@@ -854,6 +854,7 @@ function SourcesView({ sources, setSources }: { sources: any[]; setSources: (s: 
 // ═══════════════════════════════════════
 
 function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claudeRef, killSwitch, toggleKill, withdrawConfig, setWithdrawConfig, withdrawHistory, setWithdrawHistory }: any) {
+  const [promptTab, setPromptTab] = useState<'gemini' | 'gpt' | 'claude'>('gemini');
   const setField = async (field: string, val: string | number) => {
     try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify({ ...strategy, [field]: val }) }); setStrategy(u); } catch {}
   };
@@ -870,16 +871,22 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
     try { await api('/secrets', { method: 'PUT', body: JSON.stringify(body) }); (e.target as HTMLFormElement).reset(); alert('저장 완료'); } catch (err: any) { alert(err.message); }
   };
 
+  const promptTabs = [
+    { id: 'gemini' as const, label: 'Gemini (서론 · 분석)', ref: geminiRef, key: 'gemini_prompt', desc: '시장 데이터를 팩트 기반으로 정제합니다' },
+    { id: 'gpt' as const, label: 'GPT (본론 · 스코어링)', ref: gptRef, key: 'gpt_prompt', desc: 'Gemini 결과를 기반으로 점수를 매깁니다' },
+    { id: 'claude' as const, label: 'Claude (결론 · 매매)', ref: claudeRef, key: 'claude_prompt', desc: '최종 매수/매도/보류를 결정합니다' },
+  ];
+  const activePrompt = promptTabs.find(t => t.id === promptTab)!;
+
   return (
-    <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-      {/* 왼쪽: 전략 + 킬스위치 */}
-      <div className="space-y-5 sm:space-y-6">
-        {/* 킬스위치 */}
+    <div className="space-y-5 sm:space-y-6">
+      {/* ── 상단: 킬스위치 + AI 실행 ── */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Panel title="긴급 제어">
-          <div className="p-4 flex items-center justify-between">
+          <div className="p-4 sm:p-5 flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium">긴급정지 (Kill Switch)</p>
-              <p className="text-[11px] text-slate-500 mt-0.5">활성화 시 모든 자동매매 즉시 중지</p>
+              <p className="text-sm font-medium">긴급정지</p>
+              <p className="text-[11px] text-slate-500 mt-0.5">모든 자동매매 즉시 중지</p>
               {killSwitch?.reason && <p className="text-[11px] text-rose-400 mt-1">{killSwitch.reason}</p>}
             </div>
             <button onClick={toggleKill} className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${killSwitch?.active ? 'bg-rose-600 hover:bg-rose-500 shadow-lg shadow-rose-900/40' : 'bg-slate-700 hover:bg-slate-600 text-slate-400'}`}>
@@ -887,87 +894,78 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
             </button>
           </div>
         </Panel>
-
-        {/* 전략 설정 */}
-        {strategy && (
-          <Panel title="전략 설정">
-            <div className="p-4 space-y-4">
-              <div className="grid grid-cols-2 gap-3">
-                <Sel label="전략 모드" value={strategy.mode} opts={[['SWING','스윙'],['DEFENSE','방어'],['SCALPING','단타']]} onChange={v => setField('mode', v)} />
-                <Sel label="매수 기준" value={strategy.buy_threshold} opts={[[60,'60점'],[70,'70점'],[75,'75점'],[80,'80점'],[85,'85점'],[90,'90점']]} onChange={v => setField('buy_threshold', Number(v))} />
-                <Sel label="손절" value={strategy.stop_loss_pct} opts={[[-2,'-2%'],[-3,'-3%'],[-5,'-5%'],[-7,'-7%'],[-10,'-10%']]} onChange={v => setField('stop_loss_pct', Number(v))} />
-                <Sel label="익절" value={strategy.take_profit_pct} opts={[[3,'+3%'],[5,'+5%'],[8,'+8%'],[10,'+10%'],[15,'+15%'],[20,'+20%']]} onChange={v => setField('take_profit_pct', Number(v))} />
-              </div>
-
-              {[
-                { label: 'Gemini (분석)', ref: geminiRef, key: 'gemini_prompt' },
-                { label: 'GPT (스코어링)', ref: gptRef, key: 'gpt_prompt' },
-                { label: 'Claude (매매 실행)', ref: claudeRef, key: 'claude_prompt' },
-              ].map(item => (
-                <div key={item.key}>
-                  <label className="text-[11px] text-slate-500 mb-1 block">{item.label}</label>
-                  <textarea ref={item.ref} defaultValue={strategy?.[item.key] || ''} rows={3} className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-xs resize-y font-mono focus:border-blue-500 focus:outline-none" />
-                </div>
-              ))}
-              <button onClick={saveStrategy} className="px-5 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium">전략 저장</button>
-            </div>
-          </Panel>
-        )}
-      </div>
-
-      {/* 오른쪽: API 키 + 수익출금 */}
-      <div className="space-y-5 sm:space-y-6">
-        <Panel title="API 키 관리">
-          <form onSubmit={saveSecrets} className="p-4 space-y-3">
-            {[['gemini','Gemini'],['openai','OpenAI'],['anthropic','Anthropic'],['kis_appkey','KIS Key'],['kis_appsecret','KIS Secret'],['kis_account','KIS 계좌']].map(([k, l]) => (
-              <div key={k} className="flex items-center gap-2">
-                <span className="w-20 text-[11px] text-slate-400 shrink-0">{l}</span>
-                {secrets?.[k]?.exists && <span className="text-[9px] bg-emerald-900/50 text-emerald-300 px-1.5 py-0.5 rounded shrink-0">설정됨</span>}
-                <input name={k} type="password" placeholder={secrets?.[k]?.masked || '미설정'} className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs font-mono focus:border-blue-500 focus:outline-none" />
-              </div>
-            ))}
-            <button type="submit" className="px-5 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium">키 저장</button>
-          </form>
-        </Panel>
-
-        {/* 앱 보안 (PIN 변경) */}
-        <Panel title="앱 보안">
-          <form onSubmit={(e) => {
-            e.preventDefault();
-            const fd = new FormData(e.currentTarget);
-            const newPin = String(fd.get('pin') ?? '').trim();
-            if (newPin.length < 4) { alert('PIN은 4자리 이상'); return; }
-            localStorage.setItem('quantops_pin', newPin);
-            alert('PIN 변경 완료');
-            (e.target as HTMLFormElement).reset();
-          }} className="p-4 space-y-3">
-            <p className="text-[11px] text-slate-500">앱 잠금 PIN을 변경합니다. 생체인증 미지원 시 사용됩니다.</p>
-            <div className="flex gap-2">
-              <input name="pin" type="password" inputMode="numeric" maxLength={6} placeholder="새 PIN (4~6자리)" className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-center tracking-widest font-mono focus:border-blue-500 focus:outline-none" />
-              <button type="submit" className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium">변경</button>
-            </div>
-            <button type="button" onClick={() => {
-              localStorage.removeItem('quantops_cred_id');
-              localStorage.removeItem('quantops_auth_ts');
-              alert('생체인증이 초기화되었습니다. 다음 로그인 시 재등록됩니다.');
-            }} className="text-[11px] text-slate-500 hover:text-slate-400">생체인증 초기화</button>
-          </form>
-        </Panel>
-
-        {/* 수동 AI 분석 실행 */}
         <Panel title="AI 분석 수동 실행">
-          <div className="p-4 space-y-3">
-            <p className="text-xs text-slate-400">참고소스 + 차트 데이터로 즉시 AI 분석을 돌립니다. (Gemini→GPT→Claude)</p>
+          <div className="p-4 sm:p-5 flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Track A 즉시 실행</p>
+              <p className="text-[11px] text-slate-500 mt-0.5">Gemini → GPT → Claude 파이프라인</p>
+            </div>
             <button onClick={async () => {
-              if (!confirm('Track A (AI 분석)을 수동 실행하시겠습니까?')) return;
-              try {
-                await api('/run-track-a', { method: 'POST', body: JSON.stringify({}) });
-                alert('AI 분석 시작됨 — 2~3분 후 스코어가 갱신됩니다.');
-              } catch (err: any) { alert('실행 실패: ' + err.message); }
-            }} className="px-5 py-2.5 bg-purple-600 hover:bg-purple-500 rounded-lg text-sm font-medium">
-              AI 분석 즉시 실행
+              if (!confirm('AI 분석을 수동 실행하시겠습니까?')) return;
+              try { await api('/run-track-a', { method: 'POST', body: JSON.stringify({}) }); alert('실행 시작 — 2~3분 후 갱신'); } catch (err: any) { alert(err.message); }
+            }} className="px-5 py-2.5 bg-purple-600 hover:bg-purple-500 rounded-xl text-xs font-bold">
+              실행
             </button>
           </div>
+        </Panel>
+      </div>
+
+      {/* ── 전략 설정 (풀와이드) ── */}
+      {strategy && (
+        <Panel title="전략 설정">
+          <div className="p-4 sm:p-5">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+              <Sel label="전략 모드" value={strategy.mode} opts={[['SWING','스윙'],['DEFENSE','방어'],['SCALPING','단타']]} onChange={v => setField('mode', v)} />
+              <Sel label="매수 기준" value={strategy.buy_threshold} opts={[[60,'60점'],[70,'70점'],[75,'75점'],[80,'80점'],[85,'85점'],[90,'90점']]} onChange={v => setField('buy_threshold', Number(v))} />
+              <Sel label="손절" value={strategy.stop_loss_pct} opts={[[-2,'-2%'],[-3,'-3%'],[-5,'-5%'],[-7,'-7%'],[-10,'-10%']]} onChange={v => setField('stop_loss_pct', Number(v))} />
+              <Sel label="익절" value={strategy.take_profit_pct} opts={[[3,'+3%'],[5,'+5%'],[8,'+8%'],[10,'+10%'],[15,'+15%'],[20,'+20%']]} onChange={v => setField('take_profit_pct', Number(v))} />
+            </div>
+          </div>
+        </Panel>
+      )}
+
+      {/* ── AI 프롬프트 (탭 전환, 풀와이드) ── */}
+      {strategy && (
+        <Panel title="AI 프롬프트 관리">
+          <div className="p-4 sm:p-5 space-y-4">
+            {/* 탭 */}
+            <div className="flex gap-1 bg-slate-900/60 rounded-xl p-1">
+              {promptTabs.map(t => (
+                <button key={t.id} onClick={() => setPromptTab(t.id)}
+                  className={`flex-1 py-2.5 rounded-lg text-xs font-medium transition-all ${promptTab === t.id ? 'bg-blue-600/20 text-blue-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            {/* 설명 */}
+            <p className="text-[11px] text-slate-500">{activePrompt.desc}</p>
+            {/* 에디터 */}
+            <textarea
+              ref={activePrompt.ref}
+              defaultValue={strategy?.[activePrompt.key] || ''}
+              rows={10}
+              className="w-full bg-slate-900 border border-slate-700 rounded-xl p-4 text-sm leading-relaxed resize-y font-mono focus:border-blue-500 focus:outline-none"
+              placeholder={`${activePrompt.label} 프롬프트를 입력하세요...`}
+            />
+            <button onClick={saveStrategy} className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-sm font-medium">전략 + 프롬프트 저장</button>
+          </div>
+        </Panel>
+      )}
+
+      {/* ── 하단 2컬럼: API키 + 수익인출 ── */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
+        {/* API 키 */}
+        <Panel title="API 키 관리">
+          <form onSubmit={saveSecrets} className="p-4 sm:p-5 space-y-3">
+            {[['gemini','Gemini'],['openai','OpenAI'],['anthropic','Anthropic'],['kis_appkey','KIS Key'],['kis_appsecret','KIS Secret'],['kis_account','KIS 계좌']].map(([k, l]) => (
+              <div key={k} className="flex items-center gap-3">
+                <span className="w-20 text-xs text-slate-400 shrink-0">{l}</span>
+                {secrets?.[k]?.exists && <span className="text-[9px] bg-emerald-900/50 text-emerald-300 px-2 py-0.5 rounded shrink-0">설정됨</span>}
+                <input name={k} type="password" placeholder={secrets?.[k]?.masked || '미설정'} className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono focus:border-blue-500 focus:outline-none" />
+              </div>
+            ))}
+            <button type="submit" className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-sm font-medium">키 저장</button>
+          </form>
         </Panel>
 
         {/* 수익 자동 인출 설정 */}
@@ -1042,6 +1040,32 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
           </div>
         </Panel>
       </div>
+
+      {/* ── 앱 보안 ── */}
+      <Panel title="앱 보안">
+        <div className="p-4 sm:p-5">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+            <p className="text-xs text-slate-500 shrink-0">잠금 PIN 변경</p>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              const fd = new FormData(e.currentTarget);
+              const newPin = String(fd.get('pin') ?? '').trim();
+              if (newPin.length < 4) { alert('PIN은 4자리 이상'); return; }
+              localStorage.setItem('quantops_pin', newPin);
+              alert('PIN 변경 완료');
+              (e.target as HTMLFormElement).reset();
+            }} className="flex gap-2 flex-1 max-w-sm">
+              <input name="pin" type="password" inputMode="numeric" maxLength={6} placeholder="새 PIN (4~6자리)" className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-center tracking-widest font-mono focus:border-blue-500 focus:outline-none" />
+              <button type="submit" className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium shrink-0">변경</button>
+            </form>
+            <button type="button" onClick={() => {
+              localStorage.removeItem('quantops_cred_id');
+              localStorage.removeItem('quantops_auth_ts');
+              alert('생체인증이 초기화되었습니다.');
+            }} className="text-[11px] text-slate-600 hover:text-slate-400 shrink-0">생체인증 초기화</button>
+          </div>
+        </div>
+      </Panel>
     </div>
   );
 }
