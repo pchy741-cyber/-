@@ -110,7 +110,7 @@ export default function Dashboard() {
       {mobileMenu && <div className="fixed inset-0 bg-black/60 z-40 lg:hidden" onClick={() => setMobileMenu(false)} />}
 
       {/* ── Left Sidebar ── */}
-      <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-56 bg-[#0f1320] border-r border-slate-800/60 flex flex-col transform transition-transform duration-200 ${mobileMenu ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
+      <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-60 bg-[#0f1320] border-r border-slate-800/60 flex flex-col shrink-0 transform transition-transform duration-200 ${mobileMenu ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
         {/* Logo */}
         <div className="px-5 py-5 border-b border-slate-800/40">
           <h1 className="text-lg font-black tracking-tight bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">QUANTOPS</h1>
@@ -180,7 +180,7 @@ export default function Dashboard() {
               <div className="w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
             </div>
           ) : (
-            <div className="p-5 lg:p-6 max-w-[1400px]">
+            <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px] mx-auto">
               {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} sources={sources} withdrawConfig={withdrawConfig} />}
               {tab === 'trades' && <TradesView trades={trades} />}
               {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} />}
@@ -211,7 +211,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
   const totalPnl = (p?.pnl || 0) + chainsPnl;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 sm:space-y-6">
       {/* ── 다음 이벤트 배너 ── */}
       {health?.nextEvent && (
         <div className="px-4 py-2.5 bg-blue-950/30 border border-blue-900/20 rounded-xl text-xs text-blue-300 flex items-center gap-2">
@@ -220,7 +220,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
       )}
 
       {/* ── 자산 카드 ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
         <Card label="총 자산" value={fmtWon(p?.totalValue)} big />
         <Card label="현금" value={fmtWon(p?.cash)} />
         <Card label="투자금" value={fmtWon(p?.invested)} />
@@ -229,7 +229,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
       </div>
 
       {/* ── 국내 + 해외 2컬럼 ── */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
         {/* 국내 보유 */}
         <Panel title="🇰🇷 국내 보유종목" badge={`${(p?.positions?.length || 0) + chains.length}종목`}>
           {(p?.positions?.length > 0 || chains.length > 0) ? (
@@ -383,35 +383,85 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
 // ═══════════════════════════════════════
 
 function TradesView({ trades }: { trades: any[] }) {
+  const [expanded, setExpanded] = useState<number | null>(null);
+
   return (
     <Panel title="매매내역" badge={`${trades.length}건`}>
       <div className="overflow-x-auto">
-        <table className="w-full text-xs">
+        <table className="w-full text-[13px]">
           <thead><tr className="text-slate-500 border-b border-slate-700/30">
-            <th className="px-3 py-2 text-left">시간</th>
-            <th className="px-3 py-2 text-left">종목</th>
-            <th className="px-3 py-2 text-center">구분</th>
-            <th className="px-3 py-2 text-right">수량</th>
-            <th className="px-3 py-2 text-right">체결가</th>
-            <th className="px-3 py-2 text-center">상태</th>
-            <th className="px-3 py-2 text-center">모드</th>
-            <th className="px-3 py-2 text-left">판단 근거</th>
+            <th className="px-4 py-3 text-left font-medium">시간</th>
+            <th className="px-4 py-3 text-left font-medium">종목</th>
+            <th className="px-4 py-3 text-center font-medium">구분</th>
+            <th className="px-4 py-3 text-right font-medium">수량</th>
+            <th className="px-4 py-3 text-right font-medium">체결가</th>
+            <th className="px-4 py-3 text-center font-medium">상태</th>
+            <th className="px-4 py-3 text-center font-medium">모드</th>
+            <th className="px-4 py-3 text-left font-medium">AI 판단</th>
           </tr></thead>
           <tbody className="divide-y divide-slate-800/20">
             {trades.length === 0 ? (
-              <tr><td colSpan={8} className="p-8 text-center text-slate-500">매매 기록 없음</td></tr>
-            ) : trades.map((t: any, i: number) => (
-              <tr key={i} className="hover:bg-slate-800/30">
-                <td className="px-3 py-2 text-slate-500">{fmtTime(t.created_at)}</td>
-                <td className="px-3 py-2 font-medium">{t.stock_code}</td>
-                <td className="px-3 py-2 text-center"><SideBadge side={t.side} /></td>
-                <td className="px-3 py-2 text-right">{fmt(t.quantity)}</td>
-                <td className="px-3 py-2 text-right">{Number(t.filled_price) > 1000 ? fmtWon(Number(t.filled_price)) : fmtUsd(Number(t.filled_price))}</td>
-                <td className="px-3 py-2 text-center"><StatusBadge status={t.status} /></td>
-                <td className="px-3 py-2 text-center"><ModeBadge mode={t.trading_mode} /></td>
-                <td className="px-3 py-2 text-slate-500 max-w-[220px]"><div className="truncate" title={t.ai_reasoning}>{t.ai_reasoning || '-'}</div></td>
+              <tr><td colSpan={8} className="p-12 text-center text-slate-500">매매 기록 없음</td></tr>
+            ) : trades.map((t: any, i: number) => {
+              const chain = t.transaction_chains;
+              const isOpen = expanded === i;
+              return (
+              <React.Fragment key={i}>
+              <tr onClick={() => setExpanded(isOpen ? null : i)} className="hover:bg-slate-800/20 transition-colors cursor-pointer">
+                <td className="px-4 py-3 text-slate-500">{fmtTime(t.created_at)}</td>
+                <td className="px-4 py-3 font-semibold">{t.stock_code}</td>
+                <td className="px-4 py-3 text-center"><SideBadge side={t.side} /></td>
+                <td className="px-4 py-3 text-right">{fmt(t.quantity)}</td>
+                <td className="px-4 py-3 text-right font-medium">{Number(t.filled_price) > 1000 ? fmtWon(Number(t.filled_price)) : fmtUsd(Number(t.filled_price))}</td>
+                <td className="px-4 py-3 text-center"><StatusBadge status={t.status} /></td>
+                <td className="px-4 py-3 text-center"><ModeBadge mode={t.trading_mode} /></td>
+                <td className="px-4 py-3 text-slate-400 max-w-[280px]">
+                  <div className="flex items-center gap-1">
+                    <div className="truncate" title={t.ai_reasoning}>{t.ai_reasoning || '-'}</div>
+                    <span className="text-[10px] text-slate-600 shrink-0">{isOpen ? '▲' : '▼'}</span>
+                  </div>
+                </td>
               </tr>
-            ))}
+              {isOpen && (
+                <tr className="bg-slate-900/40">
+                  <td colSpan={8} className="px-5 py-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                      <div>
+                        <p className="text-slate-500 font-medium mb-1.5">AI 판단 근거</p>
+                        <p className="text-slate-300 leading-relaxed whitespace-pre-wrap">{t.ai_reasoning || '근거 없음'}</p>
+                      </div>
+                      <div>
+                        <p className="text-slate-500 font-medium mb-1.5">매도 계획</p>
+                        {chain?.strategy_mode ? (
+                          <div className="space-y-1 text-slate-400">
+                            <p>전략: <span className="text-slate-200 font-medium">{chain.strategy_mode}</span></p>
+                            <p>평단가: <span className="text-slate-200">{Number(chain.avg_buy_price).toLocaleString()}원</span></p>
+                            <p>상태: <span className="text-slate-200">{chain.status}</span></p>
+                            {chain.strategy_mode === 'SWING' && (
+                              <>
+                                <p className="text-emerald-400">익절: 평단가 +8% → 50% 매도</p>
+                                <p className="text-rose-400">손절: 평단가 -5% → 전량 매도</p>
+                                <p className="text-blue-400">물타기: -3% 시 추가 매수 (최대 3회)</p>
+                              </>
+                            )}
+                            {chain.strategy_mode === 'DEFENSE' && (
+                              <>
+                                <p className="text-emerald-400">익절: 평단가 +5% → 전량 매도</p>
+                                <p className="text-rose-400">손절: 평단가 -3% → 전량 매도</p>
+                              </>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-slate-500">체인 정보 없음</p>
+                        )}
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -444,7 +494,7 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 sm:space-y-6">
       {/* 추가 폼 */}
       <form onSubmit={addStock} className="flex flex-wrap gap-2">
         <input name="code" placeholder="종목코드 (005930)" maxLength={6} required className="flex-1 min-w-[120px] bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm placeholder:text-slate-600 focus:border-blue-500 focus:outline-none" />
@@ -531,7 +581,7 @@ function BacktestView({ watchlist }: { watchlist: any[] }) {
   const pctColor = (v: number) => v > 0 ? 'text-emerald-400' : v < 0 ? 'text-rose-400' : 'text-slate-400';
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 sm:space-y-6">
       {/* 설정 */}
       <Panel title="백테스트 설정">
         <div className="p-4 space-y-4">
@@ -717,7 +767,7 @@ function SourcesView({ sources, setSources }: { sources: any[]; setSources: (s: 
   const others = sources.filter(s => !s.is_pinned);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 sm:space-y-6">
       {/* 추가 폼 */}
       <Panel title="소스 추가">
         <form onSubmit={addSource} className="p-4 space-y-3">
@@ -823,7 +873,7 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
   return (
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
       {/* 왼쪽: 전략 + 킬스위치 */}
-      <div className="space-y-5">
+      <div className="space-y-5 sm:space-y-6">
         {/* 킬스위치 */}
         <Panel title="긴급 제어">
           <div className="p-4 flex items-center justify-between">
@@ -866,7 +916,7 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
       </div>
 
       {/* 오른쪽: API 키 + 수익출금 */}
-      <div className="space-y-5">
+      <div className="space-y-5 sm:space-y-6">
         <Panel title="API 키 관리">
           <form onSubmit={saveSecrets} className="p-4 space-y-3">
             {[['gemini','Gemini'],['openai','OpenAI'],['anthropic','Anthropic'],['kis_appkey','KIS Key'],['kis_appsecret','KIS Secret'],['kis_account','KIS 계좌']].map(([k, l]) => (
@@ -1002,10 +1052,10 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
 
 function Panel({ title, badge, children }: { title: string; badge?: string; children: React.ReactNode }) {
   return (
-    <div className="bg-[#111827]/80 backdrop-blur rounded-xl border border-slate-800/50 overflow-hidden">
-      <div className="px-4 py-2.5 border-b border-slate-800/30 flex items-center gap-2">
+    <div className="bg-[#111827]/80 backdrop-blur rounded-2xl border border-slate-800/40 overflow-hidden shadow-lg shadow-black/20">
+      <div className="px-5 py-3 border-b border-slate-800/30 flex items-center gap-2">
         <h3 className="text-sm font-semibold text-slate-200">{title}</h3>
-        {badge && <span className="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full ml-auto">{badge}</span>}
+        {badge && <span className="text-[10px] bg-slate-800 text-slate-400 px-2.5 py-0.5 rounded-full ml-auto">{badge}</span>}
       </div>
       {children}
     </div>
@@ -1014,9 +1064,9 @@ function Panel({ title, badge, children }: { title: string; badge?: string; chil
 
 function Card({ label, value, color, bg, big }: { label: string; value: string; color?: string; bg?: string; big?: boolean }) {
   return (
-    <div className={`rounded-xl border border-slate-800/50 p-4 ${bg || 'bg-[#111827]/80'}`}>
-      <div className="text-[11px] text-slate-500 mb-1">{label}</div>
-      <div className={`${big ? 'text-xl' : 'text-lg'} font-bold ${color || ''}`}>{value}</div>
+    <div className={`rounded-2xl border border-slate-800/40 p-4 sm:p-5 shadow-lg shadow-black/10 ${bg || 'bg-[#111827]/80'}`}>
+      <div className="text-[11px] sm:text-xs text-slate-500 mb-1.5">{label}</div>
+      <div className={`${big ? 'text-lg sm:text-xl' : 'text-base sm:text-lg'} font-bold ${color || ''}`}>{value}</div>
     </div>
   );
 }

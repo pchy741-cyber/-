@@ -16,7 +16,10 @@
       "Bash(xargs grep:*)",
       "Bash(grep -i \"tr_id\\\\|path.*uapi\" \"c:\\\\Users\\\\p2208\\\\.cursor\\\\projects\\\\auto ai bot/src/kis\"/*.ts)",
       "Bash(find \"c:\\\\Users\\\\p2208\\\\.cursor\\\\projects\\\\auto ai bot/src\" -name \"*.ts\" -type f -exec grep -l \"deposit\\\\|withdraw\\\\|money\\\\|cash.*out\\\\|fund.*send\" {} \\\\;)",
-      "Bash(wc -l \"c:\\\\Users\\\\p2208\\\\.cursor\\\\projects\\\\auto ai bot\\\\src\\\\automation\"/*.ts)"
+      "Bash(wc -l \"c:\\\\Users\\\\p2208\\\\.cursor\\\\projects\\\\auto ai bot\\\\src\\\\automation\"/*.ts)",
+      "Bash(where psql:*)",
+      "Read(//c/Program Files/**)",
+      "Bash(node -e ':*)"
     ]
   }
 }
