@@ -705,6 +705,30 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
           </form>
         </Panel>
 
+        {/* 앱 보안 (PIN 변경) */}
+        <Panel title="앱 보안">
+          <form onSubmit={(e) => {
+            e.preventDefault();
+            const fd = new FormData(e.currentTarget);
+            const newPin = String(fd.get('pin') ?? '').trim();
+            if (newPin.length < 4) { alert('PIN은 4자리 이상'); return; }
+            localStorage.setItem('quantops_pin', newPin);
+            alert('PIN 변경 완료');
+            (e.target as HTMLFormElement).reset();
+          }} className="p-4 space-y-3">
+            <p className="text-[11px] text-slate-500">앱 잠금 PIN을 변경합니다. 생체인증 미지원 시 사용됩니다.</p>
+            <div className="flex gap-2">
+              <input name="pin" type="password" inputMode="numeric" maxLength={6} placeholder="새 PIN (4~6자리)" className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-center tracking-widest font-mono focus:border-blue-500 focus:outline-none" />
+              <button type="submit" className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium">변경</button>
+            </div>
+            <button type="button" onClick={() => {
+              localStorage.removeItem('quantops_cred_id');
+              localStorage.removeItem('quantops_auth_ts');
+              alert('생체인증이 초기화되었습니다. 다음 로그인 시 재등록됩니다.');
+            }} className="text-[11px] text-slate-500 hover:text-slate-400">생체인증 초기화</button>
+          </form>
+        </Panel>
+
         {/* 수동 AI 분석 실행 */}
         <Panel title="AI 분석 수동 실행">
           <div className="p-4 space-y-3">

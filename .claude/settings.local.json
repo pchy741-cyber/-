@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s https://quantops-807105550136.asia-northeast3.run.app/api/health)",
+      "Bash(wc -l \"c:/Users/p2208/.cursor/projects/auto ai bot/src/automation\"/*.ts)",
+      "Bash(curl -s https://quantops-807105550136.asia-northeast3.run.app/api/secrets)",
+      "Bash(curl -s https://quantops-807105550136.asia-northeast3.run.app/api/dashboard)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); p=d.get\\('portfolio',{}\\); print\\(f'총자산: {p.get\\(\\\\\"totalValue\\\\\",0\\):,}'\\); print\\(f'현금\\(주문가능\\): {p.get\\(\\\\\"cash\\\\\",0\\):,}'\\); print\\(f'투자금: {p.get\\(\\\\\"invested\\\\\",0\\):,}'\\); print\\(f'킬스위치: {d.get\\(\\\\\"killSwitch\\\\\",{}\\).get\\(\\\\\"active\\\\\",\\\\\"?\\\\\"\\)}'\\)\")",
+      "Bash(curl -s -X POST https://quantops-807105550136.asia-northeast3.run.app/api/kill-switch/deactivate)",
+      "Bash(curl -s -X POST https://quantops-807105550136.asia-northeast3.run.app/api/kill-switch/deactivate -H \"Content-Type: application/json\" -d '{}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(f'killSwitch: {d[\\\\\"killSwitch\\\\\"][\\\\\"active\\\\\"]}'\\)\")",
+      "Bash(python3 -c ':*)",
+      "Bash(curl -s -X POST https://quantops-807105550136.asia-northeast3.run.app/api/run-track-a -H \"Content-Type: application/json\" -d '{}')",
+      "Bash(gcloud secrets:*)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(f'상태: {d[\\\\\"status\\\\\"]}'\\); print\\(f'DB: {d[\\\\\"database\\\\\"]}'\\); print\\(f'킬스위치: {d[\\\\\"killSwitch\\\\\"][\\\\\"active\\\\\"]}'\\)\")",
+      "Bash(printenv)",
+      "Read(//c/Users/p2208/**)",
+      "Bash(timeout 12 npx tsx src/main.ts)",
+      "Bash(timeout 15 npx tsx src/main.ts)",
+      "Bash(node -e ':*)"
+    ]
+  }
+}

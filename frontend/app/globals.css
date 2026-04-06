@@ -51,3 +51,20 @@ input[type='number']::-webkit-outer-spin-button {
 input[type='number'] {
   -moz-appearance: textfield;
 }
+
+/* PWA standalone 모드: 상단 안전 영역 */
+@supports (padding-top: env(safe-area-inset-top)) {
+  .safe-top { padding-top: env(safe-area-inset-top); }
+  .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+}
+
+/* 모바일: 테이블 가로 스크롤 */
+@media (max-width: 640px) {
+  table { font-size: 11px; }
+  th, td { padding: 6px 8px !important; }
+}
+
+/* 터치 디바이스: hover 효과 방지 (불필요한 스티키 hover) */
+@media (hover: none) {
+  .group:hover .group-hover\:opacity-100 { opacity: 1; }
+}

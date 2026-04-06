@@ -1,12 +1,13 @@
 {
-  "name": "QUANTOPS",
+  "name": "QUANTOPS - AI 자동매매",
   "short_name": "QUANTOPS",
-  "description": "AI 자동매매 시스템",
+  "description": "AI 기반 주식 자동매매 시스템",
   "start_url": "/",
   "display": "standalone",
-  "theme_color": "#0f172a",
-  "background_color": "#f8fafc",
+  "theme_color": "#0b0f1a",
+  "background_color": "#0b0f1a",
   "orientation": "any",
+  "categories": ["finance"],
   "icons": [
     {
       "src": "/icon-192.svg",

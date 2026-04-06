@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gcloud billing:*)",
+      "Bash(npx vitest:*)",
+      "Read(//c/Users/p2208/.cursor/projects/**)",
+      "Bash(npx biome:*)",
+      "Bash(gcloud builds:*)",
+      "Bash(gcloud run:*)",
+      "Bash(gcloud logging:*)",
+      "Read(//c/Users/p2208/.claude//**)",
+      "Read(//c/Users/p2208/.claude/**)",
+      "Bash(find 'c:/Users/p2208/.cursor/projects/auto ai bot/src/api' -type f -name *.ts)",
+      "Bash(gcloud services:*)",
+      "Bash(curl -s https://quantops-ang2aozjiq-du.a.run.app/api/health)",
+      "Bash(xargs grep:*)",
+      "Bash(grep -i \"tr_id\\\\|path.*uapi\" \"c:\\\\Users\\\\p2208\\\\.cursor\\\\projects\\\\auto ai bot/src/kis\"/*.ts)",
+      "Bash(find \"c:\\\\Users\\\\p2208\\\\.cursor\\\\projects\\\\auto ai bot/src\" -name \"*.ts\" -type f -exec grep -l \"deposit\\\\|withdraw\\\\|money\\\\|cash.*out\\\\|fund.*send\" {} \\\\;)"
+    ]
+  }
+}
