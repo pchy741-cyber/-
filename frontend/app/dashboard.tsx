@@ -34,7 +34,7 @@ const pbg = (n: number | null | undefined) => n == null || n === 0 ? '' : n > 0 
 // Dashboard
 // ═══════════════════════════════════════
 
-type Tab = 'home' | 'trades' | 'watchlist' | 'sources' | 'settings';
+type Tab = 'home' | 'trades' | 'watchlist' | 'sources' | 'backtest' | 'settings';
 
 export default function Dashboard() {
   const [tab, setTab] = useState<Tab>('home');
@@ -96,6 +96,7 @@ export default function Dashboard() {
     { id: 'trades', label: '매매내역', icon: '📋' },
     { id: 'watchlist', label: '감시목록', icon: '👁' },
     { id: 'sources', label: '참고소스', icon: '📎' },
+    { id: 'backtest', label: '백테스트', icon: '🧪' },
     { id: 'settings', label: '설정', icon: '⚙️' },
   ];
 
@@ -184,6 +185,7 @@ export default function Dashboard() {
               {tab === 'trades' && <TradesView trades={trades} />}
               {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} />}
               {tab === 'sources' && <SourcesView sources={sources} setSources={setSources} />}
+              {tab === 'backtest' && <BacktestView watchlist={watchlist} />}
               {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} geminiRef={geminiRef} gptRef={gptRef} claudeRef={claudeRef} killSwitch={killSwitch} toggleKill={toggleKill} withdrawConfig={withdrawConfig} setWithdrawConfig={setWithdrawConfig} withdrawHistory={withdrawHistory} setWithdrawHistory={setWithdrawHistory} />}
             </div>
           )}
@@ -488,6 +490,179 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
           </div>
         </Panel>
       </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════
+// BACKTEST VIEW
+// ═══════════════════════════════════════
+
+function BacktestView({ watchlist }: { watchlist: any[] }) {
+  const [mode, setMode] = useState('SWING');
+  const [capital, setCapital] = useState(1000000);
+  const [days, setDays] = useState(120);
+  const [running, setRunning] = useState(false);
+  const [singleResult, setSingleResult] = useState<any>(null);
+  const [batchResult, setBatchResult] = useState<any>(null);
+  const [selectedStock, setSelectedStock] = useState('');
+
+  const runSingle = async () => {
+    if (!selectedStock) { alert('종목을 선택하세요'); return; }
+    setRunning(true);
+    setSingleResult(null);
+    try {
+      const r = await api('/backtest/single', { method: 'POST', body: JSON.stringify({ stockCode: selectedStock, mode, capital, days }) });
+      setSingleResult(r);
+    } catch (err: any) { alert(err.message); }
+    finally { setRunning(false); }
+  };
+
+  const runAll = async () => {
+    setRunning(true);
+    setBatchResult(null);
+    try {
+      const r = await api('/backtest/all', { method: 'POST', body: JSON.stringify({ mode, capital, days }) });
+      setBatchResult(r);
+    } catch (err: any) { alert(err.message); }
+    finally { setRunning(false); }
+  };
+
+  const pctColor = (v: number) => v > 0 ? 'text-emerald-400' : v < 0 ? 'text-rose-400' : 'text-slate-400';
+
+  return (
+    <div className="space-y-5">
+      {/* 설정 */}
+      <Panel title="백테스트 설정">
+        <div className="p-4 space-y-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div>
+              <label className="text-[11px] text-slate-500 block mb-1">전략</label>
+              <select value={mode} onChange={e => setMode(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
+                <option value="SWING">스윙</option><option value="DEFENSE">방어</option><option value="SCALPING">단타</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-[11px] text-slate-500 block mb-1">시작 자본</label>
+              <select value={capital} onChange={e => setCapital(Number(e.target.value))} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
+                <option value={500000}>50만원</option><option value={1000000}>100만원</option><option value={3000000}>300만원</option><option value={5000000}>500만원</option><option value={10000000}>1,000만원</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-[11px] text-slate-500 block mb-1">기간 (일)</label>
+              <select value={days} onChange={e => setDays(Number(e.target.value))} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
+                <option value={60}>60일 (2개월)</option><option value={120}>120일 (4개월)</option><option value={180}>180일 (6개월)</option><option value={250}>250일 (1년)</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-[11px] text-slate-500 block mb-1">종목 (단일)</label>
+              <select value={selectedStock} onChange={e => setSelectedStock(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
+                <option value="">선택</option>
+                {watchlist.map((s: any) => <option key={s.stock_code} value={s.stock_code}>{s.stock_name} ({s.stock_code})</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="flex gap-3">
+            <button onClick={runSingle} disabled={running || !selectedStock} className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 rounded-lg text-sm font-medium">
+              {running ? '분석 중...' : '단일 종목 테스트'}
+            </button>
+            <button onClick={runAll} disabled={running} className="px-5 py-2.5 bg-purple-600 hover:bg-purple-500 disabled:bg-slate-700 disabled:text-slate-500 rounded-lg text-sm font-medium">
+              {running ? '분석 중...' : '전 종목 일괄 테스트'}
+            </button>
+          </div>
+        </div>
+      </Panel>
+
+      {/* 단일 종목 결과 */}
+      {singleResult && (
+        <Panel title={`${singleResult.stockCode} 백테스트 결과`} badge={singleResult.period}>
+          <div className="p-4 space-y-4">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="bg-slate-900/60 rounded-lg p-3 text-center">
+                <div className="text-[10px] text-slate-500">총 수익률</div>
+                <div className={`text-lg font-bold ${pctColor(singleResult.totalReturnPct)}`}>{singleResult.totalReturnPct > 0 ? '+' : ''}{singleResult.totalReturnPct.toFixed(1)}%</div>
+              </div>
+              <div className="bg-slate-900/60 rounded-lg p-3 text-center">
+                <div className="text-[10px] text-slate-500">승률</div>
+                <div className="text-lg font-bold">{(singleResult.winRate * 100).toFixed(0)}%</div>
+                <div className="text-[10px] text-slate-600">{singleResult.wins}승 {singleResult.losses}패</div>
+              </div>
+              <div className="bg-slate-900/60 rounded-lg p-3 text-center">
+                <div className="text-[10px] text-slate-500">최대 낙폭</div>
+                <div className="text-lg font-bold text-rose-400">{singleResult.maxDrawdownPct.toFixed(1)}%</div>
+              </div>
+              <div className="bg-slate-900/60 rounded-lg p-3 text-center">
+                <div className="text-[10px] text-slate-500">샤프 비율</div>
+                <div className="text-lg font-bold">{singleResult.sharpeRatio.toFixed(2)}</div>
+              </div>
+            </div>
+            <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-center text-[11px]">
+              <div><span className="text-slate-500">총 매매</span><br/><b>{singleResult.totalTrades}건</b></div>
+              <div><span className="text-slate-500">평균 보유</span><br/><b>{singleResult.avgHoldingDays.toFixed(0)}일</b></div>
+              <div><span className="text-slate-500">평균 수익</span><br/><b className="text-emerald-400">+{singleResult.avgWinPct.toFixed(1)}%</b></div>
+              <div><span className="text-slate-500">평균 손실</span><br/><b className="text-rose-400">{singleResult.avgLossPct.toFixed(1)}%</b></div>
+              <div><span className="text-slate-500">수익 팩터</span><br/><b>{singleResult.profitFactor.toFixed(2)}</b></div>
+              <div><span className="text-slate-500">최종 자본</span><br/><b>{(singleResult.finalCapital / 10000).toFixed(0)}만원</b></div>
+            </div>
+            {/* 매매 내역 */}
+            {singleResult.trades?.length > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead><tr className="text-slate-500 border-b border-slate-700/30">
+                    <th className="px-2 py-1.5 text-left">진입일</th><th className="px-2 py-1.5 text-left">청산일</th>
+                    <th className="px-2 py-1.5 text-right">진입가</th><th className="px-2 py-1.5 text-right">청산가</th>
+                    <th className="px-2 py-1.5 text-right">수익률</th><th className="px-2 py-1.5 text-right">보유일</th>
+                  </tr></thead>
+                  <tbody className="divide-y divide-slate-800/20">
+                    {singleResult.trades.slice(0, 20).map((t: any, i: number) => (
+                      <tr key={i} className="hover:bg-slate-800/30">
+                        <td className="px-2 py-1.5 text-slate-500">{t.entryDate}</td>
+                        <td className="px-2 py-1.5 text-slate-500">{t.exitDate}</td>
+                        <td className="px-2 py-1.5 text-right">{t.entryPrice?.toLocaleString()}</td>
+                        <td className="px-2 py-1.5 text-right">{t.exitPrice?.toLocaleString()}</td>
+                        <td className={`px-2 py-1.5 text-right font-medium ${pctColor(t.pnlPct)}`}>{t.pnlPct > 0 ? '+' : ''}{t.pnlPct?.toFixed(1)}%</td>
+                        <td className="px-2 py-1.5 text-right text-slate-500">{t.holdingDays}일</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </Panel>
+      )}
+
+      {/* 일괄 결과 */}
+      {batchResult && (
+        <Panel title="전 종목 백테스트 결과" badge={`${batchResult.totalStocks}종목 · 평균 ${batchResult.avgReturn}%`}>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead><tr className="text-slate-500 border-b border-slate-700/30">
+                <th className="px-3 py-2 text-left">종목</th>
+                <th className="px-3 py-2 text-right">수익률</th>
+                <th className="px-3 py-2 text-right">승률</th>
+                <th className="px-3 py-2 text-right">샤프</th>
+                <th className="px-3 py-2 text-right">최대 낙폭</th>
+                <th className="px-3 py-2 text-right">매매 수</th>
+              </tr></thead>
+              <tbody className="divide-y divide-slate-800/20">
+                {batchResult.results.map((r: any) => (
+                  <tr key={r.stockCode} className="hover:bg-slate-800/30">
+                    <td className="px-3 py-2"><span className="font-medium">{r.stockName}</span> <span className="text-slate-600">{r.stockCode}</span></td>
+                    <td className={`px-3 py-2 text-right font-bold ${pctColor(r.returnPct)}`}>{r.returnPct > 0 ? '+' : ''}{r.returnPct.toFixed(1)}%</td>
+                    <td className="px-3 py-2 text-right">{(r.winRate * 100).toFixed(0)}%</td>
+                    <td className="px-3 py-2 text-right">{r.sharpe.toFixed(2)}</td>
+                    <td className="px-3 py-2 text-right text-rose-400">{r.maxDD.toFixed(1)}%</td>
+                    <td className="px-3 py-2 text-right text-slate-400">{r.trades}건</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      )}
+
+      {!singleResult && !batchResult && <EmptyMsg>백테스트를 실행하면 과거 데이터로 전략 성과를 검증합니다</EmptyMsg>}
     </div>
   );
 }

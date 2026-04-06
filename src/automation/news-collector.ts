@@ -1,7 +1,6 @@
+import { XMLParser } from 'fast-xml-parser';
 import { getActiveWatchlist } from '../db/client.js';
 import { logger } from '../utils/logger.js';
-
-// import { parse as parseXml } from 'fast-xml-parser'; // TODO: Add fast-xml-parser for robust parsing
 
 /**
  * 뉴스 RSS 자동 수집기
@@ -10,10 +9,17 @@ import { logger } from '../utils/logger.js';
  * Track A 파이프라인의 additionalSources로 자동 주입
  *
  * 소스:
+ * - Google News RSS (한국 금융 뉴스)
  * - 네이버 금융 뉴스 RSS
- * - 한국거래소 공시 (DART)
- * - TODO: DART API 연동하여 공시정보 직접 수집 (자사주 매입, 대규모 계약 등)
  */
+
+const xmlParser = new XMLParser({
+  ignoreAttributes: false,
+  parseTagValue: true,
+  trimValues: true,
+  processEntities: true,
+  htmlEntities: true,
+});
 
 // 수집된 뉴스 메모리 캐시 (당일만 유지)
 let todayNews: Map<string, NewsItem[]> = new Map();
@@ -29,38 +35,34 @@ interface NewsItem {
 }
 
 /**
- * 네이버 금융 뉴스 RSS 수집
+ * Google News RSS 수집 (안정적 XML 파싱)
  */
-async function fetchNaverFinanceNews(query: string): Promise<NewsItem[]> {
+async function fetchGoogleNews(query: string): Promise<NewsItem[]> {
   try {
     const url = `https://news.google.com/rss/search?q=${encodeURIComponent(`${query} 주식`)}&hl=ko&gl=KR&ceid=KR:ko`;
 
     const res = await fetch(url, {
       headers: { 'User-Agent': 'QUANTOPS/0.2.0' },
-      signal: AbortSignal.timeout(10000), // 10초 타임아웃
+      signal: AbortSignal.timeout(10000),
     });
 
     if (!res.ok) return [];
 
     const xml = await res.text();
+    const parsed = xmlParser.parse(xml);
 
-    // 간단한 XML 파싱 (의존성 없이).
-    // 참고: 이 방식은 RSS 구조 변경에 취약합니다.
-    // 향후 fast-xml-parser와 같은 라이브러리로 교체하는 것을 권장합니다.
     const items: NewsItem[] = [];
-    const itemMatches = xml.matchAll(/<item>([\s\S]*?)<\/item>/g);
+    const rssItems = parsed?.rss?.channel?.item;
+    if (!rssItems) return [];
 
-    for (const match of itemMatches) {
-      const content = match[1];
-      const title =
-        content
-          .match(/<title>([\s\S]*?)<\/title>/)?.[1]
-          ?.replace(/<!\[CDATA\[|\]\]>/g, '')
-          .trim() ?? '';
-      const link = content.match(/<link>([\s\S]*?)<\/link>/)?.[1]?.trim() ?? '';
-      const pubDate = content.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1]?.trim() ?? '';
+    const itemArray = Array.isArray(rssItems) ? rssItems : [rssItems];
 
-      if (title) {
+    for (const item of itemArray.slice(0, 5)) {
+      const title = cleanTitle(String(item.title ?? ''));
+      const link = String(item.link ?? '');
+      const pubDate = String(item.pubDate ?? '');
+
+      if (title && title.length > 5) {
         items.push({
           title,
           link,
@@ -71,7 +73,7 @@ async function fetchNaverFinanceNews(query: string): Promise<NewsItem[]> {
       }
     }
 
-    return items.slice(0, 5); // 종목당 최대 5개
+    return items;
   } catch (error) {
     logger.warn(`뉴스 수집 실패 (${query}): ${error}`, { component: 'NEWS' });
     return [];
@@ -79,11 +81,49 @@ async function fetchNaverFinanceNews(query: string): Promise<NewsItem[]> {
 }
 
 /**
- * TODO: DART 공시 정보 수집
+ * 네이버 금융 뉴스 RSS 수집 (보조 소스)
  */
-async function _fetchDartDisclosures(_stockCode: string): Promise<NewsItem[]> {
-  // DART API (Open DART)를 사용하여 주요 공시 (e.g., 단일판매공급계약, 자기주식취득)를 가져오는 로직 구현
-  return [];
+async function fetchNaverNews(stockName: string): Promise<NewsItem[]> {
+  try {
+    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(`${stockName} site:naver.com`)}&hl=ko&gl=KR&ceid=KR:ko`;
+
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'QUANTOPS/0.2.0' },
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (!res.ok) return [];
+
+    const xml = await res.text();
+    const parsed = xmlParser.parse(xml);
+
+    const rssItems = parsed?.rss?.channel?.item;
+    if (!rssItems) return [];
+
+    const itemArray = Array.isArray(rssItems) ? rssItems : [rssItems];
+
+    return itemArray.slice(0, 3).map((item: any) => ({
+      title: cleanTitle(String(item.title ?? '')),
+      link: String(item.link ?? ''),
+      source: 'Naver',
+      publishedAt: String(item.pubDate ?? ''),
+      relevance: 'MEDIUM' as const,
+    })).filter((item: NewsItem) => item.title.length > 5);
+  } catch {
+    return [];
+  }
+}
+
+/** CDATA 및 HTML 태그 정리 */
+function cleanTitle(title: string): string {
+  return title
+    .replace(/<!\[CDATA\[|\]\]>/g, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .trim();
 }
 
 /**
@@ -108,17 +148,32 @@ export async function collectWatchlistNews(): Promise<string> {
   for (let i = 0; i < watchlist.length; i += batchSize) {
     const batch = watchlist.slice(i, i + batchSize);
 
-    const results = await Promise.allSettled(batch.map((stock) => fetchNaverFinanceNews(stock.stock_name)));
+    const results = await Promise.allSettled(
+      batch.flatMap((stock) => [
+        fetchGoogleNews(stock.stock_name),
+        fetchNaverNews(stock.stock_name),
+      ]),
+    );
 
-    results.forEach((result, idx) => {
-      const stockCode = batch[idx].stock_code;
-      if (result.status === 'fulfilled' && result.value.length > 0) {
-        const existing = todayNews.get(stockCode) ?? [];
-        const newItems = result.value.filter((item) => !existing.some((e) => e.title === item.title));
-        todayNews.set(stockCode, [...existing, ...newItems]);
-        newCount += newItems.length;
+    // 2개씩 묶어서 (Google + Naver) 합산
+    for (let j = 0; j < batch.length; j++) {
+      const stockCode = batch[j].stock_code;
+      const existing = todayNews.get(stockCode) ?? [];
+
+      const googleResult = results[j * 2];
+      const naverResult = results[j * 2 + 1];
+
+      const newItems: NewsItem[] = [];
+      if (googleResult.status === 'fulfilled') newItems.push(...googleResult.value);
+      if (naverResult.status === 'fulfilled') newItems.push(...naverResult.value);
+
+      // 중복 제거
+      const filtered = newItems.filter((item) => !existing.some((e) => e.title === item.title));
+      if (filtered.length > 0) {
+        todayNews.set(stockCode, [...existing, ...filtered]);
+        newCount += filtered.length;
       }
-    });
+    }
 
     // rate limit
     if (i + batchSize < watchlist.length) {
@@ -145,7 +200,6 @@ function formatNewsForAI(): string {
     if (items.length === 0) continue;
     lines.push(`\n### ${stockCode}`);
     for (const item of items.slice(0, 3)) {
-      // 종목당 3개까지만 AI에 전달
       lines.push(`- ${item.title} (${item.source})`);
     }
   }
