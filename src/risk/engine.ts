@@ -1,0 +1,272 @@
+import { config } from '../config/index.js';
+import { getOpenChains, getPool, getTodayStartSnapshot, insertRiskEvent, insertSnapshot } from '../db/client.js';
+import { getAccountBalance, type AccountBalance } from '../kis/account.js';
+import { logger } from '../utils/logger.js';
+import { activateKillSwitch, isKillSwitchActive } from './kill-switch.js';
+
+// ── Paper 모드 가상 잔액 ──
+const PAPER_INITIAL_CAPITAL = 10_000_000;
+let paperCashUsed = 0;
+
+export function getPaperBalance(): AccountBalance {
+  const invested = paperCashUsed;
+  const cash = PAPER_INITIAL_CAPITAL - invested;
+  return {
+    totalDeposit: PAPER_INITIAL_CAPITAL,
+    orderableCash: cash,
+    totalEvalAmount: invested,
+    totalProfitLoss: 0,
+    totalProfitLossPct: 0,
+    positions: [],
+  };
+}
+
+export function addPaperInvestment(amount: number) { paperCashUsed += amount; }
+export function removePaperInvestment(amount: number) { paperCashUsed = Math.max(0, paperCashUsed - amount); }
+export function resetPaperBalance() { paperCashUsed = 0; }
+
+async function getBalance(): Promise<AccountBalance> {
+  if (config.isPaper) {
+    // Paper 모드: KIS 잔액 조회 시도, 실패하거나 0원이면 가상 잔액 사용
+    try {
+      const real = await getAccountBalance();
+      if (real.orderableCash > 0) return real;
+    } catch { /* fallback to paper balance */ }
+    return getPaperBalance();
+  }
+  return getAccountBalance();
+}
+
+export interface PreTradeCheckResult {
+  approved: boolean;
+  reason: string;
+}
+
+/**
+ * 리스크 통제 엔진
+ * 모든 주문은 이 엔진을 거쳐야 함 (TradeExecutor가 호출)
+ */
+export class RiskEngine {
+  /**
+   * 주문 전 종합 검증
+   */
+  async validateOrder(params: {
+    stockCode: string;
+    side: 'BUY' | 'SELL';
+    quantity: number;
+    estimatedPrice: number;
+  }): Promise<PreTradeCheckResult> {
+    const { stockCode, side, quantity, estimatedPrice } = params;
+    const orderValue = quantity * estimatedPrice;
+
+    // 1. Kill Switch 확인
+    if (isKillSwitchActive()) {
+      return { approved: false, reason: '🛑 Kill Switch 활성화 상태 — 모든 매매 차단' };
+    }
+
+    // 매도는 리스크 체크 생략 (포지션 줄이기는 항상 허용)
+    if (side === 'SELL') {
+      return { approved: true, reason: '매도 주문 — 리스크 체크 통과' };
+    }
+
+    // 2. 동시 보유 종목 수 체크 (신규 매수만)
+    const concurrentCheck = await this.checkConcurrentPositions(stockCode);
+    if (!concurrentCheck.approved) return concurrentCheck;
+
+    // 3. 일일 매매 횟수 체크
+    const dailyTradeCheck = await this.checkDailyTradeCount();
+    if (!dailyTradeCheck.approved) return dailyTradeCheck;
+
+    // 4. 종목당 최대 투자 한도 체크
+    const positionCheck = await this.checkPositionLimit(stockCode, orderValue);
+    if (!positionCheck.approved) return positionCheck;
+
+    // 5. 일일 최대 손실 (Drawdown) 체크
+    const drawdownCheck = await this.checkDailyDrawdown();
+    if (!drawdownCheck.approved) return drawdownCheck;
+
+    // 6. 총 투자 비율 체크
+    const exposureCheck = await this.checkTotalExposure(orderValue);
+    if (!exposureCheck.approved) return exposureCheck;
+
+    // 7. 주문 가능 현금 체크
+    const cashCheck = await this.checkCash(orderValue);
+    if (!cashCheck.approved) return cashCheck;
+
+    return { approved: true, reason: '✅ 모든 리스크 체크 통과' };
+  }
+
+  /**
+   * 동시 보유 종목 수 제한
+   * 이미 보유 중인 종목에 대한 물타기는 허용
+   */
+  private async checkConcurrentPositions(stockCode: string): Promise<PreTradeCheckResult> {
+    try {
+      const chains = await getOpenChains();
+      const existingChain = chains.find((c) => c.stock_code === stockCode);
+
+      // 이미 보유 중인 종목은 통과 (물타기)
+      if (existingChain) {
+        return { approved: true, reason: 'OK' };
+      }
+
+      if (chains.length >= config.risk.maxConcurrentPositions) {
+        const msg = `동시 보유 종목 수 한도: ${chains.length}/${config.risk.maxConcurrentPositions}종목 — 신규 매수 차단`;
+        await insertRiskEvent({
+          event_type: 'CONCURRENT_LIMIT',
+          severity: 'WARNING',
+          details: { stockCode, currentPositions: chains.length, limit: config.risk.maxConcurrentPositions },
+          action_taken: '주문 거부',
+        });
+        return { approved: false, reason: msg };
+      }
+
+      return { approved: true, reason: 'OK' };
+    } catch {
+      // DB 조회 실패 시 보수적으로 허용 (getAccountBalance에서 한 번 더 체크됨)
+      return { approved: true, reason: 'OK' };
+    }
+  }
+
+  /**
+   * 일일 매매 횟수 제한 (과매매 방지)
+   */
+  private async checkDailyTradeCount(): Promise<PreTradeCheckResult> {
+    try {
+      const pool = getPool();
+      const today = new Date().toISOString().split('T')[0];
+      const { rows } = await pool.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM orders WHERE created_at::date = $1`,
+        [today],
+      );
+      const todayCount = Number(rows[0]?.count ?? 0);
+
+      if (todayCount >= config.risk.maxDailyTrades) {
+        return {
+          approved: false,
+          reason: `일일 매매 횟수 한도: ${todayCount}/${config.risk.maxDailyTrades}회 — 과매매 방지`,
+        };
+      }
+
+      return { approved: true, reason: 'OK' };
+    } catch {
+      return { approved: true, reason: 'OK' };
+    }
+  }
+
+  /**
+   * 종목당 최대 투자 한도 (하드 리밋)
+   */
+  private async checkPositionLimit(stockCode: string, orderValue: number): Promise<PreTradeCheckResult> {
+    const balance = await getBalance();
+    const existing = balance.positions.find((p) => p.stockCode === stockCode);
+    const currentInvested = existing ? existing.quantity * existing.avgBuyPrice : 0;
+    const totalAfter = currentInvested + orderValue;
+
+    if (totalAfter > config.risk.maxPositionKrw) {
+      const msg = `종목당 한도 초과: ${stockCode} 현재 ${currentInvested.toLocaleString()}원 + 신규 ${orderValue.toLocaleString()}원 = ${totalAfter.toLocaleString()}원 > 한도 ${config.risk.maxPositionKrw.toLocaleString()}원`;
+      await insertRiskEvent({
+        event_type: 'POSITION_LIMIT',
+        severity: 'WARNING',
+        details: { stockCode, currentInvested, orderValue, limit: config.risk.maxPositionKrw },
+        action_taken: '주문 거부',
+      });
+      return { approved: false, reason: msg };
+    }
+
+    return { approved: true, reason: 'OK' };
+  }
+
+  /**
+   * 일일 최대 손실 (Drawdown) 체크
+   * 하루 손실이 한도를 초과하면 Kill Switch 자동 발동
+   */
+  private async checkDailyDrawdown(): Promise<PreTradeCheckResult> {
+    const startSnapshot = await getTodayStartSnapshot();
+    if (!startSnapshot) {
+      // 장시작 스냅샷이 없으면 매매 차단 (기준값 없이 손실 계산 불가)
+      // 08:50 스냅샷이 자동 생성되므로, 없다면 시스템 부팅 직후
+      logger.warn('⚠️ 장시작 스냅샷 없음 → 자동 생성 후 매매 허용', { component: 'RISK' });
+      try {
+        const balance = await getBalance();
+        await insertSnapshot({
+          total_value: balance.totalDeposit + balance.totalEvalAmount,
+          cash_balance: balance.orderableCash,
+          invested_value: balance.totalEvalAmount,
+          unrealized_pnl: balance.totalProfitLoss,
+          daily_pnl: 0,
+          daily_pnl_pct: 0,
+          positions: balance.positions,
+        });
+        return { approved: true, reason: '장시작 스냅샷 자동 생성 완료' };
+      } catch {
+        return { approved: false, reason: '스냅샷 생성 실패 — Drawdown 계산 불가, 매매 차단' };
+      }
+    }
+
+    const currentBalance = await getBalance();
+    const startValue = Number(startSnapshot.total_value);
+    const currentValue = currentBalance.totalDeposit + currentBalance.totalEvalAmount;
+    const dailyLoss = startValue - currentValue;
+
+    if (dailyLoss > config.risk.maxDailyDrawdownKrw) {
+      // Kill Switch 자동 발동!
+      await activateKillSwitch(
+        `일일 손실 한도 초과: ${dailyLoss.toLocaleString()}원 > ${config.risk.maxDailyDrawdownKrw.toLocaleString()}원`,
+      );
+      return {
+        approved: false,
+        reason: `🛑 일일 손실 한도 초과 (${dailyLoss.toLocaleString()}원) — Kill Switch 자동 발동`,
+      };
+    }
+
+    // 한도의 80% 이상이면 경고
+    if (dailyLoss > config.risk.maxDailyDrawdownKrw * 0.8) {
+      logger.warn(
+        `⚠️ 일일 손실 경고: ${dailyLoss.toLocaleString()}원 (한도의 ${((dailyLoss / config.risk.maxDailyDrawdownKrw) * 100).toFixed(0)}%)`,
+        { component: 'RISK' },
+      );
+    }
+
+    return { approved: true, reason: 'OK' };
+  }
+
+  /**
+   * 총 투자 비율 체크
+   */
+  private async checkTotalExposure(orderValue: number): Promise<PreTradeCheckResult> {
+    const balance = await getBalance();
+    const totalPortfolio = balance.totalDeposit + balance.totalEvalAmount;
+    if (totalPortfolio === 0) return { approved: true, reason: 'OK' };
+
+    const _currentExposurePct = (balance.totalEvalAmount / totalPortfolio) * 100;
+    const afterExposurePct = ((balance.totalEvalAmount + orderValue) / totalPortfolio) * 100;
+
+    if (afterExposurePct > config.risk.maxTotalInvestedPct) {
+      return {
+        approved: false,
+        reason: `총 투자 비율 한도 초과: ${afterExposurePct.toFixed(1)}% > ${config.risk.maxTotalInvestedPct}%`,
+      };
+    }
+
+    return { approved: true, reason: 'OK' };
+  }
+
+  /**
+   * 주문 가능 현금 체크
+   */
+  private async checkCash(orderValue: number): Promise<PreTradeCheckResult> {
+    const balance = await getBalance();
+
+    if (orderValue > balance.orderableCash) {
+      return {
+        approved: false,
+        reason: `현금 부족: 주문금액 ${orderValue.toLocaleString()}원 > 가용 ${balance.orderableCash.toLocaleString()}원`,
+      };
+    }
+
+    return { approved: true, reason: 'OK' };
+  }
+}
+
+export const riskEngine = new RiskEngine();

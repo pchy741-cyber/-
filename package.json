@@ -1,0 +1,56 @@
+{
+  "name": "quantops",
+  "version": "0.2.0",
+  "description": "AI 기반 완전 자동매매 시스템",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check src/",
+    "lint:fix": "biome check --write src/",
+    "format": "biome format --write src/",
+    "db:migrate": "tsx src/db/migrate.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.37.0",
+    "@google-cloud/bigquery": "^8.1.1",
+    "@google-cloud/language": "^7.2.1",
+    "@google-cloud/monitoring": "^5.3.1",
+    "@google-cloud/secret-manager": "^6.1.1",
+    "@google-cloud/storage": "^7.19.0",
+    "@google/generative-ai": "^0.21.0",
+    "@hono/node-server": "^1.19.11",
+    "@upstash/redis": "^1.37.0",
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0",
+    "dotenv": "^16.4.7",
+    "google-auth-library": "^10.6.2",
+    "hono": "^4.12.9",
+    "http-proxy": "^1.18.1",
+    "node-cron": "^3.0.3",
+    "openai": "^4.77.0",
+    "pg": "^8.20.0",
+    "telegraf": "^4.16.3",
+    "uuid": "^11.0.5",
+    "winston": "^3.17.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.9",
+    "@types/node": "^22.10.5",
+    "@types/node-cron": "^3.0.11",
+    "@types/pg": "^8.20.0",
+    "@types/uuid": "^10.0.0",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

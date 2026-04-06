@@ -1,0 +1,51 @@
+# GCP Cloud Build → Artifact Registry → Cloud Run 배포
+steps:
+  # 1. Docker 빌드
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/quantops:${_TAG}'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/quantops:latest'
+      - '.'
+
+  # 2. Artifact Registry에 Push
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '--all-tags'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/quantops'
+
+  # 3. Cloud Run 배포
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'quantops'
+      - '--image'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/quantops:${_TAG}'
+      - '--region'
+      - '${_REGION}'
+      - '--platform'
+      - 'managed'
+      - '--min-instances'
+      - '1'
+      - '--max-instances'
+      - '1'
+      - '--memory'
+      - '512Mi'
+      - '--cpu'
+      - '1'
+      - '--port'
+      - '8080'
+      - '--allow-unauthenticated'
+
+substitutions:
+  _REGION: asia-northeast3  # 서울 리전
+  _REPO: quantops
+  _TAG: v0-2-0
+
+options:
+  logging: CLOUD_LOGGING_ONLY

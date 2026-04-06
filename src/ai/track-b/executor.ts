@@ -1,0 +1,109 @@
+import Anthropic from '@anthropic-ai/sdk';
+import { config } from '../../config/index.js';
+import { type TradeDecision, TradeDecisionSchema } from '../../db/models.js';
+import { logger } from '../../utils/logger.js';
+import { buildExecutionPrompt } from '../prompts/track-b-execution.js';
+
+const hasAnthropicKey = config.ai.anthropicKey && !config.ai.anthropicKey.startsWith('your_');
+const anthropic = hasAnthropicKey ? new Anthropic({ apiKey: config.ai.anthropicKey }) : null;
+
+interface ClaudeExecutionOutput {
+  decisions: TradeDecision[];
+}
+
+/**
+ * Claude 3.5 Sonnet으로 매매 실행 판단
+ * - 캐싱된 스코어 + 실시간 시세 컨텍스트를 입력
+ * - 엄격한 JSON 스키마 검증으로 환각 방지
+ * - 최대 3회 재시도 (유효성 검증 실패 시)
+ */
+export async function runClaudeExecution(params: {
+  mode: string;
+  context: string;
+  customPrompt?: string;
+}): Promise<TradeDecision[]> {
+  const { mode, context, customPrompt } = params;
+
+  if (!anthropic) {
+    logger.warn('Anthropic API 키 미설정 — Claude 매매 판단 스킵 (HOLD 반환)', { component: 'TRACK_B' });
+    return [];
+  }
+
+  const systemPrompt = customPrompt || buildExecutionPrompt(mode);
+
+  const MAX_RETRIES = 3;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      logger.info(`Claude 실행 판단 시작 (시도 ${attempt}/${MAX_RETRIES}, 모드: ${mode})`, {
+        component: 'TRACK_B',
+      });
+
+      const response = await anthropic.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 4096,
+        temperature: 0.1,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: context }],
+      });
+
+      // 텍스트 블록에서 JSON 추출
+      const textBlock = response.content.find((block) => block.type === 'text');
+      if (!textBlock || textBlock.type !== 'text') {
+        throw new Error('Claude 응답에 텍스트가 없습니다');
+      }
+
+      const rawText = textBlock.text;
+
+      // JSON 블록 추출 (```json ... ``` 또는 순수 JSON)
+      const jsonMatch = rawText.match(/```json\s*([\s\S]*?)```/) || rawText.match(/(\{[\s\S]*\})/);
+      if (!jsonMatch) {
+        throw new Error('Claude 응답에서 JSON을 찾을 수 없습니다');
+      }
+
+      const parsed = JSON.parse(jsonMatch[1]) as ClaudeExecutionOutput;
+
+      // Zod로 각 결정 엄격 검증
+      const validDecisions: TradeDecision[] = [];
+      const invalidCount = { count: 0 };
+
+      for (const decision of parsed.decisions) {
+        const result = TradeDecisionSchema.safeParse(decision);
+        if (result.success) {
+          validDecisions.push(result.data);
+        } else {
+          invalidCount.count++;
+          logger.warn(`Claude 결정 검증 실패 (${decision.stock_code ?? 'unknown'}): ${result.error.message}`, {
+            component: 'TRACK_B',
+          });
+        }
+      }
+
+      // 전부 실패하면 재시도
+      if (validDecisions.length === 0 && parsed.decisions.length > 0) {
+        throw new Error(`모든 결정이 검증 실패 (${invalidCount.count}개)`);
+      }
+
+      logger.info(
+        `Claude 판단 완료: ${validDecisions.length}개 유효 결정 ` +
+          `(BUY: ${validDecisions.filter((d) => d.action === 'BUY').length}, ` +
+          `SELL: ${validDecisions.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action)).length}, ` +
+          `HOLD: ${validDecisions.filter((d) => d.action === 'HOLD').length})`,
+        { component: 'TRACK_B' },
+      );
+
+      return validDecisions;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.warn(`Claude 실행 시도 ${attempt} 실패: ${msg}`, { component: 'TRACK_B' });
+
+      if (attempt === MAX_RETRIES) {
+        logger.error(`Claude 실행 최종 실패 (${MAX_RETRIES}회 시도)`, { component: 'TRACK_B' });
+        // 최종 실패 시 빈 배열 반환 (안전: 아무것도 안 함)
+        return [];
+      }
+    }
+  }
+
+  return [];
+}
