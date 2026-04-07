@@ -43,12 +43,16 @@ settingsRoutes.put('/strategy', async (c) => {
   try {
     await getPool().query('UPDATE strategy_config SET is_active = false WHERE is_active = true');
 
+    // notebooklm_prompt 컬럼 자동 생성 (없으면)
+    await getPool().query(`ALTER TABLE strategy_config ADD COLUMN IF NOT EXISTS notebooklm_prompt TEXT DEFAULT ''`).catch(() => {});
+
     const { rows } = await getPool().query(
-      `INSERT INTO strategy_config (mode, is_active, gemini_prompt, gpt_prompt, claude_prompt, buy_threshold, stop_loss_pct, take_profit_pct)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      `INSERT INTO strategy_config (mode, is_active, notebooklm_prompt, gemini_prompt, gpt_prompt, claude_prompt, buy_threshold, stop_loss_pct, take_profit_pct)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
       [
         body.mode ?? 'SWING',
         true,
+        body.notebooklm_prompt ?? '',
         body.gemini_prompt ?? '',
         body.gpt_prompt ?? '',
         body.claude_prompt ?? '',

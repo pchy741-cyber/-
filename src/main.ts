@@ -128,7 +128,15 @@ async function bootstrap() {
     logger.warn(`⚠️ BigQuery 초기화 실패: ${err}`, { component: 'BOOT' });
   }
 
-  // 5.5. 감시목록 종목명 자동 보정 (코드만 있는 경우 KIS API로 이름 조회)
+  // 5.5. Secret Manager에서 API 키 로드 (배포 후 키 유실 방지)
+  try {
+    const { loadSecretsToEnv } = await import('./api/routes/secrets.js');
+    await loadSecretsToEnv();
+  } catch (err) {
+    logger.warn(`Secret Manager 로드 실패 (환경변수 fallback): ${err}`, { component: 'BOOT' });
+  }
+
+  // 5.6. 감시목록 종목명 자동 보정 (코드만 있는 경우 KIS API로 이름 조회)
   try {
     const { getPool, getActiveWatchlist } = await import('./db/client.js');
     const { getCurrentPrice } = await import('./kis/market.js');

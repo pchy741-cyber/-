@@ -12,6 +12,9 @@ const KEY_MAP: Record<string, { secret: string; envVar: string }> = {
   gemini: { secret: 'gemini-api-key', envVar: 'GEMINI_API_KEY' },
   openai: { secret: 'openai-api-key', envVar: 'OPENAI_API_KEY' },
   anthropic: { secret: 'anthropic-api-key', envVar: 'ANTHROPIC_API_KEY' },
+  kis_appkey: { secret: 'kis-app-key', envVar: 'KIS_APP_KEY' },
+  kis_appsecret: { secret: 'kis-app-secret', envVar: 'KIS_APP_SECRET' },
+  kis_account: { secret: 'kis-account-no', envVar: 'KIS_ACCOUNT_NO' },
   telegram_token: { secret: 'telegram-bot-token', envVar: 'TELEGRAM_BOT_TOKEN' },
   telegram_chat: { secret: 'telegram-chat-id', envVar: 'TELEGRAM_CHAT_ID' },
 };
@@ -46,6 +49,19 @@ async function getSecretValue(secretId: string): Promise<string | null> {
     return version.payload?.data?.toString() ?? null;
   } catch {
     return null;
+  }
+}
+
+/** 부팅 시 Secret Manager에서 키 로드 → 환경변수 반영 (배포 후 키 유실 방지) */
+export async function loadSecretsToEnv(): Promise<void> {
+  for (const [key, { secret, envVar }] of Object.entries(KEY_MAP)) {
+    try {
+      const value = await getSecretValue(secret);
+      if (value && value.length > 3) {
+        process.env[envVar] = value;
+        logger.info(`Secret 로드: ${key} (${envVar})`, { component: 'SECRETS' });
+      }
+    } catch { /* skip */ }
   }
 }
 
