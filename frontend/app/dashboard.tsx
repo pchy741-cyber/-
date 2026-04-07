@@ -105,57 +105,52 @@ export default function Dashboard() {
   // ═══════════════════════════════════════
 
   return (
-    <div className="flex h-screen bg-[#0b0f1a] text-slate-100 overflow-hidden">
+    <div className="flex h-screen bg-[#06080f] text-slate-100 overflow-hidden">
       {/* ── Mobile overlay ── */}
       {mobileMenu && <div className="fixed inset-0 bg-black/60 z-40 lg:hidden" onClick={() => setMobileMenu(false)} />}
 
       {/* ── Left Sidebar ── */}
-      <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-60 bg-[#0f1320] border-r border-slate-800/60 flex flex-col shrink-0 transform transition-transform duration-200 ${mobileMenu ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
+      <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-[220px] bg-[#0a0e1a]/95 backdrop-blur-xl border-r border-white/[0.04] flex flex-col shrink-0 transform transition-transform duration-200 ${mobileMenu ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
         {/* Logo */}
-        <div className="px-5 py-5 border-b border-slate-800/40">
-          <h1 className="text-lg font-black tracking-tight bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">QUANTOPS</h1>
-          <p className="text-[10px] text-slate-600 mt-0.5">AI 자동매매 v0.2</p>
+        <div className="px-5 py-5 border-b border-white/[0.04]">
+          <h1 className="text-lg font-black tracking-tight bg-gradient-to-r from-blue-400 via-cyan-400 to-emerald-400 bg-clip-text text-transparent">QUANTOPS</h1>
+          <p className="text-[10px] text-slate-600 mt-0.5 font-medium">AI 자동매매 v0.2</p>
         </div>
 
-        {/* Status cards in sidebar */}
-        <div className="px-3 py-3 space-y-2 border-b border-slate-800/40">
-          <div className="flex items-center gap-2 text-[11px]">
-            <span className={`w-2 h-2 rounded-full ${health?.status === 'ok' ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
-            <span className="text-slate-400">{health?.status === 'ok' ? '시스템 정상' : '오류'}</span>
-          </div>
-          <div className="flex items-center gap-2 text-[11px]">
-            <span className={`w-2 h-2 rounded-full ${health?.marketOpen ? 'bg-emerald-400' : 'bg-slate-600'}`} />
-            <span className="text-slate-400">🇰🇷 {health?.marketOpen ? '장중' : '장외'}</span>
-          </div>
-          <div className="flex items-center gap-2 text-[11px]">
-            <span className={`w-2 h-2 rounded-full ${health?.usMarketOpen ? 'bg-emerald-400' : 'bg-slate-600'}`} />
-            <span className="text-slate-400">🇺🇸 {health?.usMarketOpen ? '장중' : '장외'}</span>
-          </div>
-          <div className="flex items-center gap-2 text-[11px]">
-            <span className={`w-2 h-2 rounded-full ${dash?.tradingMode === 'paper' ? 'bg-amber-400' : 'bg-blue-400'}`} />
-            <span className="text-slate-400">{dash?.tradingMode === 'paper' ? '모의투자' : '실거래'}</span>
-          </div>
+        {/* Status */}
+        <div className="px-4 py-3.5 space-y-2.5 border-b border-white/[0.04]">
+          {[
+            { ok: health?.status === 'ok', label: health?.status === 'ok' ? '시스템 정상' : '시스템 오류' },
+            { ok: health?.marketOpen, label: `KR ${health?.marketOpen ? '장중' : '장외'}` },
+            { ok: health?.usMarketOpen, label: `US ${health?.usMarketOpen ? '장중' : '장외'}` },
+            { ok: dash?.tradingMode !== 'paper', label: dash?.tradingMode === 'paper' ? '모의투자' : '실거래', amber: dash?.tradingMode === 'paper' },
+          ].map((s, i) => (
+            <div key={i} className="flex items-center gap-2.5 text-[11px]">
+              <span className={`w-1.5 h-1.5 rounded-full ${s.amber ? 'bg-amber-400' : s.ok ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+              <span className="text-slate-500 font-medium">{s.label}</span>
+            </div>
+          ))}
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 p-2 space-y-0.5">
+        <nav className="flex-1 p-2.5 space-y-0.5">
           {navItems.map(item => (
             <button key={item.id} onClick={() => { setTab(item.id); setMobileMenu(false); }}
-              className={`w-full text-left px-4 py-2.5 rounded-lg text-sm flex items-center gap-3 transition-all ${tab === item.id ? 'bg-blue-600/15 text-blue-400 font-semibold' : 'text-slate-500 hover:bg-slate-800/60 hover:text-slate-300'}`}>
-              <span>{item.icon}</span>
+              className={`w-full text-left px-4 py-2.5 rounded-xl text-[13px] flex items-center gap-3 transition-all duration-150 ${tab === item.id ? 'bg-blue-500/10 text-blue-400 font-semibold ring-1 ring-blue-500/20' : 'text-slate-500 hover:bg-white/[0.03] hover:text-slate-300'}`}>
+              <span className="text-sm">{item.icon}</span>
               <span>{item.label}</span>
             </button>
           ))}
         </nav>
 
         {/* Kill Switch — always visible */}
-        <div className="p-3 border-t border-slate-800/40 space-y-2">
+        <div className="p-3 border-t border-white/[0.04] space-y-2">
           <button onClick={toggleKill}
-            className={`w-full py-2.5 rounded-lg text-xs font-bold transition-all ${killSwitch?.active ? 'bg-rose-600 hover:bg-rose-500 text-white animate-pulse shadow-lg shadow-rose-900/40' : 'bg-slate-800 hover:bg-slate-700 text-slate-400'}`}>
-            {killSwitch?.active ? '🛑 긴급정지 ON' : '⏸️ 긴급정지 OFF'}
+            className={`w-full py-2.5 rounded-xl text-[11px] font-bold transition-all ${killSwitch?.active ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/30' : 'bg-white/[0.04] hover:bg-white/[0.06] text-slate-500'}`}>
+            {killSwitch?.active ? '긴급정지 ON' : '긴급정지 OFF'}
           </button>
-          <button onClick={load} className="w-full py-2 rounded-lg text-[11px] text-slate-500 hover:text-slate-300 bg-slate-800/50 hover:bg-slate-800 transition-all">
-            🔄 새로고침 · {lastUpdate.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
+          <button onClick={load} className="w-full py-2 rounded-xl text-[10px] text-slate-600 hover:text-slate-400 bg-white/[0.02] hover:bg-white/[0.04] transition-all font-medium">
+            새로고침 · {lastUpdate.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
           </button>
         </div>
       </aside>
@@ -174,7 +169,7 @@ export default function Dashboard() {
         </header>
 
         {/* Content area */}
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 overflow-y-auto bg-gradient-to-br from-[#06080f] via-[#0a0e1a] to-[#06080f]">
           {loading && !dash ? (
             <div className="flex items-center justify-center h-full">
               <div className="w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
@@ -221,18 +216,18 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
 
       {/* ── 자산 요약 ── */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
-        <div className={`rounded-2xl border border-slate-800/40 p-4 sm:p-5 shadow-lg shadow-black/10 bg-[#111827]/80 col-span-2 lg:col-span-1`}>
-          <div className="text-[11px] sm:text-xs text-slate-500 mb-1.5">총 자산</div>
-          <div className="text-xl sm:text-2xl font-bold">{fmtWon(p?.totalValue)}</div>
+        <div className="rounded-2xl p-5 sm:p-6 col-span-2 lg:col-span-1 bg-gradient-to-br from-blue-600/10 via-cyan-600/5 to-transparent border border-blue-500/10 shadow-xl shadow-blue-900/10">
+          <div className="text-[10px] text-blue-300/60 mb-2 font-semibold uppercase tracking-widest">총 자산</div>
+          <div className="text-2xl sm:text-3xl font-black tracking-tight text-white">{fmtWon(p?.totalValue)}</div>
         </div>
-        <Card label="현금 (대기)" value={fmtWon(p?.cash)} />
-        <Card label="투자금 (운용 중)" value={fmtWon(totalInvested)} />
-        <div className={`rounded-2xl border border-slate-800/40 p-4 sm:p-5 shadow-lg shadow-black/10 ${pbg(totalPnl)}`}>
-          <div className="text-[11px] sm:text-xs text-slate-500 mb-1.5">미실현 손익</div>
-          <div className={`text-base sm:text-lg font-bold ${pc(totalPnl)}`}>{fmtWon(totalPnl)}</div>
-          <div className={`text-xs font-medium mt-0.5 ${pc(totalPnlPct)}`}>{fmtPct(totalPnlPct)}</div>
+        <Card label="현금" value={fmtWon(p?.cash)} />
+        <Card label="투자금" value={fmtWon(totalInvested)} />
+        <div className={`rounded-2xl border p-4 sm:p-5 shadow-xl shadow-black/20 transition-transform hover:scale-[1.01] ${totalPnl > 0 ? 'bg-emerald-500/5 border-emerald-500/15 glow-green' : totalPnl < 0 ? 'bg-rose-500/5 border-rose-500/15 glow-red' : 'glass border-white/[0.04]'}`}>
+          <div className="text-[10px] text-slate-500 mb-2 font-semibold uppercase tracking-widest">미실현 손익</div>
+          <div className={`text-lg sm:text-xl font-black ${pc(totalPnl)}`}>{fmtWon(totalPnl)}</div>
+          <div className={`text-sm font-bold mt-1 ${pc(totalPnlPct)}`}>{fmtPct(totalPnlPct)}</div>
         </div>
-        <Card label="인출 예약금" value={fmtWon(withdrawConfig?.totalReserved ?? 0)} color={withdrawConfig?.totalReserved > 0 ? 'text-amber-400' : undefined} bg={withdrawConfig?.totalReserved > 0 ? 'bg-amber-950/20 border-amber-900/20' : undefined} />
+        <Card label="인출 예약" value={fmtWon(withdrawConfig?.totalReserved ?? 0)} color={withdrawConfig?.totalReserved > 0 ? 'text-amber-400' : undefined} bg={withdrawConfig?.totalReserved > 0 ? 'bg-amber-500/5 border-amber-500/15' : undefined} />
       </div>
 
       {/* ── 국내 + 해외 2컬럼 ── */}
@@ -1193,10 +1188,10 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
 
 function Panel({ title, badge, children }: { title: string; badge?: string; children: React.ReactNode }) {
   return (
-    <div className="bg-[#111827]/80 backdrop-blur rounded-2xl border border-slate-800/40 overflow-hidden shadow-lg shadow-black/20">
-      <div className="px-5 py-3 border-b border-slate-800/30 flex items-center gap-2">
-        <h3 className="text-sm font-semibold text-slate-200">{title}</h3>
-        {badge && <span className="text-[10px] bg-slate-800 text-slate-400 px-2.5 py-0.5 rounded-full ml-auto">{badge}</span>}
+    <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden shadow-xl shadow-black/30 animate-in">
+      <div className="px-5 py-3.5 border-b border-white/[0.04] flex items-center gap-2">
+        <h3 className="text-[13px] font-bold text-slate-100 tracking-tight">{title}</h3>
+        {badge && <span className="text-[10px] bg-white/[0.06] text-slate-400 px-2.5 py-1 rounded-full ml-auto font-medium">{badge}</span>}
       </div>
       {children}
     </div>
@@ -1205,35 +1200,36 @@ function Panel({ title, badge, children }: { title: string; badge?: string; chil
 
 function Card({ label, value, color, bg, big }: { label: string; value: string; color?: string; bg?: string; big?: boolean }) {
   return (
-    <div className={`rounded-2xl border border-slate-800/40 p-4 sm:p-5 shadow-lg shadow-black/10 ${bg || 'bg-[#111827]/80'}`}>
-      <div className="text-[11px] sm:text-xs text-slate-500 mb-1.5">{label}</div>
-      <div className={`${big ? 'text-lg sm:text-xl' : 'text-base sm:text-lg'} font-bold ${color || ''}`}>{value}</div>
+    <div className={`rounded-2xl border border-white/[0.04] p-4 sm:p-5 shadow-xl shadow-black/20 transition-transform hover:scale-[1.01] ${bg || 'glass'}`}>
+      <div className="text-[11px] text-slate-500 mb-2 font-medium uppercase tracking-wider">{label}</div>
+      <div className={`${big ? 'text-xl sm:text-2xl' : 'text-base sm:text-lg'} font-bold tracking-tight ${color || 'text-slate-100'}`}>{value}</div>
     </div>
   );
 }
 
 function Indicator({ label, value, sub, color }: { label: string; value: string; sub: string; color: string }) {
-  const c = color === 'emerald' ? 'text-emerald-400' : color === 'rose' ? 'text-rose-400' : color === 'blue' ? 'text-blue-400' : color === 'amber' ? 'text-amber-400' : 'text-slate-400';
-  const bg = color === 'emerald' ? 'bg-emerald-950/30' : color === 'rose' ? 'bg-rose-950/30' : color === 'blue' ? 'bg-blue-950/30' : 'bg-slate-900/40';
+  const c = color === 'emerald' ? 'text-emerald-400' : color === 'rose' ? 'text-rose-400' : color === 'blue' ? 'text-blue-400' : color === 'amber' ? 'text-amber-400' : 'text-slate-300';
+  const border = color === 'emerald' ? 'border-emerald-500/20' : color === 'rose' ? 'border-rose-500/20' : color === 'blue' ? 'border-blue-500/20' : 'border-white/[0.04]';
+  const glow = color === 'emerald' ? 'glow-green' : color === 'rose' ? 'glow-red' : color === 'blue' ? 'glow-blue' : '';
   return (
-    <div className={`rounded-xl p-3 text-center ${bg}`}>
-      <div className="text-[10px] text-slate-500 mb-1">{label}</div>
-      <div className={`text-lg font-bold ${c}`}>{value ?? '-'}</div>
-      <div className={`text-[10px] mt-0.5 ${c}`}>{sub}</div>
+    <div className={`rounded-xl p-3.5 text-center glass border ${border} ${glow}`}>
+      <div className="text-[10px] text-slate-500 mb-1.5 font-medium uppercase tracking-wider">{label}</div>
+      <div className={`text-xl font-black ${c}`}>{value ?? '-'}</div>
+      <div className={`text-[10px] mt-1 font-medium ${c} opacity-80`}>{sub}</div>
     </div>
   );
 }
 
 function EmptyMsg({ children }: { children: React.ReactNode }) {
-  return <div className="p-6 text-center text-slate-600 text-xs">{children}</div>;
+  return <div className="p-10 text-center text-slate-600 text-sm">{children}</div>;
 }
 
 function SideBadge({ side }: { side: string }) {
-  return <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${side === 'BUY' ? 'bg-emerald-900/50 text-emerald-300' : 'bg-rose-900/50 text-rose-300'}`}>{side === 'BUY' ? '매수' : '매도'}</span>;
+  return <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold tracking-wide ${side === 'BUY' ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/20' : 'bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/20'}`}>{side === 'BUY' ? '매수' : '매도'}</span>;
 }
 
 function StatusBadge({ status }: { status: string }) {
-  return <span className={`px-1.5 py-0.5 rounded text-[10px] ${status === 'FILLED' ? 'bg-emerald-900/40 text-emerald-300' : status === 'FAILED' ? 'bg-rose-900/40 text-rose-300' : 'bg-slate-700 text-slate-400'}`}>{status}</span>;
+  return <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium ${status === 'FILLED' ? 'bg-emerald-500/10 text-emerald-400' : status === 'FAILED' ? 'bg-rose-500/10 text-rose-400' : 'bg-white/[0.04] text-slate-500'}`}>{status}</span>;
 }
 
 function ModeBadge({ mode }: { mode: string }) {

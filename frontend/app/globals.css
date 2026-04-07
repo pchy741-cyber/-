@@ -4,67 +4,57 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  * { -webkit-tap-highlight-color: transparent; }
+}
+
 @layer utilities {
-  .animate-in {
-    animation: fade-in 0.3s ease-out;
-  }
+  .animate-in { animation: fade-in 0.3s ease-out; }
+  .glass { background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(16px) saturate(180%); -webkit-backdrop-filter: blur(16px) saturate(180%); }
+  .glow-green { box-shadow: 0 0 20px rgba(16, 185, 129, 0.15); }
+  .glow-red { box-shadow: 0 0 20px rgba(244, 63, 94, 0.15); }
+  .glow-blue { box-shadow: 0 0 20px rgba(59, 130, 246, 0.1); }
 }
 
-/* Custom scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
+@keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes pulse-slow { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
 
-::-webkit-scrollbar-track {
-  background: transparent;
-}
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #475569; }
 
-::-webkit-scrollbar-thumb {
-  background: #94a3b8;
-  border-radius: 3px;
-}
-
-.dark ::-webkit-scrollbar-thumb {
-  background: #475569;
-}
-
-/* Range input styling */
+/* Inputs */
 input[type='range']::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #3b82f6;
-  cursor: pointer;
-  border: 2px solid white;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #3b82f6; cursor: pointer;
+  border: 2px solid #0f172a; box-shadow: 0 0 8px rgba(59,130,246,0.4);
 }
-
-/* Number input hide arrows */
 input[type='number']::-webkit-inner-spin-button,
-input[type='number']::-webkit-outer-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
+input[type='number']::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+input[type='number'] { -moz-appearance: textfield; }
+
+select, input, textarea {
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
-input[type='number'] {
-  -moz-appearance: textfield;
+select:focus, input:focus, textarea:focus {
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
 }
 
-/* PWA standalone 모드: 상단 안전 영역 */
+/* PWA */
 @supports (padding-top: env(safe-area-inset-top)) {
   .safe-top { padding-top: env(safe-area-inset-top); }
   .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
 }
 
-/* 모바일: 테이블 가로 스크롤 */
+/* Mobile tables */
 @media (max-width: 640px) {
   table { font-size: 11px; }
-  th, td { padding: 6px 8px !important; }
+  th, td { padding: 8px 10px !important; }
 }
 
-/* 터치 디바이스: hover 효과 방지 (불필요한 스티키 hover) */
 @media (hover: none) {
   .group:hover .group-hover\:opacity-100 { opacity: 1; }
 }
