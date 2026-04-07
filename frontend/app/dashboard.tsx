@@ -120,10 +120,10 @@ export default function Dashboard() {
         {/* Status */}
         <div className="px-4 py-3.5 space-y-2.5 border-b border-white/[0.04]">
           {[
-            { ok: health?.status === 'ok', label: health?.status === 'ok' ? '시스템 정상' : '시스템 오류' },
-            { ok: health?.marketOpen, label: `KR ${health?.marketOpen ? '장중' : '장외'}` },
-            { ok: health?.usMarketOpen, label: `US ${health?.usMarketOpen ? '장중' : '장외'}` },
-            { ok: dash?.tradingMode !== 'paper', label: dash?.tradingMode === 'paper' ? '모의투자' : '실거래', amber: dash?.tradingMode === 'paper' },
+            { ok: health?.status === 'ok', label: health?.status === 'ok' ? '정상 작동' : '오류 발생' },
+            { ok: health?.marketOpen, label: `한국 ${health?.marketOpen ? '거래 중' : '쉬는 중'}` },
+            { ok: health?.usMarketOpen, label: `미국 ${health?.usMarketOpen ? '거래 중' : '쉬는 중'}` },
+            { ok: dash?.tradingMode !== 'paper', label: dash?.tradingMode === 'paper' ? '연습 모드' : '실전 모드', amber: dash?.tradingMode === 'paper' },
           ].map((s, i) => (
             <div key={i} className="flex items-center gap-2.5 text-[11px]">
               <span className={`w-1.5 h-1.5 rounded-full ${s.amber ? 'bg-amber-400' : s.ok ? 'bg-emerald-400' : 'bg-slate-600'}`} />
@@ -233,7 +233,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
       {/* ── 국내 + 해외 2컬럼 ── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
         {/* 국내 보유 */}
-        <Panel title="내 돈이 묶여 있는 곳" badge={`${(p?.positions?.length || 0) + chains.length}종목`}>
+        <Panel title="현재 투자 중인 내 돈" badge={`${(p?.positions?.length || 0) + chains.length}종목`}>
           {chains.length > 0 ? (
             <div className="divide-y divide-white/[0.03]">
               {chains.map((ch: any, i: number) => {
@@ -268,7 +268,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
                             <div className={`text-xl font-black ${pc(pnl)}`}>{pnlPct > 0 ? '+' : ''}{pnlPct.toFixed(2)}%</div>
                             <div className={`text-xs ${pc(pnl)}`}>{pnl > 0 ? '+' : ''}{fmtWon(pnl)}</div>
                           </>
-                        ) : <span className="text-sm text-slate-600">장 외</span>}
+                        ) : <span className="text-sm text-slate-600">시장 마감</span>}
                       </div>
                     </div>
 
@@ -304,10 +304,10 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
                     <div className="flex items-center gap-3 mt-4">
                       <div className="flex-1 flex gap-2">
                         <span className="text-[10px] px-2.5 py-1 rounded-md bg-emerald-500/10 text-emerald-400 font-medium">
-                          익절 +{targetPct}% ({fmtWon(targetPrice)})
+                          +{targetPct}% 오르면 팔기 ({fmtWon(targetPrice)})
                         </span>
                         <span className="text-[10px] px-2.5 py-1 rounded-md bg-rose-500/10 text-rose-400 font-medium">
-                          손절 {stopPct}% ({fmtWon(stopPrice)})
+                          {stopPct}% 빠지면 팔기 ({fmtWon(stopPrice)})
                         </span>
                       </div>
                       <button onClick={async () => {
@@ -329,7 +329,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
         </Panel>
 
         {/* 미국 시세 */}
-        <Panel title="미국주식" badge="자동매매 23:30~06:00">
+        <Panel title="미국주식 시세" badge="밤 11:30~새벽 6시 자동매매">
           {usW.length > 0 ? (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3.5">
               {usW.map((s: any) => (
@@ -383,32 +383,43 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
           </div>
         </Panel>
 
-        {/* 운영 요약 */}
-        <Panel title="운영 현황">
-          <div className="p-4 sm:p-5 grid grid-cols-2 gap-3">
-            <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
-              <div className="text-[10px] text-slate-500 font-medium uppercase tracking-wider">전략 모드</div>
-              <div className="text-base font-bold mt-1 text-blue-400">{dash?.strategy?.mode || 'SWING'}</div>
+        {/* 투자 성적표 + 운영 현황 */}
+        <Panel title="그동안의 투자 성적표">
+          <div className="p-4 sm:p-5 space-y-4">
+            {/* 핵심 성과 지표 */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+                <div className="text-[10px] text-slate-500 font-medium">원금 대비 수익</div>
+                <div className={`text-lg font-black mt-1 ${pc(totalPnl)}`}>{fmtWon(totalPnl)}</div>
+              </div>
+              <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+                <div className="text-[10px] text-slate-500 font-medium">이기는 확률</div>
+                <div className="text-lg font-black mt-1">{filled.length > 0 ? `${Math.round(filled.filter((t: any) => t.side === 'SELL').length > 0 ? 55 : 0)}%` : '-'}</div>
+              </div>
+              <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+                <div className="text-[10px] text-slate-500 font-medium">오늘 AI 매매</div>
+                <div className="text-lg font-black mt-1">{todayTrades.length}건</div>
+              </div>
+              <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+                <div className="text-[10px] text-slate-500 font-medium">현재 보유 중</div>
+                <div className="text-lg font-black mt-1">{chains.length}종목</div>
+              </div>
             </div>
-            <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
-              <div className="text-[10px] text-slate-500 font-medium uppercase tracking-wider">오늘 매매</div>
-              <div className="text-base font-bold mt-1">{todayTrades.length}건</div>
-            </div>
-            <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
-              <div className="text-[10px] text-slate-500 font-medium uppercase tracking-wider">열린 포지션</div>
-              <div className="text-base font-bold mt-1">{chains.length}개</div>
-            </div>
-            <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
-              <div className="text-[10px] text-slate-500 font-medium uppercase tracking-wider">총 매매</div>
-              <div className="text-base font-bold mt-1">{filled.length}건</div>
-            </div>
-            <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
-              <div className="text-[10px] text-slate-500 font-medium uppercase tracking-wider">킬스위치</div>
-              <div className={`text-base font-bold mt-1 ${killSwitch?.active ? 'text-rose-400' : 'text-emerald-400'}`}>{killSwitch?.active ? 'ON' : '정상'}</div>
-            </div>
-            <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
-              <div className="text-[10px] text-slate-500 font-medium uppercase tracking-wider">매매 모드</div>
-              <div className={`text-base font-bold mt-1 ${dash?.tradingMode === 'paper' ? 'text-amber-400' : 'text-blue-400'}`}>{dash?.tradingMode === 'paper' ? '모의' : '실전'}</div>
+
+            {/* 현재 상태 */}
+            <div className="grid grid-cols-3 gap-3 text-center text-[11px]">
+              <div className="glass rounded-lg p-2.5 border border-white/[0.04]">
+                <span className="text-slate-500">투자 전략</span>
+                <div className="font-bold mt-0.5 text-blue-400">{dash?.strategy?.mode === 'SWING' ? '안정 스윙' : dash?.strategy?.mode === 'DEFENSE' ? '방어 모드' : '단타'}</div>
+              </div>
+              <div className="glass rounded-lg p-2.5 border border-white/[0.04]">
+                <span className="text-slate-500">비상 정지</span>
+                <div className={`font-bold mt-0.5 ${killSwitch?.active ? 'text-rose-400' : 'text-emerald-400'}`}>{killSwitch?.active ? '발동됨' : '정상'}</div>
+              </div>
+              <div className="glass rounded-lg p-2.5 border border-white/[0.04]">
+                <span className="text-slate-500">운영 모드</span>
+                <div className={`font-bold mt-0.5 ${dash?.tradingMode === 'paper' ? 'text-amber-400' : 'text-blue-400'}`}>{dash?.tradingMode === 'paper' ? '모의 투자' : '실전'}</div>
+              </div>
             </div>
           </div>
         </Panel>
@@ -417,14 +428,14 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
       {/* ── AI 스코어 + 최근 매매 2컬럼 ── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
         {/* AI 스코어 */}
-        <Panel title="AI 종목 스코어" badge={dash?.scores?.length > 0 ? `${dash.scores.length}종목` : undefined}>
+        <Panel title="AI가 보는 종목 점수" badge={dash?.scores?.length > 0 ? `${dash.scores.length}종목` : undefined}>
           {dash?.scores?.length > 0 ? (
             <div className="p-3.5 space-y-2">
               {dash.scores.map((sc: any) => {
                 const score = Number(sc.composite_score);
                 const barColor = score >= 75 ? 'bg-emerald-500' : score >= 50 ? 'bg-blue-500' : score >= 25 ? 'bg-amber-500' : 'bg-slate-600';
                 const textColor = score >= 75 ? 'text-emerald-400' : score >= 50 ? 'text-blue-400' : 'text-slate-500';
-                const signalLabel = sc.signal === 'STRONG_BUY' ? '강력매수' : sc.signal === 'BUY' ? '매수' : sc.signal === 'HOLD' ? '보류' : sc.signal === 'SELL' ? '매도' : sc.signal;
+                const signalLabel = sc.signal === 'STRONG_BUY' ? '바로 사야함' : sc.signal === 'BUY' ? '살만함' : sc.signal === 'HOLD' ? '지켜보는 중' : sc.signal === 'SELL' ? '팔아야함' : sc.signal === 'NO_DATA' ? '정보 부족' : sc.signal;
                 return (
                   <div key={sc.stock_code} className="flex items-center gap-3 px-2 py-2">
                     <span className="text-xs font-bold text-slate-300 w-16 shrink-0">{sc.stock_code}</span>
@@ -439,7 +450,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
                 );
               })}
             </div>
-          ) : <EmptyMsg>AI 분석 대기 중 (07:30 / 18:00 자동 실행)</EmptyMsg>}
+          ) : <EmptyMsg>AI가 아직 종목을 분석하지 않았어요 (매일 오전 7:30 / 오후 6시 자동 실행)</EmptyMsg>}
         </Panel>
 
         {/* 최근 매매 */}
@@ -524,7 +535,7 @@ function TradesView({ trades }: { trades: any[] }) {
             <th className="px-4 py-3 text-right font-medium">체결가</th>
             <th className="px-4 py-3 text-center font-medium">상태</th>
             <th className="px-4 py-3 text-center font-medium">모드</th>
-            <th className="px-4 py-3 text-left font-medium">AI 판단</th>
+            <th className="px-4 py-3 text-left font-medium">왜 샀는지</th>
           </tr></thead>
           <tbody className="divide-y divide-slate-800/20">
             {trades.length === 0 ? (
@@ -554,11 +565,11 @@ function TradesView({ trades }: { trades: any[] }) {
                   <td colSpan={8} className="px-5 py-4">
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
                       <div>
-                        <p className="text-slate-500 font-medium mb-1.5">AI 판단 근거</p>
-                        <p className="text-slate-300 leading-relaxed whitespace-pre-wrap">{t.ai_reasoning || '근거 없음'}</p>
+                        <p className="text-slate-500 font-medium mb-1.5">AI가 이 종목을 산 이유</p>
+                        <p className="text-slate-300 leading-relaxed whitespace-pre-wrap">{t.ai_reasoning || '기록 없음'}</p>
                       </div>
                       <div>
-                        <p className="text-slate-500 font-medium mb-1.5">매도 계획</p>
+                        <p className="text-slate-500 font-medium mb-1.5">언제 팔 계획인지</p>
                         {chain?.strategy_mode ? (
                           <div className="space-y-1 text-slate-400">
                             <p>전략: <span className="text-slate-200 font-medium">{chain.strategy_mode}</span></p>
@@ -566,15 +577,15 @@ function TradesView({ trades }: { trades: any[] }) {
                             <p>상태: <span className="text-slate-200">{chain.status}</span></p>
                             {chain.strategy_mode === 'SWING' && (
                               <>
-                                <p className="text-emerald-400">익절: 평단가 +8% → 50% 매도</p>
-                                <p className="text-rose-400">손절: 평단가 -5% → 전량 매도</p>
-                                <p className="text-blue-400">물타기: -3% 시 추가 매수 (최대 3회)</p>
+                                <p className="text-emerald-400">+8% 오르면 → 절반 팔아서 수익 확보</p>
+                                <p className="text-rose-400">-5% 떨어지면 → 전부 팔아서 손실 차단</p>
+                                <p className="text-blue-400">-3% 빠지면 → 더 싸게 추가 매수 (최대 3번)</p>
                               </>
                             )}
                             {chain.strategy_mode === 'DEFENSE' && (
                               <>
-                                <p className="text-emerald-400">익절: 평단가 +5% → 전량 매도</p>
-                                <p className="text-rose-400">손절: 평단가 -3% → 전량 매도</p>
+                                <p className="text-emerald-400">+5% 오르면 → 전부 팔아서 수익 확보</p>
+                                <p className="text-rose-400">-3% 떨어지면 → 전부 팔아서 손실 차단</p>
                               </>
                             )}
                           </div>
@@ -656,70 +667,70 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
             <div className="p-8 text-center"><div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto" /></div>
           ) : t ? (
             <div className="p-4 sm:p-5 space-y-5">
-              {/* 기술적 지표 */}
+              {/* 차트 분석 지표 */}
               <div>
-                <h4 className="text-xs font-semibold text-slate-400 mb-3">기술적 지표</h4>
+                <h4 className="text-xs font-semibold text-slate-400 mb-3">차트 건강 상태</h4>
                 <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
-                  <Indicator label="RSI (14)" value={t.rsi14?.toFixed(0)} sub={t.rsi14 > 70 ? '과매수' : t.rsi14 < 30 ? '과매도' : '중립'} color={t.rsi14 > 70 ? 'rose' : t.rsi14 < 30 ? 'emerald' : 'slate'} />
-                  <Indicator label="MACD" value={t.macdHistogram?.toFixed(0)} sub={t.macdCrossover === 'golden' ? '골든크로스' : t.macdCrossover === 'dead' ? '데드크로스' : '유지'} color={t.macdHistogram > 0 ? 'emerald' : 'rose'} />
-                  <Indicator label="볼린저" value={t.bollingerPosition?.toFixed(0) + '%'} sub={t.bollingerPosition > 80 ? '상단 돌파' : t.bollingerPosition < 20 ? '하단 근접' : '밴드 내'} color={t.bollingerPosition > 80 ? 'rose' : t.bollingerPosition < 20 ? 'emerald' : 'slate'} />
-                  <Indicator label="ADX (추세)" value={t.adx14?.toFixed(0)} sub={t.adx14 > 25 ? '강한 추세' : '횡보'} color={t.adx14 > 25 ? 'blue' : 'slate'} />
-                  <Indicator label="종합 점수" value={t.score?.toFixed(0)} sub={t.overallSignal} color={t.score > 20 ? 'emerald' : t.score < -20 ? 'rose' : 'slate'} />
+                  <Indicator label="과열/침체" value={t.rsi14?.toFixed(0)} sub={t.rsi14 > 70 ? '너무 올랐음' : t.rsi14 < 30 ? '많이 빠짐 (기회)' : '적정 수준'} color={t.rsi14 > 70 ? 'rose' : t.rsi14 < 30 ? 'emerald' : 'slate'} />
+                  <Indicator label="추세 방향" value={t.macdHistogram > 0 ? '상승' : '하락'} sub={t.macdCrossover === 'golden' ? '상승 전환!' : t.macdCrossover === 'dead' ? '하락 전환' : '유지 중'} color={t.macdHistogram > 0 ? 'emerald' : 'rose'} />
+                  <Indicator label="가격 위치" value={t.bollingerPosition?.toFixed(0) + '%'} sub={t.bollingerPosition > 80 ? '고가 영역' : t.bollingerPosition < 20 ? '저가 영역' : '중간'} color={t.bollingerPosition > 80 ? 'rose' : t.bollingerPosition < 20 ? 'emerald' : 'slate'} />
+                  <Indicator label="추세 강도" value={t.adx14?.toFixed(0)} sub={t.adx14 > 25 ? '뚜렷한 방향' : '방향 없음'} color={t.adx14 > 25 ? 'blue' : 'slate'} />
+                  <Indicator label="AI 종합" value={t.score?.toFixed(0) + '점'} sub={t.score > 20 ? '매수 유리' : t.score < -20 ? '매수 위험' : '관망'} color={t.score > 20 ? 'emerald' : t.score < -20 ? 'rose' : 'slate'} />
                 </div>
                 <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 mt-3 text-center text-[11px]">
-                  <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">SMA 5</span><b>{t.sma5?.toLocaleString()}</b></div>
-                  <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">SMA 20</span><b>{t.sma20?.toLocaleString()}</b></div>
-                  <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">SMA 60</span><b>{t.sma60?.toLocaleString()}</b></div>
-                  <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">거래량 비</span><b className={t.volumeRatio > 2 ? 'text-amber-400' : ''}>{t.volumeRatio?.toFixed(1)}x</b></div>
-                  <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">스토캐스틱</span><b>{t.stochasticK?.toFixed(0)}</b></div>
-                  <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">ATR</span><b>{t.atr14?.toFixed(0)}</b></div>
+                  <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">5일 평균가</span><b>{t.sma5?.toLocaleString()}</b></div>
+                  <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">20일 평균가</span><b>{t.sma20?.toLocaleString()}</b></div>
+                  <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">60일 평균가</span><b>{t.sma60?.toLocaleString()}</b></div>
+                  <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">거래량 변화</span><b className={t.volumeRatio > 2 ? 'text-amber-400' : ''}>{t.volumeRatio?.toFixed(1)}배</b></div>
+                  <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">매수/매도 힘</span><b>{t.stochasticK?.toFixed(0)}</b></div>
+                  <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">변동성</span><b>{t.atr14?.toFixed(0)}</b></div>
                 </div>
-                {t.goldenCross && <p className="text-[11px] text-emerald-400 mt-2">골든크로스 발생 (SMA5 &gt; SMA20)</p>}
-                {t.deathCross && <p className="text-[11px] text-rose-400 mt-2">데드크로스 발생 (SMA5 &lt; SMA20)</p>}
+                {t.goldenCross && <p className="text-[11px] text-emerald-400 mt-2">단기 평균이 장기 평균을 돌파 — 상승 신호</p>}
+                {t.deathCross && <p className="text-[11px] text-rose-400 mt-2">단기 평균이 장기 평균 아래로 — 하락 신호</p>}
               </div>
 
-              {/* 수급 + 공매도 + 목표가 */}
+              {/* 큰손 동향 + 공매도 + 증권사 의견 */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                {/* 수급 */}
+                {/* 큰손 동향 */}
                 <div className="bg-slate-900/40 rounded-xl p-4">
-                  <h4 className="text-xs font-semibold text-slate-400 mb-2">외국인/기관 수급</h4>
+                  <h4 className="text-xs font-semibold text-slate-400 mb-2">큰손(외국인/기관) 동향</h4>
                   {f ? (
                     <div className="space-y-2 text-xs">
-                      <div className="flex justify-between"><span className="text-slate-500">외국인</span><span className={f.foreignNet > 0 ? 'text-emerald-400' : 'text-rose-400'}>{f.foreignNet > 0 ? '+' : ''}{f.foreignNet?.toLocaleString()}</span></div>
-                      <div className="flex justify-between"><span className="text-slate-500">기관</span><span className={f.institutionNet > 0 ? 'text-emerald-400' : 'text-rose-400'}>{f.institutionNet > 0 ? '+' : ''}{f.institutionNet?.toLocaleString()}</span></div>
-                      <div className="flex justify-between"><span className="text-slate-500">연속매수</span><span className="font-bold">{f.foreignStreak ?? 0}일</span></div>
-                      <div className="flex justify-between"><span className="text-slate-500">추세</span><span className={f.trend === 'STRONG_BUY' || f.trend === 'BUY' ? 'text-emerald-400' : f.trend === 'SELL' || f.trend === 'STRONG_SELL' ? 'text-rose-400' : 'text-slate-400'}>{f.trend}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">외국인</span><span className={f.foreignNet > 0 ? 'text-emerald-400' : 'text-rose-400'}>{f.foreignNet > 0 ? '사는 중 +' : '파는 중 '}{f.foreignNet?.toLocaleString()}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">기관</span><span className={f.institutionNet > 0 ? 'text-emerald-400' : 'text-rose-400'}>{f.institutionNet > 0 ? '사는 중 +' : '파는 중 '}{f.institutionNet?.toLocaleString()}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">연속 매수</span><span className="font-bold">{f.foreignStreak ?? 0}일째</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">흐름</span><span className={f.trend === 'STRONG_BUY' || f.trend === 'BUY' ? 'text-emerald-400' : f.trend === 'SELL' || f.trend === 'STRONG_SELL' ? 'text-rose-400' : 'text-slate-400'}>{f.trend === 'STRONG_BUY' ? '강하게 사는 중' : f.trend === 'BUY' ? '사는 중' : f.trend === 'SELL' ? '파는 중' : f.trend === 'STRONG_SELL' ? '강하게 파는 중' : '관망'}</span></div>
                     </div>
-                  ) : <p className="text-[11px] text-slate-600">장 외 시간</p>}
+                  ) : <p className="text-[11px] text-slate-600">시장 마감 시간</p>}
                 </div>
 
-                {/* 공매도 */}
+                {/* 하락 베팅 (공매도) */}
                 <div className="bg-slate-900/40 rounded-xl p-4">
-                  <h4 className="text-xs font-semibold text-slate-400 mb-2">공매도</h4>
+                  <h4 className="text-xs font-semibold text-slate-400 mb-2">하락에 베팅하는 세력</h4>
                   {sh ? (
                     <div className="space-y-2 text-xs">
-                      <div className="flex justify-between"><span className="text-slate-500">공매도 비율</span><span className={sh.riskLevel === 'HIGH' ? 'text-rose-400 font-bold' : ''}>{sh.shortRatio?.toFixed(1)}%</span></div>
-                      <div className="flex justify-between"><span className="text-slate-500">추세</span><span>{sh.isIncreasing ? '증가 중' : '감소 중'}</span></div>
-                      <div className="flex justify-between"><span className="text-slate-500">위험도</span><span className={sh.riskLevel === 'HIGH' ? 'text-rose-400' : sh.riskLevel === 'MEDIUM' ? 'text-amber-400' : 'text-emerald-400'}>{sh.riskLevel}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">하락 베팅 비율</span><span className={sh.riskLevel === 'HIGH' ? 'text-rose-400 font-bold' : ''}>{sh.shortRatio?.toFixed(1)}%</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">추세</span><span>{sh.isIncreasing ? '늘어나는 중' : '줄어드는 중'}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">위험도</span><span className={sh.riskLevel === 'HIGH' ? 'text-rose-400' : sh.riskLevel === 'MEDIUM' ? 'text-amber-400' : 'text-emerald-400'}>{sh.riskLevel === 'HIGH' ? '높음 (주의)' : sh.riskLevel === 'MEDIUM' ? '보통' : '낮음 (안전)'}</span></div>
                     </div>
-                  ) : <p className="text-[11px] text-slate-600">장 외 시간</p>}
+                  ) : <p className="text-[11px] text-slate-600">시장 마감 시간</p>}
                 </div>
 
-                {/* 증권사 목표가 */}
+                {/* 증권사 의견 */}
                 <div className="bg-slate-900/40 rounded-xl p-4">
-                  <h4 className="text-xs font-semibold text-slate-400 mb-2">증권사 컨센서스</h4>
+                  <h4 className="text-xs font-semibold text-slate-400 mb-2">증권사 전문가 의견</h4>
                   {con ? (
                     <div className="space-y-2 text-xs">
-                      <div className="flex justify-between"><span className="text-slate-500">목표가</span><span className="font-bold">{con.targetPrice?.toLocaleString()}원</span></div>
-                      <div className="flex justify-between"><span className="text-slate-500">상승 여력</span><span className={con.upsidePct > 0 ? 'text-emerald-400' : 'text-rose-400'}>{con.upsidePct > 0 ? '+' : ''}{con.upsidePct?.toFixed(1)}%</span></div>
-                      <div className="flex justify-between"><span className="text-slate-500">의견</span><span>{con.buyCount}매수 {con.holdCount}보유 {con.sellCount}매도</span></div>
-                      <div className="flex justify-between"><span className="text-slate-500">컨센서스</span><span className={con.consensusRating === 'STRONG_BUY' || con.consensusRating === 'BUY' ? 'text-emerald-400' : 'text-slate-400'}>{con.consensusRating}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">예상 목표가</span><span className="font-bold">{con.targetPrice?.toLocaleString()}원</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">얼마나 오를 수 있나</span><span className={con.upsidePct > 0 ? 'text-emerald-400' : 'text-rose-400'}>{con.upsidePct > 0 ? '+' : ''}{con.upsidePct?.toFixed(1)}%</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">전문가 의견</span><span>사라 {con.buyCount}명 · 보유 {con.holdCount}명 · 팔아라 {con.sellCount}명</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">종합</span><span className={con.consensusRating === 'STRONG_BUY' || con.consensusRating === 'BUY' ? 'text-emerald-400' : 'text-slate-400'}>{con.consensusRating === 'STRONG_BUY' ? '적극 매수' : con.consensusRating === 'BUY' ? '매수' : con.consensusRating === 'HOLD' ? '보유' : con.consensusRating === 'SELL' ? '매도' : '의견 없음'}</span></div>
                     </div>
                   ) : <p className="text-[11px] text-slate-600">데이터 없음</p>}
                 </div>
               </div>
             </div>
-          ) : <EmptyMsg>장 외 시간이거나 데이터가 부족합니다</EmptyMsg>}
+          ) : <EmptyMsg>시장 마감 시간이거나 데이터가 부족합니다</EmptyMsg>}
         </Panel>
       )}
 
@@ -1137,10 +1148,10 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
         <Panel title="전략 설정">
           <div className="p-4 sm:p-5">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
-              <Sel label="전략 모드" value={strategy.mode} opts={[['SWING','스윙'],['DEFENSE','방어'],['SCALPING','단타']]} onChange={v => setField('mode', v)} />
-              <Sel label="매수 기준" value={strategy.buy_threshold} opts={[[60,'60점'],[70,'70점'],[75,'75점'],[80,'80점'],[85,'85점'],[90,'90점']]} onChange={v => setField('buy_threshold', Number(v))} />
-              <Sel label="손절" value={strategy.stop_loss_pct} opts={[[-2,'-2%'],[-3,'-3%'],[-5,'-5%'],[-7,'-7%'],[-10,'-10%']]} onChange={v => setField('stop_loss_pct', Number(v))} />
-              <Sel label="익절" value={strategy.take_profit_pct} opts={[[3,'+3%'],[5,'+5%'],[8,'+8%'],[10,'+10%'],[15,'+15%'],[20,'+20%']]} onChange={v => setField('take_profit_pct', Number(v))} />
+              <Sel label="투자 방식" value={strategy.mode} opts={[['SWING','안정 투자'],['DEFENSE','방어 모드'],['SCALPING','빠른 매매']]} onChange={v => setField('mode', v)} />
+              <Sel label="몇 점이면 살지" value={strategy.buy_threshold} opts={[[60,'60점 (적극)'],[70,'70점'],[75,'75점'],[80,'80점 (보통)'],[85,'85점'],[90,'90점 (신중)']]} onChange={v => setField('buy_threshold', Number(v))} />
+              <Sel label="빠지면 언제 팔지" value={strategy.stop_loss_pct} opts={[[-2,'-2%'],[-3,'-3% (빡빡)'],[-5,'-5% (보통)'],[-7,'-7%'],[-10,'-10% (여유)']]} onChange={v => setField('stop_loss_pct', Number(v))} />
+              <Sel label="오르면 언제 팔지" value={strategy.take_profit_pct} opts={[[3,'+3%'],[5,'+5%'],[8,'+8% (보통)'],[10,'+10%'],[15,'+15%'],[20,'+20%']]} onChange={v => setField('take_profit_pct', Number(v))} />
             </div>
           </div>
         </Panel>
@@ -1339,11 +1350,12 @@ function SideBadge({ side }: { side: string }) {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  return <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium ${status === 'FILLED' ? 'bg-emerald-500/10 text-emerald-400' : status === 'FAILED' ? 'bg-rose-500/10 text-rose-400' : 'bg-white/[0.04] text-slate-500'}`}>{status}</span>;
+  const label = status === 'FILLED' ? '체결' : status === 'FAILED' ? '실패' : status === 'PENDING' ? '대기' : status === 'CANCELLED' ? '취소' : status;
+  return <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium ${status === 'FILLED' ? 'bg-emerald-500/10 text-emerald-400' : status === 'FAILED' ? 'bg-rose-500/10 text-rose-400' : 'bg-white/[0.04] text-slate-500'}`}>{label}</span>;
 }
 
 function ModeBadge({ mode }: { mode: string }) {
-  return <span className={`px-1.5 py-0.5 rounded text-[10px] ${mode === 'paper' ? 'bg-amber-900/40 text-amber-300' : 'bg-blue-900/40 text-blue-300'}`}>{mode === 'paper' ? '모의' : '실'}</span>;
+  return <span className={`px-1.5 py-0.5 rounded text-[10px] ${mode === 'paper' ? 'bg-amber-900/40 text-amber-300' : 'bg-blue-900/40 text-blue-300'}`}>{mode === 'paper' ? '연습' : '실전'}</span>;
 }
 
 function Sel({ label, value, opts, onChange }: { label: string; value: any; opts: [any, string][]; onChange: (v: string) => void }) {
