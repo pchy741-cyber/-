@@ -6,24 +6,31 @@ import { activateKillSwitch, isKillSwitchActive } from './kill-switch.js';
 
 // ── Paper 모드 가상 잔액 ──
 const PAPER_INITIAL_CAPITAL = 10_000_000;
-let paperCashUsed = 0;
+let paperCashUsed = 0;       // 현재 투자 중인 매수 원가 합
+let paperRealizedPnl = 0;    // 확정 수익/손실 누적
 
 export function getPaperBalance(): AccountBalance {
   const invested = paperCashUsed;
-  const cash = PAPER_INITIAL_CAPITAL - invested;
+  const cash = PAPER_INITIAL_CAPITAL - invested + paperRealizedPnl;
   return {
     totalDeposit: PAPER_INITIAL_CAPITAL,
-    orderableCash: cash,
+    orderableCash: Math.max(0, cash),
     totalEvalAmount: invested,
-    totalProfitLoss: 0,
-    totalProfitLossPct: 0,
+    totalProfitLoss: paperRealizedPnl,
+    totalProfitLossPct: PAPER_INITIAL_CAPITAL > 0 ? (paperRealizedPnl / PAPER_INITIAL_CAPITAL) * 100 : 0,
     positions: [],
   };
 }
 
+// 매수: 매수 원가만큼 차감
 export function addPaperInvestment(amount: number) { paperCashUsed += amount; }
-export function removePaperInvestment(amount: number) { paperCashUsed = Math.max(0, paperCashUsed - amount); }
-export function resetPaperBalance() { paperCashUsed = 0; }
+// 매도: 매수 원가 복원 + 차액을 실현손익에 반영
+export function removePaperInvestment(sellAmount: number, buyAmount?: number) {
+  const cost = buyAmount ?? sellAmount; // buyAmount가 없으면 동일 금액 가정
+  paperRealizedPnl += (sellAmount - cost);
+  paperCashUsed = Math.max(0, paperCashUsed - cost);
+}
+export function resetPaperBalance() { paperCashUsed = 0; paperRealizedPnl = 0; }
 
 async function getBalance(): Promise<AccountBalance> {
   if (config.isPaper) {

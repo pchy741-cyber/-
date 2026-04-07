@@ -46,6 +46,19 @@ export function technicalFallbackDecisions(params: {
       }
     }
 
+    // 트레일링 스톱: 부분매도 후 남은 수량 — 수익이 반으로 줄면 전량 청산
+    if (chain.status === 'PROFIT_TAKING' && pnlPct > 0 && pnlPct < strategyParams.takeProfitPct / 2) {
+      decisions.push({
+        action: 'FORCE_CLOSE',
+        stock_code: chain.stock_code,
+        quantity: chain.total_quantity,
+        price_type: 'MARKET',
+        reasoning: `트레일링 스톱: 익절 후 수익 반토막 +${pnlPct.toFixed(1)}% (기준 +${(strategyParams.takeProfitPct / 2).toFixed(1)}%)`,
+        confidence: 0.85,
+      });
+      continue;
+    }
+
     // 손절
     if (pnlPct <= strategyParams.stopLossPct) {
       decisions.push({
@@ -91,9 +104,9 @@ export function technicalFallbackDecisions(params: {
     const tech = analyzeTechnicals(candles);
     if (!tech) continue;
 
-    // 매수 조건: score > 0 이면 후보 (기존 STRONG_BUY/BUY만 → 완화)
-    // score 15+ = BUY, 40+ = STRONG_BUY, 0~14 = NEUTRAL이지만 양수이면 약한 매수 시그널
-    if (tech.score > 0) {
+    // 매수 조건: score >= 15 (BUY 시그널 이상)
+    // score 15+ = BUY, 40+ = STRONG_BUY, 0~14 = NEUTRAL(노이즈 — 매수 안 함)
+    if (tech.score >= 15) {
       candidates.push({ stock_code: stock.stock_code, tech, price });
     }
   }

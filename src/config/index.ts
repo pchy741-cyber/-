@@ -34,7 +34,7 @@ const envSchema = z.object({
   TELEGRAM_CHAT_ID: z.string().default(''),
 
   // 리스크 하드 리밋
-  RISK_MAX_DAILY_DRAWDOWN_KRW: z.coerce.number().default(200000),
+  RISK_MAX_DAILY_DRAWDOWN_KRW: z.coerce.number().default(500000),
   RISK_MAX_POSITION_KRW: z.coerce.number().default(2000000),
   RISK_MAX_TOTAL_INVESTED_PCT: z.coerce.number().default(80),
   RISK_MAX_CONCURRENT_POSITIONS: z.coerce.number().default(7),
