@@ -82,13 +82,21 @@ dashboardRoutes.get('/dashboard', async (c) => {
   const kisPnl = balance.totalProfitLoss ?? 0;
   const totalInvested = kisInvested + totalChainInvested;
   const totalPnl = kisPnl + totalChainPnl;
-  const totalPnlPct = totalInvested > 0 ? (totalChainPnl / totalChainInvested) * 100 : 0;
+  const totalPnlPct = totalChainInvested > 0 ? (totalChainPnl / totalChainInvested) * 100 : 0;
+
+  // 현금 = KIS 예수금 - chains 투자원금 (모의투자에서 KIS가 차감 안 해주므로 직접 계산)
+  const rawCash = balance.orderableCash ?? 10000000;
+  const adjustedCash = rawCash - totalChainInvested;
+  const actualCash = adjustedCash > 0 ? adjustedCash : rawCash;
+
+  // 총 자산 = 현금 + 투자 평가금(원금+손익)
+  const totalValue = actualCash + totalInvested + totalChainPnl;
 
   return c.json({
     portfolio: {
-      totalValue: (balance.orderableCash ?? 10000000) + totalInvested + totalChainPnl,
-      cash: balance.orderableCash ?? 10000000,
-      invested: totalInvested,
+      totalValue,
+      cash: actualCash,
+      invested: totalInvested + totalChainPnl, // 평가금 (원금+손익)
       pnl: totalPnl,
       pnlPct: totalPnlPct,
       positions: balance.positions ?? [],
