@@ -223,6 +223,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
   const totalPnl = p?.pnl ?? 0;
   const totalPnlPct = p?.pnlPct ?? 0;
   const totalInvested = p?.invested ?? 0;
+  const dailyLossLimit = dash?.riskLimits?.maxDailyDrawdownKrw ?? 200000;
+  const investedPct = p?.totalValue > 0 ? Math.round((totalInvested / p.totalValue) * 100) : 0;
 
   // 로봇 일과 타임라인 계산
   const now = new Date();
@@ -236,21 +238,21 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
     <div className="space-y-5 sm:space-y-6">
 
       {/* ── 오늘 손실 한도 ── */}
-      <Panel title="오늘 하루 손실 한도" badge={totalPnl < 0 ? '주의' : '안전'} badgeColor={totalPnl < -30000 ? 'red' : totalPnl < 0 ? 'amber' : 'green'}>
+      <Panel title="오늘 하루 손실 한도" badge={totalPnl < 0 ? '주의' : '안전'} badgeColor={totalPnl < -(dailyLossLimit * 0.6) ? 'red' : totalPnl < 0 ? 'amber' : 'green'}>
         <div className="px-5 py-3.5 flex items-center gap-4">
           <div className="flex-1">
             <div className="flex justify-between text-[11px] mb-1.5">
               <span className="text-slate-500">100%에 도달하면 오늘 하루 로봇이 매매를 멈춥니다</span>
-              <span className={`font-bold ${totalPnl < -30000 ? 'text-rose-400' : 'text-slate-400'}`}>
-                {totalPnl < 0 ? `손실 ${Math.abs(totalPnl).toLocaleString()}원` : '손실 없음'} / 한도 50,000원
+              <span className={`font-bold ${totalPnl < -(dailyLossLimit * 0.6) ? 'text-rose-400' : 'text-slate-400'}`}>
+                {totalPnl < 0 ? `손실 ${Math.abs(totalPnl).toLocaleString()}원` : '손실 없음'} / 한도 {dailyLossLimit.toLocaleString()}원
               </span>
             </div>
             <div className="h-2.5 bg-white/[0.04] rounded-full overflow-hidden">
-              <div className={`h-full rounded-full transition-all duration-500 ${totalPnl < -30000 ? 'bg-rose-500' : totalPnl < -10000 ? 'bg-amber-500' : 'bg-emerald-500'}`} style={{ width: `${Math.min(100, Math.max(0, (Math.abs(Math.min(0, totalPnl)) / 50000) * 100))}%` }} />
+              <div className={`h-full rounded-full transition-all duration-500 ${totalPnl < -(dailyLossLimit * 0.6) ? 'bg-rose-500' : totalPnl < -(dailyLossLimit * 0.2) ? 'bg-amber-500' : 'bg-emerald-500'}`} style={{ width: `${Math.min(100, Math.max(0, (Math.abs(Math.min(0, totalPnl)) / dailyLossLimit) * 100))}%` }} />
             </div>
           </div>
-          <div className={`text-xl font-black shrink-0 ${totalPnl < -30000 ? 'text-rose-400' : 'text-emerald-400'}`}>
-            {totalPnl < 0 ? `${Math.round((Math.abs(totalPnl) / 50000) * 100)}%` : '0%'}
+          <div className={`text-xl font-black shrink-0 ${totalPnl < -(dailyLossLimit * 0.6) ? 'text-rose-400' : 'text-emerald-400'}`}>
+            {totalPnl < 0 ? `${Math.round((Math.abs(totalPnl) / dailyLossLimit) * 100)}%` : '0%'}
           </div>
         </div>
       </Panel>
@@ -275,34 +277,49 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
         </div>
       </Panel>
 
-      {/* ── 메인 3카드 (쉬운 말) ── */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
-        <div className="rounded-2xl p-5 bg-gradient-to-br from-blue-600/10 via-cyan-600/5 to-transparent border border-blue-500/10 shadow-xl shadow-blue-900/10">
-          <div className="text-[11px] text-blue-300/60 mb-1.5 font-medium">총 자산</div>
-          <div className="text-2xl font-black tracking-tight text-white">{fmtWon(p?.totalValue)}</div>
-          <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-2.5 text-[10px]">
+      {/* ── 메인 카드 ── */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="rounded-2xl p-4 sm:p-5 bg-gradient-to-br from-blue-600/10 via-cyan-600/5 to-transparent border border-blue-500/10">
+          <div className="text-[10px] text-blue-300/60 mb-1 font-medium">총 자산</div>
+          <div className="text-xl sm:text-2xl font-black tracking-tight text-white">{fmtWon(p?.totalValue)}</div>
+          <div className="flex flex-wrap gap-x-2 mt-2 text-[10px]">
             <span className="text-slate-500">현금 <b className="text-slate-300">{fmtWon(p?.cash)}</b></span>
             <span className="text-slate-500">투자 <b className="text-blue-400">{fmtWon(totalInvested)}</b></span>
-            {withdrawConfig?.totalReserved > 0 && <span className="text-slate-500">인출 <b className="text-amber-400">{fmtWon(withdrawConfig.totalReserved)}</b></span>}
           </div>
         </div>
 
-        <div className={`rounded-2xl p-5 border shadow-xl ${totalPnl > 0 ? 'bg-emerald-500/5 border-emerald-500/15 shadow-emerald-900/10' : totalPnl < 0 ? 'bg-rose-500/5 border-rose-500/15 shadow-rose-900/10' : 'glass border-white/[0.04] shadow-black/20'}`}>
-          <div className="text-[11px] text-slate-500 mb-1.5 font-medium">수익/손실</div>
-          <div className={`text-2xl font-black ${pc(totalPnl)}`}>
-            {totalPnl > 0 ? '+' : totalPnl < 0 ? '' : ''}{fmtWon(totalPnl)}
+        <div className={`rounded-2xl p-4 sm:p-5 border ${totalPnl > 0 ? 'bg-emerald-500/5 border-emerald-500/15' : totalPnl < 0 ? 'bg-rose-500/5 border-rose-500/15' : 'glass border-white/[0.04]'}`}>
+          <div className="text-[10px] text-slate-500 mb-1 font-medium">미실현 손익</div>
+          <div className={`text-xl sm:text-2xl font-black ${pc(totalPnl)}`}>
+            {totalPnl > 0 ? '+' : ''}{fmtWon(totalPnl)}
           </div>
-          <div className={`text-[11px] font-bold mt-2 ${pc(totalPnlPct)}`}>
-            원금 대비 {fmtPct(totalPnlPct)}
+          <div className={`text-[10px] font-bold mt-2 ${pc(totalPnlPct)}`}>
+            {fmtPct(totalPnlPct)}
           </div>
         </div>
 
-        <div className="rounded-2xl p-5 glass border border-white/[0.04] shadow-xl shadow-black/20">
-          <div className="text-[11px] text-slate-500 mb-1.5 font-medium">오늘 매매</div>
-          <div className="text-2xl font-black">{todayTrades.length}<span className="text-base text-slate-500 ml-1">건</span></div>
-          <div className="text-[11px] text-slate-600 mt-2">
-            총 {filled.length}건 체결
+        <div className="rounded-2xl p-4 sm:p-5 glass border border-white/[0.04]">
+          <div className="text-[10px] text-slate-500 mb-1 font-medium">투자금</div>
+          <div className="text-xl sm:text-2xl font-black text-blue-400">{fmtWon(totalInvested)}</div>
+          <div className="text-[10px] mt-2">
+            <span className={`font-bold ${investedPct > 60 ? 'text-amber-400' : 'text-slate-400'}`}>비중 {investedPct}%</span>
+            <span className="text-slate-600 ml-1">({chains.length}종목)</span>
           </div>
+        </div>
+
+        <div className="rounded-2xl p-4 sm:p-5 glass border border-white/[0.04]">
+          <div className="text-[10px] text-slate-500 mb-1 font-medium">{withdrawConfig?.totalReserved > 0 ? '인출 예약' : '오늘 매매'}</div>
+          {withdrawConfig?.totalReserved > 0 ? (
+            <>
+              <div className="text-xl sm:text-2xl font-black text-amber-400">{fmtWon(withdrawConfig.totalReserved)}</div>
+              <div className="text-[10px] text-slate-600 mt-2">출금 대기</div>
+            </>
+          ) : (
+            <>
+              <div className="text-xl sm:text-2xl font-black">{todayTrades.length}<span className="text-base text-slate-500 ml-1">건</span></div>
+              <div className="text-[10px] text-slate-600 mt-2">총 {filled.length}건 체결</div>
+            </>
+          )}
         </div>
       </div>
 
@@ -522,7 +539,14 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
                 );
               })}
             </div>
-          ) : <EmptyMsg>AI가 아직 종목을 분석하지 않았어요 (매일 오전 7:30 / 오후 6시 자동 실행)</EmptyMsg>}
+          ) : (
+            <div className="p-6 text-center space-y-3">
+              <div className="text-2xl opacity-30">🤖</div>
+              <p className="text-sm text-slate-500">AI 스코어가 아직 없습니다</p>
+              <p className="text-[11px] text-slate-600">매일 오전 7:30 / 오후 6시에 자동 실행됩니다.<br/>설정 → AI 분석 수동 실행 버튼으로 즉시 생성할 수 있습니다.</p>
+              <p className="text-[10px] text-blue-400/60">스코어 없는 동안 기술적 지표 기반으로 자동매매가 동작합니다</p>
+            </div>
+          )}
         </Panel>
 
         {/* 최근 매매 */}
@@ -840,10 +864,16 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
                 <div key={s.stock_code} onClick={() => loadAnalysis(s.stock_code)} className={`flex items-center gap-3 px-4 py-3.5 hover:bg-white/[0.02] cursor-pointer group transition-colors ${isSelected ? 'bg-blue-950/20 border-l-2 border-blue-500' : robotStatus.border}`}>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="font-bold text-sm">{s.stock_name}</span>
-                      <span className="text-[10px] text-slate-600">{s.stock_code}</span>
+                      <span className="font-bold text-sm">{s.stock_name || s.stock_code}</span>
+                      {s.stock_name && <span className="text-[10px] text-slate-600">{s.stock_code}</span>}
                     </div>
-                    {scoreVal >= 0 && <div className="text-[10px] text-slate-500 mt-0.5">AI 점수 {scoreVal}점 {scoreVal >= 75 ? '— 매수 가능' : scoreVal >= 50 ? '' : '— 아직 부족'}</div>}
+                    {chain ? (
+                      <div className="text-[10px] text-slate-500 mt-0.5">평단 {Number(chain.avg_buy_price).toLocaleString()}원 · {chain.total_quantity}주</div>
+                    ) : scoreVal >= 0 ? (
+                      <div className="text-[10px] text-slate-500 mt-0.5">AI {scoreVal}점 {scoreVal >= 75 ? '— 매수 대기' : scoreVal >= 50 ? '— 관망' : '— 부족'}</div>
+                    ) : (
+                      <div className="text-[10px] text-slate-600 mt-0.5">기술적 지표로 감시 중</div>
+                    )}
                   </div>
                   <span className={`text-[10px] px-2.5 py-1 rounded-md font-medium ${robotStatus.bg} ${robotStatus.color}`}>{robotStatus.label}</span>
                   <span className="text-[10px] text-slate-600">{isSelected ? '▲' : '▼'}</span>
@@ -1043,7 +1073,30 @@ function BacktestView({ watchlist }: { watchlist: any[] }) {
         </Panel>
       )}
 
-      {!singleResult && !batchResult && <EmptyMsg>백테스트를 실행하면 과거 데이터로 전략 성과를 검증합니다</EmptyMsg>}
+      {!singleResult && !batchResult && (
+        <Panel title="사용 가이드">
+          <div className="p-6 space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
+              <div className="bg-slate-900/40 rounded-xl p-4">
+                <div className="text-lg mb-1">1</div>
+                <p className="text-xs font-medium text-slate-300">전략/자본/기간 선택</p>
+                <p className="text-[10px] text-slate-500 mt-1">위 설정에서 조건을 선택하세요</p>
+              </div>
+              <div className="bg-slate-900/40 rounded-xl p-4">
+                <div className="text-lg mb-1">2</div>
+                <p className="text-xs font-medium text-slate-300">테스트 실행</p>
+                <p className="text-[10px] text-slate-500 mt-1">단일 종목 또는 전 종목 일괄</p>
+              </div>
+              <div className="bg-slate-900/40 rounded-xl p-4">
+                <div className="text-lg mb-1">3</div>
+                <p className="text-xs font-medium text-slate-300">결과 분석</p>
+                <p className="text-[10px] text-slate-500 mt-1">수익률, 승률, 낙폭 등 확인</p>
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-600 text-center">과거 데이터로 전략의 실제 성과를 검증합니다. 실행에 1~3분 소요됩니다.</p>
+          </div>
+        </Panel>
+      )}
     </div>
   );
 }
@@ -1203,14 +1256,31 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
   };
 
   const promptTabs = [
-    { id: 'gemini' as const, label: 'Gemini (서론 · 분석)', ref: geminiRef, key: 'gemini_prompt', desc: '시장 데이터를 팩트 기반으로 정제합니다' },
-    { id: 'gpt' as const, label: 'GPT (본론 · 스코어링)', ref: gptRef, key: 'gpt_prompt', desc: 'Gemini 결과를 기반으로 점수를 매깁니다' },
-    { id: 'claude' as const, label: 'Claude (결론 · 매매)', ref: claudeRef, key: 'claude_prompt', desc: '최종 매수/매도/보류를 결정합니다' },
+    { id: 'gemini' as const, label: 'Gemini (서론 · 분석)', ref: geminiRef, key: 'gemini_prompt',
+      desc: '1단계: 시장 데이터 + CEO 참고소스를 종합하여 팩트 기반 분석 리포트를 생성합니다. 여기서 작성한 내용이 GPT 스코어링의 입력이 됩니다.',
+      placeholder: `## CEO 추가 지시사항\n\n### 분석 우선순위\n1. 기관/외국인 수급 데이터를 최우선으로 분석하라. 3일 연속 순매수 종목만 주목.\n2. 최근 실적(영업이익) 증가 확인 필수. 적자전환 또는 실적 악화 종목은 즉시 제외.\n3. 52주 고점 대비 -10%~-25% 구간의 눌림목 종목을 우선 분석.\n\n### 제외 조건 (절대 분석하지 마)\n- 시가총액 5000억 미만 소형주\n- 테마주/급등주 (하루 +15% 이상 급등한 종목)\n- 최근 30일 내 대규모 유상증자/CB 발행 공시가 있는 종목` },
+    { id: 'gpt' as const, label: 'GPT (본론 · 스코어링)', ref: gptRef, key: 'gpt_prompt',
+      desc: '2단계: Gemini 분석 결과를 바탕으로 종목별 0~100점 스코어를 산출합니다. 75점 이상이면 매수 후보로 선정됩니다.',
+      placeholder: `## 스코어링 보정 지시\n\n### 가점 조건\n- 외국인+기관 동시 순매수 3일 이상: +10점\n- 실적 서프라이즈(컨센서스 대비 +10%): +8점\n- RSI 30 이하 과매도 구간: +5점\n\n### 감점 조건\n- 거래량 급감 (20일 평균 대비 50% 미만): -10점\n- 단기 급등 후 조정 없음 (5일 +10% 이상): -15점\n- 공매도 잔고 비율 5% 이상: -8점` },
+    { id: 'claude' as const, label: 'Claude (결론 · 매매)', ref: claudeRef, key: 'claude_prompt',
+      desc: '3단계: AI 스코어 + 실시간 시세를 종합하여 BUY/SELL/HOLD 최종 결정을 내립니다. 수량까지 계산합니다.',
+      placeholder: `## 매매 실행 추가 규칙\n\n### 매수 원칙\n- 장 시작 30분(09:00~09:30)은 변동성이 크므로 매수 금지\n- 14:30 이후 신규 매수 금지 (당일 청산 리스크)\n- 동일 종목 하루 1회만 매수\n\n### 매도 원칙\n- 손절은 반드시 지켜라. 감정적 판단 금지.\n- 2일 연속 하락 + 거래량 증가 시 즉시 매도\n- 익절 시 "조금 더 오를 수 있다"는 판단 금지, 기계적 실행` },
   ];
   const activePrompt = promptTabs.find(t => t.id === promptTab)!;
 
   return (
     <div className="space-y-5 sm:space-y-6">
+      {/* ── KIS 미설정 경고 ── */}
+      {(!secrets?.kis_appkey?.exists || !secrets?.kis_appsecret?.exists) && (
+        <div className="bg-amber-950/30 border border-amber-500/20 rounded-2xl p-4 flex items-start gap-3">
+          <span className="text-amber-400 text-lg shrink-0">!</span>
+          <div>
+            <p className="text-sm font-bold text-amber-300">한국투자증권 API 키 미설정</p>
+            <p className="text-[11px] text-slate-400 mt-1">실전 매매를 위해 아래 API 키 관리에서 KIS Key, Secret, 계좌번호를 입력하세요. 현재 모의투자 모드로 동작합니다.</p>
+          </div>
+        </div>
+      )}
+
       {/* ── 상단: 킬스위치 + AI 실행 ── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Panel title="긴급 제어">
@@ -1243,8 +1313,11 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
 
       {/* ── 전략 설정 (풀와이드) ── */}
       {strategy && (
-        <Panel title="전략 설정">
-          <div className="p-4 sm:p-5">
+        <Panel title="전략 설정" badge={strategy.mode === 'SWING' ? '안정 스윙' : strategy.mode === 'DEFENSE' ? '방어 모드' : '단타'} badgeColor={strategy.mode === 'SWING' ? 'blue' : strategy.mode === 'DEFENSE' ? 'red' : 'amber'}>
+          <div className="p-4 sm:p-5 space-y-4">
+            <div className="text-[11px] text-slate-500 bg-slate-900/40 rounded-lg p-3">
+              {strategy.mode === 'SWING' ? '3분할 매수 → 물타기 → +8% 익절 / -5% 손절. 중장기 안정 수익 추구.' : strategy.mode === 'DEFENSE' ? '85점 이상만 소량 진입 → -3% 즉시 손절. 하락장 자본 보존 우선.' : '90점 이상 즉시 풀매수 → +3% 즉시 익절. 당일 15:20 강제 청산.'}
+            </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
               <Sel label="투자 방식" value={strategy.mode} opts={[['SWING','안정 투자'],['DEFENSE','방어 모드'],['SCALPING','빠른 매매']]} onChange={v => setField('mode', v)} />
               <Sel label="몇 점이면 살지" value={strategy.buy_threshold} opts={[[60,'60점 (적극)'],[70,'70점'],[75,'75점'],[80,'80점 (보통)'],[85,'85점'],[90,'90점 (신중)']]} onChange={v => setField('buy_threshold', Number(v))} />
@@ -1276,7 +1349,7 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
               defaultValue={strategy?.[activePrompt.key] || ''}
               rows={10}
               className="w-full bg-slate-900 border border-slate-700 rounded-xl p-4 text-sm leading-relaxed resize-y font-mono focus:border-blue-500 focus:outline-none"
-              placeholder={`${activePrompt.label} 프롬프트를 입력하세요...`}
+              placeholder={(activePrompt as any).placeholder || `${activePrompt.label} 프롬프트를 입력하세요...`}
             />
             <button onClick={saveStrategy} className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-sm font-medium">전략 + 프롬프트 저장</button>
           </div>
@@ -1440,8 +1513,13 @@ function Indicator({ label, value, sub, color }: { label: string; value: string;
   );
 }
 
-function EmptyMsg({ children }: { children: React.ReactNode }) {
-  return <div className="p-10 text-center text-slate-600 text-sm">{children}</div>;
+function EmptyMsg({ children, icon }: { children: React.ReactNode; icon?: string }) {
+  return (
+    <div className="p-8 sm:p-10 text-center">
+      {icon && <div className="text-2xl mb-2 opacity-40">{icon}</div>}
+      <div className="text-slate-500 text-sm">{children}</div>
+    </div>
+  );
 }
 
 function SideBadge({ side }: { side: string }) {
