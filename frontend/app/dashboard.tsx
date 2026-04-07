@@ -1178,8 +1178,6 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
     purple:  { bg: 'bg-purple-500/10',   border: 'border-purple-500/20',  text: 'text-purple-400',  dot: 'bg-purple-400',  grad: 'from-purple-500 to-pink-500',  activeBg: 'bg-purple-950/20' },
     emerald: { bg: 'bg-emerald-500/10',  border: 'border-emerald-500/20', text: 'text-emerald-400', dot: 'bg-emerald-400', grad: 'from-emerald-500 to-teal-500', activeBg: 'bg-emerald-950/20' },
   };
-  const cur = steps[activeStep];
-  const cc = colorMap[cur.color];
 
   return (
     <div className="space-y-5 sm:space-y-6">
@@ -1276,13 +1274,18 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
             })}
           </div>
 
-          {/* 선택된 스텝 내용 */}
-          <div className={`p-4 sm:p-5 ${cc.activeBg}`}>
-            <p className="text-[11px] text-slate-400 mb-3">{cur.desc}</p>
-            <textarea ref={cur.ref} defaultValue={strategy?.[cur.key] || ''} rows={10}
-              className={`w-full bg-slate-900/60 border border-slate-700/50 rounded-lg p-3 text-[11px] leading-relaxed resize-y font-mono focus:outline-none text-slate-300 focus:border-${cur.color}-500`}
-              placeholder={cur.placeholder} />
-          </div>
+          {/* 모든 스텝 textarea (숨김 포함 — ref 유지를 위해 항상 렌더링) */}
+          {steps.map((s, i) => {
+            const sc = colorMap[s.color];
+            return (
+              <div key={s.label} className={`p-4 sm:p-5 ${sc.activeBg} ${i === activeStep ? '' : 'hidden'}`}>
+                <p className="text-[11px] text-slate-400 mb-3">{s.desc}</p>
+                <textarea ref={s.ref} defaultValue={strategy?.[s.key] || ''} rows={10}
+                  className="w-full bg-slate-900/60 border border-slate-700/50 rounded-lg p-3 text-[11px] leading-relaxed resize-y font-mono focus:outline-none text-slate-300"
+                  placeholder={s.placeholder} />
+              </div>
+            );
+          })}
         </div>
       )}
 
