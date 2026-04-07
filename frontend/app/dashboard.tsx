@@ -409,7 +409,13 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
                 );
               })}
             </div>
-          ) : <EmptyMsg>보유 종목 없음</EmptyMsg>}
+          ) : (
+            <div className="p-6 text-center space-y-2">
+              <div className="text-2xl opacity-30">📦</div>
+              <p className="text-sm text-slate-400">아직 투자 중인 종목이 없습니다</p>
+              <p className="text-[11px] text-slate-600">로봇이 장 중 10분 간격으로 매수 기회를 탐색하고 있습니다.<br/>기술적 지표 조건이 맞으면 자동으로 매수합니다.</p>
+            </div>
+          )}
         </Panel>
 
         {/* 미국 시세 */}
@@ -425,7 +431,13 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
                 </div>
               ))}
             </div>
-          ) : <EmptyMsg>미국 장 시간에 갱신됩니다</EmptyMsg>}
+          ) : (
+            <div className="p-6 text-center space-y-2">
+              <div className="text-2xl opacity-30">🇺🇸</div>
+              <p className="text-sm text-slate-400">미국 장 시간 (23:30~06:00 KST)에 시세가 갱신됩니다</p>
+              <p className="text-[11px] text-slate-600">AAPL, TSLA, NVDA 등 감시목록 종목의 실시간 시세를 표시합니다.</p>
+            </div>
+          )}
         </Panel>
       </div>
 
@@ -618,9 +630,41 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
 
 function TradesView({ trades }: { trades: any[] }) {
   const [expanded, setExpanded] = useState<string | null>(null);
+  const filled = trades.filter((t: any) => t.status === 'FILLED');
+  const buys = filled.filter((t: any) => t.side === 'BUY');
+  const sells = filled.filter((t: any) => t.side === 'SELL');
+  const todayCount = filled.filter((t: any) => new Date(t.created_at).toDateString() === new Date().toDateString()).length;
 
   return (
+    <div className="space-y-4">
+      {/* 요약 통계 */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+          <div className="text-[10px] text-slate-500">총 체결</div>
+          <div className="text-lg font-black mt-1">{filled.length}건</div>
+        </div>
+        <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+          <div className="text-[10px] text-slate-500">오늘</div>
+          <div className="text-lg font-black mt-1 text-blue-400">{todayCount}건</div>
+        </div>
+        <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+          <div className="text-[10px] text-emerald-400/60">매수</div>
+          <div className="text-lg font-black mt-1 text-emerald-400">{buys.length}건</div>
+        </div>
+        <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+          <div className="text-[10px] text-rose-400/60">매도</div>
+          <div className="text-lg font-black mt-1 text-rose-400">{sells.length}건</div>
+        </div>
+      </div>
+
     <Panel title="매매내역" badge={`${trades.length}건`}>
+      {trades.length === 0 ? (
+        <div className="p-8 text-center space-y-2">
+          <div className="text-2xl opacity-30">📋</div>
+          <p className="text-sm text-slate-400">아직 매매 기록이 없습니다</p>
+          <p className="text-[11px] text-slate-600">로봇이 매수/매도를 실행하면 여기에 기록됩니다.<br/>장 중(09:00~15:30) 10분 간격으로 자동 실행됩니다.</p>
+        </div>
+      ) : (
       <div className="overflow-x-auto">
         <table className="w-full text-[13px]">
           <thead><tr className="text-slate-500 border-b border-slate-700/30">
@@ -700,7 +744,9 @@ function TradesView({ trades }: { trades: any[] }) {
           </tbody>
         </table>
       </div>
+      )}
     </Panel>
+    </div>
   );
 }
 
@@ -1210,7 +1256,18 @@ function SourcesView({ sources, setSources }: { sources: any[]; setSources: (s: 
 
       {/* 전체 소스 목록 */}
       <Panel title="전체 소스" badge={`${others.length}건`}>
-        {others.length === 0 ? <EmptyMsg>소스를 추가하세요 — YouTube, 뉴스, 리서치 등</EmptyMsg> : (
+        {others.length === 0 ? (
+          <div className="p-6 text-center space-y-3">
+            <div className="text-2xl opacity-30">📎</div>
+            <p className="text-sm text-slate-400">등록된 소스가 없습니다</p>
+            <p className="text-[11px] text-slate-600">YouTube 투자 채널, 뉴스 기사, 리서치 보고서 URL을 추가하면<br/>AI가 분석 시 참고하여 더 정확한 판단을 내립니다.</p>
+            <div className="flex flex-wrap justify-center gap-2 mt-2 text-[10px]">
+              <span className="bg-slate-800 text-slate-400 px-2.5 py-1 rounded-lg">예: 슈카월드 유튜브</span>
+              <span className="bg-slate-800 text-slate-400 px-2.5 py-1 rounded-lg">예: 한경 시장 전망</span>
+              <span className="bg-slate-800 text-slate-400 px-2.5 py-1 rounded-lg">예: 증권사 리서치</span>
+            </div>
+          </div>
+        ) : (
           <div className="divide-y divide-slate-800/20">
             {others.map((s: any) => (
               <div key={s.id} className="flex items-center gap-3 px-3 py-2.5 hover:bg-slate-800/30 group">
