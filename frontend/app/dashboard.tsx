@@ -206,9 +206,9 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
   const filled = trades.filter((t: any) => t.status === 'FILLED');
   const todayTrades = filled.filter((t: any) => new Date(t.created_at).toDateString() === new Date().toDateString());
 
-  // chains 미실현 손익 합산
-  const chainsPnl = chains.reduce((sum: number, ch: any) => sum + (ch.unrealizedPnl || 0), 0);
-  const totalPnl = (p?.pnl || 0) + chainsPnl;
+  const totalPnl = p?.pnl ?? 0;
+  const totalPnlPct = p?.pnlPct ?? 0;
+  const totalInvested = p?.invested ?? 0;
 
   return (
     <div className="space-y-5 sm:space-y-6">
@@ -219,65 +219,87 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
         </div>
       )}
 
-      {/* ── 자산 카드 ── */}
+      {/* ── 자산 요약 ── */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
-        <Card label="총 자산" value={fmtWon(p?.totalValue)} big />
-        <Card label="현금" value={fmtWon(p?.cash)} />
-        <Card label="투자금" value={fmtWon(p?.invested)} />
-        <Card label="미실현 손익" value={fmtWon(totalPnl)} color={pc(totalPnl)} bg={pbg(totalPnl)} />
+        <div className={`rounded-2xl border border-slate-800/40 p-4 sm:p-5 shadow-lg shadow-black/10 bg-[#111827]/80 col-span-2 lg:col-span-1`}>
+          <div className="text-[11px] sm:text-xs text-slate-500 mb-1.5">총 자산</div>
+          <div className="text-xl sm:text-2xl font-bold">{fmtWon(p?.totalValue)}</div>
+        </div>
+        <Card label="현금 (대기)" value={fmtWon(p?.cash)} />
+        <Card label="투자금 (운용 중)" value={fmtWon(totalInvested)} />
+        <div className={`rounded-2xl border border-slate-800/40 p-4 sm:p-5 shadow-lg shadow-black/10 ${pbg(totalPnl)}`}>
+          <div className="text-[11px] sm:text-xs text-slate-500 mb-1.5">미실현 손익</div>
+          <div className={`text-base sm:text-lg font-bold ${pc(totalPnl)}`}>{fmtWon(totalPnl)}</div>
+          <div className={`text-xs font-medium mt-0.5 ${pc(totalPnlPct)}`}>{fmtPct(totalPnlPct)}</div>
+        </div>
         <Card label="인출 예약금" value={fmtWon(withdrawConfig?.totalReserved ?? 0)} color={withdrawConfig?.totalReserved > 0 ? 'text-amber-400' : undefined} bg={withdrawConfig?.totalReserved > 0 ? 'bg-amber-950/20 border-amber-900/20' : undefined} />
       </div>
 
       {/* ── 국내 + 해외 2컬럼 ── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
         {/* 국내 보유 */}
-        <Panel title="🇰🇷 국내 보유종목" badge={`${(p?.positions?.length || 0) + chains.length}종목`}>
+        <Panel title="국내 보유종목" badge={`${(p?.positions?.length || 0) + chains.length}종목`}>
           {(p?.positions?.length > 0 || chains.length > 0) ? (
-            <table className="w-full text-xs">
+            <table className="w-full text-[13px]">
               <thead><tr className="text-slate-500 border-b border-slate-700/30">
-                <th className="px-3 py-2 text-left">종목</th>
-                <th className="px-3 py-2 text-right">수량</th>
-                <th className="px-3 py-2 text-right">현재가</th>
-                <th className="px-3 py-2 text-right">손익</th>
+                <th className="px-4 py-2.5 text-left font-medium">종목</th>
+                <th className="px-4 py-2.5 text-right font-medium">수량</th>
+                <th className="px-4 py-2.5 text-right font-medium">평단가</th>
+                <th className="px-4 py-2.5 text-right font-medium">현재가</th>
+                <th className="px-4 py-2.5 text-right font-medium">수익률</th>
               </tr></thead>
               <tbody className="divide-y divide-slate-800/30">
                 {(p?.positions || []).map((pos: any, i: number) => (
-                  <tr key={i} className="hover:bg-slate-800/30">
-                    <td className="px-3 py-2.5"><div className="font-medium">{pos.stockName || pos.stockCode}</div><div className="text-[10px] text-slate-600">{pos.stockCode}</div></td>
-                    <td className="px-3 py-2.5 text-right text-slate-400">{fmt(pos.quantity)}주</td>
-                    <td className="px-3 py-2.5 text-right">{fmtWon(pos.currentPrice)}</td>
-                    <td className={`px-3 py-2.5 text-right font-semibold ${pc(pos.profitLoss)}`}>{fmtWon(pos.profitLoss)}<br/><span className="text-[10px]">{fmtPct(pos.profitLossPct)}</span></td>
+                  <tr key={i} className="hover:bg-slate-800/20">
+                    <td className="px-4 py-3"><div className="font-semibold">{pos.stockName || pos.stockCode}</div><div className="text-[10px] text-slate-600">{pos.stockCode}</div></td>
+                    <td className="px-4 py-3 text-right text-slate-400">{fmt(pos.quantity)}주</td>
+                    <td className="px-4 py-3 text-right text-slate-500">{fmtWon(pos.avgBuyPrice)}</td>
+                    <td className="px-4 py-3 text-right">{fmtWon(pos.currentPrice)}</td>
+                    <td className={`px-4 py-3 text-right font-bold ${pc(pos.profitLoss)}`}>
+                      <div>{fmtPct(pos.profitLossPct)}</div>
+                      <div className="text-[10px] font-normal">{fmtWon(pos.profitLoss)}</div>
+                    </td>
                   </tr>
                 ))}
-                {chains.map((ch: any, i: number) => (
-                  <tr key={`c${i}`} className="hover:bg-slate-800/30">
-                    <td className="px-3 py-2.5"><div className="font-medium">{ch.stock_code}</div><div className="text-[10px] text-slate-600">{ch.strategy_mode} · {ch.status}</div></td>
-                    <td className="px-3 py-2.5 text-right text-slate-400">{fmt(ch.total_quantity)}주</td>
-                    <td className="px-3 py-2.5 text-right">
-                      {ch.currentPrice > 0 ? fmtWon(ch.currentPrice) : <span className="text-slate-500">평단 {fmtWon(Number(ch.avg_buy_price))}</span>}
+                {chains.map((ch: any, i: number) => {
+                  const avgPrice = Number(ch.avg_buy_price) || 0;
+                  return (
+                  <tr key={`c${i}`} className="hover:bg-slate-800/20">
+                    <td className="px-4 py-3">
+                      <div className="font-semibold">{ch.stock_code}</div>
+                      <div className="text-[10px] text-slate-600">{ch.strategy_mode} · {ch.status}</div>
                     </td>
-                    <td className={`px-3 py-2.5 text-right font-semibold ${pc(ch.unrealizedPnl || Number(ch.realized_pnl))}`}>
+                    <td className="px-4 py-3 text-right text-slate-400">{fmt(ch.total_quantity)}주</td>
+                    <td className="px-4 py-3 text-right text-slate-500">{fmtWon(avgPrice)}</td>
+                    <td className="px-4 py-3 text-right">
+                      {ch.currentPrice > 0 ? fmtWon(ch.currentPrice) : <span className="text-slate-600">-</span>}
+                    </td>
+                    <td className={`px-4 py-3 text-right font-bold ${pc(ch.unrealizedPnl)}`}>
                       {ch.currentPrice > 0 ? (
-                        <>{fmtWon(ch.unrealizedPnl)}<br/><span className="text-[10px]">{fmtPct(ch.unrealizedPnlPct)}</span></>
-                      ) : fmtWon(Number(ch.realized_pnl))}
+                        <>
+                          <div>{fmtPct(ch.unrealizedPnlPct)}</div>
+                          <div className="text-[10px] font-normal">{fmtWon(ch.unrealizedPnl)}</div>
+                        </>
+                      ) : <span className="text-slate-600 font-normal text-xs">장 외</span>}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           ) : <EmptyMsg>보유 종목 없음</EmptyMsg>}
         </Panel>
 
         {/* 미국 시세 */}
-        <Panel title="🇺🇸 미국주식" badge="자동매매 23:30~06:00">
+        <Panel title="미국주식" badge="자동매매 23:30~06:00">
           {usW.length > 0 ? (
-            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 p-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3.5">
               {usW.map((s: any) => (
-                <div key={s.code} className={`rounded-lg border p-2 text-center transition-all hover:scale-[1.02] ${pbg(s.changePct)} border-slate-700/30`}>
-                  <div className="text-[11px] font-bold text-slate-300">{s.code}</div>
-                  <div className="text-sm font-bold mt-0.5">{s.price > 0 ? `$${s.price.toFixed(1)}` : '-'}</div>
-                  <div className={`text-[10px] font-medium ${pc(s.changePct)}`}>{s.changePct !== 0 ? fmtPct(s.changePct) : '-'}</div>
-                  <div className="text-[9px] text-slate-600 mt-0.5">{s.name}</div>
+                <div key={s.code} className={`rounded-xl border p-3 text-center transition-all hover:scale-[1.02] ${pbg(s.changePct)} border-slate-700/30`}>
+                  <div className="text-xs font-bold text-slate-300">{s.code}</div>
+                  <div className="text-base font-bold mt-1">{s.price > 0 ? `$${s.price.toFixed(1)}` : '-'}</div>
+                  <div className={`text-[11px] font-semibold mt-0.5 ${pc(s.changePct)}`}>{s.changePct !== 0 ? fmtPct(s.changePct) : '-'}</div>
+                  <div className="text-[10px] text-slate-600 mt-0.5">{s.name}</div>
                 </div>
               ))}
             </div>

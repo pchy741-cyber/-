@@ -39,25 +39,58 @@ dashboardRoutes.get('/dashboard', async (c) => {
     }
   } catch { /* scores unavailable */ }
 
-  // chains에 KIS positions의 현재가 매칭 (추가 API 호출 없음)
+  // chains에 현재가 매칭 — KIS positions 우선, 없으면 시세 API 직접 조회
   const posMap = new Map((balance.positions ?? []).map((p: any) => [p.stockCode, p]));
+  const chainCodes = [...new Set(chains.map((ch: any) => ch.stock_code))];
+  const priceMap = new Map<string, number>();
+
+  // 1차: positions에서 매칭
+  for (const code of chainCodes) {
+    const pos = posMap.get(code);
+    if (pos?.currentPrice > 0) priceMap.set(code, pos.currentPrice);
+  }
+
+  // 2차: 매칭 안 된 종목은 시세 API 직접 조회 (장중에만)
+  const missingCodes = chainCodes.filter(code => !priceMap.has(code));
+  if (missingCodes.length > 0) {
+    const priceResults = await Promise.allSettled(
+      missingCodes.map(code => getCurrentPrice(code).catch(() => null))
+    );
+    priceResults.forEach((result, idx) => {
+      if (result.status === 'fulfilled' && result.value && (result.value as any).currentPrice > 0) {
+        priceMap.set(missingCodes[idx], (result.value as any).currentPrice);
+      }
+    });
+  }
+
+  let totalChainInvested = 0;
+  let totalChainPnl = 0;
   const enrichedChains = chains.map((ch: any) => {
-    const pos = posMap.get(ch.stock_code);
-    const currentPrice = pos?.currentPrice ?? 0;
+    const currentPrice = priceMap.get(ch.stock_code) ?? 0;
     const avgPrice = Number(ch.avg_buy_price) || 0;
     const qty = Number(ch.total_quantity) || 0;
+    const invested = avgPrice * qty;
     const unrealizedPnl = currentPrice > 0 ? (currentPrice - avgPrice) * qty : 0;
     const unrealizedPnlPct = currentPrice > 0 && avgPrice > 0 ? ((currentPrice - avgPrice) / avgPrice) * 100 : 0;
-    return { ...ch, currentPrice, unrealizedPnl, unrealizedPnlPct };
+    totalChainInvested += invested;
+    totalChainPnl += unrealizedPnl;
+    return { ...ch, currentPrice, unrealizedPnl, unrealizedPnlPct, invested };
   });
+
+  // 투자금/손익 계산 — KIS 잔고 + chains 합산
+  const kisInvested = balance.totalEvalAmount ?? 0;
+  const kisPnl = balance.totalProfitLoss ?? 0;
+  const totalInvested = kisInvested + totalChainInvested;
+  const totalPnl = kisPnl + totalChainPnl;
+  const totalPnlPct = totalInvested > 0 ? (totalChainPnl / totalChainInvested) * 100 : 0;
 
   return c.json({
     portfolio: {
-      totalValue: (balance.totalDeposit ?? 10000000) + (balance.totalEvalAmount ?? 0),
+      totalValue: (balance.orderableCash ?? 10000000) + totalInvested + totalChainPnl,
       cash: balance.orderableCash ?? 10000000,
-      invested: balance.totalEvalAmount ?? 0,
-      pnl: balance.totalProfitLoss ?? 0,
-      pnlPct: balance.totalProfitLossPct ?? 0,
+      invested: totalInvested,
+      pnl: totalPnl,
+      pnlPct: totalPnlPct,
       positions: balance.positions ?? [],
     },
     activeChains: enrichedChains.length,
