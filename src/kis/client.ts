@@ -135,6 +135,17 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
 
       if (!res.ok || data.rt_cd !== '0') {
         const errMsg = `KIS API 오류 [${trId}]: ${data.msg_cd} - ${data.msg1}`;
+        const msg = String(data.msg1 ?? '');
+
+        // rate limit 초과 → 재시도하되 충분히 대기 (KIS는 HTTP 200으로 rate limit 보냄)
+        if (msg.includes('초당') || msg.includes('거래건수')) {
+          if (attempt < MAX_RETRIES) {
+            logger.warn(`KIS rate limit 초과, ${attempt * 2}초 대기 후 재시도 ${attempt}/${MAX_RETRIES}`, { component: 'KIS' });
+            await sleep(2000 * attempt); // 2초, 4초, 6초 대기
+            continue;
+          }
+          throw new Error(errMsg);
+        }
 
         // 4xx는 재시도 불가
         if (res.status >= 400 && res.status < 500) {

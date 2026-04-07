@@ -101,7 +101,7 @@ export default function Dashboard() {
     finally { loadingRef.current = false; }
   };
 
-  useEffect(() => { load(); const iv = setInterval(load, 30000); return () => clearInterval(iv); }, []);
+  useEffect(() => { load(); const iv = setInterval(load, 60000); return () => clearInterval(iv); }, []); // 60초 간격 (KIS rate limit 보호)
 
   const toggleKill = async () => {
     const active = killSwitch?.active;
