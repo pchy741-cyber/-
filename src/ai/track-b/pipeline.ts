@@ -70,8 +70,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 가격 캐싱 — 대시보드에서 API 실패 시 fallback용
     try {
       const { cachePrice } = await import('../../cache/redis.js');
+      const { cachePriceMemory } = await import('../../cache/memory.js');
       for (const [code, p] of livePrices) {
-        if (p.currentPrice > 0) cachePrice(code, p.currentPrice).catch(() => {});
+        if (p.currentPrice > 0) {
+          cachePriceMemory(code, p.currentPrice);
+          cachePrice(code, p.currentPrice).catch(() => {});
+        }
       }
     } catch { /* cache optional */ }
 

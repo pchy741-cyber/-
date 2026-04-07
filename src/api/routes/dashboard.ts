@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { getPortfolioFlowStatus } from '../../automation/ceo-workflow.js';
 import { getCachedScores, cachePrice, getLastKnownPrices } from '../../cache/redis.js';
+import { cachePriceMemory, getLastKnownPricesMemory, getCachedPriceMemory } from '../../cache/memory.js';
 import { config } from '../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getPool } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
@@ -40,38 +41,50 @@ dashboardRoutes.get('/dashboard', async (c) => {
     }
   } catch { /* scores unavailable */ }
 
-  // chains에 현재가 매칭 — Redis 캐시 우선 → KIS 잔고 → 시세 API (속도 최적화)
+  // chains에 현재가 매칭 — 인메모리 캐시 우선 → KIS 잔고 → 시세 API
   const posMap = new Map((balance.positions ?? []).map((p: any) => [p.stockCode, p]));
   const chainCodes = [...new Set(chains.map((ch: any) => ch.stock_code))];
   const priceMap = new Map<string, number>();
 
-  // 1차: Redis 캐시에서 즉시 로드 (가장 빠름)
-  if (chainCodes.length > 0) {
-    const cached = await getLastKnownPrices(chainCodes);
-    cached.forEach((price, code) => priceMap.set(code, price));
+  // 1차: 인메모리 캐시 (즉시, 0ms)
+  for (const code of chainCodes) {
+    const cached = getCachedPriceMemory(code);
+    if (cached && cached > 0) priceMap.set(code, cached);
   }
 
-  // 2차: KIS 잔고 positions에서 매칭 (더 최신이면 덮어쓰기)
+  // 2차: KIS 잔고 positions (최신이면 덮어쓰기)
   for (const code of chainCodes) {
     const pos = posMap.get(code);
     if (pos?.currentPrice > 0) priceMap.set(code, pos.currentPrice);
   }
 
-  // 3차: 아직 가격 없는 종목만 시세 API 직접 조회 (느리지만 정확)
+  // 3차: 가격 없는 종목만 시세 API 조회
   const missingCodes = chainCodes.filter(code => !priceMap.has(code));
   if (missingCodes.length > 0) {
-    const priceResults = await Promise.allSettled(
-      missingCodes.map(code => getCurrentPrice(code).catch(() => null))
-    );
-    priceResults.forEach((result, idx) => {
-      if (result.status === 'fulfilled' && result.value && (result.value as any).currentPrice > 0) {
-        priceMap.set(missingCodes[idx], (result.value as any).currentPrice);
-      }
-    });
+    // Redis fallback 시도
+    const redisCached = await getLastKnownPrices(missingCodes).catch(() => new Map());
+    redisCached.forEach((price, code) => priceMap.set(code, price));
+
+    // 인메모리 장기 캐시 시도
+    const stillMissing = missingCodes.filter(code => !priceMap.has(code));
+    for (const code of stillMissing) {
+      const last = getLastKnownPricesMemory([code]).get(code);
+      if (last) priceMap.set(code, last);
+    }
+
+    // 그래도 없으면 KIS API 직접 조회
+    const finalMissing = chainCodes.filter(code => !priceMap.has(code));
+    for (const code of finalMissing) {
+      try {
+        const quote = await getCurrentPrice(code);
+        if (quote.currentPrice > 0) priceMap.set(code, quote.currentPrice);
+      } catch { /* skip */ }
+    }
   }
 
-  // 조회된 가격 Redis 캐싱
+  // 모든 가격 캐싱 (인메모리 + Redis)
   for (const [code, price] of priceMap) {
+    cachePriceMemory(code, price);
     cachePrice(code, price).catch(() => {});
   }
 

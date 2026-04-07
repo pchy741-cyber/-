@@ -65,16 +65,24 @@ export async function loadSecretsToEnv(): Promise<void> {
   }
 }
 
-// GET /api/secrets — 키 존재 여부 확인 (값은 마스킹)
+// GET /api/secrets — 키 존재 여부 확인 (값은 마스킹, 30초 캐시)
+import { cacheGet, cacheSet } from '../../cache/memory.js';
+
 secretsRoutes.get('/secrets', async (c) => {
+  const cached = cacheGet<any>('secrets:status');
+  if (cached) return c.json(cached);
+
   const result: Record<string, { exists: boolean; masked: string }> = {};
-  for (const [key, { secret }] of Object.entries(KEY_MAP)) {
-    const value = await getSecretValue(secret);
+  for (const [key, { secret, envVar }] of Object.entries(KEY_MAP)) {
+    // 환경변수 먼저 확인 (가장 빠름), 없으면 Secret Manager
+    const envVal = process.env[envVar];
+    const value = envVal || await getSecretValue(secret);
     result[key] = {
       exists: !!value,
       masked: value ? `${value.slice(0, 6)}${'*'.repeat(Math.max(0, value.length - 10))}${value.slice(-4)}` : '',
     };
   }
+  cacheSet('secrets:status', result, 30);
   return c.json(result);
 });
 
@@ -96,6 +104,12 @@ secretsRoutes.put('/secrets', async (c) => {
       errors.push(`${key}: ${err}`);
       logger.error(`Secret 저장 실패: ${key} - ${err}`, { component: 'SECRETS' });
     }
+  }
+
+  // 캐시 무효화
+  if (saved.length > 0) {
+    const { memCache } = await import('../../cache/memory.js');
+    memCache.delete('secrets:status');
   }
 
   return c.json({ saved, errors, message: `${saved.length}개 키 저장 완료` });
