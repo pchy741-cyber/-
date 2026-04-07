@@ -80,13 +80,13 @@ export const STRATEGY_PARAMS = {
     marketPenalty: -30, // 하락장 감점
   },
   SCALPING: {
-    buyThreshold: 90, // 고수 픽은 95점 자동 부여
+    buyThreshold: 60, // 단타 적극 매수 (모의투자 검증용)
     splitCount: 1, // 100% 몰빵
     averageDownPct: 0, // 물타기 없음
     maxAveragingCount: 0,
     takeProfitPct: 3, // +3% 즉시 익절
     takeProfitRatio: 1.0, // 전량 매도
-    stopLossPct: -100, // 손절 없음 (15:20 강제청산)
+    stopLossPct: -2, // -2% 칼손절
     maxHoldingDays: 0, // 당일 청산 필수
     forceCloseTime: '15:20', // 오버나잇 금지
   },
