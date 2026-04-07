@@ -1295,7 +1295,6 @@ function SourcesView({ sources, setSources }: { sources: any[]; setSources: (s: 
 // ═══════════════════════════════════════
 
 function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claudeRef, killSwitch, toggleKill, withdrawConfig, setWithdrawConfig, withdrawHistory, setWithdrawHistory }: any) {
-  const [promptTab, setPromptTab] = useState<'gemini' | 'gpt' | 'claude'>('gemini');
   const setField = async (field: string, val: string | number) => {
     try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify({ ...strategy, [field]: val }) }); setStrategy(u); } catch { alert('설정 저장 실패 — 다시 시도하세요'); }
   };
@@ -1323,8 +1322,6 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
       desc: '3단계: AI 스코어 + 실시간 시세를 종합하여 BUY/SELL/HOLD 최종 결정을 내립니다. 수량까지 계산합니다.',
       placeholder: `## 매매 실행 추가 규칙\n\n### 매수 원칙\n- 장 시작 30분(09:00~09:30)은 변동성이 크므로 매수 금지\n- 14:30 이후 신규 매수 금지 (당일 청산 리스크)\n- 동일 종목 하루 1회만 매수\n\n### 매도 원칙\n- 손절은 반드시 지켜라. 감정적 판단 금지.\n- 2일 연속 하락 + 거래량 증가 시 즉시 매도\n- 익절 시 "조금 더 오를 수 있다"는 판단 금지, 기계적 실행` },
   ];
-  const activePrompt = promptTabs.find(t => t.id === promptTab)!;
-
   return (
     <div className="space-y-5 sm:space-y-6">
       {/* ── KIS 미설정 경고 ── */}
@@ -1385,32 +1382,70 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
         </Panel>
       )}
 
-      {/* ── AI 프롬프트 (탭 전환, 풀와이드) ── */}
+      {/* ── AI 파이프라인 프롬프트 관리 (Step 1→2→3) ── */}
       {strategy && (
-        <Panel title="AI 프롬프트 관리">
-          <div className="p-4 sm:p-5 space-y-4">
-            {/* 탭 */}
-            <div className="flex gap-1 bg-slate-900/60 rounded-xl p-1">
-              {promptTabs.map(t => (
-                <button key={t.id} onClick={() => setPromptTab(t.id)}
-                  className={`flex-1 py-2.5 rounded-lg text-xs font-medium transition-all ${promptTab === t.id ? 'bg-blue-600/20 text-blue-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}>
-                  {t.label}
-                </button>
-              ))}
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-base font-bold text-slate-100">AI 파이프라인 프롬프트 관리</h3>
+              <p className="text-[11px] text-slate-500 mt-0.5">소스 가공 (Step 1) → 스코어링 (Step 2) → 매매 실행 (Step 3)</p>
             </div>
-            {/* 설명 */}
-            <p className="text-[11px] text-slate-500">{activePrompt.desc}</p>
-            {/* 에디터 */}
-            <textarea
-              ref={activePrompt.ref}
-              defaultValue={strategy?.[activePrompt.key] || ''}
-              rows={10}
-              className="w-full bg-slate-900 border border-slate-700 rounded-xl p-4 text-sm leading-relaxed resize-y font-mono focus:border-blue-500 focus:outline-none"
-              placeholder={(activePrompt as any).placeholder || `${activePrompt.label} 프롬프트를 입력하세요...`}
-            />
-            <button onClick={saveStrategy} className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-sm font-medium">전략 + 프롬프트 저장</button>
+            <button onClick={saveStrategy} className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-xs font-bold transition-all">파이프라인 프롬프트 적용</button>
           </div>
-        </Panel>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {/* Step 1: Gemini */}
+            <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden relative">
+              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 to-cyan-500" />
+              <div className="p-4 border-b border-white/[0.04] flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 text-xs font-black">1</div>
+                <div>
+                  <div className="text-xs font-bold text-slate-200">Gemini — 정보 수집 및 가공</div>
+                  <div className="text-[10px] text-slate-500">소스를 팩트 기반 보고서로 정제</div>
+                </div>
+              </div>
+              <div className="p-4">
+                <textarea ref={geminiRef} defaultValue={strategy?.gemini_prompt || ''} rows={8}
+                  className="w-full bg-slate-900/60 border border-slate-700/50 rounded-lg p-3 text-[11px] leading-relaxed resize-y font-mono focus:border-blue-500 focus:outline-none text-slate-300"
+                  placeholder={(promptTabs[0] as any).placeholder} />
+              </div>
+            </div>
+
+            {/* Step 2: GPT */}
+            <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden relative">
+              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-purple-500 to-pink-500" />
+              <div className="p-4 border-b border-white/[0.04] flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 text-xs font-black">2</div>
+                <div>
+                  <div className="text-xs font-bold text-slate-200">GPT-4o — 심층 분석 및 스코어링</div>
+                  <div className="text-[10px] text-slate-500">보고서 기반 종목별 0~100점 산출</div>
+                </div>
+              </div>
+              <div className="p-4">
+                <textarea ref={gptRef} defaultValue={strategy?.gpt_prompt || ''} rows={8}
+                  className="w-full bg-slate-900/60 border border-slate-700/50 rounded-lg p-3 text-[11px] leading-relaxed resize-y font-mono focus:border-purple-500 focus:outline-none text-slate-300"
+                  placeholder={(promptTabs[1] as any).placeholder} />
+              </div>
+            </div>
+
+            {/* Step 3: Claude */}
+            <div className="glass rounded-2xl border border-emerald-500/20 overflow-hidden relative">
+              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-500 to-teal-500" />
+              <div className="p-4 border-b border-white/[0.04] bg-emerald-500/[0.03] flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 text-xs font-black">3</div>
+                <div>
+                  <div className="text-xs font-bold text-emerald-300">Claude — 매매 실행 (최종 책임자)</div>
+                  <div className="text-[10px] text-slate-500">BUY/SELL/HOLD 결정 + 수량 계산</div>
+                </div>
+              </div>
+              <div className="p-4">
+                <textarea ref={claudeRef} defaultValue={strategy?.claude_prompt || ''} rows={8}
+                  className="w-full bg-emerald-950/20 border border-emerald-900/30 rounded-lg p-3 text-[11px] leading-relaxed resize-y font-mono focus:border-emerald-500 focus:outline-none text-slate-300"
+                  placeholder={(promptTabs[2] as any).placeholder} />
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ── 하단 2컬럼: API키 + 수익인출 ── */}
