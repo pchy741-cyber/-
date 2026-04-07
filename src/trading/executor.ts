@@ -323,8 +323,16 @@ export class TradeExecutor {
    * 3. 그래도 미체결이면 5초 후 최종 확인
    * 4. 체결 확인되면 DB 주문 상태도 업데이트
    */
+  private confirmedOrders = new Set<string>();
+
   private async confirmFill(orderNo: string, stockCode: string, fallbackPrice: number): Promise<number> {
     if (config.isPaper) return roundKrw(fallbackPrice);
+
+    // 멱등성: 이미 확인된 주문이면 중복 확인 방지
+    if (this.confirmedOrders.has(orderNo)) {
+      logger.warn(`⚠️ 이미 확인된 주문: ${orderNo} → 스킵`, { component: 'EXECUTOR' });
+      return -1;
+    }
 
     const retryDelays = [2000, 3000, 5000]; // 2초, 3초, 5초
 
@@ -338,7 +346,8 @@ export class TradeExecutor {
             component: 'EXECUTOR',
           });
 
-          // DB 주문 상태 업데이트
+          // DB 주문 상태 업데이트 + 멱등성 등록
+          this.confirmedOrders.add(orderNo);
           await updateOrder(orderNo, {
             filled_quantity: fill.filledQty,
             filled_price: fill.filledPrice,

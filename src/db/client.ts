@@ -149,11 +149,12 @@ export async function getLatestScores(stockCodes: string[]): Promise<AIScore[]> 
   if (rows.length > 0) return rows;
 
   // 오늘 없으면 최근 2일 이내 스코어 fallback (Track A가 전날 18:00에 생성한 것)
+  const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   const { rows: fallbackRows } = await getPool().query(
     `SELECT DISTINCT ON (stock_code) * FROM ai_scores
-     WHERE stock_code IN (${placeholders}) AND score_date >= (CURRENT_DATE - INTERVAL '2 days')
+     WHERE stock_code IN (${placeholders}) AND score_date >= $${validCodes.length + 1}
      ORDER BY stock_code, score_date DESC, composite_score DESC`,
-    [...validCodes],
+    [...validCodes, twoDaysAgo],
   );
 
   return fallbackRows;

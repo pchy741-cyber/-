@@ -97,7 +97,7 @@ export default function Dashboard() {
       if (src.status === 'fulfilled') setSources(Array.isArray(src.value) ? src.value : []);
       if (wc.status === 'fulfilled' && wc.value) setWithdrawConfig(wc.value);
       if (wh.status === 'fulfilled') setWithdrawHistory(Array.isArray(wh.value) ? wh.value : []);
-    } catch { setLoading(false); }
+    } catch (err) { setLoading(false); console.error('[QUANTOPS] 데이터 로드 실패:', err); }
     finally { loadingRef.current = false; }
   };
 
