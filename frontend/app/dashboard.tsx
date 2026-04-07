@@ -910,8 +910,8 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
                 <div key={s.stock_code} onClick={() => loadAnalysis(s.stock_code)} className={`flex items-center gap-3 px-4 py-3.5 hover:bg-white/[0.02] cursor-pointer group transition-colors ${isSelected ? 'bg-blue-950/20 border-l-2 border-blue-500' : robotStatus.border}`}>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="font-bold text-sm">{s.stock_name || s.stock_code}</span>
-                      {s.stock_name && <span className="text-[10px] text-slate-600">{s.stock_code}</span>}
+                      <span className="font-bold text-sm">{s.stock_name?.trim() || s.stock_code}</span>
+                      {s.stock_name?.trim() && s.stock_name.trim() !== s.stock_code && <span className="text-[10px] text-slate-600">{s.stock_code}</span>}
                     </div>
                     {chain ? (
                       <div className="text-[10px] text-slate-500 mt-0.5">평단 {Number(chain.avg_buy_price).toLocaleString()}원 · {chain.total_quantity}주</div>
