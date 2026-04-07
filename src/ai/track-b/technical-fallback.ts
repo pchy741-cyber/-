@@ -103,10 +103,13 @@ export function technicalFallbackDecisions(params: {
   // 현금 여유 확인하면서 매수 결정
   let remainingCash = orderableCash;
   const maxBuys = 3; // 한 번에 최대 3종목
+  // 분할 매수: 종목당 투자가능금 / splitCount (보통 3분할)
+  const splitCount = STRATEGY_PARAMS[mode].splitCount || 3;
 
   for (const cand of candidates.slice(0, maxBuys)) {
-    const positionSize = Math.min(maxPositionKrw, remainingCash * 0.3); // 잔고의 30% 이내
-    if (positionSize < 50000) break; // 최소 5만원
+    // 종목당 1차 매수: 총한도의 1/splitCount, 잔고 한도 내
+    const positionSize = Math.min(maxPositionKrw / splitCount, remainingCash / (maxBuys + 1));
+    if (positionSize < 100000) break; // 최소 10만원
 
     const quantity = Math.floor(positionSize / cand.price.currentPrice);
     if (quantity <= 0) continue;
