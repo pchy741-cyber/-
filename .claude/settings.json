@@ -20,7 +20,9 @@
       "Bash(where psql:*)",
       "Read(//c/Program Files/**)",
       "Bash(node -e ':*)",
-      "WebFetch(domain:docs.cloud.google.com)"
+      "WebFetch(domain:docs.cloud.google.com)",
+      "Bash(gcloud artifacts:*)",
+      "Bash(grep -v \"^$\")"
     ]
   }
 }

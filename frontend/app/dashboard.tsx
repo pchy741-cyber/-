@@ -13,7 +13,7 @@ const BACKEND_URL =
 
 async function api(path: string, opts?: RequestInit & { timeout?: number }) {
   const base = BACKEND_URL.endsWith('/') ? BACKEND_URL.slice(0, -1) : BACKEND_URL;
-  const ms = opts?.timeout ?? (path.includes('backtest') ? 120000 : 8000);
+  const ms = opts?.timeout ?? (path.includes('backtest') ? 120000 : path.includes('overseas') ? 15000 : 12000);
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), ms);
   try {
@@ -81,11 +81,10 @@ export default function Dashboard() {
       setLastUpdate(new Date());
       setLoading(false); // 핵심 데이터 로드 즉시 화면 표시
 
-      // 2단계: 나머지 데이터 백그라운드 로드
-      const [w, s, t, sec, us, wc, wh] = await Promise.allSettled([
+      // 2단계: 나머지 데이터 백그라운드 로드 (overseas 제외 — 별도 비동기)
+      const [w, s, t, sec, wc, wh] = await Promise.allSettled([
         api('/watchlist'), api('/strategy'),
         api('/trades?limit=50'), api('/secrets'),
-        api('/overseas/dashboard').catch(() => null),
         api('/withdraw/config').catch(() => null),
         api('/withdraw/history').catch(() => []),
       ]);
@@ -93,10 +92,11 @@ export default function Dashboard() {
       if (s.status === 'fulfilled') setStrategy(s.value);
       if (t.status === 'fulfilled') setTrades(Array.isArray(t.value) ? t.value : []);
       if (sec.status === 'fulfilled') setSecrets(sec.value);
-      if (us.status === 'fulfilled' && us.value) setUsDash(us.value);
-
       if (wc.status === 'fulfilled' && wc.value) setWithdrawConfig(wc.value);
       if (wh.status === 'fulfilled') setWithdrawHistory(Array.isArray(wh.value) ? wh.value : []);
+
+      // 3단계: 미국주식 별도 로드 (느려도 다른 데이터에 영향 없음)
+      api('/overseas/dashboard').then(us => { if (us) setUsDash(us); }).catch(() => {});
     } catch (err) { setLoading(false); console.error('[QUANTOPS] 데이터 로드 실패:', err); }
     finally { loadingRef.current = false; }
   };

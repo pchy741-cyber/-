@@ -40,18 +40,24 @@ dashboardRoutes.get('/dashboard', async (c) => {
     }
   } catch { /* scores unavailable */ }
 
-  // chains에 현재가 매칭 — KIS positions 우선 → 시세 API → Redis 캐시 (0원 방지)
+  // chains에 현재가 매칭 — Redis 캐시 우선 → KIS 잔고 → 시세 API (속도 최적화)
   const posMap = new Map((balance.positions ?? []).map((p: any) => [p.stockCode, p]));
   const chainCodes = [...new Set(chains.map((ch: any) => ch.stock_code))];
   const priceMap = new Map<string, number>();
 
-  // 1차: KIS 잔고 positions에서 매칭
+  // 1차: Redis 캐시에서 즉시 로드 (가장 빠름)
+  if (chainCodes.length > 0) {
+    const cached = await getLastKnownPrices(chainCodes);
+    cached.forEach((price, code) => priceMap.set(code, price));
+  }
+
+  // 2차: KIS 잔고 positions에서 매칭 (더 최신이면 덮어쓰기)
   for (const code of chainCodes) {
     const pos = posMap.get(code);
     if (pos?.currentPrice > 0) priceMap.set(code, pos.currentPrice);
   }
 
-  // 2차: 매칭 안 된 종목은 시세 API 직접 조회
+  // 3차: 아직 가격 없는 종목만 시세 API 직접 조회 (느리지만 정확)
   const missingCodes = chainCodes.filter(code => !priceMap.has(code));
   if (missingCodes.length > 0) {
     const priceResults = await Promise.allSettled(
@@ -64,14 +70,7 @@ dashboardRoutes.get('/dashboard', async (c) => {
     });
   }
 
-  // 3차: 그래도 없는 종목은 Redis 마지막 캐시에서 복구 (0원 방지)
-  const stillMissing = chainCodes.filter(code => !priceMap.has(code));
-  if (stillMissing.length > 0) {
-    const cached = await getLastKnownPrices(stillMissing);
-    cached.forEach((price, code) => priceMap.set(code, price));
-  }
-
-  // 성공적으로 조회된 가격을 Redis에 캐싱 (다음 요청 때 fallback용)
+  // 조회된 가격 Redis 캐싱
   for (const [code, price] of priceMap) {
     cachePrice(code, price).catch(() => {});
   }
