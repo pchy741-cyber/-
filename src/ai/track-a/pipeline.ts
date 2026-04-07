@@ -38,29 +38,20 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     const customGeminiPrompt = strategy?.gemini_prompt;
     const customGptPrompt = strategy?.gpt_prompt;
 
-    // 3. 종목별 차트 데이터 수집 (병렬, 5개씩 배치)
+    // 3. 종목별 차트 데이터 수집 (순차 호출 — KIS 모의투자 초당 1건 제한)
     const chartData = new Map<string, DailyCandle[]>();
-    const batchSize = 5;
 
-    for (let i = 0; i < watchlist.length; i += batchSize) {
-      const batch = watchlist.slice(i, i + batchSize);
-      const results = await Promise.allSettled(batch.map((stock) => getDailyChart(stock.stock_code, 60)));
-
-      results.forEach((result, idx) => {
-        const stockCode = batch[idx].stock_code;
-        if (result.status === 'fulfilled') {
-          chartData.set(stockCode, result.value);
-        } else {
-          logger.warn(`차트 수집 실패: ${stockCode} - ${result.reason}`, {
-            component: 'TRACK_A',
-          });
-          chartData.set(stockCode, []);
-        }
-      });
-
-      // KIS rate limit 대응
-      if (i + batchSize < watchlist.length) {
-        await new Promise((r) => setTimeout(r, 300));
+    for (let i = 0; i < watchlist.length; i++) {
+      const stockCode = watchlist[i].stock_code;
+      try {
+        const candles = await getDailyChart(stockCode, 60);
+        chartData.set(stockCode, candles);
+      } catch (err) {
+        logger.warn(`차트 수집 실패: ${stockCode} - ${err}`, { component: 'TRACK_A' });
+        chartData.set(stockCode, []);
+      }
+      if (i < watchlist.length - 1) {
+        await new Promise((r) => setTimeout(r, 500));
       }
     }
 

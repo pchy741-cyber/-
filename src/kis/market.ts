@@ -1,4 +1,5 @@
 import { KIS_TR_ID, MARKET } from '../config/constants.js';
+import { logger } from '../utils/logger.js';
 import { isTradingDay } from '../utils/holidays.js';
 import { kisRequest } from './client.js';
 
@@ -150,17 +151,18 @@ export function isMarketOpen(): boolean {
 export async function getBatchPrices(stockCodes: string[]): Promise<Map<string, CurrentPrice>> {
   const results = new Map<string, CurrentPrice>();
 
-  // KIS는 종목별 개별 호출 (병렬 처리, 최대 5개씩 배치)
-  const batchSize = 5;
-  for (let i = 0; i < stockCodes.length; i += batchSize) {
-    const batch = stockCodes.slice(i, i + batchSize);
-    const prices = await Promise.all(batch.map((code) => getCurrentPrice(code)));
-    for (const price of prices) {
+  // KIS 모의투자 API: 초당 1건 제한 → 순차 호출 + 충분한 대기
+  for (let i = 0; i < stockCodes.length; i++) {
+    try {
+      const price = await getCurrentPrice(stockCodes[i]);
       results.set(price.stockCode, price);
+    } catch (err) {
+      // 개별 실패해도 나머지 계속 진행
+      logger.warn(`시세 조회 실패: ${stockCodes[i]} - ${err}`, { component: 'KIS' });
     }
-    // KIS rate limit 대응 (배치 사이 200ms 대기)
-    if (i + batchSize < stockCodes.length) {
-      await new Promise((r) => setTimeout(r, 200));
+    // KIS 모의투자 rate limit: 최소 500ms 대기
+    if (i < stockCodes.length - 1) {
+      await new Promise((r) => setTimeout(r, 500));
     }
   }
 

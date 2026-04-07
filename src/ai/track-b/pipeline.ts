@@ -70,17 +70,16 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 5. 전 종목 차트 데이터 수집 (기술적 지표용)
     const chartData = new Map<string, import('../../kis/market.js').DailyCandle[]>();
     const allCodesForChart = [...new Set([...stockCodes, ...openChains.map((c) => c.stock_code)])];
-    const chartBatchSize = 5;
-    for (let i = 0; i < allCodesForChart.length; i += chartBatchSize) {
-      const batch = allCodesForChart.slice(i, i + chartBatchSize);
-      const results = await Promise.allSettled(batch.map((code) => getDailyChart(code, 65)));
-      results.forEach((result, idx) => {
-        if (result.status === 'fulfilled' && result.value.length >= 30) {
-          chartData.set(batch[idx], result.value);
+    // KIS 모의투자 rate limit 대응: 순차 호출 + 500ms 대기
+    for (let i = 0; i < allCodesForChart.length; i++) {
+      try {
+        const candles = await getDailyChart(allCodesForChart[i], 65);
+        if (candles.length >= 30) {
+          chartData.set(allCodesForChart[i], candles);
         }
-      });
-      if (i + chartBatchSize < allCodesForChart.length) {
-        await new Promise((r) => setTimeout(r, 200));
+      } catch { /* 개별 실패 무시 */ }
+      if (i < allCodesForChart.length - 1) {
+        await new Promise((r) => setTimeout(r, 500));
       }
     }
 
