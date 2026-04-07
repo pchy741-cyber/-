@@ -91,8 +91,9 @@ export function technicalFallbackDecisions(params: {
     const tech = analyzeTechnicals(candles);
     if (!tech) continue;
 
-    // 매수 시그널: STRONG_BUY 또는 BUY + 추세 강도 확인
-    if (tech.overallSignal === 'STRONG_BUY' || (tech.overallSignal === 'BUY' && tech.trendStrength !== 'WEAK')) {
+    // 매수 조건: score > 0 이면 후보 (기존 STRONG_BUY/BUY만 → 완화)
+    // score 15+ = BUY, 40+ = STRONG_BUY, 0~14 = NEUTRAL이지만 양수이면 약한 매수 시그널
+    if (tech.score > 0) {
       candidates.push({ stock_code: stock.stock_code, tech, price });
     }
   }
@@ -102,8 +103,7 @@ export function technicalFallbackDecisions(params: {
 
   // 현금 여유 확인하면서 매수 결정
   let remainingCash = orderableCash;
-  const maxBuys = 3; // 한 번에 최대 3종목
-  // 분할 매수: 종목당 투자가능금 / splitCount (보통 3분할)
+  const maxBuys = 5; // 한 번에 최대 5종목
   const splitCount = STRATEGY_PARAMS[mode].splitCount || 3;
 
   for (const cand of candidates.slice(0, maxBuys)) {
@@ -126,7 +126,36 @@ export function technicalFallbackDecisions(params: {
     remainingCash -= quantity * cand.price.currentPrice;
   }
 
-  logger.info(`📊 기술적 지표 판단: ${decisions.length}개 (매수 ${decisions.filter((d) => d.action === 'BUY').length}, 매도 ${decisions.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action)).length})`, {
+  // 3. 보유 종목 물타기 판단
+  for (const chain of openChains) {
+    const price = livePrices.get(chain.stock_code);
+    if (!price || !chain.avg_buy_price) continue;
+
+    const avgBuy = Number(chain.avg_buy_price);
+    const pnlPct = ((price.currentPrice - avgBuy) / avgBuy) * 100;
+    const avgDownTrigger = strategyParams.averageDownPct; // 보통 -3%
+
+    // 물타기 조건: 평단가 대비 하락률이 트리거 이하 + 횟수 미달
+    if (avgDownTrigger !== 0 && pnlPct <= avgDownTrigger && chain.current_averaging_count < chain.max_averaging_count) {
+      const avgDownSize = Math.min(maxPositionKrw / splitCount, remainingCash / 4);
+      if (avgDownSize >= 100000) {
+        const qty = Math.floor(avgDownSize / price.currentPrice);
+        if (qty > 0) {
+          decisions.push({
+            action: 'AVERAGE_DOWN',
+            stock_code: chain.stock_code,
+            quantity: qty,
+            price_type: 'MARKET',
+            reasoning: `기술적 물타기: 평단가 대비 ${pnlPct.toFixed(1)}% (트리거 ${avgDownTrigger}%) | ${chain.current_averaging_count + 1}/${chain.max_averaging_count}차`,
+            confidence: 0.7,
+          });
+          remainingCash -= qty * price.currentPrice;
+        }
+      }
+    }
+  }
+
+  logger.info(`📊 기술적 지표 판단: ${decisions.length}개 (매수 ${decisions.filter((d) => d.action === 'BUY').length}, 물타기 ${decisions.filter((d) => d.action === 'AVERAGE_DOWN').length}, 매도 ${decisions.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action)).length})`, {
     component: 'TRACK_B',
   });
 
