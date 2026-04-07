@@ -176,7 +176,7 @@ export default function Dashboard() {
             </div>
           ) : (
             <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px] mx-auto">
-              {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} sources={sources} withdrawConfig={withdrawConfig} />}
+              {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} sources={sources} withdrawConfig={withdrawConfig} onRefresh={load} />}
               {tab === 'trades' && <TradesView trades={trades} />}
               {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} />}
               {tab === 'sources' && <SourcesView sources={sources} setSources={setSources} />}
@@ -194,7 +194,7 @@ export default function Dashboard() {
 // HOME VIEW
 // ═══════════════════════════════════════
 
-function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawConfig }: any) {
+function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawConfig, onRefresh }: any) {
   const p = dash?.portfolio;
   const chains = dash?.chains || [];
   const usW = usDash?.watchlist || [];
@@ -233,55 +233,98 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
       {/* ── 국내 + 해외 2컬럼 ── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
         {/* 국내 보유 */}
-        <Panel title="국내 보유종목" badge={`${(p?.positions?.length || 0) + chains.length}종목`}>
-          {(p?.positions?.length > 0 || chains.length > 0) ? (
-            <table className="w-full text-[13px]">
-              <thead><tr className="text-slate-500 border-b border-slate-700/30">
-                <th className="px-4 py-2.5 text-left font-medium">종목</th>
-                <th className="px-4 py-2.5 text-right font-medium">수량</th>
-                <th className="px-4 py-2.5 text-right font-medium">평단가</th>
-                <th className="px-4 py-2.5 text-right font-medium">현재가</th>
-                <th className="px-4 py-2.5 text-right font-medium">수익률</th>
-              </tr></thead>
-              <tbody className="divide-y divide-slate-800/30">
-                {(p?.positions || []).map((pos: any, i: number) => (
-                  <tr key={i} className="hover:bg-slate-800/20">
-                    <td className="px-4 py-3"><div className="font-semibold">{pos.stockName || pos.stockCode}</div><div className="text-[10px] text-slate-600">{pos.stockCode}</div></td>
-                    <td className="px-4 py-3 text-right text-slate-400">{fmt(pos.quantity)}주</td>
-                    <td className="px-4 py-3 text-right text-slate-500">{fmtWon(pos.avgBuyPrice)}</td>
-                    <td className="px-4 py-3 text-right">{fmtWon(pos.currentPrice)}</td>
-                    <td className={`px-4 py-3 text-right font-bold ${pc(pos.profitLoss)}`}>
-                      <div>{fmtPct(pos.profitLossPct)}</div>
-                      <div className="text-[10px] font-normal">{fmtWon(pos.profitLoss)}</div>
-                    </td>
-                  </tr>
-                ))}
-                {chains.map((ch: any, i: number) => {
-                  const avgPrice = Number(ch.avg_buy_price) || 0;
-                  return (
-                  <tr key={`c${i}`} className="hover:bg-slate-800/20">
-                    <td className="px-4 py-3">
-                      <div className="font-semibold">{ch.stock_code}</div>
-                      <div className="text-[10px] text-slate-600">{ch.strategy_mode} · {ch.status}</div>
-                    </td>
-                    <td className="px-4 py-3 text-right text-slate-400">{fmt(ch.total_quantity)}주</td>
-                    <td className="px-4 py-3 text-right text-slate-500">{fmtWon(avgPrice)}</td>
-                    <td className="px-4 py-3 text-right">
-                      {ch.currentPrice > 0 ? fmtWon(ch.currentPrice) : <span className="text-slate-600">-</span>}
-                    </td>
-                    <td className={`px-4 py-3 text-right font-bold ${pc(ch.unrealizedPnl)}`}>
-                      {ch.currentPrice > 0 ? (
-                        <>
-                          <div>{fmtPct(ch.unrealizedPnlPct)}</div>
-                          <div className="text-[10px] font-normal">{fmtWon(ch.unrealizedPnl)}</div>
-                        </>
-                      ) : <span className="text-slate-600 font-normal text-xs">장 외</span>}
-                    </td>
-                  </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+        <Panel title="내 돈이 묶여 있는 곳" badge={`${(p?.positions?.length || 0) + chains.length}종목`}>
+          {chains.length > 0 ? (
+            <div className="divide-y divide-white/[0.03]">
+              {chains.map((ch: any, i: number) => {
+                const avgPrice = Number(ch.avg_buy_price) || 0;
+                const qty = Number(ch.total_quantity) || 0;
+                const invested = Number(ch.invested) || avgPrice * qty;
+                const curAvg = Number(ch.current_averaging_count) || 0;
+                const maxAvg = Number(ch.max_averaging_count) || 3;
+                const targetPct = Number(ch.target_profit_pct) || 8;
+                const stopPct = Number(ch.stop_loss_pct) || -5;
+                const targetPrice = Math.round(avgPrice * (1 + targetPct / 100));
+                const stopPrice = Math.round(avgPrice * (1 + stopPct / 100));
+                const pnl = ch.unrealizedPnl ?? 0;
+                const pnlPct = ch.unrealizedPnlPct ?? 0;
+
+                return (
+                  <div key={`c${i}`} className="p-4 sm:p-5 hover:bg-white/[0.01] transition-colors">
+                    <div className="flex items-start justify-between gap-4">
+                      {/* 종목 정보 */}
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-base font-bold">{ch.stock_code}</span>
+                          <span className="text-[10px] bg-blue-500/10 text-blue-400 px-2 py-0.5 rounded-md font-medium">{ch.strategy_mode}</span>
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-1">평단가 {fmtWon(avgPrice)}</div>
+                      </div>
+
+                      {/* 수익률 */}
+                      <div className="text-right shrink-0">
+                        {ch.currentPrice > 0 ? (
+                          <>
+                            <div className={`text-xl font-black ${pc(pnl)}`}>{pnlPct > 0 ? '+' : ''}{pnlPct.toFixed(2)}%</div>
+                            <div className={`text-xs ${pc(pnl)}`}>{pnl > 0 ? '+' : ''}{fmtWon(pnl)}</div>
+                          </>
+                        ) : <span className="text-sm text-slate-600">장 외</span>}
+                      </div>
+                    </div>
+
+                    {/* 분할 매수 + 투자금 + 현재가 */}
+                    <div className="grid grid-cols-3 gap-3 mt-4">
+                      {/* 분할 매수 상태 */}
+                      <div>
+                        <div className="text-[10px] text-slate-500 mb-1.5 font-medium">분할 매수</div>
+                        <div className="flex gap-1">
+                          {Array.from({ length: maxAvg }, (_, j) => (
+                            <span key={j} className={`w-7 h-7 rounded-full text-[10px] font-bold flex items-center justify-center ${j <= curAvg ? 'bg-blue-500 text-white' : 'bg-white/[0.06] text-slate-600'}`}>
+                              {j + 1}차
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* 투자금 */}
+                      <div>
+                        <div className="text-[10px] text-slate-500 mb-1.5 font-medium">투자금</div>
+                        <div className="text-sm font-bold">{fmtWon(invested)}</div>
+                        <div className="text-[10px] text-slate-600">{fmt(qty)}주</div>
+                      </div>
+
+                      {/* 현재가 */}
+                      <div>
+                        <div className="text-[10px] text-slate-500 mb-1.5 font-medium">현재가</div>
+                        <div className="text-sm font-bold">{ch.currentPrice > 0 ? fmtWon(ch.currentPrice) : '-'}</div>
+                      </div>
+                    </div>
+
+                    {/* 자동 청산 계획 + 수동 매도 */}
+                    <div className="flex items-center gap-3 mt-4">
+                      <div className="flex-1 flex gap-2">
+                        <span className="text-[10px] px-2.5 py-1 rounded-md bg-emerald-500/10 text-emerald-400 font-medium">
+                          익절 +{targetPct}% ({fmtWon(targetPrice)})
+                        </span>
+                        <span className="text-[10px] px-2.5 py-1 rounded-md bg-rose-500/10 text-rose-400 font-medium">
+                          손절 {stopPct}% ({fmtWon(stopPrice)})
+                        </span>
+                      </div>
+                      <button onClick={async () => {
+                        if (!confirm(`${ch.stock_code} ${qty}주 전량 시장가 매도하시겠습니까?`)) return;
+                        try {
+                          const r = await api(`/sell/${ch.id}`, { method: 'POST' });
+                          alert(r.message || '매도 완료');
+                          onRefresh();
+                        } catch (err: any) { alert('매도 실패: ' + err.message); }
+                      }} className="text-[11px] px-3 py-1.5 rounded-lg bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 transition-colors font-medium shrink-0">
+                        전량 매도
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           ) : <EmptyMsg>보유 종목 없음</EmptyMsg>}
         </Panel>
 

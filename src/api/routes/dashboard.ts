@@ -7,6 +7,7 @@ import { getAccountBalance } from '../../kis/account.js';
 import { getCurrentPrice } from '../../kis/market.js';
 import { getWithdrawConfig, getWithdrawals, getTotalReserved } from '../../automation/profit-withdraw.js';
 import { getKillSwitchStatus } from '../../risk/kill-switch.js';
+import { placeOrder } from '../../kis/order.js';
 import { getDailyChart } from '../../kis/market.js';
 import { analyzeTechnicals } from '../../analysis/indicators.js';
 import { getInvestorFlow } from '../../automation/investor-flow.js';
@@ -307,6 +308,40 @@ dashboardRoutes.patch('/withdraw/:id/status', async (c) => {
   try {
     await getPool().query('UPDATE profit_withdrawals SET status = $1 WHERE id = $2', [status, id]);
     return c.json({ ok: true });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── 수동 매도 (CEO 긴급 매도) ──
+dashboardRoutes.post('/sell/:chainId', async (c) => {
+  const chainId = c.req.param('chainId');
+  try {
+    const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1', [chainId]);
+    const chain = rows[0];
+    if (!chain) return c.json({ error: '체인을 찾을 수 없습니다' }, 404);
+    if (chain.total_quantity <= 0) return c.json({ error: '매도할 수량이 없습니다' }, 400);
+
+    const result = await placeOrder({
+      stockCode: chain.stock_code,
+      side: 'SELL',
+      quantity: chain.total_quantity,
+    });
+
+    // 체인 상태 업데이트
+    await getPool().query(
+      `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = 'CEO 수동 매도' WHERE id = $1`,
+      [chainId],
+    );
+
+    // 주문 기록
+    await getPool().query(
+      `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
+       VALUES ($1, $2, 'SELL', 'MARKET', $3, $4, 'FILLED', $5, 'MANUAL', 'CEO 수동 전량 매도')`,
+      [chainId, chain.stock_code, chain.total_quantity, result.orderNo ?? '', config.tradingMode],
+    );
+
+    return c.json({ ok: true, orderNo: result.orderNo, message: `${chain.stock_code} ${chain.total_quantity}주 전량 매도 주문 완료` });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
