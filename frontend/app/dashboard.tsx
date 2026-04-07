@@ -302,74 +302,141 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
         </Panel>
       </div>
 
-      {/* ── 최근 매매 ── */}
-      <Panel title="최근 매매" badge={`오늘 ${todayTrades.length}건 / 전체 ${filled.length}건`}>
-        {filled.length === 0 ? <EmptyMsg>매매 기록 없음</EmptyMsg> : (
-          <table className="w-full text-xs">
-            <thead><tr className="text-slate-500 border-b border-slate-700/30">
-              <th className="px-3 py-2 text-left">시간</th>
-              <th className="px-3 py-2 text-left">종목</th>
-              <th className="px-3 py-2 text-center">구분</th>
-              <th className="px-3 py-2 text-right">수량</th>
-              <th className="px-3 py-2 text-right">체결가</th>
-              <th className="px-3 py-2 text-left">근거</th>
-            </tr></thead>
-            <tbody className="divide-y divide-slate-800/20">
-              {filled.slice(0, 6).map((t: any, i: number) => (
-                <tr key={i} className="hover:bg-slate-800/30">
-                  <td className="px-3 py-2 text-slate-500">{fmtTime(t.created_at)}</td>
-                  <td className="px-3 py-2 font-medium">{t.stock_code}</td>
-                  <td className="px-3 py-2 text-center">
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${t.side === 'BUY' ? 'bg-emerald-900/50 text-emerald-300' : 'bg-rose-900/50 text-rose-300'}`}>{t.side === 'BUY' ? '매수' : '매도'}</span>
-                  </td>
-                  <td className="px-3 py-2 text-right">{fmt(t.quantity)}</td>
-                  <td className="px-3 py-2 text-right">{Number(t.filled_price) > 1000 ? fmtWon(Number(t.filled_price)) : fmtUsd(Number(t.filled_price))}</td>
-                  <td className="px-3 py-2 text-slate-500 max-w-[180px]"><div className="truncate" title={t.ai_reasoning}>{t.ai_reasoning || '-'}</div></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </Panel>
-
-      {/* ── AI 스코어 요약 ── */}
-      {dash?.scores?.length > 0 && (
-        <Panel title="AI 스코어" badge={`${dash.scores.length}종목`}>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 p-3">
-            {dash.scores.map((sc: any) => {
-              const score = Number(sc.composite_score);
-              const bg = score >= 75 ? 'bg-emerald-950/30 border-emerald-900/30' : score >= 50 ? 'bg-blue-950/20 border-blue-900/20' : 'bg-slate-800/30 border-slate-700/30';
-              const color = score >= 75 ? 'text-emerald-400' : score >= 50 ? 'text-blue-400' : 'text-slate-500';
-              return (
-                <div key={sc.stock_code} className={`rounded-lg border p-2.5 ${bg}`}>
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-bold text-slate-300">{sc.stock_code}</span>
-                    <span className={`text-xs font-bold ${color}`}>{score}점</span>
-                  </div>
-                  <div className="text-[10px] text-slate-500 mt-1">
-                    {sc.signal === 'STRONG_BUY' ? '강력매수' : sc.signal === 'BUY' ? '매수' : sc.signal === 'HOLD' ? '보류' : sc.signal === 'SELL' ? '매도' : sc.signal === 'NO_DATA' ? '데이터 부족' : sc.signal}
-                  </div>
-                  {sc.reasoning && <div className="text-[9px] text-slate-600 mt-0.5 truncate" title={sc.reasoning}>{sc.reasoning}</div>}
-                </div>
-              );
-            })}
+      {/* ── 포트폴리오 비중 + 운영 요약 2컬럼 ── */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
+        {/* 포트폴리오 비중 */}
+        <Panel title="포트폴리오 비중" badge={totalInvested > 0 ? `투자 ${((totalInvested / (p?.totalValue || 1)) * 100).toFixed(0)}%` : '대기'}>
+          <div className="p-4 sm:p-5 space-y-4">
+            {/* 현금 vs 투자 비율 바 */}
+            <div>
+              <div className="flex justify-between text-[11px] mb-2">
+                <span className="text-slate-500">현금 {p?.cash > 0 ? ((p.cash / (p?.totalValue || 1)) * 100).toFixed(0) : 0}%</span>
+                <span className="text-slate-500">투자 {totalInvested > 0 ? ((totalInvested / (p?.totalValue || 1)) * 100).toFixed(0) : 0}%</span>
+              </div>
+              <div className="h-2.5 bg-white/[0.04] rounded-full overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 rounded-full transition-all duration-500" style={{ width: `${totalInvested > 0 ? (totalInvested / (p?.totalValue || 1)) * 100 : 0}%` }} />
+              </div>
+            </div>
+            {/* 종목별 비중 */}
+            {chains.length > 0 && (
+              <div className="space-y-2.5">
+                {chains.map((ch: any, i: number) => {
+                  const inv = Number(ch.invested) || 0;
+                  const pct = totalInvested > 0 ? (inv / totalInvested) * 100 : 0;
+                  return (
+                    <div key={i}>
+                      <div className="flex justify-between text-[11px] mb-1">
+                        <span className="font-medium text-slate-300">{ch.stock_code}</span>
+                        <span className="text-slate-500">{fmtWon(inv)} ({pct.toFixed(0)}%)</span>
+                      </div>
+                      <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${ch.unrealizedPnl >= 0 ? 'bg-emerald-500/60' : 'bg-rose-500/60'}`} style={{ width: `${pct}%` }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </Panel>
-      )}
 
-      {/* ── 참고 소스 (핀 + 최근) ── */}
+        {/* 운영 요약 */}
+        <Panel title="운영 현황">
+          <div className="p-4 sm:p-5 grid grid-cols-2 gap-3">
+            <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+              <div className="text-[10px] text-slate-500 font-medium uppercase tracking-wider">전략 모드</div>
+              <div className="text-base font-bold mt-1 text-blue-400">{dash?.strategy?.mode || 'SWING'}</div>
+            </div>
+            <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+              <div className="text-[10px] text-slate-500 font-medium uppercase tracking-wider">오늘 매매</div>
+              <div className="text-base font-bold mt-1">{todayTrades.length}건</div>
+            </div>
+            <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+              <div className="text-[10px] text-slate-500 font-medium uppercase tracking-wider">열린 포지션</div>
+              <div className="text-base font-bold mt-1">{chains.length}개</div>
+            </div>
+            <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+              <div className="text-[10px] text-slate-500 font-medium uppercase tracking-wider">총 매매</div>
+              <div className="text-base font-bold mt-1">{filled.length}건</div>
+            </div>
+            <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+              <div className="text-[10px] text-slate-500 font-medium uppercase tracking-wider">킬스위치</div>
+              <div className={`text-base font-bold mt-1 ${killSwitch?.active ? 'text-rose-400' : 'text-emerald-400'}`}>{killSwitch?.active ? 'ON' : '정상'}</div>
+            </div>
+            <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+              <div className="text-[10px] text-slate-500 font-medium uppercase tracking-wider">매매 모드</div>
+              <div className={`text-base font-bold mt-1 ${dash?.tradingMode === 'paper' ? 'text-amber-400' : 'text-blue-400'}`}>{dash?.tradingMode === 'paper' ? '모의' : '실전'}</div>
+            </div>
+          </div>
+        </Panel>
+      </div>
+
+      {/* ── AI 스코어 + 최근 매매 2컬럼 ── */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
+        {/* AI 스코어 */}
+        <Panel title="AI 종목 스코어" badge={dash?.scores?.length > 0 ? `${dash.scores.length}종목` : undefined}>
+          {dash?.scores?.length > 0 ? (
+            <div className="p-3.5 space-y-2">
+              {dash.scores.map((sc: any) => {
+                const score = Number(sc.composite_score);
+                const barColor = score >= 75 ? 'bg-emerald-500' : score >= 50 ? 'bg-blue-500' : score >= 25 ? 'bg-amber-500' : 'bg-slate-600';
+                const textColor = score >= 75 ? 'text-emerald-400' : score >= 50 ? 'text-blue-400' : 'text-slate-500';
+                const signalLabel = sc.signal === 'STRONG_BUY' ? '강력매수' : sc.signal === 'BUY' ? '매수' : sc.signal === 'HOLD' ? '보류' : sc.signal === 'SELL' ? '매도' : sc.signal;
+                return (
+                  <div key={sc.stock_code} className="flex items-center gap-3 px-2 py-2">
+                    <span className="text-xs font-bold text-slate-300 w-16 shrink-0">{sc.stock_code}</span>
+                    <div className="flex-1">
+                      <div className="h-2 bg-white/[0.04] rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${Math.max(0, Math.min(100, (score + 100) / 2))}%` }} />
+                      </div>
+                    </div>
+                    <span className={`text-sm font-black w-12 text-right ${textColor}`}>{score}</span>
+                    <span className={`text-[10px] font-medium w-14 text-right ${textColor}`}>{signalLabel}</span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : <EmptyMsg>AI 분석 대기 중 (07:30 / 18:00 자동 실행)</EmptyMsg>}
+        </Panel>
+
+        {/* 최근 매매 */}
+        <Panel title="최근 매매" badge={`오늘 ${todayTrades.length}건`}>
+          {filled.length === 0 ? <EmptyMsg>매매 기록 없음</EmptyMsg> : (
+            <div className="divide-y divide-white/[0.03]">
+              {filled.slice(0, 5).map((t: any, i: number) => (
+                <div key={i} className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.02]">
+                  <SideBadge side={t.side} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-sm text-slate-200">{t.stock_code}</span>
+                      <span className="text-[10px] text-slate-600">{fmtTime(t.created_at)}</span>
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-0.5 truncate">{t.ai_reasoning || '-'}</div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="text-sm font-bold">{Number(t.filled_price) > 1000 ? fmtWon(Number(t.filled_price)) : fmtUsd(Number(t.filled_price))}</div>
+                    <div className="text-[10px] text-slate-500">{fmt(t.quantity)}주</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Panel>
+      </div>
+
+      {/* ── 참고 소스 ── */}
       {sources?.length > 0 && (
         <Panel title="참고 소스" badge={`${sources.length}건`}>
-          <div className="divide-y divide-slate-800/20">
-            {sources.slice(0, 5).map((s: any) => (
-              <a key={s.id} href={s.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-3 px-3 py-2.5 hover:bg-slate-800/30 group">
-                <span className="text-sm shrink-0">{sourceIcon(s.source_type)}</span>
+          <div className="divide-y divide-white/[0.03]">
+            {sources.slice(0, 4).map((s: any) => (
+              <a key={s.id} href={s.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.02] group">
+                <span className="text-base shrink-0">{sourceIcon(s.source_type)}</span>
                 <div className="flex-1 min-w-0">
-                  <div className="text-xs font-medium text-slate-200 truncate">{s.title}</div>
-                  {s.memo && <div className="text-[10px] text-slate-500 truncate">{s.memo}</div>}
+                  <div className="text-[13px] font-medium text-slate-300 group-hover:text-blue-400 transition-colors truncate">{s.title}</div>
+                  {s.memo && <div className="text-[11px] text-slate-600 truncate mt-0.5">{s.memo}</div>}
                 </div>
                 <span className="text-[10px] text-slate-600 shrink-0">{fmtTime(s.added_at)}</span>
-                {s.is_pinned && <span className="text-[10px] text-amber-400 shrink-0">PIN</span>}
+                {s.is_pinned && <span className="text-[9px] bg-amber-500/10 text-amber-400 px-1.5 py-0.5 rounded font-medium shrink-0">PIN</span>}
               </a>
             ))}
           </div>
