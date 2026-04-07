@@ -1183,7 +1183,7 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
       gpt_prompt: gptRef.current?.value ?? '',
       claude_prompt: claudeRef.current?.value ?? '',
     };
-    try { await api('/strategy', { method: 'PUT', body: JSON.stringify(body) }); toast?.('프롬프트 저장 완료', 'ok'); } catch (err: any) { toast?.(err.message, 'err'); }
+    try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify(body) }); setStrategy(u); toast?.('프롬프트 저장 완료', 'ok'); } catch (err: any) { toast?.(err.message, 'err'); }
   };
   const saveSecrets = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
