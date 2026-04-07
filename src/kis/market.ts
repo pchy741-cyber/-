@@ -151,18 +151,13 @@ export function isMarketOpen(): boolean {
 export async function getBatchPrices(stockCodes: string[]): Promise<Map<string, CurrentPrice>> {
   const results = new Map<string, CurrentPrice>();
 
-  // KIS 모의투자 API: 초당 1건 제한 → 순차 호출 + 충분한 대기
+  // kisRateLimiter가 글로벌 rate limit 관리 → 여기서는 순차 호출만
   for (let i = 0; i < stockCodes.length; i++) {
     try {
       const price = await getCurrentPrice(stockCodes[i]);
       results.set(price.stockCode, price);
     } catch (err) {
-      // 개별 실패해도 나머지 계속 진행
       logger.warn(`시세 조회 실패: ${stockCodes[i]} - ${err}`, { component: 'KIS' });
-    }
-    // KIS 모의투자 rate limit: 최소 500ms 대기
-    if (i < stockCodes.length - 1) {
-      await new Promise((r) => setTimeout(r, 500));
     }
   }
 

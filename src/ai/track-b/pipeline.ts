@@ -78,7 +78,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 5. 전 종목 차트 데이터 수집 (기술적 지표용)
     const chartData = new Map<string, import('../../kis/market.js').DailyCandle[]>();
     const allCodesForChart = [...new Set([...stockCodes, ...openChains.map((c) => c.stock_code)])];
-    // KIS 모의투자 rate limit 대응: 순차 호출 + 500ms 대기
+    // kisRateLimiter가 글로벌 rate limit 관리 → 순차 호출만
     for (let i = 0; i < allCodesForChart.length; i++) {
       try {
         const candles = await getDailyChart(allCodesForChart[i], 65);
@@ -86,9 +86,6 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           chartData.set(allCodesForChart[i], candles);
         }
       } catch { /* 개별 실패 무시 */ }
-      if (i < allCodesForChart.length - 1) {
-        await new Promise((r) => setTimeout(r, 500));
-      }
     }
 
     // 6. AI 키 유무에 따라 분기

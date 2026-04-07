@@ -83,7 +83,9 @@ class RateLimiter {
   }
 }
 
-export const kisRateLimiter = new RateLimiter(18);
+// 모의투자: 초당 1건 제한 → 안전하게 1건/sec, 실전: 20건 → 안전하게 15건/sec
+const isPaper = process.env.TRADING_MODE !== 'live';
+export const kisRateLimiter = new RateLimiter(isPaper ? 1 : 15);
 
 /**
  * KIS REST API 범용 클라이언트
