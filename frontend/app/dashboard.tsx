@@ -346,7 +346,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, on
                       {/* 종목 정보 */}
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="text-base font-bold">{ch.stock_code}</span>
+                          <span className="text-base font-bold">{ch.stock_name || ch.stock_code}</span>
+                          <span className="text-[10px] text-slate-500 ml-0.5">{ch.stock_code}</span>
                           <span className="text-[10px] bg-blue-500/10 text-blue-400 px-2 py-0.5 rounded-md font-medium">{ch.strategy_mode}</span>
                         </div>
                         <div className="text-[11px] text-slate-500 mt-1">평단가 {fmtWon(avgPrice)}</div>
@@ -465,7 +466,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, on
                   return (
                     <div key={i}>
                       <div className="flex justify-between text-[11px] mb-1">
-                        <span className="font-medium text-slate-300">{ch.stock_code}</span>
+                        <span className="font-medium text-slate-300">{ch.stock_name || ch.stock_code}</span>
                         <span className="text-slate-500">{fmtWon(inv)} ({pct.toFixed(0)}%)</span>
                       </div>
                       <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">

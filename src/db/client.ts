@@ -180,8 +180,10 @@ export async function getRecentSources(limit = 20): Promise<Array<{ title: strin
 export async function getOpenChains(): Promise<TransactionChain[]> {
   if (useMemory) return memGetOpenChains();
   const { rows } = await getPool().query(
-    `SELECT * FROM transaction_chains WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING')
-     ORDER BY opened_at DESC`,
+    `SELECT tc.*, w.stock_name FROM transaction_chains tc
+     LEFT JOIN watchlist w ON tc.stock_code = w.stock_code
+     WHERE tc.status IN ('OPEN','AVERAGING','PROFIT_TAKING')
+     ORDER BY tc.opened_at DESC`,
   );
   return rows;
 }
