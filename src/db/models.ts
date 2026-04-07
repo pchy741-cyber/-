@@ -3,9 +3,9 @@ import { z } from 'zod';
 // ── 감시 목록 ──
 export const WatchlistItemSchema = z.object({
   id: z.string().uuid(),
-  stock_code: z.string().length(6),
+  stock_code: z.string().min(1).max(10),
   stock_name: z.string(),
-  market: z.enum(['KOSPI', 'KOSDAQ']),
+  market: z.enum(['KOSPI', 'KOSDAQ', 'NYSE', 'NASDAQ', 'AMEX']),
   is_active: z.boolean(),
   added_at: z.string(),
   notes: z.string().nullable(),

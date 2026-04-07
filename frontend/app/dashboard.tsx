@@ -38,6 +38,37 @@ const fmtTime = (t: string | null | undefined) => { if (!t) return '-'; const d 
 const pc = (n: number | null | undefined) => n == null || n === 0 ? 'text-slate-400' : n > 0 ? 'text-emerald-400' : 'text-rose-400';
 const pbg = (n: number | null | undefined) => n == null || n === 0 ? '' : n > 0 ? 'bg-emerald-950/30 border-emerald-900/30' : 'bg-rose-950/30 border-rose-900/30';
 
+// ── 토스트 알림 시스템 ──
+function useToast() {
+  const [toasts, setToasts] = useState<Array<{ id: number; msg: string; type: 'ok' | 'err' | 'info' }>>([]);
+  const show = (msg: string, type: 'ok' | 'err' | 'info' = 'ok') => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, msg, type }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
+  };
+  const ToastContainer = () => (
+    <div className="fixed top-4 right-4 z-[999] space-y-2 pointer-events-none">
+      {toasts.map(t => (
+        <div key={t.id} className={`pointer-events-auto px-4 py-2.5 rounded-xl text-sm font-medium shadow-lg backdrop-blur-md animate-[fadeIn_0.2s_ease] ${
+          t.type === 'ok' ? 'bg-emerald-600/90 text-white' : t.type === 'err' ? 'bg-rose-600/90 text-white' : 'bg-blue-600/90 text-white'
+        }`}>{t.msg}</div>
+      ))}
+    </div>
+  );
+  return { show, ToastContainer };
+}
+
+// ── 로딩 버튼 ──
+function LoadBtn({ children, onClick, className = '', disabled = false }: { children: React.ReactNode; onClick: () => Promise<void>; className?: string; disabled?: boolean }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <button disabled={busy || disabled} onClick={async () => { setBusy(true); try { await onClick(); } finally { setBusy(false); } }}
+      className={`${className} ${busy ? 'opacity-60 cursor-wait' : ''}`}>
+      {busy ? <span className="flex items-center gap-1.5"><span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />{children}</span> : children}
+    </button>
+  );
+}
+
 // ═══════════════════════════════════════
 // Dashboard
 // ═══════════════════════════════════════
@@ -45,6 +76,7 @@ const pbg = (n: number | null | undefined) => n == null || n === 0 ? '' : n > 0 
 type Tab = 'home' | 'trades' | 'watchlist' | 'backtest' | 'settings';
 
 export default function Dashboard() {
+  const { show: toast, ToastContainer } = useToast();
   const [tab, setTab] = useState<Tab>('home');
   const [mobileMenu, setMobileMenu] = useState(false);
   const [health, setHealth] = useState<any>(null);
@@ -125,6 +157,7 @@ export default function Dashboard() {
 
   return (
     <div className="flex h-screen bg-[#06080f] text-slate-100 overflow-hidden">
+      <ToastContainer />
       {/* ── Mobile overlay ── */}
       {mobileMenu && <div className="fixed inset-0 bg-black/60 z-40 lg:hidden" onClick={() => setMobileMenu(false)} />}
 
@@ -196,11 +229,11 @@ export default function Dashboard() {
           ) : (
             <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px] mx-auto">
               {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={withdrawConfig} onRefresh={load} />}
-              {tab === 'trades' && <TradesView trades={trades} />}
+              {tab === 'trades' && <TradesView trades={trades} watchlist={watchlist} />}
               {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} />}
 
               {tab === 'backtest' && <BacktestView watchlist={watchlist} />}
-              {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} notebookRef={notebookRef} geminiRef={geminiRef} gptRef={gptRef} claudeRef={claudeRef} killSwitch={killSwitch} toggleKill={toggleKill} withdrawConfig={withdrawConfig} setWithdrawConfig={setWithdrawConfig} withdrawHistory={withdrawHistory} setWithdrawHistory={setWithdrawHistory} />}
+              {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} notebookRef={notebookRef} geminiRef={geminiRef} gptRef={gptRef} claudeRef={claudeRef} killSwitch={killSwitch} toggleKill={toggleKill} withdrawConfig={withdrawConfig} setWithdrawConfig={setWithdrawConfig} withdrawHistory={withdrawHistory} setWithdrawHistory={setWithdrawHistory} toast={toast} />}
             </div>
           )}
         </main>
@@ -611,7 +644,10 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, on
 // TRADES VIEW
 // ═══════════════════════════════════════
 
-function TradesView({ trades }: { trades: any[] }) {
+function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) {
+  // 종목명 조회 맵
+  const nameMap = new Map(watchlist.map((w: any) => [w.stock_code, w.stock_name]));
+  const getName = (code: string) => nameMap.get(code) || code;
   const [expanded, setExpanded] = useState<string | null>(null);
   const filled = trades.filter((t: any) => t.status === 'FILLED');
   const buys = filled.filter((t: any) => t.side === 'BUY');
@@ -671,7 +707,7 @@ function TradesView({ trades }: { trades: any[] }) {
               <React.Fragment key={tradeKey}>
               <tr onClick={() => setExpanded(isOpen ? null : tradeKey)} className="hover:bg-slate-800/20 transition-colors cursor-pointer">
                 <td className="px-4 py-3 text-slate-500">{fmtTime(t.created_at)}</td>
-                <td className="px-4 py-3 font-semibold">{t.stock_code}</td>
+                <td className="px-4 py-3 font-semibold">{getName(t.stock_code)} <span className="text-[10px] text-slate-500">{t.stock_code}</span></td>
                 <td className="px-4 py-3 text-center"><SideBadge side={t.side} /></td>
                 <td className="px-4 py-3 text-right">{fmt(t.quantity)}</td>
                 <td className="px-4 py-3 text-right font-medium">{Number(t.filled_price) > 1000 ? fmtWon(Number(t.filled_price)) : fmtUsd(Number(t.filled_price))}</td>
@@ -1134,10 +1170,10 @@ function BacktestView({ watchlist }: { watchlist: any[] }) {
 // SETTINGS VIEW
 // ═══════════════════════════════════════
 
-function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, gptRef, claudeRef, killSwitch, toggleKill, withdrawConfig, setWithdrawConfig, withdrawHistory, setWithdrawHistory }: any) {
+function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, gptRef, claudeRef, killSwitch, toggleKill, withdrawConfig, setWithdrawConfig, withdrawHistory, setWithdrawHistory, toast }: any) {
   const [activeStep, setActiveStep] = useState<number>(0);
   const setField = async (field: string, val: string | number) => {
-    try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify({ ...strategy, [field]: val }) }); setStrategy(u); } catch { alert('설정 저장 실패 — 다시 시도하세요'); }
+    try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify({ ...strategy, [field]: val }) }); setStrategy(u); toast?.('설정 저장됨', 'ok'); } catch { toast?.('설정 저장 실패', 'err'); }
   };
   const saveStrategy = async () => {
     const body = {
@@ -1147,15 +1183,15 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
       gpt_prompt: gptRef.current?.value ?? '',
       claude_prompt: claudeRef.current?.value ?? '',
     };
-    try { await api('/strategy', { method: 'PUT', body: JSON.stringify(body) }); alert('저장 완료'); } catch (err: any) { alert(err.message); }
+    try { await api('/strategy', { method: 'PUT', body: JSON.stringify(body) }); toast?.('프롬프트 저장 완료', 'ok'); } catch (err: any) { toast?.(err.message, 'err'); }
   };
   const saveSecrets = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
     const body: Record<string, string> = {};
     fd.forEach((v, k) => { if (typeof v === 'string' && v.trim()) body[k] = v.trim(); });
-    if (!Object.keys(body).length) { alert('변경할 키 입력'); return; }
-    try { await api('/secrets', { method: 'PUT', body: JSON.stringify(body) }); (e.target as HTMLFormElement).reset(); alert('저장 완료'); } catch (err: any) { alert(err.message); }
+    if (!Object.keys(body).length) { toast?.('변경할 키를 입력하세요', 'info'); return; }
+    try { await api('/secrets', { method: 'PUT', body: JSON.stringify(body) }); (e.target as HTMLFormElement).reset(); toast?.('API 키 저장 완료', 'ok'); } catch (err: any) { toast?.(err.message, 'err'); }
   };
 
   const steps = [
@@ -1214,7 +1250,7 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
             </div>
             <button onClick={async () => {
               if (!confirm('AI 분석을 수동 실행하시겠습니까?')) return;
-              try { await api('/run-track-a', { method: 'POST', body: JSON.stringify({}) }); alert('실행 시작 — 2~3분 후 갱신'); } catch (err: any) { alert(err.message); }
+              try { await api('/run-track-a', { method: 'POST', body: JSON.stringify({}) }); toast?.('AI 분석 시작 — 2~3분 후 갱신', 'ok'); } catch (err: any) { alert(err.message); }
             }} className="px-5 py-2.5 bg-purple-600 hover:bg-purple-500 rounded-xl text-xs font-bold">
               실행
             </button>
@@ -1318,7 +1354,7 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
                 try {
                   const updated = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, is_active: next }) });
                   setWithdrawConfig({ ...updated, totalReserved: withdrawConfig?.totalReserved ?? 0 });
-                } catch { alert('저장 실패'); }
+                } catch { toast?.('저장 실패', 'err'); }
               }} className={`px-4 py-2 rounded-lg text-xs font-bold ${withdrawConfig?.is_active ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-slate-700 hover:bg-slate-600 text-slate-400'}`}>
                 {withdrawConfig?.is_active ? 'ON' : 'OFF'}
               </button>
@@ -1326,16 +1362,16 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
 
             <div className="grid grid-cols-2 gap-3">
               <Sel label="목표 수익률" value={withdrawConfig?.target_profit_pct ?? 10} opts={[[5,'5%'],[8,'8%'],[10,'10%'],[15,'15%'],[20,'20%'],[30,'30%']]} onChange={async v => {
-                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, target_profit_pct: Number(v) }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch { alert('저장 실패'); }
+                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, target_profit_pct: Number(v) }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch { toast?.('저장 실패', 'err'); }
               }} />
               <Sel label="인출 비율 (수익분 중)" value={withdrawConfig?.withdraw_ratio_pct ?? 50} opts={[[30,'30%'],[50,'50%'],[70,'70%'],[80,'80%'],[100,'100%']]} onChange={async v => {
-                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, withdraw_ratio_pct: Number(v) }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch { alert('저장 실패'); }
+                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, withdraw_ratio_pct: Number(v) }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch { toast?.('저장 실패', 'err'); }
               }} />
               <Sel label="최소 인출 금액" value={withdrawConfig?.min_withdraw_amount ?? 100000} opts={[[50000,'5만원'],[100000,'10만원'],[200000,'20만원'],[500000,'50만원'],[1000000,'100만원']]} onChange={async v => {
-                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, min_withdraw_amount: Number(v) }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch { alert('저장 실패'); }
+                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, min_withdraw_amount: Number(v) }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch { toast?.('저장 실패', 'err'); }
               }} />
               <Sel label="체크 주기" value={withdrawConfig?.check_frequency ?? 'daily'} opts={[['daily','매일 (장 마감)'],['weekly','매주 금요일']]} onChange={async v => {
-                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, check_frequency: v }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch { alert('저장 실패'); }
+                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, check_frequency: v }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch { toast?.('저장 실패', 'err'); }
               }} />
             </div>
 
@@ -1389,7 +1425,7 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
               const newPin = String(fd.get('pin') ?? '').trim();
               if (newPin.length < 4) { alert('PIN은 4자리 이상'); return; }
               localStorage.setItem('quantops_pin', newPin);
-              alert('PIN 변경 완료');
+              toast?.('PIN 변경 완료', 'ok');
               (e.target as HTMLFormElement).reset();
             }} className="flex gap-2 flex-1 max-w-sm">
               <input name="pin" type="password" inputMode="numeric" maxLength={6} placeholder="새 PIN (4~6자리)" className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-center tracking-widest font-mono focus:border-blue-500 focus:outline-none" />
@@ -1398,7 +1434,7 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
             <button type="button" onClick={() => {
               localStorage.removeItem('quantops_cred_id');
               localStorage.removeItem('quantops_auth_ts');
-              alert('생체인증이 초기화되었습니다.');
+              toast?.('생체인증 초기화 완료', 'ok');
             }} className="text-[11px] text-slate-600 hover:text-slate-400 shrink-0">생체인증 초기화</button>
           </div>
         </div>
