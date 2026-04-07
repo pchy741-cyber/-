@@ -128,6 +128,24 @@ async function bootstrap() {
     logger.warn(`⚠️ BigQuery 초기화 실패: ${err}`, { component: 'BOOT' });
   }
 
+  // 5.5. 감시목록 종목명 자동 보정 (코드만 있는 경우 KIS API로 이름 조회)
+  try {
+    const { getPool, getActiveWatchlist } = await import('./db/client.js');
+    const { getCurrentPrice } = await import('./kis/market.js');
+    const wl = await getActiveWatchlist();
+    for (const item of wl) {
+      if (!item.stock_name || item.stock_name === item.stock_code || /^\d{6}$/.test(item.stock_name)) {
+        try {
+          const quote = await getCurrentPrice(item.stock_code);
+          if (quote.stockName) {
+            await getPool().query('UPDATE watchlist SET stock_name = $1 WHERE stock_code = $2', [quote.stockName, item.stock_code]);
+            logger.info(`종목명 보정: ${item.stock_code} → ${quote.stockName}`, { component: 'BOOT' });
+          }
+        } catch { /* skip */ }
+      }
+    }
+  } catch { /* skip */ }
+
   // 6. 스케줄러 시작
   startScheduler();
 
