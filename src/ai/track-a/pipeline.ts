@@ -35,7 +35,12 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     // 2. CEO 전략 설정 로드
     const strategy = await getActiveStrategy();
     const mode = strategy?.mode ?? 'SWING';
-    const customGeminiPrompt = strategy?.gemini_prompt;
+    // NotebookLM 프롬프트가 있으면 Gemini 프롬프트 앞에 주입
+    const notebookPrompt = strategy?.notebooklm_prompt?.trim() || '';
+    const geminiBase = strategy?.gemini_prompt?.trim() || '';
+    const customGeminiPrompt = notebookPrompt
+      ? `## NotebookLM 소스 분석\n${notebookPrompt}\n\n${geminiBase}`
+      : geminiBase || undefined;
     const customGptPrompt = strategy?.gpt_prompt;
 
     // 3. 종목별 차트 데이터 수집 (순차 호출 — KIS 모의투자 초당 1건 제한)

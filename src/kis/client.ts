@@ -11,6 +11,8 @@ interface KISRequestOptions {
   hashkey?: string;
   /** 시세 조회 시 실거래 URL 사용 (모의투자 서버 미지원 API용) */
   useRealUrl?: boolean;
+  /** 외부에서 rate limiter를 관리할 때 내부 limiter 스킵 */
+  skipRateLimiter?: boolean;
 }
 
 interface KISResponse<T = unknown> {
@@ -86,6 +88,8 @@ class RateLimiter {
 // 모의투자: 초당 ~2건 안전 제한, 실전: 20건 → 안전하게 15건/sec
 const isPaper = process.env.TRADING_MODE !== 'live';
 export const kisRateLimiter = new RateLimiter(isPaper ? 2 : 15);
+// 해외 전용 rate limiter (국내와 독립 — 서로 블로킹 방지)
+export const overseasRateLimiter = new RateLimiter(isPaper ? 2 : 15);
 
 /**
  * KIS REST API 범용 클라이언트
@@ -94,7 +98,7 @@ export const kisRateLimiter = new RateLimiter(isPaper ? 2 : 15);
  * - 응답 파싱
  */
 export async function kisRequest<T = unknown>(options: KISRequestOptions): Promise<KISResponse<T>> {
-  const { path, method = 'GET', trId, params, body, hashkey, useRealUrl } = options;
+  const { path, method = 'GET', trId, params, body, hashkey, useRealUrl, skipRateLimiter } = options;
 
   const token = await getAccessToken();
 
@@ -121,8 +125,8 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
   let lastError: Error | null = null;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    // Rate Limiter 대기
-    await kisRateLimiter.acquire();
+    // Rate Limiter 대기 (해외 호출은 별도 limiter 사용 → 여기서 스킵)
+    if (!skipRateLimiter) await kisRateLimiter.acquire();
 
     try {
       const res = await fetch(url.toString(), {

@@ -84,8 +84,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         const candles = await getDailyChart(allCodesForChart[i], 65);
         if (candles.length >= 30) {
           chartData.set(allCodesForChart[i], candles);
+        } else {
+          logger.warn(`차트 데이터 부족: ${allCodesForChart[i]} (${candles.length}/30)`, { component: 'TRACK_B' });
         }
-      } catch { /* 개별 실패 무시 */ }
+      } catch (err) {
+        logger.warn(`차트 조회 실패: ${allCodesForChart[i]} - ${err}`, { component: 'TRACK_B' });
+      }
     }
 
     // 6. AI 키 유무에 따라 분기

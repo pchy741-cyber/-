@@ -1,5 +1,11 @@
 import { config } from '../config/index.js';
-import { kisRequest } from './client.js';
+import { kisRequest, overseasRateLimiter } from './client.js';
+
+/** 해외 전용 KIS API 호출 — 국내와 별도 rate limiter 사용 */
+async function overseasKisRequest<T = unknown>(opts: Parameters<typeof kisRequest<T>>[0]): ReturnType<typeof kisRequest<T>> {
+  await overseasRateLimiter.acquire();
+  return kisRequest<T>({ ...opts, skipRateLimiter: true });
+}
 
 /**
  * 🇺🇸 미국 주식 매매 모듈 (KIS 해외주식 API)
@@ -45,7 +51,7 @@ export interface OverseasPrice {
 export async function getOverseasPrice(stockCode: string, exchange: string = 'NASDAQ'): Promise<OverseasPrice> {
   const excd = EXCHANGE_MAP[exchange] ?? 'NAS';
 
-  const res = await kisRequest({
+  const res = await overseasKisRequest({
     path: '/uapi/overseas-price/v1/quotations/price',
     trId: OVERSEAS_TR_ID.PRICE,
     params: {
@@ -75,7 +81,7 @@ export async function getOverseasDailyChart(stockCode: string, exchange: string 
   const excd = EXCHANGE_MAP[exchange] ?? 'NAS';
   const endDate = new Date().toISOString().split('T')[0].replace(/-/g, '');
 
-  const res = await kisRequest({
+  const res = await overseasKisRequest({
     path: '/uapi/overseas-price/v1/quotations/dailyprice',
     trId: OVERSEAS_TR_ID.DAILY_CHART,
     params: {
@@ -126,7 +132,7 @@ export async function placeOverseasOrder(params: {
     ORD_DVSN: price ? '00' : '01', // 지정가 / 시장가
   };
 
-  const res = await kisRequest({
+  const res = await overseasKisRequest({
     path: '/uapi/overseas-stock/v1/trading/order',
     method: 'POST',
     trId,
@@ -146,7 +152,7 @@ export async function placeOverseasOrder(params: {
  * 해외 주식 잔고 조회
  */
 export async function getOverseasBalance() {
-  const res = await kisRequest({
+  const res = await overseasKisRequest({
     path: '/uapi/overseas-stock/v1/trading/inquire-balance',
     trId: OVERSEAS_TR_ID.BALANCE,
     params: {

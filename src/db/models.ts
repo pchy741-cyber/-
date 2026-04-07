@@ -92,6 +92,7 @@ export const StrategyConfigSchema = z.object({
   id: z.string().uuid(),
   mode: z.enum(['SWING', 'DEFENSE', 'SCALPING']),
   is_active: z.boolean(),
+  notebooklm_prompt: z.string().optional().default(''),
   gemini_prompt: z.string(),
   gpt_prompt: z.string(),
   claude_prompt: z.string(),
