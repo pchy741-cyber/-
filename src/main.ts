@@ -136,20 +136,31 @@ async function bootstrap() {
     logger.warn(`Secret Manager 로드 실패 (환경변수 fallback): ${err}`, { component: 'BOOT' });
   }
 
-  // 5.6. 감시목록 종목명 자동 보정 (코드만 있는 경우 KIS API로 이름 조회)
+  // 5.6. 감시목록 종목명 보정 (하드코딩 우선 → KIS API fallback)
   try {
     const { getPool, getActiveWatchlist } = await import('./db/client.js');
     const { getCurrentPrice } = await import('./kis/market.js');
+    const NAME_MAP: Record<string, string> = {
+      '005930': '삼성전자', '000660': 'SK하이닉스', '373220': 'LG에너지솔루션',
+      '005380': '현대자동차', '009540': 'HD한국조선해양', '035420': 'NAVER',
+      '035720': '카카오', '006400': '삼성SDI', '051910': 'LG화학',
+      '003670': '포스코퓨처엠', '336260': '두산로보틱스', '012450': '한화에어로스페이스',
+      '267260': 'HD현대일렉트릭', '042700': '한미반도체', '068270': '셀트리온',
+    };
     const wl = await getActiveWatchlist();
     for (const item of wl) {
-      if (!item.stock_name || item.stock_name === item.stock_code || /^\d{6}$/.test(item.stock_name)) {
-        try {
-          const quote = await getCurrentPrice(item.stock_code);
-          if (quote.stockName) {
-            await getPool().query('UPDATE watchlist SET stock_name = $1 WHERE stock_code = $2', [quote.stockName, item.stock_code]);
-            logger.info(`종목명 보정: ${item.stock_code} → ${quote.stockName}`, { component: 'BOOT' });
-          }
-        } catch { /* skip */ }
+      const known = NAME_MAP[item.stock_code];
+      const needsFix = !item.stock_name || item.stock_name === item.stock_code
+        || /^\d{6}$/.test(item.stock_name) || /[^\w\sㄱ-ㅎ가-힣().-]/.test(item.stock_name);
+      if (needsFix) {
+        let name = known;
+        if (!name) {
+          try { const q = await getCurrentPrice(item.stock_code); name = q.stockName?.trim(); } catch { /* skip */ }
+        }
+        if (name) {
+          await getPool().query('UPDATE watchlist SET stock_name = $1 WHERE stock_code = $2', [name, item.stock_code]);
+          logger.info(`종목명 보정: ${item.stock_code} → ${name}`, { component: 'BOOT' });
+        }
       }
     }
   } catch { /* skip */ }
