@@ -24,7 +24,8 @@ export async function runGPTScoring(params: {
 }): Promise<ScoringResult[]> {
   const { mode, geminiAnalysis, customPrompt } = params;
 
-  const systemPrompt = customPrompt || buildScoringPrompt(mode);
+  const basePrompt = buildScoringPrompt(mode);
+  const systemPrompt = customPrompt ? `${basePrompt}\n\n${customPrompt}` : basePrompt;
 
   if (!openai) {
     throw new Error('OpenAI API 키 미설정 — GPT 스코어링 스킵');

@@ -53,7 +53,9 @@ export async function runGeminiAnalysis(params: {
 }): Promise<GeminiAnalysis> {
   const { mode, watchlist, chartData, additionalSources, customPrompt } = params;
 
-  const systemPrompt = customPrompt || buildGeminiPrompt(mode);
+  // 기본 프롬프트 + CEO 커스텀 프롬프트 병합 (항상 기본이 베이스)
+  const basePrompt = buildGeminiPrompt(mode);
+  const systemPrompt = customPrompt ? `${basePrompt}\n\n${customPrompt}` : basePrompt;
 
   // 차트 데이터를 텍스트로 변환
   const chartSummary = watchlist

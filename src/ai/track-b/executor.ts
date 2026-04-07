@@ -29,7 +29,8 @@ export async function runClaudeExecution(params: {
     return [];
   }
 
-  const systemPrompt = customPrompt || buildExecutionPrompt(mode);
+  const basePrompt = buildExecutionPrompt(mode);
+  const systemPrompt = customPrompt ? `${basePrompt}\n\n${customPrompt}` : basePrompt;
 
   const MAX_RETRIES = 3;
 
