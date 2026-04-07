@@ -72,15 +72,9 @@ gcloud run deploy $SERVICE \
 KIS_APP_KEY=kis-app-key:latest,\
 KIS_APP_SECRET=kis-app-secret:latest,\
 KIS_ACCOUNT_NO=kis-account-no:latest,\
-KIS_BASE_URL=kis-base-url:latest,\
-SUPABASE_URL=supabase-url:latest,\
-SUPABASE_ANON_KEY=supabase-anon-key:latest,\
-SUPABASE_SERVICE_ROLE_KEY=supabase-service-role-key:latest,\
 GEMINI_API_KEY=gemini-api-key:latest,\
 OPENAI_API_KEY=openai-api-key:latest,\
-ANTHROPIC_API_KEY=anthropic-api-key:latest,\
-TELEGRAM_BOT_TOKEN=telegram-bot-token:latest,\
-TELEGRAM_CHAT_ID=telegram-chat-id:latest\
+ANTHROPIC_API_KEY=anthropic-api-key:latest\
 " \
     --set-env-vars="\
 RISK_MAX_DAILY_DRAWDOWN_KRW=50000,\
