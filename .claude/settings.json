@@ -19,7 +19,8 @@
       "Bash(wc -l \"c:\\\\Users\\\\p2208\\\\.cursor\\\\projects\\\\auto ai bot\\\\src\\\\automation\"/*.ts)",
       "Bash(where psql:*)",
       "Read(//c/Program Files/**)",
-      "Bash(node -e ':*)"
+      "Bash(node -e ':*)",
+      "WebFetch(domain:docs.cloud.google.com)"
     ]
   }
 }
