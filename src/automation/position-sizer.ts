@@ -202,8 +202,8 @@ export async function getDynamicPositionSize(
   finalMultiplier = Math.max(0.3, Math.min(1.5, finalMultiplier));
 
   let amount = Math.round(baseAmount * finalMultiplier);
-  // 최소 주문금액 보장 (10만원 미만이면 매매 불가)
-  const MIN_ORDER_KRW = 100_000;
+  // 최소 주문금액 보장 (5만원 미만이면 매매 불가)
+  const MIN_ORDER_KRW = 50_000;
   if (amount < MIN_ORDER_KRW && baseAmount >= MIN_ORDER_KRW) {
     amount = MIN_ORDER_KRW;
     reasons.push(`최소 주문금액 ${MIN_ORDER_KRW.toLocaleString()}원 적용`);

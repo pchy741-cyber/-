@@ -122,7 +122,7 @@ export function technicalFallbackDecisions(params: {
   for (const cand of candidates.slice(0, maxBuys)) {
     // 종목당 1차 매수: 총한도의 1/splitCount, 잔고 한도 내
     const positionSize = Math.min(maxPositionKrw / splitCount, remainingCash / (maxBuys + 1));
-    if (positionSize < 100000) break; // 최소 10만원
+    if (positionSize < 50000) break; // 최소 5만원 (1주라도 매수)
 
     const quantity = Math.floor(positionSize / cand.price.currentPrice);
     if (quantity <= 0) continue;
@@ -151,7 +151,7 @@ export function technicalFallbackDecisions(params: {
     // 물타기 조건: 평단가 대비 하락률이 트리거 이하 + 횟수 미달
     if (avgDownTrigger !== 0 && pnlPct <= avgDownTrigger && chain.current_averaging_count < chain.max_averaging_count) {
       const avgDownSize = Math.min(maxPositionKrw / splitCount, remainingCash / 4);
-      if (avgDownSize >= 100000) {
+      if (avgDownSize >= 50000) {
         const qty = Math.floor(avgDownSize / price.currentPrice);
         if (qty > 0) {
           decisions.push({
