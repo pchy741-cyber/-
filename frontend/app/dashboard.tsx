@@ -475,6 +475,20 @@ function TradesView({ trades }: { trades: any[] }) {
 
 function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
   const usW = usDash?.watchlist || [];
+  const [selectedStock, setSelectedStock] = useState<string | null>(null);
+  const [analysis, setAnalysis] = useState<any>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+
+  const loadAnalysis = async (code: string) => {
+    if (selectedStock === code) { setSelectedStock(null); return; }
+    setSelectedStock(code);
+    setAnalysisLoading(true);
+    try {
+      const data = await api(`/stock/${code}/analysis`);
+      setAnalysis(data);
+    } catch { setAnalysis(null); }
+    finally { setAnalysisLoading(false); }
+  };
 
   const addStock = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -493,6 +507,11 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
     setWatchlist((prev: any[]) => prev.filter(s => s.stock_code !== code));
   };
 
+  const t = analysis?.technicals;
+  const f = analysis?.flow;
+  const sh = analysis?.shorts;
+  const con = analysis?.consensus;
+
   return (
     <div className="space-y-5 sm:space-y-6">
       {/* 추가 폼 */}
@@ -503,20 +522,96 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
         <button type="submit" className="px-5 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium">추가</button>
       </form>
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+      {/* 종목 상세 분석 패널 */}
+      {selectedStock && (
+        <Panel title={`${watchlist.find((s: any) => s.stock_code === selectedStock)?.stock_name || selectedStock} 종목 분석`} badge={selectedStock}>
+          {analysisLoading ? (
+            <div className="p-8 text-center"><div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto" /></div>
+          ) : t ? (
+            <div className="p-4 sm:p-5 space-y-5">
+              {/* 기술적 지표 */}
+              <div>
+                <h4 className="text-xs font-semibold text-slate-400 mb-3">기술적 지표</h4>
+                <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
+                  <Indicator label="RSI (14)" value={t.rsi14?.toFixed(0)} sub={t.rsi14 > 70 ? '과매수' : t.rsi14 < 30 ? '과매도' : '중립'} color={t.rsi14 > 70 ? 'rose' : t.rsi14 < 30 ? 'emerald' : 'slate'} />
+                  <Indicator label="MACD" value={t.macdHistogram?.toFixed(0)} sub={t.macdCrossover === 'golden' ? '골든크로스' : t.macdCrossover === 'dead' ? '데드크로스' : '유지'} color={t.macdHistogram > 0 ? 'emerald' : 'rose'} />
+                  <Indicator label="볼린저" value={t.bollingerPosition?.toFixed(0) + '%'} sub={t.bollingerPosition > 80 ? '상단 돌파' : t.bollingerPosition < 20 ? '하단 근접' : '밴드 내'} color={t.bollingerPosition > 80 ? 'rose' : t.bollingerPosition < 20 ? 'emerald' : 'slate'} />
+                  <Indicator label="ADX (추세)" value={t.adx14?.toFixed(0)} sub={t.adx14 > 25 ? '강한 추세' : '횡보'} color={t.adx14 > 25 ? 'blue' : 'slate'} />
+                  <Indicator label="종합 점수" value={t.score?.toFixed(0)} sub={t.overallSignal} color={t.score > 20 ? 'emerald' : t.score < -20 ? 'rose' : 'slate'} />
+                </div>
+                <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 mt-3 text-center text-[11px]">
+                  <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">SMA 5</span><b>{t.sma5?.toLocaleString()}</b></div>
+                  <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">SMA 20</span><b>{t.sma20?.toLocaleString()}</b></div>
+                  <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">SMA 60</span><b>{t.sma60?.toLocaleString()}</b></div>
+                  <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">거래량 비</span><b className={t.volumeRatio > 2 ? 'text-amber-400' : ''}>{t.volumeRatio?.toFixed(1)}x</b></div>
+                  <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">스토캐스틱</span><b>{t.stochasticK?.toFixed(0)}</b></div>
+                  <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">ATR</span><b>{t.atr14?.toFixed(0)}</b></div>
+                </div>
+                {t.goldenCross && <p className="text-[11px] text-emerald-400 mt-2">골든크로스 발생 (SMA5 &gt; SMA20)</p>}
+                {t.deathCross && <p className="text-[11px] text-rose-400 mt-2">데드크로스 발생 (SMA5 &lt; SMA20)</p>}
+              </div>
+
+              {/* 수급 + 공매도 + 목표가 */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                {/* 수급 */}
+                <div className="bg-slate-900/40 rounded-xl p-4">
+                  <h4 className="text-xs font-semibold text-slate-400 mb-2">외국인/기관 수급</h4>
+                  {f ? (
+                    <div className="space-y-2 text-xs">
+                      <div className="flex justify-between"><span className="text-slate-500">외국인</span><span className={f.foreignNet > 0 ? 'text-emerald-400' : 'text-rose-400'}>{f.foreignNet > 0 ? '+' : ''}{f.foreignNet?.toLocaleString()}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">기관</span><span className={f.institutionNet > 0 ? 'text-emerald-400' : 'text-rose-400'}>{f.institutionNet > 0 ? '+' : ''}{f.institutionNet?.toLocaleString()}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">연속매수</span><span className="font-bold">{f.foreignStreak ?? 0}일</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">추세</span><span className={f.trend === 'STRONG_BUY' || f.trend === 'BUY' ? 'text-emerald-400' : f.trend === 'SELL' || f.trend === 'STRONG_SELL' ? 'text-rose-400' : 'text-slate-400'}>{f.trend}</span></div>
+                    </div>
+                  ) : <p className="text-[11px] text-slate-600">장 외 시간</p>}
+                </div>
+
+                {/* 공매도 */}
+                <div className="bg-slate-900/40 rounded-xl p-4">
+                  <h4 className="text-xs font-semibold text-slate-400 mb-2">공매도</h4>
+                  {sh ? (
+                    <div className="space-y-2 text-xs">
+                      <div className="flex justify-between"><span className="text-slate-500">공매도 비율</span><span className={sh.riskLevel === 'HIGH' ? 'text-rose-400 font-bold' : ''}>{sh.shortRatio?.toFixed(1)}%</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">추세</span><span>{sh.isIncreasing ? '증가 중' : '감소 중'}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">위험도</span><span className={sh.riskLevel === 'HIGH' ? 'text-rose-400' : sh.riskLevel === 'MEDIUM' ? 'text-amber-400' : 'text-emerald-400'}>{sh.riskLevel}</span></div>
+                    </div>
+                  ) : <p className="text-[11px] text-slate-600">장 외 시간</p>}
+                </div>
+
+                {/* 증권사 목표가 */}
+                <div className="bg-slate-900/40 rounded-xl p-4">
+                  <h4 className="text-xs font-semibold text-slate-400 mb-2">증권사 컨센서스</h4>
+                  {con ? (
+                    <div className="space-y-2 text-xs">
+                      <div className="flex justify-between"><span className="text-slate-500">목표가</span><span className="font-bold">{con.targetPrice?.toLocaleString()}원</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">상승 여력</span><span className={con.upsidePct > 0 ? 'text-emerald-400' : 'text-rose-400'}>{con.upsidePct > 0 ? '+' : ''}{con.upsidePct?.toFixed(1)}%</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">의견</span><span>{con.buyCount}매수 {con.holdCount}보유 {con.sellCount}매도</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">컨센서스</span><span className={con.consensusRating === 'STRONG_BUY' || con.consensusRating === 'BUY' ? 'text-emerald-400' : 'text-slate-400'}>{con.consensusRating}</span></div>
+                    </div>
+                  ) : <p className="text-[11px] text-slate-600">데이터 없음</p>}
+                </div>
+              </div>
+            </div>
+          ) : <EmptyMsg>장 외 시간이거나 데이터가 부족합니다</EmptyMsg>}
+        </Panel>
+      )}
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
         {/* 국내 */}
         <Panel title="🇰🇷 국내" badge={`${watchlist.length}종목`}>
           <div className="divide-y divide-slate-800/20">
             {watchlist.map((s: any) => {
               const score = dash?.scores?.find((sc: any) => sc.stock_code === s.stock_code);
+              const isSelected = selectedStock === s.stock_code;
               return (
-                <div key={s.stock_code} className="flex items-center px-3 py-2.5 hover:bg-slate-800/30 group">
+                <div key={s.stock_code} onClick={() => loadAnalysis(s.stock_code)} className={`flex items-center px-4 py-3 hover:bg-slate-800/30 cursor-pointer group transition-colors ${isSelected ? 'bg-blue-950/20 border-l-2 border-blue-500' : ''}`}>
                   <div className="flex-1 min-w-0">
                     <span className="font-medium text-sm">{s.stock_name}</span>
                     <span className="text-[11px] text-slate-500 ml-2">{s.stock_code} · {s.market}</span>
                   </div>
                   {score && <span className={`text-[11px] font-bold mr-3 ${Number(score.composite_score) >= 60 ? 'text-emerald-400' : 'text-slate-500'}`}>{score.composite_score}점</span>}
-                  <button onClick={() => del(s.stock_code)} className="opacity-0 group-hover:opacity-100 text-[11px] text-rose-400 hover:text-rose-300 transition-opacity">삭제</button>
+                  <span className="text-[10px] text-slate-600 mr-2">{isSelected ? '▲' : '분석 ▼'}</span>
+                  <button onClick={(e) => { e.stopPropagation(); del(s.stock_code); }} className="opacity-0 group-hover:opacity-100 text-[11px] text-rose-400 hover:text-rose-300 transition-opacity">삭제</button>
                 </div>
               );
             })}
@@ -1091,6 +1186,18 @@ function Card({ label, value, color, bg, big }: { label: string; value: string; 
     <div className={`rounded-2xl border border-slate-800/40 p-4 sm:p-5 shadow-lg shadow-black/10 ${bg || 'bg-[#111827]/80'}`}>
       <div className="text-[11px] sm:text-xs text-slate-500 mb-1.5">{label}</div>
       <div className={`${big ? 'text-lg sm:text-xl' : 'text-base sm:text-lg'} font-bold ${color || ''}`}>{value}</div>
+    </div>
+  );
+}
+
+function Indicator({ label, value, sub, color }: { label: string; value: string; sub: string; color: string }) {
+  const c = color === 'emerald' ? 'text-emerald-400' : color === 'rose' ? 'text-rose-400' : color === 'blue' ? 'text-blue-400' : color === 'amber' ? 'text-amber-400' : 'text-slate-400';
+  const bg = color === 'emerald' ? 'bg-emerald-950/30' : color === 'rose' ? 'bg-rose-950/30' : color === 'blue' ? 'bg-blue-950/30' : 'bg-slate-900/40';
+  return (
+    <div className={`rounded-xl p-3 text-center ${bg}`}>
+      <div className="text-[10px] text-slate-500 mb-1">{label}</div>
+      <div className={`text-lg font-bold ${c}`}>{value ?? '-'}</div>
+      <div className={`text-[10px] mt-0.5 ${c}`}>{sub}</div>
     </div>
   );
 }

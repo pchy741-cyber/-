@@ -7,6 +7,12 @@ import { getAccountBalance } from '../../kis/account.js';
 import { getCurrentPrice } from '../../kis/market.js';
 import { getWithdrawConfig, getWithdrawals, getTotalReserved } from '../../automation/profit-withdraw.js';
 import { getKillSwitchStatus } from '../../risk/kill-switch.js';
+import { getDailyChart } from '../../kis/market.js';
+import { analyzeTechnicals } from '../../analysis/indicators.js';
+import { getInvestorFlow } from '../../automation/investor-flow.js';
+import { fetchShortSellingData } from '../../automation/short-selling.js';
+import { fetchAnalystConsensus } from '../../automation/analyst-consensus.js';
+import { getMacroSnapshot } from '../../automation/macro-data.js';
 
 export const dashboardRoutes = new Hono();
 
@@ -262,6 +268,49 @@ dashboardRoutes.patch('/withdraw/:id/status', async (c) => {
     return c.json({ ok: true });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── 종목 상세 분석 (기술적 지표 + 수급 + 공매도 + 목표가) ──
+dashboardRoutes.get('/stock/:code/analysis', async (c) => {
+  const stockCode = c.req.param('code');
+  const defaultResult = { technicals: null, flow: null, shorts: null, consensus: null };
+
+  try {
+    const [chart, flow, shorts, consensus] = await Promise.allSettled([
+      getDailyChart(stockCode, 65),
+      getInvestorFlow(stockCode, 5).catch(() => null),
+      fetchShortSellingData(stockCode, 5).catch(() => null),
+      fetchAnalystConsensus(stockCode).catch(() => null),
+    ]);
+
+    let technicals = null;
+    if (chart.status === 'fulfilled' && chart.value.length >= 20) {
+      const candles = chart.value.map((c: any) => ({
+        date: c.date, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
+      }));
+      technicals = analyzeTechnicals(candles);
+    }
+
+    return c.json({
+      stockCode,
+      technicals,
+      flow: flow.status === 'fulfilled' ? flow.value : null,
+      shorts: shorts.status === 'fulfilled' ? shorts.value : null,
+      consensus: consensus.status === 'fulfilled' ? consensus.value : null,
+    });
+  } catch {
+    return c.json({ stockCode, ...defaultResult });
+  }
+});
+
+// ── 매크로 환경 ──
+dashboardRoutes.get('/macro', async (c) => {
+  try {
+    const macro = await getMacroSnapshot();
+    return c.json(macro);
+  } catch {
+    return c.json({ regime: 'NEUTRAL', fearGreedIndex: 50 });
   }
 });
 
