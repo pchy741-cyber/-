@@ -1505,10 +1505,13 @@ function ModeBadge({ mode }: { mode: string }) {
 }
 
 function Sel({ label, value, opts, onChange }: { label: string; value: any; opts: [any, string][]; onChange: (v: string) => void }) {
+  // DB에서 "-5.00" (문자열) vs option "-5" (숫자) 매칭 → Number 변환 후 비교
+  const numVal = Number(value);
+  const matched = opts.find(([v]) => Number(v) === numVal)?.[0] ?? value;
   return (
     <div>
       <label className="text-[11px] text-slate-500 block mb-1">{label}</label>
-      <select value={value} onChange={e => onChange(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
+      <select value={matched} onChange={e => onChange(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
         {opts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
       </select>
     </div>
