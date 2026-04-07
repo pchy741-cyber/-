@@ -135,14 +135,28 @@ export async function getLatestScores(stockCodes: string[]): Promise<AIScore[]> 
   const validCodes = stockCodes.filter((c) => c != null && c.length > 0);
   if (validCodes.length === 0) return [];
   if (useMemory) return memGetLatestScores(validCodes);
+
   const today = new Date().toISOString().split('T')[0];
   const placeholders = validCodes.map((_, i) => `$${i + 1}`).join(',');
+
+  // 오늘 스코어 먼저 조회
   const { rows } = await getPool().query(
     `SELECT * FROM ai_scores WHERE stock_code IN (${placeholders}) AND score_date = $${validCodes.length + 1}
      ORDER BY composite_score DESC`,
     [...validCodes, today],
   );
-  return rows;
+
+  if (rows.length > 0) return rows;
+
+  // 오늘 없으면 최근 2일 이내 스코어 fallback (Track A가 전날 18:00에 생성한 것)
+  const { rows: fallbackRows } = await getPool().query(
+    `SELECT DISTINCT ON (stock_code) * FROM ai_scores
+     WHERE stock_code IN (${placeholders}) AND score_date >= (CURRENT_DATE - INTERVAL '2 days')
+     ORDER BY stock_code, score_date DESC, composite_score DESC`,
+    [...validCodes],
+  );
+
+  return fallbackRows;
 }
 
 // ── Market Sources (CEO 참고 소스) ──

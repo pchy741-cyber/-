@@ -41,6 +41,12 @@ export class TradeExecutor {
   private async executeDecision(decision: TradeDecision, mode: StrategyMode): Promise<void> {
     const { action, stock_code, quantity, price_type, limit_price, reasoning } = decision;
 
+    // 수량 0 이하 방어
+    if (!quantity || quantity <= 0) {
+      logger.warn(`⛔ 수량 0 → 스킵: ${action} ${stock_code}`, { component: 'EXECUTOR' });
+      return;
+    }
+
     // 종목별 락 획득 (중복 주문 방지)
     const unlock = await acquireLock(stock_code, `${action}-${Date.now()}`);
     if (!unlock) {
@@ -94,6 +100,12 @@ export class TradeExecutor {
 
     const price = await getCurrentPrice(stockCode);
     const estimatedPrice = limitPrice ?? price.currentPrice;
+
+    // 가격 0 방어
+    if (!estimatedPrice || estimatedPrice <= 0) {
+      logger.warn(`⛔ 현재가 0 → 매수 스킵: ${stockCode}`, { component: 'EXECUTOR' });
+      return;
+    }
 
     // 리스크 체크
     const riskCheck = await riskEngine.validateOrder({
@@ -205,10 +217,17 @@ export class TradeExecutor {
     const chain = await chainManager.findOpenChain(stockCode);
     if (!chain) return;
 
+    // 보유 수량 초과 방어 — 보유량 이내로 클램핑
+    const safeQty = Math.min(quantity, chain.total_quantity);
+    if (safeQty <= 0) {
+      logger.warn(`⛔ 보유 0주 → 매도 스킵: ${stockCode}`, { component: 'EXECUTOR' });
+      return;
+    }
+
     const result = await this.executeOrder({
       stockCode,
       side: 'SELL',
-      quantity,
+      quantity: safeQty,
       chainId: chain.id,
       triggerSource: 'TRACK_B',
       aiReasoning: reasoning,
@@ -216,7 +235,7 @@ export class TradeExecutor {
 
     if (result.success) {
       const price = await getCurrentPrice(stockCode);
-      await chainManager.partialProfit(chain.id, quantity, price.currentPrice, chain);
+      await chainManager.partialProfit(chain.id, safeQty, price.currentPrice, chain);
     }
   }
 

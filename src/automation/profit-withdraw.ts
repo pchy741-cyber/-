@@ -66,17 +66,29 @@ export async function checkAndReserveProfit(): Promise<void> {
   try {
     const balance = await getAccountBalance();
     const totalValue = balance.totalDeposit + (balance.totalEvalAmount ?? 0);
-    const totalPnl = balance.totalProfitLoss ?? 0;
+
+    // 실현 손익 기준으로 계산 (미실현 제외 — 아직 팔지 않은 주식의 수익은 확정이 아님)
+    // DB에서 체인 실현손익 합산
+    let realizedPnl = 0;
+    try {
+      const { rows } = await getPool().query(
+        `SELECT COALESCE(SUM(realized_pnl), 0)::numeric AS total FROM transaction_chains WHERE status = 'CLOSED'`,
+      );
+      realizedPnl = Number(rows[0]?.total ?? 0);
+    } catch {
+      // 실현손익 조회 실패 시 미실현 사용 (안전 fallback)
+      realizedPnl = balance.totalProfitLoss ?? 0;
+    }
 
     // 이미 예약된 금액 조회
     const reserved = await getTotalReserved();
 
-    // 예약금 제외 순수익
-    const netProfit = totalPnl - reserved;
+    // 예약금 제외 순 실현수익
+    const netProfit = realizedPnl - reserved;
     if (netProfit <= 0) return;
 
-    // 원금 추정 (총자산 - 총수익)
-    const principal = totalValue - totalPnl;
+    // 원금 추정
+    const principal = totalValue - (balance.totalProfitLoss ?? 0);
     if (principal <= 0) return;
 
     const currentProfitPct = (netProfit / principal) * 100;

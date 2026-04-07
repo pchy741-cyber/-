@@ -13,9 +13,15 @@ const BACKEND_URL =
 
 async function api(path: string, opts?: RequestInit) {
   const base = BACKEND_URL.endsWith('/') ? BACKEND_URL.slice(0, -1) : BACKEND_URL;
-  const res = await fetch(`${base}/api${path}`, { ...opts, cache: 'no-store', headers: { 'Content-Type': 'application/json', ...opts?.headers } });
-  if (!res.ok) throw new Error(`API ${path} (${res.status})`);
-  return res.json();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000); // 8초 타임아웃
+  try {
+    const res = await fetch(`${base}/api${path}`, { ...opts, signal: controller.signal, cache: 'no-store', headers: { 'Content-Type': 'application/json', ...opts?.headers } });
+    if (!res.ok) throw new Error(`API ${path} (${res.status})`);
+    return res.json();
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 // ═══════════════════════════════════════
@@ -59,27 +65,34 @@ export default function Dashboard() {
   const load = async () => {
     try {
       setLoading(true);
-      const [h, d, w, s, t, k, sec, us, src, wc, wh] = await Promise.allSettled([
-        api('/health'), api('/dashboard'), api('/watchlist'), api('/strategy'),
-        api('/trades?limit=50'), api('/kill-switch'), api('/secrets'),
+      // 1단계: 핵심 데이터 먼저 (화면 표시용)
+      const [h, d, k] = await Promise.allSettled([
+        api('/health'), api('/dashboard'), api('/kill-switch'),
+      ]);
+      if (h.status === 'fulfilled') setHealth(h.value);
+      if (d.status === 'fulfilled') setDash(d.value);
+      if (k.status === 'fulfilled') setKillSwitch(k.value);
+      setLastUpdate(new Date());
+      setLoading(false); // 핵심 데이터 로드 즉시 화면 표시
+
+      // 2단계: 나머지 데이터 백그라운드 로드
+      const [w, s, t, sec, us, src, wc, wh] = await Promise.allSettled([
+        api('/watchlist'), api('/strategy'),
+        api('/trades?limit=50'), api('/secrets'),
         api('/overseas/dashboard').catch(() => null),
         api('/sources').catch(() => []),
         api('/withdraw/config').catch(() => null),
         api('/withdraw/history').catch(() => []),
       ]);
-      if (h.status === 'fulfilled') setHealth(h.value);
-      if (d.status === 'fulfilled') setDash(d.value);
       if (w.status === 'fulfilled') setWatchlist(Array.isArray(w.value) ? w.value : []);
       if (s.status === 'fulfilled') setStrategy(s.value);
       if (t.status === 'fulfilled') setTrades(Array.isArray(t.value) ? t.value : []);
-      if (k.status === 'fulfilled') setKillSwitch(k.value);
       if (sec.status === 'fulfilled') setSecrets(sec.value);
       if (us.status === 'fulfilled' && us.value) setUsDash(us.value);
       if (src.status === 'fulfilled') setSources(Array.isArray(src.value) ? src.value : []);
       if (wc.status === 'fulfilled' && wc.value) setWithdrawConfig(wc.value);
       if (wh.status === 'fulfilled') setWithdrawHistory(Array.isArray(wh.value) ? wh.value : []);
-      setLastUpdate(new Date());
-    } finally { setLoading(false); }
+    } catch { setLoading(false); }
   };
 
   useEffect(() => { load(); const iv = setInterval(load, 30000); return () => clearInterval(iv); }, []);
@@ -205,35 +218,92 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
   const totalPnlPct = p?.pnlPct ?? 0;
   const totalInvested = p?.invested ?? 0;
 
+  // 로봇 일과 타임라인 계산
+  const now = new Date();
+  const marketStart = 9 * 60; // 09:00
+  const marketEnd = 15 * 60 + 30; // 15:30
+  const currentMin = now.getHours() * 60 + now.getMinutes();
+  const marketProgress = health?.marketOpen ? Math.min(100, Math.max(0, ((currentMin - marketStart) / (marketEnd - marketStart)) * 100)) : 0;
+  const currentTimeStr = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+
   return (
     <div className="space-y-5 sm:space-y-6">
-      {/* ── 다음 이벤트 배너 ── */}
-      {health?.nextEvent && (
-        <div className="px-4 py-2.5 bg-blue-950/30 border border-blue-900/20 rounded-xl text-xs text-blue-300 flex items-center gap-2">
-          ⏰ <span>다음: <b>{health.nextEvent}</b></span>
-        </div>
-      )}
 
-      {/* ── 자산 요약 ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
-        <div className="rounded-2xl p-5 sm:p-6 col-span-2 lg:col-span-1 bg-gradient-to-br from-blue-600/10 via-cyan-600/5 to-transparent border border-blue-500/10 shadow-xl shadow-blue-900/10">
-          <div className="text-[10px] text-blue-300/60 mb-2 font-semibold uppercase tracking-widest">총 자산</div>
-          <div className="text-2xl sm:text-3xl font-black tracking-tight text-white">{fmtWon(p?.totalValue)}</div>
+      {/* ── 오늘 손실 한도 ── */}
+      <Panel title="오늘 하루 손실 한도" badge={totalPnl < 0 ? '주의' : '안전'} badgeColor={totalPnl < -30000 ? 'red' : totalPnl < 0 ? 'amber' : 'green'}>
+        <div className="px-5 py-3.5 flex items-center gap-4">
+          <div className="flex-1">
+            <div className="flex justify-between text-[11px] mb-1.5">
+              <span className="text-slate-500">100%에 도달하면 오늘 하루 로봇이 매매를 멈춥니다</span>
+              <span className={`font-bold ${totalPnl < -30000 ? 'text-rose-400' : 'text-slate-400'}`}>
+                {totalPnl < 0 ? `손실 ${Math.abs(totalPnl).toLocaleString()}원` : '손실 없음'} / 한도 50,000원
+              </span>
+            </div>
+            <div className="h-2.5 bg-white/[0.04] rounded-full overflow-hidden">
+              <div className={`h-full rounded-full transition-all duration-500 ${totalPnl < -30000 ? 'bg-rose-500' : totalPnl < -10000 ? 'bg-amber-500' : 'bg-emerald-500'}`} style={{ width: `${Math.min(100, Math.max(0, (Math.abs(Math.min(0, totalPnl)) / 50000) * 100))}%` }} />
+            </div>
+          </div>
+          <div className={`text-xl font-black shrink-0 ${totalPnl < -30000 ? 'text-rose-400' : 'text-emerald-400'}`}>
+            {totalPnl < 0 ? `${Math.round((Math.abs(totalPnl) / 50000) * 100)}%` : '0%'}
+          </div>
         </div>
-        <Card label="현금" value={fmtWon(p?.cash)} />
-        <Card label="투자금" value={fmtWon(totalInvested)} />
-        <div className={`rounded-2xl border p-4 sm:p-5 shadow-xl shadow-black/20 transition-transform hover:scale-[1.01] ${totalPnl > 0 ? 'bg-emerald-500/5 border-emerald-500/15 glow-green' : totalPnl < 0 ? 'bg-rose-500/5 border-rose-500/15 glow-red' : 'glass border-white/[0.04]'}`}>
-          <div className="text-[10px] text-slate-500 mb-2 font-semibold uppercase tracking-widest">미실현 손익</div>
-          <div className={`text-lg sm:text-xl font-black ${pc(totalPnl)}`}>{fmtWon(totalPnl)}</div>
-          <div className={`text-sm font-bold mt-1 ${pc(totalPnlPct)}`}>{fmtPct(totalPnlPct)}</div>
+      </Panel>
+
+      {/* ── 로봇 하루 일과 ── */}
+      <Panel title={`오늘 로봇의 하루 일과 (지금 ${currentTimeStr})`} badge={health?.marketOpen ? '감시 및 분석 중' : '대기 중'} badgeColor={health?.marketOpen ? 'green' : undefined}>
+        <div className="px-5 py-4">
+          <div className="relative">
+            <div className="h-2 bg-white/[0.04] rounded-full overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 rounded-full transition-all duration-1000" style={{ width: `${marketProgress}%` }} />
+            </div>
+            <div className="flex justify-between mt-2 text-[11px]">
+              <span className="text-emerald-400 font-medium">09:00 장시작</span>
+              {health?.marketOpen && (
+                <span className="text-blue-400 font-medium" style={{ position: 'absolute', left: `${marketProgress}%`, transform: 'translateX(-50%)' }}>
+                  지금 ({currentTimeStr})
+                </span>
+              )}
+              <span className="text-slate-500">15:30 마감</span>
+            </div>
+          </div>
         </div>
-        <Card label="인출 예약" value={fmtWon(withdrawConfig?.totalReserved ?? 0)} color={withdrawConfig?.totalReserved > 0 ? 'text-amber-400' : undefined} bg={withdrawConfig?.totalReserved > 0 ? 'bg-amber-500/5 border-amber-500/15' : undefined} />
+      </Panel>
+
+      {/* ── 메인 3카드 (쉬운 말) ── */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
+        <div className="rounded-2xl p-5 bg-gradient-to-br from-blue-600/10 via-cyan-600/5 to-transparent border border-blue-500/10 shadow-xl shadow-blue-900/10">
+          <div className="text-[11px] text-blue-300/60 mb-1.5 font-medium">총 자산</div>
+          <div className="text-2xl font-black tracking-tight text-white">{fmtWon(p?.totalValue)}</div>
+          <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-2.5 text-[10px]">
+            <span className="text-slate-500">현금 <b className="text-slate-300">{fmtWon(p?.cash)}</b></span>
+            <span className="text-slate-500">투자 <b className="text-blue-400">{fmtWon(totalInvested)}</b></span>
+            {withdrawConfig?.totalReserved > 0 && <span className="text-slate-500">인출 <b className="text-amber-400">{fmtWon(withdrawConfig.totalReserved)}</b></span>}
+          </div>
+        </div>
+
+        <div className={`rounded-2xl p-5 border shadow-xl ${totalPnl > 0 ? 'bg-emerald-500/5 border-emerald-500/15 shadow-emerald-900/10' : totalPnl < 0 ? 'bg-rose-500/5 border-rose-500/15 shadow-rose-900/10' : 'glass border-white/[0.04] shadow-black/20'}`}>
+          <div className="text-[11px] text-slate-500 mb-1.5 font-medium">수익/손실</div>
+          <div className={`text-2xl font-black ${pc(totalPnl)}`}>
+            {totalPnl > 0 ? '+' : totalPnl < 0 ? '' : ''}{fmtWon(totalPnl)}
+          </div>
+          <div className={`text-[11px] font-bold mt-2 ${pc(totalPnlPct)}`}>
+            원금 대비 {fmtPct(totalPnlPct)}
+          </div>
+        </div>
+
+        <div className="rounded-2xl p-5 glass border border-white/[0.04] shadow-xl shadow-black/20">
+          <div className="text-[11px] text-slate-500 mb-1.5 font-medium">오늘 매매</div>
+          <div className="text-2xl font-black">{todayTrades.length}<span className="text-base text-slate-500 ml-1">건</span></div>
+          <div className="text-[11px] text-slate-600 mt-2">
+            총 {filled.length}건 체결
+          </div>
+        </div>
       </div>
 
       {/* ── 국내 + 해외 2컬럼 ── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
         {/* 국내 보유 */}
-        <Panel title="현재 투자 중인 내 돈" badge={`${(p?.positions?.length || 0) + chains.length}종목`}>
+        <Panel title="현재 투자 중인 내 돈" badge={`${(p?.positions?.length || 0) + chains.length}종목`} badgeColor="blue">
           {chains.length > 0 ? (
             <div className="divide-y divide-white/[0.03]">
               {chains.map((ch: any, i: number) => {
@@ -244,8 +314,6 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
                 const maxAvg = Number(ch.max_averaging_count) || 3;
                 const targetPct = Number(ch.target_profit_pct) || 8;
                 const stopPct = Number(ch.stop_loss_pct) || -5;
-                const targetPrice = Math.round(avgPrice * (1 + targetPct / 100));
-                const stopPrice = Math.round(avgPrice * (1 + stopPct / 100));
                 const pnl = ch.unrealizedPnl ?? 0;
                 const pnlPct = ch.unrealizedPnlPct ?? 0;
 
@@ -273,43 +341,36 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
                     </div>
 
                     {/* 분할 매수 + 투자금 + 현재가 */}
-                    <div className="grid grid-cols-3 gap-3 mt-4">
-                      {/* 분할 매수 상태 */}
+                    <div className="grid grid-cols-3 gap-3 mt-3">
                       <div>
-                        <div className="text-[10px] text-slate-500 mb-1.5 font-medium">분할 매수</div>
-                        <div className="flex gap-1">
+                        <div className="text-[10px] text-slate-500 mb-1 font-medium">분할 매수</div>
+                        <div className="flex gap-0.5">
                           {Array.from({ length: maxAvg }, (_, j) => (
-                            <span key={j} className={`w-7 h-7 rounded-full text-[10px] font-bold flex items-center justify-center ${j <= curAvg ? 'bg-blue-500 text-white' : 'bg-white/[0.06] text-slate-600'}`}>
-                              {j + 1}차
+                            <span key={j} className={`w-5 h-5 rounded-full text-[8px] font-bold flex items-center justify-center ${j <= curAvg ? 'bg-blue-500 text-white' : 'bg-white/[0.06] text-slate-600'}`}>
+                              {j + 1}
                             </span>
                           ))}
                         </div>
                       </div>
-
-                      {/* 투자금 */}
                       <div>
-                        <div className="text-[10px] text-slate-500 mb-1.5 font-medium">투자금</div>
-                        <div className="text-sm font-bold">{fmtWon(invested)}</div>
+                        <div className="text-[10px] text-slate-500 mb-1 font-medium">투자금</div>
+                        <div className="text-[13px] font-bold">{fmtWon(invested)}</div>
                         <div className="text-[10px] text-slate-600">{fmt(qty)}주</div>
                       </div>
-
-                      {/* 현재가 */}
                       <div>
-                        <div className="text-[10px] text-slate-500 mb-1.5 font-medium">현재가</div>
-                        <div className="text-sm font-bold">{ch.currentPrice > 0 ? fmtWon(ch.currentPrice) : '-'}</div>
+                        <div className="text-[10px] text-slate-500 mb-1 font-medium">현재가</div>
+                        <div className="text-[13px] font-bold">{ch.currentPrice > 0 ? fmtWon(ch.currentPrice) : '-'}</div>
                       </div>
                     </div>
 
-                    {/* 자동 청산 계획 + 수동 매도 */}
-                    <div className="flex items-center gap-3 mt-4">
-                      <div className="flex-1 flex gap-2">
-                        <span className="text-[10px] px-2.5 py-1 rounded-md bg-emerald-500/10 text-emerald-400 font-medium">
-                          +{targetPct}% 오르면 팔기 ({fmtWon(targetPrice)})
-                        </span>
-                        <span className="text-[10px] px-2.5 py-1 rounded-md bg-rose-500/10 text-rose-400 font-medium">
-                          {stopPct}% 빠지면 팔기 ({fmtWon(stopPrice)})
-                        </span>
-                      </div>
+                    {/* 자동 청산 + 수동 매도 */}
+                    <div className="flex flex-wrap items-center gap-1.5 mt-3">
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-medium">
+                        +{targetPct}% 익절
+                      </span>
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-rose-500/10 text-rose-400 font-medium">
+                        {stopPct}% 손절
+                      </span>
                       <button onClick={async () => {
                         if (!confirm(`${ch.stock_code} ${qty}주 전량 시장가 매도하시겠습니까?`)) return;
                         try {
@@ -317,7 +378,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
                           alert(r.message || '매도 완료');
                           onRefresh();
                         } catch (err: any) { alert('매도 실패: ' + err.message); }
-                      }} className="text-[11px] px-3 py-1.5 rounded-lg bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 transition-colors font-medium shrink-0">
+                      }} className="text-[10px] ml-auto px-2.5 py-1 rounded-lg bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 transition-colors font-medium shrink-0 border border-white/[0.04]">
                         전량 매도
                       </button>
                     </div>
@@ -329,7 +390,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
         </Panel>
 
         {/* 미국 시세 */}
-        <Panel title="미국주식 시세" badge="밤 11:30~새벽 6시 자동매매">
+        <Panel title="미국주식 시세" badge="밤 11:30~새벽 6시 자동매매" badgeColor="blue">
           {usW.length > 0 ? (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3.5">
               {usW.map((s: any) => (
@@ -394,7 +455,12 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
               </div>
               <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
                 <div className="text-[10px] text-slate-500 font-medium">이기는 확률</div>
-                <div className="text-lg font-black mt-1">{filled.length > 0 ? `${Math.round(filled.filter((t: any) => t.side === 'SELL').length > 0 ? 55 : 0)}%` : '-'}</div>
+                <div className="text-lg font-black mt-1">{(() => {
+                  const sells = filled.filter((t: any) => t.side === 'SELL' && t.filled_price && t.transaction_chains?.avg_buy_price);
+                  if (sells.length === 0) return '-';
+                  const wins = sells.filter((t: any) => Number(t.filled_price) > Number(t.transaction_chains?.avg_buy_price || 0));
+                  return `${Math.round((wins.length / sells.length) * 100)}%`;
+                })()}</div>
               </div>
               <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
                 <div className="text-[10px] text-slate-500 font-medium">오늘 AI 매매</div>
@@ -428,7 +494,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
       {/* ── AI 스코어 + 최근 매매 2컬럼 ── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
         {/* AI 스코어 */}
-        <Panel title="AI가 보는 종목 점수" badge={dash?.scores?.length > 0 ? `${dash.scores.length}종목` : undefined}>
+        <Panel title="AI가 보는 종목 점수" badge={dash?.scores?.length > 0 ? `${dash.scores.length}종목` : undefined} badgeColor="blue">
           {dash?.scores?.length > 0 ? (
             <div className="p-3.5 space-y-2">
               {dash.scores.map((sc: any) => {
@@ -454,7 +520,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
         </Panel>
 
         {/* 최근 매매 */}
-        <Panel title="최근 매매" badge={`오늘 ${todayTrades.length}건`}>
+        <Panel title="최근 매매" badge={`오늘 ${todayTrades.length}건`} badgeColor={todayTrades.length > 0 ? 'green' : undefined}>
           {filled.length === 0 ? <EmptyMsg>매매 기록 없음</EmptyMsg> : (
             <div className="divide-y divide-white/[0.03]">
               {filled.slice(0, 5).map((t: any, i: number) => (
@@ -613,19 +679,26 @@ function TradesView({ trades }: { trades: any[] }) {
 
 function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
   const usW = usDash?.watchlist || [];
+  const chains = dash?.chains || [];
   const [selectedStock, setSelectedStock] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<any>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
+  const analysisAbortRef = useRef<AbortController | null>(null);
 
   const loadAnalysis = async (code: string) => {
     if (selectedStock === code) { setSelectedStock(null); return; }
+    // 이전 요청 취소
+    analysisAbortRef.current?.abort();
+    const controller = new AbortController();
+    analysisAbortRef.current = controller;
+
     setSelectedStock(code);
     setAnalysisLoading(true);
     try {
       const data = await api(`/stock/${code}/analysis`);
-      setAnalysis(data);
-    } catch { setAnalysis(null); }
-    finally { setAnalysisLoading(false); }
+      if (!controller.signal.aborted) setAnalysis(data);
+    } catch { if (!controller.signal.aborted) setAnalysis(null); }
+    finally { if (!controller.signal.aborted) setAnalysisLoading(false); }
   };
 
   const addStock = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -736,24 +809,42 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
         {/* 국내 */}
-        <Panel title="🇰🇷 국내" badge={`${watchlist.length}종목`}>
-          <div className="divide-y divide-slate-800/20">
+        <Panel title="로봇이 감시하는 종목들" badge={`${watchlist.length}종목`}>
+          <div className="divide-y divide-white/[0.03]">
             {watchlist.map((s: any) => {
               const score = dash?.scores?.find((sc: any) => sc.stock_code === s.stock_code);
+              const chain = chains.find((ch: any) => ch.stock_code === s.stock_code);
               const isSelected = selectedStock === s.stock_code;
+              const scoreVal = score ? Number(score.composite_score) : -1;
+
+              // 로봇 상태 결정
+              let robotStatus = { label: '분석 대기', color: 'text-slate-500', bg: 'bg-white/[0.04]', border: '' };
+              if (chain) {
+                robotStatus = { label: '사서 굴리는 중', color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-l-2 border-emerald-500' };
+              } else if (scoreVal >= 70) {
+                robotStatus = { label: '매수 조건 근접!', color: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-l-2 border-amber-500' };
+              } else if (scoreVal >= 0) {
+                robotStatus = { label: '감시 중', color: 'text-blue-400', bg: 'bg-blue-500/5', border: '' };
+              } else {
+                robotStatus = { label: '분석 대기', color: 'text-slate-500', bg: 'bg-white/[0.04]', border: '' };
+              }
+
               return (
-                <div key={s.stock_code} onClick={() => loadAnalysis(s.stock_code)} className={`flex items-center px-4 py-3 hover:bg-slate-800/30 cursor-pointer group transition-colors ${isSelected ? 'bg-blue-950/20 border-l-2 border-blue-500' : ''}`}>
+                <div key={s.stock_code} onClick={() => loadAnalysis(s.stock_code)} className={`flex items-center gap-3 px-4 py-3.5 hover:bg-white/[0.02] cursor-pointer group transition-colors ${isSelected ? 'bg-blue-950/20 border-l-2 border-blue-500' : robotStatus.border}`}>
                   <div className="flex-1 min-w-0">
-                    <span className="font-medium text-sm">{s.stock_name}</span>
-                    <span className="text-[11px] text-slate-500 ml-2">{s.stock_code} · {s.market}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-sm">{s.stock_name}</span>
+                      <span className="text-[10px] text-slate-600">{s.stock_code}</span>
+                    </div>
+                    {scoreVal >= 0 && <div className="text-[10px] text-slate-500 mt-0.5">AI 점수 {scoreVal}점 {scoreVal >= 75 ? '— 매수 가능' : scoreVal >= 50 ? '' : '— 아직 부족'}</div>}
                   </div>
-                  {score && <span className={`text-[11px] font-bold mr-3 ${Number(score.composite_score) >= 60 ? 'text-emerald-400' : 'text-slate-500'}`}>{score.composite_score}점</span>}
-                  <span className="text-[10px] text-slate-600 mr-2">{isSelected ? '▲' : '분석 ▼'}</span>
+                  <span className={`text-[10px] px-2.5 py-1 rounded-md font-medium ${robotStatus.bg} ${robotStatus.color}`}>{robotStatus.label}</span>
+                  <span className="text-[10px] text-slate-600">{isSelected ? '▲' : '▼'}</span>
                   <button onClick={(e) => { e.stopPropagation(); del(s.stock_code); }} className="opacity-0 group-hover:opacity-100 text-[11px] text-rose-400 hover:text-rose-300 transition-opacity">삭제</button>
                 </div>
               );
             })}
-            {watchlist.length === 0 && <EmptyMsg>종목을 추가하세요</EmptyMsg>}
+            {watchlist.length === 0 && <EmptyMsg>종목을 추가하면 로봇이 24시간 감시합니다</EmptyMsg>}
           </div>
         </Panel>
 
@@ -1307,12 +1398,13 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
 // Shared Components
 // ═══════════════════════════════════════
 
-function Panel({ title, badge, children }: { title: string; badge?: string; children: React.ReactNode }) {
+function Panel({ title, badge, badgeColor, children }: { title: string; badge?: string; badgeColor?: 'green' | 'red' | 'amber' | 'blue'; children: React.ReactNode }) {
+  const bc = badgeColor === 'green' ? 'bg-emerald-500/15 text-emerald-400' : badgeColor === 'red' ? 'bg-rose-500/15 text-rose-400' : badgeColor === 'amber' ? 'bg-amber-500/15 text-amber-400' : badgeColor === 'blue' ? 'bg-blue-500/15 text-blue-400' : 'bg-white/[0.06] text-slate-400';
   return (
     <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden shadow-xl shadow-black/30 animate-in">
       <div className="px-5 py-3.5 border-b border-white/[0.04] flex items-center gap-2">
         <h3 className="text-[13px] font-bold text-slate-100 tracking-tight">{title}</h3>
-        {badge && <span className="text-[10px] bg-white/[0.06] text-slate-400 px-2.5 py-1 rounded-full ml-auto font-medium">{badge}</span>}
+        {badge && <span className={`text-[10px] px-2.5 py-1 rounded-full ml-auto font-medium ${bc}`}>{badge}</span>}
       </div>
       {children}
     </div>
@@ -1362,7 +1454,7 @@ function Sel({ label, value, opts, onChange }: { label: string; value: any; opts
   return (
     <div>
       <label className="text-[11px] text-slate-500 block mb-1">{label}</label>
-      <select defaultValue={value} onChange={e => onChange(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
+      <select value={value} onChange={e => onChange(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
         {opts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
       </select>
     </div>

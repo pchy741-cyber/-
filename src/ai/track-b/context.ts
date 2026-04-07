@@ -26,16 +26,28 @@ export async function buildTrackBContext(params: {
   const { mode, scores, livePrices, openChains, balance } = params;
   const strategyParams = STRATEGY_PARAMS[mode];
 
+  // 예산 계산
+  const reserved = (balance as any).reservedWithdraw ?? 0;
+  const availableCash = balance.orderableCash - reserved;
+  const budgetPerStock = Math.floor(availableCash / strategyParams.splitCount);
+
   // 리스크 한도 정보
   const riskInfo = `## 리스크 한도
 - 종목당 최대 투자: ${config.risk.maxPositionKrw.toLocaleString()}원
 - 하루 최대 손실: ${config.risk.maxDailyDrawdownKrw.toLocaleString()}원
 - 총 투자 비율 상한: ${config.risk.maxTotalInvestedPct}%
 - 현재 예수금: ${balance.orderableCash.toLocaleString()}원
-- 인출 예약금 (재투자 불가): ${((balance as any).reservedWithdraw ?? 0).toLocaleString()}원
-- 실제 투자가능금: ${(balance.orderableCash - ((balance as any).reservedWithdraw ?? 0)).toLocaleString()}원
+- 인출 예약금 (재투자 불가): ${reserved.toLocaleString()}원
+- 실제 투자가능금: ${availableCash.toLocaleString()}원
 - 현재 투자금: ${balance.totalEvalAmount.toLocaleString()}원
-- 오늘 손익: ${balance.totalProfitLoss.toLocaleString()}원`;
+- 오늘 손익: ${balance.totalProfitLoss.toLocaleString()}원
+
+## 매수 예산 계산 (반드시 이 금액으로 수량 계산)
+- 1회 매수 예산: ${budgetPerStock.toLocaleString()}원 (투자가능금 ${availableCash.toLocaleString()}원 ÷ ${strategyParams.splitCount}분할)
+- 수량 계산법: quantity = Math.floor(${budgetPerStock.toLocaleString()} ÷ 현재가)
+- 예시: 현재가 50,000원 → ${budgetPerStock.toLocaleString()} ÷ 50,000 = ${Math.floor(budgetPerStock / 50000)}주
+- 예시: 현재가 10,000원 → ${budgetPerStock.toLocaleString()} ÷ 10,000 = ${Math.floor(budgetPerStock / 10000)}주
+- ⚠️ quantity가 0이면 BUY하지 말고 HOLD하세요`;
 
   // 전략 파라미터
   const strategyInfo = `## 현재 전략: ${mode}

@@ -118,18 +118,26 @@ export async function getOrderbook(stockCode: string): Promise<OrderbookEntry[]>
 
 // ── 장 열림 여부 확인 (공휴일 포함) ──
 export function isMarketOpen(): boolean {
-  const now = new Date();
-  const kst = new Date(now.toLocaleString('en-US', { timeZone: MARKET.TIMEZONE }));
-  const day = kst.getDay();
+  // KST 시간 정확 추출 (toLocaleString → new Date 변환 버그 방지)
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: MARKET.TIMEZONE,
+    hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', weekday: 'short',
+  });
+  const parts = Object.fromEntries(
+    formatter.formatToParts(new Date()).map(p => [p.type, p.value]),
+  );
+  const day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(parts.weekday ?? '');
 
   // 주말 체크
   if (day === 0 || day === 6) return false;
 
   // 한국 공휴일 체크
-  if (!isTradingDay(now)) return false;
+  if (!isTradingDay(new Date())) return false;
 
-  const hour = kst.getHours();
-  const minute = kst.getMinutes();
+  const hour = Number(parts.hour);
+  const minute = Number(parts.minute);
   const timeNum = hour * 100 + minute;
 
   const openTime = MARKET.OPEN_HOUR * 100 + MARKET.OPEN_MINUTE; // 900

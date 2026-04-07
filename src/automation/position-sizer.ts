@@ -198,10 +198,16 @@ export async function getDynamicPositionSize(
     logger.warn('연패 패널티 계산 실패 → 스킵', { component: 'SIZER', error: err });
   }
 
-  // 최소/최대 클램핑
-  finalMultiplier = Math.max(0.1, Math.min(1.5, finalMultiplier));
+  // 최소/최대 클램핑 (최소 0.3x — 너무 작으면 최소 주문금액 미달)
+  finalMultiplier = Math.max(0.3, Math.min(1.5, finalMultiplier));
 
-  const amount = Math.round(baseAmount * finalMultiplier);
+  let amount = Math.round(baseAmount * finalMultiplier);
+  // 최소 주문금액 보장 (10만원 미만이면 매매 불가)
+  const MIN_ORDER_KRW = 100_000;
+  if (amount < MIN_ORDER_KRW && baseAmount >= MIN_ORDER_KRW) {
+    amount = MIN_ORDER_KRW;
+    reasons.push(`최소 주문금액 ${MIN_ORDER_KRW.toLocaleString()}원 적용`);
+  }
   const reason = reasons.length > 0 ? reasons.join(' | ') : '조절 없음 (기본 비중)';
 
   logger.info(

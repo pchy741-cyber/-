@@ -1,6 +1,7 @@
 import { insertOrder } from '../db/client.js';
 import { getCurrentPrice } from '../kis/market.js';
 import type { OrderResult } from '../kis/order.js';
+import { addPaperInvestment, removePaperInvestment } from './engine.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -45,7 +46,15 @@ export async function paperTradeOrder(params: {
     ai_reasoning: aiReasoning ?? null,
   });
 
-  logger.info(`📝 [PAPER] ${side} ${stockCode} x${quantity} @${filledPrice.toLocaleString()} (${fakeOrderNo})`, {
+  // Paper 현금 추적: 매수 시 차감, 매도 시 복원
+  const orderValue = filledPrice * quantity;
+  if (side === 'BUY') {
+    addPaperInvestment(orderValue);
+  } else {
+    removePaperInvestment(orderValue);
+  }
+
+  logger.info(`📝 [PAPER] ${side} ${stockCode} x${quantity} @${filledPrice.toLocaleString()} (${fakeOrderNo}) | cash${side === 'BUY' ? '-' : '+'}${orderValue.toLocaleString()}`, {
     component: 'PAPER_TRADE',
   });
 

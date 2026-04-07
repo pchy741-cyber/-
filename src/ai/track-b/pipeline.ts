@@ -59,7 +59,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     if (scores.length === 0) {
-      logger.warn('오늘의 AI 스코어가 없습니다 (Track A 미실행?)', { component: 'TRACK_B' });
+      logger.warn('오늘의 AI 스코어가 없습니다 (Track A 미실행?) → 기술적 지표 fallback 진행', { component: 'TRACK_B' });
     }
 
     // 4. 실시간 시세 수집 (열린 체인의 종목 포함)
@@ -86,10 +86,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // 6. AI 키 유무에 따라 분기
     const hasAIKey = config.ai.anthropicKey && !config.ai.anthropicKey.startsWith('your_');
+    const hasScores = scores.length > 0;
 
     let decisions: TradeDecision[];
 
-    if (hasAIKey) {
+    if (hasAIKey && hasScores) {
       // ── AI 모드: Claude 매매 판단 ──
       const technicalsSummary: string[] = [];
       const topStocks = scores.slice(0, 5).map((s) => s.stock_code);
@@ -130,8 +131,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         customPrompt: strategy?.claude_prompt ?? undefined,
       });
     } else {
-      // ── 기술적 지표 모드: AI 없이 자동매매 ──
-      logger.info('🔧 AI 키 미설정 → 기술적 지표 기반 자동매매 모드', { component: 'TRACK_B' });
+      // ── 기술적 지표 모드: AI 키 미설정 또는 스코어 없음 ──
+      logger.info(`🔧 기술적 지표 기반 자동매매 모드 (AI키=${hasAIKey ? 'O' : 'X'}, 스코어=${scores.length}개)`, { component: 'TRACK_B' });
       decisions = technicalFallbackDecisions({
         mode,
         watchlist: watchlist.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
