@@ -86,11 +86,15 @@ export async function getCachedScores(stockCodes: string[]): Promise<AIScore[]> 
 // ── 실시간 시세 캐시 (KIS 호출 절감) ──
 
 const PRICE_TTL = 10; // 10초 (거의 실시간이지만 중복 호출 방지)
+const PRICE_FALLBACK_TTL = 60 * 60 * 2; // 2시간 — API 실패 시 최후 보루
 
 export async function cachePrice(stockCode: string, price: number): Promise<void> {
   const r = getRedis();
-  if (!r) return;
-  await r.set(`price:${stockCode}`, price, { ex: PRICE_TTL });
+  if (!r || price <= 0) return;
+  const pipeline = r.pipeline();
+  pipeline.set(`price:${stockCode}`, price, { ex: PRICE_TTL });
+  pipeline.set(`price:last:${stockCode}`, price, { ex: PRICE_FALLBACK_TTL });
+  await pipeline.exec();
 }
 
 export async function getCachedPrice(stockCode: string): Promise<number | null> {
@@ -98,4 +102,25 @@ export async function getCachedPrice(stockCode: string): Promise<number | null> 
   if (!r) return null;
   const val = await r.get<number>(`price:${stockCode}`);
   return val;
+}
+
+/** API 실패 시 fallback — 마지막으로 성공한 가격 (최대 2시간 유효) */
+export async function getLastKnownPrice(stockCode: string): Promise<number | null> {
+  const r = getRedis();
+  if (!r) return null;
+  return r.get<number>(`price:last:${stockCode}`);
+}
+
+/** 여러 종목의 마지막 가격을 한번에 조회 */
+export async function getLastKnownPrices(stockCodes: string[]): Promise<Map<string, number>> {
+  const r = getRedis();
+  const map = new Map<string, number>();
+  if (!r || stockCodes.length === 0) return map;
+  const pipeline = r.pipeline();
+  for (const code of stockCodes) pipeline.get(`price:last:${code}`);
+  const results = await pipeline.exec();
+  results.forEach((val, idx) => {
+    if (val && Number(val) > 0) map.set(stockCodes[idx], Number(val));
+  });
+  return map;
 }

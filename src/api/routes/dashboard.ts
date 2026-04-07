@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { getPortfolioFlowStatus } from '../../automation/ceo-workflow.js';
-import { getCachedScores } from '../../cache/redis.js';
+import { getCachedScores, cachePrice, getLastKnownPrices } from '../../cache/redis.js';
 import { config } from '../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getPool } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
@@ -40,18 +40,18 @@ dashboardRoutes.get('/dashboard', async (c) => {
     }
   } catch { /* scores unavailable */ }
 
-  // chains에 현재가 매칭 — KIS positions 우선, 없으면 시세 API 직접 조회
+  // chains에 현재가 매칭 — KIS positions 우선 → 시세 API → Redis 캐시 (0원 방지)
   const posMap = new Map((balance.positions ?? []).map((p: any) => [p.stockCode, p]));
   const chainCodes = [...new Set(chains.map((ch: any) => ch.stock_code))];
   const priceMap = new Map<string, number>();
 
-  // 1차: positions에서 매칭
+  // 1차: KIS 잔고 positions에서 매칭
   for (const code of chainCodes) {
     const pos = posMap.get(code);
     if (pos?.currentPrice > 0) priceMap.set(code, pos.currentPrice);
   }
 
-  // 2차: 매칭 안 된 종목은 시세 API 직접 조회 (장중에만)
+  // 2차: 매칭 안 된 종목은 시세 API 직접 조회
   const missingCodes = chainCodes.filter(code => !priceMap.has(code));
   if (missingCodes.length > 0) {
     const priceResults = await Promise.allSettled(
@@ -62,6 +62,18 @@ dashboardRoutes.get('/dashboard', async (c) => {
         priceMap.set(missingCodes[idx], (result.value as any).currentPrice);
       }
     });
+  }
+
+  // 3차: 그래도 없는 종목은 Redis 마지막 캐시에서 복구 (0원 방지)
+  const stillMissing = chainCodes.filter(code => !priceMap.has(code));
+  if (stillMissing.length > 0) {
+    const cached = await getLastKnownPrices(stillMissing);
+    cached.forEach((price, code) => priceMap.set(code, price));
+  }
+
+  // 성공적으로 조회된 가격을 Redis에 캐싱 (다음 요청 때 fallback용)
+  for (const [code, price] of priceMap) {
+    cachePrice(code, price).catch(() => {});
   }
 
   let totalChainInvested = 0;
@@ -83,7 +95,7 @@ dashboardRoutes.get('/dashboard', async (c) => {
   const kisPnl = balance.totalProfitLoss ?? 0;
   const totalInvested = kisInvested + totalChainInvested;
   const totalPnl = kisPnl + totalChainPnl;
-  const totalPnlPct = totalChainInvested > 0 ? (totalChainPnl / totalChainInvested) * 100 : 0;
+  const totalPnlPct = totalInvested > 0 ? (totalPnl / totalInvested) * 100 : 0;
 
   // 현금 = KIS 예수금 - chains 투자원금 (모의투자에서 KIS가 차감 안 해주므로 직접 계산)
   const rawCash = balance.orderableCash ?? 10000000;

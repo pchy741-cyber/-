@@ -42,7 +42,7 @@ const pbg = (n: number | null | undefined) => n == null || n === 0 ? '' : n > 0 
 // Dashboard
 // ═══════════════════════════════════════
 
-type Tab = 'home' | 'trades' | 'watchlist' | 'sources' | 'backtest' | 'settings';
+type Tab = 'home' | 'trades' | 'watchlist' | 'backtest' | 'settings';
 
 export default function Dashboard() {
   const [tab, setTab] = useState<Tab>('home');
@@ -55,11 +55,12 @@ export default function Dashboard() {
   const [killSwitch, setKillSwitch] = useState<any>(null);
   const [secrets, setSecrets] = useState<any>(null);
   const [usDash, setUsDash] = useState<any>(null);
-  const [sources, setSources] = useState<any[]>([]);
+
   const [withdrawConfig, setWithdrawConfig] = useState<any>(null);
   const [withdrawHistory, setWithdrawHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState(new Date());
+  const notebookRef = useRef<HTMLTextAreaElement>(null);
   const geminiRef = useRef<HTMLTextAreaElement>(null);
   const gptRef = useRef<HTMLTextAreaElement>(null);
   const claudeRef = useRef<HTMLTextAreaElement>(null);
@@ -81,11 +82,10 @@ export default function Dashboard() {
       setLoading(false); // 핵심 데이터 로드 즉시 화면 표시
 
       // 2단계: 나머지 데이터 백그라운드 로드
-      const [w, s, t, sec, us, src, wc, wh] = await Promise.allSettled([
+      const [w, s, t, sec, us, wc, wh] = await Promise.allSettled([
         api('/watchlist'), api('/strategy'),
         api('/trades?limit=50'), api('/secrets'),
         api('/overseas/dashboard').catch(() => null),
-        api('/sources').catch(() => []),
         api('/withdraw/config').catch(() => null),
         api('/withdraw/history').catch(() => []),
       ]);
@@ -94,7 +94,7 @@ export default function Dashboard() {
       if (t.status === 'fulfilled') setTrades(Array.isArray(t.value) ? t.value : []);
       if (sec.status === 'fulfilled') setSecrets(sec.value);
       if (us.status === 'fulfilled' && us.value) setUsDash(us.value);
-      if (src.status === 'fulfilled') setSources(Array.isArray(src.value) ? src.value : []);
+
       if (wc.status === 'fulfilled' && wc.value) setWithdrawConfig(wc.value);
       if (wh.status === 'fulfilled') setWithdrawHistory(Array.isArray(wh.value) ? wh.value : []);
     } catch (err) { setLoading(false); console.error('[QUANTOPS] 데이터 로드 실패:', err); }
@@ -114,7 +114,7 @@ export default function Dashboard() {
     { id: 'home', label: '대시보드', icon: '📊' },
     { id: 'trades', label: '매매내역', icon: '📋' },
     { id: 'watchlist', label: '감시목록', icon: '👁' },
-    { id: 'sources', label: '참고소스', icon: '📎' },
+
     { id: 'backtest', label: '백테스트', icon: '🧪' },
     { id: 'settings', label: '설정', icon: '⚙️' },
   ];
@@ -195,12 +195,12 @@ export default function Dashboard() {
             </div>
           ) : (
             <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px] mx-auto">
-              {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} sources={sources} withdrawConfig={withdrawConfig} onRefresh={load} />}
+              {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={withdrawConfig} onRefresh={load} />}
               {tab === 'trades' && <TradesView trades={trades} />}
               {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} />}
-              {tab === 'sources' && <SourcesView sources={sources} setSources={setSources} />}
+
               {tab === 'backtest' && <BacktestView watchlist={watchlist} />}
-              {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} geminiRef={geminiRef} gptRef={gptRef} claudeRef={claudeRef} killSwitch={killSwitch} toggleKill={toggleKill} withdrawConfig={withdrawConfig} setWithdrawConfig={setWithdrawConfig} withdrawHistory={withdrawHistory} setWithdrawHistory={setWithdrawHistory} />}
+              {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} notebookRef={notebookRef} geminiRef={geminiRef} gptRef={gptRef} claudeRef={claudeRef} killSwitch={killSwitch} toggleKill={toggleKill} withdrawConfig={withdrawConfig} setWithdrawConfig={setWithdrawConfig} withdrawHistory={withdrawHistory} setWithdrawHistory={setWithdrawHistory} />}
             </div>
           )}
         </main>
@@ -213,7 +213,7 @@ export default function Dashboard() {
 // HOME VIEW
 // ═══════════════════════════════════════
 
-function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawConfig, onRefresh }: any) {
+function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, onRefresh }: any) {
   const p = dash?.portfolio;
   const chains = dash?.chains || [];
   const usW = usDash?.watchlist || [];
@@ -586,24 +586,6 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
         </Panel>
       </div>
 
-      {/* ── 참고 소스 ── */}
-      {sources?.length > 0 && (
-        <Panel title="참고 소스" badge={`${sources.length}건`}>
-          <div className="divide-y divide-white/[0.03]">
-            {sources.slice(0, 4).map((s: any) => (
-              <a key={s.id} href={s.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.02] group">
-                <span className="text-base shrink-0">{sourceIcon(s.source_type)}</span>
-                <div className="flex-1 min-w-0">
-                  <div className="text-[13px] font-medium text-slate-300 group-hover:text-blue-400 transition-colors truncate">{s.title}</div>
-                  {s.memo && <div className="text-[11px] text-slate-600 truncate mt-0.5">{s.memo}</div>}
-                </div>
-                <span className="text-[10px] text-slate-600 shrink-0">{fmtTime(s.added_at)}</span>
-                {s.is_pinned && <span className="text-[9px] bg-amber-500/10 text-amber-400 px-1.5 py-0.5 rounded font-medium shrink-0">PIN</span>}
-              </a>
-            ))}
-          </div>
-        </Panel>
-      )}
 
       {/* ── 시스템 로그 ── */}
       {(health?.recentEvents?.length > 0) && (
@@ -1148,158 +1130,22 @@ function BacktestView({ watchlist }: { watchlist: any[] }) {
 }
 
 // ═══════════════════════════════════════
-// SOURCES VIEW
-// ═══════════════════════════════════════
-
-function sourceIcon(type: string) {
-  switch (type) {
-    case 'youtube': return '🎬';
-    case 'news': return '📰';
-    case 'research': return '📊';
-    default: return '📎';
-  }
-}
-
-function SourcesView({ sources, setSources }: { sources: any[]; setSources: (s: any[]) => void }) {
-  const addSource = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const fd = new FormData(e.currentTarget);
-    const title = String(fd.get('title') ?? '').trim();
-    const url = String(fd.get('url') ?? '').trim();
-    const sourceType = String(fd.get('source_type') ?? 'article');
-    const memo = String(fd.get('memo') ?? '').trim();
-    if (!title || !url) { alert('제목과 URL을 입력하세요'); return; }
-    try {
-      const added = await api('/sources', { method: 'POST', body: JSON.stringify({ title, url, source_type: sourceType, memo }) });
-      setSources([added, ...sources]);
-      (e.target as HTMLFormElement).reset();
-    } catch (err: any) { alert(err.message); }
-  };
-
-  const togglePin = async (id: string) => {
-    await api(`/sources/${id}/pin`, { method: 'PATCH' });
-    setSources(sources.map(s => s.id === id ? { ...s, is_pinned: !s.is_pinned } : s));
-  };
-
-  const del = async (id: string) => {
-    if (!confirm('삭제하시겠습니까?')) return;
-    await api(`/sources/${id}`, { method: 'DELETE' });
-    setSources(sources.filter(s => s.id !== id));
-  };
-
-  // YouTube URL에서 video ID 추출
-  const getYoutubeId = (url: string) => {
-    const m = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([a-zA-Z0-9_-]{11})/);
-    return m?.[1] ?? null;
-  };
-
-  const pinned = sources.filter(s => s.is_pinned);
-  const others = sources.filter(s => !s.is_pinned);
-
-  return (
-    <div className="space-y-5 sm:space-y-6">
-      {/* 추가 폼 */}
-      <Panel title="소스 추가">
-        <form onSubmit={addSource} className="p-4 space-y-3">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <input name="title" placeholder="제목 (예: 이번주 시장 전망)" required className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm placeholder:text-slate-600 focus:border-blue-500 focus:outline-none" />
-            <input name="url" placeholder="URL (YouTube, 뉴스, 리서치)" required className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm placeholder:text-slate-600 focus:border-blue-500 focus:outline-none" />
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr_auto] gap-3 items-end">
-            <select name="source_type" defaultValue="youtube" className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
-              <option value="youtube">YouTube</option>
-              <option value="news">뉴스</option>
-              <option value="research">리서치</option>
-              <option value="article">기사/블로그</option>
-            </select>
-            <input name="memo" placeholder="메모 (선택)" className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm placeholder:text-slate-600 focus:border-blue-500 focus:outline-none" />
-            <button type="submit" className="px-5 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium whitespace-nowrap">추가</button>
-          </div>
-        </form>
-      </Panel>
-
-      {/* 핀 고정 소스 */}
-      {pinned.length > 0 && (
-        <Panel title="고정 소스" badge={`${pinned.length}건`}>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3">
-            {pinned.map((s: any) => {
-              const ytId = s.source_type === 'youtube' ? getYoutubeId(s.url) : null;
-              return (
-                <div key={s.id} className="bg-slate-900/60 rounded-lg border border-slate-700/30 overflow-hidden group">
-                  {ytId && (
-                    <div className="aspect-video bg-black">
-                      <iframe src={`https://www.youtube.com/embed/${ytId}`} className="w-full h-full" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope" allowFullScreen />
-                    </div>
-                  )}
-                  <div className="p-3">
-                    <div className="flex items-start gap-2">
-                      <span className="text-sm shrink-0">{sourceIcon(s.source_type)}</span>
-                      <div className="flex-1 min-w-0">
-                        <a href={s.url} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-blue-400 hover:text-blue-300 block truncate">{s.title}</a>
-                        {s.memo && <p className="text-[10px] text-slate-500 mt-0.5">{s.memo}</p>}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 mt-2">
-                      <span className="text-[10px] text-slate-600">{fmtTime(s.added_at)}</span>
-                      <div className="ml-auto flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => togglePin(s.id)} className="text-[10px] text-amber-400 hover:text-amber-300">고정 해제</button>
-                        <button onClick={() => del(s.id)} className="text-[10px] text-rose-400 hover:text-rose-300">삭제</button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </Panel>
-      )}
-
-      {/* 전체 소스 목록 */}
-      <Panel title="전체 소스" badge={`${others.length}건`}>
-        {others.length === 0 ? (
-          <div className="p-6 text-center space-y-3">
-            <div className="text-2xl opacity-30">📎</div>
-            <p className="text-sm text-slate-400">등록된 소스가 없습니다</p>
-            <p className="text-[11px] text-slate-600">YouTube 투자 채널, 뉴스 기사, 리서치 보고서 URL을 추가하면<br/>AI가 분석 시 참고하여 더 정확한 판단을 내립니다.</p>
-            <div className="flex flex-wrap justify-center gap-2 mt-2 text-[10px]">
-              <span className="bg-slate-800 text-slate-400 px-2.5 py-1 rounded-lg">예: 슈카월드 유튜브</span>
-              <span className="bg-slate-800 text-slate-400 px-2.5 py-1 rounded-lg">예: 한경 시장 전망</span>
-              <span className="bg-slate-800 text-slate-400 px-2.5 py-1 rounded-lg">예: 증권사 리서치</span>
-            </div>
-          </div>
-        ) : (
-          <div className="divide-y divide-slate-800/20">
-            {others.map((s: any) => (
-              <div key={s.id} className="flex items-center gap-3 px-3 py-2.5 hover:bg-slate-800/30 group">
-                <span className="text-sm shrink-0">{sourceIcon(s.source_type)}</span>
-                <div className="flex-1 min-w-0">
-                  <a href={s.url} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-blue-400 hover:text-blue-300 truncate block">{s.title}</a>
-                  {s.memo && <p className="text-[10px] text-slate-500 truncate">{s.memo}</p>}
-                </div>
-                <span className="text-[10px] text-slate-600 shrink-0">{fmtTime(s.added_at)}</span>
-                <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                  <button onClick={() => togglePin(s.id)} className="text-[10px] text-amber-400 hover:text-amber-300">PIN</button>
-                  <button onClick={() => del(s.id)} className="text-[10px] text-rose-400 hover:text-rose-300">삭제</button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </Panel>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════
 // SETTINGS VIEW
 // ═══════════════════════════════════════
 
-function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claudeRef, killSwitch, toggleKill, withdrawConfig, setWithdrawConfig, withdrawHistory, setWithdrawHistory }: any) {
+function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, gptRef, claudeRef, killSwitch, toggleKill, withdrawConfig, setWithdrawConfig, withdrawHistory, setWithdrawHistory }: any) {
+  const [activeStep, setActiveStep] = useState<number>(0);
   const setField = async (field: string, val: string | number) => {
     try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify({ ...strategy, [field]: val }) }); setStrategy(u); } catch { alert('설정 저장 실패 — 다시 시도하세요'); }
   };
   const saveStrategy = async () => {
-    const body = { ...strategy, gemini_prompt: geminiRef.current?.value ?? '', gpt_prompt: gptRef.current?.value ?? '', claude_prompt: claudeRef.current?.value ?? '' };
+    const body = {
+      ...strategy,
+      notebooklm_prompt: notebookRef.current?.value ?? '',
+      gemini_prompt: geminiRef.current?.value ?? '',
+      gpt_prompt: gptRef.current?.value ?? '',
+      claude_prompt: claudeRef.current?.value ?? '',
+    };
     try { await api('/strategy', { method: 'PUT', body: JSON.stringify(body) }); alert('저장 완료'); } catch (err: any) { alert(err.message); }
   };
   const saveSecrets = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -1311,17 +1157,29 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
     try { await api('/secrets', { method: 'PUT', body: JSON.stringify(body) }); (e.target as HTMLFormElement).reset(); alert('저장 완료'); } catch (err: any) { alert(err.message); }
   };
 
-  const promptTabs = [
-    { id: 'gemini' as const, label: 'Gemini (서론 · 분석)', ref: geminiRef, key: 'gemini_prompt',
-      desc: '1단계: 시장 데이터 + CEO 참고소스를 종합하여 팩트 기반 분석 리포트를 생성합니다. 여기서 작성한 내용이 GPT 스코어링의 입력이 됩니다.',
-      placeholder: `## CEO 추가 지시사항\n\n### 분석 우선순위\n1. 기관/외국인 수급 데이터를 최우선으로 분석하라. 3일 연속 순매수 종목만 주목.\n2. 최근 실적(영업이익) 증가 확인 필수. 적자전환 또는 실적 악화 종목은 즉시 제외.\n3. 52주 고점 대비 -10%~-25% 구간의 눌림목 종목을 우선 분석.\n\n### 제외 조건 (절대 분석하지 마)\n- 시가총액 5000억 미만 소형주\n- 테마주/급등주 (하루 +15% 이상 급등한 종목)\n- 최근 30일 내 대규모 유상증자/CB 발행 공시가 있는 종목` },
-    { id: 'gpt' as const, label: 'GPT (본론 · 스코어링)', ref: gptRef, key: 'gpt_prompt',
-      desc: '2단계: Gemini 분석 결과를 바탕으로 종목별 0~100점 스코어를 산출합니다. 75점 이상이면 매수 후보로 선정됩니다.',
+  const steps = [
+    { label: 'NotebookLM', sub: '소스 수집', color: 'amber', ref: notebookRef, key: 'notebooklm_prompt',
+      desc: 'NotebookLM에서 정리한 시장 분석·뉴스·리서치를 여기에 붙여넣으세요. 이 내용이 Gemini의 입력 소스가 됩니다.',
+      placeholder: `## NotebookLM에서 복사한 내용 붙여넣기\n\n예시:\n- 이번 주 시장 전망 요약\n- 주목할 섹터/종목 리스트\n- 기관/외국인 수급 동향\n- 증권사 리서치 핵심 포인트\n- YouTube 투자 채널 요약` },
+    { label: 'Gemini', sub: '분석 가공', color: 'blue', ref: geminiRef, key: 'gemini_prompt',
+      desc: 'NotebookLM 소스 + 시장 데이터를 종합하여 팩트 기반 분석 리포트를 생성합니다.',
+      placeholder: `## CEO 추가 지시사항\n\n### 분석 우선순위\n1. 기관/외국인 수급 데이터를 최우선으로 분석하라. 3일 연속 순매수 종목만 주목.\n2. 최근 실적(영업이익) 증가 확인 필수. 적자전환 또는 실적 악화 종목은 즉시 제외.\n3. 52주 고점 대비 -10%~-25% 구간의 눌림목 종목을 우선 분석.\n\n### 제외 조건\n- 시가총액 5000억 미만 소형주\n- 테마주/급등주 (하루 +15% 이상)\n- 최근 30일 내 유상증자/CB 발행 종목` },
+    { label: 'GPT', sub: '스코어링', color: 'purple', ref: gptRef, key: 'gpt_prompt',
+      desc: 'Gemini 분석 리포트를 바탕으로 종목별 0~100점 스코어를 산출합니다. 75점 이상 → 매수 후보.',
       placeholder: `## 스코어링 보정 지시\n\n### 가점 조건\n- 외국인+기관 동시 순매수 3일 이상: +10점\n- 실적 서프라이즈(컨센서스 대비 +10%): +8점\n- RSI 30 이하 과매도 구간: +5점\n\n### 감점 조건\n- 거래량 급감 (20일 평균 대비 50% 미만): -10점\n- 단기 급등 후 조정 없음 (5일 +10% 이상): -15점\n- 공매도 잔고 비율 5% 이상: -8점` },
-    { id: 'claude' as const, label: 'Claude (결론 · 매매)', ref: claudeRef, key: 'claude_prompt',
-      desc: '3단계: AI 스코어 + 실시간 시세를 종합하여 BUY/SELL/HOLD 최종 결정을 내립니다. 수량까지 계산합니다.',
-      placeholder: `## 매매 실행 추가 규칙\n\n### 매수 원칙\n- 장 시작 30분(09:00~09:30)은 변동성이 크므로 매수 금지\n- 14:30 이후 신규 매수 금지 (당일 청산 리스크)\n- 동일 종목 하루 1회만 매수\n\n### 매도 원칙\n- 손절은 반드시 지켜라. 감정적 판단 금지.\n- 2일 연속 하락 + 거래량 증가 시 즉시 매도\n- 익절 시 "조금 더 오를 수 있다"는 판단 금지, 기계적 실행` },
+    { label: 'Claude', sub: '매매 실행', color: 'emerald', ref: claudeRef, key: 'claude_prompt',
+      desc: 'AI 스코어 + 실시간 시세를 종합하여 BUY/SELL/HOLD 최종 결정 + 수량 계산.',
+      placeholder: `## 매매 실행 추가 규칙\n\n### 매수 원칙\n- 장 시작 30분(09:00~09:30) 매수 금지\n- 14:30 이후 신규 매수 금지\n- 동일 종목 하루 1회만 매수\n\n### 매도 원칙\n- 손절은 반드시 지켜라. 감정적 판단 금지.\n- 2일 연속 하락 + 거래량 증가 시 즉시 매도\n- 익절 시 "조금 더" 판단 금지, 기계적 실행` },
   ];
+  const colorMap: Record<string, { bg: string; border: string; text: string; dot: string; grad: string; activeBg: string }> = {
+    amber:   { bg: 'bg-amber-500/10',   border: 'border-amber-500/20',   text: 'text-amber-400',   dot: 'bg-amber-400',   grad: 'from-amber-500 to-orange-500', activeBg: 'bg-amber-950/20' },
+    blue:    { bg: 'bg-blue-500/10',     border: 'border-blue-500/20',    text: 'text-blue-400',    dot: 'bg-blue-400',    grad: 'from-blue-500 to-cyan-500',    activeBg: 'bg-blue-950/20' },
+    purple:  { bg: 'bg-purple-500/10',   border: 'border-purple-500/20',  text: 'text-purple-400',  dot: 'bg-purple-400',  grad: 'from-purple-500 to-pink-500',  activeBg: 'bg-purple-950/20' },
+    emerald: { bg: 'bg-emerald-500/10',  border: 'border-emerald-500/20', text: 'text-emerald-400', dot: 'bg-emerald-400', grad: 'from-emerald-500 to-teal-500', activeBg: 'bg-emerald-950/20' },
+  };
+  const cur = steps[activeStep];
+  const cc = colorMap[cur.color];
+
   return (
     <div className="space-y-5 sm:space-y-6">
       {/* ── KIS 미설정 경고 ── */}
@@ -1353,7 +1211,7 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
           <div className="p-4 sm:p-5 flex items-center justify-between">
             <div>
               <p className="text-sm font-medium">Track A 즉시 실행</p>
-              <p className="text-[11px] text-slate-500 mt-0.5">Gemini → GPT → Claude 파이프라인</p>
+              <p className="text-[11px] text-slate-500 mt-0.5">NotebookLM → Gemini → GPT → Claude</p>
             </div>
             <button onClick={async () => {
               if (!confirm('AI 분석을 수동 실행하시겠습니까?')) return;
@@ -1365,7 +1223,7 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
         </Panel>
       </div>
 
-      {/* ── 전략 설정 (풀와이드) ── */}
+      {/* ── 전략 설정 ── */}
       {strategy && (
         <Panel title="전략 설정" badge={strategy.mode === 'SWING' ? '안정 스윙' : strategy.mode === 'DEFENSE' ? '방어 모드' : '단타'} badgeColor={strategy.mode === 'SWING' ? 'blue' : strategy.mode === 'DEFENSE' ? 'red' : 'amber'}>
           <div className="p-4 sm:p-5 space-y-4">
@@ -1382,68 +1240,47 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
         </Panel>
       )}
 
-      {/* ── AI 파이프라인 프롬프트 관리 (Step 1→2→3) ── */}
+      {/* ── AI 파이프라인 프롬프트 (탭 UI) ── */}
       {strategy && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
+        <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden">
+          {/* 헤더 + 저장 버튼 */}
+          <div className="p-4 sm:p-5 border-b border-white/[0.04] flex items-center justify-between">
             <div>
-              <h3 className="text-base font-bold text-slate-100">AI 파이프라인 프롬프트 관리</h3>
-              <p className="text-[11px] text-slate-500 mt-0.5">소스 가공 (Step 1) → 스코어링 (Step 2) → 매매 실행 (Step 3)</p>
+              <h3 className="text-sm font-bold text-slate-100">AI 파이프라인 프롬프트</h3>
+              <p className="text-[10px] text-slate-500 mt-0.5">각 단계 탭을 눌러 프롬프트를 편집하세요</p>
             </div>
-            <button onClick={saveStrategy} className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-xs font-bold transition-all">파이프라인 프롬프트 적용</button>
+            <button onClick={saveStrategy} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-xs font-bold transition-all">저장</button>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            {/* Step 1: Gemini */}
-            <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden relative">
-              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 to-cyan-500" />
-              <div className="p-4 border-b border-white/[0.04] flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 text-xs font-black">1</div>
-                <div>
-                  <div className="text-xs font-bold text-slate-200">Gemini — 정보 수집 및 가공</div>
-                  <div className="text-[10px] text-slate-500">소스를 팩트 기반 보고서로 정제</div>
-                </div>
-              </div>
-              <div className="p-4">
-                <textarea ref={geminiRef} defaultValue={strategy?.gemini_prompt || ''} rows={8}
-                  className="w-full bg-slate-900/60 border border-slate-700/50 rounded-lg p-3 text-[11px] leading-relaxed resize-y font-mono focus:border-blue-500 focus:outline-none text-slate-300"
-                  placeholder={(promptTabs[0] as any).placeholder} />
-              </div>
-            </div>
+          {/* 스텝 네비게이션 (가로 탭) */}
+          <div className="flex border-b border-white/[0.04]">
+            {steps.map((s, i) => {
+              const sc = colorMap[s.color];
+              const active = i === activeStep;
+              return (
+                <button key={s.label} onClick={() => setActiveStep(i)}
+                  className={`flex-1 py-3 px-2 text-center transition-all relative ${active ? 'bg-white/[0.03]' : 'hover:bg-white/[0.02]'}`}>
+                  {active && <div className={`absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r ${sc.grad}`} />}
+                  <div className="flex items-center justify-center gap-1.5">
+                    <div className={`w-5 h-5 rounded-md flex items-center justify-center text-[10px] font-black ${active ? `${sc.bg} ${sc.border} border ${sc.text}` : 'bg-slate-800 text-slate-500'}`}>{i + 1}</div>
+                    <div className="text-left hidden sm:block">
+                      <div className={`text-[11px] font-bold ${active ? sc.text : 'text-slate-400'}`}>{s.label}</div>
+                      <div className="text-[9px] text-slate-600">{s.sub}</div>
+                    </div>
+                    <div className={`sm:hidden text-[11px] font-bold ${active ? sc.text : 'text-slate-400'}`}>{s.label}</div>
+                  </div>
+                  {i < steps.length - 1 && <span className="absolute right-0 top-1/2 -translate-y-1/2 text-slate-700 text-[10px]">&rarr;</span>}
+                </button>
+              );
+            })}
+          </div>
 
-            {/* Step 2: GPT */}
-            <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden relative">
-              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-purple-500 to-pink-500" />
-              <div className="p-4 border-b border-white/[0.04] flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 text-xs font-black">2</div>
-                <div>
-                  <div className="text-xs font-bold text-slate-200">GPT-4o — 심층 분석 및 스코어링</div>
-                  <div className="text-[10px] text-slate-500">보고서 기반 종목별 0~100점 산출</div>
-                </div>
-              </div>
-              <div className="p-4">
-                <textarea ref={gptRef} defaultValue={strategy?.gpt_prompt || ''} rows={8}
-                  className="w-full bg-slate-900/60 border border-slate-700/50 rounded-lg p-3 text-[11px] leading-relaxed resize-y font-mono focus:border-purple-500 focus:outline-none text-slate-300"
-                  placeholder={(promptTabs[1] as any).placeholder} />
-              </div>
-            </div>
-
-            {/* Step 3: Claude */}
-            <div className="glass rounded-2xl border border-emerald-500/20 overflow-hidden relative">
-              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-500 to-teal-500" />
-              <div className="p-4 border-b border-white/[0.04] bg-emerald-500/[0.03] flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 text-xs font-black">3</div>
-                <div>
-                  <div className="text-xs font-bold text-emerald-300">Claude — 매매 실행 (최종 책임자)</div>
-                  <div className="text-[10px] text-slate-500">BUY/SELL/HOLD 결정 + 수량 계산</div>
-                </div>
-              </div>
-              <div className="p-4">
-                <textarea ref={claudeRef} defaultValue={strategy?.claude_prompt || ''} rows={8}
-                  className="w-full bg-emerald-950/20 border border-emerald-900/30 rounded-lg p-3 text-[11px] leading-relaxed resize-y font-mono focus:border-emerald-500 focus:outline-none text-slate-300"
-                  placeholder={(promptTabs[2] as any).placeholder} />
-              </div>
-            </div>
+          {/* 선택된 스텝 내용 */}
+          <div className={`p-4 sm:p-5 ${cc.activeBg}`}>
+            <p className="text-[11px] text-slate-400 mb-3">{cur.desc}</p>
+            <textarea ref={cur.ref} defaultValue={strategy?.[cur.key] || ''} rows={10}
+              className={`w-full bg-slate-900/60 border border-slate-700/50 rounded-lg p-3 text-[11px] leading-relaxed resize-y font-mono focus:outline-none text-slate-300 focus:border-${cur.color}-500`}
+              placeholder={cur.placeholder} />
           </div>
         </div>
       )}

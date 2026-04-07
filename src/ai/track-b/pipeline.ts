@@ -67,6 +67,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const allStockCodes = [...new Set([...stockCodes, ...chainStockCodes])];
     const livePrices = await getBatchPrices(allStockCodes);
 
+    // 가격 캐싱 — 대시보드에서 API 실패 시 fallback용
+    try {
+      const { cachePrice } = await import('../../cache/redis.js');
+      for (const [code, p] of livePrices) {
+        if (p.currentPrice > 0) cachePrice(code, p.currentPrice).catch(() => {});
+      }
+    } catch { /* cache optional */ }
+
     // 5. 전 종목 차트 데이터 수집 (기술적 지표용)
     const chartData = new Map<string, import('../../kis/market.js').DailyCandle[]>();
     const allCodesForChart = [...new Set([...stockCodes, ...openChains.map((c) => c.stock_code)])];
