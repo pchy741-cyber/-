@@ -11,12 +11,14 @@ const BACKEND_URL =
     ? (process.env.NEXT_PUBLIC_API_BASE_URL || (window.location.port === '3000' ? 'http://localhost:8080' : window.location.origin))
     : (process.env.NEXT_PUBLIC_API_BASE_URL || '');
 
-async function api(path: string, opts?: RequestInit) {
+async function api(path: string, opts?: RequestInit & { timeout?: number }) {
   const base = BACKEND_URL.endsWith('/') ? BACKEND_URL.slice(0, -1) : BACKEND_URL;
+  const ms = opts?.timeout ?? (path.includes('backtest') ? 120000 : 8000);
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 8000); // 8초 타임아웃
+  const timeoutId = setTimeout(() => controller.abort(), ms);
   try {
-    const res = await fetch(`${base}/api${path}`, { ...opts, signal: controller.signal, cache: 'no-store', headers: { 'Content-Type': 'application/json', ...opts?.headers } });
+    const { timeout: _, ...fetchOpts } = opts ?? {};
+    const res = await fetch(`${base}/api${path}`, { ...fetchOpts, signal: controller.signal, cache: 'no-store', headers: { 'Content-Type': 'application/json', ...fetchOpts?.headers } });
     if (!res.ok) throw new Error(`API ${path} (${res.status})`);
     return res.json();
   } finally {
@@ -62,7 +64,10 @@ export default function Dashboard() {
   const gptRef = useRef<HTMLTextAreaElement>(null);
   const claudeRef = useRef<HTMLTextAreaElement>(null);
 
+  const loadingRef = useRef(false);
   const load = async () => {
+    if (loadingRef.current) return; // 이전 요청 겹침 방지
+    loadingRef.current = true;
     try {
       setLoading(true);
       // 1단계: 핵심 데이터 먼저 (화면 표시용)
@@ -93,6 +98,7 @@ export default function Dashboard() {
       if (wc.status === 'fulfilled' && wc.value) setWithdrawConfig(wc.value);
       if (wh.status === 'fulfilled') setWithdrawHistory(Array.isArray(wh.value) ? wh.value : []);
     } catch { setLoading(false); }
+    finally { loadingRef.current = false; }
   };
 
   useEffect(() => { load(); const iv = setInterval(load, 30000); return () => clearInterval(iv); }, []);
@@ -587,7 +593,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, sources, withdrawC
 // ═══════════════════════════════════════
 
 function TradesView({ trades }: { trades: any[] }) {
-  const [expanded, setExpanded] = useState<number | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   return (
     <Panel title="매매내역" badge={`${trades.length}건`}>
@@ -608,10 +614,11 @@ function TradesView({ trades }: { trades: any[] }) {
               <tr><td colSpan={8} className="p-12 text-center text-slate-500">매매 기록 없음</td></tr>
             ) : trades.map((t: any, i: number) => {
               const chain = t.transaction_chains;
-              const isOpen = expanded === i;
+              const tradeKey = t.id || t.kis_order_no || `t${i}`;
+              const isOpen = expanded === tradeKey;
               return (
-              <React.Fragment key={i}>
-              <tr onClick={() => setExpanded(isOpen ? null : i)} className="hover:bg-slate-800/20 transition-colors cursor-pointer">
+              <React.Fragment key={tradeKey}>
+              <tr onClick={() => setExpanded(isOpen ? null : tradeKey)} className="hover:bg-slate-800/20 transition-colors cursor-pointer">
                 <td className="px-4 py-3 text-slate-500">{fmtTime(t.created_at)}</td>
                 <td className="px-4 py-3 font-semibold">{t.stock_code}</td>
                 <td className="px-4 py-3 text-center"><SideBadge side={t.side} /></td>
@@ -746,9 +753,9 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
                 <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
                   <Indicator label="과열/침체" value={t.rsi14?.toFixed(0)} sub={t.rsi14 > 70 ? '너무 올랐음' : t.rsi14 < 30 ? '많이 빠짐 (기회)' : '적정 수준'} color={t.rsi14 > 70 ? 'rose' : t.rsi14 < 30 ? 'emerald' : 'slate'} />
                   <Indicator label="추세 방향" value={t.macdHistogram > 0 ? '상승' : '하락'} sub={t.macdCrossover === 'golden' ? '상승 전환!' : t.macdCrossover === 'dead' ? '하락 전환' : '유지 중'} color={t.macdHistogram > 0 ? 'emerald' : 'rose'} />
-                  <Indicator label="가격 위치" value={t.bollingerPosition?.toFixed(0) + '%'} sub={t.bollingerPosition > 80 ? '고가 영역' : t.bollingerPosition < 20 ? '저가 영역' : '중간'} color={t.bollingerPosition > 80 ? 'rose' : t.bollingerPosition < 20 ? 'emerald' : 'slate'} />
-                  <Indicator label="추세 강도" value={t.adx14?.toFixed(0)} sub={t.adx14 > 25 ? '뚜렷한 방향' : '방향 없음'} color={t.adx14 > 25 ? 'blue' : 'slate'} />
-                  <Indicator label="AI 종합" value={t.score?.toFixed(0) + '점'} sub={t.score > 20 ? '매수 유리' : t.score < -20 ? '매수 위험' : '관망'} color={t.score > 20 ? 'emerald' : t.score < -20 ? 'rose' : 'slate'} />
+                  <Indicator label="가격 위치" value={t.bollingerPosition != null ? t.bollingerPosition.toFixed(0) + '%' : '-'} sub={t.bollingerPosition > 80 ? '고가 영역' : t.bollingerPosition < 20 ? '저가 영역' : '중간'} color={t.bollingerPosition > 80 ? 'rose' : t.bollingerPosition < 20 ? 'emerald' : 'slate'} />
+                  <Indicator label="추세 강도" value={t.adx14 != null ? t.adx14.toFixed(0) : '-'} sub={t.adx14 > 25 ? '뚜렷한 방향' : '방향 없음'} color={t.adx14 > 25 ? 'blue' : 'slate'} />
+                  <Indicator label="AI 종합" value={t.score != null ? t.score.toFixed(0) + '점' : '-'} sub={t.score > 20 ? '매수 유리' : t.score < -20 ? '매수 위험' : '관망'} color={t.score > 20 ? 'emerald' : t.score < -20 ? 'rose' : 'slate'} />
                 </div>
                 <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 mt-3 text-center text-[11px]">
                   <div className="bg-slate-900/40 rounded-lg p-2"><span className="text-slate-500 block">5일 평균가</span><b>{t.sma5?.toLocaleString()}</b></div>
@@ -1180,7 +1187,7 @@ function SourcesView({ sources, setSources }: { sources: any[]; setSources: (s: 
 function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claudeRef, killSwitch, toggleKill, withdrawConfig, setWithdrawConfig, withdrawHistory, setWithdrawHistory }: any) {
   const [promptTab, setPromptTab] = useState<'gemini' | 'gpt' | 'claude'>('gemini');
   const setField = async (field: string, val: string | number) => {
-    try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify({ ...strategy, [field]: val }) }); setStrategy(u); } catch {}
+    try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify({ ...strategy, [field]: val }) }); setStrategy(u); } catch { alert('설정 저장 실패 — 다시 시도하세요'); }
   };
   const saveStrategy = async () => {
     const body = { ...strategy, gemini_prompt: geminiRef.current?.value ?? '', gpt_prompt: gptRef.current?.value ?? '', claude_prompt: claudeRef.current?.value ?? '' };
@@ -1305,7 +1312,7 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
                 try {
                   const updated = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, is_active: next }) });
                   setWithdrawConfig({ ...updated, totalReserved: withdrawConfig?.totalReserved ?? 0 });
-                } catch {}
+                } catch { alert('저장 실패'); }
               }} className={`px-4 py-2 rounded-lg text-xs font-bold ${withdrawConfig?.is_active ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-slate-700 hover:bg-slate-600 text-slate-400'}`}>
                 {withdrawConfig?.is_active ? 'ON' : 'OFF'}
               </button>
@@ -1313,16 +1320,16 @@ function SettingsView({ strategy, setStrategy, secrets, geminiRef, gptRef, claud
 
             <div className="grid grid-cols-2 gap-3">
               <Sel label="목표 수익률" value={withdrawConfig?.target_profit_pct ?? 10} opts={[[5,'5%'],[8,'8%'],[10,'10%'],[15,'15%'],[20,'20%'],[30,'30%']]} onChange={async v => {
-                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, target_profit_pct: Number(v) }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch {}
+                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, target_profit_pct: Number(v) }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch { alert('저장 실패'); }
               }} />
               <Sel label="인출 비율 (수익분 중)" value={withdrawConfig?.withdraw_ratio_pct ?? 50} opts={[[30,'30%'],[50,'50%'],[70,'70%'],[80,'80%'],[100,'100%']]} onChange={async v => {
-                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, withdraw_ratio_pct: Number(v) }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch {}
+                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, withdraw_ratio_pct: Number(v) }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch { alert('저장 실패'); }
               }} />
               <Sel label="최소 인출 금액" value={withdrawConfig?.min_withdraw_amount ?? 100000} opts={[[50000,'5만원'],[100000,'10만원'],[200000,'20만원'],[500000,'50만원'],[1000000,'100만원']]} onChange={async v => {
-                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, min_withdraw_amount: Number(v) }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch {}
+                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, min_withdraw_amount: Number(v) }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch { alert('저장 실패'); }
               }} />
               <Sel label="체크 주기" value={withdrawConfig?.check_frequency ?? 'daily'} opts={[['daily','매일 (장 마감)'],['weekly','매주 금요일']]} onChange={async v => {
-                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, check_frequency: v }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch {}
+                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, check_frequency: v }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch { alert('저장 실패'); }
               }} />
             </div>
 
