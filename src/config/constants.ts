@@ -59,7 +59,7 @@ export type StrategyMode = (typeof StrategyMode)[keyof typeof StrategyMode];
 // ── 전략별 파라미터 ──
 export const STRATEGY_PARAMS = {
   SWING: {
-    buyThreshold: 75, // 매수 진입 점수
+    buyThreshold: 70, // 매수 진입 점수
     splitCount: 3, // 3분할 매수
     averageDownPct: -3, // 물타기 트리거 (-3%)
     maxAveragingCount: 3, // 최대 물타기 횟수

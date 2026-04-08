@@ -43,7 +43,7 @@ export const CLAUDE_SWING_RULES = `
 ## 스윙 매매 룰 (기본)
 
 ### 매수 조건
-- AI 스코어 75점 이상 + 기술적 확인 (RSI < 70, MACD 양전환 등)
+- AI 스코어 70점 이상 + 기술적 확인 (RSI < 70, MACD 양전환 등)
 - 예산을 3분할하여 1차 매수 진입 (전체 예산의 1/3)
 - **수량 계산 필수**: quantity = Math.floor(1회 매수 예산 ÷ 현재가). 컨텍스트의 "매수 예산 계산" 섹션 참조
 - quantity가 1 이상이어야 BUY 가능. 0이면 HOLD

@@ -47,7 +47,7 @@ settingsRoutes.put('/strategy', async (c) => {
     gemini_prompt: body.gemini_prompt ?? '',
     gpt_prompt: body.gpt_prompt ?? '',
     claude_prompt: body.claude_prompt ?? '',
-    buy_threshold: body.buy_threshold ?? 75,
+    buy_threshold: body.buy_threshold ?? 70,
     stop_loss_pct: body.stop_loss_pct ?? -5.0,
     take_profit_pct: body.take_profit_pct ?? 8.0,
   };
