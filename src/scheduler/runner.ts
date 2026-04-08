@@ -112,34 +112,36 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 뉴스 RSS — 장중 15분 간격 자동 수집
+  // ── 보조 모듈 (모의투자: rate limit 충돌 방지, Track B와 겹치지 않게 오프셋) ──
+
+  // 뉴스 RSS — 30분 간격 (Track B +3분 오프셋)
   cron.schedule(
-    '*/15 9-15 * * 1-5',
+    '3,33 9-15 * * 1-5',
     () => {
       collectWatchlistNews().catch((e) => logger.error(`뉴스 수집 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 수급 분석 -- 장중 30분 간격 (2분 타임아웃)
+  // 수급 분석 — 60분 간격 (+5분 오프셋)
   cron.schedule(
-    '5,35 9-15 * * 1-5',
+    '5 9,10,11,12,13,14,15 * * 1-5',
     () => {
       withTimeout('수급 분석', () => analyzeWatchlistFlows(), 120_000);
     },
     { timezone: MARKET.TIMEZONE },
   );
 
-  // DART 공시 모니터링 -- 장중 20분 간격 (90초 타임아웃)
+  // DART 공시 — 60분 간격 (+7분 오프셋)
   cron.schedule(
-    '*/20 9-16 * * 1-5',
+    '7 9,10,11,12,13,14,15 * * 1-5',
     () => {
       withTimeout('DART 공시', () => monitorDisclosures(), 90_000);
     },
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 📈 증권사 목표가 컨센서스 — 하루 2회 (09:30, 14:00)
+  // 📈 증권사 목표가 — 하루 2회 (09:30, 14:00)
   cron.schedule(
     '30 9,14 * * 1-5',
     () => {
@@ -148,16 +150,16 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 📉 공매도 데이터 — 장중 60분 간격
+  // 📉 공매도 — 하루 2회 (10:15, 14:15)
   cron.schedule(
-    '10 9-15 * * 1-5',
+    '15 10,14 * * 1-5',
     () => {
       withTimeout('공매도 분석', () => analyzeWatchlistShortSelling(), 120_000);
     },
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 🌍 매크로 스냅샷 — 장 시작 전 + 점심 (08:30, 12:30)
+  // 🌍 매크로 — 하루 2회 (08:30, 12:30)
   cron.schedule(
     '30 8,12 * * 1-5',
     () => {
@@ -166,18 +168,18 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 이상 감지 — 장중 5분 간격 (급등/급락/거래량 급증)
+  // 이상 감지 — 30분 간격 (+8분 오프셋, 모의투자 rate limit 대응)
   cron.schedule(
-    '*/5 9-15 * * 1-5',
+    '8,38 9-15 * * 1-5',
     () => {
       detectAnomalies().catch((e) => logger.error(`이상 감지 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 스나이퍼 -- 장중 15분 간격 (3분 타임아웃)
+  // 스나이퍼 — 30분 간격 (+2분 오프셋)
   cron.schedule(
-    '*/15 9-15 * * 1-5',
+    '2,32 9-15 * * 1-5',
     () => {
       withTimeout('스나이퍼', () => runSniperScan(), 180_000);
     },
@@ -296,10 +298,9 @@ export function startScheduler(): void {
   //  🌏 해외 주식 (미국/일본/대만)
   // ═══════════════════════════════════════════
 
-  // 🇯🇵 일본 + 🇹🇼 대만 — KST 09:00~15:00 15분 간격
-  // (overseas-job이 내부에서 region 자동 판별)
+  // 🇯🇵 일본 + 🇹🇼 대만 — KST 09:30~14:30 30분 간격 (+9분 오프셋, Track B와 겹침 방지)
   cron.schedule(
-    '*/15 9-14 * * 1-5',
+    '9,39 9-14 * * 1-5',
     () => {
       runOverseasJob().catch((e) => logger.error(`아시아주식 실패: ${e}`, { component: 'SCHEDULER' }));
     },
