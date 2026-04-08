@@ -46,7 +46,9 @@ export async function restorePaperState(): Promise<void> {
         if (h && h.qty > 0) {
           const avgCost = h.totalCost / h.qty;
           const costBasis = avgCost * qty;
-          paperRealizedPnl += (value - costBasis);
+          const SELL_FEE_PCT = 0.00245; // 수수료 + 거래세
+          const sellFees = Math.round(value * SELL_FEE_PCT);
+          paperRealizedPnl += (value - sellFees - costBasis);
           h.qty -= qty;
           h.totalCost -= costBasis;
           if (h.qty <= 0) { h.qty = 0; h.totalCost = 0; }

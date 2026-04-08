@@ -5,7 +5,7 @@ import { logger } from '../utils/logger.js';
 
 // 순환 참조 방지: engine.ts에서 직접 import 하지 않고 lazy import
 let _addPaper: ((n: number) => void) | null = null;
-let _removePaper: ((n: number) => void) | null = null;
+let _removePaper: ((sellAmount: number, buyAmount?: number) => void) | null = null;
 async function getPaperFns() {
   if (!_addPaper) {
     const m = await import('./engine.js');
@@ -74,11 +74,19 @@ export async function paperTradeOrder(params: {
     ai_reasoning: `${aiReasoning ?? ''} [수수료 ${fee.toLocaleString()}원 (${(feeRate * 100).toFixed(3)}%)]`,
   });
 
-  // Paper 현금 추적: 매수 시 차감(+수수료), 매도 시 복원(-수수료)
-  const cashImpact = side === 'BUY' ? orderValue + fee : orderValue - fee;
+  // Paper 현금 추적: 매수 시 차감(+수수료), 매도 시 복원(-수수료+실현손익)
   try {
     const fns = await getPaperFns();
-    if (side === 'BUY') { fns.add(cashImpact); } else { fns.remove(cashImpact); }
+    if (side === 'BUY') {
+      fns.add(orderValue + fee); // 매수원가 + 수수료
+    } else {
+      // 매도: 매도금액(수수료 차감)과 매수원가를 따로 전달
+      const { chainManager } = await import('../trading/chain.js');
+      const chain = chainId ? await chainManager.findOpenChain(stockCode) : null;
+      const avgBuy = chain ? Number(chain.avg_buy_price) : filledPrice;
+      const costBasis = avgBuy * quantity;
+      fns.remove(orderValue - fee, costBasis); // 매도 순수익, 매수원가
+    }
   } catch { /* paper cash tracking 실패해도 주문은 진행 */ }
 
   logger.info(`📝 [PAPER] ${side} ${stockCode} x${quantity} @${filledPrice.toLocaleString()} (${fakeOrderNo}) | 금액${orderValue.toLocaleString()} 수수료${fee.toLocaleString()}원`, {

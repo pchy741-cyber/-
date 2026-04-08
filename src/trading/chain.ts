@@ -87,7 +87,9 @@ export class ChainManager {
    */
   async partialProfit(chainId: string, sellQty: number, sellPrice: number, chain: TransactionChain): Promise<void> {
     const avgBuy = Number(chain.avg_buy_price);
-    const profit = (sellPrice - avgBuy) * sellQty;
+    const sellValue = sellPrice * sellQty;
+    const SELL_FEE_PCT = 0.00245;
+    const profit = sellValue - Math.round(sellValue * SELL_FEE_PCT) - (avgBuy * sellQty);
     const remainingQty = chain.total_quantity - sellQty;
 
     await updateChain(chainId, {
@@ -111,7 +113,9 @@ export class ChainManager {
    */
   async closeChain(chainId: string, sellPrice: number, chain: TransactionChain, reason: string): Promise<void> {
     const avgBuy = Number(chain.avg_buy_price);
-    const profit = (sellPrice - avgBuy) * chain.total_quantity;
+    const sellValue = sellPrice * chain.total_quantity;
+    const SELL_FEE_PCT = 0.00245;
+    const profit = sellValue - Math.round(sellValue * SELL_FEE_PCT) - (avgBuy * chain.total_quantity);
 
     await updateChain(chainId, {
       status: 'CLOSED',
