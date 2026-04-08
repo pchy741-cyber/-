@@ -5,56 +5,24 @@
 @tailwind utilities;
 
 @layer base {
-  * { -webkit-tap-highlight-color: transparent; }
-}
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    -webkit-tap-highlight-color: transparent;
+  }
 
-@layer utilities {
-  .animate-in { animation: fade-in 0.3s ease-out; }
-  .glass { background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(16px) saturate(180%); -webkit-backdrop-filter: blur(16px) saturate(180%); }
-  .glow-green { box-shadow: 0 0 20px rgba(16, 185, 129, 0.15); }
-  .glow-red { box-shadow: 0 0 20px rgba(244, 63, 94, 0.15); }
-  .glow-blue { box-shadow: 0 0 20px rgba(59, 130, 246, 0.1); }
-}
+  html {
+    font-family: 'Pretendard Variable', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
 
-@keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes pulse-slow { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
-
-/* Scrollbar */
-::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #475569; }
-
-/* Inputs */
-input[type='range']::-webkit-slider-thumb {
-  -webkit-appearance: none; appearance: none;
-  width: 14px; height: 14px; border-radius: 50%;
-  background: #3b82f6; cursor: pointer;
-  border: 2px solid #0f172a; box-shadow: 0 0 8px rgba(59,130,246,0.4);
-}
-input[type='number']::-webkit-inner-spin-button,
-input[type='number']::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-input[type='number'] { -moz-appearance: textfield; }
-
-select, input, textarea {
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-select:focus, input:focus, textarea:focus {
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
-}
-
-/* PWA */
-@supports (padding-top: env(safe-area-inset-top)) {
-  .safe-top { padding-top: env(safe-area-inset-top); }
-  .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
-}
-
-/* Mobile tables */
-@media (max-width: 640px) {
-  table { font-size: 11px; }
-  th, td { padding: 8px 10px !important; }
-}
-
-@media (hover: none) {
-  .group:hover .group-hover\:opacity-100 { opacity: 1; }
+  body {
+    background-color: #020617; /* slate-950 */
+    color: #e2e8f0; /* slate-200 */
+    min-height: 100dvh;
+  }
 }
