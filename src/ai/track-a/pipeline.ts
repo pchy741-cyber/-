@@ -190,7 +190,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     await cacheScores(aiScoresForCache);
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    const buyCount = scores.filter((s) => s.composite_score >= 70).length;
+    const buyCount = scores.filter((s) => s.composite_score >= 65).length;
 
     await logSystem(
       'INFO',

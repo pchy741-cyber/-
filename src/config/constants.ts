@@ -59,14 +59,14 @@ export type StrategyMode = (typeof StrategyMode)[keyof typeof StrategyMode];
 // ── 전략별 파라미터 ──
 export const STRATEGY_PARAMS = {
   SWING: {
-    buyThreshold: 70, // 매수 진입 점수
+    buyThreshold: 65, // 매수 진입 점수 (모의투자 적극 매수)
     splitCount: 3, // 3분할 매수
     averageDownPct: -3, // 물타기 트리거 (-3%)
     maxAveragingCount: 3, // 최대 물타기 횟수
-    takeProfitPct: 8, // 익절 라인 (+8%)
+    takeProfitPct: 4, // 익절 라인 (+4% — 빠른 회전)
     takeProfitRatio: 0.5, // 익절 시 50% 매도
-    stopLossPct: -5, // 손절 라인 (-5%)
-    maxHoldingDays: 3, // 최대 보유일
+    stopLossPct: -3, // 손절 라인 (-3% — 타이트)
+    maxHoldingDays: 5, // 최대 보유일
   },
   DEFENSE: {
     buyThreshold: 85, // 매수 임계치 상향
