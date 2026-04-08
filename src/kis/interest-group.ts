@@ -70,16 +70,22 @@ export async function syncInterestGroups(): Promise<{ added: string[]; total: nu
 
   const allStocks = new Map<string, InterestStock>();
 
-  // 그룹 1~10 조회 (300ms 간격 — rate limit 대응)
+  // 그룹 1~10 조회 (빠른 실패 — 첫 2개 실패하면 API 미지원으로 판단 후 중단)
+  let consecutiveFails = 0;
   for (let g = 1; g <= 10; g++) {
     const stocks = await fetchInterestGroup(g);
-    for (const s of stocks) {
-      allStocks.set(s.stockCode, s);
-    }
-    if (stocks.length > 0) {
+    if (stocks.length === 0) {
+      consecutiveFails++;
+      if (consecutiveFails >= 2 && allStocks.size === 0) {
+        logger.info('관심종목 API 미지원 (모의투자) → 조기 종료', { component: 'KIS_INTEREST' });
+        break;
+      }
+    } else {
+      consecutiveFails = 0;
+      for (const s of stocks) allStocks.set(s.stockCode, s);
       logger.info(`  그룹 ${g}: ${stocks.length}종목 (${stocks.map((s) => s.stockName).join(', ')})`, { component: 'KIS_INTEREST' });
     }
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 200));
   }
 
   if (allStocks.size === 0) {

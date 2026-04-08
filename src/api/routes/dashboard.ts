@@ -245,12 +245,11 @@ dashboardRoutes.get('/kis-balance', async (c) => {
 dashboardRoutes.post('/watchlist/sync', async (c) => {
   try {
     const { syncInterestGroups, syncHoldingsToWatchlist } = await import('../../kis/interest-group.js');
-    const [interest, holdings] = await Promise.all([
-      syncInterestGroups(),
-      syncHoldingsToWatchlist(),
-    ]);
+    // 관심종목은 모의투자에서 미지원일 수 있음 → 실패해도 보유종목은 계속 진행
+    const interest = await syncInterestGroups().catch(() => ({ added: [] as string[], total: 0 }));
+    const holdings = await syncHoldingsToWatchlist().catch(() => ({ added: [] as string[] }));
     const allAdded = [...interest.added, ...holdings.added];
-    return c.json({ ok: true, added: allAdded, kisTotal: interest.total, message: allAdded.length > 0 ? `${allAdded.length}종목 동기화 완료` : '이미 최신 상태' });
+    return c.json({ ok: true, added: allAdded, kisTotal: interest.total, message: allAdded.length > 0 ? `${allAdded.length}종목 동기화 완료` : '이미 최신 상태 (모의투자는 관심종목 API 미지원)' });
   } catch (err: any) {
     return c.json({ error: err?.message ?? 'KIS 동기화 실패' }, 500);
   }
