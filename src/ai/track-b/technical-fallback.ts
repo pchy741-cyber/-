@@ -104,9 +104,10 @@ export function technicalFallbackDecisions(params: {
     const tech = analyzeTechnicals(candles);
     if (!tech) continue;
 
-    // 매수 조건: score >= 15 (BUY 시그널 이상)
-    // score 15+ = BUY, 40+ = STRONG_BUY, 0~14 = NEUTRAL(노이즈 — 매수 안 함)
-    if (tech.score >= 15) {
+    // 매수 조건: score >= buyThreshold 기반 (전략에 따라 유동적)
+    // SCALPING: 55점 기준이지만 기술적 fallback에서는 score 10+ 허용 (모의투자 실험용)
+    const minScore = mode === 'SCALPING' ? 10 : 15;
+    if (tech.score >= minScore) {
       candidates.push({ stock_code: stock.stock_code, tech, price });
     }
   }
