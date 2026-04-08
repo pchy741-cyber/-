@@ -160,6 +160,31 @@ export function stochastic(candles: OHLCV[], kPeriod = 14, dPeriod = 3): Stochas
   return { k, d };
 }
 
+// ── Williams %R (과매수/과매도 — RSI보다 민감) ──
+// -80 이하: 과매도 (매수 기회), -20 이상: 과매수 (매도 고려)
+export function williamsR(candles: OHLCV[], period = 14): number[] {
+  const result: number[] = [];
+  for (let i = period - 1; i < candles.length; i++) {
+    const slice = candles.slice(i - period + 1, i + 1);
+    const high = Math.max(...slice.map((c) => c.high));
+    const low = Math.min(...slice.map((c) => c.low));
+    const close = candles[i].close;
+    result.push(high === low ? -50 : ((high - close) / (high - low)) * -100);
+  }
+  return result;
+}
+
+// ── ROC (Rate of Change, 모멘텀) ──
+// 양수: 상승 모멘텀, 음수: 하락 모멘텀
+export function roc(prices: number[], period = 12): number[] {
+  const result: number[] = [];
+  for (let i = period; i < prices.length; i++) {
+    const prev = prices[i - period];
+    result.push(prev !== 0 ? ((prices[i] - prev) / prev) * 100 : 0);
+  }
+  return result;
+}
+
 // ── ATR (Average True Range, 변동성) ──
 
 export function atr(candles: OHLCV[], period = 14): number[] {
@@ -368,6 +393,18 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   // 스토캐스틱
   if (stochSignal === 'OVERSOLD') score += 10;
   if (stochSignal === 'OVERBOUGHT') score -= 10;
+
+  // Williams %R (RSI보다 민감한 과매수/과매도 지표)
+  const wrValues = williamsR(candlesAsc, 14);
+  const wr14 = wrValues[wrValues.length - 1] ?? -50;
+  if (wr14 < -80) score += 8;       // 과매도 → 매수 기회
+  else if (wr14 > -20) score -= 8;  // 과매수 → 매도 고려
+
+  // ROC (모멘텀 — 양수면 상승세, 음수면 하락세)
+  const rocValues = roc(closesAsc, 12);
+  const roc12 = rocValues[rocValues.length - 1] ?? 0;
+  if (roc12 > 5) score += 6;        // 강한 상승 모멘텀
+  else if (roc12 < -5) score -= 6;  // 강한 하락 모멘텀
 
   // ★ ADX 필터 (핵심 개선: 횡보장 whipsaw 방지)
   // ADX < 20이면 추세 없음 → 모든 매수 시그널 약화
