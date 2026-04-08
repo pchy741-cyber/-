@@ -146,9 +146,15 @@ function LockScreen({ onUnlock }: { onUnlock: () => void }) {
 
   const handlePin = async (e: React.FormEvent) => {
     e.preventDefault();
-    const savedHash = localStorage.getItem('quantops_pin') || DEFAULT_PIN_HASH;
+    const saved = localStorage.getItem('quantops_pin') || DEFAULT_PIN_HASH;
     const inputHash = await hashPin(pin);
-    if (inputHash === savedHash) {
+
+    // 호환: 기존 평문 PIN이면 직접 비교 후 해시로 업그레이드
+    const isOldPlaintext = saved.length < 64;
+    const matched = isOldPlaintext ? (pin === saved) : (inputHash === saved);
+
+    if (matched) {
+      if (isOldPlaintext) localStorage.setItem('quantops_pin', inputHash); // 자동 해시 업그레이드
       setAuthenticated();
       onUnlock();
     } else {

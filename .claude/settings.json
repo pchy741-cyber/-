@@ -23,7 +23,8 @@
       "WebFetch(domain:docs.cloud.google.com)",
       "Bash(gcloud artifacts:*)",
       "Bash(grep -v \"^$\")",
-      "Bash(curl -s -X POST https://quantops-807105550136.asia-northeast3.run.app/api/run-track-a -H 'Content-Type: application/json' -d '{}')"
+      "Bash(curl -s -X POST https://quantops-807105550136.asia-northeast3.run.app/api/run-track-a -H 'Content-Type: application/json' -d '{}')",
+      "Bash(curl -s -X POST \"https://quantops-807105550136.asia-northeast3.run.app/api/run-track-a\" -H \"Content-Type: application/json\" -d '{}')"
     ]
   }
 }
