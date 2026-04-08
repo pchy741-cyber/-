@@ -9,6 +9,7 @@ import { getBatchPrices, getDailyChart, isMarketOpen } from '../../kis/market.js
 import { logger } from '../../utils/logger.js';
 import { buildTrackBContext } from './context.js';
 import { runClaudeExecution } from './executor.js';
+import { runGeminiExecution } from './gemini-executor.js';
 import { technicalFallbackDecisions } from './technical-fallback.js';
 
 /**
@@ -96,14 +97,13 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       }
     }
 
-    // 6. AI 키 유무에 따라 분기
-    const hasAIKey = config.ai.anthropicKey && !config.ai.anthropicKey.startsWith('your_');
+    // 6. AI 매매 판단: Claude → Gemini → 기술적 지표 (3단 폴백)
     const hasScores = scores.length > 0;
 
-    let decisions: TradeDecision[];
+    let decisions: TradeDecision[] = [];
 
-    if (hasAIKey && hasScores) {
-      // ── AI 모드: Claude 매매 판단 ──
+    // AI 컨텍스트 구성 (스코어가 있을 때만)
+    if (hasScores) {
       const technicalsSummary: string[] = [];
       const topStocks = scores.slice(0, 5).map((s) => s.stock_code);
       for (const code of topStocks) {
@@ -137,14 +137,31 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         context += `\n${learnedInsights}`;
       }
 
-      decisions = await runClaudeExecution({
-        mode,
-        context,
-        customPrompt: strategy?.claude_prompt ?? undefined,
-      });
-    } else {
-      // ── 기술적 지표 모드: AI 키 미설정 또는 스코어 없음 ──
-      logger.info(`🔧 기술적 지표 기반 자동매매 모드 (AI키=${hasAIKey ? 'O' : 'X'}, 스코어=${scores.length}개)`, { component: 'TRACK_B' });
+      const execParams = { mode, context, customPrompt: strategy?.claude_prompt ?? undefined };
+
+      // 6-1. Claude 매매 판단 (1순위)
+      const hasClaudeKey = config.ai.anthropicKey && !config.ai.anthropicKey.startsWith('your_');
+      if (hasClaudeKey) {
+        try {
+          decisions = await runClaudeExecution(execParams);
+        } catch (claudeErr) {
+          logger.warn(`⚠️ Claude 실행 실패: ${claudeErr}`, { component: 'TRACK_B' });
+        }
+      }
+
+      // 6-2. Claude 실패 → Gemini 매매 판단 (2순위 — 무료)
+      if (decisions.length === 0) {
+        try {
+          decisions = await runGeminiExecution(execParams);
+        } catch (geminiErr) {
+          logger.warn(`⚠️ Gemini 실행 실패: ${geminiErr}`, { component: 'TRACK_B' });
+        }
+      }
+    }
+
+    // 6-3. AI 모두 실패 또는 스코어 없음 → 기술적 지표 (3순위)
+    if (decisions.length === 0) {
+      logger.info(`🔧 기술적 지표 기반 자동매매 모드 (스코어=${scores.length}개)`, { component: 'TRACK_B' });
       decisions = technicalFallbackDecisions({
         mode,
         watchlist: watchlist.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),

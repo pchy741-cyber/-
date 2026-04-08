@@ -13,8 +13,12 @@ const VERTEX_LOCATION = 'us-central1';
 const VERTEX_MODEL = 'gemini-2.5-flash';
 const VERTEX_ENDPOINT = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${VERTEX_LOCATION}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
 
-const hasGeminiKey = config.ai.geminiKey && !config.ai.geminiKey.startsWith('your_');
-const genAI = hasGeminiKey ? new GoogleGenerativeAI(config.ai.geminiKey) : null;
+// Lazy init — 키 변경 시 자동 반영
+function getGenAI(): GoogleGenerativeAI | null {
+  const key = config.ai.geminiKey || process.env.GEMINI_API_KEY;
+  if (!key || key.startsWith('your_') || key.length < 10) return null;
+  return new GoogleGenerativeAI(key);
+}
 const auth = USE_VERTEX_AI ? new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] }) : null;
 
 export interface GeminiAnalysis {
@@ -94,13 +98,14 @@ ${additionalSources ?? '추가 소스 없음'}
     { component: 'TRACK_A' },
   );
 
+  const genAI = getGenAI();
   if (!genAI && !USE_VERTEX_AI) {
     throw new Error('Gemini API 키 미설정 — Track A Gemini 분석 스킵');
   }
 
   const responseText = USE_VERTEX_AI
     ? await callVertexAI(systemPrompt, userMessage)
-    : await callGoogleAI(systemPrompt, userMessage);
+    : await callGoogleAI(genAI!, systemPrompt, userMessage);
 
   try {
     const parsed = JSON.parse(responseText) as GeminiAnalysis;
@@ -115,8 +120,8 @@ ${additionalSources ?? '추가 소스 없음'}
 }
 
 // ── Google AI SDK 경로 (API 키 사용, 로컬/외부 환경) ──
-async function callGoogleAI(systemPrompt: string, userMessage: string): Promise<string> {
-  const model = genAI!.getGenerativeModel({
+async function callGoogleAI(genAI: GoogleGenerativeAI, systemPrompt: string, userMessage: string): Promise<string> {
+  const model = genAI.getGenerativeModel({
     model: 'gemini-2.5-flash',
     generationConfig: {
       responseMimeType: 'application/json',

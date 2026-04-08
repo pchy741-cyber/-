@@ -1371,12 +1371,15 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
         {/* API 키 */}
         <Panel title="API 키 관리">
-          <form onSubmit={saveSecrets} className="p-4 sm:p-5 space-y-3">
+          <form onSubmit={saveSecrets} autoComplete="off" className="p-4 sm:p-5 space-y-3">
+            {/* hidden dummy fields to absorb browser autofill */}
+            <input type="text" name="fake_user" style={{ display: 'none' }} tabIndex={-1} />
+            <input type="password" name="fake_pass" style={{ display: 'none' }} tabIndex={-1} />
             {[['gemini','Gemini'],['openai','OpenAI'],['anthropic','Anthropic'],['kis_appkey','KIS Key'],['kis_appsecret','KIS Secret'],['kis_account','KIS 계좌']].map(([k, l]) => (
               <div key={k} className="flex items-center gap-3">
                 <span className="w-20 text-xs text-slate-400 shrink-0">{l}</span>
                 {secrets?.[k]?.exists && <span className="text-[9px] bg-emerald-900/50 text-emerald-300 px-2 py-0.5 rounded shrink-0">설정됨</span>}
-                <input name={k} type="password" placeholder={secrets?.[k]?.masked || '미설정'} className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono focus:border-blue-500 focus:outline-none" />
+                <input name={k} type="text" autoComplete="off" data-1p-ignore data-lpignore="true" placeholder={secrets?.[k]?.masked || '미설정'} className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono focus:border-blue-500 focus:outline-none [-webkit-text-security:disc]" />
               </div>
             ))}
             <button type="submit" className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-sm font-medium">키 저장</button>
@@ -1473,7 +1476,7 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
               toast?.('PIN 변경 완료', 'ok');
               (e.target as HTMLFormElement).reset();
             }} className="flex gap-2 flex-1 max-w-sm">
-              <input name="pin" type="password" inputMode="numeric" maxLength={6} placeholder="새 PIN (4~6자리)" className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-center tracking-widest font-mono focus:border-blue-500 focus:outline-none" />
+              <input name="pin" type="password" inputMode="numeric" autoComplete="new-password" data-1p-ignore data-lpignore="true" maxLength={6} placeholder="새 PIN (4~6자리)" className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-center tracking-widest font-mono focus:border-blue-500 focus:outline-none" />
               <button type="submit" className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium shrink-0">변경</button>
             </form>
             <button type="button" onClick={() => {

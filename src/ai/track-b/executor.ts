@@ -4,8 +4,12 @@ import { type TradeDecision, TradeDecisionSchema } from '../../db/models.js';
 import { logger } from '../../utils/logger.js';
 import { buildExecutionPrompt } from '../prompts/track-b-execution.js';
 
-const hasAnthropicKey = config.ai.anthropicKey && !config.ai.anthropicKey.startsWith('your_');
-const anthropic = hasAnthropicKey ? new Anthropic({ apiKey: config.ai.anthropicKey }) : null;
+// Lazy init — 키 변경 시 자동 반영
+function getAnthropic(): Anthropic | null {
+  const key = config.ai.anthropicKey || process.env.ANTHROPIC_API_KEY;
+  if (!key || key.startsWith('your_')) return null;
+  return new Anthropic({ apiKey: key });
+}
 
 interface ClaudeExecutionOutput {
   decisions: TradeDecision[];
@@ -24,6 +28,7 @@ export async function runClaudeExecution(params: {
 }): Promise<TradeDecision[]> {
   const { mode, context, customPrompt } = params;
 
+  const anthropic = getAnthropic();
   if (!anthropic) {
     logger.warn('Anthropic API 키 미설정 — Claude 매매 판단 스킵 (HOLD 반환)', { component: 'TRACK_B' });
     return [];

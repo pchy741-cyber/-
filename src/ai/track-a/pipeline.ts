@@ -6,7 +6,7 @@ import { logger } from '../../utils/logger.js';
 import { config } from '../../config/index.js';
 import { type ScoringResult } from '../../db/models.js';
 import { runGeminiAnalysis } from './gemini.js';
-import { runGPTScoring } from './scorer.js';
+import { runGeminiScoring } from './gemini-scorer.js';
 
 /**
  * Track A 전체 파이프라인
@@ -72,11 +72,12 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       logger.info(`참고소스 ${dbSources.length}건 Gemini에 주입`, { component: 'TRACK_A' });
     }
 
-    // 5. Claude 통합 분석+스코어링 (Gemini/GPT 실패 시 폴백)
-    let scores: ScoringResult[];
+    // 5. 3단 폴백: Gemini+GPT → Gemini+Claude → Gemini+기술적 → Claude 단독
+    let scores: ScoringResult[] = [];
     let geminiResult: Awaited<ReturnType<typeof runGeminiAnalysis>> | null = null;
+
+    // Step 5-1: Gemini 분석
     try {
-      // Gemini → GPT 순차 시도
       geminiResult = await runGeminiAnalysis({
         mode,
         watchlist: watchlist.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
@@ -84,14 +85,70 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         additionalSources: combinedSources || undefined,
         customPrompt: customGeminiPrompt ?? undefined,
       });
-      scores = await runGPTScoring({
-        mode,
-        geminiAnalysis: geminiResult,
-        customPrompt: customGptPrompt ?? undefined,
+    } catch (geminiErr) {
+      logger.warn(`⚠️ Gemini 실패: ${geminiErr}`, { component: 'TRACK_A' });
+    }
+
+    // Step 5-2: Gemini 스코어링 (1순위 — 무료)
+    if (geminiResult) {
+      try {
+        scores = await runGeminiScoring({
+          mode,
+          geminiAnalysis: geminiResult,
+          customPrompt: customGptPrompt ?? undefined,
+        });
+      } catch (geminiScoreErr) {
+        logger.warn(`⚠️ Gemini 스코어링 실패: ${geminiScoreErr}`, { component: 'TRACK_A' });
+      }
+    }
+
+    // Step 5-3: Gemini 스코어링 실패 → Claude 통합 분석 (2순위)
+    if (scores.length === 0) {
+      try {
+        scores = await runClaudeAnalysis(mode, watchlist, chartData, strategy);
+      } catch (claudeErr) {
+        logger.warn(`⚠️ Claude 폴백 실패: ${claudeErr}`, { component: 'TRACK_A' });
+      }
+    }
+
+    // Step 5-4: GPT/Claude 모두 실패 → Gemini 분석 + 기술적 지표로 스코어 생성
+    if (scores.length === 0) {
+      logger.info('⚙️ GPT/Claude 모두 실패 → 기술적 지표 기반 스코어 생성', { component: 'TRACK_A' });
+      const { analyzeTechnicals } = await import('../../analysis/indicators.js');
+      scores = watchlist.map((w) => {
+        const candles = chartData.get(w.stock_code) ?? [];
+        const geminiStock = geminiResult?.stocks?.find((s) => s.stock_code === w.stock_code);
+        const analysis = geminiStock?.analysis;
+        const reasoning = analysis
+          ? `${analysis.positive_factors?.join(', ') || '정보없음'} / 리스크: ${analysis.negative_factors?.join(', ') || '없음'}`
+          : 'Gemini 분석 없음';
+
+        let compositeScore = 50;
+        let technicalScore = 50;
+        let signal: 'BUY' | 'HOLD' | 'SELL' = 'HOLD';
+
+        if (candles.length >= 30) {
+          const tech = analyzeTechnicals(candles);
+          if (tech) {
+            compositeScore = Math.max(0, Math.min(100, 50 + tech.score));
+            technicalScore = compositeScore;
+            signal = compositeScore >= 60 ? 'BUY' : compositeScore >= 45 ? 'HOLD' : 'SELL';
+          }
+        }
+
+        return {
+          stock_code: w.stock_code,
+          composite_score: compositeScore,
+          fundamental_score: 50,
+          technical_score: technicalScore,
+          sentiment_score: geminiResult?.market_sentiment === 'bullish' ? 65 : geminiResult?.market_sentiment === 'bearish' ? 35 : 50,
+          confidence: 0.5,
+          reasoning,
+          signal,
+          target_price: analysis?.resistance_level ?? undefined,
+          stop_loss_price: analysis?.support_level ?? undefined,
+        };
       });
-    } catch (aiErr) {
-      logger.warn(`⚠️ Gemini/GPT 실패 → Claude 통합 모드: ${aiErr}`, { component: 'TRACK_A' });
-      scores = await runClaudeAnalysis(mode, watchlist, chartData, strategy);
     }
 
     // 6. DB에 스코어 캐싱
@@ -160,11 +217,12 @@ async function runClaudeAnalysis(
   chartData: Map<string, DailyCandle[]>,
   strategy: any,
 ): Promise<ScoringResult[]> {
-  if (!config.ai.anthropicKey || config.ai.anthropicKey.startsWith('your_')) {
+  const key = config.ai.anthropicKey || process.env.ANTHROPIC_API_KEY;
+  if (!key || key.startsWith('your_')) {
     logger.warn('Anthropic API 키 미설정 — Track A Claude 분석 스킵', { component: 'TRACK_A' });
     return [];
   }
-  const anthropic = new Anthropic({ apiKey: config.ai.anthropicKey });
+  const anthropic = new Anthropic({ apiKey: key });
 
   const chartSummary = watchlist.map((stock) => {
     const candles = chartData.get(stock.stock_code) ?? [];

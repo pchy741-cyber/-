@@ -6,7 +6,10 @@ import type { AIScore } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 
-const anthropic = new Anthropic({ apiKey: config.ai.anthropicKey });
+function getAnthropic(): Anthropic {
+  const key = config.ai.anthropicKey || process.env.ANTHROPIC_API_KEY;
+  return new Anthropic({ apiKey: key || '' });
+}
 
 /**
  * 🐂🐻 Bull vs Bear AI 토론 시스템
@@ -131,7 +134,7 @@ JSON 형식으로 응답: {"final_arguments": ["최종논거1", "최종논거2"]
 
 async function callAgent(role: 'BULL' | 'BEAR', prompt: string): Promise<{ arguments: string[]; conviction: number }> {
   try {
-    const response = await anthropic.messages.create({
+    const response = await getAnthropic().messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 1024,
       temperature: role === 'BULL' ? 0.3 : 0.4, // Bear를 약간 더 보수적으로
@@ -167,7 +170,7 @@ async function callJudge(
   context: string,
 ): Promise<{ verdict: DebateResult['finalVerdict']; confidence: number; reasoning: string }> {
   try {
-    const response = await anthropic.messages.create({
+    const response = await getAnthropic().messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 1024,
       temperature: 0.1, // 판사는 최대한 객관적

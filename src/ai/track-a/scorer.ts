@@ -5,8 +5,12 @@ import { logger } from '../../utils/logger.js';
 import { buildScoringPrompt } from '../prompts/track-a-scoring.js';
 import type { GeminiAnalysis } from './gemini.js';
 
-const hasOpenAIKey = config.ai.openaiKey && !config.ai.openaiKey.startsWith('your_');
-const openai = hasOpenAIKey ? new OpenAI({ apiKey: config.ai.openaiKey }) : null;
+// Lazy init — 키 변경 시 자동 반영
+function getOpenAI(): OpenAI | null {
+  const key = config.ai.openaiKey || process.env.OPENAI_API_KEY;
+  if (!key || key.startsWith('your_')) return null;
+  return new OpenAI({ apiKey: key });
+}
 
 interface ScoringOutput {
   scores: ScoringResult[];
@@ -27,6 +31,7 @@ export async function runGPTScoring(params: {
   const basePrompt = buildScoringPrompt(mode);
   const systemPrompt = customPrompt ? `${basePrompt}\n\n${customPrompt}` : basePrompt;
 
+  const openai = getOpenAI();
   if (!openai) {
     throw new Error('OpenAI API 키 미설정 — GPT 스코어링 스킵');
   }
