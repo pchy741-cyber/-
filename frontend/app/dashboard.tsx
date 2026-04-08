@@ -1191,7 +1191,16 @@ function BacktestView({ watchlist }: { watchlist: any[] }) {
 function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, gptRef, claudeRef, killSwitch, toggleKill, withdrawConfig, setWithdrawConfig, withdrawHistory, setWithdrawHistory, toast }: any) {
   const [activeStep, setActiveStep] = useState<number>(0);
   const setField = async (field: string, val: string | number) => {
-    try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify({ ...strategy, [field]: val }) }); setStrategy(u); toast?.('설정 저장됨', 'ok'); } catch { toast?.('설정 저장 실패', 'err'); }
+    // ref에 있는 프롬프트도 함께 보내야 덮어쓰기 방지
+    const body = {
+      ...strategy,
+      notebooklm_prompt: notebookRef.current?.value ?? strategy?.notebooklm_prompt ?? '',
+      gemini_prompt: geminiRef.current?.value ?? strategy?.gemini_prompt ?? '',
+      gpt_prompt: gptRef.current?.value ?? strategy?.gpt_prompt ?? '',
+      claude_prompt: claudeRef.current?.value ?? strategy?.claude_prompt ?? '',
+      [field]: val,
+    };
+    try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify(body) }); setStrategy(u); toast?.('설정 저장됨', 'ok'); } catch { toast?.('설정 저장 실패', 'err'); }
   };
   const saveStrategy = async () => {
     const body = {
