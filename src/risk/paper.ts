@@ -42,8 +42,12 @@ export async function paperTradeOrder(params: {
   if (basePrice <= 0) {
     return { success: false, orderNo: '', message: `[모의투자] 현재가 조회 실패: ${stockCode}` };
   }
-  // 슬리피지: 시장가 0.2%, 지정가 0%
-  const slippagePct = price ? 0 : side === 'BUY' ? 0.002 : -0.002;
+  // 슬리피지: 시가총액 기반 (연구 근거: 대형주 0.05-0.1%, 중소형주 0.3-0.5%)
+  // 가격 50만원 이상 = 대형주 추정, 미만 = 중소형주
+  const isLargeCap = basePrice >= 500000;
+  const slippagePct = price ? 0 : side === 'BUY'
+    ? (isLargeCap ? 0.001 : 0.003)   // 매수: 대형주 0.1%, 중소형주 0.3%
+    : (isLargeCap ? -0.001 : -0.003); // 매도: 역방향
   const filledPrice = Math.round(basePrice * (1 + slippagePct));
   const fakeOrderNo = `P${Date.now().toString(36)}`;
 

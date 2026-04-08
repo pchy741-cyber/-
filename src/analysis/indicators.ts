@@ -275,7 +275,8 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   const rsiValues = rsi(closesAsc, 14);
   const rsi14 = rsiValues[rsiValues.length - 1] ?? 50;
 
-  const macdResult = macd(closesAsc);
+  // MACD: Linda Raschke 세팅 (3-10-16) — 표준(12-26-9)보다 모멘텀 변화 빠르게 포착
+  const macdResult = macd(closesAsc, 3, 10, 16);
   const macdHist = macdResult.histogram[macdResult.histogram.length - 1] ?? 0;
   const macdPrev = macdResult.histogram[macdResult.histogram.length - 2] ?? 0;
   const macdCross =
