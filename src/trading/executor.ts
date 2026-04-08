@@ -101,12 +101,21 @@ export class TradeExecutor {
       return;
     }
 
-    const price = await getCurrentPrice(stockCode);
-    const estimatedPrice = limitPrice ?? price.currentPrice;
+    let priceData = await getCurrentPrice(stockCode).catch(() => null);
+    let estimatedPrice = limitPrice ?? priceData?.currentPrice ?? 0;
 
-    // 가격 0 방어
+    // 가격 0이면 캐시에서 fallback
     if (!estimatedPrice || estimatedPrice <= 0) {
-      logger.warn(`⛔ 현재가 0 → 매수 스킵: ${stockCode}`, { component: 'EXECUTOR' });
+      const { getCachedPriceMemory } = await import('../cache/memory.js');
+      const { getLastKnownPrice } = await import('../cache/redis.js');
+      estimatedPrice = getCachedPriceMemory(stockCode) ?? await getLastKnownPrice(stockCode) ?? 0;
+      if (estimatedPrice > 0) {
+        logger.info(`💰 캐시 가격 사용: ${stockCode} = ${estimatedPrice}원`, { component: 'EXECUTOR' });
+      }
+    }
+
+    if (!estimatedPrice || estimatedPrice <= 0) {
+      logger.warn(`⛔ 현재가+캐시 모두 0 → 매수 스킵: ${stockCode}`, { component: 'EXECUTOR' });
       return;
     }
 
