@@ -39,7 +39,7 @@ function getRedis(): Redis | null {
 // TTL: 4시간 (Track A가 07:30, 18:00에 실행하므로 4시간이면 충분)
 // Track A 실패 시 stale 데이터 서빙 방지
 
-const SCORE_TTL = 60 * 60 * 4; // 4시간 (12시간→4시간 단축: stale 데이터 방지)
+const SCORE_TTL = 60 * 30; // 30분 (매매 후 빠른 갱신)
 
 export async function cacheScores(scores: AIScore[]): Promise<void> {
   const r = getRedis();
@@ -123,4 +123,22 @@ export async function getLastKnownPrices(stockCodes: string[]): Promise<Map<stri
     if (val && Number(val) > 0) map.set(stockCodes[idx], Number(val));
   });
   return map;
+}
+
+// ── 매매 후 캐시 무효화 ──
+
+/** 특정 종목의 가격+스코어 캐시를 즉시 무효화 (매매 체결 후 호출) */
+export async function invalidateStockCache(stockCode: string): Promise<void> {
+  const r = getRedis();
+  if (!r) return;
+  const pipeline = r.pipeline();
+  pipeline.del(`price:${stockCode}`);
+  pipeline.del(`price:last:${stockCode}`);
+  pipeline.del(`score:latest:${stockCode}`);
+  await pipeline.exec();
+  // 메모리 캐시도 무효화
+  const { memCache } = await import('./memory.js');
+  memCache.delete(`price:${stockCode}`);
+  memCache.delete(`price:last:${stockCode}`);
+  logger.info(`🗑️ 캐시 무효화: ${stockCode}`, { component: 'CACHE' });
 }

@@ -12,6 +12,7 @@ import { paperTradeOrder } from '../risk/paper.js';
 import { acquireLock } from '../utils/lock.js';
 import { logger } from '../utils/logger.js';
 import { roundKrw } from '../utils/money.js';
+import { invalidateStockCache } from '../cache/redis.js';
 import { chainManager } from './chain.js';
 
 /**
@@ -177,7 +178,8 @@ export class TradeExecutor {
         maxAveragingCount: params.maxAveragingCount,
       });
 
-      // 푸시 알림
+      // 캐시 무효화 + 푸시 알림
+      invalidateStockCache(stockCode).catch(() => {});
       notifyBuy(stockCode, gatedQuantity, fillPrice, reasoning).catch(() => {});
     }
   }
@@ -269,6 +271,7 @@ export class TradeExecutor {
       const avgBuy = Number(chain.avg_buy_price) || 0;
       const pnlPct = avgBuy > 0 ? ((price.currentPrice - avgBuy) / avgBuy) * 100 : 0;
       await chainManager.partialProfit(chain.id, safeQty, price.currentPrice, chain);
+      invalidateStockCache(stockCode).catch(() => {});
       notifySell(stockCode, safeQty, price.currentPrice, pnlPct, reasoning).catch(() => {});
     }
   }
@@ -295,6 +298,7 @@ export class TradeExecutor {
       const avgBuy = Number(chain.avg_buy_price) || 0;
       const pnlPct = avgBuy > 0 ? ((price.currentPrice - avgBuy) / avgBuy) * 100 : 0;
       await chainManager.closeChain(chain.id, price.currentPrice, chain, closeReason);
+      invalidateStockCache(stockCode).catch(() => {});
       notifySell(stockCode, chain.total_quantity, price.currentPrice, pnlPct, closeReason).catch(() => {});
     }
   }
