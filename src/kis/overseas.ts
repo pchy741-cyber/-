@@ -28,11 +28,42 @@ const OVERSEAS_TR_ID = {
   BALANCE: config.isPaper ? 'VTTS3012R' : 'TTTS3012R', // 잔고
 } as const;
 
-// 거래소 코드
+// KIS API 거래소 코드 (OVRS_EXCG_CD / EXCD)
 const EXCHANGE_MAP: Record<string, string> = {
+  // 미국
   NYSE: 'NYS',
   NASDAQ: 'NAS',
   AMEX: 'AMS',
+  // 아시아
+  TSE: 'TSE',     // 일본 (도쿄증권거래소) — KIS코드: TKSE
+  TKSE: 'TSE',    // 일본 alias
+  TPE: 'TPE',     // 대만 (타이베이증권거래소)
+  SEHK: 'HKS',    // 홍콩 (홍콩증권거래소) — KIS코드: SEHK
+  HKS: 'HKS',     // 홍콩 alias
+  SSE: 'SHA',     // 중국 상해 — KIS코드: SHAA
+  SHAA: 'SHA',    // 상해 alias
+  SZSE: 'SZA',    // 중국 심천 — KIS코드: SZAA
+  SZAA: 'SZA',    // 심천 alias
+  HASE: 'HNX',    // 베트남 하노이
+  VNSE: 'HSX',    // 베트남 호치민
+};
+
+// 시세 조회용 거래소 코드 (EXCD 파라미터 — 주문용과 다를 수 있음)
+const QUOTE_EXCD_MAP: Record<string, string> = {
+  NYSE: 'NYS', NASDAQ: 'NAS', AMEX: 'AMS',
+  TSE: 'TSE', TKSE: 'TSE', TPE: 'TPE',
+  SEHK: 'HKS', HKS: 'HKS',
+  SSE: 'SHS', SHAA: 'SHS', SZSE: 'SZS', SZAA: 'SZS',
+  HASE: 'HNX', VNSE: 'HSX',
+};
+
+// 주문용 거래소 코드 (OVRS_EXCG_CD)
+const ORDER_EXCD_MAP: Record<string, string> = {
+  NYSE: 'NYSE', NASDAQ: 'NASD', AMEX: 'AMEX',
+  TSE: 'TKSE', TKSE: 'TKSE', TPE: 'TPEX',
+  SEHK: 'SEHK', HKS: 'SEHK',
+  SSE: 'SHAA', SHAA: 'SHAA', SZSE: 'SZAA', SZAA: 'SZAA',
+  HASE: 'HASE', VNSE: 'VNSE',
 };
 
 export interface OverseasPrice {
@@ -49,7 +80,7 @@ export interface OverseasPrice {
  * 미국 주식 현재가 조회
  */
 export async function getOverseasPrice(stockCode: string, exchange: string = 'NASDAQ'): Promise<OverseasPrice> {
-  const excd = EXCHANGE_MAP[exchange] ?? 'NAS';
+  const excd = QUOTE_EXCD_MAP[exchange] ?? EXCHANGE_MAP[exchange] ?? 'NAS';
 
   const res = await overseasKisRequest({
     path: '/uapi/overseas-price/v1/quotations/price',
@@ -78,7 +109,7 @@ export async function getOverseasPrice(stockCode: string, exchange: string = 'NA
  * 미국 주식 일봉 차트
  */
 export async function getOverseasDailyChart(stockCode: string, exchange: string = 'NASDAQ', days: number = 60) {
-  const excd = EXCHANGE_MAP[exchange] ?? 'NAS';
+  const excd = QUOTE_EXCD_MAP[exchange] ?? EXCHANGE_MAP[exchange] ?? 'NAS';
   const endDate = new Date().toISOString().split('T')[0].replace(/-/g, '');
 
   const res = await overseasKisRequest({
@@ -118,7 +149,7 @@ export async function placeOverseasOrder(params: {
   price?: number; // 지정가 (없으면 시장가)
 }) {
   const { stockCode, exchange = 'NASDAQ', side, quantity, price } = params;
-  const excd = EXCHANGE_MAP[exchange] ?? 'NAS';
+  const excd = ORDER_EXCD_MAP[exchange] ?? EXCHANGE_MAP[exchange] ?? 'NAS';
   const trId = side === 'BUY' ? OVERSEAS_TR_ID.BUY : OVERSEAS_TR_ID.SELL;
 
   const body: Record<string, string> = {

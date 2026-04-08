@@ -2,10 +2,11 @@ import { OrderType, STRATEGY_PARAMS, type StrategyMode } from '../config/constan
 import { config } from '../config/index.js';
 import { insertOrder, logSystem, updateOrder } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
-import { getCurrentPrice } from '../kis/market.js';
+import { getCurrentPrice, getDailyChart } from '../kis/market.js';
 import { getOrderFills, type OrderResult, placeOrder } from '../kis/order.js';
 import { riskEngine } from '../risk/engine.js';
 import { reportError, reportSuccess } from '../risk/kill-switch.js';
+import { runTradeGates, type GateInput } from '../risk/trade-gate.js';
 import { paperTradeOrder } from '../risk/paper.js';
 import { acquireLock } from '../utils/lock.js';
 import { logger } from '../utils/logger.js';
@@ -107,11 +108,38 @@ export class TradeExecutor {
       return;
     }
 
+    // 🚦 매매 게이트 (차트검수 + 확률교정 + 변동성사이징 + 레짐필터 + 쿨다운)
+    const params = STRATEGY_PARAMS[mode];
+    let gatedQuantity = quantity;
+    try {
+      const candles = await getDailyChart(stockCode, 65).catch(() => []);
+      const gateInput: GateInput = {
+        stockCode,
+        action: 'BUY',
+        quantity,
+        estimatedPrice,
+        candles: candles.map(c => ({ date: c.date, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume })),
+        strategyMode: mode,
+        stopLossPct: params.stopLossPct,
+        takeProfitPct: params.takeProfitPct,
+        budgetKrw: estimatedPrice * quantity,
+      };
+      const gateResult = await runTradeGates(gateInput);
+      if (!gateResult.passed) {
+        logger.warn(`🚦 게이트 차단 [${stockCode}]: ${gateResult.reason}`, { component: 'EXECUTOR' });
+        await logSystem('WARN', 'TRADE_GATE', `매수 차단: ${stockCode} - ${gateResult.reason}`);
+        return;
+      }
+      gatedQuantity = gateResult.adjustedQuantity ?? quantity;
+    } catch (e) {
+      logger.warn(`게이트 에러 (통과 처리): ${(e as Error).message}`, { component: 'EXECUTOR' });
+    }
+
     // 리스크 체크
     const riskCheck = await riskEngine.validateOrder({
       stockCode,
       side: 'BUY',
-      quantity,
+      quantity: gatedQuantity,
       estimatedPrice,
     });
 
@@ -125,7 +153,7 @@ export class TradeExecutor {
     const result = await this.executeOrder({
       stockCode,
       side: 'BUY',
-      quantity,
+      quantity: gatedQuantity,
       price: priceType === 'LIMIT' ? limitPrice : undefined,
       triggerSource: 'TRACK_B',
       aiReasoning: reasoning,
@@ -137,13 +165,12 @@ export class TradeExecutor {
         logger.error(`체결 미확인 → 체인 생성 보류: ${stockCode}`, { component: 'EXECUTOR' });
         return;
       }
-      const params = STRATEGY_PARAMS[mode];
 
       await chainManager.openChain({
         stockCode,
         mode,
         buyPrice: fillPrice,
-        quantity,
+        quantity: gatedQuantity,
         targetProfitPct: params.takeProfitPct,
         stopLossPct: params.stopLossPct,
         maxAveragingCount: params.maxAveragingCount,

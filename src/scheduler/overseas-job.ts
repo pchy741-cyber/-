@@ -13,15 +13,28 @@ import { sendTelegramMessage } from '../notifications/telegram.js';
 import { isKillSwitchActive, reportError, reportSuccess } from '../risk/kill-switch.js';
 import { logger } from '../utils/logger.js';
 
-// 미국 주식 감시 목록 (대형 기술주 + 성장주)
-const US_WATCHLIST = [
-  { code: 'AAPL', name: 'Apple', exchange: 'NASDAQ' },
-  { code: 'NVDA', name: 'NVIDIA', exchange: 'NASDAQ' },
-  { code: 'MSFT', name: 'Microsoft', exchange: 'NASDAQ' },
-  { code: 'GOOGL', name: 'Google', exchange: 'NASDAQ' },
-  { code: 'AMZN', name: 'Amazon', exchange: 'NASDAQ' },
-  { code: 'TSLA', name: 'Tesla', exchange: 'NASDAQ' },
-  { code: 'META', name: 'Meta', exchange: 'NASDAQ' },
+// 글로벌 감시 목록 — 미국 + 일본 + 대만 (안정 대형주 위주)
+const GLOBAL_WATCHLIST = [
+  // 🇺🇸 미국 (KST 23:30~06:30)
+  { code: 'AAPL', name: 'Apple', exchange: 'NASDAQ', region: 'US' },
+  { code: 'NVDA', name: 'NVIDIA', exchange: 'NASDAQ', region: 'US' },
+  { code: 'MSFT', name: 'Microsoft', exchange: 'NASDAQ', region: 'US' },
+  { code: 'GOOGL', name: 'Google', exchange: 'NASDAQ', region: 'US' },
+  { code: 'AMZN', name: 'Amazon', exchange: 'NASDAQ', region: 'US' },
+  { code: 'TSLA', name: 'Tesla', exchange: 'NASDAQ', region: 'US' },
+  { code: 'META', name: 'Meta', exchange: 'NASDAQ', region: 'US' },
+  // 🇯🇵 일본 (KST 09:00~11:30, 12:30~15:00)
+  { code: '7203', name: 'Toyota', exchange: 'TSE', region: 'JP' },
+  { code: '6758', name: 'Sony', exchange: 'TSE', region: 'JP' },
+  { code: '6861', name: 'Keyence', exchange: 'TSE', region: 'JP' },
+  { code: '8306', name: 'MUFG', exchange: 'TSE', region: 'JP' },
+  { code: '6501', name: 'Hitachi', exchange: 'TSE', region: 'JP' },
+  // 🇹🇼 대만 (KST 10:00~14:30)
+  { code: '2330', name: 'TSMC', exchange: 'TPE', region: 'TW' },
+  { code: '2317', name: 'Foxconn', exchange: 'TPE', region: 'TW' },
+  { code: '2454', name: 'MediaTek', exchange: 'TPE', region: 'TW' },
+  { code: '2308', name: 'Delta Electronics', exchange: 'TPE', region: 'TW' },
+  { code: '3711', name: 'ASMedia', exchange: 'TPE', region: 'TW' },
 ];
 
 // ── DB 기반 보유종목 관리 (서버 재시작해도 유지) ──
@@ -85,22 +98,55 @@ async function setCash(amount: number): Promise<void> {
 let isRunning = false;
 
 /**
- * 미국 주식 자동매매 Job
- * KST 23:30~06:00 (미국 장중) 15분 간격 실행
+ * 현재 KST 시간 기준으로 열려있는 시장의 region 반환
+ */
+function getActiveRegions(): string[] {
+  const now = new Date();
+  const kst = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+  const h = kst.getHours();
+  const m = kst.getMinutes();
+  const t = h * 60 + m;
+
+  const regions: string[] = [];
+
+  // 🇺🇸 미국: KST 23:30~06:30 (월~금 밤 → 화~토 새벽)
+  if (t >= 23 * 60 + 30 || t <= 6 * 60 + 30) regions.push('US');
+
+  // 🇯🇵 일본: KST 09:00~11:30, 12:30~15:00
+  if ((t >= 9 * 60 && t <= 11 * 60 + 30) || (t >= 12 * 60 + 30 && t <= 15 * 60)) regions.push('JP');
+
+  // 🇹🇼 대만: KST 10:00~14:30
+  if (t >= 10 * 60 && t <= 14 * 60 + 30) regions.push('TW');
+
+  return regions;
+}
+
+/**
+ * 글로벌 주식 자동매매 Job
+ * 각 시장 장중에만 해당 지역 종목 분석 + 매매
  * 기술적 지표 기반 매매 판단 + 자동 주문 실행
  */
 export async function runOverseasJob(): Promise<void> {
   if (isRunning) return;
 
   if (isKillSwitchActive()) {
-    logger.warn('🛑 Kill Switch 활성 — 미국주식 스킵', { component: 'OVERSEAS' });
+    logger.warn('🛑 Kill Switch 활성 — 해외주식 스킵', { component: 'OVERSEAS' });
     return;
   }
 
   isRunning = true;
 
   try {
-    logger.info('🇺🇸 미국주식 자동매매 시작', { component: 'OVERSEAS' });
+    const activeRegions = getActiveRegions();
+    if (activeRegions.length === 0) {
+      logger.info('🌏 열린 해외 시장 없음 → 스킵', { component: 'OVERSEAS' });
+      return;
+    }
+
+    const activeStocks = GLOBAL_WATCHLIST.filter(s => activeRegions.includes(s.region));
+    const regionFlags = activeRegions.map(r => r === 'US' ? '🇺🇸' : r === 'JP' ? '🇯🇵' : '🇹🇼').join('');
+    logger.info(`${regionFlags} 해외주식 자동매매 시작 (${activeStocks.length}종목)`, { component: 'OVERSEAS' });
+
     await ensureOverseasTable();
 
     const holdings = await getHoldings();
@@ -119,7 +165,7 @@ export async function runOverseasJob(): Promise<void> {
       trendStrength: string;
     }> = [];
 
-    for (const stock of US_WATCHLIST) {
+    for (const stock of activeStocks) {
       try {
         const price = await getOverseasPrice(stock.code, stock.exchange);
         const chart = await getOverseasDailyChart(stock.code, stock.exchange, 65);
@@ -147,7 +193,7 @@ export async function runOverseasJob(): Promise<void> {
     }
 
     if (analysis.length === 0) {
-      logger.warn('미국주식 분석 데이터 없음 (장 외 시간?)', { component: 'OVERSEAS' });
+      logger.warn('해외주식 분석 데이터 없음 (장 외 시간?)', { component: 'OVERSEAS' });
       return;
     }
 
@@ -181,6 +227,13 @@ export async function runOverseasJob(): Promise<void> {
       .sort((a, b) => b.score - a.score);
 
     for (const signal of buySignals.slice(0, 2)) {
+      // R:R 체크: 익절(5%) / 손절(3%) = 1.67 → OK
+      // ADX < 15 → 추세 없음, 스킵
+      if (signal.adx < 15) {
+        logger.info(`  ${signal.code} 스킵: ADX=${signal.adx.toFixed(0)} (추세 없음)`, { component: 'OVERSEAS' });
+        continue;
+      }
+
       const positionSize = Math.min(cash * 0.25, 2000);
       if (positionSize < 50) break;
 
@@ -207,7 +260,7 @@ export async function runOverseasJob(): Promise<void> {
     });
 
     const summary = [
-      `🇺🇸 미국주식 자동매매 완료`,
+      `${regionFlags} 해외주식 자동매매 완료`,
       `분석: ${analysis.length}종목 | 실행: ${totalActions}건`,
       `잔고: $${cash.toFixed(2)}`,
       ...buyOrders.map((o) => `🟢 ${o}`),
@@ -225,7 +278,7 @@ export async function runOverseasJob(): Promise<void> {
     reportSuccess();
   } catch (e) {
     const msg = (e as Error).message;
-    logger.error(`미국주식 자동매매 실패: ${msg}`, { component: 'OVERSEAS' });
+    logger.error(`해외주식 자동매매 실패: ${msg}`, { component: 'OVERSEAS' });
     await reportError('OVERSEAS', msg);
   } finally {
     isRunning = false;

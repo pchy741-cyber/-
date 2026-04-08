@@ -21,6 +21,7 @@ import { runSnapshotJob } from './snapshot-job.js';
 import { runTrackAJob } from './track-a-job.js';
 import { runTrackBJob } from './track-b-job.js';
 import { runOverseasJob } from './overseas-job.js';
+import { syncInterestGroups, syncHoldingsToWatchlist } from '../kis/interest-group.js';
 import { runUnfilledOrderCheck } from './unfilled-order-job.js';
 
 /**
@@ -140,7 +141,7 @@ export function startScheduler(): void {
 
   // 📈 증권사 목표가 컨센서스 — 하루 2회 (09:30, 14:00)
   cron.schedule(
-    '30 9,0 14 * * 1-5',
+    '30 9,14 * * 1-5',
     () => {
       withTimeout('목표가 컨센서스', () => analyzeWatchlistConsensus(), 120_000);
     },
@@ -158,7 +159,7 @@ export function startScheduler(): void {
 
   // 🌍 매크로 스냅샷 — 장 시작 전 + 점심 (08:30, 12:30)
   cron.schedule(
-    '30 8,30 12 * * 1-5',
+    '30 8,12 * * 1-5',
     () => {
       getMacroSnapshot().catch((e) => logger.error(`매크로 실패: ${e}`, { component: 'SCHEDULER' }));
     },
@@ -292,23 +293,66 @@ export function startScheduler(): void {
   );
 
   // ═══════════════════════════════════════════
-  //  🇺🇸 미국 주식 (23:30~06:00 KST)
+  //  🌏 해외 주식 (미국/일본/대만)
   // ═══════════════════════════════════════════
 
-  // 미국 주식 분석 — 미국 장중 15분 간격 (KST 23:30~06:00)
+  // 🇯🇵 일본 + 🇹🇼 대만 — KST 09:00~15:00 15분 간격
+  // (overseas-job이 내부에서 region 자동 판별)
   cron.schedule(
-    '*/15 23,0-5 * * 1-5',
+    '*/15 9-14 * * 1-5',
+    () => {
+      runOverseasJob().catch((e) => logger.error(`아시아주식 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🇺🇸 미국 주식 (23:30~06:30 KST)
+
+  // 23:20 — 미국장 전 Kill Switch 리셋 (한국장 에러가 미국장 차단하지 않도록)
+  cron.schedule(
+    '20 23 * * 1-5',
+    async () => {
+      const { isKillSwitchActive, deactivateKillSwitch, resetDailyErrorCount } = await import('../risk/kill-switch.js');
+      resetDailyErrorCount();
+      if (isKillSwitchActive()) {
+        logger.info('🔄 Kill Switch 리셋 (미국장 준비)', { component: 'SCHEDULER' });
+        await deactivateKillSwitch();
+      }
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 미국 주식 분석 — 미국 장중 15분 간격 (KST 23:30~06:30)
+  // 23시대: 30,45분 / 0~5시: 매 15분 / 6시대: 0,15,30분
+  cron.schedule(
+    '30,45 23 * * 1-5',
+    () => {
+      runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+  cron.schedule(
+    '0,15,30,45 0-5 * * 2-6',
+    () => {
+      runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+  cron.schedule(
+    '0,15,30 6 * * 2-6',
     () => {
       runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 미국 장 시작 시 1회 (KST 23:30)
+  // 🔄 KIS 관심종목 + 보유종목 동기화 — 매일 08:30, 18:30 (장 전/후)
   cron.schedule(
-    '30 23 * * 1-5',
-    () => {
-      runOverseasJob().catch((e) => logger.error(`미국주식(장시작) 실패: ${e}`, { component: 'SCHEDULER' }));
+    '30 8,18 * * 1-5',
+    async () => {
+      logger.info('🔄 KIS 관심종목/보유종목 동기화', { component: 'SCHEDULER' });
+      await syncInterestGroups().catch((e) => logger.error(`관심종목 동기화 실패: ${e}`, { component: 'SCHEDULER' }));
+      await syncHoldingsToWatchlist().catch((e) => logger.error(`보유종목 동기화 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -327,5 +371,5 @@ export function startScheduler(): void {
   logger.info('  이상감지: 5분 | 장세전환: 08:00/12:00 | 리포트: 15:40', { component: 'SCHEDULER' });
   logger.info('  🎯 스나이퍼: 15분 (수급/기술/공시 고확률 자동 진입)', { component: 'SCHEDULER' });
   logger.info('  Self-Heal: 10분 | 아카이빙: 일요일 02:00', { component: 'SCHEDULER' });
-  logger.info('  🇺🇸 미국주식: 23:30~06:00 15분 (기술적 지표)', { component: 'SCHEDULER' });
+  logger.info('  🌏 해외주식: 🇯🇵🇹🇼 09:00~15:00 + 🇺🇸 23:30~06:30 15분 (기술적 지표)', { component: 'SCHEDULER' });
 }

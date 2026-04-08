@@ -94,8 +94,14 @@ async function authenticateWithBiometric(): Promise<boolean> {
   }
 }
 
-// PIN 폴백 (생체인증 미지원 시)
-const DEFAULT_PIN = '1234';
+// PIN 폴백 (생체인증 미지원 시) — SHA-256 해시 저장
+const DEFAULT_PIN_HASH = '03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4'; // sha256('1234')
+
+async function hashPin(pin: string): Promise<string> {
+  const data = new TextEncoder().encode(pin);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
 function LockScreen({ onUnlock }: { onUnlock: () => void }) {
   const [pin, setPin] = useState('');
@@ -138,10 +144,11 @@ function LockScreen({ onUnlock }: { onUnlock: () => void }) {
     }
   }, [onUnlock]);
 
-  const handlePin = (e: React.FormEvent) => {
+  const handlePin = async (e: React.FormEvent) => {
     e.preventDefault();
-    const savedPin = localStorage.getItem('quantops_pin') || DEFAULT_PIN;
-    if (pin === savedPin) {
+    const savedHash = localStorage.getItem('quantops_pin') || DEFAULT_PIN_HASH;
+    const inputHash = await hashPin(pin);
+    if (inputHash === savedHash) {
       setAuthenticated();
       onUnlock();
     } else {

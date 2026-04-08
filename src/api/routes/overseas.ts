@@ -5,8 +5,8 @@ import { logger } from '../../utils/logger.js';
 
 export const overseasRoutes = new Hono();
 
-// 미국주식 감시목록
-const US_WATCHLIST = [
+// 글로벌 감시목록 (미국 + 일본 + 대만)
+const GLOBAL_WATCHLIST = [
   { code: 'AAPL', name: 'Apple', exchange: 'NASDAQ' },
   { code: 'NVDA', name: 'NVIDIA', exchange: 'NASDAQ' },
   { code: 'MSFT', name: 'Microsoft', exchange: 'NASDAQ' },
@@ -14,22 +14,29 @@ const US_WATCHLIST = [
   { code: 'AMZN', name: 'Amazon', exchange: 'NASDAQ' },
   { code: 'TSLA', name: 'Tesla', exchange: 'NASDAQ' },
   { code: 'META', name: 'Meta', exchange: 'NASDAQ' },
+  { code: '7203', name: 'Toyota', exchange: 'TSE' },
+  { code: '6758', name: 'Sony', exchange: 'TSE' },
+  { code: '6861', name: 'Keyence', exchange: 'TSE' },
+  { code: '2330', name: 'TSMC', exchange: 'TPE' },
+  { code: '2317', name: 'Foxconn', exchange: 'TPE' },
+  { code: '2454', name: 'MediaTek', exchange: 'TPE' },
 ];
 
-// 미국주식 대시보드 (60초 캐시)
+// 해외주식 대시보드 (60초 캐시)
 overseasRoutes.get('/overseas/dashboard', async (c) => {
   const cached = cacheGet<any>('overseas:dashboard');
   if (cached) return c.json(cached);
 
   const prices: Array<{ code: string; name: string; exchange: string; price: number; changePct: number; volume: number }> = [];
 
-  for (const stock of US_WATCHLIST) {
+  for (const stock of GLOBAL_WATCHLIST) {
     try {
       const p = await getOverseasPrice(stock.code, stock.exchange);
       prices.push({ code: stock.code, name: stock.name, exchange: stock.exchange, price: p.currentPrice, changePct: p.changePct, volume: p.volume });
     } catch {
       prices.push({ code: stock.code, name: stock.name, exchange: stock.exchange, price: 0, changePct: 0, volume: 0 });
     }
+    await new Promise(r => setTimeout(r, 200)); // rate limit
   }
 
   let positions: any[] = [];
@@ -40,9 +47,9 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
   return c.json(result);
 });
 
-// 미국주식 감시목록 조회
+// 해외주식 감시목록 조회
 overseasRoutes.get('/overseas/watchlist', (c) => {
-  return c.json(US_WATCHLIST);
+  return c.json(GLOBAL_WATCHLIST);
 });
 
 // 개별 종목 현재가

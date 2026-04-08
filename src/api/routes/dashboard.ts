@@ -8,6 +8,7 @@ import { getAccountBalance } from '../../kis/account.js';
 import { getCurrentPrice } from '../../kis/market.js';
 import { getWithdrawConfig, getWithdrawals, getTotalReserved } from '../../automation/profit-withdraw.js';
 import { getKillSwitchStatus } from '../../risk/kill-switch.js';
+import { getPaperBalance } from '../../risk/engine.js';
 import { placeOrder } from '../../kis/order.js';
 import { getDailyChart } from '../../kis/market.js';
 import { analyzeTechnicals } from '../../analysis/indicators.js';
@@ -23,8 +24,9 @@ dashboardRoutes.get('/dashboard', async (c) => {
   // KIS API 실패 시에도 기본값으로 응답 (장 외 시간, API 제한 등)
   const defaultBalance = { totalDeposit: 10000000, totalEvalAmount: 0, orderableCash: 10000000, totalProfitLoss: 0, totalProfitLossPct: 0, positions: [] };
 
+  const balanceFn = config.isPaper ? getPaperBalance : getAccountBalance;
   const [balanceResult, chains, strategy] = await Promise.all([
-    getAccountBalance().catch(() => defaultBalance),
+    balanceFn().catch(() => defaultBalance),
     getOpenChains().catch(() => []),
     getActiveStrategy().catch(() => null),
   ]);
@@ -102,26 +104,35 @@ dashboardRoutes.get('/dashboard', async (c) => {
     return { ...ch, currentPrice, unrealizedPnl, unrealizedPnlPct, invested };
   });
 
-  // 투자금/손익 계산 — KIS 잔고 + chains 합산
-  const kisInvested = balance.totalEvalAmount ?? 0;
-  const kisPnl = balance.totalProfitLoss ?? 0;
-  const totalInvested = kisInvested + totalChainInvested;
-  const totalPnl = kisPnl + totalChainPnl;
-  const totalPnlPct = totalInvested > 0 ? (totalPnl / totalInvested) * 100 : 0;
-
-  // 현금 = KIS 예수금 - chains 투자원금 (모의투자에서 KIS가 차감 안 해주므로 직접 계산)
+  // 투자금/손익 계산 — 모드별 분기
+  // Live: KIS 잔고가 source-of-truth (chains는 메타 정보)
+  // Paper: KIS가 반영 안 하므로 chains 기반 계산
   const rawCash = balance.orderableCash ?? 10000000;
-  const adjustedCash = rawCash - totalChainInvested;
-  const actualCash = adjustedCash > 0 ? adjustedCash : rawCash;
 
-  // 총 자산 = 현금 + 투자 평가금(원금+손익)
-  const totalValue = actualCash + totalInvested + totalChainPnl;
+  let totalInvested: number;
+  let totalPnl: number;
+  let actualCash: number;
+
+  if (config.isPaper) {
+    // Paper: balance에서 이미 cash=현금, evalAmount=투자금으로 분리됨
+    totalInvested = totalChainInvested;
+    totalPnl = totalChainPnl + (balance.totalProfitLoss ?? 0);
+    actualCash = rawCash;
+  } else {
+    // Live: KIS 잔고가 정확 — chains 이중합산 하지 않음
+    totalInvested = balance.totalEvalAmount ?? 0;
+    totalPnl = balance.totalProfitLoss ?? 0;
+    actualCash = rawCash;
+  }
+
+  const totalPnlPct = totalInvested > 0 ? (totalPnl / totalInvested) * 100 : 0;
+  const totalValue = actualCash + totalInvested + totalPnl;
 
   return c.json({
     portfolio: {
       totalValue,
       cash: actualCash,
-      invested: totalInvested + totalChainPnl, // 평가금 (원금+손익)
+      invested: totalInvested + (config.isPaper ? totalChainPnl : 0), // 평가금
       pnl: totalPnl,
       pnlPct: totalPnlPct,
       positions: balance.positions ?? [],
@@ -217,6 +228,34 @@ dashboardRoutes.delete('/watchlist/:stockCode', async (c) => {
   return c.json({ ok: true });
 });
 
+// ── KIS 실계좌 잔고 (국내+해외) ──
+dashboardRoutes.get('/kis-balance', async (c) => {
+  try {
+    const [domestic, overseas] = await Promise.all([
+      getAccountBalance().catch(() => null),
+      import('../../kis/overseas.js').then((m) => m.getOverseasBalance()).catch(() => []),
+    ]);
+    return c.json({ domestic, overseas });
+  } catch (err: any) {
+    return c.json({ error: err?.message ?? 'KIS 잔고 조회 실패' }, 500);
+  }
+});
+
+// ── KIS 관심종목 동기화 ──
+dashboardRoutes.post('/watchlist/sync', async (c) => {
+  try {
+    const { syncInterestGroups, syncHoldingsToWatchlist } = await import('../../kis/interest-group.js');
+    const [interest, holdings] = await Promise.all([
+      syncInterestGroups(),
+      syncHoldingsToWatchlist(),
+    ]);
+    const allAdded = [...interest.added, ...holdings.added];
+    return c.json({ ok: true, added: allAdded, kisTotal: interest.total, message: allAdded.length > 0 ? `${allAdded.length}종목 동기화 완료` : '이미 최신 상태' });
+  } catch (err: any) {
+    return c.json({ error: err?.message ?? 'KIS 동기화 실패' }, 500);
+  }
+});
+
 // ── 매매 기록 ──
 dashboardRoutes.get('/trades', async (c) => {
   const limit = Number(c.req.query('limit') ?? 50);
@@ -304,6 +343,7 @@ dashboardRoutes.put('/withdraw/config', async (c) => {
       `UPDATE profit_withdraw_config SET
          is_active = $1, target_profit_pct = $2, withdraw_ratio_pct = $3,
          min_withdraw_amount = $4, check_frequency = $5, updated_at = NOW()
+       WHERE id = (SELECT id FROM profit_withdraw_config LIMIT 1)
        RETURNING *`,
       [
         body.is_active ?? false,
@@ -358,11 +398,12 @@ dashboardRoutes.post('/sell/:chainId', async (c) => {
       [chainId],
     );
 
-    // 주문 기록
+    // 주문 기록 (filled_quantity/filled_price 포함 — Paper 복원 로직이 이 필드를 읽음)
+    const avgPrice = Number(chain.avg_buy_price) || 0;
     await getPool().query(
-      `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
-       VALUES ($1, $2, 'SELL', 'MARKET', $3, $4, 'FILLED', $5, 'MANUAL', 'CEO 수동 전량 매도')`,
-      [chainId, chain.stock_code, chain.total_quantity, result.orderNo ?? '', config.tradingMode],
+      `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
+       VALUES ($1, $2, 'SELL', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, 'MANUAL', 'CEO 수동 전량 매도')`,
+      [chainId, chain.stock_code, chain.total_quantity, avgPrice, result.orderNo ?? '', config.tradingMode],
     );
 
     return c.json({ ok: true, orderNo: result.orderNo, message: `${chain.stock_code} ${chain.total_quantity}주 전량 매도 주문 완료` });

@@ -199,7 +199,7 @@ export default function Dashboard() {
         <div className="p-3 border-t border-white/[0.04] space-y-2">
           <button onClick={toggleKill}
             className={`w-full py-2.5 rounded-xl text-[11px] font-bold transition-all ${killSwitch?.active ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/30' : 'bg-white/[0.04] hover:bg-white/[0.06] text-slate-500'}`}>
-            {killSwitch?.active ? '긴급정지 ON' : '긴급정지 OFF'}
+            {killSwitch?.active ? '수동' : '자동'}
           </button>
           <button onClick={load} className="w-full py-2 rounded-xl text-[10px] text-slate-600 hover:text-slate-400 bg-white/[0.02] hover:bg-white/[0.04] transition-all font-medium">
             새로고침 · {lastUpdate.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
@@ -216,7 +216,7 @@ export default function Dashboard() {
           </button>
           <span className="font-bold text-sm bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">QUANTOPS</span>
           <button onClick={toggleKill} className={`ml-auto px-3 py-1.5 rounded-lg text-[10px] font-bold ${killSwitch?.active ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-500'}`}>
-            {killSwitch?.active ? '🛑 ON' : '⏸️'}
+            {killSwitch?.active ? '수동' : '자동'}
           </button>
         </header>
 
@@ -453,7 +453,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, on
         </Panel>
 
         {/* 미국 시세 */}
-        <Panel title="미국주식 시세" badge="밤 11:30~새벽 6시 자동매매" badgeColor="blue">
+        <Panel title="해외주식 시세" badge="🇺🇸 🇯🇵 🇹🇼 자동매매" badgeColor="blue">
           {usW.length > 0 ? (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3.5">
               {usW.map((s: any) => (
@@ -467,9 +467,9 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, on
             </div>
           ) : (
             <div className="p-6 text-center space-y-2">
-              <div className="text-2xl opacity-30">🇺🇸</div>
-              <p className="text-sm text-slate-400">미국 장 시간 (23:30~06:00 KST)에 시세가 갱신됩니다</p>
-              <p className="text-[11px] text-slate-600">AAPL, TSLA, NVDA 등 감시목록 종목의 실시간 시세를 표시합니다.</p>
+              <div className="text-2xl opacity-30">🌏</div>
+              <p className="text-sm text-slate-400">해외 장 시간에 시세가 갱신됩니다</p>
+              <p className="text-[11px] text-slate-600">🇯🇵 09:00~15:00 · 🇹🇼 10:00~14:30 · 🇺🇸 23:30~06:30</p>
             </div>
           )}
         </Panel>
@@ -548,8 +548,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, on
                 <div className="font-bold mt-0.5 text-blue-400">{dash?.strategy?.mode === 'SWING' ? '안정 스윙' : dash?.strategy?.mode === 'DEFENSE' ? '방어 모드' : '단타'}</div>
               </div>
               <div className="glass rounded-lg p-2.5 border border-white/[0.04]">
-                <span className="text-slate-500">비상 정지</span>
-                <div className={`font-bold mt-0.5 ${killSwitch?.active ? 'text-rose-400' : 'text-emerald-400'}`}>{killSwitch?.active ? '발동됨' : '정상'}</div>
+                <span className="text-slate-500">매매 모드</span>
+                <div className={`font-bold mt-0.5 ${killSwitch?.active ? 'text-rose-400' : 'text-emerald-400'}`}>{killSwitch?.active ? '수동' : '자동'}</div>
               </div>
               <div className="glass rounded-lg p-2.5 border border-white/[0.04]">
                 <span className="text-slate-500">운영 모드</span>
@@ -814,6 +814,17 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
     setWatchlist((prev: any[]) => prev.filter(s => s.stock_code !== code));
   };
 
+  const [syncing, setSyncing] = useState(false);
+  const syncKIS = async () => {
+    setSyncing(true);
+    try {
+      const r = await api('/watchlist/sync', { method: 'POST' });
+      alert(r.message || `동기화 완료: ${r.added?.length || 0}종목 추가`);
+      const w = await api('/watchlist'); setWatchlist(Array.isArray(w) ? w : []);
+    } catch (err: any) { alert(`동기화 실패: ${err.message}`); }
+    finally { setSyncing(false); }
+  };
+
   const t = analysis?.technicals;
   const f = analysis?.flow;
   const sh = analysis?.shorts;
@@ -821,13 +832,18 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
 
   return (
     <div className="space-y-5 sm:space-y-6">
-      {/* 추가 폼 */}
-      <form onSubmit={addStock} className="flex flex-wrap gap-2">
-        <input name="code" placeholder="종목코드 (005930)" maxLength={6} required className="flex-1 min-w-[120px] bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm placeholder:text-slate-600 focus:border-blue-500 focus:outline-none" />
-        <input name="name" placeholder="종목명(자동조회)" className="flex-1 min-w-[120px] bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm placeholder:text-slate-600 focus:border-blue-500 focus:outline-none" />
-        <select name="market" defaultValue="KOSPI" className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm"><option>KOSPI</option><option>KOSDAQ</option></select>
-        <button type="submit" className="px-5 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium">추가</button>
-      </form>
+      {/* 추가 폼 + KIS 동기화 */}
+      <div className="flex flex-wrap gap-2 items-end">
+        <form onSubmit={addStock} className="flex flex-wrap gap-2 flex-1">
+          <input name="code" placeholder="종목코드 (005930)" maxLength={6} required className="flex-1 min-w-[120px] bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm placeholder:text-slate-600 focus:border-blue-500 focus:outline-none" />
+          <input name="name" placeholder="종목명(자동조회)" className="flex-1 min-w-[120px] bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm placeholder:text-slate-600 focus:border-blue-500 focus:outline-none" />
+          <select name="market" defaultValue="KOSPI" className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm"><option>KOSPI</option><option>KOSDAQ</option></select>
+          <button type="submit" className="px-5 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium">추가</button>
+        </form>
+        <button onClick={syncKIS} disabled={syncing} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 rounded-lg text-sm font-medium whitespace-nowrap">
+          {syncing ? '동기화 중...' : '한투 앱 동기화'}
+        </button>
+      </div>
 
       {/* 종목 상세 분석 패널 */}
       {selectedStock && (
@@ -1233,12 +1249,12 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
         <Panel title="긴급 제어">
           <div className="p-4 sm:p-5 flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium">긴급정지</p>
-              <p className="text-[11px] text-slate-500 mt-0.5">모든 자동매매 즉시 중지</p>
+              <p className="text-sm font-medium">매매 모드</p>
+              <p className="text-[11px] text-slate-500 mt-0.5">자동 ↔ 수동 전환</p>
               {killSwitch?.reason && <p className="text-[11px] text-rose-400 mt-1">{killSwitch.reason}</p>}
             </div>
             <button onClick={toggleKill} className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${killSwitch?.active ? 'bg-rose-600 hover:bg-rose-500 shadow-lg shadow-rose-900/40' : 'bg-slate-700 hover:bg-slate-600 text-slate-400'}`}>
-              {killSwitch?.active ? '🛑 ON → 해제' : '⏸️ OFF → 발동'}
+              {killSwitch?.active ? '수동 → 자동' : '자동 → 수동'}
             </button>
           </div>
         </Panel>
@@ -1419,12 +1435,15 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
         <div className="p-4 sm:p-5">
           <div className="flex flex-col sm:flex-row sm:items-center gap-3">
             <p className="text-xs text-slate-500 shrink-0">잠금 PIN 변경</p>
-            <form onSubmit={(e) => {
+            <form onSubmit={async (e) => {
               e.preventDefault();
               const fd = new FormData(e.currentTarget);
               const newPin = String(fd.get('pin') ?? '').trim();
               if (newPin.length < 4) { alert('PIN은 4자리 이상'); return; }
-              localStorage.setItem('quantops_pin', newPin);
+              const data = new TextEncoder().encode(newPin);
+              const hash = await crypto.subtle.digest('SHA-256', data);
+              const hex = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+              localStorage.setItem('quantops_pin', hex);
               toast?.('PIN 변경 완료', 'ok');
               (e.target as HTMLFormElement).reset();
             }} className="flex gap-2 flex-1 max-w-sm">
