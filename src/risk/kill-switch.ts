@@ -53,6 +53,9 @@ export async function activateKillSwitch(reason: string): Promise<void> {
 
     logger.error(`🛑 KILL SWITCH 발동: ${reason}`, { component: 'KILL_SWITCH' });
 
+    // 푸시 알림
+    import('../notifications/web-push.js').then(m => m.notifyAlert('🛑 긴급정지 발동', reason)).catch(() => {});
+
     await insertRiskEvent({
       event_type: 'KILL_SWITCH',
       severity: 'CRITICAL',

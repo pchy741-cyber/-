@@ -25,6 +25,38 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
+// Push: 서버에서 푸시 메시지 수신 시 알림 표시
+self.addEventListener('push', (event) => {
+  const data = event.data ? event.data.json() : {};
+  const title = data.title || 'QUANTOPS';
+  const options = {
+    body: data.body || '',
+    icon: '/icon-192.svg',
+    badge: '/icon-192.svg',
+    tag: data.tag || 'quantops-' + Date.now(),
+    data: { url: data.url || '/' },
+    vibrate: [200, 100, 200],
+    actions: data.actions || [],
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+// 알림 클릭 시 앱 열기
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = event.notification.data?.url || '/';
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window' }).then((clients) => {
+      for (const client of clients) {
+        if (client.url.includes(self.location.origin) && 'focus' in client) {
+          return client.focus();
+        }
+      }
+      return self.clients.openWindow(url);
+    })
+  );
+});
+
 // Fetch: network-first for everything except icons/manifest
 self.addEventListener('fetch', (event) => {
   const { request } = event;

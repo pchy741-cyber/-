@@ -76,6 +76,25 @@ settingsRoutes.put('/strategy', async (c) => {
   }
 });
 
+// ── 푸시 알림 ──
+settingsRoutes.get('/push/vapid-key', async (c) => {
+  const { getVapidPublicKey } = await import('../../notifications/web-push.js');
+  return c.json({ publicKey: getVapidPublicKey() });
+});
+
+settingsRoutes.post('/push/subscribe', async (c) => {
+  const subscription = await c.req.json();
+  const { saveSubscription } = await import('../../notifications/web-push.js');
+  await saveSubscription(subscription);
+  return c.json({ ok: true });
+});
+
+settingsRoutes.post('/push/test', async (c) => {
+  const { sendPushNotification } = await import('../../notifications/web-push.js');
+  await sendPushNotification({ title: 'QUANTOPS 테스트', body: '알림이 정상 작동합니다!' });
+  return c.json({ ok: true });
+});
+
 // ── 수동 Track A 실행 ──
 settingsRoutes.post('/run-track-a', async (c) => {
   const body = await c.req.json();

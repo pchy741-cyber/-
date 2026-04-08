@@ -1258,6 +1258,32 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
             </button>
           </div>
         </Panel>
+        <Panel title="알림 설정">
+          <div className="p-4 sm:p-5 flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">푸시 알림</p>
+              <p className="text-[11px] text-slate-500 mt-0.5">매수/매도/긴급 알림을 받습니다</p>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={async () => {
+                try {
+                  const permission = await Notification.requestPermission();
+                  if (permission !== 'granted') { alert('알림 권한이 거부되었습니다'); return; }
+                  const reg = await navigator.serviceWorker.ready;
+                  const { publicKey } = await api('/push/vapid-key');
+                  const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: publicKey });
+                  await api('/push/subscribe', { method: 'POST', body: JSON.stringify(sub) });
+                  toast?.('알림 등록 완료', 'ok');
+                } catch (err: any) { alert('알림 등록 실패: ' + err.message); }
+              }} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-xl text-xs font-bold">알림 켜기</button>
+              <button onClick={async () => {
+                try { await api('/push/test', { method: 'POST' }); } catch { alert('테스트 실패'); }
+              }} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded-xl text-xs text-slate-400">테스트</button>
+            </div>
+          </div>
+        </Panel>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Panel title="AI 분석 수동 실행">
           <div className="p-4 sm:p-5 flex items-center justify-between">
             <div>
