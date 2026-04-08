@@ -42,17 +42,26 @@ export async function paperTradeOrder(params: {
   if (basePrice <= 0) {
     return { success: false, orderNo: '', message: `[모의투자] 현재가 조회 실패: ${stockCode}` };
   }
-  // 시장가: 0.1~0.3% 슬리피지, 지정가: 0%
-  const slippagePct = price ? 0 : side === 'BUY' ? 0.002 : -0.002; // 매수 시 비싸게, 매도 시 싸게
+  // 슬리피지: 시장가 0.2%, 지정가 0%
+  const slippagePct = price ? 0 : side === 'BUY' ? 0.002 : -0.002;
   const filledPrice = Math.round(basePrice * (1 + slippagePct));
   const fakeOrderNo = `P${Date.now().toString(36)}`;
+
+  // ── 수수료 계산 (실거래와 동일하게 반영) ──
+  // 매수: 증권사 수수료 0.015%
+  // 매도: 증권사 0.015% + 거래세 0.23% = 0.245%
+  const BUY_FEE_PCT = 0.00015;  // 0.015%
+  const SELL_FEE_PCT = 0.00245; // 0.245% (수수료 + 거래세)
+  const orderValue = filledPrice * quantity;
+  const feeRate = side === 'BUY' ? BUY_FEE_PCT : SELL_FEE_PCT;
+  const fee = Math.round(orderValue * feeRate);
 
   // DB에 가상 주문 기록
   await insertOrder({
     chain_id: chainId ?? null,
     stock_code: stockCode,
     side,
-    order_type: price ? '00' : '01', // LIMIT : MARKET
+    order_type: price ? '00' : '01',
     quantity,
     price: filledPrice,
     kis_order_no: fakeOrderNo,
@@ -62,17 +71,17 @@ export async function paperTradeOrder(params: {
     status: 'FILLED',
     trading_mode: 'paper',
     trigger_source: triggerSource ?? null,
-    ai_reasoning: aiReasoning ?? null,
+    ai_reasoning: `${aiReasoning ?? ''} [수수료 ${fee.toLocaleString()}원 (${(feeRate * 100).toFixed(3)}%)]`,
   });
 
-  // Paper 현금 추적: 매수 시 차감, 매도 시 복원
-  const orderValue = filledPrice * quantity;
+  // Paper 현금 추적: 매수 시 차감(+수수료), 매도 시 복원(-수수료)
+  const cashImpact = side === 'BUY' ? orderValue + fee : orderValue - fee;
   try {
     const fns = await getPaperFns();
-    if (side === 'BUY') { fns.add(orderValue); } else { fns.remove(orderValue); }
+    if (side === 'BUY') { fns.add(cashImpact); } else { fns.remove(cashImpact); }
   } catch { /* paper cash tracking 실패해도 주문은 진행 */ }
 
-  logger.info(`📝 [PAPER] ${side} ${stockCode} x${quantity} @${filledPrice.toLocaleString()} (${fakeOrderNo}) | cash${side === 'BUY' ? '-' : '+'}${orderValue.toLocaleString()}`, {
+  logger.info(`📝 [PAPER] ${side} ${stockCode} x${quantity} @${filledPrice.toLocaleString()} (${fakeOrderNo}) | 금액${orderValue.toLocaleString()} 수수료${fee.toLocaleString()}원`, {
     component: 'PAPER_TRADE',
   });
 

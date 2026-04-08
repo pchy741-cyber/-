@@ -104,9 +104,11 @@ export function technicalFallbackDecisions(params: {
     const tech = analyzeTechnicals(candles);
     if (!tech) continue;
 
-    // 매수 조건: score >= buyThreshold 기반 (전략에 따라 유동적)
-    // SCALPING: 55점 기준이지만 기술적 fallback에서는 score 10+ 허용 (모의투자 실험용)
-    const minScore = mode === 'SCALPING' ? 10 : 15;
+    // 각 종목 score 로깅 (디버깅용)
+    logger.info(`  📊 ${stock.stock_code}: score=${tech.score} RSI=${tech.rsi14.toFixed(0)} ADX=${tech.adx14.toFixed(0)}(${tech.trendStrength}) MACD=${tech.macdCrossover}`, { component: 'TRACK_B' });
+
+    // 매수 조건: 기술적 score 양수면 매수 후보 (모의투자 실험 — 적극 진입)
+    const minScore = mode === 'SCALPING' ? 5 : mode === 'DEFENSE' ? 15 : 10;
     if (tech.score >= minScore) {
       candidates.push({ stock_code: stock.stock_code, tech, price });
     }
