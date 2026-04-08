@@ -28,14 +28,15 @@ const store = {
   snapshots: [] as Array<{ id: string; snapshot_at: string; total_value: number; cash_balance: number; invested_value: number; unrealized_pnl: number; daily_pnl: number; daily_pnl_pct: number; positions: unknown }>,
   strategy: {
     id: uuid(),
-    mode: 'SWING' as const,
+    mode: 'SCALPING' as const,
     is_active: true,
+    notebooklm_prompt: '',
     gemini_prompt: '',
     gpt_prompt: '',
     claude_prompt: '',
-    buy_threshold: 60,
-    stop_loss_pct: -3,
-    take_profit_pct: 5,
+    buy_threshold: 55,
+    stop_loss_pct: -2,
+    take_profit_pct: 4,
     updated_at: new Date().toISOString(),
   } as StrategyConfig,
   systemLogs: [] as Array<{ level: string; component: string; message: string; details: unknown }>,
@@ -134,6 +135,11 @@ export function memGetTodayStartSnapshot() {
 
 // ── Strategy Config ──
 export function memGetActiveStrategy(): StrategyConfig {
+  return store.strategy;
+}
+
+export function memSetActiveStrategy(updates: Partial<StrategyConfig>): StrategyConfig {
+  store.strategy = { ...store.strategy, ...updates, is_active: true, updated_at: new Date().toISOString() };
   return store.strategy;
 }
 

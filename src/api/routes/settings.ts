@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
-import { getActiveStrategy, getPool } from '../../db/client.js';
+import { getActiveStrategy, getPool, isMemoryMode } from '../../db/client.js';
+import { memSetActiveStrategy } from '../../db/memory-store.js';
 import { activateKillSwitch, deactivateKillSwitch, getKillSwitchStatus } from '../../risk/kill-switch.js';
 import { runTrackAJob } from '../../scheduler/track-a-job.js';
 
@@ -40,31 +41,38 @@ settingsRoutes.get('/strategy', async (c) => {
 settingsRoutes.put('/strategy', async (c) => {
   const body = await c.req.json();
 
+  const strategyData = {
+    mode: body.mode ?? 'SWING',
+    notebooklm_prompt: body.notebooklm_prompt ?? '',
+    gemini_prompt: body.gemini_prompt ?? '',
+    gpt_prompt: body.gpt_prompt ?? '',
+    claude_prompt: body.claude_prompt ?? '',
+    buy_threshold: body.buy_threshold ?? 75,
+    stop_loss_pct: body.stop_loss_pct ?? -5.0,
+    take_profit_pct: body.take_profit_pct ?? 8.0,
+  };
+
+  // 인메모리 모드: DB 없이도 전략 변경 가능
+  if (isMemoryMode()) {
+    const updated = memSetActiveStrategy(strategyData);
+    return c.json(updated);
+  }
+
   try {
     await getPool().query('UPDATE strategy_config SET is_active = false WHERE is_active = true');
-
-    // notebooklm_prompt 컬럼 자동 생성 (없으면)
     await getPool().query(`ALTER TABLE strategy_config ADD COLUMN IF NOT EXISTS notebooklm_prompt TEXT DEFAULT ''`).catch(() => {});
 
     const { rows } = await getPool().query(
       `INSERT INTO strategy_config (mode, is_active, notebooklm_prompt, gemini_prompt, gpt_prompt, claude_prompt, buy_threshold, stop_loss_pct, take_profit_pct)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [
-        body.mode ?? 'SWING',
-        true,
-        body.notebooklm_prompt ?? '',
-        body.gemini_prompt ?? '',
-        body.gpt_prompt ?? '',
-        body.claude_prompt ?? '',
-        body.buy_threshold ?? 75,
-        body.stop_loss_pct ?? -5.0,
-        body.take_profit_pct ?? 8.0,
-      ],
+      [strategyData.mode, true, strategyData.notebooklm_prompt, strategyData.gemini_prompt, strategyData.gpt_prompt, strategyData.claude_prompt, strategyData.buy_threshold, strategyData.stop_loss_pct, strategyData.take_profit_pct],
     );
 
     return c.json(rows[0]);
   } catch (err: any) {
-    return c.json({ error: err.message }, 400);
+    // DB 실패 시 인메모리 폴백
+    const updated = memSetActiveStrategy(strategyData);
+    return c.json(updated);
   }
 });
 
