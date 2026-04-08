@@ -228,7 +228,7 @@ export default function Dashboard() {
             </div>
           ) : (
             <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px] mx-auto">
-              {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={withdrawConfig} onRefresh={load} />}
+              {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={withdrawConfig} watchlist={watchlist} onRefresh={load} />}
               {tab === 'trades' && <TradesView trades={trades} watchlist={watchlist} />}
               {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} />}
 
@@ -246,8 +246,10 @@ export default function Dashboard() {
 // HOME VIEW
 // ═══════════════════════════════════════
 
-function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, onRefresh }: any) {
+function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, onRefresh }: any) {
   const p = dash?.portfolio;
+  const stockNameMap = new Map((watchlist ?? []).map((w: any) => [w.stock_code, w.stock_name]));
+  const getStockName = (code: string): string => String(stockNameMap.get(code) ?? code);
   const chains = dash?.chains || [];
   const usW = usDash?.watchlist || [];
   const filled = trades.filter((t: any) => t.status === 'FILLED');
@@ -570,10 +572,10 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, on
                 const score = Number(sc.composite_score);
                 const barColor = score >= 75 ? 'bg-emerald-500' : score >= 50 ? 'bg-blue-500' : score >= 25 ? 'bg-amber-500' : 'bg-slate-600';
                 const textColor = score >= 75 ? 'text-emerald-400' : score >= 50 ? 'text-blue-400' : 'text-slate-500';
-                const signalLabel = sc.signal === 'STRONG_BUY' ? '바로 사야함' : sc.signal === 'BUY' ? '살만함' : sc.signal === 'HOLD' ? '지켜보는 중' : sc.signal === 'SELL' ? '팔아야함' : sc.signal === 'NO_DATA' ? '정보 부족' : sc.signal;
+                const signalLabel = score >= 85 ? '강력 추천' : score >= 70 ? '매수 추천' : score >= 50 ? '관망' : score >= 30 ? '위험' : '매도 추천';
                 return (
                   <div key={sc.stock_code} className="flex items-center gap-3 px-2 py-2">
-                    <span className="text-xs font-bold text-slate-300 w-16 shrink-0">{sc.stock_code}</span>
+                    <span className="text-xs font-bold text-slate-300 w-24 shrink-0 truncate">{getStockName(sc.stock_code)}</span>
                     <div className="flex-1">
                       <div className="h-2 bg-white/[0.04] rounded-full overflow-hidden">
                         <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${Math.max(0, Math.min(100, (score + 100) / 2))}%` }} />
@@ -604,7 +606,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, on
                   <SideBadge side={t.side} />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="font-bold text-sm text-slate-200">{t.stock_code}</span>
+                      <span className="font-bold text-sm text-slate-200">{getStockName(t.stock_code)}</span>
                       <span className="text-[10px] text-slate-600">{fmtTime(t.created_at)}</span>
                     </div>
                     <div className="text-[11px] text-slate-500 mt-0.5 truncate">{t.ai_reasoning || '-'}</div>

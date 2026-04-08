@@ -95,10 +95,21 @@ settingsRoutes.post('/push/test', async (c) => {
   return c.json({ ok: true });
 });
 
-// ── 수동 Track A 실행 ──
+// ── 수동 실행 API ──
 settingsRoutes.post('/run-track-a', async (c) => {
   const body = await c.req.json();
-  // 비동기 실행 (응답은 먼저 반환)
   runTrackAJob(body.sources).catch(() => {});
   return c.json({ ok: true, message: 'Track A 수동 실행 시작' });
+});
+
+settingsRoutes.post('/run-track-b', async (c) => {
+  const { runTrackBJob } = await import('../../scheduler/track-b-job.js');
+  runTrackBJob().catch(() => {});
+  return c.json({ ok: true, message: 'Track B 수동 실행 시작' });
+});
+
+settingsRoutes.post('/run-overseas', async (c) => {
+  const { runOverseasJob } = await import('../../scheduler/overseas-job.js');
+  runOverseasJob().catch(() => {});
+  return c.json({ ok: true, message: '해외주식 수동 실행 시작' });
 });
