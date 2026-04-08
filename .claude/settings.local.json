@@ -17,7 +17,9 @@
       "Read(//c/Users/p2208/**)",
       "Bash(timeout 12 npx tsx src/main.ts)",
       "Bash(timeout 15 npx tsx src/main.ts)",
-      "Bash(node -e ':*)"
+      "Bash(node -e ':*)",
+      "Bash(node -e \"process.stdin.on\\('data',d=>{const m=JSON.parse\\(d\\).models||[];m.filter\\(x=>x.name.includes\\('flash'\\)\\).forEach\\(x=>console.log\\(x.name,x.supportedGenerationMethods\\)\\)}\\)\")",
+      "Bash(curl -s \"https://generativelanguage.googleapis.com/v1beta/models?key=AIzaSyBQjLTjreb2XIXJW29dGO9zfFeT22GKbio&pageSize=50\")"
     ]
   }
 }
