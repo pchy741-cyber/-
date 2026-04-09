@@ -8,12 +8,22 @@ import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
 
 let isRunning = false;
+let runningStartedAt = 0;
+let runGeneration = 0; // 강제 리셋 시 세대 증가 → 이전 실행의 finally가 새 실행을 종료하지 않도록
+const MAX_RUNTIME_MS = 10 * 60 * 1000; // 10분 초과 시 강제 해제
 
 export async function runTrackBJob(): Promise<void> {
-  // 동시 실행 방지
+  // 동시 실행 방지 — 단, 10분 초과 시 강제 리셋 (API hang 방지)
   if (isRunning) {
-    logger.debug('Track B 이미 실행 중 — 스킵', { component: 'SCHEDULER' });
-    return;
+    const elapsed = Date.now() - runningStartedAt;
+    if (elapsed < MAX_RUNTIME_MS) {
+      logger.debug('Track B 이미 실행 중 — 스킵', { component: 'SCHEDULER' });
+      return;
+    }
+    // 강제 리셋: 이전 실행의 finally가 새 실행을 건드리지 못하도록 세대 증가
+    runGeneration++;
+    logger.warn(`⚠️ Track B 잠금 ${Math.round(elapsed / 60000)}분 초과 → 강제 해제 (generation=${runGeneration})`, { component: 'SCHEDULER' });
+    isRunning = false;
   }
 
   // Kill Switch 확인
@@ -31,6 +41,8 @@ export async function runTrackBJob(): Promise<void> {
   logger.info('🟢 Track B 실행 시작 (장 열림 확인)', { component: 'SCHEDULER' });
 
   isRunning = true;
+  runningStartedAt = Date.now();
+  const myGeneration = runGeneration;
 
   try {
     // 1. Track B 파이프라인 실행 → 매매 판단
@@ -51,13 +63,19 @@ export async function runTrackBJob(): Promise<void> {
     reportSuccess();
 
     // 4. 텔레그램 알림 (HOLD 제외한 결정만)
-    const summary = decisions.map((d) => `${d.action} ${d.stock_code} x${d.quantity}`).join('\n');
-    await sendTelegramMessage(`🤖 Track B 실행:\n${summary}`);
+    const actionable = decisions.filter((d) => d.action !== 'HOLD');
+    if (actionable.length > 0) {
+      const summary = actionable.map((d) => `${d.action} ${d.stock_code} x${d.quantity}`).join('\n');
+      await sendTelegramMessage(`🤖 Track B 실행:\n${summary}`).catch(() => {});
+    }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     await reportError('TRACK_B', msg);
     logger.error(`Track B 작업 실패: ${msg}`, { component: 'SCHEDULER' });
   } finally {
-    isRunning = false;
+    // 내 세대가 현재 세대와 같을 때만 플래그 해제 (강제 리셋 후엔 새 실행이 이미 isRunning=true)
+    if (myGeneration === runGeneration) {
+      isRunning = false;
+    }
   }
 }

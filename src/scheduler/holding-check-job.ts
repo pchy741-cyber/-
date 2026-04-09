@@ -41,37 +41,60 @@ export async function runHoldingCheckJob(): Promise<void> {
 
       if (businessDays < maxDays) continue;
 
-      // 현재가 확인
-      try {
-        const price = await getCurrentPrice(chain.stock_code);
-        const pnlPct = calcPnlPct(Number(chain.avg_buy_price), price.currentPrice);
-
-        // 수익이 나고 있으면 유지 (보유일 초과여도 수익 중이면 안 팔음)
-        if (pnlPct > 1.0) {
-          logger.info(`⏰ ${chain.stock_code}: ${businessDays}일 보유, 수익 ${pnlPct}% → 유지`, {
-            component: 'HOLDING_CHECK',
-          });
-          continue;
+      // 현재가 확인 — 최대 2회 재시도, 실패 시 평균매입가로 시간손절 강제 실행
+      let currentPrice: number | null = null;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const priceData = await getCurrentPrice(chain.stock_code);
+          if (priceData.currentPrice > 0) {
+            currentPrice = priceData.currentPrice;
+            break;
+          }
+        } catch {
+          if (attempt < 2) await new Promise(r => setTimeout(r, 1000));
         }
+      }
 
-        // 수익 없음 → 손절 대상
-        logger.warn(`⏰ ${chain.stock_code}: ${businessDays}일 보유, 수익 ${pnlPct}% → 시간 손절 대상`, {
-          component: 'HOLDING_CHECK',
-        });
-
+      if (currentPrice === null) {
+        // API 2회 실패 → 평균매입가 기준으로 손절 강행 (가격 불명이어도 기간 초과는 손절)
+        logger.warn(
+          `${chain.stock_code} 현재가 조회 2회 실패 → 평균가(${chain.avg_buy_price}) 기준 시간손절 강행`,
+          { component: 'HOLDING_CHECK' },
+        );
         forceCloseDecisions.push({
           action: 'FORCE_CLOSE',
           stock_code: chain.stock_code,
           quantity: chain.total_quantity,
           price_type: 'MARKET',
-          reasoning: `보유 ${businessDays}영업일 초과 (한도 ${maxDays}일), 수익률 ${pnlPct}% → 시간 손절`,
+          reasoning: `보유 ${businessDays}영업일 초과 (한도 ${maxDays}일), 현재가 조회 실패 → 시장가 강제 손절`,
           confidence: 1.0,
         });
-      } catch {
-        logger.warn(`${chain.stock_code} 현재가 조회 실패 → 손절 판단 보류`, {
+        continue;
+      }
+
+      const pnlPct = calcPnlPct(Number(chain.avg_buy_price), currentPrice);
+
+      // 수익이 나고 있으면 유지 (보유일 초과여도 수익 중이면 안 팔음)
+      if (pnlPct > 1.0) {
+        logger.info(`⏰ ${chain.stock_code}: ${businessDays}일 보유, 수익 ${pnlPct}% → 유지`, {
           component: 'HOLDING_CHECK',
         });
+        continue;
       }
+
+      // 수익 없음 → 손절 대상
+      logger.warn(`⏰ ${chain.stock_code}: ${businessDays}일 보유, 수익 ${pnlPct}% → 시간 손절 대상`, {
+        component: 'HOLDING_CHECK',
+      });
+
+      forceCloseDecisions.push({
+        action: 'FORCE_CLOSE',
+        stock_code: chain.stock_code,
+        quantity: chain.total_quantity,
+        price_type: 'MARKET',
+        reasoning: `보유 ${businessDays}영업일 초과 (한도 ${maxDays}일), 수익률 ${pnlPct}% → 시간 손절`,
+        confidence: 1.0,
+      });
     }
 
     if (forceCloseDecisions.length > 0) {
@@ -85,7 +108,21 @@ export async function runHoldingCheckJob(): Promise<void> {
   }
 }
 
-/** 두 날짜 사이의 영업일 수 (주말 제외) */
+/** 한국 공휴일 목록 (KRX 휴장일 기준 2025~2026) */
+const KRX_HOLIDAYS = new Set([
+  // 2025
+  '2025-01-01', '2025-01-28', '2025-01-29', '2025-01-30',
+  '2025-03-01', '2025-05-05', '2025-05-06', '2025-06-06',
+  '2025-08-15', '2025-10-03', '2025-10-06', '2025-10-07', '2025-10-08',
+  '2025-12-25',
+  // 2026
+  '2026-01-01', '2026-02-17', '2026-02-18', '2026-02-19',
+  '2026-03-01', '2026-03-02', '2026-05-05', '2026-05-25',
+  '2026-06-06', '2026-08-17', '2026-09-24', '2026-09-25', '2026-09-28',
+  '2026-10-09', '2026-12-25',
+]);
+
+/** 두 날짜 사이의 영업일 수 (주말 + 한국 공휴일 제외) */
 function countBusinessDays(start: Date, end: Date): number {
   let count = 0;
   const current = new Date(start);
@@ -96,7 +133,8 @@ function countBusinessDays(start: Date, end: Date): number {
   while (current < endDate) {
     current.setDate(current.getDate() + 1);
     const day = current.getDay();
-    if (day !== 0 && day !== 6) count++;
+    const ymd = current.toISOString().split('T')[0];
+    if (day !== 0 && day !== 6 && !KRX_HOLIDAYS.has(ymd)) count++;
   }
 
   return count;

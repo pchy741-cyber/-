@@ -12,6 +12,7 @@ import {
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { isKillSwitchActive, reportError, reportSuccess } from '../risk/kill-switch.js';
 import { logger } from '../utils/logger.js';
+import { analyzeOverseasWithAI, type OverseasStockInput } from '../ai/overseas/analyzer.js';
 
 // 글로벌 감시 목록 — 미국 + 일본 + 대만 (안정 대형주 위주)
 const GLOBAL_WATCHLIST = [
@@ -36,6 +37,11 @@ const GLOBAL_WATCHLIST = [
   { code: '2308', name: 'Delta Electronics', exchange: 'TPE', region: 'TW' },
   { code: '3711', name: 'ASMedia', exchange: 'TPE', region: 'TW' },
 ];
+
+// ─── 포지션 한도 (미국/아시아 공통) ───
+const MAX_POSITIONS = 5;           // 최대 동시 보유 종목
+const POSITION_SIZE_USD = 1500;    // 종목당 최대 투자금 (기존 $2,000 → $1,500, 5개 분산)
+const POSITION_PCT = 0.20;         // 또는 가용 현금의 20%
 
 // ── DB 기반 보유종목 관리 (서버 재시작해도 유지) ──
 async function ensureOverseasTable(): Promise<void> {
@@ -88,10 +94,12 @@ async function getCash(): Promise<number> {
 }
 
 async function setCash(amount: number): Promise<void> {
+  // cap 제거 — 수익 누적 허용 (기존: 초기자본으로 강제 제한 → 수익 소멸 버그)
+  const safe = Math.max(0, amount);
   await getPool().query(
     `INSERT INTO overseas_state (key, value) VALUES ('cash', $1)
      ON CONFLICT (key) DO UPDATE SET value = $1`,
-    [amount.toString()],
+    [safe.toString()],
   );
 }
 
@@ -101,7 +109,6 @@ let isRunning = false;
  * 현재 KST 시간 기준으로 열려있는 시장의 region 반환
  */
 function getActiveRegions(): string[] {
-  // UTC+9 고정 변환 (toLocaleString 파싱 버그 방지)
   const now = new Date();
   const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
   const h = kst.getUTCHours();
@@ -111,31 +118,29 @@ function getActiveRegions(): string[] {
 
   const regions: string[] = [];
 
-  // 🇺🇸 미국: KST 23:30~06:30 (월~금 밤 → 화~토 새벽)
-  // 23시대: 월~금(day 1-5), 새벽: 화~토(day 2-6)
+  // 🇺🇸 미국: KST 23:30~06:30
   const isUSNight = t >= 23 * 60 + 30 && day >= 1 && day <= 5;
   const isUSDawn = t <= 6 * 60 + 30 && day >= 2 && day <= 6;
   if (isUSNight || isUSDawn) regions.push('US');
 
-  // 🇯🇵 일본: KST 09:00~11:30, 12:30~15:00 (평일만)
+  // 🇯🇵 일본: KST 09:00~11:30, 12:30~15:00 (평일)
   if (day >= 1 && day <= 5) {
     if ((t >= 9 * 60 && t <= 11 * 60 + 30) || (t >= 12 * 60 + 30 && t <= 15 * 60)) regions.push('JP');
   }
 
-  // 🇹🇼 대만: KST 10:00~14:30 (평일만)
+  // 🇹🇼 대만: KST 10:00~14:30 (평일)
   if (day >= 1 && day <= 5) {
     if (t >= 10 * 60 && t <= 14 * 60 + 30) regions.push('TW');
   }
 
   logger.info(`🌏 시장 체크: KST ${h}:${String(m).padStart(2, '0')} (day=${day}) → [${regions.join(',')}]`, { component: 'OVERSEAS' });
-
   return regions;
 }
 
 /**
  * 글로벌 주식 자동매매 Job
- * 각 시장 장중에만 해당 지역 종목 분석 + 매매
- * 기술적 지표 기반 매매 판단 + 자동 주문 실행
+ * AI(Claude) + 기술적 지표 복합 판단
+ * 최대 5종목 동시 보유, 종목당 $1,500 / 20% 중 작은 값
  */
 export async function runOverseasJob(): Promise<void> {
   if (isRunning) return;
@@ -163,120 +168,172 @@ export async function runOverseasJob(): Promise<void> {
     const holdings = await getHoldings();
     let cash = await getCash();
 
-    // 1. 시세 + 차트 수집 + 기술적 분석
-    const analysis: Array<{
-      code: string;
-      name: string;
-      exchange: string;
-      price: OverseasPrice;
-      signal: string;
-      score: number;
-      rsi: number;
-      adx: number;
-      trendStrength: string;
+    // ── 1. 시세 + 차트 병렬 수집 (배치 5개씩, rate limit 준수) ──
+    const techResults: Array<{
+      code: string; name: string; exchange: string;
+      price: OverseasPrice; signal: string; score: number;
+      rsi: number; adx: number; trendStrength: string;
     }> = [];
 
-    for (const stock of activeStocks) {
-      try {
-        const price = await getOverseasPrice(stock.code, stock.exchange);
-        const chart = await getOverseasDailyChart(stock.code, stock.exchange, 65);
+    // 배치 처리: 5개씩 병렬 → rate limit 안전
+    const BATCH = 5;
+    for (let i = 0; i < activeStocks.length; i += BATCH) {
+      const batch = activeStocks.slice(i, i + BATCH);
+      const settled = await Promise.allSettled(
+        batch.map(async (stock) => {
+          const price = await getOverseasPrice(stock.code, stock.exchange);
+          const chart = await getOverseasDailyChart(stock.code, stock.exchange, 65);
+          return { stock, price, chart };
+        })
+      );
 
-        if (chart.length >= 30 && price.currentPrice > 0) {
-          const candles: OHLCV[] = chart.map((c) => ({
-            date: c.date, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
-          }));
-          const tech = analyzeTechnicals(candles);
-          if (tech) {
-            analysis.push({
-              code: stock.code, name: stock.name, exchange: stock.exchange,
-              price, signal: tech.overallSignal, score: tech.score,
-              rsi: tech.rsi14, adx: tech.adx14, trendStrength: tech.trendStrength,
-            });
-            logger.info(`  ${stock.code}: $${price.currentPrice} ${price.changePct > 0 ? '+' : ''}${price.changePct}% → ${tech.overallSignal}(${tech.score}) RSI=${tech.rsi14.toFixed(0)} ADX=${tech.adx14.toFixed(0)}`, {
-              component: 'OVERSEAS',
-            });
-          }
-        }
-      } catch (e) {
-        logger.warn(`  ${stock.code} 실패: ${(e as Error).message}`, { component: 'OVERSEAS' });
+      for (const result of settled) {
+        if (result.status !== 'fulfilled') continue;
+        const { stock, price, chart } = result.value;
+        if (chart.length < 30 || price.currentPrice <= 0) continue;
+
+        const candles: OHLCV[] = chart.map(c => ({
+          date: c.date, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
+        }));
+        const tech = analyzeTechnicals(candles);
+        if (!tech) continue;
+
+        techResults.push({
+          code: stock.code, name: stock.name, exchange: stock.exchange,
+          price, signal: tech.overallSignal, score: tech.score,
+          rsi: tech.rsi14, adx: tech.adx14, trendStrength: tech.trendStrength,
+        });
+        logger.info(
+          `  ${stock.code}: $${price.currentPrice} ${price.changePct >= 0 ? '+' : ''}${price.changePct}% | ${tech.overallSignal}(${tech.score}) RSI=${tech.rsi14.toFixed(0)} ADX=${tech.adx14.toFixed(0)}`,
+          { component: 'OVERSEAS' },
+        );
       }
-      await new Promise((r) => setTimeout(r, 300));
+
+      // 배치 간 300ms 간격 (rate limit)
+      if (i + BATCH < activeStocks.length) {
+        await new Promise(r => setTimeout(r, 300));
+      }
     }
 
-    if (analysis.length === 0) {
-      logger.warn('해외주식 분석 데이터 없음 (장 외 시간?)', { component: 'OVERSEAS' });
+    if (techResults.length === 0) {
+      logger.warn('해외주식 분석 데이터 없음 (장 외?)', { component: 'OVERSEAS' });
       return;
     }
 
-    // 2. 보유 종목 매도 판단 (익절/손절)
+    // ── 2. AI(Claude) 판단 ──
+    const aiInputs: OverseasStockInput[] = techResults.map(t => {
+      const holding = holdings.get(t.code);
+      const pnlPct = holding
+        ? ((t.price.currentPrice - holding.avgPrice) / holding.avgPrice) * 100
+        : undefined;
+      return {
+        code: t.code, name: t.name, exchange: t.exchange,
+        currentPrice: t.price.currentPrice, changePct: t.price.changePct,
+        rsi: t.rsi, adx: t.adx, score: t.score,
+        signal: t.signal, trendStrength: t.trendStrength,
+        isHolding: !!holding,
+        holdingPnlPct: pnlPct,
+      };
+    });
+
+    const aiDecisions = await analyzeOverseasWithAI(aiInputs, cash, holdings.size);
+
+    // AI 결과를 코드 → 판단 맵으로 변환
+    const aiMap = new Map(aiDecisions.map(d => [d.code, d]));
+
+    // ── 3. 매도 판단 ──
     const sellOrders: string[] = [];
     for (const [code, holding] of holdings) {
-      const data = analysis.find((a) => a.code === code);
-      if (!data) continue;
+      const tech = techResults.find(t => t.code === code);
+      if (!tech) continue;
 
-      const pnlPct = ((data.price.currentPrice - holding.avgPrice) / holding.avgPrice) * 100;
+      const pnlPct = ((tech.price.currentPrice - holding.avgPrice) / holding.avgPrice) * 100;
+      const ai = aiMap.get(code);
 
       let sellReason = '';
+      // 익절 / 손절 (하드 룰 — AI 무시)
       if (pnlPct >= 5) sellReason = `익절: +${pnlPct.toFixed(1)}%`;
       else if (pnlPct <= -3) sellReason = `손절: ${pnlPct.toFixed(1)}%`;
-      else if (data.signal === 'STRONG_SELL') sellReason = `기술적 매도: score=${data.score}`;
+      // AI가 SELL 판단 + 신뢰도 60% 이상
+      else if (ai?.action === 'SELL' && ai.confidence >= 0.6) sellReason = `AI 매도: ${ai.reasoning}`;
+      // 기술적 강매도 (AI 없을 때 fallback)
+      else if (!ai && tech.signal === 'STRONG_SELL') sellReason = `기술적 매도: score=${tech.score}`;
 
       if (sellReason) {
-        await executeOverseasOrder(code, 'SELL', holding.qty, data.price.currentPrice, data.exchange, sellReason);
+        await executeOverseasOrder(code, 'SELL', holding.qty, tech.price.currentPrice, tech.exchange, sellReason);
         await setHolding(code, 0, 0);
-        cash += data.price.currentPrice * holding.qty;
+        // 수수료 0.25% 차감 (해외주식 매도: 브로커 수수료 + 거래세 합산)
+        const proceeds = tech.price.currentPrice * holding.qty * (1 - 0.0025);
+        cash += proceeds;
         await setCash(cash);
-        sellOrders.push(`매도 ${code} x${holding.qty} @$${data.price.currentPrice} (${sellReason})`);
+        sellOrders.push(`매도 ${code} x${holding.qty} @$${tech.price.currentPrice} (${sellReason})`);
       }
     }
 
-    // 3. 신규 매수 판단
+    // ── 4. 매수 판단 ──
     const buyOrders: string[] = [];
-    const currentHoldings = await getHoldings(); // 매도 후 갱신
-    const buySignals = analysis
-      .filter((a) => (a.signal === 'STRONG_BUY' || a.signal === 'BUY') && !currentHoldings.has(a.code) && a.trendStrength !== 'WEAK')
-      .sort((a, b) => b.score - a.score);
+    const updatedHoldings = await getHoldings();
+    const currentHoldingCount = updatedHoldings.size;
 
-    for (const signal of buySignals.slice(0, 2)) {
-      // R:R 체크: 익절(5%) / 손절(3%) = 1.67 → OK
-      // ADX < 15 → 추세 없음, 스킵
-      if (signal.adx < 15) {
-        logger.info(`  ${signal.code} 스킵: ADX=${signal.adx.toFixed(0)} (추세 없음)`, { component: 'OVERSEAS' });
-        continue;
+    if (currentHoldingCount < MAX_POSITIONS && cash >= 200) {
+      // AI BUY 신호 우선, 없으면 기술적 BUY fallback
+      const buyTargets = techResults
+        .filter(t => !updatedHoldings.has(t.code))
+        .map(t => {
+          const ai = aiMap.get(t.code);
+          const aiScore = ai?.action === 'BUY' ? ai.confidence * 100 : 0;
+          const techScore = (t.signal === 'STRONG_BUY' ? 80 : t.signal === 'BUY' ? 60 : 0)
+            + (t.adx >= 20 ? 20 : t.adx >= 15 ? 10 : 0);
+          return { ...t, ai, combinedScore: aiScore + techScore };
+        })
+        .filter(t => {
+          const ai = aiMap.get(t.code);
+          // AI가 있으면 BUY + 신뢰도 55% 이상
+          if (ai) return ai.action === 'BUY' && ai.confidence >= 0.55 && t.adx >= 12;
+          // AI 없으면 기술적 fallback (기존보다 완화)
+          return (t.signal === 'STRONG_BUY' || t.signal === 'BUY')
+            && t.trendStrength !== 'WEAK'
+            && t.adx >= 12;
+        })
+        .sort((a, b) => b.combinedScore - a.combinedScore);
+
+      const slotsAvailable = MAX_POSITIONS - currentHoldingCount;
+      for (const target of buyTargets.slice(0, slotsAvailable)) {
+        const positionSize = Math.min(cash * POSITION_PCT, POSITION_SIZE_USD);
+        if (positionSize < 50) break;
+
+        const qty = Math.floor(positionSize / target.price.currentPrice);
+        if (qty <= 0) continue;
+
+        const cost = qty * target.price.currentPrice;
+        const reason = target.ai
+          ? `AI 매수(${(target.ai.confidence * 100).toFixed(0)}%): ${target.ai.reasoning}`
+          : `기술적 매수: score=${target.score} RSI=${target.rsi.toFixed(0)} ADX=${target.adx.toFixed(0)}`;
+
+        await executeOverseasOrder(target.code, 'BUY', qty, target.price.currentPrice, target.exchange, reason);
+        await setHolding(target.code, qty, target.price.currentPrice);
+        cash -= cost;
+        await setCash(cash);
+        buyOrders.push(`매수 ${target.code} x${qty} @$${target.price.currentPrice.toFixed(2)} (score=${target.combinedScore.toFixed(0)})`);
       }
-
-      const positionSize = Math.min(cash * 0.25, 2000);
-      if (positionSize < 50) break;
-
-      const qty = Math.floor(positionSize / signal.price.currentPrice);
-      if (qty <= 0) continue;
-
-      const cost = qty * signal.price.currentPrice;
-      await executeOverseasOrder(signal.code, 'BUY', qty, signal.price.currentPrice, signal.exchange,
-        `기술적 매수: score=${signal.score} RSI=${signal.rsi.toFixed(0)} ADX=${signal.adx.toFixed(0)}(${signal.trendStrength})`);
-
-      await setHolding(signal.code, qty, signal.price.currentPrice);
-      cash -= cost;
-      await setCash(cash);
-      buyOrders.push(`매수 ${signal.code} x${qty} @$${signal.price.currentPrice.toFixed(2)} (score=${signal.score})`);
     }
 
-    // 4. 결과 로그
+    // ── 5. 결과 로그 ──
     const totalActions = buyOrders.length + sellOrders.length;
-    const updatedHoldings = await getHoldings();
-    const holdingList = Array.from(updatedHoldings.entries()).map(([code, h]) => {
-      const data = analysis.find((a) => a.code === code);
-      const pnl = data ? ((data.price.currentPrice - h.avgPrice) / h.avgPrice * 100).toFixed(1) : '?';
+    const finalHoldings = await getHoldings();
+    const holdingList = Array.from(finalHoldings.entries()).map(([code, h]) => {
+      const tech = techResults.find(t => t.code === code);
+      const pnl = tech ? ((tech.price.currentPrice - h.avgPrice) / h.avgPrice * 100).toFixed(1) : '?';
       return `${code} x${h.qty} @$${h.avgPrice.toFixed(2)} (${Number(pnl) >= 0 ? '+' : ''}${pnl}%)`;
     });
 
     const summary = [
       `${regionFlags} 해외주식 자동매매 완료`,
-      `분석: ${analysis.length}종목 | 실행: ${totalActions}건`,
-      `잔고: $${cash.toFixed(2)}`,
-      ...buyOrders.map((o) => `🟢 ${o}`),
-      ...sellOrders.map((o) => `🔴 ${o}`),
-      holdingList.length > 0 ? `\n보유: ${holdingList.join(', ')}` : '',
+      `분석: ${techResults.length}종목 | AI판단: ${aiDecisions.length}건 | 실행: ${totalActions}건`,
+      `잔고: $${cash.toFixed(2)} | 보유: ${finalHoldings.size}/${MAX_POSITIONS}종목`,
+      ...buyOrders.map(o => `🟢 ${o}`),
+      ...sellOrders.map(o => `🔴 ${o}`),
+      holdingList.length > 0 ? `\n포트폴리오: ${holdingList.join(', ')}` : '',
     ].filter(Boolean).join('\n');
 
     logger.info(summary, { component: 'OVERSEAS' });
@@ -322,7 +379,6 @@ async function executeOverseasOrder(
 
     logger.info(`📝 [US_PAPER] ${side} ${code} x${qty} @$${fillPrice.toFixed(2)} (${fakeOrderNo})`, { component: 'OVERSEAS' });
 
-    // PWA 푸시 알림
     const { sendPushNotification } = await import('../notifications/web-push.js');
     const emoji = side === 'BUY' ? '🟢' : '🔴';
     await sendPushNotification({

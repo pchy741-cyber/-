@@ -29,25 +29,31 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
 
   const prices: Array<{ code: string; name: string; exchange: string; price: number; changePct: number; volume: number }> = [];
 
-  for (const stock of GLOBAL_WATCHLIST) {
-    try {
-      const p = await getOverseasPrice(stock.code, stock.exchange);
-      if (p.currentPrice > 0) {
+  // 배치 5개씩 병렬 조회 — 순차 200ms × 13종목(2.6초+) 대신 ~1초 이내
+  const BATCH = 5;
+  for (let i = 0; i < GLOBAL_WATCHLIST.length; i += BATCH) {
+    const batch = GLOBAL_WATCHLIST.slice(i, i + BATCH);
+    const results = await Promise.allSettled(
+      batch.map(stock => getOverseasPrice(stock.code, stock.exchange))
+    );
+    for (let j = 0; j < batch.length; j++) {
+      const stock = batch[j];
+      const result = results[j];
+      if (result.status === 'fulfilled' && result.value.currentPrice > 0) {
+        const p = result.value;
         prices.push({ code: stock.code, name: stock.name, exchange: stock.exchange, price: p.currentPrice, changePct: p.changePct, volume: p.volume });
-        // 마지막 시세 캐시 저장 (장 외에도 보여주기용)
         cacheSet(`overseas:lastprice:${stock.code}`, { price: p.currentPrice, changePct: p.changePct, volume: p.volume }, 86400);
       } else {
-        throw new Error('price=0');
+        const last = cacheGet<any>(`overseas:lastprice:${stock.code}`);
+        prices.push({
+          code: stock.code, name: stock.name, exchange: stock.exchange,
+          price: last?.price ?? 0, changePct: last?.changePct ?? 0, volume: last?.volume ?? 0,
+        });
       }
-    } catch {
-      // 장 외: 마지막 시세 캐시에서 복원
-      const last = cacheGet<any>(`overseas:lastprice:${stock.code}`);
-      prices.push({
-        code: stock.code, name: stock.name, exchange: stock.exchange,
-        price: last?.price ?? 0, changePct: last?.changePct ?? 0, volume: last?.volume ?? 0,
-      });
     }
-    await new Promise(r => setTimeout(r, 200)); // rate limit
+    if (i + BATCH < GLOBAL_WATCHLIST.length) {
+      await new Promise(r => setTimeout(r, 150)); // 배치 간 rate limit
+    }
   }
 
   // DB에서 해외 보유종목 조회
