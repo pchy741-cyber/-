@@ -403,22 +403,34 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   // ROC (모멘텀 — 양수면 상승세, 음수면 하락세)
   const rocValues = roc(closesAsc, 12);
   const roc12 = rocValues[rocValues.length - 1] ?? 0;
-  if (roc12 > 5) score += 6;        // 강한 상승 모멘텀
-  else if (roc12 < -5) score -= 6;  // 강한 하락 모멘텀
+  if (roc12 > 8) score += 12;       // 강한 상승 모멘텀 (증폭)
+  else if (roc12 > 3) score += 6;
+  else if (roc12 < -8) score -= 12;
+  else if (roc12 < -3) score -= 6;
 
-  // ★ ADX 필터 (핵심 개선: 횡보장 whipsaw 방지)
-  // ADX < 20이면 추세 없음 → 모든 매수 시그널 약화
+  // ★ 볼륨 돌파 보너스 (거래량 급증 + 5MA 위 = 가장 강력한 매수 신호)
+  const vol2dAvg = (volumes[1] + volumes[2]) / 2; // 직전 2일 평균
+  const todayVolSurge = vol2dAvg > 0 ? volumes[0] / vol2dAvg : 1;
+  if (todayVolSurge >= 2.0 && current > sma5Now) {
+    score += 15; // 거래량 2배 돌파 + 5MA 위 → 강력 매수
+  } else if (todayVolSurge >= 1.5 && current > sma5Now) {
+    score += 8;
+  }
+
+  // ★ ADX 필터 (횡보장 whipsaw 방지 — 단, 변동성 종목용으로 완화)
   if (trendStrength === 'WEAK') {
-    if (score > 0) score = Math.floor(score * 0.4); // 매수 시그널 60% 감쇄
+    if (score > 0) score = Math.floor(score * 0.7); // 30% 감쇄 (기존 60% → 완화)
   } else if (trendStrength === 'STRONG') {
     if (score > 0) score = Math.floor(score * 1.2); // 강한 추세면 시그널 증폭
   }
 
   // ★ 거래량 확인 필터 (연구: 거래량 동반 시그널 1.5배 신뢰도)
-  if (volumeRatio >= 1.5 && score > 0) {
-    score = Math.floor(score * 1.15); // 거래량 동반 → 시그널 강화
-  } else if (volumeRatio < 0.7 && score > 0) {
-    score = Math.floor(score * 0.8); // 거래량 부족 → 시그널 약화
+  if (volumeRatio >= 2.0 && score > 0) {
+    score = Math.floor(score * 1.2); // 거래량 2배 동반 → 강하게 강화
+  } else if (volumeRatio >= 1.5 && score > 0) {
+    score = Math.floor(score * 1.1);
+  } else if (volumeRatio < 0.5 && score > 0) {
+    score = Math.floor(score * 0.7); // 거래량 심각 부족 → 신호 약화
   }
 
   score = Math.max(-100, Math.min(100, score));
