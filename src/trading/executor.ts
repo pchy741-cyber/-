@@ -47,6 +47,7 @@ export class TradeExecutor {
     // 수량 0 이하 방어
     if (!quantity || quantity <= 0) {
       logger.warn(`⛔ 수량 0 → 스킵: ${action} ${stock_code}`, { component: 'EXECUTOR' });
+      await logSystem('WARN', 'EXECUTOR', `수량 0 스킵: ${action} ${stock_code}`);
       return;
     }
 
@@ -116,6 +117,7 @@ export class TradeExecutor {
 
     if (!estimatedPrice || estimatedPrice <= 0) {
       logger.warn(`⛔ 현재가+캐시 모두 0 → 매수 스킵: ${stockCode}`, { component: 'EXECUTOR' });
+      await logSystem('WARN', 'EXECUTOR', `매수 스킵: ${stockCode} - 현재가 조회 실패 (0원)`);
       return;
     }
 
@@ -143,7 +145,9 @@ export class TradeExecutor {
       }
       gatedQuantity = gateResult.adjustedQuantity ?? quantity;
     } catch (e) {
-      logger.warn(`게이트 에러 (통과 처리): ${(e as Error).message}`, { component: 'EXECUTOR' });
+      const errMsg = (e as Error).message;
+      logger.warn(`게이트 에러 (통과 처리): ${errMsg}`, { component: 'EXECUTOR' });
+      await logSystem('WARN', 'EXECUTOR', `게이트 오류 (통과): ${stockCode} - ${errMsg}`);
     }
 
     // 리스크 체크

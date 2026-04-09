@@ -84,6 +84,15 @@ async function bootstrap() {
     const ok = await checkDb();
     if (!ok) throw new Error('DB health check failed');
     logger.info('✅ PostgreSQL 연결 성공', { component: 'BOOT' });
+    // 1-1. 스키마 마이그레이션 (무중단 ALTER TABLE)
+    try {
+      const { getPool } = await import('./db/client.js');
+      await getPool().query(`ALTER TABLE orders ALTER COLUMN kis_order_no TYPE VARCHAR(100)`);
+      logger.info('✅ DB 마이그레이션: kis_order_no VARCHAR(100)', { component: 'BOOT' });
+    } catch (e: any) {
+      // 이미 적용된 경우 무시
+      if (!e.message?.includes('already')) logger.warn(`DB 마이그레이션 경고: ${e.message}`, { component: 'BOOT' });
+    }
   } catch (err) {
     logger.warn(`⚠️ PostgreSQL 미연결: ${err}`, { component: 'BOOT' });
     enableMemoryMode();
