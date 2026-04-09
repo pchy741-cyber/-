@@ -1,6 +1,14 @@
+import { createHash } from 'crypto';
 import { getActiveWatchlist } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
 import { emitSniperSignal, type SniperSignal } from './index.js';
+
+// 프로세스 내 메모리 중복 제거 (Redis 없어도 동작)
+const seenTitleHashes = new Set<string>();
+
+function titleHash(title: string): string {
+  return createHash('md5').update(title).digest('hex').slice(0, 12);
+}
 
 /**
  * 📝 공시 기반 스나이퍼 (DART 공시 모니터링)
@@ -60,6 +68,11 @@ async function fetchDisclosures(): Promise<DisclosureItem[]> {
           .match(/<title>([\s\S]*?)<\/title>/)?.[1]
           ?.replace(/<!\[CDATA\[|\]\]>/g, '')
           .trim() ?? '';
+
+      // 중복 기사 스킵
+      const hash = titleHash(title);
+      if (seenTitleHashes.has(hash)) continue;
+      seenTitleHashes.add(hash);
 
       // 감시 종목과 매칭
       for (const [name, code] of stockNames.entries()) {
