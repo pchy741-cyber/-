@@ -181,8 +181,22 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       decisions = [...decisions.filter((d) => d.action !== 'HOLD'), ...techDecisions];
     }
 
-    // 7. HOLD 제외한 액션만 필터
-    const actionable = decisions.filter((d) => d.action !== 'HOLD');
+    // 7. HOLD 제외 + BUY 결정에 현재가 주입 (executor 재조회 실패 방지)
+    for (const d of decisions) {
+      if ((d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && !d.limit_price) {
+        const livePrice = livePrices.get(d.stock_code)?.currentPrice ?? 0;
+        if (livePrice > 0) d.limit_price = livePrice;
+      }
+    }
+    // 현재가 없는 BUY 결정 제외 (가격 조회 불가 종목 → 매수 불가)
+    const actionable = decisions.filter((d) => {
+      if (d.action !== 'HOLD' && (d.action === 'BUY' || d.action === 'AVERAGE_DOWN')) {
+        const hasPrice = (d.limit_price ?? 0) > 0;
+        if (!hasPrice) logger.warn(`가격 없는 BUY 제외: ${d.stock_code}`, { component: 'TRACK_B' });
+        return hasPrice;
+      }
+      return d.action !== 'HOLD';
+    });
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     await logSystem(
