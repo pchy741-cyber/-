@@ -95,8 +95,9 @@ export function chartVerificationGate(input: GateInput): GateResult {
     return { passed: false, reason: `거래량 이상치: ${tech.volumeRatio.toFixed(1)}배 (허수/작전 의심)` };
   }
 
-  // 거래량 너무 적으면 유동성 부족
-  if (tech.volumeRatio < 0.3) {
+  // 거래량 너무 적으면 유동성 부족 (모의투자는 0.15x, 실전은 0.3x)
+  const minVolumeRatio = config.isPaper ? 0.15 : 0.3;
+  if (tech.volumeRatio < minVolumeRatio) {
     return { passed: false, reason: `거래량 과소: ${tech.volumeRatio.toFixed(1)}배 (유동성 부족)` };
   }
 
@@ -118,11 +119,13 @@ export function chartVerificationGate(input: GateInput): GateResult {
   const currentPrice = candles[0]?.close ?? input.estimatedPrice;
   const atrPct = currentPrice > 0 ? (tech.atr14 / currentPrice) * 100 : 0;
 
-  // 손절폭이 ATR의 0.5배 미만이면 너무 타이트 (빈번한 손절)
-  if (atrPct > 0 && absStopLoss < atrPct * 0.5) {
+  // 손절폭이 ATR의 N배 미만이면 너무 타이트 (빈번한 손절)
+  // 모의투자: 0.3배 (완화), 실전: 0.5배
+  const atrMultiplier = config.isPaper ? 0.3 : 0.5;
+  if (atrPct > 0 && absStopLoss < atrPct * atrMultiplier) {
     return {
       passed: false,
-      reason: `손절 너무 타이트: ${absStopLoss}% < ATR의 0.5배(${(atrPct * 0.5).toFixed(1)}%)`,
+      reason: `손절 너무 타이트: ${absStopLoss}% < ATR의 ${atrMultiplier}배(${(atrPct * atrMultiplier).toFixed(1)}%)`,
       riskRewardRatio,
     };
   }
@@ -272,6 +275,14 @@ export function volatilitySizing(input: GateInput): GateResult {
   const adjustedQty = Math.min(optimalQty, maxQtyByBudget, input.quantity);
 
   if (adjustedQty <= 0) {
+    // 모의투자는 최소 1주 허용 (실전 리스크 없음)
+    if (config.isPaper) {
+      return {
+        passed: true,
+        reason: `ATR 과대 → 모의투자 최소 1주 진입 (ATR=${currentATR.toLocaleString()})`,
+        adjustedQuantity: 1,
+      };
+    }
     return {
       passed: false,
       reason: `변동성 과대: ATR=${currentATR.toLocaleString()}원 → 적정수량 0 (리스크 과다)`,

@@ -135,7 +135,7 @@ JSON 형식으로 응답: {"final_arguments": ["최종논거1", "최종논거2"]
 async function callAgent(role: 'BULL' | 'BEAR', prompt: string): Promise<{ arguments: string[]; conviction: number }> {
   try {
     const response = await getAnthropic().messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
       temperature: role === 'BULL' ? 0.3 : 0.4, // Bear를 약간 더 보수적으로
       system:
@@ -171,7 +171,7 @@ async function callJudge(
 ): Promise<{ verdict: DebateResult['finalVerdict']; confidence: number; reasoning: string }> {
   try {
     const response = await getAnthropic().messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
       temperature: 0.1, // 판사는 최대한 객관적
       system:
