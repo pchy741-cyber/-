@@ -128,10 +128,9 @@ dashboardRoutes.get('/dashboard', async (c) => {
   const totalPnlPct = totalInvested > 0 ? (totalPnl / totalInvested) * 100 : 0;
   const totalValue = actualCash + totalInvested + totalPnl;
 
-  // ── 해외 보유종목 합산 ──
+  // ── 해외 보유종목 (별도 표시용, 국내 총자산에 합산하지 않음) ──
   let overseasHoldings: Array<{ stock_code: string; quantity: number; avg_price: number; bought_at: string }> = [];
   let overseasTotalInvested = 0;
-  let overseasTotalPnl = 0;
   let overseasCash = 0;
   try {
     const { rows: osRows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0');
@@ -141,8 +140,7 @@ dashboardRoutes.get('/dashboard', async (c) => {
     for (const r of osRows) {
       const qty = Number(r.quantity);
       const avgP = Number(r.avg_price);
-      const invested = avgP * qty;
-      overseasTotalInvested += invested;
+      overseasTotalInvested += avgP * qty;
       overseasHoldings.push({
         stock_code: r.stock_code,
         quantity: qty,
@@ -152,17 +150,11 @@ dashboardRoutes.get('/dashboard', async (c) => {
     }
   } catch { /* overseas table may not exist */ }
 
-  // 환율 (간이: 1 USD ≈ 1,380 KRW)
-  const FX_RATE = 1380;
-  const overseasInvestedKrw = overseasTotalInvested * FX_RATE;
-  const overseasCashKrw = overseasCash * FX_RATE;
-  const grandTotalValue = totalValue + overseasInvestedKrw + overseasCashKrw;
-
   return c.json({
     portfolio: {
-      totalValue: grandTotalValue,
+      totalValue,  // 국내만
       cash: actualCash,
-      invested: totalInvested + (config.isPaper ? totalChainPnl : 0), // 국내 평가금
+      invested: totalInvested + (config.isPaper ? totalChainPnl : 0),
       pnl: totalPnl,
       pnlPct: totalPnlPct,
       positions: balance.positions ?? [],
@@ -170,10 +162,7 @@ dashboardRoutes.get('/dashboard', async (c) => {
     overseas: {
       holdings: overseasHoldings,
       totalInvestedUsd: overseasTotalInvested,
-      totalInvestedKrw: overseasInvestedKrw,
       cashUsd: overseasCash,
-      cashKrw: overseasCashKrw,
-      fxRate: FX_RATE,
     },
     activeChains: enrichedChains.length,
     chains: enrichedChains,

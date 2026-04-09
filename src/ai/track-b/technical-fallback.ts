@@ -17,8 +17,10 @@ export function technicalFallbackDecisions(params: {
   openChains: TransactionChain[];
   orderableCash: number;
   maxPositionKrw: number;
+  aiScores?: Array<{ stock_code: string; score: number }>;
 }): TradeDecision[] {
-  const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw } = params;
+  const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores } = params;
+  const aiScoreMap = new Map((aiScores ?? []).map((s) => [s.stock_code, s.score]));
   const strategyParams = STRATEGY_PARAMS[mode];
   const decisions: TradeDecision[] = [];
 
@@ -107,15 +109,26 @@ export function technicalFallbackDecisions(params: {
     // 각 종목 score 로깅 (디버깅용)
     logger.info(`  📊 ${stock.stock_code}: score=${tech.score} RSI=${tech.rsi14.toFixed(0)} ADX=${tech.adx14.toFixed(0)}(${tech.trendStrength}) MACD=${tech.macdCrossover}`, { component: 'TRACK_B' });
 
-    // 매수 조건: 모의투자 적극 진입 — 수수료(0.25%) 이상 수익 가능성이면 진입
+    // 매수 조건: AI 스코어 >= 매수임계치(65)면 기술적 조건 완화
+    const aiScore = aiScoreMap.get(stock.stock_code) ?? 0;
+    const buyThreshold = STRATEGY_PARAMS[mode].buyThreshold; // SWING: 65
     const minScore = mode === 'SCALPING' ? 0 : mode === 'DEFENSE' ? 10 : 5;
-    if (tech.score >= minScore) {
+
+    // AI 스코어가 매수 추천(>=threshold)이면 기술적 점수 관계없이 후보 포함
+    if (aiScore >= buyThreshold || tech.score >= minScore) {
       candidates.push({ stock_code: stock.stock_code, tech, price });
+      if (aiScore >= buyThreshold) {
+        logger.info(`  ✅ ${stock.stock_code}: AI=${aiScore}점(>=${buyThreshold}) → 매수 후보 (기술=${tech.score})`, { component: 'TRACK_B' });
+      }
     }
   }
 
-  // 점수 높은 순으로 정렬
-  candidates.sort((a, b) => b.tech.score - a.tech.score);
+  // AI 스코어 + 기술적 점수 합산으로 정렬
+  candidates.sort((a, b) => {
+    const aTotal = (aiScoreMap.get(a.stock_code) ?? 0) + a.tech.score;
+    const bTotal = (aiScoreMap.get(b.stock_code) ?? 0) + b.tech.score;
+    return bTotal - aTotal;
+  });
 
   // 현금 여유 확인하면서 매수 결정
   let remainingCash = orderableCash;

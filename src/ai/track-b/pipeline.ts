@@ -159,10 +159,15 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       }
     }
 
-    // 6-3. AI 모두 실패 또는 스코어 없음 → 기술적 지표 (3순위)
-    if (decisions.length === 0) {
-      logger.info(`🔧 기술적 지표 기반 자동매매 모드 (스코어=${scores.length}개)`, { component: 'TRACK_B' });
-      decisions = technicalFallbackDecisions({
+    // 6-3. AI 모두 실패/스코어 없음/전부 HOLD → 기술적 지표 (3순위)
+    const aiAllHold = decisions.length > 0 && decisions.every((d) => d.action === 'HOLD');
+    if (decisions.length === 0 || aiAllHold) {
+      if (aiAllHold) {
+        logger.info(`🔄 AI 전부 HOLD → 기술적 지표 fallback 추가 실행`, { component: 'TRACK_B' });
+      } else {
+        logger.info(`🔧 기술적 지표 기반 자동매매 모드 (스코어=${scores.length}개)`, { component: 'TRACK_B' });
+      }
+      const techDecisions = technicalFallbackDecisions({
         mode,
         watchlist: watchlist.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
         livePrices,
@@ -170,7 +175,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         openChains,
         orderableCash: balance.orderableCash,
         maxPositionKrw: config.risk.maxPositionKrw,
+        aiScores: scores.map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
       });
+      // AI HOLD + 기술적 매매 합산
+      decisions = [...decisions.filter((d) => d.action !== 'HOLD'), ...techDecisions];
     }
 
     // 7. HOLD 제외한 액션만 필터

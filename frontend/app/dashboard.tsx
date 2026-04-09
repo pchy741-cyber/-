@@ -260,8 +260,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const totalPnl = p?.pnl ?? 0;
   const totalPnlPct = p?.pnlPct ?? 0;
   const totalInvested = p?.invested ?? 0;
-  const overseasInvestedKrw = os?.totalInvestedKrw ?? 0;
-  const grandInvested = totalInvested + overseasInvestedKrw;
+  const overseasInvestedUsd = os?.totalInvestedUsd ?? 0;
+  const overseasCashUsd = os?.cashUsd ?? 0;
   const dailyLossLimit = dash?.riskLimits?.maxDailyDrawdownKrw ?? 200000;
   const investedPct = p?.totalValue > 0 ? Math.round((totalInvested / p.totalValue) * 100) : 0;
 
@@ -520,24 +520,24 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       {/* ── 포트폴리오 비중 + 운영 요약 2컬럼 ── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
         {/* 포트폴리오 비중 */}
-        <Panel title="포트폴리오 비중" badge={grandInvested > 0 ? `투자 ${((grandInvested / (p?.totalValue || 1)) * 100).toFixed(0)}%` : '대기'}>
+        <Panel title="포트폴리오 비중" badge={totalInvested > 0 ? `투자 ${((totalInvested / (p?.totalValue || 1)) * 100).toFixed(0)}%` : '대기'}>
           <div className="p-4 sm:p-5 space-y-4">
-            {/* 현금 vs 투자 비율 바 */}
+            {/* 현금 vs 투자 비율 바 (국내 기준) */}
             <div>
               <div className="flex justify-between text-[11px] mb-2">
                 <span className="text-slate-500">현금 {p?.cash > 0 ? ((p.cash / (p?.totalValue || 1)) * 100).toFixed(0) : 0}%</span>
-                <span className="text-slate-500">투자 {grandInvested > 0 ? ((grandInvested / (p?.totalValue || 1)) * 100).toFixed(0) : 0}%</span>
+                <span className="text-slate-500">투자 {totalInvested > 0 ? ((totalInvested / (p?.totalValue || 1)) * 100).toFixed(0) : 0}%</span>
               </div>
               <div className="h-2.5 bg-white/[0.04] rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 rounded-full transition-all duration-500" style={{ width: `${grandInvested > 0 ? (grandInvested / (p?.totalValue || 1)) * 100 : 0}%` }} />
+                <div className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 rounded-full transition-all duration-500" style={{ width: `${totalInvested > 0 ? (totalInvested / (p?.totalValue || 1)) * 100 : 0}%` }} />
               </div>
             </div>
             {/* 종목별 비중 — 국내 */}
-            {(chains.length > 0 || usHoldings.length > 0) && (
+            {chains.length > 0 && (
               <div className="space-y-2.5">
                 {chains.map((ch: any, i: number) => {
                   const inv = Number(ch.invested) || 0;
-                  const pct = grandInvested > 0 ? (inv / grandInvested) * 100 : 0;
+                  const pct = totalInvested > 0 ? (inv / totalInvested) * 100 : 0;
                   return (
                     <div key={`kr-${i}`}>
                       <div className="flex justify-between text-[11px] mb-1">
@@ -550,25 +550,30 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                     </div>
                   );
                 })}
-                {/* 해외 보유종목 */}
-                {usHoldings.map((h: any, i: number) => {
-                  const invUsd = h.avg_price * h.quantity;
-                  const invKrw = invUsd * (os?.fxRate ?? 1380);
-                  const pct = grandInvested > 0 ? (invKrw / grandInvested) * 100 : 0;
-                  const priceData = usW.find((s: any) => s.code === h.stock_code);
-                  const curPnl = priceData?.price ? (priceData.price - h.avg_price) * h.quantity : 0;
-                  return (
-                    <div key={`us-${i}`}>
-                      <div className="flex justify-between text-[11px] mb-1">
-                        <span className="font-medium text-blue-300">🇺🇸 {priceData?.name || h.stock_code}</span>
-                        <span className="text-slate-500">${invUsd.toFixed(0)} ({pct.toFixed(0)}%)</span>
+              </div>
+            )}
+            {/* 해외 보유 (별도 표시) */}
+            {usHoldings.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-white/[0.04]">
+                <div className="text-[10px] text-slate-500 font-medium mb-2">해외 (별도 자금 $10,000)</div>
+                <div className="space-y-2">
+                  {usHoldings.map((h: any, i: number) => {
+                    const invUsd = h.avg_price * h.quantity;
+                    const priceData = usW.find((s: any) => s.code === h.stock_code);
+                    const curPnl = priceData?.price ? (priceData.price - h.avg_price) * h.quantity : 0;
+                    return (
+                      <div key={`us-${i}`}>
+                        <div className="flex justify-between text-[11px] mb-1">
+                          <span className="font-medium text-blue-300">{priceData?.name || h.stock_code}</span>
+                          <span className="text-slate-500">${invUsd.toFixed(0)}</span>
+                        </div>
+                        <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full ${curPnl >= 0 ? 'bg-blue-500/60' : 'bg-rose-500/60'}`} style={{ width: `${(invUsd / 10000) * 100}%` }} />
+                        </div>
                       </div>
-                      <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
-                        <div className={`h-full rounded-full ${curPnl >= 0 ? 'bg-blue-500/60' : 'bg-rose-500/60'}`} style={{ width: `${pct}%` }} />
-                      </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>
