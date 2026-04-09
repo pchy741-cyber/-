@@ -280,9 +280,12 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
 
   const totalPnl = p?.pnl ?? 0;
   const totalPnlPct = p?.pnlPct ?? 0;
-  const totalInvested = p?.invested ?? 0;
+  const totalInvested = p?.invested ?? 0; // 국내+해외 합산
+  const domesticInvested = p?.domesticInvested ?? 0;
   const overseasInvestedUsd = os?.totalInvestedUsd ?? 0;
+  const overseasInvestedKrw = os?.totalInvestedKrw ?? 0;
   const overseasCashUsd = os?.cashUsd ?? 0;
+  const fxRate = os?.fxRate ?? 1380;
   const dailyLossLimit = dash?.riskLimits?.maxDailyDrawdownKrw ?? 200000;
   const investedPct = p?.totalValue > 0 ? Math.round((totalInvested / p.totalValue) * 100) : 0;
 
@@ -556,6 +559,9 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
             {/* 종목별 비중 — 국내 */}
             {chains.length > 0 && (
               <div className="space-y-2.5">
+                {domesticInvested > 0 && usHoldings.length > 0 && (
+                  <div className="text-[10px] text-slate-500 font-medium">국내 ({fmtWon(domesticInvested)})</div>
+                )}
                 {chains.map((ch: any, i: number) => {
                   const inv = Number(ch.invested) || 0;
                   const pct = totalInvested > 0 ? (inv / totalInvested) * 100 : 0;
@@ -573,23 +579,25 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                 })}
               </div>
             )}
-            {/* 해외 보유 (별도 표시) */}
+            {/* 해외 보유 */}
             {usHoldings.length > 0 && (
               <div className="mt-3 pt-3 border-t border-white/[0.04]">
-                <div className="text-[10px] text-slate-500 font-medium mb-2">해외 (별도 자금 $10,000)</div>
+                <div className="text-[10px] text-slate-500 font-medium mb-2">해외 ({fmtWon(overseasInvestedKrw)})</div>
                 <div className="space-y-2">
                   {usHoldings.map((h: any, i: number) => {
                     const invUsd = h.avg_price * h.quantity;
+                    const invKrw = invUsd * fxRate;
+                    const pct = totalInvested > 0 ? (invKrw / totalInvested) * 100 : 0;
                     const priceData = usW.find((s: any) => s.code === h.stock_code);
                     const curPnl = priceData?.price ? (priceData.price - h.avg_price) * h.quantity : 0;
                     return (
                       <div key={`us-${i}`}>
                         <div className="flex justify-between text-[11px] mb-1">
                           <span className="font-medium text-blue-300">{priceData?.name || h.stock_code}</span>
-                          <span className="text-slate-500">${invUsd.toFixed(0)}</span>
+                          <span className="text-slate-500">{fmtWon(invKrw)} ({pct.toFixed(0)}%)</span>
                         </div>
                         <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
-                          <div className={`h-full rounded-full ${curPnl >= 0 ? 'bg-blue-500/60' : 'bg-rose-500/60'}`} style={{ width: `${(invUsd / 10000) * 100}%` }} />
+                          <div className={`h-full rounded-full ${curPnl >= 0 ? 'bg-blue-500/60' : 'bg-rose-500/60'}`} style={{ width: `${pct}%` }} />
                         </div>
                       </div>
                     );

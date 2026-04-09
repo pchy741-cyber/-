@@ -150,11 +150,21 @@ dashboardRoutes.get('/dashboard', async (c) => {
     }
   } catch { /* overseas table may not exist */ }
 
+  // ── 국내 + 해외 합산 ──
+  const FX_RATE = 1380; // 간이 환율
+  const overseasInvestedKrw = overseasTotalInvested * FX_RATE;
+  const overseasCashKrw = overseasCash * FX_RATE;
+  const domesticInvested = totalInvested + (config.isPaper ? totalChainPnl : 0);
+  const grandTotalValue = actualCash + domesticInvested + overseasInvestedKrw + overseasCashKrw;
+  const grandTotalInvested = domesticInvested + overseasInvestedKrw;
+
   return c.json({
     portfolio: {
-      totalValue,  // 국내만
+      totalValue: grandTotalValue,  // 국내 + 해외 합산
       cash: actualCash,
-      invested: totalInvested + (config.isPaper ? totalChainPnl : 0),
+      invested: grandTotalInvested, // 국내 + 해외 투자금 합산
+      domesticInvested,
+      domesticCash: actualCash,
       pnl: totalPnl,
       pnlPct: totalPnlPct,
       positions: balance.positions ?? [],
@@ -162,7 +172,10 @@ dashboardRoutes.get('/dashboard', async (c) => {
     overseas: {
       holdings: overseasHoldings,
       totalInvestedUsd: overseasTotalInvested,
+      totalInvestedKrw: overseasInvestedKrw,
       cashUsd: overseasCash,
+      cashKrw: overseasCashKrw,
+      fxRate: FX_RATE,
     },
     activeChains: enrichedChains.length,
     chains: enrichedChains,
