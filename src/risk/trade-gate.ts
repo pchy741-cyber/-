@@ -12,6 +12,7 @@
  */
 
 import { analyzeTechnicals, atr, sma, type OHLCV, type TechnicalSummary } from '../analysis/indicators.js';
+import { config } from '../config/index.js';
 import { getPool } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 
@@ -103,10 +104,12 @@ export function chartVerificationGate(input: GateInput): GateResult {
   const absStopLoss = Math.abs(stopLossPct);
   const riskRewardRatio = absStopLoss > 0 ? takeProfitPct / absStopLoss : 0;
 
-  if (riskRewardRatio < 1.5) {
+  const isPaper = config.isPaper;
+  const minRR = isPaper ? 1.0 : 1.5; // 모의투자: R:R 1.0 이상이면 통과
+  if (riskRewardRatio < minRR) {
     return {
       passed: false,
-      reason: `R:R 부족: ${riskRewardRatio.toFixed(2)} (최소 1.5 필요, 익절${takeProfitPct}%/손절${absStopLoss}%)`,
+      reason: `R:R 부족: ${riskRewardRatio.toFixed(2)} (최소 ${minRR} 필요, 익절${takeProfitPct}%/손절${absStopLoss}%)`,
       riskRewardRatio,
     };
   }
@@ -347,8 +350,17 @@ export function regimeGate(input: GateInput): GateResult {
     };
   }
 
-  // 고변동장: 신규진입 위험
+  // 고변동장: 실전은 차단, 모의투자는 수량 50% 축소 후 진입 허용
   if (regime === 'HIGH_VOLATILITY') {
+    const isPaper = config.isPaper;
+    if (isPaper) {
+      return {
+        passed: true,
+        reason: `고변동장(모의투자): 수량 50% 축소 진입`,
+        adjustedQuantity: Math.max(1, Math.floor(input.quantity * 0.5)),
+        regime,
+      };
+    }
     return {
       passed: false,
       reason: `고변동장: ATR 과대 — 신규진입 차단`,
