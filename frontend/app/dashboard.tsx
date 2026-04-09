@@ -133,7 +133,7 @@ export default function Dashboard() {
     finally { loadingRef.current = false; }
   };
 
-  useEffect(() => { load(); const iv = setInterval(load, 60000); return () => clearInterval(iv); }, []); // 60초 간격 (KIS rate limit 보호)
+  useEffect(() => { load(); const iv = setInterval(load, 30000); return () => clearInterval(iv); }, []); // 30초 간격
 
   const toggleKill = async () => {
     const active = killSwitch?.active;
@@ -248,16 +248,20 @@ export default function Dashboard() {
 
 function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, onRefresh }: any) {
   const p = dash?.portfolio;
+  const os = dash?.overseas; // 해외 보유 데이터
   const stockNameMap = new Map((watchlist ?? []).map((w: any) => [w.stock_code, w.stock_name]));
   const getStockName = (code: string): string => String(stockNameMap.get(code) ?? code);
   const chains = dash?.chains || [];
   const usW = usDash?.watchlist || [];
+  const usHoldings = usDash?.holdings || []; // 해외 보유종목
   const filled = trades.filter((t: any) => t.status === 'FILLED');
   const todayTrades = filled.filter((t: any) => new Date(t.created_at).toDateString() === new Date().toDateString());
 
   const totalPnl = p?.pnl ?? 0;
   const totalPnlPct = p?.pnlPct ?? 0;
   const totalInvested = p?.invested ?? 0;
+  const overseasInvestedKrw = os?.totalInvestedKrw ?? 0;
+  const grandInvested = totalInvested + overseasInvestedKrw;
   const dailyLossLimit = dash?.riskLimits?.maxDailyDrawdownKrw ?? 200000;
   const investedPct = p?.totalValue > 0 ? Math.round((totalInvested / p.totalValue) * 100) : 0;
 
@@ -361,7 +365,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       {/* ── 국내 + 해외 2컬럼 ── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
         {/* 국내 보유 */}
-        <Panel title="현재 투자 중인 내 돈" badge={`${(p?.positions?.length || 0) + chains.length}종목`} badgeColor="blue">
+        <Panel title="현재 투자 중인 내 돈" badge={`${chains.length + usHoldings.length}종목`} badgeColor="blue">
           {chains.length > 0 ? (
             <div className="divide-y divide-white/[0.03]">
               {chains.map((ch: any, i: number) => {
@@ -454,23 +458,59 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
           )}
         </Panel>
 
-        {/* 미국 시세 */}
-        <Panel title="해외주식 시세" badge="🇺🇸 🇯🇵 🇹🇼 자동매매" badgeColor="blue">
-          {usW.length > 0 ? (
+        {/* 해외 시세 + 보유종목 */}
+        <Panel title="해외주식" badge={`${usHoldings.length > 0 ? `보유 ${usHoldings.length}종목` : '🇺🇸 🇯🇵 🇹🇼 자동매매'}`} badgeColor="blue">
+          {/* 보유종목 */}
+          {usHoldings.length > 0 && (
+            <div className="divide-y divide-white/[0.03]">
+              {usHoldings.map((h: any) => {
+                const priceData = usW.find((s: any) => s.code === h.stock_code);
+                const curPrice = priceData?.price ?? 0;
+                const invested = h.avg_price * h.quantity;
+                const pnl = curPrice > 0 ? (curPrice - h.avg_price) * h.quantity : 0;
+                const pnlPct = curPrice > 0 && h.avg_price > 0 ? ((curPrice - h.avg_price) / h.avg_price) * 100 : 0;
+                return (
+                  <div key={h.stock_code} className="px-4 py-3 flex items-center justify-between">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold">{priceData?.name || h.stock_code}</span>
+                        <span className="text-[10px] text-slate-500">{h.stock_code}</span>
+                        <span className="text-[10px] text-slate-500">{h.quantity}주</span>
+                      </div>
+                      <div className="text-[11px] text-slate-500">평단 ${h.avg_price.toFixed(2)} · 투자 ${invested.toFixed(0)}</div>
+                    </div>
+                    <div className="text-right">
+                      {curPrice > 0 ? (
+                        <>
+                          <div className={`text-base font-bold ${pc(pnl)}`}>{pnlPct > 0 ? '+' : ''}{pnlPct.toFixed(1)}%</div>
+                          <div className={`text-[11px] ${pc(pnl)}`}>${pnl.toFixed(0)}</div>
+                        </>
+                      ) : <span className="text-xs text-slate-600">시세 대기</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {/* 시세 그리드 */}
+          {usW.some((s: any) => s.price > 0) ? (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3.5">
-              {usW.map((s: any) => (
-                <div key={s.code} className={`rounded-xl border p-3 text-center transition-all hover:scale-[1.02] ${pbg(s.changePct)} border-slate-700/30`}>
-                  <div className="text-xs font-bold text-slate-300">{s.code}</div>
-                  <div className="text-base font-bold mt-1">{s.price > 0 ? `$${s.price.toFixed(1)}` : '-'}</div>
-                  <div className={`text-[11px] font-semibold mt-0.5 ${pc(s.changePct)}`}>{s.changePct !== 0 ? fmtPct(s.changePct) : '-'}</div>
-                  <div className="text-[10px] text-slate-600 mt-0.5">{s.name}</div>
-                </div>
-              ))}
+              {usW.filter((s: any) => s.price > 0).map((s: any) => {
+                const held = usHoldings.find((h: any) => h.stock_code === s.code);
+                return (
+                  <div key={s.code} className={`rounded-xl border p-3 text-center transition-all hover:scale-[1.02] ${pbg(s.changePct)} ${held ? 'border-blue-500/40' : 'border-slate-700/30'}`}>
+                    <div className="text-xs font-bold text-slate-300">{s.code} {held ? '📌' : ''}</div>
+                    <div className="text-base font-bold mt-1">${s.price.toFixed(1)}</div>
+                    <div className={`text-[11px] font-semibold mt-0.5 ${pc(s.changePct)}`}>{s.changePct !== 0 ? fmtPct(s.changePct) : '-'}</div>
+                    <div className="text-[10px] text-slate-600 mt-0.5">{s.name}</div>
+                  </div>
+                );
+              })}
             </div>
           ) : (
             <div className="p-6 text-center space-y-2">
               <div className="text-2xl opacity-30">🌏</div>
-              <p className="text-sm text-slate-400">해외 장 시간에 시세가 갱신됩니다</p>
+              <p className="text-sm text-slate-400">시세 로딩 중...</p>
               <p className="text-[11px] text-slate-600">🇯🇵 09:00~15:00 · 🇹🇼 10:00~14:30 · 🇺🇸 23:30~06:30</p>
             </div>
           )}
@@ -480,32 +520,51 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       {/* ── 포트폴리오 비중 + 운영 요약 2컬럼 ── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
         {/* 포트폴리오 비중 */}
-        <Panel title="포트폴리오 비중" badge={totalInvested > 0 ? `투자 ${((totalInvested / (p?.totalValue || 1)) * 100).toFixed(0)}%` : '대기'}>
+        <Panel title="포트폴리오 비중" badge={grandInvested > 0 ? `투자 ${((grandInvested / (p?.totalValue || 1)) * 100).toFixed(0)}%` : '대기'}>
           <div className="p-4 sm:p-5 space-y-4">
             {/* 현금 vs 투자 비율 바 */}
             <div>
               <div className="flex justify-between text-[11px] mb-2">
                 <span className="text-slate-500">현금 {p?.cash > 0 ? ((p.cash / (p?.totalValue || 1)) * 100).toFixed(0) : 0}%</span>
-                <span className="text-slate-500">투자 {totalInvested > 0 ? ((totalInvested / (p?.totalValue || 1)) * 100).toFixed(0) : 0}%</span>
+                <span className="text-slate-500">투자 {grandInvested > 0 ? ((grandInvested / (p?.totalValue || 1)) * 100).toFixed(0) : 0}%</span>
               </div>
               <div className="h-2.5 bg-white/[0.04] rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 rounded-full transition-all duration-500" style={{ width: `${totalInvested > 0 ? (totalInvested / (p?.totalValue || 1)) * 100 : 0}%` }} />
+                <div className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 rounded-full transition-all duration-500" style={{ width: `${grandInvested > 0 ? (grandInvested / (p?.totalValue || 1)) * 100 : 0}%` }} />
               </div>
             </div>
-            {/* 종목별 비중 */}
-            {chains.length > 0 && (
+            {/* 종목별 비중 — 국내 */}
+            {(chains.length > 0 || usHoldings.length > 0) && (
               <div className="space-y-2.5">
                 {chains.map((ch: any, i: number) => {
                   const inv = Number(ch.invested) || 0;
-                  const pct = totalInvested > 0 ? (inv / totalInvested) * 100 : 0;
+                  const pct = grandInvested > 0 ? (inv / grandInvested) * 100 : 0;
                   return (
-                    <div key={i}>
+                    <div key={`kr-${i}`}>
                       <div className="flex justify-between text-[11px] mb-1">
                         <span className="font-medium text-slate-300">{ch.stock_name || ch.stock_code}</span>
                         <span className="text-slate-500">{fmtWon(inv)} ({pct.toFixed(0)}%)</span>
                       </div>
                       <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
                         <div className={`h-full rounded-full ${ch.unrealizedPnl >= 0 ? 'bg-emerald-500/60' : 'bg-rose-500/60'}`} style={{ width: `${pct}%` }} />
+                      </div>
+                    </div>
+                  );
+                })}
+                {/* 해외 보유종목 */}
+                {usHoldings.map((h: any, i: number) => {
+                  const invUsd = h.avg_price * h.quantity;
+                  const invKrw = invUsd * (os?.fxRate ?? 1380);
+                  const pct = grandInvested > 0 ? (invKrw / grandInvested) * 100 : 0;
+                  const priceData = usW.find((s: any) => s.code === h.stock_code);
+                  const curPnl = priceData?.price ? (priceData.price - h.avg_price) * h.quantity : 0;
+                  return (
+                    <div key={`us-${i}`}>
+                      <div className="flex justify-between text-[11px] mb-1">
+                        <span className="font-medium text-blue-300">🇺🇸 {priceData?.name || h.stock_code}</span>
+                        <span className="text-slate-500">${invUsd.toFixed(0)} ({pct.toFixed(0)}%)</span>
+                      </div>
+                      <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${curPnl >= 0 ? 'bg-blue-500/60' : 'bg-rose-500/60'}`} style={{ width: `${pct}%` }} />
                       </div>
                     </div>
                   );
@@ -539,7 +598,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
               </div>
               <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
                 <div className="text-[10px] text-slate-500 font-medium">현재 보유 중</div>
-                <div className="text-lg font-black mt-1">{chains.length}종목</div>
+                <div className="text-lg font-black mt-1">{chains.length + usHoldings.length}종목</div>
               </div>
             </div>
 

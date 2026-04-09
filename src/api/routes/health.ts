@@ -25,8 +25,9 @@ export function logSystemEvent(component: string, status: 'success' | 'error' | 
 
 healthRoutes.get('/health', async (c) => {
   const now = new Date();
-  const kst = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
-  const hour = kst.getHours();
+  // UTC+9 고정 (toLocaleString 파싱 버그 방지)
+  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const hour = kst.getUTCHours();
 
   // 미국 장 시간 판단 (KST 23:30~06:00, 서머타임 22:30~05:00)
   const usMarketOpen = hour >= 23 || hour < 6;
@@ -58,10 +59,10 @@ healthRoutes.get('/health', async (c) => {
 });
 
 function getNextEvent(kst: Date): string {
-  const h = kst.getHours();
-  const m = kst.getMinutes();
+  const h = kst.getUTCHours();
+  const m = kst.getUTCMinutes();
   const t = h * 60 + m;
-  const day = kst.getDay();
+  const day = kst.getUTCDay();
   const isWeekday = day >= 1 && day <= 5;
 
   if (!isWeekday) return '주말 — 월요일 07:30 Track A';

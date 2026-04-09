@@ -24,8 +24,11 @@ export async function runTrackBJob(): Promise<void> {
 
   // 장 열림 확인
   if (!isMarketOpen()) {
+    logger.debug('📉 장 닫힘 — Track B 스킵', { component: 'SCHEDULER' });
     return;
   }
+
+  logger.info('🟢 Track B 실행 시작 (장 열림 확인)', { component: 'SCHEDULER' });
 
   isRunning = true;
 

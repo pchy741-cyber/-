@@ -101,22 +101,33 @@ let isRunning = false;
  * 현재 KST 시간 기준으로 열려있는 시장의 region 반환
  */
 function getActiveRegions(): string[] {
+  // UTC+9 고정 변환 (toLocaleString 파싱 버그 방지)
   const now = new Date();
-  const kst = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
-  const h = kst.getHours();
-  const m = kst.getMinutes();
+  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const h = kst.getUTCHours();
+  const m = kst.getUTCMinutes();
   const t = h * 60 + m;
+  const day = kst.getUTCDay(); // 0=Sun, 6=Sat
 
   const regions: string[] = [];
 
   // 🇺🇸 미국: KST 23:30~06:30 (월~금 밤 → 화~토 새벽)
-  if (t >= 23 * 60 + 30 || t <= 6 * 60 + 30) regions.push('US');
+  // 23시대: 월~금(day 1-5), 새벽: 화~토(day 2-6)
+  const isUSNight = t >= 23 * 60 + 30 && day >= 1 && day <= 5;
+  const isUSDawn = t <= 6 * 60 + 30 && day >= 2 && day <= 6;
+  if (isUSNight || isUSDawn) regions.push('US');
 
-  // 🇯🇵 일본: KST 09:00~11:30, 12:30~15:00
-  if ((t >= 9 * 60 && t <= 11 * 60 + 30) || (t >= 12 * 60 + 30 && t <= 15 * 60)) regions.push('JP');
+  // 🇯🇵 일본: KST 09:00~11:30, 12:30~15:00 (평일만)
+  if (day >= 1 && day <= 5) {
+    if ((t >= 9 * 60 && t <= 11 * 60 + 30) || (t >= 12 * 60 + 30 && t <= 15 * 60)) regions.push('JP');
+  }
 
-  // 🇹🇼 대만: KST 10:00~14:30
-  if (t >= 10 * 60 && t <= 14 * 60 + 30) regions.push('TW');
+  // 🇹🇼 대만: KST 10:00~14:30 (평일만)
+  if (day >= 1 && day <= 5) {
+    if (t >= 10 * 60 && t <= 14 * 60 + 30) regions.push('TW');
+  }
+
+  logger.info(`🌏 시장 체크: KST ${h}:${String(m).padStart(2, '0')} (day=${day}) → [${regions.join(',')}]`, { component: 'OVERSEAS' });
 
   return regions;
 }

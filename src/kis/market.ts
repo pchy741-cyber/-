@@ -117,34 +117,37 @@ export async function getOrderbook(stockCode: string): Promise<OrderbookEntry[]>
   return entries;
 }
 
+// ── KST 시간 유틸 (UTC+9 고정 — Intl/locale 의존 제거) ──
+export function getKSTNow(): Date {
+  const now = new Date();
+  // UTC ms + 9시간 → KST Date (getHours/getMinutes/getDay 안전)
+  return new Date(now.getTime() + 9 * 60 * 60 * 1000);
+}
+
 // ── 장 열림 여부 확인 (공휴일 포함) ──
 export function isMarketOpen(): boolean {
-  // KST 시간 정확 추출 (toLocaleString → new Date 변환 버그 방지)
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: MARKET.TIMEZONE,
-    hour12: false,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', weekday: 'short',
-  });
-  const parts = Object.fromEntries(
-    formatter.formatToParts(new Date()).map(p => [p.type, p.value]),
-  );
-  const day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(parts.weekday ?? '');
+  const kst = getKSTNow();
+  const day = kst.getUTCDay(); // UTC기준이지만 +9h 보정했으므로 KST 요일
 
   // 주말 체크
-  if (day === 0 || day === 6) return false;
+  if (day === 0 || day === 6) {
+    logger.debug(`장 닫힘: 주말 (day=${day})`, { component: 'MARKET' });
+    return false;
+  }
 
   // 한국 공휴일 체크
   if (!isTradingDay(new Date())) return false;
 
-  const hour = Number(parts.hour);
-  const minute = Number(parts.minute);
+  const hour = kst.getUTCHours();
+  const minute = kst.getUTCMinutes();
   const timeNum = hour * 100 + minute;
 
   const openTime = MARKET.OPEN_HOUR * 100 + MARKET.OPEN_MINUTE; // 900
   const closeTime = MARKET.CLOSE_HOUR * 100 + MARKET.CLOSE_MINUTE; // 1530
 
-  return timeNum >= openTime && timeNum <= closeTime;
+  const open = timeNum >= openTime && timeNum <= closeTime;
+  logger.debug(`장 상태: ${open ? '열림' : '닫힘'} (KST ${hour}:${String(minute).padStart(2, '0')}, timeNum=${timeNum})`, { component: 'MARKET' });
+  return open;
 }
 
 // ── 복수 종목 현재가 일괄 조회 ──

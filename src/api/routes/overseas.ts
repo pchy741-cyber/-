@@ -32,17 +32,36 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
   for (const stock of GLOBAL_WATCHLIST) {
     try {
       const p = await getOverseasPrice(stock.code, stock.exchange);
-      prices.push({ code: stock.code, name: stock.name, exchange: stock.exchange, price: p.currentPrice, changePct: p.changePct, volume: p.volume });
+      if (p.currentPrice > 0) {
+        prices.push({ code: stock.code, name: stock.name, exchange: stock.exchange, price: p.currentPrice, changePct: p.changePct, volume: p.volume });
+        // 마지막 시세 캐시 저장 (장 외에도 보여주기용)
+        cacheSet(`overseas:lastprice:${stock.code}`, { price: p.currentPrice, changePct: p.changePct, volume: p.volume }, 86400);
+      } else {
+        throw new Error('price=0');
+      }
     } catch {
-      prices.push({ code: stock.code, name: stock.name, exchange: stock.exchange, price: 0, changePct: 0, volume: 0 });
+      // 장 외: 마지막 시세 캐시에서 복원
+      const last = cacheGet<any>(`overseas:lastprice:${stock.code}`);
+      prices.push({
+        code: stock.code, name: stock.name, exchange: stock.exchange,
+        price: last?.price ?? 0, changePct: last?.changePct ?? 0, volume: last?.volume ?? 0,
+      });
     }
     await new Promise(r => setTimeout(r, 200)); // rate limit
   }
 
+  // DB에서 해외 보유종목 조회
+  let holdings: Array<{ stock_code: string; quantity: number; avg_price: number }> = [];
+  try {
+    const { getPool } = await import('../../db/client.js');
+    const { rows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0');
+    holdings = rows.map((r: any) => ({ stock_code: r.stock_code, quantity: Number(r.quantity), avg_price: Number(r.avg_price) }));
+  } catch { /* table may not exist */ }
+
   let positions: any[] = [];
   try { positions = await getOverseasBalance(); } catch { /* no positions */ }
 
-  const result = { watchlist: prices, positions };
+  const result = { watchlist: prices, positions, holdings };
   cacheSet('overseas:dashboard', result, 60); // 60초 캐시
   return c.json(result);
 });
