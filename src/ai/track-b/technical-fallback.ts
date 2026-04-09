@@ -101,7 +101,7 @@ export function technicalFallbackDecisions(params: {
 
     const candles = chartData.get(stock.stock_code);
     const price = livePrices.get(stock.stock_code);
-    if (!candles || candles.length < 30 || !price) continue;
+    if (!candles || candles.length < 30 || !price || price.currentPrice <= 0) continue;
 
     const tech = analyzeTechnicals(candles);
     if (!tech) continue;
@@ -148,6 +148,7 @@ export function technicalFallbackDecisions(params: {
       stock_code: cand.stock_code,
       quantity,
       price_type: 'MARKET',
+      limit_price: cand.price.currentPrice, // 파이프라인에서 조회한 현재가 전달 (executor 재조회 불필요)
       reasoning: `기술적 매수: score=${cand.tech.score} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength})${cand.tech.goldenCross ? ' 골든크로스' : ''}`,
       confidence: Math.min(0.9, cand.tech.score / 100),
     });

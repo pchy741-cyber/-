@@ -102,16 +102,20 @@ export class TradeExecutor {
       return;
     }
 
-    let priceData = await getCurrentPrice(stockCode).catch(() => null);
-    let estimatedPrice = limitPrice ?? priceData?.currentPrice ?? 0;
+    // 가격 우선순위: limit_price(파이프라인) → KIS API → 메모리캐시 → Redis캐시
+    let estimatedPrice = limitPrice ?? 0;
+    if (!estimatedPrice) {
+      const priceData = await getCurrentPrice(stockCode).catch(() => null);
+      estimatedPrice = priceData?.currentPrice ?? 0;
 
-    // 가격 0이면 캐시에서 fallback
-    if (!estimatedPrice || estimatedPrice <= 0) {
-      const { getCachedPriceMemory } = await import('../cache/memory.js');
-      const { getLastKnownPrice } = await import('../cache/redis.js');
-      estimatedPrice = getCachedPriceMemory(stockCode) ?? await getLastKnownPrice(stockCode) ?? 0;
-      if (estimatedPrice > 0) {
-        logger.info(`💰 캐시 가격 사용: ${stockCode} = ${estimatedPrice}원`, { component: 'EXECUTOR' });
+      // KIS 실패 → 캐시 fallback
+      if (!estimatedPrice || estimatedPrice <= 0) {
+        const { getCachedPriceMemory } = await import('../cache/memory.js');
+        const { getLastKnownPrice } = await import('../cache/redis.js');
+        estimatedPrice = getCachedPriceMemory(stockCode) ?? await getLastKnownPrice(stockCode) ?? 0;
+        if (estimatedPrice > 0) {
+          logger.info(`💰 캐시 가격 사용: ${stockCode} = ${estimatedPrice}원`, { component: 'EXECUTOR' });
+        }
       }
     }
 
