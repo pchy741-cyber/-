@@ -27,48 +27,60 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
   const cached = cacheGet<any>('overseas:dashboard');
   if (cached) return c.json(cached);
 
-  const prices: Array<{ code: string; name: string; exchange: string; price: number; changePct: number; volume: number }> = [];
-
-  // 배치 5개씩 병렬 조회 — 순차 200ms × 13종목(2.6초+) 대신 ~1초 이내
-  const BATCH = 5;
-  for (let i = 0; i < GLOBAL_WATCHLIST.length; i += BATCH) {
-    const batch = GLOBAL_WATCHLIST.slice(i, i + BATCH);
-    const results = await Promise.allSettled(
-      batch.map(stock => getOverseasPrice(stock.code, stock.exchange))
-    );
-    for (let j = 0; j < batch.length; j++) {
-      const stock = batch[j];
-      const result = results[j];
-      if (result.status === 'fulfilled' && result.value.currentPrice > 0) {
-        const p = result.value;
-        prices.push({ code: stock.code, name: stock.name, exchange: stock.exchange, price: p.currentPrice, changePct: p.changePct, volume: p.volume });
-        cacheSet(`overseas:lastprice:${stock.code}`, { price: p.currentPrice, changePct: p.changePct, volume: p.volume }, 86400);
-      } else {
-        const last = cacheGet<any>(`overseas:lastprice:${stock.code}`);
-        prices.push({
-          code: stock.code, name: stock.name, exchange: stock.exchange,
-          price: last?.price ?? 0, changePct: last?.changePct ?? 0, volume: last?.volume ?? 0,
-        });
+  // 가격 조회 + DB 보유종목 + KIS 잔고를 모두 병렬 시작
+  const pricePromise = (async () => {
+    const prices: Array<{ code: string; name: string; exchange: string; price: number; changePct: number; volume: number }> = [];
+    const BATCH = 5;
+    for (let i = 0; i < GLOBAL_WATCHLIST.length; i += BATCH) {
+      const batch = GLOBAL_WATCHLIST.slice(i, i + BATCH);
+      const results = await Promise.allSettled(
+        batch.map(stock => getOverseasPrice(stock.code, stock.exchange))
+      );
+      for (let j = 0; j < batch.length; j++) {
+        const stock = batch[j];
+        const result = results[j];
+        if (result.status === 'fulfilled' && result.value.currentPrice > 0) {
+          const p = result.value;
+          prices.push({ code: stock.code, name: stock.name, exchange: stock.exchange, price: p.currentPrice, changePct: p.changePct, volume: p.volume });
+          cacheSet(`overseas:lastprice:${stock.code}`, { price: p.currentPrice, changePct: p.changePct, volume: p.volume }, 86400);
+        } else {
+          const last = cacheGet<any>(`overseas:lastprice:${stock.code}`);
+          prices.push({
+            code: stock.code, name: stock.name, exchange: stock.exchange,
+            price: last?.price ?? 0, changePct: last?.changePct ?? 0, volume: last?.volume ?? 0,
+          });
+        }
+      }
+      if (i + BATCH < GLOBAL_WATCHLIST.length) {
+        await new Promise(r => setTimeout(r, 150));
       }
     }
-    if (i + BATCH < GLOBAL_WATCHLIST.length) {
-      await new Promise(r => setTimeout(r, 150)); // 배치 간 rate limit
-    }
-  }
+    return prices;
+  })();
 
-  // DB에서 해외 보유종목 조회
-  let holdings: Array<{ stock_code: string; quantity: number; avg_price: number }> = [];
-  try {
-    const { getPool } = await import('../../db/client.js');
-    const { rows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0');
-    holdings = rows.map((r: any) => ({ stock_code: r.stock_code, quantity: Number(r.quantity), avg_price: Number(r.avg_price) }));
-  } catch { /* table may not exist */ }
+  const holdingsPromise = (async () => {
+    try {
+      const { getPool } = await import('../../db/client.js');
+      const { rows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0');
+      return rows.map((r: any) => ({ stock_code: r.stock_code, quantity: Number(r.quantity), avg_price: Number(r.avg_price) }));
+    } catch { return []; }
+  })();
 
-  let positions: any[] = [];
-  try { positions = await getOverseasBalance(); } catch { /* no positions */ }
+  // KIS 잔고: 5분 캐시 적용 (느린 API, 자주 바뀌지 않음)
+  const positionsPromise = (async () => {
+    const cachedPos = cacheGet<any[]>('overseas:balance');
+    if (cachedPos) return cachedPos;
+    try {
+      const pos = await getOverseasBalance();
+      cacheSet('overseas:balance', pos, 300); // 5분 캐시
+      return pos;
+    } catch { return []; }
+  })();
+
+  const [prices, holdings, positions] = await Promise.all([pricePromise, holdingsPromise, positionsPromise]);
 
   const result = { watchlist: prices, positions, holdings };
-  cacheSet('overseas:dashboard', result, 60); // 60초 캐시
+  cacheSet('overseas:dashboard', result, 60);
   return c.json(result);
 });
 
