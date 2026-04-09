@@ -135,6 +135,27 @@ export default function Dashboard() {
 
   useEffect(() => { load(); const iv = setInterval(load, 30000); return () => clearInterval(iv); }, []); // 30초 간격
 
+  // PWA 푸시 알림 자동 등록
+  useEffect(() => {
+    (async () => {
+      try {
+        if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+        if (Notification.permission === 'denied') return;
+        if (Notification.permission === 'default') {
+          const perm = await Notification.requestPermission();
+          if (perm !== 'granted') return;
+        }
+        const reg = await navigator.serviceWorker.ready;
+        const existing = await reg.pushManager.getSubscription();
+        if (existing) return; // 이미 등록됨
+        const { publicKey } = await api('/push/vapid-key');
+        const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: publicKey });
+        await api('/push/subscribe', { method: 'POST', body: JSON.stringify(sub) });
+        console.log('[QUANTOPS] 푸시 알림 자동 등록 완료');
+      } catch { /* silent */ }
+    })();
+  }, []);
+
   const toggleKill = async () => {
     const active = killSwitch?.active;
     await api(`/kill-switch/${active ? 'deactivate' : 'activate'}`, { method: 'POST' });

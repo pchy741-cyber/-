@@ -321,6 +321,16 @@ async function executeOverseasOrder(
     });
 
     logger.info(`📝 [US_PAPER] ${side} ${code} x${qty} @$${fillPrice.toFixed(2)} (${fakeOrderNo})`, { component: 'OVERSEAS' });
+
+    // PWA 푸시 알림
+    const { sendPushNotification } = await import('../notifications/web-push.js');
+    const emoji = side === 'BUY' ? '🟢' : '🔴';
+    await sendPushNotification({
+      title: `${emoji} 해외 ${side === 'BUY' ? '매수' : '매도'}: ${code}`,
+      body: `${qty}주 × $${fillPrice.toFixed(2)}\n${reasoning}`,
+      tag: `overseas-${side.toLowerCase()}`,
+      url: '/',
+    }).catch(() => {});
   } else {
     try {
       const result = await placeOverseasOrder({ stockCode: code, exchange, side, quantity: qty, price });
