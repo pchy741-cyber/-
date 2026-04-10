@@ -35,28 +35,41 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     // 2. CEO 전략 설정 로드
     const strategy = await getActiveStrategy();
     const mode = strategy?.mode ?? 'SWING';
-    // NotebookLM 프롬프트가 있으면 Gemini 프롬프트 앞에 주입
-    const notebookPrompt = strategy?.notebooklm_prompt?.trim() || '';
+    // NotebookLM 소스 파싱 (JSON 배열 또는 레거시 텍스트)
+    let notebookPrompt = '';
+    const rawNb = strategy?.notebooklm_prompt?.trim() || '';
+    if (rawNb) {
+      try {
+        const sources = JSON.parse(rawNb);
+        if (Array.isArray(sources) && sources.length > 0) {
+          notebookPrompt = sources
+            .map((s: { title?: string; content?: string }) => `### ${s.title || '소스'}\n${s.content || ''}`)
+            .join('\n\n');
+        }
+      } catch {
+        notebookPrompt = rawNb; // 레거시 텍스트
+      }
+    }
     const geminiBase = strategy?.gemini_prompt?.trim() || '';
     const customGeminiPrompt = notebookPrompt
       ? `## NotebookLM 소스 분석\n${notebookPrompt}\n\n${geminiBase}`
       : geminiBase || undefined;
     const customGptPrompt = strategy?.gpt_prompt;
 
-    // 3. 종목별 차트 데이터 수집 (순차 호출 — KIS 모의투자 초당 1건 제한)
+    // 3. 종목별 차트 데이터 수집 — 5개씩 병렬 (kisRateLimiter가 내부 12/sec 관리)
     const chartData = new Map<string, DailyCandle[]>();
-
-    for (let i = 0; i < watchlist.length; i++) {
-      const stockCode = watchlist[i].stock_code;
-      try {
-        const candles = await getDailyChart(stockCode, 60);
-        chartData.set(stockCode, candles);
-      } catch (err) {
-        logger.warn(`차트 수집 실패: ${stockCode} - ${err}`, { component: 'TRACK_A' });
-        chartData.set(stockCode, []);
-      }
-      if (i < watchlist.length - 1) {
-        await new Promise((r) => setTimeout(r, 500));
+    const CHART_BATCH = 5;
+    for (let i = 0; i < watchlist.length; i += CHART_BATCH) {
+      const batch = watchlist.slice(i, i + CHART_BATCH);
+      const results = await Promise.allSettled(batch.map((w) => getDailyChart(w.stock_code, 60)));
+      for (let j = 0; j < batch.length; j++) {
+        const r = results[j];
+        if (r.status === 'fulfilled') {
+          chartData.set(batch[j].stock_code, r.value);
+        } else {
+          logger.warn(`차트 수집 실패: ${batch[j].stock_code} - ${r.reason}`, { component: 'TRACK_A' });
+          chartData.set(batch[j].stock_code, []);
+        }
       }
     }
 
@@ -151,13 +164,13 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       });
     }
 
-    // 6. DB에 스코어 캐싱
+    // 6. DB에 스코어 캐싱 (병렬 upsert — DB는 각 row 독립적)
     const today = new Date().toISOString().split('T')[0];
-    for (const score of scores) {
-      await upsertAIScore({
+    await Promise.all(scores.map((score) =>
+      upsertAIScore({
         stock_code: score.stock_code,
         score_date: today,
-        gemini_summary: geminiResult?.stocks.find((s) => s.stock_code === score.stock_code)?.analysis ?? null,
+        gemini_summary: geminiResult?.stocks?.find((s) => s.stock_code === score.stock_code)?.analysis ?? null,
         composite_score: score.composite_score,
         fundamental_score: score.fundamental_score,
         technical_score: score.technical_score,
@@ -167,8 +180,8 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         signal: score.signal,
         target_price: score.target_price ?? null,
         stop_loss_price: score.stop_loss_price ?? null,
-      });
-    }
+      }),
+    ));
 
     // 7. Redis에도 캐싱 (Track B에서 ms 단위 조회용)
     const aiScoresForCache = scores.map((score) => ({

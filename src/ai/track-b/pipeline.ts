@@ -81,19 +81,24 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     } catch { /* cache optional */ }
 
     // 5. 전 종목 차트 데이터 수집 (기술적 지표용)
+    // kisRateLimiter가 내부에서 12/sec 큐 관리 → 5개씩 병렬 발사
     const chartData = new Map<string, import('../../kis/market.js').DailyCandle[]>();
     const allCodesForChart = [...new Set([...stockCodes, ...openChains.map((c) => c.stock_code)])];
-    // kisRateLimiter가 글로벌 rate limit 관리 → 순차 호출만
-    for (let i = 0; i < allCodesForChart.length; i++) {
-      try {
-        const candles = await getDailyChart(allCodesForChart[i], 65);
-        if (candles.length >= 30) {
-          chartData.set(allCodesForChart[i], candles);
+    const CHART_BATCH = 5;
+    for (let i = 0; i < allCodesForChart.length; i += CHART_BATCH) {
+      const batch = allCodesForChart.slice(i, i + CHART_BATCH);
+      const results = await Promise.allSettled(batch.map((code) => getDailyChart(code, 65)));
+      for (let j = 0; j < batch.length; j++) {
+        const r = results[j];
+        if (r.status === 'fulfilled') {
+          if (r.value.length >= 30) {
+            chartData.set(batch[j], r.value);
+          } else {
+            logger.warn(`차트 데이터 부족: ${batch[j]} (${r.value.length}/30)`, { component: 'TRACK_B' });
+          }
         } else {
-          logger.warn(`차트 데이터 부족: ${allCodesForChart[i]} (${candles.length}/30)`, { component: 'TRACK_B' });
+          logger.warn(`차트 조회 실패: ${batch[j]} - ${r.reason}`, { component: 'TRACK_B' });
         }
-      } catch (err) {
-        logger.warn(`차트 조회 실패: ${allCodesForChart[i]} - ${err}`, { component: 'TRACK_B' });
       }
     }
 
@@ -111,10 +116,15 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         if (candles) {
           const result = analyzeTechnicals(candles);
           if (result) {
+            const patternStr = result.candlePatterns.length > 0
+              ? ' 패턴=' + result.candlePatterns.map(p => `${p.bullish ? '📈' : '📉'}${p.name}`).join(',')
+              : '';
+            const pricePos = `고가대비${result.pctFrom3DayHigh.toFixed(1)}% 저가대비${result.pctFrom5DayLow >= 0 ? '+' : ''}${result.pctFrom5DayLow.toFixed(1)}% VWAP=${result.vwapPosition}`;
             technicalsSummary.push(
-              `${code}: RSI=${result.rsi14.toFixed(0)} MACD=${result.macdCrossover} 볼린저=${result.bollingerPosition} 종합=${result.overallSignal}(${result.score}점)` +
+              `${code}: RSI=${result.rsi14.toFixed(0)} MACD=${result.macdCrossover} 볼린저=${result.bollingerPosition} 종합=${result.overallSignal}(${result.score}점) ${pricePos}` +
                 (result.goldenCross ? ' ⭐골든크로스' : '') +
-                (result.deathCross ? ' ⚠️데드크로스' : ''),
+                (result.deathCross ? ' ⚠️데드크로스' : '') +
+                patternStr,
             );
           }
         }

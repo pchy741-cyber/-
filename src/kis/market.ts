@@ -151,18 +151,17 @@ export function isMarketOpen(): boolean {
 }
 
 // ── 복수 종목 현재가 일괄 조회 ──
+// kisRateLimiter가 각 kisRequest 내부에서 12/sec 큐 관리 → 병렬 발사해도 안전
 export async function getBatchPrices(stockCodes: string[]): Promise<Map<string, CurrentPrice>> {
   const results = new Map<string, CurrentPrice>();
-
-  // kisRateLimiter가 글로벌 rate limit 관리 → 여기서는 순차 호출만
+  const settled = await Promise.allSettled(stockCodes.map((code) => getCurrentPrice(code)));
   for (let i = 0; i < stockCodes.length; i++) {
-    try {
-      const price = await getCurrentPrice(stockCodes[i]);
-      results.set(price.stockCode, price);
-    } catch (err) {
-      logger.warn(`시세 조회 실패: ${stockCodes[i]} - ${err}`, { component: 'KIS' });
+    const r = settled[i];
+    if (r.status === 'fulfilled') {
+      results.set(r.value.stockCode, r.value);
+    } else {
+      logger.warn(`시세 조회 실패: ${stockCodes[i]} - ${r.reason}`, { component: 'KIS' });
     }
   }
-
   return results;
 }
