@@ -39,9 +39,10 @@ export async function runHoldingCheckJob(): Promise<void> {
       const openedAt = new Date(chain.opened_at);
       const businessDays = countBusinessDays(openedAt, now);
 
-      if (businessDays < maxDays) continue;
+      // 1영업일 미만은 건드리지 않음
+      if (businessDays < 1) continue;
 
-      // 현재가 확인 — 최대 2회 재시도, 실패 시 평균매입가로 시간손절 강제 실행
+      // 현재가 확인 — 최대 2회 재시도
       let currentPrice: number | null = null;
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
@@ -56,9 +57,32 @@ export async function runHoldingCheckJob(): Promise<void> {
       }
 
       if (currentPrice === null) {
-        // API 2회 실패 → 평균매입가 기준으로 손절 강행 (가격 불명이어도 기간 초과는 손절)
+        if (businessDays >= maxDays) {
+          // maxDays 초과 + 가격 조회 실패 → 강행
+          logger.warn(
+            `${chain.stock_code} 현재가 조회 2회 실패 → 평균가(${chain.avg_buy_price}) 기준 시간손절 강행`,
+            { component: 'HOLDING_CHECK' },
+          );
+          forceCloseDecisions.push({
+            action: 'FORCE_CLOSE',
+            stock_code: chain.stock_code,
+            quantity: chain.total_quantity,
+            price_type: 'MARKET',
+            reasoning: `보유 ${businessDays}영업일 초과 (한도 ${maxDays}일), 현재가 조회 실패 → 시장가 강제 손절`,
+            confidence: 1.0,
+          });
+        }
+        continue;
+      }
+
+      const pnlPct = calcPnlPct(Number(chain.avg_buy_price), currentPrice);
+
+      // ── 조기 정체 감지 (수익 가능성 없는 포지션 선제 청산) ──
+      // 기준: 일수별 슬라이딩 임계값. 아래 조건 충족 시 maxDays 기다리지 않고 청산
+      const stagnantReason = checkStagnation(businessDays, pnlPct, maxDays);
+      if (stagnantReason) {
         logger.warn(
-          `${chain.stock_code} 현재가 조회 2회 실패 → 평균가(${chain.avg_buy_price}) 기준 시간손절 강행`,
+          `🥱 정체 청산: ${chain.stock_code} ${businessDays}일 보유, ${pnlPct.toFixed(2)}% — ${stagnantReason}`,
           { component: 'HOLDING_CHECK' },
         );
         forceCloseDecisions.push({
@@ -66,33 +90,32 @@ export async function runHoldingCheckJob(): Promise<void> {
           stock_code: chain.stock_code,
           quantity: chain.total_quantity,
           price_type: 'MARKET',
-          reasoning: `보유 ${businessDays}영업일 초과 (한도 ${maxDays}일), 현재가 조회 실패 → 시장가 강제 손절`,
+          reasoning: `정체 청산 (${businessDays}영업일, ${pnlPct.toFixed(2)}%): ${stagnantReason}`,
           confidence: 1.0,
         });
         continue;
       }
 
-      const pnlPct = calcPnlPct(Number(chain.avg_buy_price), currentPrice);
+      // ── 최대 보유일 초과 ──
+      if (businessDays < maxDays) continue;
 
-      // 수익이 나고 있으면 유지 (보유일 초과여도 수익 중이면 안 팔음)
+      // 수익이 충분히 나고 있으면 계속 보유
       if (pnlPct > 1.0) {
-        logger.info(`⏰ ${chain.stock_code}: ${businessDays}일 보유, 수익 ${pnlPct}% → 유지`, {
+        logger.info(`⏰ ${chain.stock_code}: ${businessDays}일 보유, 수익 ${pnlPct.toFixed(2)}% → 유지`, {
           component: 'HOLDING_CHECK',
         });
         continue;
       }
 
-      // 수익 없음 → 손절 대상
-      logger.warn(`⏰ ${chain.stock_code}: ${businessDays}일 보유, 수익 ${pnlPct}% → 시간 손절 대상`, {
+      logger.warn(`⏰ ${chain.stock_code}: ${businessDays}일 보유, 수익 ${pnlPct.toFixed(2)}% → 시간 손절`, {
         component: 'HOLDING_CHECK',
       });
-
       forceCloseDecisions.push({
         action: 'FORCE_CLOSE',
         stock_code: chain.stock_code,
         quantity: chain.total_quantity,
         price_type: 'MARKET',
-        reasoning: `보유 ${businessDays}영업일 초과 (한도 ${maxDays}일), 수익률 ${pnlPct}% → 시간 손절`,
+        reasoning: `보유 ${businessDays}영업일 초과 (한도 ${maxDays}일), 수익률 ${pnlPct.toFixed(2)}% → 시간 손절`,
         confidence: 1.0,
       });
     }
@@ -106,6 +129,32 @@ export async function runHoldingCheckJob(): Promise<void> {
   } catch (error) {
     logger.error(`보유일 체크 실패: ${error}`, { component: 'HOLDING_CHECK' });
   }
+}
+
+/**
+ * 정체 감지: 일수별 슬라이딩 임계값으로 "수익 가능성 없는 포지션" 조기 청산 여부 판단
+ *
+ * 기준:
+ *  - 2일차: -1.5% 미만 (손절선 절반 넘었는데 회복 없음 → 더 내려갈 가능성)
+ *  - 3일차: 0% 미만 (3일 넘어도 여전히 마이너스 = 기대 없음)
+ *  - maxDays-1 일차: +0.5% 미만 (만기 하루 전인데 거의 보합 = 수수료만 날림)
+ *
+ * @returns 청산 사유 문자열 (청산 불필요하면 null)
+ */
+function checkStagnation(businessDays: number, pnlPct: number, maxDays: number): string | null {
+  // 2일차 이상: 손절선(-3%) 절반 이상 내려왔으면 조기 차단
+  if (businessDays >= 2 && pnlPct < -1.5) {
+    return `2일 이상 보유 중 -1.5% 이하 (${pnlPct.toFixed(2)}%) — 추가 하락 전 선제 청산`;
+  }
+  // 3일차 이상: 아직도 마이너스 = 수익 전환 가능성 낮음
+  if (businessDays >= 3 && pnlPct < 0) {
+    return `3일 이상 보유 중 여전히 마이너스 (${pnlPct.toFixed(2)}%) — 데드머니 청산`;
+  }
+  // maxDays 하루 전: 거의 보합이면 기다려봤자 수수료만 손해
+  if (maxDays > 1 && businessDays >= maxDays - 1 && pnlPct < 0.5) {
+    return `만기 하루 전 수익률 미달 (${pnlPct.toFixed(2)}% < 0.5%) — 조기 청산`;
+  }
+  return null;
 }
 
 /** 한국 공휴일 목록 (KRX 휴장일 기준 2025~2026) */
