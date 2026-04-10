@@ -5,7 +5,7 @@ import { cachePriceMemory, getLastKnownPricesMemory, getCachedPriceMemory } from
 import { config } from '../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getPool } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
-import { getCurrentPrice, isMarketOpen } from '../../kis/market.js';
+import { getCurrentPrice, getBatchPrices, isMarketOpen } from '../../kis/market.js';
 import { getWithdrawConfig, getWithdrawals, getTotalReserved } from '../../automation/profit-withdraw.js';
 import { getKillSwitchStatus } from '../../risk/kill-switch.js';
 import { getPaperBalance } from '../../risk/engine.js';
@@ -82,12 +82,24 @@ dashboardRoutes.get('/dashboard', async (c) => {
   });
   const codesToFetch = isMarketOpen() ? chainCodes : needNameCodes;
 
-  for (const code of codesToFetch) {
+  // 병렬 배치 조회 (순차 → 동시 → 속도 대폭 개선)
+  if (codesToFetch.length > 0) {
     try {
-      const quote = await getCurrentPrice(code);
-      if (quote.currentPrice > 0) priceMap.set(code, quote.currentPrice);
-      if (quote.stockName && quote.stockName !== code) nameMap.set(code, quote.stockName);
-    } catch { /* skip */ }
+      const batchResult = await getBatchPrices(codesToFetch);
+      for (const [code, quote] of batchResult) {
+        if (quote.currentPrice > 0) priceMap.set(code, quote.currentPrice);
+        if (quote.stockName && quote.stockName !== code) nameMap.set(code, quote.stockName);
+      }
+    } catch {
+      // 배치 실패 시 개별 순차 폴백
+      for (const code of codesToFetch) {
+        try {
+          const quote = await getCurrentPrice(code);
+          if (quote.currentPrice > 0) priceMap.set(code, quote.currentPrice);
+          if (quote.stockName && quote.stockName !== code) nameMap.set(code, quote.stockName);
+        } catch { /* skip */ }
+      }
+    }
   }
 
   // 종목명 백그라운드 보정: watchlist + transaction_chains 모두 코드명 → 실제명으로 업데이트
