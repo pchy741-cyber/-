@@ -220,8 +220,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         if (alreadySelling) continue;
 
         // 체인 저장값 vs DB 세팅값 중 더 보수적인 값 사용
-        const targetPct = dbTakeProfit ?? Number(chain.target_profit_pct) || baseParams.takeProfitPct;
-        const stopPct = dbStopLoss ?? Number(chain.stop_loss_pct) || baseParams.stopLossPct;
+        const targetPct = dbTakeProfit ?? (Number(chain.target_profit_pct) || baseParams.takeProfitPct);
+        const stopPct = dbStopLoss ?? (Number(chain.stop_loss_pct) || baseParams.stopLossPct);
 
         if (pnlPct >= targetPct) {
           const sellRatio = baseParams.takeProfitRatio ?? 0.5;
