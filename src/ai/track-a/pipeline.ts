@@ -35,47 +35,21 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     // 2. CEO 전략 설정 로드
     const strategy = await getActiveStrategy();
     const mode = strategy?.mode ?? 'SWING';
-    // NotebookLM 소스 파싱 (JSON 배열 또는 레거시 텍스트) + 7일 자동 만료
+    // NotebookLM 소스 파싱 (JSON 배열 또는 레거시 텍스트)
     let notebookPrompt = '';
     const rawNb = strategy?.notebooklm_prompt?.trim() || '';
     if (rawNb) {
       try {
         const sources = JSON.parse(rawNb) as Array<{ id?: string; title?: string; content?: string; created_at?: string }>;
         if (Array.isArray(sources) && sources.length > 0) {
-          const EXPIRY_DAYS = 7;
-          const now = Date.now();
-          const activeSources = sources.filter((s) => {
-            if (!s.created_at) return true; // created_at 없으면 유지
-            const age = (now - new Date(s.created_at).getTime()) / (1000 * 60 * 60 * 24);
-            return age < EXPIRY_DAYS;
-          });
-          const expiredCount = sources.length - activeSources.length;
-          if (expiredCount > 0) {
-            logger.info(`🗑️ NotebookLM: ${expiredCount}개 소스 만료 삭제 (7일 초과)`, { component: 'TRACK_A' });
-            // DB에 만료 후 목록 저장
-            if (strategy) {
-              const { getPool } = await import('../../db/client.js');
-              await getPool().query(
-                `UPDATE strategy_config SET notebooklm_prompt = $1 WHERE is_active = true`,
-                [JSON.stringify(activeSources)],
-              ).catch((e: unknown) => logger.warn(`NotebookLM 만료 저장 실패: ${e}`, { component: 'TRACK_A' }));
-              // 메모리 캐시도 갱신
-              const { memSetActiveStrategy } = await import('../../db/memory-store.js');
-              memSetActiveStrategy({ ...strategy, notebooklm_prompt: JSON.stringify(activeSources) });
-            }
-          }
-          if (activeSources.length > 0) {
-            notebookPrompt = activeSources
-              .map((s) => `### ${s.title || '소스'}\n${s.content || ''}`)
-              .join('\n\n');
-            const totalChars = notebookPrompt.length;
-            logger.info(
-              `📚 NotebookLM: ${activeSources.length}개 소스 Gemini 주입 (${totalChars}자) — [${activeSources.map((s) => s.title || '제목없음').join(', ')}]`,
-              { component: 'TRACK_A' },
-            );
-          } else {
-            logger.info('📚 NotebookLM: 활성 소스 없음 (전부 만료)', { component: 'TRACK_A' });
-          }
+          notebookPrompt = sources
+            .map((s) => `### ${s.title || '소스'}\n${s.content || ''}`)
+            .join('\n\n');
+          const totalChars = notebookPrompt.length;
+          logger.info(
+            `📚 NotebookLM: ${sources.length}개 소스 Gemini 주입 (${totalChars}자) — [${sources.map((s) => s.title || '제목없음').join(', ')}]`,
+            { component: 'TRACK_A' },
+          );
         }
       } catch {
         notebookPrompt = rawNb; // 레거시 텍스트
