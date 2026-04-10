@@ -133,7 +133,7 @@ export default function Dashboard() {
     finally { loadingRef.current = false; }
   };
 
-  useEffect(() => { load(); const iv = setInterval(load, 30000); return () => clearInterval(iv); }, []); // 30초 간격
+  useEffect(() => { load(); const iv = setInterval(load, 10000); return () => clearInterval(iv); }, []); // 10초 간격
 
   // PWA 푸시 알림 자동 등록
   useEffect(() => {

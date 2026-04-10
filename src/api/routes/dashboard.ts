@@ -5,7 +5,7 @@ import { cachePriceMemory, getLastKnownPricesMemory, getCachedPriceMemory } from
 import { config } from '../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getPool } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
-import { getCurrentPrice } from '../../kis/market.js';
+import { getCurrentPrice, isMarketOpen } from '../../kis/market.js';
 import { getWithdrawConfig, getWithdrawals, getTotalReserved } from '../../automation/profit-withdraw.js';
 import { getKillSwitchStatus } from '../../risk/kill-switch.js';
 import { getPaperBalance } from '../../risk/engine.js';
@@ -16,8 +16,25 @@ import { getInvestorFlow } from '../../automation/investor-flow.js';
 import { fetchShortSellingData } from '../../automation/short-selling.js';
 import { fetchAnalystConsensus } from '../../automation/analyst-consensus.js';
 import { getMacroSnapshot } from '../../automation/macro-data.js';
+import { logger } from '../../utils/logger.js';
 
 export const dashboardRoutes = new Hono();
+
+// ── 환율 캐시 (1시간 TTL, 실패 시 1420 폴백) ──
+let _fxCache = { rate: 1420, fetchedAt: 0 };
+async function getFxRate(): Promise<number> {
+  const now = Date.now();
+  if (now - _fxCache.fetchedAt < 60 * 60 * 1000) return _fxCache.rate;
+  try {
+    const resp = await fetch('https://open.er-api.com/v6/latest/USD', { signal: AbortSignal.timeout(4000) });
+    const data = await resp.json() as any;
+    const krw = data?.rates?.KRW;
+    if (krw && krw > 1000 && krw < 2000) {
+      _fxCache = { rate: Math.round(krw), fetchedAt: now };
+    }
+  } catch { /* 폴백 유지 */ }
+  return _fxCache.rate;
+}
 
 // ── 대시보드 요약 ──
 dashboardRoutes.get('/dashboard', async (c) => {
@@ -43,44 +60,67 @@ dashboardRoutes.get('/dashboard', async (c) => {
     }
   } catch { /* scores unavailable */ }
 
-  // chains에 현재가 매칭 — 인메모리 캐시 우선 → KIS 잔고 → 시세 API
+  // chains에 현재가 매칭 — KIS API 우선 (신선한 가격), 실패 시 캐시 폴백
   const posMap = new Map((balance.positions ?? []).map((p: any) => [p.stockCode, p]));
   const chainCodes = [...new Set(chains.map((ch: any) => ch.stock_code))];
   const priceMap = new Map<string, number>();
 
-  // 1차: 인메모리 캐시 (즉시, 0ms)
-  for (const code of chainCodes) {
-    const cached = getCachedPriceMemory(code);
-    if (cached && cached > 0) priceMap.set(code, cached);
-  }
-
-  // 2차: KIS 잔고 positions (최신이면 덮어쓰기)
+  // 1차: KIS 잔고 positions (실계좌 모드에서 정확)
   for (const code of chainCodes) {
     const pos = posMap.get(code);
     if (pos?.currentPrice > 0) priceMap.set(code, pos.currentPrice);
   }
 
-  // 3차: 가격 없는 종목만 시세 API 조회
-  const missingCodes = chainCodes.filter(code => !priceMap.has(code));
-  if (missingCodes.length > 0) {
-    // Redis fallback 시도
-    const redisCached = await getLastKnownPrices(missingCodes).catch(() => new Map());
-    redisCached.forEach((price, code) => priceMap.set(code, price));
+  // 2차: KIS 시세 API — 장중에만 호출 (장 마감 후엔 캐시 사용으로 속도 보장)
+  const nameMap = new Map<string, string>();
+  const watchlistNameMap = new Map(watchlist.map((w: any) => [w.stock_code, w.stock_name]));
+  const chainNameMap = new Map(chains.map((ch: any) => [ch.stock_code, ch.stock_name ?? '']));
+  // 이름이 없는 종목은 장 마감 후에도 1회 조회 (이름 보정 목적) — watchlist + chains 모두 확인
+  const needNameCodes = chainCodes.filter(c => {
+    const n = String(watchlistNameMap.get(c) ?? '') || String(chainNameMap.get(c) ?? '');
+    return !n || n === c || /^\d{6}$/.test(n);
+  });
+  const codesToFetch = isMarketOpen() ? chainCodes : needNameCodes;
 
-    // 인메모리 장기 캐시 시도
-    const stillMissing = missingCodes.filter(code => !priceMap.has(code));
-    for (const code of stillMissing) {
+  for (const code of codesToFetch) {
+    try {
+      const quote = await getCurrentPrice(code);
+      if (quote.currentPrice > 0) priceMap.set(code, quote.currentPrice);
+      if (quote.stockName && quote.stockName !== code) nameMap.set(code, quote.stockName);
+    } catch { /* skip */ }
+  }
+
+  // 종목명 백그라운드 보정: watchlist + transaction_chains 모두 코드명 → 실제명으로 업데이트
+  for (const [code, name] of nameMap) {
+    const wName = String(watchlistNameMap.get(code) ?? '');
+    if (!wName || wName === code || /^\d{6}$/.test(wName)) {
+      getPool().query('UPDATE watchlist SET stock_name = $1 WHERE stock_code = $2', [name, code]).catch(() => {});
+    }
+    const cName = String(chainNameMap.get(code) ?? '');
+    if (!cName || cName === code || /^\d{6}$/.test(cName)) {
+      getPool().query(
+        "UPDATE transaction_chains SET stock_name = $1 WHERE stock_code = $2 AND (stock_name IS NULL OR stock_name = $2 OR stock_name ~ '^[0-9]{6}$')",
+        [name, code]
+      ).catch(() => {});
+    }
+  }
+
+  // 3차: API 실패 시 단기 캐시 폴백 (30초 TTL)
+  for (const code of chainCodes) {
+    if (!priceMap.has(code)) {
+      const cached = getCachedPriceMemory(code);
+      if (cached && cached > 0) priceMap.set(code, cached);
+    }
+  }
+
+  // 4차: 마지막 수단 — 2시간 장기 캐시 (장 마감 후 등)
+  const stillMissing = chainCodes.filter(code => !priceMap.has(code));
+  if (stillMissing.length > 0) {
+    const redisCached = await getLastKnownPrices(stillMissing).catch(() => new Map());
+    redisCached.forEach((price, code) => priceMap.set(code, price));
+    for (const code of stillMissing.filter(c => !priceMap.has(c))) {
       const last = getLastKnownPricesMemory([code]).get(code);
       if (last) priceMap.set(code, last);
-    }
-
-    // 그래도 없으면 KIS API 직접 조회
-    const finalMissing = chainCodes.filter(code => !priceMap.has(code));
-    for (const code of finalMissing) {
-      try {
-        const quote = await getCurrentPrice(code);
-        if (quote.currentPrice > 0) priceMap.set(code, quote.currentPrice);
-      } catch { /* skip */ }
     }
   }
 
@@ -101,7 +141,9 @@ dashboardRoutes.get('/dashboard', async (c) => {
     const unrealizedPnlPct = currentPrice > 0 && avgPrice > 0 ? ((currentPrice - avgPrice) / avgPrice) * 100 : 0;
     totalChainInvested += invested;
     totalChainPnl += unrealizedPnl;
-    return { ...ch, currentPrice, unrealizedPnl, unrealizedPnlPct, invested };
+    // 종목명: KIS API에서 얻은 이름 > watchlist 이름 > 코드 순으로 사용
+    const resolvedName = nameMap.get(ch.stock_code) || ch.stock_name || ch.stock_code;
+    return { ...ch, stock_name: resolvedName, currentPrice, unrealizedPnl, unrealizedPnlPct, invested };
   });
 
   // 투자금/손익 계산 — 모드별 분기
@@ -114,10 +156,12 @@ dashboardRoutes.get('/dashboard', async (c) => {
   let actualCash: number;
 
   if (config.isPaper) {
-    // Paper: balance에서 이미 cash=현금, evalAmount=투자금으로 분리됨
-    totalInvested = totalChainInvested;
+    // Paper: 가상 초기자본 1천만원 고정 — 초과 포지션은 1천만원 기준으로 캡
+    const PAPER_CAP = 10_000_000;
+    const cappedInvested = Math.min(totalChainInvested, PAPER_CAP);
+    totalInvested = cappedInvested;
     totalPnl = totalChainPnl + (balance.totalProfitLoss ?? 0);
-    actualCash = rawCash;
+    actualCash = Math.max(0, PAPER_CAP - cappedInvested);
   } else {
     // Live: KIS 잔고가 정확 — chains 이중합산 하지 않음
     totalInvested = balance.totalEvalAmount ?? 0;
@@ -151,22 +195,22 @@ dashboardRoutes.get('/dashboard', async (c) => {
   } catch { /* overseas table may not exist */ }
 
   // ── 국내 + 해외 합산 ──
-  const FX_RATE = 1380; // 간이 환율
-  const overseasInvestedKrw = overseasTotalInvested * FX_RATE;
-  const overseasCashKrw = overseasCash * FX_RATE;
-  const domesticInvested = totalInvested + (config.isPaper ? totalChainPnl : 0);
-  const grandTotalValue = actualCash + domesticInvested + overseasInvestedKrw + overseasCashKrw;
+  const FX_RATE = await getFxRate(); // 실시간 환율 (1시간 캐시, 실패 시 1420 폴백)
+  const overseasInvestedKrw = (isNaN(overseasTotalInvested) ? 0 : overseasTotalInvested) * FX_RATE;
+  const overseasCashKrw = (isNaN(overseasCash) ? 0 : overseasCash) * FX_RATE;
+  const domesticInvested = (totalInvested || 0) + (config.isPaper ? (totalChainPnl || 0) : 0);
+  const grandTotalValue = (actualCash || 0) + domesticInvested + overseasInvestedKrw + overseasCashKrw;
   const grandTotalInvested = domesticInvested + overseasInvestedKrw;
 
   return c.json({
     portfolio: {
-      totalValue: grandTotalValue,  // 국내 + 해외 합산
-      cash: actualCash,
-      invested: grandTotalInvested, // 국내 + 해외 투자금 합산
-      domesticInvested,
-      domesticCash: actualCash,
-      pnl: totalPnl,
-      pnlPct: totalPnlPct,
+      totalValue: Math.round(grandTotalValue),  // 국내 + 해외 합산
+      cash: Math.round(actualCash),
+      invested: Math.round(grandTotalInvested), // 국내 + 해외 투자금 합산
+      domesticInvested: Math.round(domesticInvested),
+      domesticCash: Math.round(actualCash),
+      pnl: Math.round(totalPnl),
+      pnlPct: Math.round(totalPnlPct * 100) / 100,
       positions: balance.positions ?? [],
     },
     overseas: {
@@ -183,7 +227,75 @@ dashboardRoutes.get('/dashboard', async (c) => {
     strategy: strategy ?? { mode: 'SWING' },
     killSwitch: getKillSwitchStatus(),
     tradingMode: config.tradingMode,
+    riskLimits: { maxDailyDrawdownKrw: config.risk.maxDailyDrawdownKrw },
   });
+});
+
+// ── 종목명 검색 (KRX 공개 API + DB) ──
+dashboardRoutes.get('/search/stock', async (c) => {
+  const q = String(c.req.query('q') ?? '').trim();
+  if (q.length < 1) return c.json([]);
+
+  // 6자리 숫자면 시세 API로 직접 조회
+  if (/^\d{6}$/.test(q)) {
+    try {
+      const price = await getCurrentPrice(q);
+      if (price.stockName) {
+        const market = price.stockName ? 'KOSPI' : 'KOSPI';
+        return c.json([{ code: q, name: price.stockName, market }]);
+      }
+    } catch { /* fallback */ }
+    return c.json([{ code: q, name: q, market: 'KOSPI' }]);
+  }
+
+  const results: Array<{ code: string; name: string; market: string }> = [];
+
+  // 1차: DB watchlist에서 부분 이름 검색
+  try {
+    const { rows } = await getPool().query(
+      `SELECT stock_code, stock_name FROM watchlist WHERE stock_name ILIKE $1 LIMIT 5`,
+      [`%${q}%`],
+    );
+    for (const r of rows) results.push({ code: r.stock_code, name: r.stock_name, market: 'KOSPI' });
+  } catch { /* ignore */ }
+
+  // 2차: KRX 공개 API로 검색 (이름 → 코드 매핑)
+  if (results.length < 5) {
+    try {
+      const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+      const resp = await fetch('https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'Referer': 'https://data.krx.co.kr/',
+          'User-Agent': 'Mozilla/5.0',
+        },
+        body: new URLSearchParams({
+          bld: 'dbms/MDC/STAT/standard/MDCSTAT01901',
+          mktId: 'ALL',
+          trdDd: today,
+          searchText: q,
+          lang: 'ko',
+          pageNo: '1',
+          rowSize: '10',
+        }).toString(),
+        signal: AbortSignal.timeout(5000),
+      });
+      const data = await resp.json() as any;
+      if (Array.isArray(data.output)) {
+        for (const item of data.output) {
+          const code = String(item.ISU_SRT_CD ?? '');
+          const name = String(item.ISU_ABBRV ?? '');
+          const mkt = String(item.MKT_NM ?? 'KOSPI');
+          if (code.length === 6 && !results.find(r => r.code === code)) {
+            results.push({ code, name, market: mkt.includes('KOSDAQ') ? 'KOSDAQ' : 'KOSPI' });
+          }
+        }
+      }
+    } catch { /* KRX API 실패 시 DB 결과만 반환 */ }
+  }
+
+  return c.json(results.slice(0, 10));
 });
 
 // ── 감시 목록 CRUD ──
@@ -233,7 +345,9 @@ dashboardRoutes.post('/watchlist', async (c) => {
 
   // CEO 워크플로우: 종목 추가 시 자동 알림
   const { onStockAdded } = await import('../../automation/ceo-workflow.js');
-  onStockAdded(stockCode, stockName).catch(() => {});
+  onStockAdded(stockCode, stockName).catch((err: unknown) => {
+    logger.warn(`CEO 워크플로우 알림 실패 (onStockAdded): ${err}`, { component: 'WATCHLIST' });
+  });
 
   return c.json({ ok: true, stock_code: stockCode, stock_name: stockName, market });
 });
@@ -295,19 +409,34 @@ dashboardRoutes.post('/watchlist/sync', async (c) => {
   }
 });
 
+// ── 종목명 깨짐 일괄 보정 (watchlist + transaction_chains 미등록 종목 포함) ──
+dashboardRoutes.post('/watchlist/fix-names', async (c) => {
+  try {
+    const { fixWatchlistNames } = await import('../../kis/interest-group.js');
+    const result = await fixWatchlistNames();
+    return c.json({ ok: true, ...result });
+  } catch (err: any) {
+    return c.json({ error: err?.message }, 500);
+  }
+});
+
 // ── 매매 기록 ──
 dashboardRoutes.get('/trades', async (c) => {
-  const limit = Number(c.req.query('limit') ?? 50);
+  const limit = Math.min(Math.max(1, Number(c.req.query('limit') ?? 50)), 500);
   try {
     const { rows } = await getPool().query(
-      `SELECT o.*, json_build_object(
-         'stock_code', tc.stock_code,
-         'status', tc.status,
-         'strategy_mode', tc.strategy_mode,
-         'avg_buy_price', tc.avg_buy_price
-       ) AS transaction_chains
+      `SELECT o.*,
+         CASE WHEN w.stock_name IS NOT NULL AND w.stock_name != o.stock_code AND w.stock_name !~ '^[0-9]{6}$'
+              THEN w.stock_name ELSE NULL END AS stock_name,
+         json_build_object(
+           'stock_code', tc.stock_code,
+           'status', tc.status,
+           'strategy_mode', tc.strategy_mode,
+           'avg_buy_price', tc.avg_buy_price
+         ) AS transaction_chains
        FROM orders o
        LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
+       LEFT JOIN watchlist w ON o.stock_code = w.stock_code
        ORDER BY o.created_at DESC
        LIMIT $1`,
       [limit],
@@ -456,12 +585,15 @@ dashboardRoutes.get('/stock/:code/analysis', async (c) => {
   const stockCode = c.req.param('code');
   const defaultResult = { technicals: null, flow: null, shorts: null, consensus: null };
 
+  const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T> =>
+    Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+
   try {
     const [chart, flow, shorts, consensus] = await Promise.allSettled([
-      getDailyChart(stockCode, 65),
-      getInvestorFlow(stockCode, 5).catch(() => null),
-      fetchShortSellingData(stockCode, 5).catch(() => null),
-      fetchAnalystConsensus(stockCode).catch(() => null),
+      withTimeout(getDailyChart(stockCode, 65), 6000),
+      withTimeout(getInvestorFlow(stockCode, 5).catch(() => null), 4000),
+      withTimeout(fetchShortSellingData(stockCode, 5).catch(() => null), 4000),
+      withTimeout(fetchAnalystConsensus(stockCode).catch(() => null), 4000),
     ]);
 
     let technicals = null;
