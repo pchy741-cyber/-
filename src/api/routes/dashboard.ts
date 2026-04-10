@@ -153,8 +153,10 @@ dashboardRoutes.get('/dashboard', async (c) => {
     const unrealizedPnlPct = currentPrice > 0 && avgPrice > 0 ? ((currentPrice - avgPrice) / avgPrice) * 100 : 0;
     totalChainInvested += invested;
     totalChainPnl += unrealizedPnl;
-    // 종목명: KIS API에서 얻은 이름 > watchlist 이름 > 코드 순으로 사용
-    const resolvedName = nameMap.get(ch.stock_code) || ch.stock_name || ch.stock_code;
+    // 종목명: KIS API > watchlist > chains DB > 코드 순으로 사용 (코드처럼 생긴 이름은 제외)
+    const isCode = (n: any) => !n || String(n) === ch.stock_code || /^\d{6}$/.test(String(n));
+    const resolvedName = [nameMap.get(ch.stock_code), watchlistNameMap.get(ch.stock_code), ch.stock_name]
+      .find(n => !isCode(n)) ?? ch.stock_code;
     return { ...ch, stock_name: resolvedName, currentPrice, unrealizedPnl, unrealizedPnlPct, invested };
   });
 
@@ -438,8 +440,11 @@ dashboardRoutes.get('/trades', async (c) => {
   try {
     const { rows } = await getPool().query(
       `SELECT o.*,
-         CASE WHEN w.stock_name IS NOT NULL AND w.stock_name != o.stock_code AND w.stock_name !~ '^[0-9]{6}$'
-              THEN w.stock_name ELSE NULL END AS stock_name,
+         COALESCE(
+           NULLIF(CASE WHEN w.stock_name IS NOT NULL AND w.stock_name != o.stock_code AND w.stock_name !~ '^[0-9]{6}$' THEN w.stock_name ELSE NULL END, NULL),
+           NULLIF(CASE WHEN tc.stock_name IS NOT NULL AND tc.stock_name != o.stock_code AND tc.stock_name !~ '^[0-9]{6}$' THEN tc.stock_name ELSE NULL END, NULL),
+           NULLIF(CASE WHEN o.stock_name IS NOT NULL AND o.stock_name != o.stock_code AND o.stock_name !~ '^[0-9]{6}$' THEN o.stock_name ELSE NULL END, NULL)
+         ) AS stock_name,
          json_build_object(
            'stock_code', tc.stock_code,
            'status', tc.status,
