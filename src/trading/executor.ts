@@ -1,6 +1,6 @@
 import { OrderType, STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
 import { config } from '../config/index.js';
-import { insertOrder, logSystem, updateOrder } from '../db/client.js';
+import { insertOrder, logSystem, updateOrder, upsertWatchlistItem } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import { getCurrentPrice, getDailyChart } from '../kis/market.js';
 import { getOrderFills, type OrderResult, placeOrder } from '../kis/order.js';
@@ -194,6 +194,11 @@ export class TradeExecutor {
         stopLossPct: params.stopLossPct,
         maxAveragingCount: params.maxAveragingCount,
       });
+
+      // 감시목록 자동 등록 + 종목명 즉시 보정 (코드 저장 후 KRX API로 이름 조회)
+      upsertWatchlistItem({ stock_code: stockCode, stock_name: stockCode, market: 'KOSPI' })
+        .then(() => import('../kis/interest-group.js').then((m) => m.fixWatchlistNames()))
+        .catch(() => {});
 
       // 캐시 무효화 + 푸시 알림
       invalidateStockCache(stockCode).catch(() => {});

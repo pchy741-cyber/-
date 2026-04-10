@@ -3,6 +3,7 @@ import { getActiveStrategy, getPool, isMemoryMode } from '../../db/client.js';
 import { memSetActiveStrategy } from '../../db/memory-store.js';
 import { activateKillSwitch, deactivateKillSwitch, getKillSwitchStatus } from '../../risk/kill-switch.js';
 import { runTrackAJob } from '../../scheduler/track-a-job.js';
+import { logger } from '../../utils/logger.js';
 
 export const settingsRoutes = new Hono();
 
@@ -98,18 +99,27 @@ settingsRoutes.post('/push/test', async (c) => {
 // ── 수동 실행 API ──
 settingsRoutes.post('/run-track-a', async (c) => {
   const body = await c.req.json();
-  runTrackAJob(body.sources).catch(() => {});
+  runTrackAJob(body.sources).catch((e) => logger.error(`Track A 수동 실행 실패: ${e}`, { component: 'SETTINGS' }));
   return c.json({ ok: true, message: 'Track A 수동 실행 시작' });
 });
 
 settingsRoutes.post('/run-track-b', async (c) => {
   const { runTrackBJob } = await import('../../scheduler/track-b-job.js');
-  runTrackBJob().catch(() => {});
+  runTrackBJob().catch((e) => logger.error(`Track B 수동 실행 실패: ${e}`, { component: 'SETTINGS' }));
   return c.json({ ok: true, message: 'Track B 수동 실행 시작' });
 });
 
 settingsRoutes.post('/run-overseas', async (c) => {
   const { runOverseasJob } = await import('../../scheduler/overseas-job.js');
-  runOverseasJob().catch(() => {});
+  runOverseasJob().catch((e) => logger.error(`해외주식 수동 실행 실패: ${e}`, { component: 'SETTINGS' }));
   return c.json({ ok: true, message: '해외주식 수동 실행 시작' });
+});
+
+// 종목명 즉시 보정 (코드로만 저장된 종목 → KRX API로 이름 조회)
+settingsRoutes.post('/fix-names', async (c) => {
+  const { fixWatchlistNames } = await import('../../kis/interest-group.js');
+  fixWatchlistNames()
+    .then((r) => logger.info(`종목명 보정 완료: ${r.fixed}/${r.total}건`, { component: 'SETTINGS' }))
+    .catch((e) => logger.error(`종목명 보정 실패: ${e}`, { component: 'SETTINGS' }));
+  return c.json({ ok: true, message: '종목명 보정 시작 (KRX API 조회 중...)' });
 });

@@ -1382,7 +1382,7 @@ function BacktestView({ watchlist }: { watchlist: any[] }) {
 // ═══════════════════════════════════════
 
 // NotebookLM 소스 타입
-interface NbSource { id: string; title: string; content: string; }
+interface NbSource { id: string; title: string; content: string; created_at?: string; }
 
 function parseNbSources(raw: string | null | undefined): NbSource[] {
   if (!raw || !raw.trim()) return [];
@@ -1613,8 +1613,13 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
                       소스가 없습니다. 아래에서 추가하세요.
                     </div>
                   )}
-                  {nbSources.map((src) => (
-                    <div key={src.id} className="bg-slate-900/60 border border-amber-900/20 rounded-lg p-3">
+                  {nbSources.map((src) => {
+                    const daysOld = src.created_at ? Math.floor((Date.now() - new Date(src.created_at).getTime()) / 86400000) : null;
+                    const daysLeft = daysOld !== null ? 7 - daysOld : null;
+                    const expirySoon = daysLeft !== null && daysLeft <= 2;
+                    const expired = daysLeft !== null && daysLeft <= 0;
+                    return (
+                    <div key={src.id} className={`bg-slate-900/60 border rounded-lg p-3 ${expired ? 'border-rose-700/40 opacity-60' : expirySoon ? 'border-amber-600/40' : 'border-amber-900/20'}`}>
                       {nbEditId === src.id ? (
                         <div className="space-y-2">
                           <input value={nbEditTitle} onChange={e => setNbEditTitle(e.target.value)}
@@ -1632,8 +1637,20 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
                       ) : (
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0 flex-1">
-                            <p className="text-[11px] font-semibold text-amber-300 truncate">{src.title || '제목 없음'}</p>
-                            <p className="text-[10px] text-slate-400 mt-1 whitespace-pre-wrap">{src.content}</p>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="text-[11px] font-semibold text-amber-300 truncate">{src.title || '제목 없음'}</p>
+                              {expired ? (
+                                <span className="text-[9px] px-1.5 py-0.5 bg-rose-900/50 text-rose-400 rounded-full shrink-0">만료됨</span>
+                              ) : daysLeft !== null ? (
+                                <span className={`text-[9px] px-1.5 py-0.5 rounded-full shrink-0 ${expirySoon ? 'bg-amber-900/50 text-amber-400' : 'bg-slate-800 text-slate-500'}`}>
+                                  {daysLeft}일 후 만료
+                                </span>
+                              ) : null}
+                              {daysOld !== null && (
+                                <span className="text-[9px] text-slate-600">{daysOld}일 전 등록</span>
+                              )}
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-1 whitespace-pre-wrap line-clamp-3">{src.content}</p>
                           </div>
                           <div className="flex flex-col gap-1 shrink-0">
                             <button onClick={() => { setNbEditId(src.id); setNbEditTitle(src.title); setNbEditContent(src.content); }}
@@ -1644,7 +1661,8 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
                         </div>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 {/* 소스 추가 폼 */}
@@ -1660,7 +1678,7 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
                     <div className="flex gap-2">
                       <button onClick={() => {
                         if (!nbAddContent.trim()) return;
-                        setNbSources(prev => [...prev, { id: crypto.randomUUID(), title: nbAddTitle.trim() || `소스 ${prev.length + 1}`, content: nbAddContent.trim() }]);
+                        setNbSources(prev => [...prev, { id: crypto.randomUUID(), title: nbAddTitle.trim() || `소스 ${prev.length + 1}`, content: nbAddContent.trim(), created_at: new Date().toISOString() }]);
                         setNbAddTitle(''); setNbAddContent(''); setNbAdding(false);
                       }} className="px-4 py-1.5 bg-amber-600 hover:bg-amber-500 rounded text-[11px] font-bold">추가</button>
                       <button onClick={() => { setNbAdding(false); setNbAddTitle(''); setNbAddContent(''); }}

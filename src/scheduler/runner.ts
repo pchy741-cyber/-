@@ -21,7 +21,7 @@ import { runSnapshotJob } from './snapshot-job.js';
 import { runTrackAJob } from './track-a-job.js';
 import { runTrackBJob } from './track-b-job.js';
 import { runOverseasJob } from './overseas-job.js';
-import { syncInterestGroups, syncHoldingsToWatchlist } from '../kis/interest-group.js';
+import { syncInterestGroups, syncHoldingsToWatchlist, fixWatchlistNames } from '../kis/interest-group.js';
 import { runUnfilledOrderCheck } from './unfilled-order-job.js';
 
 /**
@@ -54,6 +54,7 @@ function withTimeout<T>(label: string, fn: () => Promise<T>, timeoutMs: number):
  * ├─ 15:40 ─── 일일 자동 리포트 (Telegram)
  * ├─ 18:00 ─── Track A 장후 분석
  * ├─ 상시 ──── Self-Healing 10분 간격
+ * ├─ 18:30 ─── 자기학습 (당일 매매 패턴 분석 → 즉시 반영)
  * └─ 일요일 02:00 ── 데이터 아카이빙 (3개월 초과 삭제)
  */
 export function startScheduler(): void {
@@ -78,6 +79,15 @@ export function startScheduler(): void {
     '0 8 * * 1-5',
     () => {
       autoSwitchStrategy().catch((e) => logger.error(`장세 감지 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 08:25 — 종목명 자동 보정 (장 시작 전, 깨진 이름 / 코드만 저장된 종목 정리)
+  cron.schedule(
+    '25 8 * * 1-5',
+    () => {
+      fixWatchlistNames().catch((e) => logger.error(`종목명 보정 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -239,7 +249,7 @@ export function startScheduler(): void {
   cron.schedule(
     `${MARKET.FORCE_SELL_MINUTE} ${MARKET.FORCE_SELL_HOUR} * * 1-5`,
     () => {
-      import('./force-close-job.js').then((m) => m.runForceCloseJob());
+      import('./force-close-job.js').then((m) => m.runForceCloseJob()).catch((e) => logger.error(`강제 청산 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -285,9 +295,9 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 🧠 자기학습 — 매주 일요일 01:00 (과거 매매 패턴 분석 → 다음 주에 반영)
+  // 🧠 자기학습 — 평일 18:30 (Track A 장후 분석 완료 후, 당일 매매 패턴 즉시 반영)
   cron.schedule(
-    '0 1 * * 0',
+    '30 18 * * 1-5',
     () => {
       analyzeTradeHistory().catch((e) => logger.error(`자기학습 실패: ${e}`, { component: 'SCHEDULER' }));
     },
@@ -354,6 +364,8 @@ export function startScheduler(): void {
       logger.info('🔄 KIS 관심종목/보유종목 동기화', { component: 'SCHEDULER' });
       await syncInterestGroups().catch((e) => logger.error(`관심종목 동기화 실패: ${e}`, { component: 'SCHEDULER' }));
       await syncHoldingsToWatchlist().catch((e) => logger.error(`보유종목 동기화 실패: ${e}`, { component: 'SCHEDULER' }));
+      // 동기화 후 즉시 이름 보정 (새로 추가된 종목의 코드→이름 변환)
+      await fixWatchlistNames().catch((e) => logger.error(`종목명 보정 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -366,6 +378,11 @@ export function startScheduler(): void {
     },
     { timezone: MARKET.TIMEZONE },
   );
+
+  // 서버 시작 시 1회 즉시 실행 (이름 깨진 종목 즉시 정리)
+  setTimeout(() => {
+    fixWatchlistNames().catch((e) => logger.error(`종목명 보정(시작시) 실패: ${e}`, { component: 'SCHEDULER' }));
+  }, 10_000); // 10초 후 (DB 연결 안정화 대기)
 
   logger.info('✅ 스케줄러 등록 완료 (자동화 모듈 14개 + 미국주식)', { component: 'SCHEDULER' });
   logger.info('  Track A: 07:30/18:00 | Track B: 10분 | 뉴스: 15분', { component: 'SCHEDULER' });
