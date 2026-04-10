@@ -1,5 +1,6 @@
 import { config } from '../config/index.js';
 import { getActiveWatchlist, upsertWatchlistItem } from '../db/client.js';
+import { getPool } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 import { kisRequest } from './client.js';
 import { getCurrentPrice } from './market.js';
@@ -179,5 +180,93 @@ export async function syncHoldingsToWatchlist(): Promise<{ added: string[] }> {
   } catch (e) {
     logger.warn(`보유종목 동기화 실패: ${(e as Error).message}`, { component: 'KIS_INTEREST' });
     return { added: [] };
+  }
+}
+
+/**
+ * watchlist 종목명 자동 보정
+ * - 이름이 깨지거나 코드로만 저장된 종목을 KIS 시세 API로 정상 이름으로 업데이트
+ * - transaction_chains / orders에 있지만 watchlist에 없는 종목도 먼저 추가
+ */
+const GARBLED_REGEX = /[^\w\s\uAC00-\uD7A3\u3131-\u318E\u1100-\u11FF().,\u00B7\-+%$]/;
+
+export async function fixWatchlistNames(): Promise<{ fixed: number; total: number }> {
+  logger.info('🔧 종목명 자동 보정 시작', { component: 'KIS_INTEREST' });
+  try {
+    // 1. transaction_chains에 있지만 watchlist에 없는 종목 추가
+    const { rows: chainRows } = await getPool().query(
+      `SELECT DISTINCT tc.stock_code FROM transaction_chains tc
+       WHERE tc.stock_code NOT IN (SELECT stock_code FROM watchlist)`,
+    );
+    // 2. orders에 있지만 watchlist에 없는 종목 추가
+    const { rows: orderRows } = await getPool().query(
+      `SELECT DISTINCT o.stock_code FROM orders o
+       WHERE o.stock_code NOT IN (SELECT stock_code FROM watchlist)
+       AND o.stock_code ~ '^[0-9]{6}$'`,
+    );
+
+    const missingCodes = [...new Set([...chainRows, ...orderRows].map((r) => r.stock_code))];
+    for (const code of missingCodes) {
+      await getPool().query(
+        `INSERT INTO watchlist (stock_code, stock_name, market) VALUES ($1, $1, 'KOSPI') ON CONFLICT DO NOTHING`,
+        [code],
+      );
+    }
+
+    // 3. 전체 watchlist에서 이름 보정 필요 항목 처리 (6자리 한국 종목코드만)
+    const { rows } = await getPool().query(
+      `SELECT stock_code, stock_name FROM watchlist WHERE stock_code ~ '^[0-9]{6}$'`,
+    );
+    let fixed = 0;
+
+    const needsFix = rows.filter(row =>
+      !row.stock_name || row.stock_name === row.stock_code ||
+      /^\d{6}$/.test(row.stock_name) || GARBLED_REGEX.test(row.stock_name),
+    );
+
+    if (needsFix.length === 0) {
+      logger.info('🔧 종목명 보정 불필요 (모두 정상)', { component: 'KIS_INTEREST' });
+      return { fixed: 0, total: rows.length };
+    }
+
+    logger.info(`🔧 KRX API로 ${needsFix.length}종목 병렬 보정 중...`, { component: 'KIS_INTEREST' });
+
+    // KRX 전종목 리스트를 한 번만 조회 (rate limit 없음)
+    let krxMap = new Map<string, string>();
+    try {
+      const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+      const resp = await fetch('https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'Referer': 'https://data.krx.co.kr/', 'User-Agent': 'Mozilla/5.0' },
+        body: new URLSearchParams({ bld: 'dbms/MDC/STAT/standard/MDCSTAT01901', mktId: 'ALL', trdDd: today, lang: 'ko', pageNo: '1', rowSize: '5000' }).toString(),
+        signal: AbortSignal.timeout(10000),
+      });
+      const data = await resp.json() as any;
+      if (Array.isArray(data.output)) {
+        for (const item of data.output) {
+          const code = String(item.ISU_SRT_CD ?? '').trim();
+          const name = String(item.ISU_ABBRV ?? '').trim();
+          if (code && name && !GARBLED_REGEX.test(name)) krxMap.set(code, name);
+        }
+        logger.info(`  KRX 전종목 ${krxMap.size}건 로드`, { component: 'KIS_INTEREST' });
+      }
+    } catch (e) {
+      logger.warn(`  KRX 전종목 조회 실패: ${(e as Error).message}`, { component: 'KIS_INTEREST' });
+    }
+
+    for (const row of needsFix) {
+      const resolved = krxMap.get(row.stock_code) ?? '';
+      if (resolved) {
+        await getPool().query('UPDATE watchlist SET stock_name = $1 WHERE stock_code = $2', [resolved, row.stock_code]);
+        fixed++;
+        logger.info(`  ✅ 보정: ${row.stock_code} → ${resolved}`, { component: 'KIS_INTEREST' });
+      }
+    }
+
+    logger.info(`🔧 종목명 보정 완료: ${fixed}/${rows.length}건`, { component: 'KIS_INTEREST' });
+    return { fixed, total: rows.length };
+  } catch (e) {
+    logger.warn(`종목명 보정 실패: ${(e as Error).message}`, { component: 'KIS_INTEREST' });
+    return { fixed: 0, total: 0 };
   }
 }

@@ -160,9 +160,9 @@ async function getWinRateStats(days: number = 30): Promise<WinRateStats> {
         (SELECT filled_price FROM orders WHERE chain_id = tc.id AND side = 'SELL' ORDER BY created_at DESC LIMIT 1) as sell_price
       FROM transaction_chains tc
       WHERE status = 'CLOSED'
-        AND closed_at >= NOW() - INTERVAL '${days} days'
+        AND closed_at >= NOW() - ($1 * INTERVAL '1 day')
         AND avg_buy_price > 0
-    `);
+    `, [days]);
 
     if (rows.length < 5) return defaultStats; // 데이터 부족 시 기본값
 
@@ -297,6 +297,124 @@ export function volatilitySizing(input: GateInput): GateResult {
     passed: true,
     reason: `ATR사이징: ${input.quantity}→${adjustedQty}주 (ATR=${currentATR.toLocaleString()}, ${reductionPct > 0 ? `-${reductionPct.toFixed(0)}%` : '유지'})`,
     adjustedQuantity: adjustedQty,
+  };
+}
+
+// ══════════════════════════════════════
+//  [게이트 0] 진입 타이밍 필터 (핵심)
+// ══════════════════════════════════════
+
+/**
+ * 전문 트레이더 관점의 진입 타이밍 검증
+ *
+ * "지금이 살 타이밍인가?" — 점수가 높아도 가격 위치가 나쁘면 차단
+ *
+ * 체크 항목:
+ * 1. 고점 추격 방지 — 3일 고가 대비 1% 이내면 차단
+ * 2. RSI 과매수 차단 — RSI 75+ 이면 조정 대기
+ * 3. 연속 상승 후 조정 대기 — 3일 연속 상승 → 스윙 차단
+ * 4. 캔들스틱 패턴 — V반등, 불리쉬인걸핑, 긴아래꼬리(망치형) 확인
+ * 5. 오늘 캔들 내 위치 — 당일 고가 근처 종가 = 매도세 없음 (양호)
+ *                         당일 저가 근처 종가 = 매도세 강함 (위험)
+ */
+export function entryTimingGate(input: GateInput): GateResult {
+  const { candles, strategyMode } = input;
+
+  if (candles.length < 6) {
+    return { passed: true, reason: '데이터 부족 — 타이밍 게이트 스킵' };
+  }
+
+  const [c0, c1, c2, c3, c4] = candles; // c0 = 오늘(최신), 내림차순
+  const current = c0.close;
+
+  // ── 1. RSI 과매수 차단 ──
+  const tech = analyzeTechnicals(candles);
+  const rsi = tech?.rsi14 ?? 50;
+
+  if (rsi >= 75) {
+    return { passed: false, reason: `🔴 RSI 과매수 차단: ${rsi.toFixed(1)} ≥ 75 (과매수 구간 — 조정 대기)` };
+  }
+
+  // ── 2. 고점 추격 방지 (꼭지 매수 금지) ──
+  const recent3High = Math.max(c0.high, c1.high, c2.high);
+  const pctFromHigh = recent3High > 0 ? ((current - recent3High) / recent3High) * 100 : -5;
+
+  // 3일 최고가 대비 -1% 이내 = 고점권 → 차단
+  if (pctFromHigh >= -1.0) {
+    return {
+      passed: false,
+      reason: `🔴 고점 추격 차단: 현재(${current.toLocaleString()}) = 3일고가(${recent3High.toLocaleString()})의 ${(100 + pctFromHigh).toFixed(1)}% — 조정 후 재진입`,
+    };
+  }
+
+  // ── 3. 3일 연속 상승 → 스윙/스캘핑 구분 처리 ──
+  const is3DayRising = c0.close > c1.close && c1.close > c2.close && c2.close > c3.close;
+  if (is3DayRising && strategyMode !== 'SCALPING') {
+    // 스윙 모드에서 3일 연속 상승 후 매수 = 고점 추격
+    return {
+      passed: false,
+      reason: `🔴 3일 연속 상승 후 조정 대기: ${c3.close.toLocaleString()}→${c2.close.toLocaleString()}→${c1.close.toLocaleString()}→${current.toLocaleString()}`,
+    };
+  }
+
+  // ── 4. 캔들스틱 패턴 분석 ──
+  const body0 = Math.abs(c0.close - c0.open);
+  const range0 = c0.high - c0.low;
+  const bodyRatio0 = range0 > 0 ? body0 / range0 : 0;
+  const lowerShadow0 = Math.min(c0.open, c0.close) - c0.low;
+  const upperShadow0 = c0.high - Math.max(c0.open, c0.close);
+
+  const isBullishCandle = c0.close >= c0.open; // 양봉
+  const isHammer = range0 > 0 && lowerShadow0 / range0 > 0.5 && upperShadow0 / range0 < 0.2; // 망치형 (긴아래꼬리)
+  const isBullishEngulfing = isBullishCandle && c0.open <= c1.close && c0.close >= c1.open && body0 > Math.abs(c1.close - c1.open); // 불리쉬 인걸핑
+  const isVBounce = c1.close < c2.close && c0.close > c1.close; // V자 반등 (전일 하락 후 오늘 반등)
+
+  // ── 5. 당일 캔들 내 종가 위치 ──
+  // 오늘 저가 근처 종가 = 매도세 강함 → 낙하 중
+  const closePositionInRange = range0 > 0 ? (c0.close - c0.low) / range0 : 0.5;
+  const isFallingKnife = closePositionInRange < 0.2 && !isHammer; // 종가가 오늘 범위 하위 20% = 낙하 중
+
+  if (isFallingKnife) {
+    return {
+      passed: false,
+      reason: `🔴 낙하 중 매수 차단: 오늘 종가가 일중 저가 근처 (${(closePositionInRange * 100).toFixed(0)}%) — 하락 지속 위험`,
+    };
+  }
+
+  // ── 6. 5일 저점 대비 위치 계산 ──
+  const recent5Low = Math.min(c0.low, c1.low, c2.low, c3.low, c4.low);
+  const pctFromLow = recent5Low > 0 ? ((current - recent5Low) / recent5Low) * 100 : 0;
+
+  // 좋은 패턴 없이 저점에서 5% 이상 올라온 상태면 최적 타이밍 아님
+  const hasGoodPattern = isVBounce || isBullishEngulfing || isHammer || isBullishCandle;
+  const isTooFarFromLow = pctFromLow > 5 && rsi > 60;
+
+  if (isTooFarFromLow && !hasGoodPattern) {
+    if (config.isPaper) {
+      // 모의투자: 경고만, 차단 안 함
+      return {
+        passed: true,
+        reason: `⚠️ [모의투자] 최적 타이밍 아님: 5일저점+${pctFromLow.toFixed(1)}%, RSI=${rsi.toFixed(0)} — 실전에선 차단`,
+      };
+    }
+    return {
+      passed: false,
+      reason: `🔴 진입 타이밍 부적합: 5일저점+${pctFromLow.toFixed(1)}%, RSI=${rsi.toFixed(0)}, 반등 패턴 없음`,
+    };
+  }
+
+  // ── 통과 — 타이밍 사유 기록 ──
+  const signals: string[] = [];
+  if (isVBounce) signals.push('V반등');
+  if (isBullishEngulfing) signals.push('인걸핑');
+  if (isHammer) signals.push('망치형');
+  if (isBullishCandle) signals.push('양봉');
+  if (pctFromHigh < -3) signals.push(`고가대비${pctFromHigh.toFixed(1)}%`);
+  if (pctFromLow < 3) signals.push(`저점근처+${pctFromLow.toFixed(1)}%`);
+
+  return {
+    passed: true,
+    reason: `✅ 타이밍: ${signals.length > 0 ? signals.join('+') : `RSI=${rsi.toFixed(0)}, 고가대비${pctFromHigh.toFixed(1)}%`}`,
   };
 }
 
@@ -476,6 +594,14 @@ export async function runTradeGates(input: GateInput): Promise<GateResult> {
   if (input.action !== 'BUY' && input.action !== 'AVERAGE_DOWN') {
     return { passed: true, reason: '매도 — 게이트 생략' };
   }
+
+  // 0. 진입 타이밍 필터 (전문 트레이더 시야 — 고점 추격, RSI 과매수, 낙하중 매수 방지)
+  const timing = entryTimingGate(input);
+  if (!timing.passed) {
+    logger.warn(`🚦 [타이밍] ${input.stockCode}: ${timing.reason}`, { component: 'TRADE_GATE' });
+    return timing;
+  }
+  results.push(timing);
 
   // 1. 연속손실 쿨다운 (가장 먼저 — DB 1회 조회)
   const cooldown = await cooldownGate();

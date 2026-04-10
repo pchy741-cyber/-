@@ -22,6 +22,7 @@ import { runTrackAJob } from './track-a-job.js';
 import { runTrackBJob } from './track-b-job.js';
 import { runOverseasJob } from './overseas-job.js';
 import { syncInterestGroups, syncHoldingsToWatchlist, fixWatchlistNames } from '../kis/interest-group.js';
+import { parkIdleCash, unparkForTrading } from '../automation/cash-parking.js';
 import { runUnfilledOrderCheck } from './unfilled-order-job.js';
 
 /**
@@ -79,6 +80,15 @@ export function startScheduler(): void {
     '0 8 * * 1-5',
     () => {
       autoSwitchStrategy().catch((e) => logger.error(`장세 감지 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 08:45 — 장 시작 전 현금 확보 (ETF 일부 매도 → 오늘 매매 유동성)
+  cron.schedule(
+    '45 8 * * 1-5',
+    () => {
+      unparkForTrading().catch((e) => logger.error(`현금 확보 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -259,6 +269,15 @@ export function startScheduler(): void {
     '40 15 * * 1-5',
     () => {
       generateDailyReport().catch((e) => logger.error(`리포트 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 15:55 — 장 마감 후 현금 파킹 (잉여 현금 → KODEX200 ETF 자동 매수)
+  cron.schedule(
+    '55 15 * * 1-5',
+    () => {
+      parkIdleCash().catch((e) => logger.error(`현금 파킹 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

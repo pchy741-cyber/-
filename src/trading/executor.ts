@@ -1,6 +1,6 @@
 import { OrderType, STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
 import { config } from '../config/index.js';
-import { insertOrder, logSystem, updateOrder, upsertWatchlistItem } from '../db/client.js';
+import { getActiveStrategy, insertOrder, logSystem, updateOrder, upsertWatchlistItem } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import { getCurrentPrice, getDailyChart } from '../kis/market.js';
 import { getOrderFills, type OrderResult, placeOrder } from '../kis/order.js';
@@ -185,13 +185,18 @@ export class TradeExecutor {
         return;
       }
 
+      // DB 전략 세팅값 우선 적용 (없으면 STRATEGY_PARAMS 하드코딩 fallback)
+      const dbStrategy = await getActiveStrategy().catch(() => null);
+      const targetProfitPct = (dbStrategy as any)?.take_profit_pct ?? params.takeProfitPct;
+      const stopLossPct = (dbStrategy as any)?.stop_loss_pct ?? params.stopLossPct;
+
       await chainManager.openChain({
         stockCode,
         mode,
         buyPrice: fillPrice,
         quantity: gatedQuantity,
-        targetProfitPct: params.takeProfitPct,
-        stopLossPct: params.stopLossPct,
+        targetProfitPct,
+        stopLossPct,
         maxAveragingCount: params.maxAveragingCount,
       });
 

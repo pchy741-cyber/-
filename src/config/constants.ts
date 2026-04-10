@@ -14,8 +14,8 @@ export const MARKET = {
 export const SCHEDULE = {
   // Track A: 무거운 분석 (하루 2회)
   TRACK_A_CRON: ['30 7 * * 1-5', '0 18 * * 1-5'], // 07:30, 18:00 KST 평일
-  // Track B: 실시간 감시 (장중 5분 간격 — 빠른 매매 대응)
-  TRACK_B_INTERVAL_MINUTES: 5,
+  // Track B: 실시간 감시 (장중 3분 간격 — 적극적 스캔)
+  TRACK_B_INTERVAL_MINUTES: 3,
 } as const;
 
 // ── 주문 관련 Enum ──
@@ -80,13 +80,13 @@ export const STRATEGY_PARAMS = {
     marketPenalty: -30, // 하락장 감점
   },
   SCALPING: {
-    buyThreshold: 55, // 단타 적극 매수 (모의투자 실험)
-    splitCount: 1, // 100% 몰빵
+    buyThreshold: 68, // 단타 — 수수료(~0.21% 왕복) 대비 수익 확보를 위해 고품질 진입만
+    splitCount: 1, // 100% 한번에
     averageDownPct: 0, // 물타기 없음
     maxAveragingCount: 0,
-    takeProfitPct: 4, // +4% 즉시 익절 (R:R = 2.0)
+    takeProfitPct: 3, // +3% 즉시 익절 (수수료 0.21% 제외 실수익 ~2.8%)
     takeProfitRatio: 1.0, // 전량 매도
-    stopLossPct: -2, // -2% 칼손절
+    stopLossPct: -2, // -2% 칼손절 (수수료 포함 실손실 ~2.2%)
     maxHoldingDays: 0, // 당일 청산 필수
     forceCloseTime: '15:20', // 오버나잇 금지
   },

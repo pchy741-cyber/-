@@ -18,10 +18,21 @@ export function technicalFallbackDecisions(params: {
   orderableCash: number;
   maxPositionKrw: number;
   aiScores?: Array<{ stock_code: string; score: number }>;
+  /** DB 전략 설정값 — 있으면 STRATEGY_PARAMS 하드코딩 대신 사용 */
+  takeProfitPct?: number;
+  stopLossPct?: number;
+  buyThreshold?: number;
 }): TradeDecision[] {
   const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores } = params;
   const aiScoreMap = new Map((aiScores ?? []).map((s) => [s.stock_code, s.score]));
-  const strategyParams = STRATEGY_PARAMS[mode];
+  const base = STRATEGY_PARAMS[mode];
+  // DB 세팅값 우선 적용 (없으면 STRATEGY_PARAMS 하드코딩 fallback)
+  const strategyParams = {
+    ...base,
+    takeProfitPct: params.takeProfitPct ?? base.takeProfitPct,
+    stopLossPct: params.stopLossPct ?? base.stopLossPct,
+    buyThreshold: params.buyThreshold ?? base.buyThreshold,
+  };
   const decisions: TradeDecision[] = [];
 
   // 1. 보유 종목 매도 판단 (손절/익절)
@@ -109,16 +120,18 @@ export function technicalFallbackDecisions(params: {
     // 각 종목 score 로깅 (디버깅용)
     logger.info(`  📊 ${stock.stock_code}: score=${tech.score} RSI=${tech.rsi14.toFixed(0)} ADX=${tech.adx14.toFixed(0)}(${tech.trendStrength}) MACD=${tech.macdCrossover}`, { component: 'TRACK_B' });
 
-    // 매수 조건: AI 스코어 >= 매수임계치(65)면 기술적 조건 완화
+    // 매수 조건: AI 스코어 >= 매수임계치면 기술 완화, 아니면 기술적 점수 단독 기준 충족 필요
     const aiScore = aiScoreMap.get(stock.stock_code) ?? 0;
-    const buyThreshold = STRATEGY_PARAMS[mode].buyThreshold; // SWING: 65
-    const minScore = mode === 'SCALPING' ? 0 : mode === 'DEFENSE' ? 10 : 5;
+    const buyThreshold = strategyParams.buyThreshold;
+    // 기술 단독 최소 점수 (수수료 감안 — 낮으면 저품질 진입 → 손절 반복)
+    const minTechScore = mode === 'SCALPING' ? 55 : mode === 'DEFENSE' ? 60 : 40;
 
-    // AI 스코어가 매수 추천(>=threshold)이면 기술적 점수 관계없이 후보 포함
-    if (aiScore >= buyThreshold || tech.score >= minScore) {
+    if (aiScore >= buyThreshold || tech.score >= minTechScore) {
       candidates.push({ stock_code: stock.stock_code, tech, price });
       if (aiScore >= buyThreshold) {
         logger.info(`  ✅ ${stock.stock_code}: AI=${aiScore}점(>=${buyThreshold}) → 매수 후보 (기술=${tech.score})`, { component: 'TRACK_B' });
+      } else {
+        logger.info(`  ✅ ${stock.stock_code}: 기술=${tech.score}점(>=${minTechScore}) → 매수 후보 (AI=${aiScore})`, { component: 'TRACK_B' });
       }
     }
   }
@@ -133,7 +146,7 @@ export function technicalFallbackDecisions(params: {
   // 현금 여유 확인하면서 매수 결정
   let remainingCash = orderableCash;
   const maxBuys = 5; // 한 번에 최대 5종목
-  const splitCount = STRATEGY_PARAMS[mode].splitCount || 3;
+  const splitCount = strategyParams.splitCount || 3;
 
   for (const cand of candidates.slice(0, maxBuys)) {
     // 종목당 1차 매수: 총한도의 1/splitCount, 잔고 한도 내

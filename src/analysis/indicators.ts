@@ -266,6 +266,102 @@ export function vwap(candles: OHLCV[]): number[] {
 
 // ── 종합 분석 리포트 ──
 
+// ── 캔들스틱 패턴 감지 ──
+// 전문 트레이더가 실시간으로 보는 핵심 패턴
+
+export interface CandlePatternResult {
+  name: string;       // 패턴 이름 (한글)
+  bullish: boolean;   // true: 매수 신호, false: 매도 신호
+  strength: 'WEAK' | 'MODERATE' | 'STRONG';
+}
+
+/**
+ * 주요 캔들스틱 패턴 감지 (내림차순 candles — candles[0]이 최신)
+ *
+ * 패턴:
+ * - 망치형 (Hammer): 긴 아래꼬리 → 저점 매수세 강함
+ * - 역망치형 (Inverted Hammer): 긴 위꼬리 → 상승 전환 신호
+ * - 불리쉬 인걸핑 (Bullish Engulfing): 전일 음봉을 양봉이 삼킴 → 강세 전환
+ * - 베어리쉬 인걸핑 (Bearish Engulfing): 전일 양봉을 음봉이 삼킴 → 약세 전환
+ * - 도지 (Doji): 시가≈종가 → 매수/매도 균형, 추세 전환 가능
+ * - 모닝스타 (Morning Star): 3일 패턴, 하락→도지→상승 = 바닥 전환
+ * - 이브닝스타 (Evening Star): 3일 패턴, 상승→도지→하락 = 고점 전환
+ * - 상승장악형 (Piercing Line): 음봉 중간 이상 올라온 양봉
+ */
+export function detectCandlePatterns(candles: OHLCV[]): CandlePatternResult[] {
+  if (candles.length < 3) return [];
+  const patterns: CandlePatternResult[] = [];
+
+  const [c0, c1, c2] = candles; // c0=오늘, c1=어제, c2=그제
+
+  const body0 = Math.abs(c0.close - c0.open);
+  const range0 = c0.high - c0.low || 1;
+  const lower0 = Math.min(c0.open, c0.close) - c0.low;
+  const upper0 = c0.high - Math.max(c0.open, c0.close);
+  const bull0 = c0.close > c0.open;
+
+  const body1 = Math.abs(c1.close - c1.open);
+  const range1 = c1.high - c1.low || 1;
+  const bull1 = c1.close > c1.open;
+
+  // 1. 망치형 (Hammer) — 아래꼬리 >= 몸통 2배, 위꼬리 짧음, 음봉 끝에 등장
+  if (lower0 / range0 >= 0.5 && upper0 / range0 < 0.15 && body0 / range0 < 0.4) {
+    patterns.push({ name: '망치형', bullish: true, strength: 'STRONG' });
+  }
+
+  // 2. 역망치형 (Inverted Hammer) — 위꼬리 >= 몸통 2배, 아래꼬리 짧음
+  if (upper0 / range0 >= 0.5 && lower0 / range0 < 0.15 && body0 / range0 < 0.4 && !bull0) {
+    patterns.push({ name: '역망치형', bullish: true, strength: 'MODERATE' });
+  }
+
+  // 3. 슈팅스타 (Shooting Star) — 위꼬리 길고, 상승 후 등장 = 하락 반전
+  if (upper0 / range0 >= 0.5 && lower0 / range0 < 0.15 && body0 / range0 < 0.4 && bull1) {
+    patterns.push({ name: '슈팅스타', bullish: false, strength: 'STRONG' });
+  }
+
+  // 4. 도지 (Doji) — 시가≈종가 (몸통 < 범위의 10%)
+  if (body0 / range0 < 0.1) {
+    // 전일 방향과 반대면 더 강한 신호
+    const isDoji = true;
+    if (isDoji && !bull1 && c0.close > c1.close) {
+      patterns.push({ name: '도지(강세)', bullish: true, strength: 'MODERATE' });
+    } else {
+      patterns.push({ name: '도지(중립)', bullish: true, strength: 'WEAK' });
+    }
+  }
+
+  // 5. 불리쉬 인걸핑 (Bullish Engulfing) — 오늘 양봉이 어제 음봉 전체 덮음
+  if (bull0 && !bull1 && c0.open <= c1.close && c0.close >= c1.open && body0 > body1 * 1.1) {
+    patterns.push({ name: '불리쉬인걸핑', bullish: true, strength: 'STRONG' });
+  }
+
+  // 6. 베어리쉬 인걸핑 (Bearish Engulfing) — 오늘 음봉이 어제 양봉 전체 덮음
+  if (!bull0 && bull1 && c0.open >= c1.close && c0.close <= c1.open && body0 > body1 * 1.1) {
+    patterns.push({ name: '베어리쉬인걸핑', bullish: false, strength: 'STRONG' });
+  }
+
+  // 7. 모닝스타 (Morning Star) — 3일: 음봉, 도지/작은몸통, 양봉 (바닥 전환)
+  if (candles.length >= 3) {
+    const bull2 = c2.close > c2.open;
+    const body2 = Math.abs(c2.close - c2.open);
+    const range2 = c2.high - c2.low || 1;
+    if (!bull2 && body1 / range1 < 0.3 && bull0 && c0.close > (c2.open + c2.close) / 2) {
+      patterns.push({ name: '모닝스타', bullish: true, strength: 'STRONG' });
+    }
+    // 이브닝스타 (Evening Star)
+    if (bull2 && body1 / range1 < 0.3 && !bull0 && c0.close < (c2.open + c2.close) / 2) {
+      patterns.push({ name: '이브닝스타', bullish: false, strength: 'STRONG' });
+    }
+  }
+
+  // 8. V자 반등 — 전일 하락 + 오늘 양봉 반등
+  if (!bull1 && bull0 && c0.close > c1.open) {
+    patterns.push({ name: 'V반등', bullish: true, strength: 'MODERATE' });
+  }
+
+  return patterns;
+}
+
 export interface TechnicalSummary {
   rsi14: number;
   macdHistogram: number;
@@ -285,6 +381,10 @@ export interface TechnicalSummary {
   volumeRatio: number; // 당일 거래량 / 20일 평균 (>1.5면 확인)
   overallSignal: 'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL';
   score: number; // -100 ~ +100
+  candlePatterns: CandlePatternResult[]; // 캔들스틱 패턴
+  pctFrom3DayHigh: number; // 3일 고가 대비 현재 위치 (%)
+  pctFrom5DayLow: number;  // 5일 저가 대비 현재 위치 (%)
+  vwapPosition: 'ABOVE' | 'BELOW' | 'AT'; // VWAP 대비 위치
 }
 
 export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
@@ -433,6 +533,13 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
     score = Math.floor(score * 0.7); // 거래량 심각 부족 → 신호 약화
   }
 
+  // ★ 캔들스틱 패턴 점수 반영
+  const candlePatterns = detectCandlePatterns(candles);
+  for (const p of candlePatterns) {
+    const pts = p.strength === 'STRONG' ? 12 : p.strength === 'MODERATE' ? 7 : 3;
+    score += p.bullish ? pts : -pts;
+  }
+
   score = Math.max(-100, Math.min(100, score));
 
   let overallSignal: TechnicalSummary['overallSignal'];
@@ -441,6 +548,18 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   else if (score <= -40) overallSignal = 'STRONG_SELL';
   else if (score <= -15) overallSignal = 'SELL';
   else overallSignal = 'NEUTRAL';
+
+  // ★ 가격 위치 정보 (전문 트레이더 시야)
+  const recent3High = Math.max(candles[0].high, candles[1]?.high ?? 0, candles[2]?.high ?? 0);
+  const recent5Low = Math.min(candles[0].low, candles[1]?.low ?? Infinity, candles[2]?.low ?? Infinity, candles[3]?.low ?? Infinity, candles[4]?.low ?? Infinity);
+  const pctFrom3DayHigh = recent3High > 0 ? ((current - recent3High) / recent3High) * 100 : 0;
+  const pctFrom5DayLow = recent5Low > 0 && recent5Low < Infinity ? ((current - recent5Low) / recent5Low) * 100 : 0;
+
+  // VWAP 위치 (일봉 VWAP — 최근 20일)
+  const vwapValues = vwap(candlesAsc.slice(-20));
+  const vwapNow = vwapValues[vwapValues.length - 1] ?? current;
+  const vwapDiff = (current - vwapNow) / vwapNow * 100;
+  const vwapPosition: TechnicalSummary['vwapPosition'] = vwapDiff > 1 ? 'ABOVE' : vwapDiff < -1 ? 'BELOW' : 'AT';
 
   return {
     rsi14,
@@ -461,5 +580,9 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
     volumeRatio,
     overallSignal,
     score,
+    candlePatterns,
+    pctFrom3DayHigh,
+    pctFrom5DayLow,
+    vwapPosition,
   };
 }

@@ -33,12 +33,12 @@ const envSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().default(''),
   TELEGRAM_CHAT_ID: z.string().default(''),
 
-  // 리스크 하드 리밋
-  RISK_MAX_DAILY_DRAWDOWN_KRW: z.coerce.number().default(500000),
-  RISK_MAX_POSITION_KRW: z.coerce.number().default(2000000),
-  RISK_MAX_TOTAL_INVESTED_PCT: z.coerce.number().default(80),
-  RISK_MAX_CONCURRENT_POSITIONS: z.coerce.number().default(7),
-  RISK_MAX_DAILY_TRADES: z.coerce.number().default(20),
+  // 리스크 하드 리밋 (모의투자 — 적극 실험)
+  RISK_MAX_DAILY_DRAWDOWN_KRW: z.coerce.number().default(3000000), // 3백만원 일일 허용손실
+  RISK_MAX_POSITION_KRW: z.coerce.number().default(5000000), // 종목당 5백만원
+  RISK_MAX_TOTAL_INVESTED_PCT: z.coerce.number().default(95), // 잔고 95%까지 투자
+  RISK_MAX_CONCURRENT_POSITIONS: z.coerce.number().default(15), // 동시 15종목
+  RISK_MAX_DAILY_TRADES: z.coerce.number().default(100), // 하루 100건
 });
 
 // ── 파싱 & Export ──

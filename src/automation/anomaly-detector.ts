@@ -109,8 +109,8 @@ export async function detectAnomalies(): Promise<AnomalyAlert[]> {
 
       // rate limit
       await new Promise((r) => setTimeout(r, 100));
-    } catch {
-      // 개별 종목 실패는 무시
+    } catch (err) {
+      logger.warn(`이상감지 개별 종목 실패: ${err}`, { component: 'ANOMALY' });
     }
   }
 
@@ -118,7 +118,7 @@ export async function detectAnomalies(): Promise<AnomalyAlert[]> {
   const importantAlerts = alerts.filter((a) => a.severity !== 'INFO');
   if (importantAlerts.length > 0) {
     const msg = importantAlerts.map((a) => `${a.severity === 'CRITICAL' ? '🚨' : '⚠️'} ${a.message}`).join('\n');
-    await sendTelegramMessage(`📡 *이상 감지*\n${msg}`);
+    await sendTelegramMessage(`📡 *이상 감지*\n${msg}`).catch((e) => logger.warn(`이상감지 알림 실패: ${e}`, { component: 'ANOMALY' }));
     logger.warn(`이상 감지 ${importantAlerts.length}건`, { component: 'ANOMALY' });
   }
 

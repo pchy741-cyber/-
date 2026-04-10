@@ -111,11 +111,11 @@ export async function getPaperBalance(): Promise<AccountBalance> {
   await restorePaperState();
   const positions = await getPaperPositions();
   const invested = positions.reduce((s, p) => s + p.evalAmount, 0);
-  const cash = PAPER_INITIAL_CAPITAL - invested + paperRealizedPnl;
-  const effectiveCash = Math.max(0, cash);
+  // 가상투자: 초기자본(1천만원) 고정 — 총 자산이 초기자본을 초과하지 않도록
+  const cash = Math.max(0, PAPER_INITIAL_CAPITAL - invested);
   return {
-    totalDeposit: effectiveCash, // 현재 현금 (초기자본 아님 — 다른 곳에서 totalDeposit + totalEvalAmount 합산하므로)
-    orderableCash: effectiveCash,
+    totalDeposit: cash,
+    orderableCash: cash,
     totalEvalAmount: invested,
     totalProfitLoss: paperRealizedPnl,
     totalProfitLossPct: PAPER_INITIAL_CAPITAL > 0 ? (paperRealizedPnl / PAPER_INITIAL_CAPITAL) * 100 : 0,
@@ -347,7 +347,6 @@ export class RiskEngine {
     const totalPortfolio = balance.totalDeposit + balance.totalEvalAmount;
     if (totalPortfolio === 0) return { approved: true, reason: 'OK' };
 
-    const _currentExposurePct = (balance.totalEvalAmount / totalPortfolio) * 100;
     const afterExposurePct = ((balance.totalEvalAmount + orderValue) / totalPortfolio) * 100;
 
     if (afterExposurePct > config.risk.maxTotalInvestedPct) {

@@ -41,15 +41,31 @@ export function initTelegram(): void {
     }
   });
 
-  // /kill 명령어 — Kill Switch 수동 발동
+  // 명령어 인증 헬퍼 — TELEGRAM_CHAT_ID와 일치하는 사용자만 허용
+  const isAuthorized = (ctx: any): boolean => {
+    const allowedId = String(config.telegram.chatId ?? '').replace(/^-100/, '');
+    const fromId = String(ctx.from?.id ?? '');
+    const chatId = String(ctx.chat?.id ?? '').replace(/^-100/, '');
+    return !!allowedId && (fromId === allowedId || chatId.endsWith(allowedId));
+  };
+
+  // /kill 명령어 — Kill Switch 수동 발동 (인증된 사용자만)
   bot.command('kill', async (ctx) => {
+    if (!isAuthorized(ctx)) {
+      logger.warn(`Telegram /kill 미인증 시도: userId=${ctx.from?.id}`, { component: 'TELEGRAM' });
+      return;
+    }
     const { activateKillSwitch } = await import('../risk/kill-switch.js');
     await activateKillSwitch('CEO 수동 발동 (Telegram)');
     await ctx.reply('🛑 Kill Switch 발동 — 모든 매매 즉시 차단');
   });
 
-  // /resume 명령어 — Kill Switch 해제
+  // /resume 명령어 — Kill Switch 해제 (인증된 사용자만)
   bot.command('resume', async (ctx) => {
+    if (!isAuthorized(ctx)) {
+      logger.warn(`Telegram /resume 미인증 시도: userId=${ctx.from?.id}`, { component: 'TELEGRAM' });
+      return;
+    }
     await deactivateKillSwitch();
     await ctx.reply('✅ Kill Switch 해제 — 매매 재개');
   });

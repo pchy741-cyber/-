@@ -90,14 +90,33 @@ export async function getActiveWatchlist(): Promise<WatchlistItem[]> {
   return rows;
 }
 
+// 종목명 깨짐 감지 (특수문자 ◆ 등)
+function isGarbledStockName(name: string): boolean {
+  if (!name) return true;
+  return /[^\w\s\uAC00-\uD7A3\u3131-\u318E\u1100-\u11FF().,·\-+%$]/.test(name);
+}
+
 export async function upsertWatchlistItem(item: Pick<WatchlistItem, 'stock_code' | 'stock_name' | 'market'>) {
   if (useMemory) { memUpsertWatchlistItem(item); return; }
-  await getPool().query(
-    `INSERT INTO watchlist (stock_code, stock_name, market)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (stock_code) DO UPDATE SET stock_name = $2, market = $3`,
-    [item.stock_code, item.stock_name, item.market],
-  );
+  // 깨진 종목명으로 기존 정상 이름을 덮어쓰지 않음
+  const nameIsGarbled = isGarbledStockName(item.stock_name);
+  if (nameIsGarbled) {
+    // 신규 삽입 시에는 코드로 저장, 기존 정상 이름은 보존
+    await getPool().query(
+      `INSERT INTO watchlist (stock_code, stock_name, market)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (stock_code) DO UPDATE SET market = $3
+         WHERE watchlist.stock_name IS NULL OR watchlist.stock_name = watchlist.stock_code`,
+      [item.stock_code, item.stock_code, item.market],
+    );
+  } else {
+    await getPool().query(
+      `INSERT INTO watchlist (stock_code, stock_name, market)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (stock_code) DO UPDATE SET stock_name = $2, market = $3`,
+      [item.stock_code, item.stock_name, item.market],
+    );
+  }
 }
 
 // ── AI Scores ──
@@ -214,9 +233,15 @@ export async function createChain(
   return rows[0].id;
 }
 
+const CHAIN_ALLOWED_COLS = new Set([
+  'status', 'strategy_mode', 'avg_buy_price', 'total_quantity', 'total_invested',
+  'realized_pnl', 'target_profit_pct', 'stop_loss_pct', 'max_averaging_count',
+  'current_averaging_count', 'opened_at', 'closed_at', 'close_reason',
+]);
+
 export async function updateChain(id: string, updates: Partial<TransactionChain>) {
   if (useMemory) { memUpdateChain(id, updates); return; }
-  const keys = Object.keys(updates);
+  const keys = Object.keys(updates).filter((k) => CHAIN_ALLOWED_COLS.has(k));
   if (keys.length === 0) return;
   const setClauses = keys.map((k, i) => `${k} = $${i + 2}`);
   const values = keys.map((k) => (updates as Record<string, unknown>)[k]);
@@ -252,9 +277,15 @@ export async function insertOrder(order: Omit<Order, 'id' | 'created_at' | 'upda
   return rows[0].id;
 }
 
+const ORDER_ALLOWED_COLS = new Set([
+  'chain_id', 'stock_code', 'side', 'order_type', 'quantity', 'price',
+  'kis_order_no', 'kis_status', 'filled_quantity', 'filled_price', 'status',
+  'trading_mode', 'trigger_source', 'ai_reasoning',
+]);
+
 export async function updateOrder(id: string, updates: Partial<Order>) {
   if (useMemory) { memUpdateOrder(id, updates); return; }
-  const keys = Object.keys(updates);
+  const keys = Object.keys(updates).filter((k) => ORDER_ALLOWED_COLS.has(k));
   if (keys.length === 0) return;
   const setClauses = keys.map((k, i) => `${k} = $${i + 2}`);
   setClauses.push(`updated_at = NOW()`);

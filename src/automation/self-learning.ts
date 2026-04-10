@@ -534,7 +534,7 @@ function analyzeSniperByMarketRegime(enrichedChains: EnrichedChain[]): LearnedIn
 async function saveInsights(insights: LearnedInsight[]): Promise<void> {
   if (insights.length > 0) {
     // 기존 인사이트 삭제 후 새로 삽입
-    await getPool().query('DELETE FROM learned_insights WHERE id IS NOT NULL');
+    await getPool().query('DELETE FROM learned_insights');
     for (const insight of insights) {
       await getPool().query(
         `INSERT INTO learned_insights (category, insight, confidence, sample_count, last_updated, details)
@@ -551,7 +551,7 @@ async function saveInsights(insights: LearnedInsight[]): Promise<void> {
     }
 
     const _summary = insights.map((i) => `[${i.category}] ${i.insight}`).join('\n');
-    await logSystem('INFO', 'LEARN', `자기학습 완료: ${insights.length}개 인사이트 추출`);
+    await logSystem('INFO', 'LEARN', `자기학습 완료: ${insights.length}개 인사이트 추출`).catch(() => {});
 
     await sendTelegramMessage(
       `🧠 *자기학습 완료*\n${insights.length}개 패턴 학습\n\n` +
@@ -559,7 +559,7 @@ async function saveInsights(insights: LearnedInsight[]): Promise<void> {
           .slice(0, 5)
           .map((i) => `• ${i.insight.split('—')[0]}`)
           .join('\n'),
-    );
+    ).catch((e) => logger.warn(`자기학습 알림 실패: ${e}`, { component: 'LEARN' }));
 
     logger.info(`🧠 자기학습 완료: ${insights.length}개 인사이트`, { component: 'LEARN' });
   }

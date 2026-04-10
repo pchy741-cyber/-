@@ -2,11 +2,18 @@ import webpush from 'web-push';
 import { getPool } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 
-// VAPID 키 (환경변수 또는 하드코딩)
-const VAPID_PUBLIC = process.env.VAPID_PUBLIC_KEY || 'BE6iN3FNECLxC_J_noAEZQ5ZPmp-i8YtEj_NVSu0m4b_qdOgArE5NGi_Qm8AXItsb775RfEbBdt3YjA3jzuL2Eo';
-const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY || '4qBiE3-_zo8ZJKVAs_qrjLR8E90QT9LwSF-J1SmBqLY';
+// VAPID 키 — 환경변수 필수 (개인키는 절대 소스코드에 하드코딩 금지)
+const VAPID_PUBLIC = process.env.VAPID_PUBLIC_KEY ?? '';
+const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY ?? '';
 
-webpush.setVapidDetails('mailto:pro@proscom-hr.com', VAPID_PUBLIC, VAPID_PRIVATE);
+let vapidReady = false;
+if (VAPID_PUBLIC && VAPID_PRIVATE) {
+  webpush.setVapidDetails('mailto:pro@proscom-hr.com', VAPID_PUBLIC, VAPID_PRIVATE);
+  vapidReady = true;
+} else {
+  // 키 없으면 웹 푸시 비활성 (텔레그램 알림은 계속 동작)
+  logger.warn('VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY 미설정 → 웹 푸시 비활성', { component: 'WEB_PUSH' });
+}
 
 export function getVapidPublicKey(): string {
   return VAPID_PUBLIC;
@@ -53,6 +60,7 @@ export async function sendPushNotification(payload: {
   tag?: string;
   url?: string;
 }): Promise<void> {
+  if (!vapidReady) return; // VAPID 키 없으면 스킵
   const subscriptions = await getAllSubscriptions();
   if (subscriptions.length === 0) return;
 
@@ -101,26 +109,62 @@ async function removeSubscription(endpoint: string): Promise<void> {
 //  매매 이벤트별 알림 헬퍼
 // ══════════════════════════════════════
 
-export async function notifyBuy(stockName: string, qty: number, price: number, reasoning: string) {
+export async function notifyBuy(stockCode: string, qty: number, price: number, reasoning: string) {
+  const totalKrw = (qty * price).toLocaleString();
+  const shortReason = reasoning.length > 80 ? reasoning.slice(0, 80) + '…' : reasoning;
+
+  // 웹 푸시
   await sendPushNotification({
-    title: `🟢 매수: ${stockName}`,
-    body: `${qty}주 × ${price.toLocaleString()}원\n${reasoning}`,
+    title: `🟢 매수: ${stockCode}`,
+    body: `${qty}주 × ${price.toLocaleString()}원 (${totalKrw}원)\n${shortReason}`,
     tag: 'trade-buy',
     url: '/',
   });
+
+  // 텔레그램 (항상 전송)
+  try {
+    const { sendTelegramMessage } = await import('./telegram.js');
+    await sendTelegramMessage(
+      `🟢 *매수 체결*\n` +
+      `종목: \`${stockCode}\`\n` +
+      `수량: ${qty}주 × ${price.toLocaleString()}원\n` +
+      `총액: ${totalKrw}원\n` +
+      `사유: ${shortReason}`
+    );
+  } catch { /* telegram optional */ }
 }
 
-export async function notifySell(stockName: string, qty: number, price: number, pnlPct: number, reasoning: string) {
+export async function notifySell(stockCode: string, qty: number, price: number, pnlPct: number, reasoning: string) {
   const emoji = pnlPct >= 0 ? '🔴' : '🔻';
   const pnlStr = pnlPct >= 0 ? `+${pnlPct.toFixed(1)}%` : `${pnlPct.toFixed(1)}%`;
+  const shortReason = reasoning.length > 80 ? reasoning.slice(0, 80) + '…' : reasoning;
+
+  // 웹 푸시
   await sendPushNotification({
-    title: `${emoji} 매도: ${stockName} (${pnlStr})`,
-    body: `${qty}주 × ${price.toLocaleString()}원\n${reasoning}`,
+    title: `${emoji} 매도: ${stockCode} (${pnlStr})`,
+    body: `${qty}주 × ${price.toLocaleString()}원\n${shortReason}`,
     tag: 'trade-sell',
     url: '/',
   });
+
+  // 텔레그램 (항상 전송)
+  try {
+    const { sendTelegramMessage } = await import('./telegram.js');
+    await sendTelegramMessage(
+      `${emoji} *매도 체결* (${pnlStr})\n` +
+      `종목: \`${stockCode}\`\n` +
+      `수량: ${qty}주 × ${price.toLocaleString()}원\n` +
+      `사유: ${shortReason}`
+    );
+  } catch { /* telegram optional */ }
 }
 
 export async function notifyAlert(title: string, body: string) {
   await sendPushNotification({ title, body, tag: 'alert', url: '/' });
+
+  // 텔레그램으로도 전송
+  try {
+    const { sendTelegramMessage } = await import('./telegram.js');
+    await sendTelegramMessage(`⚠️ *${title}*\n${body}`);
+  } catch { /* telegram optional */ }
 }

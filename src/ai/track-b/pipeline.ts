@@ -186,9 +186,70 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         orderableCash: balance.orderableCash,
         maxPositionKrw: config.risk.maxPositionKrw,
         aiScores: scores.map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
+        // DB 세팅값 전달 (없으면 fallback 내에서 STRATEGY_PARAMS 사용)
+        takeProfitPct: strategy?.take_profit_pct ?? undefined,
+        stopLossPct: strategy?.stop_loss_pct ?? undefined,
+        buyThreshold: strategy?.buy_threshold ?? undefined,
       });
       // AI HOLD + 기술적 매매 합산
       decisions = [...decisions.filter((d) => d.action !== 'HOLD'), ...techDecisions];
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // 6-4. 🔒 하드 룰: AI 결정과 무관하게 익절/손절 강제 실행
+    //   - Claude가 HOLD 해도 목표 수익률/손절 초과 시 무조건 실행
+    //   - chain.target_profit_pct / chain.stop_loss_pct (매수 당시 저장된 값) 기준
+    //   - DB 전략 세팅값(strategy.take_profit_pct 등)으로 override
+    // ─────────────────────────────────────────────────────────────────
+    {
+      const baseParams = (await import('../../config/constants.js')).STRATEGY_PARAMS[mode];
+      const dbTakeProfit = strategy?.take_profit_pct ?? null;
+      const dbStopLoss = strategy?.stop_loss_pct ?? null;
+
+      for (const chain of openChains) {
+        const price = livePrices.get(chain.stock_code);
+        if (!price || !chain.avg_buy_price) continue;
+        const avgBuy = Number(chain.avg_buy_price);
+        if (avgBuy <= 0 || price.currentPrice <= 0) continue;
+        const pnlPct = ((price.currentPrice - avgBuy) / avgBuy) * 100;
+
+        // 이미 매도 결정이 있으면 스킵 (중복 방지)
+        const alreadySelling = decisions.some(
+          (d) => d.stock_code === chain.stock_code && ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action),
+        );
+        if (alreadySelling) continue;
+
+        // 체인 저장값 vs DB 세팅값 중 더 보수적인 값 사용
+        const targetPct = dbTakeProfit ?? Number(chain.target_profit_pct) || baseParams.takeProfitPct;
+        const stopPct = dbStopLoss ?? Number(chain.stop_loss_pct) || baseParams.stopLossPct;
+
+        if (pnlPct >= targetPct) {
+          const sellRatio = baseParams.takeProfitRatio ?? 0.5;
+          const sellQty = Math.ceil(chain.total_quantity * sellRatio);
+          const safeQty = Math.min(sellQty, chain.total_quantity);
+          if (safeQty > 0) {
+            logger.info(`🔒 하드 익절: ${chain.stock_code} +${pnlPct.toFixed(1)}% (목표 ${targetPct}%) — AI HOLD 무시`, { component: 'TRACK_B' });
+            decisions.push({
+              action: safeQty >= chain.total_quantity ? 'SELL' : 'PARTIAL_SELL',
+              stock_code: chain.stock_code,
+              quantity: safeQty,
+              price_type: 'MARKET',
+              reasoning: `하드 익절: +${pnlPct.toFixed(1)}% (목표 ${targetPct}%) — AI 결정 무관 강제 실행`,
+              confidence: 1.0,
+            });
+          }
+        } else if (pnlPct <= stopPct) {
+          logger.info(`🔒 하드 손절: ${chain.stock_code} ${pnlPct.toFixed(1)}% (한도 ${stopPct}%) — AI HOLD 무시`, { component: 'TRACK_B' });
+          decisions.push({
+            action: 'FORCE_CLOSE',
+            stock_code: chain.stock_code,
+            quantity: chain.total_quantity,
+            price_type: 'MARKET',
+            reasoning: `하드 손절: ${pnlPct.toFixed(1)}% (한도 ${stopPct}%) — AI 결정 무관 강제 실행`,
+            confidence: 1.0,
+          });
+        }
+      }
     }
 
     // 7. HOLD 제외 + BUY 결정에 현재가 주입 (executor 재조회 실패 방지)

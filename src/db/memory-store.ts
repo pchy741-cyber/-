@@ -8,15 +8,28 @@ import type { AIScore, Order, StrategyConfig, TransactionChain, WatchlistItem } 
  * Cloud SQL 연결되면 자동으로 사용 안 함
  */
 
-// ── 기본 감시목록 (한국 대형 우량주) ──
+// ── 기본 감시목록 (테마별 엄선) ──
 const DEFAULT_WATCHLIST: WatchlistItem[] = [
-  { id: uuid(), stock_code: '005930', stock_name: '삼성전자', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: null },
-  { id: uuid(), stock_code: '000660', stock_name: 'SK하이닉스', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: null },
-  { id: uuid(), stock_code: '373220', stock_name: 'LG에너지솔루션', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: null },
-  { id: uuid(), stock_code: '005380', stock_name: '현대차', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: null },
-  { id: uuid(), stock_code: '035420', stock_name: 'NAVER', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: null },
-  { id: uuid(), stock_code: '035720', stock_name: '카카오', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: null },
-  { id: uuid(), stock_code: '051910', stock_name: 'LG화학', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: null },
+  // AI·반도체 핵심
+  { id: uuid(), stock_code: '005930', stock_name: '삼성전자', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: 'AI반도체' },
+  { id: uuid(), stock_code: '000660', stock_name: 'SK하이닉스', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: 'HBM/AI반도체' },
+  { id: uuid(), stock_code: '042700', stock_name: '한미반도체', market: 'KOSDAQ', is_active: true, added_at: new Date().toISOString(), notes: 'AI반도체패키징' },
+  { id: uuid(), stock_code: '403870', stock_name: 'HPSP', market: 'KOSDAQ', is_active: true, added_at: new Date().toISOString(), notes: '반도체공정장비' },
+  // 반도체 소재·원자재
+  { id: uuid(), stock_code: '357780', stock_name: '솔브레인', market: 'KOSDAQ', is_active: true, added_at: new Date().toISOString(), notes: '반도체소재' },
+  { id: uuid(), stock_code: '005290', stock_name: '동진쎄미켐', market: 'KOSDAQ', is_active: true, added_at: new Date().toISOString(), notes: '반도체소재' },
+  // 로봇·자동화
+  { id: uuid(), stock_code: '277810', stock_name: '레인보우로보틱스', market: 'KOSDAQ', is_active: true, added_at: new Date().toISOString(), notes: '협동로봇' },
+  { id: uuid(), stock_code: '454910', stock_name: '두산로보틱스', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: '협동로봇' },
+  // 방산·인프라 (트럼프 테마)
+  { id: uuid(), stock_code: '012450', stock_name: '한화에어로스페이스', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: '방산/우주' },
+  { id: uuid(), stock_code: '009540', stock_name: 'HD한국조선해양', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: '조선/LNG' },
+  // 바이오·제약
+  { id: uuid(), stock_code: '068270', stock_name: '셀트리온', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: '바이오시밀러' },
+  { id: uuid(), stock_code: '207940', stock_name: '삼성바이오로직스', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: 'CMO바이오' },
+  // 원자재 (알래스카/광물)
+  { id: uuid(), stock_code: '010130', stock_name: '고려아연', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: '비철금속' },
+  { id: uuid(), stock_code: '247540', stock_name: '에코프로비엠', market: 'KOSDAQ', is_active: true, added_at: new Date().toISOString(), notes: '2차전지소재' },
 ];
 
 // ── 스토어 ──
@@ -28,7 +41,7 @@ const store = {
   snapshots: [] as Array<{ id: string; snapshot_at: string; total_value: number; cash_balance: number; invested_value: number; unrealized_pnl: number; daily_pnl: number; daily_pnl_pct: number; positions: unknown }>,
   strategy: {
     id: uuid(),
-    mode: 'SCALPING' as const,
+    mode: 'SWING' as const,
     is_active: true,
     notebooklm_prompt: '',
     gemini_prompt: '',

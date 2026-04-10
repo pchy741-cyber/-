@@ -65,8 +65,9 @@ export class ChainManager {
 
     const newAvgPrice = Math.round(totalCost / totalQty);
 
-    // 물타기 횟수 = 전체 매수 - 1차 매수 (1차는 물타기가 아님)
-    const averagingCount = buyOrders.length; // 이미 기존 주문들이므로, 이번 추가분이 N번째 물타기
+    // 물타기 횟수 = 전체 매수 - 1차 매수 (초기 매수는 물타기 아님)
+    // buyOrders에는 이미 이번 체결분이 포함되어 있으므로 -1
+    const averagingCount = buyOrders.length - 1;
 
     await updateChain(chainId, {
       status: 'AVERAGING',
