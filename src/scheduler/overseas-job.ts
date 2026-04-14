@@ -40,8 +40,8 @@ const GLOBAL_WATCHLIST = [
 ];
 
 // ─── 포지션 한도 (미국/아시아 공통) ───
-const MAX_POSITIONS = 5;           // 최대 동시 보유 종목
-const POSITION_SIZE_USD = 1500;    // 종목당 최대 투자금 (기존 $2,000 → $1,500, 5개 분산)
+const MAX_POSITIONS = 7;           // 최대 동시 보유 종목
+const POSITION_SIZE_USD = 3000;    // 종목당 최대 투자금 (스윙 적극 투자)
 const POSITION_PCT = 0.20;         // 또는 가용 현금의 20%
 
 // ── DB 기반 보유종목 관리 (서버 재시작해도 유지) ──

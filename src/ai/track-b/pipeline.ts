@@ -423,6 +423,28 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         if (livePrice > 0) d.limit_price = livePrice;
       }
     }
+
+    // 7-B. 수량 강제 보정: AI가 1주처럼 과소 계산 시 예산 기반으로 상향
+    // AI는 수량 계산 오류가 잦음 → 코드에서 직접 검증하고 보정
+    {
+      const orderableCashNow = Math.max(0, balance.orderableCash - ((balance as any).reservedWithdraw ?? 0));
+      const _params = STRATEGY_PARAMS[mode];
+      const budgetPerBuy = Math.floor(orderableCashNow / _params.splitCount);
+      for (const d of decisions) {
+        if ((d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && (d.limit_price ?? 0) > 0 && d.stock_code !== IDLE_PARK_CODE) {
+          const price = d.limit_price!;
+          const maxQtyByRisk = Math.floor(config.risk.maxPositionKrw / price);
+          const targetQty = Math.min(maxQtyByRisk, Math.max(1, Math.floor(budgetPerBuy / price)));
+          if ((d.quantity ?? 0) < targetQty) {
+            logger.info(
+              `📊 수량 보정: ${d.stock_code} ${d.quantity ?? 0}주 → ${targetQty}주 (예산 ${budgetPerBuy.toLocaleString()}원 ÷ ${price.toLocaleString()}원, 한도 ${maxQtyByRisk}주)`,
+              { component: 'TRACK_B' },
+            );
+            d.quantity = targetQty;
+          }
+        }
+      }
+    }
     // 현재가 없는 BUY 결정 제외 (가격 조회 불가 종목 → 매수 불가)
     const actionable = decisions.filter((d) => {
       if (d.action !== 'HOLD' && (d.action === 'BUY' || d.action === 'AVERAGE_DOWN')) {

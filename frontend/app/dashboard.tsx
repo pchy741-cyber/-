@@ -18,7 +18,8 @@ async function api(path: string, opts?: RequestInit & { timeout?: number }) {
   const timeoutId = setTimeout(() => controller.abort(), ms);
   try {
     const { timeout: _, ...fetchOpts } = opts ?? {};
-    const res = await fetch(`${base}/api${path}`, { ...fetchOpts, signal: controller.signal, cache: 'no-store', headers: { 'Content-Type': 'application/json', ...fetchOpts?.headers } });
+    const res = await fetch(`${base}/api${path}`, { ...fetchOpts, signal: controller.signal, cache: 'no-store', credentials: 'include', headers: { 'Content-Type': 'application/json', ...fetchOpts?.headers } });
+    if (res.status === 401) { window.location.href = '/'; throw new Error('UNAUTHORIZED'); }
     if (!res.ok) throw new Error(`API ${path} (${res.status})`);
     return res.json();
   } finally {

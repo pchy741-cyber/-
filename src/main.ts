@@ -5,12 +5,14 @@ import { logger as honoLogger } from 'hono/logger';
 import { secureHeaders } from 'hono/secure-headers';
 import { dashboardRoutes } from './api/routes/dashboard.js';
 // API Routes
+import { authRoutes } from './api/routes/auth.js';
 import { healthRoutes } from './api/routes/health.js';
 import { overseasRoutes } from './api/routes/overseas.js';
 import { secretsRoutes } from './api/routes/secrets.js';
 import { settingsRoutes } from './api/routes/settings.js';
 import { sseRoutes } from './api/routes/sse.js';
 import { backtestRoutes } from './backtest/api.js';
+import { requireAuth } from './api/middleware/auth.js';
 import { initBigQuery } from './automation/bigquery-pipeline.js';
 import { setupMonitoring } from './automation/gcp-monitoring.js';
 import { initRedisCache } from './cache/redis.js';
@@ -30,7 +32,12 @@ app.use('*', cors());
 app.use('*', honoLogger());
 
 // ── 라우트 마운트 ──
-app.route('/', healthRoutes);
+// 인증 불필요 (공개)
+app.route('/', healthRoutes);   // /health
+app.route('/', authRoutes);     // /auth/login, /auth/logout, /auth/me
+
+// 🔒 이하 모든 라우트: 로그인 필요
+app.use('*', requireAuth);
 app.route('/', dashboardRoutes);
 app.route('/', secretsRoutes);
 app.route('/', settingsRoutes);

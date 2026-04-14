@@ -78,7 +78,8 @@ KIS_ACCOUNT_NO=kis-account-no:latest,\
 GEMINI_API_KEY=gemini-api-key:latest,\
 OPENAI_API_KEY=openai-api-key:latest,\
 ANTHROPIC_API_KEY=anthropic-api-key:latest,\
-DB_PASSWORD=db-password:latest\
+DB_PASSWORD=db-password:latest,\
+DASHBOARD_PASSWORD=dashboard-password:latest\
 "
 
 echo ""
