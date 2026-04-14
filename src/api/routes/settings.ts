@@ -62,18 +62,39 @@ settingsRoutes.put('/strategy', async (c) => {
   }
 
   try {
-    await getPool().query('UPDATE strategy_config SET is_active = false WHERE is_active = true');
     // 컬럼이 없을 경우 자동 추가
     await getPool().query(`ALTER TABLE strategy_config ADD COLUMN IF NOT EXISTS notebooklm_prompt TEXT DEFAULT ''`).catch(() => {});
     await getPool().query(`ALTER TABLE strategy_config ADD COLUMN IF NOT EXISTS strategy_document TEXT DEFAULT ''`).catch(() => {});
     await getPool().query(`ALTER TABLE strategy_config ADD COLUMN IF NOT EXISTS risk_prompt TEXT DEFAULT ''`).catch(() => {});
 
-    const { rows } = await getPool().query(
-      `INSERT INTO strategy_config (mode, is_active, notebooklm_prompt, gemini_prompt, gpt_prompt, claude_prompt, buy_threshold, stop_loss_pct, take_profit_pct, strategy_document, risk_prompt)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [strategyData.mode, true, strategyData.notebooklm_prompt, strategyData.gemini_prompt, strategyData.gpt_prompt, strategyData.claude_prompt, strategyData.buy_threshold, strategyData.stop_loss_pct, strategyData.take_profit_pct, strategyData.strategy_document, strategyData.risk_prompt],
+    // UPDATE 우선 (기존 활성 전략 덮어쓰기) → 없으면 INSERT
+    const { rowCount } = await getPool().query(
+      `UPDATE strategy_config
+       SET mode=$1, notebooklm_prompt=$2, gemini_prompt=$3, gpt_prompt=$4, claude_prompt=$5,
+           buy_threshold=$6, stop_loss_pct=$7, take_profit_pct=$8, strategy_document=$9, risk_prompt=$10,
+           updated_at=NOW()
+       WHERE is_active = true`,
+      [strategyData.mode, strategyData.notebooklm_prompt, strategyData.gemini_prompt,
+       strategyData.gpt_prompt, strategyData.claude_prompt, strategyData.buy_threshold,
+       strategyData.stop_loss_pct, strategyData.take_profit_pct,
+       strategyData.strategy_document, strategyData.risk_prompt],
     );
 
+    if ((rowCount ?? 0) === 0) {
+      // 활성 전략이 없으면 새로 INSERT
+      await getPool().query(
+        `INSERT INTO strategy_config (mode, is_active, notebooklm_prompt, gemini_prompt, gpt_prompt, claude_prompt, buy_threshold, stop_loss_pct, take_profit_pct, strategy_document, risk_prompt)
+         VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [strategyData.mode, strategyData.notebooklm_prompt, strategyData.gemini_prompt,
+         strategyData.gpt_prompt, strategyData.claude_prompt, strategyData.buy_threshold,
+         strategyData.stop_loss_pct, strategyData.take_profit_pct,
+         strategyData.strategy_document, strategyData.risk_prompt],
+      );
+    }
+
+    const { rows } = await getPool().query(
+      `SELECT * FROM strategy_config WHERE is_active = true ORDER BY updated_at DESC LIMIT 1`,
+    );
     return c.json(rows[0]);
   } catch (err: any) {
     // DB 실패 시 인메모리 폴백

@@ -99,6 +99,8 @@ export const StrategyConfigSchema = z.object({
   buy_threshold: z.number(),
   stop_loss_pct: z.number(),
   take_profit_pct: z.number(),
+  strategy_document: z.string().optional().default(''),
+  risk_prompt: z.string().optional().default(''),
   updated_at: z.string(),
 });
 export type StrategyConfig = z.infer<typeof StrategyConfigSchema>;

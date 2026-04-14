@@ -127,10 +127,13 @@ export async function autoSwitchStrategy(): Promise<void> {
       // 기존 전략 비활성화
       await getPool().query('UPDATE strategy_config SET is_active = false WHERE is_active = true');
 
-      // 새 전략 활성화 (기존 프롬프트 유지, 모드만 변경)
+      // 새 전략 활성화 (기존 프롬프트 전체 유지, 모드만 변경)
       await getPool().query(
-        `INSERT INTO strategy_config (mode, is_active, gemini_prompt, gpt_prompt, claude_prompt, buy_threshold, stop_loss_pct, take_profit_pct)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        `INSERT INTO strategy_config
+           (mode, is_active, gemini_prompt, gpt_prompt, claude_prompt,
+            buy_threshold, stop_loss_pct, take_profit_pct,
+            notebooklm_prompt, strategy_document, risk_prompt)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [
           regime.recommendedMode,
           true,
@@ -140,6 +143,9 @@ export async function autoSwitchStrategy(): Promise<void> {
           regime.recommendedMode === 'DEFENSE' ? 85 : 75,
           regime.recommendedMode === 'DEFENSE' ? -3.0 : -5.0,
           currentStrategy?.take_profit_pct ?? 8.0,
+          currentStrategy?.notebooklm_prompt ?? '',
+          currentStrategy?.strategy_document ?? '',
+          currentStrategy?.risk_prompt ?? '',
         ],
       );
 

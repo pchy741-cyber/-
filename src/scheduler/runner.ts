@@ -338,7 +338,7 @@ export function startScheduler(): void {
 
   // 🇺🇸 미국 주식 (23:30~06:30 KST)
 
-  // 23:20 — 미국장 전 Kill Switch 리셋 (한국장 에러가 미국장 차단하지 않도록)
+  // 23:20 — 미국장 전 Kill Switch 리셋 + 세션 캐시 초기화
   cron.schedule(
     '20 23 * * 1-5',
     async () => {
@@ -348,6 +348,10 @@ export function startScheduler(): void {
         logger.info('🔄 Kill Switch 리셋 (미국장 준비)', { component: 'SCHEDULER' });
         await deactivateKillSwitch();
       }
+      // 미국장 세션 캐시 초기화 — 23:30 첫 사이클에서 전 종목 재스캔
+      const { resetUSSessionCache } = await import('./overseas-job.js');
+      resetUSSessionCache();
+      logger.info('🇺🇸 미국장 세션 캐시 초기화 (23:30 전체 스캔 준비)', { component: 'SCHEDULER' });
     },
     { timezone: MARKET.TIMEZONE },
   );

@@ -132,6 +132,31 @@ async function clearMaxPrice(code: string): Promise<void> {
 
 let isRunning = false;
 
+// ── 미국장 세션 캐시 ──
+// 장 시작 시 전 종목 기술점수 스캔 → 상위 종목만 매 사이클 AI 호출 (비용 절감)
+interface USSessionCache {
+  topCodes: string[];   // 이번 세션 매수 후보 상위 코드
+  sessionDate: string;  // 'YYYY-MM-DD HH' — 세션 구분용
+  techCache: Map<string, { score: number; rsi: number; adx: number; signal: string; trendStrength: string; isMomentum: boolean; dayRangePct: number }>;
+}
+let usSessionCache: USSessionCache | null = null;
+const US_TOP_COUNT = 4; // 매 사이클 AI에 넘길 최대 후보 수 (보유종목 제외)
+
+/** 세션 캐시 초기화 (runner.ts에서 23:20에 호출) */
+export function resetUSSessionCache(): void {
+  usSessionCache = null;
+}
+
+/** 미국 세션 ID — KST 기준 날짜+야간세션(0~6시는 전날로 묶음) */
+function getUSSessionId(): string {
+  const now = new Date();
+  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const h = kst.getUTCHours();
+  // 0~6시 → 전날 세션으로 묶기
+  if (h < 7) kst.setUTCDate(kst.getUTCDate() - 1);
+  return `${kst.getUTCFullYear()}-${String(kst.getUTCMonth() + 1).padStart(2, '0')}-${String(kst.getUTCDate()).padStart(2, '0')}`;
+}
+
 interface OverseasExecutionResult {
   submitted: boolean;
   filledQty: number;
@@ -277,15 +302,42 @@ export async function runOverseasJob(): Promise<void> {
       return;
     }
 
-    const activeStocks = GLOBAL_WATCHLIST.filter(s => activeRegions.includes(s.region));
+    const allActiveStocks = GLOBAL_WATCHLIST.filter(s => activeRegions.includes(s.region));
     const regionFlags = activeRegions.map(r => r === 'US' ? '🇺🇸' : r === 'JP' ? '🇯🇵' : '🇹🇼').join('');
-    logger.info(`${regionFlags} 해외주식 자동매매 시작 (${activeStocks.length}종목)`, { component: 'OVERSEAS' });
 
     await ensureOverseasTable();
 
     const holdings = await getHoldings();
     const pendingOrderStocks = await getPendingOverseasStocks();
     let cash = await getCash();
+
+    // ── 미국 세션 캐시: 신규 세션이면 전 종목 스캔 → 이후 사이클은 상위 종목만 ──
+    const isUS = activeRegions.includes('US');
+    const sessionId = getUSSessionId();
+    const isNewUSSession = isUS && (!usSessionCache || usSessionCache.sessionDate !== sessionId);
+
+    if (isNewUSSession) {
+      // 새 세션 시작 — 캐시 초기화 (이번 사이클은 전체 스캔)
+      usSessionCache = null;
+      logger.info('🇺🇸 새 미국장 세션 시작 — 전 종목 점수 스캔', { component: 'OVERSEAS' });
+    }
+
+    // US 종목: 새 세션이면 전체, 기존 세션이면 보유 + 캐시 상위만 조회
+    let activeStocks = allActiveStocks;
+    if (isUS && usSessionCache) {
+      const heldCodes = new Set(holdings.keys());
+      const targetCodes = new Set([...heldCodes, ...usSessionCache.topCodes]);
+      const usFull = allActiveStocks.filter(s => s.region === 'US');
+      const usFiltered = usFull.filter(s => targetCodes.has(s.code));
+      const nonUS = allActiveStocks.filter(s => s.region !== 'US');
+      activeStocks = [...usFiltered, ...nonUS];
+      logger.info(
+        `🇺🇸 세션 캐시 사용 — US ${usFiltered.length}종목 (보유:${heldCodes.size} + 후보:${usSessionCache.topCodes.length}) / 전체 절약`,
+        { component: 'OVERSEAS' },
+      );
+    }
+
+    logger.info(`${regionFlags} 해외주식 자동매매 시작 (${activeStocks.length}/${allActiveStocks.length}종목)`, { component: 'OVERSEAS' });
 
     // ── 1. 시세 + 차트 병렬 수집 (배치 5개씩, rate limit 준수) ──
     const techResults: Array<{
@@ -303,38 +355,50 @@ export async function runOverseasJob(): Promise<void> {
       const settled = await Promise.allSettled(
         batch.map(async (stock) => {
           const price = await getOverseasPrice(stock.code, stock.exchange);
-          const chart = await getOverseasDailyChart(stock.code, stock.exchange, 65);
-          return { stock, price, chart };
+          // 세션 캐시에 기술점수가 있고 보유종목이 아니면 차트 재호출 생략
+          const cached = (isUS && usSessionCache?.techCache.get(stock.code));
+          const chart = cached ? null : await getOverseasDailyChart(stock.code, stock.exchange, 65);
+          return { stock, price, chart, cached };
         })
       );
 
       for (const result of settled) {
         if (result.status !== 'fulfilled') continue;
-        const { stock, price, chart } = result.value;
-        if (chart.length < 30 || price.currentPrice <= 0) continue;
+        const { stock, price, chart, cached } = result.value;
+        if (price.currentPrice <= 0) continue;
 
-        const candles: OHLCV[] = chart.map(c => ({
-          date: c.date, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
-        }));
-        const tech = analyzeTechnicals(candles);
-        if (!tech) continue;
-
-        // 일중 위치: 0=저가, 100=고가
         const dayRange = price.dayHigh - price.dayLow;
         const dayRangePct = dayRange > 0
           ? ((price.currentPrice - price.dayLow) / dayRange) * 100
           : 50;
-        // 모멘텀: 당일 +3% 이상 상승 + 고가 근처(상위 40%)
         const isMomentum = price.changePct >= 3 && dayRangePct >= 60;
+
+        let signal: string, score: number, rsi: number, adx: number, trendStrength: string;
+
+        if (cached) {
+          // 세션 캐시 재사용 (차트 재분석 불필요)
+          ({ signal, score, rsi, adx, trendStrength } = cached);
+        } else {
+          if (!chart || chart.length < 30) continue;
+          const candles: OHLCV[] = chart.map(c => ({
+            date: c.date, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
+          }));
+          const tech = analyzeTechnicals(candles);
+          if (!tech) continue;
+          signal = tech.overallSignal; score = tech.score;
+          rsi = tech.rsi14; adx = tech.adx14; trendStrength = tech.trendStrength;
+          // 미국 종목이면 캐시 저장
+          if (isUS && usSessionCache) {
+            usSessionCache.techCache.set(stock.code, { score, rsi, adx, signal, trendStrength, isMomentum, dayRangePct });
+          }
+        }
 
         techResults.push({
           code: stock.code, name: stock.name, exchange: stock.exchange,
-          price, signal: tech.overallSignal, score: tech.score,
-          rsi: tech.rsi14, adx: tech.adx14, trendStrength: tech.trendStrength,
-          dayRangePct, isMomentum,
+          price, signal, score, rsi, adx, trendStrength, dayRangePct, isMomentum,
         });
         logger.info(
-          `  ${stock.code}: $${price.currentPrice} ${price.changePct >= 0 ? '+' : ''}${price.changePct}% | ${tech.overallSignal}(${tech.score}) RSI=${tech.rsi14.toFixed(0)} ADX=${tech.adx14.toFixed(0)} 일중${dayRangePct.toFixed(0)}%${isMomentum ? ' 🚀모멘텀' : ''}`,
+          `  ${stock.code}: $${price.currentPrice} ${price.changePct >= 0 ? '+' : ''}${price.changePct}% | ${signal}(${score}) RSI=${rsi.toFixed(0)} ADX=${adx.toFixed(0)} 일중${dayRangePct.toFixed(0)}%${isMomentum ? ' 🚀모멘텀' : ''}${cached ? ' [캐시]' : ''}`,
           { component: 'OVERSEAS' },
         );
       }
@@ -343,6 +407,27 @@ export async function runOverseasJob(): Promise<void> {
       if (i + BATCH < activeStocks.length) {
         await new Promise(r => setTimeout(r, 300));
       }
+    }
+
+    // ── 1-c. 새 US 세션: 전 종목 스캔 완료 → 상위 종목 캐시 저장 ──
+    if (isNewUSSession && techResults.length > 0) {
+      const usResults = techResults.filter(t => {
+        const stock = GLOBAL_WATCHLIST.find(s => s.code === t.code);
+        return stock?.region === 'US';
+      });
+      // score + 모멘텀 보너스로 정렬 → 상위 US_TOP_COUNT 캐시
+      const sorted = [...usResults].sort((a, b) => {
+        const sa = a.score + (a.isMomentum ? 30 : 0);
+        const sb = b.score + (b.isMomentum ? 30 : 0);
+        return sb - sa;
+      });
+      const topCodes = sorted.slice(0, US_TOP_COUNT).map(t => t.code);
+      const techCacheMap = new Map<string, { score: number; rsi: number; adx: number; signal: string; trendStrength: string; isMomentum: boolean; dayRangePct: number }>();
+      for (const t of usResults) {
+        techCacheMap.set(t.code, { score: t.score, rsi: t.rsi, adx: t.adx, signal: t.signal, trendStrength: t.trendStrength, isMomentum: t.isMomentum, dayRangePct: t.dayRangePct });
+      }
+      usSessionCache = { topCodes, sessionDate: sessionId, techCache: techCacheMap };
+      logger.info(`🇺🇸 이번 세션 AI 매수 후보: [${topCodes.join(', ')}] (score 기준 상위 ${US_TOP_COUNT})`, { component: 'OVERSEAS' });
     }
 
     if (techResults.length === 0) {
@@ -365,8 +450,9 @@ export async function runOverseasJob(): Promise<void> {
       cachedAt: Date.now(),
     })));
 
-    // ── 2. AI(Claude) 판단 ──
-    const aiInputs: OverseasStockInput[] = techResults.map(t => {
+    // ── 2. AI(Claude) 판단 — 보유종목 전체 + 비보유 중 상위만 ──
+    const heldSet = new Set(holdings.keys());
+    const allAiInputs: OverseasStockInput[] = techResults.map(t => {
       const holding = holdings.get(t.code);
       const pnlPct = holding
         ? ((t.price.currentPrice - holding.avgPrice) / holding.avgPrice) * 100
@@ -382,6 +468,16 @@ export async function runOverseasJob(): Promise<void> {
         isMomentum: t.isMomentum,
       };
     });
+
+    // US 세션 캐시 있을 때: 비보유 종목 중 상위 후보만 AI에 전달 (API 비용 절감)
+    let aiInputs = allAiInputs;
+    if (isUS && usSessionCache) {
+      const topSet = new Set(usSessionCache.topCodes);
+      aiInputs = allAiInputs.filter(s => heldSet.has(s.code) || topSet.has(s.code));
+      if (aiInputs.length < allAiInputs.length) {
+        logger.info(`🤖 AI 입력 최적화: ${allAiInputs.length} → ${aiInputs.length}종목 (세션 상위 후보만)`, { component: 'OVERSEAS' });
+      }
+    }
 
     const aiDecisions = await analyzeOverseasWithAI(aiInputs, cash, holdings.size);
 
