@@ -68,14 +68,16 @@ export function technicalFallbackDecisions(params: {
       }
     }
 
-    // 트레일링 스톱: 부분매도 후 남은 수량 — 수익이 반으로 줄면 전량 청산
-    if (chain.status === 'PROFIT_TAKING' && pnlPct > 0 && pnlPct < strategyParams.takeProfitPct / 2) {
+    // 트레일링 스톱: 익절 후 남은 수량 — +1.5% 이하로 떨어질 때만 청산
+    // 기존: 목표의 절반(+3%) 이하 → 추세 오르는 도중 강제 청산되는 문제
+    // 변경: +1.5% 이하 → 원금 보호 수준에서만 청산, 추세 살아있으면 계속 보유
+    if (chain.status === 'PROFIT_TAKING' && pnlPct > 0 && pnlPct < 1.5) {
       decisions.push({
         action: 'FORCE_CLOSE',
         stock_code: chain.stock_code,
         quantity: chain.total_quantity,
         price_type: 'MARKET',
-        reasoning: `트레일링 스톱: 익절 후 수익 반토막 +${pnlPct.toFixed(1)}% (기준 +${(strategyParams.takeProfitPct / 2).toFixed(1)}%)`,
+        reasoning: `트레일링 스톱: 익절 후 수익 소멸 +${pnlPct.toFixed(1)}% → +1.5% 이하 (원금 보호 수준 청산)`,
         confidence: 0.85,
       });
       continue;
@@ -140,11 +142,25 @@ export function technicalFallbackDecisions(params: {
     // 각 종목 score 로깅 (디버깅용)
     logger.info(`  📊 ${stock.stock_code}: score=${tech.score} RSI=${tech.rsi14.toFixed(0)} ADX=${tech.adx14.toFixed(0)}(${tech.trendStrength}) MACD=${tech.macdCrossover}`, { component: 'TRACK_B' });
 
-    // 매수 조건: AI 스코어 >= 매수임계치면 기술 완화, 아니면 기술적 점수 단독 기준 충족 필요
+    // ─── ADX 횡보장 필터 ───────────────────────────────────────────────
+    // ADX < 20 = 방향성 없음 = 저점에서 사고 팔다 끝나는 박스권 루프
+    // SWING/DEFENSE 모드: ADX WEAK → 신규 진입 완전 차단 (추세 없으면 타지 않음)
+    // SCALPING은 예외 (단타는 방향성 불필요)
     const aiScore = aiScoreMap.get(stock.stock_code) ?? 0;
     const buyThreshold = strategyParams.buyThreshold;
-    // 기술 단독 최소 점수 (수수료 감안 — 낮으면 저품질 진입 → 손절 반복)
-    const minTechScore = mode === 'SCALPING' ? 55 : mode === 'DEFENSE' ? 60 : 40;
+
+    if (mode !== 'SCALPING' && tech.trendStrength === 'WEAK') {
+      // AI 스코어가 매수임계치를 크게 초과(10점 이상 여유)하는 경우만 예외 허용
+      // → AI가 강하게 확신하면 ADX 약해도 진입 허용 (AI 우선권 부여)
+      if (aiScore < buyThreshold + 10) {
+        logger.info(`  ⏸️ ${stock.stock_code}: ADX=${tech.adx14.toFixed(0)} 횡보(WEAK) → 추세 없음, 진입 스킵 (AI=${aiScore})`, { component: 'TRACK_B' });
+        continue;
+      }
+    }
+    // ───────────────────────────────────────────────────────────────────
+
+    // 기술 단독 최소 점수 — 상향: 40→52 (저점에서 저품질 진입 방지)
+    const minTechScore = mode === 'SCALPING' ? 55 : mode === 'DEFENSE' ? 65 : 52;
 
     // 우선 테마(반도체/에너지/방산) 보너스 +10점 적용
     const priorityBonus = PRIORITY_SECTOR_CODES.has(stock.stock_code) ? 10 : 0;

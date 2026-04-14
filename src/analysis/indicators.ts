@@ -464,28 +464,33 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   // ══════════════════════════════════════════════════
   let score = 0;
 
-  // RSI (평균 회귀 + 모멘텀 통합)
-  if (rsi14 < 30) score += 25;        // 과매도 → 반등 기대
-  else if (rsi14 < 40) score += 12;
-  else if (rsi14 >= 45 && rsi14 <= 62) score += 10; // 모멘텀 상승 구간 (저점 바이어스 보정)
+  // RSI — 저점 편향 축소, 모멘텀 구간 강화
+  // 핵심: RSI 30 이하 = 과매도지만 하락 추세일 수도 있음 → 과대 점수 부여 금지
+  // RSI 45-62 = 상승 모멘텀 진행 중인 이상적 진입 타이밍 → 가장 높은 점수
+  if (rsi14 < 30) score += 15;        // 과매도 — 반등 가능하나 다운트렌드일 수도 (편향 축소)
+  else if (rsi14 < 40) score += 7;
+  else if (rsi14 >= 45 && rsi14 <= 62) score += 18; // ★ 상승 모멘텀 구간 (가장 좋은 진입 타이밍)
   else if (rsi14 > 70) score -= 25;
   else if (rsi14 > 65) score -= 12;
 
-  // MACD (모멘텀 확인)
-  if (macdCross === 'BULLISH') score += 20;
+  // MACD (모멘텀 확인 — 크로스 비중 상향)
+  if (macdCross === 'BULLISH') score += 25;  // 골든크로스급 모멘텀 전환 신호
   else if (macdCross === 'BEARISH') score -= 20;
   else if (macdHist > 0) score += 8;
   else score -= 8;
 
-  // 볼린저 밴드 (평균 회귀 + 변동성)
-  if (bbPos === 'BELOW_LOWER') score += 18;
-  else if (bbPos === 'NEAR_LOWER') score += 10;
-  else if (bbPos === 'ABOVE_UPPER') score -= 18;
-  else if (bbPos === 'NEAR_UPPER') score -= 5; // 완화: 상단 근접은 강세 추세에선 자연스러움
+  // 볼린저 밴드 — 저점 편향 대폭 축소
+  // 하단 이탈은 반등 기회지만 하락 추세 확인일 수도 → 과대 점수 금지
+  // 상단 이탈은 강한 상승 추세에선 자연스러운 현상 → 지나치게 페널티 주지 않음
+  if (bbPos === 'BELOW_LOWER') score += 10;  // +18 → +10 (하단 이탈 = 위험 경고도 포함)
+  else if (bbPos === 'NEAR_LOWER') score += 5;  // +10 → +5
+  else if (bbPos === 'ABOVE_UPPER') score -= 12; // 강한 추세 돌파는 자연스러움 (완화)
+  else if (bbPos === 'NEAR_UPPER') score -= 3;
 
-  // 이동평균 정배열/역배열 (추세 추종 — 비중 상향)
-  if (current > sma5Now && sma5Now > sma20Now && sma20Now > sma60Now) score += 20; // 완전 정배열
-  else if (current > sma20Now && sma20Now > sma60Now) score += 10; // 중기 정배열
+  // 이동평균 정배열 — 추세 추종 비중 대폭 상향 (핵심 시그널)
+  // 완전 정배열 = 단기/중기/장기 모두 우상향 = 가장 강력한 매수 근거
+  if (current > sma5Now && sma5Now > sma20Now && sma20Now > sma60Now) score += 28; // ★ 완전 정배열 (+20→+28)
+  else if (current > sma20Now && sma20Now > sma60Now) score += 14; // 중기 정배열 (+10→+14)
   if (current < sma5Now && sma5Now < sma20Now && sma20Now < sma60Now) score -= 20;
   else if (current < sma20Now && sma20Now < sma60Now) score -= 10;
 
@@ -506,8 +511,8 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   // ROC (모멘텀 — 양수면 상승세, 음수면 하락세)
   const rocValues = roc(closesAsc, 12);
   const roc12 = rocValues[rocValues.length - 1] ?? 0;
-  if (roc12 > 8) score += 12;       // 강한 상승 모멘텀 (증폭)
-  else if (roc12 > 3) score += 6;
+  if (roc12 > 8) score += 20;       // ★ 강한 상승 모멘텀 종목 우선 (+12→+20)
+  else if (roc12 > 3) score += 12;   // 완만한 상승세도 인정 (+6→+12)
   else if (roc12 < -8) score -= 12;
   else if (roc12 < -3) score -= 6;
 
@@ -525,11 +530,13 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   if (current > sma20Now && sma20Now > sma60Now) score += 8;   // 중기 추세 위 = 추세 추종 진입
   else if (current < sma20Now && sma20Now < sma60Now) score -= 8;
 
-  // ★ ADX 필터 (횡보장 whipsaw 방지 — 단, 변동성 종목용으로 완화)
+  // ★ ADX 필터 (횡보장 진입 강력 억제 — 저점 박스권 매매 방지)
+  // ADX < 20 = 방향성 없음 = 저점에서 사서 저점에서 팔다 끝나는 패턴
+  // ADX > 30 = 강한 추세 = 추세 추종 진입 최적
   if (trendStrength === 'WEAK') {
-    if (score > 0) score = Math.floor(score * 0.7); // 30% 감쇄 (기존 60% → 완화)
+    if (score > 0) score = Math.floor(score * 0.45); // 55% 감쇄 — 횡보장 진입 강력 억제 (기존 30%)
   } else if (trendStrength === 'STRONG') {
-    if (score > 0) score = Math.floor(score * 1.2); // 강한 추세면 시그널 증폭
+    if (score > 0) score = Math.floor(score * 1.35); // 강한 추세 35% 증폭 (기존 20%)
   }
 
   // ★ 거래량 확인 필터 (연구: 거래량 동반 시그널 1.5배 신뢰도)
