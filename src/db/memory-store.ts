@@ -132,6 +132,11 @@ export function memUpdateOrder(id: string, updates: Partial<Order>) {
   if (order) Object.assign(order, updates, { updated_at: new Date().toISOString() });
 }
 
+export function memUpdateOrderByKisOrderNo(kisOrderNo: string, updates: Partial<Order>) {
+  const order = store.orders.find((o) => o.kis_order_no === kisOrderNo);
+  if (order) Object.assign(order, updates, { updated_at: new Date().toISOString() });
+}
+
 export function memGetOrdersByChain(chainId: string): Order[] {
   return store.orders.filter((o) => o.chain_id === chainId).sort((a, b) => a.created_at.localeCompare(b.created_at));
 }

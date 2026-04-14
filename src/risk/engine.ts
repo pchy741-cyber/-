@@ -6,9 +6,94 @@ import { activateKillSwitch, isKillSwitchActive } from './kill-switch.js';
 
 // ── Paper 모드 가상 잔액 (DB에서 복원) ──
 const PAPER_INITIAL_CAPITAL = 10_000_000;
+const PAPER_BUY_FEE_PCT = 0.00015;
+const PAPER_SELL_FEE_PCT = 0.00245;
 let paperCashUsed = 0;       // 현재 투자 중인 매수 원가 합
 let paperRealizedPnl = 0;    // 확정 수익/손실 누적
 let paperRestored = false;   // 서버 시작 후 DB에서 복원했는지
+let paperLedgerCache: { fetchedAt: number; state: PaperLedgerState } | null = null;
+
+interface PaperHoldingState {
+  qty: number;
+  totalCost: number;
+}
+
+interface PaperLedgerState {
+  holdings: Record<string, PaperHoldingState>;
+  totalBought: number;
+  totalSold: number;
+  realizedPnl: number;
+}
+
+function applyPaperOrder(
+  holdings: Record<string, PaperHoldingState>,
+  row: { stock_code: string; side: 'BUY' | 'SELL'; filled_quantity: number; filled_price: number },
+): { bought: number; sold: number; realizedPnl: number } {
+  const qty = Math.max(0, Number(row.filled_quantity ?? 0));
+  const price = Math.max(0, Number(row.filled_price ?? 0));
+  if (qty <= 0 || price <= 0) return { bought: 0, sold: 0, realizedPnl: 0 };
+
+  const value = qty * price;
+  if (!holdings[row.stock_code]) holdings[row.stock_code] = { qty: 0, totalCost: 0 };
+  const h = holdings[row.stock_code];
+
+  if (row.side === 'BUY') {
+    const buyFee = Math.round(value * PAPER_BUY_FEE_PCT);
+    h.qty += qty;
+    h.totalCost += (value + buyFee);
+    return { bought: value, sold: 0, realizedPnl: 0 };
+  }
+
+  if (h.qty <= 0) return { bought: 0, sold: value, realizedPnl: 0 };
+
+  const matchedQty = Math.min(qty, h.qty);
+  const avgCost = h.totalCost / h.qty;
+  const costBasis = avgCost * matchedQty;
+  const sellValue = price * matchedQty;
+  const sellFee = Math.round(sellValue * PAPER_SELL_FEE_PCT);
+  const realizedPnl = sellValue - sellFee - costBasis;
+
+  h.qty -= matchedQty;
+  h.totalCost -= costBasis;
+  if (h.qty <= 0) {
+    h.qty = 0;
+    h.totalCost = 0;
+  }
+
+  return { bought: 0, sold: sellValue, realizedPnl };
+}
+
+async function loadPaperLedger(force = false): Promise<PaperLedgerState> {
+  const now = Date.now();
+  if (!force && paperLedgerCache && now - paperLedgerCache.fetchedAt < 2000) {
+    return paperLedgerCache.state;
+  }
+
+  const pool = getPool();
+  const { rows } = await pool.query(
+    `SELECT stock_code, side, filled_quantity, filled_price
+       FROM orders
+      WHERE trading_mode = 'paper'
+        AND status = 'FILLED'
+      ORDER BY created_at ASC, id ASC`,
+  );
+
+  const holdings: Record<string, PaperHoldingState> = {};
+  let totalBought = 0;
+  let totalSold = 0;
+  let realizedPnl = 0;
+
+  for (const row of rows as Array<{ stock_code: string; side: 'BUY' | 'SELL'; filled_quantity: number; filled_price: number }>) {
+    const result = applyPaperOrder(holdings, row);
+    totalBought += result.bought;
+    totalSold += result.sold;
+    realizedPnl += result.realizedPnl;
+  }
+
+  const state: PaperLedgerState = { holdings, totalBought, totalSold, realizedPnl };
+  paperLedgerCache = { fetchedAt: now, state };
+  return state;
+}
 
 /**
  * 서버 시작 시 DB 주문 내역에서 Paper 포지션/잔액 복원
@@ -18,86 +103,35 @@ let paperRestored = false;   // 서버 시작 후 DB에서 복원했는지
 export async function restorePaperState(): Promise<void> {
   if (paperRestored) return;
   try {
-    const pool = getPool();
-    const { rows } = await pool.query(
-      `SELECT stock_code, side, filled_quantity, filled_price
-       FROM orders WHERE trading_mode = 'paper' AND status = 'FILLED'
-       ORDER BY created_at ASC`,
-    );
-
-    let totalBought = 0;
-    let totalSold = 0;
-    // 종목별 매수 잔량 추적 (FIFO)
-    const holdings: Record<string, { qty: number; totalCost: number }> = {};
-
-    for (const r of rows) {
-      const qty = Number(r.filled_quantity);
-      const price = Number(r.filled_price);
-      const value = qty * price;
-
-      if (r.side === 'BUY') {
-        totalBought += value;
-        if (!holdings[r.stock_code]) holdings[r.stock_code] = { qty: 0, totalCost: 0 };
-        holdings[r.stock_code].qty += qty;
-        holdings[r.stock_code].totalCost += value;
-      } else {
-        // SELL: 해당 종목 평단가 기준으로 원가 계산
-        const h = holdings[r.stock_code];
-        if (h && h.qty > 0) {
-          const avgCost = h.totalCost / h.qty;
-          const costBasis = avgCost * qty;
-          const SELL_FEE_PCT = 0.00245; // 수수료 + 거래세
-          const sellFees = Math.round(value * SELL_FEE_PCT);
-          paperRealizedPnl += (value - sellFees - costBasis);
-          h.qty -= qty;
-          h.totalCost -= costBasis;
-          if (h.qty <= 0) { h.qty = 0; h.totalCost = 0; }
-        }
-        totalSold += value;
-      }
-    }
-
-    // 현재 보유 중인 종목의 총 매수 원가
-    paperCashUsed = Object.values(holdings).reduce((sum, h) => sum + h.totalCost, 0);
+    const state = await loadPaperLedger(true);
+    paperRealizedPnl = state.realizedPnl;
+    paperCashUsed = Object.values(state.holdings).reduce((sum, h) => sum + h.totalCost, 0);
     paperRestored = true;
 
-    const posCount = Object.values(holdings).filter(h => h.qty > 0).length;
-    logger.info(`📦 Paper 상태 복원: 총매수 ${totalBought.toLocaleString()}원, 보유 ${posCount}종목, 투자중 ${paperCashUsed.toLocaleString()}원, 실현PnL ${paperRealizedPnl.toLocaleString()}원`, { component: 'PAPER' });
+    const posCount = Object.values(state.holdings).filter(h => h.qty > 0).length;
+    logger.info(`📦 Paper 상태 복원: 총매수 ${state.totalBought.toLocaleString()}원, 총매도 ${state.totalSold.toLocaleString()}원, 보유 ${posCount}종목, 투자중 ${Math.round(paperCashUsed).toLocaleString()}원, 실현PnL ${Math.round(paperRealizedPnl).toLocaleString()}원`, { component: 'PAPER' });
   } catch (err) {
     logger.error(`Paper 상태 복원 실패: ${err}`, { component: 'PAPER' });
   }
 }
 
 /**
- * DB에서 Paper 포지션 목록 조회 (BUY - SELL 잔량 계산)
+ * Paper 주문 원장 기반 포지션 목록 조회 (FIFO + 수수료 반영)
  */
 async function getPaperPositions(): Promise<Position[]> {
   try {
-    const pool = getPool();
-    const { rows } = await pool.query(
-      `SELECT stock_code,
-              SUM(CASE WHEN side='BUY' THEN filled_quantity ELSE 0 END) -
-              SUM(CASE WHEN side='SELL' THEN filled_quantity ELSE 0 END) AS net_qty,
-              SUM(CASE WHEN side='BUY' THEN filled_quantity * filled_price ELSE 0 END) AS total_cost,
-              SUM(CASE WHEN side='BUY' THEN filled_quantity ELSE 0 END) AS buy_qty
-       FROM orders
-       WHERE trading_mode = 'paper' AND status = 'FILLED'
-       GROUP BY stock_code
-       HAVING SUM(CASE WHEN side='BUY' THEN filled_quantity ELSE 0 END) -
-              SUM(CASE WHEN side='SELL' THEN filled_quantity ELSE 0 END) > 0`,
-    );
-    return rows.map((r: any) => {
-      const qty = Number(r.net_qty);
-      const buyQty = Number(r.buy_qty);
-      const totalCost = Number(r.total_cost);
-      const avgPrice = buyQty > 0 ? totalCost / buyQty : 0;
+    const state = await loadPaperLedger();
+    return Object.entries(state.holdings)
+      .filter(([, h]) => h.qty > 0)
+      .map(([stockCode, h]) => {
+      const avgPrice = h.qty > 0 ? h.totalCost / h.qty : 0;
       return {
-        stockCode: r.stock_code,
-        stockName: r.stock_code, // 이름은 시세 조회 시 갱신
-        quantity: qty,
+        stockCode,
+        stockName: stockCode, // 이름은 시세 조회 시 갱신
+        quantity: h.qty,
         avgBuyPrice: Math.round(avgPrice),
         currentPrice: Math.round(avgPrice), // 시세 반영은 스냅샷 Job에서
-        evalAmount: Math.round(avgPrice * qty),
+        evalAmount: Math.round(h.totalCost),
         profitLoss: 0,
         profitLossPct: 0,
       };
@@ -109,10 +143,13 @@ async function getPaperPositions(): Promise<Position[]> {
 
 export async function getPaperBalance(): Promise<AccountBalance> {
   await restorePaperState();
+  const state = await loadPaperLedger();
+  paperRealizedPnl = state.realizedPnl;
   const positions = await getPaperPositions();
   const invested = positions.reduce((s, p) => s + p.evalAmount, 0);
-  // 가상투자: 초기자본(1천만원) 고정 — 총 자산이 초기자본을 초과하지 않도록
-  const cash = Math.max(0, PAPER_INITIAL_CAPITAL - invested);
+  paperCashUsed = invested;
+  // 가용현금 = 초기자본 + 실현손익 - 현재 미회수 원가
+  const cash = Math.max(0, Math.round(PAPER_INITIAL_CAPITAL + paperRealizedPnl - invested));
   return {
     totalDeposit: cash,
     orderableCash: cash,
@@ -124,14 +161,23 @@ export async function getPaperBalance(): Promise<AccountBalance> {
 }
 
 // 매수: 매수 원가만큼 차감
-export function addPaperInvestment(amount: number) { paperCashUsed += amount; }
+export function addPaperInvestment(amount: number) {
+  paperCashUsed += amount;
+  paperLedgerCache = null;
+}
 // 매도: 매수 원가 복원 + 차액을 실현손익에 반영
 export function removePaperInvestment(sellAmount: number, buyAmount?: number) {
   const cost = buyAmount ?? sellAmount; // buyAmount가 없으면 동일 금액 가정
   paperRealizedPnl += (sellAmount - cost);
   paperCashUsed = Math.max(0, paperCashUsed - cost);
+  paperLedgerCache = null;
 }
-export function resetPaperBalance() { paperCashUsed = 0; paperRealizedPnl = 0; paperRestored = false; }
+export function resetPaperBalance() {
+  paperCashUsed = 0;
+  paperRealizedPnl = 0;
+  paperRestored = false;
+  paperLedgerCache = null;
+}
 
 async function getBalance(): Promise<AccountBalance> {
   if (config.isPaper) {

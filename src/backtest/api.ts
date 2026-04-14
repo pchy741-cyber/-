@@ -15,8 +15,8 @@ backtestRoutes.post('/backtest/single', async (c) => {
   const { stockCode, mode, capital, days, buyThreshold } = await c.req.json();
 
   const chart = await getDailyChart(stockCode, days ?? 120);
-  if (chart.length < 60) {
-    return c.json({ error: '차트 데이터 부족 (최소 60일 필요)' }, 400);
+  if (chart.length < 20) {
+    return c.json({ error: `차트 데이터 부족 (${chart.length}일, 최소 20일 필요)` }, 400);
   }
 
   const config: BacktestConfig = {
@@ -53,7 +53,7 @@ backtestRoutes.post('/backtest/all', async (c) => {
   for (const stock of watchlist) {
     try {
       const chart = await getDailyChart(stock.stock_code, days ?? 120);
-      if (chart.length < 60) continue;
+      if (chart.length < 20) continue;
 
       const candles = chart.map((c) => ({
         date: c.date,

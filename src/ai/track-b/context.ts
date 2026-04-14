@@ -2,7 +2,7 @@ import { getConsensusScoreAdjustment } from '../../automation/analyst-consensus.
 import { getCachedDisclosures } from '../../automation/dart-monitor.js';
 import { getFlowScoreAdjustment, getInvestorFlow } from '../../automation/investor-flow.js';
 import { getMacroScoreAdjustment, getMacroSnapshot } from '../../automation/macro-data.js';
-import { getTodayNews } from '../../automation/news-collector.js';
+import { collectMacroNews, getTodayNews } from '../../automation/news-collector.js';
 import { getSentimentScoreAdjustment } from '../../automation/sentiment-analyzer.js';
 import { getShortSellingScoreAdjustment } from '../../automation/short-selling.js';
 import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
@@ -67,6 +67,16 @@ export async function buildTrackBContext(params: {
 - VKOSPI: ${macro.vkospi.toFixed(1)} | USD/KRW: ${macro.usdKrw.toFixed(0)}원 | 기준금리: ${macro.baseRate}%
 - Fear & Greed: ${macro.fearGreedIndex}/100 → 시장 체제: ${macro.regime} (전체 스코어 ${macroAdj >= 0 ? '+' : ''}${macroAdj}점 보정)`;
   } catch { /* 매크로 실패 시 무시 */ }
+
+  // 매크로·정치 뉴스 (한국은행/이재명/트럼프 등 시장 전체 영향)
+  let macroNewsInfo = '';
+  try {
+    macroNewsInfo = await Promise.race([
+      collectMacroNews(),
+      new Promise<string>((resolve) => setTimeout(() => resolve(''), 8000)),
+    ]);
+    if (macroNewsInfo) macroNewsInfo = `\n${macroNewsInfo}`;
+  } catch { /* 실패 시 무시 */ }
 
   // 종목별 AI 스코어 + 실시간 시세 + 수급/공시/뉴스감성/목표가/공매도
   const disclosures = getCachedDisclosures();
@@ -207,12 +217,14 @@ ${riskInfo}
 
 ${strategyInfo}
 ${macroInfo}
+${macroNewsInfo}
 
 ## 종목 현황 (수급 + 감성 + 목표가 + 공매도 + 공시 반영)
 ${stocksInfo}
 ${orphanChains ? `\n## 스코어 미갱신 보유 종목\n${orphanChains}` : ''}
 ${newsSummary}
 
-위 데이터(시세/수급/뉴스감성/공시)를 종합하여 각 종목에 대한 매매 판단을 내려주세요.
+위 데이터(시세/수급/뉴스감성/공시/매크로뉴스)를 종합하여 각 종목에 대한 매매 판단을 내려주세요.
+⚠️ 매크로 뉴스에 부정적 발언(금리 인상, 관세 확대, 규제 강화)이 감지되면 매수에 더 신중하게 판단하세요.
 특히 외국인/기관 수급 트렌드와 뉴스 감성이 일치하는 방향의 종목을 우선 고려하세요.`;
 }

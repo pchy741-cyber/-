@@ -273,9 +273,9 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 15:55 — 장 마감 후 현금 파킹 (잉여 현금 → KODEX200 ETF 자동 매수)
+  // 15:10 — 장중 현금 파킹 (잉여 현금 → 머니마켓 ETF 자동 매수, 장 마감 20분 전)
   cron.schedule(
-    '55 15 * * 1-5',
+    '10 15 * * 1-5',
     () => {
       parkIdleCash().catch((e) => logger.error(`현금 파킹 실패: ${e}`, { component: 'SCHEDULER' }));
     },

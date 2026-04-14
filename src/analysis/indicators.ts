@@ -464,11 +464,12 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   // ══════════════════════════════════════════════════
   let score = 0;
 
-  // RSI (평균 회귀 시그널 — 단기 60% 승률)
-  if (rsi14 < 30) score += 25;
+  // RSI (평균 회귀 + 모멘텀 통합)
+  if (rsi14 < 30) score += 25;        // 과매도 → 반등 기대
   else if (rsi14 < 40) score += 12;
+  else if (rsi14 >= 45 && rsi14 <= 62) score += 10; // 모멘텀 상승 구간 (저점 바이어스 보정)
   else if (rsi14 > 70) score -= 25;
-  else if (rsi14 > 60) score -= 12;
+  else if (rsi14 > 65) score -= 12;
 
   // MACD (모멘텀 확인)
   if (macdCross === 'BULLISH') score += 20;
@@ -480,11 +481,13 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   if (bbPos === 'BELOW_LOWER') score += 18;
   else if (bbPos === 'NEAR_LOWER') score += 10;
   else if (bbPos === 'ABOVE_UPPER') score -= 18;
-  else if (bbPos === 'NEAR_UPPER') score -= 10;
+  else if (bbPos === 'NEAR_UPPER') score -= 5; // 완화: 상단 근접은 강세 추세에선 자연스러움
 
-  // 이동평균 정배열/역배열
-  if (current > sma5Now && sma5Now > sma20Now && sma20Now > sma60Now) score += 15;
-  if (current < sma5Now && sma5Now < sma20Now && sma20Now < sma60Now) score -= 15;
+  // 이동평균 정배열/역배열 (추세 추종 — 비중 상향)
+  if (current > sma5Now && sma5Now > sma20Now && sma20Now > sma60Now) score += 20; // 완전 정배열
+  else if (current > sma20Now && sma20Now > sma60Now) score += 10; // 중기 정배열
+  if (current < sma5Now && sma5Now < sma20Now && sma20Now < sma60Now) score -= 20;
+  else if (current < sma20Now && sma20Now < sma60Now) score -= 10;
 
   // 골든/데드크로스
   if (goldenCross) score += 18;
@@ -516,6 +519,11 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   } else if (todayVolSurge >= 1.5 && current > sma5Now) {
     score += 8;
   }
+
+  // ★ VWAP 위 + 상승 추세 보너스 (기관/세력 매수세 확인) — VWAP는 아래서 재사용
+  // (실제 값은 아래 vwapValues에서 계산, 여기선 근사치로 sma20 대용)
+  if (current > sma20Now && sma20Now > sma60Now) score += 8;   // 중기 추세 위 = 추세 추종 진입
+  else if (current < sma20Now && sma20Now < sma60Now) score -= 8;
 
   // ★ ADX 필터 (횡보장 whipsaw 방지 — 단, 변동성 종목용으로 완화)
   if (trendStrength === 'WEAK') {

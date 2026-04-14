@@ -12,7 +12,7 @@ function getGenAI(): GoogleGenerativeAI | null {
 }
 
 /**
- * Gemini 2.5 Flash로 종목 스코어링 (GPT 대체 — 무료)
+ * Gemini 2.5 Pro로 종목 스코어링 (GPT 대체)
  * GPT-4o와 동일한 프롬프트/스키마 사용
  */
 export async function runGeminiScoring(params: {
@@ -35,7 +35,7 @@ export async function runGeminiScoring(params: {
   });
 
   const model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
+    model: 'gemini-2.5-pro',
     generationConfig: {
       responseMimeType: 'application/json',
       temperature: 0.2,
@@ -58,10 +58,14 @@ ${JSON.stringify(geminiAnalysis.stocks, null, 2)}
     const validScores: ScoringResult[] = [];
     for (const score of parsed.scores) {
       const zod = ScoringResultSchema.safeParse(score);
-      if (zod.success) {
+      if (zod.success && zod.data.composite_score > 0) {
         validScores.push(zod.data);
+      } else if (zod.success && zod.data.composite_score <= 0) {
+        logger.warn(`Gemini 스코어 0점 무효화 (${score.stock_code}): composite_score=${zod.data.composite_score} → 기술적 지표 fallback`, {
+          component: 'TRACK_A',
+        });
       } else {
-        logger.warn(`Gemini 스코어 검증 실패 (${score.stock_code}): ${zod.error.message}`, {
+        logger.warn(`Gemini 스코어 검증 실패 (${score.stock_code}): ${zod.error?.message}`, {
           component: 'TRACK_A',
         });
       }

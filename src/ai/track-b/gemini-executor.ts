@@ -3,6 +3,7 @@ import { config } from '../../config/index.js';
 import { type TradeDecision, TradeDecisionSchema } from '../../db/models.js';
 import { logger } from '../../utils/logger.js';
 import { buildExecutionPrompt } from '../prompts/track-b-execution.js';
+import { BUY_BLOCKED_CODES } from './trading-rules.js';
 
 function getGenAI(): GoogleGenerativeAI | null {
   const key = config.ai.geminiKey || process.env.GEMINI_API_KEY;
@@ -11,7 +12,7 @@ function getGenAI(): GoogleGenerativeAI | null {
 }
 
 /**
- * Gemini 2.5 Flash로 매매 실행 판단 (Claude 대체 — 무료)
+ * Gemini 2.5 Pro로 매매 실행 판단 (Claude 대체)
  * Claude와 동일한 프롬프트/스키마 사용
  */
 export async function runGeminiExecution(params: {
@@ -33,7 +34,7 @@ export async function runGeminiExecution(params: {
   logger.info(`Gemini 실행 판단 시작 (모드: ${mode})`, { component: 'TRACK_B' });
 
   const model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
+    model: 'gemini-2.5-pro',
     generationConfig: {
       responseMimeType: 'application/json',
       temperature: 0.1,
@@ -61,19 +62,28 @@ export async function runGeminiExecution(params: {
         }
       }
 
-      if (validDecisions.length === 0 && parsed.decisions.length > 0) {
-        throw new Error(`모든 결정이 검증 실패 (${parsed.decisions.length}개)`);
+      // CEO 지시: 차단 종목 BUY 필터링
+      const filtered = validDecisions.filter((d) => {
+        if (d.action === 'BUY' && d.stock_code && BUY_BLOCKED_CODES.has(d.stock_code)) {
+          logger.warn(`🚫 AI BUY 차단: ${d.stock_code} — 매수 금지 목록`, { component: 'TRACK_B' });
+          return false;
+        }
+        return true;
+      });
+
+      if (filtered.length === 0 && parsed.decisions.length > 0) {
+        throw new Error(`모든 결정이 검증 실패 또는 차단 (${parsed.decisions.length}개)`);
       }
 
       logger.info(
-        `Gemini 판단 완료: ${validDecisions.length}개 유효 결정 ` +
-          `(BUY: ${validDecisions.filter((d) => d.action === 'BUY').length}, ` +
-          `SELL: ${validDecisions.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action)).length}, ` +
-          `HOLD: ${validDecisions.filter((d) => d.action === 'HOLD').length})`,
+        `Gemini 판단 완료: ${filtered.length}개 유효 결정 ` +
+          `(BUY: ${filtered.filter((d) => d.action === 'BUY').length}, ` +
+          `SELL: ${filtered.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action)).length}, ` +
+          `HOLD: ${filtered.filter((d) => d.action === 'HOLD').length})`,
         { component: 'TRACK_B' },
       );
 
-      return validDecisions;
+      return filtered;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       logger.warn(`Gemini 실행 시도 ${attempt} 실패: ${msg}`, { component: 'TRACK_B' });

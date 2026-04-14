@@ -37,18 +37,20 @@ echo "   리전: $REGION (서울)"
 echo ""
 
 # ────────────────────────────────────────────
-# Docker 빌드 + Push
+# Cloud Build (로컬 Docker 불필요)
 # ────────────────────────────────────────────
-echo "🐳 [1/3] Docker 빌드..."
-docker build \
-    --platform linux/amd64 \
-    -t ${IMAGE}:${TAG} \
-    -t ${IMAGE}:latest \
+echo "☁️  [1/3] Cloud Build 원격 빌드..."
+gcloud builds submit \
+    --project=$PROJECT_ID \
+    --tag=${IMAGE}:${TAG} \
+    --timeout=20m \
     .
 
-echo "📤 [2/3] 이미지 Push..."
-docker push ${IMAGE}:${TAG}
-docker push ${IMAGE}:latest
+echo "🏷️  [2/3] latest 태그 추가..."
+gcloud artifacts docker tags add \
+    ${IMAGE}:${TAG} \
+    ${IMAGE}:latest \
+    --project=$PROJECT_ID 2>/dev/null || true
 
 # ────────────────────────────────────────────
 # Cloud Run 배포 (실거래 최적화 설정)
@@ -67,19 +69,16 @@ gcloud run deploy $SERVICE \
     --concurrency=80 \
     --no-cpu-throttling \
     --allow-unauthenticated \
-    --set-env-vars="NODE_ENV=production,TRADING_MODE=paper" \
+    --add-cloudsql-instances=quantops-trading:asia-northeast3:quantops-db \
+    --set-env-vars="NODE_ENV=production,TRADING_MODE=paper,INSTANCE_UNIX_SOCKET=/cloudsql/quantops-trading:asia-northeast3:quantops-db,DB_DATABASE=quantops,DB_USER=postgres,RISK_MAX_DAILY_DRAWDOWN_KRW=300000,RISK_MAX_POSITION_KRW=2000000,RISK_MAX_TOTAL_INVESTED_PCT=80" \
     --set-secrets="\
 KIS_APP_KEY=kis-app-key:latest,\
 KIS_APP_SECRET=kis-app-secret:latest,\
 KIS_ACCOUNT_NO=kis-account-no:latest,\
 GEMINI_API_KEY=gemini-api-key:latest,\
 OPENAI_API_KEY=openai-api-key:latest,\
-ANTHROPIC_API_KEY=anthropic-api-key:latest\
-" \
-    --set-env-vars="\
-RISK_MAX_DAILY_DRAWDOWN_KRW=50000,\
-RISK_MAX_POSITION_KRW=300000,\
-RISK_MAX_TOTAL_INVESTED_PCT=80\
+ANTHROPIC_API_KEY=anthropic-api-key:latest,\
+DB_PASSWORD=db-password:latest\
 "
 
 echo ""

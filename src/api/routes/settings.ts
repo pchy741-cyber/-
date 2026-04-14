@@ -51,6 +51,8 @@ settingsRoutes.put('/strategy', async (c) => {
     buy_threshold: body.buy_threshold ?? 70,
     stop_loss_pct: body.stop_loss_pct ?? -5.0,
     take_profit_pct: body.take_profit_pct ?? 8.0,
+    strategy_document: body.strategy_document ?? '',
+    risk_prompt: body.risk_prompt ?? '',
   };
 
   // 인메모리 모드: DB 없이도 전략 변경 가능
@@ -61,12 +63,15 @@ settingsRoutes.put('/strategy', async (c) => {
 
   try {
     await getPool().query('UPDATE strategy_config SET is_active = false WHERE is_active = true');
+    // 컬럼이 없을 경우 자동 추가
     await getPool().query(`ALTER TABLE strategy_config ADD COLUMN IF NOT EXISTS notebooklm_prompt TEXT DEFAULT ''`).catch(() => {});
+    await getPool().query(`ALTER TABLE strategy_config ADD COLUMN IF NOT EXISTS strategy_document TEXT DEFAULT ''`).catch(() => {});
+    await getPool().query(`ALTER TABLE strategy_config ADD COLUMN IF NOT EXISTS risk_prompt TEXT DEFAULT ''`).catch(() => {});
 
     const { rows } = await getPool().query(
-      `INSERT INTO strategy_config (mode, is_active, notebooklm_prompt, gemini_prompt, gpt_prompt, claude_prompt, buy_threshold, stop_loss_pct, take_profit_pct)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [strategyData.mode, true, strategyData.notebooklm_prompt, strategyData.gemini_prompt, strategyData.gpt_prompt, strategyData.claude_prompt, strategyData.buy_threshold, strategyData.stop_loss_pct, strategyData.take_profit_pct],
+      `INSERT INTO strategy_config (mode, is_active, notebooklm_prompt, gemini_prompt, gpt_prompt, claude_prompt, buy_threshold, stop_loss_pct, take_profit_pct, strategy_document, risk_prompt)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      [strategyData.mode, true, strategyData.notebooklm_prompt, strategyData.gemini_prompt, strategyData.gpt_prompt, strategyData.claude_prompt, strategyData.buy_threshold, strategyData.stop_loss_pct, strategyData.take_profit_pct, strategyData.strategy_document, strategyData.risk_prompt],
     );
 
     return c.json(rows[0]);
@@ -113,6 +118,65 @@ settingsRoutes.post('/run-overseas', async (c) => {
   const { runOverseasJob } = await import('../../scheduler/overseas-job.js');
   runOverseasJob().catch((e) => logger.error(`해외주식 수동 실행 실패: ${e}`, { component: 'SETTINGS' }));
   return c.json({ ok: true, message: '해외주식 수동 실행 시작' });
+});
+
+// ── 인사이트 관리 ──
+// GET: 전체 인사이트 조회
+settingsRoutes.get('/insights', async (c) => {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT id, category, insight, confidence, sample_count, last_updated, is_manual,
+              recommendation, param_change, is_applied, applied_at
+       FROM learned_insights ORDER BY is_manual DESC, confidence DESC LIMIT 50`
+    );
+    return c.json(rows);
+  } catch (err: any) {
+    return c.json({ error: err?.message }, 500);
+  }
+});
+
+// POST: CEO 수동 인사이트 추가
+settingsRoutes.post('/insights', async (c) => {
+  const body = await c.req.json();
+  const category = String(body.category ?? 'MANUAL').trim();
+  const insight = String(body.insight ?? '').trim();
+  if (!insight) return c.json({ error: '내용 필요' }, 400);
+
+  try {
+    const { rows } = await getPool().query(
+      `INSERT INTO learned_insights (category, insight, confidence, sample_count, last_updated, is_manual)
+       VALUES ($1, $2, $3, 1, NOW(), TRUE) RETURNING *`,
+      [category, insight, body.confidence ?? 0.8]
+    );
+    return c.json(rows[0]);
+  } catch (err: any) {
+    return c.json({ error: err?.message }, 500);
+  }
+});
+
+// POST: 인사이트 파라미터 전략 적용
+settingsRoutes.post('/insights/:id/apply', async (c) => {
+  const id = Number(c.req.param('id'));
+  if (!id) return c.json({ error: 'id 필요' }, 400);
+  try {
+    const { applyInsightById } = await import('../../automation/self-learning.js');
+    const result = await applyInsightById(String(id));
+    return c.json(result);
+  } catch (err: any) {
+    return c.json({ error: err?.message }, 500);
+  }
+});
+
+// DELETE: 인사이트 삭제 (수동/자동 모두 삭제 가능)
+settingsRoutes.delete('/insights/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  if (!id) return c.json({ error: 'id 필요' }, 400);
+  try {
+    await getPool().query('DELETE FROM learned_insights WHERE id = $1', [id]);
+    return c.json({ ok: true });
+  } catch (err: any) {
+    return c.json({ error: err?.message }, 500);
+  }
 });
 
 // 종목명 즉시 보정 (코드로만 저장된 종목 → KRX API로 이름 조회)

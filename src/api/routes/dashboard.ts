@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { getPortfolioFlowStatus } from '../../automation/ceo-workflow.js';
+import { getDefenseParkState } from '../../ai/track-b/defense-park.js';
 import { getCachedScores, cachePrice, getLastKnownPrices } from '../../cache/redis.js';
 import { cachePriceMemory, getLastKnownPricesMemory, getCachedPriceMemory } from '../../cache/memory.js';
 import { config } from '../../config/index.js';
@@ -17,11 +18,68 @@ import { fetchShortSellingData } from '../../automation/short-selling.js';
 import { fetchAnalystConsensus } from '../../automation/analyst-consensus.js';
 import { getMacroSnapshot } from '../../automation/macro-data.js';
 import { logger } from '../../utils/logger.js';
+import { getOverseasScores } from '../../cache/overseas-scores.js';
 
 export const dashboardRoutes = new Hono();
 
 // ── 환율 캐시 (1시간 TTL, 실패 시 1420 폴백) ──
 let _fxCache = { rate: 1420, fetchedAt: 0 };
+const GARBLED_NAME_REGEX = /[^\w\s\uAC00-\uD7A3\u3131-\u318E\u1100-\u11FF().,·\-+%$]/;
+const KNOWN_GLOBAL_STOCK_NAMES: Record<string, string> = {
+  AAPL: 'Apple',
+  NVDA: 'NVIDIA',
+  MSFT: 'Microsoft',
+  GOOGL: 'Google',
+  AMZN: 'Amazon',
+  TSLA: 'Tesla',
+  META: 'Meta',
+  '7203': 'Toyota',
+  '6758': 'Sony',
+  '6861': 'Keyence',
+  '2330': 'TSMC',
+  '2317': 'Foxconn',
+  '2454': 'MediaTek',
+};
+const KNOWN_KR_STOCK_NAMES: Record<string, string> = {
+  '000100': '유한양행',
+  '005290': '동진쎄미켐',
+  '009540': 'HD한국조선해양',
+  '010130': '고려아연',
+  '012450': '한화에어로스페이스',
+  '028300': 'HLB',
+  '036490': 'SK머티리얼즈',
+  '042700': '한미반도체',
+  '058470': '리노공업',
+  '068270': '셀트리온',
+  '079550': 'LIG넥스원',
+  '086520': '에코프로',
+  '112040': '위메이드',
+  '196170': '알테오젠',
+  '207940': '삼성바이오로직스',
+  '214150': '클래시스',
+  '263750': '펄어비스',
+  '267260': 'HD현대일렉트릭',
+  '277810': '레인보우로보틱스',
+  '328130': '루닛',
+  '336260': '두산퓨얼셀',
+  '336370': '솔루스첨단소재',
+  '357780': '솔브레인',
+  '403870': 'HPSP',
+  '454910': '두산로보틱스',
+};
+
+function isInvalidStockName(name: unknown, stockCode?: string): boolean {
+  const n = String(name ?? '').trim();
+  if (!n) return true;
+  if (stockCode && n === stockCode) return true;
+  if (/^[0-9]{6}$/.test(n)) return true;
+  return GARBLED_NAME_REGEX.test(n);
+}
+
+function getKnownStockName(code: string): string | undefined {
+  return KNOWN_GLOBAL_STOCK_NAMES[code] ?? KNOWN_KR_STOCK_NAMES[code];
+}
+
 async function getFxRate(): Promise<number> {
   const now = Date.now();
   if (now - _fxCache.fetchedAt < 60 * 60 * 1000) return _fxCache.rate;
@@ -42,10 +100,16 @@ dashboardRoutes.get('/dashboard', async (c) => {
   const defaultBalance = { totalDeposit: 10000000, totalEvalAmount: 0, orderableCash: 10000000, totalProfitLoss: 0, totalProfitLossPct: 0, positions: [] };
 
   const balanceFn = config.isPaper ? getPaperBalance : getAccountBalance;
-  const [balanceResult, chains, strategy] = await Promise.all([
+  const [balanceResult, chains, strategy, insightRows, defensePark] = await Promise.all([
     balanceFn().catch(() => defaultBalance),
     getOpenChains().catch(() => []),
     getActiveStrategy().catch(() => null),
+    getPool().query(
+      `SELECT id, category, insight, confidence, sample_count, last_updated, is_manual,
+              recommendation, param_change, is_applied, applied_at
+       FROM learned_insights ORDER BY is_manual DESC, confidence DESC LIMIT 30`
+    ).catch(() => ({ rows: [] as any[] })),
+    getDefenseParkState().catch(() => ({ isActive: false, parkStockCode: '069500', parkStockName: 'KODEX 200', entryReason: null, enteredAt: null })),
   ]);
   const balance = balanceResult ?? defaultBalance;
 
@@ -105,13 +169,13 @@ dashboardRoutes.get('/dashboard', async (c) => {
   // 종목명 백그라운드 보정: watchlist + transaction_chains 모두 코드명 → 실제명으로 업데이트
   for (const [code, name] of nameMap) {
     const wName = String(watchlistNameMap.get(code) ?? '');
-    if (!wName || wName === code || /^\d{6}$/.test(wName)) {
+    if (isInvalidStockName(wName, code)) {
       getPool().query('UPDATE watchlist SET stock_name = $1 WHERE stock_code = $2', [name, code]).catch(() => {});
     }
     const cName = String(chainNameMap.get(code) ?? '');
-    if (!cName || cName === code || /^\d{6}$/.test(cName)) {
+    if (isInvalidStockName(cName, code)) {
       getPool().query(
-        "UPDATE transaction_chains SET stock_name = $1 WHERE stock_code = $2 AND (stock_name IS NULL OR stock_name = $2 OR stock_name ~ '^[0-9]{6}$')",
+        "UPDATE transaction_chains SET stock_name = $1 WHERE stock_code = $2 AND (stock_name IS NULL OR stock_name = $2 OR stock_name ~ '^[0-9]{6}$' OR stock_name !~ '[A-Za-z가-힣]')",
         [name, code]
       ).catch(() => {});
     }
@@ -155,8 +219,9 @@ dashboardRoutes.get('/dashboard', async (c) => {
     totalChainPnl += unrealizedPnl;
     // 종목명: KIS API > watchlist > chains DB > 코드 순으로 사용 (코드처럼 생긴 이름은 제외)
     const isCode = (n: any) => !n || String(n) === ch.stock_code || /^\d{6}$/.test(String(n));
-    const resolvedName = [nameMap.get(ch.stock_code), watchlistNameMap.get(ch.stock_code), ch.stock_name]
-      .find(n => !isCode(n)) ?? ch.stock_code;
+    const known = getKnownStockName(ch.stock_code);
+    const resolvedName = [nameMap.get(ch.stock_code), watchlistNameMap.get(ch.stock_code), ch.stock_name, known]
+      .find(n => !isCode(n) && !isInvalidStockName(n, ch.stock_code)) ?? ch.stock_code;
     return { ...ch, stock_name: resolvedName, currentPrice, unrealizedPnl, unrealizedPnlPct, invested };
   });
 
@@ -170,21 +235,24 @@ dashboardRoutes.get('/dashboard', async (c) => {
   let actualCash: number;
 
   if (config.isPaper) {
-    // Paper: 가상 초기자본 1천만원 고정 — 초과 포지션은 1천만원 기준으로 캡
-    const PAPER_CAP = 10_000_000;
-    const cappedInvested = Math.min(totalChainInvested, PAPER_CAP);
-    totalInvested = cappedInvested;
-    totalPnl = totalChainPnl + (balance.totalProfitLoss ?? 0);
-    actualCash = Math.max(0, PAPER_CAP - cappedInvested);
+    // Paper: chains 기반 원금 (cap 없음), 손익 = 미실현+실현 합산
+    totalInvested = totalChainInvested; // 현재 보유 원금 합산 (상한선 없음)
+    totalPnl = totalChainPnl + (balance.totalProfitLoss ?? 0); // 미실현 + 실현
+    actualCash = rawCash; // getPaperBalance: 초기자본 + 실현손익 - 보유원가
   } else {
-    // Live: KIS 잔고가 정확 — chains 이중합산 하지 않음
-    totalInvested = balance.totalEvalAmount ?? 0;
-    totalPnl = balance.totalProfitLoss ?? 0;
+    // Live: KIS 잔고가 source-of-truth
+    totalInvested = balance.totalEvalAmount ?? 0; // 평가금액(원금+미실현손익 포함)
+    totalPnl = balance.totalProfitLoss ?? 0;      // 미실현손익
     actualCash = rawCash;
   }
 
-  const totalPnlPct = totalInvested > 0 ? (totalPnl / totalInvested) * 100 : 0;
-  const totalValue = actualCash + totalInvested + totalPnl;
+  // pnlPct: Live는 KIS API 직접값 사용(정확), Paper는 원금 대비 계산
+  const totalPnlPct = config.isPaper
+    ? (totalChainInvested > 0 ? (totalPnl / totalChainInvested) * 100 : 0)
+    : (balance.totalProfitLossPct ?? 0); // KIS API가 내려주는 정확한 수익률
+
+  // totalValue는 pnlPct 계산 전에 필요 없음 — grandTotalValue가 실제 반환값
+  // (Paper: cash + 미실현평가금액(evalAmount) ≈ cash + 원금 + 미실현손익, Live: cash + evalAmount)
 
   // ── 해외 보유종목 (별도 표시용, 국내 총자산에 합산하지 않음) ──
   let overseasHoldings: Array<{ stock_code: string; quantity: number; avg_price: number; bought_at: string }> = [];
@@ -212,18 +280,31 @@ dashboardRoutes.get('/dashboard', async (c) => {
   const FX_RATE = await getFxRate(); // 실시간 환율 (1시간 캐시, 실패 시 1420 폴백)
   const overseasInvestedKrw = (isNaN(overseasTotalInvested) ? 0 : overseasTotalInvested) * FX_RATE;
   const overseasCashKrw = (isNaN(overseasCash) ? 0 : overseasCash) * FX_RATE;
-  const domesticInvested = (totalInvested || 0) + (config.isPaper ? (totalChainPnl || 0) : 0);
+
+  // domesticInvested: 화면 표시용 "현재 국내 투자금(원금)" — 손익 미포함
+  // Paper: totalInvested = totalChainInvested (원금), Live: evalAmount(원금+미실현) 이지만 KIS 기준이 이것
+  const domesticInvested = totalInvested || 0;
+
+  // grandTotalValue: 국내(현금 + 평가금액) + 해외(투자원금 + 현금)
+  // Paper: cash + evalAmount(=KIS paper posVal ≈ 원금+미실현) + 해외
+  // Live:  cash + evalAmount(=KIS evalAmount) + 해외
   const grandTotalValue = (actualCash || 0) + domesticInvested + overseasInvestedKrw + overseasCashKrw;
-  const grandTotalInvested = domesticInvested + overseasInvestedKrw;
+
+  // grandTotalInvested: 투자 중인 원금 합산 (현금 제외)
+  const grandTotalInvested = totalChainInvested + overseasInvestedKrw;
 
   return c.json({
     portfolio: {
-      totalValue: Math.round(grandTotalValue),  // 국내 + 해외 합산
-      cash: Math.round(actualCash),
-      invested: Math.round(grandTotalInvested), // 국내 + 해외 투자금 합산
-      domesticInvested: Math.round(domesticInvested),
+      totalValue: Math.round(grandTotalValue),         // 국내 + 해외 합산 총자산
+      cash: Math.round(actualCash),                    // 가용현금
+      invested: Math.round(grandTotalInvested),        // 국내+해외 투자 원금
+      domesticInvested: Math.round(totalChainInvested),// 국내 투자 원금
       domesticCash: Math.round(actualCash),
-      pnl: Math.round(totalPnl),
+      // Live: KIS evlu_pfls_smtl_amt = 미실현손익 (source-of-truth), 실현손익은 잔고 API 미제공
+      // Paper: chains 기반 미실현손익, balance.totalProfitLoss = 실현손익
+      unrealizedPnl: Math.round(config.isPaper ? totalChainPnl : (balance.totalProfitLoss || totalChainPnl)),
+      realizedPnl: config.isPaper ? Math.round(balance.totalProfitLoss ?? 0) : 0,
+      pnl: Math.round(totalPnl),                       // 국내 미실현+실현 합산
       pnlPct: Math.round(totalPnlPct * 100) / 100,
       positions: balance.positions ?? [],
     },
@@ -234,6 +315,7 @@ dashboardRoutes.get('/dashboard', async (c) => {
       cashUsd: overseasCash,
       cashKrw: overseasCashKrw,
       fxRate: FX_RATE,
+      scores: getOverseasScores(),
     },
     activeChains: enrichedChains.length,
     chains: enrichedChains,
@@ -242,6 +324,8 @@ dashboardRoutes.get('/dashboard', async (c) => {
     killSwitch: getKillSwitchStatus(),
     tradingMode: config.tradingMode,
     riskLimits: { maxDailyDrawdownKrw: config.risk.maxDailyDrawdownKrw },
+    insights: insightRows.rows,
+    defensePark,
   });
 });
 
@@ -316,7 +400,54 @@ dashboardRoutes.get('/search/stock', async (c) => {
 dashboardRoutes.get('/watchlist', async (c) => {
   try {
     const data = await getActiveWatchlist();
-    return c.json(data);
+    const unresolvedDomestic = [...new Set(
+      data
+        .filter((w: any) => /^[0-9]{6}$/.test(String(w.stock_code)) && isInvalidStockName(w.stock_name, w.stock_code))
+        .map((w: any) => String(w.stock_code))
+    )];
+
+    const nameMap = new Map<string, string>();
+    // 해외/글로벌은 고정 매핑으로 즉시 보정
+    for (const w of data) {
+      const code = String(w.stock_code ?? '');
+      const knownName = getKnownStockName(code);
+      if (isInvalidStockName(w.stock_name, code) && knownName) {
+        nameMap.set(code, knownName);
+      }
+    }
+
+    // 국내 종목은 KIS 시세 API에서 종목명 보정
+    if (unresolvedDomestic.length > 0) {
+      const quotes = await getBatchPrices(unresolvedDomestic.slice(0, 30)).catch(() => new Map());
+      for (const [code, q] of quotes) {
+        if (!isInvalidStockName(q.stockName, code)) {
+          nameMap.set(code, q.stockName.trim());
+        }
+      }
+    }
+
+    if (nameMap.size === 0) return c.json(data);
+
+    const patched = data.map((w: any) => {
+      const code = String(w.stock_code ?? '');
+      const resolved = nameMap.get(code);
+      return resolved ? { ...w, stock_name: resolved } : w;
+    });
+
+    // 다음 요청부터 즉시 일관되게 나오도록 DB도 보정
+    await Promise.allSettled(
+      [...nameMap.entries()].map(([code, name]) =>
+        getPool().query(
+          `UPDATE watchlist
+             SET stock_name = $1
+           WHERE stock_code = $2
+             AND is_active = true`,
+          [name, code],
+        )
+      )
+    );
+
+    return c.json(patched);
   } catch (err: any) {
     return c.json({ error: err?.message ?? 'watchlist 조회 실패' }, 500);
   }
@@ -441,9 +572,14 @@ dashboardRoutes.get('/trades', async (c) => {
     const { rows } = await getPool().query(
       `SELECT o.*,
          COALESCE(
-           NULLIF(CASE WHEN w.stock_name IS NOT NULL AND w.stock_name != o.stock_code AND w.stock_name !~ '^[0-9]{6}$' THEN w.stock_name ELSE NULL END, NULL),
-           NULLIF(CASE WHEN tc.stock_name IS NOT NULL AND tc.stock_name != o.stock_code AND tc.stock_name !~ '^[0-9]{6}$' THEN tc.stock_name ELSE NULL END, NULL),
-           NULLIF(CASE WHEN o.stock_name IS NOT NULL AND o.stock_name != o.stock_code AND o.stock_name !~ '^[0-9]{6}$' THEN o.stock_name ELSE NULL END, NULL)
+           CASE
+             WHEN w.stock_name IS NOT NULL
+               AND w.stock_name != o.stock_code
+               AND w.stock_name !~ '^[0-9]{6}$'
+             THEN w.stock_name
+             ELSE NULL
+           END,
+           o.stock_code
          ) AS stock_name,
          json_build_object(
            'stock_code', tc.stock_code,
@@ -458,7 +594,122 @@ dashboardRoutes.get('/trades', async (c) => {
        LIMIT $1`,
       [limit],
     );
-    return c.json(rows);
+    const tradePnlMap = new Map<string, { pnl: number; pct: number | null }>();
+    const domesticCodes = [...new Set(
+      rows
+        .map((r: any) => String(r.stock_code ?? ''))
+        .filter((code: string) => /^[0-9]{6}$/.test(code))
+    )];
+
+    if (domesticCodes.length > 0) {
+      const { rows: pnlRows } = await getPool().query(
+        `SELECT id, stock_code, side, filled_quantity, filled_price
+           FROM orders
+          WHERE status = 'FILLED'
+            AND stock_code = ANY($1::text[])
+          ORDER BY created_at ASC, id ASC`,
+        [domesticCodes],
+      );
+
+      const BUY_FEE_PCT = 0.00015;
+      const SELL_FEE_PCT = 0.00245;
+      const holdings = new Map<string, { qty: number; totalCost: number }>();
+
+      for (const o of pnlRows as Array<any>) {
+        const code = String(o.stock_code ?? '');
+        const side = String(o.side ?? '');
+        const qty = Math.max(0, Number(o.filled_quantity ?? 0));
+        const price = Math.max(0, Number(o.filled_price ?? 0));
+        if (!code || qty <= 0 || price <= 0) continue;
+
+        const h = holdings.get(code) ?? { qty: 0, totalCost: 0 };
+        if (side === 'BUY') {
+          const buyValue = qty * price;
+          const buyFee = Math.round(buyValue * BUY_FEE_PCT);
+          h.qty += qty;
+          h.totalCost += (buyValue + buyFee);
+          holdings.set(code, h);
+          continue;
+        }
+
+        if (side !== 'SELL' || h.qty <= 0) continue;
+        const matchedQty = Math.min(qty, h.qty);
+        if (matchedQty <= 0) continue;
+
+        const avgCost = h.totalCost / h.qty;
+        const costBasis = avgCost * matchedQty;
+        const sellValue = matchedQty * price;
+        const sellFee = Math.round(sellValue * SELL_FEE_PCT);
+        const pnl = sellValue - sellFee - costBasis;
+        const pct = costBasis > 0 ? (pnl / costBasis) * 100 : null;
+        tradePnlMap.set(String(o.id), { pnl, pct });
+
+        h.qty -= matchedQty;
+        h.totalCost -= costBasis;
+        if (h.qty <= 0) {
+          h.qty = 0;
+          h.totalCost = 0;
+        }
+        holdings.set(code, h);
+      }
+    }
+
+    const rowsWithPnl = rows.map((r: any) => {
+      const p = tradePnlMap.get(String(r.id ?? ''));
+      return {
+        ...r,
+        realized_pnl: p?.pnl ?? null,
+        realized_pnl_pct: p?.pct ?? null,
+      };
+    });
+
+    const unresolvedDomestic = [...new Set(
+      rowsWithPnl
+        .filter((r: any) => /^[0-9]{6}$/.test(String(r.stock_code)) && isInvalidStockName(r.stock_name, r.stock_code))
+        .map((r: any) => String(r.stock_code))
+    )];
+    const nameMap = new Map<string, string>();
+
+    // 글로벌 티커 이름 보정
+    for (const r of rowsWithPnl) {
+      const code = String(r.stock_code ?? '');
+      const knownName = getKnownStockName(code);
+      if (isInvalidStockName(r.stock_name, code) && knownName) {
+        nameMap.set(code, knownName);
+      }
+    }
+
+    // 국내 코드는 KIS 조회로 보정
+    if (unresolvedDomestic.length > 0) {
+      const quotes = await getBatchPrices(unresolvedDomestic.slice(0, 30)).catch(() => new Map());
+      for (const [code, q] of quotes) {
+        if (!isInvalidStockName(q.stockName, code)) {
+          nameMap.set(code, q.stockName.trim());
+        }
+      }
+    }
+
+    if (nameMap.size === 0) return c.json(rowsWithPnl);
+
+    const patched = rowsWithPnl.map((r: any) => {
+      const code = String(r.stock_code ?? '');
+      const resolved = nameMap.get(code);
+      return resolved ? { ...r, stock_name: resolved } : r;
+    });
+
+    // watchlist에 있는 코드면 이름 동기화
+    await Promise.allSettled(
+      [...nameMap.entries()].map(([code, name]) =>
+        getPool().query(
+          `UPDATE watchlist
+             SET stock_name = $1
+           WHERE stock_code = $2`,
+          [name, code],
+        )
+      )
+    );
+
+    return c.json(patched);
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
@@ -556,6 +807,50 @@ dashboardRoutes.patch('/withdraw/:id/status', async (c) => {
   if (!['withdrawn', 'cancelled'].includes(status)) return c.json({ error: '유효한 상태: withdrawn, cancelled' }, 400);
   try {
     await getPool().query('UPDATE profit_withdrawals SET status = $1 WHERE id = $2', [status, id]);
+    return c.json({ ok: true });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── 탈출 모드 등록: +0.5% 돌파 순간 자동 전량 매도 ──
+dashboardRoutes.post('/escape/:chainId', async (c) => {
+  const chainId = c.req.param('chainId');
+  try {
+    const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1', [chainId]);
+    const chain = rows[0];
+    if (!chain) return c.json({ error: '체인을 찾을 수 없습니다' }, 404);
+    if (chain.total_quantity <= 0) return c.json({ error: '매도할 수량이 없습니다' }, 400);
+
+    // 현재가 조회
+    const { getCurrentPrice } = await import('../../kis/market.js');
+    const priceData = await getCurrentPrice(chain.stock_code);
+    const curPrice = priceData.currentPrice;
+    if (!curPrice || curPrice <= 0) return c.json({ error: '현재가를 조회할 수 없습니다' }, 500);
+
+    // 탈출 목표가 = 현재가 × 1.005 (원 단위 반올림)
+    const escapeTarget = Math.ceil(curPrice * 1.005);
+    await getPool().query(
+      'UPDATE transaction_chains SET escape_target_price = $1 WHERE id = $2',
+      [escapeTarget, chainId],
+    );
+
+    logger.info(
+      `🚪 탈출 모드 등록: ${chain.stock_code} 목표가 ${escapeTarget.toLocaleString()}원 (현재 ${curPrice.toLocaleString()}원 → +0.5%)`,
+      { component: 'ESCAPE' },
+    );
+
+    return c.json({ ok: true, escape_target_price: escapeTarget, current_price: curPrice });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── 탈출 모드 취소 ──
+dashboardRoutes.delete('/escape/:chainId', async (c) => {
+  const chainId = c.req.param('chainId');
+  try {
+    await getPool().query('UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1', [chainId]);
     return c.json({ ok: true });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);

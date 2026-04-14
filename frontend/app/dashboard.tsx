@@ -37,6 +37,46 @@ const fmtUsd = (n: number | null | undefined) => n == null ? '-' : '$' + (n ?? 0
 const fmtTime = (t: string | null | undefined) => { if (!t) return '-'; const d = new Date(t); return `${(d.getMonth()+1).toString().padStart(2,'0')}/${d.getDate().toString().padStart(2,'0')} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`; };
 const pc = (n: number | null | undefined) => n == null || n === 0 ? 'text-slate-400' : n > 0 ? 'text-emerald-400' : 'text-rose-400';
 const pbg = (n: number | null | undefined) => n == null || n === 0 ? '' : n > 0 ? 'bg-emerald-950/30 border-emerald-900/30' : 'bg-rose-950/30 border-rose-900/30';
+const KNOWN_STOCK_NAMES: Record<string, string> = {
+  AAPL: 'Apple',
+  NVDA: 'NVIDIA',
+  MSFT: 'Microsoft',
+  GOOGL: 'Google',
+  AMZN: 'Amazon',
+  TSLA: 'Tesla',
+  META: 'Meta',
+  '000100': '유한양행',
+  '005290': '동진쎄미켐',
+  '009540': 'HD한국조선해양',
+  '010130': '고려아연',
+  '012450': '한화에어로스페이스',
+  '028300': 'HLB',
+  '036490': 'SK머티리얼즈',
+  '042700': '한미반도체',
+  '058470': '리노공업',
+  '068270': '셀트리온',
+  '079550': 'LIG넥스원',
+  '086520': '에코프로',
+  '112040': '위메이드',
+  '196170': '알테오젠',
+  '207940': '삼성바이오로직스',
+  '214150': '클래시스',
+  '263750': '펄어비스',
+  '267260': 'HD현대일렉트릭',
+  '277810': '레인보우로보틱스',
+  '328130': '루닛',
+  '336260': '두산퓨얼셀',
+  '336370': '솔루스첨단소재',
+  '357780': '솔브레인',
+  '403870': 'HPSP',
+  '454910': '두산로보틱스',
+};
+
+function getKnownStockName(code?: unknown): string | undefined {
+  const c = String(code ?? '').trim();
+  if (!c) return undefined;
+  return KNOWN_STOCK_NAMES[c.toUpperCase()] ?? KNOWN_STOCK_NAMES[c];
+}
 
 // ── 토스트 알림 시스템 ──
 function useToast() {
@@ -133,7 +173,18 @@ export default function Dashboard() {
     finally { loadingRef.current = false; }
   };
 
-  useEffect(() => { load(); const iv = setInterval(load, 10000); return () => clearInterval(iv); }, []); // 10초 간격
+  useEffect(() => {
+    load();
+    const getInterval = () => {
+      const h = new Date().getHours(), m = new Date().getMinutes();
+      const mins = h * 60 + m;
+      return (mins >= 9 * 60 && mins < 15 * 60 + 30) ? 10000 : 60000; // 장중 10초, 장외 60초
+    };
+    let iv: ReturnType<typeof setInterval>;
+    const schedule = () => { iv = setInterval(() => { load(); clearInterval(iv); schedule(); }, getInterval()); };
+    schedule();
+    return () => clearInterval(iv);
+  }, []);
 
   // PWA 푸시 알림 자동 등록
   useEffect(() => {
@@ -249,7 +300,7 @@ export default function Dashboard() {
             </div>
           ) : (
             <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px] mx-auto">
-              {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={withdrawConfig} watchlist={watchlist} onRefresh={load} />}
+              {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={withdrawConfig} watchlist={watchlist} strategy={strategy} setStrategy={setStrategy} toast={toast} onRefresh={load} />}
               {tab === 'trades' && <TradesView trades={trades} watchlist={watchlist} />}
               {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} />}
 
@@ -264,18 +315,402 @@ export default function Dashboard() {
 }
 
 // ═══════════════════════════════════════
+// ── 자기학습 인사이트 패널 ──
+function InsightsPanel({ insights, trades, onRefresh, toast }: { insights: any[]; trades?: any[]; onRefresh: () => void; toast?: (msg: string, type: string) => void }) {
+  const [deleting, setDeleting] = React.useState<number | null>(null);
+  const [applying, setApplying] = React.useState<number | null>(null);
+  const [newInsight, setNewInsight] = React.useState('');
+  const [adding, setAdding] = React.useState(false);
+  const [showAdd, setShowAdd] = React.useState(false);
+  const [deleteModal, setDeleteModal] = React.useState<{ id: number; insight: string; relatedTrades: any[] } | null>(null);
+
+  if (insights.length === 0 && !showAdd) return null;
+
+  const openDeleteModal = (id: number, insight: string) => {
+    const words = insight.replace(/[^\w\s가-힣]/g, ' ').split(/\s+/).filter((w: string) => w.length >= 2).slice(0, 8);
+    const relatedTrades = (trades ?? []).filter((t: any) => {
+      if (t.status !== 'FILLED' || t.side !== 'SELL') return false;
+      const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
+      const filledPx = Number(t.filled_price) || 0;
+      const pnl = avgBuy > 0 && filledPx > 0 ? (filledPx - avgBuy) * (Number(t.quantity) || 0) : 0;
+      if (pnl >= 0) return false;
+      const hay = ((t.ai_reasoning ?? '') + ' ' + (t.stock_name ?? '')).toLowerCase();
+      return words.some((w: string) => hay.includes(w.toLowerCase()));
+    }).slice(0, 4);
+    setDeleteModal({ id, insight, relatedTrades });
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteModal) return;
+    const id = deleteModal.id;
+    setDeleteModal(null);
+    setDeleting(id);
+    try {
+      await fetch(`/api/settings/insights/${id}`, { method: 'DELETE' });
+      onRefresh();
+    } finally { setDeleting(null); }
+  };
+
+  const handleApply = async (id: number) => {
+    setApplying(id);
+    try {
+      const res = await fetch(`/api/settings/insights/${id}/apply`, { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) { toast?.(data.message ?? '전략 파라미터 적용 완료', 'ok'); onRefresh(); }
+      else toast?.(data.error ?? '적용 실패', 'err');
+    } catch { toast?.('적용 요청 실패', 'err'); }
+    finally { setApplying(null); }
+  };
+
+  const handleAdd = async () => {
+    const text = newInsight.trim();
+    if (!text) return;
+    setAdding(true);
+    try {
+      await fetch('/api/settings/insights', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: 'MANUAL', insight: text, confidence: 0.9 }),
+      });
+      setNewInsight('');
+      setShowAdd(false);
+      onRefresh();
+    } finally { setAdding(false); }
+  };
+
+  const categoryColor: Record<string, string> = {
+    WIN_PATTERN: 'text-emerald-400 bg-emerald-900/30',
+    LOSS_PATTERN: 'text-rose-400 bg-rose-900/30',
+    TIMING: 'text-blue-400 bg-blue-900/30',
+    SIZING: 'text-amber-400 bg-amber-900/30',
+    MANUAL: 'text-purple-400 bg-purple-900/30',
+  };
+  const categoryLabel: Record<string, string> = {
+    WIN_PATTERN: '승리패턴', LOSS_PATTERN: '손실패턴', TIMING: '타이밍',
+    SIZING: '사이징', MANUAL: 'CEO가이드',
+  };
+
+  const harmful = insights.filter(i => i.category === 'LOSS_PATTERN');
+
+  return (
+    <>
+      {/* 삭제 승인 모달 */}
+      {deleteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-[#0f1422] border border-rose-900/40 rounded-2xl p-5 max-w-sm w-full mx-4 shadow-2xl">
+            <div className="flex items-start gap-3 mb-4">
+              <span className="text-2xl shrink-0">⚠️</span>
+              <div>
+                <p className="text-sm font-bold text-rose-400 mb-1.5">인사이트 삭제 승인</p>
+                <p className="text-[11px] text-slate-300 leading-relaxed bg-slate-800/40 rounded-lg px-3 py-2">"{deleteModal.insight}"</p>
+              </div>
+            </div>
+            {deleteModal.relatedTrades.length > 0 ? (
+              <div className="bg-rose-950/30 border border-rose-900/30 rounded-xl p-3 mb-4 space-y-1.5">
+                <p className="text-[10px] text-rose-400 font-medium mb-2">이 가이드와 연관된 손실 매매:</p>
+                {deleteModal.relatedTrades.map((t: any, i: number) => {
+                  const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
+                  const filledPx = Number(t.filled_price) || 0;
+                  const qty = Number(t.quantity) || 0;
+                  const pnl = avgBuy > 0 && filledPx > 0 ? (filledPx - avgBuy) * qty : 0;
+                  return (
+                    <div key={i} className="flex items-center justify-between text-[10px]">
+                      <span className="text-slate-300 font-medium">{t.stock_name || t.stock_code}</span>
+                      <span className="text-rose-400 font-bold">{fmtWon(pnl)}</span>
+                    </div>
+                  );
+                })}
+                <p className="text-[9px] text-rose-500/60 mt-1.5">이 인사이트 적용 후 손실이 발생한 매매입니다</p>
+              </div>
+            ) : (
+              <p className="text-[11px] text-slate-500 mb-4">연관된 손실 매매 내역이 없습니다.</p>
+            )}
+            <div className="flex gap-2">
+              <button onClick={() => setDeleteModal(null)}
+                className="flex-1 py-2.5 bg-slate-700/50 hover:bg-slate-700 text-slate-300 text-xs rounded-xl transition-all">
+                취소
+              </button>
+              <button onClick={confirmDelete}
+                className="flex-1 py-2.5 bg-rose-700 hover:bg-rose-600 text-white text-xs font-bold rounded-xl transition-all">
+                삭제 승인
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-2xl bg-white/[0.03] border border-white/[0.06] overflow-hidden">
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-white/[0.06]">
+          <span className="text-sm font-semibold text-slate-200">🧠 자기학습 인사이트</span>
+          <span className="ml-auto text-[10px] bg-slate-700/60 text-slate-400 px-2 py-0.5 rounded-full">{insights.length}개</span>
+          <button onClick={() => setShowAdd(v => !v)}
+            className="text-[10px] bg-purple-900/40 hover:bg-purple-900/60 text-purple-300 px-2.5 py-1 rounded-lg transition-all">
+            + CEO 가이드 추가
+          </button>
+        </div>
+
+        {showAdd && (
+          <div className="px-4 py-3 border-b border-white/[0.04] bg-purple-900/10 flex gap-2">
+            <input
+              value={newInsight}
+              onChange={e => setNewInsight(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleAdd()}
+              placeholder="예: 공매도 과열 종목은 반드시 제외할 것"
+              className="flex-1 bg-white/[0.06] border border-white/[0.08] rounded-lg px-3 py-1.5 text-xs text-slate-200 placeholder:text-slate-600 outline-none focus:border-purple-500/50"
+            />
+            <button onClick={handleAdd} disabled={adding}
+              className="px-3 py-1.5 bg-purple-700 hover:bg-purple-600 text-white text-xs rounded-lg disabled:opacity-50">
+              {adding ? '저장중...' : '저장'}
+            </button>
+          </div>
+        )}
+
+        {harmful.length > 0 && (
+          <div className="px-4 py-2.5 bg-rose-900/10 border-b border-rose-900/20">
+            <p className="text-[11px] text-rose-400 font-medium mb-2">
+              ⚠️ 아래 인사이트는 수익에 악영향을 줄 수 있습니다 — 삭제를 검토하세요
+            </p>
+            {harmful.map(i => (
+              <div key={i.id} className="flex items-start gap-2 py-1.5 border-b border-rose-900/10 last:border-0">
+                <div className="flex-1 min-w-0">
+                  <p className="text-[11px] text-slate-300 leading-relaxed">{i.insight}</p>
+                  <p className="text-[10px] text-slate-500 mt-0.5">
+                    신뢰도 {Math.round(i.confidence * 100)}% · 샘플 {i.sample_count}건
+                  </p>
+                </div>
+                <button
+                  onClick={() => openDeleteModal(i.id, i.insight)}
+                  disabled={deleting === i.id}
+                  className="shrink-0 px-2.5 py-1 bg-rose-800/50 hover:bg-rose-700 text-rose-300 text-[10px] rounded-lg transition-all disabled:opacity-50">
+                  {deleting === i.id ? '삭제중...' : '삭제'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="divide-y divide-white/[0.03] max-h-80 overflow-y-auto">
+          {insights.filter(i => i.category !== 'LOSS_PATTERN').map(i => (
+            <div key={i.id} className="px-4 py-3 hover:bg-white/[0.02]">
+              <div className="flex items-start gap-3">
+                <span className={`shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded mt-0.5 ${categoryColor[i.category] ?? 'text-slate-400 bg-slate-800'}`}>
+                  {categoryLabel[i.category] ?? i.category}
+                </span>
+                <p className="flex-1 text-[11px] text-slate-300 leading-relaxed">{i.insight}</p>
+                <div className="shrink-0 flex items-center gap-1.5">
+                  {i.is_applied
+                    ? <span className="text-[9px] bg-emerald-900/40 text-emerald-400 px-1.5 py-0.5 rounded-full">적용됨</span>
+                    : i.param_change && (
+                      <button onClick={() => handleApply(i.id)} disabled={applying === i.id}
+                        className="text-[9px] bg-violet-700/60 hover:bg-violet-600 text-violet-200 px-2 py-0.5 rounded-full transition-all disabled:opacity-50 whitespace-nowrap">
+                        {applying === i.id ? '적용중...' : '전략 적용'}
+                      </button>
+                    )
+                  }
+                  <button onClick={() => openDeleteModal(i.id, i.insight)} disabled={deleting === i.id}
+                    className="shrink-0 text-slate-600 hover:text-rose-400 text-[11px] transition-colors disabled:opacity-50">
+                    ✕
+                  </button>
+                </div>
+              </div>
+              {i.recommendation && (
+                <div className="mt-1.5 ml-[52px] flex items-start gap-1.5">
+                  <span className="text-[9px] text-amber-400/80 shrink-0 mt-0.5">→ 권장:</span>
+                  <p className="text-[10px] text-amber-300/70 leading-relaxed">{i.recommendation}</p>
+                </div>
+              )}
+              {i.param_change && !i.is_applied && (
+                <div className="mt-1 ml-[52px]">
+                  <span className="text-[9px] text-violet-400/60">
+                    파라미터 변경: {i.param_change.field} → {String(i.param_change.value)}
+                  </span>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── 성과 종합 분석 패널 ──
+function PerformancePanel({ trades, strategy, setStrategy, toast }: { trades: any[]; strategy: any; setStrategy?: (s: any) => void; toast?: (msg: string, type: string) => void }) {
+  const [quickPrompt, setQuickPrompt] = React.useState('');
+  const [savingPrompt, setSavingPrompt] = React.useState(false);
+
+  // 일별 실현 손익 계산 (SELL 체결 기준)
+  const sellTrades = trades.filter((t: any) => t.status === 'FILLED' && t.side === 'SELL');
+  const dailyMap = new Map<string, number>();
+  for (const t of sellTrades) {
+    const date = new Date(t.created_at).toISOString().slice(0, 10);
+    const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
+    const filledPx = Number(t.filled_price) || 0;
+    const qty = Number(t.quantity) || 0;
+    if (avgBuy > 0 && filledPx > 0) {
+      dailyMap.set(date, (dailyMap.get(date) ?? 0) + (filledPx - avgBuy) * qty);
+    }
+  }
+
+  const sortedDays = [...dailyMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  let cumPnl = 0; let peak = 0; let maxDdPct = 0; let maxDdAmt = 0;
+  const dailySeries = sortedDays.map(([date, pnl]) => {
+    cumPnl += pnl;
+    if (cumPnl > peak) peak = cumPnl;
+    const dd = peak > 0 ? ((peak - cumPnl) / peak) * 100 : 0;
+    if (dd > maxDdPct) { maxDdPct = dd; maxDdAmt = peak - cumPnl; }
+    return { date, pnl, cumPnl };
+  });
+
+  const allPnls = dailySeries.map(d => d.pnl);
+  const avgPnl = allPnls.length > 0 ? allPnls.reduce((s, v) => s + v, 0) / allPnls.length : 0;
+  const winRate = allPnls.length > 0 ? Math.round((allPnls.filter(p => p > 0).length / allPnls.length) * 100) : 0;
+  // 손익비: 평균 수익 / 평균 손실 (1 이상이면 우량)
+  const winPnls = allPnls.filter(p => p > 0);
+  const lossPnls = allPnls.filter(p => p < 0);
+  const avgWin = winPnls.length > 0 ? winPnls.reduce((s, v) => s + v, 0) / winPnls.length : 0;
+  const avgLoss = lossPnls.length > 0 ? Math.abs(lossPnls.reduce((s, v) => s + v, 0) / lossPnls.length) : 0;
+  const profitFactor = avgLoss > 0 ? avgWin / avgLoss : (avgWin > 0 ? 99 : 0);
+  // 연속 손실/수익 스트릭 (최근)
+  let streak = 0; let streakDir: 'win' | 'loss' | 'none' = 'none';
+  for (let k = allPnls.length - 1; k >= 0; k--) {
+    const p = allPnls[k];
+    if (streak === 0) { streakDir = p > 0 ? 'win' : 'loss'; streak = 1; }
+    else if ((streakDir === 'win' && p > 0) || (streakDir === 'loss' && p < 0)) streak++;
+    else break;
+  }
+
+  const last14 = dailySeries.slice(-14);
+  const last7 = dailySeries.slice(-7);
+  const pos7 = last7.filter(d => d.pnl > 0).length;
+  const neg7 = last7.filter(d => d.pnl < 0).length;
+  const trendUp = pos7 > neg7; const trendDown = neg7 > pos7;
+  const trendLabel = trendDown ? '하락세' : trendUp ? '상승세' : '횡보';
+  const trendColor = trendDown ? 'text-rose-400' : trendUp ? 'text-emerald-400' : 'text-slate-400';
+  const trendBg = trendDown ? 'bg-rose-900/20 border-rose-900/20' : trendUp ? 'bg-emerald-900/20 border-emerald-900/20' : 'bg-slate-700/20 border-slate-700/20';
+  const maxBar = last14.length > 0 ? Math.max(...last14.map(d => Math.abs(d.pnl)), 1) : 1;
+
+  const saveQuickPrompt = async () => {
+    if (!quickPrompt.trim() || !setStrategy) return;
+    setSavingPrompt(true);
+    try {
+      const body = {
+        ...strategy,
+        claude_prompt: (strategy?.claude_prompt ?? '') + '\n\n[CEO 추가 지시 ' + new Date().toLocaleDateString('ko') + ']\n' + quickPrompt.trim(),
+      };
+      const u = await fetch('/api/settings/strategy', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+      setStrategy(u);
+      setQuickPrompt('');
+      toast?.('전략 지시 추가됨', 'ok');
+    } finally { setSavingPrompt(false); }
+  };
+
+  if (dailySeries.length === 0 && !strategy) return null;
+
+  return (
+    <div className="rounded-2xl bg-white/[0.03] border border-white/[0.06] overflow-hidden">
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-white/[0.06]">
+        <span className="text-sm font-semibold text-slate-200">📊 성과 종합 분석</span>
+        <span className={`ml-auto text-[10px] font-bold px-2.5 py-1 rounded-full border ${trendBg} ${trendColor}`}>
+          {trendDown ? '↓' : trendUp ? '↑' : '→'} {trendLabel} (7일)
+        </span>
+      </div>
+      <div className="p-4 space-y-4">
+        {/* 4개 핵심 지표 */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="bg-white/[0.03] rounded-xl p-3">
+            <div className="text-[10px] text-slate-500 mb-1">누적 실현 손익</div>
+            <div className={`text-base font-black ${cumPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+              {cumPnl >= 0 ? '+' : ''}{fmtWon(cumPnl)}
+            </div>
+            <div className="text-[9px] text-slate-600 mt-1">일평균 {avgPnl >= 0 ? '+' : ''}{fmtWon(avgPnl)}</div>
+          </div>
+          <div className="bg-white/[0.03] rounded-xl p-3">
+            <div className="text-[10px] text-slate-500 mb-1">최대 낙폭 (MDD)</div>
+            <div className={`text-base font-black ${maxDdPct > 15 ? 'text-rose-400' : maxDdPct > 7 ? 'text-amber-400' : 'text-slate-300'}`}>
+              -{maxDdPct.toFixed(1)}%
+            </div>
+            <div className="text-[9px] text-slate-600 mt-1">{fmtWon(maxDdAmt)}</div>
+          </div>
+          <div className="bg-white/[0.03] rounded-xl p-3">
+            <div className="text-[10px] text-slate-500 mb-1">승률</div>
+            <div className={`text-base font-black ${winRate >= 60 ? 'text-emerald-400' : winRate >= 45 ? 'text-amber-400' : 'text-rose-400'}`}>
+              {winRate}%
+            </div>
+            <div className="text-[9px] text-slate-600 mt-1">{winPnls.length}승 {lossPnls.length}패 ({dailySeries.length}일)</div>
+          </div>
+          <div className="bg-white/[0.03] rounded-xl p-3">
+            <div className="text-[10px] text-slate-500 mb-1">손익비</div>
+            <div className={`text-base font-black ${profitFactor >= 1.5 ? 'text-emerald-400' : profitFactor >= 1.0 ? 'text-amber-400' : 'text-rose-400'}`}>
+              {profitFactor === 99 ? '∞' : profitFactor.toFixed(2)}
+            </div>
+            <div className="text-[9px] mt-1">
+              {streak > 1 && streakDir !== 'none'
+                ? <span className={streakDir === 'win' ? 'text-emerald-500' : 'text-rose-500'}>{streakDir === 'win' ? `${streak}연승` : `${streak}연패 ⚠️`}</span>
+                : <span className="text-slate-600">평균 +{fmtWon(avgWin)} / -{fmtWon(avgLoss)}</span>
+              }
+            </div>
+          </div>
+        </div>
+
+        {/* 최근 14일 미니 바 차트 */}
+        {last14.length > 0 && (
+          <div>
+            <div className="text-[10px] text-slate-500 mb-2">최근 {last14.length}일 일별 손익</div>
+            <div className="flex items-end gap-0.5 h-10">
+              {last14.map((d, i) => {
+                const barH = Math.max(3, (Math.abs(d.pnl) / maxBar) * 36);
+                return (
+                  <div key={i} className="flex-1 flex flex-col items-center justify-end" title={`${d.date}: ${d.pnl >= 0 ? '+' : ''}${fmtWon(d.pnl)}`}>
+                    <div className={`w-full rounded-sm ${d.pnl >= 0 ? 'bg-emerald-500/70' : 'bg-rose-500/70'}`} style={{ height: `${barH}px` }} />
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex justify-between text-[9px] text-slate-700 mt-1">
+              <span>{last14[0]?.date?.slice(5)}</span>
+              <span>오늘</span>
+            </div>
+          </div>
+        )}
+
+        {/* 빠른 전략 지시 입력창 */}
+        {setStrategy && (
+          <div className="border-t border-white/[0.04] pt-3">
+            <div className="text-[10px] text-slate-500 mb-2">⚡ 빠른 전략 지시 <span className="text-slate-700">(Claude 프롬프트에 추가됨)</span></div>
+            <div className="flex gap-2">
+              <textarea
+                value={quickPrompt}
+                onChange={e => setQuickPrompt(e.target.value)}
+                placeholder="예: 오늘부터 바이오 전면 제외, 반도체만 공략..."
+                rows={2}
+                className="flex-1 bg-white/[0.04] border border-white/[0.06] rounded-xl px-3 py-2 text-[11px] text-slate-200 placeholder:text-slate-700 outline-none focus:border-blue-500/40 resize-none"
+              />
+              <button
+                onClick={saveQuickPrompt}
+                disabled={savingPrompt || !quickPrompt.trim()}
+                className="px-4 bg-blue-700/60 hover:bg-blue-600/80 text-blue-300 text-xs rounded-xl transition-all disabled:opacity-40 shrink-0">
+                {savingPrompt ? '...' : '저장'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // HOME VIEW
 // ═══════════════════════════════════════
 
-function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, onRefresh }: any) {
+function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, strategy, setStrategy, toast, onRefresh }: any) {
   const [showPortfolio, setShowPortfolio] = React.useState(false);
   const [holdingsTab, setHoldingsTab] = React.useState<'KR' | 'US'>('KR');
   const p = dash?.portfolio;
   const os = dash?.overseas; // 해외 보유 데이터
   const stockNameMap = new Map((watchlist ?? []).map((w: any) => [w.stock_code, w.stock_name]));
   const getStockName = (code: string): string => {
-    const n = String(stockNameMap.get(code) ?? '');
-    return (n && !isGarbledName(n) && n !== code) ? n : code;
+    return toDisplayName(stockNameMap.get(code), code);
   };
   const chains = dash?.chains || [];
   const usW = usDash?.watchlist || [];
@@ -283,18 +718,29 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const filled = trades.filter((t: any) => t.status === 'FILLED' && t.trigger_source !== 'OVERSEAS');
   const todayTrades = filled.filter((t: any) => new Date(t.created_at).toDateString() === new Date().toDateString());
 
-  const totalPnl = p?.pnl ?? 0;
-  const totalPnlPct = p?.pnlPct ?? 0;
-  const totalInvested = p?.invested ?? 0; // 국내+해외 합산
-  const domesticInvested = p?.domesticInvested ?? 0;
+  // API에서 내려오는 손익 분리 값 사용
+  const unrealizedPnl = p?.unrealizedPnl ?? p?.pnl ?? 0;  // 국내 미실현손익만
+  const realizedPnl   = p?.realizedPnl ?? 0;               // 실현손익 (매도 완료분)
+  const totalPnl      = p?.pnl ?? 0;                       // 국내 미실현+실현 합산
+  const totalPnlPct   = p?.pnlPct ?? 0;
+  const domesticInvested = p?.domesticInvested ?? 0;       // 국내 투자 원금
+  const totalInvested    = p?.invested ?? domesticInvested; // 국내+해외 투자 원금
   const overseasInvestedUsd = os?.totalInvestedUsd ?? 0;
   const overseasInvestedKrw = os?.totalInvestedKrw ?? 0;
   const overseasCashUsd = os?.cashUsd ?? 0;
+  const overseasCashKrw = os?.cashKrw ?? (overseasCashUsd * (os?.fxRate ?? 1380));
   const fxRate = os?.fxRate ?? 1380;
   const dailyLossLimit = dash?.riskLimits?.maxDailyDrawdownKrw ?? 200000;
-  const investedPct = p?.totalValue > 0 ? Math.round((totalInvested / p.totalValue) * 100) : 0;
+  const totalValue = Number(p?.totalValue ?? 0);
+  const domesticCash = Number(p?.cash ?? 0);
+  const pctClamp = (v: number) => Math.max(0, Math.min(100, v));
+  const investedPct = totalValue > 0 ? Math.round((totalInvested / totalValue) * 100) : 0;
+  // 국내 포트폴리오 비중 바 차트용 (소수점 포함 — 합계 100% 맞춤)
+  const investedPctExact = totalValue > 0 ? (domesticInvested / totalValue) * 100 : 0;
+  const cashPctExact = totalValue > 0 ? (domesticCash / totalValue) * 100 : 0;
+  const overseasCashPctExact = totalValue > 0 ? (overseasCashKrw / totalValue) * 100 : 0;
 
-  // 통합 미실현 손익 (국내 + 해외 → 원화 환산)
+  // 통합 미실현 손익 — 국내(미실현만) + 해외 미실현 합산
   const overseasPnlUsd = usHoldings.reduce((sum: number, h: any) => {
     const priceData = usW.find((s: any) => s.code === h.stock_code);
     const curPrice = priceData?.price ?? 0;
@@ -302,10 +748,43 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
     return sum + (curPrice - h.avg_price) * h.quantity;
   }, 0);
   const overseasPnlKrw = Math.round(overseasPnlUsd * fxRate);
-  const combinedPnl = totalPnl + (usHoldings.length > 0 ? overseasPnlKrw : 0);
+  // combinedPnl = 국내 미실현 + 해외 미실현 (실현손익 제외 — 이미 현금에 반영)
+  const combinedPnl = unrealizedPnl + (usHoldings.length > 0 ? overseasPnlKrw : 0);
   const combinedInvested = (domesticInvested > 0 ? domesticInvested : 0) + (overseasInvestedKrw > 0 ? overseasInvestedKrw : 0);
   const combinedPnlPct = combinedInvested > 0 ? (combinedPnl / combinedInvested) * 100 : (domesticInvested > 0 ? totalPnlPct : 0);
   const hasOverseasHoldings = usHoldings.length > 0;
+
+  // 탭별 금일 손익 = 오늘 매도 실현손익 + 오늘 매수 포지션 미실현손익
+  const todayStr = new Date().toDateString();
+  const krTodaySells = todayTrades.filter((t: any) => t.side === 'SELL');
+  const krRealizedPnl = krTodaySells.reduce((sum: number, t: any) => {
+    const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
+    const filledPx = Number(t.filled_price) || 0;
+    const qty = Number(t.quantity) || 0;
+    return avgBuy > 0 && filledPx > 0 ? sum + (filledPx - avgBuy) * qty : sum;
+  }, 0);
+  const krUnrealizedTodayPnl = chains
+    .filter((ch: any) => new Date(ch.opened_at).toDateString() === todayStr)
+    .reduce((sum: number, ch: any) => sum + (ch.unrealizedPnl ?? 0), 0);
+  const krTabPnl = krRealizedPnl + krUnrealizedTodayPnl;
+  const krTabHasData = krTodaySells.length > 0 || chains.some((ch: any) => new Date(ch.opened_at).toDateString() === todayStr);
+  const krTodayInvested = chains
+    .filter((ch: any) => new Date(ch.opened_at).toDateString() === todayStr)
+    .reduce((sum: number, ch: any) => sum + (Number(ch.avg_buy_price) * Number(ch.total_quantity)), 0)
+    + krTodaySells.reduce((sum: number, t: any) => sum + (Number(t.transaction_chains?.avg_buy_price) * Number(t.quantity)), 0);
+  const krTabPct = krTodayInvested > 0 ? (krTabPnl / krTodayInvested) * 100 : null;
+
+  const usTodaySells = trades.filter((t: any) =>
+    t.status === 'FILLED' && t.side === 'SELL' && t.trigger_source === 'OVERSEAS' &&
+    new Date(t.created_at).toDateString() === todayStr
+  );
+  const usTabPnlUsd = usTodaySells.reduce((sum: number, t: any) => {
+    const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
+    const filledPx = Number(t.filled_price) || 0;
+    const qty = Number(t.quantity) || 0;
+    return avgBuy > 0 && filledPx > 0 ? sum + (filledPx - avgBuy) * qty : sum;
+  }, 0);
+  const usTabPnlKrw = Math.round(usTabPnlUsd * fxRate);
 
   // 로봇 일과 타임라인 계산
   const now = new Date();
@@ -321,8 +800,22 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   })();
   const currentTimeStr = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
 
+  const defensePark = dash?.defensePark;
+
   return (
     <div className="space-y-4 sm:space-y-5">
+
+      {/* ── 방어 파킹 배너 ── */}
+      {defensePark?.isActive && (
+        <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 flex items-start gap-3">
+          <span className="text-xl shrink-0">🛡️</span>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-amber-300">방어 파킹 중 — {defensePark.parkStockName} 보유</p>
+            <p className="text-xs text-amber-400/80 mt-0.5 truncate">진입 사유: {defensePark.entryReason ?? '하락세 감지'}</p>
+            <p className="text-xs text-amber-400/60 mt-0.5">시장 회복 감지 시 자동으로 정상 매매 복귀합니다.</p>
+          </div>
+        </div>
+      )}
 
       {/* ── 상태 한 줄 바 (손실 한도 + 장 진행도 통합) ── */}
       <div className="glass rounded-2xl border border-white/[0.04] px-4 py-3 flex items-center gap-4">
@@ -371,7 +864,9 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
         <div className="flex items-center gap-2 shrink-0">
           <span className="text-[10px] text-slate-500">손실 한도</span>
           <div className={`text-[11px] font-bold ${totalPnl < -(dailyLossLimit * 0.6) ? 'text-rose-400' : totalPnl < 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
-            {totalPnl < 0 ? `${Math.round((Math.abs(totalPnl) / dailyLossLimit) * 100)}%` : '0%'}
+            {totalPnl < 0
+              ? `${Math.min(100, Math.round((Math.abs(totalPnl) / dailyLossLimit) * 100))}% (${fmtWon(Math.abs(totalPnl))}/${fmtWon(dailyLossLimit)})`
+              : '0%'}
           </div>
         </div>
       </div>
@@ -383,7 +878,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
           <div className="text-xl sm:text-2xl font-black tracking-tight text-white">{fmtWon(p?.totalValue)}</div>
           <div className="flex flex-wrap gap-x-2 mt-2 text-[10px]">
             <span className="text-slate-500">현금 <b className="text-slate-300">{fmtWon(p?.cash)}</b></span>
-            <span className="text-slate-500">투자 <b className="text-blue-400">{fmtWon(totalInvested)}</b></span>
+            <span className={`font-semibold ${combinedPnl > 0 ? 'text-emerald-400' : combinedPnl < 0 ? 'text-rose-400' : 'text-slate-500'}`}>{combinedPnl > 0 ? '+' : ''}{fmtWon(combinedPnl)}</span>
           </div>
         </div>
 
@@ -397,7 +892,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
           </div>
           {hasOverseasHoldings && (
             <div className="flex gap-2 mt-1.5 text-[10px] text-slate-600">
-              <span>국내 <span className={pc(totalPnl)}>{totalPnl > 0 ? '+' : ''}{fmtWon(totalPnl)}</span></span>
+              <span>국내 <span className={pc(unrealizedPnl)}>{unrealizedPnl > 0 ? '+' : ''}{fmtWon(unrealizedPnl)}</span></span>
               <span>·</span>
               <span>해외 <span className={pc(overseasPnlUsd)}>{overseasPnlUsd > 0 ? '+' : ''}${overseasPnlUsd.toFixed(0)}</span></span>
             </div>
@@ -405,11 +900,12 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
         </div>
 
         <div className="rounded-2xl p-4 sm:p-5 glass border border-white/[0.04]">
-          <div className="text-[10px] text-slate-500 mb-1 font-medium">투자금</div>
-          <div className="text-xl sm:text-2xl font-black text-blue-400">{fmtWon(totalInvested)}</div>
-          <div className="text-[10px] mt-2">
-            <span className={`font-bold ${investedPct > 60 ? 'text-amber-400' : 'text-slate-400'}`}>비중 {investedPct}%</span>
-            <span className="text-slate-600 ml-1">({chains.length}종목)</span>
+          <div className="text-[10px] text-slate-500 mb-1 font-medium">투자 비중</div>
+          <div className={`text-xl sm:text-2xl font-black ${investedPct > 60 ? 'text-amber-400' : 'text-blue-400'}`}>{investedPct}%</div>
+          <div className="flex flex-wrap gap-x-2 mt-2 text-[10px]">
+            <span className="text-slate-500">국내 <b className="text-slate-300">{fmtWon(domesticInvested)}</b></span>
+            {hasOverseasHoldings && <span className="text-slate-500">해외 <b className="text-slate-300">${overseasInvestedUsd.toFixed(0)}</b></span>}
+            <span className="text-slate-600">({chains.length}종목)</span>
           </div>
         </div>
 
@@ -436,12 +932,18 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
           <button onClick={() => setHoldingsTab('KR')}
             className={`flex-1 py-3 px-4 text-sm font-bold transition-all relative ${holdingsTab === 'KR' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-400'}`}>
             {holdingsTab === 'KR' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500" />}
-            국내주식 {chains.length > 0 && <span className="ml-1.5 text-[10px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded-full">{chains.length}</span>}
+            <span className="flex items-center justify-center gap-1.5 flex-wrap">
+              국내주식 {chains.length > 0 && <span className="text-[10px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded-full">{chains.length}</span>}
+              {krTabHasData && <span className={`text-[10px] font-semibold ${krTabPnl > 0 ? 'text-emerald-400' : krTabPnl < 0 ? 'text-rose-400' : 'text-slate-500'}`}>{krTabPnl > 0 ? '+' : ''}{Math.round(krTabPnl).toLocaleString('ko-KR')}원{krTabPct != null ? ` (${krTabPct > 0 ? '+' : ''}${krTabPct.toFixed(2)}%)` : ''}</span>}
+            </span>
           </button>
           <button onClick={() => setHoldingsTab('US')}
             className={`flex-1 py-3 px-4 text-sm font-bold transition-all relative ${holdingsTab === 'US' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-400'}`}>
             {holdingsTab === 'US' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500" />}
-            해외주식 {usHoldings.length > 0 && <span className="ml-1.5 text-[10px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded-full">{usHoldings.length}</span>}
+            <span className="flex items-center justify-center gap-1.5 flex-wrap">
+              해외주식 {usHoldings.length > 0 && <span className="text-[10px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded-full">{usHoldings.length}</span>}
+              {usTodaySells.length > 0 && <span className={`text-[10px] font-semibold ${usTabPnlUsd > 0 ? 'text-emerald-400' : usTabPnlUsd < 0 ? 'text-rose-400' : 'text-slate-500'}`}>{usTabPnlUsd > 0 ? '+' : ''}${usTabPnlUsd.toFixed(2)} (₩{usTabPnlKrw > 0 ? '+' : ''}{usTabPnlKrw.toLocaleString('ko-KR')})</span>}
+            </span>
           </button>
         </div>
 
@@ -459,16 +961,18 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                 const stopPct = Number(ch.stop_loss_pct) || -5;
                 const pnl = ch.unrealizedPnl ?? 0;
                 const pnlPct = ch.unrealizedPnlPct ?? 0;
+                const displayName = toDisplayName(ch.stock_name, ch.stock_code) === '종목명 확인중'
+                  ? getStockName(ch.stock_code)
+                  : toDisplayName(ch.stock_name, ch.stock_code);
                 return (
                   <div key={`c${i}`} className="p-4 bg-[#0f1320] hover:bg-white/[0.01] transition-colors">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="text-sm font-bold truncate">{(ch.stock_name && ch.stock_name !== ch.stock_code && !isGarbledName(ch.stock_name)) ? ch.stock_name : getStockName(ch.stock_code)}</span>
-                          <span className="text-[10px] text-slate-500">{ch.stock_code}</span>
+                          <span className="text-sm font-bold truncate">{displayName}</span>
                           <span className="text-[10px] bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded font-medium">{ch.strategy_mode}</span>
                         </div>
-                        <div className="text-[11px] text-slate-500 mt-0.5">평단 {fmtWon(avgPrice)} · {fmt(qty)}주</div>
+                        <div className="text-[11px] text-slate-500 mt-0.5">매수평단 {fmtWon(avgPrice)} · {fmt(qty)}주</div>
                       </div>
                       <div className="text-right shrink-0">
                         {ch.currentPrice > 0 ? (
@@ -479,15 +983,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                         ) : <span className="text-xs text-slate-600">장 마감</span>}
                       </div>
                     </div>
-                    <div className="grid grid-cols-3 gap-2 mt-2.5">
-                      <div>
-                        <div className="text-[10px] text-slate-500 mb-1">분할매수</div>
-                        <div className="flex gap-0.5">
-                          {Array.from({ length: maxAvg }, (_, j) => (
-                            <span key={j} className={`w-4 h-4 rounded-full text-[8px] font-bold flex items-center justify-center ${j <= curAvg ? 'bg-blue-500 text-white' : 'bg-white/[0.06] text-slate-600'}`}>{j + 1}</span>
-                          ))}
-                        </div>
-                      </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mt-3">
                       <div>
                         <div className="text-[10px] text-slate-500 mb-1">투자금</div>
                         <div className="text-[12px] font-bold">{fmtWon(invested)}</div>
@@ -496,17 +992,54 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                         <div className="text-[10px] text-slate-500 mb-1">현재가</div>
                         <div className="text-[12px] font-bold">{ch.currentPrice > 0 ? fmtWon(ch.currentPrice) : '-'}</div>
                       </div>
+                      <div>
+                        <div className="text-[10px] text-emerald-600 mb-1">목표가</div>
+                        <div className="text-[12px] font-bold text-emerald-500">{avgPrice > 0 ? fmtWon(Math.round(avgPrice * (1 + targetPct / 100))) : '-'}</div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] text-rose-600 mb-1">손절가</div>
+                        <div className="text-[12px] font-bold text-rose-500">{avgPrice > 0 ? fmtWon(Math.round(avgPrice * (1 + stopPct / 100))) : '-'}</div>
+                      </div>
                     </div>
                     <div className="flex items-center gap-1.5 mt-2.5">
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400">+{targetPct}% 익절</span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400">{stopPct}% 손절</span>
-                      <button onClick={async () => {
-                        if (!confirm(`${ch.stock_code} ${qty}주 전량 시장가 매도하시겠습니까?`)) return;
-                        try { const r = await api(`/sell/${ch.id}`, { method: 'POST' }); alert(r.message || '매도 완료'); onRefresh(); }
-                        catch (err: any) { alert('매도 실패: ' + err.message); }
-                      }} className="text-[10px] ml-auto px-2 py-0.5 rounded-lg bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 transition-colors font-medium border border-white/[0.04]">
-                        전량 매도
-                      </button>
+                      <div className="flex gap-0.5 mr-1">
+                        {Array.from({ length: maxAvg }, (_, j) => (
+                          <span key={j} className={`w-3.5 h-3.5 rounded-full text-[7px] font-bold flex items-center justify-center ${j <= curAvg ? 'bg-blue-500 text-white' : 'bg-white/[0.06] text-slate-600'}`}>{j + 1}</span>
+                        ))}
+                      </div>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400">+{targetPct}%</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400">{stopPct}%</span>
+                      <div className="ml-auto flex items-center gap-1">
+                        {/* 탈출 버튼: +0.5% 도달 순간 자동 전량 매도 */}
+                        {ch.escape_target_price ? (
+                          <button onClick={async () => {
+                            try {
+                              await api(`/escape/${ch.id}`, { method: 'DELETE' });
+                              onRefresh();
+                            } catch (err: any) { alert('취소 실패: ' + err.message); }
+                          }} className="text-[10px] px-2 py-0.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 transition-colors font-bold border border-amber-500/30 animate-pulse">
+                            탈출대기 {fmtWon(Number(ch.escape_target_price))}
+                          </button>
+                        ) : (
+                          <button onClick={async () => {
+                            if (!confirm(`${displayName}\n\n현재가 기준 +0.5% 돌파 시 자동 전량 매도합니다.\n손해 보기 싫을 때 탈출구를 열어두는 기능입니다.`)) return;
+                            try {
+                              const r = await api(`/escape/${ch.id}`, { method: 'POST' });
+                              alert(`탈출 목표가 설정: ${fmtWon(r.escape_target_price)}\n현재가 ${fmtWon(r.current_price)} → +0.5% 도달 시 자동 매도`);
+                              onRefresh();
+                            } catch (err: any) { alert('탈출 설정 실패: ' + err.message); }
+                          }} className="text-[10px] px-2 py-0.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 transition-colors font-bold border border-amber-500/20">
+                            탈출
+                          </button>
+                        )}
+                        <button onClick={async () => {
+                          if (!confirm(`${displayName} ${qty}주 전량 시장가 매도하시겠습니까?`)) return;
+                          try { const r = await api(`/sell/${ch.id}`, { method: 'POST' }); alert(r.message || '매도 완료'); onRefresh(); }
+                          catch (err: any) { alert('매도 실패: ' + err.message); }
+                        }} className="text-[10px] px-2 py-0.5 rounded-lg bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 transition-colors font-medium border border-white/[0.04]">
+                          전량 매도
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
@@ -532,12 +1065,12 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                   const invested = h.avg_price * h.quantity;
                   const pnl = curPrice > 0 ? (curPrice - h.avg_price) * h.quantity : 0;
                   const pnlPct = curPrice > 0 && h.avg_price > 0 ? ((curPrice - h.avg_price) / h.avg_price) * 100 : 0;
+                  const usDisplayName = toDisplayName(priceData?.name, h.stock_code);
                   return (
                     <div key={h.stock_code} className="px-4 py-3 flex items-center justify-between">
                       <div>
                         <div className="flex items-center gap-2">
-                          <span className="text-sm font-bold">{priceData?.name || h.stock_code}</span>
-                          <span className="text-[10px] text-slate-500">{h.stock_code}</span>
+                          <span className="text-sm font-bold">{usDisplayName}</span>
                           <span className="text-[10px] text-slate-500">{h.quantity}주</span>
                         </div>
                         <div className="text-[11px] text-slate-500">평단 ${h.avg_price.toFixed(2)} · 투자 ${invested.toFixed(0)}</div>
@@ -559,12 +1092,12 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3.5">
                 {usW.filter((s: any) => s.price > 0).map((s: any) => {
                   const held = usHoldings.find((h: any) => h.stock_code === s.code);
+                  const usDisplayName = toDisplayName(s.name, s.code);
                   return (
                     <div key={s.code} className={`rounded-xl border p-3 text-center transition-all hover:scale-[1.02] ${pbg(s.changePct)} ${held ? 'border-blue-500/40' : 'border-slate-700/30'}`}>
-                      <div className="text-xs font-bold text-slate-300">{s.code} {held ? '📌' : ''}</div>
+                      <div className="text-xs font-bold text-slate-300 truncate">{usDisplayName} {held ? '📌' : ''}</div>
                       <div className="text-base font-bold mt-1">${s.price.toFixed(1)}</div>
                       <div className={`text-[11px] font-semibold mt-0.5 ${pc(s.changePct)}`}>{s.changePct !== 0 ? fmtPct(s.changePct) : '-'}</div>
-                      <div className="text-[10px] text-slate-600 mt-0.5">{s.name}</div>
                     </div>
                   );
                 })}
@@ -595,11 +1128,27 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
             {/* 현금 vs 투자 비율 바 (국내 기준) */}
             <div>
               <div className="flex justify-between text-[11px] mb-2">
-                <span className="text-slate-500">현금 {p?.cash > 0 ? ((p.cash / (p?.totalValue || 1)) * 100).toFixed(0) : 0}%</span>
-                <span className="text-slate-500">투자 {totalInvested > 0 ? ((totalInvested / (p?.totalValue || 1)) * 100).toFixed(0) : 0}%</span>
+                <span className="text-slate-500">국내 현금 {cashPctExact.toFixed(0)}%</span>
+                <span className="text-slate-500">투자 {investedPctExact.toFixed(0)}%</span>
+                {overseasCashKrw > 0 && <span className="text-slate-500">해외 현금 {overseasCashPctExact.toFixed(0)}%</span>}
               </div>
               <div className="h-2.5 bg-white/[0.04] rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 rounded-full transition-all duration-500" style={{ width: `${totalInvested > 0 ? (totalInvested / (p?.totalValue || 1)) * 100 : 0}%` }} />
+                <div className="h-full flex">
+                  <div
+                    className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 transition-all duration-500"
+                    style={{ width: `${pctClamp(investedPctExact)}%` }}
+                  />
+                  <div
+                    className="h-full bg-slate-400/40 transition-all duration-500"
+                    style={{ width: `${pctClamp(cashPctExact)}%` }}
+                  />
+                  {overseasCashKrw > 0 && (
+                    <div
+                      className="h-full bg-indigo-400/60 transition-all duration-500"
+                      style={{ width: `${pctClamp(overseasCashPctExact)}%` }}
+                    />
+                  )}
+                </div>
               </div>
             </div>
             {/* 종목별 비중 — 국내 */}
@@ -614,7 +1163,11 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                   return (
                     <div key={`kr-${i}`}>
                       <div className="flex justify-between text-[11px] mb-1">
-                        <span className="font-medium text-slate-300">{(ch.stock_name && ch.stock_name !== ch.stock_code && !isGarbledName(ch.stock_name)) ? ch.stock_name : getStockName(ch.stock_code)}</span>
+                        <span className="font-medium text-slate-300">
+                          {toDisplayName(ch.stock_name, ch.stock_code) === '종목명 확인중'
+                            ? getStockName(ch.stock_code)
+                            : toDisplayName(ch.stock_name, ch.stock_code)}
+                        </span>
                         <span className="text-slate-500">{fmtWon(inv)} ({pct.toFixed(0)}%)</span>
                       </div>
                       <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
@@ -639,7 +1192,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                     return (
                       <div key={`us-${i}`}>
                         <div className="flex justify-between text-[11px] mb-1">
-                          <span className="font-medium text-blue-300">{priceData?.name || h.stock_code}</span>
+                          <span className="font-medium text-blue-300">{toDisplayName(priceData?.name, h.stock_code)}</span>
                           <span className="text-slate-500">{fmtWon(invKrw)} ({pct.toFixed(0)}%)</span>
                         </div>
                         <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
@@ -656,12 +1209,12 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       </div>
 
       {/* ── AI 스코어 + 최근 매매 2컬럼 ── */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
+      <div className="grid grid-cols-1 xl:grid-cols-2 items-start gap-4 sm:gap-5">
         {/* AI 스코어 */}
         <Panel title="AI가 보는 종목 점수" badge={dash?.scores?.length > 0 ? `${dash.scores.length}종목` : undefined} badgeColor="blue">
           {dash?.scores?.length > 0 ? (
             <div className="p-3.5 space-y-2">
-              {dash.scores.map((sc: any) => {
+              {[...dash.scores].sort((a: any, b: any) => (b.composite_score ?? 0) - (a.composite_score ?? 0)).map((sc: any) => {
                 const score = Number(sc.composite_score);
                 const barColor = score >= 75 ? 'bg-emerald-500' : score >= 50 ? 'bg-blue-500' : score >= 25 ? 'bg-amber-500' : 'bg-slate-600';
                 const textColor = score >= 75 ? 'text-emerald-400' : score >= 50 ? 'text-blue-400' : 'text-slate-500';
@@ -671,7 +1224,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                     <span className="text-xs font-bold text-slate-300 w-24 shrink-0 truncate">{getStockName(sc.stock_code)}</span>
                     <div className="flex-1">
                       <div className="h-2 bg-white/[0.04] rounded-full overflow-hidden">
-                        <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${Math.max(0, Math.min(100, (score + 100) / 2))}%` }} />
+                        <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${Math.max(2, Math.min(100, score))}%` }} />
                       </div>
                     </div>
                     <span className={`text-sm font-black w-12 text-right ${textColor}`}>{score}</span>
@@ -690,6 +1243,53 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
           )}
         </Panel>
 
+        {/* 해외 종목 점수 */}
+        {(() => {
+          const oScores: any[] = dash?.overseas?.scores ?? [];
+          if (oScores.length === 0) return null;
+          const regionLabel = (r: string) => r === 'US' ? '🇺🇸 미국' : r === 'JP' ? '🇯🇵 일본' : '🇹🇼 대만';
+          const regions = ['US', 'JP', 'TW'] as const;
+          return (
+            <Panel title="해외 종목 점수 (기술적 분석)" badge={`${oScores.length}종목`} badgeColor="blue">
+              <div className="p-3.5 space-y-4">
+                {regions.map(region => {
+                  const regionScores = oScores.filter((s: any) => s.region === region);
+                  if (regionScores.length === 0) return null;
+                  return (
+                    <div key={region}>
+                      <div className="text-[11px] text-slate-500 font-semibold px-2 mb-2">{regionLabel(region)}</div>
+                      <div className="space-y-2">
+                        {regionScores.map((sc: any) => {
+                          // score는 -100~100 범위
+                          const raw = Number(sc.score);
+                          const pct = Math.max(2, Math.min(100, (raw + 100) / 2));
+                          const barColor = pct >= 75 ? 'bg-emerald-500' : pct >= 60 ? 'bg-blue-500' : pct >= 45 ? 'bg-amber-500' : 'bg-slate-600';
+                          const textColor = pct >= 75 ? 'text-emerald-400' : pct >= 60 ? 'text-blue-400' : 'text-slate-500';
+                          const signalMap: Record<string, string> = { STRONG_BUY: '강력 추천', BUY: '매수', HOLD: '관망', SELL: '매도', STRONG_SELL: '강력 매도' };
+                          const label = signalMap[sc.signal] ?? sc.signal;
+                          return (
+                            <div key={sc.code} className="flex items-center gap-3 px-2 py-1.5">
+                              <span className="text-xs font-bold text-slate-300 w-24 shrink-0 truncate">{sc.name}</span>
+                              <div className="flex-1">
+                                <div className="h-2 bg-white/[0.04] rounded-full overflow-hidden">
+                                  <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${pct}%` }} />
+                                </div>
+                              </div>
+                              <span className={`text-sm font-black w-10 text-right ${textColor}`}>{raw > 0 ? '+' : ''}{raw}</span>
+                              <span className={`text-[10px] font-medium w-16 text-right ${textColor}`}>{label}</span>
+                              <span className="text-[10px] text-slate-600 w-12 text-right">{sc.changePct >= 0 ? '+' : ''}{sc.changePct?.toFixed(2)}%</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Panel>
+          );
+        })()}
+
         {/* 최근 매매 */}
         <Panel title="최근 매매" badge={`오늘 ${todayTrades.length}건`} badgeColor={todayTrades.length > 0 ? 'green' : undefined}>
           {filled.length === 0 ? <EmptyMsg>매매 기록 없음</EmptyMsg> : (
@@ -699,7 +1299,11 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                   <SideBadge side={t.side} />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="font-bold text-sm text-slate-200">{(t.stock_name && t.stock_name !== t.stock_code && !isGarbledName(t.stock_name)) ? t.stock_name : getStockName(t.stock_code)}</span>
+                      <span className="font-bold text-sm text-slate-200">
+                        {toDisplayName(t.stock_name, t.stock_code) === '종목명 확인중'
+                          ? getStockName(t.stock_code)
+                          : toDisplayName(t.stock_name, t.stock_code)}
+                      </span>
                       <span className="text-[10px] text-slate-600">{fmtTime(t.created_at)}</span>
                     </div>
                     <div className="text-[11px] text-slate-500 mt-0.5 truncate">{t.ai_reasoning || '-'}</div>
@@ -715,6 +1319,12 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
         </Panel>
       </div>
 
+
+      {/* ── 성과 종합 분석 ── */}
+      <PerformancePanel trades={trades} strategy={strategy} setStrategy={setStrategy} toast={toast} />
+
+      {/* ── 자기학습 인사이트 ── */}
+      <InsightsPanel insights={dash?.insights ?? []} trades={trades} onRefresh={onRefresh} toast={toast} />
 
       {/* ── 시스템 로그 ── */}
       {(health?.recentEvents?.length > 0) && (
@@ -745,6 +1355,16 @@ function isGarbledName(name: string): boolean {
   return /[^\w\s\uAC00-\uD7A3\u3131-\u318E\u1100-\u11FF().,·\-+%$]/.test(name);
 }
 
+function toDisplayName(name: unknown, code?: string): string {
+  const n = String(name ?? '').trim();
+  const known = getKnownStockName(code);
+  if (!n) return known ?? '종목명 확인중';
+  if (code && n === code) return known ?? '종목명 확인중';
+  if (/^[0-9]{6}$/.test(n)) return known ?? '종목명 확인중';
+  if (isGarbledName(n)) return known ?? '종목명 확인중';
+  return n;
+}
+
 function simplifyReason(reason: string | null | undefined, side: string): string {
   if (!reason) return side === 'BUY' ? '매수' : '매도';
   if (reason.includes('15:20') || reason.includes('강제 청산')) return '마감 청산';
@@ -762,11 +1382,9 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
   // 종목명 조회 맵 (API stock_name 우선, 없으면 watchlist, 없으면 코드)
   const nameMap = new Map(watchlist.map((w: any) => [w.stock_code, w.stock_name]));
   const getName = (t: any) => {
-    const apiName = t.stock_name;
-    if (apiName && apiName !== t.stock_code && !isGarbledName(apiName)) return apiName;
-    const wlName = nameMap.get(t.stock_code);
-    if (wlName && !isGarbledName(wlName)) return wlName;
-    return t.stock_code;
+    const apiName = toDisplayName(t.stock_name, t.stock_code);
+    if (apiName !== '종목명 확인중') return apiName;
+    return toDisplayName(nameMap.get(t.stock_code), t.stock_code);
   };
   const [expanded, setExpanded] = useState<string | null>(null);
   const filled = trades.filter((t: any) => t.status === 'FILLED');
@@ -831,16 +1449,20 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
               const avgBuy = Number(chain?.avg_buy_price) || 0;
               const filledPrice = Number(t.filled_price) || 0;
               const qty = Number(t.quantity) || 0;
-              // 해외 주문은 USD 가격이므로 원화 P&L 계산 불가
-              const tradePnl = !overseas && isSell && avgBuy > 0 && filledPrice > 0 ? (filledPrice - avgBuy) * qty : null;
-              const tradePnlPct = !overseas && isSell && avgBuy > 0 && filledPrice > 0 ? ((filledPrice - avgBuy) / avgBuy) * 100 : null;
+              const apiPnl = typeof t.realized_pnl === 'number' ? Number(t.realized_pnl) : null;
+              const apiPnlPct = typeof t.realized_pnl_pct === 'number' ? Number(t.realized_pnl_pct) : null;
+              // 해외 주문은 USD 가격이므로 원화 P&L 계산 불가. API 미제공 시 기존 계산식 폴백.
+              const fallbackPnl = !overseas && isSell && avgBuy > 0 && filledPrice > 0 ? (filledPrice - avgBuy) * qty : null;
+              const fallbackPnlPct = !overseas && isSell && avgBuy > 0 && filledPrice > 0 ? ((filledPrice - avgBuy) / avgBuy) * 100 : null;
+              const tradePnl = apiPnl ?? fallbackPnl;
+              const tradePnlPct = apiPnlPct ?? fallbackPnlPct;
               return (
               <React.Fragment key={tradeKey}>
               <tr onClick={() => setExpanded(isOpen ? null : tradeKey)} className={`hover:bg-slate-800/20 transition-colors cursor-pointer${overseas ? ' opacity-60' : ''}`}>
                 <td className="px-4 py-3 text-slate-500">{fmtTime(t.created_at)}</td>
                 <td className="px-4 py-3 font-semibold">
                   {overseas && <span className="text-[10px] mr-1">🌏</span>}
-                  {getName(t)} <span className="text-[10px] text-slate-500">{t.stock_code}</span>
+                  {getName(t)}
                 </td>
                 <td className="px-4 py-3 text-center"><SideBadge side={t.side} /></td>
                 <td className="px-4 py-3 text-right">{fmt(t.quantity)}</td>
@@ -918,6 +1540,10 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
 function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
   const usW = usDash?.watchlist || [];
   const chains = dash?.chains || [];
+  const getWatchlistName = (code: string) => {
+    const item = watchlist.find((s: any) => s.stock_code === code);
+    return toDisplayName(item?.stock_name, code);
+  };
   const [selectedStock, setSelectedStock] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<any>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
@@ -1049,7 +1675,7 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
 
       {/* 종목 상세 분석 패널 */}
       {selectedStock && (
-        <Panel title={`${watchlist.find((s: any) => s.stock_code === selectedStock)?.stock_name || selectedStock} 종목 분석`} badge={selectedStock}>
+        <Panel title={`${getWatchlistName(selectedStock)} 종목 분석`}>
           {analysisLoading ? (
             <div className="p-8 text-center"><div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto" /></div>
           ) : t ? (
@@ -1130,7 +1756,7 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
               const chain = chains.find((ch: any) => ch.stock_code === s.stock_code);
               const isSelected = selectedStock === s.stock_code;
               const scoreVal = score ? Number(score.composite_score) : -1;
-              const displayName = (s.stock_name?.trim() && !isGarbledName(s.stock_name) && s.stock_name.trim() !== s.stock_code) ? s.stock_name.trim() : s.stock_code;
+              const displayName = toDisplayName(s.stock_name, s.stock_code);
 
               let statusColor = 'text-slate-500';
               let statusLabel = '대기';
@@ -1147,7 +1773,7 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
                     <span className={`text-[9px] font-medium shrink-0 ${statusColor}`}>{statusLabel}</span>
                   </div>
                   <div className="text-[10px] text-slate-600 mt-0.5">
-                    {chain ? `평단 ${Number(chain.avg_buy_price).toLocaleString()}원` : scoreVal >= 0 ? `AI ${scoreVal}점` : s.stock_code}
+                    {chain ? `평단 ${Number(chain.avg_buy_price).toLocaleString()}원` : scoreVal >= 0 ? `AI ${scoreVal}점` : displayName}
                   </div>
                   <button onClick={(e) => { e.stopPropagation(); del(s.stock_code); }}
                     className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 text-[9px] text-rose-400 hover:text-rose-300 transition-opacity leading-none">✕</button>
@@ -1161,16 +1787,18 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
         {/* 미국 */}
         <Panel title="🇺🇸 미국" badge={`${usW.length}종목`}>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 p-3">
-            {usW.map((s: any) => (
-              <div key={s.code} className={`rounded-lg border p-3 ${pbg(s.changePct)} border-slate-700/30`}>
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-sm">{s.code}</span>
-                  <span className={`text-[11px] font-medium ${pc(s.changePct)}`}>{fmtPct(s.changePct)}</span>
+            {usW.map((s: any) => {
+              const usDisplayName = toDisplayName(s.name, s.code);
+              return (
+                <div key={s.code} className={`rounded-lg border p-3 ${pbg(s.changePct)} border-slate-700/30`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-sm truncate">{usDisplayName}</span>
+                    <span className={`text-[11px] font-medium shrink-0 ${pc(s.changePct)}`}>{fmtPct(s.changePct)}</span>
+                  </div>
+                  <div className="text-lg font-bold mt-1">{s.price > 0 ? `$${s.price.toFixed(2)}` : '-'}</div>
                 </div>
-                <div className="text-lg font-bold mt-1">{s.price > 0 ? `$${s.price.toFixed(2)}` : '-'}</div>
-                <div className="text-[10px] text-slate-500">{s.name}</div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </Panel>
       </div>
@@ -1190,6 +1818,10 @@ function BacktestView({ watchlist }: { watchlist: any[] }) {
   const [singleResult, setSingleResult] = useState<any>(null);
   const [batchResult, setBatchResult] = useState<any>(null);
   const [selectedStock, setSelectedStock] = useState('');
+  const getWatchlistName = (code: string) => {
+    const item = watchlist.find((s: any) => s.stock_code === code);
+    return toDisplayName(item?.stock_name, code);
+  };
 
   const runSingle = async () => {
     if (!selectedStock) { alert('종목을 선택하세요'); return; }
@@ -1242,7 +1874,7 @@ function BacktestView({ watchlist }: { watchlist: any[] }) {
               <label className="text-[11px] text-slate-500 block mb-1">종목 (단일)</label>
               <select value={selectedStock} onChange={e => setSelectedStock(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
                 <option value="">선택</option>
-                {watchlist.map((s: any) => <option key={s.stock_code} value={s.stock_code}>{s.stock_name} ({s.stock_code})</option>)}
+                {watchlist.map((s: any) => <option key={s.stock_code} value={s.stock_code}>{getWatchlistName(s.stock_code)}</option>)}
               </select>
             </div>
           </div>
@@ -1259,7 +1891,12 @@ function BacktestView({ watchlist }: { watchlist: any[] }) {
 
       {/* 단일 종목 결과 */}
       {singleResult && (
-        <Panel title={`${singleResult.stockCode} 백테스트 결과`} badge={singleResult.period}>
+        <Panel
+          title={`${toDisplayName(singleResult.stockName, singleResult.stockCode) === '종목명 확인중'
+            ? getWatchlistName(singleResult.stockCode)
+            : toDisplayName(singleResult.stockName, singleResult.stockCode)} 백테스트 결과`}
+          badge={singleResult.period}
+        >
           <div className="p-4 space-y-4">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <div className="bg-slate-900/60 rounded-lg p-3 text-center">
@@ -1330,16 +1967,21 @@ function BacktestView({ watchlist }: { watchlist: any[] }) {
                 <th className="px-3 py-2 text-right">매매 수</th>
               </tr></thead>
               <tbody className="divide-y divide-slate-800/20">
-                {batchResult.results.map((r: any) => (
-                  <tr key={r.stockCode} className="hover:bg-slate-800/30">
-                    <td className="px-3 py-2"><span className="font-medium">{r.stockName}</span> <span className="text-slate-600">{r.stockCode}</span></td>
-                    <td className={`px-3 py-2 text-right font-bold ${pctColor(r.returnPct)}`}>{r.returnPct > 0 ? '+' : ''}{r.returnPct.toFixed(1)}%</td>
-                    <td className="px-3 py-2 text-right">{(r.winRate * 100).toFixed(0)}%</td>
-                    <td className="px-3 py-2 text-right">{r.sharpe.toFixed(2)}</td>
-                    <td className="px-3 py-2 text-right text-rose-400">{r.maxDD.toFixed(1)}%</td>
-                    <td className="px-3 py-2 text-right text-slate-400">{r.trades}건</td>
-                  </tr>
-                ))}
+                {batchResult.results.map((r: any) => {
+                  const displayName = toDisplayName(r.stockName, r.stockCode) === '종목명 확인중'
+                    ? getWatchlistName(r.stockCode)
+                    : toDisplayName(r.stockName, r.stockCode);
+                  return (
+                    <tr key={r.stockCode} className="hover:bg-slate-800/30">
+                      <td className="px-3 py-2"><span className="font-medium">{displayName}</span></td>
+                      <td className={`px-3 py-2 text-right font-bold ${pctColor(r.returnPct)}`}>{r.returnPct > 0 ? '+' : ''}{r.returnPct.toFixed(1)}%</td>
+                      <td className="px-3 py-2 text-right">{(r.winRate * 100).toFixed(0)}%</td>
+                      <td className="px-3 py-2 text-right">{r.sharpe.toFixed(2)}</td>
+                      <td className="px-3 py-2 text-right text-rose-400">{r.maxDD.toFixed(1)}%</td>
+                      <td className="px-3 py-2 text-right text-slate-400">{r.trades}건</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1407,13 +2049,74 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
   const [nbEditContent, setNbEditContent] = useState('');
 
   // 프롬프트 로컬 상태 — strategy 최초 로드 시 한 번만 초기화, 이후 30초 폴링에 영향 받지 않음
+  const DEFAULT_STRATEGY_DOC = `# 매매 전략서
+
+## 투자 철학
+- 추세 추종 + 분할 매수(3회)로 리스크 분산
+- 손절은 기계적으로, 익절은 단계적으로
+- 모의투자 단계 — 적극적 자동매매로 전략 검증이 최우선
+
+## 종목 선정 기준
+- AI 점수 70점 이상 + 기술적 점수 상위 종목 우선
+- 반도체·방산·에너지 테마 종목 적극 편입 (시장 주도 섹터)
+- 바이오 종목은 이벤트(임상결과·FDA) 없으면 보수적 접근
+- 14일 내 손절 이력 종목 재진입 금지
+
+## 매매 규칙
+- 1종목 최대 투자금: 총 자산의 25%
+- 분할 매수: 1차 진입 후 -3% 물타기 최대 2회
+- 부분 익절 후 트레일링 스톱 자동 적용
+- 당일 신규 매수는 장 시작 30분 이후부터
+
+## 시장 상황별 대응
+### 상승장 (코스피 +1% 이상)
+- 공격적 비중 확대, 우선 테마 종목 비중 20% 추가
+
+### 횡보장
+- 스윙 비중 유지, 손절 기준 엄격 적용
+
+### 하락장 / 갭다운 3% 이상
+- 신규 매수 금지, 기존 포지션 손절 기준 절반으로 타이트하게
+- 현금 비중 50% 이상 유지`;
+
+  const DEFAULT_RISK_PROMPT = `## 리스크 운영 지시사항
+
+### 일별 손실 한도 초과 시
+- 당일 추가 매수 완전 금지
+- 기존 포지션 손절 기준 절반으로 타이트하게 운영
+- 다음날 장 시작 전 Track A 재분석 후 전략 재평가
+
+### 급락 감지 시 (갭다운 -3% 이상 또는 장중 -2% 급락)
+- 개장 후 30분간 신규 매수 완전 금지
+- 기존 포지션 평가손 -5% 이상이면 즉시 청산
+- 반등 시작 확인 후에만 신규 진입 허용
+
+### 외부 충격 (정치·경제 뉴스) 감지 시
+- 미국 관세·금리 인상·전쟁·대규모 파산 키워드 → 포지션 50% 즉시 축소
+- 대통령/연준 의장 발언 예정일 → 당일 신규 매수 금지
+- 외환위기 징후 (원/달러 급등) → 해외주식 비중 확대, 국내 현금화
+
+### 연속 손실 시 (3거래일 연속 마이너스)
+- 매매 사이즈 절반으로 축소
+- Track A 재실행 후 포트폴리오 전면 재검토
+- 손절 패턴 있는 종목은 watchlist에서 즉시 제거
+
+### 수익 실현 원칙
+- 누적 수익 10% 달성 시 수익분 30% 인출 예약 자동 설정
+- 인출 후 남은 원금으로 동일 전략 반복`;
+
   const [geminiPrompt, setGeminiPrompt] = useState<string>(() => strategy?.gemini_prompt ?? '');
   const [claudePrompt, setClaudePrompt] = useState<string>(() => strategy?.claude_prompt ?? '');
+  const [strategyDoc, setStrategyDoc] = useState<string>(() => strategy?.strategy_document || DEFAULT_STRATEGY_DOC);
+  const [riskPrompt, setRiskPrompt] = useState<string>(() => strategy?.risk_prompt || DEFAULT_RISK_PROMPT);
+  const [strategyDocTab, setStrategyDocTab] = useState<'doc' | 'risk'>('doc');
   const promptsInitialized = React.useRef(false);
   React.useEffect(() => {
     if (!promptsInitialized.current && strategy) {
       setGeminiPrompt(strategy.gemini_prompt ?? '');
       setClaudePrompt(strategy.claude_prompt ?? '');
+      setStrategyDoc(strategy.strategy_document || DEFAULT_STRATEGY_DOC);
+      setRiskPrompt(strategy.risk_prompt || DEFAULT_RISK_PROMPT);
       promptsInitialized.current = true;
     }
   }, [strategy]);
@@ -1439,8 +2142,21 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
       notebooklm_prompt: JSON.stringify(nbSources),
       gemini_prompt: geminiPrompt,
       claude_prompt: claudePrompt,
+      strategy_document: strategyDoc,
+      risk_prompt: riskPrompt,
     };
     try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify(body) }); setStrategy(u); toast?.('프롬프트 저장 완료', 'ok'); } catch (err: any) { toast?.(err.message, 'err'); }
+  };
+  const saveStrategyDoc = async () => {
+    const body = {
+      ...strategy,
+      notebooklm_prompt: JSON.stringify(nbSources),
+      gemini_prompt: geminiPrompt,
+      claude_prompt: claudePrompt,
+      strategy_document: strategyDoc,
+      risk_prompt: riskPrompt,
+    };
+    try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify(body) }); setStrategy(u); toast?.('전략서 저장 완료', 'ok'); } catch (err: any) { toast?.(err.message, 'err'); }
   };
   const saveSecrets = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -1452,17 +2168,17 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
   };
 
   const steps = [
-    { label: 'NotebookLM', sub: '소스 수집', color: 'amber', key: 'notebooklm_prompt',
+    { label: '참고 소스', sub: '소스 관리', color: 'amber', key: 'notebooklm_prompt',
       value: null, onChange: null,
-      desc: '좋은 소스를 추가하고 삭제하세요. 이 내용이 Gemini 분석의 입력으로 들어갑니다.',
+      desc: 'AI 분석에 참고할 자료(뉴스 요약, 리서치 핵심 포인트)를 추가·삭제하세요. 여기서 등록한 소스가 매일 분석의 입력으로 사용됩니다.',
       placeholder: '' },
-    { label: 'Gemini', sub: '분석 가공', color: 'blue', key: 'gemini_prompt',
+    { label: '분석 지시', sub: 'AI 분석 설정', color: 'blue', key: 'gemini_prompt',
       value: geminiPrompt, onChange: (v: string) => setGeminiPrompt(v),
-      desc: 'NotebookLM 소스 + 시장 데이터를 종합하여 팩트 기반 분석 리포트를 생성합니다.',
+      desc: 'AI가 종목을 분석할 때 따라야 할 규칙을 적어주세요. 예: "기관이 3일 이상 순매수한 종목만 보기", "소형주 제외" 등.',
       placeholder: `## CEO 추가 지시사항\n\n### 분석 우선순위\n1. 기관/외국인 수급 데이터를 최우선으로 분석하라. 3일 연속 순매수 종목만 주목.\n2. 최근 실적(영업이익) 증가 확인 필수. 적자전환 또는 실적 악화 종목은 즉시 제외.\n3. 52주 고점 대비 -10%~-25% 구간의 눌림목 종목을 우선 분석.\n\n### 제외 조건\n- 시가총액 5000억 미만 소형주\n- 테마주/급등주 (하루 +15% 이상)\n- 최근 30일 내 유상증자/CB 발행 종목` },
-    { label: 'Claude', sub: '매매 실행', color: 'emerald', key: 'claude_prompt',
+    { label: '매매 지시', sub: '매수·매도 규칙', color: 'emerald', key: 'claude_prompt',
       value: claudePrompt, onChange: (v: string) => setClaudePrompt(v),
-      desc: 'AI 스코어 + 실시간 시세를 종합하여 BUY/SELL/HOLD 최종 결정 + 수량 계산.',
+      desc: 'AI가 실제로 사고팔 때 지켜야 할 규칙을 적어주세요. 예: "장 시작 30분은 매수 금지", "손절은 반드시 지켜라" 등.',
       placeholder: `## 매매 실행 추가 규칙\n\n### 매수 원칙\n- 장 시작 30분(09:00~09:30) 매수 금지\n- 14:30 이후 신규 매수 금지\n- 동일 종목 하루 1회만 매수\n\n### 매도 원칙\n- 손절은 반드시 지켜라. 감정적 판단 금지.\n- 2일 연속 하락 + 거래량 증가 시 즉시 매도\n- 익절 시 "조금 더" 판단 금지, 기계적 실행` },
   ];
   const colorMap: Record<string, { bg: string; border: string; text: string; dot: string; grad: string; activeBg: string }> = {
@@ -1488,26 +2204,26 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
       {/* ── 상단: 킬스위치 + AI 실행 ── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Panel title="긴급 제어">
-          <div className="p-4 sm:p-5 flex items-center justify-between">
+          <div className="px-6 py-5 flex items-center justify-between gap-4">
             <div>
               <p className="text-sm font-medium">자동매매 제어</p>
-              <p className={`text-[11px] mt-0.5 font-medium ${killSwitch?.active ? 'text-rose-400' : 'text-emerald-400'}`}>
+              <p className={`text-[12px] mt-1 font-medium ${killSwitch?.active ? 'text-rose-400' : 'text-emerald-400'}`}>
                 현재: {killSwitch?.active ? '매매 중단 (수동)' : '자동매매 실행 중'}
               </p>
               {killSwitch?.reason && <p className="text-[11px] text-slate-500 mt-1">{killSwitch.reason}</p>}
             </div>
-            <button onClick={toggleKill} className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${killSwitch?.active ? 'bg-emerald-700 hover:bg-emerald-600 text-white' : 'bg-rose-700 hover:bg-rose-600 text-white'}`}>
+            <button onClick={toggleKill} className={`px-5 py-2.5 rounded-xl text-xs font-semibold transition-all shrink-0 ${killSwitch?.active ? 'bg-emerald-700 hover:bg-emerald-600 text-white' : 'bg-rose-700 hover:bg-rose-600 text-white'}`}>
               {killSwitch?.active ? '▶ 자동매매 재개' : '⏸ 자동매매 중단'}
             </button>
           </div>
         </Panel>
         <Panel title="알림 설정">
-          <div className="p-4 sm:p-5 flex items-center justify-between">
+          <div className="px-6 py-5 flex items-center justify-between gap-4">
             <div>
               <p className="text-sm font-medium">푸시 알림</p>
-              <p className="text-[11px] text-slate-500 mt-0.5">매수/매도/긴급 알림을 받습니다</p>
+              <p className="text-[12px] text-slate-500 mt-1">매수·매도·긴급 상황 알림을 받습니다</p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-2 shrink-0">
               <button onClick={async () => {
                 try {
                   const permission = await Notification.requestPermission();
@@ -1518,24 +2234,24 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
                   await api('/push/subscribe', { method: 'POST', body: JSON.stringify(sub) });
                   toast?.('알림 등록 완료', 'ok');
                 } catch (err: any) { alert('알림 등록 실패: ' + err.message); }
-              }} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-xl text-xs font-bold">알림 켜기</button>
+              }} className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-xs font-semibold transition-all">알림 켜기</button>
               <button onClick={async () => {
                 try { await api('/push/test', { method: 'POST' }); } catch { alert('테스트 실패'); }
-              }} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded-xl text-xs text-slate-400">테스트</button>
+              }} className="px-3 py-2.5 bg-white/[0.06] hover:bg-white/[0.1] rounded-xl text-xs text-slate-400 transition-all">테스트</button>
             </div>
           </div>
         </Panel>
       </div>
       <Panel title="AI 분석 수동 실행">
-        <div className="p-4 sm:p-5 flex items-center justify-between">
+        <div className="px-6 py-5 flex items-center justify-between gap-4">
           <div>
-            <p className="text-sm font-medium">Track A 즉시 실행</p>
-            <p className="text-[11px] text-slate-500 mt-0.5">NotebookLM → Gemini → GPT → Claude</p>
+            <p className="text-sm font-medium">지금 당장 AI 분석 실행</p>
+            <p className="text-[12px] text-slate-500 mt-1">소스 수집 → 종목 분석 → 매매 판단 순서로 2~3분 소요</p>
           </div>
           <button onClick={async () => {
             if (!confirm('AI 분석을 수동 실행하시겠습니까?')) return;
             try { await api('/run-track-a', { method: 'POST', body: JSON.stringify({}) }); toast?.('AI 분석 시작 — 2~3분 후 갱신', 'ok'); } catch (err: any) { alert(err.message); }
-          }} className="px-5 py-2.5 bg-purple-600 hover:bg-purple-500 rounded-xl text-xs font-bold">
+          }} className="px-5 py-2.5 bg-purple-600 hover:bg-purple-500 rounded-xl text-xs font-semibold transition-all shrink-0">
             실행
           </button>
         </div>
@@ -1544,30 +2260,83 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
       {/* ── 전략 설정 ── */}
       {strategy && (
         <Panel title="전략 설정" badge={strategy.mode === 'SWING' ? '스윙' : strategy.mode === 'DEFENSE' ? '방어' : '단타'} badgeColor={strategy.mode === 'SWING' ? 'blue' : strategy.mode === 'DEFENSE' ? 'red' : 'amber'}>
-          <div className="p-4 sm:p-5 space-y-4">
-            <div className="text-[11px] text-slate-500 bg-slate-900/40 rounded-lg p-3">
-              {strategy.mode === 'SWING' ? '3분할 매수 → 물타기 → +8% 익절 / -5% 손절. 중장기 안정 수익 추구.' : strategy.mode === 'DEFENSE' ? '85점 이상만 소량 진입 → -3% 즉시 손절. 하락장 자본 보존 우선.' : '90점 이상 즉시 풀매수 → +3% 즉시 익절. 당일 15:20 강제 청산.'}
+          <div className="px-6 py-5 space-y-5">
+            <div className="text-[12px] text-slate-400 bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl px-4 py-3.5 leading-relaxed">
+              {strategy.mode === 'SWING' ? '3번에 나눠 사고 → 조금 더 빠지면 추가 매수 → 6% 오르면 절반 팔기 / 3% 빠지면 전량 손절. 중장기 안정 수익 추구.' : strategy.mode === 'DEFENSE' ? '85점 이상 종목만 소량 진입 → 3% 빠지면 즉시 손절. 하락장 자본 보존 최우선.' : '65점 이상 즉시 매수 → 1.5% 오르면 즉시 전량 매도. 당일 15:20 무조건 청산.'}
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
-              <Sel label="투자 방식" value={strategy.mode} opts={[['SWING','스윙'],['DEFENSE','방어'],['SCALPING','단타']]} onChange={v => setField('mode', v)} />
-              <Sel label="몇 점이면 살지" value={strategy.buy_threshold} opts={[[60,'60점 (적극)'],[70,'70점'],[75,'75점'],[80,'80점 (보통)'],[85,'85점'],[90,'90점 (신중)']]} onChange={v => setField('buy_threshold', Number(v))} />
-              <Sel label="빠지면 언제 팔지" value={strategy.stop_loss_pct} opts={[[-2,'-2%'],[-3,'-3% (빡빡)'],[-5,'-5% (보통)'],[-7,'-7%'],[-10,'-10% (여유)']]} onChange={v => setField('stop_loss_pct', Number(v))} />
-              <Sel label="오르면 언제 팔지" value={strategy.take_profit_pct} opts={[[3,'+3%'],[5,'+5%'],[8,'+8% (보통)'],[10,'+10%'],[15,'+15%'],[20,'+20%']]} onChange={v => setField('take_profit_pct', Number(v))} />
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <Sel label="매매 방식" value={strategy.mode} opts={[['SWING','스윙 (중장기)'],['DEFENSE','방어 (하락장)'],['SCALPING','단타 (당일)']]} onChange={v => setField('mode', v)} />
+              <Sel label="AI 매수 기준점수" value={strategy.buy_threshold} opts={[[60,'60점 이상 (공격적)'],[70,'70점 이상'],[75,'75점 이상'],[80,'80점 이상 (보통)'],[85,'85점 이상'],[90,'90점 이상 (신중)']]} onChange={v => setField('buy_threshold', Number(v))} />
+              <Sel label="손절 기준 (이만큼 빠지면)" value={strategy.stop_loss_pct} opts={[[-2,'-2% (매우 타이트)'],[-3,'-3% (타이트)'],[-5,'-5% (보통)'],[-7,'-7%'],[-10,'-10% (여유있게)']]} onChange={v => setField('stop_loss_pct', Number(v))} />
+              <Sel label="익절 기준 (이만큼 오르면)" value={strategy.take_profit_pct} opts={[[3,'+3%'],[5,'+5%'],[6,'+6%'],[8,'+8% (보통)'],[10,'+10%'],[15,'+15%'],[20,'+20%']]} onChange={v => setField('take_profit_pct', Number(v))} />
             </div>
           </div>
         </Panel>
       )}
 
+      {/* ── 전략서 + 리스크 운영 프롬프트 ── */}
+      {strategy && (
+        <div className="glass rounded-2xl overflow-hidden shadow-xl shadow-black/40">
+          <div className="px-6 py-4 border-b border-white/[0.05] flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-bold text-slate-100">나의 매매 철학 & 위기 대응</h3>
+              <p className="text-[11px] text-slate-500 mt-0.5">AI가 판단을 내릴 때 참고하는 나만의 투자 원칙을 적어두세요</p>
+            </div>
+            <button onClick={saveStrategyDoc} className="px-4 py-2.5 bg-violet-600 hover:bg-violet-500 rounded-xl text-xs font-semibold transition-all">저장</button>
+          </div>
+          {/* 탭 */}
+          <div className="flex border-b border-white/[0.04]">
+            {([['doc', '전략서', '매매 철학·원칙'], ['risk', '리스크 프롬프트', 'AI 리스크 판단 지시']] as const).map(([id, label, sub]) => (
+              <button key={id} onClick={() => setStrategyDocTab(id)}
+                className={`flex-1 py-3 px-4 text-left transition-all relative ${strategyDocTab === id ? 'bg-white/[0.03]' : 'hover:bg-white/[0.02]'}`}>
+                {strategyDocTab === id && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-violet-500 to-fuchsia-500" />}
+                <div className="text-[11px] font-bold text-slate-200">{label}</div>
+                <div className="text-[9px] text-slate-600 mt-0.5">{sub}</div>
+              </button>
+            ))}
+          </div>
+          {strategyDocTab === 'doc' && (
+            <div className="p-4 sm:p-5 bg-violet-950/10">
+              <p className="text-[11px] text-slate-400 mb-3">
+                매매 철학, 종목 선정 기준, 시장 상황별 대응 원칙 등을 자유롭게 작성하세요.
+                AI 분석 맥락에 주입됩니다.
+              </p>
+              <textarea
+                value={strategyDoc}
+                onChange={e => setStrategyDoc(e.target.value)}
+                rows={16}
+                placeholder={`# 매매 전략서\n\n## 투자 철학\n- 추세 추종 + 분할 매수로 리스크 분산\n- 손절은 기계적으로, 익절은 단계적으로\n\n## 종목 선정 기준\n- 기관/외국인 수급 3일 연속 순매수\n- 52주 고점 대비 -10~-25% 눌림목\n- 최근 분기 실적 개선 확인 필수\n\n## 시장 상황별 대응\n### 상승장\n- 공격적 비중 확대, 익절 기준 상향\n\n### 횡보장\n- 스윙 비중 유지, 손절 기준 엄격 적용\n\n### 하락장 / 급락 시\n- 신규 매수 최소화, 기존 포지션 축소\n- 현금 비중 50% 이상 유지\n- RSS/뉴스 이상 신호 감지 시 즉시 킬스위치`}
+                className="w-full bg-white/[0.04] border-0 ring-1 ring-violet-500/20 rounded-xl px-4 py-3.5 text-[12px] leading-relaxed resize-y font-mono text-slate-200 placeholder:text-slate-700 focus:outline-none focus:ring-2 focus:ring-violet-500/40 transition-all"
+              />
+            </div>
+          )}
+          {strategyDocTab === 'risk' && (
+            <div className="p-4 sm:p-5 bg-rose-950/10">
+              <p className="text-[11px] text-slate-400 mb-3">
+                리스크 상황별 AI 판단 지시사항입니다. 급락장·하락장 대응, 포지션 축소 기준, 대통령 발언 등 외부 충격 대응 원칙을 작성하세요.
+              </p>
+              <textarea
+                value={riskPrompt}
+                onChange={e => setRiskPrompt(e.target.value)}
+                rows={16}
+                placeholder={`## 리스크 운영 지시사항\n\n### 하락장 감지 시\n- 전 종목 신규 매수 금지\n- 기존 포지션 -3% 이상 손실이면 즉시 청산\n- 현금 비중 60% 이상 유지\n\n### 급락 (-3% 이상 갭다운) 시\n- 개장 30분간 매수 완전 금지\n- 손절 기준 절반으로 타이트하게 운영\n\n### 외부 충격 (정치·경제 뉴스) 감지 시\n- RSS 뉴스에 미국 관세·금리·전쟁 키워드 → 포지션 50% 이상 즉시 축소\n- 대통령/연준 발언 → 당일 신규 매수 금지\n\n### 연속 손실 시 (3회 이상)\n- 매매 사이즈 절반으로 줄이기\n- Track A 재분석 후 재진입 여부 결정`}
+                className="w-full bg-white/[0.04] border-0 ring-1 ring-rose-500/20 rounded-xl px-4 py-3.5 text-[12px] leading-relaxed resize-y font-mono text-slate-200 placeholder:text-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500/40 transition-all"
+              />
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── AI 파이프라인 프롬프트 (탭 UI) ── */}
       {strategy && (
-        <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden">
+        <div className="glass rounded-2xl overflow-hidden shadow-xl shadow-black/40">
           {/* 헤더 + 저장 버튼 */}
-          <div className="p-4 sm:p-5 border-b border-white/[0.04] flex items-center justify-between">
+          <div className="px-6 py-4 border-b border-white/[0.05] flex items-center justify-between">
             <div>
-              <h3 className="text-sm font-bold text-slate-100">AI 파이프라인 프롬프트</h3>
-              <p className="text-[10px] text-slate-500 mt-0.5">각 단계 탭을 눌러 프롬프트를 편집하세요</p>
+              <h3 className="text-sm font-bold text-slate-100">AI 매매 지시 설정</h3>
+              <p className="text-[11px] text-slate-500 mt-0.5">AI가 분석하고 매매할 때 따르는 규칙을 탭별로 설정합니다</p>
             </div>
-            <button onClick={saveStrategy} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-xs font-bold transition-all">저장</button>
+            <button onClick={saveStrategy} className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-xs font-semibold transition-all">저장</button>
           </div>
 
           {/* 스텝 네비게이션 (가로 탭) */}
@@ -1620,9 +2389,9 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
                       {nbEditId === src.id ? (
                         <div className="space-y-2">
                           <input value={nbEditTitle} onChange={e => setNbEditTitle(e.target.value)}
-                            className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-1.5 text-[11px] focus:outline-none text-slate-200" />
+                            className="w-full bg-white/[0.05] border-0 ring-1 ring-white/[0.1] rounded-xl px-3.5 py-2.5 text-[11px] text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-amber-500/40 transition-all" />
                           <textarea value={nbEditContent} onChange={e => setNbEditContent(e.target.value)} rows={6}
-                            className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-1.5 text-[11px] leading-relaxed resize-y font-mono focus:outline-none text-slate-300" />
+                            className="w-full bg-white/[0.05] border-0 ring-1 ring-white/[0.1] rounded-xl px-3.5 py-2.5 text-[11px] leading-relaxed resize-y font-mono text-slate-300 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-amber-500/40 transition-all" />
                           <div className="flex gap-2">
                             <button onClick={() => {
                               setNbSources(prev => prev.map(x => x.id === src.id ? { ...x, title: nbEditTitle, content: nbEditContent } : x));
@@ -1667,11 +2436,11 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
                   <div className="bg-slate-900/60 border border-amber-700/30 rounded-lg p-3 space-y-2">
                     <input value={nbAddTitle} onChange={e => setNbAddTitle(e.target.value)}
                       placeholder="소스 제목 (예: 이번 주 시장 전망)"
-                      className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-1.5 text-[11px] focus:outline-none text-slate-200" />
+                      className="w-full bg-white/[0.05] border-0 ring-1 ring-white/[0.1] rounded-xl px-3.5 py-2.5 text-[11px] text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-amber-500/40 transition-all" />
                     <textarea value={nbAddContent} onChange={e => setNbAddContent(e.target.value)}
-                      placeholder="NotebookLM에서 복사한 내용, 뉴스 요약, 리서치 핵심 포인트 등..."
+                      placeholder="뉴스 요약, 리서치 핵심 포인트 등 AI 분석에 참고할 내용을 붙여넣으세요..."
                       rows={6}
-                      className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-1.5 text-[11px] leading-relaxed resize-y font-mono focus:outline-none text-slate-300" />
+                      className="w-full bg-white/[0.05] border-0 ring-1 ring-white/[0.1] rounded-xl px-3.5 py-2.5 text-[11px] leading-relaxed resize-y font-mono text-slate-300 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-amber-500/40 transition-all" />
                     <div className="flex gap-2">
                       <button onClick={() => {
                         if (!nbAddContent.trim()) return;
@@ -1694,7 +2463,7 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
               <div key={s.label} className={`p-4 sm:p-5 ${sc.activeBg} ${hidden ? 'hidden' : ''}`}>
                 <p className="text-[11px] text-slate-400 mb-3">{s.desc}</p>
                 <textarea value={s.value ?? ''} onChange={e => s.onChange?.(e.target.value)} rows={10}
-                  className="w-full bg-slate-900/60 border border-slate-700/50 rounded-lg p-3 text-[11px] leading-relaxed resize-y font-mono focus:outline-none text-slate-300"
+                  className="w-full bg-white/[0.04] border-0 ring-1 ring-white/[0.08] rounded-xl px-4 py-3.5 text-[11px] leading-relaxed resize-y font-mono text-slate-300 placeholder:text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/40 transition-all"
                   placeholder={s.placeholder} />
               </div>
             );
@@ -1706,28 +2475,28 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
         {/* API 키 */}
         <Panel title="API 키 관리">
-          <form onSubmit={saveSecrets} autoComplete="off" className="p-4 sm:p-5 space-y-3">
+          <form onSubmit={saveSecrets} autoComplete="off" className="px-6 py-5 space-y-3.5">
             {/* hidden dummy fields to absorb browser autofill */}
             <input type="text" name="fake_user" style={{ display: 'none' }} tabIndex={-1} />
             <input type="password" name="fake_pass" style={{ display: 'none' }} tabIndex={-1} />
-            {[['gemini','Gemini'],['openai','OpenAI'],['anthropic','Anthropic'],['kis_appkey','KIS Key'],['kis_appsecret','KIS Secret'],['kis_account','KIS 계좌']].map(([k, l]) => (
+            {[['gemini','Gemini AI'],['openai','OpenAI'],['anthropic','Anthropic AI'],['kis_appkey','KIS 앱키'],['kis_appsecret','KIS 시크릿'],['kis_account','KIS 계좌번호']].map(([k, l]) => (
               <div key={k} className="flex items-center gap-3">
-                <span className="w-20 text-xs text-slate-400 shrink-0">{l}</span>
-                {secrets?.[k]?.exists && <span className="text-[9px] bg-emerald-900/50 text-emerald-300 px-2 py-0.5 rounded shrink-0">설정됨</span>}
-                <input name={k} type="text" autoComplete="off" data-1p-ignore data-lpignore="true" placeholder={secrets?.[k]?.masked || '미설정'} className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono focus:border-blue-500 focus:outline-none [-webkit-text-security:disc]" />
+                <span className="w-24 text-[12px] text-slate-400 shrink-0 font-medium">{l}</span>
+                {secrets?.[k]?.exists && <span className="text-[9px] bg-emerald-900/40 text-emerald-400 px-2 py-0.5 rounded-full ring-1 ring-emerald-500/20 shrink-0">설정됨</span>}
+                <input name={k} type="text" autoComplete="off" data-1p-ignore data-lpignore="true" placeholder={secrets?.[k]?.masked || '미설정'} className="flex-1 bg-white/[0.05] border-0 ring-1 ring-white/[0.08] rounded-xl px-3.5 py-2.5 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all [-webkit-text-security:disc]" />
               </div>
             ))}
-            <button type="submit" className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-sm font-medium">키 저장</button>
+            <button type="submit" className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-sm font-semibold transition-all mt-1">키 저장</button>
           </form>
         </Panel>
 
         {/* 수익 자동 인출 설정 */}
         <Panel title="수익 자동 인출">
-          <div className="p-4 space-y-4">
-            <div className="flex items-center justify-between">
+          <div className="px-6 py-5 space-y-5">
+            <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="text-sm font-medium">자동 수익 확보</p>
-                <p className="text-[11px] text-slate-500 mt-0.5">목표 수익률 도달 시 수익분을 인출 예약금으로 잠금</p>
+                <p className="text-[12px] text-slate-500 mt-1">목표 수익률 도달 시 수익분을 인출 예약금으로 잠금</p>
               </div>
               <button onClick={async () => {
                 const next = !withdrawConfig?.is_active;
@@ -1735,7 +2504,7 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
                   const updated = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, is_active: next }) });
                   setWithdrawConfig({ ...updated, totalReserved: withdrawConfig?.totalReserved ?? 0 });
                 } catch { toast?.('저장 실패', 'err'); }
-              }} className={`px-4 py-2 rounded-lg text-xs font-bold ${withdrawConfig?.is_active ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-slate-700 hover:bg-slate-600 text-slate-400'}`}>
+              }} className={`px-5 py-2.5 rounded-xl text-xs font-semibold shrink-0 transition-all ${withdrawConfig?.is_active ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-white/[0.06] hover:bg-white/[0.1] text-slate-400'}`}>
                 {withdrawConfig?.is_active ? 'ON' : 'OFF'}
               </button>
             </div>
@@ -1796,9 +2565,9 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
 
       {/* ── 앱 보안 ── */}
       <Panel title="앱 보안">
-        <div className="p-4 sm:p-5">
+        <div className="px-6 py-5">
           <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-            <p className="text-xs text-slate-500 shrink-0">잠금 PIN 변경</p>
+            <p className="text-[12px] text-slate-500 shrink-0 font-medium">잠금 PIN 변경</p>
             <form onSubmit={async (e) => {
               e.preventDefault();
               const fd = new FormData(e.currentTarget);
@@ -1810,15 +2579,15 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
               localStorage.setItem('quantops_pin', hex);
               toast?.('PIN 변경 완료', 'ok');
               (e.target as HTMLFormElement).reset();
-            }} className="flex gap-2 flex-1 max-w-sm">
-              <input name="pin" type="password" inputMode="numeric" autoComplete="new-password" data-1p-ignore data-lpignore="true" maxLength={6} placeholder="새 PIN (4~6자리)" className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-center tracking-widest font-mono focus:border-blue-500 focus:outline-none" />
-              <button type="submit" className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium shrink-0">변경</button>
+            }} className="flex gap-2.5 flex-1 max-w-sm">
+              <input name="pin" type="password" inputMode="numeric" autoComplete="new-password" data-1p-ignore data-lpignore="true" maxLength={6} placeholder="새 PIN (4~6자리)" className="flex-1 bg-white/[0.05] border-0 ring-1 ring-white/[0.08] rounded-xl px-3.5 py-2.5 text-sm text-center tracking-widest font-mono text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all" />
+              <button type="submit" className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-sm font-semibold shrink-0 transition-all">변경</button>
             </form>
             <button type="button" onClick={() => {
               localStorage.removeItem('quantops_cred_id');
               localStorage.removeItem('quantops_auth_ts');
               toast?.('생체인증 초기화 완료', 'ok');
-            }} className="text-[11px] text-slate-600 hover:text-slate-400 shrink-0">생체인증 초기화</button>
+            }} className="text-[11px] text-slate-600 hover:text-slate-400 shrink-0 transition-colors">생체인증 초기화</button>
           </div>
         </div>
       </Panel>
@@ -1831,12 +2600,12 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
 // ═══════════════════════════════════════
 
 function Panel({ title, badge, badgeColor, children }: { title: string; badge?: string; badgeColor?: 'green' | 'red' | 'amber' | 'blue'; children: React.ReactNode }) {
-  const bc = badgeColor === 'green' ? 'bg-emerald-500/15 text-emerald-400' : badgeColor === 'red' ? 'bg-rose-500/15 text-rose-400' : badgeColor === 'amber' ? 'bg-amber-500/15 text-amber-400' : badgeColor === 'blue' ? 'bg-blue-500/15 text-blue-400' : 'bg-white/[0.06] text-slate-400';
+  const bc = badgeColor === 'green' ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/20' : badgeColor === 'red' ? 'bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/20' : badgeColor === 'amber' ? 'bg-amber-500/15 text-amber-400 ring-1 ring-amber-500/20' : badgeColor === 'blue' ? 'bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/20' : 'bg-white/[0.05] text-slate-400';
   return (
-    <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden shadow-xl shadow-black/30 animate-in">
-      <div className="px-5 py-3.5 border-b border-white/[0.04] flex items-center gap-2">
+    <div className="glass rounded-2xl overflow-hidden shadow-xl shadow-black/40 animate-in">
+      <div className="px-6 py-4 border-b border-white/[0.05] flex items-center gap-3">
         <h3 className="text-[13px] font-bold text-slate-100 tracking-tight">{title}</h3>
-        {badge && <span className={`text-[10px] px-2.5 py-1 rounded-full ml-auto font-medium ${bc}`}>{badge}</span>}
+        {badge && <span className={`text-[10px] px-2.5 py-1 rounded-full ml-auto font-semibold ${bc}`}>{badge}</span>}
       </div>
       {children}
     </div>
@@ -1892,10 +2661,10 @@ function Sel({ label, value, opts, onChange }: { label: string; value: any; opts
   const numVal = Number(value);
   const matched = opts.find(([v]) => Number(v) === numVal)?.[0] ?? value;
   return (
-    <div>
-      <label className="text-[11px] text-slate-500 block mb-1">{label}</label>
-      <select value={matched} onChange={e => onChange(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
-        {opts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+    <div className="space-y-1.5">
+      <label className="text-[11px] font-medium text-slate-400 block">{label}</label>
+      <select value={matched} onChange={e => onChange(e.target.value)} className="w-full bg-white/[0.05] border-0 ring-1 ring-white/[0.08] rounded-xl px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all appearance-none cursor-pointer">
+        {opts.map(([v, l]) => <option key={v} value={v} className="bg-slate-900">{l}</option>)}
       </select>
     </div>
   );
@@ -1919,9 +2688,9 @@ function NumInput({ label, value, suffix, min, max, step, onCommit }: {
     setEditing(false);
   };
   return (
-    <div>
-      <label className="text-[11px] text-slate-500 block mb-1">{label}</label>
-      <div className="flex items-center bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 gap-1 focus-within:border-blue-500">
+    <div className="space-y-1.5">
+      <label className="text-[11px] font-medium text-slate-400 block">{label}</label>
+      <div className="flex items-center bg-white/[0.05] ring-1 ring-white/[0.08] rounded-xl px-3.5 py-2.5 gap-1 focus-within:ring-2 focus-within:ring-blue-500/50 transition-all">
         <input
           type="number" inputMode="decimal"
           value={local}

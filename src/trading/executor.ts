@@ -1,6 +1,6 @@
 import { OrderType, STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
 import { config } from '../config/index.js';
-import { getActiveStrategy, insertOrder, logSystem, updateOrder, upsertWatchlistItem } from '../db/client.js';
+import { getActiveStrategy, insertOrder, logSystem, updateOrderByKisOrderNo, upsertWatchlistItem } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import { getCurrentPrice, getDailyChart } from '../kis/market.js';
 import { getOrderFills, type OrderResult, placeOrder } from '../kis/order.js';
@@ -179,10 +179,14 @@ export class TradeExecutor {
     });
 
     if (result.success) {
-      const fillPrice = await this.confirmFill(result.orderNo, stockCode, estimatedPrice);
-      if (fillPrice < 0) {
+      const fill = await this.confirmFill(result.orderNo, stockCode, gatedQuantity, estimatedPrice);
+      if (!fill) {
         logger.error(`체결 미확인 → 체인 생성 보류: ${stockCode}`, { component: 'EXECUTOR' });
         return;
+      }
+      const filledQty = Math.max(1, Math.min(gatedQuantity, fill.filledQty));
+      if (filledQty < gatedQuantity) {
+        logger.warn(`⚠️ 매수 부분체결 반영: ${stockCode} 요청 ${gatedQuantity}주 → 체결 ${filledQty}주`, { component: 'EXECUTOR' });
       }
 
       // DB 전략 세팅값 우선 적용 (없으면 STRATEGY_PARAMS 하드코딩 fallback)
@@ -193,8 +197,8 @@ export class TradeExecutor {
       await chainManager.openChain({
         stockCode,
         mode,
-        buyPrice: fillPrice,
-        quantity: gatedQuantity,
+        buyPrice: fill.filledPrice,
+        quantity: filledQty,
         targetProfitPct,
         stopLossPct,
         maxAveragingCount: params.maxAveragingCount,
@@ -207,7 +211,7 @@ export class TradeExecutor {
 
       // 캐시 무효화 + 푸시 알림
       invalidateStockCache(stockCode).catch(() => {});
-      notifyBuy(stockCode, gatedQuantity, fillPrice, reasoning).catch(() => {});
+      notifyBuy(stockCode, filledQty, fill.filledPrice, reasoning).catch(() => {});
     }
   }
 
@@ -261,12 +265,16 @@ export class TradeExecutor {
     });
 
     if (result.success) {
-      const fillPrice = await this.confirmFill(result.orderNo, stockCode, estimatedPrice);
-      if (fillPrice < 0) {
+      const fill = await this.confirmFill(result.orderNo, stockCode, quantity, estimatedPrice);
+      if (!fill) {
         logger.error(`체결 미확인 → 물타기 체인 업데이트 보류: ${stockCode}`, { component: 'EXECUTOR' });
         return;
       }
-      await chainManager.addAveraging(chain.id, fillPrice, quantity);
+      const filledQty = Math.max(1, Math.min(quantity, fill.filledQty));
+      if (filledQty < quantity) {
+        logger.warn(`⚠️ 물타기 부분체결 반영: ${stockCode} 요청 ${quantity}주 → 체결 ${filledQty}주`, { component: 'EXECUTOR' });
+      }
+      await chainManager.addAveraging(chain.id, fill.filledPrice, filledQty);
     }
   }
 
@@ -294,12 +302,24 @@ export class TradeExecutor {
     });
 
     if (result.success) {
-      const price = await getCurrentPrice(stockCode);
+      const now = await getCurrentPrice(stockCode).catch(() => null);
+      const fallbackPrice = now?.currentPrice ?? (Number(chain.avg_buy_price) || 0);
+      const fill = await this.confirmFill(result.orderNo, stockCode, safeQty, fallbackPrice);
+      if (!fill) {
+        logger.error(`체결 미확인 → 부분익절 체인 업데이트 보류: ${stockCode}`, { component: 'EXECUTOR' });
+        return;
+      }
+
+      const soldQty = Math.max(1, Math.min(safeQty, fill.filledQty));
+      if (soldQty < safeQty) {
+        logger.warn(`⚠️ 부분익절 부분체결 반영: ${stockCode} 요청 ${safeQty}주 → 체결 ${soldQty}주`, { component: 'EXECUTOR' });
+      }
+
       const avgBuy = Number(chain.avg_buy_price) || 0;
-      const pnlPct = avgBuy > 0 ? ((price.currentPrice - avgBuy) / avgBuy) * 100 : 0;
-      await chainManager.partialProfit(chain.id, safeQty, price.currentPrice, chain);
+      const pnlPct = avgBuy > 0 ? ((fill.filledPrice - avgBuy) / avgBuy) * 100 : 0;
+      await chainManager.partialProfit(chain.id, soldQty, fill.filledPrice, chain);
       invalidateStockCache(stockCode).catch(() => {});
-      notifySell(stockCode, safeQty, price.currentPrice, pnlPct, reasoning).catch(() => {});
+      notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, reasoning).catch(() => {});
     }
   }
 
@@ -320,13 +340,29 @@ export class TradeExecutor {
     });
 
     if (result.success) {
-      const price = await getCurrentPrice(stockCode);
+      const now = await getCurrentPrice(stockCode).catch(() => null);
+      const fallbackPrice = now?.currentPrice ?? (Number(chain.avg_buy_price) || 0);
+      const fill = await this.confirmFill(result.orderNo, stockCode, chain.total_quantity, fallbackPrice);
+      if (!fill) {
+        logger.error(`체결 미확인 → 청산 체인 업데이트 보류: ${stockCode}`, { component: 'EXECUTOR' });
+        return;
+      }
+
+      const soldQty = Math.max(1, Math.min(chain.total_quantity, fill.filledQty));
+      if (soldQty < chain.total_quantity) {
+        logger.warn(`⚠️ 전량청산 부분체결 반영: ${stockCode} 요청 ${chain.total_quantity}주 → 체결 ${soldQty}주`, { component: 'EXECUTOR' });
+      }
+
       const closeReason = action === 'FORCE_CLOSE' ? `강제 청산: ${reasoning}` : `매도: ${reasoning}`;
       const avgBuy = Number(chain.avg_buy_price) || 0;
-      const pnlPct = avgBuy > 0 ? ((price.currentPrice - avgBuy) / avgBuy) * 100 : 0;
-      await chainManager.closeChain(chain.id, price.currentPrice, chain, closeReason);
+      const pnlPct = avgBuy > 0 ? ((fill.filledPrice - avgBuy) / avgBuy) * 100 : 0;
+      if (soldQty >= chain.total_quantity) {
+        await chainManager.closeChain(chain.id, fill.filledPrice, chain, closeReason);
+      } else {
+        await chainManager.partialProfit(chain.id, soldQty, fill.filledPrice, chain);
+      }
       invalidateStockCache(stockCode).catch(() => {});
-      notifySell(stockCode, chain.total_quantity, price.currentPrice, pnlPct, closeReason).catch(() => {});
+      notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, closeReason).catch(() => {});
     }
   }
 
@@ -393,13 +429,20 @@ export class TradeExecutor {
    */
   private confirmedOrders = new Set<string>();
 
-  private async confirmFill(orderNo: string, stockCode: string, fallbackPrice: number): Promise<number> {
-    if (config.isPaper) return roundKrw(fallbackPrice);
+  private async confirmFill(
+    orderNo: string,
+    stockCode: string,
+    expectedQty: number,
+    fallbackPrice: number,
+  ): Promise<{ filledQty: number; filledPrice: number } | null> {
+    if (config.isPaper) {
+      return { filledQty: expectedQty, filledPrice: roundKrw(fallbackPrice) };
+    }
 
     // 멱등성: 이미 확인된 주문이면 중복 확인 방지
     if (this.confirmedOrders.has(orderNo)) {
       logger.warn(`⚠️ 이미 확인된 주문: ${orderNo} → 스킵`, { component: 'EXECUTOR' });
-      return -1;
+      return null;
     }
 
     const retryDelays = [2000, 3000, 5000]; // 2초, 3초, 5초
@@ -416,14 +459,17 @@ export class TradeExecutor {
 
           // DB 주문 상태 업데이트 + 멱등성 등록
           this.confirmedOrders.add(orderNo);
-          await updateOrder(orderNo, {
+          await updateOrderByKisOrderNo(orderNo, {
             filled_quantity: fill.filledQty,
             filled_price: fill.filledPrice,
             status: fill.filledQty >= fill.orderQty ? 'FILLED' : 'PARTIAL',
             kis_status: 'FILLED',
           });
 
-          return roundKrw(fill.filledPrice);
+          return {
+            filledQty: fill.filledQty,
+            filledPrice: roundKrw(fill.filledPrice || fallbackPrice),
+          };
         }
 
         logger.info(`⏳ 체결 대기 (시도 ${i + 1}/${retryDelays.length}): ${orderNo}`, {
@@ -443,7 +489,7 @@ export class TradeExecutor {
     const { sendTelegramMessage } = await import('../notifications/telegram.js');
     await sendTelegramMessage(`🛑 체결 미확인 경고!\n주문번호: ${orderNo}\n종목: ${stockCode}\n수동 확인 후 조치 필요`);
 
-    return -1; // 체결 실패 시그널
+    return null; // 체결 실패 시그널
   }
 }
 

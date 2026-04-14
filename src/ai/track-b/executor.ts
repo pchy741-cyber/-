@@ -3,6 +3,7 @@ import { config } from '../../config/index.js';
 import { type TradeDecision, TradeDecisionSchema } from '../../db/models.js';
 import { logger } from '../../utils/logger.js';
 import { buildExecutionPrompt } from '../prompts/track-b-execution.js';
+import { BUY_BLOCKED_CODES } from './trading-rules.js';
 
 // Lazy init — 키 변경 시 자동 반영
 function getAnthropic(): Anthropic | null {
@@ -90,15 +91,24 @@ export async function runClaudeExecution(params: {
         throw new Error(`모든 결정이 검증 실패 (${invalidCount.count}개)`);
       }
 
+      // CEO 지시: 차단 종목 BUY 필터링
+      const filtered = validDecisions.filter((d) => {
+        if (d.action === 'BUY' && d.stock_code && BUY_BLOCKED_CODES.has(d.stock_code)) {
+          logger.warn(`🚫 Claude BUY 차단: ${d.stock_code} — 매수 금지 목록`, { component: 'TRACK_B' });
+          return false;
+        }
+        return true;
+      });
+
       logger.info(
-        `Claude 판단 완료: ${validDecisions.length}개 유효 결정 ` +
-          `(BUY: ${validDecisions.filter((d) => d.action === 'BUY').length}, ` +
-          `SELL: ${validDecisions.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action)).length}, ` +
-          `HOLD: ${validDecisions.filter((d) => d.action === 'HOLD').length})`,
+        `Claude 판단 완료: ${filtered.length}개 유효 결정 ` +
+          `(BUY: ${filtered.filter((d) => d.action === 'BUY').length}, ` +
+          `SELL: ${filtered.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action)).length}, ` +
+          `HOLD: ${filtered.filter((d) => d.action === 'HOLD').length})`,
         { component: 'TRACK_B' },
       );
 
-      return validDecisions;
+      return filtered;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       logger.warn(`Claude 실행 시도 ${attempt} 실패: ${msg}`, { component: 'TRACK_B' });

@@ -19,6 +19,12 @@ import { logger } from '../utils/logger.js';
  * → 시간이 지날수록 AI가 "이 종목, 이 조건이면 잘 벌었다"를 기억
  */
 
+export interface InsightParamChange {
+  field: 'mode' | 'stop_loss_pct' | 'take_profit_pct' | 'buy_threshold';
+  value: string | number;
+  reason: string;
+}
+
 export interface LearnedInsight {
   id?: string;
   category: 'WIN_PATTERN' | 'LOSS_PATTERN' | 'TIMING' | 'SIZING';
@@ -27,6 +33,12 @@ export interface LearnedInsight {
   sampleCount: number; // 근거 매매 건수
   lastUpdated: string;
   details?: Record<string, any>;
+  /** 구체적 행동 권장사항 (UI에 표시) */
+  recommendation?: string;
+  /** 자동 적용 가능한 전략 파라미터 변경 */
+  paramChange?: InsightParamChange;
+  /** 이미 적용됐는지 (DB에서 로드 시) */
+  isApplied?: boolean;
 }
 
 interface EnrichedChain {
@@ -110,11 +122,16 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
     ...analyzeHoldingPeriodByEntry(wins),
     ...(await analyzeOptimalTrailingStop(enrichedChains)),
     ...analyzeSniperByMarketRegime(enrichedChains),
+    ...analyzeLossStreakRisk(enrichedChains),
+    ...analyzeProfitRatio(wins, losses),
+    ...analyzeQuickProfitTaking(wins),
   ];
 
   // 3. DB에 인사이트 저장 및 알림
   if (insights.length > 0) {
     await saveInsights(insights);
+    // 고신뢰도 인사이트 자동 전략 적용 (confidence >= 0.8, paramChange 있는 것만)
+    await autoApplyInsights(insights).catch((e) => logger.warn(`자동 적용 실패: ${e}`, { component: 'LEARN' }));
   }
 
   return insights;
@@ -209,17 +226,43 @@ function analyzeModePerformance(enrichedChains: EnrichedChain[]): LearnedInsight
   }
 
   const insights: LearnedInsight[] = [];
+
+  // 최고 성과 모드 찾기
+  let bestMode = '';
+  let bestWinRate = 0;
   for (const [mode, stats] of modeResults) {
     const total = stats.wins + stats.losses;
     if (total >= 5) {
-      const winRate = (stats.wins / total) * 100;
-      insights.push({
-        category: 'WIN_PATTERN',
-        insight: `${mode} 모드 성과: 승률 ${winRate.toFixed(0)}% (${stats.wins}승 ${stats.losses}패), 총 수익 ${stats.totalPnl.toLocaleString()}원`,
+      const winRate = stats.wins / total;
+      if (winRate > bestWinRate) { bestWinRate = winRate; bestMode = mode; }
+    }
+  }
+
+  for (const [mode, stats] of modeResults) {
+    const total = stats.wins + stats.losses;
+    if (total >= 5) {
+      const winRate = stats.wins / total;
+      const winRatePct = (winRate * 100).toFixed(0);
+      const isBest = mode === bestMode;
+      const isBad = winRate < 0.4 && total >= 8 && stats.totalPnl < 0;
+
+      const insight: LearnedInsight = {
+        category: isBad ? 'LOSS_PATTERN' : 'WIN_PATTERN',
+        insight: `${mode} 모드 성과: 승률 ${winRatePct}% (${stats.wins}승 ${stats.losses}패), 총 수익 ${stats.totalPnl.toLocaleString()}원`,
         confidence: total >= 10 ? 0.85 : 0.6,
         sampleCount: total,
         lastUpdated: now,
-      });
+      };
+
+      // 성과 나쁜 모드 → 다른 모드로 전환 권장
+      if (isBad && bestMode && bestMode !== mode) {
+        insight.recommendation = `${mode} 모드 승률 ${winRatePct}%로 부진. ${bestMode} 모드(승률 ${(bestWinRate * 100).toFixed(0)}%)로 전환하면 성과 개선 가능.`;
+        insight.paramChange = { field: 'mode', value: bestMode, reason: `${mode} 승률 ${winRatePct}% → ${bestMode} 우위` };
+      } else if (isBest && winRate >= 0.65) {
+        insight.recommendation = `${mode} 모드가 현재 가장 효과적. 계속 유지 권장.`;
+      }
+
+      insights.push(insight);
     }
   }
   return insights;
@@ -245,16 +288,16 @@ function analyzeStockPerformance(enrichedChains: EnrichedChain[]): LearnedInsigh
     if (winRate >= 0.75) {
       insights.push({
         category: 'WIN_PATTERN',
-        insight: `종목 '${code}'는 승률 ${(winRate * 100).toFixed(0)}% (${total}건)로, 현재 전략과 궁합이 좋음.`,
-        confidence: 0.75,
+        insight: `종목 '${code}'는 승률 ${(winRate * 100).toFixed(0)}% (${total}건) — 이 전략과 잘 맞는 종목. 매수 시그널 시 적극 진입하세요.`,
+        confidence: 0.75 + (total >= 5 ? 0.05 : 0),
         sampleCount: total,
         lastUpdated: now,
       });
     } else if (winRate <= 0.33 && total >= 3) {
       insights.push({
         category: 'LOSS_PATTERN',
-        insight: `종목 '${code}'는 승률 ${(winRate * 100).toFixed(0)}% (${total}건)로, 현재 전략과 맞지 않음. 진입에 신중할 것.`,
-        confidence: 0.7,
+        insight: `종목 '${code}'는 승률 ${(winRate * 100).toFixed(0)}% (${total}건) — 이 전략과 맞지 않음. 스코어가 높아도 BUY를 HOLD로 전환하거나 수량 절반으로 줄이세요.`,
+        confidence: 0.7 + (total >= 5 ? 0.1 : 0),
         sampleCount: total,
         lastUpdated: now,
       });
@@ -531,14 +574,108 @@ function analyzeSniperByMarketRegime(enrichedChains: EnrichedChain[]): LearnedIn
   return insights;
 }
 
+/**
+ * 연속 손실 위험 감지 — 최근 5건 중 3건 이상 손실이면 경고
+ */
+function analyzeLossStreakRisk(enrichedChains: EnrichedChain[]): LearnedInsight[] {
+  if (enrichedChains.length < 5) return [];
+
+  const recent5 = enrichedChains.slice(0, 5);
+  const lossCount = recent5.filter((c) => Number(c.chain.realized_pnl) <= 0).length;
+
+  if (lossCount >= 3) {
+    return [
+      {
+        category: 'LOSS_PATTERN',
+        insight: `최근 5건 중 ${lossCount}건 손실 — 연속 손실 구간. 현재 시장 환경이 전략과 맞지 않음. 신규 매수를 최소화하고 기존 포지션 리스크 관리를 강화하세요.`,
+        confidence: 0.85,
+        sampleCount: 5,
+        lastUpdated: now,
+      },
+    ];
+  }
+
+  return [];
+}
+
+/**
+ * 수익/손실 비율 분석 — 평균 수익 vs 평균 손실 비율
+ */
+function analyzeProfitRatio(wins: EnrichedChain[], losses: EnrichedChain[]): LearnedInsight[] {
+  if (wins.length < 3 || losses.length < 3) return [];
+
+  const avgWinPct = wins.reduce((s, c) => s + c.pnlPct, 0) / wins.length;
+  const avgLossPct = Math.abs(losses.reduce((s, c) => s + c.pnlPct, 0) / losses.length);
+  const ratio = avgWinPct / avgLossPct;
+
+  const insights: LearnedInsight[] = [];
+
+  if (ratio < 1.0) {
+    // 손절을 더 타이트하게 → 현재 avgLossPct의 70%로 제안
+    const suggestedStopLoss = -(Math.abs(avgLossPct) * 0.7).toFixed(1);
+    insights.push({
+      category: 'LOSS_PATTERN',
+      insight: `손익비 ${ratio.toFixed(2)} (평균 수익 +${avgWinPct.toFixed(1)}% vs 평균 손실 -${avgLossPct.toFixed(1)}%). 손절 지연이 손익비를 악화시키고 있음.`,
+      recommendation: `손절 기준을 ${suggestedStopLoss}%로 타이트하게 조정하면 손익비 개선 가능. 현재 평균 손실 -${avgLossPct.toFixed(1)}%의 70% 수준.`,
+      paramChange: { field: 'stop_loss_pct', value: Number(suggestedStopLoss), reason: `손익비 ${ratio.toFixed(2)} 개선 필요` },
+      confidence: 0.8,
+      sampleCount: wins.length + losses.length,
+      lastUpdated: now,
+    });
+  } else if (ratio >= 2.0) {
+    insights.push({
+      category: 'WIN_PATTERN',
+      insight: `손익비 ${ratio.toFixed(2)} (평균 수익 +${avgWinPct.toFixed(1)}% vs 평균 손실 -${avgLossPct.toFixed(1)}%) — 수익 구조 우수.`,
+      recommendation: `현재 손절/익절 기준이 최적화되어 있음. 변경 불필요.`,
+      confidence: 0.8,
+      sampleCount: wins.length + losses.length,
+      lastUpdated: now,
+    });
+  }
+
+  return insights;
+}
+
+/**
+ * 단기 빠른 수익 패턴 분석 — 1~2일 안에 목표가 달성한 종목 패턴
+ */
+function analyzeQuickProfitTaking(wins: EnrichedChain[]): LearnedInsight[] {
+  if (wins.length < 5) return [];
+
+  const quickWins = wins.filter((c) => c.holdingDays <= 2 && c.pnlPct >= 1.5);
+  const ratio = quickWins.length / wins.length;
+
+  if (ratio >= 0.4 && quickWins.length >= 3) {
+    // 빠른 익절이 전체 수익의 40% 이상
+    const stockCodes = [...new Set(quickWins.map((c) => c.chain.stock_code))];
+    return [
+      {
+        category: 'WIN_PATTERN',
+        insight: `단기 수익(1~2일, +1.5% 이상) 패턴이 전체 수익 거래의 ${(ratio * 100).toFixed(0)}%를 차지. 단기 모멘텀 시 과도한 홀딩보다 빠른 익절이 효과적. 관련 종목: ${stockCodes.slice(0, 3).join(', ')}`,
+        confidence: 0.75,
+        sampleCount: quickWins.length,
+        lastUpdated: now,
+      },
+    ];
+  }
+
+  return [];
+}
+
 async function saveInsights(insights: LearnedInsight[]): Promise<void> {
   if (insights.length > 0) {
-    // 기존 인사이트 삭제 후 새로 삽입
-    await getPool().query('DELETE FROM learned_insights');
+    // 자동 생성 인사이트만 삭제 (CEO가 수동 입력한 is_manual=true 인사이트는 보존)
+    await getPool().query('DELETE FROM learned_insights WHERE is_manual IS NOT TRUE');
+    // 마이그레이션 008 컬럼 보장 (없으면 추가)
+    await getPool().query(`ALTER TABLE learned_insights ADD COLUMN IF NOT EXISTS recommendation TEXT`).catch(() => {});
+    await getPool().query(`ALTER TABLE learned_insights ADD COLUMN IF NOT EXISTS param_change JSONB`).catch(() => {});
+    await getPool().query(`ALTER TABLE learned_insights ADD COLUMN IF NOT EXISTS is_applied BOOLEAN DEFAULT false`).catch(() => {});
+    await getPool().query(`ALTER TABLE learned_insights ADD COLUMN IF NOT EXISTS applied_at TIMESTAMPTZ`).catch(() => {});
+
     for (const insight of insights) {
       await getPool().query(
-        `INSERT INTO learned_insights (category, insight, confidence, sample_count, last_updated, details)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+        `INSERT INTO learned_insights (category, insight, confidence, sample_count, last_updated, details, recommendation, param_change)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           insight.category,
           insight.insight,
@@ -546,6 +683,8 @@ async function saveInsights(insights: LearnedInsight[]): Promise<void> {
           insight.sampleCount,
           insight.lastUpdated,
           insight.details ? JSON.stringify(insight.details) : null,
+          insight.recommendation ?? null,
+          insight.paramChange ? JSON.stringify(insight.paramChange) : null,
         ],
       );
     }
@@ -567,24 +706,153 @@ async function saveInsights(insights: LearnedInsight[]): Promise<void> {
 
 /**
  * Track B Claude에 주입할 학습 인사이트 텍스트
+ * - 실제 매매 데이터 기반 패턴 → AI 판단에 강제 적용
  */
 export async function getLearnedInsightsForPrompt(): Promise<string> {
-  const { rows: data } = await getPool().query('SELECT * FROM learned_insights ORDER BY confidence DESC LIMIT 8');
+  const { rows: data } = await getPool().query(
+    'SELECT * FROM learned_insights ORDER BY confidence DESC, sample_count DESC LIMIT 15',
+  );
 
   if (!data || data.length === 0) return '';
 
+  // 카테고리별로 분류
+  const lossPatterns = data.filter((d) => d.category === 'LOSS_PATTERN');
+  const winPatterns = data.filter((d) => d.category === 'WIN_PATTERN');
+  const timingInsights = data.filter((d) => d.category === 'TIMING');
+  const sizingInsights = data.filter((d) => d.category === 'SIZING');
+
   const lines = [
-    '\n## 과거 매매에서 학습된 인사이트 (자기학습 결과)',
-    '아래는 실제 매매 결과를 분석하여 추출한 패턴입니다. 매매 판단 시 참고하세요.',
+    '\n## ⚠️ 실거래 학습 인사이트 — 반드시 매매 판단에 반영하세요',
+    '아래는 실제 수익/손실 매매 데이터를 분석한 결과입니다. 단순 참고가 아닌 강제 적용 사항입니다.',
   ];
 
-  for (const insight of data) {
-    lines.push(
-      `- [${insight.category}] ${insight.insight} (신뢰도 ${(insight.confidence * 100).toFixed(0)}%, 근거 ${insight.sample_count}건)`,
-    );
+  if (lossPatterns.length > 0) {
+    lines.push('\n### 🚫 손실 패턴 — 다음 상황에서는 매수를 AVOID하거나 즉시 SELL하세요:');
+    for (const insight of lossPatterns) {
+      const confidence = (insight.confidence * 100).toFixed(0);
+      const mandatory = insight.confidence >= 0.75 ? '【필수】' : '【권장】';
+      lines.push(`  ${mandatory} ${insight.insight} (신뢰도 ${confidence}%, 근거 ${insight.sample_count}건)`);
+    }
   }
 
+  if (winPatterns.length > 0) {
+    lines.push('\n### ✅ 수익 패턴 — 다음 조건이 충족되면 BUY를 적극 검토하세요:');
+    for (const insight of winPatterns) {
+      const confidence = (insight.confidence * 100).toFixed(0);
+      const mandatory = insight.confidence >= 0.8 ? '【높은 신뢰도 — PRIORITIZE】' : '【참고】';
+      lines.push(`  ${mandatory} ${insight.insight} (신뢰도 ${confidence}%, 근거 ${insight.sample_count}건)`);
+    }
+  }
+
+  if (timingInsights.length > 0) {
+    lines.push('\n### ⏱️ 타이밍 인사이트:');
+    for (const insight of timingInsights) {
+      lines.push(`  - ${insight.insight} (신뢰도 ${(insight.confidence * 100).toFixed(0)}%, 근거 ${insight.sample_count}건)`);
+    }
+  }
+
+  if (sizingInsights.length > 0) {
+    lines.push('\n### 📊 투자 규모 인사이트:');
+    for (const insight of sizingInsights) {
+      lines.push(`  - ${insight.insight} (신뢰도 ${(insight.confidence * 100).toFixed(0)}%, 근거 ${insight.sample_count}건)`);
+    }
+  }
+
+  lines.push('\n> 위 인사이트는 과거 실거래 결과로 도출된 통계적 패턴입니다. 단순 스코어보다 이 인사이트를 우선 적용하세요.');
+
   return lines.join('\n');
+}
+
+/**
+ * 고신뢰도 인사이트를 strategy_config에 자동 반영
+ * - confidence >= 0.8 + paramChange 있는 인사이트만 자동 적용
+ * - analyzeTradeHistory() 직후 호출
+ */
+export async function autoApplyInsights(insights: LearnedInsight[]): Promise<void> {
+  const toApply = insights.filter((i) => i.confidence >= 0.8 && i.paramChange && !i.isApplied);
+  if (toApply.length === 0) return;
+
+  try {
+    // 현재 활성 전략 조회
+    const { rows } = await getPool().query(`SELECT * FROM strategy_config WHERE is_active = true ORDER BY updated_at DESC LIMIT 1`);
+    const current = rows[0];
+    if (!current) return;
+
+    // 가장 신뢰도 높은 변경사항 우선 적용 (mode 변경은 최우선)
+    const sorted = toApply.sort((a, b) => {
+      if (a.paramChange?.field === 'mode') return -1;
+      if (b.paramChange?.field === 'mode') return 1;
+      return b.confidence - a.confidence;
+    });
+
+    const applied: string[] = [];
+    for (const insight of sorted.slice(0, 3)) { // 한 번에 최대 3개 적용
+      const { field, value } = insight.paramChange!;
+      const oldVal = current[field];
+      if (oldVal === value) continue; // 이미 같은 값이면 스킵
+
+      await getPool().query(`UPDATE strategy_config SET ${field} = $1 WHERE is_active = true`, [value]);
+      applied.push(`${field}: ${oldVal} → ${value}`);
+      logger.info(`🤖 인사이트 자동 적용: ${field}=${value} (${insight.insight.slice(0, 40)}...)`, { component: 'LEARN' });
+    }
+
+    if (applied.length > 0) {
+      await logSystem('INFO', 'LEARN', `인사이트 자동 전략 적용: ${applied.join(', ')}`).catch(() => {});
+      await sendTelegramMessage(
+        `🤖 *자기학습 자동 전략 적용*\n${applied.map((a) => `• ${a}`).join('\n')}`,
+      ).catch(() => {});
+    }
+  } catch (err) {
+    logger.warn(`인사이트 자동 적용 실패: ${err}`, { component: 'LEARN' });
+  }
+}
+
+/**
+ * 특정 인사이트를 수동으로 전략에 적용 (대시보드 버튼)
+ */
+export async function applyInsightById(insightId: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    const { rows } = await getPool().query(`SELECT * FROM learned_insights WHERE id = $1`, [insightId]);
+    const insight = rows[0];
+    if (!insight) return { ok: false, message: '인사이트를 찾을 수 없음' };
+    if (!insight.param_change) return { ok: false, message: '자동 적용 가능한 파라미터 변경 없음' };
+    if (insight.is_applied) return { ok: false, message: '이미 적용됨' };
+
+    const { field, value } = insight.param_change as InsightParamChange;
+    const { rows: stratRows } = await getPool().query(`SELECT * FROM strategy_config WHERE is_active = true LIMIT 1`);
+    const current = stratRows[0];
+    if (!current) return { ok: false, message: '활성 전략 없음' };
+
+    await getPool().query(`UPDATE strategy_config SET ${field} = $1 WHERE is_active = true`, [value]);
+    await getPool().query(`UPDATE learned_insights SET is_applied = true, applied_at = NOW() WHERE id = $1`, [insightId]);
+
+    const message = `${field}: ${current[field]} → ${value}`;
+    await logSystem('INFO', 'LEARN', `인사이트 수동 적용: ${message}`).catch(() => {});
+    return { ok: true, message };
+  } catch (err) {
+    return { ok: false, message: `적용 실패: ${err}` };
+  }
+}
+
+/**
+ * 대시보드용 인사이트 목록 (recommendation + paramChange 포함)
+ */
+export async function getInsightsForDashboard(): Promise<LearnedInsight[]> {
+  const { rows } = await getPool().query(
+    `SELECT * FROM learned_insights ORDER BY confidence DESC, sample_count DESC LIMIT 20`,
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    category: r.category,
+    insight: r.insight,
+    confidence: Number(r.confidence),
+    sampleCount: r.sample_count,
+    lastUpdated: r.last_updated,
+    details: r.details,
+    recommendation: r.recommendation,
+    paramChange: r.param_change as InsightParamChange | undefined,
+    isApplied: r.is_applied,
+  }));
 }
 
 export interface LearnedParameters {

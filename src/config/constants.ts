@@ -59,12 +59,12 @@ export type StrategyMode = (typeof StrategyMode)[keyof typeof StrategyMode];
 // ── 전략별 파라미터 ──
 export const STRATEGY_PARAMS = {
   SWING: {
-    buyThreshold: 65, // 매수 진입 점수 (모의투자 적극 매수)
+    buyThreshold: 70, // 매수 진입 점수 (70점 이상 품질 신호)
     splitCount: 3, // 3분할 매수
     averageDownPct: -3, // 물타기 트리거 (-3%)
-    maxAveragingCount: 3, // 최대 물타기 횟수
-    takeProfitPct: 4, // 익절 라인 (+4% — 빠른 회전)
-    takeProfitRatio: 0.5, // 익절 시 50% 매도
+    maxAveragingCount: 2, // 최대 물타기 2회 (과도한 물타기 방지)
+    takeProfitPct: 6, // 익절 라인 (+6% — R/R 2:1 이상)
+    takeProfitRatio: 0.5, // 익절 시 50% 매도 (나머지 트레일링)
     stopLossPct: -3, // 손절 라인 (-3% — 타이트)
     maxHoldingDays: 5, // 최대 보유일
   },
@@ -80,13 +80,13 @@ export const STRATEGY_PARAMS = {
     marketPenalty: -30, // 하락장 감점
   },
   SCALPING: {
-    buyThreshold: 68, // 단타 — 수수료(~0.21% 왕복) 대비 수익 확보를 위해 고품질 진입만
-    splitCount: 1, // 100% 한번에
+    buyThreshold: 65, // 단타 — 장 시작 5분 황금 타임 활용, 진입 기준 약간 완화
+    splitCount: 2, // 2분할 매수 (리스크 분산)
     averageDownPct: 0, // 물타기 없음
     maxAveragingCount: 0,
-    takeProfitPct: 3, // +3% 즉시 익절 (수수료 0.21% 제외 실수익 ~2.8%)
+    takeProfitPct: 1.5, // +1.5% 즉시 익절 (수수료 0.21% 제외 실수익 ~1.3%)
     takeProfitRatio: 1.0, // 전량 매도
-    stopLossPct: -2, // -2% 칼손절 (수수료 포함 실손실 ~2.2%)
+    stopLossPct: -1.5, // -1.5% 칼손절 (수수료 포함 실손실 ~1.7%)
     maxHoldingDays: 0, // 당일 청산 필수
     forceCloseTime: '15:20', // 오버나잇 금지
   },

@@ -66,6 +66,23 @@ const ORDER_EXCD_MAP: Record<string, string> = {
   HASE: 'HASE', VNSE: 'VNSE',
 };
 
+const BALANCE_CURRENCY_MAP: Record<string, string> = {
+  NYSE: 'USD',
+  NASDAQ: 'USD',
+  AMEX: 'USD',
+  TSE: 'JPY',
+  TKSE: 'JPY',
+  TPE: 'TWD',
+  SEHK: 'HKD',
+  HKS: 'HKD',
+  SSE: 'CNY',
+  SHAA: 'CNY',
+  SZSE: 'CNY',
+  SZAA: 'CNY',
+  HASE: 'VND',
+  VNSE: 'VND',
+};
+
 export interface OverseasPrice {
   stockCode: string;
   stockName: string;
@@ -74,6 +91,9 @@ export interface OverseasPrice {
   changePct: number;
   volume: number;
   exchange: string;
+  dayHigh: number;   // 당일 고가
+  dayLow: number;    // 당일 저가
+  dayOpen: number;   // 당일 시가
 }
 
 /**
@@ -102,6 +122,9 @@ export async function getOverseasPrice(stockCode: string, exchange: string = 'NA
     changePct: Number(o.rate ?? 0),
     volume: Number(o.tvol ?? 0),
     exchange,
+    dayHigh: Number(o.high ?? o.last ?? 0),
+    dayLow: Number(o.low ?? o.last ?? 0),
+    dayOpen: Number(o.open ?? o.last ?? 0),
   };
 }
 
@@ -182,15 +205,18 @@ export async function placeOverseasOrder(params: {
 /**
  * 해외 주식 잔고 조회
  */
-export async function getOverseasBalance() {
+export async function getOverseasBalance(exchange: string = 'NASDAQ') {
+  const excd = ORDER_EXCD_MAP[exchange] ?? EXCHANGE_MAP[exchange] ?? 'NASD';
+  const currency = BALANCE_CURRENCY_MAP[exchange] ?? 'USD';
+
   const res = await overseasKisRequest({
     path: '/uapi/overseas-stock/v1/trading/inquire-balance',
     trId: OVERSEAS_TR_ID.BALANCE,
     params: {
       CANO: config.kis.accountNo,
       ACNT_PRDT_CD: config.kis.accountProductCode,
-      OVRS_EXCG_CD: 'NASD',
-      TR_CRCY_CD: 'USD',
+      OVRS_EXCG_CD: excd,
+      TR_CRCY_CD: currency,
       CTX_AREA_FK200: '',
       CTX_AREA_NK200: '',
     },
@@ -207,6 +233,6 @@ export async function getOverseasBalance() {
     evalAmount: Number(item.ovrs_stck_evlu_amt ?? 0),
     profitLoss: Number(item.frcr_evlu_pfls_amt ?? 0),
     profitLossPct: Number(item.evlu_pfls_rt ?? 0),
-    currency: 'USD',
+    currency,
   }));
 }

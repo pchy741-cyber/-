@@ -13,14 +13,16 @@ export interface OverseasStockInput {
   name: string;
   exchange: string;
   currentPrice: number;
-  changePct: number;   // 당일 등락률
+  changePct: number;     // 당일 등락률
   rsi: number;
   adx: number;
-  score: number;       // analyzeTechnicals score (-100~100)
-  signal: string;      // STRONG_BUY / BUY / HOLD / SELL / STRONG_SELL
+  score: number;         // analyzeTechnicals score (-100~100)
+  signal: string;        // STRONG_BUY / BUY / HOLD / SELL / STRONG_SELL
   trendStrength: string;
   isHolding: boolean;
-  holdingPnlPct?: number; // 보유 중이면 현재 손익률
+  holdingPnlPct?: number;
+  dayRangePct?: number;  // 0=저가, 100=고가 위치 (일중 어디에 있는지)
+  isMomentum?: boolean;  // 당일 +3% 이상 + 일중 상위 → 강한 상승 모멘텀
 }
 
 export interface OverseasAIDecision {
@@ -30,16 +32,20 @@ export interface OverseasAIDecision {
   reasoning: string;
 }
 
-const SYSTEM_PROMPT = `당신은 미국 대형주 단기 트레이딩 전문가입니다.
+const SYSTEM_PROMPT = `당신은 미국 대형주 단기 트레이딩 전문가입니다. 수익 창출이 목표이므로 적극적으로 기회를 찾아야 합니다.
 
 규칙:
 - 분석 대상: NASDAQ/NYSE 빅테크 (AAPL, NVDA, META, MSFT, GOOGL, AMZN, TSLA)
-- 포지션: 최대 5종목 동시 보유
-- 익절: +5% / 손절: -3%
-- 관세/금리/시장 변동성을 최우선으로 고려
-- RSI 30 이하 = 과매도 반등 기회, 70 이상 = 과매수 주의
-- ADX 20+ = 추세 있음, 15 미만 = 횡보 (매수 비추)
+- 포지션: 최대 5종목 동시 보유 (슬롯 여유 있고 조건 되면 매수 적극 권장)
+- 익절: +5% / 손절: -3% (단기 스윙)
+- RSI 35 이하 = 과매도 → 반등 매수 기회로 적극 고려
+- RSI 65 이상 + score < 0 = 과매수 주의
+- ADX 15+ = 추세 있음 → BUY 조건 충족 시 적극 진입
 - 기술적 score -30 이하이면 매도 우선
+- 하락장/변동성 구간에서도 개별 종목 기술적 반등은 유효함. 시장 전체 비관론으로 전 종목 HOLD하지 말 것.
+- 🚀모멘텀(당일강세) 표시 종목: 이미 강하게 상승 중 → 추세 추종 매수 적극 고려 (RSI 72 미만이면 과매수 아님)
+- 일중 위치가 높다(70%+)는 것은 당일 강세 지속 신호일 수 있음 (고점 돌파 모멘텀)
+- 5종목 미만 보유이고 조건 충족 종목이 있으면 최소 1개는 BUY 권장
 
 반드시 JSON 배열로만 응답하세요:
 [{"code":"AAPL","action":"BUY","confidence":0.75,"reasoning":"RSI 32 과매도 반등, ADX 22 상승 추세"},...]
@@ -108,7 +114,9 @@ function buildContext(stocks: OverseasStockInput[], cash: number, holdingCount: 
 
   const lines = stocks.map(s => {
     const holding = s.isHolding ? ` [보유중 PnL=${s.holdingPnlPct?.toFixed(1)}%]` : '';
-    return `${s.code}(${s.name}): $${s.currentPrice} ${s.changePct >= 0 ? '+' : ''}${s.changePct.toFixed(2)}% | RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)} score=${s.score} signal=${s.signal}${holding}`;
+    const momentum = s.isMomentum ? ' 🚀모멘텀(당일강세)' : '';
+    const range = s.dayRangePct != null ? ` 일중${s.dayRangePct.toFixed(0)}%` : '';
+    return `${s.code}(${s.name}): $${s.currentPrice} ${s.changePct >= 0 ? '+' : ''}${s.changePct.toFixed(2)}%${range} | RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)} score=${s.score} signal=${s.signal}${momentum}${holding}`;
   });
 
   return [

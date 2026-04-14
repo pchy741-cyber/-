@@ -1,5 +1,5 @@
 import { STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
-import { getActiveStrategy, getOpenChains } from '../db/client.js';
+import { getActiveStrategy, getOpenChains, getPool } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import { getCurrentPrice } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
@@ -18,6 +18,9 @@ export async function runHoldingCheckJob(): Promise<void> {
   try {
     const chains = await getOpenChains();
     if (chains.length === 0) return;
+
+    // ── 탈출 모드 체크 (+0.5% 돌파 시 즉시 매도) ──
+    await checkEscapeTargets(chains);
 
     const strategy = await getActiveStrategy();
     const mode = (strategy?.mode ?? 'SWING') as StrategyMode;
@@ -187,4 +190,67 @@ function countBusinessDays(start: Date, end: Date): number {
   }
 
   return count;
+}
+
+/**
+ * 탈출 모드 체크: escape_target_price 가 설정된 체인 중
+ * 현재가 >= 목표가 (+0.5%) 이면 즉시 전량 매도
+ */
+async function checkEscapeTargets(chains: any[]): Promise<void> {
+  const escapeChains = chains.filter(
+    (ch) => ch.escape_target_price != null && Number(ch.escape_target_price) > 0,
+  );
+  if (escapeChains.length === 0) return;
+
+  const decisions: TradeDecision[] = [];
+
+  for (const chain of escapeChains) {
+    const target = Number(chain.escape_target_price);
+    let curPrice: number | null = null;
+
+    try {
+      const priceData = await getCurrentPrice(chain.stock_code);
+      if (priceData.currentPrice > 0) curPrice = priceData.currentPrice;
+    } catch {
+      continue;
+    }
+
+    if (curPrice === null) continue;
+
+    if (curPrice >= target) {
+      const pnlPct = calcPnlPct(Number(chain.avg_buy_price), curPrice);
+      logger.info(
+        `🚪 탈출 실행: ${chain.stock_code} 현재가 ${curPrice.toLocaleString()}원 ≥ 목표 ${target.toLocaleString()}원 (${pnlPct.toFixed(2)}%)`,
+        { component: 'ESCAPE' },
+      );
+      decisions.push({
+        action: 'FORCE_CLOSE',
+        stock_code: chain.stock_code,
+        quantity: chain.total_quantity,
+        price_type: 'MARKET',
+        reasoning: `탈출: 현재가 ${curPrice.toLocaleString()}원이 목표가 ${target.toLocaleString()}원 돌파 (+${pnlPct.toFixed(2)}%)`,
+        confidence: 1.0,
+      });
+      // 탈출 후 목표가 초기화
+      await getPool().query(
+        'UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1',
+        [chain.id],
+      );
+    } else {
+      const gap = (((target - curPrice) / curPrice) * 100).toFixed(2);
+      logger.info(
+        `🚪 탈출 대기: ${chain.stock_code} 현재 ${curPrice.toLocaleString()}원 / 목표 ${target.toLocaleString()}원 (${gap}% 남음)`,
+        { component: 'ESCAPE' },
+      );
+    }
+  }
+
+  if (decisions.length === 0) return;
+
+  const strategy = await getActiveStrategy();
+  const mode = ((strategy?.mode ?? 'SWING') as StrategyMode);
+  await tradeExecutor.processDecisions(decisions, mode);
+
+  const summary = decisions.map((d) => `${d.stock_code} x${d.quantity} — ${d.reasoning}`).join('\n');
+  await sendTelegramMessage(`🚪 탈출 매도 실행:\n${summary}`);
 }

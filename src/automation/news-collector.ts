@@ -221,3 +221,50 @@ function getTotalNewsCount(): number {
 export function getTodayNews(): Map<string, NewsItem[]> {
   return todayNews;
 }
+
+// ─── 매크로 뉴스 캐시 ───────────────────────────────────────────────────────
+let macroNewsCache: { headlines: string[]; collectedAt: number } = { headlines: [], collectedAt: 0 };
+
+/**
+ * 매크로·정치 뉴스 수집
+ * 시장 전체에 영향을 주는 인물/기관 발언 포착
+ * - 한국은행 총재 (금리 발언)
+ * - 이재명 (정책/규제 발언)
+ * - 트럼프 (관세/무역 발언)
+ * - 연준(Fed) 발언
+ *
+ * 캐시: 30분 유효 (너무 자주 Google News를 요청하면 차단)
+ */
+export async function collectMacroNews(): Promise<string> {
+  const now = Date.now();
+  if (now - macroNewsCache.collectedAt < 30 * 60 * 1000 && macroNewsCache.headlines.length > 0) {
+    return formatMacroNews(macroNewsCache.headlines);
+  }
+
+  const queries = [
+    '한국은행 총재 금리',
+    '이재명 주식 경제 정책',
+    '트럼프 관세 한국',
+    '연준 Fed 금리 인하',
+    'KOSPI 시장 전망',
+  ];
+
+  const headlines: string[] = [];
+  for (const query of queries) {
+    try {
+      const items = await fetchGoogleNews(query);
+      for (const item of items.slice(0, 2)) {
+        if (item.title) headlines.push(`[${query}] ${item.title}`);
+      }
+    } catch { /* 실패 시 무시 */ }
+  }
+
+  macroNewsCache = { headlines, collectedAt: now };
+  logger.info(`📰 매크로 뉴스 ${headlines.length}건 수집`, { component: 'NEWS' });
+  return formatMacroNews(headlines);
+}
+
+function formatMacroNews(headlines: string[]): string {
+  if (headlines.length === 0) return '';
+  return `## 📰 매크로·정치 뉴스 (시장 전체 영향)\n${headlines.map((h) => `- ${h}`).join('\n')}`;
+}

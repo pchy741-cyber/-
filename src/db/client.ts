@@ -15,6 +15,7 @@ import {
   memLogSystem,
   memUpdateChain,
   memUpdateOrder,
+  memUpdateOrderByKisOrderNo,
   memUpsertAIScore,
   memUpsertWatchlistItem,
 } from './memory-store.js';
@@ -161,17 +162,19 @@ export async function getLatestScores(stockCodes: string[]): Promise<AIScore[]> 
   // 오늘 스코어 먼저 조회
   const { rows } = await getPool().query(
     `SELECT * FROM ai_scores WHERE stock_code IN (${placeholders}) AND score_date = $${validCodes.length + 1}
+     AND composite_score > 0
      ORDER BY composite_score DESC`,
     [...validCodes, today],
   );
 
   if (rows.length > 0) return rows;
 
-  // 오늘 없으면 최근 2일 이내 스코어 fallback (Track A가 전날 18:00에 생성한 것)
-  const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  // 오늘 없으면 최근 7일 이내 스코어 fallback (주말/공휴일 대비)
+  const twoDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   const { rows: fallbackRows } = await getPool().query(
     `SELECT DISTINCT ON (stock_code) * FROM ai_scores
      WHERE stock_code IN (${placeholders}) AND score_date >= $${validCodes.length + 1}
+     AND composite_score > 0
      ORDER BY stock_code, score_date DESC, composite_score DESC`,
     [...validCodes, twoDaysAgo],
   );
@@ -293,6 +296,16 @@ export async function updateOrder(id: string, updates: Partial<Order>) {
   await getPool().query(`UPDATE orders SET ${setClauses.join(', ')} WHERE id = $1`, [id, ...values]);
 }
 
+export async function updateOrderByKisOrderNo(kisOrderNo: string, updates: Partial<Order>) {
+  if (useMemory) { memUpdateOrderByKisOrderNo(kisOrderNo, updates); return; }
+  const keys = Object.keys(updates).filter((k) => ORDER_ALLOWED_COLS.has(k));
+  if (keys.length === 0) return;
+  const setClauses = keys.map((k, i) => `${k} = $${i + 2}`);
+  setClauses.push(`updated_at = NOW()`);
+  const values = keys.map((k) => (updates as Record<string, unknown>)[k]);
+  await getPool().query(`UPDATE orders SET ${setClauses.join(', ')} WHERE kis_order_no = $1`, [kisOrderNo, ...values]);
+}
+
 export async function getOrdersByChain(chainId: string): Promise<Order[]> {
   if (useMemory) return memGetOrdersByChain(chainId);
   const { rows } = await getPool().query('SELECT * FROM orders WHERE chain_id = $1 ORDER BY created_at ASC', [chainId]);
@@ -367,6 +380,24 @@ export async function logSystem(
     ]);
   } catch (err) {
     logger.error(`시스템 로그 DB 기록 실패: ${err}`);
+  }
+}
+
+// ── 손실 종목 쿨다운 ──
+
+/** 최근 N일 이내 손절 청산된 종목 코드 반환 (재진입 방지) */
+export async function getRecentLossStocks(daysBack = 14): Promise<Set<string>> {
+  if (useMemory) return new Set();
+  try {
+    const { rows } = await getPool().query(
+      `SELECT DISTINCT stock_code FROM transaction_chains
+       WHERE status = 'CLOSED'
+         AND realized_pnl < 0
+         AND closed_at > NOW() - INTERVAL '${daysBack} days'`,
+    );
+    return new Set(rows.map((r: { stock_code: string }) => r.stock_code));
+  } catch {
+    return new Set();
   }
 }
 
