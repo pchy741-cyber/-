@@ -144,26 +144,27 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
 
         let compositeScore = 50;
         let technicalScore = 50;
-        let signal: 'BUY' | 'HOLD' | 'SELL' = 'HOLD';
 
         if (candles.length >= 30) {
           const tech = analyzeTechnicals(candles);
           if (tech) {
             compositeScore = Math.max(0, Math.min(100, 50 + tech.score));
             technicalScore = compositeScore;
-            signal = compositeScore >= 60 ? 'BUY' : compositeScore >= 45 ? 'HOLD' : 'SELL';
           }
         }
 
+        // 폴백 스코어: 신뢰도 0.4로 고정, 시그널은 항상 HOLD
+        // → Track B hasBuyCandidates 필터(confidence >= 0.6)에서 걸러짐
+        // → 기술적 폴백이 자체 지표로 직접 판단하므로 이 점수로 BUY 유입 방지
         return {
           stock_code: w.stock_code,
           composite_score: compositeScore,
           fundamental_score: 50,
           technical_score: technicalScore,
           sentiment_score: geminiResult?.market_sentiment === 'bullish' ? 65 : geminiResult?.market_sentiment === 'bearish' ? 35 : 50,
-          confidence: 0.5,
-          reasoning,
-          signal,
+          confidence: 0.4,
+          reasoning: `[폴백] ${reasoning}`,
+          signal: 'HOLD' as const,
           target_price: analysis?.resistance_level ?? undefined,
           stop_loss_price: analysis?.support_level ?? undefined,
         };

@@ -181,11 +181,8 @@ export function resetPaperBalance() {
 
 async function getBalance(): Promise<AccountBalance> {
   if (config.isPaper) {
-    // Paper 모드: KIS 잔액 조회 시도, 실패하거나 0원이면 가상 잔액 사용
-    try {
-      const real = await getAccountBalance();
-      if (real.orderableCash > 0) return real;
-    } catch { /* fallback to paper balance */ }
+    // Paper 모드: 가상 원장만 사용 — 실계좌 잔고 절대 혼용 금지
+    // (실계좌 잔고 혼용 시 리스크 계산/백테스트 왜곡 발생)
     return getPaperBalance();
   }
   return getAccountBalance();
@@ -276,9 +273,11 @@ export class RiskEngine {
       }
 
       return { approved: true, reason: 'OK' };
-    } catch {
-      // DB 조회 실패 시 보수적으로 허용 (getAccountBalance에서 한 번 더 체크됨)
-      return { approved: true, reason: 'OK' };
+    } catch (err) {
+      // DB 조회 실패 시 Fail-Closed: 신규 매수 차단
+      // (체인 수를 알 수 없는 상태에서 매수하면 한도 초과 위험)
+      logger.warn(`⚠️ 동시 보유 수 조회 실패 — 신규 매수 차단: ${err}`, { component: 'RISK' });
+      return { approved: false, reason: 'DB 조회 실패 — 동시 보유 수 확인 불가, 신규 매수 차단' };
     }
   }
 
@@ -303,8 +302,10 @@ export class RiskEngine {
       }
 
       return { approved: true, reason: 'OK' };
-    } catch {
-      return { approved: true, reason: 'OK' };
+    } catch (err) {
+      // DB 조회 실패 시 Fail-Closed: 신규 매수 차단
+      logger.warn(`⚠️ 일일 거래 수 조회 실패 — 신규 매수 차단: ${err}`, { component: 'RISK' });
+      return { approved: false, reason: 'DB 조회 실패 — 일일 거래 수 확인 불가, 신규 매수 차단' };
     }
   }
 

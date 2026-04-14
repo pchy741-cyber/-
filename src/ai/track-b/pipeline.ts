@@ -149,8 +149,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 6. AI 매매 판단: Claude → Gemini → 기술적 지표 (3단 폴백)
     const hasScores = scores.length > 0;
 
-    // 보유 종목 없고 + 매수 후보(스코어 ≥65)도 없으면 AI 호출 스킵 → 기술적 지표로만
-    const hasBuyCandidates = scores.some((s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[mode].buyThreshold);
+    // 보유 종목 없고 + 매수 후보(스코어 ≥threshold + 신뢰도 ≥0.6)도 없으면 AI 호출 스킵
+    // confidence < 0.6은 폴백 스코어 — BUY 후보로 취급 안 함 (과매매 방지)
+    const hasBuyCandidates = scores.some(
+      (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[mode].buyThreshold && (s.confidence ?? 1) >= 0.6,
+    );
     const hasOpenPositions = openChains.length > 0;
     if (!hasOpenPositions && !hasBuyCandidates) {
       logger.info('⏭️ AI 스킵: 보유 종목 없음 + 매수 후보 없음 → 기술적 지표 fallback', { component: 'TRACK_B' });
@@ -228,30 +231,51 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const aiAllHold = decisions.length > 0 && decisions.every((d) => d.action === 'HOLD');
     if (decisions.length === 0 || aiAllHold) {
       if (aiAllHold) {
-        logger.info(`🔄 AI 전부 HOLD → 기술적 지표 fallback 추가 실행`, { component: 'TRACK_B' });
+        // AI가 명시적으로 전부 HOLD를 반환한 경우:
+        // 신규 진입(BUY/AVERAGE_DOWN)은 차단, 청산(SELL/FORCE_CLOSE)만 허용
+        // → AI 판단을 존중하되 하드 룰 손익절은 아래 6-4 블록에서 처리
+        logger.info(`🔄 AI 전부 HOLD → 기술적 폴백은 청산 신호만 허용 (신규 진입 차단)`, { component: 'TRACK_B' });
+        const orderableCashForTech = Math.max(0, balance.orderableCash - ((balance as any).reservedWithdraw ?? 0));
+        const totalAssetsForTech = balance.totalEvalAmount + orderableCashForTech;
+        const techDecisions = technicalFallbackDecisions({
+          mode,
+          watchlist: watchlist.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
+          livePrices,
+          chartData,
+          openChains,
+          orderableCash: 0, // 신규 진입 예산 0 — 청산 판단만 생성됨
+          maxPositionKrw: config.risk.maxPositionKrw,
+          totalAssets: totalAssetsForTech,
+          lossBlockedCodes: recentLossCodes,
+          aiScores: scores.map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
+          takeProfitPct: strategy?.take_profit_pct ?? undefined,
+          stopLossPct: strategy?.stop_loss_pct ?? undefined,
+          buyThreshold: strategy?.buy_threshold ?? undefined,
+        });
+        // BUY/AVERAGE_DOWN 제외 — SELL/PARTIAL_SELL/FORCE_CLOSE만 병합
+        const exitOnly = techDecisions.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action));
+        decisions = [...exitOnly];
       } else {
         logger.info(`🔧 기술적 지표 기반 자동매매 모드 (스코어=${scores.length}개)`, { component: 'TRACK_B' });
+        const orderableCashForTech = Math.max(0, balance.orderableCash - ((balance as any).reservedWithdraw ?? 0));
+        const totalAssetsForTech = balance.totalEvalAmount + orderableCashForTech;
+        const techDecisions = technicalFallbackDecisions({
+          mode,
+          watchlist: watchlist.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
+          livePrices,
+          chartData,
+          openChains,
+          orderableCash: orderableCashForTech,
+          maxPositionKrw: config.risk.maxPositionKrw,
+          totalAssets: totalAssetsForTech,
+          lossBlockedCodes: recentLossCodes,
+          aiScores: scores.map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
+          takeProfitPct: strategy?.take_profit_pct ?? undefined,
+          stopLossPct: strategy?.stop_loss_pct ?? undefined,
+          buyThreshold: strategy?.buy_threshold ?? undefined,
+        });
+        decisions = [...techDecisions];
       }
-      const orderableCashForTech = Math.max(0, balance.orderableCash - ((balance as any).reservedWithdraw ?? 0));
-      const totalAssetsForTech = balance.totalEvalAmount + orderableCashForTech;
-      const techDecisions = technicalFallbackDecisions({
-        mode,
-        watchlist: watchlist.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
-        livePrices,
-        chartData,
-        openChains,
-        orderableCash: orderableCashForTech,
-        maxPositionKrw: config.risk.maxPositionKrw,
-        totalAssets: totalAssetsForTech, // 동적 포지션 계산용
-        lossBlockedCodes: recentLossCodes, // 14일 손절 쿨다운
-        aiScores: scores.map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
-        // DB 세팅값 전달 (없으면 fallback 내에서 STRATEGY_PARAMS 사용)
-        takeProfitPct: strategy?.take_profit_pct ?? undefined,
-        stopLossPct: strategy?.stop_loss_pct ?? undefined,
-        buyThreshold: strategy?.buy_threshold ?? undefined,
-      });
-      // AI HOLD + 기술적 매매 합산
-      decisions = [...decisions.filter((d) => d.action !== 'HOLD'), ...techDecisions];
     }
 
     // ─────────────────────────────────────────────────────────────────

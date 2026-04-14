@@ -1662,15 +1662,6 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
         <button onClick={syncKIS} disabled={syncing} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 rounded-lg text-sm font-medium whitespace-nowrap">
           {syncing ? '동기화 중...' : '한투 앱 동기화'}
         </button>
-        <button onClick={async () => {
-          try {
-            const r = await api('/watchlist/fix-names', { method: 'POST' });
-            alert(`종목명 보정 완료: ${r.fixed}/${r.total}건`);
-            const w = await api('/watchlist'); setWatchlist(Array.isArray(w) ? w : []);
-          } catch { alert('보정 실패'); }
-        }} className="px-4 py-2 bg-amber-600 hover:bg-amber-500 rounded-lg text-sm font-medium whitespace-nowrap">
-          종목명 보정
-        </button>
       </div>
 
       {/* 종목 상세 분석 패널 */}
