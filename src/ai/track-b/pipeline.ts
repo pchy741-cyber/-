@@ -292,19 +292,28 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       const totalAssets = balance.totalEvalAmount + orderableCash;
       const idleCashPct = totalAssets > 0 ? (orderableCash / totalAssets) * 100 : 0;
 
-      // 파킹 진입: 매수 결정 후 남은 현금이 여전히 20% 초과 + 아직 파킹 안 됨
-      // hasBuyDecision으로 막으면 AI가 BUY 신호 줄 때마다 파킹 영구 차단 → 40% 유휴현금 방치
+      // 파킹 진입: 매수 결정 후 남은 현금이 10% 초과 + 파킹 여유 있을 때
+      // alreadyIdleParked는 현재 보유 수량 기준 — 일부 매도 후 현금 재쌓이면 추가 파킹 허용
       const plannedBuyCash = decisions
         .filter((d) => (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && d.stock_code !== IDLE_PARK_CODE)
         .reduce((sum, d) => sum + (d.limit_price ?? 0) * (d.quantity ?? 0), 0);
       const cashAfterBuys = Math.max(0, orderableCash - plannedBuyCash);
       const idlePctAfterBuys = totalAssets > 0 ? (cashAfterBuys / totalAssets) * 100 : 0;
 
-      if (idlePctAfterBuys > 20 && !alreadyIdleParked) {
+      // 현재 파킹된 ETF 평가금액 계산 (이미 많이 파킹돼 있으면 추가 불필요)
+      const idleParkChain = openChains.find((c) => c.stock_code === IDLE_PARK_CODE);
+      const idleParkValue = idleParkChain
+        ? (livePrices.get(IDLE_PARK_CODE)?.currentPrice ?? Number(idleParkChain.avg_buy_price ?? 0)) * Number(idleParkChain.total_quantity)
+        : 0;
+      const idleParkPct = totalAssets > 0 ? (idleParkValue / totalAssets) * 100 : 0;
+      // 파킹 잔액 + 신규 파킹 대상이 전체의 30% 이하일 때만 추가 파킹 (무한 파킹 방지)
+      const canParkMore = idleParkPct < 30;
+
+      if (idlePctAfterBuys > 10 && !alreadyIdleParked && canParkMore) {
         const parkPrice = livePrices.get(IDLE_PARK_CODE);
         if (parkPrice && parkPrice.currentPrice > 0) {
-          // 매수 후 남은 현금의 80%를 파킹 (20%는 긴급 매수 여유분)
-          const parkAmount = cashAfterBuys * 0.8;
+          // 매수 후 남은 현금의 85%를 파킹 (15%는 긴급 매수 여유분)
+          const parkAmount = cashAfterBuys * 0.85;
           const qty = Math.floor(parkAmount / parkPrice.currentPrice);
           if (qty > 0) {
             logger.info(

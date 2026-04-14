@@ -70,7 +70,7 @@ gcloud run deploy $SERVICE \
     --no-cpu-throttling \
     --allow-unauthenticated \
     --add-cloudsql-instances=quantops-trading:asia-northeast3:quantops-db \
-    --set-env-vars="NODE_ENV=production,TRADING_MODE=paper,INSTANCE_UNIX_SOCKET=/cloudsql/quantops-trading:asia-northeast3:quantops-db,DB_DATABASE=quantops,DB_USER=postgres,RISK_MAX_DAILY_DRAWDOWN_KRW=300000,RISK_MAX_POSITION_KRW=2000000,RISK_MAX_TOTAL_INVESTED_PCT=80" \
+    --set-env-vars="NODE_ENV=production,TRADING_MODE=paper,INSTANCE_UNIX_SOCKET=/cloudsql/quantops-trading:asia-northeast3:quantops-db,DB_DATABASE=quantops,DB_USER=postgres,RISK_MAX_DAILY_DRAWDOWN_KRW=500000,RISK_MAX_POSITION_KRW=3000000,RISK_MAX_TOTAL_INVESTED_PCT=90" \
     --set-secrets="\
 KIS_APP_KEY=kis-app-key:latest,\
 KIS_APP_SECRET=kis-app-secret:latest,\
