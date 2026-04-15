@@ -150,10 +150,9 @@ export function technicalFallbackDecisions(params: {
     const buyThreshold = strategyParams.buyThreshold;
 
     if (mode !== 'SCALPING' && tech.trendStrength === 'WEAK') {
-      // AI 스코어가 매수임계치를 크게 초과(10점 이상 여유)하는 경우만 예외 허용
-      // → AI가 강하게 확신하면 ADX 약해도 진입 허용 (AI 우선권 부여)
-      if (aiScore < buyThreshold + 10) {
-        logger.info(`  ⏸️ ${stock.stock_code}: ADX=${tech.adx14.toFixed(0)} 횡보(WEAK) → 추세 없음, 진입 스킵 (AI=${aiScore})`, { component: 'TRACK_B' });
+      // AI 스코어가 매수임계치 +5 이상이면 ADX 약해도 진입 허용 (기존 +10 → +5 완화)
+      if (aiScore < buyThreshold + 5) {
+        logger.info(`  ⏸️ ${stock.stock_code}: ADX=${tech.adx14.toFixed(0)} 횡보(WEAK) → AI=${aiScore} < ${buyThreshold + 5}, 진입 스킵`, { component: 'TRACK_B' });
         continue;
       }
     }

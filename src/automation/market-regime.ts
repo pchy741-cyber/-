@@ -124,30 +124,41 @@ export async function autoSwitchStrategy(): Promise<void> {
     if (currentMode !== regime.recommendedMode) {
       logger.warn(`전략 자동 전환: ${currentMode} → ${regime.recommendedMode}`, { component: 'REGIME' });
 
-      // 기존 전략 비활성화
-      await getPool().query('UPDATE strategy_config SET is_active = false WHERE is_active = true');
-
-      // 새 전략 활성화 (기존 프롬프트 전체 유지, 모드만 변경)
-      await getPool().query(
-        `INSERT INTO strategy_config
-           (mode, is_active, gemini_prompt, gpt_prompt, claude_prompt,
-            buy_threshold, stop_loss_pct, take_profit_pct,
-            notebooklm_prompt, strategy_document, risk_prompt)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      // 전략 모드만 UPDATE — notebooklm_prompt·프롬프트 등 유저 설정은 절대 덮어쓰지 않음
+      // (INSERT+deactivate 방식은 notebooklm_prompt가 잠깐 사라지는 race condition 발생)
+      const { rowCount: updCount } = await getPool().query(
+        `UPDATE strategy_config
+         SET mode = $1, buy_threshold = $2, stop_loss_pct = $3, updated_at = NOW()
+         WHERE is_active = true`,
         [
           regime.recommendedMode,
-          true,
-          currentStrategy?.gemini_prompt ?? '',
-          currentStrategy?.gpt_prompt ?? '',
-          currentStrategy?.claude_prompt ?? '',
-          regime.recommendedMode === 'DEFENSE' ? 85 : 75,
+          regime.recommendedMode === 'DEFENSE' ? 85 : 65,
           regime.recommendedMode === 'DEFENSE' ? -3.0 : -5.0,
-          currentStrategy?.take_profit_pct ?? 8.0,
-          currentStrategy?.notebooklm_prompt ?? '',
-          currentStrategy?.strategy_document ?? '',
-          currentStrategy?.risk_prompt ?? '',
         ],
       );
+
+      // 활성 전략이 없으면 기존 방식으로 INSERT (초기 상태)
+      if ((updCount ?? 0) === 0) {
+        await getPool().query(
+          `INSERT INTO strategy_config
+             (mode, is_active, gemini_prompt, gpt_prompt, claude_prompt,
+              buy_threshold, stop_loss_pct, take_profit_pct,
+              notebooklm_prompt, strategy_document, risk_prompt)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          [
+            regime.recommendedMode, true,
+            currentStrategy?.gemini_prompt ?? '',
+            currentStrategy?.gpt_prompt ?? '',
+            currentStrategy?.claude_prompt ?? '',
+            regime.recommendedMode === 'DEFENSE' ? 85 : 65,
+            regime.recommendedMode === 'DEFENSE' ? -3.0 : -5.0,
+            currentStrategy?.take_profit_pct ?? 8.0,
+            currentStrategy?.notebooklm_prompt ?? '',
+            currentStrategy?.strategy_document ?? '',
+            currentStrategy?.risk_prompt ?? '',
+          ],
+        );
+      }
 
       await logSystem(
         'WARN',

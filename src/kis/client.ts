@@ -85,10 +85,9 @@ class RateLimiter {
   }
 }
 
-// 모의투자: 초당 ~2건 안전 제한, 실전: 20건 → 안전하게 15건/sec
+// KIS API rate limit: 실전 20건/sec, 모의투자 5건/sec (실제 허용치 낮음)
 const isPaper = process.env.TRADING_MODE !== 'live';
-// 모의투자도 12 req/sec까지 허용 (KIS 실문서 기준 최대 20, 안전 마진 8 확보)
-export const kisRateLimiter = new RateLimiter(isPaper ? 12 : 15);
+export const kisRateLimiter = new RateLimiter(isPaper ? 5 : 15);
 // 해외 전용 rate limiter (국내와 독립 — 서로 블로킹 방지)
 export const overseasRateLimiter = new RateLimiter(isPaper ? 12 : 15);
 

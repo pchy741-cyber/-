@@ -364,10 +364,13 @@ export class RiskEngine {
     const currentValue = currentBalance.totalDeposit + currentBalance.totalEvalAmount;
     const dailyLoss = startValue - currentValue;
 
-    if (dailyLoss > config.risk.maxDailyDrawdownKrw) {
+    // 손실 한도 = 총 포트폴리오의 30% (동적 계산)
+    const maxDailyDrawdownKrw = Math.round(startValue * 0.3);
+
+    if (dailyLoss > maxDailyDrawdownKrw) {
       // Kill Switch 자동 발동!
       await activateKillSwitch(
-        `일일 손실 한도 초과: ${dailyLoss.toLocaleString()}원 > ${config.risk.maxDailyDrawdownKrw.toLocaleString()}원`,
+        `일일 손실 한도 초과: ${dailyLoss.toLocaleString()}원 > ${maxDailyDrawdownKrw.toLocaleString()}원 (총자산 ${startValue.toLocaleString()}원의 30%)`,
       );
       return {
         approved: false,
@@ -376,9 +379,9 @@ export class RiskEngine {
     }
 
     // 한도의 80% 이상이면 경고
-    if (dailyLoss > config.risk.maxDailyDrawdownKrw * 0.8) {
+    if (dailyLoss > maxDailyDrawdownKrw * 0.8) {
       logger.warn(
-        `⚠️ 일일 손실 경고: ${dailyLoss.toLocaleString()}원 (한도의 ${((dailyLoss / config.risk.maxDailyDrawdownKrw) * 100).toFixed(0)}%)`,
+        `⚠️ 일일 손실 경고: ${dailyLoss.toLocaleString()}원 (한도의 ${((dailyLoss / maxDailyDrawdownKrw) * 100).toFixed(0)}% — 총자산의 30% 기준)`,
         { component: 'RISK' },
       );
     }

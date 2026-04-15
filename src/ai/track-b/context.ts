@@ -27,8 +27,11 @@ export async function buildTrackBContext(params: {
   const strategyParams = STRATEGY_PARAMS[mode];
 
   // 예산 계산
+  // totalDeposit(예수금총액) vs orderableCash(주문가능현금): 매도 D+2 결제 지연으로 주문가능현금이
+  // 예수금보다 낮을 수 있음 → 예수금의 85%와 주문가능현금 중 큰 값을 실효 예산으로 사용
   const reserved = (balance as any).reservedWithdraw ?? 0;
-  const availableCash = balance.orderableCash - reserved;
+  const effectiveCash = Math.max(balance.orderableCash, Math.floor(balance.totalDeposit * 0.85));
+  const availableCash = Math.max(0, effectiveCash - reserved);
   const budgetPerStock = Math.floor(availableCash / strategyParams.splitCount);
 
   // 리스크 한도 정보

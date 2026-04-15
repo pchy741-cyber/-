@@ -392,7 +392,7 @@ export async function getRecentLossStocks(daysBack = 14): Promise<Set<string>> {
     const { rows } = await getPool().query(
       `SELECT DISTINCT stock_code FROM transaction_chains
        WHERE status = 'CLOSED'
-         AND realized_pnl < 0
+         AND realized_pnl < -5000
          AND closed_at > NOW() - INTERVAL '${daysBack} days'`,
     );
     return new Set(rows.map((r: { stock_code: string }) => r.stock_code));

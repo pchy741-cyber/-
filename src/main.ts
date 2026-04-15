@@ -100,6 +100,16 @@ async function bootstrap() {
       // 이미 적용된 경우 무시
       if (!e.message?.includes('already')) logger.warn(`DB 마이그레이션 경고: ${e.message}`, { component: 'BOOT' });
     }
+    // buy_threshold 보정: SWING 65, DEFENSE 85 (과거 보수적 값 75 자동 수정)
+    try {
+      const { getPool } = await import('./db/client.js');
+      await getPool().query(
+        `UPDATE strategy_config SET buy_threshold = 65 WHERE is_active = true AND mode = 'SWING' AND buy_threshold > 65`,
+      );
+      logger.info('✅ buy_threshold 보정: SWING 65점으로 완화', { component: 'BOOT' });
+    } catch (e: any) {
+      logger.warn(`buy_threshold 보정 실패: ${e.message}`, { component: 'BOOT' });
+    }
   } catch (err) {
     logger.warn(`⚠️ PostgreSQL 미연결: ${err}`, { component: 'BOOT' });
     enableMemoryMode();

@@ -8,6 +8,20 @@ import { logger } from '../utils/logger.js';
 import { calcPnlPct } from '../utils/money.js';
 
 /**
+ * 트레일링 스탑 설정
+ *
+ * 수익률이 TRAILING_ACTIVATE_PCT(+2%) 이상에 도달한 순간부터
+ * 고점(peak_price_since_open)을 추적한다.
+ * 이후 고점 대비 TRAILING_DROP_PCT(1.5%) 하락 시 전량 매도.
+ *
+ * 예시:
+ *  매수 10,000원 → 고점 11,000원(+10%) → 10,835원으로 하락(-1.5%) → 트레일링 스탑 발동
+ *  → 고정 익절(3%)보다 +7% 더 먹을 수 있음
+ */
+const TRAILING_ACTIVATE_PCT = 2.0;  // 트레일링 스탑 활성화 최소 수익률 (%)
+const TRAILING_DROP_PCT     = 1.5;  // 고점 대비 이 % 하락 시 매도 (%)
+
+/**
  * 보유일 초과 자동 손절 체크
  * - 매수 후 N영업일(기본 3일) 경과 시 수익이 안 나면 전량 손절
  * - CEO 매뉴얼: "매수 후 3영업일이 지나도 수익이 안 나면 미련 없이 전량 시장가로 손절"
@@ -79,6 +93,13 @@ export async function runHoldingCheckJob(): Promise<void> {
       }
 
       const pnlPct = calcPnlPct(Number(chain.avg_buy_price), currentPrice);
+
+      // ── 트레일링 스탑: 고점 갱신 + 하락 감지 ──
+      const trailingResult = await checkAndUpdateTrailingStop(chain, currentPrice, pnlPct);
+      if (trailingResult) {
+        forceCloseDecisions.push(trailingResult);
+        continue;
+      }
 
       // ── 조기 정체 감지 (수익 가능성 없는 포지션 선제 청산) ──
       // 기준: 일수별 슬라이딩 임계값. 아래 조건 충족 시 maxDays 기다리지 않고 청산
@@ -157,6 +178,65 @@ function checkStagnation(businessDays: number, pnlPct: number, maxDays: number):
   if (maxDays > 1 && businessDays >= maxDays - 1 && pnlPct < 0.5) {
     return `만기 하루 전 수익률 미달 (${pnlPct.toFixed(2)}% < 0.5%) — 조기 청산`;
   }
+  return null;
+}
+
+/**
+ * 트레일링 스탑 체크 + 고점 업데이트
+ *
+ * - 수익률 >= TRAILING_ACTIVATE_PCT 이면 peak_price_since_open 갱신
+ * - 고점 대비 TRAILING_DROP_PCT% 하락 시 → FORCE_CLOSE 결정 반환
+ * - 아직 익절 구간 미도달 or 하락폭 미달 → null 반환
+ */
+async function checkAndUpdateTrailingStop(
+  chain: any,
+  currentPrice: number,
+  pnlPct: number,
+): Promise<import('../db/models.js').TradeDecision | null> {
+  const avgBuy = Number(chain.avg_buy_price);
+  if (avgBuy <= 0 || currentPrice <= 0) return null;
+
+  // 트레일링 미활성화 구간 (수익 불충분)
+  if (pnlPct < TRAILING_ACTIVATE_PCT) return null;
+
+  const storedPeak = Number(chain.peak_price_since_open ?? 0);
+  const newPeak = Math.max(storedPeak, currentPrice);
+
+  // 고점 갱신 (DB 비동기 업데이트, 실패해도 로직 계속)
+  if (newPeak > storedPeak) {
+    getPool()
+      .query('UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2', [newPeak, chain.id])
+      .catch(() => {});
+    logger.info(
+      `📈 트레일링 고점 갱신: ${chain.stock_code} ${storedPeak > 0 ? storedPeak.toLocaleString() : '초기'} → ${newPeak.toLocaleString()}원 (+${pnlPct.toFixed(1)}%)`,
+      { component: 'TRAILING' },
+    );
+  }
+
+  // 고점 확정 (newPeak 기준으로 하락폭 계산)
+  if (newPeak <= 0) return null;
+  const dropFromPeak = ((newPeak - currentPrice) / newPeak) * 100;
+
+  if (dropFromPeak >= TRAILING_DROP_PCT) {
+    const peakPnlPct = ((newPeak - avgBuy) / avgBuy) * 100;
+    logger.info(
+      `🎯 트레일링 스탑 발동: ${chain.stock_code} 고점 ${newPeak.toLocaleString()}원(+${peakPnlPct.toFixed(1)}%) → 현재 ${currentPrice.toLocaleString()}원(+${pnlPct.toFixed(1)}%) | 고점 대비 -${dropFromPeak.toFixed(1)}% (트리거: -${TRAILING_DROP_PCT}%)`,
+      { component: 'TRAILING' },
+    );
+    return {
+      action: 'FORCE_CLOSE',
+      stock_code: chain.stock_code,
+      quantity: chain.total_quantity,
+      price_type: 'MARKET',
+      reasoning: `트레일링 스탑: 고점 +${peakPnlPct.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}% (고점 대비 -${dropFromPeak.toFixed(1)}% 하락)`,
+      confidence: 1.0,
+    };
+  }
+
+  logger.info(
+    `⏳ 트레일링 추적 중: ${chain.stock_code} +${pnlPct.toFixed(1)}% | 고점 ${newPeak.toLocaleString()}원 대비 -${dropFromPeak.toFixed(1)}% (발동까지 ${(TRAILING_DROP_PCT - dropFromPeak).toFixed(1)}% 남음)`,
+    { component: 'TRAILING' },
+  );
   return null;
 }
 

@@ -83,6 +83,22 @@ async function ensureOverseasTable(): Promise<void> {
        ON CONFLICT (key) DO UPDATE SET value = '1'`
     ).catch(() => {});
   }
+
+  // 초기자본 수정: 이전 배포에서 $1,000으로 잘못 설정된 경우 $10,000으로 보정
+  // (보유 포지션이 없고 현금이 $5,000 미만이면 초기 세팅 오류로 판단)
+  try {
+    const { rows: cashRows } = await getPool().query("SELECT value FROM overseas_state WHERE key = 'cash'");
+    const currentCash = cashRows.length > 0 ? Number(cashRows[0].value) : null;
+    if (currentCash !== null && currentCash < 5000) {
+      const { rows: holdingRows } = await getPool().query('SELECT COUNT(*) as cnt FROM overseas_holdings WHERE quantity > 0');
+      const holdingCount = Number(holdingRows[0]?.cnt ?? 0);
+      if (holdingCount === 0) {
+        await getPool().query(
+          `INSERT INTO overseas_state (key, value) VALUES ('cash', '10000') ON CONFLICT (key) DO UPDATE SET value = '10000'`
+        );
+      }
+    }
+  } catch { /* 오류 무시 */ }
 }
 
 async function getHoldings(): Promise<Map<string, { qty: number; avgPrice: number; boughtAt: string; exchange: string }>> {

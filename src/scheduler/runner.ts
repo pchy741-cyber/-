@@ -23,6 +23,7 @@ import { runTrackBJob } from './track-b-job.js';
 import { runOverseasJob } from './overseas-job.js';
 import { syncInterestGroups, syncHoldingsToWatchlist, fixWatchlistNames } from '../kis/interest-group.js';
 import { parkIdleCash, unparkForTrading } from '../automation/cash-parking.js';
+import { manageUsdParking } from '../automation/usd-parking.js';
 import { runUnfilledOrderCheck } from './unfilled-order-job.js';
 
 /**
@@ -302,6 +303,15 @@ export function startScheduler(): void {
     '10 15 * * 1-5',
     () => {
       parkIdleCash().catch((e) => logger.error(`현금 파킹(15:10) 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🇺🇸 USD 장기파킹 — 09:05 매일 (DEFENSE 10일↑ → SPY 매수 / SWING 복귀 3일↑ → SPY 매도)
+  cron.schedule(
+    '5 9 * * 1-5',
+    () => {
+      manageUsdParking().catch((e) => logger.error(`USD 파킹 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

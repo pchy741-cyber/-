@@ -8,9 +8,8 @@ import { logger } from '../utils/logger.js';
  * 장중 15분마다 실행 → 감시 종목 관련 뉴스를 자동 수집
  * Track A 파이프라인의 additionalSources로 자동 주입
  *
- * 소스:
- * - Google News RSS (한국 금융 뉴스)
- * - 네이버 금융 뉴스 RSS
+ * 매크로 뉴스: Reuters · CNBC · AP Finance (글로벌 신뢰도 높은 소스)
+ * 종목 뉴스:   연합뉴스 · 한국경제 · 매일경제 · 서울경제만 수집
  */
 
 const xmlParser = new XMLParser({
@@ -34,64 +33,77 @@ interface NewsItem {
   relevance: 'HIGH' | 'MEDIUM' | 'LOW';
 }
 
-/**
- * Google News RSS 수집 (안정적 XML 파싱)
- */
-async function fetchGoogleNews(query: string): Promise<NewsItem[]> {
-  try {
-    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(`${query} 주식`)}&hl=ko&gl=KR&ceid=KR:ko`;
+// ─── 글로벌 매크로 뉴스 RSS 피드 ──────────────────────────────────────────────
+// 시장 실제 영향력 있는 신뢰도 높은 소스만 포함
+const MACRO_RSS_FEEDS = [
+  // Reuters
+  { url: 'https://feeds.reuters.com/reuters/businessNews', source: 'Reuters Business', max: 5 },
+  { url: 'https://feeds.reuters.com/reuters/markets', source: 'Reuters Markets', max: 5 },
+  // CNBC
+  { url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664', source: 'CNBC Markets', max: 5 },
+  { url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258', source: 'CNBC Finance', max: 3 },
+  // AP Finance
+  { url: 'https://feeds.apnews.com/rss/finance', source: 'AP Finance', max: 4 },
+  // MarketWatch
+  { url: 'https://feeds.marketwatch.com/marketwatch/topstories/', source: 'MarketWatch', max: 4 },
+  // Yonhap (연합뉴스) — 한국 공신력 1위
+  { url: 'https://www.yonhapnewstv.co.kr/browse/feed/?cat=0&category=economy', source: '연합뉴스', max: 4 },
+] as const;
 
+// 한국 종목 뉴스: 공신력 있는 경제지만 허용
+const STOCK_NEWS_ALLOWED_DOMAINS = [
+  'yonhapnews.co.kr',
+  'yna.co.kr',
+  'hankyung.com',
+  'mk.co.kr',
+  'sedaily.com',
+  'einews.com',
+  'etnews.com',
+  'edaily.co.kr',
+  'newsis.com',
+  'news1.kr',
+];
+
+/** RSS XML을 파싱해서 NewsItem 배열로 변환 */
+async function fetchRSSFeed(url: string, source: string, maxItems = 5): Promise<NewsItem[]> {
+  try {
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'QUANTOPS/0.2.0' },
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; QUANTOPS/0.5.0)' },
       signal: AbortSignal.timeout(10000),
     });
-
     if (!res.ok) return [];
 
     const xml = await res.text();
     const parsed = xmlParser.parse(xml);
 
-    const items: NewsItem[] = [];
-    const rssItems = parsed?.rss?.channel?.item;
+    const rssItems = parsed?.rss?.channel?.item ?? parsed?.feed?.entry;
     if (!rssItems) return [];
 
     const itemArray = Array.isArray(rssItems) ? rssItems : [rssItems];
 
-    for (const item of itemArray.slice(0, 5)) {
+    return itemArray.slice(0, maxItems).map((item: any) => {
       const title = cleanTitle(String(item.title ?? ''));
-      const link = String(item.link ?? '');
-      const pubDate = String(item.pubDate ?? '');
-
-      if (title && title.length > 5) {
-        items.push({
-          title,
-          link,
-          source: 'Google News',
-          publishedAt: pubDate,
-          relevance: 'MEDIUM',
-        });
-      }
-    }
-
-    return items;
-  } catch (error) {
-    logger.warn(`뉴스 수집 실패 (${query}): ${error}`, { component: 'NEWS' });
+      // Atom <link href="..."> vs RSS <link>
+      const link = String(item.link?.['@_href'] ?? item.link ?? '');
+      const pubDate = String(item.pubDate ?? item.updated ?? item.published ?? '');
+      return { title, link, source, publishedAt: pubDate, relevance: 'HIGH' as const };
+    }).filter((item) => item.title.length > 8);
+  } catch {
     return [];
   }
 }
 
 /**
- * 네이버 금융 뉴스 RSS 수집 (보조 소스)
+ * 종목 뉴스: Google News RSS → 공신력 있는 도메인만 필터
  */
-async function fetchNaverNews(stockName: string): Promise<NewsItem[]> {
+async function fetchStockNews(stockName: string): Promise<NewsItem[]> {
   try {
-    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(`${stockName} site:naver.com`)}&hl=ko&gl=KR&ceid=KR:ko`;
+    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(stockName + ' 주가 실적')}&hl=ko&gl=KR&ceid=KR:ko`;
 
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'QUANTOPS/0.2.0' },
-      signal: AbortSignal.timeout(8000),
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; QUANTOPS/0.5.0)' },
+      signal: AbortSignal.timeout(10000),
     });
-
     if (!res.ok) return [];
 
     const xml = await res.text();
@@ -102,13 +114,30 @@ async function fetchNaverNews(stockName: string): Promise<NewsItem[]> {
 
     const itemArray = Array.isArray(rssItems) ? rssItems : [rssItems];
 
-    return itemArray.slice(0, 3).map((item: any) => ({
-      title: cleanTitle(String(item.title ?? '')),
-      link: String(item.link ?? ''),
-      source: 'Naver',
-      publishedAt: String(item.pubDate ?? ''),
-      relevance: 'MEDIUM' as const,
-    })).filter((item: NewsItem) => item.title.length > 5);
+    const results: NewsItem[] = [];
+    for (const item of itemArray.slice(0, 15)) {
+      const title = cleanTitle(String(item.title ?? ''));
+      const link = String(item.link ?? '');
+      const pubDate = String(item.pubDate ?? '');
+
+      // 도메인 필터: 공신력 있는 출처만
+      const isAllowed = STOCK_NEWS_ALLOWED_DOMAINS.some((domain) => link.includes(domain));
+      if (!isAllowed) continue;
+
+      if (title.length > 8) {
+        results.push({ title, link, source: 'Stock News', publishedAt: pubDate, relevance: 'HIGH' });
+      }
+      if (results.length >= 5) break;
+    }
+
+    // 도메인 필터 통과 항목이 없으면 연합뉴스 직접 검색 시도
+    if (results.length === 0) {
+      const ynaUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(stockName)}&hl=ko&gl=KR&ceid=KR:ko&as_sites=yna.co.kr`;
+      const ynaItems = await fetchRSSFeed(ynaUrl, '연합뉴스', 3);
+      results.push(...ynaItems);
+    }
+
+    return results;
   } catch {
     return [];
   }
@@ -123,6 +152,7 @@ function cleanTitle(title: string): string {
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
     .trim();
 }
 
@@ -132,7 +162,6 @@ function cleanTitle(title: string): string {
 export async function collectWatchlistNews(): Promise<string> {
   const today = new Date().toISOString().split('T')[0];
 
-  // 날짜 바뀌면 캐시 초기화
   if (lastCollectDate !== today) {
     todayNews = new Map();
     lastCollectDate = today;
@@ -143,39 +172,26 @@ export async function collectWatchlistNews(): Promise<string> {
 
   let newCount = 0;
 
-  // 종목별 뉴스 수집 (3개씩 배치, rate limit 대응)
   const batchSize = 3;
   for (let i = 0; i < watchlist.length; i += batchSize) {
     const batch = watchlist.slice(i, i + batchSize);
 
-    const results = await Promise.allSettled(
-      batch.flatMap((stock) => [
-        fetchGoogleNews(stock.stock_name),
-        fetchNaverNews(stock.stock_name),
-      ]),
-    );
+    const results = await Promise.allSettled(batch.map((stock) => fetchStockNews(stock.stock_name)));
 
-    // 2개씩 묶어서 (Google + Naver) 합산
     for (let j = 0; j < batch.length; j++) {
       const stockCode = batch[j].stock_code;
       const existing = todayNews.get(stockCode) ?? [];
+      const result = results[j];
 
-      const googleResult = results[j * 2];
-      const naverResult = results[j * 2 + 1];
-
-      const newItems: NewsItem[] = [];
-      if (googleResult.status === 'fulfilled') newItems.push(...googleResult.value);
-      if (naverResult.status === 'fulfilled') newItems.push(...naverResult.value);
-
-      // 중복 제거
-      const filtered = newItems.filter((item) => !existing.some((e) => e.title === item.title));
-      if (filtered.length > 0) {
-        todayNews.set(stockCode, [...existing, ...filtered]);
-        newCount += filtered.length;
+      if (result.status === 'fulfilled' && result.value.length > 0) {
+        const filtered = result.value.filter((item) => !existing.some((e) => e.title === item.title));
+        if (filtered.length > 0) {
+          todayNews.set(stockCode, [...existing, ...filtered]);
+          newCount += filtered.length;
+        }
       }
     }
 
-    // rate limit
     if (i + batchSize < watchlist.length) {
       await new Promise((r) => setTimeout(r, 1000));
     }
@@ -223,48 +239,49 @@ export function getTodayNews(): Map<string, NewsItem[]> {
 }
 
 // ─── 매크로 뉴스 캐시 ───────────────────────────────────────────────────────
-let macroNewsCache: { headlines: string[]; collectedAt: number } = { headlines: [], collectedAt: 0 };
+let macroNewsCache: { headlines: MacroHeadline[]; collectedAt: number } = { headlines: [], collectedAt: 0 };
+
+interface MacroHeadline {
+  title: string;
+  link: string;
+  source: string;
+  publishedAt: string;
+}
 
 /**
- * 매크로·정치 뉴스 수집
- * 시장 전체에 영향을 주는 인물/기관 발언 포착
- * - 한국은행 총재 (금리 발언)
- * - 이재명 (정책/규제 발언)
- * - 트럼프 (관세/무역 발언)
- * - 연준(Fed) 발언
- *
- * 캐시: 30분 유효 (너무 자주 Google News를 요청하면 차단)
+ * 글로벌 매크로 뉴스 수집
+ * Reuters · CNBC · AP Finance · MarketWatch · 연합뉴스
+ * 캐시: 30분 유효
  */
 export async function collectMacroNews(): Promise<string> {
   const now = Date.now();
   if (now - macroNewsCache.collectedAt < 30 * 60 * 1000 && macroNewsCache.headlines.length > 0) {
-    return formatMacroNews(macroNewsCache.headlines);
+    return formatMacroForAPI(macroNewsCache.headlines);
   }
 
-  const queries = [
-    '한국은행 총재 금리',
-    '이재명 주식 경제 정책',
-    '트럼프 관세 한국',
-    '연준 Fed 금리 인하',
-    'KOSPI 시장 전망',
-  ];
+  const headlines: MacroHeadline[] = [];
 
-  const headlines: string[] = [];
-  for (const query of queries) {
-    try {
-      const items = await fetchGoogleNews(query);
-      for (const item of items.slice(0, 2)) {
-        if (item.title) headlines.push(`[${query}] ${item.title}`);
+  const results = await Promise.allSettled(
+    MACRO_RSS_FEEDS.map((feed) => fetchRSSFeed(feed.url, feed.source, feed.max)),
+  );
+
+  for (const result of results) {
+    if (result.status === 'fulfilled') {
+      for (const item of result.value) {
+        headlines.push({ title: item.title, link: item.link, source: item.source, publishedAt: item.publishedAt });
       }
-    } catch { /* 실패 시 무시 */ }
+    }
   }
 
   macroNewsCache = { headlines, collectedAt: now };
-  logger.info(`📰 매크로 뉴스 ${headlines.length}건 수집`, { component: 'NEWS' });
-  return formatMacroNews(headlines);
+  logger.info(`📰 매크로 뉴스 ${headlines.length}건 수집 (Reuters/CNBC/AP/MarketWatch/연합뉴스)`, { component: 'NEWS' });
+  return formatMacroForAPI(headlines);
 }
 
-function formatMacroNews(headlines: string[]): string {
+/** API 응답용: "[title](link) — source" 마크다운 형태 */
+function formatMacroForAPI(headlines: MacroHeadline[]): string {
   if (headlines.length === 0) return '';
-  return `## 📰 매크로·정치 뉴스 (시장 전체 영향)\n${headlines.map((h) => `- ${h}`).join('\n')}`;
+  return headlines
+    .map((h) => `- [${h.title}](${h.link || '#'}) — ${h.source}`)
+    .join('\n');
 }
