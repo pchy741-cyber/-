@@ -684,7 +684,7 @@ export async function runOverseasJob(): Promise<void> {
         const proceeds = exec.filledPrice * exec.filledQty * (1 - 0.0025);
         cash += proceeds;
         await setCash(cash);
-        sellOrders.push(`매도 ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (${sellReason})`);
+        sellOrders.push(`매도 ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (${sellReason}) [수수료 $${(exec.filledPrice * exec.filledQty * 0.0025).toFixed(2)}]`);
       }
     }
 
@@ -726,7 +726,7 @@ export async function runOverseasJob(): Promise<void> {
         const positionSize = Math.min(cash * POSITION_PCT, POSITION_SIZE_USD);
         if (positionSize < 50) break;
 
-        const qty = Math.floor(positionSize / target.price.currentPrice);
+        const qty = Math.floor(positionSize / (target.price.currentPrice * 1.0025)); // 수수료 0.25% 포함 단가
         if (qty <= 0) continue;
 
         const buyMode = target.isMomentum ? '🚀모멘텀' : '📉반등';
@@ -752,11 +752,12 @@ export async function runOverseasJob(): Promise<void> {
           continue;
         }
 
-        const cost = exec.filledQty * exec.filledPrice;
+        // 수수료 0.25% 포함 실제 매수 비용
+        const cost = exec.filledQty * exec.filledPrice * 1.0025;
         await setHolding(target.code, target.exchange, exec.finalQty, exec.finalAvgPrice);
         cash -= cost;
         await setCash(cash);
-        buyOrders.push(`매수 ${target.code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} ${buyMode} (AI ${((target.ai?.confidence ?? 0) * 100).toFixed(0)}%)`);
+        buyOrders.push(`매수 ${target.code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} ${buyMode} (AI ${((target.ai?.confidence ?? 0) * 100).toFixed(0)}%) [수수료 $${(exec.filledQty * exec.filledPrice * 0.0025).toFixed(2)}]`);
       }
     }
 
