@@ -50,7 +50,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       getActiveStrategy(),
       getAccountBalance(),
       import('../../automation/profit-withdraw.js').then(m => m.getTotalReserved()).catch(() => 0),
-      getRecentLossStocks(14), // 14일 이내 손절 종목 재진입 금지
+      getRecentLossStocks(7), // 7일 이내 실손실 종목 재진입 금지 (수수료만 있는 경우 제외)
     ]);
     const balance = { ...balanceRaw, reservedWithdraw } as any;
 
@@ -242,22 +242,33 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     if (decisions.length === 0 || aiAllHold) {
       if (aiAllHold) {
         // AI가 명시적으로 전부 HOLD를 반환한 경우:
-        // 신규 진입(BUY/AVERAGE_DOWN)은 차단, 청산(SELL/FORCE_CLOSE)만 허용
-        // → AI 판단을 존중하되 하드 룰 손익절은 아래 6-4 블록에서 처리
-        logger.info(`🔄 AI 전부 HOLD → 기술적 폴백은 청산 신호만 허용 (신규 진입 차단)`, { component: 'TRACK_B' });
-        const orderableCashForTech = Math.max(0, balance.orderableCash - ((balance as any).reservedWithdraw ?? 0));
-        const totalAssetsForTech = balance.totalEvalAmount + orderableCashForTech;
+        // - 강한 매수 후보(score >= threshold + 기술 지표 BUY)가 있으면 기술 폴백 매수 허용
+        // - 그 외에는 청산 신호만 허용 (AI 판단 존중)
+        const strongBuyCandidates = scores.filter(
+          (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[mode].buyThreshold && (s.confidence ?? 1) >= 0.6,
+        );
+        const effectiveCashForHold = Math.max(balance.orderableCash, Math.floor(balance.totalDeposit * 0.85));
+        const orderableCashForHold = Math.max(0, effectiveCashForHold - ((balance as any).reservedWithdraw ?? 0));
+        const totalAssetsForHold = balance.totalEvalAmount + orderableCashForHold;
+
+        if (strongBuyCandidates.length > 0) {
+          // 강한 후보 있을 때만 기술 지표 매수도 허용 (AI conservatism 돌파)
+          logger.info(`🔄 AI 전부 HOLD이나 강한 매수 후보 ${strongBuyCandidates.length}개 존재 → 기술 폴백 전체 허용`, { component: 'TRACK_B' });
+        } else {
+          logger.info(`🔄 AI 전부 HOLD → 기술적 폴백은 청산 신호만 허용 (매수 후보 없음)`, { component: 'TRACK_B' });
+        }
+
         const techDecisions = technicalFallbackDecisions({
           mode,
           watchlist: watchlist.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
           livePrices,
           chartData,
           openChains,
-          orderableCash: 0, // 신규 진입 예산 0 — 청산 판단만 생성됨
+          // 강한 후보 있으면 예산 투입, 없으면 0 (청산만)
+          orderableCash: strongBuyCandidates.length > 0 ? orderableCashForHold : 0,
           maxPositionKrw: config.risk.maxPositionKrw,
-          totalAssets: totalAssetsForTech,
+          totalAssets: totalAssetsForHold,
           lossBlockedCodes: recentLossCodes,
-          // 신뢰도 0.6 미만 = LLM 폴백 점수 — 기술 판단에 주입 금지 (신호 품질 저하 방지)
           aiScores: scores
             .filter((s: any) => (s.confidence ?? 1) >= 0.6)
             .map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
@@ -265,9 +276,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           stopLossPct: strategy?.stop_loss_pct ?? undefined,
           buyThreshold: strategy?.buy_threshold ?? undefined,
         });
-        // BUY/AVERAGE_DOWN 제외 — SELL/PARTIAL_SELL/FORCE_CLOSE만 병합
-        const exitOnly = techDecisions.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action));
-        decisions = [...exitOnly];
+        // 강한 후보 없으면 BUY/AVERAGE_DOWN 제외
+        const filtered = strongBuyCandidates.length > 0
+          ? techDecisions
+          : techDecisions.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action));
+        decisions = [...filtered];
       } else {
         logger.info(`🔧 기술적 지표 기반 자동매매 모드 (스코어=${scores.length}개)`, { component: 'TRACK_B' });
         const orderableCashForTech = Math.max(0, balance.orderableCash - ((balance as any).reservedWithdraw ?? 0));
@@ -308,33 +321,54 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       const totalAssets = balance.totalEvalAmount + orderableCash;
       const idleCashPct = totalAssets > 0 ? (orderableCash / totalAssets) * 100 : 0;
 
-      // 파킹 진입: 매수 결정 후 남은 현금이 10% 초과 + 파킹 여유 있을 때
-      // alreadyIdleParked는 현재 보유 수량 기준 — 일부 매도 후 현금 재쌓이면 추가 파킹 허용
+      // 파킹 진입: 매수 결정 후 남은 현금이 5% 초과 → 머니마켓 ETF 자동 주차
       const plannedBuyCash = decisions
         .filter((d) => (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && d.stock_code !== IDLE_PARK_CODE)
         .reduce((sum, d) => sum + (d.limit_price ?? 0) * (d.quantity ?? 0), 0);
       const cashAfterBuys = Math.max(0, orderableCash - plannedBuyCash);
-      const idlePctAfterBuys = totalAssets > 0 ? (cashAfterBuys / totalAssets) * 100 : 0;
+      // totalDeposit이 가장 정확한 총자산 (D+2 미결제 포함)
+      const totalPortfolio = Math.max(totalAssets, balance.totalDeposit ?? totalAssets);
+      const idlePctAfterBuys = totalPortfolio > 0 ? (cashAfterBuys / totalPortfolio) * 100 : 0;
 
       // 현재 파킹된 ETF 평가금액 계산 (이미 많이 파킹돼 있으면 추가 불필요)
       const idleParkChain = openChains.find((c) => c.stock_code === IDLE_PARK_CODE);
       const idleParkValue = idleParkChain
         ? (livePrices.get(IDLE_PARK_CODE)?.currentPrice ?? Number(idleParkChain.avg_buy_price ?? 0)) * Number(idleParkChain.total_quantity)
         : 0;
-      const idleParkPct = totalAssets > 0 ? (idleParkValue / totalAssets) * 100 : 0;
-      // 파킹 잔액 + 신규 파킹 대상이 전체의 30% 이하일 때만 추가 파킹 (무한 파킹 방지)
-      const canParkMore = idleParkPct < 30;
+      const idleParkPct = totalPortfolio > 0 ? (idleParkValue / totalPortfolio) * 100 : 0;
+      // 파킹 잔액이 전체의 40% 이하일 때만 추가 파킹 (무한 파킹 방지)
+      const canParkMore = idleParkPct < 40;
 
-      // aiAllHold: AI가 명시적으로 전부 HOLD → 신규 파킹 BUY도 차단 (과매매 방지)
-      if (idlePctAfterBuys > 10 && !alreadyIdleParked && canParkMore && !aiAllHold) {
-        const parkPrice = livePrices.get(IDLE_PARK_CODE);
-        if (parkPrice && parkPrice.currentPrice > 0) {
+      // 현금 5% 초과 + 파킹 여유(40% 미만) 있으면 파킹
+      if (idlePctAfterBuys > 5 && canParkMore) {
+        // 실시간 가격 조회 실패 시 캐시된 가격 사용 (rate limit 방어)
+        const parkPriceLive = livePrices.get(IDLE_PARK_CODE);
+        let parkCurrentPrice = parkPriceLive?.currentPrice ?? 0;
+        if (parkCurrentPrice <= 0) {
+          // 캐시 fallback
+          try {
+            const { getCachedPriceMemory } = await import('../../cache/memory.js');
+            parkCurrentPrice = getCachedPriceMemory(IDLE_PARK_CODE) ?? 0;
+          } catch { /* ignore */ }
+        }
+        if (parkCurrentPrice <= 0) {
+          // 직접 KIS API 조회 fallback (배치가격 실패 시)
+          try {
+            const { getCurrentPrice } = await import('../../kis/market.js');
+            const priceData = await getCurrentPrice(IDLE_PARK_CODE);
+            parkCurrentPrice = priceData?.currentPrice ?? 0;
+            if (parkCurrentPrice > 0) {
+              logger.info(`💰 KODEX MMF 직접 가격 조회: ${parkCurrentPrice.toLocaleString()}원`, { component: 'TRACK_B' });
+            }
+          } catch { /* ignore */ }
+        }
+        if (parkCurrentPrice > 0) {
           // 매수 후 남은 현금의 85%를 파킹 (15%는 긴급 매수 여유분)
           const parkAmount = cashAfterBuys * 0.85;
-          const qty = Math.floor(parkAmount / parkPrice.currentPrice);
+          const qty = Math.floor(parkAmount / parkCurrentPrice);
           if (qty > 0) {
             logger.info(
-              `💰 유휴 현금 머니마켓 파킹: 전체 ${idleCashPct.toFixed(1)}% / 매수 후 ${idlePctAfterBuys.toFixed(1)}% 대기 → ${IDLE_PARK_NAME} ${qty}주 (${Math.round(parkAmount).toLocaleString()}원)`,
+              `💰 유휴 현금 머니마켓 파킹: 현금 ${idlePctAfterBuys.toFixed(1)}%(${Math.round(cashAfterBuys).toLocaleString()}원) → ${IDLE_PARK_NAME} ${qty}주 @${parkCurrentPrice.toLocaleString()}원 (${Math.round(parkAmount).toLocaleString()}원)`,
               { component: 'TRACK_B' },
             );
             decisions.push({
@@ -342,11 +376,13 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
               stock_code: IDLE_PARK_CODE,
               quantity: qty,
               price_type: 'MARKET',
-              limit_price: parkPrice.currentPrice,
+              limit_price: parkCurrentPrice,
               reasoning: `유휴 현금 파킹: 현금 ${idlePctAfterBuys.toFixed(1)}%(매수후 잔여) → ${IDLE_PARK_NAME} (단기금융형, 익일물 콜금리 수준 수익)`,
               confidence: 0.95,
             });
           }
+        } else {
+          logger.warn(`💰 유휴 현금 파킹 실패: ${IDLE_PARK_CODE} 가격 조회 불가 (rate limit?)`, { component: 'TRACK_B' });
         }
       }
 
@@ -443,8 +479,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // 7-B. 수량 강제 보정: AI가 1주처럼 과소 계산 시 예산 기반으로 상향
     // AI는 수량 계산 오류가 잦음 → 코드에서 직접 검증하고 보정
+    // D+2 결제 지연으로 orderableCash < totalDeposit 가능 → 실효 예산 사용
     {
-      const orderableCashNow = Math.max(0, balance.orderableCash - ((balance as any).reservedWithdraw ?? 0));
+      const effectiveCashNow = Math.max(balance.orderableCash, Math.floor(balance.totalDeposit * 0.85));
+      const orderableCashNow = Math.max(0, effectiveCashNow - ((balance as any).reservedWithdraw ?? 0));
       const _params = STRATEGY_PARAMS[mode];
       const budgetPerBuy = Math.floor(orderableCashNow / _params.splitCount);
       for (const d of decisions) {

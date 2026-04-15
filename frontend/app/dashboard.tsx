@@ -13,7 +13,7 @@ const BACKEND_URL =
 
 async function api(path: string, opts?: RequestInit & { timeout?: number }) {
   const base = BACKEND_URL.endsWith('/') ? BACKEND_URL.slice(0, -1) : BACKEND_URL;
-  const ms = opts?.timeout ?? (path.includes('backtest') ? 120000 : path.includes('overseas') ? 15000 : 12000);
+  const ms = opts?.timeout ?? (path.includes('overseas') ? 15000 : 12000);
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), ms);
   try {
@@ -114,7 +114,7 @@ function LoadBtn({ children, onClick, className = '', disabled = false }: { chil
 // Dashboard
 // ═══════════════════════════════════════
 
-type Tab = 'home' | 'trades' | 'watchlist' | 'backtest' | 'settings';
+type Tab = 'home' | 'trades' | 'watchlist' | 'news' | 'settings';
 
 export default function Dashboard() {
   const { show: toast, ToastContainer } = useToast();
@@ -220,7 +220,7 @@ export default function Dashboard() {
     { id: 'trades', label: '매매내역', icon: '📋' },
     { id: 'watchlist', label: '감시목록', icon: '👁' },
 
-    { id: 'backtest', label: '백테스트', icon: '🧪' },
+    { id: 'news', label: '뉴스', icon: '📰' },
     { id: 'settings', label: '설정', icon: '⚙️' },
   ];
 
@@ -305,7 +305,7 @@ export default function Dashboard() {
               {tab === 'trades' && <TradesView trades={trades} watchlist={watchlist} />}
               {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} />}
 
-              {tab === 'backtest' && <BacktestView watchlist={watchlist} />}
+              {tab === 'news' && <NewsView watchlist={watchlist} />}
               {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} notebookRef={notebookRef} geminiRef={geminiRef} gptRef={gptRef} claudeRef={claudeRef} killSwitch={killSwitch} toggleKill={toggleKill} withdrawConfig={withdrawConfig} setWithdrawConfig={setWithdrawConfig} withdrawHistory={withdrawHistory} setWithdrawHistory={setWithdrawHistory} toast={toast} />}
             </div>
           )}
@@ -710,10 +710,12 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const [usInsights, setUsInsights] = React.useState('');
   const [insightsDraft, setInsightsDraft] = React.useState('');
   const [insightsSaving, setInsightsSaving] = React.useState(false);
+  const [tradingStatus, setTradingStatus] = React.useState<any>(null);
   React.useEffect(() => {
     api('/overseas/insights').then((r: any) => {
       if (r?.insights != null) { setUsInsights(r.insights); setInsightsDraft(r.insights); }
     }).catch(() => {});
+    api('/trading-status').then((r: any) => setTradingStatus(r)).catch(() => {});
   }, []);
   const p = dash?.portfolio;
   const os = dash?.overseas; // 해외 보유 데이터
@@ -817,6 +819,49 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   return (
     <div className="space-y-4 sm:space-y-5">
 
+      {/* ── 매매 상태 배너 ── */}
+      {tradingStatus && tradingStatus.overallStatus !== 'ACTIVE' && (
+        <div className={`rounded-2xl border px-4 py-3 ${
+          tradingStatus.overallStatus === 'BLOCKED'
+            ? 'border-rose-500/40 bg-rose-500/10'
+            : 'border-amber-500/30 bg-amber-500/[0.07]'
+        }`}>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-base">{tradingStatus.overallStatus === 'BLOCKED' ? '🚫' : '👀'}</span>
+            <span className={`text-sm font-bold ${tradingStatus.overallStatus === 'BLOCKED' ? 'text-rose-300' : 'text-amber-300'}`}>
+              {tradingStatus.overallStatus === 'BLOCKED' ? '매수 완전 차단 중' : '관망 중 — 매수 조건 미충족'}
+            </span>
+            <span className="ml-auto text-[10px] text-slate-500">{tradingStatus.mode} · 기준점수 {tradingStatus.buyThreshold}</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {(tradingStatus.blocks ?? []).map((b: any, i: number) => (
+              <div key={i} className={`flex items-center gap-1.5 text-[11px] rounded-lg px-2.5 py-1 ${
+                b.severity === 'warn' ? 'bg-amber-500/15 text-amber-300' : 'bg-white/[0.04] text-slate-400'
+              }`}>
+                <span className="font-semibold">{b.reason}</span>
+                <span className="text-[10px] opacity-70">— {b.detail}</span>
+              </div>
+            ))}
+          </div>
+          {tradingStatus.topScore > 0 && (
+            <div className="mt-2 text-[10px] text-slate-500">
+              감시종목 최고점수 <b className="text-slate-300">{tradingStatus.topScore}점</b> / 기준 <b className="text-slate-300">{tradingStatus.buyThreshold}점</b>
+              {tradingStatus.candidateCount > 0 && <span className="ml-2 text-emerald-400">→ {tradingStatus.candidateCount}종목 후보 있음</span>}
+            </div>
+          )}
+        </div>
+      )}
+      {tradingStatus && tradingStatus.overallStatus === 'ACTIVE' && (
+        <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/[0.06] px-4 py-2.5 flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+          <span className="text-xs font-semibold text-emerald-300">자동매매 정상 운영 중</span>
+          {tradingStatus.candidateCount > 0 && (
+            <span className="text-[11px] text-emerald-400/70 ml-1">— {tradingStatus.candidateCount}종목 매수 후보 대기</span>
+          )}
+          <span className="ml-auto text-[10px] text-slate-500">{tradingStatus.mode} · 기준 {tradingStatus.buyThreshold}점</span>
+        </div>
+      )}
+
       {/* ── 방어 파킹 배너 ── */}
       {defensePark?.isActive && (
         <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 flex items-start gap-3">
@@ -877,8 +922,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
           <span className="text-[10px] text-slate-500">손실 한도</span>
           <div className={`text-[11px] font-bold ${totalPnl < -(dailyLossLimit * 0.6) ? 'text-rose-400' : totalPnl < 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
             {totalPnl < 0
-              ? `${Math.min(100, Math.round((Math.abs(totalPnl) / dailyLossLimit) * 100))}% (${fmtWon(Math.abs(totalPnl))}/${fmtWon(dailyLossLimit)})`
-              : '0%'}
+              ? `${Math.min(100, Math.round((Math.abs(totalPnl) / dailyLossLimit) * 100))}% (${fmtWon(Math.abs(totalPnl))}/${fmtWon(dailyLossLimit)} · 총자산 30%)`
+              : `0% / ${fmtWon(dailyLossLimit)} (총자산 30%)`}
           </div>
         </div>
       </div>
@@ -889,7 +934,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
           <div className="text-[10px] text-blue-300/60 mb-1 font-medium">총 자산</div>
           <div className="text-xl sm:text-2xl font-black tracking-tight text-white">{fmtWon(p?.totalValue)}</div>
           <div className="flex flex-wrap gap-x-2 mt-2 text-[10px]">
-            <span className="text-slate-500">현금 <b className="text-slate-300">{fmtWon(p?.cash)}</b></span>
+            <span className="text-slate-500">국내현금 <b className="text-slate-300">{fmtWon(p?.cash)}</b></span>
+            {(os?.cashUsd ?? 0) > 0 && <span className="text-slate-500">해외 <b className="text-slate-300">${(os?.cashUsd ?? 0).toLocaleString('en', { maximumFractionDigits: 0 })}</b></span>}
             <span className={`font-semibold ${combinedPnl > 0 ? 'text-emerald-400' : combinedPnl < 0 ? 'text-rose-400' : 'text-slate-500'}`}>{combinedPnl > 0 ? '+' : ''}{fmtWon(combinedPnl)}</span>
           </div>
         </div>
@@ -911,15 +957,24 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
           )}
         </div>
 
-        <div className="rounded-2xl p-4 sm:p-5 glass border border-white/[0.04]">
-          <div className="text-[10px] text-slate-500 mb-1 font-medium">투자 비중</div>
-          <div className={`text-xl sm:text-2xl font-black ${investedPct > 60 ? 'text-amber-400' : 'text-blue-400'}`}>{investedPct}%</div>
-          <div className="flex flex-wrap gap-x-2 mt-2 text-[10px]">
-            <span className="text-slate-500">국내 <b className="text-slate-300">{fmtWon(domesticInvested)}</b></span>
-            {hasOverseasHoldings && <span className="text-slate-500">해외 <b className="text-slate-300">${overseasInvestedUsd.toFixed(0)}</b></span>}
-            <span className="text-slate-600">({chains.length}종목)</span>
+        {(() => {
+          // 국내 투자비중: 국내자산(현금+투자) 기준으로 계산 (해외현금이 분모를 부풀리는 문제 해결)
+          const domesticTotal = domesticCash + domesticInvested;
+          const domesticPct = domesticTotal > 0 ? Math.round((domesticInvested / domesticTotal) * 100) : 0;
+          const overseasTotal = (os?.cashKrw ?? 0) + overseasInvestedKrw;
+          const overseasPct = overseasTotal > 0 ? Math.round((overseasInvestedKrw / overseasTotal) * 100) : 0;
+          return (
+          <div className="rounded-2xl p-4 sm:p-5 glass border border-white/[0.04]">
+            <div className="text-[10px] text-slate-500 mb-1 font-medium">투자 비중</div>
+            <div className={`text-xl sm:text-2xl font-black ${domesticPct > 60 ? 'text-amber-400' : 'text-blue-400'}`}>{domesticPct}%</div>
+            <div className="flex flex-wrap gap-x-2 mt-2 text-[10px]">
+              <span className="text-slate-500">국내 <b className="text-slate-300">{fmtWon(domesticInvested)}</b></span>
+              {overseasTotal > 0 && <span className="text-slate-500">해외 <b className="text-slate-300">{overseasPct}%</b></span>}
+              <span className="text-slate-600">({chains.length}종목)</span>
+            </div>
           </div>
-        </div>
+          );
+        })()}
 
         <div className="rounded-2xl p-4 sm:p-5 glass border border-white/[0.04]">
           <div className="text-[10px] text-slate-500 mb-1 font-medium">{withdrawConfig?.totalReserved > 0 ? '인출 예약' : '오늘 매매'}</div>
@@ -1784,13 +1839,14 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
         {/* 국내 */}
         <Panel title="로봇이 감시하는 종목들" badge={`${watchlist.length}종목`}>
-          <div className="grid grid-cols-2 gap-px p-3 gap-2">
+          <div className="grid grid-cols-2 gap-2 p-3">
             {watchlist.map((s: any) => {
               const score = dash?.scores?.find((sc: any) => sc.stock_code === s.stock_code);
               const chain = chains.find((ch: any) => ch.stock_code === s.stock_code);
               const isSelected = selectedStock === s.stock_code;
               const scoreVal = score ? Number(score.composite_score) : -1;
               const displayName = toDisplayName(s.stock_name, s.stock_code);
+              const sellPct: number | undefined = s.last_sell_pct != null ? Number(s.last_sell_pct) : undefined;
 
               let statusColor = 'text-slate-500';
               let statusLabel = '대기';
@@ -1801,14 +1857,19 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
 
               return (
                 <div key={s.stock_code} onClick={() => loadAnalysis(s.stock_code)}
-                  className={`relative group rounded-xl border px-3 py-2.5 cursor-pointer hover:bg-white/[0.03] transition-colors ${isSelected ? 'bg-blue-950/20 border-blue-500/40' : borderClass}`}>
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="font-bold text-[13px] truncate">{displayName}</span>
-                    <span className={`text-[9px] font-medium shrink-0 ${statusColor}`}>{statusLabel}</span>
+                  className={`relative group rounded-xl border px-3 py-3 cursor-pointer hover:bg-white/[0.03] transition-colors ${isSelected ? 'bg-blue-950/20 border-blue-500/40' : borderClass}`}>
+                  <div className="flex items-start justify-between gap-1">
+                    <span className="font-bold text-[13px] truncate leading-tight">{displayName}</span>
+                    <span className={`text-[9px] font-semibold shrink-0 mt-0.5 ${statusColor}`}>{statusLabel}</span>
                   </div>
-                  <div className="text-[10px] text-slate-600 mt-0.5">
-                    {chain ? `평단 ${Number(chain.avg_buy_price).toLocaleString()}원` : scoreVal >= 0 ? `AI ${scoreVal}점` : displayName}
+                  <div className="text-[10px] text-slate-500 mt-1">
+                    {chain ? `평단 ${Number(chain.avg_buy_price).toLocaleString()}원` : scoreVal >= 0 ? `AI ${scoreVal}점` : '점수 없음'}
                   </div>
+                  {sellPct != null && (
+                    <div className={`text-[10px] font-medium mt-1 ${sellPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      최근 매도 {sellPct >= 0 ? '+' : ''}{sellPct.toFixed(1)}%
+                    </div>
+                  )}
                   <button onClick={(e) => { e.stopPropagation(); del(s.stock_code); }}
                     className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 text-[9px] text-rose-400 hover:text-rose-300 transition-opacity leading-none">✕</button>
                 </div>
@@ -1841,211 +1902,132 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
 }
 
 // ═══════════════════════════════════════
-// BACKTEST VIEW
+// NEWS VIEW
 // ═══════════════════════════════════════
 
-function BacktestView({ watchlist }: { watchlist: any[] }) {
-  const [mode, setMode] = useState('SWING');
-  const [capital, setCapital] = useState(1000000);
-  const [days, setDays] = useState(120);
-  const [running, setRunning] = useState(false);
-  const [singleResult, setSingleResult] = useState<any>(null);
-  const [batchResult, setBatchResult] = useState<any>(null);
-  const [selectedStock, setSelectedStock] = useState('');
-  const getWatchlistName = (code: string) => {
+function NewsView({ watchlist }: { watchlist: any[] }) {
+  const [stockNews, setStockNews] = useState<any[]>([]);
+  const [macroNews, setMacroNews] = useState<string[]>([]);
+  const [summary, setSummary] = useState<string>('');
+  const [summaryLoading, setSummaryLoading] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [macroLoading, setMacroLoading] = useState(true);
+
+  const getStockName = (code: string) => {
     const item = watchlist.find((s: any) => s.stock_code === code);
     return toDisplayName(item?.stock_name, code);
   };
 
-  const runSingle = async () => {
-    if (!selectedStock) { alert('종목을 선택하세요'); return; }
-    setRunning(true);
-    setSingleResult(null);
-    try {
-      const r = await api('/backtest/single', { method: 'POST', body: JSON.stringify({ stockCode: selectedStock, mode, capital, days }) });
-      setSingleResult(r);
-    } catch (err: any) { alert(err.message); }
-    finally { setRunning(false); }
-  };
+  useEffect(() => {
+    api('/news')
+      .then((data: any) => setStockNews(Array.isArray(data) ? data : []))
+      .catch(() => setStockNews([]))
+      .finally(() => setLoading(false));
 
-  const runAll = async () => {
-    setRunning(true);
-    setBatchResult(null);
-    try {
-      const r = await api('/backtest/all', { method: 'POST', body: JSON.stringify({ mode, capital, days }) });
-      setBatchResult(r);
-    } catch (err: any) { alert(err.message); }
-    finally { setRunning(false); }
-  };
+    api('/news/macro')
+      .then((data: any) => setMacroNews(Array.isArray(data?.headlines) ? data.headlines : []))
+      .catch(() => setMacroNews([]))
+      .finally(() => setMacroLoading(false));
 
-  const pctColor = (v: number) => v > 0 ? 'text-emerald-400' : v < 0 ? 'text-rose-400' : 'text-slate-400';
+    api('/news/summary')
+      .then((data: any) => setSummary(typeof data?.summary === 'string' ? data.summary : ''))
+      .catch(() => setSummary(''))
+      .finally(() => setSummaryLoading(false));
+  }, []);
 
   return (
     <div className="space-y-5 sm:space-y-6">
-      {/* 설정 */}
-      <Panel title="백테스트 설정">
-        <div className="p-4 space-y-4">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div>
-              <label className="text-[11px] text-slate-500 block mb-1">전략</label>
-              <select value={mode} onChange={e => setMode(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
-                <option value="SWING">스윙</option><option value="DEFENSE">방어</option><option value="SCALPING">단타</option>
-              </select>
+      {/* AI 시황 요약 */}
+      <Panel title="AI 시황 요약">
+        <div className="p-4">
+          {summaryLoading ? (
+            <div className="flex items-center gap-2 py-2">
+              <div className="w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full animate-spin shrink-0" />
+              <span className="text-xs text-slate-500">AI가 뉴스를 분석 중입니다...</span>
             </div>
-            <div>
-              <label className="text-[11px] text-slate-500 block mb-1">시작 자본</label>
-              <select value={capital} onChange={e => setCapital(Number(e.target.value))} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
-                <option value={500000}>50만원</option><option value={1000000}>100만원</option><option value={3000000}>300만원</option><option value={5000000}>500만원</option><option value={10000000}>1,000만원</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-[11px] text-slate-500 block mb-1">기간 (일)</label>
-              <select value={days} onChange={e => setDays(Number(e.target.value))} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
-                <option value={60}>60일 (2개월)</option><option value={120}>120일 (4개월)</option><option value={180}>180일 (6개월)</option><option value={250}>250일 (1년)</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-[11px] text-slate-500 block mb-1">종목 (단일)</label>
-              <select value={selectedStock} onChange={e => setSelectedStock(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
-                <option value="">선택</option>
-                {watchlist.map((s: any) => <option key={s.stock_code} value={s.stock_code}>{getWatchlistName(s.stock_code)}</option>)}
-              </select>
-            </div>
-          </div>
-          <div className="flex gap-3">
-            <button onClick={runSingle} disabled={running || !selectedStock} className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 rounded-lg text-sm font-medium">
-              {running ? '분석 중...' : '단일 종목 테스트'}
-            </button>
-            <button onClick={runAll} disabled={running} className="px-5 py-2.5 bg-purple-600 hover:bg-purple-500 disabled:bg-slate-700 disabled:text-slate-500 rounded-lg text-sm font-medium">
-              {running ? '분석 중...' : '전 종목 일괄 테스트'}
-            </button>
-          </div>
+          ) : summary ? (
+            <p className="text-sm text-slate-200 leading-relaxed">{summary}</p>
+          ) : (
+            <p className="text-sm text-slate-500">뉴스 요약을 불러오지 못했습니다</p>
+          )}
         </div>
       </Panel>
 
-      {/* 단일 종목 결과 */}
-      {singleResult && (
-        <Panel
-          title={`${toDisplayName(singleResult.stockName, singleResult.stockCode) === '종목명 확인중'
-            ? getWatchlistName(singleResult.stockCode)
-            : toDisplayName(singleResult.stockName, singleResult.stockCode)} 백테스트 결과`}
-          badge={singleResult.period}
-        >
-          <div className="p-4 space-y-4">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <div className="bg-slate-900/60 rounded-lg p-3 text-center">
-                <div className="text-[10px] text-slate-500">총 수익률</div>
-                <div className={`text-lg font-bold ${pctColor(singleResult.totalReturnPct)}`}>{singleResult.totalReturnPct > 0 ? '+' : ''}{singleResult.totalReturnPct.toFixed(1)}%</div>
-              </div>
-              <div className="bg-slate-900/60 rounded-lg p-3 text-center">
-                <div className="text-[10px] text-slate-500">승률</div>
-                <div className="text-lg font-bold">{(singleResult.winRate * 100).toFixed(0)}%</div>
-                <div className="text-[10px] text-slate-600">{singleResult.wins}승 {singleResult.losses}패</div>
-              </div>
-              <div className="bg-slate-900/60 rounded-lg p-3 text-center">
-                <div className="text-[10px] text-slate-500">최대 낙폭</div>
-                <div className="text-lg font-bold text-rose-400">{singleResult.maxDrawdownPct.toFixed(1)}%</div>
-              </div>
-              <div className="bg-slate-900/60 rounded-lg p-3 text-center">
-                <div className="text-[10px] text-slate-500">샤프 비율</div>
-                <div className="text-lg font-bold">{singleResult.sharpeRatio.toFixed(2)}</div>
-              </div>
+      {/* 매크로/시황 뉴스 */}
+      <Panel title="시황 · 매크로 뉴스">
+        <div className="p-4">
+          {macroLoading ? (
+            <div className="flex justify-center py-6">
+              <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
             </div>
-            <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-center text-[11px]">
-              <div><span className="text-slate-500">총 매매</span><br/><b>{singleResult.totalTrades}건</b></div>
-              <div><span className="text-slate-500">평균 보유</span><br/><b>{singleResult.avgHoldingDays.toFixed(0)}일</b></div>
-              <div><span className="text-slate-500">평균 수익</span><br/><b className="text-emerald-400">+{singleResult.avgWinPct.toFixed(1)}%</b></div>
-              <div><span className="text-slate-500">평균 손실</span><br/><b className="text-rose-400">{singleResult.avgLossPct.toFixed(1)}%</b></div>
-              <div><span className="text-slate-500">수익 팩터</span><br/><b>{singleResult.profitFactor.toFixed(2)}</b></div>
-              <div><span className="text-slate-500">최종 자본</span><br/><b>{(singleResult.finalCapital / 10000).toFixed(0)}만원</b></div>
-            </div>
-            {/* 매매 내역 */}
-            {singleResult.trades?.length > 0 && (
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead><tr className="text-slate-500 border-b border-slate-700/30">
-                    <th className="px-2 py-1.5 text-left">진입일</th><th className="px-2 py-1.5 text-left">청산일</th>
-                    <th className="px-2 py-1.5 text-right">진입가</th><th className="px-2 py-1.5 text-right">청산가</th>
-                    <th className="px-2 py-1.5 text-right">수익률</th><th className="px-2 py-1.5 text-right">보유일</th>
-                  </tr></thead>
-                  <tbody className="divide-y divide-slate-800/20">
-                    {singleResult.trades.slice(0, 20).map((t: any, i: number) => (
-                      <tr key={i} className="hover:bg-slate-800/30">
-                        <td className="px-2 py-1.5 text-slate-500">{t.entryDate}</td>
-                        <td className="px-2 py-1.5 text-slate-500">{t.exitDate}</td>
-                        <td className="px-2 py-1.5 text-right">{t.entryPrice?.toLocaleString()}</td>
-                        <td className="px-2 py-1.5 text-right">{t.exitPrice?.toLocaleString()}</td>
-                        <td className={`px-2 py-1.5 text-right font-medium ${pctColor(t.pnlPct)}`}>{t.pnlPct > 0 ? '+' : ''}{t.pnlPct?.toFixed(1)}%</td>
-                        <td className="px-2 py-1.5 text-right text-slate-500">{t.holdingDays}일</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </Panel>
-      )}
-
-      {/* 일괄 결과 */}
-      {batchResult && (
-        <Panel title="전 종목 백테스트 결과" badge={`${batchResult.totalStocks}종목 · 평균 ${batchResult.avgReturn}%`}>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead><tr className="text-slate-500 border-b border-slate-700/30">
-                <th className="px-3 py-2 text-left">종목</th>
-                <th className="px-3 py-2 text-right">수익률</th>
-                <th className="px-3 py-2 text-right">승률</th>
-                <th className="px-3 py-2 text-right">샤프</th>
-                <th className="px-3 py-2 text-right">최대 낙폭</th>
-                <th className="px-3 py-2 text-right">매매 수</th>
-              </tr></thead>
-              <tbody className="divide-y divide-slate-800/20">
-                {batchResult.results.map((r: any) => {
-                  const displayName = toDisplayName(r.stockName, r.stockCode) === '종목명 확인중'
-                    ? getWatchlistName(r.stockCode)
-                    : toDisplayName(r.stockName, r.stockCode);
+          ) : macroNews.length === 0 ? (
+            <p className="text-sm text-slate-500 text-center py-4">수집된 매크로 뉴스가 없습니다</p>
+          ) : (
+            <ul className="space-y-2">
+              {macroNews.map((line, i) => {
+                const match = line.match(/^\[(.+?)\]\((.+?)\)(\s*—\s*(.*))?$/);
+                if (match) {
                   return (
-                    <tr key={r.stockCode} className="hover:bg-slate-800/30">
-                      <td className="px-3 py-2"><span className="font-medium">{displayName}</span></td>
-                      <td className={`px-3 py-2 text-right font-bold ${pctColor(r.returnPct)}`}>{r.returnPct > 0 ? '+' : ''}{r.returnPct.toFixed(1)}%</td>
-                      <td className="px-3 py-2 text-right">{(r.winRate * 100).toFixed(0)}%</td>
-                      <td className="px-3 py-2 text-right">{r.sharpe.toFixed(2)}</td>
-                      <td className="px-3 py-2 text-right text-rose-400">{r.maxDD.toFixed(1)}%</td>
-                      <td className="px-3 py-2 text-right text-slate-400">{r.trades}건</td>
-                    </tr>
+                    <li key={i} className="flex items-start gap-2 text-sm">
+                      <span className="text-slate-600 shrink-0 mt-0.5">•</span>
+                      <span>
+                        <a href={match[2]} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 hover:underline">{match[1]}</a>
+                        {match[4] && <span className="text-slate-500 text-xs ml-1">— {match[4]}</span>}
+                      </span>
+                    </li>
                   );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
-      )}
+                }
+                return (
+                  <li key={i} className="flex items-start gap-2 text-sm text-slate-300">
+                    <span className="text-slate-600 shrink-0 mt-0.5">•</span>
+                    <span>{line}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </Panel>
 
-      {!singleResult && !batchResult && (
-        <Panel title="사용 가이드">
-          <div className="p-6 space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
-              <div className="bg-slate-900/40 rounded-xl p-4">
-                <div className="text-lg mb-1">1</div>
-                <p className="text-xs font-medium text-slate-300">전략/자본/기간 선택</p>
-                <p className="text-[10px] text-slate-500 mt-1">위 설정에서 조건을 선택하세요</p>
-              </div>
-              <div className="bg-slate-900/40 rounded-xl p-4">
-                <div className="text-lg mb-1">2</div>
-                <p className="text-xs font-medium text-slate-300">테스트 실행</p>
-                <p className="text-[10px] text-slate-500 mt-1">단일 종목 또는 전 종목 일괄</p>
-              </div>
-              <div className="bg-slate-900/40 rounded-xl p-4">
-                <div className="text-lg mb-1">3</div>
-                <p className="text-xs font-medium text-slate-300">결과 분석</p>
-                <p className="text-[10px] text-slate-500 mt-1">수익률, 승률, 낙폭 등 확인</p>
-              </div>
+      {/* 종목별 뉴스 */}
+      <Panel title="감시 종목 뉴스" badge={loading ? '로딩 중' : `${stockNews.length}종목`}>
+        <div className="divide-y divide-slate-800/40">
+          {loading ? (
+            <div className="flex justify-center py-8">
+              <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
             </div>
-            <p className="text-[11px] text-slate-600 text-center">과거 데이터로 전략의 실제 성과를 검증합니다. 실행에 1~3분 소요됩니다.</p>
-          </div>
-        </Panel>
-      )}
+          ) : stockNews.length === 0 ? (
+            <p className="text-sm text-slate-500 text-center py-6">오늘 수집된 종목 뉴스가 없습니다</p>
+          ) : (
+            stockNews.map((entry: any) => (
+              <div key={entry.stockCode} className="p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-sm font-semibold text-white">{getStockName(entry.stockCode)}</span>
+                  <span className="text-[10px] text-slate-500 bg-slate-800 rounded px-1.5 py-0.5">{entry.stockCode}</span>
+                  <span className="text-[10px] text-slate-600 ml-auto">{entry.items.length}건</span>
+                </div>
+                <ul className="space-y-1.5">
+                  {entry.items.map((item: any, i: number) => (
+                    <li key={i} className="flex items-start gap-2 text-xs">
+                      <span className="text-slate-600 shrink-0 mt-0.5">•</span>
+                      <span className="flex-1 min-w-0">
+                        {item.link ? (
+                          <a href={item.link} target="_blank" rel="noopener noreferrer" className="text-slate-300 hover:text-white hover:underline line-clamp-2">{item.title}</a>
+                        ) : (
+                          <span className="text-slate-300 line-clamp-2">{item.title}</span>
+                        )}
+                        {item.publishedAt && (
+                          <span className="text-slate-600 ml-1">{new Date(item.publishedAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}</span>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))
+          )}
+        </div>
+      </Panel>
     </div>
   );
 }
@@ -2455,7 +2437,10 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
                           <div className="flex flex-col gap-1 shrink-0">
                             <button onClick={() => { setNbEditId(src.id); setNbEditTitle(src.title); setNbEditContent(src.content); }}
                               className="text-[10px] px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded">수정</button>
-                            <button onClick={() => setNbSources(prev => prev.filter(x => x.id !== src.id))}
+                            <button onClick={() => {
+                              if (!window.confirm(`"${src.title}" 소스를 삭제하시겠습니까?\n삭제 후 저장 버튼을 눌러야 실제 반영됩니다.`)) return;
+                              setNbSources(prev => prev.filter(x => x.id !== src.id));
+                            }}
                               className="text-[10px] px-2 py-1 bg-rose-900/40 text-rose-400 hover:bg-rose-800/40 rounded">삭제</button>
                           </div>
                         </div>

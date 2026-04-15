@@ -283,11 +283,25 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 15:10 — 장중 현금 파킹 (잉여 현금 → 머니마켓 ETF 자동 매수, 장 마감 20분 전)
+  // 현금 파킹 — 09:30, 12:00, 15:10 (장중 3회, 유휴 현금 → 머니마켓 ETF 자동 매수)
+  cron.schedule(
+    '30 9 * * 1-5',
+    () => {
+      parkIdleCash().catch((e) => logger.error(`현금 파킹(09:30) 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+  cron.schedule(
+    '0 12 * * 1-5',
+    () => {
+      parkIdleCash().catch((e) => logger.error(`현금 파킹(12:00) 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
   cron.schedule(
     '10 15 * * 1-5',
     () => {
-      parkIdleCash().catch((e) => logger.error(`현금 파킹 실패: ${e}`, { component: 'SCHEDULER' }));
+      parkIdleCash().catch((e) => logger.error(`현금 파킹(15:10) 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

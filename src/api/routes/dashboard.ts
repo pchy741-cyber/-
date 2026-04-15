@@ -4,7 +4,7 @@ import { getDefenseParkState } from '../../ai/track-b/defense-park.js';
 import { getCachedScores, cachePrice, getLastKnownPrices } from '../../cache/redis.js';
 import { cachePriceMemory, getLastKnownPricesMemory, getCachedPriceMemory } from '../../cache/memory.js';
 import { config } from '../../config/index.js';
-import { getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getPool } from '../../db/client.js';
+import { getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getPool, getTodayStartSnapshot } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { getCurrentPrice, getBatchPrices, isMarketOpen } from '../../kis/market.js';
 import { getWithdrawConfig, getWithdrawals, getTotalReserved } from '../../automation/profit-withdraw.js';
@@ -323,7 +323,12 @@ dashboardRoutes.get('/dashboard', async (c) => {
     strategy: strategy ?? { mode: 'SWING' },
     killSwitch: getKillSwitchStatus(),
     tradingMode: config.tradingMode,
-    riskLimits: { maxDailyDrawdownKrw: config.risk.maxDailyDrawdownKrw },
+    riskLimits: await (async () => {
+      const snap = await getTodayStartSnapshot().catch(() => null);
+      const startValue = snap ? Number(snap.total_value) : grandTotalValue;
+      const maxDailyDrawdownKrw = Math.round(startValue * 0.3);
+      return { maxDailyDrawdownKrw, startValue: Math.round(startValue) };
+    })(),
     insights: insightRows.rows,
     defensePark,
   });
@@ -357,10 +362,40 @@ dashboardRoutes.get('/search/stock', async (c) => {
     for (const r of rows) results.push({ code: r.stock_code, name: r.stock_name, market: 'KOSPI' });
   } catch { /* ignore */ }
 
-  // 2차: KRX 공개 API로 검색 (이름 → 코드 매핑)
+  // 2차: NAVER 자동완성 API (이름 → 코드 매핑 — 검색어 필터 정확)
   if (results.length < 5) {
     try {
-      const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+      const resp = await fetch(
+        `https://ac.stock.naver.com/ac?q=${encodeURIComponent(q)}&target=stock,etf&lang=ko`,
+        {
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+          signal: AbortSignal.timeout(4000),
+        },
+      );
+      const data = await resp.json() as any;
+      const items: any[] = data?.items?.[0] ?? [];
+      for (const item of items) {
+        const code = String(item[0] ?? '');
+        const name = String(item[1] ?? '');
+        const typeInfo = String(item[2] ?? '');
+        if (code.length === 6 && name && !results.find(r => r.code === code)) {
+          const market = typeInfo.includes('KOSDAQ') ? 'KOSDAQ' : 'KOSPI';
+          results.push({ code, name, market });
+        }
+      }
+    } catch { /* NAVER API 실패 시 DB 결과만 반환 */ }
+  }
+
+  // 3차: KRX 전체 종목 리스트에서 이름 필터 (NAVER 실패 폴백)
+  if (results.length === 0) {
+    try {
+      // 최근 거래일 계산 (오늘 or 가장 최근 평일)
+      const d = new Date();
+      const day = d.getUTCDay();
+      if (day === 0) d.setUTCDate(d.getUTCDate() - 2);
+      else if (day === 6) d.setUTCDate(d.getUTCDate() - 1);
+      const trdDd = d.toISOString().split('T')[0].replace(/-/g, '');
+
       const resp = await fetch('https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd', {
         method: 'POST',
         headers: {
@@ -369,28 +404,29 @@ dashboardRoutes.get('/search/stock', async (c) => {
           'User-Agent': 'Mozilla/5.0',
         },
         body: new URLSearchParams({
-          bld: 'dbms/MDC/STAT/standard/MDCSTAT01901',
+          bld: 'dbms/MDC/STAT/standard/MDCSTAT01501',
           mktId: 'ALL',
-          trdDd: today,
-          searchText: q,
+          trdDd,
           lang: 'ko',
           pageNo: '1',
-          rowSize: '10',
+          rowSize: '5000',
         }).toString(),
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(6000),
       });
       const data = await resp.json() as any;
+      const qLower = q.toLowerCase();
       if (Array.isArray(data.output)) {
         for (const item of data.output) {
           const code = String(item.ISU_SRT_CD ?? '');
-          const name = String(item.ISU_ABBRV ?? '');
+          const name = String(item.ISU_ABBRV ?? item.ISU_KOR_ABBRV ?? '');
           const mkt = String(item.MKT_NM ?? 'KOSPI');
-          if (code.length === 6 && !results.find(r => r.code === code)) {
+          if (code.length === 6 && name.toLowerCase().includes(qLower) && !results.find(r => r.code === code)) {
             results.push({ code, name, market: mkt.includes('KOSDAQ') ? 'KOSDAQ' : 'KOSPI' });
+            if (results.length >= 10) break;
           }
         }
       }
-    } catch { /* KRX API 실패 시 DB 결과만 반환 */ }
+    } catch { /* KRX API 실패 */ }
   }
 
   return c.json(results.slice(0, 10));
@@ -426,28 +462,63 @@ dashboardRoutes.get('/watchlist', async (c) => {
       }
     }
 
-    if (nameMap.size === 0) return c.json(data);
+    // 최근 매도 수익률 조회 (watchlist 카드에 ±% 표시용)
+    const sellPctMap = new Map<string, { pct: number; closedAt: string }>();
+    try {
+      const codes = data.map((w: any) => String(w.stock_code));
+      if (codes.length > 0) {
+        const { rows: sellRows } = await getPool().query(`
+          SELECT DISTINCT ON (tc.stock_code)
+            tc.stock_code,
+            tc.avg_buy_price,
+            tc.closed_at,
+            (SELECT o.filled_price FROM orders o
+             WHERE o.chain_id = tc.id AND o.side = 'SELL'
+             ORDER BY o.created_at DESC LIMIT 1) AS last_sell_price
+          FROM transaction_chains tc
+          WHERE tc.status = 'CLOSED'
+            AND tc.stock_code = ANY($1)
+          ORDER BY tc.stock_code, tc.closed_at DESC
+        `, [codes]);
+        for (const r of sellRows) {
+          const buy = Number(r.avg_buy_price ?? 0);
+          const sell = Number(r.last_sell_price ?? 0);
+          if (buy > 0 && sell > 0) {
+            sellPctMap.set(r.stock_code, {
+              pct: ((sell - buy) / buy) * 100,
+              closedAt: r.closed_at,
+            });
+          }
+        }
+      }
+    } catch { /* skip — non-critical */ }
 
-    const patched = data.map((w: any) => {
+    const base = data.map((w: any) => {
       const code = String(w.stock_code ?? '');
       const resolved = nameMap.get(code);
-      return resolved ? { ...w, stock_name: resolved } : w;
+      const sellInfo = sellPctMap.get(code);
+      return {
+        ...(resolved ? { ...w, stock_name: resolved } : w),
+        ...(sellInfo ? { last_sell_pct: sellInfo.pct, last_sell_at: sellInfo.closedAt } : {}),
+      };
     });
 
     // 다음 요청부터 즉시 일관되게 나오도록 DB도 보정
-    await Promise.allSettled(
-      [...nameMap.entries()].map(([code, name]) =>
-        getPool().query(
-          `UPDATE watchlist
-             SET stock_name = $1
-           WHERE stock_code = $2
-             AND is_active = true`,
-          [name, code],
+    if (nameMap.size > 0) {
+      await Promise.allSettled(
+        [...nameMap.entries()].map(([code, name]) =>
+          getPool().query(
+            `UPDATE watchlist
+               SET stock_name = $1
+             WHERE stock_code = $2
+               AND is_active = true`,
+            [name, code],
+          )
         )
-      )
-    );
+      );
+    }
 
-    return c.json(patched);
+    return c.json(base);
   } catch (err: any) {
     return c.json({ error: err?.message ?? 'watchlist 조회 실패' }, 500);
   }
@@ -935,6 +1006,172 @@ dashboardRoutes.get('/macro', async (c) => {
     return c.json(macro);
   } catch {
     return c.json({ regime: 'NEUTRAL', fearGreedIndex: 50 });
+  }
+});
+
+// ── 오늘 수집된 뉴스 피드 ──
+dashboardRoutes.get('/news', async (c) => {
+  try {
+    const { getTodayNews } = await import('../../automation/news-collector.js');
+    const newsMap = getTodayNews();
+    const result: Array<{ stockCode: string; stockName?: string; items: Array<{ title: string; link: string; publishedAt?: string }> }> = [];
+    for (const [stockCode, items] of newsMap.entries()) {
+      if (items.length > 0) {
+        result.push({ stockCode, items: items.slice(0, 10) });
+      }
+    }
+    // 최신 뉴스가 많은 종목 순
+    result.sort((a, b) => b.items.length - a.items.length);
+    return c.json(result);
+  } catch (err: any) {
+    return c.json([], 200);
+  }
+});
+
+// ── 매크로 뉴스 피드 ──
+dashboardRoutes.get('/news/macro', async (c) => {
+  try {
+    const { collectMacroNews } = await import('../../automation/news-collector.js');
+    const raw = await Promise.race([
+      collectMacroNews(),
+      new Promise<string>((resolve) => setTimeout(() => resolve(''), 8000)),
+    ]);
+    const lines = raw.split('\n').filter(l => l.startsWith('- [')).map(l => l.replace(/^- /, ''));
+    return c.json({ headlines: lines });
+  } catch {
+    return c.json({ headlines: [] });
+  }
+});
+
+// ── 매크로 뉴스 AI 한 줄 요약 (Claude haiku) ──
+dashboardRoutes.get('/news/summary', async (c) => {
+  try {
+    const { collectMacroNews } = await import('../../automation/news-collector.js');
+    const raw = await Promise.race([
+      collectMacroNews(),
+      new Promise<string>((resolve) => setTimeout(() => resolve(''), 12000)),
+    ]);
+    if (!raw) return c.json({ summary: '' });
+
+    const key = config.ai.anthropicKey || process.env.ANTHROPIC_API_KEY;
+    if (!key) return c.json({ summary: '' });
+
+    const { Anthropic } = await import('@anthropic-ai/sdk');
+    const client = new Anthropic({ apiKey: key });
+
+    const headlines = raw.split('\n').filter(l => l.startsWith('- [')).map(l => {
+      const m = l.match(/^\- \[(.+?)\]\(.+?\)\s*—\s*(.+)$/);
+      return m ? `${m[1]} (${m[2]})` : l.replace(/^- /, '');
+    }).join('\n');
+
+    const res = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 400,
+      messages: [{
+        role: 'user',
+        content: `아래는 오늘 글로벌 금융 뉴스 헤드라인입니다. 주식 투자에 영향을 미치는 핵심 내용만 뽑아서 한국어로 자연스럽게 2~3문장으로 요약해 주세요. 투자자 관점에서 오늘 시장 분위기와 주요 이슈를 간결하게 서술하세요.\n\n${headlines}`,
+      }],
+    });
+
+    const summary = (res.content[0] as any)?.text ?? '';
+    return c.json({ summary });
+  } catch {
+    return c.json({ summary: '' });
+  }
+});
+
+// ── 매매 상태 진단 (왜 매수 안 하는지) ──
+dashboardRoutes.get('/trading-status', async (c) => {
+  try {
+    const [killSwitch, defensePark, strategy, scores, watchlist, recentLossCodes] = await Promise.all([
+      Promise.resolve(getKillSwitchStatus()),
+      getDefenseParkState().catch(() => ({ isActive: false, entryReason: null })),
+      getActiveStrategy().catch(() => null),
+      (async () => {
+        const wl = await getActiveWatchlist().catch(() => []);
+        const codes = wl.map((w: any) => w.stock_code);
+        const s = await getCachedScores(codes).catch(() => []);
+        return s.length > 0 ? s : await getLatestScores(codes).catch(() => []);
+      })(),
+      getActiveWatchlist().catch(() => []),
+      (async () => {
+        const { getRecentLossStocks } = await import('../../db/client.js');
+        return getRecentLossStocks(7).catch(() => new Set<string>());
+      })(),
+    ]);
+
+    const mode = (strategy?.mode ?? 'SWING') as string;
+    const buyThreshold = strategy?.buy_threshold ?? (mode === 'DEFENSE' ? 85 : 65);
+    const marketOpen = isMarketOpen();
+
+    const blocks: { reason: string; detail: string; severity: 'warn' | 'info' | 'ok' }[] = [];
+
+    // 1. Kill switch
+    if (killSwitch.active) {
+      blocks.push({ reason: '긴급정지 (Kill Switch)', detail: killSwitch.reason ?? '수동 발동', severity: 'warn' });
+    }
+
+    // 2. 방어 파킹
+    if (defensePark.isActive) {
+      blocks.push({ reason: '방어 파킹 중', detail: defensePark.entryReason ?? '하락세 감지 → 현금 ETF 보호', severity: 'warn' });
+    }
+
+    // 3. 장 마감
+    if (!marketOpen) {
+      blocks.push({ reason: '장 마감', detail: '09:00~15:30 외 시간 — 매수 불가', severity: 'info' });
+    }
+
+    // 4. DEFENSE 모드
+    if (mode === 'DEFENSE') {
+      blocks.push({ reason: 'DEFENSE 모드', detail: `AI 점수 ${buyThreshold}점 이상만 진입 — 기준 매우 높음`, severity: 'warn' });
+    }
+
+    // 5. AI 점수 후보 없음
+    const candidates = scores.filter((s: any) => (s.composite_score ?? 0) >= buyThreshold && (s.confidence ?? 1) >= 0.6);
+    const topScore = scores.length > 0 ? Math.max(...scores.map((s: any) => s.composite_score ?? 0)) : 0;
+    if (scores.length === 0) {
+      blocks.push({ reason: 'AI 스코어 없음', detail: 'Track A 미실행 or 캐시 만료 — 기술적 지표 fallback 사용 중', severity: 'info' });
+    } else if (candidates.length === 0) {
+      blocks.push({ reason: `매수 후보 없음 (최고 ${topScore}점)`, detail: `현재 임계치 ${buyThreshold}점 — 모든 감시 종목 점수 미달`, severity: 'warn' });
+    }
+
+    // 6. 손실 밴 종목
+    if (recentLossCodes.size > 0) {
+      const watchCodes = new Set(watchlist.map((w: any) => w.stock_code));
+      const bannedInWatch = [...recentLossCodes].filter((c) => watchCodes.has(c));
+      if (bannedInWatch.length > 0) {
+        blocks.push({ reason: `손실 밴 ${bannedInWatch.length}종목`, detail: `7일 내 손절 ${bannedInWatch.length}종목 재진입 금지: ${bannedInWatch.slice(0, 3).join(', ')}`, severity: 'info' });
+      }
+    }
+
+    // 7. 감시목록 부족
+    if (watchlist.length < 3) {
+      blocks.push({ reason: '감시목록 부족', detail: `현재 ${watchlist.length}종목 — 3종목 이상 권장`, severity: 'warn' });
+    }
+
+    // 전반적 상태
+    const hasHardBlock = blocks.some(b => b.severity === 'warn' && (
+      b.reason.includes('긴급정지') || b.reason.includes('방어 파킹') || b.reason.includes('후보 없음') || b.reason.includes('DEFENSE')
+    ));
+    const overallStatus: 'ACTIVE' | 'WATCHING' | 'BLOCKED' = killSwitch.active || defensePark.isActive
+      ? 'BLOCKED'
+      : hasHardBlock
+        ? 'WATCHING'
+        : 'ACTIVE';
+
+    return c.json({
+      overallStatus,   // ACTIVE=정상매매 | WATCHING=관망중 | BLOCKED=완전차단
+      mode,
+      buyThreshold,
+      marketOpen,
+      topScore,
+      candidateCount: candidates.length,
+      watchlistCount: watchlist.length,
+      lossBlockedCount: recentLossCodes.size,
+      blocks,
+    });
+  } catch (err) {
+    return c.json({ overallStatus: 'UNKNOWN', blocks: [], error: String(err) });
   }
 });
 
