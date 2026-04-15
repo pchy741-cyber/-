@@ -16,14 +16,14 @@ import {
   isPortfolioInDowntrend,
   PARK_STOCK_CODE,
 } from './defense-park.js';
+import { setActiveEngine } from '../../cache/ai-status.js';
 import { runClaudeExecution } from './executor.js';
 import { runGeminiExecution } from './gemini-executor.js';
 import { technicalFallbackDecisions } from './technical-fallback.js';
 import { IDLE_PARK_CODE, IDLE_PARK_NAME } from './trading-rules.js';
 
-// ── IDLE_PARK_CODE 가격 모듈 캐시 (30분 TTL — rate limit 방지) ──
+// ── IDLE_PARK_CODE 가격 캐시 — 배치 실패 시 직전 가격 fallback용 ──
 let _idleParkPriceCache: { price: number; fetchedAt: number } = { price: 0, fetchedAt: 0 };
-const IDLE_PARK_PRICE_TTL = 30 * 60 * 1000;
 
 /**
  * Track B 전체 파이프라인
@@ -122,22 +122,18 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     // 4. 실시간 시세 수집
-    // IDLE_PARK_CODE(333940)는 배치에서 제외 — 배치 rate limit 시 연쇄 실패 방지
-    // 배치보다 먼저 조회 (rate limit 여유분이 있을 때 선점)
-    if (_idleParkPriceCache.price <= 0 || Date.now() - _idleParkPriceCache.fetchedAt >= IDLE_PARK_PRICE_TTL) {
-      try {
-        const { getCurrentPrice } = await import('../../kis/market.js');
-        const pd = await getCurrentPrice(IDLE_PARK_CODE);
-        if (pd?.currentPrice > 0) {
-          _idleParkPriceCache = { price: pd.currentPrice, fetchedAt: Date.now() };
-          logger.info(`💰 333940 가격 갱신: ${pd.currentPrice.toLocaleString()}원 (30분 캐시)`, { component: 'TRACK_B' });
-        }
-      } catch { /* ignore — 직전 캐시 유지 */ }
-    }
-
+    // IDLE_PARK_CODE(333940) 배치에 포함 — 별도 getCurrentPrice 제거로 rate limit 최적화
     const chainStockCodes = openChains.map((c) => c.stock_code);
-    const allStockCodes = [...new Set([...stockCodes, ...chainStockCodes, PARK_STOCK_CODE])];
+    const allStockCodes = [...new Set([...stockCodes, ...chainStockCodes, PARK_STOCK_CODE, IDLE_PARK_CODE])];
     const livePrices = await getBatchPrices(allStockCodes);
+
+    // 333940 캐시 매 파이프라인마다 최신화 (배치 결과 직접 활용 — 별도 API 호출 0건)
+    const batchParkPrice = livePrices.get(IDLE_PARK_CODE)?.currentPrice ?? 0;
+    if (batchParkPrice > 0) {
+      _idleParkPriceCache = { price: batchParkPrice, fetchedAt: Date.now() };
+    } else if (_idleParkPriceCache.price > 0) {
+      logger.warn(`💰 333940 배치 조회 실패 — 캐시 가격 유지: ${_idleParkPriceCache.price.toLocaleString()}원`, { component: 'TRACK_B' });
+    }
 
     // 가격 캐싱 — 대시보드에서 API 실패 시 fallback용
     try {
@@ -267,6 +263,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       if (hasClaudeKey) {
         try {
           decisions = await runClaudeExecution(execParams);
+          if (decisions.length > 0) setActiveEngine('claude');
         } catch (claudeErr) {
           logger.warn(`⚠️ Claude 실행 실패: ${claudeErr}`, { component: 'TRACK_B' });
         }
@@ -276,6 +273,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       if (decisions.length === 0) {
         try {
           decisions = await runGeminiExecution(execParams);
+          if (decisions.length > 0) setActiveEngine('gemini');
         } catch (geminiErr) {
           logger.warn(`⚠️ Gemini 실행 실패: ${geminiErr}`, { component: 'TRACK_B' });
         }
@@ -327,7 +325,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           : techDecisions.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action));
         decisions = [...filtered];
       } else {
-        logger.info(`🔧 기술적 지표 기반 자동매매 모드 (스코어=${scores.length}개)`, { component: 'TRACK_B' });
+        // ── 안정 모드: AI 엔진 전체 실패 (Claude + Gemini 모두 응답 없음) ──
+        // 자본 보존 최우선: 신규 매수/매도 금지, FORCE_CLOSE(하드 손절)만 허용
+        // 이유: AI 없이 기술 지표만으로 매도하면 변동성 구간에서 손실 확정 위험
+        logger.info(`🛡️ 안정 모드: AI 전체 실패 → 신규 매매 중단, FORCE_CLOSE만 허용 (스코어=${scores.length}개)`, { component: 'TRACK_B' });
         const orderableCashForTech = Math.max(0, balance.orderableCash - ((balance as any).reservedWithdraw ?? 0));
         const totalAssetsForTech = balance.totalEvalAmount + orderableCashForTech;
         const techDecisions = technicalFallbackDecisions({
@@ -336,11 +337,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           livePrices,
           chartData,
           openChains,
-          orderableCash: orderableCashForTech,
+          orderableCash: 0, // 신규 매수 예산 0 → BUY/AVERAGE_DOWN 불가
           maxPositionKrw: config.risk.maxPositionKrw,
           totalAssets: totalAssetsForTech,
           lossBlockedCodes: recentLossCodes,
-          // 신뢰도 0.6 미만 = LLM 폴백 점수 — 기술 판단에 주입 금지 (신호 품질 저하 방지)
           aiScores: scores
             .filter((s: any) => (s.confidence ?? 1) >= 0.6)
             .map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
@@ -348,7 +348,13 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           stopLossPct: strategy?.stop_loss_pct ?? undefined,
           buyThreshold: strategy?.buy_threshold ?? undefined,
         });
-        decisions = [...techDecisions];
+        // FORCE_CLOSE(하드 손절)만 통과, 일반 SELL/PARTIAL_SELL/BUY 차단
+        decisions = techDecisions.filter((d) => d.action === 'FORCE_CLOSE');
+        if (decisions.length > 0) {
+          logger.info(`🛡️ 안정 모드: 하드 손절 ${decisions.length}건 실행 (FORCE_CLOSE)`, { component: 'TRACK_B' });
+        } else {
+          logger.info(`🛡️ 안정 모드: 포지션 유지 — 매매 없음`, { component: 'TRACK_B' });
+        }
       }
     }
 
@@ -416,7 +422,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       if (hasBuyDecision && alreadyIdleParked) {
         const parkChain = openChains.find((c) => c.stock_code === IDLE_PARK_CODE);
         if (parkChain && parkChain.total_quantity > 0) {
-          // 배치에서 제외된 IDLE_PARK_CODE → 캐시 가격 사용
+          // 배치 최신값 → 캐시에 저장됨, 없으면 avg_buy_price fallback
           const cachedPrice = _idleParkPriceCache.price;
           if (cachedPrice > 0) {
             const parkPnlPct = parkChain.avg_buy_price
@@ -493,6 +499,21 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
             confidence: 1.0,
           });
         }
+      }
+    }
+
+    // syncInterestGroups 보완: hasBuyCandidates=true이나 실제 BUY 결정 없을 때도 재동기화
+    // (Gemini 전부 HOLD → 기술 폴백 BUY도 없는 경우 커버)
+    if (hasBuyCandidates) {
+      const hasActualBuyDecision = decisions.some(
+        (d) => ['BUY', 'AVERAGE_DOWN'].includes(d.action) && d.stock_code !== IDLE_PARK_CODE,
+      );
+      if (!hasActualBuyDecision) {
+        logger.info('⏭️ 매수 후보 있으나 실제 BUY 결정 없음 → KIS 관심종목 재동기화', { component: 'TRACK_B' });
+        try {
+          const { syncInterestGroups } = await import('../../kis/interest-group.js');
+          await syncInterestGroups();
+        } catch { /* 동기화 실패해도 파이프라인 계속 */ }
       }
     }
 
