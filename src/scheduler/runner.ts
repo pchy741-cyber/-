@@ -123,6 +123,16 @@ export function startScheduler(): void {
   //  장중 실시간 자동화
   // ═══════════════════════════════════════════
 
+  // 🔔 09:00 개장 즉시 — 초단타 선제 실행 (SCALPING 모드 자동 강제, pipeline 내부에서 처리)
+  cron.schedule(
+    '0 9 * * 1-5',
+    () => {
+      logger.info('🔔 개장 초단타 선제 실행 (09:00)', { component: 'SCHEDULER' });
+      runTrackBJob().catch((e) => logger.error(`개장 초단타 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // Track B — 장중 10분 간격 (핵심: Claude 매매 판단)
   cron.schedule(
     `*/${SCHEDULE.TRACK_B_INTERVAL_MINUTES} 9-15 * * 1-5`,

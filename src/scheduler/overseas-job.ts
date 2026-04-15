@@ -48,11 +48,12 @@ const POSITION_PCT = 0.20;         // 또는 가용 현금의 20%
 async function ensureOverseasTable(): Promise<void> {
   await getPool().query(`
     CREATE TABLE IF NOT EXISTS overseas_holdings (
-      stock_code TEXT PRIMARY KEY,
+      stock_code TEXT NOT NULL,
       exchange TEXT NOT NULL DEFAULT 'NASDAQ',
       quantity NUMERIC NOT NULL DEFAULT 0,
       avg_price NUMERIC NOT NULL DEFAULT 0,
-      bought_at TIMESTAMPTZ DEFAULT NOW()
+      bought_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (exchange, stock_code)
     )
   `);
   await getPool().query(`
@@ -61,28 +62,49 @@ async function ensureOverseasTable(): Promise<void> {
       value TEXT NOT NULL
     )
   `);
+  // One-time migration: PK 단일(stock_code) → 복합(exchange, stock_code)
+  // 동일 코드가 다른 거래소에 존재할 경우 충돌 방지 (예: TSE 7203 vs 다른 거래소 동일 코드)
+  const { rows: migRows } = await getPool().query(
+    "SELECT value FROM overseas_state WHERE key = 'schema_holdings_v2'"
+  ).catch(() => ({ rows: [] as { value: string }[] }));
+  if (migRows.length === 0) {
+    await getPool().query(`
+      DO $$
+      BEGIN
+        -- 기존 단일 PK 제거 후 복합 PK 추가
+        ALTER TABLE overseas_holdings DROP CONSTRAINT IF EXISTS overseas_holdings_pkey;
+        BEGIN
+          ALTER TABLE overseas_holdings ADD PRIMARY KEY (exchange, stock_code);
+        EXCEPTION WHEN others THEN NULL; END;
+      END $$;
+    `).catch(() => {});
+    await getPool().query(
+      `INSERT INTO overseas_state (key, value) VALUES ('schema_holdings_v2', '1')
+       ON CONFLICT (key) DO UPDATE SET value = '1'`
+    ).catch(() => {});
+  }
 }
 
-async function getHoldings(): Promise<Map<string, { qty: number; avgPrice: number; boughtAt: string }>> {
+async function getHoldings(): Promise<Map<string, { qty: number; avgPrice: number; boughtAt: string; exchange: string }>> {
   const map = new Map();
   try {
     const { rows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0');
     for (const r of rows) {
-      map.set(r.stock_code, { qty: Number(r.quantity), avgPrice: Number(r.avg_price), boughtAt: r.bought_at });
+      map.set(r.stock_code, { qty: Number(r.quantity), avgPrice: Number(r.avg_price), boughtAt: r.bought_at, exchange: r.exchange });
     }
   } catch { /* table might not exist yet */ }
   return map;
 }
 
-async function setHolding(code: string, qty: number, avgPrice: number): Promise<void> {
+async function setHolding(code: string, exchange: string, qty: number, avgPrice: number): Promise<void> {
   if (qty <= 0) {
-    await getPool().query('DELETE FROM overseas_holdings WHERE stock_code = $1', [code]);
+    await getPool().query('DELETE FROM overseas_holdings WHERE exchange = $1 AND stock_code = $2', [exchange, code]);
   } else {
     await getPool().query(
-      `INSERT INTO overseas_holdings (stock_code, quantity, avg_price, bought_at)
-       VALUES ($1, $2, $3, NOW())
-       ON CONFLICT (stock_code) DO UPDATE SET quantity = $2, avg_price = $3`,
-      [code, qty, avgPrice],
+      `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at)
+       VALUES ($1, $2, $3, $4, NOW())
+       ON CONFLICT (exchange, stock_code) DO UPDATE SET quantity = $3, avg_price = $4`,
+      [code, exchange, qty, avgPrice],
     );
   }
 }
@@ -140,7 +162,7 @@ interface USSessionCache {
   techCache: Map<string, { score: number; rsi: number; adx: number; signal: string; trendStrength: string; isMomentum: boolean; dayRangePct: number }>;
 }
 let usSessionCache: USSessionCache | null = null;
-const US_TOP_COUNT = 4; // 매 사이클 AI에 넘길 최대 후보 수 (보유종목 제외)
+const US_TOP_COUNT = 6; // 매 사이클 AI에 넘길 최대 후보 수 (보유종목 제외)
 
 /** 세션 캐시 초기화 (runner.ts에서 23:20에 호출) */
 export function resetUSSessionCache(): void {
@@ -166,6 +188,47 @@ interface OverseasExecutionResult {
   orderNo: string;
 }
 
+/**
+ * 최근 해외 매도 실적 요약 — AI 자기학습용 컨텍스트
+ * 최근 20건 SELL 주문에서 win/loss + 평균 PnL 계산
+ */
+async function getRecentPerfSummary(): Promise<string> {
+  try {
+    const { rows } = await getPool().query(`
+      SELECT ai_reasoning, filled_price, quantity
+      FROM orders
+      WHERE trigger_source = 'OVERSEAS'
+        AND side = 'SELL'
+        AND status = 'FILLED'
+        AND filled_price IS NOT NULL
+        AND created_at >= NOW() - INTERVAL '14 days'
+      ORDER BY created_at DESC
+      LIMIT 20
+    `);
+    if (rows.length === 0) return '';
+
+    let wins = 0, losses = 0, totalPnlPct = 0, counted = 0;
+    for (const r of rows) {
+      const match = String(r.ai_reasoning ?? '').match(/\[avgBuy:([\d.]+)\]/);
+      if (!match) continue;
+      const avgBuy = Number(match[1]);
+      const fillPx = Number(r.filled_price);
+      if (avgBuy <= 0 || fillPx <= 0) continue;
+      const pnlPct = ((fillPx - avgBuy) / avgBuy) * 100;
+      if (pnlPct >= 0) wins++; else losses++;
+      totalPnlPct += pnlPct;
+      counted++;
+    }
+    if (counted === 0) return '';
+
+    const winRate = ((wins / counted) * 100).toFixed(0);
+    const avgPnl = (totalPnlPct / counted).toFixed(2);
+    return `최근 ${counted}건 실적: 승률 ${winRate}% (${wins}승 ${losses}패) | 평균 PnL ${Number(avgPnl) >= 0 ? '+' : ''}${avgPnl}%`;
+  } catch {
+    return '';
+  }
+}
+
 async function getPendingOverseasStocks(): Promise<Set<string>> {
   const pending = new Set<string>();
   try {
@@ -184,6 +247,74 @@ async function getPendingOverseasStocks(): Promise<Set<string>> {
     logger.warn(`미체결 주문 조회 실패: ${(e as Error).message}`, { component: 'OVERSEAS' });
   }
   return pending;
+}
+
+/**
+ * PENDING 해외주문 재동기화 — 매 사이클 실행
+ * - 15분 이상 PENDING: KIS 잔고 기반 체결 여부 확인
+ * - 4시간 이상 PENDING: 타임아웃 처리 → CANCELLED
+ * 이 함수가 없으면 PENDING 종목이 영구 스킵되어 매매 기회 소실
+ */
+async function syncPendingOverseasOrders(): Promise<void> {
+  try {
+    const { rows } = await getPool().query(`
+      SELECT id, stock_code, side, quantity, price,
+             EXTRACT(EPOCH FROM (NOW() - created_at)) / 60 AS age_minutes,
+             kis_order_no
+      FROM orders
+      WHERE trigger_source = 'OVERSEAS'
+        AND trading_mode = 'live'
+        AND status = 'PENDING'
+        AND created_at >= NOW() - INTERVAL '24 hours'
+      ORDER BY created_at ASC
+    `);
+    if (rows.length === 0) return;
+    logger.info(`🔄 PENDING 해외주문 재동기화: ${rows.length}건`, { component: 'OVERSEAS' });
+
+    for (const order of rows) {
+      const ageMin = Number(order.age_minutes);
+
+      // 4시간(240분) 이상 미체결 → 타임아웃 취소
+      if (ageMin >= 240) {
+        await updateOrder(order.id, { status: 'CANCELLED', kis_status: 'TIMEOUT' });
+        logger.info(`⏰ ${order.stock_code} PENDING 타임아웃 (${ageMin.toFixed(0)}분) → CANCELLED`, { component: 'OVERSEAS' });
+        continue;
+      }
+
+      // 15분 이상: KIS 잔고로 체결 추정
+      if (ageMin >= 15) {
+        try {
+          const stock = GLOBAL_WATCHLIST.find((s) => s.code === order.stock_code);
+          const exchange = stock?.exchange ?? 'NASDAQ';
+          const balances = await getOverseasBalance(exchange);
+          const position = balances.find((b) => b.stockCode === order.stock_code);
+          const currentQty = position?.quantity ?? 0;
+
+          if (order.side === 'BUY' && currentQty > 0) {
+            await updateOrder(order.id, {
+              filled_quantity: Math.min(Number(order.quantity), currentQty),
+              filled_price: position?.avgBuyPrice ?? Number(order.price),
+              status: 'FILLED',
+              kis_status: 'FILLED',
+            });
+            logger.info(`✅ ${order.stock_code} BUY PENDING→FILLED (잔고 확인: ${currentQty}주)`, { component: 'OVERSEAS' });
+          } else if (order.side === 'SELL' && currentQty === 0) {
+            await updateOrder(order.id, {
+              filled_quantity: Number(order.quantity),
+              filled_price: Number(order.price),
+              status: 'FILLED',
+              kis_status: 'FILLED',
+            });
+            logger.info(`✅ ${order.stock_code} SELL PENDING→FILLED (잔고 0 확인)`, { component: 'OVERSEAS' });
+          }
+        } catch (e) {
+          logger.warn(`PENDING 재동기화 실패 (${order.stock_code}): ${(e as Error).message}`, { component: 'OVERSEAS' });
+        }
+      }
+    }
+  } catch (e) {
+    logger.warn(`PENDING 재동기화 전체 실패: ${(e as Error).message}`, { component: 'OVERSEAS' });
+  }
 }
 
 async function confirmOverseasFillFromBalance(params: {
@@ -249,35 +380,23 @@ async function confirmOverseasFillFromBalance(params: {
 }
 
 /**
- * 현재 KST 시간 기준으로 열려있는 시장의 region 반환
+ * 사용자 인사이트 — 대시보드에서 입력, DB에 저장, 매 사이클 AI에 주입
  */
-function getActiveRegions(): string[] {
-  const now = new Date();
-  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
-  const h = kst.getUTCHours();
-  const m = kst.getUTCMinutes();
-  const t = h * 60 + m;
-  const day = kst.getUTCDay(); // 0=Sun, 6=Sat
+export async function getUserInsights(): Promise<string> {
+  try {
+    const { rows } = await getPool().query(
+      "SELECT value FROM overseas_state WHERE key = 'user_insights'",
+    );
+    return rows.length > 0 ? String(rows[0].value) : '';
+  } catch { return ''; }
+}
 
-  const regions: string[] = [];
-
-  // 🇺🇸 미국: KST 22:30~05:00 (NYSE 9:30am ET = KST 22:30)
-  const isUSNight = t >= 22 * 60 + 30 && day >= 1 && day <= 5;
-  const isUSDawn = t <= 5 * 60 && day >= 2 && day <= 6;
-  if (isUSNight || isUSDawn) regions.push('US');
-
-  // 🇯🇵 일본: KST 09:00~11:30, 12:30~15:00 (평일)
-  if (day >= 1 && day <= 5) {
-    if ((t >= 9 * 60 && t <= 11 * 60 + 30) || (t >= 12 * 60 + 30 && t <= 15 * 60)) regions.push('JP');
-  }
-
-  // 🇹🇼 대만: KST 10:00~14:30 (평일)
-  if (day >= 1 && day <= 5) {
-    if (t >= 10 * 60 && t <= 14 * 60 + 30) regions.push('TW');
-  }
-
-  logger.info(`🌏 시장 체크: KST ${h}:${String(m).padStart(2, '0')} (day=${day}) → [${regions.join(',')}]`, { component: 'OVERSEAS' });
-  return regions;
+export async function setUserInsights(text: string): Promise<void> {
+  await getPool().query(
+    `INSERT INTO overseas_state (key, value) VALUES ('user_insights', $1)
+     ON CONFLICT (key) DO UPDATE SET value = $1`,
+    [text],
+  );
 }
 
 /**
@@ -296,43 +415,35 @@ export async function runOverseasJob(): Promise<void> {
   isRunning = true;
 
   try {
-    const activeRegions = getActiveRegions();
-    if (activeRegions.length === 0) {
-      logger.info('🌏 열린 해외 시장 없음 → 스킵', { component: 'OVERSEAS' });
-      return;
-    }
-
-    const allActiveStocks = GLOBAL_WATCHLIST.filter(s => activeRegions.includes(s.region));
-    const regionFlags = activeRegions.map(r => r === 'US' ? '🇺🇸' : r === 'JP' ? '🇯🇵' : '🇹🇼').join('');
+    // 시간 필터 없음 — 크론 스케줄이 타이밍 제어, 여기서는 전 종목 처리
+    const allActiveStocks = GLOBAL_WATCHLIST;
+    const regionFlags = '🌏';
 
     await ensureOverseasTable();
+    // PENDING 주문 재동기화 — 미체결 종목이 영구 스킵되는 버그 방지
+    if (!config.isPaper) await syncPendingOverseasOrders();
 
     const holdings = await getHoldings();
     const pendingOrderStocks = await getPendingOverseasStocks();
     let cash = await getCash();
 
-    // ── 미국 세션 캐시: 신규 세션이면 전 종목 스캔 → 이후 사이클은 상위 종목만 ──
-    const isUS = activeRegions.includes('US');
+    // ── 세션 캐시: 신규 세션이면 전 종목 스캔 → 이후 사이클은 보유 + 상위 후보만 ──
     const sessionId = getUSSessionId();
-    const isNewUSSession = isUS && (!usSessionCache || usSessionCache.sessionDate !== sessionId);
+    const isNewSession = !usSessionCache || usSessionCache.sessionDate !== sessionId;
 
-    if (isNewUSSession) {
-      // 새 세션 시작 — 캐시 초기화 (이번 사이클은 전체 스캔)
+    if (isNewSession) {
       usSessionCache = null;
-      logger.info('🇺🇸 새 미국장 세션 시작 — 전 종목 점수 스캔', { component: 'OVERSEAS' });
+      logger.info('🌏 새 세션 시작 — 전 종목 점수 스캔', { component: 'OVERSEAS' });
     }
 
-    // US 종목: 새 세션이면 전체, 기존 세션이면 보유 + 캐시 상위만 조회
+    // 기존 세션이면 보유 + 캐시 상위만 조회 (API 비용 절감)
     let activeStocks = allActiveStocks;
-    if (isUS && usSessionCache) {
+    if (usSessionCache) {
       const heldCodes = new Set(holdings.keys());
       const targetCodes = new Set([...heldCodes, ...usSessionCache.topCodes]);
-      const usFull = allActiveStocks.filter(s => s.region === 'US');
-      const usFiltered = usFull.filter(s => targetCodes.has(s.code));
-      const nonUS = allActiveStocks.filter(s => s.region !== 'US');
-      activeStocks = [...usFiltered, ...nonUS];
+      activeStocks = allActiveStocks.filter(s => targetCodes.has(s.code));
       logger.info(
-        `🇺🇸 세션 캐시 사용 — US ${usFiltered.length}종목 (보유:${heldCodes.size} + 후보:${usSessionCache.topCodes.length}) / 전체 절약`,
+        `세션 캐시 사용 — ${activeStocks.length}종목 (보유:${heldCodes.size} + 후보:${usSessionCache.topCodes.length})`,
         { component: 'OVERSEAS' },
       );
     }
@@ -356,7 +467,7 @@ export async function runOverseasJob(): Promise<void> {
         batch.map(async (stock) => {
           const price = await getOverseasPrice(stock.code, stock.exchange);
           // 세션 캐시에 기술점수가 있고 보유종목이 아니면 차트 재호출 생략
-          const cached = (isUS && usSessionCache?.techCache.get(stock.code));
+          const cached = usSessionCache?.techCache.get(stock.code);
           const chart = cached ? null : await getOverseasDailyChart(stock.code, stock.exchange, 65);
           return { stock, price, chart, cached };
         })
@@ -388,7 +499,7 @@ export async function runOverseasJob(): Promise<void> {
           signal = tech.overallSignal; score = tech.score;
           rsi = tech.rsi14; adx = tech.adx14; trendStrength = tech.trendStrength;
           // 미국 종목이면 캐시 저장
-          if (isUS && usSessionCache) {
+          if (usSessionCache) {
             usSessionCache.techCache.set(stock.code, { score, rsi, adx, signal, trendStrength, isMomentum, dayRangePct });
           }
         }
@@ -409,25 +520,21 @@ export async function runOverseasJob(): Promise<void> {
       }
     }
 
-    // ── 1-c. 새 US 세션: 전 종목 스캔 완료 → 상위 종목 캐시 저장 ──
-    if (isNewUSSession && techResults.length > 0) {
-      const usResults = techResults.filter(t => {
-        const stock = GLOBAL_WATCHLIST.find(s => s.code === t.code);
-        return stock?.region === 'US';
-      });
+    // ── 1-c. 새 세션: 전 종목 스캔 완료 → 상위 종목 캐시 저장 ──
+    if (isNewSession && techResults.length > 0) {
       // score + 모멘텀 보너스로 정렬 → 상위 US_TOP_COUNT 캐시
-      const sorted = [...usResults].sort((a, b) => {
+      const sorted = [...techResults].sort((a, b) => {
         const sa = a.score + (a.isMomentum ? 30 : 0);
         const sb = b.score + (b.isMomentum ? 30 : 0);
         return sb - sa;
       });
       const topCodes = sorted.slice(0, US_TOP_COUNT).map(t => t.code);
       const techCacheMap = new Map<string, { score: number; rsi: number; adx: number; signal: string; trendStrength: string; isMomentum: boolean; dayRangePct: number }>();
-      for (const t of usResults) {
+      for (const t of techResults) {
         techCacheMap.set(t.code, { score: t.score, rsi: t.rsi, adx: t.adx, signal: t.signal, trendStrength: t.trendStrength, isMomentum: t.isMomentum, dayRangePct: t.dayRangePct });
       }
       usSessionCache = { topCodes, sessionDate: sessionId, techCache: techCacheMap };
-      logger.info(`🇺🇸 이번 세션 AI 매수 후보: [${topCodes.join(', ')}] (score 기준 상위 ${US_TOP_COUNT})`, { component: 'OVERSEAS' });
+      logger.info(`🌏 이번 세션 AI 매수 후보: [${topCodes.join(', ')}] (score 기준 상위 ${US_TOP_COUNT})`, { component: 'OVERSEAS' });
     }
 
     if (techResults.length === 0) {
@@ -471,7 +578,7 @@ export async function runOverseasJob(): Promise<void> {
 
     // US 세션 캐시 있을 때: 비보유 종목 중 상위 후보만 AI에 전달 (API 비용 절감)
     let aiInputs = allAiInputs;
-    if (isUS && usSessionCache) {
+    if (usSessionCache) {
       const topSet = new Set(usSessionCache.topCodes);
       aiInputs = allAiInputs.filter(s => heldSet.has(s.code) || topSet.has(s.code));
       if (aiInputs.length < allAiInputs.length) {
@@ -479,7 +586,8 @@ export async function runOverseasJob(): Promise<void> {
       }
     }
 
-    const aiDecisions = await analyzeOverseasWithAI(aiInputs, cash, holdings.size);
+    const [perfSummary, userInsights] = await Promise.all([getRecentPerfSummary(), getUserInsights()]);
+    const aiDecisions = await analyzeOverseasWithAI(aiInputs, cash, holdings.size, perfSummary, userInsights || undefined);
 
     // AI 결과를 코드 → 판단 맵으로 변환
     const aiMap = new Map(aiDecisions.map(d => [d.code, d]));
@@ -519,22 +627,17 @@ export async function runOverseasJob(): Promise<void> {
       else if (pnlPct >= 10) {
         sellReason = `익절(10%): +${pnlPct.toFixed(1)}%`;
       }
-      // 4) 소프트 익절: +5% BUT 모멘텀 강하면 홀딩
-      else if (pnlPct >= 5) {
-        const stillMomentum = tech.rsi < 68 && tech.adx >= 18 && tech.score > 20;
-        if (!stillMomentum) {
-          sellReason = `익절(+${pnlPct.toFixed(1)}%): 모멘텀 약화 RSI=${tech.rsi.toFixed(0)} ADX=${tech.adx.toFixed(0)} score=${tech.score}`;
-        } else {
-          logger.info(`  ⏳ ${code} +${pnlPct.toFixed(1)}% — 모멘텀 지속 홀딩 (RSI=${tech.rsi.toFixed(0)} ADX=${tech.adx.toFixed(0)}, 목표 10%)`, { component: 'OVERSEAS' });
-        }
+      // 4) AI 매도 신호 — confidence 60% 이상이면 구간 무관하게 신뢰
+      else if (ai?.action === 'SELL' && ai.confidence >= 0.60) {
+        sellReason = `AI 매도(${(ai.confidence * 100).toFixed(0)}%): ${ai.reasoning}`;
       }
-      // 5) AI SELL 신뢰도 65% 이상 (수익 구간에서만)
-      else if (ai?.action === 'SELL' && ai.confidence >= 0.65 && pnlPct > -1) {
-        sellReason = `AI 매도: ${ai.reasoning}`;
+      // 5) AI 없을 때 fallback: +7% 이상이면 소프트 익절
+      else if (!ai && pnlPct >= 7) {
+        sellReason = `소프트 익절(AI없음): +${pnlPct.toFixed(1)}%`;
       }
-      // 6) 기술적 강매도 (AI 없을 때 fallback)
+      // 6) AI 없을 때 fallback: 기술적 강매도
       else if (!ai && tech.signal === 'STRONG_SELL' && tech.score < -30) {
-        sellReason = `기술적 매도: score=${tech.score}`;
+        sellReason = `기술적 매도(AI없음): score=${tech.score}`;
       }
 
       if (sellReason) {
@@ -556,7 +659,7 @@ export async function runOverseasJob(): Promise<void> {
           continue;
         }
 
-        await setHolding(code, exec.finalQty, exec.finalAvgPrice);
+        await setHolding(code, tech.exchange, exec.finalQty, exec.finalAvgPrice);
         if (exec.finalQty <= 0) {
           await clearMaxPrice(code);
         }
@@ -569,12 +672,18 @@ export async function runOverseasJob(): Promise<void> {
       }
     }
 
-    // ── 4. 리스크 관리: 일간 손실 한도 체크 ──
+    // ── 4. 리스크 관리: 포트폴리오 손실 한도 체크 ──
     const INITIAL_OVERSEAS_CASH = 10000; // $10,000 초기 자본
-    const dailyLossPct = ((cash - INITIAL_OVERSEAS_CASH) / INITIAL_OVERSEAS_CASH) * 100;
+    // 현금만 보면 매수 후 항상 손실로 오인 → 보유종목 평가액 포함한 포트폴리오 기준으로 계산
+    const holdingEvalUsd = Array.from(holdings.entries()).reduce((sum, [code, h]) => {
+      const tech = techResults.find((t) => t.code === code);
+      return sum + (tech ? tech.price.currentPrice * h.qty : h.avgPrice * h.qty);
+    }, 0);
+    const portfolioValue = cash + holdingEvalUsd;
+    const dailyLossPct = ((portfolioValue - INITIAL_OVERSEAS_CASH) / INITIAL_OVERSEAS_CASH) * 100;
     const riskBlocked = dailyLossPct <= -8; // 8% 손실 시 당일 매수 중단
     if (riskBlocked) {
-      logger.warn(`⛔ 리스크 한도 초과: 포트폴리오 ${dailyLossPct.toFixed(1)}% → 당일 신규 매수 차단`, { component: 'OVERSEAS' });
+      logger.warn(`⛔ 리스크 한도 초과: 포트폴리오 $${portfolioValue.toFixed(0)} (${dailyLossPct.toFixed(1)}%) → 당일 신규 매수 차단`, { component: 'OVERSEAS' });
     }
 
     // ── 5. 매수 판단 ──
@@ -585,47 +694,29 @@ export async function runOverseasJob(): Promise<void> {
     if (!riskBlocked && currentHoldingCount < MAX_POSITIONS && cash >= 200) {
       const buyTargets = techResults
         .filter(t => !updatedHoldings.has(t.code) && !pendingOrderStocks.has(t.code))
-        .map(t => {
-          const ai = aiMap.get(t.code);
-          const aiScore = ai?.action === 'BUY' ? ai.confidence * 100 : 0;
-          // 모멘텀 보너스: 당일 강한 상승 중이면 점수 가산
-          const momentumBonus = t.isMomentum ? 40 : 0;
-          const techScore = (t.signal === 'STRONG_BUY' ? 80 : t.signal === 'BUY' ? 60 : 0)
-            + (t.adx >= 20 ? 20 : t.adx >= 15 ? 10 : 0)
-            + momentumBonus;
-          return { ...t, ai, combinedScore: aiScore + techScore };
-        })
         .filter(t => {
           const ai = aiMap.get(t.code);
-
-          // ── 모멘텀 매수: 당일 +3% 이상, 일중 상위 60%, ADX 강세 ──
-          // (저점 반등이 아니라 이미 달리는 종목에 올라타기)
-          if (t.isMomentum && t.adx >= 18 && t.rsi < 72) {
-            if (ai?.action === 'BUY' || ai?.action === 'HOLD' || !ai) return true;
-          }
-
-          // ── 저점 반등 매수 (기존 로직) ──
-          if (ai?.action === 'BUY' && ai.confidence >= 0.50 && t.adx >= 12) return true;
-          if (ai?.action === 'HOLD' && t.signal === 'STRONG_BUY' && t.score > 40 && t.adx >= 15) return true;
-          if (!ai) return (t.signal === 'STRONG_BUY' || t.signal === 'BUY') && t.trendStrength !== 'WEAK' && t.adx >= 12;
+          // AI가 BUY라고 판단한 것만 신뢰 — 백엔드 재검증 없음
+          if (ai?.action === 'BUY' && ai.confidence >= 0.55) return true;
+          // AI 없을 때 fallback: 강한 기술 신호만
+          if (!ai) return t.signal === 'STRONG_BUY' && t.adx >= 15;
           return false;
         })
-        .sort((a, b) => b.combinedScore - a.combinedScore);
+        .map(t => ({ ...t, ai: aiMap.get(t.code) }))
+        .sort((a, b) => (b.ai?.confidence ?? 0) - (a.ai?.confidence ?? 0));
 
       const slotsAvailable = MAX_POSITIONS - currentHoldingCount;
       for (const target of buyTargets.slice(0, slotsAvailable)) {
-        // 모멘텀 매수는 포지션 크기 1.3배 (추세 강할 때 더 태우기)
-        const sizeMult = target.isMomentum ? 1.3 : 1.0;
-        const positionSize = Math.min(cash * POSITION_PCT * sizeMult, POSITION_SIZE_USD * sizeMult);
+        const positionSize = Math.min(cash * POSITION_PCT, POSITION_SIZE_USD);
         if (positionSize < 50) break;
 
         const qty = Math.floor(positionSize / target.price.currentPrice);
         if (qty <= 0) continue;
 
-        const buyMode = target.isMomentum ? '🚀모멘텀' : '📉저점반등';
+        const buyMode = target.isMomentum ? '🚀모멘텀' : '📉반등';
         const reason = target.ai
           ? `${buyMode} AI(${(target.ai.confidence * 100).toFixed(0)}%): ${target.ai.reasoning}`
-          : `${buyMode} 기술적: score=${target.score} RSI=${target.rsi.toFixed(0)} ADX=${target.adx.toFixed(0)} 일중${target.dayRangePct.toFixed(0)}%`;
+          : `${buyMode} 기술(AI없음): score=${target.score} RSI=${target.rsi.toFixed(0)} ADX=${target.adx.toFixed(0)}`;
 
         const exec = await executeOverseasOrder(
           target.code,
@@ -646,10 +737,10 @@ export async function runOverseasJob(): Promise<void> {
         }
 
         const cost = exec.filledQty * exec.filledPrice;
-        await setHolding(target.code, exec.finalQty, exec.finalAvgPrice);
+        await setHolding(target.code, target.exchange, exec.finalQty, exec.finalAvgPrice);
         cash -= cost;
         await setCash(cash);
-        buyOrders.push(`매수 ${target.code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} ${buyMode} (score=${target.combinedScore.toFixed(0)})`);
+        buyOrders.push(`매수 ${target.code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} ${buyMode} (AI ${((target.ai?.confidence ?? 0) * 100).toFixed(0)}%)`);
       }
     }
 
@@ -706,12 +797,15 @@ async function executeOverseasOrder(
     const fillPrice = price * (1 + slippage);
     const fakeOrderNo = `USP${Date.now().toString(36)}`;
 
+    const paperReasoning = side === 'SELL' && previousAvgPrice > 0
+      ? `[avgBuy:${previousAvgPrice.toFixed(4)}] ${reasoning}`
+      : reasoning;
     await insertOrder({
       chain_id: null, stock_code: code, side, order_type: '01',
       quantity: qty, price: fillPrice, kis_order_no: fakeOrderNo,
       kis_status: 'PAPER_FILLED', filled_quantity: qty, filled_price: fillPrice,
       status: 'FILLED', trading_mode: 'paper', trigger_source: 'OVERSEAS',
-      ai_reasoning: reasoning,
+      ai_reasoning: paperReasoning,
     });
 
     logger.info(`📝 [US_PAPER] ${side} ${code} x${qty} @$${fillPrice.toFixed(2)} (${fakeOrderNo})`, { component: 'OVERSEAS' });
@@ -739,13 +833,16 @@ async function executeOverseasOrder(
   } else {
     try {
       const result = await placeOverseasOrder({ stockCode: code, exchange, side, quantity: qty, price });
+      const liveReasoning = side === 'SELL' && previousAvgPrice > 0
+        ? `[avgBuy:${previousAvgPrice.toFixed(4)}] ${reasoning}`
+        : reasoning;
       const orderId = await insertOrder({
         chain_id: null, stock_code: code, side, order_type: '01',
         quantity: qty, price, kis_order_no: result.orderNo,
         kis_status: result.success ? 'SUBMITTED' : 'FAILED',
         filled_quantity: 0, filled_price: null,
         status: result.success ? 'PENDING' : 'FAILED', trading_mode: 'live',
-        trigger_source: 'OVERSEAS', ai_reasoning: reasoning,
+        trigger_source: 'OVERSEAS', ai_reasoning: liveReasoning,
       });
       if (result.success) {
         logger.info(`🌍 [LIVE] 주문 접수: ${side} ${code} x${qty} @$${price.toFixed(2)} (${result.orderNo})`, { component: 'OVERSEAS' });

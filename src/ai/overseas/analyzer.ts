@@ -32,27 +32,29 @@ export interface OverseasAIDecision {
   reasoning: string;
 }
 
-const SYSTEM_PROMPT = `당신은 미국 대형주 단기 트레이딩 전문가입니다. 수익 창출이 목표이므로 적극적으로 기회를 찾아야 합니다.
+const SYSTEM_PROMPT = `당신은 미국·아시아 대형주 단기 스윙 트레이딩 AI입니다. 실제 자금이 투입되므로 근거 있는 판단만 하세요.
 
-규칙:
-- 분석 대상: NASDAQ/NYSE 빅테크 (AAPL, NVDA, META, MSFT, GOOGL, AMZN, TSLA)
-- 포지션: 최대 5종목 동시 보유 (슬롯 여유 있고 조건 되면 매수 적극 권장)
-- 익절: +5% / 손절: -3% (단기 스윙)
-- RSI 35 이하 = 과매도 → 반등 매수 기회로 적극 고려
-- RSI 65 이상 + score < 0 = 과매수 주의
-- ADX 15+ = 추세 있음 → BUY 조건 충족 시 적극 진입
-- 기술적 score -30 이하이면 매도 우선
-- 하락장/변동성 구간에서도 개별 종목 기술적 반등은 유효함. 시장 전체 비관론으로 전 종목 HOLD하지 말 것.
-- 🚀모멘텀(당일강세) 표시 종목: 이미 강하게 상승 중 → 추세 추종 매수 적극 고려 (RSI 72 미만이면 과매수 아님)
-- 일중 위치가 높다(70%+)는 것은 당일 강세 지속 신호일 수 있음 (고점 돌파 모멘텀)
-- 5종목 미만 보유이고 조건 충족 종목이 있으면 최소 1개는 BUY 권장
+【역할 분담】
+- 손절(-3%), 하드익절(+10%), 트레일링 스탑은 시스템이 자동 처리합니다.
+- 당신의 역할: ① 진입 타이밍(BUY) ② 모멘텀 약화 시 선제 청산(SELL) ③ 관망(HOLD)
 
-반드시 JSON 배열로만 응답하세요:
-[{"code":"AAPL","action":"BUY","confidence":0.75,"reasoning":"RSI 32 과매도 반등, ADX 22 상승 추세"},...]
+【BUY 조건 — 미보유 종목만】
+- RSI 38 이하 과매도 구간에서 기술 반등 신호(ADX 15+)
+- 🚀모멘텀 종목: 당일 강하게 상승 중 + ADX 강세 → 추세 추종 진입 (RSI 73 미만이면 과매수 아님)
+- 슬롯·현금 여유 있고 위 조건 충족 시 적극 BUY 권장
 
-action은 BUY/SELL/HOLD 중 하나. confidence는 0.0~1.0.
-보유 중 종목에 SELL이면 즉시 청산 의미.
-이미 보유 중인 종목은 BUY 금지.`;
+【SELL 조건 — 보유 종목만】
+- PnL +5% 이상 표시 종목: 모멘텀이 꺾였으면(RSI 하락, ADX 약화, score 급락) SELL
+- 전체 시장 하락 국면에서 손실 중인 보유종목 선제 정리 가능
+- score -25 이하로 급락 시 SELL
+
+【주의】
+- 시장 전체 분위기로 전 종목 HOLD 금지 — 개별 종목 기준으로 판단
+- 보유 종목에 BUY 금지 / 비보유 종목에 SELL 금지
+
+반드시 JSON 배열로만 응답:
+[{"code":"AAPL","action":"BUY","confidence":0.75,"reasoning":"RSI 33 과매도, ADX 21 상승추세 확인"}]
+confidence: 0.0~1.0 (확신 낮으면 낮게)`;
 
 /**
  * Claude에게 미국주식 매매 판단을 요청
@@ -62,6 +64,8 @@ export async function analyzeOverseasWithAI(
   stocks: OverseasStockInput[],
   availableCash: number,
   holdingCount: number,
+  perfSummary?: string,
+  userInsights?: string,
 ): Promise<OverseasAIDecision[]> {
   const anthropic = getAnthropic();
   if (!anthropic) {
@@ -69,7 +73,7 @@ export async function analyzeOverseasWithAI(
     return [];
   }
 
-  const context = buildContext(stocks, availableCash, holdingCount);
+  const context = buildContext(stocks, availableCash, holdingCount, perfSummary, userInsights);
 
   const MAX_RETRIES = 2;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -107,25 +111,26 @@ export async function analyzeOverseasWithAI(
   return [];
 }
 
-function buildContext(stocks: OverseasStockInput[], cash: number, holdingCount: number): string {
+function buildContext(stocks: OverseasStockInput[], cash: number, holdingCount: number, perfSummary?: string, userInsights?: string): string {
   const now = new Date();
   const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
   const timeStr = `${kst.getUTCHours()}:${String(kst.getUTCMinutes()).padStart(2, '0')} KST`;
 
   const lines = stocks.map(s => {
-    const holding = s.isHolding ? ` [보유중 PnL=${s.holdingPnlPct?.toFixed(1)}%]` : '';
-    const momentum = s.isMomentum ? ' 🚀모멘텀(당일강세)' : '';
+    const pnl = s.isHolding ? s.holdingPnlPct?.toFixed(1) : null;
+    const softZone = s.isHolding && (s.holdingPnlPct ?? 0) >= 5 ? ' ⚠️소프트익절구간' : '';
+    const holding = s.isHolding ? ` [보유 PnL=${pnl}%${softZone}]` : '';
+    const momentum = s.isMomentum ? ' 🚀모멘텀' : '';
     const range = s.dayRangePct != null ? ` 일중${s.dayRangePct.toFixed(0)}%` : '';
-    return `${s.code}(${s.name}): $${s.currentPrice} ${s.changePct >= 0 ? '+' : ''}${s.changePct.toFixed(2)}%${range} | RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)} score=${s.score} signal=${s.signal}${momentum}${holding}`;
+    return `${s.code}: $${s.currentPrice} ${s.changePct >= 0 ? '+' : ''}${s.changePct.toFixed(2)}%${range} | RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)} score=${s.score} signal=${s.signal}${momentum}${holding}`;
   });
 
-  return [
-    `시각: ${timeStr} | 가용현금: $${cash.toFixed(0)} | 현재보유: ${holdingCount}종목 (최대 5종목)`,
-    '',
-    '=== 종목 현황 ===',
-    ...lines,
-    '',
-    '위 종목들에 대해 JSON 배열로 BUY/SELL/HOLD 판단을 내려주세요.',
-    '가용현금이 $200 미만이면 BUY 금지. 이미 5종목 보유 시 BUY 금지.',
-  ].join('\n');
+  const canBuy = cash >= 200 && holdingCount < 7;
+  const parts = [
+    `시각: ${timeStr} | 현금: $${cash.toFixed(0)} | 보유: ${holdingCount}/7종목 | 매수가능: ${canBuy ? '예' : '아니오(현금부족 또는 만석)'}`,
+  ];
+  if (perfSummary) parts.push(`📊 ${perfSummary} — 이 실적을 바탕으로 더 정확한 판단을 내려주세요.`);
+  if (userInsights) parts.push(`\n💡 운영자 인사이트: ${userInsights}`);
+  parts.push('', ...lines, '', 'BUY/SELL/HOLD 판단을 JSON 배열로 출력하세요.');
+  return parts.join('\n');
 }

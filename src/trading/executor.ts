@@ -150,8 +150,10 @@ export class TradeExecutor {
       gatedQuantity = gateResult.adjustedQuantity ?? quantity;
     } catch (e) {
       const errMsg = (e as Error).message;
-      logger.warn(`게이트 에러 (통과 처리): ${errMsg}`, { component: 'EXECUTOR' });
-      await logSystem('WARN', 'EXECUTOR', `게이트 오류 (통과): ${stockCode} - ${errMsg}`);
+      // fail-closed: 게이트 장애 시 매수 허용하면 리스크 통제 우회 — 차단이 안전
+      logger.warn(`게이트 에러 (매수 차단): ${errMsg}`, { component: 'EXECUTOR' });
+      await logSystem('WARN', 'EXECUTOR', `게이트 오류 (차단): ${stockCode} - ${errMsg}`);
+      return;
     }
 
     // 리스크 체크
@@ -355,6 +357,7 @@ export class TradeExecutor {
 
       const closeReason = action === 'FORCE_CLOSE' ? `강제 청산: ${reasoning}` : `매도: ${reasoning}`;
       const avgBuy = Number(chain.avg_buy_price) || 0;
+      const pnlKrw = avgBuy > 0 ? Math.round((fill.filledPrice - avgBuy) * soldQty) : 0;
       const pnlPct = avgBuy > 0 ? ((fill.filledPrice - avgBuy) / avgBuy) * 100 : 0;
       if (soldQty >= chain.total_quantity) {
         await chainManager.closeChain(chain.id, fill.filledPrice, chain, closeReason);
@@ -363,6 +366,18 @@ export class TradeExecutor {
       }
       invalidateStockCache(stockCode).catch(() => {});
       notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, closeReason).catch(() => {});
+
+      // 🍽️ 개장 초단타 용돈 알림: 수익 5만원 이상 시 텔레그램 알림
+      if (pnlKrw >= 50000 && reasoning.includes('초단타')) {
+        import('../notifications/telegram.js').then(({ sendTelegramMessage }) => {
+          sendTelegramMessage(
+            `🍽️ *개장 초단타 용돈 벌었습니다!*\n\n` +
+            `종목: ${stockCode}\n` +
+            `수익: +${pnlKrw.toLocaleString()}원 (+${pnlPct.toFixed(2)}%)\n` +
+            `저녁 식사비로 입금 확인해 주세요 😄`,
+          );
+        }).catch(() => {});
+      }
     }
   }
 

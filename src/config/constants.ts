@@ -80,15 +80,15 @@ export const STRATEGY_PARAMS = {
     marketPenalty: -30, // 하락장 감점
   },
   SCALPING: {
-    buyThreshold: 65, // 단타 — 장 시작 5분 황금 타임 활용, 진입 기준 약간 완화
-    splitCount: 2, // 2분할 매수 (리스크 분산)
-    averageDownPct: 0, // 물타기 없음
+    buyThreshold: 68, // 개장 5분 — 모멘텀 종목 빠른 포착, 진입 임계치 완화
+    splitCount: 1, // 전액 즉시 진입 (분할 불필요, 5분 안에 끝냄)
+    averageDownPct: 0, // 물타기 절대 없음
     maxAveragingCount: 0,
-    takeProfitPct: 1.5, // +1.5% 즉시 익절 (수수료 0.21% 제외 실수익 ~1.3%)
+    takeProfitPct: 2.0, // +2% 즉시 전량 익절 (수수료 0.25% 제외 실수익 ~1.75%)
     takeProfitRatio: 1.0, // 전량 매도
-    stopLossPct: -1.5, // -1.5% 칼손절 (수수료 포함 실손실 ~1.7%)
+    stopLossPct: -1.0, // -1% 칼손절 (수수료 포함 실손실 ~1.25%) — 손익비 2:1 유지
     maxHoldingDays: 0, // 당일 청산 필수
-    forceCloseTime: '15:20', // 오버나잇 금지
+    forceCloseTime: '09:10', // 09:10 이후 보유 금지 — 강제 청산
   },
 } as const;
 

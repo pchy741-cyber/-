@@ -101,6 +101,29 @@ overseasRoutes.get('/overseas/price/:code', async (c) => {
   }
 });
 
+// 운영자 인사이트 조회/저장
+overseasRoutes.get('/overseas/insights', async (c) => {
+  try {
+    const { getUserInsights } = await import('../../scheduler/overseas-job.js');
+    const text = await getUserInsights();
+    return c.json({ insights: text });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+overseasRoutes.put('/overseas/insights', async (c) => {
+  try {
+    const body = await c.req.json();
+    const text = String(body.insights ?? '').trim();
+    const { setUserInsights } = await import('../../scheduler/overseas-job.js');
+    await setUserInsights(text);
+    return c.json({ ok: true });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
 // 개별 종목 일봉 차트
 overseasRoutes.get('/overseas/chart/:code', async (c) => {
   const code = c.req.param('code');

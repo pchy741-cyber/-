@@ -707,6 +707,14 @@ function PerformancePanel({ trades, strategy, setStrategy, toast }: { trades: an
 function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, strategy, setStrategy, toast, onRefresh }: any) {
   const [showPortfolio, setShowPortfolio] = React.useState(false);
   const [holdingsTab, setHoldingsTab] = React.useState<'KR' | 'US'>('KR');
+  const [usInsights, setUsInsights] = React.useState('');
+  const [insightsDraft, setInsightsDraft] = React.useState('');
+  const [insightsSaving, setInsightsSaving] = React.useState(false);
+  React.useEffect(() => {
+    api('/overseas/insights').then((r: any) => {
+      if (r?.insights != null) { setUsInsights(r.insights); setInsightsDraft(r.insights); }
+    }).catch(() => {});
+  }, []);
   const p = dash?.portfolio;
   const os = dash?.overseas; // 해외 보유 데이터
   const stockNameMap = new Map((watchlist ?? []).map((w: any) => [w.stock_code, w.stock_name]));
@@ -780,7 +788,10 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
     new Date(t.created_at).toDateString() === todayStr
   );
   const usTabPnlUsd = usTodaySells.reduce((sum: number, t: any) => {
-    const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
+    // overseas orders have chain_id=null so transaction_chains is always null.
+    // avg_buy_price is encoded in ai_reasoning as "[avgBuy:123.4567] ..."
+    const reasoningMatch = String(t.ai_reasoning ?? '').match(/\[avgBuy:([\d.]+)\]/);
+    const avgBuy = reasoningMatch ? Number(reasoningMatch[1]) : (Number(t.transaction_chains?.avg_buy_price) || 0);
     const filledPx = Number(t.filled_price) || 0;
     const qty = Number(t.quantity) || 0;
     return avgBuy > 0 && filledPx > 0 ? sum + (filledPx - avgBuy) * qty : sum;
@@ -1110,6 +1121,37 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                 <p className="text-[11px] text-slate-600">🇯🇵 09:00~15:00 · 🇹🇼 10:00~14:30 · 🇺🇸 23:30~06:30</p>
               </div>
             )}
+            {/* 운영자 인사이트 입력 */}
+            <div className="border-t border-white/[0.04] px-4 py-3">
+              <div className="text-[11px] text-slate-500 mb-1.5 font-medium">💡 AI 인사이트 메모 <span className="text-slate-600">(다음 사이클에 AI에게 전달됩니다)</span></div>
+              <textarea
+                value={insightsDraft}
+                onChange={e => setInsightsDraft(e.target.value)}
+                placeholder="예: 미국 연준 금리 동결 예상, 반도체 섹터 주목 등 시장 상황을 자유롭게 입력하세요"
+                rows={2}
+                className="w-full bg-slate-800/60 border border-slate-700/50 rounded-xl px-3 py-2 text-xs text-slate-300 placeholder:text-slate-600 focus:border-blue-500/50 focus:outline-none resize-none"
+              />
+              <div className="flex items-center justify-between mt-1.5">
+                {usInsights && insightsDraft === usInsights
+                  ? <span className="text-[10px] text-emerald-500/70">✓ 저장됨</span>
+                  : <span className="text-[10px] text-slate-600">{insightsDraft.length > 0 ? '미저장' : ''}</span>}
+                <button
+                  disabled={insightsSaving || insightsDraft === usInsights}
+                  onClick={async () => {
+                    setInsightsSaving(true);
+                    try {
+                      await api('/overseas/insights', { method: 'PUT', body: JSON.stringify({ insights: insightsDraft }) });
+                      setUsInsights(insightsDraft);
+                      toast?.('인사이트 저장됨', 'success');
+                    } catch { toast?.('저장 실패', 'error'); }
+                    setInsightsSaving(false);
+                  }}
+                  className="text-[11px] px-3 py-1 bg-blue-600/70 hover:bg-blue-500/70 disabled:bg-slate-700 disabled:text-slate-500 rounded-lg transition-all"
+                >
+                  {insightsSaving ? '저장중...' : '저장'}
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>

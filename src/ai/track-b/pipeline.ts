@@ -59,7 +59,17 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       return [];
     }
 
-    const mode = (strategy?.mode ?? 'SWING') as StrategyMode;
+    // ─── 개장 초단타 모드: 09:00~09:10 자동 강제 적용 ─────────────────
+    // 개장 직후 5분은 거래량 폭발 + 이목 집중 구간 — SCALPING 전략 강제
+    const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    const kstH = nowKst.getUTCHours();
+    const kstM = nowKst.getUTCMinutes();
+    const isOpeningBell = kstH === 9 && kstM < 10; // 09:00~09:09
+    const dbMode = (strategy?.mode ?? 'SWING') as StrategyMode;
+    const mode: StrategyMode = (isOpeningBell && dbMode !== 'DEFENSE') ? 'SCALPING' : dbMode;
+    if (isOpeningBell && mode === 'SCALPING') {
+      logger.info('🔔 개장 초단타 모드 자동 활성화 (09:00~09:10) — SCALPING +2% 즉시 익절', { component: 'TRACK_B' });
+    }
 
     // ─── 방어 파킹 시스템 ───────────────────────────────────────────────
     // 하락장 감지 시 전종목 청산 → KODEX 200 파킹 / 회복 시 자동 복귀
@@ -247,7 +257,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           maxPositionKrw: config.risk.maxPositionKrw,
           totalAssets: totalAssetsForTech,
           lossBlockedCodes: recentLossCodes,
-          aiScores: scores.map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
+          // 신뢰도 0.6 미만 = LLM 폴백 점수 — 기술 판단에 주입 금지 (신호 품질 저하 방지)
+          aiScores: scores
+            .filter((s: any) => (s.confidence ?? 1) >= 0.6)
+            .map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
           takeProfitPct: strategy?.take_profit_pct ?? undefined,
           stopLossPct: strategy?.stop_loss_pct ?? undefined,
           buyThreshold: strategy?.buy_threshold ?? undefined,
@@ -269,7 +282,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           maxPositionKrw: config.risk.maxPositionKrw,
           totalAssets: totalAssetsForTech,
           lossBlockedCodes: recentLossCodes,
-          aiScores: scores.map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
+          // 신뢰도 0.6 미만 = LLM 폴백 점수 — 기술 판단에 주입 금지 (신호 품질 저하 방지)
+          aiScores: scores
+            .filter((s: any) => (s.confidence ?? 1) >= 0.6)
+            .map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
           takeProfitPct: strategy?.take_profit_pct ?? undefined,
           stopLossPct: strategy?.stop_loss_pct ?? undefined,
           buyThreshold: strategy?.buy_threshold ?? undefined,
@@ -309,7 +325,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       // 파킹 잔액 + 신규 파킹 대상이 전체의 30% 이하일 때만 추가 파킹 (무한 파킹 방지)
       const canParkMore = idleParkPct < 30;
 
-      if (idlePctAfterBuys > 10 && !alreadyIdleParked && canParkMore) {
+      // aiAllHold: AI가 명시적으로 전부 HOLD → 신규 파킹 BUY도 차단 (과매매 방지)
+      if (idlePctAfterBuys > 10 && !alreadyIdleParked && canParkMore && !aiAllHold) {
         const parkPrice = livePrices.get(IDLE_PARK_CODE);
         if (parkPrice && parkPrice.currentPrice > 0) {
           // 매수 후 남은 현금의 85%를 파킹 (15%는 긴급 매수 여유분)
