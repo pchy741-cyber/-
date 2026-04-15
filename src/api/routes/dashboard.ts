@@ -19,11 +19,16 @@ import { fetchAnalystConsensus } from '../../automation/analyst-consensus.js';
 import { getMacroSnapshot } from '../../automation/macro-data.js';
 import { logger } from '../../utils/logger.js';
 import { getOverseasScores } from '../../cache/overseas-scores.js';
+import { getAiStatus } from '../../cache/ai-status.js';
 
 export const dashboardRoutes = new Hono();
 
 // ── 환율 캐시 (1시간 TTL, 실패 시 1420 폴백) ──
 let _fxCache = { rate: 1420, fetchedAt: 0 };
+
+// ── 뉴스 요약 캐시 (30분 TTL) ──
+let _newsSummaryCache = { summary: '', fetchedAt: 0 };
+const NEWS_SUMMARY_TTL = 30 * 60 * 1000;
 const GARBLED_NAME_REGEX = /[^\w\s\uAC00-\uD7A3\u3131-\u318E\u1100-\u11FF().,·\-+%$]/;
 const KNOWN_GLOBAL_STOCK_NAMES: Record<string, string> = {
   AAPL: 'Apple',
@@ -1043,39 +1048,44 @@ dashboardRoutes.get('/news/macro', async (c) => {
   }
 });
 
-// ── 매크로 뉴스 AI 한 줄 요약 (Claude haiku) ──
+// ── 매크로 뉴스 AI 한 줄 요약 (Gemini 2.0 Flash — 무료 티어) ──
 dashboardRoutes.get('/news/summary', async (c) => {
   try {
+    // 30분 캐시 — 반복 호출 시 API 절약 + 타임아웃 방지
+    if (_newsSummaryCache.summary && Date.now() - _newsSummaryCache.fetchedAt < NEWS_SUMMARY_TTL) {
+      return c.json({ summary: _newsSummaryCache.summary });
+    }
+
     const { collectMacroNews } = await import('../../automation/news-collector.js');
+    // RSS 피드 최대 10s × 7개 allSettled + 여유 → 28s 타임아웃
     const raw = await Promise.race([
       collectMacroNews(),
-      new Promise<string>((resolve) => setTimeout(() => resolve(''), 12000)),
+      new Promise<string>((resolve) => setTimeout(() => resolve(''), 28000)),
     ]);
     if (!raw) return c.json({ summary: '' });
 
-    const key = config.ai.anthropicKey || process.env.ANTHROPIC_API_KEY;
-    if (!key) return c.json({ summary: '' });
+    const geminiKey = config.ai.geminiKey || process.env.GEMINI_API_KEY;
+    if (!geminiKey || geminiKey.startsWith('your_') || geminiKey.length < 10) return c.json({ summary: '' });
 
-    const { Anthropic } = await import('@anthropic-ai/sdk');
-    const client = new Anthropic({ apiKey: key });
+    const { GoogleGenerativeAI } = await import('@google/generative-ai');
+    const genAI = new GoogleGenerativeAI(geminiKey);
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash', generationConfig: { temperature: 0.2 } });
 
     const headlines = raw.split('\n').filter(l => l.startsWith('- [')).map(l => {
       const m = l.match(/^\- \[(.+?)\]\(.+?\)\s*—\s*(.+)$/);
       return m ? `${m[1]} (${m[2]})` : l.replace(/^- /, '');
     }).join('\n');
 
-    const res = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 400,
-      messages: [{
-        role: 'user',
-        content: `아래는 오늘 글로벌 금융 뉴스 헤드라인입니다. 주식 투자에 영향을 미치는 핵심 내용만 뽑아서 한국어로 자연스럽게 2~3문장으로 요약해 주세요. 투자자 관점에서 오늘 시장 분위기와 주요 이슈를 간결하게 서술하세요.\n\n${headlines}`,
-      }],
-    });
+    const res = await model.generateContent(
+      `아래는 오늘 글로벌 금융 뉴스 헤드라인입니다. 주식 투자에 영향을 미치는 핵심 내용만 뽑아서 한국어로 자연스럽게 2~3문장으로 요약해 주세요. 투자자 관점에서 오늘 시장 분위기와 주요 이슈를 간결하게 서술하세요.\n\n${headlines}`,
+    );
 
-    const summary = (res.content[0] as any)?.text ?? '';
+    const summary = res.response.text() ?? '';
+    // 캐시 업데이트
+    if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now() };
     return c.json({ summary });
-  } catch {
+  } catch (err) {
+    logger.error('뉴스 요약 생성 실패', { error: String(err), component: 'NEWS_SUMMARY' });
     return c.json({ summary: '' });
   }
 });
@@ -1176,6 +1186,10 @@ dashboardRoutes.get('/trading-status', async (c) => {
 });
 
 // ── 시스템 로그 ──
+dashboardRoutes.get('/ai-status', (c) => {
+  return c.json(getAiStatus());
+});
+
 dashboardRoutes.get('/logs', async (c) => {
   const limit = Number(c.req.query('limit') ?? 100);
   const component = c.req.query('component');

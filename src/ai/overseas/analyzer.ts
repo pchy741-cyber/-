@@ -1,11 +1,11 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { config } from '../../config/index.js';
 import { logger } from '../../utils/logger.js';
 
-function getAnthropic(): Anthropic | null {
-  const key = config.ai.anthropicKey || process.env.ANTHROPIC_API_KEY;
-  if (!key || key.startsWith('your_')) return null;
-  return new Anthropic({ apiKey: key });
+function getGenAI(): GoogleGenerativeAI | null {
+  const key = config.ai.geminiKey || process.env.GEMINI_API_KEY;
+  if (!key || key.startsWith('your_') || key.length < 10) return null;
+  return new GoogleGenerativeAI(key);
 }
 
 export interface OverseasStockInput {
@@ -57,8 +57,7 @@ const SYSTEM_PROMPT = `당신은 미국·아시아 대형주 단기 스윙 트�
 confidence: 0.0~1.0 (확신 낮으면 낮게)`;
 
 /**
- * Claude에게 미국주식 매매 판단을 요청
- * Track B 방식과 동일하게 structured JSON 반환
+ * Gemini 2.0 Flash로 미국주식 매매 판단 (Claude Sonnet 대체 — 무료 티어)
  */
 export async function analyzeOverseasWithAI(
   stocks: OverseasStockInput[],
@@ -67,26 +66,27 @@ export async function analyzeOverseasWithAI(
   perfSummary?: string,
   userInsights?: string,
 ): Promise<OverseasAIDecision[]> {
-  const anthropic = getAnthropic();
-  if (!anthropic) {
-    logger.warn('Anthropic 키 없음 — AI 분석 스킵, 기술적 지표만 사용', { component: 'OVERSEAS_AI' });
+  const genAI = getGenAI();
+  if (!genAI) {
+    logger.warn('Gemini 키 없음 — AI 분석 스킵, 기술적 지표만 사용', { component: 'OVERSEAS_AI' });
     return [];
   }
 
   const context = buildContext(stocks, availableCash, holdingCount, perfSummary, userInsights);
 
+  const model = genAI.getGenerativeModel({
+    model: 'gemini-2.0-flash',
+    generationConfig: {
+      temperature: 0.1,
+    },
+  });
+
   const MAX_RETRIES = 2;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const response = await anthropic.messages.create({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1024,
-        temperature: 0.1,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: context }],
-      });
+      const result = await model.generateContent([SYSTEM_PROMPT, context]);
+      const text = result.response.text();
 
-      const text = response.content.find(b => b.type === 'text')?.text ?? '';
       const jsonMatch = text.match(/\[[\s\S]*\]/);
       if (!jsonMatch) throw new Error('JSON 배열 없음');
 

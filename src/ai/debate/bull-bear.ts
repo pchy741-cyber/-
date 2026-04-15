@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import type { TechnicalSummary } from '../../analysis/indicators.js';
 import { config } from '../../config/index.js';
 import { logSystem } from '../../db/client.js';
@@ -6,9 +6,10 @@ import type { AIScore } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 
-function getAnthropic(): Anthropic {
-  const key = config.ai.anthropicKey || process.env.ANTHROPIC_API_KEY;
-  return new Anthropic({ apiKey: key || '' });
+function getGenAI(): GoogleGenerativeAI | null {
+  const key = config.ai.geminiKey || process.env.GEMINI_API_KEY;
+  if (!key || key.startsWith('your_') || key.length < 10) return null;
+  return new GoogleGenerativeAI(key);
 }
 
 /**
@@ -133,22 +134,30 @@ JSON 형식으로 응답: {"final_arguments": ["최종논거1", "최종논거2"]
 // ── AI 에이전트 호출 ──
 
 async function callAgent(role: 'BULL' | 'BEAR', prompt: string): Promise<{ arguments: string[]; conviction: number }> {
+  const genAI = getGenAI();
+  if (!genAI) {
+    logger.warn(`${role} 에이전트: Gemini 키 없음`, { component: 'DEBATE' });
+    return { arguments: ['분석 불가'], conviction: 50 };
+  }
+
   try {
-    const response = await getAnthropic().messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
-      temperature: role === 'BULL' ? 0.3 : 0.4, // Bear를 약간 더 보수적으로
-      system:
-        role === 'BULL'
-          ? '당신은 월가의 낙관적 애널리스트입니다. 매수 기회를 적극적으로 찾되, 근거 없는 낙관은 금지합니다. 반드시 JSON으로만 응답하세요.'
-          : '당신은 월가의 비관적 리스크 매니저입니다. 모든 리스크를 날카롭게 지적하되, 근거 없는 비관은 금지합니다. 반드시 JSON으로만 응답하세요.',
-      messages: [{ role: 'user', content: prompt }],
+    const systemInstruction =
+      role === 'BULL'
+        ? '당신은 월가의 낙관적 애널리스트입니다. 매수 기회를 적극적으로 찾되, 근거 없는 낙관은 금지합니다. 반드시 JSON으로만 응답하세요.'
+        : '당신은 월가의 비관적 리스크 매니저입니다. 모든 리스크를 날카롭게 지적하되, 근거 없는 비관은 금지합니다. 반드시 JSON으로만 응답하세요.';
+
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.0-flash',
+      systemInstruction,
+      generationConfig: {
+        temperature: role === 'BULL' ? 0.3 : 0.4,
+      },
     });
 
-    const text = response.content.find((b) => b.type === 'text');
-    if (!text || text.type !== 'text') throw new Error('No text response');
+    const result = await model.generateContent(prompt);
+    const text = result.response.text();
 
-    const json = text.text.match(/\{[\s\S]*\}/)?.[0];
+    const json = text.match(/\{[\s\S]*\}/)?.[0];
     if (!json) throw new Error('No JSON found');
 
     const parsed = JSON.parse(json);
@@ -169,17 +178,22 @@ async function callJudge(
   bullFinal: { arguments: string[]; conviction: number },
   context: string,
 ): Promise<{ verdict: DebateResult['finalVerdict']; confidence: number; reasoning: string }> {
+  const genAI = getGenAI();
+  if (!genAI) {
+    return { verdict: 'HOLD', confidence: 0.3, reasoning: 'Gemini 키 없음 → 안전하게 HOLD' };
+  }
+
   try {
-    const response = await getAnthropic().messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
-      temperature: 0.1, // 판사는 최대한 객관적
-      system:
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.0-flash',
+      systemInstruction:
         '당신은 공정한 투자 심판입니다. Bull과 Bear 양측의 논거를 객관적으로 평가하여 최종 판결을 내리세요. 감정이 아닌 데이터와 논리만으로 판단합니다. 반드시 JSON으로만 응답하세요.',
-      messages: [
-        {
-          role: 'user',
-          content: `## ${stockName} 투자 토론 판결
+      generationConfig: {
+        temperature: 0.1,
+      },
+    });
+
+    const judgePrompt = `## ${stockName} 투자 토론 판결
 
 ${context}
 
@@ -192,15 +206,12 @@ ${bull.arguments.map((a, i) => `${i + 1}. ${a}`).join('\n')}
 ${bear.arguments.map((a, i) => `${i + 1}. ${a}`).join('\n')}
 
 양측 논거를 종합하여 판결하세요.
-JSON 형식: {"verdict": "STRONG_BUY|BUY|HOLD|SELL|STRONG_SELL", "confidence": 0.0~1.0, "reasoning": "판결 이유 2줄"}`,
-        },
-      ],
-    });
+JSON 형식: {"verdict": "STRONG_BUY|BUY|HOLD|SELL|STRONG_SELL", "confidence": 0.0~1.0, "reasoning": "판결 이유 2줄"}`;
 
-    const text = response.content.find((b) => b.type === 'text');
-    if (!text || text.type !== 'text') throw new Error('No text');
+    const result = await model.generateContent(judgePrompt);
+    const text = result.response.text();
 
-    const json = text.text.match(/\{[\s\S]*\}/)?.[0];
+    const json = text.match(/\{[\s\S]*\}/)?.[0];
     if (!json) throw new Error('No JSON');
 
     const parsed = JSON.parse(json);

@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { cacheScores } from '../../cache/redis.js';
 import { getActiveStrategy, getActiveWatchlist, getRecentSources, logSystem, upsertAIScore } from '../../db/client.js';
 import { type DailyCandle, getDailyChart } from '../../kis/market.js';
@@ -121,18 +121,18 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       }
     }
 
-    // Step 5-3: Gemini 스코어링 실패 → Claude 통합 분석 (2순위)
+    // Step 5-3: Gemini 스코어링 실패 → Gemini Flash 통합 분석 (2순위 폴백)
     if (scores.length === 0) {
       try {
         scores = await runClaudeAnalysis(mode, watchlist, chartData, strategy);
-      } catch (claudeErr) {
-        logger.warn(`⚠️ Claude 폴백 실패: ${claudeErr}`, { component: 'TRACK_A' });
+      } catch (flashErr) {
+        logger.warn(`⚠️ Gemini Flash 폴백 실패: ${flashErr}`, { component: 'TRACK_A' });
       }
     }
 
-    // Step 5-4: GPT/Claude 모두 실패 → Gemini 분석 + 기술적 지표로 스코어 생성
+    // Step 5-4: 모두 실패 → 기술적 지표로 스코어 생성
     if (scores.length === 0) {
-      logger.info('⚙️ GPT/Claude 모두 실패 → 기술적 지표 기반 스코어 생성', { component: 'TRACK_A' });
+      logger.info('⚙️ AI 모두 실패 → 기술적 지표 기반 스코어 생성', { component: 'TRACK_A' });
       const { analyzeTechnicals } = await import('../../analysis/indicators.js');
       scores = watchlist.map((w) => {
         const candles = chartData.get(w.stock_code) ?? [];
@@ -229,7 +229,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
 }
 
 /**
- * Claude 통합 분석+스코어링 (Gemini/GPT 실패 시 폴백)
+ * Gemini Flash 통합 분석+스코어링 (Gemini 스코어링 실패 시 폴백 — 무료 티어)
  */
 async function runClaudeAnalysis(
   mode: string,
@@ -237,12 +237,12 @@ async function runClaudeAnalysis(
   chartData: Map<string, DailyCandle[]>,
   strategy: any,
 ): Promise<ScoringResult[]> {
-  const key = config.ai.anthropicKey || process.env.ANTHROPIC_API_KEY;
-  if (!key || key.startsWith('your_')) {
-    logger.warn('Anthropic API 키 미설정 — Track A Claude 분석 스킵', { component: 'TRACK_A' });
+  const key = config.ai.geminiKey || process.env.GEMINI_API_KEY;
+  if (!key || key.startsWith('your_') || key.length < 10) {
+    logger.warn('Gemini API 키 미설정 — Track A 폴백 분석 스킵', { component: 'TRACK_A' });
     return [];
   }
-  const anthropic = new Anthropic({ apiKey: key });
+  const genAI = new GoogleGenerativeAI(key);
 
   const chartSummary = watchlist.map((stock) => {
     const candles = chartData.get(stock.stock_code) ?? [];
@@ -259,14 +259,17 @@ async function runClaudeAnalysis(
 
   const ceoPrompt = strategy?.gemini_prompt || strategy?.gpt_prompt || '';
 
-  logger.info(`Claude 통합 분석 시작 (${watchlist.length}개 종목, 모드: ${mode})`, { component: 'TRACK_A' });
+  logger.info(`Gemini Flash 통합 분석 시작 (${watchlist.length}개 종목, 모드: ${mode})`, { component: 'TRACK_A' });
 
-  const response = await anthropic.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 2048,
-    messages: [{
-      role: 'user',
-      content: `당신은 주식 분석+스코어링 전문가입니다. 아래 차트 데이터를 분석하여 종목별 점수를 매겨주세요.
+  const model = genAI.getGenerativeModel({
+    model: 'gemini-2.0-flash',
+    generationConfig: {
+      responseMimeType: 'application/json',
+      temperature: 0.2,
+    },
+  });
+
+  const prompt = `당신은 주식 분석+스코어링 전문가입니다. 아래 차트 데이터를 분석하여 종목별 점수를 매겨주세요.
 
 ## 모드: ${mode}
 ${ceoPrompt ? `## CEO 지시사항\n${ceoPrompt}\n` : ''}
@@ -284,15 +287,14 @@ ${ceoPrompt ? `## CEO 지시사항\n${ceoPrompt}\n` : ''}
 ${chartSummary}
 
 ## 출력 (JSON만, 다른 텍스트 금지)
-{"scores":[{"stock_code":"코드","stock_name":"이름","composite_score":0,"fundamental_score":0,"technical_score":0,"sentiment_score":0,"confidence":0.0,"signal":"STRONG_BUY|BUY|HOLD|SELL|STRONG_SELL|NO_DATA","target_price":0,"stop_loss_price":0,"reasoning":"근거"}]}`,
-    }],
-  });
+{"scores":[{"stock_code":"코드","stock_name":"이름","composite_score":0,"fundamental_score":0,"technical_score":0,"sentiment_score":0,"confidence":0.0,"signal":"STRONG_BUY|BUY|HOLD|SELL|STRONG_SELL|NO_DATA","target_price":0,"stop_loss_price":0,"reasoning":"근거"}]}`;
 
-  const text = response.content[0].type === 'text' ? response.content[0].text : '';
+  const result = await model.generateContent(prompt);
+  const text = result.response.text();
   const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('Claude 응답에서 JSON을 찾을 수 없습니다');
+  if (!jsonMatch) throw new Error('Gemini Flash 응답에서 JSON을 찾을 수 없습니다');
 
   const parsed = JSON.parse(jsonMatch[0]) as { scores: ScoringResult[] };
-  logger.info(`Claude 통합 분석 완료: ${parsed.scores.length}개 스코어`, { component: 'TRACK_A' });
+  logger.info(`Gemini Flash 통합 분석 완료: ${parsed.scores.length}개 스코어`, { component: 'TRACK_A' });
   return parsed.scores;
 }

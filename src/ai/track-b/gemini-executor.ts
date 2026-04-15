@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { setGeminiStatus } from '../../cache/ai-status.js';
 import { config } from '../../config/index.js';
 import { type TradeDecision, TradeDecisionSchema } from '../../db/models.js';
 import { logger } from '../../utils/logger.js';
@@ -34,7 +35,7 @@ export async function runGeminiExecution(params: {
   logger.info(`Gemini 실행 판단 시작 (모드: ${mode})`, { component: 'TRACK_B' });
 
   const model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-pro',
+    model: 'gemini-2.0-flash',
     generationConfig: {
       responseMimeType: 'application/json',
       temperature: 0.1,
@@ -83,13 +84,25 @@ export async function runGeminiExecution(params: {
         { component: 'TRACK_B' },
       );
 
+      setGeminiStatus('ok');
       return filtered;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       logger.warn(`Gemini 실행 시도 ${attempt} 실패: ${msg}`, { component: 'TRACK_B' });
-      if (attempt === MAX_RETRIES) return [];
+
+      // 무료 할당량 초과
+      if (msg.includes('quota') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429')) {
+        setGeminiStatus('quota', msg);
+        return [];
+      }
+
+      if (attempt === MAX_RETRIES) {
+        setGeminiStatus('error', msg);
+        return [];
+      }
     }
   }
 
+  setGeminiStatus('error');
   return [];
 }
