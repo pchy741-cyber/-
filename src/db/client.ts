@@ -385,6 +385,22 @@ export async function logSystem(
 
 // ── 손실 종목 쿨다운 ──
 
+/** CEO 수동 매도 후 N시간 이내 재진입 금지 종목 반환 */
+export async function getRecentManuallySoldStocks(hoursBack = 24): Promise<Set<string>> {
+  if (useMemory) return new Set();
+  try {
+    const { rows } = await getPool().query(
+      `SELECT DISTINCT stock_code FROM transaction_chains
+       WHERE status = 'CLOSED'
+         AND close_reason = 'CEO 수동 매도'
+         AND closed_at > NOW() - INTERVAL '${hoursBack} hours'`,
+    );
+    return new Set(rows.map((r: { stock_code: string }) => r.stock_code));
+  } catch {
+    return new Set();
+  }
+}
+
 /** 최근 N일 이내 손절 청산된 종목 코드 반환 (재진입 방지) */
 export async function getRecentLossStocks(daysBack = 14): Promise<Set<string>> {
   if (useMemory) return new Set();

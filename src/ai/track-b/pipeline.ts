@@ -2,7 +2,7 @@ import { analyzeTechnicals } from '../../analysis/indicators.js';
 import { getLearnedInsightsForPrompt } from '../../automation/self-learning.js';
 import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
 import { config } from '../../config/index.js';
-import { getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getRecentLossStocks, logSystem } from '../../db/client.js';
+import { getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getRecentLossStocks, getRecentManuallySoldStocks, logSystem } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { getBatchPrices, getDailyChart, isMarketOpen } from '../../kis/market.js';
@@ -48,13 +48,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     // 2. 데이터 로드 (병렬)
-    const [watchlist, openChains, strategy, balanceRaw, reservedWithdraw, recentLossCodes] = await Promise.all([
+    const [watchlist, openChains, strategy, balanceRaw, reservedWithdraw, recentLossCodes, manuallySoldCodes] = await Promise.all([
       getActiveWatchlist(),
       getOpenChains(),
       getActiveStrategy(),
       getAccountBalance(),
       import('../../automation/profit-withdraw.js').then(m => m.getTotalReserved()).catch(() => 0),
       getRecentLossStocks(7), // 7일 이내 실손실 종목 재진입 금지 (수수료만 있는 경우 제외)
+      getRecentManuallySoldStocks(24), // CEO 수동 매도 후 24시간 재진입 금지
     ]);
     const balance = { ...balanceRaw, reservedWithdraw } as any;
 
@@ -249,6 +250,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       // 손실 종목 재진입 금지 — AI에게도 명시
       if (recentLossCodes.size > 0) {
         context += `\n\n## 🚫 손절 쿨다운 (14일 재진입 금지)\n${[...recentLossCodes].join(', ')}\n→ 위 종목은 최근 손절 이력이 있습니다. 절대 BUY 결정 금지.`;
+      }
+      // CEO 수동 매도 쿨다운 — AI에게도 명시
+      if (manuallySoldCodes.size > 0) {
+        context += `\n\n## 🚫 CEO 수동 매도 쿨다운 (24시간 재진입 금지)\n${[...manuallySoldCodes].join(', ')}\n→ 위 종목은 CEO가 직접 매도했습니다. 절대 BUY 결정 금지.`;
       }
 
       // risk_prompt가 있으면 claude_prompt 앞에 삽입 (리스크 규칙이 매매 판단보다 우선)
@@ -554,6 +559,21 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         }
       }
     }
+    // CEO 수동 매도 쿨다운: 24시간 내 수동 매도된 종목 BUY/AVERAGE_DOWN 하드 차단
+    if (manuallySoldCodes.size > 0) {
+      const before = decisions.length;
+      decisions = decisions.filter((d) => {
+        if ((d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && d.stock_code && manuallySoldCodes.has(d.stock_code)) {
+          logger.warn(`🚫 CEO 수동 매도 쿨다운 차단: ${d.stock_code} — 24시간 재진입 금지`, { component: 'TRACK_B' });
+          return false;
+        }
+        return true;
+      });
+      if (decisions.length < before) {
+        logger.info(`🚫 수동 매도 쿨다운: ${before - decisions.length}건 BUY 차단 (${[...manuallySoldCodes].join(', ')})`, { component: 'TRACK_B' });
+      }
+    }
+
     // 현재가 없는 BUY 결정 제외 (가격 조회 불가 종목 → 매수 불가)
     const actionable = decisions.filter((d) => {
       if (d.action !== 'HOLD' && (d.action === 'BUY' || d.action === 'AVERAGE_DOWN')) {

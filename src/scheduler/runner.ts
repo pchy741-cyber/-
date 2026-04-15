@@ -217,9 +217,9 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 미체결 주문 자동 취소 — 장중 10분 간격 (Track B와 주기 통일)
+  // 미체결 주문 자동 취소 — 장중 10분 간격 (Track B :00,:10... 과 겹침 방지 → +5분 오프셋)
   cron.schedule(
-    '*/10 9-15 * * 1-5',
+    '5,15,25,35,45,55 9-15 * * 1-5',
     () => {
       runUnfilledOrderCheck().catch((e) => logger.error(`미체결 체크 실패: ${e}`, { component: 'SCHEDULER' }));
     },
@@ -258,6 +258,16 @@ export function startScheduler(): void {
     '0 12 * * 1-5',
     () => {
       autoSwitchStrategy().catch((e) => logger.error(`장세 재판단 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 12:05 — Track A 장중 분석 (오전장 결과 반영, 오후 매매 판단 업데이트)
+  cron.schedule(
+    '5 12 * * 1-5',
+    () => {
+      logger.info('⏰ Track A (장중)', { component: 'SCHEDULER' });
+      runTrackAJob().catch((e) => logger.error(`Track A 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

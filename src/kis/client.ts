@@ -1,6 +1,6 @@
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
-import { getAccessToken } from './auth.js';
+import { clearTokenCache, getAccessToken } from './auth.js';
 
 interface KISRequestOptions {
   path: string;
@@ -100,8 +100,6 @@ export const overseasRateLimiter = new RateLimiter(isPaper ? 12 : 15);
 export async function kisRequest<T = unknown>(options: KISRequestOptions): Promise<KISResponse<T>> {
   const { path, method = 'GET', trId, params, body, hashkey, useRealUrl, skipRateLimiter } = options;
 
-  const token = await getAccessToken();
-
   const baseUrl = useRealUrl ? 'https://openapi.koreainvestment.com:9443' : config.kis.baseUrl;
   const url = new URL(`${baseUrl}${path}`);
   if (params) {
@@ -112,7 +110,7 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json; charset=utf-8',
-    authorization: `Bearer ${token}`,
+    authorization: '',
     appkey: config.kis.appKey,
     appsecret: config.kis.appSecret,
     tr_id: trId,
@@ -125,6 +123,9 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
   let lastError: Error | null = null;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    // 매 시도마다 토큰 갱신 (LOGOUT 후 clearTokenCache() 시 새 토큰 발급)
+    headers.authorization = `Bearer ${await getAccessToken()}`;
+
     // Rate Limiter 대기 (해외 호출은 별도 limiter 사용 → 여기서 스킵)
     if (!skipRateLimiter) await kisRateLimiter.acquire();
 
@@ -135,7 +136,18 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
         body: body ? JSON.stringify(body) : undefined,
       });
 
-      const data = (await res.json()) as Record<string, unknown>;
+      // KIS가 토큰 만료 시 JSON 대신 평문 "LOGOUT" 반환 → 토큰 캐시 초기화 후 재시도
+      const rawText = await res.text();
+      if (rawText.trim() === 'LOGOUT') {
+        clearTokenCache();
+        if (attempt < MAX_RETRIES) {
+          logger.warn(`KIS 세션 만료 (LOGOUT), 토큰 갱신 후 재시도 ${attempt}/${MAX_RETRIES}`, { component: 'KIS' });
+          continue;
+        }
+        throw new Error('KIS 세션 만료 (LOGOUT) — 토큰 재발급 후에도 실패');
+      }
+
+      const data = JSON.parse(rawText) as Record<string, unknown>;
 
       if (!res.ok || data.rt_cd !== '0') {
         const errMsg = `KIS API 오류 [${trId}]: ${data.msg_cd} - ${data.msg1}`;
