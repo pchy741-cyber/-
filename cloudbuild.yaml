@@ -45,7 +45,7 @@ steps:
 substitutions:
   _REGION: asia-northeast3  # 서울 리전
   _REPO: quantops
-  _TAG: v0-27-0
+  _TAG: v0-28-0
 
 options:
   logging: CLOUD_LOGGING_ONLY

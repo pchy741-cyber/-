@@ -250,8 +250,11 @@ export class RiskEngine {
   /**
    * 동시 보유 종목 수 제한
    * 이미 보유 중인 종목에 대한 물타기는 허용
+   * ETF 파킹 종목(KODEX 머니마켓 333940, KODEX200 069500)은 카운트 제외
    */
   private async checkConcurrentPositions(stockCode: string): Promise<PreTradeCheckResult> {
+    // ETF 파킹 코드는 포지션 수 제한에서 제외 (운용 목적이 다름)
+    const ETF_PARK_CODES = new Set(['333940', '069500']);
     try {
       const chains = await getOpenChains();
       const existingChain = chains.find((c) => c.stock_code === stockCode);
@@ -261,12 +264,15 @@ export class RiskEngine {
         return { approved: true, reason: 'OK' };
       }
 
-      if (chains.length >= config.risk.maxConcurrentPositions) {
-        const msg = `동시 보유 종목 수 한도: ${chains.length}/${config.risk.maxConcurrentPositions}종목 — 신규 매수 차단`;
+      // ETF 파킹 종목 제외한 실제 트레이딩 포지션 수
+      const tradingChains = chains.filter((c) => !ETF_PARK_CODES.has(c.stock_code));
+
+      if (tradingChains.length >= config.risk.maxConcurrentPositions) {
+        const msg = `동시 보유 종목 수 한도: ${tradingChains.length}/${config.risk.maxConcurrentPositions}종목 — 신규 매수 차단`;
         await insertRiskEvent({
           event_type: 'CONCURRENT_LIMIT',
           severity: 'WARNING',
-          details: { stockCode, currentPositions: chains.length, limit: config.risk.maxConcurrentPositions },
+          details: { stockCode, currentPositions: tradingChains.length, limit: config.risk.maxConcurrentPositions },
           action_taken: '주문 거부',
         });
         return { approved: false, reason: msg };
@@ -364,13 +370,15 @@ export class RiskEngine {
     const currentValue = currentBalance.totalDeposit + currentBalance.totalEvalAmount;
     const dailyLoss = startValue - currentValue;
 
-    // 손실 한도 = 총 포트폴리오의 30% (동적 계산)
-    const maxDailyDrawdownKrw = Math.round(startValue * 0.3);
+    // 손실 한도 = config 설정값 우선, 없으면 총 포트폴리오의 5% (보수적 기본값)
+    const maxDailyDrawdownKrw = config.risk.maxDailyDrawdownKrw > 0
+      ? config.risk.maxDailyDrawdownKrw
+      : Math.round(startValue * 0.05);
 
     if (dailyLoss > maxDailyDrawdownKrw) {
       // Kill Switch 자동 발동!
       await activateKillSwitch(
-        `일일 손실 한도 초과: ${dailyLoss.toLocaleString()}원 > ${maxDailyDrawdownKrw.toLocaleString()}원 (총자산 ${startValue.toLocaleString()}원의 30%)`,
+        `일일 손실 한도 초과: ${dailyLoss.toLocaleString()}원 > ${maxDailyDrawdownKrw.toLocaleString()}원 (한도 설정값)`,
       );
       return {
         approved: false,
@@ -381,7 +389,7 @@ export class RiskEngine {
     // 한도의 80% 이상이면 경고
     if (dailyLoss > maxDailyDrawdownKrw * 0.8) {
       logger.warn(
-        `⚠️ 일일 손실 경고: ${dailyLoss.toLocaleString()}원 (한도의 ${((dailyLoss / maxDailyDrawdownKrw) * 100).toFixed(0)}% — 총자산의 30% 기준)`,
+        `⚠️ 일일 손실 경고: ${dailyLoss.toLocaleString()}원 (한도의 ${((dailyLoss / maxDailyDrawdownKrw) * 100).toFixed(0)}% — 설정 한도 ${maxDailyDrawdownKrw.toLocaleString()}원 기준)`,
         { component: 'RISK' },
       );
     }

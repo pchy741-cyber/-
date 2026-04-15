@@ -21,6 +21,8 @@ export function technicalFallbackDecisions(params: {
   aiScores?: Array<{ stock_code: string; score: number }>;
   /** 14일 이내 손절 종목 코드 — 재진입 금지 */
   lossBlockedCodes?: Set<string>;
+  /** 24시간 이내 CEO 수동 매도 종목 코드 — 재진입 금지 */
+  manuallySoldCodes?: Set<string>;
   /** 전체 자산 규모 (포지션 크기 동적 계산용) */
   totalAssets?: number;
   /** DB 전략 설정값 — 있으면 STRATEGY_PARAMS 하드코딩 대신 사용 */
@@ -28,7 +30,7 @@ export function technicalFallbackDecisions(params: {
   stopLossPct?: number;
   buyThreshold?: number;
 }): TradeDecision[] {
-  const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, totalAssets } = params;
+  const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, manuallySoldCodes, totalAssets } = params;
   // 포지션 규모: config 값과 자산 25% 중 큰 값 사용 (소규모 계좌에서 1~2주만 매수되는 버그 방지)
   const effectiveMaxPos = totalAssets
     ? Math.max(maxPositionKrw, Math.round(totalAssets * 0.25))
@@ -68,16 +70,16 @@ export function technicalFallbackDecisions(params: {
       }
     }
 
-    // 트레일링 스톱: 익절 후 남은 수량 — +1.5% 이하로 떨어질 때만 청산
-    // 기존: 목표의 절반(+3%) 이하 → 추세 오르는 도중 강제 청산되는 문제
-    // 변경: +1.5% 이하 → 원금 보호 수준에서만 청산, 추세 살아있으면 계속 보유
-    if (chain.status === 'PROFIT_TAKING' && pnlPct > 0 && pnlPct < 1.5) {
+    // 트레일링 스톱: PROFIT_TAKING(부분 익절 후) 남은 수량 보호
+    // pnlPct < 0.5%: 0%~+0.5% 구간 (수익 소멸) 및 0%~-2% 구간 (손절 전 조기 청산) 모두 포함
+    // 이전 버그: pnlPct > 0 조건으로 인해 0% ~ -2% 구간에서 트리거 없었음 → 수익 반납 후 손실 확대
+    if (chain.status === 'PROFIT_TAKING' && pnlPct < 0.5) {
       decisions.push({
         action: 'FORCE_CLOSE',
         stock_code: chain.stock_code,
         quantity: chain.total_quantity,
         price_type: 'MARKET',
-        reasoning: `트레일링 스톱: 익절 후 수익 소멸 +${pnlPct.toFixed(1)}% → +1.5% 이하 (원금 보호 수준 청산)`,
+        reasoning: `트레일링 스톱: 익절 후 수익 소멸 ${pnlPct.toFixed(1)}% → +0.5% 이하 (원금 보호 조기 청산)`,
         confidence: 0.85,
       });
       continue;
@@ -129,6 +131,11 @@ export function technicalFallbackDecisions(params: {
     // 14일 이내 손절 쿨다운 종목 재진입 금지
     if (lossBlockedCodes?.has(stock.stock_code)) {
       logger.info(`  🚫 ${stock.stock_code}(${stock.stock_name}): 손절 쿨다운 (14일) — 재진입 금지`, { component: 'TRACK_B' });
+      continue;
+    }
+    // 24시간 이내 CEO 수동 매도 종목 재진입 금지
+    if (manuallySoldCodes?.has(stock.stock_code)) {
+      logger.info(`  🚫 ${stock.stock_code}(${stock.stock_name}): CEO 수동 매도 쿨다운 (24h) — 재진입 금지`, { component: 'TRACK_B' });
       continue;
     }
 

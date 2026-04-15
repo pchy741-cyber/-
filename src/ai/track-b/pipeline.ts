@@ -54,7 +54,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       getActiveStrategy(),
       getAccountBalance(),
       import('../../automation/profit-withdraw.js').then(m => m.getTotalReserved()).catch(() => 0),
-      getRecentLossStocks(7), // 7일 이내 실손실 종목 재진입 금지 (수수료만 있는 경우 제외)
+      getRecentLossStocks(14), // 14일 이내 실손실 종목 재진입 금지 (수수료만 있는 경우 제외)
       getRecentManuallySoldStocks(24), // CEO 수동 매도 후 24시간 재진입 금지
     ]);
     const balance = { ...balanceRaw, reservedWithdraw } as any;
@@ -323,6 +323,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           maxPositionKrw: config.risk.maxPositionKrw,
           totalAssets: totalAssetsForHold,
           lossBlockedCodes: recentLossCodes,
+          manuallySoldCodes,
           aiScores: scores
             .filter((s: any) => (s.confidence ?? 1) >= 0.6)
             .map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
@@ -352,6 +353,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           maxPositionKrw: config.risk.maxPositionKrw,
           totalAssets: totalAssetsForTech,
           lossBlockedCodes: recentLossCodes,
+          manuallySoldCodes,
           aiScores: scores
             .filter((s: any) => (s.confidence ?? 1) >= 0.6)
             .map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
