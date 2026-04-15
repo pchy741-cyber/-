@@ -21,6 +21,10 @@ import { runGeminiExecution } from './gemini-executor.js';
 import { technicalFallbackDecisions } from './technical-fallback.js';
 import { IDLE_PARK_CODE, IDLE_PARK_NAME } from './trading-rules.js';
 
+// ── IDLE_PARK_CODE 가격 모듈 캐시 (30분 TTL — rate limit 방지) ──
+let _idleParkPriceCache: { price: number; fetchedAt: number } = { price: 0, fetchedAt: 0 };
+const IDLE_PARK_PRICE_TTL = 30 * 60 * 1000;
+
 /**
  * Track B 전체 파이프라인
  * 장중 5~15분 간격 실행
@@ -106,7 +110,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // ───────────────────────────────────────────────────────────────────
 
     // 3. 캐싱된 스코어 로드 (Redis 우선 → DB fallback)
-    const stockCodes = watchlist.map((w) => w.stock_code);
+    const stockCodes: string[] = watchlist.map((w) => w.stock_code);
     const { getCachedScores } = await import('../../cache/redis.js');
     let scores = await getCachedScores(stockCodes);
     if (scores.length === 0) {
@@ -117,9 +121,22 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       logger.warn('오늘의 AI 스코어가 없습니다 (Track A 미실행?) → 기술적 지표 fallback 진행', { component: 'TRACK_B' });
     }
 
-    // 4. 실시간 시세 수집 (열린 체인의 종목 + 방어파킹/유휴파킹 ETF 포함)
+    // 4. 실시간 시세 수집
+    // IDLE_PARK_CODE(333940)는 배치에서 제외 — 배치 rate limit 시 연쇄 실패 방지
+    // 배치보다 먼저 조회 (rate limit 여유분이 있을 때 선점)
+    if (_idleParkPriceCache.price <= 0 || Date.now() - _idleParkPriceCache.fetchedAt >= IDLE_PARK_PRICE_TTL) {
+      try {
+        const { getCurrentPrice } = await import('../../kis/market.js');
+        const pd = await getCurrentPrice(IDLE_PARK_CODE);
+        if (pd?.currentPrice > 0) {
+          _idleParkPriceCache = { price: pd.currentPrice, fetchedAt: Date.now() };
+          logger.info(`💰 333940 가격 갱신: ${pd.currentPrice.toLocaleString()}원 (30분 캐시)`, { component: 'TRACK_B' });
+        }
+      } catch { /* ignore — 직전 캐시 유지 */ }
+    }
+
     const chainStockCodes = openChains.map((c) => c.stock_code);
-    const allStockCodes = [...new Set([...stockCodes, ...chainStockCodes, PARK_STOCK_CODE, IDLE_PARK_CODE])];
+    const allStockCodes = [...new Set([...stockCodes, ...chainStockCodes, PARK_STOCK_CODE])];
     const livePrices = await getBatchPrices(allStockCodes);
 
     // 가격 캐싱 — 대시보드에서 API 실패 시 fallback용
@@ -164,9 +181,32 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const hasBuyCandidates = scores.some(
       (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[mode].buyThreshold && (s.confidence ?? 1) >= 0.6,
     );
-    const hasOpenPositions = openChains.length > 0;
-    if (!hasOpenPositions && !hasBuyCandidates) {
-      logger.info('⏭️ AI 스킵: 보유 종목 없음 + 매수 후보 없음 → 기술적 지표 fallback', { component: 'TRACK_B' });
+    const hasOpenPositions = openChains.some((c) => c.stock_code !== IDLE_PARK_CODE && Number(c.total_quantity) > 0);
+    if (!hasBuyCandidates) {
+      logger.info(`⏭️ 매수 후보 없음 → KIS 관심종목 재동기화 + 종목 확장 (보유종목 ${hasOpenPositions ? '있음' : '없음'})`, { component: 'TRACK_B' });
+      // 매수 후보 0개 → KIS 관심종목 즉시 재동기화 후 현재 사이클에 즉시 편입
+      try {
+        const { syncInterestGroups } = await import('../../kis/interest-group.js');
+        const { added } = await syncInterestGroups();
+        if (added.length > 0) {
+          logger.info(`📌 신규 ${added.length}종목 감시 편입 → 현재 사이클 즉시 분석 (${added.join(', ')})`, { component: 'TRACK_B' });
+          // 새 종목 가격 조회 후 livePrices에 추가
+          try {
+            const newPrices = await getBatchPrices(added);
+            for (const [code, price] of newPrices) {
+              livePrices.set(code, price);
+              stockCodes.push(code);
+            }
+          } catch { /* 가격 조회 실패해도 계속 */ }
+          // 새 종목 차트 조회 후 chartData에 추가
+          for (const code of added) {
+            try {
+              const candles = await getDailyChart(code, 65);
+              if (candles.length >= 30) chartData.set(code, candles);
+            } catch { /* 차트 실패해도 계속 */ }
+          }
+        }
+      } catch { /* 동기화 실패해도 파이프라인 계속 */ }
     }
 
     let decisions: TradeDecision[] = [];
@@ -215,7 +255,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         context += `\n\n## 🚫 손절 쿨다운 (14일 재진입 금지)\n${[...recentLossCodes].join(', ')}\n→ 위 종목은 최근 손절 이력이 있습니다. 절대 BUY 결정 금지.`;
       }
 
-      const execParams = { mode, context, customPrompt: strategy?.claude_prompt ?? undefined };
+      // risk_prompt가 있으면 claude_prompt 앞에 삽입 (리스크 규칙이 매매 판단보다 우선)
+      const riskBlock = strategy?.risk_prompt?.trim()
+        ? `## 🛡️ CEO 리스크 규칙 (최우선 준수)\n${strategy.risk_prompt.trim()}\n\n`
+        : '';
+      const combinedClaudePrompt = riskBlock + (strategy?.claude_prompt?.trim() ?? '');
+      const execParams = { mode, context, customPrompt: combinedClaudePrompt || undefined };
 
       // 6-1. Claude 매매 판단 (1순위)
       const hasClaudeKey = config.ai.anthropicKey && !config.ai.anthropicKey.startsWith('your_');
@@ -332,36 +377,17 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
       // 현재 파킹된 ETF 평가금액 계산 (이미 많이 파킹돼 있으면 추가 불필요)
       const idleParkChain = openChains.find((c) => c.stock_code === IDLE_PARK_CODE);
+      const cachedParkPrice = _idleParkPriceCache.price > 0 ? _idleParkPriceCache.price : 0;
       const idleParkValue = idleParkChain
-        ? (livePrices.get(IDLE_PARK_CODE)?.currentPrice ?? Number(idleParkChain.avg_buy_price ?? 0)) * Number(idleParkChain.total_quantity)
+        ? (cachedParkPrice || Number(idleParkChain.avg_buy_price ?? 0)) * Number(idleParkChain.total_quantity)
         : 0;
       const idleParkPct = totalPortfolio > 0 ? (idleParkValue / totalPortfolio) * 100 : 0;
       // 파킹 잔액이 전체의 40% 이하일 때만 추가 파킹 (무한 파킹 방지)
       const canParkMore = idleParkPct < 40;
 
-      // 현금 5% 초과 + 파킹 여유(40% 미만) 있으면 파킹
+      // 현금 5% 초과 + 파킹 여유(40% 미만) + 가격 조회 성공 → 파킹
+      const parkCurrentPrice = _idleParkPriceCache.price;
       if (idlePctAfterBuys > 5 && canParkMore) {
-        // 실시간 가격 조회 실패 시 캐시된 가격 사용 (rate limit 방어)
-        const parkPriceLive = livePrices.get(IDLE_PARK_CODE);
-        let parkCurrentPrice = parkPriceLive?.currentPrice ?? 0;
-        if (parkCurrentPrice <= 0) {
-          // 캐시 fallback
-          try {
-            const { getCachedPriceMemory } = await import('../../cache/memory.js');
-            parkCurrentPrice = getCachedPriceMemory(IDLE_PARK_CODE) ?? 0;
-          } catch { /* ignore */ }
-        }
-        if (parkCurrentPrice <= 0) {
-          // 직접 KIS API 조회 fallback (배치가격 실패 시)
-          try {
-            const { getCurrentPrice } = await import('../../kis/market.js');
-            const priceData = await getCurrentPrice(IDLE_PARK_CODE);
-            parkCurrentPrice = priceData?.currentPrice ?? 0;
-            if (parkCurrentPrice > 0) {
-              logger.info(`💰 KODEX MMF 직접 가격 조회: ${parkCurrentPrice.toLocaleString()}원`, { component: 'TRACK_B' });
-            }
-          } catch { /* ignore */ }
-        }
         if (parkCurrentPrice > 0) {
           // 매수 후 남은 현금의 85%를 파킹 (15%는 긴급 매수 여유분)
           const parkAmount = cashAfterBuys * 0.85;
@@ -390,10 +416,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       if (hasBuyDecision && alreadyIdleParked) {
         const parkChain = openChains.find((c) => c.stock_code === IDLE_PARK_CODE);
         if (parkChain && parkChain.total_quantity > 0) {
-          const parkPrice = livePrices.get(IDLE_PARK_CODE);
-          if (parkPrice && parkPrice.currentPrice > 0) {
+          // 배치에서 제외된 IDLE_PARK_CODE → 캐시 가격 사용
+          const cachedPrice = _idleParkPriceCache.price;
+          if (cachedPrice > 0) {
             const parkPnlPct = parkChain.avg_buy_price
-              ? ((parkPrice.currentPrice - Number(parkChain.avg_buy_price)) / Number(parkChain.avg_buy_price)) * 100
+              ? ((cachedPrice - Number(parkChain.avg_buy_price)) / Number(parkChain.avg_buy_price)) * 100
               : 0;
             logger.info(
               `🔄 머니마켓 파킹 해제: 매수 신호 → ${IDLE_PARK_NAME} ${parkChain.total_quantity}주 매도 (수익률 ${parkPnlPct.toFixed(2)}%)`,
