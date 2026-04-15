@@ -28,7 +28,7 @@ let _fxCache = { rate: 1420, fetchedAt: 0 };
 
 // ── 뉴스 요약 캐시 (30분 TTL) ──
 let _newsSummaryCache = { summary: '', fetchedAt: 0 };
-const NEWS_SUMMARY_TTL = 30 * 60 * 1000;
+const NEWS_SUMMARY_TTL = 120 * 60 * 1000; // 2시간 캐시 (AI 호출 절약)
 const GARBLED_NAME_REGEX = /[^\w\s\uAC00-\uD7A3\u3131-\u318E\u1100-\u11FF().,·\-+%$]/;
 const KNOWN_GLOBAL_STOCK_NAMES: Record<string, string> = {
   AAPL: 'Apple',
@@ -1069,7 +1069,7 @@ dashboardRoutes.get('/news/summary', async (c) => {
 
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(geminiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash', generationConfig: { temperature: 0.2 } });
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash', generationConfig: { temperature: 0.2 } });
 
     const headlines = raw.split('\n').filter(l => l.startsWith('- [')).map(l => {
       const m = l.match(/^\- \[(.+?)\]\(.+?\)\s*—\s*(.+)$/);

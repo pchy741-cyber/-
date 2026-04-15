@@ -217,9 +217,9 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 미체결 주문 자동 취소 — 장중 3분 간격
+  // 미체결 주문 자동 취소 — 장중 10분 간격 (Track B와 주기 통일)
   cron.schedule(
-    '*/3 9-15 * * 1-5',
+    '*/10 9-15 * * 1-5',
     () => {
       runUnfilledOrderCheck().catch((e) => logger.error(`미체결 체크 실패: ${e}`, { component: 'SCHEDULER' }));
     },
@@ -339,9 +339,9 @@ export function startScheduler(): void {
   //  상시 + 주간
   // ═══════════════════════════════════════════
 
-  // Self-Healing — 10분 간격 상시 (24/7)
+  // Self-Healing — 20분 간격 상시 (24/7, API 비용 절감)
   cron.schedule(
-    '*/10 * * * *',
+    '*/20 * * * *',
     () => {
       runSelfHealing().catch((e) => logger.error(`Self-heal 실패: ${e}`, { component: 'SCHEDULER' }));
     },
@@ -390,24 +390,24 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 미국 주식 분석 — 미국 장중 15분 간격 (KST 23:30~06:30)
-  // 23시대: 30,45분 / 0~5시: 매 15분 / 6시대: 0,15,30분
+  // 미국 주식 분석 — 미국 장중 30분 간격 (KST 23:30~06:30, API 비용 절감)
+  // 23시대: 30분 / 0~5시: 매 30분 / 6시대: 0,30분
   cron.schedule(
-    '30,45 23 * * 1-5',
+    '30 23 * * 1-5',
     () => {
       runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
-    '0,15,30,45 0-5 * * 2-6',
+    '0,30 0-5 * * 2-6',
     () => {
       runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
-    '0,15,30 6 * * 2-6',
+    '0,30 6 * * 2-6',
     () => {
       runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
     },

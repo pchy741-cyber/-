@@ -179,12 +179,19 @@ export default function Dashboard() {
     const getInterval = () => {
       const h = new Date().getHours(), m = new Date().getMinutes();
       const mins = h * 60 + m;
-      return (mins >= 9 * 60 && mins < 15 * 60 + 30) ? 10000 : 60000; // 장중 10초, 장외 60초
+      const isMarket = mins >= 9 * 60 && mins < 15 * 60 + 30;
+      const visible = document.visibilityState === 'visible';
+      // 탭 보는 중 + 장중: 15초 / 탭 보는 중 + 장외: 90초 / 백그라운드: 3분
+      if (!visible) return 180000;
+      return isMarket ? 15000 : 90000;
     };
     let iv: ReturnType<typeof setInterval>;
     const schedule = () => { iv = setInterval(() => { load(); clearInterval(iv); schedule(); }, getInterval()); };
     schedule();
-    return () => clearInterval(iv);
+    // 탭 전환 시 인터벌 재조정
+    const onVisibility = () => { clearInterval(iv); schedule(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVisibility); };
   }, []);
 
   // PWA 푸시 알림 자동 등록
@@ -707,16 +714,25 @@ function PerformancePanel({ trades, strategy, setStrategy, toast }: { trades: an
 function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, strategy, setStrategy, toast, onRefresh }: any) {
   const [showPortfolio, setShowPortfolio] = React.useState(false);
   const [holdingsTab, setHoldingsTab] = React.useState<'KR' | 'US'>('KR');
+  const [userPickedTab, setUserPickedTab] = React.useState(false); // 사용자가 직접 탭 변경했는지
   const [usInsights, setUsInsights] = React.useState('');
   const [insightsDraft, setInsightsDraft] = React.useState('');
   const [insightsSaving, setInsightsSaving] = React.useState(false);
   const [tradingStatus, setTradingStatus] = React.useState<any>(null);
+  const [aiStatus, setAiStatus] = React.useState<any>(null);
   React.useEffect(() => {
     api('/overseas/insights').then((r: any) => {
       if (r?.insights != null) { setUsInsights(r.insights); setInsightsDraft(r.insights); }
     }).catch(() => {});
     api('/trading-status').then((r: any) => setTradingStatus(r)).catch(() => {});
+    api('/ai-status').then((r: any) => setAiStatus(r)).catch(() => {});
   }, []);
+  // 미국장 열리면 자동으로 US 탭으로 전환 (사용자가 직접 변경하지 않은 경우만)
+  React.useEffect(() => {
+    if (!userPickedTab) {
+      setHoldingsTab(health?.usMarketOpen ? 'US' : 'KR');
+    }
+  }, [health?.usMarketOpen, userPickedTab]);
   const p = dash?.portfolio;
   const os = dash?.overseas; // 해외 보유 데이터
   const stockNameMap = new Map((watchlist ?? []).map((w: any) => [w.stock_code, w.stock_name]));
@@ -726,7 +742,9 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const chains = dash?.chains || [];
   const usW = usDash?.watchlist || [];
   const usHoldings = usDash?.holdings || []; // 해외 보유종목
-  const filled = trades.filter((t: any) => t.status === 'FILLED' && t.trigger_source !== 'OVERSEAS');
+  // 국내+해외 체결 모두 포함 (시간 역순)
+  const filled = trades.filter((t: any) => t.status === 'FILLED')
+    .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   const todayTrades = filled.filter((t: any) => new Date(t.created_at).toDateString() === new Date().toDateString());
 
   // API에서 내려오는 손익 분리 값 사용
@@ -747,7 +765,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const pctClamp = (v: number) => Math.max(0, Math.min(100, v));
   const investedPct = totalValue > 0 ? Math.round((totalInvested / totalValue) * 100) : 0;
   // 국내 포트폴리오 비중 바 차트용 (소수점 포함 — 합계 100% 맞춤)
-  const investedPctExact = totalValue > 0 ? (domesticInvested / totalValue) * 100 : 0;
+  const investedPctExact = totalValue > 0 ? ((domesticInvested + overseasInvestedKrw) / totalValue) * 100 : 0;
   const cashPctExact = totalValue > 0 ? (domesticCash / totalValue) * 100 : 0;
   const overseasCashPctExact = totalValue > 0 ? (overseasCashKrw / totalValue) * 100 : 0;
 
@@ -874,6 +892,29 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
         </div>
       )}
 
+      {/* ── AI 엔진 상태 배너 (크레딧/쿼터 이슈 시만 표시) ── */}
+      {aiStatus && (aiStatus.claude === 'no_credit' || aiStatus.claude === 'error' || aiStatus.gemini === 'quota') && (
+        <div className="rounded-2xl border border-amber-500/30 bg-amber-500/[0.07] px-4 py-2.5">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm">⚠️</span>
+            <span className="text-xs font-bold text-amber-300">AI 엔진 경고</span>
+            {aiStatus.claude === 'no_credit' && (
+              <span className="text-[11px] bg-rose-500/20 text-rose-300 rounded px-2 py-0.5">Claude 크레딧 소진 — Anthropic 콘솔에서 충전 필요</span>
+            )}
+            {aiStatus.claude === 'error' && aiStatus.claude !== 'no_credit' && (
+              <span className="text-[11px] bg-amber-500/20 text-amber-300 rounded px-2 py-0.5">Claude 오류</span>
+            )}
+            {aiStatus.gemini === 'quota' && (
+              <span className="text-[11px] bg-amber-500/20 text-amber-300 rounded px-2 py-0.5">Gemini 무료 한도 초과</span>
+            )}
+            <span className="ml-auto text-[10px] text-slate-500">
+              {aiStatus.gemini === 'ok' ? '✅ Gemini 정상' : aiStatus.gemini === 'quota' ? '❌ Gemini 한도초과' : ''}
+              {aiStatus.activeEngine === 'technical' ? ' · 기술 지표로 운영 중' : ''}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* ── 상태 한 줄 바 (손실 한도 + 장 진행도 통합) ── */}
       <div className="glass rounded-2xl border border-white/[0.04] px-4 py-3 flex items-center gap-4">
         {/* 장 상태 표시 */}
@@ -996,7 +1037,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden">
         {/* 탭 헤더 */}
         <div className="flex items-center border-b border-white/[0.04]">
-          <button onClick={() => setHoldingsTab('KR')}
+          <button onClick={() => { setHoldingsTab('KR'); setUserPickedTab(true); }}
             className={`flex-1 py-3 px-4 text-sm font-bold transition-all relative ${holdingsTab === 'KR' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-400'}`}>
             {holdingsTab === 'KR' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500" />}
             <span className="flex items-center justify-center gap-1.5 flex-wrap">
@@ -1004,7 +1045,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
               {krTabHasData && <span className={`text-[10px] font-semibold ${krTabPnl > 0 ? 'text-emerald-400' : krTabPnl < 0 ? 'text-rose-400' : 'text-slate-500'}`}>{krTabPnl > 0 ? '+' : ''}{Math.round(krTabPnl).toLocaleString('ko-KR')}원{krTabPct != null ? ` (${krTabPct > 0 ? '+' : ''}${krTabPct.toFixed(2)}%)` : ''}</span>}
             </span>
           </button>
-          <button onClick={() => setHoldingsTab('US')}
+          <button onClick={() => { setHoldingsTab('US'); setUserPickedTab(true); }}
             className={`flex-1 py-3 px-4 text-sm font-bold transition-all relative ${holdingsTab === 'US' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-400'}`}>
             {holdingsTab === 'US' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500" />}
             <span className="flex items-center justify-center gap-1.5 flex-wrap">
@@ -1223,26 +1264,27 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
             <span className="text-[11px] text-slate-500">{showPortfolio ? '접기 ▲' : '자세히 ▼'}</span>
           </button>
           {showPortfolio && <div className="p-4 sm:p-5 space-y-4 border-t border-white/[0.04]">
-            {/* 현금 vs 투자 비율 바 (국내 기준) */}
+            {/* 현금 vs 투자 비율 바 */}
             <div>
-              <div className="flex justify-between text-[11px] mb-2">
-                <span className="text-slate-500">국내 현금 {cashPctExact.toFixed(0)}%</span>
-                <span className="text-slate-500">투자 {investedPctExact.toFixed(0)}%</span>
-                {overseasCashKrw > 0 && <span className="text-slate-500">해외 현금 {overseasCashPctExact.toFixed(0)}%</span>}
+              {/* 색상 범례 */}
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] mb-2">
+                <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-gradient-to-r from-blue-500 to-cyan-500 shrink-0" />투자 중 {investedPctExact.toFixed(0)}%</span>
+                <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-slate-400/50 shrink-0" />국내 현금 {cashPctExact.toFixed(0)}%</span>
+                {overseasCashKrw > 0 && <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-indigo-400/70 shrink-0" />해외 현금 {overseasCashPctExact.toFixed(0)}%</span>}
               </div>
-              <div className="h-2.5 bg-white/[0.04] rounded-full overflow-hidden">
+              <div className="h-3 bg-white/[0.04] rounded-full overflow-hidden">
                 <div className="h-full flex">
                   <div
                     className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 transition-all duration-500"
                     style={{ width: `${pctClamp(investedPctExact)}%` }}
                   />
                   <div
-                    className="h-full bg-slate-400/40 transition-all duration-500"
+                    className="h-full bg-slate-400/50 transition-all duration-500"
                     style={{ width: `${pctClamp(cashPctExact)}%` }}
                   />
                   {overseasCashKrw > 0 && (
                     <div
-                      className="h-full bg-indigo-400/60 transition-all duration-500"
+                      className="h-full bg-indigo-400/70 transition-all duration-500"
                       style={{ width: `${pctClamp(overseasCashPctExact)}%` }}
                     />
                   )}
@@ -1392,26 +1434,30 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
         <Panel title="최근 매매" badge={`오늘 ${todayTrades.length}건`} badgeColor={todayTrades.length > 0 ? 'green' : undefined}>
           {filled.length === 0 ? <EmptyMsg>매매 기록 없음</EmptyMsg> : (
             <div className="divide-y divide-white/[0.03]">
-              {filled.slice(0, 5).map((t: any, i: number) => (
-                <div key={i} className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.02]">
-                  <SideBadge side={t.side} />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="font-bold text-sm text-slate-200">
-                        {toDisplayName(t.stock_name, t.stock_code) === '종목명 확인중'
-                          ? getStockName(t.stock_code)
-                          : toDisplayName(t.stock_name, t.stock_code)}
-                      </span>
-                      <span className="text-[10px] text-slate-600">{fmtTime(t.created_at)}</span>
+              {filled.slice(0, 10).map((t: any, i: number) => {
+                const isOverseasTrade = t.trigger_source === 'OVERSEAS' || Number(t.filled_price) < 1000;
+                return (
+                  <div key={i} className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.02]">
+                    <SideBadge side={t.side} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-sm text-slate-200">
+                          {toDisplayName(t.stock_name, t.stock_code) === '종목명 확인중'
+                            ? getStockName(t.stock_code)
+                            : toDisplayName(t.stock_name, t.stock_code)}
+                        </span>
+                        {isOverseasTrade && <span className="text-[9px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded-md">🇺🇸</span>}
+                        <span className="text-[10px] text-slate-600">{fmtTime(t.created_at)}</span>
+                      </div>
+                      <div className="text-[11px] text-slate-500 mt-0.5 truncate">{t.ai_reasoning || '-'}</div>
                     </div>
-                    <div className="text-[11px] text-slate-500 mt-0.5 truncate">{t.ai_reasoning || '-'}</div>
+                    <div className="text-right shrink-0">
+                      <div className="text-sm font-bold">{isOverseasTrade ? fmtUsd(Number(t.filled_price)) : fmtWon(Number(t.filled_price))}</div>
+                      <div className="text-[10px] text-slate-500">{fmt(t.quantity)}주</div>
+                    </div>
                   </div>
-                  <div className="text-right shrink-0">
-                    <div className="text-sm font-bold">{Number(t.filled_price) > 1000 ? fmtWon(Number(t.filled_price)) : fmtUsd(Number(t.filled_price))}</div>
-                    <div className="text-[10px] text-slate-500">{fmt(t.quantity)}주</div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </Panel>
@@ -1467,12 +1513,17 @@ function simplifyReason(reason: string | null | undefined, side: string): string
   if (!reason) return side === 'BUY' ? '매수' : '매도';
   if (reason.includes('15:20') || reason.includes('강제 청산')) return '마감 청산';
   if (reason.includes('손절') || reason.toLowerCase().includes('stop_loss')) return '손절 매도';
+  if (reason.match(/익절\([+-]?[\d.]+%\)/)) return '익절 매도';
+  if (reason.match(/손절\([+-]?[\d.]+%\)/)) return '손절 매도';
   if ((reason.includes('수익') || reason.includes('익절')) && reason.includes('매도')) return '익절 매도';
   if (reason.includes('목표가')) return '목표가 도달';
   if (reason.includes('AI 스코어') || reason.includes('기술적 매수')) return 'AI 매수 신호';
   if (reason.includes('물타기') || reason.includes('추가 매수') || reason.includes('AVERAGE')) return '추가 매수';
   if (reason.includes('분할 매도') || reason.includes('PROFIT_TAKING')) return '분할 익절';
   if (reason.includes('CEO') || reason.includes('수동')) return '수동 매도';
+  if (reason.includes('🚀') || reason.includes('모멘텀')) return side === 'BUY' ? 'AI 매수 신호' : '모멘텀 매도';
+  if (reason.includes('📉') || reason.includes('반등')) return side === 'BUY' ? '반등 매수' : '반등 매도';
+  if (reason.includes('저점') || reason.includes('기술적')) return side === 'BUY' ? '기술적 매수' : '기술 매도';
   return reason.length > 15 ? reason.slice(0, 15) + '…' : reason;
 }
 
@@ -1549,11 +1600,17 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
               const qty = Number(t.quantity) || 0;
               const apiPnl = typeof t.realized_pnl === 'number' ? Number(t.realized_pnl) : null;
               const apiPnlPct = typeof t.realized_pnl_pct === 'number' ? Number(t.realized_pnl_pct) : null;
-              // 해외 주문은 USD 가격이므로 원화 P&L 계산 불가. API 미제공 시 기존 계산식 폴백.
+              // 국내 폴백: avg_buy_price vs filled_price
               const fallbackPnl = !overseas && isSell && avgBuy > 0 && filledPrice > 0 ? (filledPrice - avgBuy) * qty : null;
               const fallbackPnlPct = !overseas && isSell && avgBuy > 0 && filledPrice > 0 ? ((filledPrice - avgBuy) / avgBuy) * 100 : null;
-              const tradePnl = apiPnl ?? fallbackPnl;
-              const tradePnlPct = apiPnlPct ?? fallbackPnlPct;
+              // 해외 폴백: ai_reasoning에서 "익절(+5.2%)" 또는 "손절(-1.0%)" 패턴 추출
+              const overseasReasonPct = overseas && isSell
+                ? (() => { const m = String(t.ai_reasoning || '').match(/[익손절]+\(([+-]?[\d.]+)%\)/); return m ? Number(m[1]) : null; })()
+                : null;
+              const overseasPnlUsdAmt = overseasReasonPct !== null && filledPrice > 0 && qty > 0
+                ? filledPrice * qty * (overseasReasonPct / 100) : null;
+              const tradePnl = apiPnl ?? (overseas ? overseasPnlUsdAmt : fallbackPnl);
+              const tradePnlPct = apiPnlPct ?? (overseas ? overseasReasonPct : fallbackPnlPct);
               return (
               <React.Fragment key={tradeKey}>
               <tr onClick={() => setExpanded(isOpen ? null : tradeKey)} className={`hover:bg-slate-800/20 transition-colors cursor-pointer${overseas ? ' opacity-60' : ''}`}>
@@ -1569,9 +1626,11 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
                   {tradePnl !== null && tradePnlPct !== null ? (
                     <div className={tradePnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
                       <div className="font-semibold text-[12px]">{tradePnlPct >= 0 ? '+' : ''}{tradePnlPct.toFixed(1)}%</div>
-                      <div className="text-[11px] opacity-80">{tradePnl >= 0 ? '+' : ''}{Math.round(tradePnl).toLocaleString()}원</div>
+                      <div className="text-[11px] opacity-80">
+                        {tradePnl >= 0 ? '+' : ''}{overseas ? `$${Math.abs(tradePnl).toFixed(2)}` : `${Math.round(tradePnl).toLocaleString()}원`}
+                      </div>
                     </div>
-                  ) : <span className="text-slate-600 text-[11px]">{overseas ? '해외' : '-'}</span>}
+                  ) : <span className="text-slate-600 text-[11px]">-</span>}
                 </td>
                 <td className="px-4 py-3 text-center"><StatusBadge status={t.status} /></td>
                 <td className="px-4 py-3 text-center"><ModeBadge mode={t.trading_mode} /></td>
@@ -1929,7 +1988,7 @@ function NewsView({ watchlist }: { watchlist: any[] }) {
       .catch(() => setMacroNews([]))
       .finally(() => setMacroLoading(false));
 
-    api('/news/summary')
+    api('/news/summary', { timeout: 40000 })
       .then((data: any) => setSummary(typeof data?.summary === 'string' ? data.summary : ''))
       .catch(() => setSummary(''))
       .finally(() => setSummaryLoading(false));

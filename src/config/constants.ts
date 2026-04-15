@@ -14,8 +14,8 @@ export const MARKET = {
 export const SCHEDULE = {
   // Track A: 무거운 분석 (하루 2회)
   TRACK_A_CRON: ['30 7 * * 1-5', '0 18 * * 1-5'], // 07:30, 18:00 KST 평일
-  // Track B: 실시간 감시 (장중 3분 간격 — 적극적 스캔)
-  TRACK_B_INTERVAL_MINUTES: 3,
+  // Track B: 실시간 감시 (장중 10분 간격 — Claude API 비용 절감)
+  TRACK_B_INTERVAL_MINUTES: 10,
 } as const;
 
 // ── 주문 관련 Enum ──

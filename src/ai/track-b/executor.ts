@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { setClaudeStatus } from '../../cache/ai-status.js';
 import { config } from '../../config/index.js';
 import { type TradeDecision, TradeDecisionSchema } from '../../db/models.js';
 import { logger } from '../../utils/logger.js';
@@ -108,18 +109,27 @@ export async function runClaudeExecution(params: {
         { component: 'TRACK_B' },
       );
 
+      setClaudeStatus('ok');
       return filtered;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       logger.warn(`Claude 실행 시도 ${attempt} 실패: ${msg}`, { component: 'TRACK_B' });
 
+      // 크레딧 소진 — 재시도 불필요, 즉시 종료
+      if (msg.includes('credit balance is too low') || msg.includes('insufficient_credits')) {
+        logger.error('Claude API 크레딧 소진 — Gemini로 폴백', { component: 'TRACK_B' });
+        setClaudeStatus('no_credit', msg);
+        return [];
+      }
+
       if (attempt === MAX_RETRIES) {
         logger.error(`Claude 실행 최종 실패 (${MAX_RETRIES}회 시도)`, { component: 'TRACK_B' });
-        // 최종 실패 시 빈 배열 반환 (안전: 아무것도 안 함)
+        setClaudeStatus('error', msg);
         return [];
       }
     }
   }
 
+  setClaudeStatus('error');
   return [];
 }

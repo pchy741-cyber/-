@@ -262,7 +262,7 @@ async function runClaudeAnalysis(
   logger.info(`Gemini Flash 통합 분석 시작 (${watchlist.length}개 종목, 모드: ${mode})`, { component: 'TRACK_A' });
 
   const model = genAI.getGenerativeModel({
-    model: 'gemini-2.0-flash',
+    model: 'gemini-1.5-flash',
     generationConfig: {
       responseMimeType: 'application/json',
       temperature: 0.2,

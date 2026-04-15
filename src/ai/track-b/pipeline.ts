@@ -16,7 +16,7 @@ import {
   isPortfolioInDowntrend,
   PARK_STOCK_CODE,
 } from './defense-park.js';
-import { setActiveEngine } from '../../cache/ai-status.js';
+import { getAiStatus, setActiveEngine } from '../../cache/ai-status.js';
 import { runClaudeExecution } from './executor.js';
 import { runGeminiExecution } from './gemini-executor.js';
 import { technicalFallbackDecisions } from './technical-fallback.js';
@@ -258,25 +258,31 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       const combinedClaudePrompt = riskBlock + (strategy?.claude_prompt?.trim() ?? '');
       const execParams = { mode, context, customPrompt: combinedClaudePrompt || undefined };
 
-      // 6-1. Claude 매매 판단 (1순위)
+      // 6-1. Claude 매매 판단 (1순위) — 크레딧 소진 캐시 확인 후 스킵
       const hasClaudeKey = config.ai.anthropicKey && !config.ai.anthropicKey.startsWith('your_');
-      if (hasClaudeKey) {
+      const cachedClaudeStatus = getAiStatus().claude;
+      if (hasClaudeKey && cachedClaudeStatus !== 'no_credit') {
         try {
           decisions = await runClaudeExecution(execParams);
           if (decisions.length > 0) setActiveEngine('claude');
         } catch (claudeErr) {
           logger.warn(`⚠️ Claude 실행 실패: ${claudeErr}`, { component: 'TRACK_B' });
         }
+      } else if (cachedClaudeStatus === 'no_credit') {
+        logger.info(`⏭️ Claude 크레딧 소진 캐시 → 호출 스킵 (Gemini로 직행)`, { component: 'TRACK_B' });
       }
 
-      // 6-2. Claude 실패 → Gemini Pro 매매 판단 (2순위)
-      if (decisions.length === 0) {
+      // 6-2. Claude 실패 → Gemini 매매 판단 (2순위) — 할당량 소진 캐시 확인 후 스킵
+      const cachedGeminiStatus = getAiStatus().gemini;
+      if (decisions.length === 0 && cachedGeminiStatus !== 'quota') {
         try {
           decisions = await runGeminiExecution(execParams);
           if (decisions.length > 0) setActiveEngine('gemini');
         } catch (geminiErr) {
           logger.warn(`⚠️ Gemini 실행 실패: ${geminiErr}`, { component: 'TRACK_B' });
         }
+      } else if (decisions.length === 0 && cachedGeminiStatus === 'quota') {
+        logger.info(`⏭️ Gemini 할당량 소진 캐시 → 호출 스킵 (안정 모드)`, { component: 'TRACK_B' });
       }
     }
 
