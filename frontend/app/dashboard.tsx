@@ -839,6 +839,32 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   return (
     <div className="space-y-4 sm:space-y-5">
 
+      {/* ── 수동 실행 버튼 (항상 표시) ── */}
+      <div className="flex gap-2 justify-end">
+        <button
+          onClick={async () => {
+            setRunningTrackA(true);
+            try { await api('/run-track-a', { method: 'POST' }); } catch {}
+            setTimeout(() => setRunningTrackA(false), 300000);
+          }}
+          disabled={runningTrackA}
+          className="px-3 py-1.5 text-[11px] rounded-lg bg-blue-500/20 hover:bg-blue-500/40 text-blue-300 font-semibold disabled:opacity-50 transition-colors"
+        >
+          {runningTrackA ? '분석 중...' : '점수 갱신'}
+        </button>
+        <button
+          onClick={async () => {
+            setRunningTrackB(true);
+            try { await api('/run-track-b', { method: 'POST' }); } catch {}
+            setTimeout(() => setRunningTrackB(false), 30000);
+          }}
+          disabled={runningTrackB}
+          className="px-3 py-1.5 text-[11px] rounded-lg bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 font-semibold disabled:opacity-50 transition-colors"
+        >
+          {runningTrackB ? '실행 중...' : '지금 실행'}
+        </button>
+      </div>
+
       {/* ── 매매 상태 배너 ── */}
       {tradingStatus && tradingStatus.overallStatus !== 'ACTIVE' && (
         <div className={`rounded-2xl border px-4 py-3 ${
