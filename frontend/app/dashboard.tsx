@@ -869,6 +869,30 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
               {tradingStatus.candidateCount > 0 && <span className="ml-2 text-emerald-400">→ {tradingStatus.candidateCount}종목 후보 있음</span>}
             </div>
           )}
+          <div className="mt-2 flex gap-2">
+            <button
+              onClick={async () => {
+                setRunningTrackA(true);
+                try { await api('/run-track-a', { method: 'POST' }); } catch {}
+                setTimeout(() => setRunningTrackA(false), 300000);
+              }}
+              disabled={runningTrackA}
+              className="px-3 py-1.5 text-[11px] rounded-lg bg-blue-500/20 hover:bg-blue-500/40 text-blue-300 font-semibold disabled:opacity-50 transition-colors"
+            >
+              {runningTrackA ? '분석 중...' : '점수 갱신'}
+            </button>
+            <button
+              onClick={async () => {
+                setRunningTrackB(true);
+                try { await api('/run-track-b', { method: 'POST' }); } catch {}
+                setTimeout(() => setRunningTrackB(false), 30000);
+              }}
+              disabled={runningTrackB}
+              className="px-3 py-1.5 text-[11px] rounded-lg bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 font-semibold disabled:opacity-50 transition-colors"
+            >
+              {runningTrackB ? '실행 중...' : '지금 실행'}
+            </button>
+          </div>
         </div>
       )}
       {tradingStatus && tradingStatus.overallStatus === 'ACTIVE' && (
