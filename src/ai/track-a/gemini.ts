@@ -108,7 +108,10 @@ ${additionalSources ?? '추가 소스 없음'}
     : await callGoogleAI(genAI!, systemPrompt, userMessage);
 
   try {
-    const parsed = JSON.parse(responseText) as GeminiAnalysis;
+    // Gemini가 마크다운 코드블록으로 JSON을 감쌀 수 있음 — 추출 후 파싱
+    const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/) ?? responseText.match(/(\{[\s\S]*\})/);
+    const jsonText = jsonMatch ? jsonMatch[1] ?? jsonMatch[0] : responseText;
+    const parsed = JSON.parse(jsonText) as GeminiAnalysis;
     logger.info(`Gemini 분석 완료: market_sentiment=${parsed.market_sentiment}`, {
       component: 'TRACK_A',
     });

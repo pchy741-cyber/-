@@ -48,7 +48,10 @@ export async function runGeminiExecution(params: {
       const result = await model.generateContent([systemPrompt, context]);
       const rawText = result.response.text();
 
-      const parsed = JSON.parse(rawText) as { decisions: TradeDecision[] };
+      // Gemini가 마크다운 코드블록으로 JSON을 감쌀 수 있음 — 추출 후 파싱
+      const jsonMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/) ?? rawText.match(/(\{[\s\S]*\})/);
+      const jsonText = jsonMatch ? jsonMatch[1] ?? jsonMatch[0] : rawText;
+      const parsed = JSON.parse(jsonText) as { decisions: TradeDecision[] };
 
       const validDecisions: TradeDecision[] = [];
       for (const decision of parsed.decisions) {

@@ -52,7 +52,10 @@ ${JSON.stringify(geminiAnalysis.stocks, null, 2)}
   const content = result.response.text();
 
   try {
-    const parsed = JSON.parse(content) as { scores: ScoringResult[] };
+    // Gemini가 마크다운 코드블록으로 JSON을 감쌀 수 있음 — 추출 후 파싱
+    const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/) ?? content.match(/(\{[\s\S]*\})/);
+    const jsonText = jsonMatch ? jsonMatch[1] ?? jsonMatch[0] : content;
+    const parsed = JSON.parse(jsonText) as { scores: ScoringResult[] };
 
     const validScores: ScoringResult[] = [];
     for (const score of parsed.scores) {
