@@ -129,7 +129,7 @@ async function callGoogleAI(genAI: GoogleGenerativeAI, systemPrompt: string, use
     generationConfig: {
       temperature: 0.1,
     },
-  }, { apiVersion: 'v1' });
+  }, { apiVersion: 'v1beta' });
 
   const result = await model.generateContent([systemPrompt, userMessage]);
   return result.response.text();

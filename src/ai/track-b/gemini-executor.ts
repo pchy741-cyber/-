@@ -39,7 +39,7 @@ export async function runGeminiExecution(params: {
     generationConfig: {
       temperature: 0.1,
     },
-  }, { apiVersion: 'v1' });
+  }, { apiVersion: 'v1beta' });
 
   const MAX_RETRIES = 2;
 
