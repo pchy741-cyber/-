@@ -125,7 +125,7 @@ ${additionalSources ?? '추가 소스 없음'}
 // ── Google AI SDK 경로 (API 키 사용, 로컬/외부 환경) ──
 async function callGoogleAI(genAI: GoogleGenerativeAI, systemPrompt: string, userMessage: string): Promise<string> {
   const model = genAI.getGenerativeModel({
-    model: 'gemini-2.0-flash',
+    model: 'gemini-1.5-flash',
     generationConfig: {
       temperature: 0.1,
     },
