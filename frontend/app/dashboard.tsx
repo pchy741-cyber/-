@@ -2054,7 +2054,10 @@ function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist:
   const [stockNews, setStockNews] = useState<any[]>([]);
   const [macroNews, setMacroNews] = useState<string[]>([]);
   const [summary, setSummary] = useState<string>('');
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [summaryHeadlines, setSummaryHeadlines] = useState(0);
   const [summaryLoading, setSummaryLoading] = useState(true);
+  const [summaryRefreshing, setSummaryRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [macroLoading, setMacroLoading] = useState(true);
   const [theme, setTheme] = useState<{ theme: string; reason: string; stocks: Array<{ code: string; name: string; market: string }> } | null>(null);
@@ -2079,6 +2082,19 @@ function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist:
     finally { setAddingCode(null); }
   };
 
+  const fetchSummary = (force = false) => {
+    setSummaryRefreshing(force);
+    if (!force) setSummaryLoading(true);
+    api(`/news/summary${force ? '?refresh=1' : ''}`, { timeout: 45000 })
+      .then((data: any) => {
+        setSummary(typeof data?.summary === 'string' ? data.summary : '');
+        setSummaryError(data?.error ?? null);
+        setSummaryHeadlines(data?.headlineCount ?? 0);
+      })
+      .catch(() => { setSummary(''); setSummaryError('network'); })
+      .finally(() => { setSummaryLoading(false); setSummaryRefreshing(false); });
+  };
+
   useEffect(() => {
     api('/news')
       .then((data: any) => setStockNews(Array.isArray(data) ? data : []))
@@ -2090,10 +2106,7 @@ function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist:
       .catch(() => setMacroNews([]))
       .finally(() => setMacroLoading(false));
 
-    api('/news/summary', { timeout: 40000 })
-      .then((data: any) => setSummary(typeof data?.summary === 'string' ? data.summary : ''))
-      .catch(() => setSummary(''))
-      .finally(() => setSummaryLoading(false));
+    fetchSummary(false);
 
     api('/news/theme', { timeout: 35000 })
       .then((data: any) => setTheme(data?.theme ? data : null))
@@ -2155,17 +2168,54 @@ function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist:
       </Panel>
 
       {/* AI 시황 요약 */}
-      <Panel title="AI 시황 요약">
-        <div className="p-4">
+      <Panel title="AI 시황 요약" badge={
+        summaryLoading ? undefined :
+        summary ? 'Gemini 정상' :
+        summaryError === 'rss_failed' ? 'RSS 실패' :
+        summaryError === 'gemini_quota' ? 'Gemini 한도 초과' :
+        summaryError === 'no_key' ? 'API 키 없음' :
+        summaryError ? 'Gemini 오류' : undefined
+      } badgeColor={
+        summaryLoading ? undefined :
+        summary ? 'green' : 'red'
+      }>
+        <div className="p-4 space-y-3">
           {summaryLoading ? (
             <div className="flex items-center gap-2 py-2">
               <div className="w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full animate-spin shrink-0" />
-              <span className="text-xs text-slate-500">AI가 뉴스를 분석 중입니다...</span>
+              <span className="text-xs text-slate-500">Gemini가 뉴스를 분석 중입니다... (최대 45초)</span>
             </div>
           ) : summary ? (
             <p className="text-sm text-slate-200 leading-relaxed">{summary}</p>
           ) : (
-            <p className="text-sm text-slate-500">뉴스 요약을 불러오지 못했습니다</p>
+            <div className="space-y-2">
+              <p className="text-sm text-slate-400">
+                {summaryError === 'rss_failed' && '글로벌 뉴스 RSS 수집에 실패했습니다. 네트워크 상태를 확인하세요.'}
+                {summaryError === 'gemini_quota' && 'Gemini API 일일 무료 한도를 초과했습니다. 내일 다시 시도됩니다.'}
+                {summaryError === 'no_key' && 'GEMINI_API_KEY가 설정되지 않았습니다.'}
+                {summaryError === 'gemini_failed' && `Gemini API 호출에 실패했습니다${summaryHeadlines > 0 ? ` (뉴스 ${summaryHeadlines}건 수집됨)` : ''}.`}
+                {summaryError === 'gemini_empty' && 'Gemini가 빈 응답을 반환했습니다.'}
+                {summaryError === 'network' && '네트워크 오류로 요약을 불러오지 못했습니다.'}
+                {!summaryError && '뉴스 요약을 불러오지 못했습니다.'}
+              </p>
+            </div>
+          )}
+          {/* 새로고침 버튼 */}
+          {!summaryLoading && (
+            <div className="flex justify-end">
+              <button
+                onClick={() => fetchSummary(true)}
+                disabled={summaryRefreshing}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700 disabled:opacity-50 transition-colors"
+              >
+                {summaryRefreshing ? (
+                  <span className="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <span>↻</span>
+                )}
+                다시 불러오기
+              </button>
+            </div>
           )}
         </div>
       </Panel>

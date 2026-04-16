@@ -1055,10 +1055,11 @@ dashboardRoutes.get('/news/macro', async (c) => {
 
 // ── 매크로 뉴스 AI 한 줄 요약 (Gemini 2.0 Flash — 무료 티어) ──
 dashboardRoutes.get('/news/summary', async (c) => {
+  const forceRefresh = c.req.query('refresh') === '1';
   try {
-    // 30분 캐시 — 반복 호출 시 API 절약 + 타임아웃 방지
-    if (_newsSummaryCache.summary && Date.now() - _newsSummaryCache.fetchedAt < NEWS_SUMMARY_TTL) {
-      return c.json({ summary: _newsSummaryCache.summary });
+    // 30분 캐시 — 반복 호출 시 API 절약 + 타임아웃 방지 (force=1 이면 캐시 무시)
+    if (!forceRefresh && _newsSummaryCache.summary && Date.now() - _newsSummaryCache.fetchedAt < NEWS_SUMMARY_TTL) {
+      return c.json({ summary: _newsSummaryCache.summary, geminiOk: true, error: null, headlineCount: 0, cached: true });
     }
 
     const { collectMacroNews } = await import('../../automation/news-collector.js');
@@ -1067,19 +1068,31 @@ dashboardRoutes.get('/news/summary', async (c) => {
       collectMacroNews(),
       new Promise<string>((resolve) => setTimeout(() => resolve(''), 28000)),
     ]);
-    if (!raw) return c.json({ summary: '' });
+    if (!raw) {
+      logger.warn('뉴스 요약: RSS 피드 수집 실패 (빈 결과)', { component: 'NEWS_SUMMARY' });
+      return c.json({ summary: '', geminiOk: false, error: 'rss_failed', headlineCount: 0, cached: false });
+    }
 
     const geminiKey = config.ai.geminiKey || process.env.GEMINI_API_KEY;
-    if (!geminiKey || geminiKey.startsWith('your_') || geminiKey.length < 10) return c.json({ summary: '' });
+    if (!geminiKey || geminiKey.startsWith('your_') || geminiKey.length < 10) {
+      return c.json({ summary: '', geminiOk: false, error: 'no_key', headlineCount: 0, cached: false });
+    }
 
-    const { GoogleGenerativeAI } = await import('@google/generative-ai');
-    const genAI = new GoogleGenerativeAI(geminiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash', generationConfig: { temperature: 0.2 } }, { apiVersion: 'v1beta' });
+    const headlineLines = raw.split('\n').filter(l => l.startsWith('- ['));
+    const headlineCount = headlineLines.length;
 
-    const headlines = raw.split('\n').filter(l => l.startsWith('- [')).map(l => {
+    if (headlineCount === 0) {
+      return c.json({ summary: '', geminiOk: false, error: 'rss_failed', headlineCount: 0, cached: false });
+    }
+
+    const headlines = headlineLines.map(l => {
       const m = l.match(/^\- \[(.+?)\]\(.+?\)\s*—\s*(.+)$/);
       return m ? `${m[1]} (${m[2]})` : l.replace(/^- /, '');
     }).join('\n');
+
+    const { GoogleGenerativeAI } = await import('@google/generative-ai');
+    const genAI = new GoogleGenerativeAI(geminiKey);
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash', generationConfig: { temperature: 0.2 } }, { apiVersion: 'v1beta' });
 
     const res = await model.generateContent(
       `아래는 오늘 글로벌 금융 뉴스 헤드라인입니다. 주식 투자에 영향을 미치는 핵심 내용만 뽑아서 한국어로 자연스럽게 2~3문장으로 요약해 주세요. 투자자 관점에서 오늘 시장 분위기와 주요 이슈를 간결하게 서술하세요.\n\n${headlines}`,
@@ -1088,10 +1101,13 @@ dashboardRoutes.get('/news/summary', async (c) => {
     const summary = res.response.text() ?? '';
     // 캐시 업데이트
     if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now() };
-    return c.json({ summary });
+    return c.json({ summary, geminiOk: !!summary, error: summary ? null : 'gemini_empty', headlineCount, cached: false });
   } catch (err) {
-    logger.error('뉴스 요약 생성 실패', { error: String(err), component: 'NEWS_SUMMARY' });
-    return c.json({ summary: '' });
+    const errStr = String(err);
+    logger.error('뉴스 요약 생성 실패', { error: errStr, component: 'NEWS_SUMMARY' });
+    // quota 오류 vs 일반 오류 구분
+    const error = errStr.includes('quota') || errStr.includes('429') ? 'gemini_quota' : 'gemini_failed';
+    return c.json({ summary: '', geminiOk: false, error, headlineCount: 0, cached: false });
   }
 });
 
