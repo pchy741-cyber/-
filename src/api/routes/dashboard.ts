@@ -1074,7 +1074,7 @@ dashboardRoutes.get('/news/summary', async (c) => {
 
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(geminiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash', generationConfig: { temperature: 0.2 } });
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash', generationConfig: { temperature: 0.2 } });
 
     const headlines = raw.split('\n').filter(l => l.startsWith('- [')).map(l => {
       const m = l.match(/^\- \[(.+?)\]\(.+?\)\s*—\s*(.+)$/);
@@ -1122,7 +1122,7 @@ dashboardRoutes.get('/news/theme', async (c) => {
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(geminiKey);
     const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-1.5-flash',
       generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
     });
 
@@ -1183,7 +1183,9 @@ dashboardRoutes.get('/trading-status', async (c) => {
     ]);
 
     const mode = (strategy?.mode ?? 'SWING') as string;
-    const buyThreshold = strategy?.buy_threshold ?? (mode === 'DEFENSE' ? 85 : 65);
+    const { STRATEGY_PARAMS } = await import('../../config/constants.js');
+    const defaultThreshold = (STRATEGY_PARAMS as any)[mode]?.buyThreshold ?? 62;
+    const buyThreshold = strategy?.buy_threshold ?? defaultThreshold;
     const marketOpen = isMarketOpen();
 
     const blocks: { reason: string; detail: string; severity: 'warn' | 'info' | 'ok' }[] = [];
@@ -1241,6 +1243,16 @@ dashboardRoutes.get('/trading-status', async (c) => {
         ? 'WATCHING'
         : 'ACTIVE';
 
+    const aiEngineStatus = getAiStatus();
+    // AI 엔진이 모두 실패 상태 → 안정 모드 경고 블록 추가
+    const geminiBlocked = aiEngineStatus.gemini === 'quota' || aiEngineStatus.gemini === 'error';
+    const claudeBlocked = aiEngineStatus.claude === 'no_credit' || aiEngineStatus.claude === 'error';
+    if (geminiBlocked && claudeBlocked) {
+      blocks.push({ reason: 'AI 엔진 전체 실패', detail: '안정 모드 — 신규 매수 중단, FORCE_CLOSE만 허용 (30분 후 Gemini 자동 재시도)', severity: 'warn' });
+    } else if (geminiBlocked) {
+      blocks.push({ reason: 'Gemini 오류/한도', detail: `${aiEngineStatus.gemini === 'quota' ? '무료 할당량 초과' : '연결 오류'} — 30분 후 자동 재시도`, severity: 'info' });
+    }
+
     return c.json({
       overallStatus,   // ACTIVE=정상매매 | WATCHING=관망중 | BLOCKED=완전차단
       mode,
@@ -1250,6 +1262,7 @@ dashboardRoutes.get('/trading-status', async (c) => {
       candidateCount: candidates.length,
       watchlistCount: watchlist.length,
       lossBlockedCount: recentLossCodes.size,
+      aiEngine: { claude: aiEngineStatus.claude, gemini: aiEngineStatus.gemini, active: aiEngineStatus.activeEngine },
       blocks,
     });
   } catch (err) {
@@ -1280,6 +1293,31 @@ dashboardRoutes.get('/logs', async (c) => {
 
     const { rows } = await getPool().query(sql, params);
     return c.json(rows);
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// POST /api/run-track-b — Track B 즉시 수동 실행
+dashboardRoutes.post('/run-track-b', async (c) => {
+  try {
+    const { runTrackBJob } = await import('../../scheduler/track-b-job.js');
+    // 비동기로 실행 (응답은 즉시 반환)
+    runTrackBJob().catch((e: Error) => logger.error(`수동 Track B 실패: ${e.message}`, { component: 'MANUAL' }));
+    logger.info('수동 Track B 실행 요청됨', { component: 'MANUAL' });
+    return c.json({ ok: true, message: 'Track B 실행 시작됨 (10~30초 소요)' });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// POST /api/run-track-a — Track A 즉시 수동 실행 (AI 점수 강제 갱신)
+dashboardRoutes.post('/run-track-a', async (c) => {
+  try {
+    const { runTrackAJob } = await import('../../scheduler/track-a-job.js');
+    runTrackAJob().catch((e: Error) => logger.error(`수동 Track A 실패: ${e.message}`, { component: 'MANUAL' }));
+    logger.info('수동 Track A 실행 요청됨', { component: 'MANUAL' });
+    return c.json({ ok: true, message: 'Track A 실행 시작됨 (2~5분 소요)' });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }

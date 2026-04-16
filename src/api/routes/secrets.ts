@@ -17,6 +17,7 @@ const KEY_MAP: Record<string, { secret: string; envVar: string }> = {
   kis_account: { secret: 'kis-account-no', envVar: 'KIS_ACCOUNT_NO' },
   telegram_token: { secret: 'telegram-bot-token', envVar: 'TELEGRAM_BOT_TOKEN' },
   telegram_chat: { secret: 'telegram-chat-id', envVar: 'TELEGRAM_CHAT_ID' },
+  dashboard_password: { secret: 'dashboard-password', envVar: 'DASHBOARD_PASSWORD' },
 };
 
 async function ensureSecret(secretId: string) {

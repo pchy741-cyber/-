@@ -720,6 +720,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const [insightsSaving, setInsightsSaving] = React.useState(false);
   const [tradingStatus, setTradingStatus] = React.useState<any>(null);
   const [aiStatus, setAiStatus] = React.useState<any>(null);
+  const [runningTrackB, setRunningTrackB] = React.useState(false);
+  const [runningTrackA, setRunningTrackA] = React.useState(false);
   React.useEffect(() => {
     api('/overseas/insights').then((r: any) => {
       if (r?.insights != null) { setUsInsights(r.insights); setInsightsDraft(r.insights); }
@@ -877,6 +879,28 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
             <span className="text-[11px] text-emerald-400/70 ml-1">— {tradingStatus.candidateCount}종목 매수 후보 대기</span>
           )}
           <span className="ml-auto text-[10px] text-slate-500">{tradingStatus.mode} · 기준 {tradingStatus.buyThreshold}점</span>
+          <button
+            onClick={async () => {
+              setRunningTrackA(true);
+              try { await api('/run-track-a', { method: 'POST' }); } catch {}
+              setTimeout(() => setRunningTrackA(false), 300000);
+            }}
+            disabled={runningTrackA}
+            className="ml-2 px-2.5 py-1 text-[11px] rounded-lg bg-blue-500/20 hover:bg-blue-500/40 text-blue-300 font-semibold disabled:opacity-50 transition-colors"
+          >
+            {runningTrackA ? '분석 중...' : '점수 갱신'}
+          </button>
+          <button
+            onClick={async () => {
+              setRunningTrackB(true);
+              try { await api('/run-track-b', { method: 'POST' }); } catch {}
+              setTimeout(() => setRunningTrackB(false), 30000);
+            }}
+            disabled={runningTrackB}
+            className="ml-2 px-2.5 py-1 text-[11px] rounded-lg bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 font-semibold disabled:opacity-50 transition-colors"
+          >
+            {runningTrackB ? '실행 중...' : '지금 실행'}
+          </button>
         </div>
       )}
 
@@ -892,24 +916,26 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
         </div>
       )}
 
-      {/* ── AI 엔진 상태 배너 (크레딧/쿼터 이슈 시만 표시) ── */}
-      {aiStatus && (aiStatus.claude === 'no_credit' || aiStatus.claude === 'error' || aiStatus.gemini === 'quota') && (
+      {/* ── AI 엔진 상태 배너 (크레딧/쿼터/오류 시 표시) ── */}
+      {aiStatus && (aiStatus.claude === 'no_credit' || aiStatus.claude === 'error' || aiStatus.gemini === 'quota' || aiStatus.gemini === 'error') && (
         <div className="rounded-2xl border border-amber-500/30 bg-amber-500/[0.07] px-4 py-2.5">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm">⚠️</span>
-            <span className="text-xs font-bold text-amber-300">AI 엔진 경고</span>
+            <span className="text-xs font-bold text-amber-300">AI 엔진 경고 — 안정 모드로 운영 중 (신규 매수 중단)</span>
             {aiStatus.claude === 'no_credit' && (
-              <span className="text-[11px] bg-rose-500/20 text-rose-300 rounded px-2 py-0.5">Claude 크레딧 소진 — Anthropic 콘솔에서 충전 필요</span>
+              <span className="text-[11px] bg-rose-500/20 text-rose-300 rounded px-2 py-0.5">Claude 크레딧 소진</span>
             )}
-            {aiStatus.claude === 'error' && aiStatus.claude !== 'no_credit' && (
+            {aiStatus.claude === 'error' && (
               <span className="text-[11px] bg-amber-500/20 text-amber-300 rounded px-2 py-0.5">Claude 오류</span>
             )}
             {aiStatus.gemini === 'quota' && (
-              <span className="text-[11px] bg-amber-500/20 text-amber-300 rounded px-2 py-0.5">Gemini 무료 한도 초과</span>
+              <span className="text-[11px] bg-amber-500/20 text-amber-300 rounded px-2 py-0.5">Gemini 무료 한도 초과 — 30분 후 자동 재시도</span>
+            )}
+            {aiStatus.gemini === 'error' && (
+              <span className="text-[11px] bg-amber-500/20 text-amber-300 rounded px-2 py-0.5">Gemini 오류 — 30분 후 자동 재시도</span>
             )}
             <span className="ml-auto text-[10px] text-slate-500">
-              {aiStatus.gemini === 'ok' ? '✅ Gemini 정상' : aiStatus.gemini === 'quota' ? '❌ Gemini 한도초과' : ''}
-              {aiStatus.activeEngine === 'technical' ? ' · 기술 지표로 운영 중' : ''}
+              {aiStatus.activeEngine === 'technical' ? '기술 지표 모드' : aiStatus.activeEngine === 'none' ? '매매 대기' : ''}
             </span>
           </div>
         </div>

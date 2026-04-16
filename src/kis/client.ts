@@ -111,8 +111,8 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
   const headers: Record<string, string> = {
     'Content-Type': 'application/json; charset=utf-8',
     authorization: '',
-    appkey: config.kis.appKey,
-    appsecret: config.kis.appSecret,
+    appkey: process.env.KIS_APP_KEY || config.kis.appKey,
+    appsecret: process.env.KIS_APP_SECRET || config.kis.appSecret,
     tr_id: trId,
   };
 

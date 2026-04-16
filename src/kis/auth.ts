@@ -21,13 +21,17 @@ export async function getAccessToken(): Promise<string> {
 
   logger.info('KIS 토큰 발급 요청', { component: 'KIS_AUTH' });
 
+  // process.env에서 직접 읽기 — config는 모듈 로드 시 고정되므로 Secret Manager 로드 후에도 반영
+  const appKey = process.env.KIS_APP_KEY || config.kis.appKey;
+  const appSecret = process.env.KIS_APP_SECRET || config.kis.appSecret;
+
   const res = await fetch(`${config.kis.baseUrl}/oauth2/tokenP`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json; charset=utf-8' },
     body: JSON.stringify({
       grant_type: 'client_credentials',
-      appkey: config.kis.appKey,
-      appsecret: config.kis.appSecret,
+      appkey: appKey,
+      appsecret: appSecret,
     }),
   });
 
@@ -55,12 +59,15 @@ export async function getAccessToken(): Promise<string> {
  * Hashkey 발급 (주문 API 필수)
  */
 export async function getHashkey(body: Record<string, unknown>): Promise<string> {
+  const appKey = process.env.KIS_APP_KEY || config.kis.appKey;
+  const appSecret = process.env.KIS_APP_SECRET || config.kis.appSecret;
+
   const res = await fetch(`${config.kis.baseUrl}/uapi/hashkey`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
-      appkey: config.kis.appKey,
-      appsecret: config.kis.appSecret,
+      appkey: appKey,
+      appsecret: appSecret,
     },
     body: JSON.stringify(body),
   });

@@ -52,21 +52,40 @@ if (!parsed.success) {
 
 const env = parsed.data;
 
+// KIS 설정은 Secret Manager 로드 후 process.env가 갱신되므로 getter로 동적 읽기
+function getKisAccountNo() {
+  const raw = process.env.KIS_ACCOUNT_NO || env.KIS_ACCOUNT_NO;
+  return raw.split('-')[0];
+}
+function getKisProductCode() {
+  const raw = process.env.KIS_ACCOUNT_NO || env.KIS_ACCOUNT_NO;
+  return raw.split('-')[1] || '01';
+}
+
 export const config = {
   env: env.NODE_ENV,
   tradingMode: env.TRADING_MODE as 'paper' | 'live',
   isPaper: env.TRADING_MODE === 'paper',
 
-  kis: {
-    appKey: env.KIS_APP_KEY,
-    appSecret: env.KIS_APP_SECRET,
-    accountNo: env.KIS_ACCOUNT_NO.split('-')[0],
-    accountProductCode: env.KIS_ACCOUNT_NO.split('-')[1] || '01',
-    // 모의투자/실거래 URL 자동 분기
-    baseUrl:
-      env.TRADING_MODE === 'paper'
-        ? 'https://openapivts.koreainvestment.com:29443'
-        : env.KIS_BASE_URL || 'https://openapi.koreainvestment.com:9443',
+  get kis() {
+    return {
+      appKey: process.env.KIS_APP_KEY || env.KIS_APP_KEY,
+      appSecret: process.env.KIS_APP_SECRET || env.KIS_APP_SECRET,
+      accountNo: getKisAccountNo(),
+      accountProductCode: getKisProductCode(),
+      baseUrl:
+        env.TRADING_MODE === 'paper'
+          ? 'https://openapivts.koreainvestment.com:29443'
+          : process.env.KIS_BASE_URL || env.KIS_BASE_URL || 'https://openapi.koreainvestment.com:9443',
+    };
+  },
+
+  get ai() {
+    return {
+      geminiKey: process.env.GEMINI_API_KEY || env.GEMINI_API_KEY,
+      openaiKey: process.env.OPENAI_API_KEY || env.OPENAI_API_KEY,
+      anthropicKey: process.env.ANTHROPIC_API_KEY || env.ANTHROPIC_API_KEY,
+    };
   },
 
   db: {
@@ -78,12 +97,6 @@ export const config = {
     // Cloud Run에서는 Unix socket으로 연결
     unixSocket: env.INSTANCE_UNIX_SOCKET,
     databaseUrl: env.DATABASE_URL,
-  },
-
-  ai: {
-    geminiKey: env.GEMINI_API_KEY,
-    openaiKey: env.OPENAI_API_KEY,
-    anthropicKey: env.ANTHROPIC_API_KEY,
   },
 
   telegram: {
@@ -98,6 +111,6 @@ export const config = {
     maxConcurrentPositions: env.RISK_MAX_CONCURRENT_POSITIONS,
     maxDailyTrades: env.RISK_MAX_DAILY_TRADES,
   },
-} as const;
+};
 
 export type Config = typeof config;

@@ -124,6 +124,14 @@ async function bootstrap() {
     logger.warn(`⚠️ Redis 미연결 (DB fallback): ${err}`, { component: 'BOOT' });
   }
 
+  // 2.5. Secret Manager에서 API 키 로드 (KIS 토큰 발급 전에 실행)
+  try {
+    const { loadSecretsToEnv } = await import('./api/routes/secrets.js');
+    await loadSecretsToEnv();
+  } catch (err) {
+    logger.warn(`Secret Manager 로드 실패 (환경변수 fallback): ${err}`, { component: 'BOOT' });
+  }
+
   // 3. KIS 토큰 발급
   try {
     await getAccessToken();
@@ -152,14 +160,6 @@ async function bootstrap() {
     logger.info('✅ BigQuery 파이프라인 연결', { component: 'BOOT' });
   } catch (err) {
     logger.warn(`⚠️ BigQuery 초기화 실패: ${err}`, { component: 'BOOT' });
-  }
-
-  // 5.5. Secret Manager에서 API 키 로드 (배포 후 키 유실 방지)
-  try {
-    const { loadSecretsToEnv } = await import('./api/routes/secrets.js');
-    await loadSecretsToEnv();
-  } catch (err) {
-    logger.warn(`Secret Manager 로드 실패 (환경변수 fallback): ${err}`, { component: 'BOOT' });
   }
 
   // 5.6. 감시목록 종목명 보정 (하드코딩 우선 → KIS API fallback)
