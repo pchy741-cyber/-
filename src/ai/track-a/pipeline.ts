@@ -242,7 +242,7 @@ async function runClaudeAnalysis(
     logger.warn('Gemini API 키 미설정 — Track A 폴백 분석 스킵', { component: 'TRACK_A' });
     return [];
   }
-  const genAI = new GoogleGenerativeAI(key, { apiVersion: 'v1' });
+  const genAI = new GoogleGenerativeAI(key);
 
   const chartSummary = watchlist.map((stock) => {
     const candles = chartData.get(stock.stock_code) ?? [];
@@ -267,7 +267,7 @@ async function runClaudeAnalysis(
       responseMimeType: 'application/json',
       temperature: 0.2,
     },
-  });
+  }, { apiVersion: 'v1' });
 
   const prompt = `당신은 주식 분석+스코어링 전문가입니다. 아래 차트 데이터를 분석하여 종목별 점수를 매겨주세요.
 

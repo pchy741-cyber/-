@@ -8,7 +8,7 @@ import type { GeminiAnalysis } from './gemini.js';
 function getGenAI(): GoogleGenerativeAI | null {
   const key = config.ai.geminiKey || process.env.GEMINI_API_KEY;
   if (!key || key.startsWith('your_') || key.length < 10) return null;
-  return new GoogleGenerativeAI(key, { apiVersion: 'v1' });
+  return new GoogleGenerativeAI(key);
 }
 
 /**
@@ -40,7 +40,7 @@ export async function runGPTScoring(params: {
       responseMimeType: 'application/json',
       temperature: 0.2,
     },
-  });
+  }, { apiVersion: 'v1' });
 
   const userMessage = `## Gemini 분석 결과
 시장 분위기: ${geminiAnalysis.market_sentiment}

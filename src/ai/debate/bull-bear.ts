@@ -9,7 +9,7 @@ import { logger } from '../../utils/logger.js';
 function getGenAI(): GoogleGenerativeAI | null {
   const key = config.ai.geminiKey || process.env.GEMINI_API_KEY;
   if (!key || key.startsWith('your_') || key.length < 10) return null;
-  return new GoogleGenerativeAI(key, { apiVersion: 'v1' });
+  return new GoogleGenerativeAI(key);
 }
 
 /**
@@ -152,7 +152,7 @@ async function callAgent(role: 'BULL' | 'BEAR', prompt: string): Promise<{ argum
       generationConfig: {
         temperature: role === 'BULL' ? 0.3 : 0.4,
       },
-    });
+    }, { apiVersion: 'v1' });
 
     const result = await model.generateContent(prompt);
     const text = result.response.text();
@@ -191,7 +191,7 @@ async function callJudge(
       generationConfig: {
         temperature: 0.1,
       },
-    });
+    }, { apiVersion: 'v1' });
 
     const judgePrompt = `## ${stockName} 투자 토론 판결
 

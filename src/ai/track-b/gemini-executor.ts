@@ -9,7 +9,7 @@ import { BUY_BLOCKED_CODES } from './trading-rules.js';
 function getGenAI(): GoogleGenerativeAI | null {
   const key = config.ai.geminiKey || process.env.GEMINI_API_KEY;
   if (!key || key.startsWith('your_') || key.length < 10) return null;
-  return new GoogleGenerativeAI(key, { apiVersion: 'v1' });
+  return new GoogleGenerativeAI(key);
 }
 
 /**
@@ -40,7 +40,7 @@ export async function runGeminiExecution(params: {
       responseMimeType: 'application/json',
       temperature: 0.1,
     },
-  });
+  }, { apiVersion: 'v1' });
 
   const MAX_RETRIES = 2;
 

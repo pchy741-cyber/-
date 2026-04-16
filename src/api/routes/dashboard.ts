@@ -1073,8 +1073,8 @@ dashboardRoutes.get('/news/summary', async (c) => {
     if (!geminiKey || geminiKey.startsWith('your_') || geminiKey.length < 10) return c.json({ summary: '' });
 
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
-    const genAI = new GoogleGenerativeAI(geminiKey, { apiVersion: 'v1' });
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash', generationConfig: { temperature: 0.2 } });
+    const genAI = new GoogleGenerativeAI(geminiKey);
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash', generationConfig: { temperature: 0.2 } }, { apiVersion: 'v1' });
 
     const headlines = raw.split('\n').filter(l => l.startsWith('- [')).map(l => {
       const m = l.match(/^\- \[(.+?)\]\(.+?\)\s*—\s*(.+)$/);
@@ -1120,11 +1120,11 @@ dashboardRoutes.get('/news/theme', async (c) => {
     }).slice(0, 20).join('\n');
 
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
-    const genAI = new GoogleGenerativeAI(geminiKey, { apiVersion: 'v1' });
+    const genAI = new GoogleGenerativeAI(geminiKey);
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.0-flash',
       generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
-    });
+    }, { apiVersion: 'v1' });
 
     const prompt = `아래 글로벌 금융 뉴스 헤드라인을 분석해서 오늘 한국 주식시장에서 가장 주목받을 테마/섹터를 1개 선정하고, 관련 한국 상장주 3~5개를 추천하세요.
 

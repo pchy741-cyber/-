@@ -17,7 +17,7 @@ const VERTEX_ENDPOINT = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1
 function getGenAI(): GoogleGenerativeAI | null {
   const key = config.ai.geminiKey || process.env.GEMINI_API_KEY;
   if (!key || key.startsWith('your_') || key.length < 10) return null;
-  return new GoogleGenerativeAI(key, { apiVersion: 'v1' });
+  return new GoogleGenerativeAI(key);
 }
 const auth = USE_VERTEX_AI ? new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] }) : null;
 
@@ -127,7 +127,7 @@ async function callGoogleAI(genAI: GoogleGenerativeAI, systemPrompt: string, use
       responseMimeType: 'application/json',
       temperature: 0.1,
     },
-  });
+  }, { apiVersion: 'v1' });
 
   const result = await model.generateContent([systemPrompt, userMessage]);
   return result.response.text();
