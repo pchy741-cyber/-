@@ -242,7 +242,7 @@ async function runClaudeAnalysis(
     logger.warn('Gemini API 키 미설정 — Track A 폴백 분석 스킵', { component: 'TRACK_A' });
     return [];
   }
-  const genAI = new GoogleGenerativeAI(key);
+  const genAI = new GoogleGenerativeAI(key, { apiVersion: 'v1' });
 
   const chartSummary = watchlist.map((stock) => {
     const candles = chartData.get(stock.stock_code) ?? [];
@@ -262,7 +262,7 @@ async function runClaudeAnalysis(
   logger.info(`Gemini Flash 통합 분석 시작 (${watchlist.length}개 종목, 모드: ${mode})`, { component: 'TRACK_A' });
 
   const model = genAI.getGenerativeModel({
-    model: 'gemini-1.5-flash',
+    model: 'gemini-2.0-flash',
     generationConfig: {
       responseMimeType: 'application/json',
       temperature: 0.2,

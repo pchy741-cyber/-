@@ -8,7 +8,7 @@ import type { GeminiAnalysis } from './gemini.js';
 function getGenAI(): GoogleGenerativeAI | null {
   const key = config.ai.geminiKey || process.env.GEMINI_API_KEY;
   if (!key || key.startsWith('your_') || key.length < 10) return null;
-  return new GoogleGenerativeAI(key);
+  return new GoogleGenerativeAI(key, { apiVersion: 'v1' });
 }
 
 /**
@@ -35,7 +35,7 @@ export async function runGPTScoring(params: {
   });
 
   const model = genAI.getGenerativeModel({
-    model: 'gemini-1.5-flash',
+    model: 'gemini-2.0-flash',
     generationConfig: {
       responseMimeType: 'application/json',
       temperature: 0.2,

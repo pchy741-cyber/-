@@ -5,7 +5,7 @@ import { logger } from '../../utils/logger.js';
 function getGenAI(): GoogleGenerativeAI | null {
   const key = config.ai.geminiKey || process.env.GEMINI_API_KEY;
   if (!key || key.startsWith('your_') || key.length < 10) return null;
-  return new GoogleGenerativeAI(key);
+  return new GoogleGenerativeAI(key, { apiVersion: 'v1' });
 }
 
 export interface OverseasStockInput {
@@ -75,7 +75,7 @@ export async function analyzeOverseasWithAI(
   const context = buildContext(stocks, availableCash, holdingCount, perfSummary, userInsights);
 
   const model = genAI.getGenerativeModel({
-    model: 'gemini-1.5-flash',
+    model: 'gemini-2.0-flash',
     generationConfig: {
       temperature: 0.1,
     },

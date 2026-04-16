@@ -9,7 +9,7 @@ import { BUY_BLOCKED_CODES } from './trading-rules.js';
 function getGenAI(): GoogleGenerativeAI | null {
   const key = config.ai.geminiKey || process.env.GEMINI_API_KEY;
   if (!key || key.startsWith('your_') || key.length < 10) return null;
-  return new GoogleGenerativeAI(key);
+  return new GoogleGenerativeAI(key, { apiVersion: 'v1' });
 }
 
 /**
@@ -35,7 +35,7 @@ export async function runGeminiExecution(params: {
   logger.info(`Gemini 실행 판단 시작 (모드: ${mode})`, { component: 'TRACK_B' });
 
   const model = genAI.getGenerativeModel({
-    model: 'gemini-1.5-flash',
+    model: 'gemini-2.0-flash',
     generationConfig: {
       responseMimeType: 'application/json',
       temperature: 0.1,
