@@ -2058,6 +2058,8 @@ function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist:
   const [summaryHeadlines, setSummaryHeadlines] = useState(0);
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [summaryRefreshing, setSummaryRefreshing] = useState(false);
+  const [geminiTest, setGeminiTest] = useState<{ ok: boolean; latencyMs: number; error: string | null; errorDetail: string | null } | null>(null);
+  const [geminiTesting, setGeminiTesting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [macroLoading, setMacroLoading] = useState(true);
   const [theme, setTheme] = useState<{ theme: string; reason: string; stocks: Array<{ code: string; name: string; market: string }> } | null>(null);
@@ -2080,6 +2082,15 @@ function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist:
       setWatchlist(Array.isArray(w) ? w : []);
     } catch { /* 이미 있거나 실패 */ }
     finally { setAddingCode(null); }
+  };
+
+  const testGemini = () => {
+    setGeminiTesting(true);
+    setGeminiTest(null);
+    api('/ai/gemini-test', { timeout: 15000 })
+      .then((d: any) => setGeminiTest(d))
+      .catch(() => setGeminiTest({ ok: false, latencyMs: 0, error: 'network', errorDetail: '서버에 연결할 수 없습니다' }))
+      .finally(() => setGeminiTesting(false));
   };
 
   const fetchSummary = (force = false) => {
@@ -2200,9 +2211,39 @@ function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist:
               </p>
             </div>
           )}
-          {/* 새로고침 버튼 */}
+
+          {/* Gemini 직접 연결 테스트 결과 */}
+          {geminiTest && (
+            <div className={`rounded-lg px-3 py-2.5 text-xs space-y-1 border ${geminiTest.ok ? 'bg-emerald-950/40 border-emerald-700/40' : 'bg-rose-950/40 border-rose-700/40'}`}>
+              <div className="flex items-center gap-2">
+                <span className={`font-semibold ${geminiTest.ok ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {geminiTest.ok ? '✓ Gemini 연결 성공' : '✗ Gemini 연결 실패'}
+                </span>
+                {geminiTest.latencyMs > 0 && (
+                  <span className="text-slate-500">{geminiTest.latencyMs.toLocaleString()}ms</span>
+                )}
+              </div>
+              {geminiTest.errorDetail && (
+                <p className="text-rose-300/80 leading-relaxed">{geminiTest.errorDetail}</p>
+              )}
+            </div>
+          )}
+
+          {/* 버튼 행 */}
           {!summaryLoading && (
-            <div className="flex justify-end">
+            <div className="flex items-center gap-2 justify-end flex-wrap">
+              <button
+                onClick={testGemini}
+                disabled={geminiTesting}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-violet-900/30 border border-violet-700/50 text-violet-300 hover:bg-violet-800/40 disabled:opacity-50 transition-colors"
+              >
+                {geminiTesting ? (
+                  <span className="w-3 h-3 border border-violet-400 border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <span>⚡</span>
+                )}
+                Gemini 연결 테스트
+              </button>
               <button
                 onClick={() => fetchSummary(true)}
                 disabled={summaryRefreshing}

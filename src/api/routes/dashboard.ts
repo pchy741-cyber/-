@@ -1291,6 +1291,43 @@ dashboardRoutes.get('/ai-status', (c) => {
   return c.json(getAiStatus());
 });
 
+// ── Gemini API 직접 연결 테스트 ──
+dashboardRoutes.get('/ai/gemini-test', async (c) => {
+  const start = Date.now();
+  const geminiKey = config.ai.geminiKey || process.env.GEMINI_API_KEY;
+
+  if (!geminiKey || geminiKey.startsWith('your_') || geminiKey.length < 10) {
+    return c.json({ ok: false, latencyMs: 0, model: '', error: 'no_key', errorDetail: 'GEMINI_API_KEY가 설정되지 않았습니다' });
+  }
+
+  try {
+    const { GoogleGenerativeAI } = await import('@google/generative-ai');
+    const genAI = new GoogleGenerativeAI(geminiKey);
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' }, { apiVersion: 'v1beta' });
+    const res = await Promise.race([
+      model.generateContent('안녕 (한 단어로만 대답)'),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout_10s')), 10000)),
+    ]);
+    const text = res.response.text();
+    const latencyMs = Date.now() - start;
+    return c.json({ ok: !!text, latencyMs, model: 'gemini-1.5-flash', error: null, errorDetail: null });
+  } catch (err) {
+    const errStr = String(err);
+    const latencyMs = Date.now() - start;
+    let error = 'unknown';
+    let errorDetail = errStr;
+
+    if (errStr.includes('timeout')) { error = 'timeout'; errorDetail = '10초 내 응답 없음 — 네트워크 또는 서버 과부하'; }
+    else if (errStr.includes('429') || errStr.includes('quota') || errStr.includes('Resource has been exhausted')) { error = 'quota'; errorDetail = '무료 할당량 초과 (429) — 내일 자동 초기화됩니다'; }
+    else if (errStr.includes('400') && errStr.includes('API key')) { error = 'invalid_key'; errorDetail = 'API 키가 유효하지 않습니다 (400)'; }
+    else if (errStr.includes('404')) { error = 'model_not_found'; errorDetail = '모델을 찾을 수 없습니다 (404) — gemini-1.5-flash'; }
+    else if (errStr.includes('403')) { error = 'permission'; errorDetail = '접근 권한 없음 (403) — API 키 권한 확인 필요'; }
+
+    logger.warn('Gemini 연결 테스트 실패', { error, errorDetail, component: 'GEMINI_TEST' });
+    return c.json({ ok: false, latencyMs, model: 'gemini-1.5-flash', error, errorDetail });
+  }
+});
+
 dashboardRoutes.get('/logs', async (c) => {
   const limit = Number(c.req.query('limit') ?? 100);
   const component = c.req.query('component');
