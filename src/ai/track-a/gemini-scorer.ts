@@ -35,11 +35,11 @@ export async function runGeminiScoring(params: {
   });
 
   const model = genAI.getGenerativeModel({
-    model: 'gemini-1.5-flash',
+    model: 'gemini-2.0-flash',
     generationConfig: {
       temperature: 0.2,
     },
-  }, { apiVersion: 'v1' });
+  }, { apiVersion: 'v1beta' });
 
   const userMessage = `## Gemini 분석 결과
 시장 분위기: ${geminiAnalysis.market_sentiment}
