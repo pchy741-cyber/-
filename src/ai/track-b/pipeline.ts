@@ -338,36 +338,15 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         decisions = [...filtered];
       } else {
         // ── 안정 모드: AI 엔진 전체 실패 (Claude + Gemini 모두 응답 없음) ──
-        // 자본 보존 최우선: 신규 매수/매도 금지, FORCE_CLOSE(하드 손절)만 허용
-        // 이유: AI 없이 기술 지표만으로 매도하면 변동성 구간에서 손실 확정 위험
-        logger.info(`🛡️ 안정 모드: AI 전체 실패 → 신규 매매 중단, FORCE_CLOSE만 허용 (스코어=${scores.length}개)`, { component: 'TRACK_B' });
-        const orderableCashForTech = Math.max(0, balance.orderableCash - ((balance as any).reservedWithdraw ?? 0));
-        const totalAssetsForTech = balance.totalEvalAmount + orderableCashForTech;
-        const techDecisions = technicalFallbackDecisions({
-          mode,
-          watchlist: watchlist.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
-          livePrices,
-          chartData,
-          openChains,
-          orderableCash: 0, // 신규 매수 예산 0 → BUY/AVERAGE_DOWN 불가
-          maxPositionKrw: config.risk.maxPositionKrw,
-          totalAssets: totalAssetsForTech,
-          lossBlockedCodes: recentLossCodes,
-          manuallySoldCodes,
-          aiScores: scores
-            .filter((s: any) => (s.confidence ?? 1) >= 0.6)
-            .map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
-          takeProfitPct: strategy?.take_profit_pct ?? undefined,
-          stopLossPct: strategy?.stop_loss_pct ?? undefined,
-          buyThreshold: strategy?.buy_threshold ?? undefined,
-        });
-        // FORCE_CLOSE(하드 손절)만 통과, 일반 SELL/PARTIAL_SELL/BUY 차단
-        decisions = techDecisions.filter((d) => d.action === 'FORCE_CLOSE');
-        if (decisions.length > 0) {
-          logger.info(`🛡️ 안정 모드: 하드 손절 ${decisions.length}건 실행 (FORCE_CLOSE)`, { component: 'TRACK_B' });
-        } else {
-          logger.info(`🛡️ 안정 모드: 포지션 유지 — 매매 없음`, { component: 'TRACK_B' });
-        }
+        // API 일시 단절(네트워크 오류, 할당량 초과 등)로 AI가 응답 못할 때
+        // → 매매 완전 중단, 포지션 전량 유지
+        // 이유: 일시적 API 오류로 강제 매도하면 정상 회복 구간에서 손실 확정됨
+        //        "API 끊김 = 매도 신호"가 아님
+        decisions = [];
+        logger.info(
+          `🛡️ 안정 모드: AI 전체 실패(일시적 API 오류) → 포지션 전량 유지, 매매 없음 (스코어=${scores.length}개)`,
+          { component: 'TRACK_B' },
+        );
       }
     }
 

@@ -30,15 +30,17 @@ import { runUnfilledOrderCheck } from './unfilled-order-job.js';
  * 타임아웃을 적용하여 작업 실행 (지정 시간 초과 시 에러 로그 후 스킵)
  */
 function withTimeout<T>(label: string, fn: () => Promise<T>, timeoutMs: number): Promise<T | undefined> {
-  return Promise.race([
-    fn(),
-    new Promise<undefined>((_, reject) =>
-      setTimeout(() => reject(new Error(`${label} 타임아웃 (${timeoutMs / 1000}초 초과)`)), timeoutMs),
-    ),
-  ]).catch((e) => {
-    logger.error(`${label}: ${e instanceof Error ? e.message : String(e)}`, { component: 'SCHEDULER' });
-    return undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} 타임아웃 (${timeoutMs / 1000}초 초과)`)), timeoutMs);
   });
+  return Promise.race([fn(), timeout])
+    .then((result) => { clearTimeout(timer); return result as T; })
+    .catch((e) => {
+      clearTimeout(timer);
+      logger.error(`${label}: ${e instanceof Error ? e.message : String(e)}`, { component: 'SCHEDULER' });
+      return undefined;
+    });
 }
 
 /**
@@ -420,6 +422,20 @@ export function startScheduler(): void {
     '0,30 6 * * 2-6',
     () => {
       runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🇺🇸 미국장 마감 후 미체결 주문 강제 취소 (06:35 KST)
+  // 마감 후에도 PENDING 남아있으면 자본이 묶이므로 즉시 정리
+  cron.schedule(
+    '35 6 * * 2-6',
+    async () => {
+      logger.info('🇺🇸 미국장 마감 — 미체결 PENDING 주문 강제 취소 시작', { component: 'SCHEDULER' });
+      const { cancelAllPendingOverseasOrders } = await import('./overseas-job.js');
+      await cancelAllPendingOverseasOrders().catch((e) =>
+        logger.error(`미국장 마감 미체결 취소 실패: ${e}`, { component: 'SCHEDULER' }),
+      );
     },
     { timezone: MARKET.TIMEZONE },
   );

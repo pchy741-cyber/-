@@ -2,8 +2,9 @@
 
 export type AiEngineStatus = 'ok' | 'no_credit' | 'quota' | 'error' | 'unknown';
 
-// quota/error 상태는 30분 후 자동 만료 → 무료 티어 쿨다운 후 재시도
+// 일반 에러는 30분 후 재시도, quota 초과는 24시간 대기 (무료 티어 일일 한도)
 const ERROR_TTL_MS = 30 * 60 * 1000;
+const QUOTA_TTL_MS = 24 * 60 * 60 * 1000;
 
 interface AiStatus {
   claude: AiEngineStatus;
@@ -55,11 +56,12 @@ export function setActiveEngine(engine: AiStatus['activeEngine']): void {
 export function getAiStatus(): Readonly<AiStatus> {
   // quota/error 30분 경과 시 자동 만료 → 재시도 허용
   const now = Date.now();
-  if (
-    (_status.gemini === 'quota' || _status.gemini === 'error') &&
-    _status.geminiErrorAt &&
-    now - _status.geminiErrorAt > ERROR_TTL_MS
-  ) {
+  if (_status.gemini === 'quota' && _status.geminiErrorAt && now - _status.geminiErrorAt > QUOTA_TTL_MS) {
+    _status.gemini = 'unknown';
+    delete _status.geminiErrorAt;
+    delete _status.geminiErrorMsg;
+  }
+  if (_status.gemini === 'error' && _status.geminiErrorAt && now - _status.geminiErrorAt > ERROR_TTL_MS) {
     _status.gemini = 'unknown';
     delete _status.geminiErrorAt;
     delete _status.geminiErrorMsg;

@@ -3,6 +3,7 @@ import { config } from '../config/index.js';
 import { getPool, insertOrder, logSystem, updateOrder } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import {
+  cancelOverseasOrder,
   getOverseasBalance,
   getOverseasDailyChart,
   getOverseasPrice,
@@ -271,7 +272,7 @@ async function getPendingOverseasStocks(): Promise<Set<string>> {
  * - 4시간 이상 PENDING: 타임아웃 처리 → CANCELLED
  * 이 함수가 없으면 PENDING 종목이 영구 스킵되어 매매 기회 소실
  */
-async function syncPendingOverseasOrders(): Promise<void> {
+export async function syncPendingOverseasOrders(): Promise<void> {
   try {
     const { rows } = await getPool().query(`
       SELECT id, stock_code, side, quantity, price,
@@ -393,6 +394,55 @@ async function confirmOverseasFillFromBalance(params: {
     finalQty: previousQty,
     finalAvgPrice: previousAvgPrice,
   };
+}
+
+/**
+ * 미국장 마감 시 모든 PENDING 해외주문 강제 취소
+ * syncPendingOverseasOrders()는 4시간 기준이라 마감 직전 주문은 안 잡힘
+ * → 이 함수는 나이 제한 없이 전부 취소
+ */
+export async function cancelAllPendingOverseasOrders(): Promise<void> {
+  try {
+    const { rows } = await getPool().query(`
+      SELECT id, stock_code, exchange, quantity, kis_order_no
+      FROM orders
+      WHERE trigger_source = 'OVERSEAS'
+        AND trading_mode = $1
+        AND status = 'PENDING'
+        AND created_at >= NOW() - INTERVAL '24 hours'
+      ORDER BY created_at ASC
+    `, [config.isPaper ? 'paper' : 'live']);
+
+    if (rows.length === 0) {
+      logger.info('🇺🇸 미국장 마감: 취소할 PENDING 주문 없음', { component: 'OVERSEAS' });
+      return;
+    }
+
+    logger.info(`🇺🇸 미국장 마감: PENDING 주문 ${rows.length}건 강제 취소`, { component: 'OVERSEAS' });
+    for (const order of rows) {
+      if (!order.kis_order_no) {
+        await getPool().query(`UPDATE orders SET status = 'CANCELLED', kis_status = 'MARKET_CLOSED' WHERE id = $1`, [order.id]);
+        continue;
+      }
+      const result = await cancelOverseasOrder({
+        stockCode: order.stock_code,
+        exchange: order.exchange ?? 'NASDAQ',
+        orderNo: order.kis_order_no,
+        quantity: Number(order.quantity),
+      }).catch(() => ({ success: false, message: 'cancel failed' }));
+
+      await getPool().query(
+        `UPDATE orders SET status = 'CANCELLED', kis_status = $1 WHERE id = $2`,
+        [result.success ? 'MARKET_CLOSED_CANCEL' : 'CANCEL_FAILED', order.id],
+      );
+      logger.info(
+        `  ${result.success ? '✅' : '⚠️'} ${order.stock_code} 취소 ${result.success ? '성공' : '실패'}: ${result.message}`,
+        { component: 'OVERSEAS' },
+      );
+    }
+  } catch (e) {
+    logger.error(`미국장 마감 PENDING 취소 실패: ${(e as Error).message}`, { component: 'OVERSEAS' });
+  }
 }
 
 /**

@@ -203,6 +203,36 @@ export async function placeOverseasOrder(params: {
 }
 
 /**
+ * 해외 주식 주문 취소
+ */
+export async function cancelOverseasOrder(params: {
+  stockCode: string;
+  exchange?: string;
+  orderNo: string;
+  quantity: number;
+}): Promise<{ success: boolean; message: string }> {
+  const { stockCode, exchange = 'NASDAQ', orderNo, quantity } = params;
+  const excd = ORDER_EXCD_MAP[exchange] ?? 'NASD';
+  const trId = config.isPaper ? 'VTTT1004U' : 'JTTT1004U';
+
+  const body: Record<string, string> = {
+    CANO: config.kis.accountNo,
+    ACNT_PRDT_CD: config.kis.accountProductCode,
+    OVRS_EXCG_CD: excd,
+    PDNO: stockCode,
+    ORGN_ODNO: orderNo,
+    ORD_SVR_DVSN_CD: '0',
+    RVSE_CNCL_DVSN_CD: '02', // 02 = 취소
+    ORD_QTY: String(quantity),
+    OVRS_ORD_UNPR: '0',
+    ORD_DVSN: '00',
+  };
+
+  const res = await overseasKisRequest({ path: '/uapi/overseas-stock/v1/trading/order-rvsecncl', method: 'POST', trId, body });
+  return { success: res.rtCd === '0', message: res.msg1 };
+}
+
+/**
  * 해외 주식 잔고 조회
  */
 export async function getOverseasBalance(exchange: string = 'NASDAQ') {
