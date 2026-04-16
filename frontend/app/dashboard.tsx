@@ -2058,8 +2058,9 @@ function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist:
   const [summaryHeadlines, setSummaryHeadlines] = useState(0);
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [summaryRefreshing, setSummaryRefreshing] = useState(false);
-  const [geminiTest, setGeminiTest] = useState<{ ok: boolean; latencyMs: number; error: string | null; errorDetail: string | null } | null>(null);
+  const [geminiTest, setGeminiTest] = useState<{ ok: boolean; latencyMs: number; model: string; error: string | null; errorDetail: string | null; rawError: string; response?: string } | null>(null);
   const [geminiTesting, setGeminiTesting] = useState(false);
+  const [aiEngineStatus, setAiEngineStatus] = useState<{ gemini: string; claude: string; activeEngine: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [macroLoading, setMacroLoading] = useState(true);
   const [theme, setTheme] = useState<{ theme: string; reason: string; stocks: Array<{ code: string; name: string; market: string }> } | null>(null);
@@ -2089,7 +2090,7 @@ function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist:
     setGeminiTest(null);
     api('/ai/gemini-test', { timeout: 15000 })
       .then((d: any) => setGeminiTest(d))
-      .catch(() => setGeminiTest({ ok: false, latencyMs: 0, error: 'network', errorDetail: '서버에 연결할 수 없습니다' }))
+      .catch(() => setGeminiTest({ ok: false, latencyMs: 0, model: '', error: 'network', errorDetail: '서버에 연결할 수 없습니다', rawError: '' }))
       .finally(() => setGeminiTesting(false));
   };
 
@@ -2118,6 +2119,10 @@ function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist:
       .finally(() => setMacroLoading(false));
 
     fetchSummary(false);
+
+    api('/ai-status')
+      .then((d: any) => setAiEngineStatus(d))
+      .catch(() => {});
 
     api('/news/theme', { timeout: 35000 })
       .then((data: any) => setTheme(data?.theme ? data : null))
@@ -2212,19 +2217,37 @@ function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist:
             </div>
           )}
 
+          {/* 트레이딩봇 AI 엔진 상태 */}
+          {aiEngineStatus && (
+            <div className="rounded-lg px-3 py-2 text-xs bg-slate-900/60 border border-slate-700/40 flex flex-wrap items-center gap-x-4 gap-y-1">
+              <span className="text-slate-500 shrink-0">트레이딩봇 감지:</span>
+              <span className={`flex items-center gap-1 ${aiEngineStatus.gemini === 'ok' ? 'text-emerald-400' : aiEngineStatus.gemini === 'quota' ? 'text-amber-400' : aiEngineStatus.gemini === 'error' ? 'text-rose-400' : 'text-slate-500'}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${aiEngineStatus.gemini === 'ok' ? 'bg-emerald-400' : aiEngineStatus.gemini === 'quota' ? 'bg-amber-400' : aiEngineStatus.gemini === 'error' ? 'bg-rose-400' : 'bg-slate-600'}`} />
+                Gemini: {aiEngineStatus.gemini === 'ok' ? '정상' : aiEngineStatus.gemini === 'quota' ? '할당량 초과' : aiEngineStatus.gemini === 'error' ? '오류' : aiEngineStatus.gemini}
+              </span>
+              <span className="text-slate-600">활성: {aiEngineStatus.activeEngine}</span>
+            </div>
+          )}
+
           {/* Gemini 직접 연결 테스트 결과 */}
           {geminiTest && (
-            <div className={`rounded-lg px-3 py-2.5 text-xs space-y-1 border ${geminiTest.ok ? 'bg-emerald-950/40 border-emerald-700/40' : 'bg-rose-950/40 border-rose-700/40'}`}>
-              <div className="flex items-center gap-2">
+            <div className={`rounded-lg px-3 py-2.5 text-xs space-y-1.5 border ${geminiTest.ok ? 'bg-emerald-950/40 border-emerald-700/40' : 'bg-rose-950/40 border-rose-700/40'}`}>
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className={`font-semibold ${geminiTest.ok ? 'text-emerald-400' : 'text-rose-400'}`}>
-                  {geminiTest.ok ? '✓ Gemini 연결 성공' : '✗ Gemini 연결 실패'}
+                  {geminiTest.ok ? `✓ 연결 성공 (${geminiTest.model})` : `✗ 연결 실패 (${geminiTest.model})`}
                 </span>
                 {geminiTest.latencyMs > 0 && (
                   <span className="text-slate-500">{geminiTest.latencyMs.toLocaleString()}ms</span>
                 )}
               </div>
               {geminiTest.errorDetail && (
-                <p className="text-rose-300/80 leading-relaxed">{geminiTest.errorDetail}</p>
+                <p className="text-amber-200/80 leading-relaxed">{geminiTest.errorDetail}</p>
+              )}
+              {geminiTest.rawError && (
+                <pre className="text-rose-300/60 font-mono text-[10px] whitespace-pre-wrap break-all leading-relaxed max-h-20 overflow-y-auto">{geminiTest.rawError}</pre>
+              )}
+              {geminiTest.response && (
+                <p className="text-emerald-300/70">응답: "{geminiTest.response}"</p>
               )}
             </div>
           )}

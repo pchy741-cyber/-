@@ -1297,34 +1297,42 @@ dashboardRoutes.get('/ai/gemini-test', async (c) => {
   const geminiKey = config.ai.geminiKey || process.env.GEMINI_API_KEY;
 
   if (!geminiKey || geminiKey.startsWith('your_') || geminiKey.length < 10) {
-    return c.json({ ok: false, latencyMs: 0, model: '', error: 'no_key', errorDetail: 'GEMINI_API_KEY가 설정되지 않았습니다' });
+    return c.json({ ok: false, latencyMs: 0, model: '', error: 'no_key', errorDetail: 'GEMINI_API_KEY가 설정되지 않았습니다', rawError: '' });
   }
 
+  // 테스트 1: gemini-2.0-flash (v1beta) — 실제 트레이딩 봇과 동일 설정
+  const TEST_MODEL = 'gemini-2.0-flash';
   try {
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(geminiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' }, { apiVersion: 'v1beta' });
+    const model = genAI.getGenerativeModel({ model: TEST_MODEL }, { apiVersion: 'v1beta' });
     const res = await Promise.race([
-      model.generateContent('안녕 (한 단어로만 대답)'),
+      model.generateContent('Reply with exactly one word: OK'),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout_10s')), 10000)),
     ]);
     const text = res.response.text();
     const latencyMs = Date.now() - start;
-    return c.json({ ok: !!text, latencyMs, model: 'gemini-1.5-flash', error: null, errorDetail: null });
+    return c.json({ ok: !!text, latencyMs, model: TEST_MODEL, error: null, errorDetail: null, rawError: '', response: text?.slice(0, 50) });
   } catch (err) {
     const errStr = String(err);
     const latencyMs = Date.now() - start;
     let error = 'unknown';
-    let errorDetail = errStr;
+    let errorDetail = `원인 불명 — 로그를 확인하세요`;
+    const rawError = errStr.slice(0, 300); // 실제 에러 메시지 그대로 노출
 
-    if (errStr.includes('timeout')) { error = 'timeout'; errorDetail = '10초 내 응답 없음 — 네트워크 또는 서버 과부하'; }
-    else if (errStr.includes('429') || errStr.includes('quota') || errStr.includes('Resource has been exhausted')) { error = 'quota'; errorDetail = '무료 할당량 초과 (429) — 내일 자동 초기화됩니다'; }
-    else if (errStr.includes('400') && errStr.includes('API key')) { error = 'invalid_key'; errorDetail = 'API 키가 유효하지 않습니다 (400)'; }
-    else if (errStr.includes('404')) { error = 'model_not_found'; errorDetail = '모델을 찾을 수 없습니다 (404) — gemini-1.5-flash'; }
-    else if (errStr.includes('403')) { error = 'permission'; errorDetail = '접근 권한 없음 (403) — API 키 권한 확인 필요'; }
+    if (errStr.includes('timeout')) { error = 'timeout'; errorDetail = '10초 내 응답 없음 — Cloud Run 네트워크 또는 Gemini 서버 과부하'; }
+    else if (errStr.includes('429') || errStr.includes('quota') || errStr.includes('RESOURCE_EXHAUSTED') || errStr.includes('Resource has been exhausted')) {
+      error = 'quota'; errorDetail = '무료 할당량 초과 (429) — Google AI Studio에서 사용량 확인 후 내일 재시도';
+    }
+    else if ((errStr.includes('400') && (errStr.includes('API key') || errStr.includes('API_KEY'))) || errStr.includes('INVALID_ARGUMENT')) {
+      error = 'invalid_key'; errorDetail = 'API 키가 유효하지 않습니다 — 설정에서 키를 재발급하세요';
+    }
+    else if (errStr.includes('404') || errStr.includes('NOT_FOUND')) { error = 'model_not_found'; errorDetail = `모델 없음 (404) — ${TEST_MODEL} 접근 불가`; }
+    else if (errStr.includes('403') || errStr.includes('PERMISSION_DENIED')) { error = 'permission'; errorDetail = '접근 권한 없음 (403) — API 키 허용 범위 확인 필요'; }
+    else if (errStr.includes('503') || errStr.includes('UNAVAILABLE')) { error = 'unavailable'; errorDetail = 'Gemini 서비스 일시 불가 (503) — 잠시 후 재시도'; }
 
-    logger.warn('Gemini 연결 테스트 실패', { error, errorDetail, component: 'GEMINI_TEST' });
-    return c.json({ ok: false, latencyMs, model: 'gemini-1.5-flash', error, errorDetail });
+    logger.warn('Gemini 연결 테스트 실패', { error, rawError, component: 'GEMINI_TEST' });
+    return c.json({ ok: false, latencyMs, model: TEST_MODEL, error, errorDetail, rawError });
   }
 });
 
