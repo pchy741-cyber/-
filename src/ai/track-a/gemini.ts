@@ -124,7 +124,6 @@ async function callGoogleAI(genAI: GoogleGenerativeAI, systemPrompt: string, use
   const model = genAI.getGenerativeModel({
     model: 'gemini-2.0-flash',
     generationConfig: {
-      responseMimeType: 'application/json',
       temperature: 0.1,
     },
   }, { apiVersion: 'v1' });
@@ -146,7 +145,6 @@ async function callVertexAI(systemPrompt: string, userMessage: string): Promise<
       },
     ],
     generationConfig: {
-      responseMimeType: 'application/json',
       temperature: 0.1,
     },
   };
