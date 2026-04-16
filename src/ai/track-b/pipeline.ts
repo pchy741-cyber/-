@@ -555,6 +555,31 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       }
     }
 
+    // ── 최종 중복 매도 신호 제거 (AI 출력 오류 or 다중 체인 방어) ──
+    // 우선순위: FORCE_CLOSE > SELL > PARTIAL_SELL (더 강한 신호 유지)
+    {
+      const SELL_PRIORITY: Record<string, number> = { FORCE_CLOSE: 3, SELL: 2, PARTIAL_SELL: 1 };
+      const sellMap = new Map<string, (typeof decisions)[0]>();
+      const nonSellDecisions: typeof decisions = [];
+      for (const d of decisions) {
+        if (['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action) && d.stock_code) {
+          const existing = sellMap.get(d.stock_code);
+          if (!existing || (SELL_PRIORITY[d.action] ?? 0) > (SELL_PRIORITY[existing.action] ?? 0)) {
+            sellMap.set(d.stock_code, d);
+          } else {
+            logger.warn(
+              `🔇 중복 매도 신호 제거: ${d.stock_code} ${d.action} (이미 ${existing.action} 존재)`,
+              { component: 'TRACK_B' },
+            );
+          }
+        } else {
+          nonSellDecisions.push(d);
+        }
+      }
+      decisions.length = 0;
+      decisions.push(...nonSellDecisions, ...sellMap.values());
+    }
+
     // 현재가 없는 BUY 결정 제외 (가격 조회 불가 종목 → 매수 불가)
     const actionable = decisions.filter((d) => {
       if (d.action !== 'HOLD' && (d.action === 'BUY' || d.action === 'AVERAGE_DOWN')) {

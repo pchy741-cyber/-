@@ -47,12 +47,17 @@ export function technicalFallbackDecisions(params: {
   const decisions: TradeDecision[] = [];
 
   // 1. 보유 종목 매도 판단 (손절/익절)
+  // 동일 종목에 다중 체인(분할 매수)이 있을 경우 중복 매도 신호 방지
+  const processedSellCodes = new Set<string>();
   for (const chain of openChains) {
     const price = livePrices.get(chain.stock_code);
     if (!price || !chain.avg_buy_price) continue;
 
     const avgBuy = Number(chain.avg_buy_price);
     const pnlPct = ((price.currentPrice - avgBuy) / avgBuy) * 100;
+
+    // 동일 종목 중복 매도 신호 방지 (다중 체인 시 첫 번째 체인만 처리)
+    if (processedSellCodes.has(chain.stock_code)) continue;
 
     // 익절
     if (pnlPct >= strategyParams.takeProfitPct) {
@@ -66,6 +71,7 @@ export function technicalFallbackDecisions(params: {
           reasoning: `기술적 익절: +${pnlPct.toFixed(1)}% (목표 ${strategyParams.takeProfitPct}%)`,
           confidence: 0.9,
         });
+        processedSellCodes.add(chain.stock_code);
         continue;
       }
     }
@@ -82,6 +88,7 @@ export function technicalFallbackDecisions(params: {
         reasoning: `트레일링 스톱: 익절 후 수익 소멸 ${pnlPct.toFixed(1)}% → +0.5% 이하 (원금 보호 조기 청산)`,
         confidence: 0.85,
       });
+      processedSellCodes.add(chain.stock_code);
       continue;
     }
 
@@ -95,6 +102,7 @@ export function technicalFallbackDecisions(params: {
         reasoning: `기술적 손절: ${pnlPct.toFixed(1)}% (한도 ${strategyParams.stopLossPct}%)`,
         confidence: 0.95,
       });
+      processedSellCodes.add(chain.stock_code);
       continue;
     }
 
@@ -111,6 +119,7 @@ export function technicalFallbackDecisions(params: {
           reasoning: `기술적 매도: RSI=${tech.rsi14.toFixed(0)} MACD=${tech.macdCrossover} score=${tech.score}`,
           confidence: 0.7,
         });
+        processedSellCodes.add(chain.stock_code);
       }
     }
   }
