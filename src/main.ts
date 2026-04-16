@@ -194,6 +194,27 @@ async function bootstrap() {
   // 6. 스케줄러 시작
   startScheduler();
 
+  // 6-1. 오늘 AI 점수가 없으면 즉시 Track A 실행 (재배포 후 점수 공백 자동 복구)
+  try {
+    const { getActiveWatchlist, getLatestScores } = await import('./db/client.js');
+    const wl = await getActiveWatchlist();
+    const codes = wl.map((w: any) => w.stock_code).slice(0, 5);
+    if (codes.length > 0) {
+      const scores = await getLatestScores(codes);
+      const today = new Date().toISOString().split('T')[0];
+      const hasTodayScore = scores.some((s: any) => s.score_date === today && (s.composite_score ?? 0) > 0);
+      if (!hasTodayScore) {
+        logger.info('🔄 오늘 AI 점수 없음 → Track A 자동 실행', { component: 'BOOT' });
+        const { runTrackAJob } = await import('./scheduler/track-a-job.js');
+        runTrackAJob().catch((e: Error) => logger.error(`부팅 Track A 실패: ${e.message}`, { component: 'BOOT' }));
+      } else {
+        logger.info('✅ 오늘 AI 점수 존재 — Track A 스킵', { component: 'BOOT' });
+      }
+    }
+  } catch (e: any) {
+    logger.warn(`부팅 Track A 체크 실패: ${e.message}`, { component: 'BOOT' });
+  }
+
   // 6. Hono 서버 시작
   serve({ fetch: rootApp.fetch, port: PORT }, () => {
     logger.info(`🚀 Hono 서버 시작: http://localhost:${PORT}`, { component: 'BOOT' });
