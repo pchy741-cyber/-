@@ -147,7 +147,7 @@ async function callAgent(role: 'BULL' | 'BEAR', prompt: string): Promise<{ argum
         : '당신은 월가의 비관적 리스크 매니저입니다. 모든 리스크를 날카롭게 지적하되, 근거 없는 비관은 금지합니다. 반드시 JSON으로만 응답하세요.';
 
     const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-1.5-flash',
       systemInstruction,
       generationConfig: {
         temperature: role === 'BULL' ? 0.3 : 0.4,
@@ -185,7 +185,7 @@ async function callJudge(
 
   try {
     const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-1.5-flash',
       systemInstruction:
         '당신은 공정한 투자 심판입니다. Bull과 Bear 양측의 논거를 객관적으로 평가하여 최종 판결을 내리세요. 감정이 아닌 데이터와 논리만으로 판단합니다. 반드시 JSON으로만 응답하세요.',
       generationConfig: {

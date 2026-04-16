@@ -1074,7 +1074,7 @@ dashboardRoutes.get('/news/summary', async (c) => {
 
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(geminiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash', generationConfig: { temperature: 0.2 } }, { apiVersion: 'v1' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash', generationConfig: { temperature: 0.2 } }, { apiVersion: 'v1' });
 
     const headlines = raw.split('\n').filter(l => l.startsWith('- [')).map(l => {
       const m = l.match(/^\- \[(.+?)\]\(.+?\)\s*—\s*(.+)$/);
@@ -1122,7 +1122,7 @@ dashboardRoutes.get('/news/theme', async (c) => {
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(geminiKey);
     const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-1.5-flash',
       generationConfig: { temperature: 0.2 },
     }, { apiVersion: 'v1' });
 
