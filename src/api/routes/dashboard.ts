@@ -26,9 +26,14 @@ export const dashboardRoutes = new Hono();
 // ── 환율 캐시 (1시간 TTL, 실패 시 1420 폴백) ──
 let _fxCache = { rate: 1420, fetchedAt: 0 };
 
-// ── 뉴스 요약 캐시 (30분 TTL) ──
+// ── 뉴스 요약 캐시 (2시간 TTL) ──
 let _newsSummaryCache = { summary: '', fetchedAt: 0 };
 const NEWS_SUMMARY_TTL = 120 * 60 * 1000; // 2시간 캐시 (AI 호출 절약)
+
+// ── 오늘의 테마 캐시 (2시간 TTL) ──
+interface NewsTheme { theme: string; reason: string; stocks: Array<{ code: string; name: string; market: string }> }
+let _newsThemeCache: { data: NewsTheme | null; fetchedAt: number } = { data: null, fetchedAt: 0 };
+const NEWS_THEME_TTL = 120 * 60 * 1000;
 const GARBLED_NAME_REGEX = /[^\w\s\uAC00-\uD7A3\u3131-\u318E\u1100-\u11FF().,·\-+%$]/;
 const KNOWN_GLOBAL_STOCK_NAMES: Record<string, string> = {
   AAPL: 'Apple',
@@ -1069,7 +1074,7 @@ dashboardRoutes.get('/news/summary', async (c) => {
 
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(geminiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash', generationConfig: { temperature: 0.2 } });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash', generationConfig: { temperature: 0.2 } });
 
     const headlines = raw.split('\n').filter(l => l.startsWith('- [')).map(l => {
       const m = l.match(/^\- \[(.+?)\]\(.+?\)\s*—\s*(.+)$/);
@@ -1087,6 +1092,73 @@ dashboardRoutes.get('/news/summary', async (c) => {
   } catch (err) {
     logger.error('뉴스 요약 생성 실패', { error: String(err), component: 'NEWS_SUMMARY' });
     return c.json({ summary: '' });
+  }
+});
+
+// ── 오늘의 테마 + 추천 종목 (Gemini 2.0 Flash — 무료 티어) ──
+dashboardRoutes.get('/news/theme', async (c) => {
+  try {
+    if (_newsThemeCache.data && Date.now() - _newsThemeCache.fetchedAt < NEWS_THEME_TTL) {
+      return c.json(_newsThemeCache.data);
+    }
+
+    const { collectMacroNews } = await import('../../automation/news-collector.js');
+    const raw = await Promise.race([
+      collectMacroNews(),
+      new Promise<string>((resolve) => setTimeout(() => resolve(''), 20000)),
+    ]);
+    if (!raw) return c.json({ theme: '', reason: '', stocks: [] });
+
+    const geminiKey = config.ai.geminiKey || process.env.GEMINI_API_KEY;
+    if (!geminiKey || geminiKey.startsWith('your_') || geminiKey.length < 10) {
+      return c.json({ theme: '', reason: '', stocks: [] });
+    }
+
+    const headlines = raw.split('\n').filter(l => l.startsWith('- [')).map(l => {
+      const m = l.match(/^\- \[(.+?)\]\(.+?\)\s*—\s*(.+)$/);
+      return m ? `${m[1]} (${m[2]})` : l.replace(/^- /, '');
+    }).slice(0, 20).join('\n');
+
+    const { GoogleGenerativeAI } = await import('@google/generative-ai');
+    const genAI = new GoogleGenerativeAI(geminiKey);
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.0-flash',
+      generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
+    });
+
+    const prompt = `아래 글로벌 금융 뉴스 헤드라인을 분석해서 오늘 한국 주식시장에서 가장 주목받을 테마/섹터를 1개 선정하고, 관련 한국 상장주 3~5개를 추천하세요.
+
+헤드라인:
+${headlines}
+
+반드시 아래 JSON 형식으로만 응답하세요:
+{
+  "theme": "테마명 (예: AI 반도체, 방산, 2차전지, 바이오 등)",
+  "reason": "한 문장으로 이 테마를 선택한 이유 (투자자 관점)",
+  "stocks": [
+    {"code": "005930", "name": "삼성전자", "market": "KOSPI"},
+    {"code": "000660", "name": "SK하이닉스", "market": "KOSPI"}
+  ]
+}
+
+주의: code는 반드시 실제 한국거래소 6자리 종목코드, market은 KOSPI 또는 KOSDAQ`;
+
+    const res = await model.generateContent(prompt);
+    const text = res.response.text() ?? '';
+
+    let data: NewsTheme;
+    try {
+      data = JSON.parse(text) as NewsTheme;
+      if (!data.theme || !Array.isArray(data.stocks)) throw new Error('invalid');
+    } catch {
+      return c.json({ theme: '', reason: '', stocks: [] });
+    }
+
+    _newsThemeCache = { data, fetchedAt: Date.now() };
+    return c.json(data);
+  } catch (err) {
+    logger.error('오늘의 테마 생성 실패', { error: String(err), component: 'NEWS_THEME' });
+    return c.json({ theme: '', reason: '', stocks: [] });
   }
 });
 

@@ -35,7 +35,7 @@ export async function runGeminiScoring(params: {
   });
 
   const model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-pro-preview-05-06',
+    model: 'gemini-2.0-flash',
     generationConfig: {
       responseMimeType: 'application/json',
       temperature: 0.2,
