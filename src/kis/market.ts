@@ -15,6 +15,8 @@ export interface CurrentPrice {
   lowPrice: number;
   openPrice: number;
   prevClosePrice: number;
+  dividendYield: number; // 배당수익률 (%, dvr 필드)
+  per: number;           // PER
 }
 
 export async function getCurrentPrice(stockCode: string): Promise<CurrentPrice> {
@@ -40,6 +42,8 @@ export async function getCurrentPrice(stockCode: string): Promise<CurrentPrice> 
     lowPrice: Number(o.stck_lwpr),
     openPrice: Number(o.stck_oprc),
     prevClosePrice: Number(o.stck_sdpr),
+    dividendYield: Number(o.dvr ?? 0),
+    per: Number(o.per ?? 0),
   };
 }
 

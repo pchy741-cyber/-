@@ -1,7 +1,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { cacheScores } from '../../cache/redis.js';
 import { getActiveStrategy, getActiveWatchlist, getPool, getRecentSources, isMemoryMode, logSystem, upsertAIScore } from '../../db/client.js';
-import { type DailyCandle, getDailyChart, getVolumeRankingStocks, getChangeRankingStocks } from '../../kis/market.js';
+import { type DailyCandle, getDailyChart, getVolumeRankingStocks, getChangeRankingStocks, getBatchPrices } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { config } from '../../config/index.js';
 import { type ScoringResult } from '../../db/models.js';
@@ -112,6 +112,18 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       }
     }
 
+    // 3-b. 종목별 배당수익률 일괄 조회 (현재가 API의 dvr 필드)
+    const dividendData = new Map<string, number>();
+    try {
+      const priceMap = await getBatchPrices(allStocks.map((s) => s.stock_code));
+      for (const [code, price] of priceMap.entries()) {
+        if (price.dividendYield > 0) dividendData.set(code, price.dividendYield);
+      }
+      logger.info(`배당수익률 조회: ${dividendData.size}개 종목`, { component: 'TRACK_A' });
+    } catch (err) {
+      logger.warn(`배당수익률 조회 실패 (스킵): ${err}`, { component: 'TRACK_A' });
+    }
+
     // 4. CEO 참고소스 로드 (market_sources 테이블 → Gemini 서론 주입)
     const dbSources = await getRecentSources(10);
     let combinedSources = additionalSources ?? '';
@@ -134,6 +146,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         mode,
         watchlist: allStocks,
         chartData,
+        dividendData: dividendData.size > 0 ? dividendData : undefined,
         additionalSources: combinedSources || undefined,
         customPrompt: customGeminiPrompt ?? undefined,
       });

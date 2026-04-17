@@ -186,7 +186,8 @@ export async function buildTrackBContext(params: {
     const disclosureInfo =
       highDisclosures.length > 0 ? ` | 📋 중요공시: ${highDisclosures.map((d) => d.report_nm).join(', ')}` : '';
 
-    let line = `📊 ${score.stock_code} | 스코어: ${score.composite_score}점 (${score.signal}) | 현재가: ${price.currentPrice.toLocaleString()} (${price.changePct > 0 ? '+' : ''}${price.changePct}%)${flowInfo}${sentimentInfo}${consensusInfo}${shortInfo}${disclosureInfo}`;
+    const dvrInfo = price.dividendYield > 0 ? ` | 배당: ${price.dividendYield.toFixed(2)}%` : '';
+    let line = `📊 ${score.stock_code} | 스코어: ${score.composite_score}점 (${score.signal}) | 현재가: ${price.currentPrice.toLocaleString()} (${price.changePct > 0 ? '+' : ''}${price.changePct}%)${dvrInfo}${flowInfo}${sentimentInfo}${consensusInfo}${shortInfo}${disclosureInfo}`;
 
     if (chain) {
       const pnlPct = chain.avg_buy_price

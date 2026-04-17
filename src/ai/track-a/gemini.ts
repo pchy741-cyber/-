@@ -52,10 +52,11 @@ export async function runGeminiAnalysis(params: {
   mode: string;
   watchlist: Array<{ stock_code: string; stock_name: string }>;
   chartData: Map<string, DailyCandle[]>;
+  dividendData?: Map<string, number>; // 종목별 배당수익률 (%)
   additionalSources?: string; // CEO가 입력한 유튜브/리포트 텍스트
   customPrompt?: string; // CEO 커스텀 프롬프트 (대시보드에서 입력)
 }): Promise<GeminiAnalysis> {
-  const { mode, watchlist, chartData, additionalSources, customPrompt } = params;
+  const { mode, watchlist, chartData, dividendData, additionalSources, customPrompt } = params;
 
   // 기본 프롬프트 + CEO 커스텀 프롬프트 병합 (항상 기본이 베이스)
   const basePrompt = buildGeminiPrompt(mode);
@@ -72,8 +73,10 @@ export async function runGeminiAnalysis(params: {
       const high52w = Math.max(...candles.map((c) => c.high));
       const dropFromHigh = latest ? (((latest.close - high52w) / high52w) * 100).toFixed(1) : 'N/A';
 
+      const dvr = dividendData?.get(stock.stock_code) ?? 0;
+      const dvrText = dvr > 0 ? `, 배당수익률: ${dvr.toFixed(2)}%` : '';
       return `${stock.stock_name}(${stock.stock_code}):
-  최근 종가: ${latest?.close}, 52주 고가: ${high52w}, 고점 대비: ${dropFromHigh}%
+  최근 종가: ${latest?.close}, 52주 고가: ${high52w}, 고점 대비: ${dropFromHigh}%${dvrText}
   최근 5일 거래량: ${candles
     .slice(0, 5)
     .map((c) => c.volume)
