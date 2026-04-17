@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
+import { Panel, Card, Indicator, SideBadge, StatusBadge, ModeBadge, EmptyMsg, Sel, NumInput, LoadBtn } from '@/components/ui';
 
 // ═══════════════════════════════════════
 // API
@@ -99,16 +100,6 @@ function useToast() {
   return { show, ToastContainer };
 }
 
-// ── 로딩 버튼 ──
-function LoadBtn({ children, onClick, className = '', disabled = false }: { children: React.ReactNode; onClick: () => Promise<void>; className?: string; disabled?: boolean }) {
-  const [busy, setBusy] = useState(false);
-  return (
-    <button disabled={busy || disabled} onClick={async () => { setBusy(true); try { await onClick(); } finally { setBusy(false); } }}
-      className={`${className} ${busy ? 'opacity-60 cursor-wait' : ''}`}>
-      {busy ? <span className="flex items-center gap-1.5"><span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />{children}</span> : children}
-    </button>
-  );
-}
 
 // ═══════════════════════════════════════
 // Dashboard
@@ -278,7 +269,7 @@ export default function Dashboard() {
         {/* Kill Switch — always visible */}
         <div className="p-3 border-t border-white/[0.04] space-y-2">
           <button onClick={toggleKill}
-            className={`w-full py-2.5 rounded-xl text-[11px] font-bold transition-all ${killSwitch?.active ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/30' : 'bg-emerald-900/40 hover:bg-emerald-900/60 text-emerald-400'}`}>
+            className={`w-full py-3 rounded-xl text-xs font-bold transition-all ${killSwitch?.active ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/30' : 'bg-emerald-900/40 hover:bg-emerald-900/60 text-emerald-400'}`}>
             {killSwitch?.active ? '⏸ 매매 중단 중' : '▶ 자동매매 중'}
           </button>
           <button onClick={load} className="w-full py-2 rounded-xl text-[10px] text-slate-600 hover:text-slate-400 bg-white/[0.02] hover:bg-white/[0.04] transition-all font-medium">
@@ -295,8 +286,8 @@ export default function Dashboard() {
             <svg width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18M3 12h18M3 18h18" /></svg>
           </button>
           <span className="font-bold text-sm bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">QUANTOPS</span>
-          <button onClick={toggleKill} className={`ml-auto px-3 py-1.5 rounded-lg text-[10px] font-bold ${killSwitch?.active ? 'bg-rose-600 text-white' : 'bg-emerald-900/40 text-emerald-400'}`}>
-            {killSwitch?.active ? '중단 중' : '자동 중'}
+          <button onClick={toggleKill} className={`ml-auto px-4 py-2 rounded-xl text-xs font-bold min-h-[36px] whitespace-nowrap ${killSwitch?.active ? 'bg-rose-600 text-white' : 'bg-emerald-900/40 text-emerald-400'}`}>
+            {killSwitch?.active ? '⏸ 중단 중' : '▶ 자동 중'}
           </button>
         </header>
 
@@ -1119,7 +1110,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
             setTimeout(() => setRunningTrackA(false), 300000);
           }}
           disabled={runningTrackA}
-          className="px-3 py-1.5 text-[11px] rounded-lg bg-blue-500/20 hover:bg-blue-500/40 text-blue-300 font-semibold disabled:opacity-50 transition-colors"
+          className="px-3.5 py-2 text-xs rounded-xl bg-blue-500/20 hover:bg-blue-500/40 text-blue-300 font-semibold disabled:opacity-50 transition-colors whitespace-nowrap shrink-0"
         >
           {runningTrackA ? '분석 중...' : '점수 갱신'}
         </button>
@@ -1130,7 +1121,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
             setTimeout(() => setRunningTrackB(false), 30000);
           }}
           disabled={runningTrackB}
-          className="px-3 py-1.5 text-[11px] rounded-lg bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 font-semibold disabled:opacity-50 transition-colors"
+          className="px-3.5 py-2 text-xs rounded-xl bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 font-semibold disabled:opacity-50 transition-colors whitespace-nowrap shrink-0"
         >
           {runningTrackB ? '실행 중...' : '지금 실행'}
         </button>
@@ -1143,12 +1134,12 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
             ? 'border-rose-500/40 bg-rose-500/10'
             : 'border-amber-500/30 bg-amber-500/[0.07]'
         }`}>
-          <div className="flex items-center gap-2 mb-2">
-            <span className="text-base">{tradingStatus.overallStatus === 'BLOCKED' ? '🚫' : '👀'}</span>
-            <span className={`text-sm font-bold ${tradingStatus.overallStatus === 'BLOCKED' ? 'text-rose-300' : 'text-amber-300'}`}>
-              {tradingStatus.overallStatus === 'BLOCKED' ? '매수 완전 차단 중' : '관망 중 — 매수 조건 미충족'}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-2">
+            <span className="text-base shrink-0">{tradingStatus.overallStatus === 'BLOCKED' ? '🚫' : '👀'}</span>
+            <span className={`text-sm font-bold whitespace-nowrap ${tradingStatus.overallStatus === 'BLOCKED' ? 'text-rose-300' : 'text-amber-300'}`}>
+              {tradingStatus.overallStatus === 'BLOCKED' ? '매수 완전 차단 중' : '관망 중'}
             </span>
-            <span className="ml-auto text-[10px] text-slate-500">{tradingStatus.mode} · 기준점수 {tradingStatus.buyThreshold}</span>
+            <span className="text-[10px] text-slate-500 ml-auto whitespace-nowrap">{tradingStatus.mode} · {tradingStatus.buyThreshold}점</span>
           </div>
           <div className="flex flex-wrap gap-2">
             {(tradingStatus.blocks ?? []).map((b: any, i: number) => (
@@ -1166,7 +1157,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
               {tradingStatus.candidateCount > 0 && <span className="ml-2 text-emerald-400">→ {tradingStatus.candidateCount}종목 후보 있음</span>}
             </div>
           )}
-          <div className="mt-2 flex gap-2">
+          <div className="mt-2 flex gap-2 flex-wrap">
             <button
               onClick={async () => {
                 setRunningTrackA(true);
@@ -1174,7 +1165,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                 setTimeout(() => setRunningTrackA(false), 300000);
               }}
               disabled={runningTrackA}
-              className="px-3 py-1.5 text-[11px] rounded-lg bg-blue-500/20 hover:bg-blue-500/40 text-blue-300 font-semibold disabled:opacity-50 transition-colors"
+              className="px-3.5 py-2 text-xs rounded-xl bg-blue-500/20 hover:bg-blue-500/40 text-blue-300 font-semibold disabled:opacity-50 transition-colors whitespace-nowrap"
             >
               {runningTrackA ? '분석 중...' : '점수 갱신'}
             </button>
@@ -1185,7 +1176,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                 setTimeout(() => setRunningTrackB(false), 30000);
               }}
               disabled={runningTrackB}
-              className="px-3 py-1.5 text-[11px] rounded-lg bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 font-semibold disabled:opacity-50 transition-colors"
+              className="px-3.5 py-2 text-xs rounded-xl bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 font-semibold disabled:opacity-50 transition-colors whitespace-nowrap"
             >
               {runningTrackB ? '실행 중...' : '지금 실행'}
             </button>
@@ -1193,35 +1184,37 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
         </div>
       )}
       {tradingStatus && tradingStatus.overallStatus === 'ACTIVE' && (
-        <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/[0.06] px-4 py-2.5 flex items-center gap-2">
+        <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/[0.06] px-4 py-2.5 flex flex-wrap items-center gap-x-2 gap-y-2">
           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-          <span className="text-xs font-semibold text-emerald-300">자동매매 정상 운영 중</span>
+          <span className="text-xs font-semibold text-emerald-300 whitespace-nowrap">자동매매 정상 운영 중</span>
           {tradingStatus.candidateCount > 0 && (
-            <span className="text-[11px] text-emerald-400/70 ml-1">— {tradingStatus.candidateCount}종목 매수 후보 대기</span>
+            <span className="text-xs text-emerald-400/70">— {tradingStatus.candidateCount}종목 대기</span>
           )}
-          <span className="ml-auto text-[10px] text-slate-500">{tradingStatus.mode} · 기준 {tradingStatus.buyThreshold}점</span>
-          <button
-            onClick={async () => {
-              setRunningTrackA(true);
-              try { await api('/run-track-a', { method: 'POST' }); } catch {}
-              setTimeout(() => setRunningTrackA(false), 300000);
-            }}
-            disabled={runningTrackA}
-            className="ml-2 px-2.5 py-1 text-[11px] rounded-lg bg-blue-500/20 hover:bg-blue-500/40 text-blue-300 font-semibold disabled:opacity-50 transition-colors"
-          >
-            {runningTrackA ? '분석 중...' : '점수 갱신'}
-          </button>
-          <button
-            onClick={async () => {
-              setRunningTrackB(true);
-              try { await api('/run-track-b', { method: 'POST' }); } catch {}
-              setTimeout(() => setRunningTrackB(false), 30000);
-            }}
-            disabled={runningTrackB}
-            className="ml-2 px-2.5 py-1 text-[11px] rounded-lg bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 font-semibold disabled:opacity-50 transition-colors"
-          >
-            {runningTrackB ? '실행 중...' : '지금 실행'}
-          </button>
+          <span className="text-[10px] text-slate-500 whitespace-nowrap">{tradingStatus.mode} · {tradingStatus.buyThreshold}점</span>
+          <div className="ml-auto flex gap-2 shrink-0">
+            <button
+              onClick={async () => {
+                setRunningTrackA(true);
+                try { await api('/run-track-a', { method: 'POST' }); } catch {}
+                setTimeout(() => setRunningTrackA(false), 300000);
+              }}
+              disabled={runningTrackA}
+              className="px-3 py-1.5 text-xs rounded-xl bg-blue-500/20 hover:bg-blue-500/40 text-blue-300 font-semibold disabled:opacity-50 transition-colors whitespace-nowrap"
+            >
+              {runningTrackA ? '분석 중...' : '점수 갱신'}
+            </button>
+            <button
+              onClick={async () => {
+                setRunningTrackB(true);
+                try { await api('/run-track-b', { method: 'POST' }); } catch {}
+                setTimeout(() => setRunningTrackB(false), 30000);
+              }}
+              disabled={runningTrackB}
+              className="px-3 py-1.5 text-xs rounded-xl bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 font-semibold disabled:opacity-50 transition-colors whitespace-nowrap"
+            >
+              {runningTrackB ? '실행 중...' : '지금 실행'}
+            </button>
+          </div>
         </div>
       )}
 
@@ -1263,7 +1256,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       )}
 
       {/* ── 상태 한 줄 바 (손실 한도 + 장 진행도 통합) ── */}
-      <div className="glass rounded-2xl border border-white/[0.04] px-4 py-3 flex items-center gap-4">
+      <div className="glass rounded-2xl border border-white/[0.04] px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-2">
         {/* 장 상태 표시 */}
         {health?.marketOpen ? (
           <div className="flex items-center gap-2 shrink-0">
@@ -1485,8 +1478,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                               await api(`/escape/${ch.id}`, { method: 'DELETE' });
                               onRefresh();
                             } catch (err: any) { alert('취소 실패: ' + err.message); }
-                          }} className="text-[10px] px-2 py-0.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 transition-colors font-bold border border-amber-500/30 animate-pulse">
-                            탈출대기 {fmtWon(Number(ch.escape_target_price))}
+                          }} className="text-xs px-2.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 transition-colors font-bold border border-amber-500/30 animate-pulse whitespace-nowrap">
+                            탈출대기
                           </button>
                         ) : (
                           <button onClick={async () => {
@@ -1496,7 +1489,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                               alert(`탈출 목표가 설정: ${fmtWon(r.escape_target_price)}\n현재가 ${fmtWon(r.current_price)} → +0.5% 도달 시 자동 매도`);
                               onRefresh();
                             } catch (err: any) { alert('탈출 설정 실패: ' + err.message); }
-                          }} className="text-[10px] px-2 py-0.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 transition-colors font-bold border border-amber-500/20">
+                          }} className="text-xs px-2.5 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 transition-colors font-bold border border-amber-500/20 whitespace-nowrap">
                             탈출
                           </button>
                         )}
@@ -1504,7 +1497,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                           if (!confirm(`${displayName} ${qty}주 전량 시장가 매도하시겠습니까?`)) return;
                           try { const r = await api(`/sell/${ch.id}`, { method: 'POST' }); alert(r.message || '매도 완료'); onRefresh(); }
                           catch (err: any) { alert('매도 실패: ' + err.message); }
-                        }} className="text-[10px] px-2 py-0.5 rounded-lg bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 transition-colors font-medium border border-white/[0.04]">
+                        }} className="text-xs px-2.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 transition-colors font-medium border border-white/[0.04] whitespace-nowrap">
                           전량 매도
                         </button>
                       </div>
@@ -1791,7 +1784,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
         })()}
 
         {/* 최근 매매 */}
-        <Panel title="최근 매매" badge={`오늘 ${todayTrades.length}건`} badgeColor={todayTrades.length > 0 ? 'green' : undefined}>
+        <Panel title="최근 매매" badge={`오늘 ${todayTrades.length}건`} badgeColor={todayTrades.length > 0 ? 'emerald' : undefined}>
           {filled.length === 0 ? <EmptyMsg>매매 기록 없음</EmptyMsg> : (
             <div className="divide-y divide-white/[0.03]">
               {filled.slice(0, 10).map((t: any, i: number) => {
@@ -2287,7 +2280,7 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
                 toast?.(d.message ?? '순환 완료', 'ok');
                 setTimeout(onRefresh, 3000);
               }}
-              className="text-[10px] bg-violet-900/40 hover:bg-violet-900/60 text-violet-300 px-2.5 py-1 rounded-lg transition-all">
+              className="text-xs bg-violet-900/40 hover:bg-violet-900/60 text-violet-300 px-3 py-1.5 rounded-xl transition-all whitespace-nowrap">
               🔄 순환 실행
             </button>
             <button
@@ -2297,8 +2290,8 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
                 const d = await r.json().catch(() => ({}));
                 toast?.(d.message ?? '보정 완료', 'ok');
               }}
-              className="text-[10px] bg-slate-800/60 hover:bg-slate-800/80 text-slate-400 px-2.5 py-1 rounded-lg transition-all">
-              🏷️ 종목명 보정
+              className="text-xs bg-slate-800/60 hover:bg-slate-800/80 text-slate-400 px-3 py-1.5 rounded-xl transition-all whitespace-nowrap">
+              🏷️ 이름 보정
             </button>
           </div>
           <div className="grid grid-cols-2 gap-2 p-3">
@@ -2545,7 +2538,7 @@ function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist:
         summaryError ? 'Gemini 오류' : undefined
       } badgeColor={
         summaryLoading ? undefined :
-        summary ? 'green' : 'red'
+        summary ? 'emerald' : 'rose'
       }>
         <div className="p-4 space-y-3">
           {summaryLoading ? (
@@ -2959,7 +2952,7 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
 
       {/* ── 전략 설정 ── */}
       {strategy && (
-        <Panel title="전략 설정" badge={strategy.mode === 'SWING' ? '스윙' : strategy.mode === 'DEFENSE' ? '방어' : '단타'} badgeColor={strategy.mode === 'SWING' ? 'blue' : strategy.mode === 'DEFENSE' ? 'red' : 'amber'}>
+        <Panel title="전략 설정" badge={strategy.mode === 'SWING' ? '스윙' : strategy.mode === 'DEFENSE' ? '방어' : '단타'} badgeColor={strategy.mode === 'SWING' ? 'blue' : strategy.mode === 'DEFENSE' ? 'rose' : 'amber'}>
           <div className="px-6 py-5 space-y-5">
             <div className="text-[12px] text-slate-400 bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl px-4 py-3.5 leading-relaxed">
               {strategy.mode === 'SWING' ? `${strategy.split_count ?? 2}번에 나눠 사고 → 조금 더 빠지면 추가 매수 → ${strategy.take_profit_pct ?? 8}% 오르면 익절 / ${Math.abs(strategy.stop_loss_pct ?? -4)}% 빠지면 전량 손절. 중장기 안정 수익 추구.` : strategy.mode === 'DEFENSE' ? '85점 이상 종목만 소량 진입 → 3% 빠지면 즉시 손절. 하락장 자본 보존 최우선.' : '65점 이상 즉시 매수 → 1.5% 오르면 즉시 전량 매도. 당일 15:20 무조건 청산.'}
@@ -3301,114 +3294,3 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
   );
 }
 
-// ═══════════════════════════════════════
-// Shared Components
-// ═══════════════════════════════════════
-
-function Panel({ title, badge, badgeColor, children }: { title: string; badge?: string; badgeColor?: 'green' | 'red' | 'amber' | 'blue'; children: React.ReactNode }) {
-  const bc = badgeColor === 'green' ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/20' : badgeColor === 'red' ? 'bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/20' : badgeColor === 'amber' ? 'bg-amber-500/15 text-amber-400 ring-1 ring-amber-500/20' : badgeColor === 'blue' ? 'bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/20' : 'bg-white/[0.05] text-slate-400';
-  return (
-    <div className="glass rounded-2xl overflow-hidden shadow-xl shadow-black/40 animate-in">
-      <div className="px-6 py-4 border-b border-white/[0.05] flex items-center gap-3">
-        <h3 className="text-[13px] font-bold text-slate-100 tracking-tight">{title}</h3>
-        {badge && <span className={`text-[10px] px-2.5 py-1 rounded-full ml-auto font-semibold ${bc}`}>{badge}</span>}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function Card({ label, value, color, bg, big }: { label: string; value: string; color?: string; bg?: string; big?: boolean }) {
-  return (
-    <div className={`rounded-2xl border border-white/[0.04] p-4 sm:p-5 shadow-xl shadow-black/20 transition-transform hover:scale-[1.01] ${bg || 'glass'}`}>
-      <div className="text-[11px] text-slate-500 mb-2 font-medium uppercase tracking-wider">{label}</div>
-      <div className={`${big ? 'text-xl sm:text-2xl' : 'text-base sm:text-lg'} font-bold tracking-tight ${color || 'text-slate-100'}`}>{value}</div>
-    </div>
-  );
-}
-
-function Indicator({ label, value, sub, color }: { label: string; value: string; sub: string; color: string }) {
-  const c = color === 'emerald' ? 'text-emerald-400' : color === 'rose' ? 'text-rose-400' : color === 'blue' ? 'text-blue-400' : color === 'amber' ? 'text-amber-400' : 'text-slate-300';
-  const border = color === 'emerald' ? 'border-emerald-500/20' : color === 'rose' ? 'border-rose-500/20' : color === 'blue' ? 'border-blue-500/20' : 'border-white/[0.04]';
-  const glow = color === 'emerald' ? 'glow-green' : color === 'rose' ? 'glow-red' : color === 'blue' ? 'glow-blue' : '';
-  return (
-    <div className={`rounded-xl p-3.5 text-center glass border ${border} ${glow}`}>
-      <div className="text-[10px] text-slate-500 mb-1.5 font-medium uppercase tracking-wider">{label}</div>
-      <div className={`text-xl font-black ${c}`}>{value ?? '-'}</div>
-      <div className={`text-[10px] mt-1 font-medium ${c} opacity-80`}>{sub}</div>
-    </div>
-  );
-}
-
-function EmptyMsg({ children, icon }: { children: React.ReactNode; icon?: string }) {
-  return (
-    <div className="p-8 sm:p-10 text-center">
-      {icon && <div className="text-2xl mb-2 opacity-40">{icon}</div>}
-      <div className="text-slate-500 text-sm">{children}</div>
-    </div>
-  );
-}
-
-function SideBadge({ side }: { side: string }) {
-  return <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold tracking-wide ${side === 'BUY' ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/20' : 'bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/20'}`}>{side === 'BUY' ? '매수' : '매도'}</span>;
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const label = status === 'FILLED' ? '체결' : status === 'FAILED' ? '실패' : status === 'PENDING' ? '대기' : status === 'CANCELLED' ? '취소' : status;
-  return <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium ${status === 'FILLED' ? 'bg-emerald-500/10 text-emerald-400' : status === 'FAILED' ? 'bg-rose-500/10 text-rose-400' : 'bg-white/[0.04] text-slate-500'}`}>{label}</span>;
-}
-
-function ModeBadge({ mode }: { mode: string }) {
-  return <span className={`px-1.5 py-0.5 rounded text-[10px] ${mode === 'paper' ? 'bg-amber-900/40 text-amber-300' : 'bg-blue-900/40 text-blue-300'}`}>{mode === 'paper' ? '연습' : '실전'}</span>;
-}
-
-function Sel({ label, value, opts, onChange }: { label: string; value: any; opts: [any, string][]; onChange: (v: string) => void }) {
-  // DB에서 "-5.00" (문자열) vs option "-5" (숫자) 매칭 → Number 변환 후 비교
-  const numVal = Number(value);
-  const matched = opts.find(([v]) => Number(v) === numVal)?.[0] ?? value;
-  return (
-    <div className="space-y-1.5">
-      <label className="text-[11px] font-medium text-slate-400 block">{label}</label>
-      <select value={matched} onChange={e => onChange(e.target.value)} className="w-full bg-white/[0.05] border-0 ring-1 ring-white/[0.08] rounded-xl px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all appearance-none cursor-pointer">
-        {opts.map(([v, l]) => <option key={v} value={v} className="bg-slate-900">{l}</option>)}
-      </select>
-    </div>
-  );
-}
-
-function NumInput({ label, value, suffix, min, max, step, onCommit }: {
-  label: string; value: number; suffix?: string; min?: number; max?: number; step?: number; onCommit: (v: number) => void;
-}) {
-  const [editing, setEditing] = React.useState(false);
-  const [local, setLocal] = React.useState(String(value));
-  React.useEffect(() => { if (!editing) setLocal(String(value)); }, [value, editing]);
-  const commit = () => {
-    const n = parseFloat(local);
-    if (!isNaN(n)) {
-      const clamped = Math.min(max ?? Infinity, Math.max(min ?? -Infinity, n));
-      onCommit(clamped);
-      setLocal(String(clamped));
-    } else {
-      setLocal(String(value));
-    }
-    setEditing(false);
-  };
-  return (
-    <div className="space-y-1.5">
-      <label className="text-[11px] font-medium text-slate-400 block">{label}</label>
-      <div className="flex items-center bg-white/[0.05] ring-1 ring-white/[0.08] rounded-xl px-3.5 py-2.5 gap-1 focus-within:ring-2 focus-within:ring-blue-500/50 transition-all">
-        <input
-          type="number" inputMode="decimal"
-          value={local}
-          min={min} max={max} step={step ?? 1}
-          onFocus={() => setEditing(true)}
-          onChange={e => setLocal(e.target.value)}
-          onBlur={commit}
-          onKeyDown={e => { if (e.key === 'Enter') { (e.target as HTMLInputElement).blur(); } }}
-          className="w-full bg-transparent text-sm outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-        />
-        {suffix && <span className="text-[11px] text-slate-500 shrink-0">{suffix}</span>}
-      </div>
-    </div>
-  );
-}
