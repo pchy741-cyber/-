@@ -1,6 +1,6 @@
 import { analyzeTechnicals } from '../../analysis/indicators.js';
 import { getLearnedInsightsForPrompt } from '../../automation/self-learning.js';
-import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
+import { MIN_DIVIDEND_YIELD_FOR_BUY, STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
 import { config } from '../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getRecentLossStocks, getRecentManuallySoldStocks, logSystem } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
@@ -263,6 +263,18 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       }
       if (learnedInsights) {
         context += `\n${learnedInsights}`;
+      }
+      // DIVIDEND 모드: 배당수익률 미달 종목 BUY 금지 명시
+      if (mode === 'DIVIDEND') {
+        const noDividendCodes = scores
+          .filter((s) => {
+            const p = livePrices.get(s.stock_code);
+            return !p || p.dividendYield < MIN_DIVIDEND_YIELD_FOR_BUY;
+          })
+          .map((s) => s.stock_code);
+        if (noDividendCodes.length > 0) {
+          context += `\n\n## 🏦 DIVIDEND 파킹 모드: BUY 금지 목록\n${noDividendCodes.join(', ')}\n→ 배당수익률 ${MIN_DIVIDEND_YIELD_FOR_BUY}% 미만 — BUY 절대 금지. 현금 파킹 유지 (머니마켓 ETF).`;
+        }
       }
       // 손실 종목 재진입 금지 — AI에게도 명시
       if (recentLossCodes.size > 0) {

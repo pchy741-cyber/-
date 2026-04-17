@@ -50,11 +50,15 @@ export type ChainStatus = (typeof ChainStatus)[keyof typeof ChainStatus];
 
 // ── CEO 전략 모드 ──
 export const StrategyMode = {
-  SWING: 'SWING', // 🟢 평상시 스윙
-  DEFENSE: 'DEFENSE', // 🔴 폭락장 방어
+  SWING: 'SWING',       // 🟢 평상시 스윙
+  DEFENSE: 'DEFENSE',   // 🔴 폭락장 방어
   SCALPING: 'SCALPING', // 🔥 초단타
+  DIVIDEND: 'DIVIDEND', // 🏦 파킹+배당 안정 운영 (하락장 지속 시 자동 전환)
 } as const;
 export type StrategyMode = (typeof StrategyMode)[keyof typeof StrategyMode];
+
+// 🏦 DIVIDEND 모드에서 매수 허용 최소 배당수익률 (%)
+export const MIN_DIVIDEND_YIELD_FOR_BUY = 2.0;
 
 // ── 전략별 파라미터 ──
 export const STRATEGY_PARAMS = {
@@ -89,6 +93,17 @@ export const STRATEGY_PARAMS = {
     stopLossPct: -1.0, // -1% 칼손절 (수수료 포함 실손실 ~1.25%) — 손익비 2:1 유지
     maxHoldingDays: 0, // 당일 청산 필수
     forceCloseTime: '09:10', // 09:10 이후 보유 금지 — 강제 청산
+  },
+  DIVIDEND: {
+    buyThreshold: 90,  // 거의 신규 매수 안 함 — AI 90점 이상 + 배당 2%+ 종목만
+    splitCount: 2,
+    averageDownPct: 0,      // 물타기 금지
+    maxAveragingCount: 0,
+    takeProfitPct: 12,      // 배당+시세차익 합산 목표 — 여유있게 익절
+    takeProfitRatio: 0.5,   // 절반만 익절 (나머지는 배당 계속 수령)
+    stopLossPct: -8,        // 배당주는 단기 변동성 크므로 넓게
+    maxHoldingDays: 60,     // 장기 보유 — 배당 수령 목적
+    marketPenalty: -20,
   },
 } as const;
 
