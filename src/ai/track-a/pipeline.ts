@@ -1,7 +1,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { cacheScores } from '../../cache/redis.js';
-import { getActiveStrategy, getActiveWatchlist, getRecentSources, logSystem, upsertAIScore } from '../../db/client.js';
-import { type DailyCandle, getDailyChart } from '../../kis/market.js';
+import { getActiveStrategy, getActiveWatchlist, getPool, getRecentSources, isMemoryMode, logSystem, upsertAIScore } from '../../db/client.js';
+import { type DailyCandle, getDailyChart, getVolumeRankingStocks, getChangeRankingStocks } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { config } from '../../config/index.js';
 import { type ScoringResult } from '../../db/models.js';
@@ -24,13 +24,46 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
   logger.info('🚀 Track A 파이프라인 시작', { component: 'TRACK_A' });
 
   try {
-    // 1. 감시 목록 로드
+    // 1. 감시 목록 로드 + 시장 발굴 종목 병합
     const watchlist = await getActiveWatchlist();
     if (watchlist.length === 0) {
       logger.warn('감시 목록이 비어있습니다', { component: 'TRACK_A' });
       return;
     }
-    logger.info(`감시 종목: ${watchlist.length}개`, { component: 'TRACK_A' });
+
+    // 시장 발굴: 거래량/등락률 상위 종목을 추가 스코어링 대상으로 병합 (워치리스트 순환에서 자동 추가 가능)
+    const watchlistCodes = new Set(watchlist.map((w) => w.stock_code));
+    const [volumeTop, changeTop] = await Promise.allSettled([
+      getVolumeRankingStocks('J', 30),
+      getChangeRankingStocks(20),
+    ]);
+    const discoveryStocks = [
+      ...(volumeTop.status === 'fulfilled' ? volumeTop.value : []),
+      ...(changeTop.status === 'fulfilled' ? changeTop.value : []),
+    ].filter((s) => !watchlistCodes.has(s.stock_code));
+    // 중복 제거
+    const discoveryMap = new Map(discoveryStocks.map((s) => [s.stock_code, s]));
+    const discoveryList = [...discoveryMap.values()].slice(0, 30);
+
+    // 발굴 종목을 watchlist에 inactive로 미리 등록 (ai_scores FK 제약 충족용)
+    // Track B는 is_active=false 종목을 무시하므로 실제 매매 영향 없음
+    if (discoveryList.length > 0 && !isMemoryMode()) {
+      await Promise.allSettled(discoveryList.map((s) =>
+        getPool().query(
+          `INSERT INTO watchlist (stock_code, stock_name, is_active)
+           VALUES ($1, $2, false)
+           ON CONFLICT (stock_code) DO NOTHING`,
+          [s.stock_code, s.stock_name || s.stock_code],
+        )
+      ));
+      logger.info(`발굴 종목 ${discoveryList.length}개 watchlist 임시 등록 (inactive)`, { component: 'TRACK_A' });
+    }
+
+    const allStocks = [
+      ...watchlist.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
+      ...discoveryList,
+    ];
+    logger.info(`감시 종목: ${watchlist.length}개 + 발굴 후보: ${discoveryList.length}개 = 합계 ${allStocks.length}개`, { component: 'TRACK_A' });
 
     // 2. CEO 전략 설정 로드
     const strategy = await getActiveStrategy();
@@ -65,8 +98,8 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     // 3. 종목별 차트 데이터 수집 — 5개씩 병렬 (kisRateLimiter가 내부 12/sec 관리)
     const chartData = new Map<string, DailyCandle[]>();
     const CHART_BATCH = 5;
-    for (let i = 0; i < watchlist.length; i += CHART_BATCH) {
-      const batch = watchlist.slice(i, i + CHART_BATCH);
+    for (let i = 0; i < allStocks.length; i += CHART_BATCH) {
+      const batch = allStocks.slice(i, i + CHART_BATCH);
       const results = await Promise.allSettled(batch.map((w) => getDailyChart(w.stock_code, 60)));
       for (let j = 0; j < batch.length; j++) {
         const r = results[j];
@@ -99,7 +132,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     try {
       geminiResult = await runGeminiAnalysis({
         mode,
-        watchlist: watchlist.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
+        watchlist: allStocks,
         chartData,
         additionalSources: combinedSources || undefined,
         customPrompt: customGeminiPrompt ?? undefined,
@@ -124,7 +157,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     // Step 5-3: Gemini 스코어링 실패 → Gemini Flash 통합 분석 (2순위 폴백)
     if (scores.length === 0) {
       try {
-        scores = await runClaudeAnalysis(mode, watchlist, chartData, strategy);
+        scores = await runClaudeAnalysis(mode, allStocks, chartData, strategy);
       } catch (flashErr) {
         logger.warn(`⚠️ Gemini Flash 폴백 실패: ${flashErr}`, { component: 'TRACK_A' });
       }
@@ -134,7 +167,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     if (scores.length === 0) {
       logger.info('⚙️ AI 모두 실패 → 기술적 지표 기반 스코어 생성', { component: 'TRACK_A' });
       const { analyzeTechnicals } = await import('../../analysis/indicators.js');
-      scores = watchlist.map((w) => {
+      scores = allStocks.map((w) => {
         const candles = chartData.get(w.stock_code) ?? [];
         const geminiStock = geminiResult?.stocks?.find((s) => s.stock_code === w.stock_code);
         const analysis = geminiStock?.analysis;

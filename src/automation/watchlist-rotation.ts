@@ -77,17 +77,20 @@ export async function runWatchlistRotation(): Promise<void> {
     }
 
     // ── 2. 고점수 신규 종목 자동 추가 ────────────────────────────────────
+    // ai_scores는 watchlist FK로 묶여있어 watchlist에 있는 종목만 조회됨
+    // inactive 종목 중 고점수인 것을 활성화
     const { rows: addCandidates } = await pool.query(
-      `SELECT stock_code,
+      `SELECT a.stock_code,
               COUNT(*) AS record_count,
-              AVG(composite_score) AS avg_score,
-              MAX(stock_name) AS stock_name
-         FROM ai_scores
-        WHERE score_date >= $1
-          AND composite_score IS NOT NULL
-        GROUP BY stock_code
-        HAVING COUNT(*) >= $2 AND AVG(composite_score) >= $3
-        ORDER BY AVG(composite_score) DESC
+              AVG(a.composite_score) AS avg_score,
+              MAX(w.stock_name) AS stock_name
+         FROM ai_scores a
+         JOIN watchlist w ON w.stock_code = a.stock_code
+        WHERE a.score_date >= $1
+          AND a.composite_score IS NOT NULL
+        GROUP BY a.stock_code
+        HAVING COUNT(*) >= $2 AND AVG(a.composite_score) >= $3
+        ORDER BY AVG(a.composite_score) DESC
         LIMIT 20`,
       [addCutoff.toISOString().split('T')[0], MIN_ADD_RECORDS, AUTO_ADD_THRESHOLD],
     );

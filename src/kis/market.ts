@@ -165,3 +165,73 @@ export async function getBatchPrices(stockCodes: string[]): Promise<Map<string, 
   }
   return results;
 }
+
+// ── 거래량 상위 종목 조회 (시장 발굴용) ──
+export interface RankingStock {
+  stock_code: string;
+  stock_name: string;
+}
+
+export async function getVolumeRankingStocks(market: 'J' | 'Q' = 'J', limit = 30): Promise<RankingStock[]> {
+  try {
+    const res = await kisRequest({
+      path: '/uapi/domestic-stock/v1/ranking/volume',
+      trId: 'FHPST01710000',
+      useRealUrl: true,
+      params: {
+        FID_COND_MRKT_DIV_CODE: market,
+        FID_COND_SCR_DIV_CODE: '20171',
+        FID_INPUT_ISCD: '0001',
+        FID_DIV_CLS_CODE: '0',
+        FID_BLNG_CLS_CODE: '0',
+        FID_TRGT_CLS_CODE: '111111111',
+        FID_TRGT_EXLS_CLS_CODE: '000000',
+        FID_INPUT_PRICE_1: '',
+        FID_INPUT_PRICE_2: '',
+        FID_VOL_CNT: '',
+        FID_INPUT_DATE_1: '',
+      },
+    });
+    const output = (res.output as Record<string, string>[]) ?? [];
+    return output.slice(0, limit)
+      .map((o) => ({ stock_code: o.stck_shrn_iscd ?? '', stock_name: o.hts_kor_isnm ?? '' }))
+      .filter((s) => s.stock_code && !s.stock_code.startsWith('1')); // ETF 제외
+  } catch (err) {
+    logger.warn(`거래량 상위 조회 실패: ${err}`, { component: 'KIS' });
+    return [];
+  }
+}
+
+// ── 등락률 상위 종목 조회 (급등주 발굴) ──
+export async function getChangeRankingStocks(limit = 20): Promise<RankingStock[]> {
+  try {
+    const res = await kisRequest({
+      path: '/uapi/domestic-stock/v1/ranking/fluctuation',
+      trId: 'FHPST01700000',
+      useRealUrl: true,
+      params: {
+        FID_COND_MRKT_DIV_CODE: 'J',
+        FID_COND_SCR_DIV_CODE: '20170',
+        FID_INPUT_ISCD: '0001',
+        FID_RANK_SORT_CLS_CODE: '0',
+        FID_INPUT_CNT_1: '0',
+        FID_PRC_CLS_CODE: '1',
+        FID_INPUT_PRICE_1: '',
+        FID_INPUT_PRICE_2: '',
+        FID_VOL_CNT: '100000',
+        FID_TRGT_CLS_CODE: '0',
+        FID_TRGT_EXLS_CLS_CODE: '0',
+        FID_DIV_CLS_CODE: '0',
+        FID_RSFL_RATE1: '',
+        FID_RSFL_RATE2: '',
+      },
+    });
+    const output = (res.output as Record<string, string>[]) ?? [];
+    return output.slice(0, limit)
+      .map((o) => ({ stock_code: o.stck_shrn_iscd ?? '', stock_name: o.hts_kor_isnm ?? '' }))
+      .filter((s) => s.stock_code && !s.stock_code.startsWith('1'));
+  } catch (err) {
+    logger.warn(`등락률 상위 조회 실패: ${err}`, { component: 'KIS' });
+    return [];
+  }
+}
