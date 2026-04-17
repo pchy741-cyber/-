@@ -2,9 +2,10 @@
 
 export type AiEngineStatus = 'ok' | 'no_credit' | 'quota' | 'error' | 'unknown';
 
-// 일반 에러는 30분 후 재시도, quota 초과는 24시간 대기 (무료 티어 일일 한도)
+// 일반 에러는 30분 후 재시도, quota/no_credit는 24시간 대기
 const ERROR_TTL_MS = 30 * 60 * 1000;
 const QUOTA_TTL_MS = 24 * 60 * 60 * 1000;
+const NO_CREDIT_TTL_MS = 24 * 60 * 60 * 1000;
 
 interface AiStatus {
   claude: AiEngineStatus;
@@ -66,11 +67,12 @@ export function getAiStatus(): Readonly<AiStatus> {
     delete _status.geminiErrorAt;
     delete _status.geminiErrorMsg;
   }
-  if (
-    (_status.claude === 'error') &&
-    _status.claudeErrorAt &&
-    now - _status.claudeErrorAt > ERROR_TTL_MS
-  ) {
+  if (_status.claude === 'no_credit' && _status.claudeErrorAt && now - _status.claudeErrorAt > NO_CREDIT_TTL_MS) {
+    _status.claude = 'unknown';
+    delete _status.claudeErrorAt;
+    delete _status.claudeErrorMsg;
+  }
+  if (_status.claude === 'error' && _status.claudeErrorAt && now - _status.claudeErrorAt > ERROR_TTL_MS) {
     _status.claude = 'unknown';
     delete _status.claudeErrorAt;
     delete _status.claudeErrorMsg;

@@ -175,7 +175,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // 보유 종목 없고 + 매수 후보(스코어 ≥threshold + 신뢰도 ≥0.6)도 없으면 AI 호출 스킵
     // confidence < 0.6은 폴백 스코어 — BUY 후보로 취급 안 함 (과매매 방지)
-    const hasBuyCandidates = scores.some(
+    let hasBuyCandidates = scores.some(
       (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[mode].buyThreshold && (s.confidence ?? 1) >= 0.6,
     );
     const hasOpenPositions = openChains.some((c) => c.stock_code !== IDLE_PARK_CODE && Number(c.total_quantity) > 0);
@@ -202,14 +202,27 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
               if (candles.length >= 30) chartData.set(code, candles);
             } catch { /* 차트 실패해도 계속 */ }
           }
+          // 새 종목 스코어 조회 후 scores/hasBuyCandidates 재계산
+          try {
+            const newScores = await getLatestScores(added);
+            if (newScores.length > 0) {
+              scores.push(...newScores);
+              hasBuyCandidates = scores.some(
+                (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[mode].buyThreshold && (s.confidence ?? 1) >= 0.6,
+              );
+              logger.info(`📊 신규 종목 스코어 ${newScores.length}개 반영 → 매수후보: ${hasBuyCandidates}`, { component: 'TRACK_B' });
+            }
+          } catch { /* 스코어 조회 실패해도 계속 */ }
         }
       } catch { /* 동기화 실패해도 파이프라인 계속 */ }
     }
 
     let decisions: TradeDecision[] = [];
+    let aiWasCalled = false; // AI 실제 호출 여부 — 안정 모드 vs 기술적 폴백 구분용
 
     // AI 컨텍스트 구성 (스코어가 있을 때만 + AI 호출 필요 시)
     if (hasScores && (hasOpenPositions || hasBuyCandidates)) {
+      aiWasCalled = true;
       const technicalsSummary: string[] = [];
       const topStocks = scores.slice(0, 5).map((s) => s.stock_code);
       for (const code of topStocks) {
@@ -336,15 +349,40 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           ? techDecisions
           : techDecisions.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action));
         decisions = [...filtered];
-      } else {
-        // ── 안정 모드: AI 엔진 전체 실패 (Claude + Gemini 모두 응답 없음) ──
+      } else if (aiWasCalled) {
+        // ── 안정 모드: AI 호출했으나 Claude + Gemini 모두 응답 없음 ──
         // API 일시 단절(네트워크 오류, 할당량 초과 등)로 AI가 응답 못할 때
         // → 매매 완전 중단, 포지션 전량 유지
-        // 이유: 일시적 API 오류로 강제 매도하면 정상 회복 구간에서 손실 확정됨
-        //        "API 끊김 = 매도 신호"가 아님
         decisions = [];
         logger.info(
           `🛡️ 안정 모드: AI 전체 실패(일시적 API 오류) → 포지션 전량 유지, 매매 없음 (스코어=${scores.length}개)`,
+          { component: 'TRACK_B' },
+        );
+      } else {
+        // ── AI 미호출: 스코어 없음 / 보유·매수후보 없음 → 기술적 폴백 전체 실행 ──
+        const effectiveCashForFallback = Math.max(balance.orderableCash, Math.floor(balance.totalDeposit * 0.85));
+        const orderableCashForFallback = Math.max(0, effectiveCashForFallback - ((balance as any).reservedWithdraw ?? 0));
+        const totalAssetsForFallback = balance.totalEvalAmount + orderableCashForFallback;
+        decisions = technicalFallbackDecisions({
+          mode,
+          watchlist: watchlist.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
+          livePrices,
+          chartData,
+          openChains,
+          orderableCash: orderableCashForFallback,
+          maxPositionKrw: config.risk.maxPositionKrw,
+          totalAssets: totalAssetsForFallback,
+          lossBlockedCodes: recentLossCodes,
+          manuallySoldCodes,
+          aiScores: scores
+            .filter((s: any) => (s.confidence ?? 1) >= 0.6)
+            .map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
+          takeProfitPct: strategy?.take_profit_pct ?? undefined,
+          stopLossPct: strategy?.stop_loss_pct ?? undefined,
+          buyThreshold: strategy?.buy_threshold ?? undefined,
+        });
+        logger.info(
+          `📊 AI 미호출 → 기술적 지표 폴백 전체 실행 (스코어=${scores.length}개, 결정=${decisions.length}개)`,
           { component: 'TRACK_B' },
         );
       }
