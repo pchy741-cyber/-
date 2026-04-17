@@ -1092,11 +1092,14 @@ dashboardRoutes.get('/news/summary', async (c) => {
 
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(geminiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash', generationConfig: { temperature: 0.2 } }, { apiVersion: 'v1beta' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash', generationConfig: { temperature: 0.2 } }, { apiVersion: 'v1beta' });
 
-    const res = await model.generateContent(
-      `아래는 오늘 글로벌 금융 뉴스 헤드라인입니다. 주식 투자에 영향을 미치는 핵심 내용만 뽑아서 한국어로 자연스럽게 2~3문장으로 요약해 주세요. 투자자 관점에서 오늘 시장 분위기와 주요 이슈를 간결하게 서술하세요.\n\n${headlines}`,
-    );
+    const res = await Promise.race([
+      model.generateContent(
+        `아래는 오늘 글로벌 금융 뉴스 헤드라인입니다. 주식 투자에 영향을 미치는 핵심 내용만 뽑아서 한국어로 자연스럽게 2~3문장으로 요약해 주세요. 투자자 관점에서 오늘 시장 분위기와 주요 이슈를 간결하게 서술하세요.\n\n${headlines}`,
+      ),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout_15s')), 15000)),
+    ]);
 
     const summary = res.response.text() ?? '';
     // 캐시 업데이트
@@ -1104,10 +1107,13 @@ dashboardRoutes.get('/news/summary', async (c) => {
     return c.json({ summary, geminiOk: !!summary, error: summary ? null : 'gemini_empty', headlineCount, cached: false });
   } catch (err) {
     const errStr = String(err);
-    logger.error('뉴스 요약 생성 실패', { error: errStr, component: 'NEWS_SUMMARY' });
-    // quota 오류 vs 일반 오류 구분
-    const error = errStr.includes('quota') || errStr.includes('429') ? 'gemini_quota' : 'gemini_failed';
-    return c.json({ summary: '', geminiOk: false, error, headlineCount: 0, cached: false });
+    logger.error('뉴스 요약 생성 실패', { error: errStr.slice(0, 300), component: 'NEWS_SUMMARY' });
+    const error = errStr.includes('quota') || errStr.includes('429') || errStr.includes('RESOURCE_EXHAUSTED')
+      ? 'gemini_quota'
+      : errStr.includes('timeout')
+        ? 'gemini_timeout'
+        : 'gemini_failed';
+    return c.json({ summary: '', geminiOk: false, error, errorDetail: errStr.slice(0, 200), headlineCount: 0, cached: false });
   }
 });
 
