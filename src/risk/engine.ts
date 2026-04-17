@@ -254,7 +254,7 @@ export class RiskEngine {
    */
   private async checkConcurrentPositions(stockCode: string): Promise<PreTradeCheckResult> {
     // ETF 파킹 코드는 포지션 수 제한에서 제외 (운용 목적이 다름)
-    const ETF_PARK_CODES = new Set(['333940', '069500']);
+    const ETF_PARK_CODES = new Set(['333940', '069500', '161510', '114800']);
     try {
       const chains = await getOpenChains();
       const existingChain = chains.find((c) => c.stock_code === stockCode);

@@ -127,7 +127,7 @@ export class TradeExecutor {
 
     // 🚦 매매 게이트 (차트검수 + 확률교정 + 변동성사이징 + 레짐필터 + 쿨다운)
     // ETF 파킹 종목은 게이트 생략 (머니마켓/KODEX200 — 차트 분석 불필요)
-    const ETF_PARK_CODES = ['333940', '069500'];
+    const ETF_PARK_CODES = ['333940', '069500', '161510', '114800']; // 파킹ETF: KODEX인버스,KODEX200,TIGER고배당,KODEX200인버스
     const params = STRATEGY_PARAMS[mode];
     let gatedQuantity = quantity;
     if (ETF_PARK_CODES.includes(stockCode)) {

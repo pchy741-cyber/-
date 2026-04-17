@@ -240,7 +240,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     if (discoveryList.length > 0 && !isMemoryMode()) {
       const discoverySet = new Set(discoveryList.map((d) => d.stock_code));
       const topDiscovery = scores.filter(
-        (s) => discoverySet.has(s.stock_code) && s.composite_score >= 70 && (s.confidence ?? 0) >= 0.7,
+        (s) => discoverySet.has(s.stock_code) && s.composite_score >= 65 && (s.confidence ?? 0) >= 0.65,
       );
       if (topDiscovery.length > 0) {
         await Promise.allSettled(topDiscovery.map((s) =>
