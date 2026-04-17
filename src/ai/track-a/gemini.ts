@@ -10,7 +10,7 @@ const USE_VERTEX_AI = false; // Vertex AI 비활성화 — Google AI SDK (API Ke
 
 const VERTEX_PROJECT_ID = 'quantops-trading';
 const VERTEX_LOCATION = 'us-central1';
-const VERTEX_MODEL = 'gemini-2.0-flash';
+const VERTEX_MODEL = 'gemini-2.5-flash';
 const VERTEX_ENDPOINT = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${VERTEX_LOCATION}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
 
 // Lazy init — 키 변경 시 자동 반영
@@ -125,7 +125,7 @@ ${additionalSources ?? '추가 소스 없음'}
 // ── Google AI SDK 경로 (API 키 사용, 로컬/외부 환경) ──
 async function callGoogleAI(genAI: GoogleGenerativeAI, systemPrompt: string, userMessage: string): Promise<string> {
   const model = genAI.getGenerativeModel({
-    model: 'gemini-2.0-flash',
+    model: 'gemini-2.5-flash',
     generationConfig: {
       temperature: 0.1,
     },

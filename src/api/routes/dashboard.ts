@@ -1092,7 +1092,7 @@ dashboardRoutes.get('/news/summary', async (c) => {
 
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(geminiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash', generationConfig: { temperature: 0.2 } }, { apiVersion: 'v1beta' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash', generationConfig: { temperature: 0.2 } }, { apiVersion: 'v1beta' });
 
     const res = await Promise.race([
       model.generateContent(
@@ -1144,7 +1144,7 @@ dashboardRoutes.get('/news/theme', async (c) => {
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(geminiKey);
     const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-2.5-flash',
       generationConfig: { temperature: 0.2 },
     }, { apiVersion: 'v1beta' });
 
@@ -1306,8 +1306,8 @@ dashboardRoutes.get('/ai/gemini-test', async (c) => {
     return c.json({ ok: false, latencyMs: 0, model: '', error: 'no_key', errorDetail: 'GEMINI_API_KEY가 설정되지 않았습니다', rawError: '' });
   }
 
-  // 테스트 1: gemini-2.0-flash (v1beta) — 실제 트레이딩 봇과 동일 설정
-  const TEST_MODEL = 'gemini-2.0-flash';
+  // 테스트 1: gemini-2.5-flash (v1beta) — 실제 트레이딩 봇과 동일 설정
+  const TEST_MODEL = 'gemini-2.5-flash';
   try {
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(geminiKey);
