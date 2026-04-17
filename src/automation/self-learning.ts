@@ -110,6 +110,9 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
   const wins = enrichedChains.filter((c) => Number(c.chain.realized_pnl) > 0);
   const losses = enrichedChains.filter((c) => Number(c.chain.realized_pnl) <= 0);
 
+  // 파킹 체인 별도 분석
+  const parkingInsights = await analyzeParkingDecisions();
+
   // 2. 개별 분석기 실행
   const insights: LearnedInsight[] = [
     ...analyzeAveraging(wins, losses),
@@ -125,6 +128,7 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
     ...analyzeLossStreakRisk(enrichedChains),
     ...analyzeProfitRatio(wins, losses),
     ...analyzeQuickProfitTaking(wins),
+    ...parkingInsights,
   ];
 
   // 3. DB에 인사이트 저장 및 알림
@@ -883,4 +887,81 @@ export async function getLearnedParameters(): Promise<LearnedParameters> {
   }
 
   return params;
+}
+
+/**
+ * 파킹 결정 학습 — 머니마켓 ETF(333940) 파킹 기간 수익률 vs 워치리스트 주식 수익률 비교
+ * 파킹이 좋은 결정이었는지(시장 하락 구간) 나쁜 결정이었는지(기회 손실) 패턴 추출
+ */
+async function analyzeParkingDecisions(): Promise<LearnedInsight[]> {
+  const IDLE_PARK_CODE = '333940';
+  try {
+    const ninetyDaysAgo = new Date();
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+
+    // 완료된 파킹 체인 조회
+    const { rows: parkChains } = await getPool().query(
+      `SELECT tc.*, COALESCE(json_agg(o.*) FILTER (WHERE o.id IS NOT NULL), '[]') AS orders
+         FROM transaction_chains tc
+         LEFT JOIN orders o ON o.chain_id = tc.id
+        WHERE tc.stock_code = $1
+          AND tc.status = 'CLOSED'
+          AND tc.closed_at >= $2
+        GROUP BY tc.id
+        ORDER BY tc.closed_at DESC`,
+      [IDLE_PARK_CODE, ninetyDaysAgo.toISOString()],
+    );
+
+    if (parkChains.length < 3) return [];
+
+    // 파킹 수익률 계산
+    const parkReturns = parkChains.map((c: any) => {
+      const pnlPct = Number(c.total_invested) > 0
+        ? (Number(c.realized_pnl) / Number(c.total_invested)) * 100
+        : 0;
+      const holdDays = (new Date(c.closed_at).getTime() - new Date(c.opened_at).getTime()) / (1000 * 60 * 60 * 24);
+      return { pnlPct, holdDays, openedAt: c.opened_at, closedAt: c.closed_at };
+    });
+
+    // 파킹 해제 직후 시장이 올랐는지 — 파킹 기간 중 워치리스트 종목 수익률 비교
+    const { rows: watchlistRows } = await getPool().query(
+      `SELECT DISTINCT stock_code FROM watchlist WHERE is_active = true LIMIT 10`,
+    );
+
+    const insights: LearnedInsight[] = [];
+
+    // 파킹 체인 평균 수익률 (MMF ETF 연이율 환산)
+    const avgParkPnlPct = parkReturns.reduce((s, r) => s + r.pnlPct, 0) / parkReturns.length;
+    const avgHoldDays = parkReturns.reduce((s, r) => s + r.holdDays, 0) / parkReturns.length;
+    const annualizedParkReturn = avgHoldDays > 0 ? (avgParkPnlPct / avgHoldDays) * 365 : 0;
+
+    if (parkChains.length >= 3) {
+      if (annualizedParkReturn > 2) {
+        insights.push({
+          category: 'TIMING',
+          insight: `머니마켓 파킹 ${parkChains.length}회 분석: 평균 보유 ${avgHoldDays.toFixed(1)}일, 연환산 ${annualizedParkReturn.toFixed(1)}% 수익. 유휴 현금 파킹이 원금 보전에 효과적.`,
+          confidence: 0.7,
+          sampleCount: parkChains.length,
+          lastUpdated: now,
+        });
+      }
+
+      // 파킹 평균 기간이 3일 초과 — 파킹이 너무 길면 기회 손실 경고
+      if (avgHoldDays > 3 && watchlistRows.length > 0) {
+        insights.push({
+          category: 'TIMING',
+          insight: `파킹 평균 보유 기간이 ${avgHoldDays.toFixed(1)}일로 길어지고 있음. 매수 기회 포착이 지연되고 있는지 확인 필요. AI 스코어 임계값을 점검하세요.`,
+          recommendation: `buy_threshold를 낮춰 매수 기회를 늘리거나, 기술 폴백 임계값 재검토.`,
+          confidence: 0.65,
+          sampleCount: parkChains.length,
+          lastUpdated: now,
+        });
+      }
+    }
+
+    return insights;
+  } catch (err) {
+    logger.warn(`파킹 분석 실패: ${err}`, { component: 'LEARN' });
+    return [];
+  }
 }

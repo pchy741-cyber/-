@@ -132,8 +132,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const batchParkPrice = livePrices.get(IDLE_PARK_CODE)?.currentPrice ?? 0;
     if (batchParkPrice > 0) {
       _idleParkPriceCache = { price: batchParkPrice, fetchedAt: Date.now() };
-    } else if (_idleParkPriceCache.price > 0) {
+    } else if (_idleParkPriceCache.price > 0 && Date.now() - _idleParkPriceCache.fetchedAt < 30 * 60 * 1000) {
       logger.warn(`💰 333940 배치 조회 실패 — 캐시 가격 유지: ${_idleParkPriceCache.price.toLocaleString()}원`, { component: 'TRACK_B' });
+    } else if (_idleParkPriceCache.price > 0) {
+      // 30분 이상 된 캐시는 무효화 (stale price로 파킹 수량 계산 오류 방지)
+      _idleParkPriceCache = { price: 0, fetchedAt: 0 };
+      logger.warn(`💰 333940 캐시 만료(30분 초과) — 파킹 스킵`, { component: 'TRACK_B' });
     }
 
     // 가격 캐싱 — 대시보드에서 API 실패 시 fallback용
