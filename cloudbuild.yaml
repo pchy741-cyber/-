@@ -5,9 +5,9 @@ steps:
     args:
       - 'build'
       - '-t'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/quantops:${_TAG}'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${_TAG}'
       - '-t'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/quantops:latest'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest'
       - '.'
 
   # 2. Artifact Registry에 Push
@@ -15,7 +15,7 @@ steps:
     args:
       - 'push'
       - '--all-tags'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/quantops'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}'
 
   # 3. Cloud Run 배포
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -23,9 +23,9 @@ steps:
     args:
       - 'run'
       - 'deploy'
-      - 'quantops'
+      - '${_SERVICE}'
       - '--image'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/quantops:${_TAG}'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${_TAG}'
       - '--region'
       - '${_REGION}'
       - '--platform'
@@ -43,9 +43,10 @@ steps:
       - '--allow-unauthenticated'
 
 substitutions:
-  _REGION: asia-northeast3  # 서울 리전
-  _REPO: quantops
-  _TAG: v0-28-0
+  _REGION: asia-northeast3
+  _REPO: cloud-run-source-deploy
+  _SERVICE: auto-ai-bot
+  _TAG: v0-53-0
 
 options:
   logging: CLOUD_LOGGING_ONLY

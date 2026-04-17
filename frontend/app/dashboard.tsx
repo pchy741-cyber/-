@@ -469,18 +469,38 @@ function InsightsPanel({ insights, trades, onRefresh, toast }: { insights: any[]
         </div>
 
         {showAdd && (
-          <div className="px-4 py-3 border-b border-white/[0.04] bg-purple-900/10 flex gap-2">
-            <input
-              value={newInsight}
-              onChange={e => setNewInsight(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleAdd()}
-              placeholder="예: 공매도 과열 종목은 반드시 제외할 것"
-              className="flex-1 bg-white/[0.06] border border-white/[0.08] rounded-lg px-3 py-1.5 text-xs text-slate-200 placeholder:text-slate-600 outline-none focus:border-purple-500/50"
-            />
-            <button onClick={handleAdd} disabled={adding}
-              className="px-3 py-1.5 bg-purple-700 hover:bg-purple-600 text-white text-xs rounded-lg disabled:opacity-50">
-              {adding ? '저장중...' : '저장'}
-            </button>
+          <div className="px-4 py-3 border-b border-white/[0.04] bg-purple-900/10 space-y-2">
+            <div className="flex gap-2">
+              <input
+                value={newInsight}
+                onChange={e => setNewInsight(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleAdd()}
+                placeholder="예: 공매도 과열 종목은 반드시 제외할 것"
+                className="flex-1 bg-white/[0.06] border border-white/[0.08] rounded-lg px-3 py-1.5 text-xs text-slate-200 placeholder:text-slate-600 outline-none focus:border-purple-500/50"
+              />
+              <button onClick={handleAdd} disabled={adding}
+                className="px-3 py-1.5 bg-purple-700 hover:bg-purple-600 text-white text-xs rounded-lg disabled:opacity-50">
+                {adding ? '저장중...' : '저장'}
+              </button>
+            </div>
+            {/* 빠른 템플릿 */}
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                '거래량이 평균의 3배 이상 터질 때만 진입 — 작은 거래량 돌파는 페이크',
+                '코스피 200일선 아래에서는 신규 매수 금지, 보유 종목 50% 이하로 유지',
+                '개별 종목 최대 투자금은 전체 계좌의 20% 이하 유지',
+                '매수 후 -7% 닿으면 이유 불문 손절 — 오를 거라는 기대 금지',
+                '외국인/기관 순매도 전환 시 보유 중이면 다음날 개장에 50% 매도',
+                '실적 발표 전날 신규 매수 금지 — 발표 후 반응 보고 진입',
+                '상한가 다음날 추격 매수 금지 — 단타꾼 물량 출하 시점',
+                '하락장(코스피 -1.5% 이상)에선 AI 점수 80점 이상만 매수 허용',
+              ].map(t => (
+                <button key={t} onClick={() => setNewInsight(t)}
+                  className="text-[9px] bg-purple-900/30 hover:bg-purple-900/60 text-purple-300 px-2 py-1 rounded-md transition-all text-left leading-tight max-w-[180px] truncate">
+                  {t}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
@@ -2404,7 +2424,7 @@ function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist:
 // ═══════════════════════════════════════
 
 // NotebookLM 소스 타입
-interface NbSource { id: string; title: string; content: string; created_at?: string; }
+interface NbSource { id: string; title: string; content: string; created_at?: string; harm_suspected?: boolean; }
 
 function parseNbSources(raw: string | null | undefined): NbSource[] {
   if (!raw || !raw.trim()) return [];
@@ -2430,6 +2450,7 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
   const [nbEditId, setNbEditId] = useState<string | null>(null);
   const [nbEditTitle, setNbEditTitle] = useState('');
   const [nbEditContent, setNbEditContent] = useState('');
+  const [nbPendingDeleteId, setNbPendingDeleteId] = useState<string | null>(null);
 
   // 프롬프트 로컬 상태 — strategy 최초 로드 시 한 번만 초기화, 이후 30초 폴링에 영향 받지 않음
   const DEFAULT_STRATEGY_DOC = `# 매매 전략서
@@ -2764,11 +2785,10 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
                   )}
                   {nbSources.map((src) => {
                     const daysOld = src.created_at ? Math.floor((Date.now() - new Date(src.created_at).getTime()) / 86400000) : null;
-                    const daysLeft = daysOld !== null ? 7 - daysOld : null;
-                    const expirySoon = daysLeft !== null && daysLeft <= 2;
-                    const expired = daysLeft !== null && daysLeft <= 0;
+                    const isHarmful = src.harm_suspected === true;
+                    const isPendingDelete = nbPendingDeleteId === src.id;
                     return (
-                    <div key={src.id} className={`bg-slate-900/60 border rounded-lg p-3 ${expired ? 'border-rose-700/40 opacity-60' : expirySoon ? 'border-amber-600/40' : 'border-amber-900/20'}`}>
+                    <div key={src.id} className={`bg-slate-900/60 border rounded-lg p-3 transition-all ${isHarmful ? 'border-rose-600/50 bg-rose-950/10' : 'border-amber-900/20'}`}>
                       {nbEditId === src.id ? (
                         <div className="space-y-2">
                           <input value={nbEditTitle} onChange={e => setNbEditTitle(e.target.value)}
@@ -2788,13 +2808,9 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2 flex-wrap">
                               <p className="text-[11px] font-semibold text-amber-300 truncate">{src.title || '제목 없음'}</p>
-                              {expired ? (
-                                <span className="text-[9px] px-1.5 py-0.5 bg-rose-900/50 text-rose-400 rounded-full shrink-0">만료됨</span>
-                              ) : daysLeft !== null ? (
-                                <span className={`text-[9px] px-1.5 py-0.5 rounded-full shrink-0 ${expirySoon ? 'bg-amber-900/50 text-amber-400' : 'bg-slate-800 text-slate-500'}`}>
-                                  {daysLeft}일 후 만료
-                                </span>
-                              ) : null}
+                              {isHarmful && (
+                                <span className="text-[9px] px-1.5 py-0.5 bg-rose-900/60 text-rose-300 rounded-full shrink-0 animate-pulse">⚠️ 수익 악영향 의심</span>
+                              )}
                               {daysOld !== null && (
                                 <span className="text-[9px] text-slate-600">{daysOld}일 전 등록</span>
                               )}
@@ -2802,13 +2818,21 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
                             <p className="text-[10px] text-slate-400 mt-1 whitespace-pre-wrap line-clamp-3">{src.content}</p>
                           </div>
                           <div className="flex flex-col gap-1 shrink-0">
-                            <button onClick={() => { setNbEditId(src.id); setNbEditTitle(src.title); setNbEditContent(src.content); }}
+                            <button onClick={() => { setNbEditId(src.id); setNbEditTitle(src.title); setNbEditContent(src.content); setNbPendingDeleteId(null); }}
                               className="text-[10px] px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded">수정</button>
-                            <button onClick={() => {
-                              if (!window.confirm(`"${src.title}" 소스를 삭제하시겠습니까?\n삭제 후 저장 버튼을 눌러야 실제 반영됩니다.`)) return;
-                              setNbSources(prev => prev.filter(x => x.id !== src.id));
-                            }}
-                              className="text-[10px] px-2 py-1 bg-rose-900/40 text-rose-400 hover:bg-rose-800/40 rounded">삭제</button>
+                            {/* 악영향 의심 토글 */}
+                            <button onClick={() => setNbSources(prev => prev.map(x => x.id === src.id ? { ...x, harm_suspected: !x.harm_suspected } : x))}
+                              className={`text-[9px] px-2 py-1 rounded transition-all ${isHarmful ? 'bg-rose-900/60 text-rose-300' : 'bg-slate-800 text-slate-500 hover:text-amber-400'}`}>
+                              {isHarmful ? '⚠️ 플래그됨' : '⚠️ 악영향?'}
+                            </button>
+                            {/* 2단계 삭제 승인 */}
+                            {isPendingDelete ? (
+                              <button onClick={() => { setNbSources(prev => prev.filter(x => x.id !== src.id)); setNbPendingDeleteId(null); }}
+                                className="text-[10px] px-2 py-1 bg-rose-600 text-white rounded font-bold animate-pulse">승인 삭제</button>
+                            ) : (
+                              <button onClick={() => setNbPendingDeleteId(src.id)}
+                                className="text-[10px] px-2 py-1 bg-rose-900/40 text-rose-400 hover:bg-rose-800/40 rounded">삭제</button>
+                            )}
                           </div>
                         </div>
                       )}
