@@ -1390,13 +1390,13 @@ dashboardRoutes.get('/logs', async (c) => {
 dashboardRoutes.get('/strategy/history', async (c) => {
   try {
     const { rows } = await getPool().query(
-      `SELECT created_at, message
+      `SELECT timestamp AS created_at, message
          FROM system_log
         WHERE component = 'REGIME'
           AND level = 'WARN'
           AND message LIKE '전략 자동 전환%'
-          AND created_at >= NOW() - INTERVAL '7 days'
-        ORDER BY created_at DESC
+          AND timestamp >= NOW() - INTERVAL '7 days'
+        ORDER BY timestamp DESC
         LIMIT 20`,
     );
     const events = rows.map((r: any) => {
@@ -1452,7 +1452,11 @@ dashboardRoutes.get('/stock/:code/score-detail', async (c) => {
       fundamental: Number(r.fundamental_score),
       technical: Number(r.technical_score),
       sentiment: Number(r.sentiment_score),
-      summary: r.gemini_summary ?? null,
+      summary: typeof r.gemini_summary === 'string'
+        ? r.gemini_summary
+        : r.gemini_summary
+          ? JSON.stringify(r.gemini_summary).slice(0, 300)
+          : null,
       updatedAt: r.created_at,
     });
   } catch (err: any) {
