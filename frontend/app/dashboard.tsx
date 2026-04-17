@@ -451,6 +451,17 @@ function InsightsPanel({ insights, trades, onRefresh, toast }: { insights: any[]
         <div className="flex items-center gap-3 px-4 py-3 border-b border-white/[0.06]">
           <span className="text-sm font-semibold text-slate-200">🧠 자기학습 인사이트</span>
           <span className="ml-auto text-[10px] bg-slate-700/60 text-slate-400 px-2 py-0.5 rounded-full">{insights.length}개</span>
+          <button
+            onClick={async () => {
+              toast?.('자기학습 시작...', 'info');
+              const r = await fetch('/api/settings/run-self-learning', { method: 'POST' });
+              const d = await r.json().catch(() => ({}));
+              toast?.(d.message ?? '자기학습 완료', 'ok');
+              setTimeout(onRefresh, 3000);
+            }}
+            className="text-[10px] bg-indigo-900/40 hover:bg-indigo-900/60 text-indigo-300 px-2.5 py-1 rounded-lg transition-all">
+            ▶ 지금 실행
+          </button>
           <button onClick={() => setShowAdd(v => !v)}
             className="text-[10px] bg-purple-900/40 hover:bg-purple-900/60 text-purple-300 px-2.5 py-1 rounded-lg transition-all">
             + CEO 가이드 추가
@@ -1976,6 +1987,29 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
         {/* 국내 */}
         <Panel title="로봇이 감시하는 종목들" badge={`${watchlist.length}종목`}>
+          <div className="px-4 pt-3 pb-1 flex gap-2">
+            <button
+              onClick={async () => {
+                toast?.('워치리스트 순환 시작...', 'info');
+                const r = await fetch('/api/settings/run-watchlist-rotation', { method: 'POST' });
+                const d = await r.json().catch(() => ({}));
+                toast?.(d.message ?? '순환 완료', 'ok');
+                setTimeout(onRefresh, 3000);
+              }}
+              className="text-[10px] bg-violet-900/40 hover:bg-violet-900/60 text-violet-300 px-2.5 py-1 rounded-lg transition-all">
+              🔄 순환 실행
+            </button>
+            <button
+              onClick={async () => {
+                toast?.('종목명 보정 중...', 'info');
+                const r = await fetch('/api/settings/fix-names', { method: 'POST' });
+                const d = await r.json().catch(() => ({}));
+                toast?.(d.message ?? '보정 완료', 'ok');
+              }}
+              className="text-[10px] bg-slate-800/60 hover:bg-slate-800/80 text-slate-400 px-2.5 py-1 rounded-lg transition-all">
+              🏷️ 종목명 보정
+            </button>
+          </div>
           <div className="grid grid-cols-2 gap-2 p-3">
             {[...watchlist].sort((a: any, b: any) => {
               const chainA = chains.find((ch: any) => ch.stock_code === a.stock_code);

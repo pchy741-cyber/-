@@ -114,10 +114,10 @@ export async function runWatchlistRotation(): Promise<void> {
         continue;
       }
 
-      // 신규 추가
+      // 신규 추가 (source 컬럼은 없을 수 있으므로 기본 컬럼만 사용)
       await pool.query(
-        `INSERT INTO watchlist (stock_code, stock_name, is_active, source)
-         VALUES ($1, $2, true, 'AUTO_ROTATION')
+        `INSERT INTO watchlist (stock_code, stock_name, is_active)
+         VALUES ($1, $2, true)
          ON CONFLICT (stock_code) DO UPDATE SET is_active = true, stock_name = EXCLUDED.stock_name`,
         [code, stockName],
       );

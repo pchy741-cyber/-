@@ -208,3 +208,21 @@ settingsRoutes.post('/fix-names', async (c) => {
     .catch((e) => logger.error(`종목명 보정 실패: ${e}`, { component: 'SETTINGS' }));
   return c.json({ ok: true, message: '종목명 보정 시작 (KRX API 조회 중...)' });
 });
+
+// 자기학습 즉시 실행 (평일 18:30 자동 외 수동 트리거)
+settingsRoutes.post('/run-self-learning', async (c) => {
+  const { analyzeTradeHistory } = await import('../../automation/self-learning.js');
+  analyzeTradeHistory()
+    .then((insights) => logger.info(`자기학습 완료: ${insights.length}개 인사이트`, { component: 'SETTINGS' }))
+    .catch((e) => logger.error(`자기학습 실패: ${e}`, { component: 'SETTINGS' }));
+  return c.json({ ok: true, message: '자기학습 시작 (백그라운드 실행, 완료 시 텔레그램 알림)' });
+});
+
+// 워치리스트 순환 즉시 실행 (일요일 19:00 자동 외 수동 트리거)
+settingsRoutes.post('/run-watchlist-rotation', async (c) => {
+  const { runWatchlistRotation } = await import('../../automation/watchlist-rotation.js');
+  runWatchlistRotation()
+    .then(() => logger.info(`워치리스트 순환 완료`, { component: 'SETTINGS' }))
+    .catch((e) => logger.error(`워치리스트 순환 실패: ${e}`, { component: 'SETTINGS' }));
+  return c.json({ ok: true, message: '워치리스트 순환 시작 (저점수 종목 제거 + 고점수 종목 자동 추가)' });
+});
