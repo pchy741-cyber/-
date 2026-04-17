@@ -351,6 +351,53 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     // ─────────────────────────────────────────────────────────────────
+    // 6-3-C. 🛡️ AI 조기 매도 방지 필터
+    //   - AI가 손절선(-4%) 미도달 포지션을 FORCE_CLOSE하는 것을 차단
+    //   - AI는 "시장 심리"로 -0.7%에서도 FORCE_CLOSE 호출 가능 → 금지
+    //   - 실제 익절/손절은 6-4 하드룰 + holding-check 트레일링이 전담
+    //   - 파킹 ETF(IDLE_PARK_CODE) 결정은 예외 (가격 무관 청산)
+    // ─────────────────────────────────────────────────────────────────
+    {
+      const _baseP = STRATEGY_PARAMS[mode];
+      const _stopPct = strategy?.stop_loss_pct ?? _baseP.stopLossPct;
+      const _tpPct = strategy?.take_profit_pct ?? _baseP.takeProfitPct;
+
+      decisions = decisions.filter((d) => {
+        if (!['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action)) return true;
+        if (d.stock_code === IDLE_PARK_CODE || d.stock_code === PARK_STOCK_CODE) return true;
+
+        const chain = openChains.find((c) => c.stock_code === d.stock_code);
+        if (!chain?.avg_buy_price) return true;
+
+        const liveP = livePrices.get(d.stock_code);
+        if (!liveP || liveP.currentPrice <= 0) return true;
+
+        const avgBuy = Number(chain.avg_buy_price);
+        if (avgBuy <= 0) return true;
+
+        const pnlPct = ((liveP.currentPrice - avgBuy) / avgBuy) * 100;
+
+        if (d.action === 'FORCE_CLOSE' && pnlPct > _stopPct) {
+          logger.warn(
+            `🛡️ AI 조기 청산 차단: ${d.stock_code} 현재 ${pnlPct.toFixed(1)}% (손절선 ${_stopPct}% 미도달) → 하드룰 대기`,
+            { component: 'TRACK_B' },
+          );
+          return false;
+        }
+
+        if ((d.action === 'SELL' || d.action === 'PARTIAL_SELL') && pnlPct > _stopPct && pnlPct < _tpPct) {
+          logger.warn(
+            `🛡️ AI 중간 매도 차단: ${d.stock_code} 현재 ${pnlPct.toFixed(1)}% — 트레일링/하드룰 처리 대기`,
+            { component: 'TRACK_B' },
+          );
+          return false;
+        }
+
+        return true;
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────────────
     // 6-3-B. 💰 유휴 현금 파킹
     //   - 현금 비중 15% 초과 + BUY 신호 없음 → 머니마켓 ETF 자동 매수
     //   - 머니마켓 ETF: 사실상 원금 손실 0%, 익일물 콜금리 수준 (~3.4% 연간)
@@ -414,25 +461,24 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       if (hasBuyDecision && alreadyIdleParked) {
         const parkChain = openChains.find((c) => c.stock_code === IDLE_PARK_CODE);
         if (parkChain && parkChain.total_quantity > 0) {
-          // 배치 최신값 → 캐시에 저장됨, 없으면 avg_buy_price fallback
           const cachedPrice = _idleParkPriceCache.price;
-          if (cachedPrice > 0) {
-            const parkPnlPct = parkChain.avg_buy_price
-              ? ((cachedPrice - Number(parkChain.avg_buy_price)) / Number(parkChain.avg_buy_price)) * 100
-              : 0;
-            logger.info(
-              `🔄 머니마켓 파킹 해제: 매수 신호 → ${IDLE_PARK_NAME} ${parkChain.total_quantity}주 매도 (수익률 ${parkPnlPct.toFixed(2)}%)`,
-              { component: 'TRACK_B' },
-            );
-            decisions.push({
-              action: 'FORCE_CLOSE',
-              stock_code: IDLE_PARK_CODE,
-              quantity: parkChain.total_quantity,
-              price_type: 'MARKET',
-              reasoning: `머니마켓 파킹 해제: 매수 신호 발생 → ${IDLE_PARK_NAME} 청산 후 재투자 (보유 수익 ${parkPnlPct.toFixed(2)}%)`,
-              confidence: 0.95,
-            });
-          }
+          const fallbackPrice = Number(parkChain.avg_buy_price ?? 0);
+          const priceForLog = cachedPrice > 0 ? cachedPrice : fallbackPrice;
+          const parkPnlPct = priceForLog > 0 && fallbackPrice > 0
+            ? ((priceForLog - fallbackPrice) / fallbackPrice) * 100
+            : 0;
+          logger.info(
+            `🔄 머니마켓 파킹 해제: 매수 신호 → ${IDLE_PARK_NAME} ${parkChain.total_quantity}주 시장가 매도 (수익률 ${parkPnlPct.toFixed(2)}%)`,
+            { component: 'TRACK_B' },
+          );
+          decisions.push({
+            action: 'FORCE_CLOSE',
+            stock_code: IDLE_PARK_CODE,
+            quantity: parkChain.total_quantity,
+            price_type: 'MARKET',
+            reasoning: `머니마켓 파킹 해제: 매수 신호 발생 → ${IDLE_PARK_NAME} 청산 후 재투자 (보유 수익 ${parkPnlPct.toFixed(2)}%)`,
+            confidence: 0.95,
+          });
         }
       }
     }

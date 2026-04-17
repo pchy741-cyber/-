@@ -10,16 +10,18 @@ import { calcPnlPct } from '../utils/money.js';
 /**
  * 트레일링 스탑 설정
  *
- * 수익률이 TRAILING_ACTIVATE_PCT(+2%) 이상에 도달한 순간부터
+ * 수익률이 TRAILING_ACTIVATE_PCT(+1.5%) 이상에 도달한 순간부터
  * 고점(peak_price_since_open)을 추적한다.
- * 이후 고점 대비 TRAILING_DROP_PCT(1.5%) 하락 시 전량 매도.
+ * +3% 이상 구간 진입 시 보유 수량의 50% 분할 익절 (1회만)
+ * 이후 고점 대비 TRAILING_DROP_PCT(1.5%) 하락 시 나머지 전량 매도.
  *
  * 예시:
- *  매수 10,000원 → 고점 11,000원(+10%) → 10,835원으로 하락(-1.5%) → 트레일링 스탑 발동
- *  → 고정 익절(3%)보다 +7% 더 먹을 수 있음
+ *  매수 10,000원 → +3% → 50% 분할 익절
+ *  → 남은 50% 고점 추적, 고점 대비 -1.5% 하락 시 청산
  */
 const TRAILING_ACTIVATE_PCT = 2.0;  // 트레일링 스탑 활성화 최소 수익률 (%)
-const TRAILING_DROP_PCT     = 1.5;  // 고점 대비 이 % 하락 시 매도 (%)
+const TRAILING_DROP_PCT     = 2.0;  // 고점 대비 이 % 하락 시 매도 (%)
+const PARTIAL_SELL_PCT      = 5.0;  // 이 수익률 도달 시 50% 분할 익절
 
 /**
  * 보유일 초과 자동 손절 체크
@@ -159,24 +161,24 @@ export async function runHoldingCheckJob(): Promise<void> {
  * 정체 감지: 일수별 슬라이딩 임계값으로 "수익 가능성 없는 포지션" 조기 청산 여부 판단
  *
  * 기준:
- *  - 2일차: -1.5% 미만 (손절선 절반 넘었는데 회복 없음 → 더 내려갈 가능성)
- *  - 3일차: 0% 미만 (3일 넘어도 여전히 마이너스 = 기대 없음)
+ *  - 2일차: -2.5% 미만 (손절선 -4%의 절반 이상 내려왔으면 선제 청산)
+ *  - 3일차: -1.5% 미만 (3일 넘어도 손실 = 수익 전환 가능성 낮음)
  *  - maxDays-1 일차: +0.5% 미만 (만기 하루 전인데 거의 보합 = 수수료만 날림)
  *
  * @returns 청산 사유 문자열 (청산 불필요하면 null)
  */
 function checkStagnation(businessDays: number, pnlPct: number, maxDays: number): string | null {
-  // 2일차 이상: 손절선(-3%) 절반 이상 내려왔으면 조기 차단
-  if (businessDays >= 2 && pnlPct < -1.5) {
-    return `2일 이상 보유 중 -1.5% 이하 (${pnlPct.toFixed(2)}%) — 추가 하락 전 선제 청산`;
+  // 2일차 이상: 손절선(-4%) 절반 이상 내려왔으면 조기 차단
+  if (businessDays >= 2 && pnlPct < -2.5) {
+    return `2일 이상 보유 중 -2.5% 이하 (${pnlPct.toFixed(2)}%) — 추가 하락 전 선제 청산`;
   }
-  // 3일차 이상: 아직도 마이너스 = 수익 전환 가능성 낮음
-  if (businessDays >= 3 && pnlPct < 0) {
-    return `3일 이상 보유 중 여전히 마이너스 (${pnlPct.toFixed(2)}%) — 데드머니 청산`;
+  // 3일차 이상: 1.5% 이상 손실 = 수익 전환 가능성 낮음
+  if (businessDays >= 3 && pnlPct < -1.5) {
+    return `3일 이상 보유 중 -1.5% 이하 (${pnlPct.toFixed(2)}%) — 데드머니 청산`;
   }
   // maxDays 하루 전: 거의 보합이면 기다려봤자 수수료만 손해
-  if (maxDays > 1 && businessDays >= maxDays - 1 && pnlPct < 0.5) {
-    return `만기 하루 전 수익률 미달 (${pnlPct.toFixed(2)}% < 0.5%) — 조기 청산`;
+  if (maxDays > 1 && businessDays >= maxDays - 1 && pnlPct < 0.3) {
+    return `만기 하루 전 수익률 미달 (${pnlPct.toFixed(2)}% < 0.3%) — 조기 청산`;
   }
   return null;
 }
@@ -199,28 +201,65 @@ async function checkAndUpdateTrailingStop(
   // 트레일링 미활성화 구간 (수익 불충분)
   if (pnlPct < TRAILING_ACTIVATE_PCT) return null;
 
-  const storedPeak = Number(chain.peak_price_since_open ?? 0);
+  // +PARTIAL_SELL_PCT 도달 + 아직 분할매도 안 했으면 → 50% 분할 익절
+  // partial_sold 플래그를 peak_price_since_open 음수로 표현 (음수면 이미 분할매도 완료)
+  const storedPeakRaw = Number(chain.peak_price_since_open ?? 0);
+  const partialSoldAlready = storedPeakRaw < 0;
+  const storedPeak = Math.abs(storedPeakRaw);
+
+  if (!partialSoldAlready && pnlPct >= PARTIAL_SELL_PCT && chain.total_quantity >= 2) {
+    const partialQty = Math.floor(chain.total_quantity / 2);
+    if (partialQty > 0) {
+      logger.info(
+        `💰 분할 익절 발동: ${chain.stock_code} +${pnlPct.toFixed(1)}% (기준 +${PARTIAL_SELL_PCT}%) → ${partialQty}주 50% 매도`,
+        { component: 'TRAILING' },
+      );
+      // 음수 peak로 분할매도 완료 표시 — await로 중복 발동 방지
+      try {
+        await getPool().query(
+          'UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2',
+          [-currentPrice, chain.id],
+        );
+      } catch (err) {
+        logger.error(`트레일링 분할매도 플래그 저장 실패: ${err}`, { component: 'TRAILING' });
+      }
+      return {
+        action: 'PARTIAL_SELL',
+        stock_code: chain.stock_code,
+        quantity: partialQty,
+        price_type: 'MARKET',
+        reasoning: `분할 익절(50%): 평단가 대비 +${pnlPct.toFixed(1)}% 도달 → ${partialQty}주 매도, 나머지 트레일링 추적`,
+        confidence: 1.0,
+      };
+    }
+  }
+
   const newPeak = Math.max(storedPeak, currentPrice);
 
-  // 고점 갱신 (DB 비동기 업데이트, 실패해도 로직 계속)
+  // 고점 갱신
   if (newPeak > storedPeak) {
-    getPool()
-      .query('UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2', [newPeak, chain.id])
-      .catch(() => {});
+    const saveVal = partialSoldAlready ? -newPeak : newPeak;
+    try {
+      await getPool().query(
+        'UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2',
+        [saveVal, chain.id],
+      );
+    } catch (err) {
+      logger.error(`트레일링 고점 갱신 실패: ${err}`, { component: 'TRAILING' });
+    }
     logger.info(
       `📈 트레일링 고점 갱신: ${chain.stock_code} ${storedPeak > 0 ? storedPeak.toLocaleString() : '초기'} → ${newPeak.toLocaleString()}원 (+${pnlPct.toFixed(1)}%)`,
       { component: 'TRAILING' },
     );
   }
 
-  // 고점 확정 (newPeak 기준으로 하락폭 계산)
   if (newPeak <= 0) return null;
   const dropFromPeak = ((newPeak - currentPrice) / newPeak) * 100;
 
   if (dropFromPeak >= TRAILING_DROP_PCT) {
     const peakPnlPct = ((newPeak - avgBuy) / avgBuy) * 100;
     logger.info(
-      `🎯 트레일링 스탑 발동: ${chain.stock_code} 고점 ${newPeak.toLocaleString()}원(+${peakPnlPct.toFixed(1)}%) → 현재 ${currentPrice.toLocaleString()}원(+${pnlPct.toFixed(1)}%) | 고점 대비 -${dropFromPeak.toFixed(1)}% (트리거: -${TRAILING_DROP_PCT}%)`,
+      `🎯 트레일링 스탑 발동: ${chain.stock_code} 고점 ${newPeak.toLocaleString()}원(+${peakPnlPct.toFixed(1)}%) → 현재 ${currentPrice.toLocaleString()}원(+${pnlPct.toFixed(1)}%) | 고점 대비 -${dropFromPeak.toFixed(1)}%`,
       { component: 'TRAILING' },
     );
     return {
