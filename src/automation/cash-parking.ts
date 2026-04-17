@@ -2,12 +2,12 @@
  * 현금 파킹 모듈
  *
  * 철학: 돈은 생명체 — 가만히 두면 썩는다.
- * 유휴 현금은 탑티어 ETF(기본: KODEX200)에 자동 매수해 굴리고,
- * 매매 기회 발생 시 일부 매도 → 다시 매수.
+ * 유휴 현금은 TIGER 고배당(배당 ~4.5%/년)에 자동 매수해 굴리고,
+ * 매매 기회 발생 시 전량 매도 → 다시 매수.
  *
  * 실행 흐름:
- *  1. 장 마감 후 (15:55) — 잉여 현금 → 기저자산 ETF 매수
- *  2. 장 시작 전 (08:45) — 오늘 매매 예상 현금 부족 시 → ETF 일부 매도
+ *  1. 장중 09:30/12:00/15:10 — 잉여 현금 → 배당 ETF 매수
+ *  2. 장 시작 전 (08:45) — 오늘 매매 예상 현금 부족 시 → ETF 전량 매도
  */
 
 import { getAccountBalance } from '../kis/account.js';
@@ -18,15 +18,18 @@ import { sendTelegramMessage } from '../notifications/telegram.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
 
-/** 기저자산 ETF 코드 (KODEX200) */
-const BASE_ASSET_CODE = process.env.BASE_ASSET_CODE || '069500';
-const BASE_ASSET_NAME = process.env.BASE_ASSET_NAME || 'KODEX200';
+/**
+ * 파킹 ETF: TIGER 고배당 (161510) — 배당수익률 ~4.5%/년, 월배당
+ * 환경변수로 오버라이드 가능
+ */
+const BASE_ASSET_CODE = process.env.BASE_ASSET_CODE || '161510';
+const BASE_ASSET_NAME = process.env.BASE_ASSET_NAME || 'TIGER 고배당';
 
-/** 최소 파킹 금액 (이 이상 남을 때만 ETF 매수) */
-const MIN_PARK_KRW = 500_000; // 50만원 이상 남아야 파킹
+/** 최소 파킹 금액 — 이 이상이면 즉시 파킹 */
+const MIN_PARK_KRW = 100_000; // 10만원 이상이면 파킹 (공격적 운용)
 
-/** 항상 유지할 최소 현금 (오늘 매매를 위한 유동성) */
-const MIN_LIQUID_KRW = 1_000_000; // 100만원은 항상 현금으로 유지
+/** 항상 유지할 최소 현금 — 소액 수수료/슬리피지 대비 */
+const MIN_LIQUID_KRW = 300_000; // 30만원만 현금으로 유지, 나머지는 ETF
 
 /**
  * 장 마감 후 현금 파킹
@@ -122,10 +125,10 @@ export async function unparkForTrading(): Promise<void> {
     const etfPrice = await getCurrentPrice(BASE_ASSET_CODE);
     if (etfPrice.currentPrice <= 0) return;
 
-    // 부족분만큼 매도 (전량 매도 방지 — 절반은 유지)
+    // 부족분만큼 매도 (최대 전량 — 매매 기회가 생기면 ETF 다 팔아서 현금 확보)
     const sellQty = Math.min(
       Math.ceil(shortfall / etfPrice.currentPrice),
-      Math.floor(etfPosition.quantity / 2), // 최대 절반만 매도
+      etfPosition.quantity, // 전량 매도 허용
     );
 
     if (sellQty <= 0) return;

@@ -247,7 +247,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
           getPool().query(
             `UPDATE watchlist SET is_active = true, stock_name = COALESCE(NULLIF(stock_name, stock_code), $2), source = 'AUTO'
              WHERE stock_code = $1`,
-            [s.stock_code, s.stock_name ?? s.stock_code],
+            [s.stock_code, (s as any).stock_name ?? s.stock_code],
           )
         ));
         logger.info(
