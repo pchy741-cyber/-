@@ -310,7 +310,7 @@ export default function Dashboard() {
             <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px] mx-auto">
               {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={withdrawConfig} watchlist={watchlist} strategy={strategy} setStrategy={setStrategy} toast={toast} onRefresh={load} />}
               {tab === 'trades' && <TradesView trades={trades} watchlist={watchlist} />}
-              {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} />}
+              {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} toast={toast} onRefresh={load} />}
 
               {tab === 'news' && <NewsView watchlist={watchlist} setWatchlist={setWatchlist} />}
               {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} notebookRef={notebookRef} geminiRef={geminiRef} gptRef={gptRef} claudeRef={claudeRef} killSwitch={killSwitch} toggleKill={toggleKill} withdrawConfig={withdrawConfig} setWithdrawConfig={setWithdrawConfig} withdrawHistory={withdrawHistory} setWithdrawHistory={setWithdrawHistory} toast={toast} />}
@@ -1803,7 +1803,7 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
 // WATCHLIST VIEW
 // ═══════════════════════════════════════
 
-function WatchlistView({ watchlist, setWatchlist, dash, usDash }: any) {
+function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh }: any) {
   const usW = usDash?.watchlist || [];
   const chains = dash?.chains || [];
   const getWatchlistName = (code: string) => {
