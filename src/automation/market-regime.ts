@@ -119,9 +119,9 @@ export async function autoSwitchStrategy(): Promise<void> {
     // DIVIDEND → SWING 회복: 장세 NEUTRAL/BULLISH로 회복 시 스윙 복귀
     let targetMode = regime.recommendedMode;
     if (currentMode === 'DEFENSE' && (regime.regime === 'BEARISH' || regime.regime === 'PANIC')) {
-      targetMode = 'DIVIDEND';
+      targetMode = 'DIVIDEND' as any;
       regime.reasons.push('DEFENSE 지속 → DIVIDEND 파킹 모드 에스컬레이션 (배당+안정 운영)');
-    } else if (currentMode === 'DIVIDEND' && (regime.regime === 'NEUTRAL' || regime.regime === 'BULLISH')) {
+    } else if ((currentMode as string) === 'DIVIDEND' && (regime.regime === 'NEUTRAL' || regime.regime === 'BULLISH')) {
       targetMode = 'SWING';
       regime.reasons.push('장세 회복 → DIVIDEND → SWING 복귀');
     }

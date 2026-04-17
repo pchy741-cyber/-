@@ -36,7 +36,7 @@ export const TransactionChainSchema = z.object({
   id: z.string().uuid(),
   stock_code: z.string(),
   status: z.enum(['OPEN', 'AVERAGING', 'PROFIT_TAKING', 'CLOSED']),
-  strategy_mode: z.enum(['SWING', 'DEFENSE', 'SCALPING']),
+  strategy_mode: z.enum(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND']),
   avg_buy_price: z.number().nullable(),
   total_quantity: z.number(),
   total_invested: z.number(),
@@ -90,7 +90,7 @@ export type PortfolioSnapshot = z.infer<typeof PortfolioSnapshotSchema>;
 // ── CEO 전략 설정 ──
 export const StrategyConfigSchema = z.object({
   id: z.string().uuid(),
-  mode: z.enum(['SWING', 'DEFENSE', 'SCALPING']),
+  mode: z.enum(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND']),
   is_active: z.boolean(),
   notebooklm_prompt: z.string().optional().default(''),
   gemini_prompt: z.string(),

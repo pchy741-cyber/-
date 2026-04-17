@@ -236,6 +236,28 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       }),
     ));
 
+    // 6-1. 발굴 종목 중 고점수(≥70) + 고신뢰도(≥0.7) 자동 active 등록
+    if (discoveryList.length > 0 && !isMemoryMode()) {
+      const discoverySet = new Set(discoveryList.map((d) => d.stock_code));
+      const topDiscovery = scores.filter(
+        (s) => discoverySet.has(s.stock_code) && s.composite_score >= 70 && (s.confidence ?? 0) >= 0.7,
+      );
+      if (topDiscovery.length > 0) {
+        await Promise.allSettled(topDiscovery.map((s) =>
+          getPool().query(
+            `UPDATE watchlist SET is_active = true, stock_name = COALESCE(NULLIF(stock_name, stock_code), $2), source = 'AUTO'
+             WHERE stock_code = $1`,
+            [s.stock_code, s.stock_name ?? s.stock_code],
+          )
+        ));
+        logger.info(
+          `🌟 발굴 종목 ${topDiscovery.length}개 자동 활성화: ${topDiscovery.map((s) => `${s.stock_code}(${s.composite_score}점)`).join(', ')}`,
+          { component: 'TRACK_A' },
+        );
+        await logSystem('INFO', 'TRACK_A', `발굴 종목 자동 활성화: ${topDiscovery.map((s) => s.stock_code).join(', ')}`);
+      }
+    }
+
     // 7. Redis에도 캐싱 (Track B에서 ms 단위 조회용)
     const aiScoresForCache = scores.map((score) => ({
       id: '',

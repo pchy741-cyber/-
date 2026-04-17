@@ -194,8 +194,9 @@ export async function buildTrackBContext(params: {
         ? (((price.currentPrice - Number(chain.avg_buy_price)) / Number(chain.avg_buy_price)) * 100).toFixed(1)
         : 'N/A';
       // 배당 모드 보유 중이면 배당 적립 수익률 추가 표시
-      const dividendAccrual = (chain.strategy_mode === 'DIVIDEND' && price.dividendYield > 0 && chain.holding_days > 0)
-        ? ` | 배당적립: +${((price.dividendYield / 365) * chain.holding_days).toFixed(2)}%`
+      const holdingDays = chain.opened_at ? Math.max(0, (Date.now() - new Date(chain.opened_at).getTime()) / (1000 * 60 * 60 * 24)) : 0;
+      const dividendAccrual = ((chain.strategy_mode as string) === 'DIVIDEND' && price.dividendYield > 0 && holdingDays > 0)
+        ? ` | 배당적립: +${((price.dividendYield / 365) * holdingDays).toFixed(2)}%`
         : '';
       line += `\n   ⮡ 보유: ${chain.total_quantity}주 @ 평단${Number(chain.avg_buy_price).toLocaleString()} | 수익률: ${pnlPct}%${dividendAccrual} | 물타기: ${chain.current_averaging_count}/${chain.max_averaging_count} | 체인상태: ${chain.status}`;
     }

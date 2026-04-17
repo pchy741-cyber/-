@@ -46,8 +46,8 @@ interface EnrichedChain {
   pnlPct: number;
   holdingDays: number;
   entryType: 'SNIPER' | 'TRACK_B' | 'UNKNOWN';
-  sniperType?: string;
-  initialConfidence?: number;
+  sniperType: string | null;
+  initialConfidence: number | null;
 }
 
 const now = new Date().toISOString();
@@ -87,8 +87,8 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
 
     const firstOrder = (chain.orders as any[])?.find((o) => o.side === 'BUY');
     let entryType: EnrichedChain['entryType'] = 'UNKNOWN';
-    let sniperType: string | undefined;
-    let initialConfidence: number | undefined;
+    let sniperType: string | null = null;
+    let initialConfidence: number | null = null;
 
     if (firstOrder?.ai_reasoning) {
       const reasoning = firstOrder.ai_reasoning;
