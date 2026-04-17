@@ -237,9 +237,9 @@ export async function calcPositionSize(baseBudget: number): Promise<PositionSize
     };
   }
 
-  // 승률 계산
+  // 승률 계산 — Laplace smoothing: 소표본 과적합 방지 (wins+2)/(total+4)
   const wins = trades.filter((t) => Number(t.realized_pnl) > 0).length;
-  const winRate = wins / trades.length;
+  const winRate = (wins + 2) / (trades.length + 4);
 
   // 연승/연패 계산
   let streak = 0;

@@ -560,8 +560,8 @@ dashboardRoutes.post('/watchlist', async (c) => {
 
   try {
     await getPool().query(
-      `INSERT INTO watchlist (stock_code, stock_name, market)
-       VALUES ($1, $2, $3)
+      `INSERT INTO watchlist (stock_code, stock_name, market, source)
+       VALUES ($1, $2, $3, 'MANUAL')
        ON CONFLICT (stock_code) DO UPDATE SET stock_name = $2, market = $3`,
       [stockCode, stockName, market],
     );
@@ -1381,6 +1381,80 @@ dashboardRoutes.get('/logs', async (c) => {
 
     const { rows } = await getPool().query(sql, params);
     return c.json(rows);
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// GET /api/strategy/history — 최근 7일 전략 모드 전환 이력
+dashboardRoutes.get('/strategy/history', async (c) => {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT created_at, message
+         FROM system_log
+        WHERE component = 'REGIME'
+          AND level = 'WARN'
+          AND message LIKE '전략 자동 전환%'
+          AND created_at >= NOW() - INTERVAL '7 days'
+        ORDER BY created_at DESC
+        LIMIT 20`,
+    );
+    const events = rows.map((r: any) => {
+      const m = String(r.message).match(/전략 자동 전환: (\w+) → (\w+)/);
+      return {
+        ts: r.created_at,
+        from: m?.[1] ?? '',
+        to: m?.[2] ?? '',
+        message: r.message,
+      };
+    });
+    return c.json(events);
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// GET /api/stock/:code/score-history — 종목 5일 스코어 이력 (스파크라인용)
+dashboardRoutes.get('/stock/:code/score-history', async (c) => {
+  try {
+    const code = c.req.param('code');
+    const { rows } = await getPool().query(
+      `SELECT composite_score, created_at
+         FROM ai_scores
+        WHERE stock_code = $1
+          AND created_at >= NOW() - INTERVAL '7 days'
+        ORDER BY created_at ASC
+        LIMIT 10`,
+      [code],
+    );
+    return c.json(rows.map((r: any) => ({ score: Number(r.composite_score), ts: r.created_at })));
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// GET /api/stock/:code/score-detail — 종목 AI 점수 세부 분해 (투명성 패널)
+dashboardRoutes.get('/stock/:code/score-detail', async (c) => {
+  try {
+    const code = c.req.param('code');
+    const { rows } = await getPool().query(
+      `SELECT composite_score, fundamental_score, technical_score, sentiment_score, gemini_summary, created_at
+         FROM ai_scores
+        WHERE stock_code = $1
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [code],
+    );
+    if (rows.length === 0) return c.json(null);
+    const r = rows[0];
+    return c.json({
+      composite: Number(r.composite_score),
+      fundamental: Number(r.fundamental_score),
+      technical: Number(r.technical_score),
+      sentiment: Number(r.sentiment_score),
+      summary: r.gemini_summary ?? null,
+      updatedAt: r.created_at,
+    });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }

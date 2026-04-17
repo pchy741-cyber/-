@@ -129,6 +129,8 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
     ...analyzeProfitRatio(wins, losses),
     ...analyzeQuickProfitTaking(wins),
     ...parkingInsights,
+    ...analyzeTimeOfDayPerformance(enrichedChains),
+    ...analyzeDayOfWeekPerformance(enrichedChains),
   ];
 
   // 3. DB에 인사이트 저장 및 알림
@@ -887,6 +889,117 @@ export async function getLearnedParameters(): Promise<LearnedParameters> {
   }
 
   return params;
+}
+
+/**
+ * 시간대별 성과 분석 — 어느 시간대에 진입한 매매가 수익이 좋았는지
+ */
+function analyzeTimeOfDayPerformance(
+  enrichedChains: { chain: any; pnlPct: number; holdingDays: number; entryType: string; sniperType: string | null; initialConfidence: number | null }[],
+): LearnedInsight[] {
+  const insights: LearnedInsight[] = [];
+  const now = new Date().toISOString();
+
+  type HourBucket = { wins: number; total: number; pnlSum: number };
+  const buckets: Record<number, HourBucket> = {};
+
+  for (const { chain, pnlPct } of enrichedChains) {
+    if (!chain.created_at) continue;
+    const hour = new Date(chain.created_at).getHours();
+    if (!buckets[hour]) buckets[hour] = { wins: 0, total: 0, pnlSum: 0 };
+    buckets[hour].total++;
+    buckets[hour].pnlSum += pnlPct;
+    if (pnlPct > 0) buckets[hour].wins++;
+  }
+
+  const hours = Object.entries(buckets)
+    .filter(([, b]) => b.total >= 3)
+    .map(([h, b]) => ({ hour: Number(h), winRate: b.wins / b.total, avgPnl: b.pnlSum / b.total, total: b.total }))
+    .sort((a, b) => b.avgPnl - a.avgPnl);
+
+  if (hours.length === 0) return insights;
+
+  const best = hours[0];
+  const worst = hours[hours.length - 1];
+
+  if (best.avgPnl > 0.5) {
+    insights.push({
+      category: 'TIMING',
+      insight: `${best.hour}시 진입 매매 평균 ${best.avgPnl.toFixed(1)}% 수익 (승률 ${Math.round(best.winRate * 100)}%, ${best.total}건). 이 시간대 진입 선호.`,
+      confidence: Math.min(0.9, 0.5 + best.total * 0.05),
+      sampleCount: best.total,
+      lastUpdated: now,
+    });
+  }
+
+  if (worst.avgPnl < -0.3 && worst.total >= 3) {
+    insights.push({
+      category: 'TIMING',
+      insight: `${worst.hour}시 진입 매매 평균 ${worst.avgPnl.toFixed(1)}% 손실 (${worst.total}건). 이 시간대 신규 진입 주의.`,
+      recommendation: `${worst.hour}시 대 진입 시 매수 임계치를 5점 높이거나 진입 보류.`,
+      confidence: Math.min(0.85, 0.5 + worst.total * 0.05),
+      sampleCount: worst.total,
+      lastUpdated: now,
+    });
+  }
+
+  return insights;
+}
+
+/**
+ * 요일별 성과 분석 — 월~금 중 어느 요일이 수익이 좋았는지
+ */
+function analyzeDayOfWeekPerformance(
+  enrichedChains: { chain: any; pnlPct: number; holdingDays: number; entryType: string; sniperType: string | null; initialConfidence: number | null }[],
+): LearnedInsight[] {
+  const insights: LearnedInsight[] = [];
+  const now = new Date().toISOString();
+  const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+
+  type DayBucket = { wins: number; total: number; pnlSum: number };
+  const buckets: Record<number, DayBucket> = {};
+
+  for (const { chain, pnlPct } of enrichedChains) {
+    if (!chain.created_at) continue;
+    const day = new Date(chain.created_at).getDay();
+    if (!buckets[day]) buckets[day] = { wins: 0, total: 0, pnlSum: 0 };
+    buckets[day].total++;
+    buckets[day].pnlSum += pnlPct;
+    if (pnlPct > 0) buckets[day].wins++;
+  }
+
+  const days = Object.entries(buckets)
+    .filter(([, b]) => b.total >= 3)
+    .map(([d, b]) => ({ day: Number(d), winRate: b.wins / b.total, avgPnl: b.pnlSum / b.total, total: b.total }))
+    .sort((a, b) => b.avgPnl - a.avgPnl);
+
+  if (days.length === 0) return insights;
+
+  const best = days[0];
+  const worst = days[days.length - 1];
+
+  if (best.avgPnl > 0.3) {
+    insights.push({
+      category: 'TIMING',
+      insight: `${dayNames[best.day]}요일 진입이 평균 ${best.avgPnl.toFixed(1)}% 수익으로 가장 우수 (승률 ${Math.round(best.winRate * 100)}%, ${best.total}건).`,
+      confidence: Math.min(0.85, 0.5 + best.total * 0.04),
+      sampleCount: best.total,
+      lastUpdated: now,
+    });
+  }
+
+  if (worst.avgPnl < -0.2 && days.length > 2) {
+    insights.push({
+      category: 'TIMING',
+      insight: `${dayNames[worst.day]}요일 진입 평균 ${worst.avgPnl.toFixed(1)}% 손실 (${worst.total}건). 해당 요일 신규 진입 시 더 높은 점수 요구.`,
+      recommendation: `${dayNames[worst.day]}요일 매수 임계치 +5점 상향 검토.`,
+      confidence: Math.min(0.8, 0.45 + worst.total * 0.04),
+      sampleCount: worst.total,
+      lastUpdated: now,
+    });
+  }
+
+  return insights;
 }
 
 /**

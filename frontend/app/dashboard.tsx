@@ -739,6 +739,245 @@ function PerformancePanel({ trades, strategy, setStrategy, toast }: { trades: an
   );
 }
 
+// ═══════════════════════════════════════
+// RISK GAUGE (3 arc gauges)
+// ═══════════════════════════════════════
+
+function ArcGauge({ pct, color, label, sub }: { pct: number; color: string; label: string; sub: string }) {
+  const r = 28; const cx = 36; const cy = 36;
+  const circ = Math.PI * r; // half-circle
+  const clamped = Math.max(0, Math.min(100, pct));
+  const stroke = (clamped / 100) * circ;
+  const trackColor = 'rgba(255,255,255,0.05)';
+  const colorMap: Record<string, string> = {
+    emerald: '#10b981', blue: '#3b82f6', amber: '#f59e0b', rose: '#f43f5e',
+  };
+  const strokeColor = colorMap[color] ?? colorMap.blue;
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <svg width="72" height="44" viewBox="0 0 72 44">
+        {/* track */}
+        <path d={`M 8 36 A ${r} ${r} 0 0 1 64 36`} fill="none" stroke={trackColor} strokeWidth="6" strokeLinecap="round" />
+        {/* fill */}
+        <path d={`M 8 36 A ${r} ${r} 0 0 1 64 36`} fill="none" stroke={strokeColor} strokeWidth="6" strokeLinecap="round"
+          strokeDasharray={`${stroke} ${circ}`} style={{ transition: 'stroke-dasharray 0.6s ease' }} />
+        <text x="36" y="34" textAnchor="middle" fontSize="11" fontWeight="700" fill="white">{clamped}%</text>
+      </svg>
+      <div className="text-[10px] font-semibold text-slate-300 text-center leading-tight">{label}</div>
+      <div className="text-[9px] text-slate-600 text-center">{sub}</div>
+    </div>
+  );
+}
+
+function RiskGaugePanel({ investedPct, dailyLossPct, concentrationPct }: { investedPct: number; dailyLossPct: number; concentrationPct: number }) {
+  const investedColor = investedPct > 75 ? 'rose' : investedPct > 50 ? 'amber' : 'emerald';
+  const lossColor = dailyLossPct > 70 ? 'rose' : dailyLossPct > 40 ? 'amber' : 'emerald';
+  const concColor = concentrationPct > 50 ? 'rose' : concentrationPct > 30 ? 'amber' : 'blue';
+  return (
+    <div className="glass rounded-2xl border border-white/[0.04] px-4 py-3">
+      <div className="text-[11px] font-semibold text-slate-400 mb-2">리스크 게이지</div>
+      <div className="flex items-end justify-around gap-2">
+        <ArcGauge pct={Math.round(investedPct)} color={investedColor} label="투자 비중" sub="한도 80%" />
+        <ArcGauge pct={Math.round(dailyLossPct)} color={lossColor} label="손실 소진" sub="일일 한도" />
+        <ArcGauge pct={Math.round(concentrationPct)} color={concColor} label="종목 집중도" sub="단일 최대" />
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════
+// STRATEGY TIMELINE (7-day mode switch)
+// ═══════════════════════════════════════
+
+function StrategyTimelinePanel({ strategy }: { strategy: any }) {
+  const [history, setHistory] = React.useState<any[]>([]);
+  React.useEffect(() => {
+    api('/strategy/history').then((r: any) => { if (Array.isArray(r)) setHistory(r.slice(0, 10)); }).catch(() => {});
+  }, []);
+
+  const modeColor: Record<string, string> = {
+    SWING: 'bg-emerald-500/70 text-emerald-100',
+    DEFENSE: 'bg-rose-500/70 text-rose-100',
+    DIVIDEND: 'bg-amber-500/70 text-amber-100',
+    SCALPING: 'bg-purple-500/70 text-purple-100',
+  };
+  const currentMode = strategy?.mode ?? 'SWING';
+  const currentColor = modeColor[currentMode] ?? 'bg-slate-500/70 text-slate-100';
+
+  return (
+    <div className="glass rounded-2xl border border-white/[0.04] px-4 py-3">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-[11px] font-semibold text-slate-400">전략 모드 이력 (7일)</span>
+        <span className={`ml-auto text-[10px] font-bold px-2 py-0.5 rounded-full ${currentColor}`}>{currentMode} 진행 중</span>
+      </div>
+      {history.length === 0 ? (
+        <div className="text-[10px] text-slate-600 py-1">전략 전환 없음 — 안정 운영 중</div>
+      ) : (
+        <div className="flex flex-wrap gap-1.5 mt-1">
+          {history.slice().reverse().map((ev: any, i: number) => {
+            const fromC = (modeColor[ev.from] ?? 'bg-slate-500/50 text-slate-300').split(' ');
+            const toC = (modeColor[ev.to] ?? 'bg-slate-500/50 text-slate-300').split(' ');
+            return (
+              <div key={i} className="flex items-center gap-1 text-[9px] bg-white/[0.03] rounded-lg px-2 py-1">
+                <span className={`px-1.5 py-0.5 rounded ${fromC[0]} ${fromC[1]}`}>{ev.from}</span>
+                <span className="text-slate-600">→</span>
+                <span className={`px-1.5 py-0.5 rounded ${toC[0]} ${toC[1]}`}>{ev.to}</span>
+                <span className="text-slate-700 ml-1">{new Date(ev.ts).toLocaleDateString('ko', { month:'numeric', day:'numeric' })}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════
+// PNL 3-WAY BREAKDOWN
+// ═══════════════════════════════════════
+
+function PnlBreakdownPanel({ chains, trades }: { chains: any[]; trades: any[] }) {
+  const filled = trades.filter((t: any) => t.status === 'FILLED' && t.side === 'SELL');
+
+  // 시세차익 (SWING/DEFENSE/SCALPING 모드 매도 실현손익)
+  const swingPnl = filled.filter((t: any) => ['SWING','DEFENSE','SCALPING'].includes(t.trading_mode ?? '')).reduce((sum: number, t: any) => {
+    const pnl = typeof t.realized_pnl === 'number' ? Number(t.realized_pnl) : null;
+    if (pnl === null) {
+      const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
+      const fp = Number(t.filled_price) || 0; const qty = Number(t.quantity) || 0;
+      return avgBuy > 0 ? sum + (fp - avgBuy) * qty : sum;
+    }
+    return sum + pnl;
+  }, 0);
+
+  // 배당 적립 (DIVIDEND 모드 보유 종목 미실현 배당)
+  const dividendAccrual = chains.filter((c: any) => c.strategy_mode === 'DIVIDEND').reduce((sum: number, c: any) => {
+    const dvd = Number(c.dividendYield ?? 0);
+    const holdDays = Number(c.holdingDays ?? 0);
+    const invested = Number(c.invested ?? 0) || (Number(c.avg_buy_price) * Number(c.total_quantity));
+    return sum + (invested * (dvd / 365 / 100) * holdDays);
+  }, 0);
+
+  // 파킹 ETF 수익 (stock_code === '333940')
+  const parkingPnl = filled.filter((t: any) => t.stock_code === '333940').reduce((sum: number, t: any) => {
+    const pnl = typeof t.realized_pnl === 'number' ? Number(t.realized_pnl) : 0;
+    return sum + pnl;
+  }, 0);
+
+  if (swingPnl === 0 && dividendAccrual === 0 && parkingPnl === 0) return null;
+  const total = swingPnl + dividendAccrual + parkingPnl;
+
+  return (
+    <div className="glass rounded-2xl border border-white/[0.04] px-4 py-3">
+      <div className="text-[11px] font-semibold text-slate-400 mb-2">수익 구조 분해</div>
+      <div className="grid grid-cols-3 gap-2">
+        <div className="bg-white/[0.03] rounded-xl p-2.5 text-center">
+          <div className="text-[9px] text-slate-500 mb-1">📈 시세차익</div>
+          <div className={`text-sm font-black ${swingPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{swingPnl >= 0 ? '+' : ''}{fmtWon(swingPnl)}</div>
+          <div className="text-[9px] text-slate-600 mt-0.5">SWING/DEFENSE</div>
+        </div>
+        <div className="bg-white/[0.03] rounded-xl p-2.5 text-center">
+          <div className="text-[9px] text-slate-500 mb-1">🏦 배당적립</div>
+          <div className={`text-sm font-black ${dividendAccrual >= 0 ? 'text-amber-400' : 'text-rose-400'}`}>+{fmtWon(dividendAccrual)}</div>
+          <div className="text-[9px] text-slate-600 mt-0.5">DIVIDEND 모드</div>
+        </div>
+        <div className="bg-white/[0.03] rounded-xl p-2.5 text-center">
+          <div className="text-[9px] text-slate-500 mb-1">🅿️ 파킹ETF</div>
+          <div className={`text-sm font-black ${parkingPnl >= 0 ? 'text-blue-400' : 'text-rose-400'}`}>{parkingPnl >= 0 ? '+' : ''}{fmtWon(parkingPnl)}</div>
+          <div className="text-[9px] text-slate-600 mt-0.5">333940 파킹</div>
+        </div>
+      </div>
+      {total !== 0 && (
+        <div className="mt-2 pt-2 border-t border-white/[0.04] flex justify-between text-[11px]">
+          <span className="text-slate-500">합산 실현+적립</span>
+          <span className={`font-bold ${total >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{total >= 0 ? '+' : ''}{fmtWon(total)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════
+// AI DECISION TRANSPARENCY PANEL
+// ═══════════════════════════════════════
+
+function ScoreBar({ label, value, color }: { label: string; value: number; color: string }) {
+  const colorMap: Record<string, string> = {
+    blue: 'bg-blue-500', emerald: 'bg-emerald-500', amber: 'bg-amber-500', violet: 'bg-violet-500',
+  };
+  return (
+    <div className="flex items-center gap-2 text-[10px]">
+      <div className="w-14 text-slate-500 shrink-0 text-right">{label}</div>
+      <div className="flex-1 h-1.5 bg-white/[0.05] rounded-full overflow-hidden">
+        <div className={`h-full rounded-full ${colorMap[color] ?? colorMap.blue}`} style={{ width: `${Math.max(0, Math.min(100, value))}%`, transition: 'width 0.5s ease' }} />
+      </div>
+      <div className="w-7 text-right text-slate-400 font-semibold">{Math.round(value)}</div>
+    </div>
+  );
+}
+
+function AiTransparencyPanel({ watchlist }: { watchlist: any[] }) {
+  const [details, setDetails] = React.useState<Map<string, any>>(new Map());
+  const [selected, setSelected] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    const codes = watchlist.map((s: any) => s.stock_code).filter((c: string) => /^[0-9]{6}$/.test(c)).slice(0, 8);
+    codes.forEach((code: string) => {
+      api(`/stock/${code}/score-detail`).then((r: any) => {
+        if (r && typeof r.composite === 'number') {
+          setDetails((prev) => new Map(prev).set(code, r));
+        }
+      }).catch(() => {});
+    });
+    if (codes.length > 0 && !selected) setSelected(codes[0]);
+  }, [watchlist]);
+
+  const stocks = watchlist.filter((s: any) => details.has(s.stock_code)).slice(0, 8);
+  if (stocks.length === 0) return null;
+
+  const sel = selected ?? stocks[0]?.stock_code;
+  const detail = details.get(sel ?? '');
+
+  return (
+    <div className="glass rounded-2xl border border-white/[0.04] px-4 py-3">
+      <div className="text-[11px] font-semibold text-slate-400 mb-2">AI 판단 근거 투명성</div>
+      {/* 종목 탭 */}
+      <div className="flex gap-1 flex-wrap mb-3">
+        {stocks.map((s: any) => {
+          const d = details.get(s.stock_code);
+          const score = d?.composite ?? 0;
+          const active = sel === s.stock_code;
+          return (
+            <button key={s.stock_code} onClick={() => setSelected(s.stock_code)}
+              className={`text-[9px] px-2 py-0.5 rounded-full font-semibold transition-colors ${active ? 'bg-blue-500/30 text-blue-300 border border-blue-500/40' : 'bg-white/[0.04] text-slate-500 hover:text-slate-300'}`}>
+              {s.stock_name ?? s.stock_code} <span className={score >= 60 ? 'text-emerald-400' : score <= 40 ? 'text-rose-400' : 'text-amber-400'}>{Math.round(score)}</span>
+            </button>
+          );
+        })}
+      </div>
+      {/* 선택 종목 점수 분해 */}
+      {detail && (
+        <div className="space-y-1.5">
+          <ScoreBar label="종합" value={detail.composite} color="blue" />
+          <ScoreBar label="기본지표" value={detail.fundamental} color="emerald" />
+          <ScoreBar label="기술지표" value={detail.technical} color="violet" />
+          <ScoreBar label="시장심리" value={detail.sentiment} color="amber" />
+          {detail.summary && (
+            <div className="mt-2 pt-2 border-t border-white/[0.04] text-[10px] text-slate-500 leading-relaxed line-clamp-3">
+              {detail.summary}
+            </div>
+          )}
+          {detail.updatedAt && (
+            <div className="text-[9px] text-slate-700 text-right">
+              {new Date(detail.updatedAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} 분석
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // HOME VIEW
 // ═══════════════════════════════════════
 
@@ -1140,6 +1379,19 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
           )}
         </div>
       </div>
+
+      {/* ── 리스크 게이지 + 전략 이력 ── */}
+      {(() => {
+        const dailyLossPct = totalPnl < 0 ? Math.min(100, Math.round((Math.abs(totalPnl) / dailyLossLimit) * 100)) : 0;
+        const maxInvested = chains.reduce((mx: number, ch: any) => Math.max(mx, Number(ch.invested) || 0), 0);
+        const concPct = totalInvested > 0 ? Math.round((maxInvested / totalInvested) * 100) : 0;
+        return (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <RiskGaugePanel investedPct={investedPct} dailyLossPct={dailyLossPct} concentrationPct={concPct} />
+            <StrategyTimelinePanel strategy={strategy} />
+          </div>
+        );
+      })()}
 
       {/* ── 보유종목 (국내/해외 탭) ── */}
       <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden">
@@ -1572,6 +1824,12 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       </div>
 
 
+      {/* ── 수익 구조 분해 ── */}
+      <PnlBreakdownPanel chains={chains} trades={trades} />
+
+      {/* ── AI 판단 근거 투명성 ── */}
+      <AiTransparencyPanel watchlist={watchlist} />
+
       {/* ── 성과 종합 분석 ── */}
       <PerformancePanel trades={trades} strategy={strategy} setStrategy={setStrategy} toast={toast} />
 
@@ -1880,6 +2138,19 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
     setWatchlist((prev: any[]) => prev.filter(s => s.stock_code !== code));
   };
 
+  // 스코어 스파크라인 캐시 (종목코드 → 점수 배열)
+  const [sparklines, setSparklines] = React.useState<Map<string, number[]>>(new Map());
+  React.useEffect(() => {
+    const codes = watchlist.map((s: any) => s.stock_code).filter((c: string) => /^[0-9]{6}$/.test(c));
+    codes.forEach((code: string) => {
+      api(`/stock/${code}/score-history`).then((rows: any) => {
+        if (Array.isArray(rows) && rows.length >= 2) {
+          setSparklines((prev) => new Map(prev).set(code, rows.map((r: any) => Number(r.score))));
+        }
+      }).catch(() => {});
+    });
+  }, [watchlist]);
+
   const [syncing, setSyncing] = useState(false);
   const syncKIS = async () => {
     setSyncing(true);
@@ -2063,12 +2334,37 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
                     <span className="font-bold text-[13px] truncate leading-tight">{displayName}</span>
                     <span className={`text-[9px] font-semibold shrink-0 mt-0.5 ${statusColor}`}>{statusLabel}</span>
                   </div>
-                  <div className="text-[10px] text-slate-500 mt-1">
-                    {chain ? `평단 ${Number(chain.avg_buy_price).toLocaleString()}원` : scoreVal >= 0 ? `AI ${scoreVal}점` : '점수 없음'}
+                  <div className="text-[10px] text-slate-500 mt-1 flex items-center gap-2">
+                    <span>{chain ? `평단 ${Number(chain.avg_buy_price).toLocaleString()}원` : scoreVal >= 0 ? `AI ${scoreVal}점` : '점수 없음'}</span>
+                    {(() => {
+                      const pts = sparklines.get(s.stock_code);
+                      if (!pts || pts.length < 2) return null;
+                      const min = Math.min(...pts); const max = Math.max(...pts);
+                      const range = max - min || 1;
+                      const w = 40; const h = 16;
+                      const xs = pts.map((_, i) => (i / (pts.length - 1)) * w);
+                      const ys = pts.map((v) => h - ((v - min) / range) * h);
+                      const d = xs.map((x, i) => `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${ys[i].toFixed(1)}`).join(' ');
+                      const trend = pts[pts.length - 1] >= pts[0] ? '#10b981' : '#f43f5e';
+                      return (
+                        <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="shrink-0">
+                          <path d={d} fill="none" stroke={trend} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      );
+                    })()}
                   </div>
                   {sellPct != null && (
                     <div className={`text-[10px] font-medium mt-1 ${sellPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                       최근 매도 {sellPct >= 0 ? '+' : ''}{sellPct.toFixed(1)}%
+                    </div>
+                  )}
+                  {s.source && s.source !== 'MANUAL' && (
+                    <div className="mt-1">
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${
+                        s.source === 'KIS_SYNC' ? 'bg-blue-500/15 text-blue-400' : 'bg-violet-500/15 text-violet-400'
+                      }`}>
+                        {s.source === 'KIS_SYNC' ? 'KIS관심그룹' : '자동편입'}
+                      </span>
                     </div>
                   )}
                   <button onClick={(e) => { e.stopPropagation(); del(s.stock_code); }}

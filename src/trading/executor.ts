@@ -175,6 +175,24 @@ export class TradeExecutor {
       return;
     }
 
+    // 호가 진입 타이밍 — ask2 이하일 때만 매수 (ETF 파킹 제외)
+    if (!ETF_PARK_CODES.includes(stockCode)) {
+      try {
+        const { getOrderbook } = await import('../kis/market.js');
+        const book = await getOrderbook(stockCode);
+        const ask1 = book[0]?.askPrice ?? 0;
+        const ask2 = book[1]?.askPrice ?? 0;
+        if (ask1 > 0 && ask2 > 0 && estimatedPrice > ask2) {
+          logger.warn(`⏸️ 호가 진입 보류: ${stockCode} 현재가 ${estimatedPrice} > ask2 ${ask2} — 스킵`, { component: 'EXECUTOR' });
+          await logSystem('WARN', 'EXECUTOR', `호가 진입 보류: ${stockCode} 현재가=${estimatedPrice} ask2=${ask2}`);
+          return;
+        }
+        if (ask2 > 0) {
+          logger.info(`✅ 호가 진입 허용: ${stockCode} 현재가 ${estimatedPrice} ≤ ask2 ${ask2}`, { component: 'EXECUTOR' });
+        }
+      } catch { /* 호가 조회 실패 시 진입 허용 (fail-open) */ }
+    }
+
     // 주문 실행
     const result = await this.executeOrder({
       stockCode,
@@ -199,7 +217,18 @@ export class TradeExecutor {
       // DB 전략 세팅값 우선 적용 (없으면 STRATEGY_PARAMS 하드코딩 fallback)
       const dbStrategy = await getActiveStrategy().catch(() => null);
       const targetProfitPct = (dbStrategy as any)?.take_profit_pct ?? params.takeProfitPct;
-      const stopLossPct = (dbStrategy as any)?.stop_loss_pct ?? params.stopLossPct;
+      let stopLossPct = (dbStrategy as any)?.stop_loss_pct ?? params.stopLossPct;
+
+      // ATR 기반 동적 손절 — ATR*2.0 / 매수가, 클램핑 -2% ~ -8%
+      try {
+        const { calculateATR } = await import('../automation/position-sizer.js');
+        const atr = await calculateATR(stockCode);
+        if (atr > 0 && fill.filledPrice > 0) {
+          const atrStopPct = -((atr * 2.0) / fill.filledPrice) * 100;
+          stopLossPct = Math.max(-8, Math.min(-2, atrStopPct));
+          logger.info(`ATR 동적 손절: ${stockCode} ATR=${atr.toFixed(0)} → 손절 ${stopLossPct.toFixed(1)}%`, { component: 'EXECUTOR' });
+        }
+      } catch { /* ATR 실패 시 기본값 유지 */ }
 
       await chainManager.openChain({
         stockCode,
@@ -212,7 +241,7 @@ export class TradeExecutor {
       });
 
       // 감시목록 자동 등록 + 종목명 즉시 보정 (코드 저장 후 KRX API로 이름 조회)
-      upsertWatchlistItem({ stock_code: stockCode, stock_name: stockCode, market: 'KOSPI' })
+      upsertWatchlistItem({ stock_code: stockCode, stock_name: stockCode, market: 'KOSPI' }, 'AUTO')
         .then(() => import('../kis/interest-group.js').then((m) => m.fixWatchlistNames()))
         .catch(() => {});
 

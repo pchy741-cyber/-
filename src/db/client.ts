@@ -97,25 +97,27 @@ function isGarbledStockName(name: string): boolean {
   return /[^\w\s\uAC00-\uD7A3\u3131-\u318E\u1100-\u11FF().,·\-+%$]/.test(name);
 }
 
-export async function upsertWatchlistItem(item: Pick<WatchlistItem, 'stock_code' | 'stock_name' | 'market'>) {
+export async function upsertWatchlistItem(
+  item: Pick<WatchlistItem, 'stock_code' | 'stock_name' | 'market'>,
+  source: 'MANUAL' | 'KIS_SYNC' | 'AUTO' = 'MANUAL',
+) {
   if (useMemory) { memUpsertWatchlistItem(item); return; }
   // 깨진 종목명으로 기존 정상 이름을 덮어쓰지 않음
   const nameIsGarbled = isGarbledStockName(item.stock_name);
   if (nameIsGarbled) {
-    // 신규 삽입 시에는 코드로 저장, 기존 정상 이름은 보존
     await getPool().query(
-      `INSERT INTO watchlist (stock_code, stock_name, market)
-       VALUES ($1, $2, $3)
+      `INSERT INTO watchlist (stock_code, stock_name, market, source)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (stock_code) DO UPDATE SET market = $3
          WHERE watchlist.stock_name IS NULL OR watchlist.stock_name = watchlist.stock_code`,
-      [item.stock_code, item.stock_code, item.market],
+      [item.stock_code, item.stock_code, item.market, source],
     );
   } else {
     await getPool().query(
-      `INSERT INTO watchlist (stock_code, stock_name, market)
-       VALUES ($1, $2, $3)
+      `INSERT INTO watchlist (stock_code, stock_name, market, source)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (stock_code) DO UPDATE SET stock_name = $2, market = $3`,
-      [item.stock_code, item.stock_name, item.market],
+      [item.stock_code, item.stock_name, item.market, source],
     );
   }
 }

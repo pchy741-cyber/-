@@ -193,7 +193,11 @@ export async function buildTrackBContext(params: {
       const pnlPct = chain.avg_buy_price
         ? (((price.currentPrice - Number(chain.avg_buy_price)) / Number(chain.avg_buy_price)) * 100).toFixed(1)
         : 'N/A';
-      line += `\n   ⮡ 보유: ${chain.total_quantity}주 @ 평단${Number(chain.avg_buy_price).toLocaleString()} | 수익률: ${pnlPct}% | 물타기: ${chain.current_averaging_count}/${chain.max_averaging_count} | 체인상태: ${chain.status}`;
+      // 배당 모드 보유 중이면 배당 적립 수익률 추가 표시
+      const dividendAccrual = (chain.strategy_mode === 'DIVIDEND' && price.dividendYield > 0 && chain.holding_days > 0)
+        ? ` | 배당적립: +${((price.dividendYield / 365) * chain.holding_days).toFixed(2)}%`
+        : '';
+      line += `\n   ⮡ 보유: ${chain.total_quantity}주 @ 평단${Number(chain.avg_buy_price).toLocaleString()} | 수익률: ${pnlPct}%${dividendAccrual} | 물타기: ${chain.current_averaging_count}/${chain.max_averaging_count} | 체인상태: ${chain.status}`;
     }
 
     stockLines.push(line);
@@ -230,5 +234,6 @@ ${newsSummary}
 
 위 데이터(시세/수급/뉴스감성/공시/매크로뉴스)를 종합하여 각 종목에 대한 매매 판단을 내려주세요.
 ⚠️ 매크로 뉴스에 부정적 발언(금리 인상, 관세 확대, 규제 강화)이 감지되면 매수에 더 신중하게 판단하세요.
-특히 외국인/기관 수급 트렌드와 뉴스 감성이 일치하는 방향의 종목을 우선 고려하세요.`;
+특히 외국인/기관 수급 트렌드와 뉴스 감성이 일치하는 방향의 종목을 우선 고려하세요.
+⚠️ 물타기(AVERAGE_DOWN) 판단 시: 거래량이 평소보다 급증하고 있다면 공황 매도 신호일 수 있습니다. 수급 트렌드가 SELL/STRONG_SELL이거나 뉴스감성이 부정적이면 물타기를 보류하고 HOLD를 선택하세요.`;
 }

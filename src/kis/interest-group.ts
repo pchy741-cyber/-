@@ -116,7 +116,7 @@ export async function syncInterestGroups(): Promise<{ added: string[]; total: nu
       stock_code: code,
       stock_name: name,
       market: stock.market,
-    });
+    }, 'KIS_SYNC');
 
     added.push(`${name}(${code})`);
     logger.info(`  ✅ 추가: ${name} (${code}) [${stock.market}]`, { component: 'KIS_INTEREST' });
@@ -166,7 +166,7 @@ export async function syncHoldingsToWatchlist(): Promise<{ added: string[] }> {
         stock_code: pos.stockCode,
         stock_name: pos.stockName,
         market,
-      });
+      }, 'KIS_SYNC');
 
       added.push(`${pos.stockName}(${pos.stockCode})`);
       logger.info(`  ✅ 보유종목 추가: ${pos.stockName} (${pos.stockCode})`, { component: 'KIS_INTEREST' });
