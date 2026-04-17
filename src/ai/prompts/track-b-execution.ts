@@ -4,6 +4,8 @@
  * 역할: AI 스코어 + 실시간 시세 + 리스크 한도를 종합하여 최종 매매 판단
  * 입력: 종목별 스코어, 현재가, 보유 포지션, 리스크 한도
  * 출력: BUY/SELL/HOLD 결정 + 수량 + 근거
+ *
+ * ⚠️ 임계값은 STRATEGY_PARAMS에서 주입 — 직접 수정 금지
  */
 
 export const CLAUDE_BASE_PROMPT = `당신은 주식 매매 실행 AI입니다.
@@ -19,7 +21,7 @@ export const CLAUDE_BASE_PROMPT = `당신은 주식 매매 실행 AI입니다.
 - 한국어로 쉽게, 3줄 이내
 - "왜 샀는지" 또는 "왜 안 샀는지" 명확히
 - 핵심 수치 포함: "RSI 35 과매도 + 외국인 5일 순매수 → 눌림목 1차 매수"
-- 매도 시: "목표가 +8% 도달 → 50% 익절"
+- 매도 시: "목표가 도달 → 익절" 또는 "손절선 도달 → 강제 청산"
 
 ## 출력 형식 (JSON만 응답)
 \`\`\`json
@@ -38,30 +40,48 @@ export const CLAUDE_BASE_PROMPT = `당신은 주식 매매 실행 AI입니다.
 }
 \`\`\``;
 
-export const CLAUDE_SWING_RULES = `
+/**
+ * SWING 룰을 STRATEGY_PARAMS 값으로 동적 생성 — 하드코딩 금지
+ */
+function buildSwingRules(params: {
+  buyThreshold: number;
+  splitCount: number;
+  averageDownPct: number;
+  maxAveragingCount: number;
+  takeProfitPct: number;
+  stopLossPct: number;
+  maxHoldingDays: number;
+}): string {
+  const perBuyPct = Math.round(100 / params.splitCount);
+  const absAvgDown = Math.abs(params.averageDownPct);
+  const absSL = Math.abs(params.stopLossPct);
+
+  return `
 
 ## 스윙 매매 룰 (기본 — 장중 09:10 이후)
 
-### 매수 조건
-- AI 스코어 70점 이상이면 적극 매수
-- 예산을 3분할하여 1차 매수 진입 (전체 예산의 1/3)
+### 매수 조건 (BUY)
+- AI 스코어 **${params.buyThreshold}점 이상**이면 적극 매수
+- 예산을 ${params.splitCount}분할하여 1차 매수 진입 (전체 예산의 ${perBuyPct}%)
 - **수량 계산 필수**: quantity = Math.floor(1회 매수 예산 ÷ 현재가). 컨텍스트의 "매수 예산 계산" 섹션 참조
 - quantity가 1 이상이어야 BUY 가능. 0이면 HOLD
-- reasoning에 반드시 "1차 매수 (1/3)" 명시
+- reasoning에 반드시 "1차 매수 (1/${params.splitCount})" 명시
 
 ### 물타기 (AVERAGE_DOWN)
-- 1차 매수가 대비 -3% 하락 시 → 2차 매수 (1/3)
-- 추가 -3% 하락 시 → 3차 매수 (1/3, 최대)
-- 3차 이후 추가 매수 절대 금지
-
-### 익절 (PARTIAL_SELL)
-- 전체 평단가 대비 +6% 수익 → 보유 수량의 50% 매도
-- reasoning: "평단가 대비 +6.x% 도달 → 50% 익절"
+- 1차 매수가 대비 **-${absAvgDown}%** 하락 시 → 2차 매수 (${perBuyPct}%, 마지막 분할)
+${params.maxAveragingCount >= 2 ? `- 추가 -${absAvgDown}% 하락 시 → 3차 매수 (마지막, 최대 ${params.maxAveragingCount}회)` : `- 최대 1회만 허용 (${params.splitCount}분할 완성 후 추가 매수 절대 금지)`}
+- reasoning: "평단가 대비 -${absAvgDown}% 도달 → ${params.splitCount}분할 완성 분할매수"
 
 ### 손절 (FORCE_CLOSE)
-- -3% 손실 도달 → 전량 시장가 매도
-- 매수 후 5영업일 경과 + 수익 없음 → 전량 매도
-- reasoning: "손절 -3% 도달" 또는 "5일 경과 무수익 청산"`;
+- **-${absSL}%** 손실 도달 → 전량 시장가 즉시 매도
+- 매수 후 **${params.maxHoldingDays}영업일** 경과 + 수익 없음 → 전량 매도
+- reasoning: "손절 -${absSL}% 도달 → 전량 청산" 또는 "${params.maxHoldingDays}일 경과 무수익 청산"
+
+### 익절 (백엔드 자동 관리 — AI 중복 판단 금지)
+- **+${params.takeProfitPct}% 목표가** 도달 시 백엔드 하드룰이 자동 전량 청산
+- 중간 분할 익절(트레일링 스탑)도 백엔드가 자동 처리
+- AI는 이미 매도 결정이 있는 종목에 SELL/PARTIAL_SELL 금지 (중복 방지)`;
+}
 
 export const CLAUDE_DEFENSE_RULES = `
 
@@ -72,7 +92,7 @@ export const CLAUDE_DEFENSE_RULES = `
 - 예산의 1/3만 1차 매수, 물타기 금지
 
 ### 손절
-- -3%에서 즉시 전량 손절 (기존 -5%보다 타이트)
+- **-3%** 즉시 전량 손절 (방어모드 타이트 스탑)
 - reasoning: "방어모드 -3% 손절"
 
 ### 원칙
@@ -109,7 +129,18 @@ export const CLAUDE_SCALPING_RULES = `
 - 확신 없으면 HOLD — 안 사는 것이 최선
 - reasoning: "09:10 개장 초단타 강제 청산"`;
 
-export function buildExecutionPrompt(mode: string): string {
+export function buildExecutionPrompt(
+  mode: string,
+  params?: {
+    buyThreshold: number;
+    splitCount: number;
+    averageDownPct: number;
+    maxAveragingCount: number;
+    takeProfitPct: number;
+    stopLossPct: number;
+    maxHoldingDays: number;
+  },
+): string {
   let prompt = CLAUDE_BASE_PROMPT;
 
   switch (mode) {
@@ -120,7 +151,16 @@ export function buildExecutionPrompt(mode: string): string {
       prompt += CLAUDE_SCALPING_RULES;
       break;
     default:
-      prompt += CLAUDE_SWING_RULES;
+      // SWING: params 주입 필수 — 없으면 안전한 기본값 사용
+      prompt += buildSwingRules(params ?? {
+        buyThreshold: 60,
+        splitCount: 2,
+        averageDownPct: -4,
+        maxAveragingCount: 1,
+        takeProfitPct: 8,
+        stopLossPct: -4,
+        maxHoldingDays: 5,
+      });
   }
 
   return prompt;

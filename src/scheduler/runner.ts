@@ -13,6 +13,7 @@ import { autoSwitchStrategy } from '../automation/market-regime.js';
 import { collectWatchlistNews } from '../automation/news-collector.js';
 import { runSelfHealing } from '../automation/self-heal.js';
 import { analyzeTradeHistory } from '../automation/self-learning.js';
+import { runWatchlistRotation } from '../automation/watchlist-rotation.js';
 import { runSniperScan } from '../automation/snipers/runner.js';
 import { MARKET, SCHEDULE } from '../config/constants.js';
 import { logger } from '../utils/logger.js';
@@ -74,6 +75,26 @@ export function startScheduler(): void {
     () => {
       logger.info('⏰ Track A (장전)', { component: 'SCHEDULER' });
       runTrackAJob().catch((e) => logger.error(`Track A 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 12:00 — Track A 점심 재분석 (장중 흐름 반영)
+  cron.schedule(
+    '0 12 * * 1-5',
+    () => {
+      logger.info('⏰ Track A (점심 재분석)', { component: 'SCHEDULER' });
+      runTrackAJob().catch((e) => logger.error(`Track A 점심 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 14:00 — Track A 오후 재분석 (마감 전 포지션 점검)
+  cron.schedule(
+    '0 14 * * 1-5',
+    () => {
+      logger.info('⏰ Track A (오후 재분석)', { component: 'SCHEDULER' });
+      runTrackAJob().catch((e) => logger.error(`Track A 오후 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -365,6 +386,15 @@ export function startScheduler(): void {
     '30 18 * * 1-5',
     () => {
       analyzeTradeHistory().catch((e) => logger.error(`자기학습 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🔄 워치리스트 자동 순환 — 일요일 19:00 (14일 평균 40점 미만 종목 비활성화)
+  cron.schedule(
+    '0 19 * * 0',
+    () => {
+      runWatchlistRotation().catch((e) => logger.error(`워치리스트 순환 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

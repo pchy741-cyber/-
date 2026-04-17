@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { setGeminiStatus } from '../../cache/ai-status.js';
 import { config } from '../../config/index.js';
+import { STRATEGY_PARAMS } from '../../config/constants.js';
 import { type TradeDecision, TradeDecisionSchema } from '../../db/models.js';
 import { logger } from '../../utils/logger.js';
 import { buildExecutionPrompt } from '../prompts/track-b-execution.js';
@@ -29,7 +30,8 @@ export async function runGeminiExecution(params: {
     return [];
   }
 
-  const basePrompt = buildExecutionPrompt(mode);
+  const strategyParams = STRATEGY_PARAMS[mode as keyof typeof STRATEGY_PARAMS] ?? STRATEGY_PARAMS.SWING;
+  const basePrompt = buildExecutionPrompt(mode, strategyParams);
   const systemPrompt = customPrompt ? `${basePrompt}\n\n${customPrompt}` : basePrompt;
 
   logger.info(`Gemini 실행 판단 시작 (모드: ${mode})`, { component: 'TRACK_B' });

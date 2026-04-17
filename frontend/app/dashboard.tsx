@@ -785,25 +785,26 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const combinedPnlPct = combinedInvested > 0 ? (combinedPnl / combinedInvested) * 100 : (domesticInvested > 0 ? totalPnlPct : 0);
   const hasOverseasHoldings = usHoldings.length > 0;
 
-  // 탭별 금일 손익 = 오늘 매도 실현손익 + 오늘 매수 포지션 미실현손익
+  // 탭별 금일 손익 = 오늘 매도한 종목 기준 실현손익만 표시 (미실현 제외)
   const todayStr = new Date().toDateString();
   const krTodaySells = todayTrades.filter((t: any) => t.side === 'SELL');
   const krRealizedPnl = krTodaySells.reduce((sum: number, t: any) => {
     const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
     const filledPx = Number(t.filled_price) || 0;
     const qty = Number(t.quantity) || 0;
-    return avgBuy > 0 && filledPx > 0 ? sum + (filledPx - avgBuy) * qty : sum;
+    if (avgBuy <= 0 || filledPx <= 0) return sum;
+    const grossPnl = (filledPx - avgBuy) * qty;
+    const sellFee = filledPx * qty * 0.00245; // 매도 수수료 0.245%
+    return sum + grossPnl - sellFee;
   }, 0);
-  const krUnrealizedTodayPnl = chains
-    .filter((ch: any) => new Date(ch.opened_at).toDateString() === todayStr)
-    .reduce((sum: number, ch: any) => sum + (ch.unrealizedPnl ?? 0), 0);
-  const krTabPnl = krRealizedPnl + krUnrealizedTodayPnl;
-  const krTabHasData = krTodaySells.length > 0 || chains.some((ch: any) => new Date(ch.opened_at).toDateString() === todayStr);
-  const krTodayInvested = chains
-    .filter((ch: any) => new Date(ch.opened_at).toDateString() === todayStr)
-    .reduce((sum: number, ch: any) => sum + (Number(ch.avg_buy_price) * Number(ch.total_quantity)), 0)
-    + krTodaySells.reduce((sum: number, t: any) => sum + (Number(t.transaction_chains?.avg_buy_price) * Number(t.quantity)), 0);
-  const krTabPct = krTodayInvested > 0 ? (krTabPnl / krTodayInvested) * 100 : null;
+  const krTabPnl = krRealizedPnl; // 매도 실현손익만
+  const krTabHasData = krTodaySells.length > 0;
+  const krSellsCostBasis = krTodaySells.reduce((sum: number, t: any) => {
+    const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
+    const qty = Number(t.quantity) || 0;
+    return avgBuy > 0 ? sum + avgBuy * qty : sum;
+  }, 0);
+  const krTabPct = krSellsCostBasis > 0 ? (krTabPnl / krSellsCostBasis) * 100 : null;
 
   const usTodaySells = trades.filter((t: any) =>
     t.status === 'FILLED' && t.side === 'SELL' && t.trigger_source === 'OVERSEAS' &&
@@ -1053,23 +1054,23 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
           <div className="flex flex-wrap gap-x-2 mt-2 text-[10px]">
             <span className="text-slate-500">국내현금 <b className="text-slate-300">{fmtWon(p?.cash)}</b></span>
             {(os?.cashUsd ?? 0) > 0 && <span className="text-slate-500">해외 <b className="text-slate-300">${(os?.cashUsd ?? 0).toLocaleString('en', { maximumFractionDigits: 0 })}</b></span>}
-            <span className={`font-semibold ${combinedPnl > 0 ? 'text-emerald-400' : combinedPnl < 0 ? 'text-rose-400' : 'text-slate-500'}`}>{combinedPnl > 0 ? '+' : ''}{fmtWon(combinedPnl)}</span>
+            <span className={`font-semibold ${unrealizedPnl > 0 ? 'text-emerald-400' : unrealizedPnl < 0 ? 'text-rose-400' : 'text-slate-500'}`}>{unrealizedPnl > 0 ? '+' : ''}{fmtWon(unrealizedPnl)}</span>
           </div>
         </div>
 
-        <div className={`rounded-2xl p-4 sm:p-5 border ${combinedPnl > 0 ? 'bg-emerald-500/5 border-emerald-500/15' : combinedPnl < 0 ? 'bg-rose-500/5 border-rose-500/15' : 'glass border-white/[0.04]'}`}>
-          <div className="text-[10px] text-slate-500 mb-1 font-medium">미실현 손익 {hasOverseasHoldings ? '(국내+해외)' : ''}</div>
-          <div className={`text-xl sm:text-2xl font-black ${pc(combinedPnl)}`}>
-            {combinedPnl > 0 ? '+' : ''}{fmtWon(combinedPnl)}
+        <div className={`rounded-2xl p-4 sm:p-5 border ${unrealizedPnl > 0 ? 'bg-emerald-500/5 border-emerald-500/15' : unrealizedPnl < 0 ? 'bg-rose-500/5 border-rose-500/15' : 'glass border-white/[0.04]'}`}>
+          <div className="text-[10px] text-slate-500 mb-1 font-medium">미실현 손익 (국내)</div>
+          <div className={`text-xl sm:text-2xl font-black ${pc(unrealizedPnl)}`}>
+            {unrealizedPnl > 0 ? '+' : ''}{fmtWon(unrealizedPnl)}
           </div>
-          <div className={`text-[10px] font-bold mt-1 ${pc(combinedPnlPct)}`}>
-            {fmtPct(combinedPnlPct)}
+          <div className={`text-[10px] font-bold mt-1 ${pc(unrealizedPnl)}`}>
+            {(() => { const pct = domesticInvested > 0 ? (unrealizedPnl / domesticInvested) * 100 : 0; return (pct > 0 ? '+' : '') + pct.toFixed(2) + '%'; })()}
           </div>
           {hasOverseasHoldings && (
-            <div className="flex gap-2 mt-1.5 text-[10px] text-slate-600">
-              <span>국내 <span className={pc(unrealizedPnl)}>{unrealizedPnl > 0 ? '+' : ''}{fmtWon(unrealizedPnl)}</span></span>
-              <span>·</span>
-              <span>해외 <span className={pc(overseasPnlUsd)}>{overseasPnlUsd > 0 ? '+' : ''}${overseasPnlUsd.toFixed(0)}</span></span>
+            <div className="flex gap-2 mt-1.5 text-[10px] text-slate-500 border-t border-white/[0.05] pt-1.5">
+              <span>해외 미실현</span>
+              <span className={`font-semibold ${pc(overseasPnlUsd)}`}>{overseasPnlUsd > 0 ? '+' : ''}${overseasPnlUsd.toFixed(0)}</span>
+              <span className="text-slate-600">({overseasPnlUsd > 0 ? '+' : ''}{fmtWon(overseasPnlKrw)})</span>
             </div>
           )}
         </div>
@@ -1142,7 +1143,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                 const curAvg = Number(ch.current_averaging_count) || 0;
                 const maxAvg = Number(ch.max_averaging_count) || 3;
                 const targetPct = Number(ch.target_profit_pct) || 8;
-                const stopPct = Number(ch.stop_loss_pct) || -5;
+                const stopPct = Number(ch.stop_loss_pct) || -4;
                 const pnl = ch.unrealizedPnl ?? 0;
                 const pnlPct = ch.unrealizedPnlPct ?? 0;
                 const displayName = toDisplayName(ch.stock_name, ch.stock_code) === '종목명 확인중'
@@ -1676,16 +1677,17 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
               const qty = Number(t.quantity) || 0;
               const apiPnl = typeof t.realized_pnl === 'number' ? Number(t.realized_pnl) : null;
               const apiPnlPct = typeof t.realized_pnl_pct === 'number' ? Number(t.realized_pnl_pct) : null;
+              const apiPnlUsd = typeof t.realized_pnl_usd === 'number' ? Number(t.realized_pnl_usd) : null;
               // 국내 폴백: avg_buy_price vs filled_price
               const fallbackPnl = !overseas && isSell && avgBuy > 0 && filledPrice > 0 ? (filledPrice - avgBuy) * qty : null;
               const fallbackPnlPct = !overseas && isSell && avgBuy > 0 && filledPrice > 0 ? ((filledPrice - avgBuy) / avgBuy) * 100 : null;
-              // 해외 폴백: ai_reasoning에서 "익절(+5.2%)" 또는 "손절(-1.0%)" 패턴 추출
-              const overseasReasonPct = overseas && isSell
+              // 해외: API 계산값 우선, 없으면 ai_reasoning 패턴 추출
+              const overseasReasonPct = overseas && isSell && apiPnlPct === null
                 ? (() => { const m = String(t.ai_reasoning || '').match(/[익손절]+\(([+-]?[\d.]+)%\)/); return m ? Number(m[1]) : null; })()
                 : null;
               const overseasPnlUsdAmt = overseasReasonPct !== null && filledPrice > 0 && qty > 0
                 ? filledPrice * qty * (overseasReasonPct / 100) : null;
-              const tradePnl = apiPnl ?? (overseas ? overseasPnlUsdAmt : fallbackPnl);
+              const tradePnl = overseas ? (apiPnlUsd ?? overseasPnlUsdAmt) : (apiPnl ?? fallbackPnl);
               const tradePnlPct = apiPnlPct ?? (overseas ? overseasReasonPct : fallbackPnlPct);
               return (
               <React.Fragment key={tradeKey}>
@@ -2609,12 +2611,12 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
         <Panel title="전략 설정" badge={strategy.mode === 'SWING' ? '스윙' : strategy.mode === 'DEFENSE' ? '방어' : '단타'} badgeColor={strategy.mode === 'SWING' ? 'blue' : strategy.mode === 'DEFENSE' ? 'red' : 'amber'}>
           <div className="px-6 py-5 space-y-5">
             <div className="text-[12px] text-slate-400 bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl px-4 py-3.5 leading-relaxed">
-              {strategy.mode === 'SWING' ? '3번에 나눠 사고 → 조금 더 빠지면 추가 매수 → 6% 오르면 절반 팔기 / 3% 빠지면 전량 손절. 중장기 안정 수익 추구.' : strategy.mode === 'DEFENSE' ? '85점 이상 종목만 소량 진입 → 3% 빠지면 즉시 손절. 하락장 자본 보존 최우선.' : '65점 이상 즉시 매수 → 1.5% 오르면 즉시 전량 매도. 당일 15:20 무조건 청산.'}
+              {strategy.mode === 'SWING' ? `${strategy.split_count ?? 2}번에 나눠 사고 → 조금 더 빠지면 추가 매수 → ${strategy.take_profit_pct ?? 8}% 오르면 익절 / ${Math.abs(strategy.stop_loss_pct ?? -4)}% 빠지면 전량 손절. 중장기 안정 수익 추구.` : strategy.mode === 'DEFENSE' ? '85점 이상 종목만 소량 진입 → 3% 빠지면 즉시 손절. 하락장 자본 보존 최우선.' : '65점 이상 즉시 매수 → 1.5% 오르면 즉시 전량 매도. 당일 15:20 무조건 청산.'}
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <Sel label="매매 방식" value={strategy.mode} opts={[['SWING','스윙 (중장기)'],['DEFENSE','방어 (하락장)'],['SCALPING','단타 (당일)']]} onChange={v => setField('mode', v)} />
               <Sel label="AI 매수 기준점수" value={strategy.buy_threshold} opts={[[60,'60점 이상 (공격적)'],[70,'70점 이상'],[75,'75점 이상'],[80,'80점 이상 (보통)'],[85,'85점 이상'],[90,'90점 이상 (신중)']]} onChange={v => setField('buy_threshold', Number(v))} />
-              <Sel label="손절 기준 (이만큼 빠지면)" value={strategy.stop_loss_pct} opts={[[-2,'-2% (매우 타이트)'],[-3,'-3% (타이트)'],[-5,'-5% (보통)'],[-7,'-7%'],[-10,'-10% (여유있게)']]} onChange={v => setField('stop_loss_pct', Number(v))} />
+              <Sel label="손절 기준 (이만큼 빠지면)" value={strategy.stop_loss_pct} opts={[[-2,'-2% (매우 타이트)'],[-3,'-3% (타이트)'],[-4,'-4% (기본)'],[-5,'-5% (보통)'],[-7,'-7%'],[-10,'-10% (여유있게)']]} onChange={v => setField('stop_loss_pct', Number(v))} />
               <Sel label="익절 기준 (이만큼 오르면)" value={strategy.take_profit_pct} opts={[[3,'+3%'],[5,'+5%'],[6,'+6%'],[8,'+8% (보통)'],[10,'+10%'],[15,'+15%'],[20,'+20%']]} onChange={v => setField('take_profit_pct', Number(v))} />
             </div>
           </div>

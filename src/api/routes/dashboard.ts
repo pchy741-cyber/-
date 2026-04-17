@@ -675,27 +675,15 @@ dashboardRoutes.get('/trades', async (c) => {
        LIMIT $1`,
       [limit],
     );
-    const tradePnlMap = new Map<string, { pnl: number; pct: number | null }>();
-    const domesticCodes = [...new Set(
-      rows
-        .map((r: any) => String(r.stock_code ?? ''))
-        .filter((code: string) => /^[0-9]{6}$/.test(code))
-    )];
+    const tradePnlMap = new Map<string, { pnl: number; pct: number | null; isUsd?: boolean }>();
+    const allCodes = [...new Set(rows.map((r: any) => String(r.stock_code ?? '')).filter(Boolean))];
+    const domesticCodes = allCodes.filter((code: string) => /^[0-9]{6}$/.test(code));
+    const overseasCodes = allCodes.filter((code: string) => !/^[0-9]{6}$/.test(code));
 
-    if (domesticCodes.length > 0) {
-      const { rows: pnlRows } = await getPool().query(
-        `SELECT id, stock_code, side, filled_quantity, filled_price
-           FROM orders
-          WHERE status = 'FILLED'
-            AND stock_code = ANY($1::text[])
-          ORDER BY created_at ASC, id ASC`,
-        [domesticCodes],
-      );
-
-      const BUY_FEE_PCT = 0.00015;
-      const SELL_FEE_PCT = 0.00245;
+    const calcFifoPnl = (pnlRows: any[], isUsd: boolean) => {
+      const BUY_FEE_PCT = isUsd ? 0 : 0.00015;   // 해외: 수수료 단순화
+      const SELL_FEE_PCT = isUsd ? 0 : 0.00245;
       const holdings = new Map<string, { qty: number; totalCost: number }>();
-
       for (const o of pnlRows as Array<any>) {
         const code = String(o.stock_code ?? '');
         const side = String(o.side ?? '');
@@ -706,9 +694,8 @@ dashboardRoutes.get('/trades', async (c) => {
         const h = holdings.get(code) ?? { qty: 0, totalCost: 0 };
         if (side === 'BUY') {
           const buyValue = qty * price;
-          const buyFee = Math.round(buyValue * BUY_FEE_PCT);
           h.qty += qty;
-          h.totalCost += (buyValue + buyFee);
+          h.totalCost += buyValue + (isUsd ? 0 : Math.round(buyValue * BUY_FEE_PCT));
           holdings.set(code, h);
           continue;
         }
@@ -720,19 +707,40 @@ dashboardRoutes.get('/trades', async (c) => {
         const avgCost = h.totalCost / h.qty;
         const costBasis = avgCost * matchedQty;
         const sellValue = matchedQty * price;
-        const sellFee = Math.round(sellValue * SELL_FEE_PCT);
+        const sellFee = isUsd ? 0 : Math.round(sellValue * SELL_FEE_PCT);
         const pnl = sellValue - sellFee - costBasis;
         const pct = costBasis > 0 ? (pnl / costBasis) * 100 : null;
-        tradePnlMap.set(String(o.id), { pnl, pct });
+        tradePnlMap.set(String(o.id), { pnl, pct, isUsd });
 
         h.qty -= matchedQty;
         h.totalCost -= costBasis;
-        if (h.qty <= 0) {
-          h.qty = 0;
-          h.totalCost = 0;
-        }
+        if (h.qty <= 0) { h.qty = 0; h.totalCost = 0; }
         holdings.set(code, h);
       }
+    };
+
+    if (domesticCodes.length > 0) {
+      const { rows: pnlRows } = await getPool().query(
+        `SELECT id, stock_code, side, filled_quantity, filled_price
+           FROM orders
+          WHERE status = 'FILLED'
+            AND stock_code = ANY($1::text[])
+          ORDER BY created_at ASC, id ASC`,
+        [domesticCodes],
+      );
+      calcFifoPnl(pnlRows, false);
+    }
+
+    if (overseasCodes.length > 0) {
+      const { rows: osPnlRows } = await getPool().query(
+        `SELECT id, stock_code, side, filled_quantity, filled_price
+           FROM orders
+          WHERE status = 'FILLED'
+            AND stock_code = ANY($1::text[])
+          ORDER BY created_at ASC, id ASC`,
+        [overseasCodes],
+      );
+      calcFifoPnl(osPnlRows, true);
     }
 
     const rowsWithPnl = rows.map((r: any) => {
@@ -741,6 +749,7 @@ dashboardRoutes.get('/trades', async (c) => {
         ...r,
         realized_pnl: p?.pnl ?? null,
         realized_pnl_pct: p?.pct ?? null,
+        realized_pnl_usd: p?.isUsd ? p.pnl : null,
       };
     });
 
@@ -1136,10 +1145,14 @@ dashboardRoutes.get('/news/theme', async (c) => {
       return c.json({ theme: '', reason: '', stocks: [] });
     }
 
-    const headlines = raw.split('\n').filter(l => l.startsWith('- [')).map(l => {
-      const m = l.match(/^\- \[(.+?)\]\(.+?\)\s*—\s*(.+)$/);
-      return m ? `${m[1]} (${m[2]})` : l.replace(/^- /, '');
-    }).slice(0, 20).join('\n');
+    const headlines = raw.split('\n')
+      .filter(l => l.startsWith('- [') || (l.startsWith('- ') && l.length > 10))
+      .map(l => {
+        const m = l.match(/^\- \[(.+?)\]\(.+?\)\s*[—-]\s*(.+)$/);
+        return m ? `${m[1]} (${m[2]})` : l.replace(/^- /, '');
+      }).slice(0, 20).join('\n');
+
+    if (!headlines) return c.json({ theme: '', reason: '', stocks: [] });
 
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(geminiKey);
@@ -1165,14 +1178,22 @@ ${headlines}
 
 주의: code는 반드시 실제 한국거래소 6자리 종목코드, market은 KOSPI 또는 KOSDAQ`;
 
-    const res = await model.generateContent(prompt);
+    const res = await Promise.race([
+      model.generateContent(prompt),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('theme_timeout_20s')), 20000)),
+    ]);
     const text = res.response.text() ?? '';
+
+    // Gemini가 ```json ... ``` 마크다운으로 감쌀 수 있음 — 추출 후 파싱
+    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/) ?? text.match(/(\{[\s\S]*\})/);
+    const jsonText = jsonMatch ? (jsonMatch[1] ?? jsonMatch[0]) : text;
 
     let data: NewsTheme;
     try {
-      data = JSON.parse(text) as NewsTheme;
+      data = JSON.parse(jsonText.trim()) as NewsTheme;
       if (!data.theme || !Array.isArray(data.stocks)) throw new Error('invalid');
     } catch {
+      logger.warn(`오늘의 테마 JSON 파싱 실패. raw: ${text.slice(0, 200)}`, { component: 'NEWS_THEME' });
       return c.json({ theme: '', reason: '', stocks: [] });
     }
 
