@@ -63,7 +63,7 @@ export const MIN_DIVIDEND_YIELD_FOR_BUY = 2.0;
 // ── 전략별 파라미터 ──
 export const STRATEGY_PARAMS = {
   SWING: {
-    buyThreshold: 60, // 매수 진입 점수 완화 (60점 — 더 많은 기회 포착)
+    buyThreshold: 55, // 매수 진입 점수 완화 (55점 — 시장 약세 기회 포착)
     splitCount: 2, // 2분할 매수 (예산 절반씩 — 포지션 크기 2배)
     averageDownPct: -4, // 물타기 트리거 (-4% — 더 여유있게)
     maxAveragingCount: 1, // 최대 물타기 1회 (2분할이므로 1회면 충분)

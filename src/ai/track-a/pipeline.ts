@@ -34,8 +34,8 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     // 시장 발굴: 거래량/등락률 상위 종목을 추가 스코어링 대상으로 병합 (워치리스트 순환에서 자동 추가 가능)
     const watchlistCodes = new Set(watchlist.map((w) => w.stock_code));
     const [volumeTop, changeTop] = await Promise.allSettled([
-      getVolumeRankingStocks('J', 30),
-      getChangeRankingStocks(20),
+      getVolumeRankingStocks('J', 50),
+      getChangeRankingStocks(30),
     ]);
     const discoveryStocks = [
       ...(volumeTop.status === 'fulfilled' ? volumeTop.value : []),
@@ -43,7 +43,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     ].filter((s) => !watchlistCodes.has(s.stock_code));
     // 중복 제거
     const discoveryMap = new Map(discoveryStocks.map((s) => [s.stock_code, s]));
-    const discoveryList = [...discoveryMap.values()].slice(0, 30);
+    const discoveryList = [...discoveryMap.values()].slice(0, 50);
 
     // 발굴 종목을 watchlist에 inactive로 미리 등록 (ai_scores FK 제약 충족용)
     // Track B는 is_active=false 종목을 무시하므로 실제 매매 영향 없음
@@ -240,7 +240,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     if (discoveryList.length > 0 && !isMemoryMode()) {
       const discoverySet = new Set(discoveryList.map((d) => d.stock_code));
       const topDiscovery = scores.filter(
-        (s) => discoverySet.has(s.stock_code) && s.composite_score >= 65 && (s.confidence ?? 0) >= 0.65,
+        (s) => discoverySet.has(s.stock_code) && s.composite_score >= 58 && (s.confidence ?? 0) >= 0.58,
       );
       if (topDiscovery.length > 0) {
         await Promise.allSettled(topDiscovery.map((s) =>

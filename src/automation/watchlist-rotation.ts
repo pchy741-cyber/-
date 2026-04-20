@@ -11,12 +11,12 @@ import { logger } from '../utils/logger.js';
  * - 주 1회 (일요일 19:00) 실행
  */
 const MIN_SCORE_THRESHOLD = 40;
-const AUTO_ADD_THRESHOLD = 65; // 자동 추가 기준 점수
+const AUTO_ADD_THRESHOLD = 58; // 자동 추가 기준 점수 (약세장 대응 완화)
 const EVAL_DAYS = 14;
 const ADD_EVAL_DAYS = 7; // 자동 추가는 최근 7일 기준
 const MIN_SCORE_RECORDS = 3;
 const MIN_ADD_RECORDS = 3; // 자동 추가 최소 평가 건수
-const MAX_AUTO_ADD = 5; // 주당 최대 자동 추가 종목 수
+const MAX_AUTO_ADD = 12; // 주당 최대 자동 추가 종목 수 (확장)
 
 export async function runWatchlistRotation(): Promise<void> {
   logger.info('🔄 워치리스트 자동 순환 시작', { component: 'WATCHLIST_ROTATION' });

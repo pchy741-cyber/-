@@ -662,12 +662,12 @@ dashboardRoutes.get('/trades', async (c) => {
            END,
            o.stock_code
          ) AS stock_name,
-         json_build_object(
+         CASE WHEN tc.id IS NOT NULL THEN json_build_object(
            'stock_code', tc.stock_code,
            'status', tc.status,
            'strategy_mode', tc.strategy_mode,
            'avg_buy_price', tc.avg_buy_price
-         ) AS transaction_chains
+         ) END AS transaction_chains
        FROM orders o
        LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
        LEFT JOIN watchlist w ON o.stock_code = w.stock_code
