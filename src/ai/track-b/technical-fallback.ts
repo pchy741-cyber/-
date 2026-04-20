@@ -59,6 +59,25 @@ export function technicalFallbackDecisions(params: {
     // 동일 종목 중복 매도 신호 방지 (다중 체인 시 첫 번째 체인만 처리)
     if (processedSellCodes.has(chain.stock_code)) continue;
 
+    // 조기 부분익절: +3% 도달 시 50% 매도 (수익 확정 우선, 나머지는 계속 보유)
+    const EARLY_PROFIT_PCT = 3.0;
+    const isEarlyProfitCandidate = pnlPct >= EARLY_PROFIT_PCT && pnlPct < strategyParams.takeProfitPct && chain.status === 'OPEN';
+    if (isEarlyProfitCandidate) {
+      const sellQty = Math.ceil(chain.total_quantity * 0.5);
+      if (sellQty > 0) {
+        decisions.push({
+          action: 'PARTIAL_SELL',
+          stock_code: chain.stock_code,
+          quantity: Math.min(sellQty, chain.total_quantity),
+          price_type: 'MARKET',
+          reasoning: `조기 부분익절: +${pnlPct.toFixed(1)}% → 50% 수익 확정 (목표 ${strategyParams.takeProfitPct}% 대기 잔여 50%)`,
+          confidence: 0.85,
+        });
+        processedSellCodes.add(chain.stock_code);
+        continue;
+      }
+    }
+
     // 익절
     if (pnlPct >= strategyParams.takeProfitPct) {
       const sellQty = Math.ceil(chain.total_quantity * strategyParams.takeProfitRatio);
@@ -170,6 +189,18 @@ export function technicalFallbackDecisions(params: {
       // DEFENSE는 ADX WEAK + AI 임계치 미달 시만 차단
       if (aiScore < buyThreshold + 5) {
         logger.info(`  ⏸️ ${stock.stock_code}: ADX=${tech.adx14.toFixed(0)} 횡보(WEAK) → AI=${aiScore} < ${buyThreshold + 5}, 진입 스킵`, { component: 'TRACK_B' });
+        continue;
+      }
+    }
+    // ───────────────────────────────────────────────────────────────────
+
+    // ─── 하락추세 진입 차단 (낙칼 방지) ────────────────────────────────
+    // 현재가 < SMA20 = 중기 하락추세 = 물려서 손절 반복의 근원
+    // AI 점수 70 이상일 때만 예외 허용 (강한 확신 = 추세 역행 허용)
+    if (mode === 'SWING' || mode === 'DEFENSE') {
+      const sma20val = tech.sma20;
+      if (price.currentPrice < sma20val && aiScore < 70) {
+        logger.info(`  ⬇️ ${stock.stock_code}: 현재가 ${price.currentPrice} < SMA20 ${sma20val.toFixed(0)} 하락추세 → 진입 차단 (AI=${aiScore})`, { component: 'TRACK_B' });
         continue;
       }
     }
