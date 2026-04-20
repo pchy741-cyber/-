@@ -80,6 +80,28 @@ function getKnownStockName(code?: unknown): string | undefined {
   return KNOWN_STOCK_NAMES[c.toUpperCase()] ?? KNOWN_STOCK_NAMES[c];
 }
 
+// ── 숫자 롤업 애니메이션 ──
+function useCountUp(target: number, duration = 500) {
+  const [val, setVal] = React.useState(target);
+  const prev = React.useRef(target);
+  const mounted = React.useRef(false);
+  React.useEffect(() => {
+    if (!mounted.current) { mounted.current = true; prev.current = target; setVal(target); return; }
+    const from = prev.current;
+    const diff = target - from;
+    if (Math.abs(diff) < 100) { prev.current = target; setVal(target); return; }
+    const steps = Math.ceil(duration / 16);
+    let step = 0;
+    const id = setInterval(() => {
+      step++;
+      setVal(Math.round(from + diff * (step / steps)));
+      if (step >= steps) { clearInterval(id); prev.current = target; }
+    }, 16);
+    return () => clearInterval(id);
+  }, [target, duration]);
+  return val;
+}
+
 // ── 토스트 알림 시스템 ──
 function useToast() {
   const [toasts, setToasts] = useState<Array<{ id: number; msg: string; type: 'ok' | 'err' | 'info' }>>([]);
@@ -315,13 +337,21 @@ export default function Dashboard() {
 
 // ═══════════════════════════════════════
 // ── 자기학습 인사이트 패널 ──
-function InsightsPanel({ insights, trades, onRefresh, toast }: { insights: any[]; trades?: any[]; onRefresh: () => void; toast?: (msg: string, type: string) => void }) {
+function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast }: { insights: any[]; trades?: any[]; onRefresh: () => void; toast?: (msg: string, type: string) => void }) {
   const [deleting, setDeleting] = React.useState<number | null>(null);
   const [applying, setApplying] = React.useState<number | null>(null);
   const [newInsight, setNewInsight] = React.useState('');
   const [adding, setAdding] = React.useState(false);
   const [showAdd, setShowAdd] = React.useState(false);
   const [deleteModal, setDeleteModal] = React.useState<{ id: number; insight: string; relatedTrades: any[] } | null>(null);
+  const [liveInsights, setLiveInsights] = React.useState<any[] | null>(null);
+  React.useEffect(() => {
+    const load = () => api('/settings/insights').then((d: any) => setLiveInsights(Array.isArray(d) ? d : [])).catch(() => {});
+    load();
+    const id = setInterval(load, 60000);
+    return () => clearInterval(id);
+  }, []);
+  const insights = liveInsights ?? insightsProp;
 
   if (insights.length === 0 && !showAdd) return null;
 
@@ -948,11 +978,23 @@ function AiTransparencyPanel({ watchlist }: { watchlist: any[] }) {
           <ScoreBar label="기본지표" value={detail.fundamental} color="emerald" />
           <ScoreBar label="기술지표" value={detail.technical} color="violet" />
           <ScoreBar label="시장심리" value={detail.sentiment} color="amber" />
-          {detail.summary && (
-            <div className="mt-2 pt-2 border-t border-white/[0.04] text-[10px] text-slate-500 leading-relaxed line-clamp-3">
-              {detail.summary}
-            </div>
-          )}
+          {detail.summary && (() => {
+            let displayText = detail.summary;
+            try {
+              const parsed = typeof detail.summary === 'string' && detail.summary.trim().startsWith('{')
+                ? JSON.parse(detail.summary) : null;
+              if (parsed?.key_facts?.length > 0) {
+                displayText = parsed.key_facts.slice(0, 3).join(' · ');
+              } else if (parsed) {
+                displayText = null;
+              }
+            } catch {}
+            return displayText ? (
+              <div className="mt-2 pt-2 border-t border-white/[0.04] text-[10px] text-slate-500 leading-relaxed line-clamp-2">
+                {displayText}
+              </div>
+            ) : null;
+          })()}
           {detail.updatedAt && (
             <div className="text-[9px] text-slate-700 text-right">
               {new Date(detail.updatedAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} 분석
@@ -978,6 +1020,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const [aiStatus, setAiStatus] = React.useState<any>(null);
   const [runningTrackB, setRunningTrackB] = React.useState(false);
   const [runningTrackA, setRunningTrackA] = React.useState(false);
+  const [privacyMode, setPrivacyMode] = React.useState(false);
   React.useEffect(() => {
     api('/overseas/insights').then((r: any) => {
       if (r?.insights != null) { setUsInsights(r.insights); setInsightsDraft(r.insights); }
@@ -1006,7 +1049,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const todayTrades = filled.filter((t: any) => new Date(t.created_at).toDateString() === new Date().toDateString());
 
   // API에서 내려오는 손익 분리 값 사용
-  const unrealizedPnl = p?.unrealizedPnl ?? p?.pnl ?? 0;  // 국내 미실현손익만
+  // unrealizedPnl: p.pnl로 폴백 금지 — pnl은 실현+미실현 합산이라 미실현 전용 카드에 사용하면 안 됨
+  const unrealizedPnl = p?.unrealizedPnl ?? 0;             // 국내 미실현손익만
   const realizedPnl   = p?.realizedPnl ?? 0;               // 실현손익 (매도 완료분)
   const totalPnl      = p?.pnl ?? 0;                       // 국내 미실현+실현 합산
   const totalPnlPct   = p?.pnlPct ?? 0;
@@ -1022,7 +1066,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const domesticCash = Number(p?.cash ?? 0);
   const pctClamp = (v: number) => Math.max(0, Math.min(100, v));
   const investedPct = totalValue > 0 ? Math.round((totalInvested / totalValue) * 100) : 0;
-  // 국내 포트폴리오 비중 바 차트용 (소수점 포함 — 합계 100% 맞춤)
+  // 포트폴리오 비중 바 차트용 — totalValue는 이미 국내+해외 합산 grandTotalValue
   const investedPctExact = totalValue > 0 ? ((domesticInvested + overseasInvestedKrw) / totalValue) * 100 : 0;
   const cashPctExact = totalValue > 0 ? (domesticCash / totalValue) * 100 : 0;
   const overseasCashPctExact = totalValue > 0 ? (overseasCashKrw / totalValue) * 100 : 0;
@@ -1043,7 +1087,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
 
   // 탭별 금일 손익 = 오늘 매도한 종목 기준 실현손익만 표시 (미실현 제외)
   const todayStr = new Date().toDateString();
-  const krTodaySells = todayTrades.filter((t: any) => t.side === 'SELL');
+  // 해외(OVERSEAS) 제외: usTodaySells와 중복 집계 방지
+  const krTodaySells = todayTrades.filter((t: any) => t.side === 'SELL' && t.trigger_source !== 'OVERSEAS');
   const krRealizedPnl = krTodaySells.reduce((sum: number, t: any) => {
     if (t.realized_pnl != null) return sum + Number(t.realized_pnl);
     const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
@@ -1094,6 +1139,12 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const currentTimeStr = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
 
   const defensePark = dash?.defensePark;
+
+  // ── 롤업 애니메이션 값 ──
+  const animCombined = useCountUp(combinedPnl);
+  const todayRealizedPnl = krTabPnl + usTabPnlKrw;
+  const animToday = useCountUp(todayRealizedPnl);
+  const animTotal = useCountUp(totalValue);
 
   return (
     <div className="space-y-4 sm:space-y-5">
@@ -1280,69 +1331,65 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
         </div>
       </div>
 
-      {/* ── 메인 카드 ── */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="rounded-2xl p-4 sm:p-5 bg-gradient-to-br from-blue-600/10 via-cyan-600/5 to-transparent border border-blue-500/10">
-          <div className="text-[10px] text-blue-300/60 mb-1 font-medium">총 자산</div>
-          <div className="text-xl sm:text-2xl font-black tracking-tight text-white">{fmtWon(p?.totalValue)}</div>
-          <div className="flex flex-wrap gap-x-2 mt-2 text-[10px]">
-            <span className="text-slate-500">국내현금 <b className="text-slate-300">{fmtWon(p?.cash)}</b></span>
-            {(os?.cashUsd ?? 0) > 0 && <span className="text-slate-500">해외 <b className="text-slate-300">${(os?.cashUsd ?? 0).toLocaleString('en', { maximumFractionDigits: 0 })}</b></span>}
-            <span className={`font-semibold ${unrealizedPnl > 0 ? 'text-emerald-400' : unrealizedPnl < 0 ? 'text-rose-400' : 'text-slate-500'}`}>{unrealizedPnl > 0 ? '+' : ''}{fmtWon(unrealizedPnl)}</span>
-          </div>
-        </div>
-
-        <div className={`rounded-2xl p-4 sm:p-5 border ${unrealizedPnl > 0 ? 'bg-emerald-500/5 border-emerald-500/15' : unrealizedPnl < 0 ? 'bg-rose-500/5 border-rose-500/15' : 'glass border-white/[0.04]'}`}>
-          <div className="text-[10px] text-slate-500 mb-1 font-medium">미실현 손익 (국내)</div>
-          <div className={`text-xl sm:text-2xl font-black ${pc(unrealizedPnl)}`}>
-            {unrealizedPnl > 0 ? '+' : ''}{fmtWon(unrealizedPnl)}
-          </div>
-          <div className={`text-[10px] font-bold mt-1 ${pc(unrealizedPnl)}`}>
-            {(() => { const pct = domesticInvested > 0 ? (unrealizedPnl / domesticInvested) * 100 : 0; return (pct > 0 ? '+' : '') + pct.toFixed(2) + '%'; })()}
-          </div>
-          {hasOverseasHoldings && (
-            <div className="flex gap-2 mt-1.5 text-[10px] text-slate-500 border-t border-white/[0.05] pt-1.5">
-              <span>해외 미실현</span>
-              <span className={`font-semibold ${pc(overseasPnlUsd)}`}>{overseasPnlUsd > 0 ? '+' : ''}${overseasPnlUsd.toFixed(0)}</span>
-              <span className="text-slate-600">({overseasPnlUsd > 0 ? '+' : ''}{fmtWon(overseasPnlKrw)})</span>
+      {/* ── 토스형 Hero 손익 카드 ── */}
+      {(() => {
+        const domesticTotal = domesticCash + domesticInvested;
+        const domesticPct = domesticTotal > 0 ? Math.round((domesticInvested / domesticTotal) * 100) : 0;
+        const mask = (v: string) => privacyMode ? '••••••' : v;
+        return (
+          <div className={`rounded-2xl border p-5 ${combinedPnl > 0 ? 'bg-gradient-to-br from-emerald-950/60 via-emerald-900/20 to-transparent border-emerald-500/20' : combinedPnl < 0 ? 'bg-gradient-to-br from-rose-950/60 via-rose-900/20 to-transparent border-rose-500/20' : 'glass border-white/[0.06]'}`}>
+            {/* 상단 헤더 */}
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-xs font-semibold text-slate-400 tracking-wide">미실현 손익{hasOverseasHoldings ? ' (국내+해외)' : ''}</span>
+              <button onClick={() => setPrivacyMode(v => !v)} className="text-slate-500 hover:text-slate-300 transition-colors p-1 -m-1 rounded-lg">
+                {privacyMode ? (
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" /></svg>
+                ) : (
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                )}
+              </button>
             </div>
-          )}
-        </div>
-
-        {(() => {
-          // 국내 투자비중: 국내자산(현금+투자) 기준으로 계산 (해외현금이 분모를 부풀리는 문제 해결)
-          const domesticTotal = domesticCash + domesticInvested;
-          const domesticPct = domesticTotal > 0 ? Math.round((domesticInvested / domesticTotal) * 100) : 0;
-          const overseasTotal = (os?.cashKrw ?? 0) + overseasInvestedKrw;
-          const overseasPct = overseasTotal > 0 ? Math.round((overseasInvestedKrw / overseasTotal) * 100) : 0;
-          return (
-          <div className="rounded-2xl p-4 sm:p-5 glass border border-white/[0.04]">
-            <div className="text-[10px] text-slate-500 mb-1 font-medium">투자 비중</div>
-            <div className={`text-xl sm:text-2xl font-black ${domesticPct > 60 ? 'text-amber-400' : 'text-blue-400'}`}>{domesticPct}%</div>
-            <div className="flex flex-wrap gap-x-2 mt-2 text-[10px]">
-              <span className="text-slate-500">국내 <b className="text-slate-300">{fmtWon(domesticInvested)}</b></span>
-              {overseasTotal > 0 && <span className="text-slate-500">해외 <b className="text-slate-300">{overseasPct}%</b></span>}
-              <span className="text-slate-600">({chains.length}종목)</span>
+            {/* 메인 수치 */}
+            <div className="flex items-end gap-4 mb-5">
+              <div className="flex-1">
+                <div className={`text-4xl sm:text-5xl font-black tracking-tight tabular-nums ${pc(combinedPnl)}`}>
+                  {privacyMode ? '••••••원' : `${combinedPnl > 0 ? '+' : ''}${animCombined.toLocaleString('ko-KR')}원`}
+                </div>
+                <div className={`text-sm font-bold mt-1 ${pc(combinedPnl)}`}>
+                  {combinedPnlPct !== 0 ? `${combinedPnlPct > 0 ? '+' : ''}${combinedPnlPct.toFixed(2)}%` : '0.00%'}
+                </div>
+              </div>
+              {(krTabHasData || usTodaySells.length > 0) && (
+                <div className="text-right shrink-0 border-l border-white/[0.06] pl-4">
+                  <div className="text-[10px] text-slate-500 mb-0.5">오늘 실현</div>
+                  <div className={`text-xl font-black tabular-nums ${pc(todayRealizedPnl)}`}>
+                    {privacyMode ? '••••원' : `${todayRealizedPnl > 0 ? '+' : ''}${animToday.toLocaleString('ko-KR')}원`}
+                  </div>
+                </div>
+              )}
+            </div>
+            {/* 미니 스탯 3개 */}
+            <div className="grid grid-cols-3 gap-2">
+              <div className="bg-white/[0.04] rounded-xl px-3 py-2">
+                <div className="text-[9px] text-slate-500 mb-0.5">총자산</div>
+                <div className="text-sm font-bold text-slate-200 tabular-nums truncate">{mask(Math.round(animTotal / 10000).toLocaleString('ko-KR') + '만원')}</div>
+              </div>
+              <div className="bg-white/[0.04] rounded-xl px-3 py-2">
+                <div className="text-[9px] text-slate-500 mb-0.5">투자비중</div>
+                <div className={`text-sm font-bold tabular-nums ${domesticPct > 60 ? 'text-amber-400' : 'text-blue-400'}`}>{domesticPct}% <span className="text-[9px] text-slate-600">({chains.length}종목)</span></div>
+              </div>
+              <div className="bg-white/[0.04] rounded-xl px-3 py-2">
+                <div className="text-[9px] text-slate-500 mb-0.5">{withdrawConfig?.totalReserved > 0 ? '인출예약' : '오늘매매'}</div>
+                {withdrawConfig?.totalReserved > 0 ? (
+                  <div className="text-sm font-bold text-amber-400 truncate">{mask(fmtWon(withdrawConfig.totalReserved))}</div>
+                ) : (
+                  <div className="text-sm font-bold text-slate-200">{todayTrades.length}<span className="text-[9px] text-slate-500 ml-0.5">건</span></div>
+                )}
+              </div>
             </div>
           </div>
-          );
-        })()}
-
-        <div className="rounded-2xl p-4 sm:p-5 glass border border-white/[0.04]">
-          <div className="text-[10px] text-slate-500 mb-1 font-medium">{withdrawConfig?.totalReserved > 0 ? '인출 예약' : '오늘 매매'}</div>
-          {withdrawConfig?.totalReserved > 0 ? (
-            <>
-              <div className="text-xl sm:text-2xl font-black text-amber-400">{fmtWon(withdrawConfig.totalReserved)}</div>
-              <div className="text-[10px] text-slate-600 mt-2">출금 대기</div>
-            </>
-          ) : (
-            <>
-              <div className="text-xl sm:text-2xl font-black">{todayTrades.length}<span className="text-base text-slate-500 ml-1">건</span></div>
-              <div className="text-[10px] text-slate-600 mt-2">총 {filled.length}건 체결</div>
-            </>
-          )}
-        </div>
-      </div>
+        );
+      })()}
 
       {/* ── 리스크 게이지 + 전략 이력 ── */}
       {(() => {
@@ -1415,22 +1462,36 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                         ) : <span className="text-xs text-slate-600">장 마감</span>}
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mt-3">
+                    {/* P&L 진행 바: 손절 ← 현재 → 목표 */}
+                    {ch.currentPrice > 0 && avgPrice > 0 && (() => {
+                      const range = targetPct - stopPct;
+                      const pos = Math.max(0, Math.min(100, ((pnlPct - stopPct) / range) * 100));
+                      const barColor = pnlPct >= 0 ? 'bg-emerald-500' : 'bg-rose-500';
+                      return (
+                        <div className="mt-3 mb-1">
+                          <div className="relative h-1.5 bg-white/[0.05] rounded-full overflow-visible">
+                            <div className={`absolute h-full rounded-full transition-all duration-700 ${barColor}`} style={{ width: `${pos}%` }} />
+                            <div className="absolute h-3 w-0.5 bg-white/20 rounded-full top-1/2 -translate-y-1/2" style={{ left: `${((0 - stopPct) / range) * 100}%` }} />
+                          </div>
+                          <div className="flex justify-between mt-0.5">
+                            <span className="text-[9px] text-rose-500">{stopPct}%</span>
+                            <span className="text-[9px] text-emerald-500">+{targetPct}%</span>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                    <div className="grid grid-cols-3 gap-2 mt-2">
                       <div>
-                        <div className="text-[10px] text-slate-500 mb-1">투자금</div>
-                        <div className="text-[12px] font-bold">{fmtWon(invested)}</div>
+                        <div className="text-[9px] text-slate-500 mb-0.5">투자금</div>
+                        <div className="text-[11px] font-bold truncate">{fmtWon(invested)}</div>
                       </div>
                       <div>
-                        <div className="text-[10px] text-slate-500 mb-1">현재가</div>
-                        <div className="text-[12px] font-bold">{ch.currentPrice > 0 ? fmtWon(ch.currentPrice) : '-'}</div>
+                        <div className="text-[9px] text-slate-500 mb-0.5">현재가</div>
+                        <div className="text-[11px] font-bold">{ch.currentPrice > 0 ? fmtWon(ch.currentPrice) : '-'}</div>
                       </div>
                       <div>
-                        <div className="text-[10px] text-emerald-600 mb-1">목표가</div>
-                        <div className="text-[12px] font-bold text-emerald-500">{avgPrice > 0 ? fmtWon(Math.round(avgPrice * (1 + targetPct / 100))) : '-'}</div>
-                      </div>
-                      <div>
-                        <div className="text-[10px] text-rose-600 mb-1">손절가</div>
-                        <div className="text-[12px] font-bold text-rose-500">{avgPrice > 0 ? fmtWon(Math.round(avgPrice * (1 + stopPct / 100))) : '-'}</div>
+                        <div className="text-[9px] text-emerald-600 mb-0.5">목표 / 손절</div>
+                        <div className="text-[10px] font-bold"><span className="text-emerald-500">+{targetPct}%</span> <span className="text-slate-600">/</span> <span className="text-rose-500">{stopPct}%</span></div>
                       </div>
                     </div>
                     <div className="flex items-center gap-1.5 mt-2.5">
