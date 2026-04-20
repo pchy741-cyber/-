@@ -574,11 +574,19 @@ function PerformancePanel({ trades, strategy, setStrategy, toast }: { trades: an
   const dailyMap = new Map<string, number>();
   for (const t of sellTrades) {
     const date = new Date(t.created_at).toISOString().slice(0, 10);
-    const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
-    const filledPx = Number(t.filled_price) || 0;
-    const qty = Number(t.quantity) || 0;
-    if (avgBuy > 0 && filledPx > 0) {
-      dailyMap.set(date, (dailyMap.get(date) ?? 0) + (filledPx - avgBuy) * qty);
+    // realized_pnl이 있으면 백엔드 FIFO 계산값 사용 (수수료 포함), 없으면 직접 계산
+    if (t.realized_pnl != null) {
+      dailyMap.set(date, (dailyMap.get(date) ?? 0) + Number(t.realized_pnl));
+    } else {
+      const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
+      const filledPx = Number(t.filled_price) || 0;
+      const qty = Number(t.filled_quantity ?? t.quantity) || 0;
+      const BUY_FEE = 0.00015; const SELL_FEE = 0.00245;
+      if (avgBuy > 0 && filledPx > 0 && qty > 0) {
+        const gross = (filledPx - avgBuy) * qty;
+        const fees = Math.round(avgBuy * qty * BUY_FEE) + Math.round(filledPx * qty * SELL_FEE);
+        dailyMap.set(date, (dailyMap.get(date) ?? 0) + gross - fees);
+      }
     }
   }
 
@@ -1050,19 +1058,21 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const todayStr = new Date().toDateString();
   const krTodaySells = todayTrades.filter((t: any) => t.side === 'SELL');
   const krRealizedPnl = krTodaySells.reduce((sum: number, t: any) => {
+    if (t.realized_pnl != null) return sum + Number(t.realized_pnl);
     const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
     const filledPx = Number(t.filled_price) || 0;
-    const qty = Number(t.quantity) || 0;
-    if (avgBuy <= 0 || filledPx <= 0) return sum;
+    const qty = Number(t.filled_quantity ?? t.quantity) || 0;
+    if (avgBuy <= 0 || filledPx <= 0 || qty <= 0) return sum;
     const grossPnl = (filledPx - avgBuy) * qty;
-    const sellFee = filledPx * qty * 0.00245; // 매도 수수료 0.245%
-    return sum + grossPnl - sellFee;
+    const buyFee = Math.round(avgBuy * qty * 0.00015);
+    const sellFee = Math.round(filledPx * qty * 0.00245);
+    return sum + grossPnl - buyFee - sellFee;
   }, 0);
   const krTabPnl = krRealizedPnl; // 매도 실현손익만
   const krTabHasData = krTodaySells.length > 0;
   const krSellsCostBasis = krTodaySells.reduce((sum: number, t: any) => {
     const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
-    const qty = Number(t.quantity) || 0;
+    const qty = Number(t.filled_quantity ?? t.quantity) || 0;
     return avgBuy > 0 ? sum + avgBuy * qty : sum;
   }, 0);
   const krTabPct = krSellsCostBasis > 0 ? (krTabPnl / krSellsCostBasis) * 100 : null;

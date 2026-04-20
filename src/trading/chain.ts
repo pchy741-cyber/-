@@ -21,13 +21,16 @@ export class ChainManager {
     stopLossPct: number;
     maxAveragingCount: number;
   }): Promise<string> {
-    const invested = params.buyPrice * params.quantity;
+    const COMMISSION_RATE = 0.00015;
+    const rawInvested = params.buyPrice * params.quantity;
+    const invested = rawInvested + Math.round(rawInvested * COMMISSION_RATE);
+    const avgBuyPrice = Math.round(invested / params.quantity);
 
     const chainId = await createChain({
       stock_code: params.stockCode,
       status: 'OPEN',
       strategy_mode: params.mode,
-      avg_buy_price: params.buyPrice,
+      avg_buy_price: avgBuyPrice,
       total_quantity: params.quantity,
       total_invested: invested,
       realized_pnl: 0,

@@ -3,6 +3,7 @@ import { getCachedDisclosures } from '../../automation/dart-monitor.js';
 import { getFlowScoreAdjustment, getInvestorFlow } from '../../automation/investor-flow.js';
 import { getMacroScoreAdjustment, getMacroSnapshot } from '../../automation/macro-data.js';
 import { collectMacroNews, getTodayNews } from '../../automation/news-collector.js';
+import { getLearnedInsightsForPrompt } from '../../automation/self-learning.js';
 import { getSentimentScoreAdjustment } from '../../automation/sentiment-analyzer.js';
 import { getShortSellingScoreAdjustment } from '../../automation/short-selling.js';
 import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
@@ -220,6 +221,14 @@ export async function buildTrackBContext(params: {
 
   const now = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
 
+  let insightsInfo = '';
+  try {
+    insightsInfo = await Promise.race([
+      getLearnedInsightsForPrompt(),
+      new Promise<string>((resolve) => setTimeout(() => resolve(''), 3000)),
+    ]);
+  } catch { /* 인사이트 로드 실패 시 무시 */ }
+
   return `# Track B 실행 컨텍스트 (${now})
 
 ${riskInfo}
@@ -227,6 +236,7 @@ ${riskInfo}
 ${strategyInfo}
 ${macroInfo}
 ${macroNewsInfo}
+${insightsInfo}
 
 ## 종목 현황 (수급 + 감성 + 목표가 + 공매도 + 공시 반영)
 ${stocksInfo}
