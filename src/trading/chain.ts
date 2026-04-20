@@ -1,5 +1,5 @@
 import type { StrategyMode } from '../config/constants.js';
-import { createChain, getOpenChains, getOrdersByChain, updateChain } from '../db/client.js';
+import { createChain, getOpenChains, getOrdersByChain, updateChain, getPool } from '../db/client.js';
 import type { TransactionChain } from '../db/models.js';
 import { logger } from '../utils/logger.js';
 
@@ -136,6 +136,53 @@ export class ChainManager {
       `${emoji} 체인 종료: ${chain.stock_code} | ${reason} | 실현손익: ${profit.toLocaleString()}원 (${pnlPct}%)`,
       { component: 'CHAIN' },
     );
+
+    // 스코어 정확도 기록 — 비동기 fire-and-forget
+    this.recordScoreAccuracy(chainId, chain, Number(pnlPct), reason).catch(() => {});
+  }
+
+  /** 체인 종료 후 진입 당시 AI 스코어 vs 결과를 score_accuracy에 기록 */
+  private async recordScoreAccuracy(chainId: string, chain: TransactionChain, pnlPct: number, reason: string): Promise<void> {
+    try {
+      const pool = getPool();
+      // 진입 당시 가장 가까운 ai_scores 조회
+      const { rows: scoreRows } = await pool.query(
+        `SELECT composite_score, signal, confidence
+           FROM ai_scores
+          WHERE stock_code = $1
+            AND created_at <= COALESCE($2::timestamptz, NOW())
+          ORDER BY created_at DESC
+          LIMIT 1`,
+        [chain.stock_code, (chain as any).opened_at ?? null],
+      );
+      const score = scoreRows[0];
+      const holdingDays = (chain as any).opened_at
+        ? Math.round((Date.now() - new Date((chain as any).opened_at).getTime()) / 86400000)
+        : null;
+      const outcome = pnlPct > 0.1 ? 'WIN' : pnlPct < -0.1 ? 'LOSS' : 'BREAK_EVEN';
+
+      await pool.query(
+        `INSERT INTO score_accuracy
+           (stock_code, chain_id, entry_score, entry_signal, entry_confidence,
+            realized_pnl_pct, outcome, holding_days, close_reason, strategy_mode)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [
+          chain.stock_code,
+          chainId,
+          score?.composite_score ?? null,
+          score?.signal ?? null,
+          score?.confidence ?? null,
+          pnlPct,
+          outcome,
+          holdingDays,
+          reason,
+          (chain as any).strategy_mode ?? null,
+        ],
+      );
+      logger.info(`📝 스코어 정확도 기록: ${chain.stock_code} ${outcome} (${pnlPct > 0 ? '+' : ''}${pnlPct}%)`, { component: 'CHAIN' });
+    } catch (err) {
+      logger.warn(`스코어 정확도 기록 실패: ${err}`, { component: 'CHAIN' });
+    }
   }
 
   /**

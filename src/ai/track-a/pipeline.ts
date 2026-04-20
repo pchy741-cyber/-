@@ -7,6 +7,7 @@ import { config } from '../../config/index.js';
 import { type ScoringResult } from '../../db/models.js';
 import { runGeminiAnalysis } from './gemini.js';
 import { runGeminiScoring } from './gemini-scorer.js';
+import { getStockAccuracyContext } from '../../automation/self-learning.js';
 
 /**
  * Track A 전체 파이프라인
@@ -135,6 +136,15 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       combinedSources = combinedSources ? `${combinedSources}\n\n## CEO 등록 참고소스\n${sourcesText}` : `## CEO 등록 참고소스\n${sourcesText}`;
       logger.info(`참고소스 ${dbSources.length}건 Gemini에 주입`, { component: 'TRACK_A' });
     }
+
+    // 4-b. 종목별 실거래 정확도 컨텍스트 주입 (score_accuracy 기반)
+    try {
+      const accuracyCtx = await getStockAccuracyContext(allStocks.map((s) => s.stock_code));
+      if (accuracyCtx) {
+        combinedSources = combinedSources ? `${combinedSources}\n${accuracyCtx}` : accuracyCtx;
+        logger.info('실거래 정확도 컨텍스트 스코어링에 주입', { component: 'TRACK_A' });
+      }
+    } catch { /* 실패해도 스코어링 계속 */ }
 
     // 5. 3단 폴백: Gemini+GPT → Gemini+Claude → Gemini+기술적 → Claude 단독
     let scores: ScoringResult[] = [];

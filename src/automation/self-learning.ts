@@ -775,7 +775,7 @@ export async function getLearnedInsightsForPrompt(): Promise<string> {
  * - analyzeTradeHistory() 직후 호출
  */
 export async function autoApplyInsights(insights: LearnedInsight[]): Promise<void> {
-  const toApply = insights.filter((i) => i.confidence >= 0.8 && i.paramChange && !i.isApplied);
+  const toApply = insights.filter((i) => i.confidence >= 0.7 && i.paramChange && !i.isApplied);
   if (toApply.length === 0) return;
 
   try {
@@ -1076,5 +1076,83 @@ async function analyzeParkingDecisions(): Promise<LearnedInsight[]> {
   } catch (err) {
     logger.warn(`파킹 분석 실패: ${err}`, { component: 'LEARN' });
     return [];
+  }
+}
+
+/**
+ * 종목별 실거래 정확도 요약 — Track A 스코어링 프롬프트에 주입
+ * score_accuracy 테이블 기반, 최근 90일 / 최소 3건 이상인 종목만
+ */
+export async function getStockAccuracyContext(stockCodes: string[]): Promise<string> {
+  if (stockCodes.length === 0) return '';
+  try {
+    const { rows } = await getPool().query(
+      `SELECT
+         stock_code,
+         COUNT(*)::int                                      AS total,
+         SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END)::int AS wins,
+         ROUND(AVG(realized_pnl_pct)::numeric, 2)          AS avg_pnl_pct,
+         ROUND(AVG(CASE WHEN outcome='WIN' THEN realized_pnl_pct END)::numeric, 2) AS avg_win_pct,
+         ROUND(AVG(CASE WHEN outcome='LOSS' THEN realized_pnl_pct END)::numeric, 2) AS avg_loss_pct,
+         ROUND(AVG(entry_score)::numeric, 0)                AS avg_entry_score
+       FROM score_accuracy
+      WHERE stock_code = ANY($1)
+        AND recorded_at >= NOW() - INTERVAL '90 days'
+      GROUP BY stock_code
+      HAVING COUNT(*) >= 3
+      ORDER BY stock_code`,
+      [stockCodes],
+    );
+
+    if (rows.length === 0) return '';
+
+    const lines = ['\n## 📊 종목별 실거래 정확도 (최근 90일)'];
+    for (const r of rows) {
+      const winRate = Math.round((r.wins / r.total) * 100);
+      const bias = winRate >= 60
+        ? `✅ 승률 높음 — 신호 강하면 적극 매수`
+        : winRate <= 35
+          ? `⚠️ 승률 낮음 — 더 높은 스코어(+10) 요구`
+          : `→ 보통`;
+      lines.push(
+        `  ${r.stock_code}: 승률 ${winRate}%(${r.wins}/${r.total}건) | 평균손익 ${r.avg_pnl_pct > 0 ? '+' : ''}${r.avg_pnl_pct}% | 진입스코어평균 ${r.avg_entry_score}점 ${bias}`,
+      );
+    }
+    lines.push('> 위 승률이 낮은 종목은 composite_score를 10점 더 엄격하게 적용하세요.');
+    return lines.join('\n');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 자기학습 분석 실행 + 인사이트 저장 + auto-apply (매일 18:30 호출)
+ */
+export async function runDailyLearning(): Promise<void> {
+  try {
+    const insights = await analyzeTradeHistory();
+    if (insights.length === 0) {
+      logger.info('자기학습: 분석 결과 없음', { component: 'LEARN' });
+      return;
+    }
+    // DB upsert
+    for (const ins of insights) {
+      await getPool().query(
+        `INSERT INTO learned_insights (category, insight, confidence, sample_count, details, recommendation, param_change, last_updated)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+         ON CONFLICT (category, insight)
+         DO UPDATE SET confidence=$3, sample_count=$4, details=$5, recommendation=$6, param_change=$7, last_updated=NOW()`,
+        [
+          ins.category, ins.insight, ins.confidence, ins.sampleCount,
+          ins.details ? JSON.stringify(ins.details) : null,
+          ins.recommendation ?? null,
+          ins.paramChange ? JSON.stringify(ins.paramChange) : null,
+        ],
+      ).catch(() => {});
+    }
+    logger.info(`🧠 자기학습 인사이트 ${insights.length}건 저장`, { component: 'LEARN' });
+    await autoApplyInsights(insights);
+  } catch (err) {
+    logger.warn(`자기학습 실패: ${err}`, { component: 'LEARN' });
   }
 }

@@ -12,7 +12,7 @@ import { analyzeWatchlistShortSelling } from '../automation/short-selling.js';
 import { autoSwitchStrategy } from '../automation/market-regime.js';
 import { collectWatchlistNews } from '../automation/news-collector.js';
 import { runSelfHealing } from '../automation/self-heal.js';
-import { analyzeTradeHistory } from '../automation/self-learning.js';
+import { runDailyLearning } from '../automation/self-learning.js';
 import { runWatchlistRotation } from '../automation/watchlist-rotation.js';
 import { runSniperScan } from '../automation/snipers/runner.js';
 import { MARKET, SCHEDULE } from '../config/constants.js';
@@ -375,7 +375,7 @@ export function startScheduler(): void {
   cron.schedule(
     '30 18 * * 1-5',
     () => {
-      analyzeTradeHistory().catch((e) => logger.error(`자기학습 실패: ${e}`, { component: 'SCHEDULER' }));
+      runDailyLearning().catch((e) => logger.error(`자기학습 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
