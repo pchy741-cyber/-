@@ -110,6 +110,31 @@ async function bootstrap() {
     } catch (e: any) {
       logger.warn(`buy_threshold 보정 실패: ${e.message}`, { component: 'BOOT' });
     }
+    // score_accuracy 테이블 자동 생성 (마이그레이션 010)
+    try {
+      const { getPool: gp } = await import('./db/client.js');
+      await gp().query(`
+        CREATE TABLE IF NOT EXISTS score_accuracy (
+          id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          stock_code       VARCHAR(20) NOT NULL,
+          chain_id         UUID,
+          entry_score      SMALLINT,
+          entry_signal     VARCHAR(20),
+          entry_confidence DECIMAL(4,3),
+          realized_pnl_pct DECIMAL(8,4),
+          outcome          VARCHAR(10) NOT NULL DEFAULT 'BREAK_EVEN',
+          holding_days     SMALLINT,
+          close_reason     TEXT,
+          strategy_mode    VARCHAR(15),
+          recorded_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_score_accuracy_stock ON score_accuracy(stock_code);
+        CREATE INDEX IF NOT EXISTS idx_score_accuracy_recorded ON score_accuracy(recorded_at DESC);
+      `);
+      logger.info('✅ score_accuracy 테이블 준비 완료', { component: 'BOOT' });
+    } catch (e: any) {
+      logger.warn(`score_accuracy 테이블 생성 경고: ${e.message}`, { component: 'BOOT' });
+    }
   } catch (err) {
     logger.warn(`⚠️ PostgreSQL 미연결: ${err}`, { component: 'BOOT' });
     enableMemoryMode();
