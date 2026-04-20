@@ -31,8 +31,8 @@ self.addEventListener('push', (event) => {
   const title = data.title || 'QUANTOPS';
   const options = {
     body: data.body || '',
-    icon: '/icon-192.svg',
-    badge: '/icon-192.svg',
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
     tag: data.tag || 'quantops-' + Date.now(),
     data: { url: data.url || '/' },
     vibrate: [200, 100, 200],
