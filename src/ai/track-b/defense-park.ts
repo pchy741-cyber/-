@@ -16,8 +16,8 @@ export const PARK_STOCK_CODE = '069500'; // KODEX 200
 export const PARK_STOCK_NAME = 'KODEX 200';
 
 // 하락세 진입 기준 (보수적으로 설정)
-const DOWNTREND_DRAWDOWN_PCT = 5;   // 7일 최고점 대비 5% 이상 낙폭
-const DOWNTREND_CONFIRM_DAYS = 3;   // 최근 n일 중 음수 daily_pnl 일수
+const DOWNTREND_DRAWDOWN_PCT = 7;   // 7일 최고점 대비 7% 이상 낙폭
+const DOWNTREND_CONFIRM_DAYS = 4;   // 최근 5일 중 음수 daily_pnl 일수
 const DOWNTREND_MIN_DAYS = 3;       // 판단에 필요한 최소 스냅샷 수
 
 // 상승세 복귀 기준
@@ -197,15 +197,23 @@ export async function buildDefenseParkEntryDecisions(
 
   const decisions: TradeDecision[] = [];
 
-  // 1. 전종목 청산 (KODEX 200 제외)
+  // 1. 손실 포지션만 청산 (KODEX 200 및 수익 중 종목 제외)
   for (const chain of openChains) {
     if (chain.stock_code === PARK_STOCK_CODE) continue;
+    const livePrice = livePrices.get(chain.stock_code);
+    const avgBuy = Number(chain.avg_buy_price ?? 0);
+    const currentPx = livePrice?.currentPrice ?? 0;
+    // 수익 중(+1% 이상)이면 FORCE_CLOSE 제외 — 수익 실현 기회 보존
+    if (avgBuy > 0 && currentPx > 0 && ((currentPx - avgBuy) / avgBuy) * 100 >= 1.0) {
+      logger.info(`🛡️ 방어 파킹: ${chain.stock_code} 수익 중 — 청산 제외`, { component: 'DEFENSE_PARK' });
+      continue;
+    }
     decisions.push({
       action: 'FORCE_CLOSE',
       stock_code: chain.stock_code,
       quantity: chain.total_quantity,
       price_type: 'MARKET',
-      reasoning: `🛡️ 방어 파킹 진입 — 전종목 청산: ${reason}`,
+      reasoning: `🛡️ 방어 파킹 진입 — 손실 포지션 청산: ${reason}`,
       confidence: 0.99,
     });
   }
