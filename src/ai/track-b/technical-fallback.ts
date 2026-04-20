@@ -268,6 +268,15 @@ export function technicalFallbackDecisions(params: {
     const pnlPct = ((price.currentPrice - avgBuy) / avgBuy) * 100;
     const avgDownTrigger = strategyParams.averageDownPct; // 보통 -3%
 
+    // 물타기 차단: 익절 진행 중 체인 or SMA20 아래 깊은 하락 (추가 물타기는 손실만 키움)
+    const chainCandles = chartData.get(chain.stock_code);
+    const chainTech = chainCandles ? analyzeTechnicals(chainCandles) : null;
+    const isBelowSma20Deep = chainTech ? price.currentPrice < chainTech.sma20 * 0.97 : false; // SMA20 -3% 이상 이탈 시 물타기 금지
+    if (chain.status === 'PROFIT_TAKING' || isBelowSma20Deep) {
+      if (isBelowSma20Deep) logger.info(`  🚫 ${chain.stock_code}: SMA20 -3% 이탈 → 물타기 차단 (손실확대 방지)`, { component: 'TRACK_B' });
+      continue;
+    }
+
     // 물타기 조건: 평단가 대비 하락률이 트리거 이하 + 횟수 미달
     if (avgDownTrigger !== 0 && pnlPct <= avgDownTrigger && chain.current_averaging_count < chain.max_averaging_count) {
       const avgDownSize = Math.min(effectiveMaxPos / splitCount, remainingCash / 4);
