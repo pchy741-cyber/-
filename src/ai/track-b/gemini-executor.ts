@@ -1,21 +1,13 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { setGeminiStatus } from '../../cache/ai-status.js';
-import { config } from '../../config/index.js';
 import { STRATEGY_PARAMS } from '../../config/constants.js';
 import { type TradeDecision, TradeDecisionSchema } from '../../db/models.js';
 import { logger } from '../../utils/logger.js';
+import { callVertexGemini } from '../../utils/vertex-gemini.js';
 import { buildExecutionPrompt } from '../prompts/track-b-execution.js';
 import { BUY_BLOCKED_CODES } from './trading-rules.js';
 
-function getGenAI(): GoogleGenerativeAI | null {
-  const key = config.ai.geminiKey || process.env.GEMINI_API_KEY;
-  if (!key || key.startsWith('your_') || key.length < 10) return null;
-  return new GoogleGenerativeAI(key);
-}
-
 /**
- * Gemini 2.5 Pro로 매매 실행 판단 (Claude 대체)
- * Claude와 동일한 프롬프트/스키마 사용
+ * Vertex AI Gemini로 매매 실행 판단 (Claude 대체)
  */
 export async function runGeminiExecution(params: {
   mode: string;
@@ -24,31 +16,17 @@ export async function runGeminiExecution(params: {
 }): Promise<TradeDecision[]> {
   const { mode, context, customPrompt } = params;
 
-  const genAI = getGenAI();
-  if (!genAI) {
-    logger.warn('Gemini API 키 미설정 — Gemini 매매 판단 스킵', { component: 'TRACK_B' });
-    return [];
-  }
-
   const strategyParams = STRATEGY_PARAMS[mode as keyof typeof STRATEGY_PARAMS] ?? STRATEGY_PARAMS.SWING;
   const basePrompt = buildExecutionPrompt(mode, strategyParams);
   const systemPrompt = customPrompt ? `${basePrompt}\n\n${customPrompt}` : basePrompt;
 
   logger.info(`Gemini 실행 판단 시작 (모드: ${mode})`, { component: 'TRACK_B' });
 
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-2.0-flash',
-    generationConfig: {
-      temperature: 0.1,
-    },
-  });
-
   const MAX_RETRIES = 2;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const result = await model.generateContent([systemPrompt, context]);
-      const rawText = result.response.text();
+      const rawText = await callVertexGemini(systemPrompt, context, { temperature: 0.1 });
 
       // Gemini가 마크다운 코드블록으로 JSON을 감쌀 수 있음 — 추출 후 파싱
       const jsonMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/) ?? rawText.match(/(\{[\s\S]*\})/);
@@ -94,7 +72,6 @@ export async function runGeminiExecution(params: {
       const msg = error instanceof Error ? error.message : String(error);
       logger.warn(`Gemini 실행 시도 ${attempt} 실패: ${msg}`, { component: 'TRACK_B' });
 
-      // 무료 할당량 초과
       if (msg.includes('quota') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429')) {
         setGeminiStatus('quota', msg);
         return [];

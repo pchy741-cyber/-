@@ -1,4 +1,3 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { cacheScores } from '../../cache/redis.js';
 import { getActiveStrategy, getActiveWatchlist, getPool, getRecentSources, isMemoryMode, logSystem, upsertAIScore } from '../../db/client.js';
 import { type DailyCandle, getDailyChart, getVolumeRankingStocks, getChangeRankingStocks, getBatchPrices } from '../../kis/market.js';
@@ -315,12 +314,7 @@ async function runClaudeAnalysis(
   chartData: Map<string, DailyCandle[]>,
   strategy: any,
 ): Promise<ScoringResult[]> {
-  const key = config.ai.geminiKey || process.env.GEMINI_API_KEY;
-  if (!key || key.startsWith('your_') || key.length < 10) {
-    logger.warn('Gemini API 키 미설정 — Track A 폴백 분석 스킵', { component: 'TRACK_A' });
-    return [];
-  }
-  const genAI = new GoogleGenerativeAI(key);
+  const { callVertexGemini } = await import('../../utils/vertex-gemini.js');
 
   const chartSummary = watchlist.map((stock) => {
     const candles = chartData.get(stock.stock_code) ?? [];
@@ -337,16 +331,9 @@ async function runClaudeAnalysis(
 
   const ceoPrompt = strategy?.gemini_prompt || strategy?.gpt_prompt || '';
 
-  logger.info(`Gemini Flash 통합 분석 시작 (${watchlist.length}개 종목, 모드: ${mode})`, { component: 'TRACK_A' });
+  logger.info(`Gemini 통합 분석 시작 (${watchlist.length}개 종목, 모드: ${mode})`, { component: 'TRACK_A' });
 
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-2.0-flash',
-    generationConfig: {
-      temperature: 0.2,
-    },
-  });
-
-  const prompt = `당신은 주식 분석+스코어링 전문가입니다. 아래 차트 데이터를 분석하여 종목별 점수를 매겨주세요.
+  const userMsg = `당신은 주식 분석+스코어링 전문가입니다. 아래 차트 데이터를 분석하여 종목별 점수를 매겨주세요.
 
 ## 모드: ${mode}
 ${ceoPrompt ? `## CEO 지시사항\n${ceoPrompt}\n` : ''}
@@ -366,8 +353,7 @@ ${chartSummary}
 ## 출력 (JSON만, 다른 텍스트 금지)
 {"scores":[{"stock_code":"코드","stock_name":"이름","composite_score":0,"fundamental_score":0,"technical_score":0,"sentiment_score":0,"confidence":0.0,"signal":"STRONG_BUY|BUY|HOLD|SELL|STRONG_SELL|NO_DATA","target_price":0,"stop_loss_price":0,"reasoning":"근거"}]}`;
 
-  const result = await model.generateContent(prompt);
-  const text = result.response.text();
+  const text = await callVertexGemini('당신은 주식 분석 전문가입니다. JSON 형식으로만 응답합니다.', userMsg, { temperature: 0.2 });
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('Gemini Flash 응답에서 JSON을 찾을 수 없습니다');
 

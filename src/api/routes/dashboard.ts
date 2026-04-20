@@ -1097,11 +1097,6 @@ dashboardRoutes.get('/news/summary', async (c) => {
       return c.json({ summary: '', geminiOk: false, error: 'rss_failed', headlineCount: 0, cached: false });
     }
 
-    const geminiKey = config.ai.geminiKey || process.env.GEMINI_API_KEY;
-    if (!geminiKey || geminiKey.startsWith('your_') || geminiKey.length < 10) {
-      return c.json({ summary: '', geminiOk: false, error: 'no_key', headlineCount: 0, cached: false });
-    }
-
     const headlineLines = raw.split('\n').filter(l => l.startsWith('- ['));
     const headlineCount = headlineLines.length;
 
@@ -1114,18 +1109,17 @@ dashboardRoutes.get('/news/summary', async (c) => {
       return m ? `${m[1]} (${m[2]})` : l.replace(/^- /, '');
     }).join('\n');
 
-    const { GoogleGenerativeAI } = await import('@google/generative-ai');
-    const genAI = new GoogleGenerativeAI(geminiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash', generationConfig: { temperature: 0.2 } });
+    const { callVertexGemini: callVertexNews } = await import('../../utils/vertex-gemini.js');
+    const summaryPromise = callVertexNews(
+      '당신은 주식 투자 전문가입니다. 뉴스를 투자자 관점에서 간결하게 요약합니다.',
+      `아래는 오늘 글로벌 금융 뉴스 헤드라인입니다. 주식 투자에 영향을 미치는 핵심 내용만 뽑아서 한국어로 자연스럽게 2~3문장으로 요약해 주세요. 투자자 관점에서 오늘 시장 분위기와 주요 이슈를 간결하게 서술하세요.\n\n${headlines}`,
+      { temperature: 0.2 },
+    );
 
-    const res = await Promise.race([
-      model.generateContent(
-        `아래는 오늘 글로벌 금융 뉴스 헤드라인입니다. 주식 투자에 영향을 미치는 핵심 내용만 뽑아서 한국어로 자연스럽게 2~3문장으로 요약해 주세요. 투자자 관점에서 오늘 시장 분위기와 주요 이슈를 간결하게 서술하세요.\n\n${headlines}`,
-      ),
+    const summary = await Promise.race([
+      summaryPromise,
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout_15s')), 15000)),
     ]);
-
-    const summary = res.response.text() ?? '';
     // 캐시 업데이트
     if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now() };
     return c.json({ summary, geminiOk: !!summary, error: summary ? null : 'gemini_empty', headlineCount, cached: false });
@@ -1155,11 +1149,6 @@ dashboardRoutes.get('/news/theme', async (c) => {
     ]);
     if (!raw) return c.json({ theme: '', reason: '', stocks: [] });
 
-    const geminiKey = config.ai.geminiKey || process.env.GEMINI_API_KEY;
-    if (!geminiKey || geminiKey.startsWith('your_') || geminiKey.length < 10) {
-      return c.json({ theme: '', reason: '', stocks: [] });
-    }
-
     const headlines = raw.split('\n')
       .filter(l => l.startsWith('- [') || (l.startsWith('- ') && l.length > 10))
       .map(l => {
@@ -1169,14 +1158,9 @@ dashboardRoutes.get('/news/theme', async (c) => {
 
     if (!headlines) return c.json({ theme: '', reason: '', stocks: [] });
 
-    const { GoogleGenerativeAI } = await import('@google/generative-ai');
-    const genAI = new GoogleGenerativeAI(geminiKey);
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-1.5-flash',
-      generationConfig: { temperature: 0.2 },
-    });
+    const { callVertexGemini: callVertexTheme } = await import('../../utils/vertex-gemini.js');
 
-    const prompt = `아래 글로벌 금융 뉴스 헤드라인을 분석해서 오늘 한국 주식시장에서 가장 주목받을 테마/섹터를 1개 선정하고, 관련 한국 상장주 3~5개를 추천하세요.
+    const themeUserMsg = `아래 글로벌 금융 뉴스 헤드라인을 분석해서 오늘 한국 주식시장에서 가장 주목받을 테마/섹터를 1개 선정하고, 관련 한국 상장주 3~5개를 추천하세요.
 
 헤드라인:
 ${headlines}
@@ -1193,11 +1177,10 @@ ${headlines}
 
 주의: code는 반드시 실제 한국거래소 6자리 종목코드, market은 KOSPI 또는 KOSDAQ`;
 
-    const res = await Promise.race([
-      model.generateContent(prompt),
+    const text = await Promise.race([
+      callVertexTheme('당신은 한국 주식시장 전문가입니다. 뉴스 헤드라인을 분석하여 테마와 종목을 추천합니다.', themeUserMsg, { temperature: 0.2 }),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('theme_timeout_20s')), 20000)),
     ]);
-    const text = res.response.text() ?? '';
 
     // Gemini가 ```json ... ``` 마크다운으로 감쌀 수 있음 — 추출 후 파싱
     const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/) ?? text.match(/(\{[\s\S]*\})/);
@@ -1333,26 +1316,16 @@ dashboardRoutes.get('/ai-status', (c) => {
   return c.json(getAiStatus());
 });
 
-// ── Gemini API 직접 연결 테스트 ──
+// ── Vertex AI 직접 연결 테스트 ──
 dashboardRoutes.get('/ai/gemini-test', async (c) => {
   const start = Date.now();
-  const geminiKey = config.ai.geminiKey || process.env.GEMINI_API_KEY;
-
-  if (!geminiKey || geminiKey.startsWith('your_') || geminiKey.length < 10) {
-    return c.json({ ok: false, latencyMs: 0, model: '', error: 'no_key', errorDetail: 'GEMINI_API_KEY가 설정되지 않았습니다', rawError: '' });
-  }
-
-  // 테스트 1: gemini-2.0-flash (v1beta) — 실제 트레이딩 봇과 동일 설정
-  const TEST_MODEL = 'gemini-2.0-flash';
+  const TEST_MODEL = 'gemini-2.0-flash (Vertex AI)';
   try {
-    const { GoogleGenerativeAI } = await import('@google/generative-ai');
-    const genAI = new GoogleGenerativeAI(geminiKey);
-    const model = genAI.getGenerativeModel({ model: TEST_MODEL });
-    const res = await Promise.race([
-      model.generateContent('Reply with exactly one word: OK'),
+    const { callVertexGemini: callTest } = await import('../../utils/vertex-gemini.js');
+    const text = await Promise.race([
+      callTest('You are a test assistant.', 'Reply with exactly one word: OK'),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout_10s')), 10000)),
     ]);
-    const text = res.response.text();
     const latencyMs = Date.now() - start;
     return c.json({ ok: !!text, latencyMs, model: TEST_MODEL, error: null, errorDetail: null, rawError: '', response: text?.slice(0, 50) });
   } catch (err) {

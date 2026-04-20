@@ -1,12 +1,5 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import { config } from '../../config/index.js';
 import { logger } from '../../utils/logger.js';
-
-function getGenAI(): GoogleGenerativeAI | null {
-  const key = config.ai.geminiKey || process.env.GEMINI_API_KEY;
-  if (!key || key.startsWith('your_') || key.length < 10) return null;
-  return new GoogleGenerativeAI(key);
-}
+import { callVertexGemini } from '../../utils/vertex-gemini.js';
 
 export interface OverseasStockInput {
   code: string;
@@ -66,26 +59,12 @@ export async function analyzeOverseasWithAI(
   perfSummary?: string,
   userInsights?: string,
 ): Promise<OverseasAIDecision[]> {
-  const genAI = getGenAI();
-  if (!genAI) {
-    logger.warn('Gemini 키 없음 — AI 분석 스킵, 기술적 지표만 사용', { component: 'OVERSEAS_AI' });
-    return [];
-  }
-
   const context = buildContext(stocks, availableCash, holdingCount, perfSummary, userInsights);
-
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-2.0-flash',
-    generationConfig: {
-      temperature: 0.1,
-    },
-  });
 
   const MAX_RETRIES = 2;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const result = await model.generateContent([SYSTEM_PROMPT, context]);
-      const text = result.response.text();
+      const text = await callVertexGemini(SYSTEM_PROMPT, context, { temperature: 0.1 });
 
       const jsonMatch = text.match(/\[[\s\S]*\]/);
       if (!jsonMatch) throw new Error('JSON 배열 없음');

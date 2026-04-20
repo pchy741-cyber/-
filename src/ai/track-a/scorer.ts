@@ -1,19 +1,11 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import { config } from '../../config/index.js';
 import { type ScoringResult, ScoringResultSchema } from '../../db/models.js';
 import { logger } from '../../utils/logger.js';
+import { callVertexGemini } from '../../utils/vertex-gemini.js';
 import { buildScoringPrompt } from '../prompts/track-a-scoring.js';
 import type { GeminiAnalysis } from './gemini.js';
 
-function getGenAI(): GoogleGenerativeAI | null {
-  const key = config.ai.geminiKey || process.env.GEMINI_API_KEY;
-  if (!key || key.startsWith('your_') || key.length < 10) return null;
-  return new GoogleGenerativeAI(key);
-}
-
 /**
- * Gemini 2.0 Flash로 종목 스코어링 (GPT-4o 대체 — 무료 티어)
- * GPT-4o와 동일한 프롬프트/스키마 사용
+ * Vertex AI Gemini로 종목 스코어링 (GPT-4o 대체)
  */
 export async function runGPTScoring(params: {
   mode: string;
@@ -22,23 +14,11 @@ export async function runGPTScoring(params: {
 }): Promise<ScoringResult[]> {
   const { mode, geminiAnalysis, customPrompt } = params;
 
-  const genAI = getGenAI();
-  if (!genAI) {
-    throw new Error('Gemini API 키 미설정 — 스코어링 스킵');
-  }
-
   const basePrompt = buildScoringPrompt(mode);
   const systemPrompt = customPrompt ? `${basePrompt}\n\n${customPrompt}` : basePrompt;
 
-  logger.info(`Gemini Flash 스코어링 시작 (${geminiAnalysis.stocks.length}개 종목, 모드: ${mode})`, {
+  logger.info(`Gemini 스코어링 시작 (${geminiAnalysis.stocks.length}개 종목, 모드: ${mode})`, {
     component: 'TRACK_A',
-  });
-
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-2.0-flash',
-    generationConfig: {
-      temperature: 0.2,
-    },
   });
 
   const userMessage = `## Gemini 분석 결과
@@ -48,8 +28,7 @@ ${JSON.stringify(geminiAnalysis.stocks, null, 2)}
 
 위 분석 결과를 바탕으로 각 종목의 점수를 산출해주세요.`;
 
-  const result = await model.generateContent([systemPrompt, userMessage]);
-  const content = result.response.text();
+  const content = await callVertexGemini(systemPrompt, userMessage, { temperature: 0.2 });
 
   try {
     const parsed = JSON.parse(content) as { scores: ScoringResult[] };

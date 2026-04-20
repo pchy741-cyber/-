@@ -6,7 +6,7 @@ import { logger } from '../../utils/logger.js';
 import { buildGeminiPrompt } from '../prompts/track-a-analysis.js';
 
 // Gemini API Key가 있으면 Google AI SDK 사용, 없으면 Vertex AI 시도
-const USE_VERTEX_AI = false; // Vertex AI 비활성화 — Google AI SDK (API Key) 사용
+const USE_VERTEX_AI = true; // Vertex AI 사용 — Cloud Run 서비스 계정 자동 인증
 
 const VERTEX_PROJECT_ID = 'quantops-trading';
 const VERTEX_LOCATION = 'us-central1';
