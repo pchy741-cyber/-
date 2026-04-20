@@ -161,18 +161,26 @@ export class TradeExecutor {
       return;
     }
 
-    // 리스크 체크
-    const riskCheck = await riskEngine.validateOrder({
-      stockCode,
-      side: 'BUY',
-      quantity: gatedQuantity,
-      estimatedPrice,
-    });
+    // 리스크 체크 (ETF 파킹은 Kill Switch만 확인 — 포지션/한도 체크 제외)
+    if (ETF_PARK_CODES.includes(stockCode)) {
+      const { isKillSwitchActive } = await import('../risk/kill-switch.js');
+      if (isKillSwitchActive()) {
+        logger.warn(`🛑 Kill Switch 활성 → ETF 파킹 스킵: ${stockCode}`, { component: 'EXECUTOR' });
+        return;
+      }
+    } else {
+      const riskCheck = await riskEngine.validateOrder({
+        stockCode,
+        side: 'BUY',
+        quantity: gatedQuantity,
+        estimatedPrice,
+      });
 
-    if (!riskCheck.approved) {
-      logger.warn(`❌ 매수 거부 [${stockCode}]: ${riskCheck.reason}`, { component: 'EXECUTOR' });
-      await logSystem('WARN', 'EXECUTOR', `매수 거부: ${stockCode} - ${riskCheck.reason}`);
-      return;
+      if (!riskCheck.approved) {
+        logger.warn(`❌ 매수 거부 [${stockCode}]: ${riskCheck.reason}`, { component: 'EXECUTOR' });
+        await logSystem('WARN', 'EXECUTOR', `매수 거부: ${stockCode} - ${riskCheck.reason}`);
+        return;
+      }
     }
 
     // 호가 진입 타이밍 — ask2 이하일 때만 매수 (ETF 파킹 제외)
