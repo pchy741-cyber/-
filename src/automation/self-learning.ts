@@ -798,6 +798,7 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
       if (oldVal === value) continue; // 이미 같은 값이면 스킵
 
       await getPool().query(`UPDATE strategy_config SET ${field} = $1 WHERE is_active = true`, [value]);
+      await getPool().query(`UPDATE learned_insights SET is_applied = true, applied_at = NOW() WHERE id = $1`, [insight.id]);
       applied.push(`${field}: ${oldVal} → ${value}`);
       logger.info(`🤖 인사이트 자동 적용: ${field}=${value} (${insight.insight.slice(0, 40)}...)`, { component: 'LEARN' });
     }

@@ -441,21 +441,11 @@ function InsightsPanel({ insights, trades, onRefresh, toast }: { insights: any[]
       <div className="rounded-2xl bg-white/[0.03] border border-white/[0.06] overflow-hidden">
         <div className="flex items-center gap-3 px-4 py-3 border-b border-white/[0.06]">
           <span className="text-sm font-semibold text-slate-200">🧠 자기학습 인사이트</span>
+          <span className="text-[10px] text-slate-600 ml-1">매일 18:30 자동 반영</span>
           <span className="ml-auto text-[10px] bg-slate-700/60 text-slate-400 px-2 py-0.5 rounded-full">{insights.length}개</span>
-          <button
-            onClick={async () => {
-              toast?.('자기학습 시작...', 'info');
-              const r = await fetch('/api/settings/run-self-learning', { method: 'POST' });
-              const d = await r.json().catch(() => ({}));
-              toast?.(d.message ?? '자기학습 완료', 'ok');
-              setTimeout(onRefresh, 3000);
-            }}
-            className="text-[10px] bg-indigo-900/40 hover:bg-indigo-900/60 text-indigo-300 px-2.5 py-1 rounded-lg transition-all">
-            ▶ 지금 실행
-          </button>
           <button onClick={() => setShowAdd(v => !v)}
             className="text-[10px] bg-purple-900/40 hover:bg-purple-900/60 text-purple-300 px-2.5 py-1 rounded-lg transition-all">
-            + CEO 가이드 추가
+            + 가이드 추가
           </button>
         </div>
 
@@ -529,16 +519,13 @@ function InsightsPanel({ insights, trades, onRefresh, toast }: { insights: any[]
                 <p className="flex-1 text-[11px] text-slate-300 leading-relaxed">{i.insight}</p>
                 <div className="shrink-0 flex items-center gap-1.5">
                   {i.is_applied
-                    ? <span className="text-[9px] bg-emerald-900/40 text-emerald-400 px-1.5 py-0.5 rounded-full">적용됨</span>
-                    : i.param_change && (
-                      <button onClick={() => handleApply(i.id)} disabled={applying === i.id}
-                        className="text-[9px] bg-violet-700/60 hover:bg-violet-600 text-violet-200 px-2 py-0.5 rounded-full transition-all disabled:opacity-50 whitespace-nowrap">
-                        {applying === i.id ? '적용중...' : '전략 적용'}
-                      </button>
-                    )
+                    ? <span className="text-[9px] bg-emerald-900/40 text-emerald-400 px-1.5 py-0.5 rounded-full">✓ 적용됨</span>
+                    : i.param_change
+                      ? <span className="text-[9px] bg-amber-900/40 text-amber-400 px-1.5 py-0.5 rounded-full">대기중</span>
+                      : <span className="text-[9px] text-slate-600 px-1.5 py-0.5">AI 자동 반영</span>
                   }
                   <button onClick={() => openDeleteModal(i.id, i.insight)} disabled={deleting === i.id}
-                    className="shrink-0 text-slate-600 hover:text-rose-400 text-[11px] transition-colors disabled:opacity-50">
+                    className="shrink-0 text-slate-700 hover:text-rose-400 text-[11px] transition-colors disabled:opacity-50">
                     ✕
                   </button>
                 </div>
