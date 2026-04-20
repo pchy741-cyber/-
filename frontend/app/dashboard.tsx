@@ -353,7 +353,16 @@ function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast }: { i
   }, []);
   const insights = liveInsights ?? insightsProp;
 
-  if (insights.length === 0 && !showAdd) return null;
+  const [triggering, setTriggering] = React.useState(false);
+  const triggerLearning = async () => {
+    setTriggering(true);
+    try {
+      await fetch('/api/settings/run-self-learning', { method: 'POST' });
+      toast?.('자기학습 시작 — 잠시 후 인사이트가 업데이트됩니다', 'ok');
+      setTimeout(() => api('/settings/insights').then((d: any) => setLiveInsights(Array.isArray(d) ? d : [])).catch(() => {}), 8000);
+    } catch { toast?.('자기학습 실행 실패', 'err'); }
+    finally { setTriggering(false); }
+  };
 
   const openDeleteModal = (id: number, insight: string) => {
     const words = insight.replace(/[^\w\s가-힣]/g, ' ').split(/\s+/).filter((w: string) => w.length >= 2).slice(0, 8);
@@ -473,6 +482,10 @@ function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast }: { i
           <span className="text-sm font-semibold text-slate-200">🧠 자기학습 인사이트</span>
           <span className="text-[10px] text-slate-600 ml-1">매일 18:30 자동 반영</span>
           <span className="ml-auto text-[10px] bg-slate-700/60 text-slate-400 px-2 py-0.5 rounded-full">{insights.length}개</span>
+          <button onClick={triggerLearning} disabled={triggering}
+            className="text-[10px] bg-blue-900/40 hover:bg-blue-900/60 text-blue-300 px-2.5 py-1 rounded-lg transition-all disabled:opacity-50">
+            {triggering ? '분석중...' : '지금 분석'}
+          </button>
           <button onClick={() => setShowAdd(v => !v)}
             className="text-[10px] bg-purple-900/40 hover:bg-purple-900/60 text-purple-300 px-2.5 py-1 rounded-lg transition-all">
             + 가이드 추가
@@ -540,6 +553,12 @@ function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast }: { i
         )}
 
         <div className="divide-y divide-white/[0.03] max-h-80 overflow-y-auto">
+          {insights.filter(i => i.category !== 'LOSS_PATTERN').length === 0 && !showAdd && (
+            <div className="px-4 py-6 text-center">
+              <p className="text-xs text-slate-500 mb-1">아직 학습된 패턴이 없습니다</p>
+              <p className="text-[10px] text-slate-600">매일 18:30 자동 분석 또는 "지금 분석" 버튼으로 즉시 실행</p>
+            </div>
+          )}
           {insights.filter(i => i.category !== 'LOSS_PATTERN').map(i => (
             <div key={i.id} className="px-4 py-3 hover:bg-white/[0.02]">
               <div className="flex items-start gap-3">

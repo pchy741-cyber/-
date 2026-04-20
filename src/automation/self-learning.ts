@@ -73,8 +73,8 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
     [ninetyDaysAgo.toISOString()],
   );
 
-  if (!chains || chains.length < 10) {
-    logger.info('학습 데이터 부족 (최소 10건 필요)', { component: 'LEARN' });
+  if (!chains || chains.length < 3) {
+    logger.info('학습 데이터 부족 (최소 3건 필요)', { component: 'LEARN' });
     return [];
   }
 

@@ -1116,7 +1116,7 @@ dashboardRoutes.get('/news/summary', async (c) => {
 
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(geminiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash', generationConfig: { temperature: 0.2 } }, { apiVersion: 'v1beta' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash', generationConfig: { temperature: 0.2 } });
 
     const res = await Promise.race([
       model.generateContent(
@@ -1172,9 +1172,9 @@ dashboardRoutes.get('/news/theme', async (c) => {
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(geminiKey);
     const model = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-1.5-flash',
       generationConfig: { temperature: 0.2 },
-    }, { apiVersion: 'v1beta' });
+    });
 
     const prompt = `아래 글로벌 금융 뉴스 헤드라인을 분석해서 오늘 한국 주식시장에서 가장 주목받을 테마/섹터를 1개 선정하고, 관련 한국 상장주 3~5개를 추천하세요.
 
@@ -1467,11 +1467,14 @@ dashboardRoutes.get('/stock/:code/score-detail', async (c) => {
       fundamental: Number(r.fundamental_score),
       technical: Number(r.technical_score),
       sentiment: Number(r.sentiment_score),
-      summary: typeof r.gemini_summary === 'string'
-        ? r.gemini_summary
-        : r.gemini_summary
-          ? JSON.stringify(r.gemini_summary).slice(0, 300)
-          : null,
+      summary: (() => {
+        const gs = r.gemini_summary;
+        if (!gs) return null;
+        const obj = typeof gs === 'string' ? (() => { try { return JSON.parse(gs); } catch { return null; } })() : gs;
+        if (obj?.key_facts?.length > 0) return (obj.key_facts as string[]).slice(0, 3).join(' · ');
+        if (typeof gs === 'string') return gs.slice(0, 200);
+        return null;
+      })(),
       updatedAt: r.created_at,
     });
   } catch (err: any) {
