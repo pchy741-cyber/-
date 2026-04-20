@@ -745,12 +745,27 @@ dashboardRoutes.get('/trades', async (c) => {
 
     const rowsWithPnl = rows.map((r: any) => {
       const p = tradePnlMap.get(String(r.id ?? ''));
-      return {
-        ...r,
-        realized_pnl: p?.pnl ?? null,
-        realized_pnl_pct: p?.pct ?? null,
-        realized_pnl_usd: p?.isUsd ? p.pnl : null,
-      };
+      if (p) {
+        return { ...r, realized_pnl: p.pnl, realized_pnl_pct: p.pct, realized_pnl_usd: p.isUsd ? p.pnl : null };
+      }
+      // FIFO에 BUY 이력 없는 SELL → chain avg_buy_price로 fallback
+      const chainAvgBuy = r.transaction_chains?.avg_buy_price;
+      if (String(r.side) === 'SELL' && chainAvgBuy) {
+        const qty = Math.max(0, Number(r.filled_quantity ?? 0));
+        const sellPx = Math.max(0, Number(r.filled_price ?? 0));
+        const avgBuy = Number(chainAvgBuy);
+        const isUsd = !/^[0-9]{6}$/.test(String(r.stock_code ?? ''));
+        if (qty > 0 && sellPx > 0 && avgBuy > 0) {
+          const costBasis = avgBuy * qty;
+          const sellValue = sellPx * qty;
+          const sellFee = isUsd ? 0 : Math.round(sellValue * 0.00245);
+          const buyFee = isUsd ? 0 : Math.round(costBasis * 0.00015);
+          const pnl = sellValue - sellFee - costBasis - buyFee;
+          const pct = (pnl / costBasis) * 100;
+          return { ...r, realized_pnl: pnl, realized_pnl_pct: pct, realized_pnl_usd: isUsd ? pnl : null };
+        }
+      }
+      return { ...r, realized_pnl: null, realized_pnl_pct: null, realized_pnl_usd: null };
     });
 
     const unresolvedDomestic = [...new Set(
