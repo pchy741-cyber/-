@@ -75,11 +75,11 @@ export async function analyzeOverseasWithAI(
   const context = buildContext(stocks, availableCash, holdingCount, perfSummary, userInsights);
 
   const model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
+    model: 'gemini-2.0-flash',
     generationConfig: {
       temperature: 0.1,
     },
-  }, { apiVersion: 'v1beta' });
+  });
 
   const MAX_RETRIES = 2;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {

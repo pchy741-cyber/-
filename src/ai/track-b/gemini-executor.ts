@@ -37,11 +37,11 @@ export async function runGeminiExecution(params: {
   logger.info(`Gemini 실행 판단 시작 (모드: ${mode})`, { component: 'TRACK_B' });
 
   const model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
+    model: 'gemini-2.0-flash',
     generationConfig: {
       temperature: 0.1,
     },
-  }, { apiVersion: 'v1beta' });
+  });
 
   const MAX_RETRIES = 2;
 
