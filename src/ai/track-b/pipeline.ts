@@ -2,7 +2,7 @@ import { analyzeTechnicals } from '../../analysis/indicators.js';
 import { getLearnedInsightsForPrompt } from '../../automation/self-learning.js';
 import { MIN_DIVIDEND_YIELD_FOR_BUY, STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
 import { config } from '../../config/index.js';
-import { getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getRecentLossStocks, getRecentManuallySoldStocks, logSystem } from '../../db/client.js';
+import { enableMemoryMode, getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getRecentLossStocks, getRecentManuallySoldStocks, logSystem } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { getBatchPrices, getDailyChart, isMarketOpen } from '../../kis/market.js';
@@ -20,10 +20,11 @@ import { getAiStatus, setActiveEngine } from '../../cache/ai-status.js';
 import { runClaudeExecution } from './executor.js';
 import { runGeminiExecution } from './gemini-executor.js';
 import { technicalFallbackDecisions } from './technical-fallback.js';
-import { IDLE_PARK_CODE, IDLE_PARK_NAME } from './trading-rules.js';
+import { IDLE_PARK_CODE, IDLE_PARK_CODES, IDLE_PARK_NAME } from './trading-rules.js';
 
 // ── IDLE_PARK_CODE 가격 캐시 — 배치 실패 시 직전 가격 fallback용 ──
 let _idleParkPriceCache: { price: number; fetchedAt: number } = { price: 0, fetchedAt: 0 };
+const IDLE_PARK_CODE_SET = new Set<string>(IDLE_PARK_CODES);
 
 /**
  * Track B 전체 파이프라인
@@ -47,15 +48,36 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       return [];
     }
 
-    // 2. 데이터 로드 (병렬)
-    const [watchlist, openChains, strategy, balanceRaw, reservedWithdraw, recentLossCodes, manuallySoldCodes] = await Promise.all([
-      getActiveWatchlist(),
-      getOpenChains(),
-      getActiveStrategy(),
+    // 2. 데이터 로드 (병렬) — DB 타임아웃 시 인메모리 모드 전환
+    const dbLoadWithFallback = async () => {
+      try {
+        return await Promise.all([
+          getActiveWatchlist(),
+          getOpenChains(),
+          getActiveStrategy(),
+          getRecentLossStocks(14),
+          getRecentManuallySoldStocks(24),
+        ]);
+      } catch (dbErr: any) {
+        const msg = String(dbErr?.message ?? dbErr);
+        if (msg.includes('timeout') || msg.includes('terminated') || msg.includes('ECONNREFUSED') || msg.includes('ENOTFOUND')) {
+          logger.warn(`⚡ DB 연결 실패 → 인메모리 모드로 전환: ${msg}`, { component: 'TRACK_B' });
+          enableMemoryMode();
+          return await Promise.all([
+            getActiveWatchlist(),
+            getOpenChains(),
+            getActiveStrategy(),
+            getRecentLossStocks(14),
+            getRecentManuallySoldStocks(24),
+          ]);
+        }
+        throw dbErr;
+      }
+    };
+    const [watchlist, openChains, strategy, recentLossCodes, manuallySoldCodes] = await dbLoadWithFallback();
+    const [balanceRaw, reservedWithdraw] = await Promise.all([
       getAccountBalance(),
       import('../../automation/profit-withdraw.js').then(m => m.getTotalReserved()).catch(() => 0),
-      getRecentLossStocks(14), // 14일 이내 실손실 종목 재진입 금지 (수수료만 있는 경우 제외)
-      getRecentManuallySoldStocks(24), // CEO 수동 매도 후 24시간 재진입 금지
     ]);
     const balance = { ...balanceRaw, reservedWithdraw } as any;
 
@@ -96,6 +118,13 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       return [];
     }
 
+    // 방어 파킹 비활성이지만 KODEX 200이 포트폴리오에 남아있으면 즉시 청산
+    const orphanedKodex = openChains.find((c) => c.stock_code === PARK_STOCK_CODE);
+    if (orphanedKodex) {
+      logger.warn(`🧹 고아 KODEX 200 감지 → 강제 청산 (파킹 비활성, 잔여 수량: ${orphanedKodex.total_quantity})`, { component: 'TRACK_B' });
+      return buildDefenseParkExitDecisions([orphanedKodex], '방어 파킹 비활성 후 잔여 포지션 청산');
+    }
+
     // 방어 파킹 비활성 — 하락세 감지
     const { downtrend, reason: downtrendReason } = await isPortfolioInDowntrend();
     if (downtrend) {
@@ -125,7 +154,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 4. 실시간 시세 수집
     // IDLE_PARK_CODE(333940) 배치에 포함 — 별도 getCurrentPrice 제거로 rate limit 최적화
     const chainStockCodes = openChains.map((c) => c.stock_code);
-    const allStockCodes = [...new Set([...stockCodes, ...chainStockCodes, PARK_STOCK_CODE, IDLE_PARK_CODE])];
+    const allStockCodes = [...new Set([...stockCodes, ...chainStockCodes, PARK_STOCK_CODE, ...IDLE_PARK_CODES])];
     const livePrices = await getBatchPrices(allStockCodes);
 
     // 333940 캐시 매 파이프라인마다 최신화 (배치 결과 직접 활용 — 별도 API 호출 0건)
@@ -144,20 +173,24 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 문제: 현금 0 + 전부 파킹 ETF → 매수 결정 없음 → hasBuyDecision=false
     //       → 파킹 해제 안 됨 → 현금 계속 0 → 자동매매 불가 (무한 데드락)
     // 해결: 파킹 ETF 평가금액을 실효 현금에 포함 → 매수 결정 생성 → 파킹 해제 트리거
-    const _idleParkChain = openChains.find((c) => c.stock_code === IDLE_PARK_CODE && Number(c.total_quantity) > 0);
-    const _parkCurrentPrice = _idleParkPriceCache.price > 0
-      ? _idleParkPriceCache.price
-      : (livePrices.get(IDLE_PARK_CODE)?.currentPrice ?? 0);
-    const _idleParkValue = _idleParkChain
-      ? (_parkCurrentPrice > 0
-          ? _parkCurrentPrice * Number(_idleParkChain.total_quantity)
-          : Number(_idleParkChain.avg_buy_price ?? 0) * Number(_idleParkChain.total_quantity))
-      : 0;
+    const _idleParkChains = openChains.filter((c) => IDLE_PARK_CODE_SET.has(c.stock_code) && Number(c.total_quantity) > 0);
+    const _idleParkValue = _idleParkChains.reduce((sum, chain) => {
+      const qty = Number(chain.total_quantity) || 0;
+      if (qty <= 0) return sum;
+      const currentPrice = chain.stock_code === IDLE_PARK_CODE
+        ? (_idleParkPriceCache.price > 0
+            ? _idleParkPriceCache.price
+            : (livePrices.get(chain.stock_code)?.currentPrice ?? 0))
+        : (livePrices.get(chain.stock_code)?.currentPrice ?? 0);
+      const fallbackPrice = Number(chain.avg_buy_price ?? 0);
+      const usedPrice = currentPrice > 0 ? currentPrice : fallbackPrice;
+      return sum + usedPrice * qty;
+    }, 0);
     const _rawOrderableCash = Math.max(0, balance.orderableCash - ((balance as any).reservedWithdraw ?? 0));
     // 실효 가용 현금 = 주문가능현금 + 파킹 ETF 평가금액 (파킹 해제 시 즉시 사용 가능)
     const effectiveCashWithPark = _rawOrderableCash + _idleParkValue;
     if (_idleParkValue > 0) {
-      logger.info(`💰 파킹 ETF 평가금액 포함: ${_idleParkValue.toLocaleString()}원 (${_idleParkChain!.total_quantity}주 @${_parkCurrentPrice.toLocaleString()}원) → 실효현금 ${effectiveCashWithPark.toLocaleString()}원`, { component: 'TRACK_B' });
+      logger.info(`💰 파킹 ETF 평가금액 포함: ${_idleParkValue.toLocaleString()}원 (파킹 ${_idleParkChains.length}종목) → 실효현금 ${effectiveCashWithPark.toLocaleString()}원`, { component: 'TRACK_B' });
     }
 
     // 가격 캐싱 — 대시보드에서 API 실패 시 fallback용
@@ -202,7 +235,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     let hasBuyCandidates = scores.some(
       (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[mode].buyThreshold && (s.confidence ?? 1) >= 0.6,
     );
-    const hasOpenPositions = openChains.some((c) => c.stock_code !== IDLE_PARK_CODE && Number(c.total_quantity) > 0);
+    const hasOpenPositions = openChains.some((c) => !IDLE_PARK_CODE_SET.has(c.stock_code) && Number(c.total_quantity) > 0);
     if (!hasBuyCandidates) {
       logger.info(`⏭️ 매수 후보 없음 → KIS 관심종목 재동기화 + 종목 확장 (보유종목 ${hasOpenPositions ? '있음' : '없음'})`, { component: 'TRACK_B' });
       // 매수 후보 0개 → KIS 관심종목 즉시 재동기화 후 현재 사이클에 즉시 편입
@@ -276,6 +309,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         livePrices,
         openChains,
         balance,
+        idleParkValue: _idleParkValue,
       });
 
       if (technicalsSummary.length > 0) {
@@ -440,7 +474,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
       decisions = decisions.filter((d) => {
         if (!['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action)) return true;
-        if (d.stock_code === IDLE_PARK_CODE || d.stock_code === PARK_STOCK_CODE) return true;
+        if (IDLE_PARK_CODE_SET.has(d.stock_code) || d.stock_code === PARK_STOCK_CODE) return true;
 
         const chain = openChains.find((c) => c.stock_code === d.stock_code);
         if (!chain?.avg_buy_price) return true;
@@ -481,15 +515,13 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     //   - KODEX 200은 하락장 방어용으로만 사용 (defense-park.ts)
     // ─────────────────────────────────────────────────────────────────
     if (mode !== 'SCALPING') {
-      const hasBuyDecision = decisions.some((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
-      const alreadyIdleParked = openChains.some((c) => c.stock_code === IDLE_PARK_CODE && Number(c.total_quantity) > 0);
+      const alreadyIdleParked = openChains.some((c) => IDLE_PARK_CODE_SET.has(c.stock_code) && Number(c.total_quantity) > 0);
       const orderableCash = Math.max(0, balance.orderableCash - ((balance as any).reservedWithdraw ?? 0));
       const totalAssets = balance.totalEvalAmount + orderableCash;
-      const idleCashPct = totalAssets > 0 ? (orderableCash / totalAssets) * 100 : 0;
 
       // 파킹 진입: 매수 결정 후 남은 현금이 5% 초과 → 머니마켓 ETF 자동 주차
       const plannedBuyCash = decisions
-        .filter((d) => (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && d.stock_code !== IDLE_PARK_CODE)
+        .filter((d) => (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && !IDLE_PARK_CODE_SET.has(d.stock_code))
         .reduce((sum, d) => sum + (d.limit_price ?? 0) * (d.quantity ?? 0), 0);
       const cashAfterBuys = Math.max(0, orderableCash - plannedBuyCash);
       // totalDeposit이 가장 정확한 총자산 (D+2 미결제 포함)
@@ -529,25 +561,31 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       }
 
       // 파킹 해제: 머니마켓 ETF 보유 중 + 실제 매수 신호 발생 → 파킹 매도 후 재투자
+      // hasBuyDecision을 파킹 ETF 추가 후 재계산 (파킹 ETF BUY는 제외)
+      const hasBuyDecision = decisions.some(
+        (d) => (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && !IDLE_PARK_CODE_SET.has(d.stock_code),
+      );
       if (hasBuyDecision && alreadyIdleParked) {
-        const parkChain = openChains.find((c) => c.stock_code === IDLE_PARK_CODE);
-        if (parkChain && parkChain.total_quantity > 0) {
-          const cachedPrice = _idleParkPriceCache.price;
+        const parkChains = openChains.filter((c) => IDLE_PARK_CODE_SET.has(c.stock_code) && Number(c.total_quantity) > 0);
+        for (const parkChain of parkChains) {
+          const livePrice = livePrices.get(parkChain.stock_code)?.currentPrice ?? 0;
+          const cachedPrice = parkChain.stock_code === IDLE_PARK_CODE ? _idleParkPriceCache.price : 0;
           const fallbackPrice = Number(parkChain.avg_buy_price ?? 0);
-          const priceForLog = cachedPrice > 0 ? cachedPrice : fallbackPrice;
+          const priceForLog = livePrice > 0 ? livePrice : (cachedPrice > 0 ? cachedPrice : fallbackPrice);
           const parkPnlPct = priceForLog > 0 && fallbackPrice > 0
             ? ((priceForLog - fallbackPrice) / fallbackPrice) * 100
             : 0;
+          const parkName = parkChain.stock_code === IDLE_PARK_CODE ? IDLE_PARK_NAME : parkChain.stock_code;
           logger.info(
-            `🔄 머니마켓 파킹 해제: 매수 신호 → ${IDLE_PARK_NAME} ${parkChain.total_quantity}주 시장가 매도 (수익률 ${parkPnlPct.toFixed(2)}%)`,
+            `🔄 파킹 해제: 매수 신호 → ${parkName}(${parkChain.stock_code}) ${parkChain.total_quantity}주 시장가 매도 (수익률 ${parkPnlPct.toFixed(2)}%)`,
             { component: 'TRACK_B' },
           );
           decisions.unshift({
             action: 'FORCE_CLOSE',
-            stock_code: IDLE_PARK_CODE,
+            stock_code: parkChain.stock_code,
             quantity: parkChain.total_quantity,
             price_type: 'MARKET',
-            reasoning: `머니마켓 파킹 해제: 매수 신호 발생 → ${IDLE_PARK_NAME} 청산 후 재투자 (보유 수익 ${parkPnlPct.toFixed(2)}%)`,
+            reasoning: `파킹 해제: 매수 신호 발생 → ${parkName}(${parkChain.stock_code}) 청산 후 재투자 (보유 수익 ${parkPnlPct.toFixed(2)}%)`,
             confidence: 0.95,
           });
         }
@@ -615,7 +653,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // (Gemini 전부 HOLD → 기술 폴백 BUY도 없는 경우 커버)
     if (hasBuyCandidates) {
       const hasActualBuyDecision = decisions.some(
-        (d) => ['BUY', 'AVERAGE_DOWN'].includes(d.action) && d.stock_code !== IDLE_PARK_CODE,
+        (d) => ['BUY', 'AVERAGE_DOWN'].includes(d.action) && !IDLE_PARK_CODE_SET.has(d.stock_code),
       );
       if (!hasActualBuyDecision) {
         logger.info('⏭️ 매수 후보 있으나 실제 BUY 결정 없음 → KIS 관심종목 재동기화', { component: 'TRACK_B' });
@@ -643,7 +681,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       const _params = STRATEGY_PARAMS[mode];
       const budgetPerBuy = Math.floor(orderableCashNow / _params.splitCount);
       for (const d of decisions) {
-        if ((d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && (d.limit_price ?? 0) > 0 && d.stock_code !== IDLE_PARK_CODE) {
+        if ((d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && (d.limit_price ?? 0) > 0 && !IDLE_PARK_CODE_SET.has(d.stock_code)) {
           const price = d.limit_price!;
           const maxQtyByRisk = Math.floor(config.risk.maxPositionKrw / price);
           const targetQty = Math.min(maxQtyByRisk, Math.max(1, Math.floor(budgetPerBuy / price)));

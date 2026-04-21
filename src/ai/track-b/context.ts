@@ -23,26 +23,29 @@ export async function buildTrackBContext(params: {
   livePrices: Map<string, CurrentPrice>;
   openChains: TransactionChain[];
   balance: AccountBalance;
+  idleParkValue?: number;
 }): Promise<string> {
-  const { mode, scores, livePrices, openChains, balance } = params;
+  const { mode, scores, livePrices, openChains, balance, idleParkValue = 0 } = params;
   const strategyParams = STRATEGY_PARAMS[mode];
 
   // 예산 계산
   // totalDeposit(예수금총액) vs orderableCash(주문가능현금): 매도 D+2 결제 지연으로 주문가능현금이
   // 예수금보다 낮을 수 있음 → 예수금의 85%와 주문가능현금 중 큰 값을 실효 예산으로 사용
+  // idleParkValue: 파킹 ETF 평가금액 — BUY 신호 발생 시 즉시 청산 가능하므로 가용 현금에 포함
   const reserved = (balance as any).reservedWithdraw ?? 0;
-  const effectiveCash = Math.max(balance.orderableCash, Math.floor(balance.totalDeposit * 0.85));
+  const effectiveCash = Math.max(balance.orderableCash + idleParkValue, Math.floor(balance.totalDeposit * 0.85));
   const availableCash = Math.max(0, effectiveCash - reserved);
   const budgetPerStock = Math.floor(availableCash / strategyParams.splitCount);
 
   // 리스크 한도 정보
+  const parkNote = idleParkValue > 0 ? `\n- 파킹 ETF 평가금액 (매수 시 자동 청산): ${idleParkValue.toLocaleString()}원` : '';
   const riskInfo = `## 리스크 한도
 - 종목당 최대 투자: ${config.risk.maxPositionKrw.toLocaleString()}원
 - 하루 최대 손실: ${config.risk.maxDailyDrawdownKrw.toLocaleString()}원
 - 총 투자 비율 상한: ${config.risk.maxTotalInvestedPct}%
 - 현재 예수금: ${balance.orderableCash.toLocaleString()}원
-- 인출 예약금 (재투자 불가): ${reserved.toLocaleString()}원
-- 실제 투자가능금: ${availableCash.toLocaleString()}원
+- 인출 예약금 (재투자 불가): ${reserved.toLocaleString()}원${parkNote}
+- 실제 투자가능금: ${availableCash.toLocaleString()}원 (파킹 ETF 포함)
 - 현재 투자금: ${balance.totalEvalAmount.toLocaleString()}원
 - 오늘 손익: ${balance.totalProfitLoss.toLocaleString()}원
 

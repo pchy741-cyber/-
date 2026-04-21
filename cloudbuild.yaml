@@ -41,12 +41,15 @@ steps:
       - '--port'
       - '8080'
       - '--allow-unauthenticated'
+      - '--update-env-vars'
+      - 'GEMINI_API_KEY=${_GEMINI_API_KEY}'
 
 substitutions:
   _REGION: asia-northeast3
   _REPO: cloud-run-source-deploy
   _SERVICE: auto-ai-bot
-  _TAG: v0-60-0
+  _TAG: v0-61-3
+  _GEMINI_API_KEY: AIzaSyBsTcHTcYGPrJqcFgrRbPDs-7Opmax1uhA
 
 options:
   logging: CLOUD_LOGGING_ONLY

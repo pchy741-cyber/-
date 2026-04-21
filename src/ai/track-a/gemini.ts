@@ -12,7 +12,7 @@ const VERTEX_PROJECT_ID = 'quantops-trading';
 const VERTEX_LOCATION = 'us-central1';
 const VERTEX_MODEL = 'gemini-2.0-flash';
 const VERTEX_ENDPOINT = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${VERTEX_LOCATION}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
-const AI_STUDIO_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent`;
+const AI_STUDIO_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent`;
 
 // Lazy init — 키 변경 시 자동 반영
 function getGenAI(): GoogleGenerativeAI | null {
@@ -109,19 +109,7 @@ ${additionalSources ?? '추가 소스 없음'}
 
   let responseText: string;
   if (USE_VERTEX_AI) {
-    try {
-      responseText = await callVertexAI(systemPrompt, userMessage);
-    } catch (vertexErr) {
-      const errStr = String(vertexErr);
-      const freeKey = config.ai.geminiKey || process.env.GEMINI_API_KEY;
-      if (freeKey && freeKey.length > 10 && !freeKey.startsWith('your_') &&
-          (errStr.includes('429') || errStr.includes('quota') || errStr.includes('RESOURCE_EXHAUSTED'))) {
-        logger.warn(`⚠️ Vertex AI 할당량 초과 → AI Studio 무료 키로 재시도`, { component: 'TRACK_A' });
-        responseText = await callAiStudio(freeKey, systemPrompt, userMessage);
-      } else {
-        throw vertexErr;
-      }
-    }
+    responseText = await callVertexAI(systemPrompt, userMessage);
   } else {
     responseText = await callGoogleAI(genAI!, systemPrompt, userMessage);
   }
