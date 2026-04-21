@@ -385,6 +385,7 @@ function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast }: { i
     setDeleting(id);
     try {
       await fetch(`/api/settings/insights/${id}`, { method: 'DELETE' });
+      setLiveInsights((prev) => (prev ?? []).filter((i) => i.id !== id));
       onRefresh();
     } finally { setDeleting(null); }
   };
@@ -1168,6 +1169,30 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   return (
     <div className="space-y-4 sm:space-y-5">
 
+      {/* ── 상단 액션 바 (항상 표시) ── */}
+      <div className="flex gap-2 justify-end flex-wrap">
+        <button
+          onClick={async () => {
+            if (!confirm('파킹 강제 해제 + KODEX 200 즉시 매도를 실행할까요?')) return;
+            try {
+              const r = await api('/release-defense-park', { method: 'POST' });
+              alert(r?.message ?? '파킹 해제 완료');
+            } catch (e: any) { alert('실패: ' + e.message); }
+          }}
+          className="px-3 py-1.5 text-xs rounded-xl bg-amber-500/20 hover:bg-amber-500/40 text-amber-300 font-semibold transition-colors whitespace-nowrap"
+        >🛡️ 파킹 해제</button>
+        <button
+          onClick={async () => { setRunningTrackA(true); try { await api('/run-track-a', { method: 'POST' }); } catch {} setTimeout(() => setRunningTrackA(false), 300000); }}
+          disabled={runningTrackA}
+          className="px-3 py-1.5 text-xs rounded-xl bg-blue-500/20 hover:bg-blue-500/40 text-blue-300 font-semibold disabled:opacity-50 transition-colors whitespace-nowrap"
+        >{runningTrackA ? '분석 중...' : '점수 갱신'}</button>
+        <button
+          onClick={async () => { setRunningTrackB(true); try { await api('/run-track-b', { method: 'POST' }); } catch {} setTimeout(() => setRunningTrackB(false), 60000); }}
+          disabled={runningTrackB}
+          className="px-3 py-1.5 text-xs rounded-xl bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 font-semibold disabled:opacity-50 transition-colors whitespace-nowrap"
+        >{runningTrackB ? '실행 중...' : '지금 실행'}</button>
+      </div>
+
       {/* ── 매매 상태 배너 ── */}
       {tradingStatus && tradingStatus.overallStatus !== 'ACTIVE' && (
         <div className={`rounded-2xl border px-4 py-3 ${
@@ -1198,30 +1223,6 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
               {tradingStatus.candidateCount > 0 && <span className="ml-2 text-emerald-400">→ {tradingStatus.candidateCount}종목 후보 있음</span>}
             </div>
           )}
-          <div className="mt-2 flex gap-2 flex-wrap">
-            <button
-              onClick={async () => {
-                setRunningTrackA(true);
-                try { await api('/run-track-a', { method: 'POST' }); } catch {}
-                setTimeout(() => setRunningTrackA(false), 300000);
-              }}
-              disabled={runningTrackA}
-              className="px-3.5 py-2 text-xs rounded-xl bg-blue-500/20 hover:bg-blue-500/40 text-blue-300 font-semibold disabled:opacity-50 transition-colors whitespace-nowrap"
-            >
-              {runningTrackA ? '분석 중...' : '점수 갱신'}
-            </button>
-            <button
-              onClick={async () => {
-                setRunningTrackB(true);
-                try { await api('/run-track-b', { method: 'POST' }); } catch {}
-                setTimeout(() => setRunningTrackB(false), 30000);
-              }}
-              disabled={runningTrackB}
-              className="px-3.5 py-2 text-xs rounded-xl bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 font-semibold disabled:opacity-50 transition-colors whitespace-nowrap"
-            >
-              {runningTrackB ? '실행 중...' : '지금 실행'}
-            </button>
-          </div>
         </div>
       )}
       {tradingStatus && tradingStatus.overallStatus === 'ACTIVE' && (
@@ -1232,30 +1233,6 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
             <span className="text-xs text-emerald-400/70">— {tradingStatus.candidateCount}종목 대기</span>
           )}
           <span className="text-[10px] text-slate-500 whitespace-nowrap">{tradingStatus.mode} · {tradingStatus.buyThreshold}점</span>
-          <div className="ml-auto flex gap-2 shrink-0">
-            <button
-              onClick={async () => {
-                setRunningTrackA(true);
-                try { await api('/run-track-a', { method: 'POST' }); } catch {}
-                setTimeout(() => setRunningTrackA(false), 300000);
-              }}
-              disabled={runningTrackA}
-              className="px-3 py-1.5 text-xs rounded-xl bg-blue-500/20 hover:bg-blue-500/40 text-blue-300 font-semibold disabled:opacity-50 transition-colors whitespace-nowrap"
-            >
-              {runningTrackA ? '분석 중...' : '점수 갱신'}
-            </button>
-            <button
-              onClick={async () => {
-                setRunningTrackB(true);
-                try { await api('/run-track-b', { method: 'POST' }); } catch {}
-                setTimeout(() => setRunningTrackB(false), 30000);
-              }}
-              disabled={runningTrackB}
-              className="px-3 py-1.5 text-xs rounded-xl bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 font-semibold disabled:opacity-50 transition-colors whitespace-nowrap"
-            >
-              {runningTrackB ? '실행 중...' : '지금 실행'}
-            </button>
-          </div>
         </div>
       )}
 
@@ -1469,6 +1446,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="text-sm font-bold truncate">{displayName}</span>
                           <span className="text-[10px] bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded font-medium">{ch.strategy_mode}</span>
+                          {ch.stock_code === '069500' && <span className="text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/40 px-1.5 py-0.5 rounded font-bold">🛡️ 파킹</span>}
                         </div>
                         <div className="text-[11px] text-slate-500 mt-0.5">매수평단 {fmtWon(avgPrice)} · {fmt(qty)}주</div>
                       </div>
