@@ -186,9 +186,9 @@ export function technicalFallbackDecisions(params: {
     const buyThreshold = strategyParams.buyThreshold;
 
     if (mode !== 'SCALPING' && tech.trendStrength === 'WEAK') {
-      // SCALPING만 예외 — SWING/DEFENSE 모두 횡보장 진입 차단 (whipsaw 방지)
-      if (aiScore < buyThreshold + 5) {
-        logger.info(`  ⏸️ ${stock.stock_code}: ADX=${tech.adx14.toFixed(0)} 횡보(WEAK) → AI=${aiScore} < ${buyThreshold + 5}, 진입 스킵`, { component: 'TRACK_B' });
+      // SCALPING만 예외 — SWING/DEFENSE 횡보장 진입 억제 (임계치 그대로, +5 제거)
+      if (aiScore < buyThreshold) {
+        logger.info(`  ⏸️ ${stock.stock_code}: ADX=${tech.adx14.toFixed(0)} 횡보(WEAK) → AI=${aiScore} < ${buyThreshold}, 진입 스킵`, { component: 'TRACK_B' });
         continue;
       }
     }
@@ -199,8 +199,11 @@ export function technicalFallbackDecisions(params: {
     // AI 점수 70 이상일 때만 예외 허용 (강한 확신 = 추세 역행 허용)
     if (mode === 'SWING' || mode === 'DEFENSE') {
       const sma20val = tech.sma20;
-      if (price.currentPrice < sma20val && aiScore < 70) {
-        logger.info(`  ⬇️ ${stock.stock_code}: 현재가 ${price.currentPrice} < SMA20 ${sma20val.toFixed(0)} 하락추세 → 진입 차단 (AI=${aiScore})`, { component: 'TRACK_B' });
+      // AI 있으면 70점 이상 확신 필요, AI 없으면 기술 점수 65점 이상으로 대체
+      const sma20AiThreshold = aiScore > 0 ? 70 : 999; // AI 없을 땐 기술 점수로만 판단
+      const sma20TechOk = tech.score >= 65 && tech.macdCrossover === 'BULLISH_CROSS';
+      if (price.currentPrice < sma20val && aiScore < sma20AiThreshold && !sma20TechOk) {
+        logger.info(`  ⬇️ ${stock.stock_code}: 현재가 < SMA20 하락추세 → 진입 차단 (AI=${aiScore}, tech=${tech.score})`, { component: 'TRACK_B' });
         continue;
       }
     }

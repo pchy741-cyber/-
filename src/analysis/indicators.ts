@@ -531,7 +531,7 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   // ADX < 20 = 방향성 없음 = 저점에서 사서 저점에서 팔다 끝나는 패턴
   // ADX > 30 = 강한 추세 = 추세 추종 진입 최적
   if (trendStrength === 'WEAK') {
-    if (score > 0) score = Math.floor(score * 0.45); // 55% 감쇄 — 횡보장 진입 강력 억제 (기존 30%)
+    if (score > 0) score = Math.floor(score * 0.6); // 40% 감쇄 — 반등 포착 허용 (과도한 억제 완화)
   } else if (trendStrength === 'STRONG') {
     if (score > 0) score = Math.floor(score * 1.35); // 강한 추세 35% 증폭 (기존 20%)
   }
