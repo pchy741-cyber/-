@@ -1912,10 +1912,10 @@ function isGarbledName(name: string): boolean {
 function toDisplayName(name: unknown, code?: string): string {
   const n = String(name ?? '').trim();
   const known = getKnownStockName(code);
-  if (!n) return known ?? '종목명 확인중';
-  if (code && n === code) return known ?? '종목명 확인중';
-  if (/^[0-9]{6}$/.test(n)) return known ?? '종목명 확인중';
-  if (isGarbledName(n)) return known ?? '종목명 확인중';
+  if (!n) return known ?? (code ? String(code) : '종목명 확인중');
+  if (code && n === code) return known ?? String(code);
+  if (/^[0-9]{6}$/.test(n)) return known ?? n;
+  if (isGarbledName(n)) return known ?? (code ? String(code) : n);
   return n;
 }
 

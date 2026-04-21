@@ -246,7 +246,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // AI 컨텍스트 구성 (스코어가 있을 때만 + AI 호출 필요 시)
     if (hasScores && (hasOpenPositions || hasBuyCandidates)) {
-      aiWasCalled = true;
+      // aiWasCalled은 실제 호출 시도 후 설정 — 캐시 스킵이면 false → 기술적 폴백 허용
       const technicalsSummary: string[] = [];
       const topStocks = scores.slice(0, 5).map((s) => s.stock_code);
       for (const code of topStocks) {
@@ -316,6 +316,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       const hasClaudeKey = config.ai.anthropicKey && !config.ai.anthropicKey.startsWith('your_');
       const cachedClaudeStatus = getAiStatus().claude;
       if (hasClaudeKey && cachedClaudeStatus !== 'no_credit') {
+        aiWasCalled = true;
         try {
           decisions = await runClaudeExecution(execParams);
           if (decisions.length > 0) setActiveEngine('claude');
@@ -329,6 +330,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       // 6-2. Claude 실패 → Gemini 매매 판단 (2순위) — 할당량 소진 캐시 확인 후 스킵
       const cachedGeminiStatus = getAiStatus().gemini;
       if (decisions.length === 0 && cachedGeminiStatus !== 'quota') {
+        aiWasCalled = true;
         try {
           decisions = await runGeminiExecution(execParams);
           if (decisions.length > 0) setActiveEngine('gemini');
@@ -336,7 +338,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           logger.warn(`⚠️ Gemini 실행 실패: ${geminiErr}`, { component: 'TRACK_B' });
         }
       } else if (decisions.length === 0 && cachedGeminiStatus === 'quota') {
-        logger.info(`⏭️ Gemini 할당량 소진 캐시 → 호출 스킵 (안정 모드)`, { component: 'TRACK_B' });
+        logger.info(`⏭️ Gemini 할당량 소진 캐시 → 호출 스킵 → 기술적 폴백으로 직행`, { component: 'TRACK_B' });
       }
     }
 

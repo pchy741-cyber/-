@@ -178,6 +178,31 @@ export async function isMarketRecovering(
     } catch { /* 스냅샷 없으면 스킵 */ }
   }
 
+  // 3. 파킹 1일 이상 경과 + KODEX 200이 손실 아닐 때 → 기간 만료 해제
+  if (!isMemoryMode() && parkChain) {
+    try {
+      const { rows } = await getPool().query(
+        `SELECT entered_at FROM defense_park_state WHERE is_active = TRUE ORDER BY entered_at DESC LIMIT 1`
+      );
+      if (rows.length > 0) {
+        const enteredAt = new Date(rows[0].entered_at);
+        const hoursParked = (Date.now() - enteredAt.getTime()) / (1000 * 60 * 60);
+        if (hoursParked >= 24) {
+          const price = livePrices.get(PARK_STOCK_CODE);
+          const avgBuy = Number(parkChain.avg_buy_price ?? 0);
+          const currentPx = price?.currentPrice ?? 0;
+          const pnlPct = avgBuy > 0 && currentPx > 0 ? ((currentPx - avgBuy) / avgBuy) * 100 : 0;
+          if (pnlPct >= -1.0) {
+            return {
+              recovering: true,
+              reason: `파킹 ${hoursParked.toFixed(0)}시간 경과 — 기간 만료 자동 해제 (KODEX200 ${pnlPct.toFixed(1)}%)`,
+            };
+          }
+        }
+      }
+    } catch { /* 스킵 */ }
+  }
+
   return { recovering: false, reason: '' };
 }
 

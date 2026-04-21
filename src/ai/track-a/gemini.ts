@@ -12,6 +12,7 @@ const VERTEX_PROJECT_ID = 'quantops-trading';
 const VERTEX_LOCATION = 'us-central1';
 const VERTEX_MODEL = 'gemini-2.0-flash';
 const VERTEX_ENDPOINT = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${VERTEX_LOCATION}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
+const AI_STUDIO_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent`;
 
 // Lazy init — 키 변경 시 자동 반영
 function getGenAI(): GoogleGenerativeAI | null {
@@ -106,9 +107,24 @@ ${additionalSources ?? '추가 소스 없음'}
     throw new Error('Gemini API 키 미설정 — Track A Gemini 분석 스킵');
   }
 
-  const responseText = USE_VERTEX_AI
-    ? await callVertexAI(systemPrompt, userMessage)
-    : await callGoogleAI(genAI!, systemPrompt, userMessage);
+  let responseText: string;
+  if (USE_VERTEX_AI) {
+    try {
+      responseText = await callVertexAI(systemPrompt, userMessage);
+    } catch (vertexErr) {
+      const errStr = String(vertexErr);
+      const freeKey = config.ai.geminiKey || process.env.GEMINI_API_KEY;
+      if (freeKey && freeKey.length > 10 && !freeKey.startsWith('your_') &&
+          (errStr.includes('429') || errStr.includes('quota') || errStr.includes('RESOURCE_EXHAUSTED'))) {
+        logger.warn(`⚠️ Vertex AI 할당량 초과 → AI Studio 무료 키로 재시도`, { component: 'TRACK_A' });
+        responseText = await callAiStudio(freeKey, systemPrompt, userMessage);
+      } else {
+        throw vertexErr;
+      }
+    }
+  } else {
+    responseText = await callGoogleAI(genAI!, systemPrompt, userMessage);
+  }
 
   try {
     // Gemini가 마크다운 코드블록으로 JSON을 감쌀 수 있음 — 추출 후 파싱
@@ -182,5 +198,32 @@ async function callVertexAI(systemPrompt: string, userMessage: string): Promise<
   if (!text) {
     throw new Error('Vertex AI 응답에 텍스트가 없습니다');
   }
+  return text;
+}
+
+// ── Google AI Studio REST 경로 (무료 API 키, Vertex 할당량 초과 시 fallback) ──
+async function callAiStudio(apiKey: string, systemPrompt: string, userMessage: string): Promise<string> {
+  const body = {
+    system_instruction: { parts: [{ text: systemPrompt }] },
+    contents: [{ role: 'user', parts: [{ text: userMessage }] }],
+    generationConfig: { temperature: 0.1 },
+  };
+
+  const response = await fetch(`${AI_STUDIO_ENDPOINT}?key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`AI Studio API 오류 (${response.status}): ${err.slice(0, 200)}`);
+  }
+
+  const data = (await response.json()) as {
+    candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+  };
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) throw new Error('AI Studio 응답에 텍스트 없음');
   return text;
 }
