@@ -140,6 +140,26 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       logger.warn(`💰 333940 캐시 만료(30분 초과) — 파킹 스킵`, { component: 'TRACK_B' });
     }
 
+    // ── 파킹 ETF 평가금액 사전 계산 (effectiveCash 포함 — 데드락 방지) ──
+    // 문제: 현금 0 + 전부 파킹 ETF → 매수 결정 없음 → hasBuyDecision=false
+    //       → 파킹 해제 안 됨 → 현금 계속 0 → 자동매매 불가 (무한 데드락)
+    // 해결: 파킹 ETF 평가금액을 실효 현금에 포함 → 매수 결정 생성 → 파킹 해제 트리거
+    const _idleParkChain = openChains.find((c) => c.stock_code === IDLE_PARK_CODE && Number(c.total_quantity) > 0);
+    const _parkCurrentPrice = _idleParkPriceCache.price > 0
+      ? _idleParkPriceCache.price
+      : (livePrices.get(IDLE_PARK_CODE)?.currentPrice ?? 0);
+    const _idleParkValue = _idleParkChain
+      ? (_parkCurrentPrice > 0
+          ? _parkCurrentPrice * Number(_idleParkChain.total_quantity)
+          : Number(_idleParkChain.avg_buy_price ?? 0) * Number(_idleParkChain.total_quantity))
+      : 0;
+    const _rawOrderableCash = Math.max(0, balance.orderableCash - ((balance as any).reservedWithdraw ?? 0));
+    // 실효 가용 현금 = 주문가능현금 + 파킹 ETF 평가금액 (파킹 해제 시 즉시 사용 가능)
+    const effectiveCashWithPark = _rawOrderableCash + _idleParkValue;
+    if (_idleParkValue > 0) {
+      logger.info(`💰 파킹 ETF 평가금액 포함: ${_idleParkValue.toLocaleString()}원 (${_idleParkChain!.total_quantity}주 @${_parkCurrentPrice.toLocaleString()}원) → 실효현금 ${effectiveCashWithPark.toLocaleString()}원`, { component: 'TRACK_B' });
+    }
+
     // 가격 캐싱 — 대시보드에서 API 실패 시 fallback용
     try {
       const { cachePrice } = await import('../../cache/redis.js');
@@ -330,7 +350,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         const strongBuyCandidates = scores.filter(
           (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[mode].buyThreshold && (s.confidence ?? 1) >= 0.6,
         );
-        const effectiveCashForHold = Math.max(balance.orderableCash, Math.floor(balance.totalDeposit * 0.85));
+        const effectiveCashForHold = Math.max(effectiveCashWithPark, Math.floor(balance.totalDeposit * 0.85));
         const orderableCashForHold = Math.max(0, effectiveCashForHold - ((balance as any).reservedWithdraw ?? 0));
         const totalAssetsForHold = balance.totalEvalAmount + orderableCashForHold;
 
@@ -376,7 +396,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         );
       } else {
         // ── AI 미호출: 스코어 없음 / 보유·매수후보 없음 → 기술적 폴백 전체 실행 ──
-        const effectiveCashForFallback = Math.max(balance.orderableCash, Math.floor(balance.totalDeposit * 0.85));
+        const effectiveCashForFallback = Math.max(effectiveCashWithPark, Math.floor(balance.totalDeposit * 0.85));
         const orderableCashForFallback = Math.max(0, effectiveCashForFallback - ((balance as any).reservedWithdraw ?? 0));
         const totalAssetsForFallback = balance.totalEvalAmount + orderableCashForFallback;
         decisions = technicalFallbackDecisions({
@@ -474,13 +494,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       const totalPortfolio = Math.max(totalAssets, balance.totalDeposit ?? totalAssets);
       const idlePctAfterBuys = totalPortfolio > 0 ? (cashAfterBuys / totalPortfolio) * 100 : 0;
 
-      // 현재 파킹된 ETF 평가금액 계산 (이미 많이 파킹돼 있으면 추가 불필요)
-      const idleParkChain = openChains.find((c) => c.stock_code === IDLE_PARK_CODE);
-      const cachedParkPrice = _idleParkPriceCache.price > 0 ? _idleParkPriceCache.price : 0;
-      const idleParkValue = idleParkChain
-        ? (cachedParkPrice || Number(idleParkChain.avg_buy_price ?? 0)) * Number(idleParkChain.total_quantity)
-        : 0;
-      const idleParkPct = totalPortfolio > 0 ? (idleParkValue / totalPortfolio) * 100 : 0;
+      // 현재 파킹된 ETF 평가금액 — 조기 계산된 _idleParkValue 재사용
+      const idleParkPct = totalPortfolio > 0 ? (_idleParkValue / totalPortfolio) * 100 : 0;
       // 파킹 잔액이 전체의 40% 이하일 때만 추가 파킹 (무한 파킹 방지)
       const canParkMore = idleParkPct < 40;
 
@@ -525,7 +540,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
             `🔄 머니마켓 파킹 해제: 매수 신호 → ${IDLE_PARK_NAME} ${parkChain.total_quantity}주 시장가 매도 (수익률 ${parkPnlPct.toFixed(2)}%)`,
             { component: 'TRACK_B' },
           );
-          decisions.push({
+          decisions.unshift({
             action: 'FORCE_CLOSE',
             stock_code: IDLE_PARK_CODE,
             quantity: parkChain.total_quantity,

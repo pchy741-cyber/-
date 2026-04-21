@@ -400,8 +400,8 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   const rsiValues = rsi(closesAsc, 14);
   const rsi14 = rsiValues[rsiValues.length - 1] ?? 50;
 
-  // MACD: Linda Raschke 세팅 (3-10-16) — 표준(12-26-9)보다 모멘텀 변화 빠르게 포착
-  const macdResult = macd(closesAsc, 3, 10, 16);
+  // MACD: 표준 (12-26-9) — 3-10-16은 signal>slow 구조상 크로스오버 과다 발생
+  const macdResult = macd(closesAsc, 12, 26, 9);
   const macdHist = macdResult.histogram[macdResult.histogram.length - 1] ?? 0;
   const macdPrev = macdResult.histogram[macdResult.histogram.length - 2] ?? 0;
   const macdCross =
@@ -525,10 +525,7 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
     score += 8;
   }
 
-  // ★ VWAP 위 + 상승 추세 보너스 (기관/세력 매수세 확인) — VWAP는 아래서 재사용
-  // (실제 값은 아래 vwapValues에서 계산, 여기선 근사치로 sma20 대용)
-  if (current > sma20Now && sma20Now > sma60Now) score += 8;   // 중기 추세 위 = 추세 추종 진입
-  else if (current < sma20Now && sma20Now < sma60Now) score -= 8;
+  // SMA 추세 점수는 위(line 492-495)에서 이미 반영 — 중복 제거
 
   // ★ ADX 필터 (횡보장 진입 강력 억제 — 저점 박스권 매매 방지)
   // ADX < 20 = 방향성 없음 = 저점에서 사서 저점에서 팔다 끝나는 패턴

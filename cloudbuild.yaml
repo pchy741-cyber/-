@@ -46,7 +46,7 @@ substitutions:
   _REGION: asia-northeast3
   _REPO: cloud-run-source-deploy
   _SERVICE: auto-ai-bot
-  _TAG: v0-59-5
+  _TAG: v0-59-8
 
 options:
   logging: CLOUD_LOGGING_ONLY

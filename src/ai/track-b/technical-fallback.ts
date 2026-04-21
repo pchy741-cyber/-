@@ -98,13 +98,14 @@ export function technicalFallbackDecisions(params: {
     // 트레일링 스톱: PROFIT_TAKING(부분 익절 후) 남은 수량 보호
     // pnlPct < 0.5%: 0%~+0.5% 구간 (수익 소멸) 및 0%~-2% 구간 (손절 전 조기 청산) 모두 포함
     // 이전 버그: pnlPct > 0 조건으로 인해 0% ~ -2% 구간에서 트리거 없었음 → 수익 반납 후 손실 확대
-    if (chain.status === 'PROFIT_TAKING' && pnlPct < 0.5) {
+    if (chain.status === 'PROFIT_TAKING' && pnlPct < -0.5) {
+      // -0.5% 이하일 때만 트리거 (0.5% → -0.5%: 원금 소폭 손실 시 청산, 일반 변동성 허용)
       decisions.push({
         action: 'FORCE_CLOSE',
         stock_code: chain.stock_code,
         quantity: chain.total_quantity,
         price_type: 'MARKET',
-        reasoning: `트레일링 스톱: 익절 후 수익 소멸 ${pnlPct.toFixed(1)}% → +0.5% 이하 (원금 보호 조기 청산)`,
+        reasoning: `트레일링 스톱: 익절 후 수익 반납 ${pnlPct.toFixed(1)}% → -0.5% 이하 (원금 보호 청산)`,
         confidence: 0.85,
       });
       processedSellCodes.add(chain.stock_code);
@@ -184,9 +185,8 @@ export function technicalFallbackDecisions(params: {
     const aiScore = aiScoreMap.get(stock.stock_code) ?? 0;
     const buyThreshold = strategyParams.buyThreshold;
 
-    if (mode !== 'SCALPING' && mode !== 'SWING' && tech.trendStrength === 'WEAK') {
-      // SWING은 ADX 횡보 필터 제외 — 약세장에서도 기회 포착
-      // DEFENSE는 ADX WEAK + AI 임계치 미달 시만 차단
+    if (mode !== 'SCALPING' && tech.trendStrength === 'WEAK') {
+      // SCALPING만 예외 — SWING/DEFENSE 모두 횡보장 진입 차단 (whipsaw 방지)
       if (aiScore < buyThreshold + 5) {
         logger.info(`  ⏸️ ${stock.stock_code}: ADX=${tech.adx14.toFixed(0)} 횡보(WEAK) → AI=${aiScore} < ${buyThreshold + 5}, 진입 스킵`, { component: 'TRACK_B' });
         continue;
