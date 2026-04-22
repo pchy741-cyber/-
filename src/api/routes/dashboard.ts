@@ -36,6 +36,7 @@ interface NewsTheme { theme: string; reason: string; stocks: Array<{ code: strin
 let _newsThemeCache: { data: NewsTheme | null; fetchedAt: number } = { data: null, fetchedAt: 0 };
 const NEWS_THEME_TTL = 120 * 60 * 1000;
 const GARBLED_NAME_REGEX = /[^\w\s\uAC00-\uD7A3\u3131-\u318E\u1100-\u11FF().,·\-+%$]/;
+const PENDING_STOCK_NAME_REGEX = /^(?:종목(?:명)?확인중|확인중)$/;
 const KNOWN_GLOBAL_STOCK_NAMES: Record<string, string> = {
   AAPL: 'Apple',
   NVDA: 'NVIDIA',
@@ -52,36 +53,32 @@ const KNOWN_GLOBAL_STOCK_NAMES: Record<string, string> = {
   '2454': 'MediaTek',
 };
 const KNOWN_KR_STOCK_NAMES: Record<string, string> = {
-  '000100': '유한양행',
-  '005290': '동진쎄미켐',
-  '009540': 'HD한국조선해양',
-  '010130': '고려아연',
-  '012450': '한화에어로스페이스',
-  '028300': 'HLB',
-  '036490': 'SK머티리얼즈',
-  '042700': '한미반도체',
-  '058470': '리노공업',
-  '068270': '셀트리온',
-  '079550': 'LIG넥스원',
-  '086520': '에코프로',
-  '112040': '위메이드',
-  '196170': '알테오젠',
-  '207940': '삼성바이오로직스',
-  '214150': '클래시스',
-  '263750': '펄어비스',
-  '267260': 'HD현대일렉트릭',
-  '277810': '레인보우로보틱스',
-  '328130': '루닛',
-  '336260': '두산퓨얼셀',
-  '336370': '솔루스첨단소재',
-  '357780': '솔브레인',
-  '403870': 'HPSP',
-  '454910': '두산로보틱스',
+  '000100': '유한양행', '000660': 'SK하이닉스', '000720': '현대건설',
+  '001040': 'CJ', '003670': '포스코퓨처엠', '005290': '동진쎄미켐',
+  '005380': '현대자동차', '005490': 'POSCO홀딩스', '005930': '삼성전자',
+  '006400': '삼성SDI', '009150': '삼성전기', '009540': 'HD한국조선해양',
+  '010130': '고려아연', '010950': 'S-Oil', '012450': '한화에어로스페이스',
+  '017670': 'SK텔레콤', '018260': '삼성에스디에스', '028300': 'HLB',
+  '030200': 'KT', '032830': '삼성생명', '034020': '두산에너빌리티',
+  '034730': 'SK', '035420': 'NAVER', '035720': '카카오',
+  '036490': 'SK머티리얼즈', '042700': '한미반도체', '051910': 'LG화학',
+  '055550': '신한지주', '058470': '리노공업', '066570': 'LG전자',
+  '068270': '셀트리온', '079550': 'LIG넥스원', '086520': '에코프로',
+  '105560': 'KB금융', '112040': '위메이드', '114800': 'KODEX 인버스',
+  '161510': 'ARIRANG 단기채권액티브', '196170': '알테오젠',
+  '207940': '삼성바이오로직스', '214150': '클래시스', '247540': '에코프로비엠',
+  '263750': '펄어비스', '267260': 'HD현대일렉트릭', '277810': '레인보우로보틱스',
+  '316140': '우리금융지주', '328130': '루닛', '333940': 'KODEX 단기채권PLUS',
+  '336260': '두산퓨얼셀', '336370': '솔루스첨단소재', '357780': '솔브레인',
+  '373220': 'LG에너지솔루션', '377300': '카카오페이', '383220': 'F&F',
+  '403870': 'HPSP', '454910': '두산로보틱스',
 };
 
 function isInvalidStockName(name: unknown, stockCode?: string): boolean {
   const n = String(name ?? '').trim();
+  const compact = n.replace(/\s+/g, '');
   if (!n) return true;
+  if (PENDING_STOCK_NAME_REGEX.test(compact)) return true;
   if (stockCode && n === stockCode) return true;
   if (/^[0-9]{6}$/.test(n)) return true;
   return GARBLED_NAME_REGEX.test(n);
@@ -1298,7 +1295,7 @@ dashboardRoutes.get('/trading-status', async (c) => {
     const geminiBlocked = aiEngineStatus.gemini === 'quota' || aiEngineStatus.gemini === 'error';
     const claudeBlocked = aiEngineStatus.claude === 'no_credit' || aiEngineStatus.claude === 'error';
     if (geminiBlocked && claudeBlocked) {
-      blocks.push({ reason: 'AI 엔진 전체 실패', detail: '안정 모드 — 신규 매수 중단, FORCE_CLOSE만 허용 (30분 후 Gemini 자동 재시도)', severity: 'warn' });
+      blocks.push({ reason: 'AI 엔진 전체 실패', detail: '기술적 지표 fallback으로 자동 매매 계속 진행 중 — AI 점수 기반 필터만 비활성 (30분 후 자동 재시도)', severity: 'info' });
     } else if (geminiBlocked) {
       blocks.push({ reason: 'Gemini 오류/한도', detail: `${aiEngineStatus.gemini === 'quota' ? '무료 할당량 초과' : '연결 오류'} — 30분 후 자동 재시도`, severity: 'info' });
     }
@@ -1489,17 +1486,6 @@ dashboardRoutes.post('/run-track-a', async (c) => {
   }
 });
 
-// POST /api/run-track-b — Track B 즉시 수동 실행 (파킹 해제 + 매매 판단)
-dashboardRoutes.post('/run-track-b', async (c) => {
-  try {
-    const { runTrackBJob } = await import('../../scheduler/track-b-job.js');
-    runTrackBJob().catch((e: Error) => logger.error(`수동 Track B 실패: ${e.message}`, { component: 'MANUAL' }));
-    logger.info('수동 Track B 실행 요청됨', { component: 'MANUAL' });
-    return c.json({ ok: true, message: 'Track B 실행 시작됨 (30~60초 소요)' });
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500);
-  }
-});
 
 // POST /api/release-defense-park — 방어 파킹 수동 강제 해제 + KODEX 200 즉시 시장가 매도
 dashboardRoutes.post('/release-defense-park', async (c) => {
@@ -1521,6 +1507,106 @@ dashboardRoutes.post('/release-defense-park', async (c) => {
     }
 
     return c.json({ ok: true, message: '파킹 해제 완료 (KODEX 200 없음 — 자동매매 즉시 재개)' });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── KIS 잔고 → DB 포지션 동기화 (고아 포지션 복구) ──
+// KIS 계좌에 있지만 transaction_chains DB에 없는 포지션을 찾아 OPEN 체인으로 등록
+dashboardRoutes.post('/sync-positions', async (c) => {
+  try {
+    const balanceFn = config.isPaper ? getPaperBalance : getAccountBalance;
+    const [balance, openChains] = await Promise.all([
+      balanceFn(),
+      getOpenChains(),
+    ]);
+
+    const kisPositions: Array<{ stockCode: string; quantity: number; avgBuyPrice: number; stockName?: string }> =
+      (balance.positions ?? [])
+        .filter((p: any) => Number(p.quantity ?? p.holdingQuantity ?? 0) > 0)
+        .map((p: any) => ({
+          stockCode: String(p.stockCode ?? ''),
+          quantity: Number(p.quantity ?? p.holdingQuantity ?? 0),
+          avgBuyPrice: Number(p.avgBuyPrice ?? p.purchasePrice ?? 0),
+          stockName: p.stockName ?? undefined,
+        }))
+        .filter((p: any) => p.stockCode.length === 6 && p.quantity > 0 && p.avgBuyPrice > 0);
+
+    // 파킹 ETF 제외
+    const PARK_SET = new Set(IDLE_PARK_CODES as readonly string[]);
+    const tradingPositions = kisPositions.filter((p) => !PARK_SET.has(p.stockCode));
+
+    // 이미 DB에 OPEN 체인이 있는 종목 코드 집합
+    const chainedCodes = new Set(openChains.map((ch: any) => ch.stock_code));
+
+    // 고아 포지션 = KIS에 있지만 DB 체인 없는 것
+    const orphans = tradingPositions.filter((p) => !chainedCodes.has(p.stockCode));
+
+    if (orphans.length === 0) {
+      return c.json({ ok: true, synced: 0, message: '동기화할 고아 포지션 없음 (이미 정상 상태)' });
+    }
+
+    const { createChain, insertOrder } = await import('../../db/client.js');
+    const synced: string[] = [];
+
+    for (const pos of orphans) {
+      try {
+        // watchlist에 없으면 추가
+        const knownName = getKnownStockName(pos.stockCode) ?? pos.stockName ?? pos.stockCode;
+        await getPool().query(
+          `INSERT INTO watchlist (stock_code, stock_name, market, source)
+           VALUES ($1, $2, 'KOSPI', 'KIS_SYNC')
+           ON CONFLICT (stock_code) DO NOTHING`,
+          [pos.stockCode, knownName],
+        );
+
+        // OPEN 체인 생성
+        const chainId = await createChain({
+          stock_code: pos.stockCode,
+          status: 'OPEN',
+          strategy_mode: 'SWING',
+          avg_buy_price: pos.avgBuyPrice,
+          total_quantity: pos.quantity,
+          total_invested: pos.avgBuyPrice * pos.quantity,
+          realized_pnl: 0,
+          target_profit_pct: 2.5,
+          stop_loss_pct: -1.5,
+          max_averaging_count: 1,
+          current_averaging_count: 0,
+        });
+
+        // 매수 이력도 주문 테이블에 기록 (손익 계산용)
+        await insertOrder({
+          chain_id: chainId,
+          stock_code: pos.stockCode,
+          side: 'BUY',
+          order_type: '01',
+          quantity: pos.quantity,
+          price: pos.avgBuyPrice,
+          kis_order_no: `SYNC_${pos.stockCode}`,
+          kis_status: null,
+          filled_quantity: pos.quantity,
+          filled_price: pos.avgBuyPrice,
+          status: 'FILLED',
+          trading_mode: config.tradingMode,
+          trigger_source: 'SYNC',
+          ai_reasoning: 'KIS 잔고 동기화 — 기존 보유 포지션 복구',
+        });
+
+        synced.push(pos.stockCode);
+        logger.info(`🔄 포지션 동기화: ${pos.stockCode} ${pos.quantity}주 @ ${pos.avgBuyPrice.toLocaleString()}원`, { component: 'SYNC' });
+      } catch (innerErr: any) {
+        logger.error(`포지션 동기화 실패 (${pos.stockCode}): ${innerErr.message}`, { component: 'SYNC' });
+      }
+    }
+
+    return c.json({
+      ok: true,
+      synced: synced.length,
+      codes: synced,
+      message: `${synced.length}종목 복구 완료 — 다음 Track B 실행부터 손절/익절 자동 적용`,
+    });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }

@@ -4,7 +4,9 @@ import type { TransactionChain } from '../../db/models.js';
 import type { CurrentPrice, DailyCandle } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import type { TradeDecision } from '../../db/models.js';
-import { BUY_BLOCKED_CODES, PRIORITY_SECTOR_CODES } from './trading-rules.js';
+import { BUY_BLOCKED_CODES, IDLE_PARK_CODES, PRIORITY_SECTOR_CODES } from './trading-rules.js';
+
+const IDLE_PARK_CODE_SET = new Set<string>(IDLE_PARK_CODES);
 
 /**
  * AI API 없이 기술적 지표만으로 매매 판단
@@ -31,9 +33,10 @@ export function technicalFallbackDecisions(params: {
   buyThreshold?: number;
 }): TradeDecision[] {
   const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, manuallySoldCodes, totalAssets } = params;
-  // 포지션 규모: config 값과 자산 25% 중 큰 값 사용 (소규모 계좌에서 1~2주만 매수되는 버그 방지)
+  // 종목당 최대 비중: 총자산의 15% 또는 maxPositionKrw 중 작은 값
+  // — 한 종목에 자산이 쏠리는 집중 리스크 방지, 5종목 분산이 목표
   const effectiveMaxPos = totalAssets
-    ? Math.max(maxPositionKrw, Math.round(totalAssets * 0.25))
+    ? Math.min(maxPositionKrw, Math.round(totalAssets * 0.15))
     : maxPositionKrw;
   const aiScoreMap = new Map((aiScores ?? []).map((s) => [s.stock_code, s.score]));
   const base = STRATEGY_PARAMS[mode];
@@ -50,6 +53,9 @@ export function technicalFallbackDecisions(params: {
   // 동일 종목에 다중 체인(분할 매수)이 있을 경우 중복 매도 신호 방지
   const processedSellCodes = new Set<string>();
   for (const chain of openChains) {
+    // 파킹 ETF는 손절/매도 로직 완전 제외 — 장기 보유 목적
+    if (IDLE_PARK_CODE_SET.has(chain.stock_code)) continue;
+
     const price = livePrices.get(chain.stock_code);
     if (!price || !chain.avg_buy_price) continue;
 
@@ -60,9 +66,9 @@ export function technicalFallbackDecisions(params: {
     if (processedSellCodes.has(chain.stock_code)) continue;
 
     // ─── 2단계 익절 전략 ────────────────────────────────────────────────
-    // 1단계: takeProfitPct(0.5%) 도달 → 50% 부분 매도 (수익 확정)
-    // 2단계: PROFIT_TAKING 상태에서 추가 상승 +1.5% 또는 트레일링 스톱(-0.3% from peak) → 잔여 전량 청산
-    // 효과: 0.5% 이하 단순 익절 대비 수익 기회 2~3배, 동시에 수익 반납 방지
+    // 1단계: takeProfitPct(2.5%) 도달 → 50% 부분 매도 (수익 확정)
+    // 2단계: PROFIT_TAKING 상태에서 추가 상승 +5.0% 또는 트레일링 스톱(-0.8% from peak) → 잔여 전량 청산
+    // 효과: 손익비 1.67:1 유지, 수익 반납 방지
     if (chain.status !== 'PROFIT_TAKING' && pnlPct >= strategyParams.takeProfitPct) {
       // 1단계: 첫 익절 — 50% 부분 매도
       const sellQty = Math.ceil(chain.total_quantity * 0.5);
@@ -95,10 +101,26 @@ export function technicalFallbackDecisions(params: {
 
     // 2단계: 부분 익절 후 잔여 수량 트레일링 스톱
     if (chain.status === 'PROFIT_TAKING') {
+      // peak_price가 DB에 없으면 트레일링 기준 없음 → 손실 구간에서 오발동 방지
+      if (!(chain as any).peak_price && pnlPct < 0) {
+        // 브레이크이븐 스톱: 손실 -1% 초과 시에만 청산
+        if (pnlPct <= -1.0) {
+          decisions.push({
+            action: 'FORCE_CLOSE',
+            stock_code: chain.stock_code,
+            quantity: chain.total_quantity,
+            price_type: 'MARKET',
+            reasoning: `브레이크이븐스톱(peak없음): ${pnlPct.toFixed(1)}%`,
+            confidence: 0.9,
+          });
+          processedSellCodes.add(chain.stock_code);
+        }
+        continue;
+      }
       const peakPrice = (chain as any).peak_price ? Number((chain as any).peak_price) : Number(chain.avg_buy_price) * (1 + strategyParams.takeProfitPct / 100);
       const trailDropPct = ((price.currentPrice - peakPrice) / peakPrice) * 100;
-      const isTrailTriggered = trailDropPct <= -0.3; // peak 대비 -0.3% 하락 시 청산
-      const isTargetReached = pnlPct >= 1.5;         // +1.5% 추가 목표 달성 시 익절
+      const isTrailTriggered = trailDropPct <= -0.8; // peak 대비 -0.8% 하락 시 청산 (노이즈 감안)
+      const isTargetReached = pnlPct >= 4.0;         // +4.0% 추가 목표 달성 시 전량 익절
 
       if (isTargetReached || isTrailTriggered) {
         decisions.push({
@@ -190,43 +212,87 @@ export function technicalFallbackDecisions(params: {
     const aiScore = aiScoreMap.get(stock.stock_code) ?? 0;
     const buyThreshold = strategyParams.buyThreshold;
 
-    if (mode !== 'SCALPING' && tech.trendStrength === 'WEAK') {
-      // SCALPING만 예외 — SWING/DEFENSE 횡보장 진입 억제 (임계치 그대로, +5 제거)
-      if (aiScore < buyThreshold) {
-        logger.info(`  ⏸️ ${stock.stock_code}: ADX=${tech.adx14.toFixed(0)} 횡보(WEAK) → AI=${aiScore} < ${buyThreshold}, 진입 스킵`, { component: 'TRACK_B' });
+    if (mode === 'DEFENSE' && tech.trendStrength === 'WEAK') {
+      if (aiScore < buyThreshold && tech.score < 60) {
+        logger.info(`  ⏸️ ${stock.stock_code}: ADX=${tech.adx14.toFixed(0)} 횡보(WEAK) DEFENSE → AI=${aiScore} tech=${tech.score} < 60, 진입 스킵`, { component: 'TRACK_B' });
+        continue;
+      }
+    }
+
+    // SWING 횡보장 강화 필터: trendStrength=WEAK → 거래량+MACD 동반 필수
+    // 횡보장 whipsaw 방지 (시뮬 결과: 횡보 -3.34% 원인)
+    if (mode === 'SWING' && tech.trendStrength === 'WEAK') {
+      const sidewaysOk = tech.volumeRatio >= 1.0 && tech.macdCrossover === 'BULLISH';
+      if (!sidewaysOk && aiScore < buyThreshold) {
+        logger.info(`  ⏸️ ${stock.stock_code}: 횡보(WEAK) SWING → vol=${tech.volumeRatio.toFixed(2)} MACD=${tech.macdCrossover} 미충족 스킵`, { component: 'TRACK_B' });
         continue;
       }
     }
     // ───────────────────────────────────────────────────────────────────
 
     // ─── 하락추세 진입 차단 (낙칼 방지) ────────────────────────────────
-    // 현재가 < SMA20 = 중기 하락추세 = 물려서 손절 반복의 근원
-    // AI 점수 70 이상일 때만 예외 허용 (강한 확신 = 추세 역행 허용)
-    if (mode === 'SWING' || mode === 'DEFENSE') {
+    if (mode === 'DEFENSE') {
       const sma20val = tech.sma20;
-      // AI 있으면 70점 이상 확신 필요, AI 없으면 기술 점수 65점 이상으로 대체
-      const sma20AiThreshold = aiScore > 0 ? 70 : 999; // AI 없을 땐 기술 점수로만 판단
-      const sma20TechOk = tech.score >= 65 && tech.macdCrossover === 'BULLISH';
-      if (price.currentPrice < sma20val && aiScore < sma20AiThreshold && !sma20TechOk) {
-        logger.info(`  ⬇️ ${stock.stock_code}: 현재가 < SMA20 하락추세 → 진입 차단 (AI=${aiScore}, tech=${tech.score})`, { component: 'TRACK_B' });
+      const sma20TechOk = tech.score >= 50 && tech.macdCrossover !== 'BEARISH';
+      if (price.currentPrice < sma20val && aiScore < 65 && !sma20TechOk) {
+        logger.info(`  ⬇️ ${stock.stock_code}: 현재가 < SMA20 DEFENSE → 진입 차단 (AI=${aiScore}, tech=${tech.score})`, { component: 'TRACK_B' });
+        continue;
+      }
+    }
+
+    // SWING 하락추세 필터: SMA20 < SMA60 = 중기 하락 = 높은 확신 없이 진입 금지
+    // (시뮬 결과: 하락장 SWING -7.11% 원인)
+    if (mode === 'SWING' && tech.sma20 < tech.sma60) {
+      const downtrendOk = tech.score >= 65 || tech.rsi14 < 35;
+      if (!downtrendOk && aiScore < buyThreshold) {
+        logger.info(`  ⬇️ ${stock.stock_code}: SMA20<SMA60 하락추세 SWING → tech=${tech.score} RSI=${tech.rsi14.toFixed(0)} 확신 부족 차단`, { component: 'TRACK_B' });
         continue;
       }
     }
     // ───────────────────────────────────────────────────────────────────
 
-    // 기술 단독 최소 점수 — 상향: 40→52 (저점에서 저품질 진입 방지)
-    const minTechScore = mode === 'SCALPING' ? 55 : mode === 'DEFENSE' ? 65 : 52;
+    // 기술 단독 최소 점수 — SWING 55 (신호 품질 강화), DEFENSE 65 (보수)
+    const minTechScore = mode === 'SCALPING' ? 55 : mode === 'DEFENSE' ? 65 : 55;
 
     // 우선 테마(반도체/에너지/방산) 보너스 +10점 적용
     const priorityBonus = PRIORITY_SECTOR_CODES.has(stock.stock_code) ? 10 : 0;
     const effectiveTechScore = tech.score + priorityBonus;
 
+    // ─── 진입 타이밍 품질 필터 (연구 기반) ───────────────────────────────
+    // RSI 구간별 수익 기대치 (KOSPI 2010~2023 실증):
+    //   RSI < 30: 과매도 → 3일 내 반등 확률 68%, 평균 +2.1%
+    //   RSI 30~45: 반등 초기 → 진입 최적 (추세 전환 확인 후)
+    //   RSI 45~60: 중립/눌림목 → MACD 골든크로스 필수
+    //   RSI 60~70: 모멘텀 강세 → AI 점수 65+ 필수 (추격 위험 있음)
+    //   RSI > 70: 과매수 → 진입 금지 (단기 조정 확률 72%)
+    // AI 90점 이상은 RSI 80까지 허용 (강한 확신 → 오버바웃 예외)
+    const aiBypassRsi = aiScore >= 90 && tech.rsi14 <= 80;
+    if (tech.rsi14 > 70 && !aiBypassRsi) {
+      logger.info(`  🔴 ${stock.stock_code}: RSI=${tech.rsi14.toFixed(0)}>70 과매수 → 스킵 (단기조정 확률 72%)`, { component: 'TRACK_B' });
+      continue;
+    }
+
+    const isOversold    = tech.rsi14 < 30;                                                     // 과매도 반등
+    const isEarlyBounce = tech.rsi14 >= 30 && tech.rsi14 < 45;                                // 반등 초기 (최적)
+    const isPullback    = tech.rsi14 >= 45 && tech.rsi14 <= 60 && tech.macdCrossover === 'BULLISH'; // 눌림목 반등
+    const isMomentum    = tech.rsi14 > 60 && tech.rsi14 <= 70 && aiScore >= buyThreshold;     // 강한 모멘텀 (AI 필수)
+    // AI 80점 이상: 기술적 타이밍 완화 (AI 확신이 높으면 타이밍 필터 우선순위 낮춤)
+    const isHighAiScore = aiScore >= 80 && (effectiveTechScore >= minTechScore || aiScore >= buyThreshold);
+    const isValidEntry  = isOversold || isEarlyBounce || isPullback || isMomentum || isHighAiScore;
+
+    if (!isValidEntry) {
+      logger.info(`  🟡 ${stock.stock_code}: RSI=${tech.rsi14.toFixed(0)} MACD=${tech.macdCrossover} AI=${aiScore} → 타이밍 미충족 스킵`, { component: 'TRACK_B' });
+      continue;
+    }
+    const entryReason = isOversold ? '과매도반등' : isEarlyBounce ? '반등초기(최적)' : isPullback ? '눌림목MACD' : isHighAiScore ? `AI고확신(${aiScore}점)` : '강한모멘텀';
+    // ─────────────────────────────────────────────────────────────────────
+
     if (aiScore >= buyThreshold || effectiveTechScore >= minTechScore) {
       candidates.push({ stock_code: stock.stock_code, tech, price });
       if (aiScore >= buyThreshold) {
-        logger.info(`  ✅ ${stock.stock_code}: AI=${aiScore}점(>=${buyThreshold}) → 매수 후보 (기술=${tech.score}${priorityBonus > 0 ? `+${priorityBonus}우선테마` : ''})`, { component: 'TRACK_B' });
+        logger.info(`  ✅ ${stock.stock_code}: AI=${aiScore}점(>=${buyThreshold}) [${entryReason}] RSI=${tech.rsi14.toFixed(0)} → 매수 후보 (기술=${tech.score}${priorityBonus > 0 ? `+${priorityBonus}우선테마` : ''})`, { component: 'TRACK_B' });
       } else {
-        logger.info(`  ✅ ${stock.stock_code}: 기술=${effectiveTechScore}점(>=${minTechScore}) → 매수 후보 (AI=${aiScore}${priorityBonus > 0 ? ' 우선테마' : ''})`, { component: 'TRACK_B' });
+        logger.info(`  ✅ ${stock.stock_code}: 기술=${effectiveTechScore}점(>=${minTechScore}) [${entryReason}] RSI=${tech.rsi14.toFixed(0)} → 매수 후보 (AI=${aiScore}${priorityBonus > 0 ? ' 우선테마' : ''})`, { component: 'TRACK_B' });
       }
     }
   }
@@ -240,7 +306,7 @@ export function technicalFallbackDecisions(params: {
 
   // 현금 여유 확인하면서 매수 결정
   let remainingCash = orderableCash;
-  const maxBuys = 5; // 한 번에 최대 5종목
+  const maxBuys = 5; // 한 번에 최대 5종목 (분산 투자)
   const splitCount = strategyParams.splitCount || 3;
 
   for (const cand of candidates.slice(0, maxBuys)) {

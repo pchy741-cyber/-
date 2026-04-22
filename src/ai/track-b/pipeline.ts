@@ -1,24 +1,16 @@
-import { analyzeTechnicals } from '../../analysis/indicators.js';
-import { getLearnedInsightsForPrompt } from '../../automation/self-learning.js';
-import { MIN_DIVIDEND_YIELD_FOR_BUY, STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
+import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
 import { config } from '../../config/index.js';
 import { enableMemoryMode, getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getRecentLossStocks, getRecentManuallySoldStocks, logSystem } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { getBatchPrices, getDailyChart, isMarketOpen } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
-import { buildTrackBContext } from './context.js';
 import {
-  buildDefenseParkEntryDecisions,
   buildDefenseParkExitDecisions,
   getDefenseParkState,
-  isMarketRecovering,
-  isPortfolioInDowntrend,
   PARK_STOCK_CODE,
 } from './defense-park.js';
-import { getAiStatus, setActiveEngine } from '../../cache/ai-status.js';
-import { runClaudeExecution } from './executor.js';
-import { runGeminiExecution } from './gemini-executor.js';
+import { setActiveEngine } from '../../cache/ai-status.js';
 import { technicalFallbackDecisions } from './technical-fallback.js';
 import { IDLE_PARK_CODE, IDLE_PARK_CODES, IDLE_PARK_NAME } from './trading-rules.js';
 
@@ -27,15 +19,15 @@ let _idleParkPriceCache: { price: number; fetchedAt: number } = { price: 0, fetc
 const IDLE_PARK_CODE_SET = new Set<string>(IDLE_PARK_CODES);
 
 /**
- * Track B 전체 파이프라인
- * 장중 5~15분 간격 실행
+ * Track B 전체 파이프라인 — 장중 5분 간격 실행
  *
  * 흐름:
  * 1. 장 열림 확인
- * 2. DB에서 캐싱된 스코어 + 열린 체인 로드
- * 3. KIS에서 실시간 시세 수집
- * 4. Claude에 컨텍스트 전달 → 매매 판단
- * 5. 판단 결과를 TradeExecutor로 전달 (HOLD 제외)
+ * 2. DB에서 스코어 + 열린 체인 로드
+ * 3. KIS에서 실시간 시세 + 차트 수집
+ * 4. 기술적 지표로 매매 판단 (Track A AI 점수는 우선순위 힌트)
+ * 5. 하드룰 익절/손절 강제 + 파킹 관리
+ * 6. 실행 가능한 결정만 TradeExecutor로 전달
  */
 export async function runTrackBPipeline(): Promise<TradeDecision[]> {
   const startTime = Date.now();
@@ -95,47 +87,25 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const dbMode = (strategy?.mode ?? 'SWING') as StrategyMode;
     const mode: StrategyMode = (isOpeningBell && dbMode !== 'DEFENSE') ? 'SCALPING' : dbMode;
     if (isOpeningBell && mode === 'SCALPING') {
-      logger.info('🔔 개장 초단타 모드 자동 활성화 (09:00~09:10) — SCALPING +2% 즉시 익절', { component: 'TRACK_B' });
+      logger.info('🔔 개장 초단타 모드 자동 활성화 (09:00~09:10) — SCALPING +1.2% 즉시 익절', { component: 'TRACK_B' });
     }
 
-    // ─── 방어 파킹 시스템 ───────────────────────────────────────────────
-    // 하락장 감지 시 전종목 청산 → KODEX 200 파킹 / 회복 시 자동 복귀
+    // ─── 방어 파킹 시스템 (SWING 모드 비활성) ─────────────────────────
+    // SWING 모드: 방어 파킹 없이 기술적 지표로 직접 매매
+    // 잔여 KODEX 200 포지션만 즉시 청산
     const parkState = await getDefenseParkState();
 
     if (parkState.isActive) {
-      // 방어 파킹 중 — 시장 회복 여부만 확인
-      const chainStockCodesEarly = openChains.map((c) => c.stock_code);
-      const allCodesEarly = [...new Set([...chainStockCodesEarly, PARK_STOCK_CODE])];
-      const livePricesEarly = await getBatchPrices(allCodesEarly);
-
-      const { recovering, reason: recoveryReason } = await isMarketRecovering(openChains, livePricesEarly);
-      if (recovering) {
-        logger.info(`✅ 방어 파킹 해제 조건 충족: ${recoveryReason}`, { component: 'TRACK_B' });
-        return buildDefenseParkExitDecisions(openChains, recoveryReason);
-      }
-
-      logger.info(`🛡️ 방어 파킹 유지 중 (진입: ${parkState.entryReason ?? ''}) — 정상 매매 스킵`, { component: 'TRACK_B' });
-      return [];
+      // 이미 방어 파킹 중이면 즉시 해제 (정상 매매 복귀)
+      logger.info(`🔓 방어 파킹 강제 해제 → 기술적 매매 복귀`, { component: 'TRACK_B' });
+      return buildDefenseParkExitDecisions(openChains, '기술적 매매 우선 — 방어 파킹 해제');
     }
 
-    // 방어 파킹 비활성이지만 KODEX 200이 포트폴리오에 남아있으면 즉시 청산
+    // 잔여 KODEX 200 즉시 청산
     const orphanedKodex = openChains.find((c) => c.stock_code === PARK_STOCK_CODE);
     if (orphanedKodex) {
-      logger.warn(`🧹 고아 KODEX 200 감지 → 강제 청산 (파킹 비활성, 잔여 수량: ${orphanedKodex.total_quantity})`, { component: 'TRACK_B' });
-      return buildDefenseParkExitDecisions([orphanedKodex], '방어 파킹 비활성 후 잔여 포지션 청산');
-    }
-
-    // 방어 파킹 비활성 — 하락세 감지
-    const { downtrend, reason: downtrendReason } = await isPortfolioInDowntrend();
-    if (downtrend) {
-      // 하락세 진입: 실시간 가격 먼저 수집 후 방어 파킹 결정 생성
-      const chainCodesForPark = openChains.map((c) => c.stock_code);
-      const allCodesForPark = [...new Set([...chainCodesForPark, PARK_STOCK_CODE])];
-      const livePricesForPark = await getBatchPrices(allCodesForPark);
-      const orderableCashForPark = Math.max(0, balance.orderableCash - (balance.reservedWithdraw ?? 0));
-
-      logger.warn(`📉 하락세 감지 → 방어 파킹 진입: ${downtrendReason}`, { component: 'TRACK_B' });
-      return buildDefenseParkEntryDecisions(openChains, livePricesForPark, orderableCashForPark, downtrendReason);
+      logger.warn(`🧹 잔여 KODEX 200 즉시 청산`, { component: 'TRACK_B' });
+      return buildDefenseParkExitDecisions([orphanedKodex], 'KODEX 200 잔여 포지션 청산');
     }
     // ───────────────────────────────────────────────────────────────────
 
@@ -227,7 +197,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       }
     }
 
-    // 6. AI 매매 판단: Claude → Gemini → 기술적 지표 (3단 폴백)
+    // 6. 매매 판단: 기술적 지표 (Track A AI 점수를 우선순위 힌트로 활용)
     const hasScores = scores.length > 0;
 
     // 보유 종목 없고 + 매수 후보(스코어 ≥threshold + 신뢰도 ≥0.6)도 없으면 AI 호출 스킵
@@ -275,196 +245,47 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     let decisions: TradeDecision[] = [];
-    let aiWasCalled = false; // AI 실제 호출 여부 — 안정 모드 vs 기술적 폴백 구분용
 
-    // AI 컨텍스트 구성 (스코어가 있을 때만 + AI 호출 필요 시)
-    if (hasScores && (hasOpenPositions || hasBuyCandidates)) {
-      // aiWasCalled은 실제 호출 시도 후 설정 — 캐시 스킵이면 false → 기술적 폴백 허용
-      const technicalsSummary: string[] = [];
-      const topStocks = scores.slice(0, 5).map((s) => s.stock_code);
-      for (const code of topStocks) {
-        const candles = chartData.get(code);
-        if (candles) {
-          const result = analyzeTechnicals(candles);
-          if (result) {
-            const patternStr = result.candlePatterns.length > 0
-              ? ' 패턴=' + result.candlePatterns.map(p => `${p.bullish ? '📈' : '📉'}${p.name}`).join(',')
-              : '';
-            const pricePos = `고가대비${result.pctFrom3DayHigh.toFixed(1)}% 저가대비${result.pctFrom5DayLow >= 0 ? '+' : ''}${result.pctFrom5DayLow.toFixed(1)}% VWAP=${result.vwapPosition}`;
-            technicalsSummary.push(
-              `${code}: RSI=${result.rsi14.toFixed(0)} MACD=${result.macdCrossover} 볼린저=${result.bollingerPosition} 종합=${result.overallSignal}(${result.score}점) ${pricePos}` +
-                (result.goldenCross ? ' ⭐골든크로스' : '') +
-                (result.deathCross ? ' ⚠️데드크로스' : '') +
-                patternStr,
-            );
-          }
-        }
-      }
+    // ── 기술적 지표 매매 (항상 실행) + Track A AI 점수를 힌트로만 활용 ──
+    // AI 실시간 실행(Claude/Gemini)은 제거 — 안정성 우선, 손실 없는 자동매매
+    // Track A가 매일 AI로 점수를 생성 → Track B는 그 점수를 힌트로 종목 우선순위에 반영
+    {
+      // Paper 모드: 실제 가용현금만 사용 (totalDeposit = 가용현금)
+      // Live 모드: effectiveCashWithPark 그대로 (reservedWithdraw는 _rawOrderableCash 계산 시 이미 차감됨)
+      const orderableCash = Math.max(0, effectiveCashWithPark);
+      const totalAssets = balance.totalEvalAmount + orderableCash;
 
-      const learnedInsights = await getLearnedInsightsForPrompt().catch(() => '');
-
-      let context = await buildTrackBContext({
+      decisions = technicalFallbackDecisions({
         mode,
-        scores,
+        watchlist: watchlist.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
         livePrices,
+        chartData,
         openChains,
-        balance,
-        idleParkValue: _idleParkValue,
+        orderableCash,
+        maxPositionKrw: config.risk.maxPositionKrw,
+        totalAssets,
+        lossBlockedCodes: recentLossCodes,
+        manuallySoldCodes,
+        aiScores: scores
+          .filter((s: any) => (s.confidence ?? 1) >= 0.6)
+          .map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
+        takeProfitPct: strategy?.take_profit_pct ?? undefined,
+        stopLossPct: strategy?.stop_loss_pct ?? undefined,
+        buyThreshold: strategy?.buy_threshold ?? undefined,
       });
 
-      if (technicalsSummary.length > 0) {
-        context += `\n\n## 기술적 지표 분석\n${technicalsSummary.join('\n')}`;
-      }
-      if (learnedInsights) {
-        context += `\n${learnedInsights}`;
-      }
-      // DIVIDEND 모드: 배당수익률 미달 종목 BUY 금지 명시
-      if (mode === 'DIVIDEND') {
-        const noDividendCodes = scores
-          .filter((s) => {
-            const p = livePrices.get(s.stock_code);
-            return !p || p.dividendYield < MIN_DIVIDEND_YIELD_FOR_BUY;
-          })
-          .map((s) => s.stock_code);
-        if (noDividendCodes.length > 0) {
-          context += `\n\n## 🏦 DIVIDEND 파킹 모드: BUY 금지 목록\n${noDividendCodes.join(', ')}\n→ 배당수익률 ${MIN_DIVIDEND_YIELD_FOR_BUY}% 미만 — BUY 절대 금지. 현금 파킹 유지 (머니마켓 ETF).`;
-        }
-      }
-      // 손실 종목 재진입 금지 — AI에게도 명시
-      if (recentLossCodes.size > 0) {
-        context += `\n\n## 🚫 손절 쿨다운 (14일 재진입 금지)\n${[...recentLossCodes].join(', ')}\n→ 위 종목은 최근 손절 이력이 있습니다. 절대 BUY 결정 금지.`;
-      }
-      // CEO 수동 매도 쿨다운 — AI에게도 명시
-      if (manuallySoldCodes.size > 0) {
-        context += `\n\n## 🚫 CEO 수동 매도 쿨다운 (24시간 재진입 금지)\n${[...manuallySoldCodes].join(', ')}\n→ 위 종목은 CEO가 직접 매도했습니다. 절대 BUY 결정 금지.`;
-      }
-
-      // risk_prompt가 있으면 claude_prompt 앞에 삽입 (리스크 규칙이 매매 판단보다 우선)
-      const riskBlock = strategy?.risk_prompt?.trim()
-        ? `## 🛡️ CEO 리스크 규칙 (최우선 준수)\n${strategy.risk_prompt.trim()}\n\n`
-        : '';
-      const combinedClaudePrompt = riskBlock + (strategy?.claude_prompt?.trim() ?? '');
-      const execParams = { mode, context, customPrompt: combinedClaudePrompt || undefined };
-
-      // 6-1. Claude 매매 판단 (1순위) — 크레딧 소진 캐시 확인 후 스킵
-      const hasClaudeKey = config.ai.anthropicKey && !config.ai.anthropicKey.startsWith('your_');
-      const cachedClaudeStatus = getAiStatus().claude;
-      if (hasClaudeKey && cachedClaudeStatus !== 'no_credit') {
-        aiWasCalled = true;
-        try {
-          decisions = await runClaudeExecution(execParams);
-          if (decisions.length > 0) setActiveEngine('claude');
-        } catch (claudeErr) {
-          logger.warn(`⚠️ Claude 실행 실패: ${claudeErr}`, { component: 'TRACK_B' });
-        }
-      } else if (cachedClaudeStatus === 'no_credit') {
-        logger.info(`⏭️ Claude 크레딧 소진 캐시 → 호출 스킵 (Gemini로 직행)`, { component: 'TRACK_B' });
-      }
-
-      // 6-2. Claude 실패 → Gemini 매매 판단 (2순위) — 할당량 소진 캐시 확인 후 스킵
-      const cachedGeminiStatus = getAiStatus().gemini;
-      if (decisions.length === 0 && cachedGeminiStatus !== 'quota') {
-        aiWasCalled = true;
-        try {
-          decisions = await runGeminiExecution(execParams);
-          if (decisions.length > 0) setActiveEngine('gemini');
-        } catch (geminiErr) {
-          logger.warn(`⚠️ Gemini 실행 실패: ${geminiErr}`, { component: 'TRACK_B' });
-        }
-      } else if (decisions.length === 0 && cachedGeminiStatus === 'quota') {
-        logger.info(`⏭️ Gemini 할당량 소진 캐시 → 호출 스킵 → 기술적 폴백으로 직행`, { component: 'TRACK_B' });
-      }
-    }
-
-    // 6-3. AI 모두 실패/스코어 없음/전부 HOLD → 기술적 지표 (3순위)
-    const aiAllHold = decisions.length > 0 && decisions.every((d) => d.action === 'HOLD');
-    if (decisions.length === 0 || aiAllHold) {
-      if (aiAllHold) {
-        // AI가 명시적으로 전부 HOLD를 반환한 경우:
-        // - 강한 매수 후보(score >= threshold + 기술 지표 BUY)가 있으면 기술 폴백 매수 허용
-        // - 그 외에는 청산 신호만 허용 (AI 판단 존중)
-        const strongBuyCandidates = scores.filter(
-          (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[mode].buyThreshold && (s.confidence ?? 1) >= 0.6,
-        );
-        const effectiveCashForHold = Math.max(effectiveCashWithPark, Math.floor(balance.totalDeposit * 0.85));
-        const orderableCashForHold = Math.max(0, effectiveCashForHold - ((balance as any).reservedWithdraw ?? 0));
-        const totalAssetsForHold = balance.totalEvalAmount + orderableCashForHold;
-
-        if (strongBuyCandidates.length > 0) {
-          // 강한 후보 있을 때만 기술 지표 매수도 허용 (AI conservatism 돌파)
-          logger.info(`🔄 AI 전부 HOLD이나 강한 매수 후보 ${strongBuyCandidates.length}개 존재 → 기술 폴백 전체 허용`, { component: 'TRACK_B' });
-        } else {
-          logger.info(`🔄 AI 전부 HOLD → 기술적 폴백은 청산 신호만 허용 (매수 후보 없음)`, { component: 'TRACK_B' });
-        }
-
-        const techDecisions = technicalFallbackDecisions({
-          mode,
-          watchlist: watchlist.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
-          livePrices,
-          chartData,
-          openChains,
-          // 강한 후보 있으면 예산 투입, 없으면 0 (청산만)
-          orderableCash: strongBuyCandidates.length > 0 ? orderableCashForHold : 0,
-          maxPositionKrw: config.risk.maxPositionKrw,
-          totalAssets: totalAssetsForHold,
-          lossBlockedCodes: recentLossCodes,
-          manuallySoldCodes,
-          aiScores: scores
-            .filter((s: any) => (s.confidence ?? 1) >= 0.6)
-            .map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
-          takeProfitPct: strategy?.take_profit_pct ?? undefined,
-          stopLossPct: strategy?.stop_loss_pct ?? undefined,
-          buyThreshold: strategy?.buy_threshold ?? undefined,
-        });
-        // 강한 후보 없으면 BUY/AVERAGE_DOWN 제외
-        const filtered = strongBuyCandidates.length > 0
-          ? techDecisions
-          : techDecisions.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action));
-        decisions = [...filtered];
-      } else if (aiWasCalled) {
-        // ── 안정 모드: AI 호출했으나 Claude + Gemini 모두 응답 없음 ──
-        // API 일시 단절(네트워크 오류, 할당량 초과 등)로 AI가 응답 못할 때
-        // → 매매 완전 중단, 포지션 전량 유지
-        decisions = [];
-        logger.info(
-          `🛡️ 안정 모드: AI 전체 실패(일시적 API 오류) → 포지션 전량 유지, 매매 없음 (스코어=${scores.length}개)`,
-          { component: 'TRACK_B' },
-        );
-      } else {
-        // ── AI 미호출: 스코어 없음 / 보유·매수후보 없음 → 기술적 폴백 전체 실행 ──
-        const effectiveCashForFallback = Math.max(effectiveCashWithPark, Math.floor(balance.totalDeposit * 0.85));
-        const orderableCashForFallback = Math.max(0, effectiveCashForFallback - ((balance as any).reservedWithdraw ?? 0));
-        const totalAssetsForFallback = balance.totalEvalAmount + orderableCashForFallback;
-        decisions = technicalFallbackDecisions({
-          mode,
-          watchlist: watchlist.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
-          livePrices,
-          chartData,
-          openChains,
-          orderableCash: orderableCashForFallback,
-          maxPositionKrw: config.risk.maxPositionKrw,
-          totalAssets: totalAssetsForFallback,
-          lossBlockedCodes: recentLossCodes,
-          manuallySoldCodes,
-          aiScores: scores
-            .filter((s: any) => (s.confidence ?? 1) >= 0.6)
-            .map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
-          takeProfitPct: strategy?.take_profit_pct ?? undefined,
-          stopLossPct: strategy?.stop_loss_pct ?? undefined,
-          buyThreshold: strategy?.buy_threshold ?? undefined,
-        });
-        logger.info(
-          `📊 AI 미호출 → 기술적 지표 폴백 전체 실행 (스코어=${scores.length}개, 결정=${decisions.length}개)`,
-          { component: 'TRACK_B' },
-        );
-      }
+      const engine = hasScores ? 'technical+AI힌트' : 'technical';
+      logger.info(
+        `📊 기술적 지표 매매 실행 [${engine}] (AI점수=${scores.length}개, 결정=${decisions.length}개)`,
+        { component: 'TRACK_B' },
+      );
+      setActiveEngine('technical');
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // 6-3-C. 🛡️ AI 조기 매도 방지 필터
-    //   - AI가 손절선(-4%) 미도달 포지션을 FORCE_CLOSE하는 것을 차단
-    //   - AI는 "시장 심리"로 -0.7%에서도 FORCE_CLOSE 호출 가능 → 금지
-    //   - 실제 익절/손절은 6-4 하드룰 + holding-check 트레일링이 전담
+    // 6-3-C. 🛡️ 조기 매도 방지 필터 (기술적 지표 신호 오발 차단)
+    //   - 기술 지표 STRONG_SELL 신호가 손절선(-1.0%) 미도달 포지션을 닫으려는 것 차단
+    //   - 실제 익절/손절은 6-4 하드룰 전담 (기준: take_profit_pct / stop_loss_pct)
     //   - 파킹 ETF(IDLE_PARK_CODE) 결정은 예외 (가격 무관 청산)
     // ─────────────────────────────────────────────────────────────────
     {
@@ -533,9 +354,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       // 파킹 잔액이 전체의 40% 이하일 때만 추가 파킹 (무한 파킹 방지)
       const canParkMore = idleParkPct < 40;
 
-      // 현금 5% 초과 + 파킹 여유(40% 미만) + 가격 조회 성공 → 파킹
+      // 현금 10% 초과 + 파킹 여유(40% 미만) → 파킹
+      // 10% 미만은 주문 여유분으로 현금 유지 (5%는 수수료+슬리피지로 금방 소진)
       const parkCurrentPrice = _idleParkPriceCache.price;
-      if (idlePctAfterBuys > 5 && canParkMore) {
+      if (idlePctAfterBuys > 10 && canParkMore) {
         if (parkCurrentPrice > 0) {
           // 매수 후 남은 현금의 85%를 파킹 (15%는 긴급 매수 여유분)
           const parkAmount = cashAfterBuys * 0.85;
@@ -604,6 +426,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       const dbStopLoss = strategy?.stop_loss_pct ?? null;
 
       for (const chain of openChains) {
+        // 파킹 ETF는 손절/익절 하드룰 완전 제외 — 장기 보유 목적
+        if (IDLE_PARK_CODE_SET.has(chain.stock_code)) continue;
+
         const price = livePrices.get(chain.stock_code);
         if (!price || !chain.avg_buy_price) continue;
         const avgBuy = Number(chain.avg_buy_price);
@@ -621,13 +446,23 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         const stopPct = dbStopLoss ?? (Number(chain.stop_loss_pct) || baseParams.stopLossPct);
 
         // PROFIT_TAKING 상태: 2단계 trailing stop — peak_price 기준
+        // 수치는 technical-fallback과 동일하게 유지 (4.0% 목표, -0.8% 트레일)
         if (chain.status === 'PROFIT_TAKING') {
+          // peak_price 없고 손실 구간: 브레이크이븐스톱(-1%)만 적용, 트레일 오발동 방지
+          if (!(chain as any).peak_price && pnlPct < 0) {
+            if (pnlPct <= -1.0) {
+              logger.info(`🔒 브레이크이븐스톱(peak없음): ${chain.stock_code} ${pnlPct.toFixed(1)}%`, { component: 'TRACK_B' });
+              decisions.push({ action: 'FORCE_CLOSE', stock_code: chain.stock_code, quantity: chain.total_quantity, price_type: 'MARKET', reasoning: `브레이크이븐스톱(peak없음): ${pnlPct.toFixed(1)}%`, confidence: 1.0 });
+            }
+            continue;
+          }
           const peakPrice = (chain as any).peak_price ? Number((chain as any).peak_price) : avgBuy * (1 + targetPct / 100);
           const trailDropPct = ((price.currentPrice - peakPrice) / peakPrice) * 100;
-          if (pnlPct >= 1.5) {
-            logger.info(`🔒 하드 2단계 익절: ${chain.stock_code} +${pnlPct.toFixed(1)}% → +1.5% 목표달성`, { component: 'TRACK_B' });
-            decisions.push({ action: 'SELL', stock_code: chain.stock_code, quantity: chain.total_quantity, price_type: 'MARKET', reasoning: `하드 2단계 익절: +${pnlPct.toFixed(1)}% ≥ +1.5% 달성`, confidence: 1.0 });
-          } else if (trailDropPct <= -0.3) {
+          const stage2Target = targetPct * 2; // 1단계 익절 기준의 2배 (예: 2% → 4%)
+          if (pnlPct >= stage2Target) {
+            logger.info(`🔒 하드 2단계 익절: ${chain.stock_code} +${pnlPct.toFixed(1)}% → +${stage2Target}% 목표달성`, { component: 'TRACK_B' });
+            decisions.push({ action: 'SELL', stock_code: chain.stock_code, quantity: chain.total_quantity, price_type: 'MARKET', reasoning: `하드 2단계 익절: +${pnlPct.toFixed(1)}% ≥ +${stage2Target}% 달성`, confidence: 1.0 });
+          } else if (trailDropPct <= -0.8) {
             logger.info(`🔒 하드 트레일링스톱: ${chain.stock_code} peak 대비 ${trailDropPct.toFixed(2)}% 하락`, { component: 'TRACK_B' });
             decisions.push({ action: 'FORCE_CLOSE', stock_code: chain.stock_code, quantity: chain.total_quantity, price_type: 'MARKET', reasoning: `하드 트레일링스톱: peak ${peakPrice.toFixed(0)}원 대비 ${trailDropPct.toFixed(2)}% 하락`, confidence: 1.0 });
           }
@@ -688,22 +523,30 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       }
     }
 
-    // 7-B. 수량 강제 보정: AI가 1주처럼 과소 계산 시 예산 기반으로 상향
-    // AI는 수량 계산 오류가 잦음 → 코드에서 직접 검증하고 보정
-    // D+2 결제 지연으로 orderableCash < totalDeposit 가능 → 실효 예산 사용
+    // 7-B. 수량 보정: 과소 수량을 1차 진입 예산 기준으로 맞춤 (초과는 금지)
+    // 종목당 한도: 총자산 15% / splitCount = 1차 진입분
     {
-      const effectiveCashNow = Math.max(balance.orderableCash, Math.floor(balance.totalDeposit * 0.85));
-      const orderableCashNow = Math.max(0, effectiveCashNow - ((balance as any).reservedWithdraw ?? 0));
+      const orderableCashNow = Math.max(0, effectiveCashWithPark); // reservedWithdraw는 _rawOrderableCash 계산 시 이미 차감됨
+      const totalAssetsNow = balance.totalEvalAmount + orderableCashNow;
       const _params = STRATEGY_PARAMS[mode];
-      const budgetPerBuy = Math.floor(orderableCashNow / _params.splitCount);
+      // 종목당 최대 = 총자산 15% or maxPositionKrw 중 작은 값 (technical-fallback과 동일 기준)
+      const maxPerPosition = Math.min(config.risk.maxPositionKrw, Math.round(totalAssetsNow * 0.15));
+      const budgetPerBuy = Math.floor(maxPerPosition / _params.splitCount);
       for (const d of decisions) {
         if ((d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && (d.limit_price ?? 0) > 0 && !IDLE_PARK_CODE_SET.has(d.stock_code)) {
           const price = d.limit_price!;
-          const maxQtyByRisk = Math.floor(config.risk.maxPositionKrw / price);
-          const targetQty = Math.min(maxQtyByRisk, Math.max(1, Math.floor(budgetPerBuy / price)));
-          if ((d.quantity ?? 0) < targetQty) {
+          const targetQty = Math.max(1, Math.floor(budgetPerBuy / price));
+          const currentQty = d.quantity ?? 0;
+          if (currentQty < targetQty) {
             logger.info(
-              `📊 수량 보정: ${d.stock_code} ${d.quantity ?? 0}주 → ${targetQty}주 (예산 ${budgetPerBuy.toLocaleString()}원 ÷ ${price.toLocaleString()}원, 한도 ${maxQtyByRisk}주)`,
+              `📊 수량 보정(상향): ${d.stock_code} ${currentQty}주 → ${targetQty}주 (1차진입예산 ${budgetPerBuy.toLocaleString()}원)`,
+              { component: 'TRACK_B' },
+            );
+            d.quantity = targetQty;
+          } else if (currentQty > targetQty * 2) {
+            // 2배 초과 시만 하향 보정 (소수점 오류 등 극단값 방지)
+            logger.warn(
+              `📊 수량 보정(하향): ${d.stock_code} ${currentQty}주 → ${targetQty}주 (초과 감지)`,
               { component: 'TRACK_B' },
             );
             d.quantity = targetQty;

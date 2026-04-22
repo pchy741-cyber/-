@@ -101,17 +101,7 @@ async function bootstrap() {
       // 이미 적용된 경우 무시
       if (!e.message?.includes('already')) logger.warn(`DB 마이그레이션 경고: ${e.message}`, { component: 'BOOT' });
     }
-    // buy_threshold 보정: SWING 65, DEFENSE 85 (과거 보수적 값 75 자동 수정)
-    try {
-      const { getPool } = await import('./db/client.js');
-      await getPool().query(
-        `UPDATE strategy_config SET buy_threshold = 65 WHERE is_active = true AND mode = 'SWING' AND buy_threshold > 65`,
-      );
-      logger.info('✅ buy_threshold 보정: SWING 65점으로 완화', { component: 'BOOT' });
-    } catch (e: any) {
-      logger.warn(`buy_threshold 보정 실패: ${e.message}`, { component: 'BOOT' });
-    }
-    // 익절/손절 목표 동기화: STRATEGY_PARAMS 기본값으로 업데이트 (DB 구버전 덮어쓰기)
+    // 전략 파라미터 전체 동기화: STRATEGY_PARAMS 상수 → DB (buy_threshold 포함)
     try {
       const { getPool: gp } = await import('./db/client.js');
       const { STRATEGY_PARAMS } = await import('./config/constants.js');
@@ -119,12 +109,12 @@ async function bootstrap() {
       const activeMode = (sr[0]?.mode ?? 'SWING') as keyof typeof STRATEGY_PARAMS;
       const sp = STRATEGY_PARAMS[activeMode] ?? STRATEGY_PARAMS.SWING;
       await gp().query(
-        `UPDATE strategy_config SET take_profit_pct=$1, stop_loss_pct=$2 WHERE is_active = true`,
-        [sp.takeProfitPct, sp.stopLossPct],
+        `UPDATE strategy_config SET take_profit_pct=$1, stop_loss_pct=$2, buy_threshold=$3 WHERE is_active = true`,
+        [sp.takeProfitPct, sp.stopLossPct, sp.buyThreshold],
       );
-      logger.info(`✅ 익절/손절 동기화: take_profit=${sp.takeProfitPct}% stop_loss=${sp.stopLossPct}%`, { component: 'BOOT' });
+      logger.info(`✅ 전략 파라미터 동기화: buy_threshold=${sp.buyThreshold} take_profit=${sp.takeProfitPct}% stop_loss=${sp.stopLossPct}%`, { component: 'BOOT' });
     } catch (e: any) {
-      logger.warn(`익절/손절 동기화 실패: ${e.message}`, { component: 'BOOT' });
+      logger.warn(`전략 파라미터 동기화 실패: ${e.message}`, { component: 'BOOT' });
     }
     // score_accuracy 테이블 자동 생성 (마이그레이션 010)
     try {

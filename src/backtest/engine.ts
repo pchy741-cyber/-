@@ -40,6 +40,8 @@ interface SimPosition {
   totalInvested: number;
   averagingCount: number;
   openedAt: string;
+  peakPrice: number;        // 최고가 추적 (트레일링 스톱용)
+  profitTaking: boolean;    // 1단계 익절 완료 → 트레일링 대기 중
 }
 
 interface SimTrade {
@@ -84,13 +86,14 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
   const { mode, initialCapital, buyThreshold, commissionPct = 0.015, taxPct = 0.20 } = backtestConfig;
   const params = STRATEGY_PARAMS[mode];
   let totalCommissions = 0; // 총 거래비용 추적
-  // 백테스트 기술 점수 임계치 (AI 스코어 75점과 다름)
-  // 기술 지표 종합 점수는 -100~+100 범위이므로 모드별 임계치를 분리해 과매매를 줄입니다.
+  // 백테스트 기술 점수 임계치
+  // 실전 minTechScore(SWING=55, DEFENSE=65) 기준이나, 합성 데이터는 지표 분산이 적으므로
+  // SWING은 45로 완화해 충분한 거래 횟수 확보 (과매매 방지 vs 표본 부족 균형)
   const defaultThresholdByMode: Record<StrategyMode, number> = {
-    SWING: 15,
-    DEFENSE: 24,
-    SCALPING: 35,
-    DIVIDEND: 20,
+    SWING: 45,
+    DEFENSE: 55,
+    SCALPING: 45,
+    DIVIDEND: 45,
   };
   const threshold = buyThreshold ?? defaultThresholdByMode[mode];
   const isForceEntryMode = buyThreshold !== undefined && buyThreshold <= -50;
@@ -117,31 +120,37 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
 
     dailyPnl.push({ date: today.date, equity: currentEquity, drawdown });
 
-    // ── 포지션이 있을 때: 단계별 익절 + ATR 트레일링 스톱 + 시간손절 ──
+    // ── 포지션이 있을 때: 2단계 익절 (실전과 동일) + 고정 손절 + 시간손절 ──
     if (position) {
       const pnlPct = calcPnlPct(position.avgPrice, today.close);
       const holdingDays = countDaysBetween(position.openedAt, today.date);
 
-      // ATR 기반 트레일링 스톱 (논문 근거: 고정 손절보다 승률 15~20% 개선)
-      const windowForATR = sorted.slice(Math.max(0, i - 14), i + 1).reverse();
-      let atrStop = Math.abs(params.stopLossPct);
-      if (windowForATR.length >= 2) {
-        const trueRanges = windowForATR
-          .slice(0, -1)
-          .map((c, idx) =>
-            Math.max(
-              c.high - c.low,
-              Math.abs(c.high - windowForATR[idx + 1].close),
-              Math.abs(c.low - windowForATR[idx + 1].close),
-            ),
-          );
-        const avgTR = trueRanges.reduce((s, t) => s + t, 0) / trueRanges.length;
-        const atrPct = position.avgPrice > 0 ? ((avgTR * 2) / position.avgPrice) * 100 : atrStop;
-        atrStop = Math.max(2, Math.min(atrPct, 8)); // 최소 2%, 최대 8%
-      }
-      if (mode === 'DEFENSE') {
-        // 방어 모드는 손절을 더 타이트하게 운영해 급락장 노출을 줄입니다.
-        atrStop = Math.max(1.5, Math.min(atrStop * 0.85, 5));
+      // 최고가 업데이트 (트레일링 스톱 기준)
+      position.peakPrice = Math.max(position.peakPrice, today.close);
+
+      // 고정 손절 — 일봉에서 low가 손절가 이하면 손절가에 체결 (갭다운 방지)
+      const stopPrice = position.avgPrice * (1 + params.stopLossPct / 100);
+      const stopTriggered = !position.profitTaking && today.low <= stopPrice;
+      const stopExitPrice = stopTriggered ? Math.max(today.low, stopPrice) : today.close;
+      const stopPnlPct = stopTriggered ? calcPnlPct(position.avgPrice, stopExitPrice) : pnlPct;
+      if (stopTriggered) {
+        const saStop = stopExitPrice * position.totalQty;
+        const scStop = calcSellCost(saStop, commissionPct, taxPct);
+        totalCommissions += scStop;
+        const pnl = roundKrw((stopExitPrice - position.avgPrice) * position.totalQty - scStop);
+        capital += saStop - scStop;
+        trades.push({
+          stockCode,
+          side: 'SELL',
+          price: stopExitPrice,
+          quantity: position.totalQty,
+          date: today.date,
+          reason: `손절 ${stopPnlPct.toFixed(1)}% (한도 ${params.stopLossPct}%)`,
+          pnl,
+          pnlPct: stopPnlPct,
+        });
+        position = null;
+        continue;
       }
 
       // 방어 모드 조기 청산: 추세 훼손 시 손실/무수익 포지션을 빠르게 종료
@@ -171,7 +180,7 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
         continue;
       }
 
-      // SWING 조기 이탈: 횡보/약세 전환 구간의 작은 손실을 빠르게 차단
+      // SWING 조기 이탈: 횡보/약세 전환 구간 손실 차단 (-0.7% ~ stopLoss 사이에서만 발동)
       if (
         mode === 'SWING' &&
         holdingDays >= 2 &&
@@ -198,10 +207,10 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
         continue;
       }
 
-      // 단계별 익절 (연구 기반: 한 번에 전량 익절보다 단계별이 총수익 20~30% 높음)
-      // 1단계: +3%에 1/3 매도
-      if (pnlPct >= 3 && position.totalQty > 1) {
-        const sellQty = Math.max(1, Math.ceil(position.totalQty / 3));
+      // 2단계 익절 (실전 technical-fallback.ts와 동일한 로직)
+      // 1단계: takeProfitPct(2.5%) → 50% 부분 매도
+      if (!position.profitTaking && pnlPct >= params.takeProfitPct && position.totalQty > 1) {
+        const sellQty = Math.max(1, Math.ceil(position.totalQty * 0.5));
         const sa1 = today.close * sellQty;
         const sc1 = calcSellCost(sa1, commissionPct, taxPct);
         totalCommissions += sc1;
@@ -213,56 +222,27 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
           price: today.close,
           quantity: sellQty,
           date: today.date,
-          reason: `1단계 익절 +${pnlPct.toFixed(1)}%`,
+          reason: `1단계 익절(50%) +${pnlPct.toFixed(1)}%`,
           pnl,
           pnlPct,
         });
         position.totalQty -= sellQty;
-        if (position.totalQty <= 0) {
-          position = null;
-          continue;
-        }
-      }
-
-      // 2단계: +6%에 1/2 매도 (원래 포지션의 1/3)
-      if (pnlPct >= 6 && position.totalQty > 1) {
-        const sellQty = Math.max(1, Math.ceil(position.totalQty / 2));
-        const sa2 = today.close * sellQty;
-        const sc2 = calcSellCost(sa2, commissionPct, taxPct);
-        totalCommissions += sc2;
-        const pnl = roundKrw((today.close - position.avgPrice) * sellQty - sc2);
-        capital += sa2 - sc2;
-        trades.push({
-          stockCode,
-          side: 'SELL',
-          price: today.close,
-          quantity: sellQty,
-          date: today.date,
-          reason: `2단계 익절 +${pnlPct.toFixed(1)}%`,
-          pnl,
-          pnlPct,
-        });
-        position.totalQty -= sellQty;
-        if (position.totalQty <= 0) {
-          position = null;
-          continue;
-        }
-      }
-
-      // 3단계: +10% 이상이면 나머지 전량 (트레일링으로 더 가도 됨)
-      if (pnlPct >= 10) {
-        const sa3 = today.close * position.totalQty;
-        const sc3 = calcSellCost(sa3, commissionPct, taxPct);
-        totalCommissions += sc3;
-        const pnl = roundKrw((today.close - position.avgPrice) * position.totalQty - sc3);
-        capital += sa3 - sc3;
+        position.profitTaking = true;
+        if (position.totalQty <= 0) { position = null; continue; }
+      } else if (!position.profitTaking && pnlPct >= params.takeProfitPct) {
+        // 1주 등 분할 불가 → 전량 익절
+        const sa1 = today.close * position.totalQty;
+        const sc1 = calcSellCost(sa1, commissionPct, taxPct);
+        totalCommissions += sc1;
+        const pnl = roundKrw((today.close - position.avgPrice) * position.totalQty - sc1);
+        capital += sa1 - sc1;
         trades.push({
           stockCode,
           side: 'SELL',
           price: today.close,
           quantity: position.totalQty,
           date: today.date,
-          reason: `전량 익절 +${pnlPct.toFixed(1)}%`,
+          reason: `익절(전량-분할불가) +${pnlPct.toFixed(1)}%`,
           pnl,
           pnlPct,
         });
@@ -270,26 +250,32 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
         continue;
       }
 
-      // ATR 트레일링 손절 (고정 -5% 대신 변동성 기반)
-      if (pnlPct <= -atrStop) {
-        const saATR = today.close * position.totalQty;
-        const scATR = calcSellCost(saATR, commissionPct, taxPct);
-        totalCommissions += scATR;
-        const pnl = roundKrw((today.close - position.avgPrice) * position.totalQty - scATR);
-        capital += saATR - scATR;
-
-        trades.push({
-          stockCode,
-          side: 'SELL',
-          price: today.close,
-          quantity: position.totalQty,
-          date: today.date,
-          reason: `ATR손절 ${pnlPct.toFixed(1)}% (한도 -${atrStop.toFixed(1)}%)`,
-          pnl,
-          pnlPct,
-        });
-        position = null;
-        continue;
+      // 2단계: PROFIT_TAKING 상태에서 트레일링 또는 +4.0% 목표
+      // 일봉 백테스트는 -2.0% 트레일 (일 노이즈 1.5% 감안, 실전 -0.8%는 5분봉 기준)
+      if (position?.profitTaking) {
+        const trailDropPct = position.peakPrice > 0 ? ((today.close - position.peakPrice) / position.peakPrice) * 100 : 0;
+        const isBreakevenStop = pnlPct <= 0.2; // 1단계 익절 후 원금 하회 방지
+        const isTrailTriggered = trailDropPct <= -2.0;
+        const isTargetReached = pnlPct >= 4.0;
+        if (isBreakevenStop || isTrailTriggered || isTargetReached) {
+          const sa2 = today.close * position.totalQty;
+          const sc2 = calcSellCost(sa2, commissionPct, taxPct);
+          totalCommissions += sc2;
+          const pnl = roundKrw((today.close - position.avgPrice) * position.totalQty - sc2);
+          capital += sa2 - sc2;
+          trades.push({
+            stockCode,
+            side: 'SELL',
+            price: today.close,
+            quantity: position.totalQty,
+            date: today.date,
+            reason: isTargetReached ? `2단계 익절(+4%) +${pnlPct.toFixed(1)}%` : isBreakevenStop ? `브레이크이븐스톱 ${pnlPct.toFixed(1)}%` : `트레일링스톱 peak대비${trailDropPct.toFixed(1)}%`,
+            pnl,
+            pnlPct,
+          });
+          position = null;
+          continue;
+        }
       }
 
       // 시간 손절 (변경: 수익 0% 이하일 때만, 소폭이라도 수익이면 유지)
@@ -372,8 +358,8 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
         (technicals.rsi14 > 72 ||
           // 1-1. 추세 약한 구간에서 중립/약세 시그널은 스킵
           (technicals.trendStrength === 'WEAK' && technicals.score < 22) ||
-          // 2. MACD가 약세 전환 중이면 진입 금지
-          (technicals.macdCrossover === 'BEARISH' && technicals.rsi14 > 55) ||
+          // 2. MACD가 약세 전환 중이고 RSI 과열권이면 진입 금지
+          (technicals.macdCrossover === 'BEARISH' && technicals.rsi14 > 65) ||
           // 3. 거래량 없이 오른 거면 진입 금지 (허수 상승)
           (technicals.volumeRatio < 0.6 && technicals.score < 30));
 
@@ -404,6 +390,8 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
           totalInvested: today.close * qty,
           averagingCount: 0,
           openedAt: today.date,
+          peakPrice: today.close,
+          profitTaking: false,
         };
 
         trades.push({

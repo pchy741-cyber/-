@@ -40,38 +40,27 @@ const fmtTime = (t: string | null | undefined) => { if (!t) return '-'; const d 
 const pc = (n: number | null | undefined) => n == null || n === 0 ? 'text-slate-400' : n > 0 ? 'text-emerald-400' : 'text-rose-400';
 const pbg = (n: number | null | undefined) => n == null || n === 0 ? '' : n > 0 ? 'bg-emerald-950/30 border-emerald-900/30' : 'bg-rose-950/30 border-rose-900/30';
 const KNOWN_STOCK_NAMES: Record<string, string> = {
-  AAPL: 'Apple',
-  NVDA: 'NVIDIA',
-  MSFT: 'Microsoft',
-  GOOGL: 'Google',
-  AMZN: 'Amazon',
-  TSLA: 'Tesla',
-  META: 'Meta',
-  '000100': '유한양행',
-  '005290': '동진쎄미켐',
-  '009540': 'HD한국조선해양',
-  '010130': '고려아연',
-  '012450': '한화에어로스페이스',
-  '028300': 'HLB',
-  '036490': 'SK머티리얼즈',
-  '042700': '한미반도체',
-  '058470': '리노공업',
-  '068270': '셀트리온',
-  '079550': 'LIG넥스원',
-  '086520': '에코프로',
-  '112040': '위메이드',
-  '196170': '알테오젠',
-  '207940': '삼성바이오로직스',
-  '214150': '클래시스',
-  '263750': '펄어비스',
-  '267260': 'HD현대일렉트릭',
-  '277810': '레인보우로보틱스',
-  '328130': '루닛',
-  '336260': '두산퓨얼셀',
-  '336370': '솔루스첨단소재',
-  '357780': '솔브레인',
-  '403870': 'HPSP',
-  '454910': '두산로보틱스',
+  AAPL: 'Apple', NVDA: 'NVIDIA', MSFT: 'Microsoft', GOOGL: 'Google',
+  AMZN: 'Amazon', TSLA: 'Tesla', META: 'Meta',
+  '000100': '유한양행', '000660': 'SK하이닉스', '000720': '현대건설',
+  '001040': 'CJ', '003670': '포스코퓨처엠', '005290': '동진쎄미켐',
+  '005380': '현대자동차', '005490': 'POSCO홀딩스', '005930': '삼성전자',
+  '006400': '삼성SDI', '009150': '삼성전기', '009540': 'HD한국조선해양',
+  '010130': '고려아연', '010950': 'S-Oil', '012450': '한화에어로스페이스',
+  '017670': 'SK텔레콤', '018260': '삼성에스디에스', '028300': 'HLB',
+  '030200': 'KT', '032830': '삼성생명', '034020': '두산에너빌리티',
+  '034730': 'SK', '035420': 'NAVER', '035720': '카카오',
+  '036490': 'SK머티리얼즈', '042700': '한미반도체', '051910': 'LG화학',
+  '055550': '신한지주', '058470': '리노공업', '066570': 'LG전자',
+  '068270': '셀트리온', '079550': 'LIG넥스원', '086520': '에코프로',
+  '105560': 'KB금융', '112040': '위메이드', '114800': 'KODEX 인버스',
+  '161510': 'ARIRANG 단기채권액티브', '196170': '알테오젠',
+  '207940': '삼성바이오로직스', '214150': '클래시스', '247540': '에코프로비엠',
+  '263750': '펄어비스', '267260': 'HD현대일렉트릭', '277810': '레인보우로보틱스',
+  '316140': '우리금융지주', '328130': '루닛', '333940': 'KODEX 단기채권PLUS',
+  '336260': '두산퓨얼셀', '336370': '솔루스첨단소재', '357780': '솔브레인',
+  '373220': 'LG에너지솔루션', '377300': '카카오페이', '383220': 'F&F',
+  '403870': 'HPSP', '454910': '두산로보틱스',
 };
 
 function getKnownStockName(code?: unknown): string | undefined {
@@ -377,7 +366,7 @@ function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast }: { i
   const [deleteModal, setDeleteModal] = React.useState<{ id: number; insight: string; relatedTrades: any[] } | null>(null);
   const [liveInsights, setLiveInsights] = React.useState<any[] | null>(null);
   React.useEffect(() => {
-    const load = () => api('/settings/insights').then((d: any) => setLiveInsights(Array.isArray(d) ? d : [])).catch(() => {});
+    const load = () => api('/insights').then((d: any) => setLiveInsights(Array.isArray(d) ? d : [])).catch(() => {});
     load();
     const id = setInterval(load, 60000);
     return () => clearInterval(id);
@@ -388,9 +377,9 @@ function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast }: { i
   const triggerLearning = async () => {
     setTriggering(true);
     try {
-      await fetch('/api/settings/run-self-learning', { method: 'POST' });
+      await api('/run-self-learning', { method: 'POST' });
       toast?.('자기학습 시작 — 잠시 후 인사이트가 업데이트됩니다', 'ok');
-      setTimeout(() => api('/settings/insights').then((d: any) => setLiveInsights(Array.isArray(d) ? d : [])).catch(() => {}), 8000);
+      setTimeout(() => api('/insights').then((d: any) => setLiveInsights(Array.isArray(d) ? d : [])).catch(() => {}), 8000);
     } catch { toast?.('자기학습 실행 실패', 'err'); }
     finally { setTriggering(false); }
   };
@@ -415,7 +404,7 @@ function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast }: { i
     setDeleteModal(null);
     setDeleting(id);
     try {
-      await fetch(`/api/settings/insights/${id}`, { method: 'DELETE' });
+      await api(`/insights/${id}`, { method: 'DELETE' });
       setLiveInsights((prev) => (prev ?? []).filter((i) => i.id !== id));
       onRefresh();
     } finally { setDeleting(null); }
@@ -424,8 +413,7 @@ function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast }: { i
   const handleApply = async (id: number) => {
     setApplying(id);
     try {
-      const res = await fetch(`/api/settings/insights/${id}/apply`, { method: 'POST' });
-      const data = await res.json();
+      const data = await api(`/insights/${id}/apply`, { method: 'POST' });
       if (data.ok) { toast?.(data.message ?? '전략 파라미터 적용 완료', 'ok'); onRefresh(); }
       else toast?.(data.error ?? '적용 실패', 'err');
     } catch { toast?.('적용 요청 실패', 'err'); }
@@ -437,11 +425,7 @@ function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast }: { i
     if (!text) return;
     setAdding(true);
     try {
-      await fetch('/api/settings/insights', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ category: 'MANUAL', insight: text, confidence: 0.9 }),
-      });
+      await api('/insights', { method: 'POST', body: JSON.stringify({ category: 'MANUAL', insight: text, confidence: 0.9 }) });
       setNewInsight('');
       setShowAdd(false);
       onRefresh();
@@ -704,7 +688,7 @@ function PerformancePanel({ trades, strategy, setStrategy, toast }: { trades: an
         ...strategy,
         claude_prompt: (strategy?.claude_prompt ?? '') + '\n\n[CEO 추가 지시 ' + new Date().toLocaleDateString('ko') + ']\n' + quickPrompt.trim(),
       };
-      const u = await fetch('/api/settings/strategy', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+      const u = await api('/strategy', { method: 'PUT', body: JSON.stringify(body) });
       setStrategy(u);
       setQuickPrompt('');
       toast?.('전략 지시 추가됨', 'ok');
@@ -1467,9 +1451,10 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                 const stopPct = Number(ch.stop_loss_pct) || -4;
                 const pnl = ch.unrealizedPnl ?? 0;
                 const pnlPct = ch.unrealizedPnlPct ?? 0;
-                const displayName = toDisplayName(ch.stock_name, ch.stock_code) === '종목명 확인중'
+                const resolvedName = toDisplayName(ch.stock_name, ch.stock_code);
+                const displayName = isUnresolvedStockName(resolvedName, ch.stock_code)
                   ? getStockName(ch.stock_code)
-                  : toDisplayName(ch.stock_name, ch.stock_code);
+                  : resolvedName;
                 const isParking = ch.isParking === true;
                 const weight = typeof ch.weight === 'number' ? ch.weight : null;
 
@@ -1758,9 +1743,10 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                     <div key={`kr-${i}`}>
                       <div className="flex justify-between text-[11px] mb-1">
                         <span className="font-medium text-slate-300">
-                          {toDisplayName(ch.stock_name, ch.stock_code) === '종목명 확인중'
-                            ? getStockName(ch.stock_code)
-                            : toDisplayName(ch.stock_name, ch.stock_code)}
+                          {(() => {
+                            const resolved = toDisplayName(ch.stock_name, ch.stock_code);
+                            return isUnresolvedStockName(resolved, ch.stock_code) ? getStockName(ch.stock_code) : resolved;
+                          })()}
                         </span>
                         <span className="text-slate-500">{fmtWon(inv)} ({pct.toFixed(0)}%)</span>
                       </div>
@@ -1896,9 +1882,10 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="font-bold text-sm text-slate-200">
-                          {toDisplayName(t.stock_name, t.stock_code) === '종목명 확인중'
-                            ? getStockName(t.stock_code)
-                            : toDisplayName(t.stock_name, t.stock_code)}
+                          {(() => {
+                            const resolved = toDisplayName(t.stock_name, t.stock_code);
+                            return isUnresolvedStockName(resolved, t.stock_code) ? getStockName(t.stock_code) : resolved;
+                          })()}
                         </span>
                         {isOverseasTrade && <span className="text-[9px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded-md">🇺🇸</span>}
                         <span className="text-[10px] text-slate-600">{fmtTime(t.created_at)}</span>
@@ -1953,16 +1940,29 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
 // TRADES VIEW
 // ═══════════════════════════════════════
 
+const PENDING_STOCK_NAME_REGEX = /^(?:종목(?:명)?확인중|확인중)$/;
+
 // 특수문자(◆ 등) 포함 여부로 종목명 깨짐 감지
 function isGarbledName(name: string): boolean {
   if (!name) return true;
   return /[^\w\s\uAC00-\uD7A3\u3131-\u318E\u1100-\u11FF().,·\-+%$]/.test(name);
 }
 
+function isPendingStockName(name: string): boolean {
+  const compact = name.replace(/\s+/g, '');
+  return PENDING_STOCK_NAME_REGEX.test(compact);
+}
+
+function isUnresolvedStockName(name: string, code?: string): boolean {
+  if (!name) return true;
+  if (isPendingStockName(name)) return true;
+  return !!code && name === code;
+}
+
 function toDisplayName(name: unknown, code?: string): string {
   const n = String(name ?? '').trim();
   const known = getKnownStockName(code);
-  if (!n) return known ?? (code ? String(code) : '종목명 확인중');
+  if (!n || isPendingStockName(n)) return known ?? (code ? String(code) : '종목명 확인중');
   if (code && n === code) return known ?? String(code);
   if (/^[0-9]{6}$/.test(n)) return known ?? n;
   if (isGarbledName(n)) return known ?? (code ? String(code) : n);
@@ -1992,7 +1992,7 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
   const nameMap = new Map(watchlist.map((w: any) => [w.stock_code, w.stock_name]));
   const getName = (t: any) => {
     const apiName = toDisplayName(t.stock_name, t.stock_code);
-    if (apiName !== '종목명 확인중') return apiName;
+    if (!isUnresolvedStockName(apiName, t.stock_code)) return apiName;
     return toDisplayName(nameMap.get(t.stock_code), t.stock_code);
   };
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -2376,8 +2376,7 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
             <button
               onClick={async () => {
                 toast?.('워치리스트 순환 시작...', 'info');
-                const r = await fetch('/api/settings/run-watchlist-rotation', { method: 'POST' });
-                const d = await r.json().catch(() => ({}));
+                const d = await api('/run-watchlist-rotation', { method: 'POST' }).catch(() => ({}));
                 toast?.(d.message ?? '순환 완료', 'ok');
                 setTimeout(onRefresh, 3000);
               }}
@@ -2387,8 +2386,7 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
             <button
               onClick={async () => {
                 toast?.('종목명 보정 중...', 'info');
-                const r = await fetch('/api/settings/fix-names', { method: 'POST' });
-                const d = await r.json().catch(() => ({}));
+                const d = await api('/fix-names', { method: 'POST' }).catch(() => ({}));
                 toast?.(d.message ?? '보정 완료', 'ok');
               }}
               className="text-xs bg-slate-800/60 hover:bg-slate-800/80 text-slate-400 px-3 py-1.5 rounded-xl transition-all whitespace-nowrap">
