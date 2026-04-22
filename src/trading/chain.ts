@@ -100,6 +100,8 @@ export class ChainManager {
       status: remainingQty > 0 ? 'PROFIT_TAKING' : 'CLOSED',
       total_quantity: remainingQty,
       realized_pnl: Number(chain.realized_pnl) + profit,
+      // peak_price: 부분 익절 시점 현재가 기록 → 트레일링 스톱 기준점
+      ...(remainingQty > 0 && { peak_price: sellPrice }),
       ...(remainingQty === 0 && {
         closed_at: new Date().toISOString(),
         close_reason: `익절: +${((sellPrice / avgBuy - 1) * 100).toFixed(1)}%`,

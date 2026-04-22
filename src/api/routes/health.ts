@@ -23,6 +23,7 @@ export function logSystemEvent(component: string, status: 'success' | 'error' | 
   if (recentEvents.length > MAX_EVENTS) recentEvents.length = MAX_EVENTS;
 }
 
+
 healthRoutes.get('/health', async (c) => {
   const now = new Date();
   // UTC+9 고정 (toLocaleString 파싱 버그 방지)

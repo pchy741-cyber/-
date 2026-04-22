@@ -14,8 +14,8 @@ export const MARKET = {
 export const SCHEDULE = {
   // Track A: 무거운 분석 (하루 2회)
   TRACK_A_CRON: ['30 7 * * 1-5', '0 18 * * 1-5'], // 07:30, 18:00 KST 평일
-  // Track B: 실시간 감시 (장중 10분 간격 — Claude API 비용 절감)
-  TRACK_B_INTERVAL_MINUTES: 10,
+  // Track B: 실시간 감시 (장중 5분 간격 — 매매 기회 2배, API 비용 < 수익 기여)
+  TRACK_B_INTERVAL_MINUTES: 5,
 } as const;
 
 // ── 주문 관련 Enum ──
@@ -65,12 +65,12 @@ export const STRATEGY_PARAMS = {
   SWING: {
     buyThreshold: 55, // 매수 진입 점수 완화 (55점 — 시장 약세 기회 포착)
     splitCount: 2, // 2분할 매수 (예산 절반씩 — 포지션 크기 2배)
-    averageDownPct: -3, // 물타기 트리거 (-3% — 손절 -4%보다 먼저 대응)
-    maxAveragingCount: 1, // 최대 물타기 1회 (2분할이므로 1회면 충분)
-    takeProfitPct: 8, // 익절 라인 (+8% — 스윙 큰 목표)
+    averageDownPct: -1.5, // 물타기 트리거 (-1.5% — 0.5% 익절 대비 균형)
+    maxAveragingCount: 1, // 최대 물타기 1회
+    takeProfitPct: 0.5, // 익절 라인 (+0.5% — 투자금 대비 0.5% 수익 목표)
     takeProfitRatio: 1.0, // 익절 시 전량 매도
-    stopLossPct: -4, // 손절 라인 (-4% — 스윙에 충분한 여유)
-    maxHoldingDays: 5, // 최대 보유 5일 (스윙 충분한 시간)
+    stopLossPct: -1.0, // 손절 라인 (-1.0% — 수수료 감안 타이트 손절)
+    maxHoldingDays: 5, // 최대 보유 5일
   },
   DEFENSE: {
     buyThreshold: 85, // 매수 임계치 상향
@@ -85,12 +85,12 @@ export const STRATEGY_PARAMS = {
   },
   SCALPING: {
     buyThreshold: 68, // 개장 5분 — 모멘텀 종목 빠른 포착, 진입 임계치 완화
-    splitCount: 1, // 전액 즉시 진입 (분할 불필요, 5분 안에 끝냄)
+    splitCount: 1, // 전액 즉시 진입 (분할 불필요)
     averageDownPct: 0, // 물타기 절대 없음
     maxAveragingCount: 0,
-    takeProfitPct: 2.0, // +2% 즉시 전량 익절 (수수료 0.25% 제외 실수익 ~1.75%)
+    takeProfitPct: 0.5, // +0.5% 즉시 전량 익절 (투자금 대비 0.5% 수익 목표)
     takeProfitRatio: 1.0, // 전량 매도
-    stopLossPct: -1.0, // -1% 칼손절 (수수료 포함 실손실 ~1.25%) — 손익비 2:1 유지
+    stopLossPct: -0.5, // -0.5% 칼손절 (손익비 1:1 최소 유지)
     maxHoldingDays: 0, // 당일 청산 필수
     forceCloseTime: '09:10', // 09:10 이후 보유 금지 — 강제 청산
   },

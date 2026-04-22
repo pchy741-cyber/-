@@ -48,3 +48,11 @@ export const PRIORITY_SECTOR_CODES = new Set([
 /** 유휴 현금 파킹 ETF: KODEX 머니마켓액티브 (단기금융, 사실상 원금 손실 0) */
 export const IDLE_PARK_CODE = '333940';
 export const IDLE_PARK_NAME = 'KODEX 머니마켓액티브';
+
+/**
+ * 레거시/보조 파킹 코드
+ * - 과거 버전에서 161510(TIGER 고배당) 등이 파킹으로 사용됨
+ * - Track B에서 이 코드들도 "파킹 자산"으로 간주해 회수 누락을 방지
+ */
+export const LEGACY_IDLE_PARK_CODES = ['161510', '114800'] as const;
+export const IDLE_PARK_CODES = [IDLE_PARK_CODE, ...LEGACY_IDLE_PARK_CODES] as const;

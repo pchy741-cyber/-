@@ -38,9 +38,11 @@ export function enableMemoryMode(): void {
 export function getPool(): pg.Pool {
   if (!pool) {
     const poolDefaults = {
-      max: 10,
-      idleTimeoutMillis: 30_000,
-      connectionTimeoutMillis: 10_000,
+      max: 5,
+      idleTimeoutMillis: 8_000,       // Cloud SQL Unix socket이 ~10s에 idle 연결 끊음 → 8s에 먼저 반환
+      connectionTimeoutMillis: 15_000,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 3_000,
     };
 
     if (config.db.unixSocket) {
@@ -241,7 +243,7 @@ export async function createChain(
 const CHAIN_ALLOWED_COLS = new Set([
   'status', 'strategy_mode', 'avg_buy_price', 'total_quantity', 'total_invested',
   'realized_pnl', 'target_profit_pct', 'stop_loss_pct', 'max_averaging_count',
-  'current_averaging_count', 'opened_at', 'closed_at', 'close_reason',
+  'current_averaging_count', 'peak_price', 'opened_at', 'closed_at', 'close_reason',
 ]);
 
 export async function updateChain(id: string, updates: Partial<TransactionChain>) {

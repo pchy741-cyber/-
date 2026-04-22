@@ -207,6 +207,37 @@ export default function Dashboard() {
     return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVisibility); };
   }, []);
 
+  // SSE 실시간 스트림 — 거래 체결 즉시 반영 (폴링 15초 보완)
+  useEffect(() => {
+    const base = BACKEND_URL.endsWith('/') ? BACKEND_URL.slice(0, -1) : BACKEND_URL;
+    const es = new EventSource(`${base}/api/stream`, { withCredentials: true });
+    let prevChainCount = -1;
+
+    es.addEventListener('update', (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data);
+        // 최신 거래내역 즉시 반영
+        if (Array.isArray(data.recentTrades) && data.recentTrades.length > 0) {
+          setTrades(prev => {
+            const existingIds = new Set(prev.map((t: any) => t.id));
+            const newTrades = data.recentTrades.filter((t: any) => !existingIds.has(t.id));
+            if (newTrades.length === 0) return prev;
+            // 새 거래 추가 후 최신순 유지
+            return [...newTrades, ...prev].slice(0, 200);
+          });
+        }
+        // 체인 수 변화 시 전체 재조회 (새 포지션 진입/청산)
+        if (prevChainCount !== -1 && data.activeChains !== prevChainCount) {
+          load();
+        }
+        prevChainCount = data.activeChains ?? prevChainCount;
+      } catch { /* 파싱 오류 무시 */ }
+    });
+
+    es.onerror = () => { /* 재연결은 EventSource가 자동 처리 */ };
+    return () => es.close();
+  }, []);
+
   // PWA 푸시 알림 자동 등록
   useEffect(() => {
     (async () => {

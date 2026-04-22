@@ -1251,8 +1251,8 @@ dashboardRoutes.get('/trading-status', async (c) => {
       blocks.push({ reason: 'DEFENSE 모드', detail: `AI 점수 ${buyThreshold}점 이상만 진입 — 기준 매우 높음`, severity: 'warn' });
     }
 
-    // 5. AI 점수 후보 없음
-    const candidates = scores.filter((s: any) => (s.composite_score ?? 0) >= buyThreshold && (s.confidence ?? 1) >= 0.6);
+    // 5. AI 점수 후보 없음 (confidence 필터 제거 — 점수만으로 판단)
+    const candidates = scores.filter((s: any) => (s.composite_score ?? 0) >= buyThreshold);
     const topScore = scores.length > 0 ? Math.max(...scores.map((s: any) => s.composite_score ?? 0)) : 0;
     if (scores.length === 0) {
       blocks.push({ reason: 'AI 스코어 없음', detail: 'Track A 미실행 or 캐시 만료 — 기술적 지표 fallback 사용 중', severity: 'info' });
@@ -1475,6 +1475,43 @@ dashboardRoutes.post('/run-track-a', async (c) => {
     runTrackAJob().catch((e: Error) => logger.error(`수동 Track A 실패: ${e.message}`, { component: 'MANUAL' }));
     logger.info('수동 Track A 실행 요청됨', { component: 'MANUAL' });
     return c.json({ ok: true, message: 'Track A 실행 시작됨 (2~5분 소요)' });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// POST /api/run-track-b — Track B 즉시 수동 실행 (파킹 해제 + 매매 판단)
+dashboardRoutes.post('/run-track-b', async (c) => {
+  try {
+    const { runTrackBJob } = await import('../../scheduler/track-b-job.js');
+    runTrackBJob().catch((e: Error) => logger.error(`수동 Track B 실패: ${e.message}`, { component: 'MANUAL' }));
+    logger.info('수동 Track B 실행 요청됨', { component: 'MANUAL' });
+    return c.json({ ok: true, message: 'Track B 실행 시작됨 (30~60초 소요)' });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// POST /api/release-defense-park — 방어 파킹 수동 강제 해제 + KODEX 200 즉시 시장가 매도
+dashboardRoutes.post('/release-defense-park', async (c) => {
+  try {
+    const { deactivateDefensePark } = await import('../../ai/track-b/defense-park.js');
+    const { getPositionForStock } = await import('../../kis/account.js');
+    const { placeOrder } = await import('../../kis/order.js');
+
+    // 1. DB 파킹 상태 해제
+    await deactivateDefensePark('CEO 수동 해제');
+    logger.info('방어 파킹 수동 강제 해제됨', { component: 'MANUAL' });
+
+    // 2. KODEX 200 보유 수량 확인 후 즉시 시장가 매도
+    const position = await getPositionForStock('069500');
+    if (position && position.quantity > 0) {
+      const result = await placeOrder({ stockCode: '069500', side: 'SELL', quantity: position.quantity });
+      logger.info(`🛡️ KODEX 200 즉시 매도: ${position.quantity}주 → ${result.success ? '성공' : '실패'} (${result.message})`, { component: 'MANUAL' });
+      return c.json({ ok: true, message: `파킹 해제 + KODEX 200 ${position.quantity}주 시장가 매도 완료 — 체결 후 자동매매 재개` });
+    }
+
+    return c.json({ ok: true, message: '파킹 해제 완료 (KODEX 200 없음 — 자동매매 즉시 재개)' });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }

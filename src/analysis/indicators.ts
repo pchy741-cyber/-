@@ -552,6 +552,17 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
     score += p.bullish ? pts : -pts;
   }
 
+  // ★ VWAP 위치 점수 (추세 방향 필터 — VWAP 위=매수, 아래=매도 구간)
+  const vwapValues = vwap(candlesAsc.slice(-20));
+  const vwapNow = vwapValues[vwapValues.length - 1] ?? current;
+  const vwapDiff = (current - vwapNow) / vwapNow * 100;
+  const vwapPosition: TechnicalSummary['vwapPosition'] = vwapDiff > 1 ? 'ABOVE' : vwapDiff < -1 ? 'BELOW' : 'AT';
+  if (vwapPosition === 'ABOVE') score += 12;       // VWAP 위 = 단기 상승 바이어스
+  else if (vwapPosition === 'BELOW') score -= 8;   // VWAP 아래 = 매도 압력
+
+  // ★ 중간 거래량 보너스 (1.3~1.8x 구간 — 기존 1.5x만 보상하던 사각지대)
+  if (todayVolSurge >= 1.3 && todayVolSurge < 1.5 && current > sma5Now) score += 4;
+
   score = Math.max(-100, Math.min(100, score));
 
   let overallSignal: TechnicalSummary['overallSignal'];
@@ -566,12 +577,6 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   const recent5Low = Math.min(candles[0].low, candles[1]?.low ?? Infinity, candles[2]?.low ?? Infinity, candles[3]?.low ?? Infinity, candles[4]?.low ?? Infinity);
   const pctFrom3DayHigh = recent3High > 0 ? ((current - recent3High) / recent3High) * 100 : 0;
   const pctFrom5DayLow = recent5Low > 0 && recent5Low < Infinity ? ((current - recent5Low) / recent5Low) * 100 : 0;
-
-  // VWAP 위치 (일봉 VWAP — 최근 20일)
-  const vwapValues = vwap(candlesAsc.slice(-20));
-  const vwapNow = vwapValues[vwapValues.length - 1] ?? current;
-  const vwapDiff = (current - vwapNow) / vwapNow * 100;
-  const vwapPosition: TechnicalSummary['vwapPosition'] = vwapDiff > 1 ? 'ABOVE' : vwapDiff < -1 ? 'BELOW' : 'AT';
 
   return {
     rsi14,

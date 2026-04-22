@@ -94,6 +94,7 @@ async function bootstrap() {
     // 1-1. 스키마 마이그레이션 (무중단 ALTER TABLE)
     try {
       const { getPool } = await import('./db/client.js');
+      await getPool().query(`ALTER TABLE transaction_chains ADD COLUMN IF NOT EXISTS peak_price NUMERIC`).catch(() => {});
       await getPool().query(`ALTER TABLE orders ALTER COLUMN kis_order_no TYPE VARCHAR(100)`);
       logger.info('✅ DB 마이그레이션: kis_order_no VARCHAR(100)', { component: 'BOOT' });
     } catch (e: any) {
@@ -109,6 +110,21 @@ async function bootstrap() {
       logger.info('✅ buy_threshold 보정: SWING 65점으로 완화', { component: 'BOOT' });
     } catch (e: any) {
       logger.warn(`buy_threshold 보정 실패: ${e.message}`, { component: 'BOOT' });
+    }
+    // 익절/손절 목표 동기화: STRATEGY_PARAMS 기본값으로 업데이트 (DB 구버전 덮어쓰기)
+    try {
+      const { getPool: gp } = await import('./db/client.js');
+      const { STRATEGY_PARAMS } = await import('./config/constants.js');
+      const { rows: sr } = await gp().query(`SELECT mode FROM strategy_config WHERE is_active = true LIMIT 1`);
+      const activeMode = (sr[0]?.mode ?? 'SWING') as keyof typeof STRATEGY_PARAMS;
+      const sp = STRATEGY_PARAMS[activeMode] ?? STRATEGY_PARAMS.SWING;
+      await gp().query(
+        `UPDATE strategy_config SET take_profit_pct=$1, stop_loss_pct=$2 WHERE is_active = true`,
+        [sp.takeProfitPct, sp.stopLossPct],
+      );
+      logger.info(`✅ 익절/손절 동기화: take_profit=${sp.takeProfitPct}% stop_loss=${sp.stopLossPct}%`, { component: 'BOOT' });
+    } catch (e: any) {
+      logger.warn(`익절/손절 동기화 실패: ${e.message}`, { component: 'BOOT' });
     }
     // score_accuracy 테이블 자동 생성 (마이그레이션 010)
     try {

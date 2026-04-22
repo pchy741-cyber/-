@@ -17,19 +17,20 @@ import { logSystem } from '../db/client.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
+import { IDLE_PARK_CODE, IDLE_PARK_NAME } from '../ai/track-b/trading-rules.js';
 
 /**
- * 파킹 ETF: TIGER 고배당 (161510) — 배당수익률 ~4.5%/년, 월배당
- * 환경변수로 오버라이드 가능
+ * 파킹 ETF: Track B와 동일 코드 사용 (기본 333940)
+ * 환경변수로 오버라이드 가능하되, 미설정 시 Track B 기본 파킹 코드에 맞춘다.
  */
-const BASE_ASSET_CODE = process.env.BASE_ASSET_CODE || '161510';
-const BASE_ASSET_NAME = process.env.BASE_ASSET_NAME || 'TIGER 고배당';
+const BASE_ASSET_CODE = process.env.BASE_ASSET_CODE || IDLE_PARK_CODE;
+const BASE_ASSET_NAME = process.env.BASE_ASSET_NAME || IDLE_PARK_NAME;
 
 /** 최소 파킹 금액 — 이 이상이면 즉시 파킹 */
-const MIN_PARK_KRW = 100_000; // 10만원 이상이면 파킹 (공격적 운용)
+const MIN_PARK_KRW = 50_000; // 5만원 이상이면 즉시 파킹 (공격적)
 
-/** 항상 유지할 최소 현금 — 소액 수수료/슬리피지 대비 */
-const MIN_LIQUID_KRW = 300_000; // 30만원만 현금으로 유지, 나머지는 ETF
+/** 항상 유지할 최소 현금 — 수수료/슬리피지 대비 최소한만 */
+const MIN_LIQUID_KRW = 100_000; // 10만원만 현금 유보, 나머지 100% ETF 파킹
 
 /**
  * 장 마감 후 현금 파킹

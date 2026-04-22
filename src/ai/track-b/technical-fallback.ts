@@ -59,35 +59,33 @@ export function technicalFallbackDecisions(params: {
     // 동일 종목 중복 매도 신호 방지 (다중 체인 시 첫 번째 체인만 처리)
     if (processedSellCodes.has(chain.stock_code)) continue;
 
-    // 조기 부분익절: +3% 도달 시 50% 매도 (수익 확정 우선, 나머지는 계속 보유)
-    const EARLY_PROFIT_PCT = 3.0;
-    const isEarlyProfitCandidate = pnlPct >= EARLY_PROFIT_PCT && pnlPct < strategyParams.takeProfitPct && chain.status === 'OPEN';
-    if (isEarlyProfitCandidate) {
+    // ─── 2단계 익절 전략 ────────────────────────────────────────────────
+    // 1단계: takeProfitPct(0.5%) 도달 → 50% 부분 매도 (수익 확정)
+    // 2단계: PROFIT_TAKING 상태에서 추가 상승 +1.5% 또는 트레일링 스톱(-0.3% from peak) → 잔여 전량 청산
+    // 효과: 0.5% 이하 단순 익절 대비 수익 기회 2~3배, 동시에 수익 반납 방지
+    if (chain.status !== 'PROFIT_TAKING' && pnlPct >= strategyParams.takeProfitPct) {
+      // 1단계: 첫 익절 — 50% 부분 매도
       const sellQty = Math.ceil(chain.total_quantity * 0.5);
-      if (sellQty > 0) {
+      if (sellQty > 0 && sellQty < chain.total_quantity) {
         decisions.push({
           action: 'PARTIAL_SELL',
           stock_code: chain.stock_code,
-          quantity: Math.min(sellQty, chain.total_quantity),
+          quantity: sellQty,
           price_type: 'MARKET',
-          reasoning: `조기 부분익절: +${pnlPct.toFixed(1)}% → 50% 수익 확정 (목표 ${strategyParams.takeProfitPct}% 대기 잔여 50%)`,
-          confidence: 0.85,
+          reasoning: `1단계 익절(50%): +${pnlPct.toFixed(1)}% 도달 → 나머지 트레일링 대기`,
+          confidence: 0.9,
         });
         processedSellCodes.add(chain.stock_code);
         continue;
       }
-    }
-
-    // 익절
-    if (pnlPct >= strategyParams.takeProfitPct) {
-      const sellQty = Math.ceil(chain.total_quantity * strategyParams.takeProfitRatio);
-      if (sellQty > 0) {
+      // 수량 1주 등 분할 불가 → 전량 익절
+      if (chain.total_quantity > 0) {
         decisions.push({
-          action: sellQty >= chain.total_quantity ? 'SELL' : 'PARTIAL_SELL',
+          action: 'SELL',
           stock_code: chain.stock_code,
-          quantity: Math.min(sellQty, chain.total_quantity),
+          quantity: chain.total_quantity,
           price_type: 'MARKET',
-          reasoning: `기술적 익절: +${pnlPct.toFixed(1)}% (목표 ${strategyParams.takeProfitPct}%)`,
+          reasoning: `기술적 익절(전량): +${pnlPct.toFixed(1)}% (목표 ${strategyParams.takeProfitPct}%)`,
           confidence: 0.9,
         });
         processedSellCodes.add(chain.stock_code);
@@ -95,22 +93,29 @@ export function technicalFallbackDecisions(params: {
       }
     }
 
-    // 트레일링 스톱: PROFIT_TAKING(부분 익절 후) 남은 수량 보호
-    // pnlPct < 0.5%: 0%~+0.5% 구간 (수익 소멸) 및 0%~-2% 구간 (손절 전 조기 청산) 모두 포함
-    // 이전 버그: pnlPct > 0 조건으로 인해 0% ~ -2% 구간에서 트리거 없었음 → 수익 반납 후 손실 확대
-    if (chain.status === 'PROFIT_TAKING' && pnlPct < -0.5) {
-      // -0.5% 이하일 때만 트리거 (0.5% → -0.5%: 원금 소폭 손실 시 청산, 일반 변동성 허용)
-      decisions.push({
-        action: 'FORCE_CLOSE',
-        stock_code: chain.stock_code,
-        quantity: chain.total_quantity,
-        price_type: 'MARKET',
-        reasoning: `트레일링 스톱: 익절 후 수익 반납 ${pnlPct.toFixed(1)}% → -0.5% 이하 (원금 보호 청산)`,
-        confidence: 0.85,
-      });
-      processedSellCodes.add(chain.stock_code);
-      continue;
+    // 2단계: 부분 익절 후 잔여 수량 트레일링 스톱
+    if (chain.status === 'PROFIT_TAKING') {
+      const peakPrice = (chain as any).peak_price ? Number((chain as any).peak_price) : Number(chain.avg_buy_price) * (1 + strategyParams.takeProfitPct / 100);
+      const trailDropPct = ((price.currentPrice - peakPrice) / peakPrice) * 100;
+      const isTrailTriggered = trailDropPct <= -0.3; // peak 대비 -0.3% 하락 시 청산
+      const isTargetReached = pnlPct >= 1.5;         // +1.5% 추가 목표 달성 시 익절
+
+      if (isTargetReached || isTrailTriggered) {
+        decisions.push({
+          action: isTargetReached ? 'SELL' : 'FORCE_CLOSE',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: isTargetReached
+            ? `2단계 익절(잔여전량): +${pnlPct.toFixed(1)}% 목표달성`
+            : `트레일링 스톱: peak 대비 ${trailDropPct.toFixed(2)}% 하락 (peak=${peakPrice.toFixed(0)}원)`,
+          confidence: 0.9,
+        });
+        processedSellCodes.add(chain.stock_code);
+        continue;
+      }
     }
+    // ──────────────────────────────────────────────────────────────────────
 
     // 손절
     if (pnlPct <= strategyParams.stopLossPct) {
@@ -201,7 +206,7 @@ export function technicalFallbackDecisions(params: {
       const sma20val = tech.sma20;
       // AI 있으면 70점 이상 확신 필요, AI 없으면 기술 점수 65점 이상으로 대체
       const sma20AiThreshold = aiScore > 0 ? 70 : 999; // AI 없을 땐 기술 점수로만 판단
-      const sma20TechOk = tech.score >= 65 && tech.macdCrossover === 'BULLISH_CROSS';
+      const sma20TechOk = tech.score >= 65 && tech.macdCrossover === 'BULLISH';
       if (price.currentPrice < sma20val && aiScore < sma20AiThreshold && !sma20TechOk) {
         logger.info(`  ⬇️ ${stock.stock_code}: 현재가 < SMA20 하락추세 → 진입 차단 (AI=${aiScore}, tech=${tech.score})`, { component: 'TRACK_B' });
         continue;

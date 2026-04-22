@@ -317,18 +317,23 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 현금 파킹 — 09:40, 10:30, 12:00, 13:30, 15:10 (장중 5회, 유휴 현금 → TIGER 고배당 ETF)
-  // 돈이 단 1분도 놀지 않도록 — 기회 없으면 ETF, 기회 생기면 ETF 팔아서 매수
-  for (const [h, m] of [[9,40],[10,30],[12,0],[13,30],[15,10]]) {
-    const cronExpr = `${m} ${h} * * 1-5`;
-    cron.schedule(
-      cronExpr,
-      () => {
-        parkIdleCash().catch((e) => logger.error(`현금 파킹(${h}:${String(m).padStart(2,'0')}) 실패: ${e}`, { component: 'SCHEDULER' }));
-      },
-      { timezone: MARKET.TIMEZONE },
-    );
-  }
+  // 현금 파킹 — 매 30분 (장중 전구간, 유휴 현금 → 머니마켓 ETF)
+  // 돈이 단 1분도 놀지 않도록 — Track B 5분 사이클과 겹치지 않게 +25분 오프셋
+  cron.schedule(
+    '25,55 9-14 * * 1-5',
+    () => {
+      parkIdleCash().catch((e) => logger.error(`현금 파킹 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+  // 15:10 마지막 파킹 (15:20 강제청산 전)
+  cron.schedule(
+    '10 15 * * 1-5',
+    () => {
+      parkIdleCash().catch((e) => logger.error(`현금 파킹(15:10) 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
 
   // 🇺🇸 USD 장기파킹 — 09:05 매일 (DEFENSE 10일↑ → SPY 매수 / SWING 복귀 3일↑ → SPY 매도)
   cron.schedule(

@@ -620,18 +620,34 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         const targetPct = dbTakeProfit ?? (Number(chain.target_profit_pct) || baseParams.takeProfitPct);
         const stopPct = dbStopLoss ?? (Number(chain.stop_loss_pct) || baseParams.stopLossPct);
 
+        // PROFIT_TAKING 상태: 2단계 trailing stop — peak_price 기준
+        if (chain.status === 'PROFIT_TAKING') {
+          const peakPrice = (chain as any).peak_price ? Number((chain as any).peak_price) : avgBuy * (1 + targetPct / 100);
+          const trailDropPct = ((price.currentPrice - peakPrice) / peakPrice) * 100;
+          if (pnlPct >= 1.5) {
+            logger.info(`🔒 하드 2단계 익절: ${chain.stock_code} +${pnlPct.toFixed(1)}% → +1.5% 목표달성`, { component: 'TRACK_B' });
+            decisions.push({ action: 'SELL', stock_code: chain.stock_code, quantity: chain.total_quantity, price_type: 'MARKET', reasoning: `하드 2단계 익절: +${pnlPct.toFixed(1)}% ≥ +1.5% 달성`, confidence: 1.0 });
+          } else if (trailDropPct <= -0.3) {
+            logger.info(`🔒 하드 트레일링스톱: ${chain.stock_code} peak 대비 ${trailDropPct.toFixed(2)}% 하락`, { component: 'TRACK_B' });
+            decisions.push({ action: 'FORCE_CLOSE', stock_code: chain.stock_code, quantity: chain.total_quantity, price_type: 'MARKET', reasoning: `하드 트레일링스톱: peak ${peakPrice.toFixed(0)}원 대비 ${trailDropPct.toFixed(2)}% 하락`, confidence: 1.0 });
+          }
+          continue; // PROFIT_TAKING은 일반 익절/손절 하드룰 적용 안 함
+        }
+
         if (pnlPct >= targetPct) {
-          const sellRatio = baseParams.takeProfitRatio ?? 0.5;
-          const sellQty = Math.ceil(chain.total_quantity * sellRatio);
+          // 1단계 익절: 50% 부분 매도 → PROFIT_TAKING으로 전환
+          const sellQty = chain.total_quantity > 1
+            ? Math.ceil(chain.total_quantity * 0.5)
+            : chain.total_quantity;
           const safeQty = Math.min(sellQty, chain.total_quantity);
           if (safeQty > 0) {
-            logger.info(`🔒 하드 익절: ${chain.stock_code} +${pnlPct.toFixed(1)}% (목표 ${targetPct}%) — AI HOLD 무시`, { component: 'TRACK_B' });
+            logger.info(`🔒 하드 1단계 익절(50%): ${chain.stock_code} +${pnlPct.toFixed(1)}% → 잔여 trailing 대기`, { component: 'TRACK_B' });
             decisions.push({
               action: safeQty >= chain.total_quantity ? 'SELL' : 'PARTIAL_SELL',
               stock_code: chain.stock_code,
               quantity: safeQty,
               price_type: 'MARKET',
-              reasoning: `하드 익절: +${pnlPct.toFixed(1)}% (목표 ${targetPct}%) — AI 결정 무관 강제 실행`,
+              reasoning: `하드 1단계 익절(50%): +${pnlPct.toFixed(1)}% (목표 ${targetPct}%) — 잔여 trailing`,
               confidence: 1.0,
             });
           }
