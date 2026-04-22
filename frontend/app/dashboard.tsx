@@ -1470,28 +1470,49 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                 const displayName = toDisplayName(ch.stock_name, ch.stock_code) === '종목명 확인중'
                   ? getStockName(ch.stock_code)
                   : toDisplayName(ch.stock_name, ch.stock_code);
+                const isParking = ch.isParking === true;
+                const weight = typeof ch.weight === 'number' ? ch.weight : null;
                 return (
-                  <div key={`c${i}`} className="p-4 bg-[#0f1320] hover:bg-white/[0.01] transition-colors">
+                  <div key={`c${i}`} className={`p-4 transition-colors ${isParking ? 'bg-sky-950/60 hover:bg-sky-900/40 border-l-2 border-sky-500/50' : 'bg-[#0f1320] hover:bg-white/[0.01]'}`}>
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="text-sm font-bold truncate">{displayName}</span>
-                          <span className="text-[10px] bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded font-medium">{ch.strategy_mode}</span>
-                          {ch.stock_code === '069500' && <span className="text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/40 px-1.5 py-0.5 rounded font-bold">🛡️ 파킹</span>}
+                          <span className={`text-sm font-bold truncate ${isParking ? 'text-sky-200' : ''}`}>{displayName}</span>
+                          {isParking ? (
+                            <span className="text-[10px] bg-sky-500/20 text-sky-300 border border-sky-500/40 px-1.5 py-0.5 rounded font-bold">💰 파킹중</span>
+                          ) : (
+                            <span className="text-[10px] bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded font-medium">{ch.strategy_mode}</span>
+                          )}
+                          {ch.status === 'PROFIT_TAKING' && <span className="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded font-bold">2단계↑</span>}
                         </div>
-                        <div className="text-[11px] text-slate-500 mt-0.5">매수평단 {fmtWon(avgPrice)} · {fmt(qty)}주</div>
+                        <div className="text-[11px] text-slate-500 mt-0.5">
+                          매수평단 {fmtWon(avgPrice)} · {fmt(qty)}주
+                          {weight !== null && <span className={`ml-1.5 font-semibold ${isParking ? 'text-sky-500' : 'text-slate-400'}`}>· 비중 {weight}%</span>}
+                        </div>
                       </div>
                       <div className="text-right shrink-0">
                         {ch.currentPrice > 0 ? (
                           <>
-                            <div className={`text-lg font-black ${pc(pnl)}`}>{pnlPct > 0 ? '+' : ''}{pnlPct.toFixed(2)}%</div>
-                            <div className={`text-[11px] ${pc(pnl)}`}>{pnl > 0 ? '+' : ''}{fmtWon(pnl)}</div>
+                            <div className={`text-lg font-black ${isParking ? 'text-sky-300' : pc(pnl)}`}>{pnlPct > 0 ? '+' : ''}{pnlPct.toFixed(2)}%</div>
+                            <div className={`text-[11px] ${isParking ? 'text-sky-400' : pc(pnl)}`}>{pnl > 0 ? '+' : ''}{fmtWon(pnl)}</div>
                           </>
                         ) : <span className="text-xs text-slate-600">장 마감</span>}
                       </div>
                     </div>
-                    {/* P&L 진행 바: 손절 ← 현재 → 목표 */}
-                    {ch.currentPrice > 0 && avgPrice > 0 && (() => {
+                    {/* 파킹 ETF: 심플 바 (연 수익률 기준) */}
+                    {isParking && ch.currentPrice > 0 && avgPrice > 0 && (
+                      <div className="mt-3 mb-1">
+                        <div className="relative h-1.5 bg-white/[0.05] rounded-full overflow-hidden">
+                          <div className="absolute h-full rounded-full bg-sky-500/70 transition-all duration-700" style={{ width: `${Math.min(100, Math.max(0, pnlPct * 20 + 50))}%` }} />
+                        </div>
+                        <div className="flex justify-between mt-0.5">
+                          <span className="text-[9px] text-sky-600">유휴현금 파킹 ETF</span>
+                          <span className="text-[9px] text-sky-500">연 ~3.4% 수익</span>
+                        </div>
+                      </div>
+                    )}
+                    {/* P&L 진행 바: 손절 ← 현재 → 목표 (일반 종목만) */}
+                    {!isParking && ch.currentPrice > 0 && avgPrice > 0 && (() => {
                       const range = targetPct - stopPct;
                       const pos = Math.max(0, Math.min(100, ((pnlPct - stopPct) / range) * 100));
                       const barColor = pnlPct >= 0 ? 'bg-emerald-500' : 'bg-rose-500';
@@ -1508,6 +1529,23 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                         </div>
                       );
                     })()}
+                    {isParking ? (
+                      /* 파킹 ETF: 투자금 + 현재가 + 비중만 */
+                      <div className="grid grid-cols-3 gap-2 mt-2">
+                        <div>
+                          <div className="text-[9px] text-slate-500 mb-0.5">파킹금액</div>
+                          <div className="text-[11px] font-bold text-sky-300 truncate">{fmtWon(invested)}</div>
+                        </div>
+                        <div>
+                          <div className="text-[9px] text-slate-500 mb-0.5">현재가</div>
+                          <div className="text-[11px] font-bold text-sky-300">{ch.currentPrice > 0 ? fmtWon(ch.currentPrice) : '-'}</div>
+                        </div>
+                        <div>
+                          <div className="text-[9px] text-sky-600 mb-0.5">자산 비중</div>
+                          <div className="text-[10px] font-bold text-sky-400">{weight !== null ? `${weight}%` : '-'}</div>
+                        </div>
+                      </div>
+                    ) : (
                     <div className="grid grid-cols-3 gap-2 mt-2">
                       <div>
                         <div className="text-[9px] text-slate-500 mb-0.5">투자금</div>
@@ -1522,14 +1560,15 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                         <div className="text-[10px] font-bold"><span className="text-emerald-500">+{targetPct}%</span> <span className="text-slate-600">/</span> <span className="text-rose-500">{stopPct}%</span></div>
                       </div>
                     </div>
+                    )}
                     <div className="flex items-center gap-1.5 mt-2.5">
-                      <div className="flex gap-0.5 mr-1">
+                      {!isParking && <div className="flex gap-0.5 mr-1">
                         {Array.from({ length: maxAvg }, (_, j) => (
                           <span key={j} className={`w-3.5 h-3.5 rounded-full text-[7px] font-bold flex items-center justify-center ${j <= curAvg ? 'bg-blue-500 text-white' : 'bg-white/[0.06] text-slate-600'}`}>{j + 1}</span>
                         ))}
-                      </div>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400">+{targetPct}%</span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400">{stopPct}%</span>
+                      </div>}
+                      {!isParking && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400">+{targetPct}%</span>}
+                      {!isParking && <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400">{stopPct}%</span>}
                       <div className="ml-auto flex items-center gap-1">
                         {/* 탈출 버튼: +0.5% 도달 순간 자동 전량 매도 */}
                         {ch.escape_target_price ? (

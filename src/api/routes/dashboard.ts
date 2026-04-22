@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { getPortfolioFlowStatus } from '../../automation/ceo-workflow.js';
 import { getDefenseParkState } from '../../ai/track-b/defense-park.js';
+import { IDLE_PARK_CODES } from '../../ai/track-b/trading-rules.js';
 import { getCachedScores, cachePrice, getLastKnownPrices } from '../../cache/redis.js';
 import { cachePriceMemory, getLastKnownPricesMemory, getCachedPriceMemory } from '../../cache/memory.js';
 import { config } from '../../config/index.js';
@@ -232,7 +233,9 @@ dashboardRoutes.get('/dashboard', async (c) => {
     const known = getKnownStockName(ch.stock_code);
     const resolvedName = [nameMap.get(ch.stock_code), watchlistNameMap.get(ch.stock_code), ch.stock_name, known]
       .find(n => !isCode(n) && !isInvalidStockName(n, ch.stock_code)) ?? ch.stock_code;
-    return { ...ch, stock_name: resolvedName, currentPrice, unrealizedPnl, unrealizedPnlPct, invested };
+    const isParking = (IDLE_PARK_CODES as readonly string[]).includes(ch.stock_code)
+      || (defensePark?.isActive && ch.stock_code === defensePark?.parkStockCode);
+    return { ...ch, stock_name: resolvedName, currentPrice, unrealizedPnl, unrealizedPnlPct, invested, isParking };
   });
 
   // 투자금/손익 계산 — 모드별 분기
@@ -254,6 +257,12 @@ dashboardRoutes.get('/dashboard', async (c) => {
     totalInvested = balance.totalEvalAmount ?? 0; // 평가금액(원금+미실현손익 포함)
     totalPnl = balance.totalProfitLoss ?? 0;      // 미실현손익
     actualCash = rawCash;
+  }
+
+  // 비중(weight) 계산 — actualCash 확정 후
+  const totalForWeight = totalChainInvested + actualCash;
+  for (const ch of enrichedChains as any[]) {
+    ch.weight = totalForWeight > 0 ? Math.round((ch.invested / totalForWeight) * 1000) / 10 : 0;
   }
 
   // pnlPct: Live는 KIS API 직접값 사용(정확), Paper는 원금 대비 계산
