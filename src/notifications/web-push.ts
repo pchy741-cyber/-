@@ -106,55 +106,129 @@ async function removeSubscription(endpoint: string): Promise<void> {
 }
 
 // ══════════════════════════════════════
+//  종목명 조회 헬퍼 (코드→이름)
+// ══════════════════════════════════════
+
+async function resolveStockName(code: string): Promise<string> {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT stock_name FROM watchlist WHERE stock_code = $1 LIMIT 1`,
+      [code],
+    );
+    const name = rows[0]?.stock_name;
+    if (name && name !== code && !/^\d{6}$/.test(name)) return name;
+  } catch { /* ignore */ }
+  return code;
+}
+
+function compactReasoning(reasoning: string, prefixRegex: RegExp): string {
+  const cleaned = reasoning.replace(prefixRegex, '').trim();
+  return cleaned.length > 0 ? cleaned.slice(0, 60) : '사유 없음';
+}
+
+// ══════════════════════════════════════
 //  매매 이벤트별 알림 헬퍼
 // ══════════════════════════════════════
 
 export async function notifyBuy(stockCode: string, qty: number, price: number, reasoning: string) {
-  const totalKrw = (qty * price).toLocaleString();
-  const shortReason = reasoning.length > 80 ? reasoning.slice(0, 80) + '…' : reasoning;
+  const name = await resolveStockName(stockCode);
+  const totalKrw = Math.round(qty * price);
+  const shortReason = compactReasoning(reasoning, /^(매수|BUY|buy)\s*[:：]?\s*/i);
 
-  // 웹 푸시
   await sendPushNotification({
-    title: `🟢 매수: ${stockCode}`,
-    body: `${qty}주 × ${price.toLocaleString()}원 (${totalKrw}원)\n${shortReason}`,
-    tag: 'trade-buy',
+    title: `🟢 매수 체결 — ${name}`,
+    body: `${qty}주 × ${price.toLocaleString()}원 = ${totalKrw.toLocaleString()}원\n📌 ${shortReason}`,
+    tag: `buy-${stockCode}`,
     url: '/',
   });
 
-  // 텔레그램 (항상 전송)
   try {
     const { sendTelegramMessage } = await import('./telegram.js');
     await sendTelegramMessage(
       `🟢 *매수 체결*\n` +
-      `종목: \`${stockCode}\`\n` +
+      `종목: *${name}* (\`${stockCode}\`)\n` +
       `수량: ${qty}주 × ${price.toLocaleString()}원\n` +
-      `총액: ${totalKrw}원\n` +
+      `총액: ${totalKrw.toLocaleString()}원\n` +
       `사유: ${shortReason}`
     );
   } catch { /* telegram optional */ }
 }
 
 export async function notifySell(stockCode: string, qty: number, price: number, pnlPct: number, reasoning: string) {
-  const emoji = pnlPct >= 0 ? '🔴' : '🔻';
-  const pnlStr = pnlPct >= 0 ? `+${pnlPct.toFixed(1)}%` : `${pnlPct.toFixed(1)}%`;
-  const shortReason = reasoning.length > 80 ? reasoning.slice(0, 80) + '…' : reasoning;
+  const name = await resolveStockName(stockCode);
+  const isProfit = pnlPct >= 0;
+  const emoji = pnlPct >= 3 ? '🎉' : isProfit ? '✅' : pnlPct >= -1 ? '🟡' : '🔻';
+  const pnlStr = (isProfit ? '+' : '') + pnlPct.toFixed(2) + '%';
+  const shortReason = compactReasoning(reasoning, /^(매도|SELL|sell|강제\s*청산)\s*[:：]?\s*/i);
 
-  // 웹 푸시
   await sendPushNotification({
-    title: `${emoji} 매도: ${stockCode} (${pnlStr})`,
-    body: `${qty}주 × ${price.toLocaleString()}원\n${shortReason}`,
-    tag: 'trade-sell',
+    title: `${emoji} 매도 체결 — ${name} (${pnlStr})`,
+    body: `${qty}주 × ${price.toLocaleString()}원\n📌 ${shortReason}`,
+    tag: `sell-${stockCode}`,
     url: '/',
   });
 
-  // 텔레그램 (항상 전송)
   try {
     const { sendTelegramMessage } = await import('./telegram.js');
     await sendTelegramMessage(
       `${emoji} *매도 체결* (${pnlStr})\n` +
-      `종목: \`${stockCode}\`\n` +
+      `종목: *${name}* (\`${stockCode}\`)\n` +
       `수량: ${qty}주 × ${price.toLocaleString()}원\n` +
       `사유: ${shortReason}`
+    );
+  } catch { /* telegram optional */ }
+}
+
+export async function notifyOverseasBuy(stockCode: string, stockName: string, qty: number, priceUsd: number, reasoning: string) {
+  const shortReason = compactReasoning(reasoning, /^(매수|BUY|buy)\s*[:：]?\s*/i);
+  const totalUsd = qty * priceUsd;
+
+  await sendPushNotification({
+    title: `🟢 해외 매수 체결 — ${stockName}`,
+    body: `${qty}주 × $${priceUsd.toFixed(2)} = $${totalUsd.toFixed(2)}\n📌 ${shortReason}`,
+    tag: `overseas-buy-${stockCode}`,
+    url: '/',
+  });
+
+  try {
+    const { sendTelegramMessage } = await import('./telegram.js');
+    await sendTelegramMessage(
+      `🟢 *해외 매수 체결*\n` +
+      `종목: *${stockName}* (\`${stockCode}\`)\n` +
+      `수량: ${qty}주 × $${priceUsd.toFixed(2)}\n` +
+      `총액: $${totalUsd.toFixed(2)}\n` +
+      `사유: ${shortReason}`,
+    );
+  } catch { /* telegram optional */ }
+}
+
+export async function notifyOverseasSell(
+  stockCode: string,
+  stockName: string,
+  qty: number,
+  priceUsd: number,
+  pnlPct: number,
+  reasoning: string,
+) {
+  const isProfit = pnlPct >= 0;
+  const emoji = pnlPct >= 3 ? '🎉' : isProfit ? '✅' : pnlPct >= -1 ? '🟡' : '🔻';
+  const pnlStr = `${isProfit ? '+' : ''}${pnlPct.toFixed(2)}%`;
+  const shortReason = compactReasoning(reasoning, /^(매도|SELL|sell|강제\s*청산)\s*[:：]?\s*/i);
+
+  await sendPushNotification({
+    title: `${emoji} 해외 매도 체결 — ${stockName} (${pnlStr})`,
+    body: `${qty}주 × $${priceUsd.toFixed(2)}\n📌 ${shortReason}`,
+    tag: `overseas-sell-${stockCode}`,
+    url: '/',
+  });
+
+  try {
+    const { sendTelegramMessage } = await import('./telegram.js');
+    await sendTelegramMessage(
+      `${emoji} *해외 매도 체결* (${pnlStr})\n` +
+      `종목: *${stockName}* (\`${stockCode}\`)\n` +
+      `수량: ${qty}주 × $${priceUsd.toFixed(2)}\n` +
+      `사유: ${shortReason}`,
     );
   } catch { /* telegram optional */ }
 }

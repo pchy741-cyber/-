@@ -45,6 +45,12 @@ const MAX_POSITIONS = 7;           // 최대 동시 보유 종목
 const POSITION_SIZE_USD = 3000;    // 종목당 최대 투자금 (스윙 적극 투자)
 const POSITION_PCT = 0.20;         // 또는 가용 현금의 20%
 
+function resolveOverseasStockName(code: string, exchange: string): string {
+  return GLOBAL_WATCHLIST.find((s) => s.code === code && s.exchange === exchange)?.name
+    ?? GLOBAL_WATCHLIST.find((s) => s.code === code)?.name
+    ?? code;
+}
+
 // ── DB 기반 보유종목 관리 (서버 재시작해도 유지) ──
 async function ensureOverseasTable(): Promise<void> {
   await getPool().query(`
@@ -949,6 +955,8 @@ async function executeOverseasOrder(
   previousQty: number,
   previousAvgPrice: number,
 ): Promise<OverseasExecutionResult> {
+  const stockName = resolveOverseasStockName(code, exchange);
+
   if (config.isPaper) {
     const slippage = side === 'BUY' ? 0.001 : -0.001;
     const fillPrice = price * (1 + slippage);
@@ -967,14 +975,13 @@ async function executeOverseasOrder(
 
     logger.info(`📝 [US_PAPER] ${side} ${code} x${qty} @$${fillPrice.toFixed(2)} (${fakeOrderNo})`, { component: 'OVERSEAS' });
 
-    const { sendPushNotification } = await import('../notifications/web-push.js');
-    const emoji = side === 'BUY' ? '🟢' : '🔴';
-    await sendPushNotification({
-      title: `${emoji} 해외 ${side === 'BUY' ? '매수' : '매도'}: ${code}`,
-      body: `${qty}주 × $${fillPrice.toFixed(2)}\n${reasoning}`,
-      tag: `overseas-${side.toLowerCase()}`,
-      url: '/',
-    }).catch(() => {});
+    const { notifyOverseasBuy: nb, notifyOverseasSell: ns } = await import('../notifications/web-push.js');
+    if (side === 'BUY') {
+      nb(code, stockName, qty, fillPrice, reasoning).catch(() => {});
+    } else {
+      const pnlPct = previousAvgPrice > 0 ? ((fillPrice - previousAvgPrice) / previousAvgPrice) * 100 : 0;
+      ns(code, stockName, qty, fillPrice, pnlPct, reasoning).catch(() => {});
+    }
     const finalQty = side === 'BUY' ? previousQty + qty : Math.max(0, previousQty - qty);
     const finalAvgPrice = side === 'BUY' && finalQty > 0
       ? (previousAvgPrice * previousQty + fillPrice * qty) / finalQty
@@ -1020,6 +1027,14 @@ async function executeOverseasOrder(
             status: confirmed.filledQty >= qty ? 'FILLED' : 'PARTIAL',
             kis_status: confirmed.filledQty >= qty ? 'FILLED' : 'PARTIAL',
           });
+          // 체결 확인 후 푸시 알림
+          const { notifyOverseasBuy: nb, notifyOverseasSell: ns } = await import('../notifications/web-push.js');
+          if (side === 'BUY') {
+            nb(code, stockName, confirmed.filledQty, confirmed.filledPrice, reasoning).catch(() => {});
+          } else {
+            const pnlPct = previousAvgPrice > 0 ? ((confirmed.filledPrice - previousAvgPrice) / previousAvgPrice) * 100 : 0;
+            ns(code, stockName, confirmed.filledQty, confirmed.filledPrice, pnlPct, reasoning).catch(() => {});
+          }
         } else {
           logger.warn(`⏳ 체결 미확인: ${code} (${result.orderNo}) → PENDING 유지`, { component: 'OVERSEAS' });
         }

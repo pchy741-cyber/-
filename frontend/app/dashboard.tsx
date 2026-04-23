@@ -1079,9 +1079,9 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   };
   const chains = dash?.chains || [];
   const usW = usDash?.watchlist || [];
-  const usHoldings = usDash?.holdings || []; // 해외 보유종목
-  // 국내+해외 체결 모두 포함 (시간 역순)
-  const filled = trades.filter((t: any) => t.status === 'FILLED')
+  const usHoldings = usDash?.holdings || (dash?.overseas?.holdings ?? []); // 해외 보유종목 (usDash 미로드시 main dash 폴백)
+  // 국내+해외 체결 모두 포함 (시간 역순) — PENDING 해외주문도 포함
+  const filled = trades.filter((t: any) => t.status === 'FILLED' || (t.status === 'PENDING' && t.trigger_source === 'OVERSEAS'))
     .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   const todayTrades = filled.filter((t: any) => new Date(t.created_at).toDateString() === new Date().toDateString());
 
@@ -1987,7 +1987,7 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
     return toDisplayName(nameMap.get(t.stock_code), t.stock_code);
   };
   const [expanded, setExpanded] = useState<string | null>(null);
-  const filled = trades.filter((t: any) => t.status === 'FILLED');
+  const filled = trades.filter((t: any) => t.status === 'FILLED' || (t.status === 'PENDING' && t.trigger_source === 'OVERSEAS'));
   const isOverseas = (t: any) => t.trigger_source === 'OVERSEAS';
   const domestic = filled.filter((t: any) => !isOverseas(t));
   const buys = domestic.filter((t: any) => t.side === 'BUY');

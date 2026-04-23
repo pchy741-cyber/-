@@ -95,8 +95,8 @@ export function chartVerificationGate(input: GateInput): GateResult {
     return { passed: false, reason: `거래량 이상치: ${tech.volumeRatio.toFixed(1)}배 (허수/작전 의심)` };
   }
 
-  // 거래량 너무 적으면 유동성 부족 (모의투자는 0.15x, 실전은 0.3x)
-  const minVolumeRatio = config.isPaper ? 0.15 : 0.3;
+  // 거래량 너무 적으면 유동성 부족 (0.15x — 실전/모의 동일)
+  const minVolumeRatio = 0.15;
   if (tech.volumeRatio < minVolumeRatio) {
     return { passed: false, reason: `거래량 과소: ${tech.volumeRatio.toFixed(1)}배 (유동성 부족)` };
   }
@@ -203,28 +203,29 @@ async function getWinRateStats(days: number = 30): Promise<WinRateStats> {
 export async function expectedValueGate(_input: GateInput): Promise<GateResult> {
   const stats = await getWinRateStats(30);
 
-  if (stats.totalTrades < 5) {
-    // 데이터 부족 시 기본 R:R만 체크하고 통과
-    return { passed: true, reason: '매매이력 부족(5건 미만) — 기본 통과', expectedValue: 0 };
+  if (stats.totalTrades < 20) {
+    // 데이터 부족 시 기본 통과 (20건 미만이면 통계적으로 의미 없음)
+    return { passed: true, reason: `매매이력 부족(${stats.totalTrades}건) — 기본 통과`, expectedValue: 0 };
   }
 
   const winRate = stats.totalTrades > 0 ? stats.wins / stats.totalTrades : 0.5;
   const lossRate = 1 - winRate;
   const ev = winRate * stats.avgWinPct - lossRate * Math.abs(stats.avgLossPct);
 
-  if (ev <= 0) {
+  if (ev <= -2.0) {
+    // EV가 -2% 이하일 때만 차단 (약간 음수는 단기 슬럼프로 허용)
     return {
       passed: false,
-      reason: `기대값 음수: EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%, 평균익${stats.avgWinPct.toFixed(1)}%, 평균손${stats.avgLossPct.toFixed(1)}%)`,
+      reason: `기대값 심각: EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%, 평균익${stats.avgWinPct.toFixed(1)}%, 평균손${stats.avgLossPct.toFixed(1)}%)`,
       expectedValue: ev,
     };
   }
 
-  // 승률 35% 미만이면 추가 경고
-  if (winRate < 0.35) {
+  // 승률 25% 미만이면 차단 (35% → 25%로 완화)
+  if (winRate < 0.25) {
     return {
       passed: false,
-      reason: `승률 과소: ${(winRate * 100).toFixed(0)}% (최소 35% 필요)`,
+      reason: `승률 과소: ${(winRate * 100).toFixed(0)}% (최소 25% 필요)`,
       expectedValue: ev,
     };
   }
@@ -339,23 +340,16 @@ export function entryTimingGate(input: GateInput): GateResult {
   const recent3High = Math.max(c0.high, c1.high, c2.high);
   const pctFromHigh = recent3High > 0 ? ((current - recent3High) / recent3High) * 100 : -5;
 
-  // 3일 최고가 대비 -1% 이내 = 고점권 → 차단
-  if (pctFromHigh >= -1.0) {
+  // 3일 최고가와 동일 or 초과 = 신고가 돌파 시도 → 차단 (단순 근접은 허용)
+  if (pctFromHigh >= 0) {
     return {
       passed: false,
-      reason: `🔴 고점 추격 차단: 현재(${current.toLocaleString()}) = 3일고가(${recent3High.toLocaleString()})의 ${(100 + pctFromHigh).toFixed(1)}% — 조정 후 재진입`,
+      reason: `🔴 고점 추격 차단: 현재(${current.toLocaleString()}) ≥ 3일고가(${recent3High.toLocaleString()}) — 조정 후 재진입`,
     };
   }
 
-  // ── 3. 3일 연속 상승 → 스윙/스캘핑 구분 처리 ──
-  const is3DayRising = c0.close > c1.close && c1.close > c2.close && c2.close > c3.close;
-  if (is3DayRising && strategyMode !== 'SCALPING') {
-    // 스윙 모드에서 3일 연속 상승 후 매수 = 고점 추격
-    return {
-      passed: false,
-      reason: `🔴 3일 연속 상승 후 조정 대기: ${c3.close.toLocaleString()}→${c2.close.toLocaleString()}→${c1.close.toLocaleString()}→${current.toLocaleString()}`,
-    };
-  }
+  // ── 3. 3일 연속 상승 — 모멘텀 추세이므로 허용 (고점 추격은 #2에서 이미 차단) ──
+  // (이전: SWING 모드 3일 연속 상승 시 차단 → 정상 상승추세도 막히는 문제 제거)
 
   // ── 4. 캔들스틱 패턴 분석 ──
   const body0 = Math.abs(c0.close - c0.open);
@@ -479,20 +473,12 @@ export function regimeGate(input: GateInput): GateResult {
     };
   }
 
-  // 고변동장: 실전은 차단, 모의투자는 수량 50% 축소 후 진입 허용
+  // 고변동장: 수량 50% 축소 후 진입 허용 (실전/모의 공통 — 차단하면 거래 기회 완전 소실)
   if (regime === 'HIGH_VOLATILITY') {
-    const isPaper = config.isPaper;
-    if (isPaper) {
-      return {
-        passed: true,
-        reason: `고변동장(모의투자): 수량 50% 축소 진입`,
-        adjustedQuantity: Math.max(1, Math.floor(input.quantity * 0.5)),
-        regime,
-      };
-    }
     return {
-      passed: false,
-      reason: `고변동장: ATR 과대 — 신규진입 차단`,
+      passed: true,
+      reason: `고변동장: 수량 50% 축소 진입`,
+      adjustedQuantity: Math.max(1, Math.floor(input.quantity * 0.5)),
       regime,
     };
   }
