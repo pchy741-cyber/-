@@ -200,10 +200,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 6. 매매 판단: 기술적 지표 (Track A AI 점수를 우선순위 힌트로 활용)
     const hasScores = scores.length > 0;
 
-    // 보유 종목 없고 + 매수 후보(스코어 ≥threshold + 신뢰도 ≥0.6)도 없으면 AI 호출 스킵
-    // confidence < 0.6은 폴백 스코어 — BUY 후보로 취급 안 함 (과매매 방지)
+    // 보유 종목 없고 + 매수 후보(스코어 ≥threshold + 신뢰도 ≥0.45)도 없으면 AI 호출 스킵
+    // confidence 기본값 0 (null = 실패한 점수, 1로 폴백하면 깨진 점수가 100% 확신 취급됨)
     let hasBuyCandidates = scores.some(
-      (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[mode].buyThreshold && (s.confidence ?? 1) >= 0.6,
+      (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[mode].buyThreshold && (s.confidence ?? 0) >= 0.45,
     );
     const hasOpenPositions = openChains.some((c) => !IDLE_PARK_CODE_SET.has(c.stock_code) && Number(c.total_quantity) > 0);
     if (!hasBuyCandidates) {
@@ -235,7 +235,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
             if (newScores.length > 0) {
               scores.push(...newScores);
               hasBuyCandidates = scores.some(
-                (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[mode].buyThreshold && (s.confidence ?? 1) >= 0.6,
+                (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[mode].buyThreshold && (s.confidence ?? 0) >= 0.45,
               );
               logger.info(`📊 신규 종목 스코어 ${newScores.length}개 반영 → 매수후보: ${hasBuyCandidates}`, { component: 'TRACK_B' });
             }
@@ -257,7 +257,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
       decisions = technicalFallbackDecisions({
         mode,
-        watchlist: watchlist.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
+        // PARK_STOCK_CODE(069500) + IDLE_PARK_CODES(333940 등) 제외 — 파킹 ETF가 일반 종목으로 매매되면 orphan 청산 루프 발생
+        watchlist: watchlist
+          .filter((w) => w.stock_code !== PARK_STOCK_CODE && !IDLE_PARK_CODE_SET.has(w.stock_code))
+          .map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
         livePrices,
         chartData,
         openChains,
@@ -267,7 +270,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         lossBlockedCodes: recentLossCodes,
         manuallySoldCodes,
         aiScores: scores
-          .filter((s: any) => (s.confidence ?? 1) >= 0.3)
+          .filter((s: any) => (s.confidence ?? 0) >= 0.3)
           .map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
         takeProfitPct: strategy?.take_profit_pct ?? undefined,
         stopLossPct: strategy?.stop_loss_pct ?? undefined,
@@ -387,7 +390,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       const hasBuyDecision = decisions.some(
         (d) => (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && !IDLE_PARK_CODE_SET.has(d.stock_code),
       );
-      if (hasBuyDecision && alreadyIdleParked) {
+      // 데드락 방지: 매수 후보 있는데 실제 현금이 부족하고 파킹이 있으면 선제 해제
+      const cashInsufficient = _rawOrderableCash < config.risk.maxPositionKrw * 0.5;
+      if (!hasBuyDecision && hasBuyCandidates && alreadyIdleParked && cashInsufficient) {
+        logger.info(`🔓 파킹 데드락 방지: 매수 후보 있으나 현금 부족(${_rawOrderableCash.toLocaleString()}원) → 파킹 선제 해제`, { component: 'TRACK_B' });
+      }
+      if ((hasBuyDecision || (hasBuyCandidates && cashInsufficient)) && alreadyIdleParked) {
         const parkChains = openChains.filter((c) => IDLE_PARK_CODE_SET.has(c.stock_code) && Number(c.total_quantity) > 0);
         for (const parkChain of parkChains) {
           const livePrice = livePrices.get(parkChain.stock_code)?.currentPrice ?? 0;
