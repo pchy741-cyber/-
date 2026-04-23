@@ -266,7 +266,7 @@ export function technicalFallbackDecisions(params: {
     //   RSI 60~70: 모멘텀 강세 → AI 점수 65+ 필수 (추격 위험 있음)
     //   RSI > 70: 과매수 → 진입 금지 (단기 조정 확률 72%)
     // AI 90점 이상은 RSI 80까지 허용 (강한 확신 → 오버바웃 예외)
-    const aiBypassRsi = aiScore >= 90 && tech.rsi14 <= 80;
+    const aiBypassRsi = aiScore >= 80 && tech.rsi14 <= 80;
     if (tech.rsi14 > 70 && !aiBypassRsi) {
       logger.info(`  🔴 ${stock.stock_code}: RSI=${tech.rsi14.toFixed(0)}>70 과매수 → 스킵 (단기조정 확률 72%)`, { component: 'TRACK_B' });
       continue;

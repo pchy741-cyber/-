@@ -1500,13 +1500,63 @@ dashboardRoutes.post('/release-defense-park', async (c) => {
 
     // 2. KODEX 200 보유 수량 확인 후 즉시 시장가 매도
     const position = await getPositionForStock('069500');
+    let sellMsg = '';
     if (position && position.quantity > 0) {
       const result = await placeOrder({ stockCode: '069500', side: 'SELL', quantity: position.quantity });
       logger.info(`🛡️ KODEX 200 즉시 매도: ${position.quantity}주 → ${result.success ? '성공' : '실패'} (${result.message})`, { component: 'MANUAL' });
-      return c.json({ ok: true, message: `파킹 해제 + KODEX 200 ${position.quantity}주 시장가 매도 완료 — 체결 후 자동매매 재개` });
+      sellMsg = `KODEX 200 ${position.quantity}주 매도 완료. `;
     }
 
-    return c.json({ ok: true, message: '파킹 해제 완료 (KODEX 200 없음 — 자동매매 즉시 재개)' });
+    // 3. KIS 잔고 → DB 포지션 자동 동기화 (고아 포지션 복구)
+    let syncMsg = '';
+    try {
+      const balanceFn = config.isPaper ? getPaperBalance : getAccountBalance;
+      const [balance, openChains] = await Promise.all([balanceFn(), getOpenChains()]);
+      const PARK_SET = new Set(IDLE_PARK_CODES as readonly string[]);
+      const chainedCodes = new Set(openChains.map((ch: any) => ch.stock_code));
+      const orphans = (balance.positions ?? [])
+        .map((p: any) => ({
+          stockCode: String(p.stockCode ?? ''),
+          quantity: Number(p.quantity ?? p.holdingQuantity ?? 0),
+          avgBuyPrice: Number(p.avgBuyPrice ?? p.purchasePrice ?? 0),
+          stockName: p.stockName ?? undefined,
+        }))
+        .filter((p) => p.stockCode.length === 6 && p.quantity > 0 && p.avgBuyPrice > 0 && !PARK_SET.has(p.stockCode) && !chainedCodes.has(p.stockCode));
+
+      if (orphans.length > 0) {
+        const { createChain, insertOrder } = await import('../../db/client.js');
+        const synced: string[] = [];
+        for (const pos of orphans) {
+          try {
+            const knownName = getKnownStockName(pos.stockCode) ?? pos.stockName ?? pos.stockCode;
+            await getPool().query(
+              `INSERT INTO watchlist (stock_code, stock_name, market, source) VALUES ($1, $2, 'KOSPI', 'KIS_SYNC') ON CONFLICT (stock_code) DO NOTHING`,
+              [pos.stockCode, knownName],
+            );
+            const chainId = await createChain({
+              stock_code: pos.stockCode, status: 'OPEN', strategy_mode: 'SWING',
+              avg_buy_price: pos.avgBuyPrice, total_quantity: pos.quantity,
+              total_invested: pos.avgBuyPrice * pos.quantity, realized_pnl: 0,
+              target_profit_pct: 2.5, stop_loss_pct: -1.5, max_averaging_count: 1, current_averaging_count: 0,
+            });
+            await insertOrder({
+              chain_id: chainId, stock_code: pos.stockCode, side: 'BUY', order_type: '01',
+              quantity: pos.quantity, price: pos.avgBuyPrice, kis_order_no: `SYNC_${pos.stockCode}`,
+              kis_status: null, filled_quantity: pos.quantity, filled_price: pos.avgBuyPrice,
+              status: 'FILLED', trading_mode: config.tradingMode, trigger_source: 'SYNC',
+              ai_reasoning: 'KIS 잔고 동기화 — 파킹 해제 시 자동 복구',
+            });
+            synced.push(pos.stockCode);
+          } catch { /* skip individual failure */ }
+        }
+        syncMsg = `보유종목 ${synced.length}개 대시보드 복구 완료.`;
+        logger.info(`🔄 파킹 해제 후 포지션 자동 복구: ${synced.join(', ')}`, { component: 'MANUAL' });
+      }
+    } catch (syncErr: any) {
+      logger.warn(`포지션 자동 복구 실패: ${syncErr.message}`, { component: 'MANUAL' });
+    }
+
+    return c.json({ ok: true, message: `파킹 해제 완료. ${sellMsg}${syncMsg}자동매매 재개`.trim() });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }

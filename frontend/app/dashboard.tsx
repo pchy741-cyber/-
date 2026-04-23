@@ -404,9 +404,11 @@ function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast }: { i
     setDeleteModal(null);
     setDeleting(id);
     try {
-      await api(`/insights/${id}`, { method: 'DELETE' });
+      await api(`/insights/${id}`, { method: 'DELETE', headers: {} });
       setLiveInsights((prev) => (prev ?? []).filter((i) => i.id !== id));
       onRefresh();
+    } catch (err: any) {
+      alert('삭제 실패: ' + err.message);
     } finally { setDeleting(null); }
   };
 
@@ -1184,29 +1186,6 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   return (
     <div className="space-y-4 sm:space-y-5">
 
-      {/* ── 상단 액션 바 (항상 표시) ── */}
-      <div className="flex gap-2 justify-end flex-wrap">
-        <button
-          onClick={async () => {
-            if (!confirm('파킹 강제 해제 + KODEX 200 즉시 매도를 실행할까요?')) return;
-            try {
-              const r = await api('/release-defense-park', { method: 'POST' });
-              alert(r?.message ?? '파킹 해제 완료');
-            } catch (e: any) { alert('실패: ' + e.message); }
-          }}
-          className="px-3 py-1.5 text-xs rounded-xl bg-amber-500/20 hover:bg-amber-500/40 text-amber-300 font-semibold transition-colors whitespace-nowrap"
-        >🛡️ 파킹 해제</button>
-        <button
-          onClick={async () => { setRunningTrackA(true); try { await api('/run-track-a', { method: 'POST' }); } catch {} setTimeout(() => setRunningTrackA(false), 300000); }}
-          disabled={runningTrackA}
-          className="px-3 py-1.5 text-xs rounded-xl bg-blue-500/20 hover:bg-blue-500/40 text-blue-300 font-semibold disabled:opacity-50 transition-colors whitespace-nowrap"
-        >{runningTrackA ? '분석 중...' : '점수 갱신'}</button>
-        <button
-          onClick={async () => { setRunningTrackB(true); try { await api('/run-track-b', { method: 'POST' }); } catch {} setTimeout(() => setRunningTrackB(false), 60000); }}
-          disabled={runningTrackB}
-          className="px-3 py-1.5 text-xs rounded-xl bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 font-semibold disabled:opacity-50 transition-colors whitespace-nowrap"
-        >{runningTrackB ? '실행 중...' : '지금 실행'}</button>
-      </div>
 
       {/* ── 매매 상태 배너 ── */}
       {tradingStatus && tradingStatus.overallStatus !== 'ACTIVE' && (
@@ -1255,11 +1234,22 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       {defensePark?.isActive && (
         <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 flex items-start gap-3">
           <span className="text-xl shrink-0">🛡️</span>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold text-amber-300">방어 파킹 중 — {defensePark.parkStockName} 보유</p>
             <p className="text-xs text-amber-400/80 mt-0.5 truncate">진입 사유: {defensePark.entryReason ?? '하락세 감지'}</p>
             <p className="text-xs text-amber-400/60 mt-0.5">시장 회복 감지 시 자동으로 정상 매매 복귀합니다.</p>
           </div>
+          <button
+            onClick={async () => {
+              if (!confirm('파킹 강제 해제 + 보유 ETF 즉시 매도를 실행할까요?')) return;
+              try {
+                const r = await api('/release-defense-park', { method: 'POST' });
+                alert(r?.message ?? '파킹 해제 완료');
+                onRefresh();
+              } catch (e: any) { alert('실패: ' + (e as any).message); }
+            }}
+            className="px-3 py-1.5 text-xs rounded-xl bg-amber-500/30 hover:bg-amber-500/50 text-amber-200 font-semibold transition-colors whitespace-nowrap shrink-0"
+          >강제 해제</button>
         </div>
       )}
 
@@ -1441,6 +1431,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
         {holdingsTab === 'KR' && (
           chains.length > 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-white/[0.03]">
+
               {chains.map((ch: any, i: number) => {
                 const avgPrice = Number(ch.avg_buy_price) || 0;
                 const qty = Number(ch.total_quantity) || 0;
@@ -1593,7 +1584,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
               })}
             </div>
           ) : (
-            <div className="p-8 text-center space-y-2">
+            <div className="p-8 text-center space-y-3">
               <div className="text-2xl opacity-30">📦</div>
               <p className="text-sm text-slate-400">아직 투자 중인 종목이 없습니다</p>
               <p className="text-[11px] text-slate-600">장 중 10분 간격으로 자동 탐색 중</p>
@@ -1817,7 +1808,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
             <div className="p-6 text-center space-y-3">
               <div className="text-2xl opacity-30">🤖</div>
               <p className="text-sm text-slate-500">AI 스코어가 아직 없습니다</p>
-              <p className="text-[11px] text-slate-600">매일 오전 7:30 / 오후 6시에 자동 실행됩니다.<br/>설정 → AI 분석 수동 실행 버튼으로 즉시 생성할 수 있습니다.</p>
+              <p className="text-[11px] text-slate-600">매일 오전 7:30 / 오후 6시에 자동 실행됩니다.</p>
               <p className="text-[10px] text-blue-400/60">스코어 없는 동안 기술적 지표 기반으로 자동매매가 동작합니다</p>
             </div>
           )}
@@ -2289,9 +2280,6 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
         </div>
         <button onClick={addStock} className="px-5 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium whitespace-nowrap">
           추가
-        </button>
-        <button onClick={syncKIS} disabled={syncing} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 rounded-lg text-sm font-medium whitespace-nowrap">
-          {syncing ? '동기화 중...' : '한투 앱 동기화'}
         </button>
       </div>
 
@@ -3034,21 +3022,6 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
           </div>
         </Panel>
       </div>
-      <Panel title="AI 분석 수동 실행">
-        <div className="px-6 py-5 flex items-center justify-between gap-4">
-          <div>
-            <p className="text-sm font-medium">지금 당장 AI 분석 실행</p>
-            <p className="text-[12px] text-slate-500 mt-1">소스 수집 → 종목 분석 → 매매 판단 순서로 2~3분 소요</p>
-          </div>
-          <button onClick={async () => {
-            if (!confirm('AI 분석을 수동 실행하시겠습니까?')) return;
-            try { await api('/run-track-a', { method: 'POST', body: JSON.stringify({}) }); toast?.('AI 분석 시작 — 2~3분 후 갱신', 'ok'); } catch (err: any) { alert(err.message); }
-          }} className="px-5 py-2.5 bg-purple-600 hover:bg-purple-500 rounded-xl text-xs font-semibold transition-all shrink-0">
-            실행
-          </button>
-        </div>
-      </Panel>
-
       {/* ── 전략 설정 ── */}
       {strategy && (
         <Panel title="전략 설정" badge={strategy.mode === 'SWING' ? '스윙' : strategy.mode === 'DEFENSE' ? '방어' : '단타'} badgeColor={strategy.mode === 'SWING' ? 'blue' : strategy.mode === 'DEFENSE' ? 'rose' : 'amber'}>

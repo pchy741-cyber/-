@@ -267,7 +267,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         lossBlockedCodes: recentLossCodes,
         manuallySoldCodes,
         aiScores: scores
-          .filter((s: any) => (s.confidence ?? 1) >= 0.6)
+          .filter((s: any) => (s.confidence ?? 1) >= 0.3)
           .map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
         takeProfitPct: strategy?.take_profit_pct ?? undefined,
         stopLossPct: strategy?.stop_loss_pct ?? undefined,

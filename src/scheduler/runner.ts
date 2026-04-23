@@ -398,11 +398,23 @@ export function startScheduler(): void {
   //  🌏 해외 주식 (미국/일본/대만)
   // ═══════════════════════════════════════════
 
-  // 🇯🇵 일본 + 🇹🇼 대만 — KST 09:30~14:30 30분 간격 (+9분 오프셋, Track B와 겹침 방지)
+  // 🇯🇵 일본(KST 09:00~15:30) + 🇹🇼 대만(KST 10:00~14:30) — 30분 간격 (+9분 오프셋)
+  // 일본 오전장(09~11:30) + 오후장(12:30~15:30), 대만(10~14:30) 통합 커버
   cron.schedule(
-    '9,39 9-14 * * 1-5',
+    '9,39 9-15 * * 1-5',
     () => {
       runOverseasJob().catch((e) => logger.error(`아시아주식 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🌏 아시아장 세션 캐시 초기화 — 08:50 (장 시작 전, 당일 스캔 준비)
+  cron.schedule(
+    '50 8 * * 1-5',
+    async () => {
+      const { resetAsiaSessionCache } = await import('./overseas-job.js');
+      resetAsiaSessionCache();
+      logger.info('🌏 아시아장 세션 캐시 초기화 (09:09 첫 스캔 준비)', { component: 'SCHEDULER' });
     },
     { timezone: MARKET.TIMEZONE },
   );
