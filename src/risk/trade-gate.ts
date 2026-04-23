@@ -534,9 +534,8 @@ async function getConsecutiveLosses(): Promise<number> {
 export async function cooldownGate(): Promise<GateResult> {
   const consecutive = await getConsecutiveLosses();
 
-  // 3회 연속 손절 → 60분 쿨다운
-  if (consecutive >= 3) {
-    // 마지막 손절 시간 확인
+  // 5연패 이상 + 마지막 손절 30분 이내 → 30분 쿨다운 (3연패 기준 제거 — 너무 잦은 차단)
+  if (consecutive >= 5) {
     try {
       const pool = getPool();
       const { rows } = await pool.query(`
@@ -547,7 +546,7 @@ export async function cooldownGate(): Promise<GateResult> {
 
       if (rows.length > 0) {
         const lastLoss = new Date(rows[0].closed_at);
-        const cooldownMs = consecutive >= 5 ? 60 * 60_000 : 30 * 60_000; // 5연패: 1시간, 3연패: 30분
+        const cooldownMs = 30 * 60_000; // 30분 쿨다운
         const elapsed = Date.now() - lastLoss.getTime();
 
         if (elapsed < cooldownMs) {

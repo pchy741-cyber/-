@@ -130,13 +130,17 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       logger.info(`발굴 종목 ${discoveryList.length}개 watchlist 임시 등록 (inactive)`, { component: 'TRACK_A' });
     }
 
+    // 파킹 ETF는 스코어링 제외 (KODEX 200 / TIGER 머니마켓 등 — 일반 매매 종목 아님)
+    const PARK_EXCLUDE = new Set(['069500', '333940', '441680', '481770']);
     const allStocks = [
       ...watchlist.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
       ...discoveryList,
-    ].map((s) => ({
-      stock_code: normalizeStockCode(s.stock_code),
-      stock_name: String(s.stock_name ?? '').trim() || normalizeStockCode(s.stock_code),
-    }));
+    ]
+      .filter((s) => !PARK_EXCLUDE.has(s.stock_code))
+      .map((s) => ({
+        stock_code: normalizeStockCode(s.stock_code),
+        stock_name: String(s.stock_name ?? '').trim() || normalizeStockCode(s.stock_code),
+      }));
     const allowedStockNameByCode = new Map(allStocks.map((s) => [s.stock_code, s.stock_name]));
     logger.info(`감시 종목: ${watchlist.length}개 + 발굴 후보: ${discoveryList.length}개 = 합계 ${allStocks.length}개`, { component: 'TRACK_A' });
 
