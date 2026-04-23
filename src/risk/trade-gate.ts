@@ -372,7 +372,7 @@ export function entryTimingGate(input: GateInput): GateResult {
   // ── 5. 당일 캔들 내 종가 위치 ──
   // 오늘 저가 근처 종가 = 매도세 강함 → 낙하 중
   const closePositionInRange = range0 > 0 ? (c0.close - c0.low) / range0 : 0.5;
-  const isFallingKnife = closePositionInRange < 0.2 && !isHammer; // 종가가 오늘 범위 하위 20% = 낙하 중
+  const isFallingKnife = closePositionInRange < 0.1 && !isHammer; // 종가가 오늘 범위 하위 10% = 낙하 중
 
   if (isFallingKnife) {
     return {

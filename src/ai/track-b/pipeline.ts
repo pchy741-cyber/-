@@ -47,7 +47,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           getActiveWatchlist(),
           getOpenChains(),
           getActiveStrategy(),
-          getRecentLossStocks(14),
+          getRecentLossStocks(7),
           getRecentManuallySoldStocks(24),
         ]);
       } catch (dbErr: any) {
@@ -59,7 +59,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
             getActiveWatchlist(),
             getOpenChains(),
             getActiveStrategy(),
-            getRecentLossStocks(14),
+            getRecentLossStocks(7),
             getRecentManuallySoldStocks(24),
           ]);
         }
