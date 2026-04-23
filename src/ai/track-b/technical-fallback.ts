@@ -275,9 +275,13 @@ export function technicalFallbackDecisions(params: {
     const isOversold    = tech.rsi14 < 30;                                                     // 과매도 반등
     const isEarlyBounce = tech.rsi14 >= 30 && tech.rsi14 < 45;                                // 반등 초기 (최적)
     const isPullback    = tech.rsi14 >= 45 && tech.rsi14 <= 60 && tech.macdCrossover === 'BULLISH'; // 눌림목 반등
-    const isMomentum    = tech.rsi14 > 60 && tech.rsi14 <= 70 && aiScore >= buyThreshold;     // 강한 모멘텀 (AI 필수)
-    // AI 80점 이상: 기술적 타이밍 완화 (AI 확신이 높으면 타이밍 필터 우선순위 낮춤)
-    const isHighAiScore = aiScore >= 80 && (effectiveTechScore >= minTechScore || aiScore >= buyThreshold);
+    // 모멘텀: RSI 60~70 + (AI점수 있으면 buyThreshold 이상 OR 기술점수 양호)
+    // AI API 없을 때 aiScore=0 → 기술점수만으로 판단 가능하도록 수정
+    const isMomentum    = tech.rsi14 > 60 && tech.rsi14 <= 70 &&
+      (aiScore >= buyThreshold || effectiveTechScore >= minTechScore + 5);
+    // AI 80점 이상 또는 기술점수 매우 높으면: 타이밍 필터 완화
+    const isHighAiScore = (aiScore >= 80 || effectiveTechScore >= minTechScore + 15) &&
+      (effectiveTechScore >= minTechScore || aiScore >= buyThreshold);
     const isValidEntry  = isOversold || isEarlyBounce || isPullback || isMomentum || isHighAiScore;
 
     if (!isValidEntry) {
