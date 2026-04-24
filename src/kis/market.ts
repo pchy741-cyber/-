@@ -1,7 +1,7 @@
 import { KIS_TR_ID, MARKET } from '../config/constants.js';
 import { logger } from '../utils/logger.js';
 import { isTradingDay } from '../utils/holidays.js';
-import { kisRequest } from './client.js';
+import { kisRequest, marketDataRateLimiter } from './client.js';
 
 // ── 현재가 조회 ──
 export interface CurrentPrice {
@@ -20,9 +20,12 @@ export interface CurrentPrice {
 }
 
 export async function getCurrentPrice(stockCode: string): Promise<CurrentPrice> {
+  await marketDataRateLimiter.acquire();
   const res = await kisRequest({
     path: '/uapi/domestic-stock/v1/quotations/inquire-price',
     trId: KIS_TR_ID.QUOTE.CURRENT_PRICE,
+    useRealUrl: true,
+    skipRateLimiter: true,
     params: {
       FID_COND_MRKT_DIV_CODE: 'J',
       FID_INPUT_ISCD: stockCode,
@@ -61,9 +64,12 @@ export async function getDailyChart(stockCode: string, days: number = 60): Promi
   const endDate = new Date().toISOString().split('T')[0].replace(/-/g, '');
   const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0].replace(/-/g, '');
 
+  await marketDataRateLimiter.acquire();
   const res = await kisRequest({
     path: '/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice',
     trId: KIS_TR_ID.QUOTE.DAILY_CHART,
+    useRealUrl: true,
+    skipRateLimiter: true,
     params: {
       FID_COND_MRKT_DIV_CODE: 'J',
       FID_INPUT_ISCD: stockCode,
