@@ -116,19 +116,17 @@ export function chartVerificationGate(input: GateInput): GateResult {
     };
   }
 
-  // ── 1-4. ATR 대비 손절폭이 합리적인지 ──
-  const currentPrice = candles[0]?.close ?? input.estimatedPrice;
-  const atrPct = currentPrice > 0 ? (tech.atr14 / currentPrice) * 100 : 0;
-
-  // 손절폭이 ATR의 N배 미만이면 너무 타이트 (빈번한 손절)
-  // 모의투자: 0.3배 (완화), 실전: 0.5배
-  const atrMultiplier = config.isPaper ? 0.3 : 0.5;
-  if (atrPct > 0 && absStopLoss < atrPct * atrMultiplier) {
-    return {
-      passed: false,
-      reason: `손절 너무 타이트: ${absStopLoss}% < ATR의 ${atrMultiplier}배(${(atrPct * atrMultiplier).toFixed(1)}%)`,
-      riskRewardRatio,
-    };
+  // ── 1-4. ATR 대비 손절폭이 합리적인지 (실전만) ──
+  if (!config.isPaper) {
+    const currentPrice = candles[0]?.close ?? input.estimatedPrice;
+    const atrPct = currentPrice > 0 ? (tech.atr14 / currentPrice) * 100 : 0;
+    if (atrPct > 0 && absStopLoss < atrPct * 0.5) {
+      return {
+        passed: false,
+        reason: `손절 너무 타이트: ${absStopLoss}% < ATR의 0.5배(${(atrPct * 0.5).toFixed(1)}%)`,
+        riskRewardRatio,
+      };
+    }
   }
 
   return { passed: true, reason: '차트 검수 통과', riskRewardRatio };
