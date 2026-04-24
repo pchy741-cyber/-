@@ -202,6 +202,11 @@ async function getWinRateStats(days: number = 30): Promise<WinRateStats> {
  * EV > 0 이어야 진입 가치 있음
  */
 export async function expectedValueGate(_input: GateInput): Promise<GateResult> {
+  // 모의투자: 승률 기반 차단 없음 (실전 데이터 없어서 항상 0% 차단됨)
+  if (config.isPaper) {
+    return { passed: true, reason: '모의투자 — 기대값 게이트 스킵', expectedValue: 0 };
+  }
+
   const stats = await getWinRateStats(30);
 
   if (stats.totalTrades < 20) {
