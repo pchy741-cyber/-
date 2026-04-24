@@ -85,6 +85,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const kstM = nowKst.getUTCMinutes();
     const isOpeningBell = kstH === 9 && kstM < 10; // 09:00~09:09
     const dbMode = (strategy?.mode ?? 'SWING') as StrategyMode;
+    // AI 스코어 없을 때 DEFENSE 모드는 매수 불가(minTechScore=65, buyThreshold=75)
+    // → scores 로드 전이므로 여기서는 일단 dbMode 유지, technicalFallbackDecisions 호출 시 override
     const mode: StrategyMode = (isOpeningBell && dbMode !== 'DEFENSE') ? 'SCALPING' : dbMode;
     if (isOpeningBell && mode === 'SCALPING') {
       logger.info('🔔 개장 초단타 모드 자동 활성화 (09:00~09:10) — SCALPING +1.2% 즉시 익절', { component: 'TRACK_B' });
@@ -255,8 +257,15 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       const orderableCash = Math.max(0, effectiveCashWithPark);
       const totalAssets = balance.totalEvalAmount + orderableCash;
 
+      // AI 스코어 없을 때 DEFENSE 모드는 minTechScore=65/buyThreshold=75로 진입 불가
+      // → AI 미실행 시 SWING으로 완화 (기술점수만으로 매매 가능하도록)
+      const effectiveMode: StrategyMode = (scores.length === 0 && mode === 'DEFENSE') ? 'SWING' : mode;
+      if (scores.length === 0 && mode === 'DEFENSE') {
+        logger.info('⚡ AI 스코어 없음 + DEFENSE 모드 → SWING으로 완화 (기술적 매매 활성화)', { component: 'TRACK_B' });
+      }
+
       decisions = technicalFallbackDecisions({
-        mode,
+        mode: effectiveMode,
         // PARK_STOCK_CODE(069500) + IDLE_PARK_CODES(333940 등) 제외 — 파킹 ETF가 일반 종목으로 매매되면 orphan 청산 루프 발생
         watchlist: watchlist
           .filter((w) => w.stock_code !== PARK_STOCK_CODE && !IDLE_PARK_CODE_SET.has(w.stock_code))

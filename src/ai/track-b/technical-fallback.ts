@@ -174,6 +174,8 @@ export function technicalFallbackDecisions(params: {
   // 2. 신규 매수 판단 (기술적 지표 기반)
   const openStockCodes = new Set(openChains.map((c) => c.stock_code));
   const candidates: Array<{ stock_code: string; tech: TechnicalSummary; price: CurrentPrice }> = [];
+  // AI 스코어 없을 때(Track A 미실행) DEFENSE 기준 완화 여부 — 루프 밖에서 1회 계산
+  const noAiScores = (aiScores ?? []).length === 0 || (aiScores ?? []).every((s) => s.score === 0);
 
   for (const stock of watchlist) {
     // 이미 포지션 있으면 스킵
@@ -213,8 +215,10 @@ export function technicalFallbackDecisions(params: {
     const buyThreshold = strategyParams.buyThreshold;
 
     if (mode === 'DEFENSE' && tech.trendStrength === 'WEAK') {
-      if (aiScore < buyThreshold && tech.score < 60) {
-        logger.info(`  ⏸️ ${stock.stock_code}: ADX=${tech.adx14.toFixed(0)} 횡보(WEAK) DEFENSE → AI=${aiScore} tech=${tech.score} < 60, 진입 스킵`, { component: 'TRACK_B' });
+      // AI 없을 때 tech.score 기준 완화: 60 → 50 (SWING 수준)
+      const defenseWeakThreshold = noAiScores ? 50 : 60;
+      if (aiScore < buyThreshold && tech.score < defenseWeakThreshold) {
+        logger.info(`  ⏸️ ${stock.stock_code}: ADX=${tech.adx14.toFixed(0)} 횡보(WEAK) DEFENSE → AI=${aiScore} tech=${tech.score} < ${defenseWeakThreshold}, 진입 스킵`, { component: 'TRACK_B' });
         continue;
       }
     }
@@ -251,8 +255,9 @@ export function technicalFallbackDecisions(params: {
     }
     // ───────────────────────────────────────────────────────────────────
 
-    // 기술 단독 최소 점수 — SWING 55 (신호 품질 강화), DEFENSE 65 (보수)
-    const minTechScore = mode === 'SCALPING' ? 55 : mode === 'DEFENSE' ? 65 : 55;
+    // 기술 단독 최소 점수 — SWING 55, DEFENSE 65 (보수)
+    // AI 스코어 없으면(Track A 미실행) DEFENSE도 SWING 기준(55)으로 완화
+    const minTechScore = mode === 'SCALPING' ? 55 : (mode === 'DEFENSE' && !noAiScores) ? 65 : 55;
 
     // 우선 테마(반도체/에너지/방산) 보너스 +10점 적용
     const priorityBonus = PRIORITY_SECTOR_CODES.has(stock.stock_code) ? 10 : 0;
