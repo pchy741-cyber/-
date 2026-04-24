@@ -54,6 +54,7 @@ export function chartVerificationGate(input: GateInput): GateResult {
   const { candles, stopLossPct, takeProfitPct } = input;
 
   if (candles.length < 30) {
+    if (config.isPaper) return { passed: true, reason: '일봉 부족 — 모의투자 통과' };
     return { passed: false, reason: '일봉 데이터 부족 (30일 미만)' };
   }
 
