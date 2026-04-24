@@ -33,10 +33,10 @@ export function technicalFallbackDecisions(params: {
   buyThreshold?: number;
 }): TradeDecision[] {
   const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, manuallySoldCodes, totalAssets } = params;
-  // 종목당 최대 비중: 총자산의 15% 또는 maxPositionKrw 중 작은 값
-  // — 한 종목에 자산이 쏠리는 집중 리스크 방지, 5종목 분산이 목표
+  // 종목당 최대 비중: 총자산의 25% 또는 maxPositionKrw 중 작은 값
+  // — 15%는 고가주(고려아연 등 700K~1M/주) 최소 1주 매수 불가 문제 발생
   const effectiveMaxPos = totalAssets
-    ? Math.min(maxPositionKrw, Math.round(totalAssets * 0.15))
+    ? Math.min(maxPositionKrw, Math.round(totalAssets * 0.25))
     : maxPositionKrw;
   const aiScoreMap = new Map((aiScores ?? []).map((s) => [s.stock_code, s.score]));
   const base = STRATEGY_PARAMS[mode];
