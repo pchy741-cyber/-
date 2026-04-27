@@ -1,4 +1,30 @@
 import winston from 'winston';
+import Transport from 'winston-transport';
+
+// WARN/ERROR 레벨을 system_log DB에 직접 저장 (로그 유실 방지)
+class DbTransport extends Transport {
+  constructor(opts?: Transport.TransportStreamOptions) {
+    super(opts);
+  }
+
+  log(info: any, callback: () => void) {
+    setImmediate(() => this.emit('logged', info));
+    // 순환참조 방지: logSystem은 나중에 주입
+    const logFn = (DbTransport as any)._logSystem;
+    if (logFn && (info.level === 'warn' || info.level === 'error')) {
+      const component = info.component ?? 'SYSTEM';
+      const level: 'ERROR' | 'WARN' = info.level === 'error' ? 'ERROR' : 'WARN';
+      logFn(level, component, String(info.message).slice(0, 500)).catch(() => {});
+    }
+    callback();
+  }
+
+  static _logSystem: ((level: 'ERROR' | 'WARN' | 'INFO' | 'TRADE', component: string, message: string, details?: unknown) => Promise<void>) | null = null;
+}
+
+export function injectDbLogger(logSystem: (level: 'ERROR' | 'WARN' | 'INFO' | 'TRADE', component: string, message: string, details?: unknown) => Promise<void>) {
+  DbTransport._logSystem = logSystem;
+}
 
 export const logger = winston.createLogger({
   level: 'info',
@@ -19,5 +45,6 @@ export const logger = winston.createLogger({
         }),
       ),
     }),
+    new DbTransport({ level: 'warn' }),
   ],
 });

@@ -17,7 +17,8 @@ import { initBigQuery } from './automation/bigquery-pipeline.js';
 import { setupMonitoring } from './automation/gcp-monitoring.js';
 import { initRedisCache } from './cache/redis.js';
 import { config } from './config/index.js';
-import { checkDb, enableMemoryMode } from './db/client.js';
+import { checkDb, enableMemoryMode, logSystem } from './db/client.js';
+import { injectDbLogger } from './utils/logger.js';
 import { getAccessToken } from './kis/auth.js';
 import { initTelegram } from './notifications/telegram.js';
 import { startScheduler } from './scheduler/runner.js';
@@ -91,6 +92,7 @@ async function bootstrap() {
     const ok = await checkDb();
     if (!ok) throw new Error('DB health check failed');
     logger.info('✅ PostgreSQL 연결 성공', { component: 'BOOT' });
+    injectDbLogger(logSystem);
     // 1-1. 스키마 마이그레이션 (무중단 ALTER TABLE)
     try {
       const { getPool } = await import('./db/client.js');

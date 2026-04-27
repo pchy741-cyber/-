@@ -64,6 +64,7 @@ export async function runSniperScan(): Promise<void> {
 
         // 🐂🐻 Bull-Bear 토론으로 스나이퍼 시그널 검증 (고액이므로 신중하게)
         let debateVerdict: string | undefined;
+        let debateSource = 'DEBATE';
         try {
           const scores = await getLatestScores([stockCode]);
           const chart = await getDailyChart(stockCode, 65);
@@ -85,14 +86,30 @@ export async function runSniperScan(): Promise<void> {
             currentPrice: price,
           });
 
-          debateVerdict = debate.finalVerdict;
+          // DEBATE AI가 전부 실패(분析 실패)했으면 Track A 스코어로 폴백
+          const debateFailed =
+            debate.bullArguments[0] === '분析 실패' && debate.bearArguments[0] === '분析 실패';
+          if (debateFailed && scores[0]) {
+            const score = scores[0].composite_score ?? 0;
+            debateVerdict = score >= 75 ? 'BUY' : score >= 85 ? 'STRONG_BUY' : 'HOLD';
+            debateSource = `TRACK_A_FALLBACK(${score}점)`;
+            logger.warn(
+              `🏛️ DEBATE AI 실패 → Track A 폴백: ${stockCode} 스코어 ${score}점 → ${debateVerdict}`,
+              { component: 'SNIPER' },
+            );
+          } else {
+            debateVerdict = debate.finalVerdict;
+          }
+
           logger.info(
-            `🏛️ 토론 결과: ${stockCode} → ${debateVerdict} (Bull ${debate.bullScore} vs Bear ${debate.bearScore})`,
+            `🏛️ 토론 결과: ${stockCode} → ${debateVerdict} [${debateSource}] (Bull ${debate.bullScore} vs Bear ${debate.bearScore})`,
             { component: 'SNIPER' },
           );
         } catch (debateErr) {
-          logger.error(`AI 토론 실패 (${stockCode}), 안전을 위해 매수 보류: ${debateErr}`, { component: 'SNIPER' });
-          continue; // 토론 실패 시 매수하지 않음
+          logger.error(`AI 토론 실패 (${stockCode}), 스나이퍼 시그널 강도로 판단: ${debateErr}`, { component: 'SNIPER' });
+          // 예외 발생 시: 시그널 신뢰도가 충분히 높으면 통과 (자사주 매입 등 강력한 공시)
+          debateVerdict = signal.confidence >= 0.85 ? 'BUY' : undefined;
+          debateSource = 'SIGNAL_CONFIDENCE_FALLBACK';
         }
 
         // 토론 결과가 매수 반대/보류이면 스나이퍼 시그널 무시
@@ -118,7 +135,7 @@ export async function runSniperScan(): Promise<void> {
           stock_code: stockCode,
           quantity,
           price_type: 'MARKET',
-          reasoning: `[SNIPER ${signal.type}] ${signal.reasoning} | 토론: ${debateVerdict} (신뢰도 ${(signal.confidence * 100).toFixed(0)}%, 배수 x${signal.budgetMultiplier})`,
+          reasoning: `[SNIPER ${signal.type}] ${signal.reasoning} | 토론: ${debateVerdict} [${debateSource}] (신뢰도 ${(signal.confidence * 100).toFixed(0)}%, 배수 x${signal.budgetMultiplier})`,
           confidence: signal.confidence,
         });
 

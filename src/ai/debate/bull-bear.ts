@@ -126,7 +126,7 @@ JSON 형식으로 응답: {"final_arguments": ["최종논거1", "최종논거2"]
 
 // ── AI 에이전트 호출 ──
 
-async function callAgent(role: 'BULL' | 'BEAR', prompt: string): Promise<{ arguments: string[]; conviction: number }> {
+async function callAgent(role: 'BULL' | 'BEAR', prompt: string): Promise<{ arguments: string[]; conviction: number; failed?: boolean }> {
   try {
     const systemInstruction =
       role === 'BULL'
@@ -135,8 +135,10 @@ async function callAgent(role: 'BULL' | 'BEAR', prompt: string): Promise<{ argum
 
     const text = await callVertexGemini(systemInstruction, prompt, { temperature: role === 'BULL' ? 0.3 : 0.4 });
 
-    const json = text.match(/\{[\s\S]*\}/)?.[0];
-    if (!json) throw new Error('No JSON found');
+    // 마크다운 코드블록 제거 후 JSON 추출
+    const cleaned = text.replace(/```json?\s*/gi, '').replace(/```/g, '');
+    const json = cleaned.match(/\{[\s\S]*\}/)?.[0];
+    if (!json) throw new Error(`No JSON in response: ${text.slice(0, 200)}`);
 
     const parsed = JSON.parse(json);
     return {
@@ -144,8 +146,10 @@ async function callAgent(role: 'BULL' | 'BEAR', prompt: string): Promise<{ argum
       conviction: Math.min(100, Math.max(0, parsed.conviction ?? 50)),
     };
   } catch (error) {
-    logger.warn(`${role} 에이전트 호출 실패: ${error}`, { component: 'DEBATE' });
-    return { arguments: ['분석 실패'], conviction: 50 };
+    const errMsg = String(error).slice(0, 300);
+    logger.warn(`${role} 에이전트 호출 실패: ${errMsg}`, { component: 'DEBATE' });
+    await logSystem('WARN', 'DEBATE', `${role} AI 호출 실패`, { error: errMsg }).catch(() => {});
+    return { arguments: ['분석 실패'], conviction: 50, failed: true };
   }
 }
 
@@ -176,8 +180,9 @@ JSON 형식: {"verdict": "STRONG_BUY|BUY|HOLD|SELL|STRONG_SELL", "confidence": 0
 
     const text = await callVertexGemini(judgeSystem, judgePrompt, { temperature: 0.1 });
 
-    const json = text.match(/\{[\s\S]*\}/)?.[0];
-    if (!json) throw new Error('No JSON');
+    const cleaned = text.replace(/```json?\s*/gi, '').replace(/```/g, '');
+    const json = cleaned.match(/\{[\s\S]*\}/)?.[0];
+    if (!json) throw new Error(`No JSON in judge response: ${text.slice(0, 200)}`);
 
     const parsed = JSON.parse(json);
     return {
@@ -186,7 +191,9 @@ JSON 형식: {"verdict": "STRONG_BUY|BUY|HOLD|SELL|STRONG_SELL", "confidence": 0
       reasoning: parsed.reasoning ?? '판단 불가',
     };
   } catch (error) {
-    logger.warn(`Judge 호출 실패: ${error}`, { component: 'DEBATE' });
+    const errMsg = String(error).slice(0, 300);
+    logger.warn(`Judge 호출 실패: ${errMsg}`, { component: 'DEBATE' });
+    await logSystem('WARN', 'DEBATE', 'Judge AI 호출 실패', { error: errMsg }).catch(() => {});
     return { verdict: 'HOLD', confidence: 0.3, reasoning: '토론 실패 → 안전하게 HOLD' };
   }
 }
