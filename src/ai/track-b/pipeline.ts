@@ -280,6 +280,19 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         logger.info(`📈 승률 데이터 로드: ${winRates.size}종목`, { component: 'TRACK_B' });
       }
 
+      // 황금비율 배분 설정 조회 (실패해도 계속)
+      const allocCfg = await import('../../db/client.js')
+        .then(m => m.getPool().query('SELECT * FROM portfolio_allocation_config WHERE is_active = true LIMIT 1'))
+        .then(r => r.rows[0] ?? null).catch(() => null);
+
+      // 현재 주식 포지션 가치 (파킹 ETF 제외)
+      const currentStockValue = openChains
+        .filter(c => !IDLE_PARK_CODE_SET.has(c.stock_code) && c.stock_code !== PARK_STOCK_CODE)
+        .reduce((sum, c) => {
+          const price = livePrices.get(c.stock_code)?.currentPrice ?? Number(c.avg_buy_price ?? 0);
+          return sum + price * Number(c.total_quantity ?? 0);
+        }, 0);
+
       decisions = technicalFallbackDecisions({
         mode: effectiveMode,
         // PARK_STOCK_CODE(069500) + IDLE_PARK_CODES(333940 등) 제외 — 파킹 ETF가 일반 종목으로 매매되면 orphan 청산 루프 발생
@@ -303,6 +316,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         winRates,
         // 15:10 이후 신규 매수 차단 — 마감 20분 전 진입만 차단
         blockNewBuys: kstH > 15 || (kstH === 15 && kstM >= 10),
+        allocationTarget: allocCfg ? {
+          stock_pct: Number(allocCfg.stock_pct),
+          rebalance_threshold_pct: Number(allocCfg.rebalance_threshold_pct),
+          is_active: Boolean(allocCfg.is_active),
+        } : null,
+        currentStockValue,
       });
 
       const engine = hasScores ? 'technical+AI힌트' : 'technical';

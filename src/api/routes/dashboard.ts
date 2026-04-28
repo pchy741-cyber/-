@@ -8,7 +8,7 @@ import { config } from '../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getPool, getTodayStartSnapshot } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { getCurrentPrice, getBatchPrices, isMarketOpen } from '../../kis/market.js';
-import { getWithdrawConfig, getWithdrawals, getTotalReserved } from '../../automation/profit-withdraw.js';
+import { getWithdrawConfig, getWithdrawals, getTotalReserved, getDinnerMoneyStats } from '../../automation/profit-withdraw.js';
 import { getKillSwitchStatus } from '../../risk/kill-switch.js';
 import { getPaperBalance } from '../../risk/engine.js';
 import { placeOrder } from '../../kis/order.js';
@@ -1608,11 +1608,14 @@ dashboardRoutes.get('/profit-stats', async (c) => {
         ${codeFilter}
     `);
 
+    const dinnerMoney = market === 'KR' ? await getDinnerMoneyStats() : null;
+
     return c.json({
       market,
       totalCumulative: Number(total[0]?.total_pnl ?? 0),
       thisMonthPnl: Number(thisMonth[0]?.pnl ?? 0),
       monthly: monthly.map((r: any) => ({ month: r.month, pnl: Number(r.pnl ?? 0), trades: Number(r.trades ?? 0) })),
+      dinnerMoney,
     });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);

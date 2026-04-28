@@ -218,6 +218,80 @@ settingsRoutes.post('/run-self-learning', async (c) => {
   return c.json({ ok: true, message: '자기학습 시작 (백그라운드 실행, 완료 시 텔레그램 알림)' });
 });
 
+// ── 황금비율 포트폴리오 배분 설정 ──
+settingsRoutes.get('/portfolio/allocation', async (c) => {
+  try {
+    await getPool().query(`
+      CREATE TABLE IF NOT EXISTS portfolio_allocation_config (
+        id SERIAL PRIMARY KEY,
+        parking_pct NUMERIC NOT NULL DEFAULT 30,
+        dividend_pct NUMERIC NOT NULL DEFAULT 30,
+        stock_pct NUMERIC NOT NULL DEFAULT 40,
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        rebalance_threshold_pct NUMERIC NOT NULL DEFAULT 10,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    const { rows } = await getPool().query('SELECT * FROM portfolio_allocation_config ORDER BY id DESC LIMIT 1');
+    if (rows.length === 0) {
+      const { rows: ins } = await getPool().query(
+        `INSERT INTO portfolio_allocation_config (parking_pct, dividend_pct, stock_pct) VALUES (30, 30, 40) RETURNING *`
+      );
+      return c.json(ins[0]);
+    }
+    return c.json(rows[0]);
+  } catch (err: any) {
+    return c.json({ parking_pct: 30, dividend_pct: 30, stock_pct: 40, is_active: true, rebalance_threshold_pct: 10 });
+  }
+});
+
+settingsRoutes.put('/portfolio/allocation', async (c) => {
+  const body = await c.req.json();
+  const parking = Math.max(0, Math.min(100, Number(body.parking_pct ?? 30)));
+  const dividend = Math.max(0, Math.min(100, Number(body.dividend_pct ?? 30)));
+  const stock = Math.max(0, Math.min(100, Number(body.stock_pct ?? 40)));
+  const threshold = Math.max(1, Math.min(50, Number(body.rebalance_threshold_pct ?? 10)));
+  const isActive = Boolean(body.is_active ?? true);
+
+  // 합계 검증
+  const total = parking + dividend + stock;
+  if (Math.abs(total - 100) > 1) return c.json({ error: '비율 합계가 100%여야 합니다' }, 400);
+
+  try {
+    await getPool().query(`
+      CREATE TABLE IF NOT EXISTS portfolio_allocation_config (
+        id SERIAL PRIMARY KEY,
+        parking_pct NUMERIC NOT NULL DEFAULT 30,
+        dividend_pct NUMERIC NOT NULL DEFAULT 30,
+        stock_pct NUMERIC NOT NULL DEFAULT 40,
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        rebalance_threshold_pct NUMERIC NOT NULL DEFAULT 10,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    const { rows: existing } = await getPool().query('SELECT id FROM portfolio_allocation_config LIMIT 1');
+    let result;
+    if (existing.length > 0) {
+      const { rows } = await getPool().query(
+        `UPDATE portfolio_allocation_config SET parking_pct=$1, dividend_pct=$2, stock_pct=$3,
+         is_active=$4, rebalance_threshold_pct=$5, updated_at=NOW() WHERE id=$6 RETURNING *`,
+        [parking, dividend, stock, isActive, threshold, existing[0].id]
+      );
+      result = rows[0];
+    } else {
+      const { rows } = await getPool().query(
+        `INSERT INTO portfolio_allocation_config (parking_pct, dividend_pct, stock_pct, is_active, rebalance_threshold_pct)
+         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+        [parking, dividend, stock, isActive, threshold]
+      );
+      result = rows[0];
+    }
+    return c.json(result);
+  } catch (err: any) {
+    return c.json({ error: err?.message }, 500);
+  }
+});
+
 // 워치리스트 순환 즉시 실행 (일요일 19:00 자동 외 수동 트리거)
 settingsRoutes.post('/run-watchlist-rotation', async (c) => {
   const { runWatchlistRotation } = await import('../../automation/watchlist-rotation.js');

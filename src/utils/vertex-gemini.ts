@@ -7,9 +7,9 @@ import { GoogleAuth } from 'google-auth-library';
 
 const PROJECT_ID = 'quantops-trading';
 const LOCATION = 'us-central1';
-const VERTEX_MODEL = 'gemini-2.0-flash-001';
+const VERTEX_MODEL = 'gemini-2.5-flash';  // GA (2026-04) — 2.0-flash-001 대비 추론 능력 대폭 향상
 const VERTEX_ENDPOINT = `https://${LOCATION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${LOCATION}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
-const AI_STUDIO_MODEL = 'gemini-2.0-flash-lite';
+const AI_STUDIO_MODEL = 'gemini-2.5-flash';  // GA — 동일 모델 AI Studio 경로
 const AI_STUDIO_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${AI_STUDIO_MODEL}:generateContent`;
 
 const auth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });

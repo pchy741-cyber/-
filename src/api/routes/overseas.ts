@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import { getOverseasBalance, getOverseasDailyChart, getOverseasPrice } from '../../kis/overseas.js';
 import { cacheGet, cacheSet } from '../../cache/memory.js';
 import { logger } from '../../utils/logger.js';
+import { getOverseasScores, setOverseasScores, type OverseasScoreEntry } from '../../cache/overseas-scores.js';
+import { analyzeTechnicals, type OHLCV } from '../../analysis/indicators.js';
 
 export const overseasRoutes = new Hono();
 
@@ -91,7 +93,15 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
 
   const [prices, holdings, positions] = await Promise.all([pricePromise, holdingsPromise, positionsPromise]);
 
-  const result = { watchlist: prices, positions, holdings };
+  // AI 기술점수 병합 (overseas-job에서 계산된 최신 점수)
+  const scores = getOverseasScores();
+  const scoreMap = new Map(scores.map(s => [s.code, s]));
+  const watchlistWithScores = prices.map(p => {
+    const sc = scoreMap.get(p.code);
+    return sc ? { ...p, score: sc.score, signal: sc.signal, rsi: sc.rsi } : p;
+  });
+
+  const result = { watchlist: watchlistWithScores, positions, holdings };
   cacheSet('overseas:dashboard', result, 60);
   return c.json(result);
 });
@@ -99,6 +109,73 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
 // 해외주식 감시목록 조회
 overseasRoutes.get('/overseas/watchlist', (c) => {
   return c.json(GLOBAL_WATCHLIST);
+});
+
+// ── 온디맨드 기술점수 계산 (AI 없음, 순수 지표) ──
+// 캐시가 30분 이내면 즉시 반환, 아니면 차트 fetch + analyzeTechnicals 실행
+let _scoringInProgress = false;
+
+overseasRoutes.get('/overseas/scores', async (c) => {
+  const fresh = getOverseasScores();
+  if (fresh.length > 0) return c.json(fresh);
+
+  // 크론이 아직 돌지 않은 경우 — 온디맨드 계산 (US만)
+  if (_scoringInProgress) return c.json([]); // 중복 방지
+  _scoringInProgress = true;
+
+  try {
+    const usStocks = GLOBAL_WATCHLIST.filter(s => s.exchange === 'NASDAQ' || s.exchange === 'NYSE');
+    const results: OverseasScoreEntry[] = [];
+
+    // 병렬 fetch (최대 4개씩)
+    const BATCH = 4;
+    for (let i = 0; i < usStocks.length; i += BATCH) {
+      const batch = usStocks.slice(i, i + BATCH);
+      const settled = await Promise.allSettled(
+        batch.map(async (stock) => {
+          const [price, chart] = await Promise.all([
+            getOverseasPrice(stock.code, stock.exchange).catch(() => null),
+            getOverseasDailyChart(stock.code, stock.exchange, 80).catch(() => null),
+          ]);
+          return { stock, price, chart };
+        })
+      );
+      for (const r of settled) {
+        if (r.status !== 'fulfilled') continue;
+        const { stock, price, chart } = r.value;
+        if (!chart || chart.length < 30) continue;
+        const candles: OHLCV[] = chart.map((c: any) => ({
+          date: c.date, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
+        }));
+        const tech = analyzeTechnicals(candles);
+        if (!tech) continue;
+        results.push({
+          code: stock.code,
+          name: stock.name,
+          exchange: stock.exchange,
+          region: 'US',
+          score: tech.score,
+          signal: tech.overallSignal,
+          price: price?.currentPrice ?? candles[0]?.close ?? 0,
+          changePct: price?.changePct ?? 0,
+          rsi: tech.rsi14,
+          cachedAt: Date.now(),
+        });
+      }
+      if (i + BATCH < usStocks.length) await new Promise(r => setTimeout(r, 200));
+    }
+
+    if (results.length > 0) setOverseasScores(results);
+    // 대시보드 캐시 무효화 (다음 요청 시 점수 포함해서 내려감)
+    cacheSet('overseas:dashboard', null as any, 0);
+    logger.info(`온디맨드 해외점수 계산 완료: ${results.length}종목`, { component: 'OVERSEAS' });
+    return c.json(results);
+  } catch (e: any) {
+    logger.error(`온디맨드 해외점수 실패: ${e.message}`, { component: 'OVERSEAS' });
+    return c.json([]);
+  } finally {
+    _scoringInProgress = false;
+  }
 });
 
 // 개별 종목 현재가

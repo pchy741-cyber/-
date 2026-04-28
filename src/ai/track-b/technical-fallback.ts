@@ -36,8 +36,12 @@ export function technicalFallbackDecisions(params: {
   winRates?: Map<string, StockWinRate>;
   /** 장 마감 30분 전(14:30~) — 신규 매수 차단 */
   blockNewBuys?: boolean;
+  /** 황금비율 배분 목표 — 주식 비중 초과 시 매수 기준 상향 (더 선택적 진입) */
+  allocationTarget?: { stock_pct: number; rebalance_threshold_pct: number; is_active: boolean } | null;
+  /** 현재 주식 포지션 가치 (황금비율 계산용) */
+  currentStockValue?: number;
 }): TradeDecision[] {
-  const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, manuallySoldCodes, totalAssets, winRates, blockNewBuys } = params;
+  const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, manuallySoldCodes, totalAssets, winRates, blockNewBuys, allocationTarget, currentStockValue } = params;
   // 종목당 최대 비중: 총자산의 20% 또는 maxPositionKrw 중 작은 값
   // — pipeline(15%)보다 약간 넓게 (고가주 최소 1주 매수 보장)
   const effectiveMaxPos = totalAssets
@@ -187,6 +191,24 @@ export function technicalFallbackDecisions(params: {
     return decisions; // 매도/손절 결정만 반환
   }
 
+  // 황금비율 배분 편차 계산 — 주식 비중 초과 시 매수 기준 상향
+  let allocationBuyPenalty = 0; // 양수 = minTechScore 상향 (더 선택적)
+  if (allocationTarget?.is_active && totalAssets && totalAssets > 0 && currentStockValue !== undefined) {
+    const currentStockPct = (currentStockValue / totalAssets) * 100;
+    const targetStockPct = allocationTarget.stock_pct;
+    const threshold = allocationTarget.rebalance_threshold_pct;
+    const deviation = currentStockPct - targetStockPct;
+    if (deviation > threshold) {
+      // 주식 비중 목표 초과 → 신규 매수 기준 상향 (최대 +15점)
+      allocationBuyPenalty = Math.min(15, Math.round((deviation - threshold) * 1.5));
+      logger.info(`⚖️ 황금비율 편차: 현재주식 ${currentStockPct.toFixed(1)}% > 목표 ${targetStockPct}%+${threshold}% → 매수 임계값 +${allocationBuyPenalty}점 상향`, { component: 'TRACK_B' });
+    } else if (deviation < -threshold) {
+      // 주식 비중 목표 미달 → 매수 기준 소폭 완화 (최대 -5점)
+      allocationBuyPenalty = Math.max(-5, Math.round((deviation + threshold) * 0.5));
+      logger.info(`⚖️ 황금비율 편차: 현재주식 ${currentStockPct.toFixed(1)}% < 목표 ${targetStockPct}%-${threshold}% → 매수 임계값 ${allocationBuyPenalty}점 완화`, { component: 'TRACK_B' });
+    }
+  }
+
   const openStockCodes = new Set(openChains.map((c) => c.stock_code));
   const candidates: Array<{ stock_code: string; tech: TechnicalSummary; price: CurrentPrice; candleBonus: number }> = [];
   // AI 스코어 없을 때(Track A 미실행) DEFENSE 기준 완화 여부 — 루프 밖에서 1회 계산
@@ -288,7 +310,7 @@ export function technicalFallbackDecisions(params: {
     const baseMinTechScore = mode === 'SCALPING' ? 50 : (mode === 'DEFENSE' && !noAiScores) ? 60 : 55;
     // 종목별 승률 기반 임계값 보정 (AI 없어도 과거 실적 반영)
     const wrAdj = getWinRateThresholdAdj(winRates?.get(stock.stock_code));
-    const minTechScore = baseMinTechScore + wrAdj;
+    const minTechScore = baseMinTechScore + wrAdj + allocationBuyPenalty;
 
     // 우선 테마(반도체/에너지/방산) 보너스 +10점 적용
     const priorityBonus = PRIORITY_SECTOR_CODES.has(stock.stock_code) ? 10 : 0;

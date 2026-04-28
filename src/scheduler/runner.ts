@@ -4,7 +4,7 @@ import { analyzeCapitalFlow } from '../automation/capital-flow.js';
 import { generateDailyReport } from '../automation/daily-report.js';
 import { analyzeWatchlistConsensus } from '../automation/analyst-consensus.js';
 import { monitorDisclosures } from '../automation/dart-monitor.js';
-import { checkAndReserveProfit } from '../automation/profit-withdraw.js';
+import { checkAndReserveProfit, checkDinnerMoneyWithdraw } from '../automation/profit-withdraw.js';
 import { archiveOldData } from '../automation/data-archiver.js';
 import { analyzeWatchlistFlows } from '../automation/investor-flow.js';
 import { getMacroSnapshot } from '../automation/macro-data.js';
@@ -372,6 +372,15 @@ export function startScheduler(): void {
     '*/20 * * * *',
     () => {
       runSelfHealing().catch((e) => logger.error(`Self-heal 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🍚 저녁용돈 — 평일 18:10 (퇴근 후, 오늘 수익 ≥ 1만원이면 1만원 적립, 월 30만원 한도)
+  cron.schedule(
+    '10 18 * * 1-5',
+    () => {
+      checkDinnerMoneyWithdraw().catch((e) => logger.error(`저녁용돈 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

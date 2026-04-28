@@ -133,6 +133,7 @@ export default function Dashboard() {
 
   const [withdrawConfig, setWithdrawConfig] = useState<any>(null);
   const [withdrawHistory, setWithdrawHistory] = useState<any[]>([]);
+  const [allocConfig, setAllocConfig] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState(new Date());
   const notebookRef = useRef<HTMLTextAreaElement>(null);
@@ -169,6 +170,7 @@ export default function Dashboard() {
       if (sec.status === 'fulfilled') setSecrets(sec.value);
       if (wc.status === 'fulfilled' && wc.value) setWithdrawConfig(wc.value);
       if (wh.status === 'fulfilled') setWithdrawHistory(Array.isArray(wh.value) ? wh.value : []);
+      api('/portfolio/allocation').then(ac => { if (ac) setAllocConfig(ac); }).catch(() => {});
 
       // 3단계: 미국주식 별도 로드 (느려도 다른 데이터에 영향 없음)
       api('/overseas/dashboard').then(us => { if (us) setUsDash(us); }).catch(() => {});
@@ -346,7 +348,7 @@ export default function Dashboard() {
               {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} toast={toast} onRefresh={load} />}
 
               {tab === 'news' && <NewsView watchlist={watchlist} setWatchlist={setWatchlist} />}
-              {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} notebookRef={notebookRef} geminiRef={geminiRef} gptRef={gptRef} claudeRef={claudeRef} killSwitch={killSwitch} toggleKill={toggleKill} withdrawConfig={withdrawConfig} setWithdrawConfig={setWithdrawConfig} withdrawHistory={withdrawHistory} setWithdrawHistory={setWithdrawHistory} toast={toast} />}
+              {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} notebookRef={notebookRef} geminiRef={geminiRef} gptRef={gptRef} claudeRef={claudeRef} killSwitch={killSwitch} toggleKill={toggleKill} withdrawConfig={withdrawConfig} setWithdrawConfig={setWithdrawConfig} withdrawHistory={withdrawHistory} setWithdrawHistory={setWithdrawHistory} allocConfig={allocConfig} setAllocConfig={setAllocConfig} toast={toast} />}
             </div>
           )}
         </main>
@@ -969,11 +971,12 @@ function ScoreBar({ label, value, color }: { label: string; value: number; color
   );
 }
 
-function AiTransparencyPanel({ watchlist }: { watchlist: any[] }) {
+function AiTransparencyPanel({ watchlist, tab, usDash }: { watchlist: any[]; tab?: 'KR' | 'US'; usDash?: any }) {
   const [details, setDetails] = React.useState<Map<string, any>>(new Map());
   const [selected, setSelected] = React.useState<string | null>(null);
 
   React.useEffect(() => {
+    if (tab === 'US') return; // US 탭은 API 호출 불필요 (usDash에서 직접 읽음)
     const codes = watchlist.map((s: any) => s.stock_code).filter((c: string) => /^[0-9]{6}$/.test(c)).slice(0, 8);
     codes.forEach((code: string) => {
       api(`/stock/${code}/score-detail`).then((r: any) => {
@@ -983,7 +986,48 @@ function AiTransparencyPanel({ watchlist }: { watchlist: any[] }) {
       }).catch(() => {});
     });
     if (codes.length > 0 && !selected) setSelected(codes[0]);
-  }, [watchlist]);
+  }, [watchlist, tab]);
+
+  // US 탭: usDash?.watchlist에서 AI 점수 읽기
+  if (tab === 'US') {
+    const usStocks: any[] = (usDash?.watchlist ?? []).filter((s: any) => typeof s.score === 'number' || typeof s.ai_score === 'number').slice(0, 8);
+    if (usStocks.length === 0) return null;
+    const [usSel, setUsSel] = React.useState<string | null>(usStocks[0]?.code ?? null);
+    const selStock = usStocks.find((s: any) => s.code === (usSel ?? usStocks[0]?.code));
+    const score = selStock?.score ?? selStock?.ai_score ?? 0;
+    const signal = selStock?.signal ?? '';
+    return (
+      <div className="glass rounded-2xl border border-white/[0.04] px-4 py-3">
+        <div className="text-[11px] font-semibold text-slate-400 mb-2">AI 판단 근거 투명성 🇺🇸</div>
+        <div className="flex gap-1 flex-wrap mb-3">
+          {usStocks.map((s: any) => {
+            const sc = s.score ?? s.ai_score ?? 0;
+            const active = (usSel ?? usStocks[0]?.code) === s.code;
+            return (
+              <button key={s.code} onClick={() => setUsSel(s.code)}
+                className={`text-[9px] px-2 py-0.5 rounded-full font-semibold transition-colors ${active ? 'bg-blue-500/30 text-blue-300 border border-blue-500/40' : 'bg-white/[0.04] text-slate-500 hover:text-slate-300'}`}>
+                {s.name ?? s.code} <span className={sc >= 60 ? 'text-emerald-400' : sc <= 40 ? 'text-rose-400' : 'text-amber-400'}>{Math.round(sc)}</span>
+              </button>
+            );
+          })}
+        </div>
+        {selStock && (
+          <div className="space-y-1.5">
+            <ScoreBar label="AI점수" value={score} color="blue" />
+            {selStock.confidence != null && <ScoreBar label="신뢰도" value={selStock.confidence} color="emerald" />}
+            <div className="flex items-center gap-2 mt-2 pt-2 border-t border-white/[0.04]">
+              <span className="text-[10px] text-slate-500">시그널</span>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${signal === 'BUY' || signal === 'STRONG_BUY' ? 'bg-emerald-500/20 text-emerald-300' : signal === 'SELL' ? 'bg-rose-500/20 text-rose-300' : 'bg-white/[0.04] text-slate-400'}`}>{signal || 'HOLD'}</span>
+              {selStock.price != null && <span className="text-[10px] text-slate-500 ml-auto">${selStock.price?.toFixed(2)}</span>}
+            </div>
+            {selStock.reason && (
+              <div className="text-[10px] text-slate-500 leading-relaxed line-clamp-2">{selStock.reason}</div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   const stocks = watchlist.filter((s: any) => details.has(s.stock_code)).slice(0, 8);
   if (stocks.length === 0) return null;
@@ -1257,21 +1301,15 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
     return sum + (curPrice - h.avg_price) * h.quantity;
   }, 0);
   const overseasPnlKrw = Math.round(overseasPnlUsd * fxRate);
-  // 18시 이전 → 국내 미실현손익만, 18시 이후 → 해외 미실현손익만
-  const kstHour = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' })).getHours();
-  const isAfterEvening = kstHour >= 18;
-  const showOnlyKr = !isAfterEvening;
-  const showOnlyUs = isAfterEvening;
+  // 탭 기반 손익 표시 — 국내 탭이면 국내, 해외 탭이면 해외
+  const showOnlyKr = holdingsTab === 'KR';
+  const showOnlyUs = holdingsTab === 'US';
   const combinedPnl = showOnlyKr
     ? unrealizedPnl
-    : showOnlyUs
-      ? (usHoldings.length > 0 ? overseasPnlKrw : 0)
-      : unrealizedPnl + (usHoldings.length > 0 ? overseasPnlKrw : 0);
+    : (usHoldings.length > 0 ? overseasPnlKrw : 0);
   const combinedInvested = showOnlyKr
     ? (domesticInvested > 0 ? domesticInvested : 0)
-    : showOnlyUs
-      ? (overseasInvestedKrw > 0 ? overseasInvestedKrw : 0)
-      : (domesticInvested > 0 ? domesticInvested : 0) + (overseasInvestedKrw > 0 ? overseasInvestedKrw : 0);
+    : (overseasInvestedKrw > 0 ? overseasInvestedKrw : 0);
   const combinedPnlPct = combinedInvested > 0 ? (combinedPnl / combinedInvested) * 100 : (domesticInvested > 0 ? totalPnlPct : 0);
   const hasOverseasHoldings = usHoldings.length > 0;
 
@@ -1525,16 +1563,28 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
             {/* 미니 스탯 3개 */}
             <div className="grid grid-cols-3 gap-2">
               <div className="bg-white/[0.04] rounded-xl px-3 py-2">
-                <div className="text-[9px] text-slate-500 mb-0.5">총자산</div>
-                <div className="text-sm font-bold text-slate-200 tabular-nums truncate">{mask(Math.round(animTotal / 10000).toLocaleString('ko-KR') + '만원')}</div>
+                <div className="text-[9px] text-slate-500 mb-0.5">{showOnlyUs ? '해외자산' : '총자산'}</div>
+                {showOnlyUs ? (
+                  <div className="text-sm font-bold text-slate-200 tabular-nums truncate">{mask('$' + (overseasInvestedUsd + overseasCashUsd).toFixed(0))}</div>
+                ) : (
+                  <div className="text-sm font-bold text-slate-200 tabular-nums truncate">{mask(Math.round(animTotal / 10000).toLocaleString('ko-KR') + '만원')}</div>
+                )}
               </div>
               <div className="bg-white/[0.04] rounded-xl px-3 py-2">
                 <div className="text-[9px] text-slate-500 mb-0.5">투자비중</div>
-                <div className={`text-sm font-bold tabular-nums ${domesticPct > 60 ? 'text-amber-400' : 'text-blue-400'}`}>{domesticPct}% <span className="text-[9px] text-slate-600">({chains.length}종목)</span></div>
+                {showOnlyUs ? (() => {
+                  const usTotalUsd = overseasInvestedUsd + overseasCashUsd;
+                  const usPct = usTotalUsd > 0 ? Math.round((overseasInvestedUsd / usTotalUsd) * 100) : 0;
+                  return <div className={`text-sm font-bold tabular-nums ${usPct > 60 ? 'text-amber-400' : 'text-blue-400'}`}>{usPct}% <span className="text-[9px] text-slate-600">({usHoldings.length}종목)</span></div>;
+                })() : (
+                  <div className={`text-sm font-bold tabular-nums ${domesticPct > 60 ? 'text-amber-400' : 'text-blue-400'}`}>{domesticPct}% <span className="text-[9px] text-slate-600">({chains.length}종목)</span></div>
+                )}
               </div>
               <div className="bg-white/[0.04] rounded-xl px-3 py-2">
-                <div className="text-[9px] text-slate-500 mb-0.5">{withdrawConfig?.totalReserved > 0 ? '인출예약' : '오늘매매'}</div>
-                {withdrawConfig?.totalReserved > 0 ? (
+                <div className="text-[9px] text-slate-500 mb-0.5">{showOnlyUs ? '오늘미국' : withdrawConfig?.totalReserved > 0 ? '인출예약' : '오늘매매'}</div>
+                {showOnlyUs ? (
+                  <div className={`text-sm font-bold tabular-nums ${usTodaySells.length > 0 ? pc(usTabPnlUsd) : 'text-slate-200'}`}>{usTodaySells.length > 0 ? `${usTabPnlUsd > 0 ? '+' : ''}$${usTabPnlUsd.toFixed(0)}` : `${usTodaySells.length}건`}</div>
+                ) : withdrawConfig?.totalReserved > 0 ? (
                   <div className="text-sm font-bold text-amber-400 truncate">{mask(fmtWon(withdrawConfig.totalReserved))}</div>
                 ) : (
                   <div className="text-sm font-bold text-slate-200">{todayTrades.length}<span className="text-[9px] text-slate-500 ml-0.5">건</span></div>
@@ -1546,7 +1596,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       })()}
 
       {/* ── 머니 통계 (누적수익 + 월별 막대 + 목표 게이지) ── */}
-      <MoneyStatsPanel market={health?.usMarketOpen && !health?.marketOpen ? 'US' : 'KR'} />
+      <MoneyStatsPanel market={holdingsTab} />
 
       {/* ── 리스크 게이지 + 전략 이력 ── */}
       {(() => {
@@ -2060,7 +2110,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       <PnlBreakdownPanel chains={chains} trades={trades} />
 
       {/* ── AI 판단 근거 투명성 ── */}
-      <AiTransparencyPanel watchlist={watchlist} />
+      <AiTransparencyPanel watchlist={watchlist} tab={holdingsTab} usDash={usDash} />
 
       {/* ── 성과 종합 분석 ── */}
       <PerformancePanel trades={trades} strategy={strategy} setStrategy={setStrategy} toast={toast} />
@@ -2616,23 +2666,76 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
           </div>
         </Panel>
 
-        {/* 미국 */}
-        <Panel title="🇺🇸 미국" badge={`${usW.length}종목`}>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 p-3">
-            {usW.map((s: any) => {
-              const usDisplayName = toDisplayName(s.name, s.code);
-              return (
-                <div key={s.code} className={`rounded-lg border p-3 ${pbg(s.changePct)} border-slate-700/30`}>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-bold text-sm truncate">{usDisplayName}</span>
-                    <span className={`text-[11px] font-medium shrink-0 ${pc(s.changePct)}`}>{fmtPct(s.changePct)}</span>
-                  </div>
-                  <div className="text-lg font-bold mt-1">{s.price > 0 ? `$${s.price.toFixed(2)}` : '-'}</div>
+        {/* 미국 — 기술점수 포함 */}
+        {(() => {
+          const [usScores, setUsScores] = React.useState<any[]>([]);
+          const [scoresLoading, setScoresLoading] = React.useState(false);
+
+          React.useEffect(() => {
+            // usDash watchlist에 이미 score가 있으면 그대로 사용
+            const hasScores = usW.some((s: any) => typeof s.score === 'number');
+            if (hasScores) { setUsScores(usW); return; }
+            // 없으면 온디맨드 계산 요청
+            setScoresLoading(true);
+            api('/overseas/scores').then((data: any) => {
+              if (Array.isArray(data) && data.length > 0) {
+                // usDash watchlist 가격정보와 병합
+                const scoreMap = new Map(data.map((s: any) => [s.code, s]));
+                const merged = (usW.length > 0 ? usW : data).map((s: any) => {
+                  const sc = scoreMap.get(s.code ?? s.stock_code);
+                  return sc ? { ...s, score: sc.score, signal: sc.signal, rsi: sc.rsi } : s;
+                });
+                setUsScores(merged.length > 0 ? merged : data);
+              } else if (usW.length > 0) {
+                setUsScores(usW);
+              }
+            }).catch(() => { if (usW.length > 0) setUsScores(usW); })
+            .finally(() => setScoresLoading(false));
+          }, [usW]);
+
+          const displayList = usScores.length > 0 ? usScores : usW;
+          return (
+            <Panel title="🇺🇸 미국주식 감시" badge={scoresLoading ? '계산 중...' : `${displayList.length}종목`}>
+              {scoresLoading && displayList.length === 0 && (
+                <div className="flex items-center gap-2 px-4 py-3 text-[11px] text-slate-500">
+                  <div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                  기술지표 자동 계산 중 (AI 없이 차트 분석)...
                 </div>
-              );
-            })}
-          </div>
-        </Panel>
+              )}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 p-3">
+                {displayList.map((s: any) => {
+                  const code = s.code ?? s.stock_code;
+                  const name = s.name ?? code;
+                  const usDisplayName = toDisplayName(name, code);
+                  const score = typeof s.score === 'number' ? s.score : null;
+                  const signal = s.signal ?? '';
+                  const rsi = typeof s.rsi === 'number' ? s.rsi : null;
+                  const signalColor = signal === 'STRONG_BUY' ? 'text-emerald-300' : signal === 'BUY' ? 'text-emerald-400' : signal === 'SELL' || signal === 'STRONG_SELL' ? 'text-rose-400' : 'text-slate-500';
+                  const scoreBg = score !== null ? (score >= 40 ? 'bg-emerald-500/10 border-emerald-500/20' : score <= -20 ? 'bg-rose-500/10 border-rose-500/20' : 'bg-white/[0.03] border-slate-700/30') : `${pbg(s.changePct)} border-slate-700/30`;
+                  return (
+                    <div key={code} className={`rounded-lg border p-3 ${scoreBg}`}>
+                      <div className="flex items-center justify-between gap-1 mb-1">
+                        <span className="font-bold text-sm truncate">{usDisplayName}</span>
+                        <span className={`text-[10px] font-medium shrink-0 ${pc(s.changePct)}`}>{fmtPct(s.changePct)}</span>
+                      </div>
+                      <div className="text-base font-bold">{s.price > 0 ? `$${s.price.toFixed(2)}` : '-'}</div>
+                      {score !== null && (
+                        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${signalColor} bg-white/[0.04]`}>
+                            {signal === 'STRONG_BUY' ? '강매수' : signal === 'BUY' ? '매수' : signal === 'HOLD' ? '관망' : signal === 'SELL' ? '매도' : signal === 'STRONG_SELL' ? '강매도' : signal}
+                          </span>
+                          <span className={`text-[9px] font-semibold ${score >= 40 ? 'text-emerald-400' : score <= -20 ? 'text-rose-400' : 'text-slate-400'}`}>{score >= 0 ? '+' : ''}{Math.round(score)}점</span>
+                          {rsi !== null && <span className="text-[9px] text-slate-600">RSI {Math.round(rsi)}</span>}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {displayList.length === 0 && !scoresLoading && <div className="col-span-3"><EmptyMsg>데이터 없음</EmptyMsg></div>}
+              </div>
+            </Panel>
+          );
+        })()}
       </div>
     </div>
   );
@@ -2977,7 +3080,131 @@ function isGarbledPrompt(_val: string | null | undefined): boolean {
   return false; // 특수문자(→ 등) 포함 시 오탐 → 항상 raw 값 그대로 사용
 }
 
-function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, gptRef, claudeRef, killSwitch, toggleKill, withdrawConfig, setWithdrawConfig, withdrawHistory, setWithdrawHistory, toast }: any) {
+function GoldenRatioPanel({ allocConfig, setAllocConfig, toast }: any) {
+  const cfg = allocConfig ?? { parking_pct: 30, dividend_pct: 30, stock_pct: 40, is_active: false, rebalance_threshold_pct: 10 };
+  const [parking, setParking] = React.useState<number>(Number(cfg.parking_pct));
+  const [dividend, setDividend] = React.useState<number>(Number(cfg.dividend_pct));
+  const [stock, setStock] = React.useState<number>(Number(cfg.stock_pct));
+  const [threshold, setThreshold] = React.useState<number>(Number(cfg.rebalance_threshold_pct));
+
+  React.useEffect(() => {
+    if (allocConfig) {
+      setParking(Number(allocConfig.parking_pct));
+      setDividend(Number(allocConfig.dividend_pct));
+      setStock(Number(allocConfig.stock_pct));
+      setThreshold(Number(allocConfig.rebalance_threshold_pct));
+    }
+  }, [allocConfig]);
+
+  const total = parking + dividend + stock;
+  const valid = Math.abs(total - 100) <= 1;
+
+  const save = async (patch: Partial<{ parking_pct: number; dividend_pct: number; stock_pct: number; is_active: boolean; rebalance_threshold_pct: number }>) => {
+    const next = { parking_pct: parking, dividend_pct: dividend, stock_pct: stock, is_active: cfg.is_active, rebalance_threshold_pct: threshold, ...patch };
+    if (Math.abs(next.parking_pct + next.dividend_pct + next.stock_pct - 100) > 1) { toast?.('비율 합계가 100%여야 합니다', 'err'); return; }
+    try {
+      const updated = await api('/portfolio/allocation', { method: 'PUT', body: JSON.stringify(next) });
+      setAllocConfig(updated);
+      toast?.('황금비율 저장됨', 'ok');
+    } catch { toast?.('저장 실패', 'err'); }
+  };
+
+  // 슬라이더 조정 시 나머지 항목 비례 분배
+  const adjustOther = (changed: 'parking' | 'dividend' | 'stock', val: number) => {
+    const clamped = Math.max(0, Math.min(100, val));
+    const others = 100 - clamped;
+    if (changed === 'parking') {
+      const ratio = dividend + stock > 0 ? dividend / (dividend + stock) : 0.5;
+      setParking(clamped); setDividend(Math.round(others * ratio)); setStock(Math.round(others * (1 - ratio)));
+    } else if (changed === 'dividend') {
+      const ratio = parking + stock > 0 ? parking / (parking + stock) : 0.5;
+      setDividend(clamped); setParking(Math.round(others * ratio)); setStock(Math.round(others * (1 - ratio)));
+    } else {
+      const ratio = parking + dividend > 0 ? parking / (parking + dividend) : 0.5;
+      setStock(clamped); setParking(Math.round(others * ratio)); setDividend(Math.round(others * (1 - ratio)));
+    }
+  };
+
+  const barColor = ['bg-sky-500', 'bg-emerald-500', 'bg-violet-500'];
+
+  return (
+    <Panel title="🏆 황금비율 목표 배분">
+      <div className="px-6 py-5 space-y-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-slate-200">포트폴리오 황금비율</p>
+            <p className="text-[12px] text-slate-500 mt-1">파킹 ETF · 배당주 · 매매주식의 목표 비율 설정. AI가 매매 시 이 비율을 고려해 진입/청산 우선순위를 조정합니다.</p>
+          </div>
+          <button onClick={() => save({ is_active: !cfg.is_active })}
+            className={`px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all ${cfg.is_active ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-white/[0.06] hover:bg-white/[0.1] text-slate-400'}`}>
+            {cfg.is_active ? 'ON' : 'OFF'}
+          </button>
+        </div>
+
+        {/* 비율 막대 시각화 */}
+        <div className="w-full h-4 rounded-full overflow-hidden flex gap-0.5">
+          <div className="bg-sky-500 transition-all" style={{ width: `${parking}%` }} title={`파킹 ${parking}%`} />
+          <div className="bg-emerald-500 transition-all" style={{ width: `${dividend}%` }} title={`배당 ${dividend}%`} />
+          <div className="bg-violet-500 transition-all" style={{ width: `${stock}%` }} title={`주식 ${stock}%`} />
+        </div>
+        <div className="flex justify-between text-[10px] text-slate-400 -mt-1">
+          {[['sky', '🅿 파킹 ETF', parking], ['emerald', '💎 배당주', dividend], ['violet', '📈 매매주식', stock]].map(([color, label, pct]) => (
+            <span key={String(label)} className="flex items-center gap-1">
+              <span className={`w-2 h-2 rounded-sm bg-${color}-500`} />{label} <span className="font-bold text-white">{pct}%</span>
+            </span>
+          ))}
+        </div>
+
+        {/* 슬라이더 */}
+        <div className="space-y-3">
+          {([['파킹 ETF (현금성 안전자산)', parking, (v: number) => adjustOther('parking', v), 'sky'],
+            ['배당주 (고배당·리츠)', dividend, (v: number) => adjustOther('dividend', v), 'emerald'],
+            ['매매주식 (단기·스윙)', stock, (v: number) => adjustOther('stock', v), 'violet']] as [string, number, (v: number) => void, string][]).map(([label, val, setter, color]) => (
+            <div key={label} className="space-y-1">
+              <div className="flex justify-between text-[11px]">
+                <span className="text-slate-400">{label}</span>
+                <span className="font-bold text-white">{val}%</span>
+              </div>
+              <input type="range" min={0} max={100} step={5} value={val}
+                onChange={e => setter(Number(e.target.value))}
+                className={`w-full h-1.5 rounded-full appearance-none cursor-pointer accent-${color}-500`} />
+            </div>
+          ))}
+        </div>
+
+        {!valid && <p className="text-[11px] text-rose-400">⚠ 합계 {total}% — 100%로 맞춰주세요</p>}
+
+        <div className="grid grid-cols-2 gap-3 pt-1">
+          <div className="space-y-1">
+            <p className="text-[11px] text-slate-400">리밸런싱 허용 오차</p>
+            <div className="flex items-center gap-2">
+              <input type="number" min={1} max={30} step={1} value={threshold} onChange={e => setThreshold(Number(e.target.value))}
+                className="w-full bg-white/[0.05] ring-1 ring-white/[0.08] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:ring-blue-500/50" />
+              <span className="text-[11px] text-slate-500 shrink-0">% 이내</span>
+            </div>
+            <p className="text-[10px] text-slate-600">목표와 이 % 이상 벗어나면 AI가 매매 방향 조정</p>
+          </div>
+          <div className="flex items-end">
+            <button onClick={() => save({ parking_pct: parking, dividend_pct: dividend, stock_pct: stock, rebalance_threshold_pct: threshold })}
+              disabled={!valid}
+              className="w-full px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 rounded-xl text-xs font-semibold transition-all">
+              저장
+            </button>
+          </div>
+        </div>
+
+        <div className="text-[10px] text-slate-600 space-y-0.5 pt-1">
+          <p>* 파킹 ETF 예시: TIGER 단기채권, KODEX 머니마켓</p>
+          <p>* 배당주 예시: 고배당 ETF, REIT (월배당)</p>
+          <p>* 매매주식: 단타·스윙 대상 종목</p>
+          <p>* AI가 즉시 강제 매매하지 않고, 타점 잡을 때 비율 방향으로 조정합니다</p>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, gptRef, claudeRef, killSwitch, toggleKill, withdrawConfig, setWithdrawConfig, withdrawHistory, setWithdrawHistory, allocConfig, setAllocConfig, toast }: any) {
   const [activeStep, setActiveStep] = useState<number>(0);
   const [nbSources, setNbSources] = useState<NbSource[]>(() => parseNbSources(strategy?.notebooklm_prompt));
   const [nbAddTitle, setNbAddTitle] = useState('');
@@ -3493,6 +3720,9 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
           </div>
         </Panel>
       </div>
+
+      {/* ── 황금비율 포트폴리오 배분 ── */}
+      <GoldenRatioPanel allocConfig={allocConfig} setAllocConfig={setAllocConfig} toast={toast} />
 
       {/* ── 앱 보안 ── */}
       <Panel title="앱 보안">
