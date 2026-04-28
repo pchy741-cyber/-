@@ -124,8 +124,8 @@ export function technicalFallbackDecisions(params: {
       }
       const peakPrice = (chain as any).peak_price ? Number((chain as any).peak_price) : Number(chain.avg_buy_price) * (1 + strategyParams.takeProfitPct / 100);
       const trailDropPct = ((price.currentPrice - peakPrice) / peakPrice) * 100;
-      const isTrailTriggered = trailDropPct <= -1.5; // peak 대비 -1.5% 하락 시 청산 (ATR 노이즈 감안 — 0.8%는 너무 좁아 조기 청산 빈번)
-      const isTargetReached = pnlPct >= 4.0;         // +4.0% 추가 목표 달성 시 전량 익절
+      const isTrailTriggered = trailDropPct <= -2.5; // peak 대비 -2.5% 하락 시 청산 (너무 좁으면 노이즈에 조기 청산)
+      const isTargetReached = pnlPct >= 5.0;         // +5.0% 추가 목표 달성 시 전량 익절
 
       if (isTargetReached || isTrailTriggered) {
         decisions.push({
@@ -225,8 +225,8 @@ export function technicalFallbackDecisions(params: {
     // 거래량 < 1.2x 평균 = 기관/외국인 관심 없음 = 가짜 돌파 위험
     // 예외: 과매도(RSI<35) 반등은 거래량 바닥에서 발생 — 필터 면제
     //       강한 불리쉬 캔들(망치형 등) = 저거래량에서도 의미있는 반전 신호
-    if (tech.volumeRatio < 1.2 && tech.rsi14 >= 35 && !hasBullishCandle) {
-      logger.info(`  📉 ${stock.stock_code}: 거래량 부족 (${tech.volumeRatio.toFixed(2)}x < 1.2) → 기관 관심 없음, 스킵`, { component: 'TRACK_B' });
+    if (tech.volumeRatio < 1.5 && tech.rsi14 >= 35 && !hasBullishCandle) {
+      logger.info(`  📉 ${stock.stock_code}: 거래량 부족 (${tech.volumeRatio.toFixed(2)}x < 1.5) → 기관 관심 없음, 스킵`, { component: 'TRACK_B' });
       continue;
     }
 
@@ -278,9 +278,9 @@ export function technicalFallbackDecisions(params: {
     }
     // ───────────────────────────────────────────────────────────────────
 
-    // 기술 단독 최소 점수 — SWING 45, DEFENSE 60 (적극 투자)
-    // AI 스코어 없으면(Track A 미실행) DEFENSE도 SWING 기준(45)으로 완화
-    const baseMinTechScore = mode === 'SCALPING' ? 50 : (mode === 'DEFENSE' && !noAiScores) ? 60 : 45;
+    // 기술 단독 최소 점수 — SWING 55, DEFENSE 60 (품질 우선)
+    // AI 스코어 없으면(Track A 미실행) DEFENSE도 SWING 기준(55)으로 완화
+    const baseMinTechScore = mode === 'SCALPING' ? 50 : (mode === 'DEFENSE' && !noAiScores) ? 60 : 55;
     // 종목별 승률 기반 임계값 보정 (AI 없어도 과거 실적 반영)
     const wrAdj = getWinRateThresholdAdj(winRates?.get(stock.stock_code));
     const minTechScore = baseMinTechScore + wrAdj;
@@ -343,7 +343,7 @@ export function technicalFallbackDecisions(params: {
 
   // 현금 여유 확인하면서 매수 결정
   let remainingCash = orderableCash;
-  const maxBuys = 8; // 한 번에 최대 8종목 (적극 분산 투자)
+  const maxBuys = 5; // 한 번에 최대 5종목 (집중 투자, 분산 과다 방지)
   const splitCount = strategyParams.splitCount || 2;
 
   for (const cand of candidates.slice(0, maxBuys)) {

@@ -37,7 +37,7 @@ const GLOBAL_WATCHLIST = [
 ];
 
 // ─── 포지션 한도 (미국/아시아 공통) ───
-const MAX_POSITIONS = 10;          // 최대 동시 보유 종목 (적극 투자)
+const MAX_POSITIONS = 5;           // 최대 동시 보유 종목 (집중 투자)
 const POSITION_SIZE_USD = 4000;    // 종목당 최대 투자금 (스윙 적극 투자)
 const POSITION_PCT = 0.28;         // 또는 가용 현금의 28%
 
@@ -863,8 +863,8 @@ export async function runOverseasJob(): Promise<void> {
 
       let sellReason = '';
 
-      // 1) 손절: -3% (하드 룰)
-      if (pnlPct <= -3) {
+      // 1) 손절: -2.5% (하드 룰)
+      if (pnlPct <= -2.5) {
         sellReason = `손절: ${pnlPct.toFixed(1)}%`;
       }
       // 2) 트레일링 스탑: 최고점 대비 -2.5% 하락 (최소 +2% 이상 수익 구간에서만)
@@ -1002,8 +1002,8 @@ export async function runOverseasJob(): Promise<void> {
 
       const slotsAvailable = MAX_POSITIONS - currentHoldingCount;
       for (const target of buyTargets.slice(0, slotsAvailable)) {
-        // 총 포트폴리오 기준 15% 단위 투자 (현금만 보면 매수할수록 비중이 줄어드는 문제 해결)
-        const positionSize = Math.min(portfolioValue * 0.15, POSITION_SIZE_USD, cash * 0.95);
+        // 가용 현금의 70% 한도 (과잉 투자 방지)
+        const positionSize = Math.min(portfolioValue * 0.15, POSITION_SIZE_USD, cash * 0.70);
         if (positionSize < 50) break;
 
         const qty = Math.floor(positionSize / (target.price.currentPrice * 1.0025)); // 수수료 0.25% 포함 단가
