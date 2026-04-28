@@ -264,6 +264,13 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         logger.info('⚡ AI 스코어 없음 + DEFENSE 모드 → SWING으로 완화 (기술적 매매 활성화)', { component: 'TRACK_B' });
       }
 
+      // 종목별 과거 승률 로드 — AI 없어도 진입 임계값 동적 조정 (실패해도 계속)
+      const { getStockWinRates } = await import('../../analysis/win-rate.js');
+      const winRates = await getStockWinRates(stockCodes).catch(() => new Map());
+      if (winRates.size > 0) {
+        logger.info(`📈 승률 데이터 로드: ${winRates.size}종목`, { component: 'TRACK_B' });
+      }
+
       decisions = technicalFallbackDecisions({
         mode: effectiveMode,
         // PARK_STOCK_CODE(069500) + IDLE_PARK_CODES(333940 등) 제외 — 파킹 ETF가 일반 종목으로 매매되면 orphan 청산 루프 발생
@@ -284,6 +291,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         takeProfitPct: strategy?.take_profit_pct ?? undefined,
         stopLossPct: strategy?.stop_loss_pct ?? undefined,
         buyThreshold: strategy?.buy_threshold ?? undefined,
+        winRates,
       });
 
       const engine = hasScores ? 'technical+AI힌트' : 'technical';
@@ -369,7 +377,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       // 현금 10% 초과 + 파킹 여유(40% 미만) → 파킹
       // 10% 미만은 주문 여유분으로 현금 유지 (5%는 수수료+슬리피지로 금방 소진)
       const parkCurrentPrice = _idleParkPriceCache.price;
-      if (idlePctAfterBuys > 10 && canParkMore) {
+      if (idlePctAfterBuys > 20 && canParkMore) {
         if (parkCurrentPrice > 0) {
           // 매수 후 남은 현금의 85%를 파킹 (15%는 긴급 매수 여유분)
           const parkAmount = cashAfterBuys * 0.85;

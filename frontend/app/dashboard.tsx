@@ -1599,7 +1599,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
               <div className="divide-y divide-white/[0.03]">
                 {usHoldings.map((h: any) => {
                   const priceData = usW.find((s: any) => s.code === h.stock_code);
-                  const curPrice = priceData?.price ?? 0;
+                  const curPrice = (priceData?.price ?? 0) > 0 ? priceData!.price : (h.last_price ?? 0);
+                  const isStale = (priceData?.price ?? 0) === 0 && curPrice > 0; // DB 저장 마지막 시세
                   const invested = h.avg_price * h.quantity;
                   const pnl = curPrice > 0 ? (curPrice - h.avg_price) * h.quantity : 0;
                   const pnlPct = curPrice > 0 && h.avg_price > 0 ? ((curPrice - h.avg_price) / h.avg_price) * 100 : 0;
@@ -1618,15 +1619,16 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                           <>
                             <div className={`text-base font-bold ${pc(pnl)}`}>{pnlPct > 0 ? '+' : ''}{pnlPct.toFixed(1)}%</div>
                             <div className={`text-[11px] ${pc(pnl)}`}>${pnl.toFixed(0)}</div>
+                            {isStale && <div className="text-[10px] text-slate-600">장마감 시세</div>}
                           </>
-                        ) : <span className="text-xs text-slate-600">시세 대기</span>}
+                        ) : <span className="text-xs text-slate-600">시세 없음</span>}
                       </div>
                     </div>
                   );
                 })}
               </div>
             )}
-            {usW.some((s: any) => s.price > 0) ? (
+            {usW.some((s: any) => s.price > 0) && (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3.5">
                 {usW.filter((s: any) => s.price > 0).map((s: any) => {
                   const held = usHoldings.find((h: any) => h.stock_code === s.code);
@@ -1640,11 +1642,12 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                   );
                 })}
               </div>
-            ) : (
+            )}
+            {!usW.some((s: any) => s.price > 0) && usHoldings.length === 0 && (
               <div className="p-8 text-center space-y-2">
                 <div className="text-2xl opacity-30">🌏</div>
-                <p className="text-sm text-slate-400">시세 로딩 중...</p>
-                <p className="text-[11px] text-slate-600">🇯🇵 09:00~15:00 · 🇹🇼 10:00~14:30 · 🇺🇸 23:30~06:30</p>
+                <p className="text-sm text-slate-400">장 마감 — 다음 세션 시작 시 시세 자동 업데이트</p>
+                <p className="text-[11px] text-slate-600">🇯🇵 09:00~15:00 · 🇹🇼 10:00~14:30 · 🇺🇸 22:30~06:30 (서머타임)</p>
               </div>
             )}
             {/* 운영자 인사이트 입력 */}

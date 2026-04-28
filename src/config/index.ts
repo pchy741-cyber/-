@@ -40,8 +40,8 @@ const envSchema = z.object({
   // • 총 투자 비중: 최대 75% (25%는 항상 현금/파킹 유지)
   RISK_MAX_DAILY_DRAWDOWN_KRW: z.coerce.number().default(200000),  // 일일 2% = 200,000원
   RISK_MAX_POSITION_KRW: z.coerce.number().default(5000000),       // 종목당 최대 한도 (pipeline에서 총자산 15%와 min 취함 — 자동 스케일)
-  RISK_MAX_TOTAL_INVESTED_PCT: z.coerce.number().default(75),       // 최대 75% 투자
-  RISK_MAX_CONCURRENT_POSITIONS: z.coerce.number().default(5),      // 동시 5종목
+  RISK_MAX_TOTAL_INVESTED_PCT: z.coerce.number().default(88),       // 최대 88% 투자 (적극 모드)
+  RISK_MAX_CONCURRENT_POSITIONS: z.coerce.number().default(8),      // 동시 8종목
   RISK_MAX_DAILY_TRADES: z.coerce.number().default(30),             // 하루 30건 (과매매 방지)
 });
 

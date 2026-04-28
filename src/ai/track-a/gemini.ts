@@ -10,7 +10,7 @@ const USE_VERTEX_AI = true; // Vertex AI 사용 — Cloud Run 서비스 계정 �
 
 const VERTEX_PROJECT_ID = 'quantops-trading';
 const VERTEX_LOCATION = 'us-central1';
-const VERTEX_MODEL = 'gemini-2.0-flash';
+const VERTEX_MODEL = 'gemini-2.0-flash-001';
 const VERTEX_ENDPOINT = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${VERTEX_LOCATION}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
 const AI_STUDIO_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent`;
 
@@ -109,7 +109,9 @@ ${additionalSources ?? '추가 소스 없음'}
 
   let responseText: string;
   if (USE_VERTEX_AI) {
-    responseText = await callVertexAI(systemPrompt, userMessage);
+    // 공유 유틸 사용 — system_instruction 포맷 정확, AI Studio 폴백 포함
+    const { callVertexGemini } = await import('../../utils/vertex-gemini.js');
+    responseText = await callVertexGemini(systemPrompt, userMessage, { temperature: 0.1 });
   } else {
     responseText = await callGoogleAI(genAI!, systemPrompt, userMessage);
   }

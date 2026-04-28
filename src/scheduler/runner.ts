@@ -421,9 +421,10 @@ export function startScheduler(): void {
 
   // 🇺🇸 미국 주식 (23:30~06:30 KST)
 
-  // 23:20 — 미국장 전 Kill Switch 리셋 + 세션 캐시 초기화
+  // 22:20 — 미국장 전 Kill Switch 리셋 + 세션 캐시 초기화
+  // (서머타임: 22:30 개장 / 표준시: 23:30 개장 — 둘 다 커버하기 위해 22:20으로 앞당김)
   cron.schedule(
-    '20 23 * * 1-5',
+    '20 22 * * 1-5',
     async () => {
       const { isKillSwitchActive, deactivateKillSwitch, resetDailyErrorCount } = await import('../risk/kill-switch.js');
       resetDailyErrorCount();
@@ -431,16 +432,23 @@ export function startScheduler(): void {
         logger.info('🔄 Kill Switch 리셋 (미국장 준비)', { component: 'SCHEDULER' });
         await deactivateKillSwitch();
       }
-      // 미국장 세션 캐시 초기화 — 23:30 첫 사이클에서 전 종목 재스캔
+      // 미국장 세션 캐시 초기화 — 22:30 첫 사이클에서 전 종목 재스캔
       const { resetUSSessionCache } = await import('./overseas-job.js');
       resetUSSessionCache();
-      logger.info('🇺🇸 미국장 세션 캐시 초기화 (23:30 전체 스캔 준비)', { component: 'SCHEDULER' });
+      logger.info('🇺🇸 미국장 세션 캐시 초기화 (22:30 전체 스캔 준비 — 서머타임 대응)', { component: 'SCHEDULER' });
     },
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 미국 주식 분석 — 미국 장중 30분 간격 (KST 23:30~06:30, API 비용 절감)
-  // 23시대: 30분 / 0~5시: 매 30분 / 6시대: 0,30분
+  // 미국 주식 분석 — 미국 장중 30분 간격 (서머타임: KST 22:30~05:00 / 표준시: 23:30~06:00)
+  // 22시대: 30분 / 23~5시: 매 30분 / 6시대: 0,30분 (표준시 보정)
+  cron.schedule(
+    '30 22 * * 1-5',
+    () => {
+      runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
   cron.schedule(
     '30 23 * * 1-5',
     () => {

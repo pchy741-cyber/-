@@ -203,6 +203,46 @@ export async function placeOverseasOrder(params: {
 }
 
 /**
+ * 해외주식 소수점 매수 (금액 기준 — KIS TTTT3016U)
+ * 정수 주문 최소단위보다 작은 금액도 매수 가능
+ */
+export async function placeFractionalOverseasBuy(params: {
+  stockCode: string;
+  exchange?: string;
+  amountUsd: number; // 달러 금액 기준
+}): Promise<{ success: boolean; orderNo: string; message: string }> {
+  const { stockCode, exchange = 'NASDAQ', amountUsd } = params;
+  const excd = ORDER_EXCD_MAP[exchange] ?? EXCHANGE_MAP[exchange] ?? 'NAS';
+  const trId = config.isPaper ? 'VTTT3016U' : 'TTTT3016U';
+
+  const body: Record<string, string> = {
+    CANO: config.kis.accountNo,
+    ACNT_PRDT_CD: config.kis.accountProductCode,
+    OVRS_EXCG_CD: excd,
+    PDNO: stockCode,
+    ORD_QTY: '0',                          // 소수점 매수: 수량 0 = 금액 기준
+    OVRS_ORD_UNPR: '0',                    // 시장가
+    ORD_SVR_DVSN_CD: '0',
+    ORD_DVSN: '01',                        // 시장가
+    OVRS_STCK_AMT: String(Math.floor(amountUsd)), // 주문 금액 (달러)
+  };
+
+  const res = await overseasKisRequest({
+    path: '/uapi/overseas-stock/v1/trading/order',
+    method: 'POST',
+    trId,
+    body,
+  });
+
+  const output = res.output as Record<string, string>;
+  return {
+    success: res.rtCd === '0',
+    orderNo: output?.ODNO ?? '',
+    message: res.msg1,
+  };
+}
+
+/**
  * 해외 주식 주문 취소
  */
 export async function cancelOverseasOrder(params: {

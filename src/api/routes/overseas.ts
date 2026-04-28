@@ -45,10 +45,22 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
           cacheSet(`overseas:lastprice:${stock.code}`, { price: p.currentPrice, changePct: p.changePct, volume: p.volume }, 86400);
         } else {
           const last = cacheGet<any>(`overseas:lastprice:${stock.code}`);
-          prices.push({
-            code: stock.code, name: stock.name, exchange: stock.exchange,
-            price: last?.price ?? 0, changePct: last?.changePct ?? 0, volume: last?.volume ?? 0,
-          });
+          if (last) {
+            prices.push({ code: stock.code, name: stock.name, exchange: stock.exchange, price: last.price, changePct: last.changePct, volume: last.volume });
+          } else {
+            // 서버 재시작 후 인메모리 캐시 없으면 DB 폴백
+            try {
+              const { getPool } = await import('../../db/client.js');
+              const { rows } = await getPool().query(
+                `SELECT price, change_pct, volume FROM overseas_prices WHERE exchange = $1 AND code = $2`,
+                [stock.exchange, stock.code],
+              );
+              const row = rows[0];
+              prices.push({ code: stock.code, name: stock.name, exchange: stock.exchange, price: row ? Number(row.price) : 0, changePct: row ? Number(row.change_pct) : 0, volume: row ? Number(row.volume) : 0 });
+            } catch {
+              prices.push({ code: stock.code, name: stock.name, exchange: stock.exchange, price: 0, changePct: 0, volume: 0 });
+            }
+          }
         }
       }
       if (i + BATCH < GLOBAL_WATCHLIST.length) {
@@ -62,7 +74,7 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
     try {
       const { getPool } = await import('../../db/client.js');
       const { rows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0');
-      return rows.map((r: any) => ({ stock_code: r.stock_code, quantity: Number(r.quantity), avg_price: Number(r.avg_price) }));
+      return rows.map((r: any) => ({ stock_code: r.stock_code, quantity: Number(r.quantity), avg_price: Number(r.avg_price), last_price: Number(r.last_price ?? 0) }));
     } catch { return []; }
   })();
 

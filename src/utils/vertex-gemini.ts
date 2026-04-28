@@ -7,7 +7,7 @@ import { GoogleAuth } from 'google-auth-library';
 
 const PROJECT_ID = 'quantops-trading';
 const LOCATION = 'us-central1';
-const VERTEX_MODEL = 'gemini-2.0-flash';
+const VERTEX_MODEL = 'gemini-2.0-flash-001';
 const VERTEX_ENDPOINT = `https://${LOCATION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${LOCATION}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
 // 2.0-flash는 AI Studio에서 2.5-flash(유료)로 자동 라우팅됨 → 1.5-flash 고정 사용
 const AI_STUDIO_MODEL = 'gemini-1.5-flash';

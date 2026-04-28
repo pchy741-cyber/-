@@ -224,6 +224,21 @@ async function bootstrap() {
     }
   } catch { /* skip */ }
 
+  // 5.7. 자기학습 인사이트 초기화 (비어있으면 즉시 분석 실행)
+  try {
+    const { getPool: gp } = await import('./db/client.js');
+    const { rows: ins } = await gp().query(`SELECT COUNT(*) FROM learned_insights`);
+    if (Number(ins[0]?.count ?? 0) === 0) {
+      logger.info('🧠 learned_insights 비어있음 → 즉시 자기학습 실행', { component: 'BOOT' });
+      const { runDailyLearning } = await import('./automation/self-learning.js');
+      runDailyLearning().catch((e: Error) => logger.warn(`부팅 자기학습 실패: ${e.message}`, { component: 'BOOT' }));
+    } else {
+      logger.info(`✅ 학습 인사이트 ${ins[0]?.count}건 로드됨`, { component: 'BOOT' });
+    }
+  } catch (e: any) {
+    logger.warn(`자기학습 초기화 체크 실패: ${e.message}`, { component: 'BOOT' });
+  }
+
   // 6. 스케줄러 시작
   startScheduler();
 

@@ -290,7 +290,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
 
     // Step 5-4: 모두 실패 → 기술적 지표로 스코어 생성
     if (scores.length === 0) {
-      logger.info('⚙️ AI 모두 실패 → 기술적 지표 기반 스코어 생성', { component: 'TRACK_A' });
+      logger.info('⚙️ AI 모두 실패 → 기술적 지표 기반 스코어 생성 (BUY/SELL 신호 활성)', { component: 'TRACK_A' });
       const { analyzeTechnicals } = await import('../../analysis/indicators.js');
       scores = allStocks.map((w) => {
         const candles = chartData.get(w.stock_code) ?? [];
@@ -302,27 +302,39 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
 
         let compositeScore = 50;
         let technicalScore = 50;
+        let tech: ReturnType<typeof analyzeTechnicals> = null;
 
         if (candles.length >= 30) {
-          const tech = analyzeTechnicals(candles);
+          tech = analyzeTechnicals(candles);
           if (tech) {
             compositeScore = Math.max(0, Math.min(100, 50 + tech.score));
             technicalScore = compositeScore;
           }
         }
 
-        // 폴백 스코어: 신뢰도 0.4로 고정, 시그널은 항상 HOLD
-        // → Track B hasBuyCandidates 필터(confidence >= 0.6)에서 걸러짐
-        // → 기술적 폴백이 자체 지표로 직접 판단하므로 이 점수로 BUY 유입 방지
+        // 기술적 지표 기반 신호 — AI 없어도 BUY/SELL 생성
+        let signal: 'STRONG_BUY' | 'BUY' | 'HOLD' | 'SELL' | 'STRONG_SELL' | 'NO_DATA' = 'HOLD';
+        let confidence = 0.5;
+        if (tech) {
+          if (tech.overallSignal === 'STRONG_BUY' || (tech.score >= 25 && tech.goldenCross)) {
+            signal = 'STRONG_BUY'; confidence = 0.72;
+          } else if (tech.overallSignal === 'BUY' || tech.score >= 15) {
+            signal = 'BUY'; confidence = 0.62;
+          } else if (tech.overallSignal === 'STRONG_SELL' || (tech.score <= -20 && tech.deathCross)) {
+            signal = 'STRONG_SELL'; confidence = 0.68;
+          } else if (tech.overallSignal === 'SELL' || tech.score <= -10) {
+            signal = 'SELL'; confidence = 0.58;
+          }
+        }
         return {
           stock_code: w.stock_code,
           composite_score: compositeScore,
           fundamental_score: 50,
           technical_score: technicalScore,
           sentiment_score: geminiResult?.market_sentiment === 'bullish' ? 65 : geminiResult?.market_sentiment === 'bearish' ? 35 : 50,
-          confidence: 0.4,
-          reasoning: `[폴백] ${reasoning}`,
-          signal: 'HOLD' as const,
+          confidence,
+          reasoning: `[기술적폴백] ${reasoning}`,
+          signal,
           target_price: analysis?.resistance_level ?? undefined,
           stop_loss_price: analysis?.support_level ?? undefined,
         };

@@ -7,7 +7,9 @@
       "Edit(*)",
       "Glob(*)",
       "Grep(*)",
-      "Agent(*)"
+      "Agent(*)",
+      "PowerShell($env:GOOGLE_APPLICATION_CREDENTIALS=\"C:\\\\Users\\\\p2208\\\\AppData\\\\Roaming\\\\gcloud\\\\application_default_credentials.json\"; gcloud builds submit --config cloudbuild.yaml --project quantops-trading 2>&1 | tail -20)",
+      "PowerShell($env:GOOGLE_APPLICATION_CREDENTIALS=\"C:\\\\Users\\\\p2208\\\\AppData\\\\Roaming\\\\gcloud\\\\application_default_credentials.json\"; gcloud builds submit --config cloudbuild.yaml --project quantops-trading 2>&1 | Select-Object -Last 30)"
     ],
     "additionalDirectories": [
       "C:\\Users\\p2208\\.claude"
