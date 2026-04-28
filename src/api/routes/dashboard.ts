@@ -1564,6 +1564,61 @@ dashboardRoutes.post('/release-defense-park', async (c) => {
 
 // ── KIS 잔고 → DB 포지션 동기화 (고아 포지션 복구) ──
 // KIS 계좌에 있지만 transaction_chains DB에 없는 포지션을 찾아 OPEN 체인으로 등록
+// ── 수익 통계 (누적 총수익 + 월별 분해) ──
+dashboardRoutes.get('/profit-stats', async (c) => {
+  try {
+    const market = (c.req.query('market') ?? 'KR') as 'KR' | 'US';
+    // KR = 6자리 숫자 종목코드, US = 영문자 코드
+    const isKr = market === 'KR';
+    const pool = getPool();
+
+    // 종목코드 패턴으로 국내/해외 구분
+    const codeFilter = isKr
+      ? `AND tc.stock_code ~ '^[0-9]{6}$'`
+      : `AND tc.stock_code !~ '^[0-9]{6}$'`;
+
+    // 월별 실현손익 (최근 12개월)
+    const { rows: monthly } = await pool.query(`
+      SELECT
+        to_char(closed_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM') AS month,
+        SUM(realized_pnl) AS pnl,
+        COUNT(*) AS trades
+      FROM transaction_chains
+      WHERE status = 'CLOSED'
+        AND closed_at >= NOW() - INTERVAL '12 months'
+        ${codeFilter}
+      GROUP BY 1
+      ORDER BY 1 ASC
+    `);
+
+    // 누적 전체 (봇 시작부터)
+    const { rows: total } = await pool.query(`
+      SELECT COALESCE(SUM(realized_pnl), 0) AS total_pnl
+      FROM transaction_chains
+      WHERE status = 'CLOSED'
+        ${codeFilter}
+    `);
+
+    // 이번 달
+    const { rows: thisMonth } = await pool.query(`
+      SELECT COALESCE(SUM(realized_pnl), 0) AS pnl
+      FROM transaction_chains
+      WHERE status = 'CLOSED'
+        AND closed_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')
+        ${codeFilter}
+    `);
+
+    return c.json({
+      market,
+      totalCumulative: Number(total[0]?.total_pnl ?? 0),
+      thisMonthPnl: Number(thisMonth[0]?.pnl ?? 0),
+      monthly: monthly.map((r: any) => ({ month: r.month, pnl: Number(r.pnl ?? 0), trades: Number(r.trades ?? 0) })),
+    });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
 dashboardRoutes.post('/sync-positions', async (c) => {
   try {
     const balanceFn = config.isPaper ? getPaperBalance : getAccountBalance;
