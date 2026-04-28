@@ -201,6 +201,23 @@ export async function getRecentSources(limit = 20): Promise<Array<{ title: strin
   }
 }
 
+// ── DB 트랜잭션 헬퍼 ──
+
+export async function withTransaction<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 // ── Transaction Chains ──
 
 export async function getOpenChains(): Promise<TransactionChain[]> {

@@ -1,5 +1,5 @@
 import type { StrategyMode } from '../config/constants.js';
-import { createChain, getOpenChains, getOrdersByChain, updateChain, getPool } from '../db/client.js';
+import { createChain, getOpenChains, getOrdersByChain, updateChain, getPool, withTransaction, isMemoryMode } from '../db/client.js';
 import type { TransactionChain } from '../db/models.js';
 import { logger } from '../utils/logger.js';
 
@@ -51,37 +51,53 @@ export class ChainManager {
    * 물타기 추가 매수
    */
   async addAveraging(chainId: string, buyPrice: number, quantity: number): Promise<void> {
-    const orders = await getOrdersByChain(chainId);
-    const buyOrders = orders.filter((o) => o.side === 'BUY' && o.status === 'FILLED');
-
-    // 평단가 재계산 (수수료 0.015% 반영)
     const COMMISSION_RATE = 0.00015;
-    let totalCost = buyOrders.reduce((sum, o) => {
-      const cost = Number(o.filled_price) * o.filled_quantity;
-      return sum + cost + Math.round(cost * COMMISSION_RATE);
-    }, 0);
-    let totalQty = buyOrders.reduce((sum, o) => sum + o.filled_quantity, 0);
+    let finalAvgPrice = 0;
 
-    const newCost = buyPrice * quantity;
-    totalCost += newCost + Math.round(newCost * COMMISSION_RATE);
-    totalQty += quantity;
+    const calcFromOrders = (buyOrders: Array<{ filled_price: string | number | null; filled_quantity: number }>) => {
+      let totalCost = buyOrders.reduce((sum, o) => {
+        const cost = Number(o.filled_price ?? 0) * o.filled_quantity;
+        return sum + cost + Math.round(cost * COMMISSION_RATE);
+      }, 0);
+      let totalQty = buyOrders.reduce((sum, o) => sum + o.filled_quantity, 0);
+      const newCost = buyPrice * quantity;
+      totalCost += newCost + Math.round(newCost * COMMISSION_RATE);
+      totalQty += quantity;
+      return { totalCost, totalQty, newAvgPrice: Math.round(totalCost / totalQty), averagingCount: buyOrders.length - 1 };
+    };
 
-    const newAvgPrice = Math.round(totalCost / totalQty);
-
-    // 물타기 횟수 = 전체 매수 - 1차 매수 (초기 매수는 물타기 아님)
-    // buyOrders에는 이미 이번 체결분이 포함되어 있으므로 -1
-    const averagingCount = buyOrders.length - 1;
-
-    await updateChain(chainId, {
-      status: 'AVERAGING',
-      avg_buy_price: newAvgPrice,
-      total_quantity: totalQty,
-      total_invested: totalCost,
-      current_averaging_count: averagingCount,
-    });
+    if (isMemoryMode()) {
+      const orders = await getOrdersByChain(chainId);
+      const buyOrders = orders.filter((o) => o.side === 'BUY' && o.status === 'FILLED');
+      const { totalCost, totalQty, newAvgPrice, averagingCount } = calcFromOrders(buyOrders);
+      finalAvgPrice = newAvgPrice;
+      await updateChain(chainId, {
+        status: 'AVERAGING',
+        avg_buy_price: newAvgPrice,
+        total_quantity: totalQty,
+        total_invested: totalCost,
+        current_averaging_count: averagingCount,
+      });
+    } else {
+      // SELECT FOR UPDATE — 동시 물타기 방지 (동일 체인 동시 접근 시 후발 요청은 대기)
+      await withTransaction(async (client) => {
+        await client.query('SELECT id FROM transaction_chains WHERE id = $1 FOR UPDATE', [chainId]);
+        const { rows } = await client.query(
+          `SELECT side, status, filled_price, filled_quantity FROM orders WHERE chain_id = $1 ORDER BY created_at ASC`,
+          [chainId],
+        );
+        const buyOrders = rows.filter((o: { side: string; status: string }) => o.side === 'BUY' && o.status === 'FILLED');
+        const { totalCost, totalQty, newAvgPrice, averagingCount } = calcFromOrders(buyOrders);
+        finalAvgPrice = newAvgPrice;
+        await client.query(
+          `UPDATE transaction_chains SET status='AVERAGING', avg_buy_price=$1, total_quantity=$2, total_invested=$3, current_averaging_count=$4 WHERE id=$5`,
+          [newAvgPrice, totalQty, totalCost, averagingCount, chainId],
+        );
+      });
+    }
 
     logger.info(
-      `📊 물타기: 체인 ${chainId.slice(0, 8)} | +${quantity}주 @${buyPrice} | 새 평단: ${newAvgPrice.toFixed(0)}`,
+      `📊 물타기: 체인 ${chainId.slice(0, 8)} | +${quantity}주 @${buyPrice} | 새 평단: ${finalAvgPrice.toFixed(0)}`,
       { component: 'CHAIN' },
     );
   }

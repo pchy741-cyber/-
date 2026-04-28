@@ -515,7 +515,7 @@ export class TradeExecutor {
             component: 'EXECUTOR',
           });
 
-          // DB 주문 상태 업데이트 + 멱등성 등록
+          // 멱등성 등록 먼저 (await 전에) → 동시 호출 시 중복 DB 업데이트 방지
           this.confirmedOrders.add(orderNo);
           await updateOrderByKisOrderNo(orderNo, {
             filled_quantity: fill.filledQty,
