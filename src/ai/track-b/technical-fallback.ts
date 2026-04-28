@@ -355,17 +355,19 @@ export function technicalFallbackDecisions(params: {
 
   // 현금 여유 확인하면서 매수 결정
   let remainingCash = orderableCash;
-  const maxBuys = 5; // 한 번에 최대 5종목 (집중 투자, 분산 과다 방지)
+  // SCALPING: 개장 10분 단타 — 최대 2종목, 확신배율 없음 (과집중 방지)
+  const maxBuys = mode === 'SCALPING' ? 2 : 5;
   const splitCount = strategyParams.splitCount || 2;
 
   for (const cand of candidates.slice(0, maxBuys)) {
     const isPriority = PRIORITY_SECTOR_CODES.has(cand.stock_code);
     const priorityMultiplier = isPriority ? 1.2 : 1.0;
 
-    // 확신 배율: 고점수 + 고거래량 = 최강 신호 → 포지션 확대 (더 많이 넣어야 수익 최대화)
+    // 확신 배율: 고점수 + 고거래량 = 최강 신호 → 포지션 확대
+    // SCALPING 제외 — 단타는 크게 넣을수록 손실 폭이 커짐
     const aiScore = aiScoreMap.get(cand.stock_code) ?? 0;
-    const isHighConviction = cand.tech.score >= 65 && cand.tech.volumeRatio >= 1.5;
-    const isMedConviction = (aiScore >= strategyParams.buyThreshold && cand.tech.volumeRatio >= 1.3) || cand.candleBonus >= 12;
+    const isHighConviction = mode !== 'SCALPING' && cand.tech.score >= 65 && cand.tech.volumeRatio >= 1.5;
+    const isMedConviction = mode !== 'SCALPING' && ((aiScore >= strategyParams.buyThreshold && cand.tech.volumeRatio >= 1.3) || cand.candleBonus >= 12);
     const convictionMultiplier = isHighConviction ? 1.4 : isMedConviction ? 1.25 : 1.0;
 
     // 종목당 1차 매수: 자산 기반 동적 포지션 한도의 1/splitCount, 잔고 한도 내
@@ -402,8 +404,11 @@ export function technicalFallbackDecisions(params: {
     const chainCandles = chartData.get(chain.stock_code);
     const chainTech = chainCandles ? analyzeTechnicals(chainCandles) : null;
     const isBelowSma20Deep = chainTech ? price.currentPrice < chainTech.sma20 * 0.97 : false; // SMA20 -3% 이상 이탈 시 물타기 금지
-    if (chain.status === 'PROFIT_TAKING' || isBelowSma20Deep) {
+    // 하드 손실 한도: -8% 초과 수중에서는 물타기 절대 금지 (나락 방지)
+    const isTooDeepUnderwater = pnlPct <= -8.0;
+    if (chain.status === 'PROFIT_TAKING' || isBelowSma20Deep || isTooDeepUnderwater) {
       if (isBelowSma20Deep) logger.info(`  🚫 ${chain.stock_code}: SMA20 -3% 이탈 → 물타기 차단 (손실확대 방지)`, { component: 'TRACK_B' });
+      if (isTooDeepUnderwater) logger.info(`  🚫 ${chain.stock_code}: ${pnlPct.toFixed(1)}% ≤ -8% → 물타기 하드 차단 (나락 방지)`, { component: 'TRACK_B' });
       continue;
     }
 

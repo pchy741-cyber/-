@@ -1048,7 +1048,12 @@ function AiTransparencyPanel({ watchlist }: { watchlist: any[] }) {
 // ═══════════════════════════════════════
 
 function MoneyStatsPanel({ market, monthlyGoal }: { market: 'KR' | 'US'; monthlyGoal?: number }) {
-  const [data, setData] = React.useState<{ totalCumulative: number; thisMonthPnl: number; monthly: Array<{ month: string; pnl: number; trades: number }> } | null>(null);
+  const [data, setData] = React.useState<{
+    totalCumulative: number;
+    thisMonthPnl: number;
+    monthly: Array<{ month: string; pnl: number; trades: number }>;
+    dinnerMoney?: { monthlyTotal: number; monthlyCap: number; todayReserved: boolean } | null;
+  } | null>(null);
   const [loading, setLoading] = React.useState(true);
 
   React.useEffect(() => {
@@ -1150,6 +1155,31 @@ function MoneyStatsPanel({ market, monthlyGoal }: { market: 'KR' | 'US'; monthly
           </div>
         </div>
       )}
+
+      {/* 저녁 용돈 적립 현황 (국내주식 KR만) */}
+      {isKr && data.dinnerMoney && (
+        <div className="border-t border-white/[0.04] pt-3">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[10px] text-slate-400">🍚 저녁용돈 적립</span>
+            <span className="text-[10px] text-slate-500">
+              {data.dinnerMoney.monthlyTotal.toLocaleString('ko-KR')}원 / 30만원
+              {data.dinnerMoney.todayReserved && <span className="ml-1 text-emerald-400">✓ 오늘 적립됨</span>}
+            </span>
+          </div>
+          <div className="w-full h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all duration-700"
+              style={{
+                width: `${Math.min(100, (data.dinnerMoney.monthlyTotal / data.dinnerMoney.monthlyCap) * 100)}%`,
+                background: data.dinnerMoney.monthlyTotal >= data.dinnerMoney.monthlyCap
+                  ? '#34d399'
+                  : 'linear-gradient(90deg, #f59e0b, #fbbf24)',
+              }}
+            />
+          </div>
+          <div className="text-[9px] text-slate-600 mt-1">수익 1만원↑ 되는 날 자동 적립 · 월 30만원 한도</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1227,11 +1257,11 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
     return sum + (curPrice - h.avg_price) * h.quantity;
   }, 0);
   const overseasPnlKrw = Math.round(overseasPnlUsd * fxRate);
-  // 시장 시간대에 따라 관련 시장 손익만 표시 (국내장중→국내, 미국장중→해외, 둘다→합산)
-  const krMarketOpen = !!health?.marketOpen;
-  const usMarketOpen = !!health?.usMarketOpen;
-  const showOnlyKr = krMarketOpen && !usMarketOpen;
-  const showOnlyUs = usMarketOpen && !krMarketOpen;
+  // 18시 이전 → 국내 미실현손익만, 18시 이후 → 해외 미실현손익만
+  const kstHour = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' })).getHours();
+  const isAfterEvening = kstHour >= 18;
+  const showOnlyKr = !isAfterEvening;
+  const showOnlyUs = isAfterEvening;
   const combinedPnl = showOnlyKr
     ? unrealizedPnl
     : showOnlyUs
