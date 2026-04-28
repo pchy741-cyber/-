@@ -12,7 +12,7 @@ const VERTEX_PROJECT_ID = 'quantops-trading';
 const VERTEX_LOCATION = 'us-central1';
 const VERTEX_MODEL = 'gemini-2.0-flash-001';
 const VERTEX_ENDPOINT = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${VERTEX_LOCATION}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
-const AI_STUDIO_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent`;
+const AI_STUDIO_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent`;
 
 // Lazy init — 키 변경 시 자동 반영
 function getGenAI(): GoogleGenerativeAI | null {
@@ -134,7 +134,7 @@ ${additionalSources ?? '추가 소스 없음'}
 // ── Google AI SDK 경로 (API 키 사용, 로컬/외부 환경) ──
 async function callGoogleAI(genAI: GoogleGenerativeAI, systemPrompt: string, userMessage: string): Promise<string> {
   const model = genAI.getGenerativeModel({
-    model: 'gemini-1.5-flash',
+    model: 'gemini-2.0-flash-lite',
     generationConfig: {
       temperature: 0.1,
     },

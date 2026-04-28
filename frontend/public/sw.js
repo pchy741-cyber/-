@@ -1,4 +1,4 @@
-const CACHE_NAME = 'quantops-v2';
+const CACHE_NAME = 'quantops-v3';
 const STATIC_ASSETS = [
   '/manifest.json',
   '/icon-192.svg',
@@ -29,14 +29,21 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('push', (event) => {
   const data = event.data ? event.data.json() : {};
   const title = data.title || 'QUANTOPS';
+  const body = data.body || '';
+
+  // 매매 알림인지 파악해서 강조 표시
+  const isTrade = data.tag && (data.tag.startsWith('buy-') || data.tag.startsWith('sell-') || data.tag.startsWith('overseas-'));
+
   const options = {
-    body: data.body || '',
+    body,
     icon: '/icon-192.png',
     badge: '/icon-192.png',
     tag: data.tag || 'quantops-' + Date.now(),
+    renotify: true,           // 같은 tag라도 새 알림으로 표시
+    requireInteraction: isTrade, // 매매 알림은 클릭 전까지 유지
+    silent: false,
     data: { url: data.url || '/' },
-    vibrate: [200, 100, 200],
-    actions: data.actions || [],
+    vibrate: isTrade ? [300, 100, 300, 100, 300] : [200, 100, 200],
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });

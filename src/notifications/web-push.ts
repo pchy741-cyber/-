@@ -134,10 +134,11 @@ export async function notifyBuy(stockCode: string, qty: number, price: number, r
   const name = await resolveStockName(stockCode);
   const totalKrw = Math.round(qty * price);
   const shortReason = compactReasoning(reasoning, /^(매수|BUY|buy)\s*[:：]?\s*/i);
+  const totalStr = totalKrw >= 10000 ? `${Math.round(totalKrw / 10000)}만원` : `${totalKrw.toLocaleString()}원`;
 
   await sendPushNotification({
-    title: `🟢 매수 체결 — ${name}`,
-    body: `${qty}주 × ${price.toLocaleString()}원 = ${totalKrw.toLocaleString()}원\n📌 ${shortReason}`,
+    title: `🟢 매수 — ${name} ${totalStr}`,
+    body: `${qty}주 @ ${price.toLocaleString()}원 | ${shortReason}`,
     tag: `buy-${stockCode}`,
     url: '/',
   });
@@ -161,9 +162,12 @@ export async function notifySell(stockCode: string, qty: number, price: number, 
   const pnlStr = (isProfit ? '+' : '') + pnlPct.toFixed(2) + '%';
   const shortReason = compactReasoning(reasoning, /^(매도|SELL|sell|강제\s*청산)\s*[:：]?\s*/i);
 
+  const pnlKrw = Math.round(qty * price * (pnlPct / 100));
+  const pnlKrwStr = pnlKrw >= 0 ? `+${Math.round(pnlKrw / 100) * 100 >= 10000 ? Math.round(pnlKrw / 10000) + '만원' : pnlKrw.toLocaleString() + '원'}` : `${Math.round(pnlKrw / 100) * 100 <= -10000 ? Math.round(pnlKrw / 10000) + '만원' : pnlKrw.toLocaleString() + '원'}`;
+
   await sendPushNotification({
-    title: `${emoji} 매도 체결 — ${name} (${pnlStr})`,
-    body: `${qty}주 × ${price.toLocaleString()}원\n📌 ${shortReason}`,
+    title: `${emoji} 매도 — ${name} ${pnlStr} (${pnlKrwStr})`,
+    body: `${qty}주 @ ${price.toLocaleString()}원 | ${shortReason}`,
     tag: `sell-${stockCode}`,
     url: '/',
   });
@@ -184,8 +188,8 @@ export async function notifyOverseasBuy(stockCode: string, stockName: string, qt
   const totalUsd = qty * priceUsd;
 
   await sendPushNotification({
-    title: `🟢 해외 매수 체결 — ${stockName}`,
-    body: `${qty}주 × $${priceUsd.toFixed(2)} = $${totalUsd.toFixed(2)}\n📌 ${shortReason}`,
+    title: `🟢 해외매수 — ${stockName} $${totalUsd.toFixed(0)}`,
+    body: `${qty}주 @ $${priceUsd.toFixed(2)} | ${shortReason}`,
     tag: `overseas-buy-${stockCode}`,
     url: '/',
   });
@@ -215,9 +219,10 @@ export async function notifyOverseasSell(
   const pnlStr = `${isProfit ? '+' : ''}${pnlPct.toFixed(2)}%`;
   const shortReason = compactReasoning(reasoning, /^(매도|SELL|sell|강제\s*청산)\s*[:：]?\s*/i);
 
+  const pnlUsd = qty * priceUsd * (pnlPct / 100);
   await sendPushNotification({
-    title: `${emoji} 해외 매도 체결 — ${stockName} (${pnlStr})`,
-    body: `${qty}주 × $${priceUsd.toFixed(2)}\n📌 ${shortReason}`,
+    title: `${emoji} 해외매도 — ${stockName} ${pnlStr} (${pnlUsd >= 0 ? '+' : ''}$${pnlUsd.toFixed(1)})`,
+    body: `${qty}주 @ $${priceUsd.toFixed(2)} | ${shortReason}`,
     tag: `overseas-sell-${stockCode}`,
     url: '/',
   });

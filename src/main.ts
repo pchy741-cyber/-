@@ -115,6 +115,12 @@ async function bootstrap() {
         [sp.takeProfitPct, sp.stopLossPct, sp.buyThreshold],
       );
       logger.info(`✅ 전략 파라미터 동기화: buy_threshold=${sp.buyThreshold} take_profit=${sp.takeProfitPct}% stop_loss=${sp.stopLossPct}%`, { component: 'BOOT' });
+      // 기존 열린 체인도 최신 손절/익절 파라미터로 일괄 업데이트
+      await gp().query(
+        `UPDATE transaction_chains SET stop_loss_pct=$1, target_profit_pct=$2 WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING')`,
+        [sp.stopLossPct, sp.takeProfitPct],
+      );
+      logger.info(`✅ 기존 체인 손절/익절 동기화: stop_loss=${sp.stopLossPct}% target=${sp.takeProfitPct}%`, { component: 'BOOT' });
     } catch (e: any) {
       logger.warn(`전략 파라미터 동기화 실패: ${e.message}`, { component: 'BOOT' });
     }

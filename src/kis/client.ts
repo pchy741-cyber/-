@@ -140,6 +140,14 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
 
       // KIS가 토큰 만료 시 JSON 대신 평문 "LOGOUT" 반환 → 토큰 캐시 초기화 후 재시도
       const rawText = await res.text();
+      if (!rawText || rawText.trim() === '') {
+        if (attempt < MAX_RETRIES) {
+          logger.warn(`KIS 빈 응답, 재시도 ${attempt}/${MAX_RETRIES}`, { component: 'KIS' });
+          await sleep(2000 * attempt);
+          continue;
+        }
+        throw new Error('KIS 빈 응답 — 반복 재시도 실패');
+      }
       if (rawText.trim() === 'LOGOUT') {
         clearTokenCache();
         if (attempt < MAX_RETRIES) {

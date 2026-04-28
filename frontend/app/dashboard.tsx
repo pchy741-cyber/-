@@ -1116,9 +1116,21 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
     return sum + (curPrice - h.avg_price) * h.quantity;
   }, 0);
   const overseasPnlKrw = Math.round(overseasPnlUsd * fxRate);
-  // combinedPnl = 국내 미실현 + 해외 미실현 (실현손익 제외 — 이미 현금에 반영)
-  const combinedPnl = unrealizedPnl + (usHoldings.length > 0 ? overseasPnlKrw : 0);
-  const combinedInvested = (domesticInvested > 0 ? domesticInvested : 0) + (overseasInvestedKrw > 0 ? overseasInvestedKrw : 0);
+  // 시장 시간대에 따라 관련 시장 손익만 표시 (국내장중→국내, 미국장중→해외, 둘다→합산)
+  const krMarketOpen = !!health?.marketOpen;
+  const usMarketOpen = !!health?.usMarketOpen;
+  const showOnlyKr = krMarketOpen && !usMarketOpen;
+  const showOnlyUs = usMarketOpen && !krMarketOpen;
+  const combinedPnl = showOnlyKr
+    ? unrealizedPnl
+    : showOnlyUs
+      ? (usHoldings.length > 0 ? overseasPnlKrw : 0)
+      : unrealizedPnl + (usHoldings.length > 0 ? overseasPnlKrw : 0);
+  const combinedInvested = showOnlyKr
+    ? (domesticInvested > 0 ? domesticInvested : 0)
+    : showOnlyUs
+      ? (overseasInvestedKrw > 0 ? overseasInvestedKrw : 0)
+      : (domesticInvested > 0 ? domesticInvested : 0) + (overseasInvestedKrw > 0 ? overseasInvestedKrw : 0);
   const combinedPnlPct = combinedInvested > 0 ? (combinedPnl / combinedInvested) * 100 : (domesticInvested > 0 ? totalPnlPct : 0);
   const hasOverseasHoldings = usHoldings.length > 0;
 
@@ -1341,7 +1353,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
           <div className={`rounded-2xl border p-5 ${combinedPnl > 0 ? 'bg-gradient-to-br from-emerald-950/60 via-emerald-900/20 to-transparent border-emerald-500/20' : combinedPnl < 0 ? 'bg-gradient-to-br from-rose-950/60 via-rose-900/20 to-transparent border-rose-500/20' : 'glass border-white/[0.06]'}`}>
             {/* 상단 헤더 */}
             <div className="flex items-center justify-between mb-4">
-              <span className="text-xs font-semibold text-slate-400 tracking-wide">미실현 손익{hasOverseasHoldings ? ' (국내+해외)' : ''}</span>
+              <span className="text-xs font-semibold text-slate-400 tracking-wide">미실현 손익{showOnlyKr ? ' 🇰🇷 국내' : showOnlyUs ? ' 🇺🇸 해외' : hasOverseasHoldings ? ' (국내+해외)' : ''}</span>
               <button onClick={() => setPrivacyMode(v => !v)} className="text-slate-500 hover:text-slate-300 transition-colors p-1 -m-1 rounded-lg">
                 {privacyMode ? (
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" /></svg>
@@ -1437,9 +1449,9 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                 const qty = Number(ch.total_quantity) || 0;
                 const invested = Number(ch.invested) || avgPrice * qty;
                 const curAvg = Number(ch.current_averaging_count) || 0;
-                const maxAvg = Number(ch.max_averaging_count) || 3;
-                const targetPct = Number(ch.target_profit_pct) || 8;
-                const stopPct = Number(ch.stop_loss_pct) || -4;
+                const maxAvg = Number(ch.max_averaging_count) || 1;
+                const targetPct = Number(ch.target_profit_pct) || 3;
+                const stopPct = Number(ch.stop_loss_pct) || -3;
                 const pnl = ch.unrealizedPnl ?? 0;
                 const pnlPct = ch.unrealizedPnlPct ?? 0;
                 const resolvedName = toDisplayName(ch.stock_name, ch.stock_code);
@@ -1512,7 +1524,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                             <div className={`text-lg font-black ${pc(pnl)}`}>{pnlPct > 0 ? '+' : ''}{pnlPct.toFixed(2)}%</div>
                             <div className={`text-[11px] ${pc(pnl)}`}>{pnl > 0 ? '+' : ''}{fmtWon(pnl)}</div>
                           </>
-                        ) : <span className="text-xs text-slate-600">장 마감</span>}
+                        ) : <span className="text-xs text-slate-600">시세 로딩중</span>}
                       </div>
                     </div>
                     {/* P&L 진행 바 */}
@@ -1628,22 +1640,23 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                 })}
               </div>
             )}
-            {usW.some((s: any) => s.price > 0) && (
+            {usW.length > 0 && (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3.5">
-                {usW.filter((s: any) => s.price > 0).map((s: any) => {
+                {usW.map((s: any) => {
                   const held = usHoldings.find((h: any) => h.stock_code === s.code);
                   const usDisplayName = toDisplayName(s.name, s.code);
+                  const hasPrice = s.price > 0;
                   return (
-                    <div key={s.code} className={`rounded-xl border p-3 text-center transition-all hover:scale-[1.02] ${pbg(s.changePct)} ${held ? 'border-blue-500/40' : 'border-slate-700/30'}`}>
+                    <div key={s.code} className={`rounded-xl border p-3 text-center transition-all hover:scale-[1.02] ${hasPrice ? pbg(s.changePct) : ''} ${held ? 'border-blue-500/40' : 'border-slate-700/30'}`}>
                       <div className="text-xs font-bold text-slate-300 truncate">{usDisplayName} {held ? '📌' : ''}</div>
-                      <div className="text-base font-bold mt-1">${s.price.toFixed(1)}</div>
-                      <div className={`text-[11px] font-semibold mt-0.5 ${pc(s.changePct)}`}>{s.changePct !== 0 ? fmtPct(s.changePct) : '-'}</div>
+                      <div className={`text-base font-bold mt-1 ${!hasPrice ? 'text-slate-600' : ''}`}>{hasPrice ? `$${s.price.toFixed(1)}` : '-'}</div>
+                      <div className={`text-[11px] font-semibold mt-0.5 ${hasPrice ? pc(s.changePct) : 'text-slate-600'}`}>{hasPrice ? fmtPct(s.changePct) : '장마감'}</div>
                     </div>
                   );
                 })}
               </div>
             )}
-            {!usW.some((s: any) => s.price > 0) && usHoldings.length === 0 && (
+            {usW.length === 0 && usHoldings.length === 0 && (
               <div className="p-8 text-center space-y-2">
                 <div className="text-2xl opacity-30">🌏</div>
                 <p className="text-sm text-slate-400">장 마감 — 다음 세션 시작 시 시세 자동 업데이트</p>
@@ -3030,11 +3043,11 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
         <Panel title="전략 설정" badge={strategy.mode === 'SWING' ? '스윙' : strategy.mode === 'DEFENSE' ? '방어' : '단타'} badgeColor={strategy.mode === 'SWING' ? 'blue' : strategy.mode === 'DEFENSE' ? 'rose' : 'amber'}>
           <div className="px-6 py-5 space-y-5">
             <div className="text-[12px] text-slate-400 bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl px-4 py-3.5 leading-relaxed">
-              {strategy.mode === 'SWING' ? `${strategy.split_count ?? 2}번에 나눠 사고 → 조금 더 빠지면 추가 매수 → ${strategy.take_profit_pct ?? 8}% 오르면 익절 / ${Math.abs(strategy.stop_loss_pct ?? -4)}% 빠지면 전량 손절. 중장기 안정 수익 추구.` : strategy.mode === 'DEFENSE' ? '85점 이상 종목만 소량 진입 → 3% 빠지면 즉시 손절. 하락장 자본 보존 최우선.' : '65점 이상 즉시 매수 → 1.5% 오르면 즉시 전량 매도. 당일 15:20 무조건 청산.'}
+              {strategy.mode === 'SWING' ? `${strategy.split_count ?? 2}번에 나눠 사고 → 조금 더 빠지면 추가 매수 → +${strategy.take_profit_pct ?? 3}% 오르면 익절 / ${Math.abs(strategy.stop_loss_pct ?? -3)}% 빠지면 전량 손절. 중장기 안정 수익 추구.` : strategy.mode === 'DEFENSE' ? '85점 이상 종목만 소량 진입 → 3% 빠지면 즉시 손절. 하락장 자본 보존 최우선.' : '65점 이상 즉시 매수 → 1.5% 오르면 즉시 전량 매도. 당일 15:20 무조건 청산.'}
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <Sel label="매매 방식" value={strategy.mode} opts={[['SWING','스윙 (중장기)'],['DEFENSE','방어 (하락장)'],['SCALPING','단타 (당일)']]} onChange={v => setField('mode', v)} />
-              <Sel label="AI 매수 기준점수" value={strategy.buy_threshold} opts={[[60,'60점 이상 (공격적)'],[70,'70점 이상'],[75,'75점 이상'],[80,'80점 이상 (보통)'],[85,'85점 이상'],[90,'90점 이상 (신중)']]} onChange={v => setField('buy_threshold', Number(v))} />
+              <Sel label="AI 매수 기준점수" value={strategy.buy_threshold} opts={[[40,'40점 이상 (매우 공격적)'],[45,'45점 이상'],[48,'48점 이상 (현재)'],[50,'50점 이상'],[55,'55점 이상'],[60,'60점 이상'],[70,'70점 이상'],[75,'75점 이상'],[80,'80점 이상 (보통)'],[85,'85점 이상'],[90,'90점 이상 (신중)']]} onChange={v => setField('buy_threshold', Number(v))} />
               <Sel label="손절 기준 (이만큼 빠지면)" value={strategy.stop_loss_pct} opts={[[-2,'-2% (매우 타이트)'],[-3,'-3% (타이트)'],[-4,'-4% (기본)'],[-5,'-5% (보통)'],[-7,'-7%'],[-10,'-10% (여유있게)']]} onChange={v => setField('stop_loss_pct', Number(v))} />
               <Sel label="익절 기준 (이만큼 오르면)" value={strategy.take_profit_pct} opts={[[3,'+3%'],[5,'+5%'],[6,'+6%'],[8,'+8% (보통)'],[10,'+10%'],[15,'+15%'],[20,'+20%']]} onChange={v => setField('take_profit_pct', Number(v))} />
             </div>

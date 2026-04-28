@@ -34,12 +34,14 @@ export function technicalFallbackDecisions(params: {
   buyThreshold?: number;
   /** 종목별 과거 승률 — AI 없이도 진입 임계값 동적 조정 */
   winRates?: Map<string, StockWinRate>;
+  /** 장 마감 30분 전(14:30~) — 신규 매수 차단 */
+  blockNewBuys?: boolean;
 }): TradeDecision[] {
-  const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, manuallySoldCodes, totalAssets, winRates } = params;
-  // 종목당 최대 비중: 총자산의 25% 또는 maxPositionKrw 중 작은 값
-  // — 15%는 고가주(고려아연 등 700K~1M/주) 최소 1주 매수 불가 문제 발생
+  const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, manuallySoldCodes, totalAssets, winRates, blockNewBuys } = params;
+  // 종목당 최대 비중: 총자산의 20% 또는 maxPositionKrw 중 작은 값
+  // — pipeline(15%)보다 약간 넓게 (고가주 최소 1주 매수 보장)
   const effectiveMaxPos = totalAssets
-    ? Math.min(maxPositionKrw, Math.round(totalAssets * 0.30))
+    ? Math.min(maxPositionKrw, Math.round(totalAssets * 0.20))
     : maxPositionKrw;
   const aiScoreMap = new Map((aiScores ?? []).map((s) => [s.stock_code, s.score]));
   const base = STRATEGY_PARAMS[mode];
@@ -122,7 +124,7 @@ export function technicalFallbackDecisions(params: {
       }
       const peakPrice = (chain as any).peak_price ? Number((chain as any).peak_price) : Number(chain.avg_buy_price) * (1 + strategyParams.takeProfitPct / 100);
       const trailDropPct = ((price.currentPrice - peakPrice) / peakPrice) * 100;
-      const isTrailTriggered = trailDropPct <= -0.8; // peak 대비 -0.8% 하락 시 청산 (노이즈 감안)
+      const isTrailTriggered = trailDropPct <= -1.5; // peak 대비 -1.5% 하락 시 청산 (ATR 노이즈 감안 — 0.8%는 너무 좁아 조기 청산 빈번)
       const isTargetReached = pnlPct >= 4.0;         // +4.0% 추가 목표 달성 시 전량 익절
 
       if (isTargetReached || isTrailTriggered) {
@@ -175,8 +177,13 @@ export function technicalFallbackDecisions(params: {
   }
 
   // 2. 신규 매수 판단 (기술적 지표 기반)
+  if (blockNewBuys) {
+    logger.info('⏰ 14:30 이후 — 신규 매수 차단 (마감 노이즈 방지)', { component: 'TRACK_B' });
+    return decisions; // 매도/손절 결정만 반환
+  }
+
   const openStockCodes = new Set(openChains.map((c) => c.stock_code));
-  const candidates: Array<{ stock_code: string; tech: TechnicalSummary; price: CurrentPrice }> = [];
+  const candidates: Array<{ stock_code: string; tech: TechnicalSummary; price: CurrentPrice; candleBonus: number }> = [];
   // AI 스코어 없을 때(Track A 미실행) DEFENSE 기준 완화 여부 — 루프 밖에서 1회 계산
   const noAiScores = (aiScores ?? []).length === 0 || (aiScores ?? []).every((s) => s.score === 0);
 
@@ -207,8 +214,21 @@ export function technicalFallbackDecisions(params: {
     const tech = analyzeTechnicals(candles);
     if (!tech) continue;
 
+    // 강한 불리쉬 캔들 패턴 감지 (망치형·모닝스타·인걸핑 등 — 진입 타이밍 최적)
+    const hasBullishCandle = tech.candlePatterns.some((p) => p.bullish && p.strength === 'STRONG');
+    const candleBonus = hasBullishCandle ? 12 : tech.candlePatterns.some((p) => p.bullish && p.strength === 'MODERATE') ? 6 : 0;
+
     // 각 종목 score 로깅 (디버깅용)
-    logger.info(`  📊 ${stock.stock_code}: score=${tech.score} RSI=${tech.rsi14.toFixed(0)} ADX=${tech.adx14.toFixed(0)}(${tech.trendStrength}) MACD=${tech.macdCrossover}`, { component: 'TRACK_B' });
+    logger.info(`  📊 ${stock.stock_code}: score=${tech.score}${candleBonus > 0 ? `+${candleBonus}캔들` : ''} RSI=${tech.rsi14.toFixed(0)} ADX=${tech.adx14.toFixed(0)}(${tech.trendStrength}) MACD=${tech.macdCrossover} vol=${tech.volumeRatio.toFixed(2)}x`, { component: 'TRACK_B' });
+
+    // ─── 거래량 확인 필터 ─────────────────────────────────────────────────
+    // 거래량 < 1.2x 평균 = 기관/외국인 관심 없음 = 가짜 돌파 위험
+    // 예외: 과매도(RSI<35) 반등은 거래량 바닥에서 발생 — 필터 면제
+    //       강한 불리쉬 캔들(망치형 등) = 저거래량에서도 의미있는 반전 신호
+    if (tech.volumeRatio < 1.2 && tech.rsi14 >= 35 && !hasBullishCandle) {
+      logger.info(`  📉 ${stock.stock_code}: 거래량 부족 (${tech.volumeRatio.toFixed(2)}x < 1.2) → 기관 관심 없음, 스킵`, { component: 'TRACK_B' });
+      continue;
+    }
 
     // ─── ADX 횡보장 필터 ───────────────────────────────────────────────
     // ADX < 20 = 방향성 없음 = 저점에서 사고 팔다 끝나는 박스권 루프
@@ -250,7 +270,7 @@ export function technicalFallbackDecisions(params: {
     // SWING 하락추세 필터: SMA20 < SMA60 = 중기 하락 = 높은 확신 없이 진입 금지
     // (시뮬 결과: 하락장 SWING -7.11% 원인)
     if (mode === 'SWING' && tech.sma20 < tech.sma60) {
-      const downtrendOk = tech.score >= 65 || tech.rsi14 < 35;
+      const downtrendOk = tech.score >= 55 || tech.rsi14 < 40;
       if (!downtrendOk && aiScore < buyThreshold) {
         logger.info(`  ⬇️ ${stock.stock_code}: SMA20<SMA60 하락추세 SWING → tech=${tech.score} RSI=${tech.rsi14.toFixed(0)} 확신 부족 차단`, { component: 'TRACK_B' });
         continue;
@@ -258,16 +278,16 @@ export function technicalFallbackDecisions(params: {
     }
     // ───────────────────────────────────────────────────────────────────
 
-    // 기술 단독 최소 점수 — SWING 55, DEFENSE 65 (보수)
-    // AI 스코어 없으면(Track A 미실행) DEFENSE도 SWING 기준(55)으로 완화
-    const baseMinTechScore = mode === 'SCALPING' ? 55 : (mode === 'DEFENSE' && !noAiScores) ? 65 : 55;
+    // 기술 단독 최소 점수 — SWING 45, DEFENSE 60 (적극 투자)
+    // AI 스코어 없으면(Track A 미실행) DEFENSE도 SWING 기준(45)으로 완화
+    const baseMinTechScore = mode === 'SCALPING' ? 50 : (mode === 'DEFENSE' && !noAiScores) ? 60 : 45;
     // 종목별 승률 기반 임계값 보정 (AI 없어도 과거 실적 반영)
     const wrAdj = getWinRateThresholdAdj(winRates?.get(stock.stock_code));
     const minTechScore = baseMinTechScore + wrAdj;
 
     // 우선 테마(반도체/에너지/방산) 보너스 +10점 적용
     const priorityBonus = PRIORITY_SECTOR_CODES.has(stock.stock_code) ? 10 : 0;
-    const effectiveTechScore = tech.score + priorityBonus;
+    const effectiveTechScore = tech.score + priorityBonus + candleBonus;
 
     // ─── 진입 타이밍 품질 필터 (연구 기반) ───────────────────────────────
     // RSI 구간별 수익 기대치 (KOSPI 2010~2023 실증):
@@ -303,12 +323,13 @@ export function technicalFallbackDecisions(params: {
     // ─────────────────────────────────────────────────────────────────────
 
     if (aiScore >= buyThreshold || effectiveTechScore >= minTechScore) {
-      candidates.push({ stock_code: stock.stock_code, tech, price });
+      candidates.push({ stock_code: stock.stock_code, tech, price, candleBonus });
       const wrInfo = winRateSummary(stock.stock_code, winRates?.get(stock.stock_code));
+      const bonusStr = [priorityBonus > 0 ? `+${priorityBonus}테마` : '', candleBonus > 0 ? `+${candleBonus}캔들` : ''].filter(Boolean).join('');
       if (aiScore >= buyThreshold) {
-        logger.info(`  ✅ ${stock.stock_code}: AI=${aiScore}점(>=${buyThreshold}) [${entryReason}] RSI=${tech.rsi14.toFixed(0)} → 매수 후보 (기술=${tech.score}${priorityBonus > 0 ? `+${priorityBonus}우선테마` : ''}${wrInfo})`, { component: 'TRACK_B' });
+        logger.info(`  ✅ ${stock.stock_code}: AI=${aiScore}점(>=${buyThreshold}) [${entryReason}] RSI=${tech.rsi14.toFixed(0)} vol=${tech.volumeRatio.toFixed(2)}x → 매수 후보 (기술=${tech.score}${bonusStr}${wrInfo})`, { component: 'TRACK_B' });
       } else {
-        logger.info(`  ✅ ${stock.stock_code}: 기술=${effectiveTechScore}점(>=${minTechScore}) [${entryReason}] RSI=${tech.rsi14.toFixed(0)} → 매수 후보 (AI=${aiScore}${priorityBonus > 0 ? ' 우선테마' : ''}${wrInfo})`, { component: 'TRACK_B' });
+        logger.info(`  ✅ ${stock.stock_code}: 기술=${effectiveTechScore}점(>=${minTechScore}) [${entryReason}] RSI=${tech.rsi14.toFixed(0)} vol=${tech.volumeRatio.toFixed(2)}x → 매수 후보 (AI=${aiScore}${bonusStr}${wrInfo})`, { component: 'TRACK_B' });
       }
     }
   }
@@ -327,23 +348,30 @@ export function technicalFallbackDecisions(params: {
 
   for (const cand of candidates.slice(0, maxBuys)) {
     const isPriority = PRIORITY_SECTOR_CODES.has(cand.stock_code);
-    // 우선 테마(반도체/에너지/방산): 포지션 20% 확대
     const priorityMultiplier = isPriority ? 1.2 : 1.0;
+
+    // 확신 배율: 고점수 + 고거래량 = 최강 신호 → 포지션 확대 (더 많이 넣어야 수익 최대화)
+    const aiScore = aiScoreMap.get(cand.stock_code) ?? 0;
+    const isHighConviction = cand.tech.score >= 65 && cand.tech.volumeRatio >= 1.5;
+    const isMedConviction = (aiScore >= strategyParams.buyThreshold && cand.tech.volumeRatio >= 1.3) || cand.candleBonus >= 12;
+    const convictionMultiplier = isHighConviction ? 1.4 : isMedConviction ? 1.25 : 1.0;
+
     // 종목당 1차 매수: 자산 기반 동적 포지션 한도의 1/splitCount, 잔고 한도 내
-    const positionSize = Math.min(effectiveMaxPos / splitCount * priorityMultiplier, remainingCash / maxBuys);
+    const positionSize = Math.min(effectiveMaxPos / splitCount * priorityMultiplier * convictionMultiplier, remainingCash / maxBuys);
     if (positionSize < 50000) break; // 최소 5만원 (1주라도 매수)
 
     const quantity = Math.floor(positionSize / cand.price.currentPrice);
     if (quantity <= 0) continue;
 
+    const convStr = isHighConviction ? ' [확신MAX+40%]' : isMedConviction ? ' [확신+25%]' : '';
     decisions.push({
       action: 'BUY',
       stock_code: cand.stock_code,
       quantity,
       price_type: 'MARKET',
       limit_price: cand.price.currentPrice,
-      reasoning: `기술적 매수: score=${cand.tech.score} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength})${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마+20%]' : ''}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))}`,
-      confidence: Math.min(0.92, Math.max(0.5, cand.tech.score / 100 + getWinRateConfidenceBoost(winRates?.get(cand.stock_code)))),
+      reasoning: `기술적 매수: score=${cand.tech.score}${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${convStr}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))}`,
+      confidence: Math.min(0.95, Math.max(0.5, cand.tech.score / 100 + getWinRateConfidenceBoost(winRates?.get(cand.stock_code)) + (cand.candleBonus > 0 ? 0.05 : 0))),
     });
 
     remainingCash -= quantity * cand.price.currentPrice;

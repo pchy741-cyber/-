@@ -16,29 +16,24 @@ import { isKillSwitchActive, reportError, reportSuccess } from '../risk/kill-swi
 import { logger } from '../utils/logger.js';
 import { analyzeOverseasWithAI, type OverseasStockInput } from '../ai/overseas/analyzer.js';
 import { setOverseasScores } from '../cache/overseas-scores.js';
+import {
+  getFearGreedIndex,
+  getUpcomingEarnings,
+  getNewsSentiment,
+  interpretMarketSentiment,
+  hasEarningsRisk,
+} from '../market/external-signals.js';
 
 // 글로벌 감시 목록 — 미국 + 일본 + 대만 (안정 대형주 위주)
 const GLOBAL_WATCHLIST = [
-  // 🇺🇸 미국 (KST 23:30~06:30)
-  { code: 'AAPL', name: 'Apple', exchange: 'NASDAQ', region: 'US' },
-  { code: 'NVDA', name: 'NVIDIA', exchange: 'NASDAQ', region: 'US' },
-  { code: 'MSFT', name: 'Microsoft', exchange: 'NASDAQ', region: 'US' },
-  { code: 'GOOGL', name: 'Google', exchange: 'NASDAQ', region: 'US' },
-  { code: 'AMZN', name: 'Amazon', exchange: 'NASDAQ', region: 'US' },
-  { code: 'TSLA', name: 'Tesla', exchange: 'NASDAQ', region: 'US' },
-  { code: 'META', name: 'Meta', exchange: 'NASDAQ', region: 'US' },
-  // 🇯🇵 일본 (KST 09:00~11:30, 12:30~15:00)
-  { code: '7203', name: 'Toyota', exchange: 'TSE', region: 'JP' },
-  { code: '6758', name: 'Sony', exchange: 'TSE', region: 'JP' },
-  { code: '6861', name: 'Keyence', exchange: 'TSE', region: 'JP' },
-  { code: '8306', name: 'MUFG', exchange: 'TSE', region: 'JP' },
-  { code: '6501', name: 'Hitachi', exchange: 'TSE', region: 'JP' },
-  // 🇹🇼 대만 (KST 10:00~14:30)
-  { code: '2330', name: 'TSMC', exchange: 'TPE', region: 'TW' },
-  { code: '2317', name: 'Foxconn', exchange: 'TPE', region: 'TW' },
-  { code: '2454', name: 'MediaTek', exchange: 'TPE', region: 'TW' },
-  { code: '2308', name: 'Delta Electronics', exchange: 'TPE', region: 'TW' },
-  { code: '3711', name: 'ASMedia', exchange: 'TPE', region: 'TW' },
+  // 🇺🇸 미국 7대 빅테크만 (시총 상위, 유동성 최고)
+  { code: 'AAPL',  name: 'Apple',     exchange: 'NASDAQ', region: 'US' },
+  { code: 'NVDA',  name: 'NVIDIA',    exchange: 'NASDAQ', region: 'US' },
+  { code: 'MSFT',  name: 'Microsoft', exchange: 'NASDAQ', region: 'US' },
+  { code: 'GOOGL', name: 'Google',    exchange: 'NASDAQ', region: 'US' },
+  { code: 'AMZN',  name: 'Amazon',    exchange: 'NASDAQ', region: 'US' },
+  { code: 'TSLA',  name: 'Tesla',     exchange: 'NASDAQ', region: 'US' },
+  { code: 'META',  name: 'Meta',      exchange: 'NASDAQ', region: 'US' },
 ];
 
 // ─── 포지션 한도 (미국/아시아 공통) ───
@@ -609,6 +604,7 @@ export async function runOverseasJob(): Promise<void> {
     const holdings = await getHoldings();
     const pendingOrderStocks = await getPendingOverseasStocks();
     let cash = await getCash();
+    const usCodes = GLOBAL_WATCHLIST.filter(s => s.region === 'US').map(s => s.code);
 
     // ── 세션 캐시: 미국/아시아 별도 관리 ──
     // 신규 세션이면 전 종목 스캔 → 이후 사이클은 보유 + 상위 후보만
@@ -817,7 +813,19 @@ export async function runOverseasJob(): Promise<void> {
     let aiDecisions: Awaited<ReturnType<typeof analyzeOverseasWithAI>> = [];
     if (shouldCallAI) {
       const [perfSummary, userInsights] = await Promise.all([getRecentPerfSummary(), getUserInsights()]);
-      aiDecisions = await analyzeOverseasWithAI(aiInputs, cash, holdings.size, perfSummary, userInsights || undefined);
+      // 외부 신호 조기 조회 (AI 프롬프트에 포함)
+      const [fgEarly, earningsEarly] = await Promise.all([
+        getFearGreedIndex().catch(() => null),
+        getUpcomingEarnings(usCodes).catch(() => [] as import('../market/external-signals.js').EarningsEvent[]),
+      ]);
+      const earningsRiskCodes = earningsEarly.filter(e => e.daysUntil >= 0 && e.daysUntil <= 5).map(e => e.code);
+      const mktCtx = fgEarly ? {
+        fearGreed: fgEarly.fearGreedScore,
+        fearGreedLabel: fgEarly.fearGreedLabel,
+        vix: fgEarly.vix,
+        earningsRisk: earningsRiskCodes,
+      } : undefined;
+      aiDecisions = await analyzeOverseasWithAI(aiInputs, cash, holdings.size, perfSummary, userInsights || undefined, mktCtx);
     } else {
       logger.info('🤖 AI 생략 — 매수/매도 후보 없음 (비용 절감)', { component: 'OVERSEAS' });
     }
@@ -936,21 +944,46 @@ export async function runOverseasJob(): Promise<void> {
     const updatedHoldings = await getHoldings();
     const currentHoldingCount = updatedHoldings.size;
 
+    // 외부 신호: Fear&Greed + 어닝 캘린더 (병렬 조회)
+    const [marketSentiment, upcomingEarnings] = await Promise.all([
+      getFearGreedIndex().catch(() => null),
+      getUpcomingEarnings(usCodes).catch(() => []),
+    ]);
+    const mktSignal = marketSentiment ? interpretMarketSentiment(marketSentiment) : null;
+    if (mktSignal) {
+      logger.info(`📊 시장 신호: ${mktSignal.reason}`, { component: 'OVERSEAS' });
+    }
+
     if (!riskBlocked && currentHoldingCount < MAX_POSITIONS && cash >= 200) {
       const buyTargets = techResults
         .filter(t => !updatedHoldings.has(t.code) && !pendingOrderStocks.has(t.code))
+        // 어닝 3일 이내 종목 매수 금지 (어닝 서프라이즈 리스크)
+        .filter(t => {
+          if (hasEarningsRisk(t.code, upcomingEarnings, 3)) {
+            logger.info(`📅 어닝 리스크 차단: ${t.code} (3일 이내 실적 발표)`, { component: 'OVERSEAS' });
+            return false;
+          }
+          return true;
+        })
+        // 극탐욕(F&G≥80) 또는 VIX 공황(>35) 시 신규 매수 차단 (극공포 역매수는 허용)
+        .filter(t => {
+          if (mktSignal && !mktSignal.allowBuy && !mktSignal.aggressive) {
+            logger.info(`📊 시장 과열/공황 차단: ${t.code} — ${mktSignal.reason}`, { component: 'OVERSEAS' });
+            return false;
+          }
+          return true;
+        })
         .filter(t => {
           const ai = aiMap.get(t.code);
-          // AI가 BUY라고 판단한 것만 신뢰 — 백엔드 재검증 없음
-          if (ai?.action === 'BUY' && ai.confidence >= 0.50) return true;
-          // AI 없을 때 기술적 복합 진입 조건 (전문 트레이더 기준):
-          //   1) 추세 확인: ADX ≥ 20 (횡보 구간 진입 방지)
-          //   2) RSI 과매수 아님: 30 ≤ RSI ≤ 65
-          //   3) 신호: BUY 이상 + score ≥ 30
-          //   4) 추가: 모멘텀이면 RSI 조건 완화 (≤ 70)
+          // AI 신뢰도 65% 이상 + 상승 방향일 때만 진입
+          if (ai?.action === 'BUY' && ai.confidence >= 0.65) return true;
+          // STRONG_BUY는 60%도 허용
+          if (ai?.action === 'BUY' && t.signal === 'STRONG_BUY' && ai.confidence >= 0.60) return true;
+          // AI 없을 때: 강한 기술적 신호만 진입
+          //   ADX ≥ 25 (추세 확실), score ≥ 40, RSI 적정 구간
           if (!ai) {
-            const isBuySignal = (t.signal === 'STRONG_BUY' || t.signal === 'BUY') && t.score >= 30 && t.adx >= 20;
-            const rsiOk = t.isMomentum ? t.rsi <= 70 : (t.rsi >= 30 && t.rsi <= 65);
+            const isBuySignal = t.signal === 'STRONG_BUY' && t.score >= 40 && t.adx >= 25;
+            const rsiOk = t.isMomentum ? (t.rsi >= 30 && t.rsi <= 70) : (t.rsi >= 30 && t.rsi <= 60);
             return isBuySignal && rsiOk;
           }
           return false;
@@ -969,7 +1002,8 @@ export async function runOverseasJob(): Promise<void> {
 
       const slotsAvailable = MAX_POSITIONS - currentHoldingCount;
       for (const target of buyTargets.slice(0, slotsAvailable)) {
-        const positionSize = Math.min(cash * POSITION_PCT, POSITION_SIZE_USD);
+        // 총 포트폴리오 기준 15% 단위 투자 (현금만 보면 매수할수록 비중이 줄어드는 문제 해결)
+        const positionSize = Math.min(portfolioValue * 0.15, POSITION_SIZE_USD, cash * 0.95);
         if (positionSize < 50) break;
 
         const qty = Math.floor(positionSize / (target.price.currentPrice * 1.0025)); // 수수료 0.25% 포함 단가

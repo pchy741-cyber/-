@@ -227,13 +227,14 @@ export class TradeExecutor {
       const targetProfitPct = (dbStrategy as any)?.take_profit_pct ?? params.takeProfitPct;
       let stopLossPct = (dbStrategy as any)?.stop_loss_pct ?? params.stopLossPct;
 
-      // ATR 기반 동적 손절 — ATR*2.0 / 매수가, 클램핑 -2% ~ -8%
+      // ATR 기반 동적 손절 — 전략 손절폭보다 넓어지지 않도록 캡 적용
       try {
         const { calculateATR } = await import('../automation/position-sizer.js');
         const atr = await calculateATR(stockCode);
         if (atr > 0 && fill.filledPrice > 0) {
           const atrStopPct = -((atr * 2.0) / fill.filledPrice) * 100;
-          stopLossPct = Math.max(-8, Math.min(-2, atrStopPct));
+          // 전략 설정(stopLossPct)보다 넓어지는 것 방지: -2% ~ stopLossPct 범위
+          stopLossPct = Math.max(stopLossPct, Math.min(-2, atrStopPct));
           logger.info(`ATR 동적 손절: ${stockCode} ATR=${atr.toFixed(0)} → 손절 ${stopLossPct.toFixed(1)}%`, { component: 'EXECUTOR' });
         }
       } catch { /* ATR 실패 시 기본값 유지 */ }

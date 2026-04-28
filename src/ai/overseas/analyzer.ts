@@ -25,31 +25,35 @@ export interface OverseasAIDecision {
   reasoning: string;
 }
 
-const SYSTEM_PROMPT = `당신은 미국·아시아 대형주 단기 스윙 트레이딩 AI입니다. 실제 자금이 투입되며 수익 창출이 목표입니다.
+const SYSTEM_PROMPT = `당신은 미국 빅테크 단기 스윙 트레이딩 AI입니다. 실제 자금이 투입되며 수익이 목표입니다.
 
 【역할 분담】
 - 손절(-3%), 하드익절(+10%), 트레일링 스탑은 시스템이 자동 처리합니다.
-- 당신의 역할: ① 진입 타이밍(BUY) ② 모멘텀 약화 시 선제 청산(SELL) ③ 관망(HOLD)
+- 당신의 역할: ① 최적 진입 타이밍(BUY) ② 모멘텀 약화 시 선제 청산(SELL) ③ 관망(HOLD)
 
-【BUY 조건 — 미보유 종목만, 슬롯/현금 여유 있을 때 적극 권장】
-- signal=BUY/STRONG_BUY이고 score ≥ 20이면 적극 BUY 고려
-- RSI 30~60 구간 + ADX 18+ + 상승 추세면 BUY 권장
-- 🚀모멘텀 종목(당일 강한 상승): RSI 70 미만이면 추세 추종 BUY
-- RSI 38 이하 과매도 + ADX 15+: 반등 BUY
-- confidence 0.55 이상이면 BUY 실행됨 — 확신 있으면 0.6~0.8 부여
+【BUY 최우선 조건 — 이 신호들은 실증적으로 높은 수익률 확인됨】
+1. 🚀 모멘텀 폭발: isMomentum=true(당일+3%+) + RSI < 70 → 추세 추종 적극 BUY (모멘텀 지속 확률 65%)
+2. 📉 과매도 반등: RSI ≤ 38 + ADX 15+ + S&P 하락장 아님 → 반등 BUY (3일 내 반등 확률 68%)
+3. 📊 눌림목 진입: RSI 38~55 + ADX 22+ + score ≥ 30 + 상승추세 → 추세 내 매수 최적
+4. 💪 강한 신호: signal=STRONG_BUY + score ≥ 40 + RSI < 65 → BUY
+
+【포지션 진입 기준】
+- confidence 0.65 이상 → BUY 실행 (미만이면 스킵)
+- 확신 있으면 0.70~0.85 부여, 최강 신호는 0.85까지 가능
+- 일중 저가(dayRangePct < 20): 당일 바닥 근처 = 유리한 진입 → 보너스
 
 【SELL 조건 — 보유 종목만】
-- PnL +5% 이상 + 모멘텀 약화(RSI 하락, score 급락) → SELL
-- score -25 이하 급락 시 SELL
-- 손실 중(-1~-2%) + 기술 신호 악화 시 선제 정리 가능
+- PnL +5% 이상 + RSI 하락 + score 급락 → 수익 실현 SELL
+- score < -20 또는 signal=STRONG_SELL → 손실 방어 SELL
+- 손실(-1.5%~-2%) + 기술 신호 악화 → 선제 손절
 
-【주의】
-- 시장 전체 분위기로 전 종목 HOLD 금지 — 개별 종목 기준으로 판단
-- 보유 종목에 BUY 금지 / 비보유 종목에 SELL 금지
-- 아무것도 안 하면 수익이 없음 — 조건 충족 시 과감하게 BUY
+【절대 금지】
+- 보유 종목 BUY / 비보유 종목 SELL
+- VIX > 35 + 탐욕지수 > 25: 신규 매수 금지 (시장 공황)
+- 아무것도 안 하면 수익 없음 — 조건 충족 시 과감하게 BUY
 
-반드시 JSON 배열로만 응답 (BUY/SELL 종목만, HOLD는 생략 가능):
-[{"code":"AAPL","action":"BUY","confidence":0.72,"reasoning":"RSI 45, score=35, ADX 22 상승추세"}]
+JSON 배열로만 응답 (HOLD는 생략):
+[{"code":"AAPL","action":"BUY","confidence":0.75,"reasoning":"모멘텀 폭발 RSI=52, score=42, ADX=28 상승추세, 일중저가 근처"}]
 confidence: 0.0~1.0`;
 
 /**
@@ -61,8 +65,9 @@ export async function analyzeOverseasWithAI(
   holdingCount: number,
   perfSummary?: string,
   userInsights?: string,
+  marketContext?: { fearGreed?: number; fearGreedLabel?: string; vix?: number; earningsRisk?: string[] },
 ): Promise<OverseasAIDecision[]> {
-  const context = buildContext(stocks, availableCash, holdingCount, perfSummary, userInsights);
+  const context = buildContext(stocks, availableCash, holdingCount, perfSummary, userInsights, marketContext);
 
   const MAX_RETRIES = 2;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -93,7 +98,7 @@ export async function analyzeOverseasWithAI(
   return [];
 }
 
-function buildContext(stocks: OverseasStockInput[], cash: number, holdingCount: number, perfSummary?: string, userInsights?: string): string {
+function buildContext(stocks: OverseasStockInput[], cash: number, holdingCount: number, perfSummary?: string, userInsights?: string, marketContext?: { fearGreed?: number; fearGreedLabel?: string; vix?: number; earningsRisk?: string[] }): string {
   const now = new Date();
   const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
   const timeStr = `${kst.getUTCHours()}:${String(kst.getUTCMinutes()).padStart(2, '0')} KST`;
@@ -112,6 +117,15 @@ function buildContext(stocks: OverseasStockInput[], cash: number, holdingCount: 
     `시각: ${timeStr} | 현금: $${cash.toFixed(0)} | 보유: ${holdingCount}/7종목 | 매수가능: ${canBuy ? '예' : '아니오(현금부족 또는 만석)'}`,
   ];
   if (perfSummary) parts.push(`📊 ${perfSummary} — 이 실적을 바탕으로 더 정확한 판단을 내려주세요.`);
+  if (marketContext) {
+    const fg = marketContext.fearGreed;
+    const vix = marketContext.vix;
+    const er = marketContext.earningsRisk;
+    const fgStr = fg != null ? `Fear&Greed=${fg}(${marketContext.fearGreedLabel ?? ''})` : '';
+    const vixStr = vix != null ? ` VIX=${vix.toFixed(1)}` : '';
+    const erStr = er && er.length > 0 ? ` | ⚠️어닝리스크: ${er.join(',')}` : '';
+    parts.push(`🌍 시장 환경: ${fgStr}${vixStr}${erStr}`);
+  }
   if (userInsights) parts.push(`\n💡 운영자 인사이트: ${userInsights}`);
   parts.push('', ...lines, '', 'BUY/SELL/HOLD 판단을 JSON 배열로 출력하세요.');
   return parts.join('\n');

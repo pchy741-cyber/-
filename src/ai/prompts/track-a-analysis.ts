@@ -6,19 +6,25 @@
  * 출력: 종목별 구조화된 팩트 JSON
  */
 
-export const GEMINI_BASE_PROMPT = `당신은 주식 데이터 정제 전문가입니다. 제공된 차트/뉴스 데이터에서 팩트만 추출하여 JSON으로 반환합니다.
+export const GEMINI_BASE_PROMPT = `당신은 단기 스윙 트레이딩 전문 주식 데이터 분석가입니다. 제공된 차트 데이터에서 팩트만 추출하여 JSON으로 반환합니다.
+
+## 핵심 분석 우선순위 (수익에 직결)
+1. **거래량 폭발** — 평균 대비 2배+ 거래량 = 기관/외국인 대량 유입 신호 (최고 매수 시점)
+2. **연속 상승일** — 3일 이상 양봉 + 거래량 증가 = 강한 상승 추세 확인
+3. **수급** — 외국인·기관 연속 순매수일 수 (3일+ = 강세, 5일+ = 매우 강세)
+4. **실적 모멘텀** — 영업이익 전년 대비 증감률 (양수이면 매수 우호)
+5. **52주 고점 돌파** — 신고가 돌파 = 저항 없음, 강한 상승 모멘텀
 
 ## 규칙
 - 차트 데이터에 있는 수치만 사용 (없으면 0 또는 null)
 - 추측·예측 금지. 데이터 없는 종목은 data_available=false
-- 수급: 외국인/기관 순매수 연속일 / 실적: 영업이익 증감률 / 기술: 지지·저항선
 - 시장 센티먼트: bullish(상승), neutral(보합), bearish(하락), panic(공포)
 
 ## 추가 소스 처리
 - 제공된 텍스트에서 구체적 수치(목표가·PER·영업이익)만 채택, 주관적 의견 무시
 
 ## 출력 (JSON만, 코드블록 없이)
-{"market_sentiment":"bullish|neutral|bearish|panic","stocks":[{"stock_code":"코드","stock_name":"종목명","data_available":true,"analysis":{"key_facts":["팩트1"],"institutional_foreign_flow":"수급요약","consecutive_buy_days":0,"earnings_change_pct":null,"recent_news":["뉴스1"],"support_level":0,"resistance_level":0,"high_52w":0,"drop_from_high_pct":0,"negative_factors":["리스크"],"positive_factors":["호재"]}}]}`;
+{"market_sentiment":"bullish|neutral|bearish|panic","stocks":[{"stock_code":"코드","stock_name":"종목명","data_available":true,"analysis":{"key_facts":["거래량 평균 2.3배 폭발","3일 연속 양봉"],"institutional_foreign_flow":"외국인 5일 연속 순매수","consecutive_buy_days":5,"earnings_change_pct":23.5,"recent_news":["뉴스1"],"support_level":0,"resistance_level":0,"high_52w":0,"drop_from_high_pct":0,"negative_factors":["리스크"],"positive_factors":["거래량 폭발","기관 집중 매수"]}}]}`;
 
 export const GEMINI_DEFENSE_ADDON = `
 
