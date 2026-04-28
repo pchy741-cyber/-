@@ -144,14 +144,19 @@ export function technicalFallbackDecisions(params: {
     }
     // ──────────────────────────────────────────────────────────────────────
 
-    // 손절
-    if (pnlPct <= strategyParams.stopLossPct) {
+    // 손절 (ATR 동적 손절 vs 전략 고정 손절 — 더 보수적인 쪽 적용)
+    const sellCheckCandles = chartData.get(chain.stock_code);
+    const sellTech = sellCheckCandles && sellCheckCandles.length >= 30 ? analyzeTechnicals(sellCheckCandles) : null;
+    const dynamicStop = sellTech ? sellTech.dynamicStopLossPct : strategyParams.stopLossPct;
+    // ATR 기반이 고정 손절보다 좁으면 ATR 우선 (더 빠른 손절로 손실 최소화)
+    const effectiveStop = Math.max(strategyParams.stopLossPct, dynamicStop);
+    if (pnlPct <= effectiveStop) {
       decisions.push({
         action: 'FORCE_CLOSE',
         stock_code: chain.stock_code,
         quantity: chain.total_quantity,
         price_type: 'MARKET',
-        reasoning: `기술적 손절: ${pnlPct.toFixed(1)}% (한도 ${strategyParams.stopLossPct}%)`,
+        reasoning: `손절: ${pnlPct.toFixed(1)}% (ATR동적=${dynamicStop.toFixed(1)}% 고정=${strategyParams.stopLossPct}%)`,
         confidence: 0.95,
       });
       processedSellCodes.add(chain.stock_code);
@@ -319,7 +324,12 @@ export function technicalFallbackDecisions(params: {
       logger.info(`  🟡 ${stock.stock_code}: RSI=${tech.rsi14.toFixed(0)} MACD=${tech.macdCrossover} AI=${aiScore} → 타이밍 미충족 스킵`, { component: 'TRACK_B' });
       continue;
     }
-    const entryReason = isOversold ? '과매도반등' : isEarlyBounce ? '반등초기(최적)' : isPullback ? '눌림목MACD' : isHighAiScore ? `AI고확신(${aiScore}점)` : '강한모멘텀';
+    const squeezeTag = tech.bollingerBreakout === 'UP' ? '🎯BB스퀴즈돌파' : tech.bollingerSqueeze ? '🔃BB응축중' : '';
+    const vwapTag = tech.vwapCross === 'JUST_ABOVE' ? '⚡VWAP돌파' : '';
+    const entryReason = [
+      isOversold ? '과매도반등' : isEarlyBounce ? '반등초기(최적)' : isPullback ? '눌림목MACD' : isHighAiScore ? `AI고확신(${aiScore}점)` : '강한모멘텀',
+      squeezeTag, vwapTag,
+    ].filter(Boolean).join('+');
     // ─────────────────────────────────────────────────────────────────────
 
     if (aiScore >= buyThreshold || effectiveTechScore >= minTechScore) {

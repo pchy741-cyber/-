@@ -368,6 +368,8 @@ export interface TechnicalSummary {
   macdCrossover: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
   bollingerPosition: 'ABOVE_UPPER' | 'NEAR_UPPER' | 'MIDDLE' | 'NEAR_LOWER' | 'BELOW_LOWER';
   bollingerWidth: number;
+  bollingerSqueeze: boolean;     // BB 밴드 폭 < 20일 평균의 80% = 에너지 응축 (돌파 임박)
+  bollingerBreakout: 'UP' | 'DOWN' | 'NONE'; // 스퀴즈 후 상하단 돌파
   sma5: number;
   sma20: number;
   sma60: number;
@@ -376,15 +378,18 @@ export interface TechnicalSummary {
   stochasticK: number;
   stochasticSignal: 'OVERBOUGHT' | 'OVERSOLD' | 'NEUTRAL';
   atr14: number;
-  adx14: number; // 추세 강도 (>25 강한추세, <20 횡보)
+  atrPct: number;                // ATR / 현재가 × 100 — 변동성 % (동적 손절 기준)
+  dynamicStopLossPct: number;    // ATR 기반 동적 손절: max(strategyStop, -2×ATR%)
+  adx14: number;                 // 추세 강도 (>25 강한추세, <20 횡보)
   trendStrength: 'STRONG' | 'MODERATE' | 'WEAK';
-  volumeRatio: number; // 당일 거래량 / 20일 평균 (>1.5면 확인)
+  volumeRatio: number;           // 당일 거래량 / 20일 평균 (>1.5면 확인)
+  vwapCross: 'JUST_ABOVE' | 'JUST_BELOW' | 'NONE'; // VWAP 방금 돌파 여부 (1~2일)
   overallSignal: 'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL';
-  score: number; // -100 ~ +100
-  candlePatterns: CandlePatternResult[]; // 캔들스틱 패턴
-  pctFrom3DayHigh: number; // 3일 고가 대비 현재 위치 (%)
-  pctFrom5DayLow: number;  // 5일 저가 대비 현재 위치 (%)
-  vwapPosition: 'ABOVE' | 'BELOW' | 'AT'; // VWAP 대비 위치
+  score: number;                 // -100 ~ +100
+  candlePatterns: CandlePatternResult[];
+  pctFrom3DayHigh: number;
+  pctFrom5DayLow: number;
+  vwapPosition: 'ABOVE' | 'BELOW' | 'AT';
 }
 
 export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
@@ -416,6 +421,15 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   const bbLower = bb.lower[bb.lower.length - 1] ?? current;
   const bbMiddle = bb.middle[bb.middle.length - 1] ?? current;
   const bbWidth = bb.width[bb.width.length - 1] ?? 0;
+  // 볼린저 스퀴즈: 현재 밴드 폭 < 최근 20일 평균 폭의 80% = 에너지 응축
+  const bbWidthAvg20 = bb.width.slice(-20).reduce((s, v) => s + v, 0) / Math.max(bb.width.slice(-20).length, 1);
+  const bollingerSqueeze = bbWidth < bbWidthAvg20 * 0.8;
+  // 스퀴즈 후 돌파 감지 (전일 스퀴즈 + 오늘 상단/하단 돌파)
+  const prevBbWidth = bb.width[bb.width.length - 2] ?? bbWidth;
+  const prevSqueeze = prevBbWidth < bbWidthAvg20 * 0.8;
+  const bollingerBreakout: TechnicalSummary['bollingerBreakout'] =
+    prevSqueeze && current > (bb.upper[bb.upper.length - 1] ?? current) ? 'UP' :
+    prevSqueeze && current < (bb.lower[bb.lower.length - 1] ?? current) ? 'DOWN' : 'NONE';
 
   let bbPos: TechnicalSummary['bollingerPosition'] = 'MIDDLE';
   if (current > bbUpper) bbPos = 'ABOVE_UPPER';
@@ -443,6 +457,10 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
 
   const atrValues = atr(candlesAsc, 14);
   const atr14 = atrValues[atrValues.length - 1] ?? 0;
+  // ATR % = ATR / 현재가 × 100 (변동성 정규화)
+  const atrPct = current > 0 ? (atr14 / current) * 100 : 0;
+  // 동적 손절: -2×ATR% (최소 -1%, 최대 -8%)
+  const dynamicStopLossPct = Math.max(-8, Math.min(-1, -(atrPct * 2)));
 
   // ADX (추세 강도) — 논문 근거: ADX < 20 시 진입하면 whipsaw 90%
   const adxValues = adx(candlesAsc, 14);
@@ -552,13 +570,26 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
     score += p.bullish ? pts : -pts;
   }
 
-  // ★ VWAP 위치 점수 (추세 방향 필터 — VWAP 위=매수, 아래=매도 구간)
+  // ★ VWAP 위치 + 크로스 감지 (20일 슬라이딩 윈도우)
   const vwapValues = vwap(candlesAsc.slice(-20));
   const vwapNow = vwapValues[vwapValues.length - 1] ?? current;
+  const vwapPrev = vwapValues[vwapValues.length - 2] ?? vwapNow;
+  const prevClose = closesAsc[closesAsc.length - 2] ?? current;
   const vwapDiff = (current - vwapNow) / vwapNow * 100;
   const vwapPosition: TechnicalSummary['vwapPosition'] = vwapDiff > 1 ? 'ABOVE' : vwapDiff < -1 ? 'BELOW' : 'AT';
-  if (vwapPosition === 'ABOVE') score += 12;       // VWAP 위 = 단기 상승 바이어스
+  // 방금 VWAP 크로스: 어제는 아래, 오늘은 위 (또는 반대)
+  const vwapCross: TechnicalSummary['vwapCross'] =
+    prevClose < vwapPrev && current > vwapNow ? 'JUST_ABOVE' :
+    prevClose > vwapPrev && current < vwapNow ? 'JUST_BELOW' : 'NONE';
+  if (vwapCross === 'JUST_ABOVE') score += 20;      // ★ VWAP 방금 돌파 = 가장 강한 추세 전환 확인
+  else if (vwapCross === 'JUST_BELOW') score -= 15; // VWAP 방금 이탈 = 매도 압력
+  else if (vwapPosition === 'ABOVE') score += 12;  // VWAP 위 = 단기 상승 바이어스
   else if (vwapPosition === 'BELOW') score -= 8;   // VWAP 아래 = 매도 압력
+
+  // ★ 볼린저 스퀴즈 돌파 (가장 강력한 모멘텀 신호 중 하나)
+  if (bollingerBreakout === 'UP') score += 22;    // 스퀴즈 후 상방 돌파 = 압축 에너지 방출
+  else if (bollingerBreakout === 'DOWN') score -= 18; // 하방 돌파 = 하락 가속
+  else if (bollingerSqueeze && macdCross === 'BULLISH') score += 10; // 스퀴즈 중 MACD 골든 = 선행 신호
 
   // ★ 중간 거래량 보너스 (1.3~1.8x 구간 — 기존 1.5x만 보상하던 사각지대)
   if (todayVolSurge >= 1.3 && todayVolSurge < 1.5 && current > sma5Now) score += 4;
@@ -584,6 +615,8 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
     macdCrossover: macdCross,
     bollingerPosition: bbPos,
     bollingerWidth: bbWidth,
+    bollingerSqueeze,
+    bollingerBreakout,
     sma5: sma5Now,
     sma20: sma20Now,
     sma60: sma60Now,
@@ -592,9 +625,12 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
     stochasticK: stochK,
     stochasticSignal: stochSignal,
     atr14,
+    atrPct,
+    dynamicStopLossPct,
     adx14,
     trendStrength,
     volumeRatio,
+    vwapCross,
     overallSignal,
     score,
     candlePatterns,
