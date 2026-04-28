@@ -185,6 +185,85 @@ export function roc(prices: number[], period = 12): number[] {
   return result;
 }
 
+// ── TTM Squeeze (John Carter) ──
+// 근거: TrendSpider 검증 — 5개+ 검은점(스퀴즈 on) 후 첫 번째 초록점 진입
+// 검은점 = BB가 KC 안에 있음 (에너지 응축), 빨간점 = 스퀴즈 해제 (에너지 방출)
+// 히스토그램이 증가하면 롱, 감소하면 숏
+
+export interface TTMSqueezeResult {
+  // 'ON' = BB가 KC 내부 (스퀴즈 응축 중, 검은점)
+  // 'OFF' = BB가 KC 외부 (스퀴즈 해제, 빨간점 → 에너지 방출)
+  squeezeState: 'ON' | 'OFF';
+  momentum: number;      // 현재 모멘텀 히스토그램 값 (양수=상승, 음수=하락)
+  momentumPrev: number;  // 직전 모멘텀 (증가/감소 판단)
+  // 진입 신호: 스퀴즈 ON→OFF 전환 + 모멘텀 양수+증가 = 롱 진입
+  fireSignal: 'LONG' | 'SHORT' | 'NONE';
+  consecutiveSqueezeOn: number; // 연속 스퀴즈 ON 횟수 (5이상이면 강한 신호)
+}
+
+export function ttmSqueeze(candles: OHLCV[], bbPeriod = 20, bbMult = 2.0, kcPeriod = 20, kcMult = 1.5): TTMSqueezeResult {
+  if (candles.length < bbPeriod + 5) {
+    return { squeezeState: 'OFF', momentum: 0, momentumPrev: 0, fireSignal: 'NONE', consecutiveSqueezeOn: 0 };
+  }
+
+  const closes = candles.map((c) => c.close);
+  // BB 계산
+  const bbResult = bollingerBands(closes.reverse(), bbPeriod, bbMult);
+  closes.reverse();
+
+  const closesAsc = [...closes].reverse();
+  const candlesAsc = [...candles].reverse();
+
+  // Keltner Channel (EMA + ATR 기반)
+  const emaValues = ema(closesAsc, kcPeriod);
+  const atrValues = atr(candlesAsc, kcPeriod);
+  const kcUpper = emaValues.map((e, i) => e + kcMult * (atrValues[i] ?? 0));
+  const kcLower = emaValues.map((e, i) => e - kcMult * (atrValues[i] ?? 0));
+
+  const minLen = Math.min(bbResult.upper.length, kcUpper.length);
+  const bbU = bbResult.upper.slice(-minLen);
+  const bbL = bbResult.lower.slice(-minLen);
+  const kcU = kcUpper.slice(-minLen);
+  const kcL = kcLower.slice(-minLen);
+
+  // 현재 스퀴즈 상태: BB가 KC 안에 있으면 ON
+  const lastIdx = minLen - 1;
+  const prevIdx = minLen - 2;
+  const currSqueezeOn = (bbU[lastIdx] ?? 0) < (kcU[lastIdx] ?? 0) && (bbL[lastIdx] ?? 0) > (kcL[lastIdx] ?? 0);
+  const prevSqueezeOn = prevIdx >= 0 && (bbU[prevIdx] ?? 0) < (kcU[prevIdx] ?? 0) && (bbL[prevIdx] ?? 0) > (kcL[prevIdx] ?? 0);
+
+  // 연속 ON 횟수
+  let consecutiveSqueezeOn = 0;
+  for (let i = minLen - 1; i >= 0; i--) {
+    if ((bbU[i] ?? 0) < (kcU[i] ?? 0) && (bbL[i] ?? 0) > (kcL[i] ?? 0)) consecutiveSqueezeOn++;
+    else break;
+  }
+
+  // 모멘텀: LinReg of (close - midpoint of BB/KC) — 간소화 버전
+  const midpoints = closesAsc.slice(-kcPeriod).map((c, i) => {
+    const bbMid = bbResult.middle[bbResult.middle.length - kcPeriod + i] ?? c;
+    const kcMid = emaValues[emaValues.length - kcPeriod + i] ?? c;
+    return c - (bbMid + kcMid) / 2;
+  });
+  const momentum = midpoints[midpoints.length - 1] ?? 0;
+  const momentumPrev = midpoints[midpoints.length - 2] ?? 0;
+
+  // 진입 신호: 직전 스퀴즈 ON → 현재 OFF (해제) + 모멘텀 방향 확인
+  let fireSignal: TTMSqueezeResult['fireSignal'] = 'NONE';
+  if (prevSqueezeOn && !currSqueezeOn) {
+    if (momentum > 0 && momentum > momentumPrev) fireSignal = 'LONG';
+    else if (momentum < 0 && momentum < momentumPrev) fireSignal = 'SHORT';
+  }
+
+  return {
+    squeezeState: currSqueezeOn ? 'ON' : 'OFF',
+    momentum,
+    momentumPrev,
+    fireSignal,
+    consecutiveSqueezeOn,
+  };
+}
+
 // ── ATR (Average True Range, 변동성) ──
 
 export function atr(candles: OHLCV[], period = 14): number[] {
@@ -384,6 +463,9 @@ export interface TechnicalSummary {
   trendStrength: 'STRONG' | 'MODERATE' | 'WEAK';
   volumeRatio: number;           // 당일 거래량 / 20일 평균 (>1.5면 확인)
   vwapCross: 'JUST_ABOVE' | 'JUST_BELOW' | 'NONE'; // VWAP 방금 돌파 여부 (1~2일)
+  vwapPullback: boolean;         // VWAP 돌파 후 되돌림 매수 기회 (LuxAlgo 검증 전략)
+  rsi2: number;                  // 2-day RSI (QuantifiedStrategies: 15↓매수/85↑매도 — 91% 승률)
+  ttmSqueeze: TTMSqueezeResult;  // TTM 스퀴즈 (존 카터) — 5+ 검은점 후 첫 초록점 진입
   overallSignal: 'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL';
   score: number;                 // -100 ~ +100
   candlePatterns: CandlePatternResult[];
@@ -594,6 +676,37 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   // ★ 중간 거래량 보너스 (1.3~1.8x 구간 — 기존 1.5x만 보상하던 사각지대)
   if (todayVolSurge >= 1.3 && todayVolSurge < 1.5 && current > sma5Now) score += 4;
 
+  // ★ 2-day RSI (QuantifiedStrategies 검증 — 91% 승률, 2일 평균 회귀 전략)
+  // 근거: Larry Connors RSI-2 전략, 15 이하 매수 / 85 이상 매도
+  const rsi2Values = rsi(closesAsc, 2);
+  const rsi2 = rsi2Values[rsi2Values.length - 1] ?? 50;
+  if (rsi2 < 15) score += 18;       // 극단 과매도 — 단기 반등 확률 91% (연구 검증)
+  else if (rsi2 < 25) score += 10;  // 과매도 영역
+  else if (rsi2 > 85) score -= 18;  // 극단 과매수 — 단기 하락 확률 높음
+  else if (rsi2 > 75) score -= 10;
+
+  // ★ VWAP 풀백 감지 (LuxAlgo 검증 전략)
+  // VWAP 돌파 후 2~3일 내 되돌림 = 최적 진입점
+  // 패턴: 1~3일 전에 VWAP 상향 돌파 → 오늘 가격이 VWAP ±0.5% 이내
+  const vwapHistory = vwapValues.slice(-4); // 최근 4일 VWAP
+  const closeHistory = closesAsc.slice(-4);
+  let recentVwapBreak = false;
+  for (let i = 1; i < Math.min(3, vwapHistory.length - 1); i++) {
+    const pastClose = closeHistory[closeHistory.length - 1 - i] ?? 0;
+    const pastVwap = vwapHistory[vwapHistory.length - 1 - i] ?? 0;
+    if (pastClose > pastVwap * 1.005) { recentVwapBreak = true; break; }
+  }
+  const nearVwap = Math.abs(vwapDiff) < 0.5; // 현재가 ±0.5% 이내
+  const vwapPullback = recentVwapBreak && nearVwap && current > vwapNow * 0.995;
+  if (vwapPullback) score += 15; // VWAP 돌파 후 풀백 = 강한 재진입 신호
+
+  // ★ TTM 스퀴즈 신호 (존 카터 — TrendSpider 검증)
+  // 5개+ 검은점 (BB < KC 응축) 후 첫 초록점 + 모멘텀 상승 = LONG 진입
+  const ttmSqueezeResult = ttmSqueeze(candles);
+  if (ttmSqueezeResult.fireSignal === 'LONG') score += 25;  // 스퀴즈 해제 + 상승 모멘텀
+  else if (ttmSqueezeResult.fireSignal === 'SHORT') score -= 20;
+  else if (ttmSqueezeResult.squeezeState === 'ON' && ttmSqueezeResult.consecutiveSqueezeOn >= 5) score += 8; // 강한 응축 중
+
   score = Math.max(-100, Math.min(100, score));
 
   let overallSignal: TechnicalSummary['overallSignal'];
@@ -631,6 +744,9 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
     trendStrength,
     volumeRatio,
     vwapCross,
+    vwapPullback,
+    rsi2,
+    ttmSqueeze: ttmSqueezeResult,
     overallSignal,
     score,
     candlePatterns,

@@ -325,10 +325,12 @@ export function technicalFallbackDecisions(params: {
       continue;
     }
     const squeezeTag = tech.bollingerBreakout === 'UP' ? '🎯BB스퀴즈돌파' : tech.bollingerSqueeze ? '🔃BB응축중' : '';
-    const vwapTag = tech.vwapCross === 'JUST_ABOVE' ? '⚡VWAP돌파' : '';
+    const vwapTag = tech.vwapCross === 'JUST_ABOVE' ? '⚡VWAP돌파' : tech.vwapPullback ? '🔁VWAP풀백' : '';
+    const ttmTag = tech.ttmSqueeze.fireSignal === 'LONG' ? `🚀TTM발사(${tech.ttmSqueeze.consecutiveSqueezeOn}봉)` : '';
+    const rsi2Tag = tech.rsi2 < 15 ? `📉RSI2(${tech.rsi2.toFixed(0)})` : '';
     const entryReason = [
       isOversold ? '과매도반등' : isEarlyBounce ? '반등초기(최적)' : isPullback ? '눌림목MACD' : isHighAiScore ? `AI고확신(${aiScore}점)` : '강한모멘텀',
-      squeezeTag, vwapTag,
+      squeezeTag, vwapTag, ttmTag, rsi2Tag,
     ].filter(Boolean).join('+');
     // ─────────────────────────────────────────────────────────────────────
 
