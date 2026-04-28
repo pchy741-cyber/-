@@ -301,8 +301,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         stopLossPct: strategy?.stop_loss_pct ?? undefined,
         buyThreshold: strategy?.buy_threshold ?? undefined,
         winRates,
-        // 14:30 이후 신규 매수 차단 — 마감 30분 전 진입은 불리 (당일 청산 위험)
-        blockNewBuys: kstH > 14 || (kstH === 14 && kstM >= 30),
+        // 15:10 이후 신규 매수 차단 — 마감 20분 전 진입만 차단
+        blockNewBuys: kstH > 15 || (kstH === 15 && kstM >= 10),
       });
 
       const engine = hasScores ? 'technical+AI힌트' : 'technical';

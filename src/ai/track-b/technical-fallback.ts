@@ -178,7 +178,7 @@ export function technicalFallbackDecisions(params: {
 
   // 2. 신규 매수 판단 (기술적 지표 기반)
   if (blockNewBuys) {
-    logger.info('⏰ 14:30 이후 — 신규 매수 차단 (마감 노이즈 방지)', { component: 'TRACK_B' });
+    logger.info('⏰ 15:10 이후 — 신규 매수 차단 (마감 20분 전)', { component: 'TRACK_B' });
     return decisions; // 매도/손절 결정만 반환
   }
 

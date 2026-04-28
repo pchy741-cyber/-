@@ -361,12 +361,16 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       }),
     ));
 
-    // 6-1. 발굴 종목 중 고점수(≥70) + 고신뢰도(≥0.7) 자동 active 등록
+    // 6-1. 발굴 종목 중 고점수 자동 active 등록
+    // AI 정상: score≥58 + confidence≥0.58 / AI 실패(기술 폴백): score≥75만으로 활성화
     if (discoveryList.length > 0 && !isMemoryMode()) {
       const discoverySet = new Set(discoveryList.map((d) => d.stock_code));
-      const topDiscovery = scores.filter(
-        (s) => discoverySet.has(s.stock_code) && s.composite_score >= 58 && (s.confidence ?? 0) >= 0.58,
-      );
+      const aiWorking = scores.some((s) => (s.confidence ?? 0) >= 0.3);
+      const topDiscovery = scores.filter((s) => {
+        if (!discoverySet.has(s.stock_code)) return false;
+        if (aiWorking) return s.composite_score >= 58 && (s.confidence ?? 0) >= 0.58;
+        return s.composite_score >= 75; // AI 실패 시 기술 점수만으로 판단
+      });
       if (topDiscovery.length > 0) {
         await Promise.allSettled(topDiscovery.map((s) =>
           getPool().query(
