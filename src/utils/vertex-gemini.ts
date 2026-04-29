@@ -7,9 +7,9 @@ import { GoogleAuth } from 'google-auth-library';
 
 const PROJECT_ID = 'quantops-trading';
 const LOCATION = 'us-central1';
-const VERTEX_MODEL = 'gemini-2.5-flash';  // GA (2026-04) — 2.0-flash-001 대비 추론 능력 대폭 향상
+const VERTEX_MODEL = 'gemini-2.5-flash';  // Vertex(유료): 추론력 우선
 const VERTEX_ENDPOINT = `https://${LOCATION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${LOCATION}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
-const AI_STUDIO_MODEL = 'gemini-2.5-flash';  // GA — 동일 모델 AI Studio 경로
+const AI_STUDIO_MODEL = 'gemini-2.0-flash';  // AI Studio(무료): 1500 RPD 한도 — 2.5-flash는 250 RPD
 const AI_STUDIO_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${AI_STUDIO_MODEL}:generateContent`;
 
 const auth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
@@ -24,16 +24,17 @@ export async function callVertexGemini(
   userMessage: string,
   opts: GeminiCallOptions = {},
 ): Promise<string> {
-  try {
-    return await callViaVertex(systemPrompt, userMessage, opts);
-  } catch (vertexErr) {
-    const geminiKey = process.env.GEMINI_API_KEY;
-    if (geminiKey) {
-      console.warn(`[vertex-gemini] Vertex AI 실패 → AI Studio 무료 폴백: ${(vertexErr as Error).message?.slice(0, 100)}`);
+  // 1순위: AI Studio 무료 키 (할당량 무제한 활용)
+  const geminiKey = process.env.GEMINI_API_KEY;
+  if (geminiKey) {
+    try {
       return await callViaAiStudio(geminiKey, systemPrompt, userMessage, opts);
+    } catch (studioErr) {
+      console.warn(`[vertex-gemini] AI Studio 실패 → Vertex AI 폴백: ${(studioErr as Error).message?.slice(0, 100)}`);
     }
-    throw vertexErr;
   }
+  // 2순위: Vertex AI (Cloud Run 서비스 계정, 유료)
+  return await callViaVertex(systemPrompt, userMessage, opts);
 }
 
 async function callViaVertex(systemPrompt: string, userMessage: string, opts: GeminiCallOptions): Promise<string> {

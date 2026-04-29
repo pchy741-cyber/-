@@ -24,22 +24,30 @@ import {
   hasEarningsRisk,
 } from '../market/external-signals.js';
 
-// 글로벌 감시 목록 — 미국 + 일본 + 대만 (안정 대형주 위주)
+// 글로벌 감시 목록 — 안정 코어 + 단타 기회주 (14종목 정예)
 const GLOBAL_WATCHLIST = [
-  // 🇺🇸 미국 7대 빅테크만 (시총 상위, 유동성 최고)
-  { code: 'AAPL',  name: 'Apple',     exchange: 'NASDAQ', region: 'US' },
-  { code: 'NVDA',  name: 'NVIDIA',    exchange: 'NASDAQ', region: 'US' },
-  { code: 'MSFT',  name: 'Microsoft', exchange: 'NASDAQ', region: 'US' },
-  { code: 'GOOGL', name: 'Google',    exchange: 'NASDAQ', region: 'US' },
-  { code: 'AMZN',  name: 'Amazon',    exchange: 'NASDAQ', region: 'US' },
-  { code: 'TSLA',  name: 'Tesla',     exchange: 'NASDAQ', region: 'US' },
-  { code: 'META',  name: 'Meta',      exchange: 'NASDAQ', region: 'US' },
+  // 🏛️ 안정 코어 (유동성 최고, 항상 거래 가능) — 5종목
+  { code: 'NVDA',  name: 'NVIDIA',       exchange: 'NASDAQ', region: 'US' },
+  { code: 'AAPL',  name: 'Apple',        exchange: 'NASDAQ', region: 'US' },
+  { code: 'MSFT',  name: 'Microsoft',    exchange: 'NASDAQ', region: 'US' },
+  { code: 'META',  name: 'Meta',         exchange: 'NASDAQ', region: 'US' },
+  { code: 'AMZN',  name: 'Amazon',       exchange: 'NASDAQ', region: 'US' },
+  // ⚡ 단타 기회주 (변동성 크고 "거저먹는" 타이밍 자주 발생) — 9종목
+  { code: 'TSLA',  name: 'Tesla',        exchange: 'NASDAQ', region: 'US' },
+  { code: 'PLTR',  name: 'Palantir',     exchange: 'NYSE',   region: 'US' },
+  { code: 'COIN',  name: 'Coinbase',     exchange: 'NASDAQ', region: 'US' },
+  { code: 'MSTR',  name: 'MicroStrategy',exchange: 'NASDAQ', region: 'US' },
+  { code: 'HOOD',  name: 'Robinhood',    exchange: 'NASDAQ', region: 'US' },
+  { code: 'SOFI',  name: 'SoFi',         exchange: 'NASDAQ', region: 'US' },
+  { code: 'AMD',   name: 'AMD',          exchange: 'NASDAQ', region: 'US' },
+  { code: 'NFLX',  name: 'Netflix',      exchange: 'NASDAQ', region: 'US' },
+  { code: 'LLY',   name: 'Eli Lilly',    exchange: 'NYSE',   region: 'US' },
 ];
 
-// ─── 포지션 한도 (미국/아시아 공통) ───
-const MAX_POSITIONS = 5;           // 최대 동시 보유 종목 (집중 투자)
-const POSITION_SIZE_USD = 4000;    // 종목당 최대 투자금 (스윙 적극 투자)
-const POSITION_PCT = 0.28;         // 또는 가용 현금의 28%
+// ─── 포지션 한도 ───
+const MAX_POSITIONS = 6;           // 최대 동시 보유 (집중 + 분산 균형)
+const POSITION_SIZE_USD = 1500;    // 종목당 최대 $1,500 (단타 적정 규모)
+const POSITION_PCT = 0.20;         // 또는 가용 현금의 20%
 
 function resolveOverseasStockName(code: string, exchange: string): string {
   return GLOBAL_WATCHLIST.find((s) => s.code === code && s.exchange === exchange)?.name
@@ -226,14 +234,19 @@ interface SessionCache {
 }
 let usSessionCache: SessionCache | null = null;
 let asiaSessionCache: SessionCache | null = null;
-const US_TOP_COUNT = 6;
+const US_TOP_COUNT = 10;   // 14종목 중 상위 10개 세션 캐시 (기회주 놓치지 않게 넉넉하게)
 const ASIA_TOP_COUNT = 6;
+// AI 호출 빈도 제한 — 무료 Gemini 1500 RPD 절약
+let lastUSAiCallAt = 0;  // epoch ms
+const US_AI_INTERVAL_MS = 60 * 60 * 1000;        // 기본: 60분에 1회
+const US_AI_MOMENTUM_INTERVAL_MS = 30 * 60 * 1000; // 모멘텀/보유 있으면: 30분에 1회
 let sessionStartPortfolioValue: number | null = null;
 
 /** 미국장 세션 캐시 초기화 (runner.ts 23:20 호출) */
 export function resetUSSessionCache(): void {
   usSessionCache = null;
   sessionStartPortfolioValue = null;
+  lastUSAiCallAt = 0; // 새 세션 시작 시 AI 즉시 호출 가능
 }
 
 /** 아시아장 세션 캐시 초기화 (runner.ts 08:50 호출) */
@@ -850,10 +863,17 @@ export async function runOverseasJob(): Promise<void> {
       }
     }
 
-    // AI 호출 최적화: 매수 후보 or 보유종목 있을 때만 호출 (Gemini 비용 절감)
-    const hasBuyCandidates = aiInputs.some(s => !s.isHolding && (s.score >= 20 || s.signal === 'BUY' || s.signal === 'STRONG_BUY'));
+    // AI 호출 빈도 제어 — 무료 Gemini 한도 절약
+    const hasBuyCandidates = aiInputs.some(s => !s.isHolding);
     const hasSellCandidates = aiInputs.some(s => s.isHolding);
-    const shouldCallAI = hasBuyCandidates || hasSellCandidates;
+    const hasMomentum = aiInputs.some(s => s.isMomentum);
+    const now_ms = Date.now();
+    const intervalMs = (hasSellCandidates || hasMomentum) ? US_AI_MOMENTUM_INTERVAL_MS : US_AI_INTERVAL_MS;
+    const aiCooldownOk = isUSSession ? (now_ms - lastUSAiCallAt >= intervalMs) : true;
+    const shouldCallAI = (hasBuyCandidates || hasSellCandidates) && aiCooldownOk;
+    if ((hasBuyCandidates || hasSellCandidates) && !aiCooldownOk) {
+      logger.info(`🤖 AI 대기 중 — 다음 호출까지 ${Math.ceil((intervalMs - (now_ms - lastUSAiCallAt)) / 60000)}분 (무료 한도 절약)`, { component: 'OVERSEAS' });
+    }
 
     let aiDecisions: Awaited<ReturnType<typeof analyzeOverseasWithAI>> = [];
     if (shouldCallAI) {
@@ -871,8 +891,9 @@ export async function runOverseasJob(): Promise<void> {
         earningsRisk: earningsRiskCodes,
       } : undefined;
       aiDecisions = await analyzeOverseasWithAI(aiInputs, cash, holdings.size, perfSummary, userInsights || undefined, mktCtx);
+      if (isUSSession) lastUSAiCallAt = Date.now();
     } else {
-      logger.info('🤖 AI 생략 — 매수/매도 후보 없음 (비용 절감)', { component: 'OVERSEAS' });
+      logger.info('🤖 AI 생략 — 후보 없음 또는 쿨다운 중 (무료 한도 절약)', { component: 'OVERSEAS' });
     }
 
     // AI 결과를 코드 → 판단 맵으로 변환

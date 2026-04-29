@@ -40,8 +40,9 @@ export async function analyzeImageForScalp(
   mimeType: string,
 ): Promise<VisionScalpSignal> {
   const client = await auth.getClient();
-  const tokenRes = await (client as any).getAccessToken();
-  const token = tokenRes?.token ?? tokenRes?.access_token ?? '';
+  const accessToken = (await client.getAccessToken()).token;
+  if (!accessToken) throw new Error('Vertex AI 인증 토큰 없음');
+  const token = accessToken;
 
   const body = {
     contents: [{
