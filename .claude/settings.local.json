@@ -9,7 +9,8 @@
       "Grep(*)",
       "Agent(*)",
       "PowerShell($env:GOOGLE_APPLICATION_CREDENTIALS=\"C:\\\\Users\\\\p2208\\\\AppData\\\\Roaming\\\\gcloud\\\\application_default_credentials.json\"; gcloud builds submit --config cloudbuild.yaml --project quantops-trading 2>&1 | tail -20)",
-      "PowerShell($env:GOOGLE_APPLICATION_CREDENTIALS=\"C:\\\\Users\\\\p2208\\\\AppData\\\\Roaming\\\\gcloud\\\\application_default_credentials.json\"; gcloud builds submit --config cloudbuild.yaml --project quantops-trading 2>&1 | Select-Object -Last 30)"
+      "PowerShell($env:GOOGLE_APPLICATION_CREDENTIALS=\"C:\\\\Users\\\\p2208\\\\AppData\\\\Roaming\\\\gcloud\\\\application_default_credentials.json\"; gcloud builds submit --config cloudbuild.yaml --project quantops-trading 2>&1 | Select-Object -Last 30)",
+      "PowerShell($env:PGPASSWORD='Quantops2026!Secure'; & \"psql\" -h 34.64.217.165 -U postgres -d quantops -c \"SELECT stock_code, strategy_mode, target_profit_pct, stop_loss_pct, status FROM transaction_chains WHERE status IN \\('OPEN','AVERAGING','PROFIT_TAKING'\\) ORDER BY stock_code;\" 2>&1)"
     ],
     "additionalDirectories": [
       "C:\\Users\\p2208\\.claude"

@@ -261,6 +261,93 @@ overseasRoutes.put('/overseas/insights', async (c) => {
   }
 });
 
+// ── Vision Scalp: 이미지 분석 ──
+// POST /overseas/vision-scalp/analyze  body: { imageBase64, mimeType }
+overseasRoutes.post('/overseas/vision-scalp/analyze', async (c) => {
+  try {
+    const body = await c.req.json<{ imageBase64: string; mimeType: string }>();
+    if (!body.imageBase64 || !body.mimeType) return c.json({ error: '이미지 필요' }, 400);
+    const { analyzeImageForScalp } = await import('../../ai/vision/image-analyzer.js');
+    const signal = await analyzeImageForScalp(body.imageBase64, body.mimeType);
+    return c.json(signal);
+  } catch (e: any) {
+    logger.error(`[VisionScalp] 분석 실패: ${e.message}`, { component: 'OVERSEAS' });
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// POST /overseas/vision-scalp/execute  body: { ticker, exchange, amountUsd, reasoning }
+overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
+  try {
+    const body = await c.req.json<{ ticker: string; exchange: string; amountUsd: number; reasoning: string }>();
+    const { ticker, exchange = 'NASDAQ', amountUsd = 200, reasoning = '' } = body;
+    if (!ticker) return c.json({ error: '티커 필요' }, 400);
+
+    const sanitizedTicker = ticker.toUpperCase().replace(/[^A-Z0-9.]/g, '');
+    const safeAmount = Math.max(50, Math.min(1000, Number(amountUsd)));
+
+    // 현재가 조회
+    const price = await getOverseasPrice(sanitizedTicker, exchange);
+    if (!price.currentPrice || price.currentPrice <= 0) {
+      return c.json({ error: `${sanitizedTicker} 시세 조회 실패` }, 400);
+    }
+
+    const qty = Math.max(1, Math.floor(safeAmount / price.currentPrice));
+    const totalCost = qty * price.currentPrice;
+
+    // 현금 차감
+    const { getPool } = await import('../../db/client.js');
+    const pool = getPool();
+    const { rows: cashRows } = await pool.query("SELECT value FROM overseas_state WHERE key = 'cash'");
+    const currentCash = cashRows.length > 0 ? Number(cashRows[0].value) : 10000;
+    if (currentCash < totalCost) {
+      return c.json({ error: `해외 현금 부족 (보유: $${currentCash.toFixed(0)}, 필요: $${totalCost.toFixed(0)})` }, 400);
+    }
+
+    // TP +2.5%, SL -1.5% (단타 파라미터)
+    const tpPrice = +(price.currentPrice * 1.025).toFixed(2);
+    const slPrice = +(price.currentPrice * 0.985).toFixed(2);
+
+    // scalp 포지션 기록 (overseas_holdings + scalp_tp/sl 컬럼)
+    await pool.query(`
+      ALTER TABLE overseas_holdings
+        ADD COLUMN IF NOT EXISTS scalp_tp NUMERIC DEFAULT NULL,
+        ADD COLUMN IF NOT EXISTS scalp_sl NUMERIC DEFAULT NULL,
+        ADD COLUMN IF NOT EXISTS is_scalp BOOLEAN DEFAULT FALSE
+    `).catch(() => {});
+
+    await pool.query(`
+      INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, scalp_tp, scalp_sl, is_scalp)
+      VALUES ($1, $2, $3, $4, NOW(), $5, $6, TRUE)
+      ON CONFLICT (exchange, stock_code) DO UPDATE
+        SET quantity = overseas_holdings.quantity + $3,
+            avg_price = (overseas_holdings.avg_price * overseas_holdings.quantity + $4 * $3) / (overseas_holdings.quantity + $3),
+            scalp_tp = $5, scalp_sl = $6, is_scalp = TRUE
+    `, [sanitizedTicker, exchange, qty, price.currentPrice, tpPrice, slPrice]);
+
+    await pool.query(
+      `INSERT INTO overseas_state (key, value) VALUES ('cash', $1) ON CONFLICT (key) DO UPDATE SET value = $1`,
+      [(currentCash - totalCost).toFixed(2)],
+    );
+
+    logger.info(`[VisionScalp] 매수 ${sanitizedTicker} ${qty}주 @ $${price.currentPrice} (TP:$${tpPrice} SL:$${slPrice})`, { component: 'OVERSEAS' });
+
+    return c.json({
+      ok: true,
+      ticker: sanitizedTicker,
+      qty,
+      price: price.currentPrice,
+      totalCost,
+      tpPrice,
+      slPrice,
+      reasoning,
+    });
+  } catch (e: any) {
+    logger.error(`[VisionScalp] 실행 실패: ${e.message}`, { component: 'OVERSEAS' });
+    return c.json({ error: e.message }, 500);
+  }
+});
+
 // 개별 종목 일봉 차트
 overseasRoutes.get('/overseas/chart/:code', async (c) => {
   const code = c.req.param('code');

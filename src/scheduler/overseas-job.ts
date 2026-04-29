@@ -606,6 +606,51 @@ export async function runOverseasJob(): Promise<void> {
     let cash = await getCash();
     const usCodes = GLOBAL_WATCHLIST.filter(s => s.region === 'US').map(s => s.code);
 
+    // ── Vision Scalp TP/SL 모니터링 ──
+    // scalp 포지션은 별도로 먼저 처리 (일반 AI 사이클과 독립)
+    try {
+      const { rows: scalpRows } = await getPool().query(`
+        SELECT stock_code, exchange, quantity, avg_price, scalp_tp, scalp_sl
+        FROM overseas_holdings
+        WHERE is_scalp = TRUE AND quantity > 0 AND scalp_tp IS NOT NULL
+      `).catch(() => ({ rows: [] as any[] }));
+
+      for (const row of scalpRows) {
+        const code = String(row.stock_code);
+        const exch = String(row.exchange);
+        const qty = Number(row.quantity);
+        const avgBuy = Number(row.avg_price);
+        const tpPrice = Number(row.scalp_tp);
+        const slPrice = Number(row.scalp_sl);
+
+        try {
+          const priceData = await getOverseasPrice(code, exch);
+          const cur = priceData.currentPrice;
+          if (cur <= 0) continue;
+
+          const pnlPct = ((cur - avgBuy) / avgBuy) * 100;
+          const hitTP = cur >= tpPrice;
+          const hitSL = cur <= slPrice;
+
+          if (hitTP || hitSL) {
+            const label = hitTP ? 'TP' : 'SL';
+            logger.info(`[VisionScalp] ${label} 청산 ${code} @ $${cur} (PnL: ${pnlPct.toFixed(2)}%)`, { component: 'OVERSEAS' });
+
+            // DB에서 포지션 제거
+            await getPool().query('DELETE FROM overseas_holdings WHERE exchange=$1 AND stock_code=$2', [exch, code]);
+            // 현금 복구
+            const recovered = qty * cur;
+            const newCash = (await getCash()) + recovered;
+            await setCash(newCash);
+
+            sendTelegramMessage(
+              `🎯 Vision단타 ${label} 청산\n${code} ${qty}주 @ $${cur.toFixed(2)}\nPnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%\n회수: $${recovered.toFixed(0)}`,
+            ).catch(() => {});
+          }
+        } catch { /* 개별 종목 오류 무시 */ }
+      }
+    } catch { /* scalp 모니터링 전체 오류 무시 */ }
+
     // ── 세션 캐시: 미국/아시아 별도 관리 ──
     // 신규 세션이면 전 종목 스캔 → 이후 사이클은 보유 + 상위 후보만
     const todayStr = getKSTDateString();
