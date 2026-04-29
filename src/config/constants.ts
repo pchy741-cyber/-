@@ -76,11 +76,11 @@ export const STRATEGY_PARAMS = {
     // │ 익절 +7% / 손익비 7:4=1.75:1 / 손익분기 승률 36.4% (달성 용이)   │
     // │ splitCount=2: 1차 진입 → 물타기 → 평균단가 최적화                │
     // └────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 60,
-    // 신호 진입 점수: 60점 (품질·승률 균형)
+    buyThreshold: 58,
+    // 신호 진입 점수: 58점 (품질·승률 균형 — 진입 기회 소폭 확대)
     splitCount: 2,
-    averageDownPct: -2.0,
-    // 물타기 1차: -2% (손절 전 빠른 단가 낮추기)
+    averageDownPct: -1.5,
+    // 물타기 1차: -1.5% (더 빠른 단가 낮추기 → 익절 도달 가속)
     maxAveragingCount: 2,
     takeProfitPct: 3.5,
     // 익절: +3.5% → 50% 매도, 잔여 트레일링 스톱 (단타-스윙 중간, 자주 실현)
@@ -99,7 +99,7 @@ export const STRATEGY_PARAMS = {
     maxAveragingCount: 0,
     takeProfitPct: 5.0,     // 반등 폭 감안 넓은 익절
     takeProfitRatio: 0.5,
-    stopLossPct: -2.5,      // 손절 넓게 (낙폭장 노이즈 큼)
+    stopLossPct: -2.0,      // 손절 타이트 (하락장 추가 낙폭 차단)
     maxHoldingDays: 3,
     marketPenalty: -30,
   },

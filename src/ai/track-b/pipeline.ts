@@ -315,7 +315,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         buyThreshold: strategy?.buy_threshold ?? undefined,
         winRates,
         // 15:10 이후 신규 매수 차단 — 마감 20분 전 진입만 차단
-        blockNewBuys: kstH > 15 || (kstH === 15 && kstM >= 10),
+        // DIVIDEND 모드: 신규 매수 완전 차단 (현금 파킹 ETF로만 운용)
+        blockNewBuys: kstH > 15 || (kstH === 15 && kstM >= 10) || mode === 'DIVIDEND',
         allocationTarget: allocCfg ? {
           stock_pct: Number(allocCfg.stock_pct),
           rebalance_threshold_pct: Number(allocCfg.rebalance_threshold_pct),
@@ -323,6 +324,22 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         } : null,
         currentStockValue,
       });
+
+      // DIVIDEND 모드: 하드 필터 — 일반 주식 신규 매수 전량 차단
+      // (blockNewBuys 플래그 외 이중 안전망 — 현금은 파킹 ETF로만 운용)
+      if (mode === 'DIVIDEND') {
+        const before = decisions.length;
+        decisions = decisions.filter((d) => {
+          if ((d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && !IDLE_PARK_CODE_SET.has(d.stock_code)) {
+            logger.info(`🏦 DIVIDEND 모드 — 신규 매수 차단: ${d.stock_code}`, { component: 'TRACK_B' });
+            return false;
+          }
+          return true;
+        });
+        if (before !== decisions.length) {
+          logger.info(`🏦 DIVIDEND 모드: ${before - decisions.length}건 매수 차단 → 현금 파킹 ETF 전환`, { component: 'TRACK_B' });
+        }
+      }
 
       const engine = hasScores ? 'technical+AI힌트' : 'technical';
       logger.info(
@@ -404,13 +421,15 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       // 파킹 잔액이 전체의 40% 이하일 때만 추가 파킹 (무한 파킹 방지)
       const canParkMore = idleParkPct < 40;
 
-      // 현금 10% 초과 + 파킹 여유(40% 미만) → 파킹
-      // 10% 미만은 주문 여유분으로 현금 유지
+      // 현금 파킹 조건:
+      //   - DIVIDEND 모드: 잔여 현금 100% 파킹 (신규 매수 없으니 여유분 불필요)
+      //   - 일반 모드: 현금 10% 초과 시 90% 파킹 (10%는 긴급 매수 여유분)
       const parkCurrentPrice = _idleParkPriceCache.price;
-      if (idlePctAfterBuys > 10 && canParkMore) {
+      const isDividendMode = mode === 'DIVIDEND';
+      if ((isDividendMode || idlePctAfterBuys > 10) && canParkMore) {
         if (parkCurrentPrice > 0) {
-          // 매수 후 남은 현금의 90%를 파킹 (10%는 긴급 매수 여유분)
-          const parkAmount = cashAfterBuys * 0.90;
+          // DIVIDEND 모드: 100% 파킹, 일반 모드: 90% 파킹
+          const parkAmount = cashAfterBuys * (isDividendMode ? 1.0 : 0.90);
           const qty = Math.floor(parkAmount / parkCurrentPrice);
           if (qty > 0) {
             logger.info(
