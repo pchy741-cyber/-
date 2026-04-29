@@ -258,14 +258,14 @@ export async function getVolumeRankingStocks(market: 'J' | 'Q' = 'J', limit = 30
 }
 
 // ── 등락률 상위 종목 조회 (급등주 발굴) ──
-export async function getChangeRankingStocks(limit = 20): Promise<RankingStock[]> {
+export async function getChangeRankingStocks(limit = 20, market: 'J' | 'Q' = 'J'): Promise<RankingStock[]> {
   try {
     const res = await kisRequest({
       path: '/uapi/domestic-stock/v1/ranking/fluctuation',
       trId: 'FHPST01700000',
       useRealUrl: true,
       params: {
-        FID_COND_MRKT_DIV_CODE: 'J',
+        FID_COND_MRKT_DIV_CODE: market,
         FID_COND_SCR_DIV_CODE: '20170',
         FID_INPUT_ISCD: '0001',
         FID_RANK_SORT_CLS_CODE: '0',

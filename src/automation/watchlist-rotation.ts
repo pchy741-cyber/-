@@ -245,19 +245,25 @@ export async function runDailyMarketScan(): Promise<void> {
       }
     }
 
-    // ── 2. 발굴 — 거래량/급등 후보에서 수급 좋은 종목 편입 ───────────────
-    const [volStocks, chgStocks] = await Promise.all([
-      getVolumeRankingStocks('J', 40).catch(() => []),
-      getChangeRankingStocks(30).catch(() => []),
+    // ── 2. 발굴 — KOSPI + KOSDAQ 거래량/급등 후보에서 수급 좋은 종목 편입 ──
+    const [kospiVol, kosdaqVol, kospiChg, kosdaqChg] = await Promise.all([
+      getVolumeRankingStocks('J', 50).catch(() => []),
+      getVolumeRankingStocks('Q', 50).catch(() => []),
+      getChangeRankingStocks(40, 'J').catch(() => []),
+      getChangeRankingStocks(40, 'Q').catch(() => []),
     ]);
 
-    if (volStocks.length === 0 && chgStocks.length === 0) {
+    const allRankingStocks = [...kospiVol, ...kosdaqVol, ...kospiChg, ...kosdaqChg];
+
+    if (allRankingStocks.length === 0) {
       logger.warn('시장 발굴: KIS 순위 데이터 없음', { component: 'DAILY_MARKET_SCAN' });
       if (dailyRemoved.length > 0) {
         await sendTelegramMessage(`🗑️ 일일정리(${dailyRemoved.length}): ${dailyRemoved.join(' | ')}`);
       }
       return;
     }
+
+    logger.info(`시장 발굴 후보: KOSPI거래량${kospiVol.length} + KOSDAQ거래량${kosdaqVol.length} + KOSPI급등${kospiChg.length} + KOSDAQ급등${kosdaqChg.length} = 총${allRankingStocks.length}개`, { component: 'DAILY_MARKET_SCAN' });
 
     // 현재 워치리스트 전체 (활성/비활성 구분) — 정리 후 재조회
     const { rows: watchlistRows } = await pool.query(`SELECT stock_code, is_active FROM watchlist`);
@@ -267,7 +273,7 @@ export async function runDailyMarketScan(): Promise<void> {
     // 중복 제거된 후보 목록 (활성 종목 제외)
     const seen = new Set<string>();
     const candidates: { stock_code: string; stock_name: string }[] = [];
-    for (const s of [...volStocks, ...chgStocks]) {
+    for (const s of allRankingStocks) {
       if (!s.stock_code || seen.has(s.stock_code) || activeSet.has(s.stock_code)) continue;
       seen.add(s.stock_code);
       candidates.push(s);
@@ -278,8 +284,8 @@ export async function runDailyMarketScan(): Promise<void> {
       return;
     }
 
-    // 후보별 수급 + 주가 검증 (병렬, 최대 20개 검사)
-    const checkList = candidates.slice(0, 20);
+    // 후보별 수급 + 주가 검증 (병렬, 최대 40개 검사)
+    const checkList = candidates.slice(0, 40);
     const scored: { stock_code: string; stock_name: string; score: number; reason: string; isInactive: boolean }[] = [];
 
     await Promise.allSettled(
@@ -290,8 +296,8 @@ export async function runDailyMarketScan(): Promise<void> {
             getInvestorFlow(s.stock_code, 5).catch(() => null),
           ]);
 
-          // 주가 범위 필터 (저가주·고가주 제외)
-          if (!price || price.currentPrice < 2000 || price.currentPrice > 300000) return;
+          // 주가 범위 필터 (저가주·초고가주 제외)
+          if (!price || price.currentPrice < 1000 || price.currentPrice > 600000) return;
 
           let supplyScore = 0;
           const reasons: string[] = [];
@@ -333,9 +339,9 @@ export async function runDailyMarketScan(): Promise<void> {
       }),
     );
 
-    // 수급 점수 내림차순 정렬 → 상위 10개 편입
+    // 수급 점수 내림차순 정렬 → 상위 15개 편입
     scored.sort((a, b) => b.score - a.score);
-    const toAdd = scored.slice(0, 10);
+    const toAdd = scored.slice(0, 15);
 
     const newlyAdded: string[] = [];
     const reactivated: string[] = [];
