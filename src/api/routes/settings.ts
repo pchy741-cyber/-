@@ -141,6 +141,38 @@ settingsRoutes.post('/run-overseas', async (c) => {
   return c.json({ ok: true, message: '해외주식 수동 실행 시작' });
 });
 
+// ── 체인 TP/SL 점수 기반 복원 (1회성 보정) ──
+settingsRoutes.post('/fix-chain-tpsl', async (c) => {
+  try {
+    const { getScoreBasedParams } = await import('../../config/constants.js');
+    const pool = getPool();
+    // 열린 체인 목록
+    const { rows: chains } = await pool.query(
+      `SELECT id, stock_code FROM transaction_chains WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING')`,
+    );
+    // 최신 AI 점수 조회
+    const { rows: scores } = await pool.query(
+      `SELECT DISTINCT ON (stock_code) stock_code, composite_score FROM ai_scores ORDER BY stock_code, score_date DESC`,
+    );
+    const scoreMap = new Map<string, number>(scores.map((s: any) => [s.stock_code, Number(s.composite_score)]));
+    let updated = 0;
+    for (const chain of chains) {
+      const score = scoreMap.get(chain.stock_code);
+      if (!score || score < 60) continue;
+      const { takeProfitPct, stopLossPct } = getScoreBasedParams(score);
+      await pool.query(
+        `UPDATE transaction_chains SET target_profit_pct=$1, stop_loss_pct=$2 WHERE id=$3`,
+        [takeProfitPct, stopLossPct, chain.id],
+      );
+      updated++;
+    }
+    logger.info(`🔧 체인 TP/SL 복원: ${updated}/${chains.length}개`, { component: 'SETTINGS' });
+    return c.json({ ok: true, updated, total: chains.length });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message }, 500);
+  }
+});
+
 // ── 인사이트 관리 ──
 // GET: 전체 인사이트 조회
 settingsRoutes.get('/insights', async (c) => {

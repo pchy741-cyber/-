@@ -514,9 +514,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         );
         if (alreadySelling) continue;
 
-        // 체인 저장값 우선 (매수 당시 점수 기반 설정) → DB 세팅 override → 상수 fallback
-        const targetPct = Number(chain.target_profit_pct) || dbTakeProfit || baseParams.takeProfitPct;
-        const stopPct = Number(chain.stop_loss_pct) || dbStopLoss || baseParams.stopLossPct;
+        // 체인 저장값 우선 (매수 당시 점수 기반 설정) → DB 세팅 → 상수 fallback
+        // null/undefined 체크: Number(0)||x 는 0도 falsy로 처리하므로 != null 사용
+        const targetPct = chain.target_profit_pct != null ? Number(chain.target_profit_pct) : (dbTakeProfit ?? baseParams.takeProfitPct);
+        const stopPct = chain.stop_loss_pct != null ? Number(chain.stop_loss_pct) : (dbStopLoss ?? baseParams.stopLossPct);
 
         // PROFIT_TAKING 상태: 2단계 trailing stop — peak_price 기준
         // 수치는 technical-fallback과 동일하게 유지 (4.0% 목표, -0.8% 트레일)
