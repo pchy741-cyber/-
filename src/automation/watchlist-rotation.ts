@@ -1,4 +1,5 @@
 import { getPool, logSystem } from '../db/client.js';
+import { getVolumeRankingStocks, getChangeRankingStocks } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
 
@@ -132,22 +133,55 @@ export async function runWatchlistRotation(): Promise<void> {
       added.push(`${code}(${avgScore.toFixed(0)}점)`);
     }
 
-    // ── 3. 결과 리포트 ───────────────────────────────────────────────────
+    // ── 3. 시장 자동 발굴 — 거래량/급등 상위 완전 신규 종목 추가 ──────────
+    // watchlist에 아예 없던 종목을 시장에서 직접 스캔
+    const marketAdded: string[] = [];
+    try {
+      const [volStocks, chgStocks] = await Promise.all([
+        getVolumeRankingStocks('J', 30).catch(() => []),
+        getChangeRankingStocks(20).catch(() => []),
+      ]);
+      const marketSeen = new Set<string>();
+      const marketCandidates: { stock_code: string; stock_name: string }[] = [];
+      for (const s of [...volStocks, ...chgStocks]) {
+        if (!s.stock_code || marketSeen.has(s.stock_code) || existingCodes.has(s.stock_code)) continue;
+        marketSeen.add(s.stock_code);
+        marketCandidates.push(s);
+      }
+      for (const s of marketCandidates.slice(0, 10)) {
+        await pool.query(
+          `INSERT INTO watchlist (stock_code, stock_name, market, is_active)
+           VALUES ($1, $2, 'KOSPI', true)
+           ON CONFLICT (stock_code) DO UPDATE SET is_active = true, stock_name = EXCLUDED.stock_name`,
+          [s.stock_code, s.stock_name || s.stock_code],
+        );
+        existingCodes.add(s.stock_code);
+        marketAdded.push(`${s.stock_code}(${s.stock_name})`);
+        logger.info(`🔍 시장 신규 발굴: ${s.stock_code}(${s.stock_name})`, { component: 'WATCHLIST_ROTATION' });
+      }
+    } catch (err) {
+      logger.warn(`시장 스캔 실패 (계속 진행): ${err}`, { component: 'WATCHLIST_ROTATION' });
+    }
+
+    // ── 4. 결과 리포트 ───────────────────────────────────────────────────
     await logSystem('INFO', 'WATCHLIST_ROTATION', '워치리스트 순환 완료', {
       removed: removed.length,
       added: added.length,
+      marketAdded: marketAdded.length,
       skipped: skipped.length,
       removedCodes: removed,
       addedCodes: added,
+      marketAddedCodes: marketAdded,
       skippedCodes: skipped,
     });
 
-    const hasChanges = removed.length > 0 || added.length > 0 || skipped.length > 0;
+    const hasChanges = removed.length > 0 || added.length > 0 || marketAdded.length > 0 || skipped.length > 0;
     if (hasChanges) {
       const msg = [
         `🔄 워치리스트 자동 순환 완료`,
         removed.length > 0 ? `제거(${removed.length}): ${removed.join(', ')}` : '',
-        added.length > 0 ? `✨ 신규 추가(${added.length}): ${added.join(', ')}` : '',
+        added.length > 0 ? `♻️ 재활성(${added.length}): ${added.join(', ')}` : '',
+        marketAdded.length > 0 ? `🔍 시장발굴(${marketAdded.length}): ${marketAdded.join(', ')}` : '',
         skipped.length > 0 ? `보유중 유지(${skipped.length}): ${skipped.join(', ')}` : '',
       ].filter(Boolean).join('\n');
       await sendTelegramMessage(msg);

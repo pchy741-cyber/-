@@ -7,7 +7,7 @@ import { cachePriceMemory, getLastKnownPricesMemory, getCachedPriceMemory } from
 import { config } from '../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getPool, getTodayStartSnapshot } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
-import { getCurrentPrice, getBatchPrices, isMarketOpen } from '../../kis/market.js';
+import { getCurrentPrice, getBatchPrices, isMarketOpen, getVolumeRankingStocks, getChangeRankingStocks } from '../../kis/market.js';
 import { getWithdrawConfig, getWithdrawals, getTotalReserved } from '../../automation/profit-withdraw.js';
 import { getKillSwitchStatus } from '../../risk/kill-switch.js';
 import { getPaperBalance } from '../../risk/engine.js';
@@ -616,13 +616,66 @@ dashboardRoutes.get('/kis-balance', async (c) => {
 dashboardRoutes.post('/watchlist/sync', async (c) => {
   try {
     const { syncInterestGroups, syncHoldingsToWatchlist } = await import('../../kis/interest-group.js');
-    // 관심종목은 모의투자에서 미지원일 수 있음 → 실패해도 보유종목은 계속 진행
     const interest = await syncInterestGroups().catch(() => ({ added: [] as string[], total: 0 }));
     const holdings = await syncHoldingsToWatchlist().catch(() => ({ added: [] as string[] }));
     const allAdded = [...interest.added, ...holdings.added];
     return c.json({ ok: true, added: allAdded, kisTotal: interest.total, message: allAdded.length > 0 ? `${allAdded.length}종목 동기화 완료` : '이미 최신 상태 (모의투자는 관심종목 API 미지원)' });
   } catch (err: any) {
     return c.json({ error: err?.message ?? 'KIS 동기화 실패' }, 500);
+  }
+});
+
+// ── 시장 자동 스캔 — 거래량/급등 상위 신규 종목 발굴 ──
+dashboardRoutes.post('/watchlist/scan', async (c) => {
+  try {
+    const pool = getPool();
+
+    // 현재 워치리스트 코드 목록
+    const { rows: existing } = await pool.query(`SELECT stock_code FROM watchlist`);
+    const existingSet = new Set(existing.map((r: any) => String(r.stock_code)));
+
+    // 거래량 상위 30 + 급등 상위 20 병렬 조회
+    const [volumeStocks, changeStocks] = await Promise.all([
+      getVolumeRankingStocks('J', 30).catch(() => [] as { stock_code: string; stock_name: string }[]),
+      getChangeRankingStocks(20).catch(() => [] as { stock_code: string; stock_name: string }[]),
+    ]);
+
+    // 합치고 중복 제거 (code 기준), 이미 워치리스트에 있는 종목 제외
+    const seen = new Set<string>();
+    const candidates: { stock_code: string; stock_name: string; source: string }[] = [];
+    for (const s of volumeStocks) {
+      if (!s.stock_code || seen.has(s.stock_code) || existingSet.has(s.stock_code)) continue;
+      seen.add(s.stock_code);
+      candidates.push({ ...s, source: '거래량상위' });
+    }
+    for (const s of changeStocks) {
+      if (!s.stock_code || seen.has(s.stock_code) || existingSet.has(s.stock_code)) continue;
+      seen.add(s.stock_code);
+      candidates.push({ ...s, source: '급등상위' });
+    }
+
+    // 상위 15개만 추가 (과부하 방지)
+    const toAdd = candidates.slice(0, 15);
+    const added: string[] = [];
+
+    for (const stock of toAdd) {
+      const stockName = stock.stock_name || stock.stock_code;
+      await pool.query(
+        `INSERT INTO watchlist (stock_code, stock_name, market, is_active)
+         VALUES ($1, $2, 'KOSPI', true)
+         ON CONFLICT (stock_code) DO UPDATE SET is_active = true, stock_name = EXCLUDED.stock_name`,
+        [stock.stock_code, stockName],
+      );
+      added.push(`${stock.stock_code}(${stockName},${stock.source})`);
+      logger.info(`🔍 시장스캔 신규 발굴: ${stock.stock_code}(${stockName}) [${stock.source}]`, { component: 'WATCHLIST_SCAN' });
+    }
+
+    const msg = added.length > 0
+      ? `${added.length}개 신규 종목 발굴 추가 완료`
+      : '신규 발굴 종목 없음 (이미 모두 감시 중)';
+    return c.json({ ok: true, added, scanned: candidates.length, message: msg });
+  } catch (err: any) {
+    return c.json({ error: err?.message ?? '시장 스캔 실패' }, 500);
   }
 });
 
@@ -892,8 +945,12 @@ dashboardRoutes.put('/withdraw/config', async (c) => {
 });
 
 dashboardRoutes.get('/withdraw/history', async (c) => {
-  const history = await getWithdrawals();
-  return c.json(history);
+  try {
+    const history = await getWithdrawals();
+    return c.json(history ?? []);
+  } catch {
+    return c.json([]);
+  }
 });
 
 dashboardRoutes.patch('/withdraw/:id/status', async (c) => {
