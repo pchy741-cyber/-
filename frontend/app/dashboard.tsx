@@ -1547,18 +1547,33 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
             {/* 메인 수치 */}
             <div className="flex items-end gap-4 mb-5">
               <div className="flex-1">
-                <div className={`text-4xl sm:text-5xl font-black tracking-tight tabular-nums ${pc(combinedPnl)}`}>
-                  {privacyMode ? '••••••원' : `${combinedPnl > 0 ? '+' : ''}${animCombined.toLocaleString('ko-KR')}원`}
-                </div>
-                <div className={`text-sm font-bold mt-1 ${pc(combinedPnl)}`}>
-                  {combinedPnlPct !== 0 ? `${combinedPnlPct > 0 ? '+' : ''}${combinedPnlPct.toFixed(2)}%` : '0.00%'}
-                </div>
+                {showOnlyUs ? (
+                  <>
+                    <div className={`text-4xl sm:text-5xl font-black tracking-tight tabular-nums ${pc(overseasPnlUsd)}`}>
+                      {privacyMode ? '••••••' : `${overseasPnlUsd > 0 ? '+' : ''}$${Math.round(overseasPnlUsd).toLocaleString('en-US')}`}
+                    </div>
+                    <div className={`text-sm font-bold mt-1 ${pc(overseasPnlUsd)}`}>
+                      {overseasInvestedUsd > 0 ? `${((overseasPnlUsd / overseasInvestedUsd) * 100) > 0 ? '+' : ''}${((overseasPnlUsd / overseasInvestedUsd) * 100).toFixed(2)}%` : '0.00%'}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className={`text-4xl sm:text-5xl font-black tracking-tight tabular-nums ${pc(combinedPnl)}`}>
+                      {privacyMode ? '••••••원' : `${combinedPnl > 0 ? '+' : ''}${Math.round(animCombined).toLocaleString('ko-KR')}원`}
+                    </div>
+                    <div className={`text-sm font-bold mt-1 ${pc(combinedPnl)}`}>
+                      {combinedPnlPct !== 0 ? `${combinedPnlPct > 0 ? '+' : ''}${combinedPnlPct.toFixed(2)}%` : '0.00%'}
+                    </div>
+                  </>
+                )}
               </div>
               {(krTabHasData || usTodaySells.length > 0) && (
                 <div className="text-right shrink-0 border-l border-white/[0.06] pl-4">
                   <div className="text-[10px] text-slate-500 mb-0.5">오늘 실현</div>
-                  <div className={`text-xl font-black tabular-nums ${pc(todayRealizedPnl)}`}>
-                    {privacyMode ? '••••원' : `${todayRealizedPnl > 0 ? '+' : ''}${animToday.toLocaleString('ko-KR')}원`}
+                  <div className={`text-xl font-black tabular-nums ${pc(showOnlyUs ? usTabPnlUsd : todayRealizedPnl)}`}>
+                    {privacyMode ? '••••' : showOnlyUs
+                      ? `${usTabPnlUsd > 0 ? '+' : ''}$${Math.round(usTabPnlUsd).toLocaleString('en-US')}`
+                      : `${todayRealizedPnl > 0 ? '+' : ''}${Math.round(animToday).toLocaleString('ko-KR')}원`}
                   </div>
                 </div>
               )}
@@ -1566,11 +1581,11 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
             {/* 미니 스탯 3개 */}
             <div className="grid grid-cols-3 gap-2">
               <div className="bg-white/[0.04] rounded-xl px-3 py-2">
-                <div className="text-[9px] text-slate-500 mb-0.5">{showOnlyUs ? '해외자산' : '총자산'}</div>
+                <div className="text-[9px] text-slate-500 mb-0.5">{showOnlyUs ? '해외현금' : '현금잔고'}</div>
                 {showOnlyUs ? (
-                  <div className="text-sm font-bold text-slate-200 tabular-nums truncate">{mask('$' + (overseasInvestedUsd + overseasCashUsd).toFixed(0))}</div>
+                  <div className="text-sm font-bold text-slate-200 tabular-nums truncate">{mask('$' + Math.round(overseasCashUsd).toLocaleString('en-US'))}</div>
                 ) : (
-                  <div className="text-sm font-bold text-slate-200 tabular-nums truncate">{mask(Math.round(animTotal / 10000).toLocaleString('ko-KR') + '만원')}</div>
+                  <div className="text-sm font-bold text-slate-200 tabular-nums truncate">{mask(Math.round(domesticCash / 10000).toLocaleString('ko-KR') + '만원')}</div>
                 )}
               </div>
               <div className="bg-white/[0.04] rounded-xl px-3 py-2">
@@ -1691,7 +1706,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                     <div className="flex justify-end mt-3">
                       <button onClick={async () => {
                         if (!confirm(`${displayName} ${qty}주 전량 매도하시겠습니까?\n(파킹 해제)`)) return;
-                        try { const r = await api(`/sell/${ch.id}`, { method: 'POST' }); alert(r.message || '매도 완료'); onRefresh(); }
+                        try { const r = await api(`/sell/${ch.id}`, { method: 'POST', timeout: 40000 }); alert(r.message || '매도 완료'); onRefresh(); }
                         catch (err: any) { alert('매도 실패: ' + err.message); }
                       }} className="text-xs px-3 py-1.5 rounded-lg bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 transition-colors border border-white/[0.05]">
                         파킹 해제
@@ -1781,7 +1796,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                         )}
                         <button onClick={async () => {
                           if (!confirm(`${displayName} ${qty}주 전량 시장가 매도하시겠습니까?`)) return;
-                          try { const r = await api(`/sell/${ch.id}`, { method: 'POST' }); alert(r.message || '매도 완료'); onRefresh(); }
+                          try { const r = await api(`/sell/${ch.id}`, { method: 'POST', timeout: 40000 }); alert(r.message || '매도 완료'); onRefresh(); }
                           catch (err: any) { alert('매도 실패: ' + err.message); }
                         }} className="text-xs px-2.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 font-medium border border-white/[0.04] whitespace-nowrap">
                           전량 매도
