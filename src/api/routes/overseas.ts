@@ -94,7 +94,55 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
   const [prices, holdings, positions] = await Promise.all([pricePromise, holdingsPromise, positionsPromise]);
 
   // AI 기술점수 병합 (overseas-job에서 계산된 최신 점수)
-  const scores = getOverseasScores();
+  let scores = getOverseasScores();
+
+  // 점수 캐시가 비어있으면 백그라운드 on-demand 계산 트리거 (비동기, 응답은 블로킹 안 함)
+  if (scores.length === 0 && !_scoringInProgress) {
+    _scoringInProgress = true;
+    (async () => {
+      try {
+        const usStocks = GLOBAL_WATCHLIST.filter(s => s.exchange === 'NASDAQ' || s.exchange === 'NYSE');
+        const results: OverseasScoreEntry[] = [];
+        const BATCH = 4;
+        for (let i = 0; i < usStocks.length; i += BATCH) {
+          const batch = usStocks.slice(i, i + BATCH);
+          const settled = await Promise.allSettled(
+            batch.map(async (stock) => {
+              const [price, chart] = await Promise.all([
+                getOverseasPrice(stock.code, stock.exchange).catch(() => null),
+                getOverseasDailyChart(stock.code, stock.exchange, 80).catch(() => null),
+              ]);
+              return { stock, price, chart };
+            })
+          );
+          for (const r of settled) {
+            if (r.status !== 'fulfilled') continue;
+            const { stock, price, chart } = r.value;
+            if (!chart || chart.length < 30) continue;
+            const candles: OHLCV[] = chart.map((c: any) => ({
+              date: c.date, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
+            }));
+            const tech = analyzeTechnicals(candles);
+            if (!tech) continue;
+            results.push({ code: stock.code, name: stock.name, exchange: stock.exchange, region: 'US', score: tech.score, signal: tech.overallSignal, price: price?.currentPrice ?? 0, changePct: price?.changePct ?? 0, rsi: tech.rsi14, cachedAt: Date.now() });
+          }
+          if (i + BATCH < usStocks.length) await new Promise(r => setTimeout(r, 200));
+        }
+        if (results.length > 0) {
+          setOverseasScores(results);
+          cacheSet('overseas:dashboard', null as any, 0); // 다음 요청 시 점수 포함
+          logger.info(`대시보드 트리거 해외점수 계산: ${results.length}종목`, { component: 'OVERSEAS' });
+        }
+      } catch (e: any) {
+        logger.warn(`대시보드 트리거 해외점수 실패: ${e.message}`, { component: 'OVERSEAS' });
+      } finally {
+        _scoringInProgress = false;
+      }
+    })();
+    // 첫 요청은 점수 없이 빠르게 반환 (다음 요청부터 점수 포함)
+    scores = [];
+  }
+
   const scoreMap = new Map(scores.map(s => [s.code, s]));
   const watchlistWithScores = prices.map(p => {
     const sc = scoreMap.get(p.code);

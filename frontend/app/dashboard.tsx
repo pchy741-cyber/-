@@ -2009,82 +2009,78 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
 
       {/* ── AI 스코어 + 최근 매매 2컬럼 ── */}
       <div className="grid grid-cols-1 xl:grid-cols-2 items-start gap-4 sm:gap-5">
-        {/* AI 스코어 */}
-        <Panel title="AI가 보는 종목 점수" badge={dash?.scores?.length > 0 ? `${dash.scores.length}종목` : undefined} badgeColor="blue">
-          {dash?.scores?.length > 0 ? (
-            <div className="p-3.5 space-y-2">
-              {[...dash.scores].sort((a: any, b: any) => (b.composite_score ?? 0) - (a.composite_score ?? 0)).map((sc: any) => {
-                const score = Number(sc.composite_score);
-                const barColor = score >= 75 ? 'bg-emerald-500' : score >= 50 ? 'bg-blue-500' : score >= 25 ? 'bg-amber-500' : 'bg-slate-600';
-                const textColor = score >= 75 ? 'text-emerald-400' : score >= 50 ? 'text-blue-400' : 'text-slate-500';
-                const signalLabel = score >= 85 ? '강력 추천' : score >= 70 ? '매수 추천' : score >= 50 ? '관망' : score >= 30 ? '위험' : '매도 추천';
-                return (
-                  <div key={sc.stock_code} className="flex items-center gap-3 px-2 py-2">
-                    <span className="text-xs font-bold text-slate-300 w-24 shrink-0 truncate">{getStockName(sc.stock_code)}</span>
-                    <div className="flex-1">
-                      <div className="h-2 bg-white/[0.04] rounded-full overflow-hidden">
-                        <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${Math.max(2, Math.min(100, score))}%` }} />
-                      </div>
-                    </div>
-                    <span className={`text-sm font-black w-12 text-right ${textColor}`}>{score}</span>
-                    <span className={`text-[10px] font-medium w-14 text-right ${textColor}`}>{signalLabel}</span>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="p-6 text-center space-y-3">
-              <div className="text-2xl opacity-30">🤖</div>
-              <p className="text-sm text-slate-500">AI 스코어가 아직 없습니다</p>
-              <p className="text-[11px] text-slate-600">매일 오전 7:30 / 오후 6시에 자동 실행됩니다.</p>
-              <p className="text-[10px] text-blue-400/60">스코어 없는 동안 기술적 지표 기반으로 자동매매가 동작합니다</p>
-            </div>
-          )}
-        </Panel>
-
-        {/* 해외 종목 점수 */}
-        {(() => {
-          const oScores: any[] = dash?.overseas?.scores ?? [];
-          if (oScores.length === 0) return null;
-          const regionLabel = (r: string) => r === 'US' ? '🇺🇸 미국' : r === 'JP' ? '🇯🇵 일본' : '🇹🇼 대만';
-          const regions = ['US', 'JP', 'TW'] as const;
-          return (
-            <Panel title="해외 종목 점수 (기술적 분석)" badge={`${oScores.length}종목`} badgeColor="blue">
-              <div className="p-3.5 space-y-4">
-                {regions.map(region => {
-                  const regionScores = oScores.filter((s: any) => s.region === region);
-                  if (regionScores.length === 0) return null;
+        {/* AI 스코어 — KR/US 탭 연동 */}
+        {holdingsTab === 'KR' ? (
+          <Panel title="AI가 보는 종목 점수" badge={dash?.scores?.length > 0 ? `${dash.scores.length}종목` : undefined} badgeColor="blue">
+            {dash?.scores?.length > 0 ? (
+              <div className="p-3.5 space-y-2">
+                {[...dash.scores].sort((a: any, b: any) => (b.composite_score ?? 0) - (a.composite_score ?? 0)).map((sc: any) => {
+                  const score = Number(sc.composite_score);
+                  const barColor = score >= 75 ? 'bg-emerald-500' : score >= 50 ? 'bg-blue-500' : score >= 25 ? 'bg-amber-500' : 'bg-slate-600';
+                  const textColor = score >= 75 ? 'text-emerald-400' : score >= 50 ? 'text-blue-400' : 'text-slate-500';
+                  const signalLabel = score >= 85 ? '강력 추천' : score >= 70 ? '매수 추천' : score >= 50 ? '관망' : score >= 30 ? '위험' : '매도 추천';
                   return (
-                    <div key={region}>
-                      <div className="text-[11px] text-slate-500 font-semibold px-2 mb-2">{regionLabel(region)}</div>
-                      <div className="space-y-2">
-                        {regionScores.map((sc: any) => {
-                          // score는 -100~100 범위
-                          const raw = Number(sc.score);
-                          const pct = Math.max(2, Math.min(100, (raw + 100) / 2));
-                          const barColor = pct >= 75 ? 'bg-emerald-500' : pct >= 60 ? 'bg-blue-500' : pct >= 45 ? 'bg-amber-500' : 'bg-slate-600';
-                          const textColor = pct >= 75 ? 'text-emerald-400' : pct >= 60 ? 'text-blue-400' : 'text-slate-500';
-                          const signalMap: Record<string, string> = { STRONG_BUY: '강력 추천', BUY: '매수', HOLD: '관망', SELL: '매도', STRONG_SELL: '강력 매도' };
-                          const label = signalMap[sc.signal] ?? sc.signal;
-                          return (
-                            <div key={sc.code} className="flex items-center gap-3 px-2 py-1.5">
-                              <span className="text-xs font-bold text-slate-300 w-24 shrink-0 truncate">{sc.name}</span>
-                              <div className="flex-1">
-                                <div className="h-2 bg-white/[0.04] rounded-full overflow-hidden">
-                                  <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${pct}%` }} />
-                                </div>
-                              </div>
-                              <span className={`text-sm font-black w-10 text-right ${textColor}`}>{raw > 0 ? '+' : ''}{raw}</span>
-                              <span className={`text-[10px] font-medium w-16 text-right ${textColor}`}>{label}</span>
-                              <span className="text-[10px] text-slate-600 w-12 text-right">{sc.changePct >= 0 ? '+' : ''}{sc.changePct?.toFixed(2)}%</span>
-                            </div>
-                          );
-                        })}
+                    <div key={sc.stock_code} className="flex items-center gap-3 px-2 py-2">
+                      <span className="text-xs font-bold text-slate-300 w-24 shrink-0 truncate">{getStockName(sc.stock_code)}</span>
+                      <div className="flex-1">
+                        <div className="h-2 bg-white/[0.04] rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${Math.max(2, Math.min(100, score))}%` }} />
+                        </div>
                       </div>
+                      <span className={`text-sm font-black w-12 text-right ${textColor}`}>{score}</span>
+                      <span className={`text-[10px] font-medium w-14 text-right ${textColor}`}>{signalLabel}</span>
                     </div>
                   );
                 })}
               </div>
+            ) : (
+              <div className="p-6 text-center space-y-3">
+                <div className="text-2xl opacity-30">🤖</div>
+                <p className="text-sm text-slate-500">AI 스코어가 아직 없습니다</p>
+                <p className="text-[11px] text-slate-600">매일 오전 7:30 / 오후 6시에 자동 실행됩니다.</p>
+                <p className="text-[10px] text-blue-400/60">스코어 없는 동안 기술적 지표 기반으로 자동매매가 동작합니다</p>
+              </div>
+            )}
+          </Panel>
+        ) : (() => {
+          // US 탭: usDash watchlist에서 score 있는 종목만 표시
+          const usScored = (usDash?.watchlist ?? []).filter((s: any) => typeof s.score === 'number');
+          const signalMap: Record<string, string> = { STRONG_BUY: '강력 추천', BUY: '매수', HOLD: '관망', SELL: '매도', STRONG_SELL: '강력 매도' };
+          return (
+            <Panel title="AI가 보는 해외 종목 점수" badge={usScored.length > 0 ? `${usScored.length}종목` : undefined} badgeColor="blue">
+              {usScored.length > 0 ? (
+                <div className="p-3.5 space-y-2">
+                  {[...usScored].sort((a: any, b: any) => (b.score ?? 0) - (a.score ?? 0)).map((sc: any) => {
+                    const raw = Number(sc.score);
+                    const pct = Math.max(2, Math.min(100, (raw + 100) / 2));
+                    const barColor = pct >= 75 ? 'bg-emerald-500' : pct >= 60 ? 'bg-blue-500' : pct >= 45 ? 'bg-amber-500' : 'bg-slate-600';
+                    const textColor = pct >= 75 ? 'text-emerald-400' : pct >= 60 ? 'text-blue-400' : 'text-slate-500';
+                    const label = signalMap[sc.signal] ?? sc.signal ?? '';
+                    return (
+                      <div key={sc.code} className="flex items-center gap-3 px-2 py-2">
+                        <div className="w-24 shrink-0">
+                          <div className="text-xs font-bold text-slate-300 truncate">{sc.name}</div>
+                          <div className="text-[10px] text-slate-600">{sc.code} · RSI {sc.rsi?.toFixed(0) ?? '-'}</div>
+                        </div>
+                        <div className="flex-1">
+                          <div className="h-2 bg-white/[0.04] rounded-full overflow-hidden">
+                            <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${pct}%` }} />
+                          </div>
+                        </div>
+                        <span className={`text-sm font-black w-10 text-right ${textColor}`}>{raw > 0 ? '+' : ''}{raw}</span>
+                        <span className={`text-[10px] font-medium w-16 text-right ${textColor}`}>{label}</span>
+                        <span className="text-[10px] text-slate-600 w-12 text-right">{(sc.changePct ?? 0) >= 0 ? '+' : ''}{(sc.changePct ?? 0).toFixed(2)}%</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="p-6 text-center space-y-3">
+                  <div className="text-2xl opacity-30">🌐</div>
+                  <p className="text-sm text-slate-500">해외 점수 계산 중...</p>
+                  <p className="text-[11px] text-slate-600">잠시 후 새로고침하면 기술적 분석 점수가 표시됩니다</p>
+                </div>
+              )}
             </Panel>
           );
         })()}
