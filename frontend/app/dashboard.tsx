@@ -3177,23 +3177,20 @@ function GoldenRatioPanel({ allocConfig, setAllocConfig, toast }: any) {
 
         {!valid && <p className="text-[11px] text-rose-400">⚠ 합계 {total}% — 100%로 맞춰주세요</p>}
 
-        <div className="grid grid-cols-2 gap-3 pt-1">
-          <div className="space-y-1">
+        <div className="flex items-end gap-3 pt-1">
+          <div className="flex-1 space-y-1">
             <p className="text-[11px] text-slate-400">리밸런싱 허용 오차</p>
             <div className="flex items-center gap-2">
               <input type="number" min={1} max={30} step={1} value={threshold} onChange={e => setThreshold(Number(e.target.value))}
-                className="w-full bg-white/[0.05] ring-1 ring-white/[0.08] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:ring-blue-500/50" />
-              <span className="text-[11px] text-slate-500 shrink-0">% 이내</span>
+                className="w-24 bg-white/[0.05] ring-1 ring-white/[0.08] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:ring-blue-500/50" />
+              <span className="text-[11px] text-slate-500">% 이내</span>
             </div>
-            <p className="text-[10px] text-slate-600">목표와 이 % 이상 벗어나면 AI가 매매 방향 조정</p>
           </div>
-          <div className="flex items-end">
-            <button onClick={() => save({ parking_pct: parking, dividend_pct: dividend, stock_pct: stock, rebalance_threshold_pct: threshold })}
-              disabled={!valid}
-              className="w-full px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 rounded-xl text-xs font-semibold transition-all">
-              저장
-            </button>
-          </div>
+          <button onClick={() => save({ parking_pct: parking, dividend_pct: dividend, stock_pct: stock, rebalance_threshold_pct: threshold })}
+            disabled={!valid}
+            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 rounded-xl text-xs font-semibold transition-all shrink-0">
+            저장
+          </button>
         </div>
 
         <div className="text-[10px] text-slate-600 space-y-0.5 pt-1">
@@ -3415,15 +3412,12 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
       {/* ── 전략 설정 ── */}
       {strategy && (
         <Panel title="전략 설정" badge={strategy.mode === 'SWING' ? '스윙' : strategy.mode === 'DEFENSE' ? '방어' : '단타'} badgeColor={strategy.mode === 'SWING' ? 'blue' : strategy.mode === 'DEFENSE' ? 'rose' : 'amber'}>
-          <div className="px-6 py-5 space-y-5">
-            <div className="text-[12px] text-slate-400 bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl px-4 py-3.5 leading-relaxed">
-              {strategy.mode === 'SWING' ? `${strategy.split_count ?? 2}번에 나눠 사고 → 조금 더 빠지면 추가 매수 → +${strategy.take_profit_pct ?? 3}% 오르면 익절 / ${Math.abs(strategy.stop_loss_pct ?? -3)}% 빠지면 전량 손절. 중장기 안정 수익 추구.` : strategy.mode === 'DEFENSE' ? '85점 이상 종목만 소량 진입 → 3% 빠지면 즉시 손절. 하락장 자본 보존 최우선.' : '65점 이상 즉시 매수 → 1.5% 오르면 즉시 전량 매도. 당일 15:20 무조건 청산.'}
-            </div>
+          <div className="px-6 py-5">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              <Sel label="매매 방식" value={strategy.mode} opts={[['SWING','스윙 (중장기)'],['DEFENSE','방어 (하락장)'],['SCALPING','단타 (당일)']]} onChange={v => setField('mode', v)} />
-              <Sel label="AI 매수 기준점수" value={strategy.buy_threshold} opts={[[40,'40점 이상 (매우 공격적)'],[45,'45점 이상'],[48,'48점 이상 (현재)'],[50,'50점 이상'],[55,'55점 이상'],[60,'60점 이상'],[70,'70점 이상'],[75,'75점 이상'],[80,'80점 이상 (보통)'],[85,'85점 이상'],[90,'90점 이상 (신중)']]} onChange={v => setField('buy_threshold', Number(v))} />
-              <Sel label="손절 기준 (이만큼 빠지면)" value={strategy.stop_loss_pct} opts={[[-2,'-2% (매우 타이트)'],[-3,'-3% (타이트)'],[-4,'-4% (기본)'],[-5,'-5% (보통)'],[-7,'-7%'],[-10,'-10% (여유있게)']]} onChange={v => setField('stop_loss_pct', Number(v))} />
-              <Sel label="익절 기준 (이만큼 오르면)" value={strategy.take_profit_pct} opts={[[3,'+3%'],[5,'+5%'],[6,'+6%'],[8,'+8% (보통)'],[10,'+10%'],[15,'+15%'],[20,'+20%']]} onChange={v => setField('take_profit_pct', Number(v))} />
+              <Sel label="매매 방식" value={strategy.mode} opts={[['SWING','스윙 (중단기)'],['DEFENSE','방어 (하락장)'],['SCALPING','단타 (당일)']]} onChange={v => setField('mode', v)} />
+              <Sel label="AI 매수 기준점수" value={strategy.buy_threshold} opts={[[50,'50점'],[55,'55점'],[60,'60점 (권장)'],[65,'65점'],[70,'70점'],[75,'75점'],[80,'80점']]} onChange={v => setField('buy_threshold', Number(v))} />
+              <Sel label="손절 기준" value={strategy.stop_loss_pct} opts={[[-1.5,'-1.5% (타이트)'],[-2,'-2%'],[-2.5,'-2.5% (권장)'],[-3,'-3%'],[-4,'-4%'],[-5,'-5% (여유)']]} onChange={v => setField('stop_loss_pct', Number(v))} />
+              <Sel label="익절 기준" value={strategy.take_profit_pct} opts={[[2,'+2%'],[2.5,'+2.5%'],[3,'+3%'],[3.5,'+3.5% (권장)'],[4,'+4%'],[5,'+5%'],[7,'+7%']]} onChange={v => setField('take_profit_pct', Number(v))} />
             </div>
           </div>
         </Panel>
@@ -3653,12 +3647,9 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
 
         {/* 수익 자동 인출 설정 */}
         <Panel title="수익 자동 인출">
-          <div className="px-6 py-5 space-y-5">
+          <div className="px-6 py-5 space-y-4">
             <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="text-sm font-medium">자동 수익 확보</p>
-                <p className="text-[12px] text-slate-500 mt-1">목표 수익률 도달 시 수익분을 인출 예약금으로 잠금</p>
-              </div>
+              <p className="text-[12px] text-slate-400">목표 수익률 달성 시 수익분 일부를 인출 예약금으로 잠금합니다</p>
               <button onClick={async () => {
                 const next = !withdrawConfig?.is_active;
                 try {
@@ -3676,12 +3667,6 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
               }} />
               <NumInput label="인출 비율 (수익분 중)" value={withdrawConfig?.withdraw_ratio_pct ?? 50} suffix="%" min={1} max={100} step={1} onCommit={async v => {
                 try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, withdraw_ratio_pct: v }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch { toast?.('저장 실패', 'err'); }
-              }} />
-              <NumInput label="최소 인출 금액" value={withdrawConfig?.min_withdraw_amount ?? 100000} suffix="원" min={0} step={10000} onCommit={async v => {
-                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, min_withdraw_amount: v }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch { toast?.('저장 실패', 'err'); }
-              }} />
-              <Sel label="체크 주기" value={withdrawConfig?.check_frequency ?? 'daily'} opts={[['daily','매일 (장 마감)'],['weekly','매주 금요일']]} onChange={async v => {
-                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, check_frequency: v }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch { toast?.('저장 실패', 'err'); }
               }} />
             </div>
 
