@@ -26,6 +26,7 @@ import { syncInterestGroups, syncHoldingsToWatchlist, fixWatchlistNames } from '
 import { parkIdleCash, unparkForTrading } from '../automation/cash-parking.js';
 import { manageUsdParking } from '../automation/usd-parking.js';
 import { runUnfilledOrderCheck } from './unfilled-order-job.js';
+import { runPreMarketQuickScore } from '../automation/pre-market-quick-score.js';
 
 /**
  * 타임아웃을 적용하여 작업 실행 (지정 시간 초과 시 에러 로그 후 스킵)
@@ -122,6 +123,15 @@ export function startScheduler(): void {
     '25 8 * * 1-5',
     () => {
       fixWatchlistNames().catch((e) => logger.error(`종목명 보정 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 08:55 — 장전 빠른 스코어링 (08:50 시장발굴 직후 — 09:00 개장 대비)
+  cron.schedule(
+    '55 8 * * 1-5',
+    () => {
+      runPreMarketQuickScore().catch((e) => logger.error(`장전 빠른 스코어링 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
