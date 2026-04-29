@@ -101,16 +101,16 @@ export async function getVolatilityMultiplier(stockCode: string): Promise<number
   let label: string;
 
   if (atrPct < 2) {
-    multiplier = 1.3;
+    multiplier = 1.1;
     label = '저변동성';
-  } else if (atrPct < 4) {
+  } else if (atrPct < 5) {
     multiplier = 1.0;
     label = '보통';
-  } else if (atrPct < 6) {
-    multiplier = 0.6;
+  } else if (atrPct < 8) {
+    multiplier = 0.8;
     label = '고변동성';
   } else {
-    multiplier = 0.3;
+    multiplier = 0.6;
     label = '초고변동성';
   }
 
@@ -196,6 +196,39 @@ export async function getDynamicPositionSize(
     }
   } catch (err) {
     logger.warn('연패 패널티 계산 실패 → 스킵', { component: 'SIZER', error: err });
+  }
+
+  // 4. 종목별 손익 이력 (이 종목에서 직전 거래가 손실이면 감소, 수익이면 증가)
+  try {
+    const { rows: stockHistory } = await getPool().query(
+      `SELECT realized_pnl FROM transaction_chains
+       WHERE status = 'CLOSED' AND stock_code = $1
+       ORDER BY closed_at DESC LIMIT 2`,
+      [stockCode],
+    );
+
+    if (stockHistory.length > 0) {
+      const lastPnl = Number(stockHistory[0].realized_pnl);
+      if (lastPnl < 0) {
+        // 직전 손실: -50% 손실이면 0.5x, -10%면 0.7x, -5%면 0.85x
+        const lossPct = Math.abs(lastPnl) / Math.max(1, Math.abs(lastPnl)); // ratio placeholder
+        // 손실 규모와 무관하게 단순 패널티: 직전 1회 손실 → 0.7x, 2회 연속 손실 → 0.5x
+        const consecutive = stockHistory.length >= 2 && Number(stockHistory[1].realized_pnl) < 0;
+        if (consecutive) {
+          finalMultiplier *= 0.5;
+          reasons.push(`${stockCode} 2연속 손실 → 50% 감소`);
+        } else {
+          finalMultiplier *= 0.7;
+          reasons.push(`${stockCode} 직전 손실 → 30% 감소`);
+        }
+      } else if (lastPnl > 0) {
+        // 직전 수익: 약간 확대 (최대 1.2x, ATR 패널티 일부 상쇄)
+        finalMultiplier = Math.min(finalMultiplier * 1.2, 1.5);
+        reasons.push(`${stockCode} 직전 수익 → 20% 확대`);
+      }
+    }
+  } catch (err) {
+    logger.warn(`종목별 손익 이력 계산 실패 → 스킵: ${stockCode}`, { component: 'SIZER', error: err });
   }
 
   // 최소/최대 클램핑 (최소 0.3x — 너무 작으면 최소 주문금액 미달)
