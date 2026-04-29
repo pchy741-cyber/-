@@ -4,6 +4,8 @@ import { cors } from 'hono/cors';
 import { logger as honoLogger } from 'hono/logger';
 import { secureHeaders } from 'hono/secure-headers';
 import { dashboardRoutes } from './api/routes/dashboard.js';
+import { dashboardNewsRoutes } from './api/routes/dashboard-news.js';
+import { dashboardAnalysisRoutes } from './api/routes/dashboard-analysis.js';
 // API Routes
 import { authRoutes } from './api/routes/auth.js';
 import { healthRoutes } from './api/routes/health.js';
@@ -40,6 +42,8 @@ app.route('/', authRoutes);     // /auth/login, /auth/logout, /auth/me
 // 🔒 이하 모든 라우트: 로그인 필요
 app.use('*', requireAuth);
 app.route('/', dashboardRoutes);
+app.route('/', dashboardNewsRoutes);
+app.route('/', dashboardAnalysisRoutes);
 app.route('/', secretsRoutes);
 app.route('/', settingsRoutes);
 app.route('/', sseRoutes);
@@ -93,17 +97,14 @@ async function bootstrap() {
     if (!ok) throw new Error('DB health check failed');
     logger.info('✅ PostgreSQL 연결 성공', { component: 'BOOT' });
     injectDbLogger(logSystem);
-    // 1-1. 스키마 마이그레이션 (무중단 ALTER TABLE)
+    // 1-1. SQL 마이그레이션 파일 순차 실행 (src/db/migrations/*.sql)
     try {
-      const { getPool } = await import('./db/client.js');
-      await getPool().query(`ALTER TABLE transaction_chains ADD COLUMN IF NOT EXISTS peak_price NUMERIC`).catch(() => {});
-      await getPool().query(`ALTER TABLE orders ALTER COLUMN kis_order_no TYPE VARCHAR(100)`);
-      logger.info('✅ DB 마이그레이션: kis_order_no VARCHAR(100)', { component: 'BOOT' });
+      const { runMigrations } = await import('./db/migrate.js');
+      await runMigrations();
     } catch (e: any) {
-      // 이미 적용된 경우 무시
-      if (!e.message?.includes('already')) logger.warn(`DB 마이그레이션 경고: ${e.message}`, { component: 'BOOT' });
+      logger.warn(`DB 마이그레이션 경고: ${e.message}`, { component: 'BOOT' });
     }
-    // 전략 파라미터 전체 동기화: STRATEGY_PARAMS 상수 → DB (buy_threshold 포함)
+    // 1-2. 전략 파라미터 동기화: STRATEGY_PARAMS 상수 → DB
     try {
       const { getPool: gp } = await import('./db/client.js');
       const { STRATEGY_PARAMS } = await import('./config/constants.js');
@@ -115,7 +116,6 @@ async function bootstrap() {
         [sp.takeProfitPct, sp.stopLossPct, sp.buyThreshold],
       );
       logger.info(`✅ 전략 파라미터 동기화: buy_threshold=${sp.buyThreshold} take_profit=${sp.takeProfitPct}% stop_loss=${sp.stopLossPct}%`, { component: 'BOOT' });
-      // 기존 열린 체인도 최신 손절/익절 파라미터로 일괄 업데이트
       await gp().query(
         `UPDATE transaction_chains SET stop_loss_pct=$1, target_profit_pct=$2 WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING')`,
         [sp.stopLossPct, sp.takeProfitPct],
@@ -123,31 +123,6 @@ async function bootstrap() {
       logger.info(`✅ 기존 체인 손절/익절 동기화: stop_loss=${sp.stopLossPct}% target=${sp.takeProfitPct}%`, { component: 'BOOT' });
     } catch (e: any) {
       logger.warn(`전략 파라미터 동기화 실패: ${e.message}`, { component: 'BOOT' });
-    }
-    // score_accuracy 테이블 자동 생성 (마이그레이션 010)
-    try {
-      const { getPool: gp } = await import('./db/client.js');
-      await gp().query(`
-        CREATE TABLE IF NOT EXISTS score_accuracy (
-          id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          stock_code       VARCHAR(20) NOT NULL,
-          chain_id         UUID,
-          entry_score      SMALLINT,
-          entry_signal     VARCHAR(20),
-          entry_confidence DECIMAL(4,3),
-          realized_pnl_pct DECIMAL(8,4),
-          outcome          VARCHAR(10) NOT NULL DEFAULT 'BREAK_EVEN',
-          holding_days     SMALLINT,
-          close_reason     TEXT,
-          strategy_mode    VARCHAR(15),
-          recorded_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-        CREATE INDEX IF NOT EXISTS idx_score_accuracy_stock ON score_accuracy(stock_code);
-        CREATE INDEX IF NOT EXISTS idx_score_accuracy_recorded ON score_accuracy(recorded_at DESC);
-      `);
-      logger.info('✅ score_accuracy 테이블 준비 완료', { component: 'BOOT' });
-    } catch (e: any) {
-      logger.warn(`score_accuracy 테이블 생성 경고: ${e.message}`, { component: 'BOOT' });
     }
   } catch (err) {
     logger.warn(`⚠️ PostgreSQL 미연결: ${err}`, { component: 'BOOT' });

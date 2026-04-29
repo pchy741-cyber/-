@@ -160,7 +160,7 @@ export default function Dashboard() {
       // 2단계: 나머지 데이터 백그라운드 로드 (overseas 제외 — 별도 비동기)
       const [w, s, t, sec, wc, wh] = await Promise.allSettled([
         api('/watchlist'), api('/strategy'),
-        api('/trades?limit=50'), api('/secrets'),
+        api('/trades?limit=200'), api('/secrets'),
         api('/withdraw/config').catch(() => null),
         api('/withdraw/history').catch(() => []),
       ]);
@@ -658,10 +658,13 @@ function PerformancePanel({ trades, strategy, setStrategy, toast }: { trades: an
 
   const allPnls = dailySeries.map(d => d.pnl);
   const avgPnl = allPnls.length > 0 ? allPnls.reduce((s, v) => s + v, 0) / allPnls.length : 0;
-  const winRate = allPnls.length > 0 ? Math.round((allPnls.filter(p => p > 0).length / allPnls.length) * 100) : 0;
-  // 손익비: 평균 수익 / 평균 손실 (1 이상이면 우량)
-  const winPnls = allPnls.filter(p => p > 0);
-  const lossPnls = allPnls.filter(p => p < 0);
+  // 승률/손익비는 매매(체결) 단위로 계산 — 일별 집계가 아닌 개별 SELL 기준
+  const tradePnls = sellTrades
+    .filter((t: any) => t.realized_pnl != null)
+    .map((t: any) => Number(t.realized_pnl));
+  const winPnls = tradePnls.filter((p: number) => p > 0);
+  const lossPnls = tradePnls.filter((p: number) => p < 0);
+  const winRate = tradePnls.length > 0 ? Math.round((winPnls.length / tradePnls.length) * 100) : 0;
   const avgWin = winPnls.length > 0 ? winPnls.reduce((s, v) => s + v, 0) / winPnls.length : 0;
   const avgLoss = lossPnls.length > 0 ? Math.abs(lossPnls.reduce((s, v) => s + v, 0) / lossPnls.length) : 0;
   const profitFactor = avgLoss > 0 ? avgWin / avgLoss : (avgWin > 0 ? 99 : 0);
@@ -731,7 +734,7 @@ function PerformancePanel({ trades, strategy, setStrategy, toast }: { trades: an
             <div className={`text-base font-black ${winRate >= 60 ? 'text-emerald-400' : winRate >= 45 ? 'text-amber-400' : 'text-rose-400'}`}>
               {winRate}%
             </div>
-            <div className="text-[9px] text-slate-600 mt-1">{winPnls.length}승 {lossPnls.length}패 ({dailySeries.length}일)</div>
+            <div className="text-[9px] text-slate-600 mt-1">{winPnls.length}승 {lossPnls.length}패 ({tradePnls.length}매매)</div>
           </div>
           <div className="bg-white/[0.03] rounded-xl p-3">
             <div className="text-[10px] text-slate-500 mb-1">손익비</div>
