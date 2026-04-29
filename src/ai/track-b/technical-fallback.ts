@@ -411,6 +411,75 @@ export async function technicalFallbackDecisions(params: {
     }));
   }
 
+  // ─── 점수 기반 교체매매: 고점수 신호 왔는데 현금 부족 시 저점수 보유종목 청산 ───
+  // 조건: 1위 후보 AI점수 ≥ 80점 AND 현금 < 1차 매수금액 AND 교체 대상 점수 차 ≥ 15점
+  if (!blockNewBuys && candidates.length > 0 && mode !== 'SCALPING') {
+    const topCand = candidates[0];
+    const topAiScore = aiScoreMap.get(topCand.stock_code) ?? 0;
+    const topScore = topAiScore + topCand.tech.score;
+    const needCash = Math.min(effectiveMaxPos / (strategyParams.splitCount || 2), orderableCash + 1);
+    const isHighConvictionCandidate = topAiScore >= 80 || (topCand.tech.score >= 70 && topAiScore >= (strategyParams.buyThreshold ?? 58));
+
+    if (isHighConvictionCandidate && orderableCash < needCash) {
+      // 교체 대상: 파킹 ETF 제외, 수익 중인 종목 우선 (손실 실현 최소화)
+      // 점수가 가장 낮은 종목 선택
+      const tradingChains = openChains.filter(
+        (c) => !IDLE_PARK_CODE_SET.has(c.stock_code) && Number(c.total_quantity) > 0,
+      );
+
+      if (tradingChains.length > 0) {
+        // 보유 종목별 현재 AI 점수 조회
+        const chainScored = tradingChains.map((c) => ({
+          chain: c,
+          aiScore: aiScoreMap.get(c.stock_code) ?? 0,
+          techScore: (() => {
+            const candles = chartData.get(c.stock_code);
+            return analyzeTechnicals(candles ?? [])?.score ?? 0;
+          })(),
+        }));
+
+        // 점수 낮은 순 정렬 → 가장 낮은 종목
+        chainScored.sort((a, b) => (a.aiScore + a.techScore) - (b.aiScore + b.techScore));
+        const weakest = chainScored[0];
+        const weakScore = weakest.aiScore + weakest.techScore;
+        const scoreDiff = topScore - weakScore;
+
+        // 교체 조건: 점수 차 15점 이상 + 대상 종목이 현금 부족 해소에 충분한 보유량
+        if (scoreDiff >= 15) {
+          const price = livePrices.get(weakest.chain.stock_code);
+          const qty = Number(weakest.chain.total_quantity ?? 0);
+          const pnlPct = price && weakest.chain.avg_buy_price
+            ? ((price.currentPrice - Number(weakest.chain.avg_buy_price)) / Number(weakest.chain.avg_buy_price)) * 100
+            : 0;
+
+          // 손실 중인 종목은 -3% 이내일 때만 교체 허용 (깊은 손실 실현 방지)
+          const lossOk = pnlPct >= -3.0;
+
+          if (lossOk && qty > 0 && price) {
+            logger.info(
+              `🔄 교체매매: ${weakest.chain.stock_code}(점수${weakScore}) → ${topCand.stock_code}(점수${topScore}) 차이=${scoreDiff}점 수익률=${pnlPct.toFixed(1)}%`,
+              { component: 'TRACK_B' },
+            );
+            decisions.push({
+              action: 'SELL',
+              stock_code: weakest.chain.stock_code,
+              quantity: qty,
+              price_type: 'MARKET',
+              limit_price: price.currentPrice,
+              reasoning: `교체매매: 점수${weakScore}점 → 고확신${topScore}점(${topCand.stock_code}) 차이=${scoreDiff}점, 현금확보 후 재매수`,
+              confidence: 0.7,
+            });
+          } else {
+            logger.info(
+              `⏭️ 교체매매 보류: ${weakest.chain.stock_code} 손실${pnlPct.toFixed(1)}% > -3% 한도 초과`,
+              { component: 'TRACK_B' },
+            );
+          }
+        }
+      }
+    }
+  }
+
   // 현금 여유 확인하면서 매수 결정
   let remainingCash = orderableCash;
   // SCALPING: 개장 10분 단타 — 최대 2종목, 확신배율 없음 (과집중 방지)
