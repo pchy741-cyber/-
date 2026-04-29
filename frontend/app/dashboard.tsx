@@ -3418,26 +3418,40 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
           </div>
         </Panel>
         <Panel title="알림 설정">
-          <div className="px-6 py-5 flex items-center justify-between gap-4">
-            <div>
-              <p className="text-sm font-medium">푸시 알림</p>
-              <p className="text-[12px] text-slate-500 mt-1">매수·매도·긴급 상황 알림을 받습니다</p>
+          <div className="px-6 py-5 space-y-4">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium">푸시 알림</p>
+                <p className="text-[12px] text-slate-500 mt-1">매수·매도·긴급 상황 알림을 받습니다</p>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <button onClick={async () => {
+                  try {
+                    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+                      alert('이 브라우저는 푸시 알림을 지원하지 않습니다.\niOS는 사파리에서 홈 화면에 추가 후 사용하세요.');
+                      return;
+                    }
+                    const permission = await Notification.requestPermission();
+                    if (permission !== 'granted') { alert('알림 권한이 거부되었습니다.\n브라우저 설정에서 허용해주세요.'); return; }
+                    const reg = await navigator.serviceWorker.ready;
+                    // 기존 구독 해제 후 재등록 (디바이스 전환 대응)
+                    const existing = await reg.pushManager.getSubscription();
+                    if (existing) await existing.unsubscribe();
+                    const { publicKey } = await api('/push/vapid-key');
+                    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: publicKey });
+                    await api('/push/subscribe', { method: 'POST', body: JSON.stringify(sub) });
+                    toast?.('이 기기에 알림 등록 완료', 'ok');
+                  } catch (err: any) { alert('알림 등록 실패: ' + err.message); }
+                }} className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-xs font-semibold transition-all">이 기기에 등록</button>
+                <button onClick={async () => {
+                  try { await api('/push/test', { method: 'POST' }); toast?.('테스트 알림 전송', 'ok'); } catch { alert('테스트 실패'); }
+                }} className="px-3 py-2.5 bg-white/[0.06] hover:bg-white/[0.1] rounded-xl text-xs text-slate-400 transition-all">테스트</button>
+              </div>
             </div>
-            <div className="flex gap-2 shrink-0">
-              <button onClick={async () => {
-                try {
-                  const permission = await Notification.requestPermission();
-                  if (permission !== 'granted') { alert('알림 권한이 거부되었습니다'); return; }
-                  const reg = await navigator.serviceWorker.ready;
-                  const { publicKey } = await api('/push/vapid-key');
-                  const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: publicKey });
-                  await api('/push/subscribe', { method: 'POST', body: JSON.stringify(sub) });
-                  toast?.('알림 등록 완료', 'ok');
-                } catch (err: any) { alert('알림 등록 실패: ' + err.message); }
-              }} className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-xs font-semibold transition-all">알림 켜기</button>
-              <button onClick={async () => {
-                try { await api('/push/test', { method: 'POST' }); } catch { alert('테스트 실패'); }
-              }} className="px-3 py-2.5 bg-white/[0.06] hover:bg-white/[0.1] rounded-xl text-xs text-slate-400 transition-all">테스트</button>
+            <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3">
+              <p className="text-[11px] text-amber-400 font-medium mb-1">📱 모바일/다른 기기에서 알림 받기</p>
+              <p className="text-[11px] text-slate-400">각 기기(폰·태블릿·PC)마다 해당 브라우저에서 이 페이지를 열고 <b className="text-slate-300">"이 기기에 등록"</b> 버튼을 눌러야 합니다.</p>
+              <p className="text-[11px] text-slate-500 mt-1">iOS 사파리: 공유 → 홈 화면에 추가 → 홈 화면 앱에서 열기 → 등록</p>
             </div>
           </div>
         </Panel>
@@ -3448,7 +3462,7 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
           <div className="px-6 py-5">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <Sel label="매매 방식" value={strategy.mode} opts={[['SWING','스윙 (중단기)'],['DEFENSE','방어 (하락장)'],['SCALPING','단타 (당일)']]} onChange={v => setField('mode', v)} />
-              <Sel label="AI 매수 기준점수" value={strategy.buy_threshold} opts={[[50,'50점'],[55,'55점'],[60,'60점 (권장)'],[65,'65점'],[70,'70점'],[75,'75점'],[80,'80점']]} onChange={v => setField('buy_threshold', Number(v))} />
+              <Sel label="AI 매수 기준점수" value={strategy.buy_threshold} opts={[[50,'50점'],[55,'55점'],[58,'58점 (기본)'],[60,'60점'],[65,'65점'],[70,'70점'],[75,'75점'],[80,'80점']]} onChange={v => setField('buy_threshold', Number(v))} />
               <Sel label="손절 기준" value={strategy.stop_loss_pct} opts={[[-1.5,'-1.5% (타이트)'],[-2,'-2%'],[-2.5,'-2.5% (권장)'],[-3,'-3%'],[-4,'-4%'],[-5,'-5% (여유)']]} onChange={v => setField('stop_loss_pct', Number(v))} />
               <Sel label="익절 기준" value={strategy.take_profit_pct} opts={[[2,'+2%'],[2.5,'+2.5%'],[3,'+3%'],[3.5,'+3.5% (권장)'],[4,'+4%'],[5,'+5%'],[7,'+7%']]} onChange={v => setField('take_profit_pct', Number(v))} />
             </div>
