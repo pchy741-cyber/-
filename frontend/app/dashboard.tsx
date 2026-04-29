@@ -2090,11 +2090,19 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
           </Panel>
         ) : <OverseasScorePanel usDash={usDash} />}
 
-        {/* 최근 매매 */}
-        <Panel title="최근 매매" badge={`오늘 ${todayTrades.length}건`} badgeColor={todayTrades.length > 0 ? 'emerald' : undefined}>
-          {filled.length === 0 ? <EmptyMsg>매매 기록 없음</EmptyMsg> : (
+        {/* 최근 매매 — KR/US 탭 연동 */}
+        {(() => {
+          const isUsTab = holdingsTab === 'US';
+          const tabFiltered = filled.filter((t: any) => {
+            const isOv = t.trigger_source === 'OVERSEAS' || Number(t.filled_price) < 1000;
+            return isUsTab ? isOv : !isOv;
+          });
+          const todayTabTrades = tabFiltered.filter((t: any) => new Date(t.created_at).toDateString() === new Date().toDateString());
+          return (
+        <Panel title={isUsTab ? '최근 매매 (미국)' : '최근 매매'} badge={`오늘 ${todayTabTrades.length}건`} badgeColor={todayTabTrades.length > 0 ? 'emerald' : undefined}>
+          {tabFiltered.length === 0 ? <EmptyMsg>매매 기록 없음</EmptyMsg> : (
             <div className="divide-y divide-white/[0.03]">
-              {filled.slice(0, 10).map((t: any, i: number) => {
+              {tabFiltered.slice(0, 10).map((t: any, i: number) => {
                 const isOverseasTrade = t.trigger_source === 'OVERSEAS' || Number(t.filled_price) < 1000;
                 return (
                   <div key={i} className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.02]">
@@ -2122,6 +2130,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
             </div>
           )}
         </Panel>
+          );
+        })()}
       </div>
 
 
@@ -2284,14 +2294,17 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
               // 국내 폴백: avg_buy_price vs filled_price
               const fallbackPnl = !overseas && isSell && avgBuy > 0 && filledPrice > 0 ? (filledPrice - avgBuy) * qty : null;
               const fallbackPnlPct = !overseas && isSell && avgBuy > 0 && filledPrice > 0 ? ((filledPrice - avgBuy) / avgBuy) * 100 : null;
-              // 해외: API 계산값 우선, 없으면 ai_reasoning 패턴 추출
+              // 해외 폴백: avg_buy_price 기반 (국내와 동일 로직, 단위 USD)
+              const overseasFallbackPnl = overseas && isSell && avgBuy > 0 && filledPrice > 0 ? (filledPrice - avgBuy) * qty : null;
+              const overseasFallbackPnlPct = overseas && isSell && avgBuy > 0 && filledPrice > 0 ? ((filledPrice - avgBuy) / avgBuy) * 100 : null;
+              // 해외: API 계산값 우선 → ai_reasoning 패턴 → avg_buy_price 폴백
               const overseasReasonPct = overseas && isSell && apiPnlPct === null
                 ? (() => { const m = String(t.ai_reasoning || '').match(/[익손절]+\(([+-]?[\d.]+)%\)/); return m ? Number(m[1]) : null; })()
                 : null;
               const overseasPnlUsdAmt = overseasReasonPct !== null && filledPrice > 0 && qty > 0
                 ? filledPrice * qty * (overseasReasonPct / 100) : null;
-              const tradePnl = overseas ? (apiPnlUsd ?? overseasPnlUsdAmt) : (apiPnl ?? fallbackPnl);
-              const tradePnlPct = apiPnlPct ?? (overseas ? overseasReasonPct : fallbackPnlPct);
+              const tradePnl = overseas ? (apiPnlUsd ?? overseasPnlUsdAmt ?? overseasFallbackPnl) : (apiPnl ?? fallbackPnl);
+              const tradePnlPct = apiPnlPct ?? (overseas ? (overseasReasonPct ?? overseasFallbackPnlPct) : fallbackPnlPct);
               return (
               <React.Fragment key={tradeKey}>
               <tr onClick={() => setExpanded(isOpen ? null : tradeKey)} className={`hover:bg-slate-800/20 transition-colors cursor-pointer${overseas ? ' opacity-60' : ''}`}>
