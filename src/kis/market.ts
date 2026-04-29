@@ -94,6 +94,51 @@ export async function getDailyChart(stockCode: string, days: number = 60): Promi
   }));
 }
 
+// ── 분봉 차트 ──
+export interface MinuteCandle {
+  time: string;   // HHmmss
+  date: string;   // YYYYMMDD
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export async function getMinuteChart(stockCode: string): Promise<MinuteCandle[]> {
+  const kst = getKSTNow();
+  const hh = String(kst.getUTCHours()).padStart(2, '0');
+  const mm = String(kst.getUTCMinutes()).padStart(2, '0');
+  const ss = String(kst.getUTCSeconds()).padStart(2, '0');
+  await marketDataRateLimiter.acquire();
+  const res = await kisRequest({
+    path: '/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice',
+    trId: KIS_TR_ID.QUOTE.MINUTE_CHART,
+    useRealUrl: true,
+    skipRateLimiter: true,
+    params: {
+      FID_ETC_CLS_CODE: '',
+      FID_COND_MRKT_DIV_CODE: 'J',
+      FID_INPUT_ISCD: stockCode,
+      FID_INPUT_HOUR_1: `${hh}${mm}${ss}`,
+      FID_PW_DATA_INCU_YN: 'Y',
+    },
+  });
+  const items = (res.output2 ?? []) as unknown as Record<string, string>[];
+  if (!Array.isArray(items)) return [];
+  return items
+    .filter(c => c.stck_cntg_hour && Number(c.stck_prpr ?? c.stck_clpr ?? 0) > 0)
+    .map(c => ({
+      time: c.stck_cntg_hour ?? '',
+      date: c.stck_bsop_date ?? '',
+      open: Number(c.stck_oprc ?? 0),
+      high: Number(c.stck_hgpr ?? 0),
+      low: Number(c.stck_lwpr ?? 0),
+      close: Number(c.stck_prpr ?? c.stck_clpr ?? 0),
+      volume: Number(c.cntg_vol ?? 0),
+    }));
+}
+
 // ── 호가 (Orderbook) ──
 export interface OrderbookEntry {
   askPrice: number;

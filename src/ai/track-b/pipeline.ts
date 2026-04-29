@@ -293,7 +293,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           return sum + price * Number(c.total_quantity ?? 0);
         }, 0);
 
-      decisions = technicalFallbackDecisions({
+      decisions = await technicalFallbackDecisions({
         mode: effectiveMode,
         // PARK_STOCK_CODE(069500) + IDLE_PARK_CODES(333940 등) 제외 — 파킹 ETF가 일반 종목으로 매매되면 orphan 청산 루프 발생
         watchlist: watchlist

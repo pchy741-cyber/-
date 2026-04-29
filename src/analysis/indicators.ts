@@ -755,3 +755,183 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
     vwapPosition,
   };
 }
+
+// ══════════════════════════════════════════════════════════════════
+// ── 볼륨 프로파일 (가격대별 거래량 — 지지/저항 자동 산출) ──
+// ══════════════════════════════════════════════════════════════════
+export interface VolumeLevelResult {
+  priceLevel: number;
+  volumePct: number;   // 전체 거래량 중 이 구간 비중 %
+  isSupport: boolean;  // 현재가 아래 고량 구간 (지지선)
+  isResistance: boolean; // 현재가 위 고량 구간 (저항선)
+}
+
+export function volumeProfile(candles: OHLCV[], bins = 24): VolumeLevelResult[] {
+  if (candles.length < 10) return [];
+  const minP = Math.min(...candles.map(c => c.low));
+  const maxP = Math.max(...candles.map(c => c.high));
+  if (maxP <= minP) return [];
+  const binSize = (maxP - minP) / bins;
+  const volByBin = new Array(bins).fill(0);
+  for (const c of candles) {
+    const s = Math.max(0, Math.floor((c.low - minP) / binSize));
+    const e = Math.min(bins - 1, Math.floor((c.high - minP) / binSize));
+    const n = Math.max(1, e - s + 1);
+    for (let b = s; b <= e; b++) volByBin[b] += c.volume / n;
+  }
+  const total = volByBin.reduce((a, b) => a + b, 0);
+  const threshold = total > 0 ? (total / bins) * 1.5 : 0;
+  const cur = candles[0].close;
+  return volByBin
+    .map((vol, i) => {
+      const priceLevel = minP + (i + 0.5) * binSize;
+      return {
+        priceLevel,
+        volumePct: total > 0 ? (vol / total) * 100 : 0,
+        isSupport: vol >= threshold && priceLevel < cur,
+        isResistance: vol >= threshold && priceLevel > cur,
+      };
+    })
+    .filter(v => v.isSupport || v.isResistance);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ── 구조적 차트 패턴 (이중 바닥/천장, 삼각수렴) ──
+// ══════════════════════════════════════════════════════════════════
+export interface StructuralPattern {
+  name: 'DOUBLE_BOTTOM' | 'DOUBLE_TOP' | 'SYM_TRIANGLE' | 'ASC_TRIANGLE' | 'DESC_TRIANGLE';
+  bullish: boolean;
+  confidence: number; // 0-1
+  score: number;      // 점수 기여 (+매수/-매도)
+  label: string;
+}
+
+function _linearSlope(arr: number[]): number {
+  const n = arr.length;
+  if (n < 2) return 0;
+  const xm = (n - 1) / 2;
+  const ym = arr.reduce((a, b) => a + b, 0) / n;
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) { num += (i - xm) * (arr[i] - ym); den += (i - xm) ** 2; }
+  return den !== 0 ? (num / den) / (ym || 1) : 0;
+}
+
+function _localExtremes(arr: number[], type: 'min' | 'max', w = 3): number[] {
+  const result: number[] = [];
+  for (let i = w; i < arr.length - w; i++) {
+    const s = arr.slice(i - w, i + w + 1);
+    if (type === 'min' && arr[i] === Math.min(...s)) result.push(i);
+    if (type === 'max' && arr[i] === Math.max(...s)) result.push(i);
+  }
+  return result;
+}
+
+export function detectStructuralPatterns(candles: OHLCV[]): StructuralPattern[] {
+  if (candles.length < 30) return [];
+  const recent = candles.slice(0, 30).reverse(); // 오름차순
+  const highs = recent.map(c => c.high);
+  const lows = recent.map(c => c.low);
+  const closes = recent.map(c => c.close);
+  const patterns: StructuralPattern[] = [];
+
+  // 이중 바닥 (Double Bottom) — 두 저점이 3% 이내
+  const mins = _localExtremes(lows, 'min');
+  if (mins.length >= 2) {
+    const [i1, i2] = [mins[0], mins[mins.length - 1]];
+    if (i2 - i1 >= 5) {
+      const diff = Math.abs(lows[i1] - lows[i2]) / (lows[i1] || 1);
+      if (diff < 0.03) {
+        const conf = 1 - diff / 0.03;
+        patterns.push({ name: 'DOUBLE_BOTTOM', bullish: true, confidence: conf, score: Math.round(15 * conf), label: `이중바닥(${lows[i1].toFixed(0)}/${lows[i2].toFixed(0)})` });
+      }
+    }
+  }
+
+  // 이중 천장 (Double Top) — 두 고점이 3% 이내
+  const maxs = _localExtremes(highs, 'max');
+  if (maxs.length >= 2) {
+    const [i1, i2] = [maxs[0], maxs[maxs.length - 1]];
+    if (i2 - i1 >= 5) {
+      const diff = Math.abs(highs[i1] - highs[i2]) / (highs[i1] || 1);
+      if (diff < 0.03) {
+        const conf = 1 - diff / 0.03;
+        patterns.push({ name: 'DOUBLE_TOP', bullish: false, confidence: conf, score: -Math.round(15 * conf), label: `이중천장(${highs[i1].toFixed(0)}/${highs[i2].toFixed(0)})` });
+      }
+    }
+  }
+
+  // 삼각수렴 (Triangle)
+  const hSlope = _linearSlope(highs.slice(-20));
+  const lSlope = _linearSlope(lows.slice(-20));
+  const curClose = closes[closes.length - 1];
+  const sma20v = sma(closes, 20).pop() ?? curClose;
+  if (hSlope < -0.001 && lSlope > 0.001) {
+    const bull = curClose > sma20v;
+    patterns.push({ name: 'SYM_TRIANGLE', bullish: bull, confidence: 0.6, score: bull ? 8 : -8, label: '대칭삼각수렴' });
+  } else if (hSlope < -0.001 && Math.abs(lSlope) < 0.0005) {
+    patterns.push({ name: 'DESC_TRIANGLE', bullish: false, confidence: 0.65, score: -12, label: '하강삼각형' });
+  } else if (Math.abs(hSlope) < 0.0005 && lSlope > 0.001) {
+    patterns.push({ name: 'ASC_TRIANGLE', bullish: true, confidence: 0.65, score: 12, label: '상승삼각형' });
+  }
+
+  return patterns;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ── 분봉 단기 신호 (장중 진입 타이밍 확인) ──
+// ══════════════════════════════════════════════════════════════════
+export interface IntradaySignal {
+  score: number;        // -30 ~ +30 (일봉 점수에 가산)
+  trend: 'UP' | 'DOWN' | 'NEUTRAL';
+  volumeSurge: boolean;
+  reason: string;
+}
+
+export function analyzeIntraday(minuteCandles: OHLCV[]): IntradaySignal {
+  if (minuteCandles.length < 10) return { score: 0, trend: 'NEUTRAL', volumeSurge: false, reason: '데이터부족' };
+  const asc = [...minuteCandles].reverse();
+  const closes = asc.map(c => c.close);
+  const vols = asc.map(c => c.volume);
+  let score = 0;
+  const tags: string[] = [];
+
+  // RSI (분봉 14개 ≈ 70분)
+  const rsiPeriod = Math.min(14, closes.length - 1);
+  const rsiNow = rsi(closes, rsiPeriod).pop() ?? 50;
+  if (rsiNow < 30) { score += 12; tags.push('분봉RSI과매도'); }
+  else if (rsiNow < 40) score += 6;
+  else if (rsiNow > 70) { score -= 12; tags.push('분봉RSI과매수'); }
+  else if (rsiNow > 60) score -= 6;
+
+  // 단기 MACD (5/13/4) — 모멘텀 방향
+  if (closes.length >= 14) {
+    const m = macd(closes, 5, 13, 4);
+    const h = m.histogram;
+    const hNow = h[h.length - 1] ?? 0;
+    const hPrev = h[h.length - 2] ?? hNow;
+    if (hNow > 0 && hNow > hPrev) { score += 10; tags.push('분봉MACD상승'); }
+    else if (hNow < 0 && hNow < hPrev) score -= 10;
+    else if (hNow > 0) score += 4;
+    else score -= 4;
+  }
+
+  // 최근 5봉 가격 추세
+  if (closes.length >= 5) {
+    const pct = (closes[closes.length - 1] - closes[closes.length - 5]) / (closes[closes.length - 5] || 1) * 100;
+    if (pct > 0.5) { score += 8; tags.push('단기상승'); }
+    else if (pct > 0.2) score += 4;
+    else if (pct < -0.5) { score -= 8; tags.push('단기하락'); }
+    else if (pct < -0.2) score -= 4;
+  }
+
+  // 거래량 서지 (최근 5봉 / 이전 10봉)
+  const surgeRatio = vols.length >= 15
+    ? (vols.slice(-5).reduce((a, b) => a + b, 0) / 5) / (vols.slice(-15, -5).reduce((a, b) => a + b, 0) / 10 || 1)
+    : 1;
+  const volumeSurge = surgeRatio >= 1.5;
+  if (volumeSurge && score > 0) { score += 5; tags.push('거래량급증'); }
+
+  score = Math.max(-30, Math.min(30, score));
+  const trend = score > 5 ? 'UP' : score < -5 ? 'DOWN' : 'NEUTRAL';
+  return { score, trend, volumeSurge, reason: tags.join('+') || '중립' };
+}
