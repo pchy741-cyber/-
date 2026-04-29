@@ -103,7 +103,8 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     }
 
     // 시장 발굴: 거래량/등락률 상위 종목을 추가 스코어링 대상으로 병합 (워치리스트 순환에서 자동 추가 가능)
-    const watchlistCodes = new Set(watchlist.map((w) => w.stock_code));
+    // normalizeStockCode 적용 후 비교해야 포맷 불일치(앞자리 0 등)로 필터 뚫리는 것 방지
+    const watchlistCodes = new Set(watchlist.map((w) => normalizeStockCode(w.stock_code)));
     const [volumeTop, changeTop] = await Promise.allSettled([
       getVolumeRankingStocks('J', 50),
       getChangeRankingStocks(30),
@@ -111,9 +112,9 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     const discoveryStocks = [
       ...(volumeTop.status === 'fulfilled' ? volumeTop.value : []),
       ...(changeTop.status === 'fulfilled' ? changeTop.value : []),
-    ].filter((s) => !watchlistCodes.has(s.stock_code));
+    ].filter((s) => !watchlistCodes.has(normalizeStockCode(s.stock_code)));
     // 중복 제거
-    const discoveryMap = new Map(discoveryStocks.map((s) => [s.stock_code, s]));
+    const discoveryMap = new Map(discoveryStocks.map((s) => [normalizeStockCode(s.stock_code), s]));
     const discoveryList = [...discoveryMap.values()].slice(0, 50);
 
     // 발굴 종목을 watchlist에 inactive로 미리 등록 (ai_scores FK 제약 충족용)
@@ -132,17 +133,22 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
 
     // 파킹 ETF는 스코어링 제외 (KODEX 200 / TIGER 머니마켓 등 — 일반 매매 종목 아님)
     const PARK_EXCLUDE = new Set(['069500', '333940', '441680', '481770']);
-    const allStocks = [
+    // allStocks: normalizeStockCode 적용 후 Map으로 최종 중복 제거 (watchlist 우선)
+    const allStocksMap = new Map<string, { stock_code: string; stock_name: string }>();
+    for (const s of [
       ...watchlist.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
       ...discoveryList,
-    ]
-      .filter((s) => !PARK_EXCLUDE.has(s.stock_code))
-      .map((s) => ({
-        stock_code: normalizeStockCode(s.stock_code),
-        stock_name: String(s.stock_name ?? '').trim() || normalizeStockCode(s.stock_code),
-      }));
+    ]) {
+      const code = normalizeStockCode(s.stock_code);
+      if (!code || PARK_EXCLUDE.has(code) || allStocksMap.has(code)) continue;
+      allStocksMap.set(code, {
+        stock_code: code,
+        stock_name: String(s.stock_name ?? '').trim() || code,
+      });
+    }
+    const allStocks = [...allStocksMap.values()];
     const allowedStockNameByCode = new Map(allStocks.map((s) => [s.stock_code, s.stock_name]));
-    logger.info(`감시 종목: ${watchlist.length}개 + 발굴 후보: ${discoveryList.length}개 = 합계 ${allStocks.length}개`, { component: 'TRACK_A' });
+    logger.info(`감시 종목: ${watchlist.length}개 + 발굴 후보: ${discoveryList.length}개 = 합계 ${allStocks.length}개 (중복제거 후)`, { component: 'TRACK_A' });
 
     // 2. CEO 전략 설정 로드
     const strategy = await getActiveStrategy();

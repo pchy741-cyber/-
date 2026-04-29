@@ -86,7 +86,7 @@ class RateLimiter {
 }
 
 // KIS API rate limit: 실전 20건/sec, 모의투자 2건/sec (실제 허용치 낮음 — 보수적 설정)
-const isPaper = process.env.TRADING_MODE !== 'live';
+const isPaper = config.isPaper;
 export const kisRateLimiter = new RateLimiter(isPaper ? 2 : 15);
 // 해외 전용 rate limiter (국내와 독립 — 서로 블로킹 방지)
 export const overseasRateLimiter = new RateLimiter(isPaper ? 12 : 15);
@@ -136,6 +136,7 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
         method,
         headers,
         body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(30000),
       });
 
       // KIS가 토큰 만료 시 JSON 대신 평문 "LOGOUT" 반환 → 토큰 캐시 초기화 후 재시도

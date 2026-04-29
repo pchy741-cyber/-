@@ -38,7 +38,7 @@ export async function runMigrations(): Promise<void> {
     try {
       await pool.query(sql);
       await pool.query(
-        'INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT DO NOTHING',
+        'INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
         [file]
       );
       logger.info(`✅ 마이그레이션 적용: ${file}`, { component: 'MIGRATE' });
@@ -51,7 +51,7 @@ export async function runMigrations(): Promise<void> {
         msg.includes('does not exist')
       ) {
         await pool.query(
-          'INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT DO NOTHING',
+          'INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
           [file]
         );
         logger.warn(`⚠️ 마이그레이션 경고(무시): ${file} — ${msg}`, { component: 'MIGRATE' });
