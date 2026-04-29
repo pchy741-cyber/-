@@ -891,6 +891,51 @@ function StrategyTimelinePanel({ strategy }: { strategy: any }) {
 }
 
 // ═══════════════════════════════════════
+// OVERSEAS SCORE PANEL
+// ═══════════════════════════════════════
+
+function OverseasScorePanel({ usDash }: { usDash?: any }) {
+  const usScored = (usDash?.watchlist ?? []).filter((s: any) => typeof s.score === 'number');
+  const signalMap: Record<string, string> = { STRONG_BUY: '강력 추천', BUY: '매수', HOLD: '관망', SELL: '매도', STRONG_SELL: '강력 매도' };
+  return (
+    <Panel title="AI가 보는 해외 종목 점수" badge={usScored.length > 0 ? `${usScored.length}종목` : undefined} badgeColor="blue">
+      {usScored.length > 0 ? (
+        <div className="p-3.5 space-y-2">
+          {[...usScored].sort((a: any, b: any) => (b.score ?? 0) - (a.score ?? 0)).map((sc: any) => {
+            const raw = Number(sc.score);
+            const pct = Math.max(2, Math.min(100, (raw + 100) / 2));
+            const barColor = pct >= 75 ? 'bg-emerald-500' : pct >= 60 ? 'bg-blue-500' : pct >= 45 ? 'bg-amber-500' : 'bg-slate-600';
+            const textColor = pct >= 75 ? 'text-emerald-400' : pct >= 60 ? 'text-blue-400' : 'text-slate-500';
+            const label = signalMap[sc.signal] ?? sc.signal ?? '';
+            return (
+              <div key={sc.code} className="flex items-center gap-3 px-2 py-2">
+                <div className="w-24 shrink-0">
+                  <div className="text-xs font-bold text-slate-300 truncate">{sc.name}</div>
+                  <div className="text-[10px] text-slate-600">{sc.code} · RSI {sc.rsi != null ? Number(sc.rsi).toFixed(0) : '-'}</div>
+                </div>
+                <div className="flex-1">
+                  <div className="h-2 bg-white/[0.04] rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+                <span className={`text-sm font-black w-10 text-right ${textColor}`}>{raw > 0 ? '+' : ''}{raw}</span>
+                <span className={`text-[10px] font-medium w-16 text-right ${textColor}`}>{label}</span>
+                <span className="text-[10px] text-slate-600 w-12 text-right">{(Number(sc.changePct) >= 0 ? '+' : '')}{Number(sc.changePct ?? 0).toFixed(2)}%</span>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="p-6 text-center space-y-3">
+          <div className="text-2xl opacity-30">🌐</div>
+          <p className="text-sm text-slate-500">해외 점수 계산 중...</p>
+          <p className="text-[11px] text-slate-600">잠시 후 새로고침하면 기술적 분석 점수가 표시됩니다</p>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 // PNL 3-WAY BREAKDOWN
 // ═══════════════════════════════════════
 
@@ -2042,48 +2087,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
               </div>
             )}
           </Panel>
-        ) : (() => {
-          // US 탭: usDash watchlist에서 score 있는 종목만 표시
-          const usScored = (usDash?.watchlist ?? []).filter((s: any) => typeof s.score === 'number');
-          const signalMap: Record<string, string> = { STRONG_BUY: '강력 추천', BUY: '매수', HOLD: '관망', SELL: '매도', STRONG_SELL: '강력 매도' };
-          return (
-            <Panel title="AI가 보는 해외 종목 점수" badge={usScored.length > 0 ? `${usScored.length}종목` : undefined} badgeColor="blue">
-              {usScored.length > 0 ? (
-                <div className="p-3.5 space-y-2">
-                  {[...usScored].sort((a: any, b: any) => (b.score ?? 0) - (a.score ?? 0)).map((sc: any) => {
-                    const raw = Number(sc.score);
-                    const pct = Math.max(2, Math.min(100, (raw + 100) / 2));
-                    const barColor = pct >= 75 ? 'bg-emerald-500' : pct >= 60 ? 'bg-blue-500' : pct >= 45 ? 'bg-amber-500' : 'bg-slate-600';
-                    const textColor = pct >= 75 ? 'text-emerald-400' : pct >= 60 ? 'text-blue-400' : 'text-slate-500';
-                    const label = signalMap[sc.signal] ?? sc.signal ?? '';
-                    return (
-                      <div key={sc.code} className="flex items-center gap-3 px-2 py-2">
-                        <div className="w-24 shrink-0">
-                          <div className="text-xs font-bold text-slate-300 truncate">{sc.name}</div>
-                          <div className="text-[10px] text-slate-600">{sc.code} · RSI {sc.rsi?.toFixed(0) ?? '-'}</div>
-                        </div>
-                        <div className="flex-1">
-                          <div className="h-2 bg-white/[0.04] rounded-full overflow-hidden">
-                            <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${pct}%` }} />
-                          </div>
-                        </div>
-                        <span className={`text-sm font-black w-10 text-right ${textColor}`}>{raw > 0 ? '+' : ''}{raw}</span>
-                        <span className={`text-[10px] font-medium w-16 text-right ${textColor}`}>{label}</span>
-                        <span className="text-[10px] text-slate-600 w-12 text-right">{(sc.changePct ?? 0) >= 0 ? '+' : ''}{(sc.changePct ?? 0).toFixed(2)}%</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="p-6 text-center space-y-3">
-                  <div className="text-2xl opacity-30">🌐</div>
-                  <p className="text-sm text-slate-500">해외 점수 계산 중...</p>
-                  <p className="text-[11px] text-slate-600">잠시 후 새로고침하면 기술적 분석 점수가 표시됩니다</p>
-                </div>
-              )}
-            </Panel>
-          );
-        })()}
+        ) : <OverseasScorePanel usDash={usDash} />}
 
         {/* 최근 매매 */}
         <Panel title="최근 매매" badge={`오늘 ${todayTrades.length}건`} badgeColor={todayTrades.length > 0 ? 'emerald' : undefined}>
