@@ -255,7 +255,7 @@ settingsRoutes.put('/portfolio/allocation', async (c) => {
 
   // 합계 검증
   const total = parking + dividend + stock;
-  if (Math.abs(total - 100) > 1) return c.json({ error: '비율 합계가 100%여야 합니다' }, 400);
+  if (total !== 100) return c.json({ error: `비율 합계가 100%여야 합니다 (현재 ${total}%)` }, 400);
 
   try {
     await getPool().query(`

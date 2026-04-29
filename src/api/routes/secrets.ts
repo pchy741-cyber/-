@@ -80,7 +80,7 @@ secretsRoutes.get('/secrets', async (c) => {
     const value = envVal || await getSecretValue(secret);
     result[key] = {
       exists: !!value,
-      masked: value ? `${value.slice(0, 6)}${'*'.repeat(Math.max(0, value.length - 10))}${value.slice(-4)}` : '',
+      masked: value ? (value.length > 8 ? `${value.slice(0, 4)}***${value.slice(-4)}` : '***') : '',
     };
   }
   cacheSet('secrets:status', result, 30);

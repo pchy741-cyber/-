@@ -196,7 +196,7 @@ dashboardAnalysisRoutes.get('/ai/gemini-test', async (c) => {
 
 // ── 시스템 로그 ──
 dashboardAnalysisRoutes.get('/logs', async (c) => {
-  const limit = Number(c.req.query('limit') ?? 100);
+  const limit = Math.min(Math.max(1, Number(c.req.query('limit') ?? 100)), 500);
   const component = c.req.query('component');
 
   try {
