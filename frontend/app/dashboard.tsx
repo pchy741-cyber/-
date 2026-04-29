@@ -1708,8 +1708,12 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                 const invested = Number(ch.invested) || avgPrice * qty;
                 const curAvg = Number(ch.current_averaging_count) || 0;
                 const maxAvg = Number(ch.max_averaging_count) || 1;
-                const targetPct = Number(ch.target_profit_pct) || 3;
-                const stopPct = Number(ch.stop_loss_pct) || -3;
+                const STRATEGY_TP_SL: Record<string, [number, number]> = {
+                  SWING: [3.5, -2.5], DEFENSE: [5.0, -2.0], SCALPING: [1.2, -0.6], DIVIDEND: [10, -5],
+                };
+                const [modeTp, modeSl] = STRATEGY_TP_SL[ch.strategy_mode as string] ?? [4.0, -2.5];
+                const targetPct = Number(ch.target_profit_pct) || modeTp;
+                const stopPct = Number(ch.stop_loss_pct) || modeSl;
                 const pnl = ch.unrealizedPnl ?? 0;
                 const pnlPct = ch.unrealizedPnlPct ?? 0;
                 const resolvedName = toDisplayName(ch.stock_name, ch.stock_code);

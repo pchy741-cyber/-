@@ -126,6 +126,17 @@ async function bootstrap() {
         [sp.takeProfitPct],
       );
       logger.info(`✅ 기존 체인 null값만 기본값 보충: stop_loss=${sp.stopLossPct}% target=${sp.takeProfitPct}%`, { component: 'BOOT' });
+      // 전략 모드별 올바른 TP/SL로 보정 (마이그레이션 일괄 기본값 4.0/-3.0 오버라이드)
+      const { STRATEGY_PARAMS: SP } = await import('./config/constants.js');
+      for (const [mode, params] of Object.entries(SP) as [string, { takeProfitPct: number; stopLossPct: number }][]) {
+        await gp().query(
+          `UPDATE transaction_chains SET target_profit_pct=$1, stop_loss_pct=$2
+           WHERE strategy_mode=$3 AND status IN ('OPEN','AVERAGING','PROFIT_TAKING')
+             AND (target_profit_pct = 4.0 OR stop_loss_pct = -3.0)`,
+          [params.takeProfitPct, params.stopLossPct, mode],
+        );
+      }
+      logger.info('✅ 체인 전략모드별 TP/SL 보정 완료', { component: 'BOOT' });
     } catch (e: any) {
       logger.warn(`전략 파라미터 동기화 실패: ${e.message}`, { component: 'BOOT' });
     }
