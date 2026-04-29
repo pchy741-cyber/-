@@ -224,11 +224,11 @@ export class TradeExecutor {
       }
 
       // 점수 기반 동적 TP/SL: aiScore → 확신 티어 → 최적 파라미터
-      // DB 전략 세팅값은 수동 override 시에만 우선 (null이면 점수 기반 사용)
+      // scoreParams 우선 → DB 전략값은 scoreParams 없을 때만 폴백
       const dbStrategy = await getActiveStrategy().catch(() => null);
       const scoreParams = aiScore && aiScore >= 60 ? getScoreBasedParams(aiScore) : null;
-      const targetProfitPct = (dbStrategy as any)?.take_profit_pct ?? scoreParams?.takeProfitPct ?? params.takeProfitPct;
-      let stopLossPct = (dbStrategy as any)?.stop_loss_pct ?? scoreParams?.stopLossPct ?? params.stopLossPct;
+      const targetProfitPct = scoreParams?.takeProfitPct ?? (dbStrategy as any)?.take_profit_pct ?? params.takeProfitPct;
+      let stopLossPct = scoreParams?.stopLossPct ?? (dbStrategy as any)?.stop_loss_pct ?? params.stopLossPct;
       if (scoreParams) {
         logger.info(`🎯 점수 기반 TP/SL: score=${aiScore} → TP ${targetProfitPct}% / SL ${stopLossPct}%`, { component: 'EXECUTOR' });
       }

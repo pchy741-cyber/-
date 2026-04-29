@@ -116,11 +116,16 @@ async function bootstrap() {
         [sp.takeProfitPct, sp.stopLossPct, sp.buyThreshold],
       );
       logger.info(`✅ 전략 파라미터 동기화: buy_threshold=${sp.buyThreshold} take_profit=${sp.takeProfitPct}% stop_loss=${sp.stopLossPct}%`, { component: 'BOOT' });
+      // 기존 체인은 AI가 매수 시점에 설정한 종목별 값 유지 — null인 경우에만 기본값 채움
       await gp().query(
-        `UPDATE transaction_chains SET stop_loss_pct=$1, target_profit_pct=$2 WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING')`,
-        [sp.stopLossPct, sp.takeProfitPct],
+        `UPDATE transaction_chains SET stop_loss_pct=$1 WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND stop_loss_pct IS NULL`,
+        [sp.stopLossPct],
       );
-      logger.info(`✅ 기존 체인 손절/익절 동기화: stop_loss=${sp.stopLossPct}% target=${sp.takeProfitPct}%`, { component: 'BOOT' });
+      await gp().query(
+        `UPDATE transaction_chains SET target_profit_pct=$1 WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND target_profit_pct IS NULL`,
+        [sp.takeProfitPct],
+      );
+      logger.info(`✅ 기존 체인 null값만 기본값 보충: stop_loss=${sp.stopLossPct}% target=${sp.takeProfitPct}%`, { component: 'BOOT' });
     } catch (e: any) {
       logger.warn(`전략 파라미터 동기화 실패: ${e.message}`, { component: 'BOOT' });
     }
