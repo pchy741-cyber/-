@@ -1022,6 +1022,7 @@ function ScoreBar({ label, value, color }: { label: string; value: number; color
 function AiTransparencyPanel({ watchlist, tab, usDash }: { watchlist: any[]; tab?: 'KR' | 'US'; usDash?: any }) {
   const [details, setDetails] = React.useState<Map<string, any>>(new Map());
   const [selected, setSelected] = React.useState<string | null>(null);
+  const [usSel, setUsSel] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (tab === 'US') return; // US 탭은 API 호출 불필요 (usDash에서 직접 읽음)
@@ -1040,8 +1041,8 @@ function AiTransparencyPanel({ watchlist, tab, usDash }: { watchlist: any[]; tab
   if (tab === 'US') {
     const usStocks: any[] = (usDash?.watchlist ?? []).filter((s: any) => typeof s.score === 'number' || typeof s.ai_score === 'number').slice(0, 8);
     if (usStocks.length === 0) return null;
-    const [usSel, setUsSel] = React.useState<string | null>(usStocks[0]?.code ?? null);
-    const selStock = usStocks.find((s: any) => s.code === (usSel ?? usStocks[0]?.code));
+    const activeUsSel = usSel ?? usStocks[0]?.code ?? null;
+    const selStock = usStocks.find((s: any) => s.code === activeUsSel);
     const score = selStock?.score ?? selStock?.ai_score ?? 0;
     const signal = selStock?.signal ?? '';
     return (
@@ -1050,7 +1051,7 @@ function AiTransparencyPanel({ watchlist, tab, usDash }: { watchlist: any[]; tab
         <div className="flex gap-1 flex-wrap mb-3">
           {usStocks.map((s: any) => {
             const sc = s.score ?? s.ai_score ?? 0;
-            const active = (usSel ?? usStocks[0]?.code) === s.code;
+            const active = activeUsSel === s.code;
             return (
               <button key={s.code} onClick={() => setUsSel(s.code)}
                 className={`text-[9px] px-2 py-0.5 rounded-full font-semibold transition-colors ${active ? 'bg-blue-500/30 text-blue-300 border border-blue-500/40' : 'bg-white/[0.04] text-slate-500 hover:text-slate-300'}`}>
