@@ -29,10 +29,16 @@ authRoutes.post('/auth/login', async (c) => {
     return c.json({ error: '패스워드를 입력하세요' }, 400);
   }
 
-  // 타이밍 공격 방지: 항상 동일 시간 비교
-  const inputBuf = Buffer.from(input.padEnd(secret.length, '\0').slice(0, Math.max(input.length, secret.length)));
-  const secretBuf = Buffer.from(secret.padEnd(input.length, '\0').slice(0, Math.max(input.length, secret.length)));
-  const match = input.length === secret.length && timingSafeEqual(inputBuf, secretBuf);
+  // 타이밍 공격 방지: 항상 256바이트 고정 길이 비교 (길이 정보 노출 차단)
+  const FIXED_LEN = 256;
+  const inputBuf = Buffer.alloc(FIXED_LEN);
+  const secretBuf = Buffer.alloc(FIXED_LEN);
+  Buffer.from(input).copy(inputBuf, 0, 0, Math.min(input.length, FIXED_LEN));
+  Buffer.from(secret).copy(secretBuf, 0, 0, Math.min(secret.length, FIXED_LEN));
+  // 길이가 다를 때 항상 false — 단 비교 시간은 동일하게 유지
+  const lenMatch = input.length === secret.length;
+  const bufMatch = timingSafeEqual(inputBuf, secretBuf);
+  const match = lenMatch && bufMatch;
 
   if (!match) {
     // 브루트포스 방지: 500ms 지연

@@ -210,9 +210,7 @@ export async function getDynamicPositionSize(
     if (stockHistory.length > 0) {
       const lastPnl = Number(stockHistory[0].realized_pnl);
       if (lastPnl < 0) {
-        // 직전 손실: -50% 손실이면 0.5x, -10%면 0.7x, -5%면 0.85x
-        const lossPct = Math.abs(lastPnl) / Math.max(1, Math.abs(lastPnl)); // ratio placeholder
-        // 손실 규모와 무관하게 단순 패널티: 직전 1회 손실 → 0.7x, 2회 연속 손실 → 0.5x
+        // 직전 1회 손실 → 0.7x, 2회 연속 손실 → 0.5x
         const consecutive = stockHistory.length >= 2 && Number(stockHistory[1].realized_pnl) < 0;
         if (consecutive) {
           finalMultiplier *= 0.5;

@@ -74,7 +74,7 @@ export function startScheduler(): void {
     SCHEDULE.TRACK_A_CRON[0],
     () => {
       logger.info('⏰ Track A (장전)', { component: 'SCHEDULER' });
-      runTrackAJob().catch((e) => logger.error(`Track A 실패: ${e}`, { component: 'SCHEDULER' }));
+      withTimeout('Track A 장전', () => runTrackAJob(), 300_000);
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -84,7 +84,7 @@ export function startScheduler(): void {
     '0 12 * * 1-5',
     () => {
       logger.info('⏰ Track A (점심 재분석)', { component: 'SCHEDULER' });
-      runTrackAJob().catch((e) => logger.error(`Track A 점심 실패: ${e}`, { component: 'SCHEDULER' }));
+      withTimeout('Track A 점심', () => runTrackAJob(), 300_000);
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -94,7 +94,7 @@ export function startScheduler(): void {
     '0 14 * * 1-5',
     () => {
       logger.info('⏰ Track A (오후 재분석)', { component: 'SCHEDULER' });
-      runTrackAJob().catch((e) => logger.error(`Track A 오후 실패: ${e}`, { component: 'SCHEDULER' }));
+      withTimeout('Track A 오후', () => runTrackAJob(), 300_000);
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -147,12 +147,24 @@ export function startScheduler(): void {
   //  장중 실시간 자동화
   // ═══════════════════════════════════════════
 
+  // Track B 중복 실행 방지 mutex
+  let _trackBRunning = false;
+  const runTrackBSafe = () => {
+    if (_trackBRunning) {
+      logger.warn('⏭️ Track B 이미 실행 중 — 스킵 (중복 방지)', { component: 'SCHEDULER' });
+      return;
+    }
+    _trackBRunning = true;
+    withTimeout('Track B', () => runTrackBJob(), 480_000)
+      .finally(() => { _trackBRunning = false; });
+  };
+
   // 🔔 09:00 개장 즉시 — 초단타 선제 실행 (SCALPING 모드 자동 강제, pipeline 내부에서 처리)
   cron.schedule(
     '0 9 * * 1-5',
     () => {
       logger.info('🔔 개장 초단타 선제 실행 (09:00)', { component: 'SCHEDULER' });
-      runTrackBJob().catch((e) => logger.error(`개장 초단타 실패: ${e}`, { component: 'SCHEDULER' }));
+      runTrackBSafe();
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -160,9 +172,7 @@ export function startScheduler(): void {
   // Track B — 장중 10분 간격 (핵심: Claude 매매 판단)
   cron.schedule(
     `*/${SCHEDULE.TRACK_B_INTERVAL_MINUTES} 9-15 * * 1-5`,
-    () => {
-      runTrackBJob().catch((e) => logger.error(`Track B 실패: ${e}`, { component: 'SCHEDULER' }));
-    },
+    () => { runTrackBSafe(); },
     { timezone: MARKET.TIMEZONE },
   );
 
