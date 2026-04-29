@@ -115,6 +115,7 @@ export const TradeDecisionSchema = z.object({
   limit_price: z.number().optional(),
   reasoning: z.string(),
   confidence: z.number().min(0).max(1),
+  ai_score: z.number().optional(), // 매수 당시 AI 복합 점수 (점수 기반 TP/SL 계산용)
 });
 export type TradeDecision = z.infer<typeof TradeDecisionSchema>;
 

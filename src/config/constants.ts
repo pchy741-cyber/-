@@ -163,6 +163,20 @@ export const KIS_TR_ID = {
   },
 } as const;
 
+// ── 점수 기반 동적 익절/손절 파라미터 ──
+// 매수 당시 AI 점수 → 확신 티어별 최적 TP/SL 계산
+// 근거: Kelly Criterion + 손익비 최적화
+//   • 60-69 (마진컬): 낮은 확신 → 빠른 실현, 타이트한 손절로 기대값 보전
+//   • 70-79 (보통): 적당한 확신 → 손익비 2:1 타겟
+//   • 80-89 (고확신): 강한 신호 → 수익 극대화 허용, ATR 기반 여유 손절
+//   • 90+  (엘리트): 최강 신호 → 큰 수익 목표, 손절 타이트 (확신이 높으므로)
+export function getScoreBasedParams(score: number): { takeProfitPct: number; stopLossPct: number } {
+  if (score >= 90) return { takeProfitPct: 7.0, stopLossPct: -1.5 };  // 엘리트: 극대화
+  if (score >= 80) return { takeProfitPct: 5.5, stopLossPct: -2.0 };  // 고확신
+  if (score >= 70) return { takeProfitPct: 4.0, stopLossPct: -2.0 };  // 보통
+  return                 { takeProfitPct: 3.0, stopLossPct: -2.5 };   // 마진컬 (60-69)
+}
+
 // ── AI 스코어 시그널 ──
 export const Signal = {
   STRONG_BUY: 'STRONG_BUY',

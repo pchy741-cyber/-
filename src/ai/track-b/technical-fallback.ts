@@ -408,6 +408,7 @@ export function technicalFallbackDecisions(params: {
       limit_price: cand.price.currentPrice,
       reasoning: `기술적 매수: score=${cand.tech.score}${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${convStr}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))}`,
       confidence: Math.min(0.95, Math.max(0.5, cand.tech.score / 100 + getWinRateConfidenceBoost(winRates?.get(cand.stock_code)) + (cand.candleBonus > 0 ? 0.05 : 0))),
+      ai_score: aiScore > 0 ? aiScore : cand.tech.score, // 점수 기반 TP/SL 계산용
     });
 
     remainingCash -= quantity * cand.price.currentPrice;

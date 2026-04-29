@@ -1,4 +1,4 @@
-import { OrderType, STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
+import { OrderType, STRATEGY_PARAMS, getScoreBasedParams, type StrategyMode } from '../config/constants.js';
 import { config } from '../config/index.js';
 import { getActiveStrategy, insertOrder, logSystem, updateOrderByKisOrderNo, upsertWatchlistItem } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
@@ -63,7 +63,7 @@ export class TradeExecutor {
 
       switch (action) {
         case 'BUY':
-          await this.executeBuy(stock_code, quantity, price_type, limit_price, mode, reasoning);
+          await this.executeBuy(stock_code, quantity, price_type, limit_price, mode, reasoning, decision.ai_score);
           break;
         case 'AVERAGE_DOWN':
           await this.executeAverageDown(stock_code, quantity, price_type, limit_price, reasoning);
@@ -93,6 +93,7 @@ export class TradeExecutor {
     limitPrice: number | undefined,
     mode: StrategyMode,
     reasoning: string,
+    aiScore?: number,
   ): Promise<void> {
     // 이미 열린 체인이 있으면 물타기로 전환
     const existingChain = await chainManager.findOpenChain(stockCode);
@@ -222,10 +223,15 @@ export class TradeExecutor {
         logger.warn(`⚠️ 매수 부분체결 반영: ${stockCode} 요청 ${gatedQuantity}주 → 체결 ${filledQty}주`, { component: 'EXECUTOR' });
       }
 
-      // DB 전략 세팅값 우선 적용 (없으면 STRATEGY_PARAMS 하드코딩 fallback)
+      // 점수 기반 동적 TP/SL: aiScore → 확신 티어 → 최적 파라미터
+      // DB 전략 세팅값은 수동 override 시에만 우선 (null이면 점수 기반 사용)
       const dbStrategy = await getActiveStrategy().catch(() => null);
-      const targetProfitPct = (dbStrategy as any)?.take_profit_pct ?? params.takeProfitPct;
-      let stopLossPct = (dbStrategy as any)?.stop_loss_pct ?? params.stopLossPct;
+      const scoreParams = aiScore && aiScore >= 60 ? getScoreBasedParams(aiScore) : null;
+      const targetProfitPct = (dbStrategy as any)?.take_profit_pct ?? scoreParams?.takeProfitPct ?? params.takeProfitPct;
+      let stopLossPct = (dbStrategy as any)?.stop_loss_pct ?? scoreParams?.stopLossPct ?? params.stopLossPct;
+      if (scoreParams) {
+        logger.info(`🎯 점수 기반 TP/SL: score=${aiScore} → TP ${targetProfitPct}% / SL ${stopLossPct}%`, { component: 'EXECUTOR' });
+      }
 
       // ATR 기반 동적 손절 — 전략 손절폭보다 넓어지지 않도록 캡 적용
       try {
