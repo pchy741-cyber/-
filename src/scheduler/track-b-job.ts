@@ -68,6 +68,15 @@ export async function runTrackBJob(): Promise<void> {
       const summary = actionable.map((d) => `${d.action} ${d.stock_code} x${d.quantity}`).join('\n');
       await sendTelegramMessage(`🤖 Track B 실행:\n${summary}`).catch(() => {});
     }
+
+    // 5. 매도 체결 후 60초 뒤 즉시 재스캔 (해방된 현금으로 바로 매수 기회 포착)
+    const hasSell = decisions.some((d) => d.action === 'SELL');
+    if (hasSell) {
+      setTimeout(() => {
+        logger.info('🔄 매도 후 즉시 재스캔 (60초)', { component: 'SCHEDULER' });
+        runTrackBJob().catch(() => {});
+      }, 60_000);
+    }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     await reportError('TRACK_B', msg);
