@@ -2,112 +2,208 @@ import { KIS_TR_ID, STRATEGY_PARAMS } from '../config/constants.js';
 import { getActiveStrategy, getPool, logSystem } from '../db/client.js';
 import { kisRequest } from '../kis/client.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
+import { getMacroSnapshot, calculateFearGreedIndex } from './macro-data.js';
 import { logger } from '../utils/logger.js';
 
 /**
- * 장세 자동 감지 & 전략 모드 자동 전환
+ * 장세 자동 감지 & 전략 모드 자동 전환 (v2)
  *
- * 매일 장 시작 전(08:00) + 점심(12:00) 실행
- * KOSPI 지수 + 변동성 + 외국인 수급을 분석하여
- * SWING ↔ DEFENSE 모드를 자동 전환
+ * 다중 팩터 스코어링:
+ * ① 오늘 KOSPI 등락률
+ * ② 연속 상승/하락일 수 (최근 5거래일)
+ * ③ VKOSPI (변동성 지수) — 공포/탐욕 판단
+ * ④ 외국인 순매수 방향 (KIS 시장 수급)
+ * ⑤ Fear & Greed Index (VKOSPI + KOSPI 합산)
  *
- * CEO는 프롬프트만 신경쓰면 됨 → 모드 전환은 시스템이 자동 판단
+ * 점수 합산 → BULLISH / NEUTRAL / BEARISH / PANIC 판정
+ * → SWING / DEFENSE / DIVIDEND 모드 자동 전환
  */
 
 export interface MarketRegime {
   regime: 'BULLISH' | 'NEUTRAL' | 'BEARISH' | 'PANIC';
   kospiChange: number;
   kospi200Change: number;
-  foreignNetBuy: number; // 외국인 순매수 (억원)
-  vix: number; // 변동성 지표
-  recommendedMode: 'SWING' | 'DEFENSE' | 'DIVIDEND';
+  foreignNetBuy: number;
+  vix: number;
+  fearGreed: number;
+  consecutiveDays: number; // 양수=연속 상승일, 음수=연속 하락일
+  score: number;           // 종합 점수 (양수=강세, 음수=약세)
+  recommendedMode: 'SWING' | 'SCALPING' | 'DEFENSE' | 'DIVIDEND';
   reasons: string[];
 }
 
+// ── KOSPI 최근 5일 종가 (Naver) ──
+async function fetchKospiHistory(): Promise<number[]> {
+  try {
+    const end = new Date();
+    const start = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+    const fmt = (d: Date) => d.toISOString().split('T')[0].replace(/-/g, '');
+    const url = `https://m.stock.naver.com/api/index/KOSPI/price?startTime=${fmt(start)}&endTime=${fmt(end)}&pageSize=10&type=DAYBYDAY`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json() as Record<string, unknown>[];
+    if (!Array.isArray(data)) return [];
+    // 최신순 → 최근 5거래일 종가 반환
+    return data.slice(0, 5).map((d: any) => Number(d.closePrice ?? d.endPrice ?? 0)).filter(v => v > 0);
+  } catch {
+    return [];
+  }
+}
+
+// ── 연속 상승/하락일 계산 ──
+function calcConsecutiveDays(prices: number[]): number {
+  if (prices.length < 2) return 0;
+  // prices[0] = 최신, prices[1] = 전일 ...
+  const isUp = prices[0] > prices[1];
+  let streak = isUp ? 1 : -1;
+  for (let i = 1; i < prices.length - 1; i++) {
+    if (isUp && prices[i] > prices[i + 1]) streak++;
+    else if (!isUp && prices[i] < prices[i + 1]) streak--;
+    else break;
+  }
+  return streak;
+}
+
+// ── KIS 시장 외국인 수급 (KOSPI 전체) ──
+async function fetchMarketForeignNet(): Promise<number> {
+  try {
+    const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0].replace(/-/g, '');
+    const res = await kisRequest({
+      path: '/uapi/domestic-stock/v1/quotations/inquire-investor',
+      trId: KIS_TR_ID.QUOTE.INVESTOR_FLOW,
+      params: {
+        FID_COND_MRKT_DIV_CODE: 'J',
+        FID_INPUT_ISCD: '0001', // KOSPI 지수 코드
+        FID_INPUT_DATE_1: weekAgo,
+        FID_INPUT_DATE_2: today,
+      },
+    });
+    const items = ((res.output ?? []) as Record<string, string>[]).slice(0, 3); // 최근 3일
+    if (items.length === 0) return 0;
+    // 외국인 순매수 금액 합산 (frgn_ntby_tr_pbmn = 외국인 순매수 거래대금 억원)
+    const total = items.reduce((sum, item) => {
+      return sum + Number(item.frgn_ntby_tr_pbmn ?? item.frgn_ntby_qty ?? 0);
+    }, 0);
+    return total;
+  } catch {
+    return 0;
+  }
+}
+
+// ── KOSPI 200 등락률 ──
+async function fetchKospi200Change(): Promise<number> {
+  try {
+    const res = await kisRequest({
+      path: '/uapi/domestic-stock/v1/quotations/inquire-price',
+      trId: KIS_TR_ID.QUOTE.CURRENT_PRICE,
+      params: { FID_COND_MRKT_DIV_CODE: 'U', FID_INPUT_ISCD: '0101' },
+    });
+    const o = res.output as Record<string, string>;
+    return Number(o?.prdy_ctrt ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
 /**
- * KOSPI 지수 데이터 수집 + 장세 판단
+ * 다중 팩터 장세 판단
  */
 export async function detectMarketRegime(): Promise<MarketRegime> {
   const reasons: string[] = [];
-  let bearishScore = 0;
 
-  // 1. KOSPI 지수 변동률 (전일 대비)
-  let kospiChange = 0;
-  try {
-    const res = await kisRequest({
-      path: '/uapi/domestic-stock/v1/quotations/inquire-price',
-      trId: KIS_TR_ID.QUOTE.CURRENT_PRICE,
-      params: { FID_COND_MRKT_DIV_CODE: 'U', FID_INPUT_ISCD: '0001' }, // KOSPI 지수
-    });
-    const o = res.output as Record<string, string>;
-    kospiChange = Number(o?.prdy_ctrt ?? 0);
-  } catch {
-    logger.warn('KOSPI 지수 조회 실패', { component: 'REGIME' });
-  }
+  // 병렬 데이터 수집
+  const [macro, kospiHistory, foreignNet, kospi200Change] = await Promise.all([
+    getMacroSnapshot().catch(() => null),
+    fetchKospiHistory(),
+    fetchMarketForeignNet(),
+    fetchKospi200Change(),
+  ]);
 
-  // 2. KOSPI200 변동률
-  let kospi200Change = 0;
-  try {
-    const res = await kisRequest({
-      path: '/uapi/domestic-stock/v1/quotations/inquire-price',
-      trId: KIS_TR_ID.QUOTE.CURRENT_PRICE,
-      params: { FID_COND_MRKT_DIV_CODE: 'U', FID_INPUT_ISCD: '0101' }, // KOSPI200
-    });
-    const o = res.output as Record<string, string>;
-    kospi200Change = Number(o?.prdy_ctrt ?? 0);
-  } catch {
-    logger.warn('KOSPI200 조회 실패', { component: 'REGIME' });
-  }
+  const kospiChange = macro?.kospiChange ?? 0;
+  const vkospi = macro?.vkospi ?? 20;
+  const fearGreed = macro?.fearGreedIndex ?? calculateFearGreedIndex(vkospi, kospiChange);
+  const consecutiveDays = calcConsecutiveDays(kospiHistory);
 
-  // 3. 하락 판단 기준
-  if (kospiChange < -1.5) {
-    bearishScore += 3;
-    reasons.push(`KOSPI ${kospiChange.toFixed(1)}% 급락`);
-  } else if (kospiChange < -0.5) {
-    bearishScore += 1;
-    reasons.push(`KOSPI ${kospiChange.toFixed(1)}% 하락`);
-  }
+  // ── 점수 계산 (양수=강세, 음수=약세) ──
+  let score = 0;
 
-  if (kospi200Change < -1.5) {
-    bearishScore += 2;
-    reasons.push(`KOSPI200 ${kospi200Change.toFixed(1)}% 급락`);
-  }
+  // ① 오늘 KOSPI 등락률
+  if (kospiChange >= 1.5) { score += 4; reasons.push(`KOSPI +${kospiChange.toFixed(1)}% 강세`); }
+  else if (kospiChange >= 0.5) { score += 2; reasons.push(`KOSPI +${kospiChange.toFixed(1)}%`); }
+  else if (kospiChange <= -2.0) { score -= 5; reasons.push(`KOSPI ${kospiChange.toFixed(1)}% 급락`); }
+  else if (kospiChange <= -1.0) { score -= 3; reasons.push(`KOSPI ${kospiChange.toFixed(1)}% 하락`); }
+  else if (kospiChange <= -0.5) { score -= 1; reasons.push(`KOSPI ${kospiChange.toFixed(1)}%`); }
 
-  // 4. 장세 판단
+  // ② 연속 상승/하락일
+  if (consecutiveDays >= 3) { score += 3; reasons.push(`연속 ${consecutiveDays}일 상승`); }
+  else if (consecutiveDays >= 2) { score += 1; reasons.push(`연속 ${consecutiveDays}일 상승`); }
+  else if (consecutiveDays <= -3) { score -= 4; reasons.push(`연속 ${Math.abs(consecutiveDays)}일 하락`); }
+  else if (consecutiveDays <= -2) { score -= 2; reasons.push(`연속 ${Math.abs(consecutiveDays)}일 하락`); }
+
+  // ③ VKOSPI (공포지수)
+  if (vkospi >= 35) { score -= 4; reasons.push(`VKOSPI ${vkospi.toFixed(1)} (극단 공포)`); }
+  else if (vkospi >= 25) { score -= 2; reasons.push(`VKOSPI ${vkospi.toFixed(1)} (공포)`); }
+  else if (vkospi <= 14) { score += 3; reasons.push(`VKOSPI ${vkospi.toFixed(1)} (극단 탐욕)`); }
+  else if (vkospi <= 18) { score += 1; reasons.push(`VKOSPI ${vkospi.toFixed(1)} (탐욕)`); }
+
+  // ④ 외국인 수급 (3일 합산)
+  if (foreignNet > 3000) { score += 3; reasons.push(`외국인 3일 순매수 ${(foreignNet / 100).toFixed(0)}억`); }
+  else if (foreignNet > 500) { score += 1; reasons.push(`외국인 순매수`); }
+  else if (foreignNet < -3000) { score -= 3; reasons.push(`외국인 3일 순매도 ${(Math.abs(foreignNet) / 100).toFixed(0)}억`); }
+  else if (foreignNet < -500) { score -= 1; reasons.push(`외국인 순매도`); }
+
+  // ⑤ Fear & Greed
+  if (fearGreed >= 75) { score += 2; reasons.push(`탐욕 지수 ${fearGreed}`); }
+  else if (fearGreed >= 60) { score += 1; }
+  else if (fearGreed <= 20) { score += 1; reasons.push(`극단 공포 → 역발상 매수 (F&G ${fearGreed})`); } // 역발상
+  else if (fearGreed <= 35) { score -= 2; reasons.push(`공포 지수 ${fearGreed}`); }
+
+  // ⑥ KOSPI200 이중 확인
+  if (kospi200Change <= -2.0) { score -= 2; reasons.push(`KOSPI200 ${kospi200Change.toFixed(1)}% 급락`); }
+
+  // ── 체제 판단 ──
   let regime: MarketRegime['regime'];
-  let recommendedMode: 'SWING' | 'DEFENSE' | 'DIVIDEND';
+  let recommendedMode: MarketRegime['recommendedMode'];
 
-  if (bearishScore >= 5) {
-    regime = 'PANIC';
-    recommendedMode = 'DEFENSE';
-    reasons.push('공포 수준 하락 → DEFENSE 모드 권장');
-  } else if (bearishScore >= 3) {
-    regime = 'BEARISH';
-    recommendedMode = 'DEFENSE';
-    reasons.push('하락장 감지 → DEFENSE 모드 권장');
-  } else if (kospiChange > 1.0) {
+  if (score >= 6) {
+    regime = 'BULLISH';
+    recommendedMode = 'SCALPING'; // 강세장 → 공격적 스캘핑
+    reasons.push(`강세장 스코어 ${score} → SCALPING 모드`);
+  } else if (score >= 2) {
     regime = 'BULLISH';
     recommendedMode = 'SWING';
-    reasons.push('상승장 → SWING 모드 유지');
-  } else {
+    reasons.push(`상승장 스코어 ${score} → SWING 모드`);
+  } else if (score >= -2) {
     regime = 'NEUTRAL';
     recommendedMode = 'SWING';
-    reasons.push('보합장 → SWING 모드 유지');
+    reasons.push(`중립장 스코어 ${score} → SWING 유지`);
+  } else if (score >= -5) {
+    regime = 'BEARISH';
+    recommendedMode = 'DEFENSE';
+    reasons.push(`하락장 스코어 ${score} → DEFENSE 모드`);
+  } else {
+    regime = 'PANIC';
+    recommendedMode = 'DIVIDEND';
+    reasons.push(`공황 스코어 ${score} → DIVIDEND 파킹`);
   }
 
   return {
     regime,
     kospiChange,
     kospi200Change,
-    foreignNetBuy: 0, // 외국인 수급은 장중에만 확인 가능
-    vix: 0,
+    foreignNetBuy: foreignNet,
+    vix: vkospi,
+    fearGreed,
+    consecutiveDays,
+    score,
     recommendedMode,
     reasons,
   };
 }
 
 /**
- * 장세 감지 → 전략 자동 전환 (필요 시)
+ * 장세 감지 → 전략 자동 전환
  */
 export async function autoSwitchStrategy(): Promise<void> {
   try {
@@ -115,81 +211,67 @@ export async function autoSwitchStrategy(): Promise<void> {
     const currentStrategy = await getActiveStrategy();
     const currentMode = currentStrategy?.mode ?? 'SWING';
 
-    // DEFENSE → DIVIDEND 에스컬레이션: DEFENSE 중 장세 여전히 BEARISH/PANIC → 배당 파킹 모드로 전환
-    // DIVIDEND → SWING 회복: 장세 NEUTRAL/BULLISH로 회복 시 스윙 복귀
-    let targetMode = regime.recommendedMode;
+    let targetMode = regime.recommendedMode as string;
+
+    // DEFENSE 지속 중 여전히 BEARISH → DIVIDEND 에스컬레이션
     if (currentMode === 'DEFENSE' && (regime.regime === 'BEARISH' || regime.regime === 'PANIC')) {
-      targetMode = 'DIVIDEND' as any;
-      regime.reasons.push('DEFENSE 지속 → DIVIDEND 파킹 모드 에스컬레이션 (배당+안정 운영)');
-    } else if ((currentMode as string) === 'DIVIDEND' && (regime.regime === 'NEUTRAL' || regime.regime === 'BULLISH')) {
+      targetMode = 'DIVIDEND';
+      regime.reasons.push('DEFENSE 지속 → DIVIDEND 파킹 에스컬레이션');
+    }
+    // DIVIDEND 중 장세 회복 → SWING 복귀
+    else if ((currentMode as string) === 'DIVIDEND' && (regime.regime === 'NEUTRAL' || regime.regime === 'BULLISH')) {
       targetMode = 'SWING';
       regime.reasons.push('장세 회복 → DIVIDEND → SWING 복귀');
     }
+    // SCALPING은 강세장 스코어 6이상 + 현재 SWING일 때만 전환 (과도한 전환 방지)
+    if (targetMode === 'SCALPING' && currentMode !== 'SWING') {
+      targetMode = currentMode; // DEFENSE/DIVIDEND 중엔 SCALPING 전환 안 함
+    }
 
     logger.info(
-      `장세 감지: ${regime.regime} (KOSPI ${regime.kospiChange > 0 ? '+' : ''}${regime.kospiChange.toFixed(1)}%) → 권장: ${targetMode}`,
+      `장세 감지: ${regime.regime} | 스코어 ${regime.score} | KOSPI ${regime.kospiChange > 0 ? '+' : ''}${regime.kospiChange.toFixed(1)}% | VKOSPI ${regime.vix.toFixed(1)} | 연속 ${regime.consecutiveDays}일 | 외국인 ${regime.foreignNetBuy > 0 ? '+' : ''}${regime.foreignNetBuy} → ${targetMode}`,
       { component: 'REGIME' },
     );
 
-    // 모드 전환 필요한 경우
-    if (currentMode !== targetMode) {
-      const effectiveMode = targetMode;
-      logger.warn(`전략 자동 전환: ${currentMode} → ${effectiveMode}`, { component: 'REGIME' });
+    if (currentMode === targetMode) return;
 
-      const modeParams = STRATEGY_PARAMS[effectiveMode as keyof typeof STRATEGY_PARAMS];
-      const newBuyThreshold = modeParams?.buyThreshold ?? 65;
-      const newStopLoss = modeParams?.stopLossPct ?? -5.0;
+    const modeParams = STRATEGY_PARAMS[targetMode as keyof typeof STRATEGY_PARAMS];
+    const newBuyThreshold = modeParams?.buyThreshold ?? 65;
+    const newStopLoss = modeParams?.stopLossPct ?? -5.0;
 
-      // 전략 모드만 UPDATE — notebooklm_prompt·프롬프트 등 유저 설정은 절대 덮어쓰지 않음
-      const { rowCount: updCount } = await getPool().query(
-        `UPDATE strategy_config
-         SET mode = $1, buy_threshold = $2, stop_loss_pct = $3, updated_at = NOW()
-         WHERE is_active = true`,
-        [effectiveMode, newBuyThreshold, newStopLoss],
+    const { rowCount: updCount } = await getPool().query(
+      `UPDATE strategy_config SET mode=$1, buy_threshold=$2, stop_loss_pct=$3, updated_at=NOW() WHERE is_active=true`,
+      [targetMode, newBuyThreshold, newStopLoss],
+    );
+
+    if ((updCount ?? 0) === 0) {
+      await getPool().query(
+        `INSERT INTO strategy_config
+           (mode, is_active, gemini_prompt, gpt_prompt, claude_prompt,
+            buy_threshold, stop_loss_pct, take_profit_pct, notebooklm_prompt, strategy_document, risk_prompt)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [targetMode, true,
+          currentStrategy?.gemini_prompt ?? '', currentStrategy?.gpt_prompt ?? '', currentStrategy?.claude_prompt ?? '',
+          newBuyThreshold, newStopLoss, currentStrategy?.take_profit_pct ?? 8.0,
+          currentStrategy?.notebooklm_prompt ?? '', currentStrategy?.strategy_document ?? '', currentStrategy?.risk_prompt ?? ''],
       );
-
-      // 활성 전략이 없으면 기존 방식으로 INSERT (초기 상태)
-      if ((updCount ?? 0) === 0) {
-        await getPool().query(
-          `INSERT INTO strategy_config
-             (mode, is_active, gemini_prompt, gpt_prompt, claude_prompt,
-              buy_threshold, stop_loss_pct, take_profit_pct,
-              notebooklm_prompt, strategy_document, risk_prompt)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-          [
-            effectiveMode, true,
-            currentStrategy?.gemini_prompt ?? '',
-            currentStrategy?.gpt_prompt ?? '',
-            currentStrategy?.claude_prompt ?? '',
-            newBuyThreshold,
-            newStopLoss,
-            currentStrategy?.take_profit_pct ?? 8.0,
-            currentStrategy?.notebooklm_prompt ?? '',
-            currentStrategy?.strategy_document ?? '',
-            currentStrategy?.risk_prompt ?? '',
-          ],
-        );
-      }
-
-      await logSystem(
-        'WARN',
-        'REGIME',
-        `전략 자동 전환: ${currentMode} → ${effectiveMode} (${regime.reasons.join(', ')})`,
-      );
-
-      await sendTelegramMessage(
-        `🔄 *전략 자동 전환*\n` +
-          `${currentMode} → *${effectiveMode}*\n\n` +
-          `장세: ${regime.regime}\n` +
-          `KOSPI: ${regime.kospiChange > 0 ? '+' : ''}${regime.kospiChange.toFixed(1)}%\n` +
-          `사유: ${regime.reasons.join('\n')}\n\n` +
-          `수동 변경: 대시보드 > 설정`,
-      );
-
-      // CEO 워크플로우: 모드 전환 시 자금 재배치 트리거
-      const { onModeSwitch } = await import('./ceo-workflow.js');
-      await onModeSwitch(currentMode, effectiveMode);
     }
+
+    const regimeEmoji = { BULLISH: '🟢', NEUTRAL: '⚪', BEARISH: '🔴', PANIC: '💀' }[regime.regime];
+    await logSystem('WARN', 'REGIME', `전략 자동 전환: ${currentMode} → ${targetMode} (${regime.reasons.join(', ')})`);
+    await sendTelegramMessage(
+      `${regimeEmoji} *전략 자동 전환*\n` +
+      `${currentMode} → *${targetMode}*\n\n` +
+      `장세: ${regime.regime} (스코어 ${regime.score})\n` +
+      `KOSPI: ${regime.kospiChange > 0 ? '+' : ''}${regime.kospiChange.toFixed(1)}% | 연속 ${regime.consecutiveDays}일\n` +
+      `VKOSPI: ${regime.vix.toFixed(1)} | F&G: ${regime.fearGreed}\n` +
+      `외국인: ${regime.foreignNetBuy > 0 ? '+' : ''}${regime.foreignNetBuy}\n\n` +
+      `사유: ${regime.reasons.slice(-3).join(' / ')}\n` +
+      `수동 변경: 대시보드 > 설정`,
+    );
+
+    const { onModeSwitch } = await import('./ceo-workflow.js');
+    await onModeSwitch(currentMode, targetMode);
   } catch (error) {
     logger.error(`장세 감지 실패: ${error}`, { component: 'REGIME' });
   }
