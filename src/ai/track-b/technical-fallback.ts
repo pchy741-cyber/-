@@ -154,7 +154,10 @@ export async function technicalFallbackDecisions(params: {
     const sellTech = sellCheckCandles && sellCheckCandles.length >= 30 ? analyzeTechnicals(sellCheckCandles) : null;
     const dynamicStop = sellTech ? sellTech.dynamicStopLossPct : strategyParams.stopLossPct;
     // ATR 기반이 고정 손절보다 좁으면 ATR 우선 (더 빠른 손절로 손실 최소화)
-    const effectiveStop = Math.max(strategyParams.stopLossPct, dynamicStop);
+    // AI 80점+ 고확신 종목은 손절 기준 1.4배 넓히기 (일시적 노이즈로 조기손절 방지)
+    const holdingAiScore = aiScoreMap.get(chain.stock_code) ?? 0;
+    const stopWidenMultiplier = holdingAiScore >= 80 ? 1.4 : holdingAiScore >= 65 ? 1.2 : 1.0;
+    const effectiveStop = Math.max(strategyParams.stopLossPct, dynamicStop) * stopWidenMultiplier;
     if (pnlPct <= effectiveStop) {
       // ── RSI<35 + 거래량 급증 = 패닉 매도 손절 억제 (공황 매도 직후 반등 확률 높음) ──
       if (sellTech && sellTech.rsi14 < 35 && sellTech.volumeRatio >= 2.5) {
@@ -326,12 +329,16 @@ export async function technicalFallbackDecisions(params: {
     // 각 종목 score 로깅 (디버깅용)
     logger.info(`  📊 ${stock.stock_code}: score=${tech.score}${candleBonus > 0 ? `+${candleBonus}캔들` : ''} RSI=${tech.rsi14.toFixed(0)} ADX=${tech.adx14.toFixed(0)}(${tech.trendStrength}) MACD=${tech.macdCrossover} vol=${tech.volumeRatio.toFixed(2)}x`, { component: 'TRACK_B' });
 
+    const aiScore = aiScoreMap.get(stock.stock_code) ?? 0;
+    const buyThreshold = strategyParams.buyThreshold;
+
     // ─── 거래량 확인 필터 ─────────────────────────────────────────────────
-    // 거래량 < 1.2x 평균 = 기관/외국인 관심 없음 = 가짜 돌파 위험
-    // 예외: 과매도(RSI<35) 반등은 거래량 바닥에서 발생 — 필터 면제
-    //       강한 불리쉬 캔들(망치형 등) = 저거래량에서도 의미있는 반전 신호
-    if (tech.volumeRatio < 1.5 && tech.rsi14 >= 35 && !hasBullishCandle) {
-      logger.info(`  📉 ${stock.stock_code}: 거래량 부족 (${tech.volumeRatio.toFixed(2)}x < 1.5) → 기관 관심 없음, 스킵`, { component: 'TRACK_B' });
+    // 거래량 < 1.5x 평균 = 기관/외국인 관심 없음 = 가짜 돌파 위험
+    // AI 80점+ 고확신 → 1.2x로 완화 (섹터 모멘텀이 거래량보다 선행)
+    // 예외: 과매도(RSI<35) 반등은 거래량 바닥에서 발생 / 강한 불리쉬 캔들
+    const volThreshold = aiScore >= 80 ? 1.2 : 1.5;
+    if (tech.volumeRatio < volThreshold && tech.rsi14 >= 35 && !hasBullishCandle) {
+      logger.info(`  📉 ${stock.stock_code}: 거래량 부족 (${tech.volumeRatio.toFixed(2)}x < ${volThreshold}) → 스킵 (AI=${aiScore})`, { component: 'TRACK_B' });
       continue;
     }
 
@@ -339,8 +346,6 @@ export async function technicalFallbackDecisions(params: {
     // ADX < 20 = 방향성 없음 = 저점에서 사고 팔다 끝나는 박스권 루프
     // SWING/DEFENSE 모드: ADX WEAK → 신규 진입 완전 차단 (추세 없으면 타지 않음)
     // SCALPING은 예외 (단타는 방향성 불필요)
-    const aiScore = aiScoreMap.get(stock.stock_code) ?? 0;
-    const buyThreshold = strategyParams.buyThreshold;
 
     if (mode === 'DEFENSE' && tech.trendStrength === 'WEAK') {
       // AI 없을 때 tech.score 기준 완화: 60 → 50 (SWING 수준)
@@ -354,10 +359,15 @@ export async function technicalFallbackDecisions(params: {
     // SWING 횡보장 강화 필터: trendStrength=WEAK → 거래량+MACD 동반 필수
     // 횡보장 whipsaw 방지 (시뮬 결과: 횡보 -3.34% 원인)
     if (mode === 'SWING' && tech.trendStrength === 'WEAK') {
-      const sidewaysOk = tech.volumeRatio >= 1.0 && tech.macdCrossover === 'BULLISH';
-      if (!sidewaysOk && aiScore < buyThreshold) {
-        logger.info(`  ⏸️ ${stock.stock_code}: 횡보(WEAK) SWING → vol=${tech.volumeRatio.toFixed(2)} MACD=${tech.macdCrossover} 미충족 스킵`, { component: 'TRACK_B' });
-        continue;
+      // AI 80점+ 고확신 → ADX WEAK 허용 (강한 섹터 모멘텀이 기술지표보다 선행)
+      if (aiScore >= 80) {
+        logger.info(`  ✅ ${stock.stock_code}: ADX WEAK이지만 AI고확신(${aiScore}점) → 진입 허용`, { component: 'TRACK_B' });
+      } else {
+        const sidewaysOk = tech.volumeRatio >= 1.0 && tech.macdCrossover === 'BULLISH';
+        if (!sidewaysOk && aiScore < buyThreshold) {
+          logger.info(`  ⏸️ ${stock.stock_code}: 횡보(WEAK) SWING → vol=${tech.volumeRatio.toFixed(2)} MACD=${tech.macdCrossover} 미충족 스킵`, { component: 'TRACK_B' });
+          continue;
+        }
       }
     }
     // ───────────────────────────────────────────────────────────────────
