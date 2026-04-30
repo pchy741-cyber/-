@@ -650,7 +650,9 @@ dashboardAnalysisRoutes.get('/market/sector-heatmap', async (c) => {
       headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'ko-KR,ko' },
       signal: AbortSignal.timeout(8000),
     });
-    const html = await res.text();
+    // 네이버 파이낸스는 EUC-KR 인코딩 — text()는 UTF-8 기본값이라 한글 깨짐
+    const buf = await res.arrayBuffer();
+    const html = new TextDecoder('euc-kr').decode(buf);
     const rows: any[] = [];
     const rowRe = /<tr[^>]*>[\s\S]*?<\/tr>/g;
     let m;

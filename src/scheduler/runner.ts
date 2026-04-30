@@ -27,6 +27,7 @@ import { parkIdleCash, unparkForTrading } from '../automation/cash-parking.js';
 import { manageUsdParking } from '../automation/usd-parking.js';
 import { runUnfilledOrderCheck } from './unfilled-order-job.js';
 import { runPreMarketQuickScore } from '../automation/pre-market-quick-score.js';
+import { warmupOpeningBell, runOpeningBellCycle } from './opening-bell-job.js';
 
 /**
  * 타임아웃을 적용하여 작업 실행 (지정 시간 초과 시 에러 로그 후 스킵)
@@ -169,11 +170,30 @@ export function startScheduler(): void {
       .finally(() => { _trackBRunning = false; });
   };
 
-  // 🔔 09:00 개장 즉시 — 초단타 선제 실행 (SCALPING 모드 자동 강제, pipeline 내부에서 처리)
+  // 🌅 08:55 — 개장 워밍업: 차트+시세 선행 캐시 + Gemini 사전 분석
+  cron.schedule(
+    '55 8 * * 1-5',
+    () => {
+      logger.info('🌅 개장 워밍업 시작 (08:55)', { component: 'SCHEDULER' });
+      warmupOpeningBell().catch(e => logger.error(`워밍업 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // ⚡ 09:00~09:10 — 개장 초단타 전용: 1분 간격 (캐시 차트 + Gemini 실시간 판단)
+  cron.schedule(
+    '0,1,2,3,4,5,6,7,8,9,10,11,12 9 * * 1-5',
+    () => {
+      runOpeningBellCycle().catch(e => logger.error(`개장 사이클 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🔔 09:00 개장 즉시 — 기존 Track B도 병행 (SCALPING 모드 자동 강제)
   cron.schedule(
     '0 9 * * 1-5',
     () => {
-      logger.info('🔔 개장 초단타 선제 실행 (09:00)', { component: 'SCHEDULER' });
+      logger.info('🔔 개장 Track B 선제 실행 (09:00)', { component: 'SCHEDULER' });
       runTrackBSafe();
     },
     { timezone: MARKET.TIMEZONE },

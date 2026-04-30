@@ -706,7 +706,7 @@ function PerformancePanel({ trades, strategy, setStrategy, toast }: { trades: an
             <div className={`text-base font-black ${maxDdPct > 15 ? 'text-rose-400' : maxDdPct > 7 ? 'text-amber-400' : 'text-slate-300'}`}>
               -{maxDdPct.toFixed(1)}%
             </div>
-            <div className="text-[9px] text-slate-600 mt-1">{fmtWon(maxDdAmt)}</div>
+            <div className="text-[9px] text-slate-600 mt-1">수익곡선 기준 {fmtWon(maxDdAmt)}</div>
           </div>
           <div className="bg-white/[0.03] rounded-xl p-3">
             <div className="text-[10px] text-slate-500 mb-1">승률</div>
