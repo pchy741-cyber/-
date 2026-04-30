@@ -8,6 +8,7 @@ import {
   getOpenChains,
   getRecentLossStocks,
   getRecentManuallySoldStocks,
+  getTodayRepeatStopCodes,
   logSystem,
 } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
@@ -82,6 +83,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       }
     };
     const [watchlist, openChains, strategy, recentLossCodes, manuallySoldCodes] = await dbLoadWithFallback();
+    // 당일 2회 이상 손절 종목 → 당일 재진입 완전 차단
+    const todayRepeatStopCodes = await getTodayRepeatStopCodes(2);
+    if (todayRepeatStopCodes.size > 0) {
+      logger.warn(`🚫 당일 반복손절 재진입 차단: ${[...todayRepeatStopCodes].join(', ')}`, { component: 'TRACK_B' });
+    }
     const [balanceRaw, reservedWithdraw] = await Promise.all([
       getAccountBalance(),
       import('../../automation/profit-withdraw.js').then(m => m.getTotalReserved()).catch(() => 0),
@@ -299,7 +305,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       orderableCash,
       maxPositionKrw: config.risk.maxPositionKrw,
       totalAssets,
-      lossBlockedCodes: recentLossCodes,
+      lossBlockedCodes: new Set([...recentLossCodes, ...todayRepeatStopCodes]),
       manuallySoldCodes,
       aiScores: adjustedScores,
       takeProfitPct: strategy?.take_profit_pct ?? undefined,

@@ -438,6 +438,28 @@ export async function getRecentLossStocks(daysBack = 14): Promise<Set<string>> {
   }
 }
 
+/**
+ * 당일 손절 2회 이상 종목 — 재진입 금지 (당일 한정)
+ */
+export async function getTodayRepeatStopCodes(minStops = 2): Promise<Set<string>> {
+  if (useMemory) return new Set();
+  try {
+    const { rows } = await getPool().query(
+      `SELECT stock_code, COUNT(*) AS stop_count
+         FROM transaction_chains
+        WHERE status = 'CLOSED'
+          AND realized_pnl < 0
+          AND closed_at >= CURRENT_DATE AT TIME ZONE 'Asia/Seoul'
+        GROUP BY stock_code
+       HAVING COUNT(*) >= $1`,
+      [minStops],
+    );
+    return new Set(rows.map((r: { stock_code: string }) => r.stock_code));
+  } catch {
+    return new Set();
+  }
+}
+
 // ── Risk Events ──
 
 export async function insertRiskEvent(event: {
