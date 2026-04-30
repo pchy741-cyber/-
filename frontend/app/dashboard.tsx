@@ -229,26 +229,78 @@ export default function Dashboard() {
     return () => es.close();
   }, []);
 
-  // PWA 푸시 알림 자동 등록
+  // 알림 상태
+  const [pushStatus, setPushStatus] = useState<{
+    ready: boolean;
+    publicKey: string;
+    deviceCount: number;
+    subscribed: boolean;
+    permissionState: NotificationPermission | 'unsupported';
+    registering: boolean;
+    error: string | null;
+  }>({
+    ready: false,
+    publicKey: '',
+    deviceCount: 0,
+    subscribed: false,
+    permissionState: typeof Notification !== 'undefined' ? Notification.permission : 'unsupported',
+    registering: false,
+    error: null,
+  });
+
+  // PWA 푸시 알림 상태 초기화 + 자동 등록
   useEffect(() => {
     (async () => {
-      try {
-        if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
-        if (Notification.permission === 'denied') return;
-        if (Notification.permission === 'default') {
-          const perm = await Notification.requestPermission();
-          if (perm !== 'granted') return;
+      if (typeof window === 'undefined') return;
+      const supported = 'serviceWorker' in navigator && 'PushManager' in window;
+      const perm: NotificationPermission | 'unsupported' = supported
+        ? Notification.permission
+        : 'unsupported';
+
+      // 서버 상태 조회
+      let serverStatus = { ready: false, publicKey: '', deviceCount: 0 };
+      try { serverStatus = await api('/push/status'); } catch { /* 서버 미응답 */ }
+
+      // 현재 구독 여부 확인
+      let subscribed = false;
+      if (supported && perm === 'granted') {
+        try {
+          const reg = await navigator.serviceWorker.ready;
+          const existing = await reg.pushManager.getSubscription();
+          subscribed = !!existing;
+        } catch { /* ignore */ }
+      }
+
+      setPushStatus(prev => ({
+        ...prev,
+        ...serverStatus,
+        subscribed,
+        permissionState: perm,
+      }));
+
+      // 권한 있고 구독 안 됐으면 자동 등록
+      if (supported && perm === 'granted' && !subscribed && serverStatus.ready && serverStatus.publicKey) {
+        try {
+          const reg = await navigator.serviceWorker.ready;
+          const sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(serverStatus.publicKey),
+          });
+          await api('/push/subscribe', { method: 'POST', body: JSON.stringify(sub) });
+          setPushStatus(prev => ({ ...prev, subscribed: true, deviceCount: prev.deviceCount + 1 }));
+        } catch (e: any) {
+          console.warn('[QUANTOPS] 자동 푸시 등록 실패:', e.message);
         }
-        const reg = await navigator.serviceWorker.ready;
-        const existing = await reg.pushManager.getSubscription();
-        if (existing) return; // 이미 등록됨
-        const { publicKey } = await api('/push/vapid-key');
-        const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: publicKey });
-        await api('/push/subscribe', { method: 'POST', body: JSON.stringify(sub) });
-        console.log('[QUANTOPS] 푸시 알림 자동 등록 완료');
-      } catch { /* silent */ }
+      }
     })();
   }, []);
+
+  function urlBase64ToUint8Array(base64String: string): Uint8Array {
+    const padding = '='.repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const rawData = atob(base64);
+    return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
+  }
 
   const toggleKill = async () => {
     const active = killSwitch?.active;
@@ -3932,39 +3984,132 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
         </Panel>
         <Panel title="알림 설정">
           <div className="px-6 py-5 space-y-4">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="text-sm font-medium">푸시 알림</p>
-                <p className="text-[12px] text-slate-500 mt-1">매수·매도·긴급 상황 알림을 받습니다</p>
+            {/* 상태 표시 바 */}
+            <div className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.04] border border-white/[0.07]">
+              <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                pushStatus.permissionState === 'unsupported' ? 'bg-slate-600' :
+                pushStatus.permissionState === 'denied' ? 'bg-red-500' :
+                pushStatus.subscribed && pushStatus.ready ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.7)] animate-pulse' :
+                'bg-amber-400'
+              }`} />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-semibold text-slate-200">
+                  {pushStatus.permissionState === 'unsupported' ? '알림 미지원 브라우저' :
+                   pushStatus.permissionState === 'denied' ? '알림 권한 차단됨' :
+                   !pushStatus.ready ? '서버 알림 초기화 중...' :
+                   pushStatus.subscribed ? '알림 활성 — 실시간 수신 중' :
+                   '알림 미등록'}
+                </p>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  {pushStatus.permissionState === 'denied'
+                    ? '브라우저 주소창 자물쇠 → 알림 → 허용으로 변경 후 새로고침'
+                    : pushStatus.subscribed && pushStatus.ready
+                    ? `등록 기기 ${pushStatus.deviceCount}대 · 매수/매도/긴급 알림 즉시 수신`
+                    : !pushStatus.ready
+                    ? 'VAPID 키 로드 중 — 잠시 후 버튼을 눌러주세요'
+                    : '아래 버튼으로 이 기기에 알림을 등록하세요'}
+                </p>
               </div>
-              <div className="flex gap-2 shrink-0">
-                <button onClick={async () => {
+              {pushStatus.subscribed && (
+                <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full shrink-0 font-medium">ON</span>
+              )}
+            </div>
+
+            {/* 에러 메시지 */}
+            {pushStatus.error && (
+              <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
+                <p className="text-[11px] text-red-400 font-medium">❌ 등록 실패</p>
+                <p className="text-[11px] text-slate-400 mt-1">{pushStatus.error}</p>
+              </div>
+            )}
+
+            {/* 버튼 영역 */}
+            <div className="flex gap-2">
+              <button
+                disabled={pushStatus.registering || pushStatus.permissionState === 'denied' || pushStatus.permissionState === 'unsupported'}
+                onClick={async () => {
+                  setPushStatus(prev => ({ ...prev, registering: true, error: null }));
                   try {
                     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-                      alert('이 브라우저는 푸시 알림을 지원하지 않습니다.\niOS는 사파리에서 홈 화면에 추가 후 사용하세요.');
+                      setPushStatus(prev => ({ ...prev, registering: false, error: '이 브라우저는 푸시 알림을 지원하지 않습니다. iOS는 사파리에서 홈 화면에 추가 후 사용하세요.' }));
                       return;
                     }
                     const permission = await Notification.requestPermission();
-                    if (permission !== 'granted') { alert('알림 권한이 거부되었습니다.\n브라우저 설정에서 허용해주세요.'); return; }
+                    if (permission !== 'granted') {
+                      setPushStatus(prev => ({ ...prev, registering: false, permissionState: 'denied', error: '알림 권한이 거부되었습니다. 브라우저 주소창 자물쇠 아이콘 → 알림 → 허용으로 변경해주세요.' }));
+                      return;
+                    }
+                    // VAPID 키 최신 로드
+                    const serverStatus = await api('/push/status');
+                    if (!serverStatus.ready || !serverStatus.publicKey) {
+                      setPushStatus(prev => ({ ...prev, registering: false, error: '서버 알림 키 초기화 중입니다. 10초 후 다시 시도해주세요.' }));
+                      return;
+                    }
                     const reg = await navigator.serviceWorker.ready;
-                    // 기존 구독 해제 후 재등록 (디바이스 전환 대응)
                     const existing = await reg.pushManager.getSubscription();
                     if (existing) await existing.unsubscribe();
-                    const { publicKey } = await api('/push/vapid-key');
-                    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: publicKey });
+                    const sub = await reg.pushManager.subscribe({
+                      userVisibleOnly: true,
+                      applicationServerKey: urlBase64ToUint8Array(serverStatus.publicKey),
+                    });
                     await api('/push/subscribe', { method: 'POST', body: JSON.stringify(sub) });
-                    toast?.('이 기기에 알림 등록 완료', 'ok');
-                  } catch (err: any) { alert('알림 등록 실패: ' + err.message); }
-                }} className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-xs font-semibold transition-all">이 기기에 등록</button>
-                <button onClick={async () => {
-                  try { await api('/push/test', { method: 'POST' }); toast?.('테스트 알림 전송', 'ok'); } catch { alert('테스트 실패'); }
-                }} className="px-3 py-2.5 bg-white/[0.06] hover:bg-white/[0.1] rounded-xl text-xs text-slate-400 transition-all">테스트</button>
-              </div>
+                    setPushStatus(prev => ({
+                      ...prev,
+                      registering: false,
+                      subscribed: true,
+                      ready: true,
+                      permissionState: 'granted',
+                      deviceCount: serverStatus.deviceCount + 1,
+                      error: null,
+                    }));
+                    toast?.('이 기기에 알림 등록 완료 — 매수/매도 즉시 알림됩니다', 'ok');
+                  } catch (err: any) {
+                    setPushStatus(prev => ({ ...prev, registering: false, error: err.message || '알 수 없는 오류' }));
+                  }
+                }}
+                className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-1.5"
+              >
+                {pushStatus.registering ? (
+                  <><span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin inline-block" /> 등록 중...</>
+                ) : pushStatus.subscribed ? '📱 이 기기 재등록' : '📱 이 기기에 등록'}
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    const res = await api('/push/test', { method: 'POST' });
+                    if (res.ok) toast?.('테스트 알림 전송 완료', 'ok');
+                    else toast?.('서버 알림 미준비 — 기기 등록 먼저', 'error');
+                  } catch {
+                    toast?.('테스트 실패 — 기기 등록 여부 확인', 'error');
+                  }
+                }}
+                className="px-4 py-2.5 bg-white/[0.06] hover:bg-white/[0.1] rounded-xl text-xs text-slate-400 transition-all shrink-0"
+              >테스트</button>
             </div>
+
+            {/* 알림 종류 안내 */}
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { icon: '🟢', label: '매수 체결', desc: '종목·수량·금액 즉시' },
+                { icon: '🔻', label: '매도/손절', desc: '손익률·금액 포함' },
+                { icon: '🎉', label: '목표 수익', desc: '+5% 이상 매도 시' },
+                { icon: '⚠️', label: '긴급 알림', desc: '킬스위치·시장 이상' },
+              ].map(({ icon, label, desc }) => (
+                <div key={label} className="flex items-start gap-2 p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.05]">
+                  <span className="text-base leading-none mt-0.5">{icon}</span>
+                  <div>
+                    <p className="text-[11px] font-medium text-slate-300">{label}</p>
+                    <p className="text-[10px] text-slate-500 mt-0.5">{desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* 기기 추가 안내 */}
             <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3">
-              <p className="text-[11px] text-amber-400 font-medium mb-1">📱 모바일/다른 기기에서 알림 받기</p>
-              <p className="text-[11px] text-slate-400">각 기기(폰·태블릿·PC)마다 해당 브라우저에서 이 페이지를 열고 <b className="text-slate-300">"이 기기에 등록"</b> 버튼을 눌러야 합니다.</p>
-              <p className="text-[11px] text-slate-500 mt-1">iOS 사파리: 공유 → 홈 화면에 추가 → 홈 화면 앱에서 열기 → 등록</p>
+              <p className="text-[11px] text-amber-400 font-medium mb-1">📱 폰·태블릿에서도 받으려면</p>
+              <p className="text-[11px] text-slate-400">각 기기 브라우저에서 이 페이지를 열고 <b className="text-slate-300">"이 기기에 등록"</b>을 누르세요. 기기마다 따로 등록해야 합니다.</p>
+              <p className="text-[11px] text-slate-500 mt-1">iPhone: 사파리 → 공유 → 홈 화면에 추가 → 홈 화면 앱에서 열기 → 등록</p>
             </div>
           </div>
         </Panel>

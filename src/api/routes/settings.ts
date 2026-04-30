@@ -105,8 +105,20 @@ settingsRoutes.put('/strategy', async (c) => {
 
 // ── 푸시 알림 ──
 settingsRoutes.get('/push/vapid-key', async (c) => {
-  const { getVapidPublicKey } = await import('../../notifications/web-push.js');
+  const { getVapidPublicKey, initVapid } = await import('../../notifications/web-push.js');
+  // 아직 초기화 안 됐을 경우 대기
+  if (!getVapidPublicKey()) await initVapid();
   return c.json({ publicKey: getVapidPublicKey() });
+});
+
+settingsRoutes.get('/push/status', async (c) => {
+  const { isVapidReady, getSubscriptionCount, getVapidPublicKey } = await import('../../notifications/web-push.js');
+  const count = isVapidReady() ? await getSubscriptionCount() : 0;
+  return c.json({
+    ready: isVapidReady(),
+    publicKey: getVapidPublicKey(),
+    deviceCount: count,
+  });
 });
 
 settingsRoutes.post('/push/subscribe', async (c) => {
@@ -117,8 +129,14 @@ settingsRoutes.post('/push/subscribe', async (c) => {
 });
 
 settingsRoutes.post('/push/test', async (c) => {
-  const { sendPushNotification } = await import('../../notifications/web-push.js');
-  await sendPushNotification({ title: 'QUANTOPS 테스트', body: '알림이 정상 작동합니다!' });
+  const { sendPushNotification, isVapidReady } = await import('../../notifications/web-push.js');
+  if (!isVapidReady()) return c.json({ ok: false, error: 'VAPID 미준비' }, 503);
+  await sendPushNotification({
+    title: '🔔 QUANTOPS 알림 테스트',
+    body: '매수·매도·긴급상황 알림이 이렇게 옵니다. 실제 거래 시 즉시 알림됩니다.',
+    tag: 'test-' + Date.now(),
+    url: '/',
+  });
   return c.json({ ok: true });
 });
 
