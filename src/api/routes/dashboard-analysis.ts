@@ -535,13 +535,23 @@ dashboardAnalysisRoutes.get('/market/performance-vs-kospi', async (c) => {
         AND o.created_at >= NOW() - INTERVAL '60 days'
       GROUP BY day ORDER BY day ASC
     `);
-    // KOSPI 60일 차트
-    const kospiCandles = await getDailyChart('0001', 65).catch(() => []);
-    const kospiBase = kospiCandles.length > 0 ? kospiCandles[kospiCandles.length - 1].close : 0;
-    const kospiPoints = kospiCandles.slice().reverse().map((c: any) => ({
-      date: c.date,
-      value: kospiBase > 0 ? ((c.close - kospiBase) / kospiBase) * 100 : 0,
-    }));
+    // KOSPI 60일 차트 — Naver Finance (KIS API는 지수 코드 필드명 불일치로 0 반환)
+    const kospiPoints = await (async () => {
+      const end = new Date();
+      const start = new Date(Date.now() - 70 * 24 * 60 * 60 * 1000);
+      const fmt = (d: Date) => d.toISOString().split('T')[0].replace(/-/g, '');
+      const url = `https://m.stock.naver.com/api/index/KOSPI/price?startTime=${fmt(start)}&endTime=${fmt(end)}&pageSize=70&type=DAYBYDAY`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) return [];
+      const data = await res.json() as Record<string, unknown>[];
+      if (!Array.isArray(data)) return [];
+      const sorted = data
+        .map((d: any) => ({ date: String(d.localDate ?? ''), price: Number(d.closePrice ?? d.endPrice ?? 0) }))
+        .filter(d => d.date && d.price > 0)
+        .sort((a, b) => a.date.localeCompare(b.date));
+      const base = sorted[0]?.price ?? 0;
+      return sorted.map(d => ({ date: d.date, value: base > 0 ? ((d.price - base) / base) * 100 : 0 }));
+    })().catch(() => [] as { date: string; value: number }[]);
     // 봇 누적수익률 (일별 합산)
     let cumPnl = 0; let cumCost = 0;
     const botPoints = pnlRows.map((r: any) => {
