@@ -517,3 +517,40 @@ dashboardAnalysisRoutes.post('/sync-positions', async (c) => {
 
 // suppress unused import warning
 void isInvalidStockName;
+
+// ── 워치리스트 외국인/기관 순매매 동향 ──
+// 5분 캐시 (KIS rate limit 대응)
+let _flowCache: { data: any[]; fetchedAt: number } = { data: [], fetchedAt: 0 };
+const FLOW_CACHE_TTL = 5 * 60 * 1000;
+
+dashboardAnalysisRoutes.get('/market/investor-flow', async (c) => {
+  try {
+    if (Date.now() - _flowCache.fetchedAt < FLOW_CACHE_TTL && _flowCache.data.length > 0) {
+      return c.json({ items: _flowCache.data, cached: true });
+    }
+    const watchlist = await getActiveWatchlist();
+    const PARK_SET = new Set(IDLE_PARK_CODES as readonly string[]);
+    const targets = watchlist.filter((w) => !PARK_SET.has(w.stock_code)).slice(0, 15); // 최대 15종목
+    const results = await Promise.allSettled(
+      targets.map(async (w) => {
+        const flow = await getInvestorFlow(w.stock_code, 5);
+        return {
+          stock_code: w.stock_code,
+          stock_name: w.stock_name,
+          foreignNet: flow.foreignNet,
+          institutionNet: flow.institutionNet,
+          foreignStreak: flow.foreignStreak,
+          trend: flow.trend,
+        };
+      }),
+    );
+    const items = results
+      .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled')
+      .map((r) => r.value)
+      .sort((a, b) => (b.foreignNet + b.institutionNet) - (a.foreignNet + a.institutionNet));
+    _flowCache = { data: items, fetchedAt: Date.now() };
+    return c.json({ items, cached: false });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});

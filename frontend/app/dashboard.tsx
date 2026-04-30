@@ -1288,6 +1288,100 @@ function AiTransparencyPanel({ watchlist, tab, usDash }: { watchlist: any[]; tab
 }
 
 // ═══════════════════════════════════════
+// 외국인/기관 순매매 패널
+// ═══════════════════════════════════════
+
+const TREND_META: Record<string, { label: string; color: string }> = {
+  STRONG_BUY: { label: '강매수', color: 'text-emerald-400' },
+  BUY:        { label: '매수',   color: 'text-emerald-300' },
+  NEUTRAL:    { label: '중립',   color: 'text-slate-400' },
+  SELL:       { label: '매도',   color: 'text-rose-300' },
+  STRONG_SELL:{ label: '강매도', color: 'text-rose-400' },
+};
+
+function InvestorFlowPanel() {
+  const [items, setItems] = React.useState<any[]>([]);
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    api('/market/investor-flow', { timeout: 30000 })
+      .then((d: any) => setItems(d.items ?? []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const top = items.filter((it) => it.trend === 'STRONG_BUY' || it.trend === 'BUY').slice(0, 5);
+  const warn = items.filter((it) => it.trend === 'STRONG_SELL' || it.trend === 'SELL').slice(0, 3);
+
+  return (
+    <Panel title="외국인·기관 수급" badge={items.length > 0 ? `${items.length}종목` : undefined}>
+      {loading ? (
+        <div className="px-4 py-6 text-center text-xs text-slate-500 animate-pulse">수급 데이터 불러오는 중…</div>
+      ) : items.length === 0 ? (
+        <div className="px-4 py-4 text-center text-xs text-slate-500">감시종목이 없거나 장중에만 조회 가능</div>
+      ) : (
+        <div className="divide-y divide-slate-800/30">
+          {top.length > 0 && (
+            <div className="px-4 py-2">
+              <p className="text-[10px] text-slate-500 mb-2 font-semibold tracking-wide uppercase">순매수 우위</p>
+              <div className="space-y-2">
+                {top.map((it) => {
+                  const meta = TREND_META[it.trend] ?? TREND_META.NEUTRAL;
+                  const streak = it.foreignStreak;
+                  return (
+                    <div key={it.stock_code} className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-xs font-semibold text-slate-200 truncate">{it.stock_name}</span>
+                        {streak !== 0 && (
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${streak > 0 ? 'bg-emerald-900/40 text-emerald-400' : 'bg-rose-900/40 text-rose-400'}`}>
+                            외국인 {streak > 0 ? '+' : ''}{streak}일
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0 text-right">
+                        <div className="text-[10px] text-slate-500">
+                          <span>외 {it.foreignNet > 0 ? '+' : ''}{it.foreignNet.toLocaleString()}</span>
+                          <span className="mx-1 text-slate-700">|</span>
+                          <span>기 {it.institutionNet > 0 ? '+' : ''}{it.institutionNet.toLocaleString()}</span>
+                        </div>
+                        <span className={`text-[11px] font-bold ${meta.color}`}>{meta.label}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {warn.length > 0 && (
+            <div className="px-4 py-2">
+              <p className="text-[10px] text-rose-500 mb-2 font-semibold tracking-wide uppercase">순매도 주의</p>
+              <div className="space-y-2">
+                {warn.map((it) => {
+                  const meta = TREND_META[it.trend] ?? TREND_META.NEUTRAL;
+                  return (
+                    <div key={it.stock_code} className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-slate-400 truncate">{it.stock_name}</span>
+                      <div className="flex items-center gap-3 shrink-0 text-right">
+                        <div className="text-[10px] text-slate-500">
+                          <span>외 {it.foreignNet > 0 ? '+' : ''}{it.foreignNet.toLocaleString()}</span>
+                          <span className="mx-1 text-slate-700">|</span>
+                          <span>기 {it.institutionNet > 0 ? '+' : ''}{it.institutionNet.toLocaleString()}</span>
+                        </div>
+                        <span className={`text-[11px] font-bold ${meta.color}`}>{meta.label}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+// ═══════════════════════════════════════
 // 머니 통계 패널 (누적수익 + 월별 막대 + 목표 게이지)
 // ═══════════════════════════════════════
 
@@ -2295,6 +2389,9 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       {/* ── 수익 구조 분해 ── */}
       <PnlBreakdownPanel chains={chains} trades={trades} />
 
+      {/* ── 외국인/기관 수급 ── */}
+      {holdingsTab === 'KR' && <InvestorFlowPanel />}
+
       {/* ── AI 판단 근거 투명성 ── */}
       <AiTransparencyPanel watchlist={watchlist} tab={holdingsTab} usDash={usDash} />
 
@@ -2509,7 +2606,7 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
                             <p>상태: <span className="text-slate-200">{chain.status}</span></p>
                             {chain.strategy_mode === 'SWING' && (
                               <>
-                                <p className="text-emerald-400">+8% 오르면 → 절반 팔아서 수익 확보</p>
+                                <p className="text-orange-400">수익 +3% 이상 & 고점 대비 -5% 이탈 → 전량 매도 (트레일링 스탑)</p>
                                 <p className="text-rose-400">-5% 떨어지면 → 전부 팔아서 손실 차단</p>
                                 <p className="text-blue-400">-3% 빠지면 → 더 싸게 추가 매수 (최대 3번)</p>
                               </>
@@ -2520,6 +2617,32 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
                                 <p className="text-rose-400">-3% 떨어지면 → 전부 팔아서 손실 차단</p>
                               </>
                             )}
+                          </div>
+                        ) : overseas ? (
+                          <div className="space-y-1 text-slate-400">
+                            <p>전략: <span className="text-slate-200 font-medium">미국주식 자동매매</span></p>
+                            {(() => {
+                              const isScalp = String(t.ai_reasoning || '').includes('scalp') || String(t.ai_reasoning || '').includes('SCALP');
+                              const tpMatch = String(t.ai_reasoning || '').match(/tp[:\s]*\$?([\d.]+)/i);
+                              const slMatch = String(t.ai_reasoning || '').match(/sl[:\s]*\$?([\d.]+)/i);
+                              if (isScalp && tpMatch && slMatch) {
+                                return (
+                                  <>
+                                    <p className="text-emerald-400">익절가 ${tpMatch[1]} 도달 → 전량 매도</p>
+                                    <p className="text-rose-400">손절가 ${slMatch[1]} 이탈 → 전량 매도</p>
+                                    <p className="text-amber-400">전략: 단타 (SCALP)</p>
+                                  </>
+                                );
+                              }
+                              return (
+                                <>
+                                  <p className="text-emerald-400">+10% 오르면 → 전량 매도 (익절)</p>
+                                  <p className="text-rose-400">-2.5% 떨어지면 → 전량 매도 (손절)</p>
+                                  <p className="text-orange-400">최고점 대비 -2.5% 빠지면 → 트레일링 스탑</p>
+                                  <p className="text-sky-400">AI 매도 신호 (신뢰도 55%↑) → 전량 매도</p>
+                                </>
+                              );
+                            })()}
                           </div>
                         ) : (
                           <p className="text-slate-500">체인 정보 없음</p>
@@ -3270,121 +3393,129 @@ function isGarbledPrompt(_val: string | null | undefined): boolean {
 }
 
 function GoldenRatioPanel({ allocConfig, setAllocConfig, toast }: any) {
-  const cfg = allocConfig ?? { parking_pct: 30, dividend_pct: 30, stock_pct: 40, is_active: false, rebalance_threshold_pct: 10 };
-  const [parking, setParking] = React.useState<number>(Number(cfg.parking_pct));
-  const [dividend, setDividend] = React.useState<number>(Number(cfg.dividend_pct));
-  const [stock, setStock] = React.useState<number>(Number(cfg.stock_pct));
-  const [threshold, setThreshold] = React.useState<number>(Number(cfg.rebalance_threshold_pct));
+  const cfg = allocConfig ?? { kr_pct: 70, us_pct: 30, sector_semiconductor: 30, sector_bio: 20, sector_defense: 25, sector_finance: 20, sector_etc: 30, trailing_stop_pct: 5 };
+  const [kr, setKr] = React.useState<number>(Number(cfg.kr_pct ?? 70));
+  const [us, setUs] = React.useState<number>(Number(cfg.us_pct ?? 30));
+  const [semi, setSemi] = React.useState<number>(Number(cfg.sector_semiconductor ?? 30));
+  const [bio, setBio] = React.useState<number>(Number(cfg.sector_bio ?? 20));
+  const [defense, setDefense] = React.useState<number>(Number(cfg.sector_defense ?? 25));
+  const [finance, setFinance] = React.useState<number>(Number(cfg.sector_finance ?? 20));
+  const [etc, setEtc] = React.useState<number>(Number(cfg.sector_etc ?? 30));
+  const [trailStop, setTrailStop] = React.useState<number>(Number(cfg.trailing_stop_pct ?? 5));
 
   React.useEffect(() => {
     if (allocConfig) {
-      setParking(Number(allocConfig.parking_pct));
-      setDividend(Number(allocConfig.dividend_pct));
-      setStock(Number(allocConfig.stock_pct));
-      setThreshold(Number(allocConfig.rebalance_threshold_pct));
+      setKr(Number(allocConfig.kr_pct ?? 70));
+      setUs(Number(allocConfig.us_pct ?? 30));
+      setSemi(Number(allocConfig.sector_semiconductor ?? 30));
+      setBio(Number(allocConfig.sector_bio ?? 20));
+      setDefense(Number(allocConfig.sector_defense ?? 25));
+      setFinance(Number(allocConfig.sector_finance ?? 20));
+      setEtc(Number(allocConfig.sector_etc ?? 30));
+      setTrailStop(Number(allocConfig.trailing_stop_pct ?? 5));
     }
   }, [allocConfig]);
 
-  const total = parking + dividend + stock;
-  const valid = Math.abs(total - 100) <= 1;
+  const krUsValid = Math.abs(kr + us - 100) <= 1;
 
-  const save = async (patch: Partial<{ parking_pct: number; dividend_pct: number; stock_pct: number; is_active: boolean; rebalance_threshold_pct: number }>) => {
-    const next = { parking_pct: parking, dividend_pct: dividend, stock_pct: stock, is_active: cfg.is_active, rebalance_threshold_pct: threshold, ...patch };
-    if (Math.abs(next.parking_pct + next.dividend_pct + next.stock_pct - 100) > 1) { toast?.('비율 합계가 100%여야 합니다', 'err'); return; }
+  const adjustKrUs = (side: 'kr' | 'us', val: number) => {
+    const v = Math.max(0, Math.min(100, val));
+    if (side === 'kr') { setKr(v); setUs(100 - v); }
+    else { setUs(v); setKr(100 - v); }
+  };
+
+  const save = async () => {
+    if (!krUsValid) { toast?.('국내+미국 합계가 100%여야 합니다', 'err'); return; }
     try {
-      const updated = await api('/portfolio/allocation', { method: 'PUT', body: JSON.stringify(next) });
+      const updated = await api('/portfolio/allocation', { method: 'PUT', body: JSON.stringify({
+        kr_pct: kr, us_pct: us,
+        sector_semiconductor: semi, sector_bio: bio, sector_defense: defense, sector_finance: finance, sector_etc: etc,
+        trailing_stop_pct: trailStop,
+      })});
       setAllocConfig(updated);
-      toast?.('황금비율 저장됨', 'ok');
+      toast?.('투자비율 저장됨', 'ok');
     } catch { toast?.('저장 실패', 'err'); }
   };
 
-  // 슬라이더 조정 시 나머지 항목 비례 분배
-  const adjustOther = (changed: 'parking' | 'dividend' | 'stock', val: number) => {
-    const clamped = Math.max(0, Math.min(100, val));
-    const others = 100 - clamped;
-    if (changed === 'parking') {
-      const ratio = dividend + stock > 0 ? dividend / (dividend + stock) : 0.5;
-      setParking(clamped); setDividend(Math.round(others * ratio)); setStock(Math.round(others * (1 - ratio)));
-    } else if (changed === 'dividend') {
-      const ratio = parking + stock > 0 ? parking / (parking + stock) : 0.5;
-      setDividend(clamped); setParking(Math.round(others * ratio)); setStock(Math.round(others * (1 - ratio)));
-    } else {
-      const ratio = parking + dividend > 0 ? parking / (parking + dividend) : 0.5;
-      setStock(clamped); setParking(Math.round(others * ratio)); setDividend(Math.round(others * (1 - ratio)));
-    }
-  };
-
-  const barColor = ['bg-sky-500', 'bg-emerald-500', 'bg-violet-500'];
+  const SectorInput = ({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) => (
+    <div className="flex items-center justify-between">
+      <span className="text-[11px] text-slate-400">{label}</span>
+      <div className="flex items-center gap-1.5">
+        <input type="number" min={5} max={100} step={5} value={value}
+          onChange={e => onChange(Math.max(5, Math.min(100, Number(e.target.value))))}
+          className="w-16 bg-white/[0.05] ring-1 ring-white/[0.08] rounded-lg px-2 py-1.5 text-xs text-white text-center focus:outline-none focus:ring-blue-500/50" />
+        <span className="text-[11px] text-slate-500">%</span>
+      </div>
+    </div>
+  );
 
   return (
-    <Panel title="🏆 황금비율 목표 배분">
-      <div className="px-6 py-5 space-y-5">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-sm font-medium text-slate-200">포트폴리오 황금비율</p>
-            <p className="text-[12px] text-slate-500 mt-1">파킹 ETF · 배당주 · 매매주식의 목표 비율 설정. AI가 매매 시 이 비율을 고려해 진입/청산 우선순위를 조정합니다.</p>
-          </div>
-          <button onClick={() => save({ is_active: !cfg.is_active })}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all ${cfg.is_active ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-white/[0.06] hover:bg-white/[0.1] text-slate-400'}`}>
-            {cfg.is_active ? 'ON' : 'OFF'}
-          </button>
-        </div>
+    <Panel title="투자비율 설정">
+      <div className="px-6 py-5 space-y-6">
 
-        {/* 비율 막대 시각화 */}
-        <div className="w-full h-4 rounded-full overflow-hidden flex gap-0.5">
-          <div className="bg-sky-500 transition-all" style={{ width: `${parking}%` }} title={`파킹 ${parking}%`} />
-          <div className="bg-emerald-500 transition-all" style={{ width: `${dividend}%` }} title={`배당 ${dividend}%`} />
-          <div className="bg-violet-500 transition-all" style={{ width: `${stock}%` }} title={`주식 ${stock}%`} />
-        </div>
-        <div className="flex justify-between text-[10px] text-slate-400 -mt-1">
-          {[['sky', '🅿 파킹 ETF', parking], ['emerald', '💎 배당주', dividend], ['violet', '📈 매매주식', stock]].map(([color, label, pct]) => (
-            <span key={String(label)} className="flex items-center gap-1">
-              <span className={`w-2 h-2 rounded-sm bg-${color}-500`} />{label} <span className="font-bold text-white">{pct}%</span>
-            </span>
-          ))}
-        </div>
-
-        {/* 슬라이더 */}
+        {/* 국내 vs 미국 */}
         <div className="space-y-3">
-          {([['파킹 ETF (현금성 안전자산)', parking, (v: number) => adjustOther('parking', v), 'sky'],
-            ['배당주 (고배당·리츠)', dividend, (v: number) => adjustOther('dividend', v), 'emerald'],
-            ['매매주식 (단기·스윙)', stock, (v: number) => adjustOther('stock', v), 'violet']] as [string, number, (v: number) => void, string][]).map(([label, val, setter, color]) => (
-            <div key={label} className="space-y-1">
-              <div className="flex justify-between text-[11px]">
-                <span className="text-slate-400">{label}</span>
-                <span className="font-bold text-white">{val}%</span>
-              </div>
-              <input type="range" min={0} max={100} step={5} value={val}
-                onChange={e => setter(Number(e.target.value))}
-                className={`w-full h-1.5 rounded-full appearance-none cursor-pointer accent-${color}-500`} />
-            </div>
-          ))}
-        </div>
-
-        {!valid && <p className="text-[11px] text-rose-400">⚠ 합계 {total}% — 100%로 맞춰주세요</p>}
-
-        <div className="flex items-end gap-3 pt-1">
-          <div className="flex-1 space-y-1">
-            <p className="text-[11px] text-slate-400">리밸런싱 허용 오차</p>
-            <div className="flex items-center gap-2">
-              <input type="number" min={1} max={30} step={1} value={threshold} onChange={e => setThreshold(Number(e.target.value))}
-                className="w-24 bg-white/[0.05] ring-1 ring-white/[0.08] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:ring-blue-500/50" />
-              <span className="text-[11px] text-slate-500">% 이내</span>
-            </div>
+          <p className="text-xs font-semibold text-slate-300">국내 / 미국 비율</p>
+          <div className="w-full h-3 rounded-full overflow-hidden flex">
+            <div className="bg-blue-500 transition-all" style={{ width: `${kr}%` }} />
+            <div className="bg-amber-500 transition-all" style={{ width: `${us}%` }} />
           </div>
-          <button onClick={() => save({ parking_pct: parking, dividend_pct: dividend, stock_pct: stock, rebalance_threshold_pct: threshold })}
-            disabled={!valid}
-            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 rounded-xl text-xs font-semibold transition-all shrink-0">
-            저장
-          </button>
+          <div className="flex justify-between text-[10px] text-slate-400">
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-blue-500" />국내 <span className="font-bold text-white">{kr}%</span></span>
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-amber-500" />미국 <span className="font-bold text-white">{us}%</span></span>
+          </div>
+          <div className="space-y-2">
+            {([['국내 주식', kr, (v: number) => adjustKrUs('kr', v), 'blue'], ['미국 주식', us, (v: number) => adjustKrUs('us', v), 'amber']] as [string, number, (v: number) => void, string][]).map(([label, val, setter, color]) => (
+              <div key={label} className="space-y-1">
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-slate-400">{label}</span>
+                  <span className="font-bold text-white">{val}%</span>
+                </div>
+                <input type="range" min={0} max={100} step={5} value={val}
+                  onChange={e => setter(Number(e.target.value))}
+                  className={`w-full h-1.5 rounded-full appearance-none cursor-pointer accent-${color}-500`} />
+              </div>
+            ))}
+          </div>
+          {!krUsValid && <p className="text-[11px] text-rose-400">합계 {kr + us}% — 100%가 되어야 합니다</p>}
         </div>
 
-        <div className="text-[10px] text-slate-600 space-y-0.5 pt-1">
-          <p>* 파킹 ETF 예시: TIGER 단기채권, KODEX 머니마켓</p>
-          <p>* 배당주 예시: 고배당 ETF, REIT (월배당)</p>
-          <p>* 매매주식: 단타·스윙 대상 종목</p>
-          <p>* AI가 즉시 강제 매매하지 않고, 타점 잡을 때 비율 방향으로 조정합니다</p>
+        <div className="border-t border-white/[0.06]" />
+
+        {/* 섹터별 최대 한도 */}
+        <div className="space-y-3">
+          <div>
+            <p className="text-xs font-semibold text-slate-300">섹터별 최대 투자 한도</p>
+            <p className="text-[11px] text-slate-500 mt-0.5">포트폴리오 대비 각 섹터 최대 비중. AI가 한도 초과 종목 신규 매수를 막습니다.</p>
+          </div>
+          <div className="space-y-2.5">
+            <SectorInput label="반도체 (SK하이닉스·삼성·한미반도체 등)" value={semi} onChange={setSemi} />
+            <SectorInput label="바이오·제약" value={bio} onChange={setBio} />
+            <SectorInput label="방산 (한화에어로·현대로템 등)" value={defense} onChange={setDefense} />
+            <SectorInput label="금융·은행" value={finance} onChange={setFinance} />
+            <SectorInput label="기타 단일 섹터" value={etc} onChange={setEtc} />
+          </div>
         </div>
+
+        <div className="border-t border-white/[0.06]" />
+
+        {/* 트레일링 스탑 */}
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-slate-300">트레일링 스탑 기준</p>
+          <p className="text-[11px] text-slate-500">수익 +3% 이상일 때 활성화. 고점 대비 이 값 이상 하락하면 전량 매도합니다.</p>
+          <div className="flex items-center gap-3">
+            <input type="range" min={2} max={15} step={1} value={trailStop}
+              onChange={e => setTrailStop(Number(e.target.value))}
+              className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer accent-orange-500" />
+            <span className="text-sm font-bold text-orange-400 w-12 text-right">-{trailStop}%</span>
+          </div>
+          <p className="text-[10px] text-slate-600">예: -{trailStop}% → 고점 100만원이면 {(100 * (1 - trailStop / 100)).toFixed(0)}만원 이탈 시 매도</p>
+        </div>
+
+        <button onClick={save} disabled={!krUsValid}
+          className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 rounded-xl text-xs font-semibold transition-all">
+          저장
+        </button>
       </div>
     </Panel>
   );
