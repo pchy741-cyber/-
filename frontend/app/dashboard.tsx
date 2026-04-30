@@ -229,73 +229,6 @@ export default function Dashboard() {
     return () => es.close();
   }, []);
 
-  // 알림 상태
-  const [pushStatus, setPushStatus] = useState<{
-    ready: boolean;
-    publicKey: string;
-    deviceCount: number;
-    subscribed: boolean;
-    permissionState: NotificationPermission | 'unsupported';
-    registering: boolean;
-    error: string | null;
-  }>({
-    ready: false,
-    publicKey: '',
-    deviceCount: 0,
-    subscribed: false,
-    permissionState: typeof Notification !== 'undefined' ? Notification.permission : 'unsupported',
-    registering: false,
-    error: null,
-  });
-
-  // PWA 푸시 알림 상태 초기화 + 자동 등록
-  useEffect(() => {
-    (async () => {
-      if (typeof window === 'undefined') return;
-      const supported = 'serviceWorker' in navigator && 'PushManager' in window;
-      const perm: NotificationPermission | 'unsupported' = supported
-        ? Notification.permission
-        : 'unsupported';
-
-      // 서버 상태 조회
-      let serverStatus = { ready: false, publicKey: '', deviceCount: 0 };
-      try { serverStatus = await api('/push/status'); } catch { /* 서버 미응답 */ }
-
-      // 현재 구독 여부 확인
-      let subscribed = false;
-      if (supported && perm === 'granted') {
-        try {
-          const reg = await navigator.serviceWorker.ready;
-          const existing = await reg.pushManager.getSubscription();
-          subscribed = !!existing;
-        } catch { /* ignore */ }
-      }
-
-      setPushStatus(prev => ({
-        ...prev,
-        ...serverStatus,
-        subscribed,
-        permissionState: perm,
-      }));
-
-      // 권한 있고 구독 안 됐으면 자동 등록
-      if (supported && perm === 'granted' && !subscribed && serverStatus.ready && serverStatus.publicKey) {
-        try {
-          const reg = await navigator.serviceWorker.ready;
-          const sub = await reg.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: serverStatus.publicKey,
-          });
-          await api('/push/subscribe', { method: 'POST', body: JSON.stringify(sub) });
-          setPushStatus(prev => ({ ...prev, subscribed: true, deviceCount: prev.deviceCount + 1 }));
-        } catch (e: any) {
-          console.warn('[QUANTOPS] 자동 푸시 등록 실패:', e.message);
-        }
-      }
-    })();
-  }, []);
-
-
   const toggleKill = async () => {
     const active = killSwitch?.active;
     await api(`/kill-switch/${active ? 'deactivate' : 'activate'}`, { method: 'POST' });
@@ -3798,6 +3731,59 @@ function GoldenRatioPanel({ allocConfig, setAllocConfig, toast }: any) {
 
 function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, gptRef, claudeRef, killSwitch, toggleKill, withdrawConfig, setWithdrawConfig, withdrawHistory, setWithdrawHistory, allocConfig, setAllocConfig, toast }: any) {
   const [activeStep, setActiveStep] = useState<number>(0);
+
+  // 알림 상태
+  const [pushStatus, setPushStatus] = useState<{
+    ready: boolean;
+    publicKey: string;
+    deviceCount: number;
+    subscribed: boolean;
+    permissionState: NotificationPermission | 'unsupported';
+    registering: boolean;
+    error: string | null;
+  }>({
+    ready: false,
+    publicKey: '',
+    deviceCount: 0,
+    subscribed: false,
+    permissionState: typeof Notification !== 'undefined' ? Notification.permission : 'unsupported',
+    registering: false,
+    error: null,
+  });
+
+  // 알림 상태 초기화 + 자동 등록
+  useEffect(() => {
+    (async () => {
+      if (typeof window === 'undefined') return;
+      const supported = 'serviceWorker' in navigator && 'PushManager' in window;
+      const perm: NotificationPermission | 'unsupported' = supported ? Notification.permission : 'unsupported';
+
+      let serverStatus = { ready: false, publicKey: '', deviceCount: 0 };
+      try { serverStatus = await api('/push/status'); } catch { /* ignore */ }
+
+      let subscribed = false;
+      if (supported && perm === 'granted') {
+        try {
+          const reg = await navigator.serviceWorker.ready;
+          const existing = await reg.pushManager.getSubscription();
+          subscribed = !!existing;
+        } catch { /* ignore */ }
+      }
+
+      setPushStatus(prev => ({ ...prev, ...serverStatus, subscribed, permissionState: perm }));
+
+      if (supported && perm === 'granted' && !subscribed && serverStatus.ready && serverStatus.publicKey) {
+        try {
+          const reg = await navigator.serviceWorker.ready;
+          const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: serverStatus.publicKey });
+          await api('/push/subscribe', { method: 'POST', body: JSON.stringify(sub) });
+          setPushStatus(prev => ({ ...prev, subscribed: true, deviceCount: prev.deviceCount + 1 }));
+        } catch (e: any) {
+          console.warn('[QUANTOPS] 자동 푸시 등록 실패:', e.message);
+        }
+      }
+    })();
+  }, []);
   const [nbSources, setNbSources] = useState<NbSource[]>(() => parseNbSources(strategy?.notebooklm_prompt));
   const [nbAddTitle, setNbAddTitle] = useState('');
   const [nbAddContent, setNbAddContent] = useState('');
