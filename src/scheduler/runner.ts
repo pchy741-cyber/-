@@ -217,12 +217,15 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 수급 분석 — 60분 간격 (+5분 오프셋)
+  // 수급 분석 — 장 시작 전(08:30) + 장 마감 후(15:40) 2회만 (장중 KIS rate limit 보호)
   cron.schedule(
-    '5 9,10,11,12,13,14,15 * * 1-5',
-    () => {
-      withTimeout('수급 분석', () => analyzeWatchlistFlows(), 120_000);
-    },
+    '30 8 * * 1-5',
+    () => { withTimeout('수급 분석 (장전)', () => analyzeWatchlistFlows(), 180_000); },
+    { timezone: MARKET.TIMEZONE },
+  );
+  cron.schedule(
+    '40 15 * * 1-5',
+    () => { withTimeout('수급 분석 (장후)', () => analyzeWatchlistFlows(), 180_000); },
     { timezone: MARKET.TIMEZONE },
   );
 

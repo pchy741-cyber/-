@@ -230,8 +230,8 @@ export async function analyzeWatchlistFlows(): Promise<Map<string, InvestorFlowR
 
   logger.info(`📊 감시목록 ${watchlist.length}개 종목 투자자흐름 분석 시작`, { component: COMPONENT });
 
-  // KIS rate limit 대응: 5개씩 배치 처리
-  const batchSize = 5;
+  // KIS rate limit 대응: 2개씩 배치, 1초 대기 (장전/장후 실행이므로 여유있게)
+  const batchSize = 2;
   for (let i = 0; i < watchlist.length; i += batchSize) {
     const batch = watchlist.slice(i, i + batchSize);
     const flows = await Promise.all(batch.map((item) => getInvestorFlow(item.stock_code)));
@@ -240,9 +240,8 @@ export async function analyzeWatchlistFlows(): Promise<Map<string, InvestorFlowR
       results.set(batch[j].stock_code, flows[j]);
     }
 
-    // 배치 사이 200ms 대기 (rate limit)
     if (i + batchSize < watchlist.length) {
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 1000));
     }
   }
 

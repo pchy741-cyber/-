@@ -602,7 +602,7 @@ export async function technicalFallbackDecisions(params: {
 
     // 종목당 1차 매수: 자산 기반 동적 포지션 한도의 1/splitCount, 잔고 한도 내
     const positionSize = Math.min(effectiveMaxPos / splitCount * priorityMultiplier * convictionMultiplier, remainingCash / maxBuys);
-    if (positionSize < 50000) break; // 최소 5만원 (1주라도 매수)
+    if (positionSize < 250000) break; // 최소 25만원 (4% 수익 시 1만원 이상 확보)
 
     const quantity = Math.floor(positionSize / cand.price.currentPrice);
     if (quantity <= 0) continue;
