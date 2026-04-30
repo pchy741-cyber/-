@@ -48,7 +48,7 @@ substitutions:
   _REGION: asia-northeast3
   _REPO: cloud-run-source-deploy
   _SERVICE: auto-ai-bot
-  _TAG: v0-65-20
+  _TAG: v0-66-1
   _GEMINI_API_KEY: ''
 
 options:

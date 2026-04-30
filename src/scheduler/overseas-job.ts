@@ -33,9 +33,10 @@ const GLOBAL_WATCHLIST = [
   { code: 'AMD',   name: 'AMD',             exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
   { code: 'ANET',  name: 'Arista Networks', exchange: 'NYSE',   region: 'US', sector: 'INFRA' },  // 데이터센터 네트워크 +57% YoY
   { code: 'VRT',   name: 'Vertiv',          exchange: 'NYSE',   region: 'US', sector: 'INFRA' },  // 데이터센터 냉각 고성장
-  // 🏛️ 빅테크 선별 (유동성 확보, 2종목으로 축소)
+  // 🏛️ 빅테크 선별 (유동성 확보)
   { code: 'META',  name: 'Meta',            exchange: 'NASDAQ', region: 'US', sector: 'TECH' },
   { code: 'AAPL',  name: 'Apple',           exchange: 'NASDAQ', region: 'US', sector: 'TECH' },
+  { code: 'MSFT',  name: 'Microsoft',       exchange: 'NASDAQ', region: 'US', sector: 'TECH' },
   // 🛡️ 방산·항공우주 (2025 최강 섹터, 글로벌 군비 지출 +9.4% YoY)
   { code: 'RTX',   name: 'RTX Corp',        exchange: 'NYSE',   region: 'US', sector: 'DEFENSE' }, // Raytheon +60% YTD
   { code: 'LMT',   name: 'Lockheed Martin', exchange: 'NYSE',   region: 'US', sector: 'DEFENSE' }, // F-35 수주 지속

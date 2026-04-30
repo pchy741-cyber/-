@@ -4,7 +4,7 @@ import { type DailyCandle, getDailyChart, getVolumeRankingStocks, getChangeRanki
 import { logger } from '../../utils/logger.js';
 import { config } from '../../config/index.js';
 import { type ScoringResult } from '../../db/models.js';
-import { runGeminiAnalysis, type GeminiAnalysis } from './gemini.js';
+import { runGeminiAnalysis } from './gemini.js';
 import { runGeminiScoring } from './gemini-scorer.js';
 import { getStockAccuracyContext } from '../../automation/self-learning.js';
 
@@ -15,69 +15,6 @@ function normalizeStockCode(raw: unknown): string {
   return text.replace(/[^A-Z0-9.\-]/g, '');
 }
 
-function normalizeGeminiStocks(
-  stocks: GeminiAnalysis['stocks'],
-  allowedStockNameByCode: Map<string, string>,
-): { stocks: GeminiAnalysis['stocks']; droppedUnknown: number; droppedDuplicate: number } {
-  const deduped = new Map<string, GeminiAnalysis['stocks'][number]>();
-  let droppedUnknown = 0;
-  let droppedDuplicate = 0;
-
-  for (const stock of stocks) {
-    const normalizedCode = normalizeStockCode(stock.stock_code);
-    const canonicalName = allowedStockNameByCode.get(normalizedCode);
-    if (!normalizedCode || !canonicalName) {
-      droppedUnknown++;
-      continue;
-    }
-    if (deduped.has(normalizedCode)) {
-      droppedDuplicate++;
-      continue;
-    }
-    deduped.set(normalizedCode, {
-      ...stock,
-      stock_code: normalizedCode,
-      // 종목명은 DB/watchlist를 정본으로 사용해서 LLM 오기재를 차단
-      stock_name: canonicalName,
-    });
-  }
-
-  return { stocks: [...deduped.values()], droppedUnknown, droppedDuplicate };
-}
-
-function normalizeScoringResults(
-  scores: ScoringResult[],
-  allowedStockNameByCode: Map<string, string>,
-): { scores: ScoringResult[]; droppedUnknown: number; mergedDuplicate: number } {
-  const deduped = new Map<string, ScoringResult>();
-  let droppedUnknown = 0;
-  let mergedDuplicate = 0;
-
-  for (const score of scores) {
-    const normalizedCode = normalizeStockCode(score.stock_code);
-    if (!normalizedCode || !allowedStockNameByCode.has(normalizedCode)) {
-      droppedUnknown++;
-      continue;
-    }
-
-    const normalizedScore = { ...score, stock_code: normalizedCode };
-    const prev = deduped.get(normalizedCode);
-    if (!prev) {
-      deduped.set(normalizedCode, normalizedScore);
-      continue;
-    }
-
-    mergedDuplicate++;
-    const prevConfidence = prev.confidence ?? 0;
-    const nextConfidence = normalizedScore.confidence ?? 0;
-    const pickNext =
-      nextConfidence > prevConfidence ||
-      (nextConfidence === prevConfidence && normalizedScore.composite_score > prev.composite_score);
-    if (pickNext) deduped.set(normalizedCode, normalizedScore);
-  }
-
-  return { scores: [...deduped.values()], droppedUnknown, mergedDuplicate };
-}
 
 /**
  * Track A 전체 파이프라인
@@ -147,7 +84,6 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       });
     }
     const allStocks = [...allStocksMap.values()];
-    const allowedStockNameByCode = new Map(allStocks.map((s) => [s.stock_code, s.stock_name]));
     logger.info(`감시 종목: ${watchlist.length}개 + 발굴 후보: ${discoveryList.length}개 = 합계 ${allStocks.length}개 (중복제거 후)`, { component: 'TRACK_A' });
 
     // 2. CEO 전략 설정 로드
@@ -244,14 +180,6 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         additionalSources: combinedSources || undefined,
         customPrompt: customGeminiPrompt ?? undefined,
       });
-      const normalized = normalizeGeminiStocks(geminiResult.stocks, allowedStockNameByCode);
-      if (normalized.droppedUnknown > 0 || normalized.droppedDuplicate > 0) {
-        logger.warn(
-          `Gemini 분석 종목 정합성 보정: unknown=${normalized.droppedUnknown}, duplicate=${normalized.droppedDuplicate}`,
-          { component: 'TRACK_A' },
-        );
-      }
-      geminiResult.stocks = normalized.stocks;
     } catch (geminiErr) {
       logger.warn(`⚠️ Gemini 실패: ${geminiErr}`, { component: 'TRACK_A' });
     }
@@ -264,14 +192,6 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
           geminiAnalysis: geminiResult,
           customPrompt: customGptPrompt ?? undefined,
         });
-        const normalized = normalizeScoringResults(scores, allowedStockNameByCode);
-        if (normalized.droppedUnknown > 0 || normalized.mergedDuplicate > 0) {
-          logger.warn(
-            `Gemini 스코어 정합성 보정: unknown=${normalized.droppedUnknown}, duplicate=${normalized.mergedDuplicate}`,
-            { component: 'TRACK_A' },
-          );
-        }
-        scores = normalized.scores;
       } catch (geminiScoreErr) {
         logger.warn(`⚠️ Gemini 스코어링 실패: ${geminiScoreErr}`, { component: 'TRACK_A' });
       }
@@ -281,14 +201,6 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     if (scores.length === 0) {
       try {
         scores = await runGeminiFallbackAnalysis(mode, allStocks, chartData, strategy);
-        const normalized = normalizeScoringResults(scores, allowedStockNameByCode);
-        if (normalized.droppedUnknown > 0 || normalized.mergedDuplicate > 0) {
-          logger.warn(
-            `Gemini 통합 폴백 스코어 정합성 보정: unknown=${normalized.droppedUnknown}, duplicate=${normalized.mergedDuplicate}`,
-            { component: 'TRACK_A' },
-          );
-        }
-        scores = normalized.scores;
       } catch (flashErr) {
         logger.warn(`⚠️ Gemini 통합 폴백 실패: ${flashErr}`, { component: 'TRACK_A' });
       }

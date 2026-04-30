@@ -13,7 +13,7 @@ import { autoSwitchStrategy } from '../automation/market-regime.js';
 import { collectWatchlistNews } from '../automation/news-collector.js';
 import { runSelfHealing } from '../automation/self-heal.js';
 import { runDailyLearning } from '../automation/self-learning.js';
-import { runWatchlistRotation, runDailyMarketScan } from '../automation/watchlist-rotation.js';
+
 import { runSniperScan } from '../automation/snipers/runner.js';
 import { MARKET, SCHEDULE } from '../config/constants.js';
 import { logger } from '../utils/logger.js';
@@ -387,24 +387,6 @@ export function startScheduler(): void {
     '30 18 * * 1-5',
     () => {
       runDailyLearning().catch((e) => logger.error(`자기학습 실패: ${e}`, { component: 'SCHEDULER' }));
-    },
-    { timezone: MARKET.TIMEZONE },
-  );
-
-  // 🔄 워치리스트 자동 순환 — 일요일 19:00 (14일 평균 40점 미만 종목 비활성화)
-  cron.schedule(
-    '0 19 * * 0',
-    () => {
-      runWatchlistRotation().catch((e) => logger.error(`워치리스트 순환 실패: ${e}`, { component: 'SCHEDULER' }));
-    },
-    { timezone: MARKET.TIMEZONE },
-  );
-
-  // 🔍 일일 시장 발굴 — 평일 08:50 (거래량/급등 상위 종목 자동 편입)
-  cron.schedule(
-    '50 8 * * 1-5',
-    () => {
-      runDailyMarketScan().catch((e) => logger.error(`일일 시장 발굴 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

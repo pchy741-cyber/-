@@ -7,21 +7,32 @@ import { analyzeTechnicals, type OHLCV } from '../../analysis/indicators.js';
 
 export const overseasRoutes = new Hono();
 
-// 글로벌 감시목록 (미국 + 일본 + 대만)
+// 글로벌 감시목록 (미국 NYSE/NASDAQ + 일본·대만 ADR)
 const GLOBAL_WATCHLIST = [
-  { code: 'AAPL', name: 'Apple', exchange: 'NASDAQ' },
-  { code: 'NVDA', name: 'NVIDIA', exchange: 'NASDAQ' },
-  { code: 'MSFT', name: 'Microsoft', exchange: 'NASDAQ' },
-  { code: 'GOOGL', name: 'Google', exchange: 'NASDAQ' },
-  { code: 'AMZN', name: 'Amazon', exchange: 'NASDAQ' },
-  { code: 'TSLA', name: 'Tesla', exchange: 'NASDAQ' },
-  { code: 'META', name: 'Meta', exchange: 'NASDAQ' },
-  { code: '7203', name: 'Toyota', exchange: 'TSE' },
-  { code: '6758', name: 'Sony', exchange: 'TSE' },
-  { code: '6861', name: 'Keyence', exchange: 'TSE' },
-  { code: '2330', name: 'TSMC', exchange: 'TPE' },
-  { code: '2317', name: 'Foxconn', exchange: 'TPE' },
-  { code: '2454', name: 'MediaTek', exchange: 'TPE' },
+  { code: 'NVDA',  name: 'NVIDIA',           exchange: 'NASDAQ' },
+  { code: 'AMD',   name: 'AMD',              exchange: 'NASDAQ' },
+  { code: 'ANET',  name: 'Arista Networks',  exchange: 'NYSE'   },
+  { code: 'VRT',   name: 'Vertiv',           exchange: 'NYSE'   },
+  { code: 'META',  name: 'Meta',             exchange: 'NASDAQ' },
+  { code: 'AAPL',  name: 'Apple',            exchange: 'NASDAQ' },
+  { code: 'MSFT',  name: 'Microsoft',        exchange: 'NASDAQ' },
+  { code: 'RTX',   name: 'RTX Corp',         exchange: 'NYSE'   },
+  { code: 'LMT',   name: 'Lockheed Martin',  exchange: 'NYSE'   },
+  { code: 'GEV',   name: 'GE Vernova',       exchange: 'NYSE'   },
+  { code: 'PLTR',  name: 'Palantir',         exchange: 'NYSE'   },
+  { code: 'ETN',   name: 'Eaton Corp',       exchange: 'NYSE'   },
+  { code: 'PWR',   name: 'Quanta Services',  exchange: 'NYSE'   },
+  { code: 'TSLA',  name: 'Tesla',            exchange: 'NASDAQ' },
+  { code: 'COIN',  name: 'Coinbase',         exchange: 'NASDAQ' },
+  { code: 'AMZN',  name: 'Amazon',           exchange: 'NASDAQ' },
+  { code: 'GOOGL', name: 'Alphabet',         exchange: 'NASDAQ' },
+  { code: 'MELI',  name: 'MercadoLibre',     exchange: 'NASDAQ' },
+  { code: 'AVGO',  name: 'Broadcom',         exchange: 'NASDAQ' },
+  { code: 'TM',    name: 'Toyota Motor',     exchange: 'NYSE'   },
+  { code: 'SONY',  name: 'Sony Group',       exchange: 'NYSE'   },
+  { code: 'MUFG',  name: 'Mitsubishi UFJ',   exchange: 'NYSE'   },
+  { code: 'TSM',   name: 'TSMC',             exchange: 'NYSE'   },
+  { code: 'UMC',   name: 'United Micro',     exchange: 'NYSE'   },
 ];
 
 // 해외주식 대시보드 (60초 캐시)

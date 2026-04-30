@@ -2294,9 +2294,11 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                   const priceData = usW.find((s: any) => s.code === h.stock_code);
                   const curPrice = (priceData?.price ?? 0) > 0 ? priceData!.price : (h.last_price ?? 0);
                   const isStale = (priceData?.price ?? 0) === 0 && curPrice > 0; // DB 저장 마지막 시세
+                  const displayPrice = curPrice > 0 ? curPrice : (h.avg_price ?? 0); // 최후 폴백: 매수가
+                  const isAvgFallback = curPrice === 0 && displayPrice > 0;
                   const invested = h.avg_price * h.quantity;
-                  const pnl = curPrice > 0 ? (curPrice - h.avg_price) * h.quantity : 0;
-                  const pnlPct = curPrice > 0 && h.avg_price > 0 ? ((curPrice - h.avg_price) / h.avg_price) * 100 : 0;
+                  const pnl = displayPrice > 0 ? (displayPrice - h.avg_price) * h.quantity : 0;
+                  const pnlPct = displayPrice > 0 && h.avg_price > 0 ? ((displayPrice - h.avg_price) / h.avg_price) * 100 : 0;
                   const usDisplayName = toDisplayName(priceData?.name, h.stock_code);
                   return (
                     <div key={h.stock_code} className="px-4 py-3 flex items-center justify-between">
@@ -2308,11 +2310,12 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                         <div className="text-[11px] text-slate-500">평단 ${h.avg_price.toFixed(2)} · 투자 ${invested.toFixed(0)}</div>
                       </div>
                       <div className="text-right">
-                        {curPrice > 0 ? (
+                        {displayPrice > 0 ? (
                           <>
                             <div className={`text-base font-bold ${pc(pnl)}`}>{pnlPct > 0 ? '+' : ''}{pnlPct.toFixed(1)}%</div>
                             <div className={`text-[11px] ${pc(pnl)}`}>${pnl.toFixed(0)}</div>
-                            {isStale && <div className="text-[10px] text-slate-600">장마감 시세</div>}
+                            {isAvgFallback && <div className="text-[10px] text-slate-600">매수가 기준</div>}
+                            {isStale && !isAvgFallback && <div className="text-[10px] text-slate-600">장마감 시세</div>}
                           </>
                         ) : <span className="text-xs text-slate-600">시세 없음</span>}
                       </div>
