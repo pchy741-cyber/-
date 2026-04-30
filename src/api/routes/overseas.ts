@@ -40,46 +40,54 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
   const cached = cacheGet<any>('overseas:dashboard');
   if (cached) return c.json(cached);
 
-  // 가격 조회 + DB 보유종목 + KIS 잔고를 모두 병렬 시작
+  // 가격 조회: DB 일괄 로드(즉시) → 인메모리 캐시 채우기 → KIS 백그라운드 갱신
   const pricePromise = (async () => {
-    const prices: Array<{ code: string; name: string; exchange: string; price: number; changePct: number; volume: number }> = [];
-    const BATCH = 5;
-    for (let i = 0; i < GLOBAL_WATCHLIST.length; i += BATCH) {
-      const batch = GLOBAL_WATCHLIST.slice(i, i + BATCH);
-      const results = await Promise.allSettled(
-        batch.map(stock => getOverseasPrice(stock.code, stock.exchange))
+    // 1. DB에서 모든 종목 가격 일괄 로드 (단일 쿼리, ~50ms)
+    const dbPrices: Record<string, { price: number; changePct: number; volume: number }> = {};
+    try {
+      const { getPool } = await import('../../db/client.js');
+      const codes = GLOBAL_WATCHLIST.map(s => s.code);
+      const { rows } = await getPool().query(
+        `SELECT code, price, change_pct, volume FROM overseas_prices WHERE code = ANY($1)`,
+        [codes],
       );
-      for (let j = 0; j < batch.length; j++) {
-        const stock = batch[j];
-        const result = results[j];
-        if (result.status === 'fulfilled' && result.value.currentPrice > 0) {
-          const p = result.value;
-          prices.push({ code: stock.code, name: stock.name, exchange: stock.exchange, price: p.currentPrice, changePct: p.changePct, volume: p.volume });
-          cacheSet(`overseas:lastprice:${stock.code}`, { price: p.currentPrice, changePct: p.changePct, volume: p.volume }, 86400);
-        } else {
-          const last = cacheGet<any>(`overseas:lastprice:${stock.code}`);
-          if (last) {
-            prices.push({ code: stock.code, name: stock.name, exchange: stock.exchange, price: last.price, changePct: last.changePct, volume: last.volume });
-          } else {
-            // 서버 재시작 후 인메모리 캐시 없으면 DB 폴백
-            try {
-              const { getPool } = await import('../../db/client.js');
-              const { rows } = await getPool().query(
-                `SELECT price, change_pct, volume FROM overseas_prices WHERE exchange = $1 AND code = $2`,
-                [stock.exchange, stock.code],
-              );
-              const row = rows[0];
-              prices.push({ code: stock.code, name: stock.name, exchange: stock.exchange, price: row ? Number(row.price) : 0, changePct: row ? Number(row.change_pct) : 0, volume: row ? Number(row.volume) : 0 });
-            } catch {
-              prices.push({ code: stock.code, name: stock.name, exchange: stock.exchange, price: 0, changePct: 0, volume: 0 });
-            }
-          }
+      for (const row of rows) {
+        dbPrices[row.code] = { price: Number(row.price), changePct: Number(row.change_pct), volume: Number(row.volume) };
+        // DB 데이터로 인메모리 캐시 채우기 (아직 KIS 갱신 없으면 재시작 후 빠른 폴백용)
+        if (!cacheGet(`overseas:lastprice:${row.code}`)) {
+          cacheSet(`overseas:lastprice:${row.code}`, dbPrices[row.code], 86400);
         }
       }
-      if (i + BATCH < GLOBAL_WATCHLIST.length) {
-        await new Promise(r => setTimeout(r, 150));
+    } catch { /* DB 접근 실패 시 인메모리 캐시만 사용 */ }
+
+    // 2. 즉시 응답용 가격 배열 (인메모리 캐시 우선, DB 폴백)
+    const prices = GLOBAL_WATCHLIST.map(stock => {
+      const mem = cacheGet<any>(`overseas:lastprice:${stock.code}`);
+      const db = dbPrices[stock.code];
+      const d = mem ?? db;
+      return { code: stock.code, name: stock.name, exchange: stock.exchange, price: d?.price ?? 0, changePct: d?.changePct ?? 0, volume: d?.volume ?? 0 };
+    });
+
+    // 3. KIS API 백그라운드 갱신 (응답 블로킹 없음 — 다음 60초 캐시 만료 후 반영)
+    (async () => {
+      const BATCH = 5;
+      for (let i = 0; i < GLOBAL_WATCHLIST.length; i += BATCH) {
+        const batch = GLOBAL_WATCHLIST.slice(i, i + BATCH);
+        const results = await Promise.allSettled(
+          batch.map(stock => getOverseasPrice(stock.code, stock.exchange))
+        );
+        for (let j = 0; j < batch.length; j++) {
+          const stock = batch[j];
+          const result = results[j];
+          if (result.status === 'fulfilled' && result.value.currentPrice > 0) {
+            const p = result.value;
+            cacheSet(`overseas:lastprice:${stock.code}`, { price: p.currentPrice, changePct: p.changePct, volume: p.volume }, 86400);
+          }
+        }
+        if (i + BATCH < GLOBAL_WATCHLIST.length) await new Promise(r => setTimeout(r, 150));
       }
-    }
+    })().catch(() => {});
+
     return prices;
   })();
 

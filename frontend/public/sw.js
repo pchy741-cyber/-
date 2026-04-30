@@ -109,7 +109,11 @@ self.addEventListener('push', (event) => {
     actions,
   };
 
-  event.waitUntil(self.registration.showNotification(title, options));
+  event.waitUntil(
+    self.registration.showNotification(title, options).catch(() =>
+      self.registration.showNotification(title, { body, icon: '/icon-192.png', tag, data: { url } })
+    )
+  );
 });
 
 // ══════════════════════════════════════

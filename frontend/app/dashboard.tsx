@@ -1008,6 +1008,7 @@ function VisionScalpPanel({ toast }: { toast?: (msg: string, type?: string) => v
   const [executing, setExecuting] = React.useState(false);
   const [amountUsd, setAmountUsd] = React.useState(200);
   const [result, setResult] = React.useState<any>(null);
+  const [analyzeError, setAnalyzeError] = React.useState<string | null>(null);
 
   const handleFile = (file: File) => {
     if (!file.type.startsWith('image/')) return;
@@ -1028,14 +1029,20 @@ function VisionScalpPanel({ toast }: { toast?: (msg: string, type?: string) => v
     if (!imgBase64) return;
     setAnalyzing(true);
     setSignal(null);
+    setAnalyzeError(null);
     try {
       const res = await api('/overseas/vision-scalp/analyze', {
         method: 'POST',
         body: JSON.stringify({ imageBase64: imgBase64, mimeType }),
+        timeout: 45000,
       });
       setSignal(res);
-      if (!res?.ticker) toast?.('미국 주식 신호를 찾지 못했습니다', 'error');
-    } catch { toast?.('분석 실패', 'error'); }
+      if (!res?.ticker) toast?.('미국 주식 신호를 찾지 못했습니다', 'info');
+    } catch (e) {
+      const msg = (e as Error).name === 'AbortError' ? 'AI 분석 시간 초과 (45초) — 재시도해 주세요' : '분석 실패 — 서버 로그 확인';
+      setAnalyzeError(msg);
+      toast?.(msg, 'err');
+    }
     finally { setAnalyzing(false); }
   };
 
@@ -1054,14 +1061,14 @@ function VisionScalpPanel({ toast }: { toast?: (msg: string, type?: string) => v
       });
       if (res?.ok) {
         setResult(res);
-        toast?.(`${signal.ticker} 단타 매수 완료 — ${res.qty}주 @ $${res.price?.toFixed(2)}`, 'success');
+        toast?.(`${signal.ticker} 단타 매수 완료 — ${res.qty}주 @ $${res.price?.toFixed(2)}`, 'ok');
         setSignal(null);
         setImgPreview(null);
         setImgBase64('');
       } else {
-        toast?.(res?.error ?? '실행 실패', 'error');
+        toast?.(res?.error ?? '실행 실패', 'err');
       }
-    } catch { toast?.('실행 오류', 'error'); }
+    } catch { toast?.('실행 오류', 'err'); }
     finally { setExecuting(false); }
   };
 
@@ -1104,6 +1111,11 @@ function VisionScalpPanel({ toast }: { toast?: (msg: string, type?: string) => v
           ) : signal && !signal.ticker ? (
             <div className="bg-slate-800/60 rounded-xl px-3 py-2 text-[11px] text-slate-500">{signal.reasoning}</div>
           ) : null}
+
+          {/* 분석 오류 */}
+          {analyzeError && (
+            <div className="bg-rose-900/30 border border-rose-800/40 rounded-xl px-3 py-2 text-[10px] text-rose-400">{analyzeError}</div>
+          )}
 
           {/* 실행 결과 */}
           {result && (
@@ -2370,8 +2382,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                     try {
                       await api('/overseas/insights', { method: 'PUT', body: JSON.stringify({ insights: insightsDraft }) });
                       setUsInsights(insightsDraft);
-                      toast?.('인사이트 저장됨', 'success');
-                    } catch { toast?.('저장 실패', 'error'); }
+                      toast?.('인사이트 저장됨', 'ok');
+                    } catch { toast?.('저장 실패', 'err'); }
                     setInsightsSaving(false);
                   }}
                   className="text-[11px] px-3 py-1 bg-blue-600/70 hover:bg-blue-500/70 disabled:bg-slate-700 disabled:text-slate-500 rounded-lg transition-all"
@@ -3751,7 +3763,7 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
     error: null,
   });
 
-  // 알림 상태 초기화 + 자동 등록
+  // 알림 상태 초기화 + 자동 등록 (VAPID 키 변경 시 자동 재등록)
   useEffect(() => {
     (async () => {
       if (typeof window === 'undefined') return;
@@ -3766,7 +3778,23 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
         try {
           const reg = await navigator.serviceWorker.ready;
           const existing = await reg.pushManager.getSubscription();
-          subscribed = !!existing;
+          if (existing) {
+            // VAPID 키 변경 감지: 서버 키와 구독의 applicationServerKey 비교
+            const akBuf = existing.options?.applicationServerKey as ArrayBuffer | null;
+            if (akBuf && serverStatus.publicKey) {
+              const b64 = btoa(String.fromCharCode(...new Uint8Array(akBuf)))
+                .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+              if (b64 !== serverStatus.publicKey) {
+                // 키 불일치 → 기존 구독 해제, 재등록 트리거
+                console.info('[QUANTOPS] VAPID 키 변경 감지 → 재등록');
+                await existing.unsubscribe();
+              } else {
+                subscribed = true;
+              }
+            } else {
+              subscribed = true;
+            }
+          }
         } catch { /* ignore */ }
       }
 
@@ -4061,9 +4089,9 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
                   try {
                     const res = await api('/push/test', { method: 'POST' });
                     if (res.ok) toast?.('테스트 알림 전송 완료', 'ok');
-                    else toast?.('서버 알림 미준비 — 기기 등록 먼저', 'error');
+                    else toast?.('서버 알림 미준비 — 기기 등록 먼저', 'err');
                   } catch {
-                    toast?.('테스트 실패 — 기기 등록 여부 확인', 'error');
+                    toast?.('테스트 실패 — 기기 등록 여부 확인', 'err');
                   }
                 }}
                 className="px-4 py-2.5 bg-white/[0.06] hover:bg-white/[0.1] rounded-xl text-xs text-slate-400 transition-all shrink-0"
