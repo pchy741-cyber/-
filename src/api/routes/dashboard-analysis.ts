@@ -518,6 +518,189 @@ dashboardAnalysisRoutes.post('/sync-positions', async (c) => {
 // suppress unused import warning
 void isInvalidStockName;
 
+// ── 봇 수익률 vs KOSPI 비교 ──
+dashboardAnalysisRoutes.get('/market/performance-vs-kospi', async (c) => {
+  try {
+    const pool = getPool();
+    // 최근 60일 일별 실현손익 합계
+    const { rows: pnlRows } = await pool.query(`
+      SELECT DATE(o.created_at AT TIME ZONE 'Asia/Seoul') AS day,
+             SUM((o.filled_price - tc.avg_buy_price) * o.filled_quantity) AS daily_pnl,
+             SUM(tc.avg_buy_price * o.filled_quantity) AS cost_basis
+      FROM orders o
+      JOIN transaction_chains tc ON tc.id = o.chain_id
+      WHERE o.side = 'SELL' AND o.status = 'FILLED'
+        AND o.trigger_source != 'OVERSEAS'
+        AND o.filled_price IS NOT NULL AND tc.avg_buy_price IS NOT NULL
+        AND o.created_at >= NOW() - INTERVAL '60 days'
+      GROUP BY day ORDER BY day ASC
+    `);
+    // KOSPI 60일 차트
+    const kospiCandles = await getDailyChart('0001', 65).catch(() => []);
+    const kospiBase = kospiCandles.length > 0 ? kospiCandles[kospiCandles.length - 1].close : 0;
+    const kospiPoints = kospiCandles.slice().reverse().map((c: any) => ({
+      date: c.date,
+      value: kospiBase > 0 ? ((c.close - kospiBase) / kospiBase) * 100 : 0,
+    }));
+    // 봇 누적수익률 (일별 합산)
+    let cumPnl = 0; let cumCost = 0;
+    const botPoints = pnlRows.map((r: any) => {
+      cumPnl += Number(r.daily_pnl ?? 0);
+      cumCost += Number(r.cost_basis ?? 0);
+      return { date: String(r.day).slice(0, 10), value: cumCost > 0 ? (cumPnl / cumCost) * 100 : 0 };
+    });
+    return c.json({ bot: botPoints, kospi: kospiPoints });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── 세금 추정 (양도세 + 거래세) ──
+dashboardAnalysisRoutes.get('/market/tax-estimate', async (c) => {
+  try {
+    const pool = getPool();
+    const year = new Date().getFullYear();
+    const { rows } = await pool.query(`
+      SELECT
+        SUM(GREATEST(0, (o.filled_price - tc.avg_buy_price) * o.filled_quantity)) AS gross_gain,
+        SUM(GREATEST(0, (tc.avg_buy_price - o.filled_price) * o.filled_quantity)) AS gross_loss,
+        SUM(o.filled_price * o.filled_quantity * 0.0023) AS transaction_tax,
+        SUM(o.filled_price * o.filled_quantity) AS total_sell_amount
+      FROM orders o
+      JOIN transaction_chains tc ON tc.id = o.chain_id
+      WHERE o.side = 'SELL' AND o.status = 'FILLED'
+        AND o.trigger_source != 'OVERSEAS'
+        AND EXTRACT(YEAR FROM o.created_at) = $1
+        AND o.filled_price IS NOT NULL AND tc.avg_buy_price IS NOT NULL
+    `, [year]);
+    const r = rows[0] ?? {};
+    const grossGain = Number(r.gross_gain ?? 0);
+    const grossLoss = Number(r.gross_loss ?? 0);
+    const netGain = grossGain - grossLoss;
+    const transactionTax = Number(r.transaction_tax ?? 0);
+    // 소액주주 국내 상장 주식: 양도세 없음 (단, 대주주 판정 기준 50억 미만)
+    const capitalGainsTax = 0;
+    return c.json({ year, grossGain, grossLoss, netGain, transactionTax, capitalGainsTax, totalSellAmount: Number(r.total_sell_amount ?? 0) });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── 52주 신고가 스캐너 (워치리스트) ──
+let _highCache: { data: any[]; fetchedAt: number } = { data: [], fetchedAt: 0 };
+dashboardAnalysisRoutes.get('/market/52w-highs', async (c) => {
+  try {
+    if (Date.now() - _highCache.fetchedAt < 10 * 60 * 1000 && _highCache.data.length > 0)
+      return c.json({ items: _highCache.data });
+    const watchlist = await getActiveWatchlist();
+    const PARK_SET = new Set(IDLE_PARK_CODES as readonly string[]);
+    const targets = watchlist.filter((w) => !PARK_SET.has(w.stock_code)).slice(0, 20);
+    const results = await Promise.allSettled(targets.map(async (w) => {
+      const candles = await getDailyChart(w.stock_code, 65).catch(() => []);
+      if (candles.length < 10) return null;
+      const high52w = Math.max(...candles.map((c: any) => c.high ?? c.close));
+      const current = candles[0]?.close ?? 0;
+      const dropFromHigh = high52w > 0 ? ((current - high52w) / high52w) * 100 : 0;
+      const isNearHigh = dropFromHigh >= -3; // 신고가 3% 이내
+      return { stock_code: w.stock_code, stock_name: w.stock_name, current, high52w, dropFromHigh, isNearHigh };
+    }));
+    const items = results
+      .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled' && r.value !== null)
+      .map((r) => r.value)
+      .sort((a, b) => b.dropFromHigh - a.dropFromHigh); // 신고가 근접 순
+    _highCache = { data: items, fetchedAt: Date.now() };
+    return c.json({ items });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── 공매도 비율 (보유종목) ──
+let _shortCache: { data: any[]; fetchedAt: number } = { data: [], fetchedAt: 0 };
+dashboardAnalysisRoutes.get('/market/short-selling', async (c) => {
+  try {
+    if (Date.now() - _shortCache.fetchedAt < 10 * 60 * 1000 && _shortCache.data.length > 0)
+      return c.json({ items: _shortCache.data });
+    const openChains = await getOpenChains();
+    const PARK_SET = new Set(IDLE_PARK_CODES as readonly string[]);
+    const targets = openChains.filter((ch: any) => !PARK_SET.has(ch.stock_code) && Number(ch.total_quantity) > 0);
+    const results = await Promise.allSettled(targets.map(async (ch: any) => {
+      const s = await fetchShortSellingData(ch.stock_code, 5).catch(() => null);
+      if (!s) return null;
+      return { stock_code: ch.stock_code, stock_name: (ch as any).stock_name ?? ch.stock_code, shortRatio: s.shortRatio, isIncreasing: s.isIncreasing, riskLevel: s.riskLevel, trend: s.shortTrend };
+    }));
+    const items = results
+      .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled' && r.value !== null)
+      .map((r) => r.value)
+      .sort((a, b) => b.shortRatio - a.shortRatio);
+    _shortCache = { data: items, fetchedAt: Date.now() };
+    return c.json({ items });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── 업종 히트맵 (네이버 금융 스크래핑) ──
+let _sectorCache: { data: any[]; fetchedAt: number } = { data: [], fetchedAt: 0 };
+dashboardAnalysisRoutes.get('/market/sector-heatmap', async (c) => {
+  try {
+    if (Date.now() - _sectorCache.fetchedAt < 5 * 60 * 1000 && _sectorCache.data.length > 0)
+      return c.json({ items: _sectorCache.data });
+    const res = await fetch('https://finance.naver.com/sise/sise_group.naver?type=upjong', {
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'ko-KR,ko' },
+      signal: AbortSignal.timeout(8000),
+    });
+    const html = await res.text();
+    const rows: any[] = [];
+    const rowRe = /<tr[^>]*>[\s\S]*?<\/tr>/g;
+    let m;
+    while ((m = rowRe.exec(html)) !== null) {
+      const tdRe = /<td[^>]*>([\s\S]*?)<\/td>/g;
+      const tds: string[] = [];
+      let td;
+      while ((td = tdRe.exec(m[0])) !== null) tds.push(td[1].replace(/<[^>]+>/g, '').trim());
+      if (tds.length >= 3 && tds[0] && !isNaN(parseFloat(tds[2]?.replace(/[^-0-9.]/g, '')))) {
+        rows.push({ name: tds[0], pct: parseFloat(tds[2].replace(/[^-0-9.]/g, '')) || 0 });
+      }
+    }
+    const items = rows.filter((r) => r.name && r.name.length > 1).slice(0, 20);
+    if (items.length > 0) _sectorCache = { data: items, fetchedAt: Date.now() };
+    return c.json({ items });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── 포트폴리오 상관관계 경고 ──
+const SECTOR_MAP: Record<string, string> = {
+  '000660': '반도체', '005930': '반도체', '042700': '반도체', '005290': '반도체', '357780': '반도체', '403870': '반도체',
+  '051910': '배터리', '006400': '배터리', '247540': '배터리', '373220': '배터리', '336260': '배터리', '003670': '배터리',
+  '012450': '방산', '079550': '방산', '034020': '방산',
+  '035420': '인터넷', '035720': '인터넷', '377300': '인터넷',
+  '207940': '바이오', '068270': '바이오', '328130': '바이오', '196170': '바이오', '028300': '바이오',
+  '055550': '금융', '105560': '금융', '316140': '금융',
+  '267260': '전력', '009540': '조선', '066570': '가전',
+};
+dashboardAnalysisRoutes.get('/market/correlation', async (c) => {
+  try {
+    const openChains = await getOpenChains();
+    const PARK_SET = new Set(IDLE_PARK_CODES as readonly string[]);
+    const held = openChains.filter((ch: any) => !PARK_SET.has(ch.stock_code) && Number(ch.total_quantity) > 0);
+    const sectorGroups: Record<string, string[]> = {};
+    for (const ch of held) {
+      const sector = SECTOR_MAP[ch.stock_code] ?? '기타';
+      if (!sectorGroups[sector]) sectorGroups[sector] = [];
+      sectorGroups[sector].push((ch as any).stock_name ?? ch.stock_code);
+    }
+    const warnings = Object.entries(sectorGroups)
+      .filter(([, names]) => names.length >= 2)
+      .map(([sector, names]) => ({ sector, count: names.length, stocks: names }));
+    return c.json({ warnings, sectorGroups });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
 // ── 워치리스트 외국인/기관 순매매 동향 ──
 // 5분 캐시 (KIS rate limit 대응)
 let _flowCache: { data: any[]; fetchedAt: number } = { data: [], fetchedAt: 0 };
