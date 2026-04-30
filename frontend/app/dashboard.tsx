@@ -2094,22 +2094,6 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
         );
       })()}
 
-      {/* ── 머니 통계 (누적수익 + 월별 막대 + 목표 게이지) ── */}
-      <MoneyStatsPanel market={holdingsTab} />
-
-      {/* ── 리스크 게이지 + 전략 이력 ── */}
-      {(() => {
-        const dailyLossPct = totalPnl < 0 ? Math.min(100, Math.round((Math.abs(totalPnl) / dailyLossLimit) * 100)) : 0;
-        const maxInvested = chains.reduce((mx: number, ch: any) => Math.max(mx, Number(ch.invested) || 0), 0);
-        const concPct = totalInvested > 0 ? Math.round((maxInvested / totalInvested) * 100) : 0;
-        return (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <RiskGaugePanel investedPct={investedPct} dailyLossPct={dailyLossPct} concentrationPct={concPct} />
-            <StrategyTimelinePanel strategy={strategy} />
-          </div>
-        );
-      })()}
-
       {/* ── 보유종목 (국내/해외 탭) ── */}
       <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden">
         {/* 탭 헤더 */}
@@ -2396,6 +2380,19 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
           </div>
         )}
       </div>
+
+      {/* ── 머니 통계 (누적수익 + 월별 막대 + 목표 게이지) ── */}
+      <MoneyStatsPanel market={holdingsTab} />
+
+      {/* ── 리스크 게이지 ── */}
+      {(() => {
+        const dailyLossPct = totalPnl < 0 ? Math.min(100, Math.round((Math.abs(totalPnl) / dailyLossLimit) * 100)) : 0;
+        const maxInvested = chains.reduce((mx: number, ch: any) => Math.max(mx, Number(ch.invested) || 0), 0);
+        const concPct = totalInvested > 0 ? Math.round((maxInvested / totalInvested) * 100) : 0;
+        return (
+          <RiskGaugePanel investedPct={investedPct} dailyLossPct={dailyLossPct} concentrationPct={concPct} />
+        );
+      })()}
 
       {/* ── 포트폴리오 비중 (접기/펼치기) ── */}
       <div>
@@ -3707,17 +3704,17 @@ function GoldenRatioPanel({ allocConfig, setAllocConfig, toast }: any) {
 
         <div className="border-t border-white/[0.06]" />
 
-        {/* 트레일링 스탑 */}
+        {/* 자동 수익 보호 (트레일링 스탑) */}
         <div className="space-y-2">
-          <p className="text-xs font-semibold text-slate-300">트레일링 스탑 기준</p>
-          <p className="text-[11px] text-slate-500">수익 +3% 이상일 때 활성화. 고점 대비 이 값 이상 하락하면 전량 매도합니다.</p>
+          <p className="text-xs font-semibold text-slate-300">수익 보호 — 고점에서 얼마나 빠지면 팔까?</p>
+          <p className="text-[11px] text-slate-500">수익이 +3% 이상 났을 때만 작동합니다. 최고점에서 이 % 이상 내려오면 자동으로 전량 매도해 수익을 지킵니다.</p>
           <div className="flex items-center gap-3">
             <input type="range" min={2} max={15} step={1} value={trailStop}
               onChange={e => setTrailStop(Number(e.target.value))}
               className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer accent-orange-500" />
             <span className="text-sm font-bold text-orange-400 w-12 text-right">-{trailStop}%</span>
           </div>
-          <p className="text-[10px] text-slate-600">예: -{trailStop}% → 고점 100만원이면 {(100 * (1 - trailStop / 100)).toFixed(0)}만원 이탈 시 매도</p>
+          <p className="text-[10px] text-slate-600">예: 100만원까지 올랐다가 {trailStop}% 빠진 {(100 * (1 - trailStop / 100)).toFixed(0)}만원이 되면 → 자동 매도</p>
         </div>
 
         <button onClick={save} disabled={!krUsValid}
@@ -3935,6 +3932,9 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
 
   return (
     <div className="space-y-5 sm:space-y-6">
+      {/* ── 전략 이력 ── */}
+      <StrategyTimelinePanel strategy={strategy} />
+
       {/* ── KIS 미설정 경고 ── */}
       {(!secrets?.kis_appkey?.exists || !secrets?.kis_appsecret?.exists) && (
         <div className="bg-amber-950/30 border border-amber-500/20 rounded-2xl p-4 flex items-start gap-3">
@@ -4100,9 +4100,9 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
           <div className="px-6 py-5">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <Sel label="매매 방식" value={strategy.mode} opts={[['SWING','스윙 (중단기)'],['DEFENSE','방어 (하락장)'],['SCALPING','단타 (당일)']]} onChange={v => setField('mode', v)} />
-              <Sel label="AI 매수 기준점수" value={strategy.buy_threshold} opts={[[50,'50점'],[55,'55점'],[58,'58점 (기본)'],[60,'60점'],[65,'65점'],[70,'70점'],[75,'75점'],[80,'80점']]} onChange={v => setField('buy_threshold', Number(v))} />
-              <Sel label="손절 기준" value={strategy.stop_loss_pct} opts={[[-1.5,'-1.5% (타이트)'],[-2,'-2%'],[-2.5,'-2.5% (권장)'],[-3,'-3%'],[-4,'-4%'],[-5,'-5% (여유)']]} onChange={v => setField('stop_loss_pct', Number(v))} />
-              <Sel label="익절 기준" value={strategy.take_profit_pct} opts={[[2,'+2%'],[2.5,'+2.5%'],[3,'+3%'],[3.5,'+3.5% (권장)'],[4,'+4%'],[5,'+5%'],[7,'+7%']]} onChange={v => setField('take_profit_pct', Number(v))} />
+              <Sel label="AI 확신도 (높을수록 신중)" value={strategy.buy_threshold} opts={[[50,'50점'],[55,'55점'],[58,'58점 (기본)'],[60,'60점'],[65,'65점'],[70,'70점'],[75,'75점'],[80,'80점']]} onChange={v => setField('buy_threshold', Number(v))} />
+              <Sel label="손실 한계 (이 이상 빠지면 매도)" value={strategy.stop_loss_pct} opts={[[-1.5,'-1.5% (타이트)'],[-2,'-2%'],[-2.5,'-2.5% (권장)'],[-3,'-3%'],[-4,'-4%'],[-5,'-5% (여유)']]} onChange={v => setField('stop_loss_pct', Number(v))} />
+              <Sel label="목표 수익 (이 이상 오르면 매도)" value={strategy.take_profit_pct} opts={[[2,'+2%'],[2.5,'+2.5%'],[3,'+3%'],[3.5,'+3.5% (권장)'],[4,'+4%'],[5,'+5%'],[7,'+7%']]} onChange={v => setField('take_profit_pct', Number(v))} />
             </div>
           </div>
         </Panel>
