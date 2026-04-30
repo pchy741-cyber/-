@@ -610,8 +610,12 @@ export async function technicalFallbackDecisions(params: {
     }
 
     // 종목당 1차 매수: 자산 기반 동적 포지션 한도의 1/splitCount, 잔고 한도 내
-    const positionSize = Math.min(effectiveMaxPos / splitCount * priorityMultiplier * convictionMultiplier * winRateMultiplier, remainingCash / maxBuys);
-    if (positionSize < 250000) break; // 최소 25만원 (4% 수익 시 1만원 이상 확보)
+    // remainingCash / 3 → 현금의 최대 1/3씩 배분 (현금 효율 극대화)
+    const positionSize = Math.min(
+      effectiveMaxPos / splitCount * priorityMultiplier * convictionMultiplier * winRateMultiplier,
+      remainingCash / Math.max(3, maxBuys - candidates.indexOf(cand)),
+    );
+    if (positionSize < 200000) break; // 최소 20만원
 
     const quantity = Math.floor(positionSize / cand.price.currentPrice);
     if (quantity <= 0) continue;
