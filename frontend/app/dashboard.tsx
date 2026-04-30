@@ -4098,6 +4098,26 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
               >테스트</button>
             </div>
 
+            {/* 알림 초기화 (VAPID 불일치 시 사용) */}
+            <button
+              onClick={async () => {
+                if (!confirm('서버의 모든 구독을 삭제합니다. 이후 "이 기기 재등록"을 눌러 재등록하세요.')) return;
+                try {
+                  // 브라우저 구독도 해제
+                  const reg = await navigator.serviceWorker.ready;
+                  const existing = await reg.pushManager.getSubscription();
+                  if (existing) await existing.unsubscribe();
+                  // 서버 전체 삭제
+                  await api('/push/subscriptions', { method: 'DELETE' });
+                  toast?.('알림 초기화 완료 — "이 기기 재등록" 버튼으로 재등록하세요', 'ok');
+                  setPushStatus(s => ({ ...s, subscribed: false }));
+                } catch {
+                  toast?.('초기화 실패 — 다시 시도해 주세요', 'err');
+                }
+              }}
+              className="w-full px-4 py-2 bg-rose-900/20 hover:bg-rose-900/35 border border-rose-800/30 rounded-xl text-xs text-rose-400 transition-all"
+            >🔄 알림 초기화 (안됨 → 여기 누른 후 재등록)</button>
+
             {/* 알림 종류 안내 */}
             <div className="grid grid-cols-2 gap-2">
               {[

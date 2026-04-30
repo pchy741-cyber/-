@@ -140,6 +140,12 @@ settingsRoutes.post('/push/test', async (c) => {
   return c.json({ ok: true });
 });
 
+settingsRoutes.delete('/push/subscriptions', async (c) => {
+  const { purgeAllSubscriptions } = await import('../../notifications/web-push.js');
+  const count = await purgeAllSubscriptions();
+  return c.json({ ok: true, deleted: count });
+});
+
 // ── 수동 실행 API ──
 settingsRoutes.post('/run-track-a', async (c) => {
   const body = await c.req.json();

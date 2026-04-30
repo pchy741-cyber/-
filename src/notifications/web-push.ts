@@ -157,10 +157,11 @@ export async function sendPushNotification(payload: {
       });
       sent++;
     } catch (err: any) {
-      if (err.statusCode === 410 || err.statusCode === 404) {
+      if (err.statusCode === 410 || err.statusCode === 404 || err.statusCode === 403) {
+        logger.warn(`구독 만료/거부 (${err.statusCode}) → 삭제: ...${sub.endpoint.slice(-20)}`, { component: 'WEB_PUSH' });
         await removeSubscription(sub.endpoint);
       } else {
-        logger.error(`푸시 발송 실패: ${err.statusCode} ${err.message}`, { component: 'WEB_PUSH' });
+        logger.error(`푸시 발송 실패: ${err.statusCode} ${err.message} | ${JSON.stringify(err.body ?? '').slice(0, 200)}`, { component: 'WEB_PUSH' });
       }
     }
   }
@@ -189,6 +190,18 @@ async function removeSubscription(endpoint: string): Promise<void> {
   } catch { /* ignore */ }
   const idx = memSubscriptions.findIndex(s => s.endpoint === endpoint);
   if (idx >= 0) memSubscriptions.splice(idx, 1);
+}
+
+export async function purgeAllSubscriptions(): Promise<number> {
+  let count = 0;
+  try {
+    const { rowCount } = await getPool().query('DELETE FROM push_subscriptions');
+    count = rowCount ?? 0;
+  } catch { /* ignore */ }
+  const memCount = memSubscriptions.length;
+  memSubscriptions.length = 0;
+  logger.info(`🗑️ 모든 푸시 구독 삭제: ${count + memCount}건`, { component: 'WEB_PUSH' });
+  return count + memCount;
 }
 
 // ══════════════════════════════════════
