@@ -616,14 +616,18 @@ export async function technicalFallbackDecisions(params: {
       if (!tier || tier.sample_count < 10) return null;
       return tier.alloc_pct;
     };
-    // 확신도 비례 비율: 낮은 점수 → 소액 탐색, 높은 점수 → 집중 투자
-    // 85점+ 되어야 15%+ 투입 (한 종목 18% 하드캡과 조화)
-    const hardcodedAllocPct =
-      blendedScore >= 90 ? 0.18 :
-      blendedScore >= 85 ? 0.15 :
-      blendedScore >= 78 ? 0.12 :
-      blendedScore >= 70 ? 0.09 :
-      blendedScore >= 62 ? 0.06 : 0.04;
+
+    // ── AI 허락 여부로 투자비율 결정 ──────────────────────────────────────
+    // AI가 buyThreshold 이상 승인 → 점수 비례 풀 비율
+    // 기술지표만 통과(AI 미허락) → 소액 탐색(4-5%)으로 제한
+    const aiApproved = aiScore >= strategyParams.buyThreshold;
+
+    const hardcodedAllocPct = aiApproved
+      ? (blendedScore >= 90 ? 0.18 :
+         blendedScore >= 85 ? 0.15 :
+         blendedScore >= 78 ? 0.12 :
+         blendedScore >= 70 ? 0.09 : 0.07)
+      : 0.04; // AI 미허락 → 최소 탐색 비율만
     const baseAllocPct = getDbAllocPct(blendedScore) ?? hardcodedAllocPct;
     const modeScale = mode === 'SCALPING' ? 0.5 : mode === 'DEFENSE' ? 0.6 : 1.0;
 
