@@ -155,32 +155,91 @@ export async function technicalFallbackDecisions(params: {
     // ATR 기반이 고정 손절보다 좁으면 ATR 우선 (더 빠른 손절로 손실 최소화)
     const effectiveStop = Math.max(strategyParams.stopLossPct, dynamicStop);
     if (pnlPct <= effectiveStop) {
-      decisions.push({
-        action: 'FORCE_CLOSE',
-        stock_code: chain.stock_code,
-        quantity: chain.total_quantity,
-        price_type: 'MARKET',
-        reasoning: `손절: ${pnlPct.toFixed(1)}% (ATR동적=${dynamicStop.toFixed(1)}% 고정=${strategyParams.stopLossPct}%)`,
-        confidence: 0.95,
-      });
-      processedSellCodes.add(chain.stock_code);
+      // ── 대형 포지션 회복 신호 판단 (비중 8% 이상 — 팍 손절 대신 절반 지키기) ──
+      // 논리: 비중이 크면 전량 손절 충격이 크고, 회복 신호 있으면 더 기다리는 게 유리
+      // 회복 조건 중 2개 이상 충족 시 50% 부분 손절 후 대기 (전량 강제청산 차단)
+      const positionValue = price.currentPrice * Number(chain.total_quantity);
+      const positionWeight = (totalAssets ?? 0) > 0 ? positionValue / totalAssets! : 0;
+      const isLargePosition = positionWeight >= 0.08; // 포트폴리오 8% 이상 = 대형
+
+      let usedPartialStop = false;
+      if (isLargePosition && sellTech) {
+        const recoverySignals = [
+          sellTech.rsi14 < 32,                                                // 극단 과매도 (단기 반등 확률 68%)
+          sellTech.macdHistogram > 0,                                         // MACD 히스토그램 양전환 (상승 모멘텀)
+          sellTech.bollingerPosition === 'BELOW_LOWER' || sellTech.bollingerPosition === 'NEAR_LOWER', // 볼린저 하단 지지
+          sellTech.volumeRatio < 0.6,                                         // 거래량 급감 = 매도 소진
+          sellTech.rsi2 < 10,                                                 // RSI(2) 극단 과매도 — 91% 반등 확률
+        ].filter(Boolean).length;
+
+        if (recoverySignals >= 2) {
+          // 전량 손절 대신 50% 부분 매도: 절반 확정 손절 + 나머지 회복 대기
+          const partialQty = Math.ceil(Number(chain.total_quantity) * 0.5);
+          if (partialQty > 0 && partialQty < Number(chain.total_quantity)) {
+            logger.info(
+              `🛡️ 대형포지션 부분손절(50%): ${chain.stock_code} ${pnlPct.toFixed(1)}% | 비중${(positionWeight*100).toFixed(0)}% | 회복신호${recoverySignals}개 → 전량청산 보류`,
+              { component: 'TRACK_B' },
+            );
+            decisions.push({
+              action: 'PARTIAL_SELL',
+              stock_code: chain.stock_code,
+              quantity: partialQty,
+              price_type: 'MARKET',
+              reasoning: `대형포지션 부분손절(50%): ${pnlPct.toFixed(1)}% | 회복신호${recoverySignals}개(RSI과매도/MACD반전/볼린저지지/거래량소진) → 나머지 50% 회복 대기`,
+              confidence: 0.85,
+            });
+            processedSellCodes.add(chain.stock_code);
+            usedPartialStop = true;
+          }
+        }
+      }
+
+      if (!usedPartialStop) {
+        decisions.push({
+          action: 'FORCE_CLOSE',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `손절: ${pnlPct.toFixed(1)}% (ATR동적=${dynamicStop.toFixed(1)}% 고정=${strategyParams.stopLossPct}%)`,
+          confidence: 0.95,
+        });
+        processedSellCodes.add(chain.stock_code);
+      }
       continue;
     }
 
-    // 기술적 지표 기반 매도 판단
+    // 기술적 지표 기반 매도 판단 (대형 포지션은 STRONG_SELL도 완화)
     const candles = chartData.get(chain.stock_code);
     if (candles && candles.length >= 60) {
       const tech = analyzeTechnicals(candles);
       if (tech && tech.overallSignal === 'STRONG_SELL') {
-        decisions.push({
-          action: 'SELL',
-          stock_code: chain.stock_code,
-          quantity: chain.total_quantity,
-          price_type: 'MARKET',
-          reasoning: `기술적 매도: RSI=${tech.rsi14.toFixed(0)} MACD=${tech.macdCrossover} score=${tech.score}`,
-          confidence: 0.7,
-        });
-        processedSellCodes.add(chain.stock_code);
+        const positionValueSell = price.currentPrice * Number(chain.total_quantity);
+        const positionWeightSell = (totalAssets ?? 0) > 0 ? positionValueSell / totalAssets! : 0;
+        // 대형 포지션(8% 이상) + STRONG_SELL: 전량 매도 대신 30% 부분 매도
+        if (positionWeightSell >= 0.08) {
+          const partialQty = Math.ceil(Number(chain.total_quantity) * 0.3);
+          if (partialQty > 0 && partialQty < Number(chain.total_quantity)) {
+            decisions.push({
+              action: 'PARTIAL_SELL',
+              stock_code: chain.stock_code,
+              quantity: partialQty,
+              price_type: 'MARKET',
+              reasoning: `대형포지션 기술적 부분매도(30%): STRONG_SELL | RSI=${tech.rsi14.toFixed(0)} MACD=${tech.macdCrossover} | 나머지 70% 추가 확인 후 판단`,
+              confidence: 0.65,
+            });
+            processedSellCodes.add(chain.stock_code);
+          }
+        } else {
+          decisions.push({
+            action: 'SELL',
+            stock_code: chain.stock_code,
+            quantity: chain.total_quantity,
+            price_type: 'MARKET',
+            reasoning: `기술적 매도: RSI=${tech.rsi14.toFixed(0)} MACD=${tech.macdCrossover} score=${tech.score}`,
+            confidence: 0.7,
+          });
+          processedSellCodes.add(chain.stock_code);
+        }
       }
     }
   }
@@ -541,9 +600,15 @@ export async function technicalFallbackDecisions(params: {
     const isBelowSma20Deep = chainTech ? price.currentPrice < chainTech.sma20 * 0.97 : false; // SMA20 -3% 이상 이탈 시 물타기 금지
     // 하드 손실 한도: -8% 초과 수중에서는 물타기 절대 금지 (나락 방지)
     const isTooDeepUnderwater = pnlPct <= -8.0;
-    if (chain.status === 'PROFIT_TAKING' || isBelowSma20Deep || isTooDeepUnderwater) {
+    // ── 지지선 확인 없는 물타기 차단 (Barber&Odean 1999: 기계적 물타기 → 추가 손실) ──
+    // 볼린저 하단 또는 RSI 과매도 근처에서만 물타기 허용 (지지선 근거 있는 경우)
+    const avgDownSupportOk = chainTech
+      ? (chainTech.bollingerPosition === 'BELOW_LOWER' || chainTech.bollingerPosition === 'NEAR_LOWER' || chainTech.rsi14 < 38)
+      : true; // 차트 없으면 허용 (데이터 없는 경우 차단 안 함)
+    if (chain.status === 'PROFIT_TAKING' || isBelowSma20Deep || isTooDeepUnderwater || !avgDownSupportOk) {
       if (isBelowSma20Deep) logger.info(`  🚫 ${chain.stock_code}: SMA20 -3% 이탈 → 물타기 차단 (손실확대 방지)`, { component: 'TRACK_B' });
       if (isTooDeepUnderwater) logger.info(`  🚫 ${chain.stock_code}: ${pnlPct.toFixed(1)}% ≤ -8% → 물타기 하드 차단 (나락 방지)`, { component: 'TRACK_B' });
+      if (!avgDownSupportOk && !isBelowSma20Deep && !isTooDeepUnderwater) logger.info(`  🚫 ${chain.stock_code}: 지지선 미확인(BB=${chainTech?.bollingerPosition} RSI=${chainTech?.rsi14.toFixed(0)}) → 물타기 차단`, { component: 'TRACK_B' });
       continue;
     }
 

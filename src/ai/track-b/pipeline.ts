@@ -256,6 +256,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     let decisions: TradeDecision[] = [];
+    // KOSPI 시장 추세 판별값 — 기술적 매매 블록과 수량 보정 블록 공유
+    let kospiRegimePenalty = 0; // 0=정상, 1=조정장(포지션60%), 2=하락장(매수차단)
 
     // ── 기술적 지표 매매 (항상 실행) + Track A AI 점수를 힌트로만 활용 ──
     // AI 실시간 실행(Claude/Gemini)은 제거 — 안정성 우선, 손실 없는 자동매매
@@ -285,8 +287,31 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         .then(m => m.getPool().query('SELECT * FROM portfolio_allocation_config WHERE is_active = true LIMIT 1'))
         .then(r => r.rows[0] ?? null).catch(() => null);
 
-      // ── 일일 최대 손실 한도 (-3% 전체 투자금 기준) ──
-      // 오늘 실현 손익을 orders 테이블에서 집계 — 3% 초과 손실 시 신규 매수 차단
+      // ── KOSPI 시장 추세 필터 (Faber 2007: MA 기반 시장 국면 판별) ──
+      // KOSPI MA20 아래: 매수 사이즈 60%, MA60 아래: 신규 매수 차단
+      let kospiRegimePenalty = 0; // 0=정상, 1=축소, 2=차단
+      let kospiRegimeLog = '';
+      try {
+        const kospiCandles = await getDailyChart('0001', 65);
+        if (kospiCandles.length >= 60) {
+          const { analyzeTechnicals: analyzeKospi } = await import('../../analysis/indicators.js');
+          const kospiTech = analyzeKospi(kospiCandles);
+          if (kospiTech) {
+            const kospiNow = kospiCandles[0]?.close ?? 0;
+            if (kospiNow > 0 && kospiNow < kospiTech.sma60) {
+              kospiRegimePenalty = 2; // MA60 아래 = 하락장 → 신규 매수 차단
+              kospiRegimeLog = `KOSPI ${kospiNow.toFixed(0)} < MA60 ${kospiTech.sma60.toFixed(0)} → 하락장 신규 매수 차단`;
+              logger.warn(`⛔ ${kospiRegimeLog}`, { component: 'TRACK_B' });
+            } else if (kospiNow > 0 && kospiNow < kospiTech.sma20) {
+              kospiRegimePenalty = 1; // MA20 아래 = 조정장 → 포지션 60%로 제한
+              kospiRegimeLog = `KOSPI ${kospiNow.toFixed(0)} < MA20 ${kospiTech.sma20.toFixed(0)} → 조정장 포지션 60%`;
+              logger.info(`⚠️ ${kospiRegimeLog}`, { component: 'TRACK_B' });
+            }
+          }
+        }
+      } catch { /* KOSPI 조회 실패 시 정상 동작 */ }
+
+      // ── 일일 최대 손실 한도 (-3% 전체 투자금 기준, 실현+미실현 합산) ──
       let dailyLossBlocked = false;
       try {
         const { getPool: gp } = await import('../../db/client.js');
@@ -305,12 +330,26 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
             AND tc.avg_buy_price IS NOT NULL
         `, [today.toISOString()]);
         const realizedPnl = Number(pnlRows[0]?.realized_pnl ?? 0);
+
+        // 미실현 손익 합산 — 보유 종목 평가손익 포함 (파킹 ETF 제외)
+        const unrealizedPnl = openChains
+          .filter(c => !IDLE_PARK_CODE_SET.has(c.stock_code) && c.stock_code !== PARK_STOCK_CODE && c.avg_buy_price)
+          .reduce((sum, c) => {
+            const curPrice = livePrices.get(c.stock_code)?.currentPrice ?? 0;
+            const avgBuy = Number(c.avg_buy_price ?? 0);
+            if (curPrice <= 0 || avgBuy <= 0) return sum;
+            return sum + (curPrice - avgBuy) * Number(c.total_quantity ?? 0);
+          }, 0);
+
+        const totalDailyPnl = realizedPnl + unrealizedPnl;
         if (totalAssets > 0) {
-          const dailyPnlPct = (realizedPnl / totalAssets) * 100;
+          const dailyPnlPct = (totalDailyPnl / totalAssets) * 100;
           if (dailyPnlPct <= -3) {
             dailyLossBlocked = true;
-            logger.warn(`⛔ 국내 일일 손실 한도(-3%) 초과: ${dailyPnlPct.toFixed(2)}% (${realizedPnl.toLocaleString()}원) → 신규 매수 차단`, { component: 'TRACK_B' });
-            await logSystem('WARN', 'TRACK_B', `일일 손실 한도 초과: ${dailyPnlPct.toFixed(2)}% → 국내 신규 매수 차단`);
+            logger.warn(`⛔ 국내 일일 손실 한도(-3%) 초과: ${dailyPnlPct.toFixed(2)}% (실현${realizedPnl.toLocaleString()}+미실현${unrealizedPnl.toLocaleString()}원) → 신규 매수 차단`, { component: 'TRACK_B' });
+            await logSystem('WARN', 'TRACK_B', `일일 손실 한도 초과: ${dailyPnlPct.toFixed(2)}%(실현+미실현) → 국내 신규 매수 차단`);
+          } else {
+            logger.info(`📊 일일 손익: ${dailyPnlPct.toFixed(2)}% (실현${realizedPnl.toLocaleString()}+미실현${unrealizedPnl.toLocaleString()}원)`, { component: 'TRACK_B' });
           }
         }
       } catch { /* 조회 실패 시 차단 안 함 */ }
@@ -347,7 +386,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         // 15:10 이후 신규 매수 차단 — 마감 20분 전 진입만 차단
         // DIVIDEND 모드: 신규 매수 완전 차단 (현금 파킹 ETF로만 운용)
         // 일일 손실 -3% 초과: 당일 신규 매수 차단 (전체 투자금 기준)
-        blockNewBuys: kstH > 15 || (kstH === 15 && kstM >= 10) || mode === 'DIVIDEND' || dailyLossBlocked,
+        blockNewBuys: kstH > 15 || (kstH === 15 && kstM >= 10) || mode === 'DIVIDEND' || dailyLossBlocked || kospiRegimePenalty >= 2,
         allocationTarget: allocCfg ? {
           stock_pct: Number(allocCfg.stock_pct),
           rebalance_threshold_pct: Number(allocCfg.rebalance_threshold_pct),
@@ -546,48 +585,25 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         if (avgBuy <= 0 || price.currentPrice <= 0) continue;
         const pnlPct = ((price.currentPrice - avgBuy) / avgBuy) * 100;
 
-        // 이미 매도 결정이 있으면 스킵 (중복 방지)
+        // 이미 매도 결정이 있으면 스킵 (중복 방지 — technical-fallback 결정 우선)
         const alreadySelling = decisions.some(
           (d) => d.stock_code === chain.stock_code && ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action),
         );
         if (alreadySelling) continue;
 
-        // 체인 저장값 우선 (매수 당시 점수 기반 설정) → DB 세팅 → 상수 fallback
-        // null/undefined 체크: Number(0)||x 는 0도 falsy로 처리하므로 != null 사용
-        const targetPct = chain.target_profit_pct != null ? Number(chain.target_profit_pct) : (dbTakeProfit ?? baseParams.takeProfitPct);
         const stopPct = chain.stop_loss_pct != null ? Number(chain.stop_loss_pct) : (dbStopLoss ?? baseParams.stopLossPct);
 
-        // PROFIT_TAKING 상태: 2단계 trailing stop — peak_price 기준
-        // 수치는 technical-fallback과 동일하게 유지 (4.0% 목표, -0.8% 트레일)
-        if (chain.status === 'PROFIT_TAKING') {
-          // peak_price 없고 손실 구간: 브레이크이븐스톱(-1%)만 적용, 트레일 오발동 방지
-          if (!(chain as any).peak_price && pnlPct < 0) {
-            if (pnlPct <= -1.0) {
-              logger.info(`🔒 브레이크이븐스톱(peak없음): ${chain.stock_code} ${pnlPct.toFixed(1)}%`, { component: 'TRACK_B' });
-              decisions.push({ action: 'FORCE_CLOSE', stock_code: chain.stock_code, quantity: chain.total_quantity, price_type: 'MARKET', reasoning: `브레이크이븐스톱(peak없음): ${pnlPct.toFixed(1)}%`, confidence: 1.0 });
-            }
-            continue;
-          }
-          const peakPrice = (chain as any).peak_price ? Number((chain as any).peak_price) : avgBuy * (1 + targetPct / 100);
-          const trailDropPct = ((price.currentPrice - peakPrice) / peakPrice) * 100;
-          const stage2Target = targetPct * 2; // 1단계 익절 기준의 2배 (예: 2% → 4%)
-          if (pnlPct >= stage2Target) {
-            logger.info(`🔒 하드 2단계 익절: ${chain.stock_code} +${pnlPct.toFixed(1)}% → +${stage2Target}% 목표달성`, { component: 'TRACK_B' });
-            decisions.push({ action: 'SELL', stock_code: chain.stock_code, quantity: chain.total_quantity, price_type: 'MARKET', reasoning: `하드 2단계 익절: +${pnlPct.toFixed(1)}% ≥ +${stage2Target}% 달성`, confidence: 1.0 });
-          } else if (trailDropPct <= -0.8) {
-            logger.info(`🔒 하드 트레일링스톱: ${chain.stock_code} peak 대비 ${trailDropPct.toFixed(2)}% 하락`, { component: 'TRACK_B' });
-            decisions.push({ action: 'FORCE_CLOSE', stock_code: chain.stock_code, quantity: chain.total_quantity, price_type: 'MARKET', reasoning: `하드 트레일링스톱: peak ${peakPrice.toFixed(0)}원 대비 ${trailDropPct.toFixed(2)}% 하락`, confidence: 1.0 });
-          }
-          continue; // PROFIT_TAKING은 일반 익절/손절 하드룰 적용 안 함
-        }
+        // PROFIT_TAKING 상태: technical-fallback에서 이미 처리 (충돌 제거 — 여기선 스킵)
+        // technical-fallback: peak 대비 -2.5% 트레일 OR +5% 2단계 목표 → 결정이 없을 때만 하드룰 보완
+        if (chain.status === 'PROFIT_TAKING') continue;
 
-        // 트레일링 스탑: 고정 익절 없이 고점 추적 → 고점 대비 -5% 이탈 시 전량 매도
-        // peak_price_since_open 없으면 현재가로 초기화 (별도 업데이트 루틴에서 갱신)
+        // 트레일링 스탑: +1.5% 이상 수익 중일 때 활성화 (기존 +3% → 완화, 수익 반납 방지)
+        // peak_price_since_open 없으면 비활성 (별도 업데이트 루틴에서 갱신)
         const peakForTrail = (chain as any).peak_price_since_open
           ? Number((chain as any).peak_price_since_open)
           : 0;
-        if (peakForTrail > 0 && pnlPct >= 3) {
-          // +3% 이상 수익 중일 때만 트레일링 스탑 활성화 (노이즈 방지)
+        if (peakForTrail > 0 && pnlPct >= 1.5) {
+          // +1.5% 이상 수익 중일 때만 트레일링 스탑 활성화 (기존 +3% → 더 빠른 수익 보호)
           const trailDropPct = ((price.currentPrice - peakForTrail) / peakForTrail) * 100;
           if (trailDropPct <= trailingStopThreshold) {
             logger.info(`🔒 트레일링 스탑: ${chain.stock_code} 고점 ${peakForTrail.toFixed(0)}원 대비 ${trailDropPct.toFixed(1)}% 하락 (수익 ${pnlPct.toFixed(1)}%)`, { component: 'TRACK_B' });
@@ -647,7 +663,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       const orderableCashNow = Math.max(0, effectiveCashWithPark);
       const totalAssetsNow = balance.totalEvalAmount + orderableCashNow;
       const _params = STRATEGY_PARAMS[mode];
-      const maxPerPosition = Math.min(config.risk.maxPositionKrw, Math.round(totalAssetsNow * 0.15));
+      // KOSPI 조정장(MA20 아래)이면 포지션 한도 60% 축소 (하락장 손실 완충)
+      const kospiSizingMult = kospiRegimePenalty === 1 ? 0.6 : 1.0;
+      const maxPerPosition = Math.min(config.risk.maxPositionKrw, Math.round(totalAssetsNow * 0.15 * kospiSizingMult));
       const baseBudget = Math.floor(maxPerPosition / _params.splitCount);
 
       const scoreMap = new Map<string, number>(
