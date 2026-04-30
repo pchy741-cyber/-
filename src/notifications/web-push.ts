@@ -96,6 +96,20 @@ const memSubscriptions: webpush.PushSubscription[] = [];
  * 푸시 구독 저장
  */
 export async function saveSubscription(subscription: webpush.PushSubscription): Promise<void> {
+  // 메모리에도 항상 저장 (DB 실패 대비)
+  if (!memSubscriptions.find(s => s.endpoint === subscription.endpoint)) {
+    memSubscriptions.push(subscription);
+  }
+
+  const p256dh = subscription.keys?.p256dh ?? (subscription as any).keys?.p256dh ?? null;
+  const auth   = subscription.keys?.auth   ?? (subscription as any).keys?.auth   ?? null;
+
+  if (!p256dh || !auth) {
+    logger.error(`❌ 구독 키 누락 — DB 저장 스킵 (메모리만 저장). subscription=${JSON.stringify(subscription).slice(0, 200)}`, { component: 'WEB_PUSH' });
+    logger.info('📱 푸시 구독 등록 (메모리)', { component: 'WEB_PUSH' });
+    return;
+  }
+
   try {
     const pool = getPool();
     await pool.query(`
@@ -112,15 +126,14 @@ export async function saveSubscription(subscription: webpush.PushSubscription): 
     await pool.query(
       `INSERT INTO push_subscriptions (endpoint, keys_p256dh, keys_auth)
        VALUES ($1, $2, $3)
-       ON CONFLICT (endpoint) DO UPDATE SET last_used = NOW()`,
-      [subscription.endpoint, subscription.keys.p256dh, subscription.keys.auth],
+       ON CONFLICT (endpoint) DO UPDATE SET keys_p256dh=$2, keys_auth=$3, last_used=NOW()`,
+      [subscription.endpoint, p256dh, auth],
     );
-  } catch {
-    if (!memSubscriptions.find(s => s.endpoint === subscription.endpoint)) {
-      memSubscriptions.push(subscription);
-    }
+    logger.info('📱 푸시 구독 등록 (DB)', { component: 'WEB_PUSH' });
+  } catch (err) {
+    logger.error(`❌ DB 구독 저장 실패 (메모리 폴백): ${err}`, { component: 'WEB_PUSH' });
+    logger.info('📱 푸시 구독 등록 (메모리 폴백)', { component: 'WEB_PUSH' });
   }
-  logger.info('📱 푸시 구독 등록', { component: 'WEB_PUSH' });
 }
 
 export async function getSubscriptionCount(): Promise<number> {
@@ -188,16 +201,22 @@ export async function sendPushNotification(payload: {
 }
 
 async function getAllSubscriptions(): Promise<webpush.PushSubscription[]> {
+  let dbSubs: webpush.PushSubscription[] = [];
   try {
     const pool = getPool();
     const { rows } = await pool.query('SELECT * FROM push_subscriptions');
-    return rows.map((r: any) => ({
+    dbSubs = rows.map((r: any) => ({
       endpoint: r.endpoint,
       keys: { p256dh: r.keys_p256dh, auth: r.keys_auth },
     }));
   } catch {
+    // DB 실패 시 메모리만 사용
     return memSubscriptions;
   }
+  // DB 성공 시: DB 결과 + 메모리 전용 구독 합치기 (메모리에만 있는 항목 추가)
+  const dbEndpoints = new Set(dbSubs.map(s => s.endpoint));
+  const memOnly = memSubscriptions.filter(s => !dbEndpoints.has(s.endpoint));
+  return [...dbSubs, ...memOnly];
 }
 
 async function removeSubscription(endpoint: string): Promise<void> {
