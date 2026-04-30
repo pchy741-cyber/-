@@ -6,6 +6,7 @@ import { getMinuteChart, isMarketOpen, type CurrentPrice, type DailyCandle } fro
 import { logger } from '../../utils/logger.js';
 import type { TradeDecision } from '../../db/models.js';
 import { BUY_BLOCKED_CODES, IDLE_PARK_CODES, PRIORITY_SECTOR_CODES } from './trading-rules.js';
+import { getPool } from '../../db/client.js';
 
 const IDLE_PARK_CODE_SET = new Set<string>(IDLE_PARK_CODES);
 
@@ -42,10 +43,10 @@ export async function technicalFallbackDecisions(params: {
   currentStockValue?: number;
 }): Promise<TradeDecision[]> {
   const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, manuallySoldCodes, totalAssets, winRates, blockNewBuys, allocationTarget, currentStockValue } = params;
-  // 종목당 최대 비중: 총자산의 20% 또는 maxPositionKrw 중 작은 값
-  // — pipeline(15%)보다 약간 넓게 (고가주 최소 1주 매수 보장)
+  // 종목당 최대 비중: 총자산의 18% (집중 손실 방지) 또는 maxPositionKrw 중 작은 값
+  // 한 종목에 50%+ 집중되면 손실 충격이 너무 큼 → 18% 하드캡
   const effectiveMaxPos = totalAssets
-    ? Math.min(maxPositionKrw, Math.round(totalAssets * 0.25))
+    ? Math.min(maxPositionKrw, Math.round(totalAssets * 0.18))
     : maxPositionKrw;
   const aiScoreMap = new Map((aiScores ?? []).map((s) => [s.stock_code, s.score]));
   const base = STRATEGY_PARAMS[mode];
@@ -276,6 +277,15 @@ export async function technicalFallbackDecisions(params: {
       logger.info(`⚖️ 황금비율 편차: 현재주식 ${currentStockPct.toFixed(1)}% < 목표 ${targetStockPct}%-${threshold}% → 매수 임계값 ${allocationBuyPenalty}점 완화`, { component: 'TRACK_B' });
     }
   }
+
+  // DB에서 점수 티어별 실거래 역산 비율 로드 (없으면 하드코딩 fallback)
+  let scoreTierParams: Array<{ tier_min: number; tier_max: number; alloc_pct: number; sample_count: number }> = [];
+  try {
+    const { rows } = await getPool().query(
+      `SELECT tier_min, tier_max, alloc_pct::float, sample_count FROM score_tier_params ORDER BY tier_min`,
+    );
+    scoreTierParams = rows;
+  } catch { /* DB 없으면 하드코딩 사용 */ }
 
   const openStockCodes = new Set(openChains.map((c) => c.stock_code));
   const candidates: Array<{ stock_code: string; tech: TechnicalSummary; price: CurrentPrice; candleBonus: number }> = [];
@@ -578,8 +588,8 @@ export async function technicalFallbackDecisions(params: {
 
   // 현금 여유 확인하면서 매수 결정
   let remainingCash = orderableCash;
-  // SCALPING: 개장 10분 단타 — 최대 2종목, 확신배율 없음 (과집중 방지)
-  const maxBuys = mode === 'SCALPING' ? 2 : 7;
+  // SCALPING: 개장 10분 단타 — 최대 3종목 (현금 효율 개선)
+  const maxBuys = mode === 'SCALPING' ? 3 : 8;
   const splitCount = strategyParams.splitCount || 2;
 
   for (const cand of candidates.slice(0, maxBuys)) {
@@ -599,11 +609,22 @@ export async function technicalFallbackDecisions(params: {
     // DEFENSE/SCALPING은 절반 비율 적용 (보수 운용)
     const techScore = Math.min(100, cand.tech.score + (cand.candleBonus ?? 0) * 0.5);
     const blendedScore = aiScore > 0 ? techScore * 0.5 + aiScore * 0.5 : techScore;
-    const baseAllocPct =
-      blendedScore >= 88 ? 0.20 :
-      blendedScore >= 78 ? 0.16 :
-      blendedScore >= 68 ? 0.12 :
-      blendedScore >= 60 ? 0.08 : 0.06;
+
+    // DB 실거래 역산 비율 사용 (샘플 10건 이상인 티어만), 부족하면 하드코딩 fallback
+    const getDbAllocPct = (score: number): number | null => {
+      const tier = scoreTierParams.find((t) => score >= t.tier_min && score <= t.tier_max);
+      if (!tier || tier.sample_count < 10) return null;
+      return tier.alloc_pct;
+    };
+    // 확신도 비례 비율: 낮은 점수 → 소액 탐색, 높은 점수 → 집중 투자
+    // 85점+ 되어야 15%+ 투입 (한 종목 18% 하드캡과 조화)
+    const hardcodedAllocPct =
+      blendedScore >= 90 ? 0.18 :
+      blendedScore >= 85 ? 0.15 :
+      blendedScore >= 78 ? 0.12 :
+      blendedScore >= 70 ? 0.09 :
+      blendedScore >= 62 ? 0.06 : 0.04;
+    const baseAllocPct = getDbAllocPct(blendedScore) ?? hardcodedAllocPct;
     const modeScale = mode === 'SCALPING' ? 0.5 : mode === 'DEFENSE' ? 0.6 : 1.0;
 
     // 승률 기반 보정: 실거래 데이터 기반으로 비율 조정
@@ -625,9 +646,9 @@ export async function technicalFallbackDecisions(params: {
       ? Math.round(totalAssets * baseAllocPct * modeScale * winRateMultiplier * priorityBonus * firstEntryRatio)
       : Math.round(effectiveMaxPos * firstEntryRatio);
 
-    // 상한: effectiveMaxPos (종목당 절대 한도), 하한: 남은 현금의 60%까지만 사용
-    const positionSize = Math.min(targetKrw, effectiveMaxPos, remainingCash * 0.6);
-    if (positionSize < 300000) break; // 최소 30만원 (이 이하면 수익이 수수료보다 작음)
+    // 상한: effectiveMaxPos (종목당 절대 한도), 하한: 남은 현금의 85%까지 사용 (현금 효율)
+    const positionSize = Math.min(targetKrw, effectiveMaxPos, remainingCash * 0.85);
+    if (positionSize < 300000) continue; // 최소 30만원 미달 → 이 종목만 스킵 (break→continue: 이후 종목 계속 검토)
 
     const quantity = Math.floor(positionSize / cand.price.currentPrice);
     if (quantity <= 0) continue;
