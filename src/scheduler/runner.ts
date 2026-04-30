@@ -28,6 +28,7 @@ import { manageUsdParking } from '../automation/usd-parking.js';
 import { runUnfilledOrderCheck } from './unfilled-order-job.js';
 import { runPreMarketQuickScore } from '../automation/pre-market-quick-score.js';
 import { warmupOpeningBell, runOpeningBellCycle } from './opening-bell-job.js';
+import { runHotSectorWatchlist } from '../automation/hot-sector-watchlist.js';
 
 /**
  * 타임아웃을 적용하여 작업 실행 (지정 시간 초과 시 에러 로그 후 스킵)
@@ -451,6 +452,15 @@ export function startScheduler(): void {
     '50 8 * * 1-5',
     () => {
       runDailyMarketScan().catch((e) => logger.error(`일일 시장 발굴 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🔥 10:00 — 핫 업종 자동 워치리스트 편입 (장 초반 30분 흐름 반영)
+  cron.schedule(
+    '0 10 * * 1-5',
+    () => {
+      runHotSectorWatchlist().catch((e) => logger.error(`핫 업종 편입 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

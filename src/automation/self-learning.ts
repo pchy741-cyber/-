@@ -119,6 +119,7 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
     ...analyzeHoldingPeriod(wins, losses),
     ...analyzeModePerformance(enrichedChains),
     ...analyzeStockPerformance(enrichedChains),
+    ...analyzeStockWinRateAcceleration(enrichedChains),
     ...analyzeWinRateTrend(chains),
     ...analyzeSniperPerformance(wins, losses),
     ...analyzeConfidenceCorrelation(enrichedChains),
@@ -309,6 +310,63 @@ function analyzeStockPerformance(enrichedChains: EnrichedChain[]): LearnedInsigh
       });
     }
   }
+  return insights;
+}
+
+/**
+ * 종목별 승률 가속 분석 — 최근 거래가 과거보다 더 잘 맞는 종목 자동 감지
+ * 이 종목들은 매수 임계값을 더 낮추고 포지션을 더 크게 잡도록 인사이트 생성
+ */
+function analyzeStockWinRateAcceleration(enrichedChains: EnrichedChain[]): LearnedInsight[] {
+  const stockTrades = new Map<string, { pnlPct: number; date: string }[]>();
+  for (const { chain, pnlPct } of enrichedChains) {
+    const code = chain.stock_code;
+    const list = stockTrades.get(code) ?? [];
+    list.push({ pnlPct, date: chain.closed_at ?? chain.opened_at });
+    stockTrades.set(code, list);
+  }
+
+  const insights: LearnedInsight[] = [];
+
+  for (const [code, trades] of stockTrades) {
+    if (trades.length < 4) continue;
+
+    // 날짜순 정렬 (오래된 것 먼저)
+    const sorted = [...trades].sort((a, b) => a.date.localeCompare(b.date));
+    const half = Math.floor(sorted.length / 2);
+    const older = sorted.slice(0, half);
+    const newer = sorted.slice(half);
+
+    const olderWinRate = older.filter(t => t.pnlPct > 0).length / older.length;
+    const newerWinRate = newer.filter(t => t.pnlPct > 0).length / newer.length;
+    const olderAvgPnl = older.reduce((s, t) => s + t.pnlPct, 0) / older.length;
+    const newerAvgPnl = newer.reduce((s, t) => s + t.pnlPct, 0) / newer.length;
+
+    // 승률이 25%p 이상 개선되거나 평균 수익이 1%p 이상 개선된 종목
+    if (newerWinRate > olderWinRate + 0.25 && newerAvgPnl > 0) {
+      insights.push({
+        category: 'WIN_PATTERN',
+        insight: `종목 '${code}' 최근 승률 가속: 이전 ${(olderWinRate * 100).toFixed(0)}% → 최근 ${(newerWinRate * 100).toFixed(0)}% (${trades.length}건). 전략 적합성 향상 중 — 신호 시 우선 진입.`,
+        confidence: Math.min(0.90, 0.65 + trades.length * 0.03),
+        sampleCount: trades.length,
+        lastUpdated: now,
+        details: { code, olderWinRate, newerWinRate, olderAvgPnl, newerAvgPnl },
+      });
+    }
+
+    // 반대: 최근 성과 악화 → 경고
+    if (newerWinRate < olderWinRate - 0.30 && newerAvgPnl < 0 && trades.length >= 5) {
+      insights.push({
+        category: 'LOSS_PATTERN',
+        insight: `종목 '${code}' 최근 성과 악화: 이전 승률 ${(olderWinRate * 100).toFixed(0)}% → 최근 ${(newerWinRate * 100).toFixed(0)}% (${trades.length}건). 진입 기준 강화 또는 워치리스트 제거 검토.`,
+        confidence: Math.min(0.85, 0.60 + trades.length * 0.03),
+        sampleCount: trades.length,
+        lastUpdated: now,
+        recommendation: `${code} 매수 기준 +10점 상향, 지속 부진 시 워치리스트 제거.`,
+      });
+    }
+  }
+
   return insights;
 }
 
@@ -761,6 +819,40 @@ export async function getLearnedInsightsForPrompt(): Promise<string> {
     lines.push('\n### 📊 투자 규모 인사이트:');
     for (const insight of sizingInsights) {
       lines.push(`  - ${insight.insight} (신뢰도 ${(insight.confidence * 100).toFixed(0)}%, 근거 ${insight.sample_count}건)`);
+    }
+  }
+
+  // 종목별 실거래 승률 요약 (고승률 종목 우선 진입 지시)
+  const { rows: stockAccRows } = await getPool().query(
+    `SELECT stock_code,
+            COUNT(*)::int AS total,
+            SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END)::int AS wins,
+            ROUND(AVG(realized_pnl_pct)::numeric,2) AS avg_pnl
+       FROM score_accuracy
+      WHERE recorded_at >= NOW() - INTERVAL '90 days'
+      GROUP BY stock_code
+      HAVING COUNT(*) >= 3
+      ORDER BY (SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END)::float / COUNT(*)) DESC
+      LIMIT 10`,
+  ).catch(() => ({ rows: [] }));
+
+  if (stockAccRows.length > 0) {
+    const highWinStocks = stockAccRows.filter((r: any) => (r.wins / r.total) >= 0.65);
+    const lowWinStocks  = stockAccRows.filter((r: any) => (r.wins / r.total) <= 0.35);
+
+    if (highWinStocks.length > 0) {
+      lines.push('\n### 🏆 실거래 검증 고승률 종목 — 매수 신호 시 즉시 우선 진입 (포지션 30% 이상 확대):');
+      for (const r of highWinStocks) {
+        const winPct = Math.round((r.wins / r.total) * 100);
+        lines.push(`  • ${r.stock_code}: 승률 ${winPct}% (${r.wins}/${r.total}건, 평균수익 ${r.avg_pnl > 0 ? '+' : ''}${r.avg_pnl}%) → 기준점수 15점 낮춰서 진입, 포지션 최대치`);
+      }
+    }
+    if (lowWinStocks.length > 0) {
+      lines.push('\n### ⚠️ 저승률 종목 — 매수 신호 와도 기준점수 +15점 이상 요구:');
+      for (const r of lowWinStocks) {
+        const winPct = Math.round((r.wins / r.total) * 100);
+        lines.push(`  • ${r.stock_code}: 승률 ${winPct}% (${r.wins}/${r.total}건) → 매우 높은 확신 없으면 진입 SKIP`);
+      }
     }
   }
 

@@ -47,10 +47,13 @@ export async function getStockWinRates(stockCodes: string[]): Promise<Map<string
  */
 export function getWinRateThresholdAdj(wr: StockWinRate | undefined): number {
   if (!wr || wr.sampleCount < 3) return 0;
-  if (wr.winRate >= 0.65 && wr.avgPnlPct > 0) return -10; // 고승률 + 수익 → 적극 진입
-  if (wr.winRate >= 0.55) return -5;
-  if (wr.winRate <= 0.28) return +15;  // 저승률 → 진입 강력 차단
-  if (wr.winRate <= 0.40) return +8;
+  // 데이터 많을수록 신뢰도 → 더 강하게 적용
+  const dataBias = wr.sampleCount >= 8 ? 1.3 : wr.sampleCount >= 5 ? 1.15 : 1.0;
+  if (wr.winRate >= 0.80 && wr.avgPnlPct > 0) return Math.round(-20 * dataBias); // 80%+ 검증 → 매우 적극
+  if (wr.winRate >= 0.65 && wr.avgPnlPct > 0) return Math.round(-15 * dataBias); // 고승률 → 적극 진입
+  if (wr.winRate >= 0.55) return Math.round(-8 * dataBias);
+  if (wr.winRate <= 0.28) return Math.round(+20 * dataBias);  // 저승률 → 강력 차단
+  if (wr.winRate <= 0.40) return Math.round(+12 * dataBias);
   return 0;
 }
 
@@ -59,10 +62,12 @@ export function getWinRateThresholdAdj(wr: StockWinRate | undefined): number {
  */
 export function getWinRateConfidenceBoost(wr: StockWinRate | undefined): number {
   if (!wr || wr.sampleCount < 3) return 0;
-  if (wr.winRate >= 0.65) return +0.08;
-  if (wr.winRate >= 0.55) return +0.04;
-  if (wr.winRate <= 0.28) return -0.10;
-  if (wr.winRate <= 0.40) return -0.05;
+  const dataBias = wr.sampleCount >= 8 ? 1.3 : wr.sampleCount >= 5 ? 1.15 : 1.0;
+  if (wr.winRate >= 0.80) return Math.min(0.20, +(0.12 * dataBias));
+  if (wr.winRate >= 0.65) return Math.min(0.15, +(0.08 * dataBias));
+  if (wr.winRate >= 0.55) return +(0.04 * dataBias);
+  if (wr.winRate <= 0.28) return -(0.12 * dataBias);
+  if (wr.winRate <= 0.40) return -(0.06 * dataBias);
   return 0;
 }
 

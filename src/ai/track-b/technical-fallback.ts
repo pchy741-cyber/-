@@ -45,7 +45,7 @@ export async function technicalFallbackDecisions(params: {
   // 종목당 최대 비중: 총자산의 20% 또는 maxPositionKrw 중 작은 값
   // — pipeline(15%)보다 약간 넓게 (고가주 최소 1주 매수 보장)
   const effectiveMaxPos = totalAssets
-    ? Math.min(maxPositionKrw, Math.round(totalAssets * 0.20))
+    ? Math.min(maxPositionKrw, Math.round(totalAssets * 0.25))
     : maxPositionKrw;
   const aiScoreMap = new Map((aiScores ?? []).map((s) => [s.stock_code, s.score]));
   const base = STRATEGY_PARAMS[mode];
@@ -579,7 +579,7 @@ export async function technicalFallbackDecisions(params: {
   // 현금 여유 확인하면서 매수 결정
   let remainingCash = orderableCash;
   // SCALPING: 개장 10분 단타 — 최대 2종목, 확신배율 없음 (과집중 방지)
-  const maxBuys = mode === 'SCALPING' ? 2 : 5;
+  const maxBuys = mode === 'SCALPING' ? 2 : 7;
   const splitCount = strategyParams.splitCount || 2;
 
   for (const cand of candidates.slice(0, maxBuys)) {
@@ -600,8 +600,17 @@ export async function technicalFallbackDecisions(params: {
     const isMedConviction = mode !== 'SCALPING' && ((aiScore >= strategyParams.buyThreshold && cand.tech.volumeRatio >= 1.3) || cand.candleBonus >= 12);
     const convictionMultiplier = isHighConviction ? 1.4 : isMedConviction ? 1.25 : 1.0;
 
+    // 승률 기반 포지션 배율: 실거래 고승률 종목은 더 크게 진입, 저승률은 줄임
+    const wr = winRates?.get(cand.stock_code);
+    const winRateMultiplier = wr && wr.sampleCount >= 3
+      ? (wr.winRate >= 0.80 ? 1.35 : wr.winRate >= 0.65 ? 1.18 : wr.winRate <= 0.35 ? 0.65 : 1.0)
+      : 1.0;
+    if (winRateMultiplier !== 1.0) {
+      logger.info(`  📈 ${cand.stock_code}: 승률배율 ×${winRateMultiplier} (승률${wr ? (wr.winRate * 100).toFixed(0) : 0}%/${wr?.sampleCount ?? 0}건)`, { component: 'TRACK_B' });
+    }
+
     // 종목당 1차 매수: 자산 기반 동적 포지션 한도의 1/splitCount, 잔고 한도 내
-    const positionSize = Math.min(effectiveMaxPos / splitCount * priorityMultiplier * convictionMultiplier, remainingCash / maxBuys);
+    const positionSize = Math.min(effectiveMaxPos / splitCount * priorityMultiplier * convictionMultiplier * winRateMultiplier, remainingCash / maxBuys);
     if (positionSize < 250000) break; // 최소 25만원 (4% 수익 시 1만원 이상 확보)
 
     const quantity = Math.floor(positionSize / cand.price.currentPrice);
