@@ -19,9 +19,6 @@ import { technicalFallbackDecisions } from '../ai/track-b/technical-fallback.js'
 import { tradeExecutor } from '../trading/executor.js';
 import { getAccountBalance } from '../kis/account.js';
 import { config } from '../config/index.js';
-import { IDLE_PARK_CODES } from '../ai/track-b/trading-rules.js';
-
-const IDLE_PARK_CODE_SET = new Set<string>(IDLE_PARK_CODES);
 
 // ── 캐시 (워밍업 → 사이클 공유) ──────────────────────────────────────────
 interface WarmCache {
@@ -38,7 +35,7 @@ export async function warmupOpeningBell(): Promise<void> {
 
   try {
     const watchlist = await getActiveWatchlist();
-    const stockCodes = watchlist.map(w => w.stock_code).filter(c => !IDLE_PARK_CODE_SET.has(c));
+    const stockCodes = watchlist.map(w => w.stock_code);
     if (stockCodes.length === 0) {
       logger.warn('[OPENING] 워치리스트 비어있음', { component: 'OPENING_BELL' });
       return;
@@ -169,7 +166,7 @@ export async function runOpeningBellCycle(): Promise<void> {
       getAccountBalance(),
     ]);
 
-    const stockCodes = watchlist.map(w => w.stock_code).filter(c => !IDLE_PARK_CODE_SET.has(c));
+    const stockCodes = watchlist.map(w => w.stock_code);
 
     // 실시간 시세만 빠르게 조회 (캐시된 차트 재활용)
     const livePrices = await getBatchPrices([
@@ -255,9 +252,7 @@ JSON만: {"scores":[{"code":"코드","score":점수},...]}`;
 
     const decisions = await technicalFallbackDecisions({
       mode: 'SCALPING',
-      watchlist: watchlist
-        .filter(w => !IDLE_PARK_CODE_SET.has(w.stock_code))
-        .map(w => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
+      watchlist: watchlist.map(w => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
       livePrices,
       chartData,
       openChains,

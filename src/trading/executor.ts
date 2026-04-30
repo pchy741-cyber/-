@@ -21,6 +21,15 @@ import { chainManager } from './chain.js';
  * - AI 판단 → 리스크 검증 → 주문 → 체결 확인 → 체인 업데이트
  */
 export class TradeExecutor {
+  // (종목코드)-(YYYYMMDDHHMM) 키로 분당 1회 중복 주문 방지
+  private readonly _recentOrderKeys = new Set<string>();
+
+  private _minuteKey(stockCode: string): string {
+    const now = new Date();
+    const ymd = now.toISOString().slice(0, 16).replace(/[-:T]/g, ''); // YYYYMMDDHHmm
+    return `${stockCode}-${ymd}`;
+  }
+
   /**
    * AI 결정 배열을 일괄 처리
    */
@@ -36,6 +45,8 @@ export class TradeExecutor {
         await logSystem('ERROR', 'EXECUTOR', `실행 실패: ${decision.stock_code} - ${msg}`);
       }
     }
+    // 오래된 키 정리 (Set이 무한 증가 방지 — 2분 지난 것만 남김)
+    if (this._recentOrderKeys.size > 200) this._recentOrderKeys.clear();
   }
 
   /**
@@ -50,6 +61,14 @@ export class TradeExecutor {
       await logSystem('WARN', 'EXECUTOR', `수량 0 스킵: ${action} ${stock_code}`);
       return;
     }
+
+    // 분당 1회 중복 주문 가드 (같은 종목 같은 분에 매수/매도 2번 방지)
+    const minuteKey = this._minuteKey(stock_code);
+    if (this._recentOrderKeys.has(minuteKey)) {
+      logger.warn(`⏳ 분당 중복 주문 차단: ${action} ${stock_code} (이미 이 분에 처리됨)`, { component: 'EXECUTOR' });
+      return;
+    }
+    this._recentOrderKeys.add(minuteKey);
 
     // 종목별 락 획득 (중복 주문 방지)
     const unlock = await acquireLock(stock_code, `${action}-${Date.now()}`);

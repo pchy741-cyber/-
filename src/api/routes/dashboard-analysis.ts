@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
 import { getDefenseParkState } from '../../ai/track-b/defense-park.js';
-import { IDLE_PARK_CODES } from '../../ai/track-b/trading-rules.js';
 import { getCachedScores } from '../../cache/redis.js';
 import { config } from '../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getPool } from '../../db/client.js';
@@ -340,7 +339,6 @@ dashboardAnalysisRoutes.post('/release-defense-park', async (c) => {
     try {
       const balanceFn = config.isPaper ? getPaperBalance : getAccountBalance;
       const [balance, openChains] = await Promise.all([balanceFn(), getOpenChains()]);
-      const PARK_SET = new Set(IDLE_PARK_CODES as readonly string[]);
       const chainedCodes = new Set(openChains.map((ch: any) => ch.stock_code));
       const orphans = (balance.positions ?? [])
         .map((p: any) => ({
@@ -349,7 +347,7 @@ dashboardAnalysisRoutes.post('/release-defense-park', async (c) => {
           avgBuyPrice: Number(p.avgBuyPrice ?? p.purchasePrice ?? 0),
           stockName: p.stockName ?? undefined,
         }))
-        .filter((p) => p.stockCode.length === 6 && p.quantity > 0 && p.avgBuyPrice > 0 && !PARK_SET.has(p.stockCode) && !chainedCodes.has(p.stockCode));
+        .filter((p) => p.stockCode.length === 6 && p.quantity > 0 && p.avgBuyPrice > 0 && !chainedCodes.has(p.stockCode));
 
       if (orphans.length > 0) {
         const { createChain, insertOrder } = await import('../../db/client.js');
@@ -460,8 +458,7 @@ dashboardAnalysisRoutes.post('/sync-positions', async (c) => {
         }))
         .filter((p: any) => p.stockCode.length === 6 && p.quantity > 0 && p.avgBuyPrice > 0);
 
-    const PARK_SET = new Set(IDLE_PARK_CODES as readonly string[]);
-    const tradingPositions = kisPositions.filter((p) => !PARK_SET.has(p.stockCode));
+    const tradingPositions = kisPositions;
     const chainedCodes = new Set(openChains.map((ch: any) => ch.stock_code));
     const orphans = tradingPositions.filter((p) => !chainedCodes.has(p.stockCode));
 
@@ -603,8 +600,7 @@ dashboardAnalysisRoutes.get('/market/52w-highs', async (c) => {
     if (Date.now() - _highCache.fetchedAt < 10 * 60 * 1000 && _highCache.data.length > 0)
       return c.json({ items: _highCache.data });
     const watchlist = await getActiveWatchlist();
-    const PARK_SET = new Set(IDLE_PARK_CODES as readonly string[]);
-    const targets = watchlist.filter((w) => !PARK_SET.has(w.stock_code)).slice(0, 20);
+    const targets = watchlist.slice(0, 20);
     const results = await Promise.allSettled(targets.map(async (w) => {
       const candles = await getDailyChart(w.stock_code, 252).catch(() => []);
       if (candles.length < 10) return null;
@@ -632,8 +628,7 @@ dashboardAnalysisRoutes.get('/market/short-selling', async (c) => {
     if (Date.now() - _shortCache.fetchedAt < 10 * 60 * 1000 && _shortCache.data.length > 0)
       return c.json({ items: _shortCache.data });
     const openChains = await getOpenChains();
-    const PARK_SET = new Set(IDLE_PARK_CODES as readonly string[]);
-    const targets = openChains.filter((ch: any) => !PARK_SET.has(ch.stock_code) && Number(ch.total_quantity) > 0);
+    const targets = openChains.filter((ch: any) => Number(ch.total_quantity) > 0);
     const results = await Promise.allSettled(targets.map(async (ch: any) => {
       const s = await fetchShortSellingData(ch.stock_code, 5).catch(() => null);
       if (!s) return null;
@@ -696,8 +691,7 @@ const SECTOR_MAP: Record<string, string> = {
 dashboardAnalysisRoutes.get('/market/correlation', async (c) => {
   try {
     const openChains = await getOpenChains();
-    const PARK_SET = new Set(IDLE_PARK_CODES as readonly string[]);
-    const held = openChains.filter((ch: any) => !PARK_SET.has(ch.stock_code) && Number(ch.total_quantity) > 0);
+    const held = openChains.filter((ch: any) => Number(ch.total_quantity) > 0);
     const sectorGroups: Record<string, string[]> = {};
     for (const ch of held) {
       const sector = SECTOR_MAP[ch.stock_code] ?? '기타';
@@ -724,8 +718,7 @@ dashboardAnalysisRoutes.get('/market/investor-flow', async (c) => {
       return c.json({ items: _flowCache.data, cached: true });
     }
     const watchlist = await getActiveWatchlist();
-    const PARK_SET = new Set(IDLE_PARK_CODES as readonly string[]);
-    const targets = watchlist.filter((w) => !PARK_SET.has(w.stock_code)).slice(0, 15); // 최대 15종목
+    const targets = watchlist.slice(0, 15); // 최대 15종목
     const results = await Promise.allSettled(
       targets.map(async (w) => {
         const flow = await getInvestorFlow(w.stock_code, 5);

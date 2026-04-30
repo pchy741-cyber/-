@@ -4,36 +4,40 @@ import { logSystem } from '../../db/client.js';
 import type { TransactionChain } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
 import { PARK_STOCK_CODE } from './defense-park.js';
-import { IDLE_PARK_CODES } from './trading-rules.js';
-
-const IDLE_PARK_CODE_SET = new Set<string>(IDLE_PARK_CODES);
 
 /** KOSPI 시장 국면 판별 결과 (Faber 2007 MA 기반) */
 export interface KospiRegime {
   /** 0=정상, 1=조정장(포지션60%), 2=하락장(매수차단) */
   penalty: 0 | 1 | 2;
+  /** 강세장: 가격 > MA20 > MA60 (골든크로스 구간) → 포지션 1.3x 확대 + TP 상향 */
+  boost: boolean;
 }
 
 /** KOSPI MA20/MA60 기반 시장 국면 판별 */
 export async function fetchKospiRegime(): Promise<KospiRegime> {
   try {
     const kospiCandles = await getDailyChart('0001', 65);
-    if (kospiCandles.length < 60) return { penalty: 0 };
+    if (kospiCandles.length < 60) return { penalty: 0, boost: false };
     const { analyzeTechnicals } = await import('../../analysis/indicators.js');
     const kospiTech = analyzeTechnicals(kospiCandles);
-    if (!kospiTech) return { penalty: 0 };
+    if (!kospiTech) return { penalty: 0, boost: false };
     const kospiNow = kospiCandles[0]?.close ?? 0;
     if (kospiNow > 0 && kospiNow < kospiTech.sma60) {
       logger.warn(`⛔ KOSPI ${kospiNow.toFixed(0)} < MA60 ${kospiTech.sma60.toFixed(0)} → 하락장 신규 매수 차단`, { component: 'REGIME' });
-      return { penalty: 2 };
+      return { penalty: 2, boost: false };
     }
     if (kospiNow > 0 && kospiNow < kospiTech.sma20) {
       logger.info(`⚠️ KOSPI ${kospiNow.toFixed(0)} < MA20 ${kospiTech.sma20.toFixed(0)} → 조정장 포지션 60%`, { component: 'REGIME' });
-      return { penalty: 1 };
+      return { penalty: 1, boost: false };
     }
-    return { penalty: 0 };
+    // 강세장: 가격 > MA20 > MA60 = 골든크로스 구간 → 포지션 확대 + TP 상향
+    const isBull = kospiNow > 0 && kospiTech.sma20 > kospiTech.sma60;
+    if (isBull) {
+      logger.info(`🚀 KOSPI 강세장: ${kospiNow.toFixed(0)} > MA20 ${kospiTech.sma20.toFixed(0)} > MA60 ${kospiTech.sma60.toFixed(0)} → 포지션 1.3x + TP 상향`, { component: 'REGIME' });
+    }
+    return { penalty: 0, boost: isBull };
   } catch {
-    return { penalty: 0 };
+    return { penalty: 0, boost: false };
   }
 }
 
@@ -62,7 +66,7 @@ export async function checkDailyLoss(params: {
     const realizedPnl = Number(rows[0]?.realized_pnl ?? 0);
 
     const unrealizedPnl = params.openChains
-      .filter(c => !IDLE_PARK_CODE_SET.has(c.stock_code) && c.stock_code !== PARK_STOCK_CODE && c.avg_buy_price)
+      .filter(c => c.stock_code !== PARK_STOCK_CODE && c.avg_buy_price)
       .reduce((sum, c) => {
         const curPrice = params.livePrices.get(c.stock_code)?.currentPrice ?? 0;
         const avgBuy = Number(c.avg_buy_price ?? 0);

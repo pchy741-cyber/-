@@ -1,14 +1,13 @@
 import { Hono } from 'hono';
 import { getPortfolioFlowStatus } from '../../automation/ceo-workflow.js';
 import { getDefenseParkState } from '../../ai/track-b/defense-park.js';
-import { IDLE_PARK_CODES } from '../../ai/track-b/trading-rules.js';
 import { getCachedScores, cachePrice, getLastKnownPrices } from '../../cache/redis.js';
 import { cachePriceMemory, getLastKnownPricesMemory, getCachedPriceMemory } from '../../cache/memory.js';
 import { config } from '../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getPool, getTodayStartSnapshot } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { getCurrentPrice, getBatchPrices, isMarketOpen, getVolumeRankingStocks, getChangeRankingStocks } from '../../kis/market.js';
-import { getWithdrawConfig, getWithdrawals, getTotalReserved } from '../../automation/profit-withdraw.js';
+import { getDinnerMoneyStats } from '../../automation/profit-withdraw.js';
 import { getKillSwitchStatus } from '../../risk/kill-switch.js';
 import { getPaperBalance } from '../../risk/engine.js';
 import { placeOrder } from '../../kis/order.js';
@@ -215,8 +214,7 @@ dashboardRoutes.get('/dashboard', async (c) => {
     const known = getKnownStockName(ch.stock_code);
     const resolvedName = [nameMap.get(ch.stock_code), watchlistNameMap.get(ch.stock_code), ch.stock_name, known]
       .find(n => !isCode(n) && !isInvalidStockName(n, ch.stock_code)) ?? ch.stock_code;
-    const isParking = (IDLE_PARK_CODES as readonly string[]).includes(ch.stock_code)
-      || (defensePark?.isActive && ch.stock_code === defensePark?.parkStockCode);
+    const isParking = defensePark?.isActive && ch.stock_code === defensePark?.parkStockCode;
     return { ...ch, stock_name: resolvedName, currentPrice, unrealizedPnl, unrealizedPnlPct, invested, isParking };
   });
 
@@ -914,40 +912,22 @@ dashboardRoutes.delete('/sources/:id', async (c) => {
   }
 });
 
-// ── 수익 인출 ──
+// ── 용돈 이관 현황 ──
 dashboardRoutes.get('/withdraw/config', async (c) => {
-  const config = await getWithdrawConfig();
-  const reserved = await getTotalReserved();
-  return c.json({ ...config, totalReserved: reserved });
+  const stats = await getDinnerMoneyStats();
+  return c.json({ is_active: true, withdraw_ratio_pct: 10, min_profit: 100000, ...stats });
 });
 
-dashboardRoutes.put('/withdraw/config', async (c) => {
-  const body = await c.req.json();
-  try {
-    const { rows } = await getPool().query(
-      `UPDATE profit_withdraw_config SET
-         is_active = $1, target_profit_pct = $2, withdraw_ratio_pct = $3,
-         min_withdraw_amount = $4, check_frequency = $5, updated_at = NOW()
-       WHERE id = (SELECT id FROM profit_withdraw_config LIMIT 1)
-       RETURNING *`,
-      [
-        body.is_active ?? false,
-        body.target_profit_pct ?? 10,
-        body.withdraw_ratio_pct ?? 50,
-        body.min_withdraw_amount ?? 100000,
-        body.check_frequency ?? 'daily',
-      ],
-    );
-    return c.json(rows[0]);
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500);
-  }
+dashboardRoutes.put('/withdraw/config', async (_c) => {
+  return _c.json({ ok: true });
 });
 
 dashboardRoutes.get('/withdraw/history', async (c) => {
   try {
-    const history = await getWithdrawals();
-    return c.json(history ?? []);
+    const { rows } = await getPool().query(
+      `SELECT id, amount, memo, status, created_at FROM profit_withdrawals ORDER BY created_at DESC LIMIT 50`,
+    );
+    return c.json(rows);
   } catch {
     return c.json([]);
   }

@@ -2,10 +2,7 @@ import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
 import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
-import { IDLE_PARK_CODES } from './trading-rules.js';
 import { PARK_STOCK_CODE } from './defense-park.js';
-
-const IDLE_PARK_CODE_SET = new Set<string>(IDLE_PARK_CODES);
 
 /**
  * 조기 매도 방지 필터
@@ -28,7 +25,7 @@ export function filterEarlySells(params: {
 
   return decisions.filter((d) => {
     if (!['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action)) return true;
-    if (IDLE_PARK_CODE_SET.has(d.stock_code) || d.stock_code === PARK_STOCK_CODE) return true;
+    if (d.stock_code === PARK_STOCK_CODE) return true;
 
     const chain = openChains.find((c) => c.stock_code === d.stock_code);
     if (!chain?.avg_buy_price) return true;
@@ -40,6 +37,13 @@ export function filterEarlySells(params: {
     if (avgBuy <= 0) return true;
 
     const pnlPct = ((liveP.currentPrice - avgBuy) / avgBuy) * 100;
+
+    // 보유 기간 초과 시 기술적 매도 신호 차단 면제 (장기 물림 방지)
+    const maxHoldingDays = baseP.maxHoldingDays ?? 0;
+    if (maxHoldingDays > 0 && chain.opened_at) {
+      const holdingDays = (Date.now() - new Date(chain.opened_at).getTime()) / 86400000;
+      if (holdingDays >= maxHoldingDays) return true;
+    }
 
     if (d.action === 'FORCE_CLOSE' && pnlPct > _stopPct) {
       logger.warn(
@@ -86,8 +90,6 @@ export async function applyHardRules(params: {
   } catch { /* 기본값 사용 */ }
 
   for (const chain of openChains) {
-    if (IDLE_PARK_CODE_SET.has(chain.stock_code)) continue;
-
     const price = livePrices.get(chain.stock_code);
     if (!price || !chain.avg_buy_price) continue;
     const avgBuy = Number(chain.avg_buy_price);
@@ -100,12 +102,28 @@ export async function applyHardRules(params: {
     );
     if (alreadySelling) continue;
 
-    // PROFIT_TAKING: technical-fallback.ts 단독 처리
-    if (chain.status === 'PROFIT_TAKING') continue;
-
     const stopPct = chain.stop_loss_pct != null
       ? Number(chain.stop_loss_pct)
       : (stopLossPct ?? baseParams.stopLossPct);
+
+    // PROFIT_TAKING 상태: 트레일링 스탑은 technical-fallback 전담, 하드 손절은 여기서도 강제
+    if (chain.status === 'PROFIT_TAKING') {
+      if (pnlPct <= stopPct) {
+        logger.info(
+          `🔒 PROFIT_TAKING 하드 손절: ${chain.stock_code} ${pnlPct.toFixed(1)}% ≤ ${stopPct}% — 잔여 포지션 강제 청산`,
+          { component: 'RISK_GUARD' },
+        );
+        result.push({
+          action: 'FORCE_CLOSE',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `PROFIT_TAKING 하드 손절: ${pnlPct.toFixed(1)}% (한도 ${stopPct}%) — 잔여 포지션 강제 실행`,
+          confidence: 1.0,
+        });
+      }
+      continue; // 트레일링 스탑은 technical-fallback 처리
+    }
 
     const peakForTrail = (chain as any).peak_price_since_open
       ? Number((chain as any).peak_price_since_open)
@@ -165,10 +183,9 @@ export function filterSectorConcentration(
   decisions: TradeDecision[],
   openChains: TransactionChain[],
 ): TradeDecision[] {
-  const PARK_SET = IDLE_PARK_CODE_SET;
   const heldSectorCounts: Record<string, number> = {};
   for (const c of openChains) {
-    if (PARK_SET.has(c.stock_code) || Number(c.total_quantity) <= 0) continue;
+    if (Number(c.total_quantity) <= 0) continue;
     const sector = SECTOR_MAP[c.stock_code];
     if (sector) heldSectorCounts[sector] = (heldSectorCounts[sector] ?? 0) + 1;
   }
@@ -179,7 +196,6 @@ export function filterSectorConcentration(
 
   return decisions.filter((d) => {
     if (d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN') return true;
-    if (PARK_SET.has(d.stock_code)) return true;
     const sector = SECTOR_MAP[d.stock_code];
     if (sector && blockedSectors.has(sector)) {
       logger.warn(`🚫 섹터 집중 차단: ${d.stock_code} (${sector}) — 이미 ${heldSectorCounts[sector]}종목 보유`, { component: 'RISK_GUARD' });

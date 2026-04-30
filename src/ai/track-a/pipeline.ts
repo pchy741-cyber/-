@@ -280,7 +280,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     // Step 5-3: Gemini 스코어링 실패 → Gemini Flash 통합 분석 (2순위 폴백)
     if (scores.length === 0) {
       try {
-        scores = await runClaudeAnalysis(mode, allStocks, chartData, strategy);
+        scores = await runGeminiFallbackAnalysis(mode, allStocks, chartData, strategy);
         const normalized = normalizeScoringResults(scores, allowedStockNameByCode);
         if (normalized.droppedUnknown > 0 || normalized.mergedDuplicate > 0) {
           logger.warn(
@@ -290,7 +290,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         }
         scores = normalized.scores;
       } catch (flashErr) {
-        logger.warn(`⚠️ Gemini Flash 폴백 실패: ${flashErr}`, { component: 'TRACK_A' });
+        logger.warn(`⚠️ Gemini 통합 폴백 실패: ${flashErr}`, { component: 'TRACK_A' });
       }
     }
 
@@ -434,7 +434,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
 /**
  * Gemini Flash 통합 분석+스코어링 (Gemini 스코어링 실패 시 폴백 — 무료 티어)
  */
-async function runClaudeAnalysis(
+async function runGeminiFallbackAnalysis(
   mode: string,
   watchlist: Array<{ stock_code: string; stock_name: string }>,
   chartData: Map<string, DailyCandle[]>,

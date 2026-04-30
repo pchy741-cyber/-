@@ -2,7 +2,7 @@ import { runBullBearDebate } from '../../ai/debate/bull-bear.js';
 import { analyzeTechnicals } from '../../analysis/indicators.js';
 import type { StrategyMode } from '../../config/constants.js';
 import { config } from '../../config/index.js';
-import { getActiveStrategy, getLatestScores } from '../../db/client.js';
+import { getActiveStrategy, getLatestScores, getTodayRepeatStopCodes, getRecentLossStocks } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { getCurrentPrice, getDailyChart } from '../../kis/market.js';
 import { isKillSwitchActive } from '../../risk/kill-switch.js';
@@ -43,9 +43,23 @@ export async function runSniperScan(): Promise<void> {
 
     if (allSignals.length === 0) return;
 
-    // 중복 종목 제거 (가장 높은 confidence 우선)
+    // 당일 손절 이력 + 7일 이내 손절 종목 → 스나이퍼 재진입 차단
+    const [todayStopCodes, recentLossCodes] = await Promise.all([
+      getTodayRepeatStopCodes(1), // 당일 1회 이상 손절이면 스나이퍼도 차단
+      getRecentLossStocks(7),
+    ]);
+    const lossBlocked = new Set([...todayStopCodes, ...recentLossCodes]);
+    if (lossBlocked.size > 0) {
+      logger.warn(`🚫 스나이퍼 손절이력 차단: ${[...lossBlocked].join(', ')}`, { component: 'SNIPER' });
+    }
+
+    // 중복 종목 제거 (가장 높은 confidence 우선) + 손절 차단 적용
     const bestPerStock = new Map<string, SniperSignal>();
     for (const signal of allSignals) {
+      if (lossBlocked.has(signal.stockCode)) {
+        logger.info(`🚫 스나이퍼 차단(손절이력): ${signal.stockCode}`, { component: 'SNIPER' });
+        continue;
+      }
       const existing = bestPerStock.get(signal.stockCode);
       if (!existing || signal.confidence > existing.confidence) {
         bestPerStock.set(signal.stockCode, signal);

@@ -3,7 +3,6 @@ import { getOpenChains, getPool, getTodayStartSnapshot, insertRiskEvent, insertS
 import { getAccountBalance, type AccountBalance, type Position } from '../kis/account.js';
 import { logger } from '../utils/logger.js';
 import { activateKillSwitch, isKillSwitchActive } from './kill-switch.js';
-import { IDLE_PARK_CODES } from '../ai/track-b/trading-rules.js';
 
 // ── Paper 모드 가상 잔액 (DB에서 복원) ──
 const PAPER_INITIAL_CAPITAL = 10_000_000;
@@ -255,7 +254,6 @@ export class RiskEngine {
    */
   private async checkConcurrentPositions(stockCode: string): Promise<PreTradeCheckResult> {
     // ETF 파킹 코드는 포지션 수 제한에서 제외 (운용 목적이 다름)
-    const ETF_PARK_CODES = new Set<string>(IDLE_PARK_CODES);
     try {
       const chains = await getOpenChains();
       const existingChain = chains.find((c) => c.stock_code === stockCode);
@@ -265,8 +263,7 @@ export class RiskEngine {
         return { approved: true, reason: 'OK' };
       }
 
-      // ETF 파킹 종목 제외한 실제 트레이딩 포지션 수
-      const tradingChains = chains.filter((c) => !ETF_PARK_CODES.has(c.stock_code));
+      const tradingChains = chains;
 
       if (tradingChains.length >= config.risk.maxConcurrentPositions) {
         const msg = `동시 보유 종목 수 한도: ${tradingChains.length}/${config.risk.maxConcurrentPositions}종목 — 신규 매수 차단`;

@@ -24,8 +24,9 @@ import {
   hasEarningsRisk,
 } from '../market/external-signals.js';
 
-// 글로벌 감시 목록 — 섹터 다각화 (빅테크 편중 해소, 18종목)
+// 글로벌 감시 목록 — 섹터 다각화 (미국 주력 + 일본·대만 ADR 서브, 23종목)
 // 근거: 2025년 리서치 — 방산/산업인프라가 빅테크 대비 초과 수익 (방산 +60~87% vs FAANG +36%)
+// 일본·대만 ADR: NYSE 상장 → 미국 세션에서 동일하게 거래 가능 (KIS 해외 API 지원)
 const GLOBAL_WATCHLIST = [
   // 🤖 AI 반도체·인프라 (핵심 모멘텀 섹터)
   { code: 'NVDA',  name: 'NVIDIA',          exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
@@ -49,12 +50,19 @@ const GLOBAL_WATCHLIST = [
   { code: 'AMZN',  name: 'Amazon',          exchange: 'NASDAQ', region: 'US', sector: 'CLOUD' }, // AWS 클라우드
   { code: 'GOOGL', name: 'Alphabet',        exchange: 'NASDAQ', region: 'US', sector: 'CLOUD' }, // 검색+클라우드
   { code: 'MELI',  name: 'MercadoLibre',    exchange: 'NASDAQ', region: 'US', sector: 'GROWTH' }, // 중남미 이커머스 고성장
-  { code: 'SMCI',  name: 'Super Micro',     exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' }, // AI 서버 고성장
+  { code: 'AVGO',  name: 'Broadcom',        exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' }, // AI 커스텀칩 수익 안정
+  // 🇯🇵 일본 ADR (NYSE 상장 — 미국 세션 거래, 엔화 약세 수혜 수출주)
+  { code: 'TM',    name: 'Toyota Motor',    exchange: 'NYSE',   region: 'US', sector: 'JP_AUTO' },  // 세계 1위 자동차 ADR
+  { code: 'SONY',  name: 'Sony Group',      exchange: 'NYSE',   region: 'US', sector: 'JP_TECH' },  // 게임·엔터·이미징센서
+  { code: 'MUFG',  name: 'Mitsubishi UFJ',  exchange: 'NYSE',   region: 'US', sector: 'JP_BANK' },  // 일본 최대 금융그룹, 금리 상승 수혜
+  // 🇹🇼 대만 ADR (NYSE 상장 — 미국 세션 거래, AI 반도체 공급망 핵심)
+  { code: 'TSM',   name: 'TSMC',            exchange: 'NYSE',   region: 'US', sector: 'TW_SEMI' },  // 세계 최대 파운드리, NVDA·AAPL 위탁생산
+  { code: 'UMC',   name: 'United Micro',    exchange: 'NYSE',   region: 'US', sector: 'TW_SEMI' },  // 2위 파운드리, 성숙 공정
 ];
 
 // ─── 포지션 한도 ───
-const MAX_POSITIONS = 6;           // 최대 동시 보유 (집중 + 분산 균형)
-const POSITION_SIZE_USD = 1500;    // 종목당 최대 $1,500 (단타 적정 규모)
+const MAX_POSITIONS = 8;           // 최대 동시 보유 (23종목 확장 대응)
+const POSITION_SIZE_USD = 2000;    // 종목당 최대 $2,000
 const POSITION_PCT = 0.20;         // 또는 가용 현금의 20%
 
 function resolveOverseasStockName(code: string, exchange: string): string {
@@ -246,8 +254,8 @@ const US_TOP_COUNT = 10;   // 14종목 중 상위 10개 세션 캐시 (기회주
 const ASIA_TOP_COUNT = 6;
 // AI 호출 빈도 제한 — 무료 Gemini 1500 RPD 절약
 let lastUSAiCallAt = 0;  // epoch ms
-const US_AI_INTERVAL_MS = 60 * 60 * 1000;        // 기본: 60분에 1회
-const US_AI_MOMENTUM_INTERVAL_MS = 30 * 60 * 1000; // 모멘텀/보유 있으면: 30분에 1회
+const US_AI_INTERVAL_MS = 30 * 60 * 1000;        // 기본: 30분에 1회 (15분 사이클 대응)
+const US_AI_MOMENTUM_INTERVAL_MS = 15 * 60 * 1000; // 모멘텀/보유 있으면: 15분에 1회
 let sessionStartPortfolioValue: number | null = null;
 
 /** 미국장 세션 캐시 초기화 (runner.ts 23:20 호출) */
@@ -949,6 +957,8 @@ export async function runOverseasJob(): Promise<void> {
       const trailActivatePct = isHighBeta ? 4.0 : 3.0;
       // 하드 익절: 고베타 +18%, 방산 +15%, 일반 +12% (승자 더 오래 보유)
       const hardTpPct = isHighBeta ? 18.0 : isDefense ? 15.0 : 12.0;
+      // 보유 기간 (일수) — 반장투 상한: 14일 초과 손실 포지션 청산
+      const holdingDays = (Date.now() - new Date(holding.boughtAt).getTime()) / (1000 * 60 * 60 * 24);
 
       // 1) 손절: 섹터별 하드 룰
       if (pnlPct <= stopLossPct) {
@@ -973,6 +983,10 @@ export async function runOverseasJob(): Promise<void> {
       // 6) AI 없을 때 기술적 강매도: 점수 -30 이하
       else if (!ai && tech.score <= -30 && (tech.signal === 'SELL' || tech.signal === 'STRONG_SELL')) {
         sellReason = `기술적 매도(AI없음): score=${tech.score} RSI=${tech.rsi.toFixed(0)}`;
+      }
+      // 7) 보유기한 초과: 14일 넘어 손실 포지션 — 자본 묶임 방지 (반장투 상한)
+      else if (holdingDays > 14 && pnlPct < 0) {
+        sellReason = `보유기한 초과(${holdingDays.toFixed(0)}일/손실): ${pnlPct.toFixed(1)}% → 청산`;
       }
 
       if (sellReason) {
@@ -1100,7 +1114,7 @@ export async function runOverseasJob(): Promise<void> {
         const scoreFactor = Math.min(1, Math.max(0, (target.score + 50) / 100)); // score -50~+50 → 0~1
         const combined = confFactor * 0.55 + scoreFactor * 0.45;
         const sizingMult = Math.round((0.6 + combined * 1.2) * 100) / 100; // 0.6x ~ 1.8x
-        const baseSize = Math.min(portfolioValue * 0.15, POSITION_SIZE_USD);
+        const baseSize = Math.min(portfolioValue * 0.20, POSITION_SIZE_USD);
         const positionSize = Math.min(baseSize * sizingMult, cash * 0.70);
         if (positionSize < 50) break;
 

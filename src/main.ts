@@ -236,7 +236,15 @@ async function bootstrap() {
     logger.warn(`자기학습 초기화 체크 실패: ${e.message}`, { component: 'BOOT' });
   }
 
-  // 6. 스케줄러 시작
+  // 6. Kill Switch DB 복원 (재배포 후에도 수동 정지 상태 유지)
+  try {
+    const { initKillSwitchFromDB } = await import('./risk/kill-switch.js');
+    await initKillSwitchFromDB();
+  } catch (e: any) {
+    logger.warn(`Kill Switch 복원 실패 (무시): ${e.message}`, { component: 'BOOT' });
+  }
+
+  // 7. 스케줄러 시작
   startScheduler();
 
   // 6-1. 오늘 AI 점수가 없으면 즉시 Track A 실행 (재배포 후 점수 공백 자동 복구)

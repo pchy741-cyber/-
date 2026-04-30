@@ -1219,6 +1219,141 @@ export async function getStockAccuracyContext(stockCodes: string[]): Promise<str
 }
 
 /**
+ * 점수 티어별 실거래 역산 파라미터 보정 (자기학습 피드백)
+ * 최근 120일 score_accuracy 테이블 데이터로 Kelly Criterion 기반 최적 비율 계산
+ */
+async function calibrateScoreTierParams(): Promise<void> {
+  try {
+    // 1. score_accuracy에서 entry_score가 있는 레코드 조회 (최근 120일)
+    const { rows: accuracyData } = await getPool().query(
+      `SELECT entry_score, outcome, realized_pnl_pct
+       FROM score_accuracy
+       WHERE recorded_at >= NOW() - INTERVAL '120 days'
+         AND entry_score IS NOT NULL
+       ORDER BY recorded_at DESC`,
+    );
+
+    if (accuracyData.length < 30) {
+      logger.info('점수 티어 보정: 데이터 부족 (최소 30건 필요)', { component: 'LEARN' });
+      return;
+    }
+
+    // 2. 점수를 티어로 분류하고 통계 계산
+    const tiers = [
+      { min: 60, max: 69 },
+      { min: 70, max: 79 },
+      { min: 80, max: 89 },
+      { min: 90, max: 100 },
+    ];
+
+    interface TierStats {
+      data: Array<{ outcome: string; realized_pnl_pct: number }>;
+      winRate: number;
+      avgPnl: number;
+      avgWin: number;
+      avgLoss: number;
+      stdev: number;
+    }
+
+    const tierStats: Record<string, TierStats> = {};
+
+    for (const tier of tiers) {
+      const tierKey = `${tier.min}-${tier.max}`;
+      const tierData = accuracyData.filter(
+        (d) => d.entry_score >= tier.min && d.entry_score <= tier.max,
+      );
+
+      if (tierData.length < 5) {
+        tierStats[tierKey] = { data: [], winRate: 0, avgPnl: 0, avgWin: 0, avgLoss: 0, stdev: 0 };
+        continue;
+      }
+
+      const wins = tierData.filter((d) => d.outcome === 'WIN');
+      const losses = tierData.filter((d) => d.outcome === 'LOSS');
+
+      const winRate = wins.length / tierData.length;
+      const avgPnl = tierData.reduce((s, d) => s + d.realized_pnl_pct, 0) / tierData.length;
+      const avgWin = wins.length > 0
+        ? wins.reduce((s, d) => s + d.realized_pnl_pct, 0) / wins.length
+        : 0;
+      const avgLoss = losses.length > 0
+        ? losses.reduce((s, d) => s + d.realized_pnl_pct, 0) / losses.length
+        : 0;
+
+      // 표준편차 계산
+      const variance = tierData.reduce((s, d) => s + Math.pow(d.realized_pnl_pct - avgPnl, 2), 0) / tierData.length;
+      const stdev = Math.sqrt(variance);
+
+      tierStats[tierKey] = { data: tierData, winRate, avgPnl, avgWin, avgLoss, stdev };
+    }
+
+    // 3. Kelly Criterion 기반 최적 비율 계산
+    const updates: Array<{ tier_min: number; tier_max: number; alloc_pct: number; win_rate: number; avg_pnl_pct: number; sample_count: number }> = [];
+
+    for (const tier of tiers) {
+      const tierKey = `${tier.min}-${tier.max}`;
+      const stats = tierStats[tierKey];
+
+      if (stats.data.length < 5) continue;
+
+      const { winRate, avgWin, avgLoss } = stats;
+
+      // Kelly Criterion 공식: kelly = winRate - (1 - winRate) / (avgWin / |avgLoss|)
+      let kelly = 0;
+      if (avgLoss !== 0) {
+        const ratio = avgWin / Math.abs(avgLoss);
+        kelly = winRate - (1 - winRate) / ratio;
+      }
+
+      // Kelly이 음수면 최소값, Half-Kelly 보수화 (30% 적용), 상한 0.22
+      if (kelly < 0) kelly = 0.04;
+      else kelly = Math.min(kelly * 0.3, 0.22);
+
+      // 샘플이 10건 미만이면 현재 DB값과 50:50 블렌딩
+      let allocPct = kelly;
+      if (stats.data.length < 10) {
+        const { rows: currentRows } = await getPool().query(
+          `SELECT alloc_pct FROM score_tier_params WHERE tier_min = $1 AND tier_max = $2`,
+          [tier.min, tier.max],
+        ).catch(() => ({ rows: [] }));
+
+        if (currentRows.length > 0) {
+          const currentAlloc = Number(currentRows[0].alloc_pct);
+          allocPct = (kelly + currentAlloc) / 2;
+        }
+      }
+
+      updates.push({
+        tier_min: tier.min,
+        tier_max: tier.max,
+        alloc_pct: allocPct,
+        win_rate: winRate,
+        avg_pnl_pct: stats.avgPnl,
+        sample_count: stats.data.length,
+      });
+    }
+
+    // 4. DB upsert
+    for (const update of updates) {
+      await getPool().query(
+        `INSERT INTO score_tier_params (tier_min, tier_max, alloc_pct, win_rate, avg_pnl_pct, sample_count, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW())
+         ON CONFLICT (tier_min, tier_max)
+         DO UPDATE SET alloc_pct=$3, win_rate=$4, avg_pnl_pct=$5, sample_count=$6, updated_at=NOW()`,
+        [update.tier_min, update.tier_max, update.alloc_pct, update.win_rate, update.avg_pnl_pct, update.sample_count],
+      );
+    }
+
+    // 5. 로깅
+    const summary = updates.map((u) => `[${u.tier_min}-${u.tier_max}: ${(u.alloc_pct * 100).toFixed(1)}%, 승률 ${(u.win_rate * 100).toFixed(0)}%, n=${u.sample_count}]`).join(' ');
+    logger.info(`점수 티어 파라미터 갱신: ${summary}`, { component: 'LEARN' });
+    await logSystem('INFO', 'LEARN', `점수 티어 보정: ${summary}`).catch(() => {});
+  } catch (err) {
+    logger.warn(`점수 티어 보정 실패: ${err}`, { component: 'LEARN' });
+  }
+}
+
+/**
  * 자기학습 분석 실행 + 인사이트 저장 + auto-apply (매일 18:30 호출)
  */
 export async function runDailyLearning(): Promise<void> {
@@ -1245,6 +1380,7 @@ export async function runDailyLearning(): Promise<void> {
     }
     logger.info(`🧠 자기학습 인사이트 ${insights.length}건 저장`, { component: 'LEARN' });
     await autoApplyInsights(insights);
+    await calibrateScoreTierParams().catch((e) => logger.warn(`티어 파라미터 보정 실패: ${e}`, { component: 'LEARN' }));
   } catch (err) {
     logger.warn(`자기학습 실패: ${err}`, { component: 'LEARN' });
   }

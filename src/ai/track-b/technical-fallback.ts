@@ -5,10 +5,8 @@ import type { TransactionChain } from '../../db/models.js';
 import { getMinuteChart, isMarketOpen, type CurrentPrice, type DailyCandle } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import type { TradeDecision } from '../../db/models.js';
-import { BUY_BLOCKED_CODES, IDLE_PARK_CODES, PRIORITY_SECTOR_CODES } from './trading-rules.js';
+import { BUY_BLOCKED_CODES, PRIORITY_SECTOR_CODES } from './trading-rules.js';
 import { getPool } from '../../db/client.js';
-
-const IDLE_PARK_CODE_SET = new Set<string>(IDLE_PARK_CODES);
 
 /**
  * AI API 없이 기술적 지표만으로 매매 판단
@@ -37,35 +35,38 @@ export async function technicalFallbackDecisions(params: {
   winRates?: Map<string, StockWinRate>;
   /** 장 마감 30분 전(14:30~) — 신규 매수 차단 */
   blockNewBuys?: boolean;
+  /** 강세장 부스터: true이면 TP +1.5% 상향 */
+  kospiBoost?: boolean;
   /** 황금비율 배분 목표 — 주식 비중 초과 시 매수 기준 상향 (더 선택적 진입) */
   allocationTarget?: { stock_pct: number; rebalance_threshold_pct: number; is_active: boolean } | null;
   /** 현재 주식 포지션 가치 (황금비율 계산용) */
   currentStockValue?: number;
 }): Promise<TradeDecision[]> {
-  const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, manuallySoldCodes, totalAssets, winRates, blockNewBuys, allocationTarget, currentStockValue } = params;
-  // 종목당 최대 비중: 총자산의 18% (집중 손실 방지) 또는 maxPositionKrw 중 작은 값
-  // 한 종목에 50%+ 집중되면 손실 충격이 너무 큼 → 18% 하드캡
+  const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, manuallySoldCodes, totalAssets, winRates, blockNewBuys, kospiBoost, allocationTarget, currentStockValue } = params;
+  // 종목당 최대 비중: 총자산의 25% 또는 maxPositionKrw 중 작은 값
   const effectiveMaxPos = totalAssets
-    ? Math.min(maxPositionKrw, Math.round(totalAssets * 0.18))
+    ? Math.min(maxPositionKrw, Math.round(totalAssets * 0.25))
     : maxPositionKrw;
   const aiScoreMap = new Map((aiScores ?? []).map((s) => [s.stock_code, s.score]));
   const base = STRATEGY_PARAMS[mode];
   // DB 세팅값 우선 적용 (없으면 STRATEGY_PARAMS 하드코딩 fallback)
+  // 강세장(kospiBoost)이면 TP +1.5% 상향 — 더 길게 들고 수익 극대화
+  const baseTp = params.takeProfitPct ?? base.takeProfitPct;
   const strategyParams = {
     ...base,
-    takeProfitPct: params.takeProfitPct ?? base.takeProfitPct,
+    takeProfitPct: kospiBoost ? baseTp + 1.5 : baseTp,
     stopLossPct: params.stopLossPct ?? base.stopLossPct,
     buyThreshold: params.buyThreshold ?? base.buyThreshold,
   };
+  if (kospiBoost) {
+    logger.info(`🚀 강세장 TP 상향: ${baseTp}% → ${strategyParams.takeProfitPct}% (+1.5%)`, { component: 'FALLBACK' });
+  }
   const decisions: TradeDecision[] = [];
 
   // 1. 보유 종목 매도 판단 (손절/익절)
   // 동일 종목에 다중 체인(분할 매수)이 있을 경우 중복 매도 신호 방지
   const processedSellCodes = new Set<string>();
   for (const chain of openChains) {
-    // 파킹 ETF는 손절/매도 로직 완전 제외 — 장기 보유 목적
-    if (IDLE_PARK_CODE_SET.has(chain.stock_code)) continue;
-
     const price = livePrices.get(chain.stock_code);
     if (!price || !chain.avg_buy_price) continue;
 
@@ -129,7 +130,7 @@ export async function technicalFallbackDecisions(params: {
       }
       const peakPrice = (chain as any).peak_price ? Number((chain as any).peak_price) : Number(chain.avg_buy_price) * (1 + strategyParams.takeProfitPct / 100);
       const trailDropPct = ((price.currentPrice - peakPrice) / peakPrice) * 100;
-      const isTrailTriggered = trailDropPct <= -2.5; // peak 대비 -2.5% 하락 시 청산 (너무 좁으면 노이즈에 조기 청산)
+      const isTrailTriggered = trailDropPct <= -3.5; // peak 대비 -3.5% 하락 시 청산 (+5% 2단계 목표와 균형)
       const isTargetReached = pnlPct >= 5.0;         // +5.0% 추가 목표 달성 시 전량 익절
 
       if (isTargetReached || isTrailTriggered) {
@@ -159,10 +160,12 @@ export async function technicalFallbackDecisions(params: {
     const stopWidenMultiplier = holdingAiScore >= 80 ? 1.4 : holdingAiScore >= 65 ? 1.2 : 1.0;
     const effectiveStop = Math.max(strategyParams.stopLossPct, dynamicStop) * stopWidenMultiplier;
     if (pnlPct <= effectiveStop) {
-      // ── RSI<35 + 거래량 급증 = 패닉 매도 손절 억제 (공황 매도 직후 반등 확률 높음) ──
-      if (sellTech && sellTech.rsi14 < 35 && sellTech.volumeRatio >= 2.5) {
+      // ── RSI<35 + 거래량 급증 = 패닉 매도 손절 억제 — 단, 손절선 1.5배 초과 시 무조건 청산 ──
+      // 억제 허용 구간: stopPct ~ stopPct×1.5 (예: -5%~-7.5%) — 이 밖에선 루프 방지
+      const suppressionFloor = effectiveStop * 1.5;
+      if (sellTech && sellTech.rsi14 < 35 && sellTech.volumeRatio >= 2.5 && pnlPct > suppressionFloor) {
         logger.info(
-          `🛡️ 패닉매도 손절 억제: ${chain.stock_code} RSI=${sellTech.rsi14.toFixed(0)}<35 거래량${sellTech.volumeRatio.toFixed(1)}x급증 — 공황 손절 대신 보유 유지`,
+          `🛡️ 패닉매도 손절 억제: ${chain.stock_code} RSI=${sellTech.rsi14.toFixed(0)}<35 거래량${sellTech.volumeRatio.toFixed(1)}x급증 — 보유 유지 (floor=${suppressionFloor.toFixed(1)}%)`,
           { component: 'TRACK_B' },
         );
         continue; // 이 사이클 손절 스킵 — 다음 사이클에서 재판단
@@ -540,7 +543,7 @@ export async function technicalFallbackDecisions(params: {
       // 교체 대상: 파킹 ETF 제외, 수익 중인 종목 우선 (손실 실현 최소화)
       // 점수가 가장 낮은 종목 선택
       const tradingChains = openChains.filter(
-        (c) => !IDLE_PARK_CODE_SET.has(c.stock_code) && Number(c.total_quantity) > 0,
+        (c) => Number(c.total_quantity) > 0,
       );
 
       if (tradingChains.length > 0) {

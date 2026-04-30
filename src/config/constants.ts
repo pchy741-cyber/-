@@ -53,12 +53,8 @@ export const StrategyMode = {
   SWING: 'SWING',       // 🟢 평상시 스윙
   DEFENSE: 'DEFENSE',   // 🔴 폭락장 방어
   SCALPING: 'SCALPING', // 🔥 초단타
-  DIVIDEND: 'DIVIDEND', // 🏦 파킹+배당 안정 운영 (하락장 지속 시 자동 전환)
 } as const;
 export type StrategyMode = (typeof StrategyMode)[keyof typeof StrategyMode];
-
-// 🏦 DIVIDEND 모드에서 매수 허용 최소 배당수익률 (%)
-export const MIN_DIVIDEND_YIELD_FOR_BUY = 2.0;
 
 // ── 전략별 파라미터 (연구 기반 최적화) ──
 //
@@ -124,17 +120,6 @@ export const STRATEGY_PARAMS = {
     forceCloseTime: '09:25',// 개장 25분 후 강제 청산 (09:00~09:25 모멘텀 구간)
   },
 
-  DIVIDEND: {
-    buyThreshold: 90,
-    splitCount: 2,
-    averageDownPct: 0,
-    maxAveragingCount: 0,
-    takeProfitPct: 10,
-    takeProfitRatio: 0.5,
-    stopLossPct: -5,
-    maxHoldingDays: 60,
-    marketPenalty: -20,
-  },
 } as const;
 
 // ── KIS API Transaction IDs ──

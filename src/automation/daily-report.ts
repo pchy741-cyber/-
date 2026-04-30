@@ -1,6 +1,6 @@
 import { getOpenChains, getPool } from '../db/client.js';
 import { getAccountBalance } from '../kis/account.js';
-import { getTotalReserved } from './profit-withdraw.js';
+import { getDinnerMoneyStats } from './profit-withdraw.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
 
@@ -20,7 +20,7 @@ export async function generateDailyReport(): Promise<void> {
     const balance = await getAccountBalance();
     const chains = await getOpenChains();
     const today = new Date().toISOString().split('T')[0];
-    const reserved = await getTotalReserved();
+    const { todayAmount: reserved } = await getDinnerMoneyStats();
 
     // 오늘 체결된 주문
     const { rows: todayOrders } = await getPool().query(
