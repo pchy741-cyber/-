@@ -122,14 +122,14 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
       try {
         const usStocks = GLOBAL_WATCHLIST.filter(s => s.exchange === 'NASDAQ' || s.exchange === 'NYSE');
         const results: OverseasScoreEntry[] = [];
-        const BATCH = 4;
+        const BATCH = 6;
         for (let i = 0; i < usStocks.length; i += BATCH) {
           const batch = usStocks.slice(i, i + BATCH);
           const settled = await Promise.allSettled(
             batch.map(async (stock) => {
               const [price, chart] = await Promise.all([
                 getOverseasPrice(stock.code, stock.exchange).catch(() => null),
-                getOverseasDailyChart(stock.code, stock.exchange, 80).catch(() => null),
+                getOverseasDailyChart(stock.code, stock.exchange, 40).catch(() => null),
               ]);
               return { stock, price, chart };
             })
@@ -145,7 +145,7 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
             if (!tech) continue;
             results.push({ code: stock.code, name: stock.name, exchange: stock.exchange, region: 'US', score: tech.score, signal: tech.overallSignal, price: price?.currentPrice ?? 0, changePct: price?.changePct ?? 0, rsi: tech.rsi14, cachedAt: Date.now() });
           }
-          if (i + BATCH < usStocks.length) await new Promise(r => setTimeout(r, 200));
+          if (i + BATCH < usStocks.length) await new Promise(r => setTimeout(r, 100));
         }
         if (results.length > 0) {
           setOverseasScores(results);
@@ -194,15 +194,15 @@ overseasRoutes.get('/overseas/scores', async (c) => {
     const usStocks = GLOBAL_WATCHLIST.filter(s => s.exchange === 'NASDAQ' || s.exchange === 'NYSE');
     const results: OverseasScoreEntry[] = [];
 
-    // 병렬 fetch (최대 4개씩)
-    const BATCH = 4;
+    // 병렬 fetch (최대 6개씩)
+    const BATCH = 6;
     for (let i = 0; i < usStocks.length; i += BATCH) {
       const batch = usStocks.slice(i, i + BATCH);
       const settled = await Promise.allSettled(
         batch.map(async (stock) => {
           const [price, chart] = await Promise.all([
             getOverseasPrice(stock.code, stock.exchange).catch(() => null),
-            getOverseasDailyChart(stock.code, stock.exchange, 80).catch(() => null),
+            getOverseasDailyChart(stock.code, stock.exchange, 40).catch(() => null),
           ]);
           return { stock, price, chart };
         })
@@ -229,7 +229,7 @@ overseasRoutes.get('/overseas/scores', async (c) => {
           cachedAt: Date.now(),
         });
       }
-      if (i + BATCH < usStocks.length) await new Promise(r => setTimeout(r, 200));
+      if (i + BATCH < usStocks.length) await new Promise(r => setTimeout(r, 100));
     }
 
     if (results.length > 0) setOverseasScores(results);

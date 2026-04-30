@@ -251,12 +251,12 @@ interface SessionCache {
 }
 let usSessionCache: SessionCache | null = null;
 let asiaSessionCache: SessionCache | null = null;
-const US_TOP_COUNT = 10;   // 14종목 중 상위 10개 세션 캐시 (기회주 놓치지 않게 넉넉하게)
+const US_TOP_COUNT = 15;   // 상위 15개 세션 캐시 (기회주 누락 방지)
 const ASIA_TOP_COUNT = 6;
-// AI 호출 빈도 제한 — 무료 Gemini 1500 RPD 절약
+// AI 호출 빈도 제한 — 15분 사이클과 동일하게 매 사이클 호출
 let lastUSAiCallAt = 0;  // epoch ms
-const US_AI_INTERVAL_MS = 30 * 60 * 1000;        // 기본: 30분에 1회 (15분 사이클 대응)
-const US_AI_MOMENTUM_INTERVAL_MS = 15 * 60 * 1000; // 모멘텀/보유 있으면: 15분에 1회
+const US_AI_INTERVAL_MS = 15 * 60 * 1000;        // 매 사이클(15분)마다 AI 호출
+const US_AI_MOMENTUM_INTERVAL_MS = 15 * 60 * 1000; // 모멘텀/보유: 동일
 let sessionStartPortfolioValue: number | null = null;
 
 /** 미국장 세션 캐시 초기화 (runner.ts 23:20 호출) */
@@ -719,8 +719,8 @@ export async function runOverseasJob(): Promise<void> {
       isMomentum: boolean; // 당일 강한 상승 모멘텀
     }> = [];
 
-    // 배치 처리: 5개씩 병렬 → rate limit 안전
-    const BATCH = 5;
+    // 배치 처리: 8개씩 병렬 → rate limit 안전 (15req/sec 용량)
+    const BATCH = 8;
     for (let i = 0; i < activeStocks.length; i += BATCH) {
       const batch = activeStocks.slice(i, i + BATCH);
       const latestCache = isUSSession ? usSessionCache : asiaSessionCache;
@@ -779,9 +779,9 @@ export async function runOverseasJob(): Promise<void> {
         );
       }
 
-      // 배치 간 300ms 간격 (rate limit)
+      // 배치 간 100ms 간격 (rate limit 준수 범위 내 최소화)
       if (i + BATCH < activeStocks.length) {
-        await new Promise(r => setTimeout(r, 300));
+        await new Promise(r => setTimeout(r, 100));
       }
     }
 
