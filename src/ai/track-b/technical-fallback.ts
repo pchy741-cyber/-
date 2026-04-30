@@ -643,15 +643,20 @@ export async function technicalFallbackDecisions(params: {
     // 우선 테마 보정
     const priorityBonus = PRIORITY_SECTOR_CODES.has(cand.stock_code) ? 1.1 : 1.0;
 
-    // 목표 금액 = 총자산 × 비율 × 보정들 (물타기 여지 splitCount 반영)
-    // splitCount=2이면 1차에 60% 투입, 물타기 여지 40% 남김
-    const firstEntryRatio = splitCount <= 1 ? 1.0 : splitCount <= 2 ? 0.60 : 0.50;
+    // 목표 금액 = 총자산 × 비율 × 보정들
+    // AI허락 고확신(85점+) → 1차에 80% 과감 진입 (물타기 여지 20%)
+    // AI허락 일반(70-84점) → 1차 70%
+    // AI 미허락 탐색 → 1차 100% (소액이므로 분할 의미 없음)
+    const firstEntryRatio = !aiApproved ? 1.0
+      : blendedScore >= 85 ? 0.80
+      : splitCount <= 1 ? 1.0
+      : splitCount <= 2 ? 0.70 : 0.60;
     const targetKrw = totalAssets
       ? Math.round(totalAssets * baseAllocPct * modeScale * winRateMultiplier * priorityBonus * firstEntryRatio)
       : Math.round(effectiveMaxPos * firstEntryRatio);
 
-    // 상한: effectiveMaxPos (종목당 절대 한도), 하한: 남은 현금의 85%까지 사용 (현금 효율)
-    const positionSize = Math.min(targetKrw, effectiveMaxPos, remainingCash * 0.85);
+    // 상한: effectiveMaxPos (종목당 절대 한도), 남은 현금의 92%까지 사용 (현금 최소화)
+    const positionSize = Math.min(targetKrw, effectiveMaxPos, remainingCash * 0.92);
     if (positionSize < 300000) continue; // 최소 30만원 미달 → 이 종목만 스킵 (break→continue: 이후 종목 계속 검토)
 
     const quantity = Math.floor(positionSize / cand.price.currentPrice);
@@ -670,6 +675,36 @@ export async function technicalFallbackDecisions(params: {
     });
 
     remainingCash -= quantity * cand.price.currentPrice;
+  }
+
+  // 2-b. 현금 추가 소진 패스: 매수 후 남은 현금이 총자산 15% 이상 & AI허락 후보 더 있으면 추가 진입
+  // (1차 매수에서 firstEntryRatio로 아낀 40% 여지를 고확신 종목에 추가 투입)
+  if (totalAssets && remainingCash >= totalAssets * 0.15 && mode !== 'SCALPING') {
+    const alreadyBuying = new Set(decisions.filter(d => d.action === 'BUY').map(d => d.stock_code));
+    const extraCandidates = candidates.filter(c => {
+      const score = aiScoreMap.get(c.stock_code) ?? 0;
+      return alreadyBuying.has(c.stock_code) && score >= strategyParams.buyThreshold;
+    });
+    // 이미 매수 결정한 AI허락 종목에 물타기가 아닌 추가 비중 투입
+    for (const cand of extraCandidates.slice(0, 2)) {
+      const addSize = Math.min(Math.round(remainingCash * 0.50), effectiveMaxPos);
+      if (addSize < 300000) continue;
+      const qty = Math.floor(addSize / cand.price.currentPrice);
+      if (qty <= 0) continue;
+      const aiScoreEx = aiScoreMap.get(cand.stock_code) ?? 0;
+      logger.info(`  💰 현금추가투입: ${cand.stock_code} +${Math.round(addSize / 10000)}만원 (남은현금 ${Math.round(remainingCash / 10000)}만원)`, { component: 'TRACK_B' });
+      decisions.push({
+        action: 'BUY',
+        stock_code: cand.stock_code,
+        quantity: qty,
+        price_type: 'MARKET',
+        limit_price: cand.price.currentPrice,
+        reasoning: `현금추가투입: AI${aiScoreEx}점 고확신 추가매수 (잔여현금 소진)`,
+        confidence: 0.75,
+        ai_score: aiScoreEx,
+      });
+      remainingCash -= qty * cand.price.currentPrice;
+    }
   }
 
   // 3. 보유 종목 물타기 판단
