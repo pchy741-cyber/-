@@ -383,8 +383,8 @@ export async function technicalFallbackDecisions(params: {
     }
 
     // SWING 하락추세 필터: SMA20 < SMA60 = 중기 하락 = 높은 확신 없이 진입 금지
-    // (시뮬 결과: 하락장 SWING -7.11% 원인)
-    if (mode === 'SWING' && tech.sma20 < tech.sma60) {
+    // AI 80점+ → 섹터/종목 고유 모멘텀으로 지수 하락을 이길 수 있으므로 면제
+    if (mode === 'SWING' && tech.sma20 < tech.sma60 && aiScore < 80) {
       const downtrendOk = tech.score >= 55 || tech.rsi14 < 40;
       if (!downtrendOk && aiScore < buyThreshold) {
         logger.info(`  ⬇️ ${stock.stock_code}: SMA20<SMA60 하락추세 SWING → tech=${tech.score} RSI=${tech.rsi14.toFixed(0)} 확신 부족 차단`, { component: 'TRACK_B' });
@@ -438,7 +438,7 @@ export async function technicalFallbackDecisions(params: {
 
     const isOversold    = tech.rsi14 < 30;                                                     // 과매도 반등
     const isEarlyBounce = tech.rsi14 >= 30 && tech.rsi14 < 45;                                // 반등 초기 (최적)
-    const isPullback    = tech.rsi14 >= 45 && tech.rsi14 <= 60 && tech.macdCrossover === 'BULLISH'; // 눌림목 반등
+    const isPullback    = tech.rsi14 >= 45 && tech.rsi14 <= 60 && (tech.macdCrossover === 'BULLISH' || aiScore >= 80); // 눌림목 반등 (AI 80+이면 MACD 불필요)
     // 모멘텀: RSI 60~70 + (AI점수 있으면 buyThreshold 이상 OR 기술점수 양호)
     // AI API 없을 때 aiScore=0 → 기술점수만으로 판단 가능하도록 수정
     const isMomentum    = tech.rsi14 > 60 && tech.rsi14 <= 70 &&
@@ -603,10 +603,11 @@ export async function technicalFallbackDecisions(params: {
   const splitCount = strategyParams.splitCount || 2;
 
   for (const cand of candidates.slice(0, maxBuys)) {
-    // 분봉 신호가 강하게 하락(-15 이하)이면 진입 보류
+    // 분봉 신호가 강하게 하락이면 진입 보류 (AI 80점+ → 임계값 완화)
     const idBonus = intradayBonus.get(cand.stock_code) ?? 0;
-    if (idBonus <= -15) {
-      logger.info(`  ⏸️ ${cand.stock_code}: 분봉 하락신호(${idBonus}) → 일봉 매수 보류`, { component: 'TRACK_B' });
+    const idBonusThreshold = (aiScoreMap.get(cand.stock_code) ?? 0) >= 80 ? -25 : -15;
+    if (idBonus <= idBonusThreshold) {
+      logger.info(`  ⏸️ ${cand.stock_code}: 분봉 하락신호(${idBonus}<=${idBonusThreshold}) → 일봉 매수 보류`, { component: 'TRACK_B' });
       continue;
     }
 
