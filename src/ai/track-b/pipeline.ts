@@ -285,6 +285,36 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         .then(m => m.getPool().query('SELECT * FROM portfolio_allocation_config WHERE is_active = true LIMIT 1'))
         .then(r => r.rows[0] ?? null).catch(() => null);
 
+      // ── 일일 최대 손실 한도 (-3% 전체 투자금 기준) ──
+      // 오늘 실현 손익을 orders 테이블에서 집계 — 3% 초과 손실 시 신규 매수 차단
+      let dailyLossBlocked = false;
+      try {
+        const { getPool: gp } = await import('../../db/client.js');
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        const { rows: pnlRows } = await gp().query(`
+          SELECT COALESCE(SUM(
+            (o.filled_price - tc.avg_buy_price) * o.filled_quantity
+          ), 0) AS realized_pnl
+          FROM orders o
+          JOIN transaction_chains tc ON tc.id = o.chain_id
+          WHERE o.side = 'SELL'
+            AND o.status = 'FILLED'
+            AND o.trigger_source != 'OVERSEAS'
+            AND o.created_at >= $1
+            AND o.filled_price IS NOT NULL
+            AND tc.avg_buy_price IS NOT NULL
+        `, [today.toISOString()]);
+        const realizedPnl = Number(pnlRows[0]?.realized_pnl ?? 0);
+        if (totalAssets > 0) {
+          const dailyPnlPct = (realizedPnl / totalAssets) * 100;
+          if (dailyPnlPct <= -3) {
+            dailyLossBlocked = true;
+            logger.warn(`⛔ 국내 일일 손실 한도(-3%) 초과: ${dailyPnlPct.toFixed(2)}% (${realizedPnl.toLocaleString()}원) → 신규 매수 차단`, { component: 'TRACK_B' });
+            await logSystem('WARN', 'TRACK_B', `일일 손실 한도 초과: ${dailyPnlPct.toFixed(2)}% → 국내 신규 매수 차단`);
+          }
+        }
+      } catch { /* 조회 실패 시 차단 안 함 */ }
+
       // 현재 주식 포지션 가치 (파킹 ETF 제외)
       const currentStockValue = openChains
         .filter(c => !IDLE_PARK_CODE_SET.has(c.stock_code) && c.stock_code !== PARK_STOCK_CODE)
@@ -316,7 +346,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         winRates,
         // 15:10 이후 신규 매수 차단 — 마감 20분 전 진입만 차단
         // DIVIDEND 모드: 신규 매수 완전 차단 (현금 파킹 ETF로만 운용)
-        blockNewBuys: kstH > 15 || (kstH === 15 && kstM >= 10) || mode === 'DIVIDEND',
+        // 일일 손실 -3% 초과: 당일 신규 매수 차단 (전체 투자금 기준)
+        blockNewBuys: kstH > 15 || (kstH === 15 && kstM >= 10) || mode === 'DIVIDEND' || dailyLossBlocked,
         allocationTarget: allocCfg ? {
           stock_pct: Number(allocCfg.stock_pct),
           rebalance_threshold_pct: Number(allocCfg.rebalance_threshold_pct),
@@ -497,6 +528,13 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       const baseParams = (await import('../../config/constants.js')).STRATEGY_PARAMS[mode];
       const dbTakeProfit = strategy?.take_profit_pct ?? null;
       const dbStopLoss = strategy?.stop_loss_pct ?? null;
+      // 트레일링 스탑 임계값: DB 투자비율 설정에서 읽거나 기본값 -5%
+      let trailingStopThreshold = -5;
+      try {
+        const { getPool: gp } = await import('../../db/client.js');
+        const { rows: allocRows } = await gp().query('SELECT trailing_stop_pct FROM portfolio_allocation_config LIMIT 1');
+        if (allocRows[0]?.trailing_stop_pct) trailingStopThreshold = -Math.abs(Number(allocRows[0].trailing_stop_pct));
+      } catch { /* 기본값 사용 */ }
 
       for (const chain of openChains) {
         // 파킹 ETF는 손절/익절 하드룰 완전 제외 — 장기 보유 목적
@@ -543,20 +581,22 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           continue; // PROFIT_TAKING은 일반 익절/손절 하드룰 적용 안 함
         }
 
-        if (pnlPct >= targetPct) {
-          // 1단계 익절: 50% 부분 매도 → PROFIT_TAKING으로 전환
-          const sellQty = chain.total_quantity > 1
-            ? Math.ceil(chain.total_quantity * 0.5)
-            : chain.total_quantity;
-          const safeQty = Math.min(sellQty, chain.total_quantity);
-          if (safeQty > 0) {
-            logger.info(`🔒 하드 1단계 익절(50%): ${chain.stock_code} +${pnlPct.toFixed(1)}% → 잔여 trailing 대기`, { component: 'TRACK_B' });
+        // 트레일링 스탑: 고정 익절 없이 고점 추적 → 고점 대비 -5% 이탈 시 전량 매도
+        // peak_price_since_open 없으면 현재가로 초기화 (별도 업데이트 루틴에서 갱신)
+        const peakForTrail = (chain as any).peak_price_since_open
+          ? Number((chain as any).peak_price_since_open)
+          : 0;
+        if (peakForTrail > 0 && pnlPct >= 3) {
+          // +3% 이상 수익 중일 때만 트레일링 스탑 활성화 (노이즈 방지)
+          const trailDropPct = ((price.currentPrice - peakForTrail) / peakForTrail) * 100;
+          if (trailDropPct <= trailingStopThreshold) {
+            logger.info(`🔒 트레일링 스탑: ${chain.stock_code} 고점 ${peakForTrail.toFixed(0)}원 대비 ${trailDropPct.toFixed(1)}% 하락 (수익 ${pnlPct.toFixed(1)}%)`, { component: 'TRACK_B' });
             decisions.push({
-              action: safeQty >= chain.total_quantity ? 'SELL' : 'PARTIAL_SELL',
+              action: 'FORCE_CLOSE',
               stock_code: chain.stock_code,
-              quantity: safeQty,
+              quantity: chain.total_quantity,
               price_type: 'MARKET',
-              reasoning: `하드 1단계 익절(50%): +${pnlPct.toFixed(1)}% (목표 ${targetPct}%) — 잔여 trailing`,
+              reasoning: `트레일링 스탑: 고점 ${peakForTrail.toFixed(0)}원 대비 ${trailDropPct.toFixed(1)}% 하락 (수익 +${pnlPct.toFixed(1)}%)`,
               confidence: 1.0,
             });
           }
@@ -597,30 +637,38 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       }
     }
 
-    // 7-B. 수량 보정: 과소 수량을 1차 진입 예산 기준으로 맞춤 (초과는 금지)
-    // 종목당 한도: 총자산 15% / splitCount = 1차 진입분
+    // 7-B. 수량 보정: AI confidence × composite_score 연속 함수로 유연하게 포지션 결정
+    // multiplier 공식: 두 신호를 가중 합산 → 0.6x ~ 1.8x 연속 범위
+    //   scoreFactor  = composite_score / 100  (AI 종합 점수)
+    //   confFactor   = d.confidence           (이번 결정의 신뢰도 0~1)
+    //   combined     = confFactor×0.55 + scoreFactor×0.45  (신뢰도 비중 약간 더 높게)
+    //   multiplier   = 0.6 + combined × 1.2   → 최소 0.6x(저확신) ~ 최대 1.8x(고확신)
     {
-      const orderableCashNow = Math.max(0, effectiveCashWithPark); // reservedWithdraw는 _rawOrderableCash 계산 시 이미 차감됨
+      const orderableCashNow = Math.max(0, effectiveCashWithPark);
       const totalAssetsNow = balance.totalEvalAmount + orderableCashNow;
       const _params = STRATEGY_PARAMS[mode];
-      // 종목당 최대 = 총자산 15% or maxPositionKrw 중 작은 값 (technical-fallback과 동일 기준)
       const maxPerPosition = Math.min(config.risk.maxPositionKrw, Math.round(totalAssetsNow * 0.15));
-      const budgetPerBuy = Math.floor(maxPerPosition / _params.splitCount);
+      const baseBudget = Math.floor(maxPerPosition / _params.splitCount);
+
+      const scoreMap = new Map<string, number>(
+        scores.map((s: any) => [s.stock_code, Number(s.composite_score ?? 0)])
+      );
+
       for (const d of decisions) {
         if ((d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && (d.limit_price ?? 0) > 0 && !IDLE_PARK_CODE_SET.has(d.stock_code)) {
           const price = d.limit_price!;
-          const targetQty = Math.max(1, Math.floor(budgetPerBuy / price));
+          const aiScore = scoreMap.get(d.stock_code) ?? 0;
+          const confFactor = Math.min(1, Math.max(0, d.confidence ?? 0.6));
+          const scoreFactor = Math.min(1, aiScore / 100);
+          const combined = confFactor * 0.55 + scoreFactor * 0.45;
+          const convMult = Math.round((0.6 + combined * 1.2) * 100) / 100; // 소수점 2자리 반올림
+          const budget = Math.floor(baseBudget * convMult);
+          const targetQty = Math.max(1, Math.floor(budget / price));
           const currentQty = d.quantity ?? 0;
-          if (currentQty < targetQty) {
+          if (currentQty !== targetQty && (currentQty < targetQty || currentQty > targetQty * 2)) {
+            const dir = currentQty < targetQty ? '상향' : '하향';
             logger.info(
-              `📊 수량 보정(상향): ${d.stock_code} ${currentQty}주 → ${targetQty}주 (1차진입예산 ${budgetPerBuy.toLocaleString()}원)`,
-              { component: 'TRACK_B' },
-            );
-            d.quantity = targetQty;
-          } else if (currentQty > targetQty * 2) {
-            // 2배 초과 시만 하향 보정 (소수점 오류 등 극단값 방지)
-            logger.warn(
-              `📊 수량 보정(하향): ${d.stock_code} ${currentQty}주 → ${targetQty}주 (초과 감지)`,
+              `📊 수량 보정(${dir} conf=${(confFactor * 100).toFixed(0)}% score=${aiScore}점 ×${convMult}): ${d.stock_code} ${currentQty}주 → ${targetQty}주 (예산 ${budget.toLocaleString()}원)`,
               { component: 'TRACK_B' },
             );
             d.quantity = targetQty;

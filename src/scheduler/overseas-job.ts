@@ -24,24 +24,32 @@ import {
   hasEarningsRisk,
 } from '../market/external-signals.js';
 
-// 글로벌 감시 목록 — 안정 코어 + 단타 기회주 (14종목 정예)
+// 글로벌 감시 목록 — 섹터 다각화 (빅테크 편중 해소, 18종목)
+// 근거: 2025년 리서치 — 방산/산업인프라가 빅테크 대비 초과 수익 (방산 +60~87% vs FAANG +36%)
 const GLOBAL_WATCHLIST = [
-  // 🏛️ 안정 코어 (유동성 최고, 항상 거래 가능) — 5종목
-  { code: 'NVDA',  name: 'NVIDIA',       exchange: 'NASDAQ', region: 'US' },
-  { code: 'AAPL',  name: 'Apple',        exchange: 'NASDAQ', region: 'US' },
-  { code: 'MSFT',  name: 'Microsoft',    exchange: 'NASDAQ', region: 'US' },
-  { code: 'META',  name: 'Meta',         exchange: 'NASDAQ', region: 'US' },
-  { code: 'AMZN',  name: 'Amazon',       exchange: 'NASDAQ', region: 'US' },
-  // ⚡ 단타 기회주 (변동성 크고 "거저먹는" 타이밍 자주 발생) — 9종목
-  { code: 'TSLA',  name: 'Tesla',        exchange: 'NASDAQ', region: 'US' },
-  { code: 'PLTR',  name: 'Palantir',     exchange: 'NYSE',   region: 'US' },
-  { code: 'COIN',  name: 'Coinbase',     exchange: 'NASDAQ', region: 'US' },
-  { code: 'MSTR',  name: 'MicroStrategy',exchange: 'NASDAQ', region: 'US' },
-  { code: 'HOOD',  name: 'Robinhood',    exchange: 'NASDAQ', region: 'US' },
-  { code: 'SOFI',  name: 'SoFi',         exchange: 'NASDAQ', region: 'US' },
-  { code: 'AMD',   name: 'AMD',          exchange: 'NASDAQ', region: 'US' },
-  { code: 'NFLX',  name: 'Netflix',      exchange: 'NASDAQ', region: 'US' },
-  { code: 'LLY',   name: 'Eli Lilly',    exchange: 'NYSE',   region: 'US' },
+  // 🤖 AI 반도체·인프라 (핵심 모멘텀 섹터)
+  { code: 'NVDA',  name: 'NVIDIA',          exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
+  { code: 'AMD',   name: 'AMD',             exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
+  { code: 'ANET',  name: 'Arista Networks', exchange: 'NYSE',   region: 'US', sector: 'INFRA' },  // 데이터센터 네트워크 +57% YoY
+  { code: 'VRT',   name: 'Vertiv',          exchange: 'NYSE',   region: 'US', sector: 'INFRA' },  // 데이터센터 냉각 고성장
+  // 🏛️ 빅테크 선별 (유동성 확보, 2종목으로 축소)
+  { code: 'META',  name: 'Meta',            exchange: 'NASDAQ', region: 'US', sector: 'TECH' },
+  { code: 'AAPL',  name: 'Apple',           exchange: 'NASDAQ', region: 'US', sector: 'TECH' },
+  // 🛡️ 방산·항공우주 (2025 최강 섹터, 글로벌 군비 지출 +9.4% YoY)
+  { code: 'RTX',   name: 'RTX Corp',        exchange: 'NYSE',   region: 'US', sector: 'DEFENSE' }, // Raytheon +60% YTD
+  { code: 'LMT',   name: 'Lockheed Martin', exchange: 'NYSE',   region: 'US', sector: 'DEFENSE' }, // F-35 수주 지속
+  { code: 'GEV',   name: 'GE Vernova',      exchange: 'NYSE',   region: 'US', sector: 'DEFENSE' }, // GE 에너지·항공 +87% YTD
+  { code: 'PLTR',  name: 'Palantir',        exchange: 'NYSE',   region: 'US', sector: 'DEFENSE' }, // AI+방산 융합
+  // 🏭 산업·에너지인프라 (AI 데이터센터 전력 수요 폭증 수혜)
+  { code: 'ETN',   name: 'Eaton Corp',      exchange: 'NYSE',   region: 'US', sector: 'INDUSTRIAL' }, // 전력관리 시스템
+  { code: 'PWR',   name: 'Quanta Services', exchange: 'NYSE',   region: 'US', sector: 'INDUSTRIAL' }, // 전력 인프라 EPC
+  // ⚡ 단타·고변동성 (모멘텀+이벤트 드리븐)
+  { code: 'TSLA',  name: 'Tesla',           exchange: 'NASDAQ', region: 'US', sector: 'EV' },
+  { code: 'COIN',  name: 'Coinbase',        exchange: 'NASDAQ', region: 'US', sector: 'CRYPTO' },
+  { code: 'AMZN',  name: 'Amazon',          exchange: 'NASDAQ', region: 'US', sector: 'CLOUD' }, // AWS 클라우드
+  { code: 'GOOGL', name: 'Alphabet',        exchange: 'NASDAQ', region: 'US', sector: 'CLOUD' }, // 검색+클라우드
+  { code: 'MELI',  name: 'MercadoLibre',    exchange: 'NASDAQ', region: 'US', sector: 'GROWTH' }, // 중남미 이커머스 고성장
+  { code: 'SMCI',  name: 'Super Micro',     exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' }, // AI 서버 고성장
 ];
 
 // ─── 포지션 한도 ───
@@ -929,32 +937,41 @@ export async function runOverseasJob(): Promise<void> {
 
       let sellReason = '';
 
-      // 1) 손절: -2.5% (하드 룰)
-      if (pnlPct <= -2.5) {
-        sellReason = `손절: ${pnlPct.toFixed(1)}%`;
+      // 섹터별 변동성 프로파일 — 연구: 고베타 섹터는 더 넓은 스탑 필요 (ATR 기반 6-8% 권장)
+      const watchItem = GLOBAL_WATCHLIST.find(w => w.code === code);
+      const isHighBeta = ['EV', 'CRYPTO', 'AI_SEMI', 'GROWTH'].includes(watchItem?.sector ?? '');
+      const isDefense = watchItem?.sector === 'DEFENSE';
+      // 손절 한도: 고베타 -5%, 방산 -4%, 일반 -3.5% (연구: 너무 좁으면 노이즈 손절)
+      const stopLossPct = isHighBeta ? -5.0 : isDefense ? -4.0 : -3.5;
+      // 트레일링 스탑: 고베타 -7%, 방산 -6%, 일반 -5% (연구: 6-8% 범위 최적)
+      const trailDropPct = isHighBeta ? -7.0 : isDefense ? -6.0 : -5.0;
+      // 트레일링 활성화 기준: 고베타 +4%, 일반 +3% (노이즈 방지)
+      const trailActivatePct = isHighBeta ? 4.0 : 3.0;
+      // 하드 익절: 고베타 +18%, 방산 +15%, 일반 +12% (승자 더 오래 보유)
+      const hardTpPct = isHighBeta ? 18.0 : isDefense ? 15.0 : 12.0;
+
+      // 1) 손절: 섹터별 하드 룰
+      if (pnlPct <= stopLossPct) {
+        sellReason = `손절(${stopLossPct}%): ${pnlPct.toFixed(1)}%`;
       }
-      // 2) 트레일링 스탑: 최고점 대비 -2.5% 하락 (최소 +2% 이상 수익 구간에서만)
-      else if (maxPnlPct >= 2 && drawdownFromPeak <= -2.5) {
-        sellReason = `트레일링 스탑: 최고 +${maxPnlPct.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}%`;
+      // 2) 트레일링 스탑: 수익 구간 진입 후 고점 대비 하락 — 연구 기반 섹터별 임계값
+      else if (maxPnlPct >= trailActivatePct && drawdownFromPeak <= trailDropPct) {
+        sellReason = `트레일링 스탑(${trailDropPct}%): 고점 +${maxPnlPct.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}%`;
       }
-      // 3) 하드 익절: +10% (모멘텀 상관없이 확정)
-      else if (pnlPct >= 10) {
-        sellReason = `익절(10%): +${pnlPct.toFixed(1)}%`;
+      // 3) 하드 익절: 섹터별 목표 달성 (승자를 더 오래 보유)
+      else if (pnlPct >= hardTpPct) {
+        sellReason = `익절(${hardTpPct}%): +${pnlPct.toFixed(1)}%`;
       }
-      // 4) AI 매도 신호 — confidence 60% 이상이면 구간 무관하게 신뢰
-      else if (ai?.action === 'SELL' && ai.confidence >= 0.55) {
+      // 4) AI 매도 신호 — 고확신(≥65%)만 신뢰, 낮은 신뢰도는 무시
+      else if (ai?.action === 'SELL' && ai.confidence >= 0.65) {
         sellReason = `AI 매도(${(ai.confidence * 100).toFixed(0)}%): ${ai.reasoning}`;
       }
-      // 5) AI 없을 때 기술적 익절: RSI 과매수(>75) + 점수 약화 + 최소 수익 확보
-      else if (!ai && tech.rsi > 75 && tech.score < 15 && pnlPct >= 2) {
+      // 5) AI 없을 때 기술적 익절: RSI 과매수(>78) + 모멘텀 약화 + 최소 수익
+      else if (!ai && tech.rsi > 78 && tech.score < 10 && pnlPct >= trailActivatePct) {
         sellReason = `기술 익절(과매수): RSI=${tech.rsi.toFixed(0)} +${pnlPct.toFixed(1)}%`;
       }
-      // 6) AI 없을 때 소프트 익절: +6% 이상 수익 구간
-      else if (!ai && pnlPct >= 6) {
-        sellReason = `소프트 익절(AI없음): +${pnlPct.toFixed(1)}%`;
-      }
-      // 7) AI 없을 때 기술적 강매도: 점수 -25 이하 + SELL/STRONG_SELL
-      else if (!ai && tech.score <= -25 && (tech.signal === 'SELL' || tech.signal === 'STRONG_SELL')) {
+      // 6) AI 없을 때 기술적 강매도: 점수 -30 이하
+      else if (!ai && tech.score <= -30 && (tech.signal === 'SELL' || tech.signal === 'STRONG_SELL')) {
         sellReason = `기술적 매도(AI없음): score=${tech.score} RSI=${tech.rsi.toFixed(0)}`;
       }
 
@@ -1000,9 +1017,10 @@ export async function runOverseasJob(): Promise<void> {
     // 세션 시작 시 기준값 설정 (매일 리셋) — 누적 손실이 아닌 당일 손실만 체크
     if (sessionStartPortfolioValue === null) sessionStartPortfolioValue = portfolioValue;
     const dailyLossPct = ((portfolioValue - sessionStartPortfolioValue) / sessionStartPortfolioValue) * 100;
-    const riskBlocked = dailyLossPct <= -8; // 8% 손실 시 당일 매수 중단
+    const riskBlocked = dailyLossPct <= -3; // -3% 손실 시 당일 매수 중단 (전체 투자금 기준)
     if (riskBlocked) {
-      logger.warn(`⛔ 리스크 한도 초과: 포트폴리오 $${portfolioValue.toFixed(0)} (${dailyLossPct.toFixed(1)}%) → 당일 신규 매수 차단`, { component: 'OVERSEAS' });
+      logger.warn(`⛔ 일일 손실 한도(-3%) 초과: 포트폴리오 $${portfolioValue.toFixed(0)} (${dailyLossPct.toFixed(1)}%) → 당일 신규 매수 차단`, { component: 'OVERSEAS' });
+      await logSystem('WARN', 'OVERSEAS', `일일 손실 한도 초과: ${dailyLossPct.toFixed(1)}% → 신규 매수 차단`);
     }
 
     // ── 5. 매수 판단 ──
@@ -1041,12 +1059,20 @@ export async function runOverseasJob(): Promise<void> {
         })
         .filter(t => {
           const ai = aiMap.get(t.code);
+          const isOversold = t.rsi <= 35; // 과매도 반등 — RSI 필터 예외
+          // ── 연구 기반 진입 필터 (RSI21>55 + ADX>20 → 승률 ~81%) ──
+          // 예외1: 모멘텀(당일+3%↑) — 추세 추종은 RSI 높아도 유효
+          // 예외2: 과매도 반등(RSI≤35) — 바닥 매수
+          const trendFilterOk = t.isMomentum || isOversold || (t.rsi > 55 && t.adx > 20);
+          if (!trendFilterOk) {
+            logger.info(`  ⛔ 진입 필터 탈락: ${t.code} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)} (트렌드 미확인)`, { component: 'OVERSEAS' });
+            return false;
+          }
           // AI 신뢰도 65% 이상 + 상승 방향일 때만 진입
           if (ai?.action === 'BUY' && ai.confidence >= 0.65) return true;
           // STRONG_BUY는 60%도 허용
           if (ai?.action === 'BUY' && t.signal === 'STRONG_BUY' && ai.confidence >= 0.60) return true;
           // AI 없을 때: 강한 기술적 신호만 진입
-          //   ADX ≥ 25 (추세 확실), score ≥ 40, RSI 적정 구간
           if (!ai) {
             const isBuySignal = t.signal === 'STRONG_BUY' && t.score >= 40 && t.adx >= 25;
             const rsiOk = t.isMomentum ? (t.rsi >= 30 && t.rsi <= 70) : (t.rsi >= 30 && t.rsi <= 60);
@@ -1068,19 +1094,25 @@ export async function runOverseasJob(): Promise<void> {
 
       const slotsAvailable = MAX_POSITIONS - currentHoldingCount;
       for (const target of buyTargets.slice(0, slotsAvailable)) {
-        // 가용 현금의 70% 한도 (과잉 투자 방지)
-        const positionSize = Math.min(portfolioValue * 0.15, POSITION_SIZE_USD, cash * 0.70);
+        // ── AI 신뢰도 × 점수 기반 연속 포지션 사이징 (0.6x ~ 1.8x) ──
+        // 연구: Kelly criterion 절반 적용 — 강한 신호일수록 더 크게
+        const confFactor = Math.min(1, Math.max(0, target.ai?.confidence ?? 0.65));
+        const scoreFactor = Math.min(1, Math.max(0, (target.score + 50) / 100)); // score -50~+50 → 0~1
+        const combined = confFactor * 0.55 + scoreFactor * 0.45;
+        const sizingMult = Math.round((0.6 + combined * 1.2) * 100) / 100; // 0.6x ~ 1.8x
+        const baseSize = Math.min(portfolioValue * 0.15, POSITION_SIZE_USD);
+        const positionSize = Math.min(baseSize * sizingMult, cash * 0.70);
         if (positionSize < 50) break;
 
         const qty = Math.floor(positionSize / (target.price.currentPrice * 1.0025)); // 수수료 0.25% 포함 단가
         if (qty <= 0) continue;
 
-        const buyMode = target.isMomentum ? '🚀모멘텀' : '📉반등';
+        const buyMode = target.isMomentum ? '🚀모멘텀' : (target.rsi <= 35 ? '📉과매도반등' : '📊트렌드');
         const wrInfo = overseasWinRates.get(target.code);
         const wrTag = wrInfo && wrInfo.sampleCount >= 2 ? ` 승률${(wrInfo.winRate * 100).toFixed(0)}%/${wrInfo.sampleCount}건` : '';
         const reason = target.ai
-          ? `${buyMode} AI(${(target.ai.confidence * 100).toFixed(0)}%): ${target.ai.reasoning}${wrTag}`
-          : `${buyMode} 기술(AI없음): score=${target.score} RSI=${target.rsi.toFixed(0)} ADX=${target.adx.toFixed(0)}${wrTag}`;
+          ? `${buyMode} AI(${(target.ai.confidence * 100).toFixed(0)}%) 사이징x${sizingMult}: ${target.ai.reasoning}${wrTag}`
+          : `${buyMode} 기술(AI없음) 사이징x${sizingMult}: score=${target.score} RSI=${target.rsi.toFixed(0)} ADX=${target.adx.toFixed(0)}${wrTag}`;
 
         const exec = await executeOverseasOrder(
           target.code,
@@ -1105,7 +1137,9 @@ export async function runOverseasJob(): Promise<void> {
         await setHolding(target.code, target.exchange, exec.finalQty, exec.finalAvgPrice);
         cash -= cost;
         await setCash(cash);
-        buyOrders.push(`매수 ${target.code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} ${buyMode} (AI ${((target.ai?.confidence ?? 0) * 100).toFixed(0)}%) [수수료 $${(exec.filledQty * exec.filledPrice * 0.0025).toFixed(2)}]`);
+        const buyLog = `매수 ${target.code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} ${buyMode} (AI ${((target.ai?.confidence ?? 0) * 100).toFixed(0)}% 사이징x${sizingMult}) [수수료 $${(exec.filledQty * exec.filledPrice * 0.0025).toFixed(2)}]`;
+        buyOrders.push(buyLog);
+        await logSystem('TRADE', 'OVERSEAS', `BUY ${target.code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} | 사이징x${sizingMult} (conf=${((target.ai?.confidence ?? 0) * 100).toFixed(0)}% score=${target.score}) | ${reason}`);
       }
     }
 
