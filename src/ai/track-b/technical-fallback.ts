@@ -591,43 +591,55 @@ export async function technicalFallbackDecisions(params: {
     }
 
     const isPriority = PRIORITY_SECTOR_CODES.has(cand.stock_code);
-    const priorityMultiplier = isPriority ? 1.2 : 1.0;
-
-    // 확신 배율: 고점수 + 고거래량 = 최강 신호 → 포지션 확대
-    // SCALPING 제외 — 단타는 크게 넣을수록 손실 폭이 커짐
     const aiScore = aiScoreMap.get(cand.stock_code) ?? 0;
-    const isHighConviction = mode !== 'SCALPING' && cand.tech.score >= 65 && cand.tech.volumeRatio >= 1.5;
-    const isMedConviction = mode !== 'SCALPING' && ((aiScore >= strategyParams.buyThreshold && cand.tech.volumeRatio >= 1.3) || cand.candleBonus >= 12);
-    const convictionMultiplier = isHighConviction ? 1.4 : isMedConviction ? 1.25 : 1.0;
 
-    // 승률 기반 포지션 배율: 실거래 고승률 종목은 더 크게 진입, 저승률은 줄임
+    // ── 점수 기반 목표 투자비율 계산 (총자산 대비 %) ──────────────────────
+    // 기술점수(0~100) + AI점수를 실제 투자비율로 직접 변환
+    // 기준: 60점=8%, 70점=12%, 80점=16%, 90점+=20%
+    // DEFENSE/SCALPING은 절반 비율 적용 (보수 운용)
+    const techScore = Math.min(100, cand.tech.score + (cand.candleBonus ?? 0) * 0.5);
+    const blendedScore = aiScore > 0 ? techScore * 0.5 + aiScore * 0.5 : techScore;
+    const baseAllocPct =
+      blendedScore >= 88 ? 0.20 :
+      blendedScore >= 78 ? 0.16 :
+      blendedScore >= 68 ? 0.12 :
+      blendedScore >= 60 ? 0.08 : 0.06;
+    const modeScale = mode === 'SCALPING' ? 0.5 : mode === 'DEFENSE' ? 0.6 : 1.0;
+
+    // 승률 기반 보정: 실거래 데이터 기반으로 비율 조정
     const wr = winRates?.get(cand.stock_code);
     const winRateMultiplier = wr && wr.sampleCount >= 3
-      ? (wr.winRate >= 0.80 ? 1.35 : wr.winRate >= 0.65 ? 1.18 : wr.winRate <= 0.35 ? 0.65 : 1.0)
+      ? (wr.winRate >= 0.80 ? 1.30 : wr.winRate >= 0.65 ? 1.15 : wr.winRate <= 0.35 ? 0.65 : 1.0)
       : 1.0;
     if (winRateMultiplier !== 1.0) {
       logger.info(`  📈 ${cand.stock_code}: 승률배율 ×${winRateMultiplier} (승률${wr ? (wr.winRate * 100).toFixed(0) : 0}%/${wr?.sampleCount ?? 0}건)`, { component: 'TRACK_B' });
     }
 
-    // 종목당 1차 매수: 자산 기반 동적 포지션 한도의 1/splitCount, 잔고 한도 내
-    // remainingCash / 3 → 현금의 최대 1/3씩 배분 (현금 효율 극대화)
-    const positionSize = Math.min(
-      effectiveMaxPos / splitCount * priorityMultiplier * convictionMultiplier * winRateMultiplier,
-      remainingCash / Math.max(3, maxBuys - candidates.indexOf(cand)),
-    );
-    if (positionSize < 200000) break; // 최소 20만원
+    // 우선 테마 보정
+    const priorityBonus = PRIORITY_SECTOR_CODES.has(cand.stock_code) ? 1.1 : 1.0;
+
+    // 목표 금액 = 총자산 × 비율 × 보정들 (물타기 여지 splitCount 반영)
+    // splitCount=2이면 1차에 60% 투입, 물타기 여지 40% 남김
+    const firstEntryRatio = splitCount <= 1 ? 1.0 : splitCount <= 2 ? 0.60 : 0.50;
+    const targetKrw = totalAssets
+      ? Math.round(totalAssets * baseAllocPct * modeScale * winRateMultiplier * priorityBonus * firstEntryRatio)
+      : Math.round(effectiveMaxPos * firstEntryRatio);
+
+    // 상한: effectiveMaxPos (종목당 절대 한도), 하한: 남은 현금의 60%까지만 사용
+    const positionSize = Math.min(targetKrw, effectiveMaxPos, remainingCash * 0.6);
+    if (positionSize < 300000) break; // 최소 30만원 (이 이하면 수익이 수수료보다 작음)
 
     const quantity = Math.floor(positionSize / cand.price.currentPrice);
     if (quantity <= 0) continue;
 
-    const convStr = isHighConviction ? ' [확신MAX+40%]' : isMedConviction ? ' [확신+25%]' : '';
+    const allocStr = ` [비율${(baseAllocPct * modeScale * firstEntryRatio * 100).toFixed(0)}%→${Math.round(positionSize / 10000)}만원]`;
     decisions.push({
       action: 'BUY',
       stock_code: cand.stock_code,
       quantity,
       price_type: 'MARKET',
       limit_price: cand.price.currentPrice,
-      reasoning: `기술적 매수: score=${cand.tech.score}${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''}${idBonus !== 0 ? `${idBonus > 0 ? '+' : ''}${idBonus}분봉` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${convStr}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))}`,
+      reasoning: `기술적 매수: score=${cand.tech.score}(blend=${blendedScore.toFixed(0)})${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''}${idBonus !== 0 ? `${idBonus > 0 ? '+' : ''}${idBonus}분봉` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${allocStr}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))}`,
       confidence: Math.min(0.95, Math.max(0.5, cand.tech.score / 100 + getWinRateConfidenceBoost(winRates?.get(cand.stock_code)) + (cand.candleBonus > 0 ? 0.05 : 0))),
       ai_score: aiScore > 0 ? aiScore : cand.tech.score, // 점수 기반 TP/SL 계산용
     });
