@@ -155,6 +155,15 @@ export async function technicalFallbackDecisions(params: {
     // ATR 기반이 고정 손절보다 좁으면 ATR 우선 (더 빠른 손절로 손실 최소화)
     const effectiveStop = Math.max(strategyParams.stopLossPct, dynamicStop);
     if (pnlPct <= effectiveStop) {
+      // ── RSI<35 + 거래량 급증 = 패닉 매도 손절 억제 (공황 매도 직후 반등 확률 높음) ──
+      if (sellTech && sellTech.rsi14 < 35 && sellTech.volumeRatio >= 2.5) {
+        logger.info(
+          `🛡️ 패닉매도 손절 억제: ${chain.stock_code} RSI=${sellTech.rsi14.toFixed(0)}<35 거래량${sellTech.volumeRatio.toFixed(1)}x급증 — 공황 손절 대신 보유 유지`,
+          { component: 'TRACK_B' },
+        );
+        continue; // 이 사이클 손절 스킵 — 다음 사이클에서 재판단
+      }
+
       // ── 대형 포지션 회복 신호 판단 (비중 8% 이상 — 팍 손절 대신 절반 지키기) ──
       // 논리: 비중이 크면 전량 손절 충격이 크고, 회복 신호 있으면 더 기다리는 게 유리
       // 회복 조건 중 2개 이상 충족 시 50% 부분 손절 후 대기 (전량 강제청산 차단)
@@ -423,6 +432,26 @@ export async function technicalFallbackDecisions(params: {
       logger.info(`  🟡 ${stock.stock_code}: RSI=${tech.rsi14.toFixed(0)} MACD=${tech.macdCrossover} AI=${aiScore} → 타이밍 미충족 스킵`, { component: 'TRACK_B' });
       continue;
     }
+
+    // ─── SCALPING 전용 진입 기준 ─────────────────────────────────────────
+    // 단타는 과매도 반등(RSI<30) 대신 모멘텀 돌파에 집중
+    // BB 상단 돌파 / TTM 발사 / VWAP 돌파 + 거래량 2배 이상 필수
+    if (mode === 'SCALPING') {
+      const hasMomentumSignal =
+        tech.bollingerBreakout === 'UP' ||
+        tech.ttmSqueeze.fireSignal === 'LONG' ||
+        tech.vwapCross === 'JUST_ABOVE';
+      const scalpVolumeOk = tech.volumeRatio >= 2.0;
+      const scalpRsiOk = tech.rsi14 >= 40 && tech.rsi14 <= 72; // 모멘텀 구간 (과매도 반등은 너무 느림)
+      if (!hasMomentumSignal || !scalpVolumeOk || !scalpRsiOk) {
+        logger.info(
+          `  ⚡ ${stock.stock_code}: SCALPING 기준 미달 — 모멘텀=${hasMomentumSignal ? '✓' : '✗'} vol=${tech.volumeRatio.toFixed(1)}x(>=2.0) RSI=${tech.rsi14.toFixed(0)}(40-72) → 스킵`,
+          { component: 'TRACK_B' },
+        );
+        continue;
+      }
+    }
+    // ───────────────────────────────────────────────────────────────────
     const squeezeTag = tech.bollingerBreakout === 'UP' ? '🎯BB스퀴즈돌파' : tech.bollingerSqueeze ? '🔃BB응축중' : '';
     const vwapTag = tech.vwapCross === 'JUST_ABOVE' ? '⚡VWAP돌파' : tech.vwapPullback ? '🔁VWAP풀백' : '';
     const ttmTag = tech.ttmSqueeze.fireSignal === 'LONG' ? `🚀TTM발사(${tech.ttmSqueeze.consecutiveSqueezeOn}봉)` : '';

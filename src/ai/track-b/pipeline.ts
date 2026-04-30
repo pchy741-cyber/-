@@ -19,7 +19,9 @@ import { setActiveEngine } from '../../cache/ai-status.js';
 import { technicalFallbackDecisions } from './technical-fallback.js';
 import { IDLE_PARK_CODE, IDLE_PARK_CODES, IDLE_PARK_NAME } from './trading-rules.js';
 import { fetchKospiRegime, checkDailyLoss } from './market-regime.js';
-import { filterEarlySells, applyHardRules, filterManualCooldown, deduplicateSells } from './risk-guard.js';
+import { getMacroSnapshot } from '../../automation/macro-data.js';
+import { getInvestorFlow } from '../../automation/investor-flow.js';
+import { filterEarlySells, applyHardRules, filterManualCooldown, deduplicateSells, filterSectorConcentration } from './risk-guard.js';
 import { manageCashParking } from './cash-manager.js';
 import { adjustPositionSizes } from './position-sizer.js';
 
@@ -33,7 +35,7 @@ const IDLE_PARK_CODE_SET = new Set<string>(IDLE_PARK_CODES);
  * 실행 순서 (각 단계는 독립 모듈, 충돌 없음):
  * 1. 장 열림 확인
  * 2. DB/KIS 데이터 로드
- * 3. KOSPI 레짐 + 일일 손실 체크 (market-regime.ts)
+ * 3. KOSPI 레짐 + 일일 손실 + 매크로 스냅샷 (market-regime.ts + macro-data.ts)
  * 4. 기술적 지표 매매 판단 (technical-fallback.ts)
  * 5. 조기 매도 방지 필터 (risk-guard.ts)
  * 6. 유휴 현금 파킹 관리 (cash-manager.ts)
@@ -193,10 +195,15 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const orderableCash = Math.max(0, effectiveCashWithPark);
     const totalAssets = balance.totalEvalAmount + orderableCash;
 
-    const [kospiRegime, dailyLoss] = await Promise.all([
+    const [kospiRegime, dailyLoss, macroSnapshot] = await Promise.all([
       fetchKospiRegime(),
       checkDailyLoss({ openChains, livePrices, totalAssets }),
+      getMacroSnapshot().catch(() => null),
     ]);
+    const macroRiskOff = macroSnapshot?.regime === 'RISK_OFF';
+    if (macroRiskOff) {
+      logger.info(`🌐 매크로 RISK_OFF (Fear&Greed=${macroSnapshot?.fearGreedIndex ?? '?'}, VKOSPI=${macroSnapshot?.vkospi ?? '?'}) → 신규 매수 추가 제한`, { component: 'TRACK_B' });
+    }
 
     // 현재 주식 포지션 가치 (파킹 ETF 제외)
     const currentStockValue = openChains
@@ -245,11 +252,42 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const { getStockWinRates } = await import('../../analysis/win-rate.js');
     const winRates = await getStockWinRates(stockCodes).catch(() => new Map());
 
+    // ── 외국인/기관 수급 → AI 스코어 보정 (15분 캐시) ───────────────────
+    // KIS rate limit 대응: 워치리스트 5개씩 배치, 타임아웃 4초/종목
+    const flowAdjMap = new Map<string, number>();
+    try {
+      const FLOW_SCORE_ADJ: Record<string, number> = { STRONG_BUY: 15, BUY: 8, NEUTRAL: 0, SELL: -10, STRONG_SELL: -20 };
+      const flowBatch = stockCodes.slice(0, 10); // 최대 10종목만 (rate limit)
+      const flowResults = await Promise.allSettled(
+        flowBatch.map((code) =>
+          Promise.race([
+            getInvestorFlow(code, 5).then((f) => ({ code, adj: FLOW_SCORE_ADJ[f.trend] ?? 0 })),
+            new Promise<never>((_, r) => setTimeout(() => r(new Error('timeout')), 3000)),
+          ]),
+        ),
+      );
+      for (const r of flowResults) {
+        if (r.status === 'fulfilled') flowAdjMap.set(r.value.code, r.value.adj);
+      }
+      if (flowAdjMap.size > 0) {
+        logger.info(`📊 수급 스코어 보정: ${[...flowAdjMap.entries()].filter(([, v]) => v !== 0).map(([k, v]) => `${k}${v > 0 ? '+' : ''}${v}`).join(', ')}`, { component: 'TRACK_B' });
+      }
+    } catch { /* 수급 실패해도 파이프라인 계속 */ }
+
     const allocCfg = await import('../../db/client.js')
       .then(m => m.getPool().query('SELECT * FROM portfolio_allocation_config WHERE is_active = true LIMIT 1'))
       .then(r => r.rows[0] ?? null).catch(() => null);
 
     // ── 4. 기술적 지표 매매 판단 ─────────────────────────────────────
+    // 수급 보정 반영: composite_score + flowAdj (±20점 범위 제한)
+    const adjustedScores = scores
+      .filter((s: any) => (s.confidence ?? 0) >= 0.3)
+      .map((s: any) => {
+        const base = s.composite_score ?? 0;
+        const adj = flowAdjMap.get(s.stock_code) ?? 0;
+        return { stock_code: s.stock_code, score: Math.min(100, Math.max(0, base + adj)) };
+      });
+
     let decisions = await technicalFallbackDecisions({
       mode: effectiveMode,
       watchlist: watchlist
@@ -263,9 +301,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       totalAssets,
       lossBlockedCodes: recentLossCodes,
       manuallySoldCodes,
-      aiScores: scores
-        .filter((s: any) => (s.confidence ?? 0) >= 0.3)
-        .map((s: any) => ({ stock_code: s.stock_code, score: s.composite_score ?? 0 })),
+      aiScores: adjustedScores,
       takeProfitPct: strategy?.take_profit_pct ?? undefined,
       stopLossPct: strategy?.stop_loss_pct ?? undefined,
       buyThreshold: strategy?.buy_threshold ?? undefined,
@@ -275,7 +311,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         (kstH === 15 && kstM >= 10) ||
         mode === 'DIVIDEND' ||
         dailyLoss.blocked ||
-        kospiRegime.penalty >= 2,
+        kospiRegime.penalty >= 2 ||
+        macroRiskOff,
       allocationTarget: allocCfg ? {
         stock_pct: Number(allocCfg.stock_pct),
         rebalance_threshold_pct: Number(allocCfg.rebalance_threshold_pct),
@@ -314,6 +351,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       stopLossPct: strategy?.stop_loss_pct ?? null,
       takeProfitPct: strategy?.take_profit_pct ?? null,
     });
+
+    // ── 5b. 섹터 집중 매수 차단 ──────────────────────────────────────
+    decisions = filterSectorConcentration(decisions, openChains);
 
     // ── 6. 유휴 현금 파킹 관리 ───────────────────────────────────────
     decisions = manageCashParking({

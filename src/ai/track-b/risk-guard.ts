@@ -146,6 +146,49 @@ export async function applyHardRules(params: {
   return result;
 }
 
+// 섹터 집중도 차단에 사용하는 정적 섹터 맵
+const SECTOR_MAP: Record<string, string> = {
+  '000660': '반도체', '005930': '반도체', '042700': '반도체', '005290': '반도체', '357780': '반도체', '403870': '반도체',
+  '051910': '배터리', '006400': '배터리', '247540': '배터리', '373220': '배터리', '336260': '배터리', '003670': '배터리',
+  '012450': '방산', '079550': '방산', '034020': '방산',
+  '035420': '인터넷', '035720': '인터넷', '377300': '인터넷',
+  '207940': '바이오', '068270': '바이오', '328130': '바이오', '196170': '바이오', '028300': '바이오',
+  '055550': '금융', '105560': '금융', '316140': '금융',
+  '267260': '전력', '009540': '조선', '066570': '가전',
+};
+
+/**
+ * 섹터 집중 매수 차단
+ * 같은 섹터에 이미 2종목 이상 보유 중이면 해당 섹터 신규 BUY 차단
+ */
+export function filterSectorConcentration(
+  decisions: TradeDecision[],
+  openChains: TransactionChain[],
+): TradeDecision[] {
+  const PARK_SET = IDLE_PARK_CODE_SET;
+  const heldSectorCounts: Record<string, number> = {};
+  for (const c of openChains) {
+    if (PARK_SET.has(c.stock_code) || Number(c.total_quantity) <= 0) continue;
+    const sector = SECTOR_MAP[c.stock_code];
+    if (sector) heldSectorCounts[sector] = (heldSectorCounts[sector] ?? 0) + 1;
+  }
+  const blockedSectors = new Set(
+    Object.entries(heldSectorCounts).filter(([, n]) => n >= 2).map(([s]) => s),
+  );
+  if (blockedSectors.size === 0) return decisions;
+
+  return decisions.filter((d) => {
+    if (d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN') return true;
+    if (PARK_SET.has(d.stock_code)) return true;
+    const sector = SECTOR_MAP[d.stock_code];
+    if (sector && blockedSectors.has(sector)) {
+      logger.warn(`🚫 섹터 집중 차단: ${d.stock_code} (${sector}) — 이미 ${heldSectorCounts[sector]}종목 보유`, { component: 'RISK_GUARD' });
+      return false;
+    }
+    return true;
+  });
+}
+
 /** CEO 수동 매도 쿨다운 필터 (24시간 재진입 금지) */
 export function filterManualCooldown(
   decisions: TradeDecision[],

@@ -596,7 +596,7 @@ dashboardAnalysisRoutes.get('/market/52w-highs', async (c) => {
     const PARK_SET = new Set(IDLE_PARK_CODES as readonly string[]);
     const targets = watchlist.filter((w) => !PARK_SET.has(w.stock_code)).slice(0, 20);
     const results = await Promise.allSettled(targets.map(async (w) => {
-      const candles = await getDailyChart(w.stock_code, 65).catch(() => []);
+      const candles = await getDailyChart(w.stock_code, 252).catch(() => []);
       if (candles.length < 10) return null;
       const high52w = Math.max(...candles.map((c: any) => c.high ?? c.close));
       const current = candles[0]?.close ?? 0;
