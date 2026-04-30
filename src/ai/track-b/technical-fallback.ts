@@ -436,6 +436,7 @@ export async function technicalFallbackDecisions(params: {
     // ─── SCALPING 전용 진입 기준 ─────────────────────────────────────────
     // 단타는 과매도 반등(RSI<30) 대신 모멘텀 돌파에 집중
     // BB 상단 돌파 / TTM 발사 / VWAP 돌파 + 거래량 2배 이상 필수
+    // 예외: AI점수 >= buyThreshold(72)이면 모멘텀 신호 없어도 매수 허용
     if (mode === 'SCALPING') {
       const hasMomentumSignal =
         tech.bollingerBreakout === 'UP' ||
@@ -443,12 +444,19 @@ export async function technicalFallbackDecisions(params: {
         tech.vwapCross === 'JUST_ABOVE';
       const scalpVolumeOk = tech.volumeRatio >= 2.0;
       const scalpRsiOk = tech.rsi14 >= 40 && tech.rsi14 <= 72; // 모멘텀 구간 (과매도 반등은 너무 느림)
-      if (!hasMomentumSignal || !scalpVolumeOk || !scalpRsiOk) {
+      const aiBypassScalp = aiScore >= buyThreshold; // AI 고확신 → 엄격 필터 면제
+      if (!aiBypassScalp && (!hasMomentumSignal || !scalpVolumeOk || !scalpRsiOk)) {
         logger.info(
-          `  ⚡ ${stock.stock_code}: SCALPING 기준 미달 — 모멘텀=${hasMomentumSignal ? '✓' : '✗'} vol=${tech.volumeRatio.toFixed(1)}x(>=2.0) RSI=${tech.rsi14.toFixed(0)}(40-72) → 스킵`,
+          `  ⚡ ${stock.stock_code}: SCALPING 기준 미달 — 모멘텀=${hasMomentumSignal ? '✓' : '✗'} vol=${tech.volumeRatio.toFixed(1)}x(>=2.0) RSI=${tech.rsi14.toFixed(0)}(40-72) AI=${aiScore}(bypass=${aiBypassScalp}) → 스킵`,
           { component: 'TRACK_B' },
         );
         continue;
+      }
+      if (aiBypassScalp && (!hasMomentumSignal || !scalpVolumeOk || !scalpRsiOk)) {
+        logger.info(
+          `  ✅ ${stock.stock_code}: SCALPING — AI고확신(${aiScore}점>=${buyThreshold}) 모멘텀필터 면제`,
+          { component: 'TRACK_B' },
+        );
       }
     }
     // ───────────────────────────────────────────────────────────────────
