@@ -3,8 +3,9 @@ import { logger } from '../../utils/logger.js';
 
 const VERTEX_PROJECT_ID = 'quantops-trading';
 const VERTEX_LOCATION = 'us-central1';
-const VERTEX_MODEL = 'gemini-2.5-flash';
+const VERTEX_MODEL = 'gemini-2.0-flash';
 const VERTEX_ENDPOINT = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${VERTEX_LOCATION}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
+const AI_STUDIO_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent`;
 
 const auth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
 
@@ -35,50 +36,68 @@ const SYSTEM_PROMPT = `당신은 미국 주식 단타 트레이딩 전문가입�
 - exchange는 NASDAQ/NYSE/AMEX 중 하나 (불확실하면 NASDAQ)
 - 소형주/저유동성 종목이면 riskLevel=HIGH 설정`;
 
-export async function analyzeImageForScalp(
-  imageBase64: string,
-  mimeType: string,
-): Promise<VisionScalpSignal> {
+function parseVisionResponse(text: string): VisionScalpSignal {
+  logger.info(`[VisionScalp] 응답: ${text.slice(0, 300)}`, { component: 'VISION' });
+  const jsonMatch = text.match(/\{[\s\S]*?\}/);
+  if (!jsonMatch) throw new Error('JSON 파싱 실패');
+  const parsed = JSON.parse(jsonMatch[0]) as VisionScalpSignal;
+  parsed.exchange = (['NASDAQ', 'NYSE', 'AMEX'].includes(parsed.exchange) ? parsed.exchange : 'NASDAQ') as VisionScalpSignal['exchange'];
+  parsed.direction = parsed.direction === 'BUY' ? 'BUY' : 'HOLD';
+  parsed.confidence = Math.max(0, Math.min(100, Number(parsed.confidence) || 0));
+  return parsed;
+}
+
+async function callAiStudioVision(apiKey: string, imageBase64: string, mimeType: string): Promise<VisionScalpSignal> {
+  const body = {
+    contents: [{ role: 'user', parts: [{ text: SYSTEM_PROMPT }, { inlineData: { mimeType, data: imageBase64 } }] }],
+    generationConfig: { temperature: 0.05, maxOutputTokens: 512 },
+  };
+  const res = await fetch(`${AI_STUDIO_ENDPOINT}?key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`AI Studio ${res.status}: ${errText.slice(0, 200)}`);
+  }
+  const data = await res.json() as any;
+  const text: string = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  if (!text) throw new Error('AI Studio 응답 없음');
+  return parseVisionResponse(text);
+}
+
+async function callVertexVision(imageBase64: string, mimeType: string): Promise<VisionScalpSignal> {
   const client = await auth.getClient();
   const accessToken = (await client.getAccessToken()).token;
   if (!accessToken) throw new Error('Vertex AI 인증 토큰 없음');
-  const token = accessToken;
-
   const body = {
-    contents: [{
-      role: 'user',
-      parts: [
-        { text: SYSTEM_PROMPT },
-        { inlineData: { mimeType, data: imageBase64 } },
-      ],
-    }],
+    contents: [{ role: 'user', parts: [{ text: SYSTEM_PROMPT }, { inlineData: { mimeType, data: imageBase64 } }] }],
     generationConfig: { temperature: 0.05, maxOutputTokens: 512 },
   };
-
   const res = await fetch(VERTEX_ENDPOINT, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-
   if (!res.ok) {
     const errText = await res.text();
     throw new Error(`Vertex AI ${res.status}: ${errText.slice(0, 200)}`);
   }
-
   const data = await res.json() as any;
   const text: string = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-  logger.info(`[VisionScalp] Gemini 응답: ${text.slice(0, 300)}`, { component: 'VISION' });
+  if (!text) throw new Error('Vertex AI 응답 없음');
+  return parseVisionResponse(text);
+}
 
-  const jsonMatch = text.match(/\{[\s\S]*?\}/);
-  if (!jsonMatch) throw new Error('JSON 파싱 실패');
-
-  const parsed = JSON.parse(jsonMatch[0]) as VisionScalpSignal;
-  parsed.exchange = parsed.exchange ?? 'NASDAQ';
-  parsed.direction = parsed.direction === 'BUY' ? 'BUY' : 'HOLD';
-  parsed.confidence = Math.max(0, Math.min(100, Number(parsed.confidence) || 0));
-  return parsed;
+export async function analyzeImageForScalp(imageBase64: string, mimeType: string): Promise<VisionScalpSignal> {
+  const geminiKey = process.env.GEMINI_API_KEY;
+  if (geminiKey) {
+    try {
+      return await callAiStudioVision(geminiKey, imageBase64, mimeType);
+    } catch (e) {
+      logger.warn(`[VisionScalp] AI Studio 실패 → Vertex AI 폴백: ${(e as Error).message}`, { component: 'VISION' });
+    }
+  }
+  return await callVertexVision(imageBase64, mimeType);
 }

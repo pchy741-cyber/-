@@ -69,8 +69,17 @@ export async function initVapid(): Promise<void> {
   }
 }
 
-// 앱 시작 시 즉시 초기화
-initVapid().catch(() => {});
+// 앱 시작 시 초기화 — DB 콜드스타트 대비 최대 4회 재시도
+(async () => {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await initVapid();
+    if (vapidReady) return;
+    const delay = [3000, 8000, 15000, 30000][attempt];
+    logger.warn(`VAPID 초기화 실패 — ${delay / 1000}초 후 재시도 (${attempt + 1}/4)`, { component: 'WEB_PUSH' });
+    await new Promise(r => setTimeout(r, delay));
+  }
+  logger.error('VAPID 초기화 최종 실패 — 알림 비활성화', { component: 'WEB_PUSH' });
+})().catch(() => {});
 
 export function getVapidPublicKey(): string {
   return vapidPublic;
@@ -137,8 +146,15 @@ export async function sendPushNotification(payload: {
   data?: Record<string, unknown>;
 }): Promise<void> {
   if (!vapidReady) {
-    logger.warn('푸시 발송 스킵 — VAPID 미준비', { component: 'WEB_PUSH' });
-    return;
+    // 아직 초기화 중이면 최대 10초 대기 후 재시도
+    for (let i = 0; i < 5; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      if (vapidReady) break;
+    }
+    if (!vapidReady) {
+      logger.warn('푸시 발송 스킵 — VAPID 미준비 (10초 대기 후에도 실패)', { component: 'WEB_PUSH' });
+      return;
+    }
   }
   const subscriptions = await getAllSubscriptions();
   if (subscriptions.length === 0) return;
