@@ -416,6 +416,13 @@ export class TradeExecutor {
       invalidateStockCache(stockCode).catch(() => {});
       notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, closeReason).catch(() => {});
 
+      // 체결 감사 로그: 매도 실체결 내역 (why + 실제 수익)
+      await logSystem(
+        'TRADE',
+        'EXECUTOR',
+        `SELL ${stockCode} x${soldQty} 체결 @${fill.filledPrice.toLocaleString()}원 | 수익 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}% (${pnlKrw >= 0 ? '+' : ''}${pnlKrw.toLocaleString()}원) | ${closeReason}`,
+      );
+
       // 🍽️ 개장 초단타 용돈 알림: 수익 5만원 이상 시 텔레그램 알림
       if (pnlKrw >= 50000 && reasoning.includes('초단타')) {
         import('../notifications/telegram.js').then(({ sendTelegramMessage }) => {

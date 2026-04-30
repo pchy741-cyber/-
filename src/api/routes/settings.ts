@@ -209,11 +209,11 @@ settingsRoutes.post('/insights', async (c) => {
 
 // POST: 인사이트 파라미터 전략 적용
 settingsRoutes.post('/insights/:id/apply', async (c) => {
-  const id = Number(c.req.param('id'));
+  const id = c.req.param('id');
   if (!id) return c.json({ error: 'id 필요' }, 400);
   try {
     const { applyInsightById } = await import('../../automation/self-learning.js');
-    const result = await applyInsightById(String(id));
+    const result = await applyInsightById(id);
     return c.json(result);
   } catch (err: any) {
     return c.json({ error: err?.message }, 500);
@@ -222,7 +222,7 @@ settingsRoutes.post('/insights/:id/apply', async (c) => {
 
 // DELETE: 인사이트 삭제 (수동/자동 모두 삭제 가능)
 settingsRoutes.delete('/insights/:id', async (c) => {
-  const id = Number(c.req.param('id'));
+  const id = c.req.param('id');
   if (!id) return c.json({ error: 'id 필요' }, 400);
   try {
     await getPool().query('DELETE FROM learned_insights WHERE id = $1', [id]);
@@ -250,54 +250,68 @@ settingsRoutes.post('/run-self-learning', async (c) => {
   return c.json({ ok: true, message: '자기학습 시작 (백그라운드 실행, 완료 시 텔레그램 알림)' });
 });
 
-// ── 황금비율 포트폴리오 배분 설정 ──
+// ── 투자비율 설정 (국내/미국 비율 + 섹터 한도) ──
+const ALLOC_DEFAULTS = {
+  kr_pct: 70, us_pct: 30,
+  sector_semiconductor: 30, sector_bio: 20, sector_defense: 25, sector_finance: 20, sector_etc: 30,
+  trailing_stop_pct: 5,
+};
+
 settingsRoutes.get('/portfolio/allocation', async (c) => {
   try {
     await getPool().query(`
       CREATE TABLE IF NOT EXISTS portfolio_allocation_config (
         id SERIAL PRIMARY KEY,
-        parking_pct NUMERIC NOT NULL DEFAULT 30,
-        dividend_pct NUMERIC NOT NULL DEFAULT 30,
-        stock_pct NUMERIC NOT NULL DEFAULT 40,
-        is_active BOOLEAN NOT NULL DEFAULT true,
-        rebalance_threshold_pct NUMERIC NOT NULL DEFAULT 10,
+        kr_pct NUMERIC NOT NULL DEFAULT 70,
+        us_pct NUMERIC NOT NULL DEFAULT 30,
+        sector_semiconductor NUMERIC NOT NULL DEFAULT 30,
+        sector_bio NUMERIC NOT NULL DEFAULT 20,
+        sector_defense NUMERIC NOT NULL DEFAULT 25,
+        sector_finance NUMERIC NOT NULL DEFAULT 20,
+        sector_etc NUMERIC NOT NULL DEFAULT 30,
+        trailing_stop_pct NUMERIC NOT NULL DEFAULT 5,
         updated_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
     const { rows } = await getPool().query('SELECT * FROM portfolio_allocation_config ORDER BY id DESC LIMIT 1');
     if (rows.length === 0) {
       const { rows: ins } = await getPool().query(
-        `INSERT INTO portfolio_allocation_config (parking_pct, dividend_pct, stock_pct) VALUES (30, 30, 40) RETURNING *`
+        `INSERT INTO portfolio_allocation_config (kr_pct, us_pct, sector_semiconductor, sector_bio, sector_defense, sector_finance, sector_etc, trailing_stop_pct)
+         VALUES (70, 30, 30, 20, 25, 20, 30, 5) RETURNING *`
       );
       return c.json(ins[0]);
     }
     return c.json(rows[0]);
   } catch (err: any) {
-    return c.json({ parking_pct: 30, dividend_pct: 30, stock_pct: 40, is_active: true, rebalance_threshold_pct: 10 });
+    return c.json(ALLOC_DEFAULTS);
   }
 });
 
 settingsRoutes.put('/portfolio/allocation', async (c) => {
   const body = await c.req.json();
-  const parking = Math.max(0, Math.min(100, Number(body.parking_pct ?? 30)));
-  const dividend = Math.max(0, Math.min(100, Number(body.dividend_pct ?? 30)));
-  const stock = Math.max(0, Math.min(100, Number(body.stock_pct ?? 40)));
-  const threshold = Math.max(1, Math.min(50, Number(body.rebalance_threshold_pct ?? 10)));
-  const isActive = Boolean(body.is_active ?? true);
+  const kr = Math.max(0, Math.min(100, Number(body.kr_pct ?? 70)));
+  const us = Math.max(0, Math.min(100, Number(body.us_pct ?? 30)));
+  if (Math.abs(kr + us - 100) > 1) return c.json({ error: `국내+미국 합계가 100%여야 합니다 (현재 ${kr + us}%)` }, 400);
 
-  // 합계 검증
-  const total = parking + dividend + stock;
-  if (total !== 100) return c.json({ error: `비율 합계가 100%여야 합니다 (현재 ${total}%)` }, 400);
+  const semi = Math.max(0, Math.min(100, Number(body.sector_semiconductor ?? 30)));
+  const bio = Math.max(0, Math.min(100, Number(body.sector_bio ?? 20)));
+  const defense = Math.max(0, Math.min(100, Number(body.sector_defense ?? 25)));
+  const finance = Math.max(0, Math.min(100, Number(body.sector_finance ?? 20)));
+  const etc = Math.max(0, Math.min(100, Number(body.sector_etc ?? 30)));
+  const trailStop = Math.max(1, Math.min(20, Number(body.trailing_stop_pct ?? 5)));
 
   try {
     await getPool().query(`
       CREATE TABLE IF NOT EXISTS portfolio_allocation_config (
         id SERIAL PRIMARY KEY,
-        parking_pct NUMERIC NOT NULL DEFAULT 30,
-        dividend_pct NUMERIC NOT NULL DEFAULT 30,
-        stock_pct NUMERIC NOT NULL DEFAULT 40,
-        is_active BOOLEAN NOT NULL DEFAULT true,
-        rebalance_threshold_pct NUMERIC NOT NULL DEFAULT 10,
+        kr_pct NUMERIC NOT NULL DEFAULT 70,
+        us_pct NUMERIC NOT NULL DEFAULT 30,
+        sector_semiconductor NUMERIC NOT NULL DEFAULT 30,
+        sector_bio NUMERIC NOT NULL DEFAULT 20,
+        sector_defense NUMERIC NOT NULL DEFAULT 25,
+        sector_finance NUMERIC NOT NULL DEFAULT 20,
+        sector_etc NUMERIC NOT NULL DEFAULT 30,
+        trailing_stop_pct NUMERIC NOT NULL DEFAULT 5,
         updated_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
@@ -305,16 +319,16 @@ settingsRoutes.put('/portfolio/allocation', async (c) => {
     let result;
     if (existing.length > 0) {
       const { rows } = await getPool().query(
-        `UPDATE portfolio_allocation_config SET parking_pct=$1, dividend_pct=$2, stock_pct=$3,
-         is_active=$4, rebalance_threshold_pct=$5, updated_at=NOW() WHERE id=$6 RETURNING *`,
-        [parking, dividend, stock, isActive, threshold, existing[0].id]
+        `UPDATE portfolio_allocation_config SET kr_pct=$1, us_pct=$2, sector_semiconductor=$3, sector_bio=$4,
+         sector_defense=$5, sector_finance=$6, sector_etc=$7, trailing_stop_pct=$8, updated_at=NOW() WHERE id=$9 RETURNING *`,
+        [kr, us, semi, bio, defense, finance, etc, trailStop, existing[0].id]
       );
       result = rows[0];
     } else {
       const { rows } = await getPool().query(
-        `INSERT INTO portfolio_allocation_config (parking_pct, dividend_pct, stock_pct, is_active, rebalance_threshold_pct)
-         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-        [parking, dividend, stock, isActive, threshold]
+        `INSERT INTO portfolio_allocation_config (kr_pct, us_pct, sector_semiconductor, sector_bio, sector_defense, sector_finance, sector_etc, trailing_stop_pct)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+        [kr, us, semi, bio, defense, finance, etc, trailStop]
       );
       result = rows[0];
     }
