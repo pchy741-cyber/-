@@ -4311,9 +4311,8 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
         </div>
       )}
 
-      {/* ── 하단 2컬럼: API키 + 수익인출 ── */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
-        {/* API 키 */}
+      {/* ── API 키 ── */}
+      <div>
         <Panel title="API 키 관리">
           <form onSubmit={saveSecrets} autoComplete="off" className="px-6 py-5 space-y-3.5">
             {/* hidden dummy fields to absorb browser autofill */}
@@ -4330,72 +4329,7 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
           </form>
         </Panel>
 
-        {/* 수익 자동 인출 설정 */}
-        <Panel title="수익 자동 인출">
-          <div className="px-6 py-5 space-y-4">
-            <div className="flex items-center justify-between gap-4">
-              <p className="text-[12px] text-slate-400">목표 수익률 달성 시 수익분 일부를 인출 예약금으로 잠금합니다</p>
-              <button onClick={async () => {
-                const next = !withdrawConfig?.is_active;
-                try {
-                  const updated = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, is_active: next }) });
-                  setWithdrawConfig({ ...updated, totalReserved: withdrawConfig?.totalReserved ?? 0 });
-                } catch { toast?.('저장 실패', 'err'); }
-              }} className={`px-5 py-2.5 rounded-xl text-xs font-semibold shrink-0 transition-all ${withdrawConfig?.is_active ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-white/[0.06] hover:bg-white/[0.1] text-slate-400'}`}>
-                {withdrawConfig?.is_active ? 'ON' : 'OFF'}
-              </button>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <NumInput label="목표 수익률" value={withdrawConfig?.target_profit_pct ?? 10} suffix="%" min={1} max={100} step={0.5} onCommit={async v => {
-                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, target_profit_pct: v }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch { toast?.('저장 실패', 'err'); }
-              }} />
-              <NumInput label="인출 비율 (수익분 중)" value={withdrawConfig?.withdraw_ratio_pct ?? 50} suffix="%" min={1} max={100} step={1} onCommit={async v => {
-                try { const u = await api('/withdraw/config', { method: 'PUT', body: JSON.stringify({ ...withdrawConfig, withdraw_ratio_pct: v }) }); setWithdrawConfig({ ...u, totalReserved: withdrawConfig?.totalReserved ?? 0 }); } catch { toast?.('저장 실패', 'err'); }
-              }} />
-            </div>
-
-            {withdrawConfig?.totalReserved > 0 && (
-              <div className="bg-amber-950/20 border border-amber-900/20 rounded-lg p-3">
-                <p className="text-xs text-amber-400 font-medium">인출 예약금: {fmtWon(withdrawConfig.totalReserved)}</p>
-                <p className="text-[10px] text-slate-500 mt-1">한국투자증권 앱에서 본인 계좌로 이체하세요</p>
-              </div>
-            )}
-
-            {/* 인출 내역 */}
-            {withdrawHistory?.length > 0 && (
-              <div className="space-y-1">
-                <p className="text-[11px] text-slate-500 font-medium">인출 내역</p>
-                <div className="max-h-40 overflow-y-auto divide-y divide-slate-800/20">
-                  {withdrawHistory.map((w: any) => (
-                    <div key={w.id} className="flex items-center gap-2 py-2 text-[11px]">
-                      <span className={`w-1.5 h-1.5 rounded-full ${w.status === 'reserved' ? 'bg-amber-400' : w.status === 'withdrawn' ? 'bg-emerald-400' : 'bg-slate-600'}`} />
-                      <span className="font-medium">{fmtWon(w.amount)}</span>
-                      <span className="text-slate-500">수익률 {Number(w.profit_pct_at_trigger).toFixed(1)}%</span>
-                      <span className="text-slate-600 ml-auto">{fmtTime(w.created_at)}</span>
-                      {w.status === 'reserved' && (
-                        <button onClick={async () => {
-                          await api(`/withdraw/${w.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: 'withdrawn' }) });
-                          setWithdrawHistory(withdrawHistory.map((h: any) => h.id === w.id ? { ...h, status: 'withdrawn' } : h));
-                          setWithdrawConfig({ ...withdrawConfig, totalReserved: (withdrawConfig?.totalReserved ?? 0) - w.amount });
-                        }} className="text-[10px] text-emerald-400 hover:text-emerald-300">인출 완료</button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="text-[10px] text-slate-600 space-y-1">
-              <p>* 인출 예약금은 자동매매에 사용되지 않습니다</p>
-              <p>* 실제 출금: 한국투자증권 앱 → 출금 → 본인 은행계좌</p>
-            </div>
-          </div>
-        </Panel>
       </div>
-
-      {/* ── 황금비율 포트폴리오 배분 ── */}
-      <GoldenRatioPanel allocConfig={allocConfig} setAllocConfig={setAllocConfig} toast={toast} />
 
       {/* ── 앱 보안 ── */}
       <Panel title="앱 보안">
