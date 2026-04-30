@@ -10,6 +10,7 @@
  */
 
 import { getActiveWatchlist, getLatestScores, getOpenChains, getActiveStrategy } from '../db/client.js';
+import { getPreMarketSharedScores } from '../automation/pre-market-quick-score.js';
 import { getBatchPrices, getDailyChart } from '../kis/market.js';
 import { analyzeTechnicals } from '../analysis/indicators.js';
 import { callVertexGemini } from '../utils/vertex-gemini.js';
@@ -60,9 +61,18 @@ export async function warmupOpeningBell(): Promise<void> {
     // 2. 실시간 시세 (갭 확인용)
     const livePrices = await getBatchPrices(stockCodes).catch(() => new Map());
 
-    // 3. Gemini 종목별 개장 갭 분석 (무료 한도 내 최대 활용)
-    //    한 번에 전체 종목을 묶어서 1콜로 처리 → 15 RPM 한도 안에서 효율적
+    // 3. 장전 스코어 확인 — 이미 runPreMarketQuickScore()가 Gemini를 호출했으면 재사용 (중복 호출 방지)
     const geminiScores = new Map<string, number>();
+    const sharedScores = getPreMarketSharedScores();
+    if (sharedScores && sharedScores.size > 0) {
+      for (const [code, score] of sharedScores) {
+        geminiScores.set(code, score);
+      }
+      logger.info(
+        `🤖 [OPENING] 장전 빠른 스코어 재사용 (${geminiScores.size}종목) — Gemini 중복 호출 스킵`,
+        { component: 'OPENING_BELL' },
+      );
+    } else {
     try {
       const stockSummaries = stockCodes.map(code => {
         const candles = chartData.get(code);
@@ -123,6 +133,7 @@ JSON만 반환 (다른 텍스트 없이):
     } catch (gemErr) {
       logger.warn(`[OPENING] Gemini 사전분석 실패 (기술지표만으로 진행): ${gemErr}`, { component: 'OPENING_BELL' });
     }
+    } // end else (sharedScores 없을 때만 Gemini 호출)
 
     _warmCache = { chartData, geminiScores, warmAt: Date.now() };
     logger.info(`✅ [OPENING] 워밍업 완료 (${((Date.now() - t0) / 1000).toFixed(1)}초, 차트 ${chartData.size}종목)`, { component: 'OPENING_BELL' });

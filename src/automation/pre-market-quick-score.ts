@@ -15,6 +15,16 @@ import { logger } from '../utils/logger.js';
 
 const MAX_QUICK_STOCKS = 15;  // 경량 스코어링 최대 종목 수
 
+// 장전 스코어 공유 캐시 — opening-bell-job이 재사용해서 Gemini 중복 호출 방지
+let _sharedScores: Map<string, number> | null = null;
+let _sharedScoresAt = 0;
+
+/** opening-bell-job이 읽는 장전 스코어 (10분 내 유효) */
+export function getPreMarketSharedScores(): Map<string, number> | null {
+  const age = (Date.now() - _sharedScoresAt) / 60000;
+  return age < 10 ? _sharedScores : null;
+}
+
 export async function runPreMarketQuickScore(): Promise<void> {
   logger.info('⚡ 장전 빠른 스코어링 시작 (08:55)', { component: 'PRE_MARKET_QS' });
 
@@ -107,6 +117,16 @@ ${stockLines}
     const scores = parsed.scores ?? [];
     logger.info(`⚡ Gemini 빠른 스코어링 완료: ${scores.length}개`, { component: 'PRE_MARKET_QS' });
 
+    // 점수 정규화 헬퍼 (|| 50 버그 수정: undefined/null만 50 기본값, 0은 그대로)
+    const safeScore = (v: unknown, def = 50) => {
+      const n = Number(v);
+      return isNaN(n) ? def : Math.max(0, Math.min(100, n));
+    };
+    const safeConf = (v: unknown) => {
+      const n = Number(v);
+      return isNaN(n) ? 0.5 : Math.max(0, Math.min(1, n));
+    };
+
     // 6. DB + Redis 캐싱
     const validSignals = new Set(['STRONG_BUY', 'BUY', 'HOLD', 'SELL', 'STRONG_SELL', 'NO_DATA']);
     const upsertResults = await Promise.allSettled(scores.map(async s => {
@@ -115,11 +135,11 @@ ${stockLines}
         stock_code: s.stock_code,
         score_date: today,
         gemini_summary: null,
-        composite_score: Math.max(0, Math.min(100, Number(s.composite_score) || 50)),
-        fundamental_score: Math.max(0, Math.min(100, Number(s.fundamental_score) || 50)),
-        technical_score: Math.max(0, Math.min(100, Number(s.technical_score) || 50)),
-        sentiment_score: Math.max(0, Math.min(100, Number(s.sentiment_score) || 50)),
-        confidence: Math.max(0, Math.min(1, Number(s.confidence) || 0.5)),
+        composite_score: safeScore(s.composite_score),
+        fundamental_score: safeScore(s.fundamental_score),
+        technical_score: safeScore(s.technical_score),
+        sentiment_score: safeScore(s.sentiment_score),
+        confidence: safeConf(s.confidence),
         reasoning: `[장전빠른스코어] ${s.reasoning || ''}`,
         signal,
         target_price: s.target_price ? Number(s.target_price) : null,
@@ -130,17 +150,21 @@ ${stockLines}
 
     const saved = upsertResults.filter(r => r.status === 'fulfilled').length;
 
+    // 공유 캐시 갱신 — opening-bell-job이 재사용 (Gemini 중복 호출 방지)
+    _sharedScores = new Map(scores.map(s => [s.stock_code, safeScore(s.composite_score)]));
+    _sharedScoresAt = Date.now();
+
     // Redis 캐시 갱신
     const cacheItems = scores.map(s => ({
       id: '',
       stock_code: s.stock_code,
       score_date: today,
       gemini_summary: null,
-      composite_score: Math.max(0, Math.min(100, Number(s.composite_score) || 50)),
-      fundamental_score: Math.max(0, Math.min(100, Number(s.fundamental_score) || 50)),
-      technical_score: Math.max(0, Math.min(100, Number(s.technical_score) || 50)),
-      sentiment_score: Math.max(0, Math.min(100, Number(s.sentiment_score) || 50)),
-      confidence: Math.max(0, Math.min(1, Number(s.confidence) || 0.5)),
+      composite_score: safeScore(s.composite_score),
+      fundamental_score: safeScore(s.fundamental_score),
+      technical_score: safeScore(s.technical_score),
+      sentiment_score: safeScore(s.sentiment_score),
+      confidence: safeConf(s.confidence),
       reasoning: `[장전빠른스코어] ${s.reasoning || ''}`,
       signal: validSignals.has(s.signal) ? s.signal as any : 'HOLD',
       target_price: s.target_price ? Number(s.target_price) : null,
