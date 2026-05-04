@@ -28,61 +28,65 @@ function isIgnorable(msg: string): boolean {
 /**
  * SQL 마이그레이션 파일을 순서대로 실행한다.
  * - schema_migrations 테이블로 적용 여부 추적
+ * - 단일 커넥션 재사용 (16개 파일 × pool.connect() 방지)
  * - 각 파일을 명시적 트랜잭션으로 감싸서 부분 적용 방지
  * - 이미 적용된 DDL 재실행은 경고로 처리 후 통과
  */
 export async function runMigrations(): Promise<void> {
   const pool = getPool();
+  const client = await pool.connect();
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      filename   TEXT PRIMARY KEY,
-      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        filename   TEXT PRIMARY KEY,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
 
-  const { rows: applied } = await pool.query<{ filename: string }>(
-    'SELECT filename FROM schema_migrations ORDER BY filename'
-  );
-  const appliedSet = new Set(applied.map(r => r.filename));
+    const { rows: applied } = await client.query<{ filename: string }>(
+      'SELECT filename FROM schema_migrations ORDER BY filename'
+    );
+    const appliedSet = new Set(applied.map(r => r.filename));
 
-  const files = fs.readdirSync(MIGRATIONS_DIR)
-    .filter(f => f.endsWith('.sql'))
-    .sort();
+    const files = fs.readdirSync(MIGRATIONS_DIR)
+      .filter(f => f.endsWith('.sql'))
+      .sort();
 
-  for (const file of files) {
-    if (appliedSet.has(file)) continue;
+    for (const file of files) {
+      if (appliedSet.has(file)) continue;
 
-    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query(sql);
-      await client.query(
-        'INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
-        [file],
-      );
-      await client.query('COMMIT');
-      logger.info(`✅ 마이그레이션 적용: ${file}`, { component: 'MIGRATE' });
-    } catch (err: any) {
-      try { await client.query('ROLLBACK'); } catch { /* ignore rollback error */ }
-      const msg = String(err?.message ?? '');
-      if (isIgnorable(msg)) {
-        // 이미 적용됐거나 무시 가능한 오류 → 파일 자체는 통과로 표시
-        await pool.query(
+      const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
+      try {
+        await client.query('BEGIN');
+        await client.query(sql);
+        await client.query(
           'INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
           [file],
         );
-        logger.warn(`⚠️ 마이그레이션 경고(건너뜀): ${file} — ${msg.slice(0, 120)}`, { component: 'MIGRATE' });
-      } else {
-        logger.error(`❌ 마이그레이션 실패: ${file} — ${msg}`, { component: 'MIGRATE' });
-        // 실패해도 throw 하지 않음 — 앱 부팅은 계속 진행
-        logger.warn(`⚠️ 마이그레이션 오류 무시 후 계속 진행: ${file}`, { component: 'MIGRATE' });
+        await client.query('COMMIT');
+        logger.info(`✅ 마이그레이션 적용: ${file}`, { component: 'MIGRATE' });
+      } catch (err: any) {
+        try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+        const msg = String(err?.message ?? '');
+        if (isIgnorable(msg)) {
+          // 이미 적용됐거나 무시 가능한 오류 → 통과로 표시
+          try {
+            await client.query(
+              'INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
+              [file],
+            );
+          } catch { /* schema_migrations INSERT 실패 무시 */ }
+          logger.warn(`⚠️ 마이그레이션 경고(건너뜀): ${file} — ${msg.slice(0, 120)}`, { component: 'MIGRATE' });
+        } else {
+          logger.error(`❌ 마이그레이션 실패: ${file} — ${msg}`, { component: 'MIGRATE' });
+          logger.warn(`⚠️ 마이그레이션 오류 무시 후 계속 진행: ${file}`, { component: 'MIGRATE' });
+        }
       }
-    } finally {
-      client.release();
     }
-  }
 
-  logger.info(`📦 마이그레이션 완료 (총 ${files.length}개 파일)`, { component: 'MIGRATE' });
+    logger.info(`📦 마이그레이션 완료 (총 ${files.length}개 파일)`, { component: 'MIGRATE' });
+  } finally {
+    client.release();
+  }
 }

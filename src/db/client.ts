@@ -39,10 +39,10 @@ export function getPool(): pg.Pool {
   if (!pool) {
     const poolDefaults = {
       max: 5,
-      idleTimeoutMillis: 8_000,       // Cloud SQL Unix socket이 ~10s에 idle 연결 끊음 → 8s에 먼저 반환
+      idleTimeoutMillis: 60_000,      // 60s idle 후 반환 (Track B 5분 주기 대비 여유)
       connectionTimeoutMillis: 15_000,
       keepAlive: true,
-      keepAliveInitialDelayMillis: 3_000,
+      keepAliveInitialDelayMillis: 10_000,
     };
 
     if (config.db.unixSocket) {
