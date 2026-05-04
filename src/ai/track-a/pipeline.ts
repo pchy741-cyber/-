@@ -1,9 +1,9 @@
 import { cacheScores } from '../../cache/redis.js';
 import { getActiveStrategy, getActiveWatchlist, getPool, getRecentSources, isMemoryMode, logSystem, upsertAIScore } from '../../db/client.js';
-import { type DailyCandle, getDailyChart, getVolumeRankingStocks, getChangeRankingStocks, getBatchPrices } from '../../kis/market.js';
+import { type DailyCandle, getDailyChart, getVolumeRankingStocks, getChangeRankingStocks, getBatchPrices, getBatchInvestorFlow } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { config } from '../../config/index.js';
-import { type ScoringResult } from '../../db/models.js';
+import { type ScoringResult, ScoringResultSchema } from '../../db/models.js';
 import { runGeminiAnalysis } from './gemini.js';
 import { runGeminiScoring } from './gemini-scorer.js';
 import { getStockAccuracyContext } from '../../automation/self-learning.js';
@@ -68,9 +68,20 @@ ${chartSummary}
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('Gemini Flash 응답에서 JSON을 찾을 수 없습니다');
 
-  const parsed = JSON.parse(jsonMatch[0]) as { scores: ScoringResult[] };
-  logger.info(`Gemini Flash 통합 분석 완료: ${parsed.scores.length}개 스코어`, { component: 'TRACK_A' });
-  return parsed.scores;
+  const parsed = JSON.parse(jsonMatch[0]) as { scores: unknown[] };
+  const rawScores: unknown[] = Array.isArray(parsed.scores) ? parsed.scores : [];
+  const validScores: ScoringResult[] = [];
+  for (const score of rawScores) {
+    const result = ScoringResultSchema.safeParse(score);
+    if (result.success && result.data.signal !== 'NO_DATA') {
+      validScores.push(result.data);
+    } else if (!result.success) {
+      const code = typeof score === 'object' && score !== null && 'stock_code' in score ? String((score as any).stock_code) : 'UNKNOWN';
+      logger.warn(`Flash 폴백 스코어 검증 실패 (${code}): ${result.error.message}`, { component: 'TRACK_A' });
+    }
+  }
+  logger.info(`Gemini Flash 통합 분석 완료: ${validScores.length}/${rawScores.length}개 유효`, { component: 'TRACK_A' });
+  return validScores;
 }
 
 /**
@@ -119,7 +130,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
           `INSERT INTO watchlist (stock_code, stock_name, is_active)
            VALUES ($1, $2, false)
            ON CONFLICT (stock_code) DO NOTHING`,
-          [s.stock_code, s.stock_name || s.stock_code],
+          [normalizeStockCode(s.stock_code), s.stock_name || s.stock_code],
         )
       ));
       logger.info(`발굴 종목 ${discoveryList.length}개 watchlist 임시 등록 (inactive)`, { component: 'TRACK_A' });
@@ -202,6 +213,27 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       logger.warn(`배당수익률 조회 실패 (스킵): ${err}`, { component: 'TRACK_A' });
     }
 
+    // 3-c. 종목별 기관/외국인 수급 조회 (KIS INVESTOR_FLOW)
+    let investorFlowSection = '';
+    try {
+      const flowMap = await getBatchInvestorFlow(allStocks.map((s) => s.stock_code));
+      if (flowMap.size > 0) {
+        const lines = [...flowMap.values()]
+          .filter((f) => f.institutionNet !== 0 || f.foreignNet !== 0)
+          .map((f) => {
+            const inst = f.institutionNet > 0 ? `기관 순매수 +${f.institutionNet.toLocaleString()}주` : `기관 순매도 ${f.institutionNet.toLocaleString()}주`;
+            const frgn = f.foreignNet > 0 ? `외국인 순매수 +${f.foreignNet.toLocaleString()}주` : `외국인 순매도 ${f.foreignNet.toLocaleString()}주`;
+            return `${f.stockCode}: ${inst}, ${frgn}, 외국인보유율 ${f.foreignHoldingPct.toFixed(1)}%`;
+          });
+        if (lines.length > 0) {
+          investorFlowSection = `## 당일 기관/외국인 수급 데이터 (KIS 실시간)\n${lines.join('\n')}`;
+          logger.info(`수급 데이터 ${flowMap.size}개 종목 Gemini 주입`, { component: 'TRACK_A' });
+        }
+      }
+    } catch (err) {
+      logger.warn(`수급 조회 실패 (스킵): ${err}`, { component: 'TRACK_A' });
+    }
+
     // 4. CEO 참고소스 로드 (market_sources 테이블 → Gemini 서론 주입)
     const dbSources = await getRecentSources(10);
     let combinedSources = additionalSources ?? '';
@@ -222,6 +254,11 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         logger.info('실거래 정확도 컨텍스트 스코어링에 주입', { component: 'TRACK_A' });
       }
     } catch { /* 실패해도 스코어링 계속 */ }
+
+    // 4-c. 기관/외국인 수급 데이터 주입
+    if (investorFlowSection) {
+      combinedSources = combinedSources ? `${combinedSources}\n\n${investorFlowSection}` : investorFlowSection;
+    }
 
     // 5. 3단 폴백: Gemini+GPT → Gemini+Claude → Gemini+기술적 → Claude 단독
     let scores: ScoringResult[] = [];

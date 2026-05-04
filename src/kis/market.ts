@@ -290,3 +290,65 @@ export async function getChangeRankingStocks(limit = 20, market: 'J' | 'Q' = 'J'
     return [];
   }
 }
+
+// ── 종목별 투자자 수급 (기관/외국인/개인) ──
+export interface InvestorFlow {
+  stockCode: string;
+  /** 기관 순매수량 (양수=순매수, 음수=순매도) */
+  institutionNet: number;
+  /** 외국인 순매수량 */
+  foreignNet: number;
+  /** 개인 순매수량 */
+  individualNet: number;
+  /** 외국인 보유 비율 (%) */
+  foreignHoldingPct: number;
+}
+
+/**
+ * 종목별 당일 투자자별 매매동향 조회 (FHKST01010900)
+ * Track A 스코어링용 — 실제 기관/외국인 수급 데이터를 AI에 주입
+ */
+export async function getInvestorFlow(stockCode: string): Promise<InvestorFlow | null> {
+  try {
+    await marketDataRateLimiter.acquire();
+    const res = await kisRequest({
+      path: '/uapi/domestic-stock/v1/quotations/inquire-investor',
+      trId: KIS_TR_ID.QUOTE.INVESTOR_FLOW,
+      useRealUrl: true,
+      skipRateLimiter: true,
+      params: {
+        FID_COND_MRKT_DIV_CODE: 'J',
+        FID_INPUT_ISCD: stockCode,
+      },
+    });
+
+    const o = res.output as Record<string, string>;
+    return {
+      stockCode,
+      institutionNet: Number(o.orgn_ntby_qty ?? 0),
+      foreignNet: Number(o.frgn_ntby_qty ?? 0),
+      individualNet: Number(o.prsn_ntby_qty ?? 0),
+      foreignHoldingPct: Number(o.frgn_hldn_qty_rt ?? 0),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 복수 종목 수급 일괄 조회 (배치 처리, 오류 무시)
+ */
+export async function getBatchInvestorFlow(stockCodes: string[]): Promise<Map<string, InvestorFlow>> {
+  const result = new Map<string, InvestorFlow>();
+  const BATCH = 5;
+  for (let i = 0; i < stockCodes.length; i += BATCH) {
+    const slice = stockCodes.slice(i, i + BATCH);
+    const flows = await Promise.allSettled(slice.map((c) => getInvestorFlow(c)));
+    for (const f of flows) {
+      if (f.status === 'fulfilled' && f.value) {
+        result.set(f.value.stockCode, f.value);
+      }
+    }
+  }
+  return result;
+}
