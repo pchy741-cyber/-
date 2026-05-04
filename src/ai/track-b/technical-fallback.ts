@@ -309,9 +309,9 @@ export async function technicalFallbackDecisions(params: {
       logger.info(`  🚫 ${stock.stock_code}(${stock.stock_name}): 매수 차단 목록 — 스킵`, { component: 'TRACK_B' });
       continue;
     }
-    // 14일 이내 손절 쿨다운 종목 재진입 금지
+    // 7일 이내 손절 쿨다운 종목 재진입 금지
     if (lossBlockedCodes?.has(stock.stock_code)) {
-      logger.info(`  🚫 ${stock.stock_code}(${stock.stock_name}): 손절 쿨다운 (14일) — 재진입 금지`, { component: 'TRACK_B' });
+      logger.info(`  🚫 ${stock.stock_code}(${stock.stock_name}): 손절 쿨다운 (7일) — 재진입 금지`, { component: 'TRACK_B' });
       continue;
     }
     // 24시간 이내 CEO 수동 매도 종목 재진입 금지
@@ -359,8 +359,8 @@ export async function technicalFallbackDecisions(params: {
 
     // ─── 거래량 확인 필터 ─────────────────────────────────────────────────
     // 예외: 과매도(RSI<35) 반등은 거래량 바닥에서 발생 / 강한 불리쉬 캔들
-    // AI 80점+ → 0.5x (고확신 섹터 모멘텀 우선), buyThreshold 이상 → 0.8x
-    const volThreshold = aiScore >= 80 ? 0.5 : aiScore >= buyThreshold ? 0.8 : 1.5;
+    // AI 80점+ → 0.3x (고확신 섹터 모멘텀 우선), buyThreshold 이상 → 0.5x
+    const volThreshold = aiScore >= 80 ? 0.3 : aiScore >= buyThreshold ? 0.5 : 1.5;
     if (tech.volumeRatio < volThreshold && tech.rsi14 >= 35 && !hasBullishCandle) {
       logger.info(`  📉 ${stock.stock_code}: 거래량 부족 (${tech.volumeRatio.toFixed(2)}x < ${volThreshold}) → 스킵 (AI=${aiScore})`, { component: 'TRACK_B' });
       continue;
@@ -524,15 +524,15 @@ export async function technicalFallbackDecisions(params: {
     ].filter(Boolean).join('+');
     // ─────────────────────────────────────────────────────────────────────
 
-    if (aiScore >= buyThreshold || effectiveTechScore >= minTechScore) {
+    // AI 미승인(buyThreshold 미달) 종목은 탐색 매수 없이 전부 스킵
+    // 근거: AI 미승인 상태에서 기술지표만으로 진입한 거래 수익 실적 없음
+    if (aiScore >= buyThreshold) {
       candidates.push({ stock_code: stock.stock_code, tech, price, candleBonus });
       const wrInfo = winRateSummary(stock.stock_code, winRates?.get(stock.stock_code));
       const bonusStr = [priorityBonus > 0 ? `+${priorityBonus}테마` : '', candleBonus > 0 ? `+${candleBonus}캔들` : ''].filter(Boolean).join('');
-      if (aiScore >= buyThreshold) {
-        logger.info(`  ✅ ${stock.stock_code}: AI=${aiScore}점(>=${buyThreshold}) [${entryReason}] RSI=${tech.rsi14.toFixed(0)} vol=${tech.volumeRatio.toFixed(2)}x → 매수 후보 (기술=${tech.score}${bonusStr}${wrInfo})`, { component: 'TRACK_B' });
-      } else {
-        logger.info(`  ✅ ${stock.stock_code}: 기술=${effectiveTechScore}점(>=${minTechScore}) [${entryReason}] RSI=${tech.rsi14.toFixed(0)} vol=${tech.volumeRatio.toFixed(2)}x → 매수 후보 (AI=${aiScore}${bonusStr}${wrInfo})`, { component: 'TRACK_B' });
-      }
+      logger.info(`  ✅ ${stock.stock_code}: AI=${aiScore}점(>=${buyThreshold}) [${entryReason}] RSI=${tech.rsi14.toFixed(0)} vol=${tech.volumeRatio.toFixed(2)}x → 매수 후보 (기술=${tech.score}${bonusStr}${wrInfo})`, { component: 'TRACK_B' });
+    } else if (effectiveTechScore >= minTechScore) {
+      logger.info(`  ⏭️ ${stock.stock_code}: AI=${aiScore}점(<${buyThreshold}) 미승인 — 기술점수(${effectiveTechScore}) 충족해도 탐색매수 스킵`, { component: 'TRACK_B' });
     }
   }
 
@@ -674,7 +674,8 @@ export async function technicalFallbackDecisions(params: {
          blendedScore >= 70 ? 0.09 : 0.07)
       : 0.04; // AI 미허락 → 최소 탐색 비율만
     const baseAllocPct = getDbAllocPct(blendedScore) ?? hardcodedAllocPct;
-    const modeScale = mode === 'SCALPING' ? 0.5 : mode === 'DEFENSE' ? 0.6 : 1.0;
+    // 강세장(kospiBoost) SWING: 1.3x — "좋은 장에서 100% 투자" 원칙
+    const modeScale = mode === 'SCALPING' ? 0.5 : mode === 'DEFENSE' ? 0.6 : (kospiBoost ? 1.3 : 1.0);
 
     // 승률 기반 보정: 실거래 데이터 기반으로 비율 조정
     const wr = winRates?.get(cand.stock_code);
@@ -704,8 +705,16 @@ export async function technicalFallbackDecisions(params: {
     const positionSize = Math.min(targetKrw, effectiveMaxPos, remainingCash * 0.92);
     if (positionSize < 300000) continue; // 최소 30만원 미달 → 이 종목만 스킵 (break→continue: 이후 종목 계속 검토)
 
-    const quantity = Math.floor(positionSize / cand.price.currentPrice);
-    if (quantity <= 0) continue;
+    let quantity = Math.floor(positionSize / cand.price.currentPrice);
+    if (quantity <= 0) {
+      // 고가주(1주 > positionSize): 현금이 충분하면 최소 1주 매수
+      if (remainingCash >= cand.price.currentPrice) {
+        quantity = 1;
+        logger.info(`  💡 ${cand.stock_code}: positionSize(${Math.round(positionSize / 10000)}만원) < 주가 → 최소 1주 매수`, { component: 'TRACK_B' });
+      } else {
+        continue;
+      }
+    }
 
     const allocStr = ` [비율${(baseAllocPct * modeScale * firstEntryRatio * 100).toFixed(0)}%→${Math.round(positionSize / 10000)}만원]`;
     decisions.push({
@@ -771,16 +780,25 @@ export async function technicalFallbackDecisions(params: {
     const positionValue = price.currentPrice * Number(chain.total_quantity ?? 0);
     const concentrationPct = (totalAssets ?? 0) > 0 ? positionValue / totalAssets! : 0;
     const isTooConcentrated = concentrationPct >= 0.10;
-    // ── 지지선 확인 없는 물타기 차단 (Barber&Odean 1999: 기계적 물타기 → 추가 손실) ──
-    // 볼린저 하단 또는 RSI 과매도 근처에서만 물타기 허용 (지지선 근거 있는 경우)
+    // ── 지지선 + 반등신호 없는 물타기 차단 ──────────────────────────────────
+    // 지지선 근처(BB하단/RSI과매도)에 있더라도, 실제 반전 신호가 있어야 물타기 허용
+    // "제이마니아 판정": 차트에서 반등 시그널 확인 후 추가매수 (기계적 % 물타기 금지)
+    const hasBullishReversalCandle = chainTech
+      ? chainTech.candlePatterns.some((p) => p.bullish && (p.strength === 'STRONG' || p.strength === 'MODERATE'))
+      : false;
     const avgDownSupportOk = chainTech
       ? (chainTech.bollingerPosition === 'BELOW_LOWER' || chainTech.bollingerPosition === 'NEAR_LOWER' || chainTech.rsi14 < 38)
-      : true; // 차트 없으면 허용 (데이터 없는 경우 차단 안 함)
-    if (chain.status === 'PROFIT_TAKING' || isBelowSma20Deep || isTooDeepUnderwater || !avgDownSupportOk || isTooConcentrated) {
+      : true;
+    // 반등신호: 불리쉬 캔들(망치형 등) OR MACD 전환 OR RSI 과매도+MACD 비하락
+    const avgDownReversalOk = chainTech
+      ? (hasBullishReversalCandle || chainTech.macdCrossover === 'BULLISH' || (chainTech.rsi14 < 35 && chainTech.macdCrossover !== 'BEARISH'))
+      : true;
+    if (chain.status === 'PROFIT_TAKING' || isBelowSma20Deep || isTooDeepUnderwater || !avgDownSupportOk || !avgDownReversalOk || isTooConcentrated) {
       if (isBelowSma20Deep) logger.info(`  🚫 ${chain.stock_code}: SMA20 -3% 이탈 → 물타기 차단 (손실확대 방지)`, { component: 'TRACK_B' });
       if (isTooDeepUnderwater) logger.info(`  🚫 ${chain.stock_code}: ${pnlPct.toFixed(1)}% ≤ -8% → 물타기 하드 차단 (나락 방지)`, { component: 'TRACK_B' });
       if (isTooConcentrated) logger.info(`  🚫 ${chain.stock_code}: 비중 ${(concentrationPct*100).toFixed(1)}% ≥ 10% → 물타기 차단 (집중 방지)`, { component: 'TRACK_B' });
       if (!avgDownSupportOk && !isBelowSma20Deep && !isTooDeepUnderwater && !isTooConcentrated) logger.info(`  🚫 ${chain.stock_code}: 지지선 미확인(BB=${chainTech?.bollingerPosition} RSI=${chainTech?.rsi14.toFixed(0)}) → 물타기 차단`, { component: 'TRACK_B' });
+      if (avgDownSupportOk && !avgDownReversalOk && !isBelowSma20Deep && !isTooDeepUnderwater && !isTooConcentrated) logger.info(`  🔄 ${chain.stock_code}: 지지선 OK지만 반등신호 없음(MACD=${chainTech?.macdCrossover} 캔들없음) → 물타기 대기`, { component: 'TRACK_B' });
       continue;
     }
 
