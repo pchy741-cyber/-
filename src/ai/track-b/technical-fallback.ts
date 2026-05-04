@@ -270,6 +270,7 @@ export async function technicalFallbackDecisions(params: {
 
   // 황금비율 배분 편차 계산 — 주식 비중 초과 시 매수 기준 상향
   let allocationBuyPenalty = 0; // 양수 = minTechScore 상향 (더 선택적)
+  let allocationBoostFirstEntry = false; // 현금 과잉 시 첫 진입 비율 상향 플래그
   if (allocationTarget?.is_active && totalAssets && totalAssets > 0 && currentStockValue !== undefined) {
     const currentStockPct = (currentStockValue / totalAssets) * 100;
     const targetStockPct = allocationTarget.stock_pct;
@@ -280,9 +281,14 @@ export async function technicalFallbackDecisions(params: {
       allocationBuyPenalty = Math.min(15, Math.round((deviation - threshold) * 1.5));
       logger.info(`⚖️ 황금비율 편차: 현재주식 ${currentStockPct.toFixed(1)}% > 목표 ${targetStockPct}%+${threshold}% → 매수 임계값 +${allocationBuyPenalty}점 상향`, { component: 'TRACK_B' });
     } else if (deviation < -threshold) {
-      // 주식 비중 목표 미달 → 매수 기준 소폭 완화 (최대 -5점)
-      allocationBuyPenalty = Math.max(-5, Math.round((deviation + threshold) * 0.5));
+      // 주식 비중 목표 미달 → 매수 기준 완화 (최대 -10점)
+      allocationBuyPenalty = Math.max(-10, Math.round((deviation + threshold) * 0.5));
       logger.info(`⚖️ 황금비율 편차: 현재주식 ${currentStockPct.toFixed(1)}% < 목표 ${targetStockPct}%-${threshold}% → 매수 임계값 ${allocationBuyPenalty}점 완화`, { component: 'TRACK_B' });
+      // 현금 과잉(목표 대비 30%p 이상 미달): 첫 진입 비율 0.90으로 상향 — "좋은 장에서 현금 놀리지 말자"
+      if (deviation < -30) {
+        allocationBoostFirstEntry = true;
+        logger.info(`💰 현금 과잉(${currentStockPct.toFixed(1)}% vs 목표 ${targetStockPct}%): 첫 진입 비율 → 0.90 상향`, { component: 'TRACK_B' });
+      }
     }
   }
 
@@ -691,12 +697,12 @@ export async function technicalFallbackDecisions(params: {
 
     // 목표 금액 = 총자산 × 비율 × 보정들
     // AI허락 고확신(85점+) → 1차에 80% 과감 진입 (물타기 여지 20%)
-    // AI허락 일반(70-84점) → 1차 70%
+    // AI허락 일반(70-84점) → 1차 70% (현금 과잉 시 90%)
     // AI 미허락 탐색 → 1차 100% (소액이므로 분할 의미 없음)
     const firstEntryRatio = !aiApproved ? 1.0
-      : blendedScore >= 85 ? 0.80
+      : blendedScore >= 85 ? (allocationBoostFirstEntry ? 0.90 : 0.80)
       : splitCount <= 1 ? 1.0
-      : splitCount <= 2 ? 0.70 : 0.60;
+      : splitCount <= 2 ? (allocationBoostFirstEntry ? 0.90 : 0.70) : (allocationBoostFirstEntry ? 0.80 : 0.60);
     const targetKrw = totalAssets
       ? Math.round(totalAssets * baseAllocPct * modeScale * winRateMultiplier * priorityBonus * firstEntryRatio)
       : Math.round(effectiveMaxPos * firstEntryRatio);
@@ -732,12 +738,13 @@ export async function technicalFallbackDecisions(params: {
   }
 
   // 2-b. 현금 추가 소진 패스: 매수 후 남은 현금이 총자산 15% 이상 & AI허락 후보 더 있으면 추가 진입
-  // (1차 매수에서 firstEntryRatio로 아낀 40% 여지를 고확신 종목에 추가 투입)
+  // (1차 매수에서 firstEntryRatio로 아낀 여지 + 아직 안 산 후보 종목에 배분)
   if (totalAssets && remainingCash >= totalAssets * 0.15 && mode !== 'SCALPING') {
     const alreadyBuying = new Set(decisions.filter(d => d.action === 'BUY').map(d => d.stock_code));
+    // 아직 매수 결정 안 된 AI허락 후보만 — 이미 사이클 내 매수한 종목 중복 제외
     const extraCandidates = candidates.filter(c => {
       const score = aiScoreMap.get(c.stock_code) ?? 0;
-      return alreadyBuying.has(c.stock_code) && score >= strategyParams.buyThreshold;
+      return !alreadyBuying.has(c.stock_code) && score >= strategyParams.buyThreshold;
     });
     // 이미 매수 결정한 AI허락 종목에 물타기가 아닌 추가 비중 투입
     for (const cand of extraCandidates.slice(0, 2)) {
@@ -803,7 +810,20 @@ export async function technicalFallbackDecisions(params: {
     }
 
     // 물타기 조건: 평단가 대비 하락률이 트리거 이하 + 횟수 미달
+    // + 이미 대기 중인 BUY 주문 없어야 함 (count는 체결 후 업데이트 → 중복 방지)
     if (avgDownTrigger !== 0 && pnlPct <= avgDownTrigger && chain.current_averaging_count < chain.max_averaging_count) {
+      let hasPendingBuy = false;
+      try {
+        const { rows: pendingRows } = await getPool().query(
+          `SELECT 1 FROM orders WHERE chain_id = $1 AND side = 'BUY' AND status IN ('PENDING','OPEN','SUBMITTED') LIMIT 1`,
+          [chain.id],
+        );
+        hasPendingBuy = pendingRows.length > 0;
+      } catch { /* DB 오류 시 안전하게 허용 */ }
+      if (hasPendingBuy) {
+        logger.info(`  ⏳ ${chain.stock_code}: 미체결 BUY 주문 존재 → 물타기 중복 차단`, { component: 'TRACK_B' });
+        continue;
+      }
       const avgDownSize = Math.min(effectiveMaxPos / splitCount, remainingCash / 4);
       if (avgDownSize >= 50000) {
         const qty = Math.floor(avgDownSize / price.currentPrice);
