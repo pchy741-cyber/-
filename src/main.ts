@@ -13,6 +13,7 @@ import { overseasRoutes } from './api/routes/overseas.js';
 import { secretsRoutes } from './api/routes/secrets.js';
 import { settingsRoutes } from './api/routes/settings.js';
 import { sseRoutes } from './api/routes/sse.js';
+import { journalRoutes } from './api/routes/journal.js';
 import { backtestRoutes } from './backtest/api.js';
 import { requireAuth } from './api/middleware/auth.js';
 import { initBigQuery } from './automation/bigquery-pipeline.js';
@@ -48,6 +49,7 @@ app.route('/', secretsRoutes);
 app.route('/', settingsRoutes);
 app.route('/', sseRoutes);
 app.route('/', backtestRoutes);
+app.route('/', journalRoutes);
 app.route('/', overseasRoutes);
 
 // ── 루트 앱 (프론트엔드 프록시 + API) ──

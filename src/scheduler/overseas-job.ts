@@ -15,6 +15,7 @@ import { sendTelegramMessage } from '../notifications/telegram.js';
 import { isKillSwitchActive, reportError, reportSuccess } from '../risk/kill-switch.js';
 import { logger } from '../utils/logger.js';
 import { analyzeOverseasWithAI, type OverseasStockInput } from '../ai/overseas/analyzer.js';
+import { generateAndSaveInsights, getAIGeneratedInsights } from '../ai/overseas/insights-generator.js';
 import { setOverseasScores } from '../cache/overseas-scores.js';
 import {
   getFearGreedIndex,
@@ -247,7 +248,7 @@ function getOpenMarketRegions(): Set<string> {
 interface SessionCache {
   topCodes: string[];
   sessionDate: string;
-  techCache: Map<string, { score: number; rsi: number; adx: number; signal: string; trendStrength: string; isMomentum: boolean; dayRangePct: number }>;
+  techCache: Map<string, { score: number; rsi: number; adx: number; signal: string; trendStrength: string; isMomentum: boolean; dayRangePct: number; aboveMA20: boolean }>;
 }
 let usSessionCache: SessionCache | null = null;
 let asiaSessionCache: SessionCache | null = null;
@@ -264,6 +265,8 @@ export function resetUSSessionCache(): void {
   usSessionCache = null;
   sessionStartPortfolioValue = null;
   lastUSAiCallAt = 0; // 새 세션 시작 시 AI 즉시 호출 가능
+  // 세션 시작마다 인사이트 재생성 시도 (4시간 쿨다운 내장)
+  generateAndSaveInsights().catch(() => {});
 }
 
 /** 아시아장 세션 캐시 초기화 (runner.ts 08:50 호출) */
@@ -601,6 +604,33 @@ export async function setUserInsights(text: string): Promise<void> {
 }
 
 /**
+ * 손절 이후 재매수 쿨다운 — 48시간 이내 손실 매도된 종목 Set 반환
+ * 동일 종목 연속 손절 방지 (손실 확정 → 즉시 재진입 금지)
+ */
+async function getLossCooldownStocks(): Promise<Set<string>> {
+  try {
+    const { rows } = await getPool().query(`
+      SELECT DISTINCT stock_code
+      FROM orders
+      WHERE side = 'SELL'
+        AND trigger_source = 'OVERSEAS'
+        AND status = 'FILLED'
+        AND created_at >= NOW() - INTERVAL '48 hours'
+        AND (
+          ai_reasoning LIKE '%손절%'
+          OR ai_reasoning LIKE '%stopLoss%'
+          OR ai_reasoning LIKE '%보유기한 초과%'
+          OR (
+            REGEXP_REPLACE(ai_reasoning, '.*\\[avgBuy:([0-9.]+)\\].*', '\\1') ~ '^[0-9.]+$'
+            AND filled_price::numeric < REGEXP_REPLACE(ai_reasoning, '.*\\[avgBuy:([0-9.]+)\\].*', '\\1')::numeric
+          )
+        )
+    `);
+    return new Set(rows.map((r: any) => String(r.stock_code)));
+  } catch { return new Set(); }
+}
+
+/**
  * 글로벌 주식 자동매매 Job
  * AI(Claude) + 기술적 지표 복합 판단
  * 최대 5종목 동시 보유, 종목당 $1,500 / 20% 중 작은 값
@@ -717,6 +747,7 @@ export async function runOverseasJob(): Promise<void> {
       rsi: number; adx: number; trendStrength: string;
       dayRangePct: number; // 0=저가, 100=고가 위치
       isMomentum: boolean; // 당일 강한 상승 모멘텀
+      aboveMA20: boolean;  // 현재가 > 21일 이평선
     }> = [];
 
     // 배치 처리: 8개씩 병렬 → rate limit 안전 (15req/sec 용량)
@@ -745,11 +776,11 @@ export async function runOverseasJob(): Promise<void> {
           : 50;
         const isMomentum = price.changePct >= 3 && dayRangePct >= 60;
 
-        let signal: string, score: number, rsi: number, adx: number, trendStrength: string;
+        let signal: string, score: number, rsi: number, adx: number, trendStrength: string, aboveMA20: boolean;
 
         if (cached) {
           // 세션 캐시 재사용 (차트 재분석 불필요)
-          ({ signal, score, rsi, adx, trendStrength } = cached);
+          ({ signal, score, rsi, adx, trendStrength, aboveMA20 } = cached);
         } else {
           if (!chart || chart.length < 30) continue;
           const candles: OHLCV[] = chart.map(c => ({
@@ -759,19 +790,20 @@ export async function runOverseasJob(): Promise<void> {
           if (!tech) continue;
           signal = tech.overallSignal; score = tech.score;
           rsi = tech.rsi14; adx = tech.adx14; trendStrength = tech.trendStrength;
+          aboveMA20 = price.currentPrice > tech.sma20; // 캔들이 21일 이평선 위에 있는가
         }
 
         // 세션 캐시에 기술점수 저장 (신규 스캔 시)
         if (isNewSession) {
           const cacheTarget = isUSSession ? usSessionCache : asiaSessionCache;
           if (cacheTarget) {
-            cacheTarget.techCache.set(stock.code, { score, rsi, adx, signal, trendStrength, isMomentum, dayRangePct });
+            cacheTarget.techCache.set(stock.code, { score, rsi, adx, signal, trendStrength, isMomentum, dayRangePct, aboveMA20 });
           }
         }
 
         techResults.push({
           code: stock.code, name: stock.name, exchange: stock.exchange,
-          price, signal, score, rsi, adx, trendStrength, dayRangePct, isMomentum,
+          price, signal, score, rsi, adx, trendStrength, dayRangePct, isMomentum, aboveMA20,
         });
         logger.info(
           `  ${stock.code}: $${price.currentPrice} ${price.changePct >= 0 ? '+' : ''}${price.changePct}% | ${signal}(${score}) RSI=${rsi.toFixed(0)} ADX=${adx.toFixed(0)} 일중${dayRangePct.toFixed(0)}%${isMomentum ? ' 🚀모멘텀' : ''}${cached ? ' [캐시]' : ''}`,
@@ -794,9 +826,9 @@ export async function runOverseasJob(): Promise<void> {
         return sb - sa;
       });
       const topCodes = sorted.slice(0, topCount).map(t => t.code);
-      const techCacheMap = new Map<string, { score: number; rsi: number; adx: number; signal: string; trendStrength: string; isMomentum: boolean; dayRangePct: number }>();
+      const techCacheMap = new Map<string, { score: number; rsi: number; adx: number; signal: string; trendStrength: string; isMomentum: boolean; dayRangePct: number; aboveMA20: boolean }>();
       for (const t of techResults) {
-        techCacheMap.set(t.code, { score: t.score, rsi: t.rsi, adx: t.adx, signal: t.signal, trendStrength: t.trendStrength, isMomentum: t.isMomentum, dayRangePct: t.dayRangePct });
+        techCacheMap.set(t.code, { score: t.score, rsi: t.rsi, adx: t.adx, signal: t.signal, trendStrength: t.trendStrength, isMomentum: t.isMomentum, dayRangePct: t.dayRangePct, aboveMA20: t.aboveMA20 });
       }
       const newCache: SessionCache = { topCodes, sessionDate: sessionId, techCache: techCacheMap };
       if (isUSSession) usSessionCache = newCache;
@@ -866,6 +898,7 @@ export async function runOverseasJob(): Promise<void> {
         holdingPnlPct: pnlPct,
         dayRangePct: t.dayRangePct,
         isMomentum: t.isMomentum,
+        aboveMA20: t.aboveMA20,
       };
     });
 
@@ -894,7 +927,11 @@ export async function runOverseasJob(): Promise<void> {
 
     let aiDecisions: Awaited<ReturnType<typeof analyzeOverseasWithAI>> = [];
     if (shouldCallAI) {
-      const [perfSummary, userInsights] = await Promise.all([getRecentPerfSummary(), getUserInsights()]);
+      const [perfSummary, userInsights, aiInsights] = await Promise.all([
+        getRecentPerfSummary(),
+        getUserInsights(),
+        getAIGeneratedInsights(),
+      ]);
       // 외부 신호 조기 조회 (AI 프롬프트에 포함)
       const [fgEarly, earningsEarly] = await Promise.all([
         getFearGreedIndex().catch(() => null),
@@ -907,7 +944,9 @@ export async function runOverseasJob(): Promise<void> {
         vix: fgEarly.vix,
         earningsRisk: earningsRiskCodes,
       } : undefined;
-      aiDecisions = await analyzeOverseasWithAI(aiInputs, cash, holdings.size, perfSummary, userInsights || undefined, mktCtx);
+      // AI 인사이트를 사용자 인사이트와 합쳐서 전달 (자기학습 피드백 루프)
+      const combinedInsights = [userInsights, aiInsights ? `[AI자기학습]\n${aiInsights}` : ''].filter(Boolean).join('\n\n') || undefined;
+      aiDecisions = await analyzeOverseasWithAI(aiInputs, cash, holdings.size, perfSummary, combinedInsights, mktCtx);
       if (isUSSession) lastUSAiCallAt = Date.now();
     } else {
       logger.info('🤖 AI 생략 — 후보 없음 또는 쿨다운 중 (무료 한도 절약)', { component: 'OVERSEAS' });
@@ -1054,8 +1093,22 @@ export async function runOverseasJob(): Promise<void> {
     }
 
     if (!riskBlocked && currentHoldingCount < MAX_POSITIONS && cash >= 200) {
+      // 48시간 이내 손절 종목 — 재매수 쿨다운
+      const lossCooldownSet = await getLossCooldownStocks();
+      if (lossCooldownSet.size > 0) {
+        logger.info(`🚫 손절 쿨다운 종목 (48h): ${[...lossCooldownSet].join(', ')}`, { component: 'OVERSEAS' });
+      }
+
       const buyTargets = techResults
         .filter(t => !updatedHoldings.has(t.code) && !pendingOrderStocks.has(t.code))
+        // 손절 쿨다운 — 48시간 이내 손실 매도 종목 재매수 금지
+        .filter(t => {
+          if (lossCooldownSet.has(t.code)) {
+            logger.info(`🚫 손절 쿨다운 차단: ${t.code} (48h 재매수 금지)`, { component: 'OVERSEAS' });
+            return false;
+          }
+          return true;
+        })
         // 어닝 3일 이내 종목 매수 금지 (어닝 서프라이즈 리스크)
         .filter(t => {
           if (hasEarningsRisk(t.code, upcomingEarnings, 3)) {
@@ -1074,23 +1127,34 @@ export async function runOverseasJob(): Promise<void> {
         })
         .filter(t => {
           const ai = aiMap.get(t.code);
-          const isOversold = t.rsi <= 35; // 과매도 반등 — RSI 필터 예외
-          // ── 연구 기반 진입 필터 (RSI21>55 + ADX>20 → 승률 ~81%) ──
-          // 예외1: 모멘텀(당일+3%↑) — 추세 추종은 RSI 높아도 유효
-          // 예외2: 과매도 반등(RSI≤35) — 바닥 매수
-          const trendFilterOk = t.isMomentum || isOversold || (t.rsi > 55 && t.adx > 20);
+          const isOversold = t.rsi <= 35 && t.trendStrength !== 'WEAK'; // 과매도 반등 — 하락추세면 제외
+          const isAbove50 = t.rsi >= 50; // 상승추세 구간
+          // ── 1단계: 상승추세 확인 (RSI≥50 OR 모멘텀 OR 과매도반등) ──
+          const trendFilterOk = t.isMomentum || isOversold || (isAbove50 && t.adx > 20);
           if (!trendFilterOk) {
-            logger.info(`  ⛔ 진입 필터 탈락: ${t.code} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)} (트렌드 미확인)`, { component: 'OVERSEAS' });
+            logger.info(`  ⛔ 진입 필터 탈락: ${t.code} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)} trend=${t.trendStrength} (상승추세 미확인)`, { component: 'OVERSEAS' });
             return false;
           }
-          // AI 신뢰도 65% 이상 + 상승 방향일 때만 진입
-          if (ai?.action === 'BUY' && ai.confidence >= 0.65) return true;
-          // STRONG_BUY는 60%도 허용
-          if (ai?.action === 'BUY' && t.signal === 'STRONG_BUY' && ai.confidence >= 0.60) return true;
+          // ── 1-b: 21일 이평선 위 안착 확인 (RSI+MA 전략) ──
+          // 모멘텀(브레이크아웃) 또는 과매도 반등이면 이평선 아래도 허용
+          if (!t.isMomentum && !isOversold && t.aboveMA20 === false) {
+            logger.info(`  ⛔ MA 하방 진입 차단: ${t.code} 캔들이 21일 이평선 아래 (RSI+MA 안착 미충족)`, { component: 'OVERSEAS' });
+            return false;
+          }
+          // ── 2단계: 타점 기준 — 일중 고점 매수 차단 (모멘텀 제외) ──
+          const dayRangeOk = t.isMomentum || t.dayRangePct === undefined || t.dayRangePct < 70;
+          if (!dayRangeOk) {
+            logger.info(`  ⛔ 고점 진입 차단: ${t.code} dayRangePct=${t.dayRangePct?.toFixed(0)}% (일중 고점 근처)`, { component: 'OVERSEAS' });
+            return false;
+          }
+          // AI 신뢰도 70% 이상 + 상승 방향일 때만 진입
+          if (ai?.action === 'BUY' && ai.confidence >= 0.70) return true;
+          // STRONG_BUY + 모멘텀은 68%도 허용
+          if (ai?.action === 'BUY' && (t.signal === 'STRONG_BUY' || t.isMomentum) && ai.confidence >= 0.68) return true;
           // AI 없을 때: 강한 기술적 신호만 진입
           if (!ai) {
             const isBuySignal = t.signal === 'STRONG_BUY' && t.score >= 40 && t.adx >= 25;
-            const rsiOk = t.isMomentum ? (t.rsi >= 30 && t.rsi <= 70) : (t.rsi >= 30 && t.rsi <= 60);
+            const rsiOk = t.isMomentum ? (t.rsi >= 45 && t.rsi <= 72) : (t.rsi >= 50 && t.rsi <= 62);
             return isBuySignal && rsiOk;
           }
           return false;
@@ -1119,7 +1183,17 @@ export async function runOverseasJob(): Promise<void> {
         const positionSize = Math.min(baseSize * sizingMult, cash * 0.70);
         if (positionSize < 50) break;
 
-        const qty = Math.floor(positionSize / (target.price.currentPrice * 1.0025)); // 수수료 0.25% 포함 단가
+        // ── 1% 리스크 룰: 포트폴리오 1% 이내 손실로 수량 상한 ──
+        // 원칙: 진입가 × 수량 × 손절률 ≤ 포트폴리오 × 1%
+        const targetWatchItem = GLOBAL_WATCHLIST.find(w => w.code === target.code);
+        const isHighBetaEntry = ['EV', 'CRYPTO', 'AI_SEMI', 'GROWTH'].includes(targetWatchItem?.sector ?? '');
+        const isDefenseEntry = targetWatchItem?.sector === 'DEFENSE';
+        const slDecimal = isHighBetaEntry ? 0.05 : isDefenseEntry ? 0.04 : 0.035;
+        const maxRiskUSD = portfolioValue * 0.01;
+        const qtyBy1PctRule = maxRiskUSD > 0 ? Math.floor(maxRiskUSD / (target.price.currentPrice * slDecimal)) : Infinity;
+
+        const qtyBySizing = Math.floor(positionSize / (target.price.currentPrice * 1.0025));
+        const qty = Math.min(qtyBySizing, qtyBy1PctRule > 0 ? qtyBy1PctRule : qtyBySizing);
         if (qty <= 0) continue;
 
         const buyMode = target.isMomentum ? '🚀모멘텀' : (target.rsi <= 35 ? '📉과매도반등' : '📊트렌드');
