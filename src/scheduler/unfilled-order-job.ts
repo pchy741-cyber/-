@@ -2,6 +2,7 @@ import { getPool, logSystem, updateOrder } from '../db/client.js';
 import { cancelOrder } from '../kis/order.js';
 import { logger } from '../utils/logger.js';
 import { config } from '../config/index.js';
+import { notifyAlert } from '../notifications/web-push.js';
 
 // 미체결 주문 자동 관리
 // - 지정가 주문 후 5분 미체결 → 자동 취소
@@ -38,6 +39,8 @@ export async function runUnfilledOrderCheck(): Promise<void> {
 
     logger.info(`미체결 주문 ${rows.length}건 발견, 자동 취소 시작`, { component: 'UNFILLED' });
 
+    const cancelled: string[] = [];
+
     for (const order of rows) {
       try {
         const result = await cancelOrder({
@@ -52,6 +55,7 @@ export async function runUnfilledOrderCheck(): Promise<void> {
             kis_status: 'CANCELLED',
           });
 
+          cancelled.push(`${order.side === 'BUY' ? '매수' : '매도'} ${order.stock_code} x${order.quantity}`);
           logger.info(
             `미체결 자동 취소: ${order.side} ${order.stock_code} x${order.quantity} (주문번호: ${order.kis_order_no})`,
             { component: 'UNFILLED' },
@@ -71,6 +75,13 @@ export async function runUnfilledOrderCheck(): Promise<void> {
       'UNFILLED',
       `미체결 주문 ${rows.length}건 자동 취소 처리`,
     );
+
+    if (cancelled.length > 0) {
+      notifyAlert(
+        `⏱️ 미체결 주문 ${cancelled.length}건 자동 취소`,
+        cancelled.join('\n'),
+      ).catch(() => {});
+    }
   } catch (err) {
     logger.error(`미체결 주문 체크 실패: ${err}`, { component: 'UNFILLED' });
   }

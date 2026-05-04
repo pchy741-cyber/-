@@ -81,10 +81,10 @@ export const STRATEGY_PARAMS = {
     takeProfitPct: 3.5,
     // 익절: +3.5% → 50% 매도, 잔여 트레일링 스톱 (단타-스윙 중간, 자주 실현)
     takeProfitRatio: 0.5,   // 50% 부분 매도 → 잔여 트레일링
-    stopLossPct: -2.5,
-    // 손절: -2.5% (빠른 손절로 리스크 통제)
-    maxHoldingDays: 5,
-    // 5일 초과 보유 시 청산 (중단기 균형)
+    stopLossPct: -5.0,
+    // 손절: -5% (스윙 변동성 허용 — 일시적 -3~4% 하락에 손절 안 함)
+    maxHoldingDays: 10,
+    // 10일 초과 보유 시 청산 (스윙 2주 충분히 기다림)
   },
 
   DEFENSE: {
@@ -156,10 +156,10 @@ export const KIS_TR_ID = {
 //   • 80-89 (고확신): 강한 신호 → 수익 극대화 허용, ATR 기반 여유 손절
 //   • 90+  (엘리트): 최강 신호 → 큰 수익 목표, 손절 타이트 (확신이 높으므로)
 export function getScoreBasedParams(score: number): { takeProfitPct: number; stopLossPct: number } {
-  if (score >= 90) return { takeProfitPct: 7.0, stopLossPct: -1.5 };  // 엘리트: 극대화
-  if (score >= 80) return { takeProfitPct: 5.5, stopLossPct: -2.0 };  // 고확신
-  if (score >= 70) return { takeProfitPct: 4.0, stopLossPct: -2.0 };  // 보통
-  return                 { takeProfitPct: 3.0, stopLossPct: -2.5 };   // 마진컬 (60-69)
+  if (score >= 90) return { takeProfitPct: 8.0, stopLossPct: -2.0 };  // 엘리트: 4:1 R:R
+  if (score >= 80) return { takeProfitPct: 6.0, stopLossPct: -2.5 };  // 고확신: 2.4:1 R:R
+  if (score >= 70) return { takeProfitPct: 5.0, stopLossPct: -2.5 };  // 보통: 2:1 R:R
+  return                 { takeProfitPct: 5.0, stopLossPct: -2.5 };   // 마진컬(60-69): 2:1 R:R (최소 기준)
 }
 
 // ── AI 스코어 시그널 ──

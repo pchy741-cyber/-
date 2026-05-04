@@ -21,7 +21,7 @@ import { calcPnlPct } from '../utils/money.js';
  */
 const TRAILING_ACTIVATE_PCT = 2.0;  // 트레일링 스탑 활성화 최소 수익률 (%)
 const TRAILING_DROP_PCT     = 2.0;  // 고점 대비 이 % 하락 시 매도 (%)
-const PARTIAL_SELL_PCT      = 5.0;  // 이 수익률 도달 시 50% 분할 익절
+const PARTIAL_SELL_PCT      = 3.5;  // 이 수익률 도달 시 50% 분할 익절 (TRAILING_ACTIVATE+DROP=4% 미만으로 설정해야 트레일링보다 먼저 발동)
 
 /**
  * 보유일 초과 자동 손절 체크
@@ -105,7 +105,7 @@ export async function runHoldingCheckJob(): Promise<void> {
 
       // ── 조기 정체 감지 (수익 가능성 없는 포지션 선제 청산) ──
       // 기준: 일수별 슬라이딩 임계값. 아래 조건 충족 시 maxDays 기다리지 않고 청산
-      const stagnantReason = checkStagnation(businessDays, pnlPct, maxDays);
+      const stagnantReason = checkStagnation(businessDays, pnlPct, maxDays, params.stopLossPct);
       if (stagnantReason) {
         logger.warn(
           `🥱 정체 청산: ${chain.stock_code} ${businessDays}일 보유, ${pnlPct.toFixed(2)}% — ${stagnantReason}`,
@@ -158,27 +158,26 @@ export async function runHoldingCheckJob(): Promise<void> {
 }
 
 /**
- * 정체 감지: 일수별 슬라이딩 임계값으로 "수익 가능성 없는 포지션" 조기 청산 여부 판단
+ * 정체 감지: 전략 손절선 기반으로 "회복 가능성 없는 포지션"만 조기 청산
  *
- * 기준:
- *  - 2일차: -2.5% 미만 (손절선 -4%의 절반 이상 내려왔으면 선제 청산)
- *  - 3일차: -1.5% 미만 (3일 넘어도 손실 = 수익 전환 가능성 낮음)
- *  - maxDays-1 일차: +0.5% 미만 (만기 하루 전인데 거의 보합 = 수수료만 날림)
+ * 스윙(-5% 손절선) 기준 예시:
+ *  - 5일차+: -4% 미만 → 손절선 80% 도달, 추가 하락 리스크 차단
+ *  - maxDays-2 이후: -2.5% 미만 → 만기 임박인데 손실 중
+ *
+ * 단기 하락(-1~-3%)은 스윙 회복 여지로 보고 기다림
  *
  * @returns 청산 사유 문자열 (청산 불필요하면 null)
  */
-function checkStagnation(businessDays: number, pnlPct: number, maxDays: number): string | null {
-  // 2일차 이상: 손절선(-4%) 절반 이상 내려왔으면 조기 차단
-  if (businessDays >= 2 && pnlPct < -2.5) {
-    return `2일 이상 보유 중 -2.5% 이하 (${pnlPct.toFixed(2)}%) — 추가 하락 전 선제 청산`;
+function checkStagnation(businessDays: number, pnlPct: number, maxDays: number, stopLossPct: number): string | null {
+  // 손절선의 80% 이상 손실이 5일 이상 지속 → 회복 가능성 낮음
+  const earlyStopPct = stopLossPct * 0.8; // e.g. SWING -5% → -4%
+  if (businessDays >= 5 && pnlPct < earlyStopPct) {
+    return `${businessDays}일 보유 중 ${pnlPct.toFixed(2)}% (회복 가능성 낮음, 기준 ${earlyStopPct.toFixed(1)}%)`;
   }
-  // 3일차 이상: 1.5% 이상 손실 = 수익 전환 가능성 낮음
-  if (businessDays >= 3 && pnlPct < -1.5) {
-    return `3일 이상 보유 중 -1.5% 이하 (${pnlPct.toFixed(2)}%) — 데드머니 청산`;
-  }
-  // maxDays 하루 전: 거의 보합이면 기다려봤자 수수료만 손해
-  if (maxDays > 1 && businessDays >= maxDays - 1 && pnlPct < 0.3) {
-    return `만기 하루 전 수익률 미달 (${pnlPct.toFixed(2)}% < 0.3%) — 조기 청산`;
+  // 만기 2일 전: 손절선 50% 이상 손실 → 만기까지 기다려도 회복 어려움
+  const lateStopPct = stopLossPct * 0.5; // e.g. SWING -5% → -2.5%
+  if (maxDays > 2 && businessDays >= maxDays - 2 && pnlPct < lateStopPct) {
+    return `만기 ${maxDays - businessDays}일 전 손실 (${pnlPct.toFixed(2)}% < ${lateStopPct.toFixed(1)}%) — 조기 청산`;
   }
   return null;
 }

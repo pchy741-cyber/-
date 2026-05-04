@@ -65,12 +65,11 @@ ${JSON.stringify(geminiAnalysis.stocks, null, 2)}
     for (const score of responseParseResult.data.scores) {
       const zod = ScoringResultSchema.safeParse(score);
       if (zod.success) {
-        // 0점짜리 스코어는 특정 항목 분석 실패를 의미할 수 있으므로 필터링
-        if (zod.data.composite_score > 0) {
+        if (zod.data.signal !== 'NO_DATA') {
           validScores.push(zod.data);
         } else {
           const stockCode = typeof score === 'object' && score !== null && 'stock_code' in score ? String((score as any).stock_code) : 'UNKNOWN';
-          logger.warn(`Gemini 스코어 0점 무효화 (${stockCode}): composite_score=${zod.data.composite_score}`, {
+          logger.info(`Gemini 스코어 NO_DATA 제외 (${stockCode}): 데이터 부족 신호`, {
             component: 'TRACK_A',
           });
         }

@@ -102,6 +102,13 @@ export async function deactivateKillSwitch(force = false): Promise<void> {
   logger.info(`✅ Kill Switch 해제${force ? ' [강제]' : ''}`, { component: 'KILL_SWITCH' });
   await logSystem('INFO', 'KILL_SWITCH', `긴급 정지 해제${force ? ' [강제]' : ''} (사유: ${prevReason})`);
 
+  import('../notifications/web-push.js').then(m =>
+    m.notifyAlert(
+      force ? '🔓 긴급정지 수동 해제' : '🔓 긴급정지 자동 해제',
+      `이전 사유: ${prevReason.slice(0, 80)}\n매매 재개됨`,
+    )
+  ).catch(() => {});
+
   // DB 영속화
   persistKillSwitchToDB(false, '', false).catch(() => {});
 }

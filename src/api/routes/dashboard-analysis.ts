@@ -327,6 +327,13 @@ dashboardAnalysisRoutes.post('/release-defense-park', async (c) => {
     await deactivateDefensePark('CEO 수동 해제');
     logger.info('방어 파킹 수동 강제 해제됨', { component: 'MANUAL' });
 
+    // strategy_config도 SWING으로 복원
+    try {
+      await getPool().query(
+        `UPDATE strategy_config SET mode='SWING', buy_threshold=70, updated_at=NOW() WHERE is_active=true`,
+      );
+    } catch { /* 실패해도 계속 */ }
+
     const position = await getPositionForStock('069500');
     let sellMsg = '';
     if (position && position.quantity > 0) {

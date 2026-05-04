@@ -179,6 +179,15 @@ async function bootstrap() {
     logger.warn(`⚠️ Telegram 초기화 실패: ${err}`, { component: 'BOOT' });
   }
 
+  // 4-b. VAPID 푸시 알림 초기화 (DB 준비 완료 후 — 구독 유효성 보장)
+  try {
+    const { initVapid } = await import('./notifications/web-push.js');
+    await initVapid();
+    logger.info('✅ VAPID 푸시 알림 초기화 완료', { component: 'BOOT' });
+  } catch (err) {
+    logger.warn(`⚠️ VAPID 초기화 실패 (알림 비활성): ${err}`, { component: 'BOOT' });
+  }
+
   // 5. GCP 서비스 초기화 (Monitoring + BigQuery)
   try {
     setupMonitoring();

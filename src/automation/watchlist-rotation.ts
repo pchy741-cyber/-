@@ -222,7 +222,7 @@ export async function runDailyMarketScan(): Promise<void> {
       const avgScore = Number(row.avg_score ?? 50);
 
       // 스코어 데이터가 있고 매우 낮으면 즉시 정리
-      if (recordCount >= 2 && avgScore < 35) {
+      if (recordCount >= 2 && avgScore < 40) {
         await pool.query(`UPDATE watchlist SET is_active = false WHERE stock_code = $1`, [code]);
         dailyRemoved.push(`${code}(${row.stock_name ?? code}, ${avgScore.toFixed(0)}점)`);
         logger.info(`🗑️ 일일정리: ${code}(${row.stock_name}) — 3일 평균 ${avgScore.toFixed(1)}점`, { component: 'DAILY_MARKET_SCAN' });

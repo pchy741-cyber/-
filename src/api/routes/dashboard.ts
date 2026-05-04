@@ -254,7 +254,7 @@ dashboardRoutes.get('/dashboard', async (c) => {
   // (Paper: cash + 미실현평가금액(evalAmount) ≈ cash + 원금 + 미실현손익, Live: cash + evalAmount)
 
   // ── 해외 보유종목 (별도 표시용, 국내 총자산에 합산하지 않음) ──
-  let overseasHoldings: Array<{ stock_code: string; quantity: number; avg_price: number; bought_at: string }> = [];
+  let overseasHoldings: Array<{ stock_code: string; quantity: number; avg_price: number; bought_at: string; last_price: number }> = [];
   let overseasTotalInvested = 0;
   let overseasCash = 0;
   try {
@@ -271,6 +271,7 @@ dashboardRoutes.get('/dashboard', async (c) => {
         quantity: qty,
         avg_price: avgP,
         bought_at: r.bought_at,
+        last_price: Number(r.last_price ?? 0),
       });
     }
   } catch { /* overseas table may not exist */ }

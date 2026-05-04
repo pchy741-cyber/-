@@ -1907,6 +1907,21 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
               {tradingStatus.candidateCount > 0 && <span className="ml-2 text-emerald-400">→ {tradingStatus.candidateCount}종목 후보 있음</span>}
             </div>
           )}
+          {tradingStatus.mode === 'DEFENSE' && (
+            <div className="mt-2 flex justify-end">
+              <button
+                onClick={async () => {
+                  if (!confirm('DEFENSE 모드를 해제하고 SWING 매매(기준 70점)로 복귀할까요?')) return;
+                  try {
+                    const r = await api('/defense-mode/deactivate', { method: 'POST' });
+                    toast?.(r?.message ?? 'DEFENSE 모드 해제 완료', 'ok');
+                    onRefresh();
+                  } catch (e: any) { toast?.('실패: ' + (e as any).message, 'error'); }
+                }}
+                className="px-3 py-1.5 text-xs rounded-xl bg-rose-500/20 hover:bg-rose-500/40 text-rose-200 font-semibold transition-colors"
+              >🔓 DEFENSE 모드 수동 해제</button>
+            </div>
+          )}
         </div>
       )}
       {tradingStatus && tradingStatus.overallStatus === 'ACTIVE' && (
@@ -3940,6 +3955,10 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
               if (b64 !== serverStatus.publicKey) {
                 // 키 불일치 → 기존 구독 해제, 재등록 트리거
                 console.info('[QUANTOPS] VAPID 키 변경 감지 → 재등록');
+                await existing.unsubscribe();
+              } else if (serverStatus.deviceCount === 0) {
+                // 브라우저엔 구독 있지만 서버 DB에 없음 (403 삭제 등) → 재등록
+                console.info('[QUANTOPS] 서버 구독 누락 감지 → 재등록');
                 await existing.unsubscribe();
               } else {
                 subscribed = true;

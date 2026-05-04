@@ -1,6 +1,6 @@
 import { OrderType, STRATEGY_PARAMS, getScoreBasedParams, type StrategyMode } from '../config/constants.js';
 import { config } from '../config/index.js';
-import { getActiveStrategy, insertOrder, logSystem, updateOrderByKisOrderNo, upsertWatchlistItem } from '../db/client.js';
+import { getActiveStrategy, getOpenChains, insertOrder, logSystem, updateOrderByKisOrderNo, upsertWatchlistItem } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import { getCurrentPrice, getDailyChart } from '../kis/market.js';
 import { getOrderFills, type OrderResult, placeOrder } from '../kis/order.js';
@@ -122,6 +122,17 @@ export class TradeExecutor {
       return;
     }
 
+    // 동시 포지션 한도 확인 (신규 매수만 해당 — 물타기/청산은 제외)
+    const allOpenChains = await getOpenChains();
+    if (allOpenChains.length >= config.risk.maxConcurrentPositions) {
+      logger.warn(
+        `⛔ 동시 포지션 한도 초과 (${allOpenChains.length}/${config.risk.maxConcurrentPositions}) → 신규 매수 차단: ${stockCode}`,
+        { component: 'EXECUTOR' },
+      );
+      await logSystem('WARN', 'EXECUTOR', `포지션 한도 초과: ${allOpenChains.length}/${config.risk.maxConcurrentPositions} — ${stockCode} 신규 매수 차단`);
+      return;
+    }
+
     // 가격 우선순위: limit_price(파이프라인) → KIS API → 메모리캐시 → Redis캐시
     let estimatedPrice = limitPrice ?? 0;
     if (!estimatedPrice) {
@@ -201,6 +212,21 @@ export class TradeExecutor {
         await logSystem('WARN', 'EXECUTOR', `매수 거부: ${stockCode} - ${riskCheck.reason}`);
         return;
       }
+    }
+
+    // 🎯 대형 주문 진입타이밍 AI 검토 (100만원 이상, ETF 파킹 제외)
+    const orderAmountKrw = estimatedPrice * gatedQuantity;
+    if (!ETF_PARK_CODES.includes(stockCode) && orderAmountKrw >= 1_000_000) {
+      try {
+        const { checkLargeOrderEntryTiming } = await import('../ai/entry-timing.js');
+        const entryCandles = await getDailyChart(stockCode, 20).catch(() => []);
+        const entryCheck = await checkLargeOrderEntryTiming(stockCode, estimatedPrice, orderAmountKrw, entryCandles, reasoning);
+        if (!entryCheck.approved) {
+          logger.warn(`🎯 진입타이밍 AI 거부 [${stockCode} ${Math.round(orderAmountKrw / 10000)}만원]: ${entryCheck.reason}`, { component: 'EXECUTOR' });
+          await logSystem('WARN', 'ENTRY_TIMING', `대형주문 진입거부: ${stockCode} ${Math.round(orderAmountKrw / 10000)}만원 — ${entryCheck.reason}`);
+          return;
+        }
+      } catch { /* fail-open: AI 오류 시 기존 게이트 결과 존중 */ }
     }
 
     // 호가 진입 타이밍 — ask2 이하일 때만 매수 (ETF 파킹 제외)
@@ -311,6 +337,37 @@ export class TradeExecutor {
 
     const price = await getCurrentPrice(stockCode);
     const estimatedPrice = limitPrice ?? price.currentPrice;
+
+    // 🚫 손실 중 물타기 AI 검토 — 마이너스 포지션에 추가 매수 시 AI 허락 필요
+    const avgBuyPrice = Number(chain.avg_buy_price ?? 0);
+    if (avgBuyPrice > 0 && estimatedPrice > 0) {
+      const pnlPct = ((estimatedPrice - avgBuyPrice) / avgBuyPrice) * 100;
+      if (pnlPct < -0.5) {
+        logger.warn(`⚠️ 손실 물타기 감지: ${stockCode} PnL=${pnlPct.toFixed(1)}% avg=${avgBuyPrice}원 → AI 검토`, { component: 'EXECUTOR' });
+        try {
+          const { checkLargeOrderEntryTiming } = await import('../ai/entry-timing.js');
+          const entryCandles = await getDailyChart(stockCode, 20).catch(() => []);
+          const entryCheck = await checkLargeOrderEntryTiming(
+            stockCode,
+            estimatedPrice,
+            estimatedPrice * quantity,
+            entryCandles,
+            `물타기: ${reasoning} [avgBuy:${avgBuyPrice}원 pnl:${pnlPct.toFixed(1)}%]`,
+          );
+          if (!entryCheck.approved) {
+            logger.warn(`🚫 손실 물타기 AI 거부 [${stockCode}]: ${entryCheck.reason}`, { component: 'EXECUTOR' });
+            await logSystem('WARN', 'EXECUTOR', `손실 물타기 거부: ${stockCode} PnL=${pnlPct.toFixed(1)}% — ${entryCheck.reason}`);
+            return;
+          }
+          logger.info(`✅ 손실 물타기 AI 승인 [${stockCode} PnL=${pnlPct.toFixed(1)}%]: ${entryCheck.reason}`, { component: 'EXECUTOR' });
+        } catch (e) {
+          // fail-closed: AI 오류 시 손실 물타기 허용하면 자유낙하 종목에 계속 추가 매수할 위험
+          logger.warn(`🚫 손실 물타기 AI 검토 오류 → 차단 (fail-closed): ${stockCode} — ${(e as Error).message}`, { component: 'EXECUTOR' });
+          await logSystem('WARN', 'EXECUTOR', `손실 물타기 AI 오류 차단: ${stockCode} PnL=${pnlPct.toFixed(1)}%`);
+          return;
+        }
+      }
+    }
 
     const riskCheck = await riskEngine.validateOrder({
       stockCode,

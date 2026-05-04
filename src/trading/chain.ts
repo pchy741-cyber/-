@@ -183,7 +183,8 @@ export class ChainManager {
         `INSERT INTO score_accuracy
            (stock_code, chain_id, entry_score, entry_signal, entry_confidence,
             realized_pnl_pct, outcome, holding_days, close_reason, strategy_mode)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         ON CONFLICT (chain_id) DO NOTHING`,
         [
           chain.stock_code,
           chainId,

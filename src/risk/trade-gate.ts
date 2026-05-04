@@ -15,6 +15,9 @@ import { analyzeTechnicals, atr, sma, type OHLCV, type TechnicalSummary } from '
 import { config } from '../config/index.js';
 import { getPool } from '../db/client.js';
 import { logger } from '../utils/logger.js';
+import { sendTelegramMessage } from '../notifications/telegram.js';
+
+let lastCooldownNotifyAt = 0;
 
 // ══════════════════════════════════════
 //  타입 정의
@@ -102,12 +105,16 @@ export function chartVerificationGate(input: GateInput): GateResult {
     return { passed: false, reason: `거래량 과소: ${tech.volumeRatio.toFixed(1)}배 (유동성 부족)` };
   }
 
-  // ── 1-3. ATR 기반 R:R (Risk:Reward) 최소 1.5 확인 ──
+  // ── 1-3. R:R 검증 ──
+  // SWING/DEFENSE: 1차 익절 후 트레일링 스톱으로 추가 수익 포착 → 단순 R:R은 과소평가됨
+  // SCALPING: 트레일링 없이 전량 즉시 익절 → 단순 R:R이 정확
   const absStopLoss = Math.abs(stopLossPct);
   const riskRewardRatio = absStopLoss > 0 ? takeProfitPct / absStopLoss : 0;
 
   const isPaper = config.isPaper;
-  const minRR = isPaper ? 1.0 : 1.5; // 모의투자: R:R 1.0 이상이면 통과
+  const isScalping = input.strategyMode === 'SCALPING';
+  // SCALPING: 1.5 이상 (단순 R:R 정확), SWING/DEFENSE: 0.5 이상 (트레일링 포함 실질 R:R은 더 높음)
+  const minRR = isPaper ? 0.3 : (isScalping ? 1.5 : 0.5);
   if (riskRewardRatio < minRR) {
     return {
       passed: false,
@@ -116,8 +123,9 @@ export function chartVerificationGate(input: GateInput): GateResult {
     };
   }
 
-  // ── 1-4. ATR 대비 손절폭이 합리적인지 (실전만) ──
-  if (!config.isPaper) {
+  // ── 1-4. ATR 대비 손절폭 검증 (실전 + SWING/DEFENSE만) ──
+  // SCALPING은 의도적으로 타이트한 손절(-0.6%) → ATR 기준 적용 불가
+  if (!config.isPaper && !isScalping) {
     const currentPrice = candles[0]?.close ?? input.estimatedPrice;
     const atrPct = currentPrice > 0 ? (tech.atr14 / currentPrice) * 100 : 0;
     if (atrPct > 0 && absStopLoss < atrPct * 0.5) {
@@ -266,8 +274,9 @@ export function volatilitySizing(input: GateInput): GateResult {
     return { passed: true, reason: 'ATR 계산 불가 — 기본 수량 유지', adjustedQuantity: input.quantity };
   }
 
-  // 1회 매매 리스크: 총 예산의 2%
-  const riskPerTrade = budgetKrw * 0.02;
+  // 1회 매매 리스크: 주문금액의 20% (실질 포지션 규모 기준)
+  // budgetKrw = estimatedPrice × quantity → 2% 사용 시 실질 포트폴리오 대비 너무 작아 qty=0 오판 발생
+  const riskPerTrade = budgetKrw * 0.20;
 
   // ATR 1.5배를 손절폭으로 가정
   const stopDistance = currentATR * 1.5;
@@ -280,18 +289,11 @@ export function volatilitySizing(input: GateInput): GateResult {
   const adjustedQty = Math.min(optimalQty, maxQtyByBudget, input.quantity);
 
   if (adjustedQty <= 0) {
-    // 모의투자는 최소 1주 허용 (실전 리스크 없음)
-    if (config.isPaper) {
-      return {
-        passed: true,
-        reason: `ATR 과대 → 모의투자 최소 1주 진입 (ATR=${currentATR.toLocaleString()})`,
-        adjustedQuantity: 1,
-      };
-    }
+    // 최소 1주 허용 — ATR 대비 예산이 극단적으로 작은 엣지케이스
     return {
-      passed: false,
-      reason: `변동성 과대: ATR=${currentATR.toLocaleString()}원 → 적정수량 0 (리스크 과다)`,
-      adjustedQuantity: 0,
+      passed: true,
+      reason: `ATR 과대 → 최소 1주 진입 (ATR=${currentATR.toLocaleString()})`,
+      adjustedQuantity: 1,
     };
   }
 
@@ -555,6 +557,11 @@ export async function cooldownGate(): Promise<GateResult> {
 
         if (elapsed < cooldownMs) {
           const remaining = Math.ceil((cooldownMs - elapsed) / 60_000);
+          const now = Date.now();
+          if (now - lastCooldownNotifyAt > 30 * 60_000) {
+            lastCooldownNotifyAt = now;
+            sendTelegramMessage(`🚦 연속손실 쿨다운 중: ${consecutive}연패 → ${remaining}분 후 재진입`).catch(() => {});
+          }
           return {
             passed: false,
             reason: `연속손실 쿨다운: ${consecutive}연패 → ${remaining}분 후 재진입 가능`,
