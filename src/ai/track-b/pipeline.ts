@@ -245,10 +245,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       .then(m => m.getPool().query('SELECT * FROM portfolio_allocation_config WHERE is_active = true LIMIT 1'))
       .then(r => r.rows[0] ?? null).catch(() => null);
 
-    // ── 3-d. 상승장 실시간 등락률 상위 종목 편입 (kospiBoost 한정) ───────────
-    // 감시 종목 밖에서 실제 오르고 있는 종목을 동적으로 후보 풀에 추가
+    // ── 3-d. 실시간 등락률 상위 종목 동적 편입 ────────────────────────────
+    // 조건: KOSPI >= MA60 (하락장 아님) + 일일손실 미차단
+    // kospiBoost(MA20>MA60 강세) 뿐 아니라 중립장(penalty=0)에서도 작동
     const watchlistSet = new Set(watchlist.map((w) => w.stock_code));
-    if (kospiRegime.boost && !dailyLoss.blocked) {
+    if (kospiRegime.penalty === 0 && !dailyLoss.blocked) {
       try {
         const topGainers = await getChangeRankingStocks(20, 'J');
         const newStocks = topGainers.filter((s) => s.stock_code && !watchlistSet.has(s.stock_code));

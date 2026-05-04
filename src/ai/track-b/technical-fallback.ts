@@ -441,17 +441,25 @@ export async function technicalFallbackDecisions(params: {
       continue;
     }
 
-    const isOversold    = tech.rsi14 < 30;                                                     // 과매도 반등
-    const isEarlyBounce = tech.rsi14 >= 30 && tech.rsi14 < 45;                                // 반등 초기 (최적)
-    const isPullback    = tech.rsi14 >= 45 && tech.rsi14 <= 60 && (tech.macdCrossover === 'BULLISH' || aiScore >= 80); // 눌림목 반등 (AI 80+이면 MACD 불필요)
-    // 모멘텀: RSI 60~70 + (AI점수 있으면 buyThreshold 이상 OR 기술점수 양호)
-    // AI API 없을 때 aiScore=0 → 기술점수만으로 판단 가능하도록 수정
-    const isMomentum    = tech.rsi14 > 60 && tech.rsi14 <= 70 &&
-      (aiScore >= buyThreshold || effectiveTechScore >= minTechScore + 5);
-    // AI 80점 이상 또는 기술점수 매우 높으면: 타이밍 필터 완화
-    const isHighAiScore = (aiScore >= 80 || effectiveTechScore >= minTechScore + 15) &&
+    // ── 진입 타이밍 분류 (RSI 구간별) ────────────────────────────────────────
+    // 각 구간별 합격 조건을 명시적으로 정의 (조건 꼬임 방지)
+    const isOversold     = tech.rsi14 < 30;          // 과매도 반등 — 무조건 허용
+    const isEarlyBounce  = tech.rsi14 >= 30 && tech.rsi14 < 45;  // 반등 초기 — 무조건 허용
+    // 눌림목(RSI 45~65): MACD 골든크로스 OR AI승인 OR 기술점수 충분
+    const isPullback     = tech.rsi14 >= 45 && tech.rsi14 <= 65 && (
+      tech.macdCrossover === 'BULLISH' ||
+      aiScore >= buyThreshold ||
+      effectiveTechScore >= minTechScore
+    );
+    // 모멘텀(RSI 65~70): 더 엄격 — AI승인 OR 기술점수 +5점 이상
+    const isMomentum     = tech.rsi14 > 65 && tech.rsi14 <= 70 && (
+      aiScore >= buyThreshold ||
+      effectiveTechScore >= minTechScore + 5
+    );
+    // 고확신 예외: AI 80+ 또는 기술점수 매우 높으면 전 구간 허용
+    const isHighConviction = (aiScore >= 80 || effectiveTechScore >= minTechScore + 15) &&
       (effectiveTechScore >= minTechScore || aiScore >= buyThreshold);
-    const isValidEntry  = isOversold || isEarlyBounce || isPullback || isMomentum || isHighAiScore;
+    const isValidEntry   = isOversold || isEarlyBounce || isPullback || isMomentum || isHighConviction;
 
     if (!isValidEntry) {
       logger.info(`  🟡 ${stock.stock_code}: RSI=${tech.rsi14.toFixed(0)} MACD=${tech.macdCrossover} AI=${aiScore} → 타이밍 미충족 스킵`, { component: 'TRACK_B' });
@@ -490,7 +498,7 @@ export async function technicalFallbackDecisions(params: {
     const ttmTag = tech.ttmSqueeze.fireSignal === 'LONG' ? `🚀TTM발사(${tech.ttmSqueeze.consecutiveSqueezeOn}봉)` : '';
     const rsi2Tag = tech.rsi2 < 15 ? `📉RSI2(${tech.rsi2.toFixed(0)})` : '';
     const entryReason = [
-      isOversold ? '과매도반등' : isEarlyBounce ? '반등초기(최적)' : isPullback ? '눌림목MACD' : isHighAiScore ? `AI고확신(${aiScore}점)` : '강한모멘텀',
+      isOversold ? '과매도반등' : isEarlyBounce ? '반등초기(최적)' : isPullback ? '눌림목' : isHighConviction ? `고확신(${aiScore}점)` : '모멘텀',
       squeezeTag, vwapTag, ttmTag, rsi2Tag,
     ].filter(Boolean).join('+');
     // ─────────────────────────────────────────────────────────────────────
