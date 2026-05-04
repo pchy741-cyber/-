@@ -66,6 +66,12 @@ export async function technicalFallbackDecisions(params: {
   }
   const decisions: TradeDecision[] = [];
 
+  // SCALPING 09:25 강제청산 판단용 KST 시간
+  const _scalpNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const _scalpH = _scalpNow.getUTCHours();
+  const _scalpM = _scalpNow.getUTCMinutes();
+  const isPastScalpDeadline = _scalpH > 9 || (_scalpH === 9 && _scalpM >= 25);
+
   // 1. 보유 종목 매도 판단 (손절/익절)
   // 동일 종목에 다중 체인(분할 매수)이 있을 경우 중복 매도 신호 방지
   const processedSellCodes = new Set<string>();
@@ -79,11 +85,43 @@ export async function technicalFallbackDecisions(params: {
     // 동일 종목 중복 매도 신호 방지 (다중 체인 시 첫 번째 체인만 처리)
     if (processedSellCodes.has(chain.stock_code)) continue;
 
+    // SCALPING 09:25 강제청산: 단타 모멘텀 윈도우(09:00~09:25) 종료 후 미청산 포지션 즉시 청산
+    if (chain.strategy_mode === 'SCALPING' && isPastScalpDeadline && chain.total_quantity > 0) {
+      decisions.push({
+        action: 'FORCE_CLOSE',
+        stock_code: chain.stock_code,
+        quantity: chain.total_quantity,
+        price_type: 'MARKET',
+        reasoning: `SCALPING 강제청산(09:25): 단타 윈도우 종료 (${pnlPct.toFixed(1)}%)`,
+        confidence: 1.0,
+      });
+      processedSellCodes.add(chain.stock_code);
+      continue;
+    }
+
+    // 체인별 TP/SL 우선: SCALPING 진입 후 모드 전환 시에도 원래 파라미터 유지
+    const chainTp = chain.target_profit_pct ?? strategyParams.takeProfitPct;
+    const chainSl = chain.stop_loss_pct ?? strategyParams.stopLossPct;
+    const isScalpChain = chain.strategy_mode === 'SCALPING';
+
     // ─── 2단계 익절 전략 ────────────────────────────────────────────────
     // 1단계: takeProfitPct(2.5%) 도달 → 50% 부분 매도 (수익 확정)
     // 2단계: PROFIT_TAKING 상태에서 추가 상승 +5.0% 또는 트레일링 스톱(-0.8% from peak) → 잔여 전량 청산
     // 효과: 손익비 1.67:1 유지, 수익 반납 방지
-    if (chain.status !== 'PROFIT_TAKING' && pnlPct >= strategyParams.takeProfitPct) {
+    if (chain.status !== 'PROFIT_TAKING' && pnlPct >= chainTp) {
+      // SCALPING: 전량 즉시 익절 (takeProfitRatio=1.0, 분할 없음)
+      if (isScalpChain && chain.total_quantity > 0) {
+        decisions.push({
+          action: 'SELL',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `SCALPING 익절(전량): +${pnlPct.toFixed(1)}% (목표 ${chainTp}%)`,
+          confidence: 0.95,
+        });
+        processedSellCodes.add(chain.stock_code);
+        continue;
+      }
       // 1단계: 첫 익절 — 30% 부분 매도 (낮은 타점에서 소량만 확정, 나머지 70%는 더 오른 후 청산)
       const sellQty = Math.ceil(chain.total_quantity * 0.3);
       if (sellQty > 0 && sellQty < chain.total_quantity) {
@@ -105,7 +143,7 @@ export async function technicalFallbackDecisions(params: {
           stock_code: chain.stock_code,
           quantity: chain.total_quantity,
           price_type: 'MARKET',
-          reasoning: `기술적 익절(전량): +${pnlPct.toFixed(1)}% (목표 ${strategyParams.takeProfitPct}%)`,
+          reasoning: `기술적 익절(전량): +${pnlPct.toFixed(1)}% (목표 ${chainTp}%)`,
           confidence: 0.9,
         });
         processedSellCodes.add(chain.stock_code);
@@ -156,12 +194,12 @@ export async function technicalFallbackDecisions(params: {
     // 손절 (ATR 동적 손절 vs 전략 고정 손절 — 더 보수적인 쪽 적용)
     const sellCheckCandles = chartData.get(chain.stock_code);
     const sellTech = sellCheckCandles && sellCheckCandles.length >= 30 ? analyzeTechnicals(sellCheckCandles) : null;
-    const dynamicStop = sellTech ? sellTech.dynamicStopLossPct : strategyParams.stopLossPct;
+    const dynamicStop = sellTech ? sellTech.dynamicStopLossPct : chainSl;
     // ATR 기반이 고정 손절보다 좁으면 ATR 우선 (더 빠른 손절로 손실 최소화)
     // AI 80점+ 고확신 종목은 손절 기준 1.4배 넓히기 (일시적 노이즈로 조기손절 방지)
     const holdingAiScore = aiScoreMap.get(chain.stock_code) ?? 0;
     const stopWidenMultiplier = holdingAiScore >= 80 ? 1.4 : holdingAiScore >= 65 ? 1.2 : 1.0;
-    const effectiveStop = Math.max(strategyParams.stopLossPct, dynamicStop) * stopWidenMultiplier;
+    const effectiveStop = Math.max(chainSl, dynamicStop) * stopWidenMultiplier;
     if (pnlPct <= effectiveStop) {
       // ── RSI<35 + 거래량 급증 = 패닉 매도 손절 억제 — 단, 손절선 1.5배 초과 시 무조건 청산 ──
       // 억제 허용 구간: stopPct ~ stopPct×1.5 (예: -5%~-7.5%) — 이 밖에선 루프 방지
@@ -219,7 +257,7 @@ export async function technicalFallbackDecisions(params: {
           stock_code: chain.stock_code,
           quantity: chain.total_quantity,
           price_type: 'MARKET',
-          reasoning: `손절: ${pnlPct.toFixed(1)}% (ATR동적=${dynamicStop.toFixed(1)}% 고정=${strategyParams.stopLossPct}%)`,
+          reasoning: `손절: ${pnlPct.toFixed(1)}% (ATR동적=${dynamicStop.toFixed(1)}% 고정=${chainSl}%)`,
           confidence: 0.95,
         });
         processedSellCodes.add(chain.stock_code);
