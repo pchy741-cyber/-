@@ -768,15 +768,20 @@ export async function technicalFallbackDecisions(params: {
     const isBelowSma20Deep = chainTech ? price.currentPrice < chainTech.sma20 * 0.97 : false; // SMA20 -3% 이상 이탈 시 물타기 금지
     // 하드 손실 한도: -8% 초과 수중에서는 물타기 절대 금지 (나락 방지)
     const isTooDeepUnderwater = pnlPct <= -8.0;
+    // 포지션 집중도 한도: 총자산의 10% 이상이면 추가 물타기 차단 (단일 종목 집중 방지)
+    const positionValue = price.currentPrice * Number(chain.total_quantity ?? 0);
+    const concentrationPct = (totalAssets ?? 0) > 0 ? positionValue / totalAssets! : 0;
+    const isTooConcentrated = concentrationPct >= 0.10;
     // ── 지지선 확인 없는 물타기 차단 (Barber&Odean 1999: 기계적 물타기 → 추가 손실) ──
     // 볼린저 하단 또는 RSI 과매도 근처에서만 물타기 허용 (지지선 근거 있는 경우)
     const avgDownSupportOk = chainTech
       ? (chainTech.bollingerPosition === 'BELOW_LOWER' || chainTech.bollingerPosition === 'NEAR_LOWER' || chainTech.rsi14 < 38)
       : true; // 차트 없으면 허용 (데이터 없는 경우 차단 안 함)
-    if (chain.status === 'PROFIT_TAKING' || isBelowSma20Deep || isTooDeepUnderwater || !avgDownSupportOk) {
+    if (chain.status === 'PROFIT_TAKING' || isBelowSma20Deep || isTooDeepUnderwater || !avgDownSupportOk || isTooConcentrated) {
       if (isBelowSma20Deep) logger.info(`  🚫 ${chain.stock_code}: SMA20 -3% 이탈 → 물타기 차단 (손실확대 방지)`, { component: 'TRACK_B' });
       if (isTooDeepUnderwater) logger.info(`  🚫 ${chain.stock_code}: ${pnlPct.toFixed(1)}% ≤ -8% → 물타기 하드 차단 (나락 방지)`, { component: 'TRACK_B' });
-      if (!avgDownSupportOk && !isBelowSma20Deep && !isTooDeepUnderwater) logger.info(`  🚫 ${chain.stock_code}: 지지선 미확인(BB=${chainTech?.bollingerPosition} RSI=${chainTech?.rsi14.toFixed(0)}) → 물타기 차단`, { component: 'TRACK_B' });
+      if (isTooConcentrated) logger.info(`  🚫 ${chain.stock_code}: 비중 ${(concentrationPct*100).toFixed(1)}% ≥ 10% → 물타기 차단 (집중 방지)`, { component: 'TRACK_B' });
+      if (!avgDownSupportOk && !isBelowSma20Deep && !isTooDeepUnderwater && !isTooConcentrated) logger.info(`  🚫 ${chain.stock_code}: 지지선 미확인(BB=${chainTech?.bollingerPosition} RSI=${chainTech?.rsi14.toFixed(0)}) → 물타기 차단`, { component: 'TRACK_B' });
       continue;
     }
 

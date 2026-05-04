@@ -259,7 +259,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const watchlistSet = new Set(watchlist.map((w) => w.stock_code));
     if (kospiRegime.penalty === 0 && !dailyLoss.blocked) {
       try {
-        const topGainers = await getChangeRankingStocks(20, 'J');
+        const topGainers = await getChangeRankingStocks(10, 'J');
         const newStocks = topGainers.filter((s) => s.stock_code && !watchlistSet.has(s.stock_code));
         if (newStocks.length > 0) {
           logger.info(`📈 상승장 실시간 편입 후보: ${newStocks.map((s) => s.stock_code).join(', ')}`, { component: 'TRACK_B' });
