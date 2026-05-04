@@ -241,6 +241,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       }
     } catch { /* 수급 실패해도 파이프라인 계속 */ }
 
+    // STRONG_SELL(-20점) = 외국인+기관 동반 이탈 → 잡주 필터 대상
+    const junkStockCodes = new Set(
+      [...flowAdjMap.entries()].filter(([, adj]) => adj <= -20).map(([code]) => code),
+    );
+    if (junkStockCodes.size > 0) {
+      logger.info(`🗑️ 잡주 필터 대상(STRONG_SELL): ${[...junkStockCodes].join(', ')}`, { component: 'TRACK_B' });
+    }
+
     const allocCfg = await import('../../db/client.js')
       .then(m => m.getPool().query('SELECT * FROM portfolio_allocation_config WHERE is_active = true LIMIT 1'))
       .then(r => r.rows[0] ?? null).catch(() => null);
@@ -315,6 +323,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         is_active: Boolean(allocCfg.is_active),
       } : null,
       currentStockValue,
+      junkStockCodes,
     });
 
     setActiveEngine('technical');

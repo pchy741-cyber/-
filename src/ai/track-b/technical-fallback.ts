@@ -41,8 +41,10 @@ export async function technicalFallbackDecisions(params: {
   allocationTarget?: { stock_pct: number; rebalance_threshold_pct: number; is_active: boolean } | null;
   /** 현재 주식 포지션 가치 (황금비율 계산용) */
   currentStockValue?: number;
+  /** 잡주 필터: 외국인/기관 동반 이탈(STRONG_SELL) 종목 코드 — 신규 매수 차단 */
+  junkStockCodes?: Set<string>;
 }): Promise<TradeDecision[]> {
-  const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, manuallySoldCodes, totalAssets, winRates, blockNewBuys, kospiBoost, allocationTarget, currentStockValue } = params;
+  const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, manuallySoldCodes, totalAssets, winRates, blockNewBuys, kospiBoost, allocationTarget, currentStockValue, junkStockCodes } = params;
   // 종목당 최대 비중: 총자산의 25% 또는 maxPositionKrw 중 작은 값
   const effectiveMaxPos = totalAssets
     ? Math.min(maxPositionKrw, Math.round(totalAssets * 0.25))
@@ -317,6 +319,26 @@ export async function technicalFallbackDecisions(params: {
       logger.info(`  🚫 ${stock.stock_code}(${stock.stock_name}): CEO 수동 매도 쿨다운 (24h) — 재진입 금지`, { component: 'TRACK_B' });
       continue;
     }
+
+    // ── 잡주/저품질 종목 필터 (3중 게이트) ─────────────────────────────────
+    // 1) 저가주: 2,000원 미만 = 유동성 부족 + 잡주/테마주 위험
+    const earlyPrice = livePrices.get(stock.stock_code);
+    if (earlyPrice && earlyPrice.currentPrice > 0 && earlyPrice.currentPrice < 2000) {
+      logger.info(`  🗑️ ${stock.stock_code}(${stock.stock_name}): 저가주(${earlyPrice.currentPrice}원 < 2000) — 잡주 필터`, { component: 'TRACK_B' });
+      continue;
+    }
+    // 2) 외국인/기관 동반 이탈(STRONG_SELL): 스마트머니가 집단 탈출 중
+    if (junkStockCodes?.has(stock.stock_code)) {
+      logger.info(`  🗑️ ${stock.stock_code}(${stock.stock_name}): 외국인+기관 동반 이탈(STRONG_SELL) — 잡주 필터`, { component: 'TRACK_B' });
+      continue;
+    }
+    // 3) 구조적 패배 종목: 90일 내 승률 < 25%, 5건 이상 표본 — 개미만 계속 잃는 종목
+    const stockWr = winRates?.get(stock.stock_code);
+    if (stockWr && stockWr.sampleCount >= 5 && stockWr.winRate < 0.25) {
+      logger.info(`  🗑️ ${stock.stock_code}(${stock.stock_name}): 패배 이력 승률=${(stockWr.winRate * 100).toFixed(0)}%(${stockWr.sampleCount}건) — 잡주 필터`, { component: 'TRACK_B' });
+      continue;
+    }
+    // ─────────────────────────────────────────────────────────────────────
 
     const candles = chartData.get(stock.stock_code);
     const price = livePrices.get(stock.stock_code);
