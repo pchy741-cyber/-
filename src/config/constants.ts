@@ -121,6 +121,18 @@ export const STRATEGY_PARAMS = {
     forceCloseTime: '09:25',// 개장 25분 후 강제 청산 (09:00~09:25 모멘텀 구간)
   },
 
+  DIVIDEND: {
+    // 공황장 자산 파킹 모드 — 신규 매수 사실상 금지, ETF 파킹만
+    buyThreshold: 99,       // 99점 이상만 매수 (사실상 진입 없음)
+    splitCount: 1,
+    averageDownPct: 0,
+    maxAveragingCount: 0,
+    takeProfitPct: 3.0,
+    takeProfitRatio: 1.0,
+    stopLossPct: -1.5,      // 타이트한 손절 (파킹 중 손실 최소화)
+    maxHoldingDays: 1,
+  },
+
   SNIPER: {
     // ┌─ 수익 구조 ─────────────────────────────────────────────────────────┐
     // │ AI 88점+ 극고확신 종목만 2개 — 총자산 40%씩 집중 투자              │

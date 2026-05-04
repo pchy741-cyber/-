@@ -46,11 +46,11 @@ const GLOBAL_WATCHLIST = [
   // 🏭 산업·에너지인프라 (AI 데이터센터 전력 수요 폭증 수혜)
   { code: 'ETN',   name: 'Eaton Corp',      exchange: 'NYSE',   region: 'US', sector: 'INDUSTRIAL' }, // 전력관리 시스템
   { code: 'PWR',   name: 'Quanta Services', exchange: 'NYSE',   region: 'US', sector: 'INDUSTRIAL' }, // 전력 인프라 EPC
-  // ⚡ 단타·고변동성 (모멘텀+이벤트 드리븐)
-  { code: 'TSLA',  name: 'Tesla',           exchange: 'NASDAQ', region: 'US', sector: 'EV' },
-  { code: 'COIN',  name: 'Coinbase',        exchange: 'NASDAQ', region: 'US', sector: 'CRYPTO' },
+  // ☁️ 클라우드·엔터프라이즈 소프트웨어
   { code: 'AMZN',  name: 'Amazon',          exchange: 'NASDAQ', region: 'US', sector: 'CLOUD' }, // AWS 클라우드
   { code: 'GOOGL', name: 'Alphabet',        exchange: 'NASDAQ', region: 'US', sector: 'CLOUD' }, // 검색+클라우드
+  { code: 'ORCL',  name: 'Oracle',          exchange: 'NYSE',   region: 'US', sector: 'CLOUD' }, // AI 클라우드 인프라, 실적 안정
+  { code: 'NOW',   name: 'ServiceNow',      exchange: 'NYSE',   region: 'US', sector: 'CLOUD' }, // 엔터프라이즈 AI SaaS, 저변동성
   { code: 'MELI',  name: 'MercadoLibre',    exchange: 'NASDAQ', region: 'US', sector: 'GROWTH' }, // 중남미 이커머스 고성장
   { code: 'AVGO',  name: 'Broadcom',        exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' }, // AI 커스텀칩 수익 안정
   // 🇯🇵 일본 ADR (NYSE 상장 — 미국 세션 거래, 엔화 약세 수혜 수출주)

@@ -91,7 +91,7 @@ export type PortfolioSnapshot = z.infer<typeof PortfolioSnapshotSchema>;
 // ── CEO 전략 설정 ──
 export const StrategyConfigSchema = z.object({
   id: z.string().uuid(),
-  mode: z.enum(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND']),
+  mode: z.enum(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER']),
   is_active: z.boolean(),
   notebooklm_prompt: z.string().optional().default(''),
   gemini_prompt: z.string(),

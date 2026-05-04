@@ -884,9 +884,14 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
       return b.confidence - a.confidence;
     });
 
+    const ALLOWED_PARAM_FIELDS = ['stop_loss_pct', 'take_profit_pct', 'buy_threshold', 'mode'] as const;
     const applied: string[] = [];
     for (const insight of sorted.slice(0, 3)) { // 한 번에 최대 3개 적용
       const { field, value } = insight.paramChange!;
+      if (!(ALLOWED_PARAM_FIELDS as readonly string[]).includes(field)) {
+        logger.warn(`🚫 허용되지 않은 필드 업데이트 차단: ${field}`, { component: 'LEARN' });
+        continue;
+      }
       const oldVal = current[field];
       if (oldVal === value) continue; // 이미 같은 값이면 스킵
 
@@ -919,6 +924,9 @@ export async function applyInsightById(insightId: string): Promise<{ ok: boolean
     if (insight.is_applied) return { ok: false, message: '이미 적용됨' };
 
     const { field, value } = insight.param_change as InsightParamChange;
+    const ALLOWED_PARAM_FIELDS = ['stop_loss_pct', 'take_profit_pct', 'buy_threshold', 'mode'];
+    if (!ALLOWED_PARAM_FIELDS.includes(field)) return { ok: false, message: `허용되지 않은 필드: ${field}` };
+
     const { rows: stratRows } = await getPool().query(`SELECT * FROM strategy_config WHERE is_active = true LIMIT 1`);
     const current = stratRows[0];
     if (!current) return { ok: false, message: '활성 전략 없음' };

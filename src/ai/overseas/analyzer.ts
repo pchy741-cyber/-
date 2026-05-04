@@ -56,12 +56,12 @@ const SYSTEM_PROMPT = `당신은 글로벌 주식(미국 주력 + 일본·대만
    → 단기 반등. 단, 하락추세(trendStrength=WEAK)면 패스. confidence 0.67+
 3. 📊 눌림목 재진입: RSI 50~58 + ADX ≥ 20 + score ≥ 25 + dayRangePct < 40
    → 상승 추세 내 저점 매수. 리스크/보상비율 우수. confidence 0.68+
-4. 💥 고베타 신호 (TSLA·COIN·PLTR): signal=STRONG_BUY + RSI 50~68 + trendStrength≠WEAK
+4. 💥 고베타 신호 (PLTR): signal=STRONG_BUY + RSI 50~68 + trendStrength≠WEAK
    → 변동성 크지만 추세 확인 후만 진입. confidence 0.65+
 5. 💪 강한 기술 신호: signal=STRONG_BUY + score ≥ 35 + RSI 50~65 → BUY. confidence 0.68+
 
 【섹터별 특성 반영】
-- 고베타 (TSLA·COIN·PLTR): 변동성 크므로 모멘텀 있을 때만 BUY, confidence 0.62+ OK
+- 고베타 (PLTR): 변동성 크므로 모멘텀 있을 때만 BUY, confidence 0.65+ OK
 - 빅테크 (AAPL·GOOGL·AMZN·META·NVDA·AMD·AVGO): 안정적. 눌림목/모멘텀 양쪽 유효
 - 방산·인프라 (RTX·LMT·GEV·ETN·PWR): 거시 환경 연동, 추세 신호 중시. 낮은 변동성 감안 RSI 기준 완화
 - AI 반도체 공급망 (ANET·VRT): 데이터센터 수요 폭증 수혜. 모멘텀 지속 경향 강함
@@ -69,7 +69,7 @@ const SYSTEM_PROMPT = `당신은 글로벌 주식(미국 주력 + 일본·대만
 - 🇹🇼 대만 ADR (TSM·UMC): AI 반도체 공급망 핵심. NVDA·AAPL 실적 연동. TSM은 대장주급 안정성, UMC는 성숙공정 안정주. confidence 0.65+ 필요. 미·중 지정학 이슈에 민감
 
 【confidence 기준】
-- 0.68 이상: 고베타 성장주(TSLA·COIN·PLTR) BUY (추세 확인 필수)
+- 0.68 이상: 고베타 성장주(PLTR) BUY (추세 확인 필수)
 - 0.70 이상: 일반 종목·일본ADR·대만ADR BUY
 - 0.72~0.88: 강한 신호 (최대 0.88)
 - 일중 저가 근처(dayRangePct < 25): +0.05 보너스 부여
