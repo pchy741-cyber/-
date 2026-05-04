@@ -283,20 +283,6 @@ const ALLOC_DEFAULTS = {
 
 settingsRoutes.get('/portfolio/allocation', async (c) => {
   try {
-    await getPool().query(`
-      CREATE TABLE IF NOT EXISTS portfolio_allocation_config (
-        id SERIAL PRIMARY KEY,
-        kr_pct NUMERIC NOT NULL DEFAULT 70,
-        us_pct NUMERIC NOT NULL DEFAULT 30,
-        sector_semiconductor NUMERIC NOT NULL DEFAULT 30,
-        sector_bio NUMERIC NOT NULL DEFAULT 20,
-        sector_defense NUMERIC NOT NULL DEFAULT 25,
-        sector_finance NUMERIC NOT NULL DEFAULT 20,
-        sector_etc NUMERIC NOT NULL DEFAULT 30,
-        trailing_stop_pct NUMERIC NOT NULL DEFAULT 5,
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
     const { rows } = await getPool().query('SELECT * FROM portfolio_allocation_config ORDER BY id DESC LIMIT 1');
     if (rows.length === 0) {
       const { rows: ins } = await getPool().query(
@@ -325,20 +311,6 @@ settingsRoutes.put('/portfolio/allocation', async (c) => {
   const trailStop = Math.max(1, Math.min(20, Number(body.trailing_stop_pct ?? 5)));
 
   try {
-    await getPool().query(`
-      CREATE TABLE IF NOT EXISTS portfolio_allocation_config (
-        id SERIAL PRIMARY KEY,
-        kr_pct NUMERIC NOT NULL DEFAULT 70,
-        us_pct NUMERIC NOT NULL DEFAULT 30,
-        sector_semiconductor NUMERIC NOT NULL DEFAULT 30,
-        sector_bio NUMERIC NOT NULL DEFAULT 20,
-        sector_defense NUMERIC NOT NULL DEFAULT 25,
-        sector_finance NUMERIC NOT NULL DEFAULT 20,
-        sector_etc NUMERIC NOT NULL DEFAULT 30,
-        trailing_stop_pct NUMERIC NOT NULL DEFAULT 5,
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
     const { rows: existing } = await getPool().query('SELECT id FROM portfolio_allocation_config LIMIT 1');
     let result;
     if (existing.length > 0) {
@@ -359,6 +331,37 @@ settingsRoutes.put('/portfolio/allocation', async (c) => {
     return c.json(result);
   } catch (err: any) {
     return c.json({ error: err?.message }, 500);
+  }
+});
+
+// ── DEFENSE 모드 수동 해제 (strategy_config + defense_park 동시 리셋) ──
+settingsRoutes.post('/defense-mode/deactivate', async (c) => {
+  try {
+    const pool = getPool();
+
+    // 1. strategy_config → SWING + 매수 임계값 70으로 복원
+    await pool.query(
+      `UPDATE strategy_config SET mode='SWING', buy_threshold=70, updated_at=NOW() WHERE is_active=true`,
+    ).catch(() => {});
+
+    // 인메모리 전략도 동기화
+    if (isMemoryMode()) {
+      const cur = await getActiveStrategy();
+      memSetActiveStrategy({ ...(cur ?? {}), mode: 'SWING', buy_threshold: 70 });
+    }
+
+    // 2. defense_park_state 해제
+    const { deactivateDefensePark } = await import('../../ai/track-b/defense-park.js');
+    await deactivateDefensePark('CEO 수동 해제 (대시보드)');
+
+    // 3. 푸시 알림
+    const { notifyAlert } = await import('../../notifications/web-push.js');
+    notifyAlert('✅ DEFENSE 모드 해제', 'SWING 매매 모드 복귀 (매수 기준 70점)').catch(() => {});
+
+    logger.info('✅ DEFENSE 모드 수동 해제 완료', { component: 'SETTINGS' });
+    return c.json({ ok: true, message: 'DEFENSE 모드 해제 — SWING 복귀 (매수 기준 70점)' });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'defense deactivate failed' }, 500);
   }
 });
 

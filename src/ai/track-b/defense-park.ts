@@ -38,19 +38,6 @@ export async function getDefenseParkState(): Promise<DefenseParkState> {
     return { isActive: false, parkStockCode: PARK_STOCK_CODE, parkStockName: PARK_STOCK_NAME, entryReason: null, enteredAt: null };
   }
   try {
-    await getPool().query(`
-      CREATE TABLE IF NOT EXISTS defense_park_state (
-        id SERIAL PRIMARY KEY,
-        is_active BOOLEAN NOT NULL DEFAULT FALSE,
-        park_stock_code VARCHAR(20) NOT NULL DEFAULT '069500',
-        park_stock_name VARCHAR(100) NOT NULL DEFAULT 'KODEX 200',
-        entry_reason TEXT,
-        exit_reason TEXT,
-        entered_at TIMESTAMPTZ,
-        exited_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
     const { rows } = await getPool().query(
       `SELECT * FROM defense_park_state WHERE is_active = TRUE LIMIT 1`
     );
@@ -220,6 +207,10 @@ export async function buildDefenseParkEntryDecisions(
   logger.warn(`🛡️ 방어 파킹 진입: ${reason}`, { component: 'DEFENSE_PARK' });
   await activateDefensePark(reason);
 
+  import('../../notifications/web-push.js').then(m =>
+    m.notifyAlert('🛡️ DEFENSE 모드 진입', `사유: ${reason.slice(0, 80)}\nKODEX 200으로 자산 이동`)
+  ).catch(() => {});
+
   const decisions: TradeDecision[] = [];
 
   // 1. 손실 포지션만 청산 (KODEX 200 및 수익 중 종목 제외)
@@ -277,6 +268,10 @@ export async function buildDefenseParkExitDecisions(
 ): Promise<TradeDecision[]> {
   logger.info(`✅ 방어 파킹 해제: ${reason}`, { component: 'DEFENSE_PARK' });
   await deactivateDefensePark(reason);
+
+  import('../../notifications/web-push.js').then(m =>
+    m.notifyAlert('✅ DEFENSE 모드 해제', `사유: ${reason.slice(0, 80)}\n정상 SWING 매매 복귀`)
+  ).catch(() => {});
 
   const parkChain = openChains.find(c => c.stock_code === PARK_STOCK_CODE);
   if (!parkChain) return [];

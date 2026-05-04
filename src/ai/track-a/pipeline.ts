@@ -17,6 +17,63 @@ function normalizeStockCode(raw: unknown): string {
 
 
 /**
+ * Gemini Flash 통합 분석+스코어링 (Gemini 스코어링 실패 시 폴백 — 무료 티어)
+ */
+async function runGeminiFallbackAnalysis(
+  mode: string,
+  watchlist: Array<{ stock_code: string; stock_name: string }>,
+  chartData: Map<string, DailyCandle[]>,
+  strategy: any,
+): Promise<ScoringResult[]> {
+  const { callVertexGemini } = await import('../../utils/vertex-gemini.js');
+
+  const chartSummary = watchlist.map((stock) => {
+    const candles = chartData.get(stock.stock_code) ?? [];
+    if (candles.length === 0) return `${stock.stock_name}(${stock.stock_code}): 차트 데이터 없음`;
+    const latest = candles[0];
+    const high52w = Math.max(...candles.map((c) => c.high));
+    const dropPct = latest ? (((latest.close - high52w) / high52w) * 100).toFixed(1) : 'N/A';
+    return `${stock.stock_name}(${stock.stock_code}):
+  종가: ${latest?.close}, 52주고가: ${high52w}, 고점대비: ${dropPct}%
+  5일거래량: ${candles.slice(0, 5).map((c) => c.volume).join(',')}
+  5일종가: ${candles.slice(0, 5).map((c) => c.close).join(',')}
+  20일종가: ${candles.slice(0, 20).map((c) => c.close).join(',')}`;
+  }).join('\n\n');
+
+  const ceoPrompt = strategy?.gemini_prompt || strategy?.gpt_prompt || '';
+
+  logger.info(`Gemini 통합 분석 시작 (${watchlist.length}개 종목, 모드: ${mode})`, { component: 'TRACK_A' });
+
+  const userMsg = `당신은 주식 분석+스코어링 전문가입니다. 아래 차트 데이터를 분석하여 종목별 점수를 매겨주세요.
+
+## 모드: ${mode}
+${ceoPrompt ? `## CEO 지시사항\n${ceoPrompt}\n` : ''}
+## 스코어링 룰
+- 기본 50점 시작
+- 기관/외국인 추정 순매수(거래량 급증): +15점
+- 고점 대비 -10%~-25% 눌림목: +20점
+- 거래량 급증(평균 2배+): +5점
+- 상승 추세(5일 종가 > 20일 평균): +10점
+- 하락 추세: -15점
+- 과매수 구간(급등 후): -10점
+- 소스/데이터 부족: 0점 NO_DATA
+
+## 차트 데이터
+${chartSummary}
+
+## 출력 (JSON만, 다른 텍스트 금지)
+{"scores":[{"stock_code":"코드","stock_name":"이름","composite_score":0,"fundamental_score":0,"technical_score":0,"sentiment_score":0,"confidence":0.0,"signal":"STRONG_BUY|BUY|HOLD|SELL|STRONG_SELL|NO_DATA","target_price":0,"stop_loss_price":0,"reasoning":"근거"}]}`;
+
+  const text = await callVertexGemini('당신은 주식 분석 전문가입니다. JSON 형식으로만 응답합니다.', userMsg, { temperature: 0.2 });
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error('Gemini Flash 응답에서 JSON을 찾을 수 없습니다');
+
+  const parsed = JSON.parse(jsonMatch[0]) as { scores: ScoringResult[] };
+  logger.info(`Gemini Flash 통합 분석 완료: ${parsed.scores.length}개 스코어`, { component: 'TRACK_A' });
+  return parsed.scores;
+}
+
+/**
  * Track A 전체 파이프라인
  * 하루 1~2회 실행 (장 시작 전 07:30, 장 마감 후 18:00)
  *
@@ -169,6 +226,8 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     // 5. 3단 폴백: Gemini+GPT → Gemini+Claude → Gemini+기술적 → Claude 단독
     let scores: ScoringResult[] = [];
     let geminiResult: Awaited<ReturnType<typeof runGeminiAnalysis>> | null = null;
+    // 폴백 단계 추적 — 'gemini'만 기존 점수 덮어쓰기 허용
+    let scoringSource: 'gemini' | 'flash' | 'technical' = 'technical';
 
     // Step 5-1: Gemini 분석
     try {
@@ -192,6 +251,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
           geminiAnalysis: geminiResult,
           customPrompt: customGptPrompt ?? undefined,
         });
+        if (scores.length > 0) scoringSource = 'gemini';
       } catch (geminiScoreErr) {
         logger.warn(`⚠️ Gemini 스코어링 실패: ${geminiScoreErr}`, { component: 'TRACK_A' });
       }
@@ -201,12 +261,13 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     if (scores.length === 0) {
       try {
         scores = await runGeminiFallbackAnalysis(mode, allStocks, chartData, strategy);
+        if (scores.length > 0) scoringSource = 'flash';
       } catch (flashErr) {
         logger.warn(`⚠️ Gemini 통합 폴백 실패: ${flashErr}`, { component: 'TRACK_A' });
       }
     }
 
-    // Step 5-4: 모두 실패 → 기술적 지표로 스코어 생성
+    // Step 5-4: 모두 실패 → 기술적 지표로 스코어 생성 (scoringSource 기본값 'technical')
     if (scores.length === 0) {
       logger.info('⚙️ AI 모두 실패 → 기술적 지표 기반 스코어 생성 (BUY/SELL 신호 활성)', { component: 'TRACK_A' });
       const { analyzeTechnicals } = await import('../../analysis/indicators.js');
@@ -262,22 +323,43 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     // 6. DB에 스코어 캐싱 (병렬 upsert — DB는 각 row 독립적)
     const today = new Date().toISOString().split('T')[0];
     const geminiSummaryByCode = new Map((geminiResult?.stocks ?? []).map((s) => [s.stock_code, s.analysis]));
-    await Promise.all(scores.map((score) =>
-      upsertAIScore({
-        stock_code: score.stock_code,
-        score_date: today,
-        gemini_summary: geminiSummaryByCode.get(score.stock_code) ?? null,
-        composite_score: score.composite_score,
-        fundamental_score: score.fundamental_score,
-        technical_score: score.technical_score,
-        sentiment_score: score.sentiment_score,
-        confidence: score.confidence,
-        reasoning: score.reasoning,
-        signal: score.signal,
-        target_price: score.target_price ?? null,
-        stop_loss_price: score.stop_loss_price ?? null,
-      }),
-    ));
+
+    // 폴백(Flash / 기술적) 시 오늘 이미 스코어가 있는 종목은 덮어쓰지 않음
+    // 07:30 정식 Gemini 점수 → 12:00/14:00 폴백이 덮어쓰는 버그 방지
+    let existingTodayCodes = new Set<string>();
+    if (scoringSource !== 'gemini' && !isMemoryMode()) {
+      try {
+        const { rows } = await getPool().query(
+          `SELECT stock_code FROM ai_scores WHERE score_date = $1`,
+          [today],
+        );
+        existingTodayCodes = new Set(rows.map((r: any) => String(r.stock_code)));
+        if (existingTodayCodes.size > 0) {
+          logger.info(`⚙️ ${scoringSource === 'technical' ? '기술적' : 'Flash'} 폴백: 오늘 기존 점수 ${existingTodayCodes.size}개 보존 (덮어쓰기 생략)`, { component: 'TRACK_A' });
+        }
+      } catch { /* 조회 실패 시 전체 upsert 진행 */ }
+    }
+
+    await Promise.all(
+      scores
+        .filter((s) => scoringSource === 'gemini' || !existingTodayCodes.has(s.stock_code))
+        .map((score) =>
+          upsertAIScore({
+            stock_code: score.stock_code,
+            score_date: today,
+            gemini_summary: geminiSummaryByCode.get(score.stock_code) ?? null,
+            composite_score: score.composite_score,
+            fundamental_score: score.fundamental_score,
+            technical_score: score.technical_score,
+            sentiment_score: score.sentiment_score,
+            confidence: score.confidence,
+            reasoning: score.reasoning,
+            signal: score.signal,
+            target_price: score.target_price ?? null,
+            stop_loss_price: score.stop_loss_price ?? null,
+          }),
+        ),
+    );
 
     // 6-1. 발굴 종목 중 고점수 자동 active 등록
     // AI 정상: score≥58 + confidence≥0.58 / AI 실패(기술 폴백): score≥75만으로 활성화
@@ -341,61 +423,4 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     logger.error(`❌ Track A 실패: ${msg}`, { component: 'TRACK_A' });
     throw error;
   }
-}
-
-/**
- * Gemini Flash 통합 분석+스코어링 (Gemini 스코어링 실패 시 폴백 — 무료 티어)
- */
-async function runGeminiFallbackAnalysis(
-  mode: string,
-  watchlist: Array<{ stock_code: string; stock_name: string }>,
-  chartData: Map<string, DailyCandle[]>,
-  strategy: any,
-): Promise<ScoringResult[]> {
-  const { callVertexGemini } = await import('../../utils/vertex-gemini.js');
-
-  const chartSummary = watchlist.map((stock) => {
-    const candles = chartData.get(stock.stock_code) ?? [];
-    if (candles.length === 0) return `${stock.stock_name}(${stock.stock_code}): 차트 데이터 없음`;
-    const latest = candles[0];
-    const high52w = Math.max(...candles.map((c) => c.high));
-    const dropPct = latest ? (((latest.close - high52w) / high52w) * 100).toFixed(1) : 'N/A';
-    return `${stock.stock_name}(${stock.stock_code}):
-  종가: ${latest?.close}, 52주고가: ${high52w}, 고점대비: ${dropPct}%
-  5일거래량: ${candles.slice(0, 5).map((c) => c.volume).join(',')}
-  5일종가: ${candles.slice(0, 5).map((c) => c.close).join(',')}
-  20일종가: ${candles.slice(0, 20).map((c) => c.close).join(',')}`;
-  }).join('\n\n');
-
-  const ceoPrompt = strategy?.gemini_prompt || strategy?.gpt_prompt || '';
-
-  logger.info(`Gemini 통합 분석 시작 (${watchlist.length}개 종목, 모드: ${mode})`, { component: 'TRACK_A' });
-
-  const userMsg = `당신은 주식 분석+스코어링 전문가입니다. 아래 차트 데이터를 분석하여 종목별 점수를 매겨주세요.
-
-## 모드: ${mode}
-${ceoPrompt ? `## CEO 지시사항\n${ceoPrompt}\n` : ''}
-## 스코어링 룰
-- 기본 50점 시작
-- 기관/외국인 추정 순매수(거래량 급증): +15점
-- 고점 대비 -10%~-25% 눌림목: +20점
-- 거래량 급증(평균 2배+): +5점
-- 상승 추세(5일 종가 > 20일 평균): +10점
-- 하락 추세: -15점
-- 과매수 구간(급등 후): -10점
-- 소스/데이터 부족: 0점 NO_DATA
-
-## 차트 데이터
-${chartSummary}
-
-## 출력 (JSON만, 다른 텍스트 금지)
-{"scores":[{"stock_code":"코드","stock_name":"이름","composite_score":0,"fundamental_score":0,"technical_score":0,"sentiment_score":0,"confidence":0.0,"signal":"STRONG_BUY|BUY|HOLD|SELL|STRONG_SELL|NO_DATA","target_price":0,"stop_loss_price":0,"reasoning":"근거"}]}`;
-
-  const text = await callVertexGemini('당신은 주식 분석 전문가입니다. JSON 형식으로만 응답합니다.', userMsg, { temperature: 0.2 });
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('Gemini Flash 응답에서 JSON을 찾을 수 없습니다');
-
-  const parsed = JSON.parse(jsonMatch[0]) as { scores: ScoringResult[] };
-  logger.info(`Gemini Flash 통합 분석 완료: ${parsed.scores.length}개 스코어`, { component: 'TRACK_A' });
-  return parsed.scores;
 }

@@ -25,15 +25,6 @@ export async function initVapid(): Promise<void> {
   try {
     const pool = getPool();
 
-    // system_config 테이블 생성
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS system_config (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-
     // 2. DB에서 로드 시도
     const { rows } = await pool.query(
       `SELECT key, value FROM system_config WHERE key IN ('vapid_public', 'vapid_private')`,
@@ -112,17 +103,6 @@ export async function saveSubscription(subscription: webpush.PushSubscription): 
 
   try {
     const pool = getPool();
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS push_subscriptions (
-        id SERIAL PRIMARY KEY,
-        endpoint TEXT UNIQUE NOT NULL,
-        keys_p256dh TEXT NOT NULL,
-        keys_auth TEXT NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        last_used TIMESTAMPTZ DEFAULT NOW(),
-        user_agent TEXT
-      )
-    `);
     await pool.query(
       `INSERT INTO push_subscriptions (endpoint, keys_p256dh, keys_auth)
        VALUES ($1, $2, $3)
@@ -180,9 +160,11 @@ export async function sendPushNotification(payload: {
 
   for (const sub of subscriptions) {
     try {
+      const tag = payload.tag ?? '';
+      const isTrade = tag.startsWith('buy-') || tag.startsWith('sell-') || tag.startsWith('overseas-');
       await webpush.sendNotification(sub, data, {
-        TTL: 3600, // 1시간 내 미수신 시 만료
-        urgency: payload.tag?.startsWith('alert') ? 'high' : 'normal',
+        TTL: isTrade ? 7200 : 3600, // 매매 알림 2시간, 나머지 1시간
+        urgency: (tag.startsWith('alert') || isTrade) ? 'high' : 'normal',
       });
       sent++;
     } catch (err: any) {

@@ -75,63 +75,7 @@ function resolveOverseasStockName(code: string, exchange: string): string {
 
 // ── DB 기반 보유종목 관리 (서버 재시작해도 유지) ──
 async function ensureOverseasTable(): Promise<void> {
-  await getPool().query(`
-    CREATE TABLE IF NOT EXISTS overseas_holdings (
-      stock_code TEXT NOT NULL,
-      exchange TEXT NOT NULL DEFAULT 'NASDAQ',
-      quantity NUMERIC NOT NULL DEFAULT 0,
-      avg_price NUMERIC NOT NULL DEFAULT 0,
-      bought_at TIMESTAMPTZ DEFAULT NOW(),
-      PRIMARY KEY (exchange, stock_code)
-    )
-  `);
-  await getPool().query(`
-    CREATE TABLE IF NOT EXISTS overseas_state (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    )
-  `);
-  // One-time migration: PK 단일(stock_code) → 복합(exchange, stock_code)
-  // 동일 코드가 다른 거래소에 존재할 경우 충돌 방지 (예: TSE 7203 vs 다른 거래소 동일 코드)
-  const { rows: migRows } = await getPool().query(
-    "SELECT value FROM overseas_state WHERE key = 'schema_holdings_v2'"
-  ).catch(() => ({ rows: [] as { value: string }[] }));
-  if (migRows.length === 0) {
-    await getPool().query(`
-      DO $$
-      BEGIN
-        -- 기존 단일 PK 제거 후 복합 PK 추가
-        ALTER TABLE overseas_holdings DROP CONSTRAINT IF EXISTS overseas_holdings_pkey;
-        BEGIN
-          ALTER TABLE overseas_holdings ADD PRIMARY KEY (exchange, stock_code);
-        EXCEPTION WHEN others THEN NULL; END;
-      END $$;
-    `).catch(() => {});
-    await getPool().query(
-      `INSERT INTO overseas_state (key, value) VALUES ('schema_holdings_v2', '1')
-       ON CONFLICT (key) DO UPDATE SET value = '1'`
-    ).catch(() => {});
-  }
-
-  // last_price 컬럼 추가 (장 외 시간 시세 영속화용)
-  await getPool().query(`ALTER TABLE overseas_holdings ADD COLUMN IF NOT EXISTS last_price NUMERIC DEFAULT 0`).catch(() => {});
-  await getPool().query(`ALTER TABLE overseas_holdings ADD COLUMN IF NOT EXISTS last_price_at TIMESTAMPTZ`).catch(() => {});
-
-  // 감시목록 전체 시세 영속화 테이블 (서버 재시작 후에도 마지막 시세 표시용)
-  await getPool().query(`
-    CREATE TABLE IF NOT EXISTS overseas_prices (
-      code TEXT NOT NULL,
-      exchange TEXT NOT NULL,
-      price NUMERIC NOT NULL DEFAULT 0,
-      change_pct NUMERIC NOT NULL DEFAULT 0,
-      volume NUMERIC NOT NULL DEFAULT 0,
-      updated_at TIMESTAMPTZ DEFAULT NOW(),
-      PRIMARY KEY (exchange, code)
-    )
-  `).catch(() => {});
-
-  // 초기자본 수정: 이전 배포에서 $1,000으로 잘못 설정된 경우 $10,000으로 보정
-  // (보유 포지션이 없고 현금이 $5,000 미만이면 초기 세팅 오류로 판단)
+  // DDL은 migrations/011에서 관리. 여기서는 잘못 설정된 초기자본만 보정.
   try {
     const { rows: cashRows } = await getPool().query("SELECT value FROM overseas_state WHERE key = 'cash'");
     const currentCash = cashRows.length > 0 ? Number(cashRows[0].value) : null;
