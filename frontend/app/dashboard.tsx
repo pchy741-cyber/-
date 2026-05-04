@@ -3275,15 +3275,6 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
               className="text-xs bg-violet-900/40 hover:bg-violet-900/60 text-violet-300 px-3 py-1.5 rounded-xl transition-all whitespace-nowrap">
               🔄 순환 실행
             </button>
-            <button
-              onClick={async () => {
-                toast?.('종목명 보정 중...', 'info');
-                const d = await api('/fix-names', { method: 'POST' }).catch(() => ({}));
-                toast?.(d.message ?? '보정 완료', 'ok');
-              }}
-              className="text-xs bg-slate-800/60 hover:bg-slate-800/80 text-slate-400 px-3 py-1.5 rounded-xl transition-all whitespace-nowrap">
-              🏷️ 이름 보정
-            </button>
           </div>
           <div className="grid grid-cols-2 gap-2 p-3">
             {[...watchlist].sort((a: any, b: any) => {
