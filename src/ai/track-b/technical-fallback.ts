@@ -358,10 +358,9 @@ export async function technicalFallbackDecisions(params: {
     const buyThreshold = strategyParams.buyThreshold;
 
     // ─── 거래량 확인 필터 ─────────────────────────────────────────────────
-    // 거래량 < 1.5x 평균 = 기관/외국인 관심 없음 = 가짜 돌파 위험
-    // AI 80점+ 고확신 → 1.2x로 완화 (섹터 모멘텀이 거래량보다 선행)
     // 예외: 과매도(RSI<35) 반등은 거래량 바닥에서 발생 / 강한 불리쉬 캔들
-    const volThreshold = aiScore >= 80 ? 1.2 : 1.5;
+    // AI 80점+ → 0.5x (고확신 섹터 모멘텀 우선), buyThreshold 이상 → 0.8x
+    const volThreshold = aiScore >= 80 ? 0.5 : aiScore >= buyThreshold ? 0.8 : 1.5;
     if (tech.volumeRatio < volThreshold && tech.rsi14 >= 35 && !hasBullishCandle) {
       logger.info(`  📉 ${stock.stock_code}: 거래량 부족 (${tech.volumeRatio.toFixed(2)}x < ${volThreshold}) → 스킵 (AI=${aiScore})`, { component: 'TRACK_B' });
       continue;

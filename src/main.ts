@@ -172,6 +172,28 @@ async function bootstrap() {
     logger.error(`❌ KIS 토큰 발급 실패: ${err}`, { component: 'BOOT' });
   }
 
+  // 3-1. KIS API로 연간 휴장일 캐시 갱신 (공휴일·대체공휴일 정확 판정)
+  try {
+    const { refreshMarketHolidayCache } = await import('./kis/market.js');
+    await refreshMarketHolidayCache();
+    // 매일 KST 00:05에 재갱신 (연말 특별 휴장 등 대응)
+    const msUntilMidnight = (() => {
+      const now = new Date();
+      const kstMs = now.getTime() + 9 * 3600_000;
+      const kstDate = new Date(kstMs);
+      const nextMidnight = new Date(
+        Date.UTC(kstDate.getUTCFullYear(), kstDate.getUTCMonth(), kstDate.getUTCDate() + 1, -9, 5),
+      );
+      return Math.max(nextMidnight.getTime() - now.getTime(), 60_000);
+    })();
+    setTimeout(function tick() {
+      refreshMarketHolidayCache().catch(() => {});
+      setTimeout(tick, 24 * 3600_000);
+    }, msUntilMidnight);
+  } catch (err) {
+    logger.warn(`⚠️ KIS 휴장일 캐시 갱신 실패 (하드코딩 fallback): ${err}`, { component: 'BOOT' });
+  }
+
   // 4. 텔레그램 봇 시작
   try {
     initTelegram();

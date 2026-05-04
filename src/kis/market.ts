@@ -1,6 +1,6 @@
 import { KIS_TR_ID, MARKET } from '../config/constants.js';
 import { logger } from '../utils/logger.js';
-import { isTradingDay } from '../utils/holidays.js';
+import { isTradingDay, setApiHolidayCache } from '../utils/holidays.js';
 import { kisRequest, marketDataRateLimiter } from './client.js';
 
 // ── 현재가 조회 ──
@@ -351,4 +351,49 @@ export async function getBatchInvestorFlow(stockCodes: string[]): Promise<Map<st
     }
   }
   return result;
+}
+
+// ── KIS API 기반 연간 휴장일 캐시 갱신 ──────────────────────────────────
+/**
+ * KIS FHKSE030000 (국내 휴장일 조회)로 당해 연도 전체 휴장일을 받아
+ * holidays.ts API 캐시에 주입한다.
+ * 부팅 시 1회 + 자정 이후 매일 1회 호출.
+ */
+export async function refreshMarketHolidayCache(): Promise<void> {
+  const kstYear = Number(
+    new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(new Date()).split('-')[0],
+  );
+  const closureDates = new Set<string>();
+
+  // 상반기(0101) + 하반기(0701) 2회 조회 → 연간 전체 커버
+  const baseDates = [`${kstYear}0101`, `${kstYear}0701`];
+  for (const bassDate of baseDates) {
+    try {
+      const res = await kisRequest<Array<Record<string, string>>>({
+        path: '/uapi/domestic-stock/v1/quotations/chk-holiday',
+        trId: 'FHKSE030000',
+        useRealUrl: true,
+        skipRateLimiter: true,
+        params: { BASS_DT: bassDate },
+      });
+      const items: Array<Record<string, string>> = Array.isArray(res.output) ? res.output : [];
+      for (const item of items) {
+        const dt = item.bass_dt ?? item.BASS_DT ?? '';
+        if (!dt || !dt.startsWith(String(kstYear))) continue;
+        // opnd_yn='N': 개장 안함 = 시장 휴장일 (주말·공휴일 모두 포함)
+        if ((item.opnd_yn ?? item.OPND_YN) === 'N') {
+          closureDates.add(`${dt.slice(0, 4)}-${dt.slice(4, 6)}-${dt.slice(6, 8)}`);
+        }
+      }
+    } catch (e: any) {
+      logger.warn(`KIS 휴장일 조회 실패 (${bassDate}): ${e.message}`, { component: 'MARKET' });
+    }
+  }
+
+  if (closureDates.size >= 10) {
+    setApiHolidayCache(kstYear, closureDates);
+    logger.info(`✅ KIS 휴장일 API 캐시 ${closureDates.size}건 (${kstYear}년)`, { component: 'MARKET' });
+  } else {
+    logger.warn(`⚠️ KIS 휴장일 응답 부족 (${closureDates.size}건) — 하드코딩 목록 사용`, { component: 'MARKET' });
+  }
 }
