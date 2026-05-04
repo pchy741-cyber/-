@@ -239,12 +239,6 @@ dashboardRoutes.get('/dashboard', async (c) => {
     actualCash = rawCash;
   }
 
-  // 비중(weight) 계산 — actualCash 확정 후
-  const totalForWeight = totalChainInvested + actualCash;
-  for (const ch of enrichedChains as any[]) {
-    ch.weight = totalForWeight > 0 ? Math.round((ch.invested / totalForWeight) * 1000) / 10 : 0;
-  }
-
   // pnlPct: Live는 KIS API 직접값 사용(정확), Paper는 원금 대비 계산
   const totalPnlPct = config.isPaper
     ? (totalChainInvested > 0 ? (totalPnl / totalChainInvested) * 100 : 0)
@@ -289,6 +283,15 @@ dashboardRoutes.get('/dashboard', async (c) => {
   // Paper: cash + evalAmount(=KIS paper posVal ≈ 원금+미실현) + 해외
   // Live:  cash + evalAmount(=KIS evalAmount) + 해외
   const grandTotalValue = (actualCash || 0) + domesticInvested + overseasInvestedKrw + overseasCashKrw;
+
+  // 비중(weight) 계산 — grandTotalValue(국내+해외 전체 자산) 기준
+  for (const ch of enrichedChains as any[]) {
+    ch.weight = grandTotalValue > 0 ? Math.round((ch.invested / grandTotalValue) * 1000) / 10 : 0;
+  }
+  for (const h of overseasHoldings as any[]) {
+    const investedKrw = (h.avg_price * h.quantity) * FX_RATE;
+    h.weight = grandTotalValue > 0 ? Math.round((investedKrw / grandTotalValue) * 1000) / 10 : 0;
+  }
 
   // grandTotalInvested: 투자 중인 원금 합산 (현금 제외)
   const grandTotalInvested = totalChainInvested + overseasInvestedKrw;
@@ -998,13 +1001,28 @@ dashboardRoutes.post('/sell/:chainId', async (c) => {
     const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1', [chainId]);
     const chain = rows[0];
     if (!chain) return c.json({ error: '체인을 찾을 수 없습니다' }, 404);
+    if (chain.status === 'CLOSED') return c.json({ error: '이미 청산된 포지션입니다' }, 400);
     if (chain.total_quantity <= 0) return c.json({ error: '매도할 수량이 없습니다' }, 400);
 
-    const result = await placeOrder({
-      stockCode: chain.stock_code,
-      side: 'SELL',
-      quantity: chain.total_quantity,
-    });
+    // KIS 주문 — 실패 시 1회 재시도 (토큰 만료·네트워크 순단 대응)
+    let result = await placeOrder({ stockCode: chain.stock_code, side: 'SELL', quantity: chain.total_quantity });
+    if (!result.success) {
+      logger.warn(`수동 매도 1차 실패 (${chain.stock_code}): ${result.message} — 2초 후 재시도`, { component: 'DASHBOARD' });
+      await new Promise((r) => setTimeout(r, 2000));
+      result = await placeOrder({ stockCode: chain.stock_code, side: 'SELL', quantity: chain.total_quantity });
+    }
+    if (!result.success) {
+      logger.error(`수동 매도 최종 실패 (${chain.stock_code}): ${result.message}`, { component: 'DASHBOARD' });
+      return c.json({ error: `KIS 매도 거부: ${result.message}` }, 502);
+    }
+
+    // 현재가 조회 (filled_price에 매수가 대신 실제 시세 기록)
+    let fillPrice = 0;
+    try {
+      const { getCurrentPrice } = await import('../../kis/market.js');
+      const px = await getCurrentPrice(chain.stock_code);
+      fillPrice = px.currentPrice;
+    } catch { /* 시세 조회 실패 시 0으로 기록 */ }
 
     // 체인 상태 업데이트
     await getPool().query(
@@ -1013,15 +1031,16 @@ dashboardRoutes.post('/sell/:chainId', async (c) => {
     );
 
     // 주문 기록 (filled_quantity/filled_price 포함 — Paper 복원 로직이 이 필드를 읽음)
-    const avgPrice = Number(chain.avg_buy_price) || 0;
     await getPool().query(
       `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
        VALUES ($1, $2, 'SELL', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, 'MANUAL', 'CEO 수동 전량 매도')`,
-      [chainId, chain.stock_code, chain.total_quantity, avgPrice, result.orderNo ?? '', config.tradingMode],
+      [chainId, chain.stock_code, chain.total_quantity, fillPrice, result.orderNo ?? '', config.tradingMode],
     );
 
+    logger.info(`✅ CEO 수동 매도 완료: ${chain.stock_code} ${chain.total_quantity}주 (주문번호 ${result.orderNo})`, { component: 'DASHBOARD' });
     return c.json({ ok: true, orderNo: result.orderNo, message: `${chain.stock_code} ${chain.total_quantity}주 전량 매도 주문 완료` });
   } catch (err: any) {
+    logger.error(`수동 매도 예외: ${err.message}`, { component: 'DASHBOARD' });
     return c.json({ error: err.message }, 500);
   }
 });

@@ -36,7 +36,7 @@ export const TransactionChainSchema = z.object({
   id: z.string().uuid(),
   stock_code: z.string(),
   status: z.enum(['OPEN', 'AVERAGING', 'PROFIT_TAKING', 'CLOSED']),
-  strategy_mode: z.enum(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND']),
+  strategy_mode: z.enum(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER']),
   avg_buy_price: z.number().nullable(),
   total_quantity: z.number(),
   total_invested: z.number(),

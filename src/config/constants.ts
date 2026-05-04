@@ -53,6 +53,7 @@ export const StrategyMode = {
   SWING: 'SWING',       // 🟢 평상시 스윙
   DEFENSE: 'DEFENSE',   // 🔴 폭락장 방어
   SCALPING: 'SCALPING', // 🔥 초단타
+  SNIPER: 'SNIPER',     // 🎯 저격수 (AI 88점+ 2종목만, 대형 포지션)
 } as const;
 export type StrategyMode = (typeof StrategyMode)[keyof typeof StrategyMode];
 
@@ -67,24 +68,24 @@ export type StrategyMode = (typeof StrategyMode)[keyof typeof StrategyMode];
 //
 export const STRATEGY_PARAMS = {
   SWING: {
-    // ┌─ 수익 구조 ─────────────────────────────────────────────────────────┐
-    // │ 진입점수≥55 → -3% 물타기(1차) → -4.5% 물타기(2차) → 손절 -4%    │
-    // │ 익절 +7% / 손익비 7:4=1.75:1 / 손익분기 승률 36.4% (달성 용이)   │
-    // │ splitCount=2: 1차 진입 → 물타기 → 평균단가 최적화                │
+    // ┌─ 실거래 데이터 기반 최적화 (92건 분석) ────────────────────────────┐
+    // │ 실 승률 46.7% / 평균 수익 +3.91% / 평균 손실 -1.59%              │
+    // │ Half-Kelly 포지션 12.5% / 손익비 2.46:1 / 월 40~50건 목표        │
+    // │ buyThreshold 68: 75~84 구간 회피 (실데이터 해당 구간 -0.77% 손실) │
+    // │ TP 5.5%: 실 수익 평균 3.91% 기준 → 조기 청산 방지                │
     // └────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 58,
-    // 신호 진입 점수: 58점 (품질·승률 균형 — 진입 기회 소폭 확대)
+    buyThreshold: 68,
     splitCount: 2,
-    averageDownPct: -1.5,
-    // 물타기 1차: -1.5% (더 빠른 단가 낮추기 → 익절 도달 가속)
+    averageDownPct: -3.0,
+    // 물타기: -3% (의미있는 눌림목 확인 후 진입, 노이즈 물타기 차단)
     maxAveragingCount: 2,
-    takeProfitPct: 3.5,
-    // 익절: +3.5% → 50% 매도, 잔여 트레일링 스톱 (단타-스윙 중간, 자주 실현)
+    takeProfitPct: 5.5,
+    // 익절: +5.5% → 실 수익 평균(+3.91%) 초과 → 승자를 더 오래 보유
     takeProfitRatio: 0.5,   // 50% 부분 매도 → 잔여 트레일링
-    stopLossPct: -5.0,
-    // 손절: -5% (스윙 변동성 허용 — 일시적 -3~4% 하락에 손절 안 함)
-    maxHoldingDays: 10,
-    // 10일 초과 보유 시 청산 (스윙 2주 충분히 기다림)
+    stopLossPct: -4.0,
+    // 손절: -4% (실 손실 평균 -1.59%, -5%까지 버티는 건 손실 키우는 행위)
+    maxHoldingDays: 12,
+    // 12일: TP 5.5% 달성 시간 확보 (기존 10일에서 소폭 연장)
   },
 
   DEFENSE: {
@@ -118,6 +119,23 @@ export const STRATEGY_PARAMS = {
     // -0.6% 칼손절 (손익비 2:1) — 단타는 손절이 전략
     maxHoldingDays: 0,      // 당일 청산 필수
     forceCloseTime: '09:25',// 개장 25분 후 강제 청산 (09:00~09:25 모멘텀 구간)
+  },
+
+  SNIPER: {
+    // ┌─ 수익 구조 ─────────────────────────────────────────────────────────┐
+    // │ AI 88점+ 극고확신 종목만 2개 — 총자산 40%씩 집중 투자              │
+    // │ 잡주 분산 대신 최고 점수 종목에 대형 포지션 (저격수 전략)          │
+    // │ 익절 +8% (엘리트 4:1 R:R) / 손절 -2% (확신 높으니 타이트)         │
+    // └────────────────────────────────────────────────────────────────────┘
+    buyThreshold: 88,
+    // 88점+: AI 최상위 확신 구간만 진입 (상위 ~5% 신호)
+    splitCount: 1,          // 분할 없음 — 단번에 풀 포지션
+    averageDownPct: -3.0,   // -3% 물타기 1회 허용 (단가 낮추기)
+    maxAveragingCount: 1,
+    takeProfitPct: 8.0,     // +8% 익절 (엘리트 4:1 R:R)
+    takeProfitRatio: 0.5,   // 50% 부분 매도 → 잔여 트레일링
+    stopLossPct: -4.0,      // -4% 손절 (노이즈 제거 후 진짜 반전 확인)
+    maxHoldingDays: 7,      // 1주일 내 청산
   },
 
 } as const;

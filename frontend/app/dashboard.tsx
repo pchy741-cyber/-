@@ -21,7 +21,11 @@ async function api(path: string, opts?: RequestInit & { timeout?: number }) {
     const { timeout: _, ...fetchOpts } = opts ?? {};
     const res = await fetch(`${base}/api${path}`, { ...fetchOpts, signal: controller.signal, cache: 'no-store', credentials: 'include', headers: { 'Content-Type': 'application/json', ...fetchOpts?.headers } });
     if (res.status === 401) { window.location.href = '/'; throw new Error('UNAUTHORIZED'); }
-    if (!res.ok) throw new Error(`API ${path} (${res.status})`);
+    if (!res.ok) {
+      let errMsg = `API ${path} (${res.status})`;
+      try { const body = await res.json(); if (body?.error) errMsg = body.error; } catch {}
+      throw new Error(errMsg);
+    }
     return res.json();
   } finally {
     clearTimeout(timeoutId);
@@ -839,6 +843,7 @@ function StrategyTimelinePanel({ strategy }: { strategy: any }) {
     DEFENSE: 'bg-rose-500/70 text-rose-100',
     DIVIDEND: 'bg-amber-500/70 text-amber-100',
     SCALPING: 'bg-purple-500/70 text-purple-100',
+    SNIPER: 'bg-orange-500/70 text-orange-100',
   };
   const currentMode = strategy?.mode ?? 'SWING';
   const currentColor = modeColor[currentMode] ?? 'bg-slate-500/70 text-slate-100';
@@ -924,7 +929,7 @@ function PnlBreakdownPanel({ chains, trades }: { chains: any[]; trades: any[] })
   const filled = trades.filter((t: any) => t.status === 'FILLED' && t.side === 'SELL');
 
   // 시세차익 (SWING/DEFENSE/SCALPING 모드 매도 실현손익)
-  const swingPnl = filled.filter((t: any) => ['SWING','DEFENSE','SCALPING'].includes(t.trading_mode ?? '')).reduce((sum: number, t: any) => {
+  const swingPnl = filled.filter((t: any) => ['SWING','DEFENSE','SCALPING','SNIPER'].includes(t.trading_mode ?? '')).reduce((sum: number, t: any) => {
     const pnl = typeof t.realized_pnl === 'number' ? Number(t.realized_pnl) : null;
     if (pnl === null) {
       const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
@@ -2158,7 +2163,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                 const curAvg = Number(ch.current_averaging_count) || 0;
                 const maxAvg = Number(ch.max_averaging_count) || 1;
                 const STRATEGY_TP_SL: Record<string, [number, number]> = {
-                  SWING: [3.5, -2.5], DEFENSE: [5.0, -2.0], SCALPING: [1.2, -0.6], DIVIDEND: [10, -5],
+                  SWING: [5.5, -4.0], DEFENSE: [5.0, -2.0], SCALPING: [1.2, -0.6], DIVIDEND: [10, -5], SNIPER: [8.0, -4.0],
                 };
                 const [modeTp, modeSl] = STRATEGY_TP_SL[ch.strategy_mode as string] ?? [4.0, -2.5];
                 const targetPct = Number(ch.target_profit_pct) || modeTp;
@@ -4359,10 +4364,10 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
       </div>
       {/* ── 전략 설정 ── */}
       {strategy && (
-        <Panel title="전략 설정" badge={strategy.mode === 'SWING' ? '스윙' : strategy.mode === 'DEFENSE' ? '방어' : '단타'} badgeColor={strategy.mode === 'SWING' ? 'blue' : strategy.mode === 'DEFENSE' ? 'rose' : 'amber'}>
+        <Panel title="전략 설정" badge={strategy.mode === 'SWING' ? '스윙' : strategy.mode === 'DEFENSE' ? '방어' : strategy.mode === 'SNIPER' ? '저격수' : '단타'} badgeColor={strategy.mode === 'SWING' ? 'blue' : strategy.mode === 'DEFENSE' ? 'rose' : strategy.mode === 'SNIPER' ? 'orange' : 'amber'}>
           <div className="px-6 py-5">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              <Sel label="매매 방식" value={strategy.mode} opts={[['SWING','스윙 (중단기)'],['DEFENSE','방어 (하락장)'],['SCALPING','단타 (당일)']]} onChange={v => setField('mode', v)} />
+              <Sel label="매매 방식" value={strategy.mode} opts={[['SWING','스윙 (중단기)'],['DEFENSE','방어 (하락장)'],['SCALPING','단타 (당일)'],['SNIPER','🎯 저격수 (AI 88점+ 2종목 집중)']]} onChange={v => setField('mode', v)} />
               <Sel label="AI 확신도 (높을수록 신중)" value={strategy.buy_threshold} opts={[[50,'50점'],[55,'55점'],[58,'58점 (기본)'],[60,'60점'],[65,'65점'],[70,'70점'],[75,'75점'],[80,'80점']]} onChange={v => setField('buy_threshold', Number(v))} />
               <Sel label="손실 한계 (이 이상 빠지면 매도)" value={strategy.stop_loss_pct} opts={[[-1.5,'-1.5% (타이트)'],[-2,'-2%'],[-2.5,'-2.5% (권장)'],[-3,'-3%'],[-4,'-4%'],[-5,'-5% (여유)']]} onChange={v => setField('stop_loss_pct', Number(v))} />
               <Sel label="목표 수익 (이 이상 오르면 매도)" value={strategy.take_profit_pct} opts={[[2,'+2%'],[2.5,'+2.5%'],[3,'+3%'],[3.5,'+3.5% (권장)'],[4,'+4%'],[5,'+5%'],[7,'+7%']]} onChange={v => setField('take_profit_pct', Number(v))} />

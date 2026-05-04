@@ -11,6 +11,7 @@ import { getPool, isMemoryMode } from '../../db/client.js';
 import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
+import { CASH_RESERVE_RATIO } from './cash-manager.js';
 
 export const PARK_STOCK_CODE = '069500'; // KODEX 200
 export const PARK_STOCK_NAME = 'KODEX 200';
@@ -202,6 +203,7 @@ export async function buildDefenseParkEntryDecisions(
   openChains: TransactionChain[],
   livePrices: Map<string, CurrentPrice>,
   orderableCash: number,
+  totalAssets: number,
   reason: string,
 ): Promise<TradeDecision[]> {
   logger.warn(`🛡️ 방어 파킹 진입: ${reason}`, { component: 'DEFENSE_PARK' });
@@ -236,10 +238,13 @@ export async function buildDefenseParkEntryDecisions(
 
   // 2. KODEX 200 매수 (이미 보유 중이면 스킵)
   const alreadyHasPark = openChains.some(c => c.stock_code === PARK_STOCK_CODE);
-  if (!alreadyHasPark && orderableCash > 50000) {
+  if (!alreadyHasPark) {
     const parkPrice = livePrices.get(PARK_STOCK_CODE);
     if (parkPrice && parkPrice.currentPrice > 0) {
-      const investAmount = Math.floor(orderableCash * 0.95); // 95% 투입 (수수료 여유)
+      // Option A: 총자산의 CASH_RESERVE_RATIO(25%)는 현금으로 유지
+      const minCashReserve = Math.floor(totalAssets * CASH_RESERVE_RATIO);
+      const parkable = Math.max(0, orderableCash - minCashReserve);
+      const investAmount = Math.floor(parkable * 0.95);
       const qty = Math.floor(investAmount / parkPrice.currentPrice);
       if (qty > 0) {
         decisions.push({

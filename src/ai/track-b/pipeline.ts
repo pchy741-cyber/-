@@ -16,6 +16,7 @@ import { getAccountBalance } from '../../kis/account.js';
 import { getBatchPrices, getDailyChart, isMarketOpen, getChangeRankingStocks } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { buildDefenseParkExitDecisions, getDefenseParkState, PARK_STOCK_CODE } from './defense-park.js';
+import { IDLE_PARK_STOCK_CODE } from './cash-manager.js';
 import { setActiveEngine } from '../../cache/ai-status.js';
 import { technicalFallbackDecisions } from './technical-fallback.js';
 import { fetchKospiRegime, checkDailyLoss } from './market-regime.js';
@@ -96,7 +97,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const kstM = nowKst.getUTCMinutes();
     const isOpeningBell = kstH === 9 && kstM < 10;
     const dbMode = (strategy?.mode ?? 'SWING') as StrategyMode;
-    const mode: StrategyMode = (isOpeningBell && dbMode !== 'DEFENSE') ? 'SCALPING' : dbMode;
+    // SNIPER/DEFENSE는 개장벨에도 모드 유지 (SNIPER는 CEO가 명시적으로 설정한 집중 전략)
+    const mode: StrategyMode = (isOpeningBell && dbMode !== 'DEFENSE' && dbMode !== 'SNIPER') ? 'SCALPING' : dbMode;
     if (isOpeningBell && mode === 'SCALPING') {
       logger.info('🔔 개장 초단타 모드 자동 활성화 (09:00~09:10) — SCALPING +1.2% 즉시 익절', { component: 'TRACK_B' });
     }
@@ -124,7 +126,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // ── 실시간 시세 수집 ──────────────────────────────────────────────
     const chainStockCodes = openChains.map((c) => c.stock_code);
-    const allStockCodes = [...new Set([...stockCodes, ...chainStockCodes, PARK_STOCK_CODE])];
+    const allStockCodes = [...new Set([...stockCodes, ...chainStockCodes, PARK_STOCK_CODE, IDLE_PARK_STOCK_CODE])];
     const livePrices = await getBatchPrices(allStockCodes);
 
     const _rawOrderableCash = Math.max(0, balance.orderableCash ?? 0);
@@ -345,7 +347,30 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // ── 5b. 섹터 집중 매수 차단 ──────────────────────────────────────
     decisions = filterSectorConcentration(decisions, openChains);
 
-    // ── 6. 하드룰: 트레일링 스탑 + 고정 손절 강제 ───────────────────
+    // ── 6. 유휴 현금 파킹 관리 ───────────────────────────────────────
+    {
+      const { manageCashParking } = await import('./cash-manager.js');
+      const cashDecisions = manageCashParking({
+        orderableCash,
+        totalAssets,
+        hasBuyCandidates,
+        openChains,
+        livePrices,
+        mode,
+        blockNewBuys:
+          kstH > 15 ||
+          (kstH === 15 && kstM >= 10) ||
+          dailyLoss.blocked ||
+          kospiRegime.penalty >= 2 ||
+          macroRiskOff,
+      });
+      for (const d of cashDecisions) {
+        if (d.action === 'SELL') decisions.unshift(d);
+        else decisions.push(d);
+      }
+    }
+
+    // ── 7. 하드룰: 트레일링 스탑 + 고정 손절 강제 ───────────────────
     decisions = await applyHardRules({
       decisions,
       openChains,

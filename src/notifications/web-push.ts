@@ -150,7 +150,10 @@ export async function sendPushNotification(payload: {
     }
   }
   const subscriptions = await getAllSubscriptions();
-  if (subscriptions.length === 0) return;
+  if (subscriptions.length === 0) {
+    logger.warn('📵 푸시 발송 스킵 — 등록된 구독 없음 (Settings에서 "이 기기에 등록" 필요)', { component: 'WEB_PUSH' });
+    return;
+  }
 
   const data = JSON.stringify({
     ...payload,
@@ -247,6 +250,7 @@ function compactReasoning(reasoning: string, prefixRegex: RegExp): string {
 // ══════════════════════════════════════
 
 export async function notifyBuy(stockCode: string, qty: number, price: number, reasoning: string) {
+  logger.info(`📣 notifyBuy 호출: ${stockCode} x${qty} @${price}`, { component: 'WEB_PUSH' });
   const name = await resolveStockName(stockCode);
   const totalKrw = Math.round(qty * price);
   const shortReason = compactReasoning(reasoning, /^(매수|BUY|buy)\s*[:：]?\s*/i);
@@ -277,6 +281,7 @@ export async function notifyBuy(stockCode: string, qty: number, price: number, r
 }
 
 export async function notifySell(stockCode: string, qty: number, price: number, pnlPct: number, reasoning: string) {
+  logger.info(`📣 notifySell 호출: ${stockCode} x${qty} @${price} pnl=${pnlPct.toFixed(2)}%`, { component: 'WEB_PUSH' });
   const name = await resolveStockName(stockCode);
   const isProfit = pnlPct >= 0;
   const emoji = pnlPct >= 5 ? '🎉' : pnlPct >= 2 ? '✅' : pnlPct >= 0 ? '🟡' : pnlPct >= -2 ? '🟠' : '🔻';

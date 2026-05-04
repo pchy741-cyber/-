@@ -16,7 +16,7 @@ COPY package.json package-lock.json* ./
 RUN npm ci
 COPY tsconfig.json ./
 COPY src/ ./src/
-RUN npm run build
+RUN npm run build && cp -r src/db/migrations dist/db/migrations
 
 # ── Stage 3: Production ──
 FROM node:22-slim AS runner

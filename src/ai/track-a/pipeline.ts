@@ -401,7 +401,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     // 6-1. 발굴 종목 중 고점수 자동 active 등록
     // AI 정상: score≥58 + confidence≥0.58 / AI 실패(기술 폴백): score≥75만으로 활성화
     if (discoveryList.length > 0 && !isMemoryMode()) {
-      const discoverySet = new Set(discoveryList.map((d) => d.stock_code));
+      const discoverySet = new Set(discoveryList.map((d) => normalizeStockCode(d.stock_code)));
       const aiWorking = scores.some((s) => (s.confidence ?? 0) >= 0.3);
       const topDiscovery = scores.filter((s) => {
         if (!discoverySet.has(s.stock_code)) return false;

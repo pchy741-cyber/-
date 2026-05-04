@@ -24,10 +24,10 @@ export class TradeExecutor {
   // (종목코드)-(YYYYMMDDHHMM) 키로 분당 1회 중복 주문 방지
   private readonly _recentOrderKeys = new Set<string>();
 
-  private _minuteKey(stockCode: string): string {
+  private _minuteKey(stockCode: string, action: string): string {
     const now = new Date();
     const ymd = now.toISOString().slice(0, 16).replace(/[-:T]/g, ''); // YYYYMMDDHHmm
-    return `${stockCode}-${ymd}`;
+    return `${stockCode}-${action}-${ymd}`;
   }
 
   /**
@@ -63,7 +63,7 @@ export class TradeExecutor {
     }
 
     // 분당 1회 중복 주문 가드 (같은 종목 같은 분에 매수/매도 2번 방지)
-    const minuteKey = this._minuteKey(stock_code);
+    const minuteKey = this._minuteKey(stock_code, action);
     if (this._recentOrderKeys.has(minuteKey)) {
       logger.warn(`⏳ 분당 중복 주문 차단: ${action} ${stock_code} (이미 이 분에 처리됨)`, { component: 'EXECUTOR' });
       return;
@@ -307,7 +307,9 @@ export class TradeExecutor {
 
       // 캐시 무효화 + 푸시 알림
       invalidateStockCache(stockCode).catch(() => {});
-      notifyBuy(stockCode, filledQty, fill.filledPrice, reasoning).catch(() => {});
+      notifyBuy(stockCode, filledQty, fill.filledPrice, reasoning).catch((err) =>
+        logger.warn(`알림 발송 오류 (BUY): ${err}`, { component: 'EXECUTOR' })
+      );
     }
   }
 
@@ -446,7 +448,9 @@ export class TradeExecutor {
       const pnlPct = avgBuy > 0 ? ((fill.filledPrice - avgBuy) / avgBuy) * 100 : 0;
       await chainManager.partialProfit(chain.id, soldQty, fill.filledPrice, chain);
       invalidateStockCache(stockCode).catch(() => {});
-      notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, reasoning).catch(() => {});
+      notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, reasoning).catch((err) =>
+        logger.warn(`알림 발송 오류 (SELL): ${err}`, { component: 'EXECUTOR' })
+      );
     }
   }
 
@@ -490,7 +494,9 @@ export class TradeExecutor {
         await chainManager.partialProfit(chain.id, soldQty, fill.filledPrice, chain);
       }
       invalidateStockCache(stockCode).catch(() => {});
-      notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, closeReason).catch(() => {});
+      notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, closeReason).catch((err) =>
+        logger.warn(`알림 발송 오류 (CLOSE): ${err}`, { component: 'EXECUTOR' })
+      );
 
       // 체결 감사 로그: 매도 실체결 내역 (why + 실제 수익)
       await logSystem(
@@ -592,7 +598,7 @@ export class TradeExecutor {
       return null;
     }
 
-    const retryDelays = [2000, 3000, 5000]; // 2초, 3초, 5초
+    const retryDelays = [3000, 5000, 8000, 15000]; // 3초, 5초, 8초, 15초 (시장가 체결 지연 대응)
 
     for (let i = 0; i < retryDelays.length; i++) {
       await new Promise((r) => setTimeout(r, retryDelays[i]));

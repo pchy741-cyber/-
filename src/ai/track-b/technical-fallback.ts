@@ -45,9 +45,10 @@ export async function technicalFallbackDecisions(params: {
   junkStockCodes?: Set<string>;
 }): Promise<TradeDecision[]> {
   const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, manuallySoldCodes, totalAssets, winRates, blockNewBuys, kospiBoost, allocationTarget, currentStockValue, junkStockCodes } = params;
-  // 종목당 최대 비중: 총자산의 25% 또는 maxPositionKrw 중 작은 값
+  // 종목당 최대 비중: SNIPER=35%, 일반=30% (Half-Kelly 기준, maxPositionKrw 중 작은 값)
+  const maxPosFraction = mode === 'SNIPER' ? 0.35 : 0.30;
   const effectiveMaxPos = totalAssets
-    ? Math.min(maxPositionKrw, Math.round(totalAssets * 0.25))
+    ? Math.min(maxPositionKrw, Math.round(totalAssets * maxPosFraction))
     : maxPositionKrw;
   const aiScoreMap = new Map((aiScores ?? []).map((s) => [s.stock_code, s.score]));
   const base = STRATEGY_PARAMS[mode];
@@ -365,8 +366,9 @@ export async function technicalFallbackDecisions(params: {
 
     // ─── 거래량 확인 필터 ─────────────────────────────────────────────────
     // 예외: 과매도(RSI<35) 반등은 거래량 바닥에서 발생 / 강한 불리쉬 캔들
-    // AI 80점+ → 0.3x (고확신 섹터 모멘텀 우선), buyThreshold 이상 → 0.5x
-    const volThreshold = aiScore >= 80 ? 0.3 : aiScore >= buyThreshold ? 0.5 : 1.5;
+    // AI 80점+ → 0.5x (기존 0.3x: 고확신도 최소 절반 이상 거래량 필요)
+    // buyThreshold 이상 → 0.8x (기존 0.5x: 거래량 없는 진입 품질 저하 방지)
+    const volThreshold = aiScore >= 80 ? 0.5 : aiScore >= buyThreshold ? 0.8 : 1.5;
     if (tech.volumeRatio < volThreshold && tech.rsi14 >= 35 && !hasBullishCandle) {
       logger.info(`  📉 ${stock.stock_code}: 거래량 부족 (${tech.volumeRatio.toFixed(2)}x < ${volThreshold}) → 스킵 (AI=${aiScore})`, { component: 'TRACK_B' });
       continue;
@@ -469,15 +471,31 @@ export async function technicalFallbackDecisions(params: {
     }
 
     // ── 진입 타이밍 분류 (RSI 구간별) ────────────────────────────────────────
-    // 각 구간별 합격 조건을 명시적으로 정의 (조건 꼬임 방지)
-    const isOversold     = tech.rsi14 < 30;          // 과매도 반등 — 무조건 허용
-    const isEarlyBounce  = tech.rsi14 >= 30 && tech.rsi14 < 45;  // 반등 초기 — 무조건 허용
-    // 눌림목(RSI 45~65): MACD 골든크로스 OR AI승인 OR 기술점수 충분
-    const isPullback     = tech.rsi14 >= 45 && tech.rsi14 <= 65 && (
+    // 각 구간별 합격 조건을 명시적으로 정의 (낙칼 방지 강화)
+
+    // 과매도(RSI<30): 반전 신호 1개 이상 필수 — RSI 혼자는 낙칼 잡기
+    const oversoldReversalOk =
+      tech.macdHistogram >= 0 ||
       tech.macdCrossover === 'BULLISH' ||
-      aiScore >= buyThreshold ||
-      effectiveTechScore >= minTechScore
+      tech.rsi2 < 15 ||
+      hasBullishCandle ||
+      tech.stochasticSignal === 'OVERSOLD';
+    const isOversold = tech.rsi14 < 30 && oversoldReversalOk;
+
+    // 반등 초기(RSI 30~45): MACD 비하락 OR 거래량 동반 OR 강세 캔들 필수
+    const isEarlyBounce = tech.rsi14 >= 30 && tech.rsi14 < 45 && (
+      tech.macdCrossover !== 'BEARISH' ||
+      tech.volumeRatio >= 1.3 ||
+      hasBullishCandle
     );
+
+    // 눌림목(RSI 45~65): MACD 비하락이 기본 조건 + 기존 조건 중 하나
+    const isPullback = tech.rsi14 >= 45 && tech.rsi14 <= 65 &&
+      tech.macdCrossover !== 'BEARISH' && (
+        tech.macdCrossover === 'BULLISH' ||
+        aiScore >= buyThreshold ||
+        effectiveTechScore >= minTechScore
+      );
     // 모멘텀(RSI 65~70): 더 엄격 — AI승인 OR 기술점수 +5점 이상
     const isMomentum     = tech.rsi14 > 65 && tech.rsi14 <= 70 && (
       aiScore >= buyThreshold ||
@@ -638,14 +656,15 @@ export async function technicalFallbackDecisions(params: {
 
   // 현금 여유 확인하면서 매수 결정
   let remainingCash = orderableCash;
-  // SCALPING: 개장 10분 단타 — 최대 3종목 (현금 효율 개선)
-  const maxBuys = mode === 'SCALPING' ? 3 : 8;
+  // SCALPING: 최대 3종목 / SNIPER: 최대 2종목 (고확신 집중) / 일반: 최대 4종목 (분산 최적화)
+  const maxBuys = mode === 'SCALPING' ? 3 : mode === 'SNIPER' ? 2 : 4;
   const splitCount = strategyParams.splitCount || 2;
 
   for (const cand of candidates.slice(0, maxBuys)) {
     // 분봉 신호가 강하게 하락이면 진입 보류 (AI 80점+ → 임계값 완화)
     const idBonus = intradayBonus.get(cand.stock_code) ?? 0;
-    const idBonusThreshold = (aiScoreMap.get(cand.stock_code) ?? 0) >= 80 ? -25 : -15;
+    const _idAiScore = aiScoreMap.get(cand.stock_code) ?? 0;
+    const idBonusThreshold = _idAiScore >= 80 ? -25 : _idAiScore >= (strategyParams.buyThreshold ?? 72) ? -10 : -5;
     if (idBonus <= idBonusThreshold) {
       logger.info(`  ⏸️ ${cand.stock_code}: 분봉 하락신호(${idBonus}<=${idBonusThreshold}) → 일봉 매수 보류`, { component: 'TRACK_B' });
       continue;
@@ -674,10 +693,14 @@ export async function technicalFallbackDecisions(params: {
     const aiApproved = aiScore >= strategyParams.buyThreshold;
 
     const hardcodedAllocPct = aiApproved
-      ? (blendedScore >= 90 ? 0.18 :
-         blendedScore >= 85 ? 0.15 :
-         blendedScore >= 78 ? 0.12 :
-         blendedScore >= 70 ? 0.09 : 0.07)
+      ? (mode === 'SNIPER'
+          // Half-Kelly: 단일 최고확신 종목 집중 — 총자산의 25/22/20%
+          ? (blendedScore >= 90 ? 0.25 :
+             blendedScore >= 85 ? 0.22 : 0.20)
+          : (blendedScore >= 90 ? 0.18 :
+             blendedScore >= 85 ? 0.15 :
+             blendedScore >= 75 ? 0.06 : // 75~84 실데이터 수익률 -0.77% 구간 — 최소 투입
+             blendedScore >= 70 ? 0.09 : 0.07))
       : 0.04; // AI 미허락 → 최소 탐색 비율만
     const baseAllocPct = getDbAllocPct(blendedScore) ?? hardcodedAllocPct;
     // 강세장(kospiBoost) SWING: 1.3x — "좋은 장에서 100% 투자" 원칙
@@ -699,7 +722,8 @@ export async function technicalFallbackDecisions(params: {
     // AI허락 고확신(85점+) → 1차에 80% 과감 진입 (물타기 여지 20%)
     // AI허락 일반(70-84점) → 1차 70% (현금 과잉 시 90%)
     // AI 미허락 탐색 → 1차 100% (소액이므로 분할 의미 없음)
-    const firstEntryRatio = !aiApproved ? 1.0
+    const firstEntryRatio = mode === 'SNIPER' ? 1.0   // 저격수: 한 번에 풀 포지션
+      : !aiApproved ? 1.0
       : blendedScore >= 85 ? (allocationBoostFirstEntry ? 0.90 : 0.80)
       : splitCount <= 1 ? 1.0
       : splitCount <= 2 ? (allocationBoostFirstEntry ? 0.90 : 0.70) : (allocationBoostFirstEntry ? 0.80 : 0.60);
@@ -709,7 +733,7 @@ export async function technicalFallbackDecisions(params: {
 
     // 상한: effectiveMaxPos (종목당 절대 한도), 남은 현금의 92%까지 사용 (현금 최소화)
     const positionSize = Math.min(targetKrw, effectiveMaxPos, remainingCash * 0.92);
-    if (positionSize < 300000) continue; // 최소 30만원 미달 → 이 종목만 스킵 (break→continue: 이후 종목 계속 검토)
+    if (positionSize < 1000000) continue; // 최소 100만원 미달 → 이 종목만 스킵 (Half-Kelly 원칙상 소액 매매는 수수료 대비 비효율)
 
     let quantity = Math.floor(positionSize / cand.price.currentPrice);
     if (quantity <= 0) {
@@ -739,7 +763,8 @@ export async function technicalFallbackDecisions(params: {
 
   // 2-b. 현금 추가 소진 패스: 매수 후 남은 현금이 총자산 15% 이상 & AI허락 후보 더 있으면 추가 진입
   // (1차 매수에서 firstEntryRatio로 아낀 여지 + 아직 안 산 후보 종목에 배분)
-  if (totalAssets && remainingCash >= totalAssets * 0.15 && mode !== 'SCALPING') {
+  // SNIPER: 최대 2종목 제한이므로 추가 소진 패스 건너뜀
+  if (totalAssets && remainingCash >= totalAssets * 0.15 && mode !== 'SCALPING' && mode !== 'SNIPER') {
     const alreadyBuying = new Set(decisions.filter(d => d.action === 'BUY').map(d => d.stock_code));
     // 아직 매수 결정 안 된 AI허락 후보만 — 이미 사이클 내 매수한 종목 중복 제외
     const extraCandidates = candidates.filter(c => {
@@ -749,7 +774,7 @@ export async function technicalFallbackDecisions(params: {
     // 이미 매수 결정한 AI허락 종목에 물타기가 아닌 추가 비중 투입
     for (const cand of extraCandidates.slice(0, 2)) {
       const addSize = Math.min(Math.round(remainingCash * 0.50), effectiveMaxPos);
-      if (addSize < 300000) continue;
+      if (addSize < 1000000) continue;
       const qty = Math.floor(addSize / cand.price.currentPrice);
       if (qty <= 0) continue;
       const aiScoreEx = aiScoreMap.get(cand.stock_code) ?? 0;

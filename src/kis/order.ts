@@ -53,12 +53,14 @@ export async function placeOrder(params: {
     component: 'KIS_ORDER',
   });
 
+  // 주문은 rate limiter 큐 건너뜀 — 매도가 큐 뒤에서 40초 대기하는 현상 방지
   const res = await kisRequest({
     path: '/uapi/domestic-stock/v1/trading/order-cash',
     method: 'POST',
     trId,
     body,
     hashkey,
+    skipRateLimiter: true,
   });
 
   const output = res.output as Record<string, string>;

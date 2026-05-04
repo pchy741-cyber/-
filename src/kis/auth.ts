@@ -70,6 +70,7 @@ export async function getHashkey(body: Record<string, unknown>): Promise<string>
       appsecret: appSecret,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15000),
   });
 
   if (!res.ok) {

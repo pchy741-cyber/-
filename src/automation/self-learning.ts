@@ -132,6 +132,7 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
     ...parkingInsights,
     ...analyzeTimeOfDayPerformance(enrichedChains),
     ...analyzeDayOfWeekPerformance(enrichedChains),
+    ...(await analyzeBuyThreshold()),
   ];
 
   // 3. DB에 인사이트 저장 및 알림
@@ -1215,6 +1216,92 @@ export async function getStockAccuracyContext(stockCodes: string[]): Promise<str
     return lines.join('\n');
   } catch {
     return '';
+  }
+}
+
+/**
+ * buy_threshold 자동 최적화 — score_accuracy 실거래 데이터로 최적 임계값 계산
+ * 임계값 이하 종목 승률 < 38% → 상향 / >= 52% → 하향 제안 → autoApplyInsights가 전략에 반영
+ */
+async function analyzeBuyThreshold(): Promise<LearnedInsight[]> {
+  try {
+    const { rows: cfgRows } = await getPool().query(
+      `SELECT buy_threshold FROM strategy_config WHERE is_active = true LIMIT 1`,
+    );
+    const currentThreshold: number = cfgRows[0]?.buy_threshold ?? 58;
+
+    const { rows } = await getPool().query(
+      `SELECT entry_score, outcome, realized_pnl_pct
+         FROM score_accuracy
+        WHERE recorded_at >= NOW() - INTERVAL '90 days'
+          AND entry_score IS NOT NULL
+        ORDER BY entry_score`,
+    );
+
+    if (rows.length < 15) return [];
+
+    const below = rows.filter((r: any) => Number(r.entry_score) < currentThreshold);
+    const above = rows.filter((r: any) => Number(r.entry_score) >= currentThreshold);
+
+    if (below.length < 5 || above.length < 5) return [];
+
+    const belowWinRate = below.filter((r: any) => r.outcome === 'WIN').length / below.length;
+    const aboveWinRate = above.filter((r: any) => r.outcome === 'WIN').length / above.length;
+    const belowAvgPnl = below.reduce((s: number, r: any) => s + Number(r.realized_pnl_pct), 0) / below.length;
+
+    const totalSamples = rows.length;
+    // 샘플 10건 → confidence 0.70 (autoApply 최소치), 20건 → 0.75, 30건+ → 0.80
+    const confidence = Math.min(0.85, 0.55 + totalSamples * 0.015);
+    const insights: LearnedInsight[] = [];
+
+    // 임계값 이하 승률 낮고 손실 → 상향 권장
+    if (belowWinRate < 0.38 && belowAvgPnl < 0 && aboveWinRate > belowWinRate + 0.10) {
+      // 3점 단위로 최적 threshold 탐색 (현재+3 ~ +12)
+      let bestThreshold = currentThreshold + 5;
+      let bestAboveWinRate = 0;
+      for (let t = currentThreshold + 3; t <= Math.min(80, currentThreshold + 12); t += 3) {
+        const atOrAbove = rows.filter((r: any) => Number(r.entry_score) >= t);
+        if (atOrAbove.length < 5) break;
+        const wr = atOrAbove.filter((r: any) => r.outcome === 'WIN').length / atOrAbove.length;
+        if (wr > bestAboveWinRate) { bestAboveWinRate = wr; bestThreshold = t; }
+      }
+
+      insights.push({
+        category: 'WIN_PATTERN',
+        insight: `매수 임계값 자동최적화: ${currentThreshold}점 미만 실거래 승률 ${(belowWinRate * 100).toFixed(0)}% (${below.length}건, 평균손익 ${belowAvgPnl.toFixed(1)}%). 임계값 ${bestThreshold}점으로 상향하면 진입 품질 개선.`,
+        recommendation: `buy_threshold: ${currentThreshold} → ${bestThreshold} (실거래 ${totalSamples}건 분석)`,
+        paramChange: { field: 'buy_threshold', value: bestThreshold, reason: `임계값 이하 승률 ${(belowWinRate * 100).toFixed(0)}% 개선 목적` },
+        confidence,
+        sampleCount: totalSamples,
+        lastUpdated: now,
+      });
+    }
+
+    // 임계값 이하에서도 수익성 있음 → 하향 가능 (더 많은 기회 포착)
+    if (belowWinRate >= 0.52 && belowAvgPnl > 0 && currentThreshold > 55 && below.length >= 8) {
+      const suggestedThreshold = Math.max(53, currentThreshold - 5);
+      insights.push({
+        category: 'WIN_PATTERN',
+        insight: `매수 임계값 자동최적화: ${currentThreshold}점 미만에서도 승률 ${(belowWinRate * 100).toFixed(0)}% (${below.length}건, 평균손익 ${belowAvgPnl.toFixed(1)}%). 임계값 ${suggestedThreshold}점 하향으로 기회 확대 가능.`,
+        recommendation: `buy_threshold: ${currentThreshold} → ${suggestedThreshold}`,
+        paramChange: { field: 'buy_threshold', value: suggestedThreshold, reason: `임계값 이하도 수익 확인 → 기회 확대` },
+        confidence: confidence * 0.85, // 하향은 더 보수적
+        sampleCount: totalSamples,
+        lastUpdated: now,
+      });
+    }
+
+    if (insights.length > 0) {
+      logger.info(
+        `🎯 buy_threshold 분석: 현재 ${currentThreshold}점 | 이하승률 ${(belowWinRate * 100).toFixed(0)}%(${below.length}건) | 이상승률 ${(aboveWinRate * 100).toFixed(0)}%(${above.length}건) → ${insights.length}건 권장`,
+        { component: 'LEARN' },
+      );
+    }
+
+    return insights;
+  } catch (err) {
+    logger.warn(`buy_threshold 분석 실패: ${err}`, { component: 'LEARN' });
+    return [];
   }
 }
 

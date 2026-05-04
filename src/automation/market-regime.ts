@@ -211,12 +211,21 @@ export async function autoSwitchStrategy(): Promise<void> {
     const currentStrategy = await getActiveStrategy();
     const currentMode = currentStrategy?.mode ?? 'SWING';
 
+    // 마지막 전환 후 경과 시간 (시간 단위) — 과도한 전환 방지용
+    const updatedAt = currentStrategy?.updated_at ? new Date(currentStrategy.updated_at) : null;
+    const hoursSinceSwitch = updatedAt ? (Date.now() - updatedAt.getTime()) / 3_600_000 : 999;
+
     let targetMode = regime.recommendedMode as string;
 
-    // DEFENSE 지속 중 여전히 BEARISH → DIVIDEND 에스컬레이션
+    // DEFENSE 지속 중 여전히 BEARISH → DIVIDEND 에스컬레이션 (24시간 이상 지속 후에만)
     if (currentMode === 'DEFENSE' && (regime.regime === 'BEARISH' || regime.regime === 'PANIC')) {
-      targetMode = 'DIVIDEND';
-      regime.reasons.push('DEFENSE 지속 → DIVIDEND 파킹 에스컬레이션');
+      if (hoursSinceSwitch >= 24) {
+        targetMode = 'DIVIDEND';
+        regime.reasons.push(`DEFENSE ${hoursSinceSwitch.toFixed(0)}h 지속 → DIVIDEND 에스컬레이션`);
+      } else {
+        targetMode = 'DEFENSE'; // 24시간 미경과 → 에스컬레이션 보류
+        regime.reasons.push(`DEFENSE 유지 (전환 후 ${hoursSinceSwitch.toFixed(0)}h < 24h)`);
+      }
     }
     // DIVIDEND 중 장세 회복 → SWING 복귀
     else if ((currentMode as string) === 'DIVIDEND' && (regime.regime === 'NEUTRAL' || regime.regime === 'BULLISH')) {
@@ -226,6 +235,24 @@ export async function autoSwitchStrategy(): Promise<void> {
     // SCALPING은 강세장 스코어 6이상 + 현재 SWING일 때만 전환 (과도한 전환 방지)
     if (targetMode === 'SCALPING' && currentMode !== 'SWING') {
       targetMode = currentMode; // DEFENSE/DIVIDEND 중엔 SCALPING 전환 안 함
+    }
+
+    // ── 히스테리시스: 진입/탈출 기준 이중화 (모드 경계 근처 과도한 전환 방지) ──
+    // SWING → DEFENSE: score ≤ -4 필요 (기본 -3보다 1점 엄격)
+    if (currentMode === 'SWING' && targetMode === 'DEFENSE' && regime.score > -4) {
+      targetMode = 'SWING';
+      regime.reasons.push(`히스테리시스: SWING 유지 (스코어 ${regime.score} > -4)`);
+    }
+    // DEFENSE → SWING: score ≥ 0 필요 (기본 -2보다 2점 엄격 — 충분한 회복 확인)
+    if (currentMode === 'DEFENSE' && targetMode === 'SWING' && regime.score < 0) {
+      targetMode = 'DEFENSE';
+      regime.reasons.push(`히스테리시스: DEFENSE 유지 (스코어 ${regime.score} < 0)`);
+    }
+
+    // ── 최소 체류 시간: 6시간 미만 전환 보류 (같은 날 12:00 재판단 시 즉시 번복 방지) ──
+    if (targetMode !== currentMode && hoursSinceSwitch < 6) {
+      logger.info(`전략 전환 보류: 마지막 전환 후 ${hoursSinceSwitch.toFixed(1)}h (최소 6h 필요) — ${currentMode} 유지`, { component: 'REGIME' });
+      return;
     }
 
     logger.info(

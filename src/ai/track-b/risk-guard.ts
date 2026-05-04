@@ -46,6 +46,8 @@ export function filterEarlySells(params: {
     }
 
     if (d.action === 'FORCE_CLOSE' && pnlPct > _stopPct) {
+      // PROFIT_TAKING 상태의 트레일링/브레이크이븐 스탑은 technical-fallback이 발행 — 차단하면 청산 불가
+      if (chain?.status === 'PROFIT_TAKING') return true;
       logger.warn(
         `🛡️ AI 조기 청산 차단: ${d.stock_code} 현재 ${pnlPct.toFixed(1)}% (손절선 ${_stopPct}% 미도달) → 하드룰 대기`,
         { component: 'RISK_GUARD' },
