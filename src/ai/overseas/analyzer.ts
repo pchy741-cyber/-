@@ -16,6 +16,9 @@ export interface OverseasStockInput {
   holdingPnlPct?: number;
   dayRangePct?: number;  // 0=저가, 100=고가 위치 (일중 어디에 있는지)
   isMomentum?: boolean;  // 당일 +3% 이상 + 일중 상위 → 강한 상승 모멘텀
+  aboveMA20?: boolean;   // 현재가 > 21일 이평선 여부 (캔들 안착 확인)
+  bollingerSqueeze?: boolean;              // BB 밴드 수축 중 (에너지 응축, 돌파 방향 미확정)
+  bollingerBreakout?: 'UP' | 'DOWN' | 'NONE'; // 스퀴즈 후 돌파 방향
 }
 
 export interface OverseasAIDecision {
@@ -37,16 +40,25 @@ const SYSTEM_PROMPT = `당신은 글로벌 주식(미국 주력 + 일본·대만
 ② 모멘텀 소진 전 선제 청산 (SELL)
 ③ 관망 (HOLD) — 단, HOLD 남발 금지. 조건 충족 시 BUY로
 
+【BUY 진입 2단계 필수 확인】
+▶ 1단계 — 상승추세 확인 (둘 다 충족해야 진입 자격)
+  • RSI ≥ 50 (상승 모멘텀 구간)
+  • trendStrength = STRONG 또는 MODERATE (이평선 상승 방향)
+
+▶ 2단계 — 타점 기준 (1단계 통과 후)
+  • RSI가 50선을 밑에서 위로 돌파 (최근 RSI 45~55 구간) OR isMomentum=true
+  • dayRangePct < 70 (일중 고점 근처 매수 금지 — 이평선 위로 안착한 저점 공략)
+
 【BUY 진입 패턴 — 글로벌 스윙 실전 기준】
-1. 🚀 모멘텀 브레이크아웃: isMomentum=true(당일+3%↑) + RSI 45~72 + ADX ≥ 20
+1. 🚀 모멘텀 브레이크아웃: isMomentum=true(당일+3%↑) + RSI 50~72 + ADX ≥ 20
    → 추세 추종. 미국 주식은 모멘텀이 3~5일 지속. 강력 BUY. confidence 0.72+
-2. 📉 과매도 반등: RSI ≤ 35 + ADX ≥ 15 + score > -10
-   → 단기 반등 노림. 바닥권 매수. S&P 급락 직후 유효. confidence 0.65+
-3. 📊 눌림목 재진입: RSI 40~58 + ADX ≥ 20 + score ≥ 25 + 일중저가(dayRangePct<30)
-   → 상승 추세 내 저점 매수. 리스크/보상비율 우수. confidence 0.67+
-4. 💥 고베타 신호 (TSLA·COIN·PLTR): signal=BUY or STRONG_BUY + RSI < 68
-   → 변동성 크지만 단타 수익 기회. confidence 0.62 이상이면 진입
-5. 💪 강한 기술 신호: signal=STRONG_BUY + score ≥ 35 + RSI < 65 → BUY. confidence 0.68+
+2. 📉 과매도 반등: RSI ≤ 35 + ADX ≥ 20 + score > 0 + trendStrength≠WEAK
+   → 단기 반등. 단, 하락추세(trendStrength=WEAK)면 패스. confidence 0.67+
+3. 📊 눌림목 재진입: RSI 50~58 + ADX ≥ 20 + score ≥ 25 + dayRangePct < 40
+   → 상승 추세 내 저점 매수. 리스크/보상비율 우수. confidence 0.68+
+4. 💥 고베타 신호 (TSLA·COIN·PLTR): signal=STRONG_BUY + RSI 50~68 + trendStrength≠WEAK
+   → 변동성 크지만 추세 확인 후만 진입. confidence 0.65+
+5. 💪 강한 기술 신호: signal=STRONG_BUY + score ≥ 35 + RSI 50~65 → BUY. confidence 0.68+
 
 【섹터별 특성 반영】
 - 고베타 (TSLA·COIN·PLTR): 변동성 크므로 모멘텀 있을 때만 BUY, confidence 0.62+ OK
@@ -57,9 +69,9 @@ const SYSTEM_PROMPT = `당신은 글로벌 주식(미국 주력 + 일본·대만
 - 🇹🇼 대만 ADR (TSM·UMC): AI 반도체 공급망 핵심. NVDA·AAPL 실적 연동. TSM은 대장주급 안정성, UMC는 성숙공정 안정주. confidence 0.65+ 필요. 미·중 지정학 이슈에 민감
 
 【confidence 기준】
-- 0.62 이상: 고베타 성장주 BUY 가능
-- 0.65 이상: 일반 종목·일본ADR·대만ADR BUY
-- 0.70~0.88: 강한 신호 (최대 0.88)
+- 0.68 이상: 고베타 성장주(TSLA·COIN·PLTR) BUY (추세 확인 필수)
+- 0.70 이상: 일반 종목·일본ADR·대만ADR BUY
+- 0.72~0.88: 강한 신호 (최대 0.88)
 - 일중 저가 근처(dayRangePct < 25): +0.05 보너스 부여
 - 모멘텀(isMomentum=true): +0.05 보너스 부여
 
@@ -72,7 +84,9 @@ const SYSTEM_PROMPT = `당신은 글로벌 주식(미국 주력 + 일본·대만
 - 보유 종목에 BUY / 비보유 종목에 SELL
 - VIX > 40: 신규 매수 금지 (패닉 구간)
 - Fear&Greed ≥ 85(극탐욕): 신규 매수 금지
-- 아무것도 안 하면 수익 없음. 확신 없어도 0.62~0.65로 과감하게 BUY
+- RSI < 50 이고 trendStrength=WEAK인 종목 BUY 금지 (하락추세 진입 금지)
+- dayRangePct ≥ 70 이고 isMomentum=false인 종목 BUY 금지 (일중 고점 매수 금지)
+- 확신 없으면 HOLD. 조건 미달 종목에 억지로 BUY 하지 말 것
 
 JSON 배열로만 응답 (HOLD는 생략, code 대소문자 정확히):
 [{"code":"NVDA","action":"BUY","confidence":0.78,"reasoning":"모멘텀 브레이크아웃 RSI=55 ADX=32 당일+4.1% 일중고가권"},{"code":"TSM","action":"BUY","confidence":0.71,"reasoning":"NVDA 실적 기대감 RSI=52 ADX=28 눌림목 dayRangePct=22"},{"code":"TSLA","action":"SELL","confidence":0.72,"reasoning":"PnL+6.2% RSI하락 score-18 모멘텀 소진"}]
@@ -131,7 +145,11 @@ function buildContext(stocks: OverseasStockInput[], cash: number, holdingCount: 
     const holding = s.isHolding ? ` [보유 PnL=${pnl}%${softZone}]` : '';
     const momentum = s.isMomentum ? ' 🚀모멘텀' : '';
     const range = s.dayRangePct != null ? ` 일중${s.dayRangePct.toFixed(0)}%` : '';
-    return `${s.code}: $${s.currentPrice} ${s.changePct >= 0 ? '+' : ''}${s.changePct.toFixed(2)}%${range} | RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)} score=${s.score} signal=${s.signal}${momentum}${holding}`;
+    const maPos = s.aboveMA20 != null ? (s.aboveMA20 ? ' ↑MA' : ' ↓MA') : '';
+    const bbTag = s.bollingerSqueeze
+      ? (s.bollingerBreakout === 'UP' ? ' 💥BB↑' : s.bollingerBreakout === 'DOWN' ? ' 💥BB↓' : ' 🔧BBsq')
+      : '';
+    return `${s.code}: $${s.currentPrice} ${s.changePct >= 0 ? '+' : ''}${s.changePct.toFixed(2)}%${range} | RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)} score=${s.score} signal=${s.signal}${maPos}${bbTag}${momentum}${holding}`;
   });
 
   const canBuy = cash >= 200 && holdingCount < 6;

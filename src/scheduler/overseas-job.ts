@@ -248,7 +248,7 @@ function getOpenMarketRegions(): Set<string> {
 interface SessionCache {
   topCodes: string[];
   sessionDate: string;
-  techCache: Map<string, { score: number; rsi: number; adx: number; signal: string; trendStrength: string; isMomentum: boolean; dayRangePct: number; aboveMA20: boolean }>;
+  techCache: Map<string, { score: number; rsi: number; adx: number; signal: string; trendStrength: string; isMomentum: boolean; dayRangePct: number; aboveMA20: boolean; bollingerSqueeze: boolean; bollingerBreakout: 'UP' | 'DOWN' | 'NONE' }>;
 }
 let usSessionCache: SessionCache | null = null;
 let asiaSessionCache: SessionCache | null = null;
@@ -748,6 +748,8 @@ export async function runOverseasJob(): Promise<void> {
       dayRangePct: number; // 0=저가, 100=고가 위치
       isMomentum: boolean; // 당일 강한 상승 모멘텀
       aboveMA20: boolean;  // 현재가 > 21일 이평선
+      bollingerSqueeze: boolean;
+      bollingerBreakout: 'UP' | 'DOWN' | 'NONE';
     }> = [];
 
     // 배치 처리: 8개씩 병렬 → rate limit 안전 (15req/sec 용량)
@@ -777,10 +779,11 @@ export async function runOverseasJob(): Promise<void> {
         const isMomentum = price.changePct >= 3 && dayRangePct >= 60;
 
         let signal: string, score: number, rsi: number, adx: number, trendStrength: string, aboveMA20: boolean;
+        let bollingerSqueeze: boolean, bollingerBreakout: 'UP' | 'DOWN' | 'NONE';
 
         if (cached) {
           // 세션 캐시 재사용 (차트 재분석 불필요)
-          ({ signal, score, rsi, adx, trendStrength, aboveMA20 } = cached);
+          ({ signal, score, rsi, adx, trendStrength, aboveMA20, bollingerSqueeze, bollingerBreakout } = cached);
         } else {
           if (!chart || chart.length < 30) continue;
           const candles: OHLCV[] = chart.map(c => ({
@@ -790,23 +793,26 @@ export async function runOverseasJob(): Promise<void> {
           if (!tech) continue;
           signal = tech.overallSignal; score = tech.score;
           rsi = tech.rsi14; adx = tech.adx14; trendStrength = tech.trendStrength;
-          aboveMA20 = price.currentPrice > tech.sma20; // 캔들이 21일 이평선 위에 있는가
+          aboveMA20 = price.currentPrice > tech.sma20;
+          bollingerSqueeze = tech.bollingerSqueeze;
+          bollingerBreakout = tech.bollingerBreakout;
         }
 
         // 세션 캐시에 기술점수 저장 (신규 스캔 시)
         if (isNewSession) {
           const cacheTarget = isUSSession ? usSessionCache : asiaSessionCache;
           if (cacheTarget) {
-            cacheTarget.techCache.set(stock.code, { score, rsi, adx, signal, trendStrength, isMomentum, dayRangePct, aboveMA20 });
+            cacheTarget.techCache.set(stock.code, { score, rsi, adx, signal, trendStrength, isMomentum, dayRangePct, aboveMA20, bollingerSqueeze, bollingerBreakout });
           }
         }
 
         techResults.push({
           code: stock.code, name: stock.name, exchange: stock.exchange,
           price, signal, score, rsi, adx, trendStrength, dayRangePct, isMomentum, aboveMA20,
+          bollingerSqueeze, bollingerBreakout,
         });
         logger.info(
-          `  ${stock.code}: $${price.currentPrice} ${price.changePct >= 0 ? '+' : ''}${price.changePct}% | ${signal}(${score}) RSI=${rsi.toFixed(0)} ADX=${adx.toFixed(0)} 일중${dayRangePct.toFixed(0)}%${isMomentum ? ' 🚀모멘텀' : ''}${cached ? ' [캐시]' : ''}`,
+          `  ${stock.code}: $${price.currentPrice} ${price.changePct >= 0 ? '+' : ''}${price.changePct}% | ${signal}(${score}) RSI=${rsi.toFixed(0)} ADX=${adx.toFixed(0)} 일중${dayRangePct.toFixed(0)}%${isMomentum ? ' 🚀모멘텀' : ''}${bollingerSqueeze ? (bollingerBreakout === 'UP' ? ' 💥BB↑' : bollingerBreakout === 'DOWN' ? ' 💥BB↓' : ' 🔧BBsq') : ''}${cached ? ' [캐시]' : ''}`,
           { component: 'OVERSEAS' },
         );
       }
@@ -826,9 +832,9 @@ export async function runOverseasJob(): Promise<void> {
         return sb - sa;
       });
       const topCodes = sorted.slice(0, topCount).map(t => t.code);
-      const techCacheMap = new Map<string, { score: number; rsi: number; adx: number; signal: string; trendStrength: string; isMomentum: boolean; dayRangePct: number; aboveMA20: boolean }>();
+      const techCacheMap = new Map<string, { score: number; rsi: number; adx: number; signal: string; trendStrength: string; isMomentum: boolean; dayRangePct: number; aboveMA20: boolean; bollingerSqueeze: boolean; bollingerBreakout: 'UP' | 'DOWN' | 'NONE' }>();
       for (const t of techResults) {
-        techCacheMap.set(t.code, { score: t.score, rsi: t.rsi, adx: t.adx, signal: t.signal, trendStrength: t.trendStrength, isMomentum: t.isMomentum, dayRangePct: t.dayRangePct, aboveMA20: t.aboveMA20 });
+        techCacheMap.set(t.code, { score: t.score, rsi: t.rsi, adx: t.adx, signal: t.signal, trendStrength: t.trendStrength, isMomentum: t.isMomentum, dayRangePct: t.dayRangePct, aboveMA20: t.aboveMA20, bollingerSqueeze: t.bollingerSqueeze, bollingerBreakout: t.bollingerBreakout });
       }
       const newCache: SessionCache = { topCodes, sessionDate: sessionId, techCache: techCacheMap };
       if (isUSSession) usSessionCache = newCache;
@@ -899,6 +905,8 @@ export async function runOverseasJob(): Promise<void> {
         dayRangePct: t.dayRangePct,
         isMomentum: t.isMomentum,
         aboveMA20: t.aboveMA20,
+        bollingerSqueeze: t.bollingerSqueeze,
+        bollingerBreakout: t.bollingerBreakout,
       };
     });
 
@@ -1139,6 +1147,12 @@ export async function runOverseasJob(): Promise<void> {
           // 모멘텀(브레이크아웃) 또는 과매도 반등이면 이평선 아래도 허용
           if (!t.isMomentum && !isOversold && t.aboveMA20 === false) {
             logger.info(`  ⛔ MA 하방 진입 차단: ${t.code} 캔들이 21일 이평선 아래 (RSI+MA 안착 미충족)`, { component: 'OVERSEAS' });
+            return false;
+          }
+          // ── 1-c: BB 스퀴즈 횡보 차단 (에너지 응축 중 돌파 미확인) ──
+          // 스퀴즈(밴드 수축) + 돌파 없음 + 모멘텀 없음 = 방향 불명확 구간 → 진입 금지
+          if (t.bollingerSqueeze && t.bollingerBreakout !== 'UP' && !t.isMomentum) {
+            logger.info(`  ⛔ BB 스퀴즈 차단: ${t.code} 에너지 응축 횡보 (돌파 방향 미확정)`, { component: 'OVERSEAS' });
             return false;
           }
           // ── 2단계: 타점 기준 — 일중 고점 매수 차단 (모멘텀 제외) ──
