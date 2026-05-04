@@ -13,7 +13,7 @@ import {
 } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { getAccountBalance } from '../../kis/account.js';
-import { getBatchPrices, getDailyChart, isMarketOpen } from '../../kis/market.js';
+import { getBatchPrices, getDailyChart, isMarketOpen, getChangeRankingStocks } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { buildDefenseParkExitDecisions, getDefenseParkState, PARK_STOCK_CODE } from './defense-park.js';
 import { setActiveEngine } from '../../cache/ai-status.js';
@@ -244,6 +244,34 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const allocCfg = await import('../../db/client.js')
       .then(m => m.getPool().query('SELECT * FROM portfolio_allocation_config WHERE is_active = true LIMIT 1'))
       .then(r => r.rows[0] ?? null).catch(() => null);
+
+    // ── 3-d. 상승장 실시간 등락률 상위 종목 편입 (kospiBoost 한정) ───────────
+    // 감시 종목 밖에서 실제 오르고 있는 종목을 동적으로 후보 풀에 추가
+    const watchlistSet = new Set(watchlist.map((w) => w.stock_code));
+    if (kospiRegime.boost && !dailyLoss.blocked) {
+      try {
+        const topGainers = await getChangeRankingStocks(20, 'J');
+        const newStocks = topGainers.filter((s) => s.stock_code && !watchlistSet.has(s.stock_code));
+        if (newStocks.length > 0) {
+          logger.info(`📈 상승장 실시간 편입 후보: ${newStocks.map((s) => s.stock_code).join(', ')}`, { component: 'TRACK_B' });
+          const newPrices = await getBatchPrices(newStocks.map((s) => s.stock_code)).catch(() => new Map());
+          for (const [code, price] of newPrices) livePrices.set(code, price);
+          const CHART_BATCH2 = 5;
+          for (let i = 0; i < newStocks.length; i += CHART_BATCH2) {
+            const batch = newStocks.slice(i, i + CHART_BATCH2);
+            const results = await Promise.allSettled(batch.map((s) => getDailyChart(s.stock_code, 65)));
+            for (let j = 0; j < batch.length; j++) {
+              const r = results[j];
+              if (r.status === 'fulfilled' && r.value.length >= 30) chartData.set(batch[j].stock_code, r.value);
+            }
+          }
+          for (const s of newStocks) watchlist.push({ id: '', stock_code: s.stock_code, stock_name: s.stock_name, market: 'KOSPI' as const, is_active: true, added_at: '', notes: null });
+          logger.info(`✅ 상승장 동적 편입: ${newStocks.length}개 → 총 후보 ${watchlist.length}개`, { component: 'TRACK_B' });
+        }
+      } catch (err) {
+        logger.warn(`등락률 상위 조회 실패 (스킵): ${err}`, { component: 'TRACK_B' });
+      }
+    }
 
     // ── 4. 기술적 지표 매매 판단 ─────────────────────────────────────
     // 수급 보정 반영: composite_score + flowAdj (±20점 범위 제한)

@@ -46,7 +46,7 @@ substitutions:
   _REGION: asia-northeast3
   _REPO: quantops
   _SERVICE: quantops
-  _TAG: v0-67-7
+  _TAG: v0-67-8
 
 options:
   logging: CLOUD_LOGGING_ONLY

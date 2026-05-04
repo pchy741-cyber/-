@@ -433,9 +433,11 @@ export async function technicalFallbackDecisions(params: {
     //   RSI 60~70: 모멘텀 강세 → AI 점수 65+ 필수 (추격 위험 있음)
     //   RSI > 70: 과매수 → 진입 금지 (단기 조정 확률 72%)
     // AI buyThreshold 이상은 RSI 80까지 허용 (강한 확신 → 오버바웃 예외)
+    // 강세장(kospiBoost)에서는 RSI 75까지 허용 — 상승장 자체가 RSI 눌러주는 환경
+    const rsiCap = kospiBoost ? 75 : 70;
     const aiBypassRsi = aiScore >= buyThreshold && tech.rsi14 <= 80;
-    if (tech.rsi14 > 70 && !aiBypassRsi) {
-      logger.info(`  🔴 ${stock.stock_code}: RSI=${tech.rsi14.toFixed(0)}>70 과매수 → 스킵 (단기조정 확률 72%)`, { component: 'TRACK_B' });
+    if (tech.rsi14 > rsiCap && !aiBypassRsi) {
+      logger.info(`  🔴 ${stock.stock_code}: RSI=${tech.rsi14.toFixed(0)}>${rsiCap} 과매수 → 스킵`, { component: 'TRACK_B' });
       continue;
     }
 
