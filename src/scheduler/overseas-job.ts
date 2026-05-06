@@ -192,7 +192,7 @@ function getOpenMarketRegions(): Set<string> {
 interface SessionCache {
   topCodes: string[];
   sessionDate: string;
-  techCache: Map<string, { score: number; rsi: number; adx: number; signal: string; trendStrength: string; isMomentum: boolean; dayRangePct: number; aboveMA20: boolean; bollingerSqueeze: boolean; bollingerBreakout: 'UP' | 'DOWN' | 'NONE' }>;
+  techCache: Map<string, { score: number; rsi: number; adx: number; signal: string; trendStrength: string; isMomentum: boolean; dayRangePct: number; aboveMA20: boolean; aboveMA60: boolean; bollingerSqueeze: boolean; bollingerBreakout: 'UP' | 'DOWN' | 'NONE' }>;
 }
 let usSessionCache: SessionCache | null = null;
 let asiaSessionCache: SessionCache | null = null;
@@ -692,6 +692,7 @@ export async function runOverseasJob(): Promise<void> {
       dayRangePct: number; // 0=저가, 100=고가 위치
       isMomentum: boolean; // 당일 강한 상승 모멘텀
       aboveMA20: boolean;  // 현재가 > 21일 이평선
+      aboveMA60: boolean;  // 현재가 > 60일 이평선 (중기 추세 방향)
       bollingerSqueeze: boolean;
       bollingerBreakout: 'UP' | 'DOWN' | 'NONE';
     }> = [];
@@ -722,12 +723,12 @@ export async function runOverseasJob(): Promise<void> {
           : 50;
         const isMomentum = price.changePct >= 3 && dayRangePct >= 60;
 
-        let signal: string, score: number, rsi: number, adx: number, trendStrength: string, aboveMA20: boolean;
+        let signal: string, score: number, rsi: number, adx: number, trendStrength: string, aboveMA20: boolean, aboveMA60: boolean;
         let bollingerSqueeze: boolean, bollingerBreakout: 'UP' | 'DOWN' | 'NONE';
 
         if (cached) {
           // 세션 캐시 재사용 (차트 재분석 불필요)
-          ({ signal, score, rsi, adx, trendStrength, aboveMA20, bollingerSqueeze, bollingerBreakout } = cached);
+          ({ signal, score, rsi, adx, trendStrength, aboveMA20, aboveMA60, bollingerSqueeze, bollingerBreakout } = cached);
         } else {
           if (!chart || chart.length < 30) continue;
           const candles: OHLCV[] = chart.map(c => ({
@@ -738,6 +739,7 @@ export async function runOverseasJob(): Promise<void> {
           signal = tech.overallSignal; score = tech.score;
           rsi = tech.rsi14; adx = tech.adx14; trendStrength = tech.trendStrength;
           aboveMA20 = price.currentPrice > tech.sma20;
+          aboveMA60 = price.currentPrice > tech.sma60;
           bollingerSqueeze = tech.bollingerSqueeze;
           bollingerBreakout = tech.bollingerBreakout;
         }
@@ -746,13 +748,13 @@ export async function runOverseasJob(): Promise<void> {
         if (isNewSession) {
           const cacheTarget = isUSSession ? usSessionCache : asiaSessionCache;
           if (cacheTarget) {
-            cacheTarget.techCache.set(stock.code, { score, rsi, adx, signal, trendStrength, isMomentum, dayRangePct, aboveMA20, bollingerSqueeze, bollingerBreakout });
+            cacheTarget.techCache.set(stock.code, { score, rsi, adx, signal, trendStrength, isMomentum, dayRangePct, aboveMA20, aboveMA60, bollingerSqueeze, bollingerBreakout });
           }
         }
 
         techResults.push({
           code: stock.code, name: stock.name, exchange: stock.exchange,
-          price, signal, score, rsi, adx, trendStrength, dayRangePct, isMomentum, aboveMA20,
+          price, signal, score, rsi, adx, trendStrength, dayRangePct, isMomentum, aboveMA20, aboveMA60,
           bollingerSqueeze, bollingerBreakout,
         });
         logger.info(
@@ -776,9 +778,9 @@ export async function runOverseasJob(): Promise<void> {
         return sb - sa;
       });
       const topCodes = sorted.slice(0, topCount).map(t => t.code);
-      const techCacheMap = new Map<string, { score: number; rsi: number; adx: number; signal: string; trendStrength: string; isMomentum: boolean; dayRangePct: number; aboveMA20: boolean; bollingerSqueeze: boolean; bollingerBreakout: 'UP' | 'DOWN' | 'NONE' }>();
+      const techCacheMap = new Map<string, { score: number; rsi: number; adx: number; signal: string; trendStrength: string; isMomentum: boolean; dayRangePct: number; aboveMA20: boolean; aboveMA60: boolean; bollingerSqueeze: boolean; bollingerBreakout: 'UP' | 'DOWN' | 'NONE' }>();
       for (const t of techResults) {
-        techCacheMap.set(t.code, { score: t.score, rsi: t.rsi, adx: t.adx, signal: t.signal, trendStrength: t.trendStrength, isMomentum: t.isMomentum, dayRangePct: t.dayRangePct, aboveMA20: t.aboveMA20, bollingerSqueeze: t.bollingerSqueeze, bollingerBreakout: t.bollingerBreakout });
+        techCacheMap.set(t.code, { score: t.score, rsi: t.rsi, adx: t.adx, signal: t.signal, trendStrength: t.trendStrength, isMomentum: t.isMomentum, dayRangePct: t.dayRangePct, aboveMA20: t.aboveMA20, aboveMA60: t.aboveMA60, bollingerSqueeze: t.bollingerSqueeze, bollingerBreakout: t.bollingerBreakout });
       }
       const newCache: SessionCache = { topCodes, sessionDate: sessionId, techCache: techCacheMap };
       if (isUSSession) usSessionCache = newCache;
@@ -1088,10 +1090,15 @@ export async function runOverseasJob(): Promise<void> {
             logger.info(`  ⛔ 진입 필터 탈락: ${t.code} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)} trend=${t.trendStrength} (상승추세 미확인)`, { component: 'OVERSEAS' });
             return false;
           }
-          // ── 1-b: 21일 이평선 위 안착 확인 (RSI+MA 전략) ──
-          // 모멘텀(브레이크아웃) 또는 과매도 반등이면 이평선 아래도 허용
+          // ── 1-b: 21일 + 60일 이평선 위 안착 확인 ──
+          // 60일선 아래 = 중기 하락추세 → 데드캣 반등에 매수하는 구조적 손해 방지
+          // 모멘텀(브레이크아웃) 또는 과매도 반등이면 21일선 아래도 허용하되, 60일선 아래는 차단
           if (!t.isMomentum && !isOversold && t.aboveMA20 === false) {
-            logger.info(`  ⛔ MA 하방 진입 차단: ${t.code} 캔들이 21일 이평선 아래 (RSI+MA 안착 미충족)`, { component: 'OVERSEAS' });
+            logger.info(`  ⛔ MA20 하방 진입 차단: ${t.code} 캔들이 21일 이평선 아래`, { component: 'OVERSEAS' });
+            return false;
+          }
+          if (!t.isMomentum && t.aboveMA60 === false) {
+            logger.info(`  ⛔ MA60 하방 진입 차단: ${t.code} 60일 이평선 아래 (중기 하락추세)`, { component: 'OVERSEAS' });
             return false;
           }
           // ── 1-c: BB 스퀴즈 횡보 차단 (에너지 응축 중 돌파 미확인) ──
