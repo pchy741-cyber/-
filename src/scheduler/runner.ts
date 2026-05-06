@@ -446,32 +446,31 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 미국 주식 분석 — 미국 장중 5분 간격 (서머타임: KST 22:30~05:00 / 표준시: 23:30~06:00)
-  // 장 좋을 때 매도 후 현금이 5분 이상 놀지 않도록 (isRunning 가드로 중복 방지)
-  // 22시대: 5분 / 23~5시: 매 5분 / 6시대: 5분 (표준시 보정)
+  // 미국 주식 분석 — 미국 장중 10분 간격 (서머타임: KST 22:30~05:00 / 표준시: 23:30~06:00)
+  // 5분은 KIS rate limit(초당 거래건수) 초과 유발 → 10분이 현금 유휴 방지 + 안정성 균형점
   cron.schedule(
-    '*/5 22 * * 1-5',
+    '*/10 22 * * 1-5',
     () => {
       runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
-    '*/5 23 * * 1-5',
+    '*/10 23 * * 1-5',
     () => {
       runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
-    '*/5 0-5 * * 2-6',
+    '*/10 0-5 * * 2-6',
     () => {
       runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
-    '*/5 6 * * 2-6',
+    '*/10 6 * * 2-6',
     () => {
       runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
     },

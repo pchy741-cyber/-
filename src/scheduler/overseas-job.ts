@@ -1071,11 +1071,6 @@ export async function runOverseasJob(): Promise<void> {
     // 세션 시작 시 기준값 설정 (매일 리셋) — 누적 손실이 아닌 당일 손실만 체크
     if (sessionStartPortfolioValue === null) sessionStartPortfolioValue = portfolioValue;
     const dailyLossPct = ((portfolioValue - sessionStartPortfolioValue) / sessionStartPortfolioValue) * 100;
-    const riskBlocked = dailyLossPct <= -3; // -3% 손실 시 당일 매수 중단 (전체 투자금 기준)
-    if (riskBlocked) {
-      logger.warn(`⛔ 일일 손실 한도(-3%) 초과: 포트폴리오 $${portfolioValue.toFixed(0)} (${dailyLossPct.toFixed(1)}%) → 당일 신규 매수 차단`, { component: 'OVERSEAS' });
-      await logSystem('WARN', 'OVERSEAS', `일일 손실 한도 초과: ${dailyLossPct.toFixed(1)}% → 신규 매수 차단`);
-    }
 
     // ── 5. 매수 판단 ──
     const buyOrders: string[] = [];
@@ -1090,6 +1085,21 @@ export async function runOverseasJob(): Promise<void> {
     const mktSignal = marketSentiment ? interpretMarketSentiment(marketSentiment) : null;
     if (mktSignal) {
       logger.info(`📊 시장 신호: ${mktSignal.reason}`, { component: 'OVERSEAS' });
+    }
+
+    // 일일 손실 한도: 장 품질에 따라 유연하게 적용
+    // GREAT/OK 장세: -5%까지 허용 (손실 회복 기회 — 단, AI 85%+ 고확신 종목만)
+    // CAUTIOUS/DANGER/알수없음: -3% 이상이면 차단 (기존 룰)
+    const quality = mktSignal?.marketQuality ?? 'OK';
+    const dailyLossLimit = (quality === 'GREAT' || quality === 'OK') ? -5 : -3;
+    const riskBlocked = dailyLossPct <= dailyLossLimit;
+    // 손실 회복 모드: -3%~-5% 구간 + GREAT/OK → AI 85%+ 필수 플래그
+    const recoveryMode = dailyLossPct <= -3 && !riskBlocked;
+    if (riskBlocked) {
+      logger.warn(`⛔ 일일 손실 한도(${dailyLossLimit}%) 초과: $${portfolioValue.toFixed(0)} (${dailyLossPct.toFixed(1)}%) → 신규 매수 차단`, { component: 'OVERSEAS' });
+      await logSystem('WARN', 'OVERSEAS', `일일 손실 한도 초과: ${dailyLossPct.toFixed(1)}% → 신규 매수 차단`);
+    } else if (recoveryMode) {
+      logger.warn(`⚠️ 손실 회복 모드(${dailyLossPct.toFixed(1)}%): ${quality} 장세 → AI 85%+ 고확신 종목만 매수`, { component: 'OVERSEAS' });
     }
 
     if (!riskBlocked && currentHoldingCount < MAX_POSITIONS && cash >= 200) {
@@ -1184,19 +1194,22 @@ export async function runOverseasJob(): Promise<void> {
           // OK   : 일반 (기본)
           // CAUTIOUS: 주의 구간 → 고확신 종목만
           // DANGER  : 위험 → 최고확신만, 모멘텀 없이 단순 기술만으론 진입 금지
+          // 손실 회복 모드(-3%~-5%): AI 85%+ 필수 (손해 후 저품질 종목 물타기 방지)
           const quality = mktSignal?.marketQuality ?? 'OK';
-          const minConf = quality === 'GREAT' ? 0.68 : quality === 'CAUTIOUS' ? 0.78 : quality === 'DANGER' ? 0.82 : 0.70;
-          const minConfMomentum = quality === 'GREAT' ? 0.65 : quality === 'CAUTIOUS' ? 0.75 : quality === 'DANGER' ? 0.80 : 0.68;
+          const minConf = recoveryMode ? 0.85
+            : quality === 'GREAT' ? 0.68 : quality === 'CAUTIOUS' ? 0.78 : quality === 'DANGER' ? 0.82 : 0.70;
+          const minConfMomentum = recoveryMode ? 0.83
+            : quality === 'GREAT' ? 0.65 : quality === 'CAUTIOUS' ? 0.75 : quality === 'DANGER' ? 0.80 : 0.68;
           if (ai?.action === 'BUY' && ai.confidence >= minConf) return true;
           if (ai?.action === 'BUY' && (t.signal === 'STRONG_BUY' || t.isMomentum) && ai.confidence >= minConfMomentum) return true;
-          // AI 없을 때: GREAT/OK만 강한 기술적 신호 허용 (CAUTIOUS/DANGER는 AI 필수)
-          if (!ai && (quality === 'GREAT' || quality === 'OK')) {
+          // AI 없을 때: GREAT/OK만 강한 기술적 신호 허용, 손실 회복 모드에서는 AI 필수
+          if (!ai && !recoveryMode && (quality === 'GREAT' || quality === 'OK')) {
             const isBuySignal = t.signal === 'STRONG_BUY' && t.score >= 40 && t.adx >= 25;
             const rsiOk = t.isMomentum ? (t.rsi >= 45 && t.rsi <= 72) : (t.rsi >= 50 && t.rsi <= 62);
             return isBuySignal && rsiOk;
           }
           if (!ai) {
-            logger.info(`  ⛔ ${quality} 장세 AI 없음 차단: ${t.code}`, { component: 'OVERSEAS' });
+            logger.info(`  ⛔ ${recoveryMode ? '손실회복모드' : quality} AI 없음 차단: ${t.code}`, { component: 'OVERSEAS' });
           }
           return false;
         })
