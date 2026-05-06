@@ -45,7 +45,7 @@ const envSchema = z.object({
   RISK_MAX_POSITION_KRW: z.coerce.number().default(5000000),       // 종목당 최대 한도 (pipeline에서 총자산 15%와 min 취함 — 자동 스케일)
   RISK_MAX_TOTAL_INVESTED_PCT: z.coerce.number().default(88),       // 최대 88% 투자 (적극 모드)
   RISK_MAX_CONCURRENT_POSITIONS: z.coerce.number().default(8),      // 동시 8종목
-  RISK_MAX_DAILY_TRADES: z.coerce.number().default(30),             // 하루 30건 (과매매 방지)
+  RISK_MAX_DAILY_TRADES: z.coerce.number().default(15),             // 하루 15건 (SCALPING 수수료 드래그 방지)
 });
 
 // ── 파싱 & Export ──

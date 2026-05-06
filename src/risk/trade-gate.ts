@@ -579,6 +579,36 @@ export async function cooldownGate(): Promise<GateResult> {
   return { passed: true, reason: consecutive > 0 ? `최근 ${consecutive}연패 (쿨다운 미해당)` : '연속손실 없음' };
 }
 
+/**
+ * 종목별 재진입 쿨다운 (SCALPING 전용)
+ * 같은 종목 매수 후 30분 내 재진입 차단 — 수수료 드래그 방지
+ */
+async function reEntryCooldownGate(input: GateInput): Promise<GateResult> {
+  if (input.strategyMode !== 'SCALPING') {
+    return { passed: true, reason: 'SCALPING 외 — 재진입 쿨다운 생략' };
+  }
+  const COOLDOWN_MS = 30 * 60_000; // 30분
+  try {
+    const { rows } = await getPool().query(
+      `SELECT created_at FROM orders
+       WHERE stock_code = $1
+         AND side = 'BUY'
+         AND status IN ('FILLED', 'PENDING', 'PARTIAL')
+         AND created_at >= NOW() - INTERVAL '30 minutes'
+       ORDER BY created_at DESC LIMIT 1`,
+      [input.stockCode],
+    );
+    if (rows.length > 0) {
+      const lastBuy = new Date(rows[0].created_at);
+      const elapsed = Date.now() - lastBuy.getTime();
+      const remaining = Math.ceil((COOLDOWN_MS - elapsed) / 60_000);
+      logger.info(`⏳ [재진입쿨다운] ${input.stockCode}: 마지막 매수 ${Math.floor(elapsed / 60_000)}분 전 → ${remaining}분 대기`, { component: 'TRADE_GATE' });
+      return { passed: false, reason: `재진입 쿨다운: ${remaining}분 남음 (SCALPING 30분 룰)` };
+    }
+  } catch { /* DB 실패 시 통과 */ }
+  return { passed: true, reason: '재진입 쿨다운 없음' };
+}
+
 // ══════════════════════════════════════
 //  통합 게이트 실행
 // ══════════════════════════════════════
@@ -611,6 +641,14 @@ export async function runTradeGates(input: GateInput): Promise<GateResult> {
     return cooldown;
   }
   results.push(cooldown);
+
+  // 1-b. 종목별 재진입 쿨다운 (SCALPING 30분)
+  const reEntry = await reEntryCooldownGate(input);
+  if (!reEntry.passed) {
+    logger.warn(`🚦 [재진입] ${input.stockCode}: ${reEntry.reason}`, { component: 'TRADE_GATE' });
+    return reEntry;
+  }
+  results.push(reEntry);
 
   // 2. 레짐 필터
   const regime = regimeGate(input);
