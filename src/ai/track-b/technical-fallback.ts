@@ -452,12 +452,22 @@ export async function technicalFallbackDecisions(params: {
       }
     }
 
-    // SWING 하락추세 필터: SMA20 < SMA60 = 중기 하락 = 높은 확신 없이 진입 금지
-    // AI 80점+ → 섹터/종목 고유 모멘텀으로 지수 하락을 이길 수 있으므로 면제
-    if (mode === 'SWING' && tech.sma20 < tech.sma60 && aiScore < 80) {
-      const downtrendOk = tech.score >= 55 || tech.rsi14 < 40;
-      if (!downtrendOk && aiScore < buyThreshold) {
-        logger.info(`  ⬇️ ${stock.stock_code}: SMA20<SMA60 하락추세 SWING → tech=${tech.score} RSI=${tech.rsi14.toFixed(0)} 확신 부족 차단`, { component: 'TRACK_B' });
+    // SWING 중기 하락추세 차단: MA20 < MA60 = 추세 역행
+    // AI 85+ 또는 극과매도(RSI<30)만 면제 — 하락장 낙칼 잡기 방지
+    if (mode === 'SWING' && tech.sma20 < tech.sma60) {
+      const canEnterDowntrend = aiScore >= 85 || tech.rsi14 < 30;
+      if (!canEnterDowntrend) {
+        logger.info(`  ⬇️ ${stock.stock_code}: MA20<MA60 중기하락 AI=${aiScore} RSI=${tech.rsi14.toFixed(0)} → 차단`, { component: 'TRACK_B' });
+        continue;
+      }
+    }
+
+    // SWING 단기 하락추세 차단: MA5 < MA20 = 단기 추세 역행
+    // AI 80+ 또는 과매도 반등 구간(RSI<35)만 진입 허용
+    if (mode === 'SWING' && tech.sma5 < tech.sma20 && aiScore < 80) {
+      const isNearOversold = tech.rsi14 < 35;
+      if (!isNearOversold) {
+        logger.info(`  ⬇️ ${stock.stock_code}: MA5<MA20 단기하락 AI=${aiScore} RSI=${tech.rsi14.toFixed(0)} → 차단`, { component: 'TRACK_B' });
         continue;
       }
     }

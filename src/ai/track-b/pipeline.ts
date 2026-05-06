@@ -326,6 +326,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         (kstH === 15 && kstM >= 10) ||
         dailyLoss.blocked ||
         (!isScalpingMode && kospiRegime.penalty >= 2) ||
+        (!isScalpingMode && kospiRegime.todayDown) ||
         (!isScalpingMode && macroRiskOff),
       kospiBoost: kospiRegime.boost,
       allocationTarget: allocCfg ? {

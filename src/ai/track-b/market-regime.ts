@@ -11,33 +11,41 @@ export interface KospiRegime {
   penalty: 0 | 1 | 2;
   /** 강세장: 가격 > MA20 > MA60 (골든크로스 구간) → 포지션 1.3x 확대 + TP 상향 */
   boost: boolean;
+  /** 당일 -0.3%+ 하락 → 신규 매수 억제 (하락장 진입 차단) */
+  todayDown: boolean;
 }
 
 /** KOSPI MA20/MA60 기반 시장 국면 판별 */
 export async function fetchKospiRegime(): Promise<KospiRegime> {
   try {
     const kospiCandles = await getDailyChart('0001', 65);
-    if (kospiCandles.length < 60) return { penalty: 0, boost: false };
+    if (kospiCandles.length < 60) return { penalty: 0, boost: false, todayDown: false };
     const { analyzeTechnicals } = await import('../../analysis/indicators.js');
     const kospiTech = analyzeTechnicals(kospiCandles);
-    if (!kospiTech) return { penalty: 0, boost: false };
+    if (!kospiTech) return { penalty: 0, boost: false, todayDown: false };
     const kospiNow = kospiCandles[0]?.close ?? 0;
+    const kospiPrev = kospiCandles[1]?.close ?? 0;
+    const todayChangePct = kospiPrev > 0 ? (kospiNow - kospiPrev) / kospiPrev * 100 : 0;
+    const todayDown = kospiNow > 0 && todayChangePct <= -0.3;
+    if (todayDown) {
+      logger.info(`📉 KOSPI 당일 ${todayChangePct.toFixed(2)}% 하락 (${kospiNow.toFixed(0)} / 전일${kospiPrev.toFixed(0)}) → 신규 매수 억제`, { component: 'REGIME' });
+    }
     if (kospiNow > 0 && kospiNow < kospiTech.sma60) {
       logger.warn(`⛔ KOSPI ${kospiNow.toFixed(0)} < MA60 ${kospiTech.sma60.toFixed(0)} → 하락장 신규 매수 차단`, { component: 'REGIME' });
-      return { penalty: 2, boost: false };
+      return { penalty: 2, boost: false, todayDown };
     }
     if (kospiNow > 0 && kospiNow < kospiTech.sma20) {
       logger.info(`⚠️ KOSPI ${kospiNow.toFixed(0)} < MA20 ${kospiTech.sma20.toFixed(0)} → 조정장 포지션 60%`, { component: 'REGIME' });
-      return { penalty: 1, boost: false };
+      return { penalty: 1, boost: false, todayDown };
     }
     // 강세장: 가격 > MA20 > MA60 = 골든크로스 구간 → 포지션 확대 + TP 상향
     const isBull = kospiNow > 0 && kospiTech.sma20 > kospiTech.sma60;
     if (isBull) {
       logger.info(`🚀 KOSPI 강세장: ${kospiNow.toFixed(0)} > MA20 ${kospiTech.sma20.toFixed(0)} > MA60 ${kospiTech.sma60.toFixed(0)} → 포지션 1.3x + TP 상향`, { component: 'REGIME' });
     }
-    return { penalty: 0, boost: isBull };
+    return { penalty: 0, boost: isBull, todayDown };
   } catch {
-    return { penalty: 0, boost: false };
+    return { penalty: 0, boost: false, todayDown: false };
   }
 }
 
