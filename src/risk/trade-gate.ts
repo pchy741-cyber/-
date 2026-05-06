@@ -540,8 +540,14 @@ async function getConsecutiveLosses(): Promise<number> {
 export async function cooldownGate(): Promise<GateResult> {
   const consecutive = await getConsecutiveLosses();
 
-  // 5연패 이상 + 마지막 손절 30분 이내 → 30분 쿨다운 (3연패 기준 제거 — 너무 잦은 차단)
-  if (consecutive >= 5) {
+  // 3연패: 45분 쿨다운 (시장이 이미 불리한 상황 — 잠시 멈춤)
+  // 5연패: 2시간 쿨다운 (명백히 오늘 장이 안 맞음 — 강제 휴식)
+  const cooldownMs =
+    consecutive >= 5 ? 120 * 60_000 :  // 2시간
+    consecutive >= 3 ?  45 * 60_000 :  // 45분
+    0;
+
+  if (cooldownMs > 0) {
     try {
       const pool = getPool();
       const { rows } = await pool.query(`
@@ -552,7 +558,6 @@ export async function cooldownGate(): Promise<GateResult> {
 
       if (rows.length > 0) {
         const lastLoss = new Date(rows[0].closed_at);
-        const cooldownMs = 30 * 60_000; // 30분 쿨다운
         const elapsed = Date.now() - lastLoss.getTime();
 
         if (elapsed < cooldownMs) {
@@ -560,11 +565,11 @@ export async function cooldownGate(): Promise<GateResult> {
           const now = Date.now();
           if (now - lastCooldownNotifyAt > 30 * 60_000) {
             lastCooldownNotifyAt = now;
-            sendTelegramMessage(`🚦 연속손실 쿨다운 중: ${consecutive}연패 → ${remaining}분 후 재진입`).catch(() => {});
+            sendTelegramMessage(`🚦 연속손실 쿨다운: ${consecutive}연패 → ${remaining}분 후 재진입`).catch(() => {});
           }
           return {
             passed: false,
-            reason: `연속손실 쿨다운: ${consecutive}연패 → ${remaining}분 후 재진입 가능`,
+            reason: `연속손실 쿨다운: ${consecutive}연패 → ${remaining}분 대기 중`,
           };
         }
       }

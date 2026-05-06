@@ -868,7 +868,7 @@ export async function getLearnedInsightsForPrompt(): Promise<string> {
  * - analyzeTradeHistory() 직후 호출
  */
 export async function autoApplyInsights(insights: LearnedInsight[]): Promise<void> {
-  const toApply = insights.filter((i) => i.confidence >= 0.7 && i.paramChange && !i.isApplied);
+  const toApply = insights.filter((i) => i.confidence >= 0.8 && i.paramChange && !i.isApplied);
   if (toApply.length === 0) return;
 
   try {
