@@ -167,25 +167,47 @@ export async function getNewsSentiment(code: string): Promise<NewsSentiment | nu
 // ──────────────────────────────────────────────────────────────
 // 4. 종합 시장 신호 — 매매 판단 보조
 // ──────────────────────────────────────────────────────────────
+
+// marketQuality 4단계:
+//   GREAT    VIX<18 + F&G 40~65 → 최고 진입 환경, 모멘텀 허용
+//   OK       VIX<22 + F&G 25~75 → 일반 진입, 기준 그대로
+//   CAUTIOUS VIX 22~30 OR F&G<30/70~79 → 선택적 진입, 고확신만
+//   DANGER   VIX>30 OR F&G≥80/≤20+VIX>25 → 방어 섹터 or 정지
+export type MarketQuality = 'GREAT' | 'OK' | 'CAUTIOUS' | 'DANGER';
+
 export function interpretMarketSentiment(s: MarketSentiment): {
   allowBuy: boolean;
   aggressive: boolean;  // 극공포 → 역매수 기회
+  marketQuality: MarketQuality;
   reason: string;
 } {
   const { fearGreedScore: fg, vix } = s;
-  // VIX 35+ = 공황 수준 → 매수 금지 (단, 극공포 역매수 제외)
-  if (vix > 35 && fg > 25) {
-    return { allowBuy: false, aggressive: false, reason: `VIX 공황(${vix.toFixed(0)}) + 탐욕(${fg}) → 매수 금지` };
+
+  // VIX 30+ = 공황 수준 → 방어 섹터만 허용
+  if (vix > 30 && fg > 25) {
+    return { allowBuy: true, aggressive: false, marketQuality: 'DANGER', reason: `VIX 위험(${vix.toFixed(0)}) → 방어 섹터만` };
+  }
+  // VIX 35+ + 탐욕 = 완전 정지
+  if (vix > 35 && fg > 40) {
+    return { allowBuy: false, aggressive: false, marketQuality: 'DANGER', reason: `VIX 공황(${vix.toFixed(0)}) + 탐욕(${fg}) → 매수 금지` };
   }
   // 극공포(≤20) = 역매수 최적 구간
   if (fg <= 20) {
-    return { allowBuy: true, aggressive: true, reason: `극공포(${fg}) 역매수 구간 — 저점 가능성` };
+    return { allowBuy: true, aggressive: true, marketQuality: 'CAUTIOUS', reason: `극공포(${fg}) 역매수 구간 — 방어+저점 종목만` };
   }
   // 극탐욕(≥80) = 과열, 신규 매수 자제
   if (fg >= 80) {
-    return { allowBuy: false, aggressive: false, reason: `극탐욕(${fg}) 과열 — 신규 매수 자제` };
+    return { allowBuy: false, aggressive: false, marketQuality: 'DANGER', reason: `극탐욕(${fg}) 과열 — 신규 매수 자제` };
   }
-  return { allowBuy: true, aggressive: false, reason: `F&G ${fg}(${s.fearGreedLabel}) VIX ${vix.toFixed(0)}` };
+  // 최고 진입 환경 (F&G 중립 + VIX 안정)
+  if (fg >= 40 && fg <= 65 && vix < 18) {
+    return { allowBuy: true, aggressive: false, marketQuality: 'GREAT', reason: `최적 진입 환경 F&G ${fg} VIX ${vix.toFixed(0)}` };
+  }
+  // 주의 구간 (F&G 쏠림 or VIX 상승)
+  if (fg < 30 || fg >= 70 || vix >= 22) {
+    return { allowBuy: true, aggressive: false, marketQuality: 'CAUTIOUS', reason: `주의 구간 F&G ${fg} VIX ${vix.toFixed(0)} — 고확신만` };
+  }
+  return { allowBuy: true, aggressive: false, marketQuality: 'OK', reason: `F&G ${fg}(${s.fearGreedLabel}) VIX ${vix.toFixed(0)}` };
 }
 
 export function hasEarningsRisk(code: string, earnings: EarningsEvent[], daysWindow = 3): boolean {

@@ -575,6 +575,34 @@ async function getLossCooldownStocks(): Promise<Set<string>> {
 }
 
 /**
+ * 7일 이내 손실 매도 종목 — 48h 쿨다운 이후에도 AI 고확신(≥0.85) 없이 재진입 금지
+ * 손해 본 종목에 다시 들어갈 때 AI가 차트를 확인하고 확신이 있을 때만 허용
+ */
+async function getRecentLossStocks(): Promise<Set<string>> {
+  try {
+    const { rows } = await getPool().query(`
+      SELECT DISTINCT stock_code
+      FROM orders
+      WHERE side = 'SELL'
+        AND trigger_source = 'OVERSEAS'
+        AND status = 'FILLED'
+        AND created_at >= NOW() - INTERVAL '7 days'
+        AND created_at < NOW() - INTERVAL '48 hours'
+        AND (
+          ai_reasoning LIKE '%손절%'
+          OR ai_reasoning LIKE '%stopLoss%'
+          OR ai_reasoning LIKE '%보유기한 초과%'
+          OR (
+            REGEXP_REPLACE(ai_reasoning, '.*\\[avgBuy:([0-9.]+)\\].*', '\\1') ~ '^[0-9.]+$'
+            AND filled_price::numeric < REGEXP_REPLACE(ai_reasoning, '.*\\[avgBuy:([0-9.]+)\\].*', '\\1')::numeric
+          )
+        )
+    `);
+    return new Set(rows.map((r: any) => String(r.stock_code)));
+  } catch { return new Set(); }
+}
+
+/**
  * 글로벌 주식 자동매매 Job
  * AI(Claude) + 기술적 지표 복합 판단
  * 최대 5종목 동시 보유, 종목당 $1,500 / 20% 중 작은 값
@@ -686,7 +714,7 @@ export async function runOverseasJob(): Promise<void> {
 
     // ── 1. 시세 + 차트 병렬 수집 (배치 5개씩, rate limit 준수) ──
     const techResults: Array<{
-      code: string; name: string; exchange: string;
+      code: string; name: string; exchange: string; sector: string;
       price: OverseasPrice; signal: string; score: number;
       rsi: number; adx: number; trendStrength: string;
       dayRangePct: number; // 0=저가, 100=고가 위치
@@ -753,7 +781,7 @@ export async function runOverseasJob(): Promise<void> {
         }
 
         techResults.push({
-          code: stock.code, name: stock.name, exchange: stock.exchange,
+          code: stock.code, name: stock.name, exchange: stock.exchange, sector: stock.sector,
           price, signal, score, rsi, adx, trendStrength, dayRangePct, isMomentum, aboveMA20, aboveMA60,
           bollingerSqueeze, bollingerBreakout,
         });
@@ -1048,10 +1076,16 @@ export async function runOverseasJob(): Promise<void> {
     }
 
     if (!riskBlocked && currentHoldingCount < MAX_POSITIONS && cash >= 200) {
-      // 48시간 이내 손절 종목 — 재매수 쿨다운
-      const lossCooldownSet = await getLossCooldownStocks();
+      // 48시간 이내 손절 종목 — 재매수 쿨다운 / 7일 이내 손실 종목 — AI 고확신 필수
+      const [lossCooldownSet, recentLossSet] = await Promise.all([
+        getLossCooldownStocks(),
+        getRecentLossStocks(),
+      ]);
       if (lossCooldownSet.size > 0) {
         logger.info(`🚫 손절 쿨다운 종목 (48h): ${[...lossCooldownSet].join(', ')}`, { component: 'OVERSEAS' });
+      }
+      if (recentLossSet.size > 0) {
+        logger.info(`⚠️ 최근 손실 종목 (7일, AI≥85% 필수): ${[...recentLossSet].join(', ')}`, { component: 'OVERSEAS' });
       }
 
       const buyTargets = techResults
@@ -1064,6 +1098,14 @@ export async function runOverseasJob(): Promise<void> {
           }
           return true;
         })
+        // 7일 이내 손실 종목 — AI 85% 이상 + BUY 확신 없으면 재진입 금지
+        .filter(t => {
+          if (!recentLossSet.has(t.code)) return true;
+          const ai = aiMap.get(t.code);
+          if (ai?.action === 'BUY' && ai.confidence >= 0.85) return true;
+          logger.info(`⚠️ 최근 손실 종목 재진입 차단: ${t.code} AI 확신 부족 (${ai ? `${(ai.confidence * 100).toFixed(0)}%` : 'AI 없음'} < 85%)`, { component: 'OVERSEAS' });
+          return false;
+        })
         // 어닝 3일 이내 종목 매수 금지 (어닝 서프라이즈 리스크)
         .filter(t => {
           if (hasEarningsRisk(t.code, upcomingEarnings, 3)) {
@@ -1072,10 +1114,17 @@ export async function runOverseasJob(): Promise<void> {
           }
           return true;
         })
-        // 극탐욕(F&G≥80) 또는 VIX 공황(>35) 시 신규 매수 차단 (극공포 역매수는 허용)
+        // 시장 신호 기반 차단 (극탐욕/공황) + 시장 품질별 섹터 필터
         .filter(t => {
-          if (mktSignal && !mktSignal.allowBuy && !mktSignal.aggressive) {
+          if (!mktSignal) return true;
+          if (!mktSignal.allowBuy && !mktSignal.aggressive) {
             logger.info(`📊 시장 과열/공황 차단: ${t.code} — ${mktSignal.reason}`, { component: 'OVERSEAS' });
+            return false;
+          }
+          // DANGER 장세: 고베타 섹터(AI_SEMI, GROWTH, EV, CRYPTO) 진입 금지 → 방어 섹터만
+          const highBetaSectors = ['AI_SEMI', 'GROWTH', 'EV', 'CRYPTO', 'JP_AUTO', 'JP_TECH'];
+          if (mktSignal.marketQuality === 'DANGER' && highBetaSectors.includes(t.sector)) {
+            logger.info(`📊 DANGER 장세 고베타 차단: ${t.code}(${t.sector}) — ${mktSignal.reason}`, { component: 'OVERSEAS' });
             return false;
           }
           return true;
@@ -1113,15 +1162,24 @@ export async function runOverseasJob(): Promise<void> {
             logger.info(`  ⛔ 고점 진입 차단: ${t.code} dayRangePct=${t.dayRangePct?.toFixed(0)}% (일중 고점 근처)`, { component: 'OVERSEAS' });
             return false;
           }
-          // AI 신뢰도 70% 이상 + 상승 방향일 때만 진입
-          if (ai?.action === 'BUY' && ai.confidence >= 0.70) return true;
-          // STRONG_BUY + 모멘텀은 68%도 허용
-          if (ai?.action === 'BUY' && (t.signal === 'STRONG_BUY' || t.isMomentum) && ai.confidence >= 0.68) return true;
-          // AI 없을 때: 강한 기술적 신호만 진입
-          if (!ai) {
+          // ── 3단계: 시장 품질별 AI 신뢰도 임계값 ──
+          // GREAT: F&G 40~65 + VIX<18 → 기준 완화 (최고 진입 환경)
+          // OK   : 일반 (기본)
+          // CAUTIOUS: 주의 구간 → 고확신 종목만
+          // DANGER  : 위험 → 최고확신만, 모멘텀 없이 단순 기술만으론 진입 금지
+          const quality = mktSignal?.marketQuality ?? 'OK';
+          const minConf = quality === 'GREAT' ? 0.68 : quality === 'CAUTIOUS' ? 0.78 : quality === 'DANGER' ? 0.82 : 0.70;
+          const minConfMomentum = quality === 'GREAT' ? 0.65 : quality === 'CAUTIOUS' ? 0.75 : quality === 'DANGER' ? 0.80 : 0.68;
+          if (ai?.action === 'BUY' && ai.confidence >= minConf) return true;
+          if (ai?.action === 'BUY' && (t.signal === 'STRONG_BUY' || t.isMomentum) && ai.confidence >= minConfMomentum) return true;
+          // AI 없을 때: GREAT/OK만 강한 기술적 신호 허용 (CAUTIOUS/DANGER는 AI 필수)
+          if (!ai && (quality === 'GREAT' || quality === 'OK')) {
             const isBuySignal = t.signal === 'STRONG_BUY' && t.score >= 40 && t.adx >= 25;
             const rsiOk = t.isMomentum ? (t.rsi >= 45 && t.rsi <= 72) : (t.rsi >= 50 && t.rsi <= 62);
             return isBuySignal && rsiOk;
+          }
+          if (!ai) {
+            logger.info(`  ⛔ ${quality} 장세 AI 없음 차단: ${t.code}`, { component: 'OVERSEAS' });
           }
           return false;
         })
@@ -1130,10 +1188,13 @@ export async function runOverseasJob(): Promise<void> {
           // AI 있으면 confidence 우선, 없으면 score + 모멘텀 + 승률 보너스
           const wrA = overseasWinRates.get(a.code);
           const wrB = overseasWinRates.get(b.code);
-          const wrBoostA = wrA && wrA.sampleCount >= 2 ? (wrA.winRate >= 0.65 ? 15 : wrA.winRate >= 0.55 ? 8 : wrA.winRate <= 0.30 ? -15 : wrA.winRate <= 0.40 ? -8 : 0) : 0;
-          const wrBoostB = wrB && wrB.sampleCount >= 2 ? (wrB.winRate >= 0.65 ? 15 : wrB.winRate >= 0.55 ? 8 : wrB.winRate <= 0.30 ? -15 : wrB.winRate <= 0.40 ? -8 : 0) : 0;
-          const sa = (a.ai?.confidence ?? 0) * 100 + a.score * 0.3 + (a.isMomentum ? 20 : 0) + wrBoostA;
-          const sb = (b.ai?.confidence ?? 0) * 100 + b.score * 0.3 + (b.isMomentum ? 20 : 0) + wrBoostB;
+          const wrBoostA = wrA && wrA.sampleCount >= 5 ? (wrA.winRate >= 0.65 ? 15 : wrA.winRate >= 0.55 ? 8 : wrA.winRate <= 0.30 ? -15 : wrA.winRate <= 0.40 ? -8 : 0) : 0;
+          const wrBoostB = wrB && wrB.sampleCount >= 5 ? (wrB.winRate >= 0.65 ? 15 : wrB.winRate >= 0.55 ? 8 : wrB.winRate <= 0.30 ? -15 : wrB.winRate <= 0.40 ? -8 : 0) : 0;
+          // 7일 이내 손실 종목은 우선순위 후순위 (-25점 페널티)
+          const losspenA = recentLossSet.has(a.code) ? -25 : 0;
+          const losspenB = recentLossSet.has(b.code) ? -25 : 0;
+          const sa = (a.ai?.confidence ?? 0) * 100 + a.score * 0.3 + (a.isMomentum ? 20 : 0) + wrBoostA + losspenA;
+          const sb = (b.ai?.confidence ?? 0) * 100 + b.score * 0.3 + (b.isMomentum ? 20 : 0) + wrBoostB + losspenB;
           return sb - sa;
         });
 
@@ -1165,7 +1226,7 @@ export async function runOverseasJob(): Promise<void> {
 
         const buyMode = target.isMomentum ? '🚀모멘텀' : (target.rsi <= 35 ? '📉과매도반등' : '📊트렌드');
         const wrInfo = overseasWinRates.get(target.code);
-        const wrTag = wrInfo && wrInfo.sampleCount >= 2 ? ` 승률${(wrInfo.winRate * 100).toFixed(0)}%/${wrInfo.sampleCount}건` : '';
+        const wrTag = wrInfo && wrInfo.sampleCount >= 5 ? ` 승률${(wrInfo.winRate * 100).toFixed(0)}%/${wrInfo.sampleCount}건` : '';
         const reason = target.ai
           ? `${buyMode} AI(${(target.ai.confidence * 100).toFixed(0)}%) 사이징x${sizingMult}: ${target.ai.reasoning}${wrTag}`
           : `${buyMode} 기술(AI없음) 사이징x${sizingMult}: score=${target.score} RSI=${target.rsi.toFixed(0)} ADX=${target.adx.toFixed(0)}${wrTag}`;
