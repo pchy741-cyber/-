@@ -244,7 +244,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const flowAdjMap = new Map<string, number>();
     try {
       const FLOW_SCORE_ADJ: Record<string, number> = { STRONG_BUY: 15, BUY: 8, NEUTRAL: 0, SELL: -10, STRONG_SELL: -20 };
-      const flowBatch = stockCodes.slice(0, 10); // 최대 10종목만 (rate limit)
+      const flowBatch = sortedWatchlistCodes.slice(0, 10); // AI 스코어 상위 10종목 (rate limit + 매수 후보 우선)
       const flowResults = await Promise.allSettled(
         flowBatch.map((code) =>
           Promise.race([
@@ -325,7 +325,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       chartData,
       openChains,
       orderableCash,
-      maxPositionKrw: config.risk.maxPositionKrw,
+      maxPositionKrw: dailyLoss.earlyWarning
+        ? Math.round(config.risk.maxPositionKrw * 0.5)
+        : config.risk.maxPositionKrw,
       totalAssets,
       lossBlockedCodes: new Set([...recentLossCodes, ...todayRepeatStopCodes]),
       manuallySoldCodes,

@@ -21,7 +21,7 @@ export async function technicalFallbackDecisions(params: {
   orderableCash: number;
   maxPositionKrw: number;
   aiScores?: Array<{ stock_code: string; score: number }>;
-  /** 14일 이내 손절 종목 코드 — 재진입 금지 */
+  /** 손절 쿨다운 종목 코드 — 재진입 금지 (14일) */
   lossBlockedCodes?: Set<string>;
   /** 24시간 이내 CEO 수동 매도 종목 코드 — 재진입 금지 */
   manuallySoldCodes?: Set<string>;
@@ -66,11 +66,11 @@ export async function technicalFallbackDecisions(params: {
   }
   const decisions: TradeDecision[] = [];
 
-  // SCALPING 09:25 강제청산 판단용 KST 시간
+  // SCALPING 09:45 강제청산 판단용 KST 시간 (개장 09:30까지 진입 → 09:45까지 TP 대기)
   const _scalpNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
   const _scalpH = _scalpNow.getUTCHours();
   const _scalpM = _scalpNow.getUTCMinutes();
-  const isPastScalpDeadline = _scalpH > 9 || (_scalpH === 9 && _scalpM >= 25);
+  const isPastScalpDeadline = _scalpH > 9 || (_scalpH === 9 && _scalpM >= 45);
 
   // 1. 보유 종목 매도 판단 (손절/익절)
   // 동일 종목에 다중 체인(분할 매수)이 있을 경우 중복 매도 신호 방지
@@ -92,7 +92,7 @@ export async function technicalFallbackDecisions(params: {
         stock_code: chain.stock_code,
         quantity: chain.total_quantity,
         price_type: 'MARKET',
-        reasoning: `SCALPING 강제청산(09:25): 단타 윈도우 종료 (${pnlPct.toFixed(1)}%)`,
+        reasoning: `SCALPING 강제청산(09:45): 단타 윈도우 종료 (${pnlPct.toFixed(1)}%)`,
         confidence: 1.0,
       });
       processedSellCodes.add(chain.stock_code);
@@ -151,6 +151,10 @@ export async function technicalFallbackDecisions(params: {
       }
     }
 
+    // 차트 지표 (트레일링 스톱 + 손절 공통 사용)
+    const sellCheckCandles = chartData.get(chain.stock_code);
+    const sellTech = sellCheckCandles && sellCheckCandles.length >= 30 ? analyzeTechnicals(sellCheckCandles) : null;
+
     // 2단계: 부분 익절 후 잔여 수량 트레일링 스톱
     if (chain.status === 'PROFIT_TAKING') {
       // peak_price가 DB에 없으면 트레일링 기준 없음 → 손실 구간에서 오발동 방지
@@ -171,7 +175,10 @@ export async function technicalFallbackDecisions(params: {
       }
       const peakPrice = (chain as any).peak_price ? Number((chain as any).peak_price) : Number(chain.avg_buy_price) * (1 + strategyParams.takeProfitPct / 100);
       const trailDropPct = ((price.currentPrice - peakPrice) / peakPrice) * 100;
-      const isTrailTriggered = trailDropPct <= -3.5; // peak 대비 -3.5% 하락 시 청산 (+5% 2단계 목표와 균형)
+      // ATR 동적 트레일링: 2×ATR% (min -1.5%, max -5.0%) — 변동성 낮은 종목은 더 촘촘하게 잠금
+      const trailAtrPct = sellTech?.atrPct ?? 1.5;
+      const dynamicTrailPct = Math.max(-5.0, Math.min(-1.5, -(trailAtrPct * 2.0)));
+      const isTrailTriggered = trailDropPct <= dynamicTrailPct;
       const isTargetReached = pnlPct >= 5.0;         // +5.0% 추가 목표 달성 시 전량 익절
 
       if (isTargetReached || isTrailTriggered) {
@@ -182,7 +189,7 @@ export async function technicalFallbackDecisions(params: {
           price_type: 'MARKET',
           reasoning: isTargetReached
             ? `2단계 익절(잔여전량): +${pnlPct.toFixed(1)}% 목표달성`
-            : `트레일링 스톱: peak 대비 ${trailDropPct.toFixed(2)}% 하락 (peak=${peakPrice.toFixed(0)}원)`,
+            : `트레일링 스톱: peak 대비 ${trailDropPct.toFixed(2)}% 하락 (ATR기준 ${dynamicTrailPct.toFixed(1)}%, peak=${peakPrice.toFixed(0)}원)`,
           confidence: 0.9,
         });
         processedSellCodes.add(chain.stock_code);
@@ -192,8 +199,6 @@ export async function technicalFallbackDecisions(params: {
     // ──────────────────────────────────────────────────────────────────────
 
     // 손절 (ATR 동적 손절 vs 전략 고정 손절 — 더 보수적인 쪽 적용)
-    const sellCheckCandles = chartData.get(chain.stock_code);
-    const sellTech = sellCheckCandles && sellCheckCandles.length >= 30 ? analyzeTechnicals(sellCheckCandles) : null;
     const dynamicStop = sellTech ? sellTech.dynamicStopLossPct : chainSl;
     // ATR 기반이 고정 손절보다 좁으면 ATR 우선 (더 빠른 손절로 손실 최소화)
     // AI 80점+ 고확신 종목은 손절 기준 1.4배 넓히기 (일시적 노이즈로 조기손절 방지)
@@ -354,9 +359,9 @@ export async function technicalFallbackDecisions(params: {
       logger.info(`  🚫 ${stock.stock_code}(${stock.stock_name}): 매수 차단 목록 — 스킵`, { component: 'TRACK_B' });
       continue;
     }
-    // 7일 이내 손절 쿨다운 종목 재진입 금지
+    // 14일 이내 손절 쿨다운 종목 재진입 금지
     if (lossBlockedCodes?.has(stock.stock_code)) {
-      logger.info(`  🚫 ${stock.stock_code}(${stock.stock_name}): 손절 쿨다운 (7일) — 재진입 금지`, { component: 'TRACK_B' });
+      logger.info(`  🚫 ${stock.stock_code}(${stock.stock_name}): 손절 쿨다운 (14일) — 재진입 금지`, { component: 'TRACK_B' });
       continue;
     }
     // 24시간 이내 CEO 수동 매도 종목 재진입 금지
@@ -813,12 +818,19 @@ export async function technicalFallbackDecisions(params: {
       : blendedScore >= 85 ? (allocationBoostFirstEntry ? 0.90 : 0.80)  // 원복 (0.88→0.80: 물타기 여지 확보)
       : splitCount <= 1 ? 1.0
       : splitCount <= 2 ? (allocationBoostFirstEntry ? 0.90 : 0.70) : (allocationBoostFirstEntry ? 0.85 : 0.65);
+    // AI 점수 고확신 포지션 확대 (Half-Kelly 기반 확신도 비례)
+    // AI 90+: 2.0x — 엘리트 신호, 최대 비중 투입 / AI 85-89: 1.5x — 고확신, 비중 강화
+    const aiPosMultiplier = aiScore >= 90 ? 2.0 : aiScore >= 85 ? 1.5 : 1.0;
     const targetKrw = totalAssets
-      ? Math.round(totalAssets * baseAllocPct * modeScale * winRateMultiplier * priorityBonus * firstEntryRatio)
-      : Math.round(effectiveMaxPos * firstEntryRatio);
+      ? Math.round(totalAssets * baseAllocPct * modeScale * winRateMultiplier * priorityBonus * firstEntryRatio * aiPosMultiplier)
+      : Math.round(effectiveMaxPos * firstEntryRatio * aiPosMultiplier);
 
-    // 상한: effectiveMaxPos (종목당 절대 한도), 남은 현금의 92%까지 사용 (현금 최소화)
-    const positionSize = Math.min(targetKrw, effectiveMaxPos, remainingCash * 0.92);
+    // AI 고확신: 포지션 한도 확대 (최대 총자산 50% 캡)
+    const aiMaxPos = aiPosMultiplier > 1.0 && totalAssets
+      ? Math.min(effectiveMaxPos * aiPosMultiplier, totalAssets * 0.50)
+      : effectiveMaxPos;
+    // 상한: aiMaxPos (AI확신도 반영 종목당 한도), 남은 현금의 92%까지 사용 (현금 최소화)
+    const positionSize = Math.min(targetKrw, aiMaxPos, remainingCash * 0.92);
     if (positionSize < 700000) continue; // 최소 70만원 미달 → 이 종목만 스킵 (Half-Kelly 원칙상 소액 매매는 수수료 대비 비효율)
 
     let quantity = Math.floor(positionSize / cand.price.currentPrice);
