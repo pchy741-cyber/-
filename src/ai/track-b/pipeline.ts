@@ -197,7 +197,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     let hasBuyCandidates = scores.some(
-      (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[mode].buyThreshold && (s.confidence ?? 0) >= 0.35,
+      (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[effectiveMode].buyThreshold && (s.confidence ?? 0) >= 0.35,
     );
     const hasOpenPositions = openChains.some((c) => Number(c.total_quantity) > 0);
     if (!hasBuyCandidates) {
@@ -217,7 +217,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           if (newScores.length > 0) {
             scores.push(...newScores);
             hasBuyCandidates = scores.some(
-              (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[mode].buyThreshold && (s.confidence ?? 0) >= 0.35,
+              (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[effectiveMode].buyThreshold && (s.confidence ?? 0) >= 0.35,
             );
           }
         }
@@ -319,13 +319,13 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       stopLossPct: strategy?.stop_loss_pct ?? undefined,
       buyThreshold: strategy?.buy_threshold ?? undefined,
       winRates,
-      // SCALPING 모드: AI 72+점 + 기술 필터가 품질 게이트 → KOSPI MA60 하락장 블록·macroRiskOff 면제
+      // effectiveMode=SCALPING일 때만 KOSPI MA60 하락장 블록·macroRiskOff 면제 (09:25 이후엔 SWING 기준 적용)
       blockNewBuys:
         kstH > 15 ||
         (kstH === 15 && kstM >= 10) ||
         dailyLoss.blocked ||
-        (!isScalpingMode && kospiRegime.penalty >= 2) ||
-        (!isScalpingMode && macroRiskOff),
+        (effectiveMode !== 'SCALPING' && kospiRegime.penalty >= 2) ||
+        (effectiveMode !== 'SCALPING' && macroRiskOff),
       kospiBoost: kospiRegime.boost,
       allocationTarget: allocCfg ? {
         stock_pct: Number(allocCfg.stock_pct),
