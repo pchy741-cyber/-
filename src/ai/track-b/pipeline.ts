@@ -102,6 +102,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     if (isOpeningBell && mode === 'SCALPING') {
       logger.info('🔔 개장 초단타 모드 자동 활성화 (09:00~09:10) — SCALPING +1.2% 즉시 익절', { component: 'TRACK_B' });
     }
+    // SCALPING 09:25 데드라인: 이후 신규 매수는 SWING 기준으로 전환 (기존 체인은 강제청산 유지)
+    const isPastScalpDeadline = dbMode === 'SCALPING' && (kstH > 9 || (kstH === 9 && kstM >= 25));
+    const isScalpingMode = dbMode === 'SCALPING';
 
     // ── 방어 파킹 시스템 ──────────────────────────────────────────────
     const parkState = await getDefenseParkState();
@@ -184,8 +187,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // ── 매수 후보 스크리닝 + KIS 관심종목 동기화 ──────────────────────
     const hasScores = scores.length > 0;
-    const effectiveMode: StrategyMode = (scores.length === 0 && mode === 'DEFENSE') ? 'SWING' : mode;
-    if (scores.length === 0 && mode === 'DEFENSE') {
+    const effectiveMode: StrategyMode = isPastScalpDeadline
+      ? 'SWING'
+      : (scores.length === 0 && mode === 'DEFENSE') ? 'SWING' : mode;
+    if (isPastScalpDeadline) {
+      logger.info('⏰ SCALPING 09:25 이후 → 신규 매수 SWING 기준 전환 (기존 SCALPING 포지션은 강제청산)', { component: 'TRACK_B' });
+    } else if (scores.length === 0 && mode === 'DEFENSE') {
       logger.info('⚡ AI 스코어 없음 + DEFENSE 모드 → SWING으로 완화', { component: 'TRACK_B' });
     }
 
@@ -259,7 +266,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 조건: KOSPI >= MA60 (하락장 아님) + 일일손실 미차단
     // kospiBoost(MA20>MA60 강세) 뿐 아니라 중립장(penalty=0)에서도 작동
     const watchlistSet = new Set(watchlist.map((w) => w.stock_code));
-    if (kospiRegime.penalty === 0 && !dailyLoss.blocked) {
+    if ((kospiRegime.penalty === 0 || isScalpingMode) && !dailyLoss.blocked) {
       try {
         const topGainers = await getChangeRankingStocks(10, 'J');
         const newStocks = topGainers.filter((s) => s.stock_code && !watchlistSet.has(s.stock_code));
@@ -312,12 +319,13 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       stopLossPct: strategy?.stop_loss_pct ?? undefined,
       buyThreshold: strategy?.buy_threshold ?? undefined,
       winRates,
+      // SCALPING 모드: AI 72+점 + 기술 필터가 품질 게이트 → KOSPI MA60 하락장 블록·macroRiskOff 면제
       blockNewBuys:
         kstH > 15 ||
         (kstH === 15 && kstM >= 10) ||
         dailyLoss.blocked ||
-        kospiRegime.penalty >= 2 ||
-        macroRiskOff,
+        (!isScalpingMode && kospiRegime.penalty >= 2) ||
+        (!isScalpingMode && macroRiskOff),
       kospiBoost: kospiRegime.boost,
       allocationTarget: allocCfg ? {
         stock_pct: Number(allocCfg.stock_pct),
