@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { getActiveStrategy, getPool, isMemoryMode } from '../../db/client.js';
+import { getActiveStrategy, getPool, isMemoryMode, logSystem } from '../../db/client.js';
 import { memSetActiveStrategy } from '../../db/memory-store.js';
 import { activateKillSwitch, deactivateKillSwitch, getKillSwitchStatus } from '../../risk/kill-switch.js';
 import { runTrackAJob } from '../../scheduler/track-a-job.js';
@@ -55,9 +55,15 @@ settingsRoutes.put('/strategy', async (c) => {
     risk_prompt: body.risk_prompt ?? '',
   };
 
+  // 감사 로그: 변경 전 상태 스냅샷
+  const prevStrategy = await getActiveStrategy().catch(() => null);
+
   // 인메모리 모드: DB 없이도 전략 변경 가능
   if (isMemoryMode()) {
     const updated = memSetActiveStrategy(strategyData);
+    const diff = buildStrategyDiff(prevStrategy, strategyData);
+    await logSystem('INFO', 'STRATEGY_AUDIT', `전략 변경: ${diff}`, { prev: prevStrategy, next: strategyData }).catch(() => {});
+    logger.info(`📋 전략 변경 감사: ${diff}`, { component: 'SETTINGS' });
     return c.json(updated);
   }
 
@@ -95,6 +101,9 @@ settingsRoutes.put('/strategy', async (c) => {
     const { rows } = await getPool().query(
       `SELECT * FROM strategy_config WHERE is_active = true ORDER BY updated_at DESC LIMIT 1`,
     );
+    const diff = buildStrategyDiff(prevStrategy, strategyData);
+    await logSystem('INFO', 'STRATEGY_AUDIT', `전략 변경: ${diff}`, { prev: prevStrategy, next: strategyData }).catch(() => {});
+    logger.info(`📋 전략 변경 감사: ${diff}`, { component: 'SETTINGS' });
     return c.json(rows[0]);
   } catch (err: any) {
     // DB 실패 시 인메모리 폴백
@@ -102,6 +111,34 @@ settingsRoutes.put('/strategy', async (c) => {
     return c.json(updated);
   }
 });
+
+// ── 전략 변경 감사 로그 조회 ──
+settingsRoutes.get('/strategy/audit', async (c) => {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT id, level, message, details, created_at
+       FROM system_log
+       WHERE component = 'STRATEGY_AUDIT'
+       ORDER BY created_at DESC
+       LIMIT 50`,
+    );
+    return c.json(rows);
+  } catch (err: any) {
+    return c.json({ error: err?.message }, 500);
+  }
+});
+
+/** 변경된 필드만 요약 문자열 반환 */
+function buildStrategyDiff(
+  prev: Record<string, unknown> | null,
+  next: Record<string, unknown>,
+): string {
+  if (!prev) return `신규 설정 (mode=${next.mode})`;
+  const KEYS = ['mode', 'buy_threshold', 'stop_loss_pct', 'take_profit_pct'] as const;
+  const changed = KEYS.filter((k) => String(prev[k] ?? '') !== String(next[k] ?? ''));
+  if (changed.length === 0) return '프롬프트 텍스트만 변경';
+  return changed.map((k) => `${k}: ${prev[k]} → ${next[k]}`).join(', ');
+}
 
 // ── 푸시 알림 ──
 settingsRoutes.get('/push/vapid-key', async (c) => {

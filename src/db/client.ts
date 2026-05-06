@@ -333,6 +333,19 @@ export async function getOrdersByChain(chainId: string): Promise<Order[]> {
   return rows;
 }
 
+export async function getPendingDomesticOrders(): Promise<Order[]> {
+  if (useMemory) return [];
+  const { rows } = await getPool().query(
+    `SELECT * FROM orders
+     WHERE status = 'PENDING'
+       AND (trigger_source IS NULL OR trigger_source != 'OVERSEAS')
+       AND created_at >= NOW() - INTERVAL '2 hours'
+       AND kis_order_no IS NOT NULL
+     ORDER BY created_at ASC`,
+  );
+  return rows;
+}
+
 // ── Portfolio Snapshots ──
 
 export async function insertSnapshot(snapshot: {

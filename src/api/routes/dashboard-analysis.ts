@@ -522,6 +522,88 @@ dashboardAnalysisRoutes.post('/sync-positions', async (c) => {
 // suppress unused import warning
 void isInvalidStockName;
 
+// ── 전략별 성과 분석 ──
+dashboardAnalysisRoutes.get('/strategy/performance', async (c) => {
+  try {
+    const pool = getPool();
+    const { rows } = await pool.query(`
+      SELECT
+        tc.strategy_mode,
+        COUNT(*) AS trades,
+        SUM(CASE WHEN tc.realized_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+        ROUND(AVG(tc.realized_pnl)::numeric, 0) AS avg_pnl,
+        ROUND(SUM(tc.realized_pnl)::numeric, 0) AS total_pnl,
+        ROUND(
+          AVG(CASE WHEN tc.avg_buy_price > 0 AND tc.total_quantity > 0
+            THEN tc.realized_pnl / (tc.avg_buy_price * tc.total_quantity) * 100
+            ELSE NULL END)::numeric, 2
+        ) AS avg_pnl_pct,
+        ROUND(AVG(
+          EXTRACT(EPOCH FROM (tc.closed_at - tc.created_at)) / 3600
+        )::numeric, 1) AS avg_hold_hours
+      FROM transaction_chains tc
+      WHERE tc.status = 'CLOSED'
+        AND tc.stock_code ~ '^[0-9]{6}$'
+        AND tc.created_at >= NOW() - INTERVAL '90 days'
+      GROUP BY tc.strategy_mode
+      ORDER BY total_pnl DESC
+    `);
+    return c.json(rows.map((r: any) => ({
+      mode: r.strategy_mode ?? 'UNKNOWN',
+      trades: Number(r.trades),
+      wins: Number(r.wins),
+      winRate: Number(r.trades) > 0 ? Math.round(Number(r.wins) / Number(r.trades) * 100) : 0,
+      avgPnl: Number(r.avg_pnl),
+      totalPnl: Number(r.total_pnl),
+      avgPnlPct: Number(r.avg_pnl_pct ?? 0),
+      avgHoldHours: Number(r.avg_hold_hours ?? 0),
+    })));
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── 시간대별 매매 성과 분석 (어느 시간대에 매수하면 수익률이 좋은가) ──
+dashboardAnalysisRoutes.get('/trades/by-hour', async (c) => {
+  try {
+    const pool = getPool();
+    const { rows } = await pool.query(`
+      SELECT
+        EXTRACT(HOUR FROM o.created_at AT TIME ZONE 'Asia/Seoul')::int AS hour,
+        o.side,
+        COUNT(*) AS count,
+        ROUND(AVG(
+          CASE
+            WHEN o.side = 'SELL' AND o.filled_price IS NOT NULL AND tc.avg_buy_price IS NOT NULL AND tc.avg_buy_price > 0
+            THEN (o.filled_price - tc.avg_buy_price) / tc.avg_buy_price * 100
+            ELSE NULL
+          END
+        )::numeric, 2) AS avg_pnl_pct,
+        SUM(CASE
+          WHEN o.side = 'SELL' AND o.filled_price IS NOT NULL AND tc.avg_buy_price IS NOT NULL
+            AND o.filled_price > tc.avg_buy_price THEN 1 ELSE 0
+        END) AS win_count
+      FROM orders o
+      JOIN transaction_chains tc ON tc.id = o.chain_id
+      WHERE o.status = 'FILLED'
+        AND o.trigger_source != 'OVERSEAS'
+        AND o.created_at >= NOW() - INTERVAL '90 days'
+        AND o.filled_price IS NOT NULL
+      GROUP BY hour, o.side
+      ORDER BY hour ASC, o.side ASC
+    `);
+    return c.json(rows.map((r: any) => ({
+      hour: Number(r.hour),
+      side: r.side,
+      count: Number(r.count),
+      avgPnlPct: Number(r.avg_pnl_pct ?? 0),
+      winRate: Number(r.count) > 0 ? Math.round(Number(r.win_count) / Number(r.count) * 100) : 0,
+    })));
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
 // ── 봇 수익률 vs KOSPI 비교 ──
 dashboardAnalysisRoutes.get('/market/performance-vs-kospi', async (c) => {
   try {
@@ -772,6 +854,123 @@ dashboardAnalysisRoutes.get('/market/investor-flow', async (c) => {
       .sort((a, b) => (b.foreignNet + b.institutionNet) - (a.foreignNet + a.institutionNet));
     _flowCache = { data: items, fetchedAt: Date.now() };
     return c.json({ items, cached: false });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── [10] 성과 분석: 전략모드별 어트리뷰션 ──
+// 각 전략 모드별 실현 손익, 수수료, 슬리피지 추정, 순손익, 승률, 평균 보유시간
+dashboardAnalysisRoutes.get('/performance/attribution', async (c) => {
+  try {
+    const { rows } = await getPool().query(`
+      SELECT
+        tc.strategy_mode                                            AS mode,
+        COUNT(*)                                                    AS trades,
+        SUM(
+          (o.filled_price - tc.avg_buy_price) * o.filled_quantity
+        )                                                           AS gross_pnl,
+        -- 왕복 수수료 추정: 매도금액×0.0025 (국내 0.015%+증권사 0.015%+거래세 0.2%)
+        SUM(o.filled_price * o.filled_quantity * 0.0025)           AS est_commission,
+        COUNT(*) FILTER (
+          WHERE (o.filled_price - tc.avg_buy_price) > 0
+        )                                                           AS wins,
+        ROUND(AVG(
+          EXTRACT(EPOCH FROM (o.created_at - tc.created_at)) / 3600
+        )::numeric, 1)                                             AS avg_hold_hours
+      FROM orders o
+      JOIN transaction_chains tc ON tc.id = o.chain_id
+      WHERE o.side = 'SELL'
+        AND o.status = 'FILLED'
+        AND o.trigger_source != 'OVERSEAS'
+        AND o.created_at >= NOW() - INTERVAL '90 days'
+        AND o.filled_price IS NOT NULL
+        AND tc.avg_buy_price IS NOT NULL
+      GROUP BY tc.strategy_mode
+      ORDER BY gross_pnl DESC
+    `);
+
+    const result = rows.map((r: any) => {
+      const trades = Number(r.trades);
+      const grossPnl = Number(r.gross_pnl ?? 0);
+      const commission = Number(r.est_commission ?? 0);
+      return {
+        mode: r.mode ?? 'UNKNOWN',
+        trades,
+        grossPnl: Math.round(grossPnl),
+        estCommission: Math.round(commission),
+        netPnl: Math.round(grossPnl - commission),
+        winRate: trades > 0 ? Math.round((Number(r.wins) / trades) * 100) : 0,
+        avgHoldHours: Number(r.avg_hold_hours ?? 0),
+      };
+    });
+
+    return c.json(result);
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── [10] 성과 분석: 거래내역 CSV 내보내기 ──
+// 쿼리파라미터: days=90 (기본값), mode= (필터)
+dashboardAnalysisRoutes.get('/performance/export-csv', async (c) => {
+  try {
+    const days = Math.min(365, Math.max(1, Number(c.req.query('days') ?? 90)));
+    const modeFilter = c.req.query('mode') ?? '';
+
+    const params: unknown[] = [days];
+    const modeClause = modeFilter ? 'AND tc.strategy_mode = $2' : '';
+    if (modeFilter) params.push(modeFilter);
+
+    const { rows } = await getPool().query(`
+      SELECT
+        o.created_at                                      AS "체결일시",
+        tc.stock_code                                     AS "종목코드",
+        o.side                                            AS "매수매도",
+        tc.strategy_mode                                  AS "전략모드",
+        o.filled_quantity                                 AS "수량",
+        tc.avg_buy_price                                  AS "평균매수가",
+        o.filled_price                                    AS "체결가",
+        ROUND(
+          (o.filled_price - tc.avg_buy_price) * o.filled_quantity
+        )                                                 AS "손익(원)",
+        ROUND(
+          (o.filled_price - tc.avg_buy_price)
+          / NULLIF(tc.avg_buy_price, 0) * 100, 2
+        )                                                 AS "수익률(%)",
+        o.kis_order_no                                    AS "KIS주문번호"
+      FROM orders o
+      JOIN transaction_chains tc ON tc.id = o.chain_id
+      WHERE o.side = 'SELL'
+        AND o.status = 'FILLED'
+        AND o.trigger_source != 'OVERSEAS'
+        AND o.created_at >= NOW() - ($1 || ' days')::INTERVAL
+        ${modeClause}
+        AND o.filled_price IS NOT NULL
+        AND tc.avg_buy_price IS NOT NULL
+      ORDER BY o.created_at DESC
+    `, params);
+
+    if (rows.length === 0) {
+      c.header('Content-Type', 'text/csv; charset=utf-8');
+      c.header('Content-Disposition', 'attachment; filename="trades.csv"');
+      return c.body('﻿체결일시,종목코드,매수매도,전략모드,수량,평균매수가,체결가,손익(원),수익률(%),KIS주문번호\n');
+    }
+
+    const headers = Object.keys(rows[0]);
+    const escape = (v: unknown) => {
+      const s = String(v ?? '');
+      return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const csvLines = [
+      '﻿' + headers.join(','),
+      ...rows.map((row: any) => headers.map((h) => escape(row[h])).join(',')),
+    ];
+
+    const filename = `trades_${new Date().toISOString().slice(0, 10)}.csv`;
+    c.header('Content-Type', 'text/csv; charset=utf-8');
+    c.header('Content-Disposition', `attachment; filename="${filename}"`);
+    return c.body(csvLines.join('\n'));
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }

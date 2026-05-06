@@ -33,6 +33,9 @@ const envSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().default(''),
   TELEGRAM_CHAT_ID: z.string().default(''),
 
+  // Slack
+  SLACK_WEBHOOK_URL: z.string().default(''),
+
   // 리스크 한도 (연구 기반: 10M 기준)
   // • 일일 최대 손실: 총자산 2% = 200,000원 (손실 누적 시 당일 거래 중단)
   // • 종목당 한도: 총자산 15% (pipeline에서 min(maxPositionKrw, assets×15%) 적용 — 자동 스케일)
@@ -106,6 +109,10 @@ export const config = {
   telegram: {
     botToken: env.TELEGRAM_BOT_TOKEN,
     chatId: env.TELEGRAM_CHAT_ID,
+  },
+
+  slack: {
+    webhookUrl: env.SLACK_WEBHOOK_URL,
   },
 
   risk: {

@@ -18,16 +18,19 @@ export function adjustPositionSizes(params: {
   kospiRegimePenalty: 0 | 1 | 2;
   /** 강세장 부스터: true이면 포지션 1.3x + convMult 상한 2.0 */
   kospiBoost?: boolean;
+  /** 일일 -2% 조기경고 시 신규 매수 포지션 50% 축소 */
+  dailyLossEarlyWarning?: boolean;
 }): TradeDecision[] {
-  const { decisions, scores, mode, totalAssets, kospiRegimePenalty, kospiBoost } = params;
+  const { decisions, scores, mode, totalAssets, kospiRegimePenalty, kospiBoost, dailyLossEarlyWarning } = params;
   const result = [...decisions];
   const _params = STRATEGY_PARAMS[mode];
 
-  // KOSPI 조정장이면 60%, 강세장이면 1.3x, 정상이면 1.0x
+  // KOSPI 조정장이면 60%, 강세장이면 1.3x, 정상이면 1.0x; 일일손실 조기경고 추가 50% 축소
   const kospiSizingMult = kospiRegimePenalty >= 1 ? 0.6 : (kospiBoost ? 1.3 : 1.0);
+  const earlyWarnMult = dailyLossEarlyWarning ? 0.5 : 1.0;
   const maxPerPosition = Math.min(
     config.risk.maxPositionKrw,
-    Math.round(totalAssets * 0.25 * kospiSizingMult),
+    Math.round(totalAssets * 0.25 * kospiSizingMult * earlyWarnMult),
   );
   const baseBudget = Math.floor(maxPerPosition / _params.splitCount);
 

@@ -1,4 +1,5 @@
 import { getDailyChart } from '../../kis/market.js';
+import { getCurrentPrice } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { logSystem } from '../../db/client.js';
 import type { TransactionChain } from '../../db/models.js';
@@ -13,16 +14,22 @@ export interface KospiRegime {
   boost: boolean;
   /** 당일 -0.3%+ 하락 → 신규 매수 억제 (하락장 진입 차단) */
   todayDown: boolean;
+  /** 5분 이내 KOSPI -1%+ 급락 → 해당 사이클 신규 매수 전면 차단 */
+  flashCrash: boolean;
 }
 
-/** KOSPI MA20/MA60 기반 시장 국면 판별 */
+// 5분 사이클 간 KOSPI 가격 추적 (서킷브레이커용)
+let _prevKospiPrice = 0;
+let _prevKospiTime = 0;
+
+/** KOSPI MA20/MA60 기반 시장 국면 판별 + 5분 서킷브레이커 */
 export async function fetchKospiRegime(): Promise<KospiRegime> {
   try {
     const kospiCandles = await getDailyChart('0001', 65);
-    if (kospiCandles.length < 60) return { penalty: 0, boost: false, todayDown: false };
+    if (kospiCandles.length < 60) return { penalty: 0, boost: false, todayDown: false, flashCrash: false };
     const { analyzeTechnicals } = await import('../../analysis/indicators.js');
     const kospiTech = analyzeTechnicals(kospiCandles);
-    if (!kospiTech) return { penalty: 0, boost: false, todayDown: false };
+    if (!kospiTech) return { penalty: 0, boost: false, todayDown: false, flashCrash: false };
     const kospiNow = kospiCandles[0]?.close ?? 0;
     const kospiPrev = kospiCandles[1]?.close ?? 0;
     const todayChangePct = kospiPrev > 0 ? (kospiNow - kospiPrev) / kospiPrev * 100 : 0;
@@ -30,31 +37,61 @@ export async function fetchKospiRegime(): Promise<KospiRegime> {
     if (todayDown) {
       logger.info(`📉 KOSPI 당일 ${todayChangePct.toFixed(2)}% 하락 (${kospiNow.toFixed(0)} / 전일${kospiPrev.toFixed(0)}) → 신규 매수 억제`, { component: 'REGIME' });
     }
+
+    // 5분 서킷브레이커: 실시간 가격 vs 직전 사이클 가격 비교
+    let flashCrash = false;
+    try {
+      const liveKospi = await getCurrentPrice('0001');
+      const livePrice = liveKospi?.currentPrice ?? 0;
+      const now = Date.now();
+      if (livePrice > 0 && _prevKospiPrice > 0) {
+        const cycleDrop = (livePrice - _prevKospiPrice) / _prevKospiPrice * 100;
+        if (cycleDrop <= -1.0) {
+          flashCrash = true;
+          logger.warn(`🚨 KOSPI 급락 서킷브레이커: 5분 내 ${cycleDrop.toFixed(2)}% 하락 (${_prevKospiPrice.toFixed(0)}→${livePrice.toFixed(0)}) → 신규 매수 전면 차단`, { component: 'REGIME' });
+          await logSystem('WARN', 'REGIME', `KOSPI 급락 서킷브레이커: ${cycleDrop.toFixed(2)}% (${_prevKospiPrice.toFixed(0)}→${livePrice.toFixed(0)})`);
+        }
+      }
+      if (livePrice > 0 && now - _prevKospiTime > 60_000) {
+        _prevKospiPrice = livePrice;
+        _prevKospiTime = now;
+      }
+    } catch { /* 실시간 시세 실패 시 무시 */ }
+
     if (kospiNow > 0 && kospiNow < kospiTech.sma60) {
       logger.warn(`⛔ KOSPI ${kospiNow.toFixed(0)} < MA60 ${kospiTech.sma60.toFixed(0)} → 하락장 신규 매수 차단`, { component: 'REGIME' });
-      return { penalty: 2, boost: false, todayDown };
+      return { penalty: 2, boost: false, todayDown, flashCrash };
     }
     if (kospiNow > 0 && kospiNow < kospiTech.sma20) {
       logger.info(`⚠️ KOSPI ${kospiNow.toFixed(0)} < MA20 ${kospiTech.sma20.toFixed(0)} → 조정장 포지션 60%`, { component: 'REGIME' });
-      return { penalty: 1, boost: false, todayDown };
+      return { penalty: 1, boost: false, todayDown, flashCrash };
     }
     // 강세장: 가격 > MA20 > MA60 = 골든크로스 구간 → 포지션 확대 + TP 상향
     const isBull = kospiNow > 0 && kospiTech.sma20 > kospiTech.sma60;
     if (isBull) {
       logger.info(`🚀 KOSPI 강세장: ${kospiNow.toFixed(0)} > MA20 ${kospiTech.sma20.toFixed(0)} > MA60 ${kospiTech.sma60.toFixed(0)} → 포지션 1.3x + TP 상향`, { component: 'REGIME' });
     }
-    return { penalty: 0, boost: isBull, todayDown };
+    return { penalty: 0, boost: isBull, todayDown, flashCrash };
   } catch {
-    return { penalty: 0, boost: false, todayDown: false };
+    return { penalty: 0, boost: false, todayDown: false, flashCrash: false };
   }
 }
 
-/** 일일 최대 손실 한도 체크 (-3%, 실현+미실현 합산) */
+export interface DailyLossResult {
+  /** -3% 이상 손실 → 신규 매수 전면 차단 */
+  blocked: boolean;
+  /** -2% ~ -3% 구간 → 조기경고 (신규 매수 포지션 50% 축소) */
+  earlyWarning: boolean;
+  /** 일일 손익률 (%) */
+  dailyPnlPct: number;
+}
+
+/** 일일 최대 손실 한도 체크 (-2% 조기경고 / -3% 차단, 실현+미실현 합산) */
 export async function checkDailyLoss(params: {
   openChains: TransactionChain[];
   livePrices: Map<string, CurrentPrice>;
   totalAssets: number;
-}): Promise<{ blocked: boolean }> {
+}): Promise<DailyLossResult> {
   try {
     const { getPool } = await import('../../db/client.js');
     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -88,12 +125,17 @@ export async function checkDailyLoss(params: {
       if (pct <= -3) {
         logger.warn(`⛔ 일일 손실 한도(-3%) 초과: ${pct.toFixed(2)}% (실현${realizedPnl.toLocaleString()}+미실현${unrealizedPnl.toLocaleString()}원) → 신규 매수 차단`, { component: 'REGIME' });
         await logSystem('WARN', 'TRACK_B', `일일 손실 한도 초과: ${pct.toFixed(2)}%(실현+미실현) → 국내 신규 매수 차단`);
-        return { blocked: true };
+        return { blocked: true, earlyWarning: false, dailyPnlPct: pct };
+      }
+      if (pct <= -2) {
+        logger.warn(`⚠️ 일일 손실 조기경고(-2%): ${pct.toFixed(2)}% → 신규 매수 포지션 50% 축소`, { component: 'REGIME' });
+        return { blocked: false, earlyWarning: true, dailyPnlPct: pct };
       }
       logger.info(`📊 일일 손익: ${pct.toFixed(2)}% (실현${realizedPnl.toLocaleString()}+미실현${unrealizedPnl.toLocaleString()}원)`, { component: 'REGIME' });
+      return { blocked: false, earlyWarning: false, dailyPnlPct: pct };
     }
-    return { blocked: false };
+    return { blocked: false, earlyWarning: false, dailyPnlPct: 0 };
   } catch {
-    return { blocked: false };
+    return { blocked: false, earlyWarning: false, dailyPnlPct: 0 };
   }
 }

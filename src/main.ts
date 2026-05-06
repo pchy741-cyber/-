@@ -24,6 +24,7 @@ import { checkDb, enableMemoryMode, logSystem } from './db/client.js';
 import { injectDbLogger } from './utils/logger.js';
 import { getAccessToken } from './kis/auth.js';
 import { initTelegram } from './notifications/telegram.js';
+import { initSlack } from './notifications/slack.js';
 import { startScheduler } from './scheduler/runner.js';
 import { logger } from './utils/logger.js';
 
@@ -200,6 +201,10 @@ async function bootstrap() {
   } catch (err) {
     logger.warn(`⚠️ Telegram 초기화 실패: ${err}`, { component: 'BOOT' });
   }
+
+  // 4-a. Slack Webhook 초기화
+  const { config: cfg } = await import('./config/index.js');
+  if (cfg.slack.webhookUrl) initSlack(cfg.slack.webhookUrl);
 
   // 4-b. VAPID 푸시 알림 초기화 (DB 준비 완료 후 — 구독 유효성 보장)
   try {

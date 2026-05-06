@@ -3,6 +3,7 @@ import { config } from '../config/index.js';
 import { getAccountBalance } from '../kis/account.js';
 import { deactivateKillSwitch, getKillSwitchStatus } from '../risk/kill-switch.js';
 import { logger } from '../utils/logger.js';
+import { sendSlackMessage } from './slack.js';
 
 let bot: Telegraf | null = null;
 
@@ -116,4 +117,7 @@ export async function sendTelegramMessage(message: string): Promise<void> {
   } catch (error) {
     logger.error(`Telegram 전송 실패: ${error}`, { component: 'TELEGRAM' });
   }
+  // Slack 동시 발송 (webhook 미설정 시 자동 스킵)
+  const level = /🚨|⛔|❌|🛑/.test(message) ? 'error' : /⚠️/.test(message) ? 'warn' : 'info';
+  await sendSlackMessage(message, level).catch(() => {});
 }

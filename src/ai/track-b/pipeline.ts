@@ -24,6 +24,7 @@ import { getMacroSnapshot } from '../../automation/macro-data.js';
 import { getInvestorFlow } from '../../automation/investor-flow.js';
 import { filterEarlySells, applyHardRules, filterManualCooldown, deduplicateSells, filterSectorConcentration } from './risk-guard.js';
 import { adjustPositionSizes } from './position-sizer.js';
+import { reconcilePendingOrders } from '../../trading/fill-reconciler.js';
 
 /**
  * Track B 전체 파이프라인 — 장중 5분 간격 실행
@@ -45,6 +46,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
   logger.info('🔄 Track B 파이프라인 시작', { component: 'TRACK_B' });
 
   try {
+    // ── 0. 미체결 주문 정리 (체결확인 + 10분 초과 취소) ─────────────
+    await reconcilePendingOrders().catch(() => {});
+
     // ── 1. 장 열림 확인 ──────────────────────────────────────────────
     if (!isMarketOpen()) {
       logger.info('장이 닫혀있어 Track B 스킵', { component: 'TRACK_B' });
@@ -58,7 +62,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           getActiveWatchlist(),
           getOpenChains(),
           getActiveStrategy(),
-          getRecentLossStocks(7),
+          getRecentLossStocks(14),
           getRecentManuallySoldStocks(24),
         ]);
       } catch (dbErr: any) {
@@ -70,7 +74,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
             getActiveWatchlist(),
             getOpenChains(),
             getActiveStrategy(),
-            getRecentLossStocks(7),
+            getRecentLossStocks(14),
             getRecentManuallySoldStocks(24),
           ]);
         }
@@ -91,19 +95,19 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       return [];
     }
 
-    // ── 개장 초단타 모드: 09:00~09:10 자동 강제 적용 ─────────────────
+    // ── 개장 초단타 모드: 09:00~09:30 자동 강제 적용 ─────────────────
     const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
     const kstH = nowKst.getUTCHours();
     const kstM = nowKst.getUTCMinutes();
-    const isOpeningBell = kstH === 9 && kstM < 10;
+    const isOpeningBell = kstH === 9 && kstM < 30;
     const dbMode = (strategy?.mode ?? 'SWING') as StrategyMode;
     // SNIPER/DEFENSE는 개장벨에도 모드 유지 (SNIPER는 CEO가 명시적으로 설정한 집중 전략)
     const mode: StrategyMode = (isOpeningBell && dbMode !== 'DEFENSE' && dbMode !== 'SNIPER') ? 'SCALPING' : dbMode;
     if (isOpeningBell && mode === 'SCALPING') {
-      logger.info('🔔 개장 초단타 모드 자동 활성화 (09:00~09:10) — SCALPING +2.0% 즉시 익절', { component: 'TRACK_B' });
+      logger.info('🔔 개장 초단타 모드 자동 활성화 (09:00~09:30) — SCALPING +2.0% 즉시 익절', { component: 'TRACK_B' });
     }
-    // SCALPING 09:30 데드라인: 이후 신규 매수는 SWING 기준으로 전환 (기존 체인은 강제청산 유지)
-    const isPastScalpDeadline = dbMode === 'SCALPING' && (kstH > 9 || (kstH === 9 && kstM >= 30));
+    // SCALPING 09:45 데드라인: 이후 신규 매수는 SWING 기준으로 전환 (기존 체인은 강제청산 유지)
+    const isPastScalpDeadline = dbMode === 'SCALPING' && (kstH > 9 || (kstH === 9 && kstM >= 45));
     const isScalpingMode = dbMode === 'SCALPING';
 
     // ── 방어 파킹 시스템 ──────────────────────────────────────────────
@@ -197,7 +201,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     let hasBuyCandidates = scores.some(
-      (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[effectiveMode].buyThreshold && (s.confidence ?? 0) >= 0.35,
+      (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[effectiveMode].buyThreshold && (s.confidence ?? 0) >= 0.55,
     );
     const hasOpenPositions = openChains.some((c) => Number(c.total_quantity) > 0);
     if (!hasBuyCandidates) {
@@ -217,7 +221,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           if (newScores.length > 0) {
             scores.push(...newScores);
             hasBuyCandidates = scores.some(
-              (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[effectiveMode].buyThreshold && (s.confidence ?? 0) >= 0.35,
+              (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[effectiveMode].buyThreshold && (s.confidence ?? 0) >= 0.55,
             );
           }
         }
@@ -293,12 +297,16 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // ── 4. 기술적 지표 매매 판단 ─────────────────────────────────────
     // 수급 보정 반영: composite_score + flowAdj (±20점 범위 제한)
+    // confidence < 0.55 신호 제거 + 당일 스코어 아니면 -8점 패널티 (stale 스코어 억제)
+    const todayDate = new Date().toISOString().split('T')[0];
     const adjustedScores = scores
-      .filter((s: any) => (s.confidence ?? 0) >= 0.3)
+      .filter((s: any) => (s.confidence ?? 0) >= 0.55)
       .map((s: any) => {
         const base = s.composite_score ?? 0;
         const adj = flowAdjMap.get(s.stock_code) ?? 0;
-        return { stock_code: s.stock_code, score: Math.min(100, Math.max(0, base + adj)) };
+        const stale = s.score_date && s.score_date !== todayDate ? -8 : 0;
+        if (stale < 0) logger.info(`⏳ 스코어 stale 패널티: ${s.stock_code} (${s.score_date} → -8점)`, { component: 'TRACK_B' });
+        return { stock_code: s.stock_code, score: Math.min(100, Math.max(0, base + adj + stale)) };
       });
 
     let decisions = await technicalFallbackDecisions({
@@ -325,6 +333,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         kstH > 15 ||
         (kstH === 15 && kstM >= 10) ||
         dailyLoss.blocked ||
+        kospiRegime.flashCrash ||
         (!isScalpingMode && kospiRegime.penalty >= 2) ||
         (!isScalpingMode && kospiRegime.todayDown) ||
         (!isScalpingMode && macroRiskOff),
@@ -371,6 +380,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           kstH > 15 ||
           (kstH === 15 && kstM >= 10) ||
           dailyLoss.blocked ||
+          kospiRegime.flashCrash ||
           kospiRegime.penalty >= 2 ||
           macroRiskOff,
       });
@@ -419,13 +429,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       totalAssets,
       kospiRegimePenalty: kospiRegime.penalty,
       kospiBoost: kospiRegime.boost,
+      dailyLossEarlyWarning: dailyLoss.earlyWarning,
     });
 
     // ── 10. 중복 매도 신호 제거 ──────────────────────────────────────
     decisions = deduplicateSells(decisions);
 
     // ── 최종 필터: 가격 없는 BUY 제외 ───────────────────────────────
-    const actionable = decisions.filter((d) => {
+    const filtered = decisions.filter((d) => {
       if (d.action === 'HOLD') return false;
       if (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') {
         const hasPrice = (d.limit_price ?? 0) > 0;
@@ -435,9 +446,25 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       return true;
     });
 
+    // SELL → AVERAGE_DOWN → BUY 순으로 정렬: 매도로 현금 확보 후 매수
+    const actionOrder = (d: TradeDecision) =>
+      d.action === 'SELL' ? 0 : d.action === 'AVERAGE_DOWN' ? 1 : 2;
+    const scoreMap = new Map<string, number>(
+      scores.map((s: any) => [s.stock_code, Number(s.composite_score ?? 0)]),
+    );
+    filtered.sort((a, b) => {
+      const orderDiff = actionOrder(a) - actionOrder(b);
+      if (orderDiff !== 0) return orderDiff;
+      // 같은 action 유형이면 점수 높은 순
+      return (scoreMap.get(b.stock_code) ?? 0) - (scoreMap.get(a.stock_code) ?? 0);
+    });
+    const actionable = filtered;
+
+    // 유휴 현금 모니터링 로그
+    const idleCashPct = totalAssets > 0 ? (orderableCash / totalAssets * 100).toFixed(1) : '0.0';
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     await logSystem('INFO', 'TRACK_B', `파이프라인 완료 (${elapsed}초): ${decisions.length}개 판단, ${actionable.length}개 실행 대기`);
-    logger.info(`✅ Track B 완료 (${elapsed}초): 총 ${decisions.length}개 판단, ${actionable.length}개 액션`, { component: 'TRACK_B' });
+    logger.info(`✅ Track B 완료 (${elapsed}초): 총 ${decisions.length}개 판단, ${actionable.length}개 액션 | 유휴현금 ${idleCashPct}% (${orderableCash.toLocaleString()}원)`, { component: 'TRACK_B' });
 
     return actionable;
   } catch (error) {
