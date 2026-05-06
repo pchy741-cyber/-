@@ -45,15 +45,8 @@ export function filterEarlySells(params: {
       if (holdingDays >= maxHoldingDays) return true;
     }
 
-    if (d.action === 'FORCE_CLOSE' && pnlPct > _stopPct) {
-      // PROFIT_TAKING 상태의 트레일링/브레이크이븐 스탑은 technical-fallback이 발행 — 차단하면 청산 불가
-      if (chain?.status === 'PROFIT_TAKING') return true;
-      logger.warn(
-        `🛡️ AI 조기 청산 차단: ${d.stock_code} 현재 ${pnlPct.toFixed(1)}% (손절선 ${_stopPct}% 미도달) → 하드룰 대기`,
-        { component: 'RISK_GUARD' },
-      );
-      return false;
-    }
+    // FORCE_CLOSE = 시간 기반 강제청산(SCALPING 09:45 등) 또는 모드 전환 청산 — 무조건 허용
+    if (d.action === 'FORCE_CLOSE') return true;
 
     if ((d.action === 'SELL' || d.action === 'PARTIAL_SELL') && pnlPct > _stopPct && pnlPct < _tpPct) {
       logger.warn(

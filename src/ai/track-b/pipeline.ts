@@ -131,9 +131,16 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       logger.warn('오늘의 AI 스코어가 없습니다 (Track A 미실행?) → 기술적 지표 fallback 진행', { component: 'TRACK_B' });
     }
 
-    // ── 실시간 시세 수집 ──────────────────────────────────────────────
+    // ── 실시간 시세 수집 (KIS rate limit 방지: 상위 35종목 + 보유종목) ──
+    // 워치리스트 전체(~79종목) 동시 조회 시 KIS 1000 req/10min 한도 초과 → rate limit storm
+    // AI 스코어 상위 35개만 BUY 평가, 보유종목은 무조건 포함 (TP/SL 트리거)
     const chainStockCodes = openChains.map((c) => c.stock_code);
-    const allStockCodes = [...new Set([...stockCodes, ...chainStockCodes, PARK_STOCK_CODE, IDLE_PARK_STOCK_CODE])];
+    const scoreMapPre = new Map(scores.map((s: any) => [s.stock_code, (s.composite_score ?? 0) as number]));
+    const sortedWatchlistCodes = [...stockCodes]
+      .sort((a, b) => (scoreMapPre.get(b) ?? 0) - (scoreMapPre.get(a) ?? 0))
+      .slice(0, 35);
+    const allStockCodes = [...new Set([...sortedWatchlistCodes, ...chainStockCodes, PARK_STOCK_CODE, IDLE_PARK_STOCK_CODE])];
+    logger.info(`📡 시세 조회: ${allStockCodes.length}종목 (워치리스트 상위 ${sortedWatchlistCodes.length} + 보유 ${chainStockCodes.length})`, { component: 'TRACK_B' });
     const livePrices = await getBatchPrices(allStockCodes);
 
     const _rawOrderableCash = Math.max(0, balance.orderableCash ?? 0);
@@ -150,9 +157,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       }
     } catch { /* cache optional */ }
 
-    // ── 차트 데이터 수집 ──────────────────────────────────────────────
+    // ── 차트 데이터 수집 (동일 상위 35 + 보유종목 기준) ─────────────────
     const chartData = new Map<string, import('../../kis/market.js').DailyCandle[]>();
-    const allCodesForChart = [...new Set([...stockCodes, ...openChains.map((c) => c.stock_code)])];
+    const allCodesForChart = [...new Set([...sortedWatchlistCodes, ...openChains.map((c) => c.stock_code)])];
     const CHART_BATCH = 5;
     for (let i = 0; i < allCodesForChart.length; i += CHART_BATCH) {
       const batch = allCodesForChart.slice(i, i + CHART_BATCH);
