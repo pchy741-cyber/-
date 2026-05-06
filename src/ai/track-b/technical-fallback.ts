@@ -549,6 +549,46 @@ export async function technicalFallbackDecisions(params: {
       continue;
     }
 
+    // ── 세계급 트레이더 기준: 컨플루언스(독립 신호 일치) 최소 요건 ─────────────
+    // 단일 신호 진입 = 코인 플립. 3개+ 독립 신호가 동시에 매수를 가리킬 때만 집행.
+    // 강한 단일 신호(BB돌파/TTM발사/VWAP크로스/RSI2 극과매도)는 면제.
+    if (mode !== 'SCALPING') {
+      const hasStrongCatalyst =
+        tech.bollingerBreakout === 'UP' ||
+        tech.ttmSqueeze.fireSignal === 'LONG' ||
+        tech.vwapCross === 'JUST_ABOVE' ||
+        tech.rsi2 < 10;
+      if (!hasStrongCatalyst) {
+        const cf = {
+          momentum: tech.macdCrossover !== 'BEARISH' || tech.macdHistogram > 0,
+          rsi: tech.rsi14 <= 60 || isOversold,
+          volume: tech.volumeRatio >= 1.2,
+          vwap: tech.vwapPosition === 'ABOVE' || tech.vwapPullback,
+          pattern: hasBullishCandle || tech.candlePatterns.some(p => p.bullish && p.strength !== 'WEAK'),
+          trend: tech.trendStrength !== 'WEAK',
+        };
+        const cfCount = Object.values(cf).filter(Boolean).length;
+        const minCf = aiScore >= 80 ? 2 : 3;
+        if (cfCount < minCf) {
+          logger.info(`  🔍 ${stock.stock_code}: 컨플루언스 ${cfCount}/${minCf} 미달 [mom=${cf.momentum} rsi=${cf.rsi} vol=${cf.volume} vwap=${cf.vwap} pat=${cf.pattern} trend=${cf.trend}] → 스킵`, { component: 'TRACK_B' });
+          continue;
+        }
+      }
+    }
+
+    // ── 당일 바 위치: 고점 80%+ 추격 차단 ──────────────────────────────────
+    // 전문 트레이더: "저점에서 사고 고점에서 팔아라" — 당일 고점권 신규 진입 방지
+    if (mode !== 'SCALPING' && aiScore < 85) {
+      const todayRange = candles[0].high - candles[0].low;
+      const priceInRange = todayRange > 50 ? (price.currentPrice - candles[0].low) / todayRange : 0.5;
+      const hasStrongMomentum = tech.bollingerBreakout === 'UP' || tech.ttmSqueeze.fireSignal === 'LONG' || tech.volumeRatio >= 2.5;
+      if (priceInRange > 0.80 && !hasStrongMomentum) {
+        logger.info(`  🚫 ${stock.stock_code}: 당일 고점권(${(priceInRange * 100).toFixed(0)}%) 추격 위험 — vol=${tech.volumeRatio.toFixed(2)}x 모멘텀 부족 → 스킵`, { component: 'TRACK_B' });
+        continue;
+      }
+    }
+    // ───────────────────────────────────────────────────────────────────────
+
     // ─── SCALPING 전용 진입 기준 ─────────────────────────────────────────
     // 단타는 과매도 반등(RSI<30) 대신 모멘텀 돌파에 집중
     // BB 상단 돌파 / TTM 발사 / VWAP 돌파 + 거래량 2배 이상 필수

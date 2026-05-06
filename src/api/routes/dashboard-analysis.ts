@@ -539,22 +539,49 @@ dashboardAnalysisRoutes.get('/market/performance-vs-kospi', async (c) => {
         AND o.created_at >= NOW() - INTERVAL '60 days'
       GROUP BY day ORDER BY day ASC
     `);
-    // KOSPI 60일 차트 — Naver Finance (KIS API는 지수 코드 필드명 불일치로 0 반환)
+    // KOSPI 60일 차트 — Yahoo Finance ^KS11 (primary) → Naver Finance (fallback)
     const kospiPoints = await (async () => {
-      const end = new Date();
-      const start = new Date(Date.now() - 70 * 24 * 60 * 60 * 1000);
-      const fmt = (d: Date) => d.toISOString().split('T')[0].replace(/-/g, '');
-      const url = `https://m.stock.naver.com/api/index/KOSPI/price?startTime=${fmt(start)}&endTime=${fmt(end)}&pageSize=70&type=DAYBYDAY`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-      if (!res.ok) return [];
-      const data = await res.json() as Record<string, unknown>[];
-      if (!Array.isArray(data)) return [];
-      const sorted = data
-        .map((d: any) => ({ date: String(d.localDate ?? ''), price: Number(d.closePrice ?? d.endPrice ?? 0) }))
-        .filter(d => d.date && d.price > 0)
-        .sort((a, b) => a.date.localeCompare(b.date));
-      const base = sorted[0]?.price ?? 0;
-      return sorted.map(d => ({ date: d.date, value: base > 0 ? ((d.price - base) / base) * 100 : 0 }));
+      // 1차: Yahoo Finance (VIX 조회에 이미 검증된 API)
+      try {
+        const res = await fetch(
+          'https://query1.finance.yahoo.com/v8/finance/chart/%5EKS11?interval=1d&range=90d',
+          { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) },
+        );
+        if (!res.ok) throw new Error(`Yahoo HTTP ${res.status}`);
+        const json = await res.json() as any;
+        const result = json?.chart?.result?.[0];
+        const timestamps: number[] = result?.timestamp ?? [];
+        const closes: (number | null)[] = result?.indicators?.quote?.[0]?.close ?? [];
+        if (timestamps.length === 0) throw new Error('빈 응답');
+        const sorted = timestamps
+          .map((ts, i) => ({
+            date: new Date(ts * 1000).toISOString().slice(0, 10).replace(/-/g, ''),
+            price: closes[i] ?? 0,
+          }))
+          .filter(d => d.price > 0)
+          .sort((a, b) => a.date.localeCompare(b.date));
+        const base = sorted[0]?.price ?? 0;
+        return sorted.map(d => ({ date: d.date, value: base > 0 ? ((d.price - base) / base) * 100 : 0 }));
+      } catch {
+        // 2차 fallback: Naver Finance (다양한 필드명 시도)
+        const end = new Date();
+        const start = new Date(Date.now() - 70 * 24 * 60 * 60 * 1000);
+        const fmt = (d: Date) => d.toISOString().split('T')[0].replace(/-/g, '');
+        const url = `https://m.stock.naver.com/api/index/KOSPI/price?startTime=${fmt(start)}&endTime=${fmt(end)}&pageSize=70&type=DAYBYDAY`;
+        const res2 = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) });
+        if (!res2.ok) return [];
+        const data2 = await res2.json() as Record<string, unknown>[];
+        if (!Array.isArray(data2)) return [];
+        const sorted2 = data2
+          .map((d: any) => ({
+            date: String(d.localDate ?? d.bizdate ?? d.date ?? ''),
+            price: Number(d.closePrice ?? d.endPrice ?? d.closingPrice ?? d.close ?? 0),
+          }))
+          .filter(d => d.date && d.price > 0)
+          .sort((a, b) => a.date.localeCompare(b.date));
+        const base2 = sorted2[0]?.price ?? 0;
+        return sorted2.map(d => ({ date: d.date, value: base2 > 0 ? ((d.price - base2) / base2) * 100 : 0 }));
+      }
     })().catch(() => [] as { date: string; value: number }[]);
     // 봇 누적수익률 (일별 합산)
     let cumPnl = 0; let cumCost = 0;
