@@ -734,8 +734,8 @@ export async function technicalFallbackDecisions(params: {
 
   // 현금 여유 확인하면서 매수 결정
   let remainingCash = orderableCash;
-  // SCALPING: 최대 3종목 / SNIPER: 최대 2종목 (고확신 집중) / 일반: 최대 4종목 (분산 최적화)
-  const maxBuys = mode === 'SCALPING' ? 3 : mode === 'SNIPER' ? 2 : 4;
+  // SCALPING: 최대 3종목 / SNIPER: 최대 2종목 (고확신 집중) / 일반: 최대 5종목 (현금 적극 활용)
+  const maxBuys = mode === 'SCALPING' ? 3 : mode === 'SNIPER' ? 2 : 5;
   const splitCount = strategyParams.splitCount || 2;
 
   for (const cand of candidates.slice(0, maxBuys)) {
@@ -775,10 +775,10 @@ export async function technicalFallbackDecisions(params: {
           // Half-Kelly: 단일 최고확신 종목 집중 — 총자산의 25/22/20%
           ? (blendedScore >= 90 ? 0.25 :
              blendedScore >= 85 ? 0.22 : 0.20)
-          : (blendedScore >= 90 ? 0.18 :
-             blendedScore >= 85 ? 0.15 :
-             blendedScore >= 75 ? 0.06 : // 75~84 실데이터 수익률 -0.77% 구간 — 최소 투입
-             blendedScore >= 70 ? 0.09 : 0.07))
+          : (blendedScore >= 90 ? 0.22 :   // 90+: 22% (강력 집중)
+             blendedScore >= 85 ? 0.18 :   // 85-89: 18%
+             blendedScore >= 75 ? 0.06 :   // 75~84 실데이터 수익률 -0.77% 구간 — 최소 투입
+             blendedScore >= 70 ? 0.10 : 0.07))
       : 0.04; // AI 미허락 → 최소 탐색 비율만
     const baseAllocPct = getDbAllocPct(blendedScore) ?? hardcodedAllocPct;
     // 강세장(kospiBoost) SWING: 1.3x — "좋은 장에서 100% 투자" 원칙
@@ -797,21 +797,21 @@ export async function technicalFallbackDecisions(params: {
     const priorityBonus = PRIORITY_SECTOR_CODES.has(cand.stock_code) ? 1.1 : 1.0;
 
     // 목표 금액 = 총자산 × 비율 × 보정들
-    // AI허락 고확신(85점+) → 1차에 80% 과감 진입 (물타기 여지 20%)
-    // AI허락 일반(70-84점) → 1차 70% (현금 과잉 시 90%)
+    // AI허락 고확신(85점+) → 1차에 88% 과감 진입 (물타기 여지 12%)
+    // AI허락 일반(70-84점) → 1차 75% (현금 과잉 시 92%)
     // AI 미허락 탐색 → 1차 100% (소액이므로 분할 의미 없음)
     const firstEntryRatio = mode === 'SNIPER' ? 1.0   // 저격수: 한 번에 풀 포지션
       : !aiApproved ? 1.0
-      : blendedScore >= 85 ? (allocationBoostFirstEntry ? 0.90 : 0.80)
+      : blendedScore >= 85 ? (allocationBoostFirstEntry ? 0.94 : 0.88)
       : splitCount <= 1 ? 1.0
-      : splitCount <= 2 ? (allocationBoostFirstEntry ? 0.90 : 0.70) : (allocationBoostFirstEntry ? 0.80 : 0.60);
+      : splitCount <= 2 ? (allocationBoostFirstEntry ? 0.92 : 0.75) : (allocationBoostFirstEntry ? 0.85 : 0.65);
     const targetKrw = totalAssets
       ? Math.round(totalAssets * baseAllocPct * modeScale * winRateMultiplier * priorityBonus * firstEntryRatio)
       : Math.round(effectiveMaxPos * firstEntryRatio);
 
     // 상한: effectiveMaxPos (종목당 절대 한도), 남은 현금의 92%까지 사용 (현금 최소화)
     const positionSize = Math.min(targetKrw, effectiveMaxPos, remainingCash * 0.92);
-    if (positionSize < 1000000) continue; // 최소 100만원 미달 → 이 종목만 스킵 (Half-Kelly 원칙상 소액 매매는 수수료 대비 비효율)
+    if (positionSize < 700000) continue; // 최소 70만원 미달 → 이 종목만 스킵 (Half-Kelly 원칙상 소액 매매는 수수료 대비 비효율)
 
     let quantity = Math.floor(positionSize / cand.price.currentPrice);
     if (quantity <= 0) {
