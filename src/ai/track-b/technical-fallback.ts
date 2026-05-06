@@ -568,7 +568,7 @@ export async function technicalFallbackDecisions(params: {
           trend: tech.trendStrength !== 'WEAK',
         };
         const cfCount = Object.values(cf).filter(Boolean).length;
-        const minCf = aiScore >= 80 ? 2 : 3;
+        const minCf = aiScore >= 85 ? 1 : aiScore >= 75 ? 2 : 3;
         if (cfCount < minCf) {
           logger.info(`  🔍 ${stock.stock_code}: 컨플루언스 ${cfCount}/${minCf} 미달 [mom=${cf.momentum} rsi=${cf.rsi} vol=${cf.volume} vwap=${cf.vwap} pat=${cf.pattern} trend=${cf.trend}] → 스킵`, { component: 'TRACK_B' });
           continue;
@@ -578,7 +578,7 @@ export async function technicalFallbackDecisions(params: {
 
     // ── 당일 바 위치: 고점 80%+ 추격 차단 ──────────────────────────────────
     // 전문 트레이더: "저점에서 사고 고점에서 팔아라" — 당일 고점권 신규 진입 방지
-    if (mode !== 'SCALPING' && aiScore < 85) {
+    if (mode !== 'SCALPING' && aiScore < 80) {
       const todayRange = candles[0].high - candles[0].low;
       const priceInRange = todayRange > 50 ? (price.currentPrice - candles[0].low) / todayRange : 0.5;
       const hasStrongMomentum = tech.bollingerBreakout === 'UP' || tech.ttmSqueeze.fireSignal === 'LONG' || tech.volumeRatio >= 2.5;

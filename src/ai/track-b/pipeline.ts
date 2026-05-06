@@ -319,13 +319,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       stopLossPct: strategy?.stop_loss_pct ?? undefined,
       buyThreshold: strategy?.buy_threshold ?? undefined,
       winRates,
-      // effectiveMode=SCALPING일 때만 KOSPI MA60 하락장 블록·macroRiskOff 면제 (09:25 이후엔 SWING 기준 적용)
+      // dbMode=SCALPING이면 하루 종일 KOSPI MA60 하락장 블록·macroRiskOff 면제
+      // (사용자가 SCALPING 모드 선택 = KOSPI 하락장 관계없이 고점수 종목 진입 허용 의사)
       blockNewBuys:
         kstH > 15 ||
         (kstH === 15 && kstM >= 10) ||
         dailyLoss.blocked ||
-        (effectiveMode !== 'SCALPING' && kospiRegime.penalty >= 2) ||
-        (effectiveMode !== 'SCALPING' && macroRiskOff),
+        (!isScalpingMode && kospiRegime.penalty >= 2) ||
+        (!isScalpingMode && macroRiskOff),
       kospiBoost: kospiRegime.boost,
       allocationTarget: allocCfg ? {
         stock_pct: Number(allocCfg.stock_pct),
