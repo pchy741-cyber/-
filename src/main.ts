@@ -236,6 +236,7 @@ async function bootstrap() {
       '003670': '포스코퓨처엠', '336260': '두산로보틱스', '012450': '한화에어로스페이스',
       '267260': 'HD현대일렉트릭', '042700': '한미반도체', '068270': '셀트리온',
       '003535': '한화투자증권우', '009830': '한화솔루션',
+      '352820': '하이브', '012610': '경인양행',
     };
     const wl = await getActiveWatchlist();
     for (const item of wl) {
@@ -244,8 +245,18 @@ async function bootstrap() {
         || /^\d{6}$/.test(item.stock_name) || /[^\w\sㄱ-ㅎ가-힣().-]/.test(item.stock_name);
       if (needsFix) {
         let name = known;
+        // KIS API (장중) → Naver Finance (24시간) 순으로 시도
         if (!name) {
           try { const q = await getCurrentPrice(item.stock_code); name = q.stockName?.trim(); } catch { /* skip */ }
+        }
+        if (!name) {
+          try {
+            const nr = await fetch(`https://finance.naver.com/item/main.naver?code=${item.stock_code}`,
+              { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(5000) });
+            const html = await nr.text();
+            const m = html.match(/<title>([^:<]+?)\s*:\s*Npay 증권<\/title>/);
+            if (m?.[1]) name = m[1].trim();
+          } catch { /* skip */ }
         }
         if (name) {
           await getPool().query('UPDATE watchlist SET stock_name = $1 WHERE stock_code = $2', [name, item.stock_code]);

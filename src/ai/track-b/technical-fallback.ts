@@ -568,7 +568,7 @@ export async function technicalFallbackDecisions(params: {
           trend: tech.trendStrength !== 'WEAK',
         };
         const cfCount = Object.values(cf).filter(Boolean).length;
-        const minCf = aiScore >= 85 ? 1 : aiScore >= 75 ? 2 : 3;
+        const minCf = aiScore >= 85 ? 1 : aiScore >= 80 ? 2 : 3; // 75-79 원복: 3개 필요 (v0-70-6 과완화 수정)
         if (cfCount < minCf) {
           logger.info(`  🔍 ${stock.stock_code}: 컨플루언스 ${cfCount}/${minCf} 미달 [mom=${cf.momentum} rsi=${cf.rsi} vol=${cf.volume} vwap=${cf.vwap} pat=${cf.pattern} trend=${cf.trend}] → 스킵`, { component: 'TRACK_B' });
           continue;
@@ -578,7 +578,7 @@ export async function technicalFallbackDecisions(params: {
 
     // ── 당일 바 위치: 고점 80%+ 추격 차단 ──────────────────────────────────
     // 전문 트레이더: "저점에서 사고 고점에서 팔아라" — 당일 고점권 신규 진입 방지
-    if (mode !== 'SCALPING' && aiScore < 80) {
+    if (mode !== 'SCALPING' && aiScore < 85) {  // 고점 차단 원복: 80→85 (AI 80-84도 고점 진입 차단)
       const todayRange = candles[0].high - candles[0].low;
       const priceInRange = todayRange > 50 ? (price.currentPrice - candles[0].low) / todayRange : 0.5;
       const hasStrongMomentum = tech.bollingerBreakout === 'UP' || tech.ttmSqueeze.fireSignal === 'LONG' || tech.volumeRatio >= 2.5;
@@ -735,7 +735,7 @@ export async function technicalFallbackDecisions(params: {
   // 현금 여유 확인하면서 매수 결정
   let remainingCash = orderableCash;
   // SCALPING: 최대 3종목 / SNIPER: 최대 2종목 (고확신 집중) / 일반: 최대 5종목 (현금 적극 활용)
-  const maxBuys = mode === 'SCALPING' ? 3 : mode === 'SNIPER' ? 2 : 5;
+  const maxBuys = mode === 'SCALPING' ? 3 : mode === 'SNIPER' ? 2 : 4; // 5→4 원복 (과잉 매매 방지)
   const splitCount = strategyParams.splitCount || 2;
 
   for (const cand of candidates.slice(0, maxBuys)) {
@@ -775,8 +775,8 @@ export async function technicalFallbackDecisions(params: {
           // Half-Kelly: 단일 최고확신 종목 집중 — 총자산의 25/22/20%
           ? (blendedScore >= 90 ? 0.25 :
              blendedScore >= 85 ? 0.22 : 0.20)
-          : (blendedScore >= 90 ? 0.22 :   // 90+: 22% (강력 집중)
-             blendedScore >= 85 ? 0.18 :   // 85-89: 18%
+          : (blendedScore >= 90 ? 0.18 :   // 90+: 18% (원복 — 22% 손실 시 타격 과다)
+             blendedScore >= 85 ? 0.15 :   // 85-89: 15% (원복)
              blendedScore >= 75 ? 0.06 :   // 75~84 실데이터 수익률 -0.77% 구간 — 최소 투입
              blendedScore >= 70 ? 0.10 : 0.07))
       : 0.04; // AI 미허락 → 최소 탐색 비율만
@@ -802,9 +802,9 @@ export async function technicalFallbackDecisions(params: {
     // AI 미허락 탐색 → 1차 100% (소액이므로 분할 의미 없음)
     const firstEntryRatio = mode === 'SNIPER' ? 1.0   // 저격수: 한 번에 풀 포지션
       : !aiApproved ? 1.0
-      : blendedScore >= 85 ? (allocationBoostFirstEntry ? 0.94 : 0.88)
+      : blendedScore >= 85 ? (allocationBoostFirstEntry ? 0.90 : 0.80)  // 원복 (0.88→0.80: 물타기 여지 확보)
       : splitCount <= 1 ? 1.0
-      : splitCount <= 2 ? (allocationBoostFirstEntry ? 0.92 : 0.75) : (allocationBoostFirstEntry ? 0.85 : 0.65);
+      : splitCount <= 2 ? (allocationBoostFirstEntry ? 0.90 : 0.70) : (allocationBoostFirstEntry ? 0.85 : 0.65);
     const targetKrw = totalAssets
       ? Math.round(totalAssets * baseAllocPct * modeScale * winRateMultiplier * priorityBonus * firstEntryRatio)
       : Math.round(effectiveMaxPos * firstEntryRatio);
