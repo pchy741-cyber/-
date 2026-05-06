@@ -964,16 +964,17 @@ export async function runOverseasJob(): Promise<void> {
       else if (pnlPct >= hardTpPct) {
         sellReason = `익절(${hardTpPct}%): +${pnlPct.toFixed(1)}%`;
       }
-      // 4) AI 매도 신호 — 고확신(≥65%)만 신뢰, 낮은 신뢰도는 무시
-      else if (ai?.action === 'SELL' && ai.confidence >= 0.65) {
+      // 4) AI 매도 신호 — 75%+ 고확신 + 최소 1일 보유 후만 허용
+      // (65%는 단기 노이즈에 너무 민감 → 매수 당일/익일 팔아버리는 구조적 손해)
+      else if (ai?.action === 'SELL' && ai.confidence >= 0.75 && holdingDays >= 1) {
         sellReason = `AI 매도(${(ai.confidence * 100).toFixed(0)}%): ${ai.reasoning}`;
       }
-      // 5) AI 없을 때 기술적 익절: RSI 과매수(>78) + 모멘텀 약화 + 최소 수익
-      else if (!ai && tech.rsi > 78 && tech.score < 10 && pnlPct >= trailActivatePct) {
+      // 5) AI 없을 때 기술적 익절: RSI 과매수(>78) + 모멘텀 약화 + 최소 수익 + 1일 이상 보유
+      else if (!ai && tech.rsi > 78 && tech.score < 10 && pnlPct >= trailActivatePct && holdingDays >= 1) {
         sellReason = `기술 익절(과매수): RSI=${tech.rsi.toFixed(0)} +${pnlPct.toFixed(1)}%`;
       }
-      // 6) AI 없을 때 기술적 강매도: 점수 -30 이하
-      else if (!ai && tech.score <= -30 && (tech.signal === 'SELL' || tech.signal === 'STRONG_SELL')) {
+      // 6) AI 없을 때 기술적 강매도: 점수 -30 이하 + 1일 이상 보유 (당일 노이즈 방지)
+      else if (!ai && tech.score <= -30 && (tech.signal === 'SELL' || tech.signal === 'STRONG_SELL') && holdingDays >= 1) {
         sellReason = `기술적 매도(AI없음): score=${tech.score} RSI=${tech.rsi.toFixed(0)}`;
       }
       // 7) 보유기한 초과: 14일 넘어 손실 포지션 — 자본 묶임 방지 (반장투 상한)
@@ -1137,7 +1138,8 @@ export async function runOverseasJob(): Promise<void> {
         const scoreFactor = Math.min(1, Math.max(0, (target.score + 50) / 100)); // score -50~+50 → 0~1
         const combined = confFactor * 0.55 + scoreFactor * 0.45;
         const sizingMult = Math.round((0.6 + combined * 1.2) * 100) / 100; // 0.6x ~ 1.8x
-        const baseSize = Math.min(portfolioValue * 0.20, POSITION_SIZE_USD);
+        // 고정 USD cap 제거 → 포트폴리오 비율로만 계산 = 복리 자동 적용
+        const baseSize = portfolioValue * 0.20;
         const positionSize = Math.min(baseSize * sizingMult, cash * 0.70);
         if (positionSize < 50) break;
 
