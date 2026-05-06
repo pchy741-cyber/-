@@ -967,19 +967,34 @@ export async function runOverseasJob(): Promise<void> {
 
       let sellReason = '';
 
-      // 섹터별 변동성 프로파일 — 연구: 고베타 섹터는 더 넓은 스탑 필요 (ATR 기반 6-8% 권장)
+      // 섹터별 변동성 프로파일 — 장타 개념: 고베타 종목(NVDA 등)은 일중 3~5% 흔들림이 정상
+      // 너무 좁은 손절 = 노이즈에 손절 반복 = 구조적 손해
       const watchItem = GLOBAL_WATCHLIST.find(w => w.code === code);
-      const isHighBeta = ['EV', 'CRYPTO', 'AI_SEMI', 'GROWTH'].includes(watchItem?.sector ?? '');
-      const isDefense = watchItem?.sector === 'DEFENSE';
-      // 손절 한도: 고베타 -5%, 방산 -4%, 일반 -3.5% (연구: 너무 좁으면 노이즈 손절)
-      const stopLossPct = isHighBeta ? -5.0 : isDefense ? -4.0 : -3.5;
-      // 트레일링 스탑: 고베타 -7%, 방산 -6%, 일반 -5% (연구: 6-8% 범위 최적)
-      const trailDropPct = isHighBeta ? -7.0 : isDefense ? -6.0 : -5.0;
-      // 트레일링 활성화 기준: 고베타 +4%, 일반 +3% (노이즈 방지)
-      const trailActivatePct = isHighBeta ? 4.0 : 3.0;
-      // 하드 익절: 고베타 +18%, 방산 +15%, 일반 +12% (승자 더 오래 보유)
-      const hardTpPct = isHighBeta ? 18.0 : isDefense ? 15.0 : 12.0;
-      // 보유 기간 (일수) — 반장투 상한: 14일 초과 손실 포지션 청산
+      const sector = watchItem?.sector ?? '';
+      // 고베타: AI 반도체·성장주 — 일평균 변동 3~5%, 장기 우상향 추세
+      const isHighBeta = ['EV', 'CRYPTO', 'AI_SEMI', 'GROWTH'].includes(sector);
+      // 중베타: 빅테크·인프라·클라우드·ADR — 일평균 변동 1.5~3%
+      const isMediumBeta = ['TECH', 'INFRA', 'INDUSTRIAL', 'CLOUD', 'JP_AUTO', 'JP_TECH', 'JP_BANK', 'TW_SEMI'].includes(sector);
+      const isDefense = sector === 'DEFENSE';
+
+      // ┌─ 장타 손절 기준 (NVDA -3%에 손절하면 안 됨) ──────────────────────────────────┐
+      // │ 고베타(NVDA·AMD): -8% (일중 변동 5% 감안, 진짜 추세 반전만 잡음)             │
+      // │ 중베타(META·MSFT): -5% (중간 변동성, 노이즈 ±3% 충분히 수용)                 │
+      // │ 방산(RTX·LMT): -4% (저변동성, 타이트하게)                                    │
+      // └────────────────────────────────────────────────────────────────────────────────┘
+      const stopLossPct = isHighBeta ? -8.0 : isMediumBeta ? -5.0 : isDefense ? -4.0 : -5.0;
+      // 트레일링 스탑: 고점 대비 하락 허용 폭 (수익 확보 후 추격)
+      const trailDropPct = isHighBeta ? -10.0 : isMediumBeta ? -7.0 : isDefense ? -6.0 : -7.0;
+      // 트레일링 활성화 기준: 이 수익률 넘어야 트레일링 발동
+      const trailActivatePct = isHighBeta ? 6.0 : isMediumBeta ? 4.0 : 3.0;
+      // 하드 익절: 고베타 +20%, 중베타 +15%, 방산 +15%
+      const hardTpPct = isHighBeta ? 20.0 : 15.0;
+      // AI 매도 최소 확신: 고베타는 80%+, 중베타/방산 75%+
+      const minAiSellConf = isHighBeta ? 0.80 : 0.75;
+      // AI 매도 최소 보유일: 고베타 2일 (하루 노이즈 방지), 일반 1일
+      const minHoldForSell = isHighBeta ? 2 : 1;
+      // 보유 기간 상한: 21일 (장타 개념 — 14일은 너무 짧아 추세 중간 강제청산)
+      const maxHoldDays = 21;
       const holdingDays = (Date.now() - new Date(holding.boughtAt).getTime()) / (1000 * 60 * 60 * 24);
 
       // 1) 손절: 섹터별 하드 룰
@@ -994,21 +1009,22 @@ export async function runOverseasJob(): Promise<void> {
       else if (pnlPct >= hardTpPct) {
         sellReason = `익절(${hardTpPct}%): +${pnlPct.toFixed(1)}%`;
       }
-      // 4) AI 매도 신호 — 75%+ 고확신 + 최소 1일 보유 후만 허용
-      // (65%는 단기 노이즈에 너무 민감 → 매수 당일/익일 팔아버리는 구조적 손해)
-      else if (ai?.action === 'SELL' && ai.confidence >= 0.75 && holdingDays >= 1) {
+      // 4) AI 매도 신호 — 섹터별 고확신 + 최소 보유일 조건
+      // 고베타(NVDA 등): 80%+ + 2일 이상 (하루 노이즈로 장기 우상향 종목 손절 방지)
+      // 일반: 75%+ + 1일 이상
+      else if (ai?.action === 'SELL' && ai.confidence >= minAiSellConf && holdingDays >= minHoldForSell) {
         sellReason = `AI 매도(${(ai.confidence * 100).toFixed(0)}%): ${ai.reasoning}`;
       }
-      // 5) AI 없을 때 기술적 익절: RSI 과매수(>78) + 모멘텀 약화 + 최소 수익 + 1일 이상 보유
-      else if (!ai && tech.rsi > 78 && tech.score < 10 && pnlPct >= trailActivatePct && holdingDays >= 1) {
+      // 5) AI 없을 때 기술적 익절: RSI 과매수(>78) + 모멘텀 약화 + 트레일링 활성화 수준 + 보유일 조건
+      else if (!ai && tech.rsi > 78 && tech.score < 10 && pnlPct >= trailActivatePct && holdingDays >= minHoldForSell) {
         sellReason = `기술 익절(과매수): RSI=${tech.rsi.toFixed(0)} +${pnlPct.toFixed(1)}%`;
       }
-      // 6) AI 없을 때 기술적 강매도: 점수 -30 이하 + 1일 이상 보유 (당일 노이즈 방지)
-      else if (!ai && tech.score <= -30 && (tech.signal === 'SELL' || tech.signal === 'STRONG_SELL') && holdingDays >= 1) {
+      // 6) AI 없을 때 기술적 강매도: 점수 -30 이하 + 보유일 조건 (당일 노이즈 방지)
+      else if (!ai && tech.score <= -30 && (tech.signal === 'SELL' || tech.signal === 'STRONG_SELL') && holdingDays >= minHoldForSell) {
         sellReason = `기술적 매도(AI없음): score=${tech.score} RSI=${tech.rsi.toFixed(0)}`;
       }
-      // 7) 보유기한 초과: 14일 넘어 손실 포지션 — 자본 묶임 방지 (반장투 상한)
-      else if (holdingDays > 14 && pnlPct < 0) {
+      // 7) 보유기한 초과: 21일 넘어 손실 포지션 — 자본 묶임 방지 (장타 개념, 기존 14일 → 21일)
+      else if (holdingDays > maxHoldDays && pnlPct < 0) {
         sellReason = `보유기한 초과(${holdingDays.toFixed(0)}일/손실): ${pnlPct.toFixed(1)}% → 청산`;
       }
 
