@@ -404,10 +404,10 @@ export function startScheduler(): void {
   //  🌏 해외 주식 (미국/일본/대만)
   // ═══════════════════════════════════════════
 
-  // 🇯🇵 일본(KST 09:00~15:30) + 🇹🇼 대만(KST 10:00~14:30) — 30분 간격 (+9분 오프셋)
-  // 일본 오전장(09~11:30) + 오후장(12:30~15:30), 대만(10~14:30) 통합 커버
+  // 🇯🇵 일본(KST 09:00~15:30) + 🇹🇼 대만(KST 10:00~14:30) — 10분 간격
+  // 장 좋을 때 매도 후 현금이 10분 이상 놀지 않도록 (isRunning 가드로 중복 방지)
   cron.schedule(
-    '9,39 9-15 * * 1-5',
+    '*/10 9-15 * * 1-5',
     () => {
       runOverseasJob().catch((e) => logger.error(`아시아주식 실패: ${e}`, { component: 'SCHEDULER' }));
     },
@@ -446,31 +446,32 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 미국 주식 분석 — 미국 장중 15분 간격 (서머타임: KST 22:30~05:00 / 표준시: 23:30~06:00)
-  // 22시대: 15분 / 23~5시: 매 15분 / 6시대: 0,15,30,45분 (표준시 보정)
+  // 미국 주식 분석 — 미국 장중 5분 간격 (서머타임: KST 22:30~05:00 / 표준시: 23:30~06:00)
+  // 장 좋을 때 매도 후 현금이 5분 이상 놀지 않도록 (isRunning 가드로 중복 방지)
+  // 22시대: 5분 / 23~5시: 매 5분 / 6시대: 5분 (표준시 보정)
   cron.schedule(
-    '0,15,30,45 22 * * 1-5',
+    '*/5 22 * * 1-5',
     () => {
       runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
-    '0,15,30,45 23 * * 1-5',
+    '*/5 23 * * 1-5',
     () => {
       runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
-    '0,15,30,45 0-5 * * 2-6',
+    '*/5 0-5 * * 2-6',
     () => {
       runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
-    '0,15,30,45 6 * * 2-6',
+    '*/5 6 * * 2-6',
     () => {
       runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
     },

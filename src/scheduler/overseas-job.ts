@@ -198,9 +198,10 @@ let usSessionCache: SessionCache | null = null;
 let asiaSessionCache: SessionCache | null = null;
 const US_TOP_COUNT = 15;   // 상위 15개 세션 캐시 (기회주 누락 방지)
 const ASIA_TOP_COUNT = 6;
-// AI 호출 빈도 제한 — 15분 사이클과 동일하게 매 사이클 호출
+// AI 호출 빈도 제한 — 5분 사이클이지만 AI는 15분에 1회 (비용 절감)
+// 5분 사이클 사이 AI 없을 때는 기술적 신호(STRONG_BUY+score≥40+ADX≥25)로 매수 가능
 let lastUSAiCallAt = 0;  // epoch ms
-const US_AI_INTERVAL_MS = 15 * 60 * 1000;        // 매 사이클(15분)마다 AI 호출
+const US_AI_INTERVAL_MS = 15 * 60 * 1000;        // AI 호출: 15분마다 (3사이클에 1회)
 const US_AI_MOMENTUM_INTERVAL_MS = 15 * 60 * 1000; // 모멘텀/보유: 동일
 let sessionStartPortfolioValue: number | null = null;
 
