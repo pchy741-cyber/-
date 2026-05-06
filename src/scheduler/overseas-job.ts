@@ -987,7 +987,8 @@ export async function runOverseasJob(): Promise<void> {
       // 트레일링 스탑: 고점 대비 하락 허용 폭 (수익 확보 후 추격)
       const trailDropPct = isHighBeta ? -10.0 : isMediumBeta ? -7.0 : isDefense ? -6.0 : -7.0;
       // 트레일링 활성화 기준: 이 수익률 넘어야 트레일링 발동
-      const trailActivatePct = isHighBeta ? 6.0 : isMediumBeta ? 4.0 : 3.0;
+      // 기존 고베타 6%, 중베타 4% → 너무 늦어 수익 반납 → 앞당겨 수익 보호
+      const trailActivatePct = isHighBeta ? 4.0 : isMediumBeta ? 3.0 : 2.5;
       // 하드 익절: 고베타 +20%, 중베타 +15%, 방산 +15%
       const hardTpPct = isHighBeta ? 20.0 : 15.0;
       // AI 매도 최소 확신: 고베타는 80%+, 중베타/방산 75%+
@@ -1189,6 +1190,16 @@ export async function runOverseasJob(): Promise<void> {
             logger.info(`  ⛔ 고점 진입 차단: ${t.code} dayRangePct=${t.dayRangePct?.toFixed(0)}% (일중 고점 근처)`, { component: 'OVERSEAS' });
             return false;
           }
+          // ── 2-b: 중베타 RSI 과열 차단 (모멘텀 제외) ──
+          // MSFT $420→$411 사례: RSI 과열(>55) 구간에서 기술적 신호만 보고 진입하면 평균회귀 손실
+          if (!t.isMomentum && !isOversold) {
+            const entryWatchSector = GLOBAL_WATCHLIST.find(w => w.code === t.code)?.sector ?? '';
+            const isMedBetaEntry = ['TECH', 'INFRA', 'INDUSTRIAL', 'CLOUD', 'JP_AUTO', 'JP_TECH', 'JP_BANK', 'TW_SEMI'].includes(entryWatchSector);
+            if (isMedBetaEntry && t.rsi > 55) {
+              logger.info(`  ⛔ 중베타 RSI 과열 차단: ${t.code} RSI=${t.rsi.toFixed(0)} > 55`, { component: 'OVERSEAS' });
+              return false;
+            }
+          }
           // ── 3단계: 시장 품질별 AI 신뢰도 임계값 ──
           // GREAT: F&G 40~65 + VIX<18 → 기준 완화 (최고 진입 환경)
           // OK   : 일반 (기본)
@@ -1237,7 +1248,8 @@ export async function runOverseasJob(): Promise<void> {
         const combined = confFactor * 0.55 + scoreFactor * 0.45;
         const sizingMult = Math.round((0.6 + combined * 1.2) * 100) / 100; // 0.6x ~ 1.8x
         // 고정 USD cap 제거 → 포트폴리오 비율로만 계산 = 복리 자동 적용
-        const baseSize = portfolioValue * 0.20;
+        // 모멘텀 + AI 고확신(≥85%) 조건 동시 충족 시 25%로 확대 (Kelly 근거)
+        const baseSize = portfolioValue * (target.isMomentum && (target.ai?.confidence ?? 0) >= 0.85 ? 0.25 : 0.20);
         const positionSize = Math.min(baseSize * sizingMult, cash * 0.70);
         if (positionSize < 50) break;
 
