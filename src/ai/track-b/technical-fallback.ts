@@ -589,30 +589,28 @@ export async function technicalFallbackDecisions(params: {
     }
     // ───────────────────────────────────────────────────────────────────────
 
-    // ─── SCALPING 전용 진입 기준 ─────────────────────────────────────────
-    // 단타는 과매도 반등(RSI<30) 대신 모멘텀 돌파에 집중
-    // BB 상단 돌파 / TTM 발사 / VWAP 돌파 + 거래량 2배 이상 필수
-    // 예외: AI점수 >= buyThreshold(72)이면 모멘텀 신호 없어도 매수 허용
+    // ─── SCALPING 전용 진입 기준 (강화) ─────────────────────────────────
+    // 모멘텀 돌파 집중 — 독립 신호 2개+ 동시 충족 필수 (코인플립 방지)
+    // 수수료 감안 손익분기 승률 42% → 진입 조건 강화로 50%+ 목표
     if (mode === 'SCALPING') {
-      const hasMomentumSignal =
-        tech.bollingerBreakout === 'UP' ||
-        tech.ttmSqueeze.fireSignal === 'LONG' ||
-        tech.vwapCross === 'JUST_ABOVE';
-      const scalpVolumeOk = tech.volumeRatio >= 2.0;
-      const scalpRsiOk = tech.rsi14 >= 40 && tech.rsi14 <= 72; // 모멘텀 구간 (과매도 반등은 너무 느림)
-      const aiBypassScalp = aiScore >= buyThreshold; // AI 고확신 → 엄격 필터 면제
-      if (!aiBypassScalp && (!hasMomentumSignal || !scalpVolumeOk || !scalpRsiOk)) {
+      const momentumSignals = [
+        tech.bollingerBreakout === 'UP',
+        tech.ttmSqueeze.fireSignal === 'LONG',
+        tech.vwapCross === 'JUST_ABOVE',
+        tech.macdCrossover === 'BULLISH' && tech.macdHistogram > 0,
+      ];
+      const momentumCount = momentumSignals.filter(Boolean).length;
+      const scalpRsiOk = tech.rsi14 >= 40 && tech.rsi14 <= 70;
+      // AI 80점+ 고확신: 신호 1개 + 거래량 2x로 완화
+      const isHighAi = aiScore >= 80;
+      const minSignals = isHighAi ? 1 : 2;
+      const minVolume = isHighAi ? 2.0 : 3.0;
+      if (momentumCount < minSignals || tech.volumeRatio < minVolume || !scalpRsiOk) {
         logger.info(
-          `  ⚡ ${stock.stock_code}: SCALPING 기준 미달 — 모멘텀=${hasMomentumSignal ? '✓' : '✗'} vol=${tech.volumeRatio.toFixed(1)}x(>=2.0) RSI=${tech.rsi14.toFixed(0)}(40-72) AI=${aiScore}(bypass=${aiBypassScalp}) → 스킵`,
+          `  ⚡ ${stock.stock_code}: SCALPING 기준 미달 — 모멘텀신호=${momentumCount}/${minSignals} vol=${tech.volumeRatio.toFixed(1)}x(>=${minVolume}) RSI=${tech.rsi14.toFixed(0)}(40-70) AI=${aiScore} → 스킵`,
           { component: 'TRACK_B' },
         );
         continue;
-      }
-      if (aiBypassScalp && (!hasMomentumSignal || !scalpVolumeOk || !scalpRsiOk)) {
-        logger.info(
-          `  ✅ ${stock.stock_code}: SCALPING — AI고확신(${aiScore}점>=${buyThreshold}) 모멘텀필터 면제`,
-          { component: 'TRACK_B' },
-        );
       }
     }
     // ───────────────────────────────────────────────────────────────────
@@ -734,8 +732,8 @@ export async function technicalFallbackDecisions(params: {
 
   // 현금 여유 확인하면서 매수 결정
   let remainingCash = orderableCash;
-  // SCALPING: 최대 3종목 / SNIPER: 최대 2종목 (고확신 집중) / 일반: 최대 5종목 (현금 적극 활용)
-  const maxBuys = mode === 'SCALPING' ? 3 : mode === 'SNIPER' ? 2 : 4; // 5→4 원복 (과잉 매매 방지)
+  // SCALPING: 최대 2종목 (3→2, 상위 고점수 집중 — 분산 시 승률 희석) / SNIPER: 최대 2종목 / 일반: 최대 4종목
+  const maxBuys = mode === 'SCALPING' ? 2 : mode === 'SNIPER' ? 2 : 4;
   const splitCount = strategyParams.splitCount || 2;
 
   for (const cand of candidates.slice(0, maxBuys)) {
