@@ -323,6 +323,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         return { stock_code: s.stock_code, score: Math.min(100, Math.max(0, base + adj + stale)) };
       });
 
+    // 적응형 파라미터: DB 명시 설정 > 시장 최적화 자동값 > STRATEGY_PARAMS 기본값
+    const adaptP = kospiRegime.adaptive[effectiveMode];
+    const resolvedTp = strategy?.take_profit_pct ?? adaptP?.takeProfitPct;
+    const resolvedSl = strategy?.stop_loss_pct ?? adaptP?.stopLossPct;
+    const resolvedThreshold = strategy?.buy_threshold ?? adaptP?.buyThreshold;
+
     let decisions = await technicalFallbackDecisions({
       mode: effectiveMode,
       watchlist: watchlist
@@ -339,9 +345,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       lossBlockedCodes: new Set([...recentLossCodes, ...todayRepeatStopCodes]),
       manuallySoldCodes,
       aiScores: adjustedScores,
-      takeProfitPct: strategy?.take_profit_pct ?? undefined,
-      stopLossPct: strategy?.stop_loss_pct ?? undefined,
-      buyThreshold: strategy?.buy_threshold ?? undefined,
+      takeProfitPct: resolvedTp,
+      stopLossPct: resolvedSl,
+      buyThreshold: resolvedThreshold,
       winRates,
       // dbMode=SCALPING이면 하루 종일 KOSPI MA60 하락장 블록·macroRiskOff 면제
       // (사용자가 SCALPING 모드 선택 = KOSPI 하락장 관계없이 고점수 종목 진입 허용 의사)
@@ -375,8 +381,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       openChains,
       livePrices,
       mode,
-      stopLossPct: strategy?.stop_loss_pct ?? null,
-      takeProfitPct: strategy?.take_profit_pct ?? null,
+      stopLossPct: resolvedSl ?? null,
+      takeProfitPct: resolvedTp ?? null,
     });
 
     // ── 5b. 섹터 집중 매수 차단 ──────────────────────────────────────
@@ -412,7 +418,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       openChains,
       livePrices,
       mode,
-      stopLossPct: strategy?.stop_loss_pct ?? null,
+      stopLossPct: resolvedSl ?? null,
     });
 
     // KIS 관심종목 보완 동기화: 매수 후보 있으나 실제 BUY 결정 없을 때
