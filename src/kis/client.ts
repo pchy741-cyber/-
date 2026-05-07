@@ -85,13 +85,13 @@ class RateLimiter {
   }
 }
 
-// KIS API rate limit: 실전 20건/sec, 모의투자 2건/sec (실제 허용치 낮음 — 보수적 설정)
+// KIS API rate limit: 실전 20건/sec, 모의투자 1건/sec (실제 서버 엄격 — 초과 시 3~15초 재시도 방지)
 const isPaper = config.isPaper;
-export const kisRateLimiter = new RateLimiter(isPaper ? 2 : 15);
+export const kisRateLimiter = new RateLimiter(isPaper ? 1 : 15);
 // 해외 전용 rate limiter (국내와 독립 — 서로 블로킹 방지)
-export const overseasRateLimiter = new RateLimiter(isPaper ? 12 : 15);
-// 시세/차트 조회 전용 rate limiter — 실거래 URL 사용하므로 paper 모드에도 12/sec 허용
-export const marketDataRateLimiter = new RateLimiter(12);
+export const overseasRateLimiter = new RateLimiter(isPaper ? 8 : 15);
+// 시세/차트 조회 전용 rate limiter — 실거래 URL 사용하므로 paper 모드에도 8/sec 허용
+export const marketDataRateLimiter = new RateLimiter(8);
 
 /**
  * KIS REST API 범용 클라이언트

@@ -87,8 +87,17 @@ async function getFxRate(): Promise<number> {
   return _fxCache.rate;
 }
 
+// ── 대시보드 응답 캐시 (15초 TTL — KIS rate limit 방어) ──
+let _dashCache: { data: unknown; ts: number } | null = null;
+const DASH_CACHE_TTL = 15_000;
+
 // ── 대시보드 요약 ──
 dashboardRoutes.get('/dashboard', async (c) => {
+  // 캐시 히트: 15초 이내 동일 응답 반환 (KIS API 동시 다발 호출 방지)
+  if (_dashCache && Date.now() - _dashCache.ts < DASH_CACHE_TTL) {
+    return c.json(_dashCache.data);
+  }
+
   // KIS API 실패 시에도 기본값으로 응답 (장 외 시간, API 제한 등)
   const defaultBalance = { totalDeposit: 10000000, totalEvalAmount: 0, orderableCash: 10000000, totalProfitLoss: 0, totalProfitLossPct: 0, positions: [] };
 
@@ -338,7 +347,9 @@ dashboardRoutes.get('/dashboard', async (c) => {
     })(),
     insights: insightRows.rows,
     defensePark,
-  });
+  };
+  _dashCache = { data: dashPayload, ts: Date.now() };
+  return c.json(dashPayload);
 });
 
 // ── 종목명 검색 (KRX 공개 API + DB) ──
