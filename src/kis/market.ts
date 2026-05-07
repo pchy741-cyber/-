@@ -17,6 +17,7 @@ export interface CurrentPrice {
   prevClosePrice: number;
   dividendYield: number; // 배당수익률 (%, dvr 필드)
   per: number;           // PER
+  marketCapEok: number;  // 시가총액 (억원, hts_avls)
 }
 
 export async function getCurrentPrice(stockCode: string): Promise<CurrentPrice> {
@@ -47,6 +48,7 @@ export async function getCurrentPrice(stockCode: string): Promise<CurrentPrice> 
     prevClosePrice: Number(o.stck_sdpr),
     dividendYield: Number(o.dvr ?? 0),
     per: Number(o.per ?? 0),
+    marketCapEok: Number(o.hts_avls ?? 0),
   };
 }
 

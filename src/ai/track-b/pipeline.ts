@@ -337,15 +337,42 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // ── 4. 기술적 지표 매매 판단 ─────────────────────────────────────
     // 수급 보정 반영: composite_score + flowAdj (±20점 범위 제한)
     // confidence < 0.55 신호 제거 + 당일 스코어 아니면 -8점 패널티 (stale 스코어 억제)
+
+    // 시총 기반 소형주 패널티: 잡주 리스크 감소 (완전 차단 아닌 점수 감산 → 고확신 소형주는 여전히 진입 가능)
+    const marketCapAdjMap = new Map<string, number>();
+    for (const [code, price] of livePrices) {
+      const cap = price.marketCapEok;
+      if (cap > 0 && cap < 1000) marketCapAdjMap.set(code, -15);
+      else if (cap > 0 && cap < 2000) marketCapAdjMap.set(code, -5);
+    }
+    const smallCapCodes = [...marketCapAdjMap.entries()].filter(([, v]) => v <= -15).map(([k]) => k);
+    if (smallCapCodes.length > 0) {
+      logger.info(`🏚️ 소형주 패널티(-15): ${smallCapCodes.join(', ')} (시총 1000억 미만)`, { component: 'TRACK_B' });
+    }
+
+    // blockNewBuys 진단 로그
+    const blockReason =
+      kstH > 15 || (kstH === 15 && kstM >= 10) ? '마감시간(15:10+)' :
+      dailyLoss.blocked ? `일일손실초과(${dailyLoss.dailyPnlPct.toFixed(1)}%)` :
+      kospiRegime.flashCrash ? 'KOSPI급락서킷브레이커' :
+      (!isScalpingMode && kospiRegime.penalty >= 2) ? `KOSPI하락장(penalty=2)` :
+      (!isScalpingMode && kospiRegime.penalty >= 1 && kospiRegime.todayDown) ? `KOSPI조정장+당일하락(penalty=1)` :
+      (!isScalpingMode && macroRiskOff) ? `매크로RISK_OFF(VKOSPI=${macroSnapshot?.vkospi?.toFixed(1) ?? '?'})` :
+      null;
+    if (blockReason) {
+      logger.warn(`🚫 신규매수 차단: ${blockReason}`, { component: 'TRACK_B' });
+    }
+
     const todayDate = new Date().toISOString().split('T')[0];
     const adjustedScores = scores
       .filter((s: any) => (s.confidence ?? 0) >= 0.55)
       .map((s: any) => {
         const base = s.composite_score ?? 0;
         const adj = flowAdjMap.get(s.stock_code) ?? 0;
+        const capAdj = marketCapAdjMap.get(s.stock_code) ?? 0;
         const stale = s.score_date && s.score_date !== todayDate ? -8 : 0;
         if (stale < 0) logger.info(`⏳ 스코어 stale 패널티: ${s.stock_code} (${s.score_date} → -8점)`, { component: 'TRACK_B' });
-        return { stock_code: s.stock_code, score: Math.min(100, Math.max(0, base + adj + stale)) };
+        return { stock_code: s.stock_code, score: Math.min(100, Math.max(0, base + adj + capAdj + stale)) };
       });
 
     // 적응형 파라미터: DB 명시 설정 > 시장 최적화 자동값 > STRATEGY_PARAMS 기본값
