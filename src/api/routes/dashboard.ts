@@ -1005,25 +1005,53 @@ dashboardRoutes.post('/sell/:chainId', async (c) => {
     if (chain.status === 'CLOSED') return c.json({ error: '이미 청산된 포지션입니다' }, 400);
     if (chain.total_quantity <= 0) return c.json({ error: '매도할 수량이 없습니다' }, 400);
 
-    // KIS 주문 — 실패 시 1회 재시도 (토큰 만료·네트워크 순단 대응)
-    let result = await placeOrder({ stockCode: chain.stock_code, side: 'SELL', quantity: chain.total_quantity });
-    if (!result.success) {
-      logger.warn(`수동 매도 1차 실패 (${chain.stock_code}): ${result.message} — 2초 후 재시도`, { component: 'DASHBOARD' });
-      await new Promise((r) => setTimeout(r, 2000));
-      result = await placeOrder({ stockCode: chain.stock_code, side: 'SELL', quantity: chain.total_quantity });
-    }
-    if (!result.success) {
-      logger.error(`수동 매도 최종 실패 (${chain.stock_code}): ${result.message}`, { component: 'DASHBOARD' });
-      return c.json({ error: `KIS 매도 거부: ${result.message}` }, 502);
-    }
-
-    // 현재가 조회 (filled_price에 매수가 대신 실제 시세 기록)
+    // 현재가 조회 (filled_price에 실제 시세 기록)
     let fillPrice = 0;
     try {
-      const { getCurrentPrice } = await import('../../kis/market.js');
       const px = await getCurrentPrice(chain.stock_code);
       fillPrice = px.currentPrice;
     } catch { /* 시세 조회 실패 시 0으로 기록 */ }
+
+    // 모의투자 모드: KIS API 건너뜀 — DB만 정리
+    if (config.isPaper) {
+      const fakeOrderNo = `P${Date.now().toString(36)}`;
+      await getPool().query(
+        `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = 'CEO 수동 매도' WHERE id = $1`,
+        [chainId],
+      );
+      await getPool().query(
+        `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
+         VALUES ($1, $2, 'SELL', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, 'MANUAL', 'CEO 수동 전량 매도')`,
+        [chainId, chain.stock_code, chain.total_quantity, fillPrice, fakeOrderNo, config.tradingMode],
+      );
+      logger.info(`✅ CEO 수동 매도 완료 (모의투자): ${chain.stock_code} ${chain.total_quantity}주`, { component: 'DASHBOARD' });
+      return c.json({ ok: true, orderNo: fakeOrderNo, message: `${chain.stock_code} ${chain.total_quantity}주 전량 매도 완료 (모의투자)` });
+    }
+
+    // 실거래: KIS 주문 — 실패 시 1회 재시도 (토큰 만료·네트워크 순단 대응)
+    let kisOrderNo = '';
+    try {
+      let result = await placeOrder({ stockCode: chain.stock_code, side: 'SELL', quantity: chain.total_quantity });
+      if (!result.success) {
+        logger.warn(`수동 매도 1차 실패 (${chain.stock_code}): ${result.message} — 2초 후 재시도`, { component: 'DASHBOARD' });
+        await new Promise((r) => setTimeout(r, 2000));
+        result = await placeOrder({ stockCode: chain.stock_code, side: 'SELL', quantity: chain.total_quantity });
+      }
+      if (!result.success) {
+        logger.error(`수동 매도 최종 실패 (${chain.stock_code}): ${result.message}`, { component: 'DASHBOARD' });
+        return c.json({ error: `KIS 매도 거부: ${result.message}` }, 502);
+      }
+      kisOrderNo = result.orderNo ?? '';
+    } catch (kisErr: any) {
+      const msg: string = kisErr?.message ?? '';
+      // 40240000: 잔고 없음 — KIS에 포지션이 없으나 DB에 남아있는 유령 체인 → DB만 정리
+      if (msg.includes('40240000') || msg.includes('잔고')) {
+        logger.warn(`수동 매도: KIS 잔고 없음 (${chain.stock_code}) — DB 유령 체인 정리`, { component: 'DASHBOARD' });
+        kisOrderNo = `GHOST_${Date.now().toString(36)}`;
+      } else {
+        throw kisErr;
+      }
+    }
 
     // 체인 상태 업데이트
     await getPool().query(
@@ -1035,11 +1063,11 @@ dashboardRoutes.post('/sell/:chainId', async (c) => {
     await getPool().query(
       `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
        VALUES ($1, $2, 'SELL', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, 'MANUAL', 'CEO 수동 전량 매도')`,
-      [chainId, chain.stock_code, chain.total_quantity, fillPrice, result.orderNo ?? '', config.tradingMode],
+      [chainId, chain.stock_code, chain.total_quantity, fillPrice, kisOrderNo, config.tradingMode],
     );
 
-    logger.info(`✅ CEO 수동 매도 완료: ${chain.stock_code} ${chain.total_quantity}주 (주문번호 ${result.orderNo})`, { component: 'DASHBOARD' });
-    return c.json({ ok: true, orderNo: result.orderNo, message: `${chain.stock_code} ${chain.total_quantity}주 전량 매도 주문 완료` });
+    logger.info(`✅ CEO 수동 매도 완료: ${chain.stock_code} ${chain.total_quantity}주 (주문번호 ${kisOrderNo})`, { component: 'DASHBOARD' });
+    return c.json({ ok: true, orderNo: kisOrderNo, message: `${chain.stock_code} ${chain.total_quantity}주 전량 매도 주문 완료` });
   } catch (err: any) {
     logger.error(`수동 매도 예외: ${err.message}`, { component: 'DASHBOARD' });
     return c.json({ error: err.message }, 500);

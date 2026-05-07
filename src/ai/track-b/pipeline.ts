@@ -6,6 +6,7 @@ import {
   getActiveWatchlist,
   getLatestScores,
   getOpenChains,
+  getPool,
   getRecentLossStocks,
   getRecentManuallySoldStocks,
   getTodayRepeatStopCodes,
@@ -203,6 +204,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       : (scores.length === 0 && mode === 'DEFENSE') ? 'SWING' : mode;
     if (isPastScalpDeadline) {
       logger.info('⏰ SCALPING 09:30 이후 → 신규 매수 SWING 기준 전환 (기존 SCALPING 포지션은 강제청산)', { component: 'TRACK_B' });
+      // DB 모드 자동 전환 (SCALPING → SWING) — 한 번만 실행 (WHERE mode='SCALPING' 조건으로 멱등)
+      getPool().query(
+        `UPDATE strategy_config SET mode='SWING', updated_at=NOW() WHERE is_active=true AND mode='SCALPING'`
+      ).then(({ rowCount }) => {
+        if (rowCount && rowCount > 0) logger.info('✅ DB 모드 자동전환: SCALPING → SWING (09:30 이후)', { component: 'TRACK_B' });
+      }).catch((e: Error) => logger.warn(`모드 자동전환 DB 업데이트 실패: ${e.message}`, { component: 'TRACK_B' }));
     } else if (scores.length === 0 && mode === 'DEFENSE') {
       logger.info('⚡ AI 스코어 없음 + DEFENSE 모드 → SWING으로 완화', { component: 'TRACK_B' });
     }
