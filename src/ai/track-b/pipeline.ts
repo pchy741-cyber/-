@@ -339,24 +339,24 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // confidence < 0.55 신호 제거 + 당일 스코어 아니면 -8점 패널티 (stale 스코어 억제)
 
     // 시총 기반 소형주 패널티: 잡주 리스크 감소 (완전 차단 아닌 점수 감산 → 고확신 소형주는 여전히 진입 가능)
+    // 200억 미만: -20점(사실상 차단), 200~500억: -10점, 500억+: 무패널티
     const marketCapAdjMap = new Map<string, number>();
     for (const [code, price] of livePrices) {
       const cap = price.marketCapEok;
-      if (cap > 0 && cap < 1000) marketCapAdjMap.set(code, -15);
-      else if (cap > 0 && cap < 2000) marketCapAdjMap.set(code, -5);
+      if (cap > 0 && cap < 200) marketCapAdjMap.set(code, -20);
+      else if (cap > 0 && cap < 500) marketCapAdjMap.set(code, -10);
     }
-    const smallCapCodes = [...marketCapAdjMap.entries()].filter(([, v]) => v <= -15).map(([k]) => k);
-    if (smallCapCodes.length > 0) {
-      logger.info(`🏚️ 소형주 패널티(-15): ${smallCapCodes.join(', ')} (시총 1000억 미만)`, { component: 'TRACK_B' });
-    }
+    const microCapCodes = [...marketCapAdjMap.entries()].filter(([, v]) => v <= -20).map(([k]) => k);
+    const smallCapCodes2 = [...marketCapAdjMap.entries()].filter(([, v]) => v === -10).map(([k]) => k);
+    if (microCapCodes.length > 0) logger.info(`🏚️ 마이크로캡 패널티(-20): ${microCapCodes.join(', ')} (시총 200억 미만)`, { component: 'TRACK_B' });
+    if (smallCapCodes2.length > 0) logger.info(`🏠 소형주 패널티(-10): ${smallCapCodes2.join(', ')} (시총 200~500억)`, { component: 'TRACK_B' });
 
     // blockNewBuys 진단 로그
     const blockReason =
       kstH > 15 || (kstH === 15 && kstM >= 10) ? '마감시간(15:10+)' :
       dailyLoss.blocked ? `일일손실초과(${dailyLoss.dailyPnlPct.toFixed(1)}%)` :
       kospiRegime.flashCrash ? 'KOSPI급락서킷브레이커' :
-      (!isScalpingMode && kospiRegime.penalty >= 2) ? `KOSPI하락장(penalty=2)` :
-      (!isScalpingMode && kospiRegime.penalty >= 1 && kospiRegime.todayDown) ? `KOSPI조정장+당일하락(penalty=1)` :
+      (!isScalpingMode && kospiRegime.penalty >= 2) ? `KOSPI하락장(penalty=2,KOSPI<MA60)` :
       (!isScalpingMode && macroRiskOff) ? `매크로RISK_OFF(VKOSPI=${macroSnapshot?.vkospi?.toFixed(1) ?? '?'})` :
       null;
     if (blockReason) {
@@ -403,13 +403,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       winRates,
       // dbMode=SCALPING이면 하루 종일 KOSPI MA60 하락장 블록·macroRiskOff 면제
       // (사용자가 SCALPING 모드 선택 = KOSPI 하락장 관계없이 고점수 종목 진입 허용 의사)
+      // penalty=1(조정장, MA60>KOSPI>MA20) 단독으로는 차단 안함 → adaptive threshold +2 로 대응
+      // penalty=2(하락장, KOSPI<MA60)만 차단 유지
       blockNewBuys:
         kstH > 15 ||
         (kstH === 15 && kstM >= 10) ||
         dailyLoss.blocked ||
         kospiRegime.flashCrash ||
         (!isScalpingMode && kospiRegime.penalty >= 2) ||
-        (!isScalpingMode && kospiRegime.penalty >= 1 && kospiRegime.todayDown) ||
         (!isScalpingMode && macroRiskOff),
       kospiBoost: kospiRegime.boost,
       allocationTarget: allocCfg ? {
