@@ -400,6 +400,17 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 10:05 — Track A 장중 재분석 (개장 1시간 실거래 반영 — 07:30 아침 점수 갱신)
+  // 코스피 급등/급락 시 아침 점수 4.5시간 공백 → 10:05 재분석으로 즉시 반영
+  cron.schedule(
+    '5 10 * * 1-5',
+    () => {
+      logger.info('⏰ Track A (장중 오전 재분석 10:05)', { component: 'SCHEDULER' });
+      withTimeout('Track A 오전재분석', () => runTrackAJob(), 300_000);
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // ═══════════════════════════════════════════
   //  🌏 해외 주식 (미국/일본/대만)
   // ═══════════════════════════════════════════
