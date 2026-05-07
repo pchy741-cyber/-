@@ -35,6 +35,7 @@ journalRoutes.get('/journal', async (c) => {
         tc.stock_code,
         w.stock_name,
         tc.avg_buy_price,
+        tc.total_quantity,
         tc.total_invested,
         tc.realized_pnl,
         tc.strategy_mode,
@@ -54,7 +55,6 @@ journalRoutes.get('/journal', async (c) => {
       LEFT JOIN watchlist w ON w.stock_code = tc.stock_code
       WHERE tc.status = 'CLOSED'
         AND tc.closed_at >= NOW() - ($1 || ' days')::interval
-        AND tc.realized_pnl IS NOT NULL
       ORDER BY tc.closed_at DESC
       LIMIT 200
     `, [days]);
@@ -62,9 +62,15 @@ journalRoutes.get('/journal', async (c) => {
     for (const r of krRows) {
       const entryPrice = Number(r.avg_buy_price ?? 0);
       const exitPrice = Number(r.exit_price ?? 0);
-      const pnlAmount = Number(r.realized_pnl ?? 0);
+      const pnlAmount = r.realized_pnl != null
+        ? Number(r.realized_pnl)
+        : exitPrice > 0 && entryPrice > 0
+          ? (exitPrice - entryPrice) * Number(r.total_quantity ?? 0)
+          : 0;
       const invested = Number(r.total_invested ?? 0);
-      const pnlPct = invested > 0 ? (pnlAmount / invested) * 100 : 0;
+      const pnlPct = invested > 0 ? (pnlAmount / invested) * 100
+        : entryPrice > 0 ? ((exitPrice - entryPrice) / entryPrice) * 100
+        : 0;
       const openedAt = r.opened_at ? new Date(r.opened_at).toISOString() : '';
       const closedAt = r.closed_at ? new Date(r.closed_at).toISOString() : '';
       const holdingDays = openedAt && closedAt
