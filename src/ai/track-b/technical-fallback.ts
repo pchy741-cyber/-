@@ -66,11 +66,11 @@ export async function technicalFallbackDecisions(params: {
   }
   const decisions: TradeDecision[] = [];
 
-  // SCALPING 09:45 강제청산 판단용 KST 시간 (개장 09:30까지 진입 → 09:45까지 TP 대기)
+  // SCALPING 09:30 강제청산 판단용 KST 시간 (개장 09:15까지 진입 → 09:30까지 TP 대기)
   const _scalpNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
   const _scalpH = _scalpNow.getUTCHours();
   const _scalpM = _scalpNow.getUTCMinutes();
-  const isPastScalpDeadline = _scalpH > 9 || (_scalpH === 9 && _scalpM >= 45);
+  const isPastScalpDeadline = _scalpH > 9 || (_scalpH === 9 && _scalpM >= 30);
 
   // 1. 보유 종목 매도 판단 (손절/익절)
   // 동일 종목에 다중 체인(분할 매수)이 있을 경우 중복 매도 신호 방지
@@ -92,7 +92,7 @@ export async function technicalFallbackDecisions(params: {
         stock_code: chain.stock_code,
         quantity: chain.total_quantity,
         price_type: 'MARKET',
-        reasoning: `SCALPING 강제청산(09:45): 단타 윈도우 종료 (${pnlPct.toFixed(1)}%)`,
+        reasoning: `SCALPING 강제청산(09:30): 단타 윈도우 종료 (${pnlPct.toFixed(1)}%)`,
         confidence: 1.0,
       });
       processedSellCodes.add(chain.stock_code);
@@ -593,7 +593,7 @@ export async function technicalFallbackDecisions(params: {
 
     // ── 당일 바 위치: 고점 80%+ 추격 차단 ──────────────────────────────────
     // 전문 트레이더: "저점에서 사고 고점에서 팔아라" — 당일 고점권 신규 진입 방지
-    if (mode !== 'SCALPING' && aiScore < 85) {  // 고점 차단 원복: 80→85 (AI 80-84도 고점 진입 차단)
+    if (aiScore < 85) {  // 고점 추격 차단 — SCALPING 포함 전 모드 적용 (갭업 고점 단타 진입 차단)
       const todayRange = candles[0].high - candles[0].low;
       const priceInRange = todayRange > 50 ? (price.currentPrice - candles[0].low) / todayRange : 0.5;
       const hasStrongMomentum = tech.bollingerBreakout === 'UP' || tech.ttmSqueeze.fireSignal === 'LONG' || tech.volumeRatio >= 2.5;
@@ -608,6 +608,14 @@ export async function technicalFallbackDecisions(params: {
     // 모멘텀 돌파 집중 — 독립 신호 2개+ 동시 충족 필수 (코인플립 방지)
     // 수수료 감안 손익분기 승률 42% → 진입 조건 강화로 50%+ 목표
     if (mode === 'SCALPING') {
+      // ── 갭상승 2.5% 초과 진입 차단 — 갭 메우기 반전으로 -2~3% 손해 패턴 제거 ──
+      const prevClose = Number(candles[candles.length - 1]?.close ?? 0);
+      const gapPct = prevClose > 0 ? ((price.currentPrice - prevClose) / prevClose) * 100 : 0;
+      if (gapPct > 2.5) {
+        logger.info(`  ⚡ ${stock.stock_code}: SCALPING 갭상승 ${gapPct.toFixed(1)}%>2.5% 갭메우기 위험 → 스킵`, { component: 'TRACK_B' });
+        continue;
+      }
+
       const momentumSignals = [
         tech.bollingerBreakout === 'UP',
         tech.ttmSqueeze.fireSignal === 'LONG',
@@ -616,13 +624,13 @@ export async function technicalFallbackDecisions(params: {
       ];
       const momentumCount = momentumSignals.filter(Boolean).length;
       const scalpRsiOk = tech.rsi14 >= 40 && tech.rsi14 <= 70;
-      // AI 80점+ 고확신: 신호 1개 + 거래량 2x로 완화
-      const isHighAi = aiScore >= 80;
+      // AI 87점+ 최고확신: 신호 1개 + 거래량 3x (완화 기준도 3x로 올림)
+      const isHighAi = aiScore >= 87;
       const minSignals = isHighAi ? 1 : 2;
-      const minVolume = isHighAi ? 2.0 : 3.0;
+      const minVolume = 3.0;  // 고확신도 최소 3x — 거래량 없는 스캘핑은 이탈 불가
       if (momentumCount < minSignals || tech.volumeRatio < minVolume || !scalpRsiOk) {
         logger.info(
-          `  ⚡ ${stock.stock_code}: SCALPING 기준 미달 — 모멘텀신호=${momentumCount}/${minSignals} vol=${tech.volumeRatio.toFixed(1)}x(>=${minVolume}) RSI=${tech.rsi14.toFixed(0)}(40-70) AI=${aiScore} → 스킵`,
+          `  ⚡ ${stock.stock_code}: SCALPING 기준 미달 — 모멘텀신호=${momentumCount}/${minSignals} vol=${tech.volumeRatio.toFixed(1)}x(>=3.0) RSI=${tech.rsi14.toFixed(0)}(40-70) AI=${aiScore} → 스킵`,
           { component: 'TRACK_B' },
         );
         continue;

@@ -1103,7 +1103,7 @@ export async function runOverseasJob(): Promise<void> {
       logger.warn(`⚠️ 손실 회복 모드(${dailyLossPct.toFixed(1)}%): ${quality} 장세 → AI 85%+ 고확신 종목만 매수`, { component: 'OVERSEAS' });
     }
 
-    if (!riskBlocked && currentHoldingCount < MAX_POSITIONS && cash >= 200) {
+    if (!riskBlocked && currentHoldingCount < MAX_POSITIONS && cash >= 50) {
       // 48시간 이내 손절 종목 — 재매수 쿨다운 / 7일 이내 손실 종목 — AI 고확신 필수
       const [lossCooldownSet, recentLossSet] = await Promise.all([
         getLossCooldownStocks(),
@@ -1239,6 +1239,63 @@ export async function runOverseasJob(): Promise<void> {
           return sb - sa;
         });
 
+      // ── 5-a-1. 순환 매도 — 최강 신호 존재 + 현금 부족 시 집중 포지션 일부 청산 ──
+      // 유저 전략: 집중 포지션을 현금 저수지로 운영 — 더 좋은 기회가 오면 거기서 떼어 진입
+      if (buyTargets.length > 0) {
+        const topTarget = buyTargets[0];
+        const confFactor = Math.min(1, Math.max(0, topTarget.ai?.confidence ?? 0.65));
+        const scoreFactor = Math.min(1, Math.max(0, (topTarget.score + 50) / 100));
+        const combined = confFactor * 0.55 + scoreFactor * 0.45;
+        const sizingMult = Math.round((0.6 + combined * 1.2) * 100) / 100;
+        const baseSize = portfolioValue * (topTarget.isMomentum && (topTarget.ai?.confidence ?? 0) >= 0.85 ? 0.25 : 0.20);
+        const neededCash = Math.min(baseSize * sizingMult, portfolioValue * 0.20);
+
+        if (cash < neededCash) {
+          const { rows: ccRows } = await getPool().query(
+            "SELECT value FROM overseas_state WHERE key = 'concentration_code'",
+          ).catch(() => ({ rows: [] as { value: string }[] }));
+          const concentrationCode = ccRows[0]?.value ?? null;
+
+          if (concentrationCode && concentrationCode !== topTarget.code) {
+            const concHolding = updatedHoldings.get(concentrationCode);
+            const concTech = techResults.find(t => t.code === concentrationCode);
+
+            if (concHolding && concTech && concTech.price.currentPrice > 0 && concHolding.qty >= 2) {
+              const concPnlPct = ((concTech.price.currentPrice - concHolding.avgPrice) / concHolding.avgPrice) * 100;
+
+              // 수익권 집중 포지션에서만 순환 (손실 종목 물타기 방지)
+              if (concPnlPct > 0) {
+                const shortfall = neededCash - cash;
+                const maxSellQty = Math.floor(concHolding.qty / 2); // 절반 이하만 매도
+                const sellQty = Math.min(
+                  Math.ceil(shortfall / concTech.price.currentPrice),
+                  maxSellQty,
+                );
+
+                if (sellQty >= 1) {
+                  const rotateReason = `순환매도: ${topTarget.code} 진입 재원 (집중포지션 +${concPnlPct.toFixed(1)}% 일부 청산)`;
+                  const exec = await executeOverseasOrder(
+                    concentrationCode, 'SELL', sellQty,
+                    concTech.price.currentPrice, concTech.exchange,
+                    rotateReason,
+                    concHolding.qty, concHolding.avgPrice,
+                  );
+                  if (exec.submitted && exec.filledQty > 0) {
+                    await setHolding(concentrationCode, concTech.exchange, exec.finalQty, exec.finalAvgPrice);
+                    if (exec.finalQty <= 0) await clearMaxPrice(concentrationCode);
+                    const proceeds = exec.filledPrice * exec.filledQty * (1 - 0.0025);
+                    cash += proceeds;
+                    await setCash(cash);
+                    sellOrders.push(`🔄 순환매도 ${concentrationCode} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (+${concPnlPct.toFixed(1)}%) → ${topTarget.code} 진입 재원 $${proceeds.toFixed(0)}`);
+                    logger.info(`🔄 순환매도 완료: ${concentrationCode} x${exec.filledQty} +${concPnlPct.toFixed(1)}% → 현금 $${cash.toFixed(0)} (${topTarget.code} 진입용)`, { component: 'OVERSEAS' });
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
       const slotsAvailable = MAX_POSITIONS - currentHoldingCount;
       for (const target of buyTargets.slice(0, slotsAvailable)) {
         // ── AI 신뢰도 × 점수 기반 연속 포지션 사이징 (0.6x ~ 1.8x) ──
@@ -1302,16 +1359,19 @@ export async function runOverseasJob(): Promise<void> {
       }
     }
 
-    // ── 5-b. 현금 파킹 전략 — 유휴 현금을 안전 ETF에 소수점 자동투자 ──
+    // ── 5-b. 유휴현금 운용 — 수익 보유종목 집중 우선, 없으면 ETF 파킹 폴백 ──
     const avgTechScore = techResults.length > 0
       ? techResults.reduce((s, t) => s + t.score, 0) / techResults.length
       : 0;
-    const parkingResult = await runParkingStrategy({ cash, avgScore: avgTechScore, isUSSession });
-    if (parkingResult.cashUsed > 0) {
-      cash -= parkingResult.cashUsed;
+    const idleCashHoldings = await getHoldings();
+    const idleResult = await deployIdleCash({
+      cash, holdings: idleCashHoldings, techResults, isUSSession, avgScore: avgTechScore,
+    });
+    if (idleResult.cashUsed > 0) {
+      cash -= idleResult.cashUsed;
       await setCash(cash);
     }
-    const parkingOrders = parkingResult.actions;
+    const parkingOrders = idleResult.actions;
 
     // ── 6. 결과 로그 ──
     const totalActions = buyOrders.length + sellOrders.length + parkingOrders.length;
@@ -1466,6 +1526,80 @@ async function runParkingStrategy(params: {
   }
 
   return { actions, cashUsed };
+}
+
+// ── 승자 집중 전략 (유휴현금 → 수익률 1위 보유종목 추가매수) ──
+// 유저 전략: 여유 현금은 ETF 말고 현재 가장 수익 좋은 종목에 추가 투입,
+//            더 좋은 신호가 오면 거기서 일부 팔아 진입 (순환 매도와 쌍으로 동작)
+const CONCENTRATION_CASH_BUFFER = 400;  // 긴급 진입 기회 대비 보유 현금 ($)
+const CONCENTRATION_MIN_PNL_PCT = 3.0;  // 집중 대상 최소 수익률 — 손실 종목 추가매수 방지
+const CONCENTRATION_MIN_INVEST  = 60;   // 최소 집중 투자액 ($)
+
+async function deployIdleCash(params: {
+  cash: number;
+  holdings: Map<string, { qty: number; avgPrice: number; boughtAt: string; exchange: string }>;
+  techResults: Array<{ code: string; name: string; exchange: string; price: { currentPrice: number } }>;
+  isUSSession: boolean;
+  avgScore: number;
+}): Promise<{ actions: string[]; cashUsed: number }> {
+  const { cash, holdings, techResults, isUSSession, avgScore } = params;
+  if (!isUSSession) return { actions: [], cashUsed: 0 };
+
+  const parkingCodes = new Set(['SCHD', 'VOO', 'BND']);
+  const investable = cash - CONCENTRATION_CASH_BUFFER;
+  if (investable < CONCENTRATION_MIN_INVEST) return { actions: [], cashUsed: 0 };
+
+  // 보유 종목 중 수익률 최고 종목 선정 (파킹 ETF 제외)
+  let bestCode: string | null = null;
+  let bestPnlPct = CONCENTRATION_MIN_PNL_PCT;
+  let bestPrice = 0;
+  let bestExchange = '';
+  let bestHolding: { qty: number; avgPrice: number } | null = null;
+
+  for (const [code, holding] of holdings) {
+    if (parkingCodes.has(code)) continue;
+    const tech = techResults.find(t => t.code === code);
+    if (!tech || tech.price.currentPrice <= 0) continue;
+    const pnlPct = ((tech.price.currentPrice - holding.avgPrice) / holding.avgPrice) * 100;
+    if (pnlPct > bestPnlPct) {
+      bestPnlPct = pnlPct;
+      bestCode = code;
+      bestPrice = tech.price.currentPrice;
+      bestExchange = tech.exchange;
+      bestHolding = holding;
+    }
+  }
+
+  if (bestCode && bestHolding && bestPrice > 0) {
+    // 집중 종목 DB 저장 (순환 매도 참조용)
+    await getPool().query(
+      `INSERT INTO overseas_state (key, value) VALUES ('concentration_code', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1`,
+      [bestCode],
+    ).catch(() => {});
+
+    const qty = Math.floor(investable / (bestPrice * 1.0025));
+    if (qty >= 1) {
+      const exec = await executeOverseasOrder(
+        bestCode, 'BUY', qty, bestPrice, bestExchange,
+        `승자집중 +${bestPnlPct.toFixed(1)}% 수익종목 추가매수 (유휴현금 $${investable.toFixed(0)})`,
+        bestHolding.qty, bestHolding.avgPrice,
+      );
+      if (exec.submitted && exec.filledQty > 0) {
+        const cost = exec.filledQty * exec.filledPrice * 1.0025;
+        await setHolding(bestCode, bestExchange, exec.finalQty, exec.finalAvgPrice);
+        logger.info(`🎯 승자집중 완료: ${bestCode} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} +${bestPnlPct.toFixed(1)}% (유휴현금 $${investable.toFixed(0)} 투입)`, { component: 'OVERSEAS' });
+        return {
+          actions: [`🎯 승자집중 ${bestCode} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (+${bestPnlPct.toFixed(1)}% 수익종목, $${investable.toFixed(0)} 추가투입)`],
+          cashUsed: cost,
+        };
+      }
+    }
+    // qty=0 (주가 너무 높아 1주 불가) → ETF 파킹 폴백
+  }
+
+  // 집중 대상 없거나 주문 실패 → ETF 파킹 폴백
+  return runParkingStrategy({ cash, avgScore, isUSSession });
 }
 
 /**

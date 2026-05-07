@@ -99,15 +99,15 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
     const kstH = nowKst.getUTCHours();
     const kstM = nowKst.getUTCMinutes();
-    const isOpeningBell = kstH === 9 && kstM < 30;
+    const isOpeningBell = kstH === 9 && kstM < 15;  // 09:00~09:14 (15분 윈도우 — 09:15+ 진입 시 09:30 TP 도달 불가)
     const dbMode = (strategy?.mode ?? 'SWING') as StrategyMode;
     // SNIPER/DEFENSE는 개장벨에도 모드 유지 (SNIPER는 CEO가 명시적으로 설정한 집중 전략)
     const mode: StrategyMode = (isOpeningBell && dbMode !== 'DEFENSE' && dbMode !== 'SNIPER') ? 'SCALPING' : dbMode;
     if (isOpeningBell && mode === 'SCALPING') {
-      logger.info('🔔 개장 초단타 모드 자동 활성화 (09:00~09:30) — SCALPING +2.0% 즉시 익절', { component: 'TRACK_B' });
+      logger.info('🔔 개장 초단타 모드 자동 활성화 (09:00~09:14) — SCALPING +2.0% 즉시 익절', { component: 'TRACK_B' });
     }
-    // SCALPING 09:45 데드라인: 이후 신규 매수는 SWING 기준으로 전환 (기존 체인은 강제청산 유지)
-    const isPastScalpDeadline = dbMode === 'SCALPING' && (kstH > 9 || (kstH === 9 && kstM >= 45));
+    // SCALPING 09:30 데드라인: 이후 신규 매수는 SWING 기준으로 전환 (기존 체인은 강제청산 유지)
+    const isPastScalpDeadline = dbMode === 'SCALPING' && (kstH > 9 || (kstH === 9 && kstM >= 30));
     const isScalpingMode = dbMode === 'SCALPING';
 
     // ── 방어 파킹 시스템 ──────────────────────────────────────────────

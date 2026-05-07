@@ -74,7 +74,8 @@ export const STRATEGY_PARAMS = {
     // │ buyThreshold 78: 75~77 저확신 구간 추가 제거 → 승률 우선          │
     // │ TP 5.5%: 실 수익 평균 3.91% 기준 → 조기 청산 방지                │
     // └────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 78,
+    buyThreshold: 83,
+    // 83점: 78→83 상향 — 저확신(78-82) 패배 누적 제거, 상위 15% 신호만 진입
     splitCount: 2,
     averageDownPct: -3.0,
     // 물타기: -3% (의미있는 눌림목 확인 후 진입, 노이즈 물타기 차단)
@@ -116,10 +117,10 @@ export const STRATEGY_PARAMS = {
     takeProfitPct: 2.0,
     // +2.0% — 수수료 0.25% 감안 실이익 +1.75%, 개장 모멘텀 평균 2~4%
     takeProfitRatio: 1.0,   // 전량 즉시 익절
-    stopLossPct: -1.0,
-    // -1.0% 손절 (손익비 2:1, 기존 -0.6%는 노이즈에 너무 자주 청산)
+    stopLossPct: -0.8,
+    // -0.8% 손절 (손익비 2.5:1, -1.0%는 개장 노이즈에 과도하게 물림)
     maxHoldingDays: 0,      // 당일 청산 필수
-    forceCloseTime: '09:45',// 09:45 강제청산 — 개장 09:30까지 진입 후 TP 대기 시간 확보
+    forceCloseTime: '09:30',// 09:30 강제청산 — 개장 09:15까지 진입 후 TP 대기 시간 확보
   },
 
   DIVIDEND: {
