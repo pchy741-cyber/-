@@ -1039,9 +1039,16 @@ dashboardRoutes.post('/sell/:chainId', async (c) => {
       }
       if (!result.success) {
         logger.error(`수동 매도 최종 실패 (${chain.stock_code}): ${result.message}`, { component: 'DASHBOARD' });
-        return c.json({ error: `KIS 매도 거부: ${result.message}` }, 502);
+        // 40240000: KIS에 포지션 없음 — DB에만 남아있는 유령 체인 → DB 정리로 처리
+        if (result.message?.includes('40240000') || result.message?.includes('잔고')) {
+          logger.warn(`수동 매도: KIS 잔고 없음 (${chain.stock_code}) — DB 유령 체인 정리`, { component: 'DASHBOARD' });
+          kisOrderNo = `GHOST_${Date.now().toString(36)}`;
+        } else {
+          return c.json({ error: `KIS 매도 거부: ${result.message}` }, 502);
+        }
+      } else {
+        kisOrderNo = result.orderNo ?? '';
       }
-      kisOrderNo = result.orderNo ?? '';
     } catch (kisErr: any) {
       const msg: string = kisErr?.message ?? '';
       // 40240000: 잔고 없음 — KIS에 포지션이 없으나 DB에 남아있는 유령 체인 → DB만 정리
