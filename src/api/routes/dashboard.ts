@@ -87,17 +87,31 @@ async function getFxRate(): Promise<number> {
   return _fxCache.rate;
 }
 
-// ── 대시보드 응답 캐시 (15초 TTL — KIS rate limit 방어) ──
+// ── 대시보드 응답 캐시 (30초 TTL, Stale-While-Revalidate) ──
 let _dashCache: { data: unknown; ts: number } | null = null;
-const DASH_CACHE_TTL = 15_000;
+let _dashRefreshing = false;
+const DASH_CACHE_TTL = 30_000;
 
 // ── 대시보드 요약 ──
 dashboardRoutes.get('/dashboard', async (c) => {
-  // 캐시 히트: 15초 이내 동일 응답 반환 (KIS API 동시 다발 호출 방지)
-  if (_dashCache && Date.now() - _dashCache.ts < DASH_CACHE_TTL) {
+  // Stale-While-Revalidate: 캐시 있으면 즉시 반환, 만료됐으면 백그라운드 갱신
+  if (_dashCache) {
+    const stale = Date.now() - _dashCache.ts >= DASH_CACHE_TTL;
+    if (!stale) return c.json(_dashCache.data);
+    // 만료됐지만 있음: 즉시 반환 + 백그라운드 갱신 트리거
+    if (!_dashRefreshing) {
+      _dashRefreshing = true;
+      buildDashPayload().then(p => { _dashCache = { data: p, ts: Date.now() }; }).catch(() => {}).finally(() => { _dashRefreshing = false; });
+    }
     return c.json(_dashCache.data);
   }
+  // 캐시 없음 (서버 재시작 직후): 최초 1회만 대기
+  const payload = await buildDashPayload();
+  _dashCache = { data: payload, ts: Date.now() };
+  return c.json(payload);
+});
 
+async function buildDashPayload(): Promise<unknown> {
   // KIS API 실패 시에도 기본값으로 응답 (장 외 시간, API 제한 등)
   const defaultBalance = { totalDeposit: 10000000, totalEvalAmount: 0, orderableCash: 10000000, totalProfitLoss: 0, totalProfitLossPct: 0, positions: [] };
 
@@ -348,9 +362,8 @@ dashboardRoutes.get('/dashboard', async (c) => {
     insights: insightRows.rows,
     defensePark,
   };
-  _dashCache = { data: dashPayload, ts: Date.now() };
-  return c.json(dashPayload);
-});
+  return dashPayload;
+}
 
 // ── 종목명 검색 (KRX 공개 API + DB) ──
 dashboardRoutes.get('/search/stock', async (c) => {
