@@ -2338,8 +2338,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                   const pnlPct = displayPrice > 0 && h.avg_price > 0 ? ((displayPrice - h.avg_price) / h.avg_price) * 100 : 0;
                   const usDisplayName = toDisplayName(priceData?.name, h.stock_code);
                   return (
-                    <div key={h.stock_code} className="px-4 py-3 flex items-center justify-between">
-                      <div>
+                    <div key={h.stock_code} className="px-4 py-3 flex items-center gap-3">
+                      <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-bold">{usDisplayName}</span>
                           <span className="text-[10px] text-slate-500">{h.quantity}주</span>
@@ -2356,6 +2356,16 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                           </>
                         ) : <span className="text-xs text-slate-600">시세 없음</span>}
                       </div>
+                      <button onClick={async () => {
+                        if (!confirm(`${usDisplayName} ${h.quantity}주 전량 시장가 매도하시겠습니까?`)) return;
+                        try {
+                          const r = await api(`/sell-overseas/${h.stock_code}`, { method: 'POST', timeout: 40000 });
+                          alert(r.message || '매도 완료');
+                          onRefresh();
+                        } catch (err: any) { alert('매도 실패: ' + err.message); }
+                      }} className="text-xs px-2.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 font-medium border border-white/[0.04] whitespace-nowrap shrink-0">
+                        전량 매도
+                      </button>
                     </div>
                   );
                 })}

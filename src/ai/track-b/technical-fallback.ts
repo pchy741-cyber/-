@@ -99,6 +99,29 @@ export async function technicalFallbackDecisions(params: {
       continue;
     }
 
+    // 마감 근접 소폭수익 확정 매도 — 장 끝에 0.1% 수익이 0%→마이너스 되기 전에 확정
+    // 15:00~15:10: 0.1%+ 수익이면 즉시 청산 | 15:10~15:25: 0%+만 되도 청산
+    const isNearClose = _scalpH === 15 && _scalpM < 25;
+    if (isNearClose && chain.strategy_mode !== 'SCALPING' && chain.total_quantity > 0) {
+      const closeThreshold = _scalpM >= 10 ? 0.0 : 0.1;
+      if (pnlPct >= closeThreshold) {
+        logger.info(
+          `⏰ 마감전 수익확정: ${chain.stock_code} +${pnlPct.toFixed(1)}% (${_scalpM >= 10 ? '15:10+' : '15:00+'} 임계값 ${closeThreshold}%)`,
+          { component: 'TRACK_B' },
+        );
+        decisions.push({
+          action: 'SELL',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `마감전 수익확정(${_scalpM >= 10 ? '15:10+' : '15:00+'}): +${pnlPct.toFixed(1)}% → 장마감 손실 방지`,
+          confidence: 0.92,
+        });
+        processedSellCodes.add(chain.stock_code);
+        continue;
+      }
+    }
+
     // 체인별 TP/SL 우선: SCALPING 진입 후 모드 전환 시에도 원래 파라미터 유지
     const chainTp = chain.target_profit_pct ?? strategyParams.takeProfitPct;
     const chainSl = chain.stop_loss_pct ?? strategyParams.stopLossPct;

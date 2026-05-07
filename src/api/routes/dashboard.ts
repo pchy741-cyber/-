@@ -1074,3 +1074,73 @@ dashboardRoutes.post('/sell/:chainId', async (c) => {
   }
 });
 
+// ── 해외주식 수동 매도 (CEO 긴급 탈출) ──
+dashboardRoutes.post('/sell-overseas/:stockCode', async (c) => {
+  const stockCode = c.req.param('stockCode');
+  try {
+    const { rows } = await getPool().query(
+      'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0', [stockCode]);
+    const holding = rows[0];
+    if (!holding) return c.json({ error: '보유 종목을 찾을 수 없습니다' }, 404);
+    const qty = Number(holding.quantity);
+    const exchange = String(holding.exchange ?? 'NASDAQ');
+    const avgPrice = Number(holding.avg_price ?? 0);
+
+    // 실시간 현재가 조회 (실패 시 DB 저장가 → 평단가 순 폴백)
+    let fillPrice = Number(holding.last_price ?? 0);
+    try {
+      const { getOverseasPrice } = await import('../../kis/overseas.js');
+      const px = await getOverseasPrice(stockCode, exchange);
+      if ((px?.currentPrice ?? 0) > 0) fillPrice = px.currentPrice;
+    } catch { /* 시세 조회 실패 시 DB 저장가 사용 */ }
+    if (fillPrice <= 0) fillPrice = avgPrice;
+
+    const paperReasoning = avgPrice > 0
+      ? `[avgBuy:${avgPrice.toFixed(4)}] CEO 해외주식 수동 전량 매도`
+      : 'CEO 해외주식 수동 전량 매도';
+
+    if (config.isPaper) {
+      const fakeOrderNo = `POS${Date.now().toString(36)}`;
+      await getPool().query(
+        'DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2', [stockCode, exchange]);
+      await getPool().query(
+        `INSERT INTO overseas_state (key, value) VALUES ('cash', $1::text)
+         ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
+        [fillPrice * qty]);
+      await getPool().query(
+        `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
+         VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','paper','OVERSEAS',$5)`,
+        [stockCode, qty, fillPrice, fakeOrderNo, paperReasoning]);
+      logger.info(`✅ CEO 해외 수동 매도 완료 (모의투자): ${stockCode} ${qty}주 @$${fillPrice}`, { component: 'DASHBOARD' });
+      return c.json({ ok: true, orderNo: fakeOrderNo, message: `${stockCode} ${qty}주 전량 매도 완료 (모의투자)` });
+    }
+
+    // 실거래: KIS 해외 주문
+    const { placeOverseasOrder } = await import('../../kis/overseas.js');
+    let result = await placeOverseasOrder({ stockCode, exchange, side: 'SELL', quantity: qty, price: 0 });
+    if (!result.success) {
+      await new Promise((r) => setTimeout(r, 2000));
+      result = await placeOverseasOrder({ stockCode, exchange, side: 'SELL', quantity: qty, price: 0 });
+    }
+    if (!result.success) {
+      logger.error(`해외 수동 매도 최종 실패 (${stockCode}): ${result.message}`, { component: 'DASHBOARD' });
+      return c.json({ error: `KIS 매도 거부: ${result.message}` }, 502);
+    }
+    await getPool().query(
+      'DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2', [stockCode, exchange]);
+    await getPool().query(
+      `INSERT INTO overseas_state (key, value) VALUES ('cash', $1::text)
+       ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
+      [fillPrice * qty]);
+    await getPool().query(
+      `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
+       VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','live','OVERSEAS',$5)`,
+      [stockCode, qty, fillPrice, result.orderNo ?? '', paperReasoning]);
+    logger.info(`✅ CEO 해외 수동 매도 완료: ${stockCode} ${qty}주 (주문번호 ${result.orderNo})`, { component: 'DASHBOARD' });
+    return c.json({ ok: true, orderNo: result.orderNo, message: `${stockCode} ${qty}주 전량 매도 주문 완료` });
+  } catch (err: any) {
+    logger.error(`해외 수동 매도 예외: ${err.message}`, { component: 'DASHBOARD' });
+    return c.json({ error: err.message }, 500);
+  }
+});
+

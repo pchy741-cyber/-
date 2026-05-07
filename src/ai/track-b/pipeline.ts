@@ -199,9 +199,23 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // ── 매수 후보 스크리닝 + KIS 관심종목 동기화 ──────────────────────
     const hasScores = scores.length > 0;
+
+    // 자동 DEFENSE 트리거: 급락 서킷브레이커 OR (하락장+당일하락+손실-1.5%+)
+    const autoShouldDefense = dbMode === 'SWING' && (
+      kospiRegime.flashCrash ||
+      (kospiRegime.penalty >= 2 && kospiRegime.todayDown && dailyLoss.dailyPnlPct <= -1.5)
+    );
+    // 자동 SWING 복귀: DB=DEFENSE이지만 시장 정상화 (MA60 위 + 당일 하락 없음 + 손실 0.5% 미만)
+    const autoShouldRevertSwing = dbMode === 'DEFENSE' &&
+      kospiRegime.penalty === 0 && !kospiRegime.todayDown && dailyLoss.dailyPnlPct > -0.5;
+
     const effectiveMode: StrategyMode = isPastScalpDeadline
       ? 'SWING'
-      : (scores.length === 0 && mode === 'DEFENSE') ? 'SWING' : mode;
+      : autoShouldDefense ? 'DEFENSE'
+      : autoShouldRevertSwing ? 'SWING'
+      : (scores.length === 0 && mode === 'DEFENSE') ? 'SWING'
+      : mode;
+
     if (isPastScalpDeadline) {
       logger.info('⏰ SCALPING 09:30 이후 → 신규 매수 SWING 기준 전환 (기존 SCALPING 포지션은 강제청산)', { component: 'TRACK_B' });
       // DB 모드 자동 전환 (SCALPING → SWING) — 한 번만 실행 (WHERE mode='SCALPING' 조건으로 멱등)
@@ -210,6 +224,17 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       ).then(({ rowCount }) => {
         if (rowCount && rowCount > 0) logger.info('✅ DB 모드 자동전환: SCALPING → SWING (09:30 이후)', { component: 'TRACK_B' });
       }).catch((e: Error) => logger.warn(`모드 자동전환 DB 업데이트 실패: ${e.message}`, { component: 'TRACK_B' }));
+    } else if (autoShouldDefense) {
+      const reason = kospiRegime.flashCrash ? '급락 서킷브레이커' : `하락장(penalty${kospiRegime.penalty})+당일하락+손실${dailyLoss.dailyPnlPct.toFixed(1)}%`;
+      logger.warn(`🔴 자동 DEFENSE 모드 전환: ${reason} → 신규 매수 극제한`, { component: 'TRACK_B' });
+    } else if (autoShouldRevertSwing) {
+      logger.info(`🟢 자동 SWING 복귀: KOSPI 정상(penalty=0) + 당일 무하락 + 손실${dailyLoss.dailyPnlPct.toFixed(1)}% → DEFENSE 해제`, { component: 'TRACK_B' });
+      // DB 모드 복귀 (DEFENSE → SWING) — 멱등 조건
+      getPool().query(
+        `UPDATE strategy_config SET mode='SWING', updated_at=NOW() WHERE is_active=true AND mode='DEFENSE'`
+      ).then(({ rowCount }) => {
+        if (rowCount && rowCount > 0) logger.info('✅ DB 모드 자동전환: DEFENSE → SWING (시장 정상화)', { component: 'TRACK_B' });
+      }).catch((e: Error) => logger.warn(`모드 자동복귀 DB 업데이트 실패: ${e.message}`, { component: 'TRACK_B' }));
     } else if (scores.length === 0 && mode === 'DEFENSE') {
       logger.info('⚡ AI 스코어 없음 + DEFENSE 모드 → SWING으로 완화', { component: 'TRACK_B' });
     }
@@ -357,7 +382,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         dailyLoss.blocked ||
         kospiRegime.flashCrash ||
         (!isScalpingMode && kospiRegime.penalty >= 2) ||
-        (!isScalpingMode && kospiRegime.todayDown) ||
+        (!isScalpingMode && kospiRegime.penalty >= 1 && kospiRegime.todayDown) ||
         (!isScalpingMode && macroRiskOff),
       kospiBoost: kospiRegime.boost,
       allocationTarget: allocCfg ? {
