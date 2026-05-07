@@ -306,7 +306,7 @@ dashboardRoutes.get('/dashboard', async (c) => {
   // grandTotalInvested: 투자 중인 원금 합산 (현금 제외)
   const grandTotalInvested = totalChainInvested + overseasInvestedKrw;
 
-  return c.json({
+  const dashPayload = {
     portfolio: {
       totalValue: Math.round(grandTotalValue),         // 국내 + 해외 합산 총자산
       cash: Math.round(actualCash),                    // 가용현금
