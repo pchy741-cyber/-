@@ -27,6 +27,7 @@ import { runUnfilledOrderCheck } from './unfilled-order-job.js';
 import { runPreMarketQuickScore } from '../automation/pre-market-quick-score.js';
 import { warmupOpeningBell, runOpeningBellCycle } from './opening-bell-job.js';
 import { runHotSectorWatchlist } from '../automation/hot-sector-watchlist.js';
+import { runPortfolioHealthCheck } from '../automation/portfolio-guard.js';
 
 /**
  * 타임아웃을 적용하여 작업 실행 (지정 시간 초과 시 에러 로그 후 스킵)
@@ -260,6 +261,15 @@ export function startScheduler(): void {
     '8,38 9-15 * * 1-5',
     () => {
       detectAnomalies().catch((e) => logger.error(`이상 감지 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 포트폴리오 헬스체크 — 30분 간격 (+12분 오프셋, 집중도/손실 텔레그램 경보)
+  cron.schedule(
+    '12,42 9-15 * * 1-5',
+    () => {
+      runPortfolioHealthCheck().catch((e) => logger.error(`포트폴리오 헬스체크 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -529,7 +539,7 @@ export function startScheduler(): void {
     fixWatchlistNames().catch((e) => logger.error(`종목명 보정(시작시) 실패: ${e}`, { component: 'SCHEDULER' }));
   }, 10_000); // 10초 후 (DB 연결 안정화 대기)
 
-  logger.info('✅ 스케줄러 등록 완료 (자동화 모듈 14개 + 미국주식)', { component: 'SCHEDULER' });
+  logger.info('✅ 스케줄러 등록 완료 (자동화 모듈 15개 + 미국주식)', { component: 'SCHEDULER' });
   logger.info('  Track A: 07:30/18:00 | Track B: 10분 | 뉴스: 15분', { component: 'SCHEDULER' });
   logger.info('  이상감지: 5분 | 장세전환: 08:00/12:00 | 리포트: 15:40', { component: 'SCHEDULER' });
   logger.info('  🎯 스나이퍼: 15분 (수급/기술/공시 고확률 자동 진입)', { component: 'SCHEDULER' });

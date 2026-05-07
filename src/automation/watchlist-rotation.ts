@@ -13,12 +13,13 @@ import { logger } from '../utils/logger.js';
  * - 주 1회 (일요일 19:00) 실행
  */
 const MIN_SCORE_THRESHOLD = 40;
-const AUTO_ADD_THRESHOLD = 58; // 자동 추가 기준 점수 (약세장 대응 완화)
+const AUTO_ADD_THRESHOLD = 58;
 const EVAL_DAYS = 14;
-const ADD_EVAL_DAYS = 7; // 자동 추가는 최근 7일 기준
+const ADD_EVAL_DAYS = 7;
 const MIN_SCORE_RECORDS = 3;
-const MIN_ADD_RECORDS = 3; // 자동 추가 최소 평가 건수
-const MAX_AUTO_ADD = 12; // 주당 최대 자동 추가 종목 수 (확장)
+const MIN_ADD_RECORDS = 3;
+const MAX_AUTO_ADD = 8; // 주당 최대 자동 추가 종목 수
+const MAX_WATCHLIST_SIZE = 60; // 활성 종목 하드캡
 
 export async function runWatchlistRotation(): Promise<void> {
   logger.info('🔄 워치리스트 자동 순환 시작', { component: 'WATCHLIST_ROTATION' });
@@ -107,9 +108,8 @@ export async function runWatchlistRotation(): Promise<void> {
       const stockName = String(row.stock_name ?? code);
 
       if (existingCodes.has(code)) {
-        // 이미 있으면 비활성화됐을 수 있으니 재활성화
         const { rowCount } = await pool.query(
-          `UPDATE watchlist SET is_active = true WHERE stock_code = $1 AND is_active = false`,
+          `UPDATE watchlist SET is_active = true, source = 'AUTO' WHERE stock_code = $1 AND is_active = false`,
           [code],
         );
         if (rowCount && rowCount > 0) {
@@ -119,11 +119,10 @@ export async function runWatchlistRotation(): Promise<void> {
         continue;
       }
 
-      // 신규 추가 (source 컬럼은 없을 수 있으므로 기본 컬럼만 사용)
       await pool.query(
-        `INSERT INTO watchlist (stock_code, stock_name, is_active)
-         VALUES ($1, $2, true)
-         ON CONFLICT (stock_code) DO UPDATE SET is_active = true, stock_name = EXCLUDED.stock_name`,
+        `INSERT INTO watchlist (stock_code, stock_name, is_active, source)
+         VALUES ($1, $2, true, 'AUTO')
+         ON CONFLICT (stock_code) DO UPDATE SET is_active = true, stock_name = EXCLUDED.stock_name, source = 'AUTO'`,
         [code, stockName],
       );
       existingCodes.add(code); // 중복 추가 방지
@@ -221,8 +220,8 @@ export async function runDailyMarketScan(): Promise<void> {
       const recordCount = Number(row.record_count ?? 0);
       const avgScore = Number(row.avg_score ?? 50);
 
-      // 스코어 데이터가 있고 매우 낮으면 즉시 정리
-      if (recordCount >= 2 && avgScore < 40) {
+      // 스코어 데이터가 있고 낮으면 즉시 정리
+      if (recordCount >= 2 && avgScore < 48) {
         await pool.query(`UPDATE watchlist SET is_active = false WHERE stock_code = $1`, [code]);
         dailyRemoved.push(`${code}(${row.stock_name ?? code}, ${avgScore.toFixed(0)}점)`);
         logger.info(`🗑️ 일일정리: ${code}(${row.stock_name}) — 3일 평균 ${avgScore.toFixed(1)}점`, { component: 'DAILY_MARKET_SCAN' });
@@ -339,23 +338,32 @@ export async function runDailyMarketScan(): Promise<void> {
       }),
     );
 
-    // 수급 점수 내림차순 정렬 → 상위 15개 편입
+    // 활성 종목 하드캡 체크
+    const { rows: activeCountRows } = await pool.query(`SELECT COUNT(*) AS cnt FROM watchlist WHERE is_active = true`);
+    const currentActiveCount = Number(activeCountRows[0]?.cnt ?? 0);
+    const slotsAvailable = Math.max(0, MAX_WATCHLIST_SIZE - currentActiveCount);
+
+    if (slotsAvailable === 0) {
+      logger.info(`🚫 감시종목 하드캡 도달 (${currentActiveCount}/${MAX_WATCHLIST_SIZE}) — 신규 편입 스킵`, { component: 'DAILY_MARKET_SCAN' });
+    }
+
+    // 수급 점수 내림차순 정렬 → 슬롯 여유만큼 편입, 최대 10개
     scored.sort((a, b) => b.score - a.score);
-    const toAdd = scored.slice(0, 15);
+    const toAdd = scored.slice(0, Math.min(10, slotsAvailable));
 
     const newlyAdded: string[] = [];
     const reactivated: string[] = [];
 
     for (const item of toAdd) {
       if (item.isInactive) {
-        await pool.query(`UPDATE watchlist SET is_active = true WHERE stock_code = $1`, [item.stock_code]);
+        await pool.query(`UPDATE watchlist SET is_active = true, source = 'AUTO' WHERE stock_code = $1`, [item.stock_code]);
         reactivated.push(`${item.stock_code}(${item.stock_name}, ${item.reason})`);
         logger.info(`♻️ 재활성: ${item.stock_code}(${item.stock_name}) — ${item.reason}`, { component: 'DAILY_MARKET_SCAN' });
       } else {
         await pool.query(
-          `INSERT INTO watchlist (stock_code, stock_name, market, is_active)
-           VALUES ($1, $2, 'KOSPI', true)
-           ON CONFLICT (stock_code) DO UPDATE SET is_active = true, stock_name = EXCLUDED.stock_name`,
+          `INSERT INTO watchlist (stock_code, stock_name, market, is_active, source)
+           VALUES ($1, $2, 'KOSPI', true, 'AUTO')
+           ON CONFLICT (stock_code) DO UPDATE SET is_active = true, stock_name = EXCLUDED.stock_name, source = 'AUTO'`,
           [item.stock_code, item.stock_name || item.stock_code],
         );
         newlyAdded.push(`${item.stock_code}(${item.stock_name}, ${item.reason})`);

@@ -25,6 +25,7 @@ import { getMacroSnapshot } from '../../automation/macro-data.js';
 import { getInvestorFlow } from '../../automation/investor-flow.js';
 import { filterEarlySells, applyHardRules, filterManualCooldown, deduplicateSells, filterSectorConcentration } from './risk-guard.js';
 import { adjustPositionSizes } from './position-sizer.js';
+import { calcPortfolioStressLevel, getConcentrationSellTargets, getPerformanceMultiplier } from '../../automation/portfolio-guard.js';
 import { reconcilePendingOrders } from '../../trading/fill-reconciler.js';
 
 /**
@@ -63,7 +64,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           getActiveWatchlist(),
           getOpenChains(),
           getActiveStrategy(),
-          getRecentLossStocks(14),
+          getRecentLossStocks(7),
           getRecentManuallySoldStocks(24),
         ]);
       } catch (dbErr: any) {
@@ -75,7 +76,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
             getActiveWatchlist(),
             getOpenChains(),
             getActiveStrategy(),
-            getRecentLossStocks(14),
+            getRecentLossStocks(7),
             getRecentManuallySoldStocks(24),
           ]);
         }
@@ -83,7 +84,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       }
     };
     const [watchlist, openChains, strategy, recentLossCodes, manuallySoldCodes] = await dbLoadWithFallback();
-    // 당일 2회 이상 손절 종목 → 당일 재진입 완전 차단
+    // 당일 2회 이상 손절 종목 → 당일 재진입 완전 차단 (recentLossCodes = 7일 손실차단)
     const todayRepeatStopCodes = await getTodayRepeatStopCodes(2);
     if (todayRepeatStopCodes.size > 0) {
       logger.warn(`🚫 당일 반복손절 재진입 차단: ${[...todayRepeatStopCodes].join(', ')}`, { component: 'TRACK_B' });
@@ -317,9 +318,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           logger.info(`📈 상승장 실시간 편입 후보: ${newStocks.map((s) => s.stock_code).join(', ')}`, { component: 'TRACK_B' });
           const newPrices = await getBatchPrices(newStocks.map((s) => s.stock_code)).catch(() => new Map());
           for (const [code, price] of newPrices) livePrices.set(code, price);
-          const CHART_BATCH2 = 5;
-          for (let i = 0; i < newStocks.length; i += CHART_BATCH2) {
-            const batch = newStocks.slice(i, i + CHART_BATCH2);
+          for (let i = 0; i < newStocks.length; i += CHART_BATCH) {
+            const batch = newStocks.slice(i, i + CHART_BATCH);
             const results = await Promise.allSettled(batch.map((s) => getDailyChart(s.stock_code, 65)));
             for (let j = 0; j < batch.length; j++) {
               const r = results[j];
@@ -347,31 +347,50 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       else if (cap > 0 && cap < 500) marketCapAdjMap.set(code, -10);
     }
     const microCapCodes = [...marketCapAdjMap.entries()].filter(([, v]) => v <= -20).map(([k]) => k);
-    const smallCapCodes2 = [...marketCapAdjMap.entries()].filter(([, v]) => v === -10).map(([k]) => k);
+    const smallCapCodes = [...marketCapAdjMap.entries()].filter(([, v]) => v === -10).map(([k]) => k);
     if (microCapCodes.length > 0) logger.info(`🏚️ 마이크로캡 패널티(-20): ${microCapCodes.join(', ')} (시총 200억 미만)`, { component: 'TRACK_B' });
-    if (smallCapCodes2.length > 0) logger.info(`🏠 소형주 패널티(-10): ${smallCapCodes2.join(', ')} (시총 200~500억)`, { component: 'TRACK_B' });
+    if (smallCapCodes.length > 0) logger.info(`🏠 소형주 패널티(-10): ${smallCapCodes.join(', ')} (시총 200~500억)`, { component: 'TRACK_B' });
 
-    // blockNewBuys 진단 로그
-    const blockReason =
-      kstH > 15 || (kstH === 15 && kstM >= 10) ? '마감시간(15:10+)' :
-      dailyLoss.blocked ? `일일손실초과(${dailyLoss.dailyPnlPct.toFixed(1)}%)` :
-      kospiRegime.flashCrash ? 'KOSPI급락서킷브레이커' :
-      (!isScalpingMode && kospiRegime.penalty >= 2) ? `KOSPI하락장(penalty=2,KOSPI<MA60)` :
-      (!isScalpingMode && macroRiskOff) ? `매크로RISK_OFF(VKOSPI=${macroSnapshot?.vkospi?.toFixed(1) ?? '?'})` :
-      null;
-    if (blockReason) {
+    // ── 신규매수 차단 플래그 (한 곳에서 정의) ──────────────────────────
+    const isPastClose = kstH > 15 || (kstH === 15 && kstM >= 10);
+    const portfolioStress = calcPortfolioStressLevel(openChains, livePrices, totalAssets);
+    if (portfolioStress >= 1) {
+      logger.warn(`⚠️ 포트폴리오 스트레스 레벨 ${portfolioStress} (미실현 손실 누적)`, { component: 'TRACK_B' });
+    }
+    const blockNewBuys =
+      isPastClose ||
+      dailyLoss.blocked ||
+      kospiRegime.flashCrash ||
+      (!isScalpingMode && kospiRegime.penalty >= 2) ||
+      (!isScalpingMode && macroRiskOff) ||
+      portfolioStress >= 2;  // 미실현 손실 -3.5% 이상 → 신규매수 전면차단
+
+    if (blockNewBuys) {
+      const blockReason =
+        isPastClose ? '마감시간(15:10+)' :
+        dailyLoss.blocked ? `일일손실초과(${dailyLoss.dailyPnlPct.toFixed(1)}%)` :
+        kospiRegime.flashCrash ? 'KOSPI급락서킷브레이커' :
+        kospiRegime.penalty >= 2 ? `KOSPI하락장(penalty=2,KOSPI<MA60)` :
+        portfolioStress >= 2 ? `포트폴리오위험(미실현손실-3.5%↑)` :
+        `매크로RISK_OFF(VKOSPI=${macroSnapshot?.vkospi?.toFixed(1) ?? '?'})`;
       logger.warn(`🚫 신규매수 차단: ${blockReason}`, { component: 'TRACK_B' });
     }
 
-    const todayDate = new Date().toISOString().split('T')[0];
+    const todayDate = new Date().toISOString().split('T')[0]; // "2026-05-07"
     const adjustedScores = scores
       .filter((s: any) => (s.confidence ?? 0) >= 0.55)
       .map((s: any) => {
         const base = s.composite_score ?? 0;
         const adj = flowAdjMap.get(s.stock_code) ?? 0;
         const capAdj = marketCapAdjMap.get(s.stock_code) ?? 0;
-        const stale = s.score_date && s.score_date !== todayDate ? -8 : 0;
-        if (stale < 0) logger.info(`⏳ 스코어 stale 패널티: ${s.stock_code} (${s.score_date} → -8점)`, { component: 'TRACK_B' });
+        // score_date가 DB timestamp("2026-05-07T00:00:00Z") 또는 Date.toString() 형식일 수 있으므로 ISO날짜로 정규화
+        const scoreDay = s.score_date
+          ? (typeof s.score_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s.score_date)
+              ? s.score_date
+              : new Date(s.score_date).toISOString().split('T')[0])
+          : null;
+        const stale = scoreDay && scoreDay !== todayDate ? -8 : 0;
+        if (stale < 0) logger.info(`⏳ 스코어 stale 패널티: ${s.stock_code} (${scoreDay} ≠ ${todayDate} → -8점)`, { component: 'TRACK_B' });
         return { stock_code: s.stock_code, score: Math.min(100, Math.max(0, base + adj + capAdj + stale)) };
       });
 
@@ -380,6 +399,38 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const resolvedTp = strategy?.take_profit_pct ?? adaptP?.takeProfitPct;
     const resolvedSl = strategy?.stop_loss_pct ?? adaptP?.stopLossPct;
     const resolvedThreshold = strategy?.buy_threshold ?? adaptP?.buyThreshold;
+
+    // 성과 배율: 최근 5거래일 승률/수익 기반 (0.7x ~ 1.2x)
+    const perfMult = await getPerformanceMultiplier();
+    const baseMaxPos = dailyLoss.earlyWarning
+      ? Math.round(config.risk.maxPositionKrw * 0.5)
+      : config.risk.maxPositionKrw;
+    // 스트레스 레벨 1 → 포지션 추가 10% 축소
+    const stressMult = portfolioStress >= 1 ? 0.9 : 1.0;
+    const adjMaxPositionKrw = Math.round(baseMaxPos * perfMult * stressMult);
+    if (perfMult !== 1.0 || stressMult !== 1.0) {
+      logger.info(`📐 maxPositionKrw 조정: ${baseMaxPos.toLocaleString()} × 성과${perfMult}x × 스트레스${stressMult}x = ${adjMaxPositionKrw.toLocaleString()}원`, { component: 'TRACK_B' });
+    }
+
+    // 집중도 초과 종목 → PARTIAL_SELL 결정 즉시 주입 (25% 초과 + 수익 3%↑)
+    const concentrationSellTargets = getConcentrationSellTargets(openChains, livePrices, totalAssets);
+    const concentrationDecisions: import('../../db/models.js').TradeDecision[] = [];
+    if (concentrationSellTargets.size > 0) {
+      for (const code of concentrationSellTargets) {
+        const chain = openChains.find((c) => c.stock_code === code);
+        if (!chain || chain.total_quantity < 3) continue;
+        const sellQty = Math.floor(chain.total_quantity / 3); // 1/3 비중 축소
+        if (sellQty < 1) continue;
+        concentrationDecisions.push({
+          action: 'PARTIAL_SELL',
+          stock_code: code,
+          quantity: sellQty,
+          price_type: 'MARKET',
+          reasoning: '집중도 자동조정: 포트폴리오 25% 초과 + 수익구간 → 1/3 비중 축소',
+          confidence: 0.9,
+        });
+      }
+    }
 
     let decisions = await technicalFallbackDecisions({
       mode: effectiveMode,
@@ -390,9 +441,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       chartData,
       openChains,
       orderableCash,
-      maxPositionKrw: dailyLoss.earlyWarning
-        ? Math.round(config.risk.maxPositionKrw * 0.5)
-        : config.risk.maxPositionKrw,
+      maxPositionKrw: adjMaxPositionKrw,
       totalAssets,
       lossBlockedCodes: new Set([...recentLossCodes, ...todayRepeatStopCodes]),
       manuallySoldCodes,
@@ -401,17 +450,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       stopLossPct: resolvedSl,
       buyThreshold: resolvedThreshold,
       winRates,
-      // dbMode=SCALPING이면 하루 종일 KOSPI MA60 하락장 블록·macroRiskOff 면제
-      // (사용자가 SCALPING 모드 선택 = KOSPI 하락장 관계없이 고점수 종목 진입 허용 의사)
-      // penalty=1(조정장, MA60>KOSPI>MA20) 단독으로는 차단 안함 → adaptive threshold +2 로 대응
-      // penalty=2(하락장, KOSPI<MA60)만 차단 유지
-      blockNewBuys:
-        kstH > 15 ||
-        (kstH === 15 && kstM >= 10) ||
-        dailyLoss.blocked ||
-        kospiRegime.flashCrash ||
-        (!isScalpingMode && kospiRegime.penalty >= 2) ||
-        (!isScalpingMode && macroRiskOff),
+      // penalty=1(조정장) 단독으로는 차단 안함 → adaptive threshold +2 로 대응
+      // penalty=2(하락장, KOSPI<MA60)만 차단. SCALPING 모드면 macro/regime 면제
+      blockNewBuys,
       kospiBoost: kospiRegime.boost,
       allocationTarget: allocCfg ? {
         stock_pct: Number(allocCfg.stock_pct),
@@ -421,6 +462,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       currentStockValue,
       junkStockCodes,
     });
+
+    // 집중도 부분매도 주입 (이미 매도 결정 없는 종목만)
+    for (const cd of concentrationDecisions) {
+      const alreadySelling = decisions.some(
+        (d) => d.stock_code === cd.stock_code && ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action),
+      );
+      if (!alreadySelling) decisions.unshift(cd);
+    }
 
     setActiveEngine('technical');
     logger.info(
@@ -451,13 +500,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         openChains,
         livePrices,
         mode,
-        blockNewBuys:
-          kstH > 15 ||
-          (kstH === 15 && kstM >= 10) ||
-          dailyLoss.blocked ||
-          kospiRegime.flashCrash ||
-          kospiRegime.penalty >= 2 ||
-          macroRiskOff,
+        blockNewBuys,
       });
       for (const d of cashDecisions) {
         if (d.action === 'SELL') decisions.unshift(d);

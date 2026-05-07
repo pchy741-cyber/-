@@ -2823,7 +2823,7 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
                   {overseas && <span className="text-[10px] mr-1">🌏</span>}
                   {getName(t)}
                 </td>
-                <td className="px-4 py-3 text-center"><SideBadge side={t.side} /></td>
+                <td className="px-4 py-3 text-center"><SideBadge side={t.side} isAverageDown={t.side === 'BUY' && (String(t.ai_reasoning ?? '').includes('AVERAGE') || String(t.ai_reasoning ?? '').includes('물타기') || String(t.ai_reasoning ?? '').includes('추가 매수'))} /></td>
                 <td className="px-4 py-3 text-right">{fmt(t.quantity)}</td>
                 <td className="px-4 py-3 text-right font-medium">{overseas ? fmtUsd(filledPrice) : fmtWon(filledPrice)}</td>
                 <td className="px-4 py-3 text-right">
