@@ -2556,7 +2556,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                   const signalLabel = score >= 85 ? '강력 추천' : score >= 70 ? '매수 추천' : score >= 50 ? '관망' : score >= 30 ? '위험' : '매도 추천';
                   return (
                     <div key={sc.stock_code} className="flex items-center gap-3 px-2 py-2">
-                      <span className="text-xs font-bold text-slate-300 w-24 shrink-0 truncate">{getStockName(sc.stock_code)}</span>
+                      <span className="text-xs font-bold text-slate-300 w-24 shrink-0 truncate">{sc.stock_name && sc.stock_name !== sc.stock_code ? sc.stock_name : getStockName(sc.stock_code)}</span>
                       <div className="flex-1">
                         <div className="h-2 bg-white/[0.04] rounded-full overflow-hidden">
                           <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${Math.max(2, Math.min(100, score))}%` }} />

@@ -323,7 +323,10 @@ dashboardRoutes.get('/dashboard', async (c) => {
     },
     activeChains: enrichedChains.length,
     chains: enrichedChains,
-    scores,
+    scores: scores.map((s: any) => ({
+      ...s,
+      stock_name: watchlistNameMap.get(s.stock_code) || s.stock_code,
+    })),
     strategy: strategy ?? { mode: 'SWING' },
     killSwitch: getKillSwitchStatus(),
     tradingMode: config.tradingMode,
