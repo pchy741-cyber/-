@@ -62,11 +62,11 @@ gcloud run deploy $SERVICE \
     --platform=managed \
     --min-instances=1 \
     --max-instances=1 \
-    --memory=1Gi \
+    --memory=512Mi \
     --cpu=0.5 \
     --port=8080 \
     --timeout=300s \
-    --concurrency=80 \
+    --concurrency=1 \
     --no-cpu-throttling \
     --allow-unauthenticated \
     --add-cloudsql-instances=quantops-trading:asia-northeast3:quantops-db \
