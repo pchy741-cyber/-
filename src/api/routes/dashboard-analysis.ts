@@ -711,25 +711,37 @@ dashboardAnalysisRoutes.get('/market/tax-estimate', async (c) => {
 
 // ── 52주 신고가 스캐너 (워치리스트) ──
 let _highCache: { data: any[]; fetchedAt: number } = { data: [], fetchedAt: 0 };
+let _highRefreshing = false;
+async function _refreshHighs() {
+  const watchlist = await getActiveWatchlist();
+  const targets = watchlist.slice(0, 20);
+  const results = await Promise.allSettled(targets.map(async (w) => {
+    const candles = await getDailyChart(w.stock_code, 252).catch(() => []);
+    if (candles.length < 10) return null;
+    const high52w = Math.max(...candles.map((c: any) => c.high ?? c.close));
+    const current = candles[0]?.close ?? 0;
+    const dropFromHigh = high52w > 0 ? ((current - high52w) / high52w) * 100 : 0;
+    const isNearHigh = dropFromHigh >= -3;
+    return { stock_code: w.stock_code, stock_name: w.stock_name, current, high52w, dropFromHigh, isNearHigh };
+  }));
+  return results
+    .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled' && r.value !== null)
+    .map((r) => r.value)
+    .sort((a, b) => b.dropFromHigh - a.dropFromHigh);
+}
 dashboardAnalysisRoutes.get('/market/52w-highs', async (c) => {
   try {
-    if (Date.now() - _highCache.fetchedAt < 10 * 60 * 1000 && _highCache.data.length > 0)
+    const stale = Date.now() - _highCache.fetchedAt >= 10 * 60 * 1000;
+    if (_highCache.data.length > 0) {
+      if (stale && !_highRefreshing) {
+        _highRefreshing = true;
+        _refreshHighs().then(items => { _highCache = { data: items, fetchedAt: Date.now() }; }).catch(() => {}).finally(() => { _highRefreshing = false; });
+      }
       return c.json({ items: _highCache.data });
-    const watchlist = await getActiveWatchlist();
-    const targets = watchlist.slice(0, 20);
-    const results = await Promise.allSettled(targets.map(async (w) => {
-      const candles = await getDailyChart(w.stock_code, 252).catch(() => []);
-      if (candles.length < 10) return null;
-      const high52w = Math.max(...candles.map((c: any) => c.high ?? c.close));
-      const current = candles[0]?.close ?? 0;
-      const dropFromHigh = high52w > 0 ? ((current - high52w) / high52w) * 100 : 0;
-      const isNearHigh = dropFromHigh >= -3; // 신고가 3% 이내
-      return { stock_code: w.stock_code, stock_name: w.stock_name, current, high52w, dropFromHigh, isNearHigh };
-    }));
-    const items = results
-      .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled' && r.value !== null)
-      .map((r) => r.value)
-      .sort((a, b) => b.dropFromHigh - a.dropFromHigh); // 신고가 근접 순
+    }
+    if (_highRefreshing) return c.json({ items: [] });
+    _highRefreshing = true;
+    const items = await _refreshHighs().finally(() => { _highRefreshing = false; });
     _highCache = { data: items, fetchedAt: Date.now() };
     return c.json({ items });
   } catch (err: any) {
@@ -739,21 +751,33 @@ dashboardAnalysisRoutes.get('/market/52w-highs', async (c) => {
 
 // ── 공매도 비율 (보유종목) ──
 let _shortCache: { data: any[]; fetchedAt: number } = { data: [], fetchedAt: 0 };
+let _shortRefreshing = false;
+async function _refreshShorts() {
+  const openChains = await getOpenChains();
+  const targets = openChains.filter((ch: any) => Number(ch.total_quantity) > 0);
+  const results = await Promise.allSettled(targets.map(async (ch: any) => {
+    const s = await fetchShortSellingData(ch.stock_code, 5).catch(() => null);
+    if (!s) return null;
+    return { stock_code: ch.stock_code, stock_name: (ch as any).stock_name ?? ch.stock_code, shortRatio: s.shortRatio, isIncreasing: s.isIncreasing, riskLevel: s.riskLevel, trend: s.shortTrend };
+  }));
+  return results
+    .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled' && r.value !== null)
+    .map((r) => r.value)
+    .sort((a, b) => b.shortRatio - a.shortRatio);
+}
 dashboardAnalysisRoutes.get('/market/short-selling', async (c) => {
   try {
-    if (Date.now() - _shortCache.fetchedAt < 10 * 60 * 1000 && _shortCache.data.length > 0)
+    const stale = Date.now() - _shortCache.fetchedAt >= 10 * 60 * 1000;
+    if (_shortCache.data.length > 0) {
+      if (stale && !_shortRefreshing) {
+        _shortRefreshing = true;
+        _refreshShorts().then(items => { _shortCache = { data: items, fetchedAt: Date.now() }; }).catch(() => {}).finally(() => { _shortRefreshing = false; });
+      }
       return c.json({ items: _shortCache.data });
-    const openChains = await getOpenChains();
-    const targets = openChains.filter((ch: any) => Number(ch.total_quantity) > 0);
-    const results = await Promise.allSettled(targets.map(async (ch: any) => {
-      const s = await fetchShortSellingData(ch.stock_code, 5).catch(() => null);
-      if (!s) return null;
-      return { stock_code: ch.stock_code, stock_name: (ch as any).stock_name ?? ch.stock_code, shortRatio: s.shortRatio, isIncreasing: s.isIncreasing, riskLevel: s.riskLevel, trend: s.shortTrend };
-    }));
-    const items = results
-      .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled' && r.value !== null)
-      .map((r) => r.value)
-      .sort((a, b) => b.shortRatio - a.shortRatio);
+    }
+    if (_shortRefreshing) return c.json({ items: [] });
+    _shortRefreshing = true;
+    const items = await _refreshShorts().finally(() => { _shortRefreshing = false; });
     _shortCache = { data: items, fetchedAt: Date.now() };
     return c.json({ items });
   } catch (err: any) {
@@ -824,34 +848,36 @@ dashboardAnalysisRoutes.get('/market/correlation', async (c) => {
 });
 
 // ── 워치리스트 외국인/기관 순매매 동향 ──
-// 5분 캐시 (KIS rate limit 대응)
 let _flowCache: { data: any[]; fetchedAt: number } = { data: [], fetchedAt: 0 };
 const FLOW_CACHE_TTL = 5 * 60 * 1000;
-
+let _flowRefreshing = false;
+async function _refreshFlow() {
+  const watchlist = await getActiveWatchlist();
+  const targets = watchlist.slice(0, 15);
+  const results = await Promise.allSettled(
+    targets.map(async (w) => {
+      const flow = await getInvestorFlow(w.stock_code, 5);
+      return { stock_code: w.stock_code, stock_name: w.stock_name, foreignNet: flow.foreignNet, institutionNet: flow.institutionNet, foreignStreak: flow.foreignStreak, trend: flow.trend };
+    }),
+  );
+  return results
+    .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled')
+    .map((r) => r.value)
+    .sort((a, b) => (b.foreignNet + b.institutionNet) - (a.foreignNet + a.institutionNet));
+}
 dashboardAnalysisRoutes.get('/market/investor-flow', async (c) => {
   try {
-    if (Date.now() - _flowCache.fetchedAt < FLOW_CACHE_TTL && _flowCache.data.length > 0) {
+    const stale = Date.now() - _flowCache.fetchedAt >= FLOW_CACHE_TTL;
+    if (_flowCache.data.length > 0) {
+      if (stale && !_flowRefreshing) {
+        _flowRefreshing = true;
+        _refreshFlow().then(items => { _flowCache = { data: items, fetchedAt: Date.now() }; }).catch(() => {}).finally(() => { _flowRefreshing = false; });
+      }
       return c.json({ items: _flowCache.data, cached: true });
     }
-    const watchlist = await getActiveWatchlist();
-    const targets = watchlist.slice(0, 15); // 최대 15종목
-    const results = await Promise.allSettled(
-      targets.map(async (w) => {
-        const flow = await getInvestorFlow(w.stock_code, 5);
-        return {
-          stock_code: w.stock_code,
-          stock_name: w.stock_name,
-          foreignNet: flow.foreignNet,
-          institutionNet: flow.institutionNet,
-          foreignStreak: flow.foreignStreak,
-          trend: flow.trend,
-        };
-      }),
-    );
-    const items = results
-      .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled')
-      .map((r) => r.value)
-      .sort((a, b) => (b.foreignNet + b.institutionNet) - (a.foreignNet + a.institutionNet));
+    if (_flowRefreshing) return c.json({ items: [], cached: true });
+    _flowRefreshing = true;
+    const items = await _refreshFlow().finally(() => { _flowRefreshing = false; });
     _flowCache = { data: items, fetchedAt: Date.now() };
     return c.json({ items, cached: false });
   } catch (err: any) {
