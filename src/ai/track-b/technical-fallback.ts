@@ -677,20 +677,17 @@ export async function technicalFallbackDecisions(params: {
     const ttmTag = tech.ttmSqueeze.fireSignal === 'LONG' ? `🚀TTM발사(${tech.ttmSqueeze.consecutiveSqueezeOn}봉)` : '';
     const rsi2Tag = tech.rsi2 < 15 ? `📉RSI2(${tech.rsi2.toFixed(0)})` : '';
     const entryReason = [
-      isOversold ? '과매도반등' : isEarlyBounce ? '반등초기(최적)' : (isPullback && truePullbackPattern) ? '🎯눌림목타점' : isPullback ? '눌림목' : isHighConviction ? `고확신(${aiScore}점)` : '모멘텀',
+      isOversold ? '과매도반등' : isEarlyBounce ? '반등초기(최적)' : (isPullback && truePullbackPattern) ? '🎯눌림목타점' : isPullback ? '눌림목' : isHighConviction ? `고확신(기술${effectiveTechScore}점)` : '모멘텀',
       squeezeTag, vwapTag, ttmTag, rsi2Tag,
     ].filter(Boolean).join('+');
     // ─────────────────────────────────────────────────────────────────────
 
-    // AI 미승인(buyThreshold 미달) 종목은 탐색 매수 없이 전부 스킵
-    // 근거: AI 미승인 상태에서 기술지표만으로 진입한 거래 수익 실적 없음
-    if (aiScore >= buyThreshold) {
+    // 기술점수 기반 진입 — AI 점수 미사용 (Gemini 무료 품질 이슈로 비활성화)
+    if (effectiveTechScore >= minTechScore) {
       candidates.push({ stock_code: stock.stock_code, tech, price, candleBonus });
       const wrInfo = winRateSummary(stock.stock_code, winRates?.get(stock.stock_code));
       const bonusStr = [priorityBonus > 0 ? `+${priorityBonus}테마` : '', candleBonus > 0 ? `+${candleBonus}캔들` : ''].filter(Boolean).join('');
-      logger.info(`  ✅ ${stock.stock_code}: AI=${aiScore}점(>=${buyThreshold}) [${entryReason}] RSI=${tech.rsi14.toFixed(0)} vol=${tech.volumeRatio.toFixed(2)}x → 매수 후보 (기술=${tech.score}${bonusStr}${wrInfo})`, { component: 'TRACK_B' });
-    } else if (effectiveTechScore >= minTechScore) {
-      logger.info(`  ⏭️ ${stock.stock_code}: AI=${aiScore}점(<${buyThreshold}) 미승인 — 기술점수(${effectiveTechScore}) 충족해도 탐색매수 스킵`, { component: 'TRACK_B' });
+      logger.info(`  ✅ ${stock.stock_code}: 기술=${effectiveTechScore}점(>=${minTechScore}) [${entryReason}] RSI=${tech.rsi14.toFixed(0)} vol=${tech.volumeRatio.toFixed(2)}x → 매수 후보${bonusStr}${wrInfo}`, { component: 'TRACK_B' });
     }
   }
 

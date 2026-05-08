@@ -438,7 +438,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       totalAssets,
       lossBlockedCodes: new Set([...recentLossCodes, ...todayRepeatStopCodes]),
       manuallySoldCodes,
-      aiScores: adjustedScores,
+      aiScores: [], // AI 진입 비활성화 — 기술지표 단독 종목선택 (Gemini 무료 품질 이슈)
       takeProfitPct: resolvedTp,
       stopLossPct: resolvedSl,
       buyThreshold: resolvedThreshold,
