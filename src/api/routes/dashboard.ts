@@ -4,7 +4,7 @@ import { getDefenseParkState } from '../../ai/track-b/defense-park.js';
 import { getCachedScores, cachePrice, getLastKnownPrices } from '../../cache/redis.js';
 import { cachePriceMemory, getLastKnownPricesMemory, getCachedPriceMemory } from '../../cache/memory.js';
 import { config } from '../../config/index.js';
-import { getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getPool, getTodayStartSnapshot } from '../../db/client.js';
+import { createChain, getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getPool, getTodayStartSnapshot } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { getCurrentPrice, getBatchPrices, isMarketOpen, getVolumeRankingStocks, getChangeRankingStocks } from '../../kis/market.js';
 import { getDinnerMoneyStats } from '../../automation/profit-withdraw.js';
@@ -1174,6 +1174,91 @@ dashboardRoutes.post('/sell-overseas/:stockCode', async (c) => {
     return c.json({ ok: true, orderNo: result.orderNo, message: `${stockCode} ${qty}주 전량 매도 주문 완료` });
   } catch (err: any) {
     logger.error(`해외 수동 매도 예외: ${err.message}`, { component: 'DASHBOARD' });
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── Claude Code 스캘핑 수동 매수 ──
+// X-Api-Key 헤더 or 세션 쿠키 인증. /loop 모드에서 Claude가 직접 호출.
+dashboardRoutes.post('/manual-buy', async (c) => {
+  const apiKey = c.req.header('x-api-key') ?? '';
+  const secret = process.env.DASHBOARD_PASSWORD ?? '';
+  if (secret && apiKey !== secret) {
+    return c.json({ error: '인증 실패' }, 401);
+  }
+
+  let body: { stock_code?: string; amount_krw?: number; reasoning?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: '요청 형식 오류' }, 400);
+  }
+
+  const { stock_code, amount_krw, reasoning } = body;
+  if (!stock_code || !amount_krw || amount_krw < 10000) {
+    return c.json({ error: 'stock_code, amount_krw(최소 10,000원) 필수' }, 400);
+  }
+
+  try {
+    const priceData = await getCurrentPrice(stock_code);
+    const curPrice = priceData.currentPrice;
+    if (!curPrice || curPrice <= 0) return c.json({ error: '현재가 조회 실패' }, 500);
+
+    const quantity = Math.floor(amount_krw / curPrice);
+    if (quantity < 1) return c.json({ error: `수량 부족: ${curPrice.toLocaleString()}원 × 1주 > ${amount_krw.toLocaleString()}원` }, 400);
+
+    const totalInvested = quantity * curPrice;
+
+    if (config.isPaper) {
+      const fakeOrderNo = `CLD${Date.now().toString(36).toUpperCase()}`;
+      const chainId = await createChain({
+        stock_code,
+        status: 'OPEN',
+        strategy_mode: 'SCALPING',
+        avg_buy_price: curPrice,
+        total_quantity: quantity,
+        total_invested: totalInvested,
+        realized_pnl: 0,
+        target_profit_pct: 1.5,
+        stop_loss_pct: 0.8,
+        max_averaging_count: 0,
+        current_averaging_count: 0,
+      });
+      await getPool().query(
+        `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
+         VALUES ($1, $2, 'BUY', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, 'CLAUDE', $7)`,
+        [chainId, stock_code, quantity, curPrice, fakeOrderNo, config.tradingMode, reasoning ?? 'Claude Code 스캘핑'],
+      );
+      logger.info(`🤖 Claude 매수 (모의): ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 — ${reasoning}`, { component: 'CLAUDE_BUY' });
+      return c.json({ ok: true, orderNo: fakeOrderNo, stock_code, quantity, price: curPrice, totalInvested });
+    }
+
+    const result = await placeOrder({ stockCode: stock_code, side: 'BUY', quantity });
+    if (!result.success) return c.json({ error: `KIS 매수 거부: ${result.message}` }, 502);
+    const kisOrderNo = result.orderNo ?? '';
+
+    const chainId = await createChain({
+      stock_code,
+      status: 'OPEN',
+      strategy_mode: 'SCALPING',
+      avg_buy_price: curPrice,
+      total_quantity: quantity,
+      total_invested: totalInvested,
+      realized_pnl: 0,
+      target_profit_pct: 1.5,
+      stop_loss_pct: 0.8,
+      max_averaging_count: 0,
+      current_averaging_count: 0,
+    });
+    await getPool().query(
+      `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
+       VALUES ($1, $2, 'BUY', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, 'CLAUDE', $7)`,
+      [chainId, stock_code, quantity, curPrice, kisOrderNo, config.tradingMode, reasoning ?? 'Claude Code 스캘핑'],
+    );
+    logger.info(`🤖 Claude 매수 완료: ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 (${kisOrderNo}) — ${reasoning}`, { component: 'CLAUDE_BUY' });
+    return c.json({ ok: true, orderNo: kisOrderNo, stock_code, quantity, price: curPrice, totalInvested });
+  } catch (err: any) {
+    logger.error(`Claude 매수 예외: ${err.message}`, { component: 'CLAUDE_BUY' });
     return c.json({ error: err.message }, 500);
   }
 });
