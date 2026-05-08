@@ -148,10 +148,13 @@ curl -s -H "x-api-key: <DASHBOARD_PASSWORD>" \
 | 조건 | 기준 | 실패 시 |
 |------|------|---------|
 | **당일 방향** | `currentPrice > openPrice * 1.003` (당일 +0.3% 이상) | **스킵 — 하락 종목 절대 매수 금지** |
+| **SMA20 추세** | `currentPrice > sma20` (20일선 위) | **스킵 — 하락 추세 종목 진입 금지** |
 | RSI14 | 15 ≤ RSI ≤ 78 | 스킵 |
 | volumeRatio | >= 0.7 | 스킵 |
 | overallSignal | STRONG_SELL이 아니면 OK | STRONG_SELL만 스킵 |
 | MACD | 필터 없음, 로그만 | 스킵 안함 |
+
+> `sma20` 없는 경우(신규 상장 등): 스킵하지 않고 당일 방향 필터만으로 판단
 
 > `currentPrice`, `openPrice` 는 analysis 응답의 `price` 필드에서 확인
 > 없으면 dashboard `chains` 의 해당 종목 값 사용
