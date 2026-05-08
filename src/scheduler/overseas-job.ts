@@ -989,6 +989,15 @@ export async function runOverseasJob(): Promise<void> {
       // 트레일링 활성화 기준: 이 수익률 넘어야 트레일링 발동
       // 기존 고베타 6%, 중베타 4% → 너무 늦어 수익 반납 → 앞당겨 수익 보호
       const trailActivatePct = isHighBeta ? 4.0 : isMediumBeta ? 3.0 : 2.5;
+
+      // Progressive trailing: 고점 수익이 클수록 트레일링 타이트 → 야간 수익 보호
+      // 새벽에 $300 수익봤다가 아침에 -$0 되는 상황 방지
+      // Math.max(-10, -4) = -4 → 허용 하락폭을 좁힘 (적은 손실만 허용)
+      let effectiveTrailDropPct = trailDropPct;
+      if (maxPnlPct >= 5.0) effectiveTrailDropPct = Math.max(trailDropPct, -4.0);      // 고점 +5% → -4% 하락 시 청산 (수익 1%+ 보호)
+      else if (maxPnlPct >= 3.0) effectiveTrailDropPct = Math.max(trailDropPct, -3.0); // 고점 +3% → -3% 하락 시 청산
+      else if (maxPnlPct >= 1.5) effectiveTrailDropPct = Math.max(trailDropPct, -2.0); // 고점 +1.5% → -2% 하락 시 청산
+
       // 하드 익절: 고베타 +20%, 중베타 +15%, 방산 +15%
       const hardTpPct = isHighBeta ? 20.0 : 15.0;
       // AI 매도 최소 확신: 고베타는 80%+, 중베타/방산 75%+
@@ -1003,9 +1012,9 @@ export async function runOverseasJob(): Promise<void> {
       if (pnlPct <= stopLossPct) {
         sellReason = `손절(${stopLossPct}%): ${pnlPct.toFixed(1)}%`;
       }
-      // 2) 트레일링 스탑: 수익 구간 진입 후 고점 대비 하락 — 연구 기반 섹터별 임계값
-      else if (maxPnlPct >= trailActivatePct && drawdownFromPeak <= trailDropPct) {
-        sellReason = `트레일링 스탑(${trailDropPct}%): 고점 +${maxPnlPct.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}%`;
+      // 2) 트레일링 스탑: 수익 구간 진입 후 고점 대비 하락 — Progressive: 고점 클수록 타이트
+      else if (maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {
+        sellReason = `트레일링 스탑(${effectiveTrailDropPct.toFixed(1)}%): 고점 +${maxPnlPct.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}%`;
       }
       // 3) 하드 익절: 섹터별 목표 달성 (승자를 더 오래 보유)
       else if (pnlPct >= hardTpPct) {
