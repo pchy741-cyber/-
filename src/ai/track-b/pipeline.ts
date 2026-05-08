@@ -68,9 +68,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           getRecentManuallySoldStocks(24),
         ]);
       } catch (dbErr: any) {
-        const msg = String(dbErr?.message ?? dbErr);
-        if (msg.includes('timeout') || msg.includes('terminated') || msg.includes('ECONNREFUSED') || msg.includes('ENOTFOUND')) {
-          logger.warn(`⚡ DB 연결 실패 → 인메모리 모드로 전환: ${msg}`, { component: 'TRACK_B' });
+        const msg = String(dbErr?.message ?? dbErr).toLowerCase();
+        const code = String(dbErr?.code ?? '');
+        const isNetworkErr =
+          ['ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', 'ECONNRESET', 'EPIPE'].includes(code) ||
+          msg.includes('timeout') || msg.includes('terminated') || msg.includes('econnrefused') ||
+          msg.includes('connection') || msg.includes('enotfound');
+        if (isNetworkErr) {
+          logger.warn(`⚡ DB 연결 실패 → 인메모리 모드로 전환: [${code}] ${msg}`, { component: 'TRACK_B' });
           enableMemoryMode();
           return await Promise.all([
             getActiveWatchlist(),
@@ -98,9 +103,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     // ── 개장 초단타 모드: 09:00~09:30 자동 강제 적용 ─────────────────
-    const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
-    const kstH = nowKst.getUTCHours();
-    const kstM = nowKst.getUTCMinutes();
+    // Intl API로 서버 타임존 무관하게 정확한 KST 시각 계산
+    const _kstParts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Seoul', hour: 'numeric', minute: 'numeric', hour12: false,
+    }).formatToParts(new Date());
+    const kstH = Number(_kstParts.find(p => p.type === 'hour')!.value);
+    const kstM = Number(_kstParts.find(p => p.type === 'minute')!.value);
     const isOpeningBell = kstH === 9 && kstM < 15;  // 09:00~09:14 (15분 윈도우 — 09:15+ 진입 시 09:30 TP 도달 불가)
     const dbMode = (strategy?.mode ?? 'SWING') as StrategyMode;
     // SNIPER/DEFENSE는 개장벨에도 모드 유지 (SNIPER는 CEO가 명시적으로 설정한 집중 전략)
@@ -552,6 +560,67 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // ── 10. 중복 매도 신호 제거 ──────────────────────────────────────
     decisions = deduplicateSells(decisions);
+
+    // ── 11. 하락장 블루칩 EOD 줍줍 + 익일 장시작 강제 청산 ──────────
+    const EOD_BLUECHIP_CODES = ['005930', '000660', '012450']; // 삼성전자, SK하이닉스, 한화에어로
+    const isEodBuyWindow = kstH === 14 && kstM >= 50;
+    const isMorningExitWindow = kstH === 9 && kstM >= 5 && kstM <= 25;
+    const isBearDay = kospiRegime.todayDown || kospiRegime.penalty >= 1;
+
+    // 익일 오전: 전날 14:45 이후 매수한 블루칩 포지션 장시작 강제 청산
+    if (isMorningExitWindow) {
+      const todayKst = new Date(Date.now() + 9 * 3600000);
+      const todayStr = todayKst.toISOString().split('T')[0];
+      for (const chain of openChains) {
+        if (!EOD_BLUECHIP_CODES.includes(chain.stock_code)) continue;
+        if (Number(chain.total_quantity) <= 0) continue;
+        if (!chain.opened_at) continue;
+        const openedKst = new Date(new Date(chain.opened_at).getTime() + 9 * 3600000);
+        const openedStr = openedKst.toISOString().split('T')[0];
+        if (openedStr >= todayStr) continue; // 오늘 매수 건은 제외
+        const openedH = openedKst.getUTCHours();
+        const openedM = openedKst.getUTCMinutes();
+        if (openedH < 14 || (openedH === 14 && openedM < 45)) continue; // 14:45 이전 매수는 일반 관리
+        const alreadySelling = decisions.some(
+          (d) => d.stock_code === chain.stock_code && ['SELL', 'FORCE_CLOSE'].includes(d.action),
+        );
+        if (alreadySelling) continue;
+        decisions.push({
+          action: 'FORCE_CLOSE',
+          stock_code: chain.stock_code,
+          quantity: Number(chain.total_quantity),
+          price_type: 'MARKET',
+          reasoning: 'EOD줍줍 익일청산: 블루칩 갭회복 매도',
+          confidence: 1.0,
+        });
+        logger.info(`🌅 EOD줍줍 익일청산: ${chain.stock_code} x${chain.total_quantity}`, { component: 'TRACK_B' });
+      }
+    }
+
+    // EOD 매수: 하락장 블루칩 줍줍 (14:50~14:59, 당일 -0.5% 이상 하락)
+    if (isEodBuyWindow && isBearDay && !blockNewBuys) {
+      for (const code of EOD_BLUECHIP_CODES) {
+        if (openChains.some((c) => c.stock_code === code && Number(c.total_quantity) > 0)) continue;
+        const p = livePrices.get(code);
+        if (!p || p.currentPrice <= 0 || p.changePct > -0.5) continue;
+        const qty = Math.floor((adjMaxPositionKrw * 0.5) / p.currentPrice);
+        if (qty <= 0) continue;
+        const alreadyBuying = decisions.some(
+          (d) => d.stock_code === code && (d.action === 'BUY' || d.action === 'AVERAGE_DOWN'),
+        );
+        if (alreadyBuying) continue;
+        decisions.push({
+          action: 'BUY',
+          stock_code: code,
+          quantity: qty,
+          price_type: 'MARKET',
+          limit_price: p.currentPrice,
+          reasoning: `EOD줍줍: 하락장 블루칩 (당일${p.changePct.toFixed(1)}%) → 익일 장시작 청산 예정`,
+          confidence: 0.80,
+        });
+        logger.info(`🛒 EOD줍줍 매수: ${code} x${qty} @${p.currentPrice} (당일${p.changePct.toFixed(1)}%)`, { component: 'TRACK_B' });
+      }
+    }
 
     // ── 최종 필터: 가격 없는 BUY 제외 ───────────────────────────────
     const filtered = decisions.filter((d) => {

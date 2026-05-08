@@ -1,10 +1,14 @@
 import { getActiveWatchlist } from '../db/client.js';
-import { kisRequest } from '../kis/client.js';
+import { kisRequest, marketDataRateLimiter } from '../kis/client.js';
 import { logger } from '../utils/logger.js';
 
 // ── 공매도 현황 분석 ──
 
 const COMPONENT = 'SHORT_SELLING';
+
+// ── 30분 캐시 (Track B 5분 사이클마다 KIS 호출 방지) ──
+const _shortCache = new Map<string, { data: ShortSellingData; fetchedAt: number }>();
+const SHORT_CACHE_TTL_MS = 30 * 60 * 1000;
 
 /** 공매도 TR ID (일별 공매도 현황) */
 const TR_SHORT_SELLING = 'FHKST03010400';
@@ -39,6 +43,7 @@ async function fetchShortSellingRawData(stockCode: string, days: number): Promis
     .split('T')[0]
     .replace(/-/g, '');
 
+  await marketDataRateLimiter.acquire();
   const res = await kisRequest<Record<string, string>[]>({
     path: '/uapi/domestic-stock/v1/quotations/inquire-daily-shortselling',
     trId: TR_SHORT_SELLING,
@@ -48,6 +53,8 @@ async function fetchShortSellingRawData(stockCode: string, days: number): Promis
       FID_INPUT_DATE_1: startDate,
       FID_INPUT_DATE_2: endDate,
     },
+    useRealUrl: true,
+    skipRateLimiter: true,
   });
 
   const items = (res.output ?? []) as Record<string, string>[];
@@ -100,6 +107,11 @@ function determineRiskLevel(ratio: number, increasing: boolean): ShortRiskLevel 
  * @returns 공매도 수량, 비율, 추세, 위험도
  */
 export async function fetchShortSellingData(stockCode: string, days: number = 5): Promise<ShortSellingData> {
+  const cached = _shortCache.get(stockCode);
+  if (cached && Date.now() - cached.fetchedAt < SHORT_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
   try {
     const dailyData = await fetchShortSellingRawData(stockCode, days);
 
@@ -127,18 +139,15 @@ export async function fetchShortSellingData(stockCode: string, days: number = 5)
       { component: COMPONENT },
     );
 
-    return { stockCode, shortVolume, shortRatio, shortTrend, isIncreasing: increasing, riskLevel };
+    const result: ShortSellingData = { stockCode, shortVolume, shortRatio, shortTrend, isIncreasing: increasing, riskLevel };
+    _shortCache.set(stockCode, { data: result, fetchedAt: Date.now() });
+    return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logger.error(`공매도 데이터 조회 실패 (${stockCode}): ${message}`, { component: COMPONENT });
-    return {
-      stockCode,
-      shortVolume: 0,
-      shortRatio: 0,
-      shortTrend: [],
-      isIncreasing: false,
-      riskLevel: 'LOW',
-    };
+    const fallback: ShortSellingData = { stockCode, shortVolume: 0, shortRatio: 0, shortTrend: [], isIncreasing: false, riskLevel: 'LOW' };
+    _shortCache.set(stockCode, { data: fallback, fetchedAt: Date.now() });
+    return fallback;
   }
 }
 

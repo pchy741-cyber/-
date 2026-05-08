@@ -528,7 +528,17 @@ export async function technicalFallbackDecisions(params: {
       logger.info(`  📊 ${stock.stock_code}: 볼륨프로파일 ${nearSupport ? '지지선 근처' : '저항선 근처'} → ${vpBonus > 0 ? '+' : ''}${vpBonus}점`, { component: 'TRACK_B' });
     }
 
-    const effectiveTechScore = tech.score + priorityBonus + candleBonus + structBonus + vpBonus;
+    // 진짜 눌림목 패턴: 돌파(최근 5봉 고점 > SMA20+4%) → SMA20 지지구간 복귀(±5%)
+    // 국내 KOSPI 최적 매수 타점 — 갭 없는 안정적 재진입, 손익비 유리
+    const recentHigh5 = candles.length >= 6 ? Math.max(...candles.slice(1, 6).map(c => c.high)) : 0;
+    const truePullbackPattern = tech.sma20 > 0 && recentHigh5 > tech.sma20 * 1.04 &&
+      curPrice >= tech.sma20 * 0.98 && curPrice <= tech.sma20 * 1.05;
+    const pullbackBonus = truePullbackPattern ? 12 : 0;
+    if (truePullbackPattern) {
+      logger.info(`  🎯 ${stock.stock_code}: 눌림목 타점 (고점+${((recentHigh5 / tech.sma20 - 1) * 100).toFixed(1)}% → SMA20+${((curPrice / tech.sma20 - 1) * 100).toFixed(1)}%) +12점`, { component: 'TRACK_B' });
+    }
+
+    const effectiveTechScore = tech.score + priorityBonus + candleBonus + structBonus + vpBonus + pullbackBonus;
 
     // ─── 진입 타이밍 품질 필터 (연구 기반) ───────────────────────────────
     // RSI 구간별 수익 기대치 (KOSPI 2010~2023 실증):
@@ -565,9 +575,10 @@ export async function technicalFallbackDecisions(params: {
       hasBullishCandle
     );
 
-    // 눌림목(RSI 45~65): MACD 비하락이 기본 조건 + 기존 조건 중 하나
+    // 눌림목(RSI 45~65): 돌파 후 SMA20 복귀 패턴이면 직접 허용, 아니면 기존 조건
     const isPullback = tech.rsi14 >= 45 && tech.rsi14 <= 65 &&
       tech.macdCrossover !== 'BEARISH' && (
+        truePullbackPattern ||        // 진짜 눌림목 타점 → 조건 면제
         tech.macdCrossover === 'BULLISH' ||
         aiScore >= buyThreshold ||
         effectiveTechScore >= minTechScore
@@ -665,7 +676,7 @@ export async function technicalFallbackDecisions(params: {
     const ttmTag = tech.ttmSqueeze.fireSignal === 'LONG' ? `🚀TTM발사(${tech.ttmSqueeze.consecutiveSqueezeOn}봉)` : '';
     const rsi2Tag = tech.rsi2 < 15 ? `📉RSI2(${tech.rsi2.toFixed(0)})` : '';
     const entryReason = [
-      isOversold ? '과매도반등' : isEarlyBounce ? '반등초기(최적)' : isPullback ? '눌림목' : isHighConviction ? `고확신(${aiScore}점)` : '모멘텀',
+      isOversold ? '과매도반등' : isEarlyBounce ? '반등초기(최적)' : (isPullback && truePullbackPattern) ? '🎯눌림목타점' : isPullback ? '눌림목' : isHighConviction ? `고확신(${aiScore}점)` : '모멘텀',
       squeezeTag, vwapTag, ttmTag, rsi2Tag,
     ].filter(Boolean).join('+');
     // ─────────────────────────────────────────────────────────────────────

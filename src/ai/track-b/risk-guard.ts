@@ -120,9 +120,7 @@ export async function applyHardRules(params: {
       continue; // 트레일링 스탑은 technical-fallback 처리
     }
 
-    const peakForTrail = (chain as any).peak_price_since_open
-      ? Number((chain as any).peak_price_since_open)
-      : 0;
+    const peakForTrail = chain.peak_price_since_open ? Number(chain.peak_price_since_open) : 0;
 
     if (peakForTrail > 0 && pnlPct >= 1.5) {
       const trailDropPct = ((price.currentPrice - peakForTrail) / peakForTrail) * 100;

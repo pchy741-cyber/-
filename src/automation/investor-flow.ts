@@ -1,11 +1,15 @@
 import { KIS_TR_ID } from '../config/constants.js';
 import { getActiveWatchlist } from '../db/client.js';
-import { kisRequest } from '../kis/client.js';
+import { kisRequest, marketDataRateLimiter } from '../kis/client.js';
 import { logger } from '../utils/logger.js';
 
 // ── 투자자별 매매동향 (외국인/기관/개인) ──
 
 const COMPONENT = 'INVESTOR_FLOW';
+
+// ── 30분 캐시 (Track B 5분 사이클마다 KIS 호출 방지) ──
+const _flowCache = new Map<string, { data: InvestorFlowResult; fetchedAt: number }>();
+const FLOW_CACHE_TTL_MS = 30 * 60 * 1000;
 
 export type InvestorTrend = 'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL';
 
@@ -31,6 +35,7 @@ async function fetchInvestorRawData(stockCode: string, days: number): Promise<Da
   const endDate = new Date().toISOString().split('T')[0].replace(/-/g, '');
   const startDate = new Date(Date.now() - days * 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0].replace(/-/g, '');
 
+  await marketDataRateLimiter.acquire();
   const res = await kisRequest<Record<string, string>[]>({
     path: '/uapi/domestic-stock/v1/quotations/inquire-investor',
     trId: KIS_TR_ID.QUOTE.INVESTOR_FLOW,
@@ -40,6 +45,8 @@ async function fetchInvestorRawData(stockCode: string, days: number): Promise<Da
       FID_INPUT_DATE_1: startDate,
       FID_INPUT_DATE_2: endDate,
     },
+    useRealUrl: true,
+    skipRateLimiter: true,
   });
 
   const items = (res.output ?? []) as Record<string, string>[];
@@ -144,6 +151,11 @@ function determineTrend(dailyData: DailyInvestorData[]): InvestorTrend {
  * @returns 외국인/기관/개인 순매수 합산 + 트렌드
  */
 export async function getInvestorFlow(stockCode: string, days: number = 5): Promise<InvestorFlowResult> {
+  const cached = _flowCache.get(stockCode);
+  if (cached && Date.now() - cached.fetchedAt < FLOW_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
   try {
     const dailyData = await fetchInvestorRawData(stockCode, days);
 
@@ -171,17 +183,15 @@ export async function getInvestorFlow(stockCode: string, days: number = 5): Prom
       { component: COMPONENT },
     );
 
-    return { foreignNet, institutionNet, retailNet, foreignStreak, trend };
+    const result: InvestorFlowResult = { foreignNet, institutionNet, retailNet, foreignStreak, trend };
+    _flowCache.set(stockCode, { data: result, fetchedAt: Date.now() });
+    return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logger.error(`투자자 매매동향 조회 실패 (${stockCode}): ${message}`, { component: COMPONENT });
-    return {
-      foreignNet: 0,
-      institutionNet: 0,
-      retailNet: 0,
-      foreignStreak: 0,
-      trend: 'NEUTRAL',
-    };
+    const fallback: InvestorFlowResult = { foreignNet: 0, institutionNet: 0, retailNet: 0, foreignStreak: 0, trend: 'NEUTRAL' };
+    _flowCache.set(stockCode, { data: fallback, fetchedAt: Date.now() });
+    return fallback;
   }
 }
 

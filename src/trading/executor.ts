@@ -45,8 +45,13 @@ export class TradeExecutor {
         await logSystem('ERROR', 'EXECUTOR', `실행 실패: ${decision.stock_code} - ${msg}`);
       }
     }
-    // 오래된 키 정리 (Set이 무한 증가 방지 — 2분 지난 것만 남김)
-    if (this._recentOrderKeys.size > 200) this._recentOrderKeys.clear();
+    // 오래된 키 정리 — 현재 분 키만 남기고 이전 분 삭제 (전체 삭제 시 동일 분 중복 허용 버그 방지)
+    if (this._recentOrderKeys.size > 200) {
+      const currentMinute = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
+      for (const key of this._recentOrderKeys) {
+        if (!key.endsWith(currentMinute)) this._recentOrderKeys.delete(key);
+      }
+    }
   }
 
   /**
@@ -598,7 +603,10 @@ export class TradeExecutor {
       return null;
     }
 
-    const retryDelays = [3000, 5000, 8000, 15000]; // 3초, 5초, 8초, 15초 (시장가 체결 지연 대응)
+    // 지수 백오프 + jitter(±20%) — 동시 다발 재시도 충돌 방지
+    const retryDelays = [3000, 5000, 8000, 15000].map(
+      (ms) => ms + Math.floor(Math.random() * ms * 0.2),
+    );
 
     for (let i = 0; i < retryDelays.length; i++) {
       await new Promise((r) => setTimeout(r, retryDelays[i]));

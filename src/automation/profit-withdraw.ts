@@ -77,21 +77,33 @@ export async function checkDinnerMoneyWithdraw(): Promise<void> {
   }
 }
 
-/** 오늘 용돈 적립 현황 조회 */
-export async function getDinnerMoneyStats(): Promise<{ todayReserved: boolean; todayAmount: number }> {
+const DINNER_MONEY_MONTHLY_CAP = 300_000;
+
+/** 용돈 적립 현황 조회 (오늘 여부 + 이번달 누계) */
+export async function getDinnerMoneyStats(): Promise<{
+  todayReserved: boolean;
+  todayAmount: number;
+  monthlyTotal: number;
+  monthlyCap: number;
+}> {
   try {
     const pool = getPool();
     const { rows } = await pool.query(`
-      SELECT COALESCE(SUM(amount), 0)::numeric AS total, COUNT(*) AS cnt
+      SELECT
+        COALESCE(SUM(amount), 0)::numeric AS monthly_total,
+        COALESCE(SUM(CASE WHEN created_at AT TIME ZONE 'Asia/Seoul' >= date_trunc('day', NOW() AT TIME ZONE 'Asia/Seoul') THEN amount ELSE 0 END), 0)::numeric AS today_total,
+        COUNT(CASE WHEN created_at AT TIME ZONE 'Asia/Seoul' >= date_trunc('day', NOW() AT TIME ZONE 'Asia/Seoul') THEN 1 END) AS today_cnt
       FROM profit_withdrawals
       WHERE memo LIKE 'dinner_money%'
-        AND created_at AT TIME ZONE 'Asia/Seoul' >= date_trunc('day', NOW() AT TIME ZONE 'Asia/Seoul')
+        AND created_at AT TIME ZONE 'Asia/Seoul' >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')
     `);
     return {
-      todayReserved: Number(rows[0]?.cnt ?? 0) > 0,
-      todayAmount: Number(rows[0]?.total ?? 0),
+      todayReserved: Number(rows[0]?.today_cnt ?? 0) > 0,
+      todayAmount: Number(rows[0]?.today_total ?? 0),
+      monthlyTotal: Number(rows[0]?.monthly_total ?? 0),
+      monthlyCap: DINNER_MONEY_MONTHLY_CAP,
     };
   } catch {
-    return { todayReserved: false, todayAmount: 0 };
+    return { todayReserved: false, todayAmount: 0, monthlyTotal: 0, monthlyCap: DINNER_MONEY_MONTHLY_CAP };
   }
 }

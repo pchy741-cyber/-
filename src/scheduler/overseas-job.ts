@@ -1073,6 +1073,46 @@ export async function runOverseasJob(): Promise<void> {
     if (sessionStartPortfolioValue === null) sessionStartPortfolioValue = portfolioValue;
     const dailyLossPct = ((portfolioValue - sessionStartPortfolioValue) / sessionStartPortfolioValue) * 100;
 
+    // ── 4-b. 단일 종목 집중도 캡 — 30% 초과 시 강제 분산 매도 ──
+    // AMD 같은 고베타가 수익→파킹 집중으로 70%까지 불어나는 것 방지
+    {
+      const CONC_CAP = 0.30;    // 30% 초과 시 발동
+      const CONC_TARGET = 0.25; // 25%로 감축
+      const capHoldings = await getHoldings();
+      for (const [capCode, capHolding] of capHoldings) {
+        if (pendingOrderStocks.has(capCode)) continue;
+        const capTech = techResults.find(t => t.code === capCode);
+        if (!capTech || capTech.price.currentPrice <= 0) continue;
+        const posValue = capTech.price.currentPrice * capHolding.qty;
+        const posWeight = posValue / portfolioValue;
+        if (posWeight <= CONC_CAP) continue;
+
+        const targetQty = Math.floor((portfolioValue * CONC_TARGET) / capTech.price.currentPrice);
+        const sellQty = capHolding.qty - targetQty;
+        if (sellQty < 1) continue;
+
+        logger.warn(
+          `⚠️ 집중도 캡 발동: ${capCode} 비중 ${(posWeight * 100).toFixed(0)}% > 30% → ${sellQty}주 매도 (25%로 감축)`,
+          { component: 'OVERSEAS' },
+        );
+        const exec = await executeOverseasOrder(
+          capCode, 'SELL', sellQty, capTech.price.currentPrice, capTech.exchange,
+          `집중도 캡(${(posWeight * 100).toFixed(0)}% > 30%) — 25%로 강제 분산 매도`,
+          capHolding.qty, capHolding.avgPrice,
+        );
+        if (exec.submitted && exec.filledQty > 0) {
+          await setHolding(capCode, capTech.exchange, exec.finalQty, exec.finalAvgPrice);
+          if (exec.finalQty <= 0) await clearMaxPrice(capCode);
+          const proceeds = exec.filledPrice * exec.filledQty * (1 - 0.0025);
+          cash += proceeds;
+          await setCash(cash);
+          sellOrders.push(
+            `⚠️ 집중캡 매도 ${capCode} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (비중 ${(posWeight * 100).toFixed(0)}% → 25%, +$${proceeds.toFixed(0)} 회수)`,
+          );
+        }
+      }
+    }
+
     // ── 5. 매수 판단 ──
     const buyOrders: string[] = [];
     const updatedHoldings = await getHoldings();
@@ -1353,7 +1393,20 @@ export async function runOverseasJob(): Promise<void> {
         await setHolding(target.code, target.exchange, exec.finalQty, exec.finalAvgPrice);
         cash -= cost;
         await setCash(cash);
-        const buyLog = `매수 ${target.code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} ${buyMode} (AI ${((target.ai?.confidence ?? 0) * 100).toFixed(0)}% 사이징x${sizingMult}) [수수료 $${(exec.filledQty * exec.filledPrice * 0.0025).toFixed(2)}]`;
+
+        // 진입 후 매도 기준 — 텔레그램 알림에 표시 (수동 참고용)
+        const entryP = exec.filledPrice;
+        const tpPct = isHighBetaEntry ? 20 : 15;
+        const slPct = isHighBetaEntry ? 8 : isDefenseEntry ? 4 : 5;
+        const trailActPct = isHighBetaEntry ? 4 : 3;
+        const trailDropPct2 = isHighBetaEntry ? 10 : 7;
+        const tpPrice = (entryP * (1 + tpPct / 100)).toFixed(2);
+        const slPrice = (entryP * (1 - slPct / 100)).toFixed(2);
+        const buyLog = [
+          `매수 ${target.code} x${exec.filledQty} @$${entryP.toFixed(2)} ${buyMode}`,
+          `📌 목표: $${tpPrice}(+${tpPct}%) | 손절: $${slPrice}(-${slPct}%) | 트레일: +${trailActPct}% 진입→고점 -${trailDropPct2}%`,
+          `(AI ${((target.ai?.confidence ?? 0) * 100).toFixed(0)}% 사이징x${sizingMult}) [수수료 $${(exec.filledQty * exec.filledPrice * 0.0025).toFixed(2)}]`,
+        ].join('\n');
         buyOrders.push(buyLog);
         await logSystem('TRADE', 'OVERSEAS', `BUY ${target.code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} | 사이징x${sizingMult} (conf=${((target.ai?.confidence ?? 0) * 100).toFixed(0)}% score=${target.score}) | ${reason}`);
       }
@@ -1367,7 +1420,8 @@ export async function runOverseasJob(): Promise<void> {
     const idleResult = await deployIdleCash({
       cash, holdings: idleCashHoldings, techResults, isUSSession, avgScore: avgTechScore,
     });
-    if (idleResult.cashUsed > 0) {
+    if (idleResult.cashUsed !== 0) {
+      // cashUsed 양수 = 지출, 음수 = 파킹 익절로 현금 회수
       cash -= idleResult.cashUsed;
       await setCash(cash);
     }
@@ -1472,10 +1526,41 @@ async function runParkingStrategy(params: {
     }
   }
 
+  // ── 파킹 ETF 익절: 0.1%+ 수익이면 먼저 현금 회수, 더 좋은 기회에 재투입 ──
+  let parkingCashRecovered = 0;
+  for (const etf of PARKING_ETFS) {
+    const h = holdings.get(etf.code);
+    if (!h || h.qty <= 0 || h.avgPrice <= 0) continue;
+    const curP = parkingPrices.get(etf.code);
+    if (!curP || curP <= 0) continue;
+    const pnlPct = ((curP - h.avgPrice) / h.avgPrice) * 100;
+    if (pnlPct < 0.1) continue; // 수익 미미 → 유지
+
+    if (config.isPaper) {
+      const proceeds = h.qty * curP * (1 - 0.0025);
+      await setHolding(etf.code, etf.exchange, 0, 0);
+      await insertOrder({
+        chain_id: null, stock_code: etf.code, side: 'SELL', order_type: '01',
+        quantity: h.qty, price: curP,
+        kis_order_no: `PKS${Date.now().toString(36)}`,
+        kis_status: 'PAPER_FILLED', filled_quantity: h.qty, filled_price: curP,
+        status: 'FILLED', trading_mode: 'paper', trigger_source: 'OVERSEAS',
+        ai_reasoning: `파킹 익절 +${pnlPct.toFixed(2)}% — 현금 회수 후 재투입`,
+      });
+      parkingCashRecovered += proceeds;
+      actions.push(`📦 파킹익절 ${etf.code} x${h.qty.toFixed(4)} @$${curP.toFixed(2)} (+${pnlPct.toFixed(2)}%, $${proceeds.toFixed(0)} 회수)`);
+      logger.info(`📦 파킹 익절: ${etf.code} +${pnlPct.toFixed(2)}% → $${proceeds.toFixed(0)} 현금 회수`, { component: 'OVERSEAS' });
+    }
+    // 실전 모드는 fractional sell API 필요 — 추후 지원
+  }
+
   // 목표 파킹 총액 = 유휴현금의 70% (나머지 30%는 급매 기회 대비)
   const targetParking = investable * 0.70;
+  // 매도된 파킹 ETF 가치를 차감 (이미 현금으로 전환)
+  totalParkingValue -= parkingCashRecovered;
+
   const toInvest = Math.max(0, targetParking - totalParkingValue);
-  if (toInvest < PARKING_MIN_ORDER) return { actions, cashUsed: 0 };
+  if (toInvest < PARKING_MIN_ORDER) return { actions, cashUsed: -parkingCashRecovered };
 
   const actualInvest = Math.min(toInvest, investable);
   let cashUsed = 0;
@@ -1522,10 +1607,11 @@ async function runParkingStrategy(params: {
   }
 
   if (cashUsed > 0) {
-    logger.info(`📦 현금 파킹 완료: $${cashUsed.toFixed(0)} 투자 (남은현금 $${(cash - cashUsed).toFixed(0)}) | 시장: avgScore=${avgScore.toFixed(0)}`, { component: 'OVERSEAS' });
+    logger.info(`📦 현금 파킹 완료: $${cashUsed.toFixed(0)} 투자 / $${parkingCashRecovered.toFixed(0)} 회수 (남은현금 $${(cash - cashUsed + parkingCashRecovered).toFixed(0)}) | 시장: avgScore=${avgScore.toFixed(0)}`, { component: 'OVERSEAS' });
   }
 
-  return { actions, cashUsed };
+  // cashUsed: 순현금 변화 (양수=지출, 음수=회수)
+  return { actions, cashUsed: cashUsed - parkingCashRecovered };
 }
 
 // ── 승자 집중 전략 (유휴현금 → 수익률 1위 보유종목 추가매수) ──

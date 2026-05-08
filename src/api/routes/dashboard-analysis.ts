@@ -403,8 +403,8 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
     const pool = getPool();
 
     const codeFilter = isKr
-      ? `AND tc.stock_code ~ '^[0-9]{6}$'`
-      : `AND tc.stock_code !~ '^[0-9]{6}$'`;
+      ? `AND stock_code ~ '^[0-9]{6}$'`
+      : `AND stock_code !~ '^[0-9]{6}$'`;
 
     const { rows: monthly } = await pool.query(`
       SELECT

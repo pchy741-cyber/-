@@ -2,7 +2,7 @@ import { runBullBearDebate } from '../../ai/debate/bull-bear.js';
 import { analyzeTechnicals } from '../../analysis/indicators.js';
 import type { StrategyMode } from '../../config/constants.js';
 import { config } from '../../config/index.js';
-import { getActiveStrategy, getLatestScores, getTodayRepeatStopCodes, getRecentLossStocks } from '../../db/client.js';
+import { getActiveStrategy, getLatestScores, getOpenChains, getTodayRepeatStopCodes, getRecentLossStocks } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { getCurrentPrice, getDailyChart } from '../../kis/market.js';
 import { isKillSwitchActive } from '../../risk/kill-switch.js';
@@ -44,13 +44,25 @@ export async function runSniperScan(): Promise<void> {
     if (allSignals.length === 0) return;
 
     // 당일 손절 이력 + 7일 이내 손절 종목 → 스나이퍼 재진입 차단
-    const [todayStopCodes, recentLossCodes] = await Promise.all([
+    const [todayStopCodes, recentLossCodes, openChains] = await Promise.all([
       getTodayRepeatStopCodes(1), // 당일 1회 이상 손절이면 스나이퍼도 차단
       getRecentLossStocks(7),
+      getOpenChains(),
     ]);
     const lossBlocked = new Set([...todayStopCodes, ...recentLossCodes]);
     if (lossBlocked.size > 0) {
       logger.warn(`🚫 스나이퍼 손절이력 차단: ${[...lossBlocked].join(', ')}`, { component: 'SNIPER' });
+    }
+
+    // 이미 추가매수 한도를 소진한 종목 → 스나이퍼 재진입 차단
+    const avgMaxedCodes = new Set<string>();
+    for (const chain of openChains) {
+      if (chain.current_averaging_count >= chain.max_averaging_count) {
+        avgMaxedCodes.add(chain.stock_code);
+      }
+    }
+    if (avgMaxedCodes.size > 0) {
+      logger.info(`🚫 스나이퍼 추가매수 한도 소진: ${[...avgMaxedCodes].join(', ')}`, { component: 'SNIPER' });
     }
 
     // 중복 종목 제거 (가장 높은 confidence 우선) + 손절 차단 적용
@@ -58,6 +70,10 @@ export async function runSniperScan(): Promise<void> {
     for (const signal of allSignals) {
       if (lossBlocked.has(signal.stockCode)) {
         logger.info(`🚫 스나이퍼 차단(손절이력): ${signal.stockCode}`, { component: 'SNIPER' });
+        continue;
+      }
+      if (avgMaxedCodes.has(signal.stockCode)) {
+        logger.info(`🚫 스나이퍼 차단(추가매수 한도 소진): ${signal.stockCode}`, { component: 'SNIPER' });
         continue;
       }
       const existing = bestPerStock.get(signal.stockCode);

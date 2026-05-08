@@ -64,7 +64,7 @@ export function getPool(): pg.Pool {
         database: config.db.database,
         user: config.db.user,
         password: config.db.password,
-        ssl: config.env === 'production' ? { rejectUnauthorized: false } : false,
+        ssl: config.env === 'production' ? { rejectUnauthorized: true } : false,
       });
     }
 
@@ -223,7 +223,7 @@ export async function withTransaction<T>(fn: (client: pg.PoolClient) => Promise<
 export async function getOpenChains(): Promise<TransactionChain[]> {
   if (useMemory) return memGetOpenChains();
   const { rows } = await getPool().query(
-    `SELECT tc.*, w.stock_name FROM transaction_chains tc
+    `SELECT tc.*, w.stock_name, tc.peak_price_since_open FROM transaction_chains tc
      LEFT JOIN watchlist w ON tc.stock_code = w.stock_code
      WHERE tc.status IN ('OPEN','AVERAGING','PROFIT_TAKING')
      ORDER BY tc.opened_at DESC`,
@@ -260,7 +260,8 @@ export async function createChain(
 const CHAIN_ALLOWED_COLS = new Set([
   'status', 'strategy_mode', 'avg_buy_price', 'total_quantity', 'total_invested',
   'realized_pnl', 'target_profit_pct', 'stop_loss_pct', 'max_averaging_count',
-  'current_averaging_count', 'peak_price', 'opened_at', 'closed_at', 'close_reason',
+  'current_averaging_count', 'peak_price', 'peak_price_since_open',
+  'opened_at', 'closed_at', 'close_reason',
 ]);
 
 export async function updateChain(id: string, updates: Partial<TransactionChain>) {

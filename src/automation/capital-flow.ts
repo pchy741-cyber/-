@@ -241,7 +241,7 @@ export async function analyzeCapitalFlow(): Promise<void> {
     let recommendation: PositionEval['recommendation'] = 'KEEP';
     let exitReason: string | undefined;
     if (entryType === 'SNIPER') {
-      let peakPrice = Number((chain as any).peak_price_since_open ?? chain.avg_buy_price);
+      let peakPrice = Number(chain.peak_price_since_open ?? chain.avg_buy_price);
       if (price.currentPrice > peakPrice) {
         peakPrice = price.currentPrice;
         chainUpdates.push({ id: chain.id, peak_price_since_open: peakPrice });
