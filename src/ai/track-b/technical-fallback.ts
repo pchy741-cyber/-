@@ -491,8 +491,8 @@ export async function technicalFallbackDecisions(params: {
     }
 
     // SWING 단기 하락추세 차단: MA5 < MA20 = 단기 추세 역행
-    // AI 80+ 또는 과매도 반등 구간(RSI<35)만 진입 허용
-    if (mode === 'SWING' && tech.sma5 < tech.sma20 && aiScore < 80) {
+    // AI 85+ 또는 과매도 반등 구간(RSI<35)만 진입 허용 (80→85: 하락장 낙칼 방지 강화)
+    if (mode === 'SWING' && tech.sma5 < tech.sma20 && aiScore < 85) {
       const isNearOversold = tech.rsi14 < 35;
       if (!isNearOversold) {
         logger.info(`  ⬇️ ${stock.stock_code}: MA5<MA20 단기하락 AI=${aiScore} RSI=${tech.rsi14.toFixed(0)} → 차단`, { component: 'TRACK_B' });

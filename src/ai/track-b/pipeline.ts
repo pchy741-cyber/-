@@ -384,6 +384,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     const todayDate = new Date().toISOString().split('T')[0]; // "2026-05-07"
+    // KOSPI 레짐에 따른 전종목 점수 감산: 조정장(penalty=1) -10, 하락장(penalty=2) -15, 당일하락(todayDown) -5
+    // 이유: AI 점수는 개별 팩터만 반영하며 시장 방향성 무관. 하락장 낙칼 방지를 위해 threshold 상향 대신 점수 직접 감산.
+    const kospiPenaltyAdj = kospiRegime.penalty >= 2 ? -15 : kospiRegime.penalty >= 1 ? -10 : kospiRegime.todayDown ? -5 : 0;
+    if (kospiPenaltyAdj !== 0) {
+      logger.info(`📉 KOSPI 레짐 점수 보정: penalty=${kospiRegime.penalty} todayDown=${kospiRegime.todayDown} → 전종목 ${kospiPenaltyAdj}점 감산`, { component: 'TRACK_B' });
+    }
     const adjustedScores = scores
       .filter((s: any) => (s.confidence ?? 0) >= 0.55)
       .map((s: any) => {
@@ -398,7 +404,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           : null;
         const stale = scoreDay && scoreDay !== todayDate ? -8 : 0;
         if (stale < 0) logger.info(`⏳ 스코어 stale 패널티: ${s.stock_code} (${scoreDay} ≠ ${todayDate} → -8점)`, { component: 'TRACK_B' });
-        return { stock_code: s.stock_code, score: Math.min(100, Math.max(0, base + adj + capAdj + stale)) };
+        return { stock_code: s.stock_code, score: Math.min(100, Math.max(0, base + adj + capAdj + stale + kospiPenaltyAdj)) };
       });
 
     // 적응형 파라미터: DB 명시 설정 > 시장 최적화 자동값 > STRATEGY_PARAMS 기본값
