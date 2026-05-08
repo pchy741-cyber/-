@@ -241,10 +241,12 @@ export async function analyzeCapitalFlow(): Promise<void> {
     let recommendation: PositionEval['recommendation'] = 'KEEP';
     let exitReason: string | undefined;
     if (entryType === 'SNIPER') {
-      let peakPrice = Number(chain.peak_price_since_open ?? chain.avg_buy_price);
+      const rawPeak = Number(chain.peak_price_since_open ?? chain.avg_buy_price);
+      const partialSold = rawPeak < 0; // negative = holding-check-job partial-sold flag
+      let peakPrice = Math.abs(rawPeak);
       if (price.currentPrice > peakPrice) {
         peakPrice = price.currentPrice;
-        chainUpdates.push({ id: chain.id, peak_price_since_open: peakPrice });
+        chainUpdates.push({ id: chain.id, peak_price_since_open: partialSold ? -peakPrice : peakPrice });
       }
       const atr = calculateATR(chartData, 14);
       const atrMultiplier = sniperType ? (learnedParams.trailingStopMultipliers[sniperType] ?? 2.5) : 2.5;

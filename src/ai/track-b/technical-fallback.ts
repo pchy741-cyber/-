@@ -643,7 +643,8 @@ export async function technicalFallbackDecisions(params: {
     // 수수료 감안 손익분기 승률 42% → 진입 조건 강화로 50%+ 목표
     if (mode === 'SCALPING') {
       // ── 갭상승 2.5% 초과 진입 차단 — 갭 메우기 반전으로 -2~3% 손해 패턴 제거 ──
-      const prevClose = Number(candles[candles.length - 1]?.close ?? 0);
+      // candles[0]=오늘, candles[1]=어제 종가 (내림차순 정렬)
+      const prevClose = Number(candles[1]?.close ?? 0);
       const gapPct = prevClose > 0 ? ((price.currentPrice - prevClose) / prevClose) * 100 : 0;
       if (gapPct > 2.5) {
         logger.info(`  ⚡ ${stock.stock_code}: SCALPING 갭상승 ${gapPct.toFixed(1)}%>2.5% 갭메우기 위험 → 스킵`, { component: 'TRACK_B' });

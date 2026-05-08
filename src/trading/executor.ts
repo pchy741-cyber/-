@@ -268,7 +268,11 @@ export class TradeExecutor {
         logger.error(`체결 미확인 → 체인 생성 보류: ${stockCode}`, { component: 'EXECUTOR' });
         return;
       }
-      const filledQty = Math.max(1, Math.min(gatedQuantity, fill.filledQty));
+      if (fill.filledQty <= 0) {
+        logger.error(`매수 체결 수량 0 → 체인 생성 보류 (주문 거부 또는 미체결): ${stockCode}`, { component: 'EXECUTOR' });
+        return;
+      }
+      const filledQty = Math.min(gatedQuantity, fill.filledQty);
       if (filledQty < gatedQuantity) {
         logger.warn(`⚠️ 매수 부분체결 반영: ${stockCode} 요청 ${gatedQuantity}주 → 체결 ${filledQty}주`, { component: 'EXECUTOR' });
       }
@@ -404,7 +408,11 @@ export class TradeExecutor {
         logger.error(`체결 미확인 → 물타기 체인 업데이트 보류: ${stockCode}`, { component: 'EXECUTOR' });
         return;
       }
-      const filledQty = Math.max(1, Math.min(quantity, fill.filledQty));
+      if (fill.filledQty <= 0) {
+        logger.error(`물타기 체결 수량 0 → 업데이트 보류 (주문 거부 또는 미체결): ${stockCode}`, { component: 'EXECUTOR' });
+        return;
+      }
+      const filledQty = Math.min(quantity, fill.filledQty);
       if (filledQty < quantity) {
         logger.warn(`⚠️ 물타기 부분체결 반영: ${stockCode} 요청 ${quantity}주 → 체결 ${filledQty}주`, { component: 'EXECUTOR' });
       }
@@ -444,7 +452,11 @@ export class TradeExecutor {
         return;
       }
 
-      const soldQty = Math.max(1, Math.min(safeQty, fill.filledQty));
+      if (fill.filledQty <= 0) {
+        logger.error(`부분익절 체결 수량 0 → 체인 업데이트 보류 (주문 거부 또는 미체결): ${stockCode}`, { component: 'EXECUTOR' });
+        return;
+      }
+      const soldQty = Math.min(safeQty, fill.filledQty);
       if (soldQty < safeQty) {
         logger.warn(`⚠️ 부분익절 부분체결 반영: ${stockCode} 요청 ${safeQty}주 → 체결 ${soldQty}주`, { component: 'EXECUTOR' });
       }
@@ -484,7 +496,11 @@ export class TradeExecutor {
         return;
       }
 
-      const soldQty = Math.max(1, Math.min(chain.total_quantity, fill.filledQty));
+      if (fill.filledQty <= 0) {
+        logger.error(`청산 체결 수량 0 → 체인 업데이트 보류 (주문 거부 또는 미체결): ${stockCode}`, { component: 'EXECUTOR' });
+        return;
+      }
+      const soldQty = Math.min(chain.total_quantity, fill.filledQty);
       if (soldQty < chain.total_quantity) {
         logger.warn(`⚠️ 전량청산 부분체결 반영: ${stockCode} 요청 ${chain.total_quantity}주 → 체결 ${soldQty}주`, { component: 'EXECUTOR' });
       }

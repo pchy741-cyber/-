@@ -23,9 +23,8 @@ import { technicalFallbackDecisions } from './technical-fallback.js';
 import { fetchKospiRegime, checkDailyLoss } from './market-regime.js';
 import { getMacroSnapshot } from '../../automation/macro-data.js';
 import { getInvestorFlow } from '../../automation/investor-flow.js';
-import { filterEarlySells, applyHardRules, filterManualCooldown, deduplicateSells, filterSectorConcentration } from './risk-guard.js';
-import { adjustPositionSizes } from './position-sizer.js';
-import { calcPortfolioStressLevel, getConcentrationSellTargets, getPerformanceMultiplier } from '../../automation/portfolio-guard.js';
+import { calcPortfolioStressLevel, getPerformanceMultiplier } from '../../automation/portfolio-guard.js';
+import { applyDecisionFlow } from './decision-flow.js';
 import { reconcilePendingOrders } from '../../trading/fill-reconciler.js';
 
 /**
@@ -420,27 +419,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       logger.info(`📐 maxPositionKrw 조정: ${baseMaxPos.toLocaleString()} × 성과${perfMult}x × 스트레스${stressMult}x = ${adjMaxPositionKrw.toLocaleString()}원`, { component: 'TRACK_B' });
     }
 
-    // 집중도 초과 종목 → PARTIAL_SELL 결정 즉시 주입 (25% 초과 + 수익 3%↑)
-    const concentrationSellTargets = getConcentrationSellTargets(openChains, livePrices, totalAssets);
-    const concentrationDecisions: import('../../db/models.js').TradeDecision[] = [];
-    if (concentrationSellTargets.size > 0) {
-      for (const code of concentrationSellTargets) {
-        const chain = openChains.find((c) => c.stock_code === code);
-        if (!chain || chain.total_quantity < 3) continue;
-        const sellQty = Math.floor(chain.total_quantity / 3); // 1/3 비중 축소
-        if (sellQty < 1) continue;
-        concentrationDecisions.push({
-          action: 'PARTIAL_SELL',
-          stock_code: code,
-          quantity: sellQty,
-          price_type: 'MARKET',
-          reasoning: '집중도 자동조정: 포트폴리오 25% 초과 + 수익구간 → 1/3 비중 축소',
-          confidence: 0.9,
-        });
-      }
-    }
-
-    let decisions = await technicalFallbackDecisions({
+    const decisions = await technicalFallbackDecisions({
       mode: effectiveMode,
       watchlist: watchlist
         .filter((w) => w.stock_code !== PARK_STOCK_CODE)
@@ -471,181 +450,37 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       junkStockCodes,
     });
 
-    // 집중도 부분매도 주입 (이미 매도 결정 없는 종목만)
-    for (const cd of concentrationDecisions) {
-      const alreadySelling = decisions.some(
-        (d) => d.stock_code === cd.stock_code && ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action),
-      );
-      if (!alreadySelling) decisions.unshift(cd);
-    }
-
     setActiveEngine('technical');
     logger.info(
       `📊 기술적 지표 매매 실행 [${hasScores ? 'technical+AI힌트' : 'technical'}] (AI점수=${scores.length}개, 결정=${decisions.length}개)`,
       { component: 'TRACK_B' },
     );
 
-    // ── 5. 조기 매도 방지 필터 ───────────────────────────────────────
-    decisions = filterEarlySells({
-      decisions,
+    // ── 5~10. 우선순위 결정 체인 (decision-flow.ts — 순서 절대 고정) ──
+    const actionable = await applyDecisionFlow({
+      rawDecisions: decisions,
       openChains,
       livePrices,
-      mode,
-      stopLossPct: resolvedSl ?? null,
-      takeProfitPct: resolvedTp ?? null,
-    });
-
-    // ── 5b. 섹터 집중 매수 차단 ──────────────────────────────────────
-    decisions = filterSectorConcentration(decisions, openChains);
-
-    // ── 6. 유휴 현금 파킹 관리 ───────────────────────────────────────
-    {
-      const { manageCashParking } = await import('./cash-manager.js');
-      const cashDecisions = manageCashParking({
-        orderableCash,
-        totalAssets,
-        hasBuyCandidates,
-        openChains,
-        livePrices,
-        mode,
-        blockNewBuys,
-      });
-      for (const d of cashDecisions) {
-        if (d.action === 'SELL') decisions.unshift(d);
-        else decisions.push(d);
-      }
-    }
-
-    // ── 7. 하드룰: 트레일링 스탑 + 고정 손절 강제 ───────────────────
-    decisions = await applyHardRules({
-      decisions,
-      openChains,
-      livePrices,
-      mode,
-      stopLossPct: resolvedSl ?? null,
-    });
-
-    // KIS 관심종목 보완 동기화: 매수 후보 있으나 실제 BUY 결정 없을 때
-    if (hasBuyCandidates) {
-      const hasActualBuy = decisions.some(
-        (d) => ['BUY', 'AVERAGE_DOWN'].includes(d.action),
-      );
-      if (!hasActualBuy) {
-        logger.info('⏭️ 매수 후보 있으나 BUY 결정 없음 → KIS 관심종목 재동기화', { component: 'TRACK_B' });
-        import('../../kis/interest-group.js').then(m => m.syncInterestGroups()).catch(() => {});
-      }
-    }
-
-    // BUY 결정에 현재가 주입 (executor 재조회 실패 방지)
-    for (const d of decisions) {
-      if ((d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && !d.limit_price) {
-        const livePrice = livePrices.get(d.stock_code)?.currentPrice ?? 0;
-        if (livePrice > 0) d.limit_price = livePrice;
-      }
-    }
-
-    // ── 8. CEO 수동 매도 쿨다운 필터 ─────────────────────────────────
-    decisions = filterManualCooldown(decisions, manuallySoldCodes);
-
-    // ── 9. 포지션 크기 보정 (KOSPI 레짐 반영) ────────────────────────
-    decisions = adjustPositionSizes({
-      decisions,
+      mode: effectiveMode,
+      manuallySoldCodes,
       scores: scores.map((s: any) => ({ stock_code: s.stock_code, composite_score: s.composite_score ?? undefined })),
-      mode,
       totalAssets,
-      kospiRegimePenalty: kospiRegime.penalty,
-      kospiBoost: kospiRegime.boost,
+      kospiRegime: { penalty: kospiRegime.penalty, boost: kospiRegime.boost, todayDown: kospiRegime.todayDown },
+      resolvedSl,
+      resolvedTp,
+      orderableCash,
+      hasBuyCandidates,
+      blockNewBuys,
+      adjMaxPositionKrw,
+      kstH,
+      kstM,
       dailyLossEarlyWarning: dailyLoss.earlyWarning,
     });
 
-    // ── 10. 중복 매도 신호 제거 ──────────────────────────────────────
-    decisions = deduplicateSells(decisions);
-
-    // ── 11. 하락장 블루칩 EOD 줍줍 + 익일 장시작 강제 청산 ──────────
-    const EOD_BLUECHIP_CODES = ['005930', '000660', '012450']; // 삼성전자, SK하이닉스, 한화에어로
-    const isEodBuyWindow = kstH === 14 && kstM >= 50;
-    const isMorningExitWindow = kstH === 9 && kstM >= 5 && kstM <= 25;
-    const isBearDay = kospiRegime.todayDown || kospiRegime.penalty >= 1;
-
-    // 익일 오전: 전날 14:45 이후 매수한 블루칩 포지션 장시작 강제 청산
-    if (isMorningExitWindow) {
-      const todayKst = new Date(Date.now() + 9 * 3600000);
-      const todayStr = todayKst.toISOString().split('T')[0];
-      for (const chain of openChains) {
-        if (!EOD_BLUECHIP_CODES.includes(chain.stock_code)) continue;
-        if (Number(chain.total_quantity) <= 0) continue;
-        if (!chain.opened_at) continue;
-        const openedKst = new Date(new Date(chain.opened_at).getTime() + 9 * 3600000);
-        const openedStr = openedKst.toISOString().split('T')[0];
-        if (openedStr >= todayStr) continue; // 오늘 매수 건은 제외
-        const openedH = openedKst.getUTCHours();
-        const openedM = openedKst.getUTCMinutes();
-        if (openedH < 14 || (openedH === 14 && openedM < 45)) continue; // 14:45 이전 매수는 일반 관리
-        const alreadySelling = decisions.some(
-          (d) => d.stock_code === chain.stock_code && ['SELL', 'FORCE_CLOSE'].includes(d.action),
-        );
-        if (alreadySelling) continue;
-        decisions.push({
-          action: 'FORCE_CLOSE',
-          stock_code: chain.stock_code,
-          quantity: Number(chain.total_quantity),
-          price_type: 'MARKET',
-          reasoning: 'EOD줍줍 익일청산: 블루칩 갭회복 매도',
-          confidence: 1.0,
-        });
-        logger.info(`🌅 EOD줍줍 익일청산: ${chain.stock_code} x${chain.total_quantity}`, { component: 'TRACK_B' });
-      }
+    if (hasBuyCandidates && !actionable.some((d) => ['BUY', 'AVERAGE_DOWN'].includes(d.action))) {
+      logger.info('⏭️ 매수 후보 있으나 BUY 결정 없음 → KIS 관심종목 재동기화', { component: 'TRACK_B' });
+      import('../../kis/interest-group.js').then(m => m.syncInterestGroups()).catch(() => {});
     }
-
-    // EOD 매수: 하락장 블루칩 줍줍 (14:50~14:59, 당일 -0.5% 이상 하락)
-    if (isEodBuyWindow && isBearDay && !blockNewBuys) {
-      for (const code of EOD_BLUECHIP_CODES) {
-        if (openChains.some((c) => c.stock_code === code && Number(c.total_quantity) > 0)) continue;
-        const p = livePrices.get(code);
-        if (!p || p.currentPrice <= 0 || p.changePct > -0.5) continue;
-        const qty = Math.floor((adjMaxPositionKrw * 0.5) / p.currentPrice);
-        if (qty <= 0) continue;
-        const alreadyBuying = decisions.some(
-          (d) => d.stock_code === code && (d.action === 'BUY' || d.action === 'AVERAGE_DOWN'),
-        );
-        if (alreadyBuying) continue;
-        decisions.push({
-          action: 'BUY',
-          stock_code: code,
-          quantity: qty,
-          price_type: 'MARKET',
-          limit_price: p.currentPrice,
-          reasoning: `EOD줍줍: 하락장 블루칩 (당일${p.changePct.toFixed(1)}%) → 익일 장시작 청산 예정`,
-          confidence: 0.80,
-        });
-        logger.info(`🛒 EOD줍줍 매수: ${code} x${qty} @${p.currentPrice} (당일${p.changePct.toFixed(1)}%)`, { component: 'TRACK_B' });
-      }
-    }
-
-    // ── 최종 필터: 가격 없는 BUY 제외 ───────────────────────────────
-    const filtered = decisions.filter((d) => {
-      if (d.action === 'HOLD') return false;
-      if (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') {
-        const hasPrice = (d.limit_price ?? 0) > 0;
-        if (!hasPrice) logger.warn(`가격 없는 BUY 제외: ${d.stock_code}`, { component: 'TRACK_B' });
-        return hasPrice;
-      }
-      return true;
-    });
-
-    // SELL → AVERAGE_DOWN → BUY 순으로 정렬: 매도로 현금 확보 후 매수
-    const actionOrder = (d: TradeDecision) =>
-      d.action === 'SELL' ? 0 : d.action === 'AVERAGE_DOWN' ? 1 : 2;
-    const scoreMap = new Map<string, number>(
-      scores.map((s: any) => [s.stock_code, Number(s.composite_score ?? 0)]),
-    );
-    filtered.sort((a, b) => {
-      const orderDiff = actionOrder(a) - actionOrder(b);
-      if (orderDiff !== 0) return orderDiff;
-      // 같은 action 유형이면 점수 높은 순
-      return (scoreMap.get(b.stock_code) ?? 0) - (scoreMap.get(a.stock_code) ?? 0);
-    });
-    const actionable = filtered;
 
     // 유휴 현금 모니터링 로그
     const idleCashPct = totalAssets > 0 ? (orderableCash / totalAssets * 100).toFixed(1) : '0.0';
