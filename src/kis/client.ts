@@ -87,11 +87,11 @@ class RateLimiter {
 
 // KIS API rate limit: 실전 20건/sec, 모의투자 1건/sec per APP KEY
 // Paper: domestic + overseas가 동일 APP KEY → 단일 limiter 공유 (1/sec 초과 방지)
-// marketData는 useRealUrl=true로 실서버 호출 → paper 제한 무관, 8/sec 허용
+// marketData는 useRealUrl=true로 실서버 호출 → 버스트 과부하 방지로 4/sec 제한
 const isPaper = config.isPaper;
 export const kisRateLimiter = new RateLimiter(isPaper ? 1 : 15);
 export const overseasRateLimiter = isPaper ? kisRateLimiter : new RateLimiter(15);
-export const marketDataRateLimiter = new RateLimiter(8);
+export const marketDataRateLimiter = new RateLimiter(4);
 
 /**
  * KIS REST API 범용 클라이언트
@@ -164,11 +164,12 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
         const errMsg = `KIS API 오류 [${trId}]: ${data.msg_cd} - ${data.msg1}`;
         const msg = String(data.msg1 ?? '');
 
-        // rate limit 초과 → 재시도하되 충분히 대기 (KIS는 HTTP 200으로 rate limit 보냄)
+        // rate limit 초과 → 최대 2회 재시도, 짧게 대기 (쌓이면 Cloud Run 포화)
         if (msg.includes('초당') || msg.includes('거래건수')) {
-          if (attempt < MAX_RETRIES) {
-            logger.warn(`KIS rate limit 초과, ${attempt * 3}초 대기 후 재시도 ${attempt}/${MAX_RETRIES}`, { component: 'KIS' });
-            await sleep(3000 * attempt); // 3초, 6초, 9초, 12초, 15초 대기
+          const MAX_RATE_RETRIES = 2;
+          if (attempt <= MAX_RATE_RETRIES) {
+            logger.warn(`KIS rate limit 초과, ${attempt * 2}초 대기 후 재시도 ${attempt}/${MAX_RATE_RETRIES}`, { component: 'KIS' });
+            await sleep(2000 * attempt); // 2초, 4초 대기
             continue;
           }
           throw new Error(errMsg);
