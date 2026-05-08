@@ -682,12 +682,13 @@ export async function technicalFallbackDecisions(params: {
     ].filter(Boolean).join('+');
     // ─────────────────────────────────────────────────────────────────────
 
-    // 기술점수 기반 진입 — AI 점수 미사용 (Gemini 무료 품질 이슈로 비활성화)
-    if (effectiveTechScore >= minTechScore) {
+    // 진입 게이트: 기술점수 충족 OR AI 꽁돈(>=92점, 200% 확실할 때만)
+    const isKongdon = aiScore >= 92;
+    if (effectiveTechScore >= minTechScore || isKongdon) {
       candidates.push({ stock_code: stock.stock_code, tech, price, candleBonus });
       const wrInfo = winRateSummary(stock.stock_code, winRates?.get(stock.stock_code));
-      const bonusStr = [priorityBonus > 0 ? `+${priorityBonus}테마` : '', candleBonus > 0 ? `+${candleBonus}캔들` : ''].filter(Boolean).join('');
-      logger.info(`  ✅ ${stock.stock_code}: 기술=${effectiveTechScore}점(>=${minTechScore}) [${entryReason}] RSI=${tech.rsi14.toFixed(0)} vol=${tech.volumeRatio.toFixed(2)}x → 매수 후보${bonusStr}${wrInfo}`, { component: 'TRACK_B' });
+      const bonusStr = [priorityBonus > 0 ? `+${priorityBonus}테마` : '', candleBonus > 0 ? `+${candleBonus}캔들` : '', isKongdon ? `🎰꽁돈(AI${aiScore}점)` : ''].filter(Boolean).join('');
+      logger.info(`  ✅ ${stock.stock_code}: 기술=${effectiveTechScore}점(>=${minTechScore})${isKongdon ? ` 꽁돈AI=${aiScore}점` : ''} [${entryReason}] RSI=${tech.rsi14.toFixed(0)} vol=${tech.volumeRatio.toFixed(2)}x → 매수 후보${bonusStr}${wrInfo}`, { component: 'TRACK_B' });
     }
   }
 

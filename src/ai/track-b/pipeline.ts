@@ -438,7 +438,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       totalAssets,
       lossBlockedCodes: new Set([...recentLossCodes, ...todayRepeatStopCodes]),
       manuallySoldCodes,
-      aiScores: [], // AI 진입 비활성화 — 기술지표 단독 종목선택 (Gemini 무료 품질 이슈)
+      aiScores: adjustedScores, // AI 꽁돈 진입(>=92점)만 활성화, 손실청산 보조
       takeProfitPct: resolvedTp,
       stopLossPct: resolvedSl,
       buyThreshold: resolvedThreshold,
@@ -455,6 +455,35 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       currentStockValue,
       junkStockCodes,
     });
+
+    // ── AI 손실 조기청산: 손실 중 + AI 부정평가(< 45점) → FORCE_CLOSE 주입 ──
+    // Gemini 무료 품질이 낮아 진입엔 안 쓰지만, 이미 보유 중 악화 종목 탈출엔 활용
+    const aiScoreMapForExit = new Map(adjustedScores.map((s) => [s.stock_code, s.score]));
+    for (const chain of openChains) {
+      const liveP = livePrices.get(chain.stock_code);
+      if (!liveP || !chain.avg_buy_price) continue;
+      const pnlPct = ((liveP.currentPrice - Number(chain.avg_buy_price)) / Number(chain.avg_buy_price)) * 100;
+      const aiScore = aiScoreMapForExit.get(chain.stock_code) ?? null;
+      if (pnlPct < -1.0 && aiScore !== null && aiScore < 45) {
+        const alreadyExiting = decisions.some(
+          (d) => d.stock_code === chain.stock_code && ['SELL', 'FORCE_CLOSE', 'PARTIAL_SELL'].includes(d.action),
+        );
+        if (!alreadyExiting) {
+          logger.info(
+            `🤖 AI 손실청산: ${chain.stock_code} 손실=${pnlPct.toFixed(1)}% AI=${aiScore}점(<45) → FORCE_CLOSE`,
+            { component: 'TRACK_B' },
+          );
+          decisions.push({
+            action: 'FORCE_CLOSE',
+            stock_code: chain.stock_code,
+            quantity: chain.total_quantity,
+            price_type: 'MARKET',
+            reasoning: `AI 부정평가(${aiScore}점<45) + 손실(${pnlPct.toFixed(1)}%) → AI 손절 가속`,
+            confidence: 0.85,
+          });
+        }
+      }
+    }
 
     setActiveEngine('technical');
     logger.info(
