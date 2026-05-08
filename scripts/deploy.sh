@@ -62,11 +62,11 @@ gcloud run deploy $SERVICE \
     --platform=managed \
     --min-instances=1 \
     --max-instances=1 \
-    --memory=512Mi \
+    --memory=1Gi \
     --cpu=1 \
     --port=8080 \
     --timeout=300s \
-    --concurrency=1 \
+    --concurrency=80 \
     --no-cpu-throttling \
     --allow-unauthenticated \
     --add-cloudsql-instances=quantops-trading:asia-northeast3:quantops-db \
@@ -94,7 +94,7 @@ echo "  📊 대시보드: ${URL}/api/dashboard"
 echo ""
 echo "  ⚡ Cloud Run 성능:"
 echo "     CPU 1 항상 할당 (스케줄러 상시 가동, 비용 최적화 ~65,000원/월)"
-echo "     메모리 1GB (AI API 동시 호출 여유)"
+echo "     메모리 1Gi (AI API 동시 호출 여유)"
 echo "     인스턴스 1개 항상 대기 (콜드스타트 0)"
 echo "     서울 리전 (KIS API 최소 지연)"
 echo ""
