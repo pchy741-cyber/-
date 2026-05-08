@@ -1020,9 +1020,12 @@ export async function runOverseasJob(): Promise<void> {
       else if (pnlPct >= hardTpPct) {
         sellReason = `익절(${hardTpPct}%): +${pnlPct.toFixed(1)}%`;
       }
-      // 4) AI 매도 신호 — 섹터별 고확신 + 최소 보유일 조건
-      // 고베타(NVDA 등): 80%+ + 2일 이상 (하루 노이즈로 장기 우상향 종목 손절 방지)
-      // 일반: 75%+ + 1일 이상
+      // 4) AI 매도 신호 — 두 단계로 분리
+      // 4a) 초고확신(90%+): 보유일 무관 즉시 매도 — NVDA +25% 1.5일차에도 수익 확보
+      else if (ai?.action === 'SELL' && ai.confidence >= 0.90) {
+        sellReason = `AI 급매도(${(ai.confidence * 100).toFixed(0)}%): ${ai.reasoning}`;
+      }
+      // 4b) 일반 확신: 최소 보유일 충족 후 매도 (당일 노이즈 방지)
       else if (ai?.action === 'SELL' && ai.confidence >= minAiSellConf && holdingDays >= minHoldForSell) {
         sellReason = `AI 매도(${(ai.confidence * 100).toFixed(0)}%): ${ai.reasoning}`;
       }
