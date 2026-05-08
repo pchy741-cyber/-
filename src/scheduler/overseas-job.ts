@@ -1168,6 +1168,16 @@ export async function runOverseasJob(): Promise<void> {
         logger.info(`⚠️ 최근 손실 종목 (7일, AI≥85% 필수): ${[...recentLossSet].join(', ')}`, { component: 'OVERSEAS' });
       }
 
+      // 섹터 집중도 계산 — 현재 보유 포지션 기준 (40% 상한 적용)
+      const sectorValues = new Map<string, number>();
+      for (const [code, holding] of updatedHoldings) {
+        const watchItem = GLOBAL_WATCHLIST.find(w => w.code === code);
+        if (!watchItem) continue;
+        const tech = techResults.find(t => t.code === code);
+        const value = (tech?.price.currentPrice ?? holding.avgPrice) * holding.qty;
+        sectorValues.set(watchItem.sector, (sectorValues.get(watchItem.sector) ?? 0) + value);
+      }
+
       const buyTargets = techResults
         .filter(t => !updatedHoldings.has(t.code) && !pendingOrderStocks.has(t.code))
         // 손절 쿨다운 — 48시간 이내 손실 매도 종목 재매수 금지
@@ -1205,6 +1215,16 @@ export async function runOverseasJob(): Promise<void> {
           const highBetaSectors = ['AI_SEMI', 'GROWTH', 'EV', 'CRYPTO', 'JP_AUTO', 'JP_TECH'];
           if (mktSignal.marketQuality === 'DANGER' && highBetaSectors.includes(t.sector)) {
             logger.info(`📊 DANGER 장세 고베타 차단: ${t.code}(${t.sector}) — ${mktSignal.reason}`, { component: 'OVERSEAS' });
+            return false;
+          }
+          return true;
+        })
+        // 섹터 집중도 40% 상한 — 동일 섹터 과집중 시 상관관계 급락 리스크 차단
+        .filter(t => {
+          const sectorValue = sectorValues.get(t.sector) ?? 0;
+          const sectorWeight = portfolioValue > 0 ? sectorValue / portfolioValue : 0;
+          if (sectorWeight >= 0.40) {
+            logger.info(`📊 섹터 집중도 초과: ${t.code}(${t.sector}) ${(sectorWeight * 100).toFixed(0)}% ≥ 40% → 스킵`, { component: 'OVERSEAS' });
             return false;
           }
           return true;
@@ -1267,9 +1287,16 @@ export async function runOverseasJob(): Promise<void> {
           if (ai?.action === 'BUY' && (t.signal === 'STRONG_BUY' || t.isMomentum) && ai.confidence >= minConfMomentum) return true;
           // AI 없을 때: GREAT/OK만 강한 기술적 신호 허용, 손실 회복 모드에서는 AI 필수
           if (!ai && !recoveryMode && (quality === 'GREAT' || quality === 'OK')) {
+            // Path 1: 강한 추세 — STRONG_BUY + ADX≥25 + RSI 범위 내
             const isBuySignal = t.signal === 'STRONG_BUY' && t.score >= 40 && t.adx >= 25;
             const rsiOk = t.isMomentum ? (t.rsi >= 45 && t.rsi <= 72) : (t.rsi >= 50 && t.rsi <= 62);
-            return isBuySignal && rsiOk;
+            if (isBuySignal && rsiOk) return true;
+            // Path 2: Bollinger 상방 돌파 + 모멘텀 (AI 쿨다운 15분 공백 보완)
+            // MA20 위에 있어야 하락추세 돌파 노이즈 차단
+            const isBollingerMomentum = t.bollingerBreakout === 'UP' && t.isMomentum
+              && t.score >= 30 && t.aboveMA20 && t.rsi >= 45 && t.rsi <= 72;
+            if (isBollingerMomentum) return true;
+            return false;
           }
           if (!ai) {
             logger.info(`  ⛔ ${recoveryMode ? '손실회복모드' : quality} AI 없음 차단: ${t.code}`, { component: 'OVERSEAS' });

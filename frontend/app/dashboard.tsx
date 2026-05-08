@@ -882,36 +882,97 @@ function StrategyTimelinePanel({ strategy }: { strategy: any }) {
 // OVERSEAS SCORE PANEL
 // ═══════════════════════════════════════
 
-function OverseasScorePanel({ usDash }: { usDash?: any }) {
-  const usScored = (usDash?.watchlist ?? []).filter((s: any) => typeof s.score === 'number');
+const US_SECTOR_MAP: Record<string, string> = {
+  NVDA: 'AI반도체', AMD: 'AI반도체', AVGO: 'AI반도체',
+  TSM: '대만반도체', UMC: '대만반도체',
+  META: '빅테크', AAPL: '빅테크', MSFT: '빅테크',
+  RTX: '방산', LMT: '방산', GEV: '방산', PLTR: '방산',
+  ETN: '산업인프라', PWR: '산업인프라', ANET: '산업인프라', VRT: '산업인프라',
+  AMZN: '클라우드', GOOGL: '클라우드', ORCL: '클라우드', NOW: '클라우드', MELI: '클라우드',
+  TM: '일본', SONY: '일본', MUFG: '일본',
+};
+const US_SECTORS = ['전체', 'AI반도체', '빅테크', '방산', '클라우드', '산업인프라', '대만반도체', '일본'];
+
+function OverseasScorePanel({ usDash, toast }: { usDash?: any; toast?: (msg: string, type?: string) => void }) {
+  const allScored = (usDash?.watchlist ?? []).filter((s: any) => typeof s.score === 'number');
+  const [sector, setSector] = React.useState('전체');
+  const [buyingCode, setBuyingCode] = React.useState<string | null>(null);
+  const [showAll, setShowAll] = React.useState(false);
   const signalMap: Record<string, string> = { STRONG_BUY: '강력 추천', BUY: '매수', HOLD: '관망', SELL: '매도', STRONG_SELL: '강력 매도' };
+  const filtered = sector === '전체' ? allScored : allScored.filter((s: any) => US_SECTOR_MAP[s.code] === sector);
+  const sorted = [...filtered].sort((a: any, b: any) => (b.score ?? 0) - (a.score ?? 0));
+  const visible = showAll ? sorted : sorted.slice(0, 10);
+
+  const manualBuy = async (sc: any) => {
+    if (!confirm(`${sc.name ?? sc.code} 수동 매수 — $200?`)) return;
+    setBuyingCode(sc.code);
+    try {
+      const ex = sc.exchange ?? (sc.code?.length <= 4 ? 'NASDAQ' : 'NYSE');
+      await api('/overseas/vision-scalp/execute', { method: 'POST', body: JSON.stringify({ ticker: sc.code, exchange: ex, amountUsd: 200, reasoning: `수동진입 점수${sc.score?.toFixed(0)} RSI${sc.rsi?.toFixed(0)} ${sc.signal}` }) });
+      toast?.('해외 매수 접수', 'ok');
+    } catch (e: any) { toast?.(e.message, 'err'); }
+    setBuyingCode(null);
+  };
+
   return (
-    <Panel title="AI가 보는 해외 종목 점수" badge={usScored.length > 0 ? `${usScored.length}종목` : undefined} badgeColor="blue">
-      {usScored.length > 0 ? (
-        <div className="p-3.5 space-y-2">
-          {[...usScored].sort((a: any, b: any) => (b.score ?? 0) - (a.score ?? 0)).map((sc: any) => {
-            const raw = Number(sc.score);
-            const pct = Math.max(2, Math.min(100, (raw + 100) / 2));
-            const barColor = pct >= 75 ? 'bg-emerald-500' : pct >= 60 ? 'bg-blue-500' : pct >= 45 ? 'bg-amber-500' : 'bg-slate-600';
-            const textColor = pct >= 75 ? 'text-emerald-400' : pct >= 60 ? 'text-blue-400' : 'text-slate-500';
-            const label = signalMap[sc.signal] ?? sc.signal ?? '';
-            return (
-              <div key={sc.code} className="flex items-center gap-3 px-2 py-2">
-                <div className="w-24 shrink-0">
-                  <div className="text-xs font-bold text-slate-300 truncate">{sc.name}</div>
-                  <div className="text-[10px] text-slate-600">{sc.code} · RSI {sc.rsi != null ? Number(sc.rsi).toFixed(0) : '-'}</div>
-                </div>
-                <div className="flex-1">
-                  <div className="h-2 bg-white/[0.04] rounded-full overflow-hidden">
-                    <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${pct}%` }} />
+    <Panel title="AI가 보는 해외 종목 점수" badge={allScored.length > 0 ? `${allScored.length}종목` : undefined} badgeColor="blue">
+      {allScored.length > 0 ? (
+        <div className="p-3.5">
+          {/* 섹터 탭 */}
+          <div className="flex gap-1.5 flex-wrap mb-3">
+            {US_SECTORS.map(s => (
+              <button key={s} onClick={() => { setSector(s); setShowAll(false); }}
+                className={`text-[10px] px-2 py-1 rounded-lg transition-all ${sector === s ? 'bg-blue-600 text-white' : 'bg-white/[0.04] text-slate-400 hover:bg-white/[0.08]'}`}>
+                {s}
+              </button>
+            ))}
+          </div>
+          <div className="space-y-1">
+            {visible.map((sc: any) => {
+              const raw = Number(sc.score);
+              const pct = Math.max(2, Math.min(100, (raw + 100) / 2));
+              const barColor = pct >= 75 ? 'bg-emerald-500' : pct >= 60 ? 'bg-blue-500' : pct >= 45 ? 'bg-amber-500' : 'bg-slate-600';
+              const textColor = pct >= 75 ? 'text-emerald-400' : pct >= 60 ? 'text-blue-400' : 'text-slate-500';
+              const label = signalMap[sc.signal] ?? sc.signal ?? '';
+              const sectorLabel = US_SECTOR_MAP[sc.code] ?? '';
+              const isBuying = buyingCode === sc.code;
+              return (
+                <div key={sc.code} className="px-2 py-2.5 border-b border-white/[0.03] last:border-0">
+                  {/* 상단: 종목명 + 바 + 점수 + 신호 + 매수 */}
+                  <div className="flex items-center gap-2">
+                    <div className="w-20 shrink-0">
+                      <div className="text-xs font-bold text-slate-300 truncate">{sc.name ?? sc.code}</div>
+                      <div className="text-[9px] text-slate-600">{sc.code} · {sectorLabel}</div>
+                    </div>
+                    <div className="flex-1">
+                      <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${pct}%` }} />
+                      </div>
+                    </div>
+                    <span className={`text-sm font-black w-9 text-right ${textColor}`}>{raw > 0 ? '+' : ''}{raw}</span>
+                    <span className={`text-[10px] font-medium w-14 text-right ${textColor}`}>{label}</span>
+                    <button disabled={isBuying} onClick={() => manualBuy(sc)}
+                      className="text-[10px] px-2 py-1 bg-blue-600/70 hover:bg-blue-500/70 disabled:opacity-40 rounded-lg whitespace-nowrap shrink-0">
+                      {isBuying ? '...' : '매수'}
+                    </button>
+                  </div>
+                  {/* 하단: RSI + 등락 + 현재가 */}
+                  <div className="flex items-center gap-3 mt-1 pl-1 text-[9px] flex-wrap">
+                    {sc.rsi != null && <span className="text-slate-500">RSI <b className={Number(sc.rsi) > 70 ? 'text-rose-400' : Number(sc.rsi) < 30 ? 'text-emerald-400' : 'text-slate-300'}>{Number(sc.rsi).toFixed(0)}</b></span>}
+                    {sc.price > 0 && <span className="text-slate-400">${Number(sc.price).toFixed(2)}</span>}
+                    <span className={Number(sc.changePct) >= 0 ? 'text-emerald-400' : 'text-rose-400'}>{Number(sc.changePct) >= 0 ? '+' : ''}{Number(sc.changePct ?? 0).toFixed(2)}%</span>
                   </div>
                 </div>
-                <span className={`text-sm font-black w-10 text-right ${textColor}`}>{raw > 0 ? '+' : ''}{raw}</span>
-                <span className={`text-[10px] font-medium w-16 text-right ${textColor}`}>{label}</span>
-                <span className="text-[10px] text-slate-600 w-12 text-right">{(Number(sc.changePct) >= 0 ? '+' : '')}{Number(sc.changePct ?? 0).toFixed(2)}%</span>
-              </div>
-            );
-          })}
+              );
+            })}
+            {sorted.length > 10 && (
+              <button onClick={() => setShowAll(v => !v)}
+                className="w-full mt-1 py-1.5 text-[11px] text-slate-500 hover:text-blue-400 transition-colors">
+                {showAll ? '접기' : `+ ${sorted.length - 10}종목 더 보기`}
+              </button>
+            )}
+            {sorted.length === 0 && <div className="py-4 text-center text-[11px] text-slate-600">해당 섹터 점수 없음</div>}
+          </div>
         </div>
       ) : (
         <div className="p-6 text-center space-y-3">
@@ -1748,6 +1809,9 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const [runningTrackB, setRunningTrackB] = React.useState(false);
   const [runningTrackA, setRunningTrackA] = React.useState(false);
   const [privacyMode, setPrivacyMode] = React.useState(false);
+  const [showAllKRScores, setShowAllKRScores] = React.useState(false);
+  const [expandedTradeIdx, setExpandedTradeIdx] = React.useState<number | null>(null);
+  const [buyingStock, setBuyingStock] = React.useState<string | null>(null);
   React.useEffect(() => {
     api('/overseas/insights').then((r: any) => {
       if (r?.insights != null) { setUsInsights(r.insights); setInsightsDraft(r.insights); }
@@ -2260,19 +2324,21 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                         </div>
                       </div>
                     )}
-                    {/* 투자금 · 현재가 · 목표/손절 */}
+                    {/* 투자금 · 현재가 · 목표가/손절가 */}
                     <div className="grid grid-cols-3 gap-2 mt-2">
                       <div>
                         <div className="text-[9px] text-slate-500 mb-0.5">투자금</div>
                         <div className="text-[11px] font-bold truncate">{fmtWon(invested)}</div>
                       </div>
                       <div>
-                        <div className="text-[9px] text-slate-500 mb-0.5">현재가</div>
-                        <div className="text-[11px] font-bold">{ch.currentPrice > 0 ? fmtWon(ch.currentPrice) : '-'}</div>
+                        <div className="text-[9px] text-slate-500 mb-0.5">진입가 → 현재</div>
+                        <div className="text-[10px] font-bold text-slate-300">{fmtWon(avgPrice)}</div>
+                        <div className="text-[10px] font-bold">{ch.currentPrice > 0 ? fmtWon(ch.currentPrice) : '-'}</div>
                       </div>
                       <div>
-                        <div className="text-[9px] text-slate-500 mb-0.5">목표 / 손절</div>
-                        <div className="text-[10px] font-bold"><span className="text-emerald-500">+{targetPct}%</span><span className="text-slate-600"> / </span><span className="text-rose-500">{stopPct}%</span></div>
+                        <div className="text-[9px] text-slate-500 mb-0.5">목표가 / 손절가</div>
+                        <div className="text-[10px] font-bold text-emerald-400">{avgPrice > 0 ? fmtWon(Math.round(avgPrice * (1 + targetPct / 100))) : '-'} <span className="text-[9px] text-emerald-600">+{targetPct}%</span></div>
+                        <div className="text-[10px] font-bold text-rose-400">{avgPrice > 0 ? fmtWon(Math.round(avgPrice * (1 + stopPct / 100))) : '-'} <span className="text-[9px] text-rose-700">{stopPct}%</span></div>
                       </div>
                     </div>
                     {/* 액션 버튼 */}
@@ -2549,28 +2615,82 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
         {/* AI 스코어 — KR/US 탭 연동 */}
         {holdingsTab === 'KR' ? (
           <Panel title="AI가 보는 종목 점수" badge={dash?.scores?.length > 0 ? `${dash.scores.length}종목` : undefined} badgeColor="blue">
-            {dash?.scores?.length > 0 ? (
-              <div className="p-3.5 space-y-2">
-                {[...dash.scores].sort((a: any, b: any) => (b.composite_score ?? 0) - (a.composite_score ?? 0)).map((sc: any) => {
-                  const score = Number(sc.composite_score);
-                  const barColor = score >= 75 ? 'bg-emerald-500' : score >= 50 ? 'bg-blue-500' : score >= 25 ? 'bg-amber-500' : 'bg-slate-600';
-                  const textColor = score >= 75 ? 'text-emerald-400' : score >= 50 ? 'text-blue-400' : 'text-slate-500';
-                  const signalLabel = score >= 85 ? '강력 추천' : score >= 70 ? '매수 추천' : score >= 50 ? '관망' : score >= 30 ? '위험' : '매도 추천';
-                  return (
-                    <div key={sc.stock_code} className="flex items-center gap-3 px-2 py-2">
-                      <span className="text-xs font-bold text-slate-300 w-24 shrink-0 truncate">{sc.stock_name && sc.stock_name !== sc.stock_code ? sc.stock_name : getStockName(sc.stock_code)}</span>
-                      <div className="flex-1">
-                        <div className="h-2 bg-white/[0.04] rounded-full overflow-hidden">
-                          <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${Math.max(2, Math.min(100, score))}%` }} />
+            {dash?.scores?.length > 0 ? (() => {
+              const sorted = [...dash.scores].sort((a: any, b: any) => (b.composite_score ?? 0) - (a.composite_score ?? 0));
+              const visible = showAllKRScores ? sorted : sorted.slice(0, 10);
+              return (
+                <div className="p-3.5">
+                  {visible.map((sc: any) => {
+                    const score = Number(sc.composite_score);
+                    const barColor = score >= 75 ? 'bg-emerald-500' : score >= 50 ? 'bg-blue-500' : score >= 25 ? 'bg-amber-500' : 'bg-slate-600';
+                    const textColor = score >= 75 ? 'text-emerald-400' : score >= 50 ? 'text-blue-400' : 'text-slate-500';
+                    const signalLabel = score >= 85 ? '강력 추천' : score >= 70 ? '매수 추천' : score >= 50 ? '관망' : score >= 30 ? '위험' : '매도 추천';
+                    const curP = Number(sc.currentPrice) || 0;
+                    const aiTarget = Number(sc.target_price) || 0;
+                    const aiStop = Number(sc.stop_loss_price) || 0;
+                    const targetP = aiTarget > 0 ? aiTarget : (curP > 0 ? Math.round(curP * 1.16) : 0);
+                    const stopP = aiStop > 0 ? aiStop : (curP > 0 ? Math.round(curP * 0.92) : 0);
+                    const conf = sc.confidence != null ? Math.round(Number(sc.confidence) * 100) : null;
+                    const fundScore = sc.fundamental_score != null ? Number(sc.fundamental_score) : null;
+                    const techScore = sc.technical_score != null ? Number(sc.technical_score) : null;
+                    const sentScore = sc.sentiment_score != null ? Number(sc.sentiment_score) : null;
+                    const isBuying = buyingStock === sc.stock_code;
+                    const stockLabel = sc.stock_name && sc.stock_name !== sc.stock_code ? sc.stock_name : getStockName(sc.stock_code);
+                    return (
+                      <div key={sc.stock_code} className="px-2 py-2.5 border-b border-white/[0.03] last:border-0">
+                        {/* 상단: 종목명 + 스코어 바 + 점수 + 매수버튼 */}
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-slate-300 w-20 shrink-0 truncate">{stockLabel}</span>
+                          <div className="flex-1">
+                            <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
+                              <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${Math.max(2, Math.min(100, score))}%` }} />
+                            </div>
+                          </div>
+                          <span className={`text-sm font-black w-8 text-right ${textColor}`}>{score}</span>
+                          <span className={`text-[10px] font-medium w-14 text-right ${textColor}`}>{signalLabel}</span>
+                          {curP > 0 && (
+                            <button disabled={isBuying} onClick={async () => {
+                              if (!confirm(`${stockLabel} 수동 매수 — 50만원?`)) return;
+                              setBuyingStock(sc.stock_code);
+                              try {
+                                await api('/manual-buy', { method: 'POST', body: JSON.stringify({ stock_code: sc.stock_code, amount_krw: 500000, reasoning: `수동진입 AI${score}점 conf${conf}% 목표${fmtWon(targetP)}` }) });
+                                toast?.('매수 접수', 'ok');
+                              } catch (e: any) { toast?.(e.message, 'err'); }
+                              setBuyingStock(null);
+                            }} className="text-[10px] px-2 py-1 bg-blue-600/70 hover:bg-blue-500/70 disabled:opacity-40 rounded-lg whitespace-nowrap shrink-0">
+                              {isBuying ? '...' : '매수'}
+                            </button>
+                          )}
                         </div>
+                        {/* 중단: 세부 점수 3종 */}
+                        <div className="flex items-center gap-3 mt-1.5 pl-1 flex-wrap">
+                          {fundScore !== null && <span className="text-[9px] text-slate-500">기본 <b className={fundScore >= 50 ? 'text-emerald-400' : fundScore >= 0 ? 'text-blue-400' : 'text-rose-400'}>{fundScore}</b></span>}
+                          {techScore !== null && <span className="text-[9px] text-slate-500">기술 <b className={techScore >= 50 ? 'text-emerald-400' : techScore >= 0 ? 'text-blue-400' : 'text-rose-400'}>{techScore}</b></span>}
+                          {sentScore !== null && <span className="text-[9px] text-slate-500">심리 <b className={sentScore >= 50 ? 'text-emerald-400' : sentScore >= 0 ? 'text-blue-400' : 'text-rose-400'}>{sentScore}</b></span>}
+                          {conf !== null && <span className="text-[9px] text-blue-400/70">확신 {conf}%</span>}
+                        </div>
+                        {/* 하단: 진입가 → 목표가 → 손절가 */}
+                        {curP > 0 && (
+                          <div className="flex items-center gap-2 mt-1 pl-1 text-[9px] flex-wrap">
+                            <span className="text-slate-500">진입 <b className="text-slate-300">{fmtWon(curP)}</b></span>
+                            <span className="text-slate-600">→</span>
+                            <span className="text-emerald-500">목표 {fmtWon(targetP)}</span>
+                            <span className="text-slate-600">/</span>
+                            <span className="text-rose-500">손절 {fmtWon(stopP)}</span>
+                          </div>
+                        )}
                       </div>
-                      <span className={`text-sm font-black w-12 text-right ${textColor}`}>{score}</span>
-                      <span className={`text-[10px] font-medium w-14 text-right ${textColor}`}>{signalLabel}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
+                    );
+                  })}
+                  {sorted.length > 10 && (
+                    <button onClick={() => setShowAllKRScores(v => !v)}
+                      className="w-full mt-1 py-1.5 text-[11px] text-slate-500 hover:text-blue-400 transition-colors">
+                      {showAllKRScores ? '접기' : `+ ${sorted.length - 10}종목 더 보기`}
+                    </button>
+                  )}
+                </div>
+              );
+            })() : (
               <div className="p-6 text-center space-y-3">
                 <div className="text-2xl opacity-30">🤖</div>
                 <p className="text-sm text-slate-500">AI 스코어가 아직 없습니다</p>
@@ -2579,7 +2699,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
               </div>
             )}
           </Panel>
-        ) : <OverseasScorePanel usDash={usDash} />}
+        ) : <OverseasScorePanel usDash={usDash} toast={toast} />}
 
         {/* 최근 매매 — KR/US 탭 연동 */}
         {(() => {
@@ -2595,8 +2715,10 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
             <div className="divide-y divide-white/[0.03]">
               {tabFiltered.slice(0, 10).map((t: any, i: number) => {
                 const isOverseasTrade = t.trigger_source === 'OVERSEAS' || Number(t.filled_price) < 1000;
+                const isExpanded = expandedTradeIdx === i;
                 return (
-                  <div key={i} className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.02]">
+                  <div key={i} onClick={() => setExpandedTradeIdx(isExpanded ? null : i)}
+                    className="flex items-start gap-3 px-4 py-3 hover:bg-white/[0.02] cursor-pointer">
                     <SideBadge side={t.side} />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
@@ -2609,7 +2731,9 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                         {isOverseasTrade && <span className="text-[9px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded-md">🇺🇸</span>}
                         <span className="text-[10px] text-slate-600">{fmtTime(t.created_at)}</span>
                       </div>
-                      <div className="text-[11px] text-slate-500 mt-0.5 truncate">{t.ai_reasoning || '-'}</div>
+                      <div className={`text-[11px] text-slate-500 mt-0.5 ${isExpanded ? 'whitespace-pre-wrap break-words' : 'truncate'}`}>
+                        {t.ai_reasoning || '-'}
+                      </div>
                     </div>
                     <div className="text-right shrink-0">
                       <div className="text-sm font-bold">{isOverseasTrade ? fmtUsd(Number(t.filled_price)) : fmtWon(Number(t.filled_price))}</div>
@@ -3297,8 +3421,31 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
         {/* 국내 */}
-        <Panel title="로봇이 감시하는 종목들" badge={`${watchlist.length}종목`}>
-          <div className="px-4 pt-3 pb-1 flex gap-2">
+        {(() => {
+          const [krFilter, setKrFilter] = React.useState<'전체' | 'KOSPI' | 'KOSDAQ' | '투자중' | '매수근접'>('전체');
+          const krFiltered = watchlist.filter((s: any) => {
+            if (krFilter === '전체') return true;
+            if (krFilter === 'KOSPI') return s.market === 'KOSPI' || (!s.market && /^[013]/.test(s.stock_code));
+            if (krFilter === 'KOSDAQ') return s.market === 'KOSDAQ' || (!s.market && /^[278]/.test(s.stock_code));
+            if (krFilter === '투자중') return chains.some((ch: any) => ch.stock_code === s.stock_code && ch.status !== 'CLOSED');
+            if (krFilter === '매수근접') {
+              const sc = dash?.scores?.find((sc: any) => sc.stock_code === s.stock_code);
+              return sc && Number(sc.composite_score) >= 60;
+            }
+            return true;
+          });
+          const KR_FILTER_OPTIONS: Array<'전체' | 'KOSPI' | 'KOSDAQ' | '투자중' | '매수근접'> = ['전체', 'KOSPI', 'KOSDAQ', '투자중', '매수근접'];
+          return (
+        <Panel title="로봇이 감시하는 종목들" badge={`${krFiltered.length}/${watchlist.length}종목`}>
+          <div className="px-3 pt-3 pb-1 flex gap-2 flex-wrap items-center">
+            <div className="flex gap-1 flex-wrap">
+              {KR_FILTER_OPTIONS.map(f => (
+                <button key={f} onClick={() => setKrFilter(f)}
+                  className={`text-[10px] px-2 py-1 rounded-lg transition-all ${krFilter === f ? 'bg-violet-600 text-white' : 'bg-white/[0.04] text-slate-400 hover:bg-white/[0.08]'}`}>
+                  {f}
+                </button>
+              ))}
+            </div>
             <button
               onClick={async () => {
                 toast?.('워치리스트 순환 시작...', 'info');
@@ -3306,12 +3453,12 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
                 toast?.(d.message ?? '순환 완료', 'ok');
                 setTimeout(onRefresh, 3000);
               }}
-              className="text-xs bg-violet-900/40 hover:bg-violet-900/60 text-violet-300 px-3 py-1.5 rounded-xl transition-all whitespace-nowrap">
-              🔄 순환 실행
+              className="text-[10px] bg-violet-900/40 hover:bg-violet-900/60 text-violet-300 px-3 py-1.5 rounded-xl transition-all whitespace-nowrap ml-auto">
+              🔄 순환
             </button>
           </div>
           <div className="grid grid-cols-2 gap-2 p-3">
-            {[...watchlist].sort((a: any, b: any) => {
+            {[...krFiltered].sort((a: any, b: any) => {
               const chainA = chains.find((ch: any) => ch.stock_code === a.stock_code);
               const chainB = chains.find((ch: any) => ch.stock_code === b.stock_code);
               if (chainA && !chainB) return -1;
@@ -3381,9 +3528,12 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
                 </div>
               );
             })}
-            {watchlist.length === 0 && <div className="col-span-2"><EmptyMsg>종목을 추가하면 로봇이 24시간 감시합니다</EmptyMsg></div>}
+            {krFiltered.length === 0 && watchlist.length === 0 && <div className="col-span-2"><EmptyMsg>종목을 추가하면 로봇이 24시간 감시합니다</EmptyMsg></div>}
+            {krFiltered.length === 0 && watchlist.length > 0 && <div className="col-span-2"><EmptyMsg>해당 조건의 종목이 없습니다</EmptyMsg></div>}
           </div>
         </Panel>
+          );
+        })()}
 
         {/* 미국 — 기술점수 포함 */}
         {(() => {
@@ -3412,10 +3562,21 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
             .finally(() => setScoresLoading(false));
           }, [usW]);
 
-          const displayList = usScores.length > 0 ? usScores : usW;
+          const [usSector, setUsSector] = React.useState('전체');
+          const allDisplayList = usScores.length > 0 ? usScores : usW;
+          const displayList = usSector === '전체' ? allDisplayList : allDisplayList.filter((s: any) => US_SECTOR_MAP[s.code ?? s.stock_code] === usSector);
           return (
-            <Panel title="🇺🇸 미국주식 감시" badge={scoresLoading ? '계산 중...' : `${displayList.length}종목`}>
-              {scoresLoading && displayList.length === 0 && (
+            <Panel title="🇺🇸 미국주식 감시" badge={scoresLoading ? '계산 중...' : `${displayList.length}/${allDisplayList.length}종목`}>
+              {/* 섹터 필터 */}
+              <div className="px-3 pt-3 pb-1 flex gap-1 flex-wrap">
+                {US_SECTORS.map(s => (
+                  <button key={s} onClick={() => setUsSector(s)}
+                    className={`text-[10px] px-2 py-1 rounded-lg transition-all ${usSector === s ? 'bg-blue-600 text-white' : 'bg-white/[0.04] text-slate-400 hover:bg-white/[0.08]'}`}>
+                    {s}
+                  </button>
+                ))}
+              </div>
+              {scoresLoading && allDisplayList.length === 0 && (
                 <div className="flex items-center gap-2 px-4 py-3 text-[11px] text-slate-500">
                   <div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
                   기술지표 자동 계산 중 (AI 없이 차트 분석)...
@@ -3429,14 +3590,16 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
                   const score = typeof s.score === 'number' ? s.score : null;
                   const signal = s.signal ?? '';
                   const rsi = typeof s.rsi === 'number' ? s.rsi : null;
+                  const sectorTag = US_SECTOR_MAP[code] ?? '';
                   const signalColor = signal === 'STRONG_BUY' ? 'text-emerald-300' : signal === 'BUY' ? 'text-emerald-400' : signal === 'SELL' || signal === 'STRONG_SELL' ? 'text-rose-400' : 'text-slate-500';
                   const scoreBg = score !== null ? (score >= 40 ? 'bg-emerald-500/10 border-emerald-500/20' : score <= -20 ? 'bg-rose-500/10 border-rose-500/20' : 'bg-white/[0.03] border-slate-700/30') : `${pbg(s.changePct)} border-slate-700/30`;
                   return (
                     <div key={code} className={`rounded-lg border p-3 ${scoreBg}`}>
-                      <div className="flex items-center justify-between gap-1 mb-1">
+                      <div className="flex items-center justify-between gap-1 mb-0.5">
                         <span className="font-bold text-sm truncate">{usDisplayName}</span>
                         <span className={`text-[10px] font-medium shrink-0 ${pc(s.changePct)}`}>{fmtPct(s.changePct)}</span>
                       </div>
+                      {sectorTag && <div className="text-[9px] text-slate-600 mb-1">{sectorTag}</div>}
                       <div className="text-base font-bold">{s.price > 0 ? `$${s.price.toFixed(2)}` : '-'}</div>
                       {score !== null && (
                         <div className="flex items-center gap-2 mt-1.5 flex-wrap">

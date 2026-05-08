@@ -140,9 +140,11 @@ async function buildDashPayload(): Promise<unknown> {
     }
   } catch { /* scores unavailable */ }
 
-  // chains에 현재가 매칭 — KIS API 우선 (신선한 가격), 실패 시 캐시 폴백
+  // chains + scores에 현재가 매칭 — KIS API 우선 (신선한 가격), 실패 시 캐시 폴백
   const posMap = new Map((balance.positions ?? []).map((p: any) => [p.stockCode, p]));
   const chainCodes = [...new Set(chains.map((ch: any) => ch.stock_code))];
+  const scoreCodes = scores.map((s: any) => s.stock_code as string).filter(Boolean);
+  const allWatchCodes = [...new Set([...chainCodes, ...scoreCodes])];
   const priceMap = new Map<string, number>();
 
   // 1차: KIS 잔고 positions (실계좌 모드에서 정확)
@@ -156,11 +158,11 @@ async function buildDashPayload(): Promise<unknown> {
   const watchlistNameMap = new Map(watchlist.map((w: any) => [w.stock_code, w.stock_name]));
   const chainNameMap = new Map(chains.map((ch: any) => [ch.stock_code, ch.stock_name ?? '']));
   // 이름이 없는 종목은 장 마감 후에도 1회 조회 (이름 보정 목적) — watchlist + chains 모두 확인
-  const needNameCodes = chainCodes.filter(c => {
+  const needNameCodes = allWatchCodes.filter(c => {
     const n = String(watchlistNameMap.get(c) ?? '') || String(chainNameMap.get(c) ?? '');
     return !n || n === c || /^\d{6}$/.test(n);
   });
-  const codesToFetch = isMarketOpen() ? chainCodes : needNameCodes;
+  const codesToFetch = isMarketOpen() ? allWatchCodes : needNameCodes;
 
   // 병렬 배치 조회 (순차 → 동시 → 속도 대폭 개선)
   if (codesToFetch.length > 0) {
@@ -349,6 +351,7 @@ async function buildDashPayload(): Promise<unknown> {
     scores: scores.map((s: any) => ({
       ...s,
       stock_name: watchlistNameMap.get(s.stock_code) || s.stock_code,
+      currentPrice: priceMap.get(s.stock_code) ?? 0,
     })),
     strategy: strategy ?? { mode: 'SWING' },
     killSwitch: getKillSwitchStatus(),

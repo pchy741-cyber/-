@@ -329,6 +329,43 @@ export async function technicalFallbackDecisions(params: {
     }
   }
 
+  // 1-B. 불타기 — 수익 중인 스윙 체인 추가 진입 (보유 5~7분, PnL +0.3% 이상)
+  if (!blockNewBuys && orderableCash >= 300_000) {
+    const pyramidedCodes = new Set<string>();
+    for (const chain of openChains) {
+      if (chain.strategy_mode === 'SCALPING') continue;
+      if (processedSellCodes.has(chain.stock_code)) continue;
+      if (pyramidedCodes.has(chain.stock_code)) continue;
+      if (!chain.opened_at || !chain.avg_buy_price) continue;
+
+      const pyPrice = livePrices.get(chain.stock_code);
+      if (!pyPrice) continue;
+
+      const pyAvg = Number(chain.avg_buy_price);
+      const pyPnlPct = ((pyPrice.currentPrice - pyAvg) / pyAvg) * 100;
+      const pyHoldMin = (Date.now() - new Date(chain.opened_at).getTime()) / 60_000;
+
+      if (pyHoldMin >= 5 && pyHoldMin < 7 && pyPnlPct >= 0.3 && pyPrice.currentPrice > pyAvg) {
+        const qty = Math.floor(300_000 / pyPrice.currentPrice);
+        if (qty <= 0) continue;
+        logger.info(
+          `🔥 불타기: ${chain.stock_code} hold=${pyHoldMin.toFixed(1)}분 PnL+${pyPnlPct.toFixed(2)}% → ${qty}주 추가`,
+          { component: 'TRACK_B' },
+        );
+        decisions.push({
+          action: 'BUY',
+          stock_code: chain.stock_code,
+          quantity: qty,
+          price_type: 'MARKET',
+          limit_price: pyPrice.currentPrice,
+          reasoning: `불타기 hold${pyHoldMin.toFixed(1)}분 PnL+${pyPnlPct.toFixed(2)}% → 30만원 추가매수`,
+          confidence: 0.75,
+        });
+        pyramidedCodes.add(chain.stock_code);
+      }
+    }
+  }
+
   // 2. 신규 매수 판단 (기술적 지표 기반)
   if (blockNewBuys) {
     logger.info('⏰ 15:10 이후 — 신규 매수 차단 (마감 20분 전)', { component: 'TRACK_B' });

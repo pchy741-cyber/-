@@ -236,6 +236,10 @@ export class RiskEngine {
     const drawdownCheck = await this.checkDailyDrawdown();
     if (!drawdownCheck.approved) return drawdownCheck;
 
+    // 5-B. 월간 MDD -8% 체크 (연속 손실 방지 — 월간 최고점 대비 -8% 이상 시 매매 중단)
+    const monthlyMddCheck = await this.checkMonthlyMDD();
+    if (!monthlyMddCheck.approved) return monthlyMddCheck;
+
     // 6. 총 투자 비율 체크
     const exposureCheck = await this.checkTotalExposure(orderValue);
     if (!exposureCheck.approved) return exposureCheck;
@@ -413,6 +417,50 @@ export class RiskEngine {
     }
 
     return { approved: true, reason: 'OK' };
+  }
+
+  /**
+   * 월간 MDD -8% 체크 — 이달 최고점 대비 -8% 이상 손실 시 신규 매수 차단
+   */
+  private async checkMonthlyMDD(): Promise<PreTradeCheckResult> {
+    try {
+      const pool = getPool();
+      const monthStart = new Date();
+      monthStart.setDate(1);
+      monthStart.setHours(0, 0, 0, 0);
+      const { rows } = await pool.query<{ total_value: string }>(
+        `SELECT total_value FROM portfolio_snapshots WHERE snapshot_at >= $1 ORDER BY snapshot_at ASC`,
+        [monthStart.toISOString()],
+      );
+      if (rows.length < 2) return { approved: true, reason: 'OK' };
+
+      const values = rows.map((r) => Number(r.total_value));
+      const peakValue = Math.max(...values);
+      const latestValue = values[values.length - 1];
+      const mddPct = ((peakValue - latestValue) / peakValue) * 100;
+
+      if (mddPct >= 8) {
+        await activateKillSwitch(
+          `월간 MDD 한도 초과: 고점 대비 -${mddPct.toFixed(1)}% (한도 -8%)`,
+        );
+        return {
+          approved: false,
+          reason: `🛑 월간 MDD -${mddPct.toFixed(1)}% — 이달 고점 대비 8% 초과 손실, Kill Switch 발동`,
+        };
+      }
+
+      if (mddPct >= 6) {
+        logger.warn(
+          `⚠️ 월간 MDD 경고: -${mddPct.toFixed(1)}% (고점 ${Math.round(peakValue / 10000)}만원 → 현재 ${Math.round(latestValue / 10000)}만원)`,
+          { component: 'RISK' },
+        );
+      }
+
+      return { approved: true, reason: 'OK' };
+    } catch (err) {
+      logger.warn(`⚠️ 월간 MDD 조회 실패 — 허용 진행: ${err}`, { component: 'RISK' });
+      return { approved: true, reason: 'OK' }; // Fail-Open: 조회 실패 시 매매 차단 안함
+    }
   }
 
   /**
