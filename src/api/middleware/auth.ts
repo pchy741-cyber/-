@@ -73,6 +73,12 @@ export async function requireAuth(c: Context, next: Next): Promise<Response | vo
     return c.json({ error: '서버 패스워드 미설정 — 관리자에게 문의' }, 503);
   }
 
+  // X-Api-Key 헤더 지원 (Claude Code /loop 등 서버 간 호출용)
+  const apiKey = c.req.header('x-api-key');
+  if (apiKey && apiKey === secret) {
+    return next();
+  }
+
   const token = getCookie(c, SESSION_COOKIE);
   if (token && verifySessionToken(token)) {
     return next();

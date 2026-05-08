@@ -223,7 +223,9 @@ export async function withTransaction<T>(fn: (client: pg.PoolClient) => Promise<
 export async function getOpenChains(): Promise<TransactionChain[]> {
   if (useMemory) return memGetOpenChains();
   const { rows } = await getPool().query(
-    `SELECT tc.*, w.stock_name, tc.peak_price_since_open FROM transaction_chains tc
+    `SELECT tc.*, w.stock_name, tc.peak_price_since_open,
+       (SELECT trigger_source FROM orders WHERE chain_id = tc.id AND side = 'BUY' ORDER BY created_at ASC LIMIT 1) AS trigger_source
+     FROM transaction_chains tc
      LEFT JOIN watchlist w ON tc.stock_code = w.stock_code
      WHERE tc.status IN ('OPEN','AVERAGING','PROFIT_TAKING')
      ORDER BY tc.opened_at DESC`,

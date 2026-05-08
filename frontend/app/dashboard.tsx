@@ -2222,15 +2222,17 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                 );
 
                 /* ── 일반 종목 카드 ── */
+                const isClaudeBought = ch.trigger_source === 'CLAUDE';
                 const range = targetPct - stopPct;
                 const barPos = Math.max(0, Math.min(100, ((pnlPct - stopPct) / range) * 100));
                 return (
-                  <div key={`c${i}`} className="p-4 bg-[#0f1320] hover:bg-white/[0.01] transition-colors">
+                  <div key={`c${i}`} className={`p-4 hover:bg-white/[0.01] transition-colors ${isClaudeBought ? 'bg-violet-950/40 border-l-2 border-violet-500/70' : 'bg-[#0f1320]'}`}>
                     {/* 헤더: 종목명 + 수익률 */}
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex items-center gap-1.5">
                           <span className="text-sm font-bold truncate">{displayName}</span>
+                          {isClaudeBought && <span className="text-[10px] bg-violet-500/20 text-violet-300 border border-violet-500/40 px-1.5 py-0.5 rounded font-bold shrink-0">AI픽</span>}
                           <span className="text-[10px] bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded font-medium shrink-0">{ch.strategy_mode}</span>
                           {ch.status === 'PROFIT_TAKING' && <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.5 rounded font-bold shrink-0">2단계↑</span>}
                         </div>
