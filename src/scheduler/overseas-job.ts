@@ -1,4 +1,5 @@
 import { analyzeTechnicals, type OHLCV } from '../analysis/indicators.js';
+import { OVERSEAS } from '../config/constants.js';
 import { config } from '../config/index.js';
 import { getPool, insertOrder, logSystem, updateOrder } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
@@ -24,6 +25,7 @@ import {
   interpretMarketSentiment,
   hasEarningsRisk,
 } from '../market/external-signals.js';
+import { checkUsEarnings } from '../automation/earnings-sentinel.js';
 
 // 글로벌 감시 목록 — 섹터 다각화 (미국 주력 + 일본·대만 ADR 서브, 23종목)
 // 근거: 2025년 리서치 — 방산/산업인프라가 빅테크 대비 초과 수익 (방산 +60~87% vs FAANG +36%)
@@ -62,10 +64,13 @@ const GLOBAL_WATCHLIST = [
   { code: 'UMC',   name: 'United Micro',    exchange: 'NYSE',   region: 'US', sector: 'TW_SEMI' },  // 2위 파운드리, 성숙 공정
 ];
 
-// ─── 포지션 한도 ───
-const MAX_POSITIONS = 8;           // 최대 동시 보유 (23종목 확장 대응)
-const POSITION_SIZE_USD = 2000;    // 종목당 최대 $2,000
-const POSITION_PCT = 0.20;         // 또는 가용 현금의 20%
+// ─── 포지션 한도 (constants.ts OVERSEAS 에서 관리) ───
+const { MAX_POSITIONS, POSITION_SIZE_USD, POSITION_PCT } = OVERSEAS;
+
+/** try-catch 래퍼 — 실패 시 null 반환, 오류 무시 */
+async function safely<T>(fn: () => Promise<T>): Promise<T | null> {
+  try { return await fn(); } catch { return null; }
+}
 
 function resolveOverseasStockName(code: string, exchange: string): string {
   return GLOBAL_WATCHLIST.find((s) => s.code === code && s.exchange === exchange)?.name
@@ -132,6 +137,69 @@ async function setCash(amount: number): Promise<void> {
   );
 }
 
+/**
+ * KIS 실계좌 잔고와 DB 동기화 — 수동매매 간섭 방지 핵심 함수
+ * 매 사이클 시작 시 실제 KIS 잔고를 읽어 DB를 덮어씀
+ * → 수동 매수/매도 해도 다음 사이클에서 자동으로 반영
+ */
+async function syncHoldingsFromKIS(): Promise<void> {
+  try {
+    const exchanges = ['NASDAQ', 'NYSE', 'AMEX', 'TSE', 'TWSE'];
+    const allHoldings = new Map<string, { qty: number; avgPrice: number; exchange: string }>();
+
+    // 각 거래소 잔고 조회 (에러 무시 — 일부 거래소 응답 없어도 계속)
+    for (const exch of exchanges) {
+      try {
+        const items = await getOverseasBalance(exch);
+        for (const item of items) {
+          if (item.quantity > 0 && item.stockCode) {
+            allHoldings.set(item.stockCode, {
+              qty: item.quantity,
+              avgPrice: item.avgBuyPrice,
+              exchange: exch,
+            });
+          }
+        }
+      } catch { /* 해당 거래소 잔고 없거나 오류 → 스킵 */ }
+    }
+
+    // DB와 비교 — 수동매매로 생긴 변경 반영
+    const { rows: dbRows } = await getPool().query('SELECT stock_code, exchange, quantity FROM overseas_holdings').catch(() => ({ rows: [] as any[] }));
+
+    for (const row of dbRows) {
+      const kisItem = allHoldings.get(String(row.stock_code));
+      if (!kisItem || kisItem.qty === 0) {
+        // DB엔 있는데 KIS엔 없음 → 수동매도됨, DB에서 제거
+        await getPool().query('DELETE FROM overseas_holdings WHERE exchange=$1 AND stock_code=$2', [row.exchange, row.stock_code]).catch(() => {});
+        logger.info(`🔄 KIS동기화: ${row.stock_code} 수동매도 감지 → DB 제거`, { component: 'OVERSEAS' });
+      } else if (Math.abs(kisItem.qty - Number(row.quantity)) >= 1) {
+        // 수량 불일치 → KIS 기준으로 업데이트
+        await getPool().query(
+          'UPDATE overseas_holdings SET quantity=$1, avg_price=$2 WHERE exchange=$3 AND stock_code=$4',
+          [kisItem.qty, kisItem.avgPrice, kisItem.exchange, row.stock_code],
+        ).catch(() => {});
+        logger.info(`🔄 KIS동기화: ${row.stock_code} 수량 조정 ${row.quantity}→${kisItem.qty}`, { component: 'OVERSEAS' });
+      }
+      allHoldings.delete(String(row.stock_code));
+    }
+
+    // KIS엔 있는데 DB엔 없음 → 수동매수됨, DB에 추가 (단, GLOBAL_WATCHLIST 종목만)
+    const watchCodes = new Set(GLOBAL_WATCHLIST.map(s => s.code));
+    for (const [code, item] of allHoldings) {
+      if (!watchCodes.has(code)) continue;
+      await getPool().query(
+        `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at)
+         VALUES ($1, $2, $3, $4, NOW())
+         ON CONFLICT (exchange, stock_code) DO UPDATE SET quantity=$3, avg_price=$4`,
+        [code, item.exchange, item.qty, item.avgPrice],
+      ).catch(() => {});
+      logger.info(`🔄 KIS동기화: ${code} 수동매수 감지 → DB 추가 (${item.qty}주 @$${item.avgPrice})`, { component: 'OVERSEAS' });
+    }
+  } catch (e) {
+    logger.warn(`KIS 잔고 동기화 실패 (무시): ${(e as Error).message}`, { component: 'OVERSEAS' });
+  }
+}
+
 /** 트레일링 스탑용 최고가 추적 */
 async function getMaxPrice(code: string): Promise<number> {
   try {
@@ -155,6 +223,32 @@ async function clearMaxPrice(code: string): Promise<void> {
   await getPool().query(
     "DELETE FROM overseas_state WHERE key = $1",
     [`maxprice_${code}`],
+  ).catch(() => {});
+}
+
+/** 부분 익절 완료 플래그 */
+async function getPartialTpDone(code: string): Promise<boolean> {
+  try {
+    const { rows } = await getPool().query(
+      "SELECT value FROM overseas_state WHERE key = $1",
+      [`partialtpdone_${code}`],
+    );
+    return rows.length > 0;
+  } catch { return false; }
+}
+
+async function setPartialTpDone(code: string): Promise<void> {
+  await getPool().query(
+    `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = $2`,
+    [`partialtpdone_${code}`, 'true'],
+  ).catch(() => {});
+}
+
+async function clearPartialTpDone(code: string): Promise<void> {
+  await getPool().query(
+    "DELETE FROM overseas_state WHERE key = $1",
+    [`partialtpdone_${code}`],
   ).catch(() => {});
 }
 
@@ -196,13 +290,8 @@ interface SessionCache {
 }
 let usSessionCache: SessionCache | null = null;
 let asiaSessionCache: SessionCache | null = null;
-const US_TOP_COUNT = 15;   // 상위 15개 세션 캐시 (기회주 누락 방지)
-const ASIA_TOP_COUNT = 6;
 // AI 호출 빈도 제한 — 5분 사이클이지만 AI는 15분에 1회 (비용 절감)
-// 5분 사이클 사이 AI 없을 때는 기술적 신호(STRONG_BUY+score≥40+ADX≥25)로 매수 가능
 let lastUSAiCallAt = 0;  // epoch ms
-const US_AI_INTERVAL_MS = 15 * 60 * 1000;        // AI 호출: 15분마다 (3사이클에 1회)
-const US_AI_MOMENTUM_INTERVAL_MS = 15 * 60 * 1000; // 모멘텀/보유: 동일
 let sessionStartPortfolioValue: number | null = null;
 
 /** 미국장 세션 캐시 초기화 (runner.ts 23:20 호출) */
@@ -292,6 +381,8 @@ async function getOverseasWinRates(codes: string[]): Promise<Map<string, Oversea
   const map = new Map<string, OverseasWinRate>();
   if (codes.length === 0) return map;
   try {
+    // SELL 기준 조회: BUY JOIN은 동일 SELL에 여러 BUY가 붙어 중복 발생
+    // ai_reasoning에 내장된 [avgBuy:X] 를 실제 평단가로 사용 → 정확한 PnL
     const { rows } = await getPool().query(`
       SELECT
         stock_code,
@@ -300,21 +391,19 @@ async function getOverseasWinRates(codes: string[]): Promise<Map<string, Oversea
         AVG(realized_pnl_pct)::float AS avg_pnl
       FROM (
         SELECT
-          s.stock_code,
-          ((f.filled_price - b.filled_price) / NULLIF(b.filled_price, 0) * 100) AS realized_pnl_pct
-        FROM orders s
-        JOIN orders b ON b.stock_code = s.stock_code
-          AND b.side = 'BUY' AND b.status = 'FILLED'
-          AND b.trigger_source = 'OVERSEAS'
-          AND b.created_at < s.created_at
-          AND b.filled_price IS NOT NULL
-        WHERE s.stock_code = ANY($1)
-          AND s.side = 'SELL' AND s.status = 'FILLED'
-          AND s.trigger_source = 'OVERSEAS'
-          AND s.created_at >= NOW() - INTERVAL '90 days'
-          AND s.filled_price IS NOT NULL
-        ORDER BY b.created_at DESC
+          stock_code,
+          ((filled_price - (regexp_match(ai_reasoning, '\\[avgBuy:([0-9]+\\.?[0-9]*)\\]'))[1]::numeric)
+            / NULLIF((regexp_match(ai_reasoning, '\\[avgBuy:([0-9]+\\.?[0-9]*)\\]'))[1]::numeric, 0) * 100
+          ) AS realized_pnl_pct
+        FROM orders
+        WHERE stock_code = ANY($1)
+          AND side = 'SELL' AND status = 'FILLED'
+          AND trigger_source = 'OVERSEAS'
+          AND created_at >= NOW() - INTERVAL '90 days'
+          AND filled_price IS NOT NULL
+          AND ai_reasoning ~ '\\[avgBuy:[0-9]'
       ) sub
+      WHERE realized_pnl_pct IS NOT NULL
       GROUP BY stock_code
       HAVING COUNT(*) >= 2
     `, [codes]);
@@ -633,6 +722,8 @@ export async function runOverseasJob(): Promise<void> {
     await ensureOverseasTable();
     // PENDING 주문 재동기화 — 미체결 종목이 영구 스킵되는 버그 방지
     if (!config.isPaper) await syncPendingOverseasOrders();
+    // KIS 실계좌 동기화 — 수동매매로 변경된 잔고를 DB에 반영 (자동매매 간섭 방지)
+    if (!config.isPaper) await syncHoldingsFromKIS();
 
     const holdings = await getHoldings();
     const pendingOrderStocks = await getPendingOverseasStocks();
@@ -668,6 +759,18 @@ export async function runOverseasJob(): Promise<void> {
           if (hitTP || hitSL) {
             const label = hitTP ? 'TP' : 'SL';
             logger.info(`[VisionScalp] ${label} 청산 ${code} @ $${cur} (PnL: ${pnlPct.toFixed(2)}%)`, { component: 'OVERSEAS' });
+
+            // orders 테이블에 SELL 기록 (저널 가시성 확보)
+            const scalReasoning = `[avgBuy:${avgBuy.toFixed(4)}] Vision단타 ${label} 청산 ${pnlPct.toFixed(2)}%`;
+            await insertOrder({
+              chain_id: null, stock_code: code, side: 'SELL', order_type: '01',
+              quantity: qty, price: cur,
+              kis_order_no: `VSP${Date.now().toString(36)}`,
+              kis_status: 'PAPER_FILLED', filled_quantity: qty, filled_price: cur,
+              status: 'FILLED', trading_mode: config.isPaper ? 'paper' : 'live',
+              trigger_source: 'OVERSEAS',
+              ai_reasoning: scalReasoning,
+            });
 
             // DB에서 포지션 제거
             await getPool().query('DELETE FROM overseas_holdings WHERE exchange=$1 AND stock_code=$2', [exch, code]);
@@ -719,7 +822,8 @@ export async function runOverseasJob(): Promise<void> {
       price: OverseasPrice; signal: string; score: number;
       rsi: number; adx: number; trendStrength: string;
       dayRangePct: number; // 0=저가, 100=고가 위치
-      isMomentum: boolean; // 당일 강한 상승 모멘텀
+      isMomentum: boolean; // 당일 강한 상승 모멘텀 (+3%↑ + 일중 고가 근처)
+      isBigMover: boolean; // 당일 +5%↑ 뉴스/촉매 기반 강한 상승 (소니+6.7% 같은 것)
       aboveMA20: boolean;  // 현재가 > 21일 이평선
       aboveMA60: boolean;  // 현재가 > 60일 이평선 (중기 추세 방향)
       bollingerSqueeze: boolean;
@@ -751,6 +855,7 @@ export async function runOverseasJob(): Promise<void> {
           ? ((price.currentPrice - price.dayLow) / dayRange) * 100
           : 50;
         const isMomentum = price.changePct >= 3 && dayRangePct >= 60;
+        const isBigMover = price.changePct >= 5; // +5%↑: 뉴스/실적 촉매 — 세션 중 가장 강한 모멘텀
 
         let signal: string, score: number, rsi: number, adx: number, trendStrength: string, aboveMA20: boolean, aboveMA60: boolean;
         let bollingerSqueeze: boolean, bollingerBreakout: 'UP' | 'DOWN' | 'NONE';
@@ -783,11 +888,11 @@ export async function runOverseasJob(): Promise<void> {
 
         techResults.push({
           code: stock.code, name: stock.name, exchange: stock.exchange, sector: stock.sector,
-          price, signal, score, rsi, adx, trendStrength, dayRangePct, isMomentum, aboveMA20, aboveMA60,
+          price, signal, score, rsi, adx, trendStrength, dayRangePct, isMomentum, isBigMover, aboveMA20, aboveMA60,
           bollingerSqueeze, bollingerBreakout,
         });
         logger.info(
-          `  ${stock.code}: $${price.currentPrice} ${price.changePct >= 0 ? '+' : ''}${price.changePct}% | ${signal}(${score}) RSI=${rsi.toFixed(0)} ADX=${adx.toFixed(0)} 일중${dayRangePct.toFixed(0)}%${isMomentum ? ' 🚀모멘텀' : ''}${bollingerSqueeze ? (bollingerBreakout === 'UP' ? ' 💥BB↑' : bollingerBreakout === 'DOWN' ? ' 💥BB↓' : ' 🔧BBsq') : ''}${cached ? ' [캐시]' : ''}`,
+          `  ${stock.code}: $${price.currentPrice} ${price.changePct >= 0 ? '+' : ''}${price.changePct}% | ${signal}(${score}) RSI=${rsi.toFixed(0)} ADX=${adx.toFixed(0)} 일중${dayRangePct.toFixed(0)}%${isBigMover ? ' 🔥빅무버' : isMomentum ? ' 🚀모멘텀' : ''}${bollingerSqueeze ? (bollingerBreakout === 'UP' ? ' 💥BB↑' : bollingerBreakout === 'DOWN' ? ' 💥BB↓' : ' 🔧BBsq') : ''}${cached ? ' [캐시]' : ''}`,
           { component: 'OVERSEAS' },
         );
       }
@@ -800,7 +905,7 @@ export async function runOverseasJob(): Promise<void> {
 
     // ── 1-c. 새 세션: 전 종목 스캔 완료 → 상위 종목 캐시 저장 ──
     if (isNewSession && techResults.length > 0) {
-      const topCount = isUSSession ? US_TOP_COUNT : ASIA_TOP_COUNT;
+      const topCount = isUSSession ? OVERSEAS.TOP_COUNT : OVERSEAS.ASIA_TOP_COUNT;
       const sorted = [...techResults].sort((a, b) => {
         const sa = a.score + (a.isMomentum ? 30 : 0);
         const sb = b.score + (b.isMomentum ? 30 : 0);
@@ -879,6 +984,7 @@ export async function runOverseasJob(): Promise<void> {
         holdingPnlPct: pnlPct,
         dayRangePct: t.dayRangePct,
         isMomentum: t.isMomentum,
+        isBigMover: t.isBigMover,
         aboveMA20: t.aboveMA20,
         bollingerSqueeze: t.bollingerSqueeze,
         bollingerBreakout: t.bollingerBreakout,
@@ -901,7 +1007,7 @@ export async function runOverseasJob(): Promise<void> {
     const hasSellCandidates = aiInputs.some(s => s.isHolding);
     const hasMomentum = aiInputs.some(s => s.isMomentum);
     const now_ms = Date.now();
-    const intervalMs = (hasSellCandidates || hasMomentum) ? US_AI_MOMENTUM_INTERVAL_MS : US_AI_INTERVAL_MS;
+    const intervalMs = OVERSEAS.AI_INTERVAL_MS;
     const aiCooldownOk = isUSSession ? (now_ms - lastUSAiCallAt >= intervalMs) : true;
     const shouldCallAI = (hasBuyCandidates || hasSellCandidates) && aiCooldownOk;
     if ((hasBuyCandidates || hasSellCandidates) && !aiCooldownOk) {
@@ -921,12 +1027,32 @@ export async function runOverseasJob(): Promise<void> {
         getUpcomingEarnings(usCodes).catch(() => [] as import('../market/external-signals.js').EarningsEvent[]),
       ]);
       const earningsRiskCodes = earningsEarly.filter(e => e.daysUntil >= 0 && e.daysUntil <= 5).map(e => e.code);
+      // 시장 폭(breadth): 감시목록 내 양봉 비율 → 약세장 감지
+      const positiveCount = techResults.filter(t => t.price.changePct > 0).length;
+      const breadthPct = techResults.length > 0 ? positiveCount / techResults.length : 0.5;
+
+      // 섹터 모멘텀: 섹터별 평균 등락률 → AI에게 강세/약세 섹터 알림
+      const sectorChangeMap = new Map<string, number[]>();
+      for (const t of techResults) {
+        const arr = sectorChangeMap.get(t.sector) ?? [];
+        arr.push(t.price.changePct);
+        sectorChangeMap.set(t.sector, arr);
+      }
+      const sectorRanking = [...sectorChangeMap.entries()]
+        .map(([s, cs]) => ({ sector: s, avg: cs.reduce((a, b) => a + b, 0) / cs.length }))
+        .sort((a, b) => b.avg - a.avg);
+      const sectorMomentumStr = sectorRanking
+        .map(s => `${s.sector}${s.avg >= 0 ? '+' : ''}${s.avg.toFixed(1)}%`)
+        .join(' ');
+
       const mktCtx = fgEarly ? {
         fearGreed: fgEarly.fearGreedScore,
         fearGreedLabel: fgEarly.fearGreedLabel,
         vix: fgEarly.vix,
         earningsRisk: earningsRiskCodes,
-      } : undefined;
+        breadthPct,
+        sectorMomentum: sectorMomentumStr,
+      } : { breadthPct, sectorMomentum: sectorMomentumStr };
       // AI 인사이트를 사용자 인사이트와 합쳐서 전달 (자기학습 피드백 루프)
       const combinedInsights = [userInsights, aiInsights ? `[AI자기학습]\n${aiInsights}` : ''].filter(Boolean).join('\n\n') || undefined;
       aiDecisions = await analyzeOverseasWithAI(aiInputs, cash, holdings.size, perfSummary, combinedInsights, mktCtx);
@@ -986,26 +1112,23 @@ export async function runOverseasJob(): Promise<void> {
       const stopLossPct = isHighBeta ? -8.0 : isMediumBeta ? -5.0 : isDefense ? -4.0 : -5.0;
       // 트레일링 스탑: 고점 대비 하락 허용 폭 (수익 확보 후 추격)
       const trailDropPct = isHighBeta ? -10.0 : isMediumBeta ? -7.0 : isDefense ? -6.0 : -7.0;
-      // 트레일링 활성화 기준: 이 수익률 넘어야 트레일링 발동
-      // 기존 고베타 6%, 중베타 4% → 너무 늦어 수익 반납 → 앞당겨 수익 보호
-      const trailActivatePct = isHighBeta ? 4.0 : isMediumBeta ? 3.0 : 2.5;
+      // 트레일링 활성화 기준: 스윙매매 — 충분한 수익 쌓은 후에만 발동 (너무 이른 발동 = 노이즈 청산)
+      // 고베타(NVDA): +10% 이상 수익 후 트레일, 중베타(META): +8% 이상, 방산: +5% 이상
+      const trailActivatePct = isHighBeta ? 10.0 : isMediumBeta ? 8.0 : 5.0;
 
-      // Progressive trailing: 고점 수익이 클수록 트레일링 타이트 → 야간 수익 보호
-      // 새벽에 $300 수익봤다가 아침에 -$0 되는 상황 방지
-      // Math.max(-10, -4) = -4 → 허용 하락폭을 좁힘 (적은 손실만 허용)
+      // Progressive trailing: 목표 달성 구간에서만 타이트하게 → 일중 노이즈에 청산 방지
+      // 스윙 목표 +15~20% → +15% 전에는 넓은 허용폭 유지
       let effectiveTrailDropPct = trailDropPct;
-      if (maxPnlPct >= 5.0) effectiveTrailDropPct = Math.max(trailDropPct, -4.0);      // 고점 +5% → -4% 하락 시 청산 (수익 1%+ 보호)
-      else if (maxPnlPct >= 3.0) effectiveTrailDropPct = Math.max(trailDropPct, -3.0); // 고점 +3% → -3% 하락 시 청산
-      else if (maxPnlPct >= 1.5) effectiveTrailDropPct = Math.max(trailDropPct, -2.0); // 고점 +1.5% → -2% 하락 시 청산
+      if (maxPnlPct >= 20.0) effectiveTrailDropPct = Math.max(trailDropPct, -5.0);       // 고점 +20%↑ → -5% 허용 (최대 수익 보호)
+      else if (maxPnlPct >= 15.0) effectiveTrailDropPct = Math.max(trailDropPct, -6.0);  // 고점 +15%↑ → -6% 허용
 
       // 하드 익절: 고베타 +20%, 중베타 +15%, 방산 +15%
       const hardTpPct = isHighBeta ? 20.0 : 15.0;
-      // AI 매도 최소 확신: 고베타는 80%+, 중베타/방산 75%+
-      const minAiSellConf = isHighBeta ? 0.80 : 0.75;
-      // AI 매도 최소 보유일: 고베타 2일 (하루 노이즈 방지), 일반 1일
-      const minHoldForSell = isHighBeta ? 2 : 1;
-      // 보유 기간 상한: 21일 (장타 개념 — 14일은 너무 짧아 추세 중간 강제청산)
-      const maxHoldDays = 21;
+      // AI 매도 최소 확신: 고베타는 82%+, 중베타/방산 78%+ (스윙 — 확신 없으면 홀드)
+      const minAiSellConf = isHighBeta ? 0.82 : 0.78;
+      // AI 매도 최소 보유일: 스윙매매 — 고베타 3일, 일반 2일 (당일·익일 노이즈 방지)
+      const minHoldForSell = isHighBeta ? 3 : 2;
+      const maxHoldDays = OVERSEAS.MAX_HOLD_DAYS;
       const holdingDays = (Date.now() - new Date(holding.boughtAt).getTime()) / (1000 * 60 * 60 * 24);
 
       // 1) 손절: 섹터별 하드 룰
@@ -1042,6 +1165,33 @@ export async function runOverseasJob(): Promise<void> {
         sellReason = `보유기한 초과(${holdingDays.toFixed(0)}일/손실): ${pnlPct.toFixed(1)}% → 청산`;
       }
 
+      // ── 8) 부분 익절 (Partial TP) — 전량 매도 사유 없을 때 50% 수익 실현 ──
+      // 고점 수익을 반납하는 사례(+15% → 트레일 후 +2% 청산) 방지
+      // 고베타 +10%, 중베타/방산 +8% → 절반 실현, 나머지 트레일링 계속
+      if (!sellReason && holding.qty >= 2) {
+        const partialTpPct = isHighBeta ? 10.0 : 8.0;
+        const partialTpDone = await getPartialTpDone(code);
+        if (!partialTpDone && pnlPct >= partialTpPct) {
+          const partialQty = Math.max(1, Math.floor(holding.qty / 2));
+          const partialReason = `부분익절(${partialTpPct}%) +${pnlPct.toFixed(1)}% → 50% 실현`;
+          logger.info(`[PartialTP] ${code} ${partialQty}주 @ $${curPrice.toFixed(2)} (${partialReason})`, { component: 'OVERSEAS' });
+
+          const exec = await executeOverseasOrder(
+            code, 'SELL', partialQty, curPrice, tech.exchange,
+            partialReason, holding.qty, holding.avgPrice,
+          );
+          if (exec.submitted && exec.filledQty > 0) {
+            await setHolding(code, tech.exchange, exec.finalQty, exec.finalAvgPrice);
+            await setPartialTpDone(code);
+            const proceeds = exec.filledPrice * exec.filledQty * (1 - 0.0025);
+            cash += proceeds;
+            await setCash(cash);
+            sellOrders.push(`부분익절 ${code} x${partialQty} @$${exec.filledPrice.toFixed(2)} (${partialReason})`);
+          }
+          continue; // 전량 매도 체크 건너뜀
+        }
+      }
+
       if (sellReason) {
         const exec = await executeOverseasOrder(
           code,
@@ -1064,6 +1214,7 @@ export async function runOverseasJob(): Promise<void> {
         await setHolding(code, tech.exchange, exec.finalQty, exec.finalAvgPrice);
         if (exec.finalQty <= 0) {
           await clearMaxPrice(code);
+          await clearPartialTpDone(code);
         }
 
         // 수수료 0.25% 차감 (해외주식 매도: 브로커 수수료 + 거래세 합산)
@@ -1114,7 +1265,7 @@ export async function runOverseasJob(): Promise<void> {
         );
         if (exec.submitted && exec.filledQty > 0) {
           await setHolding(capCode, capTech.exchange, exec.finalQty, exec.finalAvgPrice);
-          if (exec.finalQty <= 0) await clearMaxPrice(capCode);
+          if (exec.finalQty <= 0) { await clearMaxPrice(capCode); await clearPartialTpDone(capCode); }
           const proceeds = exec.filledPrice * exec.filledQty * (1 - 0.0025);
           cash += proceeds;
           await setCash(cash);
@@ -1135,6 +1286,21 @@ export async function runOverseasJob(): Promise<void> {
       getFearGreedIndex().catch(() => null),
       getUpcomingEarnings(usCodes).catch(() => []),
     ]);
+
+    // Yahoo Finance 키리스 실적발표 감시 — Finnhub 키 없을 때 폴백 (7일 이내 차단)
+    const sentinelBlockedCodes = new Set<string>();
+    if (!process.env.FINNHUB_API_KEY) {
+      await Promise.all(
+        usCodes.map(async (code) => {
+          const r = await checkUsEarnings(code).catch(() => null);
+          if (r?.hasUpcomingEarnings) sentinelBlockedCodes.add(code);
+        }),
+      );
+      if (sentinelBlockedCodes.size > 0) {
+        logger.info(`📅 실적발표 차단 (Yahoo): ${[...sentinelBlockedCodes].join(', ')}`, { component: 'OVERSEAS' });
+      }
+    }
+
     const mktSignal = marketSentiment ? interpretMarketSentiment(marketSentiment) : null;
     if (mktSignal) {
       logger.info(`📊 시장 신호: ${mktSignal.reason}`, { component: 'OVERSEAS' });
@@ -1196,9 +1362,9 @@ export async function runOverseasJob(): Promise<void> {
           logger.info(`⚠️ 최근 손실 종목 재진입 차단: ${t.code} AI 확신 부족 (${ai ? `${(ai.confidence * 100).toFixed(0)}%` : 'AI 없음'} < 85%)`, { component: 'OVERSEAS' });
           return false;
         })
-        // 어닝 3일 이내 종목 매수 금지 (어닝 서프라이즈 리스크)
+        // 어닝 3일 이내 종목 매수 금지 (Finnhub 또는 Yahoo Finance 감시)
         .filter(t => {
-          if (hasEarningsRisk(t.code, upcomingEarnings, 3)) {
+          if (hasEarningsRisk(t.code, upcomingEarnings, 3) || sentinelBlockedCodes.has(t.code)) {
             logger.info(`📅 어닝 리스크 차단: ${t.code} (3일 이내 실적 발표)`, { component: 'OVERSEAS' });
             return false;
           }
@@ -1279,10 +1445,20 @@ export async function runOverseasJob(): Promise<void> {
           // DANGER  : 위험 → 최고확신만, 모멘텀 없이 단순 기술만으론 진입 금지
           // 손실 회복 모드(-3%~-5%): AI 85%+ 필수 (손해 후 저품질 종목 물타기 방지)
           const quality = mktSignal?.marketQuality ?? 'OK';
-          const minConf = recoveryMode ? 0.85
+          // 시장 폭 페널티: 감시목록 35% 미만 양봉 = 광범위한 약세 → 최소 신뢰도 +0.04 상향
+          const freshBreadth = techResults.length > 0
+            ? techResults.filter(r => r.price.changePct > 0).length / techResults.length
+            : 0.5;
+          const breadthPenalty = freshBreadth < 0.35 ? 0.04 : 0;
+          // 빅무버(+5%↑) 특례: 뉴스/촉매 확인된 강한 종목 → 낮은 신뢰도도 허용
+          const isBigMoverTarget = t.isBigMover;
+          const baseMinConf = recoveryMode ? 0.85
             : quality === 'GREAT' ? 0.68 : quality === 'CAUTIOUS' ? 0.78 : quality === 'DANGER' ? 0.82 : 0.70;
-          const minConfMomentum = recoveryMode ? 0.83
-            : quality === 'GREAT' ? 0.65 : quality === 'CAUTIOUS' ? 0.75 : quality === 'DANGER' ? 0.80 : 0.68;
+          const minConf = isBigMoverTarget ? Math.max(0.65, baseMinConf - 0.05 + breadthPenalty) : baseMinConf + breadthPenalty;
+          const minConfMomentum = isBigMoverTarget ? Math.max(0.62, (recoveryMode ? 0.83
+            : quality === 'GREAT' ? 0.65 : quality === 'CAUTIOUS' ? 0.75 : quality === 'DANGER' ? 0.80 : 0.68) - 0.05 + breadthPenalty)
+            : (recoveryMode ? 0.83
+            : quality === 'GREAT' ? 0.65 : quality === 'CAUTIOUS' ? 0.75 : quality === 'DANGER' ? 0.80 : 0.68) + breadthPenalty;
           if (ai?.action === 'BUY' && ai.confidence >= minConf) return true;
           if (ai?.action === 'BUY' && (t.signal === 'STRONG_BUY' || t.isMomentum) && ai.confidence >= minConfMomentum) return true;
           // AI 없을 때: GREAT/OK만 강한 기술적 신호 허용, 손실 회복 모드에서는 AI 필수
@@ -1325,7 +1501,9 @@ export async function runOverseasJob(): Promise<void> {
         const confFactor = Math.min(1, Math.max(0, topTarget.ai?.confidence ?? 0.65));
         const scoreFactor = Math.min(1, Math.max(0, (topTarget.score + 50) / 100));
         const combined = confFactor * 0.55 + scoreFactor * 0.45;
-        const sizingMult = Math.round((0.6 + combined * 1.2) * 100) / 100;
+        const vixNow = marketSentiment?.vix ?? 0;
+        const vixAdjust = vixNow > 30 ? 0.5 : vixNow > 25 ? 0.7 : vixNow > 20 ? 0.85 : 1.0;
+        const sizingMult = Math.round((0.6 + combined * 1.2) * vixAdjust * 100) / 100;
         const baseSize = portfolioValue * (topTarget.isMomentum && (topTarget.ai?.confidence ?? 0) >= 0.85 ? 0.25 : 0.20);
         const neededCash = Math.min(baseSize * sizingMult, portfolioValue * 0.20);
 
@@ -1361,7 +1539,7 @@ export async function runOverseasJob(): Promise<void> {
                   );
                   if (exec.submitted && exec.filledQty > 0) {
                     await setHolding(concentrationCode, concTech.exchange, exec.finalQty, exec.finalAvgPrice);
-                    if (exec.finalQty <= 0) await clearMaxPrice(concentrationCode);
+                    if (exec.finalQty <= 0) { await clearMaxPrice(concentrationCode); await clearPartialTpDone(concentrationCode); }
                     const proceeds = exec.filledPrice * exec.filledQty * (1 - 0.0025);
                     cash += proceeds;
                     await setCash(cash);
@@ -1382,7 +1560,9 @@ export async function runOverseasJob(): Promise<void> {
         const confFactor = Math.min(1, Math.max(0, target.ai?.confidence ?? 0.65));
         const scoreFactor = Math.min(1, Math.max(0, (target.score + 50) / 100)); // score -50~+50 → 0~1
         const combined = confFactor * 0.55 + scoreFactor * 0.45;
-        const sizingMult = Math.round((0.6 + combined * 1.2) * 100) / 100; // 0.6x ~ 1.8x
+        const vixNow = marketSentiment?.vix ?? 0;
+        const vixAdjust = vixNow > 30 ? 0.5 : vixNow > 25 ? 0.7 : vixNow > 20 ? 0.85 : 1.0;
+        const sizingMult = Math.round((0.6 + combined * 1.2) * vixAdjust * 100) / 100; // 0.6x ~ 1.8x, VIX 조정 적용
         // 고정 USD cap 제거 → 포트폴리오 비율로만 계산 = 복리 자동 적용
         // 모멘텀 + AI 고확신(≥85%) 조건 동시 충족 시 25%로 확대 (Kelly 근거)
         const baseSize = portfolioValue * (target.isMomentum && (target.ai?.confidence ?? 0) >= 0.85 ? 0.25 : 0.20);
@@ -1510,10 +1690,8 @@ const PARKING_ETFS = [
   { code: 'BND',  name: 'Vanguard Total Bond ETF', exchange: 'NYSE'   }, // 채권 (방어)
 ] as const;
 
-// 거래 기회 대비 항상 남겨두는 현금 버퍼 ($)
-const PARKING_CASH_BUFFER = 500;
-// 파킹용 최소 주문 금액 ($)
-const PARKING_MIN_ORDER = 20;
+const PARKING_CASH_BUFFER = OVERSEAS.PARKING_CASH_BUFFER;
+const PARKING_MIN_ORDER   = OVERSEAS.PARKING_MIN_ORDER;
 
 /**
  * 현금 파킹 전략 — 유휴 현금을 시장 상황에 따라 안전 ETF에 소수점 자동매수
@@ -1656,9 +1834,9 @@ async function runParkingStrategy(params: {
 // ── 승자 집중 전략 (유휴현금 → 수익률 1위 보유종목 추가매수) ──
 // 유저 전략: 여유 현금은 ETF 말고 현재 가장 수익 좋은 종목에 추가 투입,
 //            더 좋은 신호가 오면 거기서 일부 팔아 진입 (순환 매도와 쌍으로 동작)
-const CONCENTRATION_CASH_BUFFER = 400;  // 긴급 진입 기회 대비 보유 현금 ($)
-const CONCENTRATION_MIN_PNL_PCT = 3.0;  // 집중 대상 최소 수익률 — 손실 종목 추가매수 방지
-const CONCENTRATION_MIN_INVEST  = 60;   // 최소 집중 투자액 ($)
+const CONCENTRATION_CASH_BUFFER  = OVERSEAS.CONCENTRATION_CASH_BUFFER;
+const CONCENTRATION_MIN_PNL_PCT  = OVERSEAS.CONCENTRATION_MIN_PNL_PCT;
+const CONCENTRATION_MIN_INVEST   = OVERSEAS.CONCENTRATION_MIN_INVEST;
 
 async function deployIdleCash(params: {
   cash: number;
@@ -1676,7 +1854,7 @@ async function deployIdleCash(params: {
 
   // 보유 종목 중 수익률 최고 종목 선정 (파킹 ETF 제외)
   let bestCode: string | null = null;
-  let bestPnlPct = CONCENTRATION_MIN_PNL_PCT;
+  let bestPnlPct: number = CONCENTRATION_MIN_PNL_PCT;
   let bestPrice = 0;
   let bestExchange = '';
   let bestHolding: { qty: number; avgPrice: number } | null = null;

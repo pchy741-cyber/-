@@ -16,6 +16,7 @@ export interface OverseasStockInput {
   holdingPnlPct?: number;
   dayRangePct?: number;  // 0=저가, 100=고가 위치 (일중 어디에 있는지)
   isMomentum?: boolean;  // 당일 +3% 이상 + 일중 상위 → 강한 상승 모멘텀
+  isBigMover?: boolean;  // 당일 +5% 이상 → 뉴스/촉매 기반 강한 상승 (우선 진입 대상)
   aboveMA20?: boolean;   // 현재가 > 21일 이평선 여부 (캔들 안착 확인)
   bollingerSqueeze?: boolean;              // BB 밴드 수축 중 (에너지 응축, 돌파 방향 미확정)
   bollingerBreakout?: 'UP' | 'DOWN' | 'NONE'; // 스퀴즈 후 돌파 방향
@@ -32,12 +33,13 @@ const SYSTEM_PROMPT = `당신은 글로벌 주식(미국 주력 + 일본·대만
 실제 자금이 투입되며, 매 사이클 최소 1~2종목 BUY를 목표로 적극 운용하세요.
 
 【시스템 자동 처리 — 당신이 관여 안 해도 됨】
-- 손절: -2.5% 자동 손절 / 고베타 섹터 -5%
-- 익절: +12% 하드익절 / 트레일링 스탑(최고점 대비 -5%)
+- 손절: 고베타(NVDA·AMD·PLTR) -8% / 중베타(META·MSFT 등) -5% / 방산 -4% 자동 손절
+- 익절: 고베타 +20% / 중베타·방산 +15% 하드익절 / 트레일링 스탑(+8~10% 수익 달성 후 고점 대비 -7~10% 이탈 시)
+- 스윙 목표: +15~20%. 당신은 이 목표 달성 전에 SELL 신호를 남발하지 말 것
 
 【당신의 역할】
-① 최적 진입 타이밍 포착 (BUY)
-② 모멘텀 소진 전 선제 청산 (SELL)
+① 최적 진입 타이밍 포착 (BUY) — 스윙 기준 2~3일 이상 보유 전제
+② 추세 반전 명확 시 선제 청산 (SELL) — 단순 단기 조정은 SELL 금지
 ③ 관망 (HOLD) — 단, HOLD 남발 금지. 조건 충족 시 BUY로
 
 【BUY 진입 2단계 필수 확인】
@@ -50,6 +52,9 @@ const SYSTEM_PROMPT = `당신은 글로벌 주식(미국 주력 + 일본·대만
   • dayRangePct < 70 (일중 고점 근처 매수 금지 — 이평선 위로 안착한 저점 공략)
 
 【BUY 진입 패턴 — 글로벌 스윙 실전 기준】
+0. 🔥 빅무버 우선진입: isBigMover=true(당일+5%↑) → 뉴스/실적/촉매 강한 주도주
+   → 섹터 상위 모멘텀 주도. RSI 50~75 + ADX ≥ 15면 충분. confidence 0.70+
+   → 빵빵한 상승 이유(실적·제품 발표·업그레이드)가 있으므로 이틀 이상 지속 가능
 1. 🚀 모멘텀 브레이크아웃: isMomentum=true(당일+3%↑) + RSI 50~72 + ADX ≥ 20
    → 추세 추종. 미국 주식은 모멘텀이 3~5일 지속. 강력 BUY. confidence 0.72+
 2. 📉 과매도 반등: RSI ≤ 35 + ADX ≥ 20 + score > 0 + trendStrength≠WEAK
@@ -74,18 +79,21 @@ const SYSTEM_PROMPT = `당신은 글로벌 주식(미국 주력 + 일본·대만
 - 0.72~0.88: 강한 신호 (최대 0.88)
 - 일중 저가 근처(dayRangePct < 25): +0.05 보너스 부여
 - 모멘텀(isMomentum=true): +0.05 보너스 부여
+- 빅무버(isBigMover=true): +0.07 보너스 부여 (촉매가 명확하므로)
 
 【SELL — 보유 종목만】
-- PnL +4% 이상 + RSI 하락추세 + score 급락 → 수익 실현 SELL
-- score < -20 또는 signal=STRONG_SELL → 손실 방어 SELL
-- 손실 -1.5%~-2% + 추가 하락 신호 → 선제 손절 SELL (시스템 자동 손절 전 선제 대응)
+- PnL +10% 이상 + RSI 명확 하락추세(70↓) + score 급락(-20↓) → 수익 실현 SELL (스윙 목표 15~20% 전제 — 조기 청산 금지)
+- score < -25 AND signal=STRONG_SELL AND trendStrength=WEAK → 추세 붕괴 SELL
+- 손실 -3% 이상 + signal=SELL 또는 STRONG_SELL + ADX 급등(추세 반전 확인) → 선제 손절 SELL
+- PnL +4~9% 구간에서 단순 RSI 하락만으로는 SELL 금지 — 스윙 추세 내 정상 조정일 수 있음
 
 【절대 금지】
 - 보유 종목에 BUY / 비보유 종목에 SELL
 - VIX > 40: 신규 매수 금지 (패닉 구간)
 - Fear&Greed ≥ 85(극탐욕): 신규 매수 금지
 - RSI < 50 이고 trendStrength=WEAK인 종목 BUY 금지 (하락추세 진입 금지)
-- dayRangePct ≥ 70 이고 isMomentum=false인 종목 BUY 금지 (일중 고점 매수 금지)
+- dayRangePct ≥ 70 이고 isMomentum=false이고 isBigMover=false인 종목 BUY 금지 (일중 고점 매수 금지)
+- 시장 breadth(양봉 비율) < 35%: 시장 전반 약세 → 확신도 기준 +0.05 상향 적용
 - 확신 없으면 HOLD. 조건 미달 종목에 억지로 BUY 하지 말 것
 
 JSON 배열로만 응답 (HOLD는 생략, code 대소문자 정확히):
@@ -101,7 +109,7 @@ export async function analyzeOverseasWithAI(
   holdingCount: number,
   perfSummary?: string,
   userInsights?: string,
-  marketContext?: { fearGreed?: number; fearGreedLabel?: string; vix?: number; earningsRisk?: string[] },
+  marketContext?: { fearGreed?: number; fearGreedLabel?: string; vix?: number; earningsRisk?: string[]; breadthPct?: number; sectorMomentum?: string },
 ): Promise<OverseasAIDecision[]> {
   const context = buildContext(stocks, availableCash, holdingCount, perfSummary, userInsights, marketContext);
 
@@ -134,7 +142,7 @@ export async function analyzeOverseasWithAI(
   return [];
 }
 
-function buildContext(stocks: OverseasStockInput[], cash: number, holdingCount: number, perfSummary?: string, userInsights?: string, marketContext?: { fearGreed?: number; fearGreedLabel?: string; vix?: number; earningsRisk?: string[] }): string {
+function buildContext(stocks: OverseasStockInput[], cash: number, holdingCount: number, perfSummary?: string, userInsights?: string, marketContext?: { fearGreed?: number; fearGreedLabel?: string; vix?: number; earningsRisk?: string[]; breadthPct?: number; sectorMomentum?: string }): string {
   const now = new Date();
   const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
   const timeStr = `${kst.getUTCHours()}:${String(kst.getUTCMinutes()).padStart(2, '0')} KST`;
@@ -143,13 +151,14 @@ function buildContext(stocks: OverseasStockInput[], cash: number, holdingCount: 
     const pnl = s.isHolding ? s.holdingPnlPct?.toFixed(1) : null;
     const softZone = s.isHolding && (s.holdingPnlPct ?? 0) >= 5 ? ' ⚠️소프트익절구간' : '';
     const holding = s.isHolding ? ` [보유 PnL=${pnl}%${softZone}]` : '';
-    const momentum = s.isMomentum ? ' 🚀모멘텀' : '';
+    const bigMover = s.isBigMover ? ' 🔥빅무버' : '';
+    const momentum = s.isMomentum && !s.isBigMover ? ' 🚀모멘텀' : '';
     const range = s.dayRangePct != null ? ` 일중${s.dayRangePct.toFixed(0)}%` : '';
     const maPos = s.aboveMA20 != null ? (s.aboveMA20 ? ' ↑MA' : ' ↓MA') : '';
     const bbTag = s.bollingerSqueeze
       ? (s.bollingerBreakout === 'UP' ? ' 💥BB↑' : s.bollingerBreakout === 'DOWN' ? ' 💥BB↓' : ' 🔧BBsq')
       : '';
-    return `${s.code}: $${s.currentPrice} ${s.changePct >= 0 ? '+' : ''}${s.changePct.toFixed(2)}%${range} | RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)} score=${s.score} signal=${s.signal}${maPos}${bbTag}${momentum}${holding}`;
+    return `${s.code}: $${s.currentPrice} ${s.changePct >= 0 ? '+' : ''}${s.changePct.toFixed(2)}%${range} | RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)} score=${s.score} signal=${s.signal}${maPos}${bbTag}${bigMover}${momentum}${holding}`;
   });
 
   const canBuy = cash >= 200 && holdingCount < 6;
@@ -164,7 +173,11 @@ function buildContext(stocks: OverseasStockInput[], cash: number, holdingCount: 
     const fgStr = fg != null ? `Fear&Greed=${fg}(${marketContext.fearGreedLabel ?? ''})` : '';
     const vixStr = vix != null ? ` VIX=${vix.toFixed(1)}` : '';
     const erStr = er && er.length > 0 ? ` | ⚠️어닝리스크: ${er.join(',')}` : '';
-    parts.push(`🌍 시장 환경: ${fgStr}${vixStr}${erStr}`);
+    const breadthStr = marketContext.breadthPct != null
+      ? ` | 양봉비율=${(marketContext.breadthPct * 100).toFixed(0)}%${marketContext.breadthPct < 0.35 ? '(⚠️시장약세—확신도+0.05)' : ''}`
+      : '';
+    const sectorStr = marketContext.sectorMomentum ? ` | 섹터모멘텀: ${marketContext.sectorMomentum}` : '';
+    parts.push(`🌍 시장 환경: ${fgStr}${vixStr}${erStr}${breadthStr}${sectorStr}`);
   }
   if (userInsights) parts.push(`\n💡 운영자 인사이트: ${userInsights}`);
   parts.push('', ...lines, '', 'BUY/SELL/HOLD 판단을 JSON 배열로 출력하세요.');
