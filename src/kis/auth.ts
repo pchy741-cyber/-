@@ -8,22 +8,25 @@ interface KISToken {
 }
 
 let cachedToken: KISToken | null = null;
+let cachedTokenIsPaper: boolean | null = null;
 
 /**
  * KIS OAuth2 토큰 발급/캐싱
  * - 토큰 유효기간: ~24시간
  * - 만료 30분 전 자동 갱신
+ * - 모드(paper/live) 전환 시 자동 재발급
  */
 export async function getAccessToken(): Promise<string> {
-  if (cachedToken && !isExpired(cachedToken)) {
+  const isPaper = config.isPaper;
+  if (cachedToken && !isExpired(cachedToken) && cachedTokenIsPaper === isPaper) {
     return cachedToken.accessToken;
   }
 
-  logger.info('KIS 토큰 발급 요청', { component: 'KIS_AUTH' });
+  logger.info('KIS 토큰 발급 요청', { component: 'KIS_AUTH', isPaper });
 
-  // process.env에서 직접 읽기 — config는 모듈 로드 시 고정되므로 Secret Manager 로드 후에도 반영
-  const appKey = process.env.KIS_APP_KEY || config.kis.appKey;
-  const appSecret = process.env.KIS_APP_SECRET || config.kis.appSecret;
+  // config.kis is a dynamic getter — returns correct live/paper credentials based on current mode
+  const appKey = config.kis.appKey;
+  const appSecret = config.kis.appSecret;
 
   const res = await fetch(`${config.kis.baseUrl}/oauth2/tokenP`, {
     method: 'POST',
@@ -47,6 +50,7 @@ export async function getAccessToken(): Promise<string> {
     tokenType: data.token_type,
     expiresAt: new Date(data.access_token_token_expired),
   };
+  cachedTokenIsPaper = isPaper;
 
   logger.info(`KIS 토큰 발급 완료, 만료: ${cachedToken.expiresAt.toISOString()}`, {
     component: 'KIS_AUTH',
@@ -59,8 +63,8 @@ export async function getAccessToken(): Promise<string> {
  * Hashkey 발급 (주문 API 필수)
  */
 export async function getHashkey(body: Record<string, unknown>): Promise<string> {
-  const appKey = process.env.KIS_APP_KEY || config.kis.appKey;
-  const appSecret = process.env.KIS_APP_SECRET || config.kis.appSecret;
+  const appKey = config.kis.appKey;
+  const appSecret = config.kis.appSecret;
 
   const res = await fetch(`${config.kis.baseUrl}/uapi/hashkey`, {
     method: 'POST',

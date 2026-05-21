@@ -269,11 +269,11 @@ export default function Dashboard() {
     setModeToggling(true);
     try {
       await api('/trading-mode', { method: 'POST', body: JSON.stringify({ mode }) });
+      setModeToggling(false);
       toast(mode === 'live' ? '실전모드로 전환됐습니다' : '연습모드로 전환됐습니다', 'ok');
-      await load(true);
+      load(true);
     } catch (e: any) {
       toast('모드 전환 실패: ' + (e?.message ?? ''), 'err');
-    } finally {
       setModeToggling(false);
     }
   };

@@ -131,8 +131,10 @@ export async function prewarmDashboard(): Promise<void> {
 }
 
 async function buildDashPayload(): Promise<unknown> {
-  // KIS API 실패 시에도 기본값으로 응답 (장 외 시간, API 제한 등)
-  const defaultBalance = { totalDeposit: 10000000, totalEvalAmount: 0, orderableCash: 10000000, totalProfitLoss: 0, totalProfitLossPct: 0, positions: [] };
+  // KIS API 실패 시 기본값 — 실전모드는 0 (10M 가짜잔고 표시 방지), 연습모드만 1000만원
+  const defaultBalance = config.isPaper
+    ? { totalDeposit: 10000000, totalEvalAmount: 0, orderableCash: 10000000, totalProfitLoss: 0, totalProfitLossPct: 0, positions: [] }
+    : { totalDeposit: 0, totalEvalAmount: 0, orderableCash: 0, totalProfitLoss: 0, totalProfitLossPct: 0, positions: [] };
 
   const balanceFn = config.isPaper ? getPaperBalance : getAccountBalance;
   const [balanceResult, chains, strategy, insightRows, defensePark] = await Promise.all([
