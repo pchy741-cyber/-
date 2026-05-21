@@ -246,22 +246,6 @@ settingsRoutes.post('/fix-chain-tpsl', async (c) => {
   }
 });
 
-// ── 거래 모드 전환 (런타임 오버라이드, 재시작 불필요) ──
-settingsRoutes.get('/trading-mode', (c) => {
-  return c.json({ mode: getEffectiveTradingMode() });
-});
-
-settingsRoutes.post('/trading-mode', async (c) => {
-  const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
-  const mode = body.mode as string;
-  if (mode !== 'paper' && mode !== 'live') {
-    return c.json({ error: 'mode must be "paper" or "live"' }, 400);
-  }
-  setTradingModeOverride(mode as 'paper' | 'live');
-  logger.info(`🔄 거래 모드 전환: ${mode}`, { component: 'SETTINGS' });
-  return c.json({ ok: true, mode: getEffectiveTradingMode() });
-});
-
 // ── 인사이트 관리 ──
 // GET: 전체 인사이트 조회
 settingsRoutes.get('/insights', async (c) => {

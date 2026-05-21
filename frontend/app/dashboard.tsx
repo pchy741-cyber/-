@@ -268,7 +268,7 @@ export default function Dashboard() {
     if (mode === 'live' && !confirm('실제 돈으로 거래합니다. 실전모드로 전환하시겠습니까?')) return;
     setModeToggling(true);
     try {
-      await api('/settings/trading-mode', { method: 'POST', body: JSON.stringify({ mode }) });
+      await api('/trading-mode', { method: 'POST', body: JSON.stringify({ mode }) });
       toast(mode === 'live' ? '실전모드로 전환됐습니다' : '연습모드로 전환됐습니다', 'ok');
       await load(true);
     } catch (e: any) {
