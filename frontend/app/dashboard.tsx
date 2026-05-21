@@ -1451,7 +1451,7 @@ function PerformanceVsKospiPanel() {
           <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-emerald-400 inline-block rounded" /> 봇 <span className={pc(botLast)}>{botLast > 0 ? '+' : ''}{botLast.toFixed(2)}%</span></span>
           <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-blue-400 inline-block rounded" /> KOSPI <span className={pc(kospiLast)}>{kospiLast > 0 ? '+' : ''}{kospiLast.toFixed(2)}%</span></span>
         </div>
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 80 }}>
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-20">
           <line x1="0" y1={zeroY} x2={W} y2={zeroY} stroke="#334155" strokeWidth="0.5" strokeDasharray="4 2" />
           {kospiPath && <path d={kospiPath} fill="none" stroke="#60a5fa" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.7" />}
           {botPath && <path d={botPath} fill="none" stroke="#34d399" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />}
@@ -4944,8 +4944,8 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
         <Panel title="API 키 관리">
           <form onSubmit={saveSecrets} autoComplete="off" className="px-6 py-5 space-y-3.5">
             {/* hidden dummy fields to absorb browser autofill */}
-            <input type="text" name="fake_user" style={{ display: 'none' }} tabIndex={-1} />
-            <input type="password" name="fake_pass" style={{ display: 'none' }} tabIndex={-1} />
+            <input type="text" name="fake_user" className="hidden" tabIndex={-1} />
+            <input type="password" name="fake_pass" className="hidden" tabIndex={-1} />
             {[['gemini','Gemini AI'],['openai','OpenAI'],['anthropic','Anthropic AI'],['kis_appkey','KIS 앱키'],['kis_appsecret','KIS 시크릿'],['kis_account','KIS 계좌번호']].map(([k, l]) => (
               <div key={k} className="flex items-center gap-3">
                 <span className="w-24 text-[12px] text-slate-400 shrink-0 font-medium">{l}</span>
