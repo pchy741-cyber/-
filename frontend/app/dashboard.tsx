@@ -398,7 +398,7 @@ export default function Dashboard() {
             </div>
           ) : (
             <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px] mx-auto">
-              {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={withdrawConfig} watchlist={watchlist} strategy={strategy} setStrategy={setStrategy} toast={toast} onRefresh={load} allocConfig={allocConfig} setAllocConfig={setAllocConfig} />}
+              {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={withdrawConfig} watchlist={watchlist} strategy={strategy} setStrategy={setStrategy} toast={toast} onRefresh={load} allocConfig={allocConfig} setAllocConfig={setAllocConfig} onGoToSettings={() => setTab('settings')} />}
               {tab === 'trades' && <TradesView trades={trades} watchlist={watchlist} />}
               {tab === 'journal' && <JournalView />}
               {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} toast={toast} onRefresh={load} />}
@@ -1868,7 +1868,7 @@ function MoneyStatsPanel({ market, monthlyGoal }: { market: 'KR' | 'US'; monthly
 // HOME VIEW
 // ═══════════════════════════════════════
 
-function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, strategy, setStrategy, toast, onRefresh, allocConfig, setAllocConfig }: any) {
+function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, strategy, setStrategy, toast, onRefresh, allocConfig, setAllocConfig, onGoToSettings }: any) {
   const [showPortfolio, setShowPortfolio] = React.useState(false);
   const [holdingsTab, setHoldingsTab] = React.useState<'KR' | 'US'>('KR');
   const [userPickedTab, setUserPickedTab] = React.useState(false); // 사용자가 직접 탭 변경했는지
@@ -2684,7 +2684,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
               {totalInvested > 0 && <span className="text-[10px] bg-blue-500/10 text-blue-400 px-2 py-0.5 rounded-md">투자 {((totalInvested / (p?.totalValue || 1)) * 100).toFixed(0)}%</span>}
             </button>
             <div className="flex items-center gap-3">
-              <button onClick={() => setTab('settings')} className="text-[11px] text-blue-400 hover:text-blue-300 transition-colors">설정 →</button>
+              <button onClick={() => onGoToSettings?.()} className="text-[11px] text-blue-400 hover:text-blue-300 transition-colors">설정 →</button>
               <button onClick={() => setShowPortfolio(v => !v)} className="text-[11px] text-slate-500">{showPortfolio ? '접기 ▲' : '자세히 ▼'}</button>
             </div>
           </div>
