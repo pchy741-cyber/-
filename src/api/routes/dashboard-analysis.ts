@@ -160,7 +160,7 @@ dashboardAnalysisRoutes.get('/ai-status', (c) => {
 // ── Vertex AI 직접 연결 테스트 ──
 dashboardAnalysisRoutes.get('/ai/gemini-test', async (c) => {
   const start = Date.now();
-  const TEST_MODEL = 'gemini-2.0-flash (Vertex AI)';
+  const TEST_MODEL = 'gemini-2.0-flash-lite (AI Studio)';
   try {
     const { callVertexGemini: callTest } = await import('../../utils/vertex-gemini.js');
     const text = await Promise.race([

@@ -2678,13 +2678,16 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       <div>
         {/* 포트폴리오 비중 */}
         <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden">
-          <button onClick={() => setShowPortfolio(v => !v)} className="w-full px-4 py-3 flex items-center justify-between hover:bg-white/[0.02] transition-colors">
-            <div className="flex items-center gap-2">
+          <div className="px-4 py-3 flex items-center justify-between">
+            <button onClick={() => setShowPortfolio(v => !v)} className="flex items-center gap-2 flex-1 text-left hover:opacity-80 transition-opacity">
               <span className="text-sm font-semibold text-slate-200">포트폴리오 비중</span>
               {totalInvested > 0 && <span className="text-[10px] bg-blue-500/10 text-blue-400 px-2 py-0.5 rounded-md">투자 {((totalInvested / (p?.totalValue || 1)) * 100).toFixed(0)}%</span>}
+            </button>
+            <div className="flex items-center gap-3">
+              <button onClick={() => setTab('settings')} className="text-[11px] text-blue-400 hover:text-blue-300 transition-colors">설정 →</button>
+              <button onClick={() => setShowPortfolio(v => !v)} className="text-[11px] text-slate-500">{showPortfolio ? '접기 ▲' : '자세히 ▼'}</button>
             </div>
-            <span className="text-[11px] text-slate-500">{showPortfolio ? '접기 ▲' : '자세히 ▼'}</span>
-          </button>
+          </div>
           {showPortfolio && <div className="p-4 sm:p-5 space-y-4 border-t border-white/[0.04]">
             {/* 현금 vs 투자 비율 바 */}
             <div>
