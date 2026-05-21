@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Panel, Card, Indicator, SideBadge, StatusBadge, ModeBadge, EmptyMsg, Sel, NumInput, LoadBtn } from '@/components/ui';
+import { Panel, Card, Indicator, SideBadge, StatusBadge, ModeBadge, EmptyMsg, Sel, NumInput, LoadBtn, Modal, ConfirmModal } from '@/components/ui';
 
 // ═══════════════════════════════════════
 // API
@@ -514,49 +514,36 @@ function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast }: { i
   return (
     <>
       {/* 삭제 승인 모달 */}
-      {deleteModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-          <div className="bg-[#0f1422] border border-rose-900/40 rounded-2xl p-5 max-w-sm w-full mx-4 shadow-2xl">
-            <div className="flex items-start gap-3 mb-4">
-              <span className="text-2xl shrink-0">⚠️</span>
-              <div>
-                <p className="text-sm font-bold text-rose-400 mb-1.5">인사이트 삭제 승인</p>
-                <p className="text-[11px] text-slate-300 leading-relaxed bg-slate-800/40 rounded-lg px-3 py-2">"{deleteModal.insight}"</p>
-              </div>
-            </div>
-            {deleteModal.relatedTrades.length > 0 ? (
-              <div className="bg-rose-950/30 border border-rose-900/30 rounded-xl p-3 mb-4 space-y-1.5">
-                <p className="text-[10px] text-rose-400 font-medium mb-2">이 가이드와 연관된 손실 매매:</p>
-                {deleteModal.relatedTrades.map((t: any, i: number) => {
-                  const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
-                  const filledPx = Number(t.filled_price) || 0;
-                  const qty = Number(t.quantity) || 0;
-                  const pnl = avgBuy > 0 && filledPx > 0 ? (filledPx - avgBuy) * qty : 0;
-                  return (
-                    <div key={i} className="flex items-center justify-between text-[10px]">
-                      <span className="text-slate-300 font-medium">{t.stock_name || t.stock_code}</span>
-                      <span className="text-rose-400 font-bold">{fmtWon(pnl)}</span>
-                    </div>
-                  );
-                })}
-                <p className="text-[9px] text-rose-500/60 mt-1.5">이 인사이트 적용 후 손실이 발생한 매매입니다</p>
-              </div>
-            ) : (
-              <p className="text-[11px] text-slate-500 mb-4">연관된 손실 매매 내역이 없습니다.</p>
-            )}
-            <div className="flex gap-2">
-              <button onClick={() => setDeleteModal(null)}
-                className="flex-1 py-2.5 bg-slate-700/50 hover:bg-slate-700 text-slate-300 text-xs rounded-xl transition-all">
-                취소
-              </button>
-              <button onClick={confirmDelete}
-                className="flex-1 py-2.5 bg-rose-700 hover:bg-rose-600 text-white text-xs font-bold rounded-xl transition-all">
-                삭제 승인
-              </button>
-            </div>
+      <ConfirmModal
+        open={!!deleteModal}
+        onClose={() => setDeleteModal(null)}
+        onConfirm={confirmDelete}
+        title="인사이트 삭제 승인"
+        description={deleteModal ? `"${deleteModal.insight}"` : undefined}
+        confirmLabel="삭제 승인"
+        confirmVariant="danger"
+      >
+        {deleteModal && deleteModal.relatedTrades.length > 0 ? (
+          <div className="bg-rose-950/30 border border-rose-900/30 rounded-xl p-3 space-y-1.5">
+            <p className="text-[10px] text-rose-400 font-medium mb-2">이 가이드와 연관된 손실 매매:</p>
+            {deleteModal.relatedTrades.map((t: any, i: number) => {
+              const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
+              const filledPx = Number(t.filled_price) || 0;
+              const qty = Number(t.quantity) || 0;
+              const pnl = avgBuy > 0 && filledPx > 0 ? (filledPx - avgBuy) * qty : 0;
+              return (
+                <div key={i} className="flex items-center justify-between text-[10px]">
+                  <span className="text-slate-300 font-medium">{t.stock_name || t.stock_code}</span>
+                  <span className="text-rose-400 font-bold">{fmtWon(pnl)}</span>
+                </div>
+              );
+            })}
+            <p className="text-[9px] text-rose-500/60 mt-1.5">이 인사이트 적용 후 손실이 발생한 매매입니다</p>
           </div>
-        </div>
-      )}
+        ) : (
+          <p className="text-[11px] text-slate-500">연관된 손실 매매 내역이 없습니다.</p>
+        )}
+      </ConfirmModal>
 
       <div className="rounded-2xl bg-white/[0.03] border border-white/[0.06] overflow-hidden">
         <div className="flex items-center gap-3 px-4 py-3 border-b border-white/[0.06]">
@@ -1828,7 +1815,7 @@ function MoneyStatsPanel({ market, monthlyGoal }: { market: 'KR' | 'US'; monthly
                   <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-slate-800 border border-white/10 rounded px-1.5 py-0.5 text-[9px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-10 pointer-events-none">
                     {fmtShort(m.pnl)} ({m.trades}건)
                   </div>
-                  <div className="w-full flex flex-col justify-end" style={{ height: '52px' }}>
+                  <div className="w-full flex flex-col justify-end h-[52px]">
                     <div
                       className={`w-full rounded-t-sm transition-all duration-500 ${isPos ? 'bg-emerald-500/70' : 'bg-rose-500/70'}`}
                       style={{ height: `${Math.max(pct, 4)}%` }}
