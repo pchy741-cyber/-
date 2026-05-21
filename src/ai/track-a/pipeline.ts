@@ -323,8 +323,9 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         if (candles.length >= 30) {
           tech = analyzeTechnicals(candles);
           if (tech) {
-            compositeScore = Math.max(0, Math.min(100, 50 + tech.score));
-            technicalScore = compositeScore;
+            technicalScore = Math.max(0, Math.min(100, 50 + Math.round(tech.score * 0.5)));
+            // 폴백 composite는 75 캡 — AI 없는 점수가 buyThreshold 83을 통과하지 못하게
+            compositeScore = Math.min(75, technicalScore);
           }
         }
 
@@ -333,7 +334,8 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         let confidence = 0.5;
         if (tech) {
           if (tech.overallSignal === 'STRONG_BUY' || (tech.score >= 25 && tech.goldenCross)) {
-            signal = 'STRONG_BUY'; confidence = 0.72;
+            // 폴백 신뢰도 0.72→0.58: AI 검증 없는 기술 신호는 과신하지 않는다
+            signal = 'STRONG_BUY'; confidence = 0.58;
           } else if (tech.overallSignal === 'BUY' || tech.score >= 15) {
             signal = 'BUY'; confidence = 0.62;
           } else if (tech.overallSignal === 'STRONG_SELL' || (tech.score <= -20 && tech.deathCross)) {
@@ -399,13 +401,13 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     );
 
     // 6-1. 발굴 종목 중 고점수 자동 active 등록
-    // AI 정상: score≥58 + confidence≥0.58 / AI 실패(기술 폴백): score≥75만으로 활성화
+    // AI 정상: score≥70 + confidence≥0.60 / AI 실패(기술 폴백): score≥75만으로 활성화
     if (discoveryList.length > 0 && !isMemoryMode()) {
       const discoverySet = new Set(discoveryList.map((d) => normalizeStockCode(d.stock_code)));
       const aiWorking = scores.some((s) => (s.confidence ?? 0) >= 0.3);
       const topDiscovery = scores.filter((s) => {
         if (!discoverySet.has(s.stock_code)) return false;
-        if (aiWorking) return s.composite_score >= 58 && (s.confidence ?? 0) >= 0.58;
+        if (aiWorking) return s.composite_score >= 70 && (s.confidence ?? 0) >= 0.60;
         return s.composite_score >= 75; // AI 실패 시 기술 점수만으로 판단
       });
       if (topDiscovery.length > 0) {

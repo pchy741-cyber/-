@@ -12,13 +12,22 @@ let vapidReady = false;
  * 우선순위: 환경변수 → DB → 자동 생성 후 DB 저장
  */
 export async function initVapid(): Promise<void> {
-  // 1. 환경변수 우선
+  // 1. 환경변수 우선 (Secret Manager 줄바꿈 제거 + DB 동기화)
   if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
-    vapidPublic = process.env.VAPID_PUBLIC_KEY;
-    vapidPrivate = process.env.VAPID_PRIVATE_KEY;
+    vapidPublic = process.env.VAPID_PUBLIC_KEY.trim();
+    vapidPrivate = process.env.VAPID_PRIVATE_KEY.trim();
     webpush.setVapidDetails('mailto:proscom2208@gmail.com', vapidPublic, vapidPrivate);
     vapidReady = true;
-    logger.info('✅ VAPID 키 로드 (환경변수)', { component: 'WEB_PUSH' });
+    // DB에도 동기화 — 재배포 시 키 불일치로 기존 구독이 무효화되는 것 방지
+    try {
+      const pool = getPool();
+      await pool.query(
+        `INSERT INTO system_config (key, value) VALUES ('vapid_public', $1), ('vapid_private', $2)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+        [vapidPublic, vapidPrivate],
+      );
+    } catch { /* DB 동기화 실패는 무시 */ }
+    logger.info(`✅ VAPID 키 로드 (환경변수) pub=${vapidPublic.slice(0, 16)}...`, { component: 'WEB_PUSH' });
     return;
   }
 

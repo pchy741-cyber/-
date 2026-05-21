@@ -1,18 +1,21 @@
 import { Hono } from 'hono';
 import { getPortfolioFlowStatus } from '../../automation/ceo-workflow.js';
 import { getDefenseParkState } from '../../ai/track-b/defense-park.js';
-import { getCachedScores, cachePrice, getLastKnownPrices } from '../../cache/redis.js';
+import { getCachedScores, getScoresWithFallback, cachePrice, getLastKnownPrices } from '../../cache/redis.js';
 import { cachePriceMemory, getLastKnownPricesMemory, getCachedPriceMemory } from '../../cache/memory.js';
 import { config } from '../../config/index.js';
-import { createChain, getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getPool, getTodayStartSnapshot } from '../../db/client.js';
+import { STRATEGY_PARAMS } from '../../config/constants.js';
+import { createChain, getActiveStrategy, getActiveWatchlist, getOpenChains, getPool, getTodayStartSnapshot } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
-import { getCurrentPrice, getBatchPrices, isMarketOpen, getVolumeRankingStocks, getChangeRankingStocks } from '../../kis/market.js';
+import { getCurrentPrice, getBatchPrices, isMarketOpen, getVolumeRankingStocks, getChangeRankingStocks, type CurrentPrice } from '../../kis/market.js';
 import { getDinnerMoneyStats } from '../../automation/profit-withdraw.js';
 import { getKillSwitchStatus } from '../../risk/kill-switch.js';
+import { getCooldownStatus } from '../../risk/trade-gate.js';
 import { getPaperBalance } from '../../risk/engine.js';
 import { placeOrder } from '../../kis/order.js';
 import { logger } from '../../utils/logger.js';
 import { getOverseasScores } from '../../cache/overseas-scores.js';
+import { notifyBuy, notifySell } from '../../notifications/web-push.js';
 
 export const dashboardRoutes = new Hono();
 
@@ -87,10 +90,15 @@ async function getFxRate(): Promise<number> {
   return _fxCache.rate;
 }
 
-// ── 대시보드 응답 캐시 (30초 TTL, Stale-While-Revalidate) ──
+// ── 대시보드 응답 캐시 (10초 TTL, Stale-While-Revalidate) ──
 let _dashCache: { data: unknown; ts: number } | null = null;
 let _dashRefreshing = false;
 const DASH_CACHE_TTL = 30_000;
+
+// Track B 자동 매도/매수 후 즉시 캐시 무효화 (다른 모듈에서 호출)
+export function invalidateDashboardCache(): void {
+  _dashCache = null;
+}
 
 // ── 대시보드 요약 ──
 dashboardRoutes.get('/dashboard', async (c) => {
@@ -110,6 +118,17 @@ dashboardRoutes.get('/dashboard', async (c) => {
   _dashCache = { data: payload, ts: Date.now() };
   return c.json(payload);
 });
+
+export async function prewarmDashboard(): Promise<void> {
+  if (_dashCache) return;
+  try {
+    const payload = await buildDashPayload();
+    _dashCache = { data: payload, ts: Date.now() };
+    logger.info('🔥 대시보드 캐시 선제 빌드 완료', { component: 'BOOT' });
+  } catch (e: any) {
+    logger.warn(`대시보드 캐시 선제 빌드 실패: ${e.message}`, { component: 'BOOT' });
+  }
+}
 
 async function buildDashPayload(): Promise<unknown> {
   // KIS API 실패 시에도 기본값으로 응답 (장 외 시간, API 제한 등)
@@ -132,13 +151,7 @@ async function buildDashPayload(): Promise<unknown> {
   const watchlist = await getActiveWatchlist().catch(() => []);
   const stockCodes = watchlist.map((w) => w.stock_code);
 
-  let scores: any[] = [];
-  try {
-    scores = await getCachedScores(stockCodes);
-    if (scores.length === 0) {
-      scores = await getLatestScores(stockCodes);
-    }
-  } catch { /* scores unavailable */ }
+  const scores = await getScoresWithFallback(stockCodes);
 
   // chains + scores에 현재가 매칭 — KIS API 우선 (신선한 가격), 실패 시 캐시 폴백
   const posMap = new Map((balance.positions ?? []).map((p: any) => [p.stockCode, p]));
@@ -153,18 +166,33 @@ async function buildDashPayload(): Promise<unknown> {
     if (pos?.currentPrice > 0) priceMap.set(code, pos.currentPrice);
   }
 
-  // 2차: KIS 시세 API — 장중에만 호출 (장 마감 후엔 캐시 사용으로 속도 보장)
+  // 2차: KIS 시세 API 조회 — 최소 호출 원칙
+  // - 장중: 체인 코드(포지션) + 캐시 없는 score 코드만 (watchlist 전체 X → API 병목 제거)
+  // - 장외: 이름 미확인 코드만 (이름 보정 목적)
   const nameMap = new Map<string, string>();
   const watchlistNameMap = new Map(watchlist.map((w: any) => [w.stock_code, w.stock_name]));
   const chainNameMap = new Map(chains.map((ch: any) => [ch.stock_code, ch.stock_name ?? '']));
-  // 이름이 없는 종목은 장 마감 후에도 1회 조회 (이름 보정 목적) — watchlist + chains 모두 확인
+
+  // 장중: score 코드 중 캐시(인메모리 30s) 없는 것만 추가 조회
+  const scoreCodesNeedingPrice = isMarketOpen()
+    ? scoreCodes.filter(c => !priceMap.has(c) && !(getCachedPriceMemory(c) ?? 0))
+    : [];
+
+  // 이름 보정 필요 코드
   const needNameCodes = allWatchCodes.filter(c => {
     const n = String(watchlistNameMap.get(c) ?? '') || String(chainNameMap.get(c) ?? '');
     return !n || n === c || /^\d{6}$/.test(n);
   });
-  const codesToFetch = isMarketOpen() ? allWatchCodes : needNameCodes;
 
-  // 병렬 배치 조회 (순차 → 동시 → 속도 대폭 개선)
+  // 실제 API 호출 대상: 포지션 종목(chain) + 이름 미확인 + 캐시 없는 score(최대 10개)
+  const chainNeedingPrice = chainCodes.filter(c => !priceMap.has(c));
+  const codesToFetch = [...new Set([
+    ...chainNeedingPrice,
+    ...needNameCodes,
+    ...scoreCodesNeedingPrice.slice(0, 10),
+  ])];
+
+  // 병렬 배치 조회 (체인+이름보정 위주 — 대폭 축소)
   if (codesToFetch.length > 0) {
     try {
       const batchResult = await getBatchPrices(codesToFetch);
@@ -199,8 +227,8 @@ async function buildDashPayload(): Promise<unknown> {
     }
   }
 
-  // 3차: API 실패 시 단기 캐시 폴백 (30초 TTL)
-  for (const code of chainCodes) {
+  // 3차: 인메모리 캐시 폴백 (chain + score 모두)
+  for (const code of allWatchCodes) {
     if (!priceMap.has(code)) {
       const cached = getCachedPriceMemory(code);
       if (cached && cached > 0) priceMap.set(code, cached);
@@ -275,7 +303,8 @@ async function buildDashPayload(): Promise<unknown> {
 
   // ── 해외 보유종목 (별도 표시용, 국내 총자산에 합산하지 않음) ──
   let overseasHoldings: Array<{ stock_code: string; quantity: number; avg_price: number; bought_at: string; last_price: number }> = [];
-  let overseasTotalInvested = 0;
+  let overseasTotalInvested = 0; // 원가 합산 (비중 계산용)
+  let overseasMarketValueUsd = 0; // 시가 합산 (총자산 표시용)
   let overseasCash = 0;
   try {
     const { rows: osRows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0');
@@ -285,39 +314,73 @@ async function buildDashPayload(): Promise<unknown> {
     for (const r of osRows) {
       const qty = Number(r.quantity);
       const avgP = Number(r.avg_price);
-      overseasTotalInvested += avgP * qty;
+      const lastP = Number(r.last_price ?? 0);
+      overseasTotalInvested += avgP * qty;                            // 원가 (weight 분모용)
+      overseasMarketValueUsd += (lastP > 0 ? lastP : avgP) * qty;    // 시가 (총자산 합산용)
       overseasHoldings.push({
         stock_code: r.stock_code,
         quantity: qty,
         avg_price: avgP,
         bought_at: r.bought_at,
-        last_price: Number(r.last_price ?? 0),
+        last_price: lastP,
       });
     }
   } catch { /* overseas table may not exist */ }
 
   // ── 국내 + 해외 합산 ──
   const FX_RATE = await getFxRate(); // 실시간 환율 (1시간 캐시, 실패 시 1420 폴백)
-  const overseasInvestedKrw = (isNaN(overseasTotalInvested) ? 0 : overseasTotalInvested) * FX_RATE;
+  const overseasInvestedKrw = (isNaN(overseasTotalInvested) ? 0 : overseasTotalInvested) * FX_RATE; // 원가(비중계산용)
+  const overseasMarketValueKrw = (isNaN(overseasMarketValueUsd) ? 0 : overseasMarketValueUsd) * FX_RATE; // 시가(총자산용)
   const overseasCashKrw = (isNaN(overseasCash) ? 0 : overseasCash) * FX_RATE;
 
   // domesticInvested: 화면 표시용 "현재 국내 투자금(원금)" — 손익 미포함
   // Paper: totalInvested = totalChainInvested (원금), Live: evalAmount(원금+미실현) 이지만 KIS 기준이 이것
   const domesticInvested = totalInvested || 0;
 
-  // grandTotalValue: 국내(현금 + 평가금액) + 해외(투자원금 + 현금)
-  // Paper: cash + evalAmount(=KIS paper posVal ≈ 원금+미실현) + 해외
-  // Live:  cash + evalAmount(=KIS evalAmount) + 해외
-  const grandTotalValue = (actualCash || 0) + domesticInvested + overseasInvestedKrw + overseasCashKrw;
+  // grandTotalValue: 국내(현금 + 평가금액) + 해외(시가 + 현금) — 해외는 last_price 기준 시가 사용
+  const grandTotalValue = (actualCash || 0) + domesticInvested + overseasMarketValueKrw + overseasCashKrw;
 
-  // 비중(weight) 계산 — grandTotalValue(국내+해외 전체 자산) 기준
+  // 비중(weight) 계산 — 국내/해외 각자 포트폴리오 기준 (해외 잔고가 국내 비중 왜곡 방지)
+  const domesticPortfolioValue = (actualCash || 0) + totalChainInvested; // 국내 현금 + 국내 투자원가
+  const overseasPortfolioValue = overseasInvestedKrw + overseasCashKrw;  // 해외 투자 + 현금 (KRW환산)
   for (const ch of enrichedChains as any[]) {
-    ch.weight = grandTotalValue > 0 ? Math.round((ch.invested / grandTotalValue) * 1000) / 10 : 0;
+    ch.weight = domesticPortfolioValue > 0 ? Math.round((ch.invested / domesticPortfolioValue) * 1000) / 10 : 0;
   }
   for (const h of overseasHoldings as any[]) {
     const investedKrw = (h.avg_price * h.quantity) * FX_RATE;
-    h.weight = grandTotalValue > 0 ? Math.round((investedKrw / grandTotalValue) * 1000) / 10 : 0;
+    h.weight = overseasPortfolioValue > 0 ? Math.round((investedKrw / overseasPortfolioValue) * 1000) / 10 : 0;
   }
+
+  // 동일 종목 복수 체인 합산 (같은 종목 중복 표시 방지)
+  const chainsByCode = new Map<string, any[]>();
+  for (const ch of enrichedChains as any[]) {
+    const arr = chainsByCode.get(ch.stock_code) ?? [];
+    arr.push(ch);
+    chainsByCode.set(ch.stock_code, arr);
+  }
+  const displayChains = [...chainsByCode.values()].map((group: any[]) => {
+    if (group.length === 1) return { ...group[0], chainIds: [group[0].id] };
+    const primary = group[0];
+    const totalQty = group.reduce((s: number, c: any) => s + Number(c.total_quantity || 0), 0);
+    const totalInv = group.reduce((s: number, c: any) => s + (c.invested || 0), 0);
+    const weightedAvg = totalQty > 0 ? totalInv / totalQty : 0;
+    const cp = primary.currentPrice;
+    const mergedPnl = cp > 0 ? (cp - weightedAvg) * totalQty : 0;
+    const mergedPnlPct = cp > 0 && weightedAvg > 0 ? ((cp - weightedAvg) / weightedAvg) * 100 : 0;
+    const totalWeight = group.reduce((s: number, c: any) => s + (c.weight || 0), 0);
+    return {
+      ...primary,
+      avg_buy_price: weightedAvg,
+      total_quantity: totalQty,
+      invested: totalInv,
+      unrealizedPnl: mergedPnl,
+      unrealizedPnlPct: mergedPnlPct,
+      weight: totalWeight,
+      status: group.some((c: any) => c.status === 'PROFIT_TAKING') ? 'PROFIT_TAKING' : primary.status,
+      chainIds: group.map((c: any) => c.id),
+      _mergedCount: group.length,
+    };
+  });
 
   // grandTotalInvested: 투자 중인 원금 합산 (현금 제외)
   const grandTotalInvested = totalChainInvested + overseasInvestedKrw;
@@ -341,13 +404,15 @@ async function buildDashPayload(): Promise<unknown> {
       holdings: overseasHoldings,
       totalInvestedUsd: overseasTotalInvested,
       totalInvestedKrw: overseasInvestedKrw,
+      totalMarketValueUsd: overseasMarketValueUsd, // 시가 기준 (last_price)
+      totalMarketValueKrw: overseasMarketValueKrw,
       cashUsd: overseasCash,
       cashKrw: overseasCashKrw,
       fxRate: FX_RATE,
       scores: getOverseasScores(),
     },
-    activeChains: enrichedChains.length,
-    chains: enrichedChains,
+    activeChains: displayChains.length,
+    chains: displayChains,
     scores: scores.map((s: any) => ({
       ...s,
       stock_name: watchlistNameMap.get(s.stock_code) || s.stock_code,
@@ -355,11 +420,15 @@ async function buildDashPayload(): Promise<unknown> {
     })),
     strategy: strategy ?? { mode: 'SWING' },
     killSwitch: getKillSwitchStatus(),
+    cooldown: await getCooldownStatus().catch(() => ({ active: false, consecutive: 0, remainingMinutes: 0, reason: '' })),
     tradingMode: config.tradingMode,
     riskLimits: await (async () => {
       const snap = await getTodayStartSnapshot().catch(() => null);
       const startValue = snap ? Number(snap.total_value) : grandTotalValue;
-      const maxDailyDrawdownKrw = Math.round(startValue * 0.3);
+      // 리스크 엔진과 동일한 계산 (config 설정값 우선, 없으면 총자산 비율 폴백)
+      const maxDailyDrawdownKrw = config.risk.maxDailyDrawdownKrw > 0
+        ? config.risk.maxDailyDrawdownKrw
+        : Math.round(startValue * (config.isPaper ? 0.25 : 0.05));
       return { maxDailyDrawdownKrw, startValue: Math.round(startValue) };
     })(),
     insights: insightRows.rows,
@@ -486,9 +555,13 @@ dashboardRoutes.get('/watchlist', async (c) => {
       }
     }
 
-    // 국내 종목은 KIS 시세 API에서 종목명 보정
+    // 국내 종목은 KIS 시세 API에서 종목명 보정 (rate limiter 혼잡 시 스킵 — 3s 타임아웃)
     if (unresolvedDomestic.length > 0) {
-      const quotes = await getBatchPrices(unresolvedDomestic.slice(0, 30)).catch(() => new Map());
+      const timeoutMap = new Map<string, CurrentPrice>();
+      const quotes = await Promise.race([
+        getBatchPrices(unresolvedDomestic.slice(0, 20)),
+        new Promise<Map<string, CurrentPrice>>(resolve => setTimeout(() => resolve(timeoutMap), 3000)),
+      ]).catch(() => new Map<string, CurrentPrice>());
       for (const [code, q] of quotes) {
         if (!isInvalidStockName(q.stockName, code)) {
           nameMap.set(code, q.stockName.trim());
@@ -764,7 +837,8 @@ dashboardRoutes.get('/trades', async (c) => {
       for (const o of pnlRows as Array<any>) {
         const code = String(o.stock_code ?? '');
         const side = String(o.side ?? '');
-        const qty = Math.max(0, Number(o.filled_quantity ?? 0));
+        // filled_quantity 우선, 없으면 quantity 폴백 (PAPER모드 일부 주문)
+        const qty = Math.max(0, Number(o.filled_quantity || o.quantity || 0));
         const price = Math.max(0, Number(o.filled_price ?? 0));
         if (!code || qty <= 0 || price <= 0) continue;
 
@@ -798,7 +872,7 @@ dashboardRoutes.get('/trades', async (c) => {
 
     if (domesticCodes.length > 0) {
       const { rows: pnlRows } = await getPool().query(
-        `SELECT id, stock_code, side, filled_quantity, filled_price
+        `SELECT id, stock_code, side, quantity, filled_quantity, filled_price
            FROM orders
           WHERE status = 'FILLED'
             AND stock_code = ANY($1::text[])
@@ -810,7 +884,7 @@ dashboardRoutes.get('/trades', async (c) => {
 
     if (overseasCodes.length > 0) {
       const { rows: osPnlRows } = await getPool().query(
-        `SELECT id, stock_code, side, filled_quantity, filled_price
+        `SELECT id, stock_code, side, quantity, filled_quantity, filled_price
            FROM orders
           WHERE status = 'FILLED'
             AND stock_code = ANY($1::text[])
@@ -861,9 +935,13 @@ dashboardRoutes.get('/trades', async (c) => {
       }
     }
 
-    // 국내 코드는 KIS 조회로 보정
+    // 국내 코드는 KIS 조회로 보정 (3s 타임아웃)
     if (unresolvedDomestic.length > 0) {
-      const quotes = await getBatchPrices(unresolvedDomestic.slice(0, 30)).catch(() => new Map());
+      const timeoutMap2 = new Map<string, CurrentPrice>();
+      const quotes = await Promise.race([
+        getBatchPrices(unresolvedDomestic.slice(0, 20)),
+        new Promise<Map<string, CurrentPrice>>(resolve => setTimeout(() => resolve(timeoutMap2), 3000)),
+      ]).catch(() => new Map<string, CurrentPrice>());
       for (const [code, q] of quotes) {
         if (!isInvalidStockName(q.stockName, code)) {
           nameMap.set(code, q.stockName.trim());
@@ -1029,6 +1107,10 @@ dashboardRoutes.delete('/escape/:chainId', async (c) => {
 dashboardRoutes.post('/sell/:chainId', async (c) => {
   const chainId = c.req.param('chainId');
   try {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const triggerSource: string = (body.source as string) || 'MANUAL';
+    const sellReason: string = (body.reason as string) || 'CEO 수동 매도';
+
     const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1', [chainId]);
     const chain = rows[0];
     if (!chain) return c.json({ error: '체인을 찾을 수 없습니다' }, 404);
@@ -1046,15 +1128,22 @@ dashboardRoutes.post('/sell/:chainId', async (c) => {
     if (config.isPaper) {
       const fakeOrderNo = `P${Date.now().toString(36)}`;
       await getPool().query(
-        `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = 'CEO 수동 매도' WHERE id = $1`,
-        [chainId],
+        `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2,
+          realized_pnl = CASE WHEN $3 > 0 THEN ($3 - avg_buy_price) * total_quantity ELSE realized_pnl END
+         WHERE id = $1`,
+        [chainId, sellReason, fillPrice],
       );
       await getPool().query(
         `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
-         VALUES ($1, $2, 'SELL', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, 'MANUAL', 'CEO 수동 전량 매도')`,
-        [chainId, chain.stock_code, chain.total_quantity, fillPrice, fakeOrderNo, config.tradingMode],
+         VALUES ($1, $2, 'SELL', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, $7, $8)`,
+        [chainId, chain.stock_code, chain.total_quantity, fillPrice, fakeOrderNo, config.tradingMode, triggerSource, sellReason],
       );
-      logger.info(`✅ CEO 수동 매도 완료 (모의투자): ${chain.stock_code} ${chain.total_quantity}주`, { component: 'DASHBOARD' });
+      logger.info(`✅ 매도 완료 (모의투자): ${chain.stock_code} ${chain.total_quantity}주 [${triggerSource}]`, { component: 'DASHBOARD' });
+      try {
+        const pnlPct = chain.avg_buy_price > 0 ? ((fillPrice - Number(chain.avg_buy_price)) / Number(chain.avg_buy_price)) * 100 : 0;
+        await notifySell(chain.stock_code, chain.total_quantity, fillPrice, pnlPct, sellReason);
+      } catch { /* 알림 실패 무시 */ }
+      _dashCache = null; // 매도 후 즉시 캐시 무효화
       return c.json({ ok: true, orderNo: fakeOrderNo, message: `${chain.stock_code} ${chain.total_quantity}주 전량 매도 완료 (모의투자)` });
     }
 
@@ -1092,21 +1181,119 @@ dashboardRoutes.post('/sell/:chainId', async (c) => {
 
     // 체인 상태 업데이트
     await getPool().query(
-      `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = 'CEO 수동 매도' WHERE id = $1`,
-      [chainId],
+      `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2,
+        realized_pnl = CASE WHEN $3 > 0 THEN ($3 - avg_buy_price) * total_quantity ELSE realized_pnl END
+       WHERE id = $1`,
+      [chainId, sellReason, fillPrice],
     );
 
     // 주문 기록 (filled_quantity/filled_price 포함 — Paper 복원 로직이 이 필드를 읽음)
     await getPool().query(
       `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
-       VALUES ($1, $2, 'SELL', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, 'MANUAL', 'CEO 수동 전량 매도')`,
-      [chainId, chain.stock_code, chain.total_quantity, fillPrice, kisOrderNo, config.tradingMode],
+       VALUES ($1, $2, 'SELL', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, $7, $8)`,
+      [chainId, chain.stock_code, chain.total_quantity, fillPrice, kisOrderNo, config.tradingMode, triggerSource, sellReason],
     );
 
-    logger.info(`✅ CEO 수동 매도 완료: ${chain.stock_code} ${chain.total_quantity}주 (주문번호 ${kisOrderNo})`, { component: 'DASHBOARD' });
+    logger.info(`✅ 매도 완료: ${chain.stock_code} ${chain.total_quantity}주 [${triggerSource}] (주문번호 ${kisOrderNo})`, { component: 'DASHBOARD' });
+    try {
+      const pnlPct = chain.avg_buy_price > 0 ? ((fillPrice - Number(chain.avg_buy_price)) / Number(chain.avg_buy_price)) * 100 : 0;
+      await notifySell(chain.stock_code, chain.total_quantity, fillPrice, pnlPct, sellReason);
+    } catch { /* 알림 실패 무시 */ }
+    _dashCache = null; // 매도 후 즉시 캐시 무효화
     return c.json({ ok: true, orderNo: kisOrderNo, message: `${chain.stock_code} ${chain.total_quantity}주 전량 매도 주문 완료` });
   } catch (err: any) {
     logger.error(`수동 매도 예외: ${err.message}`, { component: 'DASHBOARD' });
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── 종목코드 전량 매도 (복수 체인 일괄 청산) ──
+dashboardRoutes.post('/sell-stock/:stockCode', async (c) => {
+  const stockCode = c.req.param('stockCode');
+  try {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const triggerSource: string = (body.source as string) || 'MANUAL';
+    const sellReason: string = (body.reason as string) || 'CEO 수동 매도';
+
+    const { rows: openChains } = await getPool().query(
+      `SELECT * FROM transaction_chains WHERE stock_code = $1 AND status != 'CLOSED' ORDER BY created_at ASC`,
+      [stockCode],
+    );
+    if (openChains.length === 0) return c.json({ error: '보유 포지션이 없습니다' }, 404);
+
+    const totalQty = openChains.reduce((s: number, ch: any) => s + Number(ch.total_quantity || 0), 0);
+    if (totalQty <= 0) return c.json({ error: '매도할 수량이 없습니다' }, 400);
+
+    let fillPrice = 0;
+    try { const px = await getCurrentPrice(stockCode); fillPrice = px.currentPrice; } catch { /* skip */ }
+
+    if (config.isPaper) {
+      for (const chain of openChains) {
+        const fakeOrderNo = `P${Date.now().toString(36)}`;
+        await getPool().query(
+          `UPDATE transaction_chains SET status='CLOSED', closed_at=NOW(), close_reason=$2,
+            realized_pnl = CASE WHEN $3 > 0 THEN ($3 - avg_buy_price) * total_quantity ELSE realized_pnl END
+           WHERE id=$1`,
+          [chain.id, sellReason, fillPrice],
+        );
+        await getPool().query(
+          `INSERT INTO orders (chain_id,stock_code,side,order_type,quantity,price,filled_quantity,filled_price,kis_order_no,status,trading_mode,trigger_source,ai_reasoning)
+           VALUES ($1,$2,'SELL','MARKET',$3,$4,$3,$4,$5,'FILLED',$6,$7,$8)`,
+          [chain.id, stockCode, chain.total_quantity, fillPrice, fakeOrderNo, config.tradingMode, triggerSource, sellReason],
+        );
+      }
+      logger.info(`✅ 전량 매도 완료 (모의): ${stockCode} ${totalQty}주 [${triggerSource}] (${openChains.length}체인)`, { component: 'DASHBOARD' });
+      _dashCache = null;
+      return c.json({ ok: true, message: `${stockCode} ${totalQty}주 전량 매도 완료 (모의투자)` });
+    }
+
+    let kisOrderNo = '';
+    try {
+      let result = await placeOrder({ stockCode, side: 'SELL', quantity: totalQty });
+      if (!result.success) {
+        await new Promise((r) => setTimeout(r, 2000));
+        result = await placeOrder({ stockCode, side: 'SELL', quantity: totalQty });
+      }
+      if (!result.success) {
+        if (result.message?.includes('40240000') || result.message?.includes('잔고')) {
+          kisOrderNo = `GHOST_${Date.now().toString(36)}`;
+        } else {
+          return c.json({ error: `KIS 매도 거부: ${result.message}` }, 502);
+        }
+      } else {
+        kisOrderNo = result.orderNo ?? '';
+      }
+    } catch (kisErr: any) {
+      const msg: string = kisErr?.message ?? '';
+      if (msg.includes('40240000') || msg.includes('잔고')) {
+        kisOrderNo = `GHOST_${Date.now().toString(36)}`;
+      } else { throw kisErr; }
+    }
+
+    for (const chain of openChains) {
+      await getPool().query(
+        `UPDATE transaction_chains SET status='CLOSED', closed_at=NOW(), close_reason=$2,
+          realized_pnl = CASE WHEN $3 > 0 THEN ($3 - avg_buy_price) * total_quantity ELSE realized_pnl END
+         WHERE id=$1`,
+        [chain.id, sellReason, fillPrice],
+      );
+      await getPool().query(
+        `INSERT INTO orders (chain_id,stock_code,side,order_type,quantity,price,filled_quantity,filled_price,kis_order_no,status,trading_mode,trigger_source,ai_reasoning)
+         VALUES ($1,$2,'SELL','MARKET',$3,$4,$3,$4,$5,'FILLED',$6,$7,$8)`,
+        [chain.id, stockCode, chain.total_quantity, fillPrice, kisOrderNo, config.tradingMode, triggerSource, sellReason],
+      );
+    }
+
+    logger.info(`✅ 전량 매도 완료: ${stockCode} ${totalQty}주 [${triggerSource}] (${openChains.length}체인, ${kisOrderNo})`, { component: 'DASHBOARD' });
+    try {
+      const avgBuy = openChains.reduce((s: number, c: any) => s + Number(c.avg_buy_price || 0) * Number(c.total_quantity || 0), 0) / totalQty;
+      const pnlPct = avgBuy > 0 ? ((fillPrice - avgBuy) / avgBuy) * 100 : 0;
+      await notifySell(stockCode, totalQty, fillPrice, pnlPct, sellReason);
+    } catch { /* 알림 실패 무시 */ }
+    _dashCache = null;
+    return c.json({ ok: true, orderNo: kisOrderNo, message: `${stockCode} ${totalQty}주 전량 매도 완료` });
+  } catch (err: any) {
+    logger.error(`전량 매도 예외 (${stockCode}): ${err.message}`, { component: 'DASHBOARD' });
     return c.json({ error: err.message }, 500);
   }
 });
@@ -1132,14 +1319,13 @@ dashboardRoutes.post('/sell-overseas/:stockCode', async (c) => {
     } catch { /* 시세 조회 실패 시 DB 저장가 사용 */ }
     if (fillPrice <= 0) fillPrice = avgPrice;
 
-    const paperReasoning = avgPrice > 0
-      ? `[avgBuy:${avgPrice.toFixed(4)}] CEO 해외주식 수동 전량 매도`
-      : 'CEO 해외주식 수동 전량 매도';
+    const paperReasoning = 'CEO 해외주식 수동 전량 매도';
 
     if (config.isPaper) {
       const fakeOrderNo = `POS${Date.now().toString(36)}`;
       await getPool().query(
         'DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2', [stockCode, exchange]);
+      await getPool().query('DELETE FROM overseas_state WHERE key = $1', [`maxprice_${stockCode}`]);
       await getPool().query(
         `INSERT INTO overseas_state (key, value) VALUES ('cash', $1::text)
          ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
@@ -1165,6 +1351,7 @@ dashboardRoutes.post('/sell-overseas/:stockCode', async (c) => {
     }
     await getPool().query(
       'DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2', [stockCode, exchange]);
+    await getPool().query('DELETE FROM overseas_state WHERE key = $1', [`maxprice_${stockCode}`]);
     await getPool().query(
       `INSERT INTO overseas_state (key, value) VALUES ('cash', $1::text)
        ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
@@ -1182,14 +1369,8 @@ dashboardRoutes.post('/sell-overseas/:stockCode', async (c) => {
 });
 
 // ── Claude Code 스캘핑 수동 매수 ──
-// X-Api-Key 헤더 or 세션 쿠키 인증. /loop 모드에서 Claude가 직접 호출.
+// requireAuth 미들웨어가 이미 세션 쿠키 / x-api-key 인증을 처리함 — 이중 체크 불필요
 dashboardRoutes.post('/manual-buy', async (c) => {
-  const apiKey = c.req.header('x-api-key') ?? '';
-  const secret = process.env.DASHBOARD_PASSWORD ?? '';
-  if (secret && apiKey !== secret) {
-    return c.json({ error: '인증 실패' }, 401);
-  }
-
   let body: { stock_code?: string; amount_krw?: number; reasoning?: string };
   try {
     body = await c.req.json();
@@ -1217,22 +1398,23 @@ dashboardRoutes.post('/manual-buy', async (c) => {
       const chainId = await createChain({
         stock_code,
         status: 'OPEN',
-        strategy_mode: 'SCALPING',
+        strategy_mode: 'SWING',
         avg_buy_price: curPrice,
         total_quantity: quantity,
         total_invested: totalInvested,
         realized_pnl: 0,
-        target_profit_pct: 1.5,
-        stop_loss_pct: 0.8,
-        max_averaging_count: 0,
+        target_profit_pct: STRATEGY_PARAMS.SWING.takeProfitPct,
+        stop_loss_pct: STRATEGY_PARAMS.SWING.stopLossPct,
+        max_averaging_count: STRATEGY_PARAMS.SWING.maxAveragingCount,
         current_averaging_count: 0,
       });
       await getPool().query(
         `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
          VALUES ($1, $2, 'BUY', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, 'CLAUDE', $7)`,
-        [chainId, stock_code, quantity, curPrice, fakeOrderNo, config.tradingMode, reasoning ?? 'Claude Code 스캘핑'],
+        [chainId, stock_code, quantity, curPrice, fakeOrderNo, config.tradingMode, reasoning ?? 'Claude Code 눌림매매'],
       );
       logger.info(`🤖 Claude 매수 (모의): ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 — ${reasoning}`, { component: 'CLAUDE_BUY' });
+      try { await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑'); } catch { /* 알림 실패 무시 */ }
       return c.json({ ok: true, orderNo: fakeOrderNo, stock_code, quantity, price: curPrice, totalInvested });
     }
 
@@ -1243,25 +1425,73 @@ dashboardRoutes.post('/manual-buy', async (c) => {
     const chainId = await createChain({
       stock_code,
       status: 'OPEN',
-      strategy_mode: 'SCALPING',
+      strategy_mode: 'SWING',
       avg_buy_price: curPrice,
       total_quantity: quantity,
       total_invested: totalInvested,
       realized_pnl: 0,
-      target_profit_pct: 1.5,
-      stop_loss_pct: 0.8,
-      max_averaging_count: 0,
+      target_profit_pct: STRATEGY_PARAMS.SWING.takeProfitPct,
+      stop_loss_pct: STRATEGY_PARAMS.SWING.stopLossPct,
+      max_averaging_count: STRATEGY_PARAMS.SWING.maxAveragingCount,
       current_averaging_count: 0,
     });
     await getPool().query(
       `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
        VALUES ($1, $2, 'BUY', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, 'CLAUDE', $7)`,
-      [chainId, stock_code, quantity, curPrice, kisOrderNo, config.tradingMode, reasoning ?? 'Claude Code 스캘핑'],
+      [chainId, stock_code, quantity, curPrice, kisOrderNo, config.tradingMode, reasoning ?? 'Claude Code 눌림매매'],
     );
     logger.info(`🤖 Claude 매수 완료: ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 (${kisOrderNo}) — ${reasoning}`, { component: 'CLAUDE_BUY' });
+    try { await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑'); } catch { /* 알림 실패 무시 */ }
     return c.json({ ok: true, orderNo: kisOrderNo, stock_code, quantity, price: curPrice, totalInvested });
   } catch (err: any) {
     logger.error(`Claude 매수 예외: ${err.message}`, { component: 'CLAUDE_BUY' });
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── 승률 분석: 점수 구간별 WIN/LOSS 집계 ──
+dashboardRoutes.get('/stats/win-rate-bands', async (c) => {
+  try {
+    const { rows } = await getPool().query<{
+      band: string;
+      total: string;
+      wins: string;
+      losses: string;
+      break_evens: string;
+      avg_pnl: string;
+    }>(`
+      SELECT
+        CASE
+          WHEN entry_score >= 90 THEN '90+'
+          WHEN entry_score >= 85 THEN '85-89'
+          WHEN entry_score >= 80 THEN '80-84'
+          WHEN entry_score >= 75 THEN '75-79'
+          ELSE '<75'
+        END AS band,
+        COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE outcome = 'WIN')        AS wins,
+        COUNT(*) FILTER (WHERE outcome = 'LOSS')       AS losses,
+        COUNT(*) FILTER (WHERE outcome = 'BREAK_EVEN') AS break_evens,
+        ROUND(AVG(realized_pnl_pct)::NUMERIC, 2)       AS avg_pnl
+      FROM score_accuracy
+      WHERE recorded_at >= NOW() - INTERVAL '30 days'
+        AND entry_score IS NOT NULL
+      GROUP BY band
+      ORDER BY MIN(entry_score) DESC NULLS LAST
+    `);
+
+    const bands = rows.map(r => ({
+      band: r.band,
+      total: Number(r.total),
+      wins: Number(r.wins),
+      losses: Number(r.losses),
+      breakEvens: Number(r.break_evens),
+      winRate: Number(r.total) > 0 ? Math.round((Number(r.wins) / Number(r.total)) * 100) : 0,
+      avgPnlPct: Number(r.avg_pnl),
+    }));
+
+    return c.json({ ok: true, bands, period: '30days' });
+  } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
 });

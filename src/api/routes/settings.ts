@@ -1,9 +1,12 @@
 import { Hono } from 'hono';
+import { STRATEGY_PARAMS } from '../../config/constants.js';
 import { getActiveStrategy, getPool, isMemoryMode, logSystem } from '../../db/client.js';
 import { memSetActiveStrategy } from '../../db/memory-store.js';
 import { activateKillSwitch, deactivateKillSwitch, getKillSwitchStatus } from '../../risk/kill-switch.js';
+import { resetCooldown, getCooldownStatus } from '../../risk/trade-gate.js';
 import { runTrackAJob } from '../../scheduler/track-a-job.js';
 import { logger } from '../../utils/logger.js';
+import { setTradingModeOverride, getEffectiveTradingMode } from '../../config/index.js';
 
 export const settingsRoutes = new Hono();
 
@@ -33,6 +36,17 @@ settingsRoutes.post('/kill-switch/deactivate', async (c) => {
   }
 });
 
+// ── 연속손실 쿨다운 제어 ──
+settingsRoutes.get('/cooldown', async (c) => {
+  return c.json(await getCooldownStatus());
+});
+
+settingsRoutes.post('/cooldown/reset', async (c) => {
+  resetCooldown();
+  logger.info('🔓 쿨다운 수동 초기화 (대시보드)', { component: 'TRADE_GATE' });
+  return c.json({ ok: true, status: await getCooldownStatus() });
+});
+
 // ── 전략 설정 (CEO 프롬프트 관리) ──
 settingsRoutes.get('/strategy', async (c) => {
   const strategy = await getActiveStrategy();
@@ -42,15 +56,18 @@ settingsRoutes.get('/strategy', async (c) => {
 settingsRoutes.put('/strategy', async (c) => {
   const body = await c.req.json();
 
+  const requestedMode = (body.mode ?? 'SWING') as keyof typeof STRATEGY_PARAMS;
+  const modeBase = STRATEGY_PARAMS[requestedMode] ?? STRATEGY_PARAMS.SWING;
   const strategyData = {
-    mode: body.mode ?? 'SWING',
+    mode: requestedMode,
     notebooklm_prompt: body.notebooklm_prompt ?? '',
     gemini_prompt: body.gemini_prompt ?? '',
     gpt_prompt: body.gpt_prompt ?? '',
     claude_prompt: body.claude_prompt ?? '',
-    buy_threshold: body.buy_threshold ?? 70,
-    stop_loss_pct: body.stop_loss_pct ?? -5.0,
-    take_profit_pct: body.take_profit_pct ?? 8.0,
+    // UI 입력값이 constants 최솟값 미달이면 constants 우선
+    buy_threshold: body.buy_threshold != null ? Math.max(body.buy_threshold, modeBase.buyThreshold) : modeBase.buyThreshold,
+    stop_loss_pct: body.stop_loss_pct != null ? Math.min(body.stop_loss_pct, modeBase.stopLossPct) : modeBase.stopLossPct,
+    take_profit_pct: body.take_profit_pct != null ? Math.max(body.take_profit_pct, modeBase.takeProfitPct) : modeBase.takeProfitPct,
     strategy_document: body.strategy_document ?? '',
     risk_prompt: body.risk_prompt ?? '',
   };
@@ -68,11 +85,6 @@ settingsRoutes.put('/strategy', async (c) => {
   }
 
   try {
-    // 컬럼이 없을 경우 자동 추가
-    await getPool().query(`ALTER TABLE strategy_config ADD COLUMN IF NOT EXISTS notebooklm_prompt TEXT DEFAULT ''`).catch(() => {});
-    await getPool().query(`ALTER TABLE strategy_config ADD COLUMN IF NOT EXISTS strategy_document TEXT DEFAULT ''`).catch(() => {});
-    await getPool().query(`ALTER TABLE strategy_config ADD COLUMN IF NOT EXISTS risk_prompt TEXT DEFAULT ''`).catch(() => {});
-
     // UPDATE 우선 (기존 활성 전략 덮어쓰기) → 없으면 INSERT
     const { rowCount } = await getPool().query(
       `UPDATE strategy_config
@@ -234,6 +246,22 @@ settingsRoutes.post('/fix-chain-tpsl', async (c) => {
   }
 });
 
+// ── 거래 모드 전환 (런타임 오버라이드, 재시작 불필요) ──
+settingsRoutes.get('/trading-mode', (c) => {
+  return c.json({ mode: getEffectiveTradingMode() });
+});
+
+settingsRoutes.post('/trading-mode', async (c) => {
+  const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+  const mode = body.mode as string;
+  if (mode !== 'paper' && mode !== 'live') {
+    return c.json({ error: 'mode must be "paper" or "live"' }, 400);
+  }
+  setTradingModeOverride(mode as 'paper' | 'live');
+  logger.info(`🔄 거래 모드 전환: ${mode}`, { component: 'SETTINGS' });
+  return c.json({ ok: true, mode: getEffectiveTradingMode() });
+});
+
 // ── 인사이트 관리 ──
 // GET: 전체 인사이트 조회
 settingsRoutes.get('/insights', async (c) => {
@@ -311,6 +339,35 @@ settingsRoutes.post('/run-self-learning', async (c) => {
   return c.json({ ok: true, message: '자기학습 시작 (백그라운드 실행, 완료 시 텔레그램 알림)' });
 });
 
+// ── 거래 모드 전환 (모의/실전) ──
+settingsRoutes.get('/trading-mode', async (c) => {
+  try {
+    const { rows } = await getPool().query('SELECT trading_mode_override FROM portfolio_allocation_config ORDER BY id DESC LIMIT 1');
+    const dbMode = rows[0]?.trading_mode_override ?? null;
+    return c.json({ mode: dbMode ?? getEffectiveTradingMode(), dbOverride: dbMode });
+  } catch {
+    return c.json({ mode: getEffectiveTradingMode(), dbOverride: null });
+  }
+});
+
+settingsRoutes.post('/trading-mode', async (c) => {
+  const body = await c.req.json();
+  const mode: 'paper' | 'live' = body.mode === 'live' ? 'live' : 'paper';
+  setTradingModeOverride(mode);
+  try {
+    const { rows: existing } = await getPool().query('SELECT id FROM portfolio_allocation_config ORDER BY id ASC LIMIT 1');
+    if (existing.length > 0) {
+      await getPool().query('UPDATE portfolio_allocation_config SET trading_mode_override=$1 WHERE id=$2', [mode, existing[0].id]);
+    } else {
+      await getPool().query('INSERT INTO portfolio_allocation_config (trading_mode_override) VALUES ($1)', [mode]);
+    }
+  } catch (e: any) {
+    logger.warn(`거래 모드 DB 저장 실패: ${e.message}`, { component: 'SETTINGS' });
+  }
+  logger.info(`🔄 거래 모드 전환: ${mode.toUpperCase()} (CEO 대시보드)`, { component: 'SETTINGS' });
+  return c.json({ ok: true, mode });
+});
+
 // ── 투자비율 설정 (국내/미국 비율 + 섹터 한도) ──
 const ALLOC_DEFAULTS = {
   kr_pct: 70, us_pct: 30,
@@ -376,15 +433,17 @@ settingsRoutes.post('/defense-mode/deactivate', async (c) => {
   try {
     const pool = getPool();
 
-    // 1. strategy_config → SWING + 매수 임계값 70으로 복원
+    // 1. strategy_config → SWING + constants 값으로 복원 (하드코딩 70 금지)
+    const swingP = STRATEGY_PARAMS.SWING;
     await pool.query(
-      `UPDATE strategy_config SET mode='SWING', buy_threshold=70, updated_at=NOW() WHERE is_active=true`,
+      `UPDATE strategy_config SET mode='SWING', buy_threshold=$1, stop_loss_pct=$2, take_profit_pct=$3, updated_at=NOW() WHERE is_active=true`,
+      [swingP.buyThreshold, swingP.stopLossPct, swingP.takeProfitPct],
     ).catch(() => {});
 
     // 인메모리 전략도 동기화
     if (isMemoryMode()) {
       const cur = await getActiveStrategy();
-      memSetActiveStrategy({ ...(cur ?? {}), mode: 'SWING', buy_threshold: 70 });
+      memSetActiveStrategy({ ...(cur ?? {}), mode: 'SWING', buy_threshold: swingP.buyThreshold, stop_loss_pct: swingP.stopLossPct, take_profit_pct: swingP.takeProfitPct });
     }
 
     // 2. defense_park_state 해제
@@ -393,10 +452,10 @@ settingsRoutes.post('/defense-mode/deactivate', async (c) => {
 
     // 3. 푸시 알림
     const { notifyAlert } = await import('../../notifications/web-push.js');
-    notifyAlert('✅ DEFENSE 모드 해제', 'SWING 매매 모드 복귀 (매수 기준 70점)').catch(() => {});
+    notifyAlert('✅ DEFENSE 모드 해제', `SWING 매매 모드 복귀 (매수 기준 ${swingP.buyThreshold}점)`).catch(() => {});
 
     logger.info('✅ DEFENSE 모드 수동 해제 완료', { component: 'SETTINGS' });
-    return c.json({ ok: true, message: 'DEFENSE 모드 해제 — SWING 복귀 (매수 기준 70점)' });
+    return c.json({ ok: true, message: `DEFENSE 모드 해제 — SWING 복귀 (매수 기준 ${swingP.buyThreshold}점)` });
   } catch (err: any) {
     return c.json({ ok: false, error: err?.message ?? 'defense deactivate failed' }, 500);
   }

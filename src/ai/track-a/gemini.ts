@@ -1,26 +1,7 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import { GoogleAuth } from 'google-auth-library';
 import { config } from '../../config/index.js';
 import type { DailyCandle } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { buildGeminiPrompt } from '../prompts/track-a-analysis.js';
-
-// Gemini API Key가 있으면 Google AI SDK 사용, 없으면 Vertex AI 시도
-const USE_VERTEX_AI = true; // Vertex AI 사용 — Cloud Run 서비스 계정 자동 인증
-
-const VERTEX_PROJECT_ID = 'quantops-trading';
-const VERTEX_LOCATION = 'us-central1';
-const VERTEX_MODEL = 'gemini-2.5-flash';
-const VERTEX_ENDPOINT = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${VERTEX_LOCATION}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
-const AI_STUDIO_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent`;
-
-// Lazy init — 키 변경 시 자동 반영
-function getGenAI(): GoogleGenerativeAI | null {
-  const key = config.ai.geminiKey || process.env.GEMINI_API_KEY;
-  if (!key || key.startsWith('your_') || key.length < 10) return null;
-  return new GoogleGenerativeAI(key);
-}
-const auth = USE_VERTEX_AI ? new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] }) : null;
 
 export interface GeminiAnalysis {
   market_sentiment: 'bullish' | 'neutral' | 'bearish' | 'panic';
@@ -98,23 +79,12 @@ ${additionalSources ?? '추가 소스 없음'}
 위 데이터를 분석하여 종목별 팩트를 추출해주세요.`;
 
   logger.info(
-    `Gemini 분석 시작 (${watchlist.length}개 종목, 모드: ${mode}, engine: ${USE_VERTEX_AI ? 'VertexAI' : 'GoogleAI'})`,
+    `Gemini 분석 시작 (${watchlist.length}개 종목, 모드: ${mode}, engine: AI Studio)`,
     { component: 'TRACK_A' },
   );
 
-  const genAI = getGenAI();
-  if (!genAI && !USE_VERTEX_AI) {
-    throw new Error('Gemini API 키 미설정 — Track A Gemini 분석 스킵');
-  }
-
-  let responseText: string;
-  if (USE_VERTEX_AI) {
-    // 공유 유틸 사용 — system_instruction 포맷 정확, AI Studio 폴백 포함
-    const { callVertexGemini } = await import('../../utils/vertex-gemini.js');
-    responseText = await callVertexGemini(systemPrompt, userMessage, { temperature: 0.1 });
-  } else {
-    responseText = await callGoogleAI(genAI!, systemPrompt, userMessage);
-  }
+  const { callVertexGemini } = await import('../../utils/vertex-gemini.js');
+  const responseText = await callVertexGemini(systemPrompt, userMessage, { temperature: 0.1 });
 
   try {
     // Gemini가 마크다운 코드블록으로 JSON을 감쌀 수 있음 — 추출 후 파싱
@@ -131,89 +101,3 @@ ${additionalSources ?? '추가 소스 없음'}
   }
 }
 
-// ── Google AI SDK 경로 (API 키 사용, 로컬/외부 환경) ──
-async function callGoogleAI(genAI: GoogleGenerativeAI, systemPrompt: string, userMessage: string): Promise<string> {
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
-    generationConfig: {
-      temperature: 0.1,
-    },
-  });
-
-  const result = await model.generateContent([systemPrompt, userMessage]);
-  return result.response.text();
-}
-
-// ── Vertex AI REST 경로 (서비스 계정 사용, Cloud Run 환경) ──
-async function callVertexAI(systemPrompt: string, userMessage: string): Promise<string> {
-  const client = await auth!.getClient();
-  const accessToken = (await client.getAccessToken()).token;
-
-  const body = {
-    contents: [
-      {
-        role: 'user',
-        parts: [{ text: systemPrompt }, { text: userMessage }],
-      },
-    ],
-    generationConfig: {
-      temperature: 0.1,
-    },
-  };
-
-  const response = await fetch(VERTEX_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    logger.error('Vertex AI 호출 실패', {
-      component: 'TRACK_A',
-      status: response.status,
-      error: errorText,
-    });
-    throw new Error(`Vertex AI API 오류 (${response.status}): ${errorText}`);
-  }
-
-  const data = (await response.json()) as {
-    candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
-  };
-
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) {
-    throw new Error('Vertex AI 응답에 텍스트가 없습니다');
-  }
-  return text;
-}
-
-// ── Google AI Studio REST 경로 (무료 API 키, Vertex 할당량 초과 시 fallback) ──
-async function callAiStudio(apiKey: string, systemPrompt: string, userMessage: string): Promise<string> {
-  const body = {
-    system_instruction: { parts: [{ text: systemPrompt }] },
-    contents: [{ role: 'user', parts: [{ text: userMessage }] }],
-    generationConfig: { temperature: 0.1 },
-  };
-
-  const response = await fetch(`${AI_STUDIO_ENDPOINT}?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`AI Studio API 오류 (${response.status}): ${err.slice(0, 200)}`);
-  }
-
-  const data = (await response.json()) as {
-    candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
-  };
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error('AI Studio 응답에 텍스트 없음');
-  return text;
-}

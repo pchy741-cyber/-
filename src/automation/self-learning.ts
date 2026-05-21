@@ -731,12 +731,6 @@ async function saveInsights(insights: LearnedInsight[]): Promise<void> {
   if (insights.length > 0) {
     // 자동 생성 인사이트만 삭제 (CEO가 수동 입력한 is_manual=true 인사이트는 보존)
     await getPool().query('DELETE FROM learned_insights WHERE is_manual IS NOT TRUE');
-    // 마이그레이션 008 컬럼 보장 (없으면 추가)
-    await getPool().query(`ALTER TABLE learned_insights ADD COLUMN IF NOT EXISTS recommendation TEXT`).catch(() => {});
-    await getPool().query(`ALTER TABLE learned_insights ADD COLUMN IF NOT EXISTS param_change JSONB`).catch(() => {});
-    await getPool().query(`ALTER TABLE learned_insights ADD COLUMN IF NOT EXISTS is_applied BOOLEAN DEFAULT false`).catch(() => {});
-    await getPool().query(`ALTER TABLE learned_insights ADD COLUMN IF NOT EXISTS applied_at TIMESTAMPTZ`).catch(() => {});
-
     for (const insight of insights) {
       await getPool().query(
         `INSERT INTO learned_insights (category, insight, confidence, sample_count, last_updated, details, recommendation, param_change)

@@ -1,4 +1,4 @@
-import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
+import { STRATEGY_PARAMS, REFRESH, type StrategyMode } from '../../config/constants.js';
 import { config } from '../../config/index.js';
 import {
   enableMemoryMode,
@@ -21,11 +21,16 @@ import { IDLE_PARK_STOCK_CODE } from './cash-manager.js';
 import { setActiveEngine } from '../../cache/ai-status.js';
 import { technicalFallbackDecisions } from './technical-fallback.js';
 import { fetchKospiRegime, checkDailyLoss } from './market-regime.js';
-import { getMacroSnapshot } from '../../automation/macro-data.js';
+import { getMacroSnapshot, getMacroScoreAdjustment } from '../../automation/macro-data.js';
+import { checkNewsForStock } from '../../automation/news-sentinel.js';
+import { monitorDisclosures, getDisclosureScoreAdjustment } from '../../automation/dart-monitor.js';
 import { getInvestorFlow } from '../../automation/investor-flow.js';
 import { calcPortfolioStressLevel, getPerformanceMultiplier } from '../../automation/portfolio-guard.js';
 import { applyDecisionFlow } from './decision-flow.js';
 import { reconcilePendingOrders } from '../../trading/fill-reconciler.js';
+
+// DART 캐시 갱신 추적 (DART_API_KEY 있을 때만, REFRESH.DART_INTERVAL_MS 마다)
+let _lastDartRefreshAt = 0;
 
 /**
  * Track B 전체 파이프라인 — 장중 5분 간격 실행
@@ -88,8 +93,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       }
     };
     const [watchlist, openChains, strategy, recentLossCodes, manuallySoldCodes] = await dbLoadWithFallback();
-    // 당일 2회 이상 손절 종목 → 당일 재진입 완전 차단 (recentLossCodes = 7일 손실차단)
-    const todayRepeatStopCodes = await getTodayRepeatStopCodes(2);
+    // 당일 1회 이상 손절 종목 → 당일 재진입 완전 차단 (recentLossCodes = 7일 손실차단)
+    const todayRepeatStopCodes = await getTodayRepeatStopCodes(1);
     if (todayRepeatStopCodes.size > 0) {
       logger.warn(`🚫 당일 반복손절 재진입 차단: ${[...todayRepeatStopCodes].join(', ')}`, { component: 'TRACK_B' });
     }
@@ -192,9 +197,15 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       checkDailyLoss({ openChains, livePrices, totalAssets }),
       getMacroSnapshot().catch(() => null),
     ]);
-    const macroRiskOff = macroSnapshot?.regime === 'RISK_OFF';
-    if (macroRiskOff) {
-      logger.info(`🌐 매크로 RISK_OFF (Fear&Greed=${macroSnapshot?.fearGreedIndex ?? '?'}, VKOSPI=${macroSnapshot?.vkospi ?? '?'}) → 신규 매수 추가 제한`, { component: 'TRACK_B' });
+
+    // DART 공시 캐시 갱신 (1시간 간격 — API 키 없으면 no-op)
+    if (process.env.DART_API_KEY && Date.now() - _lastDartRefreshAt > REFRESH.DART_INTERVAL_MS) {
+      _lastDartRefreshAt = Date.now();
+      monitorDisclosures().catch(() => {});
+    }
+    const macroRiskOff = !config.isPaper && macroSnapshot?.regime === 'RISK_OFF';
+    if (macroSnapshot?.regime === 'RISK_OFF') {
+      logger.info(`🌐 매크로 RISK_OFF (Fear&Greed=${macroSnapshot?.fearGreedIndex ?? '?'}, VKOSPI=${macroSnapshot?.vkospi ?? '?'}) → ${config.isPaper ? '모의투자 — 차단 스킵' : '신규 매수 추가 제한'}`, { component: 'TRACK_B' });
     }
 
     // 현재 주식 포지션 가치
@@ -283,7 +294,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // KIS rate limit 대응: 워치리스트 5개씩 배치, 타임아웃 4초/종목
     const flowAdjMap = new Map<string, number>();
     try {
-      const FLOW_SCORE_ADJ: Record<string, number> = { STRONG_BUY: 15, BUY: 8, NEUTRAL: 0, SELL: -10, STRONG_SELL: -20 };
+      const FLOW_SCORE_ADJ: Record<string, number> = { STRONG_BUY: 10, BUY: 6, NEUTRAL: 0, SELL: -10, STRONG_SELL: -20 };
       const flowBatch = sortedWatchlistCodes.slice(0, 10); // AI 스코어 상위 10종목 (rate limit + 매수 후보 우선)
       const flowResults = await Promise.allSettled(
         flowBatch.map((code) =>
@@ -333,7 +344,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
               if (r.status === 'fulfilled' && r.value.length >= 30) chartData.set(batch[j].stock_code, r.value);
             }
           }
-          for (const s of newStocks) watchlist.push({ id: '', stock_code: s.stock_code, stock_name: s.stock_name, market: 'KOSPI' as const, is_active: true, added_at: '', notes: null });
+          for (const s of newStocks) watchlist.push({ id: '', stock_code: s.stock_code, stock_name: s.stock_name, market: 'KOSPI' as const, is_active: true, added_at: '', notes: null, source: 'AUTO' });
           logger.info(`✅ 상승장 동적 편입: ${newStocks.length}개 → 총 후보 ${watchlist.length}개`, { component: 'TRACK_B' });
         }
       } catch (err) {
@@ -404,14 +415,35 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           : null;
         const stale = scoreDay && scoreDay !== todayDate ? -8 : 0;
         if (stale < 0) logger.info(`⏳ 스코어 stale 패널티: ${s.stock_code} (${scoreDay} ≠ ${todayDate} → -8점)`, { component: 'TRACK_B' });
-        return { stock_code: s.stock_code, score: Math.min(100, Math.max(0, base + adj + capAdj + stale + kospiPenaltyAdj)) };
+        const macroAdj = macroSnapshot ? getMacroScoreAdjustment(macroSnapshot) : 0;
+        const dartAdj = process.env.DART_API_KEY ? getDisclosureScoreAdjustment(s.stock_code) : 0;
+        const totalAdj = adj + capAdj + stale + kospiPenaltyAdj + macroAdj + dartAdj;
+        const boundedAdj = totalAdj < 0 ? Math.max(totalAdj, -20) : totalAdj;
+        const rawScore = Math.min(100, Math.max(0, base + boundedAdj));
+        // 80점 초과 구간 압축 → 분포 개선 (80~100 → 80~92)
+        const compressed = rawScore <= 80 ? rawScore : 80 + (rawScore - 80) * 0.6;
+        return { stock_code: s.stock_code, score: Math.round(compressed) };
       });
 
     // 적응형 파라미터: DB 명시 설정 > 시장 최적화 자동값 > STRATEGY_PARAMS 기본값
+    // DB 설정이 있어도 constants의 값보다 낮아질 수 없음 (floors)
     const adaptP = kospiRegime.adaptive[effectiveMode];
-    const resolvedTp = strategy?.take_profit_pct ?? adaptP?.takeProfitPct;
-    const resolvedSl = strategy?.stop_loss_pct ?? adaptP?.stopLossPct;
-    const resolvedThreshold = strategy?.buy_threshold ?? adaptP?.buyThreshold;
+    const baseP = STRATEGY_PARAMS[effectiveMode] as { buyThreshold: number; takeProfitPct: number; stopLossPct: number };
+    const adaptThreshold = adaptP?.buyThreshold ?? baseP.buyThreshold;
+    const adaptTp = adaptP?.takeProfitPct ?? baseP.takeProfitPct;
+    const adaptSl = adaptP?.stopLossPct ?? baseP.stopLossPct;
+    // buyThreshold: DB는 상향만 가능 (더 엄격하게만)
+    const resolvedThreshold = strategy?.buy_threshold != null
+      ? Math.max(strategy.buy_threshold, adaptThreshold)
+      : adaptThreshold;
+    // takeProfitPct: DB는 상향만 가능 (더 큰 수익 목표만)
+    const resolvedTp = strategy?.take_profit_pct != null
+      ? Math.max(strategy.take_profit_pct, adaptTp)
+      : adaptTp;
+    // stopLossPct: DB는 하향만 가능 (더 넓은 손절 허용만) — 타이트하게 조이는 건 금지
+    const resolvedSl = strategy?.stop_loss_pct != null
+      ? Math.min(strategy.stop_loss_pct, adaptSl)
+      : adaptSl;
 
     // 성과 배율: 최근 5거래일 승률/수익 기반 (0.7x ~ 1.2x)
     const perfMult = await getPerformanceMultiplier();
@@ -483,6 +515,35 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           });
         }
       }
+    }
+
+    // ── 뉴스 악재 감시: 보유 종목 악재 뉴스 → FORCE_CLOSE ──
+    for (const chain of openChains) {
+      const alreadyExiting = decisions.some(
+        (d) => d.stock_code === chain.stock_code && ['SELL', 'FORCE_CLOSE', 'PARTIAL_SELL'].includes(d.action),
+      );
+      if (alreadyExiting) continue;
+      const liveP = livePrices.get(chain.stock_code);
+      if (!liveP || !chain.avg_buy_price) continue;
+      const pnlPct = ((liveP.currentPrice - Number(chain.avg_buy_price)) / Number(chain.avg_buy_price)) * 100;
+      if (pnlPct <= -5.0) continue; // 이미 깊은 손실 — 기존 SL이 처리
+      try {
+        const news = await checkNewsForStock(chain.stock_code);
+        if (news.hasBadNews) {
+          logger.warn(
+            `📰 뉴스악재청산: ${chain.stock_code} pnl=${pnlPct.toFixed(1)}% → "${news.headline.slice(0, 60)}" → FORCE_CLOSE`,
+            { component: 'TRACK_B' },
+          );
+          decisions.push({
+            action: 'FORCE_CLOSE',
+            stock_code: chain.stock_code,
+            quantity: chain.total_quantity,
+            price_type: 'MARKET',
+            reasoning: `뉴스악재: "${news.headline.slice(0, 50)}"`,
+            confidence: 0.95,
+          });
+        }
+      } catch { /* 뉴스 실패 시 무시 */ }
     }
 
     setActiveEngine('technical');

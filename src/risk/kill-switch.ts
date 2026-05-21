@@ -1,4 +1,5 @@
 import { insertRiskEvent, logSystem } from '../db/client.js';
+import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -165,6 +166,11 @@ export async function initKillSwitchFromDB(): Promise<void> {
 
     const saved = JSON.parse(rows[0].value) as { active?: boolean; reason?: string; manual?: boolean };
     if (saved.active) {
+      // 모의투자 모드에서 수동 발동이 아닌 자동 Kill Switch는 재시작 시 자동 해제
+      if (config.isPaper && !saved.manual) {
+        logger.info('🔓 [모의] 자동 Kill Switch 재시작 해제 (paper 모드)', { component: 'KILL_SWITCH' });
+        return;
+      }
       state = {
         active: true,
         reason: saved.reason ?? '재시작 복원',

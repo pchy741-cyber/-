@@ -12,12 +12,32 @@
  */
 
 import { analyzeTechnicals, atr, sma, type OHLCV, type TechnicalSummary } from '../analysis/indicators.js';
+import { GATE } from '../config/constants.js';
 import { config } from '../config/index.js';
 import { getPool } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
+import { checkNewsForStock } from '../automation/news-sentinel.js';
+import { checkKrEarnings } from '../automation/earnings-sentinel.js';
 
 let lastCooldownNotifyAt = 0;
+// 수동 쿨다운 초기화 타임스탬프 — 이 시각 이후 체결된 거래만 손실 카운트
+let cooldownResetAt: Date | null = null;
+
+/** 체인별 최종 매도가 서브쿼리 (getWinRateStats / getConsecutiveLosses 공유) */
+const SELL_PRICE_SUB = `(SELECT filled_price FROM orders WHERE chain_id = tc.id AND side = 'SELL' ORDER BY created_at DESC LIMIT 1) as sell_price`;
+
+export function resetCooldown(): void {
+  cooldownResetAt = new Date();
+  logger.info('🔓 연속손실 쿨다운 수동 초기화', { component: 'TRADE_GATE' });
+}
+
+export interface CooldownStatus {
+  active: boolean;
+  consecutive: number;
+  remainingMinutes: number;
+  reason: string;
+}
 
 // ══════════════════════════════════════
 //  타입 정의
@@ -113,8 +133,9 @@ export function chartVerificationGate(input: GateInput): GateResult {
 
   const isPaper = config.isPaper;
   const isScalping = input.strategyMode === 'SCALPING';
-  // SCALPING: 1.5 이상 (단순 R:R 정확), SWING/DEFENSE: 0.5 이상 (트레일링 포함 실질 R:R은 더 높음)
-  const minRR = isPaper ? 0.3 : (isScalping ? 1.5 : 0.5);
+  // SCALPING: TP=0.8%/SL=0.8% → R:R=1.0, 0.9 이상이면 통과 (대칭 구조)
+  // SWING/DEFENSE: 0.5 이상 (트레일링으로 추가 수익 포착 가능)
+  const minRR = isScalping ? 0.9 : 0.5;
   if (riskRewardRatio < minRR) {
     return {
       passed: false,
@@ -161,10 +182,7 @@ async function getWinRateStats(days: number = 30): Promise<WinRateStats> {
   try {
     const pool = getPool();
     const { rows } = await pool.query(`
-      SELECT
-        close_reason,
-        avg_buy_price,
-        (SELECT filled_price FROM orders WHERE chain_id = tc.id AND side = 'SELL' ORDER BY created_at DESC LIMIT 1) as sell_price
+      SELECT close_reason, avg_buy_price, ${SELL_PRICE_SUB}
       FROM transaction_chains tc
       WHERE status = 'CLOSED'
         AND closed_at >= NOW() - ($1 * INTERVAL '1 day')
@@ -208,32 +226,31 @@ async function getWinRateStats(days: number = 30): Promise<WinRateStats> {
  * EV > 0 이어야 진입 가치 있음
  */
 export async function expectedValueGate(_input: GateInput): Promise<GateResult> {
-  // 모의투자: 승률 기반 차단 없음 (실전 데이터 없어서 항상 0% 차단됨)
+  // 모의투자: 과거 불량 로직 시절 데이터가 새 매매를 차단하는 악순환 방지 → 스킵
   if (config.isPaper) {
-    return { passed: true, reason: '모의투자 — 기대값 게이트 스킵', expectedValue: 0 };
+    return { passed: true, reason: '모의투자 — 기대값 게이트 스킵 (데이터 수집 중)', expectedValue: 0 };
   }
 
-  const stats = await getWinRateStats(30);
+  // 실거래: 14일 이내 데이터만, 50건 이상일 때만 판단 (통계적 신뢰성)
+  const stats = await getWinRateStats(14);
 
-  if (stats.totalTrades < 20) {
-    // 데이터 부족 시 기본 통과 (20건 미만이면 통계적으로 의미 없음)
-    return { passed: true, reason: `매매이력 부족(${stats.totalTrades}건) — 기본 통과`, expectedValue: 0 };
+  if (stats.totalTrades < 50) {
+    return { passed: true, reason: `실거래이력 부족(${stats.totalTrades}건 < 50) — 기본 통과`, expectedValue: 0 };
   }
 
   const winRate = stats.totalTrades > 0 ? stats.wins / stats.totalTrades : 0.5;
   const lossRate = 1 - winRate;
-  const ev = winRate * stats.avgWinPct - lossRate * Math.abs(stats.avgLossPct);
+  // 슬리피지 보정: 시장가 진입 스프레드 + 체결 지연 약 0.05% (단방향)
+  const ev = winRate * stats.avgWinPct - lossRate * Math.abs(stats.avgLossPct) - GATE.SLIPPAGE_PCT;
 
   if (ev <= -2.0) {
-    // EV가 -2% 이하일 때만 차단 (약간 음수는 단기 슬럼프로 허용)
     return {
       passed: false,
-      reason: `기대값 심각: EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%, 평균익${stats.avgWinPct.toFixed(1)}%, 평균손${stats.avgLossPct.toFixed(1)}%)`,
+      reason: `기대값 심각: EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%, 슬리피지-${GATE.SLIPPAGE_PCT}% 포함)`,
       expectedValue: ev,
     };
   }
 
-  // 승률 25% 미만이면 차단 (35% → 25%로 완화)
   if (winRate < 0.25) {
     return {
       passed: false,
@@ -244,7 +261,7 @@ export async function expectedValueGate(_input: GateInput): Promise<GateResult> 
 
   return {
     passed: true,
-    reason: `EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%, ${stats.totalTrades}건)`,
+    reason: `EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%, ${stats.totalTrades}건, 슬리피지-${GATE.SLIPPAGE_PCT}%)`,
     expectedValue: ev,
   };
 }
@@ -343,14 +360,15 @@ export function entryTimingGate(input: GateInput): GateResult {
   }
 
   // ── 2. 고점 추격 방지 (꼭지 매수 금지) ──
-  const recent3High = Math.max(c0.high, c1.high, c2.high);
+  // 오늘 장중 고가는 제외 (아직 완성 안 된 캔들) — 직전 3 거래일 완성 캔들 기준
+  const recent3High = Math.max(c1.high, c2.high, c3.high);
   const pctFromHigh = recent3High > 0 ? ((current - recent3High) / recent3High) * 100 : -5;
 
-  // 3일 최고가와 동일 or 초과 = 신고가 돌파 시도 → 차단 (단순 근접은 허용)
-  if (pctFromHigh >= 0) {
+  // 직전 3일 고가보다 2% 이상 높으면 갭업 추격 → 차단, 그 이내는 정상 돌파로 허용
+  if (pctFromHigh > 2.0) {
     return {
       passed: false,
-      reason: `🔴 고점 추격 차단: 현재(${current.toLocaleString()}) ≥ 3일고가(${recent3High.toLocaleString()}) — 조정 후 재진입`,
+      reason: `🔴 고점 추격 차단: 현재(${current.toLocaleString()}) > 3일고가(${recent3High.toLocaleString()}) +${pctFromHigh.toFixed(1)}% — 갭업 추격`,
     };
   }
 
@@ -512,11 +530,15 @@ export function regimeGate(input: GateInput): GateResult {
 async function getConsecutiveLosses(): Promise<number> {
   try {
     const pool = getPool();
+    const resetFilter = cooldownResetAt
+      ? `AND closed_at > '${cooldownResetAt.toISOString()}'`
+      : '';
     const { rows } = await pool.query(`
-      SELECT close_reason, avg_buy_price,
-        (SELECT filled_price FROM orders WHERE chain_id = tc.id AND side = 'SELL' ORDER BY created_at DESC LIMIT 1) as sell_price
+      SELECT close_reason, avg_buy_price, ${SELL_PRICE_SUB}
       FROM transaction_chains tc
       WHERE status = 'CLOSED'
+        AND (close_reason IS NULL OR close_reason NOT LIKE '%SCALPING 강제청산%')
+        ${resetFilter}
       ORDER BY closed_at DESC
       LIMIT 10
     `);
@@ -538,13 +560,18 @@ async function getConsecutiveLosses(): Promise<number> {
 }
 
 export async function cooldownGate(): Promise<GateResult> {
+  // 모의투자: 쿨다운 없음 — 가짜 돈으로 전략 검증 중, 학습 기회 차단 불필요
+  if (config.isPaper) {
+    return { passed: true, reason: '모의투자 — 쿨다운 스킵' };
+  }
+
   const consecutive = await getConsecutiveLosses();
 
   // 3연패: 45분 쿨다운 (시장이 이미 불리한 상황 — 잠시 멈춤)
-  // 5연패: 2시간 쿨다운 (명백히 오늘 장이 안 맞음 — 강제 휴식)
+  // 5연패: 1시간 쿨다운 (명백히 오늘 장이 안 맞음 — 강제 휴식)
   const cooldownMs =
-    consecutive >= 5 ? 120 * 60_000 :  // 2시간
-    consecutive >= 3 ?  45 * 60_000 :  // 45분
+    consecutive >= 5 ? GATE.CONSECUTIVE_LOSS_HALT_MS :
+    consecutive >= 3 ? GATE.CONSECUTIVE_LOSS_WARN_MS :
     0;
 
   if (cooldownMs > 0) {
@@ -553,6 +580,7 @@ export async function cooldownGate(): Promise<GateResult> {
       const { rows } = await pool.query(`
         SELECT closed_at FROM transaction_chains
         WHERE status = 'CLOSED'
+          AND (close_reason IS NULL OR close_reason NOT LIKE '%SCALPING 강제청산%')
         ORDER BY closed_at DESC LIMIT 1
       `);
 
@@ -563,7 +591,7 @@ export async function cooldownGate(): Promise<GateResult> {
         if (elapsed < cooldownMs) {
           const remaining = Math.ceil((cooldownMs - elapsed) / 60_000);
           const now = Date.now();
-          if (now - lastCooldownNotifyAt > 30 * 60_000) {
+          if (now - lastCooldownNotifyAt > GATE.COOLDOWN_NOTIFY_MS) {
             lastCooldownNotifyAt = now;
             sendTelegramMessage(`🚦 연속손실 쿨다운: ${consecutive}연패 → ${remaining}분 후 재진입`).catch(() => {});
           }
@@ -579,6 +607,66 @@ export async function cooldownGate(): Promise<GateResult> {
   return { passed: true, reason: consecutive > 0 ? `최근 ${consecutive}연패 (쿨다운 미해당)` : '연속손실 없음' };
 }
 
+export async function getCooldownStatus(): Promise<CooldownStatus> {
+  try {
+    const consecutive = await getConsecutiveLosses();
+    const cooldownMs =
+      consecutive >= 5 ? GATE.CONSECUTIVE_LOSS_HALT_MS :
+      consecutive >= 3 ? GATE.CONSECUTIVE_LOSS_WARN_MS :
+      0;
+
+    if (cooldownMs > 0) {
+      const pool = getPool();
+      const resetFilter = cooldownResetAt
+        ? `AND closed_at > '${cooldownResetAt.toISOString()}'`
+        : '';
+      const { rows } = await pool.query(`
+        SELECT closed_at FROM transaction_chains
+        WHERE status = 'CLOSED'
+          AND (close_reason IS NULL OR close_reason NOT LIKE '%SCALPING 강제청산%')
+          ${resetFilter}
+        ORDER BY closed_at DESC LIMIT 1
+      `);
+      if (rows.length > 0) {
+        const elapsed = Date.now() - new Date(rows[0].closed_at).getTime();
+        if (elapsed < cooldownMs) {
+          const remaining = Math.ceil((cooldownMs - elapsed) / 60_000);
+          return { active: true, consecutive, remainingMinutes: remaining, reason: `${consecutive}연패 → ${remaining}분 후 해제` };
+        }
+      }
+    }
+    return { active: false, consecutive, remainingMinutes: 0, reason: consecutive > 0 ? `최근 ${consecutive}연패 (쿨다운 미해당)` : '' };
+  } catch {
+    return { active: false, consecutive: 0, remainingMinutes: 0, reason: '' };
+  }
+}
+
+/**
+ * 뉴스/공시 + 실적발표 게이트 — 악재·실적발표 감지 시 매수 차단
+ * - 반응형: NAVER 뉴스 악재·실적 키워드 (news-sentinel)
+ * - 선행형: NAVER 일정 API 7일 이내 실적발표 (earnings-sentinel)
+ */
+async function newsGate(stockCode: string): Promise<GateResult> {
+  try {
+    const [news, earnings] = await Promise.all([
+      checkNewsForStock(stockCode),
+      checkKrEarnings(stockCode),
+    ]);
+    if (news.hasBadNews) {
+      return { passed: false, reason: `악재뉴스차단: "${news.headline.slice(0, 50)}"` };
+    }
+    if (earnings.hasUpcomingEarnings) {
+      return { passed: false, reason: `실적발표 D+${earnings.daysUntil}일 (${earnings.earningsDate}) — 변동성 회피` };
+    }
+    if (news.isEarningsRisk) {
+      return { passed: false, reason: `실적발표리스크: "${news.headline.slice(0, 50)}" — 공시 후 재진입` };
+    }
+    return { passed: true, reason: '뉴스·실적 이상없음' };
+  } catch {
+    return { passed: true, reason: '뉴스조회실패—통과' };
+  }
+}
+
 /**
  * 종목별 재진입 쿨다운 (SCALPING 전용)
  * 같은 종목 매수 후 30분 내 재진입 차단 — 수수료 드래그 방지
@@ -587,7 +675,6 @@ async function reEntryCooldownGate(input: GateInput): Promise<GateResult> {
   if (input.strategyMode !== 'SCALPING') {
     return { passed: true, reason: 'SCALPING 외 — 재진입 쿨다운 생략' };
   }
-  const COOLDOWN_MS = 30 * 60_000; // 30분
   try {
     const { rows } = await getPool().query(
       `SELECT created_at FROM orders
@@ -601,7 +688,7 @@ async function reEntryCooldownGate(input: GateInput): Promise<GateResult> {
     if (rows.length > 0) {
       const lastBuy = new Date(rows[0].created_at);
       const elapsed = Date.now() - lastBuy.getTime();
-      const remaining = Math.ceil((COOLDOWN_MS - elapsed) / 60_000);
+      const remaining = Math.ceil((GATE.REENTRY_COOLDOWN_MS - elapsed) / 60_000);
       logger.info(`⏳ [재진입쿨다운] ${input.stockCode}: 마지막 매수 ${Math.floor(elapsed / 60_000)}분 전 → ${remaining}분 대기`, { component: 'TRADE_GATE' });
       return { passed: false, reason: `재진입 쿨다운: ${remaining}분 남음 (SCALPING 30분 룰)` };
     }
@@ -649,6 +736,14 @@ export async function runTradeGates(input: GateInput): Promise<GateResult> {
     return reEntry;
   }
   results.push(reEntry);
+
+  // 1-c. 뉴스/공시 게이트 — 악재·실적발표 차단
+  const news = await newsGate(input.stockCode);
+  if (!news.passed) {
+    logger.warn(`🚦 [뉴스게이트] ${input.stockCode}: ${news.reason}`, { component: 'TRADE_GATE' });
+    return news;
+  }
+  results.push(news);
 
   // 2. 레짐 필터
   const regime = regimeGate(input);

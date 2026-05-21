@@ -75,16 +75,16 @@ export const STRATEGY_PARAMS = {
     // │ TP 5.5%: 실 수익 평균 3.91% 기준 → 조기 청산 방지                │
     // └────────────────────────────────────────────────────────────────────┘
     buyThreshold: 83,
-    // 83점: 78→83 상향 — 저확신(78-82) 패배 누적 제거, 상위 15% 신호만 진입
+    // 83점: 4월 실데이터 기준 승률 48%(36승 39패) → 77 하향 후 승률 25%로 급락 → 복원
     splitCount: 2,
-    averageDownPct: -3.0,
-    // 물타기: -3% (의미있는 눌림목 확인 후 진입, 노이즈 물타기 차단)
-    maxAveragingCount: 2,
+    averageDownPct: 0,
+    // 물타기 비활성화: 지는 종목에 추가 매수 = 손실 배증. 동일 종목 반복 손절 차단.
+    maxAveragingCount: 0,
     takeProfitPct: 5.5,
     // 익절: +5.5% → 실 수익 평균(+3.91%) 초과 → 승자를 더 오래 보유
     takeProfitRatio: 0.5,   // 50% 부분 매도 → 잔여 트레일링
-    stopLossPct: -4.0,
-    // 손절: -4% (실 손실 평균 -1.59%, -5%까지 버티는 건 손실 키우는 행위)
+    stopLossPct: -3.0,
+    // 손절: -3% → R:R = 5.5:3 = 1.83:1 (손익분기 승률 35%)
     maxHoldingDays: 12,
     // 12일: TP 5.5% 달성 시간 확보 (기존 10일에서 소폭 연장)
   },
@@ -114,8 +114,8 @@ export const STRATEGY_PARAMS = {
     splitCount: 1,          // 분할 없이 한 번에 전량 진입 (개장 직후 속도 최우선)
     averageDownPct: 0,      // 물타기 절대 금지 (시간 없음)
     maxAveragingCount: 0,
-    takeProfitPct: 1.2,
-    // +1.2% — 16~30분 윈도우에서 달성 가능한 현실적 목표 (2.0%는 09:30 강제청산에 미달 반복)
+    takeProfitPct: 0.8,
+    // +0.8% — 수수료(0.21%) 제해도 순수익 +0.59%, 30분 윈도우 익절 극대화
     takeProfitRatio: 1.0,   // 전량 즉시 익절
     stopLossPct: -0.8,
     // -0.8% 손절 (개장 노이즈 필터)
@@ -193,6 +193,39 @@ export function getScoreBasedParams(score: number): { takeProfitPct: number; sto
   if (score >= 70) return { takeProfitPct: 5.0, stopLossPct: -2.5 };  // 보통: 2:1 R:R
   return                 { takeProfitPct: 5.0, stopLossPct: -2.5 };   // 마진컬(60-69): 2:1 R:R (최소 기준)
 }
+
+// ── 캐시 & 갱신 주기 ──
+export const REFRESH = {
+  DART_INTERVAL_MS: 60 * 60_000,           // DART 공시 캐시 갱신: 1시간
+  EARNINGS_CACHE_TTL_MS: 4 * 60 * 60_000,  // 실적발표 캐시 TTL: 4시간
+  EARNINGS_WINDOW_DAYS: 7,                  // 실적발표 매수 차단 윈도우: 7일
+  EARNINGS_FETCH_TIMEOUT_MS: 5_000,         // 실적발표 API 타임아웃: 5초
+} as const;
+
+// ── 매매 게이트 ──
+export const GATE = {
+  SLIPPAGE_PCT: 0.05,                      // 시장가 슬리피지 보정 (단방향)
+  REENTRY_COOLDOWN_MS: 30 * 60_000,        // 동일 종목 재진입 쿨다운 (SCALPING, 30분)
+  CONSECUTIVE_LOSS_HALT_MS: 60 * 60_000,   // 5연패 → 1시간 쿨다운
+  CONSECUTIVE_LOSS_WARN_MS: 45 * 60_000,   // 3연패 → 45분 쿨다운
+  COOLDOWN_NOTIFY_MS: 30 * 60_000,         // 쿨다운 알림 최소 간격
+} as const;
+
+// ── 미국주식 해외 ──
+export const OVERSEAS = {
+  MAX_POSITIONS: 8,                         // 최대 동시 보유 종목
+  POSITION_SIZE_USD: 2000,                  // 종목당 최대 $2,000
+  POSITION_PCT: 0.20,                       // 또는 가용 현금의 20%
+  PARKING_CASH_BUFFER: 500,                 // 현금 파킹 최소 유지 ($)
+  PARKING_MIN_ORDER: 20,                    // 파킹 최소 주문 금액 ($)
+  TOP_COUNT: 15,                            // 세션 캐시 상위 종목 수 (기회주 누락 방지)
+  ASIA_TOP_COUNT: 6,                        // 아시아장 세션 캐시 상위 종목 수
+  AI_INTERVAL_MS: 15 * 60_000,             // AI 호출 최소 간격: 15분 (비용 절감)
+  MAX_HOLD_DAYS: 21,                        // 최대 보유일 (21일 → 장기 추세 허용)
+  CONCENTRATION_CASH_BUFFER: 400,           // 집중 전략 긴급 대비 보유 현금 ($)
+  CONCENTRATION_MIN_PNL_PCT: 3.0,           // 집중 대상 최소 수익률 (손실 종목 추가매수 방지)
+  CONCENTRATION_MIN_INVEST: 60,             // 집중 최소 투자액 ($)
+} as const;
 
 // ── AI 스코어 시그널 ──
 export const Signal = {

@@ -83,6 +83,19 @@ export async function getCachedScores(stockCodes: string[]): Promise<AIScore[]> 
   return scores;
 }
 
+/** Redis 캐시 → DB 폴백 순서로 최신 AI 점수 조회 */
+export async function getScoresWithFallback(stockCodes: string[]): Promise<AIScore[]> {
+  if (stockCodes.length === 0) return [];
+  try {
+    const cached = await getCachedScores(stockCodes);
+    if (cached.length > 0) return cached;
+    const { getLatestScores } = await import('../db/client.js');
+    return await getLatestScores(stockCodes);
+  } catch {
+    return [];
+  }
+}
+
 // ── 실시간 시세 캐시 (KIS 호출 절감) ──
 
 const PRICE_TTL = 10; // 10초 (거의 실시간이지만 중복 호출 방지)

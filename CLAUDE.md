@@ -1,15 +1,26 @@
-# QUANTOPS — Claude Code 스캘핑 루프 지시어
+# QUANTOPS — Claude Code 루프 지시어
+
+## 루프 목록
+
+| 루프 | 명령어 | 운영 시간 |
+|------|--------|-----------|
+| **한국 눌림매매** | `/loop 장중 눌림매매: 고확신 진입 → 스윙 보유 → 직접 실행` | KST 09:30~10:20 / 13:00~15:00 |
+| **미국 야간 감시** | `/loop 미국주식 야간 감시: 포지션 보호 → 손절/익절 판단 → 직접 실행` | KST 23:30~06:00 |
+
+> 09:00~09:30 개장 스캘핑은 백엔드 자동 실행 (opening-bell-job) — Claude Code 개입 불필요
+> 미국 야간 루프는 스케줄러(overseas-job)가 10분 간격 자동 처리 중 — Claude Code 직접 실행 시에만 사용
+
+---
 
 ## 루프 시작 방법
 ```
-/loop 장중 스캘핑: 실시간 차트 분석 → 매수/매도 판단 → 직접 실행
+/loop 장중 눌림매매: 고확신 진입 → 스윙 보유 → 직접 실행
 ```
 
 ## 루프 실행 환경 변수
 ```powershell
 $env:QUANTOPS_URL = "https://quantops-807105550136.asia-northeast3.run.app"
 $env:QUANTOPS_PW  = "<DASHBOARD_PASSWORD>"
-$env:SCALP_AMOUNT = "1000000"
 ```
 
 ---
@@ -19,11 +30,31 @@ $env:SCALP_AMOUNT = "1000000"
 ### 0. 시장 시간 체크
 KST = UTC+9. PowerShell: `(Get-Date).ToUniversalTime().AddHours(9).ToString("HH:mm")`
 
-- **09:05 미만** → 장 전 대기, ScheduleWakeup(300)
-- **09:05~09:15** → 장 초반 변동구간 → 매수 금지 (매도는 가능), ScheduleWakeup(120)
-- **09:15~14:00** → 정상 매매 구간
-- **14:00~15:20** → 신규 매수 금지, 기존 포지션 정리만 (마감 임박 시간대 완전 제외)
-- **15:20 이후** → 장 마감, ScheduleWakeup(600)
+```
+09:00 미만     → 장 전 대기          ScheduleWakeup(600)
+09:00~09:30   → 백엔드 개장 자동구간  Claude 매수 금지, ScheduleWakeup(120)
+09:30~10:20   → ★★ 황금 오전 구간    모멘텀 최고조 — 적극 진입, ScheduleWakeup(120)
+10:20~13:00   → ☠️ 마의 시간대       잔손절 구간 — 신규 매수 금지, 손절 모니터만, ScheduleWakeup(300)
+13:00~15:00   → ★ 황금 오후 구간     방향성 확인 후 종가 눌림 진입, ScheduleWakeup(180)
+15:00~15:20   → 신규 매수 금지        기존 포지션 손절 모니터만, ScheduleWakeup(240)
+15:20 이후    → 장 마감              ScheduleWakeup(600)
+```
+
+> **핵심 원칙**: 오전 10:20 이전, 오후 13:00 이후만 진입. 10:20~13:00 마의 시간대는 절대 매수 금지 — 이 시간대 억지 진입이 잔손절의 주원인.
+> 참고: 누적 수익 17억 트레이더 "10:20 이후 시세가 꺾이면 비중 크게 낮추거나 매매 안 하는 것이 낫다"
+
+**황금 오전 구간 (09:30~10:20) 진입 기준**:
+- 기본 진입 기준 동일 (score ≥ 80, conf ≥ 0.65)
+- 갭업 모멘텀 종목 우선 (당일 시가 대비 +1% 이상 출발 시 가산점)
+
+**황금 오후 구간 (13:00~15:00) 진입 기준**:
+- 동일 기본 기준 (score ≥ 80) + 추가 조건:
+  - 거래대금 상위 섹터 확인 후 주도 종목만 선별
+  - `volumeRatio >= 1.5` 필수 (오후 수급 집중 확인)
+  - `pullbackSignal == true` 우선 (눌림 반등 타이밍)
+
+**마의 시간대(10:20~13:00) 유일 예외**:
+- `composite_score >= 93` AND `pullbackSignal == true` AND `volumeRatio >= 2.5` → 진입 허용 (초고확신만)
 
 ### 1. 데이터 수집
 ```bash
@@ -35,107 +66,86 @@ curl -s -H "x-api-key: <DASHBOARD_PASSWORD>" "https://quantops-807105550136.asia
 - 현금: `d['portfolio']['domesticCash']`
 - killSwitch: `d['killSwitch']` (dict, `.active` 키)
 - PnL: `c['unrealizedPnlPct']`
-- 고점(트레일링용): `c['peak_price_since_open']`
 - 체인 ID: `c['id']`
 - trigger_source: `c['trigger_source']`
 
-### 2. 매도 판단 (CLAUDE 체인만 관리, SWING 건드리지 않음)
+### 2. 포지션 관리 (매도 판단)
 
-#### 우선순위 순서로 평가:
+#### A. 긴급 손절 (CLAUDE 체인 전체)
+- `unrealizedPnlPct <= -2.5%` → 즉시 매도 (백엔드 손절선 -4% 도달 전 선제 차단)
 
-**① 즉시 손절** (보유시간 무관)
-- `unrealizedPnlPct <= -1.0%` → 즉시 매도 (수수료 감안 최대 손실 제한)
+#### B. 강세장 퀵플립 익절 (장 좋을 때 적극 수익 확정)
+**강세장 감지 기준** (아래 중 1개 이상):
+- 현재 보유 OPEN 체인 중 `unrealizedPnlPct >= 2%` 종목이 50%+ (장 전반이 상승 중)
+- 대시보드 scores[]에서 75점+ 종목이 8개 이상
 
-**② 트레일링 스탑** (고점 추적)
-- `peak_price_since_open` 이 있는 경우:
-  ```python
-  avg = float(c['avg_buy_price'])
-  peak = float(c['peak_price_since_open'])
-  cur  = float(c['currentPrice'])
-  peak_pnl_pct = (peak - avg) / avg * 100
-  cur_pnl_pct  = (cur  - avg) / avg * 100
-  # 고점 +0.3% 이상 찍은 뒤 0.25% 하락 시 트레일링 익절
-  if peak_pnl_pct >= 0.3 and (peak_pnl_pct - cur_pnl_pct) >= 0.25:
-      → 트레일링 매도
-  ```
+**강세장 퀵플립 조건**:
+- `unrealizedPnlPct >= 3.5%` → 즉시 익절 (수익 확정 후 재진입 기회 탐색)
+- `unrealizedPnlPct >= 2.5%` AND 보유시간 30분+ → 익절 (장 후반 흐름 둔화 대비)
 
-**③ 익절**
-- `unrealizedPnlPct >= 1.0%` → 즉시 익절 (수수료 제해도 +0.79% 순이익)
-- `unrealizedPnlPct >= 0.5%` AND `hold_min >= 5` → 5분 보유 후 빠른 익절 (+0.29% 순이익)
+**퀵플립 후 재진입**: 익절 종목이라도 점수 기준 충족하면 즉시 Step 3으로 재매수 가능
 
-**④ 시간 손절** (5분+ 보유 후)
-- `hold_min >= 5 and unrealizedPnlPct <= -0.8%` → 방향 안맞으면 빨리 끊기
-
-**⑤ 강제 청산**
-- `hold_min >= 30 and unrealizedPnlPct < 0%` → 30분 보유 후 손실이면 청산
-
-보유시간 계산:
-```python
-from datetime import datetime, timezone
-opened = datetime.fromisoformat(str(c['opened_at']).replace('Z','+00:00'))
-hold_min = (datetime.now(timezone.utc) - opened).total_seconds() / 60
-```
+그 외 수익/손실 관리는 백엔드에 맡긴다:
+- **Track B** (3분 간격): TP +5.5% / SL -4% 자동 처리
+- **holding-check** (10분 간격): 트레일링 스탑 + 보유일 초과 손절
 
 매도 실행:
 ```bash
+# 긴급 손절
 curl -s -X POST "https://quantops-807105550136.asia-northeast3.run.app/api/sell/<CHAIN_ID>" \
-  -H "x-api-key: <DASHBOARD_PASSWORD>"
-```
-
-### 3. 피라미딩 — 불타기 (수익 중인 포지션 추가)
-
-**매수보다 먼저 실행.** 기존 CLAUDE 체인 중 조건 충족 시 추가 매수.
-
-조건:
-```python
-for c in claude_chains:
-    avg  = float(c['avg_buy_price'])
-    cur  = float(c['currentPrice'])
-    pnl  = float(c['unrealizedPnlPct'])
-    opened = datetime.fromisoformat(str(c['opened_at']).replace('Z','+00:00'))
-    hold_min = (datetime.now(timezone.utc) - opened).total_seconds() / 60
-
-    # 불타기 창: 보유 5~7분 (90초 루프로 최대 1~2회만 해당)
-    # 고점 충분히 찍고 → 방향 확인 후 추가 진입
-    if 5 <= hold_min < 7 and pnl >= 0.3 and cur > avg:
-        → 30만원 추가 매수 (불타기)
-```
-
-실행:
-```bash
-curl -s -X POST "https://quantops-807105550136.asia-northeast3.run.app/api/manual-buy" \
-  -H "Content-Type: application/json" \
   -H "x-api-key: <DASHBOARD_PASSWORD>" \
-  -d "{\"stock_code\":\"XXXXXX\",\"amount_krw\":300000,\"reasoning\":\"불타기 hold{hold}분 PnL+{pnl}%\"}"
-```
+  -H "Content-Type: application/json" \
+  -d '{"source":"CLAUDE","reason":"긴급손절 -2.5% 초과"}'
 
-제한: 현금 300,000원 미만 시 불타기 스킵
+# 퀵플립 익절
+curl -s -X POST "https://quantops-807105550136.asia-northeast3.run.app/api/sell/<CHAIN_ID>" \
+  -H "x-api-key: <DASHBOARD_PASSWORD>" \
+  -H "Content-Type: application/json" \
+  -d '{"source":"CLAUDE","reason":"퀵플립 익절"}'
+```
 
 ---
 
-### 4. 신규 매수 [모의투자 실험모드 — 데이터 최대 수집]
+### 3. 신규 매수 — 눌림매매 + 스윙 전략
+
+#### 전략 원칙
+- **타이밍 우선**: 황금 구간(10:00~11:30, 13:30~14:20)에만 진입. 나머지 시간 신호 아무리 좋아도 기다린다.
+- 눌림매매: 상승 추세 중 일시 눌림 구간에 진입 → 반등 후 +5% 목표
+- **거래량 급증 단타**: 5분 거래량이 평균 3배+ 급증 + 당일 상승 중 → 황금구간 내 즉시 단타 진입 허용
+- 진입 기준을 엄격히 유지해 승률을 높인다 (저확신 종목 절대 진입 금지)
+- 진입 후 백엔드에 맡기고 조기 청산하지 않는다 (수익 킬러 제거)
+
+**거래량 급증 단타 조건** (황금구간 내에서만):
+```python
+# 스코어 관계없이 별도 트랙 — volumeRatio가 핵심
+if volumeRatio >= 3.0 and currentPrice > openPrice * 1.005:
+    if pullbackSignal or envelope_pos in ('BELOW_LOWER', 'NEAR_LOWER'):
+        amount = 500000  # 단타 — 표준 금액
+        reason = f"거래량급증 단타 vol{volumeRatio}x pb={pullback} env={env_pos}"
+        # 즉시 진입, 백엔드 TP/SL에 맡김
+```
 
 #### Step 1 — 1차 필터 (대시보드 scores[])
 
-**시간대별 기준** (황금시간대일수록 낮은 진입 문턱):
+**강세장 vs 일반 기준**:
 ```python
-hhmm = int(time_str.replace(':', ''))  # 예: "09:45" → 945
-if 915 <= hhmm < 1030:      # 황금시간대 — 방향성 가장 강함
-    min_score, min_conf = 55, 0.50
-elif 1300 <= hhmm < 1400:   # 오후 집중시간대
-    min_score, min_conf = 58, 0.53
-else:                        # 그 외 (10:30~13:00)
-    min_score, min_conf = 65, 0.58
+# 강세장 감지: 75점+ 종목 8개+ OR 보유 포지션 50%+ 수익중
+bull_market = (len([s for s in scores if s['composite_score'] >= 75]) >= 8)
+             or (수익중 포지션 비율 >= 0.5)
+
+min_score = 75 if bull_market else 80   # 강세장: 75점 이상
+min_conf  = 0.60 if bull_market else 0.65
+max_buys  = 3 if bull_market else 2     # 강세장: 3종목까지
 ```
 
 필수 조건:
-1. `composite_score >= min_score` (시간대별)
-2. `confidence >= min_conf` (시간대별)
-3. 이미 OPEN 포지션 없는 종목 (불타기와 별개)
+1. `composite_score >= min_score`
+2. `confidence >= min_conf`
+3. 이미 OPEN 포지션 없는 종목
 4. `d['killSwitch']['active'] == False`
-5. `d['portfolio']['domesticCash'] > 300000`
+5. `d['portfolio']['domesticCash'] > 500000`
 
-꽁돈 게이트: `composite_score >= 88` → 2차 필터 무관, 100만원 즉시 매수
+꽁돈 게이트: `composite_score >= 85` → 2차 필터 무관, 즉시 Step 3으로 (70만원)
 
 #### Step 2 — 2차 필터 (기술 분석 API)
 1차 통과 후보 최대 5종목에 대해 개별 기술분석 호출:
@@ -147,72 +157,158 @@ curl -s -H "x-api-key: <DASHBOARD_PASSWORD>" \
 응답에서 `technicals` 필드 확인:
 | 조건 | 기준 | 실패 시 |
 |------|------|---------|
-| **당일 방향** | `currentPrice > openPrice * 1.003` (당일 +0.3% 이상) | **스킵 — 하락 종목 절대 매수 금지** |
-| **SMA20 추세** | `currentPrice > sma20` (20일선 위) | **스킵 — 하락 추세 종목 진입 금지** |
-| RSI14 | 15 ≤ RSI ≤ 78 | 스킵 |
-| volumeRatio | >= 0.7 | 스킵 |
+| **당일 방향** | `currentPrice > openPrice * 1.005` (당일 +0.5% 이상) | **스킵** |
+| **SMA20 추세** | `currentPrice > sma20` (20일선 위) | **스킵** |
+| **거래량** | `volumeRatio >= 1.0` (평균 이상 거래) | **스킵** |
+| RSI14 | 30 ≤ RSI ≤ 68 | 스킵 |
 | overallSignal | STRONG_SELL이 아니면 OK | STRONG_SELL만 스킵 |
-| MACD | 필터 없음, 로그만 | 스킵 안함 |
 
-> `sma20` 없는 경우(신규 상장 등): 스킵하지 않고 당일 방향 필터만으로 판단
-
-> `currentPrice`, `openPrice` 는 analysis 응답의 `price` 필드에서 확인
-> 없으면 dashboard `chains` 의 해당 종목 값 사용
-
-**reasoning 필드에 반드시 아래 정보 모두 포함** (데이터 분석용):
-`"AI {score}점 conf{conf} RSI{rsi} vol{volRatio}x MACD{macd} sig{signal} dayChange+{pct}%"`
-
-#### Step 3 — Kelly 비례 베팅 후 실행
-
-**신호 강도별 투자금** (Kelly 원칙: 확신이 클수록 더 투자):
+**눌림매매 가산점**:
 ```python
-if score >= 88 or conf >= 0.80:
-    amount = 700000   # 강한 신호 — 크게 베팅
-elif score >= 70 or conf >= 0.68:
-    amount = 500000   # 보통 신호
-else:                 # score 55~69 (황금시간대 실험)
-    amount = 300000   # 약한 신호 — 소액 실험
+t = technicals
+score_bonus = 0
+
+# 핵심: 눌림 신호 (5MA 이탈 후 복귀 + 거래량)
+if t.get('pullbackSignal'):
+    score_bonus += 12   # 가장 강한 재진입 시그널
+
+# 엔벨로프 하단 (SMA20 -5% 이하 → 과매도 반등 구간)
+envelope_pos = t.get('envelope', {}).get('position', '')
+if envelope_pos in ('BELOW_LOWER', 'NEAR_LOWER'):
+    score_bonus += 7
+
+# 거래대금 연속성 (주도주 확인)
+vol_consistency = t.get('volumeConsistency', 0)
+if vol_consistency >= 4:
+    score_bonus += 5
+elif vol_consistency <= 1:
+    score_bonus -= 8    # 단발 이슈 제거
+
+# 눌림매매 신호 없으면 score 85 미만 종목 스킵 (일반 모멘텀은 85+ 만)
+if not t.get('pullbackSignal') and envelope_pos not in ('BELOW_LOWER', 'NEAR_LOWER'):
+    if score < 85:
+        → 스킵 (눌림 신호 없으면 더 높은 확신 필요)
 ```
 
-- 점수 내림차순, 최대 3종목
+reasoning에 `pb={pullback} env={envelope_pos} volC={vol_consistency}일` 포함
+
+> `sma20` 없는 경우(신규 상장 등): 당일 방향 필터만으로 판단
+
+**reasoning 필드**:
+`"눌림매매 AI {score}점 conf{conf} RSI{rsi} vol{volRatio}x pb={pullback} env={env_pos} volC={vol_cons}일"`
+
+#### Step 3 — 포지션 사이징 후 실행
+
+```python
+if score >= 85 or conf >= 0.80:
+    amount = 700000   # 고확신 — 크게 베팅
+elif bull_market and score >= 78:
+    amount = 600000   # 강세장 준고확신
+else:                 # score min_score~84
+    amount = 500000   # 표준
+```
+
+- 점수 내림차순, **최대 max_buys종목** (강세장: 3, 일반: 2)
 
 ```bash
 curl -s -X POST "https://quantops-807105550136.asia-northeast3.run.app/api/manual-buy" \
   -H "Content-Type: application/json" \
   -H "x-api-key: <DASHBOARD_PASSWORD>" \
-  -d "{\"stock_code\":\"XXXXXX\",\"amount_krw\":AMOUNT,\"reasoning\":\"AI 74점 conf0.62 RSI52 vol1.8x MACDneutral sigNEUTRAL 스캘핑실험\"}"
+  -d "{\"stock_code\":\"XXXXXX\",\"amount_krw\":AMOUNT,\"reasoning\":\"눌림매매 AI 82점 conf0.70 RSI48 vol1.5x pb=True env=NEAR_LOWER volC=3일\"}"
 ```
 
-### 5. 루프 간격
-- 매도 실행 후: `ScheduleWakeup(120)` — 빠른 재진입 실험
-- 매수/불타기 실행 후: `ScheduleWakeup(120)`
-- 신호 없음: `ScheduleWakeup(90)` — 1.5분 재스캔 (더 촘촘히)
-- 09:05~09:15 초반: `ScheduleWakeup(120)`
+### 4. 루프 간격
+- 긴급 손절 실행 후: `ScheduleWakeup(120)`
+- 매수 실행 후: `ScheduleWakeup(180)` — 진입 후 백엔드에 맡기고 3분 대기
+- 신호 없음: `ScheduleWakeup(180)` — 3분 간격 (Track B와 동기화)
+- 09:00~09:30 개장 구간: `ScheduleWakeup(120)`
+- 13:30 이후: `ScheduleWakeup(300)` — 모니터만
 
-### 6. 제한 규칙
-- 1회 루프당 신규 매수 최대 3종목
-- 신규 진입: 동일 종목 중복 매수 금지 (불타기와 별도)
-- `blockNewBuys == true` 이면 매수/불타기 완전 중단
-- 총 현금 200,000원 미만이면 매수 중단 (안전마진)
+### 5. 제한 규칙
+- 1회 루프당 신규 매수 최대 3종목 (강세장), 일반 2종목
+- 동일 종목 중복 매수 금지 (단, 퀵플립 익절 후 재진입은 허용)
+- `blockNewBuys == true` 이면 매수 완전 중단
+- 총 현금 500,000원 미만이면 매수 중단
 
 ---
 
 ## 판단 예시
 
-**강한 신호 큰 베팅 (09:20 황금시간)**: "020000 AI 83점 conf0.78 RSI47 vol2.1x 당일+1.2% → 70만원 매수"
+**눌림매매 진입 (고확신)**: "058430 AI 85점 conf0.73 RSI44 vol1.8x pb=True env=NEAR_LOWER → 70만원 매수"
 
-**약한 신호 소액 실험 (황금시간)**: "031820 AI 57점 conf0.52 RSI54 vol0.9x 당일+0.4% → 30만원 실험"
+**눌림 신호 없어서 스킵**: "012345 AI 83점이나 pb=False env=MIDDLE → 눌림 신호 없음, 스킵"
 
-**중간시간 높은 기준**: "058430 AI 63점이나 10:45 중간시간대 기준 65점 미달 → 스킵"
+**점수 미달 스킵**: "031820 AI 76점 conf0.61 → 80점 미달, 스킵"
 
-**불타기 성공**: "체인 #41 hold 5.5분 PnL +0.35% 상승중 → 30만원 불타기 추가"
+**거래량 미달 스킵**: "068270 AI 82점이나 vol=0.7x → 거래량 1.0x 미달, 스킵"
 
-**불타기 SKIP (창 벗어남)**: "체인 #42 hold 8분 → 불타기 창(5~7분) 종료, 스킵"
+**긴급 손절**: "체인 #45 PnL -2.6% → 긴급 손절 (-2.5% 한도 초과)"
 
-**매수 SKIP (당일 하락)**: "031820 AI 71점이나 당일 -0.5% 하락 중 → 스킵"
+**백엔드 관리 중**: "체인 #42 PnL +2.1% → 백엔드 트레일링 중, Claude 개입 없음"
 
-**빠른 익절**: "체인 #42 hold 6분 PnL +0.55% → 5분+ 빠른 익절"
+**개장 구간 대기**: "09:15 KST → 개장 스캘핑 백엔드 실행 중, 120s 대기"
 
-**트레일링**: "체인 #43 고점+0.4%에서 현재+0.12% → 고점-0.28% 하락, 트레일링 매도"
+---
 
-**즉시 손절**: "체인 #44 PnL -1.05% → 즉시 손절"
+## 미국주식 야간 감시 루프
+
+> **참고**: overseas-job 스케줄러가 10분 간격 자동 처리 중. 이 루프는 Claude Code를 야간에 직접 돌릴 때만 사용.
+
+```
+/loop 미국주식 야간 감시: 포지션 보호 → 손절/익절 판단 → 직접 실행
+```
+
+### 시장 시간 체크 (KST 기준)
+- **23:10 미만 OR 06:10 이상** → 미국장 마감, ScheduleWakeup(600)
+- **23:10~23:30** → 프리마켓 대기, ScheduleWakeup(300)
+- **23:30~06:00** → 정규장 → 활성 감시
+
+### 데이터 수집
+```bash
+curl -s -H "x-api-key: <DASHBOARD_PASSWORD>" \
+  "https://quantops-807105550136.asia-northeast3.run.app/api/overseas/dashboard" \
+  -o "C:/Temp/qops_us.json"
+```
+
+필드:
+- 포지션: `d['holdings']` (quantity > 0)
+- 현재가: `h['last_price']` (장중 업데이트)
+- 평단가: `h['avg_price']`
+- 수익률: `(last_price - avg_price) / avg_price * 100`
+
+### 매도 판단 (황금비율 기준)
+
+**① 즉시 손절**
+- `pnlPct <= -8.0%` → 즉시 매도 (황금비율 8% 손절)
+
+**② 진행 중 급락 (-5% 이내 단타 급락)**
+- `pnlPct <= -5.0%` AND 당일 하락 → 경고 로그, 다음 틱에서 재확인
+
+**③ 목표 익절**
+- `pnlPct >= 16.0%` → 1:2 황금비율 달성, 즉시 익절
+
+**④ Progressive Trailing (고점 추적)**
+- overseas-job.ts가 처리 중 — 여기선 8% 초과 손실만 체크
+
+매도 실행:
+```bash
+curl -s -X POST "https://quantops-807105550136.asia-northeast3.run.app/api/overseas/sell" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: <DASHBOARD_PASSWORD>" \
+  -d "{\"stock_code\":\"XXXXXX\",\"quantity\":N,\"reason\":\"야간감시 -8% 손절\"}"
+```
+
+### 루프 간격
+- 정규장 중: ScheduleWakeup(180) — 3분
+- 장 마감 임박 (05:45~06:10): ScheduleWakeup(120)
+- 장외: ScheduleWakeup(600)
+
+### 황금비율 준수 체크
+- 현금 비중 = `cashUsd / (totalValue)` — 20% 미만이면 신규 매수 금지
+- 종목당 비중 = `position_value / totalValue` — 5% 초과 시 경고 로그
+
+### 판단 예시
+**즉시 손절**: "NVDA pnl -8.3% → 황금비율 손절 실행"
+**목표 달성**: "AAPL pnl +16.2% → 1:2 익절 실행"
+**감시 유지**: "MSFT pnl +4.1% → 트레일링 중 (overseas-job 처리 중)"
+**장 마감 대기**: "06:05 KST 미국장 종료 → 600s 대기"

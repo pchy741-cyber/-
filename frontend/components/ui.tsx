@@ -120,10 +120,20 @@ export function Badge({
 }
 
 // ─── SideBadge ────────────────────────────────────────────────────────────────
-export function SideBadge({ side, isAverageDown }: { side: string; isAverageDown?: boolean }) {
-  const key = isAverageDown ? 'blue' : side === 'BUY' ? 'emerald' : 'rose';
+export function SideBadge({ side, isAverageDown, pnl }: { side: string; isAverageDown?: boolean; pnl?: number | null }) {
+  let key: ColorKey;
+  let label: string;
+  if (isAverageDown) {
+    key = 'blue'; label = '추가매수';
+  } else if (side === 'BUY') {
+    key = 'emerald'; label = '매수';
+  } else if (pnl != null) {
+    key = pnl >= 0 ? 'emerald' : 'rose';
+    label = pnl >= 0 ? '익절' : '손절';
+  } else {
+    key = 'rose'; label = '매도';
+  }
   const c = COLOR[key];
-  const label = isAverageDown ? '추가매수' : side === 'BUY' ? '매수' : '매도';
   return (
     <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold tracking-wide ${c.bg} ${c.text} ring-1 ${c.ring}`}>
       {label}

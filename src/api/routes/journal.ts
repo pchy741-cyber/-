@@ -62,7 +62,8 @@ journalRoutes.get('/journal', async (c) => {
     for (const r of krRows) {
       const entryPrice = Number(r.avg_buy_price ?? 0);
       const exitPrice = Number(r.exit_price ?? 0);
-      const pnlAmount = r.realized_pnl != null
+      // realized_pnl=0은 미업데이트(버그) 가능성 — exit_price 기반으로 재계산
+      const pnlAmount = (r.realized_pnl != null && Number(r.realized_pnl) !== 0)
         ? Number(r.realized_pnl)
         : exitPrice > 0 && entryPrice > 0
           ? (exitPrice - entryPrice) * Number(r.total_quantity ?? 0)
@@ -97,45 +98,46 @@ journalRoutes.get('/journal', async (c) => {
   }
 
   try {
-    // ── 해외 완결 매매 (BUY→SELL 페어) ──
+    // ── 해외 완결 매매 (SELL 기반 — 중복 없음) ──
+    // BUY 기준 JOIN은 동일 SELL에 여러 BUY가 붙어 중복 발생 (AMD 반복매수 등)
+    // SELL 기준으로 조회하고 ai_reasoning에 내장된 [avgBuy:X] 를 평단가로 사용
     const { rows: usRows } = await pool.query(`
       SELECT
-        b.stock_code AS code,
-        b.filled_price  AS entry_price,
-        b.created_at    AS opened_at,
-        b.ai_reasoning  AS buy_reasoning,
-        s.filled_price  AS exit_price,
-        s.created_at    AS closed_at,
-        s.ai_reasoning  AS sell_reasoning,
-        s.quantity      AS qty
-      FROM orders b
-      JOIN LATERAL (
-        SELECT filled_price, created_at, ai_reasoning, quantity
-        FROM orders
-        WHERE stock_code = b.stock_code
-          AND side = 'SELL'
-          AND status = 'FILLED'
-          AND trigger_source = 'OVERSEAS'
-          AND created_at > b.created_at
-          AND filled_price IS NOT NULL
-        ORDER BY created_at ASC
-        LIMIT 1
-      ) s ON TRUE
-      WHERE b.side = 'BUY'
-        AND b.status = 'FILLED'
-        AND b.trigger_source = 'OVERSEAS'
-        AND b.created_at >= NOW() - ($1 || ' days')::interval
-        AND b.filled_price IS NOT NULL
-        AND b.filled_price > 0
-      ORDER BY b.created_at DESC
+        s.stock_code   AS code,
+        s.created_at   AS closed_at,
+        s.filled_price AS exit_price,
+        s.quantity     AS qty,
+        s.ai_reasoning AS sell_reasoning,
+        -- SELL reasoning에 내장된 가중평균 매수가: [avgBuy:123.4567]
+        (regexp_match(s.ai_reasoning, '\\[avgBuy:([0-9]+\\.?[0-9]*)\\]'))[1]::numeric AS avg_buy_price,
+        -- 이 SELL 이전 첫 매수 시점 (포지션 개시일)
+        (
+          SELECT MIN(b.created_at)
+          FROM orders b
+          WHERE b.stock_code = s.stock_code
+            AND b.side = 'BUY' AND b.status = 'FILLED'
+            AND b.trigger_source = 'OVERSEAS'
+            AND b.created_at < s.created_at
+            AND b.filled_price IS NOT NULL
+        ) AS opened_at
+      FROM orders s
+      WHERE s.side = 'SELL'
+        AND s.status = 'FILLED'
+        AND s.trigger_source = 'OVERSEAS'
+        AND s.created_at >= NOW() - ($1 || ' days')::interval
+        AND s.filled_price IS NOT NULL
+        AND s.filled_price > 0
+        AND s.ai_reasoning ~ '\\[avgBuy:[0-9]'
+      ORDER BY s.created_at DESC
       LIMIT 200
     `, [days]);
 
     for (const r of usRows) {
-      const entryPrice = Number(r.entry_price);
+      const entryPrice = Number(r.avg_buy_price ?? 0);
       const exitPrice = Number(r.exit_price);
       const qty = Number(r.qty ?? 0);
-      const pnlPct = entryPrice > 0 ? ((exitPrice - entryPrice) / entryPrice) * 100 : 0;
+      if (entryPrice <= 0) continue;
+      const pnlPct = ((exitPrice - entryPrice) / entryPrice) * 100;
       const pnlAmount = (exitPrice - entryPrice) * qty;
       const openedAt = r.opened_at ? new Date(r.opened_at).toISOString() : '';
       const closedAt = r.closed_at ? new Date(r.closed_at).toISOString() : '';

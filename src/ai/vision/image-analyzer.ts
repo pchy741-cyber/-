@@ -1,13 +1,6 @@
-import { GoogleAuth } from 'google-auth-library';
 import { logger } from '../../utils/logger.js';
 
-const VERTEX_PROJECT_ID = 'quantops-trading';
-const VERTEX_LOCATION = 'us-central1';
-const VERTEX_MODEL = 'gemini-2.0-flash';
-const VERTEX_ENDPOINT = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${VERTEX_LOCATION}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
 const AI_STUDIO_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent`;
-
-const auth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
 
 export interface VisionScalpSignal {
   ticker: string;
@@ -67,37 +60,8 @@ async function callAiStudioVision(apiKey: string, imageBase64: string, mimeType:
   return parseVisionResponse(text);
 }
 
-async function callVertexVision(imageBase64: string, mimeType: string): Promise<VisionScalpSignal> {
-  const client = await auth.getClient();
-  const accessToken = (await client.getAccessToken()).token;
-  if (!accessToken) throw new Error('Vertex AI 인증 토큰 없음');
-  const body = {
-    contents: [{ role: 'user', parts: [{ text: SYSTEM_PROMPT }, { inlineData: { mimeType, data: imageBase64 } }] }],
-    generationConfig: { temperature: 0.05, maxOutputTokens: 512 },
-  };
-  const res = await fetch(VERTEX_ENDPOINT, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Vertex AI ${res.status}: ${errText.slice(0, 200)}`);
-  }
-  const data = await res.json() as any;
-  const text: string = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-  if (!text) throw new Error('Vertex AI 응답 없음');
-  return parseVisionResponse(text);
-}
-
 export async function analyzeImageForScalp(imageBase64: string, mimeType: string): Promise<VisionScalpSignal> {
   const geminiKey = process.env.GEMINI_API_KEY;
-  if (geminiKey) {
-    try {
-      return await callAiStudioVision(geminiKey, imageBase64, mimeType);
-    } catch (e) {
-      logger.warn(`[VisionScalp] AI Studio 실패 → Vertex AI 폴백: ${(e as Error).message}`, { component: 'VISION' });
-    }
-  }
-  return await callVertexVision(imageBase64, mimeType);
+  if (!geminiKey) throw new Error('GEMINI_API_KEY 미설정 — AI Studio 키 필요');
+  return await callAiStudioVision(geminiKey, imageBase64, mimeType);
 }

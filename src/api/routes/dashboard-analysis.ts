@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { getDefenseParkState } from '../../ai/track-b/defense-park.js';
-import { getCachedScores } from '../../cache/redis.js';
+import { getCachedScores, getScoresWithFallback } from '../../cache/redis.js';
 import { config } from '../../config/index.js';
-import { getActiveStrategy, getActiveWatchlist, getLatestScores, getOpenChains, getPool } from '../../db/client.js';
+import { getActiveStrategy, getActiveWatchlist, getOpenChains, getPool } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { getDailyChart, isMarketOpen } from '../../kis/market.js';
 import { analyzeTechnicals } from '../../analysis/indicators.js';
@@ -64,8 +64,7 @@ dashboardAnalysisRoutes.get('/trading-status', async (c) => {
       (async () => {
         const wl = await getActiveWatchlist().catch(() => []);
         const codes = wl.map((w: any) => w.stock_code);
-        const s = await getCachedScores(codes).catch(() => []);
-        return s.length > 0 ? s : await getLatestScores(codes).catch(() => []);
+        return getScoresWithFallback(codes);
       })(),
       getActiveWatchlist().catch(() => []),
       (async () => {

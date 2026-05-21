@@ -13,6 +13,7 @@ import { acquireLock } from '../utils/lock.js';
 import { logger } from '../utils/logger.js';
 import { roundKrw } from '../utils/money.js';
 import { invalidateStockCache } from '../cache/redis.js';
+import { invalidateDashboardCache } from '../api/routes/dashboard.js';
 import { chainManager } from './chain.js';
 
 /**
@@ -280,7 +281,7 @@ export class TradeExecutor {
       // 점수 기반 동적 TP/SL: aiScore → 확신 티어 → 최적 파라미터
       // scoreParams 우선 → DB 전략값은 scoreParams 없을 때만 폴백
       const dbStrategy = await getActiveStrategy().catch(() => null);
-      const scoreParams = aiScore && aiScore >= 60 ? getScoreBasedParams(aiScore) : null;
+      const scoreParams = (aiScore && aiScore >= 60 && mode !== 'SCALPING') ? getScoreBasedParams(aiScore) : null;
       const targetProfitPct = scoreParams?.takeProfitPct ?? (dbStrategy as any)?.take_profit_pct ?? params.takeProfitPct;
       let stopLossPct = scoreParams?.stopLossPct ?? (dbStrategy as any)?.stop_loss_pct ?? params.stopLossPct;
       if (scoreParams) {
@@ -465,6 +466,7 @@ export class TradeExecutor {
       const pnlPct = avgBuy > 0 ? ((fill.filledPrice - avgBuy) / avgBuy) * 100 : 0;
       await chainManager.partialProfit(chain.id, soldQty, fill.filledPrice, chain);
       invalidateStockCache(stockCode).catch(() => {});
+      invalidateDashboardCache();
       notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, reasoning).catch((err) =>
         logger.warn(`알림 발송 오류 (SELL): ${err}`, { component: 'EXECUTOR' })
       );
@@ -515,6 +517,7 @@ export class TradeExecutor {
         await chainManager.partialProfit(chain.id, soldQty, fill.filledPrice, chain);
       }
       invalidateStockCache(stockCode).catch(() => {});
+      invalidateDashboardCache();
       notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, closeReason).catch((err) =>
         logger.warn(`알림 발송 오류 (CLOSE): ${err}`, { component: 'EXECUTOR' })
       );

@@ -79,8 +79,14 @@ GEMINI_API_KEY=gemini-api-key:latest,\
 OPENAI_API_KEY=openai-api-key:latest,\
 ANTHROPIC_API_KEY=anthropic-api-key:latest,\
 DB_PASSWORD=db-password:latest,\
-DASHBOARD_PASSWORD=dashboard-password:latest\
+DASHBOARD_PASSWORD=dashboard-password:latest,\
+VAPID_PUBLIC_KEY=vapid-public-key:latest,\
+VAPID_PRIVATE_KEY=vapid-private-key:latest\
 "
+# 실전 계좌 준비 후 위 --set-secrets에 아래 3줄 추가:
+# KIS_APP_KEY_LIVE=kis-app-key-live:latest,\
+# KIS_APP_SECRET_LIVE=kis-app-secret-live:latest,\
+# KIS_ACCOUNT_NO_LIVE=kis-account-no-live:latest,\
 
 echo ""
 echo "=========================================="

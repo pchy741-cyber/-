@@ -171,9 +171,9 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // ⚡ 09:00~09:10 — 개장 초단타 전용: 1분 간격 (캐시 차트 + Gemini 실시간 판단)
+  // ⚡ 09:00~09:12 — 개장 초단타 전용: 2분 간격 (캐시 차트 + Gemini 실시간 판단, 비용 절감)
   cron.schedule(
-    '0,1,2,3,4,5,6,7,8,9,10,11,12 9 * * 1-5',
+    '0,2,4,6,8,10,12 9 * * 1-5',
     () => {
       runOpeningBellCycle().catch(e => logger.error(`개장 사이클 실패: ${e}`, { component: 'SCHEDULER' }));
     },
@@ -278,7 +278,7 @@ export function startScheduler(): void {
   cron.schedule(
     '2,32 9-15 * * 1-5',
     () => {
-      withTimeout('스나이퍼', () => runSniperScan(), 180_000);
+      withTimeout('스나이퍼', () => runSniperScan(), 300_000);
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -328,15 +328,6 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 12:05 — Track A 장중 분석 (오전장 결과 반영, 오후 매매 판단 업데이트)
-  cron.schedule(
-    '5 12 * * 1-5',
-    () => {
-      logger.info('⏰ Track A (장중)', { component: 'SCHEDULER' });
-      runTrackAJob().catch((e) => logger.error(`Track A 실패: ${e}`, { component: 'SCHEDULER' }));
-    },
-    { timezone: MARKET.TIMEZONE },
-  );
 
   // ═══════════════════════════════════════════
   //  장 마감 후

@@ -19,7 +19,7 @@ import { requireAuth } from './api/middleware/auth.js';
 import { initBigQuery } from './automation/bigquery-pipeline.js';
 import { setupMonitoring } from './automation/gcp-monitoring.js';
 import { initRedisCache } from './cache/redis.js';
-import { config } from './config/index.js';
+import { config, setTradingModeOverride } from './config/index.js';
 import { checkDb, enableMemoryMode, logSystem } from './db/client.js';
 import { injectDbLogger } from './utils/logger.js';
 import { getAccessToken } from './kis/auth.js';
@@ -106,6 +106,18 @@ async function bootstrap() {
       await runMigrations();
     } catch (e: any) {
       logger.warn(`DB 마이그레이션 경고: ${e.message}`, { component: 'BOOT' });
+    }
+    // 1-1b. DB 거래 모드 오버라이드 로드 (재시작 시 유지)
+    try {
+      const { getPool: gp } = await import('./db/client.js');
+      const { rows: tmRows } = await gp().query('SELECT trading_mode_override FROM portfolio_allocation_config ORDER BY id ASC LIMIT 1');
+      const dbMode = tmRows[0]?.trading_mode_override;
+      if (dbMode === 'paper' || dbMode === 'live') {
+        setTradingModeOverride(dbMode);
+        logger.info(`✅ 거래 모드 DB 복원: ${dbMode.toUpperCase()}`, { component: 'BOOT' });
+      }
+    } catch (e: any) {
+      logger.warn(`거래 모드 로드 실패 (기본값 사용): ${e.message}`, { component: 'BOOT' });
     }
     // 1-2. 전략 파라미터 동기화: STRATEGY_PARAMS 상수 → DB
     try {
@@ -324,6 +336,11 @@ async function bootstrap() {
     logger.info(`📋 헬스: http://localhost:${PORT}/api/health`, { component: 'BOOT' });
     logger.info(`📡 SSE: http://localhost:${PORT}/api/stream`, { component: 'BOOT' });
   });
+
+  // 대시보드 캐시 선제 빌드 — 재시작 후 첫 접속 30초 대기 방지
+  setTimeout(() => {
+    import('./api/routes/dashboard.js').then(({ prewarmDashboard }) => prewarmDashboard()).catch(() => {});
+  }, 3000);
 
   if (config.isPaper) {
     logger.info('📝 *** 모의투자(Paper Trading) 모드 ***', { component: 'BOOT' });

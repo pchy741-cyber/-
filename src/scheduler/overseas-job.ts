@@ -801,15 +801,13 @@ export async function runOverseasJob(): Promise<void> {
       logger.info(`${regionFlags} 새 세션 시작 — 전 종목 점수 스캔 (${[...openRegions].join('/')})`, { component: 'OVERSEAS' });
     }
 
-    // 기존 세션이면 보유 + 캐시 상위만 조회 (API 비용 절감)
+    // 세션 캐시 여부와 무관하게 전 종목 시세 매 사이클 갱신
+    // (캐시 있을 때 일부만 갱신하면 당일 급등 빅무버를 놓침)
     const currentCache = isUSSession ? usSessionCache : asiaSessionCache;
-    let activeStocks = allActiveStocks;
+    const activeStocks = allActiveStocks;
     if (currentCache) {
-      const heldCodes = new Set(holdings.keys());
-      const targetCodes = new Set([...heldCodes, ...currentCache.topCodes]);
-      activeStocks = allActiveStocks.filter(s => targetCodes.has(s.code));
       logger.info(
-        `세션 캐시 사용 — ${activeStocks.length}종목 (보유:${heldCodes.size} + 후보:${currentCache.topCodes.length})`,
+        `세션 캐시 사용 — 전 종목(${activeStocks.length}) 시세 갱신 + 차트분석 캐시 재사용`,
         { component: 'OVERSEAS' },
       );
     }
@@ -992,13 +990,14 @@ export async function runOverseasJob(): Promise<void> {
     });
 
     // 세션 캐시 있을 때: 비보유 종목 중 상위 후보만 AI에 전달 (API 비용 절감)
+    // 단, isMomentum·isBigMover 종목은 당일 급등 신호 → 세션 캐시 무관 항상 AI 전달
     const latestSessionCache = isUSSession ? usSessionCache : asiaSessionCache;
     let aiInputs = allAiInputs;
     if (latestSessionCache) {
       const topSet = new Set(latestSessionCache.topCodes);
-      aiInputs = allAiInputs.filter(s => heldSet.has(s.code) || topSet.has(s.code));
+      aiInputs = allAiInputs.filter(s => heldSet.has(s.code) || topSet.has(s.code) || s.isMomentum || s.isBigMover);
       if (aiInputs.length < allAiInputs.length) {
-        logger.info(`🤖 AI 입력 최적화: ${allAiInputs.length} → ${aiInputs.length}종목 (세션 상위 후보만)`, { component: 'OVERSEAS' });
+        logger.info(`🤖 AI 입력 최적화: ${allAiInputs.length} → ${aiInputs.length}종목 (세션 후보 + 모멘텀/빅무버 포함)`, { component: 'OVERSEAS' });
       }
     }
 
@@ -1167,9 +1166,10 @@ export async function runOverseasJob(): Promise<void> {
 
       // ── 8) 부분 익절 (Partial TP) — 전량 매도 사유 없을 때 50% 수익 실현 ──
       // 고점 수익을 반납하는 사례(+15% → 트레일 후 +2% 청산) 방지
-      // 고베타 +10%, 중베타/방산 +8% → 절반 실현, 나머지 트레일링 계속
+      // 고베타 +14%, 중베타/방산 +11% → 절반 실현, 나머지 트레일링 계속
+      // (트레일 활성화 기준 10%/8% 이상이어야 하므로 그보다 높게 설정)
       if (!sellReason && holding.qty >= 2) {
-        const partialTpPct = isHighBeta ? 10.0 : 8.0;
+        const partialTpPct = isHighBeta ? 14.0 : 11.0;
         const partialTpDone = await getPartialTpDone(code);
         if (!partialTpDone && pnlPct >= partialTpPct) {
           const partialQty = Math.max(1, Math.floor(holding.qty / 2));
@@ -1344,6 +1344,11 @@ export async function runOverseasJob(): Promise<void> {
         sectorValues.set(watchItem.sector, (sectorValues.get(watchItem.sector) ?? 0) + value);
       }
 
+      // 시장 폭(breadth) — 필터 체인 진입 전 한 번만 계산
+      const freshBreadth = techResults.length > 0
+        ? techResults.filter(r => r.price.changePct > 0).length / techResults.length
+        : 0.5;
+
       const buyTargets = techResults
         .filter(t => !updatedHoldings.has(t.code) && !pendingOrderStocks.has(t.code))
         // 손절 쿨다운 — 48시간 이내 손실 매도 종목 재매수 금지
@@ -1363,7 +1368,9 @@ export async function runOverseasJob(): Promise<void> {
           return false;
         })
         // 어닝 3일 이내 종목 매수 금지 (Finnhub 또는 Yahoo Finance 감시)
+        // 예외: isBigMover(+5%↑) = 실적 공개 후 시장이 이미 소화 → 갭업 진입 허용
         .filter(t => {
+          if (t.isBigMover) return true; // 실적 갭업 = 불확실성 해소 → 매수 허용
           if (hasEarningsRisk(t.code, upcomingEarnings, 3) || sentinelBlockedCodes.has(t.code)) {
             logger.info(`📅 어닝 리스크 차단: ${t.code} (3일 이내 실적 발표)`, { component: 'OVERSEAS' });
             return false;
@@ -1399,8 +1406,8 @@ export async function runOverseasJob(): Promise<void> {
           const ai = aiMap.get(t.code);
           const isOversold = t.rsi <= 35 && t.trendStrength !== 'WEAK'; // 과매도 반등 — 하락추세면 제외
           const isAbove50 = t.rsi >= 50; // 상승추세 구간
-          // ── 1단계: 상승추세 확인 (RSI≥50 OR 모멘텀 OR 과매도반등) ──
-          const trendFilterOk = t.isMomentum || isOversold || (isAbove50 && t.adx > 20);
+          // ── 1단계: 상승추세 확인 (RSI≥50 OR 모멘텀 OR 과매도반등 OR 빅무버) ──
+          const trendFilterOk = t.isMomentum || t.isBigMover || isOversold || (isAbove50 && t.adx > 20);
           if (!trendFilterOk) {
             logger.info(`  ⛔ 진입 필터 탈락: ${t.code} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)} trend=${t.trendStrength} (상승추세 미확인)`, { component: 'OVERSEAS' });
             return false;
@@ -1422,10 +1429,13 @@ export async function runOverseasJob(): Promise<void> {
             logger.info(`  ⛔ BB 스퀴즈 차단: ${t.code} 에너지 응축 횡보 (돌파 방향 미확정)`, { component: 'OVERSEAS' });
             return false;
           }
-          // ── 2단계: 타점 기준 — 일중 고점 매수 차단 (모멘텀 제외) ──
-          const dayRangeOk = t.isMomentum || t.dayRangePct === undefined || t.dayRangePct < 70;
+          // ── 2단계: 타점 기준 — 일중 고점 매수 차단 (모멘텀/빅무버/강세장 제외) ──
+          // 강세장(양봉 65%↑): 전 종목이 고점 근처 → 차단 기준을 85%로 완화
+          const bullDay = freshBreadth >= 0.65;
+          const dayRangeCap = bullDay ? 85 : 70;
+          const dayRangeOk = t.isMomentum || t.isBigMover || t.dayRangePct === undefined || t.dayRangePct < dayRangeCap;
           if (!dayRangeOk) {
-            logger.info(`  ⛔ 고점 진입 차단: ${t.code} dayRangePct=${t.dayRangePct?.toFixed(0)}% (일중 고점 근처)`, { component: 'OVERSEAS' });
+            logger.info(`  ⛔ 고점 진입 차단: ${t.code} dayRangePct=${t.dayRangePct?.toFixed(0)}% ≥ ${dayRangeCap}% (${bullDay ? '강세장' : '일반'})`, { component: 'OVERSEAS' });
             return false;
           }
           // ── 2-b: 중베타 RSI 과열 차단 (모멘텀 제외) ──
@@ -1433,8 +1443,8 @@ export async function runOverseasJob(): Promise<void> {
           if (!t.isMomentum && !isOversold) {
             const entryWatchSector = GLOBAL_WATCHLIST.find(w => w.code === t.code)?.sector ?? '';
             const isMedBetaEntry = ['TECH', 'INFRA', 'INDUSTRIAL', 'CLOUD', 'JP_AUTO', 'JP_TECH', 'JP_BANK', 'TW_SEMI'].includes(entryWatchSector);
-            if (isMedBetaEntry && t.rsi > 55) {
-              logger.info(`  ⛔ 중베타 RSI 과열 차단: ${t.code} RSI=${t.rsi.toFixed(0)} > 55`, { component: 'OVERSEAS' });
+            if (isMedBetaEntry && t.rsi > 62) {
+              logger.info(`  ⛔ 중베타 RSI 과열 차단: ${t.code} RSI=${t.rsi.toFixed(0)} > 62`, { component: 'OVERSEAS' });
               return false;
             }
           }
@@ -1445,20 +1455,20 @@ export async function runOverseasJob(): Promise<void> {
           // DANGER  : 위험 → 최고확신만, 모멘텀 없이 단순 기술만으론 진입 금지
           // 손실 회복 모드(-3%~-5%): AI 85%+ 필수 (손해 후 저품질 종목 물타기 방지)
           const quality = mktSignal?.marketQuality ?? 'OK';
-          // 시장 폭 페널티: 감시목록 35% 미만 양봉 = 광범위한 약세 → 최소 신뢰도 +0.04 상향
-          const freshBreadth = techResults.length > 0
-            ? techResults.filter(r => r.price.changePct > 0).length / techResults.length
-            : 0.5;
+          // 시장 폭: 35% 미만 양봉 = 광범위한 약세 → +0.04 페널티 / 65% 이상 = 강세장 → -0.02 보너스
+          // freshBreadth는 필터 체인 진입 전 계산된 값 사용
           const breadthPenalty = freshBreadth < 0.35 ? 0.04 : 0;
+          const breadthBonus = freshBreadth >= 0.65 ? 0.02 : 0;
+          const breadthAdj = breadthPenalty - breadthBonus; // 강세장엔 기준 완화, 약세장엔 상향
           // 빅무버(+5%↑) 특례: 뉴스/촉매 확인된 강한 종목 → 낮은 신뢰도도 허용
           const isBigMoverTarget = t.isBigMover;
           const baseMinConf = recoveryMode ? 0.85
             : quality === 'GREAT' ? 0.68 : quality === 'CAUTIOUS' ? 0.78 : quality === 'DANGER' ? 0.82 : 0.70;
-          const minConf = isBigMoverTarget ? Math.max(0.65, baseMinConf - 0.05 + breadthPenalty) : baseMinConf + breadthPenalty;
+          const minConf = isBigMoverTarget ? Math.max(0.65, baseMinConf - 0.05 + breadthAdj) : baseMinConf + breadthAdj;
           const minConfMomentum = isBigMoverTarget ? Math.max(0.62, (recoveryMode ? 0.83
-            : quality === 'GREAT' ? 0.65 : quality === 'CAUTIOUS' ? 0.75 : quality === 'DANGER' ? 0.80 : 0.68) - 0.05 + breadthPenalty)
+            : quality === 'GREAT' ? 0.65 : quality === 'CAUTIOUS' ? 0.75 : quality === 'DANGER' ? 0.80 : 0.68) - 0.05 + breadthAdj)
             : (recoveryMode ? 0.83
-            : quality === 'GREAT' ? 0.65 : quality === 'CAUTIOUS' ? 0.75 : quality === 'DANGER' ? 0.80 : 0.68) + breadthPenalty;
+            : quality === 'GREAT' ? 0.65 : quality === 'CAUTIOUS' ? 0.75 : quality === 'DANGER' ? 0.80 : 0.68) + breadthAdj;
           if (ai?.action === 'BUY' && ai.confidence >= minConf) return true;
           if (ai?.action === 'BUY' && (t.signal === 'STRONG_BUY' || t.isMomentum) && ai.confidence >= minConfMomentum) return true;
           // AI 없을 때: GREAT/OK만 강한 기술적 신호 허용, 손실 회복 모드에서는 AI 필수
@@ -1617,7 +1627,7 @@ export async function runOverseasJob(): Promise<void> {
         const entryP = exec.filledPrice;
         const tpPct = isHighBetaEntry ? 20 : 15;
         const slPct = isHighBetaEntry ? 8 : isDefenseEntry ? 4 : 5;
-        const trailActPct = isHighBetaEntry ? 4 : 3;
+        const trailActPct = isHighBetaEntry ? 10 : 8;
         const trailDropPct2 = isHighBetaEntry ? 10 : 7;
         const tpPrice = (entryP * (1 + tpPct / 100)).toFixed(2);
         const slPrice = (entryP * (1 - slPct / 100)).toFixed(2);

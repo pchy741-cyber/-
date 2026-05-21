@@ -326,6 +326,39 @@ export function adx(candles: OHLCV[], period: number = 14): number[] {
   return ema(dx, period);
 }
 
+// ── 엔벨로프 (Envelope) — SMA ± 고정 비율 밴드 ──
+// 하단 밴드 터치 = 급락/패닉셀 구간 → 눌림 매수 기회
+// deviation = 0.05 (5%) 기본
+
+export interface EnvelopeResult {
+  upper: number[];  // SMA * (1 + deviation)
+  middle: number[]; // SMA
+  lower: number[];  // SMA * (1 - deviation)
+  upperNow: number;
+  middleNow: number;
+  lowerNow: number;
+  position: 'ABOVE_UPPER' | 'NEAR_UPPER' | 'MIDDLE' | 'NEAR_LOWER' | 'BELOW_LOWER';
+  touchingLower: boolean; // 현재가 ≤ lowerNow → 패닉셀 눌림 구간
+}
+
+export function envelope(prices: number[], period = 20, deviation = 0.05): EnvelopeResult {
+  const mid = sma(prices, period);
+  const upper = mid.map(m => m * (1 + deviation));
+  const lower = mid.map(m => m * (1 - deviation));
+  const cur = prices[prices.length - 1] ?? 0;
+  const middleNow = mid[mid.length - 1] ?? cur;
+  const upperNow = upper[upper.length - 1] ?? cur;
+  const lowerNow = lower[lower.length - 1] ?? cur;
+
+  let position: EnvelopeResult['position'] = 'MIDDLE';
+  if (cur >= upperNow) position = 'ABOVE_UPPER';
+  else if (cur >= middleNow + (upperNow - middleNow) * 0.6) position = 'NEAR_UPPER';
+  else if (cur <= lowerNow) position = 'BELOW_LOWER';
+  else if (cur <= middleNow - (middleNow - lowerNow) * 0.6) position = 'NEAR_LOWER';
+
+  return { upper, middle: mid, lower, upperNow, middleNow, lowerNow, position, touchingLower: cur <= lowerNow };
+}
+
 // ── VWAP (Volume Weighted Average Price) ──
 
 export function vwap(candles: OHLCV[]): number[] {
@@ -472,6 +505,9 @@ export interface TechnicalSummary {
   pctFrom3DayHigh: number;
   pctFrom5DayLow: number;
   vwapPosition: 'ABOVE' | 'BELOW' | 'AT';
+  envelope: EnvelopeResult;
+  pullbackSignal: boolean;    // 눌림매매: 5MA/10MA 일시 이탈 후 복귀 + 거래량 동반
+  volumeConsistency: number;  // 거래대금 연속성: 최근 5일 중 20일 평균 이상인 날 수 (0-5)
 }
 
 export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
@@ -722,6 +758,50 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   const pctFrom3DayHigh = recent3High > 0 ? ((current - recent3High) / recent3High) * 100 : 0;
   const pctFrom5DayLow = recent5Low > 0 && recent5Low < Infinity ? ((current - recent5Low) / recent5Low) * 100 : 0;
 
+  // ★ 엔벨로프 (SMA20 ± 5%) — 하단 밴드 눌림 감지
+  const envelopeResult = envelope(closesAsc, 20, 0.05);
+
+  // ★ 눌림매매 (Pullback Signal)
+  // 조건: 최근 3~5봉 중 5MA/10MA 아래로 일시 이탈했다가 → 현재 5MA 위로 복귀 + 거래량 동반
+  const sma10Val = sma(closesAsc, 10);
+  const sma10Now = sma10Val[sma10Val.length - 1] ?? current;
+  let recentDipBelowMA = false;
+  const lookback = Math.min(5, closesAsc.length - 1);
+  for (let i = 1; i <= lookback; i++) {
+    const pastClose = closesAsc[closesAsc.length - 1 - i] ?? current;
+    const pastSma5 = sma5Val[sma5Val.length - 1 - i] ?? sma5Now;
+    if (pastClose < pastSma5) { recentDipBelowMA = true; break; }
+  }
+  const pullbackSignal = recentDipBelowMA && current > sma5Now && current > sma10Now && volumeRatio >= 0.8;
+
+  // 눌림매매 신호 점수
+  if (pullbackSignal) {
+    score += 20; // 5MA/10MA 눌림 후 반등 + 거래량 확인 = 강한 진입 시그널
+  }
+
+  // 엔벨로프 하단 터치 = 패닉셀 눌림 구간 (추가 점수)
+  if (envelopeResult.position === 'BELOW_LOWER' && volumeRatio >= 0.7) score += 12;
+  else if (envelopeResult.position === 'NEAR_LOWER' && volumeRatio >= 0.7) score += 6;
+
+  // ★ 거래대금 연속성 (5일 중 20일 평균 이상인 날 수)
+  const avgVol20ForConsistency = volumes.slice(0, 20).reduce((s, v) => s + v, 0) / 20;
+  let volumeConsistency = 0;
+  for (let i = 0; i < Math.min(5, volumes.length); i++) {
+    if (volumes[i] >= avgVol20ForConsistency) volumeConsistency++;
+  }
+  // 거래대금 연속 3일 이상 = 주도주 신호
+  if (volumeConsistency >= 4 && score > 0) score = Math.floor(score * 1.12);
+  else if (volumeConsistency <= 1 && score > 0) score = Math.floor(score * 0.85); // 단발 이슈 페널티
+
+  score = Math.max(-100, Math.min(100, score));
+
+  // overallSignal 재계산 (눌림매매/엔벨로프 점수 반영 후)
+  if (score >= 40) overallSignal = 'STRONG_BUY';
+  else if (score >= 15) overallSignal = 'BUY';
+  else if (score <= -40) overallSignal = 'STRONG_SELL';
+  else if (score <= -15) overallSignal = 'SELL';
+  else overallSignal = 'NEUTRAL';
+
   return {
     rsi14,
     macdHistogram: macdHist,
@@ -753,6 +833,9 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
     pctFrom3DayHigh,
     pctFrom5DayLow,
     vwapPosition,
+    envelope: envelopeResult,
+    pullbackSignal,
+    volumeConsistency,
   };
 }
 

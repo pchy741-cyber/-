@@ -372,10 +372,11 @@ export class RiskEngine {
     const currentValue = currentBalance.totalDeposit + currentBalance.totalEvalAmount;
     const dailyLoss = startValue - currentValue;
 
-    // 손실 한도 = config 설정값 우선, 없으면 총 포트폴리오의 5% (보수적 기본값)
+    // 손실 한도 = config 설정값 우선, 없으면 총 포트폴리오의 25%(모의) / 5%(실거래)
+    const fallbackDrawdownRate = config.isPaper ? 0.25 : 0.05;
     const maxDailyDrawdownKrw = config.risk.maxDailyDrawdownKrw > 0
       ? config.risk.maxDailyDrawdownKrw
-      : Math.round(startValue * 0.05);
+      : Math.round(startValue * fallbackDrawdownRate);
 
     if (dailyLoss > maxDailyDrawdownKrw) {
       // Kill Switch 자동 발동!
@@ -439,17 +440,19 @@ export class RiskEngine {
       const latestValue = values[values.length - 1];
       const mddPct = ((peakValue - latestValue) / peakValue) * 100;
 
-      if (mddPct >= 8) {
+      const mddLimit = config.isPaper ? 40 : 8;
+      const mddWarn = config.isPaper ? 30 : 6;
+      if (mddPct >= mddLimit) {
         await activateKillSwitch(
-          `월간 MDD 한도 초과: 고점 대비 -${mddPct.toFixed(1)}% (한도 -8%)`,
+          `월간 MDD 한도 초과: 고점 대비 -${mddPct.toFixed(1)}% (한도 -${mddLimit}%)`,
         );
         return {
           approved: false,
-          reason: `🛑 월간 MDD -${mddPct.toFixed(1)}% — 이달 고점 대비 8% 초과 손실, Kill Switch 발동`,
+          reason: `🛑 월간 MDD -${mddPct.toFixed(1)}% — 이달 고점 대비 ${mddLimit}% 초과 손실, Kill Switch 발동`,
         };
       }
 
-      if (mddPct >= 6) {
+      if (mddPct >= mddWarn) {
         logger.warn(
           `⚠️ 월간 MDD 경고: -${mddPct.toFixed(1)}% (고점 ${Math.round(peakValue / 10000)}만원 → 현재 ${Math.round(latestValue / 10000)}만원)`,
           { component: 'RISK' },

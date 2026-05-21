@@ -11,25 +11,25 @@ import type { AIScore, Order, StrategyConfig, TransactionChain, WatchlistItem } 
 // ── 기본 감시목록 (테마별 엄선) ──
 const DEFAULT_WATCHLIST: WatchlistItem[] = [
   // AI·반도체 핵심
-  { id: uuid(), stock_code: '005930', stock_name: '삼성전자', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: 'AI반도체' },
-  { id: uuid(), stock_code: '000660', stock_name: 'SK하이닉스', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: 'HBM/AI반도체' },
-  { id: uuid(), stock_code: '042700', stock_name: '한미반도체', market: 'KOSDAQ', is_active: true, added_at: new Date().toISOString(), notes: 'AI반도체패키징' },
-  { id: uuid(), stock_code: '403870', stock_name: 'HPSP', market: 'KOSDAQ', is_active: true, added_at: new Date().toISOString(), notes: '반도체공정장비' },
+  { id: uuid(), stock_code: '005930', stock_name: '삼성전자', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: 'AI반도체', source: 'MANUAL' },
+  { id: uuid(), stock_code: '000660', stock_name: 'SK하이닉스', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: 'HBM/AI반도체', source: 'MANUAL' },
+  { id: uuid(), stock_code: '042700', stock_name: '한미반도체', market: 'KOSDAQ', is_active: true, added_at: new Date().toISOString(), notes: 'AI반도체패키징', source: 'MANUAL' },
+  { id: uuid(), stock_code: '403870', stock_name: 'HPSP', market: 'KOSDAQ', is_active: true, added_at: new Date().toISOString(), notes: '반도체공정장비', source: 'MANUAL' },
   // 반도체 소재·원자재
-  { id: uuid(), stock_code: '357780', stock_name: '솔브레인', market: 'KOSDAQ', is_active: true, added_at: new Date().toISOString(), notes: '반도체소재' },
-  { id: uuid(), stock_code: '005290', stock_name: '동진쎄미켐', market: 'KOSDAQ', is_active: true, added_at: new Date().toISOString(), notes: '반도체소재' },
+  { id: uuid(), stock_code: '357780', stock_name: '솔브레인', market: 'KOSDAQ', is_active: true, added_at: new Date().toISOString(), notes: '반도체소재', source: 'MANUAL' },
+  { id: uuid(), stock_code: '005290', stock_name: '동진쎄미켐', market: 'KOSDAQ', is_active: true, added_at: new Date().toISOString(), notes: '반도체소재', source: 'MANUAL' },
   // 로봇·자동화
-  { id: uuid(), stock_code: '277810', stock_name: '레인보우로보틱스', market: 'KOSDAQ', is_active: true, added_at: new Date().toISOString(), notes: '협동로봇' },
-  { id: uuid(), stock_code: '454910', stock_name: '두산로보틱스', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: '협동로봇' },
+  { id: uuid(), stock_code: '277810', stock_name: '레인보우로보틱스', market: 'KOSDAQ', is_active: true, added_at: new Date().toISOString(), notes: '협동로봇', source: 'MANUAL' },
+  { id: uuid(), stock_code: '454910', stock_name: '두산로보틱스', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: '협동로봇', source: 'MANUAL' },
   // 방산·인프라 (트럼프 테마)
-  { id: uuid(), stock_code: '012450', stock_name: '한화에어로스페이스', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: '방산/우주' },
-  { id: uuid(), stock_code: '009540', stock_name: 'HD한국조선해양', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: '조선/LNG' },
+  { id: uuid(), stock_code: '012450', stock_name: '한화에어로스페이스', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: '방산/우주', source: 'MANUAL' },
+  { id: uuid(), stock_code: '009540', stock_name: 'HD한국조선해양', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: '조선/LNG', source: 'MANUAL' },
   // 바이오·제약
-  { id: uuid(), stock_code: '068270', stock_name: '셀트리온', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: '바이오시밀러' },
-  { id: uuid(), stock_code: '207940', stock_name: '삼성바이오로직스', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: 'CMO바이오' },
+  { id: uuid(), stock_code: '068270', stock_name: '셀트리온', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: '바이오시밀러', source: 'MANUAL' },
+  { id: uuid(), stock_code: '207940', stock_name: '삼성바이오로직스', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: 'CMO바이오', source: 'MANUAL' },
   // 원자재 (알래스카/광물)
-  { id: uuid(), stock_code: '010130', stock_name: '고려아연', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: '비철금속' },
-  { id: uuid(), stock_code: '247540', stock_name: '에코프로비엠', market: 'KOSDAQ', is_active: true, added_at: new Date().toISOString(), notes: '2차전지소재' },
+  { id: uuid(), stock_code: '010130', stock_name: '고려아연', market: 'KOSPI', is_active: true, added_at: new Date().toISOString(), notes: '비철금속', source: 'MANUAL' },
+  { id: uuid(), stock_code: '247540', stock_name: '에코프로비엠', market: 'KOSDAQ', is_active: true, added_at: new Date().toISOString(), notes: '2차전지소재', source: 'MANUAL' },
 ];
 
 // ── 스토어 ──
@@ -74,6 +74,7 @@ export function memUpsertWatchlistItem(item: Pick<WatchlistItem, 'stock_code' | 
       is_active: true,
       added_at: new Date().toISOString(),
       notes: null,
+      source: 'MANUAL',
     });
   }
 }

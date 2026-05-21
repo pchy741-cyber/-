@@ -77,7 +77,7 @@ export async function applyHardRules(params: {
   const result = [...decisions];
   const baseParams = STRATEGY_PARAMS[mode];
 
-  let trailingStopThreshold = -5;
+  let trailingStopThreshold = -2.5;
   try {
     const { getPool } = await import('../../db/client.js');
     const { rows } = await getPool().query('SELECT trailing_stop_pct FROM portfolio_allocation_config LIMIT 1');
@@ -122,7 +122,7 @@ export async function applyHardRules(params: {
 
     const peakForTrail = chain.peak_price_since_open ? Number(chain.peak_price_since_open) : 0;
 
-    if (peakForTrail > 0 && pnlPct >= 1.5) {
+    if (peakForTrail > 0 && pnlPct >= 0.5) {
       const trailDropPct = ((price.currentPrice - peakForTrail) / peakForTrail) * 100;
       if (trailDropPct <= trailingStopThreshold) {
         logger.info(

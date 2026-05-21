@@ -1,9 +1,11 @@
 import { Hono } from 'hono';
-import { getOverseasBalance, getOverseasDailyChart, getOverseasPrice } from '../../kis/overseas.js';
+import { getOverseasBalance, getOverseasDailyChart, getOverseasPrice, placeOverseasOrder } from '../../kis/overseas.js';
+import { config } from '../../config/index.js';
 import { cacheGet, cacheSet } from '../../cache/memory.js';
 import { logger } from '../../utils/logger.js';
 import { getOverseasScores, setOverseasScores, type OverseasScoreEntry } from '../../cache/overseas-scores.js';
 import { analyzeTechnicals, type OHLCV } from '../../analysis/indicators.js';
+import { notifyOverseasSell } from '../../notifications/web-push.js';
 
 export const overseasRoutes = new Hono();
 
@@ -327,14 +329,7 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
     const tpPrice = +(price.currentPrice * 1.025).toFixed(2);
     const slPrice = +(price.currentPrice * 0.985).toFixed(2);
 
-    // scalp 포지션 기록 (overseas_holdings + scalp_tp/sl 컬럼)
-    await pool.query(`
-      ALTER TABLE overseas_holdings
-        ADD COLUMN IF NOT EXISTS scalp_tp NUMERIC DEFAULT NULL,
-        ADD COLUMN IF NOT EXISTS scalp_sl NUMERIC DEFAULT NULL,
-        ADD COLUMN IF NOT EXISTS is_scalp BOOLEAN DEFAULT FALSE
-    `).catch(() => {});
-
+    // scalp 포지션 기록
     await pool.query(`
       INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, scalp_tp, scalp_sl, is_scalp)
       VALUES ($1, $2, $3, $4, NOW(), $5, $6, TRUE)
@@ -364,6 +359,82 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
   } catch (e: any) {
     logger.error(`[VisionScalp] 실행 실패: ${e.message}`, { component: 'OVERSEAS' });
     return c.json({ error: e.message }, 500);
+  }
+});
+
+// Claude Code 야간 감시 루프 매도 엔드포인트 (CLAUDE.md /api/overseas/sell)
+overseasRoutes.post('/overseas/sell', async (c) => {
+  const apiKey = c.req.header('x-api-key') ?? '';
+  const secret = process.env.DASHBOARD_PASSWORD ?? '';
+  if (secret && apiKey !== secret) return c.json({ error: '인증 실패' }, 401);
+
+  let body: { stock_code?: string; quantity?: number; reason?: string };
+  try { body = await c.req.json(); } catch { return c.json({ error: '요청 형식 오류' }, 400); }
+  const { stock_code, quantity, reason = '야간 감시 매도' } = body;
+  if (!stock_code) return c.json({ error: 'stock_code 필수' }, 400);
+
+  try {
+    const { getPool } = await import('../../db/client.js');
+    const { rows } = await getPool().query(
+      'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0', [stock_code]);
+    const holding = rows[0];
+    if (!holding) return c.json({ error: '보유 종목 없음' }, 404);
+
+    const totalQty = Number(holding.quantity);
+    const qty = quantity && quantity > 0 ? Math.min(quantity, totalQty) : totalQty;
+    const exchange = String(holding.exchange ?? 'NASDAQ');
+    const avgPrice = Number(holding.avg_price ?? 0);
+
+    let fillPrice = Number(holding.last_price ?? 0);
+    try {
+      const px = await getOverseasPrice(stock_code, exchange);
+      if ((px?.currentPrice ?? 0) > 0) fillPrice = px.currentPrice;
+    } catch { /* 폴백 */ }
+    if (fillPrice <= 0) fillPrice = avgPrice;
+
+    if (config.isPaper) {
+      const orderNo = `CLN${Date.now().toString(36)}`;
+      await getPool().query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2', [stock_code, exchange]);
+      await getPool().query('DELETE FROM overseas_state WHERE key = $1', [`maxprice_${stock_code}`]);
+      await getPool().query(
+        `INSERT INTO overseas_state (key, value) VALUES ('cash', $1::text)
+         ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
+        [fillPrice * qty]);
+      await getPool().query(
+        `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
+         VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','paper','OVERSEAS',$5)`,
+        [stock_code, qty, fillPrice, orderNo, reason]);
+      logger.info(`[OverseasSell] ${stock_code} ${qty}주 @$${fillPrice} (야간감시 모의)`, { component: 'OVERSEAS' });
+      try {
+        const stockName = GLOBAL_WATCHLIST.find(s => s.code === stock_code)?.name ?? stock_code;
+        const pnlPct = avgPrice > 0 ? ((fillPrice - avgPrice) / avgPrice) * 100 : 0;
+        await notifyOverseasSell(stock_code, stockName, qty, fillPrice, pnlPct, reason);
+      } catch { /* 알림 실패 무시 */ }
+      return c.json({ ok: true, orderNo, filledQty: qty, filledPrice: fillPrice });
+    }
+
+    const result = await placeOverseasOrder({ stockCode: stock_code, exchange, side: 'SELL', quantity: qty, price: 0 });
+    if (!result.success) return c.json({ error: `KIS 매도 실패: ${result.message}` }, 502);
+    await getPool().query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2', [stock_code, exchange]);
+    await getPool().query('DELETE FROM overseas_state WHERE key = $1', [`maxprice_${stock_code}`]);
+    await getPool().query(
+      `INSERT INTO overseas_state (key, value) VALUES ('cash', $1::text)
+       ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
+      [fillPrice * qty]);
+    await getPool().query(
+      `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
+       VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','live','OVERSEAS',$5)`,
+      [stock_code, qty, fillPrice, result.orderNo ?? '', reason]);
+    logger.info(`[OverseasSell] ${stock_code} ${qty}주 (야간감시 실거래 ${result.orderNo})`, { component: 'OVERSEAS' });
+    try {
+      const stockName = GLOBAL_WATCHLIST.find(s => s.code === stock_code)?.name ?? stock_code;
+      const pnlPct = avgPrice > 0 ? ((fillPrice - avgPrice) / avgPrice) * 100 : 0;
+      await notifyOverseasSell(stock_code, stockName, qty, fillPrice, pnlPct, reason);
+    } catch { /* 알림 실패 무시 */ }
+    return c.json({ ok: true, orderNo: result.orderNo, filledQty: qty, filledPrice: fillPrice });
+  } catch (err: any) {
+    logger.error(`[OverseasSell] 예외: ${err.message}`, { component: 'OVERSEAS' });
+    return c.json({ error: err.message }, 500);
   }
 });
 

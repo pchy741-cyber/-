@@ -8,11 +8,15 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'staging', 'production']).default('development'),
   TRADING_MODE: z.enum(['paper', 'live']).default('paper'),
 
-  // KIS (한국투자증권)
+  // KIS (한국투자증권) — 모의투자
   KIS_APP_KEY: z.string().default(''),
   KIS_APP_SECRET: z.string().default(''),
   KIS_ACCOUNT_NO: z.string().default('00000000-01'),
   KIS_BASE_URL: z.string().default('https://openapivts.koreainvestment.com:29443'),
+  // KIS 실거래 전용 자격증명 (없으면 모의투자 자격증명 사용)
+  KIS_APP_KEY_LIVE: z.string().default(''),
+  KIS_APP_SECRET_LIVE: z.string().default(''),
+  KIS_ACCOUNT_NO_LIVE: z.string().default(''),
 
   // Cloud SQL (PostgreSQL)
   DATABASE_URL: z.string().default(''),
@@ -35,6 +39,12 @@ const envSchema = z.object({
 
   // Slack
   SLACK_WEBHOOK_URL: z.string().default(''),
+
+  // DART Open API (공시 모니터링, 선택)
+  DART_API_KEY: z.string().default(''),
+
+  // Finnhub (US 어닝 캘린더, 선택)
+  FINNHUB_API_KEY: z.string().default(''),
 
   // 리스크 한도 (연구 기반: 10M 기준)
   // • 일일 최대 손실: 총자산 2% = 200,000원 (손실 누적 시 당일 거래 중단)
@@ -59,31 +69,56 @@ if (!parsed.success) {
 
 const env = parsed.data;
 
+// ── 거래 모드 런타임 오버라이드 (DB 기반, 재시작 없이 전환) ──
+let _tradingModeOverride: 'paper' | 'live' | null = null;
+
+export function setTradingModeOverride(mode: 'paper' | 'live' | null) {
+  _tradingModeOverride = mode;
+}
+
+export function getEffectiveTradingMode(): 'paper' | 'live' {
+  return _tradingModeOverride ?? env.TRADING_MODE;
+}
+
 // KIS 설정은 Secret Manager 로드 후 process.env가 갱신되므로 getter로 동적 읽기
-function getKisAccountNo() {
+function getKisAccountNo(isLive: boolean) {
+  if (isLive) {
+    const live = process.env.KIS_ACCOUNT_NO_LIVE || env.KIS_ACCOUNT_NO_LIVE;
+    if (live) return live.split('-')[0];
+  }
   const raw = process.env.KIS_ACCOUNT_NO || env.KIS_ACCOUNT_NO;
   return raw.split('-')[0];
 }
-function getKisProductCode() {
+function getKisProductCode(isLive: boolean) {
+  if (isLive) {
+    const live = process.env.KIS_ACCOUNT_NO_LIVE || env.KIS_ACCOUNT_NO_LIVE;
+    if (live) return live.split('-')[1] || '01';
+  }
   const raw = process.env.KIS_ACCOUNT_NO || env.KIS_ACCOUNT_NO;
   return raw.split('-')[1] || '01';
 }
 
 export const config = {
   env: env.NODE_ENV,
-  tradingMode: env.TRADING_MODE as 'paper' | 'live',
-  isPaper: env.TRADING_MODE === 'paper',
+  get tradingMode() { return getEffectiveTradingMode(); },
+  get isPaper() { return getEffectiveTradingMode() === 'paper'; },
 
   get kis() {
+    const isLive = getEffectiveTradingMode() === 'live';
+    const appKey = isLive
+      ? (process.env.KIS_APP_KEY_LIVE || env.KIS_APP_KEY_LIVE || process.env.KIS_APP_KEY || env.KIS_APP_KEY)
+      : (process.env.KIS_APP_KEY || env.KIS_APP_KEY);
+    const appSecret = isLive
+      ? (process.env.KIS_APP_SECRET_LIVE || env.KIS_APP_SECRET_LIVE || process.env.KIS_APP_SECRET || env.KIS_APP_SECRET)
+      : (process.env.KIS_APP_SECRET || env.KIS_APP_SECRET);
     return {
-      appKey: process.env.KIS_APP_KEY || env.KIS_APP_KEY,
-      appSecret: process.env.KIS_APP_SECRET || env.KIS_APP_SECRET,
-      accountNo: getKisAccountNo(),
-      accountProductCode: getKisProductCode(),
-      baseUrl:
-        env.TRADING_MODE === 'paper'
-          ? 'https://openapivts.koreainvestment.com:29443'
-          : process.env.KIS_BASE_URL || env.KIS_BASE_URL || 'https://openapi.koreainvestment.com:9443',
+      appKey,
+      appSecret,
+      accountNo: getKisAccountNo(isLive),
+      accountProductCode: getKisProductCode(isLive),
+      baseUrl: isLive
+        ? 'https://openapi.koreainvestment.com:9443'
+        : 'https://openapivts.koreainvestment.com:29443',
     };
   },
 

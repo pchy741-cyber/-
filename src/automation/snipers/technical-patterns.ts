@@ -52,8 +52,13 @@ function calcRSI(prices: number[], period: number = 14): number {
   return 100 - 100 / (1 + rs);
 }
 
+const MAX_SCAN_STOCKS = 25;
+
 export async function scanTechnicalPatterns(): Promise<SniperSignal[]> {
-  const watchlist = await getActiveWatchlist();
+  const allWatchlist = await getActiveWatchlist();
+  // 전체 워치리스트를 매 실행마다 다른 순서로 스캔하여 고른 커버리지 확보 (최대 25종목)
+  const shuffled = allWatchlist.slice().sort(() => Math.random() - 0.5);
+  const watchlist = shuffled.slice(0, MAX_SCAN_STOCKS);
   const signals: SniperSignal[] = [];
 
   for (const stock of watchlist) {

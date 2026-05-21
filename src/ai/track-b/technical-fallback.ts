@@ -1,5 +1,5 @@
 import { analyzeTechnicals, detectStructuralPatterns, volumeProfile, analyzeIntraday, type TechnicalSummary } from '../../analysis/indicators.js';
-import { getWinRateConfidenceBoost, getWinRateThresholdAdj, winRateSummary, type StockWinRate } from '../../analysis/win-rate.js';
+import { getWinRateConfidenceBoost, winRateSummary, type StockWinRate } from '../../analysis/win-rate.js';
 import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
 import type { TransactionChain } from '../../db/models.js';
 import { getMinuteChart, isMarketOpen, type CurrentPrice, type DailyCandle } from '../../kis/market.js';
@@ -44,7 +44,7 @@ export async function technicalFallbackDecisions(params: {
   /** 잡주 필터: 외국인/기관 동반 이탈(STRONG_SELL) 종목 코드 — 신규 매수 차단 */
   junkStockCodes?: Set<string>;
 }): Promise<TradeDecision[]> {
-  const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, manuallySoldCodes, totalAssets, winRates, blockNewBuys, kospiBoost, allocationTarget, currentStockValue, junkStockCodes } = params;
+  const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, manuallySoldCodes, totalAssets, winRates, blockNewBuys, junkStockCodes } = params;
   // 종목당 최대 비중: SNIPER=35%, 일반=30% (Half-Kelly 기준, maxPositionKrw 중 작은 값)
   const maxPosFraction = mode === 'SNIPER' ? 0.35 : 0.30;
   const effectiveMaxPos = totalAssets
@@ -53,17 +53,12 @@ export async function technicalFallbackDecisions(params: {
   const aiScoreMap = new Map((aiScores ?? []).map((s) => [s.stock_code, s.score]));
   const base = STRATEGY_PARAMS[mode];
   // DB 세팅값 우선 적용 (없으면 STRATEGY_PARAMS 하드코딩 fallback)
-  // 강세장(kospiBoost)이면 TP +1.5% 상향 — 더 길게 들고 수익 극대화
-  const baseTp = params.takeProfitPct ?? base.takeProfitPct;
   const strategyParams = {
     ...base,
-    takeProfitPct: kospiBoost ? baseTp + 1.5 : baseTp,
+    takeProfitPct: params.takeProfitPct ?? base.takeProfitPct,
     stopLossPct: params.stopLossPct ?? base.stopLossPct,
     buyThreshold: params.buyThreshold ?? base.buyThreshold,
   };
-  if (kospiBoost) {
-    logger.info(`🚀 강세장 TP 상향: ${baseTp}% → ${strategyParams.takeProfitPct}% (+1.5%)`, { component: 'FALLBACK' });
-  }
   const decisions: TradeDecision[] = [];
 
   // SCALPING 09:30 강제청산 판단용 KST 시간 (개장 09:15까지 진입 → 09:30까지 TP 대기)
@@ -85,18 +80,49 @@ export async function technicalFallbackDecisions(params: {
     // 동일 종목 중복 매도 신호 방지 (다중 체인 시 첫 번째 체인만 처리)
     if (processedSellCodes.has(chain.stock_code)) continue;
 
-    // SCALPING 09:25 강제청산: 단타 모멘텀 윈도우(09:00~09:25) 종료 후 미청산 포지션 즉시 청산
+    // SCALPING 09:30 이후: 수익/손실 무관 즉시 전량 강제청산 (SCALPING은 개장 30분 한정)
     if (chain.strategy_mode === 'SCALPING' && isPastScalpDeadline && chain.total_quantity > 0) {
       decisions.push({
         action: 'FORCE_CLOSE',
         stock_code: chain.stock_code,
         quantity: chain.total_quantity,
         price_type: 'MARKET',
-        reasoning: `SCALPING 강제청산(09:30): 단타 윈도우 종료 (${pnlPct.toFixed(1)}%)`,
+        reasoning: `SCALPING 강제청산(09:30): 개장 윈도우 종료, 전량 청산 (${pnlPct.toFixed(1)}%)`,
         confidence: 1.0,
       });
       processedSellCodes.add(chain.stock_code);
       continue;
+    }
+
+    // 외국인+기관 동반 이탈(STRONG_SELL 수급) 보유 종목 → 50% 부분 매도 (CEO 가이드)
+    // junkStockCodes는 pipeline.ts에서 외국인+기관 동반 순매도 종목으로 구성됨
+    if (junkStockCodes?.has(chain.stock_code) && chain.total_quantity > 0) {
+      const partialQty = Math.ceil(chain.total_quantity * 0.5);
+      if (partialQty > 0 && partialQty < chain.total_quantity) {
+        decisions.push({
+          action: 'PARTIAL_SELL',
+          stock_code: chain.stock_code,
+          quantity: partialQty,
+          price_type: 'MARKET',
+          reasoning: `외국인+기관 동반이탈(STRONG_SELL): 보유 50% 부분매도 → 수급 리스크 축소`,
+          confidence: 0.85,
+        });
+        processedSellCodes.add(chain.stock_code);
+        continue;
+      }
+      // 1주 등 분할 불가 → 전량 매도
+      if (chain.total_quantity > 0) {
+        decisions.push({
+          action: 'SELL',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `외국인+기관 동반이탈(STRONG_SELL): 분할불가 전량매도 → 수급 리스크 차단`,
+          confidence: 0.85,
+        });
+        processedSellCodes.add(chain.stock_code);
+        continue;
+      }
     }
 
     // 마감 근접 소폭수익 확정 매도 — 장 끝에 0.1% 수익이 0%→마이너스 되기 전에 확정
@@ -127,11 +153,32 @@ export async function technicalFallbackDecisions(params: {
     const chainSl = chain.stop_loss_pct ?? strategyParams.stopLossPct;
     const isScalpChain = chain.strategy_mode === 'SCALPING';
 
+    // ── 실시간 AI 재평가: 보유 중 AI 점수 변화 → TP/SL 동적 조정 ──────
+    // 진입 시 고정 기준 대신 현재 AI 점수로 유연하게 익절/손절 조정
+    const realtimeAiScore = aiScoreMap.get(chain.stock_code) ?? 0;
+    let effectiveTp = Number(chainTp);
+    let effectiveSl = Number(chainSl);
+
+    if (realtimeAiScore > 0 && !isScalpChain) {
+      if (realtimeAiScore >= 85) {
+        // AI 강세 지속 → 수익 극대화, TP 상향 (승자를 더 오래 보유)
+        effectiveTp = Math.max(Number(chainTp), 8.0);
+      } else if (realtimeAiScore < 65) {
+        if (pnlPct > 1.0) {
+          // AI 약세 전환 + 수익 구간 → 빠른 수익 확정 (TP를 현재 수익 -0.5%로 낮춤)
+          effectiveTp = Math.min(Number(chainTp), Math.max(pnlPct - 0.5, 1.0));
+        } else {
+          // AI 약세 전환 + 손실 구간 → SL 타이트 (-1.5%)
+          effectiveSl = Math.max(Number(chainSl), -1.5);
+        }
+      }
+    }
+
     // ─── 2단계 익절 전략 ────────────────────────────────────────────────
     // 1단계: takeProfitPct(2.5%) 도달 → 50% 부분 매도 (수익 확정)
     // 2단계: PROFIT_TAKING 상태에서 추가 상승 +5.0% 또는 트레일링 스톱(-0.8% from peak) → 잔여 전량 청산
     // 효과: 손익비 1.67:1 유지, 수익 반납 방지
-    if (chain.status !== 'PROFIT_TAKING' && pnlPct >= chainTp) {
+    if (chain.status !== 'PROFIT_TAKING' && pnlPct >= effectiveTp) {
       // SCALPING: 전량 즉시 익절 (takeProfitRatio=1.0, 분할 없음)
       if (isScalpChain && chain.total_quantity > 0) {
         decisions.push({
@@ -139,7 +186,7 @@ export async function technicalFallbackDecisions(params: {
           stock_code: chain.stock_code,
           quantity: chain.total_quantity,
           price_type: 'MARKET',
-          reasoning: `SCALPING 익절(전량): +${pnlPct.toFixed(1)}% (목표 ${chainTp}%)`,
+          reasoning: `SCALPING 익절(전량): +${pnlPct.toFixed(1)}% (목표 ${effectiveTp}%)`,
           confidence: 0.95,
         });
         processedSellCodes.add(chain.stock_code);
@@ -153,7 +200,7 @@ export async function technicalFallbackDecisions(params: {
           stock_code: chain.stock_code,
           quantity: sellQty,
           price_type: 'MARKET',
-          reasoning: `1단계 익절(30%): +${pnlPct.toFixed(1)}% 도달 → 나머지 70% 트레일링 대기`,
+          reasoning: `1단계 익절(30%): +${pnlPct.toFixed(1)}% 도달 (목표 ${effectiveTp.toFixed(1)}% AI${realtimeAiScore}점) → 나머지 70% 트레일링 대기`,
           confidence: 0.9,
         });
         processedSellCodes.add(chain.stock_code);
@@ -166,7 +213,7 @@ export async function technicalFallbackDecisions(params: {
           stock_code: chain.stock_code,
           quantity: chain.total_quantity,
           price_type: 'MARKET',
-          reasoning: `기술적 익절(전량): +${pnlPct.toFixed(1)}% (목표 ${chainTp}%)`,
+          reasoning: `기술적 익절(전량): +${pnlPct.toFixed(1)}% (목표 ${effectiveTp}%)`,
           confidence: 0.9,
         });
         processedSellCodes.add(chain.stock_code);
@@ -222,12 +269,12 @@ export async function technicalFallbackDecisions(params: {
     // ──────────────────────────────────────────────────────────────────────
 
     // 손절 (ATR 동적 손절 vs 전략 고정 손절 — 더 보수적인 쪽 적용)
-    const dynamicStop = sellTech ? sellTech.dynamicStopLossPct : chainSl;
+    const dynamicStop = sellTech ? sellTech.dynamicStopLossPct : effectiveSl;
     // ATR 기반이 고정 손절보다 좁으면 ATR 우선 (더 빠른 손절로 손실 최소화)
     // AI 80점+ 고확신 종목은 손절 기준 1.4배 넓히기 (일시적 노이즈로 조기손절 방지)
-    const holdingAiScore = aiScoreMap.get(chain.stock_code) ?? 0;
-    const stopWidenMultiplier = holdingAiScore >= 80 ? 1.4 : holdingAiScore >= 65 ? 1.2 : 1.0;
-    const effectiveStop = Math.max(chainSl, dynamicStop) * stopWidenMultiplier;
+    // AI 65점 미만 약세 전환 시 effectiveSl=-1.5%로 타이트 (위에서 산출)
+    const stopWidenMultiplier = realtimeAiScore >= 80 ? 1.4 : realtimeAiScore >= 65 ? 1.2 : 1.0;
+    const effectiveStop = Math.max(effectiveSl, dynamicStop) * stopWidenMultiplier;
     if (pnlPct <= effectiveStop) {
       // ── RSI<35 + 거래량 급증 = 패닉 매도 손절 억제 — 단, 손절선 1.5배 초과 시 무조건 청산 ──
       // 억제 허용 구간: stopPct ~ stopPct×1.5 (예: -5%~-7.5%) — 이 밖에선 루프 방지
@@ -285,7 +332,7 @@ export async function technicalFallbackDecisions(params: {
           stock_code: chain.stock_code,
           quantity: chain.total_quantity,
           price_type: 'MARKET',
-          reasoning: `손절: ${pnlPct.toFixed(1)}% (ATR동적=${dynamicStop.toFixed(1)}% 고정=${chainSl}%)`,
+          reasoning: `손절: ${pnlPct.toFixed(1)}% (ATR동적=${dynamicStop.toFixed(1)}% 기준=${effectiveSl.toFixed(1)}% AI${realtimeAiScore}점)`,
           confidence: 0.95,
         });
         processedSellCodes.add(chain.stock_code);
@@ -329,72 +376,14 @@ export async function technicalFallbackDecisions(params: {
     }
   }
 
-  // 1-B. 불타기 — 수익 중인 스윙 체인 추가 진입 (보유 5~7분, PnL +0.3% 이상)
-  if (!blockNewBuys && orderableCash >= 300_000) {
-    const pyramidedCodes = new Set<string>();
-    for (const chain of openChains) {
-      if (chain.strategy_mode === 'SCALPING') continue;
-      if (processedSellCodes.has(chain.stock_code)) continue;
-      if (pyramidedCodes.has(chain.stock_code)) continue;
-      if (!chain.opened_at || !chain.avg_buy_price) continue;
-
-      const pyPrice = livePrices.get(chain.stock_code);
-      if (!pyPrice) continue;
-
-      const pyAvg = Number(chain.avg_buy_price);
-      const pyPnlPct = ((pyPrice.currentPrice - pyAvg) / pyAvg) * 100;
-      const pyHoldMin = (Date.now() - new Date(chain.opened_at).getTime()) / 60_000;
-
-      if (pyHoldMin >= 5 && pyHoldMin < 7 && pyPnlPct >= 0.3 && pyPrice.currentPrice > pyAvg) {
-        const qty = Math.floor(300_000 / pyPrice.currentPrice);
-        if (qty <= 0) continue;
-        logger.info(
-          `🔥 불타기: ${chain.stock_code} hold=${pyHoldMin.toFixed(1)}분 PnL+${pyPnlPct.toFixed(2)}% → ${qty}주 추가`,
-          { component: 'TRACK_B' },
-        );
-        decisions.push({
-          action: 'BUY',
-          stock_code: chain.stock_code,
-          quantity: qty,
-          price_type: 'MARKET',
-          limit_price: pyPrice.currentPrice,
-          reasoning: `불타기 hold${pyHoldMin.toFixed(1)}분 PnL+${pyPnlPct.toFixed(2)}% → 30만원 추가매수`,
-          confidence: 0.75,
-        });
-        pyramidedCodes.add(chain.stock_code);
-      }
-    }
-  }
-
   // 2. 신규 매수 판단 (기술적 지표 기반)
   if (blockNewBuys) {
     logger.info('⏰ 15:10 이후 — 신규 매수 차단 (마감 20분 전)', { component: 'TRACK_B' });
     return decisions; // 매도/손절 결정만 반환
   }
 
-  // 황금비율 배분 편차 계산 — 주식 비중 초과 시 매수 기준 상향
-  let allocationBuyPenalty = 0; // 양수 = minTechScore 상향 (더 선택적)
-  let allocationBoostFirstEntry = false; // 현금 과잉 시 첫 진입 비율 상향 플래그
-  if (allocationTarget?.is_active && totalAssets && totalAssets > 0 && currentStockValue !== undefined) {
-    const currentStockPct = (currentStockValue / totalAssets) * 100;
-    const targetStockPct = allocationTarget.stock_pct;
-    const threshold = allocationTarget.rebalance_threshold_pct;
-    const deviation = currentStockPct - targetStockPct;
-    if (deviation > threshold) {
-      // 주식 비중 목표 초과 → 신규 매수 기준 상향 (최대 +15점)
-      allocationBuyPenalty = Math.min(15, Math.round((deviation - threshold) * 1.5));
-      logger.info(`⚖️ 황금비율 편차: 현재주식 ${currentStockPct.toFixed(1)}% > 목표 ${targetStockPct}%+${threshold}% → 매수 임계값 +${allocationBuyPenalty}점 상향`, { component: 'TRACK_B' });
-    } else if (deviation < -threshold) {
-      // 주식 비중 목표 미달 → 매수 기준 완화 (최대 -10점)
-      allocationBuyPenalty = Math.max(-10, Math.round((deviation + threshold) * 0.5));
-      logger.info(`⚖️ 황금비율 편차: 현재주식 ${currentStockPct.toFixed(1)}% < 목표 ${targetStockPct}%-${threshold}% → 매수 임계값 ${allocationBuyPenalty}점 완화`, { component: 'TRACK_B' });
-      // 현금 과잉(목표 대비 30%p 이상 미달): 첫 진입 비율 0.90으로 상향 — "좋은 장에서 현금 놀리지 말자"
-      if (deviation < -30) {
-        allocationBoostFirstEntry = true;
-        logger.info(`💰 현금 과잉(${currentStockPct.toFixed(1)}% vs 목표 ${targetStockPct}%): 첫 진입 비율 → 0.90 상향`, { component: 'TRACK_B' });
-      }
-    }
-  }
+  const allocationBuyPenalty = 0;
+  const allocationBoostFirstEntry = false;
 
   // DB에서 점수 티어별 실거래 역산 비율 로드 (없으면 하드코딩 fallback)
   let scoreTierParams: Array<{ tier_min: number; tier_max: number; alloc_pct: number; sample_count: number }> = [];
@@ -538,12 +527,10 @@ export async function technicalFallbackDecisions(params: {
     }
     // ───────────────────────────────────────────────────────────────────
 
-    // 기술 단독 최소 점수 — SWING 55, DEFENSE 60 (품질 우선)
-    // AI 스코어 없으면(Track A 미실행) DEFENSE도 SWING 기준(55)으로 완화
-    const baseMinTechScore = mode === 'SCALPING' ? 50 : (mode === 'DEFENSE' && !noAiScores) ? 60 : 55;
-    // 종목별 승률 기반 임계값 보정 (AI 없어도 과거 실적 반영)
-    const wrAdj = getWinRateThresholdAdj(winRates?.get(stock.stock_code));
-    const minTechScore = baseMinTechScore + wrAdj + allocationBuyPenalty;
+    // 기술 단독 최소 점수 — SWING 62, DEFENSE 62 (품질 우선, 55→62 상향: 저확신 진입 차단)
+    // AI 스코어 없으면(Track A 미실행) DEFENSE도 SWING 기준으로 완화
+    const baseMinTechScore = mode === 'SCALPING' ? 50 : (mode === 'DEFENSE' && !noAiScores) ? 62 : 62;
+    const minTechScore = baseMinTechScore;
 
     // 우선 테마(반도체/에너지/방산) 보너스 +10점 적용
     const priorityBonus = PRIORITY_SECTOR_CODES.has(stock.stock_code) ? 10 : 0;
@@ -585,8 +572,7 @@ export async function technicalFallbackDecisions(params: {
     //   RSI 60~70: 모멘텀 강세 → AI 점수 65+ 필수 (추격 위험 있음)
     //   RSI > 70: 과매수 → 진입 금지 (단기 조정 확률 72%)
     // AI buyThreshold 이상은 RSI 80까지 허용 (강한 확신 → 오버바웃 예외)
-    // 강세장(kospiBoost)에서는 RSI 75까지 허용 — 상승장 자체가 RSI 눌러주는 환경
-    const rsiCap = kospiBoost ? 75 : 70;
+    const rsiCap = 70;
     const aiBypassRsi = aiScore >= buyThreshold && tech.rsi14 <= 80;
     if (tech.rsi14 > rsiCap && !aiBypassRsi) {
       logger.info(`  🔴 ${stock.stock_code}: RSI=${tech.rsi14.toFixed(0)}>${rsiCap} 과매수 → 스킵`, { component: 'TRACK_B' });
@@ -675,39 +661,8 @@ export async function technicalFallbackDecisions(params: {
     }
     // ───────────────────────────────────────────────────────────────────────
 
-    // ─── SCALPING 전용 진입 기준 (강화) ─────────────────────────────────
-    // 모멘텀 돌파 집중 — 독립 신호 2개+ 동시 충족 필수 (코인플립 방지)
-    // 수수료 감안 손익분기 승률 42% → 진입 조건 강화로 50%+ 목표
-    if (mode === 'SCALPING') {
-      // ── 갭상승 2.5% 초과 진입 차단 — 갭 메우기 반전으로 -2~3% 손해 패턴 제거 ──
-      // candles[0]=오늘, candles[1]=어제 종가 (내림차순 정렬)
-      const prevClose = Number(candles[1]?.close ?? 0);
-      const gapPct = prevClose > 0 ? ((price.currentPrice - prevClose) / prevClose) * 100 : 0;
-      if (gapPct > 2.5) {
-        logger.info(`  ⚡ ${stock.stock_code}: SCALPING 갭상승 ${gapPct.toFixed(1)}%>2.5% 갭메우기 위험 → 스킵`, { component: 'TRACK_B' });
-        continue;
-      }
-
-      const momentumSignals = [
-        tech.bollingerBreakout === 'UP',
-        tech.ttmSqueeze.fireSignal === 'LONG',
-        tech.vwapCross === 'JUST_ABOVE',
-        tech.macdCrossover === 'BULLISH' && tech.macdHistogram > 0,
-      ];
-      const momentumCount = momentumSignals.filter(Boolean).length;
-      const scalpRsiOk = tech.rsi14 >= 40 && tech.rsi14 <= 70;
-      // AI 87점+ 최고확신: 신호 1개 + 거래량 3x (완화 기준도 3x로 올림)
-      const isHighAi = aiScore >= 87;
-      const minSignals = isHighAi ? 1 : 2;
-      const minVolume = 3.0;  // 고확신도 최소 3x — 거래량 없는 스캘핑은 이탈 불가
-      if (momentumCount < minSignals || tech.volumeRatio < minVolume || !scalpRsiOk) {
-        logger.info(
-          `  ⚡ ${stock.stock_code}: SCALPING 기준 미달 — 모멘텀신호=${momentumCount}/${minSignals} vol=${tech.volumeRatio.toFixed(1)}x(>=3.0) RSI=${tech.rsi14.toFixed(0)}(40-70) AI=${aiScore} → 스킵`,
-          { component: 'TRACK_B' },
-        );
-        continue;
-      }
-    }
+    // SCALPING은 Track B에서 신규 매수 불가 — opening-bell-job 전용
+    if (mode === 'SCALPING') continue;
     // ───────────────────────────────────────────────────────────────────
     const squeezeTag = tech.bollingerBreakout === 'UP' ? '🎯BB스퀴즈돌파' : tech.bollingerSqueeze ? '🔃BB응축중' : '';
     const vwapTag = tech.vwapCross === 'JUST_ABOVE' ? '⚡VWAP돌파' : tech.vwapPullback ? '🔁VWAP풀백' : '';
@@ -719,8 +674,9 @@ export async function technicalFallbackDecisions(params: {
     ].filter(Boolean).join('+');
     // ─────────────────────────────────────────────────────────────────────
 
-    // 진입 게이트: 기술점수 충족 OR AI 꽁돈(>=92점, 200% 확실할 때만)
-    const isKongdon = aiScore >= 92;
+    // 진입 게이트: 기술점수 충족 OR AI 꽁돈(>=92점, 단 기술점수 절대하한 45점)
+    // isKongdon이라도 tech.score 45 미만이면 차단 — AI 과대평가 낙칼 방지
+    const isKongdon = aiScore >= 85 && effectiveTechScore >= 45;
     if (effectiveTechScore >= minTechScore || isKongdon) {
       candidates.push({ stock_code: stock.stock_code, tech, price, candleBonus });
       const wrInfo = winRateSummary(stock.stock_code, winRates?.get(stock.stock_code));
@@ -870,10 +826,9 @@ export async function technicalFallbackDecisions(params: {
              blendedScore >= 85 ? 0.15 :   // 85-89: 15% (원복)
              blendedScore >= 75 ? 0.06 :   // 75~84 실데이터 수익률 -0.77% 구간 — 최소 투입
              blendedScore >= 70 ? 0.10 : 0.07))
-      : 0.04; // AI 미허락 → 최소 탐색 비율만
+      : (blendedScore >= 80 ? 0.10 : blendedScore >= 70 ? 0.07 : 0.04); // AI 미허락 → 기술지표 점수 비례 탐색
     const baseAllocPct = getDbAllocPct(blendedScore) ?? hardcodedAllocPct;
-    // 강세장(kospiBoost) SWING: 1.3x — "좋은 장에서 100% 투자" 원칙
-    const modeScale = mode === 'SCALPING' ? 0.5 : mode === 'DEFENSE' ? 0.6 : (kospiBoost ? 1.3 : 1.0);
+    const modeScale = mode === 'SCALPING' ? 0.5 : mode === 'DEFENSE' ? 0.6 : 1.0;
 
     // 승률 기반 보정: 실거래 데이터 기반으로 비율 조정
     const wr = winRates?.get(cand.stock_code);
@@ -896,9 +851,10 @@ export async function technicalFallbackDecisions(params: {
       : blendedScore >= 85 ? (allocationBoostFirstEntry ? 0.90 : 0.80)  // 원복 (0.88→0.80: 물타기 여지 확보)
       : splitCount <= 1 ? 1.0
       : splitCount <= 2 ? (allocationBoostFirstEntry ? 0.90 : 0.70) : (allocationBoostFirstEntry ? 0.85 : 0.65);
-    // AI 점수 고확신 포지션 확대 (Half-Kelly 기반 확신도 비례)
-    // AI 90+: 2.0x — 엘리트 신호, 최대 비중 투입 / AI 85-89: 1.5x — 고확신, 비중 강화
-    const aiPosMultiplier = aiScore >= 90 ? 2.0 : aiScore >= 85 ? 1.5 : 1.0;
+    // AI 고확신 포지션 확대 — blend 점수도 함께 높아야 적용 (AI만 높고 tech 낮으면 억제)
+    // blend >= 80이어야 2.0x, blend >= 72이어야 1.5x (낮은 tech 종목 과대투입 방지)
+    const aiPosMultiplier = (aiScore >= 90 && blendedScore >= 80) ? 2.0
+      : (aiScore >= 85 && blendedScore >= 72) ? 1.5 : 1.0;
     const targetKrw = totalAssets
       ? Math.round(totalAssets * baseAllocPct * modeScale * winRateMultiplier * priorityBonus * firstEntryRatio * aiPosMultiplier)
       : Math.round(effectiveMaxPos * firstEntryRatio * aiPosMultiplier);
@@ -909,7 +865,8 @@ export async function technicalFallbackDecisions(params: {
       : effectiveMaxPos;
     // 상한: aiMaxPos (AI확신도 반영 종목당 한도), 남은 현금의 92%까지 사용 (현금 최소화)
     const positionSize = Math.min(targetKrw, aiMaxPos, remainingCash * 0.92);
-    if (positionSize < 700000) continue; // 최소 70만원 미달 → 이 종목만 스킵 (Half-Kelly 원칙상 소액 매매는 수수료 대비 비효율)
+    const minPositionKrw = aiApproved ? 700000 : 350000;
+    if (positionSize < minPositionKrw) continue; // 최소 금액 미달 → 스킵 (AI허락=70만, 기술지표탐색=35만)
 
     let quantity = Math.floor(positionSize / cand.price.currentPrice);
     if (quantity <= 0) {

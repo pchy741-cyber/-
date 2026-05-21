@@ -141,6 +141,7 @@ export default function Dashboard() {
   const [withdrawHistory, setWithdrawHistory] = useState<any[]>([]);
   const [allocConfig, setAllocConfig] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [modeToggling, setModeToggling] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
   const notebookRef = useRef<HTMLTextAreaElement>(null);
   const geminiRef = useRef<HTMLTextAreaElement>(null);
@@ -148,57 +149,75 @@ export default function Dashboard() {
   const claudeRef = useRef<HTMLTextAreaElement>(null);
 
   const loadingRef = useRef(false);
-  const load = async () => {
-    if (loadingRef.current) return; // 이전 요청 겹침 방지
+  const loadGenRef = useRef(0); // 구세대 응답이 신세대 상태를 덮어쓰는 오염 방지
+  const staticLoadedRef = useRef(false); // watchlist/trades/secrets는 최초 1회만 로드
+
+  const loadStatic = async (gen: number) => {
+    // watchlist/trades/settings — 느리고 잘 안 바뀌므로 최초 로드 + 명시적 트리거만
+    const [w, s, t, sec, wc, wh] = await Promise.allSettled([
+      api('/watchlist'), api('/strategy'),
+      api('/trades?limit=50'), api('/secrets'),
+      api('/withdraw/config').catch(() => null),
+      api('/withdraw/history').catch(() => []),
+    ]);
+    if (loadGenRef.current !== gen) return;
+    if (w.status === 'fulfilled') setWatchlist(Array.isArray(w.value) ? w.value : []);
+    if (s.status === 'fulfilled') setStrategy(s.value);
+    if (t.status === 'fulfilled') setTrades(Array.isArray(t.value) ? t.value : []);
+    if (sec.status === 'fulfilled') setSecrets(sec.value);
+    if (wc.status === 'fulfilled' && wc.value) setWithdrawConfig(wc.value);
+    if (wh.status === 'fulfilled') setWithdrawHistory(Array.isArray(wh.value) ? wh.value : []);
+    staticLoadedRef.current = true;
+  };
+
+  const load = async (forceStatic = false) => {
+    if (loadingRef.current) return;
     loadingRef.current = true;
+    const gen = ++loadGenRef.current;
+    const ifCurrent = <T,>(setter: (v: T) => void) => (v: T) => {
+      if (loadGenRef.current === gen) setter(v);
+    };
     try {
       setLoading(true);
-      // 1단계: 핵심 데이터 먼저 (화면 표시용)
+      // 1단계: 핵심 데이터 먼저 (화면 표시용) — 대시보드 캐시 30s이므로 즉시 응답
       const [h, d, k] = await Promise.allSettled([
         api('/health'), api('/dashboard'), api('/kill-switch'),
       ]);
+      if (gen !== loadGenRef.current) return;
       if (h.status === 'fulfilled') setHealth(h.value);
       if (d.status === 'fulfilled') setDash(d.value);
       if (k.status === 'fulfilled') setKillSwitch(k.value);
       setLastUpdate(new Date());
-      setLoading(false); // 핵심 데이터 로드 즉시 화면 표시
+      setLoading(false);
 
-      // 2단계: 나머지 데이터 백그라운드 로드 (overseas 제외 — 별도 비동기)
-      const [w, s, t, sec, wc, wh] = await Promise.allSettled([
-        api('/watchlist'), api('/strategy'),
-        api('/trades?limit=200'), api('/secrets'),
-        api('/withdraw/config').catch(() => null),
-        api('/withdraw/history').catch(() => []),
-      ]);
-      if (w.status === 'fulfilled') setWatchlist(Array.isArray(w.value) ? w.value : []);
-      if (s.status === 'fulfilled') setStrategy(s.value);
-      if (t.status === 'fulfilled') setTrades(Array.isArray(t.value) ? t.value : []);
-      if (sec.status === 'fulfilled') setSecrets(sec.value);
-      if (wc.status === 'fulfilled' && wc.value) setWithdrawConfig(wc.value);
-      if (wh.status === 'fulfilled') setWithdrawHistory(Array.isArray(wh.value) ? wh.value : []);
-      api('/portfolio/allocation').then(ac => { if (ac) setAllocConfig(ac); }).catch(() => {});
+      // 2단계: 정적 데이터 — 최초 또는 명시적 강제 새로고침 시만
+      if (!staticLoadedRef.current || forceStatic) {
+        loadStatic(gen).catch(() => {});
+      }
 
-      // 3단계: 미국주식 별도 로드 (느려도 다른 데이터에 영향 없음)
-      api('/overseas/dashboard').then(us => { if (us) setUsDash(us); }).catch(() => {});
+      // 3단계: 미국주식 별도 로드 (최초 1회)
+      if (!staticLoadedRef.current) {
+        api('/portfolio/allocation').then(ifCurrent((ac: any) => { if (ac) setAllocConfig(ac); })).catch(() => {});
+        api('/overseas/dashboard').then(ifCurrent((us: any) => { if (us) setUsDash(us); })).catch(() => {});
+      }
     } catch (err) { setLoading(false); console.error('[QUANTOPS] 데이터 로드 실패:', err); }
     finally { loadingRef.current = false; }
   };
 
   useEffect(() => {
-    load();
+    load(true); // 최초 로드: 정적 데이터 포함
     const getInterval = () => {
       const h = new Date().getHours(), m = new Date().getMinutes();
       const mins = h * 60 + m;
       const isMarket = mins >= 9 * 60 && mins < 15 * 60 + 30;
       const visible = document.visibilityState === 'visible';
-      // 탭 보는 중 + 장중: 15초 / 탭 보는 중 + 장외: 90초 / 백그라운드: 3분
-      if (!visible) return 180000;
-      return isMarket ? 15000 : 90000;
+      // 탭 보는 중 + 장중: 20초 / 탭 보는 중 + 장외: 120초 / 백그라운드: 5분
+      if (!visible) return 300000;
+      return isMarket ? 20000 : 120000;
     };
     let iv: ReturnType<typeof setInterval>;
     const schedule = () => { iv = setInterval(() => { load(); clearInterval(iv); schedule(); }, getInterval()); };
     schedule();
-    // 탭 전환 시 인터벌 재조정
     const onVisibility = () => { clearInterval(iv); schedule(); };
     document.addEventListener('visibilitychange', onVisibility);
     return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVisibility); };
@@ -223,9 +242,12 @@ export default function Dashboard() {
             return [...newTrades, ...prev].slice(0, 200);
           });
         }
-        // 체인 수 변화 시 전체 재조회 (새 포지션 진입/청산)
+        // 체인 수 변화 시 holdings+trades 동시 강제 업데이트 (loadingRef 우회)
         if (prevChainCount !== -1 && data.activeChains !== prevChainCount) {
-          load();
+          Promise.allSettled([
+            api('/dashboard').then((d: any) => { if (d) setDash(d); }),
+            api('/trades?limit=200').then((t: any) => { if (Array.isArray(t)) setTrades(t); }),
+          ]);
         }
         prevChainCount = data.activeChains ?? prevChainCount;
       } catch { /* 파싱 오류 무시 */ }
@@ -239,6 +261,21 @@ export default function Dashboard() {
     const active = killSwitch?.active;
     await api(`/kill-switch/${active ? 'deactivate' : 'activate'}`, { method: 'POST' });
     const k = await api('/kill-switch'); setKillSwitch(k);
+  };
+
+  const switchMode = async (mode: 'paper' | 'live') => {
+    if (dash?.tradingMode === mode || modeToggling) return;
+    if (mode === 'live' && !confirm('실제 돈으로 거래합니다. 실전모드로 전환하시겠습니까?')) return;
+    setModeToggling(true);
+    try {
+      await api('/settings/trading-mode', { method: 'POST', body: JSON.stringify({ mode }) });
+      toast(mode === 'live' ? '실전모드로 전환됐습니다' : '연습모드로 전환됐습니다', 'ok');
+      await load(true);
+    } catch (e: any) {
+      toast('모드 전환 실패: ' + (e?.message ?? ''), 'err');
+    } finally {
+      setModeToggling(false);
+    }
   };
 
   // ── Nav items ──
@@ -302,7 +339,7 @@ export default function Dashboard() {
             className={`w-full py-3 rounded-xl text-xs font-bold transition-all ${killSwitch?.active ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/30' : 'bg-emerald-900/40 hover:bg-emerald-900/60 text-emerald-400'}`}>
             {killSwitch?.active ? '⏸ 매매 중단 중' : '▶ 자동매매 중'}
           </button>
-          <button onClick={load} className="w-full py-2 rounded-xl text-[10px] text-slate-600 hover:text-slate-400 bg-white/[0.02] hover:bg-white/[0.04] transition-all font-medium">
+          <button onClick={() => load(true)} className="w-full py-2 rounded-xl text-[10px] text-slate-600 hover:text-slate-400 bg-white/[0.02] hover:bg-white/[0.04] transition-all font-medium">
             새로고침 · {lastUpdate.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
           </button>
         </div>
@@ -316,9 +353,41 @@ export default function Dashboard() {
             <svg width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18M3 12h18M3 18h18" /></svg>
           </button>
           <span className="font-bold text-sm bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">QUANTOPS</span>
-          <button onClick={toggleKill} className={`ml-auto px-4 py-2 rounded-xl text-xs font-bold min-h-[36px] whitespace-nowrap ${killSwitch?.active ? 'bg-rose-600 text-white' : 'bg-emerald-900/40 text-emerald-400'}`}>
+          <div className="flex items-center gap-1 mx-auto bg-[#0a0e1a] rounded-lg p-0.5 border border-white/[0.06]">
+            <button onClick={() => switchMode('paper')} disabled={modeToggling}
+              className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all ${dash?.tradingMode === 'paper' ? 'bg-amber-500/20 text-amber-300' : 'text-slate-600 hover:text-slate-400'}`}>
+              연습
+            </button>
+            <button onClick={() => switchMode('live')} disabled={modeToggling}
+              className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all ${dash?.tradingMode !== 'paper' ? 'bg-emerald-500/20 text-emerald-300' : 'text-slate-600 hover:text-slate-400'}`}>
+              실전
+            </button>
+          </div>
+          <button onClick={toggleKill} className={`px-4 py-2 rounded-xl text-xs font-bold min-h-[36px] whitespace-nowrap ${killSwitch?.active ? 'bg-rose-600 text-white' : 'bg-emerald-900/40 text-emerald-400'}`}>
             {killSwitch?.active ? '⏸ 중단 중' : '▶ 자동 중'}
           </button>
+        </header>
+
+        {/* Desktop header — mode toggle center */}
+        <header className="hidden lg:flex items-center justify-center h-12 bg-[#0a0e1a]/60 border-b border-white/[0.04] shrink-0 relative">
+          <div className="flex items-center gap-1 bg-[#06080f]/80 rounded-xl p-1 border border-white/[0.06]">
+            <button onClick={() => switchMode('paper')} disabled={modeToggling}
+              className={`px-6 py-1.5 rounded-lg text-xs font-bold tracking-wide transition-all duration-200 ${
+                dash?.tradingMode === 'paper'
+                  ? 'bg-amber-500/20 text-amber-300 shadow-sm ring-1 ring-amber-500/20'
+                  : 'text-slate-600 hover:text-slate-400 hover:bg-white/[0.03]'
+              }`}>
+              {modeToggling && dash?.tradingMode !== 'paper' ? '전환 중...' : '연습모드'}
+            </button>
+            <button onClick={() => switchMode('live')} disabled={modeToggling}
+              className={`px-6 py-1.5 rounded-lg text-xs font-bold tracking-wide transition-all duration-200 ${
+                dash?.tradingMode !== 'paper'
+                  ? 'bg-emerald-500/20 text-emerald-300 shadow-sm ring-1 ring-emerald-500/20'
+                  : 'text-slate-600 hover:text-slate-400 hover:bg-white/[0.03]'
+              }`}>
+              {modeToggling && dash?.tradingMode === 'paper' ? '전환 중...' : '실전모드'}
+            </button>
+          </div>
         </header>
 
         {/* Content area */}
@@ -329,7 +398,7 @@ export default function Dashboard() {
             </div>
           ) : (
             <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px] mx-auto">
-              {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={withdrawConfig} watchlist={watchlist} strategy={strategy} setStrategy={setStrategy} toast={toast} onRefresh={load} />}
+              {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={withdrawConfig} watchlist={watchlist} strategy={strategy} setStrategy={setStrategy} toast={toast} onRefresh={load} allocConfig={allocConfig} setAllocConfig={setAllocConfig} />}
               {tab === 'trades' && <TradesView trades={trades} watchlist={watchlist} />}
               {tab === 'journal' && <JournalView />}
               {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} toast={toast} onRefresh={load} />}
@@ -634,12 +703,14 @@ function PerformancePanel({ trades, strategy, setStrategy, toast }: { trades: an
   }
 
   const sortedDays = [...dailyMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  let cumPnl = 0; let peak = 0; let maxDdPct = 0; let maxDdAmt = 0;
+  let cumPnl = 0; let peak = 0; let trough = 0; let maxDdPct = 0; let maxDdAmt = 0;
   const dailySeries = sortedDays.map(([date, pnl]) => {
     cumPnl += pnl;
-    if (cumPnl > peak) peak = cumPnl;
-    const dd = peak > 0 ? ((peak - cumPnl) / peak) * 100 : 0;
-    if (dd > maxDdPct) { maxDdPct = dd; maxDdAmt = peak - cumPnl; }
+    if (cumPnl > peak) { peak = cumPnl; trough = cumPnl; }
+    if (cumPnl < trough) trough = cumPnl;
+    const ddAmt = peak - trough;
+    const dd = peak > 0 ? (ddAmt / peak) * 100 : 0;
+    if (ddAmt > maxDdAmt) { maxDdAmt = ddAmt; maxDdPct = dd; }
     return { date, pnl, cumPnl };
   });
 
@@ -711,10 +782,10 @@ function PerformancePanel({ trades, strategy, setStrategy, toast }: { trades: an
           </div>
           <div className="bg-white/[0.03] rounded-xl p-3">
             <div className="text-[10px] text-slate-500 mb-1">최대 낙폭 (MDD)</div>
-            <div className={`text-base font-black ${maxDdPct > 15 ? 'text-rose-400' : maxDdPct > 7 ? 'text-amber-400' : 'text-slate-300'}`}>
-              -{maxDdPct.toFixed(1)}%
+            <div className={`text-base font-black ${maxDdAmt > 500000 ? 'text-rose-400' : maxDdAmt > 200000 ? 'text-amber-400' : 'text-slate-300'}`}>
+              -{fmtWon(maxDdAmt)}
             </div>
-            <div className="text-[9px] text-slate-600 mt-1">수익곡선 기준 {fmtWon(maxDdAmt)}</div>
+            <div className="text-[9px] text-slate-600 mt-1">{maxDdPct <= 100 ? `-${maxDdPct.toFixed(1)}% (수익곡선)` : '수익곡선 기준'}</div>
           </div>
           <div className="bg-white/[0.03] rounded-xl p-3">
             <div className="text-[10px] text-slate-500 mb-1">승률</div>
@@ -1797,7 +1868,7 @@ function MoneyStatsPanel({ market, monthlyGoal }: { market: 'KR' | 'US'; monthly
 // HOME VIEW
 // ═══════════════════════════════════════
 
-function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, strategy, setStrategy, toast, onRefresh }: any) {
+function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, strategy, setStrategy, toast, onRefresh, allocConfig, setAllocConfig }: any) {
   const [showPortfolio, setShowPortfolio] = React.useState(false);
   const [holdingsTab, setHoldingsTab] = React.useState<'KR' | 'US'>('KR');
   const [userPickedTab, setUserPickedTab] = React.useState(false); // 사용자가 직접 탭 변경했는지
@@ -1806,8 +1877,6 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const [insightsSaving, setInsightsSaving] = React.useState(false);
   const [tradingStatus, setTradingStatus] = React.useState<any>(null);
   const [aiStatus, setAiStatus] = React.useState<any>(null);
-  const [runningTrackB, setRunningTrackB] = React.useState(false);
-  const [runningTrackA, setRunningTrackA] = React.useState(false);
   const [privacyMode, setPrivacyMode] = React.useState(false);
   const [showAllKRScores, setShowAllKRScores] = React.useState(false);
   const [expandedTradeIdx, setExpandedTradeIdx] = React.useState<number | null>(null);
@@ -1848,7 +1917,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const domesticInvested = p?.domesticInvested ?? 0;       // 국내 투자 원금
   const totalInvested    = p?.invested ?? domesticInvested; // 국내+해외 투자 원금
   const overseasInvestedUsd = os?.totalInvestedUsd ?? 0;
-  const overseasInvestedKrw = os?.totalInvestedKrw ?? 0;
+  const overseasInvestedKrw = os?.totalInvestedKrw ?? 0;           // 원가 (투자금 표시용)
+  const overseasMarketKrw = os?.totalMarketValueKrw ?? overseasInvestedKrw; // 시가 (비중 계산용)
   const overseasCashUsd = os?.cashUsd ?? 0;
   const overseasCashKrw = os?.cashKrw ?? (overseasCashUsd * (os?.fxRate ?? 1380));
   const fxRate = os?.fxRate ?? 1380;
@@ -1857,8 +1927,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const domesticCash = Number(p?.cash ?? 0);
   const pctClamp = (v: number) => Math.max(0, Math.min(100, v));
   const investedPct = totalValue > 0 ? Math.round((totalInvested / totalValue) * 100) : 0;
-  // 포트폴리오 비중 바 차트용 — totalValue는 이미 국내+해외 합산 grandTotalValue
-  const investedPctExact = totalValue > 0 ? ((domesticInvested + overseasInvestedKrw) / totalValue) * 100 : 0;
+  // 포트폴리오 비중 바 차트용 — totalValue는 이미 국내+해외 합산 grandTotalValue (해외는 시가 기준)
+  const investedPctExact = totalValue > 0 ? ((domesticInvested + overseasMarketKrw) / totalValue) * 100 : 0;
   const cashPctExact = totalValue > 0 ? (domesticCash / totalValue) * 100 : 0;
   const overseasCashPctExact = totalValue > 0 ? (overseasCashKrw / totalValue) * 100 : 0;
 
@@ -1947,6 +2017,28 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   return (
     <div className="space-y-4 sm:space-y-5">
 
+
+      {/* ── 연속손실 쿨다운 배너 ── */}
+      {dash?.cooldown?.active && (
+        <div className="rounded-2xl border border-orange-500/50 bg-orange-500/10 px-4 py-3">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="text-base shrink-0">🔒</span>
+            <span className="text-sm font-bold text-orange-300">매수 쿨다운 중</span>
+            <span className="text-[11px] text-orange-200/70 ml-1">{dash.cooldown.reason}</span>
+            <button
+              onClick={async () => {
+                if (!confirm(`${dash.cooldown.consecutive}연패 쿨다운을 수동으로 해제할까요?\n(나는 이 결정에 책임집니다)`)) return;
+                try {
+                  await api('/cooldown/reset', { method: 'POST' });
+                  toast?.('쿨다운 해제 완료 — 다음 루프에서 매수 재개', 'ok');
+                  onRefresh();
+                } catch (e: any) { toast?.('실패: ' + (e as any).message, 'error'); }
+              }}
+              className="ml-auto px-3 py-1.5 text-xs rounded-xl bg-orange-500/20 hover:bg-orange-500/40 text-orange-200 font-semibold transition-colors shrink-0"
+            >🔓 쿨다운 수동 해제</button>
+          </div>
+        </div>
+      )}
 
       {/* ── 매매 상태 배너 ── */}
       {tradingStatus && tradingStatus.overallStatus !== 'ACTIVE' && (
@@ -2077,11 +2169,19 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
         <div className="flex-1 relative">
           {health?.marketOpen ? (
             <>
-              <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 rounded-full transition-all duration-1000" style={{ width: `${marketProgress}%` }} />
+              <div className="relative">
+                <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
+                  <div className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 rounded-full transition-all duration-1000" style={{ width: `${marketProgress}%` }} />
+                </div>
+                {/* 황금 구간 마커: 10:20 (20.5%), 13:00 (61.5%) */}
+                <div className="absolute top-0 w-px h-1.5 bg-emerald-400/60" style={{ left: '20.5%' }} />
+                <div className="absolute top-0 w-px h-1.5 bg-emerald-400/60" style={{ left: '61.5%' }} />
               </div>
-              <div className="flex justify-between mt-0.5 text-[9px] text-slate-600">
-                <span>09:00</span><span>15:30</span>
+              <div className="flex justify-between mt-0.5 text-[9px] text-slate-600 relative">
+                <span>09:00</span>
+                <span className="absolute text-emerald-700" style={{ left: '20.5%', transform: 'translateX(-50%)' }}>10:20</span>
+                <span className="absolute text-emerald-700" style={{ left: '61.5%', transform: 'translateX(-50%)' }}>13:00</span>
+                <span>15:30</span>
               </div>
             </>
           ) : health?.usMarketOpen ? (
@@ -2195,6 +2295,68 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
         );
       })()}
 
+      {/* ── 국내/해외 포트폴리오 비중 위젯 ── */}
+      {(() => {
+        const krTarget = Number(allocConfig?.kr_pct ?? 70);
+        const usTarget = Number(allocConfig?.us_pct ?? 30);
+        const krActualPct = totalPnlPct;
+        const usActualPct = overseasInvestedUsd > 0 ? (overseasPnlUsd / overseasInvestedUsd) * 100 : 0;
+        const krUnderperform = chains.length > 0 && usHoldings.length > 0 && krActualPct < usActualPct - 2;
+        const applyPreset = async (kr: number, us: number) => {
+          try {
+            const upd = await api('/portfolio/allocation', { method: 'PUT', body: JSON.stringify({ ...allocConfig, kr_pct: kr, us_pct: us }) });
+            setAllocConfig(upd);
+          } catch {}
+        };
+        return (
+          <div className="glass rounded-2xl border border-white/[0.04] p-4">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-[11px] font-semibold text-slate-400">포트폴리오 비중</span>
+              {krUnderperform && (
+                <span className="text-[10px] text-amber-400 animate-pulse">⚡ 국내 부진 — 해외 비중 확대 권장</span>
+              )}
+            </div>
+            {/* 목표 비중 바 */}
+            <div className="mb-3">
+              <div className="flex justify-between text-[9px] text-slate-500 mb-1">
+                <span>🇰🇷 국내 목표 {krTarget}%</span>
+                <span>🇺🇸 해외 목표 {usTarget}%</span>
+              </div>
+              <div className="h-2 rounded-full overflow-hidden bg-white/[0.04] flex">
+                <div className="h-full bg-blue-500/70 transition-all duration-500" style={{ width: `${krTarget}%` }} />
+                <div className="h-full bg-indigo-500/70 transition-all duration-500" style={{ width: `${usTarget}%` }} />
+              </div>
+            </div>
+            {/* 실제 미실현 성과 비교 */}
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <div className={`rounded-xl px-3 py-2 ${krActualPct >= 0 ? 'bg-emerald-950/40' : 'bg-rose-950/40'}`}>
+                <div className="text-[9px] text-slate-500 mb-0.5">🇰🇷 국내 미실현</div>
+                <div className={`text-sm font-bold tabular-nums ${krActualPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {krActualPct > 0 ? '+' : ''}{krActualPct.toFixed(2)}%
+                </div>
+                <div className="text-[9px] text-slate-600">{chains.length}종목</div>
+              </div>
+              <div className={`rounded-xl px-3 py-2 ${usActualPct >= 0 ? 'bg-emerald-950/40' : 'bg-rose-950/40'}`}>
+                <div className="text-[9px] text-slate-500 mb-0.5">🇺🇸 해외 미실현</div>
+                <div className={`text-sm font-bold tabular-nums ${usActualPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {usActualPct > 0 ? '+' : ''}{usActualPct.toFixed(2)}%
+                </div>
+                <div className="text-[9px] text-slate-600">{usHoldings.length}종목</div>
+              </div>
+            </div>
+            {/* 프리셋 버튼 */}
+            <div className="flex gap-1.5">
+              {[{ label: '국내 70%', kr: 70, us: 30 }, { label: '반반 50%', kr: 50, us: 50 }, { label: '해외 70%', kr: 30, us: 70 }].map(({ label, kr, us }) => (
+                <button key={label} onClick={() => applyPreset(kr, us)}
+                  className={`flex-1 text-[10px] py-1.5 rounded-lg font-semibold transition-all ${krTarget === kr ? 'bg-blue-500/30 text-blue-300 border border-blue-500/40' : 'bg-white/[0.04] text-slate-400 hover:bg-white/[0.08] hover:text-slate-300'}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ── 보유종목 (국내/해외 탭) ── */}
       <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden">
         {/* 탭 헤더 */}
@@ -2276,7 +2438,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                     <div className="flex justify-end mt-3">
                       <button onClick={async () => {
                         if (!confirm(`${displayName} ${qty}주 전량 매도하시겠습니까?\n(파킹 해제)`)) return;
-                        try { const r = await api(`/sell/${ch.id}`, { method: 'POST', timeout: 40000 }); alert(r.message || '매도 완료'); onRefresh(); }
+                        try { const r = await api(`/sell-stock/${ch.stock_code}`, { method: 'POST', timeout: 40000 }); alert(r.message || '매도 완료'); onRefresh(); }
                         catch (err: any) { alert('매도 실패: ' + err.message); }
                       }} className="text-xs px-3 py-1.5 rounded-lg bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 transition-colors border border-white/[0.05]">
                         파킹 해제
@@ -2370,7 +2532,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
                         )}
                         <button onClick={async () => {
                           if (!confirm(`${displayName} ${qty}주 전량 시장가 매도하시겠습니까?`)) return;
-                          try { const r = await api(`/sell/${ch.id}`, { method: 'POST', timeout: 40000 }); alert(r.message || '매도 완료'); onRefresh(); }
+                          try { const r = await api(`/sell-stock/${ch.stock_code}`, { method: 'POST', timeout: 40000 }); alert(r.message || '매도 완료'); onRefresh(); }
                           catch (err: any) { alert('매도 실패: ' + err.message); }
                         }} className="text-xs px-2.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 font-medium border border-white/[0.04] whitespace-nowrap">
                           전량 매도
@@ -2862,23 +3024,35 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
     return toDisplayName(nameMap.get(t.stock_code), t.stock_code);
   };
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [mktFilter, setMktFilter] = useState<'ALL' | 'KR' | 'US'>('ALL');
   const filled = trades.filter((t: any) => t.status === 'FILLED' || (t.status === 'PENDING' && t.trigger_source === 'OVERSEAS'));
   const isOverseas = (t: any) => t.trigger_source === 'OVERSEAS';
   const domestic = filled.filter((t: any) => !isOverseas(t));
-  const buys = domestic.filter((t: any) => t.side === 'BUY');
-  const sells = domestic.filter((t: any) => t.side === 'SELL');
-  const todayCount = domestic.filter((t: any) => new Date(t.created_at).toDateString() === new Date().toDateString()).length;
+  const overseas = filled.filter((t: any) => isOverseas(t));
+  const filtered = mktFilter === 'ALL' ? filled : mktFilter === 'KR' ? domestic : overseas;
+  const buys = filtered.filter((t: any) => t.side === 'BUY');
+  const sells = filtered.filter((t: any) => t.side === 'SELL');
+  const todayCount = filtered.filter((t: any) => new Date(t.created_at).toDateString() === new Date().toDateString()).length;
 
   return (
     <div className="space-y-4">
+      {/* 시장 필터 */}
+      <div className="flex gap-1 rounded-xl overflow-hidden border border-white/[0.06] text-[12px] w-fit">
+        {(['ALL', 'KR', 'US'] as const).map(m => (
+          <button key={m} onClick={() => setMktFilter(m)}
+            className={`px-3 py-1.5 transition-all ${mktFilter === m ? 'bg-blue-500/20 text-blue-400 font-semibold' : 'text-slate-500 hover:text-slate-300 hover:bg-white/[0.03]'}`}>
+            {m === 'ALL' ? '전체' : m === 'KR' ? '🇰🇷 국내' : '🇺🇸 해외'}
+          </button>
+        ))}
+      </div>
       {/* 요약 통계 */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
-          <div className="text-[10px] text-slate-500">총 체결 (국내)</div>
-          <div className="text-lg font-black mt-1">{domestic.length}건</div>
+          <div className="text-[10px] text-slate-500">총 체결</div>
+          <div className="text-lg font-black mt-1">{filtered.length}건</div>
         </div>
         <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
-          <div className="text-[10px] text-slate-500">오늘 (국내)</div>
+          <div className="text-[10px] text-slate-500">오늘</div>
           <div className="text-lg font-black mt-1 text-blue-400">{todayCount}건</div>
         </div>
         <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
@@ -2891,8 +3065,8 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
         </div>
       </div>
 
-    <Panel title="매매내역" badge={`${trades.length}건`}>
-      {trades.length === 0 ? (
+    <Panel title="매매내역" badge={`${filtered.length}건`}>
+      {filtered.length === 0 ? (
         <div className="p-8 text-center space-y-2">
           <div className="text-2xl opacity-30">📋</div>
           <p className="text-sm text-slate-400">아직 매매 기록이 없습니다</p>
@@ -2913,9 +3087,7 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
             <th className="px-4 py-3 text-left font-medium">내용</th>
           </tr></thead>
           <tbody className="divide-y divide-slate-800/20">
-            {trades.length === 0 ? (
-              <tr><td colSpan={9} className="p-12 text-center text-slate-500">매매 기록 없음</td></tr>
-            ) : trades.map((t: any, i: number) => {
+            {filtered.map((t: any, i: number) => {
               const chain = t.transaction_chains;
               const tradeKey = t.id || t.kis_order_no || `t${i}`;
               const isOpen = expanded === tradeKey;
@@ -2950,7 +3122,7 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
                   {getName(t)}
                 </td>
                 <td className="px-4 py-3 text-center"><SideBadge side={t.side} isAverageDown={t.side === 'BUY' && (String(t.ai_reasoning ?? '').includes('AVERAGE') || String(t.ai_reasoning ?? '').includes('물타기') || String(t.ai_reasoning ?? '').includes('추가 매수'))} /></td>
-                <td className="px-4 py-3 text-right">{fmt(t.quantity)}</td>
+                <td className="px-4 py-3 text-right">{fmt(t.filled_quantity ?? t.quantity)}</td>
                 <td className="px-4 py-3 text-right font-medium">{overseas ? fmtUsd(filledPrice) : fmtWon(filledPrice)}</td>
                 <td className="px-4 py-3 text-right">
                   {tradePnl !== null && tradePnlPct !== null ? (
@@ -2963,7 +3135,16 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
                   ) : <span className="text-slate-600 text-[11px]">-</span>}
                 </td>
                 <td className="px-4 py-3 text-center"><StatusBadge status={t.status} /></td>
-                <td className="px-4 py-3 text-center"><ModeBadge mode={t.trading_mode} /></td>
+                <td className="px-4 py-3 text-center">
+                  {chain?.strategy_mode
+                    ? <span className="px-1.5 py-0.5 rounded text-[11px] bg-blue-900/30 text-blue-300">{chain.strategy_mode}</span>
+                    : t.trigger_source === 'OVERSEAS'
+                      ? <span className="px-1.5 py-0.5 rounded text-[11px] bg-purple-900/30 text-purple-300">미국</span>
+                      : t.trigger_source === 'MANUAL'
+                        ? <span className="px-1.5 py-0.5 rounded text-[11px] bg-slate-700/50 text-slate-400">수동</span>
+                        : <span className="px-1.5 py-0.5 rounded text-[11px] bg-slate-700/50 text-slate-500">{t.trigger_source ?? '-'}</span>
+                  }
+                </td>
                 <td className="px-4 py-3 text-slate-400 max-w-[200px]">
                   <div className="flex items-center gap-1">
                     <div className="truncate font-medium text-slate-300" title={t.ai_reasoning}>{simplifyReason(t.ai_reasoning, t.side)}</div>
@@ -3070,12 +3251,14 @@ function JournalView() {
   const [market, setMarket] = useState<'ALL' | 'KR' | 'US'>('ALL');
   const [data, setData] = useState<{ trades: JournalTrade[]; summary: { totalTrades: number; wins: number; losses: number; winRate: number; avgPnlPct: number } } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     api(`/journal?days=${days}`)
-      .then(setData)
-      .catch(() => {})
+      .then((d: any) => { setData(d); })
+      .catch((e: any) => { setError(e?.message ?? '매매일지 로드 실패'); })
       .finally(() => setLoading(false));
   }, [days]);
 
@@ -3143,6 +3326,12 @@ function JournalView() {
         {loading ? (
           <div className="flex items-center justify-center p-12">
             <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+          </div>
+        ) : error ? (
+          <div className="p-10 text-center">
+            <div className="text-2xl opacity-20 mb-2">⚠️</div>
+            <p className="text-sm text-rose-400">{error}</p>
+            <p className="text-[11px] text-slate-600 mt-1">매매일지를 불러오지 못했습니다. 새로고침 후 다시 시도해주세요.</p>
           </div>
         ) : trades.length === 0 ? (
           <div className="p-10 text-center">
@@ -3430,7 +3619,7 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
             if (krFilter === '투자중') return chains.some((ch: any) => ch.stock_code === s.stock_code && ch.status !== 'CLOSED');
             if (krFilter === '매수근접') {
               const sc = dash?.scores?.find((sc: any) => sc.stock_code === s.stock_code);
-              return sc && Number(sc.composite_score) >= 60;
+              return sc && Number(sc.composite_score) >= 78;
             }
             return true;
           });
@@ -3446,16 +3635,6 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
                 </button>
               ))}
             </div>
-            <button
-              onClick={async () => {
-                toast?.('워치리스트 순환 시작...', 'info');
-                const d = await api('/run-watchlist-rotation', { method: 'POST' }).catch(() => ({}));
-                toast?.(d.message ?? '순환 완료', 'ok');
-                setTimeout(onRefresh, 3000);
-              }}
-              className="text-[10px] bg-violet-900/40 hover:bg-violet-900/60 text-violet-300 px-3 py-1.5 rounded-xl transition-all whitespace-nowrap ml-auto">
-              🔄 순환
-            </button>
           </div>
           <div className="grid grid-cols-2 gap-2 p-3">
             {[...krFiltered].sort((a: any, b: any) => {
@@ -3480,7 +3659,7 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
               let statusLabel = '대기';
               let borderClass = 'border-white/[0.06]';
               if (chain) { statusColor = 'text-emerald-400'; statusLabel = '투자 중'; borderClass = 'border-emerald-500/30'; }
-              else if (scoreVal >= 70) { statusColor = 'text-amber-400'; statusLabel = '매수 근접'; borderClass = 'border-amber-500/30'; }
+              else if (scoreVal >= 80) { statusColor = 'text-amber-400'; statusLabel = '매수 근접'; borderClass = 'border-amber-500/30'; }
               else if (scoreVal >= 0) { statusColor = 'text-blue-400'; statusLabel = '감시 중'; }
 
               return (
@@ -4159,9 +4338,10 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
           const reg = await navigator.serviceWorker.ready;
           const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: serverStatus.publicKey });
           await api('/push/subscribe', { method: 'POST', body: JSON.stringify(sub) });
-          setPushStatus(prev => ({ ...prev, subscribed: true, deviceCount: prev.deviceCount + 1 }));
+          setPushStatus(prev => ({ ...prev, subscribed: true, deviceCount: prev.deviceCount + 1, error: null }));
         } catch (e: any) {
           console.warn('[QUANTOPS] 자동 푸시 등록 실패:', e.message);
+          setPushStatus(prev => ({ ...prev, error: `자동 등록 실패: ${e.message} — 아래 "이 기기에 등록" 버튼을 눌러주세요` }));
         }
       }
     })();
@@ -4545,9 +4725,9 @@ function SettingsView({ strategy, setStrategy, secrets, notebookRef, geminiRef, 
           <div className="px-6 py-5">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <Sel label="매매 방식" value={strategy.mode} opts={[['SWING','스윙 (중단기)'],['DEFENSE','방어 (하락장)'],['SCALPING','단타 (당일)'],['SNIPER','🎯 저격수 (AI 88점+ 2종목 집중)']]} onChange={v => setField('mode', v)} />
-              <Sel label="AI 확신도 (높을수록 신중)" value={strategy.buy_threshold} opts={[[50,'50점'],[55,'55점'],[58,'58점 (기본)'],[60,'60점'],[65,'65점'],[70,'70점'],[75,'75점'],[80,'80점']]} onChange={v => setField('buy_threshold', Number(v))} />
-              <Sel label="손실 한계 (이 이상 빠지면 매도)" value={strategy.stop_loss_pct} opts={[[-1.5,'-1.5% (타이트)'],[-2,'-2%'],[-2.5,'-2.5% (권장)'],[-3,'-3%'],[-4,'-4%'],[-5,'-5% (여유)']]} onChange={v => setField('stop_loss_pct', Number(v))} />
-              <Sel label="목표 수익 (이 이상 오르면 매도)" value={strategy.take_profit_pct} opts={[[2,'+2%'],[2.5,'+2.5%'],[3,'+3%'],[3.5,'+3.5% (권장)'],[4,'+4%'],[5,'+5%'],[7,'+7%']]} onChange={v => setField('take_profit_pct', Number(v))} />
+              <Sel label="AI 확신도 (높을수록 신중)" value={strategy.buy_threshold} opts={[[70,'70점'],[75,'75점'],[78,'78점'],[80,'80점'],[83,'83점 (현재)'],[85,'85점'],[88,'88점'],[90,'90점']]} onChange={v => setField('buy_threshold', Number(v))} />
+              <Sel label="손실 한계 (이 이상 빠지면 매도)" value={strategy.stop_loss_pct} opts={[[-1.5,'-1.5% (타이트)'],[-2,'-2%'],[-2.5,'-2.5%'],[-3,'-3% (현재)'],[-4,'-4%'],[-5,'-5% (여유)']]} onChange={v => setField('stop_loss_pct', Number(v))} />
+              <Sel label="목표 수익 (이 이상 오르면 매도)" value={strategy.take_profit_pct} opts={[[3,'+3%'],[4,'+4%'],[5,'+5%'],[5.5,'+5.5% (현재)'],[6,'+6%'],[7,'+7%'],[8,'+8%']]} onChange={v => setField('take_profit_pct', Number(v))} />
             </div>
           </div>
         </Panel>
