@@ -269,6 +269,7 @@ export default function Dashboard() {
     setModeToggling(true);
     try {
       await api('/trading-mode', { method: 'POST', body: JSON.stringify({ mode }) });
+      setDash((d: any) => d ? { ...d, tradingMode: mode } : d);
       setModeToggling(false);
       toast(mode === 'live' ? '실전모드로 전환됐습니다' : '연습모드로 전환됐습니다', 'ok');
       load(true);
