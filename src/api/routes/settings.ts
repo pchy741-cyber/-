@@ -349,6 +349,8 @@ settingsRoutes.post('/trading-mode', async (c) => {
     logger.warn(`거래 모드 DB 저장 실패: ${e.message}`, { component: 'SETTINGS' });
   }
   logger.info(`🔄 거래 모드 전환: ${mode.toUpperCase()} (CEO 대시보드)`, { component: 'SETTINGS' });
+  const { invalidateDashboardCache } = await import('./dashboard.js');
+  invalidateDashboardCache();
   return c.json({ ok: true, mode });
 });
 

@@ -222,13 +222,16 @@ export async function withTransaction<T>(fn: (client: pg.PoolClient) => Promise<
 
 export async function getOpenChains(): Promise<TransactionChain[]> {
   if (useMemory) return memGetOpenChains();
+  const isPaper = config.isPaper;
   const { rows } = await getPool().query(
     `SELECT tc.*, w.stock_name, tc.peak_price_since_open,
        (SELECT trigger_source FROM orders WHERE chain_id = tc.id AND side = 'BUY' ORDER BY created_at ASC LIMIT 1) AS trigger_source
      FROM transaction_chains tc
      LEFT JOIN watchlist w ON tc.stock_code = w.stock_code
      WHERE tc.status IN ('OPEN','AVERAGING','PROFIT_TAKING')
+       AND tc.is_paper = $1
      ORDER BY tc.opened_at DESC`,
+    [isPaper],
   );
   return rows;
 }
@@ -240,8 +243,8 @@ export async function createChain(
   const { rows } = await getPool().query(
     `INSERT INTO transaction_chains (stock_code, status, strategy_mode, avg_buy_price,
        total_quantity, total_invested, realized_pnl, target_profit_pct, stop_loss_pct,
-       max_averaging_count, current_averaging_count)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+       max_averaging_count, current_averaging_count, is_paper)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
     [
       chain.stock_code,
       chain.status,
@@ -254,6 +257,7 @@ export async function createChain(
       chain.stop_loss_pct,
       chain.max_averaging_count,
       chain.current_averaging_count,
+      config.isPaper,
     ],
   );
   return rows[0].id;

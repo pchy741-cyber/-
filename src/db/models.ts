@@ -9,6 +9,7 @@ export const WatchlistItemSchema = z.object({
   is_active: z.boolean(),
   added_at: z.string(),
   notes: z.string().nullable(),
+  source: z.string().default('MANUAL'), // 009: MANUAL | KIS_SYNC | AUTO
 });
 export type WatchlistItem = z.infer<typeof WatchlistItemSchema>;
 
@@ -47,6 +48,7 @@ export const TransactionChainSchema = z.object({
   current_averaging_count: z.number(),
   peak_price: z.number().nullable().optional(),
   peak_price_since_open: z.number().nullable().optional(),
+  is_paper: z.boolean().optional(),
   opened_at: z.string(),
   closed_at: z.string().nullable(),
   close_reason: z.string().nullable(),
