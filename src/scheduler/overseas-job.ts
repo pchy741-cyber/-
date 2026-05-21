@@ -1563,6 +1563,70 @@ export async function runOverseasJob(): Promise<void> {
         }
       }
 
+      // ── 파킹 ETF 선제 청산 — 매수 신호 있고 현금 부족 시 파킹 ETF를 먼저 팔아 재원 확보 ──
+      if (buyTargets.length > 0 && cash < portfolioValue * 0.10) {
+        for (const etf of PARKING_ETFS) {
+          const ph = updatedHoldings.get(etf.code);
+          if (!ph || ph.qty < 1) continue;
+          const etfTech = techResults.find(t => t.code === etf.code);
+          const etfPrice = etfTech?.price?.currentPrice ?? 0;
+          if (etfPrice <= 0) continue;
+          const etfPnlPct = ((etfPrice - ph.avgPrice) / ph.avgPrice) * 100;
+          if (etfPnlPct < -3.0) continue; // -3% 이상 손실이면 청산 보류
+
+          const intQty = Math.floor(ph.qty);
+          if (intQty < 1) continue;
+
+          const preliqReason = `파킹청산(매수재원): ${buyTargets[0].code} 진입용 현금 확보`;
+          if (config.isPaper) {
+            const proceeds = intQty * etfPrice * (1 - 0.0025);
+            const remQty = ph.qty - intQty;
+            await setHolding(etf.code, etf.exchange, remQty, ph.avgPrice);
+            await insertOrder({
+              chain_id: null, stock_code: etf.code, side: 'SELL', order_type: '01',
+              quantity: intQty, price: etfPrice,
+              kis_order_no: `PKP${Date.now().toString(36)}`,
+              kis_status: 'PAPER_FILLED', filled_quantity: intQty, filled_price: etfPrice,
+              status: 'FILLED', trading_mode: 'paper', trigger_source: 'OVERSEAS',
+              ai_reasoning: preliqReason,
+            });
+            cash += proceeds;
+            await setCash(cash);
+            updatedHoldings.set(etf.code, { ...ph, qty: remQty });
+            sellOrders.push(`📦 파킹청산 ${etf.code} x${intQty} @$${etfPrice.toFixed(2)} → 매수재원 $${proceeds.toFixed(0)}`);
+            logger.info(`📦 파킹 선제청산: ${etf.code} x${intQty} → 현금 $${cash.toFixed(0)} (${buyTargets[0].code} 매수 재원)`, { component: 'OVERSEAS' });
+          } else {
+            try {
+              const result = await placeOverseasOrder({
+                stockCode: etf.code, exchange: etf.exchange,
+                side: 'SELL', quantity: intQty, price: etfPrice,
+              });
+              if (result.success) {
+                const proceeds = intQty * etfPrice * (1 - 0.0025);
+                const remQty = ph.qty - intQty;
+                await setHolding(etf.code, etf.exchange, remQty, ph.avgPrice);
+                await insertOrder({
+                  chain_id: null, stock_code: etf.code, side: 'SELL', order_type: '01',
+                  quantity: intQty, price: etfPrice,
+                  kis_order_no: result.orderNo ?? `PKP${Date.now().toString(36)}`,
+                  kis_status: 'FILLED', filled_quantity: intQty, filled_price: etfPrice,
+                  status: 'FILLED', trading_mode: 'live', trigger_source: 'OVERSEAS',
+                  ai_reasoning: preliqReason,
+                });
+                cash += proceeds;
+                await setCash(cash);
+                updatedHoldings.set(etf.code, { ...ph, qty: remQty });
+                sellOrders.push(`📦 파킹청산 ${etf.code} x${intQty} @$${etfPrice.toFixed(2)} → 매수재원 $${proceeds.toFixed(0)}`);
+                logger.info(`📦 파킹 선제청산(실전): ${etf.code} x${intQty} → 현금 $${cash.toFixed(0)} (${buyTargets[0].code} 매수 재원)`, { component: 'OVERSEAS' });
+              }
+            } catch (e) {
+              logger.warn(`파킹 선제청산 실패 ${etf.code}: ${(e as Error).message}`, { component: 'OVERSEAS' });
+            }
+          }
+          if (cash >= portfolioValue * 0.10) break; // 충분한 현금 확보되면 중단
+        }
+      }
+
       const slotsAvailable = MAX_POSITIONS - currentHoldingCount;
       for (const target of buyTargets.slice(0, slotsAvailable)) {
         // ── AI 신뢰도 × 점수 기반 연속 포지션 사이징 (0.6x ~ 1.8x) ──
@@ -1697,7 +1761,6 @@ export async function runOverseasJob(): Promise<void> {
 const PARKING_ETFS = [
   { code: 'SCHD', name: 'Schwab US Dividend ETF', exchange: 'NASDAQ' }, // 배당 중점
   { code: 'VOO',  name: 'Vanguard S&P500 ETF',    exchange: 'NYSE'   }, // 지수 추종
-  { code: 'BND',  name: 'Vanguard Total Bond ETF', exchange: 'NYSE'   }, // 채권 (방어)
 ] as const;
 
 const PARKING_CASH_BUFFER = OVERSEAS.PARKING_CASH_BUFFER;
@@ -1706,9 +1769,7 @@ const PARKING_MIN_ORDER   = OVERSEAS.PARKING_MIN_ORDER;
 /**
  * 현금 파킹 전략 — 유휴 현금을 시장 상황에 따라 안전 ETF에 소수점 자동매수
  *
- * 상승장 (평균 score > 20): SCHD 45% + VOO 45% + BND 10%
- * 하락장 (평균 score < -10): SCHD 20% + VOO 10% + BND 70%
- * 중립:                      SCHD 35% + VOO 30% + BND 35%
+ * 시장 상황 무관: VOO 70% + SCHD 30% (채권 없음 — 주식형 ETF만)
  */
 async function runParkingStrategy(params: {
   cash: number;
@@ -1724,15 +1785,8 @@ async function runParkingStrategy(params: {
   const investable = cash - PARKING_CASH_BUFFER;
   if (investable < PARKING_MIN_ORDER) return { actions, cashUsed: 0 };
 
-  // 시장 상황별 ETF 비율
-  let weights: Record<string, number>;
-  if (avgScore > 20) {
-    weights = { SCHD: 0.45, VOO: 0.45, BND: 0.10 }; // 상승장: 주식 ETF 집중
-  } else if (avgScore < -10) {
-    weights = { SCHD: 0.20, VOO: 0.10, BND: 0.70 }; // 하락장: 채권 방어
-  } else {
-    weights = { SCHD: 0.35, VOO: 0.30, BND: 0.35 }; // 중립: 균형
-  }
+  // 채권 없음 — 항상 주식형 ETF (VOO 70% + SCHD 30%)
+  const weights: Record<string, number> = { VOO: 0.70, SCHD: 0.30 };
 
   // 현재 파킹 보유 평가액 조회
   const parkingCodes = new Set<string>(PARKING_ETFS.map(e => e.code));
@@ -1753,7 +1807,7 @@ async function runParkingStrategy(params: {
     }
   }
 
-  // ── 파킹 ETF 익절: 0.1%+ 수익이면 먼저 현금 회수, 더 좋은 기회에 재투입 ──
+  // ── 파킹 ETF 익절: 2%+ 수익이면 현금 회수, 더 좋은 기회에 재투입 ──
   let parkingCashRecovered = 0;
   for (const etf of PARKING_ETFS) {
     const h = holdings.get(etf.code);
@@ -1761,7 +1815,10 @@ async function runParkingStrategy(params: {
     const curP = parkingPrices.get(etf.code);
     if (!curP || curP <= 0) continue;
     const pnlPct = ((curP - h.avgPrice) / h.avgPrice) * 100;
-    if (pnlPct < 0.1) continue; // 수익 미미 → 유지
+    if (pnlPct < 2.0) continue; // 2% 미만 → 유지 (잦은 매매 비용 방지)
+
+    const intQty = Math.floor(h.qty); // 정수 수량만 매도 (소수점 여분 유지)
+    if (intQty < 1) continue;
 
     if (config.isPaper) {
       const proceeds = h.qty * curP * (1 - 0.0025);
@@ -1777,8 +1834,33 @@ async function runParkingStrategy(params: {
       parkingCashRecovered += proceeds;
       actions.push(`📦 파킹익절 ${etf.code} x${h.qty.toFixed(4)} @$${curP.toFixed(2)} (+${pnlPct.toFixed(2)}%, $${proceeds.toFixed(0)} 회수)`);
       logger.info(`📦 파킹 익절: ${etf.code} +${pnlPct.toFixed(2)}% → $${proceeds.toFixed(0)} 현금 회수`, { component: 'OVERSEAS' });
+    } else {
+      // 실전: 정수 수량 매도
+      try {
+        const result = await placeOverseasOrder({
+          stockCode: etf.code, exchange: etf.exchange,
+          side: 'SELL', quantity: intQty, price: curP,
+        });
+        if (result.success) {
+          const proceeds = intQty * curP * (1 - 0.0025);
+          const remainQty = h.qty - intQty;
+          await setHolding(etf.code, etf.exchange, remainQty, h.avgPrice);
+          await insertOrder({
+            chain_id: null, stock_code: etf.code, side: 'SELL', order_type: '01',
+            quantity: intQty, price: curP,
+            kis_order_no: result.orderNo ?? `PKS${Date.now().toString(36)}`,
+            kis_status: 'FILLED', filled_quantity: intQty, filled_price: curP,
+            status: 'FILLED', trading_mode: 'live', trigger_source: 'OVERSEAS',
+            ai_reasoning: `파킹 익절 +${pnlPct.toFixed(2)}% — 현금 회수 후 재투입`,
+          });
+          parkingCashRecovered += proceeds;
+          actions.push(`📦 파킹익절 ${etf.code} x${intQty} @$${curP.toFixed(2)} (+${pnlPct.toFixed(2)}%, $${proceeds.toFixed(0)} 회수)`);
+          logger.info(`📦 파킹 익절(실전): ${etf.code} +${pnlPct.toFixed(2)}% x${intQty} → $${proceeds.toFixed(0)} 현금 회수`, { component: 'OVERSEAS' });
+        }
+      } catch (e) {
+        logger.warn(`파킹 익절 실패 ${etf.code}: ${(e as Error).message}`, { component: 'OVERSEAS' });
+      }
     }
-    // 실전 모드는 fractional sell API 필요 — 추후 지원
   }
 
   // 목표 파킹 총액 = 유휴현금의 70% (나머지 30%는 급매 기회 대비)
@@ -1858,7 +1940,7 @@ async function deployIdleCash(params: {
   const { cash, holdings, techResults, isUSSession, avgScore } = params;
   if (!isUSSession) return { actions: [], cashUsed: 0 };
 
-  const parkingCodes = new Set(['SCHD', 'VOO', 'BND']);
+  const parkingCodes = new Set(['SCHD', 'VOO']);
   const investable = cash - CONCENTRATION_CASH_BUFFER;
   if (investable < CONCENTRATION_MIN_INVEST) return { actions: [], cashUsed: 0 };
 

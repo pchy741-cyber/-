@@ -142,6 +142,7 @@ export default function Dashboard() {
   const [allocConfig, setAllocConfig] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [modeToggling, setModeToggling] = useState(false);
+  const [liveConfirmOpen, setLiveConfirmOpen] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
   const notebookRef = useRef<HTMLTextAreaElement>(null);
   const geminiRef = useRef<HTMLTextAreaElement>(null);
@@ -264,23 +265,26 @@ export default function Dashboard() {
     const k = await api('/kill-switch'); setKillSwitch(k);
   };
 
-  const switchMode = async (mode: 'paper' | 'live') => {
-    if (dash?.tradingMode === mode || modeTogglingRef.current) return;
-    if (mode === 'live' && !confirm('실제 돈으로 거래합니다. 실전모드로 전환하시겠습니까?')) return;
+  const doSwitchMode = async (mode: 'paper' | 'live') => {
     modeTogglingRef.current = true;
     setModeToggling(true);
     try {
       await api('/trading-mode', { method: 'POST', body: JSON.stringify({ mode }) });
       setDash((d: any) => d ? { ...d, tradingMode: mode } : d);
-      modeTogglingRef.current = false;
-      setModeToggling(false);
       toast(mode === 'live' ? '실전모드로 전환됐습니다' : '연습모드로 전환됐습니다', 'ok');
       load(true);
     } catch (e: any) {
       toast('모드 전환 실패: ' + (e?.message ?? ''), 'err');
+    } finally {
       modeTogglingRef.current = false;
       setModeToggling(false);
     }
+  };
+
+  const switchMode = (mode: 'paper' | 'live') => {
+    if (dash?.tradingMode === mode || modeTogglingRef.current) return;
+    if (mode === 'live') { setLiveConfirmOpen(true); return; }
+    doSwitchMode('paper');
   };
 
   // ── Nav items ──
@@ -544,6 +548,17 @@ function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast }: { i
           <p className="text-[11px] text-slate-500">연관된 손실 매매 내역이 없습니다.</p>
         )}
       </ConfirmModal>
+
+      {/* 실전모드 전환 승인 모달 */}
+      <ConfirmModal
+        open={liveConfirmOpen}
+        onClose={() => setLiveConfirmOpen(false)}
+        onConfirm={() => { setLiveConfirmOpen(false); doSwitchMode('live'); }}
+        title="실전모드로 전환"
+        description="실제 돈으로 거래합니다. 실전모드로 전환하시겠습니까?"
+        confirmLabel="실전 전환"
+        confirmVariant="danger"
+      />
 
       <div className="rounded-2xl bg-white/[0.03] border border-white/[0.06] overflow-hidden">
         <div className="flex items-center gap-3 px-4 py-3 border-b border-white/[0.06]">

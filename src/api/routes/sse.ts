@@ -11,10 +11,22 @@ export const sseRoutes = new Hono();
 async function getRecentTrades() {
   try {
     const { rows } = await getPool().query(
-      `SELECT id, stock_code, side, status, filled_quantity, filled_price, created_at, ai_reasoning
-       FROM orders
-       WHERE status IN ('FILLED', 'PENDING')
-       ORDER BY created_at DESC
+      `SELECT o.id, o.stock_code, o.side, o.status,
+              o.quantity, o.filled_quantity, o.filled_price,
+              o.trading_mode, o.trigger_source, o.ai_reasoning,
+              o.created_at, o.chain_id,
+              COALESCE(w.stock_name, o.stock_code) AS stock_name,
+              CASE WHEN tc.id IS NOT NULL THEN json_build_object(
+                'stock_code', tc.stock_code,
+                'status', tc.status,
+                'strategy_mode', tc.strategy_mode,
+                'avg_buy_price', tc.avg_buy_price
+              ) END AS transaction_chains
+       FROM orders o
+       LEFT JOIN watchlist w ON o.stock_code = w.stock_code
+       LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
+       WHERE o.status IN ('FILLED', 'PENDING')
+       ORDER BY o.created_at DESC
        LIMIT 10`,
     );
     return rows;
@@ -73,8 +85,8 @@ sseRoutes.get('/stream', (c) => {
         });
       }
 
-      // 장중: 5초, 장외: 30초
-      const interval = isMarketOpen() ? 5000 : 30000;
+      // 장중: 10초, 장외: 60초
+      const interval = isMarketOpen() ? 10000 : 60000;
       await stream.sleep(interval);
     }
   });
