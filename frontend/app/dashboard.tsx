@@ -151,6 +151,7 @@ export default function Dashboard() {
   const loadingRef = useRef(false);
   const loadGenRef = useRef(0); // 구세대 응답이 신세대 상태를 덮어쓰는 오염 방지
   const staticLoadedRef = useRef(false); // watchlist/trades/secrets는 최초 1회만 로드
+  const modeTogglingRef = useRef(false); // 동기적 잠금 — React 클로저 stale 방지
 
   const loadStatic = async (gen: number) => {
     // watchlist/trades/settings — 느리고 잘 안 바뀌므로 최초 로드 + 명시적 트리거만
@@ -264,17 +265,20 @@ export default function Dashboard() {
   };
 
   const switchMode = async (mode: 'paper' | 'live') => {
-    if (dash?.tradingMode === mode || modeToggling) return;
+    if (dash?.tradingMode === mode || modeTogglingRef.current) return;
     if (mode === 'live' && !confirm('실제 돈으로 거래합니다. 실전모드로 전환하시겠습니까?')) return;
+    modeTogglingRef.current = true;
     setModeToggling(true);
     try {
       await api('/trading-mode', { method: 'POST', body: JSON.stringify({ mode }) });
       setDash((d: any) => d ? { ...d, tradingMode: mode } : d);
+      modeTogglingRef.current = false;
       setModeToggling(false);
       toast(mode === 'live' ? '실전모드로 전환됐습니다' : '연습모드로 전환됐습니다', 'ok');
       load(true);
     } catch (e: any) {
       toast('모드 전환 실패: ' + (e?.message ?? ''), 'err');
+      modeTogglingRef.current = false;
       setModeToggling(false);
     }
   };
@@ -356,12 +360,12 @@ export default function Dashboard() {
           <span className="font-bold text-sm bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">QUANTOPS</span>
           <div className="flex items-center gap-1 mx-auto bg-[#0a0e1a] rounded-lg p-0.5 border border-white/[0.06]">
             <button onClick={() => switchMode('paper')} disabled={modeToggling}
-              className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all ${dash?.tradingMode === 'paper' ? 'bg-amber-500/20 text-amber-300' : 'text-slate-600 hover:text-slate-400'}`}>
+              className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all disabled:opacity-50 ${dash?.tradingMode === 'paper' ? 'bg-amber-500/20 text-amber-300' : 'text-slate-600 hover:text-slate-400'}`}>
               연습
             </button>
             <button onClick={() => switchMode('live')} disabled={modeToggling}
-              className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all ${dash?.tradingMode !== 'paper' ? 'bg-emerald-500/20 text-emerald-300' : 'text-slate-600 hover:text-slate-400'}`}>
-              실전
+              className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all disabled:opacity-50 ${dash?.tradingMode !== 'paper' ? 'bg-emerald-500/20 text-emerald-300' : 'text-slate-600 hover:text-slate-400'}`}>
+              {modeToggling ? '...' : '실전'}
             </button>
           </div>
           <button onClick={toggleKill} className={`px-4 py-2 rounded-xl text-xs font-bold min-h-[36px] whitespace-nowrap ${killSwitch?.active ? 'bg-rose-600 text-white' : 'bg-emerald-900/40 text-emerald-400'}`}>
@@ -373,20 +377,20 @@ export default function Dashboard() {
         <header className="hidden lg:flex items-center justify-center h-12 bg-[#0a0e1a]/60 border-b border-white/[0.04] shrink-0 relative">
           <div className="flex items-center gap-1 bg-[#06080f]/80 rounded-xl p-1 border border-white/[0.06]">
             <button onClick={() => switchMode('paper')} disabled={modeToggling}
-              className={`px-6 py-1.5 rounded-lg text-xs font-bold tracking-wide transition-all duration-200 ${
+              className={`px-6 py-1.5 rounded-lg text-xs font-bold tracking-wide transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed ${
                 dash?.tradingMode === 'paper'
                   ? 'bg-amber-500/20 text-amber-300 shadow-sm ring-1 ring-amber-500/20'
                   : 'text-slate-600 hover:text-slate-400 hover:bg-white/[0.03]'
               }`}>
-              {modeToggling && dash?.tradingMode !== 'paper' ? '전환 중...' : '연습모드'}
+              연습모드
             </button>
             <button onClick={() => switchMode('live')} disabled={modeToggling}
-              className={`px-6 py-1.5 rounded-lg text-xs font-bold tracking-wide transition-all duration-200 ${
+              className={`px-6 py-1.5 rounded-lg text-xs font-bold tracking-wide transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed ${
                 dash?.tradingMode !== 'paper'
                   ? 'bg-emerald-500/20 text-emerald-300 shadow-sm ring-1 ring-emerald-500/20'
                   : 'text-slate-600 hover:text-slate-400 hover:bg-white/[0.03]'
               }`}>
-              {modeToggling && dash?.tradingMode === 'paper' ? '전환 중...' : '실전모드'}
+              {modeToggling ? '전환 중...' : '실전모드'}
             </button>
           </div>
         </header>
