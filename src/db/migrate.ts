@@ -26,11 +26,30 @@ function isIgnorable(msg: string): boolean {
 }
 
 /**
+ * ';' 구분자로 SQL 파일을 개별 구문으로 분리한다.
+ * 빈 구문 및 주석만 있는 청크는 제외한다.
+ */
+function splitSqlStatements(sql: string): string[] {
+  return sql
+    .split(';')
+    .map(s => s.trim())
+    .filter(s => {
+      if (!s) return false;
+      // 주석 제거 후 실제 SQL이 있는지 확인
+      const withoutComments = s.replace(/--[^\n]*/g, '').trim();
+      return withoutComments.length > 0;
+    });
+}
+
+/**
  * SQL 마이그레이션 파일을 순서대로 실행한다.
  * - schema_migrations 테이블로 적용 여부 추적
- * - 단일 커넥션 재사용 (16개 파일 × pool.connect() 방지)
- * - 각 파일을 명시적 트랜잭션으로 감싸서 부분 적용 방지
+ * - 단일 커넥션 재사용
+ * - 각 파일을 구문 단위로 개별 실행 (전체 파일 트랜잭션 금지)
+ *   → 한 구문이 롤백돼도 이전 구문의 변경이 유지됨
  * - 이미 적용된 DDL 재실행은 경고로 처리 후 통과
+ * - 마이그레이션은 모든 구문 시도 후 항상 적용 완료로 표시
+ *   (서버 시작 블로킹 방지)
  */
 export async function runMigrations(): Promise<void> {
   const pool = getPool();
@@ -57,31 +76,41 @@ export async function runMigrations(): Promise<void> {
       if (appliedSet.has(file)) continue;
 
       const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
+      const stmts = splitSqlStatements(sql);
+      let errorCount = 0;
+
+      for (const stmt of stmts) {
+        try {
+          await client.query(stmt);
+        } catch (err: any) {
+          const msg = String(err?.message ?? '');
+          if (isIgnorable(msg)) {
+            logger.warn(
+              `⚠️ ${file} 구문 건너뜀: ${stmt.slice(0, 60).replace(/\n/g, ' ')} — ${msg.slice(0, 100)}`,
+              { component: 'MIGRATE' },
+            );
+          } else {
+            errorCount++;
+            logger.error(
+              `❌ ${file} 구문 오류: ${stmt.slice(0, 60).replace(/\n/g, ' ')} — ${msg}`,
+              { component: 'MIGRATE' },
+            );
+          }
+        }
+      }
+
+      // 모든 구문 시도 후 항상 적용 완료로 표시 (서버 시작 블로킹 방지)
       try {
-        await client.query('BEGIN');
-        await client.query(sql);
         await client.query(
           'INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
           [file],
         );
-        await client.query('COMMIT');
-        logger.info(`✅ 마이그레이션 적용: ${file}`, { component: 'MIGRATE' });
-      } catch (err: any) {
-        try { await client.query('ROLLBACK'); } catch { /* ignore */ }
-        const msg = String(err?.message ?? '');
-        if (isIgnorable(msg)) {
-          // 이미 적용됐거나 무시 가능한 오류 → 통과로 표시
-          try {
-            await client.query(
-              'INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
-              [file],
-            );
-          } catch { /* schema_migrations INSERT 실패 무시 */ }
-          logger.warn(`⚠️ 마이그레이션 경고(건너뜀): ${file} — ${msg.slice(0, 120)}`, { component: 'MIGRATE' });
-        } else {
-          logger.error(`❌ 마이그레이션 실패: ${file} — ${msg}`, { component: 'MIGRATE' });
-          logger.warn(`⚠️ 마이그레이션 오류 무시 후 계속 진행: ${file}`, { component: 'MIGRATE' });
-        }
+      } catch { /* ignore */ }
+
+      if (errorCount === 0) {
+        logger.info(`✅ 마이그레이션 적용: ${file} (${stmts.length}개 구문)`, { component: 'MIGRATE' });
+      } else {
+        logger.warn(`⚠️ 마이그레이션 부분 적용: ${file} (${errorCount}개 오류, ${stmts.length}개 구문)`, { component: 'MIGRATE' });
       }
     }
 

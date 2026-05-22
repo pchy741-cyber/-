@@ -341,11 +341,20 @@ settingsRoutes.post('/trading-mode', async (c) => {
   const mode: 'paper' | 'live' = body.mode === 'live' ? 'live' : 'paper';
   setTradingModeOverride(mode);
   try {
-    const { rows: existing } = await getPool().query('SELECT id FROM portfolio_allocation_config ORDER BY id ASC LIMIT 1');
-    if (existing.length > 0) {
-      await getPool().query('UPDATE portfolio_allocation_config SET trading_mode_override=$1 WHERE id=$2', [mode, existing[0].id]);
-    } else {
-      await getPool().query('INSERT INTO portfolio_allocation_config (trading_mode_override) VALUES ($1)', [mode]);
+    // UPDATE 시도 (전체 행 대상 — 행이 없으면 rowCount=0)
+    const { rowCount } = await getPool().query(
+      'UPDATE portfolio_allocation_config SET trading_mode_override=$1',
+      [mode],
+    );
+    if ((rowCount ?? 0) === 0) {
+      // 행이 없으면 기본값으로 INSERT
+      await getPool().query(
+        `INSERT INTO portfolio_allocation_config
+           (kr_pct, us_pct, sector_semiconductor, sector_bio, sector_defense,
+            sector_finance, sector_etc, trailing_stop_pct, trading_mode_override)
+         VALUES (70, 30, 30, 20, 25, 20, 30, 5, $1)`,
+        [mode],
+      );
     }
   } catch (e: any) {
     logger.warn(`거래 모드 DB 저장 실패: ${e.message}`, { component: 'SETTINGS' });
