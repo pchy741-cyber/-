@@ -225,9 +225,9 @@ export async function withTransaction<T>(fn: (client: pg.PoolClient) => Promise<
 
 // ── Transaction Chains ──
 
-export async function getOpenChains(): Promise<TransactionChain[]> {
+export async function getOpenChains(isPaperOverride?: boolean): Promise<TransactionChain[]> {
   if (useMemory) return memGetOpenChains();
-  const isPaper = config.isPaper;
+  const isPaper = isPaperOverride ?? config.isPaper;
   const { rows } = await getPool().query(
     `SELECT tc.*, w.stock_name, tc.peak_price_since_open,
        (SELECT trigger_source FROM orders WHERE chain_id = tc.id AND side = 'BUY' ORDER BY created_at ASC LIMIT 1) AS trigger_source

@@ -98,8 +98,8 @@ const DASH_CACHE_TTL = 30_000;
 function getDashCache(mode: string) { return _dashCacheByMode.get(mode) ?? null; }
 function setDashCache(mode: string, data: unknown) { _dashCacheByMode.set(mode, { data, ts: Date.now() }); }
 
-// 현재 모드 캐시만 무효화 (매도/매수 후)
-function invalidateCurrentModeCache(): void { _dashCacheByMode.delete(config.tradingMode); }
+// 현재 모드 캐시만 무효화 (매도/매수 후) — 실전/연습 양쪽 무효화 (병행운영 시 양쪽 뷰에 반영)
+function invalidateCurrentModeCache(): void { _dashCacheByMode.delete('live'); _dashCacheByMode.delete('paper'); }
 
 // 전체 무효화 — 외부 호출용 (하위 호환)
 export function invalidateDashboardCache(): void { _dashCacheByMode.clear(); }
@@ -108,57 +108,64 @@ export function invalidateDashboardCache(): void { _dashCacheByMode.clear(); }
 export function invalidateModeCache(mode: string): void { _dashCacheByMode.delete(mode); }
 
 // 동시 빌드 dedup: 같은 모드의 buildDashPayload가 두 번 동시 실행되지 않게
-async function getOrBuildDashPayload(mode: string): Promise<unknown> {
-  const existing = _dashBuildingByMode.get(mode);
+async function getOrBuildDashPayload(viewIsPaper: boolean): Promise<unknown> {
+  const key = viewIsPaper ? 'paper' : 'live';
+  const existing = _dashBuildingByMode.get(key);
   if (existing) return existing;
-  const promise = buildDashPayload().finally(() => { _dashBuildingByMode.delete(mode); });
-  _dashBuildingByMode.set(mode, promise);
+  const promise = buildDashPayload(viewIsPaper).finally(() => { _dashBuildingByMode.delete(key); });
+  _dashBuildingByMode.set(key, promise);
   return promise;
 }
 
 // ── 대시보드 요약 ──
 dashboardRoutes.get('/dashboard', async (c) => {
-  const currentMode = config.tradingMode;
-  const cached = getDashCache(currentMode);
+  // ?viewMode=paper|live — 보기 모드 (서버 거래 모드와 독립)
+  const viewModeParam = c.req.query('viewMode');
+  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : config.isPaper;
+  const cacheKey = viewIsPaper ? 'paper' : 'live';
+
+  const cached = getDashCache(cacheKey);
   if (cached) {
     const stale = Date.now() - cached.ts >= DASH_CACHE_TTL;
     if (!stale) return c.json(cached.data);
     // 만료됐지만 있음: 즉시 반환 + 백그라운드 갱신 트리거
-    if (!_dashBuildingByMode.has(currentMode)) {
-      getOrBuildDashPayload(currentMode)
-        .then(p => setDashCache(config.tradingMode, p))
+    if (!_dashBuildingByMode.has(cacheKey)) {
+      getOrBuildDashPayload(viewIsPaper)
+        .then(p => setDashCache(cacheKey, p))
         .catch(() => {});
     }
     return c.json(cached.data);
   }
   // 캐시 없음: 새로 빌드 (dedup 적용)
-  const payload = await getOrBuildDashPayload(currentMode);
-  setDashCache(currentMode, payload);
+  const payload = await getOrBuildDashPayload(viewIsPaper);
+  setDashCache(cacheKey, payload);
   return c.json(payload);
 });
 
 export async function prewarmDashboard(): Promise<void> {
-  const mode = config.tradingMode;
-  if (getDashCache(mode)) return;
+  // 서버 모드(live) 캐시만 선제 빌드 — paper는 요청 시 빌드
+  const viewIsPaper = config.isPaper;
+  const key = viewIsPaper ? 'paper' : 'live';
+  if (getDashCache(key)) return;
   try {
-    const payload = await getOrBuildDashPayload(mode);
-    setDashCache(mode, payload);
-    logger.info(`🔥 대시보드 캐시 선제 빌드 완료 [${mode}]`, { component: 'BOOT' });
+    const payload = await getOrBuildDashPayload(viewIsPaper);
+    setDashCache(key, payload);
+    logger.info(`🔥 대시보드 캐시 선제 빌드 완료 [${key}]`, { component: 'BOOT' });
   } catch (e: any) {
     logger.warn(`대시보드 캐시 선제 빌드 실패: ${e.message}`, { component: 'BOOT' });
   }
 }
 
-async function buildDashPayload(): Promise<unknown> {
+async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   // KIS API 실패 시 기본값 — 실전모드는 0 (10M 가짜잔고 표시 방지), 연습모드만 1000만원
-  const defaultBalance = config.isPaper
+  const defaultBalance = viewIsPaper
     ? { totalDeposit: 10000000, totalEvalAmount: 0, orderableCash: 10000000, totalProfitLoss: 0, totalProfitLossPct: 0, positions: [] }
     : { totalDeposit: 0, totalEvalAmount: 0, orderableCash: 0, totalProfitLoss: 0, totalProfitLossPct: 0, positions: [] };
 
-  const balanceFn = config.isPaper ? getPaperBalance : getAccountBalance;
+  const balanceFn = viewIsPaper ? getPaperBalance : getAccountBalance;
   const [balanceResult, chains, strategy, insightRows, defensePark] = await Promise.all([
     balanceFn().catch(() => defaultBalance),
-    getOpenChains().catch(() => []),
+    getOpenChains(viewIsPaper).catch(() => []),
     getActiveStrategy().catch(() => null),
     getPool().query(
       `SELECT id, category, insight, confidence, sample_count, last_updated, is_manual,
@@ -302,7 +309,7 @@ async function buildDashPayload(): Promise<unknown> {
   let totalPnl: number;
   let actualCash: number;
 
-  if (config.isPaper) {
+  if (viewIsPaper) {
     // Paper: chains 기반 원금 (cap 없음), 손익 = 미실현+실현 합산
     totalInvested = totalChainInvested; // 현재 보유 원금 합산 (상한선 없음)
     totalPnl = totalChainPnl + (balance.totalProfitLoss ?? 0); // 미실현 + 실현
@@ -317,7 +324,7 @@ async function buildDashPayload(): Promise<unknown> {
   }
 
   // pnlPct: Live는 KIS API 직접값 사용(정확), Paper는 원금 대비 계산
-  const totalPnlPct = config.isPaper
+  const totalPnlPct = viewIsPaper
     ? (totalChainInvested > 0 ? (totalPnl / totalChainInvested) * 100 : 0)
     : (balance.totalProfitLossPct ?? 0); // KIS API가 내려주는 정확한 수익률
 
@@ -330,8 +337,8 @@ async function buildDashPayload(): Promise<unknown> {
   let overseasMarketValueUsd = 0; // 시가 합산 (총자산 표시용)
   let overseasCash = 0;
   try {
-    if (config.isPaper) {
-      // 연습모드: 해외는 실전 전용 — 표시 안 함
+    if (viewIsPaper) {
+      // 연습모드 뷰: 해외는 실전 전용 — 표시 안 함
     } else {
     const { rows: osRows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0');
     const { rows: osCashRows } = await getPool().query("SELECT value FROM overseas_state WHERE key = 'cash'");
@@ -421,8 +428,8 @@ async function buildDashPayload(): Promise<unknown> {
       domesticCash: Math.round(actualCash),
       // Live: KIS evlu_pfls_smtl_amt = 미실현손익 (source-of-truth), 실현손익은 잔고 API 미제공
       // Paper: chains 기반 미실현손익, balance.totalProfitLoss = 실현손익
-      unrealizedPnl: Math.round(config.isPaper ? totalChainPnl : (balance.totalProfitLoss || totalChainPnl)),
-      realizedPnl: config.isPaper ? Math.round(balance.totalProfitLoss ?? 0) : 0,
+      unrealizedPnl: Math.round(viewIsPaper ? totalChainPnl : (balance.totalProfitLoss || totalChainPnl)),
+      realizedPnl: viewIsPaper ? Math.round(balance.totalProfitLoss ?? 0) : 0,
       pnl: Math.round(totalPnl),                       // 국내 미실현+실현 합산
       pnlPct: Math.round(totalPnlPct * 100) / 100,
       positions: balance.positions ?? [],
@@ -448,12 +455,13 @@ async function buildDashPayload(): Promise<unknown> {
     strategy: strategy ?? { mode: 'SWING' },
     killSwitch: getKillSwitchStatus(),
     cooldown: await getCooldownStatus().catch(() => ({ active: false, consecutive: 0, remainingMinutes: 0, reason: '' })),
-    tradingMode: config.tradingMode,
+    tradingMode: config.tradingMode,         // 실제 서버 거래 모드 (변경 불가 — 항상 live)
+    viewMode: viewIsPaper ? 'paper' : 'live', // 현재 보기 모드
     riskLimits: await (async () => {
       const snap = await getTodayStartSnapshot().catch(() => null);
       const startValue = snap ? Number(snap.total_value) : grandTotalValue;
       // 연습: env var 고정값 (500,000원), 실전: 총자산의 5% 동적 계산 (계좌 규모 반영)
-      const maxDailyDrawdownKrw = config.isPaper
+      const maxDailyDrawdownKrw = viewIsPaper
         ? (config.risk.maxDailyDrawdownKrw > 0 ? config.risk.maxDailyDrawdownKrw : Math.round(startValue * 0.25))
         : Math.round(startValue * 0.05);
       return { maxDailyDrawdownKrw, startValue: Math.round(startValue) };
@@ -827,6 +835,10 @@ dashboardRoutes.post('/watchlist/fix-names', async (c) => {
 // ── 매매 기록 ──
 dashboardRoutes.get('/trades', async (c) => {
   const limit = Math.min(Math.max(1, Number(c.req.query('limit') ?? 50)), 500);
+  // ?viewMode=paper|live — 보기 모드에 맞는 매매내역 반환
+  const viewModeParam = c.req.query('viewMode');
+  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : config.isPaper;
+  const tradeMode = viewIsPaper ? 'paper' : 'live';
   try {
     const { rows } = await getPool().query(
       `SELECT o.*,
@@ -852,7 +864,7 @@ dashboardRoutes.get('/trades', async (c) => {
        WHERE o.trading_mode = $2
        ORDER BY o.created_at DESC
        LIMIT $1`,
-      [limit, config.tradingMode],
+      [limit, tradeMode],
     );
     const tradePnlMap = new Map<string, { pnl: number; pct: number | null; isUsd?: boolean }>();
     const allCodes = [...new Set(rows.map((r: any) => String(r.stock_code ?? '')).filter(Boolean))];

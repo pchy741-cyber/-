@@ -149,17 +149,21 @@ export default function Dashboard() {
   const gptRef = useRef<HTMLTextAreaElement>(null);
   const claudeRef = useRef<HTMLTextAreaElement>(null);
 
+  const [viewMode, setViewMode] = useState<'live'|'paper'>('live'); // 보기 모드 (거래 모드와 독립)
+
   const loadingRef = useRef(false);
   const loadGenRef = useRef(0); // 구세대 응답이 신세대 상태를 덮어쓰는 오염 방지
   const staticLoadedRef = useRef(false); // watchlist/secrets 최초 1회만 로드
   const tradesLoadedRef = useRef(false);  // trades 성공 로드 여부 별도 추적
   const tradesLastFetchRef = useRef(0);   // 마지막 trades 조회 시각
   const modeTogglingRef = useRef(false); // 동기적 잠금 — React 클로저 stale 방지
+  const viewModeRef = useRef<'live'|'paper'>('live'); // 클로저 stale 방지용 ref
 
   const loadStatic = async (gen: number) => {
+    const vm = viewModeRef.current;
     const [w, s, t, sec, wc, wh] = await Promise.allSettled([
       api('/watchlist'), api('/strategy'),
-      api('/trades?limit=100'), api('/secrets'),
+      api(`/trades?limit=100&viewMode=${vm}`), api('/secrets'),
       api('/withdraw/config').catch(() => null),
       api('/withdraw/history').catch(() => []),
     ]);
@@ -179,7 +183,7 @@ export default function Dashboard() {
   };
 
   const refreshTrades = (gen: number) => {
-    api('/trades?limit=100').then((t: any) => {
+    api(`/trades?limit=100&viewMode=${viewModeRef.current}`).then((t: any) => {
       if (loadGenRef.current !== gen) return;
       if (Array.isArray(t)) {
         setTrades(t);
@@ -200,7 +204,7 @@ export default function Dashboard() {
       setLoading(true);
       // 1단계: 핵심 데이터 먼저 (화면 표시용) — 대시보드 캐시 30s이므로 즉시 응답
       const [h, d, k] = await Promise.allSettled([
-        api('/health'), api('/dashboard'), api('/kill-switch'),
+        api('/health'), api(`/dashboard?viewMode=${viewModeRef.current}`), api('/kill-switch'),
       ]);
       if (gen !== loadGenRef.current) return;
       if (h.status === 'fulfilled') setHealth(h.value);
@@ -275,8 +279,8 @@ export default function Dashboard() {
         // 체인 수 변화 시 holdings+trades 동시 강제 업데이트 (loadingRef 우회)
         if (prevChainCount !== -1 && data.activeChains !== prevChainCount) {
           Promise.allSettled([
-            api('/dashboard').then((d: any) => { if (d) setDash(d); }),
-            api('/trades?limit=200').then((t: any) => { if (Array.isArray(t)) setTrades(t); }),
+            api(`/dashboard?viewMode=${viewModeRef.current}`).then((d: any) => { if (d) setDash(d); }),
+            api(`/trades?limit=200&viewMode=${viewModeRef.current}`).then((t: any) => { if (Array.isArray(t)) setTrades(t); }),
           ]);
         }
         prevChainCount = data.activeChains ?? prevChainCount;
@@ -316,6 +320,16 @@ export default function Dashboard() {
     if (dash?.tradingMode === mode || modeTogglingRef.current) return;
     if (mode === 'live') { setLiveConfirmOpen(true); return; }
     doSwitchMode('paper');
+  };
+
+  // 보기 모드 전환 — 서버 거래 모드 변경 없이 데이터 뷰만 전환
+  const switchView = (mode: 'live' | 'paper') => {
+    if (viewModeRef.current === mode) return;
+    viewModeRef.current = mode;
+    setViewMode(mode);
+    loadingRef.current = false;
+    tradesLoadedRef.current = false;
+    load(true);
   };
 
   // ── Nav items ──
@@ -362,7 +376,8 @@ export default function Dashboard() {
             { ok: health?.status === 'ok', label: health?.status === 'ok' ? '정상 작동' : '오류 발생' },
             { ok: health?.marketOpen, label: `한국 ${health?.marketOpen ? '거래 중' : '쉬는 중'}` },
             { ok: health?.usMarketOpen, label: `미국 ${health?.usMarketOpen ? '거래 중' : '쉬는 중'}` },
-            { ok: dash?.tradingMode !== 'paper', label: dash?.tradingMode === 'paper' ? '연습 모드' : '실전 모드', amber: dash?.tradingMode === 'paper' },
+            { ok: dash?.tradingMode !== 'paper', label: dash?.tradingMode === 'paper' ? '연습 거래 중' : '실전 거래 중', amber: dash?.tradingMode === 'paper' },
+            { ok: viewMode === 'live', label: viewMode === 'paper' ? '연습 보기 중' : '실전 보기', amber: viewMode === 'paper' },
           ].map((s, i) => (
             <div key={i} className="flex items-center gap-2.5 text-[11px]">
               <span className={`w-1.5 h-1.5 rounded-full ${s.amber ? 'bg-amber-400' : s.ok ? 'bg-emerald-400' : 'bg-slate-600'}`} />
@@ -403,13 +418,13 @@ export default function Dashboard() {
           </button>
           <span className="font-bold text-sm bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">QUANTOPS</span>
           <div className="flex items-center gap-1 mx-auto bg-[#0a0e1a] rounded-lg p-0.5 border border-white/[0.06]">
-            <button onClick={() => switchMode('paper')} disabled={modeToggling}
-              className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all disabled:opacity-50 ${dash?.tradingMode === 'paper' ? 'bg-amber-500/20 text-amber-300' : 'text-slate-600 hover:text-slate-400'}`}>
-              연습
+            <button onClick={() => switchView('live')}
+              className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all ${viewMode === 'live' ? 'bg-emerald-500/20 text-emerald-300' : 'text-slate-600 hover:text-slate-400'}`}>
+              실전
             </button>
-            <button onClick={() => switchMode('live')} disabled={modeToggling}
-              className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all disabled:opacity-50 ${dash?.tradingMode !== 'paper' ? 'bg-emerald-500/20 text-emerald-300' : 'text-slate-600 hover:text-slate-400'}`}>
-              {modeToggling ? '...' : '실전'}
+            <button onClick={() => switchView('paper')}
+              className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all ${viewMode === 'paper' ? 'bg-amber-500/20 text-amber-300' : 'text-slate-600 hover:text-slate-400'}`}>
+              연습
             </button>
           </div>
           <button onClick={toggleKill} className={`px-4 py-2 rounded-xl text-xs font-bold min-h-[36px] whitespace-nowrap ${killSwitch?.active ? 'bg-rose-600 text-white' : 'bg-emerald-900/40 text-emerald-400'}`}>
@@ -417,26 +432,41 @@ export default function Dashboard() {
           </button>
         </header>
 
-        {/* Desktop header — mode toggle center */}
+        {/* Desktop header — 보기 모드 (View Mode) toggle + 거래 모드 badge */}
         <header className="hidden lg:flex items-center justify-center h-12 bg-[#0a0e1a]/60 border-b border-white/[0.04] shrink-0 relative">
+          {/* 거래 모드 badge (항상 실전) — 왼쪽 고정 */}
+          <div className="absolute left-4 flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-[10px] text-slate-500 font-medium">
+              거래: {dash?.tradingMode === 'paper' ? '연습 중' : '실전 중'}
+            </span>
+          </div>
+          {/* 보기 모드 토글 — 중앙 */}
           <div className="flex items-center gap-1 bg-[#06080f]/80 rounded-xl p-1 border border-white/[0.06]">
-            <button onClick={() => switchMode('paper')} disabled={modeToggling}
-              className={`px-6 py-1.5 rounded-lg text-xs font-bold tracking-wide transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed ${
-                dash?.tradingMode === 'paper'
-                  ? 'bg-amber-500/20 text-amber-300 shadow-sm ring-1 ring-amber-500/20'
-                  : 'text-slate-600 hover:text-slate-400 hover:bg-white/[0.03]'
-              }`}>
-              연습모드
-            </button>
-            <button onClick={() => switchMode('live')} disabled={modeToggling}
-              className={`px-6 py-1.5 rounded-lg text-xs font-bold tracking-wide transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed ${
-                dash?.tradingMode !== 'paper'
+            <button onClick={() => switchView('live')}
+              className={`px-6 py-1.5 rounded-lg text-xs font-bold tracking-wide transition-all duration-200 ${
+                viewMode === 'live'
                   ? 'bg-emerald-500/20 text-emerald-300 shadow-sm ring-1 ring-emerald-500/20'
                   : 'text-slate-600 hover:text-slate-400 hover:bg-white/[0.03]'
               }`}>
-              {modeToggling ? '전환 중...' : '실전모드'}
+              실전 보기
+            </button>
+            <button onClick={() => switchView('paper')}
+              className={`px-6 py-1.5 rounded-lg text-xs font-bold tracking-wide transition-all duration-200 ${
+                viewMode === 'paper'
+                  ? 'bg-amber-500/20 text-amber-300 shadow-sm ring-1 ring-amber-500/20'
+                  : 'text-slate-600 hover:text-slate-400 hover:bg-white/[0.03]'
+              }`}>
+              연습 보기
             </button>
           </div>
+          {/* 연습 보기 중일 때 안내 배지 */}
+          {viewMode === 'paper' && (
+            <div className="absolute right-4 flex items-center gap-1.5 px-2 py-1 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+              <span className="text-[10px] text-amber-400 font-semibold">연습 데이터 보는 중</span>
+            </div>
+          )}
         </header>
 
         {/* Content area */}
