@@ -430,8 +430,8 @@ export class RiskEngine {
       monthStart.setDate(1);
       monthStart.setHours(0, 0, 0, 0);
       const { rows } = await pool.query<{ total_value: string }>(
-        `SELECT total_value FROM portfolio_snapshots WHERE snapshot_at >= $1 ORDER BY snapshot_at ASC`,
-        [monthStart.toISOString()],
+        `SELECT total_value FROM portfolio_snapshots WHERE snapshot_at >= $1 AND is_paper = $2 ORDER BY snapshot_at ASC`,
+        [monthStart.toISOString(), config.isPaper],
       );
       if (rows.length < 2) return { approved: true, reason: 'OK' };
 

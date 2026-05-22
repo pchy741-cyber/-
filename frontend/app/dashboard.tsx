@@ -300,6 +300,10 @@ export default function Dashboard() {
       await api('/trading-mode', { method: 'POST', body: JSON.stringify({ mode }) });
       setDash((d: any) => d ? { ...d, tradingMode: mode } : d);
       toast(mode === 'live' ? '실전모드로 전환됐습니다' : '연습모드로 전환됐습니다', 'ok');
+      // 모드 전환 후 모든 캐시 초기화 — 이전 모드 데이터가 새 모드에 표시되는 버그 방지
+      loadingRef.current = false;
+      staticLoadedRef.current = false;
+      tradesLoadedRef.current = false;
       load(true);
     } catch (e: any) {
       toast('모드 전환 실패: ' + (e?.message ?? ''), 'err');
@@ -3632,7 +3636,7 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
         {/* 국내 */}
         {(() => {
-          const [krFilter, setKrFilter] = React.useState<'전체' | 'KOSPI' | 'KOSDAQ' | '투자중' | '매수근접'>('전체');
+          const [krFilter, setKrFilter] = React.useState<'전체' | 'KOSPI' | 'KOSDAQ' | '투자중' | '매수근접' | '최근매도'>('전체');
           const krFiltered = watchlist.filter((s: any) => {
             if (krFilter === '전체') return true;
             if (krFilter === 'KOSPI') return s.market === 'KOSPI' || (!s.market && /^[013]/.test(s.stock_code));
@@ -3642,9 +3646,10 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
               const sc = dash?.scores?.find((sc: any) => sc.stock_code === s.stock_code);
               return sc && Number(sc.composite_score) >= 78;
             }
+            if (krFilter === '최근매도') return s.last_sell_at != null;
             return true;
           });
-          const KR_FILTER_OPTIONS: Array<'전체' | 'KOSPI' | 'KOSDAQ' | '투자중' | '매수근접'> = ['전체', 'KOSPI', 'KOSDAQ', '투자중', '매수근접'];
+          const KR_FILTER_OPTIONS: Array<'전체' | 'KOSPI' | 'KOSDAQ' | '투자중' | '매수근접' | '최근매도'> = ['전체', 'KOSPI', 'KOSDAQ', '투자중', '매수근접', '최근매도'];
           return (
         <Panel title="로봇이 감시하는 종목들" badge={`${krFiltered.length}/${watchlist.length}종목`}>
           <div className="px-3 pt-3 pb-1 flex gap-2 flex-wrap items-center">
@@ -3675,6 +3680,11 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
               const scoreVal = score ? Number(score.composite_score) : -1;
               const displayName = toDisplayName(s.stock_name, s.stock_code);
               const sellPct: number | undefined = s.last_sell_pct != null ? Number(s.last_sell_pct) : undefined;
+              const lastSellPrice: number | undefined = s.last_sell_price != null ? Number(s.last_sell_price) : undefined;
+              const curScorePrice = dash?.scores?.find((sc: any) => sc.stock_code === s.stock_code)?.currentPrice;
+              const postSellPct: number | undefined = (lastSellPrice && curScorePrice && lastSellPrice > 0)
+                ? ((curScorePrice - lastSellPrice) / lastSellPrice) * 100
+                : undefined;
 
               let statusColor = 'text-slate-500';
               let statusLabel = '대기';
@@ -3710,8 +3720,15 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
                     })()}
                   </div>
                   {sellPct != null && (
-                    <div className={`text-[10px] font-medium mt-1 ${sellPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                      최근 매도 {sellPct >= 0 ? '+' : ''}{sellPct.toFixed(1)}%
+                    <div className="mt-1 flex flex-col gap-0.5">
+                      <div className={`text-[10px] font-medium ${sellPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        매도수익 {sellPct >= 0 ? '+' : ''}{sellPct.toFixed(1)}%
+                      </div>
+                      {postSellPct != null && (
+                        <div className={`text-[10px] ${postSellPct >= 0 ? 'text-amber-400' : 'text-sky-400'}`}>
+                          매도 후 {postSellPct >= 0 ? '↑+' : '↓'}{postSellPct.toFixed(1)}%
+                        </div>
+                      )}
                     </div>
                   )}
                   {s.source && s.source !== 'MANUAL' && (

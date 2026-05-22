@@ -4,7 +4,7 @@ import { getDefenseParkState } from '../../ai/track-b/defense-park.js';
 import { getCachedScores, getScoresWithFallback, cachePrice, getLastKnownPrices } from '../../cache/redis.js';
 import { cachePriceMemory, getLastKnownPricesMemory, getCachedPriceMemory } from '../../cache/memory.js';
 import { config } from '../../config/index.js';
-import { STRATEGY_PARAMS } from '../../config/constants.js';
+import { STRATEGY_PARAMS, getScoreBasedParams } from '../../config/constants.js';
 import { createChain, getActiveStrategy, getActiveWatchlist, getOpenChains, getPool, getTodayStartSnapshot } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { getCurrentPrice, getBatchPrices, isMarketOpen, getVolumeRankingStocks, getChangeRankingStocks, type CurrentPrice } from '../../kis/market.js';
@@ -90,8 +90,8 @@ async function getFxRate(): Promise<number> {
   return _fxCache.rate;
 }
 
-// ── 대시보드 응답 캐시 (10초 TTL, Stale-While-Revalidate) ──
-let _dashCache: { data: unknown; ts: number } | null = null;
+// ── 대시보드 응답 캐시 (30초 TTL, Stale-While-Revalidate, 모드별 독립) ──
+let _dashCache: { data: unknown; ts: number; mode: string } | null = null;
 let _dashRefreshing = false;
 const DASH_CACHE_TTL = 30_000;
 
@@ -102,28 +102,29 @@ export function invalidateDashboardCache(): void {
 
 // ── 대시보드 요약 ──
 dashboardRoutes.get('/dashboard', async (c) => {
-  // Stale-While-Revalidate: 캐시 있으면 즉시 반환, 만료됐으면 백그라운드 갱신
-  if (_dashCache) {
+  const currentMode = config.tradingMode;
+  // Stale-While-Revalidate: 캐시 있으면 즉시 반환, 만료됐거나 모드 불일치면 백그라운드 갱신
+  if (_dashCache && _dashCache.mode === currentMode) {
     const stale = Date.now() - _dashCache.ts >= DASH_CACHE_TTL;
     if (!stale) return c.json(_dashCache.data);
     // 만료됐지만 있음: 즉시 반환 + 백그라운드 갱신 트리거
     if (!_dashRefreshing) {
       _dashRefreshing = true;
-      buildDashPayload().then(p => { _dashCache = { data: p, ts: Date.now() }; }).catch(() => {}).finally(() => { _dashRefreshing = false; });
+      buildDashPayload().then(p => { _dashCache = { data: p, ts: Date.now(), mode: config.tradingMode }; }).catch(() => {}).finally(() => { _dashRefreshing = false; });
     }
     return c.json(_dashCache.data);
   }
-  // 캐시 없음 (서버 재시작 직후): 최초 1회만 대기
+  // 캐시 없음 또는 모드 불일치: 즉시 새로 빌드
   const payload = await buildDashPayload();
-  _dashCache = { data: payload, ts: Date.now() };
+  _dashCache = { data: payload, ts: Date.now(), mode: currentMode };
   return c.json(payload);
 });
 
 export async function prewarmDashboard(): Promise<void> {
-  if (_dashCache) return;
+  if (_dashCache && _dashCache.mode === config.tradingMode) return;
   try {
     const payload = await buildDashPayload();
-    _dashCache = { data: payload, ts: Date.now() };
+    _dashCache = { data: payload, ts: Date.now(), mode: config.tradingMode };
     logger.info('🔥 대시보드 캐시 선제 빌드 완료', { component: 'BOOT' });
   } catch (e: any) {
     logger.warn(`대시보드 캐시 선제 빌드 실패: ${e.message}`, { component: 'BOOT' });
@@ -574,7 +575,7 @@ dashboardRoutes.get('/watchlist', async (c) => {
     }
 
     // 최근 매도 수익률 조회 (watchlist 카드에 ±% 표시용)
-    const sellPctMap = new Map<string, { pct: number; closedAt: string }>();
+    const sellPctMap = new Map<string, { pct: number; closedAt: string; sellPrice: number }>();
     try {
       const codes = data.map((w: any) => String(w.stock_code));
       if (codes.length > 0) {
@@ -598,6 +599,7 @@ dashboardRoutes.get('/watchlist', async (c) => {
             sellPctMap.set(r.stock_code, {
               pct: ((sell - buy) / buy) * 100,
               closedAt: r.closed_at,
+              sellPrice: sell,
             });
           }
         }
@@ -610,7 +612,7 @@ dashboardRoutes.get('/watchlist', async (c) => {
       const sellInfo = sellPctMap.get(code);
       return {
         ...(resolved ? { ...w, stock_name: resolved } : w),
-        ...(sellInfo ? { last_sell_pct: sellInfo.pct, last_sell_at: sellInfo.closedAt } : {}),
+        ...(sellInfo ? { last_sell_pct: sellInfo.pct, last_sell_at: sellInfo.closedAt, last_sell_price: sellInfo.sellPrice } : {}),
       };
     });
 
@@ -825,9 +827,10 @@ dashboardRoutes.get('/trades', async (c) => {
        FROM orders o
        LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
        LEFT JOIN watchlist w ON o.stock_code = w.stock_code
+       WHERE o.trading_mode = $2
        ORDER BY o.created_at DESC
        LIMIT $1`,
-      [limit],
+      [limit, config.tradingMode],
     );
     const tradePnlMap = new Map<string, { pnl: number; pct: number | null; isUsd?: boolean }>();
     const allCodes = [...new Set(rows.map((r: any) => String(r.stock_code ?? '')).filter(Boolean))];
@@ -1372,22 +1375,56 @@ dashboardRoutes.post('/sell-overseas/:stockCode', async (c) => {
   }
 });
 
-// ── Claude Code 스캘핑 수동 매수 ──
+// ── Claude Code 수동 매수 (복리 동적 사이징) ──
 // requireAuth 미들웨어가 이미 세션 쿠키 / x-api-key 인증을 처리함 — 이중 체크 불필요
+//
+// amount_krw 생략(또는 0) 시: 1.5% 리스크 룰로 자동 계산
+//   amount = totalCapital × 0.015 / |stopLossPct|
+// ai_score 지정 시: 점수 기반 TP/SL 적용 (손익비 최적화)
 dashboardRoutes.post('/manual-buy', async (c) => {
-  let body: { stock_code?: string; amount_krw?: number; reasoning?: string };
+  let body: { stock_code?: string; amount_krw?: number; ai_score?: number; reasoning?: string };
   try {
     body = await c.req.json();
   } catch {
     return c.json({ error: '요청 형식 오류' }, 400);
   }
 
-  const { stock_code, amount_krw, reasoning } = body;
-  if (!stock_code || !amount_krw || amount_krw < 10000) {
-    return c.json({ error: 'stock_code, amount_krw(최소 10,000원) 필수' }, 400);
+  const { stock_code, reasoning } = body;
+  const aiScore = body.ai_score ?? 0;
+  if (!stock_code) {
+    return c.json({ error: 'stock_code 필수' }, 400);
   }
 
+  // 점수 기반 TP/SL 선택 (손익비 개선: 80점→2.4:1, 90점→4:1)
+  const { takeProfitPct, stopLossPct } = aiScore >= 70
+    ? getScoreBasedParams(aiScore)
+    : { takeProfitPct: STRATEGY_PARAMS.SWING.takeProfitPct, stopLossPct: STRATEGY_PARAMS.SWING.stopLossPct };
+
   try {
+    // 동적 포지션 사이징: amount_krw 미입력 시 1.5% 리스크 룰 자동 계산
+    // 가드레일: totalCapital × 20% 상한 (SL이 타이트할수록 포지션이 커지는 역설 방지)
+    const MAX_ALLOC_PCT = 0.20; // 1회 최대 진입 비중
+    let amount_krw = body.amount_krw ?? 0;
+    if (amount_krw < 10000) {
+      try {
+        const balance = await getAccountBalance();
+        const totalCapital = balance.totalEvalAmount + balance.orderableCash;
+        const slFraction = Math.abs(stopLossPct) / 100; // e.g. 2.5% → 0.025
+        const riskBudget = totalCapital * 0.015;         // 최대 허용 손실: 총자본의 1.5%
+        const computed = Math.round(riskBudget / slFraction);
+        const capByAlloc = Math.round(totalCapital * MAX_ALLOC_PCT); // 20% 하드캡
+        amount_krw = Math.max(Math.min(computed, capByAlloc), 50000); // 5만원~20%캡
+        logger.info(
+          `💰 동적 사이징: 총자본 ${(totalCapital / 10000).toFixed(0)}만원 × 1.5% / ${Math.abs(stopLossPct)}%SL = ${(computed / 10000).toFixed(1)}만원` +
+          `${computed > capByAlloc ? ` → 20%캡 ${(capByAlloc / 10000).toFixed(1)}만원 적용` : ''}`,
+          { component: 'CLAUDE_BUY' },
+        );
+      } catch (e) {
+        logger.warn(`잔고 조회 실패 → 기본 10만원 사용: ${e}`, { component: 'CLAUDE_BUY' });
+        amount_krw = 100000;
+      }
+    }
+
     const priceData = await getCurrentPrice(stock_code);
     const curPrice = priceData.currentPrice;
     if (!curPrice || curPrice <= 0) return c.json({ error: '현재가 조회 실패' }, 500);
@@ -1396,6 +1433,7 @@ dashboardRoutes.post('/manual-buy', async (c) => {
     if (quantity < 1) return c.json({ error: `수량 부족: ${curPrice.toLocaleString()}원 × 1주 > ${amount_krw.toLocaleString()}원` }, 400);
 
     const totalInvested = quantity * curPrice;
+    const rrStr = `TP+${takeProfitPct}%/SL${stopLossPct}%(${(takeProfitPct / Math.abs(stopLossPct)).toFixed(2)}:1)`;
 
     if (config.isPaper) {
       const fakeOrderNo = `CLD${Date.now().toString(36).toUpperCase()}`;
@@ -1407,8 +1445,8 @@ dashboardRoutes.post('/manual-buy', async (c) => {
         total_quantity: quantity,
         total_invested: totalInvested,
         realized_pnl: 0,
-        target_profit_pct: STRATEGY_PARAMS.SWING.takeProfitPct,
-        stop_loss_pct: STRATEGY_PARAMS.SWING.stopLossPct,
+        target_profit_pct: takeProfitPct,
+        stop_loss_pct: stopLossPct,
         max_averaging_count: STRATEGY_PARAMS.SWING.maxAveragingCount,
         current_averaging_count: 0,
       });
@@ -1417,9 +1455,9 @@ dashboardRoutes.post('/manual-buy', async (c) => {
          VALUES ($1, $2, 'BUY', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, 'CLAUDE', $7)`,
         [chainId, stock_code, quantity, curPrice, fakeOrderNo, config.tradingMode, reasoning ?? 'Claude Code 눌림매매'],
       );
-      logger.info(`🤖 Claude 매수 (모의): ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 — ${reasoning}`, { component: 'CLAUDE_BUY' });
+      logger.info(`🤖 Claude 매수 (모의): ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 ${rrStr} — ${reasoning}`, { component: 'CLAUDE_BUY' });
       try { await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑'); } catch { /* 알림 실패 무시 */ }
-      return c.json({ ok: true, orderNo: fakeOrderNo, stock_code, quantity, price: curPrice, totalInvested });
+      return c.json({ ok: true, orderNo: fakeOrderNo, stock_code, quantity, price: curPrice, totalInvested, takeProfitPct, stopLossPct });
     }
 
     const result = await placeOrder({ stockCode: stock_code, side: 'BUY', quantity });
@@ -1434,8 +1472,8 @@ dashboardRoutes.post('/manual-buy', async (c) => {
       total_quantity: quantity,
       total_invested: totalInvested,
       realized_pnl: 0,
-      target_profit_pct: STRATEGY_PARAMS.SWING.takeProfitPct,
-      stop_loss_pct: STRATEGY_PARAMS.SWING.stopLossPct,
+      target_profit_pct: takeProfitPct,
+      stop_loss_pct: stopLossPct,
       max_averaging_count: STRATEGY_PARAMS.SWING.maxAveragingCount,
       current_averaging_count: 0,
     });
@@ -1444,9 +1482,9 @@ dashboardRoutes.post('/manual-buy', async (c) => {
        VALUES ($1, $2, 'BUY', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, 'CLAUDE', $7)`,
       [chainId, stock_code, quantity, curPrice, kisOrderNo, config.tradingMode, reasoning ?? 'Claude Code 눌림매매'],
     );
-    logger.info(`🤖 Claude 매수 완료: ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 (${kisOrderNo}) — ${reasoning}`, { component: 'CLAUDE_BUY' });
+    logger.info(`🤖 Claude 매수 완료: ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 (${kisOrderNo}) ${rrStr} — ${reasoning}`, { component: 'CLAUDE_BUY' });
     try { await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑'); } catch { /* 알림 실패 무시 */ }
-    return c.json({ ok: true, orderNo: kisOrderNo, stock_code, quantity, price: curPrice, totalInvested });
+    return c.json({ ok: true, orderNo: kisOrderNo, stock_code, quantity, price: curPrice, totalInvested, takeProfitPct, stopLossPct });
   } catch (err: any) {
     logger.error(`Claude 매수 예외: ${err.message}`, { component: 'CLAUDE_BUY' });
     return c.json({ error: err.message }, 500);

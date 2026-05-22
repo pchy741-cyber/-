@@ -35,6 +35,11 @@ export function enableMemoryMode(): void {
   logger.warn('⚡ 인메모리 DB 모드 활성화 (PostgreSQL 미연결)', { component: 'DB' });
 }
 
+export function disableMemoryMode(): void {
+  useMemory = false;
+  logger.info('✅ DB 복구 확인 — 인메모리 모드 해제', { component: 'DB' });
+}
+
 export function getPool(): pg.Pool {
   if (!pool) {
     const poolDefaults = {
@@ -367,8 +372,8 @@ export async function insertSnapshot(snapshot: {
   if (useMemory) { memInsertSnapshot(snapshot); return; }
   await getPool().query(
     `INSERT INTO portfolio_snapshots (total_value, cash_balance, invested_value,
-       unrealized_pnl, daily_pnl, daily_pnl_pct, positions)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+       unrealized_pnl, daily_pnl, daily_pnl_pct, positions, is_paper)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
     [
       snapshot.total_value,
       snapshot.cash_balance,
@@ -377,6 +382,7 @@ export async function insertSnapshot(snapshot: {
       snapshot.daily_pnl,
       snapshot.daily_pnl_pct,
       JSON.stringify(snapshot.positions),
+      config.isPaper,
     ],
   );
 }
@@ -385,9 +391,9 @@ export async function getTodayStartSnapshot() {
   if (useMemory) return memGetTodayStartSnapshot();
   const today = new Date().toISOString().split('T')[0];
   const { rows } = await getPool().query(
-    `SELECT * FROM portfolio_snapshots WHERE snapshot_at >= $1
+    `SELECT * FROM portfolio_snapshots WHERE snapshot_at >= $1 AND is_paper = $2
      ORDER BY snapshot_at ASC LIMIT 1`,
-    [`${today}T00:00:00`],
+    [`${today}T00:00:00`, config.isPaper],
   );
   return rows[0] ?? null;
 }
