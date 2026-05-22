@@ -305,6 +305,15 @@ export default function Dashboard() {
   return (
     <div className="flex h-screen bg-[#06080f] text-slate-100 overflow-hidden">
       <ToastContainer />
+      <ConfirmModal
+        open={liveConfirmOpen}
+        onClose={() => setLiveConfirmOpen(false)}
+        onConfirm={() => { setLiveConfirmOpen(false); doSwitchMode('live'); }}
+        title="실전모드로 전환"
+        description="실제 돈으로 거래합니다. 실전모드로 전환하시겠습니까?"
+        confirmLabel="실전 전환"
+        confirmVariant="danger"
+      />
       {/* ── Mobile overlay ── */}
       {mobileMenu && <div className="fixed inset-0 bg-black/60 z-40 lg:hidden" onClick={() => setMobileMenu(false)} />}
 
@@ -548,17 +557,6 @@ function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast }: { i
           <p className="text-[11px] text-slate-500">연관된 손실 매매 내역이 없습니다.</p>
         )}
       </ConfirmModal>
-
-      {/* 실전모드 전환 승인 모달 */}
-      <ConfirmModal
-        open={liveConfirmOpen}
-        onClose={() => setLiveConfirmOpen(false)}
-        onConfirm={() => { setLiveConfirmOpen(false); doSwitchMode('live'); }}
-        title="실전모드로 전환"
-        description="실제 돈으로 거래합니다. 실전모드로 전환하시겠습니까?"
-        confirmLabel="실전 전환"
-        confirmVariant="danger"
-      />
 
       <div className="rounded-2xl bg-white/[0.03] border border-white/[0.06] overflow-hidden">
         <div className="flex items-center gap-3 px-4 py-3 border-b border-white/[0.06]">
