@@ -1,3 +1,4 @@
+import { config } from '../config/index.js';
 import { getOpenChains, getPool } from '../db/client.js';
 import { getAccountBalance } from '../kis/account.js';
 import { getDinnerMoneyStats } from './profit-withdraw.js';
@@ -24,8 +25,8 @@ export async function generateDailyReport(): Promise<void> {
 
     // 오늘 체결된 주문
     const { rows: todayOrders } = await getPool().query(
-      'SELECT * FROM orders WHERE created_at >= $1 AND status = $2 ORDER BY created_at ASC',
-      [`${today}T00:00:00`, 'FILLED'],
+      'SELECT * FROM orders WHERE created_at >= $1 AND status = $2 AND trading_mode = $3 ORDER BY created_at ASC',
+      [`${today}T00:00:00`, 'FILLED', config.tradingMode],
     );
 
     const buyOrders = todayOrders.filter((o: any) => o.side === 'BUY');
@@ -33,8 +34,8 @@ export async function generateDailyReport(): Promise<void> {
 
     // 오늘 닫힌 체인 (실현 손익)
     const { rows: closedToday } = await getPool().query(
-      'SELECT * FROM transaction_chains WHERE status = $1 AND closed_at >= $2',
-      ['CLOSED', `${today}T00:00:00`],
+      'SELECT * FROM transaction_chains WHERE status = $1 AND closed_at >= $2 AND is_paper = $3',
+      ['CLOSED', `${today}T00:00:00`, config.isPaper],
     );
     const realizedPnl = closedToday.reduce((sum: number, c: any) => sum + Number(c.realized_pnl ?? 0), 0);
 
@@ -54,8 +55,8 @@ export async function generateDailyReport(): Promise<void> {
     // 이번 주 성과
     const weekStart = getWeekStart(today);
     const { rows: weekData } = await getPool().query(
-      'SELECT realized_pnl FROM transaction_chains WHERE status = $1 AND closed_at >= $2',
-      ['CLOSED', `${weekStart}T00:00:00`],
+      'SELECT realized_pnl FROM transaction_chains WHERE status = $1 AND closed_at >= $2 AND is_paper = $3',
+      ['CLOSED', `${weekStart}T00:00:00`, config.isPaper],
     );
     const weekPnl = weekData.reduce((s: number, c: any) => s + Number(c.realized_pnl ?? 0), 0);
     const weekWins = weekData.filter((c: any) => Number(c.realized_pnl) > 0).length;
@@ -64,8 +65,8 @@ export async function generateDailyReport(): Promise<void> {
     // 이번 달 성과
     const monthStart = `${today.slice(0, 7)}-01`;
     const { rows: monthData } = await getPool().query(
-      'SELECT realized_pnl FROM transaction_chains WHERE status = $1 AND closed_at >= $2',
-      ['CLOSED', `${monthStart}T00:00:00`],
+      'SELECT realized_pnl FROM transaction_chains WHERE status = $1 AND closed_at >= $2 AND is_paper = $3',
+      ['CLOSED', `${monthStart}T00:00:00`, config.isPaper],
     );
     const monthPnl = monthData.reduce((s: number, c: any) => s + Number(c.realized_pnl ?? 0), 0);
     const monthWins = monthData.filter((c: any) => Number(c.realized_pnl) > 0).length;
@@ -83,7 +84,7 @@ export async function generateDailyReport(): Promise<void> {
     const dailyEmoji = balance.totalProfitLoss >= 0 ? '📈' : '📉';
 
     const report = [
-      `📊 *QUANTOPS 일일 리포트*`,
+      `📊 *QUANTOPS 일일 리포트* [${config.isPaper ? '연습' : '실전'}]`,
       `━━━━━━━━━━━━━━━━━`,
       `📅 ${today}`,
       ``,

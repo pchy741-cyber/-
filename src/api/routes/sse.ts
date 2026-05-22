@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import { config } from '../../config/index.js';
 import { getOpenChains, getPool } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { isMarketOpen } from '../../kis/market.js';
@@ -26,8 +27,10 @@ async function getRecentTrades() {
        LEFT JOIN watchlist w ON o.stock_code = w.stock_code
        LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
        WHERE o.status IN ('FILLED', 'PENDING')
+         AND o.trading_mode = $1
        ORDER BY o.created_at DESC
        LIMIT 10`,
+      [config.tradingMode],
     );
     return rows;
   } catch {

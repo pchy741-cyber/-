@@ -149,14 +149,17 @@ export async function getDynamicPositionSize(
   try {
     const { rows: snapshotRows } = await getPool().query(
       `SELECT total_value FROM portfolio_snapshots
-       WHERE created_at::date = CURRENT_DATE
+       WHERE created_at::date = CURRENT_DATE AND is_paper = $1
        ORDER BY created_at ASC LIMIT 1`,
+      [config.isPaper],
     );
 
     if (snapshotRows.length > 0) {
       const { rows: currentRows } = await getPool().query(
         `SELECT total_value FROM portfolio_snapshots
+         WHERE is_paper = $1
          ORDER BY created_at DESC LIMIT 1`,
+        [config.isPaper],
       );
 
       if (currentRows.length > 0) {
@@ -184,7 +187,8 @@ export async function getDynamicPositionSize(
   try {
     const { rows: recentTrades } = await getPool().query(
       `SELECT realized_pnl FROM transaction_chains
-       WHERE status = 'CLOSED' ORDER BY closed_at DESC LIMIT 3`,
+       WHERE status = 'CLOSED' AND is_paper = $1 ORDER BY closed_at DESC LIMIT 3`,
+      [config.isPaper],
     );
 
     if (recentTrades.length >= 3) {
@@ -202,9 +206,9 @@ export async function getDynamicPositionSize(
   try {
     const { rows: stockHistory } = await getPool().query(
       `SELECT realized_pnl FROM transaction_chains
-       WHERE status = 'CLOSED' AND stock_code = $1
+       WHERE status = 'CLOSED' AND stock_code = $1 AND is_paper = $2
        ORDER BY closed_at DESC LIMIT 2`,
-      [stockCode],
+      [stockCode, config.isPaper],
     );
 
     if (stockHistory.length > 0) {
@@ -253,7 +257,8 @@ export async function calcPositionSize(baseBudget: number): Promise<PositionSize
   // 최근 20건 청산된 체인
   const { rows: trades } = await getPool().query(
     `SELECT realized_pnl, closed_at FROM transaction_chains
-     WHERE status = 'CLOSED' ORDER BY closed_at DESC LIMIT 20`,
+     WHERE status = 'CLOSED' AND is_paper = $1 ORDER BY closed_at DESC LIMIT 20`,
+    [config.isPaper],
   );
 
   // 데이터 부족 시 기본값

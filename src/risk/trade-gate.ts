@@ -187,7 +187,8 @@ async function getWinRateStats(days: number = 30): Promise<WinRateStats> {
       WHERE status = 'CLOSED'
         AND closed_at >= NOW() - ($1 * INTERVAL '1 day')
         AND avg_buy_price > 0
-    `, [days]);
+        AND is_paper = $2
+    `, [days, config.isPaper]);
 
     if (rows.length < 5) return defaultStats; // 데이터 부족 시 기본값
 
@@ -538,10 +539,11 @@ async function getConsecutiveLosses(): Promise<number> {
       FROM transaction_chains tc
       WHERE status = 'CLOSED'
         AND (close_reason IS NULL OR close_reason NOT LIKE '%SCALPING 강제청산%')
+        AND is_paper = $1
         ${resetFilter}
       ORDER BY closed_at DESC
       LIMIT 10
-    `);
+    `, [config.isPaper]);
 
     let consecutive = 0;
     for (const r of rows) {
@@ -581,8 +583,9 @@ export async function cooldownGate(): Promise<GateResult> {
         SELECT closed_at FROM transaction_chains
         WHERE status = 'CLOSED'
           AND (close_reason IS NULL OR close_reason NOT LIKE '%SCALPING 강제청산%')
+          AND is_paper = $1
         ORDER BY closed_at DESC LIMIT 1
-      `);
+      `, [config.isPaper]);
 
       if (rows.length > 0) {
         const lastLoss = new Date(rows[0].closed_at);
@@ -624,9 +627,10 @@ export async function getCooldownStatus(): Promise<CooldownStatus> {
         SELECT closed_at FROM transaction_chains
         WHERE status = 'CLOSED'
           AND (close_reason IS NULL OR close_reason NOT LIKE '%SCALPING 강제청산%')
+          AND is_paper = $1
           ${resetFilter}
         ORDER BY closed_at DESC LIMIT 1
-      `);
+      `, [config.isPaper]);
       if (rows.length > 0) {
         const elapsed = Date.now() - new Date(rows[0].closed_at).getTime();
         if (elapsed < cooldownMs) {
@@ -682,8 +686,9 @@ async function reEntryCooldownGate(input: GateInput): Promise<GateResult> {
          AND side = 'BUY'
          AND status IN ('FILLED', 'PENDING', 'PARTIAL')
          AND created_at >= NOW() - INTERVAL '30 minutes'
+         AND trading_mode = $2
        ORDER BY created_at DESC LIMIT 1`,
-      [input.stockCode],
+      [input.stockCode, config.tradingMode],
     );
     if (rows.length > 0) {
       const lastBuy = new Date(rows[0].created_at);

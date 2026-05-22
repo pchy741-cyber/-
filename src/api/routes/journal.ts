@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { config } from '../../config/index.js';
 import { getPool } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
 
@@ -25,6 +26,9 @@ interface JournalTrade {
  */
 journalRoutes.get('/journal', async (c) => {
   const days = Math.min(90, Math.max(1, Number(c.req.query('days') ?? 30)));
+  const viewModeParam = c.req.query('viewMode');
+  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : config.isPaper;
+  const viewTradingMode = viewIsPaper ? 'paper' : 'live';
   const pool = getPool();
   const trades: JournalTrade[] = [];
 
@@ -55,9 +59,10 @@ journalRoutes.get('/journal', async (c) => {
       LEFT JOIN watchlist w ON w.stock_code = tc.stock_code
       WHERE tc.status = 'CLOSED'
         AND tc.closed_at >= NOW() - ($1 || ' days')::interval
+        AND tc.is_paper = $2
       ORDER BY tc.closed_at DESC
       LIMIT 200
-    `, [days]);
+    `, [days, viewIsPaper]);
 
     for (const r of krRows) {
       const entryPrice = Number(r.avg_buy_price ?? 0);
@@ -128,9 +133,10 @@ journalRoutes.get('/journal', async (c) => {
         AND s.filled_price IS NOT NULL
         AND s.filled_price > 0
         AND s.ai_reasoning ~ '\\[avgBuy:[0-9]'
+        AND s.trading_mode = $2
       ORDER BY s.created_at DESC
       LIMIT 200
-    `, [days]);
+    `, [days, viewTradingMode]);
 
     for (const r of usRows) {
       const entryPrice = Number(r.avg_buy_price ?? 0);
