@@ -448,10 +448,10 @@ async function buildDashPayload(): Promise<unknown> {
     riskLimits: await (async () => {
       const snap = await getTodayStartSnapshot().catch(() => null);
       const startValue = snap ? Number(snap.total_value) : grandTotalValue;
-      // 리스크 엔진과 동일한 계산 (config 설정값 우선, 없으면 총자산 비율 폴백)
-      const maxDailyDrawdownKrw = config.risk.maxDailyDrawdownKrw > 0
-        ? config.risk.maxDailyDrawdownKrw
-        : Math.round(startValue * (config.isPaper ? 0.25 : 0.05));
+      // 연습: env var 고정값 (500,000원), 실전: 총자산의 5% 동적 계산 (계좌 규모 반영)
+      const maxDailyDrawdownKrw = config.isPaper
+        ? (config.risk.maxDailyDrawdownKrw > 0 ? config.risk.maxDailyDrawdownKrw : Math.round(startValue * 0.25))
+        : Math.round(startValue * 0.05);
       return { maxDailyDrawdownKrw, startValue: Math.round(startValue) };
     })(),
     insights: insightRows.rows,
@@ -901,8 +901,9 @@ dashboardRoutes.get('/trades', async (c) => {
            FROM orders
           WHERE status = 'FILLED'
             AND stock_code = ANY($1::text[])
+            AND trading_mode = $2
           ORDER BY created_at ASC, id ASC`,
-        [domesticCodes],
+        [domesticCodes, config.tradingMode],
       );
       calcFifoPnl(pnlRows, false);
     }
@@ -913,8 +914,9 @@ dashboardRoutes.get('/trades', async (c) => {
            FROM orders
           WHERE status = 'FILLED'
             AND stock_code = ANY($1::text[])
+            AND trading_mode = $2
           ORDER BY created_at ASC, id ASC`,
-        [overseasCodes],
+        [overseasCodes, config.tradingMode],
       );
       calcFifoPnl(osPnlRows, true);
     }

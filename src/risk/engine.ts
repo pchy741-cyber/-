@@ -372,11 +372,10 @@ export class RiskEngine {
     const currentValue = currentBalance.totalDeposit + currentBalance.totalEvalAmount;
     const dailyLoss = startValue - currentValue;
 
-    // 손실 한도 = config 설정값 우선, 없으면 총 포트폴리오의 25%(모의) / 5%(실거래)
-    const fallbackDrawdownRate = config.isPaper ? 0.25 : 0.05;
-    const maxDailyDrawdownKrw = config.risk.maxDailyDrawdownKrw > 0
-      ? config.risk.maxDailyDrawdownKrw
-      : Math.round(startValue * fallbackDrawdownRate);
+    // 연습: env var 고정값 우선, 없으면 25% 폴백 / 실전: 총자산 5% 동적 계산
+    const maxDailyDrawdownKrw = config.isPaper
+      ? (config.risk.maxDailyDrawdownKrw > 0 ? config.risk.maxDailyDrawdownKrw : Math.round(startValue * 0.25))
+      : Math.round(startValue * 0.05);
 
     if (dailyLoss > maxDailyDrawdownKrw) {
       // Kill Switch 자동 발동!

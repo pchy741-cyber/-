@@ -2636,7 +2636,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       </div>
 
       {/* ── 머니 통계 (누적수익 + 월별 막대 + 목표 게이지) ── */}
-      <MoneyStatsPanel market={holdingsTab} />
+      <MoneyStatsPanel key={`${dash?.tradingMode ?? 'paper'}-${holdingsTab}`} market={holdingsTab} />
 
       {/* ── 리스크 게이지 ── */}
       {(() => {

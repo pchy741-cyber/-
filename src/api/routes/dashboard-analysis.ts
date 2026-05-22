@@ -401,6 +401,7 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
     const isKr = market === 'KR';
     const pool = getPool();
 
+    const isPaper = config.isPaper;
     const codeFilter = isKr
       ? `AND stock_code ~ '^[0-9]{6}$'`
       : `AND stock_code !~ '^[0-9]{6}$'`;
@@ -413,25 +414,28 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
       FROM transaction_chains
       WHERE status = 'CLOSED'
         AND closed_at >= NOW() - INTERVAL '12 months'
+        AND is_paper = $1
         ${codeFilter}
       GROUP BY 1
       ORDER BY 1 ASC
-    `);
+    `, [isPaper]);
 
     const { rows: total } = await pool.query(`
       SELECT COALESCE(SUM(realized_pnl), 0) AS total_pnl
       FROM transaction_chains
       WHERE status = 'CLOSED'
+        AND is_paper = $1
         ${codeFilter}
-    `);
+    `, [isPaper]);
 
     const { rows: thisMonth } = await pool.query(`
       SELECT COALESCE(SUM(realized_pnl), 0) AS pnl
       FROM transaction_chains
       WHERE status = 'CLOSED'
         AND closed_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')
+        AND is_paper = $1
         ${codeFilter}
-    `);
+    `, [isPaper]);
 
     const dinnerMoney = market === 'KR' ? await getDinnerMoneyStats() : null;
 
