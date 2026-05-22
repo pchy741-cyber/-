@@ -620,8 +620,9 @@ dashboardRoutes.get('/watchlist', async (c) => {
           FROM transaction_chains tc
           WHERE tc.status = 'CLOSED'
             AND tc.stock_code = ANY($1)
+            AND tc.is_paper = $2
           ORDER BY tc.stock_code, tc.closed_at DESC
-        `, [codes]);
+        `, [codes, config.isPaper]);
         for (const r of sellRows) {
           const buy = Number(r.avg_buy_price ?? 0);
           const sell = Number(r.last_sell_price ?? 0);
@@ -1106,7 +1107,7 @@ dashboardRoutes.patch('/withdraw/:id/status', async (c) => {
 dashboardRoutes.post('/escape/:chainId', async (c) => {
   const chainId = c.req.param('chainId');
   try {
-    const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1', [chainId]);
+    const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1 AND is_paper = $2', [chainId, config.isPaper]);
     const chain = rows[0];
     if (!chain) return c.json({ error: '체인을 찾을 수 없습니다' }, 404);
     if (chain.total_quantity <= 0) return c.json({ error: '매도할 수량이 없습니다' }, 400);
@@ -1120,8 +1121,8 @@ dashboardRoutes.post('/escape/:chainId', async (c) => {
     // 탈출 목표가 = 현재가 × 1.005 (원 단위 반올림)
     const escapeTarget = Math.ceil(curPrice * 1.005);
     await getPool().query(
-      'UPDATE transaction_chains SET escape_target_price = $1 WHERE id = $2',
-      [escapeTarget, chainId],
+      'UPDATE transaction_chains SET escape_target_price = $1 WHERE id = $2 AND is_paper = $3',
+      [escapeTarget, chainId, config.isPaper],
     );
 
     logger.info(
@@ -1139,7 +1140,7 @@ dashboardRoutes.post('/escape/:chainId', async (c) => {
 dashboardRoutes.delete('/escape/:chainId', async (c) => {
   const chainId = c.req.param('chainId');
   try {
-    await getPool().query('UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1', [chainId]);
+    await getPool().query('UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1 AND is_paper = $2', [chainId, config.isPaper]);
     return c.json({ ok: true });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
@@ -1154,7 +1155,7 @@ dashboardRoutes.post('/sell/:chainId', async (c) => {
     const triggerSource: string = (body.source as string) || 'MANUAL';
     const sellReason: string = (body.reason as string) || 'CEO 수동 매도';
 
-    const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1', [chainId]);
+    const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1 AND is_paper = $2', [chainId, config.isPaper]);
     const chain = rows[0];
     if (!chain) return c.json({ error: '체인을 찾을 수 없습니다' }, 404);
     if (chain.status === 'CLOSED') return c.json({ error: '이미 청산된 포지션입니다' }, 400);
@@ -1259,8 +1260,8 @@ dashboardRoutes.post('/sell-stock/:stockCode', async (c) => {
     const sellReason: string = (body.reason as string) || 'CEO 수동 매도';
 
     const { rows: openChains } = await getPool().query(
-      `SELECT * FROM transaction_chains WHERE stock_code = $1 AND status != 'CLOSED' ORDER BY created_at ASC`,
-      [stockCode],
+      `SELECT * FROM transaction_chains WHERE stock_code = $1 AND status != 'CLOSED' AND is_paper = $2 ORDER BY created_at ASC`,
+      [stockCode, config.isPaper],
     );
     if (openChains.length === 0) return c.json({ error: '보유 포지션이 없습니다' }, 404);
 

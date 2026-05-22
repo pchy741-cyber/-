@@ -1,3 +1,4 @@
+import { config } from '../config/index.js';
 import { getPool, logSystem } from '../db/client.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
@@ -37,7 +38,8 @@ export async function checkDinnerMoneyWithdraw(): Promise<void> {
       WHERE status = 'CLOSED'
         AND stock_code ~ '^[0-9]{6}$'
         AND closed_at AT TIME ZONE 'Asia/Seoul' >= date_trunc('day', NOW() AT TIME ZONE 'Asia/Seoul')
-    `);
+        AND is_paper = $1
+    `, [config.isPaper]);
     const todayPnl = Number(pnlRows[0]?.today_pnl ?? 0);
 
     if (todayPnl < MIN_PROFIT) {

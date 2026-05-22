@@ -7,6 +7,7 @@
  * 파킹 자산: KODEX 200 (069500) — 대한민국이 망하지 않는 한 0이 되지 않는 가장 안전한 자산
  */
 
+import { config } from '../../config/index.js';
 import { getPool, isMemoryMode } from '../../db/client.js';
 import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
@@ -90,9 +91,10 @@ export async function isPortfolioInDowntrend(): Promise<{ downtrend: boolean; re
       SELECT total_value, daily_pnl, snapshot_at
       FROM portfolio_snapshots
       WHERE snapshot_at >= NOW() - INTERVAL '8 days'
+        AND is_paper = $1
       ORDER BY snapshot_at DESC
       LIMIT 10
-    `);
+    `, [config.isPaper]);
 
     if (rows.length < DOWNTREND_MIN_DAYS) {
       return { downtrend: false, reason: `스냅샷 부족 (${rows.length}개)` };
@@ -153,8 +155,9 @@ export async function isMarketRecovering(
     try {
       const { rows } = await getPool().query(`
         SELECT daily_pnl FROM portfolio_snapshots
+        WHERE is_paper = $1
         ORDER BY snapshot_at DESC LIMIT 3
-      `);
+      `, [config.isPaper]);
       const recentPnls = rows.map((r: any) => Number(r.daily_pnl));
       const consecutivePositive = recentPnls.slice(0, RECOVERY_POSITIVE_DAYS).every(p => p > 0);
       if (consecutivePositive && recentPnls.length >= RECOVERY_POSITIVE_DAYS) {

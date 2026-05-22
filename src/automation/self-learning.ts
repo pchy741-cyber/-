@@ -1,3 +1,4 @@
+import { config } from '../config/index.js';
 import { getPool, logSystem } from '../db/client.js';
 import { getDailyChart } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
@@ -67,10 +68,10 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
        COALESCE(json_agg(o.*) FILTER (WHERE o.id IS NOT NULL), '[]') AS orders
      FROM transaction_chains tc
      LEFT JOIN orders o ON o.chain_id = tc.id
-     WHERE tc.status = 'CLOSED' AND tc.closed_at >= $1
+     WHERE tc.status = 'CLOSED' AND tc.closed_at >= $1 AND tc.is_paper = $2
      GROUP BY tc.id
      ORDER BY tc.closed_at DESC`,
-    [ninetyDaysAgo.toISOString()],
+    [ninetyDaysAgo.toISOString(), config.isPaper],
   );
 
   if (!chains || chains.length < 3) {

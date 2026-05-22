@@ -1,4 +1,5 @@
 import type { StrategyMode } from '../config/constants.js';
+import { config } from '../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getLatestScores, getPool, logSystem } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import { getAccountBalance } from '../kis/account.js';
@@ -109,7 +110,9 @@ export async function analyzeCapitalFlow(): Promise<void> {
      FROM transaction_chains tc
      LEFT JOIN orders o ON o.chain_id = tc.id
      WHERE tc.status IN ('OPEN', 'AVERAGING', 'PROFIT_TAKING')
+       AND tc.is_paper = $1
      GROUP BY tc.id`,
+    [config.isPaper],
   );
   const chains = chainsRaw;
 

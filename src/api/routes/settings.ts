@@ -1,12 +1,12 @@
 import { Hono } from 'hono';
 import { STRATEGY_PARAMS } from '../../config/constants.js';
+import { config, setTradingModeOverride, getEffectiveTradingMode } from '../../config/index.js';
 import { getActiveStrategy, getPool, isMemoryMode, logSystem } from '../../db/client.js';
 import { memSetActiveStrategy } from '../../db/memory-store.js';
 import { activateKillSwitch, deactivateKillSwitch, getKillSwitchStatus } from '../../risk/kill-switch.js';
 import { resetCooldown, getCooldownStatus } from '../../risk/trade-gate.js';
 import { runTrackAJob } from '../../scheduler/track-a-job.js';
 import { logger } from '../../utils/logger.js';
-import { setTradingModeOverride, getEffectiveTradingMode } from '../../config/index.js';
 
 export const settingsRoutes = new Hono();
 
@@ -223,7 +223,8 @@ settingsRoutes.post('/fix-chain-tpsl', async (c) => {
     const pool = getPool();
     // 열린 체인 목록
     const { rows: chains } = await pool.query(
-      `SELECT id, stock_code FROM transaction_chains WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING')`,
+      `SELECT id, stock_code FROM transaction_chains WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND is_paper = $1`,
+      [config.isPaper],
     );
     // 최신 AI 점수 조회
     const { rows: scores } = await pool.query(

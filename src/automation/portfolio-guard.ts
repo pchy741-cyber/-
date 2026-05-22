@@ -1,3 +1,4 @@
+import { config } from '../config/index.js';
 import { getPool } from '../db/client.js';
 import type { TransactionChain } from '../db/models.js';
 import { getAccountBalance } from '../kis/account.js';
@@ -65,8 +66,9 @@ export async function getPerformanceMultiplier(): Promise<number> {
        FROM transaction_chains
        WHERE status = 'CLOSED'
          AND closed_at >= $1
-         AND stock_code ~ '^[0-9]{6}$'`,
-      [cutoff.toISOString()],
+         AND stock_code ~ '^[0-9]{6}$'
+         AND is_paper = $2`,
+      [cutoff.toISOString(), config.isPaper],
     );
 
     const total = Number(rows[0]?.total ?? 0);
