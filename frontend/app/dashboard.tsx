@@ -151,25 +151,42 @@ export default function Dashboard() {
 
   const loadingRef = useRef(false);
   const loadGenRef = useRef(0); // 구세대 응답이 신세대 상태를 덮어쓰는 오염 방지
-  const staticLoadedRef = useRef(false); // watchlist/trades/secrets는 최초 1회만 로드
+  const staticLoadedRef = useRef(false); // watchlist/secrets 최초 1회만 로드
+  const tradesLoadedRef = useRef(false);  // trades 성공 로드 여부 별도 추적
+  const tradesLastFetchRef = useRef(0);   // 마지막 trades 조회 시각
   const modeTogglingRef = useRef(false); // 동기적 잠금 — React 클로저 stale 방지
 
   const loadStatic = async (gen: number) => {
-    // watchlist/trades/settings — 느리고 잘 안 바뀌므로 최초 로드 + 명시적 트리거만
     const [w, s, t, sec, wc, wh] = await Promise.allSettled([
       api('/watchlist'), api('/strategy'),
-      api('/trades?limit=50'), api('/secrets'),
+      api('/trades?limit=100'), api('/secrets'),
       api('/withdraw/config').catch(() => null),
       api('/withdraw/history').catch(() => []),
     ]);
     if (loadGenRef.current !== gen) return;
     if (w.status === 'fulfilled') setWatchlist(Array.isArray(w.value) ? w.value : []);
     if (s.status === 'fulfilled') setStrategy(s.value);
-    if (t.status === 'fulfilled') setTrades(Array.isArray(t.value) ? t.value : []);
+    if (t.status === 'fulfilled' && Array.isArray(t.value)) {
+      setTrades(t.value);
+      tradesLoadedRef.current = true;
+      tradesLastFetchRef.current = Date.now();
+    }
     if (sec.status === 'fulfilled') setSecrets(sec.value);
     if (wc.status === 'fulfilled' && wc.value) setWithdrawConfig(wc.value);
     if (wh.status === 'fulfilled') setWithdrawHistory(Array.isArray(wh.value) ? wh.value : []);
+    // trades 실패해도 나머지 static은 완료로 표시
     staticLoadedRef.current = true;
+  };
+
+  const refreshTrades = (gen: number) => {
+    api('/trades?limit=100').then((t: any) => {
+      if (loadGenRef.current !== gen) return;
+      if (Array.isArray(t)) {
+        setTrades(t);
+        tradesLoadedRef.current = true;
+        tradesLastFetchRef.current = Date.now();
+      }
+    }).catch(() => {});
   };
 
   const load = async (forceStatic = false) => {
@@ -195,6 +212,12 @@ export default function Dashboard() {
       // 2단계: 정적 데이터 — 최초 또는 명시적 강제 새로고침 시만
       if (!staticLoadedRef.current || forceStatic) {
         loadStatic(gen).catch(() => {});
+      } else {
+        // trades는 60초마다 재조회 (PENDING→FILLED 상태 동기화)
+        const tradesStaleSec = (Date.now() - tradesLastFetchRef.current) / 1000;
+        if (!tradesLoadedRef.current || tradesStaleSec > 60) {
+          refreshTrades(gen);
+        }
       }
 
       // 3단계: 미국주식 별도 로드 (최초 1회)
@@ -234,14 +257,19 @@ export default function Dashboard() {
     es.addEventListener('update', (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data);
-        // 최신 거래내역 즉시 반영
+        // 최신 거래내역 즉시 반영 (신규 추가 + 기존 상태 업데이트)
         if (Array.isArray(data.recentTrades) && data.recentTrades.length > 0) {
           setTrades(prev => {
-            const existingIds = new Set(prev.map((t: any) => t.id));
-            const newTrades = data.recentTrades.filter((t: any) => !existingIds.has(t.id));
-            if (newTrades.length === 0) return prev;
-            // 새 거래 추가 후 최신순 유지
-            return [...newTrades, ...prev].slice(0, 200);
+            const incomingMap = new Map<string, any>(data.recentTrades.map((t: any) => [String(t.id), t]));
+            const existingIds = new Set(prev.map((t: any) => String(t.id)));
+            // 기존 항목 업데이트 (PENDING→FILLED 등 상태 변화 반영)
+            const updated = prev.map((t: any) => {
+              const fresh = incomingMap.get(String(t.id));
+              return fresh ? { ...t, ...fresh } : t;
+            });
+            // 완전히 새로운 거래만 앞에 추가
+            const brandNew = data.recentTrades.filter((t: any) => !existingIds.has(String(t.id)));
+            return brandNew.length > 0 ? [...brandNew, ...updated].slice(0, 200) : updated;
           });
         }
         // 체인 수 변화 시 holdings+trades 동시 강제 업데이트 (loadingRef 우회)
