@@ -14,7 +14,7 @@ import {
 } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { getAccountBalance } from '../../kis/account.js';
-import { getBatchPrices, getDailyChart, isMarketOpen, getChangeRankingStocks } from '../../kis/market.js';
+import { getBatchPrices, getDailyChart, isMarketOpen, getChangeRankingStocks, getOrderbook } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { buildDefenseParkExitDecisions, getDefenseParkState, PARK_STOCK_CODE } from './defense-park.js';
 import { IDLE_PARK_STOCK_CODE } from './cash-manager.js';
@@ -299,7 +299,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       const flowResults = await Promise.allSettled(
         flowBatch.map((code) =>
           Promise.race([
-            getInvestorFlow(code, 5).then((f) => ({ code, adj: FLOW_SCORE_ADJ[f.trend] ?? 0 })),
+            getInvestorFlow(code, 5).then((f) => {
+              const trendAdj = FLOW_SCORE_ADJ[f.trend] ?? 0;
+              // 외국인 연속 순매수/순매도 streak 보정: +5(3일+연속매수) / -8(3일+연속매도)
+              const streakAdj = f.foreignStreak >= 3 ? 5 : f.foreignStreak <= -3 ? -8 : 0;
+              return { code, adj: trendAdj + streakAdj };
+            }),
             new Promise<never>((_, r) => setTimeout(() => r(new Error('timeout')), 3000)),
           ]),
         ),
@@ -457,6 +462,49 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       logger.info(`📐 maxPositionKrw 조정: ${baseMaxPos.toLocaleString()} × 성과${perfMult}x × 스트레스${stressMult}x = ${adjMaxPositionKrw.toLocaleString()}원`, { component: 'TRACK_B' });
     }
 
+    // ── 호가 불균형 보정 (매수 후보 상위 5종목 — 매수 확신도 검증) ───────────────
+    // bid/ask 비율 ≥ 1.5 → 매수세 강함 +6, ≥ 1.2 → +3
+    // bid/ask 비율 ≤ 0.7 → 매도세 강함 -6, ≤ 0.85 → -3
+    const orderbookAdjMap = new Map<string, number>();
+    if (!blockNewBuys) {
+      try {
+        const topCandidates = adjustedScores
+          .filter(s => s.score >= resolvedThreshold - 10)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 5);
+        const obResults = await Promise.allSettled(
+          topCandidates.map(s =>
+            Promise.race([
+              getOrderbook(s.stock_code).then(ob => {
+                if (!ob || ob.length === 0) return { code: s.stock_code, adj: 0 };
+                const totalBid = ob.reduce((sum, e) => sum + e.bidVolume, 0);
+                const totalAsk = ob.reduce((sum, e) => sum + e.askVolume, 0);
+                if (totalAsk === 0) return { code: s.stock_code, adj: 0 };
+                const ratio = totalBid / totalAsk;
+                const adj = ratio >= 1.5 ? 6 : ratio >= 1.2 ? 3 : ratio <= 0.7 ? -6 : ratio <= 0.85 ? -3 : 0;
+                return { code: s.stock_code, adj };
+              }),
+              new Promise<never>((_, r) => setTimeout(() => r(new Error('timeout')), 2000)),
+            ])
+          )
+        );
+        for (const r of obResults) {
+          if (r.status === 'fulfilled') orderbookAdjMap.set(r.value.code, r.value.adj);
+        }
+        const nonZero = [...orderbookAdjMap.entries()].filter(([, v]) => v !== 0);
+        if (nonZero.length > 0) {
+          logger.info(`📋 호가 불균형 보정: ${nonZero.map(([k, v]) => `${k}${v > 0 ? '+' : ''}${v}`).join(', ')}`, { component: 'TRACK_B' });
+        }
+      } catch { /* 호가 실패해도 파이프라인 계속 */ }
+    }
+
+    const finalScores = orderbookAdjMap.size > 0
+      ? adjustedScores.map(s => {
+          const obAdj = orderbookAdjMap.get(s.stock_code) ?? 0;
+          return obAdj !== 0 ? { ...s, score: Math.min(100, Math.max(0, s.score + obAdj)) } : s;
+        })
+      : adjustedScores;
+
     const decisions = await technicalFallbackDecisions({
       mode: effectiveMode,
       watchlist: watchlist
@@ -470,7 +518,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       totalAssets,
       lossBlockedCodes: new Set([...recentLossCodes, ...todayRepeatStopCodes]),
       manuallySoldCodes,
-      aiScores: adjustedScores, // AI 꽁돈 진입(>=92점)만 활성화, 손실청산 보조
+      aiScores: finalScores, // AI 꽁돈 진입(>=92점)만 활성화, 손실청산 보조
       takeProfitPct: resolvedTp,
       stopLossPct: resolvedSl,
       buyThreshold: resolvedThreshold,
@@ -490,7 +538,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // ── AI 손실 조기청산: 손실 중 + AI 부정평가(< 45점) → FORCE_CLOSE 주입 ──
     // Gemini 무료 품질이 낮아 진입엔 안 쓰지만, 이미 보유 중 악화 종목 탈출엔 활용
-    const aiScoreMapForExit = new Map(adjustedScores.map((s) => [s.stock_code, s.score]));
+    const aiScoreMapForExit = new Map(finalScores.map((s) => [s.stock_code, s.score]));
     for (const chain of openChains) {
       const liveP = livePrices.get(chain.stock_code);
       if (!liveP || !chain.avg_buy_price) continue;

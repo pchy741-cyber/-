@@ -4,6 +4,7 @@ import type { TradeDecision } from '../db/models.js';
 import { getCurrentPrice } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { tradeExecutor } from '../trading/executor.js';
+import { reconcileExternalSells } from '../trading/fill-reconciler.js';
 import { logger } from '../utils/logger.js';
 import { calcPnlPct } from '../utils/money.js';
 
@@ -31,6 +32,11 @@ const PARTIAL_SELL_PCT      = 3.5;  // 이 수익률 도달 시 50% 분할 익�
  * 실행 시점: 장중 매 10분마다 Track B와 함께
  */
 export async function runHoldingCheckJob(): Promise<void> {
+  // 외부 매도 감지 (KIS 앱 직접 매도 등) — 유령 체인 정리
+  await reconcileExternalSells().catch(e =>
+    logger.warn(`외부 매도 감지 실패 (무시): ${e}`, { component: 'HOLDING_CHECK' }),
+  );
+
   try {
     const chains = await getOpenChains();
     if (chains.length === 0) return;

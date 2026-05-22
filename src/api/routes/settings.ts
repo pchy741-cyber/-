@@ -29,7 +29,9 @@ settingsRoutes.post('/kill-switch/activate', async (c) => {
 
 settingsRoutes.post('/kill-switch/deactivate', async (c) => {
   try {
-    await deactivateKillSwitch();
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const force = body.force === true;
+    await deactivateKillSwitch(force);
     return c.json({ ok: true, status: getKillSwitchStatus() });
   } catch (err: any) {
     return c.json({ ok: false, error: err?.message ?? 'kill switch deactivate failed' }, 500);

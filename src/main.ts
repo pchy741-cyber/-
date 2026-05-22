@@ -20,7 +20,7 @@ import { initBigQuery } from './automation/bigquery-pipeline.js';
 import { setupMonitoring } from './automation/gcp-monitoring.js';
 import { initRedisCache } from './cache/redis.js';
 import { config, setTradingModeOverride } from './config/index.js';
-import { checkDb, enableMemoryMode, logSystem } from './db/client.js';
+import { checkDb, disableMemoryMode, enableMemoryMode, isMemoryMode, logSystem } from './db/client.js';
 import { injectDbLogger } from './utils/logger.js';
 import { getAccessToken } from './kis/auth.js';
 import { initTelegram } from './notifications/telegram.js';
@@ -159,6 +159,32 @@ async function bootstrap() {
     logger.warn(`⚠️ PostgreSQL 미연결: ${err}`, { component: 'BOOT' });
     enableMemoryMode();
     logger.info('📦 인메모리 DB 모드로 전환 (감시목록 7종목 자동 로드)', { component: 'BOOT' });
+
+    // DB 복구 감시 — 60초마다 재시도, 연결 성공 시 메모리 모드 해제
+    const recoveryInterval = setInterval(async () => {
+      if (!isMemoryMode()) { clearInterval(recoveryInterval); return; }
+      try {
+        const ok = await checkDb();
+        if (ok) {
+          disableMemoryMode();
+          clearInterval(recoveryInterval);
+          // 마이그레이션 + 모드 오버라이드 복원
+          try {
+            const { runMigrations } = await import('./db/migrate.js');
+            await runMigrations();
+          } catch { /* ignore */ }
+          try {
+            const { getPool: gp } = await import('./db/client.js');
+            const { rows: tmRows } = await gp().query('SELECT trading_mode_override FROM portfolio_allocation_config ORDER BY id ASC LIMIT 1');
+            const dbMode = tmRows[0]?.trading_mode_override;
+            if (dbMode === 'paper' || dbMode === 'live') {
+              setTradingModeOverride(dbMode);
+              logger.info(`✅ DB 복구 후 거래 모드 복원: ${dbMode.toUpperCase()}`, { component: 'BOOT' });
+            }
+          } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
+    }, 60_000);
   }
 
   // 2. Redis 캐시 초기화

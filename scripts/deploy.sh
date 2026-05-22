@@ -46,12 +46,11 @@ COMMON_RUN_OPTS="\
     --region=$REGION \
     --platform=managed \
     --max-instances=1 \
-    --memory=1Gi \
+    --memory=512Mi \
     --cpu=1 \
     --port=8080 \
     --timeout=300s \
     --concurrency=80 \
-    --no-cpu-throttling \
     --allow-unauthenticated \
     --add-cloudsql-instances=quantops-trading:asia-northeast3:quantops-db"
 

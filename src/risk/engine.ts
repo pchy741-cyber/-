@@ -297,8 +297,8 @@ export class RiskEngine {
       const pool = getPool();
       const today = new Date().toISOString().split('T')[0];
       const { rows } = await pool.query<{ count: string }>(
-        `SELECT COUNT(*)::text AS count FROM orders WHERE created_at::date = $1`,
-        [today],
+        `SELECT COUNT(*)::text AS count FROM orders WHERE created_at::date = $1 AND trading_mode = $2`,
+        [today, config.tradingMode],
       );
       const todayCount = Number(rows[0]?.count ?? 0);
 

@@ -3,7 +3,7 @@
  * GEMINI_API_KEY: Google AI Studio 키 (gemini-2.0-flash, 1500 RPD 무료)
  */
 
-const AI_STUDIO_MODEL = 'gemini-2.0-flash-lite';
+const AI_STUDIO_MODEL = 'gemini-2.0-flash';
 const AI_STUDIO_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${AI_STUDIO_MODEL}:generateContent`;
 
 export interface GeminiCallOptions {

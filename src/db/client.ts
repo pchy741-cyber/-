@@ -440,7 +440,9 @@ export async function getRecentManuallySoldStocks(hoursBack = 24): Promise<Set<s
       `SELECT DISTINCT stock_code FROM transaction_chains
        WHERE status = 'CLOSED'
          AND close_reason = 'CEO 수동 매도'
+         AND is_paper = $1
          AND closed_at > NOW() - INTERVAL '${hoursBack} hours'`,
+      [config.isPaper],
     );
     return new Set(rows.map((r: { stock_code: string }) => r.stock_code));
   } catch {
@@ -456,7 +458,9 @@ export async function getRecentLossStocks(daysBack = 14): Promise<Set<string>> {
       `SELECT DISTINCT stock_code FROM transaction_chains
        WHERE status = 'CLOSED'
          AND realized_pnl < -5000
+         AND is_paper = $1
          AND closed_at > NOW() - INTERVAL '${daysBack} days'`,
+      [config.isPaper],
     );
     return new Set(rows.map((r: { stock_code: string }) => r.stock_code));
   } catch {
@@ -475,10 +479,11 @@ export async function getTodayRepeatStopCodes(minStops = 2): Promise<Set<string>
          FROM transaction_chains
         WHERE status = 'CLOSED'
           AND realized_pnl < 0
+          AND is_paper = $1
           AND closed_at >= CURRENT_DATE AT TIME ZONE 'Asia/Seoul'
         GROUP BY stock_code
-       HAVING COUNT(*) >= $1`,
-      [minStops],
+       HAVING COUNT(*) >= $2`,
+      [config.isPaper, minStops],
     );
     return new Set(rows.map((r: { stock_code: string }) => r.stock_code));
   } catch {

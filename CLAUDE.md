@@ -143,9 +143,9 @@ max_buys  = 3 if bull_market else 2     # 강세장: 3종목까지
 2. `confidence >= min_conf`
 3. 이미 OPEN 포지션 없는 종목
 4. `d['killSwitch']['active'] == False`
-5. `d['portfolio']['domesticCash'] > 500000`
+5. `d['portfolio']['domesticCash'] > 50000`
 
-꽁돈 게이트: `composite_score >= 85` → 2차 필터 무관, 즉시 Step 3으로 (70만원)
+꽁돈 게이트: `composite_score >= 85` → 2차 필터 무관, 즉시 Step 3으로 (복리 자동계산)
 
 #### Step 2 — 2차 필터 (기술 분석 API)
 1차 통과 후보 최대 5종목에 대해 개별 기술분석 호출:
@@ -199,14 +199,10 @@ reasoning에 `pb={pullback} env={envelope_pos} volC={vol_consistency}일` 포함
 
 #### Step 3 — 포지션 사이징 후 실행
 
-```python
-if score >= 85 or conf >= 0.80:
-    amount = 700000   # 고확신 — 크게 베팅
-elif bull_market and score >= 78:
-    amount = 600000   # 강세장 준고확신
-else:                 # score min_score~84
-    amount = 500000   # 표준
-```
+**복리 동적 사이징 (백엔드 자동 계산)**:
+- `ai_score` 전달 → 백엔드가 `총자본 × 1.5% / |SL%|` 공식으로 `amount_krw` 자동 결정
+- 계좌가 클수록 베팅도 자동으로 커짐 (복리 효과)
+- `ai_score`별 손익비: 80점→TP6%/SL2.5%(2.4:1), 90점→TP8%/SL2%(4:1)
 
 - 점수 내림차순, **최대 max_buys종목** (강세장: 3, 일반: 2)
 
@@ -214,8 +210,10 @@ else:                 # score min_score~84
 curl -s -X POST "https://quantops-807105550136.asia-northeast3.run.app/api/manual-buy" \
   -H "Content-Type: application/json" \
   -H "x-api-key: <DASHBOARD_PASSWORD>" \
-  -d "{\"stock_code\":\"XXXXXX\",\"amount_krw\":AMOUNT,\"reasoning\":\"눌림매매 AI 82점 conf0.70 RSI48 vol1.5x pb=True env=NEAR_LOWER volC=3일\"}"
+  -d "{\"stock_code\":\"XXXXXX\",\"ai_score\":SCORE,\"reasoning\":\"눌림매매 AI 82점 conf0.70 RSI48 vol1.5x pb=True env=NEAR_LOWER volC=3일\"}"
 ```
+
+> `amount_krw` 생략 시 백엔드가 자동으로 복리 사이징 계산 (직접 지정도 가능).
 
 ### 4. 루프 간격
 - 긴급 손절 실행 후: `ScheduleWakeup(120)`
@@ -228,13 +226,13 @@ curl -s -X POST "https://quantops-807105550136.asia-northeast3.run.app/api/manua
 - 1회 루프당 신규 매수 최대 3종목 (강세장), 일반 2종목
 - 동일 종목 중복 매수 금지 (단, 퀵플립 익절 후 재진입은 허용)
 - `blockNewBuys == true` 이면 매수 완전 중단
-- 총 현금 500,000원 미만이면 매수 중단
+- 총 현금 50,000원 미만이면 매수 중단
 
 ---
 
 ## 판단 예시
 
-**눌림매매 진입 (고확신)**: "058430 AI 85점 conf0.73 RSI44 vol1.8x pb=True env=NEAR_LOWER → 70만원 매수"
+**눌림매매 진입 (고확신)**: "058430 AI 85점 conf0.73 RSI44 vol1.8x pb=True env=NEAR_LOWER → ai_score=85 매수 (백엔드 복리 사이징)"
 
 **눌림 신호 없어서 스킵**: "012345 AI 83점이나 pb=False env=MIDDLE → 눌림 신호 없음, 스킵"
 
