@@ -110,7 +110,7 @@ async function bootstrap() {
     // 1-1b. DB 거래 모드 오버라이드 로드 (재시작 시 유지)
     try {
       const { getPool: gp } = await import('./db/client.js');
-      const { rows: tmRows } = await gp().query('SELECT trading_mode_override FROM portfolio_allocation_config ORDER BY id ASC LIMIT 1');
+      const { rows: tmRows } = await gp().query('SELECT trading_mode_override FROM portfolio_allocation_config ORDER BY id DESC LIMIT 1');
       const dbMode = tmRows[0]?.trading_mode_override;
       if (dbMode === 'paper' || dbMode === 'live') {
         setTradingModeOverride(dbMode);
@@ -175,7 +175,7 @@ async function bootstrap() {
           } catch { /* ignore */ }
           try {
             const { getPool: gp } = await import('./db/client.js');
-            const { rows: tmRows } = await gp().query('SELECT trading_mode_override FROM portfolio_allocation_config ORDER BY id ASC LIMIT 1');
+            const { rows: tmRows } = await gp().query('SELECT trading_mode_override FROM portfolio_allocation_config ORDER BY id DESC LIMIT 1');
             const dbMode = tmRows[0]?.trading_mode_override;
             if (dbMode === 'paper' || dbMode === 'live') {
               setTradingModeOverride(dbMode);
