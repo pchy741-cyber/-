@@ -66,7 +66,8 @@ export async function getAccountBalance(): Promise<AccountBalance> {
   // 계좌 요약 파싱 (output2)
   const summary = (Array.isArray(res.output2) ? res.output2[0] : res.output2) as Record<string, string>;
 
-  const orderableCash = Number(summary?.ord_psbl_cash ?? 0);
+  // ord_psbl_cash = CMA 전용 필드; 일반 위탁계좌는 absent → dnca_tot_amt로 폴백
+  const orderableCash = Number(summary?.ord_psbl_cash || summary?.dnca_tot_amt || 0);
   const totalDeposit = Number(summary?.dnca_tot_amt ?? 0);
 
   // 모의투자 계좌 예수금이 0원이면 가상 자금 1,000만원 부여

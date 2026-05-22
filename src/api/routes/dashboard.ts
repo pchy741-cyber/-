@@ -292,7 +292,9 @@ async function buildDashPayload(): Promise<unknown> {
     // Live: KIS 잔고가 source-of-truth
     totalInvested = balance.totalEvalAmount ?? 0; // 평가금액(원금+미실현손익 포함)
     totalPnl = balance.totalProfitLoss ?? 0;      // 미실현손익
-    actualCash = rawCash;
+    // dnca_tot_amt = T+2 미결제 시 보유금액 미차감 → KIS 유가증권 평가금액 차감으로 이중집계 방지
+    // 팬텀 체인(DB에만 있고 실제 KIS 포지션 없음) 시 totalEvalAmount=0이므로 현금 올바르게 표시
+    actualCash = Math.max(0, rawCash - totalInvested);
   }
 
   // pnlPct: Live는 KIS API 직접값 사용(정확), Paper는 원금 대비 계산

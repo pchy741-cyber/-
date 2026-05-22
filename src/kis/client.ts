@@ -88,9 +88,19 @@ class RateLimiter {
 // KIS API rate limit: 실전 20건/sec, 모의투자 1건/sec per APP KEY
 // Paper: domestic + overseas가 동일 APP KEY → 단일 limiter 공유 (1/sec 초과 방지)
 // marketData는 useRealUrl=true로 실서버 호출 → 버스트 과부하 방지로 4/sec 제한
-const isPaper = config.isPaper;
-export const kisRateLimiter = new RateLimiter(isPaper ? 1 : 15);
-export const overseasRateLimiter = isPaper ? kisRateLimiter : new RateLimiter(15);
+// 모드 전환 시에도 정확한 rate 적용: 초기화 시 고정이 아닌 런타임 config 참조
+const _paperLimiter = new RateLimiter(1);
+const _liveKisLimiter = new RateLimiter(15);
+const _liveOverseasLimiter = new RateLimiter(15);
+
+export const kisRateLimiter = {
+  acquire: () => config.isPaper ? _paperLimiter.acquire() : _liveKisLimiter.acquire(),
+  get pendingCount() { return config.isPaper ? _paperLimiter.pendingCount : _liveKisLimiter.pendingCount; },
+};
+export const overseasRateLimiter = {
+  acquire: () => config.isPaper ? _paperLimiter.acquire() : _liveOverseasLimiter.acquire(),
+  get pendingCount() { return config.isPaper ? _paperLimiter.pendingCount : _liveOverseasLimiter.pendingCount; },
+};
 export const marketDataRateLimiter = new RateLimiter(4);
 
 /**
@@ -113,8 +123,8 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
   const headers: Record<string, string> = {
     'Content-Type': 'application/json; charset=utf-8',
     authorization: '',
-    appkey: process.env.KIS_APP_KEY || config.kis.appKey,
-    appsecret: process.env.KIS_APP_SECRET || config.kis.appSecret,
+    appkey: config.kis.appKey,
+    appsecret: config.kis.appSecret,
     tr_id: trId,
   };
 
@@ -143,11 +153,11 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
       const rawText = await res.text();
       if (!rawText || rawText.trim() === '') {
         if (attempt < MAX_RETRIES) {
-          logger.warn(`KIS 빈 응답, 재시도 ${attempt}/${MAX_RETRIES}`, { component: 'KIS' });
+          logger.warn(`KIS 빈 응답 [${trId}] HTTP${res.status}, 재시도 ${attempt}/${MAX_RETRIES}`, { component: 'KIS' });
           await sleep(2000 * attempt);
           continue;
         }
-        throw new Error('KIS 빈 응답 — 반복 재시도 실패');
+        throw new Error(`KIS 빈 응답 [${trId}] — 반복 재시도 실패`);
       }
       if (rawText.trim() === 'LOGOUT') {
         clearTokenCache();
@@ -182,7 +192,7 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
 
         // 5xx → 재시도
         if (attempt < MAX_RETRIES) {
-          logger.warn(`KIS 5xx 에러, 재시도 ${attempt}/${MAX_RETRIES}`, { component: 'KIS' });
+          logger.warn(`KIS 5xx 에러, 재시도 ${attempt}/${MAX_RETRIES}: ${errMsg}`, { component: 'KIS' });
           await sleep(RETRY_DELAY_MS * attempt);
           continue;
         }

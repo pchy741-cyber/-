@@ -38,17 +38,21 @@ export async function getAccessToken(): Promise<string> {
     }),
   });
 
+  const rawBody = await res.text();
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`KIS 토큰 발급 실패 (${res.status}): ${body}`);
+    throw new Error(`KIS 토큰 발급 실패 (${res.status}): ${rawBody}`);
   }
 
-  const data = (await res.json()) as { access_token: string; token_type: string; access_token_token_expired: string };
+  const data = JSON.parse(rawBody) as { access_token?: string; token_type?: string; access_token_token_expired?: string; error_code?: string; error_description?: string };
+
+  if (!data.access_token) {
+    throw new Error(`KIS 토큰 발급 실패: ${data.error_code ?? 'unknown'} - ${data.error_description ?? rawBody}`);
+  }
 
   cachedToken = {
     accessToken: data.access_token,
-    tokenType: data.token_type,
-    expiresAt: new Date(data.access_token_token_expired),
+    tokenType: data.token_type ?? 'Bearer',
+    expiresAt: new Date(data.access_token_token_expired ?? ''),
   };
   cachedTokenIsPaper = isPaper;
 
@@ -56,7 +60,7 @@ export async function getAccessToken(): Promise<string> {
     component: 'KIS_AUTH',
   });
 
-  return cachedToken.accessToken;
+  return cachedToken!.accessToken;
 }
 
 /**
