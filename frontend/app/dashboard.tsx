@@ -300,11 +300,10 @@ export default function Dashboard() {
       await api('/trading-mode', { method: 'POST', body: JSON.stringify({ mode }) });
       setDash((d: any) => d ? { ...d, tradingMode: mode } : d);
       toast(mode === 'live' ? '실전모드로 전환됐습니다' : '연습모드로 전환됐습니다', 'ok');
-      // 모드 전환 후 모든 캐시 초기화 — 이전 모드 데이터가 새 모드에 표시되는 버그 방지
+      // 모드 전환: watchlist/secrets는 모드 무관 → 유지, trades/dashboard만 갱신
       loadingRef.current = false;
-      staticLoadedRef.current = false;
-      tradesLoadedRef.current = false;
-      load(true);
+      tradesLoadedRef.current = false; // 매매내역은 모드별 → 재조회
+      load(false); // forceStatic=false → watchlist/secrets 재조회 안 함 (속도 개선)
     } catch (e: any) {
       toast('모드 전환 실패: ' + (e?.message ?? ''), 'err');
     } finally {

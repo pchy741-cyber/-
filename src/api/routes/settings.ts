@@ -351,8 +351,9 @@ settingsRoutes.post('/trading-mode', async (c) => {
     logger.warn(`거래 모드 DB 저장 실패: ${e.message}`, { component: 'SETTINGS' });
   }
   logger.info(`🔄 거래 모드 전환: ${mode.toUpperCase()} (CEO 대시보드)`, { component: 'SETTINGS' });
-  const { invalidateDashboardCache } = await import('./dashboard.js');
-  invalidateDashboardCache();
+  const { invalidateModeCache, prewarmDashboard } = await import('./dashboard.js');
+  invalidateModeCache(mode); // 새 모드 캐시만 무효화 (이전 모드 캐시 보존 → 되돌아갈 때 즉시 응답)
+  prewarmDashboard().catch(() => {}); // 새 모드 캐시 background 선제 빌드
   return c.json({ ok: true, mode });
 });
 

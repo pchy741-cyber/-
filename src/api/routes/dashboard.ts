@@ -90,42 +90,60 @@ async function getFxRate(): Promise<number> {
   return _fxCache.rate;
 }
 
-// ── 대시보드 응답 캐시 (30초 TTL, Stale-While-Revalidate, 모드별 독립) ──
-let _dashCache: { data: unknown; ts: number; mode: string } | null = null;
-let _dashRefreshing = false;
+// ── 대시보드 응답 캐시 (30초 TTL, Stale-While-Revalidate, 모드별 독립 Map) ──
+const _dashCacheByMode = new Map<string, { data: unknown; ts: number }>();
+const _dashBuildingByMode = new Map<string, Promise<unknown>>();
 const DASH_CACHE_TTL = 30_000;
 
-// Track B 자동 매도/매수 후 즉시 캐시 무효화 (다른 모듈에서 호출)
-export function invalidateDashboardCache(): void {
-  _dashCache = null;
+function getDashCache(mode: string) { return _dashCacheByMode.get(mode) ?? null; }
+function setDashCache(mode: string, data: unknown) { _dashCacheByMode.set(mode, { data, ts: Date.now() }); }
+
+// 현재 모드 캐시만 무효화 (매도/매수 후)
+function invalidateCurrentModeCache(): void { _dashCacheByMode.delete(config.tradingMode); }
+
+// 전체 무효화 — 외부 호출용 (하위 호환)
+export function invalidateDashboardCache(): void { _dashCacheByMode.clear(); }
+
+// 특정 모드 캐시 무효화 (모드 전환 시 — 새 모드 캐시만 제거)
+export function invalidateModeCache(mode: string): void { _dashCacheByMode.delete(mode); }
+
+// 동시 빌드 dedup: 같은 모드의 buildDashPayload가 두 번 동시 실행되지 않게
+async function getOrBuildDashPayload(mode: string): Promise<unknown> {
+  const existing = _dashBuildingByMode.get(mode);
+  if (existing) return existing;
+  const promise = buildDashPayload().finally(() => { _dashBuildingByMode.delete(mode); });
+  _dashBuildingByMode.set(mode, promise);
+  return promise;
 }
 
 // ── 대시보드 요약 ──
 dashboardRoutes.get('/dashboard', async (c) => {
   const currentMode = config.tradingMode;
-  // Stale-While-Revalidate: 캐시 있으면 즉시 반환, 만료됐거나 모드 불일치면 백그라운드 갱신
-  if (_dashCache && _dashCache.mode === currentMode) {
-    const stale = Date.now() - _dashCache.ts >= DASH_CACHE_TTL;
-    if (!stale) return c.json(_dashCache.data);
+  const cached = getDashCache(currentMode);
+  if (cached) {
+    const stale = Date.now() - cached.ts >= DASH_CACHE_TTL;
+    if (!stale) return c.json(cached.data);
     // 만료됐지만 있음: 즉시 반환 + 백그라운드 갱신 트리거
-    if (!_dashRefreshing) {
-      _dashRefreshing = true;
-      buildDashPayload().then(p => { _dashCache = { data: p, ts: Date.now(), mode: config.tradingMode }; }).catch(() => {}).finally(() => { _dashRefreshing = false; });
+    if (!_dashBuildingByMode.has(currentMode)) {
+      getOrBuildDashPayload(currentMode)
+        .then(p => setDashCache(config.tradingMode, p))
+        .catch(() => {});
     }
-    return c.json(_dashCache.data);
+    return c.json(cached.data);
   }
-  // 캐시 없음 또는 모드 불일치: 즉시 새로 빌드
-  const payload = await buildDashPayload();
-  _dashCache = { data: payload, ts: Date.now(), mode: currentMode };
+  // 캐시 없음: 새로 빌드 (dedup 적용)
+  const payload = await getOrBuildDashPayload(currentMode);
+  setDashCache(currentMode, payload);
   return c.json(payload);
 });
 
 export async function prewarmDashboard(): Promise<void> {
-  if (_dashCache && _dashCache.mode === config.tradingMode) return;
+  const mode = config.tradingMode;
+  if (getDashCache(mode)) return;
   try {
-    const payload = await buildDashPayload();
-    _dashCache = { data: payload, ts: Date.now(), mode: config.tradingMode };
-    logger.info('🔥 대시보드 캐시 선제 빌드 완료', { component: 'BOOT' });
+    const payload = await getOrBuildDashPayload(mode);
+    setDashCache(mode, payload);
+    logger.info(`🔥 대시보드 캐시 선제 빌드 완료 [${mode}]`, { component: 'BOOT' });
   } catch (e: any) {
     logger.warn(`대시보드 캐시 선제 빌드 실패: ${e.message}`, { component: 'BOOT' });
   }
@@ -1150,7 +1168,7 @@ dashboardRoutes.post('/sell/:chainId', async (c) => {
         const pnlPct = chain.avg_buy_price > 0 ? ((fillPrice - Number(chain.avg_buy_price)) / Number(chain.avg_buy_price)) * 100 : 0;
         await notifySell(chain.stock_code, chain.total_quantity, fillPrice, pnlPct, sellReason);
       } catch { /* 알림 실패 무시 */ }
-      _dashCache = null; // 매도 후 즉시 캐시 무효화
+      invalidateCurrentModeCache(); // 매도 후 즉시 캐시 무효화
       return c.json({ ok: true, orderNo: fakeOrderNo, message: `${chain.stock_code} ${chain.total_quantity}주 전량 매도 완료 (모의투자)` });
     }
 
@@ -1206,7 +1224,7 @@ dashboardRoutes.post('/sell/:chainId', async (c) => {
       const pnlPct = chain.avg_buy_price > 0 ? ((fillPrice - Number(chain.avg_buy_price)) / Number(chain.avg_buy_price)) * 100 : 0;
       await notifySell(chain.stock_code, chain.total_quantity, fillPrice, pnlPct, sellReason);
     } catch { /* 알림 실패 무시 */ }
-    _dashCache = null; // 매도 후 즉시 캐시 무효화
+    invalidateCurrentModeCache(); // 매도 후 즉시 캐시 무효화
     return c.json({ ok: true, orderNo: kisOrderNo, message: `${chain.stock_code} ${chain.total_quantity}주 전량 매도 주문 완료` });
   } catch (err: any) {
     logger.error(`수동 매도 예외: ${err.message}`, { component: 'DASHBOARD' });
@@ -1250,7 +1268,7 @@ dashboardRoutes.post('/sell-stock/:stockCode', async (c) => {
         );
       }
       logger.info(`✅ 전량 매도 완료 (모의): ${stockCode} ${totalQty}주 [${triggerSource}] (${openChains.length}체인)`, { component: 'DASHBOARD' });
-      _dashCache = null;
+      invalidateCurrentModeCache();
       return c.json({ ok: true, message: `${stockCode} ${totalQty}주 전량 매도 완료 (모의투자)` });
     }
 
@@ -1297,7 +1315,7 @@ dashboardRoutes.post('/sell-stock/:stockCode', async (c) => {
       const pnlPct = avgBuy > 0 ? ((fillPrice - avgBuy) / avgBuy) * 100 : 0;
       await notifySell(stockCode, totalQty, fillPrice, pnlPct, sellReason);
     } catch { /* 알림 실패 무시 */ }
-    _dashCache = null;
+    invalidateCurrentModeCache();
     return c.json({ ok: true, orderNo: kisOrderNo, message: `${stockCode} ${totalQty}주 전량 매도 완료` });
   } catch (err: any) {
     logger.error(`전량 매도 예외 (${stockCode}): ${err.message}`, { component: 'DASHBOARD' });
