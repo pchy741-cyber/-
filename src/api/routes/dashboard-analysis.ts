@@ -546,11 +546,12 @@ dashboardAnalysisRoutes.get('/strategy/performance', async (c) => {
         )::numeric, 1) AS avg_hold_hours
       FROM transaction_chains tc
       WHERE tc.status = 'CLOSED'
+        AND tc.is_paper = $1
         AND tc.stock_code ~ '^[0-9]{6}$'
         AND tc.created_at >= NOW() - INTERVAL '90 days'
       GROUP BY tc.strategy_mode
       ORDER BY total_pnl DESC
-    `);
+    `, [config.isPaper]);
     return c.json(rows.map((r: any) => ({
       mode: r.strategy_mode ?? 'UNKNOWN',
       trades: Number(r.trades),
@@ -590,11 +591,12 @@ dashboardAnalysisRoutes.get('/trades/by-hour', async (c) => {
       JOIN transaction_chains tc ON tc.id = o.chain_id
       WHERE o.status = 'FILLED'
         AND o.trigger_source != 'OVERSEAS'
+        AND tc.is_paper = $1
         AND o.created_at >= NOW() - INTERVAL '90 days'
         AND o.filled_price IS NOT NULL
       GROUP BY hour, o.side
       ORDER BY hour ASC, o.side ASC
-    `);
+    `, [config.isPaper]);
     return c.json(rows.map((r: any) => ({
       hour: Number(r.hour),
       side: r.side,
@@ -620,10 +622,11 @@ dashboardAnalysisRoutes.get('/market/performance-vs-kospi', async (c) => {
       JOIN transaction_chains tc ON tc.id = o.chain_id
       WHERE o.side = 'SELL' AND o.status = 'FILLED'
         AND o.trigger_source != 'OVERSEAS'
+        AND tc.is_paper = $1
         AND o.filled_price IS NOT NULL AND tc.avg_buy_price IS NOT NULL
         AND o.created_at >= NOW() - INTERVAL '60 days'
       GROUP BY day ORDER BY day ASC
-    `);
+    `, [config.isPaper]);
     // KOSPI 60일 차트 — Yahoo Finance ^KS11 (primary) → Naver Finance (fallback)
     const kospiPoints = await (async () => {
       // 1차: Yahoo Finance (VIX 조회에 이미 검증된 API)
@@ -696,9 +699,10 @@ dashboardAnalysisRoutes.get('/market/tax-estimate', async (c) => {
       JOIN transaction_chains tc ON tc.id = o.chain_id
       WHERE o.side = 'SELL' AND o.status = 'FILLED'
         AND o.trigger_source != 'OVERSEAS'
+        AND tc.is_paper = $2
         AND EXTRACT(YEAR FROM o.created_at) = $1
         AND o.filled_price IS NOT NULL AND tc.avg_buy_price IS NOT NULL
-    `, [year]);
+    `, [year, config.isPaper]);
     const r = rows[0] ?? {};
     const grossGain = Number(r.gross_gain ?? 0);
     const grossLoss = Number(r.gross_loss ?? 0);
@@ -912,12 +916,13 @@ dashboardAnalysisRoutes.get('/performance/attribution', async (c) => {
       WHERE o.side = 'SELL'
         AND o.status = 'FILLED'
         AND o.trigger_source != 'OVERSEAS'
+        AND tc.is_paper = $1
         AND o.created_at >= NOW() - INTERVAL '90 days'
         AND o.filled_price IS NOT NULL
         AND tc.avg_buy_price IS NOT NULL
       GROUP BY tc.strategy_mode
       ORDER BY gross_pnl DESC
-    `);
+    `, [config.isPaper]);
 
     const result = rows.map((r: any) => {
       const trades = Number(r.trades);
@@ -947,8 +952,8 @@ dashboardAnalysisRoutes.get('/performance/export-csv', async (c) => {
     const days = Math.min(365, Math.max(1, Number(c.req.query('days') ?? 90)));
     const modeFilter = c.req.query('mode') ?? '';
 
-    const params: unknown[] = [days];
-    const modeClause = modeFilter ? 'AND tc.strategy_mode = $2' : '';
+    const params: unknown[] = [days, config.isPaper];
+    const modeClause = modeFilter ? 'AND tc.strategy_mode = $3' : '';
     if (modeFilter) params.push(modeFilter);
 
     const { rows } = await getPool().query(`
@@ -973,6 +978,7 @@ dashboardAnalysisRoutes.get('/performance/export-csv', async (c) => {
       WHERE o.side = 'SELL'
         AND o.status = 'FILLED'
         AND o.trigger_source != 'OVERSEAS'
+        AND tc.is_paper = $2
         AND o.created_at >= NOW() - ($1 || ' days')::INTERVAL
         ${modeClause}
         AND o.filled_price IS NOT NULL

@@ -330,6 +330,9 @@ async function buildDashPayload(): Promise<unknown> {
   let overseasMarketValueUsd = 0; // 시가 합산 (총자산 표시용)
   let overseasCash = 0;
   try {
+    if (config.isPaper) {
+      // 연습모드: 해외는 실전 전용 — 표시 안 함
+    } else {
     const { rows: osRows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0');
     const { rows: osCashRows } = await getPool().query("SELECT value FROM overseas_state WHERE key = 'cash'");
     overseasCash = osCashRows.length > 0 ? Number(osCashRows[0].value) : 0;
@@ -348,6 +351,7 @@ async function buildDashPayload(): Promise<unknown> {
         last_price: lastP,
       });
     }
+    } // end else (live mode)
   } catch { /* overseas table may not exist */ }
 
   // ── 국내 + 해외 합산 ──
