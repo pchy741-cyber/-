@@ -232,11 +232,11 @@ export async function expectedValueGate(_input: GateInput): Promise<GateResult> 
     return { passed: true, reason: '모의투자 — 기대값 게이트 스킵 (데이터 수집 중)', expectedValue: 0 };
   }
 
-  // 실거래: 14일 이내 데이터만, 50건 이상일 때만 판단 (통계적 신뢰성)
-  const stats = await getWinRateStats(14);
+  // 실거래: 30일 이내 데이터, 15건 이상일 때 판단 (SWING 3건/주 × 5주 ≈ 15건)
+  const stats = await getWinRateStats(30);
 
-  if (stats.totalTrades < 50) {
-    return { passed: true, reason: `실거래이력 부족(${stats.totalTrades}건 < 50) — 기본 통과`, expectedValue: 0 };
+  if (stats.totalTrades < 15) {
+    return { passed: true, reason: `실거래이력 부족(${stats.totalTrades}건 < 15) — 기본 통과`, expectedValue: 0 };
   }
 
   const winRate = stats.totalTrades > 0 ? stats.wins / stats.totalTrades : 0.5;
@@ -244,10 +244,10 @@ export async function expectedValueGate(_input: GateInput): Promise<GateResult> 
   // 거래비용 보정: 왕복 수수료 0.21% + 슬리피지 0.05% = 0.26%
   const ev = winRate * stats.avgWinPct - lossRate * Math.abs(stats.avgLossPct) - GATE.SLIPPAGE_PCT;
 
-  if (ev <= -2.0) {
+  if (ev <= -0.5) {
     return {
       passed: false,
-      reason: `기대값 심각: EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%, 거래비용-${GATE.SLIPPAGE_PCT}% 포함)`,
+      reason: `기대값 음수: EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%, 거래비용-${GATE.SLIPPAGE_PCT}% 포함) — 수수료 후 적자`,
       expectedValue: ev,
     };
   }

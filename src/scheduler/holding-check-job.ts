@@ -22,7 +22,6 @@ import { calcPnlPct } from '../utils/money.js';
  */
 const TRAILING_ACTIVATE_PCT = 2.0;  // 트레일링 스탑 활성화 최소 수익률 (%)
 const TRAILING_DROP_PCT     = 2.0;  // 고점 대비 이 % 하락 시 매도 (%)
-const PARTIAL_SELL_PCT      = 3.5;  // 이 수익률 도달 시 50% 분할 익절 (TRAILING_ACTIVATE+DROP=4% 미만으로 설정해야 트레일링보다 먼저 발동)
 
 /**
  * 보유일 초과 자동 손절 체크
@@ -103,7 +102,7 @@ export async function runHoldingCheckJob(): Promise<void> {
       const pnlPct = calcPnlPct(Number(chain.avg_buy_price), currentPrice);
 
       // ── 트레일링 스탑: 고점 갱신 + 하락 감지 ──
-      const trailingResult = await checkAndUpdateTrailingStop(chain, currentPrice, pnlPct);
+      const trailingResult = await checkAndUpdateTrailingStop(chain, currentPrice, pnlPct, params);
       if (trailingResult) {
         forceCloseDecisions.push(trailingResult);
         continue;
@@ -199,6 +198,7 @@ async function checkAndUpdateTrailingStop(
   chain: any,
   currentPrice: number,
   pnlPct: number,
+  params: { takeProfitPct: number },
 ): Promise<import('../db/models.js').TradeDecision | null> {
   const avgBuy = Number(chain.avg_buy_price);
   if (avgBuy <= 0 || currentPrice <= 0) return null;
@@ -206,17 +206,17 @@ async function checkAndUpdateTrailingStop(
   // 트레일링 미활성화 구간 (수익 불충분)
   if (pnlPct < TRAILING_ACTIVATE_PCT) return null;
 
-  // +PARTIAL_SELL_PCT 도달 + 아직 분할매도 안 했으면 → 50% 분할 익절
-  // partial_sold 플래그를 peak_price_since_open 음수로 표현 (음수면 이미 분할매도 완료)
+  // 분할 익절: 체인 TP 도달 시 50% 매도 (이미 PROFIT_TAKING이면 스킵 — technical-fallback과 이중매도 방지)
   const storedPeakRaw = Number(chain.peak_price_since_open ?? 0);
   const partialSoldAlready = storedPeakRaw < 0;
   const storedPeak = Math.abs(storedPeakRaw);
+  const chainTp = Number(chain.target_profit_pct) || params.takeProfitPct;
 
-  if (!partialSoldAlready && pnlPct >= PARTIAL_SELL_PCT && chain.total_quantity >= 2) {
+  if (!partialSoldAlready && chain.status !== 'PROFIT_TAKING' && pnlPct >= chainTp && chain.total_quantity >= 2) {
     const partialQty = Math.floor(chain.total_quantity / 2);
     if (partialQty > 0) {
       logger.info(
-        `💰 분할 익절 발동: ${chain.stock_code} +${pnlPct.toFixed(1)}% (기준 +${PARTIAL_SELL_PCT}%) → ${partialQty}주 50% 매도`,
+        `💰 분할 익절 발동: ${chain.stock_code} +${pnlPct.toFixed(1)}% (기준 +${chainTp}%) → ${partialQty}주 50% 매도`,
         { component: 'TRAILING' },
       );
       // 음수 peak로 분할매도 완료 표시 — await로 중복 발동 방지
@@ -233,7 +233,7 @@ async function checkAndUpdateTrailingStop(
         stock_code: chain.stock_code,
         quantity: partialQty,
         price_type: 'MARKET',
-        reasoning: `분할 익절(50%): 평단가 대비 +${pnlPct.toFixed(1)}% 도달 → ${partialQty}주 매도, 나머지 트레일링 추적`,
+        reasoning: `분할 익절(50%): 평단가 대비 +${pnlPct.toFixed(1)}% 도달 (TP ${chainTp}%) → ${partialQty}주 매도, 나머지 트레일링 추적`,
         confidence: 1.0,
       };
     }

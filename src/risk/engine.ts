@@ -378,8 +378,8 @@ export class RiskEngine {
     const currentValue = currentBalance.totalDeposit + currentBalance.totalEvalAmount;
     const dailyLoss = startValue - currentValue;
 
-    // 총자산 기준 30% 손실 한도 (연습/실전 동일)
-    const maxDailyDrawdownKrw = Math.round(startValue * 0.30);
+    // config 기반 일일 손실 한도 (기본 200,000원 = 총자산 2%)
+    const maxDailyDrawdownKrw = config.risk.maxDailyDrawdownKrw;
 
     if (dailyLoss > maxDailyDrawdownKrw) {
       // Kill Switch 자동 발동!
