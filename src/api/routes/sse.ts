@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { config } from '../../config/index.js';
-import { getOpenChains, getPool } from '../../db/client.js';
+import { getActiveStrategy, getOpenChains, getPool } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { isMarketOpen } from '../../kis/market.js';
 import { getKillSwitchStatus } from '../../risk/kill-switch.js';
@@ -62,10 +62,11 @@ sseRoutes.get('/stream', (c) => {
     while (true) {
       try {
         const balanceFn = viewIsPaper ? getPaperBalance : getAccountBalance;
-        const [balance, chains, recentTrades] = await Promise.all([
+        const [balance, chains, recentTrades, strategy] = await Promise.all([
           balanceFn(),
           getOpenChains(viewIsPaper),
           getRecentTrades(viewIsPaper),
+          getActiveStrategy().catch(() => null),
         ]);
 
         const payload = {
@@ -82,6 +83,7 @@ sseRoutes.get('/stream', (c) => {
           activeChains: chains.length,
           marketOpen: isMarketOpen(),
           recentTrades,
+          strategy: strategy ? { mode: strategy.mode, buy_threshold: strategy.buy_threshold, take_profit_pct: strategy.take_profit_pct, stop_loss_pct: strategy.stop_loss_pct } : null,
         };
 
         await stream.writeSSE({

@@ -161,6 +161,10 @@ export default function Dashboard() {
             return brandNew.length > 0 ? [...brandNew, ...updated].slice(0, 200) : updated;
           });
         }
+        // SSE → 전략 모드 실시간 반영 (모드 변경 즉시 UI 갱신)
+        if (data.strategy) {
+          setStrategy((prev: any) => prev ? { ...prev, ...data.strategy } : data.strategy);
+        }
         if (prevChainCount !== -1 && data.activeChains !== prevChainCount) {
           Promise.allSettled([
             api(`/dashboard?viewMode=${viewModeRef.current}`).then((d: any) => { if (d) setDash(d); }),

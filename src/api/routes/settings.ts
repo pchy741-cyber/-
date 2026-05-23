@@ -7,6 +7,7 @@ import { activateKillSwitch, deactivateKillSwitch, getKillSwitchStatus } from '.
 import { resetCooldown, getCooldownStatus } from '../../risk/trade-gate.js';
 import { runTrackAJob } from '../../scheduler/track-a-job.js';
 import { logger } from '../../utils/logger.js';
+import { invalidateDashboardCache } from './dashboard.js';
 
 export const settingsRoutes = new Hono();
 
@@ -83,6 +84,7 @@ settingsRoutes.put('/strategy', async (c) => {
     const diff = buildStrategyDiff(prevStrategy, strategyData);
     await logSystem('INFO', 'STRATEGY_AUDIT', `전략 변경: ${diff}`, { prev: prevStrategy, next: strategyData }).catch(() => {});
     logger.info(`📋 전략 변경 감사: ${diff}`, { component: 'SETTINGS' });
+    invalidateDashboardCache();
     return c.json(updated);
   }
 
@@ -118,10 +120,12 @@ settingsRoutes.put('/strategy', async (c) => {
     const diff = buildStrategyDiff(prevStrategy, strategyData);
     await logSystem('INFO', 'STRATEGY_AUDIT', `전략 변경: ${diff}`, { prev: prevStrategy, next: strategyData }).catch(() => {});
     logger.info(`📋 전략 변경 감사: ${diff}`, { component: 'SETTINGS' });
+    invalidateDashboardCache(); // 모드 변경 즉시 캐시 무효화 → 프론트엔드 즉시 반영
     return c.json(rows[0]);
   } catch (err: any) {
     // DB 실패 시 인메모리 폴백
     const updated = memSetActiveStrategy(strategyData);
+    invalidateDashboardCache();
     return c.json(updated);
   }
 });
