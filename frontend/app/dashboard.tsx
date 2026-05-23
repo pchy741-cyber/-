@@ -43,7 +43,13 @@ export default function Dashboard() {
   const gptRef = useRef<HTMLTextAreaElement>(null);
   const claudeRef = useRef<HTMLTextAreaElement>(null);
 
-  const [viewMode, setViewMode] = useState<'live'|'paper'>('live');
+  const [viewMode, setViewMode] = useState<'live'|'paper'>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('quantops_viewMode');
+      if (saved === 'paper' || saved === 'live') return saved;
+    }
+    return 'live';
+  });
 
   const loadingRef = useRef(false);
   const loadGenRef = useRef(0);
@@ -51,7 +57,7 @@ export default function Dashboard() {
   const tradesLoadedRef = useRef(false);
   const tradesLastFetchRef = useRef(0);
   const modeTogglingRef = useRef(false);
-  const viewModeRef = useRef<'live'|'paper'>('live');
+  const viewModeRef = useRef<'live'|'paper'>(viewMode);
 
   const loadStatic = async (gen: number) => {
     const vm = viewModeRef.current;
@@ -141,9 +147,10 @@ export default function Dashboard() {
   }, []);
 
   // SSE 실시간 스트림
+  // SSE 실시간 스트림 — viewMode 변경 시 재연결
   useEffect(() => {
     const base = BACKEND_URL.endsWith('/') ? BACKEND_URL.slice(0, -1) : BACKEND_URL;
-    const es = new EventSource(`${base}/api/stream`, { withCredentials: true });
+    const es = new EventSource(`${base}/api/stream?viewMode=${viewMode}`, { withCredentials: true });
     let prevChainCount = -1;
 
     es.addEventListener('update', (e: MessageEvent) => {
@@ -177,7 +184,7 @@ export default function Dashboard() {
 
     es.onerror = () => {};
     return () => es.close();
-  }, []);
+  }, [viewMode]);
 
   const toggleKill = async () => {
     const active = killSwitch?.active;
@@ -213,6 +220,7 @@ export default function Dashboard() {
     if (viewModeRef.current === mode) return;
     viewModeRef.current = mode;
     setViewMode(mode);
+    try { localStorage.setItem('quantops_viewMode', mode); } catch {}
     loadingRef.current = false;
     tradesLoadedRef.current = false;
     load(true);
