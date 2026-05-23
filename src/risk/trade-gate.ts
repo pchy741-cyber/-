@@ -241,13 +241,13 @@ export async function expectedValueGate(_input: GateInput): Promise<GateResult> 
 
   const winRate = stats.totalTrades > 0 ? stats.wins / stats.totalTrades : 0.5;
   const lossRate = 1 - winRate;
-  // 슬리피지 보정: 시장가 진입 스프레드 + 체결 지연 약 0.05% (단방향)
+  // 거래비용 보정: 왕복 수수료 0.21% + 슬리피지 0.05% = 0.26%
   const ev = winRate * stats.avgWinPct - lossRate * Math.abs(stats.avgLossPct) - GATE.SLIPPAGE_PCT;
 
   if (ev <= -2.0) {
     return {
       passed: false,
-      reason: `기대값 심각: EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%, 슬리피지-${GATE.SLIPPAGE_PCT}% 포함)`,
+      reason: `기대값 심각: EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%, 거래비용-${GATE.SLIPPAGE_PCT}% 포함)`,
       expectedValue: ev,
     };
   }
@@ -262,7 +262,7 @@ export async function expectedValueGate(_input: GateInput): Promise<GateResult> 
 
   return {
     passed: true,
-    reason: `EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%, ${stats.totalTrades}건, 슬리피지-${GATE.SLIPPAGE_PCT}%)`,
+    reason: `EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%, ${stats.totalTrades}건, 거래비용-${GATE.SLIPPAGE_PCT}%)`,
     expectedValue: ev,
   };
 }

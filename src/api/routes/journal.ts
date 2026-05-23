@@ -113,8 +113,11 @@ journalRoutes.get('/journal', async (c) => {
         s.filled_price AS exit_price,
         s.quantity     AS qty,
         s.ai_reasoning AS sell_reasoning,
-        -- SELL reasoning에 내장된 가중평균 매수가: [avgBuy:123.4567]
-        (regexp_match(s.ai_reasoning, '\\[avgBuy:([0-9]+\\.?[0-9]*)\\]'))[1]::numeric AS avg_buy_price,
+        -- avg_buy_price 컬럼 우선, 없으면 ai_reasoning 파싱 폴백
+        COALESCE(
+          s.avg_buy_price,
+          (regexp_match(s.ai_reasoning, '\\[avgBuy:([0-9]+\\.?[0-9]*)\\]'))[1]::numeric
+        ) AS avg_buy_price,
         -- 이 SELL 이전 첫 매수 시점 (포지션 개시일)
         (
           SELECT MIN(b.created_at)
@@ -132,7 +135,7 @@ journalRoutes.get('/journal', async (c) => {
         AND s.created_at >= NOW() - ($1 || ' days')::interval
         AND s.filled_price IS NOT NULL
         AND s.filled_price > 0
-        AND s.ai_reasoning ~ '\\[avgBuy:[0-9]'
+        AND (s.avg_buy_price IS NOT NULL OR s.ai_reasoning ~ '\\[avgBuy:[0-9]')
         AND s.trading_mode = $2
       ORDER BY s.created_at DESC
       LIMIT 200

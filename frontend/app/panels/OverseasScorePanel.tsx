@@ -1,0 +1,106 @@
+'use client';
+
+import React from 'react';
+import { Panel } from '@/components/ui';
+import { api } from '../lib/utils';
+
+export const US_SECTOR_MAP: Record<string, string> = {
+  NVDA: 'AI반도체', AMD: 'AI반도체', AVGO: 'AI반도체',
+  TSM: '대만반도체', UMC: '대만반도체',
+  META: '빅테크', AAPL: '빅테크', MSFT: '빅테크',
+  RTX: '방산', LMT: '방산', GEV: '방산', PLTR: '방산',
+  ETN: '산업인프라', PWR: '산업인프라', ANET: '산업인프라', VRT: '산업인프라',
+  AMZN: '클라우드', GOOGL: '클라우드', ORCL: '클라우드', NOW: '클라우드', MELI: '클라우드',
+  TM: '일본', SONY: '일본', MUFG: '일본',
+};
+export const US_SECTORS = ['전체', 'AI반도체', '빅테크', '방산', '클라우드', '산업인프라', '대만반도체', '일본'];
+
+export default function OverseasScorePanel({ usDash, toast }: { usDash?: any; toast?: (msg: string, type?: string) => void }) {
+  const allScored = (usDash?.watchlist ?? []).filter((s: any) => typeof s.score === 'number');
+  const [sector, setSector] = React.useState('전체');
+  const [buyingCode, setBuyingCode] = React.useState<string | null>(null);
+  const [showAll, setShowAll] = React.useState(false);
+  const signalMap: Record<string, string> = { STRONG_BUY: '강력 추천', BUY: '매수', HOLD: '관망', SELL: '매도', STRONG_SELL: '강력 매도' };
+  const filtered = sector === '전체' ? allScored : allScored.filter((s: any) => US_SECTOR_MAP[s.code] === sector);
+  const sorted = [...filtered].sort((a: any, b: any) => (b.score ?? 0) - (a.score ?? 0));
+  const visible = showAll ? sorted : sorted.slice(0, 10);
+
+  const manualBuy = async (sc: any) => {
+    if (!confirm(`${sc.name ?? sc.code} 수동 매수 — $200?`)) return;
+    setBuyingCode(sc.code);
+    try {
+      const ex = sc.exchange ?? (sc.code?.length <= 4 ? 'NASDAQ' : 'NYSE');
+      await api('/overseas/vision-scalp/execute', { method: 'POST', body: JSON.stringify({ ticker: sc.code, exchange: ex, amountUsd: 200, reasoning: `수동진입 점수${sc.score?.toFixed(0)} RSI${sc.rsi?.toFixed(0)} ${sc.signal}` }) });
+      toast?.('해외 매수 접수', 'ok');
+    } catch (e: any) { toast?.(e.message, 'err'); }
+    setBuyingCode(null);
+  };
+
+  return (
+    <Panel title="AI가 보는 해외 종목 점수" badge={allScored.length > 0 ? `${allScored.length}종목` : undefined} badgeColor="blue">
+      {allScored.length > 0 ? (
+        <div className="p-3.5">
+          {/* 섹터 탭 */}
+          <div className="flex gap-1.5 flex-wrap mb-3">
+            {US_SECTORS.map(s => (
+              <button key={s} onClick={() => { setSector(s); setShowAll(false); }}
+                className={`text-[10px] px-2 py-1 rounded-lg transition-all ${sector === s ? 'bg-blue-600 text-white' : 'bg-white/[0.04] text-slate-400 hover:bg-white/[0.08]'}`}>
+                {s}
+              </button>
+            ))}
+          </div>
+          <div className="space-y-1">
+            {visible.map((sc: any) => {
+              const raw = Number(sc.score);
+              const pct = Math.max(2, Math.min(100, (raw + 100) / 2));
+              const barColor = pct >= 75 ? 'bg-emerald-500' : pct >= 60 ? 'bg-blue-500' : pct >= 45 ? 'bg-amber-500' : 'bg-slate-600';
+              const textColor = pct >= 75 ? 'text-emerald-400' : pct >= 60 ? 'text-blue-400' : 'text-slate-500';
+              const label = signalMap[sc.signal] ?? sc.signal ?? '';
+              const sectorLabel = US_SECTOR_MAP[sc.code] ?? '';
+              const isBuying = buyingCode === sc.code;
+              return (
+                <div key={sc.code} className="px-2 py-2.5 border-b border-white/[0.03] last:border-0">
+                  <div className="flex items-center gap-2">
+                    <div className="w-20 shrink-0">
+                      <div className="text-xs font-bold text-slate-300 truncate">{sc.name ?? sc.code}</div>
+                      <div className="text-[9px] text-slate-600">{sc.code} · {sectorLabel}</div>
+                    </div>
+                    <div className="flex-1">
+                      <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${pct}%` }} />
+                      </div>
+                    </div>
+                    <span className={`text-sm font-black w-9 text-right ${textColor}`}>{raw > 0 ? '+' : ''}{raw}</span>
+                    <span className={`text-[10px] font-medium w-14 text-right ${textColor}`}>{label}</span>
+                    <button disabled={isBuying} onClick={() => manualBuy(sc)}
+                      className="text-[10px] px-2 py-1 bg-blue-600/70 hover:bg-blue-500/70 disabled:opacity-40 rounded-lg whitespace-nowrap shrink-0">
+                      {isBuying ? '...' : '매수'}
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-3 mt-1 pl-1 text-[9px] flex-wrap">
+                    {sc.rsi != null && <span className="text-slate-500">RSI <b className={Number(sc.rsi) > 70 ? 'text-rose-400' : Number(sc.rsi) < 30 ? 'text-emerald-400' : 'text-slate-300'}>{Number(sc.rsi).toFixed(0)}</b></span>}
+                    {sc.price > 0 && <span className="text-slate-400">${Number(sc.price).toFixed(2)}</span>}
+                    <span className={Number(sc.changePct) >= 0 ? 'text-emerald-400' : 'text-rose-400'}>{Number(sc.changePct) >= 0 ? '+' : ''}{Number(sc.changePct ?? 0).toFixed(2)}%</span>
+                  </div>
+                </div>
+              );
+            })}
+            {sorted.length > 10 && (
+              <button onClick={() => setShowAll(v => !v)}
+                className="w-full mt-1 py-1.5 text-[11px] text-slate-500 hover:text-blue-400 transition-colors">
+                {showAll ? '접기' : `+ ${sorted.length - 10}종목 더 보기`}
+              </button>
+            )}
+            {sorted.length === 0 && <div className="py-4 text-center text-[11px] text-slate-600">해당 섹터 점수 없음</div>}
+          </div>
+        </div>
+      ) : (
+        <div className="p-6 text-center space-y-3">
+          <div className="text-2xl opacity-30">🌐</div>
+          <p className="text-sm text-slate-500">해외 점수 계산 중...</p>
+          <p className="text-[11px] text-slate-600">잠시 후 새로고침하면 기술적 분석 점수가 표시됩니다</p>
+        </div>
+      )}
+    </Panel>
+  );
+}

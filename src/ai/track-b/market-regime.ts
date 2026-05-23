@@ -196,7 +196,8 @@ export async function checkDailyLoss(params: {
         AND o.filled_price IS NOT NULL
         AND tc.avg_buy_price IS NOT NULL
         AND tc.is_paper = $2
-    `, [today.toISOString(), config.isPaper]);
+        AND o.trading_mode = $3
+    `, [today.toISOString(), config.isPaper, config.tradingMode]);
     const realizedPnl = Number(rows[0]?.realized_pnl ?? 0);
 
     const unrealizedPnl = params.openChains

@@ -72,6 +72,7 @@ export const OrderSchema = z.object({
   trading_mode: z.enum(['paper', 'live']),
   trigger_source: z.string().nullable(),
   ai_reasoning: z.string().nullable(),
+  avg_buy_price: z.number().nullable().optional(),
   created_at: z.string(),
   updated_at: z.string(),
 });

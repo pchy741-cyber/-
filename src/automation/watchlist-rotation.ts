@@ -34,7 +34,7 @@ export async function runWatchlistRotation(): Promise<void> {
 
     // 현재 보유 중인 종목 코드 목록 (절대 제거 금지)
     const { rows: holdingRows } = await pool.query(
-      `SELECT DISTINCT stock_code FROM transaction_chains WHERE status = 'OPEN' AND total_quantity > 0`,
+      `SELECT DISTINCT stock_code FROM transaction_chains WHERE status = 'OPEN' AND total_quantity > 0 AND is_paper = false`,
     );
     const holdingCodes = new Set(holdingRows.map((r: any) => String(r.stock_code)));
 
@@ -189,7 +189,7 @@ export async function runDailyMarketScan(): Promise<void> {
 
     // ── 0. 현재 보유 중인 종목 (절대 비활성화 금지) ──────────────────────
     const { rows: holdingRows } = await pool.query(
-      `SELECT DISTINCT stock_code FROM transaction_chains WHERE status = 'OPEN' AND total_quantity > 0`,
+      `SELECT DISTINCT stock_code FROM transaction_chains WHERE status = 'OPEN' AND total_quantity > 0 AND is_paper = false`,
     );
     const holdingCodes = new Set(holdingRows.map((r: any) => String(r.stock_code)));
 

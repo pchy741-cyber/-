@@ -581,7 +581,7 @@ export class TradeExecutor {
       filled_quantity: 0,
       filled_price: null,
       status: result.success ? 'PENDING' : 'FAILED',
-      trading_mode: 'live',
+      trading_mode: config.tradingMode,
       trigger_source: params.triggerSource ?? null,
       ai_reasoning: params.aiReasoning ?? null,
     });

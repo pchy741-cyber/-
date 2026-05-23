@@ -85,7 +85,7 @@ async function ensureOverseasTable(): Promise<void> {
     const { rows: cashRows } = await getPool().query("SELECT value FROM overseas_state WHERE key = 'cash'");
     const currentCash = cashRows.length > 0 ? Number(cashRows[0].value) : null;
     if (currentCash !== null && currentCash < 5000) {
-      const { rows: holdingRows } = await getPool().query('SELECT COUNT(*) as cnt FROM overseas_holdings WHERE quantity > 0');
+      const { rows: holdingRows } = await getPool().query('SELECT COUNT(*) as cnt FROM overseas_holdings WHERE quantity > 0 AND is_paper = false');
       const holdingCount = Number(holdingRows[0]?.cnt ?? 0);
       if (holdingCount === 0) {
         await getPool().query(
@@ -99,7 +99,7 @@ async function ensureOverseasTable(): Promise<void> {
 async function getHoldings(): Promise<Map<string, { qty: number; avgPrice: number; boughtAt: string; exchange: string }>> {
   const map = new Map();
   try {
-    const { rows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0');
+    const { rows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = false');
     for (const r of rows) {
       map.set(r.stock_code, { qty: Number(r.quantity), avgPrice: Number(r.avg_price), boughtAt: r.bought_at, exchange: r.exchange });
     }
@@ -109,11 +109,11 @@ async function getHoldings(): Promise<Map<string, { qty: number; avgPrice: numbe
 
 async function setHolding(code: string, exchange: string, qty: number, avgPrice: number): Promise<void> {
   if (qty <= 0) {
-    await getPool().query('DELETE FROM overseas_holdings WHERE exchange = $1 AND stock_code = $2', [exchange, code]);
+    await getPool().query('DELETE FROM overseas_holdings WHERE exchange = $1 AND stock_code = $2 AND is_paper = false', [exchange, code]);
   } else {
     await getPool().query(
-      `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at)
-       VALUES ($1, $2, $3, $4, NOW())
+      `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper)
+       VALUES ($1, $2, $3, $4, NOW(), false)
        ON CONFLICT (exchange, stock_code) DO UPDATE SET quantity = $3, avg_price = $4`,
       [code, exchange, qty, avgPrice],
     );
@@ -164,18 +164,18 @@ async function syncHoldingsFromKIS(): Promise<void> {
     }
 
     // DB와 비교 — 수동매매로 생긴 변경 반영
-    const { rows: dbRows } = await getPool().query('SELECT stock_code, exchange, quantity FROM overseas_holdings').catch(() => ({ rows: [] as any[] }));
+    const { rows: dbRows } = await getPool().query('SELECT stock_code, exchange, quantity FROM overseas_holdings WHERE is_paper = false').catch(() => ({ rows: [] as any[] }));
 
     for (const row of dbRows) {
       const kisItem = allHoldings.get(String(row.stock_code));
       if (!kisItem || kisItem.qty === 0) {
         // DB엔 있는데 KIS엔 없음 → 수동매도됨, DB에서 제거
-        await getPool().query('DELETE FROM overseas_holdings WHERE exchange=$1 AND stock_code=$2', [row.exchange, row.stock_code]).catch(() => {});
+        await getPool().query('DELETE FROM overseas_holdings WHERE exchange=$1 AND stock_code=$2 AND is_paper = false', [row.exchange, row.stock_code]).catch(() => {});
         logger.info(`🔄 KIS동기화: ${row.stock_code} 수동매도 감지 → DB 제거`, { component: 'OVERSEAS' });
       } else if (Math.abs(kisItem.qty - Number(row.quantity)) >= 1) {
         // 수량 불일치 → KIS 기준으로 업데이트
         await getPool().query(
-          'UPDATE overseas_holdings SET quantity=$1, avg_price=$2 WHERE exchange=$3 AND stock_code=$4',
+          'UPDATE overseas_holdings SET quantity=$1, avg_price=$2 WHERE exchange=$3 AND stock_code=$4 AND is_paper = false',
           [kisItem.qty, kisItem.avgPrice, kisItem.exchange, row.stock_code],
         ).catch(() => {});
         logger.info(`🔄 KIS동기화: ${row.stock_code} 수량 조정 ${row.quantity}→${kisItem.qty}`, { component: 'OVERSEAS' });
@@ -188,8 +188,8 @@ async function syncHoldingsFromKIS(): Promise<void> {
     for (const [code, item] of allHoldings) {
       if (!watchCodes.has(code)) continue;
       await getPool().query(
-        `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at)
-         VALUES ($1, $2, $3, $4, NOW())
+        `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper)
+         VALUES ($1, $2, $3, $4, NOW(), false)
          ON CONFLICT (exchange, stock_code) DO UPDATE SET quantity=$3, avg_price=$4`,
         [code, item.exchange, item.qty, item.avgPrice],
       ).catch(() => {});
@@ -736,7 +736,7 @@ export async function runOverseasJob(): Promise<void> {
       const { rows: scalpRows } = await getPool().query(`
         SELECT stock_code, exchange, quantity, avg_price, scalp_tp, scalp_sl
         FROM overseas_holdings
-        WHERE is_scalp = TRUE AND quantity > 0 AND scalp_tp IS NOT NULL
+        WHERE is_scalp = TRUE AND quantity > 0 AND scalp_tp IS NOT NULL AND is_paper = false
       `).catch(() => ({ rows: [] as any[] }));
 
       for (const row of scalpRows) {
@@ -769,11 +769,11 @@ export async function runOverseasJob(): Promise<void> {
               kis_status: 'PAPER_FILLED', filled_quantity: qty, filled_price: cur,
               status: 'FILLED', trading_mode: config.isPaper ? 'paper' : 'live',
               trigger_source: 'OVERSEAS',
-              ai_reasoning: scalReasoning,
+              ai_reasoning: scalReasoning, avg_buy_price: avgBuy,
             });
 
             // DB에서 포지션 제거
-            await getPool().query('DELETE FROM overseas_holdings WHERE exchange=$1 AND stock_code=$2', [exch, code]);
+            await getPool().query('DELETE FROM overseas_holdings WHERE exchange=$1 AND stock_code=$2 AND is_paper = false', [exch, code]);
             // 현금 복구
             const recovered = qty * cur;
             const newCash = (await getCash()) + recovered;
@@ -932,7 +932,7 @@ export async function runOverseasJob(): Promise<void> {
       const t = techResults.find(r => r.code === code);
       if (t && t.price.currentPrice > 0) {
         getPool().query(
-          `UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2`,
+          `UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2 AND is_paper = false`,
           [t.price.currentPrice, code],
         ).catch(() => {});
       }
@@ -1610,8 +1610,8 @@ export async function runOverseasJob(): Promise<void> {
                   quantity: intQty, price: etfPrice,
                   kis_order_no: result.orderNo ?? `PKP${Date.now().toString(36)}`,
                   kis_status: 'FILLED', filled_quantity: intQty, filled_price: etfPrice,
-                  status: 'FILLED', trading_mode: 'live', trigger_source: 'OVERSEAS',
-                  ai_reasoning: preliqReason,
+                  status: 'FILLED', trading_mode: config.isPaper ? 'paper' : 'live', trigger_source: 'OVERSEAS',
+                  ai_reasoning: preliqReason, avg_buy_price: ph.avgPrice,
                 });
                 cash += proceeds;
                 await setCash(cash);
@@ -1850,8 +1850,8 @@ async function runParkingStrategy(params: {
             quantity: intQty, price: curP,
             kis_order_no: result.orderNo ?? `PKS${Date.now().toString(36)}`,
             kis_status: 'FILLED', filled_quantity: intQty, filled_price: curP,
-            status: 'FILLED', trading_mode: 'live', trigger_source: 'OVERSEAS',
-            ai_reasoning: `파킹 익절 +${pnlPct.toFixed(2)}% — 현금 회수 후 재투입`,
+            status: 'FILLED', trading_mode: config.isPaper ? 'paper' : 'live', trigger_source: 'OVERSEAS',
+            ai_reasoning: `파킹 익절 +${pnlPct.toFixed(2)}% — 현금 회수 후 재투입`, avg_buy_price: h.avgPrice,
           });
           parkingCashRecovered += proceeds;
           actions.push(`📦 파킹익절 ${etf.code} x${intQty} @$${curP.toFixed(2)} (+${pnlPct.toFixed(2)}%, $${proceeds.toFixed(0)} 회수)`);
@@ -2026,6 +2026,7 @@ async function executeOverseasOrder(
       kis_status: 'PAPER_FILLED', filled_quantity: qty, filled_price: fillPrice,
       status: 'FILLED', trading_mode: 'paper', trigger_source: 'OVERSEAS',
       ai_reasoning: paperReasoning,
+      avg_buy_price: side === 'SELL' ? previousAvgPrice : null,
     });
 
     logger.info(`📝 [US_PAPER] ${side} ${code} x${qty} @$${fillPrice.toFixed(2)} (${fakeOrderNo})`, { component: 'OVERSEAS' });
@@ -2060,8 +2061,9 @@ async function executeOverseasOrder(
         quantity: qty, price, kis_order_no: result.orderNo,
         kis_status: result.success ? 'SUBMITTED' : 'FAILED',
         filled_quantity: 0, filled_price: null,
-        status: result.success ? 'PENDING' : 'FAILED', trading_mode: 'live',
+        status: result.success ? 'PENDING' : 'FAILED', trading_mode: config.isPaper ? 'paper' : 'live',
         trigger_source: 'OVERSEAS', ai_reasoning: liveReasoning,
+        avg_buy_price: side === 'SELL' ? previousAvgPrice : null,
       });
       if (result.success) {
         logger.info(`🌍 [LIVE] 주문 접수: ${side} ${code} x${qty} @$${price.toFixed(2)} (${result.orderNo})`, { component: 'OVERSEAS' });

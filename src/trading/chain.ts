@@ -1,4 +1,5 @@
 import type { StrategyMode } from '../config/constants.js';
+import { config } from '../config/index.js';
 import { createChain, getOpenChains, getOrdersByChain, updateChain, getPool, withTransaction, isMemoryMode } from '../db/client.js';
 import type { TransactionChain } from '../db/models.js';
 import { logger } from '../utils/logger.js';
@@ -182,8 +183,8 @@ export class ChainManager {
       await pool.query(
         `INSERT INTO score_accuracy
            (stock_code, chain_id, entry_score, entry_signal, entry_confidence,
-            realized_pnl_pct, outcome, holding_days, close_reason, strategy_mode)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            realized_pnl_pct, outcome, holding_days, close_reason, strategy_mode, is_paper)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
          ON CONFLICT (chain_id) DO NOTHING`,
         [
           chain.stock_code,
@@ -196,6 +197,7 @@ export class ChainManager {
           holdingDays,
           reason,
           (chain as any).strategy_mode ?? null,
+          (chain as any).is_paper ?? config.isPaper,
         ],
       );
       logger.info(`📝 스코어 정확도 기록: ${chain.stock_code} ${outcome} (${pnlPct > 0 ? '+' : ''}${pnlPct}%)`, { component: 'CHAIN' });

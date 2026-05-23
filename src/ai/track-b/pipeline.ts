@@ -452,9 +452,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // 성과 배율: 최근 5거래일 승률/수익 기반 (0.7x ~ 1.2x)
     const perfMult = await getPerformanceMultiplier();
+    // 복리 포지션 사이징: 총자산 20% 기반 (고정 캡 → 동적 스케일링)
+    const assetBasedMax = Math.round(totalAssets * 0.20);
     const baseMaxPos = dailyLoss.earlyWarning
-      ? Math.round(config.risk.maxPositionKrw * 0.5)
-      : config.risk.maxPositionKrw;
+      ? Math.round(assetBasedMax * 0.5)
+      : assetBasedMax;
     // 스트레스 레벨 1 → 포지션 추가 10% 축소
     const stressMult = portfolioStress >= 1 ? 0.9 : 1.0;
     const adjMaxPositionKrw = Math.round(baseMaxPos * perfMult * stressMult);

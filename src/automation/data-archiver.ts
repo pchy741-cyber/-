@@ -1,3 +1,4 @@
+import { config } from '../config/index.js';
 import { getPool, logSystem } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 
@@ -39,7 +40,7 @@ export async function archiveOldData(): Promise<void> {
 
   // portfolio_snapshots 정리
   try {
-    const { rowCount } = await getPool().query('DELETE FROM portfolio_snapshots WHERE snapshot_at < $1', [cutoff]);
+    const { rowCount } = await getPool().query('DELETE FROM portfolio_snapshots WHERE snapshot_at < $1 AND is_paper = $2', [cutoff, config.isPaper]);
     totalDeleted += rowCount ?? 0;
     logger.info(`  portfolio_snapshots: ${rowCount ?? 0}건 삭제`, { component: 'ARCHIVE' });
   } catch (e) {

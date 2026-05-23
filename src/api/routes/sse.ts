@@ -5,11 +5,15 @@ import { getOpenChains, getPool } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { isMarketOpen } from '../../kis/market.js';
 import { getKillSwitchStatus } from '../../risk/kill-switch.js';
+import { getPaperBalance } from '../../risk/engine.js';
 
 export const sseRoutes = new Hono();
 
 // 최신 체결 거래 가져오기 (SSE 페이로드용 — 최근 10건)
-async function getRecentTrades() {
+async function getRecentTrades(isPaper?: boolean) {
+  const tradingMode = isPaper !== undefined
+    ? (isPaper ? 'paper' : 'live')
+    : config.tradingMode;
   try {
     const { rows } = await getPool().query(
       `SELECT o.id, o.stock_code, o.side, o.status,
@@ -30,7 +34,7 @@ async function getRecentTrades() {
          AND o.trading_mode = $1
        ORDER BY o.created_at DESC
        LIMIT 10`,
-      [config.tradingMode],
+      [tradingMode],
     );
     return rows;
   } catch {
@@ -48,15 +52,20 @@ async function getRecentTrades() {
  * - 장중에만 활성 (장외에는 30초 간격)
  */
 sseRoutes.get('/stream', (c) => {
+  // ?viewMode=paper|live — 보기 모드 (서버 거래 모드와 독립)
+  const viewModeParam = c.req.query('viewMode');
+  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : config.isPaper;
+
   return streamSSE(c, async (stream) => {
     let id = 0;
 
     while (true) {
       try {
+        const balanceFn = viewIsPaper ? getPaperBalance : getAccountBalance;
         const [balance, chains, recentTrades] = await Promise.all([
-          getAccountBalance(),
-          getOpenChains(),
-          getRecentTrades(),
+          balanceFn(),
+          getOpenChains(viewIsPaper),
+          getRecentTrades(viewIsPaper),
         ]);
 
         const payload = {

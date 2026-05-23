@@ -826,6 +826,7 @@ export async function getLearnedInsightsForPrompt(): Promise<string> {
             ROUND(AVG(realized_pnl_pct)::numeric,2) AS avg_pnl
        FROM score_accuracy
       WHERE recorded_at >= NOW() - INTERVAL '90 days'
+        AND is_paper = false
       GROUP BY stock_code
       HAVING COUNT(*) >= 3
       ORDER BY (SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END)::float / COUNT(*)) DESC
@@ -1117,6 +1118,7 @@ async function analyzeParkingDecisions(): Promise<LearnedInsight[]> {
         WHERE tc.stock_code = $1
           AND tc.status = 'CLOSED'
           AND tc.closed_at >= $2
+          AND tc.is_paper = false
         GROUP BY tc.id
         ORDER BY tc.closed_at DESC`,
       [IDLE_PARK_CODE, ninetyDaysAgo.toISOString()],
@@ -1195,6 +1197,7 @@ export async function getStockAccuracyContext(stockCodes: string[]): Promise<str
        FROM score_accuracy
       WHERE stock_code = ANY($1)
         AND recorded_at >= NOW() - INTERVAL '90 days'
+        AND is_paper = false
       GROUP BY stock_code
       HAVING COUNT(*) >= 3
       ORDER BY stock_code`,
@@ -1238,6 +1241,7 @@ async function analyzeBuyThreshold(): Promise<LearnedInsight[]> {
          FROM score_accuracy
         WHERE recorded_at >= NOW() - INTERVAL '90 days'
           AND entry_score IS NOT NULL
+          AND is_paper = false
         ORDER BY entry_score`,
     );
 
@@ -1320,6 +1324,7 @@ async function calibrateScoreTierParams(): Promise<void> {
        FROM score_accuracy
        WHERE recorded_at >= NOW() - INTERVAL '120 days'
          AND entry_score IS NOT NULL
+         AND is_paper = false
        ORDER BY recorded_at DESC`,
     );
 

@@ -149,8 +149,8 @@ export async function getDynamicPositionSize(
   try {
     const { rows: snapshotRows } = await getPool().query(
       `SELECT total_value FROM portfolio_snapshots
-       WHERE created_at::date = CURRENT_DATE AND is_paper = $1
-       ORDER BY created_at ASC LIMIT 1`,
+       WHERE snapshot_at >= CURRENT_DATE AND is_paper = $1
+       ORDER BY snapshot_at ASC LIMIT 1`,
       [config.isPaper],
     );
 
@@ -158,7 +158,7 @@ export async function getDynamicPositionSize(
       const { rows: currentRows } = await getPool().query(
         `SELECT total_value FROM portfolio_snapshots
          WHERE is_paper = $1
-         ORDER BY created_at DESC LIMIT 1`,
+         ORDER BY snapshot_at DESC LIMIT 1`,
         [config.isPaper],
       );
 

@@ -28,10 +28,8 @@ export function adjustPositionSizes(params: {
   // KOSPI 조정장이면 60%, 강세장이면 1.3x, 정상이면 1.0x; 일일손실 조기경고 추가 50% 축소
   const kospiSizingMult = kospiRegimePenalty >= 1 ? 0.6 : (kospiBoost ? 1.3 : 1.0);
   const earlyWarnMult = dailyLossEarlyWarning ? 0.5 : 1.0;
-  const maxPerPosition = Math.min(
-    config.risk.maxPositionKrw,
-    Math.round(totalAssets * 0.25 * kospiSizingMult * earlyWarnMult),
-  );
+  // 복리 포지션 사이징: totalAssets × 25% 기반 (고정 캡 제거 → 자산 성장에 비례)
+  const maxPerPosition = Math.round(totalAssets * 0.25 * kospiSizingMult * earlyWarnMult);
   const baseBudget = Math.floor(maxPerPosition / _params.splitCount);
 
   const scoreMap = new Map<string, number>(

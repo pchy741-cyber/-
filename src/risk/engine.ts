@@ -297,7 +297,7 @@ export class RiskEngine {
       const pool = getPool();
       const today = new Date().toISOString().split('T')[0];
       const { rows } = await pool.query<{ count: string }>(
-        `SELECT COUNT(*)::text AS count FROM orders WHERE created_at::date = $1 AND trading_mode = $2`,
+        `SELECT COUNT(*)::text AS count FROM orders WHERE created_at >= $1::date AND created_at < ($1::date + INTERVAL '1 day') AND trading_mode = $2`,
         [today, config.tradingMode],
       );
       const todayCount = Number(rows[0]?.count ?? 0);
@@ -326,12 +326,18 @@ export class RiskEngine {
     const currentInvested = existing ? existing.quantity * existing.avgBuyPrice : 0;
     const totalAfter = currentInvested + orderValue;
 
-    if (totalAfter > config.risk.maxPositionKrw) {
-      const msg = `종목당 한도 초과: ${stockCode} 현재 ${currentInvested.toLocaleString()}원 + 신규 ${orderValue.toLocaleString()}원 = ${totalAfter.toLocaleString()}원 > 한도 ${config.risk.maxPositionKrw.toLocaleString()}원`;
+    // 동적 포지션 한도: 총자산 25% (복리 성장 지원), config 값은 절대 안전 상한
+    const totalAssets = balance.totalEvalAmount ?? 0;
+    const dynamicLimit = totalAssets > 0
+      ? Math.min(Math.round(totalAssets * 0.25), config.risk.maxPositionKrw)
+      : config.risk.maxPositionKrw;
+
+    if (totalAfter > dynamicLimit) {
+      const msg = `종목당 한도 초과: ${stockCode} 현재 ${currentInvested.toLocaleString()}원 + 신규 ${orderValue.toLocaleString()}원 = ${totalAfter.toLocaleString()}원 > 한도 ${dynamicLimit.toLocaleString()}원 (총자산 ${totalAssets.toLocaleString()}원의 25%)`;
       await insertRiskEvent({
         event_type: 'POSITION_LIMIT',
         severity: 'WARNING',
-        details: { stockCode, currentInvested, orderValue, limit: config.risk.maxPositionKrw },
+        details: { stockCode, currentInvested, orderValue, limit: dynamicLimit, totalAssets },
         action_taken: '주문 거부',
       });
       return { approved: false, reason: msg };
@@ -372,10 +378,8 @@ export class RiskEngine {
     const currentValue = currentBalance.totalDeposit + currentBalance.totalEvalAmount;
     const dailyLoss = startValue - currentValue;
 
-    // 연습: env var 고정값 우선, 없으면 25% 폴백 / 실전: 총자산 5% 동적 계산
-    const maxDailyDrawdownKrw = config.isPaper
-      ? (config.risk.maxDailyDrawdownKrw > 0 ? config.risk.maxDailyDrawdownKrw : Math.round(startValue * 0.25))
-      : Math.round(startValue * 0.05);
+    // 총자산 기준 30% 손실 한도 (연습/실전 동일)
+    const maxDailyDrawdownKrw = Math.round(startValue * 0.30);
 
     if (dailyLoss > maxDailyDrawdownKrw) {
       // Kill Switch 자동 발동!

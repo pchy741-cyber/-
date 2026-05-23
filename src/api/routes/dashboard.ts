@@ -340,7 +340,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     if (viewIsPaper) {
       // 연습모드 뷰: 해외는 실전 전용 — 표시 안 함
     } else {
-    const { rows: osRows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0');
+    const { rows: osRows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = false');
     const { rows: osCashRows } = await getPool().query("SELECT value FROM overseas_state WHERE key = 'cash'");
     overseasCash = osCashRows.length > 0 ? Number(osCashRows[0].value) : 0;
 
@@ -460,10 +460,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     riskLimits: await (async () => {
       const snap = await getTodayStartSnapshot().catch(() => null);
       const startValue = snap ? Number(snap.total_value) : grandTotalValue;
-      // 연습: env var 고정값 (500,000원), 실전: 총자산의 5% 동적 계산 (계좌 규모 반영)
-      const maxDailyDrawdownKrw = viewIsPaper
-        ? (config.risk.maxDailyDrawdownKrw > 0 ? config.risk.maxDailyDrawdownKrw : Math.round(startValue * 0.25))
-        : Math.round(startValue * 0.05);
+      // 총자산 기준 30% 손실 한도 (연습/실전 동일)
+      const maxDailyDrawdownKrw = Math.round(startValue * 0.30);
       return { maxDailyDrawdownKrw, startValue: Math.round(startValue) };
     })(),
     insights: insightRows.rows,
@@ -1347,7 +1345,7 @@ dashboardRoutes.post('/sell-overseas/:stockCode', async (c) => {
   const stockCode = c.req.param('stockCode');
   try {
     const { rows } = await getPool().query(
-      'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0', [stockCode]);
+      'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0 AND is_paper = false', [stockCode]);
     const holding = rows[0];
     if (!holding) return c.json({ error: '보유 종목을 찾을 수 없습니다' }, 404);
     const qty = Number(holding.quantity);
@@ -1368,16 +1366,16 @@ dashboardRoutes.post('/sell-overseas/:stockCode', async (c) => {
     if (config.isPaper) {
       const fakeOrderNo = `POS${Date.now().toString(36)}`;
       await getPool().query(
-        'DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2', [stockCode, exchange]);
+        'DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = false', [stockCode, exchange]);
       await getPool().query('DELETE FROM overseas_state WHERE key = $1', [`maxprice_${stockCode}`]);
       await getPool().query(
         `INSERT INTO overseas_state (key, value) VALUES ('cash', $1::text)
          ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
         [fillPrice * qty]);
       await getPool().query(
-        `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
-         VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','paper','OVERSEAS',$5)`,
-        [stockCode, qty, fillPrice, fakeOrderNo, paperReasoning]);
+        `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
+         VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','paper','OVERSEAS',$5,$6)`,
+        [stockCode, qty, fillPrice, fakeOrderNo, paperReasoning, avgPrice]);
       logger.info(`✅ CEO 해외 수동 매도 완료 (모의투자): ${stockCode} ${qty}주 @$${fillPrice}`, { component: 'DASHBOARD' });
       return c.json({ ok: true, orderNo: fakeOrderNo, message: `${stockCode} ${qty}주 전량 매도 완료 (모의투자)` });
     }
@@ -1394,16 +1392,16 @@ dashboardRoutes.post('/sell-overseas/:stockCode', async (c) => {
       return c.json({ error: `KIS 매도 거부: ${result.message}` }, 502);
     }
     await getPool().query(
-      'DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2', [stockCode, exchange]);
+      'DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = false', [stockCode, exchange]);
     await getPool().query('DELETE FROM overseas_state WHERE key = $1', [`maxprice_${stockCode}`]);
     await getPool().query(
       `INSERT INTO overseas_state (key, value) VALUES ('cash', $1::text)
        ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
       [fillPrice * qty]);
     await getPool().query(
-      `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
-       VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','live','OVERSEAS',$5)`,
-      [stockCode, qty, fillPrice, result.orderNo ?? '', paperReasoning]);
+      `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
+       VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','live','OVERSEAS',$5,$6)`,
+      [stockCode, qty, fillPrice, result.orderNo ?? '', paperReasoning, avgPrice]);
     logger.info(`✅ CEO 해외 수동 매도 완료: ${stockCode} ${qty}주 (주문번호 ${result.orderNo})`, { component: 'DASHBOARD' });
     return c.json({ ok: true, orderNo: result.orderNo, message: `${stockCode} ${qty}주 전량 매도 주문 완료` });
   } catch (err: any) {
@@ -1530,6 +1528,8 @@ dashboardRoutes.post('/manual-buy', async (c) => {
 
 // ── 승률 분석: 점수 구간별 WIN/LOSS 집계 ──
 dashboardRoutes.get('/stats/win-rate-bands', async (c) => {
+  const viewModeParam = c.req.query('viewMode');
+  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : config.isPaper;
   try {
     const { rows } = await getPool().query<{
       band: string;
@@ -1555,9 +1555,10 @@ dashboardRoutes.get('/stats/win-rate-bands', async (c) => {
       FROM score_accuracy
       WHERE recorded_at >= NOW() - INTERVAL '30 days'
         AND entry_score IS NOT NULL
+        AND is_paper = $1
       GROUP BY band
       ORDER BY MIN(entry_score) DESC NULLS LAST
-    `);
+    `, [viewIsPaper]);
 
     const bands = rows.map(r => ({
       band: r.band,

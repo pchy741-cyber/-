@@ -196,7 +196,8 @@ export async function fixWatchlistNames(): Promise<{ fixed: number; total: numbe
     // 1. transaction_chains에 있지만 watchlist에 없는 종목 추가
     const { rows: chainRows } = await getPool().query(
       `SELECT DISTINCT tc.stock_code FROM transaction_chains tc
-       WHERE tc.stock_code NOT IN (SELECT stock_code FROM watchlist)`,
+       WHERE tc.stock_code NOT IN (SELECT stock_code FROM watchlist)
+         AND tc.is_paper = false`,
     );
     // 2. orders에 있지만 watchlist에 없는 종목 추가
     const { rows: orderRows } = await getPool().query(

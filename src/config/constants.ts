@@ -204,7 +204,7 @@ export const REFRESH = {
 
 // ── 매매 게이트 ──
 export const GATE = {
-  SLIPPAGE_PCT: 0.05,                      // 시장가 슬리피지 보정 (단방향)
+  SLIPPAGE_PCT: 0.26,                      // 왕복 수수료 0.21% + 슬리피지 0.05% = 실질 거래비용
   REENTRY_COOLDOWN_MS: 30 * 60_000,        // 동일 종목 재진입 쿨다운 (SCALPING, 30분)
   CONSECUTIVE_LOSS_HALT_MS: 60 * 60_000,   // 5연패 → 1시간 쿨다운
   CONSECUTIVE_LOSS_WARN_MS: 45 * 60_000,   // 3연패 → 45분 쿨다운

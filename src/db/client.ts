@@ -291,8 +291,8 @@ export async function insertOrder(order: Omit<Order, 'id' | 'created_at' | 'upda
   const { rows } = await getPool().query(
     `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price,
        kis_order_no, kis_status, filled_quantity, filled_price, status, trading_mode,
-       trigger_source, ai_reasoning)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
+       trigger_source, ai_reasoning, avg_buy_price)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
     [
       order.chain_id,
       order.stock_code,
@@ -308,6 +308,7 @@ export async function insertOrder(order: Omit<Order, 'id' | 'created_at' | 'upda
       order.trading_mode,
       order.trigger_source,
       order.ai_reasoning,
+      order.avg_buy_price ?? null,
     ],
   );
   return rows[0].id;
@@ -316,7 +317,7 @@ export async function insertOrder(order: Omit<Order, 'id' | 'created_at' | 'upda
 const ORDER_ALLOWED_COLS = new Set([
   'chain_id', 'stock_code', 'side', 'order_type', 'quantity', 'price',
   'kis_order_no', 'kis_status', 'filled_quantity', 'filled_price', 'status',
-  'trading_mode', 'trigger_source', 'ai_reasoning',
+  'trading_mode', 'trigger_source', 'ai_reasoning', 'avg_buy_price',
 ]);
 
 export async function updateOrder(id: string, updates: Partial<Order>) {
@@ -353,7 +354,9 @@ export async function getPendingDomesticOrders(): Promise<Order[]> {
        AND (trigger_source IS NULL OR trigger_source != 'OVERSEAS')
        AND created_at >= NOW() - INTERVAL '2 hours'
        AND kis_order_no IS NOT NULL
+       AND trading_mode = $1
      ORDER BY created_at ASC`,
+    [config.tradingMode],
   );
   return rows;
 }
