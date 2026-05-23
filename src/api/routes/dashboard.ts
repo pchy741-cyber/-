@@ -162,7 +162,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     ? { totalDeposit: 10000000, totalEvalAmount: 0, orderableCash: 10000000, totalProfitLoss: 0, totalProfitLossPct: 0, positions: [] }
     : { totalDeposit: 0, totalEvalAmount: 0, orderableCash: 0, totalProfitLoss: 0, totalProfitLossPct: 0, positions: [] };
 
-  const balanceFn = viewIsPaper ? getPaperBalance : getAccountBalance;
+  const balanceFn = viewIsPaper ? getPaperBalance : () => getAccountBalance(true);
   const [balanceResult, chains, strategy, insightRows, defensePark] = await Promise.all([
     balanceFn().catch(() => defaultBalance),
     getOpenChains(viewIsPaper).catch(() => []),
@@ -299,6 +299,40 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     const isParking = defensePark?.isActive && ch.stock_code === defensePark?.parkStockCode;
     return { ...ch, stock_name: resolvedName, currentPrice, unrealizedPnl, unrealizedPnlPct, invested, isParking };
   });
+
+  // 🔄 LIVE 뷰: KIS 실계좌 포지션 중 체인이 없는 종목을 가상 체인으로 표시
+  // (유저가 KIS 앱에서 직접 산 종목이나, 봇이 실거래로 산 뒤 체인이 paper로 전환된 종목)
+  if (!viewIsPaper && balance.positions?.length > 0) {
+    const chainCodeSet = new Set(enrichedChains.map((ch: any) => ch.stock_code));
+    for (const pos of balance.positions as any[]) {
+      if (pos.quantity > 0 && !chainCodeSet.has(pos.stockCode)) {
+        const invested = pos.avgBuyPrice * pos.quantity;
+        totalChainInvested += invested;
+        totalChainPnl += pos.profitLoss ?? 0;
+        enrichedChains.push({
+          id: `KIS_SYNC_${pos.stockCode}`,
+          stock_code: pos.stockCode,
+          stock_name: pos.stockName || pos.stockCode,
+          status: 'OPEN',
+          strategy_mode: 'SWING',
+          avg_buy_price: pos.avgBuyPrice,
+          total_quantity: pos.quantity,
+          total_invested: invested,
+          realized_pnl: 0,
+          current_averaging_count: 0,
+          max_averaging_count: 0,
+          is_paper: false,
+          trigger_source: 'KIS_SYNC',
+          currentPrice: pos.currentPrice,
+          unrealizedPnl: pos.profitLoss ?? 0,
+          unrealizedPnlPct: pos.profitLossPct ?? 0,
+          invested,
+          isParking: false,
+          opened_at: null,
+        });
+      }
+    }
+  }
 
   // 투자금/손익 계산 — 모드별 분기
   // Live: KIS 잔고가 source-of-truth (chains는 메타 정보)
@@ -458,7 +492,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     tradingMode: config.tradingMode,         // 실제 서버 거래 모드 (변경 불가 — 항상 live)
     viewMode: viewIsPaper ? 'paper' : 'live', // 현재 보기 모드
     riskLimits: await (async () => {
-      const snap = await getTodayStartSnapshot().catch(() => null);
+      const snap = await getTodayStartSnapshot(viewIsPaper).catch(() => null);
       const startValue = snap ? Number(snap.total_value) : grandTotalValue;
       // 총자산 기준 30% 손실 한도 (연습/실전 동일)
       const maxDailyDrawdownKrw = Math.round(startValue * 0.30);
@@ -694,7 +728,7 @@ dashboardRoutes.post('/watchlist', async (c) => {
     await getPool().query(
       `INSERT INTO watchlist (stock_code, stock_name, market, source)
        VALUES ($1, $2, $3, 'MANUAL')
-       ON CONFLICT (stock_code) DO UPDATE SET stock_name = $2, market = $3`,
+       ON CONFLICT (stock_code) DO UPDATE SET stock_name = $2, market = $3, is_active = true, source = 'MANUAL'`,
       [stockCode, stockName, market],
     );
   } catch (err: any) {
@@ -717,7 +751,7 @@ dashboardRoutes.get('/flow', async (c) => {
     return c.json(status);
   } catch {
     return c.json({
-      totalPortfolio: 10000000, cash: 10000000, cashRatio: 100,
+      totalPortfolio: config.isPaper ? 10000000 : 0, cash: config.isPaper ? 10000000 : 0, cashRatio: 100,
       investedRatio: 0, flowStatus: 'FLOWING', flowMessage: '대기 중',
       mode: 'SWING', activePositions: 0, pendingStocks: 0,
       allocation: [], pendingStockCodes: [],
@@ -744,7 +778,7 @@ dashboardRoutes.delete('/watchlist/:stockCode', async (c) => {
 dashboardRoutes.get('/kis-balance', async (c) => {
   try {
     const [domestic, overseas] = await Promise.all([
-      getAccountBalance().catch(() => null),
+      getAccountBalance(true).catch(() => null),
       import('../../kis/overseas.js').then((m) => m.getOverseasBalance()).catch(() => []),
     ]);
     return c.json({ domestic, overseas });
@@ -763,6 +797,82 @@ dashboardRoutes.post('/watchlist/sync', async (c) => {
     return c.json({ ok: true, added: allAdded, kisTotal: interest.total, message: allAdded.length > 0 ? `${allAdded.length}종목 동기화 완료` : '이미 최신 상태 (모의투자는 관심종목 API 미지원)' });
   } catch (err: any) {
     return c.json({ error: err?.message ?? 'KIS 동기화 실패' }, 500);
+  }
+});
+
+// ── 매도 후 추적 — 최근 매도 종목의 현재가 변동 ──
+dashboardRoutes.get('/watchlist/sold-tracking', async (c) => {
+  try {
+    const { rows } = await getPool().query(`
+      SELECT DISTINCT ON (tc.stock_code)
+        tc.stock_code,
+        COALESCE(w.stock_name, tc.stock_code) AS stock_name,
+        tc.avg_buy_price,
+        tc.realized_pnl,
+        tc.closed_at,
+        tc.close_reason,
+        (SELECT o.filled_price FROM orders o
+         WHERE o.chain_id = tc.id AND o.side = 'SELL'
+         ORDER BY o.created_at DESC LIMIT 1) AS sell_price
+      FROM transaction_chains tc
+      LEFT JOIN watchlist w ON tc.stock_code = w.stock_code
+      WHERE tc.status = 'CLOSED'
+        AND tc.is_paper = $1
+        AND tc.closed_at > NOW() - INTERVAL '60 days'
+      ORDER BY tc.stock_code, tc.closed_at DESC
+    `, [config.isPaper]);
+
+    if (rows.length === 0) return c.json([]);
+
+    // 최근 매도 15개만 (KIS rate limit 보호)
+    const sorted = rows
+      .filter((r: any) => Number(r.sell_price ?? 0) > 0)
+      .sort((a: any, b: any) => new Date(b.closed_at).getTime() - new Date(a.closed_at).getTime())
+      .slice(0, 15);
+
+    const codes = sorted.map((r: any) => String(r.stock_code));
+
+    // 캐시 우선 → Redis → KIS API 순서로 현재가 조회
+    let priceMap = getLastKnownPricesMemory(codes);
+    if (priceMap.size < codes.length) {
+      const redisPrices = await getLastKnownPrices(codes).catch(() => new Map<string, number>());
+      for (const [code, price] of redisPrices) {
+        if (!priceMap.has(code)) priceMap.set(code, price);
+      }
+    }
+    const uncachedCodes = codes.filter((c) => !priceMap.has(c));
+    if (uncachedCodes.length > 0 && isMarketOpen()) {
+      const livePrices = await getBatchPrices(uncachedCodes).catch(() => new Map());
+      for (const [code, p] of livePrices) {
+        if (p.currentPrice > 0) {
+          priceMap.set(code, p.currentPrice);
+          cachePriceMemory(code, p.currentPrice);
+        }
+      }
+    }
+
+    const result = sorted.map((r: any) => {
+      const sellPrice = Number(r.sell_price);
+      const buyPrice = Number(r.avg_buy_price);
+      const currentPrice = priceMap.get(r.stock_code) ?? 0;
+      const sellPnlPct = buyPrice > 0 ? ((sellPrice - buyPrice) / buyPrice) * 100 : 0;
+      const postSellPct = sellPrice > 0 && currentPrice > 0
+        ? ((currentPrice - sellPrice) / sellPrice) * 100 : null;
+      return {
+        stock_code: r.stock_code,
+        stock_name: r.stock_name,
+        sell_price: sellPrice,
+        sell_date: r.closed_at,
+        sell_pnl_pct: Math.round(sellPnlPct * 10) / 10,
+        current_price: currentPrice,
+        post_sell_pct: postSellPct != null ? Math.round(postSellPct * 10) / 10 : null,
+        close_reason: r.close_reason,
+      };
+    });
+
+    return c.json(result);
+  } catch (err: any) {
+    return c.json({ error: err?.message ?? '매도 추적 조회 실패' }, 500);
   }
 });
 
@@ -918,7 +1028,7 @@ dashboardRoutes.get('/trades', async (c) => {
             AND stock_code = ANY($1::text[])
             AND trading_mode = $2
           ORDER BY created_at ASC, id ASC`,
-        [domesticCodes, config.tradingMode],
+        [domesticCodes, tradeMode],
       );
       calcFifoPnl(pnlRows, false);
     }
@@ -931,7 +1041,7 @@ dashboardRoutes.get('/trades', async (c) => {
             AND stock_code = ANY($1::text[])
             AND trading_mode = $2
           ORDER BY created_at ASC, id ASC`,
-        [overseasCodes, config.tradingMode],
+        [overseasCodes, tradeMode],
       );
       calcFifoPnl(osPnlRows, true);
     }
@@ -1442,7 +1552,7 @@ dashboardRoutes.post('/manual-buy', async (c) => {
     let amount_krw = body.amount_krw ?? 0;
     if (amount_krw < 10000) {
       try {
-        const balance = await getAccountBalance();
+        const balance = config.isPaper ? await getPaperBalance() : await getAccountBalance(true);
         const totalCapital = balance.totalEvalAmount + balance.orderableCash;
         const slFraction = Math.abs(stopLossPct) / 100; // e.g. 2.5% → 0.025
         const riskBudget = totalCapital * 0.015;         // 최대 허용 손실: 총자본의 1.5%

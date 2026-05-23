@@ -11,6 +11,7 @@ import JournalView from './views/JournalView';
 import WatchlistView from './views/WatchlistView';
 import NewsView from './views/NewsView';
 import SettingsView from './views/SettingsView';
+import ScreenshotReview from './components/ScreenshotReview';
 
 // ═══════════════════════════════════════
 // Dashboard — thin shell
@@ -43,13 +44,10 @@ export default function Dashboard() {
   const gptRef = useRef<HTMLTextAreaElement>(null);
   const claudeRef = useRef<HTMLTextAreaElement>(null);
 
-  const [viewMode, setViewMode] = useState<'live'|'paper'>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('quantops_viewMode');
-      if (saved === 'paper' || saved === 'live') return saved;
-    }
-    return 'live';
-  });
+  // SSR-safe: always start as 'live' to avoid hydration mismatch
+  // localStorage 복원은 useEffect에서 처리 (아래 참조)
+  const [viewMode, setViewMode] = useState<'live'|'paper'>('live');
+  const [marketTab, setMarketTab] = useState<'KR'|'US'>('KR');
 
   const loadingRef = useRef(false);
   const loadGenRef = useRef(0);
@@ -57,10 +55,10 @@ export default function Dashboard() {
   const tradesLoadedRef = useRef(false);
   const tradesLastFetchRef = useRef(0);
   const modeTogglingRef = useRef(false);
-  const viewModeRef = useRef<'live'|'paper'>(viewMode);
+  const viewModeRef = useRef<'live'|'paper'>('live');
 
-  const loadStatic = async (gen: number) => {
-    const vm = viewModeRef.current;
+  const loadStatic = async (gen: number, vmOverride?: string) => {
+    const vm = vmOverride ?? viewModeRef.current;
     const [w, s, t, sec, wc, wh] = await Promise.allSettled([
       api('/watchlist'), api('/strategy'),
       api(`/trades?limit=100&viewMode=${vm}`), api('/secrets'),
@@ -81,8 +79,9 @@ export default function Dashboard() {
     staticLoadedRef.current = true;
   };
 
-  const refreshTrades = (gen: number) => {
-    api(`/trades?limit=100&viewMode=${viewModeRef.current}`).then((t: any) => {
+  const refreshTrades = (gen: number, vmOverride?: string) => {
+    const vm = vmOverride ?? viewModeRef.current;
+    api(`/trades?limit=100&viewMode=${vm}`).then((t: any) => {
       if (loadGenRef.current !== gen) return;
       if (Array.isArray(t)) {
         setTrades(t);
@@ -96,13 +95,14 @@ export default function Dashboard() {
     if (loadingRef.current) return;
     loadingRef.current = true;
     const gen = ++loadGenRef.current;
+    const vm = viewModeRef.current; // 호출 시점 스냅샷 — async 중 ref 변경돼도 안전
     const ifCurrent = <T,>(setter: (v: T) => void) => (v: T) => {
       if (loadGenRef.current === gen) setter(v);
     };
     try {
       setLoading(true);
       const [h, d, k] = await Promise.allSettled([
-        api('/health'), api(`/dashboard?viewMode=${viewModeRef.current}`), api('/kill-switch'),
+        api('/health'), api(`/dashboard?viewMode=${vm}`), api('/kill-switch'),
       ]);
       if (gen !== loadGenRef.current) return;
       if (h.status === 'fulfilled') setHealth(h.value);
@@ -112,11 +112,11 @@ export default function Dashboard() {
       setLoading(false);
 
       if (!staticLoadedRef.current || forceStatic) {
-        loadStatic(gen).catch(() => {});
+        loadStatic(gen, vm).catch(() => {});
       } else {
         const tradesStaleSec = (Date.now() - tradesLastFetchRef.current) / 1000;
         if (!tradesLoadedRef.current || tradesStaleSec > 60) {
-          refreshTrades(gen);
+          refreshTrades(gen, vm);
         }
       }
 
@@ -127,6 +127,17 @@ export default function Dashboard() {
     } catch (err) { setLoading(false); console.error('[QUANTOPS] 데이터 로드 실패:', err); }
     finally { loadingRef.current = false; }
   };
+
+  // localStorage에서 viewMode 복원 (SSR hydration 이후, load 전에 ref 세팅)
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('quantops_viewMode');
+      if (saved === 'paper' || saved === 'live') {
+        viewModeRef.current = saved;
+        if (saved !== 'live') setViewMode(saved);
+      }
+    } catch {}
+  }, []);
 
   useEffect(() => {
     load(true);
@@ -146,11 +157,12 @@ export default function Dashboard() {
     return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVisibility); };
   }, []);
 
-  // SSE 실시간 스트림
   // SSE 실시간 스트림 — viewMode 변경 시 재연결
   useEffect(() => {
+    // viewMode 클로저 캡처 — ref 대신 사용하여 모드 불일치 방지
+    const vm = viewMode;
     const base = BACKEND_URL.endsWith('/') ? BACKEND_URL.slice(0, -1) : BACKEND_URL;
-    const es = new EventSource(`${base}/api/stream?viewMode=${viewMode}`, { withCredentials: true });
+    const es = new EventSource(`${base}/api/stream?viewMode=${vm}`, { withCredentials: true });
     let prevChainCount = -1;
 
     es.addEventListener('update', (e: MessageEvent) => {
@@ -168,14 +180,13 @@ export default function Dashboard() {
             return brandNew.length > 0 ? [...brandNew, ...updated].slice(0, 200) : updated;
           });
         }
-        // SSE → 전략 모드 실시간 반영 (모드 변경 즉시 UI 갱신)
         if (data.strategy) {
           setStrategy((prev: any) => prev ? { ...prev, ...data.strategy } : data.strategy);
         }
         if (prevChainCount !== -1 && data.activeChains !== prevChainCount) {
           Promise.allSettled([
-            api(`/dashboard?viewMode=${viewModeRef.current}`).then((d: any) => { if (d) setDash(d); }),
-            api(`/trades?limit=200&viewMode=${viewModeRef.current}`).then((t: any) => { if (Array.isArray(t)) setTrades(t); }),
+            api(`/dashboard?viewMode=${vm}`).then((d: any) => { if (d) setDash(d); }),
+            api(`/trades?limit=200&viewMode=${vm}`).then((t: any) => { if (Array.isArray(t)) setTrades(t); }),
           ]);
         }
         prevChainCount = data.activeChains ?? prevChainCount;
@@ -221,8 +232,12 @@ export default function Dashboard() {
     viewModeRef.current = mode;
     setViewMode(mode);
     try { localStorage.setItem('quantops_viewMode', mode); } catch {}
+    // 이전 모드 데이터 즉시 제거 → 잘못된 모드 데이터 노출 방지
+    setDash(null);
+    setTrades([]);
     loadingRef.current = false;
     tradesLoadedRef.current = false;
+    staticLoadedRef.current = false;
     load(true);
   };
 
@@ -236,11 +251,23 @@ export default function Dashboard() {
   ];
 
   // ═══════════════════════════════════════
-  // LAYOUT
+  // LAYOUT — 모드별 테마 색상
   // ═══════════════════════════════════════
+  const isPaper = viewMode === 'paper';
+  const isUS = marketTab === 'US';
+  // 4가지 조합: 실전국내(cool blue), 실전해외(cool purple), 연습국내(warm amber), 연습해외(warm olive)
+  const theme = isPaper
+    ? isUS ? { bg: '#0a0906', side: '#100f08', main1: '#0a0906', main2: '#0f0e08', accent: 'amber', border: 'amber-500/[0.06]', bar: 'from-amber-700/40 via-amber-500/60 to-amber-700/40' }
+           : { bg: '#0d0a06', side: '#12100a', main1: '#0d0a06', main2: '#11100a', accent: 'amber', border: 'amber-500/[0.06]', bar: 'from-amber-600/60 via-amber-400/80 to-amber-600/60' }
+    : isUS ? { bg: '#080610', side: '#0e0a1a', main1: '#080610', main2: '#0c0a18', accent: 'violet', border: 'violet-500/[0.06]', bar: 'from-indigo-600/50 via-violet-500/60 to-indigo-600/50' }
+           : { bg: '#06080f', side: '#0a0e1a', main1: '#06080f', main2: '#0a0e1a', accent: 'blue', border: 'white/[0.04]', bar: '' };
 
   return (
-    <div className="flex h-screen bg-[#06080f] text-slate-100 overflow-hidden">
+    <div className="flex flex-col h-screen text-slate-100 overflow-hidden transition-colors duration-500" style={{ backgroundColor: theme.bg }}>
+      {(isPaper || isUS) && (
+        <div className={`h-1 w-full bg-gradient-to-r ${theme.bar} shrink-0`} />
+      )}
+      <div className="flex flex-1 min-h-0">
       <ToastContainer />
       <ConfirmModal
         open={liveConfirmOpen}
@@ -254,7 +281,7 @@ export default function Dashboard() {
       {mobileMenu && <div className="fixed inset-0 bg-black/60 z-40 lg:hidden" onClick={() => setMobileMenu(false)} />}
 
       {/* Left Sidebar */}
-      <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-[220px] bg-[#0a0e1a]/95 backdrop-blur-xl border-r border-white/[0.04] flex flex-col shrink-0 transform transition-transform duration-200 ${mobileMenu ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
+      <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-[220px] backdrop-blur-xl flex flex-col shrink-0 transform transition-all duration-500 ${mobileMenu ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`} style={{ backgroundColor: theme.side + 'f2', borderRight: `1px solid ${isPaper ? 'rgba(245,158,11,0.06)' : isUS ? 'rgba(139,92,246,0.06)' : 'rgba(255,255,255,0.04)'}` }}>
         <div className="px-5 py-5 border-b border-white/[0.04]">
           <h1 className="text-lg font-black tracking-tight bg-gradient-to-r from-blue-400 via-cyan-400 to-emerald-400 bg-clip-text text-transparent">QUANTOPS</h1>
           <p className="text-[10px] text-slate-600 mt-0.5 font-medium">AI 자동매매 v0.2</p>
@@ -298,7 +325,7 @@ export default function Dashboard() {
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="lg:hidden flex items-center gap-3 px-4 py-3 bg-[#0f1320] border-b border-slate-800/40">
+        <header className="lg:hidden flex items-center gap-3 px-4 py-3 border-b transition-colors duration-500" style={{ backgroundColor: theme.side, borderColor: isPaper ? 'rgba(245,158,11,0.08)' : isUS ? 'rgba(139,92,246,0.08)' : 'rgba(51,65,85,0.4)' }}>
           <button onClick={() => setMobileMenu(true)} className="text-slate-400">
             <svg width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18M3 12h18M3 18h18" /></svg>
           </button>
@@ -318,7 +345,7 @@ export default function Dashboard() {
           </button>
         </header>
 
-        <header className="hidden lg:flex items-center justify-center h-12 bg-[#0a0e1a]/60 border-b border-white/[0.04] shrink-0 relative">
+        <header className="hidden lg:flex items-center justify-center h-12 border-b shrink-0 relative transition-colors duration-500" style={{ backgroundColor: theme.side + '99', borderColor: isPaper ? 'rgba(245,158,11,0.06)' : isUS ? 'rgba(139,92,246,0.06)' : 'rgba(255,255,255,0.04)' }}>
           <div className="absolute left-4 flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
             <span className="text-[10px] text-slate-500 font-medium">
@@ -343,30 +370,40 @@ export default function Dashboard() {
               연습 보기
             </button>
           </div>
-          {viewMode === 'paper' && (
-            <div className="absolute right-4 flex items-center gap-1.5 px-2 py-1 bg-amber-500/10 border border-amber-500/20 rounded-lg">
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-              <span className="text-[10px] text-amber-400 font-semibold">연습 데이터 보는 중</span>
-            </div>
-          )}
+          <div className="absolute right-4 flex items-center gap-2">
+            {marketTab === 'US' && (
+              <div className="flex items-center gap-1.5 px-2 py-1 bg-violet-500/10 border border-violet-500/20 rounded-lg">
+                <span className="w-1.5 h-1.5 rounded-full bg-violet-400" />
+                <span className="text-[10px] text-violet-400 font-semibold">해외</span>
+              </div>
+            )}
+            {viewMode === 'paper' && (
+              <div className="flex items-center gap-1.5 px-2 py-1 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                <span className="text-[10px] text-amber-400 font-semibold">연습</span>
+              </div>
+            )}
+          </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto bg-gradient-to-br from-[#06080f] via-[#0a0e1a] to-[#06080f]">
+        <main className="flex-1 overflow-y-auto transition-colors duration-500" style={{ background: `linear-gradient(to bottom right, ${theme.main1}, ${theme.main2}, ${theme.main1})` }}>
           {loading && !dash ? (
             <div className="flex items-center justify-center h-full">
               <div className="w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
             </div>
           ) : (
             <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px] mx-auto">
-              {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={withdrawConfig} watchlist={watchlist} strategy={strategy} setStrategy={setStrategy} toast={toast} onRefresh={load} allocConfig={allocConfig} setAllocConfig={setAllocConfig} onGoToSettings={() => setTab('settings')} />}
+              {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={withdrawConfig} watchlist={watchlist} strategy={strategy} setStrategy={setStrategy} toast={toast} onRefresh={load} allocConfig={allocConfig} setAllocConfig={setAllocConfig} onGoToSettings={() => setTab('settings')} viewMode={viewMode} onMarketTabChange={setMarketTab} />}
               {tab === 'trades' && <TradesView trades={trades} watchlist={watchlist} />}
-              {tab === 'journal' && <JournalView />}
+              {tab === 'journal' && <JournalView viewMode={viewMode} />}
               {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} toast={toast} onRefresh={load} />}
               {tab === 'news' && <NewsView watchlist={watchlist} setWatchlist={setWatchlist} />}
               {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} notebookRef={notebookRef} geminiRef={geminiRef} gptRef={gptRef} claudeRef={claudeRef} killSwitch={killSwitch} toggleKill={toggleKill} withdrawConfig={withdrawConfig} setWithdrawConfig={setWithdrawConfig} withdrawHistory={withdrawHistory} setWithdrawHistory={setWithdrawHistory} allocConfig={allocConfig} setAllocConfig={setAllocConfig} toast={toast} />}
             </div>
           )}
         </main>
+      </div>
+      <ScreenshotReview currentTab={tab} setTab={setTab} viewMode={viewMode} dash={dash} health={health} trades={trades} killSwitch={killSwitch} strategy={strategy} switchViewMode={switchView} />
       </div>
     </div>
   );

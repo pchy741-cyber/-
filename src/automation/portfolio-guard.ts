@@ -114,7 +114,8 @@ const MAX_SINGLE_STOCK_PCT = 0.25; // 단일 종목 25% 초과 → 경고
  */
 export async function runPortfolioHealthCheck(): Promise<void> {
   try {
-    const balance = await getAccountBalance();
+    const { getPaperBalance } = await import('../risk/engine.js');
+    const balance = config.isPaper ? await getPaperBalance() : await getAccountBalance();
     const positions = balance.positions;
 
     if (positions.length === 0) return;

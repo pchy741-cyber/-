@@ -98,6 +98,7 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
     DEFENSE: 55,
     SCALPING: 45,
     SNIPER: 88,
+    BOTTOM_FISHING: 0,
   };
   const threshold = buyThreshold ?? defaultThresholdByMode[mode];
   const isForceEntryMode = buyThreshold !== undefined && buyThreshold <= -50;

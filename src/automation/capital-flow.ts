@@ -118,7 +118,9 @@ export async function analyzeCapitalFlow(): Promise<void> {
 
   if (!chains || chains.length === 0) return;
 
-  const balance = await getAccountBalance();
+  // 서버 모드에 맞는 잔고 조회 (paper → getPaperBalance 사용, live → KIS 실계좌)
+  const { getPaperBalance } = await import('../risk/engine.js');
+  const balance = config.isPaper ? await getPaperBalance() : await getAccountBalance();
   const totalPortfolio = balance.totalDeposit + balance.totalEvalAmount;
   const cashRatio = totalPortfolio > 0 ? (balance.orderableCash / totalPortfolio) * 100 : 100;
 
@@ -393,7 +395,8 @@ export async function analyzeCapitalFlow(): Promise<void> {
  * 현금 비율 체크 + 경고
  */
 export async function checkCashRatio(): Promise<{ ratio: number; healthy: boolean }> {
-  const balance = await getAccountBalance();
+  const { getPaperBalance } = await import('../risk/engine.js');
+  const balance = config.isPaper ? await getPaperBalance() : await getAccountBalance();
   const total = balance.totalDeposit + balance.totalEvalAmount;
   const ratio = total > 0 ? (balance.orderableCash / total) * 100 : 100;
 

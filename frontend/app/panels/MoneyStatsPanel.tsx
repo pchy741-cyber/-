@@ -3,7 +3,7 @@
 import React from 'react';
 import { api } from '../lib/utils';
 
-export default function MoneyStatsPanel({ market, monthlyGoal }: { market: 'KR' | 'US'; monthlyGoal?: number }) {
+export default function MoneyStatsPanel({ market, monthlyGoal, viewMode = 'live' }: { market: 'KR' | 'US'; monthlyGoal?: number; viewMode?: 'live' | 'paper' }) {
   const [data, setData] = React.useState<{
     totalCumulative: number;
     thisMonthPnl: number;
@@ -14,11 +14,11 @@ export default function MoneyStatsPanel({ market, monthlyGoal }: { market: 'KR' 
 
   React.useEffect(() => {
     setLoading(true);
-    api(`/profit-stats?market=${market}`)
+    api(`/profit-stats?market=${market}&viewMode=${viewMode}`)
       .then(setData)
       .catch(() => setData(null))
       .finally(() => setLoading(false));
-  }, [market]);
+  }, [market, viewMode]);
 
   if (loading) return <div className="glass rounded-2xl border border-white/[0.04] px-4 py-4 text-center text-xs text-slate-600 animate-pulse">수익 통계 불러오는 중...</div>;
   if (!data) return null;

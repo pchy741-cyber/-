@@ -15,7 +15,7 @@ import InsightsPanel from '../panels/InsightsPanel';
 import InvestorFlowPanel from '../panels/InvestorFlowPanel';
 import VisionScalpPanel from '../panels/VisionScalpPanel';
 
-function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, strategy, setStrategy, toast, onRefresh, allocConfig, setAllocConfig, onGoToSettings }: any) {
+function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, strategy, setStrategy, toast, onRefresh, allocConfig, setAllocConfig, onGoToSettings, viewMode = 'live', onMarketTabChange }: any) {
   const [showPortfolio, setShowPortfolio] = React.useState(false);
   const [holdingsTab, setHoldingsTab] = React.useState<'KR' | 'US'>('KR');
   const [userPickedTab, setUserPickedTab] = React.useState(false); // 사용자가 직접 탭 변경했는지
@@ -38,9 +38,15 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   // 미국장 열리면 자동으로 US 탭으로 전환 (사용자가 직접 변경하지 않은 경우만)
   React.useEffect(() => {
     if (!userPickedTab) {
-      setHoldingsTab(health?.usMarketOpen ? 'US' : 'KR');
+      const newTab = health?.usMarketOpen ? 'US' : 'KR';
+      setHoldingsTab(newTab);
+      onMarketTabChange?.(newTab);
     }
   }, [health?.usMarketOpen, userPickedTab]);
+  // holdingsTab 변경 시 부모에 알림
+  React.useEffect(() => {
+    onMarketTabChange?.(holdingsTab);
+  }, [holdingsTab]);
   const p = dash?.portfolio;
   const os = dash?.overseas; // 해외 보유 데이터
   const stockNameMap = new Map((watchlist ?? []).map((w: any) => [w.stock_code, w.stock_name]));
@@ -748,7 +754,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       </div>
 
       {/* ── 머니 통계 (누적수익 + 월별 막대 + 목표 게이지) ── */}
-      <MoneyStatsPanel key={`${dash?.tradingMode ?? 'paper'}-${holdingsTab}`} market={holdingsTab} />
+      <MoneyStatsPanel key={`${viewMode}-${holdingsTab}`} market={holdingsTab} viewMode={viewMode} />
 
       {/* ── 리스크 게이지 ── */}
       {(() => {
@@ -904,7 +910,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       <PnlBreakdownPanel chains={chains} trades={trades} />
 
       {/* ── 봇 vs KOSPI 비교 ── */}
-      {holdingsTab === 'KR' && <PerformanceVsKospiPanel />}
+      {holdingsTab === 'KR' && <PerformanceVsKospiPanel viewMode={viewMode} />}
 
       {/* ── 외국인/기관 수급 ── */}
       {holdingsTab === 'KR' && <InvestorFlowPanel />}
@@ -913,7 +919,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       {holdingsTab === 'KR' && <ShortSellingPanel />}
 
       {/* ── 섹터 쏠림 경고 ── */}
-      {holdingsTab === 'KR' && <CorrelationWarningPanel />}
+      {holdingsTab === 'KR' && <CorrelationWarningPanel viewMode={viewMode} />}
 
       {/* ── 52주 신고가 스캐너 ── */}
       {holdingsTab === 'KR' && <HighScannerPanel />}
@@ -922,10 +928,10 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       {holdingsTab === 'KR' && <SectorHeatmapPanel />}
 
       {/* ── 세금 추정 ── */}
-      {holdingsTab === 'KR' && <TaxEstimatePanel />}
+      {holdingsTab === 'KR' && <TaxEstimatePanel viewMode={viewMode} />}
 
       {/* ── AI 판단 근거 투명성 ── */}
-      <AiTransparencyPanel watchlist={watchlist} tab={holdingsTab} usDash={usDash} />
+      <AiTransparencyPanel watchlist={watchlist} tab={holdingsTab} usDash={usDash} viewMode={viewMode} />
 
       {/* ── 성과 종합 분석 ── */}
       <PerformancePanel trades={trades} strategy={strategy} setStrategy={setStrategy} toast={toast} />

@@ -163,7 +163,9 @@ export async function runOpeningBellCycle(): Promise<void> {
       getActiveWatchlist(),
       getOpenChains(),
       getActiveStrategy(),
-      getAccountBalance(),
+      config.isPaper
+        ? import('../risk/engine.js').then(m => m.getPaperBalance())
+        : getAccountBalance(),
     ]);
 
     const stockCodes = watchlist.map(w => w.stock_code);

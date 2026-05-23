@@ -61,7 +61,7 @@ sseRoutes.get('/stream', (c) => {
 
     while (true) {
       try {
-        const balanceFn = viewIsPaper ? getPaperBalance : getAccountBalance;
+        const balanceFn = viewIsPaper ? getPaperBalance : () => getAccountBalance(true);
         const [balance, chains, recentTrades, strategy] = await Promise.all([
           balanceFn(),
           getOpenChains(viewIsPaper),

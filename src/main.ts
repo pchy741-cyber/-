@@ -15,6 +15,7 @@ import { settingsRoutes } from './api/routes/settings.js';
 import { sseRoutes } from './api/routes/sse.js';
 import { journalRoutes } from './api/routes/journal.js';
 import { backtestRoutes } from './backtest/api.js';
+import reviewRoutes from './api/routes/review.js';
 import { requireAuth } from './api/middleware/auth.js';
 import { initBigQuery } from './automation/bigquery-pipeline.js';
 import { setupMonitoring } from './automation/gcp-monitoring.js';
@@ -40,7 +41,7 @@ app.use('*', honoLogger());
 // 인증 불필요 (공개)
 app.route('/', healthRoutes);   // /health
 app.route('/', authRoutes);     // /auth/login, /auth/logout, /auth/me
-
+app.route('/', reviewRoutes);   // /review/* (캡처 검수용, 인증 불필요)
 // 🔒 이하 모든 라우트: 로그인 필요
 app.use('*', requireAuth);
 app.route('/', dashboardRoutes);

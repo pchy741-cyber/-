@@ -18,7 +18,8 @@ import { logger } from '../utils/logger.js';
  */
 export async function generateDailyReport(): Promise<void> {
   try {
-    const balance = await getAccountBalance();
+    const { getPaperBalance } = await import('../risk/engine.js');
+    const balance = config.isPaper ? await getPaperBalance() : await getAccountBalance();
     const chains = await getOpenChains();
     const today = new Date().toISOString().split('T')[0];
     const { todayAmount: reserved } = await getDinnerMoneyStats();

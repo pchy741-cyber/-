@@ -28,6 +28,7 @@ import { runPreMarketQuickScore } from '../automation/pre-market-quick-score.js'
 import { warmupOpeningBell, runOpeningBellCycle } from './opening-bell-job.js';
 import { runHotSectorWatchlist } from '../automation/hot-sector-watchlist.js';
 import { runPortfolioHealthCheck } from '../automation/portfolio-guard.js';
+import { runIntegrityCheck } from './integrity-check-job.js';
 
 /**
  * 타임아웃을 적용하여 작업 실행 (지정 시간 초과 시 에러 로그 후 스킵)
@@ -351,6 +352,15 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 🌙 15:42, 15:52 — 장후 시간외 줍줍 (급락 종목 시간외 단일가 매수)
+  cron.schedule(
+    '42,52 15 * * 1-5',
+    () => {
+      import('./after-hours-job.js').then((m) => m.runAfterHoursJob()).catch((e) => logger.error(`시간외 줍줍 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 18:00 — Track A 장후 분석
   cron.schedule(
     SCHEDULE.TRACK_A_CRON[2],
@@ -370,6 +380,15 @@ export function startScheduler(): void {
     '*/20 * * * *',
     () => {
       runSelfHealing().catch((e) => logger.error(`Self-heal 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🔍 데이터 정합성 체크 — 1시간 간격 (DB 쿼리만, 외부 API 0, 비용 0)
+  cron.schedule(
+    '20 8-16 * * 1-5',
+    () => {
+      runIntegrityCheck().catch((e) => logger.error(`정합성 체크 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -530,9 +549,9 @@ export function startScheduler(): void {
     fixWatchlistNames().catch((e) => logger.error(`종목명 보정(시작시) 실패: ${e}`, { component: 'SCHEDULER' }));
   }, 10_000); // 10초 후 (DB 연결 안정화 대기)
 
-  logger.info('✅ 스케줄러 등록 완료 (자동화 모듈 15개 + 미국주식)', { component: 'SCHEDULER' });
+  logger.info('✅ 스케줄러 등록 완료 (자동화 모듈 16개 + 미국주식)', { component: 'SCHEDULER' });
   logger.info('  Track A: 07:30/18:00 | Track B: 10분 | 뉴스: 15분', { component: 'SCHEDULER' });
-  logger.info('  이상감지: 5분 | 장세전환: 08:00/12:00 | 리포트: 15:40', { component: 'SCHEDULER' });
+  logger.info('  이상감지: 5분 | 장세전환: 08:00/12:00 | 리포트: 15:40 | 🌙시간외: 15:42/52', { component: 'SCHEDULER' });
   logger.info('  🎯 스나이퍼: 15분 (수급/기술/공시 고확률 자동 진입)', { component: 'SCHEDULER' });
   logger.info('  Self-Heal: 10분 | 아카이빙: 일요일 02:00', { component: 'SCHEDULER' });
   logger.info('  🌏 해외주식: 🇯🇵🇹🇼 09:00~15:00 + 🇺🇸 23:30~06:30 15분 (기술적 지표)', { component: 'SCHEDULER' });

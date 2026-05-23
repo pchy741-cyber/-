@@ -56,6 +56,51 @@ async function saveTokenToDb(token: KISToken, isPaper: boolean): Promise<void> {
  * - 모드(paper/live) 전환 시 자동 재발급
  * - DB 영속화: 서비스 재시작 시 DB에서 기존 토큰 로드 → KIS 1일 1회 발급 제한 준수
  */
+/**
+ * 특정 모드의 토큰 발급 (서버 모드와 독립)
+ * paper 서버에서 live 잔고 조회 시 사용
+ */
+export async function getAccessTokenForMode(mode: 'paper' | 'live'): Promise<string> {
+  const isPaper = mode === 'paper';
+  // 현재 캐시가 같은 모드면 재사용
+  if (cachedToken && !isExpired(cachedToken) && cachedTokenIsPaper === isPaper) {
+    return cachedToken.accessToken;
+  }
+  // 모드별 별도 캐시
+  const dbToken = await loadTokenFromDb(isPaper);
+  if (dbToken) return dbToken.accessToken;
+
+  // 해당 모드의 credential로 토큰 발급
+  const isLive = mode === 'live';
+  const appKey = isLive
+    ? (process.env.KIS_APP_KEY_LIVE || process.env.KIS_APP_KEY || '')
+    : (process.env.KIS_APP_KEY || '');
+  const appSecret = isLive
+    ? (process.env.KIS_APP_SECRET_LIVE || process.env.KIS_APP_SECRET || '')
+    : (process.env.KIS_APP_SECRET || '');
+  const baseUrl = isLive
+    ? 'https://openapi.koreainvestment.com:9443'
+    : 'https://openapivts.koreainvestment.com:29443';
+
+  const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ grant_type: 'client_credentials', appkey: appKey, appsecret: appSecret }),
+  });
+  const rawBody = await res.text();
+  if (!res.ok) throw new Error(`KIS 토큰 발급 실패 [${mode}] (${res.status}): ${rawBody}`);
+  const data = JSON.parse(rawBody) as { access_token?: string; token_type?: string; access_token_token_expired?: string };
+  if (!data.access_token) throw new Error(`KIS 토큰 발급 실패 [${mode}]`);
+
+  const token: KISToken = {
+    accessToken: data.access_token,
+    tokenType: data.token_type ?? 'Bearer',
+    expiresAt: new Date(data.access_token_token_expired ?? ''),
+  };
+  await saveTokenToDb(token, isPaper);
+  return token.accessToken;
+}
+
 export async function getAccessToken(): Promise<string> {
   const isPaper = config.isPaper;
   if (cachedToken && !isExpired(cachedToken) && cachedTokenIsPaper === isPaper) {

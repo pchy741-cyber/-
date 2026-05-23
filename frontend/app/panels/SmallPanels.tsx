@@ -125,11 +125,11 @@ export function StrategyTimelinePanel({ strategy }: { strategy: any }) {
 // TAX ESTIMATE PANEL
 // ═══════════════════════════════════════
 
-export function TaxEstimatePanel() {
+export function TaxEstimatePanel({ viewMode = 'live' }: { viewMode?: string }) {
   const [data, setData] = React.useState<any>(null);
   React.useEffect(() => {
-    api('/market/tax-estimate').then(setData).catch(() => {});
-  }, []);
+    api(`/market/tax-estimate?viewMode=${viewMode}`).then(setData).catch(() => {});
+  }, [viewMode]);
   if (!data) return null;
   return (
     <Panel title={`${data.year}년 세금 추정`}>
@@ -264,11 +264,11 @@ export function SectorHeatmapPanel() {
 // 포트폴리오 상관관계 경고
 // ═══════════════════════════════════════
 
-export function CorrelationWarningPanel() {
+export function CorrelationWarningPanel({ viewMode = 'live' }: { viewMode?: string }) {
   const [warnings, setWarnings] = React.useState<any[]>([]);
   React.useEffect(() => {
-    api('/market/correlation').then((d: any) => setWarnings(d.warnings ?? [])).catch(() => {});
-  }, []);
+    api(`/market/correlation?viewMode=${viewMode}`).then((d: any) => setWarnings(d.warnings ?? [])).catch(() => {});
+  }, [viewMode]);
   if (warnings.length === 0) return null;
   return (
     <Panel title="섹터 쏠림 경고" badge={`${warnings.length}건`}>
@@ -291,11 +291,11 @@ export function CorrelationWarningPanel() {
 // 봇 수익률 vs KOSPI 비교 차트
 // ═══════════════════════════════════════
 
-export function PerformanceVsKospiPanel() {
+export function PerformanceVsKospiPanel({ viewMode = 'live' }: { viewMode?: string }) {
   const [data, setData] = React.useState<{ bot: any[]; kospi: any[] } | null>(null);
   React.useEffect(() => {
-    api('/market/performance-vs-kospi', { timeout: 15000 }).then(setData).catch(() => {});
-  }, []);
+    api(`/market/performance-vs-kospi?viewMode=${viewMode}`, { timeout: 15000 }).then(setData).catch(() => {});
+  }, [viewMode]);
 
   if (!data || (data.bot.length === 0 && data.kospi.length === 0)) return null;
 

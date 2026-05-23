@@ -21,6 +21,7 @@ export class ChainManager {
     targetProfitPct: number;
     stopLossPct: number;
     maxAveragingCount: number;
+    isPaper?: boolean;
   }): Promise<string> {
     const COMMISSION_RATE = 0.00015;
     const rawInvested = params.buyPrice * params.quantity;
@@ -39,6 +40,7 @@ export class ChainManager {
       stop_loss_pct: params.stopLossPct,
       max_averaging_count: params.maxAveragingCount,
       current_averaging_count: 0,
+      is_paper: params.isPaper,
     });
 
     logger.info(`📦 체인 생성: ${params.stockCode} | ${params.quantity}주 @${params.buyPrice} | 모드: ${params.mode}`, {

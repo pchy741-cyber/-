@@ -1,6 +1,6 @@
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
-import { clearTokenCache, getAccessToken } from './auth.js';
+import { clearTokenCache, getAccessToken, getAccessTokenForMode } from './auth.js';
 
 interface KISRequestOptions {
   path: string;
@@ -13,6 +13,8 @@ interface KISRequestOptions {
   useRealUrl?: boolean;
   /** 외부에서 rate limiter를 관리할 때 내부 limiter 스킵 */
   skipRateLimiter?: boolean;
+  /** 명시적 모드 오버라이드 — paper 서버에서도 live 잔고 조회 가능 */
+  forceMode?: 'paper' | 'live';
 }
 
 interface KISResponse<T = unknown> {
@@ -110,9 +112,30 @@ export const marketDataRateLimiter = new RateLimiter(4);
  * - 응답 파싱
  */
 export async function kisRequest<T = unknown>(options: KISRequestOptions): Promise<KISResponse<T>> {
-  const { path, method = 'GET', trId, params, body, hashkey, useRealUrl, skipRateLimiter } = options;
+  const { path, method = 'GET', trId, params, body, hashkey, useRealUrl, skipRateLimiter, forceMode } = options;
 
-  const baseUrl = useRealUrl ? 'https://openapi.koreainvestment.com:9443' : config.kis.baseUrl;
+  // forceMode: 서버 모드와 무관하게 특정 모드의 URL/credential 사용
+  // (예: paper 서버에서 live 잔고 조회, 또는 그 반대)
+  const resolvedLive = forceMode ? forceMode === 'live' : !config.isPaper;
+  const resolvedBaseUrl = (useRealUrl || (forceMode === 'live'))
+    ? 'https://openapi.koreainvestment.com:9443'
+    : forceMode === 'paper'
+      ? 'https://openapivts.koreainvestment.com:29443'
+      : config.kis.baseUrl;
+
+  // forceMode 시 해당 모드의 credential 사용 (live_key → paper_key 폴백)
+  const resolvedAppKey = forceMode
+    ? (forceMode === 'live'
+        ? (process.env.KIS_APP_KEY_LIVE || process.env.KIS_APP_KEY || config.kis.appKey)
+        : (process.env.KIS_APP_KEY || config.kis.appKey))
+    : config.kis.appKey;
+  const resolvedAppSecret = forceMode
+    ? (forceMode === 'live'
+        ? (process.env.KIS_APP_SECRET_LIVE || process.env.KIS_APP_SECRET || config.kis.appSecret)
+        : (process.env.KIS_APP_SECRET || config.kis.appSecret))
+    : config.kis.appSecret;
+
+  const baseUrl = resolvedBaseUrl;
   const url = new URL(`${baseUrl}${path}`);
   if (params) {
     for (const [key, val] of Object.entries(params)) {
@@ -123,8 +146,8 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
   const headers: Record<string, string> = {
     'Content-Type': 'application/json; charset=utf-8',
     authorization: '',
-    appkey: config.kis.appKey,
-    appsecret: config.kis.appSecret,
+    appkey: resolvedAppKey,
+    appsecret: resolvedAppSecret,
     tr_id: trId,
   };
 
@@ -135,8 +158,9 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
   let lastError: Error | null = null;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    // 매 시도마다 토큰 갱신 (LOGOUT 후 clearTokenCache() 시 새 토큰 발급)
-    headers.authorization = `Bearer ${await getAccessToken()}`;
+    // 매 시도마다 토큰 갱신 (forceMode 시 해당 모드 토큰 사용)
+    const token = forceMode ? await getAccessTokenForMode(forceMode) : await getAccessToken();
+    headers.authorization = `Bearer ${token}`;
 
     // Rate Limiter 대기 (해외 호출은 별도 limiter 사용 → 여기서 스킵)
     if (!skipRateLimiter) await kisRateLimiter.acquire();

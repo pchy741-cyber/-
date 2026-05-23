@@ -18,6 +18,12 @@ import { getKnownStockName, isInvalidStockName } from './dashboard.js';
 
 export const dashboardAnalysisRoutes = new Hono();
 
+// viewMode 파싱 헬퍼 — ?viewMode=paper|live → boolean
+function resolveViewIsPaper(c: { req: { query: (k: string) => string | undefined } }): boolean {
+  const vm = c.req.query('viewMode');
+  return vm === 'paper' ? true : vm === 'live' ? false : config.isPaper;
+}
+
 // ── 종목 상세 분석 (기술적 지표 + 수급 + 공매도 + 목표가) ──
 dashboardAnalysisRoutes.get('/stock/:code/analysis', async (c) => {
   const stockCode = c.req.param('code');
@@ -292,6 +298,78 @@ dashboardAnalysisRoutes.get('/stock/:code/score-detail', async (c) => {
   }
 });
 
+// ── AI 판단 투명성 (보유 종목 중심) ──
+dashboardAnalysisRoutes.get('/ai-transparency', async (c) => {
+  const viewIsPaper = resolveViewIsPaper(c);
+  try {
+    const pool = getPool();
+    // 1) 보유 종목별 AI 매수 이유 + 현재 점수
+    const { rows: holdings } = await pool.query(
+      `SELECT tc.stock_code, tc.avg_buy_price, tc.total_quantity, tc.opened_at,
+              tc.strategy_mode, tc.status,
+              COALESCE(w.stock_name, tc.stock_name, tc.stock_code) AS stock_name,
+              -- 매수 시 AI reasoning (가장 최초 매수 주문)
+              (SELECT o.ai_reasoning FROM orders o
+               WHERE o.chain_id = tc.id AND o.side = 'BUY'
+               ORDER BY o.created_at ASC LIMIT 1) AS buy_reason,
+              -- 매수 당시 AI 점수
+              (SELECT s.composite_score FROM ai_scores s
+               WHERE s.stock_code = tc.stock_code
+                 AND s.created_at <= tc.opened_at + INTERVAL '1 hour'
+               ORDER BY s.created_at DESC LIMIT 1) AS entry_score,
+              -- 현재 최신 AI 점수
+              (SELECT s.composite_score FROM ai_scores s
+               WHERE s.stock_code = tc.stock_code
+               ORDER BY s.created_at DESC LIMIT 1) AS current_score,
+              -- 현재 시그널
+              (SELECT s.signal FROM ai_scores s
+               WHERE s.stock_code = tc.stock_code
+               ORDER BY s.created_at DESC LIMIT 1) AS current_signal
+       FROM transaction_chains tc
+       LEFT JOIN watchlist w ON tc.stock_code = w.stock_code
+       WHERE tc.status IN ('OPEN', 'AVERAGING', 'PROFIT_TAKING')
+         AND tc.is_paper = $1
+       ORDER BY tc.opened_at DESC
+       LIMIT 10`,
+      [viewIsPaper],
+    );
+
+    // 2) 최근 AI 매매 결정 (매수 + 매도, 최근 5건)
+    const { rows: decisions } = await pool.query(
+      `SELECT o.stock_code, o.side, o.filled_price, o.filled_quantity,
+              o.ai_reasoning, o.trigger_source, o.created_at,
+              COALESCE(w.stock_name, o.stock_code) AS stock_name
+       FROM orders o
+       LEFT JOIN watchlist w ON o.stock_code = w.stock_code
+       WHERE o.status = 'FILLED'
+         AND o.trading_mode = $1
+         AND o.ai_reasoning IS NOT NULL
+         AND o.ai_reasoning != ''
+       ORDER BY o.created_at DESC
+       LIMIT 5`,
+      [viewIsPaper ? 'paper' : 'live'],
+    );
+
+    // 3) AI 적중률 (최근 30일)
+    const { rows: accuracy } = await pool.query(
+      `SELECT outcome, COUNT(*)::int AS cnt
+       FROM score_accuracy
+       WHERE created_at >= NOW() - INTERVAL '30 days'
+         AND is_paper = $1
+       GROUP BY outcome`,
+      [viewIsPaper],
+    );
+    const wins = accuracy.find((r: any) => r.outcome === 'WIN')?.cnt ?? 0;
+    const losses = accuracy.find((r: any) => r.outcome === 'LOSS')?.cnt ?? 0;
+    const total = wins + losses;
+    const winRate = total > 0 ? Math.round((wins / total) * 100) : null;
+
+    return c.json({ holdings, decisions, winRate, totalTrades: total, wins, losses });
+  } catch (err: any) {
+    return c.json({ holdings: [], decisions: [], winRate: null, totalTrades: 0 }, 200);
+  }
+});
+
 // ── Track B 즉시 수동 실행 ──
 dashboardAnalysisRoutes.post('/run-track-b', async (c) => {
   try {
@@ -401,7 +479,7 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
     const isKr = market === 'KR';
     const pool = getPool();
 
-    const isPaper = config.isPaper;
+    const isPaper = resolveViewIsPaper(c);
     const codeFilter = isKr
       ? `AND stock_code ~ '^[0-9]{6}$'`
       : `AND stock_code !~ '^[0-9]{6}$'`;
@@ -529,6 +607,7 @@ void isInvalidStockName;
 dashboardAnalysisRoutes.get('/strategy/performance', async (c) => {
   try {
     const pool = getPool();
+    const isPaper = resolveViewIsPaper(c);
     const { rows } = await pool.query(`
       SELECT
         tc.strategy_mode,
@@ -551,7 +630,7 @@ dashboardAnalysisRoutes.get('/strategy/performance', async (c) => {
         AND tc.created_at >= NOW() - INTERVAL '90 days'
       GROUP BY tc.strategy_mode
       ORDER BY total_pnl DESC
-    `, [config.isPaper]);
+    `, [isPaper]);
     return c.json(rows.map((r: any) => ({
       mode: r.strategy_mode ?? 'UNKNOWN',
       trades: Number(r.trades),
@@ -570,6 +649,7 @@ dashboardAnalysisRoutes.get('/strategy/performance', async (c) => {
 // ── 시간대별 매매 성과 분석 (어느 시간대에 매수하면 수익률이 좋은가) ──
 dashboardAnalysisRoutes.get('/trades/by-hour', async (c) => {
   try {
+    const isPaper = resolveViewIsPaper(c);
     const pool = getPool();
     const { rows } = await pool.query(`
       SELECT
@@ -596,7 +676,7 @@ dashboardAnalysisRoutes.get('/trades/by-hour', async (c) => {
         AND o.filled_price IS NOT NULL
       GROUP BY hour, o.side
       ORDER BY hour ASC, o.side ASC
-    `, [config.isPaper]);
+    `, [isPaper]);
     return c.json(rows.map((r: any) => ({
       hour: Number(r.hour),
       side: r.side,
@@ -613,6 +693,7 @@ dashboardAnalysisRoutes.get('/trades/by-hour', async (c) => {
 dashboardAnalysisRoutes.get('/market/performance-vs-kospi', async (c) => {
   try {
     const pool = getPool();
+    const isPaper = resolveViewIsPaper(c);
     // 최근 60일 일별 실현손익 합계
     const { rows: pnlRows } = await pool.query(`
       SELECT DATE(o.created_at AT TIME ZONE 'Asia/Seoul') AS day,
@@ -626,7 +707,7 @@ dashboardAnalysisRoutes.get('/market/performance-vs-kospi', async (c) => {
         AND o.filled_price IS NOT NULL AND tc.avg_buy_price IS NOT NULL
         AND o.created_at >= NOW() - INTERVAL '60 days'
       GROUP BY day ORDER BY day ASC
-    `, [config.isPaper]);
+    `, [isPaper]);
     // KOSPI 60일 차트 — Yahoo Finance ^KS11 (primary) → Naver Finance (fallback)
     const kospiPoints = await (async () => {
       // 1차: Yahoo Finance (VIX 조회에 이미 검증된 API)
@@ -688,6 +769,7 @@ dashboardAnalysisRoutes.get('/market/performance-vs-kospi', async (c) => {
 dashboardAnalysisRoutes.get('/market/tax-estimate', async (c) => {
   try {
     const pool = getPool();
+    const isPaper = resolveViewIsPaper(c);
     const year = new Date().getFullYear();
     const { rows } = await pool.query(`
       SELECT
@@ -702,7 +784,7 @@ dashboardAnalysisRoutes.get('/market/tax-estimate', async (c) => {
         AND tc.is_paper = $2
         AND EXTRACT(YEAR FROM o.created_at) = $1
         AND o.filled_price IS NOT NULL AND tc.avg_buy_price IS NOT NULL
-    `, [year, config.isPaper]);
+    `, [year, isPaper]);
     const r = rows[0] ?? {};
     const grossGain = Number(r.gross_gain ?? 0);
     const grossLoss = Number(r.gross_loss ?? 0);
@@ -837,7 +919,8 @@ const SECTOR_MAP: Record<string, string> = {
 };
 dashboardAnalysisRoutes.get('/market/correlation', async (c) => {
   try {
-    const openChains = await getOpenChains();
+    const isPaper = resolveViewIsPaper(c);
+    const openChains = await getOpenChains(isPaper);
     const held = openChains.filter((ch: any) => Number(ch.total_quantity) > 0);
     const sectorGroups: Record<string, string[]> = {};
     for (const ch of held) {
@@ -896,6 +979,7 @@ dashboardAnalysisRoutes.get('/market/investor-flow', async (c) => {
 // 각 전략 모드별 실현 손익, 수수료, 슬리피지 추정, 순손익, 승률, 평균 보유시간
 dashboardAnalysisRoutes.get('/performance/attribution', async (c) => {
   try {
+    const isPaper = resolveViewIsPaper(c);
     const { rows } = await getPool().query(`
       SELECT
         tc.strategy_mode                                            AS mode,
@@ -922,7 +1006,7 @@ dashboardAnalysisRoutes.get('/performance/attribution', async (c) => {
         AND tc.avg_buy_price IS NOT NULL
       GROUP BY tc.strategy_mode
       ORDER BY gross_pnl DESC
-    `, [config.isPaper]);
+    `, [isPaper]);
 
     const result = rows.map((r: any) => {
       const trades = Number(r.trades);
@@ -952,7 +1036,8 @@ dashboardAnalysisRoutes.get('/performance/export-csv', async (c) => {
     const days = Math.min(365, Math.max(1, Number(c.req.query('days') ?? 90)));
     const modeFilter = c.req.query('mode') ?? '';
 
-    const params: unknown[] = [days, config.isPaper];
+    const isPaper = resolveViewIsPaper(c);
+    const params: unknown[] = [days, isPaper];
     const modeClause = modeFilter ? 'AND tc.strategy_mode = $3' : '';
     if (modeFilter) params.push(modeFilter);
 

@@ -19,7 +19,7 @@ interface JournalTrade {
   strategyMode?: string;
 }
 
-function JournalView() {
+function JournalView({ viewMode = 'live' }: { viewMode?: 'live' | 'paper' }) {
   const [days, setDays] = useState(30);
   const [market, setMarket] = useState<'ALL' | 'KR' | 'US'>('ALL');
   const [data, setData] = useState<{ trades: JournalTrade[]; summary: { totalTrades: number; wins: number; losses: number; winRate: number; avgPnlPct: number } } | null>(null);
@@ -29,11 +29,11 @@ function JournalView() {
   useEffect(() => {
     setLoading(true);
     setError(null);
-    api(`/journal?days=${days}`)
+    api(`/journal?days=${days}&viewMode=${viewMode}`)
       .then((d: any) => { setData(d); })
       .catch((e: any) => { setError(e?.message ?? '매매일지 로드 실패'); })
       .finally(() => setLoading(false));
-  }, [days]);
+  }, [days, viewMode]);
 
   const trades = data?.trades.filter(t => market === 'ALL' || t.market === market) ?? [];
   const wins = trades.filter(t => t.pnlPct >= 0).length;

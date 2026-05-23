@@ -26,16 +26,34 @@ export interface AccountBalance {
 
 /**
  * 계좌 잔고 + 보유 종목 조회
+ * forceLive=true: 서버가 paper 모드여도 live KIS 서버에 live credential로 조회
  */
-export async function getAccountBalance(): Promise<AccountBalance> {
-  const trIds = config.isPaper ? KIS_TR_ID.PAPER : KIS_TR_ID.LIVE;
+export async function getAccountBalance(forceLive = false): Promise<AccountBalance> {
+  const isPaper = !forceLive && config.isPaper;
+  const trIds = isPaper ? KIS_TR_ID.PAPER : KIS_TR_ID.LIVE;
+
+  // forceLive=true && 서버가 paper → live credential/URL 강제 사용
+  const needForceMode = forceLive && config.isPaper;
+  const forceMode = needForceMode ? 'live' as const : undefined;
+
+  // 계좌번호: forceMode 시 live 전용 계좌 사용
+  const acctRaw = needForceMode
+    ? (process.env.KIS_ACCOUNT_NO_LIVE || process.env.KIS_ACCOUNT_NO || config.kis.accountNo)
+    : undefined;
+  const acctNo = needForceMode && acctRaw?.includes('-')
+    ? acctRaw.split('-')[0]
+    : (needForceMode ? acctRaw : config.kis.accountNo);
+  const acctProd = needForceMode && acctRaw?.includes('-')
+    ? (acctRaw.split('-')[1] || '01')
+    : (needForceMode ? '01' : config.kis.accountProductCode);
 
   const res = await kisRequest({
     path: '/uapi/domestic-stock/v1/trading/inquire-balance',
     trId: trIds.BALANCE,
+    forceMode,
     params: {
-      CANO: config.kis.accountNo,
-      ACNT_PRDT_CD: config.kis.accountProductCode,
+      CANO: acctNo ?? config.kis.accountNo,
+      ACNT_PRDT_CD: acctProd ?? config.kis.accountProductCode,
       AFHR_FLPR_YN: 'N',
       OFL_YN: '',
       INQR_DVSN: '02',
@@ -72,8 +90,8 @@ export async function getAccountBalance(): Promise<AccountBalance> {
 
   // 모의투자 계좌 예수금이 0원이면 가상 자금 1,000만원 부여
   const PAPER_DEFAULT_CASH = 10_000_000;
-  const effectiveCash = config.isPaper && orderableCash === 0 ? PAPER_DEFAULT_CASH : orderableCash;
-  const effectiveDeposit = config.isPaper && totalDeposit === 0 ? PAPER_DEFAULT_CASH : totalDeposit;
+  const effectiveCash = isPaper && orderableCash === 0 ? PAPER_DEFAULT_CASH : orderableCash;
+  const effectiveDeposit = isPaper && totalDeposit === 0 ? PAPER_DEFAULT_CASH : totalDeposit;
 
   return {
     totalDeposit: effectiveDeposit,

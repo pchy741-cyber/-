@@ -45,19 +45,24 @@ export async function runHoldingCheckJob(): Promise<void> {
 
     const strategy = await getActiveStrategy();
     const mode = (strategy?.mode ?? 'SWING') as StrategyMode;
-    const params = STRATEGY_PARAMS[mode];
+    const globalParams = STRATEGY_PARAMS[mode];
 
     // 단타 모드는 별도 강제청산 로직(15:20)이 있으므로 스킵
     if (mode === 'SCALPING') return;
-
-    const maxDays = params.maxHoldingDays;
-    if (maxDays <= 0) return;
 
     const now = new Date();
     const forceCloseDecisions: TradeDecision[] = [];
 
     for (const chain of chains) {
       if (chain.total_quantity <= 0) continue;
+
+      // 체인별 전략 파라미터 (체인 자체 모드 우선, 없으면 글로벌)
+      const chainMode = (chain.strategy_mode && chain.strategy_mode in STRATEGY_PARAMS)
+        ? chain.strategy_mode as keyof typeof STRATEGY_PARAMS
+        : mode;
+      const params = STRATEGY_PARAMS[chainMode];
+      const maxDays = params.maxHoldingDays;
+      if (maxDays <= 0) continue;
 
       // 영업일 계산 (주말 제외)
       const openedAt = new Date(chain.opened_at);
@@ -213,10 +218,17 @@ async function checkAndUpdateTrailingStop(
   const chainTp = Number(chain.target_profit_pct) || params.takeProfitPct;
 
   if (!partialSoldAlready && chain.status !== 'PROFIT_TAKING' && pnlPct >= chainTp && chain.total_quantity >= 2) {
-    const partialQty = Math.floor(chain.total_quantity / 2);
-    if (partialQty > 0) {
+    // takeProfitRatio 1.0 = 전량 즉시 익절 (BOTTOM_FISHING 등)
+    const chainMode = chain.strategy_mode as keyof typeof STRATEGY_PARAMS | undefined;
+    const tpRatio = (chainMode && chainMode in STRATEGY_PARAMS)
+      ? (STRATEGY_PARAMS[chainMode] as any).takeProfitRatio ?? 0.5
+      : 0.5;
+    const isFullSell = tpRatio >= 1.0;
+    const sellQty = isFullSell ? chain.total_quantity : Math.floor(chain.total_quantity / 2);
+
+    if (sellQty > 0) {
       logger.info(
-        `💰 분할 익절 발동: ${chain.stock_code} +${pnlPct.toFixed(1)}% (기준 +${chainTp}%) → ${partialQty}주 50% 매도`,
+        `💰 ${isFullSell ? '전량' : '분할'} 익절 발동: ${chain.stock_code} +${pnlPct.toFixed(1)}% (기준 +${chainTp}%) → ${sellQty}주 ${isFullSell ? '100%' : '50%'} 매도`,
         { component: 'TRAILING' },
       );
       // 음수 peak로 분할매도 완료 표시 — await로 중복 발동 방지
@@ -229,11 +241,13 @@ async function checkAndUpdateTrailingStop(
         logger.error(`트레일링 분할매도 플래그 저장 실패: ${err}`, { component: 'TRAILING' });
       }
       return {
-        action: 'PARTIAL_SELL',
+        action: isFullSell ? 'FORCE_CLOSE' as const : 'PARTIAL_SELL' as const,
         stock_code: chain.stock_code,
-        quantity: partialQty,
-        price_type: 'MARKET',
-        reasoning: `분할 익절(50%): 평단가 대비 +${pnlPct.toFixed(1)}% 도달 (TP ${chainTp}%) → ${partialQty}주 매도, 나머지 트레일링 추적`,
+        quantity: sellQty,
+        price_type: 'MARKET' as const,
+        reasoning: isFullSell
+          ? `전량 익절: 평단가 대비 +${pnlPct.toFixed(1)}% 도달 (TP ${chainTp}%) → ${sellQty}주 전량 매도`
+          : `분할 익절(50%): 평단가 대비 +${pnlPct.toFixed(1)}% 도달 (TP ${chainTp}%) → ${sellQty}주 매도, 나머지 트레일링 추적`,
         confidence: 1.0,
       };
     }

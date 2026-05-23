@@ -137,6 +137,7 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
     kospiPenalty: kospiRegime.penalty,
     adjMaxPositionKrw,
     blockNewBuys,
+    watchlistCodes: scores.map((s) => s.stock_code),
   });
 
   // ── 10. 최종 필터: HOLD 제거 + 가격 검증 + 실행 순서 정렬 ──────────

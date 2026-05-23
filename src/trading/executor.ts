@@ -86,9 +86,14 @@ export class TradeExecutor {
     try {
       logger.info(`▶ 실행: ${action} ${stock_code} x${quantity}`, { component: 'EXECUTOR' });
 
+      // per-decision 모드 오버라이드 (BOTTOM_FISHING 등)
+      const effectiveMode = (decision.strategy_mode && decision.strategy_mode in STRATEGY_PARAMS)
+        ? decision.strategy_mode as StrategyMode
+        : mode;
+
       switch (action) {
         case 'BUY':
-          await this.executeBuy(stock_code, quantity, price_type, limit_price, mode, reasoning, decision.ai_score);
+          await this.executeBuy(stock_code, quantity, price_type, limit_price, effectiveMode, reasoning, decision.ai_score);
           break;
         case 'AVERAGE_DOWN':
           await this.executeAverageDown(stock_code, quantity, price_type, limit_price, reasoning);
@@ -120,6 +125,9 @@ export class TradeExecutor {
     reasoning: string,
     aiScore?: number,
   ): Promise<void> {
+    // 🔒 봇 트레이드는 무조건 paper — 실거래는 MANUAL trigger만 가능
+    const isPaperSnapshot = true;
+
     // 이미 열린 체인이 있으면 물타기로 전환
     const existingChain = await chainManager.findOpenChain(stockCode);
     if (existingChain) {
@@ -163,12 +171,13 @@ export class TradeExecutor {
     }
 
     // 🚦 매매 게이트 (차트검수 + 확률교정 + 변동성사이징 + 레짐필터 + 쿨다운)
-    // ETF 파킹 종목은 게이트 생략 (머니마켓/KODEX200 — 차트 분석 불필요)
+    // ETF 파킹 / 바닥낚시 종목은 게이트 생략 (스캐너가 이미 검증 or 차트 분석 불필요)
     const ETF_PARK_CODES = ['333940', '069500', '161510', '114800']; // 파킹ETF: KODEX인버스,KODEX200,TIGER고배당,KODEX200인버스
+    const skipGates = ETF_PARK_CODES.includes(stockCode) || mode === 'BOTTOM_FISHING';
     const params = STRATEGY_PARAMS[mode];
     let gatedQuantity = quantity;
-    if (ETF_PARK_CODES.includes(stockCode)) {
-      logger.info(`⏭️ ETF 파킹 게이트 생략: ${stockCode} → 직접 주문`, { component: 'EXECUTOR' });
+    if (skipGates) {
+      logger.info(`⏭️ 게이트 생략 (${mode === 'BOTTOM_FISHING' ? '바닥낚시' : 'ETF파킹'}): ${stockCode} → 직접 주문`, { component: 'EXECUTOR' });
     } else
     try {
       const candles = await getDailyChart(stockCode, 65).catch(() => []);
@@ -198,8 +207,8 @@ export class TradeExecutor {
       return;
     }
 
-    // 리스크 체크 (ETF 파킹은 Kill Switch만 확인 — 포지션/한도 체크 제외)
-    if (ETF_PARK_CODES.includes(stockCode)) {
+    // 리스크 체크 (ETF 파킹/바닥낚시는 Kill Switch만 확인 — 포지션/한도 체크 제외)
+    if (skipGates) {
       const { isKillSwitchActive } = await import('../risk/kill-switch.js');
       if (isKillSwitchActive()) {
         logger.warn(`🛑 Kill Switch 활성 → ETF 파킹 스킵: ${stockCode}`, { component: 'EXECUTOR' });
@@ -220,9 +229,9 @@ export class TradeExecutor {
       }
     }
 
-    // 🎯 대형 주문 진입타이밍 AI 검토 (100만원 이상, ETF 파킹 제외)
+    // 🎯 대형 주문 진입타이밍 AI 검토 (100만원 이상, ETF 파킹/바닥낚시 제외)
     const orderAmountKrw = estimatedPrice * gatedQuantity;
-    if (!ETF_PARK_CODES.includes(stockCode) && orderAmountKrw >= 1_000_000) {
+    if (!skipGates && orderAmountKrw >= 1_000_000) {
       try {
         const { checkLargeOrderEntryTiming } = await import('../ai/entry-timing.js');
         const entryCandles = await getDailyChart(stockCode, 20).catch(() => []);
@@ -235,8 +244,8 @@ export class TradeExecutor {
       } catch { /* fail-open: AI 오류 시 기존 게이트 결과 존중 */ }
     }
 
-    // 호가 진입 타이밍 — ask2 이하일 때만 매수 (ETF 파킹 제외)
-    if (!ETF_PARK_CODES.includes(stockCode)) {
+    // 호가 진입 타이밍 — ask2 이하일 때만 매수 (ETF 파킹/바닥낚시 제외 — 시간외 단일가는 호가 무의미)
+    if (!skipGates) {
       try {
         const { getOrderbook } = await import('../kis/market.js');
         const book = await getOrderbook(stockCode);
@@ -308,6 +317,7 @@ export class TradeExecutor {
         targetProfitPct,
         stopLossPct,
         maxAveragingCount: params.maxAveragingCount,
+        isPaper: isPaperSnapshot,
       });
 
       // 감시목록 자동 등록 + 종목명 즉시 보정 (코드 저장 후 KRX API로 이름 조회)
@@ -545,6 +555,7 @@ export class TradeExecutor {
 
   /**
    * 실제 주문 실행 (Paper / Live 분기)
+   * 🔒 SAFETY: trigger_source가 'MANUAL'이 아닌 봇 트레이드는 무조건 paper
    */
   private async executeOrder(params: {
     stockCode: string;
@@ -555,9 +566,25 @@ export class TradeExecutor {
     triggerSource?: string;
     aiReasoning?: string;
   }): Promise<OrderResult> {
-    if (config.isPaper) {
+    // 🔒 봇 트레이드 실거래 차단: MANUAL만 실거래 가능
+    const isBotTrade = params.triggerSource !== 'MANUAL';
+    const effectivePaper = isBotTrade || config.isPaper;
+
+    if (isBotTrade && !config.isPaper) {
+      logger.info(`🔒 봇 트레이드 paper 강제: ${params.side} ${params.stockCode} (trigger=${params.triggerSource})`, { component: 'EXECUTOR' });
+    }
+
+    if (effectivePaper) {
       return paperTradeOrder(params);
     }
+
+    // 장후 시간외 자동 감지 (15:40~16:00 KST → ORD_DVSN '06')
+    const kstNow = new Date(Date.now() + 9 * 3600000);
+    const kH = kstNow.getUTCHours(), kM = kstNow.getUTCMinutes();
+    const isAfterHours = (kH === 15 && kM >= 40) || (kH === 16 && kM === 0);
+    const orderType = isAfterHours
+      ? OrderType.AFTER_HOURS
+      : (params.price ? OrderType.LIMIT : OrderType.MARKET);
 
     // 실거래 주문
     const result = await placeOrder({
@@ -565,7 +592,7 @@ export class TradeExecutor {
       side: params.side,
       quantity: params.quantity,
       price: params.price,
-      orderType: params.price ? OrderType.LIMIT : OrderType.MARKET,
+      orderType,
     });
 
     // DB 기록
@@ -573,7 +600,7 @@ export class TradeExecutor {
       chain_id: params.chainId ?? null,
       stock_code: params.stockCode,
       side: params.side,
-      order_type: params.price ? '00' : '01',
+      order_type: orderType,
       quantity: params.quantity,
       price: params.price ?? null,
       kis_order_no: result.orderNo,
@@ -581,7 +608,7 @@ export class TradeExecutor {
       filled_quantity: 0,
       filled_price: null,
       status: result.success ? 'PENDING' : 'FAILED',
-      trading_mode: config.tradingMode,
+      trading_mode: (params.triggerSource !== 'MANUAL') ? 'paper' : config.tradingMode,
       trigger_source: params.triggerSource ?? null,
       ai_reasoning: params.aiReasoning ?? null,
     });
@@ -611,8 +638,10 @@ export class TradeExecutor {
     stockCode: string,
     expectedQty: number,
     fallbackPrice: number,
+    isBotTrade = true,
   ): Promise<{ filledQty: number; filledPrice: number } | null> {
-    if (config.isPaper) {
+    // 🔒 봇 트레이드는 무조건 paper 체결 (KIS API 조회 불필요)
+    if (isBotTrade || config.isPaper) {
       return { filledQty: expectedQty, filledPrice: roundKrw(fallbackPrice) };
     }
 

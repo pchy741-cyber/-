@@ -28,6 +28,7 @@ export type OrderSide = (typeof OrderSide)[keyof typeof OrderSide];
 export const OrderType = {
   MARKET: '01', // 시장가
   LIMIT: '00', // 지정가
+  AFTER_HOURS: '06', // 장후 시간외 (15:40~16:00 단일가)
 } as const;
 export type OrderType = (typeof OrderType)[keyof typeof OrderType];
 
@@ -54,6 +55,7 @@ export const StrategyMode = {
   DEFENSE: 'DEFENSE',   // 🔴 폭락장 방어
   SCALPING: 'SCALPING', // 🔥 초단타
   SNIPER: 'SNIPER',     // 🎯 저격수 (AI 88점+ 2종목만, 대형 포지션)
+  BOTTOM_FISHING: 'BOTTOM_FISHING', // 🎣 바닥낚시 (시간외 RSI 과매도 우량주)
 } as const;
 export type StrategyMode = (typeof StrategyMode)[keyof typeof StrategyMode];
 
@@ -150,6 +152,22 @@ export const STRATEGY_PARAMS = {
     takeProfitRatio: 0.5,   // 50% 부분 매도 → 잔여 트레일링
     stopLossPct: -4.0,      // -4% 손절 (노이즈 제거 후 진짜 반전 확인)
     maxHoldingDays: 7,      // 1주일 내 청산
+  },
+
+  BOTTOM_FISHING: {
+    // ┌─ 시간외 바닥낚시 ─────────────────────────────────────────────────────┐
+    // │ 시장 전체 RSI과매도 우량주 자동 발굴 → TP/SL 기계적 청산             │
+    // │ R:R = 6:2.5 = 2.4:1 / 손익분기 승률 29.4% (보수적)                   │
+    // │ 익일 강제청산 없음 — 최대 5영업일 보유 후 시간손절                    │
+    // └────────────────────────────────────────────────────────────────────────┘
+    buyThreshold: 0,        // 스캐너 자체 필터 (AI 점수 불필요)
+    splitCount: 1,          // 분할 없음 — 시간외 단일가 1회
+    averageDownPct: 0,
+    maxAveragingCount: 0,
+    takeProfitPct: 6.0,     // +6% 익절 → 전량 매도 (단기 반등 실현)
+    takeProfitRatio: 1.0,   // 전량 즉시 익절 (트레일링 없음)
+    stopLossPct: -2.5,      // -2.5% 손절
+    maxHoldingDays: 5,      // 5영업일 → 반등 못 하면 퇴장
   },
 
 } as const;

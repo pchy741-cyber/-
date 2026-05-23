@@ -37,7 +37,7 @@ export const TransactionChainSchema = z.object({
   id: z.string().uuid(),
   stock_code: z.string(),
   status: z.enum(['OPEN', 'AVERAGING', 'PROFIT_TAKING', 'CLOSED']),
-  strategy_mode: z.enum(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER']),
+  strategy_mode: z.enum(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER', 'BOTTOM_FISHING']),
   avg_buy_price: z.number().nullable(),
   total_quantity: z.number(),
   total_invested: z.number(),
@@ -95,7 +95,7 @@ export type PortfolioSnapshot = z.infer<typeof PortfolioSnapshotSchema>;
 // ── CEO 전략 설정 ──
 export const StrategyConfigSchema = z.object({
   id: z.string().uuid(),
-  mode: z.enum(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER']),
+  mode: z.enum(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER', 'BOTTOM_FISHING']),
   is_active: z.boolean(),
   notebooklm_prompt: z.string().optional().default(''),
   gemini_prompt: z.string(),
@@ -120,6 +120,7 @@ export const TradeDecisionSchema = z.object({
   reasoning: z.string(),
   confidence: z.number().min(0).max(1),
   ai_score: z.number().optional(), // 매수 당시 AI 복합 점수 (점수 기반 TP/SL 계산용)
+  strategy_mode: z.string().optional(), // per-decision 모드 오버라이드 (BOTTOM_FISHING 등)
 });
 export type TradeDecision = z.infer<typeof TradeDecisionSchema>;
 

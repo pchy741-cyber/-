@@ -262,7 +262,7 @@ export async function createChain(
       chain.stop_loss_pct,
       chain.max_averaging_count,
       chain.current_averaging_count,
-      config.isPaper,
+      chain.is_paper ?? config.isPaper,
     ],
   );
   return rows[0].id;
@@ -371,6 +371,7 @@ export async function insertSnapshot(snapshot: {
   daily_pnl: number;
   daily_pnl_pct: number;
   positions: unknown;
+  is_paper?: boolean;
 }) {
   if (useMemory) { memInsertSnapshot(snapshot); return; }
   await getPool().query(
@@ -385,18 +386,19 @@ export async function insertSnapshot(snapshot: {
       snapshot.daily_pnl,
       snapshot.daily_pnl_pct,
       JSON.stringify(snapshot.positions),
-      config.isPaper,
+      snapshot.is_paper ?? config.isPaper,
     ],
   );
 }
 
-export async function getTodayStartSnapshot() {
+export async function getTodayStartSnapshot(isPaperOverride?: boolean) {
   if (useMemory) return memGetTodayStartSnapshot();
+  const isPaper = isPaperOverride ?? config.isPaper;
   const today = new Date().toISOString().split('T')[0];
   const { rows } = await getPool().query(
     `SELECT * FROM portfolio_snapshots WHERE snapshot_at >= $1 AND is_paper = $2
      ORDER BY snapshot_at ASC LIMIT 1`,
-    [`${today}T00:00:00`, config.isPaper],
+    [`${today}T00:00:00`, isPaper],
   );
   return rows[0] ?? null;
 }
