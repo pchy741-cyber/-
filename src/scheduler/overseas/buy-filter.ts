@@ -73,9 +73,15 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       logger.info(`⚠️ 최근 손실 종목 재진입 차단: ${t.code} AI 확신 부족 (${ai ? `${(ai.confidence * 100).toFixed(0)}%` : 'AI 없음'} < ${(reentryThreshold * 100).toFixed(0)}%)`, { component: 'OVERSEAS' });
       return false;
     })
-    // 4. Memory Agent 차단
+    // 4. Memory Agent 차단 (Live 소액 계좌: STRONG_BUY만 바이패스 — 매수 기회 확보)
     .filter(t => {
-      if (memoryBlockedStocks.has(t.code)) { logger.info(`🧠 Memory Agent 차단: ${t.code} (60일 승률≤25%)`, { component: 'OVERSEAS' }); return false; }
+      if (memoryBlockedStocks.has(t.code)) {
+        if (!isPaper && portfolioValue < 500 && t.signal === 'STRONG_BUY' && t.score >= 40) {
+          logger.info(`🧠 Memory 경고(소액 바이패스): ${t.code} (60일 승률≤25%, STRONG_BUY score=${t.score})`, { component: 'OVERSEAS' });
+          return true;
+        }
+        logger.info(`🧠 Memory Agent 차단: ${t.code} (60일 승률≤25%)`, { component: 'OVERSEAS' }); return false;
+      }
       return true;
     })
     // 5. VIX 위기 / 점진적 쿨다운

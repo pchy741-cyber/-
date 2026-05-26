@@ -712,11 +712,15 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           logger.info(`🔗 상관관계 차단: ${target.code} (${corrBlock.group} ${corrBlock.currentCount}/${corrBlock.maxAllowed} — ${corrBlock.reason})`, { component: 'OVERSEAS' });
           continue;
         }
-        // 멀티 타임프레임 차단: 방향 불일치
+        // 멀티 타임프레임 차단: 방향 불일치 (Live 소액 계좌는 바이패스 — 매수 기회 확보)
         const mtf = mtfResults.get(target.code);
         if (mtf?.blocked) {
-          logger.info(`📊 MTF 차단: ${target.code} (W:${mtf.weekly} D:${mtf.daily} H4:${mtf.h4} 합류${mtf.confluence}/3)`, { component: 'OVERSEAS' });
-          continue;
+          if (!isPaper() && portfolioValue < 500) {
+            logger.info(`📊 MTF 경고(소액 바이패스): ${target.code} (W:${mtf.weekly} D:${mtf.daily} H4:${mtf.h4} 합류${mtf.confluence}/3)`, { component: 'OVERSEAS' });
+          } else {
+            logger.info(`📊 MTF 차단: ${target.code} (W:${mtf.weekly} D:${mtf.daily} H4:${mtf.h4} 합류${mtf.confluence}/3)`, { component: 'OVERSEAS' });
+            continue;
+          }
         }
         // MTF 합류 보너스: 3TF 일치 → +0.10, 2TF → +0.05
         const mtfBonus = mtf?.confidenceBonus ?? 0;
