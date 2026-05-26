@@ -480,8 +480,8 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       sendTelegramMessage(`⚠️ WARNING: 해외자산 대비 -${lossPctOfPortfolio.toFixed(1)}% 손실\n해외자산: $${portfolioValue.toFixed(0)}`).catch(() => {});
     }
 
-    // ── 4-b. 집중도 캡 ──
-    {
+    // ── 4-b. 집중도 캡 (소액 계좌 $500 미만: 1-2종목 집중 → 캡 비활성) ──
+    if (portfolioValue >= 500) {
       const CONC_CAP = 0.30;
       const CONC_TARGET = 0.25;
       const capHoldings = await getHoldings(isPaper());
