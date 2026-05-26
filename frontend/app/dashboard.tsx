@@ -121,8 +121,17 @@ export default function Dashboard() {
         }
       }
 
-      // 해외 대시보드: viewMode에 따라 매번 갱신
-      api(`/overseas/dashboard?viewMode=${vm}`).then(ifCurrent((us: any) => { if (us) setUsDash(us); })).catch(() => {});
+      // 해외 대시보드: viewMode에 따라 매번 갱신 — 빈 데이터면 이전 값 보존
+      api(`/overseas/dashboard?viewMode=${vm}`).then(ifCurrent((us: any) => {
+        if (!us) return; // API 실패 → 이전 데이터 유지
+        setUsDash((prev: any) => {
+          // 새 데이터의 holdings가 빈 배열이고 이전에 holdings가 있었으면 이전 값 보존
+          if (prev && Array.isArray(us.holdings) && us.holdings.length === 0 && Array.isArray(prev.holdings) && prev.holdings.length > 0) {
+            return { ...us, holdings: prev.holdings };
+          }
+          return us;
+        });
+      })).catch(() => {});
       if (!staticLoadedRef.current) {
         api('/portfolio/allocation').then(ifCurrent((ac: any) => { if (ac) setAllocConfig(ac); })).catch(() => {});
       }
@@ -159,45 +168,79 @@ export default function Dashboard() {
     return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVisibility); };
   }, []);
 
-  // SSE 실시간 스트림 — viewMode 변경 시 재연결
+  // SSE 실시간 스트림 — viewMode 변경 시 재연결 + 에러 복구
   useEffect(() => {
-    // viewMode 클로저 캡처 — ref 대신 사용하여 모드 불일치 방지
     const vm = viewMode;
     const base = BACKEND_URL.endsWith('/') ? BACKEND_URL.slice(0, -1) : BACKEND_URL;
-    const es = new EventSource(`${base}/api/stream?viewMode=${vm}`, { withCredentials: true });
+    let es: EventSource | null = null;
     let prevChainCount = -1;
+    let prevOverseasCount = -1;
+    let retryCount = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let disposed = false;
 
-    es.addEventListener('update', (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (Array.isArray(data.recentTrades) && data.recentTrades.length > 0) {
-          setTrades(prev => {
-            const incomingMap = new Map<string, any>(data.recentTrades.map((t: any) => [String(t.id), t]));
-            const existingIds = new Set(prev.map((t: any) => String(t.id)));
-            const updated = prev.map((t: any) => {
-              const fresh = incomingMap.get(String(t.id));
-              return fresh ? { ...t, ...fresh } : t;
+    const connect = () => {
+      if (disposed) return;
+      es = new EventSource(`${base}/api/stream?viewMode=${vm}`, { withCredentials: true });
+
+      es.addEventListener('update', (e: MessageEvent) => {
+        retryCount = 0; // 성공 시 재시도 카운터 리셋
+        try {
+          const data = JSON.parse(e.data);
+          // trades: 머지 패턴 (기존 데이터 보존 + 새 데이터 추가)
+          if (Array.isArray(data.recentTrades) && data.recentTrades.length > 0) {
+            setTrades(prev => {
+              const incomingMap = new Map<string, any>(data.recentTrades.map((t: any) => [String(t.id), t]));
+              const existingIds = new Set(prev.map((t: any) => String(t.id)));
+              const updated = prev.map((t: any) => {
+                const fresh = incomingMap.get(String(t.id));
+                return fresh ? { ...t, ...fresh } : t;
+              });
+              const brandNew = data.recentTrades.filter((t: any) => !existingIds.has(String(t.id)));
+              return brandNew.length > 0 ? [...brandNew, ...updated].slice(0, 200) : updated;
             });
-            const brandNew = data.recentTrades.filter((t: any) => !existingIds.has(String(t.id)));
-            return brandNew.length > 0 ? [...brandNew, ...updated].slice(0, 200) : updated;
-          });
-        }
-        if (data.strategy) {
-          setStrategy((prev: any) => prev ? { ...prev, ...data.strategy } : data.strategy);
-        }
-        if (prevChainCount !== -1 && data.activeChains !== prevChainCount) {
-          Promise.allSettled([
-            api(`/dashboard?viewMode=${vm}`).then((d: any) => { if (d) setDash(d); }),
-            api(`/trades?limit=200&viewMode=${vm}`).then((t: any) => { if (Array.isArray(t)) setTrades(t); }),
-          ]);
-        }
-        prevChainCount = data.activeChains ?? prevChainCount;
-        if (data.loopMode) setLoopStatus(data.loopMode);
-      } catch { /* ignore */ }
-    });
+          }
+          if (data.strategy) {
+            setStrategy((prev: any) => prev ? { ...prev, ...data.strategy } : data.strategy);
+          }
+          // 체인 수 or 해외 holdings 수 변동 시 전체 갱신 (데이터 보존 패턴)
+          const chainsChanged = prevChainCount !== -1 && data.activeChains !== prevChainCount;
+          const overseasChanged = prevOverseasCount !== -1 && data.overseasHoldingCount !== undefined && data.overseasHoldingCount !== prevOverseasCount;
+          if (chainsChanged || overseasChanged) {
+            api(`/dashboard?viewMode=${vm}`).then((d: any) => { if (d) setDash(d); }).catch(() => {});
+            api(`/trades?limit=200&viewMode=${vm}`).then((t: any) => { if (Array.isArray(t) && t.length > 0) setTrades(t); }).catch(() => {});
+            api(`/overseas/dashboard?viewMode=${vm}`).then((us: any) => {
+              if (us) setUsDash((prev: any) => {
+                if (prev && Array.isArray(us.holdings) && us.holdings.length === 0 && Array.isArray(prev.holdings) && prev.holdings.length > 0) {
+                  return { ...us, holdings: prev.holdings };
+                }
+                return us;
+              });
+            }).catch(() => {});
+          }
+          prevChainCount = data.activeChains ?? prevChainCount;
+          if (data.overseasHoldingCount !== undefined) prevOverseasCount = data.overseasHoldingCount;
+          if (data.loopMode) setLoopStatus(data.loopMode);
+        } catch { /* ignore */ }
+      });
 
-    es.onerror = () => {};
-    return () => es.close();
+      es.onerror = () => {
+        // 에러 시 기존 상태 보존하고 지수 백오프 재연결
+        es?.close();
+        if (disposed) return;
+        retryCount = Math.min(retryCount + 1, 5);
+        const delay = Math.min(2000 * Math.pow(2, retryCount), 30000);
+        retryTimer = setTimeout(connect, delay);
+      };
+    };
+
+    connect();
+
+    return () => {
+      disposed = true;
+      es?.close();
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, [viewMode]);
 
   const isKillActive = killSwitch?.kr?.active || killSwitch?.overseas?.active;
@@ -241,9 +284,10 @@ export default function Dashboard() {
     viewModeRef.current = mode;
     setViewMode(mode);
     try { localStorage.setItem('quantops_viewMode', mode); } catch {}
-    // 이전 모드 데이터 즉시 제거 → 잘못된 모드 데이터 노출 방지
+    // 모드 전환 시: dash/trades/usDash 모두 초기화 (잘못된 모드 데이터 방지)
     setDash(null);
     setTrades([]);
+    setUsDash(null);
     loadingRef.current = false;
     tradesLoadedRef.current = false;
     staticLoadedRef.current = false;

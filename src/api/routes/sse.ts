@@ -7,6 +7,7 @@ import { isMarketOpen } from '../../kis/market.js';
 import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
 import { getPaperBalance } from '../../risk/engine.js';
 import { getLoopStatus } from '../../scheduler/loop-mode.js';
+import { cacheGet } from '../../cache/memory.js';
 
 export const sseRoutes = new Hono();
 
@@ -70,6 +71,11 @@ sseRoutes.get('/stream', (c) => {
           getActiveStrategy().catch(() => null),
         ]);
 
+        // 해외 holdings 수 (캐시에서 빠르게 조회 — DB 호출 없음)
+        const holdingsLiveKey = `overseas:holdings:${viewIsPaper ? 'paper' : 'live'}`;
+        const overseasHoldings = cacheGet<any[]>(holdingsLiveKey);
+        const overseasHoldingCount = overseasHoldings?.length ?? 0;
+
         const payload = {
           timestamp: new Date().toISOString(),
           portfolio: {
@@ -80,12 +86,13 @@ sseRoutes.get('/stream', (c) => {
             pnlPct: balance.totalProfitLossPct,
             positionCount: balance.positions.length,
           },
+          overseasHoldingCount,
           killSwitch: getKillSwitchStatusAll(),
           activeChains: chains.length,
           marketOpen: isMarketOpen(),
           recentTrades,
           strategy: strategy ? { mode: strategy.mode, buy_threshold: strategy.buy_threshold, take_profit_pct: strategy.take_profit_pct, stop_loss_pct: strategy.stop_loss_pct } : null,
-          loopMode: (() => { try { const ls = getLoopStatus(); return { active: ls.active, totalRuns: ls.totalRuns, lastRunAt: ls.lastRunAt, lastRunResult: ls.lastRunResult }; } catch { return null; } })(),
+          loopMode: (() => { try { const ls = getLoopStatus(); return { active: ls.active, phase: ls.phase, totalRuns: ls.totalRuns, lastRunAt: ls.lastRunAt, lastRunResult: ls.lastRunResult, brief: ls.sessionBrief ? { regime: ls.sessionBrief.marketRegime, risk: ls.sessionBrief.riskLevel, narrative: ls.sessionBrief.narrative } : null }; } catch { return null; } })(),
         };
 
         await stream.writeSSE({

@@ -88,11 +88,19 @@ export function getDashCacheTTL(): number {
   return (kstMins >= 540 && kstMins < 930) ? 20_000 : 120_000;
 }
 
-// 현재 모드 캐시만 무효화 (매도/매수 후) — 실전/연습 양쪽 무효화 (병행운영 시 양쪽 뷰에 반영)
-export function invalidateCurrentModeCache(): void { _dashCacheByMode.delete('live'); _dashCacheByMode.delete('paper'); }
+// Soft invalidate: TTL만 만료시키고 데이터는 보존 (SWR: 다음 요청 시 재빌드하되, 빌드 중에는 stale 데이터 반환)
+function _softInvalidate(mode: string): void {
+  const entry = _dashCacheByMode.get(mode);
+  if (entry) entry.ts = 0; // 만료시키되 데이터는 보존 → 다음 요청에서 재빌드
+}
 
-// 전체 무효화 — 외부 호출용 (하위 호환)
-export function invalidateDashboardCache(): void { _dashCacheByMode.clear(); }
+// 현재 모드 캐시만 무효화 (매도/매수 후) — 실전/연습 양쪽 무효화 (병행운영 시 양쪽 뷰에 반영)
+export function invalidateCurrentModeCache(): void { _softInvalidate('live'); _softInvalidate('paper'); }
+
+// 전체 무효화 — 외부 호출용 (하위 호환) — soft invalidate로 변경 (빈 대시보드 방지)
+export function invalidateDashboardCache(): void {
+  for (const [mode] of _dashCacheByMode) _softInvalidate(mode);
+}
 
 // 특정 모드 캐시 무효화 (모드 전환 시 — 새 모드 캐시만 제거)
-export function invalidateModeCache(mode: string): void { _dashCacheByMode.delete(mode); }
+export function invalidateModeCache(mode: string): void { _softInvalidate(mode); }

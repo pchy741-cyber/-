@@ -97,12 +97,24 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
     return prices;
   })();
 
+  const holdingsCacheKey = `overseas:holdings:${viewIsPaper ? 'paper' : 'live'}`;
   const holdingsPromise = (async () => {
     try {
       const { getPool } = await import('../../db/client.js');
       const { rows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1', [viewIsPaper]);
-      return rows.map((r: any) => ({ stock_code: r.stock_code, quantity: Number(r.quantity), avg_price: Number(r.avg_price), last_price: Number(r.last_price ?? 0) }));
-    } catch { return []; }
+      const holdings = rows.map((r: any) => ({ stock_code: r.stock_code, quantity: Number(r.quantity), avg_price: Number(r.avg_price), last_price: Number(r.last_price ?? 0) }));
+      // DB 성공 시 holdings 백업 캐시 저장 (5분 TTL — DB 장애 시 폴백용)
+      if (holdings.length > 0) cacheSet(holdingsCacheKey, holdings, 300);
+      return holdings;
+    } catch {
+      // DB 실패 시 이전 캐시된 holdings 반환 (데이터 유실 방지)
+      const fallback = cacheGet<any[]>(holdingsCacheKey);
+      if (fallback && fallback.length > 0) {
+        logger.warn(`해외 holdings DB 실패 → 캐시 폴백 (${fallback.length}종목)`, { component: 'OVERSEAS' });
+        return fallback;
+      }
+      return [];
+    }
   })();
 
   // KIS 잔고: 5분 캐시 적용 (느린 API, 자주 바뀌지 않음)
