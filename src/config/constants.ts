@@ -255,8 +255,8 @@ export const OVERSEAS_FEE_PCT = 0.0025;
 // ── 미국주식 해외 ──
 export const OVERSEAS = {
   MAX_POSITIONS: 8,                         // 최대 동시 보유 종목
-  POSITION_SIZE_USD: 2000,                  // 종목당 최대 $2,000
-  POSITION_PCT: 0.20,                       // 또는 가용 현금의 20%
+  POSITION_SIZE_USD: 3000,                  // 종목당 최대 $3,000 (황금비율 상향)
+  POSITION_PCT: 0.25,                       // 또는 가용 현금의 25% (황금비율 상향)
   PARKING_CASH_BUFFER: 500,                 // 현금 파킹 최소 유지 ($)
   PARKING_MIN_ORDER: 20,                    // 파킹 최소 주문 금액 ($)
   TOP_COUNT: 20,                            // 세션 캐시 상위 종목 수 (35종목 풀 → 상위 20 AI 분석)

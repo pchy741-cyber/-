@@ -730,11 +730,11 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         const rawSizingMult = Math.round((0.6 + combined * 1.2) * evMult * vixRegime.sizingMult * gradualCooldown.sizingPenalty * 100) / 100;
         // Paper 모드: sizingMult 하한 0.50 (실험/학습 → 적극 투자)
         const sizingMult = isPaper() ? Math.max(rawSizingMult, 0.50) : rawSizingMult;
-        // Kelly 기반 포지션 사이즈 (Paper: 30% 기본, Live: 20% 기본)
+        // Kelly 기반 포지션 사이즈 — 황금비율: Live 상향 (종목선택 우수 → 투자금 확대)
         const paperMode = isPaper();
-        const kellyDefault = paperMode ? 0.30 : 0.20;
-        const kellyMomentum = paperMode ? 0.35 : 0.25;
-        const kellyCap = paperMode ? 0.35 : 0.25;
+        const kellyDefault = paperMode ? 0.30 : 0.25;
+        const kellyMomentum = paperMode ? 0.35 : 0.30;
+        const kellyCap = paperMode ? 0.35 : 0.30;
         const kellyPct = kellyResult.sampleCount >= 10 ? kellyResult.halfKelly : (target.isMomentum && (target.ai?.confidence ?? 0) >= 0.85 ? kellyMomentum : kellyDefault);
         const baseSize = portfolioValue * Math.min(kellyPct, kellyCap);
         const positionSize = Math.min(baseSize * sizingMult, cash * 0.70);
@@ -744,8 +744,8 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         const isHighBetaEntry = SECTOR_CLASS.HIGH_BETA.includes(targetWatchItem?.sector ?? '');
         const isDefenseEntry = SECTOR_CLASS.DEFENSE.includes(targetWatchItem?.sector ?? '');
         const slDecimal = isHighBetaEntry ? 0.08 : isDefenseEntry ? 0.04 : 0.05;
-        // Paper 모드: 3% 리스크 허용 (Live: 1%)
-        const riskPct = isPaper() ? 0.03 : 0.01;
+        // Paper 모드: 3% 리스크 허용 (Live: 2% — 황금비율 상향)
+        const riskPct = isPaper() ? 0.03 : 0.02;
         const maxRiskUSD = portfolioValue * riskPct;
         const qtyBy1PctRule = maxRiskUSD > 0 ? Math.floor(maxRiskUSD / (target.price.currentPrice * slDecimal)) : Infinity;
         const qtyBySizing = Math.floor(positionSize / (target.price.currentPrice * 1.0025));

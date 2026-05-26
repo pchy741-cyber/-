@@ -406,7 +406,7 @@ export async function technicalFallbackDecisions(params: {
   }
 
   const allocationBuyPenalty = 0;
-  const allocationBoostFirstEntry = false;
+  const allocationBoostFirstEntry = true;
 
   // DB에서 점수 티어별 실거래 역산 비율 로드 (없으면 하드코딩 fallback)
   let scoreTierParams: Array<{ tier_min: number; tier_max: number; alloc_pct: number; sample_count: number }> = [];
@@ -852,21 +852,22 @@ export async function technicalFallbackDecisions(params: {
     // 기술지표만 통과(AI 미허락) → 소액 탐색(4-5%)으로 제한
     const aiApproved = aiScore >= strategyParams.buyThreshold;
 
+    // 황금비율 v2: 확신도 비례 과감 투입 (종목선택 우수 → 투자금 상향)
     const hardcodedAllocPct = aiApproved
       ? (mode === 'SNIPER'
-          // Half-Kelly: 단일 최고확신 종목 집중 — 총자산의 25/22/20%
-          ? (blendedScore >= 90 ? 0.25 :
-             blendedScore >= 85 ? 0.22 : 0.20)
-          : (blendedScore >= 90 ? 0.18 :   // 90+: 18% (원복 — 22% 손실 시 타격 과다)
-             blendedScore >= 85 ? 0.15 :   // 85-89: 15% (원복)
-             blendedScore >= 80 ? 0.08 :   // 80-84: 실데이터 수익률 -0.77% 구간 → 최소 탐색
-             blendedScore >= 75 ? 0.0 :    // 75-79: 진입 차단 (수익률 마이너스 구간)
-             blendedScore >= 70 ? 0.10 : 0.07))
+          // Half-Kelly: 단일 최고확신 종목 집중 — 총자산의 30/25/22%
+          ? (blendedScore >= 90 ? 0.30 :
+             blendedScore >= 85 ? 0.25 : 0.22)
+          : (blendedScore >= 90 ? 0.25 :   // 90+: 25% (고확신 과감 투입)
+             blendedScore >= 85 ? 0.20 :   // 85-89: 20%
+             blendedScore >= 80 ? 0.12 :   // 80-84: 12% (데이터 경계구간 소폭 상향)
+             blendedScore >= 75 ? 0.0 :    // 75-79: 진입 차단 (수익률 마이너스 구간 유지)
+             blendedScore >= 70 ? 0.14 : 0.10))
       : (noAiScores || aiScore === 0)
         // AI 부재(전체 미실행 또는 개별종목 AI=0) → 기술지표만으로 판단, 배분 상향
-        ? (blendedScore >= 80 ? 0.14 : blendedScore >= 70 ? 0.10 : blendedScore >= 62 ? 0.07 : 0.04)
+        ? (blendedScore >= 80 ? 0.18 : blendedScore >= 70 ? 0.14 : blendedScore >= 62 ? 0.10 : 0.06)
         // AI 있지만 이 종목은 미허락 → 소액 탐색
-        : (blendedScore >= 80 ? 0.10 : blendedScore >= 70 ? 0.07 : 0.04);
+        : (blendedScore >= 80 ? 0.14 : blendedScore >= 70 ? 0.10 : 0.06);
     let baseAllocPct = getDbAllocPct(blendedScore) ?? hardcodedAllocPct;
     // 소자산(현금 50만 미만): 배분율 최소 30% (있는 돈으로 1-2종목 집중)
     // 중자산(50만~200만): 배분율 최소 20%
@@ -894,11 +895,12 @@ export async function technicalFallbackDecisions(params: {
     // AI허락 고확신(85점+) → 1차에 88% 과감 진입 (물타기 여지 12%)
     // AI허락 일반(70-84점) → 1차 75% (현금 과잉 시 92%)
     // AI 미허락 탐색 → 1차 100% (소액이므로 분할 의미 없음)
+    // 황금비율: 1차 진입 비율 상향 (좋은 종목은 바로 과감하게)
     const firstEntryRatio = mode === 'SNIPER' ? 1.0   // 저격수: 한 번에 풀 포지션
       : !aiApproved ? 1.0
-      : blendedScore >= 85 ? (allocationBoostFirstEntry ? 0.90 : 0.80)  // 원복 (0.88→0.80: 물타기 여지 확보)
+      : blendedScore >= 85 ? (allocationBoostFirstEntry ? 0.92 : 0.85)  // 92% 1차 진입 (물타기 여지 8%)
       : splitCount <= 1 ? 1.0
-      : splitCount <= 2 ? (allocationBoostFirstEntry ? 0.90 : 0.70) : (allocationBoostFirstEntry ? 0.85 : 0.65);
+      : splitCount <= 2 ? (allocationBoostFirstEntry ? 0.92 : 0.80) : (allocationBoostFirstEntry ? 0.88 : 0.70);
     // AI 고확신 포지션 확대 — blend 점수도 함께 높아야 적용 (AI만 높고 tech 낮으면 억제)
     // blend >= 80이어야 2.0x, blend >= 72이어야 1.5x (낮은 tech 종목 과대투입 방지)
     const aiPosMultiplier = (aiScore >= 90 && blendedScore >= 80) ? 2.0

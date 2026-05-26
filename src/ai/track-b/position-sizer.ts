@@ -28,8 +28,8 @@ export function adjustPositionSizes(params: {
   // KOSPI 조정장이면 60%, 강세장이면 1.3x, 정상이면 1.0x; 일일손실 조기경고 추가 50% 축소
   const kospiSizingMult = kospiRegimePenalty >= 1 ? 0.6 : (kospiBoost ? 1.3 : 1.0);
   const earlyWarnMult = dailyLossEarlyWarning ? 0.5 : 1.0;
-  // 복리 포지션 사이징: totalAssets × 25% 기반 (고정 캡 제거 → 자산 성장에 비례)
-  const maxPerPosition = Math.round(totalAssets * 0.25 * kospiSizingMult * earlyWarnMult);
+  // 복리 포지션 사이징: totalAssets × 30% 기반 (황금비율 상향 — 확신 종목 과감 투입)
+  const maxPerPosition = Math.round(totalAssets * 0.30 * kospiSizingMult * earlyWarnMult);
   const baseBudget = Math.floor(maxPerPosition / _params.splitCount);
 
   const scoreMap = new Map<string, number>(
@@ -46,8 +46,8 @@ export function adjustPositionSizes(params: {
       const confFactor = Math.min(1, Math.max(0, d.confidence ?? 0.6));
       const scoreFactor = Math.min(1, aiScore / 100);
       const combined = confFactor * 0.55 + scoreFactor * 0.45;
-      // 강세장: 상한 2.0x / 정상: 1.8x
-      const multCeiling = kospiBoost ? 1.4 : 1.2;
+      // 강세장: 상한 2.0x / 정상: 1.5x (황금비율 상향)
+      const multCeiling = kospiBoost ? 1.6 : 1.4;
       const convMult = Math.round((0.6 + combined * multCeiling) * 100) / 100;
       const budget = Math.floor(baseBudget * convMult);
       const targetQty = Math.max(1, Math.floor(budget / price));
