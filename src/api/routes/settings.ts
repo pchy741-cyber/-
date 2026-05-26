@@ -146,32 +146,34 @@ settingsRoutes.put('/strategy', async (c) => {
 
   try {
     // UPDATE 우선 (기존 활성 전략 덮어쓰기) → 없으면 INSERT
+    const isPaper = config.isPaper;
     const { rowCount } = await getPool().query(
       `UPDATE strategy_config
        SET mode=$1, notebooklm_prompt=$2, gemini_prompt=$3, gpt_prompt=$4, claude_prompt=$5,
            buy_threshold=$6, stop_loss_pct=$7, take_profit_pct=$8, strategy_document=$9, risk_prompt=$10,
            updated_at=NOW()
-       WHERE is_active = true`,
+       WHERE is_active = true AND is_paper = $11`,
       [strategyData.mode, strategyData.notebooklm_prompt, strategyData.gemini_prompt,
        strategyData.gpt_prompt, strategyData.claude_prompt, strategyData.buy_threshold,
        strategyData.stop_loss_pct, strategyData.take_profit_pct,
-       strategyData.strategy_document, strategyData.risk_prompt],
+       strategyData.strategy_document, strategyData.risk_prompt, isPaper],
     );
 
     if ((rowCount ?? 0) === 0) {
       // 활성 전략이 없으면 새로 INSERT
       await getPool().query(
-        `INSERT INTO strategy_config (mode, is_active, notebooklm_prompt, gemini_prompt, gpt_prompt, claude_prompt, buy_threshold, stop_loss_pct, take_profit_pct, strategy_document, risk_prompt)
-         VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        `INSERT INTO strategy_config (mode, is_active, notebooklm_prompt, gemini_prompt, gpt_prompt, claude_prompt, buy_threshold, stop_loss_pct, take_profit_pct, strategy_document, risk_prompt, is_paper)
+         VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [strategyData.mode, strategyData.notebooklm_prompt, strategyData.gemini_prompt,
          strategyData.gpt_prompt, strategyData.claude_prompt, strategyData.buy_threshold,
          strategyData.stop_loss_pct, strategyData.take_profit_pct,
-         strategyData.strategy_document, strategyData.risk_prompt],
+         strategyData.strategy_document, strategyData.risk_prompt, isPaper],
       );
     }
 
     const { rows } = await getPool().query(
-      `SELECT * FROM strategy_config WHERE is_active = true ORDER BY updated_at DESC LIMIT 1`,
+      `SELECT * FROM strategy_config WHERE is_active = true AND is_paper = $1 ORDER BY updated_at DESC LIMIT 1`,
+      [isPaper],
     );
     const diff = buildStrategyDiff(prevStrategy, strategyData);
     await logSystem('INFO', 'STRATEGY_AUDIT', `전략 변경: ${diff}`, { prev: prevStrategy, next: strategyData }).catch(() => {});
@@ -338,7 +340,8 @@ settingsRoutes.get('/insights', async (c) => {
     const { rows } = await getPool().query(
       `SELECT id, category, insight, confidence, sample_count, last_updated, is_manual,
               recommendation, param_change, is_applied, applied_at
-       FROM learned_insights ORDER BY is_manual DESC, confidence DESC LIMIT 50`
+       FROM learned_insights WHERE is_paper = $1 ORDER BY is_manual DESC, confidence DESC LIMIT 50`,
+      [config.isPaper],
     );
     return c.json(rows);
   } catch (err: any) {
@@ -355,9 +358,9 @@ settingsRoutes.post('/insights', async (c) => {
 
   try {
     const { rows } = await getPool().query(
-      `INSERT INTO learned_insights (category, insight, confidence, sample_count, last_updated, is_manual)
-       VALUES ($1, $2, $3, 1, NOW(), TRUE) RETURNING *`,
-      [category, insight, body.confidence ?? 0.8]
+      `INSERT INTO learned_insights (category, insight, confidence, sample_count, last_updated, is_manual, is_paper)
+       VALUES ($1, $2, $3, 1, NOW(), TRUE, $4) RETURNING *`,
+      [category, insight, body.confidence ?? 0.8, config.isPaper],
     );
     return c.json(rows[0]);
   } catch (err: any) {
@@ -411,7 +414,7 @@ settingsRoutes.post('/run-self-learning', async (c) => {
 // ── 거래 모드 전환 (모의/실전) ──
 settingsRoutes.get('/trading-mode', async (c) => {
   try {
-    const { rows } = await getPool().query('SELECT trading_mode_override FROM portfolio_allocation_config ORDER BY id DESC LIMIT 1');
+    const { rows } = await getPool().query('SELECT trading_mode_override FROM portfolio_allocation_config WHERE is_paper = false ORDER BY id DESC LIMIT 1');
     const dbMode = rows[0]?.trading_mode_override ?? null;
     return c.json({ mode: dbMode ?? getEffectiveTradingMode(), dbOverride: dbMode });
   } catch {
@@ -448,18 +451,18 @@ settingsRoutes.post('/trading-mode', async (c) => {
 
   setTradingModeOverride(mode);
   try {
-    // UPDATE 시도 (전체 행 대상 — 행이 없으면 rowCount=0)
+    // UPDATE 시도 (live 행만 대상 — 행이 없으면 rowCount=0)
     const { rowCount } = await getPool().query(
-      'UPDATE portfolio_allocation_config SET trading_mode_override=$1',
+      'UPDATE portfolio_allocation_config SET trading_mode_override=$1 WHERE is_paper = false',
       [mode],
     );
     if ((rowCount ?? 0) === 0) {
-      // 행이 없으면 기본값으로 INSERT
+      // 행이 없으면 기본값으로 INSERT (live 행)
       await getPool().query(
         `INSERT INTO portfolio_allocation_config
            (kr_pct, us_pct, sector_semiconductor, sector_bio, sector_defense,
-            sector_finance, sector_etc, trailing_stop_pct, trading_mode_override)
-         VALUES (70, 30, 30, 20, 25, 20, 30, 5, $1)`,
+            sector_finance, sector_etc, trailing_stop_pct, trading_mode_override, is_paper)
+         VALUES (70, 30, 30, 20, 25, 20, 30, 5, $1, false)`,
         [mode],
       );
     }
@@ -482,11 +485,13 @@ const ALLOC_DEFAULTS = {
 
 settingsRoutes.get('/portfolio/allocation', async (c) => {
   try {
-    const { rows } = await getPool().query('SELECT * FROM portfolio_allocation_config ORDER BY id DESC LIMIT 1');
+    const isPaper = config.isPaper;
+    const { rows } = await getPool().query('SELECT * FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1', [isPaper]);
     if (rows.length === 0) {
       const { rows: ins } = await getPool().query(
-        `INSERT INTO portfolio_allocation_config (kr_pct, us_pct, sector_semiconductor, sector_bio, sector_defense, sector_finance, sector_etc, trailing_stop_pct)
-         VALUES (70, 30, 30, 20, 25, 20, 30, 5) RETURNING *`
+        `INSERT INTO portfolio_allocation_config (kr_pct, us_pct, sector_semiconductor, sector_bio, sector_defense, sector_finance, sector_etc, trailing_stop_pct, is_paper)
+         VALUES (70, 30, 30, 20, 25, 20, 30, 5, $1) RETURNING *`,
+        [isPaper],
       );
       return c.json(ins[0]);
     }
@@ -510,20 +515,21 @@ settingsRoutes.put('/portfolio/allocation', async (c) => {
   const trailStop = Math.max(1, Math.min(20, Number(body.trailing_stop_pct ?? 5)));
 
   try {
-    const { rows: existing } = await getPool().query('SELECT id FROM portfolio_allocation_config LIMIT 1');
+    const isPaperAlloc = config.isPaper;
+    const { rows: existing } = await getPool().query('SELECT id FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1', [isPaperAlloc]);
     let result;
     if (existing.length > 0) {
       const { rows } = await getPool().query(
         `UPDATE portfolio_allocation_config SET kr_pct=$1, us_pct=$2, sector_semiconductor=$3, sector_bio=$4,
          sector_defense=$5, sector_finance=$6, sector_etc=$7, trailing_stop_pct=$8, updated_at=NOW() WHERE id=$9 RETURNING *`,
-        [kr, us, semi, bio, defense, finance, etc, trailStop, existing[0].id]
+        [kr, us, semi, bio, defense, finance, etc, trailStop, existing[0].id],
       );
       result = rows[0];
     } else {
       const { rows } = await getPool().query(
-        `INSERT INTO portfolio_allocation_config (kr_pct, us_pct, sector_semiconductor, sector_bio, sector_defense, sector_finance, sector_etc, trailing_stop_pct)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-        [kr, us, semi, bio, defense, finance, etc, trailStop]
+        `INSERT INTO portfolio_allocation_config (kr_pct, us_pct, sector_semiconductor, sector_bio, sector_defense, sector_finance, sector_etc, trailing_stop_pct, is_paper)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+        [kr, us, semi, bio, defense, finance, etc, trailStop, isPaperAlloc],
       );
       result = rows[0];
     }
@@ -541,8 +547,8 @@ settingsRoutes.post('/defense-mode/deactivate', async (c) => {
     // 1. strategy_config → SWING + constants 값으로 복원 (하드코딩 70 금지)
     const swingP = STRATEGY_PARAMS.SWING;
     await pool.query(
-      `UPDATE strategy_config SET mode='SWING', buy_threshold=$1, stop_loss_pct=$2, take_profit_pct=$3, updated_at=NOW() WHERE is_active=true`,
-      [swingP.buyThreshold, swingP.stopLossPct, swingP.takeProfitPct],
+      `UPDATE strategy_config SET mode='SWING', buy_threshold=$1, stop_loss_pct=$2, take_profit_pct=$3, updated_at=NOW() WHERE is_active=true AND is_paper=$4`,
+      [swingP.buyThreshold, swingP.stopLossPct, swingP.takeProfitPct, config.isPaper],
     ).catch(() => {});
 
     // 인메모리 전략도 동기화

@@ -408,8 +408,9 @@ export async function getTodayStartSnapshot(isPaperOverride?: boolean) {
 export async function getActiveStrategy(): Promise<StrategyConfig | null> {
   if (useMemory) return memGetActiveStrategy();
   const { rows } = await getPool().query(
-    `SELECT * FROM strategy_config WHERE is_active = true
+    `SELECT * FROM strategy_config WHERE is_active = true AND is_paper = $1
      ORDER BY updated_at DESC LIMIT 1`,
+    [config.isPaper],
   );
   return rows[0] ?? null;
 }

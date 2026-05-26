@@ -737,12 +737,13 @@ function analyzeQuickProfitTaking(wins: EnrichedChain[]): LearnedInsight[] {
 
 async function saveInsights(insights: LearnedInsight[]): Promise<void> {
   if (insights.length > 0) {
-    // 자동 생성 인사이트만 삭제 (CEO가 수동 입력한 is_manual=true 인사이트는 보존)
-    await getPool().query('DELETE FROM learned_insights WHERE is_manual IS NOT TRUE');
+    const isPaper = config.isPaper;
+    // 이 모드의 자동 생성 인사이트만 삭제 (다른 모드 인사이트 보존)
+    await getPool().query('DELETE FROM learned_insights WHERE is_manual IS NOT TRUE AND is_paper = $1', [isPaper]);
     for (const insight of insights) {
       const { rows: inserted } = await getPool().query(
-        `INSERT INTO learned_insights (category, insight, confidence, sample_count, last_updated, details, recommendation, param_change)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `INSERT INTO learned_insights (category, insight, confidence, sample_count, last_updated, details, recommendation, param_change, is_paper)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING id`,
         [
           insight.category,
@@ -753,6 +754,7 @@ async function saveInsights(insights: LearnedInsight[]): Promise<void> {
           insight.details ? JSON.stringify(insight.details) : null,
           insight.recommendation ?? null,
           insight.paramChange ? JSON.stringify(insight.paramChange) : null,
+          isPaper,
         ],
       );
       if (inserted[0]?.id) insight.id = String(inserted[0].id);
@@ -779,7 +781,8 @@ async function saveInsights(insights: LearnedInsight[]): Promise<void> {
  */
 export async function getLearnedInsightsForPrompt(): Promise<string> {
   const { rows: data } = await getPool().query(
-    'SELECT * FROM learned_insights ORDER BY confidence DESC, sample_count DESC LIMIT 15',
+    'SELECT * FROM learned_insights WHERE is_paper = $1 ORDER BY confidence DESC, sample_count DESC LIMIT 15',
+    [config.isPaper],
   );
 
   if (!data || data.length === 0) return '';
@@ -877,8 +880,12 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
   if (toApply.length === 0) return;
 
   try {
-    // 현재 활성 전략 조회
-    const { rows } = await getPool().query(`SELECT * FROM strategy_config WHERE is_active = true ORDER BY updated_at DESC LIMIT 1`);
+    // 현재 활성 전략 조회 (모드 분리)
+    const isPaper = config.isPaper;
+    const { rows } = await getPool().query(
+      `SELECT * FROM strategy_config WHERE is_active = true AND is_paper = $1 ORDER BY updated_at DESC LIMIT 1`,
+      [isPaper],
+    );
     const current = rows[0];
     if (!current) return;
 
@@ -900,7 +907,7 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
       const oldVal = current[field];
       if (oldVal === value) continue; // 이미 같은 값이면 스킵
 
-      await getPool().query(`UPDATE strategy_config SET ${field} = $1 WHERE is_active = true`, [value]);
+      await getPool().query(`UPDATE strategy_config SET ${field} = $1 WHERE is_active = true AND is_paper = $2`, [value, isPaper]);
       // id가 없을 수 있으므로 (category, insight) 복합키로 업데이트
       if (insight.id) {
         await getPool().query(`UPDATE learned_insights SET is_applied = true, applied_at = NOW() WHERE id = $1`, [insight.id]);

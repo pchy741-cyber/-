@@ -8,8 +8,12 @@
  *   "내 돈 X원 중 Y% 이상 잃지 않는다"가 직관적으로 성립한다.
  *
  * DB 저장:
- *   KR      → portfolio_allocation_config.seed_capital (기본 10,000,000원)
+ *   KR      → portfolio_allocation_config.seed_capital (기본 10,000,000원, live 행만)
  *   OVERSEAS → system_state key 'seed_capital_overseas' / 'seed_capital_overseas_paper'
+ *
+ * Paper/Live 분리:
+ *   Paper 모드는 항상 상수 반환 (DB 읽기/쓰기 없음, 캐시 오염 없음)
+ *   Live 모드는 별도 캐시(cachedKrLive, cachedOverseasLive) 사용
  */
 
 import { config } from '../config/index.js';
@@ -20,39 +24,34 @@ const PAPER_SEED_OVERSEAS = 10_000;      // 모의 해외 $10K
 const DEFAULT_SEED_KR = 10_000_000;
 const DEFAULT_SEED_OVERSEAS = 10_000;
 
-let cachedKr: number | null = null;
-let cachedOverseas: number | null = null;
+// Live 전용 캐시 — paper 모드는 상수 직접 반환하므로 캐시 불필요
+let cachedKrLive: number | null = null;
+let cachedOverseasLive: number | null = null;
 
 export async function getSeedCapitalKr(): Promise<number> {
-  if (cachedKr !== null) return cachedKr;
+  if (config.isPaper) return PAPER_SEED_KR;
 
-  if (config.isPaper) {
-    cachedKr = PAPER_SEED_KR;
-    return cachedKr;
-  }
+  if (cachedKrLive !== null) return cachedKrLive;
 
   try {
     const { getPool } = await import('../db/client.js');
     const { rows } = await getPool().query(
-      'SELECT seed_capital FROM portfolio_allocation_config ORDER BY id DESC LIMIT 1',
+      'SELECT seed_capital FROM portfolio_allocation_config WHERE is_paper = false ORDER BY id DESC LIMIT 1',
     );
     if (rows[0] && Number(rows[0].seed_capital) > 0) {
-      cachedKr = Number(rows[0].seed_capital);
-      return cachedKr;
+      cachedKrLive = Number(rows[0].seed_capital);
+      return cachedKrLive;
     }
   } catch {}
 
-  cachedKr = DEFAULT_SEED_KR;
-  return cachedKr;
+  cachedKrLive = DEFAULT_SEED_KR;
+  return cachedKrLive;
 }
 
 export async function getSeedCapitalOverseas(): Promise<number> {
-  if (cachedOverseas !== null) return cachedOverseas;
+  if (config.isPaper) return PAPER_SEED_OVERSEAS;
 
-  if (config.isPaper) {
-    cachedOverseas = PAPER_SEED_OVERSEAS;
-    return cachedOverseas;
-  }
+  if (cachedOverseasLive !== null) return cachedOverseasLive;
 
   try {
     const { getPool } = await import('../db/client.js');
@@ -62,25 +61,35 @@ export async function getSeedCapitalOverseas(): Promise<number> {
       [key],
     );
     if (rows[0] && Number(rows[0].value) > 0) {
-      cachedOverseas = Number(rows[0].value);
-      return cachedOverseas;
+      cachedOverseasLive = Number(rows[0].value);
+      return cachedOverseasLive;
     }
   } catch {}
 
-  cachedOverseas = DEFAULT_SEED_OVERSEAS;
-  return cachedOverseas;
+  cachedOverseasLive = DEFAULT_SEED_OVERSEAS;
+  return cachedOverseasLive;
 }
 
 export async function setSeedCapital(market: 'KR' | 'OVERSEAS', amount: number): Promise<void> {
   if (amount <= 0) return;
+
+  if (config.isPaper) {
+    // Paper seed capital은 상수로 고정 — DB 쓰기 불필요
+    logger.info(
+      `💰 [모의] 기준자본 고정 [${market === 'KR' ? '국내' : '해외'}]: ${market === 'KR' ? `${PAPER_SEED_KR.toLocaleString()}원` : `$${PAPER_SEED_OVERSEAS.toLocaleString()}`}`,
+      { component: 'RISK' },
+    );
+    return;
+  }
+
   const { getPool } = await import('../db/client.js');
 
   if (market === 'KR') {
     await getPool().query(
-      'UPDATE portfolio_allocation_config SET seed_capital = $1',
+      'UPDATE portfolio_allocation_config SET seed_capital = $1 WHERE is_paper = false',
       [amount],
     );
-    cachedKr = amount;
+    cachedKrLive = amount;
   } else {
     const key = 'seed_capital_overseas';
     await getPool().query(
@@ -88,7 +97,7 @@ export async function setSeedCapital(market: 'KR' | 'OVERSEAS', amount: number):
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
       [key, String(amount)],
     );
-    cachedOverseas = amount;
+    cachedOverseasLive = amount;
   }
 
   const label = market === 'KR' ? '국내' : '해외';
@@ -98,8 +107,8 @@ export async function setSeedCapital(market: 'KR' | 'OVERSEAS', amount: number):
 
 export function getSeedCapitalStatus() {
   return {
-    kr: cachedKr ?? DEFAULT_SEED_KR,
-    overseas: cachedOverseas ?? DEFAULT_SEED_OVERSEAS,
+    kr: config.isPaper ? PAPER_SEED_KR : (cachedKrLive ?? DEFAULT_SEED_KR),
+    overseas: config.isPaper ? PAPER_SEED_OVERSEAS : (cachedOverseasLive ?? DEFAULT_SEED_OVERSEAS),
   };
 }
 
@@ -128,7 +137,7 @@ export const OVERSEAS_LOSS_TIERS = { warnPct: 10, blockPct: 20, killPct: 30 } as
 export async function initSeedCapital(): Promise<void> {
   await Promise.all([getSeedCapitalKr(), getSeedCapitalOverseas()]);
   logger.info(
-    `💰 기준자본 로드: 국내 ${(cachedKr ?? DEFAULT_SEED_KR).toLocaleString()}원 / 해외 $${(cachedOverseas ?? DEFAULT_SEED_OVERSEAS).toLocaleString()}`,
+    `💰 기준자본 로드: 국내 ${(cachedKrLive ?? DEFAULT_SEED_KR).toLocaleString()}원 / 해외 $${(cachedOverseasLive ?? DEFAULT_SEED_OVERSEAS).toLocaleString()}`,
     { component: 'RISK' },
   );
 }
