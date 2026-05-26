@@ -777,7 +777,9 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           : kellyResult.sampleCount >= 10 ? Math.max(kellyResult.halfKelly, kellyFloor)
           : (target.isMomentum && (target.ai?.confidence ?? 0) >= 0.85 ? kellyMomentum : kellyDefault);
         const baseSize = portfolioValue * Math.min(kellyPct, isSmallAccount ? 0.80 : kellyCap);
-        const positionSize = Math.min(baseSize * sizingMult, cash * 0.70);
+        // 소액 계좌: 현금 95% 사용 (1-2종목 집중), 일반: 70% 버퍼
+        const cashUsageCap = isSmallAccount ? 0.95 : 0.70;
+        const positionSize = Math.min(baseSize * sizingMult, cash * cashUsageCap);
         // 소액투자 가능: 통합증거금 소액 매수 허용 (수수료 0.25% → $20도 $0.05)
         const minPositionSize = 20;
         if (positionSize < minPositionSize) break;
@@ -793,14 +795,11 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         const qtyBySizing = Math.floor(positionSize / (target.price.currentPrice * 1.0025));
         const fullQty = Math.min(qtyBySizing, qtyBy1PctRule > 0 ? qtyBy1PctRule : qtyBySizing);
 
-        // 소수점 매수: qty=0이지만 금액 $20 이상이면 소수점 매수 시도 (Live 전용, 미국 주식만)
-        const useFractional = fullQty <= 0 && !isPaper() && positionSize >= 20
-          && ['NASDAQ', 'NYSE', 'AMEX'].includes(target.exchange);
-        if (fullQty <= 0 && !useFractional) continue;
+        if (fullQty <= 0) continue;
 
         // Scale-In: 모멘텀/빅무버는 100% 즉시매수, 나머지는 60% 진입 → +2% 확인 후 40% 추가
-        const useScaleIn = !useFractional && !target.isMomentum && !target.isBigMover && fullQty >= 3;
-        const qty = useFractional ? 0 : (useScaleIn ? Math.max(1, Math.floor(fullQty * 0.6)) : fullQty);
+        const useScaleIn = !target.isMomentum && !target.isBigMover && fullQty >= 3;
+        const qty = useScaleIn ? Math.max(1, Math.floor(fullQty * 0.6)) : fullQty;
         const scaleInRemainder = useScaleIn ? fullQty - qty : 0;
 
         const buyMode = target.isMomentum ? '🚀모멘텀' : (target.rsi <= 35 ? '📉과매도반등' : '📊트렌드');
@@ -811,9 +810,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           ? `${buyMode} AI(${(target.ai.confidence * 100).toFixed(0)}%) 사이징x${sizingMult}: ${target.ai.reasoning}${wrTag}${evTag}`
           : `${buyMode} 기술(AI없음) 사이징x${sizingMult}: score=${target.score} RSI=${target.rsi.toFixed(0)} ADX=${target.adx.toFixed(0)}${wrTag}${evTag}`;
 
-        const exec = useFractional
-          ? await executeFractionalBuy(target.code, Math.floor(positionSize), target.price.currentPrice, target.exchange, reason)
-          : await executeOverseasOrder(target.code, 'BUY', qty, target.price.currentPrice, target.exchange, reason, 0, 0, { isPaper: isPaper() });
+        const exec = await executeOverseasOrder(target.code, 'BUY', qty, target.price.currentPrice, target.exchange, reason, 0, 0, { isPaper: isPaper() });
         if (!exec.submitted) continue;
         if (exec.filledQty <= 0) {
           pendingOrderStocks.add(target.code);
