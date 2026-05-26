@@ -125,8 +125,7 @@ export class TradeExecutor {
     reasoning: string,
     aiScore?: number,
   ): Promise<void> {
-    // 🔒 봇 트레이드는 무조건 paper — 실거래는 MANUAL trigger만 가능
-    const isPaperSnapshot = true;
+    const isPaperSnapshot = config.isPaper;
 
     // 이미 열린 체인이 있으면 물타기로 전환
     const existingChain = await chainManager.findOpenChain(stockCode);
@@ -553,10 +552,7 @@ export class TradeExecutor {
     }
   }
 
-  /**
-   * 실제 주문 실행 (Paper / Live 분기)
-   * 🔒 SAFETY: trigger_source가 'MANUAL'이 아닌 봇 트레이드는 무조건 paper
-   */
+  /** 실제 주문 실행 (Paper / Live 분기) — config.isPaper 서버 설정에 따라 라우팅 */
   private async executeOrder(params: {
     stockCode: string;
     side: 'BUY' | 'SELL';
@@ -566,15 +562,7 @@ export class TradeExecutor {
     triggerSource?: string;
     aiReasoning?: string;
   }): Promise<OrderResult> {
-    // 🔒 봇 트레이드 실거래 차단: MANUAL만 실거래 가능
-    const isBotTrade = params.triggerSource !== 'MANUAL';
-    const effectivePaper = isBotTrade || config.isPaper;
-
-    if (isBotTrade && !config.isPaper) {
-      logger.info(`🔒 봇 트레이드 paper 강제: ${params.side} ${params.stockCode} (trigger=${params.triggerSource})`, { component: 'EXECUTOR' });
-    }
-
-    if (effectivePaper) {
+    if (config.isPaper) {
       return paperTradeOrder(params);
     }
 
@@ -608,7 +596,7 @@ export class TradeExecutor {
       filled_quantity: 0,
       filled_price: null,
       status: result.success ? 'PENDING' : 'FAILED',
-      trading_mode: (params.triggerSource !== 'MANUAL') ? 'paper' : config.tradingMode,
+      trading_mode: config.tradingMode,
       trigger_source: params.triggerSource ?? null,
       ai_reasoning: params.aiReasoning ?? null,
     });
@@ -647,10 +635,8 @@ export class TradeExecutor {
     stockCode: string,
     expectedQty: number,
     fallbackPrice: number,
-    isBotTrade = true,
   ): Promise<{ filledQty: number; filledPrice: number } | null> {
-    // 🔒 봇 트레이드는 무조건 paper 체결 (KIS API 조회 불필요)
-    if (isBotTrade || config.isPaper) {
+    if (config.isPaper) {
       return { filledQty: expectedQty, filledPrice: roundKrw(fallbackPrice) };
     }
 
