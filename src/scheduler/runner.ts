@@ -21,7 +21,7 @@ import { runHoldingCheckJob } from './holding-check-job.js';
 import { runSnapshotJob } from './snapshot-job.js';
 import { runTrackAJob } from './track-a-job.js';
 import { runTrackBJob } from './track-b-job.js';
-import { runOverseasJob } from './overseas-job.js';
+import { runOverseasJob, runOverseasDual } from './overseas-job.js';
 import { syncInterestGroups, syncHoldingsToWatchlist, fixWatchlistNames } from '../kis/interest-group.js';
 import { runUnfilledOrderCheck } from './unfilled-order-job.js';
 import { runPreMarketQuickScore } from '../automation/pre-market-quick-score.js';
@@ -53,7 +53,7 @@ function withTimeout<T>(label: string, fn: () => Promise<T>, timeoutMs: number):
  * ┌─ 07:30 ─── Track A 장전 분석 (Gemini → GPT-4o)
  * ├─ 08:00 ─── 장세 자동 감지 → 전략 모드 전환
  * ├─ 08:50 ─── 장시작 스냅샷 + Kill Switch 리셋
- * ├─ 09:00~15:30 ── Track B 10분 간격 (Claude 실행)
+ * ├─ 09:00~15:30 ── Track B 3분 간격 (Claude 실행)
  * ├─ 09:00~15:30 ── 뉴스 RSS 15분 간격 자동 수집
  * ├─ 09:00~15:30 ── 이상 감지 5분 간격
  * ├─ 09:30~15:30 ── 보유일 초과 손절 체크 매시
@@ -137,10 +137,11 @@ export function startScheduler(): void {
       await runSnapshotJob().catch((e) => logger.error(`스냅샷 실패: ${e}`, { component: 'SCHEDULER' }));
 
       const { isKillSwitchActive, deactivateKillSwitch, resetDailyErrorCount } = await import('../risk/kill-switch.js');
-      resetDailyErrorCount();
-      if (isKillSwitchActive()) {
-        logger.info('🔄 Kill Switch 자동 리셋 시도 (새 장)', { component: 'SCHEDULER' });
-        await deactivateKillSwitch(false); // 수동 발동 중이면 내부에서 거부됨
+      // 국내 전용 리셋 (해외는 22:20에 별도 리셋)
+      resetDailyErrorCount('KR');
+      if (isKillSwitchActive('KR')) {
+        logger.info('🔄 Kill Switch 자동 리셋 시도 [국내] (새 장)', { component: 'SCHEDULER' });
+        await deactivateKillSwitch(false, 'KR');
       }
     },
     { timezone: MARKET.TIMEZONE },
@@ -191,7 +192,7 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // Track B — 장중 10분 간격 (핵심: Claude 매매 판단)
+  // Track B — 장중 3분 간격 (핵심: Claude 매매 판단)
   cron.schedule(
     `*/${SCHEDULE.TRACK_B_INTERVAL_MINUTES} 9-15 * * 1-5`,
     () => { runTrackBSafe(); },
@@ -284,7 +285,7 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 미체결 주문 자동 취소 — 장중 10분 간격 (Track B :00,:10... 과 겹침 방지 → +5분 오프셋)
+  // 미체결 주문 자동 취소 — 장중 10분 간격 (Track B 3분 간격과 겹침 방지 → +5분 오프셋)
   cron.schedule(
     '5,15,25,35,45,55 9-15 * * 1-5',
     () => {
@@ -343,11 +344,12 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 15:40 — 일일 자동 리포트 (Telegram)
+  // 15:40 — 일일 자동 리포트 (Telegram) + 체결 캐시 정리
   cron.schedule(
     '40 15 * * 1-5',
     () => {
       generateDailyReport().catch((e) => logger.error(`리포트 실패: ${e}`, { component: 'SCHEDULER' }));
+      import('../trading/executor.js').then((m) => m.tradeExecutor.clearConfirmedOrders()).catch(() => {});
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -440,7 +442,7 @@ export function startScheduler(): void {
   cron.schedule(
     '*/10 9-15 * * 1-5',
     () => {
-      runOverseasJob().catch((e) => logger.error(`아시아주식 실패: ${e}`, { component: 'SCHEDULER' }));
+      runOverseasDual().catch((e) => logger.error(`아시아주식 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -464,10 +466,11 @@ export function startScheduler(): void {
     '20 22 * * 1-5',
     async () => {
       const { isKillSwitchActive, deactivateKillSwitch, resetDailyErrorCount } = await import('../risk/kill-switch.js');
-      resetDailyErrorCount();
-      if (isKillSwitchActive()) {
-        logger.info('🔄 Kill Switch 자동 리셋 시도 (미국장 준비)', { component: 'SCHEDULER' });
-        await deactivateKillSwitch(false); // 수동 발동 중이면 내부에서 거부됨
+      // 해외 전용 리셋 (국내는 08:50에 별도 리셋)
+      resetDailyErrorCount('OVERSEAS');
+      if (isKillSwitchActive('OVERSEAS')) {
+        logger.info('🔄 Kill Switch 자동 리셋 시도 [해외] (미국장 준비)', { component: 'SCHEDULER' });
+        await deactivateKillSwitch(false, 'OVERSEAS');
       }
       // 미국장 세션 캐시 초기화 — 22:30 첫 사이클에서 전 종목 재스캔
       const { resetUSSessionCache } = await import('./overseas-job.js');
@@ -477,33 +480,74 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 미국 개장 즉시 트리거 — DST 자동 감지하여 22:30(서머) 또는 23:30(겨울) 정각 실행
+  cron.schedule(
+    '30 22 * * 1-5',
+    async () => {
+      const { isUSDST } = await import('./overseas/session.js');
+      if (isUSDST()) {
+        logger.info('🇺🇸 서머타임 개장 22:30 즉시 트리거', { component: 'SCHEDULER' });
+        runOverseasDual().catch((e) => logger.error(`개장 트리거 실패: ${e}`, { component: 'SCHEDULER' }));
+      }
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+  cron.schedule(
+    '30 23 * * 1-5',
+    async () => {
+      const { isUSDST } = await import('./overseas/session.js');
+      if (!isUSDST()) {
+        logger.info('🇺🇸 겨울시간 개장 23:30 즉시 트리거', { component: 'SCHEDULER' });
+        runOverseasDual().catch((e) => logger.error(`개장 트리거 실패: ${e}`, { component: 'SCHEDULER' }));
+      }
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 미국 주식 분석 — 미국 장중 10분 간격 (서머타임: KST 22:30~05:00 / 표준시: 23:30~06:00)
   // 5분은 KIS rate limit(초당 거래건수) 초과 유발 → 10분이 현금 유휴 방지 + 안정성 균형점
   cron.schedule(
     '*/10 22 * * 1-5',
     () => {
-      runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
+      runOverseasDual().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
     '*/10 23 * * 1-5',
     () => {
-      runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
+      runOverseasDual().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
     '*/10 0-5 * * 2-6',
     () => {
-      runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
+      runOverseasDual().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
     '*/10 6 * * 2-6',
     () => {
-      runOverseasJob().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
+      runOverseasDual().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🌙 장외시간 황금시간 — 프리마켓(18:00~22:30) + 포스트마켓(06:30~10:00) 30분 간격
+  // 급락 줍줍(-3%↓) + 빅무버(+5%↑) 선점 + 보유종목 익절/손절 감시
+  cron.schedule(
+    '*/30 18-21 * * 1-5',
+    () => {
+      runOverseasDual().catch((e) => logger.error(`프리마켓 감시 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+  cron.schedule(
+    '*/30 7-9 * * 2-6',
+    () => {
+      runOverseasDual().catch((e) => logger.error(`포스트마켓 감시 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -550,7 +594,7 @@ export function startScheduler(): void {
   }, 10_000); // 10초 후 (DB 연결 안정화 대기)
 
   logger.info('✅ 스케줄러 등록 완료 (자동화 모듈 16개 + 미국주식)', { component: 'SCHEDULER' });
-  logger.info('  Track A: 07:30/18:00 | Track B: 10분 | 뉴스: 15분', { component: 'SCHEDULER' });
+  logger.info('  Track A: 07:30/18:00 | Track B: 3분 | 뉴스: 15분', { component: 'SCHEDULER' });
   logger.info('  이상감지: 5분 | 장세전환: 08:00/12:00 | 리포트: 15:40 | 🌙시간외: 15:42/52', { component: 'SCHEDULER' });
   logger.info('  🎯 스나이퍼: 15분 (수급/기술/공시 고확률 자동 진입)', { component: 'SCHEDULER' });
   logger.info('  Self-Heal: 10분 | 아카이빙: 일요일 02:00', { component: 'SCHEDULER' });

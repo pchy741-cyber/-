@@ -7,7 +7,7 @@ import { logger } from '../utils/logger.js';
  *
  * 용도:
  * - AI 스코어 캐싱 (Track A 산출 → Track B에서 ms 단위 조회)
- * - DB 쿼리 절감 (매 10분마다 Track B가 스코어 조회)
+ * - DB 쿼리 절감 (매 3분마다 Track B가 스코어 조회)
  * - 실시간 시세 캐싱 (KIS API 호출 절감)
  *
  * 비용: Upstash Free Tier = 10,000 요청/일 (충분)

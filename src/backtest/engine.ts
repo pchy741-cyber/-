@@ -19,7 +19,7 @@ export interface BacktestConfig {
   maxPositionPct?: number; // 종목당 최대 비중 (%)
   buyThreshold?: number; // 기술 점수 진입 기준
   commissionPct?: number; // 증권사 수수료 (매수+매도 각각, 기본 0.015%)
-  taxPct?: number; // 증권거래세 (매도 시에만, 기본 0.20%)
+  taxPct?: number; // 증권거래세 (매도 시에만, 기본 0.18% — 2025~)
   slippagePct?: number; // 슬리피지 (매수 +, 매도 -, 기본 0.1%)
 }
 
@@ -84,7 +84,7 @@ export interface BacktestResult {
  * 단일 종목 백테스트 실행
  */
 export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig: BacktestConfig): BacktestResult {
-  const { mode, initialCapital, buyThreshold, commissionPct = 0.015, taxPct = 0.20, slippagePct = 0.1 } = backtestConfig;
+  const { mode, initialCapital, buyThreshold, commissionPct = 0.015, taxPct = 0.18, slippagePct = 0.1 } = backtestConfig;
   // 슬리피지 적용 헬퍼: 매수는 불리하게(높게), 매도는 불리하게(낮게)
   const buyPrice = (close: number) => Math.round(close * (1 + slippagePct / 100));
   const sellPrice = (close: number) => Math.round(close * (1 - slippagePct / 100));

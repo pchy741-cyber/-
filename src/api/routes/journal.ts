@@ -46,14 +46,17 @@ journalRoutes.get('/journal', async (c) => {
         tc.opened_at,
         tc.closed_at,
         tc.close_reason,
-        -- 매도 시세: CLOSED 체인의 마지막 SELL 주문 평균가
+        -- 매도 시세: 수량가중 평균가 (부분익절 반영)
         (
-          SELECT AVG(o.filled_price)
+          SELECT CASE WHEN SUM(o.filled_quantity) > 0
+            THEN SUM(o.filled_price * o.filled_quantity) / SUM(o.filled_quantity)
+            ELSE AVG(o.filled_price) END
           FROM orders o
           WHERE o.chain_id = tc.id
             AND o.side = 'SELL'
             AND o.status = 'FILLED'
             AND o.filled_price IS NOT NULL
+            AND o.filled_quantity > 0
         ) AS exit_price
       FROM transaction_chains tc
       LEFT JOIN watchlist w ON w.stock_code = tc.stock_code

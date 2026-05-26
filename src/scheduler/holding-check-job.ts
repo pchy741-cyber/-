@@ -28,7 +28,7 @@ const TRAILING_DROP_PCT     = 2.0;  // 고점 대비 이 % 하락 시 매도 (%)
  * - 매수 후 N영업일(기본 3일) 경과 시 수익이 안 나면 전량 손절
  * - CEO 매뉴얼: "매수 후 3영업일이 지나도 수익이 안 나면 미련 없이 전량 시장가로 손절"
  *
- * 실행 시점: 장중 매 10분마다 Track B와 함께
+ * 실행 시점: 장중 매 3분마다 Track B와 함께
  */
 export async function runHoldingCheckJob(): Promise<void> {
   // 외부 매도 감지 (KIS 앱 직접 매도 등) — 유령 체인 정리

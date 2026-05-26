@@ -1,5 +1,6 @@
 import { config } from '../../config/index.js';
 import type { DailyCandle } from '../../kis/market.js';
+import { safeParseJson } from '../../utils/json-repair.js';
 import { logger } from '../../utils/logger.js';
 import { buildGeminiPrompt } from '../prompts/track-a-analysis.js';
 
@@ -86,18 +87,44 @@ ${additionalSources ?? '추가 소스 없음'}
   const { callVertexGemini } = await import('../../utils/vertex-gemini.js');
   const responseText = await callVertexGemini(systemPrompt, userMessage, { temperature: 0.1 });
 
-  try {
-    // Gemini가 마크다운 코드블록으로 JSON을 감쌀 수 있음 — 추출 후 파싱
-    const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/) ?? responseText.match(/(\{[\s\S]*\})/);
-    const jsonText = jsonMatch ? jsonMatch[1] ?? jsonMatch[0] : responseText;
-    const parsed = JSON.parse(jsonText) as GeminiAnalysis;
-    logger.info(`Gemini 분석 완료: market_sentiment=${parsed.market_sentiment}`, {
+  // Resilient JSON parsing — Gemini 응답이 깨져도 최대한 복구
+  const parsed = safeParseJson<GeminiAnalysis>(responseText, 'GeminiAnalysis');
+
+  if (parsed && parsed.market_sentiment && Array.isArray(parsed.stocks)) {
+    logger.info(`Gemini 분석 완료: market_sentiment=${parsed.market_sentiment}, stocks=${parsed.stocks.length}개`, {
       component: 'TRACK_A',
     });
     return parsed;
-  } catch {
-    logger.error('Gemini JSON 파싱 실패', { component: 'TRACK_A', raw: responseText });
-    throw new Error('Gemini 응답이 올바른 JSON이 아닙니다');
   }
+
+  // Partial recovery: JSON은 파싱됐지만 구조가 불완전한 경우
+  if (parsed && typeof parsed === 'object') {
+    const recovered: GeminiAnalysis = {
+      market_sentiment: (parsed as any).market_sentiment ?? 'neutral',
+      stocks: Array.isArray((parsed as any).stocks) ? (parsed as any).stocks : [],
+    };
+    if (recovered.stocks.length > 0) {
+      logger.warn(`Gemini 분석 부분 복구: market_sentiment=${recovered.market_sentiment}, stocks=${recovered.stocks.length}개`, {
+        component: 'TRACK_A',
+      });
+      return recovered;
+    }
+  }
+
+  // 완전 실패 시 빈 분석 결과 반환 (throw 하지 않음 — 파이프라인 계속 진행)
+  logger.error('Gemini JSON 파싱 실패 — 빈 분석 결과로 계속 진행', {
+    component: 'TRACK_A',
+    rawLength: responseText.length,
+    rawPreview: responseText.slice(0, 500),
+  });
+  return {
+    market_sentiment: 'neutral',
+    stocks: watchlist.map((w) => ({
+      stock_code: w.stock_code,
+      stock_name: w.stock_name,
+      data_available: false,
+      analysis: null,
+    })),
+  };
 }
 

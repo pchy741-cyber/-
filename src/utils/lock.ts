@@ -2,12 +2,14 @@
  * 매매 동시성 보호 (Mutex Lock)
  *
  * 같은 종목에 대해 동시에 매수/매도 주문이 들어가는 것을 방지
- * - Track B가 10분 간격으로 실행되지만, 이전 실행이 느려져 겹칠 수 있음
+ * - Track B가 3분 간격으로 실행되지만, 이전 실행이 느려져 겹칠 수 있음
  * - 수동 매도 + AI 매도가 동시에 들어올 수 있음
  */
 
+import { logger } from './logger.js';
+
 const locks = new Map<string, { lockedAt: Date; owner: string }>();
-const LOCK_TIMEOUT_MS = 60_000; // 1분 초과하면 자동 해제 (데드락 방지)
+const LOCK_TIMEOUT_MS = 120_000; // 2분 초과하면 자동 해제 (체결 확인 최대 60초 + 여유분)
 
 /**
  * 종목별 락 획득
@@ -22,6 +24,7 @@ export async function acquireLock(stockCode: string, owner: string): Promise<(()
 
     // 타임아웃 초과 → 강제 해제
     if (elapsed > LOCK_TIMEOUT_MS) {
+      logger.warn(`🔓 종목 락 타임아웃 강제 해제: ${stockCode} (owner: ${existing.owner}, ${Math.round(elapsed / 1000)}초)`, { component: 'LOCK' });
       locks.delete(stockCode);
     } else {
       // 락 획득 실패
@@ -56,12 +59,24 @@ export function getActiveLocks(): Array<{ stockCode: string; owner: string; elap
 
 /**
  * 파이프라인 실행 가드 (Track A/B 중복 실행 방지)
+ * 타임아웃 포함 — 크래시 시 영구 잠김 방지
  */
-const pipelineLocks = new Set<string>();
+const pipelineLocks = new Map<string, number>(); // name → lockedAt timestamp
+
+const PIPELINE_LOCK_TIMEOUT_MS = 15 * 60_000; // 15분 (Track A 최대 실행 시간)
 
 export function acquirePipelineLock(name: string): boolean {
-  if (pipelineLocks.has(name)) return false;
-  pipelineLocks.add(name);
+  const lockedAt = pipelineLocks.get(name);
+  if (lockedAt !== undefined) {
+    const elapsed = Date.now() - lockedAt;
+    if (elapsed < PIPELINE_LOCK_TIMEOUT_MS) {
+      return false;
+    }
+    // 타임아웃 초과 → 강제 해제
+    logger.warn(`🔓 파이프라인 락 타임아웃 강제 해제: ${name} (${Math.round(elapsed / 60000)}분)`, { component: 'LOCK' });
+    pipelineLocks.delete(name);
+  }
+  pipelineLocks.set(name, Date.now());
   return true;
 }
 

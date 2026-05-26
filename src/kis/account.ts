@@ -18,9 +18,11 @@ export interface Position {
 export interface AccountBalance {
   totalDeposit: number; // 예수금 총액
   orderableCash: number; // 주문가능 현금
-  totalEvalAmount: number; // 총 평가금액
+  totalEvalAmount: number; // 유가증권 평가금액 (scts_evlu_amt)
   totalProfitLoss: number; // 총 손익
   totalProfitLossPct: number;
+  netAsset: number; // 순자산금액 (nass_amt) — T+2 미수 차감 완료, 가장 신뢰할 수 있는 총자산
+  purchaseCost: number; // 매입금액 합계 (pchs_amt_smtl_amt) — 실제 투자 원가
   positions: Position[];
 }
 
@@ -93,12 +95,19 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
   const effectiveCash = isPaper && orderableCash === 0 ? PAPER_DEFAULT_CASH : orderableCash;
   const effectiveDeposit = isPaper && totalDeposit === 0 ? PAPER_DEFAULT_CASH : totalDeposit;
 
+  const scts_evlu = Number(summary?.scts_evlu_amt ?? 0);
+  const nass = Number(summary?.nass_amt ?? 0);
+  const pchs = Number(summary?.pchs_amt_smtl_amt ?? 0);
+
   return {
     totalDeposit: effectiveDeposit,
     orderableCash: effectiveCash,
-    totalEvalAmount: Number(summary?.scts_evlu_amt ?? 0),
+    totalEvalAmount: scts_evlu,
     totalProfitLoss: Number(summary?.evlu_pfls_smtl_amt ?? 0),
     totalProfitLossPct: Number(summary?.evlu_pfls_rt ?? 0),
+    // 순자산: KIS nass_amt (T+2 미수 차감 완료) — paper는 예수금+증권평가로 계산
+    netAsset: isPaper ? (effectiveCash + scts_evlu) : (nass > 0 ? nass : (effectiveCash + scts_evlu)),
+    purchaseCost: pchs,
     positions,
   };
 }

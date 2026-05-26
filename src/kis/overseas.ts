@@ -26,6 +26,7 @@ const OVERSEAS_TR_ID = {
   BUY: config.isPaper ? 'VTTT1002U' : 'JTTT1002U', // 매수
   SELL: config.isPaper ? 'VTTT1001U' : 'JTTT1006U', // 매도
   BALANCE: config.isPaper ? 'VTTS3012R' : 'TTTS3012R', // 잔고
+  BUYABLE: config.isPaper ? 'VTTS3007R' : 'TTTS3007R', // 해외주문가능금액
 } as const;
 
 // KIS API 거래소 코드 (OVRS_EXCG_CD / EXCD)
@@ -305,4 +306,29 @@ export async function getOverseasBalance(exchange: string = 'NASDAQ') {
     profitLossPct: Number(item.evlu_pfls_rt ?? 0),
     currency,
   }));
+}
+
+/**
+ * 해외주문가능금액 조회 (KIS API) — 입출금 정합성 체크용
+ * 실제 계좌의 주문 가능 외화 금액을 반환 (USD)
+ */
+export async function getOverseasBuyableAmount(exchange: string = 'NASDAQ'): Promise<number | null> {
+  try {
+    const excd = ORDER_EXCD_MAP[exchange] ?? EXCHANGE_MAP[exchange] ?? 'NASD';
+    const res = await overseasKisRequest({
+      path: '/uapi/overseas-stock/v1/trading/inquire-psamount',
+      trId: OVERSEAS_TR_ID.BUYABLE,
+      params: {
+        CANO: config.kis.accountNo,
+        ACNT_PRDT_CD: config.kis.accountProductCode,
+        OVRS_EXCG_CD: excd,
+        OVRS_ORD_UNPR: '0',
+        ITEM_CD: '',
+      },
+    });
+    // frcr_ord_psbl_amt1 = 외화 주문가능금액 (USD)
+    return Number((res.output as Record<string, string>)?.frcr_ord_psbl_amt1 ?? 0);
+  } catch {
+    return null;
+  }
 }

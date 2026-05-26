@@ -1,4 +1,4 @@
-import type { StrategyMode } from '../config/constants.js';
+import { KR_FEE, type StrategyMode } from '../config/constants.js';
 import { config } from '../config/index.js';
 import { createChain, getOpenChains, getOrdersByChain, updateChain, getPool, withTransaction, isMemoryMode } from '../db/client.js';
 import type { TransactionChain } from '../db/models.js';
@@ -57,16 +57,15 @@ export class ChainManager {
     const COMMISSION_RATE = 0.00015;
     let finalAvgPrice = 0;
 
+    // 주의: 이 함수 호출 시점에 새 매수 주문은 이미 DB에 INSERT된 상태 (executor.ts → confirmFill 후 호출)
+    // buyOrders에 새 주문이 포함되어 있으므로 별도 추가하면 이중 계산됨
     const calcFromOrders = (buyOrders: Array<{ filled_price: string | number | null; filled_quantity: number }>) => {
-      let totalCost = buyOrders.reduce((sum, o) => {
+      const totalCost = buyOrders.reduce((sum, o) => {
         const cost = Number(o.filled_price ?? 0) * o.filled_quantity;
         return sum + cost + Math.round(cost * COMMISSION_RATE);
       }, 0);
-      let totalQty = buyOrders.reduce((sum, o) => sum + o.filled_quantity, 0);
-      const newCost = buyPrice * quantity;
-      totalCost += newCost + Math.round(newCost * COMMISSION_RATE);
-      totalQty += quantity;
-      return { totalCost, totalQty, newAvgPrice: Math.round(totalCost / totalQty), averagingCount: buyOrders.length - 1 };
+      const totalQty = buyOrders.reduce((sum, o) => sum + o.filled_quantity, 0);
+      return { totalCost, totalQty, newAvgPrice: totalQty > 0 ? Math.round(totalCost / totalQty) : 0, averagingCount: buyOrders.length - 1 };
     };
 
     if (isMemoryMode()) {
@@ -111,7 +110,7 @@ export class ChainManager {
   async partialProfit(chainId: string, sellQty: number, sellPrice: number, chain: TransactionChain): Promise<void> {
     const avgBuy = Number(chain.avg_buy_price);
     const sellValue = sellPrice * sellQty;
-    const SELL_FEE_PCT = 0.00245;
+    const SELL_FEE_PCT = KR_FEE.SELL_FEE_PCT;
     const profit = sellValue - Math.round(sellValue * SELL_FEE_PCT) - (avgBuy * sellQty);
     const remainingQty = chain.total_quantity - sellQty;
 
@@ -139,7 +138,7 @@ export class ChainManager {
   async closeChain(chainId: string, sellPrice: number, chain: TransactionChain, reason: string): Promise<void> {
     const avgBuy = Number(chain.avg_buy_price);
     const sellValue = sellPrice * chain.total_quantity;
-    const SELL_FEE_PCT = 0.00245;
+    const SELL_FEE_PCT = KR_FEE.SELL_FEE_PCT;
     const profit = sellValue - Math.round(sellValue * SELL_FEE_PCT) - (avgBuy * chain.total_quantity);
 
     await updateChain(chainId, {

@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { getOverseasBalance, getOverseasDailyChart, getOverseasPrice, placeOverseasOrder } from '../../kis/overseas.js';
 import { config } from '../../config/index.js';
 import { cacheGet, cacheSet } from '../../cache/memory.js';
@@ -39,7 +40,10 @@ const GLOBAL_WATCHLIST = [
 
 // 해외주식 대시보드 (60초 캐시)
 overseasRoutes.get('/overseas/dashboard', async (c) => {
-  const cached = cacheGet<any>('overseas:dashboard');
+  const viewModeParam = c.req.query('viewMode');
+  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : config.isPaper;
+  const cacheKey = `overseas:dashboard:${viewIsPaper ? 'paper' : 'live'}`;
+  const cached = cacheGet<any>(cacheKey);
   if (cached) return c.json(cached);
 
   // 가격 조회: DB 일괄 로드(즉시) → 인메모리 캐시 채우기 → KIS 백그라운드 갱신
@@ -96,7 +100,7 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
   const holdingsPromise = (async () => {
     try {
       const { getPool } = await import('../../db/client.js');
-      const { rows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1', [config.isPaper]);
+      const { rows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1', [viewIsPaper]);
       return rows.map((r: any) => ({ stock_code: r.stock_code, quantity: Number(r.quantity), avg_price: Number(r.avg_price), last_price: Number(r.last_price ?? 0) }));
     } catch { return []; }
   })();
@@ -151,7 +155,8 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
         }
         if (results.length > 0) {
           setOverseasScores(results);
-          cacheSet('overseas:dashboard', null as any, 0); // 다음 요청 시 점수 포함
+          cacheSet('overseas:dashboard:paper', null as any, 0);
+          cacheSet('overseas:dashboard:live', null as any, 0);
           logger.info(`대시보드 트리거 해외점수 계산: ${results.length}종목`, { component: 'OVERSEAS' });
         }
       } catch (e: any) {
@@ -170,8 +175,8 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
     return sc ? { ...p, score: sc.score, signal: sc.signal, rsi: sc.rsi } : p;
   });
 
-  const result = { watchlist: watchlistWithScores, positions, holdings };
-  cacheSet('overseas:dashboard', result, 60);
+  const result = { watchlist: watchlistWithScores, positions: viewIsPaper ? [] : positions, holdings };
+  cacheSet(cacheKey, result, 60);
   return c.json(result);
 });
 
@@ -313,21 +318,13 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
       return c.json({ error: `${sanitizedTicker} 시세 조회 실패` }, 400);
     }
 
-    const qty = Math.max(1, Math.floor(safeAmount / price.currentPrice));
-    const totalCost = qty * price.currentPrice;
-
-    // 현금 차감
-    const { getPool } = await import('../../db/client.js');
-    const pool = getPool();
-    const { rows: cashRows } = await pool.query("SELECT value FROM overseas_state WHERE key = 'cash'");
-    const currentCash = cashRows.length > 0 ? Number(cashRows[0].value) : 10000;
-    if (currentCash < totalCost) {
-      return c.json({ error: `해외 현금 부족 (보유: $${currentCash.toFixed(0)}, 필요: $${totalCost.toFixed(0)})` }, 400);
-    }
+    const qty = Math.max(1, Math.floor(safeAmount / (price.currentPrice * 1.0025)));
+    const totalCost = qty * price.currentPrice * 1.0025; // 수수료 0.25% 포함
 
     // TP +2.5%, SL -1.5% (단타 파라미터)
     const tpPrice = +(price.currentPrice * 1.025).toFixed(2);
     const slPrice = +(price.currentPrice * 0.985).toFixed(2);
+    const vsCashKey = config.isPaper ? 'cash_paper' : 'cash';
 
     let filledPrice = price.currentPrice;
     let orderNo = `VSP${Date.now().toString(36)}`;
@@ -344,20 +341,31 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
       logger.info(`[VisionScalp] LIVE 매수 주문 접수: ${sanitizedTicker} ${qty}주 (${orderNo})`, { component: 'OVERSEAS' });
     }
 
-    // scalp 포지션 기록
-    await pool.query(`
-      INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, scalp_tp, scalp_sl, is_scalp, is_paper)
-      VALUES ($1, $2, $3, $4, NOW(), $5, $6, TRUE, false)
-      ON CONFLICT (exchange, stock_code) DO UPDATE
-        SET quantity = overseas_holdings.quantity + $3,
-            avg_price = (overseas_holdings.avg_price * overseas_holdings.quantity + $4 * $3) / (overseas_holdings.quantity + $3),
-            scalp_tp = $5, scalp_sl = $6, is_scalp = TRUE
-    `, [sanitizedTicker, exchange, qty, filledPrice, tpPrice, slPrice]);
+    // scalp 포지션 기록 + 현금 차감 (원자적: SELECT FOR UPDATE → 차감)
+    const { withTransaction } = await import('../../db/client.js');
+    await withTransaction(async (tx) => {
+      // 트랜잭션 내에서 현금 잠금 + 읽기
+      const { rows: cashRows } = await tx.query(
+        "SELECT value FROM overseas_state WHERE key = $1 FOR UPDATE", [vsCashKey]);
+      const currentCash = Number(cashRows[0]?.value ?? 0);
+      if (!Number.isFinite(currentCash) || currentCash < totalCost) {
+        throw new Error(`해외 현금 부족 (보유: $${currentCash.toFixed(0)}, 필요: $${totalCost.toFixed(0)})`);
+      }
 
-    await pool.query(
-      `INSERT INTO overseas_state (key, value) VALUES ('cash', $1) ON CONFLICT (key) DO UPDATE SET value = $1`,
-      [(currentCash - totalCost).toFixed(2)],
-    );
+      await tx.query(`
+        INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, scalp_tp, scalp_sl, is_scalp, is_paper)
+        VALUES ($1, $2, $3, $4, NOW(), $5, $6, TRUE, $7)
+        ON CONFLICT (exchange, stock_code, is_paper) DO UPDATE
+          SET quantity = overseas_holdings.quantity + $3,
+              avg_price = (overseas_holdings.avg_price * overseas_holdings.quantity + $4 * $3) / (overseas_holdings.quantity + $3),
+              scalp_tp = $5, scalp_sl = $6, is_scalp = TRUE
+      `, [sanitizedTicker, exchange, qty, filledPrice, tpPrice, slPrice, config.isPaper]);
+
+      await tx.query(
+        `UPDATE overseas_state SET value = (CAST(value AS NUMERIC) - $2)::text WHERE key = $1`,
+        [vsCashKey, totalCost.toFixed(2)],
+      );
+    });
 
     logger.info(`[VisionScalp] 매수 ${sanitizedTicker} ${qty}주 @ $${filledPrice} (TP:$${tpPrice} SL:$${slPrice}) [${config.isPaper ? 'PAPER' : 'LIVE'}]`, { component: 'OVERSEAS' });
 
@@ -380,10 +388,7 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
 
 // Claude Code 야간 감시 루프 매도 엔드포인트 (CLAUDE.md /api/overseas/sell)
 overseasRoutes.post('/overseas/sell', async (c) => {
-  const apiKey = c.req.header('x-api-key') ?? '';
-  const secret = process.env.DASHBOARD_PASSWORD ?? '';
-  if (secret && apiKey !== secret) return c.json({ error: '인증 실패' }, 401);
-
+  // requireAuth 미들웨어가 이미 인증 처리
   let body: { stock_code?: string; quantity?: number; reason?: string };
   try { body = await c.req.json(); } catch { return c.json({ error: '요청 형식 오류' }, 400); }
   const { stock_code, quantity, reason = '야간 감시 매도' } = body;
@@ -391,8 +396,9 @@ overseasRoutes.post('/overseas/sell', async (c) => {
 
   try {
     const { getPool } = await import('../../db/client.js');
+    const isPaper = config.isPaper;
     const { rows } = await getPool().query(
-      'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0 AND is_paper = false', [stock_code]);
+      'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0 AND is_paper = $2', [stock_code, isPaper]);
     const holding = rows[0];
     if (!holding) return c.json({ error: '보유 종목 없음' }, 404);
 
@@ -400,6 +406,7 @@ overseasRoutes.post('/overseas/sell', async (c) => {
     const qty = quantity && quantity > 0 ? Math.min(quantity, totalQty) : totalQty;
     const exchange = String(holding.exchange ?? 'NASDAQ');
     const avgPrice = Number(holding.avg_price ?? 0);
+    const osCashKey = isPaper ? 'cash_paper' : 'cash';
 
     let fillPrice = Number(holding.last_price ?? 0);
     try {
@@ -408,18 +415,26 @@ overseasRoutes.post('/overseas/sell', async (c) => {
     } catch { /* 폴백 */ }
     if (fillPrice <= 0) fillPrice = avgPrice;
 
-    if (config.isPaper) {
+    if (isPaper) {
       const orderNo = `CLN${Date.now().toString(36)}`;
-      await getPool().query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = false', [stock_code, exchange]);
-      await getPool().query('DELETE FROM overseas_state WHERE key = $1', [`maxprice_${stock_code}`]);
-      await getPool().query(
-        `INSERT INTO overseas_state (key, value) VALUES ('cash', $1::text)
-         ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
-        [fillPrice * qty]);
-      await getPool().query(
-        `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
-         VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','paper','OVERSEAS',$5,$6)`,
-        [stock_code, qty, fillPrice, orderNo, reason, avgPrice]);
+      const proceeds = fillPrice * qty * (1 - OVERSEAS_FEE_PCT); // 수수료 0.25% 차감
+      const { withTransaction } = await import('../../db/client.js');
+      await withTransaction(async (client) => {
+        if (qty >= totalQty) {
+          await client.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = true', [stock_code, exchange]);
+          await client.query('DELETE FROM overseas_state WHERE key = $1', [`maxprice_${stock_code}`]);
+        } else {
+          await client.query('UPDATE overseas_holdings SET quantity = quantity - $3 WHERE stock_code = $1 AND exchange = $2 AND is_paper = true', [stock_code, exchange, qty]);
+        }
+        await client.query(
+          `INSERT INTO overseas_state (key, value) VALUES ($2, $1::text)
+           ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
+          [proceeds, osCashKey]);
+        await client.query(
+          `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
+           VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','paper','OVERSEAS',$5,$6)`,
+          [stock_code, qty, fillPrice, orderNo, reason, avgPrice]);
+      });
       logger.info(`[OverseasSell] ${stock_code} ${qty}주 @$${fillPrice} (야간감시 모의)`, { component: 'OVERSEAS' });
       try {
         const stockName = GLOBAL_WATCHLIST.find(s => s.code === stock_code)?.name ?? stock_code;
@@ -431,16 +446,24 @@ overseasRoutes.post('/overseas/sell', async (c) => {
 
     const result = await placeOverseasOrder({ stockCode: stock_code, exchange, side: 'SELL', quantity: qty, price: 0 });
     if (!result.success) return c.json({ error: `KIS 매도 실패: ${result.message}` }, 502);
-    await getPool().query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = false', [stock_code, exchange]);
-    await getPool().query('DELETE FROM overseas_state WHERE key = $1', [`maxprice_${stock_code}`]);
-    await getPool().query(
-      `INSERT INTO overseas_state (key, value) VALUES ('cash', $1::text)
-       ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
-      [fillPrice * qty]);
-    await getPool().query(
-      `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
-       VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','live','OVERSEAS',$5,$6)`,
-      [stock_code, qty, fillPrice, result.orderNo ?? '', reason, avgPrice]);
+    const liveProceeds = fillPrice * qty * (1 - OVERSEAS_FEE_PCT); // 수수료 0.25% 차감
+    const { withTransaction } = await import('../../db/client.js');
+    await withTransaction(async (client) => {
+      if (qty >= totalQty) {
+        await client.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [stock_code, exchange, isPaper]);
+        await client.query('DELETE FROM overseas_state WHERE key = $1', [`maxprice_${stock_code}`]);
+      } else {
+        await client.query('UPDATE overseas_holdings SET quantity = quantity - $3 WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [stock_code, exchange, qty, isPaper]);
+      }
+      await client.query(
+        `INSERT INTO overseas_state (key, value) VALUES ($2, $1::text)
+         ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
+        [liveProceeds, osCashKey]);
+      await client.query(
+        `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
+         VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','live','OVERSEAS',$5,$6)`,
+        [stock_code, qty, fillPrice, result.orderNo ?? '', reason, avgPrice]);
+    });
     logger.info(`[OverseasSell] ${stock_code} ${qty}주 (야간감시 실거래 ${result.orderNo})`, { component: 'OVERSEAS' });
     try {
       const stockName = GLOBAL_WATCHLIST.find(s => s.code === stock_code)?.name ?? stock_code;

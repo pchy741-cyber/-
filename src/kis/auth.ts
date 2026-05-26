@@ -207,4 +207,16 @@ function isExpired(token: KISToken): boolean {
 
 export function clearTokenCache() {
   cachedToken = null;
+  // DB 토큰도 삭제 (KIS 서버에서 무효화된 토큰이 DB 복원되는 것 방지)
+  (async () => {
+    try {
+      const { getPool, isMemoryMode } = await import('../db/client.js');
+      if (isMemoryMode()) return;
+      const key = config.isPaper ? 'kis_token_paper' : 'kis_token_live';
+      await getPool().query('DELETE FROM system_state WHERE key = $1', [key]);
+      logger.info('KIS 토큰 DB 캐시 삭제 완료', { component: 'KIS_AUTH' });
+    } catch (err) {
+      logger.warn(`KIS 토큰 DB 삭제 실패 (무시): ${err}`, { component: 'KIS_AUTH' });
+    }
+  })();
 }

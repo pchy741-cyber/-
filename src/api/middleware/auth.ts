@@ -38,7 +38,14 @@ export function verifySessionToken(token: string): boolean {
     const expected = signPayload(payload, secret);
     // 길이 다르면 바로 false (timingSafeEqual은 같은 길이 필요)
     if (sig.length !== expected.length) return false;
-    return timingSafeEqual(Buffer.from(sig, 'utf8'), Buffer.from(expected, 'utf8'));
+    if (!timingSafeEqual(Buffer.from(sig, 'utf8'), Buffer.from(expected, 'utf8'))) return false;
+
+    // 토큰 만료 확인 — payload 형식: "timestamp.random"
+    const tsStr = payload.split('.')[0];
+    const issuedAt = Number(tsStr);
+    if (!isNaN(issuedAt) && Date.now() - issuedAt > SESSION_MAX_AGE * 1000) return false;
+
+    return true;
   } catch {
     return false;
   }
@@ -73,9 +80,10 @@ export async function requireAuth(c: Context, next: Next): Promise<Response | vo
     return c.json({ error: '서버 패스워드 미설정 — 관리자에게 문의' }, 503);
   }
 
-  // X-Api-Key 헤더 지원 (Claude Code /loop 등 서버 간 호출용)
+  // X-Api-Key 헤더 지원 (Claude Code /loop 등 서버 간 호출용) — timing-safe 비교
   const apiKey = c.req.header('x-api-key');
-  if (apiKey && apiKey === secret) {
+  if (apiKey && apiKey.length === secret.length &&
+      timingSafeEqual(Buffer.from(apiKey), Buffer.from(secret))) {
     return next();
   }
 

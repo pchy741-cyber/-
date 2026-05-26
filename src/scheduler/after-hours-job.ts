@@ -30,8 +30,8 @@ export async function runAfterHoursJob(): Promise<void> {
   const kstH = kst.getUTCHours();
   const kstM = kst.getUTCMinutes();
 
-  // 15:40~15:55 에서만 실행
-  if (kstH !== 15 || kstM < 40 || kstM > 55) {
+  // 15:40~15:55 에서만 실행 (Paper 모드: 시간 제한 없이 테스트 가능)
+  if (!config.isPaper && (kstH !== 15 || kstM < 40 || kstM > 55)) {
     logger.debug('시간외 줍줍: 시간 범위 밖 — 스킵', { component: 'AFTER_HOURS' });
     return;
   }

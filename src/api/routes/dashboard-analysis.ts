@@ -11,7 +11,7 @@ import { fetchShortSellingData } from '../../automation/short-selling.js';
 import { fetchAnalystConsensus } from '../../automation/analyst-consensus.js';
 import { getAiStatus } from '../../cache/ai-status.js';
 import { getPaperBalance } from '../../risk/engine.js';
-import { getKillSwitchStatus } from '../../risk/kill-switch.js';
+import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
 import { getDinnerMoneyStats } from '../../automation/profit-withdraw.js';
 import { logger } from '../../utils/logger.js';
 import { getKnownStockName, isInvalidStockName } from './dashboard.js';
@@ -64,7 +64,7 @@ dashboardAnalysisRoutes.get('/stock/:code/analysis', async (c) => {
 dashboardAnalysisRoutes.get('/trading-status', async (c) => {
   try {
     const [killSwitch, defensePark, strategy, scores, watchlist, recentLossCodes] = await Promise.all([
-      Promise.resolve(getKillSwitchStatus()),
+      Promise.resolve(getKillSwitchStatusAll()),
       getDefenseParkState().catch(() => ({ isActive: false, entryReason: null })),
       getActiveStrategy().catch(() => null),
       (async () => {
@@ -87,8 +87,11 @@ dashboardAnalysisRoutes.get('/trading-status', async (c) => {
 
     const blocks: { reason: string; detail: string; severity: 'warn' | 'info' | 'ok' }[] = [];
 
-    if (killSwitch.active) {
-      blocks.push({ reason: '긴급정지 (Kill Switch)', detail: killSwitch.reason ?? '수동 발동', severity: 'warn' });
+    if (killSwitch.kr.active) {
+      blocks.push({ reason: '긴급정지 [국내] (Kill Switch)', detail: killSwitch.kr.reason ?? '수동 발동', severity: 'warn' });
+    }
+    if (killSwitch.overseas.active) {
+      blocks.push({ reason: '긴급정지 [해외] (Kill Switch)', detail: killSwitch.overseas.reason ?? '수동 발동', severity: 'warn' });
     }
 
     if (defensePark.isActive) {
@@ -126,7 +129,7 @@ dashboardAnalysisRoutes.get('/trading-status', async (c) => {
     const hasHardBlock = blocks.some(b => b.severity === 'warn' && (
       b.reason.includes('긴급정지') || b.reason.includes('방어 파킹') || b.reason.includes('후보 없음') || b.reason.includes('DEFENSE')
     ));
-    const overallStatus: 'ACTIVE' | 'WATCHING' | 'BLOCKED' = killSwitch.active || defensePark.isActive
+    const overallStatus: 'ACTIVE' | 'WATCHING' | 'BLOCKED' = killSwitch.kr.active || killSwitch.overseas.active || defensePark.isActive
       ? 'BLOCKED'
       : hasHardBlock
         ? 'WATCHING'

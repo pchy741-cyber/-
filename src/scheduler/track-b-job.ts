@@ -26,12 +26,6 @@ export async function runTrackBJob(): Promise<void> {
     isRunning = false;
   }
 
-  // Kill Switch 확인
-  if (isKillSwitchActive()) {
-    logger.warn('🛑 Kill Switch 활성 — Track B 스킵', { component: 'SCHEDULER' });
-    return;
-  }
-
   // 장 열림 확인
   if (!isMarketOpen()) {
     logger.debug('📉 장 닫힘 — Track B 스킵', { component: 'SCHEDULER' });
@@ -48,7 +42,17 @@ export async function runTrackBJob(): Promise<void> {
     // 1. Track B 파이프라인 실행 → 매매 판단
     const decisions = await runTrackBPipeline();
 
-    if (decisions.length === 0) {
+    // Kill Switch 활성 시 매수 차단, 매도(탈출)만 실행
+    const killActive = isKillSwitchActive('KR');
+    const filtered = killActive
+      ? decisions.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action))
+      : decisions;
+
+    if (killActive && filtered.length < decisions.length) {
+      logger.warn(`🛑 Kill Switch 활성 — 매수 ${decisions.length - filtered.length}건 차단, 매도 ${filtered.length}건 실행`, { component: 'SCHEDULER' });
+    }
+
+    if (filtered.length === 0) {
       logger.info('Track B: 실행할 매매 없음', { component: 'SCHEDULER' });
       reportSuccess();
       return;
@@ -59,7 +63,7 @@ export async function runTrackBJob(): Promise<void> {
     const mode = (strategy?.mode ?? 'SWING') as StrategyMode;
 
     // 3. 매매 실행
-    await tradeExecutor.processDecisions(decisions, mode);
+    await tradeExecutor.processDecisions(filtered, mode);
     reportSuccess();
 
     // 4. 텔레그램 알림 (HOLD 제외한 결정만)

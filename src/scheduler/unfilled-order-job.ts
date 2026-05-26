@@ -1,4 +1,4 @@
-import { getPool, logSystem, updateOrder } from '../db/client.js';
+import { getPool, logSystem, updateOrderByKisOrderNo } from '../db/client.js';
 import { cancelOrder } from '../kis/order.js';
 import { logger } from '../utils/logger.js';
 import { config } from '../config/index.js';
@@ -50,7 +50,7 @@ export async function runUnfilledOrderCheck(): Promise<void> {
         });
 
         if (result.success) {
-          await updateOrder(order.kis_order_no, {
+          await updateOrderByKisOrderNo(order.kis_order_no, {
             status: 'CANCELLED',
             kis_status: 'CANCELLED',
           });

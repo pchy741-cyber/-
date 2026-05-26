@@ -1,3 +1,4 @@
+import { KR_FEE } from '../config/constants.js';
 import { insertOrder } from '../db/client.js';
 import { getCurrentPrice } from '../kis/market.js';
 import type { OrderResult } from '../kis/order.js';
@@ -51,11 +52,11 @@ export async function paperTradeOrder(params: {
   const filledPrice = Math.round(basePrice * (1 + slippagePct));
   const fakeOrderNo = `P${Date.now().toString(36)}`;
 
-  // ── 수수료 계산 (실거래와 동일하게 반영) ──
+  // ── 수수료 계산 (실거래와 동일, 2025 세율 기준) ──
   // 매수: 증권사 수수료 0.015%
-  // 매도: 증권사 0.015% + 거래세 0.23% = 0.245%
-  const BUY_FEE_PCT = 0.00015;  // 0.015%
-  const SELL_FEE_PCT = 0.00245; // 0.245% (수수료 + 거래세)
+  // 매도: 증권사 0.015% + 거래세 0.18% = 0.195%
+  const BUY_FEE_PCT = KR_FEE.BUY_FEE_PCT;
+  const SELL_FEE_PCT = KR_FEE.SELL_FEE_PCT;
   const orderValue = filledPrice * quantity;
   const feeRate = side === 'BUY' ? BUY_FEE_PCT : SELL_FEE_PCT;
   const fee = Math.round(orderValue * feeRate);

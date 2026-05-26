@@ -46,7 +46,9 @@ export async function technicalFallbackDecisions(params: {
 }): Promise<TradeDecision[]> {
   const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, manuallySoldCodes, totalAssets, winRates, blockNewBuys, junkStockCodes } = params;
   // 종목당 최대 비중: SNIPER=35%, 일반=30% (Half-Kelly 기준, maxPositionKrw 중 작은 값)
-  const maxPosFraction = mode === 'SNIPER' ? 0.35 : 0.30;
+  // 소자산(50만 미만): 80%까지 허용 (1-2종목 집중)
+  const maxPosFraction = (totalAssets && totalAssets < 500000) ? 0.80
+    : mode === 'SNIPER' ? 0.35 : 0.30;
   const effectiveMaxPos = totalAssets
     ? Math.min(maxPositionKrw, Math.round(totalAssets * maxPosFraction))
     : maxPositionKrw;
@@ -148,9 +150,12 @@ export async function technicalFallbackDecisions(params: {
       }
     }
 
-    // 체인별 TP/SL 우선: SCALPING 진입 후 모드 전환 시에도 원래 파라미터 유지
-    const chainTp = chain.target_profit_pct ?? strategyParams.takeProfitPct;
-    const chainSl = chain.stop_loss_pct ?? strategyParams.stopLossPct;
+    // 체인별 TP/SL 우선: 체인 자체 모드 기준 폴백 (현재 모드와 다를 수 있음)
+    const chainModeParams = chain.strategy_mode && chain.strategy_mode !== mode
+      ? (STRATEGY_PARAMS[chain.strategy_mode as StrategyMode] ?? strategyParams)
+      : strategyParams;
+    const chainTp = chain.target_profit_pct ?? chainModeParams.takeProfitPct;
+    const chainSl = chain.stop_loss_pct ?? chainModeParams.stopLossPct;
     const isScalpChain = chain.strategy_mode === 'SCALPING';
 
     // ── 실시간 AI 재평가: 보유 중 AI 점수 변화 → TP/SL 동적 조정 ──────
@@ -170,6 +175,24 @@ export async function technicalFallbackDecisions(params: {
         } else {
           // AI 약세 전환 + 손실 구간 → SL 타이트 (-1.5%)
           effectiveSl = Math.max(Number(chainSl), -1.5);
+        }
+      }
+    }
+
+    // ── ATR 기반 동적 TP: 강한 추세에서 TP 확장 (승자를 더 오래 보유) ──
+    if (!isScalpChain) {
+      const holdingChart = chartData.get(chain.stock_code);
+      if (holdingChart && holdingChart.length >= 20) {
+        const holdTech = analyzeTechnicals(holdingChart);
+        if (holdTech) {
+          // 강한 상승 추세 (ADX>30 + RSI 45-70): TP × 1.5 (최대 15%)
+          if (holdTech.adx14 > 30 && holdTech.rsi14 >= 45 && holdTech.rsi14 <= 70) {
+            effectiveTp = Math.min(15.0, effectiveTp * 1.5);
+          }
+          // 중간 추세 (ADX>22 + 골든크로스 활성): TP × 1.2 (최대 12%)
+          else if (holdTech.adx14 > 22 && holdTech.sma5 > holdTech.sma20) {
+            effectiveTp = Math.min(12.0, effectiveTp * 1.2);
+          }
         }
       }
     }
@@ -458,11 +481,19 @@ export async function technicalFallbackDecisions(params: {
 
     // ─── 거래량 확인 필터 ─────────────────────────────────────────────────
     // 예외: 과매도(RSI<35) 반등은 거래량 바닥에서 발생 / 강한 불리쉬 캔들
-    // AI 80점+ → 0.5x (기존 0.3x: 고확신도 최소 절반 이상 거래량 필요)
-    // buyThreshold 이상 → 0.8x (기존 0.5x: 거래량 없는 진입 품질 저하 방지)
-    const volThreshold = aiScore >= 80 ? 0.5 : aiScore >= buyThreshold ? 0.8 : 1.5;
-    if (tech.volumeRatio < volThreshold && tech.rsi14 >= 35 && !hasBullishCandle) {
-      logger.info(`  📉 ${stock.stock_code}: 거래량 부족 (${tech.volumeRatio.toFixed(2)}x < ${volThreshold}) → 스킵 (AI=${aiScore})`, { component: 'TRACK_B' });
+    // AI 80점+ → 0.5x, AI buyThreshold+ → 0.8x
+    // 개별종목 AI=0 또는 전체 AI 없음 → 0.8x (기술지표만으로 판단)
+    // ★ 시간대 보정: 장중 당일 거래량은 경과 시간에 비례하므로
+    //   볼륨비율을 시간경과율로 나눠 풀데이 추정치로 환산 (10:19AM → ×5배 보정)
+    const kstNow = new Date(Date.now() + 9 * 3600_000);
+    const marketMinutes = (kstNow.getUTCHours() * 60 + kstNow.getUTCMinutes()) - 540; // 09:00 기준
+    const totalMarketMinutes = 390; // 09:00~15:30 = 390분
+    const timeElapsedRatio = Math.max(0.15, Math.min(1.0, marketMinutes / totalMarketMinutes));
+    const adjustedVolRatio = tech.volumeRatio / timeElapsedRatio;
+    const noAiForStock = noAiScores || aiScore === 0; // 개별종목 AI 없으면 완화
+    const volThreshold = aiScore >= 80 ? 0.5 : aiScore >= buyThreshold ? 0.8 : noAiForStock ? 0.8 : 1.2;
+    if (adjustedVolRatio < volThreshold && tech.rsi14 >= 35 && !hasBullishCandle) {
+      logger.info(`  📉 ${stock.stock_code}: 거래량 부족 (${tech.volumeRatio.toFixed(2)}x→보정${adjustedVolRatio.toFixed(2)}x < ${volThreshold}) → 스킵 (AI=${aiScore})`, { component: 'TRACK_B' });
       continue;
     }
 
@@ -517,10 +548,12 @@ export async function technicalFallbackDecisions(params: {
     }
 
     // SWING 단기 하락추세 차단: MA5 < MA20 = 단기 추세 역행
-    // AI 85+ 또는 과매도 반등 구간(RSI<35)만 진입 허용 (80→85: 하락장 낙칼 방지 강화)
+    // AI 85+ 또는 과매도 반등 구간(RSI<35)만 진입 허용
+    // AI 없을 때: tech.score≥65 + MACD비하락이면 허용 (AI 없이도 강한 기술신호는 통과)
     if (mode === 'SWING' && tech.sma5 < tech.sma20 && aiScore < 85) {
       const isNearOversold = tech.rsi14 < 35;
-      if (!isNearOversold) {
+      const techStrongEnough = (noAiScores || aiScore === 0) && tech.score >= 65 && tech.macdCrossover !== 'BEARISH';
+      if (!isNearOversold && !techStrongEnough) {
         logger.info(`  ⬇️ ${stock.stock_code}: MA5<MA20 단기하락 AI=${aiScore} RSI=${tech.rsi14.toFixed(0)} → 차단`, { component: 'TRACK_B' });
         continue;
       }
@@ -634,13 +667,15 @@ export async function technicalFallbackDecisions(params: {
         const cf = {
           momentum: tech.macdCrossover !== 'BEARISH' || tech.macdHistogram > 0,
           rsi: tech.rsi14 <= 60 || isOversold,
-          volume: tech.volumeRatio >= 1.2,
+          volume: adjustedVolRatio >= 1.2,
           vwap: tech.vwapPosition === 'ABOVE' || tech.vwapPullback,
           pattern: hasBullishCandle || tech.candlePatterns.some(p => p.bullish && p.strength !== 'WEAK'),
           trend: tech.trendStrength !== 'WEAK',
         };
         const cfCount = Object.values(cf).filter(Boolean).length;
-        const minCf = aiScore >= 85 ? 1 : aiScore >= 80 ? 2 : 3; // 75-79 원복: 3개 필요 (v0-70-6 과완화 수정)
+        // AI 없으면 2개로 완화 (개별종목 AI=0도 포함)
+        const noAiForCf = noAiScores || aiScore === 0;
+        const minCf = aiScore >= 85 ? 1 : aiScore >= 80 ? 2 : noAiForCf ? 2 : 3;
         if (cfCount < minCf) {
           logger.info(`  🔍 ${stock.stock_code}: 컨플루언스 ${cfCount}/${minCf} 미달 [mom=${cf.momentum} rsi=${cf.rsi} vol=${cf.volume} vwap=${cf.vwap} pat=${cf.pattern} trend=${cf.trend}] → 스킵`, { component: 'TRACK_B' });
           continue;
@@ -824,10 +859,23 @@ export async function technicalFallbackDecisions(params: {
              blendedScore >= 85 ? 0.22 : 0.20)
           : (blendedScore >= 90 ? 0.18 :   // 90+: 18% (원복 — 22% 손실 시 타격 과다)
              blendedScore >= 85 ? 0.15 :   // 85-89: 15% (원복)
-             blendedScore >= 75 ? 0.06 :   // 75~84 실데이터 수익률 -0.77% 구간 — 최소 투입
+             blendedScore >= 80 ? 0.08 :   // 80-84: 실데이터 수익률 -0.77% 구간 → 최소 탐색
+             blendedScore >= 75 ? 0.0 :    // 75-79: 진입 차단 (수익률 마이너스 구간)
              blendedScore >= 70 ? 0.10 : 0.07))
-      : (blendedScore >= 80 ? 0.10 : blendedScore >= 70 ? 0.07 : 0.04); // AI 미허락 → 기술지표 점수 비례 탐색
-    const baseAllocPct = getDbAllocPct(blendedScore) ?? hardcodedAllocPct;
+      : (noAiScores || aiScore === 0)
+        // AI 부재(전체 미실행 또는 개별종목 AI=0) → 기술지표만으로 판단, 배분 상향
+        ? (blendedScore >= 80 ? 0.14 : blendedScore >= 70 ? 0.10 : blendedScore >= 62 ? 0.07 : 0.04)
+        // AI 있지만 이 종목은 미허락 → 소액 탐색
+        : (blendedScore >= 80 ? 0.10 : blendedScore >= 70 ? 0.07 : 0.04);
+    let baseAllocPct = getDbAllocPct(blendedScore) ?? hardcodedAllocPct;
+    // 소자산(현금 50만 미만): 배분율 최소 30% (있는 돈으로 1-2종목 집중)
+    // 중자산(50만~200만): 배분율 최소 20%
+    // orderableCash 기준 (totalAssets는 KIS 장애 시 0이 되므로 신뢰 불가)
+    if (orderableCash < 500000) {
+      baseAllocPct = Math.max(baseAllocPct, 0.30);
+    } else if (orderableCash < 2000000) {
+      baseAllocPct = Math.max(baseAllocPct, 0.20);
+    }
     const modeScale = mode === 'SCALPING' ? 0.5 : mode === 'DEFENSE' ? 0.6 : 1.0;
 
     // 승률 기반 보정: 실거래 데이터 기반으로 비율 조정
@@ -865,21 +913,36 @@ export async function technicalFallbackDecisions(params: {
       : effectiveMaxPos;
     // 상한: aiMaxPos (AI확신도 반영 종목당 한도), 남은 현금의 92%까지 사용 (현금 최소화)
     const positionSize = Math.min(targetKrw, aiMaxPos, remainingCash * 0.92);
-    const minPositionKrw = aiApproved ? 700000 : 350000;
-    if (positionSize < minPositionKrw) continue; // 최소 금액 미달 → 스킵 (AI허락=70만, 기술지표탐색=35만)
+    // 소자산 모드: 현금 50만 미만이면 남은 현금의 80%를 직접 사용 (배분율/maxPos 무시)
+    // totalAssets가 KIS 장애 등으로 0이 되면 effectiveMaxPos도 0이 되므로
+    // 실제 잔고(orderableCash) 기준으로 판단
+    const isSmallAccount = orderableCash < 500000;
+    const effectivePositionSize = isSmallAccount
+      ? Math.round(remainingCash * 0.80)   // 있는 돈의 80% 직접 사용 (maxPos 캡 제거)
+      : positionSize;
+    // 최소 매수금액: 잔고 비례 유연화
+    const minPositionKrw = orderableCash >= 1000000
+      ? (aiApproved ? 700000 : 350000)
+      : orderableCash >= 500000 ? 200000
+      : orderableCash >= 200000 ? 100000 : 50000;
+    if (effectivePositionSize < minPositionKrw) {
+      logger.info(`  ❌ ${cand.stock_code}: 포지션크기 ${Math.round(effectivePositionSize).toLocaleString()}원 < 최소 ${minPositionKrw.toLocaleString()}원 (blend=${blendedScore.toFixed(0)} alloc=${(baseAllocPct*100).toFixed(0)}% cash=${Math.round(remainingCash).toLocaleString()}) → 스킵`, { component: 'TRACK_B' });
+      continue;
+    }
 
-    let quantity = Math.floor(positionSize / cand.price.currentPrice);
+    let quantity = Math.floor(effectivePositionSize / cand.price.currentPrice);
     if (quantity <= 0) {
       // 고가주(1주 > positionSize): 현금이 충분하면 최소 1주 매수
       if (remainingCash >= cand.price.currentPrice) {
         quantity = 1;
-        logger.info(`  💡 ${cand.stock_code}: positionSize(${Math.round(positionSize / 10000)}만원) < 주가 → 최소 1주 매수`, { component: 'TRACK_B' });
+        logger.info(`  💡 ${cand.stock_code}: positionSize(${Math.round(effectivePositionSize / 10000)}만원) < 주가(${cand.price.currentPrice.toLocaleString()}원) → 최소 1주 매수`, { component: 'TRACK_B' });
       } else {
+        logger.info(`  ❌ ${cand.stock_code}: 주가 ${cand.price.currentPrice.toLocaleString()}원 > 잔여현금 ${Math.round(remainingCash).toLocaleString()}원 → 매수불가`, { component: 'TRACK_B' });
         continue;
       }
     }
 
-    const allocStr = ` [비율${(baseAllocPct * modeScale * firstEntryRatio * 100).toFixed(0)}%→${Math.round(positionSize / 10000)}만원]`;
+    const allocStr = ` [비율${(baseAllocPct * modeScale * firstEntryRatio * 100).toFixed(0)}%→${Math.round(effectivePositionSize / 10000)}만원]`;
     decisions.push({
       action: 'BUY',
       stock_code: cand.stock_code,

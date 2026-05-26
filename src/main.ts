@@ -34,16 +34,49 @@ const app = new Hono();
 
 // ── 미들웨어 ──
 app.use('*', secureHeaders());
-app.use('*', cors());
+app.use('*', cors({
+  origin: ['https://quantops-807105550136.asia-northeast3.run.app', 'http://localhost:8080', 'http://localhost:3000'],
+  credentials: true,
+}));
 app.use('*', honoLogger());
+
+// ── API Rate Limiting (인메모리) ──
+const rateMap = new Map<string, { count: number; resetAt: number }>();
+function rateLimit(max: number, windowMs: number) {
+  return async (c: any, next: any) => {
+    // Cloud Run: x-forwarded-for 마지막 값이 진짜 클라이언트 IP
+    const xff = c.req.header('x-forwarded-for') as string | undefined;
+    const ip = xff?.split(',').pop()?.trim() ?? 'unknown';
+    if (rateMap.size > 10_000) rateMap.clear(); // DoS 방어: 메모리 폭발 방지
+    const now = Date.now();
+    const entry = rateMap.get(ip);
+    if (!entry || now > entry.resetAt) {
+      rateMap.set(ip, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+    if (++entry.count > max) return c.json({ error: 'Too many requests' }, 429);
+    return next();
+  };
+}
+// 5분마다 만료 엔트리 정리
+setInterval(() => { const n = Date.now(); for (const [k, v] of rateMap) if (n > v.resetAt) rateMap.delete(k); }, 300_000);
+
+// Rate limit 적용: 로그인 5회/분, 매매 엔드포인트 10회/분
+app.use('/auth/login', rateLimit(5, 60_000));
+app.use('/overseas/sell', rateLimit(10, 60_000));
+app.use('/overseas/vision-scalp/*', rateLimit(5, 60_000));
+app.use('/manual-buy', rateLimit(10, 60_000));
+app.use('/sell-stock/*', rateLimit(5, 60_000));
+app.use('/sell-overseas/*', rateLimit(5, 60_000));
+app.use('/kill-switch/*', rateLimit(3, 60_000));
 
 // ── 라우트 마운트 ──
 // 인증 불필요 (공개)
 app.route('/', healthRoutes);   // /health
 app.route('/', authRoutes);     // /auth/login, /auth/logout, /auth/me
-app.route('/', reviewRoutes);   // /review/* (캡처 검수용, 인증 불필요)
 // 🔒 이하 모든 라우트: 로그인 필요
 app.use('*', requireAuth);
+app.route('/', reviewRoutes);   // /review/* (캡처 — 인증 필수!)
 app.route('/', dashboardRoutes);
 app.route('/', dashboardNewsRoutes);
 app.route('/', dashboardAnalysisRoutes);
@@ -333,6 +366,46 @@ async function bootstrap() {
     logger.warn(`Kill Switch 복원 실패 (무시): ${e.message}`, { component: 'BOOT' });
   }
 
+  // 6-b. 해외 세션 시작 포트폴리오값 복원 (재배포 시 일일 손실 추적 유지)
+  try {
+    const { restoreSessionStartValue } = await import('./scheduler/overseas-job.js');
+    await restoreSessionStartValue();
+  } catch (e: any) {
+    logger.warn(`해외 세션 시작값 복원 실패 (무시): ${e.message}`, { component: 'BOOT' });
+  }
+
+  // 6-c2. 기준자본(Seed Capital) DB 로드 (손실한도 계산 기준점)
+  try {
+    const { initSeedCapital } = await import('./risk/seed-capital.js');
+    await initSeedCapital();
+  } catch (e: any) {
+    logger.warn(`기준자본 로드 실패 (기본값 사용): ${e.message}`, { component: 'BOOT' });
+  }
+
+  // 6-c. 쿨다운 리셋 상태 복원 (대시보드에서 수동 리셋한 상태 유지)
+  try {
+    const { restoreCooldownResetAt } = await import('./risk/trade-gate.js');
+    await restoreCooldownResetAt();
+  } catch (e: any) {
+    logger.warn(`쿨다운 리셋 복원 실패 (무시): ${e.message}`, { component: 'BOOT' });
+  }
+
+  // 6-2. 필수 시크릿 검증 — 없으면 킬스위치 자동 활성화 (사고 방지)
+  {
+    const missing: string[] = [];
+    if (!config.kis.appKey) missing.push('KIS_APP_KEY');
+    if (!config.kis.appSecret) missing.push('KIS_APP_SECRET');
+    if (!process.env.DASHBOARD_PASSWORD) missing.push('DASHBOARD_PASSWORD');
+    if (missing.length > 0) {
+      const msg = `필수 시크릿 누락: ${missing.join(', ')}`;
+      logger.error(msg, { component: 'BOOT' });
+      try {
+        const { activateKillSwitchAll } = await import('./risk/kill-switch.js');
+        await activateKillSwitchAll(`Startup: ${msg}`);
+      } catch {}
+    }
+  }
+
   // 7. 스케줄러 시작
   startScheduler();
 
@@ -343,7 +416,8 @@ async function bootstrap() {
     const codes = wl.map((w: any) => w.stock_code).slice(0, 5);
     if (codes.length > 0) {
       const scores = await getLatestScores(codes);
-      const today = new Date().toISOString().split('T')[0];
+      const kstNow = new Date(Date.now() + 9 * 3600_000);
+      const today = `${kstNow.getUTCFullYear()}-${String(kstNow.getUTCMonth() + 1).padStart(2, '0')}-${String(kstNow.getUTCDate()).padStart(2, '0')}`;
       const hasTodayScore = scores.some((s: any) => s.score_date === today && (s.composite_score ?? 0) > 0);
       if (!hasTodayScore) {
         logger.info('🔄 오늘 AI 점수 없음 → Track A 자동 실행', { component: 'BOOT' });
@@ -372,6 +446,28 @@ async function bootstrap() {
   if (config.isPaper) {
     logger.info('📝 *** 모의투자(Paper Trading) 모드 ***', { component: 'BOOT' });
   }
+
+  // Graceful Shutdown — Cloud Run SIGTERM 시 진행 중 거래 완료 후 종료
+  let shuttingDown = false;
+  const gracefulShutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info(`${signal} 수신 — graceful shutdown 시작`, { component: 'BOOT' });
+    try {
+      const { setShuttingDown, isOverseasJobRunning } = await import('./scheduler/overseas-job.js');
+      setShuttingDown(true);
+      // 진행 중 Job 완료 대기 (최대 8초, Cloud Run은 10초 제공)
+      const start = Date.now();
+      while (Date.now() - start < 8000 && isOverseasJobRunning()) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+    } catch {}
+    try { (await import('./db/client.js')).getPool().end(); } catch {}
+    logger.info('Graceful shutdown 완료', { component: 'BOOT' });
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 }
 
 bootstrap().catch((err) => {

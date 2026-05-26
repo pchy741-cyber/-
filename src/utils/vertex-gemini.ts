@@ -1,9 +1,9 @@
 /**
  * Gemini 공통 클라이언트 — AI Studio 전용 (Vertex AI 폴백 제거로 비용 절감)
- * GEMINI_API_KEY: Google AI Studio 키 (gemini-2.0-flash, 1500 RPD 무료)
+ * GEMINI_API_KEY: Google AI Studio 키 (gemini-2.5-flash, 1500 RPD 무료)
  */
 
-const AI_STUDIO_MODEL = 'gemini-2.0-flash';
+const AI_STUDIO_MODEL = 'gemini-2.5-flash';
 const AI_STUDIO_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${AI_STUDIO_MODEL}:generateContent`;
 
 export interface GeminiCallOptions {

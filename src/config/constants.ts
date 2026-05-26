@@ -10,6 +10,13 @@ export const MARKET = {
   TIMEZONE: 'Asia/Seoul',
 } as const;
 
+// ── 국내주식 수수료/세금 (2025 기준 — 전 코드에서 이 상수 사용) ──
+export const KR_FEE = {
+  BUY_FEE_PCT: 0.00015,    // 매수 수수료 0.015%
+  SELL_FEE_PCT: 0.00195,    // 매도 수수료 0.015% + 거래세 0.18% = 0.195%
+  ROUND_TRIP_PCT: 0.0021,   // 왕복 합계 0.21%
+} as const;
+
 // ── 스케줄러 ──
 export const SCHEDULE = {
   // Track A: 무거운 분석 (하루 2회)
@@ -62,7 +69,7 @@ export type StrategyMode = (typeof StrategyMode)[keyof typeof StrategyMode];
 // ── 전략별 파라미터 (연구 기반 최적화) ──
 //
 // 공통 전제:
-//   • 한국주식 왕복 수수료+세금: 0.21% (매수 0.015% + 매도 0.015% + 증권거래세 0.18%)
+//   • 한국주식 왕복 수수료+세금: 0.21% (매수 수수료 0.015% + 매도 수수료 0.015% + 거래세 0.18%) — KR_FEE 참조
 //   • 손익분기 계산: 기대수익 = p × (익절-0.21%) - (1-p) × (|손절|+0.21%) > 0
 //   • Kelly Criterion (반 켈리): 포지션 = (손익비×승률 - 패율) / 손익비 × 0.5
 //   • KOSPI 대형주 일평균 변동폭: 1~2%, 중소형주: 2~5%
@@ -107,9 +114,9 @@ export const STRATEGY_PARAMS = {
   SCALPING: {
     // ┌─ 수익 구조 ─────────────────────────────────────────────────────────┐
     // │ 진입: 09:00~09:14 (14분 윈도우) / 강제청산: 09:30 (최대 30분 보유) │
-    // │ 익절 +1.2% → 순수익 +0.99% / 손절 -0.8% → 순손실 -1.01%          │
-    // │ 손익비 1.5:1 / 손익분기 승률 40% — 30분 윈도우 내 1.2% 달성 현실적 │
-    // │ TP 2.0%→1.2% 하향: 16~30분 윈도우에서 2% 미달 → 09:30 0% 강제청산 반복 방지 │
+    // │ 익절 +0.8% → 순수익 +0.59% / 손절 -0.8% → 순손실 -1.01%          │
+    // │ 손익비 1:1 / 손익분기 승률 50% — 30분 윈도우 내 0.8% 달성 현실적   │
+    // │ TP 2.0%→1.2%→0.8% 하향: 윈도우 내 미달 강제청산 방지              │
     // └────────────────────────────────────────────────────────────────────┘
     buyThreshold: 87,
     // 87점: 최고확신 종목만 진입 — 상위 ~5% 신호만
@@ -229,6 +236,22 @@ export const GATE = {
   COOLDOWN_NOTIFY_MS: 30 * 60_000,         // 쿨다운 알림 최소 간격
 } as const;
 
+// ── 섹터 분류 (매수/매도/트레일링 전역 공유) ──
+export const SECTOR_CLASS = {
+  /** 고변동: EV, 암호화폐, AI반도체, 성장주 */
+  HIGH_BETA: ['EV', 'CRYPTO', 'AI_SEMI', 'GROWTH'] as readonly string[],
+  /** 중변동: 빅테크, 인프라, 산업재, 클라우드, 헬스, 금융, 일본/대만 */
+  MEDIUM_BETA: ['TECH', 'INFRA', 'INDUSTRIAL', 'CLOUD', 'HEALTH', 'FINANCE', 'JP_AUTO', 'JP_TECH', 'JP_BANK', 'TW_SEMI'] as readonly string[],
+  /** 방어: 방위산업 */
+  DEFENSE: ['DEFENSE'] as readonly string[],
+  /** DANGER 장세에서 추가 고베타 취급 (JP_AUTO/JP_TECH 포함) */
+  DANGER_HIGH_BETA: ['AI_SEMI', 'GROWTH', 'EV', 'CRYPTO', 'JP_AUTO', 'JP_TECH'] as readonly string[],
+} as const;
+
+/** 해외주식 왕복 수수료율 0.25% */
+export const OVERSEAS_FEE_PCT = 0.0025;
+
+
 // ── 미국주식 해외 ──
 export const OVERSEAS = {
   MAX_POSITIONS: 8,                         // 최대 동시 보유 종목
@@ -236,12 +259,12 @@ export const OVERSEAS = {
   POSITION_PCT: 0.20,                       // 또는 가용 현금의 20%
   PARKING_CASH_BUFFER: 500,                 // 현금 파킹 최소 유지 ($)
   PARKING_MIN_ORDER: 20,                    // 파킹 최소 주문 금액 ($)
-  TOP_COUNT: 15,                            // 세션 캐시 상위 종목 수 (기회주 누락 방지)
+  TOP_COUNT: 20,                            // 세션 캐시 상위 종목 수 (35종목 풀 → 상위 20 AI 분석)
   ASIA_TOP_COUNT: 6,                        // 아시아장 세션 캐시 상위 종목 수
   AI_INTERVAL_MS: 15 * 60_000,             // AI 호출 최소 간격: 15분 (비용 절감)
   MAX_HOLD_DAYS: 21,                        // 최대 보유일 (21일 → 장기 추세 허용)
   CONCENTRATION_CASH_BUFFER: 400,           // 집중 전략 긴급 대비 보유 현금 ($)
-  CONCENTRATION_MIN_PNL_PCT: 3.0,           // 집중 대상 최소 수익률 (손실 종목 추가매수 방지)
+  CONCENTRATION_MIN_PNL_PCT: 6.0,           // 집중 대상 최소 수익률 (확실한 승자만 추가매수)
   CONCENTRATION_MIN_INVEST: 60,             // 집중 최소 투자액 ($)
 } as const;
 

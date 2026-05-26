@@ -1,16 +1,9 @@
--- Migration 024: 실전 모드 강제 설정 + 체인 is_paper 교정
--- 서버 부팅 시 항상 실전 모드로 시작하도록 DB 강제 설정,
+-- Migration 024: 체인 is_paper 교정 (실전 모드 강제는 제거됨)
 -- KIS 실주문번호가 있는 체인은 실전으로 교정 (paper 모드로 잘못 태깅된 체인 복구)
-
--- [1] portfolio_allocation_config 전체를 실전 모드로 강제 설정
--- 부팅 시 ORDER BY id DESC LIMIT 1 로 읽으므로 모든 행을 live로 통일
-UPDATE portfolio_allocation_config
-SET trading_mode_override = 'live';
-
--- 행이 없으면 live 기본값으로 삽입
-INSERT INTO portfolio_allocation_config (trading_mode_override)
-SELECT 'live'
-WHERE NOT EXISTS (SELECT 1 FROM portfolio_allocation_config);
+--
+-- ⚠️ [1] 삭제됨: trading_mode_override = 'live' 강제 설정은
+-- 재배포 시 의도치 않은 실전 전환 사고를 유발할 수 있어 제거
+-- 거래 모드는 대시보드 UI 또는 settings API로만 전환해야 합니다
 
 -- [2] kis_order_no가 있는 체인 → 실전 체인 (가장 신뢰할 수 있는 기준)
 -- VTS(모의투자)는 실제 KIS 주문번호를 발급하지 않음

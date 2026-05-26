@@ -633,6 +633,15 @@ export class TradeExecutor {
    */
   private confirmedOrders = new Set<string>();
 
+  /** 체결 확인 캐시 정리 — 장 마감 시 호출 (메모리 누수 방지) */
+  clearConfirmedOrders(): void {
+    const size = this.confirmedOrders.size;
+    if (size > 0) {
+      this.confirmedOrders.clear();
+      logger.info(`🧹 confirmedOrders 캐시 정리: ${size}건`, { component: 'EXECUTOR' });
+    }
+  }
+
   private async confirmFill(
     orderNo: string,
     stockCode: string,

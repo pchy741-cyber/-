@@ -576,7 +576,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       const liveP = livePrices.get(chain.stock_code);
       if (!liveP || !chain.avg_buy_price) continue;
       const pnlPct = ((liveP.currentPrice - Number(chain.avg_buy_price)) / Number(chain.avg_buy_price)) * 100;
-      if (pnlPct <= -5.0) continue; // 이미 깊은 손실 — 기존 SL이 처리
+      // 깊은 손실이어도 뉴스 악재 감지 시 즉시 청산 (SL 대기보다 빠른 탈출)
       try {
         const news = await checkNewsForStock(chain.stock_code);
         if (news.hasBadNews) {

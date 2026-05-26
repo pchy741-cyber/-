@@ -1,7 +1,7 @@
 import { Telegraf } from 'telegraf';
 import { config } from '../config/index.js';
 import { getAccountBalance } from '../kis/account.js';
-import { deactivateKillSwitch, getKillSwitchStatus } from '../risk/kill-switch.js';
+import { deactivateKillSwitchAll, getKillSwitchStatusAll } from '../risk/kill-switch.js';
 import { logger } from '../utils/logger.js';
 import { sendSlackMessage } from './slack.js';
 
@@ -18,7 +18,7 @@ export function initTelegram(): void {
   bot.command('status', async (ctx) => {
     try {
       const balance = await getAccountBalance();
-      const killSwitch = getKillSwitchStatus();
+      const ks = getKillSwitchStatusAll();
 
       const msg = [
         `🤖 *QUANTOPS 상태*`,
@@ -28,8 +28,10 @@ export function initTelegram(): void {
         `📈 투자금: ${balance.totalEvalAmount.toLocaleString()}원`,
         `${balance.totalProfitLoss >= 0 ? '🟢' : '🔴'} 손익: ${balance.totalProfitLoss.toLocaleString()}원`,
         ``,
-        `🛡️ Kill Switch: ${killSwitch.active ? '🛑 활성' : '✅ 비활성'}`,
-        killSwitch.active ? `  사유: ${killSwitch.reason}` : '',
+        `🛡️ Kill Switch [국내]: ${ks.kr.active ? '🛑 활성' : '✅ 비활성'}`,
+        ks.kr.active ? `  사유: ${ks.kr.reason}` : '',
+        `🛡️ Kill Switch [해외]: ${ks.overseas.active ? '🛑 활성' : '✅ 비활성'}`,
+        ks.overseas.active ? `  사유: ${ks.overseas.reason}` : '',
         `📊 모드: ${config.tradingMode}`,
         `🔧 보유 종목: ${balance.positions.length}개`,
       ]
@@ -56,9 +58,9 @@ export function initTelegram(): void {
       logger.warn(`Telegram /kill 미인증 시도: userId=${ctx.from?.id}`, { component: 'TELEGRAM' });
       return;
     }
-    const { activateKillSwitch } = await import('../risk/kill-switch.js');
-    await activateKillSwitch('CEO 수동 발동 (Telegram)');
-    await ctx.reply('🛑 Kill Switch 발동 — 모든 매매 즉시 차단');
+    const { activateKillSwitchAll } = await import('../risk/kill-switch.js');
+    await activateKillSwitchAll('CEO 수동 발동 (Telegram)', true);
+    await ctx.reply('🛑 Kill Switch 발동 — 국내+해외 모든 매매 즉시 차단');
   });
 
   // /resume 명령어 — Kill Switch 해제 (인증된 사용자만)
@@ -67,8 +69,8 @@ export function initTelegram(): void {
       logger.warn(`Telegram /resume 미인증 시도: userId=${ctx.from?.id}`, { component: 'TELEGRAM' });
       return;
     }
-    await deactivateKillSwitch();
-    await ctx.reply('✅ Kill Switch 해제 — 매매 재개');
+    await deactivateKillSwitchAll(true);  // CEO 수동 명령 → 강제 해제
+    await ctx.reply('✅ Kill Switch 강제 해제 — 국내+해외 매매 재개');
   });
 
   // /positions 명령어 — 보유 종목 상세

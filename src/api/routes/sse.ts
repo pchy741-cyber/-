@@ -4,8 +4,9 @@ import { config } from '../../config/index.js';
 import { getActiveStrategy, getOpenChains, getPool } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { isMarketOpen } from '../../kis/market.js';
-import { getKillSwitchStatus } from '../../risk/kill-switch.js';
+import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
 import { getPaperBalance } from '../../risk/engine.js';
+import { getLoopStatus } from '../../scheduler/loop-mode.js';
 
 export const sseRoutes = new Hono();
 
@@ -79,11 +80,12 @@ sseRoutes.get('/stream', (c) => {
             pnlPct: balance.totalProfitLossPct,
             positionCount: balance.positions.length,
           },
-          killSwitch: getKillSwitchStatus(),
+          killSwitch: getKillSwitchStatusAll(),
           activeChains: chains.length,
           marketOpen: isMarketOpen(),
           recentTrades,
           strategy: strategy ? { mode: strategy.mode, buy_threshold: strategy.buy_threshold, take_profit_pct: strategy.take_profit_pct, stop_loss_pct: strategy.stop_loss_pct } : null,
+          loopMode: (() => { try { const ls = getLoopStatus(); return { active: ls.active, totalRuns: ls.totalRuns, lastRunAt: ls.lastRunAt, lastRunResult: ls.lastRunResult }; } catch { return null; } })(),
         };
 
         await stream.writeSSE({

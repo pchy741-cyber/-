@@ -16,10 +16,9 @@ import { calcPnlPct } from '../utils/money.js';
 const FORCE_CLOSE_LOSS_THRESHOLD = -2.0; // 이 이상 손실일 때만 강제청산
 
 export async function runForceCloseJob(): Promise<void> {
-  // 킬스위치 활성 시 강제청산도 금지 (CEO 수동 개입 중)
+  // 킬스위치 활성이어도 강제청산(매도)은 항상 실행 — 포지션 탈출은 막으면 안 됨
   if (isKillSwitchActive()) {
-    logger.warn('🛑 Kill Switch 활성 — 강제청산 스킵', { component: 'FORCE_CLOSE' });
-    return;
+    logger.info('🛑 Kill Switch 활성 중이나 강제청산(매도)은 실행', { component: 'FORCE_CLOSE' });
   }
 
   const strategy = await getActiveStrategy();

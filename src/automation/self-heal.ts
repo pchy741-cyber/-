@@ -1,7 +1,7 @@
 import { checkDb } from '../db/client.js';
 import { clearTokenCache, getAccessToken } from '../kis/auth.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
-import { getKillSwitchStatus, isKillSwitchActive } from '../risk/kill-switch.js';
+import { getKillSwitchStatus, isKillSwitchActive, type KillSwitchScope } from '../risk/kill-switch.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -50,15 +50,18 @@ export async function runSelfHealing(): Promise<void> {
     }
   }
 
-  // 3. Kill Switch 장기 활성 감지 (2시간 이상)
-  if (isKillSwitchActive()) {
-    const status = getKillSwitchStatus();
-    if (status.activatedAt) {
-      const activatedAt = new Date(status.activatedAt);
-      const hoursActive = (Date.now() - activatedAt.getTime()) / (1000 * 60 * 60);
+  // 3. Kill Switch 장기 활성 감지 (2시간 이상) — KR/OVERSEAS 양쪽 확인
+  for (const scope of ['KR', 'OVERSEAS'] as KillSwitchScope[]) {
+    if (isKillSwitchActive(scope)) {
+      const status = getKillSwitchStatus(scope);
+      if (status.activatedAt) {
+        const activatedAt = new Date(status.activatedAt);
+        const hoursActive = (Date.now() - activatedAt.getTime()) / (1000 * 60 * 60);
+        const label = scope === 'OVERSEAS' ? '해외' : '국내';
 
-      if (hoursActive >= 2) {
-        issues.push(`Kill Switch ${hoursActive.toFixed(1)}시간째 활성 중`);
+        if (hoursActive >= 2) {
+          issues.push(`Kill Switch [${label}] ${hoursActive.toFixed(1)}시간째 활성 중`);
+        }
       }
     }
   }

@@ -36,11 +36,11 @@
     "http-proxy": "^1.18.1",
     "node-cron": "^3.0.3",
     "openai": "^4.77.0",
+    "pg": "^8.20.0",
     "telegraf": "^4.16.3",
     "uuid": "^11.0.5",
     "web-push": "^3.6.7",
     "winston": "^3.17.0",
-    "pg": "^8.20.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
@@ -52,7 +52,7 @@
     "@types/web-push": "^3.6.4",
     "drizzle-kit": "^0.31.10",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2",
+    "typescript": "^5.9.3",
     "vitest": "^2.1.8"
   },
   "engines": {

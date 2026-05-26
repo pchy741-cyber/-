@@ -82,6 +82,9 @@ export async function reconcilePendingOrders(): Promise<void> {
  * holding-check-job에서 10분마다 호출
  */
 export async function reconcileExternalSells(): Promise<void> {
+  // Paper 모드: 체인이 KIS에 없는 게 정상 → 외부매도 감지 불필요
+  if (config.isPaper) return;
+
   try {
     const chains = await getOpenChains();
     if (chains.length === 0) return;

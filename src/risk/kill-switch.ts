@@ -4,9 +4,15 @@ import { logger } from '../utils/logger.js';
 
 /**
  * Kill Switch — 긴급 정지 장치
- * - 연습모드(paper)와 실전모드(live)를 완전히 분리
- * - 연습모드 킬스위치가 실전 매매를 막지 않음 (핵심 격리)
+ *
+ * 2축 완전 분리:
+ *   1) Paper / Live  — 연습모드 킬스위치가 실전 매매를 막지 않음
+ *   2) KR / OVERSEAS — 해외 에러가 국내 매매를 차단하지 않음 (그 반대도)
+ *
+ * 총 4개 독립 상태: paper_kr, paper_overseas, live_kr, live_overseas
  */
+
+export type KillSwitchScope = 'KR' | 'OVERSEAS';
 
 interface KillSwitchState {
   active: boolean;
@@ -24,29 +30,39 @@ const DEFAULT_STATE = (): KillSwitchState => ({
   manuallyTriggered: false,
 });
 
-// Paper/Live 완전 분리 — 연습모드 킬스위치가 실전 매매를 막지 않음
-let paperState: KillSwitchState = DEFAULT_STATE();
-let liveState: KillSwitchState = DEFAULT_STATE();
+// 4개 독립 상태 — paper/live × KR/OVERSEAS
+const states: Record<string, KillSwitchState> = {
+  paper_kr: DEFAULT_STATE(),
+  paper_overseas: DEFAULT_STATE(),
+  live_kr: DEFAULT_STATE(),
+  live_overseas: DEFAULT_STATE(),
+};
 
 const MAX_CONSECUTIVE_ERRORS = 5;
-let updating = false;
+const updatingKeys = new Set<string>(); // 스코프별 동시 발동 방지
 
-function getState(): KillSwitchState {
-  return config.isPaper ? paperState : liveState;
+function stateKey(scope: KillSwitchScope): string {
+  return `${config.isPaper ? 'paper' : 'live'}_${scope.toLowerCase()}`;
 }
 
-function setState(s: KillSwitchState): void {
-  if (config.isPaper) paperState = s;
-  else liveState = s;
+function getState(scope: KillSwitchScope): KillSwitchState {
+  return states[stateKey(scope)];
 }
 
-export function isKillSwitchActive(): boolean {
-  return getState().active;
+function setState(scope: KillSwitchScope, s: KillSwitchState): void {
+  states[stateKey(scope)] = s;
 }
 
-export function getKillSwitchStatus() {
-  const s = getState();
+// ── Public API ──────────────────────────────────────────────────────────────
+
+export function isKillSwitchActive(scope: KillSwitchScope = 'KR'): boolean {
+  return getState(scope).active;
+}
+
+export function getKillSwitchStatus(scope: KillSwitchScope = 'KR') {
+  const s = getState(scope);
   return {
+    scope,
     active: s.active,
     reason: s.reason,
     activatedAt: s.activatedAt?.toISOString() ?? null,
@@ -55,52 +71,79 @@ export function getKillSwitchStatus() {
   };
 }
 
+/** 대시보드용 — KR/OVERSEAS 양쪽 상태 한번에 조회 */
+export function getKillSwitchStatusAll() {
+  return {
+    kr: getKillSwitchStatus('KR'),
+    overseas: getKillSwitchStatus('OVERSEAS'),
+  };
+}
+
 /**
+ * Kill Switch 발동
  * @param manual true = 대시보드/텔레그램 수동 발동 → 자동 해제 불가
+ * @param scope 'KR' | 'OVERSEAS' — 어느 시장의 매매를 차단할지
  */
-export async function activateKillSwitch(reason: string, manual = false): Promise<void> {
-  const s = getState();
-  if (s.active || updating) return;
-  updating = true;
+export async function activateKillSwitch(reason: string, manual = false, scope: KillSwitchScope = 'KR'): Promise<void> {
+  const key = stateKey(scope);
+  const s = getState(scope);
+  if (s.active || updatingKeys.has(key)) return;
+  updatingKeys.add(key);
 
   const mode = config.tradingMode;
   const isPaper = config.isPaper;
+  const scopeLabel = scope === 'OVERSEAS' ? '해외' : '국내';
 
   try {
     const now = new Date();
-    setState({ active: true, reason, activatedAt: now, consecutiveErrors: s.consecutiveErrors, manuallyTriggered: manual });
+    setState(scope, { active: true, reason, activatedAt: now, consecutiveErrors: s.consecutiveErrors, manuallyTriggered: manual });
 
-    logger.error(`🛑 KILL SWITCH 발동${manual ? ' [수동]' : ''} [${mode}]: ${reason}`, { component: 'KILL_SWITCH' });
+    logger.error(`🛑 KILL SWITCH 발동 [${scopeLabel}]${manual ? ' [수동]' : ''} [${mode}]: ${reason}`, { component: 'KILL_SWITCH' });
 
-    import('../notifications/web-push.js').then(m => m.notifyAlert('🛑 긴급정지 발동', `[${mode}] ${reason}`)).catch((e) => {
+    import('../notifications/web-push.js').then(m => m.notifyAlert(
+      `🛑 긴급정지 [${scopeLabel}]`,
+      `[${mode}] ${reason}`,
+    )).catch((e) => {
       logger.error(`킬스위치 푸시 알림 실패: ${e}`, { component: 'KILL_SWITCH' });
     });
 
     await insertRiskEvent({
       event_type: 'KILL_SWITCH',
       severity: 'CRITICAL',
-      details: { reason, activatedAt: now.toISOString(), manual, mode },
-      action_taken: '모든 매매 즉시 차단',
+      details: { reason, activatedAt: now.toISOString(), manual, mode, scope },
+      action_taken: `${scopeLabel} 매매 즉시 차단`,
     });
 
-    await logSystem('ERROR', 'KILL_SWITCH', `긴급 정지 발동${manual ? ' [수동]' : ''} [${mode}]: ${reason}`);
+    await logSystem('ERROR', 'KILL_SWITCH', `긴급 정지 발동 [${scopeLabel}]${manual ? ' [수동]' : ''} [${mode}]: ${reason}`);
 
-    persistKillSwitchToDB(true, reason, manual, isPaper).catch(() => {});
+    persistKillSwitchToDB(true, reason, manual, isPaper, scope).catch(() => {});
   } finally {
-    updating = false;
+    updatingKeys.delete(key);
   }
 }
 
+/** 수동 발동 시 KR+OVERSEAS 동시 차단 (텔레그램 /kill, 대시보드 긴급정지) */
+export async function activateKillSwitchAll(reason: string, manual = false): Promise<void> {
+  await Promise.all([
+    activateKillSwitch(reason, manual, 'KR'),
+    activateKillSwitch(reason, manual, 'OVERSEAS'),
+  ]);
+}
+
 /**
+ * Kill Switch 해제
  * @param force true = 수동 발동이어도 강제 해제 (대시보드 명시적 해제)
+ * @param scope 'KR' | 'OVERSEAS'
  */
-export async function deactivateKillSwitch(force = false): Promise<void> {
-  const s = getState();
+export async function deactivateKillSwitch(force = false, scope: KillSwitchScope = 'KR'): Promise<void> {
+  const s = getState(scope);
   if (!s.active) return;
+
+  const scopeLabel = scope === 'OVERSEAS' ? '해외' : '국내';
 
   if (s.manuallyTriggered && !force) {
     logger.warn(
-      `🛡️ Kill Switch 자동 해제 거부: 수동 발동 중 (사유: ${s.reason}) — 대시보드에서 수동 해제 필요`,
+      `🛡️ Kill Switch 자동 해제 거부 [${scopeLabel}]: 수동 발동 중 (사유: ${s.reason}) — 대시보드에서 수동 해제 필요`,
       { component: 'KILL_SWITCH' },
     );
     return;
@@ -110,79 +153,87 @@ export async function deactivateKillSwitch(force = false): Promise<void> {
   const isPaper = config.isPaper;
   const prevReason = s.reason;
 
-  setState(DEFAULT_STATE());
+  setState(scope, DEFAULT_STATE());
 
-  logger.info(`✅ Kill Switch 해제${force ? ' [강제]' : ''} [${mode}]`, { component: 'KILL_SWITCH' });
-  await logSystem('INFO', 'KILL_SWITCH', `긴급 정지 해제${force ? ' [강제]' : ''} [${mode}] (사유: ${prevReason})`);
+  logger.info(`✅ Kill Switch 해제 [${scopeLabel}]${force ? ' [강제]' : ''} [${mode}]`, { component: 'KILL_SWITCH' });
+  await logSystem('INFO', 'KILL_SWITCH', `긴급 정지 해제 [${scopeLabel}]${force ? ' [강제]' : ''} [${mode}] (사유: ${prevReason})`);
 
   import('../notifications/web-push.js').then(m =>
     m.notifyAlert(
-      force ? '🔓 긴급정지 수동 해제' : '🔓 긴급정지 자동 해제',
-      `[${mode}] 이전 사유: ${prevReason.slice(0, 80)}\n매매 재개됨`,
+      force ? `🔓 긴급정지 수동 해제 [${scopeLabel}]` : `🔓 긴급정지 자동 해제 [${scopeLabel}]`,
+      `[${mode}] 이전 사유: ${prevReason.slice(0, 80)}\n${scopeLabel} 매매 재개됨`,
     )
   ).catch(() => {});
 
-  persistKillSwitchToDB(false, '', false, isPaper).catch(() => {});
+  persistKillSwitchToDB(false, '', false, isPaper, scope).catch(() => {});
+}
+
+/** KR+OVERSEAS 동시 해제 (대시보드/텔레그램) */
+export async function deactivateKillSwitchAll(force = false): Promise<void> {
+  await Promise.all([
+    deactivateKillSwitch(force, 'KR'),
+    deactivateKillSwitch(force, 'OVERSEAS'),
+  ]);
 }
 
 /**
- * 에러 누적 카운터 — 연속 에러 시 자동 Kill Switch (모드별 독립)
+ * 에러 누적 카운터 — 연속 에러 시 자동 Kill Switch (스코프별 독립)
  */
-export async function reportError(component: string, error: string): Promise<void> {
-  const s = getState();
-  setState({ ...s, consecutiveErrors: s.consecutiveErrors + 1 });
+export async function reportError(component: string, error: string, scope: KillSwitchScope = 'KR'): Promise<void> {
+  const s = getState(scope);
+  setState(scope, { ...s, consecutiveErrors: s.consecutiveErrors + 1 });
 
-  if (getState().consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-    await activateKillSwitch(`연속 에러 ${getState().consecutiveErrors}회 (최근: ${component} - ${error})`);
+  if (getState(scope).consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+    await activateKillSwitch(
+      `연속 에러 ${getState(scope).consecutiveErrors}회 (최근: ${component} - ${error})`,
+      false,
+      scope,
+    );
   }
 }
 
-export function reportSuccess(): void {
-  const s = getState();
+export function reportSuccess(scope: KillSwitchScope = 'KR'): void {
+  const s = getState(scope);
   if (s.consecutiveErrors > 0) {
-    setState({ ...s, consecutiveErrors: 0 });
+    setState(scope, { ...s, consecutiveErrors: 0 });
   }
 }
 
 /** 장 마감 시 에러 카운터 리셋 */
-export function resetDailyErrorCount(): void {
-  const s = getState();
-  setState({ ...s, consecutiveErrors: 0 });
+export function resetDailyErrorCount(scope: KillSwitchScope = 'KR'): void {
+  const s = getState(scope);
+  setState(scope, { ...s, consecutiveErrors: 0 });
 }
 
 // ── DB 영속화 ──────────────────────────────────────────────────────────────
 
-async function persistKillSwitchToDB(active: boolean, reason: string, manual: boolean, isPaper: boolean): Promise<void> {
+function dbKey(isPaper: boolean, scope: KillSwitchScope): string {
+  return `kill_switch_${isPaper ? 'paper' : 'live'}_${scope.toLowerCase()}`;
+}
+
+async function persistKillSwitchToDB(active: boolean, reason: string, manual: boolean, isPaper: boolean, scope: KillSwitchScope): Promise<void> {
   try {
     const { getPool } = await import('../db/client.js');
-    const key = isPaper ? 'kill_switch_paper' : 'kill_switch_live';
+    const key = dbKey(isPaper, scope);
     await getPool().query(
       `INSERT INTO system_state (key, value) VALUES ($1, $2)
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-      [key, JSON.stringify({ active, reason, manual, updatedAt: new Date().toISOString() })],
+      [key, JSON.stringify({ active, reason, manual, scope, updatedAt: new Date().toISOString() })],
     );
   } catch {
     // system_state 테이블 없으면 무시
   }
 }
 
-async function loadKillSwitchForMode(isPaper: boolean): Promise<void> {
+async function loadKillSwitchState(isPaper: boolean, scope: KillSwitchScope): Promise<void> {
   try {
     const { getPool } = await import('../db/client.js');
-    const newKey = isPaper ? 'kill_switch_paper' : 'kill_switch_live';
+    const key = dbKey(isPaper, scope);
 
-    let { rows } = await getPool().query(
+    const { rows } = await getPool().query(
       `SELECT value FROM system_state WHERE key = $1 LIMIT 1`,
-      [newKey],
+      [key],
     );
-
-    // 없으면 구 키 fallback (live 모드만 — 마이그레이션 호환)
-    if (!rows[0] && !isPaper) {
-      const legacy = await getPool().query(
-        `SELECT value FROM system_state WHERE key = 'kill_switch' LIMIT 1`,
-      );
-      rows = legacy.rows;
-    }
 
     if (!rows[0]) return;
 
@@ -191,7 +242,8 @@ async function loadKillSwitchForMode(isPaper: boolean): Promise<void> {
 
     // 연습모드 자동 킬스위치는 재시작 시 자동 해제
     if (isPaper && !saved.manual) {
-      logger.info('🔓 [모의] 자동 Kill Switch 재시작 해제', { component: 'KILL_SWITCH' });
+      const scopeLabel = scope === 'OVERSEAS' ? '해외' : '국내';
+      logger.info(`🔓 [모의][${scopeLabel}] 자동 Kill Switch 재시작 해제`, { component: 'KILL_SWITCH' });
       return;
     }
 
@@ -203,11 +255,12 @@ async function loadKillSwitchForMode(isPaper: boolean): Promise<void> {
       manuallyTriggered: saved.manual ?? false,
     };
 
-    if (isPaper) paperState = restoredState;
-    else liveState = restoredState;
+    const sKey = `${isPaper ? 'paper' : 'live'}_${scope.toLowerCase()}`;
+    states[sKey] = restoredState;
 
+    const scopeLabel = scope === 'OVERSEAS' ? '해외' : '국내';
     logger.warn(
-      `🛑 [시작][${isPaper ? 'paper' : 'live'}] Kill Switch 복원: ${restoredState.reason}${restoredState.manuallyTriggered ? ' [수동]' : ''}`,
+      `🛑 [시작][${isPaper ? 'paper' : 'live'}][${scopeLabel}] Kill Switch 복원: ${restoredState.reason}${restoredState.manuallyTriggered ? ' [수동]' : ''}`,
       { component: 'KILL_SWITCH' },
     );
   } catch {
@@ -215,12 +268,38 @@ async function loadKillSwitchForMode(isPaper: boolean): Promise<void> {
   }
 }
 
+/** 레거시 킬스위치 키 정리 (스플릿 이전 형식 → 삭제) */
+async function cleanupLegacyKeys(): Promise<void> {
+  try {
+    const { getPool } = await import('../db/client.js');
+    const legacyKeys = ['kill_switch', 'kill_switch_paper', 'kill_switch_live'];
+    const { rowCount } = await getPool().query(
+      `DELETE FROM system_state WHERE key = ANY($1)`,
+      [legacyKeys],
+    );
+    if ((rowCount ?? 0) > 0) {
+      logger.info(`🧹 레거시 킬스위치 키 ${rowCount}개 정리 완료`, { component: 'KILL_SWITCH' });
+    }
+  } catch {
+    // 무시
+  }
+}
+
 /**
- * 서버 시작 시 DB에서 Kill Switch 상태 복원 (paper/live 각각)
+ * 서버 시작 시 DB에서 Kill Switch 상태 복원
+ * — 현재 모드(paper/live)의 상태만 복원 (스플릿 서버 병행운영 대응)
+ * — 다른 모드의 상태는 다른 서버가 관리하므로 로드하지 않음
  */
 export async function initKillSwitchFromDB(): Promise<void> {
+  const isPaper = config.isPaper;
+  const modeLabel = isPaper ? 'PAPER' : 'LIVE';
+  logger.info(`🔄 Kill Switch 복원 시작 [${modeLabel} 모드만]`, { component: 'KILL_SWITCH' });
+
   await Promise.all([
-    loadKillSwitchForMode(true),  // paper
-    loadKillSwitchForMode(false), // live
+    loadKillSwitchState(isPaper, 'KR'),
+    loadKillSwitchState(isPaper, 'OVERSEAS'),
   ]);
+
+  // 레거시 키 정리 (구 kill_switch, kill_switch_paper, kill_switch_live → 삭제)
+  cleanupLegacyKeys().catch(() => {});
 }

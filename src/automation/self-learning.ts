@@ -131,8 +131,15 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
     ...analyzeProfitRatio(wins, losses),
     ...analyzeQuickProfitTaking(wins),
     ...parkingInsights,
-    ...analyzeTimeOfDayPerformance(enrichedChains),
-    ...analyzeDayOfWeekPerformance(enrichedChains),
+    // 시간대/요일 분석은 해외(OVERSEAS) 체인 제외 — 시장 시간대가 다름
+    ...analyzeTimeOfDayPerformance(enrichedChains.filter(c => {
+      const orders = c.chain.orders as any[];
+      return !orders?.some((o: any) => o.trigger_source === 'OVERSEAS');
+    })),
+    ...analyzeDayOfWeekPerformance(enrichedChains.filter(c => {
+      const orders = c.chain.orders as any[];
+      return !orders?.some((o: any) => o.trigger_source === 'OVERSEAS');
+    })),
     ...(await analyzeBuyThreshold()),
   ];
 
@@ -733,9 +740,10 @@ async function saveInsights(insights: LearnedInsight[]): Promise<void> {
     // 자동 생성 인사이트만 삭제 (CEO가 수동 입력한 is_manual=true 인사이트는 보존)
     await getPool().query('DELETE FROM learned_insights WHERE is_manual IS NOT TRUE');
     for (const insight of insights) {
-      await getPool().query(
+      const { rows: inserted } = await getPool().query(
         `INSERT INTO learned_insights (category, insight, confidence, sample_count, last_updated, details, recommendation, param_change)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING id`,
         [
           insight.category,
           insight.insight,
@@ -747,6 +755,7 @@ async function saveInsights(insights: LearnedInsight[]): Promise<void> {
           insight.paramChange ? JSON.stringify(insight.paramChange) : null,
         ],
       );
+      if (inserted[0]?.id) insight.id = String(inserted[0].id);
     }
 
     const _summary = insights.map((i) => `[${i.category}] ${i.insight}`).join('\n');
@@ -892,7 +901,12 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
       if (oldVal === value) continue; // 이미 같은 값이면 스킵
 
       await getPool().query(`UPDATE strategy_config SET ${field} = $1 WHERE is_active = true`, [value]);
-      await getPool().query(`UPDATE learned_insights SET is_applied = true, applied_at = NOW() WHERE id = $1`, [insight.id]);
+      // id가 없을 수 있으므로 (category, insight) 복합키로 업데이트
+      if (insight.id) {
+        await getPool().query(`UPDATE learned_insights SET is_applied = true, applied_at = NOW() WHERE id = $1`, [insight.id]);
+      } else {
+        await getPool().query(`UPDATE learned_insights SET is_applied = true, applied_at = NOW() WHERE category = $1 AND insight = $2`, [insight.category, insight.insight]);
+      }
       applied.push(`${field}: ${oldVal} → ${value}`);
       logger.info(`🤖 인사이트 자동 적용: ${field}=${value} (${insight.insight.slice(0, 40)}...)`, { component: 'LEARN' });
     }
@@ -1002,8 +1016,9 @@ function analyzeTimeOfDayPerformance(
   const buckets: Record<number, HourBucket> = {};
 
   for (const { chain, pnlPct } of enrichedChains) {
-    if (!chain.created_at) continue;
-    const hour = new Date(chain.created_at).getHours();
+    const entryTime = chain.opened_at ?? chain.created_at;
+    if (!entryTime) continue;
+    const hour = new Date(new Date(entryTime).getTime() + 9 * 3600_000).getUTCHours();
     if (!buckets[hour]) buckets[hour] = { wins: 0, total: 0, pnlSum: 0 };
     buckets[hour].total++;
     buckets[hour].pnlSum += pnlPct;
@@ -1058,8 +1073,9 @@ function analyzeDayOfWeekPerformance(
   const buckets: Record<number, DayBucket> = {};
 
   for (const { chain, pnlPct } of enrichedChains) {
-    if (!chain.created_at) continue;
-    const day = new Date(chain.created_at).getDay();
+    const entryTime = chain.opened_at ?? chain.created_at;
+    if (!entryTime) continue;
+    const day = new Date(new Date(entryTime).getTime() + 9 * 3600_000).getUTCDay();
     if (!buckets[day]) buckets[day] = { wins: 0, total: 0, pnlSum: 0 };
     buckets[day].total++;
     buckets[day].pnlSum += pnlPct;

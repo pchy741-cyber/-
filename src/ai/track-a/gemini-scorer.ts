@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { type ScoringResult, ScoringResultSchema } from '../../db/models.js';
+import { safeParseScoresJson } from '../../utils/json-repair.js';
 import { logger } from '../../utils/logger.js';
 import { callVertexGemini } from '../../utils/vertex-gemini.js';
 import { buildScoringPrompt } from '../prompts/track-a-scoring.js';
@@ -37,61 +38,46 @@ ${JSON.stringify(geminiAnalysis.stocks, null, 2)}
 
   const content = await callVertexGemini(systemPrompt, userMessage, { temperature: 0.2 });
 
-  try {
-    // 1. 마크다운 코드 블록에서 JSON 문자열 추출
-    const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/) ?? content.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
-    if (!jsonMatch) {
-      logger.error('Gemini 스코어링 응답에서 JSON 블록을 찾을 수 없음', { component: 'TRACK_A', raw: content });
-      throw new Error('Gemini scoring response does not contain a JSON block.');
-    }
-    const jsonText = jsonMatch[1] ?? jsonMatch[0];
+  // Resilient JSON parsing — 잘린 응답에서도 개별 스코어 복구
+  const parsedResponse = safeParseScoresJson(content, 'GeminiScoring');
 
-    // 2. JSON 텍스트 파싱
-    const parsedJson = JSON.parse(jsonText);
+  if (!parsedResponse || parsedResponse.scores.length === 0) {
+    logger.warn('Gemini 스코어링 응답에서 스코어를 추출할 수 없음 — 빈 배열 반환', {
+      component: 'TRACK_A',
+      rawLength: content.length,
+      rawPreview: content.slice(0, 500),
+    });
+    return []; // throw 대신 빈 배열 반환 — 파이프라인이 폴백으로 진행
+  }
 
-    // 3. Zod를 사용하여 최상위 구조 검증
-    const responseParseResult = GeminiScoringResponseSchema.safeParse(parsedJson);
-    if (!responseParseResult.success) {
-      logger.warn('Gemini 스코어링 응답이 예상 스키마와 다름 (scores 배열 부재)', {
-        component: 'TRACK_A',
-        error: responseParseResult.error.message,
-        rawPreview: jsonText.slice(0, 300),
-      });
-      return []; // 구조가 잘못된 경우 빈 배열 반환
-    }
-
-    // 4. 각 개별 스코어 객체 검증
-    const validScores: ScoringResult[] = [];
-    for (const score of responseParseResult.data.scores) {
-      const zod = ScoringResultSchema.safeParse(score);
-      if (zod.success) {
-        if (zod.data.signal !== 'NO_DATA') {
-          validScores.push(zod.data);
-        } else {
-          const stockCode = typeof score === 'object' && score !== null && 'stock_code' in score ? String((score as any).stock_code) : 'UNKNOWN';
-          logger.info(`Gemini 스코어 NO_DATA 제외 (${stockCode}): 데이터 부족 신호`, {
-            component: 'TRACK_A',
-          });
-        }
+  // 각 개별 스코어 객체 검증 (Zod)
+  const validScores: ScoringResult[] = [];
+  for (const score of parsedResponse.scores) {
+    const zod = ScoringResultSchema.safeParse(score);
+    if (zod.success) {
+      if (zod.data.signal !== 'NO_DATA') {
+        validScores.push(zod.data);
       } else {
         const stockCode = typeof score === 'object' && score !== null && 'stock_code' in score ? String((score as any).stock_code) : 'UNKNOWN';
-        logger.warn(`Gemini 스코어 검증 실패 (${stockCode}): ${zod.error?.message}`, {
+        logger.info(`Gemini 스코어 NO_DATA 제외 (${stockCode}): 데이터 부족 신호`, {
           component: 'TRACK_A',
-          invalidData: score,
         });
       }
+    } else {
+      const stockCode = typeof score === 'object' && score !== null && 'stock_code' in score ? String((score as any).stock_code) : 'UNKNOWN';
+      logger.warn(`Gemini 스코어 검증 실패 (${stockCode}): ${zod.error?.message}`, {
+        component: 'TRACK_A',
+        invalidData: score,
+      });
     }
-
-    const maxScore = validScores.length > 0 ? Math.max(...validScores.map((s) => s.composite_score)) : 0;
-
-    logger.info(
-      `Gemini 스코어링 완료: ${validScores.length}/${responseParseResult.data.scores.length}개 유효, 최고점=${maxScore}`,
-      { component: 'TRACK_A' },
-    );
-
-    return validScores;
-  } catch (e) {
-    logger.error('Gemini 스코어링 JSON 파싱 또는 처리 실패', { component: 'TRACK_A', raw: content, error: (e as Error).message });
-    throw new Error('Failed to parse or process Gemini scoring response.');
   }
+
+  const maxScore = validScores.length > 0 ? Math.max(...validScores.map((s) => s.composite_score)) : 0;
+
+  logger.info(
+    `Gemini 스코어링 완료: ${validScores.length}/${parsedResponse.scores.length}개 유효, 최고점=${maxScore}`,
+    { component: 'TRACK_A' },
+  );
+
+  return validScores;
 }

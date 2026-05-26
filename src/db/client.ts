@@ -43,7 +43,7 @@ export function disableMemoryMode(): void {
 export function getPool(): pg.Pool {
   if (!pool) {
     const poolDefaults = {
-      max: 5,
+      max: 10,
       idleTimeoutMillis: 60_000,      // 60s idle 후 반환 (Track B 5분 주기 대비 여유)
       connectionTimeoutMillis: 15_000,
       keepAlive: true,
@@ -446,8 +446,8 @@ export async function getRecentManuallySoldStocks(hoursBack = 24): Promise<Set<s
        WHERE status = 'CLOSED'
          AND close_reason = 'CEO 수동 매도'
          AND is_paper = $1
-         AND closed_at > NOW() - INTERVAL '${hoursBack} hours'`,
-      [config.isPaper],
+         AND closed_at > NOW() - ($2 || ' hours')::interval`,
+      [config.isPaper, hoursBack],
     );
     return new Set(rows.map((r: { stock_code: string }) => r.stock_code));
   } catch {
@@ -464,8 +464,8 @@ export async function getRecentLossStocks(daysBack = 14): Promise<Set<string>> {
        WHERE status = 'CLOSED'
          AND realized_pnl < -5000
          AND is_paper = $1
-         AND closed_at > NOW() - INTERVAL '${daysBack} days'`,
-      [config.isPaper],
+         AND closed_at > NOW() - ($2 || ' days')::interval`,
+      [config.isPaper, daysBack],
     );
     return new Set(rows.map((r: { stock_code: string }) => r.stock_code));
   } catch {

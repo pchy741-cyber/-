@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { config } from '../../config/index.js';
 import { checkDb } from '../../db/client.js';
 import { isMarketOpen } from '../../kis/market.js';
-import { getKillSwitchStatus } from '../../risk/kill-switch.js';
+import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
 import { getActiveLocks } from '../../utils/lock.js';
 
 export const healthRoutes = new Hono();
@@ -41,7 +41,7 @@ healthRoutes.get('/health', async (c) => {
     tradingMode: config.tradingMode,
     marketOpen: isMarketOpen(),
     usMarketOpen,
-    killSwitch: getKillSwitchStatus(),
+    killSwitch: getKillSwitchStatusAll(),
     activeLocks: getActiveLocks(),
     uptime: Math.floor(process.uptime()),
     recentEvents: recentEvents.slice(0, 10),

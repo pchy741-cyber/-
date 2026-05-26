@@ -198,6 +198,17 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
         const errMsg = `KIS API 오류 [${trId}]: ${data.msg_cd} - ${data.msg1}`;
         const msg = String(data.msg1 ?? '');
 
+        // 토큰 만료 (EGW00123) → 캐시 클리어 후 재시도 (LOGOUT과 동일 처리)
+        if (msg.includes('만료된 token') || String(data.msg_cd ?? '') === 'EGW00123') {
+          clearTokenCache();
+          if (attempt < MAX_RETRIES) {
+            logger.warn(`KIS 토큰 만료 (EGW00123), 캐시 클리어 후 재시도 ${attempt}/${MAX_RETRIES}`, { component: 'KIS' });
+            await sleep(1000);
+            continue;
+          }
+          throw new Error('KIS 토큰 만료 — 재발급 후에도 실패');
+        }
+
         // rate limit 초과 → 최대 2회 재시도, 짧게 대기 (쌓이면 Cloud Run 포화)
         if (msg.includes('초당') || msg.includes('거래건수')) {
           const MAX_RATE_RETRIES = 2;

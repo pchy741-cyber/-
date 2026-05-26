@@ -1,0 +1,230 @@
+'use client';
+
+import React, { useState } from 'react';
+import { api, fmt, fmtWon, fmtUsd } from '../../lib/utils';
+import { toDisplayName, isUnresolvedStockName } from '../../lib/helpers';
+
+interface PortfolioSectionProps {
+  allocConfig: any;
+  setAllocConfig: (v: any) => void;
+  onGoToSettings?: () => void;
+  dash: any;
+  chains: any[];
+  usHoldings: any[];
+  usW: any[];
+  totalValue: number;
+  totalInvested: number;
+  domesticInvested: number;
+  domesticCash: number;
+  overseasInvestedUsd: number;
+  overseasInvestedKrw: number;
+  overseasMarketKrw: number;
+  overseasCashUsd: number;
+  overseasCashKrw: number;
+  overseasPnlUsd: number;
+  fxRate: number;
+  investedPctExact: number;
+  cashPctExact: number;
+  overseasCashPctExact: number;
+  strategy: any;
+  getStockName: (code: string) => string;
+}
+
+export default function PortfolioSection(props: PortfolioSectionProps) {
+  const {
+    allocConfig, setAllocConfig, onGoToSettings, dash, chains, usHoldings, usW,
+    totalValue, totalInvested, domesticInvested, domesticCash,
+    overseasInvestedUsd, overseasInvestedKrw, overseasMarketKrw,
+    overseasCashUsd, overseasCashKrw, overseasPnlUsd, fxRate,
+    investedPctExact, cashPctExact, overseasCashPctExact,
+    strategy, getStockName,
+  } = props;
+
+  const [showPortfolio, setShowPortfolio] = useState(false);
+  const pctClamp = (v: number) => Math.max(0, Math.min(100, v));
+
+  const krTarget = Number(allocConfig?.kr_pct ?? 70);
+  const usTarget = Number(allocConfig?.us_pct ?? 30);
+  const krActualPct = domesticInvested > 0
+    ? (chains.reduce((s: number, ch: any) => s + (ch.unrealizedPnl ?? 0), 0) / domesticInvested) * 100
+    : 0;
+  const usActualPct = overseasInvestedUsd > 0 ? (overseasPnlUsd / overseasInvestedUsd) * 100 : 0;
+  const krUnderperform = chains.length > 0 && usHoldings.length > 0 && krActualPct < usActualPct - 2;
+  const p = dash?.portfolio;
+
+  const applyPreset = async (kr: number, us: number) => {
+    try {
+      const upd = await api('/portfolio/allocation', { method: 'PUT', body: JSON.stringify({ ...allocConfig, kr_pct: kr, us_pct: us }) });
+      setAllocConfig(upd);
+    } catch {}
+  };
+
+  return (
+    <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden">
+      {/* 헤더 */}
+      <div className="px-4 py-3 flex items-center justify-between">
+        <button onClick={() => setShowPortfolio(v => !v)} className="flex items-center gap-2 flex-1 text-left hover:opacity-80 transition-opacity">
+          <span className="text-sm font-semibold text-slate-200">포트폴리오 비중</span>
+          {totalInvested > 0 && <span className="text-[10px] bg-blue-500/10 text-blue-400 px-2 py-0.5 rounded-md">투자 {((totalInvested / (p?.totalValue || 1)) * 100).toFixed(0)}%</span>}
+          {krUnderperform && <span className="text-[10px] text-amber-400 animate-pulse ml-1">⚡ 국내 부진</span>}
+        </button>
+        <div className="flex items-center gap-3">
+          <button onClick={() => onGoToSettings?.()} className="text-[11px] text-blue-400 hover:text-blue-300 transition-colors">설정 →</button>
+          <button onClick={() => setShowPortfolio(v => !v)} className="text-[11px] text-slate-500">{showPortfolio ? '접기 ▲' : '자세히 ▼'}</button>
+        </div>
+      </div>
+      {/* 항상 보이는 영역 */}
+      <div className="px-4 pb-4 space-y-3">
+        {/* 자금 흐름 시각화 — 3칸 */}
+        <div className="grid grid-cols-3 gap-2">
+          <div className={`rounded-xl px-3 py-2.5 ${krActualPct >= 0 ? 'bg-blue-950/40 border border-blue-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>
+            <div className="text-[9px] text-slate-500 mb-0.5">🇰🇷 한국주식</div>
+            <div className="text-sm font-bold tabular-nums text-blue-300">{fmtWon(domesticInvested)}</div>
+            <div className="flex items-center justify-between mt-1">
+              <span className="text-[9px] text-slate-600">{totalValue > 0 ? ((domesticInvested / totalValue) * 100).toFixed(0) : 0}%</span>
+              <span className={`text-[9px] font-medium ${krActualPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{krActualPct > 0 ? '+' : ''}{krActualPct.toFixed(1)}%</span>
+            </div>
+            <div className="text-[8px] text-slate-600 mt-0.5">{chains.length}종목</div>
+          </div>
+          <div className="rounded-xl px-3 py-2.5 bg-slate-800/40 border border-white/[0.06]">
+            <div className="text-[9px] text-slate-500 mb-0.5">현금</div>
+            <div className="text-sm font-bold tabular-nums text-slate-200">{fmtWon(domesticCash + overseasCashKrw)}</div>
+            <div className="flex items-center justify-between mt-1">
+              <span className="text-[9px] text-slate-600">{totalValue > 0 ? (((domesticCash + overseasCashKrw) / totalValue) * 100).toFixed(0) : 0}%</span>
+            </div>
+            <div className="text-[8px] text-slate-600 mt-0.5 space-y-0.5">
+              <div>KRW {fmt(Math.round(domesticCash))}</div>
+              {overseasCashUsd > 0 && <div>USD ${overseasCashUsd.toFixed(0)}</div>}
+            </div>
+          </div>
+          <div className={`rounded-xl px-3 py-2.5 ${usActualPct >= 0 ? 'bg-indigo-950/40 border border-indigo-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>
+            <div className="text-[9px] text-slate-500 mb-0.5">🇺🇸 미국주식</div>
+            <div className="text-sm font-bold tabular-nums text-indigo-300">{fmtUsd(overseasInvestedUsd)}</div>
+            <div className="flex items-center justify-between mt-1">
+              <span className="text-[9px] text-slate-600">{totalValue > 0 ? ((overseasMarketKrw / totalValue) * 100).toFixed(0) : 0}%</span>
+              <span className={`text-[9px] font-medium ${usActualPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{usActualPct > 0 ? '+' : ''}{usActualPct.toFixed(1)}%</span>
+            </div>
+            <div className="text-[8px] text-slate-600 mt-0.5">{usHoldings.length}종목</div>
+          </div>
+        </div>
+        {/* 시장 레짐 인디케이터 */}
+        {strategy && (
+          <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-white/[0.02] border border-white/[0.04]">
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
+              strategy.mode === 'DEFENSE' ? 'bg-amber-500/20 text-amber-300' :
+              strategy.mode === 'SNIPER' ? 'bg-violet-500/20 text-violet-300' :
+              'bg-emerald-500/20 text-emerald-300'
+            }`}>{strategy.mode ?? 'SWING'}</span>
+            <span className="text-[10px] text-slate-500">
+              {strategy.mode === 'DEFENSE' ? '방어 모드 — 자동 현금화 진행 중'
+                : strategy.mode === 'SNIPER' ? '저격 모드 — 급락 매수 대기'
+                : '일반 운용 중'}
+            </span>
+            {dash?.riskLimits?.targetCashRatio != null && (
+              <span className="text-[9px] text-slate-600 ml-auto">현금 목표 {Math.round(dash.riskLimits.targetCashRatio * 100)}%</span>
+            )}
+          </div>
+        )}
+        {/* 목표 비중 바 */}
+        <div>
+          <div className="flex justify-between text-[9px] text-slate-500 mb-1">
+            <span>🇰🇷 국내 목표 {krTarget}%</span>
+            <span>🇺🇸 해외 목표 {usTarget}%</span>
+          </div>
+          <div className="h-2 rounded-full overflow-hidden bg-white/[0.04] flex">
+            <div className="h-full bg-blue-500/70 transition-all duration-500" style={{ width: `${krTarget}%` }} />
+            <div className="h-full bg-indigo-500/70 transition-all duration-500" style={{ width: `${usTarget}%` }} />
+          </div>
+        </div>
+        {/* 프리셋 버튼 */}
+        <div className="flex gap-1.5 flex-wrap">
+          {[
+            { label: '국내 70%', kr: 70, us: 30 },
+            { label: '반반 50%', kr: 50, us: 50 },
+            { label: '해외 70%', kr: 30, us: 70 },
+          ].map(({ label, kr, us }) => (
+            <button key={label} onClick={() => applyPreset(kr, us)}
+              className={`flex-1 text-[10px] py-1.5 rounded-lg font-semibold transition-all ${krTarget === kr ? 'bg-blue-500/30 text-blue-300 border border-blue-500/40' : 'bg-white/[0.04] text-slate-400 hover:bg-white/[0.08] hover:text-slate-300'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {/* 접기/펼치기: 종목별 비중 */}
+      {showPortfolio && (
+        <div className="p-4 sm:p-5 space-y-4 border-t border-white/[0.04]">
+          {/* 현금 vs 투자 비율 바 */}
+          <div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] mb-2">
+              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-gradient-to-r from-blue-500 to-cyan-500 shrink-0" />투자 중 {investedPctExact.toFixed(0)}%</span>
+              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-slate-400/50 shrink-0" />국내 현금 {cashPctExact.toFixed(0)}%</span>
+              {overseasCashKrw > 0 && <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-indigo-400/70 shrink-0" />해외 현금 {overseasCashPctExact.toFixed(0)}%</span>}
+            </div>
+            <div className="h-3 bg-white/[0.04] rounded-full overflow-hidden">
+              <div className="h-full flex">
+                <div className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 transition-all duration-500" style={{ width: `${pctClamp(investedPctExact)}%` }} />
+                <div className="h-full bg-slate-400/50 transition-all duration-500" style={{ width: `${pctClamp(cashPctExact)}%` }} />
+                {overseasCashKrw > 0 && <div className="h-full bg-indigo-400/70 transition-all duration-500" style={{ width: `${pctClamp(overseasCashPctExact)}%` }} />}
+              </div>
+            </div>
+          </div>
+          {/* 종목별 비중 — 국내 */}
+          {chains.length > 0 && (
+            <div className="space-y-2.5">
+              {domesticInvested > 0 && usHoldings.length > 0 && (
+                <div className="text-[10px] text-slate-500 font-medium">국내 ({fmtWon(domesticInvested)})</div>
+              )}
+              {chains.map((ch: any, i: number) => {
+                const inv = Number(ch.invested) || 0;
+                const pct = totalInvested > 0 ? (inv / totalInvested) * 100 : 0;
+                return (
+                  <div key={`kr-${i}`}>
+                    <div className="flex justify-between text-[11px] mb-1">
+                      <span className="font-medium text-slate-300">
+                        {(() => {
+                          const resolved = toDisplayName(ch.stock_name, ch.stock_code);
+                          return isUnresolvedStockName(resolved, ch.stock_code) ? getStockName(ch.stock_code) : resolved;
+                        })()}
+                      </span>
+                      <span className="text-slate-500">{fmtWon(inv)} ({pct.toFixed(0)}%)</span>
+                    </div>
+                    <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full ${ch.unrealizedPnl >= 0 ? 'bg-emerald-500/60' : 'bg-rose-500/60'}`} style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {/* 종목별 비중 — 해외 */}
+          {usHoldings.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-white/[0.04]">
+              <div className="text-[10px] text-slate-500 font-medium mb-2">해외 ({fmtWon(overseasInvestedKrw)})</div>
+              <div className="space-y-2">
+                {usHoldings.map((h: any, i: number) => {
+                  const invUsd = h.avg_price * h.quantity;
+                  const invKrw = invUsd * fxRate;
+                  const pct = totalInvested > 0 ? (invKrw / totalInvested) * 100 : 0;
+                  const priceData = usW.find((s: any) => s.code === h.stock_code);
+                  const curPriceAlloc = (priceData?.price ?? 0) > 0 ? priceData!.price : (h.last_price ?? 0);
+                  const curPnl = curPriceAlloc > 0 ? (curPriceAlloc - h.avg_price) * h.quantity : 0;
+                  return (
+                    <div key={`us-${i}`}>
+                      <div className="flex justify-between text-[11px] mb-1">
+                        <span className="font-medium text-blue-300">{toDisplayName(priceData?.name, h.stock_code)}</span>
+                        <span className="text-slate-500">{fmtWon(invKrw)} ({pct.toFixed(0)}%)</span>
+                      </div>
+                      <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${curPnl >= 0 ? 'bg-blue-500/60' : 'bg-rose-500/60'}`} style={{ width: `${pct}%` }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

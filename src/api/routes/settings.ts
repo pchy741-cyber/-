@@ -3,26 +3,39 @@ import { STRATEGY_PARAMS } from '../../config/constants.js';
 import { config, setTradingModeOverride, getEffectiveTradingMode } from '../../config/index.js';
 import { getActiveStrategy, getPool, isMemoryMode, logSystem } from '../../db/client.js';
 import { memSetActiveStrategy } from '../../db/memory-store.js';
-import { activateKillSwitch, deactivateKillSwitch, getKillSwitchStatus } from '../../risk/kill-switch.js';
+import { activateKillSwitchAll, deactivateKillSwitchAll, getKillSwitchStatusAll, activateKillSwitch, deactivateKillSwitch, getKillSwitchStatus } from '../../risk/kill-switch.js';
+import type { KillSwitchScope } from '../../risk/kill-switch.js';
 import { resetCooldown, getCooldownStatus } from '../../risk/trade-gate.js';
+import { getSeedCapitalStatus, setSeedCapital } from '../../risk/seed-capital.js';
 import { runTrackAJob } from '../../scheduler/track-a-job.js';
 import { logger } from '../../utils/logger.js';
 import { invalidateDashboardCache } from './dashboard.js';
 
 export const settingsRoutes = new Hono();
 
-// ── Kill Switch 제어 ──
+// ── Kill Switch 제어 (KR/OVERSEAS 분리) ──
 settingsRoutes.get('/kill-switch', (c) => {
-  return c.json(getKillSwitchStatus());
+  const scope = c.req.query('scope') as KillSwitchScope | undefined;
+  if (scope === 'KR' || scope === 'OVERSEAS') {
+    return c.json(getKillSwitchStatus(scope));
+  }
+  // scope 미지정 → 양쪽 모두 반환
+  return c.json(getKillSwitchStatusAll());
 });
 
 settingsRoutes.post('/kill-switch/activate', async (c) => {
   const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
   const reason = String(body.reason ?? '').trim() || 'CEO 수동 발동 (대시보드)';
+  const scope = body.scope as KillSwitchScope | undefined;
 
   try {
-    await activateKillSwitch(reason);
-    return c.json({ ok: true, status: getKillSwitchStatus() });
+    if (scope === 'KR' || scope === 'OVERSEAS') {
+      await activateKillSwitch(reason, true, scope);
+    } else {
+      // scope 미지정 → 양쪽 동시 차단 (CEO 긴급정지)
+      await activateKillSwitchAll(reason, true);
+    }
+    return c.json({ ok: true, status: getKillSwitchStatusAll() });
   } catch (err: any) {
     return c.json({ ok: false, error: err?.message ?? 'kill switch activate failed' }, 500);
   }
@@ -32,11 +45,54 @@ settingsRoutes.post('/kill-switch/deactivate', async (c) => {
   try {
     const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
     const force = body.force === true;
-    await deactivateKillSwitch(force);
-    return c.json({ ok: true, status: getKillSwitchStatus() });
+    const scope = body.scope as KillSwitchScope | undefined;
+
+    if (scope === 'KR' || scope === 'OVERSEAS') {
+      await deactivateKillSwitch(force, scope);
+    } else {
+      await deactivateKillSwitchAll(force);
+    }
+
+    // Kill Switch 해제 시 스냅샷도 현재 잔고로 리셋 → 재활성화 방지
+    try {
+      const { getAccountBalance } = await import('../../kis/account.js');
+      const { getPaperBalance } = await import('../../risk/paper-balance.js');
+      const { insertSnapshot } = await import('../../db/client.js');
+      const balance = config.isPaper ? await getPaperBalance() : await getAccountBalance();
+      const totalValue = balance.totalDeposit + balance.totalEvalAmount;
+      await insertSnapshot({
+        total_value: totalValue,
+        cash_balance: balance.orderableCash,
+        invested_value: balance.totalEvalAmount,
+        unrealized_pnl: balance.totalProfitLoss,
+        daily_pnl: 0,
+        daily_pnl_pct: 0,
+        positions: balance.positions,
+      });
+      logger.info(`✅ Kill Switch 해제 + 스냅샷 리셋 (${totalValue.toLocaleString()}원)`, { component: 'SETTINGS' });
+    } catch (snapErr) {
+      logger.warn(`⚠️ Kill Switch 해제 성공, 스냅샷 리셋 실패: ${snapErr}`, { component: 'SETTINGS' });
+    }
+
+    return c.json({ ok: true, status: getKillSwitchStatusAll() });
   } catch (err: any) {
     return c.json({ ok: false, error: err?.message ?? 'kill switch deactivate failed' }, 500);
   }
+});
+
+// ── 기준자본 (Seed Capital) 조회/설정 ──
+settingsRoutes.get('/seed-capital', (c) => {
+  return c.json(getSeedCapitalStatus());
+});
+
+settingsRoutes.put('/seed-capital', async (c) => {
+  const body = await c.req.json();
+  const market = body.market === 'OVERSEAS' ? 'OVERSEAS' : 'KR';
+  const amount = Number(body.amount);
+  if (!amount || amount <= 0) return c.json({ error: '금액은 0보다 커야 합니다' }, 400);
+
+  await setSeedCapital(market, amount);
+  return c.json({ ok: true, status: getSeedCapitalStatus() });
 });
 
 // ── 연속손실 쿨다운 제어 ──
@@ -123,10 +179,11 @@ settingsRoutes.put('/strategy', async (c) => {
     invalidateDashboardCache(); // 모드 변경 즉시 캐시 무효화 → 프론트엔드 즉시 반영
     return c.json(rows[0]);
   } catch (err: any) {
-    // DB 실패 시 인메모리 폴백
+    // DB 실패 시 인메모리 폴백 — 경고 포함
+    logger.warn(`전략 DB 저장 실패 → 인메모리 폴백: ${err.message}`, { component: 'SETTINGS' });
     const updated = memSetActiveStrategy(strategyData);
     invalidateDashboardCache();
-    return c.json(updated);
+    return c.json({ ...updated, _warning: 'DB 저장 실패 — 인메모리만 반영 (서버 재시작 시 초기화)' });
   }
 });
 
@@ -218,6 +275,27 @@ settingsRoutes.post('/run-overseas', async (c) => {
   const { runOverseasJob } = await import('../../scheduler/overseas-job.js');
   runOverseasJob().catch((e) => logger.error(`해외주식 수동 실행 실패: ${e}`, { component: 'SETTINGS' }));
   return c.json({ ok: true, message: '해외주식 수동 실행 시작' });
+});
+
+// ── Auto Pilot Loop ──
+settingsRoutes.get('/loop/status', async (c) => {
+  const { getLoopStatus } = await import('../../scheduler/loop-mode.js');
+  return c.json(getLoopStatus());
+});
+
+settingsRoutes.post('/loop/start', async (c) => {
+  const { startLoop } = await import('../../scheduler/loop-mode.js');
+  const result = startLoop();
+  if (!result.ok) return c.json(result, 409);
+  logger.info('Auto Pilot 시작 (대시보드)', { component: 'SETTINGS' });
+  return c.json(result);
+});
+
+settingsRoutes.post('/loop/stop', async (c) => {
+  const { stopLoop } = await import('../../scheduler/loop-mode.js');
+  const result = stopLoop('수동 정지 (대시보드)');
+  logger.info('Auto Pilot 정지 (대시보드)', { component: 'SETTINGS' });
+  return c.json(result);
 });
 
 // ── 체인 TP/SL 점수 기반 복원 (1회성 보정) ──
@@ -344,6 +422,30 @@ settingsRoutes.get('/trading-mode', async (c) => {
 settingsRoutes.post('/trading-mode', async (c) => {
   const body = await c.req.json();
   const mode: 'paper' | 'live' = body.mode === 'live' ? 'live' : 'paper';
+
+  // 안전 가드: 해외 Job 실행 중 모드 전환 차단 (paper/live 데이터 혼재 방지)
+  try {
+    const { isOverseasJobRunning } = await import('../../scheduler/overseas-job.js');
+    if (isOverseasJobRunning()) {
+      return c.json({ error: '해외 Job 실행 중 — 1분 후 다시 시도하세요' }, 409);
+    }
+  } catch {}
+
+  // 안전 가드: PENDING 주문 존재 시 모드 전환 차단 (체결 대기 중 모드 변경 → 데이터 불일치)
+  try {
+    const currentMode = getEffectiveTradingMode();
+    const { rows: pendingRows } = await getPool().query(
+      `SELECT COUNT(*) as cnt FROM orders WHERE status = 'PENDING' AND trading_mode = $1`,
+      [currentMode],
+    );
+    const pendingCount = Number(pendingRows[0]?.cnt ?? 0);
+    if (pendingCount > 0) {
+      return c.json({ error: `미체결 주문 ${pendingCount}건 존재 — 체결/취소 후 모드 전환하세요` }, 409);
+    }
+  } catch (e) {
+    logger.warn(`모드 전환 PENDING 체크 실패: ${e}`, { component: 'SETTINGS' });
+  }
+
   setTradingModeOverride(mode);
   try {
     // UPDATE 시도 (전체 행 대상 — 행이 없으면 rowCount=0)

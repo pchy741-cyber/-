@@ -1,6 +1,7 @@
 import { cacheScores } from '../../cache/redis.js';
 import { getActiveStrategy, getActiveWatchlist, getPool, getRecentSources, isMemoryMode, logSystem, upsertAIScore } from '../../db/client.js';
 import { type DailyCandle, getDailyChart, getVolumeRankingStocks, getChangeRankingStocks, getBatchPrices, getBatchInvestorFlow } from '../../kis/market.js';
+import { safeParseScoresJson } from '../../utils/json-repair.js';
 import { logger } from '../../utils/logger.js';
 import { config } from '../../config/index.js';
 import { type ScoringResult, ScoringResultSchema } from '../../db/models.js';
@@ -65,11 +66,19 @@ ${chartSummary}
 {"scores":[{"stock_code":"코드","stock_name":"이름","composite_score":0,"fundamental_score":0,"technical_score":0,"sentiment_score":0,"confidence":0.0,"signal":"STRONG_BUY|BUY|HOLD|SELL|STRONG_SELL|NO_DATA","target_price":0,"stop_loss_price":0,"reasoning":"근거"}]}`;
 
   const text = await callVertexGemini('당신은 주식 분석 전문가입니다. JSON 형식으로만 응답합니다.', userMsg, { temperature: 0.2 });
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('Gemini Flash 응답에서 JSON을 찾을 수 없습니다');
 
-  const parsed = JSON.parse(jsonMatch[0]) as { scores: unknown[] };
-  const rawScores: unknown[] = Array.isArray(parsed.scores) ? parsed.scores : [];
+  // Resilient JSON parsing — 잘린 응답에서도 개별 스코어 복구
+  const parsedResponse = safeParseScoresJson(text, 'GeminiFlashFallback');
+  if (!parsedResponse || parsedResponse.scores.length === 0) {
+    logger.warn('Gemini Flash 응답에서 스코어를 추출할 수 없음', {
+      component: 'TRACK_A',
+      rawLength: text.length,
+      rawPreview: text.slice(0, 500),
+    });
+    return []; // throw 대신 빈 배열 반환
+  }
+
+  const rawScores = parsedResponse.scores;
   const validScores: ScoringResult[] = [];
   for (const score of rawScores) {
     const result = ScoringResultSchema.safeParse(score);

@@ -39,6 +39,7 @@ export default function Dashboard() {
   const [modeToggling, setModeToggling] = useState(false);
   const [liveConfirmOpen, setLiveConfirmOpen] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
+  const [loopStatus, setLoopStatus] = useState<any>(null);
   const notebookRef = useRef<HTMLTextAreaElement>(null);
   const geminiRef = useRef<HTMLTextAreaElement>(null);
   const gptRef = useRef<HTMLTextAreaElement>(null);
@@ -120,9 +121,10 @@ export default function Dashboard() {
         }
       }
 
+      // 해외 대시보드: viewMode에 따라 매번 갱신
+      api(`/overseas/dashboard?viewMode=${vm}`).then(ifCurrent((us: any) => { if (us) setUsDash(us); })).catch(() => {});
       if (!staticLoadedRef.current) {
         api('/portfolio/allocation').then(ifCurrent((ac: any) => { if (ac) setAllocConfig(ac); })).catch(() => {});
-        api('/overseas/dashboard').then(ifCurrent((us: any) => { if (us) setUsDash(us); })).catch(() => {});
       }
     } catch (err) { setLoading(false); console.error('[QUANTOPS] 데이터 로드 실패:', err); }
     finally { loadingRef.current = false; }
@@ -190,6 +192,7 @@ export default function Dashboard() {
           ]);
         }
         prevChainCount = data.activeChains ?? prevChainCount;
+        if (data.loopMode) setLoopStatus(data.loopMode);
       } catch { /* ignore */ }
     });
 
@@ -197,9 +200,15 @@ export default function Dashboard() {
     return () => es.close();
   }, [viewMode]);
 
-  const toggleKill = async () => {
-    const active = killSwitch?.active;
-    await api(`/kill-switch/${active ? 'deactivate' : 'activate'}`, { method: 'POST' });
+  const isKillActive = killSwitch?.kr?.active || killSwitch?.overseas?.active;
+  const toggleKill = async (scope?: 'KR' | 'OVERSEAS') => {
+    const active = scope
+      ? killSwitch?.[scope.toLowerCase()]?.active
+      : isKillActive;
+    await api(`/kill-switch/${active ? 'deactivate' : 'activate'}`, {
+      method: 'POST',
+      body: JSON.stringify({ force: true, ...(scope ? { scope } : {}) }),
+    });
     const k = await api('/kill-switch'); setKillSwitch(k);
   };
 
@@ -313,10 +322,24 @@ export default function Dashboard() {
         </nav>
 
         <div className="p-3 border-t border-white/[0.04] space-y-2">
-          <button onClick={toggleKill}
-            className={`w-full py-3 rounded-xl text-xs font-bold transition-all ${killSwitch?.active ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/30' : 'bg-emerald-900/40 hover:bg-emerald-900/60 text-emerald-400'}`}>
-            {killSwitch?.active ? '⏸ 매매 중단 중' : '▶ 자동매매 중'}
+          <button onClick={() => toggleKill()}
+            className={`w-full py-3 rounded-xl text-xs font-bold transition-all ${isKillActive ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/30' : 'bg-emerald-900/40 hover:bg-emerald-900/60 text-emerald-400'}`}>
+            {isKillActive ? '⏸ 매매 중단 중' : '▶ 자동매매 중'}
           </button>
+          {isKillActive && (
+            <div className="flex gap-1">
+              {killSwitch?.kr?.active && (
+                <button onClick={() => toggleKill('KR')} className="flex-1 py-1.5 rounded-lg text-[10px] font-bold bg-amber-600/80 hover:bg-amber-500 text-white transition-all">
+                  국내 해제
+                </button>
+              )}
+              {killSwitch?.overseas?.active && (
+                <button onClick={() => toggleKill('OVERSEAS')} className="flex-1 py-1.5 rounded-lg text-[10px] font-bold bg-violet-600/80 hover:bg-violet-500 text-white transition-all">
+                  해외 해제
+                </button>
+              )}
+            </div>
+          )}
           <button onClick={() => load(true)} className="w-full py-2 rounded-xl text-[10px] text-slate-600 hover:text-slate-400 bg-white/[0.02] hover:bg-white/[0.04] transition-all font-medium">
             새로고침 · {lastUpdate.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
           </button>
@@ -340,8 +363,8 @@ export default function Dashboard() {
               연습
             </button>
           </div>
-          <button onClick={toggleKill} className={`px-4 py-2 rounded-xl text-xs font-bold min-h-[36px] whitespace-nowrap ${killSwitch?.active ? 'bg-rose-600 text-white' : 'bg-emerald-900/40 text-emerald-400'}`}>
-            {killSwitch?.active ? '⏸ 중단 중' : '▶ 자동 중'}
+          <button onClick={() => toggleKill()} className={`px-4 py-2 rounded-xl text-xs font-bold min-h-[36px] whitespace-nowrap ${isKillActive ? 'bg-rose-600 text-white' : 'bg-emerald-900/40 text-emerald-400'}`}>
+            {isKillActive ? '⏸ 중단 중' : '▶ 자동 중'}
           </button>
         </header>
 
@@ -386,6 +409,17 @@ export default function Dashboard() {
           </div>
         </header>
 
+        {/* Mode 불일치 경고 — viewMode ≠ tradingMode */}
+        {viewMode !== dash?.tradingMode && dash?.tradingMode === 'live' && (
+          <div className="mx-4 mt-2 p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-red-300 text-xs font-bold text-center animate-pulse">
+            ⚠ VIEW={viewMode.toUpperCase()} / SERVER=LIVE 불일치 — 실전 거래 진행 중!
+          </div>
+        )}
+        {viewMode === 'live' && dash?.tradingMode === 'paper' && (
+          <div className="mx-4 mt-2 p-3 bg-amber-500/20 border border-amber-500/40 rounded-lg text-amber-300 text-xs font-bold text-center">
+            ⚠ LIVE 데이터 조회 중이지만 서버는 PAPER 모드 — 자동매매는 모의투자로 작동 중
+          </div>
+        )}
         <main className="flex-1 overflow-y-auto transition-colors duration-500" style={{ background: `linear-gradient(to bottom right, ${theme.main1}, ${theme.main2}, ${theme.main1})` }}>
           {loading && !dash ? (
             <div className="flex items-center justify-center h-full">
@@ -403,7 +437,7 @@ export default function Dashboard() {
           )}
         </main>
       </div>
-      <ScreenshotReview currentTab={tab} setTab={setTab} viewMode={viewMode} dash={dash} health={health} trades={trades} killSwitch={killSwitch} strategy={strategy} switchViewMode={switchView} />
+      <ScreenshotReview currentTab={tab} setTab={setTab} viewMode={viewMode} dash={dash} health={health} trades={trades} killSwitch={killSwitch} strategy={strategy} switchViewMode={switchView} loopStatus={loopStatus} />
       </div>
     </div>
   );

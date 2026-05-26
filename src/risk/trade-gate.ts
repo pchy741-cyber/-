@@ -30,6 +30,31 @@ const SELL_PRICE_SUB = `(SELECT filled_price FROM orders WHERE chain_id = tc.id 
 export function resetCooldown(): void {
   cooldownResetAt = new Date();
   logger.info('🔓 연속손실 쿨다운 수동 초기화', { component: 'TRADE_GATE' });
+  // DB 영속화 — 서버 재시작 후에도 쿨다운 리셋 유지
+  getPool().query(
+    `INSERT INTO system_state (key, value) VALUES ('cooldown_reset_at', $1)
+     ON CONFLICT (key) DO UPDATE SET value = $1`,
+    [cooldownResetAt.toISOString()],
+  ).catch(() => {});
+}
+
+/** 서버 시작 시 쿨다운 리셋 상태 복원 */
+export async function restoreCooldownResetAt(): Promise<void> {
+  try {
+    const pool = getPool();
+    const { rows } = await pool.query(
+      "SELECT value FROM system_state WHERE key = 'cooldown_reset_at'",
+    );
+    if (rows.length > 0) {
+      const saved = new Date(rows[0].value);
+      const ageMs = Date.now() - saved.getTime();
+      // 24시간 이내 리셋만 유효
+      if (ageMs < 24 * 60 * 60_000) {
+        cooldownResetAt = saved;
+        logger.info(`📦 쿨다운 리셋 복원: ${saved.toISOString()} (${Math.round(ageMs / 60000)}분 전)`, { component: 'TRADE_GATE' });
+      }
+    }
+  } catch { /* 복원 실패 시 null 유지 */ }
 }
 
 export interface CooldownStatus {
@@ -531,9 +556,12 @@ export function regimeGate(input: GateInput): GateResult {
 async function getConsecutiveLosses(): Promise<number> {
   try {
     const pool = getPool();
-    const resetFilter = cooldownResetAt
-      ? `AND closed_at > '${cooldownResetAt.toISOString()}'`
-      : '';
+    const params: any[] = [config.isPaper];
+    let resetFilter = '';
+    if (cooldownResetAt) {
+      params.push(cooldownResetAt.toISOString());
+      resetFilter = `AND closed_at > $${params.length}`;
+    }
     const { rows } = await pool.query(`
       SELECT close_reason, avg_buy_price, ${SELL_PRICE_SUB}
       FROM transaction_chains tc
@@ -543,7 +571,7 @@ async function getConsecutiveLosses(): Promise<number> {
         ${resetFilter}
       ORDER BY closed_at DESC
       LIMIT 10
-    `, [config.isPaper]);
+    `, params);
 
     let consecutive = 0;
     for (const r of rows) {
@@ -620,17 +648,20 @@ export async function getCooldownStatus(): Promise<CooldownStatus> {
 
     if (cooldownMs > 0) {
       const pool = getPool();
-      const resetFilter = cooldownResetAt
-        ? `AND closed_at > '${cooldownResetAt.toISOString()}'`
-        : '';
+      const statusParams: any[] = [config.isPaper];
+      let statusResetFilter = '';
+      if (cooldownResetAt) {
+        statusParams.push(cooldownResetAt.toISOString());
+        statusResetFilter = `AND closed_at > $${statusParams.length}`;
+      }
       const { rows } = await pool.query(`
         SELECT closed_at FROM transaction_chains
         WHERE status = 'CLOSED'
           AND (close_reason IS NULL OR close_reason NOT LIKE '%SCALPING 강제청산%')
           AND is_paper = $1
-          ${resetFilter}
+          ${statusResetFilter}
         ORDER BY closed_at DESC LIMIT 1
-      `, [config.isPaper]);
+      `, statusParams);
       if (rows.length > 0) {
         const elapsed = Date.now() - new Date(rows[0].closed_at).getTime();
         if (elapsed < cooldownMs) {
