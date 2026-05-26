@@ -4,6 +4,8 @@
 import { config } from '../../config/index.js';
 import { getPool, insertOrder } from '../../db/client.js';
 import { getOverseasBalance, getOverseasBuyableAmount, getOverseasPrice } from '../../kis/overseas.js';
+import { getAccountBalance } from '../../kis/account.js';
+import { fetchExchangeRate } from '../../automation/macro-data.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
 import { GLOBAL_WATCHLIST } from './watchlist.js';
@@ -191,7 +193,18 @@ async function estimateSellPrice(code: string, exchange: string): Promise<number
 export async function reconcileCashWithKIS(): Promise<void> {
   if (config.isPaper) return;
   try {
-    const kisCash = await getOverseasBuyableAmount();
+    let kisCash = await getOverseasBuyableAmount();
+    // 통합증거금 폴백: 해외주문가능금액 API 실패 시 국내 계좌 잔고 ÷ 환율
+    if (kisCash === null || kisCash === undefined) {
+      try {
+        const balance = await getAccountBalance(true); // forceLive
+        const fxRate = await fetchExchangeRate();
+        if (balance.orderableCash > 0 && fxRate > 0) {
+          kisCash = balance.orderableCash / fxRate;
+          logger.info(`💱 통합증거금 폴백: ₩${balance.orderableCash.toLocaleString()} ÷ ${fxRate.toFixed(0)} = $${kisCash.toFixed(2)}`, { component: 'OVERSEAS' });
+        }
+      } catch { /* 국내 잔고 조회도 실패 시 무시 */ }
+    }
     if (kisCash === null || kisCash === undefined) return;
     const dbCash = await getCash(false);
     const diff = Math.abs(kisCash - dbCash);
