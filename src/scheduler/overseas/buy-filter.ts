@@ -196,12 +196,14 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       if (!ai) logger.info(`  ⛔ ${recoveryMode ? '손실회복모드' : mq} AI 없음 차단: ${t.code}`, { component: 'OVERSEAS' });
       return false;
     })
-    // 10. 장외시간 필터
+    // 10. 장외시간 필터 (소액 계좌: STRONG_BUY는 장외에서도 매수 허용)
     .filter(t => {
       if (!isUSExtended) return true;
       const isBargin = t.price.changePct <= -3.0;
       const isBigUp = t.isBigMover;
       if (isBargin || isBigUp) return true;
+      // 소액 계좌: 장외에서도 STRONG_BUY 매수 기회 확보
+      if (!isPaper && portfolioValue < 500 && t.signal === 'STRONG_BUY' && t.score >= 40) return true;
       return false;
     })
     // 11. AI 정보 병합
