@@ -8,13 +8,7 @@ import { MAX_POSITIONS } from './watchlist.js';
 import type { TechResult, Holding } from './sell-logic.js';
 import type { BuyTarget } from './buy-filter.js';
 
-interface AIDecision {
-  code: string; action: string; confidence: number; reasoning: string;
-}
-
-interface KellyResult {
-  halfKelly: number; sampleCount: number;
-}
+import type { AIDecision, KellyResult } from './types.js';
 
 export interface ExtendedAlertContext {
   buyTargets: BuyTarget[];

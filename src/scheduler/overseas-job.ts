@@ -6,8 +6,8 @@
 import { analyzeTechnicals, type OHLCV } from '../analysis/indicators.js';
 import { OVERSEAS, SECTOR_CLASS, OVERSEAS_FEE_PCT } from '../config/constants.js';
 import { config, setTradingModeOverride } from '../config/index.js';
-import { getPool, insertOrder, logSystem } from '../db/client.js';
-import { getOverseasDailyChart, getOverseasPrice, placeOverseasOrder, type OverseasPrice } from '../kis/overseas.js';
+import { getPool, logSystem } from '../db/client.js';
+import { getOverseasDailyChart, getOverseasPrice, type OverseasPrice } from '../kis/overseas.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { isKillSwitchActive, activateKillSwitch, reportError, reportSuccess } from '../risk/kill-switch.js';
 import { OVERSEAS_LOSS_TIERS } from '../risk/seed-capital.js';
@@ -63,6 +63,8 @@ import { getTradeReviewInsights } from './overseas/trade-reviewer.js';
 import { evaluateSells, type TechResult } from './overseas/sell-logic.js';
 import { filterAndRankBuyTargets } from './overseas/buy-filter.js';
 import { sendBuyRecommendations, sendHoldingAlerts } from './overseas/notifications.js';
+import { monitorVisionScalp } from './overseas/vision-scalp.js';
+import { rebalancePortfolio } from './overseas/rebalancer.js';
 
 /**
  * 글로벌 주식 자동매매 Job
@@ -148,67 +150,8 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       { component: 'OVERSEAS' },
     );
 
-    // ── Vision Scalp TP/SL 모니터링 ──
-    try {
-      const { rows: scalpRows } = await getPool().query(`
-        SELECT stock_code, exchange, quantity, avg_price, scalp_tp, scalp_sl
-        FROM overseas_holdings
-        WHERE is_scalp = TRUE AND quantity > 0 AND scalp_tp IS NOT NULL AND is_paper = $1
-      `, [isPaper()]).catch(() => ({ rows: [] as any[] }));
-
-      for (const row of scalpRows) {
-        const code = String(row.stock_code);
-        const exch = String(row.exchange);
-        const qty = Number(row.quantity);
-        const avgBuy = Number(row.avg_price);
-        const tpPrice = Number(row.scalp_tp);
-        const slPrice = Number(row.scalp_sl);
-
-        try {
-          const priceData = await getOverseasPrice(code, exch);
-          const cur = priceData.currentPrice;
-          if (cur <= 0) continue;
-
-          const pnlPct = ((cur - avgBuy) / avgBuy) * 100;
-          const hitTP = cur >= tpPrice;
-          const hitSL = cur <= slPrice;
-
-          if (hitTP || hitSL) {
-            const label = hitTP ? 'TP' : 'SL';
-            logger.info(`[VisionScalp] ${label} 청산 ${code} @ $${cur} (PnL: ${pnlPct.toFixed(2)}%)`, { component: 'OVERSEAS' });
-
-            let orderNo = `VSP${Date.now().toString(36)}`;
-            let kisStatus = 'PAPER_FILLED';
-            let filledPrice = cur;
-
-            if (!isPaper()) {
-              try {
-                const result = await placeOverseasOrder({ stockCode: code, exchange: exch, side: 'SELL', quantity: qty, price: 0 });
-                if (result.success) { orderNo = result.orderNo ?? orderNo; kisStatus = 'FILLED'; }
-                else { logger.error(`[VisionScalp] LIVE ${label} 매도 실패: ${code} — ${result.message}`, { component: 'OVERSEAS' }); continue; }
-              } catch (orderErr: any) {
-                logger.error(`[VisionScalp] LIVE ${label} 주문 예외: ${code} — ${orderErr.message}`, { component: 'OVERSEAS' }); continue;
-              }
-            }
-
-            await insertOrder({
-              chain_id: null, stock_code: code, side: 'SELL', order_type: '01',
-              quantity: qty, price: filledPrice, kis_order_no: orderNo,
-              kis_status: kisStatus, filled_quantity: qty, filled_price: filledPrice,
-              status: 'FILLED', trading_mode: isPaper() ? 'paper' : 'live',
-              trigger_source: 'OVERSEAS',
-              ai_reasoning: `[avgBuy:${avgBuy.toFixed(4)}] Vision단타 ${label} 청산 ${pnlPct.toFixed(2)}%`,
-              avg_buy_price: avgBuy,
-            });
-
-            const recovered = qty * cur * (1 - OVERSEAS_FEE_PCT);
-            const newCash = (await getCash(isPaper())) + recovered;
-            await updateTradeState({ code, exchange: exch, qty: 0, avgPrice: 0, newCash, isPaper: isPaper() });
-            sendTelegramMessage(`🎯 Vision단타 ${label} 청산\n${code} ${qty}주 @ $${cur.toFixed(2)}\nPnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%\n회수: $${recovered.toFixed(0)}`).catch(() => {});
-          }
-        } catch { /* 개별 종목 오류 무시 */ }
-      }
-    } catch { /* scalp 모니터링 전체 오류 무시 */ }
+    // ── Vision Scalp TP/SL 모니터링 (→ overseas/vision-scalp.ts) ──
+    await monitorVisionScalp(isPaper());
 
     // ── 세션 캐시 ──
     const todayStr = getKSTDateString();
@@ -862,88 +805,10 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       }
     }
 
-    // ── 5-b. 포트폴리오 비중 리밸런싱 추천 (1%씩) ──
-    const rebalanceAlerts: string[] = [];
-    try {
-      cash = await getCash(isPaper());
-      const rbHoldings = await getHoldings(isPaper());
-      let rbTotal = cash;
-      const positionWeights: { code: string; weight: number; value: number; qty: number; price: number; pnl: number; exchange: string }[] = [];
-      for (const [code, h] of rbHoldings) {
-        const tech = techResults.find(t => t.code === code);
-        const curPrice = tech?.price.currentPrice ?? h.avgPrice;
-        const posVal = curPrice * h.qty;
-        rbTotal += posVal;
-        const pnl = ((curPrice - h.avgPrice) / h.avgPrice) * 100;
-        positionWeights.push({ code, weight: 0, value: posVal, qty: h.qty, price: curPrice, pnl, exchange: h.exchange });
-      }
-      for (const p of positionWeights) p.weight = rbTotal > 0 ? (p.value / rbTotal) * 100 : 0;
-
-      // 균등 비중 목표: (100% - 현금비중 15%) / 종목수
-      const targetCashPct = 15;
-      const holdingCount = positionWeights.length;
-      const targetWeightPer = holdingCount > 0 ? (100 - targetCashPct) / holdingCount : 0;
-      const actualCashPct = rbTotal > 0 ? (cash / rbTotal) * 100 : 100;
-      const usdKrwRb = await fetchExchangeRate();
-
-      // 5% 이상 초과 비중인 종목만 리밸런싱 추천
-      const overweightThreshold = 5.0;
-      const overweight = positionWeights.filter(p => p.weight > targetWeightPer + overweightThreshold);
-      const underweight = positionWeights.filter(p => p.weight < targetWeightPer - overweightThreshold);
-
-      if (overweight.length > 0 || (actualCashPct < 5 && holdingCount >= 3)) {
-        const rbLines: string[] = [`📊 *포트폴리오 비중 리밸런싱 추천*`, ''];
-        rbLines.push(`총자산: $${rbTotal.toFixed(0)} (₩${(rbTotal * usdKrwRb / 10000).toFixed(0)}만) | 현금: ${actualCashPct.toFixed(1)}%`);
-        rbLines.push(`목표 비중: 종목당 ${targetWeightPer.toFixed(1)}% | 현금 ${targetCashPct}%`);
-        rbLines.push('');
-
-        for (const p of positionWeights.sort((a, b) => b.weight - a.weight)) {
-          const tag = p.weight > targetWeightPer + overweightThreshold ? '⚠️과다' : p.weight < targetWeightPer - overweightThreshold ? '⬇️부족' : '✅적정';
-          rbLines.push(`  ${tag} *${p.code}* ${p.weight.toFixed(1)}% ($${p.value.toFixed(0)}) ${p.pnl >= 0 ? '+' : ''}${p.pnl.toFixed(1)}%`);
-        }
-
-        if (overweight.length > 0) {
-          rbLines.push('', '📌 *조정 추천* (1% 단위)');
-          for (const p of overweight) {
-            const excessPct = p.weight - targetWeightPer;
-            // 1% 단위로 줄이기 (최소 1주)
-            const adjustPct = Math.min(excessPct, Math.ceil(excessPct)); // 전체 초과분
-            const trimValue = rbTotal * (adjustPct / 100);
-            const trimQty = Math.max(1, Math.floor(trimValue / p.price));
-            const trimAmt = trimQty * p.price;
-
-            if (!isPaper()) {
-              // 실전모드: 추천만 (KIS 장외 불가 등 제약)
-              rbLines.push(`  매도 *${p.code}* ${trimQty}주 @$${p.price.toFixed(2)} → $${trimAmt.toFixed(0)}(₩${(trimAmt * usdKrwRb / 10000).toFixed(1)}만)`);
-              rbLines.push(`  → 비중 ${p.weight.toFixed(1)}% → ~${(p.weight - adjustPct).toFixed(1)}%`);
-            } else {
-              // Paper모드: 자동 실행
-              const exec = await executeOverseasOrder(p.code, 'SELL', trimQty, p.price, p.exchange, `리밸런싱: 비중 ${p.weight.toFixed(1)}% → ${(p.weight - adjustPct).toFixed(1)}%`, p.qty, 0, { isPaper: isPaper() });
-              if (exec.submitted && exec.filledQty > 0) {
-                const proceeds = exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
-                cash += proceeds;
-                await updateTradeState({ code: p.code, exchange: p.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper() });
-                sellOrders.push(`📊 리밸런싱 ${p.code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (비중 ${p.weight.toFixed(1)}%→${(p.weight - adjustPct).toFixed(1)}%)`);
-              }
-            }
-          }
-        }
-
-        if (!isPaper() && overweight.length > 0) {
-          rbLines.push('', '⚡ 실전모드 — 한투앱에서 직접 주문하세요');
-          // 리밸런싱 알림: 30분 쿨타임
-          const rbAlertKey = 'rebalance_alert';
-          const lastRb = s.extendedAlertSentAt.get(rbAlertKey) ?? 0;
-          if (Date.now() - lastRb > 30 * 60_000) {
-            await sendTelegramMessage(rbLines.join('\n'));
-            s.extendedAlertSentAt.set(rbAlertKey, Date.now());
-          }
-        }
-        rebalanceAlerts.push(...overweight.map(p => `📊 리밸런싱 추천: ${p.code} ${p.weight.toFixed(1)}%→${targetWeightPer.toFixed(1)}%`));
-      }
-    } catch (rbErr) {
-      logger.warn(`포트폴리오 리밸런싱 분석 실패: ${(rbErr as Error).message}`, { component: 'OVERSEAS' });
-    }
+    // ── 5-b. 포트폴리오 비중 리밸런싱 (→ overseas/rebalancer.ts) ──
+    const rbResult = await rebalancePortfolio({ techResults, isPaper: isPaper(), sellOrders, extendedAlertSentAt: s.extendedAlertSentAt });
+    const rebalanceAlerts = rbResult.rebalanceAlerts;
+    cash = rbResult.cash;
 
     // ── 5-c. 유휴현금 운용 (킬스위치 시 스킵 — 매수 행위) ──
     const avgTechScore = techResults.length > 0 ? techResults.reduce((sum, t) => sum + t.score, 0) / techResults.length : 0;

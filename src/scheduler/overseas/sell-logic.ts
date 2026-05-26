@@ -34,9 +34,7 @@ export interface Holding {
   qty: number; avgPrice: number; boughtAt: string; exchange: string;
 }
 
-interface AIDecision {
-  code: string; action: string; confidence: number; reasoning: string;
-}
+import type { AIDecision } from './types.js';
 
 export interface SellContext {
   holdings: Map<string, Holding>;

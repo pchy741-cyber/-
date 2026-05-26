@@ -11,7 +11,7 @@ import { config } from '../../config/index.js';
 import { getPool, withTransaction } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
 
-const PAPER_OVERSEAS_SEED = 4000; // Paper 해외 시드 $4K
+const PAPER_OVERSEAS_SEED = 10000; // Paper 해외 시드 $10K (기존 주문 이력 기준 복원)
 
 /** paper/live 별 현금 키 */
 export function cashKey(isPaper?: boolean): string {

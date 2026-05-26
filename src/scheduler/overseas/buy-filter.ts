@@ -13,13 +13,7 @@ type MarketSignalResult = ReturnType<typeof interpretMarketSentiment>;
 import type { TechResult, Holding } from './sell-logic.js';
 import type { OverseasWinRate } from './analytics.js';
 
-interface AIDecision {
-  code: string; action: string; confidence: number; reasoning: string;
-}
-
-interface GradualCooldown {
-  level: number; message: string; sizingPenalty: number;
-}
+import type { AIDecision, GradualCooldown } from './types.js';
 
 export interface BuyFilterContext {
   techResults: TechResult[];
