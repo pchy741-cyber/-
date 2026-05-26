@@ -104,7 +104,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       sellReason = `손절(${stopLossPct}%): ${pnlPct.toFixed(1)}%`;
     } else if (maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {
       sellReason = `ATR트레일(${effectiveTrailDropPct.toFixed(1)}%/ATR${atrPctValue.toFixed(1)}%${vixRegime.trailTighten > 0 ? `/VIX${vixRegime.regime}` : ''}): 고점 +${maxPnlPct.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}%`;
-    } else if (pnlPct >= hardTpPct) {
+    } else if (pnlPct >= hardTpPct && !isWinnerRiding(tech, holdingDays)) {
       sellReason = `익절(${hardTpPct}%): +${pnlPct.toFixed(1)}%`;
     } else if (ai?.action === 'SELL' && ai.confidence >= 0.90) {
       sellReason = `AI 급매도(${(ai.confidence * 100).toFixed(0)}%): ${ai.reasoning}`;
@@ -116,10 +116,12 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       sellReason = `기술적 매도(AI없음): score=${tech.score} RSI=${tech.rsi.toFixed(0)}`;
     } else if (holdingDays > maxHoldDays && pnlPct < 0) {
       sellReason = `보유기한 초과(${holdingDays.toFixed(0)}일/손실): ${pnlPct.toFixed(1)}% → 청산`;
+    } else if (isWeakStock(tech, holdingDays, pnlPct)) {
+      sellReason = `약세종목 정리: ADX=${tech.adx.toFixed(0)} 횡보${holdingDays.toFixed(0)}일 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
     }
 
-    // ── 3단계 부분 익절 ──
-    if (!sellReason && holding.qty >= 2) {
+    // ── 3단계 부분 익절 (승자 라이딩 시 스킵) ──
+    if (!sellReason && holding.qty >= 2 && !isWinnerRiding(tech, holdingDays)) {
       const tpStages = getPartialTpStages(sector);
       const currentStage = await getPartialTpStageNum(code);
       const nextStage = tpStages.find(st => st.stage > currentStage && pnlPct >= st.triggerPct);
@@ -161,4 +163,22 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
   }
 
   return { sellOrders, cash };
+}
+
+/** 승자 라이딩 — 강한 종목은 익절 지연 (트레일링만 적용) */
+function isWinnerRiding(tech: TechResult, holdingDays: number): boolean {
+  if (holdingDays < 2) return false;
+  // ADX 30+ & RSI 50~70 유지 → 강한 추세 지속
+  if (tech.adx >= 30 && tech.rsi >= 50 && tech.rsi <= 70) return true;
+  // MA20 상방 + 모멘텀 → 상승 지속
+  if (tech.aboveMA20 && tech.aboveMA60 && tech.isMomentum) return true;
+  return false;
+}
+
+/** 약세 종목 조기 정리 — ADX < 15 + 5일 이상 횡보 + 수익 미미 */
+function isWeakStock(tech: TechResult, holdingDays: number, pnlPct: number): boolean {
+  if (holdingDays < 5) return false;
+  if (pnlPct > 3 || pnlPct < -3) return false; // 수익/손실 큰 건 기존 로직에서 처리
+  // ADX < 15 = 추세 없음 + 횡보 + 미미한 수익/손실
+  return tech.adx < 15 && Math.abs(tech.price.changePct) < 1.0;
 }

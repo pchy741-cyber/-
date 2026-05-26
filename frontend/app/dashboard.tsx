@@ -107,7 +107,8 @@ export default function Dashboard() {
       ]);
       if (gen !== loadGenRef.current) return;
       if (h.status === 'fulfilled') setHealth(h.value);
-      if (d.status === 'fulfilled') setDash(d.value);
+      // 대시보드: 응답이 유효할 때만 교체 (null/undefined면 이전 데이터 보존)
+      if (d.status === 'fulfilled' && d.value) setDash(d.value);
       if (k.status === 'fulfilled') setKillSwitch(k.value);
       setLastUpdate(new Date());
       setLoading(false);
@@ -284,10 +285,8 @@ export default function Dashboard() {
     viewModeRef.current = mode;
     setViewMode(mode);
     try { localStorage.setItem('quantops_viewMode', mode); } catch {}
-    // 모드 전환 시: dash/trades/usDash 모두 초기화 (잘못된 모드 데이터 방지)
-    setDash(null);
-    setTrades([]);
-    setUsDash(null);
+    // 데이터 보존: null로 밀지 않음 → 새 데이터가 도착하면 자연스럽게 교체
+    // (기존에 setDash(null) 하면 로딩 스피너만 보여 데이터 유실처럼 보임)
     loadingRef.current = false;
     tradesLoadedRef.current = false;
     staticLoadedRef.current = false;

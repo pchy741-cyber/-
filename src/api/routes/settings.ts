@@ -287,7 +287,7 @@ settingsRoutes.get('/loop/status', async (c) => {
 
 settingsRoutes.post('/loop/start', async (c) => {
   const { startLoop } = await import('../../scheduler/loop-mode.js');
-  const result = startLoop();
+  const result = await startLoop();
   if (!result.ok) return c.json(result, 409);
   logger.info('Auto Pilot 시작 (대시보드)', { component: 'SETTINGS' });
   return c.json(result);
@@ -295,7 +295,7 @@ settingsRoutes.post('/loop/start', async (c) => {
 
 settingsRoutes.post('/loop/stop', async (c) => {
   const { stopLoop } = await import('../../scheduler/loop-mode.js');
-  const result = stopLoop('수동 정지 (대시보드)');
+  const result = await stopLoop('수동 정지 (대시보드)');
   logger.info('Auto Pilot 정지 (대시보드)', { component: 'SETTINGS' });
   return c.json(result);
 });

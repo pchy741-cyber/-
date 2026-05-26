@@ -50,6 +50,14 @@ import {
   calcStockEVMultipliers,
   extractTradingPatterns, getMemoryBlockedStocks,
 } from './overseas/risk-intelligence.js';
+import { getActiveSessionBrief } from './overseas/session-strategy.js';
+import { detectEarningsDrift } from './overseas/earnings-drift.js';
+import { getCrossMarketSignals } from './overseas/cross-market.js';
+import { evaluateMarketDefense } from './overseas/market-defense.js';
+import { detectSqueezeBreakouts } from './overseas/squeeze-detector.js';
+import { checkCorrelationLimit } from './overseas/correlation-engine.js';
+import { batchMultiTF } from './overseas/multi-timeframe.js';
+import { getTradeReviewInsights } from './overseas/trade-reviewer.js';
 
 // ── 추출 모듈 ──
 import { evaluateSells, type TechResult } from './overseas/sell-logic.js';
@@ -387,6 +395,20 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       logger.info(`🤖 AI 대기 중 — 다음 호출까지 ${Math.ceil((intervalMs - (now_ms - lastAiCall)) / 60000)}분 (무료 한도 절약)`, { component: 'OVERSEAS' });
     }
 
+    // ── 선행 신호 수집 (AI 호출과 무관하게) ──
+    const [crossSignals, earningsDrift, squeezeSignals, tradeReviewCtx, defenseSignal] = await Promise.all([
+      getCrossMarketSignals().catch(() => []),
+      detectEarningsDrift(usCodes, techResults).catch(() => []),
+      Promise.resolve(detectSqueezeBreakouts(techResults)),
+      getTradeReviewInsights().catch(() => ''),
+      evaluateMarketDefense().catch(() => ({ level: 'NONE' as const, positionReduction: 0, blockNewBuys: false, trailTighten: 0, reasons: [] })),
+    ]);
+
+    if (crossSignals.length > 0) logger.info(`🌏 크로스마켓 신호: ${crossSignals.map(s => `${s.usCode}(${s.signalType} ${(s.confidence * 100).toFixed(0)}%)`).join(', ')}`, { component: 'OVERSEAS' });
+    if (earningsDrift.length > 0) logger.info(`📈 어닝 드리프트: ${earningsDrift.map(s => `${s.code}(+${s.gapPct.toFixed(1)}% vol${s.volumeRatio.toFixed(1)}x)`).join(', ')}`, { component: 'OVERSEAS' });
+    if (squeezeSignals.length > 0) logger.info(`💥 스퀴즈 돌파: ${squeezeSignals.map(s => `${s.code}(str${s.strength.toFixed(2)})`).join(', ')}`, { component: 'OVERSEAS' });
+    if (defenseSignal.level !== 'NONE') logger.info(`🛡️ 방어 모드: ${defenseSignal.level} — ${defenseSignal.reasons.join(', ')}`, { component: 'OVERSEAS' });
+
     let aiDecisions: Awaited<ReturnType<typeof analyzeOverseasWithAI>> = [];
     if (shouldCallAI) {
       const [perfSummary, userInsights, aiInsights] = await Promise.all([
@@ -415,7 +437,12 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         fearGreed: fgEarly.fearGreedScore, fearGreedLabel: fgEarly.fearGreedLabel,
         vix: fgEarly.vix, earningsRisk: earningsRiskCodes, breadthPct, sectorMomentum: sectorMomentumStr,
       } : { breadthPct, sectorMomentum: sectorMomentumStr };
-      const combinedInsights = [userInsights, aiInsights ? `[AI자기학습]\n${aiInsights}` : ''].filter(Boolean).join('\n\n') || undefined;
+      const brief = getActiveSessionBrief();
+      const sessionCtx = brief ? `[세션전략] ${brief.marketRegime}/${brief.riskLevel} | 집중:${brief.focusSectors.join(',')} | ${brief.narrative}` : '';
+      const crossCtx = crossSignals.length > 0 ? `[크로스마켓] ${crossSignals.map(s => `${s.usCode} ${s.signalType}(아시아 ${s.asiaCode} ${s.asiaChangePct >= 0 ? '+' : ''}${s.asiaChangePct.toFixed(1)}%)`).join(', ')}` : '';
+      const driftCtx = earningsDrift.length > 0 ? `[어닝드리프트] ${earningsDrift.map(s => `${s.code} ${s.direction} gap${s.gapPct >= 0 ? '+' : ''}${s.gapPct.toFixed(1)}% vol${s.volumeRatio.toFixed(1)}x`).join(', ')}` : '';
+      const squeezeCtx = squeezeSignals.length > 0 ? `[스퀴즈돌파] ${squeezeSignals.map(s => `${s.code} str${s.strength.toFixed(2)}`).join(', ')}` : '';
+      const combinedInsights = [userInsights, aiInsights ? `[AI자기학습]\n${aiInsights}` : '', sessionCtx, crossCtx, driftCtx, squeezeCtx, tradeReviewCtx ? `[매매복기]\n${tradeReviewCtx}` : ''].filter(Boolean).join('\n\n') || undefined;
       aiDecisions = await analyzeOverseasWithAI(aiInputs, cash, holdings.size, perfSummary, combinedInsights, mktCtx);
       if (isUSSession) {
         if (isPaper()) s.lastPaperAiCallAt = Date.now();
@@ -440,8 +467,11 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       logger.info(`🌡️ VIX 레짐: ${vixRegime.regime} (VIX=${vixValue.toFixed(1)}) — 사이징x${vixRegime.sizingMult} 트레일${vixRegime.trailTighten > 0 ? `-${vixRegime.trailTighten}%p` : '정상'}`, { component: 'OVERSEAS' });
     }
 
-    // ── 3. 매도 판단 (→ overseas/sell-logic.ts) ──
-    const sellResult = await evaluateSells({ holdings, pendingOrderStocks, techResults, aiMap, vixRegime, cash });
+    // ── 3. 매도 판단 (→ overseas/sell-logic.ts) — 방어 모드 트레일 타이트닝 반영 ──
+    const effectiveVixRegime = defenseSignal.trailTighten > 0
+      ? { ...vixRegime, trailTighten: vixRegime.trailTighten + defenseSignal.trailTighten }
+      : vixRegime;
+    const sellResult = await evaluateSells({ holdings, pendingOrderStocks, techResults, aiMap, vixRegime: effectiveVixRegime, cash });
     const sellOrders = sellResult.sellOrders;
     cash = sellResult.cash;
 
@@ -715,13 +745,37 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         }
       }
 
-      // ── 매수 실행 (Rolling Kelly + EV배율 + VIX 레짐 + 점진적 쿨다운 반영) ──
+      // ── 멀티 타임프레임 분석 (매수 후보 대상) ──
+      const mtfStocks = buyTargets.slice(0, 5).map(t => ({ code: t.code, exchange: t.exchange }));
+      const mtfResults = await batchMultiTF(mtfStocks).catch(() => new Map());
+
+      // ── 방어 모드 적용: 매수 차단 / 트레일링 타이트닝 ──
+      const defenseBlockBuys = defenseSignal.blockNewBuys;
+      if (defenseBlockBuys) {
+        logger.warn(`🛡️ 방어 모드 ${defenseSignal.level} — 신규 매수 차단 (${defenseSignal.reasons.join(', ')})`, { component: 'OVERSEAS' });
+      }
+
+      // ── 매수 실행 (Rolling Kelly + EV배율 + VIX 레짐 + 점진적 쿨다운 + 상관관계 + MTF 반영) ──
       if (killSwitchBuyBlock) {
         logger.warn(`🛑 Kill Switch 활성 — 해외 매수 ${buyTargets.length}건 건너뜀`, { component: 'OVERSEAS' });
       }
-      const slotsAvailable = killSwitchBuyBlock ? 0 : MAX_POSITIONS - currentHoldingCount;
+      const slotsAvailable = (killSwitchBuyBlock || defenseBlockBuys) ? 0 : MAX_POSITIONS - currentHoldingCount;
       for (const target of buyTargets.slice(0, slotsAvailable)) {
-        const confFactor = Math.min(1, Math.max(0, target.ai?.confidence ?? 0.65));
+        // 상관관계 차단: 같은 그룹 내 보유 초과
+        const corrBlock = checkCorrelationLimit(target.code, updatedHoldings);
+        if (corrBlock) {
+          logger.info(`🔗 상관관계 차단: ${target.code} (${corrBlock.group} ${corrBlock.currentCount}/${corrBlock.maxAllowed} — ${corrBlock.reason})`, { component: 'OVERSEAS' });
+          continue;
+        }
+        // 멀티 타임프레임 차단: 방향 불일치
+        const mtf = mtfResults.get(target.code);
+        if (mtf?.blocked) {
+          logger.info(`📊 MTF 차단: ${target.code} (W:${mtf.weekly} D:${mtf.daily} H4:${mtf.h4} 합류${mtf.confluence}/3)`, { component: 'OVERSEAS' });
+          continue;
+        }
+        // MTF 합류 보너스: 3TF 일치 → +0.10, 2TF → +0.05
+        const mtfBonus = mtf?.confidenceBonus ?? 0;
+        const confFactor = Math.min(1, Math.max(0, (target.ai?.confidence ?? 0.65) + mtfBonus));
         const scoreFactor = Math.min(1, Math.max(0, (target.score + 50) / 100));
         const combined = confFactor * 0.55 + scoreFactor * 0.45;
         // EV 기반 배율: 기대값 양수 종목은 확대, 음수 종목은 축소
