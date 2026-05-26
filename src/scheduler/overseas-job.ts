@@ -734,10 +734,14 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         const kellyDefault = paperMode ? 0.30 : 0.25;
         const kellyMomentum = paperMode ? 0.35 : 0.30;
         const kellyCap = paperMode ? 0.35 : 0.30;
-        const kellyPct = kellyResult.sampleCount >= 10 ? kellyResult.halfKelly : (target.isMomentum && (target.ai?.confidence ?? 0) >= 0.85 ? kellyMomentum : kellyDefault);
+        // Kelly 최소값: paper 15%, live 20% — 극단적 보수 사이징 방지 (소액도 매수 가능)
+        const kellyFloor = paperMode ? 0.15 : 0.20;
+        const kellyPct = kellyResult.sampleCount >= 10 ? Math.max(kellyResult.halfKelly, kellyFloor) : (target.isMomentum && (target.ai?.confidence ?? 0) >= 0.85 ? kellyMomentum : kellyDefault);
         const baseSize = portfolioValue * Math.min(kellyPct, kellyCap);
         const positionSize = Math.min(baseSize * sizingMult, cash * 0.70);
-        if (positionSize < 50) break;
+        // 소액투자 가능: paper $20, live $30 (통합증거금 소액 매수 허용)
+        const minPositionSize = paperMode ? 20 : 30;
+        if (positionSize < minPositionSize) break;
 
         const targetWatchItem = GLOBAL_WATCHLIST.find(w => w.code === target.code);
         const isHighBetaEntry = SECTOR_CLASS.HIGH_BETA.includes(targetWatchItem?.sector ?? '');
