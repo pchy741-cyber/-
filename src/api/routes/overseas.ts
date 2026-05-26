@@ -353,17 +353,18 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
       logger.info(`[VisionScalp] LIVE 매수 주문 접수: ${sanitizedTicker} ${qty}주 (${orderNo})`, { component: 'OVERSEAS' });
     }
 
-    // scalp 포지션 기록 + 현금 차감 (원자적: SELECT FOR UPDATE → 차감)
+    // scalp 포지션 기록 + 주문 기록 + 현금 차감
     const { withTransaction } = await import('../../db/client.js');
-    await withTransaction(async (tx) => {
-      // 트랜잭션 내에서 현금 잠금 + 읽기
-      const { rows: cashRows } = await tx.query(
-        "SELECT value FROM overseas_state WHERE key = $1 FOR UPDATE", [vsCashKey]);
-      const currentCash = Number(cashRows[0]?.value ?? 0);
-      if (!Number.isFinite(currentCash) || currentCash < totalCost) {
-        throw new Error(`해외 현금 부족 (보유: $${currentCash.toFixed(0)}, 필요: $${totalCost.toFixed(0)})`);
-      }
+    const { insertOrder } = await import('../../db/client.js');
+    const { getCash: getOsCash } = await import('../../scheduler/overseas/state.js');
 
+    // Paper: computed cash 확인 / Live: overseas_state 확인
+    const currentCash = await getOsCash(config.isPaper);
+    if (!Number.isFinite(currentCash) || currentCash < totalCost) {
+      return c.json({ error: `해외 현금 부족 (보유: $${currentCash.toFixed(0)}, 필요: $${totalCost.toFixed(0)})` }, 400);
+    }
+
+    await withTransaction(async (tx) => {
       await tx.query(`
         INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, scalp_tp, scalp_sl, is_scalp, is_paper)
         VALUES ($1, $2, $3, $4, NOW(), $5, $6, TRUE, $7)
@@ -373,10 +374,21 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
               scalp_tp = $5, scalp_sl = $6, is_scalp = TRUE
       `, [sanitizedTicker, exchange, qty, filledPrice, tpPrice, slPrice, config.isPaper]);
 
+      // 매수 주문 기록 (Paper computed cash에 필수 — 이전에 누락됐던 부분)
       await tx.query(
-        `UPDATE overseas_state SET value = (CAST(value AS NUMERIC) - $2)::text WHERE key = $1`,
-        [vsCashKey, totalCost.toFixed(2)],
-      );
+        `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price,
+          kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
+         VALUES ($1, 'BUY', 'MARKET', $2, $3, $2, $3, $4, 'FILLED', $5, 'OVERSEAS', $6)`,
+        [sanitizedTicker, qty, filledPrice, orderNo, config.isPaper ? 'paper' : 'live',
+         `Vision단타 매수 $${safeAmount} (TP:$${tpPrice} SL:$${slPrice})`]);
+
+      // Live만 overseas_state 현금 차감 (Paper는 computed)
+      if (!config.isPaper) {
+        await tx.query(
+          `UPDATE overseas_state SET value = (CAST(value AS NUMERIC) - $2)::text WHERE key = $1`,
+          [vsCashKey, totalCost.toFixed(2)],
+        );
+      }
     });
 
     logger.info(`[VisionScalp] 매수 ${sanitizedTicker} ${qty}주 @ $${filledPrice} (TP:$${tpPrice} SL:$${slPrice}) [${config.isPaper ? 'PAPER' : 'LIVE'}]`, { component: 'OVERSEAS' });
@@ -429,7 +441,6 @@ overseasRoutes.post('/overseas/sell', async (c) => {
 
     if (isPaper) {
       const orderNo = `CLN${Date.now().toString(36)}`;
-      const proceeds = fillPrice * qty * (1 - OVERSEAS_FEE_PCT); // 수수료 0.25% 차감
       const { withTransaction } = await import('../../db/client.js');
       await withTransaction(async (client) => {
         if (qty >= totalQty) {
@@ -438,10 +449,7 @@ overseasRoutes.post('/overseas/sell', async (c) => {
         } else {
           await client.query('UPDATE overseas_holdings SET quantity = quantity - $3 WHERE stock_code = $1 AND exchange = $2 AND is_paper = true', [stock_code, exchange, qty]);
         }
-        await client.query(
-          `INSERT INTO overseas_state (key, value) VALUES ($2, $1::text)
-           ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
-          [proceeds, osCashKey]);
+        // Paper: cash는 computed (orders 기반) → overseas_state 업데이트 불필요
         await client.query(
           `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
            VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','paper','OVERSEAS',$5,$6)`,

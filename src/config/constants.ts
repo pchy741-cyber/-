@@ -252,8 +252,9 @@ export const SECTOR_CLASS = {
 export const OVERSEAS_FEE_PCT = 0.0025;
 
 
-// ── 미국주식 해외 ──
+// ── 미국주식 해외 (통합증거금: 원화→해외주식 직접 주문) ──
 export const OVERSEAS = {
+  UNIFIED_MARGIN: true,                     // 통합증거금 모드 (별도 USD 환전 불필요)
   MAX_POSITIONS: 8,                         // 최대 동시 보유 종목
   POSITION_SIZE_USD: 3000,                  // 종목당 최대 $3,000 (황금비율 상향)
   POSITION_PCT: 0.25,                       // 또는 가용 현금의 25% (황금비율 상향)

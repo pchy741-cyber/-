@@ -1,15 +1,47 @@
 /**
  * DB 기반 보유종목·현금·트레일링 상태 관리
  * 서버 재시작해도 유지되는 영속 상태
+ *
+ * 통합증거금 모드:
+ *   - Live: KIS API가 원화 기반 주문가능금액 반환 (별도 USD 풀 불필요)
+ *   - Paper: orders 테이블에서 결정론적 계산 (상태 오염 불가능)
  */
 import { OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { config } from '../../config/index.js';
 import { getPool, withTransaction } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
 
+const PAPER_OVERSEAS_SEED = 4000; // Paper 해외 시드 $4K
+
 /** paper/live 별 현금 키 */
 export function cashKey(isPaper?: boolean): string {
   return (isPaper ?? config.isPaper) ? 'cash_paper' : 'cash';
+}
+
+/**
+ * Paper 현금을 orders 테이블에서 결정론적 계산
+ * cash = SEED - Σ(매수비용+수수료) + Σ(매도수익-수수료)
+ * → overseas_state 오염/리셋과 무관하게 항상 정확
+ */
+export async function computePaperCash(): Promise<number> {
+  try {
+    const { rows } = await getPool().query(`
+      SELECT
+        COALESCE(SUM(CASE WHEN side = 'BUY'
+          THEN filled_price::numeric * filled_quantity::numeric * ${1 + OVERSEAS_FEE_PCT}
+          ELSE 0 END), 0) AS total_buy,
+        COALESCE(SUM(CASE WHEN side = 'SELL'
+          THEN filled_price::numeric * filled_quantity::numeric * ${1 - OVERSEAS_FEE_PCT}
+          ELSE 0 END), 0) AS total_sell
+      FROM orders
+      WHERE trading_mode = 'paper' AND status = 'FILLED' AND trigger_source = 'OVERSEAS'
+    `);
+    const totalBuy = Number(rows[0]?.total_buy ?? 0);
+    const totalSell = Number(rows[0]?.total_sell ?? 0);
+    return Math.max(0, PAPER_OVERSEAS_SEED - totalBuy + totalSell);
+  } catch {
+    return PAPER_OVERSEAS_SEED; // DB 실패 시 시드값 폴백
+  }
 }
 
 export async function ensureOverseasTable(): Promise<void> {
@@ -107,64 +139,27 @@ export async function ensureOverseasTable(): Promise<void> {
     }
 
     // ══════════════════════════════════════════════════
-    // Paper 해외 현금: $4K 시드 + 실현PnL 기반 정밀 복구
+    // Paper 해외 현금: computed 방식 (orders 테이블 기반 결정론적 계산)
+    // overseas_state['cash_paper']는 캐시 역할만 — 실제 값은 항상 computePaperCash()
     // ══════════════════════════════════════════════════
-    const PAPER_OVERSEAS_SEED = 4000; // Paper 해외 시드 $4K
-    const paperKey = cashKey(true); // 'cash_paper'
+    const paperKey = cashKey(true);
+    const computed = await computePaperCash();
     const { rows: pkRows } = await getPool().query("SELECT value FROM overseas_state WHERE key = $1", [paperKey]);
     if (pkRows.length === 0) {
       await getPool().query(
-        `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING`, [paperKey, PAPER_OVERSEAS_SEED.toString()]);
-      logger.info(`💰 Paper 해외 시드 초기화: $${PAPER_OVERSEAS_SEED}`, { component: 'OVERSEAS' });
+        `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING`,
+        [paperKey, computed.toFixed(2)]);
+      logger.info(`💰 Paper 해외 현금 초기화: $${computed.toFixed(2)} (computed)`, { component: 'OVERSEAS' });
     } else {
-      const paperCash = Number(pkRows[0].value);
-      // $0 + 보유0 → 미사용 상태 → 시드 재설정
-      if (paperCash < 1) {
-        const { rows: holdCheck } = await getPool().query(
-          "SELECT COUNT(*) as cnt FROM overseas_holdings WHERE is_paper = true AND quantity > 0");
-        if (Number(holdCheck[0]?.cnt ?? 0) === 0) {
-          await getPool().query(
-            `UPDATE overseas_state SET value = $1 WHERE key = $2`,
-            [PAPER_OVERSEAS_SEED.toString(), paperKey]);
-          logger.info(`💰 Paper 해외 $0 + 보유0 → 시드 재설정: $${PAPER_OVERSEAS_SEED}`, { component: 'OVERSEAS' });
-        }
-      }
-      // cash_paper가 $10,000이고 거래이력이 있으면 → 리셋 버그 → 역산 복구
-      if (Math.abs(paperCash - 10000) < 1) {
-        const { rows: orderCheck } = await getPool().query(
-          "SELECT COUNT(*) as cnt FROM orders WHERE trading_mode = 'paper' AND status = 'FILLED' AND trigger_source = 'OVERSEAS'");
-        if (Number(orderCheck[0]?.cnt ?? 0) > 0) {
-          // 실현 PnL = SUM((매도가 - 매수평균가) × 수량), 수수료 포함
-          const { rows: pnlRows } = await getPool().query(`
-            SELECT COALESCE(SUM(
-              (filled_price::numeric - avg_buy_price::numeric) * filled_quantity::numeric
-            ), 0) AS realized_pnl,
-            COALESCE(SUM(
-              (filled_price::numeric + avg_buy_price::numeric) * filled_quantity::numeric * ${OVERSEAS_FEE_PCT}
-            ), 0) AS total_fees
-            FROM orders
-            WHERE trading_mode = 'paper' AND status = 'FILLED' AND side = 'SELL'
-              AND trigger_source = 'OVERSEAS' AND avg_buy_price > 0 AND filled_price > 0`);
-
-          // 현재 보유종목 원가 (현금에서 이미 빠진 돈)
-          const { rows: holdRows } = await getPool().query(`
-            SELECT COALESCE(SUM(quantity::numeric * avg_price::numeric), 0) AS cost
-            FROM overseas_holdings WHERE is_paper = true AND quantity > 0`);
-
-          const pnl = Number(pnlRows[0]?.realized_pnl ?? 0);
-          const fees = Number(pnlRows[0]?.total_fees ?? 0);
-          const holdCost = Number(holdRows[0]?.cost ?? 0);
-          const corrected = Math.max(0, 10000 + pnl - fees - holdCost);
-
-          if (Math.abs(corrected - 10000) > 1) {
-            await getPool().query(
-              `UPDATE overseas_state SET value = $1 WHERE key = $2`,
-              [corrected.toFixed(2), paperKey]);
-            logger.info(
-              `🔧 Paper 잔고 복구: $10,000 → $${corrected.toFixed(2)} (PnL $${pnl.toFixed(0)}, 수수료 $${fees.toFixed(0)}, 보유원가 $${holdCost.toFixed(0)})`,
-              { component: 'OVERSEAS' });
-          }
-        }
+      const stored = Number(pkRows[0].value);
+      const diff = Math.abs(computed - stored);
+      if (diff > 10 || stored < 0 || !Number.isFinite(stored)) {
+        await getPool().query(
+          `UPDATE overseas_state SET value = $1 WHERE key = $2`,
+          [computed.toFixed(2), paperKey]);
+        logger.warn(
+          `🔧 Paper 현금 보정: $${stored.toFixed(2)} → $${computed.toFixed(2)} (orders 기반 계산)`,
+          { component: 'OVERSEAS' });
       }
     }
   } catch { /* 오류 무시 */ }
@@ -197,16 +192,24 @@ export async function setHolding(code: string, exchange: string, qty: number, av
 }
 
 export async function getCash(isPaper?: boolean): Promise<number> {
+  const paper = isPaper ?? config.isPaper;
+  if (paper) {
+    // Paper: orders 테이블 기반 결정론적 계산 (상태 오염 불가능)
+    return computePaperCash();
+  }
+  // Live: 통합증거금 — overseas_state 저장값 (reconcileCashWithKIS가 KIS API와 동기화)
   try {
-    const key = cashKey(isPaper);
+    const key = cashKey(false);
     const { rows } = await getPool().query("SELECT value FROM overseas_state WHERE key = $1", [key]);
     return rows.length > 0 ? Number(rows[0].value) : 0;
   } catch { return 0; }
 }
 
 export async function setCash(amount: number, isPaper?: boolean): Promise<void> {
+  const paper = isPaper ?? config.isPaper;
+  if (paper) return; // Paper: computed from orders, no need to store
   const safe = Math.max(0, amount);
-  const key = cashKey(isPaper);
+  const key = cashKey(false);
   await getPool().query(
     `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
      ON CONFLICT (key) DO UPDATE SET value = $2`,
@@ -215,14 +218,15 @@ export async function setCash(amount: number, isPaper?: boolean): Promise<void> 
 }
 
 /**
- * 트랜잭션 원자 업데이트 — holdings + cash를 단일 TX로 묶어 중간 크래시 시 불일치 방지
+ * 트랜잭션 원자 업데이트 — holdings (+ live cash) 단일 TX
+ * Paper: cash는 computed (orders 기반) → 저장 불필요
+ * Live: cash도 함께 업데이트 (통합증거금이지만 reconcile 사이 트래킹용)
  */
 export async function updateTradeState(p: {
   code: string; exchange: string; qty: number; avgPrice: number;
   newCash: number; isPaper?: boolean;
 }): Promise<void> {
   const paper = p.isPaper ?? config.isPaper;
-  const key = cashKey(paper);
   await withTransaction(async (client) => {
     if (p.qty <= 0) {
       await client.query('DELETE FROM overseas_holdings WHERE exchange=$1 AND stock_code=$2 AND is_paper=$3', [p.exchange, p.code, paper]);
@@ -232,10 +236,14 @@ export async function updateTradeState(p: {
          VALUES ($1,$2,$3,$4,NOW(),$5) ON CONFLICT (exchange,stock_code,is_paper) DO UPDATE SET quantity=$3, avg_price=$4`,
         [p.code, p.exchange, p.qty, p.avgPrice, paper]);
     }
-    const safe = Math.max(0, p.newCash);
-    await client.query(
-      `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
-      [key, safe.toString()]);
+    if (!paper) {
+      // Live만 cash state 업데이트 (Paper는 computed)
+      const safe = Math.max(0, p.newCash);
+      const key = cashKey(false);
+      await client.query(
+        `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
+        [key, safe.toString()]);
+    }
   });
 }
 
