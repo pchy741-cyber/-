@@ -729,15 +729,18 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         const rawSizingMult = Math.round((0.6 + combined * 1.2) * evMult * vixRegime.sizingMult * gradualCooldown.sizingPenalty * 100) / 100;
         // Paper 모드: sizingMult 하한 0.50 (실험/학습 → 적극 투자)
         const sizingMult = isPaper() ? Math.max(rawSizingMult, 0.50) : rawSizingMult;
-        // Kelly 기반 포지션 사이즈 — 황금비율: Live 상향 (종목선택 우수 → 투자금 확대)
+        // Kelly 기반 포지션 사이즈
         const paperMode = isPaper();
         const kellyDefault = paperMode ? 0.30 : 0.25;
         const kellyMomentum = paperMode ? 0.35 : 0.30;
         const kellyCap = paperMode ? 0.35 : 0.30;
-        // Kelly 최소값: paper 15%, live 20% — 극단적 보수 사이징 방지 (소액도 매수 가능)
         const kellyFloor = paperMode ? 0.15 : 0.20;
-        const kellyPct = kellyResult.sampleCount >= 10 ? Math.max(kellyResult.halfKelly, kellyFloor) : (target.isMomentum && (target.ai?.confidence ?? 0) >= 0.85 ? kellyMomentum : kellyDefault);
-        const baseSize = portfolioValue * Math.min(kellyPct, kellyCap);
+        // 소액 계좌($500 미만): Kelly 무시, 포트폴리오 80% 집중 (1-2종목 전력투구)
+        const isSmallAccount = portfolioValue < 500;
+        const kellyPct = isSmallAccount ? 0.80
+          : kellyResult.sampleCount >= 10 ? Math.max(kellyResult.halfKelly, kellyFloor)
+          : (target.isMomentum && (target.ai?.confidence ?? 0) >= 0.85 ? kellyMomentum : kellyDefault);
+        const baseSize = portfolioValue * Math.min(kellyPct, isSmallAccount ? 0.80 : kellyCap);
         const positionSize = Math.min(baseSize * sizingMult, cash * 0.70);
         // 소액투자 가능: 통합증거금 소액 매수 허용 (수수료 0.25% → $20도 $0.05)
         const minPositionSize = 20;

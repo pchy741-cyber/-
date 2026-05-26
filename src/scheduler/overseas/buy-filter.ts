@@ -172,14 +172,12 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       }
       if (!ai && !recoveryMode && (mq === 'GREAT' || mq === 'OK')) {
         // ── Momentum Cascade: AI 없어도 강한 모멘텀은 즉시 진입 ──
-        // BigMover (+5%): score20 + RSI 40-72 통과 (가장 공격적)
         if (t.isBigMover && t.score >= 20 && t.rsi >= 40 && t.rsi <= 72) return true;
-        // Momentum (+3%): score25 + MA20 상방 + RSI 45-68 통과
         if (t.isMomentum && t.score >= 25 && t.aboveMA20 && t.rsi >= 45 && t.rsi <= 68) return true;
-        // 기존 경로 (비모멘텀)
-        const isBuySignal = t.signal === 'STRONG_BUY' && t.score >= 40 && t.adx >= 25;
-        const rsiOk = t.isMomentum ? (t.rsi >= 45 && t.rsi <= 72) : (t.rsi >= 50 && t.rsi <= 62);
-        if (isBuySignal && rsiOk) return true;
+        // STRONG_BUY: score≥30 + ADX≥20 + RSI 45-70 (AI 없이도 강한 기술 시그널)
+        if (t.signal === 'STRONG_BUY' && t.score >= 30 && t.adx >= 20 && t.rsi >= 45 && t.rsi <= 70) return true;
+        // BUY: score≥40 + ADX≥25 + RSI 50-65 (더 보수적)
+        if (t.signal === 'BUY' && t.score >= 40 && t.adx >= 25 && t.rsi >= 50 && t.rsi <= 65) return true;
         const isBollingerMomentum = t.bollingerBreakout === 'UP' && t.isMomentum && t.score >= 30 && t.aboveMA20 && t.rsi >= 45 && t.rsi <= 72;
         if (isBollingerMomentum) return true;
         return false;
