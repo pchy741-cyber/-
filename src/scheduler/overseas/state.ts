@@ -247,29 +247,34 @@ export async function updateTradeState(p: {
   });
 }
 
-// ── 트레일링 스탑용 최고가 추적 ──
-export async function getMaxPrice(code: string): Promise<number> {
+/** paper/live 분리 state key 접두사 */
+function modePrefix(isPaper?: boolean): string {
+  return (isPaper ?? config.isPaper) ? 'p_' : 'l_';
+}
+
+// ── 트레일링 스탑용 최고가 추적 (paper/live 분리) ──
+export async function getMaxPrice(code: string, isPaper?: boolean): Promise<number> {
   try {
     const { rows } = await getPool().query(
       "SELECT value FROM overseas_state WHERE key = $1",
-      [`maxprice_${code}`],
+      [`${modePrefix(isPaper)}maxprice_${code}`],
     );
     return rows.length > 0 ? Number(rows[0].value) : 0;
   } catch { return 0; }
 }
 
-export async function setMaxPrice(code: string, price: number): Promise<void> {
+export async function setMaxPrice(code: string, price: number, isPaper?: boolean): Promise<void> {
   await getPool().query(
     `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
      ON CONFLICT (key) DO UPDATE SET value = $2`,
-    [`maxprice_${code}`, price.toString()],
+    [`${modePrefix(isPaper)}maxprice_${code}`, price.toString()],
   ).catch(() => {});
 }
 
-export async function clearMaxPrice(code: string): Promise<void> {
+export async function clearMaxPrice(code: string, isPaper?: boolean): Promise<void> {
   await getPool().query(
     "DELETE FROM overseas_state WHERE key = $1",
-    [`maxprice_${code}`],
+    [`${modePrefix(isPaper)}maxprice_${code}`],
   ).catch(() => {});
 }
 

@@ -5,7 +5,7 @@
  */
 import { analyzeTechnicals, type OHLCV } from '../analysis/indicators.js';
 import { OVERSEAS, SECTOR_CLASS, OVERSEAS_FEE_PCT } from '../config/constants.js';
-import { config } from '../config/index.js';
+import { config, setTradingModeOverride } from '../config/index.js';
 import { getPool, insertOrder, logSystem } from '../db/client.js';
 import { getOverseasDailyChart, getOverseasPrice, placeOverseasOrder, type OverseasPrice } from '../kis/overseas.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
@@ -526,7 +526,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           const proceeds = exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
           cash += proceeds;
           await updateTradeState({ code: capCode, exchange: capTech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper() });
-          if (exec.finalQty <= 0) { await clearMaxPrice(capCode); await clearPartialTpStageNum(capCode); await getPool().query(`DELETE FROM overseas_state WHERE key = $1`, [`scale_in_${capCode}`]).catch(() => {}); }
+          if (exec.finalQty <= 0) { await clearMaxPrice(capCode, isPaper()); await clearPartialTpStageNum(capCode, isPaper()); await getPool().query(`DELETE FROM overseas_state WHERE key = $1`, [`${isPaper() ? 'p_' : 'l_'}scale_in_${capCode}`]).catch(() => {}); }
           sellOrders.push(`⚠️ 집중캡 매도 ${capCode} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (비중 ${(posWeight * 100).toFixed(0)}% → 25%, +$${proceeds.toFixed(0)} 회수)`);
         }
       }
@@ -684,7 +684,8 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         const neededCash = Math.min(rotBaseSize * rotSizingMult, portfolioValue * 0.20);
 
         if (cash < neededCash) {
-          const { rows: ccRows } = await getPool().query("SELECT value FROM overseas_state WHERE key = 'concentration_code'").catch(() => ({ rows: [] as { value: string }[] }));
+          const concKey = isPaper() ? 'p_concentration_code' : 'l_concentration_code';
+          const { rows: ccRows } = await getPool().query("SELECT value FROM overseas_state WHERE key = $1", [concKey]).catch(() => ({ rows: [] as { value: string }[] }));
           const concentrationCode = ccRows[0]?.value ?? null;
           if (concentrationCode && concentrationCode !== topTarget.code) {
             const concHolding = updatedHoldings.get(concentrationCode);
@@ -702,7 +703,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
                     const proceeds = exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
                     cash += proceeds;
                     await updateTradeState({ code: concentrationCode, exchange: concTech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper() });
-                    if (exec.finalQty <= 0) { await clearMaxPrice(concentrationCode); await clearPartialTpStageNum(concentrationCode); }
+                    if (exec.finalQty <= 0) { await clearMaxPrice(concentrationCode, isPaper()); await clearPartialTpStageNum(concentrationCode, isPaper()); }
                     sellOrders.push(`🔄 순환매도 ${concentrationCode} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (+${concPnlPct.toFixed(1)}%) → ${topTarget.code} 진입 재원 $${proceeds.toFixed(0)}`);
                   }
                 }
@@ -714,11 +715,12 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
 
       // ── Scale-In 확인: 기존 보유 종목 중 +2% 이상 상승 시 나머지 40% 추가매수 ──
       {
+        const scaleInPrefix = isPaper() ? 'p_scale_in_' : 'l_scale_in_';
         const { rows: scaleInRows } = await getPool().query<{ key: string; value: string }>(
-          `SELECT key, value FROM overseas_state WHERE key LIKE 'scale_in_%'`
+          `SELECT key, value FROM overseas_state WHERE key LIKE $1`, [`${scaleInPrefix}%`]
         ).catch(() => ({ rows: [] as { key: string; value: string }[] }));
         for (const row of scaleInRows) {
-          const code = row.key.replace('scale_in_', '');
+          const code = row.key.replace(scaleInPrefix, '');
           const info = JSON.parse(row.value) as { remainingQty: number; entryPrice: number; createdAt: string; exchange: string };
           const holdingDays = (Date.now() - new Date(info.createdAt).getTime()) / (1000 * 60 * 60 * 24);
           // 3일 초과 → Scale-In 취소
@@ -849,7 +851,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
 
         // Scale-In 예약: 나머지 40% 추가매수 대기 (+2% 확인 시)
         if (scaleInRemainder > 0) {
-          const scaleInKey = `scale_in_${target.code}`;
+          const scaleInKey = `${isPaper() ? 'p_' : 'l_'}scale_in_${target.code}`;
           const scaleInValue = JSON.stringify({ remainingQty: scaleInRemainder, entryPrice: exec.filledPrice, createdAt: new Date().toISOString(), exchange: target.exchange });
           await getPool().query(
             `INSERT INTO overseas_state(key, value) VALUES($1, $2) ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
@@ -1008,8 +1010,30 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
 /**
  * Paper + Live 병행운영: 양쪽 모드 순차 실행
  * Paper → 가상자금 매매, Live → 실잔고 매매
+ *
+ * 중요: setTradingModeOverride 필수!
+ *   env TRADING_MODE=paper 이므로 config.isPaper, config.kis 등
+ *   전역 설정이 모두 모드에 맞게 전환되어야 함.
+ *   (KIS TR ID, API키, reconcileCashWithKIS 등)
  */
 export async function runOverseasDual(): Promise<void> {
-  await runOverseasJob({ isPaper: true });
-  await runOverseasJob({ isPaper: false });
+  // ── Paper 모드 ──
+  setTradingModeOverride('paper');
+  try {
+    await runOverseasJob({ isPaper: true });
+  } catch (e) {
+    logger.error(`해외주식 paper 실패: ${e}`, { component: 'OVERSEAS' });
+  } finally {
+    setTradingModeOverride(null);
+  }
+
+  // ── Live 모드 ──
+  setTradingModeOverride('live');
+  try {
+    await runOverseasJob({ isPaper: false });
+  } catch (e) {
+    logger.error(`해외주식 live 실패: ${e}`, { component: 'OVERSEAS' });
+  } finally {
+    setTradingModeOverride(null);
+  }
 }

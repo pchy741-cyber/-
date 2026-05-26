@@ -174,10 +174,11 @@ export async function deployIdleCash(params: {
   }
 
   if (bestCode && bestHolding && bestPrice > 0) {
+    const concKey = (params.isPaper ?? config.isPaper) ? 'p_concentration_code' : 'l_concentration_code';
     await getPool().query(
-      `INSERT INTO overseas_state (key, value) VALUES ('concentration_code', $1)
+      `INSERT INTO overseas_state (key, value) VALUES ($2, $1)
        ON CONFLICT (key) DO UPDATE SET value = $1`,
-      [bestCode],
+      [bestCode, concKey],
     ).catch(() => {});
 
     const qty = Math.floor(investable / (bestPrice * 1.0025));

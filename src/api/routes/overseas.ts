@@ -445,7 +445,7 @@ overseasRoutes.post('/overseas/sell', async (c) => {
       await withTransaction(async (client) => {
         if (qty >= totalQty) {
           await client.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = true', [stock_code, exchange]);
-          await client.query('DELETE FROM overseas_state WHERE key = $1', [`maxprice_${stock_code}`]);
+          await client.query('DELETE FROM overseas_state WHERE key = $1', [`${isPaper ? 'p_' : 'l_'}maxprice_${stock_code}`]);
         } else {
           await client.query('UPDATE overseas_holdings SET quantity = quantity - $3 WHERE stock_code = $1 AND exchange = $2 AND is_paper = true', [stock_code, exchange, qty]);
         }
@@ -471,7 +471,7 @@ overseasRoutes.post('/overseas/sell', async (c) => {
     await withTransaction(async (client) => {
       if (qty >= totalQty) {
         await client.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [stock_code, exchange, isPaper]);
-        await client.query('DELETE FROM overseas_state WHERE key = $1', [`maxprice_${stock_code}`]);
+        await client.query('DELETE FROM overseas_state WHERE key = $1', [`${isPaper ? 'p_' : 'l_'}maxprice_${stock_code}`]);
       } else {
         await client.query('UPDATE overseas_holdings SET quantity = quantity - $3 WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [stock_code, exchange, qty, isPaper]);
       }

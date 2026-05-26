@@ -314,31 +314,36 @@ export function getPartialTpStages(sector: string): PartialTpStage[] {
   ];
 }
 
-/** DB에서 현재 부분익절 단계 조회 */
-export async function getPartialTpStageNum(code: string): Promise<number> {
+/** paper/live 분리 state key 접두사 */
+function modePrefix(isPaper?: boolean): string {
+  return (isPaper ?? config.isPaper) ? 'p_' : 'l_';
+}
+
+/** DB에서 현재 부분익절 단계 조회 (paper/live 분리) */
+export async function getPartialTpStageNum(code: string, isPaper?: boolean): Promise<number> {
   try {
     const { rows } = await getPool().query(
       "SELECT value FROM overseas_state WHERE key = $1",
-      [`partial_tp_stage_${code}`],
+      [`${modePrefix(isPaper)}partial_tp_stage_${code}`],
     );
     return rows.length > 0 ? Number(rows[0].value) : 0;
   } catch { return 0; }
 }
 
-/** 부분익절 단계 저장 */
-export async function setPartialTpStageNum(code: string, stage: number): Promise<void> {
+/** 부분익절 단계 저장 (paper/live 분리) */
+export async function setPartialTpStageNum(code: string, stage: number, isPaper?: boolean): Promise<void> {
   await getPool().query(
     `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
      ON CONFLICT (key) DO UPDATE SET value = $2`,
-    [`partial_tp_stage_${code}`, String(stage)],
+    [`${modePrefix(isPaper)}partial_tp_stage_${code}`, String(stage)],
   ).catch(() => {});
 }
 
-/** 부분익절 단계 초기화 (포지션 청산 시) */
-export async function clearPartialTpStageNum(code: string): Promise<void> {
+/** 부분익절 단계 초기화 (포지션 청산 시, paper/live 분리) */
+export async function clearPartialTpStageNum(code: string, isPaper?: boolean): Promise<void> {
   await getPool().query(
     "DELETE FROM overseas_state WHERE key = $1",
-    [`partial_tp_stage_${code}`],
+    [`${modePrefix(isPaper)}partial_tp_stage_${code}`],
   ).catch(() => {});
 }
 

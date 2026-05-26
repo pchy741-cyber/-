@@ -3,6 +3,7 @@
  * overseas-job.ts에서 추출
  */
 import { OVERSEAS, SECTOR_CLASS, OVERSEAS_FEE_PCT } from '../../config/constants.js';
+import { config } from '../../config/index.js';
 import { logger } from '../../utils/logger.js';
 import type { OverseasPrice } from '../../kis/overseas.js';
 import {
@@ -154,9 +155,10 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       await updateTradeState({ code, exchange: tech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash });
       if (exec.finalQty <= 0) {
         await clearMaxPrice(code); await clearPartialTpStageNum(code);
-        // Scale-In 예약 삭제
+        // Scale-In 예약 삭제 (paper/live prefix)
         const { getPool } = await import('../../db/client.js');
-        await getPool().query(`DELETE FROM overseas_state WHERE key = $1`, [`scale_in_${code}`]).catch(() => {});
+        const pfx = config.isPaper ? 'p_' : 'l_';
+        await getPool().query(`DELETE FROM overseas_state WHERE key = $1`, [`${pfx}scale_in_${code}`]).catch(() => {});
       }
       sellOrders.push(`매도 ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (${sellReason}) [수수료 $${(exec.filledPrice * exec.filledQty * OVERSEAS_FEE_PCT).toFixed(2)}]`);
     }
