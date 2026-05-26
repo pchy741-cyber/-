@@ -391,9 +391,9 @@ export function startScheduler(): void {
   //  상시 + 주간
   // ═══════════════════════════════════════════
 
-  // Self-Healing — 20분 간격 상시 (24/7, API 비용 절감)
+  // Self-Healing — 20분 간격, 평일 장전~장후 (06~19시)
   cron.schedule(
-    '*/20 * * * *',
+    '*/20 6-19 * * 1-5',
     () => {
       runSelfHealing().catch((e) => logger.error(`Self-heal 실패: ${e}`, { component: 'SCHEDULER' }));
     },

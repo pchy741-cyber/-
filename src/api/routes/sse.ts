@@ -101,8 +101,8 @@ sseRoutes.get('/stream', (c) => {
         });
       }
 
-      // 장중: 10초, 장외: 60초
-      const interval = isMarketOpen() ? 10000 : 60000;
+      // 장중: 30초, 장외: 120초 (API 호출 + CPU 비용 절감)
+      const interval = isMarketOpen() ? 30000 : 120000;
       await stream.sleep(interval);
     }
   });

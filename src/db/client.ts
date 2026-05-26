@@ -43,8 +43,8 @@ export function disableMemoryMode(): void {
 export function getPool(): pg.Pool {
   if (!pool) {
     const poolDefaults = {
-      max: 10,
-      idleTimeoutMillis: 60_000,      // 60s idle 후 반환 (Track B 5분 주기 대비 여유)
+      max: 5,
+      idleTimeoutMillis: 30_000,      // 30s idle 후 반환 (커넥션 절감)
       connectionTimeoutMillis: 15_000,
       keepAlive: true,
       keepAliveInitialDelayMillis: 10_000,
