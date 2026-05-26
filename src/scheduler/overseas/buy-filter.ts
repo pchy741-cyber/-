@@ -124,24 +124,27 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       const ai = aiMap.get(t.code);
       const isOversold = t.rsi <= 35 && t.trendStrength !== 'WEAK';
       const isAbove50 = t.rsi >= 50;
-      // Paper: ADX 12, Live: ADX 20
-      const adxThreshold = isPaper ? 12 : 20;
+      // Paper: ADX 12, Live: ADX 15 (소액 계좌 진입 허용)
+      const adxThreshold = isPaper ? 12 : 15;
       const trendFilterOk = t.isMomentum || t.isBigMover || isOversold || (isAbove50 && t.adx > adxThreshold);
       if (!trendFilterOk) { logger.info(`  ⛔ 진입 필터 탈락: ${t.code} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)}`, { component: 'OVERSEAS' }); return false; }
-      // Paper: MA20/MA60/BB 스퀴즈 필터 완화 — STRONG_BUY/BUY 시그널이면 통과
+      // MA20/MA60/BB 스퀴즈 필터 완화 — 강한 시그널이면 통과
       const paperSignalPass = isPaper && (t.signal === 'STRONG_BUY' || t.signal === 'BUY');
-      if (!t.isMomentum && !isOversold && t.aboveMA20 === false && !paperSignalPass) { logger.info(`  ⛔ MA20 하방 진입 차단: ${t.code}`, { component: 'OVERSEAS' }); return false; }
-      if (!t.isMomentum && t.aboveMA60 === false && !paperSignalPass) { logger.info(`  ⛔ MA60 하방 진입 차단: ${t.code}`, { component: 'OVERSEAS' }); return false; }
-      if (t.bollingerSqueeze && t.bollingerBreakout !== 'UP' && !t.isMomentum && !paperSignalPass) { logger.info(`  ⛔ BB 스퀴즈 차단: ${t.code}`, { component: 'OVERSEAS' }); return false; }
+      // Live: STRONG_BUY + score≥30이면 MA/BB 필터 바이패스 (소액 계좌 매수 기회 확보)
+      const liveSignalPass = !isPaper && t.signal === 'STRONG_BUY' && t.score >= 30;
+      const signalPass = paperSignalPass || liveSignalPass;
+      if (!t.isMomentum && !isOversold && t.aboveMA20 === false && !signalPass) { logger.info(`  ⛔ MA20 하방 진입 차단: ${t.code}`, { component: 'OVERSEAS' }); return false; }
+      if (!t.isMomentum && t.aboveMA60 === false && !signalPass) { logger.info(`  ⛔ MA60 하방 진입 차단: ${t.code}`, { component: 'OVERSEAS' }); return false; }
+      if (t.bollingerSqueeze && t.bollingerBreakout !== 'UP' && !t.isMomentum && !signalPass) { logger.info(`  ⛔ BB 스퀴즈 차단: ${t.code}`, { component: 'OVERSEAS' }); return false; }
       const bullDay = freshBreadth >= 0.65;
       const dayRangeCap = bullDay ? 85 : 70;
       const dayRangeOk = t.isMomentum || t.isBigMover || t.dayRangePct === undefined || t.dayRangePct < dayRangeCap;
       if (!dayRangeOk) { logger.info(`  ⛔ 고점 진입 차단: ${t.code} dayRangePct=${t.dayRangePct?.toFixed(0)}%`, { component: 'OVERSEAS' }); return false; }
-      // Paper: 중베타 RSI 과열 75, Live: 62
+      // Paper: 중베타 RSI 과열 75, Live: 70 (62→70 완화: 소액 계좌 진입 기회 확보)
       if (!t.isMomentum && !isOversold) {
         const entryWatchSector = GLOBAL_WATCHLIST.find(w => w.code === t.code)?.sector ?? '';
         const isMedBetaEntry = SECTOR_CLASS.MEDIUM_BETA.includes(entryWatchSector);
-        const rsiOverheatLimit = isPaper ? 75 : 62;
+        const rsiOverheatLimit = isPaper ? 75 : 70;
         if (isMedBetaEntry && t.rsi > rsiOverheatLimit) { logger.info(`  ⛔ 중베타 RSI 과열 차단: ${t.code} RSI=${t.rsi.toFixed(0)}`, { component: 'OVERSEAS' }); return false; }
       }
       const mq = mktSignal?.marketQuality ?? 'OK';
