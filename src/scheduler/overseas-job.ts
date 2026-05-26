@@ -7,7 +7,7 @@ import { analyzeTechnicals, type OHLCV } from '../analysis/indicators.js';
 import { OVERSEAS, SECTOR_CLASS, OVERSEAS_FEE_PCT } from '../config/constants.js';
 import { config, setTradingModeOverride } from '../config/index.js';
 import { getPool, logSystem } from '../db/client.js';
-import { getOverseasDailyChart, getOverseasPrice, type OverseasPrice } from '../kis/overseas.js';
+import { getOverseasDailyChart, getOverseasPrice, placeFractionalOverseasBuy, type OverseasPrice } from '../kis/overseas.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { isKillSwitchActive, activateKillSwitch, reportError, reportSuccess } from '../risk/kill-switch.js';
 import { OVERSEAS_LOSS_TIERS } from '../risk/seed-capital.js';
@@ -65,6 +65,38 @@ import { filterAndRankBuyTargets } from './overseas/buy-filter.js';
 import { sendBuyRecommendations, sendHoldingAlerts } from './overseas/notifications.js';
 import { monitorVisionScalp } from './overseas/vision-scalp.js';
 import { rebalancePortfolio } from './overseas/rebalancer.js';
+
+/**
+ * 소수점 매수 실행 — 금액 기준 주문 (Live 전용, 미국 주식만)
+ * 주가가 포지션 사이즈보다 클 때 사용 (예: NOW $101, 포지션 $96)
+ */
+async function executeFractionalBuy(
+  code: string, amountUsd: number, estimatedPrice: number, exchange: string, reasoning: string,
+): Promise<{ submitted: boolean; filledQty: number; filledPrice: number; finalQty: number; finalAvgPrice: number; orderNo?: string }> {
+  try {
+    const result = await placeFractionalOverseasBuy({ stockCode: code, exchange, amountUsd });
+    const { insertOrder: ins } = await import('../db/client.js');
+    const estimatedQty = Math.round((amountUsd / estimatedPrice) * 1000) / 1000;
+    await ins({
+      chain_id: null, stock_code: code, side: 'BUY', order_type: '01',
+      quantity: estimatedQty, price: estimatedPrice, kis_order_no: result.orderNo,
+      kis_status: result.success ? 'SUBMITTED' : 'FAILED',
+      filled_quantity: result.success ? estimatedQty : 0,
+      filled_price: result.success ? estimatedPrice : null,
+      status: result.success ? 'PENDING' : 'FAILED', trading_mode: 'live',
+      trigger_source: 'OVERSEAS', ai_reasoning: `[소수점매수 $${amountUsd}] ${reasoning}`,
+    });
+    if (result.success) {
+      logger.info(`🔬 [LIVE] 소수점 매수: ${code} $${amountUsd} ≈${estimatedQty.toFixed(3)}주 @$${estimatedPrice.toFixed(2)} (${result.orderNo})`, { component: 'OVERSEAS' });
+      return { submitted: true, filledQty: estimatedQty, filledPrice: estimatedPrice, finalQty: estimatedQty, finalAvgPrice: estimatedPrice, orderNo: result.orderNo };
+    }
+    logger.error(`🔬 소수점 매수 실패: ${code} — ${result.message}`, { component: 'OVERSEAS' });
+    return { submitted: false, filledQty: 0, filledPrice: 0, finalQty: 0, finalAvgPrice: 0 };
+  } catch (e) {
+    logger.error(`🔬 소수점 매수 에러: ${code} — ${(e as Error).message}`, { component: 'OVERSEAS' });
+    return { submitted: false, filledQty: 0, filledPrice: 0, finalQty: 0, finalAvgPrice: 0 };
+  }
+}
 
 /**
  * 글로벌 주식 자동매매 Job
@@ -760,10 +792,15 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         const qtyBy1PctRule = maxRiskUSD > 0 ? Math.floor(maxRiskUSD / (target.price.currentPrice * slDecimal)) : Infinity;
         const qtyBySizing = Math.floor(positionSize / (target.price.currentPrice * 1.0025));
         const fullQty = Math.min(qtyBySizing, qtyBy1PctRule > 0 ? qtyBy1PctRule : qtyBySizing);
-        if (fullQty <= 0) continue;
+
+        // 소수점 매수: qty=0이지만 금액 $20 이상이면 소수점 매수 시도 (Live 전용, 미국 주식만)
+        const useFractional = fullQty <= 0 && !isPaper() && positionSize >= 20
+          && ['NASDAQ', 'NYSE', 'AMEX'].includes(target.exchange);
+        if (fullQty <= 0 && !useFractional) continue;
+
         // Scale-In: 모멘텀/빅무버는 100% 즉시매수, 나머지는 60% 진입 → +2% 확인 후 40% 추가
-        const useScaleIn = !target.isMomentum && !target.isBigMover && fullQty >= 3;
-        const qty = useScaleIn ? Math.max(1, Math.floor(fullQty * 0.6)) : fullQty;
+        const useScaleIn = !useFractional && !target.isMomentum && !target.isBigMover && fullQty >= 3;
+        const qty = useFractional ? 0 : (useScaleIn ? Math.max(1, Math.floor(fullQty * 0.6)) : fullQty);
         const scaleInRemainder = useScaleIn ? fullQty - qty : 0;
 
         const buyMode = target.isMomentum ? '🚀모멘텀' : (target.rsi <= 35 ? '📉과매도반등' : '📊트렌드');
@@ -774,7 +811,9 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           ? `${buyMode} AI(${(target.ai.confidence * 100).toFixed(0)}%) 사이징x${sizingMult}: ${target.ai.reasoning}${wrTag}${evTag}`
           : `${buyMode} 기술(AI없음) 사이징x${sizingMult}: score=${target.score} RSI=${target.rsi.toFixed(0)} ADX=${target.adx.toFixed(0)}${wrTag}${evTag}`;
 
-        const exec = await executeOverseasOrder(target.code, 'BUY', qty, target.price.currentPrice, target.exchange, reason, 0, 0, { isPaper: isPaper() });
+        const exec = useFractional
+          ? await executeFractionalBuy(target.code, Math.floor(positionSize), target.price.currentPrice, target.exchange, reason)
+          : await executeOverseasOrder(target.code, 'BUY', qty, target.price.currentPrice, target.exchange, reason, 0, 0, { isPaper: isPaper() });
         if (!exec.submitted) continue;
         if (exec.filledQty <= 0) {
           pendingOrderStocks.add(target.code);

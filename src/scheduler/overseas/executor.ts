@@ -4,7 +4,7 @@
 import { OVERSEAS } from '../../config/constants.js';
 import { config } from '../../config/index.js';
 import { getPool, insertOrder } from '../../db/client.js';
-import { placeOverseasOrder } from '../../kis/overseas.js';
+import { placeOverseasOrder, placeFractionalOverseasBuy } from '../../kis/overseas.js';
 import { logger } from '../../utils/logger.js';
 import { updateOrder } from '../../db/client.js';
 import { resolveOverseasStockName } from './watchlist.js';
