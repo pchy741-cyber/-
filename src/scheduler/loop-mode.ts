@@ -38,7 +38,7 @@ async function tick(): Promise<void> {
   if (!state.active) return;
 
   // Kill Switch 활성이어도 매도(탈출)를 위해 실행 — 매수만 overseas-job 내부에서 차단
-  if (isKillSwitchActive()) {
+  if (isKillSwitchActive('OVERSEAS')) {
     logger.info('Auto Pilot: Kill Switch 활성 — 매도만 실행 (매수 차단은 overseas-job 내부)', { component: 'LOOP' });
   }
 
@@ -76,7 +76,7 @@ function scheduleNext(): void {
 
 export function startLoop(): { ok: boolean; error?: string } {
   if (state.active) return { ok: false, error: '이미 실행 중' };
-  if (isKillSwitchActive()) return { ok: false, error: 'Kill Switch 활성 — 먼저 해제하세요' };
+  if (isKillSwitchActive('OVERSEAS')) return { ok: false, error: 'Kill Switch 활성 — 먼저 해제하세요' };
 
   state.active = true;
   state.startedAt = new Date().toISOString();

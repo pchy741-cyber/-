@@ -19,7 +19,7 @@ export const sellRoutes = new Hono();
 sellRoutes.post('/escape/:chainId', async (c) => {
   const chainId = c.req.param('chainId');
   try {
-    const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1 AND is_paper = $2', [chainId, config.isPaper]);
+    const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1', [chainId]);
     const chain = rows[0];
     if (!chain) return c.json({ error: '체인을 찾을 수 없습니다' }, 404);
     if (chain.total_quantity <= 0) return c.json({ error: '매도할 수량이 없습니다' }, 400);
@@ -31,8 +31,8 @@ sellRoutes.post('/escape/:chainId', async (c) => {
 
     const escapeTarget = Math.ceil(curPrice * 1.005);
     await getPool().query(
-      'UPDATE transaction_chains SET escape_target_price = $1 WHERE id = $2 AND is_paper = $3',
-      [escapeTarget, chainId, config.isPaper],
+      'UPDATE transaction_chains SET escape_target_price = $1 WHERE id = $2',
+      [escapeTarget, chainId],
     );
 
     logger.info(
@@ -50,7 +50,7 @@ sellRoutes.post('/escape/:chainId', async (c) => {
 sellRoutes.delete('/escape/:chainId', async (c) => {
   const chainId = c.req.param('chainId');
   try {
-    await getPool().query('UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1 AND is_paper = $2', [chainId, config.isPaper]);
+    await getPool().query('UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1', [chainId]);
     return c.json({ ok: true });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
@@ -65,7 +65,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
     const triggerSource: string = (body.source as string) || 'MANUAL';
     const sellReason: string = (body.reason as string) || 'CEO 수동 매도';
 
-    const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1 AND is_paper = $2', [chainId, config.isPaper]);
+    const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1', [chainId]);
     const chain = rows[0];
     if (!chain) return c.json({ error: '체인을 찾을 수 없습니다' }, 404);
     if (chain.status === 'CLOSED') return c.json({ error: '이미 청산된 포지션입니다' }, 400);
@@ -78,7 +78,8 @@ sellRoutes.post('/sell/:chainId', async (c) => {
     } catch { /* 시세 조회 실패 시 0으로 기록 */ }
 
     // 모의투자 모드
-    if (config.isPaper) {
+    const chainTradingMode = chain.is_paper ? 'paper' : 'live';
+    if (chain.is_paper) {
       const fakeOrderNo = `P${Date.now().toString(36)}`;
       await getPool().query(
         `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2, total_quantity = 0,
@@ -89,7 +90,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
       await getPool().query(
         `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
          VALUES ($1, $2, 'SELL', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, $7, $8)`,
-        [chainId, chain.stock_code, chain.total_quantity, fillPrice, fakeOrderNo, config.tradingMode, triggerSource, sellReason],
+        [chainId, chain.stock_code, chain.total_quantity, fillPrice, fakeOrderNo, chainTradingMode, triggerSource, sellReason],
       );
       logger.info(`✅ 매도 완료 (모의투자): ${chain.stock_code} ${chain.total_quantity}주 [${triggerSource}]`, { component: 'DASHBOARD' });
       try {
@@ -158,7 +159,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
        VALUES ($1, $2, 'SELL', 'MARKET', $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [chainId, chain.stock_code, chain.total_quantity, fillPrice,
        fillConfirmed ? chain.total_quantity : 0, fillConfirmed ? fillPrice : 0,
-       kisOrderNo, fillConfirmed ? 'FILLED' : 'PENDING', config.tradingMode, triggerSource, sellReason],
+       kisOrderNo, fillConfirmed ? 'FILLED' : 'PENDING', chainTradingMode, triggerSource, sellReason],
     );
 
     logger.info(`${fillConfirmed ? '✅' : '⏳'} 매도 ${fillConfirmed ? '완료' : '접수(체결대기)'}: ${chain.stock_code} ${chain.total_quantity}주 [${triggerSource}] (${kisOrderNo})`, { component: 'DASHBOARD' });
@@ -184,10 +185,13 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
     const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
     const triggerSource: string = (body.source as string) || 'MANUAL';
     const sellReason: string = (body.reason as string) || 'CEO 수동 매도';
+    // 대시보드 viewMode에서 is_paper를 전달받거나, 없으면 서버 모드로 폴백
+    const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
+    const stockTradingMode = isPaper ? 'paper' : 'live';
 
     const { rows: openChains } = await getPool().query(
       `SELECT * FROM transaction_chains WHERE stock_code = $1 AND status != 'CLOSED' AND is_paper = $2 ORDER BY created_at ASC`,
-      [stockCode, config.isPaper],
+      [stockCode, isPaper],
     );
     if (openChains.length === 0) return c.json({ error: '보유 포지션이 없습니다' }, 404);
 
@@ -199,7 +203,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
 
     const { withTransaction } = await import('../../../db/client.js');
 
-    if (config.isPaper) {
+    if (isPaper) {
       const fakeOrderNo = `P${Date.now().toString(36)}`;
       await withTransaction(async (tx) => {
         for (const chain of openChains) {
@@ -212,7 +216,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
           await tx.query(
             `INSERT INTO orders (chain_id,stock_code,side,order_type,quantity,price,filled_quantity,filled_price,kis_order_no,status,trading_mode,trigger_source,ai_reasoning)
              VALUES ($1,$2,'SELL','MARKET',$3,$4,$3,$4,$5,'FILLED',$6,$7,$8)`,
-            [chain.id, stockCode, chain.total_quantity, fillPrice, fakeOrderNo, config.tradingMode, triggerSource, sellReason],
+            [chain.id, stockCode, chain.total_quantity, fillPrice, fakeOrderNo, stockTradingMode, triggerSource, sellReason],
           );
         }
       });
@@ -282,7 +286,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
            VALUES ($1,$2,'SELL','MARKET',$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
           [chain.id, stockCode, chain.total_quantity, fillPrice,
            fillConfirmed ? chain.total_quantity : 0, fillConfirmed ? fillPrice : 0,
-           kisOrderNo, fillConfirmed ? 'FILLED' : 'PENDING', config.tradingMode, triggerSource, sellReason],
+           kisOrderNo, fillConfirmed ? 'FILLED' : 'PENDING', stockTradingMode, triggerSource, sellReason],
         );
       }
     });
