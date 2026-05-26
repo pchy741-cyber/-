@@ -319,6 +319,7 @@ export async function getOverseasBalance(exchange: string = 'NASDAQ') {
 export async function getOverseasBuyableAmount(exchange: string = 'NASDAQ'): Promise<number | null> {
   try {
     const excd = ORDER_EXCD_MAP[exchange] ?? EXCHANGE_MAP[exchange] ?? 'NASD';
+    // ITEM_CD 필수 — 임의 종목(AAPL)으로 총 주문가능금액 조회 (종목 무관, 계좌 전체 가용액 반환)
     const res = await overseasKisRequest({
       path: '/uapi/overseas-stock/v1/trading/inquire-psamount',
       trId: getOverseasTrId().BUYABLE,
@@ -327,7 +328,7 @@ export async function getOverseasBuyableAmount(exchange: string = 'NASDAQ'): Pro
         ACNT_PRDT_CD: config.kis.accountProductCode,
         OVRS_EXCG_CD: excd,
         OVRS_ORD_UNPR: '0',
-        ITEM_CD: '',
+        ITEM_CD: 'AAPL',
       },
     });
     // frcr_ord_psbl_amt1 = 외화 주문가능금액 (USD)
