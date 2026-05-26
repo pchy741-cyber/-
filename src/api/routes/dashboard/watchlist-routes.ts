@@ -114,6 +114,8 @@ watchlistRoutes.get('/search/stock', async (c) => {
 // ── 감시 목록 CRUD ──
 watchlistRoutes.get('/watchlist', async (c) => {
   try {
+    const viewModeParam = c.req.query('viewMode');
+    const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : config.isPaper;
     const data = await getActiveWatchlist();
     const unresolvedDomestic = [...new Set(
       data
@@ -161,7 +163,7 @@ watchlistRoutes.get('/watchlist', async (c) => {
             AND tc.stock_code = ANY($1)
             AND tc.is_paper = $2
           ORDER BY tc.stock_code, tc.closed_at DESC
-        `, [codes, config.isPaper]);
+        `, [codes, viewIsPaper]);
         for (const r of sellRows) {
           const buy = Number(r.avg_buy_price ?? 0);
           const sell = Number(r.last_sell_price ?? 0);
@@ -299,6 +301,8 @@ watchlistRoutes.post('/watchlist/sync', async (c) => {
 // ── 매도 후 추적 — 최근 매도 종목의 현재가 변동 ──
 watchlistRoutes.get('/watchlist/sold-tracking', async (c) => {
   try {
+    const viewModeParam = c.req.query('viewMode');
+    const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : config.isPaper;
     const { rows } = await getPool().query(`
       SELECT DISTINCT ON (tc.stock_code)
         tc.stock_code,
@@ -316,7 +320,7 @@ watchlistRoutes.get('/watchlist/sold-tracking', async (c) => {
         AND tc.is_paper = $1
         AND tc.closed_at > NOW() - INTERVAL '60 days'
       ORDER BY tc.stock_code, tc.closed_at DESC
-    `, [config.isPaper]);
+    `, [viewIsPaper]);
 
     if (rows.length === 0) return c.json([]);
 

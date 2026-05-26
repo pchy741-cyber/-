@@ -108,6 +108,10 @@ rootApp.all('*', async (c) => {
     const resHeaders = new Headers(proxyRes.headers);
     resHeaders.delete('content-encoding');
     resHeaders.delete('content-length');
+    // Next.js 빌드 해시 포함 정적 자산 — 영구 캐시
+    if (url.pathname.startsWith('/_next/static/')) {
+      resHeaders.set('cache-control', 'public, max-age=31536000, immutable');
+    }
     return new Response(proxyRes.body, {
       status: proxyRes.status,
       headers: resHeaders,

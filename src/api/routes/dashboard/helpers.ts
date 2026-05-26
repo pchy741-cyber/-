@@ -78,12 +78,15 @@ export async function getFxRate(): Promise<number> {
 // ── 대시보드 응답 캐시 (30초 TTL, Stale-While-Revalidate, 모드별 독립 Map) ──
 const _dashCacheByMode = new Map<string, { data: unknown; ts: number }>();
 const _dashBuildingByMode = new Map<string, Promise<unknown>>();
-const DASH_CACHE_TTL = 30_000;
-
 export function getDashCache(mode: string) { return _dashCacheByMode.get(mode) ?? null; }
 export function setDashCache(mode: string, data: unknown) { _dashCacheByMode.set(mode, { data, ts: Date.now() }); }
 export function getDashBuildingByMode() { return _dashBuildingByMode; }
-export function getDashCacheTTL() { return DASH_CACHE_TTL; }
+export function getDashCacheTTL(): number {
+  const now = new Date();
+  const kstMins = ((now.getUTCHours() + 9) % 24) * 60 + now.getUTCMinutes();
+  // 장중(09:00~15:30 KST): 20초, 장외: 120초
+  return (kstMins >= 540 && kstMins < 930) ? 20_000 : 120_000;
+}
 
 // 현재 모드 캐시만 무효화 (매도/매수 후) — 실전/연습 양쪽 무효화 (병행운영 시 양쪽 뷰에 반영)
 export function invalidateCurrentModeCache(): void { _dashCacheByMode.delete('live'); _dashCacheByMode.delete('paper'); }

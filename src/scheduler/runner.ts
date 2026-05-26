@@ -16,6 +16,7 @@ import { runDailyLearning } from '../automation/self-learning.js';
 
 import { runSniperScan } from '../automation/snipers/runner.js';
 import { MARKET, SCHEDULE } from '../config/constants.js';
+import { setTradingModeOverride } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { runHoldingCheckJob } from './holding-check-job.js';
 import { runSnapshotJob } from './snapshot-job.js';
@@ -29,6 +30,19 @@ import { warmupOpeningBell, runOpeningBellCycle } from './opening-bell-job.js';
 import { runHotSectorWatchlist } from '../automation/hot-sector-watchlist.js';
 import { runPortfolioHealthCheck } from '../automation/portfolio-guard.js';
 import { runIntegrityCheck } from './integrity-check-job.js';
+
+/**
+ * paper → live 순으로 동일 작업을 실행 (국내 이중 모드 병행운영)
+ * overseas-job의 runOverseasDual() 패턴과 동일
+ */
+async function runDomesticDual(label: string, fn: () => Promise<unknown>): Promise<void> {
+  setTradingModeOverride('paper');
+  try { await fn(); } catch (e) { logger.error(`${label} paper 실패: ${e}`, { component: 'SCHEDULER' }); }
+  finally { setTradingModeOverride(null); }
+
+  setTradingModeOverride(null); // live (env 기본값)
+  try { await fn(); } catch (e) { logger.error(`${label} live 실패: ${e}`, { component: 'SCHEDULER' }); }
+}
 
 /**
  * 타임아웃을 적용하여 작업 실행 (지정 시간 초과 시 에러 로그 후 스킵)
@@ -151,7 +165,7 @@ export function startScheduler(): void {
   //  장중 실시간 자동화
   // ═══════════════════════════════════════════
 
-  // Track B 중복 실행 방지 mutex
+  // Track B 중복 실행 방지 mutex (paper → live 순차 실행)
   let _trackBRunning = false;
   const runTrackBSafe = () => {
     if (_trackBRunning) {
@@ -159,7 +173,7 @@ export function startScheduler(): void {
       return;
     }
     _trackBRunning = true;
-    withTimeout('Track B', () => runTrackBJob(), 480_000)
+    withTimeout('Track B dual', () => runDomesticDual('Track B', runTrackBJob), 960_000)
       .finally(() => { _trackBRunning = false; });
   };
 
@@ -173,11 +187,11 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // ⚡ 09:00~09:12 — 개장 초단타 전용: 2분 간격 (캐시 차트 + Gemini 실시간 판단, 비용 절감)
+  // ⚡ 09:00~09:12 — 개장 초단타 전용: 2분 간격 (paper → live 이중 실행)
   cron.schedule(
     '0,2,4,6,8,10,12 9 * * 1-5',
     () => {
-      runOpeningBellCycle().catch(e => logger.error(`개장 사이클 실패: ${e}`, { component: 'SCHEDULER' }));
+      runDomesticDual('개장벨', runOpeningBellCycle).catch(e => logger.error(`개장 사이클 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -294,11 +308,11 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 보유일 손절 체크 — 장중 매시 30분
+  // 보유일 손절 체크 — 장중 매시 30분 (paper → live 이중 실행)
   cron.schedule(
     '30 9-15 * * 1-5',
     () => {
-      runHoldingCheckJob().catch((e) => logger.error(`보유일 체크 실패: ${e}`, { component: 'SCHEDULER' }));
+      runDomesticDual('보유체크', runHoldingCheckJob).catch((e) => logger.error(`보유일 체크 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

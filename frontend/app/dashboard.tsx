@@ -61,7 +61,7 @@ export default function Dashboard() {
   const loadStatic = async (gen: number, vmOverride?: string) => {
     const vm = vmOverride ?? viewModeRef.current;
     const [w, s, t, sec, wc, wh] = await Promise.allSettled([
-      api('/watchlist'), api('/strategy'),
+      api(`/watchlist?viewMode=${vm}`), api('/strategy'),
       api(`/trades?limit=100&viewMode=${vm}`), api('/secrets'),
       api('/withdraw/config').catch(() => null),
       api('/withdraw/history').catch(() => []),
@@ -409,17 +409,6 @@ export default function Dashboard() {
           </div>
         </header>
 
-        {/* Mode 불일치 경고 — viewMode ≠ tradingMode */}
-        {viewMode !== dash?.tradingMode && dash?.tradingMode === 'live' && (
-          <div className="mx-4 mt-2 p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-red-300 text-xs font-bold text-center animate-pulse">
-            ⚠ VIEW={viewMode.toUpperCase()} / SERVER=LIVE 불일치 — 실전 거래 진행 중!
-          </div>
-        )}
-        {viewMode === 'live' && dash?.tradingMode === 'paper' && (
-          <div className="mx-4 mt-2 p-3 bg-amber-500/20 border border-amber-500/40 rounded-lg text-amber-300 text-xs font-bold text-center">
-            ⚠ LIVE 데이터 조회 중이지만 서버는 PAPER 모드 — 자동매매는 모의투자로 작동 중
-          </div>
-        )}
         <main className="flex-1 overflow-y-auto transition-colors duration-500" style={{ background: `linear-gradient(to bottom right, ${theme.main1}, ${theme.main2}, ${theme.main1})` }}>
           {loading && !dash ? (
             <div className="flex items-center justify-center h-full">
@@ -430,14 +419,14 @@ export default function Dashboard() {
               {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={withdrawConfig} watchlist={watchlist} strategy={strategy} setStrategy={setStrategy} toast={toast} onRefresh={load} allocConfig={allocConfig} setAllocConfig={setAllocConfig} onGoToSettings={() => setTab('settings')} viewMode={viewMode} onMarketTabChange={setMarketTab} />}
               {tab === 'trades' && <TradesView trades={trades} watchlist={watchlist} />}
               {tab === 'journal' && <JournalView viewMode={viewMode} />}
-              {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} toast={toast} onRefresh={load} />}
+              {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} toast={toast} onRefresh={load} viewMode={viewMode} />}
               {tab === 'news' && <NewsView watchlist={watchlist} setWatchlist={setWatchlist} />}
               {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} notebookRef={notebookRef} geminiRef={geminiRef} gptRef={gptRef} claudeRef={claudeRef} killSwitch={killSwitch} toggleKill={toggleKill} withdrawConfig={withdrawConfig} setWithdrawConfig={setWithdrawConfig} withdrawHistory={withdrawHistory} setWithdrawHistory={setWithdrawHistory} allocConfig={allocConfig} setAllocConfig={setAllocConfig} toast={toast} />}
             </div>
           )}
         </main>
       </div>
-      <ScreenshotReview currentTab={tab} setTab={setTab} viewMode={viewMode} dash={dash} health={health} trades={trades} killSwitch={killSwitch} strategy={strategy} switchViewMode={switchView} loopStatus={loopStatus} />
+      <ScreenshotReview currentTab={tab} setTab={setTab} viewMode={viewMode} dash={dash} health={health} trades={trades} killSwitch={killSwitch} strategy={strategy} switchViewMode={switchView} loopStatus={loopStatus} toast={toast} />
       </div>
     </div>
   );

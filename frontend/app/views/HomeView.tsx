@@ -186,8 +186,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
             </span>
           </button>
         </div>
-        {holdingsTab === 'KR' && <KrHoldingsTab chains={chains} dash={dash} busyAction={busyAction} guard={guard} getStockName={getStockName} onRefresh={onRefresh} />}
-        {holdingsTab === 'US' && <UsHoldingsTab usHoldings={usHoldings} usW={usW} dash={dash} busyAction={busyAction} guard={guard} onRefresh={onRefresh} toast={toast} insightsDraft={insightsDraft} setInsightsDraft={setInsightsDraft} insightsSaving={insightsSaving} setInsightsSaving={setInsightsSaving} usInsights={usInsights} setUsInsights={setUsInsights} />}
+        {holdingsTab === 'KR' && <KrHoldingsTab chains={chains} dash={dash} busyAction={busyAction} guard={guard} getStockName={getStockName} onRefresh={onRefresh} viewMode={viewMode} />}
+        {holdingsTab === 'US' && <UsHoldingsTab usHoldings={usHoldings} usW={usW} dash={dash} busyAction={busyAction} guard={guard} onRefresh={onRefresh} toast={toast} insightsDraft={insightsDraft} setInsightsDraft={setInsightsDraft} insightsSaving={insightsSaving} setInsightsSaving={setInsightsSaving} usInsights={usInsights} setUsInsights={setUsInsights} viewMode={viewMode} />}
       </div>
 
       <MoneyStatsPanel key={`${viewMode}-${holdingsTab}`} market={holdingsTab} viewMode={viewMode} />
@@ -201,7 +201,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
 
       <div className="grid grid-cols-1 xl:grid-cols-2 items-start gap-4 sm:gap-5">
         {holdingsTab === 'KR'
-          ? <KrAiScorePanel dash={dash} showAllKRScores={showAllKRScores} setShowAllKRScores={setShowAllKRScores} buyingStock={buyingStock} setBuyingStock={setBuyingStock} busyAction={busyAction} guard={guard} getStockName={getStockName} toast={toast} />
+          ? <KrAiScorePanel dash={dash} showAllKRScores={showAllKRScores} setShowAllKRScores={setShowAllKRScores} buyingStock={buyingStock} setBuyingStock={setBuyingStock} busyAction={busyAction} guard={guard} getStockName={getStockName} toast={toast} viewMode={viewMode} />
           : <OverseasScorePanel usDash={usDash} toast={toast} />}
         <RecentTradesPanel filled={filled} holdingsTab={holdingsTab} expandedTradeIdx={expandedTradeIdx} setExpandedTradeIdx={setExpandedTradeIdx} getStockName={getStockName} />
       </div>

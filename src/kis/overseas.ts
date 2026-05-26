@@ -19,15 +19,18 @@ async function overseasKisRequest<T = unknown>(opts: Parameters<typeof kisReques
  * → 같은 AI 파이프라인으로 미국 ETF/주식도 자동매매 가능
  */
 
-// ── KIS 해외주식 tr_id ──
-const OVERSEAS_TR_ID = {
-  PRICE: 'HHDFS00000300', // 해외주식 현재가
-  DAILY_CHART: 'HHDFS76240000', // 해외주식 일봉
-  BUY: config.isPaper ? 'VTTT1002U' : 'JTTT1002U', // 매수
-  SELL: config.isPaper ? 'VTTT1001U' : 'JTTT1006U', // 매도
-  BALANCE: config.isPaper ? 'VTTS3012R' : 'TTTS3012R', // 잔고
-  BUYABLE: config.isPaper ? 'VTTS3007R' : 'TTTS3007R', // 해외주문가능금액
-} as const;
+// ── KIS 해외주식 tr_id (모드 전환 시 항상 최신값 반영되도록 getter 사용) ──
+function getOverseasTrId() {
+  const p = config.isPaper;
+  return {
+    PRICE: 'HHDFS00000300',
+    DAILY_CHART: 'HHDFS76240000',
+    BUY: p ? 'VTTT1002U' : 'JTTT1002U',
+    SELL: p ? 'VTTT1001U' : 'JTTT1006U',
+    BALANCE: p ? 'VTTS3012R' : 'TTTS3012R',
+    BUYABLE: p ? 'VTTS3007R' : 'TTTS3007R',
+  };
+}
 
 // KIS API 거래소 코드 (OVRS_EXCG_CD / EXCD)
 const EXCHANGE_MAP: Record<string, string> = {
@@ -105,7 +108,7 @@ export async function getOverseasPrice(stockCode: string, exchange: string = 'NA
 
   const res = await overseasKisRequest({
     path: '/uapi/overseas-price/v1/quotations/price',
-    trId: OVERSEAS_TR_ID.PRICE,
+    trId: getOverseasTrId().PRICE,
     params: {
       AUTH: '',
       EXCD: excd,
@@ -138,7 +141,7 @@ export async function getOverseasDailyChart(stockCode: string, exchange: string 
 
   const res = await overseasKisRequest({
     path: '/uapi/overseas-price/v1/quotations/dailyprice',
-    trId: OVERSEAS_TR_ID.DAILY_CHART,
+    trId: getOverseasTrId().DAILY_CHART,
     params: {
       AUTH: '',
       EXCD: excd,
@@ -174,7 +177,7 @@ export async function placeOverseasOrder(params: {
 }) {
   const { stockCode, exchange = 'NASDAQ', side, quantity, price } = params;
   const excd = ORDER_EXCD_MAP[exchange] ?? EXCHANGE_MAP[exchange] ?? 'NAS';
-  const trId = side === 'BUY' ? OVERSEAS_TR_ID.BUY : OVERSEAS_TR_ID.SELL;
+  const trId = side === 'BUY' ? getOverseasTrId().BUY : getOverseasTrId().SELL;
 
   const body: Record<string, string> = {
     CANO: config.kis.accountNo,
@@ -282,7 +285,7 @@ export async function getOverseasBalance(exchange: string = 'NASDAQ') {
 
   const res = await overseasKisRequest({
     path: '/uapi/overseas-stock/v1/trading/inquire-balance',
-    trId: OVERSEAS_TR_ID.BALANCE,
+    trId: getOverseasTrId().BALANCE,
     params: {
       CANO: config.kis.accountNo,
       ACNT_PRDT_CD: config.kis.accountProductCode,
@@ -317,7 +320,7 @@ export async function getOverseasBuyableAmount(exchange: string = 'NASDAQ'): Pro
     const excd = ORDER_EXCD_MAP[exchange] ?? EXCHANGE_MAP[exchange] ?? 'NASD';
     const res = await overseasKisRequest({
       path: '/uapi/overseas-stock/v1/trading/inquire-psamount',
-      trId: OVERSEAS_TR_ID.BUYABLE,
+      trId: getOverseasTrId().BUYABLE,
       params: {
         CANO: config.kis.accountNo,
         ACNT_PRDT_CD: config.kis.accountProductCode,

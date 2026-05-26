@@ -11,11 +11,11 @@ import { calcDailyLossLimit } from './seed-capital.js';
 import { getCash as getOverseasCash, getHoldings as getOverseasHoldings } from '../scheduler/overseas/state.js';
 import { getFxRate } from '../api/routes/dashboard/helpers.js';
 
-async function getBalance(): Promise<AccountBalance> {
-  if (config.isPaper) {
+async function getBalance(isPaper: boolean): Promise<AccountBalance> {
+  if (isPaper) {
     return getPaperBalance();
   }
-  return getAccountBalance();
+  return getAccountBalance(true); // forceRefresh — stale cache can cause false 414% rejections
 }
 
 export interface PreTradeCheckResult {
@@ -29,8 +29,10 @@ export class RiskEngine {
     side: 'BUY' | 'SELL';
     quantity: number;
     estimatedPrice: number;
+    isPaper?: boolean;
   }): Promise<PreTradeCheckResult> {
     const { stockCode, side, quantity, estimatedPrice } = params;
+    const isPaper = typeof params.isPaper === 'boolean' ? params.isPaper : config.isPaper;
     const orderValue = quantity * estimatedPrice;
 
     // 매도는 항상 허용 (킬스위치와 무관 — 포지션 탈출은 절대 막으면 안 됨)
@@ -44,39 +46,39 @@ export class RiskEngine {
     }
 
     // 2. 동시 보유 종목 수 체크 (신규 매수만)
-    const concurrentCheck = await this.checkConcurrentPositions(stockCode);
+    const concurrentCheck = await this.checkConcurrentPositions(stockCode, isPaper);
     if (!concurrentCheck.approved) return concurrentCheck;
 
     // 3. 일일 매매 횟수 체크
-    const dailyTradeCheck = await this.checkDailyTradeCount();
+    const dailyTradeCheck = await this.checkDailyTradeCount(isPaper);
     if (!dailyTradeCheck.approved) return dailyTradeCheck;
 
     // 4. 종목당 최대 투자 한도 체크
-    const positionCheck = await this.checkPositionLimit(stockCode, orderValue);
+    const positionCheck = await this.checkPositionLimit(stockCode, orderValue, isPaper);
     if (!positionCheck.approved) return positionCheck;
 
     // 5. 일일 최대 손실 (Drawdown) 체크
-    const drawdownCheck = await this.checkDailyDrawdown();
+    const drawdownCheck = await this.checkDailyDrawdown(isPaper);
     if (!drawdownCheck.approved) return drawdownCheck;
 
     // 5-B. 월간 MDD -8% 체크
-    const monthlyMddCheck = await this.checkMonthlyMDD();
+    const monthlyMddCheck = await this.checkMonthlyMDD(isPaper);
     if (!monthlyMddCheck.approved) return monthlyMddCheck;
 
     // 6. 총 투자 비율 체크
-    const exposureCheck = await this.checkTotalExposure(orderValue);
+    const exposureCheck = await this.checkTotalExposure(orderValue, isPaper);
     if (!exposureCheck.approved) return exposureCheck;
 
     // 7. 주문 가능 현금 체크
-    const cashCheck = await this.checkCash(orderValue);
+    const cashCheck = await this.checkCash(orderValue, isPaper);
     if (!cashCheck.approved) return cashCheck;
 
     return { approved: true, reason: '✅ 모든 리스크 체크 통과' };
   }
 
-  private async checkConcurrentPositions(stockCode: string): Promise<PreTradeCheckResult> {
+  private async checkConcurrentPositions(stockCode: string, isPaper: boolean): Promise<PreTradeCheckResult> {
     try {
-      const chains = await getOpenChains();
+      const chains = await getOpenChains(isPaper);
       const existingChain = chains.find((c) => c.stock_code === stockCode);
 
       if (existingChain) {
@@ -103,14 +105,15 @@ export class RiskEngine {
     }
   }
 
-  private async checkDailyTradeCount(): Promise<PreTradeCheckResult> {
+  private async checkDailyTradeCount(isPaper: boolean): Promise<PreTradeCheckResult> {
     try {
       const pool = getPool();
       const kstNow = new Date(Date.now() + 9 * 3600_000);
       const today = kstNow.toISOString().split('T')[0];
+      const tradingMode = isPaper ? 'paper' : 'live';
       const { rows } = await pool.query<{ count: string }>(
         `SELECT COUNT(*)::text AS count FROM orders WHERE created_at >= $1::date AND created_at < ($1::date + INTERVAL '1 day') AND trading_mode = $2`,
-        [today, config.tradingMode],
+        [today, tradingMode],
       );
       const todayCount = Number(rows[0]?.count ?? 0);
 
@@ -128,8 +131,8 @@ export class RiskEngine {
     }
   }
 
-  private async checkPositionLimit(stockCode: string, orderValue: number): Promise<PreTradeCheckResult> {
-    const balance = await getBalance();
+  private async checkPositionLimit(stockCode: string, orderValue: number, isPaper: boolean): Promise<PreTradeCheckResult> {
+    const balance = await getBalance(isPaper);
     const existing = balance.positions.find((p) => p.stockCode === stockCode);
     const currentInvested = existing ? existing.quantity * existing.avgBuyPrice : 0;
     const totalAfter = currentInvested + orderValue;
@@ -153,12 +156,12 @@ export class RiskEngine {
     return { approved: true, reason: 'OK' };
   }
 
-  private async checkDailyDrawdown(): Promise<PreTradeCheckResult> {
+  private async checkDailyDrawdown(isPaper: boolean): Promise<PreTradeCheckResult> {
     const startSnapshot = await getTodayStartSnapshot();
     if (!startSnapshot) {
       logger.warn('⚠️ 장시작 스냅샷 없음 → 자동 생성 후 매매 허용', { component: 'RISK' });
       try {
-        const balance = await getBalance();
+        const balance = await getBalance(isPaper);
         await insertSnapshot({
           total_value: balance.totalDeposit + balance.totalEvalAmount,
           cash_balance: balance.orderableCash,
@@ -174,7 +177,7 @@ export class RiskEngine {
       }
     }
 
-    const currentBalance = await getBalance();
+    const currentBalance = await getBalance(isPaper);
     const startValue = Number(startSnapshot.total_value);
     const currentValue = currentBalance.totalDeposit + currentBalance.totalEvalAmount;
     const dailyLoss = startValue - currentValue;
@@ -235,10 +238,11 @@ export class RiskEngine {
     return { approved: true, reason: 'OK' };
   }
 
-  private async checkTotalExposure(orderValue: number): Promise<PreTradeCheckResult> {
-    const balance = await getBalance();
+  private async checkTotalExposure(orderValue: number, isPaper: boolean): Promise<PreTradeCheckResult> {
+    const balance = await getBalance(isPaper);
     const totalPortfolio = balance.totalDeposit + balance.totalEvalAmount;
-    if (totalPortfolio === 0) return { approved: true, reason: 'OK' };
+    // 소자산(100만 미만)은 비율 체크 의미 없음 — cashCheck가 유일한 실질 관문
+    if (totalPortfolio === 0 || totalPortfolio < 1_000_000) return { approved: true, reason: 'OK' };
 
     const afterExposurePct = ((balance.totalEvalAmount + orderValue) / totalPortfolio) * 100;
 
@@ -250,8 +254,8 @@ export class RiskEngine {
     }
 
     // 국내 배분 비중 체크 — kr_pct 목표 준수
-    // 소자산(200만 미만)은 배분 비중 체크 면제 — 소규모 계좌에서 국내/해외 비율 강제는 의미 없음
-    if (totalPortfolio >= 2000000) {
+    // 소자산(200만 미만) 또는 연습모드(해외 상태 미분리)는 배분 비중 체크 면제
+    if (!isPaper && totalPortfolio >= 2000000) {
       try {
         const [osCash, osHoldings, fx] = await Promise.all([getOverseasCash(), getOverseasHoldings(), getFxRate()]);
         const osHoldingCostUsd = Array.from(osHoldings.values()).reduce((sum, h) => sum + h.qty * h.avgPrice, 0);
@@ -274,11 +278,11 @@ export class RiskEngine {
     return { approved: true, reason: 'OK' };
   }
 
-  private async checkMonthlyMDD(): Promise<PreTradeCheckResult> {
+  private async checkMonthlyMDD(isPaper: boolean): Promise<PreTradeCheckResult> {
     try {
       // 소자산 포트폴리오(20만 미만)는 월간 MDD 체크 면제
       // 외부 매도/입출금으로 잔고 급감 시 MDD가 -90%+ 되어 영구 차단되는 문제 방지
-      const currentBalance = await getBalance();
+      const currentBalance = await getBalance(isPaper);
       const currentTotal = currentBalance.totalDeposit + currentBalance.totalEvalAmount;
       if (currentTotal < 200000) {
         return { approved: true, reason: '소자산 포트폴리오 — 월간 MDD 면제' };
@@ -290,7 +294,7 @@ export class RiskEngine {
       kstMonth.setUTCHours(0, 0, 0, 0);
       const { rows } = await pool.query<{ total_value: string }>(
         `SELECT total_value FROM portfolio_snapshots WHERE snapshot_at >= $1 AND is_paper = $2 ORDER BY snapshot_at ASC`,
-        [kstMonth.toISOString(), config.isPaper],
+        [kstMonth.toISOString(), isPaper],
       );
       if (rows.length < 2) return { approved: true, reason: 'OK' };
 
@@ -304,8 +308,8 @@ export class RiskEngine {
       }
       const mddPct = ((peakValue - latestValue) / peakValue) * 100;
 
-      const mddLimit = config.isPaper ? 40 : 8;
-      const mddWarn = config.isPaper ? 30 : 6;
+      const mddLimit = isPaper ? 40 : 8;
+      const mddWarn = isPaper ? 30 : 6;
       if (mddPct >= mddLimit) {
         await activateKillSwitch(
           `월간 MDD 한도 초과: 고점 대비 -${mddPct.toFixed(1)}% (한도 -${mddLimit}%)`,
@@ -332,8 +336,8 @@ export class RiskEngine {
     }
   }
 
-  private async checkCash(orderValue: number): Promise<PreTradeCheckResult> {
-    const balance = await getBalance();
+  private async checkCash(orderValue: number, isPaper: boolean): Promise<PreTradeCheckResult> {
+    const balance = await getBalance(isPaper);
 
     if (orderValue > balance.orderableCash) {
       return {

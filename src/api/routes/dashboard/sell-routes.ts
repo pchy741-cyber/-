@@ -312,7 +312,8 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
 sellRoutes.post('/sell-overseas/:stockCode', async (c) => {
   const stockCode = c.req.param('stockCode');
   try {
-    const isPaper = config.isPaper;
+    const body = await c.req.json().catch(() => ({}));
+    const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
     const { rows } = await getPool().query(
       'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0 AND is_paper = $2', [stockCode, isPaper]);
     const holding = rows[0];
@@ -409,7 +410,7 @@ sellRoutes.post('/sell-overseas/:stockCode', async (c) => {
 
 // ── Claude Code 수동 매수 (복리 동적 사이징) ──
 sellRoutes.post('/manual-buy', async (c) => {
-  let body: { stock_code?: string; amount_krw?: number; ai_score?: number; reasoning?: string };
+  let body: { stock_code?: string; amount_krw?: number; ai_score?: number; reasoning?: string; is_paper?: boolean };
   try {
     body = await c.req.json();
   } catch {
@@ -419,6 +420,8 @@ sellRoutes.post('/manual-buy', async (c) => {
   const stock_code = String(body.stock_code ?? '').trim().replace(/\D/g, '');
   const { reasoning } = body;
   const aiScore = body.ai_score ?? 0;
+  const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
+  const tradingMode = isPaper ? 'paper' : 'live';
   if (!stock_code || stock_code.length !== 6) {
     return c.json({ error: 'stock_code는 숫자 6자리여야 합니다' }, 400);
   }
@@ -432,21 +435,23 @@ sellRoutes.post('/manual-buy', async (c) => {
     let amount_krw = body.amount_krw ?? 0;
     if (amount_krw < 10000) {
       try {
-        const balance = config.isPaper ? await getPaperBalance() : await getAccountBalance(true);
+        const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
         const totalCapital = balance.totalEvalAmount + balance.orderableCash;
+        const availCash = balance.orderableCash;
         const slFraction = Math.abs(stopLossPct) / 100;
         const riskBudget = totalCapital * 0.015;
         const computed = Math.round(riskBudget / slFraction);
         const capByAlloc = Math.round(totalCapital * MAX_ALLOC_PCT);
-        amount_krw = Math.max(Math.min(computed, capByAlloc), 50000);
+        // 가용현금 초과 방지 + 최소 10,000원 (1주 살 수 있는지는 이후 체크)
+        const capByCash = Math.round(availCash * 0.95);
+        amount_krw = Math.max(Math.min(computed, capByAlloc, capByCash), 10000);
         logger.info(
-          `💰 동적 사이징: 총자본 ${(totalCapital / 10000).toFixed(0)}만원 × 1.5% / ${Math.abs(stopLossPct)}%SL = ${(computed / 10000).toFixed(1)}만원` +
-          `${computed > capByAlloc ? ` → 20%캡 ${(capByAlloc / 10000).toFixed(1)}만원 적용` : ''}`,
+          `💰 동적 사이징: 총자본 ${(totalCapital / 10000).toFixed(0)}만원 가용현금 ${(availCash / 10000).toFixed(1)}만원 × 1.5% / ${Math.abs(stopLossPct)}%SL = ${(computed / 10000).toFixed(1)}만원 → ${(amount_krw / 10000).toFixed(1)}만원`,
           { component: 'CLAUDE_BUY' },
         );
       } catch (e) {
-        logger.warn(`잔고 조회 실패 → 기본 10만원 사용: ${e}`, { component: 'CLAUDE_BUY' });
-        amount_krw = 100000;
+        logger.error(`잔고 조회 실패 — 주문 중단: ${e}`, { component: 'CLAUDE_BUY' });
+        return c.json({ error: `잔고 조회 실패로 주문 중단: ${e instanceof Error ? e.message : e}` }, 503);
       }
     }
 
@@ -457,27 +462,30 @@ sellRoutes.post('/manual-buy', async (c) => {
     const quantity = Math.floor(amount_krw / curPrice);
     if (quantity < 1) return c.json({ error: `수량 부족: ${curPrice.toLocaleString()}원 × 1주 > ${amount_krw.toLocaleString()}원` }, 400);
 
-    // 리스크 엔진 사전 검증 (킬스위치, 동시보유 수, 일일 손실, 투자비율 등)
-    try {
-      const riskResult = await riskEngine.validateOrder({
-        stockCode: stock_code,
-        side: 'BUY',
-        quantity,
-        estimatedPrice: curPrice,
-      });
-      if (!riskResult.approved) {
-        logger.warn(`🚫 수동매수 리스크 거부: ${stock_code} — ${riskResult.reason}`, { component: 'CLAUDE_BUY' });
-        return c.json({ error: `리스크 체크 거부: ${riskResult.reason}` }, 403);
+    // 실전 모드만 리스크 엔진 검증 — 모의투자는 실전 자금 제약 없이 자유롭게 테스트
+    if (!isPaper) {
+      try {
+        const riskResult = await riskEngine.validateOrder({
+          stockCode: stock_code,
+          side: 'BUY',
+          quantity,
+          estimatedPrice: curPrice,
+          isPaper: false,
+        });
+        if (!riskResult.approved) {
+          logger.warn(`🚫 수동매수 리스크 거부: ${stock_code} — ${riskResult.reason}`, { component: 'CLAUDE_BUY' });
+          return c.json({ error: `리스크 체크 거부: ${riskResult.reason}` }, 403);
+        }
+      } catch (e) {
+        logger.warn(`리스크 엔진 조회 실패 — 매수 진행 차단: ${e}`, { component: 'CLAUDE_BUY' });
+        return c.json({ error: '리스크 엔진 조회 실패 — 안전을 위해 매수 차단' }, 500);
       }
-    } catch (e) {
-      logger.warn(`리스크 엔진 조회 실패 — 매수 진행 차단: ${e}`, { component: 'CLAUDE_BUY' });
-      return c.json({ error: '리스크 엔진 조회 실패 — 안전을 위해 매수 차단' }, 500);
     }
 
     const totalInvested = quantity * curPrice;
     const rrStr = `TP+${takeProfitPct}%/SL${stopLossPct}%(${(takeProfitPct / Math.abs(stopLossPct)).toFixed(2)}:1)`;
 
-    if (config.isPaper) {
+    if (isPaper) {
       const fakeOrderNo = `CLD${Date.now().toString(36).toUpperCase()}`;
       const chainId = await createChain({
         stock_code,
@@ -491,11 +499,12 @@ sellRoutes.post('/manual-buy', async (c) => {
         stop_loss_pct: stopLossPct,
         max_averaging_count: STRATEGY_PARAMS.SWING.maxAveragingCount,
         current_averaging_count: 0,
+        is_paper: true,
       });
       await getPool().query(
         `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
          VALUES ($1, $2, 'BUY', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, 'CLAUDE', $7)`,
-        [chainId, stock_code, quantity, curPrice, fakeOrderNo, config.tradingMode, reasoning ?? 'Claude Code 눌림매매'],
+        [chainId, stock_code, quantity, curPrice, fakeOrderNo, tradingMode, reasoning ?? 'Claude Code 눌림매매'],
       );
       logger.info(`🤖 Claude 매수 (모의): ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 ${rrStr} — ${reasoning}`, { component: 'CLAUDE_BUY' });
       try { await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑'); } catch { /* 알림 실패 무시 */ }
@@ -529,13 +538,14 @@ sellRoutes.post('/manual-buy', async (c) => {
       stop_loss_pct: stopLossPct,
       max_averaging_count: STRATEGY_PARAMS.SWING.maxAveragingCount,
       current_averaging_count: 0,
+      is_paper: false,
     });
     await getPool().query(
       `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
        VALUES ($1, $2, 'BUY', 'MARKET', $3, $4, $5, $6, $7, $8, $9, 'CLAUDE', $10)`,
       [chainId, stock_code, quantity, curPrice,
        confirmed ? quantity : 0, confirmed ? curPrice : 0,
-       kisOrderNo, orderStatus, config.tradingMode, reasoning ?? 'Claude Code 눌림매매'],
+       kisOrderNo, orderStatus, tradingMode, reasoning ?? 'Claude Code 눌림매매'],
     );
     logger.info(`🤖 Claude 매수 ${confirmed ? '체결' : '접수'}: ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 (${kisOrderNo}) ${rrStr} — ${reasoning}`, { component: 'CLAUDE_BUY' });
     try { await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑'); } catch { /* 알림 실패 무시 */ }

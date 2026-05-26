@@ -19,17 +19,27 @@
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 
-const PAPER_SEED_KR = 10_000_000;       // 모의 국내 1천만원
-const PAPER_SEED_OVERSEAS = 10_000;      // 모의 해외 $10K
 const DEFAULT_SEED_KR = 10_000_000;
 const DEFAULT_SEED_OVERSEAS = 10_000;
 
-// Live 전용 캐시 — paper 모드는 상수 직접 반환하므로 캐시 불필요
+// 캐시 (paper/live 분리)
 let cachedKrLive: number | null = null;
+let cachedKrPaper: number | null = null;
 let cachedOverseasLive: number | null = null;
 
 export async function getSeedCapitalKr(): Promise<number> {
-  if (config.isPaper) return PAPER_SEED_KR;
+  if (config.isPaper) {
+    // paper 시드자본 = 실제 모의 계좌 잔고 (고정 상수 제거)
+    if (cachedKrPaper !== null) return cachedKrPaper;
+    try {
+      const { getPaperBalance } = await import('./paper-balance.js');
+      const bal = await getPaperBalance();
+      const total = bal.totalDeposit + bal.totalEvalAmount;
+      if (total > 0) { cachedKrPaper = total; return cachedKrPaper; }
+    } catch {}
+    cachedKrPaper = DEFAULT_SEED_KR;
+    return cachedKrPaper;
+  }
 
   if (cachedKrLive !== null) return cachedKrLive;
 
@@ -49,7 +59,7 @@ export async function getSeedCapitalKr(): Promise<number> {
 }
 
 export async function getSeedCapitalOverseas(): Promise<number> {
-  if (config.isPaper) return PAPER_SEED_OVERSEAS;
+  if (config.isPaper) return DEFAULT_SEED_OVERSEAS;
 
   if (cachedOverseasLive !== null) return cachedOverseasLive;
 
@@ -74,9 +84,10 @@ export async function setSeedCapital(market: 'KR' | 'OVERSEAS', amount: number):
   if (amount <= 0) return;
 
   if (config.isPaper) {
-    // Paper seed capital은 상수로 고정 — DB 쓰기 불필요
+    // Paper 모드: 실제 계좌잔고가 기준 → 캐시만 업데이트, DB 쓰기 불필요
+    if (market === 'KR') cachedKrPaper = amount;
     logger.info(
-      `💰 [모의] 기준자본 고정 [${market === 'KR' ? '국내' : '해외'}]: ${market === 'KR' ? `${PAPER_SEED_KR.toLocaleString()}원` : `$${PAPER_SEED_OVERSEAS.toLocaleString()}`}`,
+      `💰 [모의] 기준자본 업데이트 [${market === 'KR' ? '국내' : '해외'}]: ${market === 'KR' ? `${amount.toLocaleString()}원` : `$${amount.toLocaleString()}`}`,
       { component: 'RISK' },
     );
     return;
@@ -107,8 +118,8 @@ export async function setSeedCapital(market: 'KR' | 'OVERSEAS', amount: number):
 
 export function getSeedCapitalStatus() {
   return {
-    kr: config.isPaper ? PAPER_SEED_KR : (cachedKrLive ?? DEFAULT_SEED_KR),
-    overseas: config.isPaper ? PAPER_SEED_OVERSEAS : (cachedOverseasLive ?? DEFAULT_SEED_OVERSEAS),
+    kr: config.isPaper ? (cachedKrPaper ?? DEFAULT_SEED_KR) : (cachedKrLive ?? DEFAULT_SEED_KR),
+    overseas: config.isPaper ? DEFAULT_SEED_OVERSEAS : (cachedOverseasLive ?? DEFAULT_SEED_OVERSEAS),
   };
 }
 
@@ -136,8 +147,9 @@ export const OVERSEAS_LOSS_TIERS = { warnPct: 10, blockPct: 20, killPct: 30 } as
 /** 서버 시작 시 DB에서 기준자본 로드 */
 export async function initSeedCapital(): Promise<void> {
   await Promise.all([getSeedCapitalKr(), getSeedCapitalOverseas()]);
+  const krVal = config.isPaper ? (cachedKrPaper ?? DEFAULT_SEED_KR) : (cachedKrLive ?? DEFAULT_SEED_KR);
   logger.info(
-    `💰 기준자본 로드: 국내 ${(cachedKrLive ?? DEFAULT_SEED_KR).toLocaleString()}원 / 해외 $${(cachedOverseasLive ?? DEFAULT_SEED_OVERSEAS).toLocaleString()}`,
+    `💰 기준자본 로드: 국내 ${krVal.toLocaleString()}원 / 해외 $${(cachedOverseasLive ?? DEFAULT_SEED_OVERSEAS).toLocaleString()}`,
     { component: 'RISK' },
   );
 }

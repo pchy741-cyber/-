@@ -9,7 +9,7 @@ import StockCard from './watchlist/StockCard';
 import StockAnalysisPanel from './watchlist/StockAnalysisPanel';
 import SoldStocksPanel from './watchlist/SoldStocksPanel';
 
-function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh }: any) {
+function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh, viewMode = 'live' }: any) {
   const usW = usDash?.watchlist || [];
   const chains = dash?.chains || [];
   const getWatchlistName = (code: string) => {
@@ -162,8 +162,9 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
       {/* 최근 매도 추적 */}
       <SoldStocksPanel
         toast={toast}
+        viewMode={viewMode}
         onReAdd={async () => {
-          const w = await api('/watchlist'); setWatchlist(Array.isArray(w) ? w : []);
+          const w = await api(`/watchlist?viewMode=${viewMode}`); setWatchlist(Array.isArray(w) ? w : []);
         }}
       />
     </div>

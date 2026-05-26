@@ -24,16 +24,16 @@ function formatRelativeDate(dateStr: string): string {
   return `${Math.floor(days / 30)}개월 전`;
 }
 
-function SoldStocksPanel({ toast, onReAdd }: { toast: (msg: string) => void; onReAdd: () => void }) {
+function SoldStocksPanel({ toast, onReAdd, viewMode = 'live' }: { toast: (msg: string) => void; onReAdd: () => void; viewMode?: string }) {
   const [soldStocks, setSoldStocks] = useState<SoldStock[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api('/watchlist/sold-tracking')
+    api(`/watchlist/sold-tracking?viewMode=${viewMode}`)
       .then((data) => setSoldStocks(Array.isArray(data) ? data : []))
       .catch(() => setSoldStocks([]))
       .finally(() => setLoading(false));
-  }, []);
+  }, [viewMode]);
 
   const handleReAdd = async (stock: SoldStock) => {
     try {

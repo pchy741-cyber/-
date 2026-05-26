@@ -11,13 +11,14 @@ interface KrHoldingsTabProps {
   guard: (key: string, fn: () => Promise<void>) => () => Promise<void>;
   getStockName: (code: string) => string;
   onRefresh: () => void;
+  viewMode?: 'paper' | 'live';
 }
 
 const STRATEGY_TP_SL: Record<string, [number, number]> = {
   SWING: [5.5, -3.0], DEFENSE: [5.0, -2.0], SCALPING: [0.8, -0.8], DIVIDEND: [3.0, -1.5], SNIPER: [8.0, -4.0],
 };
 
-export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStockName, onRefresh }: KrHoldingsTabProps) {
+export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStockName, onRefresh, viewMode = 'live' }: KrHoldingsTabProps) {
   if (chains.length === 0) {
     return (
       <div className="p-8 text-center space-y-3">
@@ -76,9 +77,9 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
             </div>
             <div className="flex justify-end mt-3">
               <button disabled={!!busyAction} onClick={guard(`sell-park-${ch.stock_code}`, async () => {
-                const lwP = dash?.tradingMode === 'live' ? '⚠️ [실전모드] ' : '';
+                const lwP = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
                 if (!confirm(`${lwP}${displayName} ${qty}주 전량 매도하시겠습니까?\n(파킹 해제)`)) return;
-                try { const r = await api(`/sell-stock/${ch.stock_code}`, { method: 'POST', timeout: 40000 }); alert(r.message || '매도 완료'); onRefresh(); }
+                try { const r = await api(`/sell-stock/${ch.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 }); alert(r.message || '매도 완료'); onRefresh(); }
                 catch (err: any) { alert('매도 실패: ' + err.message); }
               })} className="text-xs px-3 py-1.5 rounded-lg bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 transition-colors border border-white/[0.05] disabled:opacity-40">
                 파킹 해제
@@ -167,9 +168,9 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
                   </button>
                 )}
                 <button disabled={!!busyAction} onClick={guard(`sell-${ch.stock_code}`, async () => {
-                  const liveW = dash?.tradingMode === 'live' ? '⚠️ [실전모드] ' : '';
+                  const liveW = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
                   if (!confirm(`${liveW}${displayName} ${qty}주 전량 시장가 매도하시겠습니까?`)) return;
-                  try { const r = await api(`/sell-stock/${ch.stock_code}`, { method: 'POST', timeout: 40000 }); alert(r.message || '매도 완료'); onRefresh(); }
+                  try { const r = await api(`/sell-stock/${ch.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 }); alert(r.message || '매도 완료'); onRefresh(); }
                   catch (err: any) { alert('매도 실패: ' + err.message); }
                 })} className="text-xs px-2.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 font-medium border border-white/[0.04] whitespace-nowrap disabled:opacity-40">
                   전량 매도

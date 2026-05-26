@@ -13,6 +13,7 @@ interface UsHoldingsTabProps {
   guard: (key: string, fn: () => Promise<void>) => () => Promise<void>;
   onRefresh: () => void;
   toast: any;
+  viewMode?: 'paper' | 'live';
   insightsDraft: string;
   setInsightsDraft: (v: string) => void;
   insightsSaving: boolean;
@@ -24,6 +25,7 @@ interface UsHoldingsTabProps {
 export default function UsHoldingsTab({
   usHoldings, usW, dash, busyAction, guard, onRefresh, toast,
   insightsDraft, setInsightsDraft, insightsSaving, setInsightsSaving, usInsights, setUsInsights,
+  viewMode = 'live',
 }: UsHoldingsTabProps) {
   return (
     <div>
@@ -59,10 +61,10 @@ export default function UsHoldingsTab({
                   ) : <span className="text-xs text-slate-600">시세 없음</span>}
                 </div>
                 <button disabled={!!busyAction} onClick={guard(`sell-us-${h.stock_code}`, async () => {
-                  const liveUS = dash?.tradingMode === 'live' ? '⚠️ [실전모드] ' : '';
+                  const liveUS = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
                   if (!confirm(`${liveUS}${usDisplayName} ${h.quantity}주 전량 시장가 매도하시겠습니까?`)) return;
                   try {
-                    const r = await api(`/sell-overseas/${h.stock_code}`, { method: 'POST', timeout: 40000 });
+                    const r = await api(`/sell-overseas/${h.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 });
                     alert(r.message || '매도 완료');
                     onRefresh();
                   } catch (err: any) { alert('매도 실패: ' + err.message); }

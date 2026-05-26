@@ -219,6 +219,7 @@ export class TradeExecutor {
         side: 'BUY',
         quantity: gatedQuantity,
         estimatedPrice,
+        isPaper: isPaperSnapshot,
       });
 
       if (!riskCheck.approved) {
@@ -342,6 +343,7 @@ export class TradeExecutor {
     limitPrice: number | undefined,
     reasoning: string,
   ): Promise<void> {
+    const isPaperSnapshot = config.isPaper;
     const chain = await chainManager.findOpenChain(stockCode);
     if (!chain) {
       logger.warn(`물타기 실패: ${stockCode} 열린 체인 없음`, { component: 'EXECUTOR' });
@@ -395,6 +397,7 @@ export class TradeExecutor {
       side: 'BUY',
       quantity,
       estimatedPrice,
+      isPaper: isPaperSnapshot,
     });
 
     if (!riskCheck.approved) {

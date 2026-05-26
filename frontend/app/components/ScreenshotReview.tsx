@@ -35,6 +35,7 @@ interface Props {
   killSwitch?: any;
   strategy?: any;
   loopStatus?: LoopStatus | null;
+  toast?: (msg: string, type?: 'ok' | 'err' | 'info') => void;
 }
 
 interface CopilotData {
@@ -158,17 +159,21 @@ export default function ScreenshotReview(props: Props) {
     try {
       if (loopStatus?.active) {
         await api('/loop/stop', { method: 'POST' });
+        props.toast?.('해외 자동매매 루프 중지됨', 'info');
       } else {
         await api('/loop/start', { method: 'POST' });
+        props.toast?.('해외 자동매매 루프 시작됨 (5분 간격)', 'ok');
       }
       const status = await api('/loop/status');
       setLocalLoopStatus(status as LoopStatus);
     } catch (err) {
+      const msg = err instanceof Error ? err.message : '알 수 없는 오류';
+      props.toast?.(`AP 루프 오류: ${msg}`, 'err');
       console.error('Loop toggle failed:', err);
     } finally {
       setTogglingLoop(false);
     }
-  }, [togglingLoop, loopStatus]);
+  }, [togglingLoop, loopStatus, props.toast]);
 
   const captureAllTabs = useCallback(async () => {
     if (capturing) return;
@@ -299,14 +304,14 @@ export default function ScreenshotReview(props: Props) {
             ? 'bg-emerald-600/90 text-white animate-pulse ring-2 ring-emerald-400/40'
             : 'bg-slate-800/90 text-slate-400 hover:bg-slate-700 hover:text-slate-200 border border-white/10'
         }`}
-        title={loopStatus?.active ? `Auto Pilot ON (${loopStatus.totalRuns}회 실행)` : 'Auto Pilot OFF — 클릭하여 5분 루프 시작'}
+        title={loopStatus?.active ? `해외 자동매매 루프 ON (${loopStatus.totalRuns}회 실행)\n클릭하면 중지` : '해외 자동매매 루프 OFF\n클릭하면 5분 간격 자동 실행 시작'}
       >
         <div className="flex flex-col items-center leading-none">
-          <span className="text-[9px] font-black tracking-wider">AP</span>
+          <span className="text-[9px] font-black tracking-wider">US</span>
           {loopStatus?.active ? (
             <span className="text-[11px] font-bold mt-0.5">{loopStatus.totalRuns}</span>
           ) : (
-            <span className="text-[8px] mt-0.5 opacity-60">OFF</span>
+            <span className="text-[8px] mt-0.5 opacity-60">루프</span>
           )}
         </div>
       </button>
