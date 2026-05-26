@@ -45,6 +45,7 @@ export interface SellContext {
   aiMap: Map<string, AIDecision>;
   vixRegime: RegimeAdjustment;
   cash: number;
+  isPaper?: boolean;
 }
 
 export interface SellResult {
@@ -59,6 +60,7 @@ export interface SellResult {
  */
 export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
   const { holdings, pendingOrderStocks, techResults, aiMap, vixRegime } = ctx;
+  const paperMode = ctx.isPaper;
   let { cash } = ctx;
   const sellOrders: string[] = [];
 
@@ -74,9 +76,9 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     const pnlPct = ((curPrice - holding.avgPrice) / holding.avgPrice) * 100;
     const ai = aiMap.get(code);
 
-    const prevMax = await getMaxPrice(code);
+    const prevMax = await getMaxPrice(code, paperMode);
     const newMax = Math.max(prevMax || holding.avgPrice, curPrice);
-    if (newMax > prevMax) await setMaxPrice(code, newMax);
+    if (newMax > prevMax) await setMaxPrice(code, newMax, paperMode);
     const maxPnlPct = ((newMax - holding.avgPrice) / holding.avgPrice) * 100;
     const drawdownFromPeak = ((curPrice - newMax) / newMax) * 100;
 
@@ -130,12 +132,12 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
         const partialQty = Math.max(1, Math.floor(holding.qty * nextStage.sellRatio));
         const partialReason = `부분익절${nextStage.stage}단계(+${nextStage.triggerPct}%) +${pnlPct.toFixed(1)}% → ${(nextStage.sellRatio * 100).toFixed(0)}% 실현`;
         logger.info(`[PartialTP-${nextStage.stage}] ${code} ${partialQty}주 @ $${curPrice.toFixed(2)} (${partialReason})`, { component: 'OVERSEAS' });
-        const exec = await executeOverseasOrder(code, 'SELL', partialQty, curPrice, tech.exchange, partialReason, holding.qty, holding.avgPrice);
+        const exec = await executeOverseasOrder(code, 'SELL', partialQty, curPrice, tech.exchange, partialReason, holding.qty, holding.avgPrice, { isPaper: paperMode });
         if (exec.submitted && exec.filledQty > 0) {
           const proceeds = exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
           cash += proceeds;
-          await updateTradeState({ code, exchange: tech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash });
-          await setPartialTpStageNum(code, nextStage.stage);
+          await updateTradeState({ code, exchange: tech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: paperMode });
+          await setPartialTpStageNum(code, nextStage.stage, paperMode);
           sellOrders.push(`부분익절${nextStage.stage} ${code} x${partialQty} @$${exec.filledPrice.toFixed(2)} (${partialReason})`);
         }
         continue;
@@ -143,7 +145,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     }
 
     if (sellReason) {
-      const exec = await executeOverseasOrder(code, 'SELL', holding.qty, curPrice, tech.exchange, sellReason, holding.qty, holding.avgPrice);
+      const exec = await executeOverseasOrder(code, 'SELL', holding.qty, curPrice, tech.exchange, sellReason, holding.qty, holding.avgPrice, { isPaper: paperMode });
       if (!exec.submitted) continue;
       if (exec.filledQty <= 0) {
         pendingOrderStocks.add(code);
@@ -152,12 +154,12 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       }
       const proceeds = exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
       cash += proceeds;
-      await updateTradeState({ code, exchange: tech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash });
+      await updateTradeState({ code, exchange: tech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: paperMode });
       if (exec.finalQty <= 0) {
-        await clearMaxPrice(code); await clearPartialTpStageNum(code);
+        await clearMaxPrice(code, paperMode); await clearPartialTpStageNum(code, paperMode);
         // Scale-In 예약 삭제 (paper/live prefix)
         const { getPool } = await import('../../db/client.js');
-        const pfx = config.isPaper ? 'p_' : 'l_';
+        const pfx = paperMode ? 'p_' : 'l_';
         await getPool().query(`DELETE FROM overseas_state WHERE key = $1`, [`${pfx}scale_in_${code}`]).catch(() => {});
       }
       sellOrders.push(`매도 ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (${sellReason}) [수수료 $${(exec.filledPrice * exec.filledQty * OVERSEAS_FEE_PCT).toFixed(2)}]`);

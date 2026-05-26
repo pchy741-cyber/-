@@ -116,27 +116,12 @@ export async function ensureOverseasTable(): Promise<void> {
     } catch { /* 마이그레이션 실패 → 전체 롤백, 다음 실행 시 재시도 */ }
 
     // ══════════════════════════════════════════════════
-    // Live 해외 현금: KIS 실잔고 기준, 해외매매 없으면 $0
+    // Live 해외 현금: 통합증거금 — KIS API에서 실제 주문가능금액 조회
+    // 매매 이력 유무와 무관하게 항상 KIS 기준 동기화
     // ══════════════════════════════════════════════════
     const liveKey = cashKey(false); // 'cash'
-    const { rows: liveOverseasOrders } = await getPool().query(
-      "SELECT COUNT(*) as cnt FROM orders WHERE trading_mode = 'live' AND status = 'FILLED' AND trigger_source = 'OVERSEAS'");
-    const liveOverseasCount = Number(liveOverseasOrders[0]?.cnt ?? 0);
-
-    if (liveOverseasCount === 0) {
-      // Live 해외매매 0건 → overseas cash/holdings 오염 정리
-      const { rows: liveCheck } = await getPool().query("SELECT value FROM overseas_state WHERE key = $1", [liveKey]);
-      const liveCash = liveCheck.length > 0 ? Number(liveCheck[0].value) : 0;
-      if (liveCash > 0) {
-        await getPool().query(
-          `INSERT INTO overseas_state (key, value) VALUES ($1, '0') ON CONFLICT (key) DO UPDATE SET value = '0'`, [liveKey]);
-        logger.info(`🔧 Live 해외현금 정리: $${liveCash.toFixed(0)} → $0 (해외매매 이력 0건)`, { component: 'OVERSEAS' });
-      }
-    } else {
-      // Live 해외매매 이력 있음 → 키 없으면 $0 생성 (reconcileCashWithKIS가 보정)
-      await getPool().query(
-        `INSERT INTO overseas_state (key, value) VALUES ($1, '0') ON CONFLICT (key) DO NOTHING`, [liveKey]);
-    }
+    await getPool().query(
+      `INSERT INTO overseas_state (key, value) VALUES ($1, '0') ON CONFLICT (key) DO NOTHING`, [liveKey]);
 
     // ══════════════════════════════════════════════════
     // Paper 해외 현금: computed 방식 (orders 테이블 기반 결정론적 계산)

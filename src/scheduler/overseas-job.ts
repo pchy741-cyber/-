@@ -471,7 +471,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     const effectiveVixRegime = defenseSignal.trailTighten > 0
       ? { ...vixRegime, trailTighten: vixRegime.trailTighten + defenseSignal.trailTighten }
       : vixRegime;
-    const sellResult = await evaluateSells({ holdings, pendingOrderStocks, techResults, aiMap, vixRegime: effectiveVixRegime, cash });
+    const sellResult = await evaluateSells({ holdings, pendingOrderStocks, techResults, aiMap, vixRegime: effectiveVixRegime, cash, isPaper: isPaper() });
     const sellOrders = sellResult.sellOrders;
     cash = sellResult.cash;
 
@@ -987,7 +987,11 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       const rescanMode = isPaper();
       logger.info(`🔄 매도 ${sellOrders.length}건 완료 → 60초 후 재스캔 (현금 $${cash.toFixed(0)} 재투자, ${rescanMode ? 'PAPER' : 'LIVE'})`, { component: 'OVERSEAS' });
       setTimeout(() => {
-        runOverseasJob({ isPaper: rescanMode }).catch((e) => logger.error(`재스캔 실패: ${e}`, { component: 'OVERSEAS' }));
+        // 재스캔 시 전역 모드 오버라이드 필수 (KIS API 자격증명 일치)
+        setTradingModeOverride(rescanMode ? 'paper' : 'live');
+        runOverseasJob({ isPaper: rescanMode })
+          .catch((e) => logger.error(`재스캔 실패: ${e}`, { component: 'OVERSEAS' }))
+          .finally(() => setTradingModeOverride(null));
       }, 60_000);
     }
 

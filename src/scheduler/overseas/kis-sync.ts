@@ -191,15 +191,13 @@ async function estimateSellPrice(code: string, exchange: string): Promise<number
 export async function reconcileCashWithKIS(): Promise<void> {
   if (config.isPaper) return;
   try {
-    // 해외매매 이력 없으면 동기화 불필요 (KRW→USD 환산값 오염 방지)
-    const { rows: orderCheck } = await getPool().query(
-      "SELECT COUNT(*) as cnt FROM orders WHERE trading_mode = 'live' AND status = 'FILLED' AND trigger_source = 'OVERSEAS'");
-    if (Number(orderCheck[0]?.cnt ?? 0) === 0) return;
-
     const kisCash = await getOverseasBuyableAmount();
     if (kisCash === null || kisCash === undefined) return;
     const dbCash = await getCash(false);
     const diff = Math.abs(kisCash - dbCash);
+
+    // 통합증거금: KIS API가 원화→USD 환산 주문가능금액 반환
+    // DB와 $10 이상 또는 1% 이상 차이 시 보정 (첫 매매 전에도 동기화)
     if (diff < 10 || (dbCash > 0 && diff / dbCash < 0.01)) return;
 
     logger.warn(`💰 Cash 정합: DB=$${dbCash.toFixed(0)} vs KIS=$${kisCash.toFixed(0)} (차이: $${diff.toFixed(0)})`, { component: 'OVERSEAS' });
