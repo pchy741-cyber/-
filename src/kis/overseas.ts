@@ -25,8 +25,8 @@ function getOverseasTrId() {
   return {
     PRICE: 'HHDFS00000300',
     DAILY_CHART: 'HHDFS76240000',
-    BUY: p ? 'VTTT1002U' : 'JTTT1002U',
-    SELL: p ? 'VTTT1001U' : 'JTTT1006U',
+    BUY: p ? 'VTTT1002U' : 'TTTT1002U',
+    SELL: p ? 'VTTT1001U' : 'TTTT1006U',
     BALANCE: p ? 'VTTS3012R' : 'TTTS3012R',
     BUYABLE: p ? 'VTTS3007R' : 'TTTS3007R',
   };
@@ -258,7 +258,7 @@ export async function cancelOverseasOrder(params: {
 }): Promise<{ success: boolean; message: string }> {
   const { stockCode, exchange = 'NASDAQ', orderNo, quantity } = params;
   const excd = ORDER_EXCD_MAP[exchange] ?? 'NASD';
-  const trId = config.isPaper ? 'VTTT1004U' : 'JTTT1004U';
+  const trId = config.isPaper ? 'VTTT1004U' : 'TTTT1004U';
 
   const body: Record<string, string> = {
     CANO: config.kis.accountNo,
