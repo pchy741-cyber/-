@@ -185,8 +185,10 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         if (t.isMomentum && t.score >= 25 && t.aboveMA20 && t.rsi >= 45 && t.rsi <= 68) return true;
         // STRONG_BUY: score≥30 + ADX≥20 + RSI 45-70 (AI 없이도 강한 기술 시그널)
         if (t.signal === 'STRONG_BUY' && t.score >= 30 && t.adx >= 20 && t.rsi >= 45 && t.rsi <= 70) return true;
-        // BUY: score≥40 + ADX≥25 + RSI 50-65 (더 보수적)
-        if (t.signal === 'BUY' && t.score >= 40 && t.adx >= 25 && t.rsi >= 50 && t.rsi <= 65) return true;
+        // BUY: 소액 계좌는 score≥30, 일반은 score≥40
+        const buyScoreMin = (!isPaper && portfolioValue < 500) ? 30 : 40;
+        const buyAdxMin = (!isPaper && portfolioValue < 500) ? 20 : 25;
+        if (t.signal === 'BUY' && t.score >= buyScoreMin && t.adx >= buyAdxMin && t.rsi >= 45 && t.rsi <= 70) return true;
         const isBollingerMomentum = t.bollingerBreakout === 'UP' && t.isMomentum && t.score >= 30 && t.aboveMA20 && t.rsi >= 45 && t.rsi <= 72;
         if (isBollingerMomentum) return true;
         return false;
