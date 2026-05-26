@@ -185,7 +185,7 @@ export async function placeOverseasOrder(params: {
     OVRS_EXCG_CD: excd,
     PDNO: stockCode,
     ORD_QTY: String(quantity),
-    OVRS_ORD_UNPR: price ? String(price) : '0',
+    OVRS_ORD_UNPR: price ? price.toFixed(2) : '0',
     SLL_TYPE: side === 'SELL' ? '00' : '',
     ORD_SVR_DVSN_CD: '0',
     ORD_DVSN: price ? '00' : '01', // 지정가 / 시장가
