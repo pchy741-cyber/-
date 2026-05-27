@@ -122,16 +122,11 @@ export default function Dashboard() {
         }
       }
 
-      // 해외 대시보드: viewMode에 따라 매번 갱신 — 빈 데이터면 이전 값 보존
+      // 해외 대시보드: viewMode에 따라 매번 갱신
+      // switchView()에서 setUsDash(null)을 선행하므로 모드 간 cross-contamination 없음
       api(`/overseas/dashboard?viewMode=${vm}`).then(ifCurrent((us: any) => {
         if (!us) return; // API 실패 → 이전 데이터 유지
-        setUsDash((prev: any) => {
-          // 새 데이터의 holdings가 빈 배열이고 이전에 holdings가 있었으면 이전 값 보존
-          if (prev && Array.isArray(us.holdings) && us.holdings.length === 0 && Array.isArray(prev.holdings) && prev.holdings.length > 0) {
-            return { ...us, holdings: prev.holdings };
-          }
-          return us;
-        });
+        setUsDash(us);
       })).catch(() => {});
       if (!staticLoadedRef.current) {
         api('/portfolio/allocation').then(ifCurrent((ac: any) => { if (ac) setAllocConfig(ac); })).catch(() => {});
@@ -211,12 +206,7 @@ export default function Dashboard() {
             api(`/dashboard?viewMode=${vm}`).then((d: any) => { if (d) setDash(d); }).catch(() => {});
             api(`/trades?limit=200&viewMode=${vm}`).then((t: any) => { if (Array.isArray(t) && t.length > 0) setTrades(t); }).catch(() => {});
             api(`/overseas/dashboard?viewMode=${vm}`).then((us: any) => {
-              if (us) setUsDash((prev: any) => {
-                if (prev && Array.isArray(us.holdings) && us.holdings.length === 0 && Array.isArray(prev.holdings) && prev.holdings.length > 0) {
-                  return { ...us, holdings: prev.holdings };
-                }
-                return us;
-              });
+              if (us) setUsDash(us);
             }).catch(() => {});
           }
           prevChainCount = data.activeChains ?? prevChainCount;
@@ -285,8 +275,9 @@ export default function Dashboard() {
     viewModeRef.current = mode;
     setViewMode(mode);
     try { localStorage.setItem('quantops_viewMode', mode); } catch {}
-    // 데이터 보존: null로 밀지 않음 → 새 데이터가 도착하면 자연스럽게 교체
-    // (기존에 setDash(null) 하면 로딩 스피너만 보여 데이터 유실처럼 보임)
+    // 해외 데이터는 모드 전환 시 즉시 초기화 — 모드 간 cross-contamination 방지
+    // (paper ↔ live 전환 시 이전 모드 holdings가 보존되는 버그 제거)
+    setUsDash(null);
     loadingRef.current = false;
     tradesLoadedRef.current = false;
     staticLoadedRef.current = false;

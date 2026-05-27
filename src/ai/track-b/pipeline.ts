@@ -29,9 +29,13 @@ import { getInvestorFlow } from '../../automation/investor-flow.js';
 import { calcPortfolioStressLevel, getPerformanceMultiplier, getWinRateFeedback } from '../../automation/portfolio-guard.js';
 import { applyDecisionFlow } from './decision-flow.js';
 import { reconcilePendingOrders } from '../../trading/fill-reconciler.js';
+import { sendTelegramMessage } from '../../notifications/telegram.js';
+import { analyzeTechnicals } from '../../analysis/indicators.js';
 
 // DART 캐시 갱신 추적 (DART_API_KEY 있을 때만, REFRESH.DART_INTERVAL_MS 마다)
 let _lastDartRefreshAt = 0;
+// 고확신 눌림목 텔레그램 알림 쿨다운 (30분/종목)
+const _alertedHighConviction = new Map<string, number>();
 
 /**
  * Track B 전체 파이프라인 — 장중 5분 간격 실행
@@ -629,6 +633,38 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           });
         }
       } catch { /* 뉴스 실패 시 무시 */ }
+    }
+
+    // ── 고확신 눌림목 텔레그램 알림 (AI 90점+ + truePullbackPattern, 실전 전용) ──
+    if (!config.isPaper) {
+      const openStockCodes = new Set(openChains.map(c => c.stock_code));
+      const nameMap = new Map(watchlist.map(w => [w.stock_code, w.stock_name]));
+      const highConvictionCandidates = finalScores.filter(s => s.score >= 90 && !openStockCodes.has(s.stock_code));
+      for (const candidate of highConvictionCandidates) {
+        const candles = chartData.get(candidate.stock_code);
+        const liveP = livePrices.get(candidate.stock_code);
+        if (!candles || candles.length < 30 || !liveP) continue;
+        const tech = analyzeTechnicals(candles as any);
+        if (!tech) continue;
+        const curPrice = liveP.currentPrice;
+        const recentHigh5 = candles.length >= 6 ? Math.max(...candles.slice(1, 6).map(c => c.high)) : 0;
+        const truePullbackPattern = tech.sma20 > 0 && recentHigh5 > tech.sma20 * 1.04 &&
+          curPrice >= tech.sma20 * 0.98 && curPrice <= tech.sma20 * 1.05;
+        if (!truePullbackPattern) continue;
+        const now = Date.now();
+        const lastAlert = _alertedHighConviction.get(candidate.stock_code) ?? 0;
+        if (now - lastAlert < 30 * 60 * 1000) continue;
+        _alertedHighConviction.set(candidate.stock_code, now);
+        const stockName = nameMap.get(candidate.stock_code) ?? candidate.stock_code;
+        const status = blockNewBuys ? `⚠️ 자동매수 차단 중 — 수동 확인` : `✅ 자동매수 대기 중`;
+        const msg = [
+          `🔥 고확신 눌림목: *${stockName}* (${candidate.stock_code})`,
+          `📊 AI점수=${candidate.score} pb=True vol=${tech.volumeRatio.toFixed(1)}x RSI=${tech.rsi14.toFixed(0)}`,
+          status,
+        ].join('\n');
+        sendTelegramMessage(msg).catch(() => {});
+        logger.info(`📱 텔레그램 고확신 알림: ${candidate.stock_code} AI=${candidate.score}점 pb=True vol=${tech.volumeRatio.toFixed(1)}x`, { component: 'TRACK_B' });
+      }
     }
 
     setActiveEngine('technical');
