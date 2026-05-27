@@ -29,6 +29,9 @@ interface HeroPnlCardProps {
   usHoldingsLength: number;
   withdrawConfig: any;
   todayTradesLength: number;
+  totalValue: number;
+  totalInvested: number;
+  fxRate: number;
 }
 
 export default function HeroPnlCard({
@@ -38,9 +41,11 @@ export default function HeroPnlCard({
   krTabHasData, usTodaySells, krTabPnl, krTabPct, usTabPnlUsd,
   todayRealizedPnl, animToday, domesticCash, overseasCashUsd,
   domesticInvested, chainsLength, usHoldingsLength, withdrawConfig, todayTradesLength,
+  totalValue, totalInvested, fxRate,
 }: HeroPnlCardProps) {
-  const domesticTotal = domesticCash + domesticInvested;
-  const domesticPct = domesticTotal > 0 ? Math.round((domesticInvested / domesticTotal) * 100) : 0;
+  // 통합증거금: 전체 포트폴리오 기준 투자비중 (탭 무관)
+  const investedPct = totalValue > 0 ? Math.round((totalInvested / totalValue) * 100) : 0;
+  const totalHoldings = chainsLength + usHoldingsLength;
   const mask = (v: string) => privacyMode ? '••••••' : v;
 
   return (
@@ -90,31 +95,20 @@ export default function HeroPnlCard({
           </div>
         )}
       </div>
-      {/* 미니 스탯 3개 */}
+      {/* 미니 스탯 3개 — 통합증거금: 탭 무관 통합 표시 */}
       <div className="grid grid-cols-3 gap-2">
         <div className="bg-white/[0.04] rounded-xl px-3 py-2">
-          <div className="text-[9px] text-slate-500 mb-0.5">{showOnlyUs ? '해외현금' : '현금잔고'}</div>
-          {showOnlyUs ? (
-            <div className="text-sm font-bold text-slate-200 tabular-nums truncate">{mask('$' + Math.round(overseasCashUsd).toLocaleString('en-US'))}</div>
-          ) : (
-            <div className="text-sm font-bold text-slate-200 tabular-nums truncate">{mask(fmtWon(domesticCash))}</div>
-          )}
+          <div className="text-[9px] text-slate-500 mb-0.5">주문가능</div>
+          <div className="text-sm font-bold text-slate-200 tabular-nums truncate">{mask(fmtWon(domesticCash))}</div>
+          {fxRate > 0 && <div className="text-[8px] text-slate-600 mt-0.5">${mask(String(Math.round(domesticCash / fxRate)))}</div>}
         </div>
         <div className="bg-white/[0.04] rounded-xl px-3 py-2">
           <div className="text-[9px] text-slate-500 mb-0.5">투자비중</div>
-          {showOnlyUs ? (() => {
-            const usTotalUsd = overseasInvestedUsd + overseasCashUsd;
-            const usPct = usTotalUsd > 0 ? Math.round((overseasInvestedUsd / usTotalUsd) * 100) : 0;
-            return <div className={`text-sm font-bold tabular-nums ${usPct > 60 ? 'text-amber-400' : 'text-blue-400'}`}>{usPct}% <span className="text-[9px] text-slate-600">({usHoldingsLength}종목)</span></div>;
-          })() : (
-            <div className={`text-sm font-bold tabular-nums ${domesticPct > 60 ? 'text-amber-400' : 'text-blue-400'}`}>{domesticPct}% <span className="text-[9px] text-slate-600">({chainsLength}종목)</span></div>
-          )}
+          <div className={`text-sm font-bold tabular-nums ${investedPct > 60 ? 'text-amber-400' : 'text-blue-400'}`}>{investedPct}% <span className="text-[9px] text-slate-600">({totalHoldings}종목)</span></div>
         </div>
         <div className="bg-white/[0.04] rounded-xl px-3 py-2">
-          <div className="text-[9px] text-slate-500 mb-0.5">{showOnlyUs ? '오늘미국' : withdrawConfig?.totalReserved > 0 ? '인출예약' : '오늘매매'}</div>
-          {showOnlyUs ? (
-            <div className={`text-sm font-bold tabular-nums ${usTodaySells.length > 0 ? pc(usTabPnlUsd) : 'text-slate-200'}`}>{usTodaySells.length > 0 ? `${usTabPnlUsd > 0 ? '+' : ''}$${usTabPnlUsd.toFixed(0)}` : `${usTodaySells.length}건`}</div>
-          ) : withdrawConfig?.totalReserved > 0 ? (
+          <div className="text-[9px] text-slate-500 mb-0.5">{withdrawConfig?.totalReserved > 0 ? '인출예약' : '오늘매매'}</div>
+          {withdrawConfig?.totalReserved > 0 ? (
             <div className="text-sm font-bold text-amber-400 truncate">{mask(fmtWon(withdrawConfig.totalReserved))}</div>
           ) : (
             <div className="text-sm font-bold text-slate-200">{todayTradesLength}<span className="text-[9px] text-slate-500 ml-0.5">건</span></div>

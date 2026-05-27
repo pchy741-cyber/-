@@ -103,11 +103,12 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const overseasPnlKrw = Math.round(overseasPnlUsd * fxRate);
   const showOnlyKr = holdingsTab === 'KR';
   const showOnlyUs = holdingsTab === 'US';
+  // 통합증거금: 탭에 따라 해당 시장 PnL만 표시 (현금/비중은 통합)
   const combinedPnl = showOnlyKr ? unrealizedPnl : (usHoldings.length > 0 ? overseasPnlKrw : 0);
   const combinedInvested = showOnlyKr
     ? (domesticInvested > 0 ? domesticInvested : 0)
     : (overseasInvestedKrw > 0 ? overseasInvestedKrw : 0);
-  const combinedPnlPct = combinedInvested > 0 ? (combinedPnl / combinedInvested) * 100 : (domesticInvested > 0 ? totalPnlPct : 0);
+  const combinedPnlPct = combinedInvested > 0 ? (combinedPnl / combinedInvested) * 100 : 0;
   const hasOverseasHoldings = usHoldings.length > 0;
 
   const todayStr = new Date().toDateString();
@@ -166,7 +167,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
 
       <MarketProgressBar health={health} holdingsTab={holdingsTab} currentTimeStr={currentTimeStr} marketProgress={marketProgress} usMarketProgress={usMarketProgress} unrealizedPnl={unrealizedPnl} overseasPnlUsd={overseasPnlUsd} dailyLossLimit={dailyLossLimit} overseasLimitUsd={overseasLimitUsd} />
 
-      <HeroPnlCard holdingsTab={holdingsTab} combinedPnl={combinedPnl} animCombined={animCombined} combinedPnlPct={combinedPnlPct} overseasPnlUsd={overseasPnlUsd} overseasInvestedUsd={overseasInvestedUsd} showOnlyKr={showOnlyKr} showOnlyUs={showOnlyUs} hasOverseasHoldings={hasOverseasHoldings} privacyMode={privacyMode} setPrivacyMode={setPrivacyMode} krTabHasData={krTabHasData} usTodaySells={usTodaySells} krTabPnl={krTabPnl} krTabPct={krTabPct} usTabPnlUsd={usTabPnlUsd} todayRealizedPnl={todayRealizedPnl} animToday={animToday} domesticCash={domesticCash} overseasCashUsd={overseasCashUsd} domesticInvested={domesticInvested} chainsLength={chains.length} usHoldingsLength={usHoldings.length} withdrawConfig={withdrawConfig} todayTradesLength={todayTrades.length} />
+      <HeroPnlCard holdingsTab={holdingsTab} combinedPnl={combinedPnl} animCombined={animCombined} combinedPnlPct={combinedPnlPct} overseasPnlUsd={overseasPnlUsd} overseasInvestedUsd={overseasInvestedUsd} showOnlyKr={showOnlyKr} showOnlyUs={showOnlyUs} hasOverseasHoldings={hasOverseasHoldings} privacyMode={privacyMode} setPrivacyMode={setPrivacyMode} krTabHasData={krTabHasData} usTodaySells={usTodaySells} krTabPnl={krTabPnl} krTabPct={krTabPct} usTabPnlUsd={usTabPnlUsd} todayRealizedPnl={todayRealizedPnl} animToday={animToday} domesticCash={domesticCash} overseasCashUsd={overseasCashUsd} domesticInvested={domesticInvested} chainsLength={chains.length} usHoldingsLength={usHoldings.length} withdrawConfig={withdrawConfig} todayTradesLength={todayTrades.length} totalValue={totalValue} totalInvested={totalInvested} fxRate={fxRate} />
 
       {/* 보유종목 (국내/해외 탭) */}
       <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden">
