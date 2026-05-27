@@ -9,6 +9,7 @@
 import { OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { config } from '../../config/index.js';
 import { getPool, withTransaction } from '../../db/client.js';
+import { fetchExchangeRate } from '../../automation/macro-data.js';
 import { logger } from '../../utils/logger.js';
 
 const PAPER_OVERSEAS_SEED = 10000; // Paper 해외 시드 $10K (기존 주문 이력 기준 복원)
@@ -176,24 +177,39 @@ export async function setHolding(code: string, exchange: string, qty: number, av
   }
 }
 
+/**
+ * 현금 조회 — USD 반환 (트레이딩 로직용)
+ * - Paper: orders 기반 결정론적 계산 (USD)
+ * - Live: DB에 KRW 저장 → 현재 환율로 USD 변환 반환
+ */
 export async function getCash(isPaper?: boolean): Promise<number> {
   const paper = isPaper ?? config.isPaper;
   if (paper) {
-    // Paper: orders 테이블 기반 결정론적 계산 (상태 오염 불가능)
     return computePaperCash();
   }
-  // Live: 통합증거금 — overseas_state 저장값 (reconcileCashWithKIS가 KIS API와 동기화)
+  // Live: DB에 KRW 저장 → USD로 변환
+  const krw = await getCashKrw();
+  if (krw <= 0) return 0;
+  const fxRate = await fetchExchangeRate();
+  return fxRate > 0 ? krw / fxRate : 0;
+}
+
+/**
+ * Live 현금 KRW 직접 조회 (디스플레이/리포트용)
+ * overseas_state['cash']에 원화 금액 저장
+ */
+export async function getCashKrw(): Promise<number> {
   try {
-    const key = cashKey(false);
-    const { rows } = await getPool().query("SELECT value FROM overseas_state WHERE key = $1", [key]);
+    const { rows } = await getPool().query("SELECT value FROM overseas_state WHERE key = $1", [cashKey(false)]);
     return rows.length > 0 ? Number(rows[0].value) : 0;
   } catch { return 0; }
 }
 
-export async function setCash(amount: number, isPaper?: boolean): Promise<void> {
+/** Live 현금 설정 — KRW 단위로 저장 (reconcileCashWithKIS에서 호출) */
+export async function setCash(amountKrw: number, isPaper?: boolean): Promise<void> {
   const paper = isPaper ?? config.isPaper;
   if (paper) return; // Paper: computed from orders, no need to store
-  const safe = Math.max(0, amount);
+  const safe = Math.max(0, amountKrw);
   const key = cashKey(false);
   await getPool().query(
     `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
@@ -205,7 +221,7 @@ export async function setCash(amount: number, isPaper?: boolean): Promise<void> 
 /**
  * 트랜잭션 원자 업데이트 — holdings (+ live cash) 단일 TX
  * Paper: cash는 computed (orders 기반) → 저장 불필요
- * Live: cash도 함께 업데이트 (통합증거금이지만 reconcile 사이 트래킹용)
+ * Live: newCash(USD)를 KRW로 변환 후 저장 (통합증거금 기준)
  */
 export async function updateTradeState(p: {
   code: string; exchange: string; qty: number; avgPrice: number;
@@ -222,12 +238,13 @@ export async function updateTradeState(p: {
         [p.code, p.exchange, p.qty, p.avgPrice, paper]);
     }
     if (!paper) {
-      // Live만 cash state 업데이트 (Paper는 computed)
-      const safe = Math.max(0, p.newCash);
+      // Live: USD → KRW 변환 후 저장 (통합증거금)
+      const fxRate = await fetchExchangeRate();
+      const cashKrw = Math.max(0, p.newCash * fxRate);
       const key = cashKey(false);
       await client.query(
         `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
-        [key, safe.toString()]);
+        [key, cashKrw.toString()]);
     }
   });
 }

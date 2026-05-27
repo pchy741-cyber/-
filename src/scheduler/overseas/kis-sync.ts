@@ -9,7 +9,7 @@ import { fetchExchangeRate } from '../../automation/macro-data.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
 import { GLOBAL_WATCHLIST } from './watchlist.js';
-import { getCash, setCash, clearMaxPrice } from './state.js';
+import { getCash, getCashKrw, setCash, clearMaxPrice } from './state.js';
 import { logSystem } from '../../db/client.js';
 
 /**
@@ -209,50 +209,53 @@ async function estimateSellPrice(code: string, exchange: string): Promise<number
 }
 
 /**
- * KIS 실계좌 현금과 DB 현금 동기화 — 입출금/수수료 차이 자동 보정
+ * KIS 실계좌 현금과 DB 현금 동기화 — 원화(KRW) 기준
+ * DB에 KRW 직접 저장 (통합증거금: 원화로 해외주식 매수)
  */
 export async function reconcileCashWithKIS(): Promise<void> {
   if (config.isPaper) return;
   try {
-    let kisCash = await getOverseasBuyableAmount();
-    // 통합증거금 폴백: 해외주문가능금액 API 실패 시 국내 계좌 잔고 ÷ 환율
-    // ⚠️ 국내 잔고 전체를 해외 현금으로 잡으면 과다투입 위험 → 30% 상한
-    if (kisCash === null || kisCash === undefined) {
-      try {
-        const balance = await getAccountBalance(true); // forceLive
-        const fxRate = await fetchExchangeRate();
-        if (balance.orderableCash > 0 && fxRate > 0) {
-          const rawUsd = balance.orderableCash / fxRate;
-          // 국내 원화 잔고의 30%만 해외 투자 가용으로 인정 (과다투입 방지)
-          kisCash = rawUsd * 0.30;
-          logger.info(`💱 통합증거금 폴백: ₩${balance.orderableCash.toLocaleString()} ÷ ${fxRate.toFixed(0)} = $${rawUsd.toFixed(2)} → 30% 적용 $${kisCash.toFixed(2)}`, { component: 'OVERSEAS' });
-        }
-      } catch { /* 국내 잔고 조회도 실패 시 무시 */ }
-    }
-    if (kisCash === null || kisCash === undefined) return;
-    const dbCash = await getCash(false);
+    let kisKrw: number | null = null;
+    const fxRate = await fetchExchangeRate();
 
-    // 🛡️ 안전 가드: KIS $0/$1 미만 반환 시 DB 현금 zeroing 차단
-    // (KIS API 오류, 빈 계좌, 잘못된 인증 등으로 인한 의심값 보호)
-    if (kisCash < 1 && dbCash > 100) {
-      logger.warn(`💰 Cash zeroing 차단: KIS=$${kisCash.toFixed(2)} (의심값), DB=$${dbCash.toFixed(0)} 유지`, { component: 'OVERSEAS' });
-      await logSystem('WARN', 'OVERSEAS', `Cash zeroing 차단: KIS=${kisCash.toFixed(2)}, DB=${dbCash.toFixed(0)}`).catch(() => {});
-      sendTelegramMessage(`⚠️ 해외 현금 zeroing 차단\nKIS=$${kisCash.toFixed(2)} (의심) → DB=$${dbCash.toFixed(0)} 보존`).catch(() => {});
+    // 1차: 해외주문가능금액 API (USD 반환) → KRW 변환
+    const kisUsd = await getOverseasBuyableAmount();
+    if (kisUsd !== null && kisUsd !== undefined && fxRate > 0) {
+      kisKrw = kisUsd * fxRate;
+    }
+
+    // 2차 폴백: 국내 계좌 주문가능원화 직접 사용
+    if (kisKrw === null) {
+      try {
+        const balance = await getAccountBalance(true);
+        if (balance.orderableCash > 0) {
+          // 통합증거금: 국내 원화 잔고의 30%만 해외 투자 가용으로 인정
+          kisKrw = balance.orderableCash * 0.30;
+          logger.info(`💱 통합증거금 폴백: ₩${balance.orderableCash.toLocaleString()} × 30% = ₩${kisKrw.toLocaleString()}`, { component: 'OVERSEAS' });
+        }
+      } catch { /* 국내 잔고 조회 실패 시 무시 */ }
+    }
+    if (kisKrw === null) return;
+
+    const dbKrw = await getCashKrw();
+
+    // 안전 가드: KIS ₩1,000 미만인데 DB ₩100,000 이상 → zeroing 차단
+    if (kisKrw < 1000 && dbKrw > 100_000) {
+      logger.warn(`💰 Cash zeroing 차단: KIS=₩${kisKrw.toFixed(0)} (의심), DB=₩${dbKrw.toFixed(0)} 유지`, { component: 'OVERSEAS' });
       return;
     }
 
-    const diff = Math.abs(kisCash - dbCash);
+    const diff = Math.abs(kisKrw - dbKrw);
+    // ₩5,000 이상 또는 1% 이상 차이 시 보정
+    if (diff < 5000 || (dbKrw > 0 && diff / dbKrw < 0.01)) return;
 
-    // 통합증거금: KIS API가 원화→USD 환산 주문가능금액 반환
-    // DB와 $10 이상 또는 1% 이상 차이 시 보정 (첫 매매 전에도 동기화)
-    if (diff < 10 || (dbCash > 0 && diff / dbCash < 0.01)) return;
-
-    logger.warn(`💰 Cash 정합: DB=$${dbCash.toFixed(0)} vs KIS=$${kisCash.toFixed(0)} (차이: $${diff.toFixed(0)})`, { component: 'OVERSEAS' });
-    await logSystem('WARN', 'OVERSEAS', `Cash 정합 보정: DB=$${dbCash.toFixed(0)} → KIS=$${kisCash.toFixed(0)}`);
-    await setCash(kisCash, false);
-    if (diff >= 50) {
+    const dbUsd = fxRate > 0 ? dbKrw / fxRate : 0;
+    const kisUsdDisp = fxRate > 0 ? kisKrw / fxRate : 0;
+    logger.warn(`💰 Cash 정합: DB=₩${dbKrw.toFixed(0)}($${dbUsd.toFixed(0)}) → KIS=₩${kisKrw.toFixed(0)}($${kisUsdDisp.toFixed(0)})`, { component: 'OVERSEAS' });
+    await setCash(kisKrw, false);
+    if (diff >= 50_000) {
       sendTelegramMessage(
-        `💰 현금 정합성 보정\nDB: $${dbCash.toFixed(0)} → KIS: $${kisCash.toFixed(0)}\n차이: $${(kisCash - dbCash).toFixed(0)} (${kisCash > dbCash ? '입금/배당?' : '출금/수수료?'})`
+        `💰 현금 정합성 보정\nDB: ₩${dbKrw.toLocaleString()} → KIS: ₩${kisKrw.toLocaleString()}\n차이: ₩${(kisKrw - dbKrw).toLocaleString()}`
       ).catch(() => {});
     }
   } catch (e) {

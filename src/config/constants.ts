@@ -248,8 +248,14 @@ export const SECTOR_CLASS = {
   DANGER_HIGH_BETA: ['AI_SEMI', 'GROWTH', 'EV', 'CRYPTO', 'JP_AUTO', 'JP_TECH'] as readonly string[],
 } as const;
 
-/** 해외주식 왕복 수수료율 0.25% */
-export const OVERSEAS_FEE_PCT = 0.0025;
+/**
+ * 해외주식 편도 수수료율 (매수/매도 각각 적용)
+ * - 매매 수수료: 0.25% (한투 온라인)
+ * - 환전 스프레드: ~0.10% (통합증거금 원화→USD)
+ * - SEC Fee (매도만): 0.00206% → 편의상 편도에 통합
+ * 합계: ~0.36% → 반올림 0.35%
+ */
+export const OVERSEAS_FEE_PCT = 0.0035;
 
 
 // ── 미국주식 해외 (통합증거금: 원화→해외주식 직접 주문) ──
