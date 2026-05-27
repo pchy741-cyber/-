@@ -133,7 +133,7 @@ if volumeRatio >= 3.0 and currentPrice > openPrice * 1.005:
 bull_market = (len([s for s in scores if s['composite_score'] >= 75]) >= 8)
              or (수익중 포지션 비율 >= 0.5)
 
-min_score = 75 if bull_market else 80   # 강세장: 75점 이상
+min_score = 80 if bull_market else 85   # 일반: 85점, 강세장: 80점 (백엔드 buyThreshold=83 이상)
 min_conf  = 0.60 if bull_market else 0.65
 max_buys  = 3 if bull_market else 2     # 강세장: 3종목까지
 ```
@@ -144,8 +144,9 @@ max_buys  = 3 if bull_market else 2     # 강세장: 3종목까지
 3. 이미 OPEN 포지션 없는 종목
 4. `d['killSwitch']['active'] == False`
 5. `d['portfolio']['domesticCash'] > 50000`
+6. **장 강도 게이트**: 상위 5종목 평균 점수 < 78 → 신규 매수 전면 중단 ("장 자체가 약한 날" 필터)
 
-꽁돈 게이트: `composite_score >= 85` → 2차 필터 무관, 즉시 Step 3으로 (복리 자동계산)
+꽁돈 게이트: `composite_score >= 90` → 2차 필터 무관, 즉시 Step 3으로 (복리 자동계산)
 
 #### Step 2 — 2차 필터 (기술 분석 API)
 1차 통과 후보 최대 5종목에 대해 개별 기술분석 호출:
