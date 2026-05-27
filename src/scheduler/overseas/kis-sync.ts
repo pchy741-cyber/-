@@ -41,7 +41,13 @@ export async function syncHoldingsFromKIS(): Promise<void> {
         const items = await getOverseasBalance(exch);
         for (const item of items) {
           if (item.quantity > 0 && item.stockCode) {
-            allHoldings.set(item.stockCode, { qty: item.quantity, avgPrice: item.avgBuyPrice, exchange: exch });
+            // 이미 다른 거래소에서 발견된 종목은 덮어쓰지 않음 (첫 발견 우선)
+            // 단, GLOBAL_WATCHLIST에 정의된 거래소가 있으면 그것을 우선 사용
+            const existing = allHoldings.get(item.stockCode);
+            if (existing) continue; // 중복 방지: 첫 발견 거래소 유지
+            const wlEntry = GLOBAL_WATCHLIST.find(w => w.code === item.stockCode);
+            const resolvedExchange = wlEntry?.exchange ?? exch;
+            allHoldings.set(item.stockCode, { qty: item.quantity, avgPrice: item.avgBuyPrice, exchange: resolvedExchange });
           }
         }
       } catch {
@@ -149,9 +155,10 @@ export async function syncHoldingsFromKIS(): Promise<void> {
           sendTelegramMessage(`🛒 수동추가매수: ${code} +${addedQty}주 @$${kisItem.avgPrice.toFixed(2)}`).catch(() => {});
         }
 
+        // exchange는 DB 기존값 유지 (watchlist 기준, KIS 쿼리 거래소와 다를 수 있음)
         await getPool().query(
           'UPDATE overseas_holdings SET quantity=$1, avg_price=$2 WHERE exchange=$3 AND stock_code=$4 AND is_paper = false',
-          [kisItem.qty, kisItem.avgPrice, kisItem.exchange, code],
+          [kisItem.qty, kisItem.avgPrice, row.exchange, code],
         ).catch(() => {});
       }
       allHoldings.delete(code);

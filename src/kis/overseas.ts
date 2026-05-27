@@ -42,6 +42,7 @@ const EXCHANGE_MAP: Record<string, string> = {
   TSE: 'TSE',     // 일본 (도쿄증권거래소) — KIS코드: TKSE
   TKSE: 'TSE',    // 일본 alias
   TPE: 'TPE',     // 대만 (타이베이증권거래소)
+  TWSE: 'TPE',    // 대만 alias (Taiwan Stock Exchange)
   SEHK: 'HKS',    // 홍콩 (홍콩증권거래소) — KIS코드: SEHK
   HKS: 'HKS',     // 홍콩 alias
   SSE: 'SHA',     // 중국 상해 — KIS코드: SHAA
@@ -55,7 +56,7 @@ const EXCHANGE_MAP: Record<string, string> = {
 // 시세 조회용 거래소 코드 (EXCD 파라미터 — 주문용과 다를 수 있음)
 const QUOTE_EXCD_MAP: Record<string, string> = {
   NYSE: 'NYS', NASDAQ: 'NAS', AMEX: 'AMS',
-  TSE: 'TSE', TKSE: 'TSE', TPE: 'TPE',
+  TSE: 'TSE', TKSE: 'TSE', TPE: 'TPE', TWSE: 'TPE',
   SEHK: 'HKS', HKS: 'HKS',
   SSE: 'SHS', SHAA: 'SHS', SZSE: 'SZS', SZAA: 'SZS',
   HASE: 'HNX', VNSE: 'HSX',
@@ -64,7 +65,7 @@ const QUOTE_EXCD_MAP: Record<string, string> = {
 // 주문용 거래소 코드 (OVRS_EXCG_CD)
 const ORDER_EXCD_MAP: Record<string, string> = {
   NYSE: 'NYSE', NASDAQ: 'NASD', AMEX: 'AMEX',
-  TSE: 'TKSE', TKSE: 'TKSE', TPE: 'TPEX',
+  TSE: 'TKSE', TKSE: 'TKSE', TPE: 'TPEX', TWSE: 'TPEX',
   SEHK: 'SEHK', HKS: 'SEHK',
   SSE: 'SHAA', SHAA: 'SHAA', SZSE: 'SZAA', SZAA: 'SZAA',
   HASE: 'HASE', VNSE: 'VNSE',
@@ -77,6 +78,7 @@ const BALANCE_CURRENCY_MAP: Record<string, string> = {
   TSE: 'JPY',
   TKSE: 'JPY',
   TPE: 'TWD',
+  TWSE: 'TWD',
   SEHK: 'HKD',
   HKS: 'HKD',
   SSE: 'CNY',
