@@ -288,8 +288,13 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   const domesticInvested = totalInvested || 0;
   // 국내 시가평가 = 원가 + 미실현손익 (원가만 쓰면 수익/손실 반영 안 됨)
   const domesticMarketValue = totalChainInvested + totalChainPnl;
-  // 통합증거금(Live): 국내 현금(orderableCash)에 해외 가용액 이미 포함 → 이중합산 방지
-  // Paper: 국내/해외 현금이 독립적이므로 합산
+
+  // 통합증거금(Live): KIS dnca_tot_amt는 해외투자 마진 포함 총 예수금
+  // 실제 가용 현금 = 예수금 - 국내투자 - 해외투자원가(KRW)
+  // Paper: 국내/해외 현금이 독립적
+  if (!viewIsPaper && overseasInvestedKrw > 0) {
+    actualCash = Math.max(0, actualCash - overseasInvestedKrw);
+  }
   const grandTotalValue = viewIsPaper
     ? (actualCash || 0) + domesticMarketValue + overseasMarketValueKrw + overseasCashKrw
     : (actualCash || 0) + domesticMarketValue + overseasMarketValueKrw;
