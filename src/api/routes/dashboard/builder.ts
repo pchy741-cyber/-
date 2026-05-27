@@ -233,12 +233,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   } else {
     totalInvested = balance.totalEvalAmount ?? 0;
     totalPnl = balance.totalProfitLoss ?? 0;
-    const netAsset = (balance as any).netAsset ?? 0;
-    if (netAsset > 0) {
-      actualCash = Math.max(0, netAsset - totalInvested);
-    } else {
-      actualCash = rawCash;
-    }
+    actualCash = rawCash;
   }
 
   const totalPnlPct = viewIsPaper
@@ -289,25 +284,37 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   // 국내 시가평가 = 원가 + 미실현손익 (원가만 쓰면 수익/손실 반영 안 됨)
   const domesticMarketValue = totalChainInvested + totalChainPnl;
 
-  // 통합증거금(Live): KIS dnca_tot_amt는 해외투자 마진 포함 총 예수금
-  // 실제 가용 현금 = 예수금 - 국내투자 - 해외투자원가(KRW)
-  // Paper: 국내/해외 현금이 독립적
-  if (!viewIsPaper && overseasInvestedKrw > 0) {
-    actualCash = Math.max(0, actualCash - overseasInvestedKrw);
+  // ══ 통합증거금 (Live): 국내+해외 단일 원화 풀 ══
+  // overseas_state.cash = reconcileCashWithKIS가 유지하는 통합증거금 주문가능원화
+  // 이 값이 국내/해외 공용 현금 (별도 USD 풀 없음)
+  if (!viewIsPaper && overseasCashKrw > 0) {
+    // 통합증거금: overseas_state.cash(KRW) = KIS 주문가능원화 (해외투자 차감 완료)
+    // dnca_tot_amt(226K)에서 해외 마진 이미 차감된 실제 가용 현금
+    actualCash = overseasCashKrw;
+  } else if (!viewIsPaper) {
+    // 초기 상태: reconciliation 미실행 시 폴백
+    const netAsset = (balance as any).netAsset ?? 0;
+    if (netAsset > 0 && domesticInvested > 0) {
+      actualCash = Math.max(0, netAsset - domesticInvested);
+    }
+    // overseasInvestedKrw 차감 (reconciliation 전 근사치)
+    if (overseasInvestedKrw > 0) {
+      actualCash = Math.max(0, actualCash - overseasInvestedKrw);
+    }
   }
+
+  // 총자산 = 현금 + 국내 시가 + 해외 시가
   const grandTotalValue = viewIsPaper
     ? (actualCash || 0) + domesticMarketValue + overseasMarketValueKrw + overseasCashKrw
     : (actualCash || 0) + domesticMarketValue + overseasMarketValueKrw;
 
-  // 비중(weight) 계산 — 시가 기준
-  const domesticPortfolioValue = (actualCash || 0) + domesticMarketValue;
-  const overseasPortfolioValue = overseasMarketValueKrw + overseasCashKrw;
+  // 비중(weight) 계산 — grandTotalValue 기준 통합 비중
   for (const ch of enrichedChains as any[]) {
-    ch.weight = domesticPortfolioValue > 0 ? Math.round((ch.invested / domesticPortfolioValue) * 1000) / 10 : 0;
+    ch.weight = grandTotalValue > 0 ? Math.round((ch.invested / grandTotalValue) * 1000) / 10 : 0;
   }
   for (const h of overseasHoldings as any[]) {
     const investedKrw = (h.avg_price * h.quantity) * FX_RATE;
-    h.weight = overseasPortfolioValue > 0 ? Math.round((investedKrw / overseasPortfolioValue) * 1000) / 10 : 0;
+    h.weight = grandTotalValue > 0 ? Math.round((investedKrw / grandTotalValue) * 1000) / 10 : 0;
   }
 
   // 동일 종목 복수 체인 합산 (같은 종목 중복 표시 방지)
@@ -343,13 +350,16 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
 
   const grandTotalInvested = totalChainInvested + overseasInvestedKrw;
 
+  // 통합증거금: 현금은 하나 (live mode에서는 portfolio.cash = overseas.cashKrw = 동일)
+  const unifiedCash = Math.round(actualCash);
+
   const dashPayload = {
     portfolio: {
       totalValue: Math.round(grandTotalValue),
-      cash: Math.round(actualCash),
+      cash: unifiedCash,
       invested: Math.round(grandTotalInvested),
       domesticInvested: Math.round(totalChainInvested),
-      domesticCash: Math.round(actualCash),
+      domesticCash: unifiedCash, // 통합증거금: 국내/해외 구분 없음
       unrealizedPnl: Math.round(viewIsPaper ? totalChainPnl : (balance.totalProfitLoss || totalChainPnl)),
       realizedPnl: viewIsPaper ? Math.round(balance.totalProfitLoss ?? 0) : 0,
       pnl: Math.round(totalPnl),
@@ -363,7 +373,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       totalMarketValueUsd: overseasMarketValueUsd,
       totalMarketValueKrw: overseasMarketValueKrw,
       cashUsd: Math.round(overseasCashUsd * 100) / 100,
-      cashKrw: Math.round(overseasCashKrw),
+      cashKrw: unifiedCash, // 통합증거금: cash = 주문가능원화
       fxRate: FX_RATE,
       scores: getOverseasScores(),
     },
@@ -380,11 +390,11 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     tradingMode: config.tradingMode,
     viewMode: viewIsPaper ? 'paper' : 'live',
     riskLimits: (() => {
-      // 국내: 현금 + 보유종목 시가평가 기준 30%
-      const domesticTotal = Math.round(domesticPortfolioValue);
-      const limit = calcDailyLossLimit(domesticTotal);
-      // 해외: 현금(USD) + 보유종목 시가평가(USD) 기준 30%
-      const osPortfolioUsd = (isNaN(overseasCash) ? 0 : overseasCash) + (isNaN(overseasMarketValueUsd) ? 0 : overseasMarketValueUsd);
+      // 통합증거금: 전체 포트폴리오 기준 일일손실한도
+      const limit = calcDailyLossLimit(Math.round(grandTotalValue));
+      // 해외: 현금(KRW) + 보유종목 시가평가(KRW) 기준
+      const osPortfolioKrw = (actualCash || 0) + (isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw);
+      const osPortfolioUsd = FX_RATE > 0 ? osPortfolioKrw / FX_RATE : 0;
       return {
         maxDailyDrawdownKrw: limit.limitAmount,
         dailyDrawdownPct: limit.pct,

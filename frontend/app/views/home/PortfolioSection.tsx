@@ -87,15 +87,12 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
             <div className="text-[8px] text-slate-600 mt-0.5">{chains.length}종목</div>
           </div>
           <div className="rounded-xl px-3 py-2.5 bg-slate-800/40 border border-white/[0.06]">
-            <div className="text-[9px] text-slate-500 mb-0.5">현금</div>
-            <div className="text-sm font-bold tabular-nums text-slate-200">{fmtWon(domesticCash + overseasCashKrw)}</div>
+            <div className="text-[9px] text-slate-500 mb-0.5">주문가능</div>
+            <div className="text-sm font-bold tabular-nums text-slate-200">{fmtWon(domesticCash)}</div>
             <div className="flex items-center justify-between mt-1">
-              <span className="text-[9px] text-slate-600">{totalValue > 0 ? (((domesticCash + overseasCashKrw) / totalValue) * 100).toFixed(0) : 0}%</span>
+              <span className="text-[9px] text-slate-600">{totalValue > 0 ? ((domesticCash / totalValue) * 100).toFixed(0) : 0}%</span>
             </div>
-            <div className="text-[8px] text-slate-600 mt-0.5 space-y-0.5">
-              <div>KRW {fmt(Math.round(domesticCash))}</div>
-              {overseasCashUsd > 0 && <div>USD ${overseasCashUsd.toFixed(0)}</div>}
-            </div>
+            <div className="text-[8px] text-slate-600 mt-0.5">통합증거금</div>
           </div>
           <div className={`rounded-xl px-3 py-2.5 ${usActualPct >= 0 ? 'bg-indigo-950/40 border border-indigo-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>
             <div className="text-[9px] text-slate-500 mb-0.5">🇺🇸 미국주식</div>
@@ -157,14 +154,12 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
           <div>
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] mb-2">
               <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-gradient-to-r from-blue-500 to-cyan-500 shrink-0" />투자 중 {investedPctExact.toFixed(0)}%</span>
-              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-slate-400/50 shrink-0" />국내 현금 {cashPctExact.toFixed(0)}%</span>
-              {overseasCashKrw > 0 && <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-indigo-400/70 shrink-0" />해외 현금 {overseasCashPctExact.toFixed(0)}%</span>}
+              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-slate-400/50 shrink-0" />현금 {cashPctExact.toFixed(0)}%</span>
             </div>
             <div className="h-3 bg-white/[0.04] rounded-full overflow-hidden">
               <div className="h-full flex">
                 <div className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 transition-all duration-500" style={{ width: `${pctClamp(investedPctExact)}%` }} />
                 <div className="h-full bg-slate-400/50 transition-all duration-500" style={{ width: `${pctClamp(cashPctExact)}%` }} />
-                {overseasCashKrw > 0 && <div className="h-full bg-indigo-400/70 transition-all duration-500" style={{ width: `${pctClamp(overseasCashPctExact)}%` }} />}
               </div>
             </div>
           </div>
@@ -176,7 +171,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
               )}
               {chains.map((ch: any, i: number) => {
                 const inv = Number(ch.invested) || 0;
-                const pct = totalInvested > 0 ? (inv / totalInvested) * 100 : 0;
+                const pct = totalValue > 0 ? (inv / totalValue) * 100 : 0;
                 return (
                   <div key={`kr-${i}`}>
                     <div className="flex justify-between text-[11px] mb-1">
@@ -204,7 +199,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
                 {usHoldings.map((h: any, i: number) => {
                   const invUsd = h.avg_price * h.quantity;
                   const invKrw = invUsd * fxRate;
-                  const pct = totalInvested > 0 ? (invKrw / totalInvested) * 100 : 0;
+                  const pct = totalValue > 0 ? (invKrw / totalValue) * 100 : 0;
                   const priceData = usW.find((s: any) => s.code === h.stock_code);
                   const curPriceAlloc = (priceData?.price ?? 0) > 0 ? priceData!.price : (h.last_price ?? 0);
                   const curPnl = curPriceAlloc > 0 ? (curPriceAlloc - h.avg_price) * h.quantity : 0;

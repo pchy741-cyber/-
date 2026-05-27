@@ -86,11 +86,13 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const dailyLossLimit = dash?.riskLimits?.maxDailyDrawdownKrw ?? 200000;
   const overseasLimitUsd = dash?.riskLimits?.overseasLimitUsd ?? 0;
   const totalValue = Number(p?.totalValue ?? 0);
+  // 통합증거금: portfolio.cash = 통합 주문가능원화 (국내/해외 공용)
   const domesticCash = Number(p?.cash ?? 0);
   const investedPct = totalValue > 0 ? Math.round((totalInvested / totalValue) * 100) : 0;
   const investedPctExact = totalValue > 0 ? ((domesticInvested + overseasMarketKrw) / totalValue) * 100 : 0;
+  // 통합증거금: 현금은 하나 (domesticCash = 통합 현금)
   const cashPctExact = totalValue > 0 ? (domesticCash / totalValue) * 100 : 0;
-  const overseasCashPctExact = totalValue > 0 ? (overseasCashKrw / totalValue) * 100 : 0;
+  const overseasCashPctExact = 0; // 통합증거금: 별도 해외현금 없음
 
   const overseasPnlUsd = usHoldings.reduce((sum: number, h: any) => {
     const priceData = usW.find((s: any) => s.code === h.stock_code);

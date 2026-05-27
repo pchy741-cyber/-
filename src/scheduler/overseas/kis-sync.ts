@@ -210,28 +210,40 @@ async function estimateSellPrice(code: string, exchange: string): Promise<number
 
 /**
  * KIS 실계좌 현금과 DB 현금 동기화 — 원화(KRW) 기준
- * DB에 KRW 직접 저장 (통합증거금: 원화로 해외주식 매수)
+ * 통합증거금: 원화 단일 풀로 국내+해외 운용. KIS psamount API에서 KRW 직접 추출.
  */
 export async function reconcileCashWithKIS(): Promise<void> {
   if (config.isPaper) return;
   try {
     let kisKrw: number | null = null;
-    const fxRate = await fetchExchangeRate();
 
-    // 1차: 해외주문가능금액 API (USD 반환) → KRW 변환
-    const kisUsd = await getOverseasBuyableAmount();
-    if (kisUsd !== null && kisUsd !== undefined && fxRate > 0) {
-      kisKrw = kisUsd * fxRate;
+    // 1차: psamount API — KRW 필드 직접 사용 (FX 변환 없이 정확)
+    const buyable = await getOverseasBuyableAmount();
+    if (buyable?.krw != null && buyable.krw > 0) {
+      kisKrw = buyable.krw;
+      logger.info(`💱 통합증거금: psamount KRW 직접 사용 ₩${kisKrw.toLocaleString()}`, { component: 'OVERSEAS' });
     }
 
-    // 2차 폴백: 국내 계좌 주문가능원화 직접 사용
+    // 2차: psamount USD → KRW 변환 (KRW 필드 없는 경우)
+    if (kisKrw === null && buyable?.usd != null && buyable.usd > 0) {
+      const fxRate = await fetchExchangeRate();
+      if (fxRate > 0) {
+        kisKrw = buyable.usd * fxRate;
+        logger.info(`💱 psamount USD→KRW 변환: $${buyable.usd.toFixed(2)} × ${fxRate.toFixed(0)} = ₩${kisKrw.toFixed(0)}`, { component: 'OVERSEAS' });
+      }
+    }
+
+    // 3차 폴백: 국내 계좌잔고 API — 통합증거금이므로 100% 사용
     if (kisKrw === null) {
       try {
         const balance = await getAccountBalance(true);
-        if (balance.orderableCash > 0) {
-          // 통합증거금: 국내 원화 잔고의 30%만 해외 투자 가용으로 인정
-          kisKrw = balance.orderableCash * 0.30;
-          logger.info(`💱 통합증거금 폴백: ₩${balance.orderableCash.toLocaleString()} × 30% = ₩${kisKrw.toLocaleString()}`, { component: 'OVERSEAS' });
+        // 통합증거금: orderableCash = 전체 주문가능원화 (국내+해외 공용)
+        // netAsset - 국내투자 = 해외+현금 가용액
+        const netAsset = (balance as any).netAsset ?? 0;
+        const domesticEval = balance.totalEvalAmount ?? 0;
+        if (netAsset > 0) {
+          kisKrw = Math.max(0, netAsset - domesticEval);
+          logger.info(`💱 통합증거금 폴백: netAsset=₩${netAsset.toLocaleString()} - domesticEval=₩${domesticEval.toLocaleString()} = ₩${kisKrw.toLocaleString()}`, { component: 'OVERSEAS' });
         }
       } catch { /* 국내 잔고 조회 실패 시 무시 */ }
     }
@@ -249,6 +261,7 @@ export async function reconcileCashWithKIS(): Promise<void> {
     // ₩5,000 이상 또는 1% 이상 차이 시 보정
     if (diff < 5000 || (dbKrw > 0 && diff / dbKrw < 0.01)) return;
 
+    const fxRate = await fetchExchangeRate();
     const dbUsd = fxRate > 0 ? dbKrw / fxRate : 0;
     const kisUsdDisp = fxRate > 0 ? kisKrw / fxRate : 0;
     logger.warn(`💰 Cash 정합: DB=₩${dbKrw.toFixed(0)}($${dbUsd.toFixed(0)}) → KIS=₩${kisKrw.toFixed(0)}($${kisUsdDisp.toFixed(0)})`, { component: 'OVERSEAS' });

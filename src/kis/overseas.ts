@@ -1,5 +1,6 @@
 import { config } from '../config/index.js';
 import { kisRequest, overseasRateLimiter } from './client.js';
+import { logger } from '../utils/logger.js';
 
 /** 해외 전용 KIS API 호출 — 국내와 별도 rate limiter 사용 */
 async function overseasKisRequest<T = unknown>(opts: Parameters<typeof kisRequest<T>>[0]): ReturnType<typeof kisRequest<T>> {
@@ -315,10 +316,15 @@ export async function getOverseasBalance(exchange: string = 'NASDAQ') {
 }
 
 /**
- * 해외주문가능금액 조회 (KIS API) — 입출금 정합성 체크용
- * 실제 계좌의 주문 가능 외화 금액을 반환 (USD)
+ * 해외주문가능금액 조회 (KIS API) — 통합증거금 기준
+ * USD + KRW(원화) 모두 반환. 통합증거금 계좌는 원화 필드가 정확.
  */
-export async function getOverseasBuyableAmount(exchange: string = 'NASDAQ'): Promise<number | null> {
+export interface OverseasBuyableResult {
+  usd: number;
+  krw: number | null; // 원화 주문가능금액 (통합증거금)
+}
+
+export async function getOverseasBuyableAmount(exchange: string = 'NASDAQ'): Promise<OverseasBuyableResult | null> {
   try {
     const excd = ORDER_EXCD_MAP[exchange] ?? EXCHANGE_MAP[exchange] ?? 'NASD';
     // ITEM_CD 필수 — 임의 종목(AAPL)으로 총 주문가능금액 조회 (종목 무관, 계좌 전체 가용액 반환)
@@ -333,8 +339,40 @@ export async function getOverseasBuyableAmount(exchange: string = 'NASDAQ'): Pro
         ITEM_CD: 'AAPL',
       },
     });
-    // frcr_ord_psbl_amt1 = 외화 주문가능금액 (USD)
-    return Number((res.output as Record<string, string>)?.frcr_ord_psbl_amt1 ?? 0);
+
+    const output = res.output as Record<string, string>;
+
+    // 디버그: 전체 응답 필드 로깅 (KRW 필드 식별용)
+    if (output) {
+      const fields = Object.entries(output)
+        .filter(([, v]) => v !== '' && v !== '0' && v !== '0.00')
+        .map(([k, v]) => `${k}=${v}`)
+        .join(', ');
+      logger.info(`💱 psamount 응답: ${fields}`, { component: 'OVERSEAS' });
+    }
+
+    const usd = Number(output?.frcr_ord_psbl_amt1 ?? 0);
+
+    // 원화 주문가능금액 후보 필드 (통합증거금)
+    // ovrs_ord_psbl_amt: 해외주문가능총금액(원화)
+    // ovrs_re_use_amt_wcrc: 해외재사용가능금액(원화)
+    // echm_af_ord_psbl_amt: 원화대용후주문가능금액
+    const krwCandidates = [
+      output?.ovrs_ord_psbl_amt,
+      output?.ovrs_re_use_amt_wcrc,
+      output?.echm_af_ord_psbl_amt,
+      output?.ord_psbl_frcr_amt,
+    ];
+    let krw: number | null = null;
+    for (const c of krwCandidates) {
+      const v = Number(c);
+      if (Number.isFinite(v) && v > 0) {
+        krw = v;
+        break;
+      }
+    }
+
+    return { usd, krw };
   } catch {
     return null;
   }
