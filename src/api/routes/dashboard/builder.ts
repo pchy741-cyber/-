@@ -275,38 +275,34 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   const overseasInvestedKrw = (isNaN(overseasTotalInvested) ? 0 : overseasTotalInvested) * FX_RATE;
   const overseasMarketValueKrw = (isNaN(overseasMarketValueUsd) ? 0 : overseasMarketValueUsd) * FX_RATE;
 
-  // 통합증거금: Live 해외 현금은 DB에 KRW로 저장됨 (Paper는 USD)
+  // overseas_state: Live=KRW 저장, Paper=USD 저장 → 통합증거금 KRW 변환
   const rawOverseasCash = isNaN(overseasCash) ? 0 : overseasCash;
   const overseasCashKrw = viewIsPaper ? rawOverseasCash * FX_RATE : rawOverseasCash;
-  const overseasCashUsd = viewIsPaper ? rawOverseasCash : (FX_RATE > 0 ? rawOverseasCash / FX_RATE : 0);
 
   const domesticInvested = totalInvested || 0;
   // 국내 시가평가 = 원가 + 미실현손익 (원가만 쓰면 수익/손실 반영 안 됨)
   const domesticMarketValue = totalChainInvested + totalChainPnl;
 
-  // ══ 통합증거금 (Live): 국내+해외 단일 원화 풀 ══
-  // overseas_state.cash = reconcileCashWithKIS가 유지하는 통합증거금 주문가능원화
-  // 이 값이 국내/해외 공용 현금 (별도 USD 풀 없음)
-  if (!viewIsPaper && overseasCashKrw > 0) {
-    // 통합증거금: overseas_state.cash(KRW) = KIS 주문가능원화 (해외투자 차감 완료)
-    // dnca_tot_amt(226K)에서 해외 마진 이미 차감된 실제 가용 현금
+  // ══ 통합증거금: 국내+해외 단일 원화 풀 (Live/Paper 동일 구조) ══
+  if (viewIsPaper) {
+    // Paper: 국내 현금(rawCash) + 해외 현금(USD→KRW) = 통합 현금
+    actualCash = (actualCash || 0) + overseasCashKrw;
+  } else if (overseasCashKrw > 0) {
+    // Live: overseas_state.cash(KRW) = KIS 주문가능원화 (해외투자 차감 완료)
     actualCash = overseasCashKrw;
-  } else if (!viewIsPaper) {
-    // 초기 상태: reconciliation 미실행 시 폴백
+  } else {
+    // Live 초기: reconciliation 미실행 시 폴백
     const netAsset = (balance as any).netAsset ?? 0;
     if (netAsset > 0 && domesticInvested > 0) {
       actualCash = Math.max(0, netAsset - domesticInvested);
     }
-    // overseasInvestedKrw 차감 (reconciliation 전 근사치)
     if (overseasInvestedKrw > 0) {
       actualCash = Math.max(0, actualCash - overseasInvestedKrw);
     }
   }
 
-  // 총자산 = 현금 + 국내 시가 + 해외 시가
-  const grandTotalValue = viewIsPaper
-    ? (actualCash || 0) + domesticMarketValue + overseasMarketValueKrw + overseasCashKrw
-    : (actualCash || 0) + domesticMarketValue + overseasMarketValueKrw;
+  // 총자산 = 통합현금 + 국내 시가 + 해외 시가 (모드 무관 동일 공식)
+  const grandTotalValue = (actualCash || 0) + domesticMarketValue + overseasMarketValueKrw;
 
   // 비중(weight) 계산 — grandTotalValue 기준 통합 비중
   for (const ch of enrichedChains as any[]) {
@@ -350,8 +346,9 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
 
   const grandTotalInvested = totalChainInvested + overseasInvestedKrw;
 
-  // 통합증거금: 현금은 하나 (live mode에서는 portfolio.cash = overseas.cashKrw = 동일)
+  // 통합증거금: 현금은 하나 (Live/Paper 모두 portfolio.cash = overseas.cashKrw = 동일)
   const unifiedCash = Math.round(actualCash);
+  const unifiedCashUsd = FX_RATE > 0 ? Math.round((actualCash / FX_RATE) * 100) / 100 : 0;
 
   const dashPayload = {
     portfolio: {
@@ -372,7 +369,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       totalInvestedKrw: overseasInvestedKrw,
       totalMarketValueUsd: overseasMarketValueUsd,
       totalMarketValueKrw: overseasMarketValueKrw,
-      cashUsd: Math.round(overseasCashUsd * 100) / 100,
+      cashUsd: unifiedCashUsd,
       cashKrw: unifiedCash, // 통합증거금: cash = 주문가능원화
       fxRate: FX_RATE,
       scores: getOverseasScores(),
