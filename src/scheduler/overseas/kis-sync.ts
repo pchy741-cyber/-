@@ -88,7 +88,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
           'DELETE FROM overseas_holdings WHERE exchange=$1 AND stock_code=$2 AND is_paper = false',
           [row.exchange, code],
         ).catch(() => {});
-        clearMaxPrice(code).catch(() => {});
+        clearMaxPrice(code, false).catch(() => {}); // live 모드 명시
 
         const emoji = pnlPct >= 0 ? '💰' : '📉';
         const msg = `🚪 수동매도 감지: ${code}\n${dbQty}주 @$${sellPrice.toFixed(2)}\n${emoji} PnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%\norders 기록 완료`;

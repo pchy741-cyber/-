@@ -30,7 +30,7 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
     let cash = await getCash(isPaper);
     const rbHoldings = await getHoldings(isPaper);
     let rbTotal = cash;
-    const positionWeights: { code: string; weight: number; value: number; qty: number; price: number; pnl: number; exchange: string }[] = [];
+    const positionWeights: { code: string; weight: number; value: number; qty: number; price: number; pnl: number; exchange: string; avgPrice: number }[] = [];
 
     for (const [code, h] of rbHoldings) {
       const tech = techResults.find(t => t.code === code);
@@ -38,7 +38,7 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
       const posVal = curPrice * h.qty;
       rbTotal += posVal;
       const pnl = ((curPrice - h.avgPrice) / h.avgPrice) * 100;
-      positionWeights.push({ code, weight: 0, value: posVal, qty: h.qty, price: curPrice, pnl, exchange: h.exchange });
+      positionWeights.push({ code, weight: 0, value: posVal, qty: h.qty, price: curPrice, pnl, exchange: h.exchange, avgPrice: h.avgPrice });
     }
     for (const p of positionWeights) p.weight = rbTotal > 0 ? (p.value / rbTotal) * 100 : 0;
 
@@ -75,7 +75,7 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
             rbLines.push(`  매도 *${p.code}* ${trimQty}주 @$${p.price.toFixed(2)} → $${trimAmt.toFixed(0)}(₩${(trimAmt * usdKrw / 10000).toFixed(1)}만)`);
             rbLines.push(`  → 비중 ${p.weight.toFixed(1)}% → ~${(p.weight - adjustPct).toFixed(1)}%`);
           } else {
-            const exec = await executeOverseasOrder(p.code, 'SELL', trimQty, p.price, p.exchange, `리밸런싱: 비중 ${p.weight.toFixed(1)}% → ${(p.weight - adjustPct).toFixed(1)}%`, p.qty, 0, { isPaper });
+            const exec = await executeOverseasOrder(p.code, 'SELL', trimQty, p.price, p.exchange, `리밸런싱: 비중 ${p.weight.toFixed(1)}% → ${(p.weight - adjustPct).toFixed(1)}%`, p.qty, p.avgPrice, { isPaper });
             if (exec.submitted && exec.filledQty > 0) {
               const proceeds = exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
               cash += proceeds;

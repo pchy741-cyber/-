@@ -32,10 +32,10 @@ export function calcDynamicTrailDrop(params: {
   if (adx !== undefined && rsi !== undefined) {
     if (adx >= 30 && rsi >= 50 && rsi <= 70) {
       // 강한 상승 추세: 트레일 20% 확대 (승자를 더 오래 보유)
-      trail *= 0.80; // 예: -6% → -7.2% (더 넓게)
+      trail *= 1.20; // 예: -6% → -7.2% (더 넓게, 더 큰 하락 허용)
     } else if (adx < 20) {
       // 추세 약화: 트레일 15% 축소 (빨리 수익 확보)
-      trail = Math.max(trail, trail * 1.15); // 예: -6% → -5.1% (더 타이트)
+      trail *= 0.85; // 예: -6% → -5.1% (더 타이트)
     }
     if (rsi > 75) {
       // 과매수: 트레일 강제 타이트닝 (반전 위험)

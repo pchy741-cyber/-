@@ -124,7 +124,8 @@ export async function confirmOverseasFillFromBalance(params: {
 /**
  * 미국장 마감 시 모든 PENDING 해외주문 강제 취소
  */
-export async function cancelAllPendingOverseasOrders(): Promise<void> {
+export async function cancelAllPendingOverseasOrders(isPaper?: boolean): Promise<void> {
+  const mode = (isPaper ?? config.isPaper) ? 'paper' : 'live';
   try {
     const { rows } = await getPool().query(`
       SELECT id, stock_code, exchange, quantity, kis_order_no
@@ -134,7 +135,7 @@ export async function cancelAllPendingOverseasOrders(): Promise<void> {
         AND status = 'PENDING'
         AND created_at >= NOW() - INTERVAL '24 hours'
       ORDER BY created_at ASC
-    `, [config.isPaper ? 'paper' : 'live']);
+    `, [mode]);
 
     if (rows.length === 0) {
       logger.info('🇺🇸 미국장 마감: 취소할 PENDING 주문 없음', { component: 'OVERSEAS' });

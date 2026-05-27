@@ -486,8 +486,8 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
 
     // ── 4-b. 집중도 캡 (소액 계좌 $500 미만: 1-2종목 집중 → 캡 비활성) ──
     if (portfolioValue >= 500) {
-      const CONC_CAP = 0.30;
-      const CONC_TARGET = 0.25;
+      const CONC_CAP = 0.25; // portfolio-guard MAX_SINGLE_STOCK_PCT와 통일
+      const CONC_TARGET = 0.20;
       const capHoldings = await getHoldings(isPaper());
       for (const [capCode, capHolding] of capHoldings) {
         if (pendingOrderStocks.has(capCode)) continue;
@@ -499,14 +499,14 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         const targetQty = Math.floor((portfolioValue * CONC_TARGET) / capTech.price.currentPrice);
         const sellQty = capHolding.qty - targetQty;
         if (sellQty < 1) continue;
-        logger.warn(`⚠️ 집중도 캡 발동: ${capCode} 비중 ${(posWeight * 100).toFixed(0)}% > 30% → ${sellQty}주 매도`, { component: 'OVERSEAS' });
-        const exec = await executeOverseasOrder(capCode, 'SELL', sellQty, capTech.price.currentPrice, capTech.exchange, `집중도 캡(${(posWeight * 100).toFixed(0)}% > 30%) — 25%로 강제 분산 매도`, capHolding.qty, capHolding.avgPrice, { isPaper: isPaper() });
+        logger.warn(`⚠️ 집중도 캡 발동: ${capCode} 비중 ${(posWeight * 100).toFixed(0)}% > 25% → ${sellQty}주 매도`, { component: 'OVERSEAS' });
+        const exec = await executeOverseasOrder(capCode, 'SELL', sellQty, capTech.price.currentPrice, capTech.exchange, `집중도 캡(${(posWeight * 100).toFixed(0)}% > 25%) — 20%로 강제 분산 매도`, capHolding.qty, capHolding.avgPrice, { isPaper: isPaper() });
         if (exec.submitted && exec.filledQty > 0) {
           const proceeds = exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
           cash += proceeds;
           await updateTradeState({ code: capCode, exchange: capTech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper() });
           if (exec.finalQty <= 0) { await clearMaxPrice(capCode, isPaper()); await clearPartialTpStageNum(capCode, isPaper()); await getPool().query(`DELETE FROM overseas_state WHERE key = $1`, [`${isPaper() ? 'p_' : 'l_'}scale_in_${capCode}`]).catch(() => {}); }
-          sellOrders.push(`⚠️ 집중캡 매도 ${capCode} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (비중 ${(posWeight * 100).toFixed(0)}% → 25%, +$${proceeds.toFixed(0)} 회수)`);
+          sellOrders.push(`⚠️ 집중캡 매도 ${capCode} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (비중 ${(posWeight * 100).toFixed(0)}% → 20%, +$${proceeds.toFixed(0)} 회수)`);
         }
       }
     }
