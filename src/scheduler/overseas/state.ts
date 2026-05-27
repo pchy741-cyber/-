@@ -114,7 +114,9 @@ export async function ensureOverseasTable(): Promise<void> {
             [new Date().toISOString()]);
         });
       }
-    } catch { /* 마이그레이션 실패 → 전체 롤백, 다음 실행 시 재시도 */ }
+    } catch (e) {
+      logger.warn(`해외 정합성 마이그레이션 실패 (다음 사이클 재시도): ${(e as Error).message}`, { component: 'OVERSEAS' });
+    }
 
     // ══════════════════════════════════════════════════
     // Live 해외 현금: 통합증거금 — KIS API에서 실제 주문가능금액 조회
@@ -148,7 +150,9 @@ export async function ensureOverseasTable(): Promise<void> {
           { component: 'OVERSEAS' });
       }
     }
-  } catch { /* 오류 무시 */ }
+  } catch (e) {
+    logger.error(`ensureOverseasTable 실패: ${(e as Error).message}`, { component: 'OVERSEAS' });
+  }
 }
 
 export async function getHoldings(isPaper?: boolean): Promise<Map<string, { qty: number; avgPrice: number; boughtAt: string; exchange: string }>> {

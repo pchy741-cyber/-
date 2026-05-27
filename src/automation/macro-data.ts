@@ -41,6 +41,11 @@ const DEFAULTS = {
 let cachedSnapshot: MacroSnapshot | null = null;
 let cacheTimestamp = 0;
 
+// fetchExchangeRate() 전용 캐시 — getCash() 등 핫패스에서 매 호출마다 Naver API 치는 것 방지
+let cachedFxRate: number | null = null;
+let cachedFxTimestamp = 0;
+const FX_CACHE_TTL_MS = 10 * 60 * 1000; // 10분
+
 // ── Helper: safe fetch with timeout ──
 
 async function safeFetch(url: string): Promise<Response> {
@@ -83,6 +88,11 @@ export async function fetchVKOSPI(): Promise<number> {
 // ── USD/KRW 환율 ──
 
 export async function fetchExchangeRate(): Promise<number> {
+  // 캐시 히트: 10분 이내 조회값 재사용 (getCash/updateTradeState 등 핫패스 보호)
+  if (cachedFxRate !== null && Date.now() - cachedFxTimestamp < FX_CACHE_TTL_MS) {
+    return cachedFxRate;
+  }
+
   try {
     const res = await safeFetch('https://m.stock.naver.com/api/exchange/FX_USDKRW/basic');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -99,16 +109,22 @@ export async function fetchExchangeRate(): Promise<number> {
       const match = raw.match(/"(?:closePrice|now|currentValue)"\s*:\s*"?([\d,.]+)"?/);
       if (match) {
         const parsed = Number(match[1].replace(/,/g, ''));
-        if (Number.isFinite(parsed) && parsed > 800 && parsed < 2000) return parsed;
+        if (Number.isFinite(parsed) && parsed > 800 && parsed < 2000) {
+          cachedFxRate = parsed;
+          cachedFxTimestamp = Date.now();
+          return parsed;
+        }
       }
       logger.warn('USD/KRW 파싱 실패, 기본값 사용', { component: 'MACRO' });
-      return DEFAULTS.usdKrw;
+      return cachedFxRate ?? DEFAULTS.usdKrw;
     }
 
+    cachedFxRate = value;
+    cachedFxTimestamp = Date.now();
     return value;
   } catch (error) {
     logger.warn(`USD/KRW 조회 실패: ${error}`, { component: 'MACRO' });
-    return DEFAULTS.usdKrw;
+    return cachedFxRate ?? DEFAULTS.usdKrw;
   }
 }
 
@@ -275,4 +291,6 @@ export function getMacroScoreAdjustment(snapshot: MacroSnapshot): number {
 export function clearMacroCache(): void {
   cachedSnapshot = null;
   cacheTimestamp = 0;
+  cachedFxRate = null;
+  cachedFxTimestamp = 0;
 }

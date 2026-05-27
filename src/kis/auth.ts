@@ -12,6 +12,11 @@ let cachedTokenIsPaper: boolean | null = null;
 // 동시 발급 방지 뮤텍스 — 서버 시작 직후 burst 요청에서 토큰이 중복 발급되는 경쟁 조건 차단
 let inflightRequest: Promise<string> | null = null;
 
+// 모드별 별도 캐시 + 뮤텍스 (getAccessTokenForMode용)
+// getAccessTokenForMode는 paper서버에서 live잔고 조회 등 cross-mode 호출에 사용
+const modeTokenCache = new Map<string, KISToken>();
+const modeInflight = new Map<string, Promise<string>>();
+
 // DB에서 토큰 로드 (재시작 시 재발급 방지)
 async function loadTokenFromDb(isPaper: boolean): Promise<KISToken | null> {
   try {
@@ -59,46 +64,75 @@ async function saveTokenToDb(token: KISToken, isPaper: boolean): Promise<void> {
 /**
  * 특정 모드의 토큰 발급 (서버 모드와 독립)
  * paper 서버에서 live 잔고 조회 시 사용
+ * 뮤텍스 + 인메모리 캐시로 중복 발급 완전 방지
  */
 export async function getAccessTokenForMode(mode: 'paper' | 'live'): Promise<string> {
   const isPaper = mode === 'paper';
-  // 현재 캐시가 같은 모드면 재사용
+
+  // 1차: 공유 캐시 확인 (getAccessToken과 동일 모드면 히트)
   if (cachedToken && !isExpired(cachedToken) && cachedTokenIsPaper === isPaper) {
     return cachedToken.accessToken;
   }
-  // 모드별 별도 캐시
-  const dbToken = await loadTokenFromDb(isPaper);
-  if (dbToken) return dbToken.accessToken;
 
-  // 해당 모드의 credential로 토큰 발급
-  const isLive = mode === 'live';
-  const appKey = isLive
-    ? (process.env.KIS_APP_KEY_LIVE || process.env.KIS_APP_KEY || '')
-    : (process.env.KIS_APP_KEY || '');
-  const appSecret = isLive
-    ? (process.env.KIS_APP_SECRET_LIVE || process.env.KIS_APP_SECRET || '')
-    : (process.env.KIS_APP_SECRET || '');
-  const baseUrl = isLive
-    ? 'https://openapi.koreainvestment.com:9443'
-    : 'https://openapivts.koreainvestment.com:29443';
+  // 2차: 모드별 전용 캐시 확인
+  const modeCached = modeTokenCache.get(mode);
+  if (modeCached && !isExpired(modeCached)) {
+    return modeCached.accessToken;
+  }
 
-  const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json; charset=utf-8' },
-    body: JSON.stringify({ grant_type: 'client_credentials', appkey: appKey, appsecret: appSecret }),
-  });
-  const rawBody = await res.text();
-  if (!res.ok) throw new Error(`KIS 토큰 발급 실패 [${mode}] (${res.status}): ${rawBody}`);
-  const data = JSON.parse(rawBody) as { access_token?: string; token_type?: string; access_token_token_expired?: string };
-  if (!data.access_token) throw new Error(`KIS 토큰 발급 실패 [${mode}]`);
+  // 동시 발급 방지 뮤텍스: 이미 진행 중이면 그 결과 공유
+  const existing = modeInflight.get(mode);
+  if (existing) return existing;
 
-  const token: KISToken = {
-    accessToken: data.access_token,
-    tokenType: data.token_type ?? 'Bearer',
-    expiresAt: new Date(data.access_token_token_expired ?? ''),
-  };
-  await saveTokenToDb(token, isPaper);
-  return token.accessToken;
+  const promise = (async () => {
+    try {
+      // 3차: DB에서 복원
+      const dbToken = await loadTokenFromDb(isPaper);
+      if (dbToken) {
+        modeTokenCache.set(mode, dbToken);
+        logger.info(`KIS 토큰 [${mode}] DB 복원, 만료: ${dbToken.expiresAt.toISOString()}`, { component: 'KIS_AUTH' });
+        return dbToken.accessToken;
+      }
+
+      // 4차: 신규 발급 (최후 수단)
+      logger.info(`KIS 토큰 [${mode}] 신규 발급 요청`, { component: 'KIS_AUTH' });
+      const isLive = mode === 'live';
+      const appKey = isLive
+        ? (process.env.KIS_APP_KEY_LIVE || process.env.KIS_APP_KEY || '')
+        : (process.env.KIS_APP_KEY || '');
+      const appSecret = isLive
+        ? (process.env.KIS_APP_SECRET_LIVE || process.env.KIS_APP_SECRET || '')
+        : (process.env.KIS_APP_SECRET || '');
+      const baseUrl = isLive
+        ? 'https://openapi.koreainvestment.com:9443'
+        : 'https://openapivts.koreainvestment.com:29443';
+
+      const res = await fetch(`${baseUrl}/oauth2/tokenP`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({ grant_type: 'client_credentials', appkey: appKey, appsecret: appSecret }),
+      });
+      const rawBody = await res.text();
+      if (!res.ok) throw new Error(`KIS 토큰 발급 실패 [${mode}] (${res.status}): ${rawBody}`);
+      const data = JSON.parse(rawBody) as { access_token?: string; token_type?: string; access_token_token_expired?: string };
+      if (!data.access_token) throw new Error(`KIS 토큰 발급 실패 [${mode}]`);
+
+      const token: KISToken = {
+        accessToken: data.access_token,
+        tokenType: data.token_type ?? 'Bearer',
+        expiresAt: new Date(data.access_token_token_expired ?? ''),
+      };
+      modeTokenCache.set(mode, token);
+      await saveTokenToDb(token, isPaper);
+      logger.info(`KIS 토큰 [${mode}] 발급 완료, 만료: ${token.expiresAt.toISOString()}`, { component: 'KIS_AUTH' });
+      return token.accessToken;
+    } finally {
+      modeInflight.delete(mode);
+    }
+  })();
+
+  modeInflight.set(mode, promise);
+  return promise;
 }
 
 export async function getAccessToken(): Promise<string> {
@@ -207,14 +241,16 @@ function isExpired(token: KISToken): boolean {
 
 export function clearTokenCache() {
   cachedToken = null;
+  modeTokenCache.clear();
   // DB 토큰도 삭제 (KIS 서버에서 무효화된 토큰이 DB 복원되는 것 방지)
+  // 현재 모드의 토큰만 삭제 (반대 모드는 유지)
   (async () => {
     try {
       const { getPool, isMemoryMode } = await import('../db/client.js');
       if (isMemoryMode()) return;
       const key = config.isPaper ? 'kis_token_paper' : 'kis_token_live';
       await getPool().query('DELETE FROM system_state WHERE key = $1', [key]);
-      logger.info('KIS 토큰 DB 캐시 삭제 완료', { component: 'KIS_AUTH' });
+      logger.info(`KIS 토큰 DB 캐시 삭제: ${key}`, { component: 'KIS_AUTH' });
     } catch (err) {
       logger.warn(`KIS 토큰 DB 삭제 실패 (무시): ${err}`, { component: 'KIS_AUTH' });
     }
