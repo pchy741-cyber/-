@@ -32,7 +32,8 @@ export { setShuttingDown, isOverseasJobRunning, resetUSSessionCache, resetAsiaSe
 export { syncPendingOverseasOrders, cancelAllPendingOverseasOrders, getUserInsights, setUserInsights } from './overseas/order-sync.js';
 
 // ── 모듈 import ──
-import { GLOBAL_WATCHLIST, MAX_POSITIONS } from './overseas/watchlist.js';
+import { GLOBAL_WATCHLIST } from './overseas/watchlist.js';
+import { getOverseasDynamic } from '../config/constants.js';
 import {
   ensureOverseasTable, getHoldings, getCash, updateTradeState,
   getMaxPrice, setMaxPrice, clearMaxPrice,
@@ -181,8 +182,10 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
 
     // ── 루프 헬스 요약 ──
     const holdingCost = Array.from(holdings.values()).reduce((s, h) => s + h.qty * h.avgPrice, 0);
+    const earlyEstPortfolio = cash + holdingCost;
+    const earlyMaxPos = getOverseasDynamic(earlyEstPortfolio).maxPositions;
     logger.info(
-      `📊 해외 루프 ${regionFlags} | 현금 $${cash.toFixed(0)} | 보유 ${holdings.size}/${MAX_POSITIONS} ($${holdingCost.toFixed(0)}) | 종목풀 ${allActiveStocks.length} | ${isPaper() ? 'PAPER' : 'LIVE'}`,
+      `📊 해외 루프 ${regionFlags} | 현금 $${cash.toFixed(0)} | 보유 ${holdings.size}/${earlyMaxPos} ($${holdingCost.toFixed(0)}) | 종목풀 ${allActiveStocks.length} | ${isPaper() ? 'PAPER' : 'LIVE'}`,
       { component: 'OVERSEAS' },
     );
 
@@ -446,20 +449,24 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       logger.info(`🌡️ VIX 레짐: ${vixRegime.regime} (VIX=${vixValue.toFixed(1)}) — 사이징x${vixRegime.sizingMult} 트레일${vixRegime.trailTighten > 0 ? `-${vixRegime.trailTighten}%p` : '정상'}`, { component: 'OVERSEAS' });
     }
 
-    // ── 3. 매도 판단 (→ overseas/sell-logic.ts) — 방어 모드 트레일 타이트닝 반영 ──
-    const effectiveVixRegime = defenseSignal.trailTighten > 0
-      ? { ...vixRegime, trailTighten: vixRegime.trailTighten + defenseSignal.trailTighten }
-      : vixRegime;
-    const sellResult = await evaluateSells({ holdings, pendingOrderStocks, techResults, aiMap, vixRegime: effectiveVixRegime, cash, isPaper: isPaper() });
-    const sellOrders = sellResult.sellOrders;
-    cash = sellResult.cash;
-
-    // ── 4. 리스크 관리 ──
+    // ── 3. 포트폴리오 평가 + 동적 파라미터 ──
     const holdingEvalUsd = Array.from(holdings.entries()).reduce((sum, [code, h]) => {
       const tech = techResults.find((t) => t.code === code);
       return sum + (tech ? tech.price.currentPrice * h.qty : h.avgPrice * h.qty);
     }, 0);
     const portfolioValue = cash + holdingEvalUsd;
+    const dynParams = getOverseasDynamic(portfolioValue);
+    const MAX_POSITIONS = dynParams.maxPositions;
+
+    // ── 4. 매도 판단 (→ overseas/sell-logic.ts) — 방어 모드 트레일 타이트닝 반영 ──
+    const effectiveVixRegime = defenseSignal.trailTighten > 0
+      ? { ...vixRegime, trailTighten: vixRegime.trailTighten + defenseSignal.trailTighten }
+      : vixRegime;
+    const sellResult = await evaluateSells({ holdings, pendingOrderStocks, techResults, aiMap, vixRegime: effectiveVixRegime, cash, isPaper: isPaper(), portfolioValue });
+    const sellOrders = sellResult.sellOrders;
+    cash = sellResult.cash;
+
+    // ── 5. 리스크 관리 ──
     if (s.sessionStartPortfolioValue === null) await setSessionStartValue(portfolioValue);
     const sessionStart = s.sessionStartPortfolioValue ?? portfolioValue;
 

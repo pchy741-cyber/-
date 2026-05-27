@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { getOverseasBalance, getOverseasDailyChart, getOverseasPrice, placeOverseasOrder } from '../../kis/overseas.js';
 import { config, baseIsPaper } from '../../config/index.js';
+import { getPool } from '../../db/client.js';
 import { cacheGet, cacheSet } from '../../cache/memory.js';
 import { logger } from '../../utils/logger.js';
 import { getOverseasScores, setOverseasScores, type OverseasScoreEntry } from '../../cache/overseas-scores.js';
@@ -319,10 +320,22 @@ overseasRoutes.post('/overseas/vision-scalp/analyze', async (c) => {
 overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
   try {
     const body = await c.req.json<{ ticker: string; exchange: string; amountUsd: number; reasoning: string }>();
-    const { ticker, exchange = 'NASDAQ', amountUsd = 200, reasoning = '' } = body;
+    const { ticker, exchange = 'NASDAQ', reasoning = '' } = body;
     if (!ticker) return c.json({ error: '티커 필요' }, 400);
 
     const sanitizedTicker = ticker.toUpperCase().replace(/[^A-Z0-9.]/g, '');
+    // 동적 기본금액: 포트폴리오의 3% (스캘프니까 작게)
+    let defaultAmount = 200;
+    try {
+      const cashKey = config.isPaper ? 'cash_paper' : 'cash';
+      const { rows: cashRows } = await getPool().query("SELECT value FROM overseas_state WHERE key = $1", [cashKey]);
+      const { rows: holdRows } = await getPool().query("SELECT SUM(avg_price * quantity) AS total FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1", [config.isPaper]);
+      const cashVal = cashRows[0] ? Number(cashRows[0].value) : 0;
+      const holdVal = holdRows[0]?.total ? Number(holdRows[0].total) : 0;
+      const portfolio = cashVal + holdVal;
+      if (portfolio > 0) defaultAmount = Math.max(50, Math.min(1000, Math.round(portfolio * 0.03)));
+    } catch { /* 조회 실패 시 기본값 유지 */ }
+    const amountUsd = body.amountUsd ?? defaultAmount;
     const safeAmount = Math.max(50, Math.min(1000, Number(amountUsd)));
 
     // 현재가 조회

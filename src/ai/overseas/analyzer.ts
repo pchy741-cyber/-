@@ -166,9 +166,13 @@ function buildContext(stocks: OverseasStockInput[], cash: number, holdingCount: 
     return `${s.code}: $${s.currentPrice} ${s.changePct >= 0 ? '+' : ''}${s.changePct.toFixed(2)}%${range} | RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)} score=${s.score} signal=${s.signal}${maPos}${bbTag}${bigMover}${momentum}${holding}`;
   });
 
-  const canBuy = cash >= 200 && holdingCount < 6;
+  // 동적 최소 매수 게이트: 포트폴리오의 2% 또는 $50 중 큰 값
+  const portfolioValue = cash + holdingCount * 300; // 대략적 포트폴리오 추정
+  const minBuyGate = Math.max(50, portfolioValue * 0.02);
+  const maxPositions = Math.max(4, Math.min(10, Math.floor(portfolioValue / 500))); // 포트폴리오 규모별 동적 종목수
+  const canBuy = cash >= minBuyGate && holdingCount < maxPositions;
   const parts = [
-    `시각: ${timeStr} | 현금: $${cash.toFixed(0)} | 보유: ${holdingCount}/6종목 | 매수가능: ${canBuy ? '예' : '아니오(현금부족 또는 만석)'}`,
+    `시각: ${timeStr} | 현금: $${cash.toFixed(0)} | 보유: ${holdingCount}/${maxPositions}종목 | 매수가능: ${canBuy ? '예' : '아니오(현금부족 또는 만석)'}`,
   ];
   if (perfSummary) parts.push(`📊 ${perfSummary} — 이 실적을 바탕으로 더 정확한 판단을 내려주세요.`);
   if (marketContext) {

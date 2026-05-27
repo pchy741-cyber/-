@@ -2,7 +2,7 @@
  * 매도 판단 로직 — SL/TP/ATR트레일/부분익절/AI매도/기술적매도
  * overseas-job.ts에서 추출
  */
-import { OVERSEAS, SECTOR_CLASS, OVERSEAS_FEE_PCT } from '../../config/constants.js';
+import { OVERSEAS, SECTOR_CLASS, OVERSEAS_FEE_PCT, getOverseasDynamic } from '../../config/constants.js';
 import { config } from '../../config/index.js';
 import { logger } from '../../utils/logger.js';
 import type { OverseasPrice } from '../../kis/overseas.js';
@@ -44,6 +44,7 @@ export interface SellContext {
   vixRegime: RegimeAdjustment;
   cash: number;
   isPaper?: boolean;
+  portfolioValue?: number; // 동적 MAX_HOLD_DAYS 계산용
 }
 
 export interface SellResult {
@@ -98,7 +99,8 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     const hardTpPct = isHighBeta ? 20.0 : 15.0;
     const minAiSellConf = isHighBeta ? 0.82 : 0.78;
     const minHoldForSell = isHighBeta ? 3 : 2;
-    const maxHoldDays = OVERSEAS.MAX_HOLD_DAYS;
+    const dynP = getOverseasDynamic(ctx.portfolioValue ?? 5000);
+    const maxHoldDays = dynP.maxHoldDays;
     const holdingDays = (Date.now() - new Date(holding.boughtAt).getTime()) / (1000 * 60 * 60 * 24);
 
     if (pnlPct <= stopLossPct) {

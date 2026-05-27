@@ -60,9 +60,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     getActiveStrategy().catch(() => null),
     getPool().query(
       `SELECT id, category, insight, confidence, sample_count, last_updated, is_manual,
-              recommendation, param_change, is_applied, applied_at
-       FROM learned_insights WHERE is_paper = $1 ORDER BY is_manual DESC, confidence DESC LIMIT 30`,
-      [viewIsPaper]
+              recommendation, param_change, is_applied, applied_at, is_paper
+       FROM learned_insights ORDER BY is_manual DESC, confidence DESC LIMIT 30`
     ).catch(() => ({ rows: [] as any[] })),
     getDefenseParkState().catch(() => ({ isActive: false, parkStockCode: '069500', parkStockName: 'KODEX 200', entryReason: null, enteredAt: null })),
   ]);

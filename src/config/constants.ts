@@ -261,19 +261,34 @@ export const OVERSEAS_FEE_PCT = 0.0035;
 // ── 미국주식 해외 (통합증거금: 원화→해외주식 직접 주문) ──
 export const OVERSEAS = {
   UNIFIED_MARGIN: true,                     // 통합증거금 모드 (별도 USD 환전 불필요)
-  MAX_POSITIONS: 8,                         // 최대 동시 보유 종목
-  POSITION_SIZE_USD: 3000,                  // 종목당 최대 $3,000 (황금비율 상향)
-  POSITION_PCT: 0.25,                       // 또는 가용 현금의 25% (황금비율 상향)
-  PARKING_CASH_BUFFER: 500,                 // 현금 파킹 최소 유지 ($)
-  PARKING_MIN_ORDER: 20,                    // 파킹 최소 주문 금액 ($)
   TOP_COUNT: 20,                            // 세션 캐시 상위 종목 수 (35종목 풀 → 상위 20 AI 분석)
   ASIA_TOP_COUNT: 6,                        // 아시아장 세션 캐시 상위 종목 수
   AI_INTERVAL_MS: 15 * 60_000,             // AI 호출 최소 간격: 15분 (비용 절감)
-  MAX_HOLD_DAYS: 21,                        // 최대 보유일 (21일 → 장기 추세 허용)
-  CONCENTRATION_CASH_BUFFER: 400,           // 집중 전략 긴급 대비 보유 현금 ($)
+  PARKING_MIN_ORDER: 20,                    // 파킹 최소 주문 금액 ($)
   CONCENTRATION_MIN_PNL_PCT: 6.0,           // 집중 대상 최소 수익률 (확실한 승자만 추가매수)
-  CONCENTRATION_MIN_INVEST: 60,             // 집중 최소 투자액 ($)
+  // 아래 값들은 레거시 폴백 — 실제 사용은 getOverseasDynamic() 동적 함수
+  MAX_POSITIONS: 8,
+  POSITION_SIZE_USD: 3000,
+  POSITION_PCT: 0.25,
+  PARKING_CASH_BUFFER: 500,
+  MAX_HOLD_DAYS: 21,
+  CONCENTRATION_CASH_BUFFER: 400,
+  CONCENTRATION_MIN_INVEST: 60,
 } as const;
+
+/** 포트폴리오 규모 기반 동적 파라미터 — 고정형 상수 대체 */
+export function getOverseasDynamic(portfolioUsd: number) {
+  const p = Math.max(100, portfolioUsd);
+  return {
+    maxPositions:       Math.max(3, Math.min(12, Math.floor(p / 1000))),    // $3k→3종목, $10k→10종목
+    positionSizeUsd:    Math.max(50, Math.min(p * 0.20, 5000)),             // 포트폴리오 20% 캡, 최대 $5k
+    positionPct:        p < 2000 ? 0.35 : p < 10000 ? 0.25 : 0.18,         // 소액→35%, 중형→25%, 대형→18%
+    parkingCashBuffer:  Math.max(50, Math.round(p * 0.05)),                 // 포트폴리오 5% 현금 유지
+    maxHoldDays:        p < 2000 ? 14 : p < 10000 ? 21 : 30,               // 소액→14일, 중형→21일, 대형→30일
+    concentrationCashBuffer: Math.max(30, Math.round(p * 0.04)),            // 4% 집중전략 현금
+    concentrationMinInvest:  Math.max(30, Math.round(p * 0.01)),            // 1% 최소 집중투자
+  };
+}
 
 // ── AI 스코어 시그널 ──
 export const Signal = {

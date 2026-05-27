@@ -54,10 +54,9 @@ async function recordOverseasScoreAccuracy(params: {
   }
 }
 
-// ── 승자 집중 전략 상수 ──
-const CONCENTRATION_CASH_BUFFER  = OVERSEAS.CONCENTRATION_CASH_BUFFER;
+// ── 승자 집중 전략 상수 (동적 함수로 대체, 레거시 폴백용) ──
+import { getOverseasDynamic } from '../../config/constants.js';
 const CONCENTRATION_MIN_PNL_PCT  = OVERSEAS.CONCENTRATION_MIN_PNL_PCT;
-const CONCENTRATION_MIN_INVEST   = OVERSEAS.CONCENTRATION_MIN_INVEST;
 
 /**
  * 미국주식 주문 실행 (Paper / Live)
@@ -203,8 +202,11 @@ export async function deployIdleCash(params: {
   const { cash, holdings, techResults, isUSSession, avgScore } = params;
   if (!isUSSession) return { actions: [], cashUsed: 0 };
 
-  const investable = cash - CONCENTRATION_CASH_BUFFER;
-  if (investable < CONCENTRATION_MIN_INVEST) return { actions: [], cashUsed: 0 };
+  // 동적: 포트폴리오 규모 기반 집중전략 파라미터
+  const holdingValue = Array.from(holdings.values()).reduce((s, h) => s + h.qty * h.avgPrice, 0);
+  const dynP = getOverseasDynamic(cash + holdingValue);
+  const investable = cash - dynP.concentrationCashBuffer;
+  if (investable < dynP.concentrationMinInvest) return { actions: [], cashUsed: 0 };
 
   let bestCode: string | null = null;
   let bestPnlPct: number = CONCENTRATION_MIN_PNL_PCT;

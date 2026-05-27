@@ -790,9 +790,9 @@ async function saveInsights(insights: LearnedInsight[]): Promise<void> {
  * - 실제 매매 데이터 기반 패턴 → AI 판단에 강제 적용
  */
 export async function getLearnedInsightsForPrompt(): Promise<string> {
+  // paper/live 인사이트 공유: 양쪽 모드 경험 모두 활용
   const { rows: data } = await getPool().query(
-    'SELECT * FROM learned_insights WHERE is_paper = $1 ORDER BY confidence DESC, sample_count DESC LIMIT 15',
-    [config.isPaper],
+    'SELECT * FROM learned_insights ORDER BY confidence DESC, sample_count DESC LIMIT 15',
   );
 
   if (!data || data.length === 0) return '';
@@ -985,9 +985,9 @@ export async function applyInsightById(insightId: string): Promise<{ ok: boolean
  * 대시보드용 인사이트 목록 (recommendation + paramChange 포함)
  */
 export async function getInsightsForDashboard(): Promise<LearnedInsight[]> {
+  // paper/live 공유: 모든 인사이트 통합 표시
   const { rows } = await getPool().query(
-    `SELECT * FROM learned_insights WHERE is_paper = $1 ORDER BY confidence DESC, sample_count DESC LIMIT 20`,
-    [config.isPaper],
+    `SELECT * FROM learned_insights ORDER BY confidence DESC, sample_count DESC LIMIT 20`,
   );
   return rows.map((r) => ({
     id: r.id,
@@ -1016,9 +1016,10 @@ export async function getLearnedParameters(): Promise<LearnedParameters> {
     trailingStopMultipliers: {},
   };
 
+  // paper/live 공유: 타이밍 인사이트 모드 무관 통합
   const { rows: data } = await getPool().query(
-    'SELECT details FROM learned_insights WHERE category = $1 AND confidence > $2 AND is_paper = $3',
-    ['TIMING', 0.65, config.isPaper],
+    'SELECT details FROM learned_insights WHERE category = $1 AND confidence > $2',
+    ['TIMING', 0.65],
   );
 
   if (!data || data.length === 0) return params;

@@ -337,10 +337,10 @@ settingsRoutes.post('/fix-chain-tpsl', async (c) => {
 // GET: 전체 인사이트 조회
 settingsRoutes.get('/insights', async (c) => {
   try {
+    // paper/live 공유: 모든 인사이트 통합 조회
     const { rows } = await getPool().query(
       `SELECT *
-       FROM learned_insights WHERE is_paper = $1 ORDER BY is_manual DESC, confidence DESC LIMIT 50`,
-      [baseIsPaper],
+       FROM learned_insights ORDER BY is_manual DESC, confidence DESC LIMIT 50`,
     );
     return c.json(rows);
   } catch (err: any) {
