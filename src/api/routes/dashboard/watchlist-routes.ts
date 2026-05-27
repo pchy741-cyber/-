@@ -2,7 +2,7 @@
  * 워치리스트 관련 라우트 — /search/stock, /watchlist/*, /flow, /kis-balance
  */
 import { Hono } from 'hono';
-import { config } from '../../../config/index.js';
+import { config, baseIsPaper } from '../../../config/index.js';
 import { getActiveWatchlist, getPool } from '../../../db/client.js';
 import { getAccountBalance } from '../../../kis/account.js';
 import { getCurrentPrice, getBatchPrices, isMarketOpen, getVolumeRankingStocks, getChangeRankingStocks, type CurrentPrice } from '../../../kis/market.js';
@@ -115,7 +115,7 @@ watchlistRoutes.get('/search/stock', async (c) => {
 watchlistRoutes.get('/watchlist', async (c) => {
   try {
     const viewModeParam = c.req.query('viewMode');
-    const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : config.isPaper;
+    const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
     const data = await getActiveWatchlist();
     const unresolvedDomestic = [...new Set(
       data
@@ -250,7 +250,7 @@ watchlistRoutes.get('/flow', async (c) => {
     return c.json(status);
   } catch {
     return c.json({
-      totalPortfolio: config.isPaper ? 10000000 : 0, cash: config.isPaper ? 10000000 : 0, cashRatio: 100,
+      totalPortfolio: baseIsPaper ? 10000000 : 0, cash: baseIsPaper ? 10000000 : 0, cashRatio: 100,
       investedRatio: 0, flowStatus: 'FLOWING', flowMessage: '대기 중',
       mode: 'SWING', activePositions: 0, pendingStocks: 0,
       allocation: [], pendingStockCodes: [],
@@ -302,7 +302,7 @@ watchlistRoutes.post('/watchlist/sync', async (c) => {
 watchlistRoutes.get('/watchlist/sold-tracking', async (c) => {
   try {
     const viewModeParam = c.req.query('viewMode');
-    const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : config.isPaper;
+    const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
     const { rows } = await getPool().query(`
       SELECT DISTINCT ON (tc.stock_code)
         tc.stock_code,

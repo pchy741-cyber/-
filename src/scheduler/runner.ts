@@ -17,6 +17,7 @@ import { runDailyLearning } from '../automation/self-learning.js';
 import { runSniperScan } from '../automation/snipers/runner.js';
 import { MARKET, SCHEDULE } from '../config/constants.js';
 import { setTradingModeOverride } from '../config/index.js';
+import { runWithMode } from '../config/context.js';
 import { logger } from '../utils/logger.js';
 import { runHoldingCheckJob } from './holding-check-job.js';
 import { runSnapshotJob } from './snapshot-job.js';
@@ -36,12 +37,12 @@ import { runIntegrityCheck } from './integrity-check-job.js';
  * overseas-job의 runOverseasDual() 패턴과 동일
  */
 async function runDomesticDual(label: string, fn: () => Promise<unknown>): Promise<void> {
-  setTradingModeOverride('paper');
-  try { await fn(); } catch (e) { logger.error(`${label} paper 실패: ${e}`, { component: 'SCHEDULER' }); }
-  finally { setTradingModeOverride(null); }
-
-  setTradingModeOverride(null); // live (env 기본값)
-  try { await fn(); } catch (e) { logger.error(`${label} live 실패: ${e}`, { component: 'SCHEDULER' }); }
+  await runWithMode(true, async () => {
+    try { await fn(); } catch (e) { logger.error(`${label} paper 실패: ${e}`, { component: 'SCHEDULER' }); }
+  });
+  await runWithMode(false, async () => {
+    try { await fn(); } catch (e) { logger.error(`${label} live 실패: ${e}`, { component: 'SCHEDULER' }); }
+  });
 }
 
 /**

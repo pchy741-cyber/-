@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import { z } from 'zod';
+import { getCtxIsPaper, hasCtx } from './context.js';
 
 dotenv.config();
 
@@ -77,8 +78,18 @@ export function setTradingModeOverride(mode: 'paper' | 'live' | null) {
 }
 
 export function getEffectiveTradingMode(): 'paper' | 'live' {
+  // AsyncLocalStorage 컨텍스트 우선 (scheduler dual-run, HTTP 미들웨어)
+  if (hasCtx()) return getCtxIsPaper() ? 'paper' : 'live';
+  // settings 엔드포인트 런타임 전환 (전역 지속 변경)
   return _tradingModeOverride ?? env.TRADING_MODE;
 }
+
+/**
+ * 서버 기본 거래모드 — 런타임 오버라이드 불가 (env 기준)
+ * API 레이어에서 사용: runOverseasDual() 중에도 오염되지 않는 stable fallback
+ */
+export const baseTradingMode: 'paper' | 'live' = env.TRADING_MODE;
+export const baseIsPaper: boolean = env.TRADING_MODE === 'paper';
 
 // KIS 설정은 Secret Manager 로드 후 process.env가 갱신되므로 getter로 동적 읽기
 function getKisAccountNo(isLive: boolean) {

@@ -18,6 +18,20 @@ import { logSystem } from '../../db/client.js';
  */
 export async function syncHoldingsFromKIS(): Promise<void> {
   try {
+    // is_paper = NULL 오염 레코드 정리 (KIS 앱 직접매수 등으로 누락된 케이스)
+    // NULL 레코드 중 이미 is_paper=false 행이 있으면 중복 제거, 없으면 live(false)로 전환
+    await getPool().query(`
+      DELETE FROM overseas_holdings oh1
+      WHERE oh1.is_paper IS NULL
+        AND EXISTS (
+          SELECT 1 FROM overseas_holdings oh2
+          WHERE oh2.stock_code = oh1.stock_code AND oh2.exchange = oh1.exchange AND oh2.is_paper = false
+        )
+    `).catch(() => {});
+    await getPool().query(
+      'UPDATE overseas_holdings SET is_paper = false WHERE is_paper IS NULL AND quantity > 0'
+    ).catch(() => {});
+
     const exchanges = ['NASDAQ', 'NYSE', 'AMEX', 'TSE', 'TWSE'];
     const allHoldings = new Map<string, { qty: number; avgPrice: number; exchange: string }>();
     const failedExchanges = new Set<string>();
@@ -195,18 +209,31 @@ export async function reconcileCashWithKIS(): Promise<void> {
   try {
     let kisCash = await getOverseasBuyableAmount();
     // 통합증거금 폴백: 해외주문가능금액 API 실패 시 국내 계좌 잔고 ÷ 환율
+    // ⚠️ 국내 잔고 전체를 해외 현금으로 잡으면 과다투입 위험 → 30% 상한
     if (kisCash === null || kisCash === undefined) {
       try {
         const balance = await getAccountBalance(true); // forceLive
         const fxRate = await fetchExchangeRate();
         if (balance.orderableCash > 0 && fxRate > 0) {
-          kisCash = balance.orderableCash / fxRate;
-          logger.info(`💱 통합증거금 폴백: ₩${balance.orderableCash.toLocaleString()} ÷ ${fxRate.toFixed(0)} = $${kisCash.toFixed(2)}`, { component: 'OVERSEAS' });
+          const rawUsd = balance.orderableCash / fxRate;
+          // 국내 원화 잔고의 30%만 해외 투자 가용으로 인정 (과다투입 방지)
+          kisCash = rawUsd * 0.30;
+          logger.info(`💱 통합증거금 폴백: ₩${balance.orderableCash.toLocaleString()} ÷ ${fxRate.toFixed(0)} = $${rawUsd.toFixed(2)} → 30% 적용 $${kisCash.toFixed(2)}`, { component: 'OVERSEAS' });
         }
       } catch { /* 국내 잔고 조회도 실패 시 무시 */ }
     }
     if (kisCash === null || kisCash === undefined) return;
     const dbCash = await getCash(false);
+
+    // 🛡️ 안전 가드: KIS $0/$1 미만 반환 시 DB 현금 zeroing 차단
+    // (KIS API 오류, 빈 계좌, 잘못된 인증 등으로 인한 의심값 보호)
+    if (kisCash < 1 && dbCash > 100) {
+      logger.warn(`💰 Cash zeroing 차단: KIS=$${kisCash.toFixed(2)} (의심값), DB=$${dbCash.toFixed(0)} 유지`, { component: 'OVERSEAS' });
+      await logSystem('WARN', 'OVERSEAS', `Cash zeroing 차단: KIS=${kisCash.toFixed(2)}, DB=${dbCash.toFixed(0)}`).catch(() => {});
+      sendTelegramMessage(`⚠️ 해외 현금 zeroing 차단\nKIS=$${kisCash.toFixed(2)} (의심) → DB=$${dbCash.toFixed(0)} 보존`).catch(() => {});
+      return;
+    }
+
     const diff = Math.abs(kisCash - dbCash);
 
     // 통합증거금: KIS API가 원화→USD 환산 주문가능금액 반환

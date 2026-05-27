@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { STRATEGY_PARAMS } from '../../config/constants.js';
-import { config, setTradingModeOverride, getEffectiveTradingMode } from '../../config/index.js';
+import { config, baseIsPaper, setTradingModeOverride, getEffectiveTradingMode } from '../../config/index.js';
 import { getActiveStrategy, getPool, isMemoryMode, logSystem } from '../../db/client.js';
 import { memSetActiveStrategy } from '../../db/memory-store.js';
 import { activateKillSwitchAll, deactivateKillSwitchAll, getKillSwitchStatusAll, activateKillSwitch, deactivateKillSwitch, getKillSwitchStatus } from '../../risk/kill-switch.js';
@@ -58,7 +58,7 @@ settingsRoutes.post('/kill-switch/deactivate', async (c) => {
       const { getAccountBalance } = await import('../../kis/account.js');
       const { getPaperBalance } = await import('../../risk/paper-balance.js');
       const { insertSnapshot } = await import('../../db/client.js');
-      const balance = config.isPaper ? await getPaperBalance() : await getAccountBalance();
+      const balance = baseIsPaper ? await getPaperBalance() : await getAccountBalance();
       const totalValue = balance.totalDeposit + balance.totalEvalAmount;
       await insertSnapshot({
         total_value: totalValue,
@@ -146,7 +146,7 @@ settingsRoutes.put('/strategy', async (c) => {
 
   try {
     // UPDATE 우선 (기존 활성 전략 덮어쓰기) → 없으면 INSERT
-    const isPaper = config.isPaper;
+    const isPaper = baseIsPaper;
     const { rowCount } = await getPool().query(
       `UPDATE strategy_config
        SET mode=$1, notebooklm_prompt=$2, gemini_prompt=$3, gpt_prompt=$4, claude_prompt=$5,
@@ -308,7 +308,7 @@ settingsRoutes.post('/fix-chain-tpsl', async (c) => {
     // 열린 체인 목록
     const { rows: chains } = await pool.query(
       `SELECT id, stock_code FROM transaction_chains WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND is_paper = $1`,
-      [config.isPaper],
+      [baseIsPaper],
     );
     // 최신 AI 점수 조회
     const { rows: scores } = await pool.query(
@@ -341,7 +341,7 @@ settingsRoutes.get('/insights', async (c) => {
       `SELECT id, category, insight, confidence, sample_count, last_updated, is_manual,
               recommendation, param_change, is_applied, applied_at
        FROM learned_insights WHERE is_paper = $1 ORDER BY is_manual DESC, confidence DESC LIMIT 50`,
-      [config.isPaper],
+      [baseIsPaper],
     );
     return c.json(rows);
   } catch (err: any) {
@@ -360,7 +360,7 @@ settingsRoutes.post('/insights', async (c) => {
     const { rows } = await getPool().query(
       `INSERT INTO learned_insights (category, insight, confidence, sample_count, last_updated, is_manual, is_paper)
        VALUES ($1, $2, $3, 1, NOW(), TRUE, $4) RETURNING *`,
-      [category, insight, body.confidence ?? 0.8, config.isPaper],
+      [category, insight, body.confidence ?? 0.8, baseIsPaper],
     );
     return c.json(rows[0]);
   } catch (err: any) {
@@ -485,7 +485,7 @@ const ALLOC_DEFAULTS = {
 
 settingsRoutes.get('/portfolio/allocation', async (c) => {
   try {
-    const isPaper = config.isPaper;
+    const isPaper = baseIsPaper;
     const { rows } = await getPool().query('SELECT * FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1', [isPaper]);
     if (rows.length === 0) {
       const { rows: ins } = await getPool().query(
@@ -515,7 +515,7 @@ settingsRoutes.put('/portfolio/allocation', async (c) => {
   const trailStop = Math.max(1, Math.min(20, Number(body.trailing_stop_pct ?? 5)));
 
   try {
-    const isPaperAlloc = config.isPaper;
+    const isPaperAlloc = baseIsPaper;
     const { rows: existing } = await getPool().query('SELECT id FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1', [isPaperAlloc]);
     let result;
     if (existing.length > 0) {
@@ -548,7 +548,7 @@ settingsRoutes.post('/defense-mode/deactivate', async (c) => {
     const swingP = STRATEGY_PARAMS.SWING;
     await pool.query(
       `UPDATE strategy_config SET mode='SWING', buy_threshold=$1, stop_loss_pct=$2, take_profit_pct=$3, updated_at=NOW() WHERE is_active=true AND is_paper=$4`,
-      [swingP.buyThreshold, swingP.stopLossPct, swingP.takeProfitPct, config.isPaper],
+      [swingP.buyThreshold, swingP.stopLossPct, swingP.takeProfitPct, baseIsPaper],
     ).catch(() => {});
 
     // 인메모리 전략도 동기화

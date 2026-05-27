@@ -9,8 +9,24 @@ import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
 import { getCash, updateTradeState } from './state.js';
 
+const DAILY_SCALP_CAP = 4; // 하루 최대 4회 청산 (fee drag 방지)
+
 export async function monitorVisionScalp(isPaper: boolean): Promise<void> {
   try {
+    // 일일 Vision Scalp 청산 횟수 체크 — 4회 초과 시 스킵
+    const { rows: capRows } = await getPool().query(`
+      SELECT COUNT(*) AS cnt FROM orders
+      WHERE trading_mode = $1
+        AND trigger_source = 'OVERSEAS'
+        AND ai_reasoning LIKE '%Vision단타%'
+        AND created_at >= CURRENT_DATE
+    `, [isPaper ? 'paper' : 'live']).catch(() => ({ rows: [{ cnt: 0 }] }));
+    const todayScalpCount = Number(capRows[0]?.cnt ?? 0);
+    if (todayScalpCount >= DAILY_SCALP_CAP) {
+      logger.info(`[VisionScalp] 일일 한도 도달 (${todayScalpCount}/${DAILY_SCALP_CAP}) — 스킵`, { component: 'OVERSEAS' });
+      return;
+    }
+
     const { rows: scalpRows } = await getPool().query(`
       SELECT stock_code, exchange, quantity, avg_price, scalp_tp, scalp_sl
       FROM overseas_holdings

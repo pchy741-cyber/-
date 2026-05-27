@@ -6,6 +6,7 @@
 import { analyzeTechnicals, type OHLCV } from '../analysis/indicators.js';
 import { OVERSEAS, SECTOR_CLASS, OVERSEAS_FEE_PCT } from '../config/constants.js';
 import { config, setTradingModeOverride } from '../config/index.js';
+import { runWithMode } from '../config/context.js';
 import { getPool, logSystem } from '../db/client.js';
 import { getOverseasDailyChart, getOverseasPrice, placeFractionalOverseasBuy, type OverseasPrice } from '../kis/overseas.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
@@ -148,6 +149,14 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
   }, 180_000);
 
   try {
+    // ── 계좌 정합 (장중/장외 무관 항상 실행) ──
+    await ensureOverseasTable();
+    if (!isPaper()) {
+      await syncPendingOverseasOrders();
+      await syncHoldingsFromKIS();    // is_paper=NULL 정리 + 수동매매 반영
+      await reconcileCashWithKIS();   // KIS 실잔고 → DB 현금 동기화
+    }
+
     // ── 시장 시간 필터 (Paper 모드: 장외에서도 매매 허용) ──
     const openRegions = getOpenMarketRegions();
     const isUSExtended = openRegions.has('US_EXTENDED') && !openRegions.has('US');
@@ -164,11 +173,6 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     const isUSSession = openRegions.has('US') || isUSExtended || paperOffHours;
     const isAsiaSession = openRegions.has('JP') || openRegions.has('TW');
     const regionFlags = paperOffHours ? '📝' : isUSExtended ? '🌙' : openRegions.has('US') ? '🇺🇸' : '🌏';
-
-    await ensureOverseasTable();
-    if (!isPaper()) await syncPendingOverseasOrders();
-    if (!isPaper()) await syncHoldingsFromKIS();
-    if (!isPaper()) await reconcileCashWithKIS();
 
     const holdings = await getHoldings(isPaper());
     const pendingOrderStocks = await getPendingOverseasStocks(isPaper());
@@ -771,14 +775,14 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         const kellyMomentum = paperMode ? 0.35 : 0.30;
         const kellyCap = paperMode ? 0.35 : 0.30;
         const kellyFloor = paperMode ? 0.15 : 0.20;
-        // 소액 계좌($500 미만): Kelly 무시, 포트폴리오 80% 집중 (1-2종목 전력투구)
+        // 소액 계좌($500 미만): 포트폴리오 50% 집중 (Paper는 80% 유지)
         const isSmallAccount = portfolioValue < 500;
-        const kellyPct = isSmallAccount ? 0.80
+        const kellyPct = isSmallAccount ? (paperMode ? 0.80 : 0.50)
           : kellyResult.sampleCount >= 10 ? Math.max(kellyResult.halfKelly, kellyFloor)
           : (target.isMomentum && (target.ai?.confidence ?? 0) >= 0.85 ? kellyMomentum : kellyDefault);
-        const baseSize = portfolioValue * Math.min(kellyPct, isSmallAccount ? 0.80 : kellyCap);
-        // 소액 계좌: 현금 95% 사용 (1-2종목 집중), 일반: 70% 버퍼
-        const cashUsageCap = isSmallAccount ? 0.95 : 0.70;
+        const baseSize = portfolioValue * Math.min(kellyPct, isSmallAccount ? (paperMode ? 0.80 : 0.50) : kellyCap);
+        // 소액 live: 현금 50% 캡 (20만원 중 $70 이하 한도), Paper: 95%
+        const cashUsageCap = isSmallAccount ? (paperMode ? 0.95 : 0.50) : 0.70;
         const positionSize = Math.min(baseSize * sizingMult, cash * cashUsageCap);
         // 소액투자 가능: 통합증거금 소액 매수 허용 (수수료 0.25% → $20도 $0.05)
         const minPositionSize = 20;
@@ -899,11 +903,10 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       const rescanMode = isPaper();
       logger.info(`🔄 매도 ${sellOrders.length}건 완료 → 60초 후 재스캔 (현금 $${cash.toFixed(0)} 재투자, ${rescanMode ? 'PAPER' : 'LIVE'})`, { component: 'OVERSEAS' });
       setTimeout(() => {
-        // 재스캔 시 전역 모드 오버라이드 필수 (KIS API 자격증명 일치)
-        setTradingModeOverride(rescanMode ? 'paper' : 'live');
-        runOverseasJob({ isPaper: rescanMode })
-          .catch((e) => logger.error(`재스캔 실패: ${e}`, { component: 'OVERSEAS' }))
-          .finally(() => setTradingModeOverride(null));
+        runWithMode(rescanMode, () =>
+          runOverseasJob({ isPaper: rescanMode })
+            .catch((e) => logger.error(`재스캔 실패: ${e}`, { component: 'OVERSEAS' }))
+        );
       }, 60_000);
     }
 
@@ -933,23 +936,14 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
  *   (KIS TR ID, API키, reconcileCashWithKIS 등)
  */
 export async function runOverseasDual(): Promise<void> {
-  // ── Paper 모드 ──
-  setTradingModeOverride('paper');
-  try {
-    await runOverseasJob({ isPaper: true });
-  } catch (e) {
-    logger.error(`해외주식 paper 실패: ${e}`, { component: 'OVERSEAS' });
-  } finally {
-    setTradingModeOverride(null);
-  }
+  // AsyncLocalStorage로 격리 — 전역 오버라이드 없이 paper/live 독립 실행
+  await runWithMode(true, async () => {
+    try { await runOverseasJob({ isPaper: true }); }
+    catch (e) { logger.error(`해외주식 paper 실패: ${e}`, { component: 'OVERSEAS' }); }
+  });
 
-  // ── Live 모드 ──
-  setTradingModeOverride('live');
-  try {
-    await runOverseasJob({ isPaper: false });
-  } catch (e) {
-    logger.error(`해외주식 live 실패: ${e}`, { component: 'OVERSEAS' });
-  } finally {
-    setTradingModeOverride(null);
-  }
+  await runWithMode(false, async () => {
+    try { await runOverseasJob({ isPaper: false }); }
+    catch (e) { logger.error(`해외주식 live 실패: ${e}`, { component: 'OVERSEAS' }); }
+  });
 }

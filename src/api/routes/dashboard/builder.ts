@@ -3,12 +3,13 @@
  */
 import { getCachedScores, getScoresWithFallback, cachePrice, getLastKnownPrices } from '../../../cache/redis.js';
 import { cachePriceMemory, getLastKnownPricesMemory, getCachedPriceMemory } from '../../../cache/memory.js';
-import { config } from '../../../config/index.js';
+import { config, baseIsPaper } from '../../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getOpenChains, getPool, getTodayStartSnapshot } from '../../../db/client.js';
 import { getAccountBalance } from '../../../kis/account.js';
 import { getCurrentPrice, getBatchPrices, isMarketOpen } from '../../../kis/market.js';
 import { getDefenseParkState } from '../../../ai/track-b/defense-park.js';
 import { getPaperBalance } from '../../../risk/engine.js';
+import { PAPER_INITIAL_CAPITAL } from '../../../risk/paper-balance.js';
 import { getKillSwitchStatusAll } from '../../../risk/kill-switch.js';
 import { calcDailyLossLimit } from '../../../risk/seed-capital.js';
 import { getCooldownStatus } from '../../../risk/trade-gate.js';
@@ -32,7 +33,7 @@ export async function getOrBuildDashPayload(viewIsPaper: boolean): Promise<unkno
 
 export async function prewarmDashboard(): Promise<void> {
   // 서버 모드(live) 캐시만 선제 빌드 — paper는 요청 시 빌드
-  const viewIsPaper = config.isPaper;
+  const viewIsPaper = baseIsPaper;
   const key = viewIsPaper ? 'paper' : 'live';
   if (getDashCache(key)) return;
   try {
@@ -241,7 +242,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   }
 
   const totalPnlPct = viewIsPaper
-    ? (totalChainInvested > 0 ? (totalPnl / totalChainInvested) * 100 : 0)
+    ? (PAPER_INITIAL_CAPITAL > 0 ? (totalPnl / PAPER_INITIAL_CAPITAL) * 100 : 0)
     : (balance.totalProfitLossPct ?? 0);
 
   // ── 해외 보유종목 (별도 표시용, 국내 총자산에 합산하지 않음) ──

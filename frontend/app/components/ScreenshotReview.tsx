@@ -153,16 +153,24 @@ export default function ScreenshotReview(props: Props) {
     return () => clearInterval(iv);
   }, [props.loopStatus]);
 
+  // KST 시간 기반 국내/해외 장 구분
+  const kstHour = new Date().getUTCHours() + 9 >= 24
+    ? new Date().getUTCHours() + 9 - 24
+    : new Date().getUTCHours() + 9;
+  const isKrMarket = kstHour >= 9 && kstHour < 16; // 09:00~15:59 KST = 국내장
+  const loopLabel = isKrMarket ? 'KR' : 'US';
+  const loopName = isKrMarket ? '국내 눌림매매 루프' : '해외 자동매매 루프';
+
   const toggleLoop = useCallback(async () => {
     if (togglingLoop) return;
     setTogglingLoop(true);
     try {
       if (loopStatus?.active) {
         await api('/loop/stop', { method: 'POST' });
-        props.toast?.('해외 자동매매 루프 중지됨', 'info');
+        props.toast?.(`${loopName} 중지됨`, 'info');
       } else {
         await api('/loop/start', { method: 'POST' });
-        props.toast?.('해외 자동매매 루프 시작됨 (5분 간격)', 'ok');
+        props.toast?.(`${loopName} 시작됨 (5분 간격)`, 'ok');
       }
       const status = await api('/loop/status');
       setLocalLoopStatus(status as LoopStatus);
@@ -304,10 +312,10 @@ export default function ScreenshotReview(props: Props) {
             ? 'bg-emerald-600/90 text-white animate-pulse ring-2 ring-emerald-400/40'
             : 'bg-slate-800/90 text-slate-400 hover:bg-slate-700 hover:text-slate-200 border border-white/10'
         }`}
-        title={loopStatus?.active ? `해외 자동매매 루프 ON (${loopStatus.totalRuns}회 실행)\n클릭하면 중지` : '해외 자동매매 루프 OFF\n클릭하면 5분 간격 자동 실행 시작'}
+        title={loopStatus?.active ? `${loopName} ON (${loopStatus.totalRuns}회 실행)\n클릭하면 중지` : `${loopName} OFF\n클릭하면 5분 간격 자동 실행 시작`}
       >
         <div className="flex flex-col items-center leading-none">
-          <span className="text-[9px] font-black tracking-wider">US</span>
+          <span className="text-[9px] font-black tracking-wider">{loopLabel}</span>
           {loopStatus?.active ? (
             <span className="text-[11px] font-bold mt-0.5">{loopStatus.totalRuns}</span>
           ) : (

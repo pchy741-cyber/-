@@ -25,7 +25,7 @@ import { getMacroSnapshot, getMacroScoreAdjustment } from '../../automation/macr
 import { checkNewsForStock } from '../../automation/news-sentinel.js';
 import { monitorDisclosures, getDisclosureScoreAdjustment } from '../../automation/dart-monitor.js';
 import { getInvestorFlow } from '../../automation/investor-flow.js';
-import { calcPortfolioStressLevel, getPerformanceMultiplier } from '../../automation/portfolio-guard.js';
+import { calcPortfolioStressLevel, getPerformanceMultiplier, getWinRateFeedback } from '../../automation/portfolio-guard.js';
 import { applyDecisionFlow } from './decision-flow.js';
 import { reconcilePendingOrders } from '../../trading/fill-reconciler.js';
 
@@ -376,12 +376,17 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // ── 신규매수 차단 플래그 (한 곳에서 정의) ──────────────────────────
     const isPastClose = kstH > 15 || (kstH === 15 && kstM >= 10);
+    // 마의 시간대: 10:20~13:00 (비스캘핑 모드에서 신규매수 금지)
+    const isLunchBan = !isScalpingMode && (
+      (kstH === 10 && kstM >= 20) || kstH === 11 || kstH === 12
+    );
     const portfolioStress = calcPortfolioStressLevel(openChains, livePrices, totalAssets);
     if (portfolioStress >= 1) {
       logger.warn(`⚠️ 포트폴리오 스트레스 레벨 ${portfolioStress} (미실현 손실 누적)`, { component: 'TRACK_B' });
     }
     const blockNewBuys =
       isPastClose ||
+      isLunchBan ||
       dailyLoss.blocked ||
       kospiRegime.flashCrash ||
       (!isScalpingMode && kospiRegime.penalty >= 2) ||
@@ -391,6 +396,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     if (blockNewBuys) {
       const blockReason =
         isPastClose ? '마감시간(15:10+)' :
+        isLunchBan ? `마의시간대(10:20~13:00) 신규매수금지` :
         dailyLoss.blocked ? `일일손실초과(${dailyLoss.dailyPnlPct.toFixed(1)}%)` :
         kospiRegime.flashCrash ? 'KOSPI급락서킷브레이커' :
         kospiRegime.penalty >= 2 ? `KOSPI하락장(penalty=2,KOSPI<MA60)` :
@@ -452,6 +458,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // 성과 배율: 최근 5거래일 승률/수익 기반 (0.7x ~ 1.2x)
     const perfMult = await getPerformanceMultiplier();
+    // 승률 피드백: 최근 30일 실거래 신호별 승률 → 임계값/눌림/거래량 동적 강화
+    const winFeedback = await getWinRateFeedback(config.isPaper);
+    const feedbackThreshold = resolvedThreshold + winFeedback.thresholdBonus;
+    if (winFeedback.thresholdBonus > 0 || winFeedback.requirePullback || winFeedback.minVolumeRatio > 1.0) {
+      logger.info(`🎯 승률피드백 적용: ${winFeedback.summary}`, { component: 'TRACK_B' });
+    }
     // 복리 포지션 사이징: 총자산 20% 기반 (고정 캡 → 동적 스케일링)
     const assetBasedMax = Math.round(totalAssets * 0.20);
     const baseMaxPos = dailyLoss.earlyWarning
@@ -523,8 +535,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       aiScores: finalScores, // AI 꽁돈 진입(>=92점)만 활성화, 손실청산 보조
       takeProfitPct: resolvedTp,
       stopLossPct: resolvedSl,
-      buyThreshold: resolvedThreshold,
+      buyThreshold: feedbackThreshold,
       winRates,
+      requirePullback: winFeedback.requirePullback,
+      minVolumeRatio: winFeedback.minVolumeRatio,
       // penalty=1(조정장) 단독으로는 차단 안함 → adaptive threshold +2 로 대응
       // penalty=2(하락장, KOSPI<MA60)만 차단. SCALPING 모드면 macro/regime 면제
       blockNewBuys,
@@ -620,7 +634,6 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       adjMaxPositionKrw,
       kstH,
       kstM,
-      dailyLossEarlyWarning: dailyLoss.earlyWarning,
     });
 
     if (hasBuyCandidates && !actionable.some((d) => ['BUY', 'AVERAGE_DOWN'].includes(d.action))) {

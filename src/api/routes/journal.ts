@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { config } from '../../config/index.js';
+import { config, baseIsPaper } from '../../config/index.js';
 import { getPool } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
 
@@ -27,7 +27,7 @@ interface JournalTrade {
 journalRoutes.get('/journal', async (c) => {
   const days = Math.min(90, Math.max(1, Number(c.req.query('days') ?? 30)));
   const viewModeParam = c.req.query('viewMode');
-  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : config.isPaper;
+  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
   const viewTradingMode = viewIsPaper ? 'paper' : 'live';
   const pool = getPool();
   const trades: JournalTrade[] = [];

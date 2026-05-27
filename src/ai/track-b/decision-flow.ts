@@ -42,14 +42,13 @@ export interface DecisionFlowParams {
   adjMaxPositionKrw: number;
   kstH: number;
   kstM: number;
-  dailyLossEarlyWarning: boolean;
 }
 
 export async function applyDecisionFlow(params: DecisionFlowParams): Promise<TradeDecision[]> {
   const {
     rawDecisions, openChains, livePrices, mode, manuallySoldCodes, scores,
     totalAssets, kospiRegime, resolvedSl, resolvedTp, orderableCash,
-    hasBuyCandidates, blockNewBuys, adjMaxPositionKrw, kstH, kstM, dailyLossEarlyWarning,
+    hasBuyCandidates, blockNewBuys, adjMaxPositionKrw, kstH, kstM,
   } = params;
 
   let decisions = [...rawDecisions];
@@ -117,14 +116,16 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   decisions = filterManualCooldown(decisions, manuallySoldCodes);
 
   // ── 7. 포지션 크기 보정 (KOSPI 레짐 반영) ────────────────────────────
+  // adjMaxPositionKrw는 pipeline에서 totalAssets×20%×perfMult×stressMult×earlyWarnMult로 계산
+  // position-sizer는 이 값을 기준으로 convMult만 적용 (독자 재계산 안 함)
   decisions = adjustPositionSizes({
     decisions,
     scores: scores.map((s) => ({ stock_code: s.stock_code, composite_score: s.composite_score })),
     mode,
     totalAssets,
+    adjMaxPositionKrw,
     kospiRegimePenalty: (Math.min(2, Math.max(0, Math.round(kospiRegime.penalty))) as 0 | 1 | 2),
     kospiBoost: kospiRegime.boost,
-    dailyLossEarlyWarning,
   });
 
   // ── 8. 중복 매도 신호 제거 (FORCE_CLOSE > SELL > PARTIAL_SELL) ───────

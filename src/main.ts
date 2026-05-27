@@ -20,7 +20,8 @@ import { requireAuth } from './api/middleware/auth.js';
 import { initBigQuery } from './automation/bigquery-pipeline.js';
 import { setupMonitoring } from './automation/gcp-monitoring.js';
 import { initRedisCache } from './cache/redis.js';
-import { config, setTradingModeOverride } from './config/index.js';
+import { config, setTradingModeOverride, baseIsPaper } from './config/index.js';
+import { runWithMode } from './config/context.js';
 import { checkDb, disableMemoryMode, enableMemoryMode, isMemoryMode, logSystem } from './db/client.js';
 import { injectDbLogger } from './utils/logger.js';
 import { getAccessToken } from './kis/auth.js';
@@ -69,6 +70,14 @@ app.use('/manual-buy', rateLimit(10, 60_000));
 app.use('/sell-stock/*', rateLimit(5, 60_000));
 app.use('/sell-overseas/*', rateLimit(5, 60_000));
 app.use('/kill-switch/*', rateLimit(3, 60_000));
+
+// ── 거래 모드 컨텍스트 주입 미들웨어 ──
+// 각 HTTP 요청에 viewMode를 AsyncLocalStorage로 주입 → config.isPaper 오염 원천 차단
+app.use('*', async (c, next) => {
+  const vm = c.req.query('viewMode');
+  const isPaper = vm === 'paper' ? true : vm === 'live' ? false : baseIsPaper;
+  return runWithMode(isPaper, next as () => Promise<void>);
+});
 
 // ── 라우트 마운트 ──
 // 인증 불필요 (공개)

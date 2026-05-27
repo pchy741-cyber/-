@@ -8,7 +8,7 @@ const app = new Hono();
 app.get('/review/copilot', async (c) => {
   try {
     const { getPool } = await import('../../../db/client.js');
-    const { config } = await import('../../../config/index.js');
+    const { config, baseIsPaper } = await import('../../../config/index.js');
     const pool = getPool();
 
     // ── 1. 데이터 정합성 검증 ──
@@ -72,7 +72,7 @@ app.get('/review/copilot', async (c) => {
       const { rows: orphanOrders } = await pool.query(`
         SELECT COUNT(*) as cnt FROM orders
         WHERE chain_id IS NULL AND status = 'FILLED' AND side = 'BUY' AND trigger_source != 'OVERSEAS'
-          AND created_at >= NOW() - INTERVAL '7 days' AND trading_mode = $1`, [config.isPaper ? 'paper' : 'live']);
+          AND created_at >= NOW() - INTERVAL '7 days' AND trading_mode = $1`, [baseIsPaper ? 'paper' : 'live']);
       const orphans = Number(orphanOrders[0]?.cnt ?? 0);
       if (orphans > 0) {
         integrity.push({ id: 'orphan_orders', status: 'warn', label: '미연결 주문', detail: `${orphans}건의 체인 미연결 매수 주문 (7일내)` });
@@ -99,7 +99,7 @@ app.get('/review/copilot', async (c) => {
         const peak = Math.max(...values);
         const latest = values[values.length - 1];
         const mddPct = peak > 0 ? ((peak - latest) / peak) * 100 : 0;
-        const mddLimit = config.isPaper ? 40 : 8;
+        const mddLimit = baseIsPaper ? 40 : 8;
         risk.push({
           id: 'mdd', label: '월간 MDD', value: Math.round(mddPct * 10) / 10, max: mddLimit, unit: '%',
           level: mddPct >= mddLimit ? 'danger' : mddPct >= mddLimit * 0.75 ? 'warn' : 'ok',
@@ -160,7 +160,7 @@ app.get('/review/copilot', async (c) => {
           COUNT(*) FILTER (WHERE realized_pnl > 0) as wins
         FROM transaction_chains
         WHERE status = 'CLOSED' AND closed_at >= NOW() - INTERVAL '30 days' AND is_paper = $1`,
-        [config.isPaper]);
+        [baseIsPaper]);
       const total = Number(winRows[0]?.total ?? 0);
       const wins = Number(winRows[0]?.wins ?? 0);
       if (total >= 3) {
@@ -177,7 +177,7 @@ app.get('/review/copilot', async (c) => {
       const { rows: recentChains } = await pool.query(`
         SELECT realized_pnl FROM transaction_chains
         WHERE status = 'CLOSED' AND is_paper = $1
-        ORDER BY closed_at DESC LIMIT 10`, [config.isPaper]);
+        ORDER BY closed_at DESC LIMIT 10`, [baseIsPaper]);
       let streak = 0;
       for (const r of recentChains) {
         if (Number(r.realized_pnl) < 0) streak++;
@@ -234,7 +234,7 @@ app.get('/review/copilot', async (c) => {
       const { rows: oldHoldings } = await pool.query(`
         SELECT stock_code, bought_at, quantity, avg_price FROM overseas_holdings
         WHERE quantity > 0 AND is_paper = $1 AND bought_at < NOW() - INTERVAL '21 days'`,
-        [config.isPaper]);
+        [baseIsPaper]);
       for (const h of oldHoldings) {
         const days = Math.round((Date.now() - new Date(h.bought_at).getTime()) / 86400000);
         actions.push({
@@ -264,7 +264,7 @@ app.get('/review/copilot', async (c) => {
 
     return c.json({
       timestamp: new Date().toISOString(),
-      mode: config.isPaper ? 'paper' : 'live',
+      mode: baseIsPaper ? 'paper' : 'live',
       integrity,
       risk,
       actions,

@@ -252,9 +252,24 @@ JSON만: {"scores":[{"code":"코드","score":점수},...]}`;
     const orderableCash = Math.max(0, balanceRaw.orderableCash);
     const totalAssets = balanceRaw.totalEvalAmount + orderableCash;
 
+    // 갭다운 필터 — 전날 종가 대비 -0.3% 이하 종목은 개장 진입 금지
+    const gapFilteredWatchlist = watchlist.filter(w => {
+      const price = livePrices.get(w.stock_code);
+      const candles = cache?.chartData.get(w.stock_code);
+      if (!price || !candles || candles.length === 0) return true;
+      const prevClose = Number(candles[candles.length - 1].close);
+      if (!prevClose || prevClose <= 0) return true;
+      const gapPct = (price.currentPrice - prevClose) / prevClose * 100;
+      if (gapPct < -0.3) {
+        logger.info(`[OPENING] ${w.stock_code} 갭다운 ${gapPct.toFixed(2)}% — 개장 진입 스킵`, { component: 'OPENING_BELL' });
+        return false;
+      }
+      return true;
+    });
+
     const decisions = await technicalFallbackDecisions({
       mode: 'SCALPING',
-      watchlist: watchlist.map(w => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
+      watchlist: gapFilteredWatchlist.map(w => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
       livePrices,
       chartData,
       openChains,

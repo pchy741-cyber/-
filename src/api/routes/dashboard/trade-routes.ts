@@ -3,7 +3,7 @@
  */
 import { Hono } from 'hono';
 import { KR_FEE } from '../../../config/constants.js';
-import { config } from '../../../config/index.js';
+import { config, baseIsPaper } from '../../../config/index.js';
 import { getPool } from '../../../db/client.js';
 import { getBatchPrices, type CurrentPrice } from '../../../kis/market.js';
 import { getDinnerMoneyStats } from '../../../automation/profit-withdraw.js';
@@ -15,7 +15,7 @@ export const tradeRoutes = new Hono();
 tradeRoutes.get('/trades', async (c) => {
   const limit = Math.min(Math.max(1, Number(c.req.query('limit') ?? 50)), 500);
   const viewModeParam = c.req.query('viewMode');
-  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : config.isPaper;
+  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
   const tradeMode = viewIsPaper ? 'paper' : 'live';
   try {
     const { rows } = await getPool().query(
@@ -276,7 +276,7 @@ tradeRoutes.patch('/withdraw/:id/status', async (c) => {
 // ── 승률 분석: 점수 구간별 WIN/LOSS 집계 ──
 tradeRoutes.get('/stats/win-rate-bands', async (c) => {
   const viewModeParam = c.req.query('viewMode');
-  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : config.isPaper;
+  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
   try {
     const { rows } = await getPool().query<{
       band: string;

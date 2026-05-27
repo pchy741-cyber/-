@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { getDefenseParkState } from '../../ai/track-b/defense-park.js';
 import { getCachedScores, getScoresWithFallback } from '../../cache/redis.js';
-import { config } from '../../config/index.js';
+import { config, baseIsPaper } from '../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getOpenChains, getPool } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { getDailyChart, isMarketOpen } from '../../kis/market.js';
@@ -21,7 +21,7 @@ export const dashboardAnalysisRoutes = new Hono();
 // viewMode 파싱 헬퍼 — ?viewMode=paper|live → boolean
 function resolveViewIsPaper(c: { req: { query: (k: string) => string | undefined } }): boolean {
   const vm = c.req.query('viewMode');
-  return vm === 'paper' ? true : vm === 'live' ? false : config.isPaper;
+  return vm === 'paper' ? true : vm === 'live' ? false : baseIsPaper;
 }
 
 // ── 종목 상세 분석 (기술적 지표 + 수급 + 공매도 + 목표가) ──
@@ -424,7 +424,7 @@ dashboardAnalysisRoutes.post('/release-defense-park', async (c) => {
 
     let syncMsg = '';
     try {
-      const balanceFn = config.isPaper ? getPaperBalance : getAccountBalance;
+      const balanceFn = baseIsPaper ? getPaperBalance : getAccountBalance;
       const [balance, openChains] = await Promise.all([balanceFn(), getOpenChains()]);
       const chainedCodes = new Set(openChains.map((ch: any) => ch.stock_code));
       const orphans = (balance.positions ?? [])

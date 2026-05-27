@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { getOverseasBalance, getOverseasDailyChart, getOverseasPrice, placeOverseasOrder } from '../../kis/overseas.js';
-import { config } from '../../config/index.js';
+import { config, baseIsPaper } from '../../config/index.js';
 import { cacheGet, cacheSet } from '../../cache/memory.js';
 import { logger } from '../../utils/logger.js';
 import { getOverseasScores, setOverseasScores, type OverseasScoreEntry } from '../../cache/overseas-scores.js';
@@ -41,7 +41,7 @@ const GLOBAL_WATCHLIST = [
 // 해외주식 대시보드 (60초 캐시)
 overseasRoutes.get('/overseas/dashboard', async (c) => {
   const viewModeParam = c.req.query('viewMode');
-  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : config.isPaper;
+  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
   const cacheKey = `overseas:dashboard:${viewIsPaper ? 'paper' : 'live'}`;
   const cached = cacheGet<any>(cacheKey);
   if (cached) return c.json(cached);
@@ -119,11 +119,12 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
 
   // KIS 잔고: 5분 캐시 적용 (느린 API, 자주 바뀌지 않음)
   const positionsPromise = (async () => {
-    const cachedPos = cacheGet<any[]>('overseas:balance');
+    const balCacheKey = `overseas:balance:${viewIsPaper ? 'paper' : 'live'}`;
+    const cachedPos = cacheGet<any[]>(balCacheKey);
     if (cachedPos) return cachedPos;
     try {
       const pos = await getOverseasBalance();
-      cacheSet('overseas:balance', pos, 300); // 5분 캐시
+      cacheSet(balCacheKey, pos, 300); // 5분 캐시 (paper/live 분리)
       return pos;
     } catch { return []; }
   })();
@@ -336,12 +337,12 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
     // TP +2.5%, SL -1.5% (단타 파라미터)
     const tpPrice = +(price.currentPrice * 1.025).toFixed(2);
     const slPrice = +(price.currentPrice * 0.985).toFixed(2);
-    const vsCashKey = config.isPaper ? 'cash_paper' : 'cash';
+    const vsCashKey = baseIsPaper ? 'cash_paper' : 'cash';
 
     let filledPrice = price.currentPrice;
     let orderNo = `VSP${Date.now().toString(36)}`;
 
-    if (!config.isPaper) {
+    if (!baseIsPaper) {
       // 실전 모드: KIS 실주문
       const result = await placeOverseasOrder({
         stockCode: sanitizedTicker, exchange, side: 'BUY', quantity: qty, price: price.currentPrice,
@@ -359,7 +360,7 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
     const { getCash: getOsCash } = await import('../../scheduler/overseas/state.js');
 
     // Paper: computed cash 확인 / Live: overseas_state 확인
-    const currentCash = await getOsCash(config.isPaper);
+    const currentCash = await getOsCash(baseIsPaper);
     if (!Number.isFinite(currentCash) || currentCash < totalCost) {
       return c.json({ error: `해외 현금 부족 (보유: $${currentCash.toFixed(0)}, 필요: $${totalCost.toFixed(0)})` }, 400);
     }
@@ -372,18 +373,18 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
           SET quantity = overseas_holdings.quantity + $3,
               avg_price = (overseas_holdings.avg_price * overseas_holdings.quantity + $4 * $3) / (overseas_holdings.quantity + $3),
               scalp_tp = $5, scalp_sl = $6, is_scalp = TRUE
-      `, [sanitizedTicker, exchange, qty, filledPrice, tpPrice, slPrice, config.isPaper]);
+      `, [sanitizedTicker, exchange, qty, filledPrice, tpPrice, slPrice, baseIsPaper]);
 
       // 매수 주문 기록 (Paper computed cash에 필수 — 이전에 누락됐던 부분)
       await tx.query(
         `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price,
           kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
          VALUES ($1, 'BUY', 'MARKET', $2, $3, $2, $3, $4, 'FILLED', $5, 'OVERSEAS', $6)`,
-        [sanitizedTicker, qty, filledPrice, orderNo, config.isPaper ? 'paper' : 'live',
+        [sanitizedTicker, qty, filledPrice, orderNo, baseIsPaper ? 'paper' : 'live',
          `Vision단타 매수 $${safeAmount} (TP:$${tpPrice} SL:$${slPrice})`]);
 
       // Live만 overseas_state 현금 차감 (Paper는 computed)
-      if (!config.isPaper) {
+      if (!baseIsPaper) {
         await tx.query(
           `UPDATE overseas_state SET value = (CAST(value AS NUMERIC) - $2)::text WHERE key = $1`,
           [vsCashKey, totalCost.toFixed(2)],
@@ -391,7 +392,7 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
       }
     });
 
-    logger.info(`[VisionScalp] 매수 ${sanitizedTicker} ${qty}주 @ $${filledPrice} (TP:$${tpPrice} SL:$${slPrice}) [${config.isPaper ? 'PAPER' : 'LIVE'}]`, { component: 'OVERSEAS' });
+    logger.info(`[VisionScalp] 매수 ${sanitizedTicker} ${qty}주 @ $${filledPrice} (TP:$${tpPrice} SL:$${slPrice}) [${baseIsPaper ? 'PAPER' : 'LIVE'}]`, { component: 'OVERSEAS' });
 
     return c.json({
       ok: true,
@@ -402,7 +403,7 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
       tpPrice,
       slPrice,
       reasoning,
-      mode: config.isPaper ? 'paper' : 'live',
+      mode: baseIsPaper ? 'paper' : 'live',
     });
   } catch (e: any) {
     logger.error(`[VisionScalp] 실행 실패: ${e.message}`, { component: 'OVERSEAS' });
@@ -420,7 +421,7 @@ overseasRoutes.post('/overseas/sell', async (c) => {
 
   try {
     const { getPool } = await import('../../db/client.js');
-    const isPaper = config.isPaper;
+    const isPaper = baseIsPaper;
     const { rows } = await getPool().query(
       'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0 AND is_paper = $2', [stock_code, isPaper]);
     const holding = rows[0];

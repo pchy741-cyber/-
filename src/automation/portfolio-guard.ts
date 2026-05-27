@@ -103,6 +103,118 @@ export async function getPerformanceMultiplier(): Promise<number> {
   }
 }
 
+// ── 승률 피드백 루프 ──────────────────────────────────────────────────────
+export interface WinRateFeedback {
+  recentWinRate: number;
+  thresholdBonus: number;   // buyThreshold에 더할 점수 (0/3/5/8)
+  requirePullback: boolean; // truePullbackPattern 없으면 스킵
+  minVolumeRatio: number;   // 최소 거래량 배율 (1.0/1.5/2.0)
+  sampleSize: number;
+  summary: string;
+}
+
+let _feedbackCache: { data: WinRateFeedback; ts: number } | null = null;
+const FEEDBACK_CACHE_MS = 15 * 60 * 1000;
+
+/**
+ * 최근 30일 실거래 체인 분석 → 신호별 승률 기반 진입 필터 강화
+ * ai_reasoning 파싱: pb=True/False, volXx, RSI, score
+ */
+export async function getWinRateFeedback(isPaper: boolean): Promise<WinRateFeedback> {
+  const neutral: WinRateFeedback = {
+    recentWinRate: 0.5, thresholdBonus: 0, requirePullback: false, minVolumeRatio: 1.0,
+    sampleSize: 0, summary: '샘플 부족 — 기본값',
+  };
+
+  try {
+    const now = Date.now();
+    if (_feedbackCache && now - _feedbackCache.ts < FEEDBACK_CACHE_MS) {
+      return _feedbackCache.data;
+    }
+
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 30);
+
+    const { rows } = await getPool().query(
+      `SELECT tc.realized_pnl, o.ai_reasoning
+       FROM transaction_chains tc
+       JOIN orders o ON o.chain_id = tc.id AND o.side = 'BUY' AND o.ai_reasoning IS NOT NULL
+       WHERE tc.status = 'CLOSED'
+         AND tc.is_paper = $1
+         AND tc.closed_at >= $2
+         AND tc.stock_code ~ '^[0-9]{6}$'
+       ORDER BY tc.closed_at DESC
+       LIMIT 50`,
+      [isPaper, cutoff.toISOString()],
+    );
+
+    if (rows.length < 5) {
+      _feedbackCache = { data: neutral, ts: now };
+      return neutral;
+    }
+
+    interface TradeSignal { win: boolean; hasPb: boolean; vol: number; }
+    const trades: TradeSignal[] = rows.map((r: { realized_pnl: string | number; ai_reasoning: string | null }) => {
+      const reasoning = r.ai_reasoning ?? '';
+      const win = Number(r.realized_pnl) > 0;
+      const pbMatch = reasoning.match(/pb=(True|False)/i);
+      const hasPb = pbMatch ? pbMatch[1].toLowerCase() === 'true' : false;
+      const volMatch = reasoning.match(/vol(\d+\.?\d*)x/i);
+      const vol = volMatch ? parseFloat(volMatch[1]) : 1.0;
+      return { win, hasPb, vol };
+    });
+
+    const total = trades.length;
+    const winRate = trades.filter(t => t.win).length / total;
+
+    const withPb = trades.filter(t => t.hasPb);
+    const withoutPb = trades.filter(t => !t.hasPb);
+    const pbWinRate = withPb.length >= 3 ? withPb.filter(t => t.win).length / withPb.length : null;
+    const noPbWinRate = withoutPb.length >= 3 ? withoutPb.filter(t => t.win).length / withoutPb.length : null;
+
+    const highVol = trades.filter(t => t.vol >= 1.5);
+    const lowVol = trades.filter(t => t.vol < 1.5);
+    const highVolWinRate = highVol.length >= 3 ? highVol.filter(t => t.win).length / highVol.length : null;
+    const lowVolWinRate = lowVol.length >= 3 ? lowVol.filter(t => t.win).length / lowVol.length : null;
+
+    let thresholdBonus = 0;
+    if (winRate < 0.25) thresholdBonus = 8;
+    else if (winRate < 0.35) thresholdBonus = 5;
+    else if (winRate < 0.45) thresholdBonus = 3;
+
+    const requirePullback = pbWinRate !== null && noPbWinRate !== null
+      && noPbWinRate < 0.30 && pbWinRate > noPbWinRate + 0.15;
+
+    let minVolumeRatio = 1.0;
+    if (lowVolWinRate !== null && highVolWinRate !== null && lowVolWinRate < 0.30) {
+      minVolumeRatio = highVolWinRate >= 0.50 ? 2.0 : 1.5;
+    }
+
+    const pbStr = pbWinRate !== null
+      ? `pb유${(pbWinRate * 100).toFixed(0)}% vs 무${((noPbWinRate ?? 0) * 100).toFixed(0)}%`
+      : '';
+    const summary = [
+      `승률 ${(winRate * 100).toFixed(0)}%(${total}건)`,
+      thresholdBonus > 0 ? `임계값+${thresholdBonus}` : '',
+      requirePullback ? '눌림필수' : '',
+      minVolumeRatio > 1.0 ? `거래량${minVolumeRatio}x+` : '',
+      pbStr,
+    ].filter(Boolean).join(' | ');
+
+    logger.info(`🎯 승률피드백: ${summary}`, { component: COMPONENT });
+
+    const result: WinRateFeedback = {
+      recentWinRate: winRate, thresholdBonus, requirePullback, minVolumeRatio,
+      sampleSize: total, summary,
+    };
+    _feedbackCache = { data: result, ts: now };
+    return result;
+  } catch (err) {
+    logger.warn(`승률피드백 조회 실패: ${err}`, { component: COMPONENT });
+    return neutral;
+  }
+}
+
 // ── 집중도 한도 ────────────────────────────────────────────────────────────
 const MAX_SINGLE_STOCK_PCT = 0.25; // 단일 종목 25% 초과 → 경고
 

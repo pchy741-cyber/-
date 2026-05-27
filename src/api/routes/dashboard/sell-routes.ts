@@ -485,6 +485,15 @@ sellRoutes.post('/manual-buy', async (c) => {
     const totalInvested = quantity * curPrice;
     const rrStr = `TP+${takeProfitPct}%/SL${stopLossPct}%(${(takeProfitPct / Math.abs(stopLossPct)).toFixed(2)}:1)`;
 
+    // 중복 OPEN 체인 방지
+    const dupCheck = await getPool().query(
+      `SELECT id FROM chains WHERE stock_code = $1 AND is_paper = $2 AND status = 'OPEN' LIMIT 1`,
+      [stock_code, isPaper],
+    );
+    if (dupCheck.rows.length > 0) {
+      return c.json({ error: `이미 OPEN 포지션 있음: ${stock_code} — 중복 매수 불가` }, 409);
+    }
+
     if (isPaper) {
       const fakeOrderNo = `CLD${Date.now().toString(36).toUpperCase()}`;
       const chainId = await createChain({

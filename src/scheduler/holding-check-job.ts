@@ -113,6 +113,23 @@ export async function runHoldingCheckJob(): Promise<void> {
         continue;
       }
 
+      // ── 3영업일 하드 리밋: 손실 중이면 전략 파라미터 무관 강제 청산 ──
+      if (businessDays >= 3 && pnlPct <= 0) {
+        logger.warn(
+          `⏰ ${chain.stock_code}: ${businessDays}영업일 보유 + 손실 ${pnlPct.toFixed(2)}% → 3일 하드 리밋 강제 청산`,
+          { component: 'HOLDING_CHECK' },
+        );
+        forceCloseDecisions.push({
+          action: 'FORCE_CLOSE',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `3영업일 하드 리밋: ${businessDays}일 보유, 손실 ${pnlPct.toFixed(2)}% → 강제 청산`,
+          confidence: 1.0,
+        });
+        continue;
+      }
+
       // ── 조기 정체 감지 (수익 가능성 없는 포지션 선제 청산) ──
       // 기준: 일수별 슬라이딩 임계값. 아래 조건 충족 시 maxDays 기다리지 않고 청산
       const stagnantReason = checkStagnation(businessDays, pnlPct, maxDays, params.stopLossPct);

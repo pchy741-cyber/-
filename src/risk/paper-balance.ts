@@ -6,7 +6,7 @@ import { getPool } from '../db/client.js';
 import { type AccountBalance, type Position } from '../kis/account.js';
 import { logger } from '../utils/logger.js';
 
-const PAPER_INITIAL_CAPITAL = 10_000_000;
+export const PAPER_INITIAL_CAPITAL = 10_000_000;
 const PAPER_BUY_FEE_PCT = KR_FEE.BUY_FEE_PCT;
 const PAPER_SELL_FEE_PCT = KR_FEE.SELL_FEE_PCT;
 let paperCashUsed = 0;       // 현재 투자 중인 매수 원가 합
@@ -71,11 +71,13 @@ async function loadPaperLedger(force = false): Promise<PaperLedgerState> {
   }
 
   const pool = getPool();
+  // 해외 주문(알파벳 종목코드)은 overseas_state['cash_paper'] USD 풀에서 별도 관리 — KRW 원장 제외
   const { rows } = await pool.query(
     `SELECT stock_code, side, filled_quantity, filled_price
        FROM orders
       WHERE trading_mode = 'paper'
         AND status = 'FILLED'
+        AND stock_code ~ '^[0-9]{6}$'
       ORDER BY created_at ASC, id ASC`,
   );
 

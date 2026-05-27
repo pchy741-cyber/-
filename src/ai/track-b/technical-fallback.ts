@@ -43,12 +43,18 @@ export async function technicalFallbackDecisions(params: {
   currentStockValue?: number;
   /** 잡주 필터: 외국인/기관 동반 이탈(STRONG_SELL) 종목 코드 — 신규 매수 차단 */
   junkStockCodes?: Set<string>;
+  /** 승률피드백: 눌림목 패턴 없으면 스킵 (연속 손절 시 자동 강화) */
+  requirePullback?: boolean;
+  /** 승률피드백: 최소 거래량 배율 하한 (기본 1.0, 저확신 구간 1.5/2.0) */
+  minVolumeRatio?: number;
 }): Promise<TradeDecision[]> {
   const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, manuallySoldCodes, totalAssets, winRates, blockNewBuys, junkStockCodes } = params;
-  // 종목당 최대 비중: SNIPER=35%, 일반=30% (Half-Kelly 기준, maxPositionKrw 중 작은 값)
+  const feedbackRequirePullback = params.requirePullback ?? false;
+  const feedbackMinVolRatio = params.minVolumeRatio ?? 1.0;
+  // 종목당 최대 비중: SNIPER=30%, 일반=25% (portfolio-guard 집중도 25%와 정합)
   // 소자산(50만 미만): 80%까지 허용 (1-2종목 집중)
   const maxPosFraction = (totalAssets && totalAssets < 500000) ? 0.80
-    : mode === 'SNIPER' ? 0.35 : 0.30;
+    : mode === 'SNIPER' ? 0.30 : 0.25;
   const effectiveMaxPos = totalAssets
     ? Math.min(maxPositionKrw, Math.round(totalAssets * maxPosFraction))
     : maxPositionKrw;
@@ -491,9 +497,12 @@ export async function technicalFallbackDecisions(params: {
     const timeElapsedRatio = Math.max(0.15, Math.min(1.0, marketMinutes / totalMarketMinutes));
     const adjustedVolRatio = tech.volumeRatio / timeElapsedRatio;
     const noAiForStock = noAiScores || aiScore === 0; // 개별종목 AI 없으면 완화
-    const volThreshold = aiScore >= 80 ? 0.5 : aiScore >= buyThreshold ? 0.8 : noAiForStock ? 0.8 : 1.2;
+    const volThreshold = Math.max(
+      feedbackMinVolRatio,
+      aiScore >= 80 ? 0.5 : aiScore >= buyThreshold ? 0.8 : noAiForStock ? 0.8 : 1.2,
+    );
     if (adjustedVolRatio < volThreshold && tech.rsi14 >= 35 && !hasBullishCandle) {
-      logger.info(`  📉 ${stock.stock_code}: 거래량 부족 (${tech.volumeRatio.toFixed(2)}x→보정${adjustedVolRatio.toFixed(2)}x < ${volThreshold}) → 스킵 (AI=${aiScore})`, { component: 'TRACK_B' });
+      logger.info(`  📉 ${stock.stock_code}: 거래량 부족 (${tech.volumeRatio.toFixed(2)}x→보정${adjustedVolRatio.toFixed(2)}x < ${volThreshold}${feedbackMinVolRatio > 1.0 ? ` 피드백${feedbackMinVolRatio}x` : ''}) → 스킵`, { component: 'TRACK_B' });
       continue;
     }
 
@@ -593,6 +602,12 @@ export async function technicalFallbackDecisions(params: {
     const pullbackBonus = truePullbackPattern ? 12 : 0;
     if (truePullbackPattern) {
       logger.info(`  🎯 ${stock.stock_code}: 눌림목 타점 (고점+${((recentHigh5 / tech.sma20 - 1) * 100).toFixed(1)}% → SMA20+${((curPrice / tech.sma20 - 1) * 100).toFixed(1)}%) +12점`, { component: 'TRACK_B' });
+    }
+
+    // 승률피드백: 눌림목 필수 구간 — truePullbackPattern 없으면 초고확신(AI 92점+)만 허용
+    if (feedbackRequirePullback && !truePullbackPattern && aiScore < 92) {
+      logger.info(`  ⏸️ ${stock.stock_code}: 승률피드백 눌림필수 — 눌림목 패턴 없음 (AI=${aiScore}) → 스킵`, { component: 'TRACK_B' });
+      continue;
     }
 
     const effectiveTechScore = tech.score + priorityBonus + candleBonus + structBonus + vpBonus + pullbackBonus;
@@ -852,15 +867,15 @@ export async function technicalFallbackDecisions(params: {
     // 기술지표만 통과(AI 미허락) → 소액 탐색(4-5%)으로 제한
     const aiApproved = aiScore >= strategyParams.buyThreshold;
 
-    // 황금비율 v2: 확신도 비례 과감 투입 (종목선택 우수 → 투자금 상향)
+    // 황금비율 v2: 확신도 비례 투입 (portfolio-guard 25% 상한과 정합)
     const hardcodedAllocPct = aiApproved
       ? (mode === 'SNIPER'
-          // Half-Kelly: 단일 최고확신 종목 집중 — 총자산의 30/25/22%
-          ? (blendedScore >= 90 ? 0.30 :
-             blendedScore >= 85 ? 0.25 : 0.22)
-          : (blendedScore >= 90 ? 0.25 :   // 90+: 25% (고확신 과감 투입)
-             blendedScore >= 85 ? 0.20 :   // 85-89: 20%
-             blendedScore >= 80 ? 0.12 :   // 80-84: 12% (데이터 경계구간 소폭 상향)
+          // SNIPER: 단일 최고확신 종목 집중 — 총자산의 25/22/20%
+          ? (blendedScore >= 90 ? 0.25 :
+             blendedScore >= 85 ? 0.22 : 0.20)
+          : (blendedScore >= 90 ? 0.22 :   // 90+: 22% (고확신, effectiveMaxPos 25%에 근접)
+             blendedScore >= 85 ? 0.18 :   // 85-89: 18%
+             blendedScore >= 80 ? 0.12 :   // 80-84: 12% (데이터 경계구간)
              blendedScore >= 75 ? 0.0 :    // 75-79: 진입 차단 (수익률 마이너스 구간 유지)
              blendedScore >= 70 ? 0.14 : 0.10))
       : (noAiScores || aiScore === 0)
@@ -909,9 +924,13 @@ export async function technicalFallbackDecisions(params: {
       ? Math.round(totalAssets * baseAllocPct * modeScale * winRateMultiplier * priorityBonus * firstEntryRatio * aiPosMultiplier)
       : Math.round(effectiveMaxPos * firstEntryRatio * aiPosMultiplier);
 
-    // AI 고확신: 포지션 한도 확대 (최대 총자산 50% 캡)
+    // AI 고확신: 포지션 한도 확대 (최대 총자산 25% 캡 — portfolio-guard 집중도와 일치)
+    // 소자산(50만 미만)은 maxPosFraction=80%이므로 별도 상한 적용 안 함
+    const concentrationCap = (totalAssets && totalAssets < 500000)
+      ? totalAssets * 0.80
+      : totalAssets ? totalAssets * 0.25 : Infinity;
     const aiMaxPos = aiPosMultiplier > 1.0 && totalAssets
-      ? Math.min(effectiveMaxPos * aiPosMultiplier, totalAssets * 0.50)
+      ? Math.min(effectiveMaxPos * aiPosMultiplier, concentrationCap)
       : effectiveMaxPos;
     // 상한: aiMaxPos (AI확신도 반영 종목당 한도), 남은 현금의 92%까지 사용 (현금 최소화)
     const positionSize = Math.min(targetKrw, aiMaxPos, remainingCash * 0.92);

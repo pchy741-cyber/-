@@ -67,6 +67,8 @@ async function fetchInterestGroup(groupNo: number): Promise<InterestStock[]> {
  * 3. 추가된 종목 수 반환
  */
 export async function syncInterestGroups(): Promise<{ added: string[]; total: number }> {
+  // 관심종목 API는 실서버 live 계정만 지원 — paper 모드에서 호출 시 HTTP404 스팸 방지
+  if (config.isPaper) return { added: [], total: 0 };
   logger.info('🔄 KIS 관심종목 동기화 시작', { component: 'KIS_INTEREST' });
 
   const allStocks = new Map<string, InterestStock>();
