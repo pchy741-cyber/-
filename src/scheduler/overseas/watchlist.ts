@@ -2,8 +2,6 @@
  * 글로벌 감시 목록 & 유틸리티
  * Core 23종목 + Extended 12종목 = 35종목 하이브리드 후보군
  */
-import { OVERSEAS } from '../../config/constants.js';
-
 // ── Core 감시 목록 — 섹터 다각화 (미국 주력 + ADR, 23종목) ──
 // 근거: 2025년 리서치 — 방산/산업인프라가 빅테크 대비 초과 수익 (방산 +60~87% vs FAANG +36%)
 const CORE_WATCHLIST = [
@@ -68,8 +66,7 @@ const EXTENDED_WATCHLIST = [
 // 모든 코드에서 GLOBAL_WATCHLIST를 사용 → 기존 호환성 유지
 export const GLOBAL_WATCHLIST = [...CORE_WATCHLIST, ...EXTENDED_WATCHLIST];
 
-// ─── 포지션 한도 (레거시 폴백, 실제는 getOverseasDynamic() 사용) ───
-export const { MAX_POSITIONS, POSITION_SIZE_USD, POSITION_PCT } = OVERSEAS;
+// 포지션 한도: getOverseasDynamic(portfolioUsd) 동적 함수 사용 (constants.ts)
 
 /** try-catch 래퍼 — 실패 시 null 반환, 오류 무시 */
 export async function safely<T>(fn: () => Promise<T>): Promise<T | null> {

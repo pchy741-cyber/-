@@ -62,6 +62,9 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
   const paperMode = ctx.isPaper;
   let { cash } = ctx;
   const sellOrders: string[] = [];
+  // 동적 파라미터 1회 캐싱 (루프 밖)
+  const dynP = getOverseasDynamic(ctx.portfolioValue ?? 5000);
+  const maxHoldDays = dynP.maxHoldDays;
 
   for (const [code, holding] of holdings) {
     if (pendingOrderStocks.has(code)) {
@@ -99,8 +102,6 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     const hardTpPct = isHighBeta ? 20.0 : 15.0;
     const minAiSellConf = isHighBeta ? 0.82 : 0.78;
     const minHoldForSell = isHighBeta ? 3 : 2;
-    const dynP = getOverseasDynamic(ctx.portfolioValue ?? 5000);
-    const maxHoldDays = dynP.maxHoldDays;
     const holdingDays = (Date.now() - new Date(holding.boughtAt).getTime()) / (1000 * 60 * 60 * 24);
 
     if (pnlPct <= stopLossPct) {

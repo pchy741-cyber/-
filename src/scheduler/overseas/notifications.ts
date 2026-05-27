@@ -4,7 +4,7 @@
  */
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { fetchExchangeRate } from '../../automation/macro-data.js';
-import { MAX_POSITIONS } from './watchlist.js';
+import { getOverseasDynamic } from '../../config/constants.js';
 import type { TechResult, Holding } from './sell-logic.js';
 import type { BuyTarget } from './buy-filter.js';
 
@@ -72,7 +72,9 @@ export async function sendBuyRecommendations(ctx: ExtendedAlertContext): Promise
     }),
   ];
   if (holdingSells.length > 0) alertLines.push('', '📋 *보유종목 현황*', ...holdingSells);
-  alertLines.push('', `💰 현금: $${cash.toFixed(0)}(₩${(cash * usdKrw / 10000).toFixed(0)}만) | 보유: ${updatedHoldings.size}/${MAX_POSITIONS}`);
+  const holdVal = Array.from(updatedHoldings.values()).reduce((s, h) => s + h.qty * h.avgPrice, 0);
+  const dynMaxPos = getOverseasDynamic(cash + holdVal).maxPositions;
+  alertLines.push('', `💰 현금: $${cash.toFixed(0)}(₩${(cash * usdKrw / 10000).toFixed(0)}만) | 보유: ${updatedHoldings.size}/${dynMaxPos}`);
   alertLines.push('', '⏰ 정규장 KST 22:30 — 그 전에 한투앱 지정가 예약 가능');
   if (alertTargets.length > 0 || holdingSells.length > 0) {
     await sendTelegramMessage(alertLines.join('\n'));

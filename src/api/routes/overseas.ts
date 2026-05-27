@@ -8,36 +8,9 @@ import { logger } from '../../utils/logger.js';
 import { getOverseasScores, setOverseasScores, type OverseasScoreEntry } from '../../cache/overseas-scores.js';
 import { analyzeTechnicals, type OHLCV } from '../../analysis/indicators.js';
 import { notifyOverseasSell } from '../../notifications/web-push.js';
+import { GLOBAL_WATCHLIST } from '../../scheduler/overseas/watchlist.js';
 
 export const overseasRoutes = new Hono();
-
-// 글로벌 감시목록 (미국 NYSE/NASDAQ + 일본·대만 ADR)
-const GLOBAL_WATCHLIST = [
-  { code: 'NVDA',  name: 'NVIDIA',           exchange: 'NASDAQ' },
-  { code: 'AMD',   name: 'AMD',              exchange: 'NASDAQ' },
-  { code: 'ANET',  name: 'Arista Networks',  exchange: 'NYSE'   },
-  { code: 'VRT',   name: 'Vertiv',           exchange: 'NYSE'   },
-  { code: 'META',  name: 'Meta',             exchange: 'NASDAQ' },
-  { code: 'AAPL',  name: 'Apple',            exchange: 'NASDAQ' },
-  { code: 'MSFT',  name: 'Microsoft',        exchange: 'NASDAQ' },
-  { code: 'RTX',   name: 'RTX Corp',         exchange: 'NYSE'   },
-  { code: 'LMT',   name: 'Lockheed Martin',  exchange: 'NYSE'   },
-  { code: 'GEV',   name: 'GE Vernova',       exchange: 'NYSE'   },
-  { code: 'PLTR',  name: 'Palantir',         exchange: 'NYSE'   },
-  { code: 'ETN',   name: 'Eaton Corp',       exchange: 'NYSE'   },
-  { code: 'PWR',   name: 'Quanta Services',  exchange: 'NYSE'   },
-  { code: 'AMZN',  name: 'Amazon',           exchange: 'NASDAQ' },
-  { code: 'GOOGL', name: 'Alphabet',         exchange: 'NASDAQ' },
-  { code: 'ORCL',  name: 'Oracle',           exchange: 'NYSE'   },
-  { code: 'NOW',   name: 'ServiceNow',       exchange: 'NYSE'   },
-  { code: 'MELI',  name: 'MercadoLibre',     exchange: 'NASDAQ' },
-  { code: 'AVGO',  name: 'Broadcom',         exchange: 'NASDAQ' },
-  { code: 'TM',    name: 'Toyota Motor',     exchange: 'NYSE'   },
-  { code: 'SONY',  name: 'Sony Group',       exchange: 'NYSE'   },
-  { code: 'MUFG',  name: 'Mitsubishi UFJ',   exchange: 'NYSE'   },
-  { code: 'TSM',   name: 'TSMC',             exchange: 'NYSE'   },
-  { code: 'UMC',   name: 'United Micro',     exchange: 'NYSE'   },
-];
 
 // 해외주식 대시보드 (60초 캐시)
 overseasRoutes.get('/overseas/dashboard', async (c) => {

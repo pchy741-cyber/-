@@ -1,7 +1,7 @@
 /**
  * overseas 모듈 배럴 — 모든 해외 자동매매 헬퍼를 단일 진입점으로 re-export
  */
-export { GLOBAL_WATCHLIST, MAX_POSITIONS, POSITION_SIZE_USD, POSITION_PCT, safely, resolveOverseasStockName } from './watchlist.js';
+export { GLOBAL_WATCHLIST, safely, resolveOverseasStockName } from './watchlist.js';
 export { cashKey, ensureOverseasTable, getHoldings, setHolding, getCash, setCash, updateTradeState, getMaxPrice, setMaxPrice, clearMaxPrice } from './state.js';
 export { overseasState, setShuttingDown, isOverseasJobRunning, resetUSSessionCache, resetAsiaSessionCache, getOpenMarketRegions, getKSTDateString, getUSSessionId } from './session.js';
 export type { SessionCache } from './session.js';
