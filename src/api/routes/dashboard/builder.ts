@@ -14,6 +14,8 @@ import { getKillSwitchStatusAll } from '../../../risk/kill-switch.js';
 import { calcDailyLossLimit } from '../../../risk/seed-capital.js';
 import { getCooldownStatus } from '../../../risk/trade-gate.js';
 import { getOverseasScores } from '../../../cache/overseas-scores.js';
+import { SECTOR_CLASS } from '../../../config/constants.js';
+import { GLOBAL_WATCHLIST } from '../../../scheduler/overseas/watchlist.js';
 import { logger } from '../../../utils/logger.js';
 import {
   isInvalidStockName, getKnownStockName, getFxRate,
@@ -59,7 +61,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     getPool().query(
       `SELECT id, category, insight, confidence, sample_count, last_updated, is_manual,
               recommendation, param_change, is_applied, applied_at
-       FROM learned_insights ORDER BY is_manual DESC, confidence DESC LIMIT 30`
+       FROM learned_insights WHERE is_paper = $1 ORDER BY is_manual DESC, confidence DESC LIMIT 30`,
+      [viewIsPaper]
     ).catch(() => ({ rows: [] as any[] })),
     getDefenseParkState().catch(() => ({ isActive: false, parkStockCode: '069500', parkStockName: 'KODEX 200', entryReason: null, enteredAt: null })),
   ]);
@@ -241,7 +244,11 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     : (balance.totalProfitLossPct ?? 0);
 
   // ── 해외 보유종목 (별도 표시용, 국내 총자산에 합산하지 않음) ──
-  let overseasHoldings: Array<{ stock_code: string; quantity: number; avg_price: number; bought_at: string; last_price: number }> = [];
+  let overseasHoldings: Array<{
+    stock_code: string; quantity: number; avg_price: number; bought_at: string; last_price: number;
+    sector: string; tp_pct: number; sl_pct: number; trail_pct: number;
+    is_scalp: boolean; scalp_tp: number | null; scalp_sl: number | null;
+  }> = [];
   let overseasTotalInvested = 0;
   let overseasMarketValueUsd = 0;
   let overseasCash = 0;
@@ -260,12 +267,30 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       const lastP = Number(r.last_price ?? 0);
       overseasTotalInvested += avgP * qty;
       overseasMarketValueUsd += (lastP > 0 ? lastP : avgP) * qty;
+
+      // 섹터 기반 TP/SL 계산
+      const wItem = GLOBAL_WATCHLIST.find(w => w.code === r.stock_code);
+      const sector = wItem?.sector ?? '';
+      const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
+      const isMediumBeta = SECTOR_CLASS.MEDIUM_BETA.includes(sector);
+      const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
+      const tpPct = isHighBeta ? 20.0 : 15.0;
+      const slPct = isHighBeta ? -8.0 : isMediumBeta ? -5.0 : isDefense ? -4.0 : -5.0;
+      const trailPct = isHighBeta ? 10.0 : isMediumBeta ? 8.0 : 5.0;
+
       overseasHoldings.push({
         stock_code: r.stock_code,
         quantity: qty,
         avg_price: avgP,
         bought_at: r.bought_at,
         last_price: lastP,
+        sector,
+        tp_pct: tpPct,
+        sl_pct: slPct,
+        trail_pct: trailPct,
+        is_scalp: !!r.is_scalp,
+        scalp_tp: r.scalp_tp != null ? Number(r.scalp_tp) : null,
+        scalp_sl: r.scalp_sl != null ? Number(r.scalp_sl) : null,
       });
     }
   } catch { /* overseas table may not exist */ }

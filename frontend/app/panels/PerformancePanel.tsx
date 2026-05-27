@@ -3,26 +3,31 @@
 import React from 'react';
 import { api, fmtWon } from '../lib/utils';
 
-export default function PerformancePanel({ trades, strategy, setStrategy, toast }: { trades: any[]; strategy: any; setStrategy?: (s: any) => void; toast?: (msg: string, type: string) => void }) {
+export default function PerformancePanel({ trades, strategy, setStrategy, toast, fxRate = 1420 }: { trades: any[]; strategy: any; setStrategy?: (s: any) => void; toast?: (msg: string, type: string) => void; fxRate?: number }) {
   const [quickPrompt, setQuickPrompt] = React.useState('');
   const [savingPrompt, setSavingPrompt] = React.useState(false);
 
-  // 일별 실현 손익 계산 (SELL 체결 기준)
+  const isOverseasTrade = (t: any) => !/^[0-9]{6}$/.test(String(t.stock_code ?? ''));
+
+  // 일별 실현 손익 계산 (SELL 체결 기준) — 해외 USD → KRW 변환
   const sellTrades = trades.filter((t: any) => t.status === 'FILLED' && t.side === 'SELL');
   const dailyMap = new Map<string, number>();
   for (const t of sellTrades) {
     const date = new Date(t.created_at).toISOString().slice(0, 10);
     if (t.realized_pnl != null) {
-      dailyMap.set(date, (dailyMap.get(date) ?? 0) + Number(t.realized_pnl));
+      const pnlKrw = isOverseasTrade(t) ? Number(t.realized_pnl) * fxRate : Number(t.realized_pnl);
+      dailyMap.set(date, (dailyMap.get(date) ?? 0) + pnlKrw);
     } else {
-      const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
+      const avgBuy = Number(t.transaction_chains?.avg_buy_price ?? t.avg_buy_price) || 0;
       const filledPx = Number(t.filled_price) || 0;
       const qty = Number(t.filled_quantity ?? t.quantity) || 0;
-      const BUY_FEE = 0.00015; const SELL_FEE = 0.00245;
+      const isUs = isOverseasTrade(t);
+      const BUY_FEE = isUs ? 0 : 0.00015; const SELL_FEE = isUs ? 0 : 0.00245;
       if (avgBuy > 0 && filledPx > 0 && qty > 0) {
         const gross = (filledPx - avgBuy) * qty;
         const fees = Math.round(avgBuy * qty * BUY_FEE) + Math.round(filledPx * qty * SELL_FEE);
-        dailyMap.set(date, (dailyMap.get(date) ?? 0) + gross - fees);
+        const pnl = gross - fees;
+        dailyMap.set(date, (dailyMap.get(date) ?? 0) + (isUs ? pnl * fxRate : pnl));
       }
     }
   }
@@ -43,7 +48,10 @@ export default function PerformancePanel({ trades, strategy, setStrategy, toast 
   const avgPnl = allPnls.length > 0 ? allPnls.reduce((s, v) => s + v, 0) / allPnls.length : 0;
   const tradePnls = sellTrades
     .filter((t: any) => t.realized_pnl != null)
-    .map((t: any) => Number(t.realized_pnl));
+    .map((t: any) => {
+      const pnl = Number(t.realized_pnl);
+      return isOverseasTrade(t) ? pnl * fxRate : pnl;
+    });
   const winPnls = tradePnls.filter((p: number) => p > 0);
   const lossPnls = tradePnls.filter((p: number) => p < 0);
   const winRate = tradePnls.length > 0 ? Math.round((winPnls.length / tradePnls.length) * 100) : 0;

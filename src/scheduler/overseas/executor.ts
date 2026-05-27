@@ -12,6 +12,48 @@ import { updateTradeState } from './state.js';
 import { confirmOverseasFillFromBalance } from './order-sync.js';
 import type { OverseasExecutionResult } from './analytics.js';
 
+/** 해외 SELL 체결 후 score_accuracy 기록 */
+async function recordOverseasScoreAccuracy(params: {
+  stockCode: string;
+  orderId: string;
+  avgBuyPrice: number;
+  fillPrice: number;
+  isPaper: boolean;
+  reasoning: string;
+}): Promise<void> {
+  try {
+    const { stockCode, orderId, avgBuyPrice, fillPrice, isPaper } = params;
+    if (avgBuyPrice <= 0 || fillPrice <= 0) return;
+    const pnlPct = ((fillPrice - avgBuyPrice) / avgBuyPrice) * 100;
+    const outcome = pnlPct > 0.1 ? 'WIN' : pnlPct < -0.1 ? 'LOSS' : 'BREAK_EVEN';
+
+    // 보유일수 추정: 가장 최근 BUY 주문 시점 기준
+    const pool = getPool();
+    const { rows: buyRows } = await pool.query(
+      `SELECT created_at FROM orders
+       WHERE stock_code = $1 AND side = 'BUY' AND status = 'FILLED'
+         AND trigger_source = 'OVERSEAS' AND trading_mode = $2
+       ORDER BY created_at DESC LIMIT 1`,
+      [stockCode, isPaper ? 'paper' : 'live'],
+    );
+    const holdingDays = buyRows[0]?.created_at
+      ? Math.round((Date.now() - new Date(buyRows[0].created_at).getTime()) / 86400000)
+      : null;
+
+    await pool.query(
+      `INSERT INTO score_accuracy
+         (stock_code, order_id, market, realized_pnl_pct, outcome, holding_days,
+          close_reason, is_paper)
+       VALUES ($1, $2, 'US', $3, $4, $5, $6, $7)
+       ON CONFLICT (order_id) WHERE order_id IS NOT NULL DO NOTHING`,
+      [stockCode, orderId, pnlPct, outcome, holdingDays, params.reasoning, isPaper],
+    );
+    logger.info(`📝 해외 스코어 기록: ${stockCode} ${outcome} (${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)`, { component: 'OVERSEAS' });
+  } catch (err) {
+    logger.warn(`해외 스코어 기록 실패: ${err}`, { component: 'OVERSEAS' });
+  }
+}
+
 // ── 승자 집중 전략 상수 ──
 const CONCENTRATION_CASH_BUFFER  = OVERSEAS.CONCENTRATION_CASH_BUFFER;
 const CONCENTRATION_MIN_PNL_PCT  = OVERSEAS.CONCENTRATION_MIN_PNL_PCT;
@@ -42,7 +84,7 @@ export async function executeOverseasOrder(
     const paperReasoning = side === 'SELL' && previousAvgPrice > 0
       ? `[avgBuy:${previousAvgPrice.toFixed(4)}] ${reasoning}`
       : reasoning;
-    await insertOrder({
+    const paperOrderId = await insertOrder({
       chain_id: null, stock_code: code, side, order_type: '01',
       quantity: qty, price: fillPrice, kis_order_no: fakeOrderNo,
       kis_status: 'PAPER_FILLED', filled_quantity: qty, filled_price: fillPrice,
@@ -59,6 +101,11 @@ export async function executeOverseasOrder(
     } else {
       const pnlPct = previousAvgPrice > 0 ? ((fillPrice - previousAvgPrice) / previousAvgPrice) * 100 : 0;
       ns(code, stockName, qty, fillPrice, pnlPct, reasoning).catch(() => {});
+      // 해외 SELL score_accuracy 기록
+      recordOverseasScoreAccuracy({
+        stockCode: code, orderId: paperOrderId, avgBuyPrice: previousAvgPrice,
+        fillPrice, isPaper: true, reasoning,
+      }).catch(() => {});
     }
     const finalQty = side === 'BUY' ? previousQty + qty : Math.max(0, previousQty - qty);
     const finalAvgPrice = side === 'BUY' && finalQty > 0
@@ -107,6 +154,11 @@ export async function executeOverseasOrder(
           } else {
             const pnlPct = previousAvgPrice > 0 ? ((confirmed.filledPrice - previousAvgPrice) / previousAvgPrice) * 100 : 0;
             ns(code, stockName, confirmed.filledQty, confirmed.filledPrice, pnlPct, reasoning).catch(() => {});
+            // 해외 SELL score_accuracy 기록
+            recordOverseasScoreAccuracy({
+              stockCode: code, orderId, avgBuyPrice: previousAvgPrice,
+              fillPrice: confirmed.filledPrice, isPaper: false, reasoning,
+            }).catch(() => {});
           }
         } else {
           logger.warn(`⏳ 체결 미확인: ${code} (${result.orderNo}) → PENDING 유지`, { component: 'OVERSEAS' });

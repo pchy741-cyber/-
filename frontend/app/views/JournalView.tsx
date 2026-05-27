@@ -104,7 +104,11 @@ function JournalView({ viewMode = 'live' }: { viewMode?: 'live' | 'paper' }) {
           <div className="p-10 text-center">
             <div className="text-2xl opacity-20 mb-2">⚠️</div>
             <p className="text-sm text-rose-400">{error}</p>
-            <p className="text-[11px] text-slate-600 mt-1">매매일지를 불러오지 못했습니다. 새로고침 후 다시 시도해주세요.</p>
+            <p className="text-[11px] text-slate-600 mt-1">매매일지를 불러오지 못했습니다.</p>
+            <button onClick={() => { setLoading(true); setError(null); api(`/journal?days=${days}&viewMode=${viewMode}`).then((d: any) => setData(d)).catch((e: any) => setError(e?.message ?? '로드 실패')).finally(() => setLoading(false)); }}
+              className="mt-3 px-4 py-1.5 text-xs bg-blue-500/20 text-blue-400 rounded-lg hover:bg-blue-500/30 transition-colors">
+              다시 시도
+            </button>
           </div>
         ) : trades.length === 0 ? (
           <div className="p-10 text-center">

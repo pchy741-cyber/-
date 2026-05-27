@@ -483,50 +483,99 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
     const pool = getPool();
 
     const isPaper = resolveViewIsPaper(c);
-    const codeFilter = isKr
-      ? `AND stock_code ~ '^[0-9]{6}$'`
-      : `AND stock_code !~ '^[0-9]{6}$'`;
+    const tradingMode = isPaper ? 'paper' : 'live';
 
-    const { rows: monthly } = await pool.query(`
-      SELECT
-        to_char(closed_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM') AS month,
-        SUM(realized_pnl) AS pnl,
-        COUNT(*) AS trades
-      FROM transaction_chains
-      WHERE status = 'CLOSED'
-        AND closed_at >= NOW() - INTERVAL '12 months'
-        AND is_paper = $1
-        ${codeFilter}
-      GROUP BY 1
-      ORDER BY 1 ASC
-    `, [isPaper]);
+    if (isKr) {
+      // 국내: transaction_chains 기반 (기존)
+      const codeFilter = `AND stock_code ~ '^[0-9]{6}$'`;
 
-    const { rows: total } = await pool.query(`
-      SELECT COALESCE(SUM(realized_pnl), 0) AS total_pnl
-      FROM transaction_chains
-      WHERE status = 'CLOSED'
-        AND is_paper = $1
-        ${codeFilter}
-    `, [isPaper]);
+      const { rows: monthly } = await pool.query(`
+        SELECT
+          to_char(closed_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM') AS month,
+          SUM(realized_pnl) AS pnl,
+          COUNT(*) AS trades
+        FROM transaction_chains
+        WHERE status = 'CLOSED'
+          AND closed_at >= NOW() - INTERVAL '12 months'
+          AND is_paper = $1
+          ${codeFilter}
+        GROUP BY 1
+        ORDER BY 1 ASC
+      `, [isPaper]);
 
-    const { rows: thisMonth } = await pool.query(`
-      SELECT COALESCE(SUM(realized_pnl), 0) AS pnl
-      FROM transaction_chains
-      WHERE status = 'CLOSED'
-        AND closed_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')
-        AND is_paper = $1
-        ${codeFilter}
-    `, [isPaper]);
+      const { rows: total } = await pool.query(`
+        SELECT COALESCE(SUM(realized_pnl), 0) AS total_pnl
+        FROM transaction_chains
+        WHERE status = 'CLOSED'
+          AND is_paper = $1
+          ${codeFilter}
+      `, [isPaper]);
 
-    const dinnerMoney = market === 'KR' ? await getDinnerMoneyStats() : null;
+      const { rows: thisMonth } = await pool.query(`
+        SELECT COALESCE(SUM(realized_pnl), 0) AS pnl
+        FROM transaction_chains
+        WHERE status = 'CLOSED'
+          AND closed_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')
+          AND is_paper = $1
+          ${codeFilter}
+      `, [isPaper]);
 
-    return c.json({
-      market,
-      totalCumulative: Number(total[0]?.total_pnl ?? 0),
-      thisMonthPnl: Number(thisMonth[0]?.pnl ?? 0),
-      monthly: monthly.map((r: any) => ({ month: r.month, pnl: Number(r.pnl ?? 0), trades: Number(r.trades ?? 0) })),
-      dinnerMoney,
-    });
+      const dinnerMoney = await getDinnerMoneyStats();
+
+      return c.json({
+        market,
+        totalCumulative: Number(total[0]?.total_pnl ?? 0),
+        thisMonthPnl: Number(thisMonth[0]?.pnl ?? 0),
+        monthly: monthly.map((r: any) => ({ month: r.month, pnl: Number(r.pnl ?? 0), trades: Number(r.trades ?? 0) })),
+        dinnerMoney,
+      });
+    } else {
+      // 해외: orders 테이블 SELL 기록 기반 (transaction_chains 없음)
+      // PnL = (filled_price - avg_buy_price) * filled_quantity (USD)
+      // 수익률 100% 초과 = 비정상 (입금으로 왜곡된 평단가) → 제외
+      const osFilter = `side = 'SELL' AND status = 'FILLED'
+          AND trigger_source = 'OVERSEAS'
+          AND avg_buy_price IS NOT NULL AND avg_buy_price > 0
+          AND filled_price IS NOT NULL AND filled_price > 0
+          AND (filled_price / avg_buy_price) <= 2.0
+          AND (avg_buy_price / filled_price) <= 2.0`;
+
+      const { rows: monthly } = await pool.query(`
+        SELECT
+          to_char(created_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM') AS month,
+          SUM((filled_price - avg_buy_price) * filled_quantity) AS pnl,
+          COUNT(*) AS trades
+        FROM orders
+        WHERE ${osFilter}
+          AND trading_mode = $1
+          AND created_at >= NOW() - INTERVAL '12 months'
+        GROUP BY 1
+        ORDER BY 1 ASC
+      `, [tradingMode]);
+
+      const { rows: total } = await pool.query(`
+        SELECT COALESCE(SUM((filled_price - avg_buy_price) * filled_quantity), 0) AS total_pnl
+        FROM orders
+        WHERE ${osFilter}
+          AND trading_mode = $1
+      `, [tradingMode]);
+
+      const { rows: thisMonth } = await pool.query(`
+        SELECT COALESCE(SUM((filled_price - avg_buy_price) * filled_quantity), 0) AS pnl
+        FROM orders
+        WHERE ${osFilter}
+          AND trading_mode = $1
+          AND created_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')
+      `, [tradingMode]);
+
+      return c.json({
+        market,
+        totalCumulative: Number(total[0]?.total_pnl ?? 0),
+        thisMonthPnl: Number(thisMonth[0]?.pnl ?? 0),
+        monthly: monthly.map((r: any) => ({ month: r.month, pnl: Number(r.pnl ?? 0), trades: Number(r.trades ?? 0) })),
+        dinnerMoney: null,
+      });
+    }
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }

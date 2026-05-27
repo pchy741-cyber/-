@@ -41,36 +41,86 @@ export default function UsHoldingsTab({
             const pnl = displayPrice > 0 ? (displayPrice - h.avg_price) * h.quantity : 0;
             const pnlPct = displayPrice > 0 && h.avg_price > 0 ? ((displayPrice - h.avg_price) / h.avg_price) * 100 : 0;
             const usDisplayName = toDisplayName(priceData?.name, h.stock_code);
+            // TP/SL 데이터
+            const tpPct = h.tp_pct ?? 15;
+            const slPct = h.sl_pct ?? -5;
+            const trailPct = h.trail_pct ?? 5;
+            const isScalp = !!h.is_scalp;
+            const scalpTpPct = isScalp && h.scalp_tp && h.avg_price > 0 ? ((h.scalp_tp - h.avg_price) / h.avg_price) * 100 : null;
+            const scalpSlPct = isScalp && h.scalp_sl && h.avg_price > 0 ? ((h.scalp_sl - h.avg_price) / h.avg_price) * 100 : null;
+            const effectiveTp = scalpTpPct ?? tpPct;
+            const effectiveSl = scalpSlPct ?? slPct;
+            // 프로그레스바: SL~TP 범위에서 현재 위치
+            const range = effectiveTp - effectiveSl;
+            const progress = range > 0 ? Math.max(0, Math.min(100, ((pnlPct - effectiveSl) / range) * 100)) : 50;
+            const targetPrice = h.avg_price * (1 + effectiveTp / 100);
+            const stopPrice = h.avg_price * (1 + effectiveSl / 100);
             return (
-              <div key={h.stock_code} className="px-4 py-3 flex items-center gap-3">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-bold">{usDisplayName}</span>
-                    <span className="text-[10px] text-slate-500">{h.quantity}주</span>
+              <div key={h.stock_code} className="px-4 py-3 space-y-2">
+                {/* 상단: 종목명 + 수익률 + 매도버튼 */}
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold">{usDisplayName}</span>
+                      <span className="text-[10px] text-slate-500">{h.quantity}주</span>
+                      {isScalp && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 font-medium">단타</span>}
+                      {h.sector && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-slate-700/50 text-slate-400">{h.sector}</span>}
+                    </div>
+                    <div className="text-[11px] text-slate-500">평단 ${h.avg_price.toFixed(2)} · 투자 ${invested.toFixed(0)}</div>
                   </div>
-                  <div className="text-[11px] text-slate-500">평단 ${h.avg_price.toFixed(2)} · 투자 ${invested.toFixed(0)}</div>
+                  <div className="text-right">
+                    {displayPrice > 0 ? (
+                      <>
+                        <div className={`text-base font-bold ${pc(pnl)}`}>{pnlPct > 0 ? '+' : ''}{pnlPct.toFixed(1)}%</div>
+                        <div className={`text-[11px] ${pc(pnl)}`}>${pnl.toFixed(0)}</div>
+                        {isAvgFallback && <div className="text-[10px] text-slate-600">매수가 기준</div>}
+                        {isStale && !isAvgFallback && <div className="text-[10px] text-slate-600">장마감 시세</div>}
+                      </>
+                    ) : <span className="text-xs text-slate-600">시세 없음</span>}
+                  </div>
+                  <button disabled={!!busyAction} onClick={guard(`sell-us-${h.stock_code}`, async () => {
+                    const liveUS = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
+                    if (!confirm(`${liveUS}${usDisplayName} ${h.quantity}주 전량 시장가 매도하시겠습니까?`)) return;
+                    try {
+                      const r = await api(`/sell-overseas/${h.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 });
+                      alert(r.message || '매도 완료');
+                      onRefresh();
+                    } catch (err: any) { alert('매도 실패: ' + err.message); }
+                  })} className="text-xs px-2.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 font-medium border border-white/[0.04] whitespace-nowrap shrink-0 disabled:opacity-40">
+                    전량 매도
+                  </button>
                 </div>
-                <div className="text-right">
-                  {displayPrice > 0 ? (
-                    <>
-                      <div className={`text-base font-bold ${pc(pnl)}`}>{pnlPct > 0 ? '+' : ''}{pnlPct.toFixed(1)}%</div>
-                      <div className={`text-[11px] ${pc(pnl)}`}>${pnl.toFixed(0)}</div>
-                      {isAvgFallback && <div className="text-[10px] text-slate-600">매수가 기준</div>}
-                      {isStale && !isAvgFallback && <div className="text-[10px] text-slate-600">장마감 시세</div>}
-                    </>
-                  ) : <span className="text-xs text-slate-600">시세 없음</span>}
-                </div>
-                <button disabled={!!busyAction} onClick={guard(`sell-us-${h.stock_code}`, async () => {
-                  const liveUS = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
-                  if (!confirm(`${liveUS}${usDisplayName} ${h.quantity}주 전량 시장가 매도하시겠습니까?`)) return;
-                  try {
-                    const r = await api(`/sell-overseas/${h.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 });
-                    alert(r.message || '매도 완료');
-                    onRefresh();
-                  } catch (err: any) { alert('매도 실패: ' + err.message); }
-                })} className="text-xs px-2.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 font-medium border border-white/[0.04] whitespace-nowrap shrink-0 disabled:opacity-40">
-                  전량 매도
-                </button>
+                {/* 하단: TP/SL 프로그레스바 + 목표가/손절가 */}
+                {displayPrice > 0 && (
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-1.5 text-[10px]">
+                      <span className="text-rose-400 font-medium w-[52px] text-right">{effectiveSl.toFixed(1)}%</span>
+                      <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden relative">
+                        <div className="absolute inset-0 flex">
+                          <div className="h-full bg-gradient-to-r from-rose-500/40 to-slate-600/20" style={{ width: '100%' }} />
+                        </div>
+                        <div
+                          className={`absolute top-0 left-0 h-full rounded-full transition-all ${pnlPct >= 0 ? 'bg-emerald-500' : 'bg-rose-500'}`}
+                          style={{ width: `${progress}%` }}
+                        />
+                        {/* 트레일링 활성화 마커 */}
+                        {range > 0 && (
+                          <div
+                            className="absolute top-0 h-full w-px bg-yellow-500/60"
+                            style={{ left: `${Math.max(0, Math.min(100, ((trailPct - effectiveSl) / range) * 100))}%` }}
+                            title={`트레일링 활성: +${trailPct}%`}
+                          />
+                        )}
+                      </div>
+                      <span className="text-emerald-400 font-medium w-[52px]">+{effectiveTp.toFixed(1)}%</span>
+                    </div>
+                    <div className="flex justify-between text-[10px] text-slate-600 px-1">
+                      <span>손절 ${stopPrice.toFixed(2)}</span>
+                      <span className="text-yellow-600">트레일 +{trailPct}%</span>
+                      <span>목표 ${targetPrice.toFixed(2)}</span>
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}

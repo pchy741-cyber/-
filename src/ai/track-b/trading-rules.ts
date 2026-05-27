@@ -50,3 +50,28 @@ export const PRIORITY_SECTOR_CODES = new Set([
   '272210', // 한화시스템
 ]);
 
+/**
+ * 대형 우선주: 시총 상위 반도체/방산 → 추가 점수 보너스 + buyThreshold 하향
+ *
+ * 문제: 대형주는 변동성이 낮아 AI 점수가 낮게 나오는 경향
+ * → SWING buyThreshold 83점을 거의 못 넘음
+ * → 반도체/방산 섹터 폭등해도 봇이 매수하지 않는 원인
+ *
+ * 해결: 대형 우선주에 대해:
+ * 1. 기술점수 추가 보너스 (+20점, PRIORITY_SECTOR +10과 합산 = +30)
+ * 2. buyThreshold 하향 (-8점: 83 → 75)
+ * 3. 횡보장(ADX WEAK) 진입 허용
+ */
+export const MEGA_CAP_PRIORITY_CODES = new Map<string, { name: string; bonus: number; thresholdReduction: number }>([
+  // 반도체 대형주 (시총 상위)
+  ['005930', { name: '삼성전자', bonus: 20, thresholdReduction: 8 }],
+  ['005935', { name: '삼성전자(우)', bonus: 20, thresholdReduction: 8 }],
+  ['000660', { name: 'SK하이닉스', bonus: 20, thresholdReduction: 8 }],
+  // 방산 대형주
+  ['012450', { name: '한화에어로스페이스', bonus: 18, thresholdReduction: 6 }],
+  ['272210', { name: '한화시스템', bonus: 15, thresholdReduction: 5 }],
+  ['064350', { name: '현대로템', bonus: 15, thresholdReduction: 5 }],
+  // 반도체 소재/장비
+  ['042700', { name: '한미반도체', bonus: 12, thresholdReduction: 4 }],
+]);
+

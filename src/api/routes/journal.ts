@@ -14,6 +14,7 @@ interface JournalTrade {
   pnlPct: number;        // 수수료 차감 후 실수익률
   pnlPctGross: number;   // 수수료 미반영 (참고용)
   pnlAmountKrw: number;  // 원화 환산 수익금
+  pnlAmount: number;     // 시장 기준 통화 (KR=원, US=달러)
   feeKrw: number;        // 수수료 원화
   entryPrice: number;
   exitPrice: number;
@@ -113,6 +114,7 @@ journalRoutes.get('/journal', async (c) => {
         pnlPct: Math.round(pnlPctNet * 100) / 100,
         pnlPctGross: Math.round(pnlPctGross * 100) / 100,
         pnlAmountKrw: Math.round(pnlNet),
+        pnlAmount: Math.round(pnlNet),
         feeKrw: Math.round(feeKrw),
         entryPrice,
         exitPrice: exitPrice || entryPrice,
@@ -168,6 +170,8 @@ journalRoutes.get('/journal', async (c) => {
       const exitPrice = Number(r.exit_price);
       const qty = Number(r.qty ?? 0);
       if (entryPrice <= 0 || qty <= 0) continue;
+      // 수익률 100% 초과 = 입금으로 왜곡된 평단가 → 제외
+      if (entryPrice > 0 && (exitPrice / entryPrice > 2.0 || entryPrice / exitPrice > 2.0)) continue;
 
       const pnlPctGross = ((exitPrice - entryPrice) / entryPrice) * 100;
       const pnlUsdGross = (exitPrice - entryPrice) * qty;
@@ -198,6 +202,7 @@ journalRoutes.get('/journal', async (c) => {
         pnlPct: Math.round(pnlPctNet * 100) / 100,
         pnlPctGross: Math.round(pnlPctGross * 100) / 100,
         pnlAmountKrw: Math.round(pnlKrw),
+        pnlAmount: Math.round(pnlUsdNet * 100) / 100,
         feeKrw: Math.round(feeKrw),
         entryPrice,
         exitPrice,

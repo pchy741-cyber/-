@@ -218,7 +218,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       {holdingsTab === 'KR' && <SectorHeatmapPanel />}
       {holdingsTab === 'KR' && <TaxEstimatePanel viewMode={viewMode} />}
       <AiTransparencyPanel watchlist={watchlist} tab={holdingsTab} usDash={usDash} viewMode={viewMode} />
-      <PerformancePanel trades={trades} strategy={strategy} setStrategy={setStrategy} toast={toast} />
+      <PerformancePanel trades={trades} strategy={strategy} setStrategy={setStrategy} toast={toast} fxRate={fxRate} />
       <InsightsPanel insights={dash?.insights ?? []} trades={trades} onRefresh={onRefresh} toast={toast} />
 
       {(health?.recentEvents?.length > 0) && (

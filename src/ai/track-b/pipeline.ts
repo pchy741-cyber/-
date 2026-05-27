@@ -18,6 +18,7 @@ import { getBatchPrices, getDailyChart, isMarketOpen, getChangeRankingStocks, ge
 import { logger } from '../../utils/logger.js';
 import { buildDefenseParkExitDecisions, getDefenseParkState, PARK_STOCK_CODE } from './defense-park.js';
 import { IDLE_PARK_STOCK_CODE } from './cash-manager.js';
+import { MEGA_CAP_PRIORITY_CODES } from './trading-rules.js';
 import { setActiveEngine } from '../../cache/ai-status.js';
 import { technicalFallbackDecisions } from './technical-fallback.js';
 import { fetchKospiRegime, checkDailyLoss } from './market-regime.js';
@@ -259,7 +260,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     let hasBuyCandidates = scores.some(
-      (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[effectiveMode].buyThreshold && (s.confidence ?? 0) >= 0.55,
+      (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[effectiveMode].buyThreshold && (s.confidence ?? 0) >= 0.65,
     );
     const hasOpenPositions = openChains.some((c) => Number(c.total_quantity) > 0);
     if (!hasBuyCandidates) {
@@ -279,7 +280,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           if (newScores.length > 0) {
             scores.push(...newScores);
             hasBuyCandidates = scores.some(
-              (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[effectiveMode].buyThreshold && (s.confidence ?? 0) >= 0.55,
+              (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[effectiveMode].buyThreshold && (s.confidence ?? 0) >= 0.65,
             );
           }
         }
@@ -412,8 +413,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     if (kospiPenaltyAdj !== 0) {
       logger.info(`📉 KOSPI 레짐 점수 보정: penalty=${kospiRegime.penalty} todayDown=${kospiRegime.todayDown} → 전종목 ${kospiPenaltyAdj}점 감산`, { component: 'TRACK_B' });
     }
+    // confidence 임계값 강화: 0.55 → 0.65 (저확신 진입 차단 → 승률 개선)
+    // 대형 우선주(MEGA_CAP)는 0.55 유지 (변동성 낮아 confidence 낮게 나오는 보정)
     const adjustedScores = scores
-      .filter((s: any) => (s.confidence ?? 0) >= 0.55)
+      .filter((s: any) => {
+        const conf = s.confidence ?? 0;
+        const isMegaCap = MEGA_CAP_PRIORITY_CODES.has(s.stock_code);
+        return conf >= (isMegaCap ? 0.55 : 0.65);
+      })
       .map((s: any) => {
         const base = s.composite_score ?? 0;
         const adj = flowAdjMap.get(s.stock_code) ?? 0;
@@ -428,7 +435,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         if (stale < 0) logger.info(`⏳ 스코어 stale 패널티: ${s.stock_code} (${scoreDay} ≠ ${todayDate} → -8점)`, { component: 'TRACK_B' });
         const macroAdj = macroSnapshot ? getMacroScoreAdjustment(macroSnapshot) : 0;
         const dartAdj = process.env.DART_API_KEY ? getDisclosureScoreAdjustment(s.stock_code) : 0;
-        const totalAdj = adj + capAdj + stale + kospiPenaltyAdj + macroAdj + dartAdj;
+        // 대형 우선주(MEGA_CAP): AI 점수 보너스 (변동성 낮아 AI가 보수적 점수 부여하는 보정)
+        const megaCapAdj = MEGA_CAP_PRIORITY_CODES.has(s.stock_code)
+          ? Math.round((MEGA_CAP_PRIORITY_CODES.get(s.stock_code)!.bonus) * 0.5)  // tech에서도 주므로 절반만
+          : 0;
+        const totalAdj = adj + capAdj + stale + kospiPenaltyAdj + macroAdj + dartAdj + megaCapAdj;
         const boundedAdj = totalAdj < 0 ? Math.max(totalAdj, -20) : totalAdj;
         const rawScore = Math.min(100, Math.max(0, base + boundedAdj));
         // 80점 초과 구간 압축 → 분포 개선 (80~100 → 80~92)
@@ -476,10 +487,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       logger.info(`📐 maxPositionKrw 조정: ${baseMaxPos.toLocaleString()} × 성과${perfMult}x × 스트레스${stressMult}x = ${adjMaxPositionKrw.toLocaleString()}원`, { component: 'TRACK_B' });
     }
 
-    // ── 호가 불균형 보정 (매수 후보 상위 5종목 — 매수 확신도 검증) ───────────────
+    // ── 호가 불균형 보정 + 매도벽 하드 게이트 (상위 5종목) ───────────────
     // bid/ask 비율 ≥ 1.5 → 매수세 강함 +6, ≥ 1.2 → +3
     // bid/ask 비율 ≤ 0.7 → 매도세 강함 -6, ≤ 0.85 → -3
+    // bid/ask 비율 ≤ 0.5 → 매도벽 2배+ → 진입 완전 차단 (hard gate)
     const orderbookAdjMap = new Map<string, number>();
+    const orderbookBlockedCodes = new Set<string>();
     if (!blockNewBuys) {
       try {
         const topCandidates = adjustedScores
@@ -490,20 +503,27 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           topCandidates.map(s =>
             Promise.race([
               getOrderbook(s.stock_code).then(ob => {
-                if (!ob || ob.length === 0) return { code: s.stock_code, adj: 0 };
+                if (!ob || ob.length === 0) return { code: s.stock_code, adj: 0, ratio: 1 };
                 const totalBid = ob.reduce((sum, e) => sum + e.bidVolume, 0);
                 const totalAsk = ob.reduce((sum, e) => sum + e.askVolume, 0);
-                if (totalAsk === 0) return { code: s.stock_code, adj: 0 };
+                if (totalAsk === 0) return { code: s.stock_code, adj: 0, ratio: 999 };
                 const ratio = totalBid / totalAsk;
                 const adj = ratio >= 1.5 ? 6 : ratio >= 1.2 ? 3 : ratio <= 0.7 ? -6 : ratio <= 0.85 ? -3 : 0;
-                return { code: s.stock_code, adj };
+                return { code: s.stock_code, adj, ratio };
               }),
               new Promise<never>((_, r) => setTimeout(() => r(new Error('timeout')), 2000)),
             ])
           )
         );
         for (const r of obResults) {
-          if (r.status === 'fulfilled') orderbookAdjMap.set(r.value.code, r.value.adj);
+          if (r.status === 'fulfilled') {
+            orderbookAdjMap.set(r.value.code, r.value.adj);
+            // 매도벽 하드 게이트: bid/ask ≤ 0.5 → 매도 잔량이 매수의 2배+ → 진입 차단
+            if (r.value.ratio <= 0.5) {
+              orderbookBlockedCodes.add(r.value.code);
+              logger.warn(`🚫 호가 매도벽: ${r.value.code} bid/ask=${r.value.ratio.toFixed(2)} → 진입 차단`, { component: 'TRACK_B' });
+            }
+          }
         }
         const nonZero = [...orderbookAdjMap.entries()].filter(([, v]) => v !== 0);
         if (nonZero.length > 0) {
@@ -550,6 +570,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       } : null,
       currentStockValue,
       junkStockCodes,
+      orderbookBlockedCodes,
     });
 
     // ── AI 손실 조기청산: 손실 중 + AI 부정평가(< 45점) → FORCE_CLOSE 주입 ──

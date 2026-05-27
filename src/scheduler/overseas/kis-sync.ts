@@ -72,7 +72,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
         const pnlPct = dbAvgPrice > 0 && sellPrice > 0
           ? ((sellPrice - dbAvgPrice) / dbAvgPrice * 100) : 0;
 
-        await insertOrder({
+        const manualOrderId = await insertOrder({
           chain_id: null,
           stock_code: code,
           side: 'SELL',
@@ -88,7 +88,18 @@ export async function syncHoldingsFromKIS(): Promise<void> {
           trigger_source: 'OVERSEAS',
           ai_reasoning: `[수동매도] KIS 앱에서 직접 매도 | PnL ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}% [avgBuy:${dbAvgPrice.toFixed(4)}]`,
           avg_buy_price: dbAvgPrice,
-        }).catch(() => {});
+        }).catch(() => '');
+
+        // score_accuracy 기록
+        if (manualOrderId && dbAvgPrice > 0 && sellPrice > 0) {
+          const outcome = pnlPct > 0.1 ? 'WIN' : pnlPct < -0.1 ? 'LOSS' : 'BREAK_EVEN';
+          getPool().query(
+            `INSERT INTO score_accuracy (stock_code, order_id, market, realized_pnl_pct, outcome, close_reason, is_paper)
+             VALUES ($1, $2, 'US', $3, $4, $5, false)
+             ON CONFLICT (order_id) WHERE order_id IS NOT NULL DO NOTHING`,
+            [code, manualOrderId, pnlPct, outcome, '수동매도'],
+          ).catch(() => {});
+        }
 
         await getPool().query(
           'DELETE FROM overseas_holdings WHERE exchange=$1 AND stock_code=$2 AND is_paper = false',

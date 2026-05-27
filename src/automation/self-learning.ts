@@ -738,8 +738,18 @@ function analyzeQuickProfitTaking(wins: EnrichedChain[]): LearnedInsight[] {
 async function saveInsights(insights: LearnedInsight[]): Promise<void> {
   if (insights.length > 0) {
     const isPaper = config.isPaper;
-    // 이 모드의 자동 생성 인사이트만 삭제 (다른 모드 인사이트 보존)
-    await getPool().query('DELETE FROM learned_insights WHERE is_manual IS NOT TRUE AND is_paper = $1', [isPaper]);
+    // 이 모드의 자동 생성 인사이트만 삭제 (다른 모드 + 수동 + promoted 원본 보존)
+    await getPool().query(
+      `DELETE FROM learned_insights
+       WHERE is_manual IS NOT TRUE
+         AND COALESCE(is_promoted, false) IS NOT TRUE
+         AND COALESCE(source_mode, 'native') = 'native'
+         AND is_paper = $1`,
+      [isPaper],
+    ).catch(() =>
+      // 마이그레이션 전 폴백 (is_promoted/source_mode 컬럼 없을 때)
+      getPool().query('DELETE FROM learned_insights WHERE is_manual IS NOT TRUE AND is_paper = $1', [isPaper]),
+    );
     for (const insight of insights) {
       const { rows: inserted } = await getPool().query(
         `INSERT INTO learned_insights (category, insight, confidence, sample_count, last_updated, details, recommendation, param_change, is_paper)
@@ -787,6 +797,13 @@ export async function getLearnedInsightsForPrompt(): Promise<string> {
 
   if (!data || data.length === 0) return '';
 
+  // 프로모션 인사이트 검증 상태 태그 (마이그레이션 전에도 안전)
+  const validationTag = (row: any): string => {
+    if (!row.source_mode || row.source_mode !== 'promoted_from_paper') return '';
+    if (row.live_validation_status === 'validated') return '【실전확인완료】';
+    return '【연습검증·실전확인중】';
+  };
+
   // 카테고리별로 분류
   const lossPatterns = data.filter((d) => d.category === 'LOSS_PATTERN');
   const winPatterns = data.filter((d) => d.category === 'WIN_PATTERN');
@@ -803,7 +820,7 @@ export async function getLearnedInsightsForPrompt(): Promise<string> {
     for (const insight of lossPatterns) {
       const confidence = (insight.confidence * 100).toFixed(0);
       const mandatory = insight.confidence >= 0.75 ? '【필수】' : '【권장】';
-      lines.push(`  ${mandatory} ${insight.insight} (신뢰도 ${confidence}%, 근거 ${insight.sample_count}건)`);
+      lines.push(`  ${validationTag(insight)}${mandatory} ${insight.insight} (신뢰도 ${confidence}%, 근거 ${insight.sample_count}건)`);
     }
   }
 
@@ -812,21 +829,21 @@ export async function getLearnedInsightsForPrompt(): Promise<string> {
     for (const insight of winPatterns) {
       const confidence = (insight.confidence * 100).toFixed(0);
       const mandatory = insight.confidence >= 0.8 ? '【높은 신뢰도 — PRIORITIZE】' : '【참고】';
-      lines.push(`  ${mandatory} ${insight.insight} (신뢰도 ${confidence}%, 근거 ${insight.sample_count}건)`);
+      lines.push(`  ${validationTag(insight)}${mandatory} ${insight.insight} (신뢰도 ${confidence}%, 근거 ${insight.sample_count}건)`);
     }
   }
 
   if (timingInsights.length > 0) {
     lines.push('\n### ⏱️ 타이밍 인사이트:');
     for (const insight of timingInsights) {
-      lines.push(`  - ${insight.insight} (신뢰도 ${(insight.confidence * 100).toFixed(0)}%, 근거 ${insight.sample_count}건)`);
+      lines.push(`  ${validationTag(insight)}- ${insight.insight} (신뢰도 ${(insight.confidence * 100).toFixed(0)}%, 근거 ${insight.sample_count}건)`);
     }
   }
 
   if (sizingInsights.length > 0) {
     lines.push('\n### 📊 투자 규모 인사이트:');
     for (const insight of sizingInsights) {
-      lines.push(`  - ${insight.insight} (신뢰도 ${(insight.confidence * 100).toFixed(0)}%, 근거 ${insight.sample_count}건)`);
+      lines.push(`  ${validationTag(insight)}- ${insight.insight} (신뢰도 ${(insight.confidence * 100).toFixed(0)}%, 근거 ${insight.sample_count}건)`);
     }
   }
 
@@ -944,11 +961,16 @@ export async function applyInsightById(insightId: string): Promise<{ ok: boolean
     const ALLOWED_PARAM_FIELDS = ['stop_loss_pct', 'take_profit_pct', 'buy_threshold', 'mode'];
     if (!ALLOWED_PARAM_FIELDS.includes(field)) return { ok: false, message: `허용되지 않은 필드: ${field}` };
 
-    const { rows: stratRows } = await getPool().query(`SELECT * FROM strategy_config WHERE is_active = true LIMIT 1`);
+    // 인사이트의 is_paper에 맞는 전략에만 적용 (크로스오염 방지)
+    const targetIsPaper = insight.is_paper;
+    const { rows: stratRows } = await getPool().query(
+      `SELECT * FROM strategy_config WHERE is_active = true AND is_paper = $1 LIMIT 1`,
+      [targetIsPaper],
+    );
     const current = stratRows[0];
     if (!current) return { ok: false, message: '활성 전략 없음' };
 
-    await getPool().query(`UPDATE strategy_config SET ${field} = $1 WHERE is_active = true`, [value]);
+    await getPool().query(`UPDATE strategy_config SET ${field} = $1 WHERE is_active = true AND is_paper = $2`, [value, targetIsPaper]);
     await getPool().query(`UPDATE learned_insights SET is_applied = true, applied_at = NOW() WHERE id = $1`, [insightId]);
 
     const message = `${field}: ${current[field]} → ${value}`;
@@ -964,7 +986,8 @@ export async function applyInsightById(insightId: string): Promise<{ ok: boolean
  */
 export async function getInsightsForDashboard(): Promise<LearnedInsight[]> {
   const { rows } = await getPool().query(
-    `SELECT * FROM learned_insights ORDER BY confidence DESC, sample_count DESC LIMIT 20`,
+    `SELECT * FROM learned_insights WHERE is_paper = $1 ORDER BY confidence DESC, sample_count DESC LIMIT 20`,
+    [config.isPaper],
   );
   return rows.map((r) => ({
     id: r.id,
@@ -994,8 +1017,8 @@ export async function getLearnedParameters(): Promise<LearnedParameters> {
   };
 
   const { rows: data } = await getPool().query(
-    'SELECT details FROM learned_insights WHERE category = $1 AND confidence > $2',
-    ['TIMING', 0.65],
+    'SELECT details FROM learned_insights WHERE category = $1 AND confidence > $2 AND is_paper = $3',
+    ['TIMING', 0.65, config.isPaper],
   );
 
   if (!data || data.length === 0) return params;
@@ -1472,6 +1495,72 @@ async function calibrateScoreTierParams(): Promise<void> {
 }
 
 /**
+ * 연습→실전 프로모션된 인사이트의 실전 성과 검증
+ * - 프로모션 후 14일 이상 경과 + 실전 거래 5건 이상일 때 검증
+ * - 승률 55%↑ → validated, confidence 원래대로 복원
+ * - 30일 경과 + 승률 40%↓ → invalidated, confidence 50% 감소
+ */
+export async function validatePromotedInsights(): Promise<void> {
+  const { rows: promoted } = await getPool().query(
+    `SELECT * FROM learned_insights
+     WHERE source_mode = 'promoted_from_paper'
+       AND live_validation_status = 'pending'
+       AND is_paper = false`,
+  );
+
+  if (promoted.length === 0) return;
+
+  for (const insight of promoted) {
+    if (!insight.promoted_at) continue;
+
+    const daysSincePromotion = (Date.now() - new Date(insight.promoted_at).getTime()) / 86400000;
+    if (daysSincePromotion < 14) continue; // 최소 2주 데이터 필요
+
+    // 프로모션 이후 실전 체인 성과 조회
+    const { rows: trades } = await getPool().query(
+      `SELECT realized_pnl FROM transaction_chains
+       WHERE is_paper = false AND status = 'CLOSED'
+         AND closed_at >= $1`,
+      [insight.promoted_at],
+    );
+
+    const wins = trades.filter((t: any) => Number(t.realized_pnl) > 0).length;
+    const losses = trades.filter((t: any) => Number(t.realized_pnl) <= 0).length;
+    const total = wins + losses;
+
+    if (total < 5) continue; // 최소 5건 필요
+
+    const winRate = wins / total;
+
+    if (winRate >= 0.55) {
+      // 실전에서도 효과적 → 신뢰도 복원 (0.7배 되돌림)
+      await getPool().query(
+        `UPDATE learned_insights
+         SET live_validation_status = 'validated',
+             confidence = LEAST(confidence / 0.7, 0.95),
+             live_win_count = $1, live_loss_count = $2,
+             live_validated_at = NOW()
+         WHERE id = $3`,
+        [wins, losses, insight.id],
+      );
+      logger.info(`프로모션 검증 완료: ${String(insight.insight).slice(0, 50)}... → validated (승률 ${(winRate * 100).toFixed(0)}%)`, { component: 'LEARN' });
+    } else if (daysSincePromotion >= 30 && winRate < 0.4) {
+      // 30일 경과 + 저조한 성과 → 무효화
+      await getPool().query(
+        `UPDATE learned_insights
+         SET live_validation_status = 'invalidated',
+             confidence = confidence * 0.5,
+             live_win_count = $1, live_loss_count = $2,
+             live_validated_at = NOW()
+         WHERE id = $3`,
+        [wins, losses, insight.id],
+      );
+      logger.info(`프로모션 무효화: ${String(insight.insight).slice(0, 50)}... → invalidated (승률 ${(winRate * 100).toFixed(0)}%)`, { component: 'LEARN' });
+    }
+  }
+}
+
+/**
  * 자기학습 분석 실행 + 인사이트 저장 + auto-apply (매일 18:30 호출)
  */
 export async function runDailyLearning(): Promise<void> {
@@ -1499,6 +1588,10 @@ export async function runDailyLearning(): Promise<void> {
     logger.info(`🧠 자기학습 인사이트 ${insights.length}건 저장`, { component: 'LEARN' });
     await autoApplyInsights(insights);
     await calibrateScoreTierParams().catch((e) => logger.warn(`티어 파라미터 보정 실패: ${e}`, { component: 'LEARN' }));
+    // 프로모션된 인사이트 실전 검증 (live 모드일 때만)
+    if (!config.isPaper) {
+      await validatePromotedInsights().catch((e) => logger.warn(`프로모션 검증 실패: ${e}`, { component: 'LEARN' }));
+    }
   } catch (err) {
     logger.warn(`자기학습 실패: ${err}`, { component: 'LEARN' });
   }

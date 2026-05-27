@@ -12,12 +12,24 @@ export default function InsightsPanel({ insights: insightsProp, trades, onRefres
   const [showAdd, setShowAdd] = React.useState(false);
   const [deleteModal, setDeleteModal] = React.useState<{ id: number; insight: string; relatedTrades: any[] } | null>(null);
   const [liveInsights, setLiveInsights] = React.useState<any[] | null>(null);
+  const [promotables, setPromotables] = React.useState<any[]>([]);
+  const [promoting, setPromoting] = React.useState<string | null>(null);
+  const [revoking, setRevoking] = React.useState<string | null>(null);
+
   React.useEffect(() => {
     const load = () => api('/insights').then((d: any) => setLiveInsights(Array.isArray(d) ? d : [])).catch(() => {});
     load();
     const id = setInterval(load, 60000);
     return () => clearInterval(id);
   }, []);
+
+  // 연습모드 프로모션 후보 로드
+  React.useEffect(() => {
+    api('/insights/promotable')
+      .then((d: any) => setPromotables(Array.isArray(d) ? d : []))
+      .catch(() => {});
+  }, [liveInsights]); // 인사이트 변경 시 후보도 갱신
+
   const insights = liveInsights ?? insightsProp;
 
   const [triggering, setTriggering] = React.useState(false);
@@ -81,6 +93,40 @@ export default function InsightsPanel({ insights: insightsProp, trades, onRefres
     } finally { setAdding(false); }
   };
 
+  // 연습→실전 프로모션
+  const handlePromote = async (id: string) => {
+    setPromoting(id);
+    try {
+      const data = await api(`/insights/${id}/promote`, { method: 'POST' });
+      if (data.ok) {
+        toast?.('연습 인사이트를 실전에 적용했습니다 (신뢰도 0.7x)', 'ok');
+        setPromotables((prev) => prev.filter((p) => p.id !== id));
+        // 인사이트 목록 새로고침
+        api('/insights').then((d: any) => setLiveInsights(Array.isArray(d) ? d : [])).catch(() => {});
+        onRefresh();
+      } else {
+        toast?.(data.error ?? '프로모션 실패', 'err');
+      }
+    } catch { toast?.('프로모션 요청 실패', 'err'); }
+    finally { setPromoting(null); }
+  };
+
+  // 프로모션 취소
+  const handleRevoke = async (id: string) => {
+    setRevoking(id);
+    try {
+      const data = await api(`/insights/${id}/revoke`, { method: 'POST' });
+      if (data.ok) {
+        toast?.('프로모션 취소 완료', 'ok');
+        setLiveInsights((prev) => (prev ?? []).filter((i) => i.id !== id));
+        onRefresh();
+      } else {
+        toast?.(data.error ?? '취소 실패', 'err');
+      }
+    } catch { toast?.('취소 요청 실패', 'err'); }
+    finally { setRevoking(null); }
+  };
+
   const categoryColor: Record<string, string> = {
     WIN_PATTERN: 'text-emerald-400 bg-emerald-900/30',
     LOSS_PATTERN: 'text-rose-400 bg-rose-900/30',
@@ -91,6 +137,15 @@ export default function InsightsPanel({ insights: insightsProp, trades, onRefres
   const categoryLabel: Record<string, string> = {
     WIN_PATTERN: '승리패턴', LOSS_PATTERN: '손실패턴', TIMING: '타이밍',
     SIZING: '사이징', MANUAL: 'CEO가이드',
+  };
+
+  // 프로모션 검증 상태 뱃지
+  const validationBadge = (i: any) => {
+    if (i.source_mode !== 'promoted_from_paper') return null;
+    const status = i.live_validation_status;
+    if (status === 'validated') return <span className="text-[8px] bg-emerald-900/50 text-emerald-300 px-1.5 py-0.5 rounded-full font-medium">실전확인</span>;
+    if (status === 'invalidated') return <span className="text-[8px] bg-slate-800/60 text-slate-500 px-1.5 py-0.5 rounded-full font-medium line-through">미검증</span>;
+    return <span className="text-[8px] bg-cyan-900/40 text-cyan-300 px-1.5 py-0.5 rounded-full font-medium">연습검증</span>;
   };
 
   const harmful = insights.filter(i => i.category === 'LOSS_PATTERN');
@@ -217,8 +272,19 @@ export default function InsightsPanel({ insights: insightsProp, trades, onRefres
                 <span className={`shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded mt-0.5 ${categoryColor[i.category] ?? 'text-slate-400 bg-slate-800'}`}>
                   {categoryLabel[i.category] ?? i.category}
                 </span>
-                <p className="flex-1 text-[11px] text-slate-300 leading-relaxed">{i.insight}</p>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    {validationBadge(i)}
+                    <p className="text-[11px] text-slate-300 leading-relaxed">{i.insight}</p>
+                  </div>
+                </div>
                 <div className="shrink-0 flex items-center gap-1.5">
+                  {i.source_mode === 'promoted_from_paper' && (
+                    <button onClick={() => handleRevoke(i.id)} disabled={revoking === i.id}
+                      className="text-[9px] bg-slate-700/50 hover:bg-rose-900/50 text-slate-400 hover:text-rose-300 px-1.5 py-0.5 rounded transition-all disabled:opacity-50">
+                      {revoking === i.id ? '...' : '취소'}
+                    </button>
+                  )}
                   {i.is_applied
                     ? <span className="text-[9px] bg-emerald-900/40 text-emerald-400 px-1.5 py-0.5 rounded-full">applied</span>
                     : i.param_change
@@ -247,6 +313,41 @@ export default function InsightsPanel({ insights: insightsProp, trades, onRefres
             </div>
           ))}
         </div>
+
+        {/* 연습모드 추천 인사이트 (프로모션 후보) */}
+        {promotables.length > 0 && (
+          <div className="border-t border-cyan-900/30 bg-cyan-950/10">
+            <div className="flex items-center gap-2 px-4 py-2.5 border-b border-cyan-900/20">
+              <span className="text-[11px] font-semibold text-cyan-300">연습모드 추천</span>
+              <span className="text-[9px] text-cyan-600">연습에서 검증된 좋은 패턴 — 실전 적용 시 신뢰도 0.7x</span>
+              <span className="ml-auto text-[9px] bg-cyan-900/40 text-cyan-400 px-1.5 py-0.5 rounded-full">{promotables.length}개</span>
+            </div>
+            <div className="divide-y divide-cyan-900/10 max-h-48 overflow-y-auto">
+              {promotables.map((p: any) => (
+                <div key={p.id} className="px-4 py-2.5 hover:bg-cyan-900/10 transition-colors">
+                  <div className="flex items-start gap-3">
+                    <span className={`shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded mt-0.5 ${categoryColor[p.category] ?? 'text-slate-400 bg-slate-800'}`}>
+                      {categoryLabel[p.category] ?? p.category}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[11px] text-slate-300 leading-relaxed">{p.insight}</p>
+                      <p className="text-[9px] text-slate-500 mt-0.5">
+                        신뢰도 {Math.round(p.confidence * 100)}% · 샘플 {p.sample_count}건
+                        {p.recommendation && <span className="text-cyan-500/60 ml-1.5">{'→'} {p.recommendation}</span>}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => handlePromote(p.id)}
+                      disabled={promoting === p.id}
+                      className="shrink-0 px-2.5 py-1 bg-cyan-800/50 hover:bg-cyan-700/70 text-cyan-200 text-[10px] rounded-lg transition-all disabled:opacity-50 font-medium">
+                      {promoting === p.id ? '적용중...' : '실전 적용'}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </>
   );

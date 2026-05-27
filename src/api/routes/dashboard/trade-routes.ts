@@ -79,6 +79,8 @@ tradeRoutes.get('/trades', async (c) => {
         const sellFee = isUsd ? 0 : Math.round(sellValue * SELL_FEE_PCT);
         const pnl = sellValue - sellFee - costBasis;
         const pct = costBasis > 0 ? (pnl / costBasis) * 100 : null;
+        // 수익률 100% 초과 = 입금으로 왜곡된 평단가 → 제외 (해외만)
+        if (isUsd && pct != null && Math.abs(pct) > 100) continue;
         tradePnlMap.set(String(o.id), { pnl, pct, isUsd });
 
         h.qty -= matchedQty;

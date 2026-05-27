@@ -157,7 +157,7 @@ export class RiskEngine {
   }
 
   private async checkDailyDrawdown(isPaper: boolean): Promise<PreTradeCheckResult> {
-    const startSnapshot = await getTodayStartSnapshot();
+    const startSnapshot = await getTodayStartSnapshot(isPaper);
     if (!startSnapshot) {
       logger.warn('⚠️ 장시작 스냅샷 없음 → 자동 생성 후 매매 허용', { component: 'RISK' });
       try {
@@ -170,6 +170,7 @@ export class RiskEngine {
           daily_pnl: 0,
           daily_pnl_pct: 0,
           positions: balance.positions,
+          is_paper: isPaper,
         });
         return { approved: true, reason: '장시작 스냅샷 자동 생성 완료' };
       } catch {
@@ -205,6 +206,7 @@ export class RiskEngine {
           daily_pnl: 0,
           daily_pnl_pct: 0,
           positions: currentBalance.positions,
+          is_paper: isPaper,
         });
       } catch { /* 스냅샷 실패해도 무시 */ }
       return { approved: true, reason: '외부 매도 감지 — 스냅샷 재설정, 매매 허용' };

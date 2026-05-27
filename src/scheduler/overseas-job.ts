@@ -84,7 +84,7 @@ async function executeFractionalBuy(
       kis_status: result.success ? 'SUBMITTED' : 'FAILED',
       filled_quantity: result.success ? estimatedQty : 0,
       filled_price: result.success ? estimatedPrice : null,
-      status: result.success ? 'PENDING' : 'FAILED', trading_mode: 'live',
+      status: result.success ? 'PENDING' : 'FAILED', trading_mode: isPaper() ? 'paper' : 'live',
       trigger_source: 'OVERSEAS', ai_reasoning: `[소수점매수 $${amountUsd}] ${reasoning}`,
     });
     if (result.success) {
