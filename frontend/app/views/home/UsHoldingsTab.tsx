@@ -41,10 +41,15 @@ export default function UsHoldingsTab({
             const pnl = displayPrice > 0 ? (displayPrice - h.avg_price) * h.quantity : 0;
             const pnlPct = displayPrice > 0 && h.avg_price > 0 ? ((displayPrice - h.avg_price) / h.avg_price) * 100 : 0;
             const usDisplayName = toDisplayName(priceData?.name, h.stock_code);
-            // TP/SL 데이터
+            // 동적 TP/SL 데이터 (서버에서 종목별로 계산됨)
             const tpPct = h.tp_pct ?? 15;
             const slPct = h.sl_pct ?? -5;
             const trailPct = h.trail_pct ?? 5;
+            const trailActive = !!h.trail_active;
+            const trailStopPct = h.trail_stop_pct ?? slPct;
+            const maxPnlPct = h.max_pnl_pct ?? 0;
+            const partialStage = h.partial_tp_stage ?? 0;
+            const nextPartialTpPct = h.next_partial_tp_pct;
             const isScalp = !!h.is_scalp;
             const scalpTpPct = isScalp && h.scalp_tp && h.avg_price > 0 ? ((h.scalp_tp - h.avg_price) / h.avg_price) * 100 : null;
             const scalpSlPct = isScalp && h.scalp_sl && h.avg_price > 0 ? ((h.scalp_sl - h.avg_price) / h.avg_price) * 100 : null;
@@ -90,7 +95,7 @@ export default function UsHoldingsTab({
                     전량 매도
                   </button>
                 </div>
-                {/* 하단: TP/SL 프로그레스바 + 목표가/손절가 */}
+                {/* 하단: 동적 TP/SL 프로그레스바 + 트레일링 상태 */}
                 {displayPrice > 0 && (
                   <div className="space-y-1">
                     <div className="flex items-center gap-1.5 text-[10px]">
@@ -103,20 +108,45 @@ export default function UsHoldingsTab({
                           className={`absolute top-0 left-0 h-full rounded-full transition-all ${pnlPct >= 0 ? 'bg-emerald-500' : 'bg-rose-500'}`}
                           style={{ width: `${progress}%` }}
                         />
-                        {/* 트레일링 활성화 마커 */}
-                        {range > 0 && (
+                        {/* 부분익절 단계 마커들 */}
+                        {nextPartialTpPct != null && nextPartialTpPct !== effectiveTp && range > 0 && (
                           <div
-                            className="absolute top-0 h-full w-px bg-yellow-500/60"
+                            className="absolute top-0 h-full w-px bg-cyan-400/50"
+                            style={{ left: `${Math.max(0, Math.min(100, ((nextPartialTpPct - effectiveSl) / range) * 100))}%` }}
+                            title={`부분익절 +${nextPartialTpPct}%`}
+                          />
+                        )}
+                        {/* 트레일링 활성화/스톱 마커 */}
+                        {range > 0 && !trailActive && (
+                          <div
+                            className="absolute top-0 h-full w-px bg-yellow-500/40"
                             style={{ left: `${Math.max(0, Math.min(100, ((trailPct - effectiveSl) / range) * 100))}%` }}
-                            title={`트레일링 활성: +${trailPct}%`}
+                            title={`트레일 활성: +${trailPct}%`}
+                          />
+                        )}
+                        {trailActive && range > 0 && (
+                          <div
+                            className="absolute top-0 h-full w-[3px] bg-yellow-400/80 rounded-full"
+                            style={{ left: `${Math.max(0, Math.min(100, ((trailStopPct - effectiveSl) / range) * 100))}%` }}
+                            title={`트레일 스톱: ${trailStopPct >= 0 ? '+' : ''}${trailStopPct.toFixed(1)}%`}
                           />
                         )}
                       </div>
                       <span className="text-emerald-400 font-medium w-[52px]">+{effectiveTp.toFixed(1)}%</span>
                     </div>
                     <div className="flex justify-between text-[10px] text-slate-600 px-1">
-                      <span>손절 ${stopPrice.toFixed(2)}</span>
-                      <span className="text-yellow-600">트레일 +{trailPct}%</span>
+                      <span>{trailActive
+                        ? <span className="text-yellow-500">트레일 ${(h.avg_price * (1 + trailStopPct / 100)).toFixed(2)}</span>
+                        : <>손절 ${stopPrice.toFixed(2)}</>
+                      }</span>
+                      <span>{trailActive
+                        ? <span className="text-yellow-500">고점+{maxPnlPct.toFixed(1)}%</span>
+                        : partialStage > 0
+                          ? <span className="text-cyan-500">{partialStage}단계 실현</span>
+                          : nextPartialTpPct != null
+                            ? <span className="text-slate-500">1차 +{nextPartialTpPct}%</span>
+                            : <span className="text-slate-500">트레일 +{trailPct}%</span>
+                      }</span>
                       <span>목표 ${targetPrice.toFixed(2)}</span>
                     </div>
                   </div>

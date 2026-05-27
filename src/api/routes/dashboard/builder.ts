@@ -247,6 +247,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   let overseasHoldings: Array<{
     stock_code: string; quantity: number; avg_price: number; bought_at: string; last_price: number;
     sector: string; tp_pct: number; sl_pct: number; trail_pct: number;
+    trail_active: boolean; trail_stop_pct: number; max_pnl_pct: number;
+    partial_tp_stage: number; next_partial_tp_pct: number | null;
     is_scalp: boolean; scalp_tp: number | null; scalp_sl: number | null;
   }> = [];
   let overseasTotalInvested = 0;
@@ -255,39 +257,89 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   try {
     const isPaperQuery = viewIsPaper;
     const osCashKey = viewIsPaper ? 'cash_paper' : 'cash';
+    const pfx = viewIsPaper ? 'p_' : 'l_';
     const { rows: osRows } = await getPool().query(
       'SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1', [isPaperQuery]);
     const { rows: osCashRows } = await getPool().query(
       "SELECT value FROM overseas_state WHERE key = $1", [osCashKey]);
     overseasCash = osCashRows.length > 0 ? Number(osCashRows[0].value) : (viewIsPaper ? 10000 : 0);
 
+    // 종목별 고점/부분익절단계 일괄 조회
+    const codes = osRows.map((r: any) => String(r.stock_code));
+    const stateKeys = codes.flatMap(c => [`${pfx}maxprice_${c}`, `${pfx}partial_tp_stage_${c}`]);
+    const stateMap = new Map<string, string>();
+    if (stateKeys.length > 0) {
+      const { rows: stRows } = await getPool().query(
+        'SELECT key, value FROM overseas_state WHERE key = ANY($1)', [stateKeys]);
+      for (const sr of stRows) stateMap.set(sr.key, sr.value);
+    }
+
     for (const r of osRows) {
+      const code = String(r.stock_code);
       const qty = Number(r.quantity);
       const avgP = Number(r.avg_price);
       const lastP = Number(r.last_price ?? 0);
+      const curP = lastP > 0 ? lastP : avgP;
       overseasTotalInvested += avgP * qty;
       overseasMarketValueUsd += (lastP > 0 ? lastP : avgP) * qty;
 
-      // 섹터 기반 TP/SL 계산
-      const wItem = GLOBAL_WATCHLIST.find(w => w.code === r.stock_code);
+      const wItem = GLOBAL_WATCHLIST.find(w => w.code === code);
       const sector = wItem?.sector ?? '';
       const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
       const isMediumBeta = SECTOR_CLASS.MEDIUM_BETA.includes(sector);
       const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
-      const tpPct = isHighBeta ? 20.0 : 15.0;
-      const slPct = isHighBeta ? -8.0 : isMediumBeta ? -5.0 : isDefense ? -4.0 : -5.0;
-      const trailPct = isHighBeta ? 10.0 : isMediumBeta ? 8.0 : 5.0;
+
+      // ── 동적 SL: ATR 기반 (overseas_state에 저장안됨 → 섹터/변동성 기반 추정) ──
+      // 현재 변동성 = abs(pnlPct) 반영하여 유연하게 설정
+      const pnlPct = avgP > 0 ? ((curP - avgP) / avgP) * 100 : 0;
+      const baseSl = isHighBeta ? -8.0 : isMediumBeta ? -5.0 : isDefense ? -4.0 : -5.0;
+
+      // ── 동적 TP: 부분익절 3단계 기반 실제 다음 목표 ──
+      const partialStageNum = Number(stateMap.get(`${pfx}partial_tp_stage_${code}`) ?? 0);
+      // 부분익절 단계별 트리거 (risk-intelligence.ts와 동일)
+      const tpStages = isHighBeta
+        ? [{ stage: 1, pct: 8.0 }, { stage: 2, pct: 15.0 }]
+        : [{ stage: 1, pct: 6.0 }, { stage: 2, pct: 12.0 }];
+      const hardTp = isHighBeta ? 20.0 : 15.0;
+      // 다음 부분익절 목표
+      const nextPartialStage = tpStages.find(s => s.stage > partialStageNum);
+      const nextPartialTpPct = nextPartialStage?.pct ?? null;
+      // 실질적 TP = 부분익절을 이미 달성했으면 다음 단계, 아니면 1단계 목표
+      const effectiveTpPct = nextPartialTpPct ?? hardTp;
+
+      // ── 트레일링 스톱 계산 (고점 추적 데이터 활용) ──
+      const maxPrice = Number(stateMap.get(`${pfx}maxprice_${code}`) ?? 0);
+      const maxPnlPct = maxPrice > 0 && avgP > 0 ? ((maxPrice - avgP) / avgP) * 100 : 0;
+      const trailActivatePct = isHighBeta ? 10.0 : isMediumBeta ? 8.0 : 5.0;
+      const trailActive = maxPnlPct >= trailActivatePct;
+      // ATR 동적 트레일 드랍 (sell-logic과 동일한 공식, ATR 기본 2.0%)
+      const estAtr = isHighBeta ? 3.0 : isDefense ? 1.2 : 2.0;
+      const atrTrail = -(estAtr * 2.5);
+      const minTrail = isHighBeta ? -12.0 : isDefense ? -6.0 : -8.0;
+      const maxTrail = isHighBeta ? -5.0 : isDefense ? -3.0 : -4.0;
+      const dynTrailDrop = Math.max(minTrail, Math.min(maxTrail, atrTrail));
+      // 트레일링 활성 시: 고점 대비 dynTrailDrop% = 매도, 이를 평단 기준 %로 변환
+      const trailStopPct = trailActive && maxPrice > 0 && avgP > 0
+        ? ((maxPrice * (1 + dynTrailDrop / 100) - avgP) / avgP) * 100
+        : baseSl;
+      // 실질 SL = 트레일링 활성이면 트레일스톱, 아니면 고정 SL
+      const effectiveSlPct = trailActive ? Math.max(trailStopPct, baseSl) : baseSl;
 
       overseasHoldings.push({
-        stock_code: r.stock_code,
+        stock_code: code,
         quantity: qty,
         avg_price: avgP,
         bought_at: r.bought_at,
         last_price: lastP,
         sector,
-        tp_pct: tpPct,
-        sl_pct: slPct,
-        trail_pct: trailPct,
+        tp_pct: effectiveTpPct,
+        sl_pct: effectiveSlPct,
+        trail_pct: trailActivatePct,
+        trail_active: trailActive,
+        trail_stop_pct: trailStopPct,
+        max_pnl_pct: maxPnlPct,
+        partial_tp_stage: partialStageNum,
+        next_partial_tp_pct: nextPartialTpPct,
         is_scalp: !!r.is_scalp,
         scalp_tp: r.scalp_tp != null ? Number(r.scalp_tp) : null,
         scalp_sl: r.scalp_sl != null ? Number(r.scalp_sl) : null,
