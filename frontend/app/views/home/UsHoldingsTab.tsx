@@ -90,9 +90,18 @@ export default function UsHoldingsTab({
                       const r = await api(`/sell-overseas/${h.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 });
                       alert(r.message || '매도 완료');
                       onRefresh();
-                    } catch (err: any) { alert('매도 실패: ' + err.message); }
+                    } catch (err: any) {
+                      // KIS 실패 시 강제 DB 청산 제안
+                      if (confirm(`매도 실패: ${err.message}\n\n장마감 등으로 KIS 주문 불가 시, 강제 DB 청산하시겠습니까?\n(마지막 시세 $${displayPrice.toFixed(2)} 기준 정산)`)) {
+                        try {
+                          const r2 = await api(`/sell-overseas-force/${h.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 20000 });
+                          alert(r2.message || '강제 청산 완료');
+                          onRefresh();
+                        } catch (e2: any) { alert('강제 청산 실패: ' + e2.message); }
+                      }
+                    }
                   })} className="text-xs px-2.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 font-medium border border-white/[0.04] whitespace-nowrap shrink-0 disabled:opacity-40">
-                    전량 매도
+                    매도
                   </button>
                 </div>
                 {/* 하단: 동적 TP/SL 프로그레스바 + 트레일링 상태 */}
@@ -154,6 +163,22 @@ export default function UsHoldingsTab({
               </div>
             );
           })}
+          {/* 전종목 일괄 탈출 버튼 */}
+          {usHoldings.length >= 2 && (
+            <div className="px-4 py-2 border-t border-white/[0.04]">
+              <button disabled={!!busyAction} onClick={guard('sell-us-all', async () => {
+                const liveUS = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
+                if (!confirm(`${liveUS}해외 보유종목 ${usHoldings.length}종목 전부 일괄 청산하시겠습니까?\n\n장마감 시 마지막 시세 기준 DB 강제 청산됩니다.`)) return;
+                try {
+                  const r = await api('/sell-overseas-all', { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper', force_db: true }), timeout: 60000 });
+                  alert(r.message || '전종목 청산 완료');
+                  onRefresh();
+                } catch (err: any) { alert('일괄 청산 실패: ' + err.message); }
+              })} className="w-full text-xs py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 font-medium border border-rose-500/20 disabled:opacity-40">
+                전종목 일괄 청산 ({usHoldings.length}종목)
+              </button>
+            </div>
+          )}
         </div>
       )}
       {/* 제보 단타 */}

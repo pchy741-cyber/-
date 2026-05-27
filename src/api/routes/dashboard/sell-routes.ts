@@ -408,6 +408,136 @@ sellRoutes.post('/sell-overseas/:stockCode', async (c) => {
   }
 });
 
+// ── 해외주식 강제 DB 청산 (장마감 시/KIS 거부 시 DB만 정리) ──
+sellRoutes.post('/sell-overseas-force/:stockCode', async (c) => {
+  const stockCode = c.req.param('stockCode');
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
+    const pfx = isPaper ? 'p_' : 'l_';
+    const cashKey = isPaper ? 'cash_paper' : 'cash';
+
+    const { rows } = await getPool().query(
+      'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0 AND is_paper = $2', [stockCode, isPaper]);
+    const holding = rows[0];
+    if (!holding) return c.json({ error: '보유 종목을 찾을 수 없습니다' }, 404);
+
+    const qty = Number(holding.quantity);
+    const avgPrice = Number(holding.avg_price ?? 0);
+    const lastPrice = Number(holding.last_price ?? avgPrice);
+    const fillPrice = lastPrice > 0 ? lastPrice : avgPrice;
+    const proceeds = fillPrice * qty * (1 - OVERSEAS_FEE_PCT);
+    const pnlPct = avgPrice > 0 ? ((fillPrice - avgPrice) / avgPrice) * 100 : 0;
+    const exchange = String(holding.exchange ?? 'NASDAQ');
+    const reason = `강제 DB 청산 (장마감/KIS미연동): ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
+
+    const { withTransaction } = await import('../../../db/client.js');
+    await withTransaction(async (tx) => {
+      await tx.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [stockCode, exchange, isPaper]);
+      // state 정리: maxprice, partial_tp_stage, scale_in
+      await tx.query("DELETE FROM overseas_state WHERE key LIKE $1", [`${pfx}%_${stockCode}`]);
+      await tx.query("DELETE FROM overseas_state WHERE key = $1", [`maxprice_${stockCode}`]);
+      // 현금 복원
+      await tx.query(
+        `INSERT INTO overseas_state (key, value) VALUES ($1, $2::text)
+         ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $2)::text`,
+        [cashKey, proceeds]);
+      // 주문 기록
+      await tx.query(
+        `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
+         VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED',$5,'OVERSEAS',$6,$7)`,
+        [stockCode, qty, fillPrice, `FORCE_${Date.now().toString(36)}`, isPaper ? 'paper' : 'live', reason, avgPrice]);
+    });
+
+    logger.info(`🔨 강제 DB 청산: ${stockCode} ${qty}주 @$${fillPrice.toFixed(2)} (${reason})`, { component: 'DASHBOARD' });
+    invalidateCurrentModeCache();
+    return c.json({ ok: true, message: `${stockCode} ${qty}주 강제 청산 완료 ($${proceeds.toFixed(2)} 반환)` });
+  } catch (err: any) {
+    logger.error(`강제 DB 청산 예외: ${err.message}`, { component: 'DASHBOARD' });
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── 해외주식 전종목 일괄 탈출 (긴급) ──
+sellRoutes.post('/sell-overseas-all', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
+    const forceDb: boolean = !!body.force_db; // true면 KIS 안거치고 DB만 청산
+    const pfx = isPaper ? 'p_' : 'l_';
+    const cashKey = isPaper ? 'cash_paper' : 'cash';
+
+    const { rows: allHoldings } = await getPool().query(
+      'SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1', [isPaper]);
+    if (allHoldings.length === 0) return c.json({ error: '보유 종목이 없습니다' }, 404);
+
+    const results: string[] = [];
+    let totalProceeds = 0;
+
+    for (const holding of allHoldings) {
+      const code = String(holding.stock_code);
+      const qty = Number(holding.quantity);
+      const avgPrice = Number(holding.avg_price ?? 0);
+      const lastPrice = Number(holding.last_price ?? avgPrice);
+      const fillPrice = lastPrice > 0 ? lastPrice : avgPrice;
+      const exchange = String(holding.exchange ?? 'NASDAQ');
+      const proceeds = fillPrice * qty * (1 - OVERSEAS_FEE_PCT);
+      const pnlPct = avgPrice > 0 ? ((fillPrice - avgPrice) / avgPrice) * 100 : 0;
+
+      let sold = false;
+      let kisOrderNo = '';
+
+      // KIS 매도 시도 (forceDb가 아닌 경우)
+      if (!forceDb && !isPaper) {
+        try {
+          const { placeOverseasOrder } = await import('../../../kis/overseas.js');
+          const result = await placeOverseasOrder({ stockCode: code, exchange, side: 'SELL', quantity: qty, price: 0 });
+          if (result.success) {
+            kisOrderNo = result.orderNo ?? '';
+            sold = true;
+          }
+        } catch { /* KIS 실패 → DB 청산으로 폴백 */ }
+      }
+
+      // DB 청산 (paper이거나, forceDb이거나, KIS 실패한 경우)
+      const reason = sold
+        ? `긴급 일괄 청산 (KIS 체결): ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`
+        : `긴급 일괄 강제청산 (DB): ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
+
+      const { withTransaction } = await import('../../../db/client.js');
+      await withTransaction(async (tx) => {
+        await tx.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [code, exchange, isPaper]);
+        await tx.query("DELETE FROM overseas_state WHERE key LIKE $1", [`${pfx}%_${code}`]);
+        await tx.query("DELETE FROM overseas_state WHERE key = $1", [`maxprice_${code}`]);
+        await tx.query(
+          `INSERT INTO overseas_state (key, value) VALUES ($1, $2::text)
+           ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $2)::text`,
+          [cashKey, proceeds]);
+        await tx.query(
+          `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
+           VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED',$5,'OVERSEAS',$6,$7)`,
+          [code, qty, fillPrice, kisOrderNo || `FORCE_${Date.now().toString(36)}`, isPaper ? 'paper' : 'live', reason, avgPrice]);
+      });
+
+      totalProceeds += proceeds;
+      results.push(`${code} ${qty}주 @$${fillPrice.toFixed(2)} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)`);
+    }
+
+    logger.info(`🚨 전종목 긴급 청산 완료: ${allHoldings.length}종목 $${totalProceeds.toFixed(2)} 반환`, { component: 'DASHBOARD' });
+    invalidateCurrentModeCache();
+    return c.json({
+      ok: true,
+      count: allHoldings.length,
+      totalProceeds: totalProceeds.toFixed(2),
+      details: results,
+      message: `${allHoldings.length}종목 전량 청산 완료 ($${totalProceeds.toFixed(2)} 반환)`,
+    });
+  } catch (err: any) {
+    logger.error(`전종목 긴급 청산 예외: ${err.message}`, { component: 'DASHBOARD' });
+    return c.json({ error: err.message }, 500);
+  }
+});
+
 // ── Claude Code 수동 매수 (복리 동적 사이징) ──
 sellRoutes.post('/manual-buy', async (c) => {
   let body: { stock_code?: string; amount_krw?: number; ai_score?: number; reasoning?: string; is_paper?: boolean };
