@@ -564,7 +564,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     const fxNow = await fetchExchangeRate();
     try {
       const { rows: snap } = await getPool().query(
-        `SELECT total_value FROM daily_snapshots WHERE DATE(created_at) = CURRENT_DATE ORDER BY id DESC LIMIT 1`
+        `SELECT total_value FROM portfolio_snapshots WHERE snapshot_at::date = CURRENT_DATE AND is_paper = false ORDER BY snapshot_at DESC LIMIT 1`
       );
       const krPortfolioUsd = snap.length > 0 && fxNow > 0 ? Number(snap[0].total_value) / fxNow : 0;
       const grandPortfolioUsd = portfolioValue + krPortfolioUsd;
