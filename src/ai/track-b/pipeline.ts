@@ -14,6 +14,7 @@ import {
 } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { getAccountBalance } from '../../kis/account.js';
+import { getPaperBalance } from '../../risk/paper-balance.js';
 import { getBatchPrices, getDailyChart, isMarketOpen, getChangeRankingStocks, getOrderbook } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { buildDefenseParkExitDecisions, getDefenseParkState, PARK_STOCK_CODE } from './defense-park.js';
@@ -103,7 +104,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     if (todayRepeatStopCodes.size > 0) {
       logger.warn(`🚫 당일 반복손절 재진입 차단: ${[...todayRepeatStopCodes].join(', ')}`, { component: 'TRACK_B' });
     }
-    const balanceRaw = await getAccountBalance();
+    const balanceRaw = config.isPaper ? await getPaperBalance() : await getAccountBalance();
     const balance = balanceRaw as any;
 
     if (watchlist.length === 0) {
