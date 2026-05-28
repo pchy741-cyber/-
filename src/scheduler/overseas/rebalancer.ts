@@ -75,6 +75,12 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
             rbLines.push(`  매도 *${p.code}* ${trimQty}주 @$${p.price.toFixed(2)} → $${trimAmt.toFixed(0)}(₩${(trimAmt * usdKrw / 10000).toFixed(1)}만)`);
             rbLines.push(`  → 비중 ${p.weight.toFixed(1)}% → ~${(p.weight - adjustPct).toFixed(1)}%`);
           } else {
+            // 수수료(왕복 ~0.7%) 커버 불가 시 리밸런싱 매도 금지
+            const minPnlPct = OVERSEAS_FEE_PCT * 2 * 100 + 0.5; // ~1.2%
+            if (p.pnl < minPnlPct) {
+              rebalanceAlerts.push(`📊 리밸런싱 스킵 ${p.code}: PnL ${p.pnl.toFixed(1)}% < 최소 ${minPnlPct.toFixed(1)}% (수수료 미달)`);
+              continue;
+            }
             const exec = await executeOverseasOrder(p.code, 'SELL', trimQty, p.price, p.exchange, `리밸런싱: 비중 ${p.weight.toFixed(1)}% → ${(p.weight - adjustPct).toFixed(1)}%`, p.qty, p.avgPrice, { isPaper });
             if (exec.submitted && exec.filledQty > 0) {
               const proceeds = exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
