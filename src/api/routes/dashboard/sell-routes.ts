@@ -617,7 +617,7 @@ sellRoutes.post('/manual-buy', async (c) => {
 
     // 중복 OPEN 체인 방지
     const dupCheck = await getPool().query(
-      `SELECT id FROM chains WHERE stock_code = $1 AND is_paper = $2 AND status = 'OPEN' LIMIT 1`,
+      `SELECT id FROM transaction_chains WHERE stock_code = $1 AND is_paper = $2 AND status = 'OPEN' LIMIT 1`,
       [stock_code, isPaper],
     );
     if (dupCheck.rows.length > 0) {
