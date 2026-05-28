@@ -155,7 +155,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     if (!isPaper()) {
       await syncPendingOverseasOrders();
       await syncHoldingsFromKIS();    // is_paper=NULL 정리 + 수동매매 반영
-      await reconcileCashWithKIS();   // KIS 실잔고 → DB 현금 동기화
+      // reconcileCashWithKIS는 아래 시장 시간 확인 후 실행 (한국장 오염 방지)
     }
 
     // ── 시장 시간 필터 ──
@@ -164,6 +164,14 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     if (openRegions.size === 0) {
       logger.info('🌏 모든 해외 시장 마감 — 스킵', { component: 'OVERSEAS' });
       return;
+    }
+
+    // ── 현금 동기화 (해외 시장 열린 시간에만 — 한국장 통합증거금 오염 방지) ──
+    // KIS psamount API는 통합증거금 전체를 반환. 한국장 개장 중에는 국내 매매용 현금까지
+    // 해외 가용금액에 포함되어 overseas_state['cash']가 과도하게 설정됨.
+    // 해외 시장이 열려 있을 때(미국장 = KST 23:30~06:00)는 한국장이 닫혀 있어 오염 없음.
+    if (!isPaper()) {
+      await reconcileCashWithKIS();
     }
     const allActiveStocks = GLOBAL_WATCHLIST.filter(stock =>
       openRegions.has(stock.region) || (isUSExtended && stock.region === 'US'));
