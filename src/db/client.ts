@@ -1,5 +1,6 @@
 import pg from 'pg';
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { logger } from '../utils/logger.js';
 import {
   memCreateChain,
@@ -227,7 +228,7 @@ export async function withTransaction<T>(fn: (client: pg.PoolClient) => Promise<
 
 export async function getOpenChains(isPaperOverride?: boolean): Promise<TransactionChain[]> {
   if (useMemory) return memGetOpenChains();
-  const isPaper = isPaperOverride ?? config.isPaper;
+  const isPaper = isPaperOverride ?? getCtxIsPaper();
   const { rows } = await getPool().query(
     `SELECT tc.*, w.stock_name, tc.peak_price_since_open,
        (SELECT trigger_source FROM orders WHERE chain_id = tc.id AND side = 'BUY' ORDER BY created_at ASC LIMIT 1) AS trigger_source
@@ -262,7 +263,7 @@ export async function createChain(
       chain.stop_loss_pct,
       chain.max_averaging_count,
       chain.current_averaging_count,
-      chain.is_paper ?? config.isPaper,
+      chain.is_paper ?? getCtxIsPaper(),
     ],
   );
   return rows[0].id;
@@ -393,7 +394,7 @@ export async function insertSnapshot(snapshot: {
 
 export async function getTodayStartSnapshot(isPaperOverride?: boolean) {
   if (useMemory) return memGetTodayStartSnapshot();
-  const isPaper = isPaperOverride ?? config.isPaper;
+  const isPaper = isPaperOverride ?? getCtxIsPaper();
   const today = new Date().toISOString().split('T')[0];
   const { rows } = await getPool().query(
     `SELECT * FROM portfolio_snapshots WHERE snapshot_at >= $1 AND is_paper = $2
@@ -410,7 +411,7 @@ export async function getActiveStrategy(): Promise<StrategyConfig | null> {
   const { rows } = await getPool().query(
     `SELECT * FROM strategy_config WHERE is_active = true AND is_paper = $1
      ORDER BY updated_at DESC LIMIT 1`,
-    [config.isPaper],
+    [getCtxIsPaper()],
   );
   return rows[0] ?? null;
 }

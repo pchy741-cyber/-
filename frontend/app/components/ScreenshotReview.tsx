@@ -153,13 +153,9 @@ export default function ScreenshotReview(props: Props) {
     return () => clearInterval(iv);
   }, [props.loopStatus]);
 
-  // KST 시간 기반 국내/해외 장 구분
-  const kstHour = new Date().getUTCHours() + 9 >= 24
-    ? new Date().getUTCHours() + 9 - 24
-    : new Date().getUTCHours() + 9;
-  const isKrMarket = kstHour >= 9 && kstHour < 16; // 09:00~15:59 KST = 국내장
-  const loopLabel = isKrMarket ? 'KR' : 'US';
-  const loopName = isKrMarket ? '국내 눌림매매 루프' : '해외 자동매매 루프';
+  // Auto Pilot 루프는 항상 해외주식(overseas-job)만 실행
+  const loopLabel = 'US';
+  const loopName = '해외 자동매매 루프';
 
   const toggleLoop = useCallback(async () => {
     if (togglingLoop) return;
@@ -193,7 +189,7 @@ export default function ScreenshotReview(props: Props) {
     const originalMode = viewMode;
     const otherMode = viewMode === 'live' ? 'paper' : 'live';
     const screenshots: { tab: string; base64: string }[] = [];
-    const totalSteps = TAB_LIST.length + DUAL_MODE_TABS.length + 2; // +1 trade, +1 copilot
+    const totalSteps = TAB_LIST.length + DUAL_MODE_TABS.length + 1; // +1 copilot
     setTotal(totalSteps);
 
     try {
@@ -229,18 +225,12 @@ export default function ScreenshotReview(props: Props) {
       setTab(originalTab);
       await new Promise((r) => setTimeout(r, 500));
 
-      // Phase 2.5: 해외주식 AI 매매 실행
-      setStep(totalSteps - 1);
-      setProgress('🚀 해외주식 AI 매매 실행');
-      await api('/run-overseas', { method: 'POST' }).catch(() => {});
-      await new Promise((r) => setTimeout(r, 3000));
-
       // Phase 3: 서버 업로드 + Copilot 진단
       setStep(totalSteps);
       setProgress('AI Copilot 분석');
       const [, copilotRes] = await Promise.all([
         api('/review/capture', { method: 'POST', body: JSON.stringify({ screenshots }) }),
-        api('/review/copilot').catch(() => null),
+        api(`/review/copilot?viewMode=${viewMode}`).catch(() => null),
       ]);
 
       capturedScreenshots.current = screenshots;
