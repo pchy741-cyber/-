@@ -99,7 +99,15 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     const effectiveTrailDropPct = dynamicTrailDrop - vixRegime.trailTighten;
     const trailActivatePct = isHighBeta ? 10.0 : isMediumBeta ? 8.0 : 5.0;
 
-    const hardTpPct = isHighBeta ? 20.0 : 15.0;
+    // 동적 TP: 모멘텀 강도에 따라 상한선을 늘려 수익 극대화
+    const baseTp = isHighBeta ? 25.0 : isMediumBeta ? 20.0 : isDefense ? 18.0 : 20.0;
+    const adxVal = tech.adx ?? 20;
+    const rsiVal = tech.rsi ?? 50;
+    const momentumExt = adxVal >= 35 && rsiVal >= 45 && rsiVal <= 68 ? 10.0
+                      : adxVal >= 28 && rsiVal >= 45 && rsiVal <= 70 ? 5.0
+                      : 0;
+    const overboughtCut = rsiVal > 75 ? -5.0 : 0;
+    const hardTpPct = Math.max(isHighBeta ? 20.0 : 15.0, baseTp + momentumExt + overboughtCut);
     const minAiSellConf = isHighBeta ? 0.82 : 0.78;
     const minHoldForSell = isHighBeta ? 3 : 2;
     const holdingDays = (Date.now() - new Date(holding.boughtAt).getTime()) / (1000 * 60 * 60 * 24);
@@ -172,7 +180,9 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
 
 /** 승자 라이딩 — 강한 종목은 익절 지연 (트레일링만 적용) */
 function isWinnerRiding(tech: TechResult, holdingDays: number): boolean {
-  if (holdingDays < 2) return false;
+  // ADX 40+ 초강세 → 보유기간 무관 즉시 라이딩 허용
+  if (tech.adx >= 40 && tech.rsi >= 45 && tech.rsi <= 68) return true;
+  if (holdingDays < 1) return false;
   // ADX 30+ & RSI 50~70 유지 → 강한 추세 지속
   if (tech.adx >= 30 && tech.rsi >= 50 && tech.rsi <= 70) return true;
   // MA20 상방 + 모멘텀 → 상승 지속

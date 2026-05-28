@@ -302,14 +302,14 @@ export function getPartialTpStages(sector: string): PartialTpStage[] {
 
   if (isHighBeta) {
     return [
-      { stage: 1, triggerPct: 8.0, sellRatio: 0.25 },   // +8%에서 25%
-      { stage: 2, triggerPct: 15.0, sellRatio: 0.25 },  // +15%에서 25% 추가
+      { stage: 1, triggerPct: 10.0, sellRatio: 0.25 },  // +10%에서 25%
+      { stage: 2, triggerPct: 20.0, sellRatio: 0.25 },  // +20%에서 25% 추가
       // 잔여 50%는 트레일링 스톱으로 관리
     ];
   }
   return [
-    { stage: 1, triggerPct: 6.0, sellRatio: 0.25 },    // +6%에서 25%
-    { stage: 2, triggerPct: 12.0, sellRatio: 0.25 },   // +12%에서 25% 추가
+    { stage: 1, triggerPct: 8.0, sellRatio: 0.25 },    // +8%에서 25%  (기존 6% → 더 오래 홀딩)
+    { stage: 2, triggerPct: 16.0, sellRatio: 0.25 },   // +16%에서 25% (기존 12% → 수익 극대화)
     // 잔여 50%는 트레일링 스톱으로 관리
   ];
 }

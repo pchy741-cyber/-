@@ -76,27 +76,27 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
       {/* 항상 보이는 영역 */}
       <div className="px-4 pb-4 space-y-3">
         {/* 자금 흐름 시각화 — 3칸 */}
-        <div className="grid grid-cols-3 gap-2">
-          <div className={`rounded-xl px-3 py-2.5 ${krActualPct >= 0 ? 'bg-blue-950/40 border border-blue-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>
+        <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
+          <div className={`rounded-xl px-2 sm:px-3 py-2.5 ${krActualPct >= 0 ? 'bg-blue-950/40 border border-blue-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>
             <div className="text-[9px] text-slate-500 mb-0.5">🇰🇷 한국주식</div>
-            <div className="text-sm font-bold tabular-nums text-blue-300">{fmtWon(domesticInvested)}</div>
+            <div className="text-sm font-bold tabular-nums text-blue-300 truncate">{fmtWon(domesticInvested)}</div>
             <div className="flex items-center justify-between mt-1">
               <span className="text-[9px] text-slate-600">{totalValue > 0 ? ((domesticInvested / totalValue) * 100).toFixed(0) : 0}%</span>
               <span className={`text-[9px] font-medium ${krActualPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{krActualPct > 0 ? '+' : ''}{krActualPct.toFixed(1)}%</span>
             </div>
             <div className="text-[8px] text-slate-600 mt-0.5">{chains.length}종목</div>
           </div>
-          <div className="rounded-xl px-3 py-2.5 bg-slate-800/40 border border-white/[0.06]">
+          <div className="rounded-xl px-2 sm:px-3 py-2.5 bg-slate-800/40 border border-white/[0.06]">
             <div className="text-[9px] text-slate-500 mb-0.5">주문가능</div>
-            <div className="text-sm font-bold tabular-nums text-slate-200">{fmtWon(domesticCash)}</div>
+            <div className="text-sm font-bold tabular-nums text-slate-200 truncate">{fmtWon(domesticCash)}</div>
             <div className="flex items-center justify-between mt-1">
               <span className="text-[9px] text-slate-600">{totalValue > 0 ? ((domesticCash / totalValue) * 100).toFixed(0) : 0}%</span>
             </div>
             <div className="text-[8px] text-slate-600 mt-0.5">통합증거금</div>
           </div>
-          <div className={`rounded-xl px-3 py-2.5 ${usActualPct >= 0 ? 'bg-indigo-950/40 border border-indigo-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>
+          <div className={`rounded-xl px-2 sm:px-3 py-2.5 ${usActualPct >= 0 ? 'bg-indigo-950/40 border border-indigo-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>
             <div className="text-[9px] text-slate-500 mb-0.5">🇺🇸 미국주식</div>
-            <div className="text-sm font-bold tabular-nums text-indigo-300">{fmtUsd(overseasInvestedUsd)}</div>
+            <div className="text-sm font-bold tabular-nums text-indigo-300 truncate">{fmtUsd(overseasInvestedUsd)}</div>
             <div className="flex items-center justify-between mt-1">
               <span className="text-[9px] text-slate-600">{totalValue > 0 ? ((overseasMarketKrw / totalValue) * 100).toFixed(0) : 0}%</span>
               <span className={`text-[9px] font-medium ${usActualPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{usActualPct > 0 ? '+' : ''}{usActualPct.toFixed(1)}%</span>

@@ -85,7 +85,7 @@ export default function HeroPnlCard({
           )}
         </div>
         {(krTabHasData || usTodaySells.length > 0) && (
-          <div className="text-right shrink-0 border-l border-white/[0.06] pl-4">
+          <div className="text-right border-l border-white/[0.06] pl-3 min-w-0">
             <div className="text-[10px] text-slate-500 mb-0.5">오늘 실현</div>
             <div className={`text-xl font-black tabular-nums ${pc(showOnlyUs ? usTabPnlUsd : todayRealizedPnl)}`}>
               {privacyMode ? '••••' : showOnlyUs
@@ -96,17 +96,17 @@ export default function HeroPnlCard({
         )}
       </div>
       {/* 미니 스탯 3개 — 통합증거금: 탭 무관 통합 표시 */}
-      <div className="grid grid-cols-3 gap-2">
-        <div className="bg-white/[0.04] rounded-xl px-3 py-2">
+      <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
+        <div className="bg-white/[0.04] rounded-xl px-2 sm:px-3 py-2">
           <div className="text-[9px] text-slate-500 mb-0.5">주문가능</div>
           <div className="text-sm font-bold text-slate-200 tabular-nums truncate">{mask(fmtWon(domesticCash))}</div>
           {fxRate > 0 && <div className="text-[8px] text-slate-600 mt-0.5">${mask(String(Math.round(domesticCash / fxRate)))}</div>}
         </div>
-        <div className="bg-white/[0.04] rounded-xl px-3 py-2">
+        <div className="bg-white/[0.04] rounded-xl px-2 sm:px-3 py-2">
           <div className="text-[9px] text-slate-500 mb-0.5">투자비중</div>
           <div className={`text-sm font-bold tabular-nums ${investedPct > 60 ? 'text-amber-400' : 'text-blue-400'}`}>{investedPct}% <span className="text-[9px] text-slate-600">({totalHoldings}종목)</span></div>
         </div>
-        <div className="bg-white/[0.04] rounded-xl px-3 py-2">
+        <div className="bg-white/[0.04] rounded-xl px-2 sm:px-3 py-2">
           <div className="text-[9px] text-slate-500 mb-0.5">{withdrawConfig?.totalReserved > 0 ? '인출예약' : '오늘매매'}</div>
           {withdrawConfig?.totalReserved > 0 ? (
             <div className="text-sm font-bold text-amber-400 truncate">{mask(fmtWon(withdrawConfig.totalReserved))}</div>

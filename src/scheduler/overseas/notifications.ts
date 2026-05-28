@@ -104,7 +104,7 @@ export async function sendHoldingAlerts(ctx: {
     const profitKrw = profitUsd * usdKrwSell;
 
     if (pnl >= 5.0) {
-      const sellQty = pnl >= 15 ? h.qty : Math.max(1, Math.ceil(h.qty * 0.5));
+      const sellQty = pnl >= 20 ? h.qty : Math.max(1, Math.ceil(h.qty * 0.5));
       const sellAmt = sellQty * tech.price.currentPrice;
       await sendTelegramMessage([
         `🌙💰 *장외 익절 추천!*`,

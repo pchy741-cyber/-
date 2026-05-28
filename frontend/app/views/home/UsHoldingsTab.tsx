@@ -108,7 +108,7 @@ export default function UsHoldingsTab({
                 {displayPrice > 0 && (
                   <div className="space-y-1">
                     <div className="flex items-center gap-1.5 text-[10px]">
-                      <span className="text-rose-400 font-medium w-[52px] text-right">{effectiveSl.toFixed(1)}%</span>
+                      <span className="text-rose-400 font-medium tabular-nums text-right">{effectiveSl.toFixed(1)}%</span>
                       <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden relative">
                         <div className="absolute inset-0 flex">
                           <div className="h-full bg-gradient-to-r from-rose-500/40 to-slate-600/20" style={{ width: '100%' }} />
@@ -141,7 +141,7 @@ export default function UsHoldingsTab({
                           />
                         )}
                       </div>
-                      <span className="text-emerald-400 font-medium w-[52px]">+{effectiveTp.toFixed(1)}%</span>
+                      <span className="text-emerald-400 font-medium tabular-nums">+{effectiveTp.toFixed(1)}%</span>
                     </div>
                     <div className="flex justify-between text-[10px] text-slate-600 px-1">
                       <span>{trailActive
