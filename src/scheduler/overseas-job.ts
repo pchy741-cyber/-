@@ -158,22 +158,18 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       await reconcileCashWithKIS();   // KIS 실잔고 → DB 현금 동기화
     }
 
-    // ── 시장 시간 필터 (Paper 모드: 장외에서도 매매 허용) ──
+    // ── 시장 시간 필터 ──
     const openRegions = getOpenMarketRegions();
     const isUSExtended = openRegions.has('US_EXTENDED') && !openRegions.has('US');
-    if (openRegions.size === 0 && !isPaper()) {
+    if (openRegions.size === 0) {
       logger.info('🌏 모든 해외 시장 마감 — 스킵', { component: 'OVERSEAS' });
       return;
     }
-    // Paper 장외: 전 종목 대상 (US 기준), 시세는 DB 캐시/마지막 가격 사용
-    const paperOffHours = isPaper() && openRegions.size === 0;
-    const allActiveStocks = paperOffHours
-      ? GLOBAL_WATCHLIST
-      : GLOBAL_WATCHLIST.filter(stock =>
-          openRegions.has(stock.region) || (isUSExtended && stock.region === 'US'));
-    const isUSSession = openRegions.has('US') || isUSExtended || paperOffHours;
+    const allActiveStocks = GLOBAL_WATCHLIST.filter(stock =>
+      openRegions.has(stock.region) || (isUSExtended && stock.region === 'US'));
+    const isUSSession = openRegions.has('US') || isUSExtended;
     const isAsiaSession = openRegions.has('JP') || openRegions.has('TW');
-    const regionFlags = paperOffHours ? '📝' : isUSExtended ? '🌙' : openRegions.has('US') ? '🇺🇸' : '🌏';
+    const regionFlags = isUSExtended ? '🌙' : openRegions.has('US') ? '🇺🇸' : '🌏';
 
     const holdings = await getHoldings(isPaper());
     const pendingOrderStocks = await getPendingOverseasStocks(isPaper());
