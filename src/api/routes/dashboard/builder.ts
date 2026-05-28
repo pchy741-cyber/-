@@ -53,7 +53,13 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     ? { totalDeposit: 10000000, totalEvalAmount: 0, orderableCash: 10000000, totalProfitLoss: 0, totalProfitLossPct: 0, netAsset: 10000000, purchaseCost: 0, positions: [] }
     : { totalDeposit: 0, totalEvalAmount: 0, orderableCash: 0, totalProfitLoss: 0, totalProfitLossPct: 0, netAsset: 0, purchaseCost: 0, positions: [] };
 
-  const balanceFn = viewIsPaper ? getPaperBalance : () => getAccountBalance(true);
+  const withTimeout = <T>(p: Promise<T>, ms: number, fallback: T): Promise<T> =>
+    Promise.race([p, new Promise<T>(res => setTimeout(() => res(fallback), ms))]);
+
+  const balanceFn = viewIsPaper
+    ? () => withTimeout(getPaperBalance(), 8000, defaultBalance as any)
+    : () => withTimeout(getAccountBalance(true), 8000, defaultBalance as any);
+
   const [balanceResult, chains, strategy, insightRows, defensePark] = await Promise.all([
     balanceFn().catch(() => defaultBalance),
     getOpenChains(viewIsPaper).catch(() => []),
@@ -73,7 +79,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   const scores = await getScoresWithFallback(stockCodes);
 
   // chains + scores에 현재가 매칭 — KIS API 우선 (신선한 가격), 실패 시 캐시 폴백
-  const posMap = new Map((balance.positions ?? []).map((p: any) => [p.stockCode, p]));
+  const posMap = new Map<string, any>((balance.positions ?? []).map((p: any) => [p.stockCode, p]));
   const chainCodes = [...new Set(chains.map((ch: any) => ch.stock_code))];
   const scoreCodes = scores.map((s: any) => s.stock_code as string).filter(Boolean);
   const allWatchCodes = [...new Set([...chainCodes, ...scoreCodes])];
@@ -112,7 +118,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   // 병렬 배치 조회 (체인+이름보정 위주 — 대폭 축소)
   if (codesToFetch.length > 0) {
     try {
-      const batchResult = await getBatchPrices(codesToFetch);
+      const batchResult = await withTimeout(getBatchPrices(codesToFetch), 10000, new Map());
       for (const [code, quote] of batchResult) {
         if (quote.currentPrice > 0) priceMap.set(code, quote.currentPrice);
         if (quote.stockName && quote.stockName !== code) nameMap.set(code, quote.stockName);
@@ -257,10 +263,10 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     const isPaperQuery = viewIsPaper;
     const osCashKey = viewIsPaper ? 'cash_paper' : 'cash';
     const pfx = viewIsPaper ? 'p_' : 'l_';
-    const { rows: osRows } = await getPool().query(
-      'SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1', [isPaperQuery]);
-    const { rows: osCashRows } = await getPool().query(
-      "SELECT value FROM overseas_state WHERE key = $1", [osCashKey]);
+    const [{ rows: osRows }, { rows: osCashRows }] = await Promise.all([
+      getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1', [isPaperQuery]),
+      getPool().query('SELECT value FROM overseas_state WHERE key = $1', [osCashKey]),
+    ]);
     overseasCash = osCashRows.length > 0 ? Number(osCashRows[0].value) : (viewIsPaper ? 10000 : 0);
 
     // 종목별 고점/부분익절단계 일괄 조회

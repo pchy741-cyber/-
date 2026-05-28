@@ -30,9 +30,19 @@ dashboardRoutes.get('/dashboard', async (c) => {
     }
     return c.json(cached.data);
   }
-  const payload = await getOrBuildDashPayload(viewIsPaper);
-  setDashCache(cacheKey, payload);
-  return c.json(payload);
+  const timeoutMs = 15_000;
+  const timeoutPromise = new Promise<never>((_, rej) =>
+    setTimeout(() => rej(new Error('dashboard timeout')), timeoutMs));
+  try {
+    const payload = await Promise.race([getOrBuildDashPayload(viewIsPaper), timeoutPromise]);
+    setDashCache(cacheKey, payload);
+    return c.json(payload);
+  } catch (e: any) {
+    if (e.message === 'dashboard timeout') {
+      return c.json({ error: 'timeout', message: '대시보드 로딩 시간 초과 — 잠시 후 재시도' }, 503);
+    }
+    throw e;
+  }
 });
 
 // 서브 라우터 마운트
