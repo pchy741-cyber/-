@@ -446,9 +446,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         const totalAdj = adj + capAdj + stale + kospiPenaltyAdj + macroAdj + dartAdj + megaCapAdj;
         const boundedAdj = totalAdj < 0 ? Math.max(totalAdj, -20) : totalAdj;
         const rawScore = Math.min(100, Math.max(0, base + boundedAdj));
-        // 80점 초과 구간 압축 → 분포 개선 (80~100 → 80~92)
-        const compressed = rawScore <= 80 ? rawScore : 80 + (rawScore - 80) * 0.6;
-        return { stock_code: s.stock_code, score: Math.round(compressed) };
+        return { stock_code: s.stock_code, score: Math.round(rawScore) };
       });
 
     // 적응형 파라미터: DB 명시 설정 > 시장 최적화 자동값 > STRATEGY_PARAMS 기본값
