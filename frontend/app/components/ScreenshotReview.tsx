@@ -480,9 +480,9 @@ export default function ScreenshotReview(props: Props) {
               {/* ── 리스크 섹션 ── */}
               {activeSection === 'risk' && (
                 <div className="space-y-3">
-                  {copilot.risk.length === 0 ? (
+                  {(copilot?.risk ?? []).length === 0 ? (
                     <div className="text-center text-slate-500 text-xs py-6">데이터 수집 중...</div>
-                  ) : copilot.risk.map((item, i) => (
+                  ) : (copilot?.risk ?? []).map((item, i) => (
                     <RiskGauge key={i} item={item} />
                   ))}
                 </div>
@@ -491,9 +491,9 @@ export default function ScreenshotReview(props: Props) {
               {/* ── 액션 섹션 ── */}
               {activeSection === 'actions' && (
                 <div className="space-y-2">
-                  {copilot.actions.length === 0 ? (
+                  {(copilot?.actions ?? []).length === 0 ? (
                     <div className="text-center text-emerald-400/60 text-xs py-6">이상 없음 — 현재 포트폴리오 정상</div>
-                  ) : copilot.actions.map((action, i) => {
+                  ) : (copilot?.actions ?? []).map((action, i) => {
                     const colors = {
                       cut_loss: { bg: 'bg-red-950/40', border: 'border-red-500/20', text: 'text-red-300', icon: 'bg-red-600/30 text-red-300' },
                       take_profit: { bg: 'bg-emerald-950/30', border: 'border-emerald-500/20', text: 'text-emerald-300', icon: 'bg-emerald-600/30 text-emerald-300' },
