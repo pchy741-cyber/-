@@ -425,8 +425,8 @@ export default function ScreenshotReview(props: Props) {
             <div className="flex border-b border-white/5 shrink-0">
               {([
                 { key: 'integrity' as const, label: '정합성', icon: 'S', count: (copilot?.integrity.filter(i => i.status !== 'ok').length ?? 0) + (xray?.summary.danger ?? 0) + (xray?.summary.warn ?? 0) },
-                { key: 'risk' as const, label: '리스크', icon: 'R', count: copilot.risk.filter(r => r.level !== 'ok').length },
-                { key: 'actions' as const, label: '액션', icon: 'A', count: copilot.actions.length },
+                { key: 'risk' as const, label: '리스크', icon: 'R', count: copilot?.risk.filter(r => r.level !== 'ok').length ?? 0 },
+                { key: 'actions' as const, label: '액션', icon: 'A', count: copilot?.actions.length ?? 0 },
               ]).map(tab => (
                 <button
                   key={tab.key}
