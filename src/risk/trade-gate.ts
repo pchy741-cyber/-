@@ -590,11 +590,6 @@ async function getConsecutiveLosses(): Promise<number> {
 }
 
 export async function cooldownGate(): Promise<GateResult> {
-  // 모의투자: 쿨다운 없음 — 가짜 돈으로 전략 검증 중, 학습 기회 차단 불필요
-  if (config.isPaper) {
-    return { passed: true, reason: '모의투자 — 쿨다운 스킵' };
-  }
-
   const consecutive = await getConsecutiveLosses();
 
   // 3연패: 45분 쿨다운 (시장이 이미 불리한 상황 — 잠시 멈춤)

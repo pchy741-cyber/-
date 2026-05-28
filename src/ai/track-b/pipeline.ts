@@ -584,13 +584,13 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       if (!liveP || !chain.avg_buy_price) continue;
       const pnlPct = ((liveP.currentPrice - Number(chain.avg_buy_price)) / Number(chain.avg_buy_price)) * 100;
       const aiScore = aiScoreMapForExit.get(chain.stock_code) ?? null;
-      if (pnlPct < -1.0 && aiScore !== null && aiScore < 45) {
+      if (pnlPct < -2.0 && aiScore !== null && aiScore < 38) {
         const alreadyExiting = decisions.some(
           (d) => d.stock_code === chain.stock_code && ['SELL', 'FORCE_CLOSE', 'PARTIAL_SELL'].includes(d.action),
         );
         if (!alreadyExiting) {
           logger.info(
-            `🤖 AI 손실청산: ${chain.stock_code} 손실=${pnlPct.toFixed(1)}% AI=${aiScore}점(<45) → FORCE_CLOSE`,
+            `🤖 AI 손실청산: ${chain.stock_code} 손실=${pnlPct.toFixed(1)}% AI=${aiScore}점(<38) → FORCE_CLOSE`,
             { component: 'TRACK_B' },
           );
           decisions.push({

@@ -176,13 +176,13 @@ export async function technicalFallbackDecisions(params: {
       if (realtimeAiScore >= 85) {
         // AI 강세 지속 → 수익 극대화, TP 상향 (승자를 더 오래 보유)
         effectiveTp = Math.max(Number(chainTp), 8.0);
-      } else if (realtimeAiScore < 65) {
+      } else if (realtimeAiScore < 55) {
         if (pnlPct > 1.0) {
           // AI 약세 전환 + 수익 구간 → 빠른 수익 확정 (TP를 현재 수익 -0.5%로 낮춤)
           effectiveTp = Math.min(Number(chainTp), Math.max(pnlPct - 0.5, 1.0));
         } else {
-          // AI 약세 전환 + 손실 구간 → SL 타이트 (-1.5%)
-          effectiveSl = Math.max(Number(chainSl), -1.5);
+          // AI 강한 약세 전환 + 손실 구간 → SL 타이트 (-2.0%)
+          effectiveSl = Math.max(Number(chainSl), -2.0);
         }
       }
     }
