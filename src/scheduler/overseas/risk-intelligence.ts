@@ -591,6 +591,81 @@ export async function extractTradingPatterns(): Promise<TradingPattern[]> {
   return patterns;
 }
 
+// ══════════════════════════════════════════════════════════════
+// 10. 동적 TP/SL (AI 확신도 × VIX 레짐 × 모멘텀 통합)
+// ══════════════════════════════════════════════════════════════
+export interface DynamicTpSlResult {
+  tpPct: number;   // take profit % (예: 27.5)
+  slPct: number;   // stop loss % 절댓값 (예: 5.0 → -5%)
+  tpLabel: string; // 계산 근거 레이블 (로그용)
+}
+
+/**
+ * 동적 TP/SL 계산 — 섹터 × 모멘텀 × AI 확신도 × VIX 레짐
+ * - 고확신 + 강추세 + 저변동성 → TP 최대 45%까지 확대
+ * - AI 매도 신호 + 고VIX → TP 축소, 조기 수익 확보
+ */
+export function calcDynamicTpSl(params: {
+  sector: string;
+  adx: number;
+  rsi: number;
+  aiConfidence?: number;
+  aiAction?: string;
+  vixRegime: RegimeAdjustment;
+  isMomentum?: boolean;
+}): DynamicTpSlResult {
+  const { sector, adx, rsi, aiConfidence = 0.5, aiAction = 'HOLD', vixRegime, isMomentum = false } = params;
+
+  const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
+  const isMediumBeta = SECTOR_CLASS.MEDIUM_BETA.includes(sector);
+  const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
+
+  // 섹터별 기본 TP/SL
+  const baseTp = isHighBeta ? 25.0 : isMediumBeta ? 20.0 : isDefense ? 18.0 : 20.0;
+  const baseSl = isHighBeta ? 8.0 : isMediumBeta ? 5.0 : isDefense ? 4.0 : 5.0;
+
+  // ADX + RSI 모멘텀 연장
+  const momentumExt = adx >= 35 && rsi >= 45 && rsi <= 68 ? 10.0
+                    : adx >= 28 && rsi >= 45 && rsi <= 70 ? 5.0
+                    : isMomentum ? 3.0 : 0;
+
+  // 과매수 TP 축소
+  const overboughtCut = rsi > 78 ? -8.0 : rsi > 75 ? -5.0 : 0;
+
+  // AI 확신도 TP 보정
+  const aiTpBonus = aiAction === 'BUY' && aiConfidence >= 0.85 ? 5.0
+                  : aiAction === 'BUY' && aiConfidence >= 0.75 ? 2.5
+                  : aiAction === 'HOLD' && aiConfidence >= 0.80 ? 1.0
+                  : aiAction === 'SELL' ? -5.0   // AI 매도 신호 → TP 목표 축소
+                  : 0;
+
+  // VIX 레짐 TP 조정
+  const vixTpAdj = vixRegime.regime === 'CRISIS' ? -7.0   // 위기 → 빨리 수익 확보
+                 : vixRegime.regime === 'STRESS' ? -3.0
+                 : vixRegime.regime === 'CALM' ? 3.0       // 안정 → 수익 극대화
+                 : 0;
+
+  // AI 매도 신호 시 SL 타이트닝 (손실 최소화)
+  const aiSlAdj = aiAction === 'SELL' && aiConfidence >= 0.80 ? -1.0 : 0;
+
+  const tpPct = Math.max(
+    isHighBeta ? 20.0 : 15.0,
+    baseTp + momentumExt + overboughtCut + aiTpBonus + vixTpAdj,
+  );
+  const slPct = Math.max(
+    isHighBeta ? 5.0 : 2.5,
+    baseSl + aiSlAdj,
+  );
+
+  const parts: string[] = [`base${baseTp}`];
+  if (momentumExt) parts.push(`mom${momentumExt > 0 ? '+' : ''}${momentumExt}`);
+  if (overboughtCut) parts.push(`rsi${overboughtCut}`);
+  if (aiTpBonus) parts.push(`AI${aiTpBonus > 0 ? '+' : ''}${aiTpBonus}`);
+  if (vixTpAdj) parts.push(`VIX${vixTpAdj > 0 ? '+' : ''}${vixTpAdj}`);
+
+  return { tpPct, slPct, tpLabel: parts.join('/') };
+}
+
 /** Memory Agent: 저승률 종목 차단 Set 반환 (승률 25% 이하, 4건 이상) */
 export async function getMemoryBlockedStocks(): Promise<Set<string>> {
   try {

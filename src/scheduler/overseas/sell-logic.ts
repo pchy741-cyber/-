@@ -13,7 +13,7 @@ import {
   updateTradeState, getMaxPrice, setMaxPrice, clearMaxPrice,
 } from './state.js';
 import {
-  calcDynamicTrailDrop, type RegimeAdjustment,
+  calcDynamicTrailDrop, calcDynamicTpSl, type RegimeAdjustment,
   getPartialTpStages, getPartialTpStageNum, setPartialTpStageNum, clearPartialTpStageNum,
 } from './risk-intelligence.js';
 import { executeOverseasOrder } from './executor.js';
@@ -94,20 +94,20 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
 
     // ATR 동적 트레일링 스톱 + VIX 레짐 타이트닝
     const atrPctValue = tech.atrPct ?? 2.0;
-    const stopLossPct = isHighBeta ? -8.0 : isMediumBeta ? -5.0 : isDefense ? -4.0 : -5.0;
+    // 동적 TP/SL: AI 확신도 × VIX 레짐 × ADX/RSI 모멘텀 통합
+    const { tpPct: hardTpPct, slPct: dynamicSlBase } = calcDynamicTpSl({
+      sector,
+      adx: tech.adx ?? 20,
+      rsi: tech.rsi ?? 50,
+      aiConfidence: ai?.confidence,
+      aiAction: ai?.action,
+      vixRegime,
+      isMomentum: tech.isMomentum,
+    });
+    const stopLossPct = -dynamicSlBase;
     const dynamicTrailDrop = calcDynamicTrailDrop({ sector, atrPct: atrPctValue, maxPnlPct, adx: tech.adx, rsi: tech.rsi });
     const effectiveTrailDropPct = dynamicTrailDrop - vixRegime.trailTighten;
     const trailActivatePct = isHighBeta ? 10.0 : isMediumBeta ? 8.0 : 5.0;
-
-    // 동적 TP: 모멘텀 강도에 따라 상한선을 늘려 수익 극대화
-    const baseTp = isHighBeta ? 25.0 : isMediumBeta ? 20.0 : isDefense ? 18.0 : 20.0;
-    const adxVal = tech.adx ?? 20;
-    const rsiVal = tech.rsi ?? 50;
-    const momentumExt = adxVal >= 35 && rsiVal >= 45 && rsiVal <= 68 ? 10.0
-                      : adxVal >= 28 && rsiVal >= 45 && rsiVal <= 70 ? 5.0
-                      : 0;
-    const overboughtCut = rsiVal > 75 ? -5.0 : 0;
-    const hardTpPct = Math.max(isHighBeta ? 20.0 : 15.0, baseTp + momentumExt + overboughtCut);
     const minAiSellConf = isHighBeta ? 0.82 : 0.78;
     const minHoldForSell = isHighBeta ? 3 : 2;
     const holdingDays = (Date.now() - new Date(holding.boughtAt).getTime()) / (1000 * 60 * 60 * 24);

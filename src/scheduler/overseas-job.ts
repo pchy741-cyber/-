@@ -44,7 +44,7 @@ import { syncPendingOverseasOrders, getUserInsights, getLossCooldownStocks, getR
 import { syncHoldingsFromKIS, reconcileCashWithKIS } from './overseas/kis-sync.js';
 import { executeOverseasOrder, deployIdleCash } from './overseas/executor.js';
 import {
-  calcDynamicTrailDrop, getVixRegime,
+  calcDynamicTrailDrop, calcDynamicTpSl, getVixRegime,
   getGradualCooldown, getGradualCooldownStocks,
   calcUncertaintyPenalty,
   clearPartialTpStageNum,
@@ -838,17 +838,24 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         await updateTradeState({ code: target.code, exchange: target.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper() });
 
         const entryP = exec.filledPrice;
-        const tpPct = isHighBetaEntry ? 20 : 15;
-        const slPct = isHighBetaEntry ? 8 : isDefenseEntry ? 4 : 5;
         const entryAtrPct = target.atrPct ?? 2.0;
         const entryTrailDrop = calcDynamicTrailDrop({ sector: targetWatchItem?.sector ?? '', atrPct: entryAtrPct, maxPnlPct: 0, adx: target.adx, rsi: target.rsi });
+        const { tpPct, slPct, tpLabel } = calcDynamicTpSl({
+          sector: targetWatchItem?.sector ?? '',
+          adx: target.adx,
+          rsi: target.rsi,
+          aiConfidence: target.ai?.confidence,
+          aiAction: target.ai?.action,
+          vixRegime,
+          isMomentum: target.isMomentum,
+        });
         const tpPrice = (entryP * (1 + tpPct / 100)).toFixed(2);
         const slPrice = (entryP * (1 - slPct / 100)).toFixed(2);
         const kellyTag = kellyResult.sampleCount >= 10 ? ` Kelly${(kellyResult.halfKelly * 100).toFixed(0)}%` : '';
         const evLogTag = stockEV && stockEV.sampleCount >= 3 ? ` EV${stockEV.evPct >= 0 ? '+' : ''}${stockEV.evPct.toFixed(1)}%×${evMult.toFixed(2)}` : '';
         const buyLog = [
           `매수 ${target.code} x${exec.filledQty} @$${entryP.toFixed(2)} ${buyMode}`,
-          `📌 목표: $${tpPrice}(+${tpPct}%) | 손절: $${slPrice}(-${slPct}%) | ATR트레일: ${entryTrailDrop.toFixed(1)}%(ATR${entryAtrPct.toFixed(1)}%)`,
+          `📌 목표: $${tpPrice}(+${tpPct.toFixed(1)}%) | 손절: $${slPrice}(-${slPct.toFixed(1)}%) | ATR트레일: ${entryTrailDrop.toFixed(1)}%(ATR${entryAtrPct.toFixed(1)}%) [${tpLabel}]`,
           `(AI ${((target.ai?.confidence ?? 0) * 100).toFixed(0)}% 사이징x${sizingMult}${kellyTag}${evLogTag} VIX:${vixRegime.regime}) [수수료 $${(exec.filledQty * exec.filledPrice * OVERSEAS_FEE_PCT).toFixed(2)}]`,
         ].join('\n');
         buyOrders.push(buyLog);
