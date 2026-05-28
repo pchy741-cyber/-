@@ -46,6 +46,20 @@ interface CopilotData {
   actions: { type: string; icon: string; title: string; detail: string; urgency: 'high' | 'mid' | 'low' }[];
 }
 
+interface XrayCheck {
+  id: string;
+  status: 'ok' | 'warn' | 'danger';
+  label: string;
+  detail: string;
+}
+
+interface XrayData {
+  ts: string;
+  mode: string;
+  summary: { danger: number; warn: number; ok: number; total: number };
+  checks: XrayCheck[];
+}
+
 /** 캡처 시 상단 배너 */
 function buildDiagBanner(tabLabel: string, props: Props): HTMLDivElement {
   const { viewMode, dash, health, trades, killSwitch, strategy } = props;
@@ -100,7 +114,7 @@ async function captureTab(tabLabel: string, props: Props, modeOverride?: 'live' 
         if (clonedMain) { (clonedMain as HTMLElement).style.overflow = 'visible'; (clonedMain as HTMLElement).style.height = 'auto'; }
       },
     });
-    return canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+    return canvas.toDataURL('image/jpeg', 0.72).split(',')[1];
   } finally { banner.remove(); }
 }
 
@@ -136,6 +150,7 @@ export default function ScreenshotReview(props: Props) {
   const [step, setStep] = useState(0);
   const [total, setTotal] = useState(0);
   const [copilot, setCopilot] = useState<CopilotData | null>(null);
+  const [xray, setXray] = useState<XrayData | null>(null);
   const [showPanel, setShowPanel] = useState(false);
   const [activeSection, setActiveSection] = useState<'integrity' | 'risk' | 'actions'>('risk');
   const capturedScreenshots = useRef<{ tab: string; base64: string }[]>([]);
@@ -183,6 +198,7 @@ export default function ScreenshotReview(props: Props) {
     if (capturing) return;
     setCapturing(true);
     setCopilot(null);
+    setXray(null);
     setShowPanel(false);
 
     const originalTab = currentTab;
@@ -225,16 +241,18 @@ export default function ScreenshotReview(props: Props) {
       setTab(originalTab);
       await new Promise((r) => setTimeout(r, 500));
 
-      // Phase 3: 서버 업로드 + Copilot 진단
+      // Phase 3: 서버 업로드 + Copilot + Xray 병렬 진단
       setStep(totalSteps);
-      setProgress('AI Copilot 분석');
-      const [, copilotRes] = await Promise.all([
+      setProgress('AI Copilot + X-Ray 분석');
+      const [, copilotRes, xrayRes] = await Promise.all([
         api('/review/capture', { method: 'POST', body: JSON.stringify({ screenshots }) }),
         api(`/review/copilot?viewMode=${viewMode}`).catch(() => null),
+        api('/review/xray').catch(() => null),
       ]);
 
       capturedScreenshots.current = screenshots;
       if (copilotRes) setCopilot(copilotRes as CopilotData);
+      if (xrayRes) setXray(xrayRes as XrayData);
       setShowPanel(true);
       setProgress('');
     } catch (err) {
@@ -258,37 +276,46 @@ export default function ScreenshotReview(props: Props) {
   }, []);
 
   const copyDiag = useCallback(() => {
-    if (!copilot) return;
-    const lines = [
-      `QuantOps Copilot Report ${copilot.timestamp}`,
-      `Mode: ${copilot.mode}`,
-      '',
-      '=== INTEGRITY ===',
-      ...copilot.integrity.map(i => `[${i.status.toUpperCase()}] ${i.label}: ${i.detail}`),
-      '',
-      '=== RISK ===',
-      ...copilot.risk.map(r => `${r.label}: ${r.value}${r.unit} / ${r.max}${r.unit} [${r.level}]`),
-      '',
-      '=== ACTIONS ===',
-      ...copilot.actions.map(a => `[${a.urgency}] ${a.title} — ${a.detail}`),
-    ];
+    if (!copilot && !xray) return;
+    const lines: string[] = [];
+    if (copilot) {
+      lines.push(`QuantOps Copilot ${copilot.timestamp}`, `Mode: ${copilot.mode}`, '');
+      lines.push('=== INTEGRITY ===');
+      lines.push(...copilot.integrity.map(i => `[${i.status.toUpperCase()}] ${i.label}: ${i.detail}`));
+      lines.push('', '=== RISK ===');
+      lines.push(...copilot.risk.map(r => `${r.label}: ${r.value}${r.unit} / ${r.max}${r.unit} [${r.level}]`));
+      lines.push('', '=== ACTIONS ===');
+      lines.push(...copilot.actions.map(a => `[${a.urgency}] ${a.title} — ${a.detail}`));
+    }
+    if (xray) {
+      lines.push('', `=== X-RAY (${xray.mode.toUpperCase()}) ===`);
+      lines.push(`danger:${xray.summary.danger} warn:${xray.summary.warn} ok:${xray.summary.ok}`);
+      lines.push(...xray.checks.map(c => `[${c.status.toUpperCase()}] ${c.label}: ${c.detail}`));
+    }
     navigator.clipboard.writeText(lines.join('\n')).catch(() => {});
-  }, [copilot]);
+  }, [copilot, xray]);
 
-  // 전체 건강도 점수 계산
-  const healthScore = copilot ? (() => {
+  // 전체 건강도 점수 계산 (copilot + xray 통합)
+  const healthScore = (copilot || xray) ? (() => {
     let s = 100;
-    for (const i of copilot.integrity) { if (i.status === 'danger') s -= 25; else if (i.status === 'warn') s -= 10; }
-    for (const r of copilot.risk) { if (r.level === 'danger') s -= 15; else if (r.level === 'warn') s -= 5; }
-    for (const a of copilot.actions) { if (a.urgency === 'high') s -= 10; else if (a.urgency === 'mid') s -= 3; }
+    if (copilot) {
+      for (const i of copilot.integrity) { if (i.status === 'danger') s -= 25; else if (i.status === 'warn') s -= 10; }
+      for (const r of copilot.risk) { if (r.level === 'danger') s -= 15; else if (r.level === 'warn') s -= 5; }
+      for (const a of copilot.actions) { if (a.urgency === 'high') s -= 10; else if (a.urgency === 'mid') s -= 3; }
+    }
+    if (xray) {
+      for (const c of xray.checks) { if (c.status === 'danger') s -= 20; else if (c.status === 'warn') s -= 7; }
+    }
     return Math.max(0, Math.min(100, s));
   })() : 0;
 
   const scoreColor = (s: number) => s >= 80 ? 'text-emerald-400' : s >= 50 ? 'text-amber-400' : 'text-red-400';
   const scoreBg = (s: number) => s >= 80 ? 'from-emerald-500/20 to-emerald-700/10 border-emerald-500/30' : s >= 50 ? 'from-amber-500/20 to-amber-700/10 border-amber-500/30' : 'from-red-500/20 to-red-700/10 border-red-500/30';
 
-  const dangerCount = copilot ? copilot.integrity.filter(i => i.status === 'danger').length + copilot.risk.filter(r => r.level === 'danger').length : 0;
-  const warnCount = copilot ? copilot.integrity.filter(i => i.status === 'warn').length + copilot.risk.filter(r => r.level === 'warn').length : 0;
+  const dangerCount = (copilot ? copilot.integrity.filter(i => i.status === 'danger').length + copilot.risk.filter(r => r.level === 'danger').length : 0)
+    + (xray?.summary.danger ?? 0);
+  const warnCount = (copilot ? copilot.integrity.filter(i => i.status === 'warn').length + copilot.risk.filter(r => r.level === 'warn').length : 0)
+    + (xray?.summary.warn ?? 0);
   const highActions = copilot?.actions.filter(a => a.urgency === 'high').length ?? 0;
 
   return (
@@ -332,7 +359,7 @@ export default function ScreenshotReview(props: Props) {
             <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin" />
             <div className="absolute -top-1 -right-1 w-3 h-3 bg-blue-400 rounded-full animate-ping" />
           </div>
-        ) : copilot ? (
+        ) : (copilot || xray) ? (
           <div className="flex flex-col items-center leading-none">
             <span className={`text-[11px] font-black ${scoreColor(healthScore)}`}>{healthScore}</span>
             <span className="text-[7px] text-slate-400 mt-0.5">SCORE</span>
@@ -348,14 +375,14 @@ export default function ScreenshotReview(props: Props) {
       </button>
 
       {/* 알림 뱃지 */}
-      {copilot && !showPanel && (dangerCount > 0 || highActions > 0) && (
+      {(copilot || xray) && !showPanel && (dangerCount > 0 || highActions > 0) && (
         <div className="fixed bottom-[82px] right-6 z-50 flex gap-1">
           {dangerCount > 0 && <span className="bg-red-600 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full animate-pulse">{dangerCount}</span>}
           {highActions > 0 && <span className="bg-amber-600 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full">{highActions}</span>}
         </div>
       )}
 
-      {copilot && !showPanel && (
+      {(copilot || xray) && !showPanel && (
         <button
           onClick={() => setShowPanel(true)}
           className="fixed bottom-[82px] right-[76px] z-50 bg-slate-900/95 border border-white/10 rounded-lg px-3 py-1.5 shadow-xl cursor-pointer hover:bg-slate-800 transition-colors"
@@ -365,7 +392,7 @@ export default function ScreenshotReview(props: Props) {
       )}
 
       {/* ── Copilot 결과 패널 ── */}
-      {showPanel && copilot && (
+      {showPanel && (copilot || xray) && (
         <div className="fixed inset-0 z-[9998] bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center" onClick={() => setShowPanel(false)}>
           <div
             className="w-full sm:w-[440px] max-h-[90vh] bg-[#0a0e1a] border border-white/10 rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-hidden flex flex-col"
@@ -376,7 +403,7 @@ export default function ScreenshotReview(props: Props) {
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-base font-bold text-white tracking-tight">Copilot</h3>
-                  <p className="text-[10px] text-slate-400 mt-0.5">{copilot.mode.toUpperCase()} | {capturedScreenshots.current.length}장 캡처</p>
+                  <p className="text-[10px] text-slate-400 mt-0.5">{copilot?.mode.toUpperCase() ?? xray?.mode.toUpperCase()} | {capturedScreenshots.current.length}장 캡처{xray ? ` | X-Ray ${xray.summary.danger}D/${xray.summary.warn}W` : ''}</p>
                 </div>
                 <div className="text-center">
                   <div className={`text-3xl font-black tracking-tighter ${scoreColor(healthScore)}`}>{healthScore}</div>
@@ -397,7 +424,7 @@ export default function ScreenshotReview(props: Props) {
             {/* 탭 네비게이션 */}
             <div className="flex border-b border-white/5 shrink-0">
               {([
-                { key: 'integrity' as const, label: '정합성', icon: 'S', count: copilot.integrity.filter(i => i.status !== 'ok').length },
+                { key: 'integrity' as const, label: '정합성', icon: 'S', count: (copilot?.integrity.filter(i => i.status !== 'ok').length ?? 0) + (xray?.summary.danger ?? 0) + (xray?.summary.warn ?? 0) },
                 { key: 'risk' as const, label: '리스크', icon: 'R', count: copilot.risk.filter(r => r.level !== 'ok').length },
                 { key: 'actions' as const, label: '액션', icon: 'A', count: copilot.actions.length },
               ]).map(tab => (
@@ -422,7 +449,10 @@ export default function ScreenshotReview(props: Props) {
             {/* 콘텐츠 영역 */}
             <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
               {/* ── 정합성 섹션 ── */}
-              {activeSection === 'integrity' && copilot.integrity.map((item, i) => (
+              {activeSection === 'integrity' && [
+                ...(copilot?.integrity ?? []),
+                ...(xray?.checks ?? []).map(c => ({ ...c, _xray: true })),
+              ].map((item: any, i) => (
                 <div key={i} className={`flex items-start gap-2.5 px-3 py-2.5 rounded-xl text-xs ${
                   item.status === 'danger' ? 'bg-red-950/40 border border-red-500/20' :
                   item.status === 'warn' ? 'bg-amber-950/40 border border-amber-500/20' :
@@ -439,7 +469,10 @@ export default function ScreenshotReview(props: Props) {
                       item.status === 'warn' ? 'text-amber-300' :
                       'text-emerald-400'
                     }`}>{item.label}</div>
-                    <div className="text-slate-500 text-[10px] mt-0.5 break-all">{item.detail}</div>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      {item._xray && <span className="text-[8px] bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded px-1 font-bold">X-RAY</span>}
+                      <span className="text-slate-500 text-[10px] break-all">{item.detail}</span>
+                    </div>
                   </div>
                 </div>
               ))}

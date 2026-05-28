@@ -181,7 +181,7 @@ export class ChainManager {
         : null;
       const outcome = pnlPct > 0.1 ? 'WIN' : pnlPct < -0.1 ? 'LOSS' : 'BREAK_EVEN';
 
-      await pool.query(
+      const insertResult = await pool.query(
         `INSERT INTO score_accuracy
            (stock_code, chain_id, entry_score, entry_signal, entry_confidence,
             realized_pnl_pct, outcome, holding_days, close_reason, strategy_mode, is_paper)
@@ -201,7 +201,11 @@ export class ChainManager {
           (chain as any).is_paper ?? config.isPaper,
         ],
       );
-      logger.info(`📝 스코어 정확도 기록: ${chain.stock_code} ${outcome} (${pnlPct > 0 ? '+' : ''}${pnlPct}%)`, { component: 'CHAIN' });
+      if ((insertResult as any).rowCount === 0) {
+        logger.info(`📝 스코어 정확도: ${chain.stock_code} 이미 기록됨 (중복 체인 종료)`, { component: 'CHAIN' });
+      } else {
+        logger.info(`📝 스코어 정확도 기록: ${chain.stock_code} ${outcome} (${pnlPct > 0 ? '+' : ''}${pnlPct}%)`, { component: 'CHAIN' });
+      }
     } catch (err) {
       logger.warn(`스코어 정확도 기록 실패: ${err}`, { component: 'CHAIN' });
     }
