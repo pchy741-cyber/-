@@ -135,14 +135,15 @@ export async function technicalFallbackDecisions(params: {
       }
     }
 
-    // 마감 근접 소폭수익 확정 매도 — 장 끝에 0.1% 수익이 0%→마이너스 되기 전에 확정
-    // 15:00~15:10: 0.1%+ 수익이면 즉시 청산 | 15:10~15:25: 0%+만 되도 청산
+    // 마감 근접 수익 확정 — 3단계: 충분한 수익만, 그다음 소폭, 마지막에 손익분기만 확정
+    // 15:00~15:10: 1.0%+ 수익만 청산 | 15:10~15:20: 0.3%+ | 15:20~15:25: 0%+ (진짜 마감 직전)
     const isNearClose = _scalpH === 15 && _scalpM < 25;
     if (isNearClose && chain.strategy_mode !== 'SCALPING' && chain.total_quantity > 0) {
-      const closeThreshold = _scalpM >= 10 ? 0.0 : 0.1;
+      const closeThreshold = _scalpM >= 20 ? 0.0 : _scalpM >= 10 ? 0.3 : 1.0;
+      const closeLabel = _scalpM >= 20 ? '15:20+' : _scalpM >= 10 ? '15:10+' : '15:00+';
       if (pnlPct >= closeThreshold) {
         logger.info(
-          `⏰ 마감전 수익확정: ${chain.stock_code} +${pnlPct.toFixed(1)}% (${_scalpM >= 10 ? '15:10+' : '15:00+'} 임계값 ${closeThreshold}%)`,
+          `⏰ 마감전 수익확정: ${chain.stock_code} +${pnlPct.toFixed(1)}% (${closeLabel} 임계값 ${closeThreshold}%)`,
           { component: 'TRACK_B' },
         );
         decisions.push({
@@ -150,7 +151,7 @@ export async function technicalFallbackDecisions(params: {
           stock_code: chain.stock_code,
           quantity: chain.total_quantity,
           price_type: 'MARKET',
-          reasoning: `마감전 수익확정(${_scalpM >= 10 ? '15:10+' : '15:00+'}): +${pnlPct.toFixed(1)}% → 장마감 손실 방지`,
+          reasoning: `마감전 수익확정(${closeLabel}): +${pnlPct.toFixed(1)}% → 장마감 손실 방지`,
           confidence: 0.92,
         });
         processedSellCodes.add(chain.stock_code);
@@ -949,15 +950,14 @@ export async function technicalFallbackDecisions(params: {
     const priorityBonus = PRIORITY_SECTOR_CODES.has(cand.stock_code) ? 1.1 : 1.0;
 
     // 목표 금액 = 총자산 × 비율 × 보정들
-    // AI허락 고확신(85점+) → 1차에 88% 과감 진입 (물타기 여지 12%)
-    // AI허락 일반(70-84점) → 1차 75% (현금 과잉 시 92%)
+    // AI허락 고확신(85점+) → 1차에 72~80% 진입 (물타기 여지 20~28% 확보)
+    // AI허락 일반(70-84점) → 1차 65~75%
     // AI 미허락 탐색 → 1차 100% (소액이므로 분할 의미 없음)
-    // 황금비율: 1차 진입 비율 상향 (좋은 종목은 바로 과감하게)
     const firstEntryRatio = mode === 'SNIPER' ? 1.0   // 저격수: 한 번에 풀 포지션
       : !aiApproved ? 1.0
-      : blendedScore >= 85 ? (allocationBoostFirstEntry ? 0.92 : 0.85)  // 92% 1차 진입 (물타기 여지 8%)
+      : blendedScore >= 85 ? (allocationBoostFirstEntry ? 0.80 : 0.72)  // 72~80% 1차 진입 (물타기 여지 20~28%)
       : splitCount <= 1 ? 1.0
-      : splitCount <= 2 ? (allocationBoostFirstEntry ? 0.92 : 0.80) : (allocationBoostFirstEntry ? 0.88 : 0.70);
+      : splitCount <= 2 ? (allocationBoostFirstEntry ? 0.78 : 0.70) : (allocationBoostFirstEntry ? 0.75 : 0.65);
     // AI 고확신 포지션 확대 — blend 점수도 함께 높아야 적용 (AI만 높고 tech 낮으면 억제)
     // blend >= 80이어야 2.0x, blend >= 72이어야 1.5x (낮은 tech 종목 과대투입 방지)
     const aiPosMultiplier = (aiScore >= 90 && blendedScore >= 80) ? 2.0
@@ -983,11 +983,10 @@ export async function technicalFallbackDecisions(params: {
     const effectivePositionSize = isSmallAccount
       ? Math.round(remainingCash * 0.80)   // 있는 돈의 80% 직접 사용 (maxPos 캡 제거)
       : positionSize;
-    // 최소 매수금액: 잔고 비례 유연화
-    const minPositionKrw = orderableCash >= 1000000
-      ? (aiApproved ? 700000 : 350000)
-      : orderableCash >= 500000 ? 200000
-      : orderableCash >= 200000 ? 100000 : 50000;
+    // 최소 매수금액: 총자산 비례 동적 계산 (고정 금액 제거)
+    const minPositionKrw = totalAssets
+      ? Math.max(50000, Math.round(totalAssets * (aiApproved ? 0.04 : 0.025)))
+      : Math.max(50000, Math.round(orderableCash * (aiApproved ? 0.08 : 0.05)));
     if (effectivePositionSize < minPositionKrw) {
       logger.info(`  ❌ ${cand.stock_code}: 포지션크기 ${Math.round(effectivePositionSize).toLocaleString()}원 < 최소 ${minPositionKrw.toLocaleString()}원 (blend=${blendedScore.toFixed(0)} alloc=${(baseAllocPct*100).toFixed(0)}% cash=${Math.round(remainingCash).toLocaleString()}) → 스킵`, { component: 'TRACK_B' });
       continue;
@@ -1033,7 +1032,8 @@ export async function technicalFallbackDecisions(params: {
     // 이미 매수 결정한 AI허락 종목에 물타기가 아닌 추가 비중 투입
     for (const cand of extraCandidates.slice(0, 2)) {
       const addSize = Math.min(Math.round(remainingCash * 0.50), effectiveMaxPos);
-      if (addSize < 1000000) continue;
+      const minAddSize = Math.max(50000, Math.round((totalAssets ?? orderableCash) * 0.03));
+      if (addSize < minAddSize) continue;
       const qty = Math.floor(addSize / cand.price.currentPrice);
       if (qty <= 0) continue;
       const aiScoreEx = aiScoreMap.get(cand.stock_code) ?? 0;

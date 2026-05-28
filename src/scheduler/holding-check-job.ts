@@ -20,8 +20,8 @@ import { calcPnlPct } from '../utils/money.js';
  *  매수 10,000원 → +3% → 50% 분할 익절
  *  → 남은 50% 고점 추적, 고점 대비 -1.5% 하락 시 청산
  */
-const TRAILING_ACTIVATE_PCT = 2.0;  // 트레일링 스탑 활성화 최소 수익률 (%)
-const TRAILING_DROP_PCT     = 2.0;  // 고점 대비 이 % 하락 시 매도 (%)
+const TRAILING_ACTIVATE_PCT = 1.5;  // 트레일링 스탑 활성화 최소 수익률 (%)
+const TRAILING_DROP_PCT     = 3.0;  // 고점 대비 이 % 하락 시 매도 (%) — 더 넉넉하게 달리게
 
 /**
  * 보유일 초과 자동 손절 체크
@@ -113,8 +113,8 @@ export async function runHoldingCheckJob(): Promise<void> {
         continue;
       }
 
-      // ── 3영업일 하드 리밋: 손실 중이면 전략 파라미터 무관 강제 청산 ──
-      if (businessDays >= 3 && pnlPct <= 0) {
+      // ── 3영업일 하드 리밋: -1.5% 이상 손실 중이면 강제 청산 (단순 횡보는 더 기다림) ──
+      if (businessDays >= 3 && pnlPct <= -1.5) {
         logger.warn(
           `⏰ ${chain.stock_code}: ${businessDays}영업일 보유 + 손실 ${pnlPct.toFixed(2)}% → 3일 하드 리밋 강제 청산`,
           { component: 'HOLDING_CHECK' },
