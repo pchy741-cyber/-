@@ -85,7 +85,8 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   // ── 3. 섹터 집중 매수 차단 ──────────────────────────────────────────
   decisions = filterSectorConcentration(decisions, openChains);
 
-  // ── 4. 유휴 현금 파킹 ───────────────────────────────────────────────
+  // ── 4. 유휴 현금 파킹 해제 (SELL만 먼저 — BUY는 포지션사이저 이후 step 7.5에서 추가) ──
+  let _parkingBuyDecisions: import('../../db/models.js').TradeDecision[] = [];
   {
     const { manageCashParking } = await import('./cash-manager.js');
     const cashDecisions = manageCashParking({
@@ -93,8 +94,8 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
       openChains, livePrices, mode, blockNewBuys,
     });
     for (const d of cashDecisions) {
-      if (d.action === 'SELL') decisions.unshift(d);
-      else decisions.push(d);
+      if (d.action === 'SELL') decisions.unshift(d);  // 파킹 해제 즉시
+      else _parkingBuyDecisions.push(d);               // 파킹 매수는 보류
     }
   }
 
@@ -127,6 +128,10 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
     kospiRegimePenalty: (Math.min(2, Math.max(0, Math.round(kospiRegime.penalty))) as 0 | 1 | 2),
     kospiBoost: kospiRegime.boost,
   });
+
+  // ── 7.5. 파킹 매수 추가 (포지션사이저 이후 — 사이저가 파킹 수량 줄이지 않게) ──
+  // 파킹은 cash-manager가 이미 적정 수량 계산했으므로 사이저 우회
+  for (const d of _parkingBuyDecisions) decisions.push(d);
 
   // ── 8. 중복 매도 신호 제거 (FORCE_CLOSE > SELL > PARTIAL_SELL) ───────
   decisions = deduplicateSells(decisions);
