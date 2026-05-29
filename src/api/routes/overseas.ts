@@ -35,7 +35,7 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
         dbPrices[row.code] = { price: Number(row.price), changePct: Number(row.change_pct), volume: Number(row.volume) };
         // DB 데이터로 인메모리 캐시 채우기 (아직 KIS 갱신 없으면 재시작 후 빠른 폴백용)
         if (!cacheGet(`overseas:lastprice:${row.code}`)) {
-          cacheSet(`overseas:lastprice:${row.code}`, dbPrices[row.code], 86400);
+          cacheSet(`overseas:lastprice:${row.code}`, dbPrices[row.code], 7200);
         }
       }
     } catch { /* DB 접근 실패 시 인메모리 캐시만 사용 */ }
@@ -61,7 +61,7 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
           const result = results[j];
           if (result.status === 'fulfilled' && result.value.currentPrice > 0) {
             const p = result.value;
-            cacheSet(`overseas:lastprice:${stock.code}`, { price: p.currentPrice, changePct: p.changePct, volume: p.volume }, 86400);
+            cacheSet(`overseas:lastprice:${stock.code}`, { price: p.currentPrice, changePct: p.changePct, volume: p.volume }, 7200);
           }
         }
         if (i + BATCH < GLOBAL_WATCHLIST.length) await new Promise(r => setTimeout(r, 150));
@@ -227,8 +227,9 @@ overseasRoutes.get('/overseas/scores', async (c) => {
     }
 
     if (results.length > 0) setOverseasScores(results);
-    // 대시보드 캐시 무효화 (다음 요청 시 점수 포함해서 내려감)
-    cacheSet('overseas:dashboard', null as any, 0);
+    // 대시보드 캐시 무효화 (paper/live 키 모두 — 다음 요청 시 점수 포함해서 내려감)
+    cacheSet('overseas:dashboard:paper', null as any, 0);
+    cacheSet('overseas:dashboard:live', null as any, 0);
     logger.info(`온디맨드 해외점수 계산 완료: ${results.length}종목`, { component: 'OVERSEAS' });
     return c.json(results);
   } catch (e: any) {
@@ -379,6 +380,10 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
     });
 
     logger.info(`[VisionScalp] 매수 ${sanitizedTicker} ${qty}주 @ $${filledPrice} (TP:$${tpPrice} SL:$${slPrice}) [${baseIsPaper ? 'PAPER' : 'LIVE'}]`, { component: 'OVERSEAS' });
+    const vsMode = baseIsPaper ? 'paper' : 'live';
+    cacheSet(`overseas:dashboard:${vsMode}`, null as any, 0);
+    cacheSet(`overseas:holdings:${vsMode}`, null as any, 0);
+    cacheSet(`overseas:balance:${vsMode}`, null as any, 0);
 
     return c.json({
       ok: true,
@@ -443,6 +448,8 @@ overseasRoutes.post('/overseas/sell', async (c) => {
           [stock_code, qty, fillPrice, orderNo, reason, avgPrice]);
       });
       logger.info(`[OverseasSell] ${stock_code} ${qty}주 @$${fillPrice} (야간감시 모의)`, { component: 'OVERSEAS' });
+      cacheSet('overseas:dashboard:paper', null as any, 0);
+      cacheSet('overseas:holdings:paper', null as any, 0);
       try {
         const stockName = GLOBAL_WATCHLIST.find(s => s.code === stock_code)?.name ?? stock_code;
         const pnlPct = avgPrice > 0 ? ((fillPrice - avgPrice) / avgPrice) * 100 : 0;
@@ -472,6 +479,9 @@ overseasRoutes.post('/overseas/sell', async (c) => {
         [stock_code, qty, fillPrice, result.orderNo ?? '', reason, avgPrice]);
     });
     logger.info(`[OverseasSell] ${stock_code} ${qty}주 (야간감시 실거래 ${result.orderNo})`, { component: 'OVERSEAS' });
+    cacheSet('overseas:dashboard:live', null as any, 0);
+    cacheSet('overseas:holdings:live', null as any, 0);
+    cacheSet(`overseas:balance:live`, null as any, 0);
     try {
       const stockName = GLOBAL_WATCHLIST.find(s => s.code === stock_code)?.name ?? stock_code;
       const pnlPct = avgPrice > 0 ? ((fillPrice - avgPrice) / avgPrice) * 100 : 0;

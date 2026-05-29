@@ -12,6 +12,7 @@ import { getPaperBalance, riskEngine } from '../../../risk/engine.js';
 import { notifyBuy, notifySell } from '../../../notifications/web-push.js';
 import { logger } from '../../../utils/logger.js';
 import { invalidateCurrentModeCache } from './helpers.js';
+import { invalidateStockCache } from '../../../cache/redis.js';
 
 export const sellRoutes = new Hono();
 
@@ -98,6 +99,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
         await notifySell(chain.stock_code, chain.total_quantity, fillPrice, pnlPct, sellReason);
       } catch { /* 알림 실패 무시 */ }
       invalidateCurrentModeCache();
+      invalidateStockCache(chain.stock_code).catch(() => {});
       return c.json({ ok: true, orderNo: fakeOrderNo, message: `${chain.stock_code} ${chain.total_quantity}주 전량 매도 완료 (모의투자)` });
     }
 
@@ -168,6 +170,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
       await notifySell(chain.stock_code, chain.total_quantity, fillPrice, pnlPct, sellReason);
     } catch { /* 알림 실패 무시 */ }
     invalidateCurrentModeCache();
+    invalidateStockCache(chain.stock_code).catch(() => {});
     return c.json({
       ok: true, orderNo: kisOrderNo, pending: !fillConfirmed,
       message: `${chain.stock_code} ${chain.total_quantity}주 ${fillConfirmed ? '매도 완료' : '매도 접수 (체결 대기)'}`,
