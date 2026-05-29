@@ -34,6 +34,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
 
     const exchanges = ['NASDAQ', 'NYSE', 'AMEX', 'TSE', 'TWSE'];
     const allHoldings = new Map<string, { qty: number; avgPrice: number; exchange: string }>();
+    const kisPriceMap = new Map<string, number>(); // 현재가 수집 (last_price 업데이트용)
     const successExchanges = new Set<string>(); // API 성공한 거래소만 추적
 
     for (const exch of exchanges) {
@@ -42,6 +43,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
         successExchanges.add(exch); // 성공한 거래소만 기록
         for (const item of items) {
           if (item.quantity > 0 && item.stockCode) {
+            if (item.currentPrice > 0) kisPriceMap.set(item.stockCode, item.currentPrice);
             const existing = allHoldings.get(item.stockCode);
             if (existing) continue;
             const wlEntry = GLOBAL_WATCHLIST.find(w => w.code === item.stockCode);
@@ -259,6 +261,20 @@ export async function syncHoldingsFromKIS(): Promise<void> {
       ).catch(() => {});
       logger.info(`🔄 KIS동기화: ${code} 수동매수 감지 → BUY 기록 (${item.qty}주 @$${item.avgPrice})`, { component: 'OVERSEAS' });
       sendTelegramMessage(`🛒 수동매수 감지: ${code} ${item.qty}주 @$${item.avgPrice.toFixed(2)}\norders 기록 완료`).catch(() => {});
+    }
+
+    // ── KIS 현재가 → DB last_price 업데이트 (대시보드 정합성) ──
+    // kisPriceMap은 초기 balance API 호출 시 수집한 현재가 (추가 API 호출 없음)
+    for (const [code, price] of kisPriceMap) {
+      if (price > 0) {
+        getPool().query(
+          'UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2 AND is_paper = false',
+          [price, code],
+        ).catch(() => {});
+      }
+    }
+    if (kisPriceMap.size > 0) {
+      logger.info(`📊 KIS동기화: ${kisPriceMap.size}종목 현재가 업데이트 완료`, { component: 'OVERSEAS' });
     }
   } catch (e) {
     logger.warn(`KIS 잔고 동기화 실패 (무시): ${(e as Error).message}`, { component: 'OVERSEAS' });

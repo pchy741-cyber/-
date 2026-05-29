@@ -14,6 +14,7 @@ import { getKillSwitchStatusAll } from '../../../risk/kill-switch.js';
 import { calcDailyLossLimit } from '../../../risk/seed-capital.js';
 import { getCooldownStatus } from '../../../risk/trade-gate.js';
 import { getOverseasScores } from '../../../cache/overseas-scores.js';
+import { getOverseasPrice } from '../../../kis/overseas.js';
 import { SECTOR_CLASS } from '../../../config/constants.js';
 import { GLOBAL_WATCHLIST } from '../../../scheduler/overseas/watchlist.js';
 import { getDynamicTpSl, computePaperCash } from '../../../scheduler/overseas/state.js';
@@ -289,6 +290,24 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       const { rows: stRows } = await getPool().query(
         'SELECT key, value FROM overseas_state WHERE key = ANY($1)', [stateKeys]);
       for (const sr of stRows) stateMap.set(sr.key, sr.value);
+    }
+
+    // Live 모드: last_price=0인 종목 실시간 시세 조회 (최대 3종목, 추가 API 호출)
+    if (!viewIsPaper) {
+      const needPrice = osRows.filter((r: any) => Number(r.last_price ?? 0) <= 0).slice(0, 3);
+      for (const r of needPrice) {
+        try {
+          const p = await withTimeout(getOverseasPrice(String(r.stock_code), String(r.exchange)), 3000, null as any);
+          if (p?.currentPrice > 0) {
+            r.last_price = p.currentPrice;
+            // DB도 비동기 업데이트 (다음 조회 시 캐시 효과)
+            getPool().query(
+              'UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2 AND is_paper = false',
+              [p.currentPrice, r.stock_code],
+            ).catch(() => {});
+          }
+        } catch { /* 시세 조회 실패 시 기존 폴백 사용 */ }
+      }
     }
 
     for (const r of osRows) {
