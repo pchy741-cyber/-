@@ -11,6 +11,7 @@ import { placeOrder } from '../../../kis/order.js';
 import { getPaperBalance, riskEngine } from '../../../risk/engine.js';
 import { notifyBuy, notifySell } from '../../../notifications/web-push.js';
 import { logger } from '../../../utils/logger.js';
+import { runWithMode } from '../../../config/context.js';
 import { invalidateCurrentModeCache } from './helpers.js';
 import { invalidateStockCache } from '../../../cache/redis.js';
 
@@ -103,15 +104,15 @@ sellRoutes.post('/sell/:chainId', async (c) => {
       return c.json({ ok: true, orderNo: fakeOrderNo, message: `${chain.stock_code} ${chain.total_quantity}주 전량 매도 완료 (모의투자)` });
     }
 
-    // 실거래: KIS 주문 — 실패 시 1회 재시도
+    // 실거래: KIS 주문 — 실패 시 1회 재시도 (live 컨텍스트 명시)
     let kisOrderNo = '';
     let isGhost = false;
     try {
-      let result = await placeOrder({ stockCode: chain.stock_code, side: 'SELL', quantity: chain.total_quantity });
+      let result = await runWithMode(false, () => placeOrder({ stockCode: chain.stock_code, side: 'SELL', quantity: chain.total_quantity }));
       if (!result.success) {
         logger.warn(`수동 매도 1차 실패 (${chain.stock_code}): ${result.message} — 2초 후 재시도`, { component: 'DASHBOARD' });
         await new Promise((r) => setTimeout(r, 2000));
-        result = await placeOrder({ stockCode: chain.stock_code, side: 'SELL', quantity: chain.total_quantity });
+        result = await runWithMode(false, () => placeOrder({ stockCode: chain.stock_code, side: 'SELL', quantity: chain.total_quantity }));
       }
       if (!result.success) {
         logger.error(`수동 매도 최종 실패 (${chain.stock_code}): ${result.message}`, { component: 'DASHBOARD' });
@@ -230,7 +231,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
 
     let kisOrderNo = '';
     try {
-      let result = await placeOrder({ stockCode, side: 'SELL', quantity: totalQty });
+      let result = await runWithMode(isPaper, () => placeOrder({ stockCode, side: 'SELL', quantity: totalQty }));
       if (!result.success) {
         await new Promise((r) => setTimeout(r, 2000));
         try {
@@ -243,7 +244,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
           }
         } catch { /* 잔고 조회 실패 시 원래대로 retry */ }
         if (!result.success) {
-          result = await placeOrder({ stockCode, side: 'SELL', quantity: totalQty });
+          result = await runWithMode(isPaper, () => placeOrder({ stockCode, side: 'SELL', quantity: totalQty }));
         }
       }
       if (!result.success) {
@@ -355,12 +356,12 @@ sellRoutes.post('/sell-overseas/:stockCode', async (c) => {
       return c.json({ ok: true, orderNo: fakeOrderNo, message: `${stockCode} ${qty}주 전량 매도 완료 (모의투자)` });
     }
 
-    // 실거래: KIS 해외 주문
+    // 실거래: KIS 해외 주문 — isPaper 컨텍스트 명시 (서버 기본=paper이므로 live 보장 필수)
     const { placeOverseasOrder } = await import('../../../kis/overseas.js');
-    let result = await placeOverseasOrder({ stockCode, exchange, side: 'SELL', quantity: qty, price: 0 });
+    let result = await runWithMode(isPaper, () => placeOverseasOrder({ stockCode, exchange, side: 'SELL', quantity: qty, price: 0 }));
     if (!result.success) {
       await new Promise((r) => setTimeout(r, 2000));
-      result = await placeOverseasOrder({ stockCode, exchange, side: 'SELL', quantity: qty, price: 0 });
+      result = await runWithMode(isPaper, () => placeOverseasOrder({ stockCode, exchange, side: 'SELL', quantity: qty, price: 0 }));
     }
     if (!result.success) {
       logger.error(`해외 수동 매도 최종 실패 (${stockCode}): ${result.message}`, { component: 'DASHBOARD' });
@@ -372,7 +373,7 @@ sellRoutes.post('/sell-overseas/:stockCode', async (c) => {
     let confirmed = false;
     try {
       const { getOverseasBalance } = await import('../../../kis/overseas.js');
-      const bal = await getOverseasBalance(exchange);
+      const bal = await runWithMode(isPaper, () => getOverseasBalance(exchange));
       const pos = bal?.find((p: any) => p.stockCode === stockCode);
       confirmed = !pos || pos.quantity === 0;
     } catch {
@@ -494,7 +495,7 @@ sellRoutes.post('/sell-overseas-all', async (c) => {
       if (!forceDb && !isPaper) {
         try {
           const { placeOverseasOrder } = await import('../../../kis/overseas.js');
-          const result = await placeOverseasOrder({ stockCode: code, exchange, side: 'SELL', quantity: qty, price: 0 });
+          const result = await runWithMode(false, () => placeOverseasOrder({ stockCode: code, exchange, side: 'SELL', quantity: qty, price: 0 }));
           if (result.success) {
             kisOrderNo = result.orderNo ?? '';
             sold = true;
@@ -685,7 +686,7 @@ sellRoutes.post('/manual-buy', async (c) => {
       return c.json({ ok: true, orderNo: fakeOrderNo, stock_code, quantity, price: curPrice, totalInvested, takeProfitPct, stopLossPct });
     }
 
-    const result = await placeOrder({ stockCode: stock_code, side: 'BUY', quantity });
+    const result = await runWithMode(isPaper, () => placeOrder({ stockCode: stock_code, side: 'BUY', quantity }));
     if (!result.success) return c.json({ error: `KIS 매수 거부: ${result.message}` }, 502);
     const kisOrderNo = result.orderNo ?? '';
 

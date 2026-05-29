@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { getOverseasBalance, getOverseasDailyChart, getOverseasPrice, placeOverseasOrder } from '../../kis/overseas.js';
 import { config, baseIsPaper } from '../../config/index.js';
+import { runWithMode } from '../../config/context.js';
 import { getPool } from '../../db/client.js';
 import { cacheGet, cacheSet } from '../../cache/memory.js';
 import { logger } from '../../utils/logger.js';
@@ -330,10 +331,10 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
     let orderNo = `VSP${Date.now().toString(36)}`;
 
     if (!baseIsPaper) {
-      // 실전 모드: KIS 실주문
-      const result = await placeOverseasOrder({
+      // 실전 모드: KIS 실주문 — live 컨텍스트 명시
+      const result = await runWithMode(false, () => placeOverseasOrder({
         stockCode: sanitizedTicker, exchange, side: 'BUY', quantity: qty, price: price.currentPrice,
-      });
+      }));
       if (!result.success) {
         return c.json({ error: `KIS 매수 실패: ${result.message}` }, 502);
       }
@@ -458,7 +459,7 @@ overseasRoutes.post('/overseas/sell', async (c) => {
       return c.json({ ok: true, orderNo, filledQty: qty, filledPrice: fillPrice });
     }
 
-    const result = await placeOverseasOrder({ stockCode: stock_code, exchange, side: 'SELL', quantity: qty, price: 0 });
+    const result = await runWithMode(isPaper, () => placeOverseasOrder({ stockCode: stock_code, exchange, side: 'SELL', quantity: qty, price: 0 }));
     if (!result.success) return c.json({ error: `KIS 매도 실패: ${result.message}` }, 502);
     const liveProceeds = fillPrice * qty * (1 - OVERSEAS_FEE_PCT); // 수수료 0.25% 차감
     const { withTransaction } = await import('../../db/client.js');
