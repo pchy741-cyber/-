@@ -49,6 +49,8 @@ export async function technicalFallbackDecisions(params: {
   minVolumeRatio?: number;
   /** 호가 매도벽 차단: bid/ask ≤ 0.5인 종목 — 진입 완전 차단 (hard gate) */
   orderbookBlockedCodes?: Set<string>;
+  /** opening-bell-job 전용: SCALPING 신규 매수 허용 (line 742 continue 우회) */
+  allowScalpingBuys?: boolean;
 }): Promise<TradeDecision[]> {
   const { mode, watchlist, livePrices, chartData, openChains, orderableCash, maxPositionKrw, aiScores, lossBlockedCodes, manuallySoldCodes, totalAssets, winRates, blockNewBuys, junkStockCodes } = params;
   const feedbackRequirePullback = params.requirePullback ?? false;
@@ -728,19 +730,28 @@ export async function technicalFallbackDecisions(params: {
 
     // ── 당일 바 위치: 고점 80%+ 추격 차단 ──────────────────────────────────
     // 전문 트레이더: "저점에서 사고 고점에서 팔아라" — 당일 고점권 신규 진입 방지
-    if (aiScore < 85) {  // 고점 추격 차단 — SCALPING 포함 전 모드 적용 (갭업 고점 단타 진입 차단)
+    // ★ 버그 수정: 개장 초반 candles[0] 미형성(todayRange≈0) → 갭% 기준으로 대체
+    if (aiScore < 90) {  // 90점+ 초고확신만 고점 필터 면제
       const todayRange = candles[0].high - candles[0].low;
-      const priceInRange = todayRange > 50 ? (price.currentPrice - candles[0].low) / todayRange : 0.5;
+      let priceInRange: number;
+      if (todayRange > 100) {
+        priceInRange = (price.currentPrice - candles[0].low) / todayRange;
+      } else {
+        // 당일 캔들 미형성(개장 초반): 전일 종가 대비 갭%로 고점 여부 환산
+        const prevClose = Number(candles[1]?.close ?? candles[0].close);
+        const gapPct = prevClose > 0 ? (price.currentPrice - prevClose) / prevClose * 100 : 0;
+        priceInRange = gapPct >= 2.0 ? 0.90 : gapPct >= 1.0 ? 0.72 : 0.45;
+      }
       const hasStrongMomentum = tech.bollingerBreakout === 'UP' || tech.ttmSqueeze.fireSignal === 'LONG' || tech.volumeRatio >= 2.5;
       if (priceInRange > 0.80 && !hasStrongMomentum) {
-        logger.info(`  🚫 ${stock.stock_code}: 당일 고점권(${(priceInRange * 100).toFixed(0)}%) 추격 위험 — vol=${tech.volumeRatio.toFixed(2)}x 모멘텀 부족 → 스킵`, { component: 'TRACK_B' });
+        logger.info(`  🚫 ${stock.stock_code}: 고점권(${(priceInRange * 100).toFixed(0)}%) 추격 위험 — vol=${tech.volumeRatio.toFixed(2)}x 모멘텀 부족 → 스킵`, { component: 'TRACK_B' });
         continue;
       }
     }
     // ───────────────────────────────────────────────────────────────────────
 
-    // SCALPING은 Track B에서 신규 매수 불가 — opening-bell-job 전용
-    if (mode === 'SCALPING') continue;
+    // SCALPING 신규 매수: opening-bell-job(allowScalpingBuys=true)만 허용, Track B 일반 루프는 스킵
+    if (mode === 'SCALPING' && !params.allowScalpingBuys) continue;
     // ───────────────────────────────────────────────────────────────────
     const squeezeTag = tech.bollingerBreakout === 'UP' ? '🎯BB스퀴즈돌파' : tech.bollingerSqueeze ? '🔃BB응축중' : '';
     const vwapTag = tech.vwapCross === 'JUST_ABOVE' ? '⚡VWAP돌파' : tech.vwapPullback ? '🔁VWAP풀백' : '';

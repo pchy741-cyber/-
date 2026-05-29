@@ -136,9 +136,15 @@ export async function syncHoldingsFromKIS(): Promise<void> {
         ).catch(() => {});
         clearMaxPrice(code, false).catch(() => {}); // live 모드 명시
 
+        // 수동매도 쿨다운: 2시간 재매수 금지 (사용자 의도 매도 보호)
+        getPool().query(
+          `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
+          [`manual_sell_cd_${code}`, JSON.stringify({ at: new Date().toISOString(), pnlPct })],
+        ).catch(() => {});
+
         const emoji = pnlPct >= 0 ? '💰' : '📉';
         const msg = `🚪 수동매도 감지: ${code}\n${dbQty}주 @$${sellPrice.toFixed(2)}\n${emoji} PnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%\norders 기록 완료`;
-        logger.info(`🔄 KIS동기화: ${code} 수동매도 → SELL 기록 (PnL ${pnlPct.toFixed(2)}%)`, { component: 'OVERSEAS' });
+        logger.info(`🔄 KIS동기화: ${code} 수동매도 → SELL 기록 (PnL ${pnlPct.toFixed(2)}%) → 2h 재매수 쿨다운 설정`, { component: 'OVERSEAS' });
         sendTelegramMessage(msg).catch(() => {});
 
       } else if (Math.abs(kisItem.qty - dbQty) >= 1) {

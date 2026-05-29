@@ -278,6 +278,7 @@ JSON만: {"scores":[{"code":"코드","score":점수},...]}`;
       totalAssets,
       aiScores,
       blockNewBuys: false,
+      allowScalpingBuys: true, // 개장벨 전용: SCALPING 신규 매수 허용
     });
 
     if (decisions.length > 0) {

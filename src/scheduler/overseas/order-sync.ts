@@ -243,3 +243,20 @@ export async function getRecentLossStocks(isPaper?: boolean): Promise<Set<string
     return new Set(rows.map((r: any) => String(r.stock_code)));
   } catch { return new Set(); }
 }
+
+/**
+ * 수동매도 쿨다운 종목 조회 (live only)
+ * 사용자가 KIS 앱에서 직접 매도한 종목은 2시간 동안 자동 재매수 금지
+ * — 의도적 매도를 시스템이 즉시 되돌리는 상황 방지
+ */
+export async function getManualSellCooldownStocks(): Promise<Set<string>> {
+  try {
+    const cutoff = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    const { rows } = await getPool().query(`
+      SELECT key FROM overseas_state
+      WHERE key LIKE 'manual_sell_cd_%'
+        AND value::jsonb->>'at' > $1
+    `, [cutoff]);
+    return new Set(rows.map((r: any) => String(r.key).replace('manual_sell_cd_', '')));
+  } catch { return new Set(); }
+}

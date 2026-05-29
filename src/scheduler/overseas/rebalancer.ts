@@ -6,7 +6,7 @@ import { OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { fetchExchangeRate } from '../../automation/macro-data.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
-import { getCash, getHoldings, updateTradeState } from './state.js';
+import { getHoldings, updateTradeState } from './state.js';
 import { executeOverseasOrder } from './executor.js';
 import type { TechResult } from './sell-logic.js';
 
@@ -15,6 +15,7 @@ export interface RebalanceContext {
   isPaper: boolean;
   sellOrders: string[];
   extendedAlertSentAt: Map<string, number>;
+  cash: number; // caller의 추적 중인 현금 (이중 재조회 방지)
 }
 
 export interface RebalanceResult {
@@ -27,7 +28,7 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
   const rebalanceAlerts: string[] = [];
 
   try {
-    let cash = await getCash(isPaper);
+    let cash = ctx.cash;
     const rbHoldings = await getHoldings(isPaper);
     let rbTotal = cash;
     const positionWeights: { code: string; weight: number; value: number; qty: number; price: number; pnl: number; exchange: string; avgPrice: number }[] = [];
@@ -107,6 +108,6 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
     return { rebalanceAlerts, cash };
   } catch (rbErr) {
     logger.warn(`포트폴리오 리밸런싱 분석 실패: ${(rbErr as Error).message}`, { component: 'OVERSEAS' });
-    return { rebalanceAlerts, cash: await getCash(isPaper) };
+    return { rebalanceAlerts, cash: ctx.cash };
   }
 }

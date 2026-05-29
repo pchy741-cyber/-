@@ -40,7 +40,7 @@ import {
 } from './overseas/state.js';
 import { overseasState, getOpenMarketRegions, getKSTDateString, getUSSessionId, setSessionStartValue, type SessionCache } from './overseas/session.js';
 import { getRecentPerfSummary, getOverseasWinRates, getPendingOverseasStocks, type OverseasWinRate } from './overseas/analytics.js';
-import { syncPendingOverseasOrders, getUserInsights, getLossCooldownStocks, getRecentLossStocks } from './overseas/order-sync.js';
+import { syncPendingOverseasOrders, getUserInsights, getLossCooldownStocks, getRecentLossStocks, getManualSellCooldownStocks } from './overseas/order-sync.js';
 import { syncHoldingsFromKIS, reconcileCashWithKIS } from './overseas/kis-sync.js';
 import { executeOverseasOrder, deployIdleCash } from './overseas/executor.js';
 import {
@@ -579,10 +579,24 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       }
     } catch { /* alloc config 미존재 시 무시 */ }
 
+    if (riskBlocked || allocBlocked || currentHoldingCount >= MAX_POSITIONS || cash < 50) {
+      const reasons: string[] = [];
+      if (riskBlocked) reasons.push(`리스크차단(-${lossPctOfPortfolio.toFixed(1)}%)`);
+      if (allocBlocked) reasons.push('해외비중초과');
+      if (currentHoldingCount >= MAX_POSITIONS) reasons.push(`보유풀(${currentHoldingCount}/${MAX_POSITIONS})`);
+      if (cash < 50) reasons.push(`현금부족($${cash.toFixed(0)}<$50)`);
+      logger.info(`🚫 매수 블록 진입 불가 — ${reasons.join(', ')}`, { component: 'OVERSEAS' });
+    }
+
     if (!riskBlocked && !allocBlocked && currentHoldingCount < MAX_POSITIONS && cash >= 50) {
-      const [lossCooldownSet, recentLossSet] = await Promise.all([getLossCooldownStocks(isPaper()), getRecentLossStocks(isPaper())]);
+      const [lossCooldownSet, recentLossSet, manualSellCdSet] = await Promise.all([
+        getLossCooldownStocks(isPaper()), getRecentLossStocks(isPaper()), getManualSellCooldownStocks(),
+      ]);
       if (lossCooldownSet.size > 0) logger.info(`🚫 손절 쿨다운 종목 (24h): ${[...lossCooldownSet].join(', ')}`, { component: 'OVERSEAS' });
       if (recentLossSet.size > 0) logger.info(`⚠️ 최근 손실 종목 (7일, AI≥80% 필수): ${[...recentLossSet].join(', ')}`, { component: 'OVERSEAS' });
+      // 수동매도 쿨다운: live 모드에서 사용자가 직접 판 종목은 2h 재매수 금지
+      for (const code of manualSellCdSet) lossCooldownSet.add(code);
+      if (manualSellCdSet.size > 0) logger.info(`🙋 수동매도 쿨다운 (2h): ${[...manualSellCdSet].join(', ')} — 자동 재매수 금지`, { component: 'OVERSEAS' });
 
       // ── 리스크 인텔리전스 (쿨다운, Memory Agent, Kelly) ──
       const [gradualCooldown, memoryBlockedStocks, kellyResult] = await Promise.all([
@@ -648,6 +662,12 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         sectorValues, portfolioValue, aiMap, freshBreadth,
         uncertaintyMap, overseasWinRates, isUSExtended, recoveryMode, isPaper: isPaper(),
       });
+
+      if (buyTargets.length === 0) {
+        logger.info(`🔍 매수 후보 없음 — techResults:${techResults.length} aiMap:${aiMap.size} extended:${isUSExtended} mq:${mktSignal?.marketQuality ?? 'N/A'} recovery:${recoveryMode}`, { component: 'OVERSEAS' });
+      } else {
+        logger.info(`✅ 매수 후보 ${buyTargets.length}종목: ${buyTargets.slice(0, 3).map(t => `${t.code}(${t.score}점 AI${((t.ai?.confidence ?? 0) * 100).toFixed(0)}%)`).join(', ')}`, { component: 'OVERSEAS' });
+      }
 
       // ── 장외시간 알림 (→ overseas/notifications.ts) ──
       if (isUSExtended && !isPaper()) {
@@ -875,13 +895,12 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     }
 
     // ── 5-b. 포트폴리오 비중 리밸런싱 (→ overseas/rebalancer.ts) ──
-    const rbResult = await rebalancePortfolio({ techResults, isPaper: isPaper(), sellOrders, extendedAlertSentAt: s.extendedAlertSentAt });
+    const rbResult = await rebalancePortfolio({ techResults, isPaper: isPaper(), sellOrders, extendedAlertSentAt: s.extendedAlertSentAt, cash });
     const rebalanceAlerts = rbResult.rebalanceAlerts;
     cash = rbResult.cash;
 
     // ── 5-c. 유휴현금 운용 (킬스위치 시 스킵 — 매수 행위) ──
     const avgTechScore = techResults.length > 0 ? techResults.reduce((sum, t) => sum + t.score, 0) / techResults.length : 0;
-    cash = await getCash(isPaper());
     const idleCashHoldings = await getHoldings(isPaper());
     const idleResult = killSwitchBuyBlock
       ? { cashUsed: 0, actions: [] as string[] }
