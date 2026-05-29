@@ -291,6 +291,60 @@ settingsRoutes.post('/sync-overseas-holdings', async (c) => {
   }
 });
 
+/**
+ * 실전 보유 포지션 직접 정정 — US 장 마감 중 KIS API 실패 시 수동 정정
+ * body: { holdings: [{ code, exchange, qty, avg_price }], clearOthers: true }
+ * clearOthers=true: body에 없는 종목은 전부 삭제 (유령 포지션 정리)
+ */
+settingsRoutes.post('/overseas-holdings-fix', async (c) => {
+  try {
+    const { getPool } = await import('../../db/client.js');
+    const body = await c.req.json<{
+      holdings: Array<{ code: string; exchange: string; qty: number; avg_price: number }>;
+      clearOthers?: boolean;
+    }>();
+    const pool = getPool();
+    const updated: string[] = [];
+    const cleared: string[] = [];
+
+    if (body.clearOthers) {
+      const keepCodes = body.holdings.map(h => h.code);
+      const { rows: existing } = await pool.query(
+        'SELECT stock_code FROM overseas_holdings WHERE is_paper = false'
+      );
+      for (const row of existing) {
+        if (!keepCodes.includes(row.stock_code)) {
+          await pool.query(
+            'DELETE FROM overseas_holdings WHERE stock_code=$1 AND is_paper=false',
+            [row.stock_code]
+          );
+          cleared.push(row.stock_code);
+        }
+      }
+    }
+
+    for (const h of body.holdings) {
+      if (h.qty <= 0) {
+        await pool.query('DELETE FROM overseas_holdings WHERE stock_code=$1 AND is_paper=false', [h.code]);
+        cleared.push(h.code);
+      } else {
+        await pool.query(
+          `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper)
+           VALUES ($1,$2,$3,$4,NOW(),false)
+           ON CONFLICT (exchange,stock_code,is_paper) DO UPDATE SET quantity=$3, avg_price=$4`,
+          [h.code, h.exchange, h.qty, h.avg_price]
+        );
+        updated.push(`${h.code}(${h.qty}@$${h.avg_price})`);
+      }
+    }
+
+    logger.info(`🔧 해외 포지션 수동 정정: 업데이트[${updated.join(',')}] 삭제[${cleared.join(',')}]`, { component: 'SETTINGS' });
+    return c.json({ ok: true, updated, cleared });
+  } catch (e) {
+    return c.json({ ok: false, error: String(e) }, 500);
+  }
+});
+
 // ── Auto Pilot Loop ──
 settingsRoutes.get('/loop/status', async (c) => {
   const { getLoopStatus } = await import('../../scheduler/loop-mode.js');
