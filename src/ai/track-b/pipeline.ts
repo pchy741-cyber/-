@@ -576,34 +576,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       orderbookBlockedCodes,
     });
 
-    // ── AI 손실 조기청산: 손실 중 + AI 부정평가(< 45점) → FORCE_CLOSE 주입 ──
-    // Gemini 무료 품질이 낮아 진입엔 안 쓰지만, 이미 보유 중 악화 종목 탈출엔 활용
-    const aiScoreMapForExit = new Map(finalScores.map((s) => [s.stock_code, s.score]));
-    for (const chain of openChains) {
-      const liveP = livePrices.get(chain.stock_code);
-      if (!liveP || !chain.avg_buy_price) continue;
-      const pnlPct = ((liveP.currentPrice - Number(chain.avg_buy_price)) / Number(chain.avg_buy_price)) * 100;
-      const aiScore = aiScoreMapForExit.get(chain.stock_code) ?? null;
-      if (pnlPct < -2.0 && aiScore !== null && aiScore < 38) {
-        const alreadyExiting = decisions.some(
-          (d) => d.stock_code === chain.stock_code && ['SELL', 'FORCE_CLOSE', 'PARTIAL_SELL'].includes(d.action),
-        );
-        if (!alreadyExiting) {
-          logger.info(
-            `🤖 AI 손실청산: ${chain.stock_code} 손실=${pnlPct.toFixed(1)}% AI=${aiScore}점(<38) → FORCE_CLOSE`,
-            { component: 'TRACK_B' },
-          );
-          decisions.push({
-            action: 'FORCE_CLOSE',
-            stock_code: chain.stock_code,
-            quantity: chain.total_quantity,
-            price_type: 'MARKET',
-            reasoning: `AI 부정평가(${aiScore}점<45) + 손실(${pnlPct.toFixed(1)}%) → AI 손절 가속`,
-            confidence: 0.85,
-          });
-        }
-      }
-    }
+    // AI 손실 조기청산 비활성화 — 정상 조정(-2%)도 강제청산해서 승률 저하 (4월→5월 13%로 하락 원인)
+    // 손절은 technical-fallback의 고정 SL(-3%)에만 맡김
 
     // ── 뉴스 악재 감시: 보유 종목 악재 뉴스 → FORCE_CLOSE ──
     for (const chain of openChains) {

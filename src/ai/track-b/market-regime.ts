@@ -59,21 +59,18 @@ function buildAdaptive(
     const base = STRATEGY_PARAMS[m] as { buyThreshold: number; takeProfitPct: number; stopLossPct: number };
     let { buyThreshold, takeProfitPct, stopLossPct } = base;
 
-    // ATR 변동성 적응 (stopLossPct는 음수 — * > 1 = 더 넓게, * < 1 = 더 타이트)
-    if (atrPct > 1.8) {          // 극고변동성: 진입 더 까다롭게, TP/SL 넓게
+    // ATR 변동성 적응 — SL 확장 제거 (고변동성 SL×1.3으로 -12.9% 손실 발생했던 원인)
+    // 진입 기준(buyThreshold)만 높이고 SL은 DB 고정값 유지
+    if (atrPct > 1.8) {
       buyThreshold = Math.min(95, buyThreshold + 4);
-      takeProfitPct = Math.min(12, takeProfitPct * 1.4);
-      stopLossPct = Math.max(-9, stopLossPct * 1.3);
-      if (m === 'SWING') notes.push(`극고변동성(ATR ${atrPct.toFixed(1)}%) → threshold+4, TP×1.4, SL×1.3`);
-    } else if (atrPct > 1.3) {   // 고변동성
+      takeProfitPct = Math.min(12, takeProfitPct * 1.2); // TP 소폭 확장만
+      if (m === 'SWING') notes.push(`극고변동성(ATR ${atrPct.toFixed(1)}%) → threshold+4, TP×1.2`);
+    } else if (atrPct > 1.3) {
       buyThreshold = Math.min(93, buyThreshold + 2);
-      takeProfitPct = Math.min(10, takeProfitPct * 1.2);
-      stopLossPct = Math.max(-7, stopLossPct * 1.15);
-      if (m === 'SWING') notes.push(`고변동성(ATR ${atrPct.toFixed(1)}%) → threshold+2, TP×1.2, SL×1.15`);
-    } else if (atrPct < 0.7) {   // 저변동성: TP/SL 타이트, 빠른 실현
-      takeProfitPct = Math.max(1.0, takeProfitPct * 0.85);
-      stopLossPct = Math.min(-0.3, stopLossPct * 0.85);
-      if (m === 'SWING') notes.push(`저변동성(ATR ${atrPct.toFixed(1)}%) → TP×0.85, SL×0.85`);
+      if (m === 'SWING') notes.push(`고변동성(ATR ${atrPct.toFixed(1)}%) → threshold+2`);
+    } else if (atrPct < 0.7) {
+      takeProfitPct = Math.max(1.0, takeProfitPct * 0.9);
+      if (m === 'SWING') notes.push(`저변동성(ATR ${atrPct.toFixed(1)}%) → TP×0.9`);
     }
 
     // KOSPI 레짐 적응
