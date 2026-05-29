@@ -596,16 +596,19 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     const fxNow = await fetchExchangeRate();
     if (!isPaper()) {
       try {
-        const { rows: snap } = await getPool().query(
-          `SELECT total_value FROM portfolio_snapshots WHERE snapshot_at::date = CURRENT_DATE AND is_paper = false ORDER BY snapshot_at DESC LIMIT 1`
+        // 국내 투자중 금액 확인 (현금 제외 — 통합증거금은 국내/해외 공유)
+        const { rows: domRows } = await getPool().query(
+          `SELECT COALESCE(SUM(invested_amount), 0) AS domestic_invested
+           FROM chains WHERE is_active = true AND is_paper = false`
         );
-        const krPortfolioUsd = snap.length > 0 && fxNow > 0 ? Number(snap[0].total_value) / fxNow : 0;
-        // 국내 포지션 없으면 비중 체크 무의미 (해외=100% 항상 차단됨)
-        if (krPortfolioUsd > 0) {
-          const grandPortfolioUsd = portfolioValue + krPortfolioUsd;
+        const domesticInvestedKrw = Number(domRows[0]?.domestic_invested ?? 0);
+        const domesticInvestedUsd = fxNow > 0 ? domesticInvestedKrw / fxNow : 0;
+        // 국내 투자중 금액이 $100 이상일 때만 비중 체크 (통합증거금 현금만 있으면 스킵)
+        if (domesticInvestedUsd >= 100) {
+          const grandInvestedUsd = (holdingEvalUsd || 0) + domesticInvestedUsd;
           const { rows: allocRows } = await getPool().query('SELECT us_pct FROM portfolio_allocation_config LIMIT 1');
           const targetUsPct = Number(allocRows[0]?.us_pct ?? 30);
-          const currentUsPct = (portfolioValue / grandPortfolioUsd) * 100;
+          const currentUsPct = grandInvestedUsd > 0 ? ((holdingEvalUsd || 0) / grandInvestedUsd) * 100 : 0;
           if (currentUsPct > targetUsPct * 1.15) {
             allocBlocked = true;
             logger.warn(`📊 해외 배분 비중 초과: ${currentUsPct.toFixed(0)}% > 목표 ${targetUsPct}% (+15% 여유) → 신규 매수 차단`, { component: 'OVERSEAS' });
