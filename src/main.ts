@@ -80,23 +80,27 @@ app.use('*', async (c, next) => {
 });
 
 // ── 라우트 마운트 ──
-// 인증 불필요 (공개)
-app.route('/', healthRoutes);   // /health
-app.route('/', authRoutes);     // /auth/login, /auth/logout, /auth/me
-// 🔒 이하 모든 라우트: 로그인 필요
+// ⚠️ 중요: 아래 app은 rootApp.route('/api', app)으로 마운트되므로
+//    실제 외부 URL은 모두 /api/... 형태
+//
+// 공개 (인증 불필요)
+app.route('/', healthRoutes);          // GET  /api/health
+app.route('/', authRoutes);            // POST /api/auth/login, GET /api/auth/me
+// 🔒 이하 모든 라우트: x-api-key 헤더 필요
 app.use('*', requireAuth);
-app.route('/', reviewRoutes);   // /review/* (캡처 — 인증 필수!)
-app.route('/', dashboardRoutes);
-app.route('/', dashboardNewsRoutes);
-app.route('/', dashboardAnalysisRoutes);
-app.route('/', secretsRoutes);
-app.route('/', settingsRoutes);
-app.route('/', sseRoutes);
-app.route('/', backtestRoutes);
-app.route('/', journalRoutes);
-app.route('/', overseasRoutes);
+app.route('/', reviewRoutes);          // POST /api/review/*, /api/capture/*
+app.route('/', dashboardRoutes);       // GET  /api/dashboard, /api/sell/:id, /api/manual-buy ...
+app.route('/', dashboardNewsRoutes);   // GET  /api/news/*
+app.route('/', dashboardAnalysisRoutes); // GET /api/analysis/*, /api/sync-positions, /api/scores/*
+app.route('/', secretsRoutes);         // GET/POST /api/secrets/*
+app.route('/', settingsRoutes);        // GET/POST /api/strategy, /api/kill-switch, /api/overseas-holdings-fix ...
+app.route('/', sseRoutes);             // GET  /api/sse (실시간 스트림)
+app.route('/', backtestRoutes);        // GET  /api/backtest/*
+app.route('/', journalRoutes);         // GET  /api/journal/*
+app.route('/', overseasRoutes);        // GET  /api/overseas/dashboard, /api/overseas/scores ...
 
 // ── 루트 앱 (프론트엔드 프록시 + API) ──
+// 모든 API 경로는 /api 하위 — Non-API는 Next.js(localhost:3000)로 프록시
 const rootApp = new Hono();
 rootApp.route('/api', app);
 
