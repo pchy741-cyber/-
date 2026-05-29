@@ -8,7 +8,7 @@ import { OVERSEAS, SECTOR_CLASS, OVERSEAS_FEE_PCT } from '../config/constants.js
 import { config, setTradingModeOverride } from '../config/index.js';
 import { runWithMode } from '../config/context.js';
 import { getPool, logSystem } from '../db/client.js';
-import { getOverseasDailyChart, getOverseasPrice, placeFractionalOverseasBuy, type OverseasPrice } from '../kis/overseas.js';
+import { getOverseasDailyChart, getOverseasPrice, type OverseasPrice } from '../kis/overseas.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { isKillSwitchActive, activateKillSwitch, reportError, reportSuccess } from '../risk/kill-switch.js';
 import { OVERSEAS_LOSS_TIERS } from '../risk/seed-capital.js';
@@ -67,38 +67,6 @@ import { filterAndRankBuyTargets } from './overseas/buy-filter.js';
 import { sendBuyRecommendations, sendHoldingAlerts } from './overseas/notifications.js';
 import { monitorVisionScalp } from './overseas/vision-scalp.js';
 import { rebalancePortfolio } from './overseas/rebalancer.js';
-
-/**
- * 소수점 매수 실행 — 금액 기준 주문 (Live 전용, 미국 주식만)
- * 주가가 포지션 사이즈보다 클 때 사용 (예: NOW $101, 포지션 $96)
- */
-async function executeFractionalBuy(
-  code: string, amountUsd: number, estimatedPrice: number, exchange: string, reasoning: string,
-): Promise<{ submitted: boolean; filledQty: number; filledPrice: number; finalQty: number; finalAvgPrice: number; orderNo?: string }> {
-  try {
-    const result = await placeFractionalOverseasBuy({ stockCode: code, exchange, amountUsd });
-    const { insertOrder: ins } = await import('../db/client.js');
-    const estimatedQty = Math.round((amountUsd / estimatedPrice) * 1000) / 1000;
-    await ins({
-      chain_id: null, stock_code: code, side: 'BUY', order_type: '01',
-      quantity: estimatedQty, price: estimatedPrice, kis_order_no: result.orderNo,
-      kis_status: result.success ? 'SUBMITTED' : 'FAILED',
-      filled_quantity: result.success ? estimatedQty : 0,
-      filled_price: result.success ? estimatedPrice : null,
-      status: result.success ? 'PENDING' : 'FAILED', trading_mode: isPaper() ? 'paper' : 'live',
-      trigger_source: 'OVERSEAS', ai_reasoning: `[소수점매수 $${amountUsd}] ${reasoning}`,
-    });
-    if (result.success) {
-      logger.info(`🔬 [LIVE] 소수점 매수: ${code} $${amountUsd} ≈${estimatedQty.toFixed(3)}주 @$${estimatedPrice.toFixed(2)} (${result.orderNo})`, { component: 'OVERSEAS' });
-      return { submitted: true, filledQty: estimatedQty, filledPrice: estimatedPrice, finalQty: estimatedQty, finalAvgPrice: estimatedPrice, orderNo: result.orderNo };
-    }
-    logger.error(`🔬 소수점 매수 실패: ${code} — ${result.message}`, { component: 'OVERSEAS' });
-    return { submitted: false, filledQty: 0, filledPrice: 0, finalQty: 0, finalAvgPrice: 0 };
-  } catch (e) {
-    logger.error(`🔬 소수점 매수 에러: ${code} — ${(e as Error).message}`, { component: 'OVERSEAS' });
-    return { submitted: false, filledQty: 0, filledPrice: 0, finalQty: 0, finalAvgPrice: 0 };
-  }
-}
 
 /**
  * 글로벌 주식 자동매매 Job

@@ -4,7 +4,7 @@
 import { OVERSEAS } from '../../config/constants.js';
 import { config } from '../../config/index.js';
 import { getPool, insertOrder } from '../../db/client.js';
-import { placeOverseasOrder, placeFractionalOverseasBuy } from '../../kis/overseas.js';
+import { placeOverseasOrder } from '../../kis/overseas.js';
 import { logger } from '../../utils/logger.js';
 import { updateOrder } from '../../db/client.js';
 import { resolveOverseasStockName } from './watchlist.js';
@@ -54,9 +54,7 @@ async function recordOverseasScoreAccuracy(params: {
   }
 }
 
-// ── 승자 집중 전략 상수 (동적 함수로 대체, 레거시 폴백용) ──
 import { getOverseasDynamic } from '../../config/constants.js';
-const CONCENTRATION_MIN_PNL_PCT  = OVERSEAS.CONCENTRATION_MIN_PNL_PCT;
 
 /**
  * 미국주식 주문 실행 (Paper / Live)
@@ -209,7 +207,7 @@ export async function deployIdleCash(params: {
   if (investable < dynP.concentrationMinInvest) return { actions: [], cashUsed: 0 };
 
   let bestCode: string | null = null;
-  let bestPnlPct: number = CONCENTRATION_MIN_PNL_PCT;
+  let bestPnlPct: number = OVERSEAS.CONCENTRATION_MIN_PNL_PCT;
   let bestPrice = 0;
   let bestExchange = '';
   let bestHolding: { qty: number; avgPrice: number } | null = null;

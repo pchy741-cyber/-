@@ -170,7 +170,7 @@ export async function getGradualCooldownStocks(cooldown: GradualCooldown): Promi
           OR ai_reasoning LIKE '%보유기한 초과%'
         )
     `, [intervalHours]);
-    return new Set(rows.map((r: any) => String(r.stock_code)));
+    return new Set(rows.map((r: { stock_code: string }) => String(r.stock_code)));
   } catch { return new Set(); }
 }
 
@@ -259,7 +259,7 @@ export async function calcUncertaintyPenalty(params: {
     `, [code]);
 
     // 같은 종목의 최근 거래 성적 확인 — 연속 손실이면 penalty
-    const recentSells = rows.filter((r: any) =>
+    const recentSells = rows.filter((r: { ai_reasoning: string | null }) =>
       String(r.ai_reasoning ?? '').includes('손절') || String(r.ai_reasoning ?? '').includes('stopLoss')
     );
     if (recentSells.length >= 2) {
@@ -679,6 +679,6 @@ export async function getMemoryBlockedStocks(): Promise<Set<string>> {
       HAVING COUNT(*) >= 4
         AND (COUNT(*) FILTER (WHERE filled_price > avg_buy_price))::float / COUNT(*) <= 0.25
     `);
-    return new Set(rows.map((r: any) => String(r.stock_code)));
+    return new Set(rows.map((r: { stock_code: string }) => String(r.stock_code)));
   } catch { return new Set(); }
 }

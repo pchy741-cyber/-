@@ -211,7 +211,7 @@ export async function getLossCooldownStocks(isPaper?: boolean): Promise<Set<stri
           )
         )
     `, [mode]);
-    return new Set(rows.map((r: any) => String(r.stock_code)));
+    return new Set(rows.map((r: { stock_code: string }) => String(r.stock_code)));
   } catch { return new Set(); }
 }
 
@@ -240,7 +240,7 @@ export async function getRecentLossStocks(isPaper?: boolean): Promise<Set<string
           )
         )
     `, [mode]);
-    return new Set(rows.map((r: any) => String(r.stock_code)));
+    return new Set(rows.map((r: { stock_code: string }) => String(r.stock_code)));
   } catch { return new Set(); }
 }
 
@@ -257,6 +257,6 @@ export async function getManualSellCooldownStocks(): Promise<Set<string>> {
       WHERE key LIKE 'manual_sell_cd_%'
         AND value::jsonb->>'at' > $1
     `, [cutoff]);
-    return new Set(rows.map((r: any) => String(r.key).replace('manual_sell_cd_', '')));
+    return new Set(rows.map((r: { key: string }) => String(r.key).replace('manual_sell_cd_', '')));
   } catch { return new Set(); }
 }

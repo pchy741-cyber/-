@@ -70,7 +70,7 @@ export async function ensureOverseasTable(): Promise<void> {
           if (!hasLiveBuys) {
             const { rows: stateRows } = await tx.query(
               "SELECT key, value FROM overseas_state WHERE key IN ('cash', 'cash_paper')");
-            const stateMap = new Map(stateRows.map((r: any) => [r.key, r.value]));
+            const stateMap = new Map(stateRows.map((r: { key: string; value: string }) => [r.key, r.value]));
             const liveCashVal = Number(stateMap.get('cash') ?? 0);
 
             if (liveCashVal > 0 && !stateMap.has('cash_paper')) {
@@ -283,5 +283,3 @@ export async function clearMaxPrice(code: string, isPaper?: boolean): Promise<vo
     [`${modePrefix(isPaper)}maxprice_${code}`],
   ).catch(() => {});
 }
-
-// 부분 익절 3단계 시스템으로 이전됨 → risk-intelligence.ts 참조

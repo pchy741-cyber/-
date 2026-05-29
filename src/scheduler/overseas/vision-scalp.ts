@@ -31,7 +31,7 @@ export async function monitorVisionScalp(isPaper: boolean): Promise<void> {
       SELECT stock_code, exchange, quantity, avg_price, scalp_tp, scalp_sl
       FROM overseas_holdings
       WHERE is_scalp = TRUE AND quantity > 0 AND scalp_tp IS NOT NULL AND is_paper = $1
-    `, [isPaper]).catch(() => ({ rows: [] as any[] }));
+    `, [isPaper]).catch(() => ({ rows: [] as Array<{ stock_code: string; exchange: string; quantity: string; avg_price: string; scalp_tp: string | null; scalp_sl: string | null }> }));
 
     for (const row of scalpRows) {
       const code = String(row.stock_code);

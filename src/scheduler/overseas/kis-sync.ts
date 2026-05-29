@@ -57,7 +57,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
 
     const { rows: dbRows } = await getPool().query(
       'SELECT stock_code, exchange, quantity, avg_price FROM overseas_holdings WHERE is_paper = false',
-    ).catch(() => ({ rows: [] as any[] }));
+    ).catch(() => ({ rows: [] as Array<{ stock_code: string; exchange: string; quantity: string; avg_price: string }> }));
 
     for (const row of dbRows) {
       if (failedExchanges.has(String(row.exchange))) continue;
@@ -82,7 +82,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
         const { rows: debounceRows } = await getPool().query(
           'SELECT value FROM overseas_state WHERE key = $1',
           [debounceKey],
-        ).catch(() => ({ rows: [] as any[] }));
+        ).catch(() => ({ rows: [] as Array<{ value: string }> }));
 
         if (debounceRows.length === 0) {
           // 첫 감지: 상태 저장, 이번 사이클은 스킵
@@ -297,7 +297,7 @@ export async function reconcileCashWithKIS(): Promise<void> {
         const balance = await getAccountBalance(true);
         // 통합증거금: orderableCash = 전체 주문가능원화 (국내+해외 공용)
         // netAsset - 국내투자 = 해외+현금 가용액
-        const netAsset = (balance as any).netAsset ?? 0;
+        const netAsset = balance.netAsset ?? 0;
         const domesticEval = balance.totalEvalAmount ?? 0;
         if (netAsset > 0) {
           kisKrw = Math.max(0, netAsset - domesticEval);
