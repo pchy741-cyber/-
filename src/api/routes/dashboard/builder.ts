@@ -413,13 +413,13 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     // Paper: 국내 현금(rawCash) + 해외 현금(USD→KRW) = 통합 현금
     actualCash = (actualCash || 0) + overseasCashKrw;
   } else {
-    // Live: KIS API 값 우선 (가장 신선), overseas_state DB는 폴백
-    if (rawCash > 0) {
-      // KIS getAccountBalance() 성공 → 실계좌 주문가능금액 사용
-      actualCash = rawCash;
-    } else if (overseasCashKrw > 0) {
-      // KIS API 실패 → overseas_state DB 캐시 폴백
+    // Live: psamount 기반 overseas_state 우선 (해외 매도대금 T+1 반영 정확)
+    // 국내 getAccountBalance().orderableCash는 미결제 금액 제외할 수 있음
+    if (overseasCashKrw > 0) {
       actualCash = overseasCashKrw;
+    } else if (rawCash > 0) {
+      // psamount 미조회 시 국내 잔고 API 폴백
+      actualCash = rawCash;
     } else {
       // 전부 실패 → netAsset 기반 추정
       const netAsset = (balance as any).netAsset ?? 0;
