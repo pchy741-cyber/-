@@ -2,7 +2,7 @@
  * 대시보드 페이로드 빌더 — buildDashPayload + getOrBuildDashPayload
  */
 import { getCachedScores, getScoresWithFallback, cachePrice, getLastKnownPrices } from '../../../cache/redis.js';
-import { cachePriceMemory, getLastKnownPricesMemory, getCachedPriceMemory } from '../../../cache/memory.js';
+import { cachePriceMemory, getLastKnownPricesMemory, getCachedPriceMemory, cacheGet } from '../../../cache/memory.js';
 import { config, baseIsPaper } from '../../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getOpenChains, getPool, getTodayStartSnapshot } from '../../../db/client.js';
 import { getAccountBalance } from '../../../kis/account.js';
@@ -283,10 +283,14 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       const code = String(r.stock_code);
       const qty = Number(r.quantity);
       const avgP = Number(r.avg_price);
-      const lastP = Number(r.last_price ?? 0);
-      const curP = lastP > 0 ? lastP : avgP;
+      // last_price 우선순위: DB last_price → 인메모리 가격 캐시 → avg_price 폴백
+      // (US 장 마감 후 DB last_price=0이어도 캐시에 장중 가격 남아있으면 사용)
+      const dbLastP = Number(r.last_price ?? 0);
+      const memPrice = cacheGet<{ price: number }>(`overseas:lastprice:${code}`)?.price ?? 0;
+      const lastP = dbLastP > 0 ? dbLastP : (memPrice > 0 ? memPrice : avgP);
+      const curP = lastP;
       overseasTotalInvested += avgP * qty;
-      overseasMarketValueUsd += (lastP > 0 ? lastP : avgP) * qty;
+      overseasMarketValueUsd += curP * qty;
 
       const wItem = GLOBAL_WATCHLIST.find(w => w.code === code);
       const sector = wItem?.sector ?? '';
@@ -335,7 +339,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
         quantity: qty,
         avg_price: avgP,
         bought_at: r.bought_at,
-        last_price: lastP,
+        last_price: curP,
         sector,
         tp_pct: effectiveTpPct,
         sl_pct: effectiveSlPct,
@@ -391,8 +395,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     ch.weight = grandTotalValue > 0 ? Math.round((ch.invested / grandTotalValue) * 1000) / 10 : 0;
   }
   for (const h of overseasHoldings as any[]) {
-    const investedKrw = (h.avg_price * h.quantity) * FX_RATE;
-    h.weight = grandTotalValue > 0 ? Math.round((investedKrw / grandTotalValue) * 1000) / 10 : 0;
+    const marketKrw = (h.last_price * h.quantity) * FX_RATE; // last_price = curP (캐시/avg 폴백 포함)
+    h.weight = grandTotalValue > 0 ? Math.round((marketKrw / grandTotalValue) * 1000) / 10 : 0;
   }
 
   // 동일 종목 복수 체인 합산 (같은 종목 중복 표시 방지)
