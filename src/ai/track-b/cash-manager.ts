@@ -66,10 +66,29 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
 
   // 현재 파킹 중인 대형주 체인 확인
   const parkingCodes = new Set(MEGA_CAP_PARK_CANDIDATES.map(c => c.code));
-  const parkChains = openChains.filter(c => parkingCodes.has(c.stock_code) && c.is_paper === undefined);
+  const parkChains = openChains.filter(c => parkingCodes.has(c.stock_code));
 
-  // 매수 후보가 생기면 파킹 포지션 청산 (자금 확보) — 단, 백엔드 TP/SL에 맡기는 게 원칙이므로 생략
-  // (Track B가 이미 TP/SL 관리 중. 파킹 청산은 이익 실현 후 자연스럽게 진행)
+  // ── 파킹 자동 해제: 좋은 매수 신호 등장 시 파킹 청산 → 더 큰 수익 기회에 재투자 ──
+  if (hasBuyCandidates && parkChains.length > 0) {
+    for (const parkChain of parkChains) {
+      const qty = Number(parkChain.total_quantity ?? 0);
+      if (qty <= 0) continue;
+      const name = MEGA_CAP_PARK_CANDIDATES.find(c => c.code === parkChain.stock_code)?.name ?? parkChain.stock_code;
+      logger.info(
+        `🔄 파킹 해제: ${name}(${parkChain.stock_code}) ${qty}주 → 더 큰 수익 기회로 현금 재배치`,
+        { component: 'CASH_MANAGER' },
+      );
+      decisions.push({
+        action: 'SELL',
+        stock_code: parkChain.stock_code,
+        quantity: qty,
+        price_type: 'MARKET',
+        reasoning: `🔄 파킹 해제 — 고확신 매수 신호 등장, 현금 재투입`,
+        confidence: 0.90,
+      });
+    }
+    return decisions; // 해제 결정만 반환, 신규 파킹 매수 없음
+  }
 
   // ── 파킹 매수 조건 ──
   const cashRatio = totalAssets > 0 ? orderableCash / totalAssets : 0;

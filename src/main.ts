@@ -170,32 +170,36 @@ async function bootstrap() {
     try {
       const { getPool: gp } = await import('./db/client.js');
       const { STRATEGY_PARAMS } = await import('./config/constants.js');
-      const { rows: sr } = await gp().query(`SELECT mode FROM strategy_config WHERE is_active = true LIMIT 1`);
+      // is_paper 분리: 현재 실행 모드에 맞는 strategy_config만 조회/수정
+      const { rows: sr } = await gp().query(
+        `SELECT mode FROM strategy_config WHERE is_active = true AND is_paper = $1 LIMIT 1`,
+        [baseIsPaper],
+      );
       const activeMode = (sr[0]?.mode ?? 'SWING') as keyof typeof STRATEGY_PARAMS;
       const sp = STRATEGY_PARAMS[activeMode] ?? STRATEGY_PARAMS.SWING;
       await gp().query(
-        `UPDATE strategy_config SET take_profit_pct=$1, stop_loss_pct=$2, buy_threshold=$3 WHERE is_active = true`,
-        [sp.takeProfitPct, sp.stopLossPct, sp.buyThreshold],
+        `UPDATE strategy_config SET take_profit_pct=$1, stop_loss_pct=$2, buy_threshold=$3 WHERE is_active = true AND is_paper = $4`,
+        [sp.takeProfitPct, sp.stopLossPct, sp.buyThreshold, baseIsPaper],
       );
-      logger.info(`✅ 전략 파라미터 동기화: buy_threshold=${sp.buyThreshold} take_profit=${sp.takeProfitPct}% stop_loss=${sp.stopLossPct}%`, { component: 'BOOT' });
-      // 기존 체인은 AI가 매수 시점에 설정한 종목별 값 유지 — null인 경우에만 기본값 채움
+      logger.info(`✅ 전략 파라미터 동기화 (${baseIsPaper ? 'paper' : 'live'}): buy_threshold=${sp.buyThreshold} take_profit=${sp.takeProfitPct}% stop_loss=${sp.stopLossPct}%`, { component: 'BOOT' });
+      // is_paper 분리: 현재 모드 체인만 null값 보충 — live 체인에 paper SL 덮어쓰기 방지
       await gp().query(
-        `UPDATE transaction_chains SET stop_loss_pct=$1 WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND stop_loss_pct IS NULL`,
-        [sp.stopLossPct],
+        `UPDATE transaction_chains SET stop_loss_pct=$1 WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND stop_loss_pct IS NULL AND is_paper = $2`,
+        [sp.stopLossPct, baseIsPaper],
       );
       await gp().query(
-        `UPDATE transaction_chains SET target_profit_pct=$1 WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND target_profit_pct IS NULL`,
-        [sp.takeProfitPct],
+        `UPDATE transaction_chains SET target_profit_pct=$1 WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND target_profit_pct IS NULL AND is_paper = $2`,
+        [sp.takeProfitPct, baseIsPaper],
       );
-      logger.info(`✅ 기존 체인 null값만 기본값 보충: stop_loss=${sp.stopLossPct}% target=${sp.takeProfitPct}%`, { component: 'BOOT' });
-      // 전략 모드별 올바른 TP/SL로 보정 (마이그레이션 일괄 기본값 4.0/-3.0 오버라이드)
+      logger.info(`✅ 기존 체인 null값 보충 (${baseIsPaper ? 'paper' : 'live'}): stop_loss=${sp.stopLossPct}% target=${sp.takeProfitPct}%`, { component: 'BOOT' });
+      // 전략 모드별 TP/SL 보정 — 현재 모드 체인만 (이전 마이그레이션 기본값 4.0/-3.0 수정)
       const { STRATEGY_PARAMS: SP } = await import('./config/constants.js');
       for (const [mode, params] of Object.entries(SP) as [string, { takeProfitPct: number; stopLossPct: number }][]) {
         await gp().query(
           `UPDATE transaction_chains SET target_profit_pct=$1, stop_loss_pct=$2
-           WHERE strategy_mode=$3 AND status IN ('OPEN','AVERAGING','PROFIT_TAKING')
+           WHERE strategy_mode=$3 AND status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND is_paper = $4
              AND (target_profit_pct = 4.0 OR stop_loss_pct = -3.0)`,
-          [params.takeProfitPct, params.stopLossPct, mode],
+          [params.takeProfitPct, params.stopLossPct, mode, baseIsPaper],
         );
       }
       logger.info('✅ 체인 전략모드별 TP/SL 보정 완료', { component: 'BOOT' });
