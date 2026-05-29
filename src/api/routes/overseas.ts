@@ -299,19 +299,21 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
     if (!ticker) return c.json({ error: '티커 필요' }, 400);
 
     const sanitizedTicker = ticker.toUpperCase().replace(/[^A-Z0-9.]/g, '');
-    // 동적 기본금액: 포트폴리오의 3% (스캘프니까 작게)
+    // 동적 기본금액: 현금잔고 기반 유연한 매수 금액
     let defaultAmount = 200;
     try {
-      const cashKey = config.isPaper ? 'cash_paper' : 'cash';
-      const { rows: cashRows } = await getPool().query("SELECT value FROM overseas_state WHERE key = $1", [cashKey]);
-      const { rows: holdRows } = await getPool().query("SELECT SUM(avg_price * quantity) AS total FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1", [config.isPaper]);
-      const cashVal = cashRows[0] ? Number(cashRows[0].value) : 0;
+      const { getCash: getOsCashFn } = await import('../../scheduler/overseas/state.js');
+      const cashUsd = await getOsCashFn(baseIsPaper); // USD 기준 현금
+      const { rows: holdRows } = await getPool().query("SELECT SUM(avg_price * quantity) AS total FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1", [baseIsPaper]);
       const holdVal = holdRows[0]?.total ? Number(holdRows[0].total) : 0;
-      const portfolio = cashVal + holdVal;
-      if (portfolio > 0) defaultAmount = Math.max(50, Math.min(1000, Math.round(portfolio * 0.03)));
+      const portfolio = cashUsd + holdVal;
+      // 포트폴리오 10% 또는 현금 80% 중 작은 값 (소액: 현금 90%)
+      const pctAmount = Math.round(portfolio * 0.10);
+      const cashCap = Math.round(cashUsd * (cashUsd < 200 ? 0.90 : 0.80));
+      defaultAmount = Math.max(20, Math.min(cashCap, pctAmount, 2000));
     } catch { /* 조회 실패 시 기본값 유지 */ }
-    const amountUsd = body.amountUsd ?? defaultAmount;
-    const safeAmount = Math.max(50, Math.min(1000, Number(amountUsd)));
+    const amountUsd = (body.amountUsd && body.amountUsd > 0) ? body.amountUsd : defaultAmount;
+    const safeAmount = Math.max(20, Math.min(2000, Number(amountUsd)));
 
     // 현재가 조회
     const price = await getOverseasPrice(sanitizedTicker, exchange);

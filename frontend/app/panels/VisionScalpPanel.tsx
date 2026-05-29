@@ -10,7 +10,7 @@ export default function VisionScalpPanel({ toast }: { toast?: (msg: string, type
   const [signal, setSignal] = React.useState<any>(null);
   const [analyzing, setAnalyzing] = React.useState(false);
   const [executing, setExecuting] = React.useState(false);
-  const [amountUsd, setAmountUsd] = React.useState(200);
+  const [amountUsd, setAmountUsd] = React.useState(0); // 0 = 서버 자동 계산
   const [result, setResult] = React.useState<any>(null);
   const [analyzeError, setAnalyzeError] = React.useState<string | null>(null);
 
@@ -58,7 +58,7 @@ export default function VisionScalpPanel({ toast }: { toast?: (msg: string, type
         body: JSON.stringify({
           ticker: signal.ticker,
           exchange: signal.exchange ?? 'NASDAQ',
-          amountUsd,
+          ...(amountUsd > 0 ? { amountUsd } : {}), // 0이면 서버 자동 계산
           reasoning: signal.reasoning,
         }),
       });
@@ -141,10 +141,11 @@ export default function VisionScalpPanel({ toast }: { toast?: (msg: string, type
               <>
                 <input
                   type="number"
-                  value={amountUsd}
-                  onChange={e => setAmountUsd(Math.max(50, Math.min(1000, Number(e.target.value))))}
+                  value={amountUsd || ''}
+                  placeholder="자동"
+                  onChange={e => setAmountUsd(Math.max(0, Math.min(2000, Number(e.target.value) || 0)))}
                   className="w-20 bg-slate-800/60 border border-slate-700/50 rounded-lg px-2 py-1.5 text-xs text-slate-300 text-center"
-                  min={50} max={1000} step={50}
+                  min={0} max={2000} step={50}
                 />
                 <span className="text-[10px] text-slate-600">USD</span>
                 <button
