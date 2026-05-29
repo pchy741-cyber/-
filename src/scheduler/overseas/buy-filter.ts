@@ -173,11 +173,17 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       if (uncPenalty && uncPenalty.penalty > 0) logger.info(`  📉 불확실성 보정: ${t.code} conf ${((ai?.confidence ?? 0) * 100).toFixed(0)}% → ${(effectiveConf * 100).toFixed(0)}% (${uncPenalty.reasons.join(',')})`, { component: 'OVERSEAS' });
       if (ai?.action === 'BUY' && effectiveConf >= minConf) return true;
       if (ai?.action === 'BUY' && (t.signal === 'STRONG_BUY' || t.isMomentum) && effectiveConf >= minConfMomentum) return true;
-      // Paper: STRONG_BUY/BUY 시그널 + score >= 30이면 AI 없어도 통과
+      // Paper: AI 없이도 기술적 신호로 매수 허용 (Gemini 한도 초과 대비)
       if (!ai && isPaper) {
-        const isBuySignal = (t.signal === 'STRONG_BUY' && t.score >= 30) || (t.signal === 'BUY' && t.score >= 40);
-        const rsiOk = t.rsi >= 40 && t.rsi <= 75;
+        const isBuySignal = (t.signal === 'STRONG_BUY' && t.score >= 20) || (t.signal === 'BUY' && t.score >= 30);
+        const rsiOk = t.rsi >= 35 && t.rsi <= 75;
         if (isBuySignal && rsiOk) return true;
+        // Paper Momentum Cascade: mq 무관하게 기술 신호로 진입
+        if (t.isBigMover && t.score >= 15 && t.rsi >= 35 && t.rsi <= 75) return true;
+        if (t.isMomentum && t.score >= 20 && t.aboveMA20 && t.rsi >= 40 && t.rsi <= 72) return true;
+        if (t.bollingerBreakout === 'UP' && t.score >= 20 && t.aboveMA20 && t.rsi >= 40 && t.rsi <= 75) return true;
+        logger.info(`  ⛔ Paper AI-free 기술 차단: ${t.code} sig=${t.signal} score=${t.score} RSI=${t.rsi.toFixed(0)}`, { component: 'OVERSEAS' });
+        return false;
       }
       if (!ai && !recoveryMode && (mq === 'GREAT' || mq === 'OK')) {
         // ── Momentum Cascade: AI 없어도 강한 모멘텀은 즉시 진입 ──
@@ -186,8 +192,8 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // STRONG_BUY: score≥30 + ADX≥20 + RSI 45-70 (AI 없이도 강한 기술 시그널)
         if (t.signal === 'STRONG_BUY' && t.score >= 30 && t.adx >= 20 && t.rsi >= 45 && t.rsi <= 70) return true;
         // BUY: 소액 계좌는 score≥30, 일반은 score≥40
-        const buyScoreMin = (!isPaper && portfolioValue < 500) ? 30 : 40;
-        const buyAdxMin = (!isPaper && portfolioValue < 500) ? 20 : 25;
+        const buyScoreMin = portfolioValue < 500 ? 30 : 40;
+        const buyAdxMin = portfolioValue < 500 ? 20 : 25;
         if (t.signal === 'BUY' && t.score >= buyScoreMin && t.adx >= buyAdxMin && t.rsi >= 45 && t.rsi <= 70) return true;
         const isBollingerMomentum = t.bollingerBreakout === 'UP' && t.isMomentum && t.score >= 30 && t.aboveMA20 && t.rsi >= 45 && t.rsi <= 72;
         if (isBollingerMomentum) return true;
