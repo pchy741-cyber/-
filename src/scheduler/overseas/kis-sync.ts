@@ -34,24 +34,25 @@ export async function syncHoldingsFromKIS(): Promise<void> {
 
     const exchanges = ['NASDAQ', 'NYSE', 'AMEX', 'TSE', 'TWSE'];
     const allHoldings = new Map<string, { qty: number; avgPrice: number; exchange: string }>();
-    const failedExchanges = new Set<string>();
+    const successExchanges = new Set<string>(); // API 성공한 거래소만 추적
 
     for (const exch of exchanges) {
       try {
         const items = await getOverseasBalance(exch);
+        successExchanges.add(exch); // 성공한 거래소만 기록
         for (const item of items) {
           if (item.quantity > 0 && item.stockCode) {
-            // 이미 다른 거래소에서 발견된 종목은 덮어쓰지 않음 (첫 발견 우선)
-            // 단, GLOBAL_WATCHLIST에 정의된 거래소가 있으면 그것을 우선 사용
             const existing = allHoldings.get(item.stockCode);
-            if (existing) continue; // 중복 방지: 첫 발견 거래소 유지
+            if (existing) continue;
             const wlEntry = GLOBAL_WATCHLIST.find(w => w.code === item.stockCode);
             const resolvedExchange = wlEntry?.exchange ?? exch;
             allHoldings.set(item.stockCode, { qty: item.quantity, avgPrice: item.avgBuyPrice, exchange: resolvedExchange });
           }
         }
       } catch {
-        failedExchanges.add(exch);
+        // API 실패 = 시장 마감 또는 일시 오류 → 해당 거래소는 "확인 불가"로 처리
+        // failedExchanges에 넣으면 ghost 포지션이 영원히 안 지워지는 버그 발생
+        logger.info(`⏭️ KIS잔고조회 실패 (${exch}) — 시장 마감 또는 오류, 이번 사이클 스킵`, { component: 'OVERSEAS' });
       }
     }
 
@@ -60,7 +61,8 @@ export async function syncHoldingsFromKIS(): Promise<void> {
     ).catch(() => ({ rows: [] as Array<{ stock_code: string; exchange: string; quantity: string; avg_price: string }> }));
 
     for (const row of dbRows) {
-      if (failedExchanges.has(String(row.exchange))) continue;
+      // API 성공한 거래소만 처리 — 실패한 거래소(마감/오류)는 스킵 (ghost 방지)
+      if (!successExchanges.has(String(row.exchange))) continue;
       const code = String(row.stock_code);
       const dbQty = Number(row.quantity);
       const dbAvgPrice = Number(row.avg_price ?? 0);

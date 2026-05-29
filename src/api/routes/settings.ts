@@ -279,6 +279,18 @@ settingsRoutes.post('/run-overseas', async (c) => {
   return c.json({ ok: true, message: '해외주식 수동 실행 시작' });
 });
 
+// KIS 잔고 강제 동기화 — 장 마감 중에도 호출 가능 (유령 포지션 정리)
+settingsRoutes.post('/sync-overseas-holdings', async (c) => {
+  try {
+    const { syncHoldingsFromKIS } = await import('../../scheduler/overseas/kis-sync.js');
+    await syncHoldingsFromKIS();
+    return c.json({ ok: true, message: 'KIS 잔고 동기화 완료' });
+  } catch (e) {
+    logger.error(`KIS 강제 동기화 실패: ${e}`, { component: 'SETTINGS' });
+    return c.json({ ok: false, error: String(e) }, 500);
+  }
+});
+
 // ── Auto Pilot Loop ──
 settingsRoutes.get('/loop/status', async (c) => {
   const { getLoopStatus } = await import('../../scheduler/loop-mode.js');
