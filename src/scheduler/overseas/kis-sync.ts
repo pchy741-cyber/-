@@ -85,12 +85,17 @@ export async function syncHoldingsFromKIS(): Promise<void> {
         ).catch(() => ({ rows: [] as Array<{ value: string }> }));
 
         if (debounceRows.length === 0) {
-          // 첫 감지: 상태 저장, 이번 사이클은 스킵
+          // 첫 감지: debounce 상태 저장 + 즉시 재매수 쿨다운 설정
+          // (2회 확인 전이라도 이번 사이클에서 재매수 금지 — 예약매도 후 재매수 버그 방지)
           await getPool().query(
             `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
             [debounceKey, String(sellPrice)],
           ).catch(() => {});
-          logger.info(`⏳ KIS동기화: ${code} 잔고 0 첫 감지($${sellPrice.toFixed(2)}) → 다음 확인 시 처리`, { component: 'OVERSEAS' });
+          getPool().query(
+            `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
+            [`manual_sell_cd_${code}`, JSON.stringify({ at: new Date().toISOString(), pnlPct: 0 })],
+          ).catch(() => {});
+          logger.info(`⏳ KIS동기화: ${code} 잔고 0 첫 감지($${sellPrice.toFixed(2)}) → 재매수 쿨다운 선제 설정`, { component: 'OVERSEAS' });
           allHoldings.delete(code);
           continue;
         }
