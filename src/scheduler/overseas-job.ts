@@ -831,8 +831,9 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         // 멀티 타임프레임 차단: 방향 불일치 (Live 소액 계좌는 바이패스 — 매수 기회 확보)
         const mtf = mtfResults.get(target.code);
         if (mtf?.blocked) {
-          if (!isPaper() && portfolioValue < 500) {
-            logger.info(`📊 MTF 경고(소액 바이패스): ${target.code} (W:${mtf.weekly} D:${mtf.daily} H4:${mtf.h4} 합류${mtf.confluence}/3)`, { component: 'OVERSEAS' });
+          // Paper: 학습용이므로 MTF 차단 바이패스 / Live 소액: 매수 기회 확보
+          if (isPaper() || portfolioValue < 500) {
+            logger.info(`📊 MTF 경고(바이패스): ${target.code} (W:${mtf.weekly} D:${mtf.daily} H4:${mtf.h4} 합류${mtf.confluence}/3)`, { component: 'OVERSEAS' });
           } else {
             logger.info(`📊 MTF 차단: ${target.code} (W:${mtf.weekly} D:${mtf.daily} H4:${mtf.h4} 합류${mtf.confluence}/3)`, { component: 'OVERSEAS' });
             continue;
