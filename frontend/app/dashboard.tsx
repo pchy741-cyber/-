@@ -275,8 +275,9 @@ export default function Dashboard() {
     viewModeRef.current = mode;
     setViewMode(mode);
     try { localStorage.setItem('quantops_viewMode', mode); } catch {}
-    // 해외 데이터는 모드 전환 시 즉시 초기화 — 모드 간 cross-contamination 방지
-    // (paper ↔ live 전환 시 이전 모드 holdings가 보존되는 버그 제거)
+    // 모드 전환 시 국내/해외 데이터 즉시 초기화 — 이전 모드 데이터 잔류 방지
+    // (paper ↔ live 전환 시 이전 포지션/현금이 잠깐 보이는 크로스오염 차단)
+    setDash(null);
     setUsDash(null);
     loadingRef.current = false;
     tradesLoadedRef.current = false;

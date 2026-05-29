@@ -138,16 +138,22 @@ export class RiskEngine {
     const totalAfter = currentInvested + orderValue;
 
     const totalAssets = balance.totalEvalAmount ?? 0;
+    // 황금비율 포지션 캡: 소계좌일수록 집중도 허용 (단일주도 못 사는 상황 방지)
+    // 피보나치 수열 기반: 50% → 38.2% → 25% (계좌 규모별 단계적 수렴)
+    const capRatio = totalAssets < 500_000 ? 0.50
+      : totalAssets < 5_000_000 ? 0.382
+      : 0.25;
     const dynamicLimit = totalAssets > 0
-      ? Math.min(Math.round(totalAssets * 0.25), config.risk.maxPositionKrw)
+      ? Math.min(Math.round(totalAssets * capRatio), config.risk.maxPositionKrw)
       : config.risk.maxPositionKrw;
 
     if (totalAfter > dynamicLimit) {
-      const msg = `종목당 한도 초과: ${stockCode} 현재 ${currentInvested.toLocaleString()}원 + 신규 ${orderValue.toLocaleString()}원 = ${totalAfter.toLocaleString()}원 > 한도 ${dynamicLimit.toLocaleString()}원 (총자산 ${totalAssets.toLocaleString()}원의 25%)`;
+      const capPct = Math.round(capRatio * 100);
+      const msg = `종목당 한도 초과: ${stockCode} 현재 ${currentInvested.toLocaleString()}원 + 신규 ${orderValue.toLocaleString()}원 = ${totalAfter.toLocaleString()}원 > 한도 ${dynamicLimit.toLocaleString()}원 (총자산 ${totalAssets.toLocaleString()}원의 ${capPct}%)`;
       await insertRiskEvent({
         event_type: 'POSITION_LIMIT',
         severity: 'WARNING',
-        details: { stockCode, currentInvested, orderValue, limit: dynamicLimit, totalAssets },
+        details: { stockCode, currentInvested, orderValue, limit: dynamicLimit, totalAssets, capRatio },
         action_taken: '주문 거부',
       });
       return { approved: false, reason: msg };

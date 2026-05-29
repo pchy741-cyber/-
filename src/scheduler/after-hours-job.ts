@@ -60,8 +60,8 @@ export async function runAfterHoursJob(): Promise<void> {
 
         const pnlPct = ((curPrice - avgBuy) / avgBuy) * 100;
 
-        // 수익 +0.3% 이상만 매도 (수수료 0.21% + 시간외 슬리피지 커버)
-        if (pnlPct >= 0.3) {
+        // 수익 +1.0% 이상만 매도 (수수료 0.21% + 시간외 슬리피지 + 실질 이익 확보)
+        if (pnlPct >= 1.0) {
           logger.info(
             `🌙 시간외 수익확정: ${chain.stock_code} +${pnlPct.toFixed(2)}% (평단 ${avgBuy.toLocaleString()} → 현재 ${curPrice.toLocaleString()}) → 전량 매도`,
             { component: 'AFTER_HOURS' },

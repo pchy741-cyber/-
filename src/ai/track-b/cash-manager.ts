@@ -103,7 +103,7 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
   const candidates = MEGA_CAP_PARK_CANDIDATES
     .filter(c => !alreadyParked.has(c.code))
     .map(c => ({ ...c, price: livePrices.get(c.code) }))
-    .filter(c => c.price && c.price.changePct > 1.0) // 당일 +1.0% 이상 상승 — 수수료 0.21% 대비 실익 확보
+    .filter(c => c.price && c.price.changePct >= 0.5 && c.price.changePct <= 3.5) // 당일 +0.5~3.5% — 수수료 커버 + 급등 추격 방지
     .sort((a, b) => (b.price?.changePct ?? 0) - (a.price?.changePct ?? 0));
 
   if (candidates.length === 0) {
