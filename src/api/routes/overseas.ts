@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { OVERSEAS_FEE_PCT } from '../../config/constants.js';
+import { OVERSEAS_FEE_PCT, SECTOR_CLASS } from '../../config/constants.js';
 import { getOverseasBalance, getOverseasDailyChart, getOverseasPrice, placeOverseasOrder } from '../../kis/overseas.js';
 import { config, baseIsPaper } from '../../config/index.js';
 import { runWithMode } from '../../config/context.js';
@@ -10,6 +10,8 @@ import { getOverseasScores, setOverseasScores, type OverseasScoreEntry } from '.
 import { analyzeTechnicals, type OHLCV } from '../../analysis/indicators.js';
 import { notifyOverseasSell } from '../../notifications/web-push.js';
 import { GLOBAL_WATCHLIST } from '../../scheduler/overseas/watchlist.js';
+import { calcDynamicTpSl, getVixRegime } from '../../scheduler/overseas/risk-intelligence.js';
+import { getFearGreedIndex } from '../../market/external-signals.js';
 
 export const overseasRoutes = new Hono();
 
@@ -299,34 +301,64 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
     if (!ticker) return c.json({ error: '티커 필요' }, 400);
 
     const sanitizedTicker = ticker.toUpperCase().replace(/[^A-Z0-9.]/g, '');
-    // 동적 기본금액: 현금잔고 기반 유연한 매수 금액
-    let defaultAmount = 200;
-    try {
-      const { getCash: getOsCashFn } = await import('../../scheduler/overseas/state.js');
-      const cashUsd = await getOsCashFn(baseIsPaper); // USD 기준 현금
-      const { rows: holdRows } = await getPool().query("SELECT SUM(avg_price * quantity) AS total FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1", [baseIsPaper]);
-      const holdVal = holdRows[0]?.total ? Number(holdRows[0].total) : 0;
-      const portfolio = cashUsd + holdVal;
-      // 포트폴리오 10% 또는 현금 80% 중 작은 값 (소액: 현금 90%)
-      const pctAmount = Math.round(portfolio * 0.10);
-      const cashCap = Math.round(cashUsd * (cashUsd < 200 ? 0.90 : 0.80));
-      defaultAmount = Math.max(20, Math.min(cashCap, pctAmount, 2000));
-    } catch { /* 조회 실패 시 기본값 유지 */ }
-    const amountUsd = (body.amountUsd && body.amountUsd > 0) ? body.amountUsd : defaultAmount;
-    const safeAmount = Math.max(20, Math.min(2000, Number(amountUsd)));
 
-    // 현재가 조회
+    // ── 1. 현재가 + 기술 데이터 조회 ──
     const price = await getOverseasPrice(sanitizedTicker, exchange);
     if (!price.currentPrice || price.currentPrice <= 0) {
       return c.json({ error: `${sanitizedTicker} 시세 조회 실패` }, 400);
     }
 
-    const qty = Math.max(1, Math.floor(safeAmount / (price.currentPrice * 1.0025)));
-    const totalCost = qty * price.currentPrice * 1.0025; // 수수료 0.25% 포함
+    // 기술 분석 데이터 (RSI, ADX 등) — 캐시된 점수 활용
+    const cachedScores = getOverseasScores() as any[];
+    const scoreEntry = cachedScores?.find((s: any) => s.code === sanitizedTicker);
+    const rsi = scoreEntry?.rsi ?? 50;
+    const adx = scoreEntry?.adx ?? 20;
+    const score = scoreEntry?.score ?? 0;
+    const signal = scoreEntry?.signal ?? 'HOLD';
+    const isMomentum = scoreEntry?.isMomentum ?? false;
 
-    // TP +2.5%, SL -1.5% (단타 파라미터)
-    const tpPrice = +(price.currentPrice * 1.025).toFixed(2);
-    const slPrice = +(price.currentPrice * 0.985).toFixed(2);
+    // 섹터 조회
+    const watchItem = GLOBAL_WATCHLIST.find(w => w.code === sanitizedTicker);
+    const sector = watchItem?.sector ?? '';
+
+    // ── 2. 동적 금액 계산: 현금잔고 기반 황금비율 ──
+    let defaultAmount = 200;
+    let cashUsd = 0;
+    let portfolio = 0;
+    try {
+      const { getCash: getOsCashFn } = await import('../../scheduler/overseas/state.js');
+      cashUsd = await getOsCashFn(baseIsPaper);
+      const { rows: holdRows } = await getPool().query("SELECT SUM(avg_price * quantity) AS total FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1", [baseIsPaper]);
+      const holdVal = holdRows[0]?.total ? Number(holdRows[0].total) : 0;
+      portfolio = cashUsd + holdVal;
+      // 황금비율(0.618) 기반 포지션: 포트폴리오 × 0.618 × 리스크팩터
+      // 리스크팩터: 소액(15%) / 중형(10%) / 대형(8%) — 황금비율 × 비율
+      const riskFactor = portfolio < 500 ? 0.15 : portfolio < 5000 ? 0.10 : 0.08;
+      const goldenAmount = Math.round(portfolio * 0.618 * riskFactor);
+      // 현금 보호: 현금의 최대 비율까지만 사용
+      const cashCap = Math.round(cashUsd * (cashUsd < 200 ? 0.90 : 0.80));
+      // 최소 1주 매수 가능: 주가보다는 높게 설정
+      const minAmount = Math.min(price.currentPrice * 1.01, cashUsd * 0.95);
+      defaultAmount = Math.max(minAmount, Math.min(cashCap, goldenAmount, 5000));
+    } catch { /* 조회 실패 시 기본값 유지 */ }
+    const amountUsd = (body.amountUsd && body.amountUsd > 0) ? body.amountUsd : defaultAmount;
+    const safeAmount = Math.max(price.currentPrice, Math.min(cashUsd * 0.95 || 5000, Number(amountUsd)));
+
+    // 주수 계산 (수수료 0.25% 보정, 최소 1주)
+    let qty = Math.floor(safeAmount / (price.currentPrice * 1.0025));
+    if (qty <= 0 && safeAmount >= price.currentPrice * 0.99) qty = 1;
+    qty = Math.max(1, qty);
+    const totalCost = qty * price.currentPrice * 1.0025;
+
+    // ── 3. 동적 TP/SL: 종목별 변동성·섹터·VIX 반영 (자동매매 동일 로직) ──
+    const vixData = await getFearGreedIndex().catch(() => null);
+    const vixValue = vixData?.vix ?? 0;
+    const vixRegime = getVixRegime(vixValue);
+    const { tpPct, slPct, tpLabel } = calcDynamicTpSl({
+      sector, adx, rsi, aiScore: score, vixRegime, isMomentum,
+    });
+    const tpPrice = +(price.currentPrice * (1 + tpPct / 100)).toFixed(2);
+    const slPrice = +(price.currentPrice * (1 - slPct / 100)).toFixed(2);
     const vsCashKey = baseIsPaper ? 'cash_paper' : 'cash';
 
     let filledPrice = price.currentPrice;
@@ -371,7 +403,7 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
           kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
          VALUES ($1, 'BUY', 'MARKET', $2, $3, $2, $3, $4, 'FILLED', $5, 'OVERSEAS', $6)`,
         [sanitizedTicker, qty, filledPrice, orderNo, baseIsPaper ? 'paper' : 'live',
-         `Vision단타 매수 $${safeAmount} (TP:$${tpPrice} SL:$${slPrice})`]);
+         `수동매수 $${safeAmount.toFixed(0)} (TP+${tpPct.toFixed(1)}%:$${tpPrice} SL-${slPct.toFixed(1)}%:$${slPrice}) [${tpLabel}]`]);
 
       // Live만 overseas_state 현금 차감 (Paper는 computed)
       if (!baseIsPaper) {
@@ -382,7 +414,7 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
       }
     });
 
-    logger.info(`[VisionScalp] 매수 ${sanitizedTicker} ${qty}주 @ $${filledPrice} (TP:$${tpPrice} SL:$${slPrice}) [${baseIsPaper ? 'PAPER' : 'LIVE'}]`, { component: 'OVERSEAS' });
+    logger.info(`[수동매수] ${sanitizedTicker} ${qty}주 @$${filledPrice.toFixed(2)} (TP+${tpPct.toFixed(1)}%:$${tpPrice} SL-${slPct.toFixed(1)}%:$${slPrice}) $${safeAmount.toFixed(0)}/${cashUsd.toFixed(0)} [${tpLabel}] [${baseIsPaper ? 'PAPER' : 'LIVE'}]`, { component: 'OVERSEAS' });
     const vsMode = baseIsPaper ? 'paper' : 'live';
     cacheSet(`overseas:dashboard:${vsMode}`, null as any, 0);
     cacheSet(`overseas:holdings:${vsMode}`, null as any, 0);
@@ -394,8 +426,11 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
       qty,
       price: filledPrice,
       totalCost,
-      tpPrice,
-      slPrice,
+      tpPrice, tpPct: +tpPct.toFixed(1),
+      slPrice, slPct: +slPct.toFixed(1),
+      tpLabel,
+      amountUsed: +safeAmount.toFixed(0),
+      cashRemaining: +(cashUsd - totalCost).toFixed(2),
       reasoning,
       mode: baseIsPaper ? 'paper' : 'live',
     });

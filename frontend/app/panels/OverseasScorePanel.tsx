@@ -26,13 +26,12 @@ export default function OverseasScorePanel({ usDash, toast }: { usDash?: any; to
   const visible = showAll ? sorted : sorted.slice(0, 10);
 
   const manualBuy = async (sc: any) => {
-    if (!confirm(`${sc.name ?? sc.code} 수동 매수 (최적 금액 자동 계산)?`)) return;
+    if (!confirm(`${sc.name ?? sc.code} 수동 매수 (현금잔고 기반 최적 금액)?`)) return;
     setBuyingCode(sc.code);
     try {
       const ex = sc.exchange ?? (sc.code?.length <= 4 ? 'NASDAQ' : 'NYSE');
-      // amountUsd 미전송 → 서버가 현금잔고 기반으로 최적 금액 계산
-      await api('/overseas/vision-scalp/execute', { method: 'POST', body: JSON.stringify({ ticker: sc.code, exchange: ex, reasoning: `수동진입 점수${sc.score?.toFixed(0)} RSI${sc.rsi?.toFixed(0)} ${sc.signal}` }) });
-      toast?.('해외 매수 접수', 'ok');
+      const res = await api('/overseas/vision-scalp/execute', { method: 'POST', body: JSON.stringify({ ticker: sc.code, exchange: ex, reasoning: `수동진입 점수${sc.score?.toFixed(0)} RSI${sc.rsi?.toFixed(0)} ${sc.signal}` }) });
+      toast?.(`${sc.code} ${res.qty}주 @$${res.price?.toFixed(2)} ($${res.amountUsed}) TP+${res.tpPct}%/SL-${res.slPct}%`, 'ok');
     } catch (e: any) { toast?.(e.message, 'err'); }
     setBuyingCode(null);
   };
