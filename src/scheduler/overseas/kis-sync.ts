@@ -236,6 +236,16 @@ export async function syncHoldingsFromKIS(): Promise<void> {
     for (const [code, item] of allHoldings) {
       if (!watchCodes.has(code)) continue;
 
+      // 수동매도 쿨다운 중이면 재삽입 스킵 (T+1 결제: KIS API가 매도 종목을 아직 반환)
+      const { rows: cdRows } = await getPool().query(
+        "SELECT value FROM overseas_state WHERE key = $1",
+        [`manual_sell_cd_${code}`],
+      ).catch(() => ({ rows: [] as any[] }));
+      if (cdRows.length > 0) {
+        logger.info(`⏭️ KIS동기화: ${code} 수동매도 쿨다운 중 → 재매수 감지 스킵 (T+1 결제 대기)`, { component: 'OVERSEAS' });
+        continue;
+      }
+
       await insertOrder({
         chain_id: null,
         stock_code: code,
