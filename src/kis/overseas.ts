@@ -352,6 +352,7 @@ export async function getOverseasBuyableAmount(exchange: string = 'NASDAQ'): Pro
     }
 
     const usd = Number(output?.frcr_ord_psbl_amt1 ?? 0);
+    const exrt = Number(output?.exrt ?? 0);
 
     // 원화 주문가능금액 후보 필드 (통합증거금)
     // ovrs_ord_psbl_amt: 해외주문가능총금액(원화)
@@ -370,6 +371,12 @@ export async function getOverseasBuyableAmount(exchange: string = 'NASDAQ'): Pro
         krw = v;
         break;
       }
+    }
+
+    // Sanity check: KRW 값이 환율보다 작으면 USD가 KRW로 오인된 것 (₩1000 미만 = 불가능)
+    // → USD × 환율로 KRW 변환하여 반환
+    if (krw !== null && krw < 10_000 && usd > 0 && exrt > 1000) {
+      krw = Math.round(usd * exrt);
     }
 
     return { usd, krw };
