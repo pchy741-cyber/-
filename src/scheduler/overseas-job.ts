@@ -821,6 +821,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         logger.warn(`🛑 Kill Switch 활성 — 해외 매수 ${buyTargets.length}건 건너뜀`, { component: 'OVERSEAS' });
       }
       const slotsAvailable = (killSwitchBuyBlock || defenseBlockBuys) ? 0 : MAX_POSITIONS - currentHoldingCount;
+      logger.info(`🔧 매수 루프: slots=${slotsAvailable} (max=${MAX_POSITIONS} held=${currentHoldingCount} kill=${killSwitchBuyBlock} defense=${defenseBlockBuys}) cash=$${cash.toFixed(0)} targets=${buyTargets.length}`, { component: 'OVERSEAS' });
       for (const target of buyTargets.slice(0, slotsAvailable)) {
         // 상관관계 차단: 같은 그룹 내 보유 초과
         const corrBlock = checkCorrelationLimit(target.code, updatedHoldings);
@@ -867,7 +868,10 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         const positionSize = Math.min(baseSize * sizingMult, cash * cashUsageCap);
         // 소액투자 가능: 통합증거금 소액 매수 허용 (수수료 0.25% → $20도 $0.05)
         const minPositionSize = 20;
-        if (positionSize < minPositionSize) break;
+        if (positionSize < minPositionSize) {
+          logger.info(`🔧 ${target.code}: positionSize=$${positionSize.toFixed(2)} < $${minPositionSize} → BREAK (base=$${baseSize.toFixed(0)} sizing=${sizingMult} cashCap=$${(cash * cashUsageCap).toFixed(0)})`, { component: 'OVERSEAS' });
+          break;
+        }
 
         const targetWatchItem = GLOBAL_WATCHLIST.find(w => w.code === target.code);
         const isHighBetaEntry = SECTOR_CLASS.HIGH_BETA.includes(targetWatchItem?.sector ?? '');
@@ -880,7 +884,10 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         const qtyBySizing = Math.floor(positionSize / (target.price.currentPrice * 1.0025));
         const fullQty = Math.min(qtyBySizing, qtyBy1PctRule > 0 ? qtyBy1PctRule : qtyBySizing);
 
-        if (fullQty <= 0) continue;
+        if (fullQty <= 0) {
+          logger.info(`🔧 ${target.code}: fullQty=0 → SKIP (sizing=${qtyBySizing} risk=${qtyBy1PctRule} price=$${target.price.currentPrice.toFixed(2)} posSize=$${positionSize.toFixed(0)})`, { component: 'OVERSEAS' });
+          continue;
+        }
 
         // Scale-In: 모멘텀/빅무버는 100% 즉시매수, 나머지는 60% 진입 → +2% 확인 후 40% 추가
         const useScaleIn = !target.isMomentum && !target.isBigMover && fullQty >= 3;
@@ -895,8 +902,9 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           ? `${buyMode} AI(${(target.ai.confidence * 100).toFixed(0)}%) 사이징x${sizingMult}: ${target.ai.reasoning}${wrTag}${evTag}`
           : `${buyMode} 기술(AI없음) 사이징x${sizingMult}: score=${target.score} RSI=${target.rsi.toFixed(0)} ADX=${target.adx.toFixed(0)}${wrTag}${evTag}`;
 
+        logger.info(`🔧 ${target.code}: 매수 실행 시도 qty=${qty} @$${target.price.currentPrice.toFixed(2)} posSize=$${positionSize.toFixed(0)} fullQty=${fullQty}`, { component: 'OVERSEAS' });
         const exec = await executeOverseasOrder(target.code, 'BUY', qty, target.price.currentPrice, target.exchange, reason, 0, 0, { isPaper: isPaper() });
-        if (!exec.submitted) continue;
+        if (!exec.submitted) { logger.warn(`🔧 ${target.code}: 주문 미접수 (submitted=false)`, { component: 'OVERSEAS' }); continue; }
         if (exec.filledQty <= 0) {
           pendingOrderStocks.add(target.code);
           buyOrders.push(`매수 접수 ${target.code} x${qty} ${buyMode} (체결 대기)`);
