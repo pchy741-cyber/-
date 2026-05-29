@@ -585,7 +585,6 @@ sellRoutes.post('/manual-buy', async (c) => {
   }
 
   try {
-    const MAX_ALLOC_PCT = 0.20;
     let amount_krw = body.amount_krw ?? 0;
     if (amount_krw < 10000) {
       try {
@@ -595,12 +594,21 @@ sellRoutes.post('/manual-buy', async (c) => {
         const slFraction = Math.abs(stopLossPct) / 100;
         const riskBudget = totalCapital * 0.015;
         const computed = Math.round(riskBudget / slFraction);
-        const capByAlloc = Math.round(totalCapital * MAX_ALLOC_PCT);
-        // 가용현금 초과 방지 + 최소 10,000원 (1주 살 수 있는지는 이후 체크)
+
+        // 동적 포지션 비중 — 종목 품질(점수·규모·리스크)에 따라 자동 조절
+        const { getDynamicPositionSizePct } = await import('../../../config/constants.js');
+        const { MEGA_CAP_PRIORITY_CODES } = await import('../.././../ai/track-b/trading-rules.js');
+        const dynPct = getDynamicPositionSizePct({
+          score: aiScore,
+          confidence: body.confidence,
+          isMegaCap: MEGA_CAP_PRIORITY_CODES.has(stock_code),
+          pullbackSignal: body.pullback_signal,
+        }) / 100;
+        const capByAlloc = Math.round(totalCapital * dynPct);
         const capByCash = Math.round(availCash * 0.95);
         amount_krw = Math.max(Math.min(computed, capByAlloc, capByCash), 10000);
         logger.info(
-          `💰 동적 사이징: 총자본 ${(totalCapital / 10000).toFixed(0)}만원 가용현금 ${(availCash / 10000).toFixed(1)}만원 × 1.5% / ${Math.abs(stopLossPct)}%SL = ${(computed / 10000).toFixed(1)}만원 → ${(amount_krw / 10000).toFixed(1)}만원`,
+          `💰 동적 사이징: score=${aiScore} megacap=${MEGA_CAP_PRIORITY_CODES.has(stock_code)} → 비중${(dynPct * 100).toFixed(0)}% | 총자본 ${(totalCapital / 10000).toFixed(0)}만원 → ${(amount_krw / 10000).toFixed(1)}만원`,
           { component: 'CLAUDE_BUY' },
         );
       } catch (e) {

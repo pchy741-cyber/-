@@ -213,6 +213,45 @@ export function getScoreBasedParams(score: number): { takeProfitPct: number; sto
   return                 { takeProfitPct: 5.0, stopLossPct: -2.5 };   // 마진컬(60-69): 2:1 R:R (최소 기준)
 }
 
+// ── 동적 포지션 사이징 — 기업 규모 × 수익률 × 리스크 복합 ──
+// 국내주식 매수 시 종목 품질에 따라 투자 비중 자동 조절
+// 고확신 대형주 → 최대 35%, 고변동 소형주 → 최소 8%
+export interface PositionSizeHints {
+  score: number;
+  confidence?: number;
+  isMegaCap?: boolean;    // 시총 상위 10 대형주
+  isHighBeta?: boolean;   // 고변동성 (반도체장비, 바이오 등)
+  pullbackSignal?: boolean;
+  nearHigh52w?: boolean;  // 52주 고점 5% 이내 (저항선 위험)
+}
+
+export function getDynamicPositionSizePct(p: PositionSizeHints): number {
+  let pct = 20; // 기본 20%
+
+  // 점수 — 확신 강할수록 더 투자
+  if (p.score >= 93)      pct += 6;
+  else if (p.score >= 88) pct += 4;
+  else if (p.score >= 83) pct += 2;
+  else if (p.score < 78)  pct -= 5;
+
+  // 기업 규모 — 대형주는 유동성·안정성 우위
+  if (p.isMegaCap) pct += 4;
+
+  // 확신도
+  const conf = p.confidence ?? 0.65;
+  if (conf >= 0.85)      pct += 3;
+  else if (conf < 0.60)  pct -= 4;
+
+  // 기술적 품질
+  if (p.pullbackSignal) pct += 2;
+  if (p.nearHigh52w)    pct -= 3;
+
+  // 리스크 — 고변동 종목은 비중 축소
+  if (p.isHighBeta) pct -= 5;
+
+  return Math.max(8, Math.min(35, Math.round(pct)));
+}
+
 // ── 완전 동적 TP/SL — score + 기술지표 복합 계산 ──
 // use_dynamic_tpsl=true 시 고정값 대신 이 함수 사용
 // 진입 품질(눌림/거래량/RSI/확신도)에 따라 TP/SL 자동 최적화
