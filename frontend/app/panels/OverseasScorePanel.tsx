@@ -19,18 +19,25 @@ export default function OverseasScorePanel({ usDash, toast }: { usDash?: any; to
   const allScored = (usDash?.watchlist ?? []).filter((s: any) => typeof s.score === 'number');
   const [sector, setSector] = React.useState('전체');
   const [buyingCode, setBuyingCode] = React.useState<string | null>(null);
+  const [confirmCode, setConfirmCode] = React.useState<string | null>(null);
+  const [manualAmount, setManualAmount] = React.useState(0); // 0 = 서버 자동
   const [showAll, setShowAll] = React.useState(false);
   const signalMap: Record<string, string> = { STRONG_BUY: '강력 추천', BUY: '매수', HOLD: '관망', SELL: '매도', STRONG_SELL: '강력 매도' };
   const filtered = sector === '전체' ? allScored : allScored.filter((s: any) => US_SECTOR_MAP[s.code] === sector);
   const sorted = [...filtered].sort((a: any, b: any) => (b.score ?? 0) - (a.score ?? 0));
   const visible = showAll ? sorted : sorted.slice(0, 10);
 
+  const openConfirm = (code: string) => { setConfirmCode(code); setManualAmount(0); };
+  const cancelConfirm = () => setConfirmCode(null);
+
   const manualBuy = async (sc: any) => {
-    if (!confirm(`${sc.name ?? sc.code} 수동 매수 (현금잔고 기반 최적 금액)?`)) return;
     setBuyingCode(sc.code);
+    setConfirmCode(null);
     try {
       const ex = sc.exchange ?? (sc.code?.length <= 4 ? 'NASDAQ' : 'NYSE');
-      const res = await api('/overseas/vision-scalp/execute', { method: 'POST', body: JSON.stringify({ ticker: sc.code, exchange: ex, reasoning: `수동진입 점수${sc.score?.toFixed(0)} RSI${sc.rsi?.toFixed(0)} ${sc.signal}` }) });
+      const body: any = { ticker: sc.code, exchange: ex, reasoning: `수동진입 점수${sc.score?.toFixed(0)} RSI${sc.rsi?.toFixed(0)} ${sc.signal}` };
+      if (manualAmount > 0) body.amountUsd = manualAmount;
+      const res = await api('/overseas/vision-scalp/execute', { method: 'POST', body: JSON.stringify(body) });
       toast?.(`${sc.code} ${res.qty}주 @$${res.price?.toFixed(2)} ($${res.amountUsed}) TP+${res.tpPct}%/SL-${res.slPct}%`, 'ok');
     } catch (e: any) { toast?.(e.message, 'err'); }
     setBuyingCode(null);
@@ -58,6 +65,7 @@ export default function OverseasScorePanel({ usDash, toast }: { usDash?: any; to
               const label = signalMap[sc.signal] ?? sc.signal ?? '';
               const sectorLabel = US_SECTOR_MAP[sc.code] ?? '';
               const isBuying = buyingCode === sc.code;
+              const isConfirming = confirmCode === sc.code;
               return (
                 <div key={sc.code} className="px-2 py-2.5 border-b border-white/[0.03] last:border-0">
                   <div className="flex items-center gap-2">
@@ -67,16 +75,45 @@ export default function OverseasScorePanel({ usDash, toast }: { usDash?: any; to
                     </div>
                     <div className="flex-1">
                       <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
-                        <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${pct}%` }} />
+                        <div className={`h-full rounded-full ${barColor} transition-all`} data-w={pct} ref={el => { if (el) el.style.width = `${pct}%`; }} />
                       </div>
                     </div>
                     <span className={`text-sm font-black w-9 text-right ${textColor}`}>{raw > 0 ? '+' : ''}{raw}</span>
                     <span className={`text-[10px] font-medium w-14 text-right ${textColor}`}>{label}</span>
-                    <button disabled={isBuying} onClick={() => manualBuy(sc)}
-                      className="text-[10px] px-2 py-1 bg-blue-600/70 hover:bg-blue-500/70 disabled:opacity-40 rounded-lg whitespace-nowrap shrink-0">
-                      {isBuying ? '...' : '매수'}
-                    </button>
+                    {isBuying ? (
+                      <span className="text-[10px] px-2 py-1 text-slate-500 animate-pulse">매수 중...</span>
+                    ) : isConfirming ? (
+                      <button onClick={cancelConfirm} className="text-[10px] px-2 py-1 text-slate-600 hover:text-slate-400 shrink-0">취소</button>
+                    ) : (
+                      <button onClick={() => openConfirm(sc.code)}
+                        className="text-[10px] px-2 py-1 bg-blue-600/70 hover:bg-blue-500/70 rounded-lg whitespace-nowrap shrink-0">
+                        매수
+                      </button>
+                    )}
                   </div>
+                  {/* 인라인 매수 확인 패널 */}
+                  {isConfirming && (
+                    <div className="mt-2 mx-1 px-3 py-2.5 bg-slate-800/80 border border-blue-500/20 rounded-xl">
+                      <div className="text-[10px] text-slate-400 mb-2">{sc.name ?? sc.code} 수동 매수</div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          value={manualAmount || ''}
+                          placeholder="자동"
+                          onChange={e => setManualAmount(Math.max(0, Math.min(5000, Number(e.target.value) || 0)))}
+                          className="w-20 bg-slate-900/60 border border-slate-700/50 rounded-lg px-2 py-1.5 text-xs text-slate-300 text-center"
+                          min={0} max={5000} step={50}
+                        />
+                        <span className="text-[10px] text-slate-600">USD</span>
+                        <span className="text-[9px] text-slate-600 flex-1">{manualAmount > 0 ? '' : '잔고 기반 최적 금액'}</span>
+                        <button onClick={() => manualBuy(sc)}
+                          className="px-3 py-1.5 bg-emerald-600/80 hover:bg-emerald-600 text-white text-[10px] font-medium rounded-lg shrink-0">
+                          확인
+                        </button>
+                      </div>
+                      <div className="text-[9px] text-slate-600 mt-1.5">동적 TP/SL 자동 (섹터·변동성·VIX 기반)</div>
+                    </div>
+                  )}
                   <div className="flex items-center gap-3 mt-1 pl-1 text-[9px] flex-wrap">
                     {sc.rsi != null && <span className="text-slate-500">RSI <b className={Number(sc.rsi) > 70 ? 'text-rose-400' : Number(sc.rsi) < 30 ? 'text-emerald-400' : 'text-slate-300'}>{Number(sc.rsi).toFixed(0)}</b></span>}
                     {sc.price > 0 && <span className="text-slate-400">${Number(sc.price).toFixed(2)}</span>}

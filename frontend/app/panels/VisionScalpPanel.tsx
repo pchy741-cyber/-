@@ -64,7 +64,7 @@ export default function VisionScalpPanel({ toast }: { toast?: (msg: string, type
       });
       if (res?.ok) {
         setResult(res);
-        toast?.(`${signal.ticker} 단타 매수 완료 — ${res.qty}주 @ $${res.price?.toFixed(2)}`, 'ok');
+        toast?.(`${signal.ticker} ${res.qty}주 @$${res.price?.toFixed(2)} ($${res.amountUsed ?? ''}) TP+${res.tpPct ?? ''}%/SL-${res.slPct ?? ''}%`, 'ok');
         setSignal(null);
         setImgPreview(null);
         setImgBase64('');
@@ -109,7 +109,7 @@ export default function VisionScalpPanel({ toast }: { toast?: (msg: string, type
                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${signal.riskLevel === 'LOW' ? 'bg-emerald-900/40 text-emerald-400' : signal.riskLevel === 'HIGH' ? 'bg-rose-900/40 text-rose-400' : 'bg-yellow-900/40 text-yellow-400'}`}>{signal.riskLevel}</span>
               </div>
               <p className="text-[10px] text-slate-400 leading-relaxed">{signal.reasoning}</p>
-              <div className="text-[9px] text-slate-600">TP +2.5% · SL -1.5% 자동 설정</div>
+              <div className="text-[9px] text-slate-600">동적 TP/SL 자동 설정 (섹터·변동성·VIX 기반)</div>
             </div>
           ) : signal && !signal.ticker ? (
             <div className="bg-slate-800/60 rounded-xl px-3 py-2 text-[11px] text-slate-500">{signal.reasoning}</div>
@@ -123,7 +123,7 @@ export default function VisionScalpPanel({ toast }: { toast?: (msg: string, type
           {/* 실행 결과 */}
           {result && (
             <div className="bg-emerald-900/30 border border-emerald-800/40 rounded-xl px-3 py-2 text-[10px] text-emerald-400">
-              {result.ticker} {result.qty}주 @ ${result.price?.toFixed(2)} · TP ${result.tpPrice} · SL ${result.slPrice}
+              {result.ticker} {result.qty}주 @${result.price?.toFixed(2)} · TP +{result.tpPct}% (${result.tpPrice}) · SL -{result.slPct}% (${result.slPrice})
             </div>
           )}
 

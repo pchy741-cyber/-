@@ -331,23 +331,28 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
       const { rows: holdRows } = await getPool().query("SELECT SUM(avg_price * quantity) AS total FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1", [baseIsPaper]);
       const holdVal = holdRows[0]?.total ? Number(holdRows[0].total) : 0;
       portfolio = cashUsd + holdVal;
-      // 황금비율(0.618) 기반 포지션: 포트폴리오 × 0.618 × 리스크팩터
-      // 리스크팩터: 소액(15%) / 중형(10%) / 대형(8%) — 황금비율 × 비율
-      const riskFactor = portfolio < 500 ? 0.15 : portfolio < 5000 ? 0.10 : 0.08;
+      // 황금비율(0.618) × 리스크팩터 → 한 포지션당 최적 금액
+      const riskFactor = portfolio < 500 ? 0.15 : portfolio < 2000 ? 0.12 : portfolio < 5000 ? 0.10 : 0.08;
       const goldenAmount = Math.round(portfolio * 0.618 * riskFactor);
-      // 현금 보호: 현금의 최대 비율까지만 사용
-      const cashCap = Math.round(cashUsd * (cashUsd < 200 ? 0.90 : 0.80));
-      // 최소 1주 매수 가능: 주가보다는 높게 설정
-      const minAmount = Math.min(price.currentPrice * 1.01, cashUsd * 0.95);
-      defaultAmount = Math.max(minAmount, Math.min(cashCap, goldenAmount, 5000));
+      // 현금 보호: 수동 1건에 현금의 40% 초과 금지
+      const cashCap = Math.round(cashUsd * 0.40);
+      defaultAmount = Math.min(cashCap, goldenAmount, 5000);
+      // 최소 1주 가격보다 적으면 1주 허용 (단 현금의 50% 이내)
+      const oneShareCost = Math.ceil(price.currentPrice * 1.0025);
+      if (defaultAmount < oneShareCost && oneShareCost <= cashUsd * 0.50) {
+        defaultAmount = oneShareCost;
+      }
     } catch { /* 조회 실패 시 기본값 유지 */ }
     const amountUsd = (body.amountUsd && body.amountUsd > 0) ? body.amountUsd : defaultAmount;
-    const safeAmount = Math.max(price.currentPrice, Math.min(cashUsd * 0.95 || 5000, Number(amountUsd)));
+    // 현금의 50% 상한 (사용자 지정 금액도 상한 적용)
+    const safeAmount = Math.min(cashUsd * 0.50 || 5000, Number(amountUsd));
 
-    // 주수 계산 (수수료 0.25% 보정, 최소 1주)
+    // 주수 계산 (수수료 0.25% 보정)
     let qty = Math.floor(safeAmount / (price.currentPrice * 1.0025));
     if (qty <= 0 && safeAmount >= price.currentPrice * 0.99) qty = 1;
-    qty = Math.max(1, qty);
+    if (qty <= 0) {
+      return c.json({ error: `${sanitizedTicker} 1주($${price.currentPrice.toFixed(0)}) > 투입가능금액($${safeAmount.toFixed(0)}) — 잔고 부족` }, 400);
+    }
     const totalCost = qty * price.currentPrice * 1.0025;
 
     // ── 3. 동적 TP/SL: 종목별 변동성·섹터·VIX 반영 (자동매매 동일 로직) ──
@@ -430,7 +435,9 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
       slPrice, slPct: +slPct.toFixed(1),
       tpLabel,
       amountUsed: +safeAmount.toFixed(0),
+      cashBefore: +cashUsd.toFixed(0),
       cashRemaining: +(cashUsd - totalCost).toFixed(2),
+      cashUsedPct: +((totalCost / cashUsd) * 100).toFixed(1),
       reasoning,
       mode: baseIsPaper ? 'paper' : 'live',
     });
