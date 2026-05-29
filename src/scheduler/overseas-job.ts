@@ -600,8 +600,9 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           `SELECT total_value FROM portfolio_snapshots WHERE snapshot_at::date = CURRENT_DATE AND is_paper = false ORDER BY snapshot_at DESC LIMIT 1`
         );
         const krPortfolioUsd = snap.length > 0 && fxNow > 0 ? Number(snap[0].total_value) / fxNow : 0;
-        const grandPortfolioUsd = portfolioValue + krPortfolioUsd;
-        if (grandPortfolioUsd > 0) {
+        // 국내 포지션 없으면 비중 체크 무의미 (해외=100% 항상 차단됨)
+        if (krPortfolioUsd > 0) {
+          const grandPortfolioUsd = portfolioValue + krPortfolioUsd;
           const { rows: allocRows } = await getPool().query('SELECT us_pct FROM portfolio_allocation_config LIMIT 1');
           const targetUsPct = Number(allocRows[0]?.us_pct ?? 30);
           const currentUsPct = (portfolioValue / grandPortfolioUsd) * 100;
