@@ -8,7 +8,7 @@ const COMPONENT = 'SHORT_SELLING';
 
 // ── 30분 캐시 (Track B 5분 사이클마다 KIS 호출 방지) ──
 const _shortCache = new Map<string, { data: ShortSellingData; fetchedAt: number }>();
-const SHORT_CACHE_TTL_MS = 30 * 60 * 1000;
+const SHORT_CACHE_TTL_MS = 60 * 60 * 1000; // 60분 (KIS rate limit 방지)
 
 /** 공매도 TR ID (일별 공매도 현황) */
 const TR_SHORT_SELLING = 'FHKST03010400';
@@ -201,8 +201,8 @@ export async function analyzeWatchlistShortSelling(): Promise<Map<string, ShortS
 
   logger.info(`📉 감시목록 ${watchlist.length}개 종목 공매도 분석 시작`, { component: COMPONENT });
 
-  // KIS rate limit 대응: 5개씩 배치 처리
-  const batchSize = 5;
+  // KIS rate limit 대응: 3개씩 배치 처리 (marketDataRateLimiter 4/sec 공유)
+  const batchSize = 3;
   for (let i = 0; i < watchlist.length; i += batchSize) {
     const batch = watchlist.slice(i, i + batchSize);
     const flows = await Promise.all(batch.map((item) => fetchShortSellingData(item.stock_code)));
@@ -211,9 +211,9 @@ export async function analyzeWatchlistShortSelling(): Promise<Map<string, ShortS
       results.set(batch[j].stock_code, flows[j]);
     }
 
-    // 배치 사이 200ms 대기 (rate limit)
+    // 배치 사이 500ms 대기 (다른 모듈과의 rate limit 충돌 방지)
     if (i + batchSize < watchlist.length) {
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 500));
     }
   }
 

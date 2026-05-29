@@ -329,7 +329,7 @@ async function checkAndUpdateTrailingStop(
   if (dropFromPeak >= TRAILING_DROP_PCT) {
     const peakPnlPct = ((newPeak - avgBuy) / avgBuy) * 100;
     logger.info(
-      `🎯 트레일링 스탑 발동: ${chain.stock_code} 고점 ${newPeak.toLocaleString()}원(+${peakPnlPct.toFixed(1)}%) → 현재 ${currentPrice.toLocaleString()}원(+${pnlPct.toFixed(1)}%) | 고점 대비 -${dropFromPeak.toFixed(1)}%`,
+      `🎯 트레일링 스탑 발동: ${chain.stock_code} 고점 ${newPeak.toLocaleString()}원(+${peakPnlPct.toFixed(1)}%) → 현재 ${currentPrice.toLocaleString()}원(${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%) | 고점 대비 -${dropFromPeak.toFixed(1)}%`,
       { component: 'TRAILING' },
     );
     return {
@@ -337,7 +337,7 @@ async function checkAndUpdateTrailingStop(
       stock_code: chain.stock_code,
       quantity: chain.total_quantity,
       price_type: 'MARKET',
-      reasoning: `트레일링 스탑: 고점 +${peakPnlPct.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}% (고점 대비 -${dropFromPeak.toFixed(1)}% 하락)`,
+      reasoning: `트레일링 스탑: 고점 +${peakPnlPct.toFixed(1)}% → 현재 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}% (고점 대비 -${dropFromPeak.toFixed(1)}% 하락)`,
       confidence: 1.0,
     };
   }

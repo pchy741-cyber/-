@@ -44,13 +44,14 @@ export function calcPortfolioStressLevel(
 }
 
 /**
- * 최근 5거래일 실현수익 기반 포지션 사이즈 배율 (0.7 ~ 1.2)
+ * 최근 5거래일 실현수익 기반 포지션 사이즈 배율 (0.5 ~ 1.2)
  *
- * - 승률 ≥ 65% + 수익 > 30만 → 1.2x
- * - 승률 ≥ 55% + 수익 > 0   → 1.1x
- * - 승률 < 40% or 손실 < -30만 → 0.7x
- * - 승률 < 50%              → 0.85x
- * - 그 외                   → 1.0x
+ * - 승률 ≥ 65% + 수익 > 30만 → 1.2x (공격)
+ * - 승률 ≥ 55% + 수익 > 0   → 1.1x (약공격)
+ * - 승률 < 30% or 손실 < -50만 → 0.5x (심각 손실 — 신규 진입 최소화)
+ * - 승률 < 40% or 손실 < -30만 → 0.7x (방어)
+ * - 승률 < 50%              → 0.85x (보수)
+ * - 그 외                   → 1.0x (중립)
  */
 export async function getPerformanceMultiplier(): Promise<number> {
   try {
@@ -79,20 +80,29 @@ export async function getPerformanceMultiplier(): Promise<number> {
     const winRate = wins / total;
 
     let mult: number;
+    let label: string;
     if (winRate >= 0.65 && totalPnl > 300_000) {
       mult = 1.2;
+      label = '공격';
     } else if (winRate >= 0.55 && totalPnl > 0) {
       mult = 1.1;
+      label = '약공격';
+    } else if (winRate < 0.30 || totalPnl < -500_000) {
+      mult = 0.5;
+      label = '심각손실 — 신규진입 최소화';
     } else if (winRate < 0.40 || totalPnl < -300_000) {
       mult = 0.7;
+      label = '방어';
     } else if (winRate < 0.50) {
       mult = 0.85;
+      label = '보수';
     } else {
       mult = 1.0;
+      label = '중립';
     }
 
     logger.info(
-      `📈 성과배율: ${mult}x (최근 ${total}건 승률 ${(winRate * 100).toFixed(0)}% 수익 ${totalPnl.toLocaleString()}원)`,
+      `📈 성과배율: ${mult}x [${label}] (최근 ${total}건 승률 ${(winRate * 100).toFixed(0)}% 수익 ${totalPnl.toLocaleString()}원)`,
       { component: COMPONENT },
     );
 

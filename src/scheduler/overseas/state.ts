@@ -229,7 +229,7 @@ export async function setCash(amountKrw: number, isPaper?: boolean): Promise<voi
  */
 export async function updateTradeState(p: {
   code: string; exchange: string; qty: number; avgPrice: number;
-  newCash: number; isPaper?: boolean;
+  newCash: number; isPaper?: boolean; fxRate?: number;
 }): Promise<void> {
   const paper = p.isPaper ?? config.isPaper;
   await withTransaction(async (client) => {
@@ -243,7 +243,7 @@ export async function updateTradeState(p: {
     }
     if (!paper) {
       // Live: USD → KRW 변환 후 저장 (통합증거금)
-      const fxRate = await fetchExchangeRate();
+      const fxRate = p.fxRate ?? await fetchExchangeRate();
       const cashKrw = Math.max(0, p.newCash * fxRate);
       const key = cashKey(false);
       await client.query(
@@ -281,5 +281,45 @@ export async function clearMaxPrice(code: string, isPaper?: boolean): Promise<vo
   await getPool().query(
     "DELETE FROM overseas_state WHERE key = $1",
     [`${modePrefix(isPaper)}maxprice_${code}`],
+  ).catch(() => {});
+}
+
+/** 동적 TP/SL 저장 — 매매 엔진이 계산한 실시간 값을 대시보드에 동기화 */
+export async function saveDynamicTpSl(code: string, tpPct: number, slPct: number, isPaper?: boolean): Promise<void> {
+  const pfx = modePrefix(isPaper);
+  const val = JSON.stringify({ tp: tpPct, sl: slPct, at: Date.now() });
+  await getPool().query(
+    `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = $2`,
+    [`${pfx}dynamic_tpsl_${code}`, val],
+  ).catch(() => {});
+}
+
+/** 동적 TP/SL 조회 — 대시보드에서 사용 */
+export async function getDynamicTpSl(codes: string[], isPaper?: boolean): Promise<Map<string, { tp: number; sl: number }>> {
+  const pfx = modePrefix(isPaper);
+  const keys = codes.map(c => `${pfx}dynamic_tpsl_${c}`);
+  const map = new Map<string, { tp: number; sl: number }>();
+  if (keys.length === 0) return map;
+  try {
+    const { rows } = await getPool().query(
+      'SELECT key, value FROM overseas_state WHERE key = ANY($1)', [keys],
+    );
+    for (const r of rows) {
+      const code = String(r.key).replace(`${pfx}dynamic_tpsl_`, '');
+      try {
+        const v = JSON.parse(r.value);
+        map.set(code, { tp: Number(v.tp), sl: Number(v.sl) });
+      } catch { /* skip invalid */ }
+    }
+  } catch { /* DB 실패 시 빈 맵 */ }
+  return map;
+}
+
+/** 동적 TP/SL 삭제 (포지션 청산 시) */
+export async function clearDynamicTpSl(code: string, isPaper?: boolean): Promise<void> {
+  await getPool().query(
+    "DELETE FROM overseas_state WHERE key = $1",
+    [`${modePrefix(isPaper)}dynamic_tpsl_${code}`],
   ).catch(() => {});
 }

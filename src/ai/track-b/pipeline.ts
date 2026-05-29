@@ -445,6 +445,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           ? Math.round((MEGA_CAP_PRIORITY_CODES.get(s.stock_code)!.bonus) * 0.5)  // tech에서도 주므로 절반만
           : 0;
         const totalAdj = adj + capAdj + stale + kospiPenaltyAdj + macroAdj + dartAdj + megaCapAdj;
+        if (!Number.isFinite(totalAdj)) {
+          logger.warn(`⚠️ 스코어 보정 NaN 감지: ${s.stock_code} adj=${adj} cap=${capAdj} macro=${macroAdj} dart=${dartAdj}`, { component: 'TRACK_B' });
+          return { stock_code: s.stock_code, score: Math.max(0, Math.round(base)) || 0 };
+        }
         const boundedAdj = totalAdj < 0 ? Math.max(totalAdj, -20) : totalAdj;
         const rawScore = Math.min(100, Math.max(0, base + boundedAdj));
         return { stock_code: s.stock_code, score: Math.round(rawScore) };

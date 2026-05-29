@@ -11,6 +11,7 @@ import {
 } from './watchlist.js';
 import {
   updateTradeState, getMaxPrice, setMaxPrice, clearMaxPrice,
+  saveDynamicTpSl, clearDynamicTpSl,
 } from './state.js';
 import {
   calcDynamicTrailDrop, calcDynamicTpSl, type RegimeAdjustment,
@@ -105,6 +106,8 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       isMomentum: tech.isMomentum,
     });
     const stopLossPct = -dynamicSlBase;
+    // 동적 TP/SL을 overseas_state에 저장 → 대시보드 동기화
+    saveDynamicTpSl(code, hardTpPct, stopLossPct, paperMode).catch(() => {});
     const dynamicTrailDrop = calcDynamicTrailDrop({ sector, atrPct: atrPctValue, maxPnlPct, adx: tech.adx, rsi: tech.rsi });
     const effectiveTrailDropPct = dynamicTrailDrop - vixRegime.trailTighten;
     const trailActivatePct = isHighBeta ? 10.0 : isMediumBeta ? 8.0 : 5.0;
@@ -115,7 +118,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     if (pnlPct <= stopLossPct) {
       sellReason = `손절(${stopLossPct}%): ${pnlPct.toFixed(1)}%`;
     } else if (maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {
-      sellReason = `ATR트레일(${effectiveTrailDropPct.toFixed(1)}%/ATR${atrPctValue.toFixed(1)}%${vixRegime.trailTighten > 0 ? `/VIX${vixRegime.regime}` : ''}): 고점 +${maxPnlPct.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}%`;
+      sellReason = `ATR트레일(${effectiveTrailDropPct.toFixed(1)}%/ATR${atrPctValue.toFixed(1)}%${vixRegime.trailTighten > 0 ? `/VIX${vixRegime.regime}` : ''}): 고점 +${maxPnlPct.toFixed(1)}% → 현재 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
     } else if (pnlPct >= hardTpPct && !isWinnerRiding(tech, holdingDays)) {
       sellReason = `익절(${hardTpPct}%): +${pnlPct.toFixed(1)}%`;
     } else if (ai?.action === 'SELL' && ai.confidence >= 0.90) {
@@ -165,7 +168,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       cash += proceeds;
       await updateTradeState({ code, exchange: tech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: paperMode });
       if (exec.finalQty <= 0) {
-        await clearMaxPrice(code, paperMode); await clearPartialTpStageNum(code, paperMode);
+        await clearMaxPrice(code, paperMode); await clearPartialTpStageNum(code, paperMode); await clearDynamicTpSl(code, paperMode);
         // Scale-In 예약 삭제 (paper/live prefix)
         const { getPool } = await import('../../db/client.js');
         const pfx = paperMode ? 'p_' : 'l_';

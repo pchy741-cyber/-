@@ -457,19 +457,41 @@ export async function getRecentManuallySoldStocks(hoursBack = 24): Promise<Set<s
   }
 }
 
-/** 최근 N일 이내 손절 청산된 종목 코드 반환 (재진입 방지) */
+/** 최근 손절 종목 코드 반환 (졸업식 재진입 방지)
+ *  - 일반 손실(>5000원): 7일 차단
+ *  - 대손실(>50000원): 14일 차단
+ *  - ATR/손절 사유 매도: 7일 차단 (같은 패턴 반복 방지)
+ */
 export async function getRecentLossStocks(daysBack = 14): Promise<Set<string>> {
   if (useMemory) return new Set();
   try {
+    // 1) 일반 손실 7일 + 대손실 14일 졸업식 차단
     const { rows } = await getPool().query(
       `SELECT DISTINCT stock_code FROM transaction_chains
        WHERE status = 'CLOSED'
-         AND realized_pnl < -5000
          AND is_paper = $1
-         AND closed_at > NOW() - ($2 || ' days')::interval`,
-      [config.isPaper, daysBack],
+         AND (
+           (realized_pnl < -5000  AND closed_at > NOW() - INTERVAL '7 days')
+           OR
+           (realized_pnl < -50000 AND closed_at > NOW() - INTERVAL '14 days')
+         )`,
+      [config.isPaper],
     );
-    return new Set(rows.map((r: { stock_code: string }) => r.stock_code));
+    const blocked = new Set(rows.map((r: { stock_code: string }) => r.stock_code));
+
+    // 2) ATR/손절 사유로 매도된 종목 7일 추가 차단
+    const { rows: slRows } = await getPool().query(
+      `SELECT DISTINCT o.stock_code FROM orders o
+       WHERE o.side = 'SELL' AND o.status = 'FILLED'
+         AND o.trading_mode = $1
+         AND o.created_at > NOW() - INTERVAL '7 days'
+         AND (o.ai_reasoning LIKE '%손절%' OR o.ai_reasoning LIKE '%ATR트레일%'
+              OR o.ai_reasoning LIKE '%FORCE_CLOSE%' OR o.ai_reasoning LIKE '%시간 손절%')`,
+      [config.tradingMode],
+    );
+    for (const r of slRows) blocked.add(r.stock_code);
+
+    return blocked;
   } catch {
     return new Set();
   }

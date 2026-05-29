@@ -4,9 +4,15 @@
  *           Kelly criterion (QuantifiedStrategies), PACIS 2025 uncertainty paper
  */
 import { config } from '../../config/index.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import { SECTOR_CLASS } from '../../config/constants.js';
 import { getPool } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
+
+/** 현재 컨텍스트의 trading_mode 문자열 반환 */
+function ctxMode(isPaper?: boolean): string {
+  return (isPaper ?? getCtxIsPaper()) ? 'paper' : 'live';
+}
 
 // ══════════════════════════════════════════════════════════════
 // 1. ATR 기반 동적 트레일링 스톱 (기존 고정% → 변동성 적응)
@@ -102,8 +108,9 @@ export interface GradualCooldown {
   message: string;
 }
 
-export async function getGradualCooldown(): Promise<GradualCooldown> {
+export async function getGradualCooldown(isPaper?: boolean): Promise<GradualCooldown> {
   try {
+    const mode = ctxMode(isPaper);
     // 24시간 내 손절 횟수 카운트
     const { rows } = await getPool().query(`
       SELECT COUNT(*) AS loss_count,
@@ -111,6 +118,7 @@ export async function getGradualCooldown(): Promise<GradualCooldown> {
       FROM orders
       WHERE side = 'SELL'
         AND trigger_source = 'OVERSEAS'
+        AND trading_mode = $1
         AND status = 'FILLED'
         AND created_at >= NOW() - INTERVAL '24 hours'
         AND (
@@ -118,7 +126,7 @@ export async function getGradualCooldown(): Promise<GradualCooldown> {
           OR ai_reasoning LIKE '%stopLoss%'
           OR ai_reasoning LIKE '%보유기한 초과%'
         )
-    `);
+    `, [mode]);
     const lossCount = Number(rows[0]?.loss_count ?? 0);
 
     if (lossCount >= 3) {
@@ -152,16 +160,18 @@ export async function getGradualCooldown(): Promise<GradualCooldown> {
 }
 
 /** 점진적 쿨다운: 레벨별 쿨다운 시간에 걸리는 종목 Set 반환 */
-export async function getGradualCooldownStocks(cooldown: GradualCooldown): Promise<Set<string>> {
+export async function getGradualCooldownStocks(cooldown: GradualCooldown, isPaper?: boolean): Promise<Set<string>> {
   if (cooldown.level === 0) return new Set();
 
   try {
+    const mode = ctxMode(isPaper);
     const intervalHours = Math.ceil(cooldown.cooldownMs / (60 * 60_000));
     const { rows } = await getPool().query(`
       SELECT DISTINCT stock_code
       FROM orders
       WHERE side = 'SELL'
         AND trigger_source = 'OVERSEAS'
+        AND trading_mode = $2
         AND status = 'FILLED'
         AND created_at >= NOW() - make_interval(hours => $1)
         AND (
@@ -169,7 +179,7 @@ export async function getGradualCooldownStocks(cooldown: GradualCooldown): Promi
           OR ai_reasoning LIKE '%stopLoss%'
           OR ai_reasoning LIKE '%보유기한 초과%'
         )
-    `, [intervalHours]);
+    `, [intervalHours, mode]);
     return new Set(rows.map((r: { stock_code: string }) => String(r.stock_code)));
   } catch { return new Set(); }
 }
@@ -242,21 +252,24 @@ export async function calcUncertaintyPenalty(params: {
   code: string;
   vix?: number;
   sectorDown?: boolean; // 섹터 전체 하락 여부
+  isPaper?: boolean;
 }): Promise<UncertaintyPenalty> {
-  const { code, vix, sectorDown } = params;
+  const { code, vix, sectorDown, isPaper } = params;
   let penalty = 0;
   const reasons: string[] = [];
 
   // 1. 최근 5거래일 AI 점수 변동성 (DB에서 조회)
   try {
+    const mode = ctxMode(isPaper);
     const { rows } = await getPool().query(`
       SELECT ai_reasoning FROM orders
       WHERE stock_code = $1
+        AND trading_mode = $2
         AND trigger_source = 'OVERSEAS'
         AND status = 'FILLED'
         AND created_at >= NOW() - INTERVAL '5 days'
       ORDER BY created_at DESC LIMIT 10
-    `, [code]);
+    `, [code, mode]);
 
     // 같은 종목의 최근 거래 성적 확인 — 연속 손실이면 penalty
     const recentSells = rows.filter((r: { ai_reasoning: string | null }) =>
@@ -359,13 +372,14 @@ export interface KellyResult {
   sampleCount: number;
 }
 
-export async function calcRollingKelly(days: number = 30): Promise<KellyResult> {
+export async function calcRollingKelly(days: number = 30, isPaper?: boolean): Promise<KellyResult> {
   const defaultResult: KellyResult = {
     fullKelly: 0.20, halfKelly: 0.10,
     winRate: 0.5, avgWin: 5.0, avgLoss: 3.0, sampleCount: 0,
   };
 
   try {
+    const mode = ctxMode(isPaper);
     const { rows } = await getPool().query(`
       SELECT
         filled_price,
@@ -373,12 +387,13 @@ export async function calcRollingKelly(days: number = 30): Promise<KellyResult> 
       FROM orders
       WHERE side = 'SELL'
         AND trigger_source = 'OVERSEAS'
+        AND trading_mode = $2
         AND status = 'FILLED'
         AND avg_buy_price > 0
         AND filled_price > 0
         AND created_at >= NOW() - make_interval(days => $1)
       ORDER BY created_at DESC
-    `, [days]);
+    `, [days, mode]);
 
     if (rows.length < 10) return defaultResult; // 표본 부족 시 기본값
 
@@ -440,11 +455,12 @@ export interface StockEVResult {
  * - EV 0~1%: 0.8~1.0x (보수적)
  * - EV < 0%: 0.5~0.8x (축소)
  */
-export async function calcStockEVMultipliers(codes: string[]): Promise<Map<string, StockEVResult>> {
+export async function calcStockEVMultipliers(codes: string[], isPaper?: boolean): Promise<Map<string, StockEVResult>> {
   const result = new Map<string, StockEVResult>();
   if (codes.length === 0) return result;
 
   try {
+    const mode = ctxMode(isPaper);
     const { rows } = await getPool().query(`
       SELECT stock_code,
              COUNT(*) AS total,
@@ -455,11 +471,12 @@ export async function calcStockEVMultipliers(codes: string[]): Promise<Map<strin
                THEN ABS((filled_price - avg_buy_price) / avg_buy_price * 100) END), 3.0) AS avg_loss_pct
       FROM orders
       WHERE side = 'SELL' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'
+        AND trading_mode = $2
         AND avg_buy_price > 0 AND filled_price > 0
         AND stock_code = ANY($1)
         AND created_at >= NOW() - INTERVAL '90 days'
       GROUP BY stock_code
-    `, [codes]);
+    `, [codes, mode]);
 
     for (const r of rows) {
       const code = String(r.stock_code);
@@ -502,8 +519,9 @@ export interface TradingPattern {
   actionable: boolean;
 }
 
-export async function extractTradingPatterns(): Promise<TradingPattern[]> {
+export async function extractTradingPatterns(isPaper?: boolean): Promise<TradingPattern[]> {
   const patterns: TradingPattern[] = [];
+  const mode = ctxMode(isPaper);
 
   try {
     // 종목별 승률 패턴
@@ -519,12 +537,13 @@ export async function extractTradingPatterns(): Promise<TradingPattern[]> {
                ELSE NULL END)::numeric, 1) AS avg_loss_pct
       FROM orders
       WHERE side = 'SELL' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'
+        AND trading_mode = $1
         AND avg_buy_price > 0 AND filled_price > 0
         AND created_at >= NOW() - INTERVAL '60 days'
       GROUP BY stock_code
       HAVING COUNT(*) >= 3
       ORDER BY COUNT(*) DESC
-    `);
+    `, [mode]);
 
     for (const r of stockWr) {
       const wr = Number(r.wins) / Number(r.total);
@@ -554,12 +573,13 @@ export async function extractTradingPatterns(): Promise<TradingPattern[]> {
         COUNT(*) FILTER (WHERE filled_price > avg_buy_price) AS wins
       FROM orders
       WHERE side = 'SELL' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'
+        AND trading_mode = $1
         AND avg_buy_price > 0 AND filled_price > 0
         AND created_at >= NOW() - INTERVAL '90 days'
       GROUP BY dow
       HAVING COUNT(*) >= 5
       ORDER BY dow
-    `);
+    `, [mode]);
 
     const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
     for (const r of dayWr) {
@@ -679,18 +699,20 @@ export function calcDynamicTpSl(params: {
 }
 
 /** Memory Agent: 저승률 종목 차단 Set 반환 (승률 25% 이하, 4건 이상) */
-export async function getMemoryBlockedStocks(): Promise<Set<string>> {
+export async function getMemoryBlockedStocks(isPaper?: boolean): Promise<Set<string>> {
   try {
+    const mode = ctxMode(isPaper);
     const { rows } = await getPool().query(`
       SELECT stock_code
       FROM orders
       WHERE side = 'SELL' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'
+        AND trading_mode = $1
         AND avg_buy_price > 0 AND filled_price > 0
         AND created_at >= NOW() - INTERVAL '60 days'
       GROUP BY stock_code
       HAVING COUNT(*) >= 4
         AND (COUNT(*) FILTER (WHERE filled_price > avg_buy_price))::float / COUNT(*) <= 0.25
-    `);
+    `, [mode]);
     return new Set(rows.map((r: { stock_code: string }) => String(r.stock_code)));
   } catch { return new Set(); }
 }

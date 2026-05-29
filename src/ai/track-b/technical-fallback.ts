@@ -171,7 +171,8 @@ export async function technicalFallbackDecisions(params: {
 
     // ── 실시간 AI 재평가: 보유 중 AI 점수 변화 → TP/SL 동적 조정 ──────
     // 진입 시 고정 기준 대신 현재 AI 점수로 유연하게 익절/손절 조정
-    const realtimeAiScore = aiScoreMap.get(chain.stock_code) ?? 0;
+    const rawAiScore = aiScoreMap.get(chain.stock_code) ?? 0;
+    const realtimeAiScore = Number.isFinite(rawAiScore) ? rawAiScore : 0;
     let effectiveTp = Number(chainTp);
     let effectiveSl = Number(chainSl);
 

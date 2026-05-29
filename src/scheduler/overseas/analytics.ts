@@ -2,8 +2,14 @@
  * 성과 분석 — 승률, 최근 실적, 미체결 주문 조회
  */
 import { config } from '../../config/index.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import { getPool } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
+
+/** 현재 컨텍스트의 trading_mode 문자열 반환 */
+function ctxMode(isPaper?: boolean): string {
+  return (isPaper ?? getCtxIsPaper()) ? 'paper' : 'live';
+}
 
 export interface OverseasExecutionResult {
   submitted: boolean;
@@ -23,19 +29,21 @@ export interface OverseasWinRate {
 /**
  * 최근 해외 매도 실적 요약 — AI 자기학습용 컨텍스트
  */
-export async function getRecentPerfSummary(): Promise<string> {
+export async function getRecentPerfSummary(isPaper?: boolean): Promise<string> {
   try {
+    const mode = ctxMode(isPaper);
     const { rows } = await getPool().query(`
       SELECT ai_reasoning, filled_price, quantity
       FROM orders
       WHERE trigger_source = 'OVERSEAS'
+        AND trading_mode = $1
         AND side = 'SELL'
         AND status = 'FILLED'
         AND filled_price IS NOT NULL
         AND created_at >= NOW() - INTERVAL '14 days'
       ORDER BY created_at DESC
       LIMIT 20
-    `);
+    `, [mode]);
     if (rows.length === 0) return '';
 
     let wins = 0, losses = 0, totalPnlPct = 0, counted = 0;
@@ -60,10 +68,11 @@ export async function getRecentPerfSummary(): Promise<string> {
   }
 }
 
-export async function getOverseasWinRates(codes: string[]): Promise<Map<string, OverseasWinRate>> {
+export async function getOverseasWinRates(codes: string[], isPaper?: boolean): Promise<Map<string, OverseasWinRate>> {
   const map = new Map<string, OverseasWinRate>();
   if (codes.length === 0) return map;
   try {
+    const mode = ctxMode(isPaper);
     const { rows } = await getPool().query(`
       SELECT
         stock_code,
@@ -78,6 +87,7 @@ export async function getOverseasWinRates(codes: string[]): Promise<Map<string, 
           ) AS realized_pnl_pct
         FROM orders
         WHERE stock_code = ANY($1)
+          AND trading_mode = $2
           AND side = 'SELL' AND status = 'FILLED'
           AND trigger_source = 'OVERSEAS'
           AND created_at >= NOW() - INTERVAL '90 days'
@@ -87,7 +97,7 @@ export async function getOverseasWinRates(codes: string[]): Promise<Map<string, 
       WHERE realized_pnl_pct IS NOT NULL
       GROUP BY stock_code
       HAVING COUNT(*) >= 2
-    `, [codes]);
+    `, [codes, mode]);
     for (const r of rows) {
       map.set(String(r.stock_code), {
         winRate: Number(r.wins) / Number(r.total),

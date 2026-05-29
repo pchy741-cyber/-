@@ -41,10 +41,10 @@ export default function UsHoldingsTab({
             const pnl = displayPrice > 0 ? (displayPrice - h.avg_price) * h.quantity : 0;
             const pnlPct = displayPrice > 0 && h.avg_price > 0 ? ((displayPrice - h.avg_price) / h.avg_price) * 100 : 0;
             const usDisplayName = toDisplayName(priceData?.name, h.stock_code);
-            // 동적 TP/SL 데이터 (서버에서 종목별로 계산됨)
-            const tpPct = h.tp_pct ?? 15;
+            // 동적 TP/SL 데이터 (서버 매매엔진에서 실시간 계산됨)
+            const tpPct = h.tp_pct ?? 20;
             const slPct = h.sl_pct ?? -5;
-            const trailPct = h.trail_pct ?? 5;
+            const trailPct = h.trail_pct ?? 8;
             const trailActive = !!h.trail_active;
             const trailStopPct = h.trail_stop_pct ?? slPct;
             const maxPnlPct = h.max_pnl_pct ?? 0;

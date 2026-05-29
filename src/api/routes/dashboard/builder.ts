@@ -16,6 +16,8 @@ import { getCooldownStatus } from '../../../risk/trade-gate.js';
 import { getOverseasScores } from '../../../cache/overseas-scores.js';
 import { SECTOR_CLASS } from '../../../config/constants.js';
 import { GLOBAL_WATCHLIST } from '../../../scheduler/overseas/watchlist.js';
+import { getDynamicTpSl, computePaperCash } from '../../../scheduler/overseas/state.js';
+import { getPartialTpStages } from '../../../scheduler/overseas/risk-intelligence.js';
 import { logger } from '../../../utils/logger.js';
 import {
   isInvalidStockName, getKnownStockName, getFxRate,
@@ -76,7 +78,12 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   const watchlist = await getActiveWatchlist().catch(() => []);
   const stockCodes = watchlist.map((w) => w.stock_code);
 
-  const scores = await getScoresWithFallback(stockCodes);
+  // 감시종목 268+개 전체 스코어 조회는 부하 과중 → 상위 50개만 표시
+  // (Track B pipeline도 35개만 사용, 대시보드도 동일 수준으로 제한)
+  const allScores = await getScoresWithFallback(stockCodes);
+  const scores = allScores
+    .sort((a: any, b: any) => (b.composite_score ?? 0) - (a.composite_score ?? 0))
+    .slice(0, 50);
 
   // chains + scores에 현재가 매칭 — KIS API 우선 (신선한 가격), 실패 시 캐시 폴백
   const posMap = new Map<string, any>((balance.positions ?? []).map((p: any) => [p.stockCode, p]));
@@ -107,31 +114,27 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     return !n || n === c || /^\d{6}$/.test(n);
   });
 
-  // 실제 API 호출 대상: 포지션 종목(chain) + 이름 미확인 + 캐시 없는 score(최대 10개)
+  // 실제 API 호출 대상: 포지션 종목(chain) 우선, 이름 미확인 + score는 여유분만
+  // KIS rate limit 방지: 총 5개 초과 금지 (marketDataRateLimiter 4/sec 기준 ~1.5초)
   const chainNeedingPrice = chainCodes.filter(c => !priceMap.has(c));
+  const remaining = Math.max(0, 5 - chainNeedingPrice.length);
   const codesToFetch = [...new Set([
     ...chainNeedingPrice,
-    ...needNameCodes,
-    ...scoreCodesNeedingPrice.slice(0, 10),
-  ])];
+    ...needNameCodes.slice(0, Math.ceil(remaining / 2)),
+    ...scoreCodesNeedingPrice.slice(0, Math.floor(remaining / 2)),
+  ])].slice(0, 8);
 
   // 병렬 배치 조회 (체인+이름보정 위주 — 대폭 축소)
   if (codesToFetch.length > 0) {
     try {
-      const batchResult = await withTimeout(getBatchPrices(codesToFetch), 10000, new Map());
+      const batchResult = await withTimeout(getBatchPrices(codesToFetch), 5000, new Map());
       for (const [code, quote] of batchResult) {
         if (quote.currentPrice > 0) priceMap.set(code, quote.currentPrice);
         if (quote.stockName && quote.stockName !== code) nameMap.set(code, quote.stockName);
       }
     } catch {
-      // 배치 실패 시 개별 순차 폴백
-      for (const code of codesToFetch) {
-        try {
-          const quote = await getCurrentPrice(code);
-          if (quote.currentPrice > 0) priceMap.set(code, quote.currentPrice);
-          if (quote.stockName && quote.stockName !== code) nameMap.set(code, quote.stockName);
-        } catch { /* skip */ }
-      }
+      // 배치 실패 시 캐시 폴백만 사용 (순차 개별 조회는 rate limit 악화시킴)
+      logger.warn(`대시보드 배치 가격 조회 실패 — 캐시 폴백`, { component: 'DASHBOARD' });
     }
   }
 
@@ -239,7 +242,10 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     totalPnl = totalChainPnl + (balance.totalProfitLoss ?? 0);
     actualCash = rawCash;
   } else {
-    totalInvested = balance.totalEvalAmount ?? 0;
+    // Live: purchaseCost(원가) 사용, 없으면 체인 원가 합산
+    totalInvested = (balance as any).purchaseCost > 0
+      ? (balance as any).purchaseCost
+      : totalChainInvested;
     totalPnl = balance.totalProfitLoss ?? 0;
     actualCash = rawCash;
   }
@@ -260,18 +266,24 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   let overseasMarketValueUsd = 0;
   let overseasCash = 0;
   try {
-    const isPaperQuery = viewIsPaper;
-    const osCashKey = viewIsPaper ? 'cash_paper' : 'cash';
     const pfx = viewIsPaper ? 'p_' : 'l_';
-    const [{ rows: osRows }, { rows: osCashRows }] = await Promise.all([
-      getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1', [isPaperQuery]),
-      getPool().query('SELECT value FROM overseas_state WHERE key = $1', [osCashKey]),
-    ]);
-    overseasCash = osCashRows.length > 0 ? Number(osCashRows[0].value) : (viewIsPaper ? 10000 : 0);
 
-    // 종목별 고점/부분익절단계 일괄 조회
+    // Paper: orders 기반 실시간 계산 (USD), Live: DB에서 KRW 읽기
+    const { rows: osRows } = await getPool().query(
+      'SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1', [viewIsPaper]);
+    if (viewIsPaper) {
+      overseasCash = await computePaperCash(); // USD (결정론적 — orders 기반)
+    } else {
+      const { rows: osCashRows } = await getPool().query(
+        "SELECT value FROM overseas_state WHERE key = 'cash'");
+      overseasCash = osCashRows.length > 0 ? Number(osCashRows[0].value) : 0; // KRW
+    }
+
+    // 종목별 고점/부분익절단계/동적TP·SL 일괄 조회
     const codes = osRows.map((r: any) => String(r.stock_code));
-    const stateKeys = codes.flatMap(c => [`${pfx}maxprice_${c}`, `${pfx}partial_tp_stage_${c}`]);
+    const stateKeys = codes.flatMap(c => [
+      `${pfx}maxprice_${c}`, `${pfx}partial_tp_stage_${c}`, `${pfx}dynamic_tpsl_${c}`,
+    ]);
     const stateMap = new Map<string, string>();
     if (stateKeys.length > 0) {
       const { rows: stRows } = await getPool().query(
@@ -284,7 +296,6 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       const qty = Number(r.quantity);
       const avgP = Number(r.avg_price);
       // last_price 우선순위: DB last_price → 인메모리 가격 캐시 → avg_price 폴백
-      // (US 장 마감 후 DB last_price=0이어도 캐시에 장중 가격 남아있으면 사용)
       const dbLastP = Number(r.last_price ?? 0);
       const memPrice = cacheGet<{ price: number }>(`overseas:lastprice:${code}`)?.price ?? 0;
       const lastP = dbLastP > 0 ? dbLastP : (memPrice > 0 ? memPrice : avgP);
@@ -298,22 +309,31 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       const isMediumBeta = SECTOR_CLASS.MEDIUM_BETA.includes(sector);
       const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
 
-      // ── 동적 SL: ATR 기반 (overseas_state에 저장안됨 → 섹터/변동성 기반 추정) ──
-      // 현재 변동성 = abs(pnlPct) 반영하여 유연하게 설정
-      const pnlPct = avgP > 0 ? ((curP - avgP) / avgP) * 100 : 0;
-      const baseSl = isHighBeta ? -8.0 : isMediumBeta ? -5.0 : isDefense ? -4.0 : -5.0;
+      // ── 동적 TP/SL: 매매엔진이 저장한 실시간 값 우선 사용 ──
+      const dynRaw = stateMap.get(`${pfx}dynamic_tpsl_${code}`);
+      let dynTp: number | null = null;
+      let dynSl: number | null = null;
+      if (dynRaw) {
+        try {
+          const v = JSON.parse(dynRaw);
+          dynTp = Number(v.tp);
+          dynSl = Number(v.sl);
+        } catch { /* skip */ }
+      }
+      // 섹터 기반 폴백 SL (동적 값 없을 때만)
+      const fallbackSl = isHighBeta ? -8.0 : isMediumBeta ? -5.0 : isDefense ? -4.0 : -5.0;
+      const baseSl = dynSl != null && isFinite(dynSl) ? dynSl : fallbackSl;
 
-      // ── 동적 TP: 부분익절 3단계 기반 실제 다음 목표 ──
+      // ── 부분익절 단계: risk-intelligence.ts 함수 사용 (동기화) ──
       const partialStageNum = Number(stateMap.get(`${pfx}partial_tp_stage_${code}`) ?? 0);
-      // 부분익절 단계별 트리거 (risk-intelligence.ts와 동일)
-      const tpStages = isHighBeta
-        ? [{ stage: 1, pct: 8.0 }, { stage: 2, pct: 15.0 }]
-        : [{ stage: 1, pct: 6.0 }, { stage: 2, pct: 12.0 }];
-      const hardTp = isHighBeta ? 20.0 : 15.0;
+      const tpStages = getPartialTpStages(sector);
       // 다음 부분익절 목표
       const nextPartialStage = tpStages.find(s => s.stage > partialStageNum);
-      const nextPartialTpPct = nextPartialStage?.pct ?? null;
-      // 실질적 TP = 부분익절을 이미 달성했으면 다음 단계, 아니면 1단계 목표
+      const nextPartialTpPct = nextPartialStage?.triggerPct ?? null;
+      // 동적 Hard TP (매매엔진 값 우선, 없으면 섹터 기반 폴백)
+      const fallbackHardTp = isHighBeta ? 25.0 : isDefense ? 18.0 : 20.0;
+      const hardTp = dynTp != null && isFinite(dynTp) ? dynTp : fallbackHardTp;
+      // 실질 TP = 다음 부분익절 목표 or hard TP
       const effectiveTpPct = nextPartialTpPct ?? hardTp;
 
       // ── 트레일링 스톱 계산 (고점 추적 데이터 활용) ──
@@ -321,7 +341,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       const maxPnlPct = maxPrice > 0 && avgP > 0 ? ((maxPrice - avgP) / avgP) * 100 : 0;
       const trailActivatePct = isHighBeta ? 10.0 : isMediumBeta ? 8.0 : 5.0;
       const trailActive = maxPnlPct >= trailActivatePct;
-      // ATR 동적 트레일 드랍 (sell-logic과 동일한 공식, ATR 기본 2.0%)
+      // ATR 동적 트레일 드랍 (sell-logic과 동일한 공식, ATR 기본 추정)
       const estAtr = isHighBeta ? 3.0 : isDefense ? 1.2 : 2.0;
       const atrTrail = -(estAtr * 2.5);
       const minTrail = isHighBeta ? -12.0 : isDefense ? -6.0 : -8.0;
@@ -331,7 +351,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       const trailStopPct = trailActive && maxPrice > 0 && avgP > 0
         ? ((maxPrice * (1 + dynTrailDrop / 100) - avgP) / avgP) * 100
         : baseSl;
-      // 실질 SL = 트레일링 활성이면 트레일스톱, 아니면 고정 SL
+      // 실질 SL = 트레일링 활성이면 트레일스톱, 아니면 동적/고정 SL
       const effectiveSlPct = trailActive ? Math.max(trailStopPct, baseSl) : baseSl;
 
       overseasHoldings.push({
@@ -369,33 +389,42 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   // 국내 시가평가 = 원가 + 미실현손익 (원가만 쓰면 수익/손실 반영 안 됨)
   const domesticMarketValue = totalChainInvested + totalChainPnl;
 
-  // ══ 통합증거금: 국내+해외 단일 원화 풀 (Live/Paper 동일 구조) ══
+  // ══ 통합증거금: 국내+해외 단일 원화 풀 ══
   if (viewIsPaper) {
     // Paper: 국내 현금(rawCash) + 해외 현금(USD→KRW) = 통합 현금
     actualCash = (actualCash || 0) + overseasCashKrw;
-  } else if (overseasCashKrw > 0) {
-    // Live: overseas_state.cash(KRW) = KIS 주문가능원화 (해외투자 차감 완료)
-    actualCash = overseasCashKrw;
   } else {
-    // Live 초기: reconciliation 미실행 시 폴백
-    const netAsset = (balance as any).netAsset ?? 0;
-    if (netAsset > 0 && domesticInvested > 0) {
-      actualCash = Math.max(0, netAsset - domesticInvested);
-    }
-    if (overseasInvestedKrw > 0) {
-      actualCash = Math.max(0, actualCash - overseasInvestedKrw);
+    // Live: KIS API 값 우선 (가장 신선), overseas_state DB는 폴백
+    if (rawCash > 0) {
+      // KIS getAccountBalance() 성공 → 실계좌 주문가능금액 사용
+      actualCash = rawCash;
+    } else if (overseasCashKrw > 0) {
+      // KIS API 실패 → overseas_state DB 캐시 폴백
+      actualCash = overseasCashKrw;
+    } else {
+      // 전부 실패 → netAsset 기반 추정
+      const netAsset = (balance as any).netAsset ?? 0;
+      if (netAsset > 0 && domesticInvested > 0) {
+        actualCash = Math.max(0, netAsset - domesticInvested);
+      }
+      if (overseasInvestedKrw > 0) {
+        actualCash = Math.max(0, actualCash - overseasInvestedKrw);
+      }
     }
   }
 
   // 총자산 = 통합현금 + 국내 시가 + 해외 시가 (모드 무관 동일 공식)
   const grandTotalValue = (actualCash || 0) + domesticMarketValue + overseasMarketValueKrw;
 
-  // 비중(weight) 계산 — grandTotalValue 기준 통합 비중
+  // 비중(weight) 계산 — grandTotalValue 기준 시가 기반 통합 비중
   for (const ch of enrichedChains as any[]) {
-    ch.weight = grandTotalValue > 0 ? Math.round((ch.invested / grandTotalValue) * 1000) / 10 : 0;
+    const marketVal = ch.currentPrice > 0
+      ? ch.currentPrice * Number(ch.total_quantity || 0)
+      : ch.invested; // 시세 없으면 원가 폴백
+    ch.weight = grandTotalValue > 0 ? Math.round((marketVal / grandTotalValue) * 1000) / 10 : 0;
   }
   for (const h of overseasHoldings as any[]) {
-    const marketKrw = (h.last_price * h.quantity) * FX_RATE; // last_price = curP (캐시/avg 폴백 포함)
+    const marketKrw = (h.last_price * h.quantity) * FX_RATE;
     h.weight = grandTotalValue > 0 ? Math.round((marketKrw / grandTotalValue) * 1000) / 10 : 0;
   }
 

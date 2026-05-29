@@ -52,7 +52,7 @@ export const memCache = new MemoryCache();
 // ── 가격 캐시 (30초 TTL — 거의 실시간이지만 중복 호출 방지) ──
 
 export function cachePriceMemory(stockCode: string, price: number): void {
-  if (price > 0) memCache.set(`price:${stockCode}`, price, 30);
+  if (price > 0) memCache.set(`price:${stockCode}`, price, 60);
   // 장기 캐시도 유지 (2시간 — 장 마감 후 fallback용)
   if (price > 0) memCache.set(`price:last:${stockCode}`, price, 7200);
 }

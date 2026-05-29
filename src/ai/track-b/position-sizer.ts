@@ -47,7 +47,8 @@ export function adjustPositionSizes(params: {
       (d.limit_price ?? 0) > 0
     ) {
       const price = d.limit_price!;
-      const aiScore = scoreMap.get(d.stock_code) ?? 0;
+      const rawAiScore = scoreMap.get(d.stock_code) ?? 0;
+      const aiScore = Number.isFinite(rawAiScore) ? rawAiScore : 0;
       const confFactor = Math.min(1, Math.max(0, d.confidence ?? 0.6));
       const scoreFactor = Math.min(1, aiScore / 100);
       const combined = confFactor * 0.55 + scoreFactor * 0.45;
