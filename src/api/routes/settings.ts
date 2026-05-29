@@ -284,9 +284,14 @@ settingsRoutes.post('/run-overseas', async (c) => {
 // KIS 잔고 강제 동기화 — 장 마감 중에도 호출 가능 (유령 포지션 정리)
 settingsRoutes.post('/sync-overseas-holdings', async (c) => {
   try {
-    const { syncHoldingsFromKIS } = await import('../../scheduler/overseas/kis-sync.js');
-    await syncHoldingsFromKIS();
-    return c.json({ ok: true, message: 'KIS 잔고 동기화 완료' });
+    const { syncHoldingsFromKIS, reconcileCashWithKIS } = await import('../../scheduler/overseas/kis-sync.js');
+    const { runWithMode } = await import('../../config/context.js');
+    // live 컨텍스트에서 실행 — paper TR ID 대신 live TR ID 사용 보장
+    await runWithMode(false, async () => {
+      await syncHoldingsFromKIS();
+      await reconcileCashWithKIS();
+    });
+    return c.json({ ok: true, message: 'KIS 잔고 + 현금 동기화 완료 (live)' });
   } catch (e) {
     logger.error(`KIS 강제 동기화 실패: ${e}`, { component: 'SETTINGS' });
     return c.json({ ok: false, error: String(e) }, 500);
