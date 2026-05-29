@@ -863,8 +863,8 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           : kellyResult.sampleCount >= 10 ? Math.max(kellyResult.halfKelly, kellyFloor)
           : (target.isMomentum && (target.ai?.confidence ?? 0) >= 0.85 ? kellyMomentum : kellyDefault);
         const baseSize = portfolioValue * Math.min(kellyPct, isSmallAccount ? (paperMode ? 0.80 : 0.50) : kellyCap);
-        // 소액 live: 현금 50% 캡 (20만원 중 $70 이하 한도), Paper: 95%
-        const cashUsageCap = isSmallAccount ? (paperMode ? 0.95 : 0.50) : 0.70;
+        // 소액 live: 80% 캡 ($200 미만은 90%), Paper: 95%
+        const cashUsageCap = isSmallAccount ? (paperMode ? 0.95 : (cash < 200 ? 0.90 : 0.80)) : 0.70;
         const positionSize = Math.min(baseSize * sizingMult, cash * cashUsageCap);
         // 소액투자 가능: 통합증거금 소액 매수 허용 (수수료 0.25% → $20도 $0.05)
         const minPositionSize = 20;
@@ -881,7 +881,12 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         const riskPct = isPaper() ? 0.03 : 0.02;
         const maxRiskUSD = portfolioValue * riskPct;
         const qtyBy1PctRule = maxRiskUSD > 0 ? Math.floor(maxRiskUSD / (target.price.currentPrice * slDecimal)) : Infinity;
-        const qtyBySizing = Math.floor(positionSize / (target.price.currentPrice * 1.0025));
+        // 수수료 0.25% 보정: positionSize가 1주 가격과 비슷하면 수수료 무시하고 1주 허용
+        const priceWithFee = target.price.currentPrice * 1.0025;
+        let qtyBySizing = Math.floor(positionSize / priceWithFee);
+        if (qtyBySizing === 0 && positionSize >= target.price.currentPrice * 0.99) {
+          qtyBySizing = 1; // 1주 가격 ±1% 내면 수수료 무시하고 매수
+        }
         const fullQty = Math.min(qtyBySizing, qtyBy1PctRule > 0 ? qtyBy1PctRule : qtyBySizing);
 
         if (fullQty <= 0) {
