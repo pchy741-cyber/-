@@ -365,10 +365,14 @@ export const OVERSEAS = {
 } as const;
 
 /** 포트폴리오 규모 기반 동적 파라미터 — 고정형 상수 대체 */
-export function getOverseasDynamic(portfolioUsd: number) {
+export function getOverseasDynamic(portfolioUsd: number, isPaper = false) {
   const p = Math.max(100, portfolioUsd);
+  // Paper: 더 많은 종목 허용 ($500당 1종목, 최대 15), Live: $1000당 1종목, 최대 12
+  const maxPos = isPaper
+    ? Math.max(5, Math.min(15, Math.floor(p / 500)))
+    : Math.max(3, Math.min(12, Math.floor(p / 1000)));
   return {
-    maxPositions:       Math.max(3, Math.min(12, Math.floor(p / 1000))),    // $3k→3종목, $10k→10종목
+    maxPositions:       maxPos,
     positionSizeUsd:    Math.max(50, Math.min(p * 0.20, 5000)),             // 포트폴리오 20% 캡, 최대 $5k
     positionPct:        p < 2000 ? 0.35 : p < 10000 ? 0.25 : 0.18,         // 소액→35%, 중형→25%, 대형→18%
     parkingCashBuffer:  Math.max(50, Math.round(p * 0.05)),                 // 포트폴리오 5% 현금 유지

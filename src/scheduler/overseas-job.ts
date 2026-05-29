@@ -156,7 +156,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     // ── 루프 헬스 요약 ──
     const holdingCost = Array.from(holdings.values()).reduce((s, h) => s + h.qty * h.avgPrice, 0);
     const earlyEstPortfolio = cash + holdingCost;
-    const earlyMaxPos = getOverseasDynamic(earlyEstPortfolio).maxPositions;
+    const earlyMaxPos = getOverseasDynamic(earlyEstPortfolio, isPaper()).maxPositions;
     logger.info(
       `📊 해외 루프 ${regionFlags} | 현금 $${cash.toFixed(0)} | 보유 ${holdings.size}/${earlyMaxPos} ($${holdingCost.toFixed(0)}) | 종목풀 ${allActiveStocks.length} | ${isPaper() ? 'PAPER' : 'LIVE'}`,
       { component: 'OVERSEAS' },
@@ -455,7 +455,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       return sum + (tech ? tech.price.currentPrice * h.qty : h.avgPrice * h.qty);
     }, 0);
     const portfolioValue = cash + holdingEvalUsd;
-    const dynParams = getOverseasDynamic(portfolioValue);
+    const dynParams = getOverseasDynamic(portfolioValue, isPaper());
     const MAX_POSITIONS = dynParams.maxPositions;
 
     // ── 4. 매도 판단 (→ overseas/sell-logic.ts) — 방어 모드 트레일 타이트닝 반영 ──
@@ -590,25 +590,28 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       logger.warn(`⚠️ 손실 회복 모드(-${lossPctOfPortfolio.toFixed(1)}%): ${quality} 장세 → AI 85%+ 고확신 종목만 매수`, { component: 'OVERSEAS' });
     }
 
-    // ── 포트폴리오 배분 비중 체크 — kr_pct / us_pct 목표 준수 ──
+    // ── 포트폴리오 배분 비중 체크 — kr_pct / us_pct 목표 준수 (Live 전용) ──
+    // Paper 모드는 국내 포트폴리오가 없어 해외비중 100%로 잡히므로 스킵
     let allocBlocked = false;
     const fxNow = await fetchExchangeRate();
-    try {
-      const { rows: snap } = await getPool().query(
-        `SELECT total_value FROM portfolio_snapshots WHERE snapshot_at::date = CURRENT_DATE AND is_paper = false ORDER BY snapshot_at DESC LIMIT 1`
-      );
-      const krPortfolioUsd = snap.length > 0 && fxNow > 0 ? Number(snap[0].total_value) / fxNow : 0;
-      const grandPortfolioUsd = portfolioValue + krPortfolioUsd;
-      if (grandPortfolioUsd > 0) {
-        const { rows: allocRows } = await getPool().query('SELECT us_pct FROM portfolio_allocation_config LIMIT 1');
-        const targetUsPct = Number(allocRows[0]?.us_pct ?? 30);
-        const currentUsPct = (portfolioValue / grandPortfolioUsd) * 100;
-        if (currentUsPct > targetUsPct * 1.15) {
-          allocBlocked = true;
-          logger.warn(`📊 해외 배분 비중 초과: ${currentUsPct.toFixed(0)}% > 목표 ${targetUsPct}% (+15% 여유) → 신규 매수 차단`, { component: 'OVERSEAS' });
+    if (!isPaper()) {
+      try {
+        const { rows: snap } = await getPool().query(
+          `SELECT total_value FROM portfolio_snapshots WHERE snapshot_at::date = CURRENT_DATE AND is_paper = false ORDER BY snapshot_at DESC LIMIT 1`
+        );
+        const krPortfolioUsd = snap.length > 0 && fxNow > 0 ? Number(snap[0].total_value) / fxNow : 0;
+        const grandPortfolioUsd = portfolioValue + krPortfolioUsd;
+        if (grandPortfolioUsd > 0) {
+          const { rows: allocRows } = await getPool().query('SELECT us_pct FROM portfolio_allocation_config LIMIT 1');
+          const targetUsPct = Number(allocRows[0]?.us_pct ?? 30);
+          const currentUsPct = (portfolioValue / grandPortfolioUsd) * 100;
+          if (currentUsPct > targetUsPct * 1.15) {
+            allocBlocked = true;
+            logger.warn(`📊 해외 배분 비중 초과: ${currentUsPct.toFixed(0)}% > 목표 ${targetUsPct}% (+15% 여유) → 신규 매수 차단`, { component: 'OVERSEAS' });
+          }
         }
-      }
-    } catch { /* alloc config 미존재 시 무시 */ }
+      } catch { /* alloc config 미존재 시 무시 */ }
+    }
 
     if (riskBlocked || allocBlocked || currentHoldingCount >= MAX_POSITIONS || cash < 50) {
       const reasons: string[] = [];
