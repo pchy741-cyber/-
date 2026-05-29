@@ -199,6 +199,16 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         if (isBollingerMomentum) return true;
         return false;
       }
+      // Live 소액 계좌($500 미만): AI 없어도 기술적 신호로 매수 허용 (Gemini 한도 초과 대비)
+      if (!ai && !isPaper && portfolioValue < 500) {
+        const isBuySignal = (t.signal === 'STRONG_BUY' && t.score >= 25) || (t.signal === 'BUY' && t.score >= 35);
+        const rsiOk = t.rsi >= 40 && t.rsi <= 70;
+        if (isBuySignal && rsiOk) return true;
+        if (t.isBigMover && t.score >= 20 && t.rsi >= 40 && t.rsi <= 70) return true;
+        if (t.isMomentum && t.score >= 25 && t.aboveMA20 && t.rsi >= 45 && t.rsi <= 68) return true;
+        logger.info(`  ⛔ Live 소액 AI-free 차단: ${t.code} sig=${t.signal} score=${t.score} RSI=${t.rsi.toFixed(0)} mq=${mq}`, { component: 'OVERSEAS' });
+        return false;
+      }
       if (!ai) logger.info(`  ⛔ ${recoveryMode ? '손실회복모드' : mq} AI 없음 차단: ${t.code}`, { component: 'OVERSEAS' });
       return false;
     })
