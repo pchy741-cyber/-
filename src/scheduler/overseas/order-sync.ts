@@ -2,6 +2,7 @@
  * 주문 동기화 — PENDING 재처리, 마감 취소, 인사이트, 손절 쿨다운
  */
 import { config } from '../../config/index.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, updateOrder } from '../../db/client.js';
 import { cancelOverseasOrder, getOverseasBalance } from '../../kis/overseas.js';
 import { logger } from '../../utils/logger.js';
@@ -125,7 +126,7 @@ export async function confirmOverseasFillFromBalance(params: {
  * 미국장 마감 시 모든 PENDING 해외주문 강제 취소
  */
 export async function cancelAllPendingOverseasOrders(isPaper?: boolean): Promise<void> {
-  const mode = (isPaper ?? config.isPaper) ? 'paper' : 'live';
+  const mode = (isPaper ?? getCtxIsPaper()) ? 'paper' : 'live';
   try {
     const { rows } = await getPool().query(`
       SELECT id, stock_code, exchange, quantity, kis_order_no
@@ -191,7 +192,7 @@ export async function setUserInsights(text: string): Promise<void> {
  * 손절 이후 재매수 쿨다운 — 24시간 이내 손실 매도된 종목 Set 반환
  */
 export async function getLossCooldownStocks(isPaper?: boolean): Promise<Set<string>> {
-  const mode = (isPaper ?? config.isPaper) ? 'paper' : 'live';
+  const mode = (isPaper ?? getCtxIsPaper()) ? 'paper' : 'live';
   try {
     const { rows } = await getPool().query(`
       SELECT DISTINCT stock_code
@@ -219,7 +220,7 @@ export async function getLossCooldownStocks(isPaper?: boolean): Promise<Set<stri
  * 7일 이내 손실 매도 종목 — 24h 쿨다운 이후에도 AI 고확신(>=0.80) 없이 재진입 금지
  */
 export async function getRecentLossStocks(isPaper?: boolean): Promise<Set<string>> {
-  const mode = (isPaper ?? config.isPaper) ? 'paper' : 'live';
+  const mode = (isPaper ?? getCtxIsPaper()) ? 'paper' : 'live';
   try {
     const { rows } = await getPool().query(`
       SELECT DISTINCT stock_code

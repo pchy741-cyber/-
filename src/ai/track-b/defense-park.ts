@@ -8,6 +8,7 @@
  */
 
 import { config } from '../../config/index.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, isMemoryMode } from '../../db/client.js';
 import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
@@ -94,7 +95,7 @@ export async function isPortfolioInDowntrend(): Promise<{ downtrend: boolean; re
         AND is_paper = $1
       ORDER BY snapshot_at DESC
       LIMIT 10
-    `, [config.isPaper]);
+    `, [getCtxIsPaper()]);
 
     if (rows.length < DOWNTREND_MIN_DAYS) {
       return { downtrend: false, reason: `스냅샷 부족 (${rows.length}개)` };
@@ -157,7 +158,7 @@ export async function isMarketRecovering(
         SELECT daily_pnl FROM portfolio_snapshots
         WHERE is_paper = $1
         ORDER BY snapshot_at DESC LIMIT 3
-      `, [config.isPaper]);
+      `, [getCtxIsPaper()]);
       const recentPnls = rows.map((r: any) => Number(r.daily_pnl));
       const consecutivePositive = recentPnls.slice(0, RECOVERY_POSITIVE_DAYS).every(p => p > 0);
       if (consecutivePositive && recentPnls.length >= RECOVERY_POSITIVE_DAYS) {

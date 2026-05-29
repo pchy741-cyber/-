@@ -2,6 +2,7 @@
  * 리스크 통제 엔진 — 모든 국내 주문은 이 엔진을 거쳐야 함
  */
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { getOpenChains, getPool, getTodayStartSnapshot, insertRiskEvent, insertSnapshot } from '../db/client.js';
 import { getAccountBalance, type AccountBalance } from '../kis/account.js';
 import { logger } from '../utils/logger.js';
@@ -270,7 +271,7 @@ export class RiskEngine {
         const osPortfolioKrw = Math.round((osCash + osHoldingCostUsd) * fx);
         const grandTotal = totalPortfolio + osPortfolioKrw;
         if (grandTotal > 0 && osPortfolioKrw > 0) {  // 해외 포트폴리오 없으면 비율 체크 불필요
-          const { rows: allocRows } = await getPool().query('SELECT kr_pct FROM portfolio_allocation_config LIMIT 1');
+          const { rows: allocRows } = await getPool().query('SELECT kr_pct FROM portfolio_allocation_config WHERE is_paper = $1 LIMIT 1', [getCtxIsPaper()]);
           const targetKrPct = Number(allocRows[0]?.kr_pct ?? 70);
           const currentKrPct = (totalPortfolio / grandTotal) * 100;
           if (currentKrPct > targetKrPct * 1.15) {

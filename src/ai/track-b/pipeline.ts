@@ -332,7 +332,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     const allocCfg = await import('../../db/client.js')
-      .then(m => m.getPool().query('SELECT * FROM portfolio_allocation_config WHERE is_active = true LIMIT 1'))
+      .then(m => m.getPool().query('SELECT * FROM portfolio_allocation_config WHERE is_active = true AND is_paper = $1 LIMIT 1', [config.isPaper]))
       .then(r => r.rows[0] ?? null).catch(() => null);
 
     // ── 3-d. 실시간 등락률 상위 종목 동적 편입 ────────────────────────────

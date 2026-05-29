@@ -38,11 +38,12 @@ function calcAtrPct(candles: DailyCandle[], period = 14): number {
   for (let i = 0; i < period; i++) {
     const high = candles[i].high;
     const low = candles[i].low;
-    const prevClose = candles[i + 1].close;
+    const prevClose = candles[i + 1]?.close;
+    if (!prevClose || prevClose <= 0) continue;
     const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
     sum += (tr / prevClose) * 100;
   }
-  return sum / period;
+  return period > 0 ? sum / period : 1.0;
 }
 
 // ── 변동성 + 레짐 기반 전략 파라미터 동적 최적화 ──

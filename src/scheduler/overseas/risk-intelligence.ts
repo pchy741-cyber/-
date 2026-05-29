@@ -329,7 +329,7 @@ export function getPartialTpStages(sector: string): PartialTpStage[] {
 
 /** paper/live 분리 state key 접두사 */
 function modePrefix(isPaper?: boolean): string {
-  return (isPaper ?? config.isPaper) ? 'p_' : 'l_';
+  return (isPaper ?? getCtxIsPaper()) ? 'p_' : 'l_';
 }
 
 /** DB에서 현재 부분익절 단계 조회 (paper/live 분리) */

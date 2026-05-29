@@ -2,7 +2,7 @@
  * 종목별 과거 승률 계산 — score_accuracy 테이블 기반
  * AI 없어도 "이 종목은 과거에 얼마나 잘 됐나"를 반영해 진입 임계값 동적 조정
  */
-import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { getPool } from '../db/client.js';
 
 export interface StockWinRate {
@@ -31,7 +31,7 @@ export async function getStockWinRates(stockCodes: string[]): Promise<Map<string
         AND is_paper = $2
       GROUP BY stock_code
       HAVING COUNT(*) >= 3
-    `, [stockCodes, config.isPaper]);
+    `, [stockCodes, getCtxIsPaper()]);
     for (const r of rows) {
       map.set(String(r.stock_code), {
         winRate: Number(r.wins) / Number(r.total),

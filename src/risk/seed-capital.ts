@@ -17,6 +17,7 @@
  */
 
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { logger } from '../utils/logger.js';
 
 const DEFAULT_SEED_KR = 10_000_000;
@@ -28,7 +29,7 @@ let cachedKrPaper: number | null = null;
 let cachedOverseasLive: number | null = null;
 
 export async function getSeedCapitalKr(): Promise<number> {
-  if (config.isPaper) {
+  if (getCtxIsPaper()) {
     // paper 시드자본 = 실제 모의 계좌 잔고 (고정 상수 제거)
     if (cachedKrPaper !== null) return cachedKrPaper;
     try {
@@ -59,7 +60,7 @@ export async function getSeedCapitalKr(): Promise<number> {
 }
 
 export async function getSeedCapitalOverseas(): Promise<number> {
-  if (config.isPaper) return DEFAULT_SEED_OVERSEAS;
+  if (getCtxIsPaper()) return DEFAULT_SEED_OVERSEAS;
 
   if (cachedOverseasLive !== null) return cachedOverseasLive;
 
@@ -83,7 +84,7 @@ export async function getSeedCapitalOverseas(): Promise<number> {
 export async function setSeedCapital(market: 'KR' | 'OVERSEAS', amount: number): Promise<void> {
   if (amount <= 0) return;
 
-  if (config.isPaper) {
+  if (getCtxIsPaper()) {
     // Paper 모드: 실제 계좌잔고가 기준 → 캐시만 업데이트, DB 쓰기 불필요
     if (market === 'KR') cachedKrPaper = amount;
     logger.info(
@@ -117,9 +118,10 @@ export async function setSeedCapital(market: 'KR' | 'OVERSEAS', amount: number):
 }
 
 export function getSeedCapitalStatus() {
+  const paper = getCtxIsPaper();
   return {
-    kr: config.isPaper ? (cachedKrPaper ?? DEFAULT_SEED_KR) : (cachedKrLive ?? DEFAULT_SEED_KR),
-    overseas: config.isPaper ? DEFAULT_SEED_OVERSEAS : (cachedOverseasLive ?? DEFAULT_SEED_OVERSEAS),
+    kr: paper ? (cachedKrPaper ?? DEFAULT_SEED_KR) : (cachedKrLive ?? DEFAULT_SEED_KR),
+    overseas: paper ? DEFAULT_SEED_OVERSEAS : (cachedOverseasLive ?? DEFAULT_SEED_OVERSEAS),
   };
 }
 
@@ -147,7 +149,7 @@ export const OVERSEAS_LOSS_TIERS = { warnPct: 10, blockPct: 20, killPct: 30 } as
 /** 서버 시작 시 DB에서 기준자본 로드 */
 export async function initSeedCapital(): Promise<void> {
   await Promise.all([getSeedCapitalKr(), getSeedCapitalOverseas()]);
-  const krVal = config.isPaper ? (cachedKrPaper ?? DEFAULT_SEED_KR) : (cachedKrLive ?? DEFAULT_SEED_KR);
+  const krVal = getCtxIsPaper() ? (cachedKrPaper ?? DEFAULT_SEED_KR) : (cachedKrLive ?? DEFAULT_SEED_KR);
   logger.info(
     `💰 기준자본 로드: 국내 ${krVal.toLocaleString()}원 / 해외 $${(cachedOverseasLive ?? DEFAULT_SEED_OVERSEAS).toLocaleString()}`,
     { component: 'RISK' },

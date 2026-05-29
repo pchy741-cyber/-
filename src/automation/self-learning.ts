@@ -1,4 +1,5 @@
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { getPool, logSystem } from '../db/client.js';
 import { getDailyChart } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
@@ -1279,7 +1280,8 @@ export async function getStockAccuracyContext(stockCodes: string[]): Promise<str
 async function analyzeBuyThreshold(): Promise<LearnedInsight[]> {
   try {
     const { rows: cfgRows } = await getPool().query(
-      `SELECT buy_threshold FROM strategy_config WHERE is_active = true LIMIT 1`,
+      `SELECT buy_threshold FROM strategy_config WHERE is_active = true AND is_paper = $1 LIMIT 1`,
+      [getCtxIsPaper()],
     );
     const currentThreshold: number = cfgRows[0]?.buy_threshold ?? 58;
 

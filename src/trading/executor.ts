@@ -1,5 +1,6 @@
 import { OrderType, STRATEGY_PARAMS, getScoreBasedParams, type StrategyMode } from '../config/constants.js';
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { getActiveStrategy, getOpenChains, insertOrder, logSystem, updateOrderByKisOrderNo, upsertWatchlistItem } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import { getCurrentPrice, getDailyChart } from '../kis/market.js';
@@ -136,7 +137,7 @@ export class TradeExecutor {
     aiScore?: number,
     tpSlHints?: import('../config/constants.js').DomesticTpSlHints,
   ): Promise<void> {
-    const isPaperSnapshot = config.isPaper;
+    const isPaperSnapshot = getCtxIsPaper();
 
     // 이미 열린 체인이 있으면 물타기로 전환
     const existingChain = await chainManager.findOpenChain(stockCode);
@@ -363,7 +364,7 @@ export class TradeExecutor {
     limitPrice: number | undefined,
     reasoning: string,
   ): Promise<void> {
-    const isPaperSnapshot = config.isPaper;
+    const isPaperSnapshot = getCtxIsPaper();
     const chain = await chainManager.findOpenChain(stockCode);
     if (!chain) {
       logger.warn(`물타기 실패: ${stockCode} 열린 체인 없음`, { component: 'EXECUTOR' });
@@ -585,7 +586,7 @@ export class TradeExecutor {
     triggerSource?: string;
     aiReasoning?: string;
   }): Promise<OrderResult> {
-    if (config.isPaper) {
+    if (getCtxIsPaper()) {
       return paperTradeOrder(params);
     }
 
@@ -659,7 +660,7 @@ export class TradeExecutor {
     expectedQty: number,
     fallbackPrice: number,
   ): Promise<{ filledQty: number; filledPrice: number } | null> {
-    if (config.isPaper) {
+    if (getCtxIsPaper()) {
       return { filledQty: expectedQty, filledPrice: roundKrw(fallbackPrice) };
     }
 

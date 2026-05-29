@@ -3,6 +3,7 @@
  */
 import { OVERSEAS } from '../../config/constants.js';
 import { config } from '../../config/index.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, insertOrder } from '../../db/client.js';
 import { placeOverseasOrder } from '../../kis/overseas.js';
 import { logger } from '../../utils/logger.js';
@@ -70,7 +71,7 @@ export async function executeOverseasOrder(
   previousAvgPrice: number,
   opts?: { isPaper?: boolean },
 ): Promise<OverseasExecutionResult> {
-  const paperMode = opts?.isPaper ?? config.isPaper;
+  const paperMode = opts?.isPaper ?? getCtxIsPaper();
   const stockName = resolveOverseasStockName(code, exchange);
 
   if (paperMode) {
@@ -226,7 +227,7 @@ export async function deployIdleCash(params: {
   }
 
   if (bestCode && bestHolding && bestPrice > 0) {
-    const concKey = (params.isPaper ?? config.isPaper) ? 'p_concentration_code' : 'l_concentration_code';
+    const concKey = (params.isPaper ?? getCtxIsPaper()) ? 'p_concentration_code' : 'l_concentration_code';
     await getPool().query(
       `INSERT INTO overseas_state (key, value) VALUES ($2, $1)
        ON CONFLICT (key) DO UPDATE SET value = $1`,

@@ -1,5 +1,6 @@
 import { KR_FEE, type StrategyMode } from '../config/constants.js';
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { createChain, getOpenChains, getOrdersByChain, updateChain, getPool, withTransaction, isMemoryMode } from '../db/client.js';
 import type { TransactionChain } from '../db/models.js';
 import { logger } from '../utils/logger.js';
@@ -198,7 +199,7 @@ export class ChainManager {
           holdingDays,
           reason,
           (chain as any).strategy_mode ?? null,
-          (chain as any).is_paper ?? config.isPaper,
+          (chain as any).is_paper ?? getCtxIsPaper(),
         ],
       );
       if ((insertResult as any).rowCount === 0) {

@@ -8,6 +8,7 @@
  */
 import { OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { config } from '../../config/index.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, withTransaction } from '../../db/client.js';
 import { fetchExchangeRate } from '../../automation/macro-data.js';
 import { logger } from '../../utils/logger.js';
@@ -16,7 +17,7 @@ const PAPER_OVERSEAS_SEED = 10000; // Paper 해외 시드 $10K (기존 주문 �
 
 /** paper/live 별 현금 키 */
 export function cashKey(isPaper?: boolean): string {
-  return (isPaper ?? config.isPaper) ? 'cash_paper' : 'cash';
+  return (isPaper ?? getCtxIsPaper()) ? 'cash_paper' : 'cash';
 }
 
 /**
@@ -156,7 +157,7 @@ export async function ensureOverseasTable(): Promise<void> {
 }
 
 export async function getHoldings(isPaper?: boolean): Promise<Map<string, { qty: number; avgPrice: number; boughtAt: string; exchange: string }>> {
-  const paper = isPaper ?? config.isPaper;
+  const paper = isPaper ?? getCtxIsPaper();
   const map = new Map();
   try {
     const { rows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1', [paper]);
@@ -168,7 +169,7 @@ export async function getHoldings(isPaper?: boolean): Promise<Map<string, { qty:
 }
 
 export async function setHolding(code: string, exchange: string, qty: number, avgPrice: number, isPaper?: boolean): Promise<void> {
-  const paper = isPaper ?? config.isPaper;
+  const paper = isPaper ?? getCtxIsPaper();
   if (qty <= 0) {
     await getPool().query('DELETE FROM overseas_holdings WHERE exchange = $1 AND stock_code = $2 AND is_paper = $3', [exchange, code, paper]);
   } else {
@@ -187,7 +188,7 @@ export async function setHolding(code: string, exchange: string, qty: number, av
  * - Live: DB에 KRW 저장 → 현재 환율로 USD 변환 반환
  */
 export async function getCash(isPaper?: boolean): Promise<number> {
-  const paper = isPaper ?? config.isPaper;
+  const paper = isPaper ?? getCtxIsPaper();
   if (paper) {
     return computePaperCash();
   }
@@ -211,7 +212,7 @@ export async function getCashKrw(): Promise<number> {
 
 /** Live 현금 설정 — KRW 단위로 저장 (reconcileCashWithKIS에서 호출) */
 export async function setCash(amountKrw: number, isPaper?: boolean): Promise<void> {
-  const paper = isPaper ?? config.isPaper;
+  const paper = isPaper ?? getCtxIsPaper();
   if (paper) return; // Paper: computed from orders, no need to store
   const safe = Math.max(0, amountKrw);
   const key = cashKey(false);
@@ -231,7 +232,7 @@ export async function updateTradeState(p: {
   code: string; exchange: string; qty: number; avgPrice: number;
   newCash: number; isPaper?: boolean; fxRate?: number;
 }): Promise<void> {
-  const paper = p.isPaper ?? config.isPaper;
+  const paper = p.isPaper ?? getCtxIsPaper();
   await withTransaction(async (client) => {
     if (p.qty <= 0) {
       await client.query('DELETE FROM overseas_holdings WHERE exchange=$1 AND stock_code=$2 AND is_paper=$3', [p.exchange, p.code, paper]);
@@ -255,7 +256,7 @@ export async function updateTradeState(p: {
 
 /** paper/live 분리 state key 접두사 */
 function modePrefix(isPaper?: boolean): string {
-  return (isPaper ?? config.isPaper) ? 'p_' : 'l_';
+  return (isPaper ?? getCtxIsPaper()) ? 'p_' : 'l_';
 }
 
 // ── 트레일링 스탑용 최고가 추적 (paper/live 분리) ──

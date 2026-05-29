@@ -15,10 +15,10 @@ import { OVERSEAS_LOSS_TIERS } from '../risk/seed-capital.js';
 
 const SCOPE = 'OVERSEAS' as const;
 
-// ── Paper/Live 병행운영: 모드 오버라이드 ──
-let _modeOverride: boolean | null = null;
-/** 현재 overseas-job 실행 모드 (오버라이드 → isPaper() 폴백) */
-function isPaper(): boolean { return _modeOverride ?? config.isPaper; }
+// ── Paper/Live 병행운영: AsyncLocalStorage 컨텍스트 기반 ──
+import { getCtxIsPaper } from '../config/context.js';
+/** 현재 overseas-job 실행 모드 (AsyncLocalStorage 컨텍스트 → 전역 폴백) */
+function isPaper(): boolean { return getCtxIsPaper(); }
 import { logger } from '../utils/logger.js';
 import { analyzeOverseasWithAI, type OverseasStockInput } from '../ai/overseas/analyzer.js';
 import { getAIGeneratedInsights } from '../ai/overseas/insights-generator.js';
@@ -75,7 +75,7 @@ import { calcTurtleSignal, isTurtleExit } from './overseas/turtle.js';
  * 최대 5종목 동시 보유, 종목당 $1,500 / 20% 중 작은 값
  */
 export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void> {
-  _modeOverride = opts?.isPaper ?? null;
+  // isPaper는 runWithMode(ctx)로 주입 — getCtxIsPaper()로 읽음
   const s = overseasState; // shorthand
 
   if (s.isRunning) return;
@@ -344,7 +344,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     const heldSet = new Set(holdings.keys());
     const allAiInputs: OverseasStockInput[] = techResults.map(t => {
       const holding = holdings.get(t.code);
-      const pnlPct = holding ? ((t.price.currentPrice - holding.avgPrice) / holding.avgPrice) * 100 : undefined;
+      const pnlPct = holding && holding.avgPrice > 0 ? ((t.price.currentPrice - holding.avgPrice) / holding.avgPrice) * 100 : undefined;
       return {
         code: t.code, name: t.name, exchange: t.exchange,
         currentPrice: t.price.currentPrice, changePct: t.price.changePct,
@@ -488,7 +488,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           await updateTradeState({ code, exchange: tech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper() });
           if (exec.finalQty <= 0) await clearMaxPrice(code, isPaper());
           await getPool().query('DELETE FROM overseas_state WHERE key = $1', [turtleTrailKey]).catch(() => {});
-          const pnlPct = ((exec.filledPrice - holding.avgPrice) / holding.avgPrice * 100);
+          const pnlPct = holding.avgPrice > 0 ? ((exec.filledPrice - holding.avgPrice) / holding.avgPrice * 100) : 0;
           sellOrders.push(`🐢 터틀탈출 ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)`);
         }
       } else {
@@ -743,7 +743,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
             const concHolding = updatedHoldings.get(concentrationCode);
             const concTech = techResults.find(t => t.code === concentrationCode);
             if (concHolding && concTech && concTech.price.currentPrice > 0 && concHolding.qty >= 2) {
-              const concPnlPct = ((concTech.price.currentPrice - concHolding.avgPrice) / concHolding.avgPrice) * 100;
+              const concPnlPct = concHolding.avgPrice > 0 ? ((concTech.price.currentPrice - concHolding.avgPrice) / concHolding.avgPrice) * 100 : 0;
               if (concPnlPct > 0) {
                 const shortfall = neededCash - cash;
                 const maxSellQty = Math.floor(concHolding.qty / 2);
@@ -964,7 +964,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     const finalHoldings = await getHoldings(isPaper());
     const holdingList = Array.from(finalHoldings.entries()).map(([code, h]) => {
       const tech = techResults.find(t => t.code === code);
-      const pnl = tech ? ((tech.price.currentPrice - h.avgPrice) / h.avgPrice * 100).toFixed(1) : '?';
+      const pnl = tech && h.avgPrice > 0 ? ((tech.price.currentPrice - h.avgPrice) / h.avgPrice * 100).toFixed(1) : '?';
       return `${code} x${h.qty} @$${h.avgPrice.toFixed(2)} (${Number(pnl) >= 0 ? '+' : ''}${pnl}%)`;
     });
 
@@ -1006,7 +1006,6 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
   } finally {
     clearTimeout(jobTimeout);
     s.isRunning = false;
-    _modeOverride = null;
     if (lockClient) {
       try { await lockClient.query('SELECT pg_advisory_unlock($1)', [LOCK_ID]); } catch {}
       lockClient.release();

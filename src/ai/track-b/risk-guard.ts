@@ -1,4 +1,5 @@
 import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
@@ -80,7 +81,7 @@ export async function applyHardRules(params: {
   let trailingStopThreshold = -2.5;
   try {
     const { getPool } = await import('../../db/client.js');
-    const { rows } = await getPool().query('SELECT trailing_stop_pct FROM portfolio_allocation_config LIMIT 1');
+    const { rows } = await getPool().query('SELECT trailing_stop_pct FROM portfolio_allocation_config WHERE is_paper = $1 LIMIT 1', [getCtxIsPaper()]);
     if (rows[0]?.trailing_stop_pct) trailingStopThreshold = -Math.abs(Number(rows[0].trailing_stop_pct));
   } catch { /* 기본값 사용 */ }
 

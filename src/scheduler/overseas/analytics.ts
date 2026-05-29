@@ -110,7 +110,7 @@ export async function getOverseasWinRates(codes: string[], isPaper?: boolean): P
 }
 
 export async function getPendingOverseasStocks(isPaper?: boolean): Promise<Set<string>> {
-  const mode = (isPaper ?? config.isPaper) ? 'paper' : 'live';
+  const mode = (isPaper ?? getCtxIsPaper()) ? 'paper' : 'live';
   const pending = new Set<string>();
   try {
     const { rows } = await getPool().query(
