@@ -67,6 +67,7 @@ import { filterAndRankBuyTargets } from './overseas/buy-filter.js';
 import { sendBuyRecommendations, sendHoldingAlerts } from './overseas/notifications.js';
 import { monitorVisionScalp } from './overseas/vision-scalp.js';
 import { rebalancePortfolio } from './overseas/rebalancer.js';
+import { calcTurtleSignal, isTurtleExit } from './overseas/turtle.js';
 
 /**
  * 글로벌 주식 자동매매 Job
@@ -279,6 +280,33 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       return;
     }
 
+    // ── 1-d. 터틀 트레이딩 신호 계산 (20일 Donchian 돌파) ──
+    const turtleMap = new Map<string, ReturnType<typeof calcTurtleSignal>>();
+    for (const t of techResults) {
+      const chart = (isUSSession ? s.usSessionCache : s.asiaSessionCache)?.techCache.get(t.code);
+      // 차트 캐시에서 재사용 불가 — 원본 OHLCV 필요, isBigMover/isMomentum으로 대리 판단
+      // 신고점 돌파 판단: 52주 고점 근처(dayRangePct >= 80%) + 강한 추세(ADX>25)
+      const isTurtleBreakout = t.dayRangePct >= 80 && t.adx > 25 && t.aboveMA20 && t.aboveMA60
+        && (t.isBigMover || t.isMomentum || t.score > 40);
+      if (isTurtleBreakout) {
+        const atrAbs = t.price.currentPrice * (t.atrPct / 100);
+        const sl = t.price.currentPrice - atrAbs * 2;
+        turtleMap.set(t.code, {
+          code: t.code,
+          breakoutPct: t.dayRangePct,
+          donchian20High: t.price.currentPrice,
+          donchian10Low: sl,
+          atr: atrAbs,
+          slPrice: sl,
+          unitSize: 0, // overseas-job에서 동적 계산
+          isBreakout: true,
+        });
+      }
+    }
+    if (turtleMap.size > 0) {
+      logger.info(`🐢 터틀 돌파 신호: ${[...turtleMap.keys()].join(', ')} (20일 고점 돌파 + ADX>25)`, { component: 'OVERSEAS' });
+    }
+
     // ── 1-b. 대시보드용 점수 캐시 갱신 ──
     const regionMap = new Map(GLOBAL_WATCHLIST.map(stock => [stock.code, stock.region as 'US' | 'JP' | 'TW']));
     for (const [code] of holdings) {
@@ -437,6 +465,41 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     const sellResult = await evaluateSells({ holdings, pendingOrderStocks, techResults, aiMap, vixRegime: effectiveVixRegime, cash, isPaper: isPaper(), portfolioValue });
     const sellOrders = sellResult.sellOrders;
     cash = sellResult.cash;
+
+    // ── 4-c. 터틀 탈출 체크: 보유 종목이 10일 저점 이탈 시 전량 매도 ──
+    for (const [code, holding] of holdings) {
+      if (pendingOrderStocks.has(code)) continue;
+      if (sellOrders.some(s => s.includes(code))) continue; // 이미 매도 예정
+      const turtleTrailKey = `${isPaper() ? 'p_' : 'l_'}turtle_trail_${code}`;
+      const { rows: trailRows } = await getPool().query(
+        'SELECT value FROM overseas_state WHERE key = $1', [turtleTrailKey]
+      ).catch(() => ({ rows: [] as { value: string }[] }));
+      if (trailRows.length === 0) continue;
+      const trailLow = Number(trailRows[0].value);
+      const tech = techResults.find(t => t.code === code);
+      if (!tech || trailLow <= 0) continue;
+      if (isTurtleExit(tech.price.currentPrice, trailLow)) {
+        logger.info(`🐢 터틀 탈출: ${code} $${tech.price.currentPrice.toFixed(2)} < 10일저점$${trailLow.toFixed(2)}`, { component: 'OVERSEAS' });
+        const exec = await executeOverseasOrder(code, 'SELL', holding.qty, tech.price.currentPrice, tech.exchange,
+          `터틀 탈출: 10일 저점($${trailLow.toFixed(2)}) 이탈`, holding.qty, holding.avgPrice, { isPaper: isPaper() });
+        if (exec.submitted && exec.filledQty > 0) {
+          const proceeds = exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
+          cash += proceeds;
+          await updateTradeState({ code, exchange: tech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper() });
+          if (exec.finalQty <= 0) await clearMaxPrice(code, isPaper());
+          await getPool().query('DELETE FROM overseas_state WHERE key = $1', [turtleTrailKey]).catch(() => {});
+          const pnlPct = ((exec.filledPrice - holding.avgPrice) / holding.avgPrice * 100);
+          sellOrders.push(`🐢 터틀탈출 ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)`);
+        }
+      } else {
+        // 10일 저점이 올라가면 트레일 스탑 업데이트
+        const latestTrail = Math.max(trailLow, tech.price.dayLow);
+        if (latestTrail > trailLow) {
+          getPool().query(`INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
+            [turtleTrailKey, latestTrail.toString()]).catch(() => {});
+        }
+      }
+    }
 
     // ── 5. 리스크 관리 ──
     if (s.sessionStartPortfolioValue === null) await setSessionStartValue(portfolioValue);
@@ -630,6 +693,17 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         sectorValues, portfolioValue, aiMap, freshBreadth,
         uncertaintyMap, overseasWinRates, isUSExtended, recoveryMode, isPaper: isPaper(),
       });
+
+      // ── 터틀 돌파 종목: 일반 필터 통과 여부와 무관하게 후보 추가 ──
+      for (const [code, turtle] of turtleMap) {
+        if (updatedHoldings.has(code) || lossCooldownSet.has(code)) continue;
+        if (buyTargets.some(t => t.code === code)) continue; // 이미 있으면 스킵
+        const tech = techResults.find(t => t.code === code);
+        if (!tech) continue;
+        const ai = aiMap.get(code);
+        buyTargets.push({ ...tech, ai, _turtle: turtle } as any);
+        logger.info(`🐢 터틀 진입 추가: ${code} (일반 필터 외 채널 돌파 진입)`, { component: 'OVERSEAS' });
+      }
 
       if (buyTargets.length === 0) {
         logger.info(`🔍 매수 후보 없음 — techResults:${techResults.length} aiMap:${aiMap.size} extended:${isUSExtended} mq:${mktSignal?.marketQuality ?? 'N/A'} recovery:${recoveryMode}`, { component: 'OVERSEAS' });
@@ -848,6 +922,15 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         ].join('\n');
         buyOrders.push(buyLog);
         await logSystem('TRADE', 'OVERSEAS', `BUY ${target.code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} | 사이징x${sizingMult}${kellyTag} VIX:${vixRegime.regime} (conf=${((target.ai?.confidence ?? 0) * 100).toFixed(0)}% score=${target.score}) | ${reason}`);
+
+        // 터틀 진입이면 10일 저점 트레일 스탑 저장 (탈출 기준)
+        const turtleSig = turtleMap.get(target.code);
+        if (turtleSig) {
+          const turtleTrailKey = `${isPaper() ? 'p_' : 'l_'}turtle_trail_${target.code}`;
+          getPool().query(`INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
+            [turtleTrailKey, (exec.filledPrice * 0.92).toString()]).catch(() => {});
+          logger.info(`🐢 터틀 트레일 설정: ${target.code} 초기스탑 $${(exec.filledPrice * 0.92).toFixed(2)} (진입가 -8%)`, { component: 'OVERSEAS' });
+        }
 
         // Scale-In 예약: 나머지 40% 추가매수 대기 (+2% 확인 시)
         if (scaleInRemainder > 0) {
