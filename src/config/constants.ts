@@ -80,22 +80,17 @@ export const STRATEGY_PARAMS = {
     // ┌─ 실거래 데이터 기반 최적화 (92건 분석) ────────────────────────────┐
     // │ 실 승률 46.7% / 평균 수익 +3.91% / 평균 손실 -1.59%              │
     // │ Half-Kelly 포지션 12.5% / 손익비 2.46:1 / 월 40~50건 목표        │
-    // │ buyThreshold 78: 75~77 저확신 구간 추가 제거 → 승률 우선          │
-    // │ TP 5.5%: 실 수익 평균 3.91% 기준 → 조기 청산 방지                │
+    // │ earlyTpPct 2.5%: 50% 조기 해제 → 현금 회전율 2배 향상             │
     // └────────────────────────────────────────────────────────────────────┘
     buyThreshold: 83,
-    // 83점: 4월 실데이터 기준 승률 48%(36승 39패) → 77 하향 후 승률 25%로 급락 → 복원
     splitCount: 2,
     averageDownPct: 0,
-    // 물타기 비활성화: 지는 종목에 추가 매수 = 손실 배증. 동일 종목 반복 손절 차단.
     maxAveragingCount: 0,
-    takeProfitPct: 5.5,
-    // 익절: +5.5% → 실 수익 평균(+3.91%) 초과 → 승자를 더 오래 보유
+    earlyTpPct: 2.5,        // 조기 부분익절: +2.5% 도달 시 50% 즉시 매도 → 현금 재배치
+    takeProfitPct: 5.5,     // 잔여 50% 트레일링 최종 목표 (+5.5% 또는 트레일링 발동)
     takeProfitRatio: 0.5,   // 50% 부분 매도 → 잔여 트레일링
     stopLossPct: -3.0,
-    // 손절: -3% → R:R = 5.5:3 = 1.83:1 (손익분기 승률 35%)
     maxHoldingDays: 12,
-    // 12일: TP 5.5% 달성 시간 확보 (기존 10일에서 소폭 연장)
   },
 
   DEFENSE: {
@@ -216,6 +211,61 @@ export function getScoreBasedParams(score: number): { takeProfitPct: number; sto
   if (score >= 80) return { takeProfitPct: 6.0, stopLossPct: -2.5 };  // 고확신: 2.4:1 R:R
   if (score >= 70) return { takeProfitPct: 5.0, stopLossPct: -2.5 };  // 보통: 2:1 R:R
   return                 { takeProfitPct: 5.0, stopLossPct: -2.5 };   // 마진컬(60-69): 2:1 R:R (최소 기준)
+}
+
+// ── 완전 동적 TP/SL — score + 기술지표 복합 계산 ──
+// use_dynamic_tpsl=true 시 고정값 대신 이 함수 사용
+// 진입 품질(눌림/거래량/RSI/확신도)에 따라 TP/SL 자동 최적화
+export interface DomesticTpSlHints {
+  score: number;
+  confidence?: number;  // 0~1
+  rsi?: number;
+  volumeRatio?: number;
+  pullbackSignal?: boolean;
+  envelopePos?: string; // 'BELOW_LOWER' | 'NEAR_LOWER' | 'MIDDLE' | ...
+}
+
+export function getDynamicDomesticTpSl(h: DomesticTpSlHints): { takeProfitPct: number; stopLossPct: number; label: string } {
+  // 1. 점수 베이스
+  let tp: number;
+  let sl: number;
+  if (h.score >= 93)      { tp = 8.5; sl = -2.5; }
+  else if (h.score >= 88) { tp = 7.5; sl = -2.8; }
+  else if (h.score >= 83) { tp = 6.5; sl = -3.0; }
+  else if (h.score >= 80) { tp = 5.5; sl = -3.0; }
+  else                    { tp = 5.0; sl = -3.2; }
+
+  const parts: string[] = [`s${h.score}`];
+
+  // 2. 눌림매매 신호 — 반등 여지 더 넓음
+  if (h.pullbackSignal) {
+    tp += 0.5;
+    sl = Math.min(sl + 0.3, -1.5); // 손절 타이트 (진입 좋으면 빨리 확인)
+    parts.push('pb+0.5');
+  }
+
+  // 3. 거래량 급증 — 강한 모멘텀
+  const vol = h.volumeRatio ?? 1;
+  if (vol >= 3.0)      { tp += 1.0; parts.push('v3x+1'); }
+  else if (vol >= 2.0) { tp += 0.5; parts.push('v2x+0.5'); }
+
+  // 4. RSI — 과매도는 반등 여지, 과매수는 목표 줄임
+  const rsi = h.rsi ?? 50;
+  if (rsi < 35)      { tp += 0.5; parts.push('rsiOS+0.5'); }
+  else if (rsi > 65) { tp -= 0.5; parts.push('rsiOB-0.5'); }
+
+  // 5. 확신도 높으면 보너스
+  const conf = h.confidence ?? 0.65;
+  if (conf >= 0.85) { tp += 0.5; parts.push('c+0.5'); }
+
+  // 6. 엔벨로프 하단 이탈 — 반등 여지 극대
+  if (h.envelopePos === 'BELOW_LOWER') { tp += 0.5; parts.push('env+0.5'); }
+
+  // 7. 범위 제한
+  tp = Math.round(Math.min(tp, 12.0) * 10) / 10;
+  sl = Math.round(Math.max(sl, -5.0) * 10) / 10;
+
+  return { takeProfitPct: tp, stopLossPct: sl, label: parts.join('/') };
 }
 
 // ── 캐시 & 갱신 주기 ──

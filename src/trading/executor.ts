@@ -91,9 +91,19 @@ export class TradeExecutor {
         ? decision.strategy_mode as StrategyMode
         : mode;
 
+      const tpSlHints: import('../config/constants.js').DomesticTpSlHints | undefined =
+        decision.ai_score ? {
+          score: decision.ai_score,
+          confidence: decision.confidence,
+          rsi: decision.rsi,
+          volumeRatio: decision.volume_ratio,
+          pullbackSignal: decision.pullback_signal,
+          envelopePos: decision.envelope_pos,
+        } : undefined;
+
       switch (action) {
         case 'BUY':
-          await this.executeBuy(stock_code, quantity, price_type, limit_price, effectiveMode, reasoning, decision.ai_score);
+          await this.executeBuy(stock_code, quantity, price_type, limit_price, effectiveMode, reasoning, decision.ai_score, tpSlHints);
           break;
         case 'AVERAGE_DOWN':
           await this.executeAverageDown(stock_code, quantity, price_type, limit_price, reasoning);
@@ -124,6 +134,7 @@ export class TradeExecutor {
     mode: StrategyMode,
     reasoning: string,
     aiScore?: number,
+    tpSlHints?: import('../config/constants.js').DomesticTpSlHints,
   ): Promise<void> {
     const isPaperSnapshot = config.isPaper;
 
@@ -287,15 +298,24 @@ export class TradeExecutor {
         logger.warn(`⚠️ 매수 부분체결 반영: ${stockCode} 요청 ${gatedQuantity}주 → 체결 ${filledQty}주`, { component: 'EXECUTOR' });
       }
 
-      // 점수 기반 동적 TP/SL: aiScore → 확신 티어 → 최적 파라미터
-      // scoreParams 우선 → DB 전략값은 scoreParams 없을 때만 폴백
+      // 동적 TP/SL: use_dynamic_tpsl ON → score+기술지표 복합 계산
+      // OFF → 기존 score 티어 기반, DB 전략값 폴백
       const dbStrategy = await getActiveStrategy().catch(() => null);
-      const scoreParams = (aiScore && aiScore >= 60 && mode !== 'SCALPING') ? getScoreBasedParams(aiScore) : null;
+      const useDynamic = (dbStrategy as any)?.use_dynamic_tpsl === true;
+      let scoreParams: { takeProfitPct: number; stopLossPct: number } | null = null;
+      if (mode !== 'SCALPING' && aiScore && aiScore >= 60) {
+        if (useDynamic && tpSlHints) {
+          const { getDynamicDomesticTpSl } = await import('../config/constants.js');
+          const dyn = getDynamicDomesticTpSl({ ...tpSlHints, score: aiScore });
+          scoreParams = { takeProfitPct: dyn.takeProfitPct, stopLossPct: dyn.stopLossPct };
+          logger.info(`🎯 동적 TP/SL [${dyn.label}]: score=${aiScore} → TP ${dyn.takeProfitPct}% / SL ${dyn.stopLossPct}%`, { component: 'EXECUTOR' });
+        } else {
+          scoreParams = getScoreBasedParams(aiScore);
+          logger.info(`🎯 점수 기반 TP/SL: score=${aiScore} → TP ${scoreParams.takeProfitPct}% / SL ${scoreParams.stopLossPct}%`, { component: 'EXECUTOR' });
+        }
+      }
       const targetProfitPct = scoreParams?.takeProfitPct ?? (dbStrategy as any)?.take_profit_pct ?? params.takeProfitPct;
       let stopLossPct = scoreParams?.stopLossPct ?? (dbStrategy as any)?.stop_loss_pct ?? params.stopLossPct;
-      if (scoreParams) {
-        logger.info(`🎯 점수 기반 TP/SL: score=${aiScore} → TP ${targetProfitPct}% / SL ${stopLossPct}%`, { component: 'EXECUTOR' });
-      }
 
       // ATR 기반 동적 손절 — 전략 손절폭보다 넓어지지 않도록 캡 적용
       try {

@@ -228,19 +228,54 @@ async function checkAndUpdateTrailingStop(
   // 트레일링 미활성화 구간 (수익 불충분)
   if (pnlPct < TRAILING_ACTIVATE_PCT) return null;
 
-  // 분할 익절: 체인 TP 도달 시 50% 매도 (이미 PROFIT_TAKING이면 스킵 — technical-fallback과 이중매도 방지)
+  // 분할 익절 판단
   const storedPeakRaw = Number(chain.peak_price_since_open ?? 0);
   const partialSoldAlready = storedPeakRaw < 0;
   const storedPeak = Math.abs(storedPeakRaw);
   const chainTp = Number(chain.target_profit_pct) || params.takeProfitPct;
+  const chainMode = chain.strategy_mode as keyof typeof STRATEGY_PARAMS | undefined;
+  const modeParams = chainMode && chainMode in STRATEGY_PARAMS ? STRATEGY_PARAMS[chainMode] : null;
+  const tpRatio = (modeParams as any)?.takeProfitRatio ?? 0.5;
+  const isFullSell = tpRatio >= 1.0;
 
+  // ── 조기 부분익절: earlyTpPct 도달 시 50% 즉시 해제 → 현금 회전율 향상 ──
+  const earlyTpPct: number = (modeParams as any)?.earlyTpPct ?? 0;
+  if (
+    earlyTpPct > 0 &&
+    !partialSoldAlready &&
+    !isFullSell &&
+    chain.status !== 'PROFIT_TAKING' &&
+    pnlPct >= earlyTpPct &&
+    pnlPct < chainTp &&      // 아직 메인 TP 미도달 (도달 시 아래 메인 TP 로직 처리)
+    chain.total_quantity >= 2
+  ) {
+    const sellQty = Math.floor(chain.total_quantity / 2);
+    if (sellQty > 0) {
+      logger.info(
+        `⚡ 조기 부분익절 발동: ${chain.stock_code} +${pnlPct.toFixed(1)}% (조기TP +${earlyTpPct}%) → ${sellQty}주 50% 매도, 나머지 메인TP(+${chainTp}%) 추적`,
+        { component: 'TRAILING' },
+      );
+      try {
+        await getPool().query(
+          'UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2',
+          [-currentPrice, chain.id],
+        );
+      } catch (err) {
+        logger.error(`조기익절 플래그 저장 실패: ${err}`, { component: 'TRAILING' });
+      }
+      return {
+        action: 'PARTIAL_SELL' as const,
+        stock_code: chain.stock_code,
+        quantity: sellQty,
+        price_type: 'MARKET' as const,
+        reasoning: `⚡ 조기익절(50%): +${pnlPct.toFixed(1)}% 도달 (조기TP +${earlyTpPct}%) → ${sellQty}주 즉시 회수, 나머지 +${chainTp}% 목표 트레일링`,
+        confidence: 1.0,
+      };
+    }
+  }
+
+  // ── 메인 TP: chainTp 도달 시 50% 매도 (조기익절 없었거나 SCALPING/BOTTOM_FISHING 전량) ──
   if (!partialSoldAlready && chain.status !== 'PROFIT_TAKING' && pnlPct >= chainTp && chain.total_quantity >= 2) {
-    // takeProfitRatio 1.0 = 전량 즉시 익절 (BOTTOM_FISHING 등)
-    const chainMode = chain.strategy_mode as keyof typeof STRATEGY_PARAMS | undefined;
-    const tpRatio = (chainMode && chainMode in STRATEGY_PARAMS)
-      ? (STRATEGY_PARAMS[chainMode] as any).takeProfitRatio ?? 0.5
-      : 0.5;
-    const isFullSell = tpRatio >= 1.0;
     const sellQty = isFullSell ? chain.total_quantity : Math.floor(chain.total_quantity / 2);
 
     if (sellQty > 0) {
@@ -248,7 +283,6 @@ async function checkAndUpdateTrailingStop(
         `💰 ${isFullSell ? '전량' : '분할'} 익절 발동: ${chain.stock_code} +${pnlPct.toFixed(1)}% (기준 +${chainTp}%) → ${sellQty}주 ${isFullSell ? '100%' : '50%'} 매도`,
         { component: 'TRAILING' },
       );
-      // 음수 peak로 분할매도 완료 표시 — await로 중복 발동 방지
       try {
         await getPool().query(
           'UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2',

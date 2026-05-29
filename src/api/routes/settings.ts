@@ -117,18 +117,20 @@ settingsRoutes.put('/strategy', async (c) => {
 
   const requestedMode = (body.mode ?? 'SWING') as keyof typeof STRATEGY_PARAMS;
   const modeBase = STRATEGY_PARAMS[requestedMode] ?? STRATEGY_PARAMS.SWING;
+  const useDynamic: boolean = body.use_dynamic_tpsl === true;
   const strategyData = {
     mode: requestedMode,
     notebooklm_prompt: body.notebooklm_prompt ?? '',
     gemini_prompt: body.gemini_prompt ?? '',
     gpt_prompt: body.gpt_prompt ?? '',
     claude_prompt: body.claude_prompt ?? '',
-    // UI 입력값이 constants 최솟값 미달이면 constants 우선
+    // UI 입력값이 constants 최솟값 미달이면 constants 우선 (동적모드에서는 사실상 무시됨)
     buy_threshold: body.buy_threshold != null ? Math.max(body.buy_threshold, modeBase.buyThreshold) : modeBase.buyThreshold,
     stop_loss_pct: body.stop_loss_pct != null ? Math.min(body.stop_loss_pct, modeBase.stopLossPct) : modeBase.stopLossPct,
     take_profit_pct: body.take_profit_pct != null ? Math.max(body.take_profit_pct, modeBase.takeProfitPct) : modeBase.takeProfitPct,
     strategy_document: body.strategy_document ?? '',
     risk_prompt: body.risk_prompt ?? '',
+    use_dynamic_tpsl: useDynamic,
   };
 
   // 감사 로그: 변경 전 상태 스냅샷
@@ -151,23 +153,23 @@ settingsRoutes.put('/strategy', async (c) => {
       `UPDATE strategy_config
        SET mode=$1, notebooklm_prompt=$2, gemini_prompt=$3, gpt_prompt=$4, claude_prompt=$5,
            buy_threshold=$6, stop_loss_pct=$7, take_profit_pct=$8, strategy_document=$9, risk_prompt=$10,
-           updated_at=NOW()
-       WHERE is_active = true AND is_paper = $11`,
+           use_dynamic_tpsl=$11, updated_at=NOW()
+       WHERE is_active = true AND is_paper = $12`,
       [strategyData.mode, strategyData.notebooklm_prompt, strategyData.gemini_prompt,
        strategyData.gpt_prompt, strategyData.claude_prompt, strategyData.buy_threshold,
        strategyData.stop_loss_pct, strategyData.take_profit_pct,
-       strategyData.strategy_document, strategyData.risk_prompt, isPaper],
+       strategyData.strategy_document, strategyData.risk_prompt, strategyData.use_dynamic_tpsl, isPaper],
     );
 
     if ((rowCount ?? 0) === 0) {
       // 활성 전략이 없으면 새로 INSERT
       await getPool().query(
-        `INSERT INTO strategy_config (mode, is_active, notebooklm_prompt, gemini_prompt, gpt_prompt, claude_prompt, buy_threshold, stop_loss_pct, take_profit_pct, strategy_document, risk_prompt, is_paper)
-         VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        `INSERT INTO strategy_config (mode, is_active, notebooklm_prompt, gemini_prompt, gpt_prompt, claude_prompt, buy_threshold, stop_loss_pct, take_profit_pct, strategy_document, risk_prompt, use_dynamic_tpsl, is_paper)
+         VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
         [strategyData.mode, strategyData.notebooklm_prompt, strategyData.gemini_prompt,
          strategyData.gpt_prompt, strategyData.claude_prompt, strategyData.buy_threshold,
          strategyData.stop_loss_pct, strategyData.take_profit_pct,
-         strategyData.strategy_document, strategyData.risk_prompt, isPaper],
+         strategyData.strategy_document, strategyData.risk_prompt, strategyData.use_dynamic_tpsl, isPaper],
       );
     }
 

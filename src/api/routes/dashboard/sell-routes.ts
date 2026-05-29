@@ -4,7 +4,7 @@
 import { Hono } from 'hono';
 import { config } from '../../../config/index.js';
 import { STRATEGY_PARAMS, getScoreBasedParams, OVERSEAS_FEE_PCT, KR_FEE } from '../../../config/constants.js';
-import { createChain, getPool } from '../../../db/client.js';
+import { createChain, getPool, getActiveStrategy } from '../../../db/client.js';
 import { getAccountBalance } from '../../../kis/account.js';
 import { getCurrentPrice } from '../../../kis/market.js';
 import { placeOrder } from '../../../kis/order.js';
@@ -540,7 +540,7 @@ sellRoutes.post('/sell-overseas-all', async (c) => {
 
 // ── Claude Code 수동 매수 (복리 동적 사이징) ──
 sellRoutes.post('/manual-buy', async (c) => {
-  let body: { stock_code?: string; amount_krw?: number; ai_score?: number; reasoning?: string; is_paper?: boolean };
+  let body: { stock_code?: string; amount_krw?: number; ai_score?: number; reasoning?: string; is_paper?: boolean; rsi?: number; volume_ratio?: number; pullback_signal?: boolean; envelope_pos?: string; confidence?: number };
   try {
     body = await c.req.json();
   } catch {
@@ -556,9 +556,33 @@ sellRoutes.post('/manual-buy', async (c) => {
     return c.json({ error: 'stock_code는 숫자 6자리여야 합니다' }, 400);
   }
 
-  const { takeProfitPct, stopLossPct } = aiScore >= 70
-    ? getScoreBasedParams(aiScore)
-    : { takeProfitPct: STRATEGY_PARAMS.SWING.takeProfitPct, stopLossPct: STRATEGY_PARAMS.SWING.stopLossPct };
+  // 동적 TP/SL: use_dynamic_tpsl=true이면 기술지표 힌트 기반 계산
+  const dbStrategy = await getActiveStrategy().catch(() => null);
+  const useDynamic = (dbStrategy as any)?.use_dynamic_tpsl === true;
+  let takeProfitPct: number;
+  let stopLossPct: number;
+  let tpSlLabel = '';
+  if (aiScore >= 70) {
+    if (useDynamic) {
+      const { getDynamicDomesticTpSl } = await import('../../../config/constants.js');
+      const dyn = getDynamicDomesticTpSl({
+        score: aiScore,
+        confidence: body.confidence,
+        rsi: body.rsi,
+        volumeRatio: body.volume_ratio,
+        pullbackSignal: body.pullback_signal,
+        envelopePos: body.envelope_pos,
+      });
+      takeProfitPct = dyn.takeProfitPct;
+      stopLossPct = dyn.stopLossPct;
+      tpSlLabel = dyn.label;
+    } else {
+      ({ takeProfitPct, stopLossPct } = getScoreBasedParams(aiScore));
+    }
+  } else {
+    takeProfitPct = STRATEGY_PARAMS.SWING.takeProfitPct;
+    stopLossPct = STRATEGY_PARAMS.SWING.stopLossPct;
+  }
 
   try {
     const MAX_ALLOC_PCT = 0.20;
@@ -613,7 +637,7 @@ sellRoutes.post('/manual-buy', async (c) => {
     }
 
     const totalInvested = quantity * curPrice;
-    const rrStr = `TP+${takeProfitPct}%/SL${stopLossPct}%(${(takeProfitPct / Math.abs(stopLossPct)).toFixed(2)}:1)`;
+    const rrStr = `TP+${takeProfitPct}%/SL${stopLossPct}%(${(takeProfitPct / Math.abs(stopLossPct)).toFixed(2)}:1)${tpSlLabel ? ` [${tpSlLabel}]` : ''}`;
 
     // 중복 OPEN 체인 방지
     const dupCheck = await getPool().query(

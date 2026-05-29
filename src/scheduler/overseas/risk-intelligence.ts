@@ -611,10 +611,11 @@ export function calcDynamicTpSl(params: {
   rsi: number;
   aiConfidence?: number;
   aiAction?: string;
+  aiScore?: number;       // 진입 품질 점수 (높을수록 TP 확대)
   vixRegime: RegimeAdjustment;
   isMomentum?: boolean;
 }): DynamicTpSlResult {
-  const { sector, adx, rsi, aiConfidence = 0.5, aiAction = 'HOLD', vixRegime, isMomentum = false } = params;
+  const { sector, adx, rsi, aiConfidence = 0.5, aiAction = 'HOLD', aiScore, vixRegime, isMomentum = false } = params;
 
   const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
   const isMediumBeta = SECTOR_CLASS.MEDIUM_BETA.includes(sector);
@@ -639,6 +640,14 @@ export function calcDynamicTpSl(params: {
                   : aiAction === 'SELL' ? -5.0   // AI 매도 신호 → TP 목표 축소
                   : 0;
 
+  // AI 점수 기반 TP 보너스 (진입 품질이 높을수록 더 오래 보유)
+  const scoreTpBonus = aiScore != null
+    ? aiScore >= 90 ? 5.0
+    : aiScore >= 80 ? 2.5
+    : aiScore >= 70 ? 1.0
+    : 0
+    : 0;
+
   // VIX 레짐 TP 조정
   const vixTpAdj = vixRegime.regime === 'CRISIS' ? -7.0   // 위기 → 빨리 수익 확보
                  : vixRegime.regime === 'STRESS' ? -3.0
@@ -647,20 +656,23 @@ export function calcDynamicTpSl(params: {
 
   // AI 매도 신호 시 SL 타이트닝 (손실 최소화)
   const aiSlAdj = aiAction === 'SELL' && aiConfidence >= 0.80 ? -1.0 : 0;
+  // 고확신 점수 진입 시 SL 약간 여유 (노이즈 흡수)
+  const scoreSlAdj = aiScore != null && aiScore >= 85 ? 0.5 : 0;
 
   const tpPct = Math.max(
     isHighBeta ? 20.0 : 15.0,
-    baseTp + momentumExt + overboughtCut + aiTpBonus + vixTpAdj,
+    baseTp + momentumExt + overboughtCut + aiTpBonus + scoreTpBonus + vixTpAdj,
   );
   const slPct = Math.max(
     isHighBeta ? 5.0 : 2.5,
-    baseSl + aiSlAdj,
+    baseSl + aiSlAdj + scoreSlAdj,
   );
 
   const parts: string[] = [`base${baseTp}`];
   if (momentumExt) parts.push(`mom${momentumExt > 0 ? '+' : ''}${momentumExt}`);
   if (overboughtCut) parts.push(`rsi${overboughtCut}`);
   if (aiTpBonus) parts.push(`AI${aiTpBonus > 0 ? '+' : ''}${aiTpBonus}`);
+  if (scoreTpBonus) parts.push(`s${aiScore}+${scoreTpBonus}`);
   if (vixTpAdj) parts.push(`VIX${vixTpAdj > 0 ? '+' : ''}${vixTpAdj}`);
 
   return { tpPct, slPct, tpLabel: parts.join('/') };
