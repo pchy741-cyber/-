@@ -764,6 +764,12 @@ export async function technicalFallbackDecisions(params: {
     ].filter(Boolean).join('+');
     // ─────────────────────────────────────────────────────────────────────
 
+    // AI 점수 없음/0점 진입 차단 — Track A 실패 시 NaN/0으로 진입하면 승률 급락
+    if (!aiScore || !Number.isFinite(aiScore) || aiScore === 0) {
+      logger.info(`  ⛔ ${stock.stock_code}: AI 점수 없음(${aiScore}) → 진입 금지 (Track A 실패 가능성)`, { component: 'TRACK_B' });
+      continue;
+    }
+
     // 진입 게이트: 기술점수 충족 OR AI 꽁돈(>=92점, 단 기술점수 절대하한 45점)
     // isKongdon이라도 tech.score 45 미만이면 차단 — AI 과대평가 낙칼 방지
     const isKongdon = aiScore >= 85 && effectiveTechScore >= 45;

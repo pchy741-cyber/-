@@ -148,6 +148,12 @@ export async function runOpeningBellCycle(): Promise<void> {
   // 09:00~09:12 구간만 실행 (약간 여유)
   if (h !== 9 || m > 12) return;
 
+  // 스캘핑 15% 승률 — paper 모드에서 비활성화 (SWING 집중)
+  if (config.isPaper) {
+    logger.info('[OPENING] Paper 모드 — 스캘핑 스킵 (SWING 집중 전략)', { component: 'OPENING_BELL' });
+    return;
+  }
+
   logger.info(`⚡ [OPENING] 개장 사이클 ${h}:${String(m).padStart(2, '0')}`, { component: 'OPENING_BELL' });
 
   try {

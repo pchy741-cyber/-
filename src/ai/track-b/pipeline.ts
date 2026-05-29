@@ -560,8 +560,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       stopLossPct: resolvedSl,
       buyThreshold: feedbackThreshold,
       winRates,
-      requirePullback: winFeedback.requirePullback,
-      minVolumeRatio: winFeedback.minVolumeRatio,
+      requirePullback: true, // 항상 눌림 필수 — 꼭대기 진입 차단 (피드백 여부 무관)
+      minVolumeRatio: Math.max(winFeedback.minVolumeRatio, 1.2), // 거래량 최소 1.2x 보장
       // penalty=1(조정장) 단독으로는 차단 안함 → adaptive threshold +2 로 대응
       // penalty=2(하락장, KOSPI<MA60)만 차단. SCALPING 모드면 macro/regime 면제
       blockNewBuys,
