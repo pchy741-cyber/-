@@ -97,9 +97,19 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 12:30 — Track A 점심 재분석 (장중 흐름 반영)
+  // 10:00 — Track A 오전 재분석 (황금 오전 구간 시작 직후 — 신선한 점수)
   cron.schedule(
     SCHEDULE.TRACK_A_CRON[1],
+    () => {
+      logger.info('⏰ Track A (오전 재분석 10:00)', { component: 'SCHEDULER' });
+      withTimeout('Track A 오전재분석', () => runTrackAJob(), 300_000);
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 12:30 — Track A 점심 재분석 (장중 흐름 반영)
+  cron.schedule(
+    SCHEDULE.TRACK_A_CRON[2],
     () => {
       logger.info('⏰ Track A (점심 재분석)', { component: 'SCHEDULER' });
       withTimeout('Track A 점심', () => runTrackAJob(), 300_000);
@@ -380,7 +390,7 @@ export function startScheduler(): void {
 
   // 18:00 — Track A 장후 분석
   cron.schedule(
-    SCHEDULE.TRACK_A_CRON[2],
+    SCHEDULE.TRACK_A_CRON[3],
     () => {
       logger.info('⏰ Track A (장후)', { component: 'SCHEDULER' });
       runTrackAJob().catch((e) => logger.error(`Track A 실패: ${e}`, { component: 'SCHEDULER' }));

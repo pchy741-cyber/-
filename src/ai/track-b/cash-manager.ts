@@ -17,14 +17,14 @@ import { logger } from '../../utils/logger.js';
 // 총자산 대비 최소 현금 보유 비율 (defense-park.ts도 임포트)
 export const CASH_RESERVE_RATIO = 0.25;
 
-// 파킹 시작 기준 — 현금 이 비율 초과 시 파킹 검토
-const PARK_TRIGGER_RATIO = 0.60;
+// 파킹 시작 기준 — 현금 이 비율 초과 시 파킹 검토 (파워풀: 45%)
+const PARK_TRIGGER_RATIO = 0.45;
 
 // 파킹 매수 최소 금액
 const MIN_PARK_AMOUNT = 200_000;
 
-// 파킹 매수 최대 비중 (총자산 대비) — 유휴 현금의 절반만 파킹
-const MAX_PARK_RATIO = 0.25;
+// 파킹 매수 최대 비중 (총자산 대비) — 파워풀: 35%까지 파킹
+const MAX_PARK_RATIO = 0.35;
 
 // KOSPI 시총 상위 대형주 파킹 후보 (순위 순)
 // 당일 상승 중인 종목 우선 선택
@@ -113,7 +113,7 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
 
   const target = candidates[0];
   const targetPrice = target.price!.currentPrice;
-  const parkAmount = Math.min(orderableCash * 0.5, totalAssets * MAX_PARK_RATIO);
+  const parkAmount = Math.min(orderableCash * 0.7, totalAssets * MAX_PARK_RATIO);
   const quantity = Math.floor(parkAmount / targetPrice);
 
   if (quantity < 1) return decisions;

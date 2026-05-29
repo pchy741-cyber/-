@@ -19,8 +19,8 @@ export const KR_FEE = {
 
 // ── 스케줄러 ──
 export const SCHEDULE = {
-  // Track A: 무거운 분석 (하루 2회)
-  TRACK_A_CRON: ['30 7 * * 1-5', '30 12 * * 1-5', '0 18 * * 1-5'], // 07:30, 12:30, 18:00 KST 평일
+  // Track A: 무거운 분석 (하루 4회 — 파워풀 모드)
+  TRACK_A_CRON: ['30 7 * * 1-5', '0 10 * * 1-5', '30 12 * * 1-5', '0 18 * * 1-5'], // 07:30, 10:00, 12:30, 18:00 KST 평일
   // Track B: 실시간 감시 (장중 3분 간격 — 반응 속도 최적화)
   TRACK_B_INTERVAL_MINUTES: 3,
 } as const;
@@ -226,7 +226,7 @@ export interface PositionSizeHints {
 }
 
 export function getDynamicPositionSizePct(p: PositionSizeHints): number {
-  let pct = 20; // 기본 20%
+  let pct = 25; // 기본 25% (파워풀 모드 — 이전 20%에서 상향)
 
   // 점수 — 확신 강할수록 더 투자
   if (p.score >= 93)      pct += 6;
