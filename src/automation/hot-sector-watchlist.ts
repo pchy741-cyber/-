@@ -20,15 +20,15 @@ const COMPONENT = 'HOT_SECTOR';
 
 // 핫 업종 판정 기준: 당일 등락률 +1.5% 이상
 const HOT_SECTOR_CHANGE_PCT = 1.5;
-// 워치리스트 편입 최소 AI 스코어 (최근 3일 평균)
-const MIN_AI_SCORE = 65;
+// 워치리스트 편입 최소 AI 스코어 (최근 3일 평균) — 없어도 신규 발굴 허용
+const MIN_AI_SCORE = 60;
 // 편입 최대 종목 수 (1회 실행당)
-const MAX_ADD_PER_RUN = 5;
+const MAX_ADD_PER_RUN = 8;
 // 최소 거래량 (유동성)
-const MIN_VOLUME = 50_000;
-// 가격 범위
-const MIN_PRICE = 3_000;
-const MAX_PRICE = 300_000;
+const MIN_VOLUME = 30_000;
+// 가격 범위 — 상한 제거 (현대오토에버 80만원, LG이노텍 15만원 등 모두 포함)
+const MIN_PRICE = 1_000;
+const MAX_PRICE = 5_000_000; // 사실상 제한 없음
 
 // KIS 업종 코드 → 한국어 이름
 const SECTOR_NAMES: Record<string, string> = {
@@ -302,10 +302,10 @@ export async function runHotSectorWatchlist(): Promise<void> {
       .filter((c) => c.score >= MIN_AI_SCORE)
       .sort((a, b) => b.score - a.score);
 
-    // AI 스코어 없는 종목도 일부 포함 (새 종목 발굴)
+    // AI 스코어 없는 종목도 적극 포함 — 씨앗 미등록 우량주 발굴
     const unscored = validCandidates
       .filter((c) => !aiScores.has(c.stock_code))
-      .slice(0, 2)
+      .slice(0, 5)
       .map((c) => ({ ...c, score: 0 }));
 
     const finalList = [...scoredCandidates, ...unscored].slice(0, MAX_ADD_PER_RUN);

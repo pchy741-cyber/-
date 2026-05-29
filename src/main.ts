@@ -323,6 +323,14 @@ async function bootstrap() {
     logger.warn(`⚠️ BigQuery 초기화 실패: ${err}`, { component: 'BOOT' });
   }
 
+  // 5.5. 씨앗 감시목록 — KOSPI 시총 상위 우량주 자동 등록 (없으면 insert)
+  try {
+    const { seedWatchlist } = await import('./automation/seed-watchlist.js');
+    await seedWatchlist();
+  } catch (err) {
+    logger.warn(`씨앗 감시목록 등록 실패 (무시): ${err}`, { component: 'BOOT' });
+  }
+
   // 5.6. 감시목록 종목명 보정 (하드코딩 우선 → KIS API fallback)
   try {
     const { getPool, getActiveWatchlist } = await import('./db/client.js');
