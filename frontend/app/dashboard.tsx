@@ -149,14 +149,14 @@ export default function Dashboard() {
     } catch {}
   }, []);
 
-  // feature flags 로드 (배당/선물 탭 표시 여부)
+  // feature flags 로드 (배당/선물 탭 표시 여부) — viewMode 전환 시에도 재확인
   useEffect(() => {
     api('/feature-flags').then((r: any) => {
       const map: Record<string, boolean> = {};
       (r.flags || []).forEach((f: any) => { map[f.key] = f.enabled; });
       setFeatureFlags(map);
     }).catch(() => {});
-  }, []);
+  }, [viewMode]);
 
   useEffect(() => {
     load(true);

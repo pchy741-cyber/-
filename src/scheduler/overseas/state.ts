@@ -11,6 +11,7 @@ import { config } from '../../config/index.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, withTransaction } from '../../db/client.js';
 import { fetchExchangeRate } from '../../automation/macro-data.js';
+import { cacheSet } from '../../cache/memory.js';
 import { logger } from '../../utils/logger.js';
 
 const PAPER_OVERSEAS_SEED = 10000; // Paper 해외 시드 $10K (기존 주문 이력 기준 복원)
@@ -269,6 +270,11 @@ export async function updateTradeState(p: {
         [key, cashKrw.toString()]);
     }
   });
+  // 매매 후 대시보드/잔고 캐시 즉시 무효화 (크로스오염 방지)
+  const mode = paper ? 'paper' : 'live';
+  cacheSet(`overseas:dashboard:${mode}`, null as any, 0);
+  cacheSet(`overseas:holdings:${mode}`, null as any, 0);
+  cacheSet(`overseas:balance:${mode}`, null as any, 0);
 }
 
 /** paper/live 분리 state key 접두사 */
