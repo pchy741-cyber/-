@@ -11,7 +11,7 @@ import {
 } from './watchlist.js';
 import {
   updateTradeState, getMaxPrice, setMaxPrice, clearMaxPrice,
-  saveDynamicTpSl, clearDynamicTpSl,
+  clearDynamicTpSl,
 } from './state.js';
 import {
   calcDynamicTrailDrop, calcDynamicTpSl, type RegimeAdjustment,
@@ -33,6 +33,7 @@ export interface TechResult {
 
 export interface Holding {
   qty: number; avgPrice: number; boughtAt: string; exchange: string;
+  tpPct: number | null; slPct: number | null;
 }
 
 import type { AIDecision } from './types.js';
@@ -95,19 +96,24 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
 
     // ATR 동적 트레일링 스톱 + VIX 레짐 타이트닝
     const atrPctValue = tech.atrPct ?? 2.0;
-    // 동적 TP/SL: AI 확신도 × VIX 레짐 × ADX/RSI 모멘텀 통합
-    const { tpPct: hardTpPct, slPct: dynamicSlBase } = calcDynamicTpSl({
-      sector,
-      adx: tech.adx ?? 20,
-      rsi: tech.rsi ?? 50,
-      aiConfidence: ai?.confidence,
-      aiAction: ai?.action,
-      vixRegime,
-      isMomentum: tech.isMomentum,
-    });
-    const stopLossPct = -dynamicSlBase;
-    // 동적 TP/SL을 overseas_state에 저장 → 대시보드 동기화
-    saveDynamicTpSl(code, hardTpPct, stopLossPct, paperMode).catch(() => {});
+    // TP/SL: overseas_holdings에 매수 시 저장된 값 우선 사용 (recalc 불필요)
+    let hardTpPct: number;
+    let stopLossPct: number;
+    if (holding.tpPct != null && holding.slPct != null) {
+      hardTpPct = holding.tpPct;
+      stopLossPct = holding.slPct; // 이미 음수
+    } else {
+      // 레거시 보유종목 (tp_pct/sl_pct 미설정) → 1회 계산 후 DB 저장
+      const dyn = calcDynamicTpSl({
+        sector, adx: tech.adx ?? 20, rsi: tech.rsi ?? 50,
+        aiConfidence: ai?.confidence, aiAction: ai?.action, vixRegime, isMomentum: tech.isMomentum,
+      });
+      hardTpPct = dyn.tpPct;
+      stopLossPct = -dyn.slPct;
+      // 레거시 보유종목 1회성 DB 저장 (다음 사이클부터 recalc 불필요)
+      const { updateHoldingTpSl } = await import('./state.js');
+      updateHoldingTpSl(code, hardTpPct, stopLossPct, paperMode).catch(() => {});
+    }
     const dynamicTrailDrop = calcDynamicTrailDrop({ sector, atrPct: atrPctValue, maxPnlPct, adx: tech.adx, rsi: tech.rsi });
     const effectiveTrailDropPct = dynamicTrailDrop - vixRegime.trailTighten;
     const trailActivatePct = isHighBeta ? 10.0 : isMediumBeta ? 8.0 : 5.0;

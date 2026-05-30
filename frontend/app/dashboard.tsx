@@ -11,13 +11,15 @@ import JournalView from './views/JournalView';
 import WatchlistView from './views/WatchlistView';
 import NewsView from './views/NewsView';
 import SettingsView from './views/SettingsView';
+import DividendView from './views/DividendView';
+import FuturesView from './views/FuturesView';
 import ScreenshotReview from './components/ScreenshotReview';
 
 // ═══════════════════════════════════════
 // Dashboard — thin shell
 // ═══════════════════════════════════════
 
-type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'settings';
+type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'settings' | 'dividend' | 'futures';
 
 export default function Dashboard() {
   const { show: toast, ToastContainer } = useToast();
@@ -40,6 +42,7 @@ export default function Dashboard() {
   const [liveConfirmOpen, setLiveConfirmOpen] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
   const [loopStatus, setLoopStatus] = useState<any>(null);
+  const [featureFlags, setFeatureFlags] = useState<Record<string, boolean>>({});
   const notebookRef = useRef<HTMLTextAreaElement>(null);
   const geminiRef = useRef<HTMLTextAreaElement>(null);
   const gptRef = useRef<HTMLTextAreaElement>(null);
@@ -144,6 +147,15 @@ export default function Dashboard() {
         if (saved !== 'live') setViewMode(saved);
       }
     } catch {}
+  }, []);
+
+  // feature flags 로드 (배당/선물 탭 표시 여부)
+  useEffect(() => {
+    api('/feature-flags').then((r: any) => {
+      const map: Record<string, boolean> = {};
+      (r.flags || []).forEach((f: any) => { map[f.key] = f.enabled; });
+      setFeatureFlags(map);
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -291,6 +303,9 @@ export default function Dashboard() {
     { id: 'journal', label: '매매일지', icon: '📓' },
     { id: 'watchlist', label: '감시목록', icon: '👁' },
     { id: 'news', label: '뉴스', icon: '📰' },
+    // 배당/선물: 기능 ON일 때만 탭 표시 (OFF면 서버 에러 방지)
+    ...(featureFlags['dividend_investing'] ? [{ id: 'dividend' as Tab, label: '배당', icon: '💰' }] : []),
+    ...(featureFlags['overseas_futures'] ? [{ id: 'futures' as Tab, label: '선물', icon: '📈' }] : []),
     { id: 'settings', label: '설정', icon: '⚙️' },
   ];
 
@@ -456,7 +471,9 @@ export default function Dashboard() {
               {tab === 'journal' && <JournalView viewMode={viewMode} />}
               {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} toast={toast} onRefresh={load} viewMode={viewMode} />}
               {tab === 'news' && <NewsView watchlist={watchlist} setWatchlist={setWatchlist} />}
-              {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} notebookRef={notebookRef} geminiRef={geminiRef} gptRef={gptRef} claudeRef={claudeRef} killSwitch={killSwitch} toggleKill={toggleKill} withdrawConfig={withdrawConfig} setWithdrawConfig={setWithdrawConfig} withdrawHistory={withdrawHistory} setWithdrawHistory={setWithdrawHistory} allocConfig={allocConfig} setAllocConfig={setAllocConfig} toast={toast} />}
+              {tab === 'dividend' && <DividendView toast={toast} viewMode={viewMode} />}
+              {tab === 'futures' && <FuturesView toast={toast} viewMode={viewMode} />}
+              {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} notebookRef={notebookRef} geminiRef={geminiRef} gptRef={gptRef} claudeRef={claudeRef} killSwitch={killSwitch} toggleKill={toggleKill} withdrawConfig={withdrawConfig} setWithdrawConfig={setWithdrawConfig} withdrawHistory={withdrawHistory} setWithdrawHistory={setWithdrawHistory} allocConfig={allocConfig} setAllocConfig={setAllocConfig} toast={toast} onFeatureFlagChange={(key: string, enabled: boolean) => setFeatureFlags(prev => ({ ...prev, [key]: enabled }))} />}
             </div>
           )}
         </main>

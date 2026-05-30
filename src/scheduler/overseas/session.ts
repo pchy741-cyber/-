@@ -2,6 +2,7 @@
  * 세션 관리 — 시장 시간 판별, 세션 캐시, 실행 상태
  */
 import { generateAndSaveInsights } from '../../ai/overseas/insights-generator.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import { getPool } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
 
@@ -18,27 +19,35 @@ export interface SessionCache {
   }>;
 }
 
-/** 모듈간 공유되는 런타임 상태 */
+type Mode = 'paper' | 'live';
+
+/** 모듈간 공유되는 런타임 상태 — paper/live 분리 필요한 필드는 Map 구조 */
 export const overseasState = {
   isRunning: false,
   _shuttingDown: false,
   usSessionCache: null as SessionCache | null,
   asiaSessionCache: null as SessionCache | null,
-  extendedAlertSentAt: new Map<string, number>(),
+  // ── paper/live 격리 필드 ──
+  extendedAlertSentAt: new Map<Mode, Map<string, number>>([['paper', new Map()], ['live', new Map()]]),
   lastUSAiCallAt: 0,
   lastPaperAiCallAt: 0,
-  sessionStartPortfolioValue: null as number | null,
-  dailyLossAlertSent3: false,
-  dailyLossAlertSent5: false,
+  sessionStartPortfolioValue: new Map<Mode, number | null>([['paper', null], ['live', null]]),
+  dailyLossAlertSent3: new Map<Mode, boolean>([['paper', false], ['live', false]]),
+  dailyLossAlertSent5: new Map<Mode, boolean>([['paper', false], ['live', false]]),
 };
+
+/** 현재 모드 키 반환 */
+export function modeKey(isPaper?: boolean): Mode {
+  return (isPaper ?? getCtxIsPaper()) ? 'paper' : 'live';
+}
 
 export const setShuttingDown = (v: boolean) => { overseasState._shuttingDown = v; };
 export const isOverseasJobRunning = () => overseasState.isRunning;
 
 /** 세션 시작 포트폴리오값 DB 영속화 (서버 재시작 시 복원용) */
-async function persistSessionStartValue(value: number | null): Promise<void> {
+async function persistSessionStartValue(value: number | null, mode?: Mode): Promise<void> {
   try {
-    const key = 'overseas_session_start_value';
+    const key = `overseas_session_start_value${mode === 'paper' ? '_paper' : ''}`;
     if (value === null) {
       await getPool().query("DELETE FROM overseas_state WHERE key = $1", [key]);
     } else {
@@ -51,40 +60,49 @@ async function persistSessionStartValue(value: number | null): Promise<void> {
   } catch { /* DB 실패 시 무시 — 메모리 값은 유지 */ }
 }
 
-/** 서버 시작 시 세션 시작값 복원 */
+/** 서버 시작 시 세션 시작값 복원 (paper/live 모두) */
 export async function restoreSessionStartValue(): Promise<void> {
-  try {
-    const { rows } = await getPool().query(
-      "SELECT value FROM overseas_state WHERE key = 'overseas_session_start_value'",
-    );
-    if (rows.length > 0) {
-      const parsed = JSON.parse(rows[0].value);
-      const savedAt = new Date(parsed.savedAt);
-      const ageMs = Date.now() - savedAt.getTime();
-      // 24시간 이내 저장된 값만 복원 (세션 넘어간 값은 무시)
-      if (ageMs < 24 * 60 * 60_000) {
-        overseasState.sessionStartPortfolioValue = parsed.value;
-        logger.info(`📦 해외 세션 시작값 복원: $${parsed.value.toFixed(0)} (${Math.round(ageMs / 60000)}분 전 저장)`, { component: 'OVERSEAS' });
+  for (const mode of ['live', 'paper'] as Mode[]) {
+    try {
+      const key = mode === 'paper' ? 'overseas_session_start_value_paper' : 'overseas_session_start_value';
+      const { rows } = await getPool().query(
+        "SELECT value FROM overseas_state WHERE key = $1", [key],
+      );
+      if (rows.length > 0) {
+        const parsed = JSON.parse(rows[0].value);
+        const savedAt = new Date(parsed.savedAt);
+        const ageMs = Date.now() - savedAt.getTime();
+        if (ageMs < 24 * 60 * 60_000) {
+          overseasState.sessionStartPortfolioValue.set(mode, parsed.value);
+          logger.info(`📦 해외 세션 시작값 복원 [${mode}]: $${parsed.value.toFixed(0)} (${Math.round(ageMs / 60000)}분 전 저장)`, { component: 'OVERSEAS' });
+        }
       }
-    }
-  } catch { /* 복원 실패 → null 유지 (첫 실행 시 자동 설정) */ }
+    } catch { /* 복원 실패 → null 유지 */ }
+  }
 }
 
 /** 세션 시작 포트폴리오값 설정 (overseas-job.ts에서 호출) */
-export async function setSessionStartValue(value: number): Promise<void> {
-  overseasState.sessionStartPortfolioValue = value;
-  await persistSessionStartValue(value);
+export async function setSessionStartValue(value: number, isPaper?: boolean): Promise<void> {
+  const mode = modeKey(isPaper);
+  overseasState.sessionStartPortfolioValue.set(mode, value);
+  await persistSessionStartValue(value, mode);
 }
 
 /** 미국장 세션 캐시 초기화 (runner.ts 23:20 호출) */
 export function resetUSSessionCache(): void {
   overseasState.usSessionCache = null;
-  overseasState.sessionStartPortfolioValue = null;
+  overseasState.sessionStartPortfolioValue.set('paper', null);
+  overseasState.sessionStartPortfolioValue.set('live', null);
   overseasState.lastUSAiCallAt = 0;
   overseasState.lastPaperAiCallAt = 0;
-  overseasState.dailyLossAlertSent3 = false;
-  overseasState.dailyLossAlertSent5 = false;
-  persistSessionStartValue(null).catch(() => {});
+  overseasState.dailyLossAlertSent3.set('paper', false);
+  overseasState.dailyLossAlertSent3.set('live', false);
+  overseasState.dailyLossAlertSent5.set('paper', false);
+  overseasState.dailyLossAlertSent5.set('live', false);
+  overseasState.extendedAlertSentAt.set('paper', new Map());
+  overseasState.extendedAlertSentAt.set('live', new Map());
+  persistSessionStartValue(null, 'live').catch(() => {});
+  persistSessionStartValue(null, 'paper').catch(() => {});
   generateAndSaveInsights().catch(() => {});
 }
 

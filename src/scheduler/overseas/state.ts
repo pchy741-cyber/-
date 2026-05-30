@@ -156,30 +156,45 @@ export async function ensureOverseasTable(): Promise<void> {
   }
 }
 
-export async function getHoldings(isPaper?: boolean): Promise<Map<string, { qty: number; avgPrice: number; boughtAt: string; exchange: string }>> {
+export async function getHoldings(isPaper?: boolean): Promise<Map<string, { qty: number; avgPrice: number; boughtAt: string; exchange: string; tpPct: number | null; slPct: number | null }>> {
   const paper = isPaper ?? getCtxIsPaper();
   const map = new Map();
   try {
     const { rows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1', [paper]);
     for (const r of rows) {
-      map.set(r.stock_code, { qty: Number(r.quantity), avgPrice: Number(r.avg_price), boughtAt: r.bought_at, exchange: r.exchange });
+      map.set(r.stock_code, {
+        qty: Number(r.quantity), avgPrice: Number(r.avg_price), boughtAt: r.bought_at, exchange: r.exchange,
+        tpPct: r.tp_pct != null ? Number(r.tp_pct) : null,
+        slPct: r.sl_pct != null ? Number(r.sl_pct) : null,
+      });
     }
   } catch { /* table might not exist yet */ }
   return map;
 }
 
-export async function setHolding(code: string, exchange: string, qty: number, avgPrice: number, isPaper?: boolean): Promise<void> {
+export async function setHolding(code: string, exchange: string, qty: number, avgPrice: number, isPaper?: boolean, opts?: { tpPct?: number; slPct?: number }): Promise<void> {
   const paper = isPaper ?? getCtxIsPaper();
   if (qty <= 0) {
     await getPool().query('DELETE FROM overseas_holdings WHERE exchange = $1 AND stock_code = $2 AND is_paper = $3', [exchange, code, paper]);
   } else {
     await getPool().query(
-      `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper)
-       VALUES ($1, $2, $3, $4, NOW(), $5)
-       ON CONFLICT (exchange, stock_code, is_paper) DO UPDATE SET quantity = $3, avg_price = $4`,
-      [code, exchange, qty, avgPrice, paper],
+      `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper, tp_pct, sl_pct)
+       VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7)
+       ON CONFLICT (exchange, stock_code, is_paper) DO UPDATE SET quantity = $3, avg_price = $4,
+         tp_pct = COALESCE($6, overseas_holdings.tp_pct),
+         sl_pct = COALESCE($7, overseas_holdings.sl_pct)`,
+      [code, exchange, qty, avgPrice, paper, opts?.tpPct ?? null, opts?.slPct ?? null],
     );
   }
+}
+
+/** 보유종목 TP/SL % 수동 조절 (대시보드 UI에서 클릭 조절) */
+export async function updateHoldingTpSl(code: string, tpPct: number | null, slPct: number | null, isPaper?: boolean): Promise<void> {
+  const paper = isPaper ?? getCtxIsPaper();
+  await getPool().query(
+    `UPDATE overseas_holdings SET tp_pct = $1, sl_pct = $2 WHERE stock_code = $3 AND is_paper = $4 AND quantity > 0`,
+    [tpPct, slPct, code, paper],
+  );
 }
 
 /**
@@ -230,7 +245,7 @@ export async function setCash(amountKrw: number, isPaper?: boolean): Promise<voi
  */
 export async function updateTradeState(p: {
   code: string; exchange: string; qty: number; avgPrice: number;
-  newCash: number; isPaper?: boolean; fxRate?: number;
+  newCash: number; isPaper?: boolean; fxRate?: number; tpPct?: number; slPct?: number;
 }): Promise<void> {
   const paper = p.isPaper ?? getCtxIsPaper();
   await withTransaction(async (client) => {
@@ -238,9 +253,11 @@ export async function updateTradeState(p: {
       await client.query('DELETE FROM overseas_holdings WHERE exchange=$1 AND stock_code=$2 AND is_paper=$3', [p.exchange, p.code, paper]);
     } else {
       await client.query(
-        `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper)
-         VALUES ($1,$2,$3,$4,NOW(),$5) ON CONFLICT (exchange,stock_code,is_paper) DO UPDATE SET quantity=$3, avg_price=$4`,
-        [p.code, p.exchange, p.qty, p.avgPrice, paper]);
+        `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper, tp_pct, sl_pct)
+         VALUES ($1,$2,$3,$4,NOW(),$5,$6,$7) ON CONFLICT (exchange,stock_code,is_paper) DO UPDATE SET quantity=$3, avg_price=$4,
+           tp_pct = COALESCE($6, overseas_holdings.tp_pct),
+           sl_pct = COALESCE($7, overseas_holdings.sl_pct)`,
+        [p.code, p.exchange, p.qty, p.avgPrice, paper, p.tpPct ?? null, p.slPct ?? null]);
     }
     if (!paper) {
       // Live: USD → KRW 변환 후 저장 (통합증거금)

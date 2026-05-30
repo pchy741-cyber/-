@@ -38,7 +38,7 @@ import {
   ensureOverseasTable, getHoldings, getCash, updateTradeState,
   getMaxPrice, setMaxPrice, clearMaxPrice,
 } from './overseas/state.js';
-import { overseasState, getOpenMarketRegions, getKSTDateString, getUSSessionId, setSessionStartValue, type SessionCache } from './overseas/session.js';
+import { overseasState, getOpenMarketRegions, getKSTDateString, getUSSessionId, setSessionStartValue, modeKey, type SessionCache } from './overseas/session.js';
 import { getRecentPerfSummary, getOverseasWinRates, getPendingOverseasStocks, type OverseasWinRate } from './overseas/analytics.js';
 import { syncPendingOverseasOrders, getUserInsights, getLossCooldownStocks, getRecentLossStocks, getManualSellCooldownStocks } from './overseas/order-sync.js';
 import { syncHoldingsFromKIS, reconcileCashWithKIS } from './overseas/kis-sync.js';
@@ -338,7 +338,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       region: regionMap.get(t.code) ?? 'US',
       score: t.score, signal: t.signal, price: t.price.currentPrice,
       changePct: t.price.changePct, rsi: t.rsi, cachedAt: Date.now(),
-    })));
+    })), isPaper());
 
     // ── 2. AI(Claude) 판단 ──
     const heldSet = new Set(holdings.keys());
@@ -502,8 +502,9 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     }
 
     // ── 5. 리스크 관리 ──
-    if (s.sessionStartPortfolioValue === null) await setSessionStartValue(portfolioValue);
-    const sessionStart = s.sessionStartPortfolioValue ?? portfolioValue;
+    const mk = modeKey(isPaper());
+    if (s.sessionStartPortfolioValue.get(mk) === null || s.sessionStartPortfolioValue.get(mk) === undefined) await setSessionStartValue(portfolioValue, isPaper());
+    const sessionStart = s.sessionStartPortfolioValue.get(mk) ?? portfolioValue;
 
     // 손실 한도 — 해외 포트폴리오(USD) 기준 30%
     const osLimit = OVERSEAS_LOSS_TIERS;
@@ -518,11 +519,11 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         SCOPE,
       );
       sendTelegramMessage(`🛑 OVERSEAS KILL SWITCH: 해외자산 대비 -${lossPctOfPortfolio.toFixed(1)}%\n손실: $${unrealizedLossUsd.toFixed(0)} (해외자산 $${portfolioValue.toFixed(0)})\n해외 전체 매매 중단`).catch(() => {});
-    } else if (lossPctOfPortfolio >= osLimit.blockPct && !s.dailyLossAlertSent5) {
-      s.dailyLossAlertSent5 = true;
+    } else if (lossPctOfPortfolio >= osLimit.blockPct && !s.dailyLossAlertSent5.get(mk)) {
+      s.dailyLossAlertSent5.set(mk, true);
       sendTelegramMessage(`🚨 CRITICAL: 해외자산 대비 -${lossPctOfPortfolio.toFixed(1)}% 손실\n손실: $${unrealizedLossUsd.toFixed(0)} (해외자산 $${portfolioValue.toFixed(0)})\n신규 매수 차단됨`).catch(() => {});
-    } else if (lossPctOfPortfolio >= osLimit.warnPct && !s.dailyLossAlertSent3) {
-      s.dailyLossAlertSent3 = true;
+    } else if (lossPctOfPortfolio >= osLimit.warnPct && !s.dailyLossAlertSent3.get(mk)) {
+      s.dailyLossAlertSent3.set(mk, true);
       sendTelegramMessage(`⚠️ WARNING: 해외자산 대비 -${lossPctOfPortfolio.toFixed(1)}% 손실\n해외자산: $${portfolioValue.toFixed(0)}`).catch(() => {});
     }
 
@@ -720,13 +721,14 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
 
       // ── 장외시간 알림 (→ overseas/notifications.ts) ──
       if (isUSExtended && !isPaper()) {
+        const alertMap = s.extendedAlertSentAt.get(mk) ?? new Map();
         await sendBuyRecommendations({
           buyTargets, aiMap, kellyResult, portfolioValue, cash,
-          extendedAlertSentAt: s.extendedAlertSentAt, updatedHoldings, techResults,
+          extendedAlertSentAt: alertMap, updatedHoldings, techResults,
           usdKrw: fxNow,
         });
         await sendHoldingAlerts({
-          extendedAlertSentAt: s.extendedAlertSentAt, updatedHoldings, techResults,
+          extendedAlertSentAt: alertMap, updatedHoldings, techResults,
           usdKrw: fxNow,
         });
       }
@@ -918,7 +920,6 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
 
         const cost = exec.filledQty * exec.filledPrice * 1.0025;
         cash -= cost;
-        await updateTradeState({ code: target.code, exchange: target.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper() });
 
         const entryP = exec.filledPrice;
         const entryAtrPct = target.atrPct ?? 2.0;
@@ -932,6 +933,8 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           vixRegime,
           isMomentum: target.isMomentum,
         });
+        // 매수 시점 동적 TP/SL을 overseas_holdings에 영속 저장 (한번 잡히면 유지)
+        await updateTradeState({ code: target.code, exchange: target.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper(), tpPct, slPct: -slPct });
         const tpPrice = (entryP * (1 + tpPct / 100)).toFixed(2);
         const slPrice = (entryP * (1 - slPct / 100)).toFixed(2);
         const kellyTag = kellyResult.sampleCount >= 10 ? ` Kelly${(kellyResult.halfKelly * 100).toFixed(0)}%` : '';
@@ -967,7 +970,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     }
 
     // ── 5-b. 포트폴리오 비중 리밸런싱 (→ overseas/rebalancer.ts) ──
-    const rbResult = await rebalancePortfolio({ techResults, isPaper: isPaper(), sellOrders, extendedAlertSentAt: s.extendedAlertSentAt, cash });
+    const rbResult = await rebalancePortfolio({ techResults, isPaper: isPaper(), sellOrders, extendedAlertSentAt: s.extendedAlertSentAt.get(mk) ?? new Map(), cash });
     const rebalanceAlerts = rbResult.rebalanceAlerts;
     cash = rbResult.cash;
 

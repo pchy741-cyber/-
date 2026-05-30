@@ -1,9 +1,10 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useCallback } from 'react';
 import { api, fmtPct, pc, pbg } from '../../lib/utils';
 import { toDisplayName } from '../../lib/helpers';
 import VisionScalpPanel from '../../panels/VisionScalpPanel';
+import ManualBuyModal from '../../panels/ManualBuyModal';
 
 interface UsHoldingsTabProps {
   usHoldings: any[];
@@ -27,6 +28,26 @@ export default function UsHoldingsTab({
   insightsDraft, setInsightsDraft, insightsSaving, setInsightsSaving, usInsights, setUsInsights,
   viewMode = 'live',
 }: UsHoldingsTabProps) {
+  const [editingTpSl, setEditingTpSl] = useState<string | null>(null);
+  const [editTp, setEditTp] = useState('');
+  const [editSl, setEditSl] = useState('');
+  const [showManualBuy, setShowManualBuy] = useState(false);
+
+  const saveTpSl = useCallback(async (code: string) => {
+    const tp = parseFloat(editTp);
+    const sl = parseFloat(editSl);
+    if (isNaN(tp) || isNaN(sl)) { toast?.('숫자를 입력하세요', 'err'); return; }
+    try {
+      await api(`/overseas/holdings/${code}/tpsl`, {
+        method: 'PATCH',
+        body: JSON.stringify({ tp_pct: tp, sl_pct: sl < 0 ? sl : -sl, is_paper: viewMode === 'paper' }),
+      });
+      setEditingTpSl(null);
+      toast?.('TP/SL 저장됨', 'ok');
+      onRefresh();
+    } catch (e: any) { toast?.(e.message || '저장 실패', 'err'); }
+  }, [editTp, editSl, viewMode, toast, onRefresh]);
+
   return (
     <div>
       {usHoldings.length > 0 && (
@@ -41,25 +62,25 @@ export default function UsHoldingsTab({
             const pnl = displayPrice > 0 ? (displayPrice - h.avg_price) * h.quantity : 0;
             const pnlPct = displayPrice > 0 && h.avg_price > 0 ? ((displayPrice - h.avg_price) / h.avg_price) * 100 : 0;
             const usDisplayName = toDisplayName(priceData?.name, h.stock_code);
-            // 동적 TP/SL 데이터 (서버 매매엔진에서 실시간 계산됨)
-            const tpPct = h.tp_pct ?? 20;
-            const slPct = h.sl_pct ?? -5;
+            // 동적 TP/SL 데이터 (매수 시 계산 → DB 영속, 클릭 조절 가능)
+            const tpPct = h.tp_pct;
+            const slPct = h.sl_pct;
             const trailPct = h.trail_pct ?? 8;
             const trailActive = !!h.trail_active;
-            const trailStopPct = h.trail_stop_pct ?? slPct;
+            const trailStopPct = h.trail_stop_pct ?? (slPct ?? -5);
             const maxPnlPct = h.max_pnl_pct ?? 0;
             const partialStage = h.partial_tp_stage ?? 0;
             const nextPartialTpPct = h.next_partial_tp_pct;
             const isScalp = !!h.is_scalp;
             const scalpTpPct = isScalp && h.scalp_tp && h.avg_price > 0 ? ((h.scalp_tp - h.avg_price) / h.avg_price) * 100 : null;
             const scalpSlPct = isScalp && h.scalp_sl && h.avg_price > 0 ? ((h.scalp_sl - h.avg_price) / h.avg_price) * 100 : null;
-            const effectiveTp = scalpTpPct ?? tpPct;
-            const effectiveSl = scalpSlPct ?? slPct;
+            const effectiveTp: number | null = scalpTpPct ?? tpPct;
+            const effectiveSl: number | null = scalpSlPct ?? slPct;
             // 프로그레스바: SL~TP 범위에서 현재 위치
-            const range = effectiveTp - effectiveSl;
-            const progress = range > 0 ? Math.max(0, Math.min(100, ((pnlPct - effectiveSl) / range) * 100)) : 50;
-            const targetPrice = h.avg_price * (1 + effectiveTp / 100);
-            const stopPrice = h.avg_price * (1 + effectiveSl / 100);
+            const range = (effectiveTp != null && effectiveSl != null) ? effectiveTp - effectiveSl : 0;
+            const progress = (range > 0 && effectiveSl != null) ? Math.max(0, Math.min(100, ((pnlPct - effectiveSl) / range) * 100)) : 50;
+            const targetPrice = effectiveTp != null ? h.avg_price * (1 + effectiveTp / 100) : 0;
+            const stopPrice = effectiveSl != null ? h.avg_price * (1 + effectiveSl / 100) : 0;
             return (
               <div key={h.stock_code} className="px-4 py-3 space-y-2">
                 {/* 상단: 종목명 + 수익률 + 매도버튼 */}
@@ -105,60 +126,81 @@ export default function UsHoldingsTab({
                   </button>
                 </div>
                 {/* 하단: 동적 TP/SL 프로그레스바 + 트레일링 상태 */}
-                {displayPrice > 0 && (
+                {displayPrice > 0 && effectiveTp != null && effectiveSl != null && (
                   <div className="space-y-1">
-                    <div className="flex items-center gap-1.5 text-[10px]">
-                      <span className="text-rose-400 font-medium tabular-nums text-right">{effectiveSl.toFixed(1)}%</span>
-                      <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden relative">
-                        <div className="absolute inset-0 flex">
-                          <div className="h-full bg-gradient-to-r from-rose-500/40 to-slate-600/20" style={{ width: '100%' }} />
-                        </div>
-                        <div
-                          className={`absolute top-0 left-0 h-full rounded-full transition-all ${pnlPct >= 0 ? 'bg-emerald-500' : 'bg-rose-500'}`}
-                          style={{ width: `${progress}%` }}
-                        />
-                        {/* 부분익절 단계 마커들 */}
-                        {nextPartialTpPct != null && nextPartialTpPct !== effectiveTp && range > 0 && (
-                          <div
-                            className="absolute top-0 h-full w-px bg-cyan-400/50"
-                            style={{ left: `${Math.max(0, Math.min(100, ((nextPartialTpPct - effectiveSl) / range) * 100))}%` }}
-                            title={`부분익절 +${nextPartialTpPct}%`}
-                          />
-                        )}
-                        {/* 트레일링 활성화/스톱 마커 */}
-                        {range > 0 && !trailActive && (
-                          <div
-                            className="absolute top-0 h-full w-px bg-yellow-500/40"
-                            style={{ left: `${Math.max(0, Math.min(100, ((trailPct - effectiveSl) / range) * 100))}%` }}
-                            title={`트레일 활성: +${trailPct}%`}
-                          />
-                        )}
-                        {trailActive && range > 0 && (
-                          <div
-                            className="absolute top-0 h-full w-[3px] bg-yellow-400/80 rounded-full"
-                            style={{ left: `${Math.max(0, Math.min(100, ((trailStopPct - effectiveSl) / range) * 100))}%` }}
-                            title={`트레일 스톱: ${trailStopPct >= 0 ? '+' : ''}${trailStopPct.toFixed(1)}%`}
-                          />
-                        )}
+                    {/* TP/SL 인라인 수정 모드 */}
+                    {editingTpSl === h.stock_code ? (
+                      <div className="flex items-center gap-1.5 text-[10px]">
+                        <span className="text-rose-400 text-[9px]">SL</span>
+                        <input type="number" step="0.5" value={editSl} onChange={e => setEditSl(e.target.value)}
+                          className="w-14 px-1 py-0.5 bg-slate-800 border border-slate-600 rounded text-[10px] text-rose-400 text-center tabular-nums" />
+                        <div className="flex-1" />
+                        <span className="text-emerald-400 text-[9px]">TP</span>
+                        <input type="number" step="0.5" value={editTp} onChange={e => setEditTp(e.target.value)}
+                          className="w-14 px-1 py-0.5 bg-slate-800 border border-slate-600 rounded text-[10px] text-emerald-400 text-center tabular-nums" />
+                        <button onClick={() => saveTpSl(h.stock_code)}
+                          className="text-[9px] px-1.5 py-0.5 bg-blue-600/60 rounded text-blue-200">저장</button>
+                        <button onClick={() => setEditingTpSl(null)}
+                          className="text-[9px] px-1 py-0.5 text-slate-500">취소</button>
                       </div>
-                      <span className="text-emerald-400 font-medium tabular-nums">+{effectiveTp.toFixed(1)}%</span>
-                    </div>
-                    <div className="flex justify-between text-[10px] text-slate-600 px-1">
-                      <span>{trailActive
-                        ? <span className="text-yellow-500">트레일 ${(h.avg_price * (1 + trailStopPct / 100)).toFixed(2)}</span>
-                        : <>손절 ${stopPrice.toFixed(2)}</>
-                      }</span>
-                      <span>{trailActive
-                        ? <span className="text-yellow-500">고점+{maxPnlPct.toFixed(1)}%</span>
-                        : partialStage > 0
-                          ? <span className="text-cyan-500">{partialStage}단계 실현</span>
-                          : nextPartialTpPct != null
-                            ? <span className="text-slate-500">1차 +{nextPartialTpPct}%</span>
-                            : <span className="text-slate-500">트레일 +{trailPct}%</span>
-                      }</span>
-                      <span>목표 ${targetPrice.toFixed(2)}</span>
-                    </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 text-[10px]">
+                        <span className="text-rose-400 font-medium tabular-nums text-right cursor-pointer hover:underline"
+                          onClick={() => { setEditingTpSl(h.stock_code); setEditSl(String(effectiveSl.toFixed(1))); setEditTp(String(effectiveTp.toFixed(1))); }}
+                          title="클릭하여 SL 조절">{effectiveSl.toFixed(1)}%<span className="text-slate-600 ml-0.5">${stopPrice.toFixed(0)}</span></span>
+                        <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden relative">
+                          <div className="absolute inset-0">
+                            <div className="h-full w-full bg-gradient-to-r from-rose-500/40 to-slate-600/20" />
+                          </div>
+                          <div
+                            className={`absolute top-0 left-0 h-full rounded-full transition-all ${pnlPct >= 0 ? 'bg-emerald-500' : 'bg-rose-500'}`}
+                            style={{ width: `${progress}%` }}
+                          />
+                          {/* 부분익절 단계 마커들 */}
+                          {nextPartialTpPct != null && nextPartialTpPct !== effectiveTp && range > 0 && (
+                            <div
+                              className="absolute top-0 h-full w-px bg-cyan-400/50"
+                              style={{ left: `${Math.max(0, Math.min(100, ((nextPartialTpPct - effectiveSl) / range) * 100))}%` }}
+                              title={`부분익절 +${nextPartialTpPct}%`}
+                            />
+                          )}
+                          {/* 트레일링 활성화/스톱 마커 */}
+                          {range > 0 && !trailActive && (
+                            <div
+                              className="absolute top-0 h-full w-px bg-yellow-500/40"
+                              style={{ left: `${Math.max(0, Math.min(100, ((trailPct - effectiveSl) / range) * 100))}%` }}
+                              title={`트레일 활성: +${trailPct}%`}
+                            />
+                          )}
+                          {trailActive && range > 0 && (
+                            <div
+                              className="absolute top-0 h-full w-[3px] bg-yellow-400/80 rounded-full"
+                              style={{ left: `${Math.max(0, Math.min(100, ((trailStopPct - effectiveSl) / range) * 100))}%` }}
+                              title={`트레일 스톱: ${trailStopPct >= 0 ? '+' : ''}${trailStopPct.toFixed(1)}%`}
+                            />
+                          )}
+                        </div>
+                        <span className="text-emerald-400 font-medium tabular-nums cursor-pointer hover:underline"
+                          onClick={() => { setEditingTpSl(h.stock_code); setEditSl(String(effectiveSl.toFixed(1))); setEditTp(String(effectiveTp.toFixed(1))); }}
+                          title="클릭하여 TP 조절">+{effectiveTp.toFixed(1)}%<span className="text-slate-600 ml-0.5">${targetPrice.toFixed(0)}</span></span>
+                      </div>
+                    )}
+                    {/* 트레일/부분익절 상태만 표시 (SL·TP 가격은 프로그레스바에 통합) */}
+                    {(trailActive || partialStage > 0 || nextPartialTpPct != null) && (
+                      <div className="text-[10px] text-slate-600 px-1 text-center">
+                        {trailActive
+                          ? <span className="text-yellow-500">트레일 활성 · 스톱 ${(h.avg_price * (1 + trailStopPct / 100)).toFixed(2)} · 고점+{maxPnlPct.toFixed(1)}%</span>
+                          : partialStage > 0
+                            ? <span className="text-cyan-500">{partialStage}단계 부분익절 완료</span>
+                            : <span className="text-slate-500">1차 익절 +{nextPartialTpPct}% · 트레일 +{trailPct}%</span>
+                        }
+                      </div>
+                    )}
                   </div>
+                )}
+                {/* TP/SL 미설정 시 (레거시 보유종목) */}
+                {displayPrice > 0 && (effectiveTp == null || effectiveSl == null) && (
+                  <div className="text-[10px] text-slate-600 px-1">TP/SL 미설정 — 다음 사이클에서 자동 계산됩니다</div>
                 )}
               </div>
             );
@@ -181,6 +223,13 @@ export default function UsHoldingsTab({
           )}
         </div>
       )}
+      {/* 수동매수 버튼 */}
+      <div className="px-4 py-2">
+        <button onClick={() => setShowManualBuy(true)}
+          className="w-full py-2.5 rounded-xl text-sm font-medium bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/20 transition-all">
+          수동 매수
+        </button>
+      </div>
       {/* 제보 단타 */}
       <VisionScalpPanel toast={toast} />
       {/* 감시 종목 그리드 */}
@@ -207,6 +256,15 @@ export default function UsHoldingsTab({
           <p className="text-[11px] text-slate-600">🇯🇵 09:00~15:00 · 🇹🇼 10:00~14:30 · 🇺🇸 22:30~06:30 (서머타임)</p>
         </div>
       )}
+      {/* 수동매수 모달 */}
+      <ManualBuyModal
+        open={showManualBuy}
+        onClose={() => setShowManualBuy(false)}
+        onSuccess={onRefresh}
+        toast={toast}
+        viewMode={viewMode}
+        watchlist={usW.map((s: any) => ({ code: s.code, name: s.name ?? s.code, exchange: s.exchange ?? 'NASDAQ' }))}
+      />
       {/* 운영자 인사이트 입력 */}
       <div className="border-t border-white/[0.04] px-4 py-3">
         <div className="text-[11px] text-slate-500 mb-1.5 font-medium">💡 AI 인사이트 메모 <span className="text-slate-600">(다음 사이클에 AI에게 전달됩니다)</span></div>

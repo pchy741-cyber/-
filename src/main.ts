@@ -99,6 +99,12 @@ app.route('/', backtestRoutes);        // GET  /api/backtest/*
 app.route('/', journalRoutes);         // GET  /api/journal/*
 app.route('/', overseasRoutes);        // GET  /api/overseas/dashboard, /api/overseas/scores ...
 
+// 확장 기능 (OFF by default, 설정에서 켜야 사용)
+import { dividendRoutes } from './api/routes/dividend.js';
+import { futuresRoutes } from './api/routes/futures.js';
+app.route('/', dividendRoutes);         // GET  /api/dividend/*, 월배당 투자
+app.route('/', futuresRoutes);          // GET  /api/futures/*, 해외선물 마이크로 트레이딩
+
 // ── 루트 앱 (프론트엔드 프록시 + API) ──
 // 모든 API 경로는 /api 하위 — Non-API는 Next.js(localhost:3000)로 프록시
 const rootApp = new Hono();

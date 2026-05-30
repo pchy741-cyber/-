@@ -4,15 +4,20 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import html2canvas from 'html2canvas';
 import { api } from '../lib/utils';
 
-type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'settings';
+type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'settings' | 'dividend' | 'futures';
 
-const TAB_LIST: { id: Tab; label: string }[] = [
+const CORE_TABS: { id: Tab; label: string }[] = [
   { id: 'home', label: '대시보드' },
   { id: 'trades', label: '매매내역' },
   { id: 'journal', label: '매매일지' },
   { id: 'watchlist', label: '감시목록' },
   { id: 'news', label: '뉴스' },
   { id: 'settings', label: '설정' },
+];
+// 배당/선물은 기능 ON일 때만 캡처 (OFF면 불필요)
+const OPTIONAL_TABS: { id: Tab; label: string }[] = [
+  { id: 'dividend', label: '배당' },
+  { id: 'futures', label: '선물' },
 ];
 
 const DUAL_MODE_TABS: Tab[] = ['home', 'trades'];
@@ -205,6 +210,19 @@ export default function ScreenshotReview(props: Props) {
     const originalMode = viewMode;
     const otherMode = viewMode === 'live' ? 'paper' : 'live';
     const screenshots: { tab: string; base64: string }[] = [];
+
+    // 배당/선물: 기능 ON인 탭만 캡처 대상에 포함
+    let enabledOptional: typeof OPTIONAL_TABS = [];
+    try {
+      const [divWl, futDash] = await Promise.all([
+        api('/dividend/watchlist').catch(() => ({ enabled: false })),
+        api('/futures/dashboard').catch(() => ({ enabled: false })),
+      ]);
+      if ((divWl as any).enabled) enabledOptional.push(OPTIONAL_TABS[0]);
+      if ((futDash as any).enabled) enabledOptional.push(OPTIONAL_TABS[1]);
+    } catch {}
+    const TAB_LIST = [...CORE_TABS, ...enabledOptional];
+
     const totalSteps = TAB_LIST.length + DUAL_MODE_TABS.length + 1; // +1 copilot
     setTotal(totalSteps);
 

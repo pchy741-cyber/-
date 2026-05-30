@@ -328,16 +328,21 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       const isMediumBeta = SECTOR_CLASS.MEDIUM_BETA.includes(sector);
       const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
 
-      // ── 동적 TP/SL: 매매엔진이 저장한 실시간 값 우선 사용 ──
-      const dynRaw = stateMap.get(`${pfx}dynamic_tpsl_${code}`);
-      let dynTp: number | null = null;
-      let dynSl: number | null = null;
-      if (dynRaw) {
-        try {
-          const v = JSON.parse(dynRaw);
-          dynTp = Number(v.tp);
-          dynSl = Number(v.sl);
-        } catch { /* skip */ }
+      // ── TP/SL: overseas_holdings에 매수 시 저장된 값 우선 사용 ──
+      const holdingTp = r.tp_pct != null ? Number(r.tp_pct) : null;
+      const holdingSl = r.sl_pct != null ? Number(r.sl_pct) : null;
+      // 레거시 폴백: overseas_state 캐시 → 섹터 기반 폴백
+      let dynTp = holdingTp;
+      let dynSl = holdingSl;
+      if (dynTp == null || dynSl == null) {
+        const dynRaw = stateMap.get(`${pfx}dynamic_tpsl_${code}`);
+        if (dynRaw) {
+          try {
+            const v = JSON.parse(dynRaw);
+            if (dynTp == null) dynTp = Number(v.tp);
+            if (dynSl == null) dynSl = Number(v.sl);
+          } catch { /* skip */ }
+        }
       }
       // 섹터 기반 폴백 SL (동적 값 없을 때만)
       const fallbackSl = isHighBeta ? -8.0 : isMediumBeta ? -5.0 : isDefense ? -4.0 : -5.0;

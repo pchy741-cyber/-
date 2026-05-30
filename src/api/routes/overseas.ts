@@ -293,10 +293,85 @@ overseasRoutes.post('/overseas/vision-scalp/analyze', async (c) => {
   }
 });
 
+// ── 수동매수 추천값 조회 (모달용) ──
+overseasRoutes.get('/overseas/buy-recommend/:code', async (c) => {
+  const code = c.req.param('code').toUpperCase().replace(/[^A-Z0-9.]/g, '');
+  const exchange = c.req.query('exchange') || 'NASDAQ';
+  try {
+    const price = await getOverseasPrice(code, exchange);
+    if (!price.currentPrice || price.currentPrice <= 0) {
+      return c.json({ error: `${code} 시세 조회 실패` }, 400);
+    }
+
+    // 기술 분석 캐시
+    const cachedScores = getOverseasScores() as any[];
+    const scoreEntry = cachedScores?.find((s: any) => s.code === code);
+    const rsi = scoreEntry?.rsi ?? 50;
+    const adx = scoreEntry?.adx ?? 20;
+    const score = scoreEntry?.score ?? 0;
+    const isMomentum = scoreEntry?.isMomentum ?? false;
+
+    // 섹터
+    const watchItem = GLOBAL_WATCHLIST.find(w => w.code === code);
+    const sector = watchItem?.sector ?? '';
+
+    // VIX + 동적 TP/SL 계산
+    const vixData = await getFearGreedIndex().catch(() => null);
+    const vixValue = vixData?.vix ?? 0;
+    const vixRegime = getVixRegime(vixValue);
+    const { tpPct, slPct, tpLabel } = calcDynamicTpSl({ sector, adx, rsi, aiScore: score, vixRegime, isMomentum });
+    const tpPrice = +(price.currentPrice * (1 + tpPct / 100)).toFixed(2);
+    const slPrice = +(price.currentPrice * (1 - slPct / 100)).toFixed(2);
+
+    // 추천 금액/수량 계산
+    let cashUsd = 0;
+    let portfolio = 0;
+    let recommendedAmount = 200;
+    try {
+      const { getCash: getOsCashFn } = await import('../../scheduler/overseas/state.js');
+      cashUsd = await getOsCashFn(baseIsPaper);
+      const { rows: holdRows } = await getPool().query("SELECT SUM(avg_price * quantity) AS total FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1", [baseIsPaper]);
+      const holdVal = holdRows[0]?.total ? Number(holdRows[0].total) : 0;
+      portfolio = cashUsd + holdVal;
+      const riskFactor = portfolio < 500 ? 0.15 : portfolio < 2000 ? 0.12 : portfolio < 5000 ? 0.10 : 0.08;
+      const goldenAmount = Math.round(portfolio * 0.618 * riskFactor);
+      const cashCap = Math.round(cashUsd * 0.40);
+      recommendedAmount = Math.min(cashCap, goldenAmount, 5000);
+      const oneShareCost = Math.ceil(price.currentPrice * 1.0025);
+      if (recommendedAmount < oneShareCost && oneShareCost <= cashUsd * 0.50) {
+        recommendedAmount = oneShareCost;
+      }
+    } catch { /* 기본값 유지 */ }
+
+    const recommendedQty = Math.max(1, Math.floor(recommendedAmount / (price.currentPrice * 1.0025)));
+    const totalCost = +(recommendedQty * price.currentPrice * 1.0025).toFixed(2);
+
+    return c.json({
+      code, exchange, sector,
+      price: price.currentPrice,
+      changePct: price.changePct,
+      score, rsi, adx,
+      tpPct: +tpPct.toFixed(1), slPct: +slPct.toFixed(1), tpLabel,
+      tpPrice, slPrice,
+      cashUsd: +cashUsd.toFixed(2),
+      portfolio: +portfolio.toFixed(2),
+      recommendedAmount: +recommendedAmount.toFixed(0),
+      recommendedQty,
+      totalCost,
+      vix: vixValue,
+      vixRegime: vixRegime.regime,
+      mode: baseIsPaper ? 'paper' : 'live',
+      stockName: watchItem?.name ?? code,
+    });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
 // POST /overseas/vision-scalp/execute  body: { ticker, exchange, amountUsd, reasoning }
 overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
   try {
-    const body = await c.req.json<{ ticker: string; exchange: string; amountUsd: number; reasoning: string }>();
+    const body = await c.req.json<{ ticker: string; exchange: string; amountUsd: number; reasoning: string; tp_pct?: number; sl_pct?: number }>();
     const { ticker, exchange = 'NASDAQ', reasoning = '' } = body;
     if (!ticker) return c.json({ error: '티커 필요' }, 400);
 
@@ -355,13 +430,20 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
     }
     const totalCost = qty * price.currentPrice * 1.0025;
 
-    // ── 3. 동적 TP/SL: 종목별 변동성·섹터·VIX 반영 (자동매매 동일 로직) ──
-    const vixData = await getFearGreedIndex().catch(() => null);
-    const vixValue = vixData?.vix ?? 0;
-    const vixRegime = getVixRegime(vixValue);
-    const { tpPct, slPct, tpLabel } = calcDynamicTpSl({
-      sector, adx, rsi, aiScore: score, vixRegime, isMomentum,
-    });
+    // ── 3. 동적 TP/SL: 클라이언트 지정값 우선, 없으면 서버 계산 ──
+    let tpPct: number;
+    let slPct: number;
+    let tpLabel = '';
+    if (body.tp_pct != null && body.sl_pct != null) {
+      tpPct = body.tp_pct;
+      slPct = Math.abs(body.sl_pct);
+      tpLabel = '수동 지정';
+    } else {
+      const vixData = await getFearGreedIndex().catch(() => null);
+      const vixValue = vixData?.vix ?? 0;
+      const vixRegime = getVixRegime(vixValue);
+      ({ tpPct, slPct, tpLabel } = calcDynamicTpSl({ sector, adx, rsi, aiScore: score, vixRegime, isMomentum }));
+    }
     const tpPrice = +(price.currentPrice * (1 + tpPct / 100)).toFixed(2);
     const slPrice = +(price.currentPrice * (1 - slPct / 100)).toFixed(2);
     const vsCashKey = baseIsPaper ? 'cash_paper' : 'cash';
@@ -394,13 +476,14 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
 
     await withTransaction(async (tx) => {
       await tx.query(`
-        INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, scalp_tp, scalp_sl, is_scalp, is_paper)
-        VALUES ($1, $2, $3, $4, NOW(), $5, $6, TRUE, $7)
+        INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, scalp_tp, scalp_sl, is_scalp, is_paper, tp_pct, sl_pct)
+        VALUES ($1, $2, $3, $4, NOW(), $5, $6, TRUE, $7, $8, $9)
         ON CONFLICT (exchange, stock_code, is_paper) DO UPDATE
           SET quantity = overseas_holdings.quantity + $3,
               avg_price = (overseas_holdings.avg_price * overseas_holdings.quantity + $4 * $3) / (overseas_holdings.quantity + $3),
-              scalp_tp = $5, scalp_sl = $6, is_scalp = TRUE
-      `, [sanitizedTicker, exchange, qty, filledPrice, tpPrice, slPrice, baseIsPaper]);
+              scalp_tp = $5, scalp_sl = $6, is_scalp = TRUE,
+              tp_pct = $8, sl_pct = $9
+      `, [sanitizedTicker, exchange, qty, filledPrice, tpPrice, slPrice, baseIsPaper, tpPct, -slPct]);
 
       // 매수 주문 기록 (Paper computed cash에 필수 — 이전에 누락됐던 부분)
       await tx.query(
@@ -443,6 +526,36 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
     });
   } catch (e: any) {
     logger.error(`[VisionScalp] 실행 실패: ${e.message}`, { component: 'OVERSEAS' });
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// ── 보유종목 TP/SL 수동 조절 ──
+overseasRoutes.patch('/overseas/holdings/:code/tpsl', async (c) => {
+  const code = c.req.param('code');
+  try {
+    const body = await c.req.json<{ tp_pct?: number; sl_pct?: number; is_paper?: boolean }>();
+    const isPaper = typeof body.is_paper === 'boolean' ? body.is_paper : baseIsPaper;
+    const tpPct = body.tp_pct != null ? Number(body.tp_pct) : null;
+    const slPct = body.sl_pct != null ? Number(body.sl_pct) : null;
+    if (tpPct == null && slPct == null) return c.json({ error: 'tp_pct 또는 sl_pct 필요' }, 400);
+
+    const { updateHoldingTpSl } = await import('../../scheduler/overseas/state.js');
+    // 개별 필드만 업데이트 가능하도록 기존값 유지
+    const { rows } = await getPool().query(
+      'SELECT tp_pct, sl_pct FROM overseas_holdings WHERE stock_code = $1 AND is_paper = $2 AND quantity > 0', [code, isPaper]);
+    if (rows.length === 0) return c.json({ error: '보유 종목 없음' }, 404);
+    const finalTp = tpPct ?? (rows[0].tp_pct != null ? Number(rows[0].tp_pct) : null);
+    const finalSl = slPct ?? (rows[0].sl_pct != null ? Number(rows[0].sl_pct) : null);
+    await updateHoldingTpSl(code, finalTp, finalSl, isPaper);
+
+    // 캐시 무효화
+    const mode = isPaper ? 'paper' : 'live';
+    cacheSet(`overseas:dashboard:${mode}`, null as any, 0);
+    cacheSet(`overseas:holdings:${mode}`, null as any, 0);
+    logger.info(`📝 TP/SL 수동 조절: ${code} TP=${finalTp} SL=${finalSl} [${mode}]`, { component: 'OVERSEAS' });
+    return c.json({ ok: true, tp_pct: finalTp, sl_pct: finalSl });
+  } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }
 });
