@@ -827,7 +827,11 @@ function FeatureFlagsPanel({ toast, onFlagChange }: { toast: any; onFlagChange?:
     overseas_futures: { icon: '📈', label: '해외선물', desc: '마이크로 선물 극소액 레버리지 (격리 예산)' },
   };
 
-  if (flags.length === 0) return null;
+  if (flags.length === 0) return (
+    <Panel title="확장 기능">
+      <div className="text-center py-4 text-sm text-slate-500">기능 초기화 중... 잠시 후 새로고침하세요</div>
+    </Panel>
+  );
 
   return (
     <Panel title="확장 기능">

@@ -461,8 +461,9 @@ export default function Dashboard() {
 
         <main className="flex-1 overflow-y-auto transition-colors duration-500" style={{ background: `linear-gradient(to bottom right, ${theme.main1}, ${theme.main2}, ${theme.main1})` }}>
           {loading && !dash ? (
-            <div className="flex items-center justify-center h-full">
+            <div className="flex items-center justify-center h-full flex-col gap-3">
               <div className="w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+              <button onClick={() => { loadingRef.current = false; load(true); }} className="text-[10px] text-slate-500 hover:text-slate-300 mt-4">재시도</button>
             </div>
           ) : (
             <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px] mx-auto">

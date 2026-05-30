@@ -202,6 +202,10 @@ export default function UsHoldingsTab({
                 {displayPrice > 0 && (effectiveTp == null || effectiveSl == null) && (
                   <div className="text-[10px] text-slate-600 px-1">TP/SL 미설정 — 다음 사이클에서 자동 계산됩니다</div>
                 )}
+                {/* 시세 없을 때 (장 마감/API 실패) */}
+                {displayPrice === 0 && (
+                  <div className="text-[10px] text-slate-600 px-1">시세 대기 — 장 시작 시 자동 업데이트</div>
+                )}
               </div>
             );
           })}
