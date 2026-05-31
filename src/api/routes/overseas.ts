@@ -327,20 +327,41 @@ overseasRoutes.get('/overseas/buy-recommend/:code', async (c) => {
     let cashUsd = 0;
     let portfolio = 0;
     let recommendedAmount = 200;
+    let holdingCount = 0;
     try {
       const { getCash: getOsCashFn } = await import('../../scheduler/overseas/state.js');
       cashUsd = await getOsCashFn(baseIsPaper);
-      const { rows: holdRows } = await getPool().query("SELECT SUM(avg_price * quantity) AS total FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1", [baseIsPaper]);
+      const { rows: holdRows } = await getPool().query(
+        "SELECT SUM(avg_price * quantity) AS total, COUNT(*) AS cnt FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1", [baseIsPaper]
+      );
       const holdVal = holdRows[0]?.total ? Number(holdRows[0].total) : 0;
+      holdingCount = Number(holdRows[0]?.cnt ?? 0);
       portfolio = cashUsd + holdVal;
-      const riskFactor = portfolio < 500 ? 0.15 : portfolio < 2000 ? 0.12 : portfolio < 5000 ? 0.10 : 0.08;
-      const goldenAmount = Math.round(portfolio * 0.618 * riskFactor);
-      const cashCap = Math.round(cashUsd * 0.40);
-      recommendedAmount = Math.min(cashCap, goldenAmount, 5000);
+
+      // 소액 계좌 스마트 사이징: 보유 종목수 고려
+      // 포트 < $500: 한 종목에 25~40% 집중 (분산 과하면 의미 없음)
+      // 포트 < $2000: 10~20% 배분
+      // 포트 ≥ $2000: 일반 황금비율
+      const maxPositions = portfolio < 500 ? 4 : portfolio < 2000 ? 6 : 10;
+      const targetPct = portfolio < 500
+        ? (holdingCount >= 3 ? 0.25 : 0.35)
+        : portfolio < 2000
+          ? (holdingCount >= 5 ? 0.12 : 0.18)
+          : (holdingCount >= 8 ? 0.08 : 0.12);
+      const targetAmount = Math.round(portfolio * targetPct);
+
+      // 현금 보호: 수동 1건에 현금의 50% 이내 (소액은 허용 넓게)
+      const cashCapPct = portfolio < 500 ? 0.60 : portfolio < 2000 ? 0.50 : 0.40;
+      const cashCap = Math.round(cashUsd * cashCapPct);
+      recommendedAmount = Math.min(cashCap, targetAmount, 5000);
+
+      // 최소 1주 보장 (1주 가격이 현금의 70% 이내면 허용)
       const oneShareCost = Math.ceil(price.currentPrice * 1.0025);
-      if (recommendedAmount < oneShareCost && oneShareCost <= cashUsd * 0.50) {
+      if (recommendedAmount < oneShareCost && oneShareCost <= cashUsd * 0.70) {
         recommendedAmount = oneShareCost;
       }
+      // 최소 금액 바닥 ($30 또는 1주 중 작은 값)
+      if (recommendedAmount < 30) recommendedAmount = Math.min(30, oneShareCost);
     } catch { /* 기본값 유지 */ }
 
     const recommendedQty = Math.max(1, Math.floor(recommendedAmount / (price.currentPrice * 1.0025)));
@@ -396,31 +417,38 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
     const watchItem = GLOBAL_WATCHLIST.find(w => w.code === sanitizedTicker);
     const sector = watchItem?.sector ?? '';
 
-    // ── 2. 동적 금액 계산: 현금잔고 기반 황금비율 ──
+    // ── 2. 동적 금액 계산: 포트폴리오 크기 + 종목수 기반 스마트 사이징 ──
     let defaultAmount = 200;
     let cashUsd = 0;
     let portfolio = 0;
     try {
       const { getCash: getOsCashFn } = await import('../../scheduler/overseas/state.js');
       cashUsd = await getOsCashFn(baseIsPaper);
-      const { rows: holdRows } = await getPool().query("SELECT SUM(avg_price * quantity) AS total FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1", [baseIsPaper]);
+      const { rows: holdRows } = await getPool().query(
+        "SELECT SUM(avg_price * quantity) AS total, COUNT(*) AS cnt FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1", [baseIsPaper]
+      );
       const holdVal = holdRows[0]?.total ? Number(holdRows[0].total) : 0;
+      const holdCount = Number(holdRows[0]?.cnt ?? 0);
       portfolio = cashUsd + holdVal;
-      // 황금비율(0.618) × 리스크팩터 → 한 포지션당 최적 금액
-      const riskFactor = portfolio < 500 ? 0.15 : portfolio < 2000 ? 0.12 : portfolio < 5000 ? 0.10 : 0.08;
-      const goldenAmount = Math.round(portfolio * 0.618 * riskFactor);
-      // 현금 보호: 수동 1건에 현금의 40% 초과 금지
-      const cashCap = Math.round(cashUsd * 0.40);
-      defaultAmount = Math.min(cashCap, goldenAmount, 5000);
-      // 최소 1주 가격보다 적으면 1주 허용 (단 현금의 50% 이내)
+      // 소액 계좌 스마트 사이징
+      const targetPct = portfolio < 500
+        ? (holdCount >= 3 ? 0.25 : 0.35)
+        : portfolio < 2000
+          ? (holdCount >= 5 ? 0.12 : 0.18)
+          : (holdCount >= 8 ? 0.08 : 0.12);
+      const targetAmount = Math.round(portfolio * targetPct);
+      const cashCapPct = portfolio < 500 ? 0.60 : portfolio < 2000 ? 0.50 : 0.40;
+      const cashCap = Math.round(cashUsd * cashCapPct);
+      defaultAmount = Math.min(cashCap, targetAmount, 5000);
       const oneShareCost = Math.ceil(price.currentPrice * 1.0025);
-      if (defaultAmount < oneShareCost && oneShareCost <= cashUsd * 0.50) {
+      if (defaultAmount < oneShareCost && oneShareCost <= cashUsd * 0.70) {
         defaultAmount = oneShareCost;
       }
     } catch { /* 조회 실패 시 기본값 유지 */ }
     const amountUsd = (body.amountUsd && body.amountUsd > 0) ? body.amountUsd : defaultAmount;
-    // 현금의 50% 상한 (사용자 지정 금액도 상한 적용)
-    const safeAmount = Math.min(cashUsd * 0.50 || 5000, Number(amountUsd));
+    // 현금 상한 (소액 60%, 일반 50%)
+    const cashSafePct = portfolio < 500 ? 0.60 : 0.50;
+    const safeAmount = Math.min(cashUsd * cashSafePct || 5000, Number(amountUsd));
 
     // 주수 계산 (수수료 0.25% 보정)
     let qty = Math.floor(safeAmount / (price.currentPrice * 1.0025));
@@ -442,7 +470,9 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
       const vixData = await getFearGreedIndex().catch(() => null);
       const vixValue = vixData?.vix ?? 0;
       const vixRegime = getVixRegime(vixValue);
-      ({ tpPct, slPct, tpLabel } = calcDynamicTpSl({ sector, adx, rsi, aiScore: score, vixRegime, isMomentum }));
+      const { getTunerOverrides } = await import('../../scheduler/overseas/trade-tuner.js');
+      const tunerOv = await getTunerOverrides(baseIsPaper).catch(() => ({}));
+      ({ tpPct, slPct, tpLabel } = calcDynamicTpSl({ sector, adx, rsi, aiScore: score, vixRegime, isMomentum, tunerOverrides: tunerOv }));
     }
     const tpPrice = +(price.currentPrice * (1 + tpPct / 100)).toFixed(2);
     const slPrice = +(price.currentPrice * (1 - slPct / 100)).toFixed(2);

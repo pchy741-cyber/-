@@ -67,7 +67,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
       <div className="px-4 py-3 flex items-center justify-between">
         <button onClick={() => setShowPortfolio(v => !v)} className="flex items-center gap-2 flex-1 text-left hover:opacity-80 transition-opacity">
           <span className="text-sm font-semibold text-slate-200">포트폴리오 비중</span>
-          {totalValue > 0 && domesticCash < totalValue && <span className="text-[10px] bg-blue-500/10 text-blue-400 px-2 py-0.5 rounded-md">투자 {(((totalValue - domesticCash) / totalValue) * 100).toFixed(0)}%</span>}
+          {totalValue > 0 && investedPctExact > 0 && <span className="text-[10px] bg-blue-500/10 text-blue-400 px-2 py-0.5 rounded-md">투자 {investedPctExact.toFixed(0)}%</span>}
           {krUnderperform && <span className="text-[10px] text-amber-400 animate-pulse ml-1">⚡ 국내 부진</span>}
         </button>
         <div className="flex items-center gap-3">
