@@ -57,9 +57,8 @@ authRoutes.post('/auth/logout', (c) => {
 });
 
 authRoutes.get('/auth/me', (c) => {
-  const secret = process.env.DASHBOARD_PASSWORD ?? '';
-  if (!secret) return c.json({ loggedIn: true, noPassword: true });
   const token = getCookie(c, 'qops_session');
   const loggedIn = !!(token && verifySessionToken(token));
+  // 🔒 비밀번호 설정 여부를 절대 노출하지 않음 (noPassword 필드 제거)
   return c.json({ loggedIn });
 });

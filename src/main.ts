@@ -8,7 +8,7 @@ import { dashboardNewsRoutes } from './api/routes/dashboard-news.js';
 import { dashboardAnalysisRoutes } from './api/routes/dashboard-analysis.js';
 // API Routes
 import { authRoutes } from './api/routes/auth.js';
-import { healthRoutes } from './api/routes/health.js';
+import { healthRoutes, healthDetailRoutes } from './api/routes/health.js';
 import { overseasRoutes } from './api/routes/overseas.js';
 import { secretsRoutes } from './api/routes/secrets.js';
 import { settingsRoutes } from './api/routes/settings.js';
@@ -70,6 +70,13 @@ app.use('/manual-buy', rateLimit(10, 60_000));
 app.use('/sell-stock/*', rateLimit(5, 60_000));
 app.use('/sell-overseas/*', rateLimit(5, 60_000));
 app.use('/kill-switch/*', rateLimit(3, 60_000));
+// 🔒 추가 보안: 위험한 설정 변경 엔드포인트 제한
+app.use('/trading-mode', rateLimit(2, 60_000));      // 거래 모드 전환
+app.use('/strategy', rateLimit(3, 60_000));           // 전략 변경
+app.use('/overseas-holdings-fix', rateLimit(2, 60_000)); // 포지션 조작
+app.use('/secrets', rateLimit(3, 60_000));            // 시크릿 관리
+app.use('/run-track-*', rateLimit(2, 60_000));        // 수동 작업 트리거
+app.use('/run-overseas', rateLimit(2, 60_000));       // 수동 해외매매 트리거
 
 // ── 거래 모드 컨텍스트 주입 미들웨어 ──
 // 각 HTTP 요청에 viewMode를 AsyncLocalStorage로 주입 → config.isPaper 오염 원천 차단
@@ -88,6 +95,7 @@ app.route('/', healthRoutes);          // GET  /api/health
 app.route('/', authRoutes);            // POST /api/auth/login, GET /api/auth/me
 // 🔒 이하 모든 라우트: x-api-key 헤더 필요
 app.use('*', requireAuth);
+app.route('/', healthDetailRoutes);     // GET  /api/health/detail (인증 필요)
 app.route('/', reviewRoutes);          // POST /api/review/*, /api/capture/*
 app.route('/', dashboardRoutes);       // GET  /api/dashboard, /api/sell/:id, /api/manual-buy ...
 app.route('/', dashboardNewsRoutes);   // GET  /api/news/*

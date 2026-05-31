@@ -190,7 +190,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
     const triggerSource: string = (body.source as string) || 'MANUAL';
     const sellReason: string = (body.reason as string) || 'CEO 수동 매도';
     // 대시보드 viewMode에서 is_paper를 전달받거나, 없으면 서버 모드로 폴백
-    const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
+    const isPaper: boolean = config.isPaper; // 🔒 서버 설정만 사용 (클라이언트 오버라이드 차단)
     const stockTradingMode = isPaper ? 'paper' : 'live';
 
     const { rows: openChains } = await getPool().query(
@@ -317,7 +317,7 @@ sellRoutes.post('/sell-overseas/:stockCode', async (c) => {
   const stockCode = c.req.param('stockCode');
   try {
     const body = await c.req.json().catch(() => ({}));
-    const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
+    const isPaper: boolean = config.isPaper; // 🔒 서버 설정만 사용 (클라이언트 오버라이드 차단)
     const { rows } = await getPool().query(
       'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0 AND is_paper = $2', [stockCode, isPaper]);
     const holding = rows[0];
@@ -436,7 +436,7 @@ sellRoutes.post('/sell-overseas-force/:stockCode', async (c) => {
   const stockCode = c.req.param('stockCode');
   try {
     const body = await c.req.json().catch(() => ({}));
-    const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
+    const isPaper: boolean = config.isPaper; // 🔒 서버 설정만 사용 (클라이언트 오버라이드 차단)
     const pfx = isPaper ? 'p_' : 'l_';
     const cashKey = isPaper ? 'cash_paper' : 'cash';
 
@@ -487,7 +487,7 @@ sellRoutes.post('/sell-overseas-force/:stockCode', async (c) => {
 sellRoutes.post('/sell-overseas-all', async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
-    const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
+    const isPaper: boolean = config.isPaper; // 🔒 서버 설정만 사용 (클라이언트 오버라이드 차단)
     const forceDb: boolean = !!body.force_db; // true면 KIS 안거치고 DB만 청산
     const pfx = isPaper ? 'p_' : 'l_';
     const cashKey = isPaper ? 'cash_paper' : 'cash';
@@ -577,7 +577,7 @@ sellRoutes.post('/manual-buy', async (c) => {
   const stock_code = String(body.stock_code ?? '').trim().replace(/\D/g, '');
   const { reasoning } = body;
   const aiScore = body.ai_score ?? 0;
-  const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
+  const isPaper: boolean = config.isPaper; // 🔒 서버 설정만 사용 (클라이언트 오버라이드 차단)
   const tradingMode = isPaper ? 'paper' : 'live';
   if (!stock_code || stock_code.length !== 6) {
     return c.json({ error: 'stock_code는 숫자 6자리여야 합니다' }, 400);

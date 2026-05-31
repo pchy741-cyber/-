@@ -565,7 +565,7 @@ overseasRoutes.patch('/overseas/holdings/:code/tpsl', async (c) => {
   const code = c.req.param('code');
   try {
     const body = await c.req.json<{ tp_pct?: number; sl_pct?: number; is_paper?: boolean }>();
-    const isPaper = typeof body.is_paper === 'boolean' ? body.is_paper : baseIsPaper;
+    const isPaper = baseIsPaper; // 🔒 서버 설정만 사용 (클라이언트 오버라이드 차단)
     const tpPct = body.tp_pct != null ? Number(body.tp_pct) : null;
     const slPct = body.sl_pct != null ? Number(body.sl_pct) : null;
     if (tpPct == null && slPct == null) return c.json({ error: 'tp_pct 또는 sl_pct 필요' }, 400);

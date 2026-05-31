@@ -83,14 +83,21 @@ secretsRoutes.get('/secrets', async (c) => {
     const value = envVal || await getSecretValue(secret);
     result[key] = {
       exists: !!value,
-      masked: value ? (value.length > 8 ? `${value.slice(0, 4)}***${value.slice(-4)}` : '***') : '',
+      masked: value ? (value.length > 8 ? `${value.slice(0, 2)}${'*'.repeat(Math.min(value.length - 2, 10))}` : '***') : '',
     };
   }
   cacheSet('secrets:status', result, 30);
   return c.json(result);
 });
 
-// PUT /api/secrets — 키 저장 + 환경변수 반영
+// 🔒 보안: KIS 인증정보, 비밀번호, 텔레그램은 API로 변경 불가 (GCP Console만 허용)
+const BLOCKED_SECRETS = new Set([
+  'kis_appkey', 'kis_appsecret', 'kis_account',
+  'kis_appkey_live', 'kis_appsecret_live', 'kis_account_live',
+  'dashboard_password', 'telegram_token', 'telegram_chat',
+]);
+
+// PUT /api/secrets — AI API 키만 저장 가능 (KIS/비밀번호 차단)
 secretsRoutes.put('/secrets', async (c) => {
   const body = await c.req.json<Record<string, string>>();
   const saved: string[] = [];
@@ -98,9 +105,13 @@ secretsRoutes.put('/secrets', async (c) => {
 
   for (const [key, value] of Object.entries(body)) {
     if (!value || !KEY_MAP[key]) continue;
+    if (BLOCKED_SECRETS.has(key)) {
+      logger.warn(`🚨 보안 차단: ${key} 변경 시도 (API 차단됨, GCP Console 사용 필요)`, { component: 'SECURITY' });
+      errors.push(`${key}: 보안상 API로 변경 불가 — GCP Secret Manager Console에서 직접 변경하세요`);
+      continue;
+    }
     try {
       await setSecretValue(KEY_MAP[key].secret, value);
-      // 현재 프로세스에도 즉시 반영
       process.env[KEY_MAP[key].envVar] = value;
       saved.push(key);
       logger.info(`Secret 업데이트: ${key}`, { component: 'SECRETS' });

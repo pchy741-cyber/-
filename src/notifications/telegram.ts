@@ -14,8 +14,21 @@ export function initTelegram(): void {
   }
   bot = new Telegraf(config.telegram.botToken);
 
-  // /status 명령어 — 시스템 상태 확인
+  // 명령어 인증 헬퍼 — TELEGRAM_CHAT_ID와 정확히 일치하는 사용자만 허용
+  const isAuthorized = (ctx: any): boolean => {
+    const allowedId = String(config.telegram.chatId ?? '');
+    const fromId = String(ctx.from?.id ?? '');
+    const chatId = String(ctx.chat?.id ?? '');
+    // 🔒 엄격한 동등 비교 (endsWith 취약점 차단)
+    return !!(allowedId && (fromId === allowedId || chatId === allowedId));
+  };
+
+  // /status 명령어 — 시스템 상태 확인 (🔒 인증 필수)
   bot.command('status', async (ctx) => {
+    if (!isAuthorized(ctx)) {
+      logger.warn(`🚨 Telegram /status 미인증 시도: userId=${ctx.from?.id}, chatId=${ctx.chat?.id}`, { component: 'TELEGRAM' });
+      return; // 무응답 (봇 존재 자체를 숨김)
+    }
     try {
       const balance = await getAccountBalance();
       const ks = getKillSwitchStatusAll();
@@ -44,14 +57,6 @@ export function initTelegram(): void {
     }
   });
 
-  // 명령어 인증 헬퍼 — TELEGRAM_CHAT_ID와 일치하는 사용자만 허용
-  const isAuthorized = (ctx: any): boolean => {
-    const allowedId = String(config.telegram.chatId ?? '').replace(/^-100/, '');
-    const fromId = String(ctx.from?.id ?? '');
-    const chatId = String(ctx.chat?.id ?? '').replace(/^-100/, '');
-    return !!allowedId && (fromId === allowedId || chatId.endsWith(allowedId));
-  };
-
   // /kill 명령어 — Kill Switch 수동 발동 (인증된 사용자만)
   bot.command('kill', async (ctx) => {
     if (!isAuthorized(ctx)) {
@@ -73,8 +78,12 @@ export function initTelegram(): void {
     await ctx.reply('✅ Kill Switch 강제 해제 — 국내+해외 매매 재개');
   });
 
-  // /positions 명령어 — 보유 종목 상세
+  // /positions 명령어 — 보유 종목 상세 (🔒 인증 필수)
   bot.command('positions', async (ctx) => {
+    if (!isAuthorized(ctx)) {
+      logger.warn(`🚨 Telegram /positions 미인증 시도: userId=${ctx.from?.id}, chatId=${ctx.chat?.id}`, { component: 'TELEGRAM' });
+      return;
+    }
     try {
       const balance = await getAccountBalance();
       if (balance.positions.length === 0) {

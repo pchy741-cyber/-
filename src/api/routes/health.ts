@@ -24,13 +24,17 @@ export function logSystemEvent(component: string, status: 'success' | 'error' | 
 }
 
 
-healthRoutes.get('/health', async (c) => {
+// 공개: 최소 정보만 (운영 정보 노출 차단)
+healthRoutes.get('/health', (c) => {
+  return c.json({ status: 'ok' }, 200);
+});
+
+// 인증 후 상세 헬스 — requireAuth 미들웨어 뒤에서 마운트 필요
+export const healthDetailRoutes = new Hono();
+healthDetailRoutes.get('/health/detail', async (c) => {
   const now = new Date();
-  // UTC+9 고정 (toLocaleString 파싱 버그 방지)
   const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
   const hour = kst.getUTCHours();
-
-  // 미국 장 시간 판단 (KST 23:30~06:00, 서머타임 22:30~05:00)
   const usMarketOpen = hour >= 23 || hour < 6;
 
   const checks: Record<string, unknown> = {
@@ -45,7 +49,6 @@ healthRoutes.get('/health', async (c) => {
     activeLocks: getActiveLocks(),
     uptime: Math.floor(process.uptime()),
     recentEvents: recentEvents.slice(0, 10),
-    // 다음 이벤트 안내
     nextEvent: getNextEvent(kst),
   };
 
