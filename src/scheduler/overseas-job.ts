@@ -718,6 +718,13 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       const scaleInResult = await processScaleIns({ techResults, buyOrders, cash, isPaper: isPaper() });
       cash = scaleInResult.cash;
 
+      // ── 프리마켓 딥바이 체결 감시 (→ overseas/premarket-dip.ts) ──
+      try {
+        const { checkDipBuyFills } = await import('./overseas/premarket-dip.js');
+        const dipFills = await checkDipBuyFills(isPaper());
+        for (const fill of dipFills) buyOrders.push(fill);
+      } catch { /* 딥바이 모듈 없으면 무시 */ }
+
       // ── 멀티 타임프레임 분석 (매수 후보 대상) ──
       const mtfStocks = buyTargets.slice(0, 5).map(t => ({ code: t.code, exchange: t.exchange }));
       const mtfResults = await batchMultiTF(mtfStocks).catch(() => new Map());

@@ -230,8 +230,9 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       }
 
       // ── 기술적 진입 경로 (강→약 순서) ──
-      // 1. BigMover (급등주: 일중 변동률 상위)
-      if (t.isBigMover && t.score >= 15 && t.rsi >= 35 && t.rsi <= 75) return true;
+      // 1. BigMover (급등주) — 승률 피드백 강화: 우량주만 + 과열 제외
+      //    "급등주는 추천 안합니다, 우량주로 하시는게 안전" → BigMover도 MA20 위 + RSI<70
+      if (t.isBigMover && t.score >= 18 && t.rsi >= 38 && t.rsi <= 70 && t.aboveMA20 && !hasBadWinRate) return true;
       // 2. Momentum (모멘텀 확인: 볼륨+추세)
       if (t.isMomentum && t.score >= 20 && t.aboveMA20 && t.rsi >= 40 && t.rsi <= 72) return true;
       // 3. STRONG_BUY 기술 시그널 (복합 지표 합산 최상위)

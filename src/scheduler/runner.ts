@@ -603,6 +603,17 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 🎯 프리마켓 딥바이 — 미장 오픈 직후 (23:31 KST) 프리마켓 종가 -2% 지정가 대기
+  cron.schedule(
+    '31 23 * * 1-5',
+    () => {
+      import('./overseas/premarket-dip.js')
+        .then(m => m.runPremarketDipBuy(true))
+        .catch(e => logger.error(`딥바이 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 📈 선물 자동매매 — 미국 장중 10분 간격 (+5분 오프셋, overseas-job 충돌 방지)
   cron.schedule(
     '5,15,25,35,45,55 22-23 * * 1-5',
