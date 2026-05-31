@@ -9,9 +9,10 @@ interface FuturesViewProps {
   viewMode: 'paper' | 'live';
   confirm: (opts: { title: string; description?: string; confirmLabel?: string; confirmVariant?: 'danger' | 'primary' }) => Promise<boolean>;
   mpData?: any;
+  onRefreshMp?: () => void;
 }
 
-const FX_RATE = 1350;
+const DEFAULT_FX = 1350;
 
 const BUDGET_PRESETS = [
   { krw: 20000, label: '2만' },
@@ -28,7 +29,8 @@ const PRODUCTS = [
   { code: 'MCL', name: 'Crude Oil', margin: 700, leverage: '~20x' },
 ];
 
-export default function FuturesView({ toast, viewMode, confirm, mpData }: FuturesViewProps) {
+export default function FuturesView({ toast, viewMode, confirm, mpData, onRefreshMp }: FuturesViewProps) {
+  const FX_RATE = mpData?.fx ?? DEFAULT_FX;
   const [loading, setLoading] = useState(true);
   const [depositing, setDepositing] = useState(false);
   const [budget, setBudget] = useState<any>(null);
@@ -68,6 +70,7 @@ export default function FuturesView({ toast, viewMode, confirm, mpData }: Future
       if (res.ok) {
         toast(`선물 입금 완료: 총 ₩${res.totalAllocatedKrw.toLocaleString()}`, 'ok');
         load();
+        onRefreshMp?.();
       } else {
         toast(res.error || '입금 실패', 'err');
       }

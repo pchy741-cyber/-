@@ -23,8 +23,8 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
     { id: 'journal', label: '매매일지', icon: '📓' },
     { id: 'watchlist', label: '감시목록', icon: '👁' },
     { id: 'news', label: '뉴스', icon: '📰' },
-    ...(featureFlags['dividend_investing'] ? [{ id: 'dividend' as Tab, label: '배당', icon: '💰' }] : []),
-    ...(featureFlags['overseas_futures'] ? [{ id: 'futures' as Tab, label: '선물', icon: '📈' }] : []),
+    { id: 'dividend' as Tab, label: '배당', icon: '💰' },
+    { id: 'futures' as Tab, label: '선물', icon: '📈' },
     { id: 'settings', label: '설정', icon: '⚙️' },
   ];
 

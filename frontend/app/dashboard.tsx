@@ -39,12 +39,14 @@ export default function Dashboard() {
   } = data;
 
   const [mpData, setMpData] = useState<any>(null);
-  React.useEffect(() => {
-    const fetchMp = () => api('/money-printer/summary').then(setMpData).catch(() => {});
-    fetchMp();
-    const id = setInterval(fetchMp, 60000);
-    return () => clearInterval(id);
+  const refreshMp = React.useCallback(() => {
+    api('/money-printer/summary').then(setMpData).catch(() => {});
   }, []);
+  React.useEffect(() => {
+    refreshMp();
+    const id = setInterval(refreshMp, 60000);
+    return () => clearInterval(id);
+  }, [refreshMp]);
 
   const modeTogglingRef = React.useRef(false);
 
@@ -146,8 +148,8 @@ export default function Dashboard() {
               {tab === 'journal' && <JournalView viewMode={viewMode} />}
               {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} toast={toast} confirm={confirm} onRefresh={load} viewMode={viewMode} />}
               {tab === 'news' && <NewsView watchlist={watchlist} setWatchlist={setWatchlist} />}
-              {tab === 'dividend' && <DividendView toast={toast} viewMode={viewMode} confirm={confirm} mpData={mpData} />}
-              {tab === 'futures' && <FuturesView toast={toast} viewMode={viewMode} confirm={confirm} mpData={mpData} />}
+              {tab === 'dividend' && <DividendView toast={toast} viewMode={viewMode} confirm={confirm} mpData={mpData} onRefreshMp={refreshMp} />}
+              {tab === 'futures' && <FuturesView toast={toast} viewMode={viewMode} confirm={confirm} mpData={mpData} onRefreshMp={refreshMp} />}
               {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} killSwitch={killSwitch} toggleKill={toggleKill} toast={toast} confirm={confirm} onFeatureFlagChange={(key: string, enabled: boolean) => setFeatureFlags(prev => ({ ...prev, [key]: enabled }))} />}
             </div>
           )}

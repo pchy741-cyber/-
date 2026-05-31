@@ -9,6 +9,7 @@ interface DividendViewProps {
   viewMode: 'paper' | 'live';
   confirm: (opts: { title: string; description?: string; confirmLabel?: string; confirmVariant?: 'danger' | 'primary' }) => Promise<boolean>;
   mpData?: any;
+  onRefreshMp?: () => void;
 }
 
 const BUDGET_PRESETS = [
@@ -18,7 +19,7 @@ const BUDGET_PRESETS = [
   { krw: 1000000, label: '100만' },
 ];
 
-const FX_RATE = 1350;
+const DEFAULT_FX = 1350;
 const TAX_RATE = 0.154;
 
 const DIVIDEND_ETFS = [
@@ -30,13 +31,14 @@ const DIVIDEND_ETFS = [
   { code: 'O', name: '리얼티인컴 리츠', yield: 5.5, growth: 3, price: 58, freq: '월', risk: '낮음' },
 ];
 
-export default function DividendView({ toast, viewMode, confirm, mpData }: DividendViewProps) {
+export default function DividendView({ toast, viewMode, confirm, mpData, onRefreshMp }: DividendViewProps) {
   const [loading, setLoading] = useState(true);
   const [investing, setInvesting] = useState(false);
   const [holdings, setHoldings] = useState<any[]>([]);
   const [customAmount, setCustomAmount] = useState('');
 
   const div = mpData?.dividend;
+  const FX_RATE = mpData?.fx ?? DEFAULT_FX;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -67,6 +69,7 @@ export default function DividendView({ toast, viewMode, confirm, mpData }: Divid
       if (res.ok) {
         toast(`배당 투자 완료: $${res.totalInvested} (${res.etfs.length} ETF)`, 'ok');
         load();
+        onRefreshMp?.();
       } else {
         toast(res.error || '투자 실패', 'err');
       }
