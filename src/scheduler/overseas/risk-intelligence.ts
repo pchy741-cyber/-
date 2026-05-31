@@ -256,15 +256,23 @@ export function calcDynamicTpSl(params: {
   aiScore?: number;
   vixRegime: RegimeAdjustment;
   isMomentum?: boolean;
+  tunerOverrides?: Record<string, number>; // Trade Tuner 자동 최적화 값
 }): DynamicTpSlResult {
-  const { sector, adx, rsi, aiConfidence = 0.5, aiAction = 'HOLD', aiScore, vixRegime, isMomentum = false } = params;
+  const { sector, adx, rsi, aiConfidence = 0.5, aiAction = 'HOLD', aiScore, vixRegime, isMomentum = false, tunerOverrides } = params;
 
   const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
   const isMediumBeta = SECTOR_CLASS.MEDIUM_BETA.includes(sector);
   const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
 
-  const baseTp = isHighBeta ? 25.0 : isMediumBeta ? 20.0 : isDefense ? 18.0 : 20.0;
-  const baseSl = isHighBeta ? 8.0 : isMediumBeta ? 5.0 : isDefense ? 4.0 : 5.0;
+  // Trade Tuner 오버라이드가 있으면 base 값 조정
+  const tunerTpAdj = tunerOverrides?.tp_base_pct;
+  const tunerSlAdj = tunerOverrides?.sl_base_pct;
+  const baseTp = tunerTpAdj != null
+    ? tunerTpAdj
+    : isHighBeta ? 25.0 : isMediumBeta ? 20.0 : isDefense ? 18.0 : 20.0;
+  const baseSl = tunerSlAdj != null
+    ? tunerSlAdj
+    : isHighBeta ? 8.0 : isMediumBeta ? 5.0 : isDefense ? 4.0 : 5.0;
 
   const momentumExt = adx >= 35 && rsi >= 45 && rsi <= 68 ? 10.0
                     : adx >= 28 && rsi >= 45 && rsi <= 70 ? 5.0

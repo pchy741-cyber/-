@@ -462,6 +462,17 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 🔧 Trade Tuner — 평일 19:00 (자기학습 후 SL/TP/Hold 파라미터 자동 최적화)
+  cron.schedule(
+    '0 19 * * 1-5',
+    () => {
+      import('./overseas/trade-tuner.js')
+        .then(m => m.runTradeTuner(true))
+        .catch(e => logger.error(`Trade Tuner 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 🔥 10:00 — 핫 업종 자동 워치리스트 편입 (장 초반 30분 흐름 반영)
   cron.schedule(
     '0 10 * * 1-5',

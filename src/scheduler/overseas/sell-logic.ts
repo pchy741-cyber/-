@@ -18,6 +18,7 @@ import {
   getPartialTpStages, getPartialTpStageNum, setPartialTpStageNum,
 } from './risk-intelligence.js';
 import { executeOverseasOrder } from './executor.js';
+import { getTunerOverrides } from './trade-tuner.js';
 
 
 // ── 타입 ──
@@ -67,7 +68,9 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
   const sellOrders: string[] = [];
   // 동적 파라미터 1회 캐싱 (루프 밖)
   const dynP = getOverseasDynamic(ctx.portfolioValue ?? 5000);
-  const maxHoldDays = dynP.maxHoldDays;
+  // Trade Tuner 오버라이드 로드 (1회)
+  const tunerOverrides: Record<string, number> = await getTunerOverrides(paperMode).catch(() => ({}));
+  const maxHoldDays = tunerOverrides.max_hold_days ?? dynP.maxHoldDays;
 
   for (const [code, holding] of holdings) {
     if (pendingOrderStocks.has(code)) {
@@ -108,6 +111,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       const dyn = calcDynamicTpSl({
         sector, adx: tech.adx ?? 20, rsi: tech.rsi ?? 50,
         aiConfidence: ai?.confidence, aiAction: ai?.action, vixRegime, isMomentum: tech.isMomentum,
+        tunerOverrides,
       });
       hardTpPct = dyn.tpPct;
       stopLossPct = -dyn.slPct; // slPct는 절댓값(양수) → 비교용 음수로 변환
@@ -117,7 +121,8 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     }
     const dynamicTrailDrop = calcDynamicTrailDrop({ sector, atrPct: atrPctValue, maxPnlPct, adx: tech.adx, rsi: tech.rsi });
     const effectiveTrailDropPct = dynamicTrailDrop - vixRegime.trailTighten;
-    const trailActivatePct = isHighBeta ? 10.0 : isMediumBeta ? 8.0 : 5.0;
+    const baseTrailActivate = isHighBeta ? 10.0 : isMediumBeta ? 8.0 : 5.0;
+    const trailActivatePct = tunerOverrides.trail_activate_pct ?? baseTrailActivate;
     const minAiSellConf = isHighBeta ? 0.82 : 0.78;
     const minHoldForSell = isHighBeta ? 3 : 2;
     const holdingDays = (Date.now() - new Date(holding.boughtAt).getTime()) / (1000 * 60 * 60 * 24);

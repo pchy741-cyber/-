@@ -340,3 +340,31 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
     return c.json({ error: e.message }, 500);
   }
 });
+
+// ── Trade Tuner 결과 조회 + 수동 실행 ──
+
+dividendRoutes.get('/trade-tuner/result', async (c) => {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT value FROM overseas_state WHERE key = 'trade_tuner_result'`
+    );
+    const result = rows.length > 0 ? JSON.parse(rows[0].value) : null;
+    const { rows: ov } = await getPool().query(
+      `SELECT value FROM overseas_state WHERE key = 'trade_tuner_overrides'`
+    );
+    const overrides = ov.length > 0 ? JSON.parse(ov[0].value) : {};
+    return c.json({ result, overrides });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+dividendRoutes.post('/trade-tuner/run', async (c) => {
+  try {
+    const { runTradeTuner } = await import('../../scheduler/overseas/trade-tuner.js');
+    const result = await runTradeTuner(true);
+    return c.json({ ok: true, result });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
