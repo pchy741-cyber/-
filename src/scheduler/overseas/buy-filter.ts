@@ -39,9 +39,28 @@ export interface BuyFilterContext {
   recoveryMode: boolean;
   isPaper?: boolean;
   sessionBrief?: SessionStrategyBrief | null;
+  earningsDrift?: { code: string; direction: 'BULL' | 'BEAR'; gapPct: number; strength: number }[];  // 개선#7
 }
 
 export type BuyTarget = TechResult & { ai?: AIDecision; _effectiveConf?: number };
+
+// ── 개선#3: 미국 시간대별 진입 가중치 ──
+function getUSTimeBonus(): number {
+  const kst = new Date();
+  const kstH = kst.getUTCHours() + 9; // UTC → KST
+  const kstM = kst.getUTCMinutes();
+  const kstTotal = ((kstH % 24) * 60) + kstM;
+  // 서머타임 기준: 미국 개장 22:30 KST, 마감 05:00 KST
+  // 22:30~23:00 (개장 30분): 변동성 최대 → -15점 (거짓 신호 다수)
+  if (kstTotal >= 22 * 60 + 30 && kstTotal < 23 * 60) return -15;
+  // 23:00~00:00 (개장 1시간 후): 트렌드 확정 구간 → +10점
+  if (kstTotal >= 23 * 60 && kstTotal < 24 * 60) return 10;
+  // 00:00~01:00 (미국 10~11am): 최적 진입 → +8점
+  if (kstTotal >= 0 && kstTotal < 60) return 8;
+  // 04:00~05:00 (미국 3~4pm 마감 전): 방향 확정 → +5점
+  if (kstTotal >= 4 * 60 && kstTotal < 5 * 60) return 5;
+  return 0;
+}
 
 /**
  * 12단계 필터 체인 → 매수 대상 종목 리스트 (정렬 완료)
@@ -229,6 +248,13 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         return false;
       }
 
+      // 개선#3: 개장 30분 차단 (BigMover/모멘텀 예외 — 급등은 개장 직후가 중요)
+      const usTimeScore = getUSTimeBonus();
+      if (usTimeScore <= -15 && !t.isBigMover && !t.isMomentum) {
+        logger.info(`  ⏰ 개장30분 차단: ${t.code} (변동성 구간 → 거짓 신호 위험)`, { component: 'OVERSEAS' });
+        return false;
+      }
+
       // ── 기술적 진입 경로 (강→약 순서) ──
       // 1. BigMover (급등주) — 승률 피드백 강화: 우량주만 + 과열 제외
       //    "급등주는 추천 안합니다, 우량주로 하시는게 안전" → BigMover도 MA20 위 + RSI<70
@@ -245,6 +271,10 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       if (isOversold && t.aboveMA60 && t.score >= 20) return true;
       // 7. 고승률 종목 완화 진입 (5거래 이상, 승률 55%+)
       if (hasGoodWinRate && t.signal !== 'SELL' && t.score >= 15 && t.rsi >= 35 && t.rsi <= 72 && t.aboveMA20) return true;
+
+      // 개선#7: 어닝 드리프트 진입 — 실적 서프라이즈 후 갭업 +5%+ 고거래량 = 추격 매수
+      const drift = ctx.earningsDrift?.find(d => d.code === t.code && d.direction === 'BULL' && d.strength >= 0.5);
+      if (drift && t.score >= 15 && t.rsi <= 75 && !hasBadWinRate) return true;
 
       // Live 추가: 시장 상황이 좋을 때만 일반 BUY 완화
       if (!isPaper && (mq === 'GREAT' || mq === 'OK')) {
@@ -266,25 +296,36 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
     })
     // 11. AI 정보 + 보정 confidence 병합
     .map(t => ({ ...t, ai: aiMap.get(t.code), _effectiveConf: effectiveConfMap.get(t.code) }))
-    // 12. 종합 점수 정렬 (기술점수 중심 — Gemini 매수 차단 모드)
-    // score(40%) + 승률(25%) + 모멘텀(15%) + 세션전략(10%) + ADX(10%)
+    // 12. 종합 점수 정렬 (기술점수 중심 + VWAP + 시간대 + ATR진입가 + 어닝드리프트)
     .sort((a, b) => {
       const wrA = overseasWinRates.get(a.code);
       const wrB = overseasWinRates.get(b.code);
       const wrScoreA = wrA && wrA.sampleCount >= 5 ? (wrA.winRate >= 0.65 ? 25 : wrA.winRate >= 0.55 ? 15 : wrA.winRate <= 0.30 ? -20 : wrA.winRate <= 0.40 ? -10 : 0) : 0;
       const wrScoreB = wrB && wrB.sampleCount >= 5 ? (wrB.winRate >= 0.65 ? 25 : wrB.winRate >= 0.55 ? 15 : wrB.winRate <= 0.30 ? -20 : wrB.winRate <= 0.40 ? -10 : 0) : 0;
-      const losspenA = recentLossSet.has(a.code) ? -25 : 0;
-      const losspenB = recentLossSet.has(b.code) ? -25 : 0;
-      // 세션전략 우선종목/집중섹터 부스트
+      // 개선#6: 바운스 리엔트리 — 최근 손실 종목이 3%+ 반등 시 페널티 감소
+      const losspenA = recentLossSet.has(a.code) ? (a.price.changePct >= 3 && a.score >= 25 ? -8 : -25) : 0;
+      const losspenB = recentLossSet.has(b.code) ? (b.price.changePct >= 3 && b.score >= 25 ? -8 : -25) : 0;
       const priorityA = prioritySet.has(a.code) ? 12 : 0;
       const priorityB = prioritySet.has(b.code) ? 12 : 0;
       const sectorBoostA = focusSectorSet.has((a.sector ?? '').toUpperCase()) ? 8 : 0;
       const sectorBoostB = focusSectorSet.has((b.sector ?? '').toUpperCase()) ? 8 : 0;
-      // 기술 점수 + 모멘텀 + ADX 트렌드 강도 중심 랭킹
       const techA = a.score * 0.6 + (a.isMomentum ? 20 : 0) + (a.isBigMover ? 15 : 0) + Math.min(a.adx * 0.3, 12);
       const techB = b.score * 0.6 + (b.isMomentum ? 20 : 0) + (b.isBigMover ? 15 : 0) + Math.min(b.adx * 0.3, 12);
-      const sa = techA + wrScoreA + losspenA + priorityA + sectorBoostA;
-      const sb = techB + wrScoreB + losspenB + priorityB + sectorBoostB;
+      // 개선#4: VWAP 가중치 — VWAP 아래 매수 = 기관 평균보다 저렴
+      const vwapA = a.vwapPosition === 'BELOW' ? 12 : a.vwapPosition === 'AT' ? 5 : -8;
+      const vwapB = b.vwapPosition === 'BELOW' ? 12 : b.vwapPosition === 'AT' ? 5 : -8;
+      // 개선#2: ATR 진입가 품질 — 일중저점 근처(dayRangePct < 30%) = 좋은 진입
+      const atrEntryA = a.dayRangePct < 30 ? 10 : a.dayRangePct < 50 ? 5 : a.dayRangePct > 80 ? -5 : 0;
+      const atrEntryB = b.dayRangePct < 30 ? 10 : b.dayRangePct < 50 ? 5 : b.dayRangePct > 80 ? -5 : 0;
+      // 개선#3: 시간대 가중치 (전체 동일하므로 정렬엔 영향 없지만 절대값 기여)
+      const timeBonus = getUSTimeBonus();
+      // 개선#7: 어닝 드리프트 보너스
+      const driftA = ctx.earningsDrift?.find(d => d.code === a.code && d.direction === 'BULL');
+      const driftB = ctx.earningsDrift?.find(d => d.code === b.code && d.direction === 'BULL');
+      const driftScoreA = driftA ? Math.min(20, driftA.strength * 25) : 0;
+      const driftScoreB = driftB ? Math.min(20, driftB.strength * 25) : 0;
+      const sa = techA + wrScoreA + losspenA + priorityA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA;
+      const sb = techB + wrScoreB + losspenB + priorityB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB;
       return sb - sa;
     });
 }

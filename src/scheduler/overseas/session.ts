@@ -16,6 +16,7 @@ export interface SessionCache {
     aboveMA20: boolean; aboveMA60: boolean;
     bollingerSqueeze: boolean; bollingerBreakout: 'UP' | 'DOWN' | 'NONE';
     atrPct: number;
+    vwapPosition?: 'ABOVE' | 'BELOW' | 'AT';
   }>;
 }
 

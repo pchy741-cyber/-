@@ -19,6 +19,7 @@ export interface SizingParams {
   sessionSizingMult?: number;
   winRate?: number;        // 종목별 과거 승률 (0~1)
   winRateSamples?: number; // 승률 샘플 수
+  marketBreadth?: number;  // 개선#10: 시장 breadth (0~1)
 }
 
 export interface SizingResult {
@@ -69,10 +70,17 @@ export function calcPositionSize(params: SizingParams): SizingResult {
     ? wr >= 0.70 ? 0.30 : wr >= 0.60 ? 0.20 : wr >= 0.55 ? 0.10 : 0
     : 0;
 
+  // 개선#10: 시장 breadth 기반 레짐 사이징 배율
+  const breadth = params.marketBreadth ?? 0.5;
+  const regimeMult = breadth >= 0.65 ? 1.15   // BULL: +15% 공격적
+    : breadth >= 0.45 ? 1.0                   // NEUTRAL: 기본
+    : breadth >= 0.35 ? 0.85                  // WEAK: -15%
+    : 0.70;                                   // BEAR: -30% 방어적
+
   const sizingMult = calcSizingMultiplier({
     confidence: effectiveConf,
     score: target.score,
-    evMult: evMultiplier * (sessionSizingMult ?? 1.0),
+    evMult: evMultiplier * (sessionSizingMult ?? 1.0) * regimeMult,
     vixSizingMult: vixRegime.sizingMult,
     cooldownPenalty: gradualCooldown.sizingPenalty,
     isPaper,

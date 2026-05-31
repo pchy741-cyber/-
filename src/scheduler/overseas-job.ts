@@ -218,10 +218,12 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         let signal: string, score: number, rsi: number, adx: number, trendStrength: string, aboveMA20: boolean, aboveMA60: boolean;
         let bollingerSqueeze: boolean, bollingerBreakout: 'UP' | 'DOWN' | 'NONE';
         let atrPct: number;
+        let vwapPosition: 'ABOVE' | 'BELOW' | 'AT' = 'AT';
 
         if (cached) {
           ({ signal, score, rsi, adx, trendStrength, aboveMA20, aboveMA60, bollingerSqueeze, bollingerBreakout } = cached);
-          atrPct = cached.atrPct ?? 2.0; // 캐시에 없으면 기본값 2%
+          atrPct = cached.atrPct ?? 2.0;
+          vwapPosition = cached.vwapPosition ?? 'AT';
         } else {
           if (!chart || chart.length < 30) continue;
           const candles: OHLCV[] = chart.map(c => ({ date: c.date, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
@@ -234,19 +236,20 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           bollingerSqueeze = tech.bollingerSqueeze;
           bollingerBreakout = tech.bollingerBreakout;
           atrPct = tech.atrPct;
+          vwapPosition = tech.vwapPosition;
         }
 
         if (isNewSession) {
           const cacheTarget = getSessionCache(region);
           if (cacheTarget) {
-            cacheTarget.techCache.set(stock.code, { score, rsi, adx, signal, trendStrength, isMomentum, dayRangePct, aboveMA20, aboveMA60, bollingerSqueeze, bollingerBreakout, atrPct });
+            cacheTarget.techCache.set(stock.code, { score, rsi, adx, signal, trendStrength, isMomentum, dayRangePct, aboveMA20, aboveMA60, bollingerSqueeze, bollingerBreakout, atrPct, vwapPosition });
           }
         }
 
         techResults.push({
           code: stock.code, name: stock.name, exchange: stock.exchange, sector: stock.sector,
           price, signal, score, rsi, adx, trendStrength, dayRangePct, isMomentum, isBigMover, aboveMA20, aboveMA60,
-          bollingerSqueeze, bollingerBreakout, atrPct,
+          bollingerSqueeze, bollingerBreakout, atrPct, vwapPosition,
         });
         logger.info(
           `  ${stock.code}: $${price.currentPrice} ${price.changePct >= 0 ? '+' : ''}${price.changePct}% | ${signal}(${score}) RSI=${rsi.toFixed(0)} ADX=${adx.toFixed(0)} 일중${dayRangePct.toFixed(0)}%${isBigMover ? ' 🔥빅무버' : isMomentum ? ' 🚀모멘텀' : ''}${bollingerSqueeze ? (bollingerBreakout === 'UP' ? ' 💥BB↑' : bollingerBreakout === 'DOWN' ? ' 💥BB↓' : ' 🔧BBsq') : ''}${cached ? ' [캐시]' : ''}`,
@@ -268,9 +271,9 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         return sb - sa;
       });
       const topCodes = sorted.slice(0, topCount).map(t => t.code);
-      const techCacheMap = new Map<string, { score: number; rsi: number; adx: number; signal: string; trendStrength: string; isMomentum: boolean; dayRangePct: number; aboveMA20: boolean; aboveMA60: boolean; bollingerSqueeze: boolean; bollingerBreakout: 'UP' | 'DOWN' | 'NONE'; atrPct: number }>();
+      const techCacheMap = new Map<string, { score: number; rsi: number; adx: number; signal: string; trendStrength: string; isMomentum: boolean; dayRangePct: number; aboveMA20: boolean; aboveMA60: boolean; bollingerSqueeze: boolean; bollingerBreakout: 'UP' | 'DOWN' | 'NONE'; atrPct: number; vwapPosition?: 'ABOVE' | 'BELOW' | 'AT' }>();
       for (const t of techResults) {
-        techCacheMap.set(t.code, { score: t.score, rsi: t.rsi, adx: t.adx, signal: t.signal, trendStrength: t.trendStrength, isMomentum: t.isMomentum, dayRangePct: t.dayRangePct, aboveMA20: t.aboveMA20, aboveMA60: t.aboveMA60, bollingerSqueeze: t.bollingerSqueeze, bollingerBreakout: t.bollingerBreakout, atrPct: t.atrPct });
+        techCacheMap.set(t.code, { score: t.score, rsi: t.rsi, adx: t.adx, signal: t.signal, trendStrength: t.trendStrength, isMomentum: t.isMomentum, dayRangePct: t.dayRangePct, aboveMA20: t.aboveMA20, aboveMA60: t.aboveMA60, bollingerSqueeze: t.bollingerSqueeze, bollingerBreakout: t.bollingerBreakout, atrPct: t.atrPct, vwapPosition: t.vwapPosition });
       }
       const newCache: SessionCache = { topCodes, sessionDate: sessionId, techCache: techCacheMap };
       setSessionCache(region, newCache);
@@ -667,6 +670,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         sectorValues, portfolioValue, aiMap, freshBreadth,
         uncertaintyMap, overseasWinRates, isUSExtended, recoveryMode, isPaper: isPaper(),
         sessionBrief: brief,
+        earningsDrift,
       });
 
       // ── 터틀 돌파 종목: 일반 필터 통과 여부와 무관하게 후보 추가 ──
@@ -769,6 +773,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           cash, isPaper: isPaper(), evMultiplier: evMult, mtfBonus,
           sessionSizingMult: brief?.sizingMultiplier,
           winRate: wrData?.winRate, winRateSamples: wrData?.sampleCount,
+          marketBreadth: freshBreadth,
         });
         // 최소 포지션: position-sizing.ts에서 $80(paper)/$150(live) 바닥 적용
         const minPositionSize = 20;
