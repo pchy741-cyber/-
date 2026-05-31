@@ -14,6 +14,7 @@ import type { TechResult, Holding } from './sell-logic.js';
 import type { OverseasWinRate } from './analytics.js';
 
 import type { AIDecision, GradualCooldown } from './types.js';
+import type { SessionStrategyBrief } from './session-strategy.js';
 
 export interface BuyFilterContext {
   techResults: TechResult[];
@@ -37,9 +38,10 @@ export interface BuyFilterContext {
   isUSExtended: boolean;
   recoveryMode: boolean;
   isPaper?: boolean;
+  sessionBrief?: SessionStrategyBrief | null;
 }
 
-export type BuyTarget = TechResult & { ai?: AIDecision };
+export type BuyTarget = TechResult & { ai?: AIDecision; _effectiveConf?: number };
 
 /**
  * 12단계 필터 체인 → 매수 대상 종목 리스트 (정렬 완료)
@@ -52,11 +54,29 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
     upcomingEarnings, sentinelBlockedCodes, mktSignal,
     sectorValues, portfolioValue, aiMap, freshBreadth,
     uncertaintyMap, overseasWinRates, isUSExtended, recoveryMode, isPaper,
+    sessionBrief,
   } = ctx;
+
+  // 세션전략에서 avoidStocks/priorityStocks/confidenceFloor 추출
+  const avoidSet = new Set(sessionBrief?.avoidStocks ?? []);
+  const prioritySet = new Set(sessionBrief?.priorityStocks ?? []);
+  const focusSectorSet = new Set((sessionBrief?.focusSectors ?? []).map(s => s.toUpperCase()));
+  const sessionConfFloor = sessionBrief?.confidenceFloor ?? 0;
+
+  // uncertainty 보정 confidence 저장 (필터 통과 후 랭킹에서도 사용)
+  const effectiveConfMap = new Map<string, number>();
 
   return techResults
     // 1. 이미 보유 / 미체결 제외
     .filter(t => !updatedHoldings.has(t.code) && !pendingOrderStocks.has(t.code))
+    // 1-b. 세션전략 회피 종목 차단
+    .filter(t => {
+      if (avoidSet.has(t.code)) {
+        logger.info(`🚫 세션전략 회피 차단: ${t.code} (avoidStocks)`, { component: 'OVERSEAS' });
+        return false;
+      }
+      return true;
+    })
     // 2. 손절 쿨다운
     .filter(t => {
       if (lossCooldownSet.has(t.code)) { logger.info(`🚫 손절 쿨다운 차단: ${t.code} (24h 재매수 금지)`, { component: 'OVERSEAS' }); return false; }
@@ -171,45 +191,66 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       const uncPenalty = uncertaintyMap.get(t.code);
       const effectiveConf = uncPenalty ? applyUncertaintyPenalty(ai?.confidence ?? 0, uncPenalty) : (ai?.confidence ?? 0);
       if (uncPenalty && uncPenalty.penalty > 0) logger.info(`  📉 불확실성 보정: ${t.code} conf ${((ai?.confidence ?? 0) * 100).toFixed(0)}% → ${(effectiveConf * 100).toFixed(0)}% (${uncPenalty.reasons.join(',')})`, { component: 'OVERSEAS' });
-      if (ai?.action === 'BUY' && effectiveConf >= minConf) return true;
-      if (ai?.action === 'BUY' && (t.signal === 'STRONG_BUY' || t.isMomentum) && effectiveConf >= minConfMomentum) return true;
-      // Paper: AI 없이도 기술적 신호로 매수 허용 (Gemini 한도 초과 대비)
-      if (!ai && isPaper) {
-        const isBuySignal = (t.signal === 'STRONG_BUY' && t.score >= 20) || (t.signal === 'BUY' && t.score >= 30);
-        const rsiOk = t.rsi >= 35 && t.rsi <= 75;
-        if (isBuySignal && rsiOk) return true;
-        // Paper Momentum Cascade: mq 무관하게 기술 신호로 진입
-        if (t.isBigMover && t.score >= 15 && t.rsi >= 35 && t.rsi <= 75) return true;
-        if (t.isMomentum && t.score >= 20 && t.aboveMA20 && t.rsi >= 40 && t.rsi <= 72) return true;
-        if (t.bollingerBreakout === 'UP' && t.score >= 20 && t.aboveMA20 && t.rsi >= 40 && t.rsi <= 75) return true;
-        logger.info(`  ⛔ Paper AI-free 기술 차단: ${t.code} sig=${t.signal} score=${t.score} RSI=${t.rsi.toFixed(0)}`, { component: 'OVERSEAS' });
+      // 세션전략 confidence 바닥값 적용 (Gemini 세션 리뷰가 정한 최소 임계)
+      const confFloorAdj = sessionConfFloor > 0 ? Math.max(minConf, sessionConfFloor) : minConf;
+      const confFloorMom = sessionConfFloor > 0 ? Math.max(minConfMomentum, sessionConfFloor - 0.03) : minConfMomentum;
+      // effectiveConf를 Map에 저장 → 랭킹에서 재사용
+      effectiveConfMap.set(t.code, effectiveConf);
+
+      // ════════════════════════════════════════════════════════
+      // 🚫 Gemini AI 매수 차단 모드 (2025-05 한달 운영 결과)
+      // Gemini 무료 매수 판단은 승률 저조 → 매수는 기술적 필터만 사용
+      // AI는 매도/분석/인사이트 용도로만 활용
+      // 유료 AI(Claude/GPT) 충전 시 아래 블록을 해제하면 됨
+      // ════════════════════════════════════════════════════════
+      // if (ai?.action === 'BUY' && effectiveConf >= confFloorAdj) return true;
+      // if (ai?.action === 'BUY' && (t.signal === 'STRONG_BUY' || t.isMomentum) && effectiveConf >= confFloorMom) return true;
+
+      // VIX CRISIS → 기술적 진입도 차단 (위기 시 매수 자제)
+      if (vixRegime.regime === 'CRISIS' && !vixRegime.allowNewBuy) {
+        logger.info(`  ⛔ VIX CRISIS 매수 차단: ${t.code}`, { component: 'OVERSEAS' });
         return false;
       }
-      if (!ai && !recoveryMode && (mq === 'GREAT' || mq === 'OK')) {
-        // ── Momentum Cascade: AI 없어도 강한 모멘텀은 즉시 진입 ──
-        if (t.isBigMover && t.score >= 20 && t.rsi >= 40 && t.rsi <= 72) return true;
-        if (t.isMomentum && t.score >= 25 && t.aboveMA20 && t.rsi >= 45 && t.rsi <= 68) return true;
-        // STRONG_BUY: score≥30 + ADX≥20 + RSI 45-70 (AI 없이도 강한 기술 시그널)
-        if (t.signal === 'STRONG_BUY' && t.score >= 30 && t.adx >= 20 && t.rsi >= 45 && t.rsi <= 70) return true;
-        // BUY: 소액 계좌는 score≥30, 일반은 score≥40
-        const buyScoreMin = portfolioValue < 500 ? 30 : 40;
-        const buyAdxMin = portfolioValue < 500 ? 20 : 25;
-        if (t.signal === 'BUY' && t.score >= buyScoreMin && t.adx >= buyAdxMin && t.rsi >= 45 && t.rsi <= 70) return true;
-        const isBollingerMomentum = t.bollingerBreakout === 'UP' && t.isMomentum && t.score >= 30 && t.aboveMA20 && t.rsi >= 45 && t.rsi <= 72;
-        if (isBollingerMomentum) return true;
+
+      // ════════════════════════════════════════════════════════
+      // 기술적 진입 — AI 없이 기술 지표 + 승률 피드백으로 매수
+      // Paper/Live 통합 (승률 기반 가중치 적용)
+      // ════════════════════════════════════════════════════════
+      const wr = overseasWinRates.get(t.code);
+      const hasGoodWinRate = wr && wr.sampleCount >= 5 && wr.winRate >= 0.55;
+      const hasBadWinRate = wr && wr.sampleCount >= 5 && wr.winRate <= 0.35;
+      // 승률 나쁜 종목은 기술적으로도 차단 (Memory Agent와 이중 보호)
+      if (hasBadWinRate && !t.isBigMover) {
+        logger.info(`  ⛔ 승률 피드백 차단: ${t.code} 승률 ${(wr!.winRate * 100).toFixed(0)}% (${wr!.sampleCount}건)`, { component: 'OVERSEAS' });
         return false;
       }
-      // Live 소액 계좌($500 미만): AI 없어도 기술적 신호로 매수 허용 (Gemini 한도 초과 대비)
-      if (!ai && !isPaper && portfolioValue < 500) {
-        const isBuySignal = (t.signal === 'STRONG_BUY' && t.score >= 25) || (t.signal === 'BUY' && t.score >= 35);
-        const rsiOk = t.rsi >= 40 && t.rsi <= 70;
-        if (isBuySignal && rsiOk) return true;
-        if (t.isBigMover && t.score >= 20 && t.rsi >= 40 && t.rsi <= 70) return true;
-        if (t.isMomentum && t.score >= 25 && t.aboveMA20 && t.rsi >= 45 && t.rsi <= 68) return true;
-        logger.info(`  ⛔ Live 소액 AI-free 차단: ${t.code} sig=${t.signal} score=${t.score} RSI=${t.rsi.toFixed(0)} mq=${mq}`, { component: 'OVERSEAS' });
+      // 손실회복 모드에서는 고승률 종목만 진입
+      if (recoveryMode && !hasGoodWinRate && !t.isBigMover) {
         return false;
       }
-      if (!ai) logger.info(`  ⛔ ${recoveryMode ? '손실회복모드' : mq} AI 없음 차단: ${t.code}`, { component: 'OVERSEAS' });
+
+      // ── 기술적 진입 경로 (강→약 순서) ──
+      // 1. BigMover (급등주: 일중 변동률 상위)
+      if (t.isBigMover && t.score >= 15 && t.rsi >= 35 && t.rsi <= 75) return true;
+      // 2. Momentum (모멘텀 확인: 볼륨+추세)
+      if (t.isMomentum && t.score >= 20 && t.aboveMA20 && t.rsi >= 40 && t.rsi <= 72) return true;
+      // 3. STRONG_BUY 기술 시그널 (복합 지표 합산 최상위)
+      if (t.signal === 'STRONG_BUY' && t.score >= 25 && t.adx >= 18 && t.rsi >= 40 && t.rsi <= 72) return true;
+      // 4. Bollinger 돌파 + 모멘텀
+      if (t.bollingerBreakout === 'UP' && t.score >= 20 && t.aboveMA20 && t.rsi >= 40 && t.rsi <= 75) return true;
+      // 5. BUY 시그널 + 트렌드 확인 (ADX 확인, RSI 적정 범위)
+      if (t.signal === 'BUY' && t.score >= 30 && t.adx >= 20 && t.rsi >= 45 && t.rsi <= 68 && t.aboveMA20) return true;
+      // 6. 과매도 반등 (RSI ≤ 35 + 트렌드 약하지 않음 — 이미 isOversold로 체크됨)
+      if (isOversold && t.aboveMA60 && t.score >= 20) return true;
+      // 7. 고승률 종목 완화 진입 (5거래 이상, 승률 55%+)
+      if (hasGoodWinRate && t.signal !== 'SELL' && t.score >= 15 && t.rsi >= 35 && t.rsi <= 72 && t.aboveMA20) return true;
+
+      // Live 추가: 시장 상황이 좋을 때만 일반 BUY 완화
+      if (!isPaper && (mq === 'GREAT' || mq === 'OK')) {
+        if (t.signal === 'BUY' && t.score >= 25 && t.adx >= 18 && t.rsi >= 42 && t.rsi <= 70 && t.aboveMA20 && !hasBadWinRate) return true;
+      }
+
+      logger.info(`  ⛔ 기술적 필터 미달: ${t.code} sig=${t.signal} score=${t.score} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)} ${wr ? `승률${(wr.winRate * 100).toFixed(0)}%` : ''}`, { component: 'OVERSEAS' });
       return false;
     })
     // 10. 장외시간 필터 (Paper: 시뮬레이션이므로 무조건 통과, 소액 계좌: STRONG_BUY도 허용)
@@ -222,18 +263,27 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       if (!isPaper && portfolioValue < 500 && t.signal === 'STRONG_BUY' && t.score >= 40) return true;
       return false;
     })
-    // 11. AI 정보 병합
-    .map(t => ({ ...t, ai: aiMap.get(t.code) }))
-    // 12. 종합 점수 정렬 (AI확신도×55% + 기술점수×30% + 모멘텀 + 승률)
+    // 11. AI 정보 + 보정 confidence 병합
+    .map(t => ({ ...t, ai: aiMap.get(t.code), _effectiveConf: effectiveConfMap.get(t.code) }))
+    // 12. 종합 점수 정렬 (기술점수 중심 — Gemini 매수 차단 모드)
+    // score(40%) + 승률(25%) + 모멘텀(15%) + 세션전략(10%) + ADX(10%)
     .sort((a, b) => {
       const wrA = overseasWinRates.get(a.code);
       const wrB = overseasWinRates.get(b.code);
-      const wrBoostA = wrA && wrA.sampleCount >= 5 ? (wrA.winRate >= 0.65 ? 15 : wrA.winRate >= 0.55 ? 8 : wrA.winRate <= 0.30 ? -15 : wrA.winRate <= 0.40 ? -8 : 0) : 0;
-      const wrBoostB = wrB && wrB.sampleCount >= 5 ? (wrB.winRate >= 0.65 ? 15 : wrB.winRate >= 0.55 ? 8 : wrB.winRate <= 0.30 ? -15 : wrB.winRate <= 0.40 ? -8 : 0) : 0;
+      const wrScoreA = wrA && wrA.sampleCount >= 5 ? (wrA.winRate >= 0.65 ? 25 : wrA.winRate >= 0.55 ? 15 : wrA.winRate <= 0.30 ? -20 : wrA.winRate <= 0.40 ? -10 : 0) : 0;
+      const wrScoreB = wrB && wrB.sampleCount >= 5 ? (wrB.winRate >= 0.65 ? 25 : wrB.winRate >= 0.55 ? 15 : wrB.winRate <= 0.30 ? -20 : wrB.winRate <= 0.40 ? -10 : 0) : 0;
       const losspenA = recentLossSet.has(a.code) ? -25 : 0;
       const losspenB = recentLossSet.has(b.code) ? -25 : 0;
-      const sa = (a.ai?.confidence ?? 0) * 100 + a.score * 0.3 + (a.isMomentum ? 20 : 0) + wrBoostA + losspenA;
-      const sb = (b.ai?.confidence ?? 0) * 100 + b.score * 0.3 + (b.isMomentum ? 20 : 0) + wrBoostB + losspenB;
+      // 세션전략 우선종목/집중섹터 부스트
+      const priorityA = prioritySet.has(a.code) ? 12 : 0;
+      const priorityB = prioritySet.has(b.code) ? 12 : 0;
+      const sectorBoostA = focusSectorSet.has((a.sector ?? '').toUpperCase()) ? 8 : 0;
+      const sectorBoostB = focusSectorSet.has((b.sector ?? '').toUpperCase()) ? 8 : 0;
+      // 기술 점수 + 모멘텀 + ADX 트렌드 강도 중심 랭킹
+      const techA = a.score * 0.6 + (a.isMomentum ? 20 : 0) + (a.isBigMover ? 15 : 0) + Math.min(a.adx * 0.3, 12);
+      const techB = b.score * 0.6 + (b.isMomentum ? 20 : 0) + (b.isBigMover ? 15 : 0) + Math.min(b.adx * 0.3, 12);
+      const sa = techA + wrScoreA + losspenA + priorityA + sectorBoostA;
+      const sb = techB + wrScoreB + losspenB + priorityB + sectorBoostB;
       return sb - sa;
     });
 }

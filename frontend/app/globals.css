@@ -2,6 +2,15 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --theme-bg: #06080f;
+  --theme-side: #0a0e1a;
+  --theme-side-95: #0a0e1af2;
+  --theme-side-60: #0a0e1a99;
+  --theme-border: rgba(255,255,255,0.04);
+  --theme-gradient: linear-gradient(to bottom right, #06080f, #0a0e1a, #06080f);
+}
+
 @layer base {
   *,
   *::before,

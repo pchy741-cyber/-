@@ -13,6 +13,7 @@ import { getPool, withTransaction } from '../../db/client.js';
 import { fetchExchangeRate } from '../../automation/macro-data.js';
 import { cacheSet } from '../../cache/memory.js';
 import { logger } from '../../utils/logger.js';
+import { modePrefix } from './utils.js';
 
 const PAPER_OVERSEAS_SEED = 10000; // Paper 해외 시드 $10K (기존 주문 이력 기준 복원)
 
@@ -277,11 +278,6 @@ export async function updateTradeState(p: {
   cacheSet(`overseas:balance:${mode}`, null as any, 0);
 }
 
-/** paper/live 분리 state key 접두사 */
-function modePrefix(isPaper?: boolean): string {
-  return (isPaper ?? getCtxIsPaper()) ? 'p_' : 'l_';
-}
-
 // ── 트레일링 스탑용 최고가 추적 (paper/live 분리) ──
 export async function getMaxPrice(code: string, isPaper?: boolean): Promise<number> {
   try {
@@ -345,5 +341,31 @@ export async function clearDynamicTpSl(code: string, isPaper?: boolean): Promise
   await getPool().query(
     "DELETE FROM overseas_state WHERE key = $1",
     [`${modePrefix(isPaper)}dynamic_tpsl_${code}`],
+  ).catch(() => {});
+}
+
+/**
+ * 포지션 청산 시 관련 overseas_state 키 일괄 삭제
+ * 모든 매도 경로(sell-logic, concentration-cap, rotation, turtle, kis-sync, vision-scalp)에서
+ * 이 함수 하나만 호출하면 dead 키 잔류를 방지할 수 있다.
+ */
+export async function cleanupPositionState(code: string, isPaper?: boolean): Promise<void> {
+  const pfx = modePrefix(isPaper);
+  const keys = [
+    `${pfx}maxprice_${code}`,
+    `${pfx}partial_tp_stage_${code}`,
+    `${pfx}dynamic_tpsl_${code}`,
+    `${pfx}scale_in_${code}`,
+    `${pfx}turtle_trail_${code}`,
+    `sync_sell_pending_${code}`,
+  ];
+  await getPool().query(
+    `DELETE FROM overseas_state WHERE key = ANY($1)`,
+    [keys],
+  ).catch(() => {});
+  // concentration_code가 이 종목을 가리키면 제거
+  await getPool().query(
+    `DELETE FROM overseas_state WHERE key = $1 AND value = $2`,
+    [`${pfx}concentration_code`, code],
   ).catch(() => {});
 }

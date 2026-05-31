@@ -14,12 +14,13 @@ interface KrAiScorePanelProps {
   guard: (key: string, fn: () => Promise<void>) => () => Promise<void>;
   getStockName: (code: string) => string;
   toast: any;
+  confirm: (opts: {title: string, description?: string, confirmLabel?: string, confirmVariant?: 'danger'|'primary'|'ghost'}) => Promise<boolean>;
   viewMode?: 'paper' | 'live';
 }
 
 export default function KrAiScorePanel({
   dash, showAllKRScores, setShowAllKRScores,
-  buyingStock, setBuyingStock, busyAction, guard, getStockName, toast,
+  buyingStock, setBuyingStock, busyAction, guard, getStockName, toast, confirm,
   viewMode = 'live',
 }: KrAiScorePanelProps) {
   return (
@@ -58,8 +59,8 @@ export default function KrAiScorePanel({
                     <span className={`text-[10px] font-medium w-14 text-right ${textColor}`}>{signalLabel}</span>
                     {curP > 0 && (
                       <button disabled={isBuying || !!busyAction} onClick={guard(`buy-${sc.stock_code}`, async () => {
-                        const modeLabel = viewMode === 'paper' ? '[연습] ' : '⚠️ [실전] ';
-                        if (!confirm(`${modeLabel}${stockLabel} 수동 매수\nAI ${score}점 — 가용자본 기준 자동 사이징`)) return;
+                        const modeLabel = viewMode === 'paper' ? '[연습] ' : '[실전] ';
+                        if (!await confirm({ title: `${modeLabel}${stockLabel} 수동 매수`, description: `AI ${score}점 — 가용자본 기준 자동 사이징`, confirmLabel: '매수', confirmVariant: 'primary' })) return;
                         setBuyingStock(sc.stock_code);
                         try {
                           await api('/manual-buy', { method: 'POST', body: JSON.stringify({ stock_code: sc.stock_code, ai_score: score, is_paper: viewMode === 'paper', reasoning: `수동진입 AI${score}점 conf${conf}% 목표${fmtWon(targetP)}` }) });

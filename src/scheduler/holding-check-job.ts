@@ -420,11 +420,6 @@ async function checkEscapeTargets(chains: any[]): Promise<void> {
         reasoning: `탈출: 현재가 ${curPrice.toLocaleString()}원이 목표가 ${target.toLocaleString()}원 돌파 (+${pnlPct.toFixed(2)}%)`,
         confidence: 1.0,
       });
-      // 탈출 후 목표가 초기화
-      await getPool().query(
-        'UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1',
-        [chain.id],
-      );
     } else {
       const gap = (((target - curPrice) / curPrice) * 100).toFixed(2);
       logger.info(
@@ -439,6 +434,17 @@ async function checkEscapeTargets(chains: any[]): Promise<void> {
   const strategy = await getActiveStrategy();
   const mode = ((strategy?.mode ?? 'SWING') as StrategyMode);
   await tradeExecutor.processDecisions(decisions, mode);
+
+  // 매도 실행 성공 후 escape_target_price 초기화 (실행 전에 하면 실패 시 탈출 기회 상실)
+  for (const chain of escapeChains) {
+    const d = decisions.find(dd => dd.stock_code === chain.stock_code);
+    if (d) {
+      await getPool().query(
+        'UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1',
+        [chain.id],
+      ).catch(() => {});
+    }
+  }
 
   const summary = decisions.map((d) => `${d.stock_code} x${d.quantity} — ${d.reasoning}`).join('\n');
   await sendTelegramMessage(`🚪 탈출 매도 실행:\n${summary}`);

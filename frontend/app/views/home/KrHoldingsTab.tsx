@@ -12,13 +12,15 @@ interface KrHoldingsTabProps {
   getStockName: (code: string) => string;
   onRefresh: () => void;
   viewMode?: 'paper' | 'live';
+  toast: (msg: string, type: 'ok' | 'err' | 'info') => void;
+  confirm: (opts: { title: string; description?: string; confirmLabel?: string; confirmVariant?: 'danger' | 'primary' | 'ghost' }) => Promise<boolean>;
 }
 
 const STRATEGY_TP_SL: Record<string, [number, number]> = {
   SWING: [5.5, -3.0], DEFENSE: [5.0, -2.0], SCALPING: [0.8, -0.8], DIVIDEND: [3.0, -1.5], SNIPER: [8.0, -4.0],
 };
 
-export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStockName, onRefresh, viewMode = 'live' }: KrHoldingsTabProps) {
+export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStockName, onRefresh, viewMode = 'live', toast, confirm }: KrHoldingsTabProps) {
   if (chains.length === 0) {
     return (
       <div className="p-8 text-center space-y-3">
@@ -78,9 +80,9 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
             <div className="flex justify-end mt-3">
               <button disabled={!!busyAction} onClick={guard(`sell-park-${ch.stock_code}`, async () => {
                 const lwP = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
-                if (!confirm(`${lwP}${displayName} ${qty}주 전량 매도하시겠습니까?\n(파킹 해제)`)) return;
-                try { const r = await api(`/sell-stock/${ch.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 }); alert(r.message || '매도 완료'); onRefresh(); }
-                catch (err: any) { alert('매도 실패: ' + err.message); }
+                if (!await confirm({ title: `${lwP}${displayName} ${qty}주 전량 매도하시겠습니까?`, description: '파킹 해제', confirmLabel: '매도', confirmVariant: 'danger' })) return;
+                try { const r = await api(`/sell-stock/${ch.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 }); toast(r.message || '매도 완료', 'ok'); onRefresh(); }
+                catch (err: any) { toast('매도 실패: ' + err.message, 'err'); }
               })} className="text-xs px-3 py-1.5 rounded-lg bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 transition-colors border border-white/[0.05] disabled:opacity-40">
                 파킹 해제
               </button>
@@ -151,27 +153,27 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
                 {ch.escape_target_price ? (
                   <button disabled={!!busyAction} onClick={guard(`esc-del-${ch.id}`, async () => {
                     try { await api(`/escape/${ch.id}`, { method: 'DELETE' }); onRefresh(); }
-                    catch (err: any) { alert('취소 실패: ' + err.message); }
+                    catch (err: any) { toast('취소 실패: ' + err.message, 'err'); }
                   })} className="text-xs px-2.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 font-bold border border-amber-500/30 animate-pulse whitespace-nowrap disabled:opacity-40">
                     탈출대기
                   </button>
                 ) : (
                   <button disabled={!!busyAction} onClick={guard(`esc-${ch.id}`, async () => {
-                    if (!confirm(`${displayName}\n현재가 기준 +0.5% 돌파 시 자동 전량 매도합니다.`)) return;
+                    if (!await confirm({ title: displayName, description: '현재가 기준 +0.5% 돌파 시 자동 전량 매도합니다.' })) return;
                     try {
                       const r = await api(`/escape/${ch.id}`, { method: 'POST' });
-                      alert(`탈출가 설정: ${fmtWon(r.escape_target_price)}`);
+                      toast(`탈출가 설정: ${fmtWon(r.escape_target_price)}`, 'ok');
                       onRefresh();
-                    } catch (err: any) { alert('탈출 설정 실패: ' + err.message); }
+                    } catch (err: any) { toast('탈출 설정 실패: ' + err.message, 'err'); }
                   })} className="text-xs px-2.5 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 font-bold border border-amber-500/20 whitespace-nowrap disabled:opacity-40">
                     탈출
                   </button>
                 )}
                 <button disabled={!!busyAction} onClick={guard(`sell-${ch.stock_code}`, async () => {
                   const liveW = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
-                  if (!confirm(`${liveW}${displayName} ${qty}주 전량 시장가 매도하시겠습니까?`)) return;
-                  try { const r = await api(`/sell-stock/${ch.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 }); alert(r.message || '매도 완료'); onRefresh(); }
-                  catch (err: any) { alert('매도 실패: ' + err.message); }
+                  if (!await confirm({ title: `${liveW}${displayName} ${qty}주 전량 시장가 매도하시겠습니까?`, confirmLabel: '매도', confirmVariant: 'danger' })) return;
+                  try { const r = await api(`/sell-stock/${ch.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 }); toast(r.message || '매도 완료', 'ok'); onRefresh(); }
+                  catch (err: any) { toast('매도 실패: ' + err.message, 'err'); }
                 })} className="text-xs px-2.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 font-medium border border-white/[0.04] whitespace-nowrap disabled:opacity-40">
                   전량 매도
                 </button>

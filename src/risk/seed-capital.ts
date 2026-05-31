@@ -60,6 +60,7 @@ export async function getSeedCapitalKr(): Promise<number> {
 }
 
 export async function getSeedCapitalOverseas(): Promise<number> {
+  // Paper 해외: 기준자본은 고정 상수 (설계 의도 — seed는 투입원금 기준, 변동 없음)
   if (getCtxIsPaper()) return DEFAULT_SEED_OVERSEAS;
 
   if (cachedOverseasLive !== null) return cachedOverseasLive;

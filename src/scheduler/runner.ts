@@ -127,6 +127,17 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 📊 크로스마켓 로테이션 — 하루 3회 (08:00 장전, 12:00 장중, 22:00 미국장 전)
+  cron.schedule(
+    '0 8,12,22 * * 1-5',
+    () => {
+      import('../automation/cross-market-rotation.js')
+        .then(m => m.runRotationCheck())
+        .catch(e => logger.error(`로테이션 체크 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 08:00 — 장세 자동 감지 → SWING/DEFENSE 자동 전환
   cron.schedule(
     '0 8 * * 1-5',
@@ -177,6 +188,8 @@ export function startScheduler(): void {
   // ═══════════════════════════════════════════
 
   // Track B 중복 실행 방지 mutex (paper → live 순차 실행)
+  // 단일 mutex로 충분 — runDomesticDual이 paper→live 순차 실행하므로 모드별 분리 불필요
+  // 이 mutex는 "이전 사이클(paper+live)이 끝나기 전에 다음 사이클 시작 방지" 역할
   let _trackBRunning = false;
   const runTrackBSafe = () => {
     if (_trackBRunning) {
@@ -429,6 +442,17 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 💰 배당 자동화 — 평일 16:00 (장 마감 후, 배당금 동기화 + 배석일 경보)
+  cron.schedule(
+    '0 16 * * 1-5',
+    () => {
+      import('./dividend-job.js')
+        .then(m => m.runDividendJob())
+        .catch(e => logger.error(`배당 자동화 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 🧠 자기학습 — 평일 18:30 (Track A 장후 분석 완료 후, 당일 매매 패턴 즉시 반영)
   cron.schedule(
     '30 18 * * 1-5',
@@ -447,16 +471,7 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 10:05 — Track A 장중 재분석 (개장 1시간 실거래 반영 — 07:30 아침 점수 갱신)
-  // 코스피 급등/급락 시 아침 점수 4.5시간 공백 → 10:05 재분석으로 즉시 반영
-  cron.schedule(
-    '5 10 * * 1-5',
-    () => {
-      logger.info('⏰ Track A (장중 오전 재분석 10:05)', { component: 'SCHEDULER' });
-      withTimeout('Track A 오전재분석', () => runTrackAJob(), 300_000);
-    },
-    { timezone: MARKET.TIMEZONE },
-  );
+  // 10:05 Track A 제거 — 10:00과 5분 간격 중복. KIS API 부하 + Gemini 호출 절약
 
   // ═══════════════════════════════════════════
   //  🌏 해외 주식 (미국/일본/대만)
@@ -573,6 +588,26 @@ export function startScheduler(): void {
     '*/30 7-9 * * 2-6',
     () => {
       runOverseasDual().catch((e) => logger.error(`포스트마켓 감시 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 📈 선물 자동매매 — 미국 장중 10분 간격 (+5분 오프셋, overseas-job 충돌 방지)
+  cron.schedule(
+    '5,15,25,35,45,55 22-23 * * 1-5',
+    () => {
+      import('./futures-job.js')
+        .then(m => m.runFuturesJob())
+        .catch(e => logger.error(`선물 자동매매 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+  cron.schedule(
+    '5,15,25,35,45,55 0-6 * * 2-6',
+    () => {
+      import('./futures-job.js')
+        .then(m => m.runFuturesJob())
+        .catch(e => logger.error(`선물 자동매매 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

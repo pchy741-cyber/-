@@ -595,7 +595,10 @@ overseasRoutes.post('/overseas/sell', async (c) => {
       await withTransaction(async (client) => {
         if (qty >= totalQty) {
           await client.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = true', [stock_code, exchange]);
-          await client.query('DELETE FROM overseas_state WHERE key = $1', [`${isPaper ? 'p_' : 'l_'}maxprice_${stock_code}`]);
+          await client.query('DELETE FROM overseas_state WHERE key = ANY($1)', [[
+            `p_maxprice_${stock_code}`, `p_partial_tp_stage_${stock_code}`, `p_dynamic_tpsl_${stock_code}`,
+            `p_scale_in_${stock_code}`, `p_turtle_trail_${stock_code}`, `sync_sell_pending_${stock_code}`,
+          ]]);
         } else {
           await client.query('UPDATE overseas_holdings SET quantity = quantity - $3 WHERE stock_code = $1 AND exchange = $2 AND is_paper = true', [stock_code, exchange, qty]);
         }
@@ -622,8 +625,12 @@ overseasRoutes.post('/overseas/sell', async (c) => {
     const { withTransaction } = await import('../../db/client.js');
     await withTransaction(async (client) => {
       if (qty >= totalQty) {
+        const pfx = isPaper ? 'p_' : 'l_';
         await client.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [stock_code, exchange, isPaper]);
-        await client.query('DELETE FROM overseas_state WHERE key = $1', [`${isPaper ? 'p_' : 'l_'}maxprice_${stock_code}`]);
+        await client.query('DELETE FROM overseas_state WHERE key = ANY($1)', [[
+          `${pfx}maxprice_${stock_code}`, `${pfx}partial_tp_stage_${stock_code}`, `${pfx}dynamic_tpsl_${stock_code}`,
+          `${pfx}scale_in_${stock_code}`, `${pfx}turtle_trail_${stock_code}`, `sync_sell_pending_${stock_code}`,
+        ]]);
       } else {
         await client.query('UPDATE overseas_holdings SET quantity = quantity - $3 WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [stock_code, exchange, qty, isPaper]);
       }

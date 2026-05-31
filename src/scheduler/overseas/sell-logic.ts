@@ -10,14 +10,15 @@ import {
   GLOBAL_WATCHLIST,
 } from './watchlist.js';
 import {
-  updateTradeState, getMaxPrice, setMaxPrice, clearMaxPrice,
-  clearDynamicTpSl,
+  updateTradeState, getMaxPrice, setMaxPrice,
+  cleanupPositionState,
 } from './state.js';
 import {
   calcDynamicTrailDrop, calcDynamicTpSl, type RegimeAdjustment,
-  getPartialTpStages, getPartialTpStageNum, setPartialTpStageNum, clearPartialTpStageNum,
+  getPartialTpStages, getPartialTpStageNum, setPartialTpStageNum,
 } from './risk-intelligence.js';
 import { executeOverseasOrder } from './executor.js';
+
 
 // ── 타입 ──
 
@@ -109,7 +110,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
         aiConfidence: ai?.confidence, aiAction: ai?.action, vixRegime, isMomentum: tech.isMomentum,
       });
       hardTpPct = dyn.tpPct;
-      stopLossPct = -dyn.slPct;
+      stopLossPct = -dyn.slPct; // slPct는 절댓값(양수) → 비교용 음수로 변환
       // 레거시 보유종목 1회성 DB 저장 (다음 사이클부터 recalc 불필요)
       const { updateHoldingTpSl } = await import('./state.js');
       updateHoldingTpSl(code, hardTpPct, stopLossPct, paperMode).catch(() => {});
@@ -135,14 +136,16 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       sellReason = `기술 익절(과매수): RSI=${tech.rsi.toFixed(0)} +${pnlPct.toFixed(1)}%`;
     } else if (!ai && tech.score <= -30 && (tech.signal === 'SELL' || tech.signal === 'STRONG_SELL') && holdingDays >= minHoldForSell) {
       sellReason = `기술적 매도(AI없음): score=${tech.score} RSI=${tech.rsi.toFixed(0)}`;
-    } else if (holdingDays > maxHoldDays && pnlPct < 0) {
-      sellReason = `보유기한 초과(${holdingDays.toFixed(0)}일/손실): ${pnlPct.toFixed(1)}% → 청산`;
+    } else if (holdingDays > maxHoldDays && pnlPct < 3.0) {
+      sellReason = pnlPct < 0
+        ? `보유기한 초과(${holdingDays.toFixed(0)}일/손실): ${pnlPct.toFixed(1)}% → 청산`
+        : `보유기한 초과(${holdingDays.toFixed(0)}일/미미한 수익): ${pnlPct.toFixed(1)}% → 청산`;
     } else if (isWeakStock(tech, holdingDays, pnlPct)) {
       sellReason = `약세종목 정리: ADX=${tech.adx.toFixed(0)} 횡보${holdingDays.toFixed(0)}일 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
     }
 
     // ── 3단계 부분 익절 (승자 라이딩 시 스킵) ──
-    if (!sellReason && holding.qty >= 2 && !isWinnerRiding(tech, holdingDays)) {
+    if (!sellReason && holding.qty >= 3 && !isWinnerRiding(tech, holdingDays)) {
       const tpStages = getPartialTpStages(sector);
       const currentStage = await getPartialTpStageNum(code);
       const nextStage = tpStages.find(st => st.stage > currentStage && pnlPct >= st.triggerPct);
@@ -174,11 +177,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       cash += proceeds;
       await updateTradeState({ code, exchange: tech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: paperMode });
       if (exec.finalQty <= 0) {
-        await clearMaxPrice(code, paperMode); await clearPartialTpStageNum(code, paperMode); await clearDynamicTpSl(code, paperMode);
-        // Scale-In 예약 삭제 (paper/live prefix)
-        const { getPool } = await import('../../db/client.js');
-        const pfx = paperMode ? 'p_' : 'l_';
-        await getPool().query(`DELETE FROM overseas_state WHERE key = $1`, [`${pfx}scale_in_${code}`]).catch(() => {});
+        await cleanupPositionState(code, paperMode);
       }
       sellOrders.push(`매도 ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (${sellReason}) [수수료 $${(exec.filledPrice * exec.filledQty * OVERSEAS_FEE_PCT).toFixed(2)}]`);
     }
@@ -190,10 +189,10 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
 /** 승자 라이딩 — 강한 종목은 익절 지연 (트레일링만 적용) */
 function isWinnerRiding(tech: TechResult, holdingDays: number): boolean {
   // ADX 40+ 초강세 → 보유기간 무관 즉시 라이딩 허용
-  if (tech.adx >= 40 && tech.rsi >= 45 && tech.rsi <= 68) return true;
+  if (tech.adx >= 40 && tech.rsi >= 45 && tech.rsi <= 75) return true;
   if (holdingDays < 1) return false;
-  // ADX 30+ & RSI 50~70 유지 → 강한 추세 지속
-  if (tech.adx >= 30 && tech.rsi >= 50 && tech.rsi <= 70) return true;
+  // ADX 30+ & RSI 50~73 유지 → 강한 추세 지속
+  if (tech.adx >= 30 && tech.rsi >= 50 && tech.rsi <= 73) return true;
   // MA20 상방 + 모멘텀 → 상승 지속
   if (tech.aboveMA20 && tech.aboveMA60 && tech.isMomentum) return true;
   return false;
@@ -202,7 +201,7 @@ function isWinnerRiding(tech: TechResult, holdingDays: number): boolean {
 /** 약세 종목 조기 정리 — ADX < 15 + 5일 이상 횡보 + 수익 미미 */
 function isWeakStock(tech: TechResult, holdingDays: number, pnlPct: number): boolean {
   if (holdingDays < 5) return false;
-  if (pnlPct > 3 || pnlPct < -3) return false; // 수익/손실 큰 건 기존 로직에서 처리
+  if (pnlPct > 5 || pnlPct < -5) return false; // ±5% 범위로 확장
   // ADX < 15 = 추세 없음 + 횡보 + 미미한 수익/손실
-  return tech.adx < 15 && Math.abs(tech.price.changePct) < 1.0;
+  return tech.adx < 15 && Math.abs(tech.price.changePct) < 1.5;
 }

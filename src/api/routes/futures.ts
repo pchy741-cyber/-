@@ -289,6 +289,32 @@ futuresRoutes.post('/futures/close/:id', async (c) => {
   }
 });
 
+// ── 선물 원클릭 입금 (Money Printer) ──
+futuresRoutes.post('/futures/auto-deposit', async (c) => {
+  try {
+    const { amount_krw } = await c.req.json<{ amount_krw: number }>();
+    if (!amount_krw || amount_krw < 10000) return c.json({ error: '최소 1만원' }, 400);
+    if (amount_krw > 500000) return c.json({ error: '최대 50만원' }, 400);
+
+    // feature flag 자동 ON
+    await getPool().query(
+      `UPDATE feature_flags SET enabled = TRUE WHERE key = 'overseas_futures' AND enabled = FALSE`
+    );
+
+    // 예산 누적 (기존 + 추가)
+    const { rows } = await getPool().query(
+      `UPDATE futures_budget SET allocated_krw = allocated_krw + $1, approved_at = COALESCE(approved_at, NOW()), updated_at = NOW() WHERE id = 1 RETURNING allocated_krw`,
+      [amount_krw]
+    );
+    const total = Number(rows[0]?.allocated_krw ?? amount_krw);
+
+    logger.info(`[MoneyPrinter] 선물 입금: +₩${amount_krw.toLocaleString()} → 총 ₩${total.toLocaleString()}`, { component: COMP });
+    return c.json({ ok: true, addedKrw: amount_krw, totalAllocatedKrw: total });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
 // ── 기능 플래그 토글 (공통) ──
 futuresRoutes.post('/feature-flags/:key/toggle', async (c) => {
   try {

@@ -15,6 +15,7 @@ interface PortfolioSectionProps {
   totalValue: number;
   totalInvested: number;
   domesticInvested: number;
+  domesticEval: number;
   domesticCash: number;
   overseasInvestedUsd: number;
   overseasInvestedKrw: number;
@@ -28,16 +29,17 @@ interface PortfolioSectionProps {
   overseasCashPctExact: number;
   strategy: any;
   getStockName: (code: string) => string;
+  mpData?: any;
 }
 
 export default function PortfolioSection(props: PortfolioSectionProps) {
   const {
     allocConfig, setAllocConfig, onGoToSettings, dash, chains, usHoldings, usW,
-    totalValue, totalInvested, domesticInvested, domesticCash,
+    totalValue, totalInvested, domesticInvested, domesticEval, domesticCash,
     overseasInvestedUsd, overseasInvestedKrw, overseasMarketKrw,
     overseasCashUsd, overseasCashKrw, overseasPnlUsd, fxRate,
     investedPctExact, cashPctExact, overseasCashPctExact,
-    strategy, getStockName,
+    strategy, getStockName, mpData,
   } = props;
 
   const [showPortfolio, setShowPortfolio] = useState(false);
@@ -65,7 +67,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
       <div className="px-4 py-3 flex items-center justify-between">
         <button onClick={() => setShowPortfolio(v => !v)} className="flex items-center gap-2 flex-1 text-left hover:opacity-80 transition-opacity">
           <span className="text-sm font-semibold text-slate-200">포트폴리오 비중</span>
-          {totalInvested > 0 && <span className="text-[10px] bg-blue-500/10 text-blue-400 px-2 py-0.5 rounded-md">투자 {((totalInvested / (p?.totalValue || 1)) * 100).toFixed(0)}%</span>}
+          {totalValue > 0 && domesticCash < totalValue && <span className="text-[10px] bg-blue-500/10 text-blue-400 px-2 py-0.5 rounded-md">투자 {(((totalValue - domesticCash) / totalValue) * 100).toFixed(0)}%</span>}
           {krUnderperform && <span className="text-[10px] text-amber-400 animate-pulse ml-1">⚡ 국내 부진</span>}
         </button>
         <div className="flex items-center gap-3">
@@ -76,12 +78,12 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
       {/* 항상 보이는 영역 */}
       <div className="px-4 pb-4 space-y-3">
         {/* 자금 흐름 시각화 — 3칸 */}
-        <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
+        <div className="grid grid-cols-3 lg:grid-cols-5 gap-1.5 sm:gap-2">
           <div className={`rounded-xl px-2 sm:px-3 py-2.5 ${krActualPct >= 0 ? 'bg-blue-950/40 border border-blue-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>
             <div className="text-[9px] text-slate-500 mb-0.5">🇰🇷 한국주식</div>
-            <div className="text-sm font-bold tabular-nums text-blue-300 truncate">{fmtWon(domesticInvested)}</div>
+            <div className="text-sm font-bold tabular-nums text-blue-300 truncate">{fmtWon(domesticEval)}</div>
             <div className="flex items-center justify-between mt-1">
-              <span className="text-[9px] text-slate-600">{totalValue > 0 ? ((domesticInvested / totalValue) * 100).toFixed(0) : 0}%</span>
+              <span className="text-[9px] text-slate-600">{totalValue > 0 ? ((domesticEval / totalValue) * 100).toFixed(0) : 0}%</span>
               <span className={`text-[9px] font-medium ${krActualPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{krActualPct > 0 ? '+' : ''}{krActualPct.toFixed(1)}%</span>
             </div>
             <div className="text-[8px] text-slate-600 mt-0.5">{chains.length}종목</div>
@@ -103,6 +105,40 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
             </div>
             <div className="text-[8px] text-slate-600 mt-0.5">{usHoldings.length}종목</div>
           </div>
+          {/* 배당 ETF */}
+          {(() => {
+            const d = mpData?.dividend;
+            const divValueKrw = d ? Math.round((d.currentValueUsd ?? 0) * (mpData?.fx ?? 1350)) : 0;
+            const divReturnPct = d?.returnPct ?? 0;
+            return (
+              <div className={`rounded-xl px-2 sm:px-3 py-2.5 ${divReturnPct >= 0 ? 'bg-emerald-950/30 border border-emerald-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>
+                <div className="text-[9px] text-slate-500 mb-0.5">📊 배당ETF</div>
+                <div className="text-sm font-bold tabular-nums text-emerald-300 truncate">{d?.investedKrw ? fmtWon(divValueKrw || d.investedKrw) : '—'}</div>
+                <div className="flex items-center justify-between mt-1">
+                  <span className="text-[9px] text-slate-600">{d?.investedKrw ? `₩${Math.round(d.investedKrw / 10000)}만` : '미투자'}</span>
+                  {d?.investedKrw ? <span className={`text-[9px] font-medium ${divReturnPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{divReturnPct > 0 ? '+' : ''}{divReturnPct.toFixed(1)}%</span> : null}
+                </div>
+                <div className="text-[8px] text-slate-600 mt-0.5">{d?.holdings?.length ?? 0}종목 · 월${(d?.monthlyDivUsd ?? 0).toFixed(0)}</div>
+              </div>
+            );
+          })()}
+          {/* 선물 */}
+          {(() => {
+            const f = mpData?.futures;
+            const fValueKrw = f?.currentValueKrw ?? (f?.investedKrw ?? 0);
+            const fReturnPct = f?.investedKrw > 0 ? ((fValueKrw - f.investedKrw) / f.investedKrw) * 100 : 0;
+            return (
+              <div className={`rounded-xl px-2 sm:px-3 py-2.5 ${fReturnPct >= 0 ? 'bg-violet-950/30 border border-violet-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>
+                <div className="text-[9px] text-slate-500 mb-0.5">⚡ 선물</div>
+                <div className="text-sm font-bold tabular-nums text-violet-300 truncate">{f?.investedKrw ? fmtWon(fValueKrw) : '—'}</div>
+                <div className="flex items-center justify-between mt-1">
+                  <span className="text-[9px] text-slate-600">{f?.investedKrw ? `₩${Math.round(f.investedKrw / 10000)}만` : '미투자'}</span>
+                  {f?.investedKrw ? <span className={`text-[9px] font-medium ${fReturnPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{fReturnPct > 0 ? '+' : ''}{fReturnPct.toFixed(1)}%</span> : null}
+                </div>
+                <div className="text-[8px] text-slate-600 mt-0.5">{f?.trades ?? 0}건 · 승률{f?.winRate ?? 0}%</div>
+              </div>
+            );
+          })()}
         </div>
         {/* 시장 레짐 인디케이터 */}
         {strategy && (

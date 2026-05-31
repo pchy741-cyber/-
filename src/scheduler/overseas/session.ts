@@ -25,8 +25,9 @@ type Mode = 'paper' | 'live';
 export const overseasState = {
   isRunning: false,
   _shuttingDown: false,
-  usSessionCache: null as SessionCache | null,
-  asiaSessionCache: null as SessionCache | null,
+  // ── 세션캐시: paper/live 완전 격리 (techCache 크로스오염 방지) ──
+  usSessionCache: new Map<Mode, SessionCache | null>([['paper', null], ['live', null]]),
+  asiaSessionCache: new Map<Mode, SessionCache | null>([['paper', null], ['live', null]]),
   // ── paper/live 격리 필드 ──
   extendedAlertSentAt: new Map<Mode, Map<string, number>>([['paper', new Map()], ['live', new Map()]]),
   lastUSAiCallAt: 0,
@@ -39,6 +40,20 @@ export const overseasState = {
 /** 현재 모드 키 반환 */
 export function modeKey(isPaper?: boolean): Mode {
   return (isPaper ?? getCtxIsPaper()) ? 'paper' : 'live';
+}
+
+/** 세션캐시 접근자 — paper/live 격리 보장 */
+export function getSessionCache(region: 'US' | 'ASIA', mode?: Mode): SessionCache | null {
+  const m = mode ?? modeKey();
+  return region === 'US'
+    ? overseasState.usSessionCache.get(m) ?? null
+    : overseasState.asiaSessionCache.get(m) ?? null;
+}
+
+export function setSessionCache(region: 'US' | 'ASIA', cache: SessionCache | null, mode?: Mode): void {
+  const m = mode ?? modeKey();
+  if (region === 'US') overseasState.usSessionCache.set(m, cache);
+  else overseasState.asiaSessionCache.set(m, cache);
 }
 
 export const setShuttingDown = (v: boolean) => { overseasState._shuttingDown = v; };
@@ -90,7 +105,8 @@ export async function setSessionStartValue(value: number, isPaper?: boolean): Pr
 
 /** 미국장 세션 캐시 초기화 (runner.ts 23:20 호출) */
 export function resetUSSessionCache(): void {
-  overseasState.usSessionCache = null;
+  overseasState.usSessionCache.set('paper', null);
+  overseasState.usSessionCache.set('live', null);
   overseasState.sessionStartPortfolioValue.set('paper', null);
   overseasState.sessionStartPortfolioValue.set('live', null);
   overseasState.lastUSAiCallAt = 0;
@@ -108,7 +124,8 @@ export function resetUSSessionCache(): void {
 
 /** 아시아장 세션 캐시 초기화 (runner.ts 08:50 호출) */
 export function resetAsiaSessionCache(): void {
-  overseasState.asiaSessionCache = null;
+  overseasState.asiaSessionCache.set('paper', null);
+  overseasState.asiaSessionCache.set('live', null);
 }
 
 // ── 미국 서머타임(DST) 자동 감지 ──

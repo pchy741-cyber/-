@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
+import { ConfirmModal } from '@/components/ui';
 
 // ── 숫자 롤업 애니메이션 ──
 export function useCountUp(target: number, duration = 500) {
@@ -42,4 +43,52 @@ export function useToast() {
     </div>
   );
   return { show, ToastContainer };
+}
+
+// ── Promise 기반 확인 다이얼로그 ──
+export interface ConfirmOptions {
+  title: string;
+  description?: string;
+  confirmLabel?: string;
+  confirmVariant?: 'danger' | 'primary' | 'ghost';
+}
+
+export function useConfirm() {
+  const [state, setState] = useState<{ open: boolean } & ConfirmOptions>({
+    open: false, title: '',
+  });
+  const resolveRef = useRef<((v: boolean) => void) | null>(null);
+
+  const confirm = useCallback((opts: ConfirmOptions): Promise<boolean> => {
+    return new Promise(resolve => {
+      resolveRef.current = resolve;
+      setState({ open: true, ...opts });
+    });
+  }, []);
+
+  const handleClose = useCallback(() => {
+    setState(s => ({ ...s, open: false }));
+    resolveRef.current?.(false);
+    resolveRef.current = null;
+  }, []);
+
+  const handleConfirm = useCallback(() => {
+    setState(s => ({ ...s, open: false }));
+    resolveRef.current?.(true);
+    resolveRef.current = null;
+  }, []);
+
+  const ConfirmDialog = () => (
+    <ConfirmModal
+      open={state.open}
+      onClose={handleClose}
+      onConfirm={handleConfirm}
+      title={state.title}
+      description={state.description}
+      confirmLabel={state.confirmLabel ?? '확인'}
+      confirmVariant={state.confirmVariant ?? 'danger'}
+    />
+  );
+
+  return { confirm, ConfirmDialog };
 }

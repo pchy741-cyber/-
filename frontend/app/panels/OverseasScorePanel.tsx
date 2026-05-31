@@ -93,7 +93,7 @@ export default function OverseasScorePanel({ usDash, toast }: { usDash?: any; to
                   </div>
                   {/* 인라인 매수 확인 패널 */}
                   {isConfirming && (
-                    <div className="mt-2 mx-1 px-3 py-2.5 bg-slate-800/80 border border-blue-500/20 rounded-xl">
+                    <div className="mt-2 mx-1 px-3 py-2.5 bg-white/[0.03] ring-1 ring-blue-500/20 rounded-xl">
                       <div className="text-[10px] text-slate-400 mb-2">{sc.name ?? sc.code} 수동 매수</div>
                       <div className="flex items-center gap-2">
                         <input
@@ -101,13 +101,13 @@ export default function OverseasScorePanel({ usDash, toast }: { usDash?: any; to
                           value={manualAmount || ''}
                           placeholder="자동"
                           onChange={e => setManualAmount(Math.max(0, Math.min(5000, Number(e.target.value) || 0)))}
-                          className="w-20 bg-slate-900/60 border border-slate-700/50 rounded-lg px-2 py-1.5 text-xs text-slate-300 text-center"
+                          className="w-20 bg-white/[0.05] ring-1 ring-white/[0.08] rounded-xl px-2 py-1.5 text-xs text-slate-300 text-center focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
                           min={0} max={5000} step={50}
                         />
                         <span className="text-[10px] text-slate-600">USD</span>
                         <span className="text-[9px] text-slate-600 flex-1">{manualAmount > 0 ? '' : '잔고 기반 최적 금액'}</span>
                         <button onClick={() => manualBuy(sc)}
-                          className="px-3 py-1.5 bg-emerald-600/80 hover:bg-emerald-600 text-white text-[10px] font-medium rounded-lg shrink-0">
+                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-medium rounded-lg shrink-0 transition-all shadow-sm">
                           확인
                         </button>
                       </div>

@@ -2,6 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import React, { useState, useEffect, useCallback } from 'react';
+import { Button } from '@/components/ui';
 
 const Dashboard = dynamic(() => import('./dashboard'), { ssr: false });
 
@@ -86,13 +87,15 @@ function LoginScreen({ onUnlock }: { onUnlock: () => void }) {
             autoFocus
             className="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-4 py-3 text-center text-base placeholder:text-slate-600 focus:border-blue-500 focus:outline-none"
           />
-          <button
+          <Button
             type="submit"
+            variant="primary"
+            size="lg"
+            className="w-full py-3 flex items-center justify-center gap-2"
             disabled={loading || !password}
-            className="w-full py-3 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2"
           >
             {loading ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : '잠금 해제'}
-          </button>
+          </Button>
         </form>
 
         {error && <p className="text-xs text-rose-400 mt-3">{error}</p>}

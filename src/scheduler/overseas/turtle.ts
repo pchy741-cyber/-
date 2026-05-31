@@ -1,15 +1,14 @@
 /**
  * 터틀 트레이딩 (Donchian Channel) — 해외주식 전용
- *
- * System 1 (단기): 20일 고점 돌파 진입 / 10일 저점 이탈 탈출
- * - 원리: 추세 초입 포착 → 고정 TP 없이 트렌드 끝까지 보유
- * - SL: 2×ATR (진입 시 확정, 이후 10일 저점으로 자동 추적)
- * - 포지션 크기: 포트폴리오 1% 리스크 / (2×ATR)
- *
- * 현재 눌림매매와 차별점:
- *  눌림매매: 이미 오른 종목에서 눌림 기다림 → 고점 진입 위험
- *  터틀:     신고점 돌파 확인 후 진입 → 추세 초입 진입
+ * System 1: 20일 고점 돌파 진입 / 10일 저점 이탈 탈출
  */
+import { OVERSEAS_FEE_PCT } from '../../config/constants.js';
+import { getPool } from '../../db/client.js';
+import { logger } from '../../utils/logger.js';
+import { modePrefix } from './utils.js';
+import { updateTradeState, cleanupPositionState } from './state.js';
+import { executeOverseasOrder } from './executor.js';
+import type { TechResult, Holding } from './sell-logic.js';
 
 export interface TurtleSignal {
   code: string;
@@ -109,4 +108,54 @@ export function updateTurtleTrail(
   const prev10 = candles.slice(-11, -1);
   const trail10Low = Math.min(...prev10.map(c => c.low));
   return { trail10Low, isProfit: trail10Low > entryPrice };
+}
+
+/**
+ * 터틀 탈출 체크: 보유 종목이 10일 저점 이탈 시 전량 매도
+ * overseas-job.ts에서 추출
+ */
+export async function processTurtleExits(params: {
+  holdings: Map<string, Holding>;
+  pendingOrderStocks: Set<string>;
+  sellOrders: string[];
+  techResults: TechResult[];
+  cash: number;
+  isPaper: boolean;
+}): Promise<{ cash: number }> {
+  const { holdings, pendingOrderStocks, sellOrders, techResults, isPaper } = params;
+  let { cash } = params;
+  const pfx = modePrefix(isPaper);
+
+  for (const [code, holding] of holdings) {
+    if (pendingOrderStocks.has(code)) continue;
+    if (sellOrders.some(s => s.includes(code))) continue;
+    const turtleTrailKey = `${pfx}turtle_trail_${code}`;
+    const { rows: trailRows } = await getPool().query(
+      'SELECT value FROM overseas_state WHERE key = $1', [turtleTrailKey]
+    ).catch(() => ({ rows: [] as { value: string }[] }));
+    if (trailRows.length === 0) continue;
+    const trailLow = Number(trailRows[0].value);
+    const tech = techResults.find(t => t.code === code);
+    if (!tech || trailLow <= 0) continue;
+    if (isTurtleExit(tech.price.currentPrice, trailLow)) {
+      logger.info(`🐢 터틀 탈출: ${code} $${tech.price.currentPrice.toFixed(2)} < 10일저점$${trailLow.toFixed(2)}`, { component: 'OVERSEAS' });
+      const exec = await executeOverseasOrder(code, 'SELL', holding.qty, tech.price.currentPrice, tech.exchange,
+        `터틀 탈출: 10일 저점($${trailLow.toFixed(2)}) 이탈`, holding.qty, holding.avgPrice, { isPaper });
+      if (exec.submitted && exec.filledQty > 0) {
+        const proceeds = exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
+        cash += proceeds;
+        await updateTradeState({ code, exchange: tech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper });
+        if (exec.finalQty <= 0) await cleanupPositionState(code, isPaper);
+        const pnlPct = holding.avgPrice > 0 ? ((exec.filledPrice - holding.avgPrice) / holding.avgPrice * 100) : 0;
+        sellOrders.push(`🐢 터틀탈출 ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)`);
+      }
+    } else {
+      const latestTrail = Math.max(trailLow, tech.price.dayLow);
+      if (latestTrail > trailLow) {
+        getPool().query(`INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
+          [turtleTrailKey, latestTrail.toString()]).catch(() => {});
+      }
+    }
+  }
+  return { cash };
 }

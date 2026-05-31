@@ -18,6 +18,7 @@ const EXTERNAL_SELL_COOLDOWN_MS = 5 * 60 * 1000; // 체인 오픈 5분 이내는
 export async function reconcilePendingOrders(): Promise<void> {
   let pendingOrders;
   try {
+    // PENDING + PARTIAL 상태 모두 조회하여 부분체결 주문도 재모니터링
     pendingOrders = await getPendingDomesticOrders();
   } catch (e) {
     logger.warn(`미체결 조회 실패: ${e}`, { component: 'RECONCILER' });
@@ -47,22 +48,31 @@ export async function reconcilePendingOrders(): Promise<void> {
         continue;
       }
 
-      // 10분 초과 미체결 지정가 → 취소
+      // 10분 초과 미체결/부분체결 지정가 → 잔여 수량 취소
       const ageMs = Date.now() - new Date(order.created_at).getTime();
       if (ageMs > PENDING_TIMEOUT_MS && order.order_type !== '01') {
-        const qty = order.quantity ?? 0;
+        const filledQty = order.filled_quantity ?? 0;
+        const totalQty = order.quantity ?? 0;
+        const remainQty = totalQty - filledQty;
+        if (remainQty <= 0) {
+          // 이미 전량 체결 — 상태만 FILLED로 보정
+          await updateOrderByKisOrderNo(kisOrderNo, { status: 'FILLED' });
+          continue;
+        }
         const cancelResult = await cancelOrder({
           orderNo: kisOrderNo,
           stockCode: order.stock_code,
-          quantity: qty,
+          quantity: remainQty,
         });
         if (cancelResult.success) {
-          await updateOrderByKisOrderNo(kisOrderNo, { status: 'CANCELLED' });
+          // 부분체결 + 취소: filledQty > 0이면 FILLED(부분체결분 기록), 아니면 CANCELLED
+          const finalStatus = filledQty > 0 ? 'FILLED' : 'CANCELLED';
+          await updateOrderByKisOrderNo(kisOrderNo, { status: finalStatus });
           logger.warn(
-            `⏰ 미체결 취소: ${order.stock_code} ${order.side} ${qty}주 (${Math.round(ageMs / 60000)}분 경과)`,
+            `⏰ 미체결 취소: ${order.stock_code} ${order.side} 잔여${remainQty}주 (체결${filledQty}주, ${Math.round(ageMs / 60000)}분 경과)`,
             { component: 'RECONCILER' },
           );
-          await logSystem('WARN', 'RECONCILER', `미체결 취소: ${order.stock_code} ${order.side} ${qty}주 (${Math.round(ageMs / 60000)}분 경과)`);
+          await logSystem('WARN', 'RECONCILER', `미체결 취소: ${order.stock_code} ${order.side} 잔여${remainQty}주 (체결${filledQty}주, ${Math.round(ageMs / 60000)}분 경과)`);
         } else {
           logger.warn(`취소 실패: ${order.stock_code} ${kisOrderNo} — ${cancelResult.message}`, { component: 'RECONCILER' });
         }
@@ -120,9 +130,11 @@ export async function reconcileExternalSells(): Promise<void> {
         try {
           const px = await getCurrentPrice(chain.stock_code);
           fillPrice = px.currentPrice;
-        } catch { /* 시세 실패 시 0으로 기록 */ }
+        } catch { /* 시세 실패 시 평균매수가로 폴백 */ }
 
         const avgBuy = Number(chain.avg_buy_price ?? 0);
+        // 가격 조회 실패 시 평균매수가로 폴백 (fillPrice=0 → P&L 오염 방지)
+        if (fillPrice <= 0 && avgBuy > 0) fillPrice = avgBuy;
         const pnlPct = avgBuy > 0 && fillPrice > 0
           ? (((fillPrice - avgBuy) / avgBuy) * 100).toFixed(2)
           : '?';

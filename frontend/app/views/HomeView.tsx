@@ -20,8 +20,9 @@ import KrHoldingsTab from './home/KrHoldingsTab';
 import UsHoldingsTab from './home/UsHoldingsTab';
 import RecentTradesPanel from './home/RecentTradesPanel';
 import KrAiScorePanel from './home/KrAiScorePanel';
+import SuggestedActionsPanel from '../panels/SuggestedActionsPanel';
 
-function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, strategy, setStrategy, toast, onRefresh, allocConfig, setAllocConfig, onGoToSettings, viewMode = 'live', onMarketTabChange }: any) {
+function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, strategy, setStrategy, toast, confirm, onRefresh, allocConfig, setAllocConfig, onGoToSettings, viewMode = 'live', onMarketTabChange, mpData }: any) {
   const [holdingsTab, setHoldingsTab] = React.useState<'KR' | 'US'>('KR');
   const [userPickedTab, setUserPickedTab] = React.useState(false);
   const [usInsights, setUsInsights] = React.useState('');
@@ -76,6 +77,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const totalPnl      = p?.pnl ?? 0;
   const totalPnlPct   = p?.pnlPct ?? 0;
   const domesticInvested = p?.domesticInvested ?? 0;
+  const domesticEval = p?.domesticEval ?? domesticInvested; // KIS 시가평가 (비중 계산용)
   const totalInvested    = p?.invested ?? domesticInvested;
   const overseasInvestedUsd = os?.totalInvestedUsd ?? 0;
   const overseasInvestedKrw = os?.totalInvestedKrw ?? 0;
@@ -88,10 +90,10 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const totalValue = Number(p?.totalValue ?? 0);
   // 통합증거금: portfolio.cash = 통합 주문가능원화 (국내/해외 공용)
   const domesticCash = Number(p?.cash ?? 0);
-  const investedPct = totalValue > 0 ? Math.round((totalInvested / totalValue) * 100) : 0;
-  const investedPctExact = totalValue > 0 ? ((domesticInvested + overseasMarketKrw) / totalValue) * 100 : 0;
-  // 통합증거금: 현금은 하나 (domesticCash = 통합 현금)
+  // 통합증거금: 시가 기반 비중 (현금+투자 = 100%)
   const cashPctExact = totalValue > 0 ? (domesticCash / totalValue) * 100 : 0;
+  const investedPctExact = totalValue > 0 ? Math.max(0, 100 - cashPctExact) : 0;
+  const investedPct = Math.round(investedPctExact);
   const overseasCashPctExact = 0; // 통합증거금: 별도 해외현금 없음
 
   const overseasPnlUsd = usHoldings.reduce((sum: number, h: any) => {
@@ -163,7 +165,9 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
 
   return (
     <div className="space-y-4 sm:space-y-5">
-      <StatusBanners dash={dash} busyAction={busyAction} guard={guard} toast={toast} onRefresh={onRefresh} tradingStatus={tradingStatus} aiStatus={aiStatus} defensePark={defensePark} />
+      <StatusBanners dash={dash} busyAction={busyAction} guard={guard} toast={toast} confirm={confirm} onRefresh={onRefresh} tradingStatus={tradingStatus} aiStatus={aiStatus} defensePark={defensePark} />
+
+      <SuggestedActionsPanel suggestedActions={dash?.suggestedActions} monthlyGoal={dash?.monthlyGoal} fxImpact={dash?.fxImpact} />
 
       <MarketProgressBar health={health} holdingsTab={holdingsTab} currentTimeStr={currentTimeStr} marketProgress={marketProgress} usMarketProgress={usMarketProgress} unrealizedPnl={unrealizedPnl} overseasPnlUsd={overseasPnlUsd} dailyLossLimit={dailyLossLimit} overseasLimitUsd={overseasLimitUsd} />
 
@@ -189,8 +193,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
             </span>
           </button>
         </div>
-        {holdingsTab === 'KR' && <KrHoldingsTab chains={chains} dash={dash} busyAction={busyAction} guard={guard} getStockName={getStockName} onRefresh={onRefresh} viewMode={viewMode} />}
-        {holdingsTab === 'US' && <UsHoldingsTab usHoldings={usHoldings} usW={usW} dash={dash} busyAction={busyAction} guard={guard} onRefresh={onRefresh} toast={toast} insightsDraft={insightsDraft} setInsightsDraft={setInsightsDraft} insightsSaving={insightsSaving} setInsightsSaving={setInsightsSaving} usInsights={usInsights} setUsInsights={setUsInsights} viewMode={viewMode} />}
+        {holdingsTab === 'KR' && <KrHoldingsTab chains={chains} dash={dash} busyAction={busyAction} guard={guard} getStockName={getStockName} onRefresh={onRefresh} toast={toast} confirm={confirm} viewMode={viewMode} />}
+        {holdingsTab === 'US' && <UsHoldingsTab usHoldings={usHoldings} usW={usW} dash={dash} busyAction={busyAction} guard={guard} onRefresh={onRefresh} toast={toast} confirm={confirm} insightsDraft={insightsDraft} setInsightsDraft={setInsightsDraft} insightsSaving={insightsSaving} setInsightsSaving={setInsightsSaving} usInsights={usInsights} setUsInsights={setUsInsights} viewMode={viewMode} />}
       </div>
 
       <MoneyStatsPanel key={`${viewMode}-${holdingsTab}`} market={holdingsTab} viewMode={viewMode} />
@@ -204,7 +208,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
 
       <div className="grid grid-cols-1 xl:grid-cols-2 items-start gap-4 sm:gap-5">
         {holdingsTab === 'KR'
-          ? <KrAiScorePanel dash={dash} showAllKRScores={showAllKRScores} setShowAllKRScores={setShowAllKRScores} buyingStock={buyingStock} setBuyingStock={setBuyingStock} busyAction={busyAction} guard={guard} getStockName={getStockName} toast={toast} viewMode={viewMode} />
+          ? <KrAiScorePanel dash={dash} showAllKRScores={showAllKRScores} setShowAllKRScores={setShowAllKRScores} buyingStock={buyingStock} setBuyingStock={setBuyingStock} busyAction={busyAction} guard={guard} getStockName={getStockName} toast={toast} confirm={confirm} viewMode={viewMode} />
           : <OverseasScorePanel usDash={usDash} toast={toast} />}
         <RecentTradesPanel filled={filled} holdingsTab={holdingsTab} expandedTradeIdx={expandedTradeIdx} setExpandedTradeIdx={setExpandedTradeIdx} getStockName={getStockName} />
       </div>
@@ -236,7 +240,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
         </Panel>
       )}
 
-      <PortfolioSection allocConfig={allocConfig} setAllocConfig={setAllocConfig} onGoToSettings={onGoToSettings} dash={dash} chains={chains} usHoldings={usHoldings} usW={usW} totalValue={totalValue} totalInvested={totalInvested} domesticInvested={domesticInvested} domesticCash={domesticCash} overseasInvestedUsd={overseasInvestedUsd} overseasInvestedKrw={overseasInvestedKrw} overseasMarketKrw={overseasMarketKrw} overseasCashUsd={overseasCashUsd} overseasCashKrw={overseasCashKrw} overseasPnlUsd={overseasPnlUsd} fxRate={fxRate} investedPctExact={investedPctExact} cashPctExact={cashPctExact} overseasCashPctExact={overseasCashPctExact} strategy={strategy} getStockName={getStockName} />
+      <PortfolioSection allocConfig={allocConfig} setAllocConfig={setAllocConfig} onGoToSettings={onGoToSettings} dash={dash} chains={chains} usHoldings={usHoldings} usW={usW} totalValue={totalValue} totalInvested={totalInvested} domesticInvested={domesticInvested} domesticEval={domesticEval} domesticCash={domesticCash} overseasInvestedUsd={overseasInvestedUsd} overseasInvestedKrw={overseasInvestedKrw} overseasMarketKrw={overseasMarketKrw} overseasCashUsd={overseasCashUsd} overseasCashKrw={overseasCashKrw} overseasPnlUsd={overseasPnlUsd} fxRate={fxRate} investedPctExact={investedPctExact} cashPctExact={cashPctExact} overseasCashPctExact={overseasCashPctExact} strategy={strategy} getStockName={getStockName} mpData={mpData} />
     </div>
   );
 }

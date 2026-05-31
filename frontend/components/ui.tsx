@@ -75,6 +75,9 @@ const BTN_VARIANT = {
   secondary: 'bg-slate-800 hover:bg-slate-700 text-slate-300',
   danger:    'bg-rose-600 hover:bg-rose-500 text-white shadow-sm',
   ghost:     'bg-white/[0.04] hover:bg-white/[0.08] text-slate-400',
+  success:   'bg-emerald-900/40 hover:bg-emerald-900/60 text-emerald-400',
+  amber:     'bg-amber-600 hover:bg-amber-500 text-white',
+  violet:    'bg-violet-600 hover:bg-violet-500 text-white',
 } as const;
 
 const BTN_SIZE = {

@@ -15,3 +15,15 @@ export type { TechResult, Holding, SellContext, SellResult } from './sell-logic.
 export { filterAndRankBuyTargets } from './buy-filter.js';
 export type { BuyTarget, BuyFilterContext } from './buy-filter.js';
 export { sendBuyRecommendations, sendHoldingAlerts } from './notifications.js';
+export { ctxMode, modePrefix, calcPnlPct, getSector, setOverseasState, getOverseasState, deleteOverseasState } from './utils.js';
+export { getVixRegime } from './vix-regime.js';
+export type { VixRegime, RegimeAdjustment } from './vix-regime.js';
+export { calcRollingKelly, calcStockEVMultipliers } from './kelly.js';
+export type { StockEVResult } from './kelly.js';
+export { extractTradingPatterns, getMemoryBlockedStocks } from './patterns.js';
+export type { TradingPattern } from './patterns.js';
+export { enforceConcentrationCap } from './concentration-cap.js';
+export { executeRotationSelling } from './rotation-selling.js';
+export { calcPositionSize, calcSizingMultiplier } from './position-sizing.js';
+export { processScaleIns, shouldUseScaleIn, buildScaleInReservation } from './scale-in-manager.js';
+export { processTurtleExits } from './turtle.js';

@@ -8,14 +8,22 @@ export interface AIDecision {
   code: string; action: string; confidence: number; reasoning: string;
 }
 
-/** Rolling Kelly 결과 */
+/** Rolling Kelly 결과 (완전한 버전) */
 export interface KellyResult {
-  halfKelly: number; sampleCount: number;
+  fullKelly: number;
+  halfKelly: number;
+  winRate: number;
+  avgWin: number;
+  avgLoss: number;
+  sampleCount: number;
 }
 
-/** 점진적 쿨다운 */
+/** 점진적 쿨다운 (완전한 버전) */
 export interface GradualCooldown {
-  level: number; message: string; sizingPenalty: number;
+  level: number;
+  cooldownMs: number;
+  sizingPenalty: number;
+  message: string;
 }
 
 /** 방어 모드 신호 */

@@ -9,7 +9,7 @@ import { fetchExchangeRate } from '../../automation/macro-data.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
 import { GLOBAL_WATCHLIST } from './watchlist.js';
-import { getCash, getCashKrw, setCash, clearMaxPrice } from './state.js';
+import { getCash, getCashKrw, setCash, cleanupPositionState } from './state.js';
 import { logSystem } from '../../db/client.js';
 
 /**
@@ -143,7 +143,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
           'DELETE FROM overseas_holdings WHERE exchange=$1 AND stock_code=$2 AND is_paper = false',
           [row.exchange, code],
         ).catch(() => {});
-        clearMaxPrice(code, false).catch(() => {}); // live 모드 명시
+        cleanupPositionState(code, false).catch(() => {}); // live 모드 명시
 
         // 수동매도 쿨다운: 2시간 재매수 금지 (사용자 의도 매도 보호)
         getPool().query(

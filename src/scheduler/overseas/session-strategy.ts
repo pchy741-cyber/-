@@ -11,6 +11,7 @@ import { getHoldings, getCash } from './state.js';
 import { calcRollingKelly, extractTradingPatterns, getVixRegime } from './risk-intelligence.js';
 import { getOverseasWinRates, getRecentPerfSummary } from './analytics.js';
 import { getAIGeneratedInsights } from '../../ai/overseas/insights-generator.js';
+import { getOverseasInsightsForPrompt } from '../../automation/self-learning/overseas-analyzers.js';
 
 // ── Types ──
 
@@ -149,7 +150,11 @@ export async function generateSessionBrief(): Promise<SessionStrategyBrief | nul
       aiInsights ? `【AI 인사이트】\n${aiInsights}` : '',
     ].filter(Boolean).join('\n');
 
-    const response = await callVertexGemini(SESSION_STRATEGY_PROMPT, userMessage, {
+    // 해외 매매일지 학습 인사이트 추가 (데이터가 쌓일수록 정밀해짐)
+    const overseasLearned = await getOverseasInsightsForPrompt().catch(() => '');
+    const fullMessage = overseasLearned ? userMessage + '\n' + overseasLearned : userMessage;
+
+    const response = await callVertexGemini(SESSION_STRATEGY_PROMPT, fullMessage, {
       temperature: 0.2,
       maxOutputTokens: 500,
     });

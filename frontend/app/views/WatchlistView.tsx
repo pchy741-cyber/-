@@ -2,14 +2,14 @@
 
 import React, { useState, useRef } from 'react';
 import { Panel, EmptyMsg } from '@/components/ui';
-import { api, fmtPct, pc, pbg } from '../lib/utils';
+import { api } from '../lib/utils';
 import { toDisplayName } from '../lib/helpers';
-import { US_SECTOR_MAP, US_SECTORS } from '../panels/OverseasScorePanel';
 import StockCard from './watchlist/StockCard';
 import StockAnalysisPanel from './watchlist/StockAnalysisPanel';
 import SoldStocksPanel from './watchlist/SoldStocksPanel';
+import { USWatchlistPanel } from './watchlist/USWatchlistPanel';
 
-function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh, viewMode = 'live' }: any) {
+function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, confirm, onRefresh, viewMode = 'live' }: any) {
   const usW = usDash?.watchlist || [];
   const chains = dash?.chains || [];
   const getWatchlistName = (code: string) => {
@@ -70,7 +70,7 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
   const addStock = async () => {
     const target = selectedResult ?? (searchQuery.replace(/\D/g, '').length === 6
       ? { code: searchQuery.replace(/\D/g, ''), name: '', market: 'KOSPI' } : null);
-    if (!target) { alert('종목명 또는 6자리 코드를 입력 후 목록에서 선택하세요'); return; }
+    if (!target) { toast('종목명 또는 6자리 코드를 입력 후 목록에서 선택하세요', 'err'); return; }
     try {
       const result = await api('/watchlist', { method: 'POST', body: JSON.stringify({ stock_code: target.code, stock_name: target.name, market: target.market }) });
       setSearchQuery(''); setSelectedResult(null); setSearchResults([]);
@@ -80,11 +80,11 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
         setTimeout(() => setFastAnalyzing((prev) => { const next = new Set(prev); next.delete(target.code); return next; }), 180_000);
       }
       const w = await api('/watchlist'); setWatchlist(Array.isArray(w) ? w : []);
-    } catch (err: any) { alert(err.message); }
+    } catch (err: any) { toast(err.message, 'err'); }
   };
 
   const del = async (code: string) => {
-    if (!confirm(`${code} 삭제?`)) return;
+    if (!await confirm({ title: `${code} 삭제`, description: '감시목록에서 삭제합니다', confirmLabel: '삭제', confirmVariant: 'danger' })) return;
     await api(`/watchlist/${code}`, { method: 'DELETE' });
     setWatchlist((prev: any[]) => prev.filter(s => s.stock_code !== code));
   };
@@ -113,14 +113,14 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
             onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
             onFocus={() => searchResults.length > 0 && setShowDropdown(true)}
             placeholder="종목명 또는 코드 검색 (예: 삼성전자, 005930)"
-            className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm placeholder:text-slate-600 focus:border-blue-500 focus:outline-none pr-8"
+            className="w-full bg-white/[0.05] ring-1 ring-white/[0.08] rounded-xl px-3.5 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all pr-8"
           />
           {searchLoading && <div className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />}
           {showDropdown && searchResults.length > 0 && (
-            <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-slate-800 border border-slate-600 rounded-lg shadow-xl overflow-hidden">
+            <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-[#0f1422] ring-1 ring-white/[0.08] rounded-xl shadow-xl shadow-black/40 overflow-hidden">
               {searchResults.map((r) => (
                 <button key={r.code} type="button" onMouseDown={() => pickResult(r)}
-                  className="w-full text-left px-3 py-2 text-sm hover:bg-slate-700 flex items-center justify-between gap-2">
+                  className="w-full text-left px-3 py-2.5 text-sm hover:bg-white/[0.06] flex items-center justify-between gap-2 transition-colors">
                   <span className="font-medium text-slate-200">{r.name}</span>
                   <span className="text-[11px] text-slate-500 shrink-0">{r.code} · {r.market}</span>
                 </button>
@@ -128,7 +128,7 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, onRefresh
             </div>
           )}
         </div>
-        <button onClick={addStock} className="px-5 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium whitespace-nowrap">
+        <button onClick={addStock} className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-sm font-medium whitespace-nowrap transition-all shadow-sm">
           추가
         </button>
       </div>
@@ -224,87 +224,6 @@ function KRWatchlistPanel({ watchlist, chains, dash, sparklines, selectedStock, 
         ))}
         {krFiltered.length === 0 && watchlist.length === 0 && <div className="col-span-2"><EmptyMsg>종목을 추가하면 로봇이 24시간 감시합니다</EmptyMsg></div>}
         {krFiltered.length === 0 && watchlist.length > 0 && <div className="col-span-2"><EmptyMsg>해당 조건의 종목이 없습니다</EmptyMsg></div>}
-      </div>
-    </Panel>
-  );
-}
-
-// ── 미국 감시목록 패널 ──
-function USWatchlistPanel({ usW }: { usW: any[] }) {
-  const [usScores, setUsScores] = useState<any[]>([]);
-  const [scoresLoading, setScoresLoading] = useState(false);
-
-  React.useEffect(() => {
-    const hasScores = usW.some((s: any) => typeof s.score === 'number');
-    if (hasScores) { setUsScores(usW); return; }
-    setScoresLoading(true);
-    api('/overseas/scores').then((data: any) => {
-      if (Array.isArray(data) && data.length > 0) {
-        const scoreMap = new Map(data.map((s: any) => [s.code, s]));
-        const merged = (usW.length > 0 ? usW : data).map((s: any) => {
-          const sc = scoreMap.get(s.code ?? s.stock_code);
-          return sc ? { ...s, score: sc.score, signal: sc.signal, rsi: sc.rsi } : s;
-        });
-        setUsScores(merged.length > 0 ? merged : data);
-      } else if (usW.length > 0) {
-        setUsScores(usW);
-      }
-    }).catch(() => { if (usW.length > 0) setUsScores(usW); })
-    .finally(() => setScoresLoading(false));
-  }, [usW]);
-
-  const [usSector, setUsSector] = useState('전체');
-  const allDisplayList = usScores.length > 0 ? usScores : usW;
-  const displayList = usSector === '전체' ? allDisplayList : allDisplayList.filter((s: any) => US_SECTOR_MAP[s.code ?? s.stock_code] === usSector);
-
-  return (
-    <Panel title="미국주식 감시" badge={scoresLoading ? '계산 중...' : `${displayList.length}/${allDisplayList.length}종목`}>
-      <div className="px-3 pt-3 pb-1 flex gap-1 flex-wrap">
-        {US_SECTORS.map(s => (
-          <button key={s} onClick={() => setUsSector(s)}
-            className={`text-[10px] px-2 py-1 rounded-lg transition-all ${usSector === s ? 'bg-blue-600 text-white' : 'bg-white/[0.04] text-slate-400 hover:bg-white/[0.08]'}`}>
-            {s}
-          </button>
-        ))}
-      </div>
-      {scoresLoading && allDisplayList.length === 0 && (
-        <div className="flex items-center gap-2 px-4 py-3 text-[11px] text-slate-500">
-          <div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-          기술지표 자동 계산 중 (AI 없이 차트 분석)...
-        </div>
-      )}
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 p-3">
-        {displayList.map((s: any) => {
-          const code = s.code ?? s.stock_code;
-          const name = s.name ?? code;
-          const usDisplayName = toDisplayName(name, code);
-          const score = typeof s.score === 'number' ? s.score : null;
-          const signal = s.signal ?? '';
-          const rsi = typeof s.rsi === 'number' ? s.rsi : null;
-          const sectorTag = US_SECTOR_MAP[code] ?? '';
-          const signalColor = signal === 'STRONG_BUY' ? 'text-emerald-300' : signal === 'BUY' ? 'text-emerald-400' : signal === 'SELL' || signal === 'STRONG_SELL' ? 'text-rose-400' : 'text-slate-500';
-          const scoreBg = score !== null ? (score >= 40 ? 'bg-emerald-500/10 border-emerald-500/20' : score <= -20 ? 'bg-rose-500/10 border-rose-500/20' : 'bg-white/[0.03] border-slate-700/30') : `${pbg(s.changePct)} border-slate-700/30`;
-          return (
-            <div key={code} className={`rounded-lg border p-3 ${scoreBg}`}>
-              <div className="flex items-center justify-between gap-1 mb-0.5">
-                <span className="font-bold text-sm truncate">{usDisplayName}</span>
-                <span className={`text-[10px] font-medium shrink-0 ${pc(s.changePct)}`}>{fmtPct(s.changePct)}</span>
-              </div>
-              {sectorTag && <div className="text-[9px] text-slate-600 mb-1">{sectorTag}</div>}
-              <div className="text-base font-bold">{s.price > 0 ? `$${s.price.toFixed(2)}` : '-'}</div>
-              {score !== null && (
-                <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                  <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${signalColor} bg-white/[0.04]`}>
-                    {signal === 'STRONG_BUY' ? '강매수' : signal === 'BUY' ? '매수' : signal === 'HOLD' ? '관망' : signal === 'SELL' ? '매도' : signal === 'STRONG_SELL' ? '강매도' : signal}
-                  </span>
-                  <span className={`text-[9px] font-semibold ${score >= 40 ? 'text-emerald-400' : score <= -20 ? 'text-rose-400' : 'text-slate-400'}`}>{score >= 0 ? '+' : ''}{Math.round(score)}점</span>
-                  {rsi !== null && <span className="text-[9px] text-slate-600">RSI {Math.round(rsi)}</span>}
-                </div>
-              )}
-            </div>
-          );
-        })}
-        {displayList.length === 0 && !scoresLoading && <div className="col-span-3"><EmptyMsg>데이터 없음</EmptyMsg></div>}
       </div>
     </Panel>
   );

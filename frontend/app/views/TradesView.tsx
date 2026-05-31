@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { Panel, SideBadge, StatusBadge, EmptyMsg } from '@/components/ui';
+import { ToggleGroup } from '@/components/ToggleGroup';
 import { fmt, fmtWon, fmtUsd, fmtPct, fmtTime, pc } from '../lib/utils';
 import { toDisplayName, isUnresolvedStockName, simplifyReason } from '../lib/helpers';
 
@@ -27,14 +28,15 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
   return (
     <div className="space-y-4">
       {/* 시장 필터 */}
-      <div className="flex gap-1 rounded-xl overflow-hidden border border-white/[0.06] text-[12px] w-fit">
-        {(['ALL', 'KR', 'US'] as const).map(m => (
-          <button key={m} onClick={() => setMktFilter(m)}
-            className={`px-3 py-1.5 transition-all ${mktFilter === m ? 'bg-blue-500/20 text-blue-400 font-semibold' : 'text-slate-500 hover:text-slate-300 hover:bg-white/[0.03]'}`}>
-            {m === 'ALL' ? '전체' : m === 'KR' ? '🇰🇷 국내' : '🇺🇸 해외'}
-          </button>
-        ))}
-      </div>
+      <ToggleGroup
+        value={mktFilter}
+        items={[
+          { value: 'ALL' as const, label: '전체' },
+          { value: 'KR' as const, label: '🇰🇷 국내' },
+          { value: 'US' as const, label: '🇺🇸 해외' },
+        ]}
+        onChange={setMktFilter}
+      />
       {/* 요약 통계 */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">

@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { Button } from '@/components/ui';
+import { ToggleGroup } from '@/components/ToggleGroup';
 import { api, fmt, fmtWon, fmtUsd, fmtPct, fmtTime, pc } from '../lib/utils';
 import { KNOWN_STOCK_NAMES } from '../lib/stock-names';
 
@@ -47,22 +49,25 @@ function JournalView({ viewMode = 'live' }: { viewMode?: 'live' | 'paper' }) {
     <div className="space-y-4">
       {/* 필터 */}
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex rounded-xl overflow-hidden border border-white/[0.06] text-[12px]">
-          {(['ALL', 'KR', 'US'] as const).map(m => (
-            <button key={m} onClick={() => setMarket(m)}
-              className={`px-3 py-1.5 transition-all ${market === m ? 'bg-blue-500/20 text-blue-400 font-semibold' : 'text-slate-500 hover:text-slate-300 hover:bg-white/[0.03]'}`}>
-              {m === 'ALL' ? '전체' : m === 'KR' ? '🇰🇷 국내' : '🇺🇸 해외'}
-            </button>
-          ))}
-        </div>
-        <div className="flex rounded-xl overflow-hidden border border-white/[0.06] text-[12px]">
-          {[7, 30, 60, 90].map(d => (
-            <button key={d} onClick={() => setDays(d)}
-              className={`px-3 py-1.5 transition-all ${days === d ? 'bg-blue-500/20 text-blue-400 font-semibold' : 'text-slate-500 hover:text-slate-300 hover:bg-white/[0.03]'}`}>
-              {d}일
-            </button>
-          ))}
-        </div>
+        <ToggleGroup
+          value={market}
+          items={[
+            { value: 'ALL' as const, label: '전체' },
+            { value: 'KR' as const, label: '🇰🇷 국내' },
+            { value: 'US' as const, label: '🇺🇸 해외' },
+          ]}
+          onChange={setMarket}
+        />
+        <ToggleGroup
+          value={String(days)}
+          items={[
+            { value: '7', label: '7일' },
+            { value: '30', label: '30일' },
+            { value: '60', label: '60일' },
+            { value: '90', label: '90일' },
+          ]}
+          onChange={v => setDays(Number(v))}
+        />
       </div>
 
       {/* 요약 카드 */}
@@ -105,10 +110,10 @@ function JournalView({ viewMode = 'live' }: { viewMode?: 'live' | 'paper' }) {
             <div className="text-2xl opacity-20 mb-2">⚠️</div>
             <p className="text-sm text-rose-400">{error}</p>
             <p className="text-[11px] text-slate-600 mt-1">매매일지를 불러오지 못했습니다.</p>
-            <button onClick={() => { setLoading(true); setError(null); api(`/journal?days=${days}&viewMode=${viewMode}`).then((d: any) => setData(d)).catch((e: any) => setError(e?.message ?? '로드 실패')).finally(() => setLoading(false)); }}
-              className="mt-3 px-4 py-1.5 text-xs bg-blue-500/20 text-blue-400 rounded-lg hover:bg-blue-500/30 transition-colors">
+            <Button variant="ghost" size="sm" className="mt-3 bg-blue-500/20 text-blue-400 hover:bg-blue-500/30"
+              onClick={() => { setLoading(true); setError(null); api(`/journal?days=${days}&viewMode=${viewMode}`).then((d: any) => setData(d)).catch((e: any) => setError(e?.message ?? '로드 실패')).finally(() => setLoading(false)); }}>
               다시 시도
-            </button>
+            </Button>
           </div>
         ) : trades.length === 0 ? (
           <div className="p-10 text-center">

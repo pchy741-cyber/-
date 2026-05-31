@@ -1,8 +1,11 @@
 'use client';
 
 import React from 'react';
-import { ConfirmModal } from '@/components/ui';
+import { ConfirmModal, Button } from '@/components/ui';
 import { api, fmtWon } from '../lib/utils';
+import { categoryColor, categoryLabel } from './insight-types';
+import { InsightsAddForm } from './InsightsAddForm';
+import { InsightsPromotables } from './InsightsPromotables';
 
 export default function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast }: { insights: any[]; trades?: any[]; onRefresh: () => void; toast?: (msg: string, type: string) => void }) {
   const [deleting, setDeleting] = React.useState<number | null>(null);
@@ -67,7 +70,7 @@ export default function InsightsPanel({ insights: insightsProp, trades, onRefres
       setLiveInsights((prev) => (prev ?? []).filter((i) => i.id !== id));
       onRefresh();
     } catch (err: any) {
-      alert('삭제 실패: ' + err.message);
+      toast?.('삭제 실패: ' + err.message, 'err');
     } finally { setDeleting(null); }
   };
 
@@ -127,18 +130,6 @@ export default function InsightsPanel({ insights: insightsProp, trades, onRefres
     finally { setRevoking(null); }
   };
 
-  const categoryColor: Record<string, string> = {
-    WIN_PATTERN: 'text-emerald-400 bg-emerald-900/30',
-    LOSS_PATTERN: 'text-rose-400 bg-rose-900/30',
-    TIMING: 'text-blue-400 bg-blue-900/30',
-    SIZING: 'text-amber-400 bg-amber-900/30',
-    MANUAL: 'text-purple-400 bg-purple-900/30',
-  };
-  const categoryLabel: Record<string, string> = {
-    WIN_PATTERN: '승리패턴', LOSS_PATTERN: '손실패턴', TIMING: '타이밍',
-    SIZING: '사이징', MANUAL: 'CEO가이드',
-  };
-
   // 프로모션 검증 상태 뱃지
   const validationBadge = (i: any) => {
     if (i.source_mode !== 'promoted_from_paper') return null;
@@ -184,55 +175,23 @@ export default function InsightsPanel({ insights: insightsProp, trades, onRefres
         )}
       </ConfirmModal>
 
-      <div className="rounded-2xl bg-white/[0.03] border border-white/[0.06] overflow-hidden">
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-white/[0.06]">
+      <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden shadow-xl shadow-black/40">
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-white/[0.04]">
           <span className="text-sm font-semibold text-slate-200">자기학습 인사이트</span>
           <span className="text-[10px] text-slate-600 ml-1">매일 18:30 자동 반영</span>
           <span className="ml-auto text-[10px] bg-slate-700/60 text-slate-400 px-2 py-0.5 rounded-full">{insights.length}개</span>
-          <button onClick={triggerLearning} disabled={triggering}
-            className="text-[10px] bg-blue-900/40 hover:bg-blue-900/60 text-blue-300 px-2.5 py-1 rounded-lg transition-all disabled:opacity-50">
+          <Button variant="ghost" size="sm" className="text-[10px] bg-blue-900/40 hover:bg-blue-900/60 text-blue-300 px-2.5 py-1"
+            disabled={triggering} onClick={triggerLearning}>
             {triggering ? '분석중...' : '지금 분석'}
-          </button>
-          <button onClick={() => setShowAdd(v => !v)}
-            className="text-[10px] bg-purple-900/40 hover:bg-purple-900/60 text-purple-300 px-2.5 py-1 rounded-lg transition-all">
+          </Button>
+          <Button variant="ghost" size="sm" className="text-[10px] bg-purple-900/40 hover:bg-purple-900/60 text-purple-300 px-2.5 py-1"
+            onClick={() => setShowAdd(v => !v)}>
             + 가이드 추가
-          </button>
+          </Button>
         </div>
 
         {showAdd && (
-          <div className="px-4 py-3 border-b border-white/[0.04] bg-purple-900/10 space-y-2">
-            <div className="flex gap-2">
-              <input
-                value={newInsight}
-                onChange={e => setNewInsight(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleAdd()}
-                placeholder="예: 공매도 과열 종목은 반드시 제외할 것"
-                className="flex-1 bg-white/[0.06] border border-white/[0.08] rounded-lg px-3 py-1.5 text-xs text-slate-200 placeholder:text-slate-600 outline-none focus:border-purple-500/50"
-              />
-              <button onClick={handleAdd} disabled={adding}
-                className="px-3 py-1.5 bg-purple-700 hover:bg-purple-600 text-white text-xs rounded-lg disabled:opacity-50">
-                {adding ? '저장중...' : '저장'}
-              </button>
-            </div>
-            {/* 빠른 템플릿 */}
-            <div className="flex flex-wrap gap-1.5">
-              {[
-                '거래량이 평균의 3배 이상 터질 때만 진입 — 작은 거래량 돌파는 페이크',
-                '코스피 200일선 아래에서는 신규 매수 금지, 보유 종목 50% 이하로 유지',
-                '개별 종목 최대 투자금은 전체 계좌의 20% 이하 유지',
-                '매수 후 -7% 닿으면 이유 불문 손절 — 오를 거라는 기대 금지',
-                '외국인/기관 순매도 전환 시 보유 중이면 다음날 개장에 50% 매도',
-                '실적 발표 전날 신규 매수 금지 — 발표 후 반응 보고 진입',
-                '상한가 다음날 추격 매수 금지 — 단타꾼 물량 출하 시점',
-                '하락장(코스피 -1.5% 이상)에선 AI 점수 80점 이상만 매수 허용',
-              ].map(t => (
-                <button key={t} onClick={() => setNewInsight(t)}
-                  className="text-[9px] bg-purple-900/30 hover:bg-purple-900/60 text-purple-300 px-2 py-1 rounded-md transition-all text-left leading-tight max-w-[180px] truncate">
-                  {t}
-                </button>
-              ))}
-            </div>
-          </div>
+          <InsightsAddForm newInsight={newInsight} setNewInsight={setNewInsight} onAdd={handleAdd} adding={adding} />
         )}
 
         {harmful.length > 0 && (
@@ -248,12 +207,10 @@ export default function InsightsPanel({ insights: insightsProp, trades, onRefres
                     신뢰도 {Math.round(i.confidence * 100)}% · 샘플 {i.sample_count}건
                   </p>
                 </div>
-                <button
-                  onClick={() => openDeleteModal(i.id, i.insight)}
-                  disabled={deleting === i.id}
-                  className="shrink-0 px-2.5 py-1 bg-rose-800/50 hover:bg-rose-700 text-rose-300 text-[10px] rounded-lg transition-all disabled:opacity-50">
+                <Button variant="danger" size="sm" className="shrink-0 text-[10px] bg-rose-800/50 hover:bg-rose-700 text-rose-300"
+                  disabled={deleting === i.id} onClick={() => openDeleteModal(i.id, i.insight)}>
                   {deleting === i.id ? '삭제중...' : '삭제'}
-                </button>
+                </Button>
               </div>
             ))}
           </div>
@@ -281,7 +238,7 @@ export default function InsightsPanel({ insights: insightsProp, trades, onRefres
                 <div className="shrink-0 flex items-center gap-1.5">
                   {i.source_mode === 'promoted_from_paper' && (
                     <button onClick={() => handleRevoke(i.id)} disabled={revoking === i.id}
-                      className="text-[9px] bg-slate-700/50 hover:bg-rose-900/50 text-slate-400 hover:text-rose-300 px-1.5 py-0.5 rounded transition-all disabled:opacity-50">
+                      className="text-[9px] bg-slate-700/50 hover:bg-rose-900/50 text-slate-400 hover:text-rose-300 px-1.5 py-0.5 rounded-md transition-all disabled:opacity-50">
                       {revoking === i.id ? '...' : '취소'}
                     </button>
                   )}
@@ -292,7 +249,7 @@ export default function InsightsPanel({ insights: insightsProp, trades, onRefres
                       : <span className="text-[9px] text-slate-600 px-1.5 py-0.5">AI 자동 반영</span>
                   }
                   <button onClick={() => openDeleteModal(i.id, i.insight)} disabled={deleting === i.id}
-                    className="shrink-0 text-slate-700 hover:text-rose-400 text-[11px] transition-colors disabled:opacity-50">
+                    className="shrink-0 text-slate-600 hover:text-rose-400 hover:bg-rose-900/30 text-[11px] px-1 py-0.5 rounded-md transition-all disabled:opacity-50">
                     X
                   </button>
                 </div>
@@ -314,40 +271,7 @@ export default function InsightsPanel({ insights: insightsProp, trades, onRefres
           ))}
         </div>
 
-        {/* 연습모드 추천 인사이트 (프로모션 후보) */}
-        {promotables.length > 0 && (
-          <div className="border-t border-cyan-900/30 bg-cyan-950/10">
-            <div className="flex items-center gap-2 px-4 py-2.5 border-b border-cyan-900/20">
-              <span className="text-[11px] font-semibold text-cyan-300">연습모드 추천</span>
-              <span className="text-[9px] text-cyan-600">연습에서 검증된 좋은 패턴 — 실전 적용 시 신뢰도 0.7x</span>
-              <span className="ml-auto text-[9px] bg-cyan-900/40 text-cyan-400 px-1.5 py-0.5 rounded-full">{promotables.length}개</span>
-            </div>
-            <div className="divide-y divide-cyan-900/10 max-h-48 overflow-y-auto">
-              {promotables.map((p: any) => (
-                <div key={p.id} className="px-4 py-2.5 hover:bg-cyan-900/10 transition-colors">
-                  <div className="flex items-start gap-3">
-                    <span className={`shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded mt-0.5 ${categoryColor[p.category] ?? 'text-slate-400 bg-slate-800'}`}>
-                      {categoryLabel[p.category] ?? p.category}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[11px] text-slate-300 leading-relaxed">{p.insight}</p>
-                      <p className="text-[9px] text-slate-500 mt-0.5">
-                        신뢰도 {Math.round(p.confidence * 100)}% · 샘플 {p.sample_count}건
-                        {p.recommendation && <span className="text-cyan-500/60 ml-1.5">{'→'} {p.recommendation}</span>}
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => handlePromote(p.id)}
-                      disabled={promoting === p.id}
-                      className="shrink-0 px-2.5 py-1 bg-cyan-800/50 hover:bg-cyan-700/70 text-cyan-200 text-[10px] rounded-lg transition-all disabled:opacity-50 font-medium">
-                      {promoting === p.id ? '적용중...' : '실전 적용'}
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        <InsightsPromotables promotables={promotables} promoting={promoting} onPromote={handlePromote} />
       </div>
     </>
   );

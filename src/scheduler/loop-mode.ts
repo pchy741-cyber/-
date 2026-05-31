@@ -1,7 +1,7 @@
 /**
  * Auto Pilot — 대시보드에서 토글하는 서버사이드 매매 루프
- * 4단계 라이프사이클: REVIEWING → TRADING → (적응형 조정) → STOPPED → 세션 요약
- * 인메모리 상태 → Cloud Run 재시작 시 자동 OFF (안전장치)
+ * 라이프사이클: REVIEWING → TRADING ↔ PAUSED → STOPPED → 세션 요약
+ * DB 영속 (loop_sessions/loop_ticks) + 서버 재시작 시 자동 재개
  */
 import { logger } from '../utils/logger.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
@@ -11,13 +11,16 @@ import {
   clearSessionBrief, getActiveSessionBrief,
   type SessionStrategyBrief,
 } from './overseas/session-strategy.js';
+import { getCopilotLiteScore } from '../api/routes/review/copilot-lite.js';
 
 const DEFAULT_INTERVAL_MS = 5 * 60_000; // 5분
 const FAST_INTERVAL_MS = 3 * 60_000;    // 3분 (VIX STRESS/CRISIS, 활성 매도)
 const SLOW_INTERVAL_MS = 8 * 60_000;    // 8분 (유휴 상태)
+const PAUSE_CHECK_MS = 30 * 60_000;     // 30분 (장외 PAUSED 상태 체크 간격)
 const MAX_CONSECUTIVE_ERRORS = 3;
 
-export type LoopPhase = 'REVIEWING' | 'TRADING' | 'STOPPED';
+export type LoopPhase = 'REVIEWING' | 'TRADING' | 'PAUSED' | 'STOPPED';
+export type USMarketPhase = 'PREMARKET' | 'OPEN_VOLATILE' | 'PRIME' | 'MIDDAY' | 'LUNCH' | 'POWER_HOUR' | 'CLOSED';
 
 interface LoopState {
   active: boolean;
@@ -32,6 +35,7 @@ interface LoopState {
   consecutiveErrors: number;
   sessionBrief: SessionStrategyBrief | null;
   consecutiveNoBuyCandidates: number;
+  dbSessionId: number | null;
 }
 
 const state: LoopState = {
@@ -47,26 +51,122 @@ const state: LoopState = {
   consecutiveErrors: 0,
   sessionBrief: null,
   consecutiveNoBuyCandidates: 0,
+  dbSessionId: null,
 };
 
 let timer: ReturnType<typeof setTimeout> | null = null;
 
+// ── DB 헬퍼 (실패해도 루프 진행) ──
+
+async function dbCreateSession(brief: SessionStrategyBrief | null): Promise<number | null> {
+  try {
+    const { getPool } = await import('../db/client.js');
+    const { rows } = await getPool().query(
+      `INSERT INTO loop_sessions (started_at, phase, session_brief) VALUES (NOW(), 'REVIEWING', $1) RETURNING id`,
+      [brief ? JSON.stringify(brief) : null],
+    );
+    return rows[0]?.id ?? null;
+  } catch (e) {
+    logger.warn(`loop_sessions INSERT 실패: ${(e as Error).message}`, { component: 'LOOP' });
+    return null;
+  }
+}
+
+async function dbUpdateSession(id: number | null, updates: Record<string, unknown>): Promise<void> {
+  if (!id) return;
+  try {
+    const { getPool } = await import('../db/client.js');
+    const keys = Object.keys(updates);
+    const sets = keys.map((k, i) => `${k} = $${i + 2}`).join(', ');
+    await getPool().query(`UPDATE loop_sessions SET ${sets} WHERE id = $1`, [id, ...keys.map(k => updates[k])]);
+  } catch (e) {
+    logger.warn(`loop_sessions UPDATE 실패: ${(e as Error).message}`, { component: 'LOOP' });
+  }
+}
+
+async function dbInsertTick(sessionId: number | null, tickNum: number, result: string, durationMs: number | null, intervalMs: number): Promise<void> {
+  if (!sessionId) return;
+  try {
+    const { getPool } = await import('../db/client.js');
+    await getPool().query(
+      `INSERT INTO loop_ticks (session_id, tick_num, result, duration_ms, interval_ms, market_phase) VALUES ($1, $2, $3, $4, $5, $6)`,
+      [sessionId, tickNum, result, durationMs, intervalMs, getUSMarketPhase()],
+    );
+  } catch {}
+}
+
+/** 임계 이벤트 시 Copilot Lite 점검 → DB 저장 + Telegram */
+async function runCopilotCheck(reason: string): Promise<void> {
+  try {
+    const result = await getCopilotLiteScore(false); // live 기준
+    logger.info(`🩺 Auto Copilot [${reason}]: score=${result.score}, issues=${result.issues.length}`, { component: 'LOOP' });
+
+    if (result.issues.length > 0) {
+      const issueText = result.issues.map(i => `[${i.level}] ${i.label}`).join(', ');
+      sendTelegramMessage(`🩺 Auto Copilot (${reason})\nScore: ${result.score}\n${issueText}`).catch(() => {});
+    }
+
+    // DB 기록
+    if (state.dbSessionId) {
+      const { getPool } = await import('../db/client.js');
+      await getPool().query(
+        `INSERT INTO loop_ticks (session_id, tick_num, result, market_phase)
+         VALUES ($1, $2, $3, $4)`,
+        [state.dbSessionId, state.totalRuns, `copilot:${reason}:${result.score}`, getUSMarketPhase()],
+      );
+    }
+  } catch (e) {
+    logger.warn(`Auto Copilot 실패: ${(e as Error).message}`, { component: 'LOOP' });
+  }
+}
+
+// ── 틱 실행 ──
+
 async function tick(): Promise<void> {
   if (!state.active) return;
+
+  // PAUSED 체크: 장 마감 → PAUSED 전환
+  const currentPhase = getUSMarketPhase();
+  if (currentPhase === 'CLOSED' || currentPhase === 'PREMARKET') {
+    if (state.phase === 'TRADING') {
+      state.phase = 'PAUSED';
+      const prevInterval = state.adaptiveIntervalMs;
+      state.adaptiveIntervalMs = PAUSE_CHECK_MS;
+      logger.info(`Auto Pilot: 장외 시간 → PAUSED (${prevInterval / 1000}s → ${PAUSE_CHECK_MS / 1000}s)`, { component: 'LOOP' });
+      dbUpdateSession(state.dbSessionId, { phase: 'PAUSED' }).catch(() => {});
+    }
+    // PAUSED 상태: 장 열릴 때까지 대기
+    scheduleNext();
+    return;
+  }
+
+  // PAUSED → TRADING 자동 복귀
+  if (state.phase === 'PAUSED') {
+    state.phase = 'TRADING';
+    state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
+    logger.info(`Auto Pilot: 장 오픈 감지 → TRADING 복귀`, { component: 'LOOP' });
+    dbUpdateSession(state.dbSessionId, { phase: 'TRADING' }).catch(() => {});
+  }
 
   // Kill Switch 활성이어도 매도(탈출)를 위해 실행 — 매수만 overseas-job 내부에서 차단
   if (isKillSwitchActive('OVERSEAS')) {
     logger.info('Auto Pilot: Kill Switch 활성 — 매도만 실행 (매수 차단은 overseas-job 내부)', { component: 'LOOP' });
+    runCopilotCheck('kill_switch').catch(() => {});
   }
 
-  // ── 1. 전략 유효성 체크 (API 호출 없음) ──
-  const validity = await checkStrategyValidity().catch(() => ({ adjusted: false, regenerate: false, reason: undefined as string | undefined }));
+  // ── 1. 전략 유효성 체크 (3틱마다 — 외부 API 절약) ──
+  const shouldCheckValidity = state.totalRuns % 3 === 0;
+  const validity = shouldCheckValidity
+    ? await checkStrategyValidity().catch(() => ({ adjusted: false, regenerate: false, reason: undefined as string | undefined }))
+    : { adjusted: false, regenerate: false, reason: undefined as string | undefined };
   if (validity.regenerate) {
     logger.info(`🔄 전략 재생성 트리거: ${validity.reason}`, { component: 'LOOP' });
     const newBrief = await generateSessionBrief().catch(() => null);
     if (newBrief) {
       state.sessionBrief = newBrief;
+      dbUpdateSession(state.dbSessionId, { session_brief: JSON.stringify(newBrief) }).catch(() => {});
       sendTelegramMessage(`🔄 세션 전략 재수립: ${newBrief.marketRegime}/${newBrief.riskLevel}\n${newBrief.narrative}`).catch(() => {});
+      runCopilotCheck('strategy_regen').catch(() => {});
     }
   }
 
@@ -87,45 +187,60 @@ async function tick(): Promise<void> {
     state.consecutiveErrors++;
     logger.error(`Auto Pilot 에러 (${state.consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}): ${(err as Error).message}`, { component: 'LOOP' });
 
+    if (state.consecutiveErrors === 2) {
+      runCopilotCheck('consecutive_errors_2').catch(() => {});
+    }
     if (state.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
       stopLoop(`연속 ${MAX_CONSECUTIVE_ERRORS}회 에러 — 자동 정지`);
       return;
     }
   }
 
+  // DB 틱 기록
+  dbInsertTick(state.dbSessionId, state.totalRuns, state.lastRunResult ?? 'error', state.lastRunDurationMs, state.adaptiveIntervalMs).catch(() => {});
+  dbUpdateSession(state.dbSessionId, {
+    total_runs: state.totalRuns,
+    consecutive_errors: state.consecutiveErrors,
+  }).catch(() => {});
+
   // ── 3. 적응형 인터벌 조정 ──
+  const prevInterval = state.adaptiveIntervalMs;
   adaptiveInterval();
+  if (prevInterval !== state.adaptiveIntervalMs) {
+    logger.debug(`interval: ${prevInterval / 60_000}m→${state.adaptiveIntervalMs / 60_000}m (${getUSMarketPhase()})`, { component: 'LOOP' });
+  }
   scheduleNext();
 }
 
 function adaptiveInterval(): void {
   const brief = getActiveSessionBrief();
 
-  // VIX STRESS/CRISIS → 가속 (3분)
+  // VIX STRESS/CRISIS → 가속 (3분) — 위기 시 빠른 탈출 감시
   if (brief && (brief.marketRegime === 'CRISIS' || brief.riskLevel === 'DEFENSIVE')) {
     state.adaptiveIntervalMs = FAST_INTERVAL_MS;
     return;
   }
 
-  // 미국장 시간대별 차등 (ET 기준, KST → ET 변환)
+  // 미국장 시간대별 차등 (ET 기준)
   const usPhase = getUSMarketPhase();
   if (usPhase === 'OPEN_VOLATILE') {
-    // 개장 30분 (9:30~10:00 ET): 관찰 위주 — 긴 간격
-    state.adaptiveIntervalMs = SLOW_INTERVAL_MS;
+    state.adaptiveIntervalMs = FAST_INTERVAL_MS; // 개장 초반 기회 포착 (3분)
     return;
   }
   if (usPhase === 'PRIME') {
-    // 10:00~11:30 ET: 주력 매수 구간 — 빠른 간격
     state.adaptiveIntervalMs = FAST_INTERVAL_MS;
     return;
   }
   if (usPhase === 'LUNCH') {
-    // 12:00~14:00 ET: 거래량 최저 — 느린 간격
+    state.adaptiveIntervalMs = SLOW_INTERVAL_MS;
+    return;
+  }
+  if (usPhase === 'MIDDAY') {
+    // MIDDAY(12:00-15:00 ET)는 변동성 낮은 구간 → 감속
     state.adaptiveIntervalMs = SLOW_INTERVAL_MS;
     return;
   }
   if (usPhase === 'POWER_HOUR') {
-    // 15:00~16:00 ET: 기관 물량 — 빠른 간격
     state.adaptiveIntervalMs = FAST_INTERVAL_MS;
     return;
   }
@@ -136,19 +251,31 @@ function adaptiveInterval(): void {
     return;
   }
 
+  // 세션 전략에서 시장 활성도 반영 — BULL+AGGRESSIVE면 가속
+  if (brief && brief.marketRegime === 'BULL' && brief.riskLevel === 'AGGRESSIVE') {
+    state.adaptiveIntervalMs = FAST_INTERVAL_MS;
+    return;
+  }
+
   // 표준 (5분)
   state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
 }
 
-type USMarketPhase = 'PREMARKET' | 'OPEN_VOLATILE' | 'PRIME' | 'MIDDAY' | 'LUNCH' | 'POWER_HOUR' | 'CLOSED';
+/** 정확한 US DST 판별 — 3월 둘째 일요일 2AM ET ~ 11월 첫째 일요일 2AM ET */
+function isUSDST(d: Date): boolean {
+  const year = d.getUTCFullYear();
+  const mar1 = new Date(Date.UTC(year, 2, 1));
+  const marSun2 = 14 - (mar1.getUTCDay() || 7);
+  const dstStart = Date.UTC(year, 2, marSun2, 7);
+  const nov1 = new Date(Date.UTC(year, 10, 1));
+  const novSun1 = nov1.getUTCDay() === 0 ? 1 : 8 - nov1.getUTCDay();
+  const dstEnd = Date.UTC(year, 10, novSun1, 6);
+  return d.getTime() >= dstStart && d.getTime() < dstEnd;
+}
 
-function getUSMarketPhase(): USMarketPhase {
-  const now = new Date();
-  // ET = UTC-5 (EST) or UTC-4 (EDT)
-  // 간단 판단: 3월 둘째 일요일~11월 첫째 일요일 = EDT
-  const month = now.getUTCMonth(); // 0-indexed
-  const isDST = month >= 2 && month <= 10; // 대략적 DST
-  const etOffset = isDST ? -4 : -5;
+export function getUSMarketPhase(date?: Date): USMarketPhase {
+  const now = date ?? new Date();
+  const etOffset = isUSDST(now) ? -4 : -5;
   const etHour = (now.getUTCHours() + etOffset + 24) % 24;
   const etMin = now.getUTCMinutes();
   const etTime = etHour * 100 + etMin;
@@ -179,9 +306,17 @@ export function reportNoBuyCandidates(noCandidates: boolean): void {
   }
 }
 
-export async function startLoop(): Promise<{ ok: boolean; error?: string }> {
+export async function startLoop(): Promise<{ ok: boolean; error?: string; warning?: string }> {
   if (state.active) return { ok: false, error: '이미 실행 중' };
   if (isKillSwitchActive('OVERSEAS')) return { ok: false, error: 'Kill Switch 활성 — 먼저 해제하세요' };
+
+  // 장외 시간 경고 (시작은 허용)
+  const marketPhase = getUSMarketPhase();
+  const isMarketClosed = marketPhase === 'CLOSED' || marketPhase === 'PREMARKET';
+  let warning: string | undefined;
+  if (isMarketClosed) {
+    warning = `현재 장외 시간 (${marketPhase}) — PAUSED 상태로 시작, 장 오픈 시 자동 TRADING 전환`;
+  }
 
   state.active = true;
   state.startedAt = new Date().toISOString();
@@ -199,6 +334,9 @@ export async function startLoop(): Promise<{ ok: boolean; error?: string }> {
   const brief = await generateSessionBrief().catch(() => null);
   state.sessionBrief = brief;
 
+  // DB 세션 생성
+  state.dbSessionId = await dbCreateSession(brief);
+
   if (brief) {
     const msg = `📋 세션 전략 수립 완료\n레짐: ${brief.marketRegime} | 리스크: ${brief.riskLevel}\n${brief.narrative}`;
     logger.info(msg, { component: 'LOOP' });
@@ -207,11 +345,19 @@ export async function startLoop(): Promise<{ ok: boolean; error?: string }> {
     logger.info(`⚠️ 전략 생성 스킵 — 기존 로직으로 진행`, { component: 'LOOP' });
   }
 
-  // ── 2단계: 매매 시작 ──
-  state.phase = 'TRADING';
-  tick();
+  // ── 2단계: 매매 시작 (또는 PAUSED) ──
+  if (isMarketClosed) {
+    state.phase = 'PAUSED';
+    state.adaptiveIntervalMs = PAUSE_CHECK_MS;
+    dbUpdateSession(state.dbSessionId, { phase: 'PAUSED' }).catch(() => {});
+    scheduleNext();
+  } else {
+    state.phase = 'TRADING';
+    dbUpdateSession(state.dbSessionId, { phase: 'TRADING' }).catch(() => {});
+    tick();
+  }
 
-  return { ok: true };
+  return { ok: true, warning };
 }
 
 export async function stopLoop(reason?: string): Promise<{ ok: boolean }> {
@@ -225,7 +371,18 @@ export async function stopLoop(reason?: string): Promise<{ ok: boolean }> {
     logger.info(msg, { component: 'LOOP' });
     sendTelegramMessage(msg).catch(() => {});
 
-    // ── 4단계: 세션 요약 ──
+    // 최종 Copilot 점검
+    runCopilotCheck('session_end').catch(() => {});
+
+    // DB 세션 종료
+    dbUpdateSession(state.dbSessionId, {
+      ended_at: new Date().toISOString(),
+      stop_reason: reason ?? 'manual',
+      total_runs: state.totalRuns,
+      phase: 'STOPPED',
+    }).catch(() => {});
+
+    // ── 세션 요약 ──
     if (state.sessionBrief) {
       await generateSessionSummary({
         startedAt: state.startedAt ?? new Date().toISOString(),
@@ -238,13 +395,56 @@ export async function stopLoop(reason?: string): Promise<{ ok: boolean }> {
 
     clearSessionBrief();
     state.sessionBrief = null;
+    state.dbSessionId = null;
   }
 
   return { ok: true };
 }
 
+/** 서버 시작 시 미종료 세션 자동 재개 (10분 이내) */
+export async function checkPendingLoop(): Promise<void> {
+  try {
+    const { getPool } = await import('../db/client.js');
+    const { rows } = await getPool().query(
+      `SELECT id, started_at, total_runs, consecutive_errors, session_brief
+       FROM loop_sessions
+       WHERE ended_at IS NULL AND started_at > NOW() - INTERVAL '10 minutes'
+       ORDER BY id DESC LIMIT 1`,
+    );
+    if (rows.length === 0) return;
+
+    const session = rows[0];
+    logger.info(`🔄 미종료 루프 세션 발견 (id=${session.id}) — 자동 재개`, { component: 'LOOP' });
+
+    state.active = true;
+    state.dbSessionId = session.id;
+    state.startedAt = session.started_at;
+    state.totalRuns = session.total_runs ?? 0;
+    state.consecutiveErrors = session.consecutive_errors ?? 0;
+    state.sessionBrief = session.session_brief;
+    state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
+
+    const marketPhase = getUSMarketPhase();
+    if (marketPhase === 'CLOSED' || marketPhase === 'PREMARKET') {
+      state.phase = 'PAUSED';
+      state.adaptiveIntervalMs = PAUSE_CHECK_MS;
+    } else {
+      state.phase = 'TRADING';
+    }
+
+    dbUpdateSession(state.dbSessionId, { phase: state.phase }).catch(() => {});
+    sendTelegramMessage(`🔄 Auto Pilot 자동 재개 (세션 #${session.id}, ${state.totalRuns}회 실행됨)`).catch(() => {});
+    scheduleNext();
+  } catch (e) {
+    logger.warn(`checkPendingLoop 실패: ${(e as Error).message}`, { component: 'LOOP' });
+  }
+}
+
 export function getLoopStatus() {
-  return { ...state };
+  return {
+    ...state,
+    marketPhase: getUSMarketPhase(),
+  };
 }
 
 export function isLoopActive(): boolean {

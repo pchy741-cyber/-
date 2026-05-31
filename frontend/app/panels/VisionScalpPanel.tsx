@@ -151,11 +151,11 @@ export default function VisionScalpPanel({ toast }: { toast?: (msg: string, type
                 <button
                   onClick={execute}
                   disabled={executing}
-                  className="px-3 py-1.5 rounded-lg bg-emerald-600/80 hover:bg-emerald-600 text-white text-xs font-medium disabled:opacity-50 transition-all"
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium disabled:opacity-50 transition-all shadow-sm"
                 >
                   {executing ? '실행 중...' : '단타 실행'}
                 </button>
-                <button onClick={() => { setSignal(null); setImgPreview(null); setImgBase64(''); }} className="text-[10px] text-slate-600 hover:text-slate-400">취소</button>
+                <button onClick={() => { setSignal(null); setImgPreview(null); setImgBase64(''); }} className="text-[10px] text-slate-600 hover:text-slate-400 transition-colors">취소</button>
               </>
             )}
           </div>

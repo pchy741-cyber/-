@@ -353,7 +353,7 @@ export const OVERSEAS = {
   ASIA_TOP_COUNT: 6,                        // 아시아장 세션 캐시 상위 종목 수
   AI_INTERVAL_MS: 15 * 60_000,             // AI 호출 최소 간격: 15분 (비용 절감)
   PARKING_MIN_ORDER: 20,                    // 파킹 최소 주문 금액 ($)
-  CONCENTRATION_MIN_PNL_PCT: 6.0,           // 집중 대상 최소 수익률 (확실한 승자만 추가매수)
+  CONCENTRATION_MIN_PNL_PCT: 4.0,           // 집중 대상 최소 수익률 (위너에 일찍 집중)
   // 아래 값들은 레거시 폴백 — 실제 사용은 getOverseasDynamic() 동적 함수
   MAX_POSITIONS: 8,
   POSITION_SIZE_USD: 3000,
@@ -367,9 +367,9 @@ export const OVERSEAS = {
 /** 포트폴리오 규모 기반 동적 파라미터 — 고정형 상수 대체 */
 export function getOverseasDynamic(portfolioUsd: number, isPaper = false) {
   const p = Math.max(100, portfolioUsd);
-  // Paper: 더 많은 종목 허용 ($400당 1종목, 최대 15), Live: $1000당 1종목, 최대 12
+  // Paper: $300당 1종목 (최소 4, 최대 15), Live: $1000당 1종목 (최소 3, 최대 12)
   const maxPos = isPaper
-    ? Math.max(5, Math.min(15, Math.floor(p / 400)))
+    ? Math.max(4, Math.min(15, Math.floor(p / 300)))
     : Math.max(3, Math.min(12, Math.floor(p / 1000)));
   return {
     maxPositions:       maxPos,

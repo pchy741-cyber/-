@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { Button } from '@/components/ui';
 import { api } from '../../lib/utils';
 
 interface StatusBannersProps {
@@ -12,9 +13,10 @@ interface StatusBannersProps {
   tradingStatus: any;
   aiStatus: any;
   defensePark: any;
+  confirm: (opts: { title: string; description?: string; confirmLabel?: string; confirmVariant?: 'danger' | 'primary' | 'ghost' }) => Promise<boolean>;
 }
 
-export default function StatusBanners({ dash, busyAction, guard, toast, onRefresh, tradingStatus, aiStatus, defensePark }: StatusBannersProps) {
+export default function StatusBanners({ dash, busyAction, guard, toast, onRefresh, tradingStatus, aiStatus, defensePark, confirm }: StatusBannersProps) {
   return (
     <>
       {/* ── 연속손실 쿨다운 배너 ── */}
@@ -24,18 +26,20 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
             <span className="text-base shrink-0">🔒</span>
             <span className="text-sm font-bold text-orange-300">매수 쿨다운 중</span>
             <span className="text-[11px] text-orange-200/70 ml-1">{dash.cooldown.reason}</span>
-            <button
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto bg-orange-500/20 hover:bg-orange-500/40 text-orange-200 shrink-0"
               disabled={!!busyAction}
               onClick={guard('cooldown', async () => {
-                if (!confirm(`${dash.cooldown.consecutive}연패 쿨다운을 수동으로 해제할까요?\n(나는 이 결정에 책임집니다)`)) return;
+                if (!await confirm({ title: `${dash.cooldown.consecutive}연패 쿨다운을 수동으로 해제할까요?`, description: '나는 이 결정에 책임집니다', confirmLabel: '쿨다운 해제', confirmVariant: 'danger' })) return;
                 try {
                   await api('/cooldown/reset', { method: 'POST' });
                   toast?.('쿨다운 해제 완료 — 다음 루프에서 매수 재개', 'ok');
                   onRefresh();
                 } catch (e: any) { toast?.('실패: ' + (e as any).message, 'error'); }
               })}
-              className="ml-auto px-3 py-1.5 text-xs rounded-xl bg-orange-500/20 hover:bg-orange-500/40 text-orange-200 font-semibold transition-colors shrink-0 disabled:opacity-40"
-            >🔓 쿨다운 수동 해제</button>
+            >🔓 쿨다운 수동 해제</Button>
           </div>
         </div>
       )}
@@ -72,18 +76,20 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
           )}
           {tradingStatus.mode === 'DEFENSE' && (
             <div className="mt-2 flex justify-end">
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
+                className="bg-rose-500/20 hover:bg-rose-500/40 text-rose-200"
                 disabled={!!busyAction}
                 onClick={guard('defense', async () => {
-                  if (!confirm('DEFENSE 모드를 해제하고 SWING 매매(기준 70점)로 복귀할까요?')) return;
+                  if (!await confirm({ title: 'DEFENSE 모드를 해제하고 SWING 매매(기준 70점)로 복귀할까요?', confirmLabel: 'DEFENSE 해제', confirmVariant: 'danger' })) return;
                   try {
                     const r = await api('/defense-mode/deactivate', { method: 'POST' });
                     toast?.(r?.message ?? 'DEFENSE 모드 해제 완료', 'ok');
                     onRefresh();
                   } catch (e: any) { toast?.('실패: ' + (e as any).message, 'error'); }
                 })}
-                className="px-3 py-1.5 text-xs rounded-xl bg-rose-500/20 hover:bg-rose-500/40 text-rose-200 font-semibold transition-colors disabled:opacity-40"
-              >🔓 DEFENSE 모드 수동 해제</button>
+              >🔓 DEFENSE 모드 수동 해제</Button>
             </div>
           )}
         </div>
@@ -108,18 +114,20 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
             <p className="text-xs text-amber-400/80 mt-0.5 truncate">진입 사유: {defensePark.entryReason ?? '하락세 감지'}</p>
             <p className="text-xs text-amber-400/60 mt-0.5">시장 회복 감지 시 자동으로 정상 매매 복귀합니다.</p>
           </div>
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
+            className="bg-amber-500/30 hover:bg-amber-500/50 text-amber-200 whitespace-nowrap shrink-0"
             disabled={!!busyAction}
             onClick={guard('park', async () => {
-              if (!confirm('파킹 강제 해제 + 보유 ETF 즉시 매도를 실행할까요?')) return;
+              if (!await confirm({ title: '파킹 강제 해제 + 보유 ETF 즉시 매도를 실행할까요?', confirmLabel: '강제 해제', confirmVariant: 'danger' })) return;
               try {
                 const r = await api('/release-defense-park', { method: 'POST' });
-                alert(r?.message ?? '파킹 해제 완료');
+                toast?.(r?.message ?? '파킹 해제 완료', 'ok');
                 onRefresh();
-              } catch (e: any) { alert('실패: ' + (e as any).message); }
+              } catch (e: any) { toast?.('실패: ' + (e as any).message, 'error'); }
             })}
-            className="px-3 py-1.5 text-xs rounded-xl bg-amber-500/30 hover:bg-amber-500/50 text-amber-200 font-semibold transition-colors whitespace-nowrap shrink-0 disabled:opacity-40"
-          >강제 해제</button>
+          >강제 해제</Button>
         </div>
       )}
 

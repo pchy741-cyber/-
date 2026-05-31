@@ -1,15 +1,10 @@
 /**
  * 성과 분석 — 승률, 최근 실적, 미체결 주문 조회
  */
-import { config } from '../../config/index.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
-
-/** 현재 컨텍스트의 trading_mode 문자열 반환 */
-function ctxMode(isPaper?: boolean): string {
-  return (isPaper ?? getCtxIsPaper()) ? 'paper' : 'live';
-}
+import { ctxMode } from './utils.js';
 
 export interface OverseasExecutionResult {
   submitted: boolean;

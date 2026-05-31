@@ -36,9 +36,8 @@ import { GLOBAL_WATCHLIST } from './overseas/watchlist.js';
 import { getOverseasDynamic } from '../config/constants.js';
 import {
   ensureOverseasTable, getHoldings, getCash, updateTradeState,
-  getMaxPrice, setMaxPrice, clearMaxPrice,
 } from './overseas/state.js';
-import { overseasState, getOpenMarketRegions, getKSTDateString, getUSSessionId, setSessionStartValue, modeKey, type SessionCache } from './overseas/session.js';
+import { overseasState, getOpenMarketRegions, getKSTDateString, getUSSessionId, setSessionStartValue, modeKey, getSessionCache, setSessionCache, type SessionCache } from './overseas/session.js';
 import { getRecentPerfSummary, getOverseasWinRates, getPendingOverseasStocks, type OverseasWinRate } from './overseas/analytics.js';
 import { syncPendingOverseasOrders, getUserInsights, getLossCooldownStocks, getRecentLossStocks, getManualSellCooldownStocks } from './overseas/order-sync.js';
 import { syncHoldingsFromKIS, reconcileCashWithKIS } from './overseas/kis-sync.js';
@@ -47,7 +46,6 @@ import {
   calcDynamicTrailDrop, calcDynamicTpSl, getVixRegime,
   getGradualCooldown, getGradualCooldownStocks,
   calcUncertaintyPenalty,
-  clearPartialTpStageNum,
   calcRollingKelly,
   calcStockEVMultipliers,
   extractTradingPatterns, getMemoryBlockedStocks,
@@ -60,6 +58,7 @@ import { detectSqueezeBreakouts } from './overseas/squeeze-detector.js';
 import { checkCorrelationLimit } from './overseas/correlation-engine.js';
 import { batchMultiTF } from './overseas/multi-timeframe.js';
 import { getTradeReviewInsights } from './overseas/trade-reviewer.js';
+import { reportNoBuyCandidates, isLoopActive } from './loop-mode.js';
 
 // ── 추출 모듈 ──
 import { evaluateSells, type TechResult } from './overseas/sell-logic.js';
@@ -67,7 +66,11 @@ import { filterAndRankBuyTargets } from './overseas/buy-filter.js';
 import { sendBuyRecommendations, sendHoldingAlerts } from './overseas/notifications.js';
 import { monitorVisionScalp } from './overseas/vision-scalp.js';
 import { rebalancePortfolio } from './overseas/rebalancer.js';
-import { calcTurtleSignal, isTurtleExit } from './overseas/turtle.js';
+import { calcTurtleSignal, processTurtleExits } from './overseas/turtle.js';
+import { enforceConcentrationCap } from './overseas/concentration-cap.js';
+import { executeRotationSelling } from './overseas/rotation-selling.js';
+import { calcPositionSize } from './overseas/position-sizing.js';
+import { processScaleIns, shouldUseScaleIn, buildScaleInReservation } from './overseas/scale-in-manager.js';
 
 /**
  * 글로벌 주식 자동매매 Job
@@ -168,17 +171,17 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     // ── 세션 캐시 ──
     const todayStr = getKSTDateString();
     const usSessionId = getUSSessionId();
-    const activeCache = isUSSession ? s.usSessionCache : s.asiaSessionCache;
+    const region = isUSSession ? 'US' as const : 'ASIA' as const;
+    const activeCache = getSessionCache(region);
     const sessionId = isUSSession ? usSessionId : todayStr;
     const isNewSession = !activeCache || activeCache.sessionDate !== sessionId;
 
     if (isNewSession) {
-      if (isUSSession) s.usSessionCache = null;
-      else s.asiaSessionCache = null;
+      setSessionCache(region, null);
       logger.info(`${regionFlags} 새 세션 시작 — 전 종목 점수 스캔 (${[...openRegions].join('/')})`, { component: 'OVERSEAS' });
     }
 
-    const currentCache = isUSSession ? s.usSessionCache : s.asiaSessionCache;
+    const currentCache = getSessionCache(region);
     const activeStocks = allActiveStocks;
     if (currentCache) {
       logger.info(`세션 캐시 사용 — 전 종목(${activeStocks.length}) 시세 갱신 + 차트분석 캐시 재사용`, { component: 'OVERSEAS' });
@@ -192,7 +195,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     const BATCH = 8;
     for (let i = 0; i < activeStocks.length; i += BATCH) {
       const batch = activeStocks.slice(i, i + BATCH);
-      const latestCache = isUSSession ? s.usSessionCache : s.asiaSessionCache;
+      const latestCache = getSessionCache(region);
       const settled = await Promise.allSettled(
         batch.map(async (stock) => {
           const price = await getOverseasPrice(stock.code, stock.exchange);
@@ -234,7 +237,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         }
 
         if (isNewSession) {
-          const cacheTarget = isUSSession ? s.usSessionCache : s.asiaSessionCache;
+          const cacheTarget = getSessionCache(region);
           if (cacheTarget) {
             cacheTarget.techCache.set(stock.code, { score, rsi, adx, signal, trendStrength, isMomentum, dayRangePct, aboveMA20, aboveMA60, bollingerSqueeze, bollingerBreakout, atrPct });
           }
@@ -270,8 +273,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         techCacheMap.set(t.code, { score: t.score, rsi: t.rsi, adx: t.adx, signal: t.signal, trendStrength: t.trendStrength, isMomentum: t.isMomentum, dayRangePct: t.dayRangePct, aboveMA20: t.aboveMA20, aboveMA60: t.aboveMA60, bollingerSqueeze: t.bollingerSqueeze, bollingerBreakout: t.bollingerBreakout, atrPct: t.atrPct });
       }
       const newCache: SessionCache = { topCodes, sessionDate: sessionId, techCache: techCacheMap };
-      if (isUSSession) s.usSessionCache = newCache;
-      else s.asiaSessionCache = newCache;
+      setSessionCache(region, newCache);
       logger.info(`${regionFlags} 이번 세션 매수 후보: [${topCodes.join(', ')}] (score 기준 상위 ${topCount})`, { component: 'OVERSEAS' });
     }
 
@@ -283,7 +285,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     // ── 1-d. 터틀 트레이딩 신호 계산 (20일 Donchian 돌파) ──
     const turtleMap = new Map<string, ReturnType<typeof calcTurtleSignal>>();
     for (const t of techResults) {
-      const chart = (isUSSession ? s.usSessionCache : s.asiaSessionCache)?.techCache.get(t.code);
+      const chart = getSessionCache(region)?.techCache.get(t.code);
       // 차트 캐시에서 재사용 불가 — 원본 OHLCV 필요, isBigMover/isMomentum으로 대리 판단
       // 신고점 돌파 판단: 52주 고점 근처(dayRangePct >= 80%) + 강한 추세(ADX>25)
       const isTurtleBreakout = t.dayRangePct >= 80 && t.adx > 25 && t.aboveMA20 && t.aboveMA60
@@ -356,7 +358,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       };
     });
 
-    const latestSessionCache = isUSSession ? s.usSessionCache : s.asiaSessionCache;
+    const latestSessionCache = getSessionCache(region);
     let aiInputs = allAiInputs;
     if (latestSessionCache) {
       const topSet = new Set(latestSessionCache.topCodes);
@@ -424,7 +426,10 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       const crossCtx = crossSignals.length > 0 ? `[크로스마켓] ${crossSignals.map(s => `${s.usCode} ${s.signalType}(아시아 ${s.asiaCode} ${s.asiaChangePct >= 0 ? '+' : ''}${s.asiaChangePct.toFixed(1)}%)`).join(', ')}` : '';
       const driftCtx = earningsDrift.length > 0 ? `[어닝드리프트] ${earningsDrift.map(s => `${s.code} ${s.direction} gap${s.gapPct >= 0 ? '+' : ''}${s.gapPct.toFixed(1)}% vol${s.volumeRatio.toFixed(1)}x`).join(', ')}` : '';
       const squeezeCtx = squeezeSignals.length > 0 ? `[스퀴즈돌파] ${squeezeSignals.map(s => `${s.code} str${s.strength.toFixed(2)}`).join(', ')}` : '';
-      const combinedInsights = [userInsights, aiInsights ? `[AI자기학습]\n${aiInsights}` : '', sessionCtx, crossCtx, driftCtx, squeezeCtx, tradeReviewCtx ? `[매매복기]\n${tradeReviewCtx}` : ''].filter(Boolean).join('\n\n') || undefined;
+      // 해외 매매일지 학습 인사이트 → 종목별 AI 분석에 직접 주입 (세션전략 경유가 아닌 직통)
+      const { getOverseasInsightsForPrompt } = await import('../automation/self-learning/overseas-analyzers.js');
+      const overseasLearnedInsights = await getOverseasInsightsForPrompt().catch(() => '');
+      const combinedInsights = [userInsights, aiInsights ? `[AI자기학습]\n${aiInsights}` : '', overseasLearnedInsights, sessionCtx, crossCtx, driftCtx, squeezeCtx, tradeReviewCtx ? `[매매복기]\n${tradeReviewCtx}` : ''].filter(Boolean).join('\n\n') || undefined;
       aiDecisions = await analyzeOverseasWithAI(aiInputs, cash, holdings.size, perfSummary, combinedInsights, mktCtx);
       if (isUSSession) {
         if (isPaper()) s.lastPaperAiCallAt = Date.now();
@@ -466,40 +471,9 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     const sellOrders = sellResult.sellOrders;
     cash = sellResult.cash;
 
-    // ── 4-c. 터틀 탈출 체크: 보유 종목이 10일 저점 이탈 시 전량 매도 ──
-    for (const [code, holding] of holdings) {
-      if (pendingOrderStocks.has(code)) continue;
-      if (sellOrders.some(s => s.includes(code))) continue; // 이미 매도 예정
-      const turtleTrailKey = `${isPaper() ? 'p_' : 'l_'}turtle_trail_${code}`;
-      const { rows: trailRows } = await getPool().query(
-        'SELECT value FROM overseas_state WHERE key = $1', [turtleTrailKey]
-      ).catch(() => ({ rows: [] as { value: string }[] }));
-      if (trailRows.length === 0) continue;
-      const trailLow = Number(trailRows[0].value);
-      const tech = techResults.find(t => t.code === code);
-      if (!tech || trailLow <= 0) continue;
-      if (isTurtleExit(tech.price.currentPrice, trailLow)) {
-        logger.info(`🐢 터틀 탈출: ${code} $${tech.price.currentPrice.toFixed(2)} < 10일저점$${trailLow.toFixed(2)}`, { component: 'OVERSEAS' });
-        const exec = await executeOverseasOrder(code, 'SELL', holding.qty, tech.price.currentPrice, tech.exchange,
-          `터틀 탈출: 10일 저점($${trailLow.toFixed(2)}) 이탈`, holding.qty, holding.avgPrice, { isPaper: isPaper() });
-        if (exec.submitted && exec.filledQty > 0) {
-          const proceeds = exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
-          cash += proceeds;
-          await updateTradeState({ code, exchange: tech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper() });
-          if (exec.finalQty <= 0) await clearMaxPrice(code, isPaper());
-          await getPool().query('DELETE FROM overseas_state WHERE key = $1', [turtleTrailKey]).catch(() => {});
-          const pnlPct = holding.avgPrice > 0 ? ((exec.filledPrice - holding.avgPrice) / holding.avgPrice * 100) : 0;
-          sellOrders.push(`🐢 터틀탈출 ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)`);
-        }
-      } else {
-        // 10일 저점이 올라가면 트레일 스탑 업데이트
-        const latestTrail = Math.max(trailLow, tech.price.dayLow);
-        if (latestTrail > trailLow) {
-          getPool().query(`INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
-            [turtleTrailKey, latestTrail.toString()]).catch(() => {});
-        }
-      }
-    }
+    // ── 4-c. 터틀 탈출 체크 (→ overseas/turtle.ts) ──
+    const turtleResult = await processTurtleExits({ holdings, pendingOrderStocks, sellOrders, techResults, cash, isPaper: isPaper() });
+    cash = turtleResult.cash;
 
     // ── 5. 리스크 관리 ──
     const mk = modeKey(isPaper());
@@ -527,32 +501,9 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       sendTelegramMessage(`⚠️ WARNING: 해외자산 대비 -${lossPctOfPortfolio.toFixed(1)}% 손실\n해외자산: $${portfolioValue.toFixed(0)}`).catch(() => {});
     }
 
-    // ── 4-b. 집중도 캡 (소액 계좌 $500 미만: 1-2종목 집중 → 캡 비활성) ──
-    if (portfolioValue >= 500) {
-      const CONC_CAP = 0.25; // portfolio-guard MAX_SINGLE_STOCK_PCT와 통일
-      const CONC_TARGET = 0.20;
-      const capHoldings = await getHoldings(isPaper());
-      for (const [capCode, capHolding] of capHoldings) {
-        if (pendingOrderStocks.has(capCode)) continue;
-        const capTech = techResults.find(t => t.code === capCode);
-        if (!capTech || capTech.price.currentPrice <= 0) continue;
-        const posValue = capTech.price.currentPrice * capHolding.qty;
-        const posWeight = posValue / portfolioValue;
-        if (posWeight <= CONC_CAP) continue;
-        const targetQty = Math.floor((portfolioValue * CONC_TARGET) / capTech.price.currentPrice);
-        const sellQty = capHolding.qty - targetQty;
-        if (sellQty < 1) continue;
-        logger.warn(`⚠️ 집중도 캡 발동: ${capCode} 비중 ${(posWeight * 100).toFixed(0)}% > 25% → ${sellQty}주 매도`, { component: 'OVERSEAS' });
-        const exec = await executeOverseasOrder(capCode, 'SELL', sellQty, capTech.price.currentPrice, capTech.exchange, `집중도 캡(${(posWeight * 100).toFixed(0)}% > 25%) — 20%로 강제 분산 매도`, capHolding.qty, capHolding.avgPrice, { isPaper: isPaper() });
-        if (exec.submitted && exec.filledQty > 0) {
-          const proceeds = exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
-          cash += proceeds;
-          await updateTradeState({ code: capCode, exchange: capTech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper() });
-          if (exec.finalQty <= 0) { await clearMaxPrice(capCode, isPaper()); await clearPartialTpStageNum(capCode, isPaper()); await getPool().query(`DELETE FROM overseas_state WHERE key = $1`, [`${isPaper() ? 'p_' : 'l_'}scale_in_${capCode}`]).catch(() => {}); }
-          sellOrders.push(`⚠️ 집중캡 매도 ${capCode} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (비중 ${(posWeight * 100).toFixed(0)}% → 20%, +$${proceeds.toFixed(0)} 회수)`);
-        }
-      }
-    }
+    // ── 4-b. 집중도 캡 (→ overseas/concentration-cap.ts) ──
+    const concCapResult = await enforceConcentrationCap({ portfolioValue, pendingOrderStocks, techResults, sellOrders, cash, isPaper: isPaper() });
+    cash = concCapResult.cash;
 
     // ── 5. 매수 판단 ──
     const buyOrders: string[] = [];
@@ -608,7 +559,21 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         if (domesticInvestedUsd >= 100) {
           const grandInvestedUsd = (holdingEvalUsd || 0) + domesticInvestedUsd;
           const { rows: allocRows } = await getPool().query('SELECT us_pct FROM portfolio_allocation_config LIMIT 1');
-          const targetUsPct = Number(allocRows[0]?.us_pct ?? 30);
+          let targetUsPct = Number(allocRows[0]?.us_pct ?? 30);
+          // 크로스마켓 로테이션: DB에 저장된 최신 로테이션 신호로 동적 조정
+          try {
+            const { rows: rotRows } = await getPool().query("SELECT value FROM system_state WHERE key = 'rotation_signal'");
+            if (rotRows.length > 0) {
+              const rot = JSON.parse(rotRows[0].value);
+              const ageMs = Date.now() - new Date(rot.updatedAt).getTime();
+              if (ageMs < 12 * 60 * 60_000 && rot.adjustedUsPct !== undefined) {
+                if (rot.adjustedUsPct !== targetUsPct) {
+                  logger.info(`📊 로테이션 적용: US 목표 ${targetUsPct}%→${rot.adjustedUsPct}%`, { component: 'OVERSEAS' });
+                }
+                targetUsPct = rot.adjustedUsPct;
+              }
+            }
+          } catch { /* 로테이션 미설정 시 원래값 유지 */ }
           const currentUsPct = grandInvestedUsd > 0 ? ((holdingEvalUsd || 0) / grandInvestedUsd) * 100 : 0;
           if (currentUsPct > targetUsPct * 1.15) {
             allocBlocked = true;
@@ -693,6 +658,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       }
 
       // ── 매수 필터 체인 (→ overseas/buy-filter.ts) ──
+      const brief = getActiveSessionBrief();
       const buyTargets = filterAndRankBuyTargets({
         techResults, updatedHoldings, pendingOrderStocks,
         lossCooldownSet, recentLossSet, memoryBlockedStocks,
@@ -700,6 +666,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         upcomingEarnings, sentinelBlockedCodes, mktSignal,
         sectorValues, portfolioValue, aiMap, freshBreadth,
         uncertaintyMap, overseasWinRates, isUSExtended, recoveryMode, isPaper: isPaper(),
+        sessionBrief: brief,
       });
 
       // ── 터틀 돌파 종목: 일반 필터 통과 여부와 무관하게 후보 추가 ──
@@ -719,6 +686,11 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         logger.info(`✅ 매수 후보 ${buyTargets.length}종목: ${buyTargets.slice(0, 3).map(t => `${t.code}(${t.score}점 AI${((t.ai?.confidence ?? 0) * 100).toFixed(0)}%)`).join(', ')}`, { component: 'OVERSEAS' });
       }
 
+      // Auto Pilot 루프 적응형 인터벌 피드백 — live 모드에서만 보고
+      if (isLoopActive() && !isPaper()) {
+        reportNoBuyCandidates(buyTargets.length === 0);
+      }
+
       // ── 장외시간 알림 (→ overseas/notifications.ts) ──
       if (isUSExtended && !isPaper()) {
         const alertMap = s.extendedAlertSentAt.get(mk) ?? new Map();
@@ -733,80 +705,18 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         });
       }
 
-      // ── 순환 매도 ──
+      // ── 순환 매도 (→ overseas/rotation-selling.ts) ──
       if (buyTargets.length > 0) {
-        const topTarget = buyTargets[0];
-        const confFactor = Math.min(1, Math.max(0, topTarget.ai?.confidence ?? 0.65));
-        const scoreFactor = Math.min(1, Math.max(0, (topTarget.score + 50) / 100));
-        const combined = confFactor * 0.55 + scoreFactor * 0.45;
-        const rotSizingMult = Math.round((0.6 + combined * 1.2) * vixRegime.sizingMult * gradualCooldown.sizingPenalty * 100) / 100;
-        const rotKellyPct = kellyResult.sampleCount >= 10 ? kellyResult.halfKelly : (topTarget.isMomentum && (topTarget.ai?.confidence ?? 0) >= 0.85 ? 0.25 : 0.20);
-        const rotBaseSize = portfolioValue * Math.min(rotKellyPct, 0.25);
-        const neededCash = Math.min(rotBaseSize * rotSizingMult, portfolioValue * 0.20);
-
-        if (cash < neededCash) {
-          const concKey = isPaper() ? 'p_concentration_code' : 'l_concentration_code';
-          const { rows: ccRows } = await getPool().query("SELECT value FROM overseas_state WHERE key = $1", [concKey]).catch(() => ({ rows: [] as { value: string }[] }));
-          const concentrationCode = ccRows[0]?.value ?? null;
-          if (concentrationCode && concentrationCode !== topTarget.code) {
-            const concHolding = updatedHoldings.get(concentrationCode);
-            const concTech = techResults.find(t => t.code === concentrationCode);
-            if (concHolding && concTech && concTech.price.currentPrice > 0 && concHolding.qty >= 2) {
-              const concPnlPct = concHolding.avgPrice > 0 ? ((concTech.price.currentPrice - concHolding.avgPrice) / concHolding.avgPrice) * 100 : 0;
-              if (concPnlPct > 0) {
-                const shortfall = neededCash - cash;
-                const maxSellQty = Math.floor(concHolding.qty / 2);
-                const sellQty = Math.min(Math.ceil(shortfall / concTech.price.currentPrice), maxSellQty);
-                if (sellQty >= 1) {
-                  const rotateReason = `순환매도: ${topTarget.code} 진입 재원 (집중포지션 +${concPnlPct.toFixed(1)}% 일부 청산)`;
-                  const exec = await executeOverseasOrder(concentrationCode, 'SELL', sellQty, concTech.price.currentPrice, concTech.exchange, rotateReason, concHolding.qty, concHolding.avgPrice, { isPaper: isPaper() });
-                  if (exec.submitted && exec.filledQty > 0) {
-                    const proceeds = exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
-                    cash += proceeds;
-                    await updateTradeState({ code: concentrationCode, exchange: concTech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper() });
-                    if (exec.finalQty <= 0) { await clearMaxPrice(concentrationCode, isPaper()); await clearPartialTpStageNum(concentrationCode, isPaper()); }
-                    sellOrders.push(`🔄 순환매도 ${concentrationCode} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (+${concPnlPct.toFixed(1)}%) → ${topTarget.code} 진입 재원 $${proceeds.toFixed(0)}`);
-                  }
-                }
-              }
-            }
-          }
-        }
+        const rotResult = await executeRotationSelling({
+          topTarget: buyTargets[0], updatedHoldings, techResults, pendingOrderStocks, sellOrders,
+          cash, portfolioValue, kellyResult, vixRegime, gradualCooldown, isPaper: isPaper(),
+        });
+        cash = rotResult.cash;
       }
 
-      // ── Scale-In 확인: 기존 보유 종목 중 +2% 이상 상승 시 나머지 40% 추가매수 ──
-      {
-        const scaleInPrefix = isPaper() ? 'p_scale_in_' : 'l_scale_in_';
-        const { rows: scaleInRows } = await getPool().query<{ key: string; value: string }>(
-          `SELECT key, value FROM overseas_state WHERE key LIKE $1`, [`${scaleInPrefix}%`]
-        ).catch(() => ({ rows: [] as { key: string; value: string }[] }));
-        for (const row of scaleInRows) {
-          const code = row.key.replace(scaleInPrefix, '');
-          const info = JSON.parse(row.value) as { remainingQty: number; entryPrice: number; createdAt: string; exchange: string };
-          const holdingDays = (Date.now() - new Date(info.createdAt).getTime()) / (1000 * 60 * 60 * 24);
-          // 3일 초과 → Scale-In 취소
-          if (holdingDays > 3) {
-            await getPool().query(`DELETE FROM overseas_state WHERE key = $1`, [row.key]).catch(() => {});
-            logger.info(`📋 Scale-In 취소: ${code} (3일 초과, 미확인)`, { component: 'OVERSEAS' });
-            continue;
-          }
-          const tech = techResults.find(t => t.code === code);
-          if (!tech) continue;
-          const pnlFromEntry = ((tech.price.currentPrice - info.entryPrice) / info.entryPrice) * 100;
-          if (pnlFromEntry >= 2.0 && cash >= info.remainingQty * tech.price.currentPrice * 1.0025) {
-            const exec = await executeOverseasOrder(code, 'BUY', info.remainingQty, tech.price.currentPrice, info.exchange,
-              `📈 Scale-In 추가매수 (+${pnlFromEntry.toFixed(1)}% 확인) — 나머지 ${info.remainingQty}주`, 0, 0, { isPaper: isPaper() });
-            if (exec.submitted && exec.filledQty > 0) {
-              const cost = exec.filledQty * exec.filledPrice * 1.0025;
-              cash -= cost;
-              await updateTradeState({ code, exchange: info.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper() });
-              buyOrders.push(`📈 Scale-In ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (+${pnlFromEntry.toFixed(1)}% 확인 추가매수)`);
-              await logSystem('TRADE', 'OVERSEAS', `SCALE-IN ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} +${pnlFromEntry.toFixed(1)}%`);
-            }
-            await getPool().query(`DELETE FROM overseas_state WHERE key = $1`, [row.key]).catch(() => {});
-          }
-        }
-      }
+      // ── Scale-In 확인 (→ overseas/scale-in-manager.ts) ──
+      const scaleInResult = await processScaleIns({ techResults, buyOrders, cash, isPaper: isPaper() });
+      cash = scaleInResult.cash;
 
       // ── 멀티 타임프레임 분석 (매수 후보 대상) ──
       const mtfStocks = buyTargets.slice(0, 5).map(t => ({ code: t.code, exchange: t.exchange }));
@@ -842,36 +752,19 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
             continue;
           }
         }
-        // MTF 합류 보너스: 3TF 일치 → +0.10, 2TF → +0.05
+        // 사이징 계산 (→ overseas/position-sizing.ts)
         const mtfBonus = mtf?.confidenceBonus ?? 0;
-        const confFactor = Math.min(1, Math.max(0, (target.ai?.confidence ?? 0.65) + mtfBonus));
-        const scoreFactor = Math.min(1, Math.max(0, (target.score + 50) / 100));
-        const combined = confFactor * 0.55 + scoreFactor * 0.45;
-        // EV 기반 배율: 기대값 양수 종목은 확대, 음수 종목은 축소
         const stockEV = evMultipliers.get(target.code);
         const evMult = stockEV?.evMultiplier ?? 1.0;
-        const rawSizingMult = Math.round((0.6 + combined * 1.2) * evMult * vixRegime.sizingMult * gradualCooldown.sizingPenalty * 100) / 100;
-        // Paper 모드: sizingMult 하한 0.50 (실험/학습 → 적극 투자)
-        const sizingMult = isPaper() ? Math.max(rawSizingMult, 0.50) : rawSizingMult;
-        // Kelly 기반 포지션 사이즈
-        const paperMode = isPaper();
-        const kellyDefault = paperMode ? 0.30 : 0.25;
-        const kellyMomentum = paperMode ? 0.35 : 0.30;
-        const kellyCap = paperMode ? 0.35 : 0.30;
-        const kellyFloor = paperMode ? 0.15 : 0.20;
-        // 소액 계좌($500 미만): 포트폴리오 50% 집중 (Paper는 80% 유지)
-        const isSmallAccount = portfolioValue < 500;
-        const kellyPct = isSmallAccount ? (paperMode ? 0.80 : 0.50)
-          : kellyResult.sampleCount >= 10 ? Math.max(kellyResult.halfKelly, kellyFloor)
-          : (target.isMomentum && (target.ai?.confidence ?? 0) >= 0.85 ? kellyMomentum : kellyDefault);
-        const baseSize = portfolioValue * Math.min(kellyPct, isSmallAccount ? (paperMode ? 0.80 : 0.50) : kellyCap);
-        // 소액 live: 80% 캡 ($200 미만은 90%), Paper: 95%
-        const cashUsageCap = isSmallAccount ? (paperMode ? 0.95 : (cash < 200 ? 0.90 : 0.80)) : 0.70;
-        const positionSize = Math.min(baseSize * sizingMult, cash * cashUsageCap);
+        const { sizingMult, positionSize } = calcPositionSize({
+          target, portfolioValue, kellyResult, vixRegime, gradualCooldown,
+          cash, isPaper: isPaper(), evMultiplier: evMult, mtfBonus,
+          sessionSizingMult: brief?.sizingMultiplier,
+        });
         // 소액투자 가능: 통합증거금 소액 매수 허용 (수수료 0.25% → $20도 $0.05)
         const minPositionSize = 20;
         if (positionSize < minPositionSize) {
-          logger.info(`🔧 ${target.code}: positionSize=$${positionSize.toFixed(2)} < $${minPositionSize} → BREAK (base=$${baseSize.toFixed(0)} sizing=${sizingMult} cashCap=$${(cash * cashUsageCap).toFixed(0)})`, { component: 'OVERSEAS' });
+          logger.info(`🔧 ${target.code}: positionSize=$${positionSize.toFixed(2)} < $${minPositionSize} → BREAK (sizing=${sizingMult} cash=$${cash.toFixed(0)})`, { component: 'OVERSEAS' });
           break;
         }
 
@@ -879,8 +772,8 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         const isHighBetaEntry = SECTOR_CLASS.HIGH_BETA.includes(targetWatchItem?.sector ?? '');
         const isDefenseEntry = SECTOR_CLASS.DEFENSE.includes(targetWatchItem?.sector ?? '');
         const slDecimal = isHighBetaEntry ? 0.08 : isDefenseEntry ? 0.04 : 0.05;
-        // Paper 모드: 3% 리스크 허용 (Live: 2% — 황금비율 상향)
-        const riskPct = isPaper() ? 0.03 : 0.02;
+        // Paper 모드: 2.5% 리스크 허용 (Live: 2%)
+        const riskPct = isPaper() ? 0.025 : 0.02;
         const maxRiskUSD = portfolioValue * riskPct;
         const qtyBy1PctRule = maxRiskUSD > 0 ? Math.floor(maxRiskUSD / (target.price.currentPrice * slDecimal)) : Infinity;
         // 수수료 0.25% 보정: positionSize가 1주 가격과 비슷하면 수수료 무시하고 1주 허용
@@ -896,8 +789,8 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           continue;
         }
 
-        // Scale-In: 모멘텀/빅무버는 100% 즉시매수, 나머지는 60% 진입 → +2% 확인 후 40% 추가
-        const useScaleIn = !target.isMomentum && !target.isBigMover && fullQty >= 3;
+        // Scale-In: 모멘텀/빅무버/강한추세는 100% 즉시매수, 나머지는 60% 진입
+        const useScaleIn = shouldUseScaleIn(target) && fullQty >= 3;
         const qty = useScaleIn ? Math.max(1, Math.floor(fullQty * 0.6)) : fullQty;
         const scaleInRemainder = useScaleIn ? fullQty - qty : 0;
 
@@ -905,9 +798,14 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         const wrInfo = overseasWinRates.get(target.code);
         const wrTag = wrInfo && wrInfo.sampleCount >= 5 ? ` 승률${(wrInfo.winRate * 100).toFixed(0)}%/${wrInfo.sampleCount}건` : '';
         const evTag = stockEV && stockEV.sampleCount >= 3 ? ` EV${stockEV.evPct >= 0 ? '+' : ''}${stockEV.evPct.toFixed(1)}%` : '';
-        const reason = target.ai
-          ? `${buyMode} AI(${(target.ai.confidence * 100).toFixed(0)}%) 사이징x${sizingMult}: ${target.ai.reasoning}${wrTag}${evTag}`
-          : `${buyMode} 기술(AI없음) 사이징x${sizingMult}: score=${target.score} RSI=${target.rsi.toFixed(0)} ADX=${target.adx.toFixed(0)}${wrTag}${evTag}`;
+        // 진입 소스 태그: 추후 승률 분석용
+        const entrySource = (target as any)._turtle ? 'TURTLE'
+          : target.isBigMover ? 'BIGMOVER'
+          : target.isMomentum ? 'MOMENTUM'
+          : target.bollingerBreakout === 'UP' ? 'BB_BREAKOUT'
+          : target.rsi <= 35 ? 'OVERSOLD'
+          : 'TECHNICAL';
+        const reason = `${buyMode} [${entrySource}] 사이징x${sizingMult}: score=${target.score} RSI=${target.rsi.toFixed(0)} ADX=${target.adx.toFixed(0)} sig=${target.signal}${wrTag}${evTag}`;
 
         logger.info(`🔧 ${target.code}: 매수 실행 시도 qty=${qty} @$${target.price.currentPrice.toFixed(2)} posSize=$${positionSize.toFixed(0)} fullQty=${fullQty}`, { component: 'OVERSEAS' });
         const exec = await executeOverseasOrder(target.code, 'BUY', qty, target.price.currentPrice, target.exchange, reason, 0, 0, { isPaper: isPaper() });
@@ -956,10 +854,9 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           logger.info(`🐢 터틀 트레일 설정: ${target.code} 초기스탑 $${(exec.filledPrice * 0.92).toFixed(2)} (진입가 -8%)`, { component: 'OVERSEAS' });
         }
 
-        // Scale-In 예약: 나머지 40% 추가매수 대기 (+2% 확인 시)
+        // Scale-In 예약 (→ overseas/scale-in-manager.ts)
         if (scaleInRemainder > 0) {
-          const scaleInKey = `${isPaper() ? 'p_' : 'l_'}scale_in_${target.code}`;
-          const scaleInValue = JSON.stringify({ remainingQty: scaleInRemainder, entryPrice: exec.filledPrice, createdAt: new Date().toISOString(), exchange: target.exchange });
+          const { key: scaleInKey, value: scaleInValue } = buildScaleInReservation(target.code, scaleInRemainder, exec.filledPrice, target.exchange, isPaper());
           await getPool().query(
             `INSERT INTO overseas_state(key, value) VALUES($1, $2) ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
             [scaleInKey, scaleInValue]
@@ -1013,13 +910,13 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     // ── 매도 후 빠른 재투자: 현금 해방 시 60초 후 재스캔 ──
     if (sellOrders.length > 0 && finalHoldings.size < MAX_POSITIONS && cash >= 50) {
       const rescanMode = isPaper();
-      logger.info(`🔄 매도 ${sellOrders.length}건 완료 → 60초 후 재스캔 (현금 $${cash.toFixed(0)} 재투자, ${rescanMode ? 'PAPER' : 'LIVE'})`, { component: 'OVERSEAS' });
+      logger.info(`🔄 매도 ${sellOrders.length}건 완료 → 30초 후 재스캔 (현금 $${cash.toFixed(0)} 재투자, ${rescanMode ? 'PAPER' : 'LIVE'})`, { component: 'OVERSEAS' });
       setTimeout(() => {
         runWithMode(rescanMode, () =>
           runOverseasJob({ isPaper: rescanMode })
             .catch((e) => logger.error(`재스캔 실패: ${e}`, { component: 'OVERSEAS' }))
         );
-      }, 60_000);
+      }, 30_000);
     }
 
     reportSuccess(SCOPE);

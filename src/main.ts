@@ -444,6 +444,14 @@ async function bootstrap() {
   // 7. 스케줄러 시작
   startScheduler();
 
+  // 7-1. 미종료 루프 세션 자동 재개
+  try {
+    const { checkPendingLoop } = await import('./scheduler/loop-mode.js');
+    await checkPendingLoop();
+  } catch (e: any) {
+    logger.warn(`루프 자동재개 실패: ${e.message}`, { component: 'BOOT' });
+  }
+
   // 6-1. 오늘 AI 점수가 없으면 즉시 Track A 실행 (재배포 후 점수 공백 자동 복구)
   try {
     const { getActiveWatchlist, getLatestScores } = await import('./db/client.js');

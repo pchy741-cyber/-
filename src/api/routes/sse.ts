@@ -8,6 +8,7 @@ import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
 import { getPaperBalance } from '../../risk/engine.js';
 import { getLoopStatus } from '../../scheduler/loop-mode.js';
 import { cacheGet } from '../../cache/memory.js';
+import { getCopilotLiteScore } from './review/copilot-lite.js';
 
 export const sseRoutes = new Hono();
 
@@ -64,11 +65,12 @@ sseRoutes.get('/stream', (c) => {
     while (true) {
       try {
         const balanceFn = viewIsPaper ? getPaperBalance : () => getAccountBalance(true);
-        const [balance, chains, recentTrades, strategy] = await Promise.all([
+        const [balance, chains, recentTrades, strategy, healthLite] = await Promise.all([
           balanceFn(),
           getOpenChains(viewIsPaper),
           getRecentTrades(viewIsPaper),
           getActiveStrategy().catch(() => null),
+          getCopilotLiteScore(viewIsPaper).catch(() => ({ score: 0, issues: [] })),
         ]);
 
         // 해외 holdings 수 (캐시에서 빠르게 조회 — DB 호출 없음)
@@ -92,7 +94,9 @@ sseRoutes.get('/stream', (c) => {
           marketOpen: isMarketOpen(),
           recentTrades,
           strategy: strategy ? { mode: strategy.mode, buy_threshold: strategy.buy_threshold, take_profit_pct: strategy.take_profit_pct, stop_loss_pct: strategy.stop_loss_pct } : null,
-          loopMode: (() => { try { const ls = getLoopStatus(); return { active: ls.active, phase: ls.phase, totalRuns: ls.totalRuns, lastRunAt: ls.lastRunAt, lastRunResult: ls.lastRunResult, brief: ls.sessionBrief ? { regime: ls.sessionBrief.marketRegime, risk: ls.sessionBrief.riskLevel, narrative: ls.sessionBrief.narrative } : null }; } catch { return null; } })(),
+          healthScore: healthLite.score,
+          healthIssues: healthLite.issues,
+          loopMode: (() => { try { const ls = getLoopStatus(); return { active: ls.active, phase: ls.phase, totalRuns: ls.totalRuns, lastRunAt: ls.lastRunAt, lastRunResult: ls.lastRunResult, startedAt: ls.startedAt, adaptiveIntervalMs: ls.adaptiveIntervalMs, consecutiveErrors: ls.consecutiveErrors, marketPhase: ls.marketPhase, brief: ls.sessionBrief ? { regime: ls.sessionBrief.marketRegime, risk: ls.sessionBrief.riskLevel, narrative: ls.sessionBrief.narrative } : null }; } catch { return null; } })(),
         };
 
         await stream.writeSSE({

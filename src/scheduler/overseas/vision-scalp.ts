@@ -7,7 +7,7 @@ import { getPool, insertOrder } from '../../db/client.js';
 import { getOverseasPrice, placeOverseasOrder } from '../../kis/overseas.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
-import { getCash, updateTradeState } from './state.js';
+import { getCash, updateTradeState, cleanupPositionState } from './state.js';
 
 const DAILY_SCALP_CAP = 4; // 하루 최대 4회 청산 (fee drag 방지)
 
@@ -80,6 +80,7 @@ export async function monitorVisionScalp(isPaper: boolean): Promise<void> {
           const recovered = qty * cur * (1 - OVERSEAS_FEE_PCT);
           const newCash = (await getCash(isPaper)) + recovered;
           await updateTradeState({ code, exchange: exch, qty: 0, avgPrice: 0, newCash, isPaper });
+          await cleanupPositionState(code, isPaper);
           sendTelegramMessage(`🎯 Vision단타 ${label} 청산\n${code} ${qty}주 @ $${cur.toFixed(2)}\nPnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%\n회수: $${recovered.toFixed(0)}`).catch(() => {});
         }
       } catch { /* 개별 종목 오류 무시 */ }

@@ -322,7 +322,10 @@ sellRoutes.post('/sell-overseas/:stockCode', async (c) => {
       'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0 AND is_paper = $2', [stockCode, isPaper]);
     const holding = rows[0];
     if (!holding) return c.json({ error: '보유 종목을 찾을 수 없습니다' }, 404);
-    const qty = Number(holding.quantity);
+    const totalQty = Number(holding.quantity);
+    const reqQty = body.quantity != null ? Math.min(Math.max(1, Math.floor(Number(body.quantity))), totalQty) : totalQty;
+    const qty = reqQty;
+    const isPartial = qty < totalQty;
     const exchange = String(holding.exchange ?? 'NASDAQ');
     const avgPrice = Number(holding.avg_price ?? 0);
 
@@ -334,15 +337,22 @@ sellRoutes.post('/sell-overseas/:stockCode', async (c) => {
     } catch { /* 시세 조회 실패 시 DB 저장가 사용 */ }
     if (fillPrice <= 0) fillPrice = avgPrice;
 
-    const paperReasoning = 'CEO 해외주식 수동 전량 매도';
+    const paperReasoning = isPartial ? `CEO 해외주식 수동 부분매도 (${qty}/${totalQty}주)` : 'CEO 해외주식 수동 전량 매도';
     const proceeds = fillPrice * qty * (1 - OVERSEAS_FEE_PCT);
 
     if (isPaper) {
       const fakeOrderNo = `POS${Date.now().toString(36)}`;
       const { withTransaction } = await import('../../../db/client.js');
       await withTransaction(async (tx) => {
-        await tx.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = true', [stockCode, exchange]);
-        await tx.query('DELETE FROM overseas_state WHERE key = $1', [`maxprice_${stockCode}`]);
+        if (isPartial) {
+          await tx.query('UPDATE overseas_holdings SET quantity = quantity - $1 WHERE stock_code = $2 AND exchange = $3 AND is_paper = true', [qty, stockCode, exchange]);
+        } else {
+          await tx.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = true', [stockCode, exchange]);
+          await tx.query('DELETE FROM overseas_state WHERE key = ANY($1)', [[
+            `p_maxprice_${stockCode}`, `p_partial_tp_stage_${stockCode}`, `p_dynamic_tpsl_${stockCode}`,
+            `p_scale_in_${stockCode}`, `p_turtle_trail_${stockCode}`, `sync_sell_pending_${stockCode}`,
+          ]]);
+        }
         await tx.query(
           `INSERT INTO overseas_state (key, value) VALUES ('cash_paper', $1::text)
            ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
@@ -353,7 +363,7 @@ sellRoutes.post('/sell-overseas/:stockCode', async (c) => {
           [stockCode, qty, fillPrice, fakeOrderNo, paperReasoning, avgPrice]);
       });
       logger.info(`✅ CEO 해외 수동 매도 완료 (모의투자): ${stockCode} ${qty}주 @$${fillPrice}`, { component: 'DASHBOARD' });
-      return c.json({ ok: true, orderNo: fakeOrderNo, message: `${stockCode} ${qty}주 전량 매도 완료 (모의투자)` });
+      return c.json({ ok: true, orderNo: fakeOrderNo, message: `${stockCode} ${qty}주 ${isPartial ? '부분' : '전량'} 매도 완료 (모의투자)` });
     }
 
     // 실거래: KIS 해외 주문 — isPaper 컨텍스트 명시 (서버 기본=paper이므로 live 보장 필수)
@@ -375,7 +385,9 @@ sellRoutes.post('/sell-overseas/:stockCode', async (c) => {
       const { getOverseasBalance } = await import('../../../kis/overseas.js');
       const bal = await runWithMode(isPaper, () => getOverseasBalance(exchange));
       const pos = bal?.find((p: any) => p.stockCode === stockCode);
-      confirmed = !pos || pos.quantity === 0;
+      confirmed = isPartial
+        ? (!pos || pos.quantity <= totalQty - qty) // 부분매도: 잔량이 예상 이하면 체결
+        : (!pos || pos.quantity === 0);            // 전량매도: 포지션 소멸
     } catch {
       logger.warn(`해외 수동 매도 체결 확인 실패 (${stockCode}) — 주문 접수 상태로 기록`, { component: 'DASHBOARD' });
     }
@@ -385,8 +397,15 @@ sellRoutes.post('/sell-overseas/:stockCode', async (c) => {
 
     if (confirmed) {
       await withTx(async (tx) => {
-        await tx.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = false', [stockCode, exchange]);
-        await tx.query('DELETE FROM overseas_state WHERE key = $1', [`maxprice_${stockCode}`]);
+        if (isPartial) {
+          await tx.query('UPDATE overseas_holdings SET quantity = quantity - $1 WHERE stock_code = $2 AND exchange = $3 AND is_paper = false', [qty, stockCode, exchange]);
+        } else {
+          await tx.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = false', [stockCode, exchange]);
+          await tx.query('DELETE FROM overseas_state WHERE key = ANY($1)', [[
+            `l_maxprice_${stockCode}`, `l_partial_tp_stage_${stockCode}`, `l_dynamic_tpsl_${stockCode}`,
+            `l_scale_in_${stockCode}`, `l_turtle_trail_${stockCode}`, `sync_sell_pending_${stockCode}`,
+          ]]);
+        }
         await tx.query(
           `INSERT INTO overseas_state (key, value) VALUES ('cash', $1::text)
            ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
@@ -405,7 +424,7 @@ sellRoutes.post('/sell-overseas/:stockCode', async (c) => {
         [stockCode, qty, fillPrice, result.orderNo ?? '', paperReasoning, avgPrice]);
       logger.warn(`⏳ CEO 해외 수동 매도 접수 (미체결): ${stockCode} ${qty}주 — 다음 sync에서 확인`, { component: 'DASHBOARD' });
     }
-    return c.json({ ok: true, orderNo: result.orderNo, status: orderStatus, message: `${stockCode} ${qty}주 매도 ${confirmed ? '체결 완료' : '주문 접수 (체결 대기)'}` });
+    return c.json({ ok: true, orderNo: result.orderNo, status: orderStatus, message: `${stockCode} ${qty}주 ${isPartial ? '부분' : '전량'} 매도 ${confirmed ? '체결 완료' : '주문 접수 (체결 대기)'}` });
   } catch (err: any) {
     logger.error(`해외 수동 매도 예외: ${err.message}`, { component: 'DASHBOARD' });
     return c.json({ error: err.message }, 500);
@@ -438,9 +457,11 @@ sellRoutes.post('/sell-overseas-force/:stockCode', async (c) => {
     const { withTransaction } = await import('../../../db/client.js');
     await withTransaction(async (tx) => {
       await tx.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [stockCode, exchange, isPaper]);
-      // state 정리: maxprice, partial_tp_stage, scale_in
-      await tx.query("DELETE FROM overseas_state WHERE key LIKE $1", [`${pfx}%_${stockCode}`]);
-      await tx.query("DELETE FROM overseas_state WHERE key = $1", [`maxprice_${stockCode}`]);
+      // state 정리: 모든 관련 키 일괄 삭제
+      await tx.query('DELETE FROM overseas_state WHERE key = ANY($1)', [[
+        `${pfx}maxprice_${stockCode}`, `${pfx}partial_tp_stage_${stockCode}`, `${pfx}dynamic_tpsl_${stockCode}`,
+        `${pfx}scale_in_${stockCode}`, `${pfx}turtle_trail_${stockCode}`, `sync_sell_pending_${stockCode}`,
+      ]]);
       // 현금 복원
       await tx.query(
         `INSERT INTO overseas_state (key, value) VALUES ($1, $2::text)
@@ -511,8 +532,10 @@ sellRoutes.post('/sell-overseas-all', async (c) => {
       const { withTransaction } = await import('../../../db/client.js');
       await withTransaction(async (tx) => {
         await tx.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [code, exchange, isPaper]);
-        await tx.query("DELETE FROM overseas_state WHERE key LIKE $1", [`${pfx}%_${code}`]);
-        await tx.query("DELETE FROM overseas_state WHERE key = $1", [`maxprice_${code}`]);
+        await tx.query('DELETE FROM overseas_state WHERE key = ANY($1)', [[
+          `${pfx}maxprice_${code}`, `${pfx}partial_tp_stage_${code}`, `${pfx}dynamic_tpsl_${code}`,
+          `${pfx}scale_in_${code}`, `${pfx}turtle_trail_${code}`, `sync_sell_pending_${code}`,
+        ]]);
         await tx.query(
           `INSERT INTO overseas_state (key, value) VALUES ($1, $2::text)
            ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $2)::text`,

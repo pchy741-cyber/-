@@ -5,6 +5,31 @@ import { Panel, SideBadge, EmptyMsg } from '@/components/ui';
 import { fmt, fmtWon, fmtUsd, fmtTime, pc } from '../../lib/utils';
 import { toDisplayName, isUnresolvedStockName } from '../../lib/helpers';
 
+/** AI 사유를 초보자 친화적 한글로 요약 */
+function simplifyReason(raw: string | null | undefined): string {
+  if (!raw) return '-';
+  let s = raw;
+  // 기술적 메타데이터 제거
+  s = s.replace(/\[avgBuy:[\d.]+\]/g, '');
+  s = s.replace(/\[score:[\d.]+\]/g, '');
+  s = s.replace(/\[kelly:[\d.]+\]/g, '');
+  s = s.replace(/\[atr:[\d.]+\]/g, '');
+  // 영어 전략명 → 한글
+  s = s.replace(/trailing\s*stop/gi, '트레일링 스톱(고점 추적 매도)');
+  s = s.replace(/stop\s*loss/gi, '손절');
+  s = s.replace(/take\s*profit/gi, '익절');
+  s = s.replace(/partial\s*(?:TP|take.?profit)/gi, '부분익절');
+  s = s.replace(/scale[_\s]?in/gi, '추가매수');
+  s = s.replace(/concentration[_\s]?cap/gi, '집중도 상한');
+  s = s.replace(/rotation[_\s]?sell/gi, '순환매도');
+  s = s.replace(/vision[_\s]?scalp/gi, '단타 청산');
+  s = s.replace(/defense[_\s]?park/gi, '방어적 주차');
+  s = s.replace(/turtle[_\s]?exit/gi, '터틀 탈출');
+  s = s.replace(/MDD/g, '최대 낙폭');
+  s = s.replace(/ATR/g, '변동폭');
+  return s.trim() || '-';
+}
+
 interface RecentTradesPanelProps {
   filled: any[];
   holdingsTab: 'KR' | 'US';
@@ -46,7 +71,7 @@ export default function RecentTradesPanel({
                     <span className="text-[10px] text-slate-600">{fmtTime(t.created_at)}</span>
                   </div>
                   <div className={`text-[11px] text-slate-500 mt-0.5 ${isExpanded ? 'whitespace-pre-wrap break-words' : 'truncate'}`}>
-                    {t.ai_reasoning || '-'}
+                    {simplifyReason(t.ai_reasoning)}
                   </div>
                 </div>
                 <div className="text-right shrink-0">

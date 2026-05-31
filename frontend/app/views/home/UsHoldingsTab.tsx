@@ -1,10 +1,12 @@
 'use client';
 
 import React, { useState, useCallback } from 'react';
+import { Button } from '@/components/ui';
 import { api, fmtPct, pc, pbg } from '../../lib/utils';
 import { toDisplayName } from '../../lib/helpers';
 import VisionScalpPanel from '../../panels/VisionScalpPanel';
 import ManualBuyModal from '../../panels/ManualBuyModal';
+import { UsHoldingTpSlBar } from './UsHoldingTpSlBar';
 
 interface UsHoldingsTabProps {
   usHoldings: any[];
@@ -14,6 +16,7 @@ interface UsHoldingsTabProps {
   guard: (key: string, fn: () => Promise<void>) => () => Promise<void>;
   onRefresh: () => void;
   toast: any;
+  confirm: (opts: {title: string, description?: string, confirmLabel?: string, confirmVariant?: 'danger'|'primary'|'ghost'}) => Promise<boolean>;
   viewMode?: 'paper' | 'live';
   insightsDraft: string;
   setInsightsDraft: (v: string) => void;
@@ -24,7 +27,7 @@ interface UsHoldingsTabProps {
 }
 
 export default function UsHoldingsTab({
-  usHoldings, usW, dash, busyAction, guard, onRefresh, toast,
+  usHoldings, usW, dash, busyAction, guard, onRefresh, toast, confirm,
   insightsDraft, setInsightsDraft, insightsSaving, setInsightsSaving, usInsights, setUsInsights,
   viewMode = 'live',
 }: UsHoldingsTabProps) {
@@ -62,25 +65,21 @@ export default function UsHoldingsTab({
             const pnl = displayPrice > 0 ? (displayPrice - h.avg_price) * h.quantity : 0;
             const pnlPct = displayPrice > 0 && h.avg_price > 0 ? ((displayPrice - h.avg_price) / h.avg_price) * 100 : 0;
             const usDisplayName = toDisplayName(priceData?.name, h.stock_code);
-            // 동적 TP/SL 데이터 (매수 시 계산 → DB 영속, 클릭 조절 가능)
+            // 동적 TP/SL 데이터
             const tpPct = h.tp_pct;
             const slPct = h.sl_pct;
+            const isScalp = !!h.is_scalp;
+            const scalpTpPct = isScalp && h.scalp_tp && h.avg_price > 0 ? ((h.scalp_tp - h.avg_price) / h.avg_price) * 100 : null;
+            const scalpSlPct = isScalp && h.scalp_sl && h.avg_price > 0 ? ((h.scalp_sl - h.avg_price) / h.avg_price) * 100 : null;
+            const effectiveTp: number | null = scalpTpPct ?? tpPct;
+            const effectiveSl: number | null = scalpSlPct ?? slPct;
+            // 트레일링 / 부분익절 데이터
             const trailPct = h.trail_pct ?? 8;
             const trailActive = !!h.trail_active;
             const trailStopPct = h.trail_stop_pct ?? (slPct ?? -5);
             const maxPnlPct = h.max_pnl_pct ?? 0;
             const partialStage = h.partial_tp_stage ?? 0;
             const nextPartialTpPct = h.next_partial_tp_pct;
-            const isScalp = !!h.is_scalp;
-            const scalpTpPct = isScalp && h.scalp_tp && h.avg_price > 0 ? ((h.scalp_tp - h.avg_price) / h.avg_price) * 100 : null;
-            const scalpSlPct = isScalp && h.scalp_sl && h.avg_price > 0 ? ((h.scalp_sl - h.avg_price) / h.avg_price) * 100 : null;
-            const effectiveTp: number | null = scalpTpPct ?? tpPct;
-            const effectiveSl: number | null = scalpSlPct ?? slPct;
-            // 프로그레스바: SL~TP 범위에서 현재 위치
-            const range = (effectiveTp != null && effectiveSl != null) ? effectiveTp - effectiveSl : 0;
-            const progress = (range > 0 && effectiveSl != null) ? Math.max(0, Math.min(100, ((pnlPct - effectiveSl) / range) * 100)) : 50;
-            const targetPrice = effectiveTp != null ? h.avg_price * (1 + effectiveTp / 100) : 0;
-            const stopPrice = effectiveSl != null ? h.avg_price * (1 + effectiveSl / 100) : 0;
             return (
               <div key={h.stock_code} className="px-4 py-3 space-y-2">
                 {/* 상단: 종목명 + 수익률 + 매도버튼 */}
@@ -104,99 +103,57 @@ export default function UsHoldingsTab({
                       </>
                     ) : <span className="text-xs text-slate-600">시세 없음</span>}
                   </div>
-                  <button disabled={!!busyAction} onClick={guard(`sell-us-${h.stock_code}`, async () => {
-                    const liveUS = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
-                    if (!confirm(`${liveUS}${usDisplayName} ${h.quantity}주 전량 시장가 매도하시겠습니까?`)) return;
-                    try {
-                      const r = await api(`/sell-overseas/${h.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 });
-                      alert(r.message || '매도 완료');
-                      onRefresh();
-                    } catch (err: any) {
-                      // KIS 실패 시 강제 DB 청산 제안
-                      if (confirm(`매도 실패: ${err.message}\n\n장마감 등으로 KIS 주문 불가 시, 강제 DB 청산하시겠습니까?\n(마지막 시세 $${displayPrice.toFixed(2)} 기준 정산)`)) {
-                        try {
-                          const r2 = await api(`/sell-overseas-force/${h.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 20000 });
-                          alert(r2.message || '강제 청산 완료');
-                          onRefresh();
-                        } catch (e2: any) { alert('강제 청산 실패: ' + e2.message); }
+                  <div className="flex items-center gap-1 shrink-0">
+                    {h.quantity >= 4 && [25, 50, 75].map(pct => {
+                      const sellQty = Math.max(1, Math.round(h.quantity * pct / 100));
+                      return (
+                        <Button key={pct} variant="ghost" size="sm" className="text-[10px] px-1.5 py-1 hover:bg-amber-500/10 hover:text-amber-400 text-slate-600 border border-white/[0.03]"
+                          disabled={!!busyAction} onClick={guard(`sell-us-${h.stock_code}-${pct}`, async () => {
+                          const liveUS = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
+                          if (!await confirm({title: `${liveUS}${usDisplayName} ${sellQty}주 (${pct}%) 시장가 매도하시겠습니까?`, confirmLabel: '매도', confirmVariant: 'danger'})) return;
+                          try {
+                            const r = await api(`/sell-overseas/${h.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper', quantity: sellQty }), timeout: 40000 });
+                            toast(r.message || '매도 완료', 'ok');
+                            onRefresh();
+                          } catch (err: any) { toast('매도 실패: ' + err.message, 'err'); }
+                        })}>
+                          {pct}%
+                        </Button>
+                      );
+                    })}
+                    <Button variant="ghost" size="sm" className="text-xs hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 border border-white/[0.04] whitespace-nowrap"
+                      disabled={!!busyAction} onClick={guard(`sell-us-${h.stock_code}`, async () => {
+                      const liveUS = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
+                      if (!await confirm({title: `${liveUS}${usDisplayName} ${h.quantity}주 전량 시장가 매도하시겠습니까?`, confirmLabel: '전량 매도', confirmVariant: 'danger'})) return;
+                      try {
+                        const r = await api(`/sell-overseas/${h.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 });
+                        toast(r.message || '매도 완료', 'ok');
+                        onRefresh();
+                      } catch (err: any) {
+                        if (await confirm({title: `매도 실패: ${err.message}`, description: `장마감 등으로 KIS 주문 불가 시, 강제 DB 청산하시겠습니까?\n(마지막 시세 $${displayPrice.toFixed(2)} 기준 정산)`, confirmLabel: '강제 청산', confirmVariant: 'danger'})) {
+                          try {
+                            const r2 = await api(`/sell-overseas-force/${h.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 20000 });
+                            toast(r2.message || '강제 청산 완료', 'ok');
+                            onRefresh();
+                          } catch (e2: any) { toast('강제 청산 실패: ' + e2.message, 'err'); }
+                        }
                       }
-                    }
-                  })} className="text-xs px-2.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 font-medium border border-white/[0.04] whitespace-nowrap shrink-0 disabled:opacity-40">
-                    매도
-                  </button>
+                    })}>
+                      전량
+                    </Button>
+                  </div>
                 </div>
                 {/* 하단: 동적 TP/SL 프로그레스바 + 트레일링 상태 */}
-                {displayPrice > 0 && effectiveTp != null && effectiveSl != null && (
-                  <div className="space-y-1">
-                    {/* TP/SL 인라인 수정 모드 */}
-                    {editingTpSl === h.stock_code ? (
-                      <div className="flex items-center gap-1.5 text-[10px]">
-                        <span className="text-rose-400 text-[9px]">SL</span>
-                        <input type="number" step="0.5" value={editSl} onChange={e => setEditSl(e.target.value)}
-                          className="w-14 px-1 py-0.5 bg-slate-800 border border-slate-600 rounded text-[10px] text-rose-400 text-center tabular-nums" />
-                        <div className="flex-1" />
-                        <span className="text-emerald-400 text-[9px]">TP</span>
-                        <input type="number" step="0.5" value={editTp} onChange={e => setEditTp(e.target.value)}
-                          className="w-14 px-1 py-0.5 bg-slate-800 border border-slate-600 rounded text-[10px] text-emerald-400 text-center tabular-nums" />
-                        <button onClick={() => saveTpSl(h.stock_code)}
-                          className="text-[9px] px-1.5 py-0.5 bg-blue-600/60 rounded text-blue-200">저장</button>
-                        <button onClick={() => setEditingTpSl(null)}
-                          className="text-[9px] px-1 py-0.5 text-slate-500">취소</button>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-1.5 text-[10px]">
-                        <span className="text-rose-400 font-medium tabular-nums text-right cursor-pointer hover:underline"
-                          onClick={() => { setEditingTpSl(h.stock_code); setEditSl(String(effectiveSl.toFixed(1))); setEditTp(String(effectiveTp.toFixed(1))); }}
-                          title="클릭하여 SL 조절">{effectiveSl.toFixed(1)}%<span className="text-slate-600 ml-0.5">${stopPrice.toFixed(0)}</span></span>
-                        <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden relative">
-                          <div className="absolute inset-0">
-                            <div className="h-full w-full bg-gradient-to-r from-rose-500/40 to-slate-600/20" />
-                          </div>
-                          <div
-                            className={`absolute top-0 left-0 h-full rounded-full transition-all ${pnlPct >= 0 ? 'bg-emerald-500' : 'bg-rose-500'}`}
-                            style={{ width: `${progress}%` }}
-                          />
-                          {/* 부분익절 단계 마커들 */}
-                          {nextPartialTpPct != null && nextPartialTpPct !== effectiveTp && range > 0 && (
-                            <div
-                              className="absolute top-0 h-full w-px bg-cyan-400/50"
-                              style={{ left: `${Math.max(0, Math.min(100, ((nextPartialTpPct - effectiveSl) / range) * 100))}%` }}
-                              title={`부분익절 +${nextPartialTpPct}%`}
-                            />
-                          )}
-                          {/* 트레일링 활성화/스톱 마커 */}
-                          {range > 0 && !trailActive && (
-                            <div
-                              className="absolute top-0 h-full w-px bg-yellow-500/40"
-                              style={{ left: `${Math.max(0, Math.min(100, ((trailPct - effectiveSl) / range) * 100))}%` }}
-                              title={`트레일 활성: +${trailPct}%`}
-                            />
-                          )}
-                          {trailActive && range > 0 && (
-                            <div
-                              className="absolute top-0 h-full w-[3px] bg-yellow-400/80 rounded-full"
-                              style={{ left: `${Math.max(0, Math.min(100, ((trailStopPct - effectiveSl) / range) * 100))}%` }}
-                              title={`트레일 스톱: ${trailStopPct >= 0 ? '+' : ''}${trailStopPct.toFixed(1)}%`}
-                            />
-                          )}
-                        </div>
-                        <span className="text-emerald-400 font-medium tabular-nums cursor-pointer hover:underline"
-                          onClick={() => { setEditingTpSl(h.stock_code); setEditSl(String(effectiveSl.toFixed(1))); setEditTp(String(effectiveTp.toFixed(1))); }}
-                          title="클릭하여 TP 조절">+{effectiveTp.toFixed(1)}%<span className="text-slate-600 ml-0.5">${targetPrice.toFixed(0)}</span></span>
-                      </div>
-                    )}
-                    {/* 트레일/부분익절 상태만 표시 (SL·TP 가격은 프로그레스바에 통합) */}
-                    {(trailActive || partialStage > 0 || nextPartialTpPct != null) && (
-                      <div className="text-[10px] text-slate-600 px-1 text-center">
-                        {trailActive
-                          ? <span className="text-yellow-500">트레일 활성 · 스톱 ${(h.avg_price * (1 + trailStopPct / 100)).toFixed(2)} · 고점+{maxPnlPct.toFixed(1)}%</span>
-                          : partialStage > 0
-                            ? <span className="text-cyan-500">{partialStage}단계 부분익절 완료</span>
-                            : <span className="text-slate-500">1차 익절 +{nextPartialTpPct}% · 트레일 +{trailPct}%</span>
-                        }
-                      </div>
-                    )}
-                  </div>
+                {displayPrice > 0 && (
+                  <UsHoldingTpSlBar
+                    stockCode={h.stock_code} pnlPct={pnlPct}
+                    effectiveTp={effectiveTp} effectiveSl={effectiveSl} avgPrice={h.avg_price}
+                    editingTpSl={editingTpSl} editTp={editTp} editSl={editSl}
+                    setEditingTpSl={setEditingTpSl} setEditTp={setEditTp} setEditSl={setEditSl}
+                    saveTpSl={saveTpSl}
+                    trailPct={trailPct} trailActive={trailActive} trailStopPct={trailStopPct}
+                    maxPnlPct={maxPnlPct} partialStage={partialStage} nextPartialTpPct={nextPartialTpPct}
+                  />
                 )}
                 {/* TP/SL 미설정 시 (레거시 보유종목) */}
                 {displayPrice > 0 && (effectiveTp == null || effectiveSl == null) && (
@@ -212,27 +169,28 @@ export default function UsHoldingsTab({
           {/* 전종목 일괄 탈출 버튼 */}
           {usHoldings.length >= 2 && (
             <div className="px-4 py-2 border-t border-white/[0.04]">
-              <button disabled={!!busyAction} onClick={guard('sell-us-all', async () => {
+              <Button variant="ghost" size="sm" className="w-full py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20"
+                disabled={!!busyAction} onClick={guard('sell-us-all', async () => {
                 const liveUS = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
-                if (!confirm(`${liveUS}해외 보유종목 ${usHoldings.length}종목 전부 일괄 청산하시겠습니까?\n\n장마감 시 마지막 시세 기준 DB 강제 청산됩니다.`)) return;
+                if (!await confirm({title: `${liveUS}해외 보유종목 ${usHoldings.length}종목 전부 일괄 청산하시겠습니까?`, description: '장마감 시 마지막 시세 기준 DB 강제 청산됩니다.', confirmLabel: '일괄 청산', confirmVariant: 'danger'})) return;
                 try {
                   const r = await api('/sell-overseas-all', { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper', force_db: true }), timeout: 60000 });
-                  alert(r.message || '전종목 청산 완료');
+                  toast(r.message || '전종목 청산 완료', 'ok');
                   onRefresh();
-                } catch (err: any) { alert('일괄 청산 실패: ' + err.message); }
-              })} className="w-full text-xs py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 font-medium border border-rose-500/20 disabled:opacity-40">
+                } catch (err: any) { toast('일괄 청산 실패: ' + err.message, 'err'); }
+              })}>
                 전종목 일괄 청산 ({usHoldings.length}종목)
-              </button>
+              </Button>
             </div>
           )}
         </div>
       )}
       {/* 수동매수 버튼 */}
       <div className="px-4 py-2">
-        <button onClick={() => setShowManualBuy(true)}
-          className="w-full py-2.5 rounded-xl text-sm font-medium bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/20 transition-all">
+        <Button variant="ghost" size="md" className="w-full py-2.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/20"
+          onClick={() => setShowManualBuy(true)}>
           수동 매수
-        </button>
+        </Button>
       </div>
       {/* 제보 단타 */}
       <VisionScalpPanel toast={toast} />
@@ -266,6 +224,7 @@ export default function UsHoldingsTab({
         onClose={() => setShowManualBuy(false)}
         onSuccess={onRefresh}
         toast={toast}
+        confirm={confirm}
         viewMode={viewMode}
         watchlist={usW.map((s: any) => ({ code: s.code, name: s.name ?? s.code, exchange: s.exchange ?? 'NASDAQ' }))}
       />
@@ -283,7 +242,7 @@ export default function UsHoldingsTab({
           {usInsights && insightsDraft === usInsights
             ? <span className="text-[10px] text-emerald-500/70">✓ 저장됨</span>
             : <span className="text-[10px] text-slate-600">{insightsDraft.length > 0 ? '미저장' : ''}</span>}
-          <button
+          <Button variant="primary" size="sm" className="text-[11px] px-3 py-1 bg-blue-600/70 hover:bg-blue-500/70"
             disabled={insightsSaving || insightsDraft === usInsights}
             onClick={async () => {
               setInsightsSaving(true);
@@ -293,11 +252,9 @@ export default function UsHoldingsTab({
                 toast?.('인사이트 저장됨', 'ok');
               } catch { toast?.('저장 실패', 'err'); }
               setInsightsSaving(false);
-            }}
-            className="text-[11px] px-3 py-1 bg-blue-600/70 hover:bg-blue-500/70 disabled:bg-slate-700 disabled:text-slate-500 rounded-lg transition-all"
-          >
+            }}>
             {insightsSaving ? '저장중...' : '저장'}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

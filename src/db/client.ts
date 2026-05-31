@@ -351,7 +351,7 @@ export async function getPendingDomesticOrders(): Promise<Order[]> {
   if (useMemory) return [];
   const { rows } = await getPool().query(
     `SELECT * FROM orders
-     WHERE status = 'PENDING'
+     WHERE status IN ('PENDING', 'PARTIAL')
        AND (trigger_source IS NULL OR trigger_source != 'OVERSEAS')
        AND created_at >= NOW() - INTERVAL '2 hours'
        AND kis_order_no IS NOT NULL

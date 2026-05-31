@@ -266,6 +266,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   let overseasTotalInvested = 0;
   let overseasMarketValueUsd = 0;
   let overseasCash = 0;
+  let osCashAge = Infinity; // 스테일 가드용: overseas_state.cash 경과 초 (try 블록 밖 선언)
   try {
     const pfx = viewIsPaper ? 'p_' : 'l_';
 
@@ -276,7 +277,9 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       overseasCash = await computePaperCash(); // USD (결정론적 — orders 기반)
     } else {
       const { rows: osCashRows } = await getPool().query(
-        "SELECT value FROM overseas_state WHERE key = 'cash'");
+        `SELECT value, EXTRACT(EPOCH FROM (NOW() - COALESCE(updated_at, NOW() - INTERVAL '999 hours'))) AS age_sec
+         FROM overseas_state WHERE key = 'cash'`);
+      osCashAge = osCashRows.length > 0 ? Number(osCashRows[0].age_sec) : Infinity;
       overseasCash = osCashRows.length > 0 ? Number(osCashRows[0].value) : 0; // KRW
     }
 
@@ -409,35 +412,45 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   const rawOverseasCash = isNaN(overseasCash) ? 0 : overseasCash;
   const overseasCashKrw = viewIsPaper ? rawOverseasCash * FX_RATE : rawOverseasCash;
 
-  const domesticInvested = totalInvested || 0;
-  // 국내 시가평가 = 원가 + 미실현손익 (원가만 쓰면 수익/손실 반영 안 됨)
-  const domesticMarketValue = totalChainInvested + totalChainPnl;
+  // ── KIS 권위 데이터 (실전모드: 체인 DB 대신 KIS 실계좌 수치 사용) ──
+  const kisDomEval = balance.totalEvalAmount ?? 0;       // 국내 증권 시가평가 (KIS)
+  const kisPurchaseCost = (balance as any).purchaseCost ?? 0; // 국내 매입원가 (KIS)
 
-  // ══ 통합증거금: 국내+해외 단일 원화 풀 ══
+  // 국내 투자원가: Live=KIS purchaseCost 우선
+  const domesticInvested = !viewIsPaper && kisPurchaseCost > 0
+    ? kisPurchaseCost : (totalInvested || 0);
+  // 국내 시가평가: Live=KIS totalEvalAmount 우선 (DB 체인보다 KIS가 정확)
+  const domesticMarketValue = !viewIsPaper && kisDomEval > 0
+    ? kisDomEval : (totalChainInvested + totalChainPnl);
+
+  // ══ 통합증거금: 현금 계산 ══
   if (viewIsPaper) {
     // Paper: 국내 현금(rawCash) + 해외 현금(USD→KRW) = 통합 현금
     actualCash = (actualCash || 0) + overseasCashKrw;
   } else {
     // Live: psamount 기반 overseas_state 우선 (해외 매도대금 T+1 반영 정확)
-    // 국내 getAccountBalance().orderableCash는 미결제 금액 제외할 수 있음
-    if (overseasCashKrw > 0) {
+    // 스테일 가드: 2시간 초과 overseas_state → 국내 잔고 API 폴백
+    const STALE_SEC = 2 * 60 * 60;
+    if (overseasCashKrw > 0 && osCashAge < STALE_SEC) {
       actualCash = overseasCashKrw;
     } else if (rawCash > 0) {
-      // psamount 미조회 시 국내 잔고 API 폴백
       actualCash = rawCash;
+      if (overseasCashKrw > 0 && osCashAge >= STALE_SEC) {
+        logger.warn(`대시보드: overseas_state.cash 스테일 (${Math.round(osCashAge / 60)}분) → 국내 잔고 API 폴백`, { component: 'DASHBOARD' });
+      }
     } else {
       // 전부 실패 → netAsset 기반 추정
       const netAsset = (balance as any).netAsset ?? 0;
-      if (netAsset > 0 && domesticInvested > 0) {
-        actualCash = Math.max(0, netAsset - domesticInvested);
-      }
-      if (overseasInvestedKrw > 0) {
-        actualCash = Math.max(0, actualCash - overseasInvestedKrw);
+      if (netAsset > 0) {
+        actualCash = Math.max(0, netAsset - domesticMarketValue);
+        if (overseasInvestedKrw > 0) {
+          actualCash = Math.max(0, actualCash - overseasInvestedKrw);
+        }
       }
     }
   }
 
-  // 총자산 = 통합현금 + 국내 시가 + 해외 시가 (모드 무관 동일 공식)
+  // 총자산 = 통합현금 + 국내 시가 + 해외 시가
   const grandTotalValue = (actualCash || 0) + domesticMarketValue + overseasMarketValueKrw;
 
   // 비중(weight) 계산 — grandTotalValue 기준 시가 기반 통합 비중
@@ -483,7 +496,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     };
   });
 
-  const grandTotalInvested = totalChainInvested + overseasInvestedKrw;
+  const grandTotalInvested = domesticInvested + overseasInvestedKrw;
 
   // 통합증거금: 현금은 하나 (Live/Paper 모두 portfolio.cash = overseas.cashKrw = 동일)
   const unifiedCash = Math.round(actualCash);
@@ -494,7 +507,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       totalValue: Math.round(grandTotalValue),
       cash: unifiedCash,
       invested: Math.round(grandTotalInvested),
-      domesticInvested: Math.round(totalChainInvested),
+      domesticInvested: Math.round(domesticInvested),
+      domesticEval: Math.round(domesticMarketValue), // 국내 증권 시가평가 (비중 계산용)
       domesticCash: unifiedCash, // 통합증거금: 국내/해외 구분 없음
       unrealizedPnl: Math.round(viewIsPaper ? totalChainPnl : (balance.totalProfitLoss || totalChainPnl)),
       realizedPnl: viewIsPaper ? Math.round(balance.totalProfitLoss ?? 0) : 0,
@@ -541,6 +555,96 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     })(),
     insights: insightRows.rows,
     defensePark,
+
+    // ── 오늘의 추천 액션 ──
+    suggestedActions: (() => {
+      const actions: Array<{ type: string; priority: 'high' | 'medium' | 'low'; message: string; detail?: string }> = [];
+
+      // 해외 보유종목: 부분익절 임박 + 트레일링 스톱 알림 (단일 루프)
+      for (const h of overseasHoldings as any[]) {
+        if (h.last_price <= 0 || h.avg_price <= 0) continue;
+        const curPnlPct = ((h.last_price - h.avg_price) / h.avg_price) * 100;
+
+        if (h.next_partial_tp_pct != null) {
+          const gap = h.next_partial_tp_pct - curPnlPct;
+          if (gap > 0 && gap <= 3) {
+            actions.push({
+              type: 'partial_tp_near',
+              priority: 'high',
+              message: `${h.stock_code} 부분익절 ${h.partial_tp_stage + 1}단계 임박`,
+              detail: `현재 +${curPnlPct.toFixed(1)}% → 목표 +${h.next_partial_tp_pct}% (${gap.toFixed(1)}% 남음)`,
+            });
+          }
+        }
+
+        if (h.trail_active) {
+          actions.push({
+            type: 'trail_active',
+            priority: 'medium',
+            message: `${h.stock_code} 트레일링 스톱 가동 중`,
+            detail: `고점 대비 +${h.max_pnl_pct.toFixed(1)}% / 현재 +${curPnlPct.toFixed(1)}% / 스톱 ${h.trail_stop_pct.toFixed(1)}%`,
+          });
+        }
+      }
+
+      // 현금 비중 과다 (60%↑) → 투자 여력 있음
+      const cashRatio = grandTotalValue > 0 ? ((actualCash || 0) / grandTotalValue) * 100 : 0;
+      if (cashRatio > 60 && grandTotalValue > 100000) {
+        actions.push({
+          type: 'high_cash',
+          priority: 'low',
+          message: `현금 비중 ${Math.round(cashRatio)}% — 자동매매가 기회 탐색 중`,
+          detail: `유휴 자금 ₩${Math.round(actualCash || 0).toLocaleString()} 대기`,
+        });
+      }
+
+      // 국내 체인 중 큰 손실 종목 경고
+      for (const ch of displayChains as any[]) {
+        const pnlPct = ch.unrealizedPnlPct ?? 0;
+        if (pnlPct < -10) {
+          actions.push({
+            type: 'deep_loss',
+            priority: 'high',
+            message: `${ch.stock_name || ch.stock_code} 손실 ${pnlPct.toFixed(1)}%`,
+            detail: '자동 손절 조건 모니터링 중',
+          });
+        }
+      }
+
+      return actions.slice(0, 8);
+    })(),
+
+    // ── 월간 목표 진행률 ──
+    monthlyGoal: (() => {
+      const monthlyTargetPct = 3; // 월 3% 목표
+      const seedKr = grandTotalValue > 0 ? grandTotalValue : 10_000_000;
+      const targetAmount = Math.round(seedKr * monthlyTargetPct / 100);
+      const currentPnl = Math.round(totalPnl);
+      const progressPct = targetAmount > 0 ? Math.min(200, Math.round((currentPnl / targetAmount) * 100)) : 0;
+      return {
+        targetPct: monthlyTargetPct,
+        targetAmount,
+        currentPnl,
+        progressPct,
+        remaining: Math.max(0, targetAmount - currentPnl),
+      };
+    })(),
+
+    // ── 환율 영향 분석 ──
+    fxImpact: (() => {
+      if (overseasTotalInvested <= 0 || FX_RATE <= 0) return null;
+      const impactPer10Won = Math.round(overseasMarketValueUsd * 10); // ₩10 변동 시 원화 영향
+      const overseasPnlUsd = overseasMarketValueUsd - overseasTotalInvested;
+      const overseasPnlKrw = Math.round(overseasPnlUsd * FX_RATE);
+      return {
+        fxRate: FX_RATE,
+        exposureUsd: Math.round(overseasMarketValueUsd * 100) / 100,
+        exposureKrw: Math.round(overseasMarketValueUsd * FX_RATE),
+        impactPer10Won,
+        overseasPnlUsd: Math.round(overseasPnlUsd * 100) / 100,
+        overseasPnlKrw,
+      };
+    })(),
   };
   return dashPayload;
 }

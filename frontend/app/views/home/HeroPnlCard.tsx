@@ -43,8 +43,9 @@ export default function HeroPnlCard({
   domesticInvested, chainsLength, usHoldingsLength, withdrawConfig, todayTradesLength,
   totalValue, totalInvested, fxRate,
 }: HeroPnlCardProps) {
-  // 통합증거금: 전체 포트폴리오 기준 투자비중 (탭 무관)
-  const investedPct = totalValue > 0 ? Math.round((totalInvested / totalValue) * 100) : 0;
+  // 통합증거금: 시가 기반 투자비중 (현금+투자=100%)
+  const investedPct = totalValue > 0 && domesticCash < totalValue
+    ? Math.round(((totalValue - domesticCash) / totalValue) * 100) : 0;
   const totalHoldings = chainsLength + usHoldingsLength;
   const mask = (v: string) => privacyMode ? '••••••' : v;
 
