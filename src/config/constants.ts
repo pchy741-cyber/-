@@ -367,14 +367,15 @@ export const OVERSEAS = {
 /** 포트폴리오 규모 기반 동적 파라미터 — 고정형 상수 대체 */
 export function getOverseasDynamic(portfolioUsd: number, isPaper = false) {
   const p = Math.max(100, portfolioUsd);
-  // Paper: $300당 1종목 (최소 4, 최대 15), Live: $1000당 1종목 (최소 3, 최대 12)
+  // Paper: $500당 1종목 (최소 2, 최대 10), Live: $1500당 1종목 (최소 2, 최대 8)
+  // 소액 과다분산 방지: 의미있는 포지션 크기 보장
   const maxPos = isPaper
-    ? Math.max(4, Math.min(15, Math.floor(p / 300)))
-    : Math.max(3, Math.min(12, Math.floor(p / 1000)));
+    ? Math.max(2, Math.min(10, Math.floor(p / 500)))
+    : Math.max(2, Math.min(8, Math.floor(p / 1500)));
   return {
     maxPositions:       maxPos,
-    positionSizeUsd:    Math.max(50, Math.min(p * 0.20, 5000)),             // 포트폴리오 20% 캡, 최대 $5k
-    positionPct:        p < 2000 ? 0.35 : p < 10000 ? 0.25 : 0.18,         // 소액→35%, 중형→25%, 대형→18%
+    positionSizeUsd:    Math.max(80, Math.min(p * 0.25, 5000)),             // 포트폴리오 25% 캡, 최소 $80
+    positionPct:        p < 2000 ? 0.40 : p < 10000 ? 0.25 : 0.18,         // 소액→40%(집중), 중형→25%, 대형→18%
     parkingCashBuffer:  Math.max(50, Math.round(p * 0.05)),                 // 포트폴리오 5% 현금 유지
     maxHoldDays:        p < 2000 ? 14 : p < 10000 ? 21 : 30,               // 소액→14일, 중형→21일, 대형→30일
     concentrationCashBuffer: Math.max(30, Math.round(p * 0.04)),            // 4% 집중전략 현금

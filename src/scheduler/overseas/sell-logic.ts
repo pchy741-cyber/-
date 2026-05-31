@@ -141,6 +141,15 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       sellReason = `기술 익절(과매수): RSI=${tech.rsi.toFixed(0)} +${pnlPct.toFixed(1)}%`;
     } else if (!ai && tech.score <= -30 && (tech.signal === 'SELL' || tech.signal === 'STRONG_SELL') && holdingDays >= minHoldForSell) {
       sellReason = `기술적 매도(AI없음): score=${tech.score} RSI=${tech.rsi.toFixed(0)}`;
+    } else if (holdingDays >= 3 && pnlPct <= -5.5 && !tech.isMomentum) {
+      // 3일+ & -5.5% 이하 & 모멘텀 없음 → 반등 기대 어려움, 조기 손절
+      sellReason = `시간SL(${holdingDays.toFixed(0)}일/${pnlPct.toFixed(1)}%): 반등 없이 하락 → 조기손절`;
+    } else if (holdingDays >= 5 && pnlPct <= -3.0 && tech.score < 0 && !tech.aboveMA20) {
+      // 5일+ & -3% & score 음수 & MA20 아래 → 약세 지속
+      sellReason = `시간손절(${holdingDays.toFixed(0)}일/${pnlPct.toFixed(1)}%): score=${tech.score} MA20↓ → 조기정리`;
+    } else if (holdingDays >= 7 && pnlPct <= -2.0 && pnlPct > -5.5 && tech.adx < 18) {
+      // 7일+ & 소폭 손실 & 추세 없음 → 횡보 하락, 자본 묶임 방지
+      sellReason = `횡보손절(${holdingDays.toFixed(0)}일/${pnlPct.toFixed(1)}%): ADX=${tech.adx.toFixed(0)} 추세없음 → 정리`;
     } else if (holdingDays > maxHoldDays && pnlPct < 3.0) {
       sellReason = pnlPct < 0
         ? `보유기한 초과(${holdingDays.toFixed(0)}일/손실): ${pnlPct.toFixed(1)}% → 청산`

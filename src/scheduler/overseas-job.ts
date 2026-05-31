@@ -756,12 +756,14 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         const mtfBonus = mtf?.confidenceBonus ?? 0;
         const stockEV = evMultipliers.get(target.code);
         const evMult = stockEV?.evMultiplier ?? 1.0;
+        const wrData = overseasWinRates.get(target.code);
         const { sizingMult, positionSize } = calcPositionSize({
           target, portfolioValue, kellyResult, vixRegime, gradualCooldown,
           cash, isPaper: isPaper(), evMultiplier: evMult, mtfBonus,
           sessionSizingMult: brief?.sizingMultiplier,
+          winRate: wrData?.winRate, winRateSamples: wrData?.sampleCount,
         });
-        // 소액투자 가능: 통합증거금 소액 매수 허용 (수수료 0.25% → $20도 $0.05)
+        // 최소 포지션: position-sizing.ts에서 $80(paper)/$150(live) 바닥 적용
         const minPositionSize = 20;
         if (positionSize < minPositionSize) {
           logger.info(`🔧 ${target.code}: positionSize=$${positionSize.toFixed(2)} < $${minPositionSize} → BREAK (sizing=${sizingMult} cash=$${cash.toFixed(0)})`, { component: 'OVERSEAS' });
