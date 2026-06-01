@@ -1,5 +1,6 @@
 import { STRATEGY_PARAMS, REFRESH, type StrategyMode } from '../../config/constants.js';
 import { config } from '../../config/index.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import {
   enableMemoryMode,
   getActiveStrategy,
@@ -104,7 +105,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     if (todayRepeatStopCodes.size > 0) {
       logger.warn(`🚫 당일 반복손절 재진입 차단: ${[...todayRepeatStopCodes].join(', ')}`, { component: 'TRACK_B' });
     }
-    const balanceRaw = config.isPaper ? await getPaperBalance() : await getAccountBalance();
+    const ctxIsPaper = getCtxIsPaper(); // runWithMode 컨텍스트 우선, 없으면 서버 기본값
+    const balanceRaw = ctxIsPaper ? await getPaperBalance() : await getAccountBalance();
     const balance = balanceRaw as any;
 
     if (watchlist.length === 0) {
@@ -209,7 +211,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       _lastDartRefreshAt = Date.now();
       monitorDisclosures().catch(() => {});
     }
-    const macroRiskOff = !config.isPaper && macroSnapshot?.regime === 'RISK_OFF';
+    const macroRiskOff = !ctxIsPaper && macroSnapshot?.regime === 'RISK_OFF';
     if (macroSnapshot?.regime === 'RISK_OFF') {
       logger.info(`🌐 매크로 RISK_OFF (Fear&Greed=${macroSnapshot?.fearGreedIndex ?? '?'}, VKOSPI=${macroSnapshot?.vkospi ?? '?'}) → ${config.isPaper ? '모의투자 — 차단 스킵' : '신규 매수 추가 제한'}`, { component: 'TRACK_B' });
     }
