@@ -4,29 +4,26 @@
  */
 import { getPool } from '../../db/client.js';
 import { getCtxIsPaper } from '../../config/context.js';
-import { getFuturesPrice, placeFuturesOrder, MICRO_FUTURES } from '../../kis/futures.js';
+import { getFuturesPrice, placeFuturesOrder, FUTURES_BY_PRODUCT } from '../../kis/futures.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
+import { budgetCol } from '../../api/guards/live-pin.js';
 import { scanFuturesSignals, calcFuturesTPSL, calcFuturesQty } from './signal-generator.js';
 import type { FuturesAutoConfig } from './types.js';
 
 const COMP = 'FUTURES';
 
-/** 선물 설정 로드 (feature flag + budget) */
+/** 선물 설정 로드 (budget만 — flag 체크는 caller가 담당) */
 export async function loadFuturesConfig(): Promise<FuturesAutoConfig> {
-  const { rows: flagRows } = await getPool().query(
-    "SELECT enabled FROM feature_flags WHERE key = 'overseas_futures'",
-  );
-  const { rows: budgetRows } = await getPool().query(
-    'SELECT * FROM futures_budget WHERE id = 1',
-  );
-  const budget = budgetRows[0];
+  const cols = budgetCol(getCtxIsPaper());
+  const { rows } = await getPool().query('SELECT * FROM futures_budget WHERE id = 1');
+  const b = rows[0];
   return {
-    enabled: flagRows[0]?.enabled === true,
+    enabled: true,
     maxContracts: 5,
-    maxBudgetKrw: Number(budget?.max_budget_krw ?? 100000),
-    allocatedKrw: Number(budget?.allocated_krw ?? 0),
-    totalPnlUsd: Number(budget?.total_pnl_usd ?? 0),
+    maxBudgetKrw: Number(b?.max_budget_krw ?? 100000),
+    allocatedKrw: Number(b?.[cols.allocated] ?? 0),
+    totalPnlUsd: Number(b?.[cols.pnl] ?? 0),
   };
 }
 
@@ -44,7 +41,7 @@ export async function monitorFuturesTPSL(): Promise<void> {
       if (!price) continue;
 
       const current = price.price;
-      const spec = MICRO_FUTURES.find(m => m.product === pos.product);
+      const spec = FUTURES_BY_PRODUCT.get(pos.product);
       const multiplier = spec ? spec.tickValue / spec.tickSize : 5;
       const direction = pos.side === 'LONG' ? 1 : -1;
       const pnl = direction * (current - Number(pos.entry_price)) * multiplier * Number(pos.quantity);
@@ -105,8 +102,9 @@ async function closeFuturesPosition(
     [pos.symbol, pos.product, closeSideLabel, pos.quantity, closePrice, pnl, reason, isPaper],
   );
 
+  const pnlCol = budgetCol(isPaper).pnl;
   await getPool().query(
-    'UPDATE futures_budget SET total_pnl_usd = total_pnl_usd + $1 WHERE id = 1',
+    `UPDATE futures_budget SET ${pnlCol} = ${pnlCol} + $1 WHERE id = 1`,
     [pnl],
   );
 
@@ -130,7 +128,7 @@ export async function executeFuturesEntry(config: FuturesAutoConfig): Promise<vo
   if (signals.length === 0) return;
 
   const best = signals.sort((a, b) => b.confidence - a.confidence)[0];
-  const spec = MICRO_FUTURES.find(m => m.product === best.product);
+  const spec = FUTURES_BY_PRODUCT.get(best.product);
   if (!spec) return;
 
   const qty = await calcFuturesQty({

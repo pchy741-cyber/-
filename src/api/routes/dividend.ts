@@ -10,14 +10,22 @@ import { getPool } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
 import { baseIsPaper } from '../../config/index.js';
 import { fetchExchangeRate } from '../../automation/macro-data.js';
+import { validateLivePin, resolveIsPaper } from '../guards/live-pin.js';
 
 export const dividendRoutes = new Hono();
 
-// ── 기능 플래그 체크 미들웨어 ──
+// ── TTL 캐시: feature flag (30초) ──
+let _divFlagCache: { value: boolean; ts: number } | null = null;
+const FLAG_TTL = 30_000;
+
 async function checkDividendEnabled(): Promise<boolean> {
+  const now = Date.now();
+  if (_divFlagCache && now - _divFlagCache.ts < FLAG_TTL) return _divFlagCache.value;
   try {
     const { rows } = await getPool().query("SELECT enabled FROM feature_flags WHERE key = 'dividend_investing'");
-    return rows[0]?.enabled === true;
+    const v = rows[0]?.enabled === true;
+    _divFlagCache = { value: v, ts: now };
+    return v;
   } catch { return false; }
 }
 
@@ -87,7 +95,7 @@ dividendRoutes.patch('/dividend/watchlist/:id', async (c) => {
 // ── 배당 보유종목 조회 ──
 dividendRoutes.get('/dividend/holdings', async (c) => {
   try {
-    const isPaper = c.req.query('viewMode') === 'paper' ? true : baseIsPaper;
+    const isPaper = resolveIsPaper(c.req.query('mode') as 'paper' | 'live' | undefined);
     const { rows } = await getPool().query(
       `SELECT dh.*, dw.name, dw.dividend_yield, dw.payment_frequency, dw.sector
        FROM dividend_holdings dh
@@ -106,19 +114,15 @@ dividendRoutes.get('/dividend/holdings', async (c) => {
 dividendRoutes.get('/dividend/history', async (c) => {
   try {
     const limit = parseInt(c.req.query('limit') || '50', 10);
-    const { rows } = await getPool().query(
-      `SELECT * FROM dividend_history ORDER BY pay_date DESC NULLS LAST, recorded_at DESC LIMIT $1`,
-      [limit]
-    );
-    // 통계
-    const { rows: stats } = await getPool().query(
-      `SELECT
-         COUNT(*) AS total_payments,
-         COALESCE(SUM(net_amount_usd), 0) AS total_received_usd,
-         COALESCE(SUM(tax_amount_usd), 0) AS total_tax_usd,
-         COALESCE(AVG(net_amount_usd), 0) AS avg_per_payment
-       FROM dividend_history`
-    );
+    const pool = getPool();
+    const [{ rows }, { rows: stats }] = await Promise.all([
+      pool.query(`SELECT * FROM dividend_history ORDER BY pay_date DESC NULLS LAST, recorded_at DESC LIMIT $1`, [limit]),
+      pool.query(
+        `SELECT COUNT(*) AS total_payments, COALESCE(SUM(net_amount_usd), 0) AS total_received_usd,
+           COALESCE(SUM(tax_amount_usd), 0) AS total_tax_usd, COALESCE(AVG(net_amount_usd), 0) AS avg_per_payment
+         FROM dividend_history`
+      ),
+    ]);
     return c.json({ history: rows, stats: stats[0] });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
@@ -194,35 +198,50 @@ const ETF_WEIGHTS: Record<string, number> = {
   JEPQ: 0.25, JEPI: 0.25, SCHD: 0.20, QYLD: 0.15, XYLD: 0.10, O: 0.05,
 };
 
-// ── 배당 ETF 자동투자 (금액 입력 → 자동 배분) ──
+// ── 배당 ETF 자동투자 (금액 입력 → 자동 배분, live=PIN 필수) ──
 dividendRoutes.post('/dividend/auto-invest', async (c) => {
   try {
-    const { amount_krw } = await c.req.json<{ amount_krw: number }>();
+    const body = await c.req.json<{ amount_krw: number; mode?: 'paper' | 'live'; pin?: string }>();
+    const { amount_krw } = body;
     if (!amount_krw || amount_krw < 10000) return c.json({ error: '최소 1만원 이상' }, 400);
     if (amount_krw > 10000000) return c.json({ error: '최대 1000만원' }, 400);
+
+    const isPaper = resolveIsPaper(body.mode);
+    const pinCheck = validateLivePin(isPaper, body.pin);
+    if (!pinCheck.ok) return c.json({ error: pinCheck.error }, 403);
 
     // 환율 → USD
     const fx = await fetchExchangeRate();
     const totalUsd = amount_krw / fx;
 
-    // ETF 현재가 조회
+    // ETF 현재가 병렬 조회 (개별 8초 타임아웃)
     const { getOverseasPrice } = await import('../../kis/overseas.js');
     const etfCodes = Object.keys(ETF_WEIGHTS);
+    const priceResults = await Promise.allSettled(
+      etfCodes.map(async (code) => {
+        const p = await Promise.race([
+          getOverseasPrice(code, code === 'O' ? 'NYSE' : 'NASDAQ'),
+          new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
+        ]);
+        return { code, price: Number((p as any).currentPrice) || 0 };
+      })
+    );
     const prices: Record<string, number> = {};
-    for (const code of etfCodes) {
-      try {
-        const p = await getOverseasPrice(code, code === 'O' ? 'NYSE' : 'NASDAQ');
-        prices[code] = Number(p.currentPrice) || 0;
-      } catch { prices[code] = 0; }
+    for (const r of priceResults) {
+      if (r.status === 'fulfilled' && r.value.price > 0) prices[r.value.code] = r.value.price;
+    }
+    if (Object.keys(prices).length === 0) {
+      return c.json({ error: 'ETF 시세 전부 조회 실패 (장 마감 또는 API 오류)' }, 502);
     }
 
     // 배분 + 매수
+    const pool = getPool();
     const results: Array<{ code: string; shares: number; invested: number; price: number }> = [];
     let totalInvested = 0;
 
     for (const [code, weight] of Object.entries(ETF_WEIGHTS)) {
       const price = prices[code];
-      if (price <= 0) continue;
+      if (!price || price <= 0) continue;
       const allocation = totalUsd * weight;
       const shares = Math.floor(allocation / price);
       if (shares <= 0) continue;
@@ -230,28 +249,27 @@ dividendRoutes.post('/dividend/auto-invest', async (c) => {
       totalInvested += invested;
 
       const exchange = code === 'O' ? 'NYSE' : 'NASDAQ';
-      await getPool().query(
+      await pool.query(
         `INSERT INTO dividend_holdings (stock_code, exchange, quantity, avg_price, total_dividends_received, is_paper)
-         VALUES ($1, $2, $3, $4, 0, TRUE)
+         VALUES ($1, $2, $3, $4, 0, $5)
          ON CONFLICT (stock_code, exchange, is_paper) DO UPDATE SET
            avg_price = (dividend_holdings.avg_price * dividend_holdings.quantity + $4 * $3) / (dividend_holdings.quantity + $3),
            quantity = dividend_holdings.quantity + $3`,
-        [code, exchange, shares, price]
+        [code, exchange, shares, price, isPaper]
       );
       results.push({ code, shares, invested, price });
     }
 
-    // 투자금 기록 (overseas_state KV)
-    await getPool().query(
-      `INSERT INTO overseas_state (key, value) VALUES ('dividend_invested_krw', $1::text)
-       ON CONFLICT (key) DO UPDATE SET value = (COALESCE(overseas_state.value::numeric, 0) + $1)::text`,
-      [amount_krw]
-    );
-
-    // feature flag 자동 ON
-    await getPool().query(
-      `UPDATE feature_flags SET enabled = TRUE WHERE key = 'dividend_investing' AND enabled = FALSE`
-    );
+    // 투자금 기록 (모드별 키: dividend_invested_krw_paper / dividend_invested_krw_live)
+    const investKey = isPaper ? 'dividend_invested_krw_paper' : 'dividend_invested_krw_live';
+    await Promise.all([
+      pool.query(
+        `INSERT INTO overseas_state (key, value) VALUES ($1, $2::text)
+         ON CONFLICT (key) DO UPDATE SET value = (COALESCE(overseas_state.value::numeric, 0) + $2::numeric)::text`,
+        [investKey, amount_krw]
+      ),
+      pool.query(`UPDATE feature_flags SET enabled = TRUE WHERE key = 'dividend_investing' AND enabled = FALSE`),
+    ]);
 
     logger.info(`[MoneyPrinter] 배당 자동투자: ₩${amount_krw.toLocaleString()} → $${totalInvested.toFixed(0)} (${results.length} ETF)`, { component: 'DIVIDEND' });
     return c.json({ ok: true, fx, totalUsd: +totalUsd.toFixed(2), totalInvested: +totalInvested.toFixed(2), etfs: results });
@@ -263,19 +281,28 @@ dividendRoutes.post('/dividend/auto-invest', async (c) => {
 // ── Money Printer 통합 요약 ──
 dividendRoutes.get('/money-printer/summary', async (c) => {
   try {
-    const fx = await fetchExchangeRate().catch(() => 1350);
+    const pool = getPool();
+    const isPaper = resolveIsPaper(c.req.query('mode') as 'paper' | 'live' | undefined);
+    const investKey = isPaper ? 'dividend_invested_krw_paper' : 'dividend_invested_krw_live';
+
+    // 모든 독립 쿼리 병렬 실행
+    const [fx, { rows: divHoldings }, { rows: divInvestedRow }, { rows: fBudget }, { rows: fStats }, { rows: fOpen }] = await Promise.all([
+      fetchExchangeRate().catch(() => 1350),
+      pool.query(
+        `SELECT dh.stock_code, dh.quantity, dh.avg_price, dh.total_dividends_received,
+                dw.dividend_yield, dw.name
+         FROM dividend_holdings dh
+         LEFT JOIN dividend_watchlist dw ON dh.stock_code = dw.stock_code
+         WHERE dh.is_paper = $1 AND dh.quantity > 0`,
+        [isPaper]
+      ),
+      pool.query(`SELECT COALESCE(value::numeric, 0) AS v FROM overseas_state WHERE key = $1`, [investKey]),
+      pool.query('SELECT * FROM futures_budget WHERE id = 1'),
+      pool.query(`SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE pnl_usd > 0) AS wins FROM futures_trades WHERE pnl_usd IS NOT NULL AND is_paper = $1`, [isPaper]),
+      pool.query(`SELECT COUNT(*) AS cnt FROM futures_positions WHERE status = 'open' AND is_paper = $1`, [isPaper]),
+    ]);
 
     // 배당 현황
-    const { rows: divHoldings } = await getPool().query(
-      `SELECT dh.stock_code, dh.quantity, dh.avg_price, dh.total_dividends_received,
-              dw.dividend_yield, dw.name
-       FROM dividend_holdings dh
-       LEFT JOIN dividend_watchlist dw ON dh.stock_code = dw.stock_code
-       WHERE dh.is_paper = TRUE AND dh.quantity > 0`
-    );
-    const { rows: divInvestedRow } = await getPool().query(
-      `SELECT COALESCE(value::numeric, 0) AS v FROM overseas_state WHERE key = 'dividend_invested_krw'`
-    );
     const divInvestedKrw = Number(divInvestedRow[0]?.v ?? 0);
     let divCurrentUsd = 0;
     let divDividendsUsd = 0;
@@ -284,9 +311,9 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
       const qty = Number(h.quantity);
       const avgPx = Number(h.avg_price);
       const divYield = Number(h.dividend_yield ?? 0) / 100;
-      const value = qty * avgPx; // 매수가 기준 (실시간 시세는 비용 절감)
+      const value = qty * avgPx;
       const divReceived = Number(h.total_dividends_received ?? 0);
-      const monthlyDiv = value * divYield * 0.846 / 12; // 세후 월배당
+      const monthlyDiv = value * divYield * 0.846 / 12;
       divCurrentUsd += value;
       divDividendsUsd += divReceived;
       divMonthlyUsd += monthlyDiv;
@@ -294,15 +321,10 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
     });
     const divReturnPct = divInvestedKrw > 0 ? (((divCurrentUsd * fx + divDividendsUsd * fx) / divInvestedKrw) - 1) * 100 : 0;
 
-    // 선물 현황
-    const { rows: fBudget } = await getPool().query('SELECT * FROM futures_budget WHERE id = 1');
-    const fb = fBudget[0] || { allocated_krw: 0, total_pnl_usd: 0 };
-    const fInvestedKrw = Number(fb.allocated_krw ?? 0);
-    const fPnlUsd = Number(fb.total_pnl_usd ?? 0);
-    const { rows: fStats } = await getPool().query(
-      `SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE pnl_usd > 0) AS wins FROM futures_trades WHERE pnl_usd IS NOT NULL`
-    );
-    const { rows: fOpen } = await getPool().query(`SELECT COUNT(*) AS cnt FROM futures_positions WHERE status = 'open'`);
+    // 선물 현황 (paper + live 합산)
+    const fb = fBudget[0] || {};
+    const fInvestedKrw = Number(fb.allocated_krw_paper ?? 0) + Number(fb.allocated_krw_live ?? 0);
+    const fPnlUsd = Number(fb.total_pnl_usd_paper ?? 0) + Number(fb.total_pnl_usd_live ?? 0);
     const fTotal = Number(fStats[0]?.total ?? 0);
     const fWins = Number(fStats[0]?.wins ?? 0);
     const fCurrentKrw = fInvestedKrw + fPnlUsd * fx;
@@ -346,13 +368,11 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
 dividendRoutes.get('/trade-tuner/result', async (c) => {
   try {
     const { rows } = await getPool().query(
-      `SELECT value FROM overseas_state WHERE key = 'trade_tuner_result'`
+      `SELECT key, value FROM overseas_state WHERE key IN ('trade_tuner_result', 'trade_tuner_overrides')`
     );
-    const result = rows.length > 0 ? JSON.parse(rows[0].value) : null;
-    const { rows: ov } = await getPool().query(
-      `SELECT value FROM overseas_state WHERE key = 'trade_tuner_overrides'`
-    );
-    const overrides = ov.length > 0 ? JSON.parse(ov[0].value) : {};
+    const byKey = Object.fromEntries(rows.map((r: any) => [r.key, r.value]));
+    const result = byKey.trade_tuner_result ? JSON.parse(byKey.trade_tuner_result) : null;
+    const overrides = byKey.trade_tuner_overrides ? JSON.parse(byKey.trade_tuner_overrides) : {};
     return c.json({ result, overrides });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);

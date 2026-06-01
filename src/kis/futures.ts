@@ -45,6 +45,9 @@ export const MICRO_FUTURES = [
   { product: 'MCL', name: 'Micro WTI Crude Oil', exchange: 'CME', tickSize: 0.01, tickValue: 1.00, marginApprox: 700 },
 ];
 
+/** O(1) product lookup Map */
+export const FUTURES_BY_PRODUCT = new Map(MICRO_FUTURES.map(m => [m.product, m]));
+
 export interface FuturesPrice {
   symbol: string;
   price: number;
