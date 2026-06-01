@@ -86,8 +86,8 @@ export const STRATEGY_PARAMS = {
     splitCount: 2,
     averageDownPct: 0,
     maxAveragingCount: 0,
-    earlyTpPct: 2.5,        // 조기 부분익절: +2.5% 도달 시 50% 즉시 매도 → 현금 재배치
-    takeProfitPct: 5.5,     // 잔여 50% 트레일링 최종 목표 (+5.5% 또는 트레일링 발동)
+    earlyTpPct: 3.5,        // 조기 부분익절: +3.5% 도달 시 50% 즉시 매도 → 수익금 극대화
+    takeProfitPct: 7.0,     // 잔여 50% 트레일링 최종 목표 (+7% 또는 동적 트레일링 발동)
     takeProfitRatio: 0.5,   // 50% 부분 매도 → 잔여 트레일링
     stopLossPct: -3.0,
     maxHoldingDays: 12,

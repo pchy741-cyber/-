@@ -21,7 +21,15 @@ import { calcPnlPct } from '../utils/money.js';
  *  → 남은 50% 고점 추적, 고점 대비 -1.5% 하락 시 청산
  */
 const TRAILING_ACTIVATE_PCT = 1.5;  // 트레일링 스탑 활성화 최소 수익률 (%)
-const TRAILING_DROP_PCT     = 3.0;  // 고점 대비 이 % 하락 시 매도 (%) — 더 넉넉하게 달리게
+
+/** 수익률 구간별 동적 트레일링 드롭 (고점 대비 하락 허용 %) — 수익 클수록 타이트 */
+function getDynamicTrailingDrop(peakPnlPct: number): number {
+  if (peakPnlPct >= 9) return 1.2;   // +9% 이상 고점: 1.2% 하락 시 즉시 청산 (수익 90% 보호)
+  if (peakPnlPct >= 6) return 1.8;   // +6~9%: 1.8% 하락 허용
+  if (peakPnlPct >= 4) return 2.2;   // +4~6%: 2.2% 하락 허용
+  if (peakPnlPct >= 2) return 2.6;   // +2~4%: 2.6% 하락 허용
+  return 3.0;                         // +1.5~2%: 기본 3.0% (초기 노이즈 흡수)
+}
 
 /**
  * 보유일 초과 자동 손절 체크
@@ -325,11 +333,12 @@ async function checkAndUpdateTrailingStop(
 
   if (newPeak <= 0) return null;
   const dropFromPeak = ((newPeak - currentPrice) / newPeak) * 100;
+  const peakPnlPct = ((newPeak - avgBuy) / avgBuy) * 100;
+  const dynamicDrop = getDynamicTrailingDrop(peakPnlPct);
 
-  if (dropFromPeak >= TRAILING_DROP_PCT) {
-    const peakPnlPct = ((newPeak - avgBuy) / avgBuy) * 100;
+  if (dropFromPeak >= dynamicDrop) {
     logger.info(
-      `🎯 트레일링 스탑 발동: ${chain.stock_code} 고점 ${newPeak.toLocaleString()}원(+${peakPnlPct.toFixed(1)}%) → 현재 ${currentPrice.toLocaleString()}원(${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%) | 고점 대비 -${dropFromPeak.toFixed(1)}%`,
+      `🎯 트레일링 스탑 발동: ${chain.stock_code} 고점 ${newPeak.toLocaleString()}원(+${peakPnlPct.toFixed(1)}%) → 현재 ${currentPrice.toLocaleString()}원(${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%) | 고점 대비 -${dropFromPeak.toFixed(1)}% (기준 -${dynamicDrop}%)`,
       { component: 'TRAILING' },
     );
     return {
@@ -337,13 +346,13 @@ async function checkAndUpdateTrailingStop(
       stock_code: chain.stock_code,
       quantity: chain.total_quantity,
       price_type: 'MARKET',
-      reasoning: `트레일링 스탑: 고점 +${peakPnlPct.toFixed(1)}% → 현재 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}% (고점 대비 -${dropFromPeak.toFixed(1)}% 하락)`,
+      reasoning: `트레일링 스탑: 고점 +${peakPnlPct.toFixed(1)}% → 현재 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}% (고점 대비 -${dropFromPeak.toFixed(1)}% > 기준 -${dynamicDrop}%)`,
       confidence: 1.0,
     };
   }
 
   logger.info(
-    `⏳ 트레일링 추적 중: ${chain.stock_code} +${pnlPct.toFixed(1)}% | 고점 ${newPeak.toLocaleString()}원 대비 -${dropFromPeak.toFixed(1)}% (발동까지 ${(TRAILING_DROP_PCT - dropFromPeak).toFixed(1)}% 남음)`,
+    `⏳ 트레일링 추적 중: ${chain.stock_code} +${pnlPct.toFixed(1)}% | 고점 ${newPeak.toLocaleString()}원(+${peakPnlPct.toFixed(1)}%) 대비 -${dropFromPeak.toFixed(1)}% (발동까지 ${(dynamicDrop - dropFromPeak).toFixed(1)}% 남음, 기준 -${dynamicDrop}%)`,
     { component: 'TRAILING' },
   );
   return null;
