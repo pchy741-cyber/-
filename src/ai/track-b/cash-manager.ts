@@ -17,23 +17,27 @@ import { logger } from '../../utils/logger.js';
 // 총자산 대비 최소 현금 보유 비율 (defense-park.ts도 임포트)
 export const CASH_RESERVE_RATIO = 0.25;
 
-// 파킹 시작 기준 — 현금 이 비율 초과 시 파킹 검토 (파워풀: 45%)
-const PARK_TRIGGER_RATIO = 0.45;
+// 파킹 시작 기준 — 현금 이 비율 초과 시 파킹 검토 (적극적: 30%)
+// CEO 지시: "20~30% 현금 놀리면 손해" → 30% 이상이면 즉시 파킹
+const PARK_TRIGGER_RATIO = 0.30;
 
-// 파킹 매수 최소 금액
-const MIN_PARK_AMOUNT = 200_000;
+// 파킹 매수 최소 금액 (소액 계좌도 파킹 가능)
+const MIN_PARK_AMOUNT = 100_000;
 
 // 파킹 매수 최대 비중 (총자산 대비) — 파워풀: 35%까지 파킹
 const MAX_PARK_RATIO = 0.35;
 
-// KOSPI 시총 상위 대형주 파킹 후보 (순위 순)
-// 당일 상승 중인 종목 우선 선택
+// KOSPI 시가총액 Top 10 파킹 후보 (시총 순, 2026년 기준)
+// CEO 지시: "잘 모르겠으면 대형주에 파킹, 더 좋은 기회 오면 풀고 나와서 매매"
+// 당일 상승 중인 종목 우선 선택, -3~+5% 범위 필터
 export const MEGA_CAP_PARK_CANDIDATES: Array<{ code: string; name: string }> = [
   { code: '005930', name: '삼성전자' },
   { code: '000660', name: 'SK하이닉스' },
   { code: '005380', name: '현대차' },
   { code: '000270', name: '기아' },
   { code: '012450', name: '한화에어로스페이스' },
+  { code: '035420', name: 'NAVER' },
+  { code: '035720', name: '카카오' },
   { code: '105560', name: 'KB금융' },
   { code: '055550', name: '신한지주' },
   { code: '064350', name: '현대로템' },
@@ -92,10 +96,9 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
 
   // ── 파킹 매수 조건 ──
   const cashRatio = totalAssets > 0 ? orderableCash / totalAssets : 0;
-  if (cashRatio < PARK_TRIGGER_RATIO) return decisions; // 현금 45% 미만 → 파킹 불필요
-  // 현금 75%+ 초과: 기술 조건 실패로 실제 매수 안 될 때도 파킹 강행
-  // (hasBuyCandidates=true여도 technical 조건 실패 시 현금이 종일 방치되는 문제 방지)
-  if (hasBuyCandidates && cashRatio < 0.75) return decisions;
+  if (cashRatio < PARK_TRIGGER_RATIO) return decisions; // 현금 30% 미만 → 파킹 불필요
+  // 현금 60%+ 초과: 기술 조건 실패로 실제 매수 안 될 때도 파킹 강행
+  if (hasBuyCandidates && cashRatio < 0.60) return decisions;
   if (orderableCash < MIN_PARK_AMOUNT) return decisions;
 
   // 이미 파킹 중인 종목 제외
@@ -105,7 +108,7 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
   const candidates = MEGA_CAP_PARK_CANDIDATES
     .filter(c => !alreadyParked.has(c.code))
     .map(c => ({ ...c, price: livePrices.get(c.code) }))
-    .filter(c => c.price && c.price.changePct >= -3.0 && c.price.changePct <= 5.0) // -3~+5% 범위 허용
+    .filter(c => c.price && c.price.changePct >= -3.0 && c.price.changePct <= 5.0)
     .sort((a, b) => (b.price?.changePct ?? 0) - (a.price?.changePct ?? 0));
 
   if (candidates.length === 0) {
@@ -113,27 +116,35 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
     return decisions;
   }
 
-  const target = candidates[0];
-  const targetPrice = target.price!.currentPrice;
-  const parkAmount = Math.min(orderableCash * 0.7, totalAssets * MAX_PARK_RATIO);
-  const quantity = Math.floor(parkAmount / targetPrice);
+  // ── 파킹 분산: 1종목에 전량 투입 방지, 최대 2종목 분산 파킹 ──
+  // 파킹 총액: 현금의 50% (나머지 50%는 자동매매용 확보)
+  const totalParkBudget = Math.min(orderableCash * 0.50, totalAssets * MAX_PARK_RATIO);
+  const maxPerStock = totalParkBudget * 0.60; // 1종목 최대 60% (2종목이면 60/40 분배)
+  const parkCount = Math.min(2, candidates.length);
 
-  if (quantity < 1) return decisions;
+  for (let i = 0; i < parkCount; i++) {
+    const target = candidates[i];
+    const targetPrice = target.price!.currentPrice;
+    const stockBudget = i === 0 ? Math.min(maxPerStock, totalParkBudget) : totalParkBudget - maxPerStock;
+    if (stockBudget < MIN_PARK_AMOUNT) continue;
+    const quantity = Math.floor(stockBudget / targetPrice);
+    if (quantity < 1) continue;
 
-  logger.info(
-    `💰 유휴현금 파킹 매수: ${target.name}(${target.code}) ${quantity}주 @${targetPrice.toLocaleString()}원 (현금비중 ${(cashRatio * 100).toFixed(0)}%, 당일 +${target.price!.changePct.toFixed(2)}%)`,
-    { component: 'CASH_MANAGER' },
-  );
+    logger.info(
+      `💰 유휴현금 파킹 매수: ${target.name}(${target.code}) ${quantity}주 @${targetPrice.toLocaleString()}원 (현금비중 ${(cashRatio * 100).toFixed(0)}%, 당일 ${target.price!.changePct >= 0 ? '+' : ''}${target.price!.changePct.toFixed(2)}%)`,
+      { component: 'CASH_MANAGER' },
+    );
 
-  decisions.push({
-    action: 'BUY',
-    stock_code: target.code,
-    quantity,
-    price_type: 'MARKET',
-    reasoning: `💰 유휴현금 대형주 파킹: ${target.name} 당일 +${target.price!.changePct.toFixed(2)}% 상승 — 현금 ${(cashRatio * 100).toFixed(0)}% 유휴`,
-    confidence: 0.70,
-    ai_score: 75,
-  });
+    decisions.push({
+      action: 'BUY',
+      stock_code: target.code,
+      quantity,
+      price_type: 'MARKET',
+      reasoning: `💰 유휴현금 대형주 파킹: ${target.name} 당일 ${target.price!.changePct >= 0 ? '+' : ''}${target.price!.changePct.toFixed(2)}% — 현금 ${(cashRatio * 100).toFixed(0)}% 유휴`,
+      confidence: 0.70,
+      ai_score: 75,
+    });
+  }
 
   return decisions;
 }

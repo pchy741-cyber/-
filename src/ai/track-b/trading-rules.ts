@@ -63,15 +63,19 @@ export const PRIORITY_SECTOR_CODES = new Set([
  * 3. 횡보장(ADX WEAK) 진입 허용
  */
 export const MEGA_CAP_PRIORITY_CODES = new Map<string, { name: string; bonus: number; thresholdReduction: number }>([
-  // 반도체 대형주 (시총 상위)
+  // ── 시가총액 Top 10 대형주 (파킹 겸용) ──
   ['005930', { name: '삼성전자', bonus: 20, thresholdReduction: 8 }],
   ['005935', { name: '삼성전자(우)', bonus: 20, thresholdReduction: 8 }],
   ['000660', { name: 'SK하이닉스', bonus: 20, thresholdReduction: 8 }],
-  // 방산 대형주
+  ['005380', { name: '현대차', bonus: 15, thresholdReduction: 6 }],
+  ['000270', { name: '기아', bonus: 15, thresholdReduction: 6 }],
+  ['035420', { name: 'NAVER', bonus: 15, thresholdReduction: 6 }],
+  ['035720', { name: '카카오', bonus: 12, thresholdReduction: 5 }],
+  // ── 방산 대형주 ──
   ['012450', { name: '한화에어로스페이스', bonus: 18, thresholdReduction: 6 }],
   ['272210', { name: '한화시스템', bonus: 15, thresholdReduction: 5 }],
   ['064350', { name: '현대로템', bonus: 15, thresholdReduction: 5 }],
-  // 반도체 소재/장비
+  // ── 반도체 소재/장비 ──
   ['042700', { name: '한미반도체', bonus: 12, thresholdReduction: 4 }],
 ]);
 

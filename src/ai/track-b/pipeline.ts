@@ -443,7 +443,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         const dartAdj = process.env.DART_API_KEY ? getDisclosureScoreAdjustment(s.stock_code) : 0;
         // 대형 우선주(MEGA_CAP): AI 점수 보너스 (변동성 낮아 AI가 보수적 점수 부여하는 보정)
         const megaCapAdj = MEGA_CAP_PRIORITY_CODES.has(s.stock_code)
-          ? Math.round((MEGA_CAP_PRIORITY_CODES.get(s.stock_code)!.bonus) * 0.5)  // tech에서도 주므로 절반만
+          ? MEGA_CAP_PRIORITY_CODES.get(s.stock_code)!.bonus  // 100% 적용 (대형주 변동성 낮아 보너스 필수)
           : 0;
         const totalAdj = adj + capAdj + stale + kospiPenaltyAdj + macroAdj + dartAdj + megaCapAdj;
         if (!Number.isFinite(totalAdj)) {
