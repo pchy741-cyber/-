@@ -275,6 +275,146 @@ tradeRoutes.patch('/withdraw/:id/status', async (c) => {
   }
 });
 
+// ── 일자별 손익 요약 ──
+tradeRoutes.get('/trades/daily-summary', async (c) => {
+  const viewModeParam = c.req.query('viewMode');
+  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
+  const tradeMode = viewIsPaper ? 'paper' : 'live';
+  const days = Math.min(Math.max(1, Number(c.req.query('days') ?? 30)), 365);
+
+  try {
+    // 일자별 매도 실현손익 집계 (FIFO 기반 — 체인 realized_pnl 사용)
+    const { rows } = await getPool().query(`
+      SELECT
+        (o.created_at AT TIME ZONE 'Asia/Seoul')::DATE AS trade_date,
+        COUNT(*) FILTER (WHERE o.side = 'BUY') AS buy_count,
+        COUNT(*) FILTER (WHERE o.side = 'SELL') AS sell_count,
+        COUNT(*) AS total_count,
+        -- 체인 기반 실현손익 (매도만)
+        COALESCE(SUM(
+          CASE WHEN o.side = 'SELL' AND tc.avg_buy_price > 0 THEN
+            (COALESCE(o.filled_price, 0) - tc.avg_buy_price) * COALESCE(o.filled_quantity, o.quantity, 0)
+          END
+        ), 0) AS realized_pnl,
+        -- 해외/국내 구분
+        COUNT(*) FILTER (WHERE o.stock_code ~ '^[0-9]{6}$') AS domestic_count,
+        COUNT(*) FILTER (WHERE o.stock_code !~ '^[0-9]{6}$') AS overseas_count,
+        -- 승패
+        COUNT(*) FILTER (WHERE o.side = 'SELL' AND tc.avg_buy_price > 0
+          AND COALESCE(o.filled_price, 0) > tc.avg_buy_price) AS win_count,
+        COUNT(*) FILTER (WHERE o.side = 'SELL' AND tc.avg_buy_price > 0
+          AND COALESCE(o.filled_price, 0) <= tc.avg_buy_price) AS loss_count
+      FROM orders o
+      LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
+      WHERE o.trading_mode = $1
+        AND o.status = 'FILLED'
+        AND o.created_at >= NOW() - ($2 * INTERVAL '1 day')
+      GROUP BY trade_date
+      ORDER BY trade_date DESC
+    `, [tradeMode, days]);
+
+    const dailySummary = rows.map((r: any) => ({
+      date: String(r.trade_date).slice(0, 10),
+      totalTrades: Number(r.total_count),
+      buys: Number(r.buy_count),
+      sells: Number(r.sell_count),
+      domesticCount: Number(r.domestic_count),
+      overseasCount: Number(r.overseas_count),
+      realizedPnl: Math.round(Number(r.realized_pnl) * 100) / 100,
+      winCount: Number(r.win_count),
+      lossCount: Number(r.loss_count),
+      winRate: (Number(r.win_count) + Number(r.loss_count)) > 0
+        ? Math.round((Number(r.win_count) / (Number(r.win_count) + Number(r.loss_count))) * 100)
+        : 0,
+    }));
+
+    const totalPnl = dailySummary.reduce((sum, d) => sum + d.realizedPnl, 0);
+    const totalWins = dailySummary.reduce((sum, d) => sum + d.winCount, 0);
+    const totalLosses = dailySummary.reduce((sum, d) => sum + d.lossCount, 0);
+
+    return c.json({
+      days: dailySummary,
+      summary: {
+        totalDays: dailySummary.length,
+        totalPnl: Math.round(totalPnl * 100) / 100,
+        totalTrades: dailySummary.reduce((sum, d) => sum + d.totalTrades, 0),
+        totalWins,
+        totalLosses,
+        overallWinRate: (totalWins + totalLosses) > 0
+          ? Math.round((totalWins / (totalWins + totalLosses)) * 100)
+          : 0,
+        profitDays: dailySummary.filter(d => d.realizedPnl > 0).length,
+        lossDays: dailySummary.filter(d => d.realizedPnl < 0).length,
+      },
+      mode: tradeMode,
+      period: `${days}days`,
+    });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── 특정일 매매 상세 ──
+tradeRoutes.get('/trades/by-date/:date', async (c) => {
+  const dateParam = c.req.param('date'); // YYYY-MM-DD
+  const viewModeParam = c.req.query('viewMode');
+  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
+  const tradeMode = viewIsPaper ? 'paper' : 'live';
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+    return c.json({ error: 'Invalid date format. Use YYYY-MM-DD' }, 400);
+  }
+
+  try {
+    const { rows } = await getPool().query(
+      `SELECT o.*,
+         COALESCE(w.stock_name, o.stock_code) AS stock_name,
+         tc.avg_buy_price,
+         tc.status AS chain_status,
+         tc.strategy_mode
+       FROM orders o
+       LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
+       LEFT JOIN watchlist w ON o.stock_code = w.stock_code
+       WHERE o.trading_mode = $1
+         AND o.status = 'FILLED'
+         AND (o.created_at AT TIME ZONE 'Asia/Seoul')::DATE = $2::DATE
+       ORDER BY o.created_at ASC`,
+      [tradeMode, dateParam],
+    );
+
+    // 간단 PnL 계산
+    const trades = rows.map((r: any) => {
+      const avgBuy = Number(r.avg_buy_price ?? 0);
+      const fillPrice = Number(r.filled_price ?? 0);
+      const qty = Number(r.filled_quantity ?? r.quantity ?? 0);
+      const isSell = r.side === 'SELL';
+      const pnl = isSell && avgBuy > 0 ? (fillPrice - avgBuy) * qty : null;
+      const pnlPct = isSell && avgBuy > 0 ? ((fillPrice - avgBuy) / avgBuy) * 100 : null;
+      return {
+        ...r,
+        realized_pnl: pnl != null ? Math.round(pnl * 100) / 100 : null,
+        realized_pnl_pct: pnlPct != null ? Math.round(pnlPct * 100) / 100 : null,
+      };
+    });
+
+    const totalPnl = trades.reduce((sum: number, t: any) => sum + (t.realized_pnl ?? 0), 0);
+
+    return c.json({
+      date: dateParam,
+      trades,
+      summary: {
+        totalTrades: trades.length,
+        buys: trades.filter((t: any) => t.side === 'BUY').length,
+        sells: trades.filter((t: any) => t.side === 'SELL').length,
+        realizedPnl: Math.round(totalPnl * 100) / 100,
+      },
+      mode: tradeMode,
+    });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
 // ── 승률 분석: 점수 구간별 WIN/LOSS 집계 ──
 tradeRoutes.get('/stats/win-rate-bands', async (c) => {
   const viewModeParam = c.req.query('viewMode');
