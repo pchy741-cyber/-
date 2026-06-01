@@ -313,7 +313,28 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       }
     }
 
-    // Step 5-3b: Gemini Flash도 실패 → Claude Haiku 폴백 (ANTHROPIC_API_KEY 있을 때)
+    // Step 5-3b: Gemini Flash도 실패 → RSS 뉴스+거래량 스코어링 (무료, 쿼터 없음)
+    if (scores.length === 0) {
+      try {
+        const { runRSSScoring } = await import('./rss-scorer.js');
+        // 거래량/등락률 상위 Set 구성 (이미 수집된 discoveryStocks 활용)
+        const topVolumeSet = new Set(
+          volumeTop.status === 'fulfilled' ? volumeTop.value.slice(0, 30).map(s => s.stock_code) : []
+        );
+        const topGainerSet = new Set(
+          changeTop.status === 'fulfilled' ? changeTop.value.slice(0, 20).map(s => s.stock_code) : []
+        );
+        scores = await runRSSScoring(mode, allStocks, chartData, topGainerSet, topVolumeSet, new Map());
+        if (scores.length > 0) {
+          scoringSource = 'flash';
+          logger.info(`✅ RSS 스코어링 폴백 성공: ${scores.length}개 (Gemini/Claude 불필요, 무료)`, { component: 'TRACK_A' });
+        }
+      } catch (rssErr) {
+        logger.warn(`⚠️ RSS 스코어링 폴백 실패: ${rssErr}`, { component: 'TRACK_A' });
+      }
+    }
+
+    // Step 5-3c: RSS도 실패 → Claude Haiku 폴백 (ANTHROPIC_API_KEY 있을 때)
     if (scores.length === 0 && process.env.ANTHROPIC_API_KEY) {
       try {
         const { runClaudeScoring } = await import('./claude-scorer.js');
