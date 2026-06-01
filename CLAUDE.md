@@ -156,7 +156,8 @@ KST = UTC+9. PowerShell: `(Get-Date).ToUniversalTime().AddHours(9).ToString("HH:
 
 ### 1. 데이터 수집
 ```bash
-curl -s -H "x-api-key: <DASHBOARD_PASSWORD>" "https://quantops-807105550136.asia-northeast3.run.app/api/dashboard" -o "C:/Temp/qops_dash.json"
+# 실전 잔금 기준 (기본값 — 루프는 항상 이 URL 사용)
+curl -s -H "x-api-key: <DASHBOARD_PASSWORD>" "https://quantops-807105550136.asia-northeast3.run.app/api/dashboard?viewMode=live" -o "C:/Temp/qops_dash.json"
 ```
 
 **실제 JSON 필드명**:
@@ -262,13 +263,15 @@ if not pullbackSignal and envelope_pos not in ('BELOW_LOWER', 'NEAR_LOWER'):
 
 #### Step 3 — 포지션 사이징 후 실행
 ```bash
+# 실전 매수 (is_paper: false — 실잔금 기준 복리 사이징)
 curl -s -X POST "https://quantops-807105550136.asia-northeast3.run.app/api/manual-buy" \
   -H "Content-Type: application/json" \
   -H "x-api-key: <DASHBOARD_PASSWORD>" \
-  -d "{\"stock_code\":\"XXXXXX\",\"ai_score\":SCORE,\"reasoning\":\"pullback AI82 conf0.70 RSI48 vol1.5x pb=True env=NEAR_LOWER volC=3d\"}"
+  -d "{\"stock_code\":\"XXXXXX\",\"ai_score\":SCORE,\"is_paper\":false,\"reasoning\":\"pullback AI82 conf0.70 RSI48 vol1.5x pb=True env=NEAR_LOWER volC=3d\"}"
 ```
 
-> `amount_krw` 생략 시 백엔드가 자동으로 복리 사이징 계산.
+> `amount_krw` 생략 시 백엔드가 실잔금(is_paper:false) 기준 복리 사이징 자동 계산.
+> 연습 매수 시: `\"is_paper\":true` 로 변경 → 연습 잔금 기준 사이징.
 
 ### 4. 루프 간격
 - 긴급 손절 실행 후: `ScheduleWakeup(120)`
