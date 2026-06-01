@@ -11,6 +11,8 @@ export interface LoopStatus {
   consecutiveErrors: number;
   marketPhase: 'PREMARKET' | 'OPEN_VOLATILE' | 'PRIME' | 'MIDDAY' | 'LUNCH' | 'POWER_HOUR' | 'CLOSED';
   brief: { regime: string; risk: string; narrative: string } | null;
+  openMarkets: string[];
+  anyMarketOpen: boolean;
 }
 
 export interface CopilotData {

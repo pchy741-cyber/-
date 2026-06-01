@@ -14,6 +14,15 @@ const MARKET_PHASE_LABEL: Record<string, string> = {
   CLOSED: '장마감',
 };
 
+function getLoopMarketInfo(openMarkets: string[] = []): { label: string; name: string } {
+  const hasKR = openMarkets.includes('KR');
+  const hasOverseas = openMarkets.some(m => m !== 'KR');
+  if (hasKR && hasOverseas) return { label: 'KR+', name: '국내+해외 자동매매 루프' };
+  if (hasKR) return { label: 'KR', name: '국내 자동매매 루프' };
+  if (hasOverseas) return { label: 'US', name: '해외 자동매매 루프' };
+  return { label: 'AP', name: '자동매매 루프' };
+}
+
 export function AutoPilotButton({ loopStatusProp, capturing, toast }: {
   loopStatusProp: LoopStatus | null;
   capturing: boolean;
@@ -53,8 +62,7 @@ export function AutoPilotButton({ loopStatusProp, capturing, toast }: {
     }
   }, [confirmStop]);
 
-  const loopLabel = 'US';
-  const loopName = '해외 자동매매 루프';
+  const { label: loopLabel, name: loopName } = getLoopMarketInfo(loopStatus?.openMarkets ?? []);
 
   const toggleLoop = useCallback(async () => {
     if (togglingLoop) return;
