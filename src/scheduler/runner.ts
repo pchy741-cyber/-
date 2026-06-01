@@ -305,11 +305,11 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 포트폴리오 헬스체크 — 30분 간격 (+12분 오프셋, 집중도/손실 텔레그램 경보)
+  // 포트폴리오 헬스체크 — 30분 간격 (+12분 오프셋, paper+live 양쪽 집중도/손실 경보)
   cron.schedule(
     '12,42 9-15 * * 1-5',
     () => {
-      runPortfolioHealthCheck().catch((e) => logger.error(`포트폴리오 헬스체크 실패: ${e}`, { component: 'SCHEDULER' }));
+      runDomesticDual('포트폴리오헬스체크', runPortfolioHealthCheck).catch((e) => logger.error(`포트폴리오 헬스체크 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

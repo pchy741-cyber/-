@@ -100,10 +100,10 @@ export async function reconcileExternalSells(): Promise<void> {
     if (chains.length === 0) return;
 
     // KIS 잔고 조회 (실패 시 유령 체인 오닫기 방지 — 스킵)
+    // live 컨텍스트에서만 실행됨 (line 96에서 paper 리턴). forceLive=true로 캐시 우회.
     let kisPositions: Map<string, number>;
     try {
-      // paper 모드에서도 live 잔고와 대조해야 실제 보유 현황 확인 가능
-      const balance = await getAccountBalance(!config.isPaper);
+      const balance = await getAccountBalance(true);
       kisPositions = new Map(balance.positions.map(p => [p.stockCode, p.quantity]));
     } catch (e) {
       logger.warn(`외부 매도 감지: KIS 잔고 조회 실패 — 스킵 (${e})`, { component: 'RECONCILER' });
