@@ -92,18 +92,20 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
 
   // ── 파킹 매수 조건 ──
   const cashRatio = totalAssets > 0 ? orderableCash / totalAssets : 0;
-  if (cashRatio < PARK_TRIGGER_RATIO) return decisions; // 현금 60% 미만 → 파킹 불필요
-  if (hasBuyCandidates) return decisions;               // 좋은 종목 있으면 파킹 생략
+  if (cashRatio < PARK_TRIGGER_RATIO) return decisions; // 현금 45% 미만 → 파킹 불필요
+  // 현금 75%+ 초과: 기술 조건 실패로 실제 매수 안 될 때도 파킹 강행
+  // (hasBuyCandidates=true여도 technical 조건 실패 시 현금이 종일 방치되는 문제 방지)
+  if (hasBuyCandidates && cashRatio < 0.75) return decisions;
   if (orderableCash < MIN_PARK_AMOUNT) return decisions;
 
   // 이미 파킹 중인 종목 제외
   const alreadyParked = new Set(openChains.map(c => c.stock_code));
 
-  // 당일 상승 중인 대형주 선택 (changePct 높은 순 정렬)
+  // 대형주 선택: 급등(+5%↑) 추격은 방지, 급락(-3%↓)은 제외. 소폭 하락은 허용(단기 파킹)
   const candidates = MEGA_CAP_PARK_CANDIDATES
     .filter(c => !alreadyParked.has(c.code))
     .map(c => ({ ...c, price: livePrices.get(c.code) }))
-    .filter(c => c.price && c.price.changePct >= 0.5 && c.price.changePct <= 3.5) // 당일 +0.5~3.5% — 수수료 커버 + 급등 추격 방지
+    .filter(c => c.price && c.price.changePct >= -3.0 && c.price.changePct <= 5.0) // -3~+5% 범위 허용
     .sort((a, b) => (b.price?.changePct ?? 0) - (a.price?.changePct ?? 0));
 
   if (candidates.length === 0) {
