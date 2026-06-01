@@ -748,8 +748,9 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         const isHighBetaEntry = SECTOR_CLASS.HIGH_BETA.includes(targetWatchItem?.sector ?? '');
         const isDefenseEntry = SECTOR_CLASS.DEFENSE.includes(targetWatchItem?.sector ?? '');
         const slDecimal = isHighBetaEntry ? 0.08 : isDefenseEntry ? 0.04 : 0.05;
-        // Paper 모드: 2.5% 리스크 허용 (Live: 2%)
-        const riskPct = isPaper() ? 0.025 : 0.02;
+        // 리스크캡: 소액(<$500)은 5%, 일반은 Paper 2.5% / Live 2%
+        // $187 × 2% = $3.74 → 대부분 종목 0주 되므로 소액 완화 필수
+        const riskPct = portfolioValue < 500 ? 0.05 : (isPaper() ? 0.025 : 0.02);
         const maxRiskUSD = portfolioValue * riskPct;
         const qtyBy1PctRule = maxRiskUSD > 0 ? Math.floor(maxRiskUSD / (target.price.currentPrice * slDecimal)) : Infinity;
         // 수수료 0.25% 보정: positionSize가 1주 가격과 비슷하면 수수료 무시하고 1주 허용
