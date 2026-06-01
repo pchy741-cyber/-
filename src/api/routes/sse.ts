@@ -7,7 +7,7 @@ import { isMarketOpen } from '../../kis/market.js';
 import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
 import { getPaperBalance } from '../../risk/engine.js';
 import { getLoopStatus } from '../../scheduler/loop-mode.js';
-import { cacheGet } from '../../cache/memory.js';
+import { cacheGet, getCachedPriceMemory } from '../../cache/memory.js';
 import { getCopilotLiteScore } from './review/copilot-lite.js';
 
 export const sseRoutes = new Hono();
@@ -78,6 +78,17 @@ sseRoutes.get('/stream', (c) => {
         const overseasHoldings = cacheGet<any[]>(holdingsLiveKey);
         const overseasHoldingCount = overseasHoldings?.length ?? 0;
 
+        // 체인별 실시간 가격 (캐시 기반 — 추가 KIS 호출 없음)
+        const chainPrices = chains.map((ch: any) => {
+          const cached = getCachedPriceMemory(ch.stock_code);
+          const currentPrice = cached ?? Number(ch.avg_buy_price ?? 0);
+          const avgPrice = Number(ch.avg_buy_price ?? 0);
+          const qty = Number(ch.total_quantity ?? 0);
+          const unrealizedPnl = currentPrice > 0 && avgPrice > 0 ? (currentPrice - avgPrice) * qty : 0;
+          const unrealizedPnlPct = currentPrice > 0 && avgPrice > 0 ? ((currentPrice - avgPrice) / avgPrice) * 100 : 0;
+          return { stock_code: ch.stock_code, currentPrice, unrealizedPnl, unrealizedPnlPct };
+        });
+
         const payload = {
           timestamp: new Date().toISOString(),
           portfolio: {
@@ -87,7 +98,9 @@ sseRoutes.get('/stream', (c) => {
             pnl: balance.totalProfitLoss,
             pnlPct: balance.totalProfitLossPct,
             positionCount: balance.positions.length,
+            unrealizedPnl: chainPrices.reduce((s, c) => s + c.unrealizedPnl, 0),
           },
+          chainPrices, // 체인별 실시간 가격/PnL
           overseasHoldingCount,
           killSwitch: getKillSwitchStatusAll(),
           activeChains: chains.length,
@@ -96,7 +109,7 @@ sseRoutes.get('/stream', (c) => {
           strategy: strategy ? { mode: strategy.mode, buy_threshold: strategy.buy_threshold, take_profit_pct: strategy.take_profit_pct, stop_loss_pct: strategy.stop_loss_pct } : null,
           healthScore: healthLite.score,
           healthIssues: healthLite.issues,
-          loopMode: (() => { try { const ls = getLoopStatus(); return { active: ls.active, phase: ls.phase, totalRuns: ls.totalRuns, lastRunAt: ls.lastRunAt, lastRunResult: ls.lastRunResult, startedAt: ls.startedAt, adaptiveIntervalMs: ls.adaptiveIntervalMs, consecutiveErrors: ls.consecutiveErrors, marketPhase: ls.marketPhase, brief: ls.sessionBrief ? { regime: ls.sessionBrief.marketRegime, risk: ls.sessionBrief.riskLevel, narrative: ls.sessionBrief.narrative } : null }; } catch { return null; } })(),
+          loopMode: (() => { try { const ls = getLoopStatus(); return { active: ls.active, phase: ls.phase, totalRuns: ls.totalRuns, lastRunAt: ls.lastRunAt, lastRunResult: ls.lastRunResult, startedAt: ls.startedAt, adaptiveIntervalMs: ls.adaptiveIntervalMs, consecutiveErrors: ls.consecutiveErrors, marketPhase: ls.marketPhase, openMarkets: ls.openMarkets, anyMarketOpen: ls.anyMarketOpen, brief: ls.sessionBrief ? { regime: ls.sessionBrief.marketRegime, risk: ls.sessionBrief.riskLevel, narrative: ls.sessionBrief.narrative } : null }; } catch { return null; } })(),
         };
 
         await stream.writeSSE({
@@ -112,8 +125,8 @@ sseRoutes.get('/stream', (c) => {
         });
       }
 
-      // 장중: 30초, 장외: 120초 (API 호출 + CPU 비용 절감)
-      const interval = isMarketOpen() ? 30000 : 120000;
+      // 장중: 5초 (실시간 PnL 업데이트), 장외: 60초
+      const interval = isMarketOpen() ? 5000 : 60000;
       await stream.sleep(interval);
     }
   });

@@ -177,6 +177,22 @@ export function useDashboardData() {
           if (data.strategy) {
             setStrategy((prev: any) => prev ? { ...prev, ...data.strategy } : data.strategy);
           }
+          // SSE chainPrices → dash.chains 실시간 업데이트 (5초마다 PnL 갱신)
+          if (Array.isArray(data.chainPrices) && data.chainPrices.length > 0) {
+            setDash((prev: any) => {
+              if (!prev?.chains) return prev;
+              const priceMap = new Map(data.chainPrices.map((cp: any) => [cp.stock_code, cp]));
+              const updatedChains = prev.chains.map((ch: any) => {
+                const cp = priceMap.get(ch.stock_code);
+                if (!cp || cp.currentPrice <= 0) return ch;
+                return { ...ch, currentPrice: cp.currentPrice, unrealizedPnl: cp.unrealizedPnl, unrealizedPnlPct: cp.unrealizedPnlPct };
+              });
+              const updatedPortfolio = data.portfolio?.unrealizedPnl != null
+                ? { ...prev.portfolio, unrealizedPnl: data.portfolio.unrealizedPnl }
+                : prev.portfolio;
+              return { ...prev, chains: updatedChains, portfolio: updatedPortfolio };
+            });
+          }
           const chainsChanged = prevChainCount !== -1 && data.activeChains !== prevChainCount;
           const overseasChanged = prevOverseasCount !== -1 && data.overseasHoldingCount !== undefined && data.overseasHoldingCount !== prevOverseasCount;
           if (chainsChanged || overseasChanged) {
@@ -188,7 +204,7 @@ export function useDashboardData() {
           }
           prevChainCount = data.activeChains ?? prevChainCount;
           if (data.overseasHoldingCount !== undefined) prevOverseasCount = data.overseasHoldingCount;
-          if (data.loopMode) setLoopStatus(data.loopMode);
+          if (data.loopMode) setLoopStatus({ ...data.loopMode, openMarkets: data.loopMode.openMarkets ?? [] });
           if (data.healthScore != null) setSseHealthScore(data.healthScore);
         } catch { /* ignore */ }
       });
