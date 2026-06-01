@@ -501,6 +501,13 @@ futuresRoutes.post('/futures/integrity-fix', async (c) => {
       fixes.push(`live 예산 ${Number(fb.allocated_krw_live).toLocaleString()}원 → 0 (paper 서버 오염 정리)`);
     }
 
+    // 4. 레거시 allocated_krw 잔여값 정리 (분리 컬럼 존재 시 legacy 무효화)
+    const legacyAlloc = Number(fb.allocated_krw ?? 0);
+    if (legacyAlloc > 0) {
+      await pool.query(`UPDATE futures_budget SET allocated_krw = 0 WHERE id = 1`);
+      fixes.push(`레거시 allocated_krw=${legacyAlloc.toLocaleString()}원 → 0 (분리 완료)`);
+    }
+
     logger.info(`[IntegrityFix] 보정 완료: ${fixes.join(' | ')}`, { component: COMP });
     return c.json({ ok: true, fixes });
   } catch (e: any) {

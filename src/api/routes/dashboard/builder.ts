@@ -60,8 +60,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     Promise.race([p, new Promise<T>(res => setTimeout(() => res(fallback), ms))]);
 
   const balanceFn = viewIsPaper
-    ? () => withTimeout(getPaperBalance(), 8000, defaultBalance as any)
-    : () => withTimeout(getAccountBalance(true), 8000, defaultBalance as any);
+    ? () => withTimeout(getPaperBalance(), 5000, defaultBalance as any)
+    : () => withTimeout(getAccountBalance(true), 6000, defaultBalance as any);
 
   const [balanceResult, chains, strategy, insightRows, defensePark] = await Promise.all([
     balanceFn().catch(() => defaultBalance),
@@ -128,7 +128,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   // 병렬 배치 조회 (체인+이름보정 위주 — 대폭 축소)
   if (codesToFetch.length > 0) {
     try {
-      const batchResult = await withTimeout(getBatchPrices(codesToFetch), 5000, new Map());
+      const batchResult = await withTimeout(getBatchPrices(codesToFetch), 3000, new Map());
       for (const [code, quote] of batchResult) {
         if (quote.currentPrice > 0) priceMap.set(code, quote.currentPrice);
         if (quote.stockName && quote.stockName !== code) nameMap.set(code, quote.stockName);
@@ -384,7 +384,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       overseasHoldings.push({
         stock_code: code,
         quantity: qty,
-        avg_price: avgP,
+        avg_price: Math.round(avgP * 10000) / 10000,
         bought_at: r.bought_at,
         last_price: curP,
         sector,
@@ -428,9 +428,9 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     // Paper: 국내 현금(rawCash) + 해외 현금(USD→KRW) = 통합 현금
     actualCash = (actualCash || 0) + overseasCashKrw;
   } else {
-    // Live: psamount 기반 overseas_state 우선 (해외 매도대금 T+1 반영 정확)
-    // 스테일 가드: 2시간 초과 overseas_state → 국내 잔고 API 폴백
-    const STALE_SEC = 2 * 60 * 60;
+    // Live: overseas_state.cash 우선 (KIS psamount 기반, KRW)
+    // 스테일 가드: 6시간 초과 시 국내 잔고 API 폴백, 없으면 overseas_state 유지
+    const STALE_SEC = 6 * 60 * 60;
     if (overseasCashKrw > 0 && osCashAge < STALE_SEC) {
       actualCash = overseasCashKrw;
     } else if (rawCash > 0) {
@@ -438,6 +438,9 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       if (overseasCashKrw > 0 && osCashAge >= STALE_SEC) {
         logger.warn(`대시보드: overseas_state.cash 스테일 (${Math.round(osCashAge / 60)}분) → 국내 잔고 API 폴백`, { component: 'DASHBOARD' });
       }
+    } else if (overseasCashKrw > 0) {
+      // 스테일이지만 다른 소스 없음 → overseas_state 값 그대로 사용 (0보다 나음)
+      actualCash = overseasCashKrw;
     } else {
       // 전부 실패 → netAsset 기반 추정
       const netAsset = (balance as any).netAsset ?? 0;
@@ -510,7 +513,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       domesticInvested: Math.round(domesticInvested),
       domesticEval: Math.round(domesticMarketValue), // 국내 증권 시가평가 (비중 계산용)
       domesticCash: unifiedCash, // 통합증거금: 국내/해외 구분 없음
-      unrealizedPnl: Math.round(viewIsPaper ? totalChainPnl : (balance.totalProfitLoss || totalChainPnl)),
+      unrealizedPnl: Math.round((viewIsPaper ? totalChainPnl : (balance.totalProfitLoss || totalChainPnl)) + (overseasMarketValueKrw - overseasInvestedKrw)),
       realizedPnl: viewIsPaper ? Math.round(balance.totalProfitLoss ?? 0) : 0,
       pnl: Math.round(totalPnl),
       pnlPct: Math.round(totalPnlPct * 100) / 100,
@@ -522,6 +525,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       totalInvestedKrw: overseasInvestedKrw,
       totalMarketValueUsd: overseasMarketValueUsd,
       totalMarketValueKrw: overseasMarketValueKrw,
+      unrealizedPnlKrw: Math.round(overseasMarketValueKrw - overseasInvestedKrw),
+      unrealizedPnlPct: overseasInvestedKrw > 0 ? Math.round((overseasMarketValueKrw - overseasInvestedKrw) / overseasInvestedKrw * 10000) / 100 : 0,
       cashUsd: unifiedCashUsd,
       cashKrw: unifiedCash, // 통합증거금: cash = 주문가능원화
       fxRate: FX_RATE,

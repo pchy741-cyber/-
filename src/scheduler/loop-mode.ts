@@ -12,6 +12,7 @@ import {
   type SessionStrategyBrief,
 } from './overseas/session-strategy.js';
 import { getCopilotLiteScore } from '../api/routes/review/copilot-lite.js';
+import { getOpenMarketRegions } from './overseas/session.js';
 
 const DEFAULT_INTERVAL_MS = 5 * 60_000; // 5분
 const FAST_INTERVAL_MS = 3 * 60_000;    // 3분 (VIX STRESS/CRISIS, 활성 매도)
@@ -125,14 +126,17 @@ async function runCopilotCheck(reason: string): Promise<void> {
 async function tick(): Promise<void> {
   if (!state.active) return;
 
-  // PAUSED 체크: 장 마감 → PAUSED 전환
+  // PAUSED 체크: 모든 시장 마감 → PAUSED, 아무 시장이라도 열리면 TRADING
   const currentPhase = getUSMarketPhase();
-  if (currentPhase === 'CLOSED' || currentPhase === 'PREMARKET') {
+  const openRegions = getOpenMarketRegions();
+  const anyMarketOpen = openRegions.size > 0;
+
+  if (!anyMarketOpen && (currentPhase === 'CLOSED' || currentPhase === 'PREMARKET')) {
     if (state.phase === 'TRADING') {
       state.phase = 'PAUSED';
       const prevInterval = state.adaptiveIntervalMs;
       state.adaptiveIntervalMs = PAUSE_CHECK_MS;
-      logger.info(`Auto Pilot: 장외 시간 → PAUSED (${prevInterval / 1000}s → ${PAUSE_CHECK_MS / 1000}s)`, { component: 'LOOP' });
+      logger.info(`Auto Pilot: 전체 장외 시간 → PAUSED (${prevInterval / 1000}s → ${PAUSE_CHECK_MS / 1000}s)`, { component: 'LOOP' });
       dbUpdateSession(state.dbSessionId, { phase: 'PAUSED' }).catch(() => {});
     }
     // PAUSED 상태: 장 열릴 때까지 대기
@@ -140,11 +144,12 @@ async function tick(): Promise<void> {
     return;
   }
 
-  // PAUSED → TRADING 자동 복귀
-  if (state.phase === 'PAUSED') {
+  // PAUSED → TRADING 자동 복귀 (아무 시장이라도 열리면)
+  if (state.phase === 'PAUSED' && anyMarketOpen) {
+    const regions = [...openRegions].join(',');
     state.phase = 'TRADING';
     state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
-    logger.info(`Auto Pilot: 장 오픈 감지 → TRADING 복귀`, { component: 'LOOP' });
+    logger.info(`Auto Pilot: 장 오픈 감지 (${regions}) → TRADING 복귀`, { component: 'LOOP' });
     dbUpdateSession(state.dbSessionId, { phase: 'TRADING' }).catch(() => {});
   }
 
@@ -312,10 +317,11 @@ export async function startLoop(): Promise<{ ok: boolean; error?: string; warnin
 
   // 장외 시간 경고 (시작은 허용)
   const marketPhase = getUSMarketPhase();
-  const isMarketClosed = marketPhase === 'CLOSED' || marketPhase === 'PREMARKET';
+  const startOpenRegions = getOpenMarketRegions();
+  const isMarketClosed = startOpenRegions.size === 0 && (marketPhase === 'CLOSED' || marketPhase === 'PREMARKET');
   let warning: string | undefined;
   if (isMarketClosed) {
-    warning = `현재 장외 시간 (${marketPhase}) — PAUSED 상태로 시작, 장 오픈 시 자동 TRADING 전환`;
+    warning = `현재 전체 장외 시간 (${marketPhase}) — PAUSED 상태로 시작, 장 오픈 시 자동 TRADING 전환`;
   }
 
   state.active = true;
@@ -424,8 +430,9 @@ export async function checkPendingLoop(): Promise<void> {
     state.sessionBrief = session.session_brief;
     state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
 
-    const marketPhase = getUSMarketPhase();
-    if (marketPhase === 'CLOSED' || marketPhase === 'PREMARKET') {
+    const resumeMarketPhase = getUSMarketPhase();
+    const resumeOpenRegions = getOpenMarketRegions();
+    if (resumeOpenRegions.size === 0 && (resumeMarketPhase === 'CLOSED' || resumeMarketPhase === 'PREMARKET')) {
       state.phase = 'PAUSED';
       state.adaptiveIntervalMs = PAUSE_CHECK_MS;
     } else {
@@ -433,7 +440,8 @@ export async function checkPendingLoop(): Promise<void> {
     }
 
     dbUpdateSession(state.dbSessionId, { phase: state.phase }).catch(() => {});
-    sendTelegramMessage(`🔄 Auto Pilot 자동 재개 (세션 #${session.id}, ${state.totalRuns}회 실행됨)`).catch(() => {});
+    const regions = [...resumeOpenRegions].join(',') || 'NONE';
+    sendTelegramMessage(`🔄 Auto Pilot 자동 재개 (세션 #${session.id}, ${state.totalRuns}회, 시장:${regions})`).catch(() => {});
     scheduleNext();
   } catch (e) {
     logger.warn(`checkPendingLoop 실패: ${(e as Error).message}`, { component: 'LOOP' });
@@ -441,9 +449,12 @@ export async function checkPendingLoop(): Promise<void> {
 }
 
 export function getLoopStatus() {
+  const regions = getOpenMarketRegions();
   return {
     ...state,
     marketPhase: getUSMarketPhase(),
+    openMarkets: [...regions],
+    anyMarketOpen: regions.size > 0,
   };
 }
 

@@ -188,9 +188,9 @@ export async function getWinRateFeedback(isPaper: boolean): Promise<WinRateFeedb
     const lowVolWinRate = lowVol.length >= 3 ? lowVol.filter(t => t.win).length / lowVol.length : null;
 
     let thresholdBonus = 0;
-    if (winRate < 0.25) thresholdBonus = 8;
-    else if (winRate < 0.35) thresholdBonus = 5;
-    else if (winRate < 0.45) thresholdBonus = 3;
+    if (winRate < 0.25) thresholdBonus = 5;
+    else if (winRate < 0.35) thresholdBonus = 3;
+    else if (winRate < 0.45) thresholdBonus = 2;
 
     const requirePullback = pbWinRate !== null && noPbWinRate !== null
       && noPbWinRate < 0.30 && pbWinRate > noPbWinRate + 0.15;

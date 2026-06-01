@@ -82,7 +82,7 @@ export const STRATEGY_PARAMS = {
     // │ Half-Kelly 포지션 12.5% / 손익비 2.46:1 / 월 40~50건 목표        │
     // │ earlyTpPct 2.5%: 50% 조기 해제 → 현금 회전율 2배 향상             │
     // └────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 83,
+    buyThreshold: 70,
     splitCount: 2,
     averageDownPct: 0,
     maxAveragingCount: 0,

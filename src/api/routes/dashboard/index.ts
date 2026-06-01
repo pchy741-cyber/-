@@ -30,7 +30,7 @@ dashboardRoutes.get('/dashboard', async (c) => {
     }
     return c.json(cached.data);
   }
-  const timeoutMs = 15_000;
+  const timeoutMs = 25_000;
   const timeoutPromise = new Promise<never>((_, rej) =>
     setTimeout(() => rej(new Error('dashboard timeout')), timeoutMs));
   try {
@@ -39,6 +39,7 @@ dashboardRoutes.get('/dashboard', async (c) => {
     return c.json(payload);
   } catch (e: any) {
     if (e.message === 'dashboard timeout') {
+      // 빌드 타임아웃 — 백그라운드에서 계속 빌드 (dedup이 관리), 다음 요청에서 캐시 히트
       return c.json({ error: 'timeout', message: '대시보드 로딩 시간 초과 — 잠시 후 재시도' }, 503);
     }
     throw e;

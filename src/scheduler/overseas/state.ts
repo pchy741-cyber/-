@@ -234,8 +234,8 @@ export async function setCash(amountKrw: number, isPaper?: boolean): Promise<voi
   const safe = Math.max(0, amountKrw);
   const key = cashKey(false);
   await getPool().query(
-    `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
-     ON CONFLICT (key) DO UPDATE SET value = $2`,
+    `INSERT INTO overseas_state (key, value, updated_at) VALUES ($1, $2, NOW())
+     ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
     [key, safe.toString()],
   );
 }

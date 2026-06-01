@@ -65,7 +65,7 @@ export async function getFxRate(): Promise<number> {
   const now = Date.now();
   if (now - _fxCache.fetchedAt < 60 * 60 * 1000) return _fxCache.rate;
   try {
-    const resp = await fetch('https://open.er-api.com/v6/latest/USD', { signal: AbortSignal.timeout(4000) });
+    const resp = await fetch('https://open.er-api.com/v6/latest/USD', { signal: AbortSignal.timeout(2000) });
     const data = await resp.json() as any;
     const krw = data?.rates?.KRW;
     if (krw && krw > 1000 && krw < 2000) {

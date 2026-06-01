@@ -174,6 +174,9 @@ export function getOpenMarketRegions(): Set<string> {
   if ((mins >= preStart && mins < usOpen) ||
       (mins > usClose && mins <= postEnd)) open.add('US_EXTENDED');
 
+  // 🇰🇷 한국 KRX: 09:00~15:30 KST (평일만 — 요일체크는 overseas-job에서)
+  if (mins >= 9 * 60 && mins <= 15 * 60 + 30) open.add('KR');
+
   // 🇯🇵 일본 TSE: 09:00~11:30, 12:30~15:30 KST
   if ((mins >= 9 * 60 && mins <= 11 * 60 + 30) ||
       (mins >= 12 * 60 + 30 && mins <= 15 * 60 + 30)) open.add('JP');
