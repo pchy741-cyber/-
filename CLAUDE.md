@@ -258,14 +258,14 @@ if not pullbackSignal and envelope_pos not in ('BELOW_LOWER', 'NEAR_LOWER'):
     if score < 85: → 스킵
 ```
 
-**reasoning 필드**: `"눌림매매 AI {score}점 conf{conf} RSI{rsi} vol{volRatio}x pb={pullback} env={env_pos} volC={vol_cons}일"`
+**reasoning 필드** (ASCII 전용 — 한글 깨짐 방지): `"pullback AI{score} conf{conf} RSI{rsi} vol{volRatio}x pb={pullback} env={env_pos} volC={vol_cons}d"`
 
 #### Step 3 — 포지션 사이징 후 실행
 ```bash
 curl -s -X POST "https://quantops-807105550136.asia-northeast3.run.app/api/manual-buy" \
   -H "Content-Type: application/json" \
   -H "x-api-key: <DASHBOARD_PASSWORD>" \
-  -d "{\"stock_code\":\"XXXXXX\",\"ai_score\":SCORE,\"reasoning\":\"눌림매매 AI 82점 conf0.70 RSI48 vol1.5x pb=True env=NEAR_LOWER volC=3일\"}"
+  -d "{\"stock_code\":\"XXXXXX\",\"ai_score\":SCORE,\"reasoning\":\"pullback AI82 conf0.70 RSI48 vol1.5x pb=True env=NEAR_LOWER volC=3d\"}"
 ```
 
 > `amount_krw` 생략 시 백엔드가 자동으로 복리 사이징 계산.
@@ -287,9 +287,9 @@ curl -s -X POST "https://quantops-807105550136.asia-northeast3.run.app/api/manua
 
 ## 판단 예시
 
-**눌림매매 진입**: "058430 AI 85점 conf0.73 RSI44 vol1.8x pb=True env=NEAR_LOWER → ai_score=85 매수"
-**눌림 신호 없어서 스킵**: "012345 AI 83점이나 pb=False env=MIDDLE → 스킵"
-**점수 미달 스킵**: "031820 AI 76점 conf0.61 → 80점 미달, 스킵"
+**눌림매매 진입**: "058430 AI85 conf0.73 RSI44 vol1.8x pb=True env=NEAR_LOWER → ai_score=85 BUY"
+**눌림 신호 없어서 스킵**: "012345 AI83 pb=False env=MIDDLE → skip"
+**점수 미달 스킵**: "031820 AI76 conf0.61 → score<80, skip"
 **긴급 손절**: "체인 #45 PnL -2.6% → 긴급 손절"
 **백엔드 관리 중**: "체인 #42 PnL +2.1% → 백엔드 트레일링 중, Claude 개입 없음"
 **개장 구간 대기**: "09:15 KST → 개장 스캘핑 백엔드 실행 중, 120s 대기"

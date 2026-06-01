@@ -251,6 +251,8 @@ export async function getRecentLossStocks(isPaper?: boolean): Promise<Set<string
  * — 의도적 매도를 시스템이 즉시 되돌리는 상황 방지
  */
 export async function getManualSellCooldownStocks(): Promise<Set<string>> {
+  // paper 모드는 KIS 앱 수동매도가 없으므로 쿨다운 없음 (live 키 크로스오염 방지)
+  if (getCtxIsPaper()) return new Set();
   try {
     const cutoff = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
     const { rows } = await getPool().query(`

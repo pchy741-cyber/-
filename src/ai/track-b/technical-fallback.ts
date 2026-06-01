@@ -177,16 +177,19 @@ export async function technicalFallbackDecisions(params: {
     let effectiveSl = Number(chainSl);
 
     if (realtimeAiScore > 0 && !isScalpChain) {
+      // 모드별 TP 상한 (SCALPING=1.5%, SWING=7%, SNIPER=8% 등) 초과 방지
+      const modeMaxTp = (STRATEGY_PARAMS[chain.strategy_mode as StrategyMode] ?? strategyParams).takeProfitPct;
+      const modeSl = (STRATEGY_PARAMS[chain.strategy_mode as StrategyMode] ?? strategyParams).stopLossPct;
       if (realtimeAiScore >= 85) {
-        // AI 강세 지속 → 수익 극대화, TP 상향 (승자를 더 오래 보유)
-        effectiveTp = Math.max(Number(chainTp), 8.0);
+        // AI 강세 지속 → TP 상향, 단 전략 TP의 120% 상한 (SCALPING 8% 강제 방지)
+        effectiveTp = Math.max(Number(chainTp), Math.min(8.0, modeMaxTp * 1.2));
       } else if (realtimeAiScore < 55) {
         if (pnlPct > 1.0) {
-          // AI 약세 전환 + 수익 구간 → 빠른 수익 확정 (TP를 현재 수익 -0.5%로 낮춤)
+          // AI 약세 전환 + 수익 구간 → 빠른 수익 확정
           effectiveTp = Math.min(Number(chainTp), Math.max(pnlPct - 0.5, 1.0));
         } else {
-          // AI 강한 약세 전환 + 손실 구간 → SL 타이트 (-2.0%)
-          effectiveSl = Math.max(Number(chainSl), -2.0);
+          // AI 강한 약세 전환 + 손실 구간 → SL 타이트 (전략 SL의 70%)
+          effectiveSl = Math.max(Number(chainSl), modeSl * 0.7);
         }
       }
     }

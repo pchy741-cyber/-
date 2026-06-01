@@ -565,7 +565,8 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           let targetUsPct = Number(allocRows[0]?.us_pct ?? 30);
           // 크로스마켓 로테이션: DB에 저장된 최신 로테이션 신호로 동적 조정
           try {
-            const { rows: rotRows } = await getPool().query("SELECT value FROM system_state WHERE key = 'rotation_signal'");
+            const rotKey = isPaper() ? 'p_rotation_signal' : 'l_rotation_signal';
+            const { rows: rotRows } = await getPool().query('SELECT value FROM system_state WHERE key = $1', [rotKey]);
             if (rotRows.length > 0) {
               const rot = JSON.parse(rotRows[0].value);
               const ageMs = Date.now() - new Date(rot.updatedAt).getTime();

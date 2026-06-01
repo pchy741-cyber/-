@@ -1,4 +1,5 @@
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { getPool } from '../db/client.js';
 import type { TransactionChain } from '../db/models.js';
 import { getAccountBalance } from '../kis/account.js';
@@ -69,7 +70,7 @@ export async function getPerformanceMultiplier(): Promise<number> {
          AND closed_at >= $1
          AND stock_code ~ '^[0-9]{6}$'
          AND is_paper = $2`,
-      [cutoff.toISOString(), config.isPaper],
+      [cutoff.toISOString(), getCtxIsPaper()],
     );
 
     const total = Number(rows[0]?.total ?? 0);
@@ -237,7 +238,7 @@ const MAX_SINGLE_STOCK_PCT = 0.25; // 단일 종목 25% 초과 → 경고
 export async function runPortfolioHealthCheck(): Promise<void> {
   try {
     const { getPaperBalance } = await import('../risk/engine.js');
-    const balance = config.isPaper ? await getPaperBalance() : await getAccountBalance();
+    const balance = getCtxIsPaper() ? await getPaperBalance() : await getAccountBalance();
     const positions = balance.positions;
 
     if (positions.length === 0) return;

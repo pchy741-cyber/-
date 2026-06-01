@@ -334,7 +334,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     const allocCfg = await import('../../db/client.js')
-      .then(m => m.getPool().query('SELECT * FROM portfolio_allocation_config WHERE is_active = true AND is_paper = $1 LIMIT 1', [config.isPaper]))
+      .then(m => m.getPool().query('SELECT * FROM portfolio_allocation_config WHERE is_active = true AND is_paper = $1 LIMIT 1', [getCtxIsPaper()]))
       .then(r => r.rows[0] ?? null).catch(() => null);
 
     // ── 3-d. 실시간 등락률 상위 종목 동적 편입 ────────────────────────────
@@ -479,7 +479,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 성과 배율: 최근 5거래일 승률/수익 기반 (0.7x ~ 1.2x)
     const perfMult = await getPerformanceMultiplier();
     // 승률 피드백: 최근 30일 실거래 신호별 승률 → 임계값/눌림/거래량 동적 강화
-    const winFeedback = await getWinRateFeedback(config.isPaper);
+    const winFeedback = await getWinRateFeedback(getCtxIsPaper());
     const feedbackThreshold = resolvedThreshold + winFeedback.thresholdBonus;
     if (winFeedback.thresholdBonus > 0 || winFeedback.requirePullback || winFeedback.minVolumeRatio > 1.0) {
       logger.info(`🎯 승률피드백 적용: ${winFeedback.summary}`, { component: 'TRACK_B' });
@@ -615,7 +615,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     // ── 고확신 눌림목 텔레그램 알림 (AI 90점+ + truePullbackPattern, 실전 전용) ──
-    if (!config.isPaper) {
+    if (!getCtxIsPaper()) {
       const openStockCodes = new Set(openChains.map(c => c.stock_code));
       const nameMap = new Map(watchlist.map(w => [w.stock_code, w.stock_name]));
       const highConvictionCandidates = finalScores.filter(s => s.score >= 90 && !openStockCodes.has(s.stock_code));

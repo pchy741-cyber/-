@@ -10,6 +10,7 @@ import { getVixRegime } from '../scheduler/overseas/risk-intelligence.js';
 import { getFearGreedIndex } from '../market/external-signals.js';
 import { fetchExchangeRate } from './macro-data.js';
 import { getPool } from '../db/client.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
 
@@ -175,7 +176,7 @@ export async function runRotationCheck(): Promise<void> {
 
     // DB에 마지막 로테이션 신호 저장 (overseas-job에서 읽기용)
     await getPool().query(
-      `INSERT INTO system_state (key, value) VALUES ('rotation_signal', $1)
+      `INSERT INTO system_state (key, value) VALUES (${getCtxIsPaper() ? "'p_rotation_signal'" : "'l_rotation_signal'"}, $1)
        ON CONFLICT (key) DO UPDATE SET value = $1`,
       [JSON.stringify({
         adjustedKrPct: signal.adjustedKrPct,
