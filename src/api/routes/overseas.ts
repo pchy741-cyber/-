@@ -79,7 +79,19 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
     try {
       const { getPool } = await import('../../db/client.js');
       const { rows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1', [viewIsPaper]);
-      const holdings = rows.map((r: any) => ({ stock_code: r.stock_code, quantity: Number(r.quantity), avg_price: Number(r.avg_price), last_price: Number(r.last_price ?? 0) }));
+      const holdings = rows.map((r: any) => ({
+        stock_code: r.stock_code,
+        quantity: Number(r.quantity),
+        avg_price: Number(r.avg_price),
+        last_price: Number(r.last_price ?? 0),
+        tp_pct: r.tp_pct != null ? Number(r.tp_pct) : null,
+        sl_pct: r.sl_pct != null ? Number(r.sl_pct) : null,
+        is_scalp: !!r.is_scalp,
+        scalp_tp: r.scalp_tp != null ? Number(r.scalp_tp) : null,
+        scalp_sl: r.scalp_sl != null ? Number(r.scalp_sl) : null,
+        bought_at: r.bought_at,
+        exchange: r.exchange,
+      }));
       // DB 성공 시 holdings 백업 캐시 저장 (5분 TTL — DB 장애 시 폴백용)
       if (holdings.length > 0) cacheSet(holdingsCacheKey, holdings, 300);
       return holdings;

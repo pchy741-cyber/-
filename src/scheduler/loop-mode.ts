@@ -13,6 +13,7 @@ import {
 } from './overseas/session-strategy.js';
 import { getCopilotLiteScore } from '../api/routes/review/copilot-lite.js';
 import { getOpenMarketRegions } from './overseas/session.js';
+import { runWithMode } from '../config/context.js';
 
 const DEFAULT_INTERVAL_MS = 5 * 60_000; // 5분
 const FAST_INTERVAL_MS = 3 * 60_000;    // 3분 (VIX STRESS/CRISIS, 활성 매도)
@@ -153,9 +154,10 @@ async function tick(): Promise<void> {
     dbUpdateSession(state.dbSessionId, { phase: 'TRADING' }).catch(() => {});
   }
 
-  // Kill Switch 활성이어도 매도(탈출)를 위해 실행 — 매수만 overseas-job 내부에서 차단
+  // Kill Switch 로그 (매도 탈출은 각 job 내부에서 처리)
+  if (isKillSwitchActive('KR')) logger.info('Auto Pilot: KR Kill Switch 활성 — 국내 매도만 실행', { component: 'LOOP' });
   if (isKillSwitchActive('OVERSEAS')) {
-    logger.info('Auto Pilot: Kill Switch 활성 — 매도만 실행 (매수 차단은 overseas-job 내부)', { component: 'LOOP' });
+    logger.info('Auto Pilot: OVERSEAS Kill Switch 활성 — 해외 매도만 실행', { component: 'LOOP' });
     runCopilotCheck('kill_switch').catch(() => {});
   }
 
@@ -175,14 +177,28 @@ async function tick(): Promise<void> {
     }
   }
 
-  // ── 2. 매매 실행 ──
+  // ── 2. 매매 실행 — 열린 시장에 따라 분기 ──
+  const krOpen = openRegions.has('KR');
+  const overseasOpen = [...openRegions].some(r => r !== 'KR');
+  const activeMarkets = [krOpen && '🇰🇷국내', overseasOpen && '🌏해외'].filter(Boolean).join('+');
+  logger.info(`Auto Pilot 틱 #${state.totalRuns + 1}: ${activeMarkets || '장외'} 실행`, { component: 'LOOP' });
+
   state.lastRunAt = new Date().toISOString();
   state.totalRuns++;
   const t0 = Date.now();
 
   try {
-    const { runOverseasDual } = await import('./overseas-job.js');
-    await runOverseasDual();
+    // 국내장 열림 → Track B paper+live 실행
+    if (krOpen) {
+      const { runTrackBJob } = await import('./track-b-job.js');
+      await runWithMode(true, () => runTrackBJob()).catch(e => logger.error(`Loop KR paper 실패: ${e}`, { component: 'LOOP' }));
+      await runWithMode(false, () => runTrackBJob()).catch(e => logger.error(`Loop KR live 실패: ${e}`, { component: 'LOOP' }));
+    }
+    // 해외장 열림 → 해외 dual 실행
+    if (overseasOpen) {
+      const { runOverseasDual } = await import('./overseas-job.js');
+      await runOverseasDual();
+    }
     state.lastRunDurationMs = Date.now() - t0;
     state.lastRunResult = 'ok';
     state.consecutiveErrors = 0;
@@ -219,34 +235,39 @@ async function tick(): Promise<void> {
 
 function adaptiveInterval(): void {
   const brief = getActiveSessionBrief();
+  const openRegions = getOpenMarketRegions();
+  const krOpen = openRegions.has('KR');
 
-  // VIX STRESS/CRISIS → 가속 (3분) — 위기 시 빠른 탈출 감시
+  // VIX STRESS/CRISIS → 가속 (3분)
   if (brief && (brief.marketRegime === 'CRISIS' || brief.riskLevel === 'DEFENSIVE')) {
     state.adaptiveIntervalMs = FAST_INTERVAL_MS;
     return;
   }
 
-  // 미국장 시간대별 차등 (ET 기준)
+  // 국내장 황금 구간 (09:30~10:20, 13:00~15:00) → 3분 빠르게
+  if (krOpen) {
+    const now = new Date();
+    const kstH = (now.getUTCHours() + 9) % 24;
+    const kstM = now.getUTCMinutes();
+    const kstTime = kstH * 100 + kstM;
+    const isKrPrime = (kstTime >= 930 && kstTime < 1020) || (kstTime >= 1300 && kstTime < 1500);
+    if (isKrPrime) {
+      state.adaptiveIntervalMs = FAST_INTERVAL_MS;
+      return;
+    }
+    // 국내장 중 (마의시간대 포함) → 5분
+    state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
+    return;
+  }
+
+  // 미국장 시간대별 차등
   const usPhase = getUSMarketPhase();
-  if (usPhase === 'OPEN_VOLATILE') {
-    state.adaptiveIntervalMs = FAST_INTERVAL_MS; // 개장 초반 기회 포착 (3분)
-    return;
-  }
-  if (usPhase === 'PRIME') {
+  if (usPhase === 'OPEN_VOLATILE' || usPhase === 'PRIME' || usPhase === 'POWER_HOUR') {
     state.adaptiveIntervalMs = FAST_INTERVAL_MS;
     return;
   }
-  if (usPhase === 'LUNCH') {
+  if (usPhase === 'LUNCH' || usPhase === 'MIDDAY') {
     state.adaptiveIntervalMs = SLOW_INTERVAL_MS;
-    return;
-  }
-  if (usPhase === 'MIDDAY') {
-    // MIDDAY(12:00-15:00 ET)는 변동성 낮은 구간 → 감속
-    state.adaptiveIntervalMs = SLOW_INTERVAL_MS;
-    return;
-  }
-  if (usPhase === 'POWER_HOUR') {
-    state.adaptiveIntervalMs = FAST_INTERVAL_MS;
     return;
   }
 
@@ -256,13 +277,12 @@ function adaptiveInterval(): void {
     return;
   }
 
-  // 세션 전략에서 시장 활성도 반영 — BULL+AGGRESSIVE면 가속
+  // 세션 전략 BULL+AGGRESSIVE → 가속
   if (brief && brief.marketRegime === 'BULL' && brief.riskLevel === 'AGGRESSIVE') {
     state.adaptiveIntervalMs = FAST_INTERVAL_MS;
     return;
   }
 
-  // 표준 (5분)
   state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
 }
 
