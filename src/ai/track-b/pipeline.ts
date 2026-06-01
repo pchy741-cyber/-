@@ -547,17 +547,23 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         })
       : adjustedScores;
 
-    // ── KIS 시장 시그널 수집 (체결강도, 공매도, 수급 등) ──
     const filteredWatchlist = watchlist
       .filter((w) => w.stock_code !== PARK_STOCK_CODE)
       .map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name }));
+
+    // ── KIS 시장 시그널: AI 상위 5종목만 수집 (속도 최적화: 5×6=30 호출) ──
     let marketSignals: Map<string, import('../../kis/market-signals.js').StockSignals> | undefined;
     try {
-      const signalCodes = filteredWatchlist.map(w => w.stock_code);
-      marketSignals = await getBatchStockSignals(signalCodes);
-      logger.info(`📡 시장 시그널 수집: ${marketSignals.size}/${signalCodes.length}개 종목`, { component: 'TRACK_B' });
+      const topCodes = [...finalScores]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 5)
+        .map(s => s.stock_code);
+      if (topCodes.length > 0) {
+        marketSignals = await getBatchStockSignals(topCodes);
+        logger.info(`📡 시그널 수집: ${marketSignals.size}/${topCodes.length}개 (상위5)`, { component: 'TRACK_B' });
+      }
     } catch (err) {
-      logger.warn(`📡 시장 시그널 수집 실패 (파이프라인 계속): ${err}`, { component: 'TRACK_B' });
+      logger.warn(`📡 시그널 수집 실패 (계속): ${err}`, { component: 'TRACK_B' });
     }
 
     const decisions = await technicalFallbackDecisions({
