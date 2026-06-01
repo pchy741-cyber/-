@@ -181,7 +181,7 @@ export function useDashboardData() {
           if (Array.isArray(data.chainPrices) && data.chainPrices.length > 0) {
             setDash((prev: any) => {
               if (!prev?.chains) return prev;
-              const priceMap = new Map(data.chainPrices.map((cp: any) => [cp.stock_code, cp]));
+              const priceMap = new Map<string, {stock_code:string;currentPrice:number;unrealizedPnl:number;unrealizedPnlPct:number}>(data.chainPrices.map((cp: any) => [cp.stock_code, cp]));
               const updatedChains = prev.chains.map((ch: any) => {
                 const cp = priceMap.get(ch.stock_code);
                 if (!cp || cp.currentPrice <= 0) return ch;
