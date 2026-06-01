@@ -60,6 +60,8 @@ const EXTENDED_WATCHLIST = [
   { code: 'TSLA',  name: 'Tesla',            exchange: 'NASDAQ', region: 'US', sector: 'EV' },
   // 🎮 엔터테인먼트
   { code: 'NFLX',  name: 'Netflix',          exchange: 'NASDAQ', region: 'US', sector: 'TECH' },
+  // 💊 헬스케어 추가 (CEO 요청)
+  { code: 'PMI',   name: 'Picard Medical',   exchange: 'AMEX',   region: 'US', sector: 'HEALTH' },
 ];
 
 // ── 통합 감시 목록 (Core 23 + Extended 12 = 35종목) ──
