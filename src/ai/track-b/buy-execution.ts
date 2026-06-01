@@ -53,8 +53,8 @@ async function calcDomesticKelly(days: number = 30): Promise<DomesticKellyResult
     const q = 1 - winRate;
     const fullKelly = (b * winRate - q) / b;
 
-    // Quarter-Kelly — 보수적 (0.5% ~ 10% 클램프)
-    const quarterKelly = Math.max(0.005, Math.min(0.10, fullKelly * 0.25));
+    // Quarter-Kelly (0.5% ~ 18% 클램프) — 10% 캡은 과도히 보수적이었음
+    const quarterKelly = Math.max(0.005, Math.min(0.18, fullKelly * 0.25));
 
     logger.info(
       `📊 국내 Kelly (${days}d, ${total}건): 승률 ${(winRate * 100).toFixed(0)}%, 평균수익 +${avgWin.toFixed(1)}%, 평균손실 -${avgLoss.toFixed(1)}% → Q-Kelly ${(quarterKelly * 100).toFixed(1)}%`,
@@ -335,8 +335,8 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
     const aiMaxPos = aiPosMultiplier > 1.0 && totalAssets
       ? Math.min(effectiveMaxPos * aiPosMultiplier, concentrationCap)
       : effectiveMaxPos;
-    // 상한: aiMaxPos (AI확신도 반영 종목당 한도), 남은 현금의 92%까지 사용 (현금 최소화)
-    const positionSize = Math.min(targetKrw, aiMaxPos, remainingCash * 0.92);
+    // 상한: aiMaxPos (AI확신도 반영 종목당 한도), 남은 현금의 95%까지 사용 (현금 최대 활용)
+    const positionSize = Math.min(targetKrw, aiMaxPos, remainingCash * 0.95);
     // 소자산 모드: 현금 50만 미만이면 남은 현금의 80%를 직접 사용 (배분율/maxPos 무시)
     // totalAssets가 KIS 장애 등으로 0이 되면 effectiveMaxPos도 0이 되므로
     // 실제 잔고(orderableCash) 기준으로 판단

@@ -78,10 +78,10 @@ export async function getGradualCooldown(isPaper?: boolean): Promise<GradualCool
     const lossCount = Number(rows[0]?.loss_count ?? 0);
 
     if (lossCount >= 3) {
-      return { level: 3, cooldownMs: 24 * 60 * 60_000, sizingPenalty: 0.5, message: `3연속 손절 → 24h 쿨다운 + 포지션 50% 축소` };
+      return { level: 3, cooldownMs: 12 * 60 * 60_000, sizingPenalty: 0.65, message: `3연속 손절 → 12h 쿨다운 + 포지션 65%` };
     }
     if (lossCount >= 2) {
-      return { level: 2, cooldownMs: 12 * 60 * 60_000, sizingPenalty: 0.7, message: `2연속 손절 → 12h 전체 쿨다운` };
+      return { level: 2, cooldownMs: 6 * 60 * 60_000, sizingPenalty: 0.80, message: `2연속 손절 → 6h 전체 쿨다운` };
     }
     if (lossCount >= 1) {
       return { level: 1, cooldownMs: 4 * 60 * 60_000, sizingPenalty: 1.0, message: `1회 손절 → 해당 종목 4h 쿨다운` };

@@ -27,7 +27,7 @@ export function getVixRegime(vix: number): RegimeAdjustment {
     return {
       regime: 'STRESS',
       confBoost: 0.05,    // AI threshold +5%p
-      sizingMult: 0.6,    // 포지션 60%로 축소
+      sizingMult: 0.80,   // 포지션 80%로 유지 (기존 60% → VIX 20-30은 일상적)
       allowNewBuy: true,
       trailTighten: 1.0,  // 트레일 1%p 타이트닝
     };

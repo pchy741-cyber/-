@@ -74,8 +74,8 @@ export function calcPositionSize(params: SizingParams): SizingResult {
   const breadth = params.marketBreadth ?? 0.5;
   const regimeMult = breadth >= 0.65 ? 1.15   // BULL: +15% 공격적
     : breadth >= 0.45 ? 1.0                   // NEUTRAL: 기본
-    : breadth >= 0.35 ? 0.85                  // WEAK: -15%
-    : 0.70;                                   // BEAR: -30% 방어적
+    : breadth >= 0.35 ? 0.90                  // WEAK: -10% (기존 -15%)
+    : 0.80;                                   // BEAR: -20% (기존 -30%, 과도)
 
   const sizingMult = calcSizingMultiplier({
     confidence: effectiveConf,
@@ -89,17 +89,19 @@ export function calcPositionSize(params: SizingParams): SizingResult {
   });
 
   const isSmallAccount = portfolioValue < 500;
-  const kellyDefault = isPaper ? 0.30 : 0.25;
-  const kellyMomentum = isPaper ? 0.35 : 0.30;
-  const kellyCap = isPaper ? 0.35 : 0.30;
-  const kellyFloor = isPaper ? 0.15 : 0.20;
+  const kellyDefault = isPaper ? 0.30 : 0.30;  // Live도 30%로 상향 (기존 25%)
+  const kellyMomentum = isPaper ? 0.35 : 0.35; // 모멘텀도 동일하게
+  const kellyCap = isPaper ? 0.35 : 0.35;       // Live 캡 35% (기존 30%)
+  const kellyFloor = isPaper ? 0.15 : 0.15;     // Live 바닥도 Paper와 동일
   // 소액: Paper 60%(집중), Live 40% — 이전 80%/50%는 과도
   const kellyPct = isSmallAccount ? (isPaper ? 0.60 : 0.40)
     : kellyResult.sampleCount >= 10 ? Math.max(kellyResult.halfKelly, kellyFloor)
     : (target.isMomentum && target.score >= 40 ? kellyMomentum : kellyDefault);
   const baseSize = portfolioValue * Math.min(kellyPct, isSmallAccount ? (isPaper ? 0.60 : 0.40) : kellyCap);
-  const cashUsageCap = isSmallAccount ? (isPaper ? 0.90 : (cash < 200 ? 0.85 : 0.75)) : 0.70;
-  let positionSize = Math.min(baseSize * sizingMult, cash * cashUsageCap);
+  const cashUsageCap = isSmallAccount ? (isPaper ? 0.90 : (cash < 200 ? 0.85 : 0.80)) : 0.85;
+  // 복합 감소기 바닥: sizingMult가 여러 팩터 곱셈으로 0.3 이하로 붕괴 방지
+  const flooredSizingMult = Math.max(sizingMult, 0.40);
+  let positionSize = Math.min(baseSize * flooredSizingMult, cash * cashUsageCap);
 
   // 최소 포지션 바닥 (수수료 대비 의미있는 거래량 보장)
   const minPosition = isPaper ? MIN_POSITION_PAPER : MIN_POSITION_LIVE;
