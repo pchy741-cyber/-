@@ -190,7 +190,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
     const triggerSource: string = (body.source as string) || 'MANUAL';
     const sellReason: string = (body.reason as string) || 'CEO 수동 매도';
     // 대시보드 viewMode에서 is_paper를 전달받거나, 없으면 서버 모드로 폴백
-    const isPaper: boolean = config.isPaper; // 🔒 서버 설정만 사용 (클라이언트 오버라이드 차단)
+    const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
     const stockTradingMode = isPaper ? 'paper' : 'live';
 
     const { rows: openChains } = await getPool().query(
@@ -577,7 +577,8 @@ sellRoutes.post('/manual-buy', async (c) => {
   const stock_code = String(body.stock_code ?? '').trim().replace(/\D/g, '');
   const { reasoning } = body;
   const aiScore = body.ai_score ?? 0;
-  const isPaper: boolean = config.isPaper; // 🔒 서버 설정만 사용 (클라이언트 오버라이드 차단)
+  // 대시보드 paper/live 뷰 존중 — is_paper 명시 시 사용, 없으면 서버 모드 폴백 (Claude Code 직접 호출 등)
+  const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
   const tradingMode = isPaper ? 'paper' : 'live';
   if (!stock_code || stock_code.length !== 6) {
     return c.json({ error: 'stock_code는 숫자 6자리여야 합니다' }, 400);

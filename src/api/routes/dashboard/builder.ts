@@ -515,7 +515,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       domesticCash: unifiedCash, // 통합증거금: 국내/해외 구분 없음
       unrealizedPnl: Math.round((viewIsPaper ? totalChainPnl : (balance.totalProfitLoss || totalChainPnl)) + (overseasMarketValueKrw - overseasInvestedKrw)),
       realizedPnl: viewIsPaper ? Math.round(balance.totalProfitLoss ?? 0) : 0,
-      pnl: Math.round(totalPnl),
+      pnl: Math.round(totalPnl + (isNaN(overseasMarketValueKrw - overseasInvestedKrw) ? 0 : (overseasMarketValueKrw - overseasInvestedKrw))),
       pnlPct: Math.round(totalPnlPct * 100) / 100,
       positions: balance.positions ?? [],
     },
@@ -624,7 +624,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       const monthlyTargetPct = 3; // 월 3% 목표
       const seedKr = grandTotalValue > 0 ? grandTotalValue : 10_000_000;
       const targetAmount = Math.round(seedKr * monthlyTargetPct / 100);
-      const currentPnl = Math.round(totalPnl);
+      const overseasUnrealizedForGoal = isNaN(overseasMarketValueKrw - overseasInvestedKrw) ? 0 : (overseasMarketValueKrw - overseasInvestedKrw);
+      const currentPnl = Math.round(totalPnl + overseasUnrealizedForGoal);
       const progressPct = targetAmount > 0 ? Math.min(200, Math.round((currentPnl / targetAmount) * 100)) : 0;
       return {
         targetPct: monthlyTargetPct,
