@@ -645,13 +645,20 @@ export class TradeExecutor {
    */
   private confirmedOrders = new Set<string>();
 
-  /** 체결 확인 캐시 정리 — 장 마감 시 호출 (메모리 누수 방지) */
+  /** 체결 확인 캐시 + 중복주문 키 정리 — 장 마감 시 호출 */
   clearConfirmedOrders(): void {
     const size = this.confirmedOrders.size;
     if (size > 0) {
       this.confirmedOrders.clear();
       logger.info(`🧹 confirmedOrders 캐시 정리: ${size}건`, { component: 'EXECUTOR' });
     }
+    // 전날 분 키 잔재 제거 (오늘 날짜 없는 항목)
+    const todayPrefix = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const before = this._recentOrderKeys.size;
+    for (const key of this._recentOrderKeys) {
+      if (!key.includes(todayPrefix)) this._recentOrderKeys.delete(key);
+    }
+    if (before > 0) logger.info(`🧹 recentOrderKeys 정리: ${before}→${this._recentOrderKeys.size}건`, { component: 'EXECUTOR' });
   }
 
   private async confirmFill(

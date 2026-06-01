@@ -50,10 +50,16 @@ async function runDomesticDual(label: string, fn: () => Promise<unknown>): Promi
  */
 function withTimeout<T>(label: string, fn: () => Promise<T>, timeoutMs: number): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} 타임아웃 (${timeoutMs / 1000}초 초과)`)), timeoutMs);
+    timer = setTimeout(() => {
+      timedOut = true;
+      reject(new Error(`${label} 타임아웃 (${timeoutMs / 1000}초 초과)`));
+    }, timeoutMs);
   });
-  return Promise.race([fn(), timeout])
+  // 타임아웃 후 백그라운드 작업이 완료돼도 결과 무시 (두 번 실행 방지)
+  const guarded = fn().then((r) => timedOut ? undefined : r);
+  return Promise.race([guarded, timeout])
     .then((result) => { clearTimeout(timer); return result as T; })
     .catch((e) => {
       clearTimeout(timer);
