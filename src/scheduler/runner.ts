@@ -442,13 +442,13 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 💰 배당 자동화 — 평일 16:00 (장 마감 후, 배당금 동기화 + 배석일 경보)
+  // 💰 배당 자동화 — 평일 16:00 (paper+live 이중 실행: 배당금 동기화 + 배석일 경보 + DRIP)
   cron.schedule(
     '0 16 * * 1-5',
     () => {
-      import('./dividend-job.js')
-        .then(m => m.runDividendJob())
-        .catch(e => logger.error(`배당 자동화 실패: ${e}`, { component: 'SCHEDULER' }));
+      import('./dividend-job.js').then(m =>
+        runDomesticDual('배당 자동화', () => m.runDividendJob())
+      ).catch(e => logger.error(`배당 자동화 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
