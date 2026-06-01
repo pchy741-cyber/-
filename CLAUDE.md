@@ -352,3 +352,35 @@ curl -s -X POST "https://quantops-807105550136.asia-northeast3.run.app/api/overs
 **목표 달성**: "AAPL pnl +16.2% → 1:2 익절 실행"
 **감시 유지**: "MSFT pnl +4.1% → 트레일링 중 (overseas-job 처리 중)"
 **장 마감 대기**: "06:05 KST 미국장 종료 → 600s 대기"
+
+---
+
+## 현재 시스템 상태 (2026-06-01 기준)
+
+### 배포된 주요 변경사항
+- **RSS 스코어러**: Gemini 429 실패 시 무료 뉴스+기술지표 폴백 (`src/ai/track-a/rss-scorer.ts`)
+- **눌림목 최적화**: pullbackSignal +8점 보너스, Gemini 프롬프트에 눌림목 주입 (`track-a-scoring.ts`, `gemini.ts`)
+- **DB 유니크 제약**: `migration 050` — 동일 종목 OPEN 체인 중복 방지
+- **크로스오염 수정**: `pipeline.ts`, `portfolio-guard.ts`, `kis-sync.ts` 등 `config.isPaper` → `getCtxIsPaper()` 교체
+- **카카오페이 webhook**: `POST /api/kakao-alert` — Android 알림 → AI 판단 → 텔레그램
+- **루프 실전 명시**: `is_paper:false` + `?viewMode=live` 추가
+
+### 알려진 미해결 이슈
+- **해외 buy-filter score ≥15** (고승률 경로): 임계값이 낮아 불필요한 진입 가능 — 승인 후 ≥22로 상향 검토
+- **AI confidence 주석처리** (`buy-filter.ts:225-226`): Gemini 불신으로 꺼둠, 추후 재활성화 검토
+- **DIVIDEND 모드**: `market-regime.ts`에서 전환되지만 `decision-flow.ts`에 처리 없음 — dead-end
+
+### AI 스코어 현황
+- 현재 스코어: 75점 기술폴백 (Gemini 실패 중)
+- **다음 Track A 실행**: 07:30 KST 평일 — RSS 스코어러 첫 적용 예정
+- Track A 스케줄: 07:30 / 10:00 / 12:30 / 18:00 KST 평일
+
+### 포지션 현황
+- 국내: 0개 포지션 / 현금 ~230,000원
+- 해외: SONY 1주 live (-2.79%) / 손절선 -8%
+
+### 인프라
+- Cloud Run: `quantops-807105550136.asia-northeast3.run.app`
+- DB: PostgreSQL (migration 050까지 적용)
+- 알림: Telegram + Slack + Web Push + 카카오페이 webhook
+- 비밀번호: `$env:QUANTOPS_PW` (PowerShell에서 설정 — git에 저장 안 함)
