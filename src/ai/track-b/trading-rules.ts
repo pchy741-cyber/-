@@ -69,11 +69,12 @@ export const MEGA_CAP_PRIORITY_CODES = new Map<string, { name: string; bonus: nu
   ['000660', { name: 'SK하이닉스', bonus: 20, thresholdReduction: 8 }],
   ['005380', { name: '현대차', bonus: 15, thresholdReduction: 6 }],
   ['000270', { name: '기아', bonus: 15, thresholdReduction: 6 }],
+  ['012330', { name: '현대모비스', bonus: 12, thresholdReduction: 5 }],
   ['035420', { name: 'NAVER', bonus: 15, thresholdReduction: 6 }],
-  ['035720', { name: '카카오', bonus: 12, thresholdReduction: 5 }],
-  // ── 방산 대형주 ──
+  // ── 방산/한화 대형주 ──
   ['012450', { name: '한화에어로스페이스', bonus: 18, thresholdReduction: 6 }],
   ['272210', { name: '한화시스템', bonus: 15, thresholdReduction: 5 }],
+  ['042660', { name: '한화오션', bonus: 15, thresholdReduction: 5 }],
   ['064350', { name: '현대로템', bonus: 15, thresholdReduction: 5 }],
   // ── 반도체 소재/장비 ──
   ['042700', { name: '한미반도체', bonus: 12, thresholdReduction: 4 }],

@@ -31,16 +31,22 @@ const MAX_PARK_RATIO = 0.35;
 // CEO 지시: "잘 모르겠으면 대형주에 파킹, 더 좋은 기회 오면 풀고 나와서 매매"
 // 당일 상승 중인 종목 우선 선택, -3~+5% 범위 필터
 export const MEGA_CAP_PARK_CANDIDATES: Array<{ code: string; name: string }> = [
+  // ── 반도체 ──
   { code: '005930', name: '삼성전자' },
   { code: '000660', name: 'SK하이닉스' },
+  { code: '042700', name: '한미반도체' },
+  // ── 자동차/현대 ──
   { code: '005380', name: '현대차' },
   { code: '000270', name: '기아' },
+  { code: '012330', name: '현대모비스' },
+  // ── 방산/한화 ──
   { code: '012450', name: '한화에어로스페이스' },
-  { code: '035420', name: 'NAVER' },
-  { code: '035720', name: '카카오' },
-  { code: '105560', name: 'KB금융' },
-  { code: '055550', name: '신한지주' },
+  { code: '272210', name: '한화시스템' },
+  { code: '042660', name: '한화오션' },
+  // ── 방산/기타 ──
   { code: '064350', name: '현대로템' },
+  // ── 플랫폼 ──
+  { code: '035420', name: 'NAVER' },
 ];
 
 // 레거시 호환 (pipeline.ts에서 참조)
