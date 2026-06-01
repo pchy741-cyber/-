@@ -31,7 +31,7 @@ const FETCH_TIMEOUT_MS = 8_000;
 
 const DEFAULTS = {
   baseRate: 3.0,
-  usdKrw: 1_350,
+  usdKrw: 1_500,
   vkospi: 20,
   kospiChange: 0,
 } as const;
@@ -93,18 +93,25 @@ export async function fetchExchangeRate(): Promise<number> {
     return cachedFxRate;
   }
 
+  // 1차: open.er-api.com (무료, 안정적)
+  try {
+    const res = await safeFetch('https://open.er-api.com/v6/latest/USD');
+    if (res.ok) {
+      const data = (await res.json()) as { rates?: { KRW?: number } };
+      const value = data?.rates?.KRW;
+      if (value && Number.isFinite(value) && value > 800 && value < 2000) {
+        cachedFxRate = Math.round(value * 100) / 100;
+        cachedFxTimestamp = Date.now();
+        return cachedFxRate;
+      }
+    }
+  } catch { /* fallback to next source */ }
+
+  // 2차: Naver 증권 (기존 — 현재 404일 수 있음)
   try {
     const res = await safeFetch('https://m.stock.naver.com/api/exchange/FX_USDKRW/basic');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-    const data = (await res.json()) as Record<string, unknown>;
-    const value = Number(
-      (data as Record<string, Record<string, string>>)?.closePrice ??
-        (data as Record<string, Record<string, string>>)?.now ??
-        (data as Record<string, Record<string, string>>)?.currentValue,
-    );
-
-    if (!Number.isFinite(value) || value < 800 || value > 2000) {
+    if (res.ok) {
+      const data = (await res.json()) as Record<string, unknown>;
       const raw = JSON.stringify(data);
       const match = raw.match(/"(?:closePrice|now|currentValue)"\s*:\s*"?([\d,.]+)"?/);
       if (match) {
@@ -112,20 +119,14 @@ export async function fetchExchangeRate(): Promise<number> {
         if (Number.isFinite(parsed) && parsed > 800 && parsed < 2000) {
           cachedFxRate = parsed;
           cachedFxTimestamp = Date.now();
-          return parsed;
+          return cachedFxRate;
         }
       }
-      logger.warn('USD/KRW 파싱 실패, 기본값 사용', { component: 'MACRO' });
-      return cachedFxRate ?? DEFAULTS.usdKrw;
     }
+  } catch { /* fallback */ }
 
-    cachedFxRate = value;
-    cachedFxTimestamp = Date.now();
-    return value;
-  } catch (error) {
-    logger.warn(`USD/KRW 조회 실패: ${error}`, { component: 'MACRO' });
-    return cachedFxRate ?? DEFAULTS.usdKrw;
-  }
+  logger.warn('USD/KRW 모든 소스 실패, 캐시/기본값 사용', { component: 'MACRO' });
+  return cachedFxRate ?? DEFAULTS.usdKrw;
 }
 
 // ── 한국은행 기준금리 (ECOS API) ──
