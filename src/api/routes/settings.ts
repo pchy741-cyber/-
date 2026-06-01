@@ -298,6 +298,25 @@ settingsRoutes.post('/sync-overseas-holdings', async (c) => {
   }
 });
 
+// Live 현금 수동 보정 — KIS 동기화 안될 때 직접 설정
+settingsRoutes.post('/cash-fix', async (c) => {
+  try {
+    const body = await c.req.json<{ amount_krw: number; pin?: string }>();
+    if (!body.amount_krw || body.amount_krw < 0) return c.json({ error: '양수 금액 필요' }, 400);
+    // live 보정이므로 PIN 검증
+    const { validateLivePin } = await import('../guards/live-pin.js');
+    const pinCheck = validateLivePin(false, body.pin);
+    if (!pinCheck.ok) return c.json({ error: pinCheck.error }, 403);
+
+    const { setCash } = await import('../../scheduler/overseas/state.js');
+    const { runWithMode } = await import('../../config/context.js');
+    await runWithMode(false, () => setCash(body.amount_krw, false));
+    return c.json({ ok: true, cashKrw: body.amount_krw });
+  } catch (e) {
+    return c.json({ error: String(e) }, 500);
+  }
+});
+
 /**
  * 실전 보유 포지션 직접 정정 — US 장 마감 중 KIS API 실패 시 수동 정정
  * body: { holdings: [{ code, exchange, qty, avg_price }], clearOthers: true }
