@@ -2,6 +2,7 @@
  * KIS 실계좌 동기화 — 보유종목 & 현금 정합
  */
 import { config } from '../../config/index.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, insertOrder } from '../../db/client.js';
 import { getOverseasBalance, getOverseasBuyableAmount, getOverseasPrice } from '../../kis/overseas.js';
 import { getAccountBalance } from '../../kis/account.js';
@@ -304,7 +305,7 @@ async function estimateSellPrice(code: string, exchange: string): Promise<number
  * 통합증거금: 원화 단일 풀로 국내+해외 운용. KIS psamount API에서 KRW 직접 추출.
  */
 export async function reconcileCashWithKIS(): Promise<void> {
-  if (config.isPaper) return;
+  if (getCtxIsPaper()) return;
   try {
     let kisKrw: number | null = null;
 
