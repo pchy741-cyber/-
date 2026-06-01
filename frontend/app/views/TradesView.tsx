@@ -164,7 +164,7 @@ function TradesView({ trades, watchlist }: { trades: any[]; watchlist: any[] }) 
       {viewMode === 'DAILY' && (
         <Panel title="일자별 손익" badge={`${dailySummaries.length}일`}>
           {dailySummaries.length === 0 ? (
-            <EmptyMsg icon="📊" text="매매 기록이 없습니다" />
+            <EmptyMsg icon="📊">매매 기록이 없습니다</EmptyMsg>
           ) : (
             <div className="divide-y divide-slate-800/30">
               {dailySummaries.map(day => {
