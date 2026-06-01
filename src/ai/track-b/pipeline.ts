@@ -265,8 +265,16 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       logger.info('⚡ AI 스코어 없음 + DEFENSE 모드 → SWING으로 완화', { component: 'TRACK_B' });
     }
 
+    // 메가캡 보너스/레짐 보정을 반영한 유연한 사전 체크
+    // 기존: 고정 threshold → 삼성 68점이면 "후보 없음" → 매수 로직 전체 스킵
+    // 개선: 메가캡 종목은 threshold-8, 일반도 threshold-5 여유 (buy-filters에서 정밀 판단)
+    const preFilterThreshold = STRATEGY_PARAMS[effectiveMode].buyThreshold - 5;
     let hasBuyCandidates = scores.some(
-      (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[effectiveMode].buyThreshold && (s.confidence ?? 0) >= 0.65,
+      (s) => {
+        const megaCapReduction = MEGA_CAP_PRIORITY_CODES.has(s.stock_code)
+          ? MEGA_CAP_PRIORITY_CODES.get(s.stock_code)!.thresholdReduction : 0;
+        return (s.composite_score ?? 0) >= (preFilterThreshold - megaCapReduction) && (s.confidence ?? 0) >= 0.60;
+      },
     );
     const hasOpenPositions = openChains.some((c) => Number(c.total_quantity) > 0);
     if (!hasBuyCandidates) {
@@ -286,7 +294,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           if (newScores.length > 0) {
             scores.push(...newScores);
             hasBuyCandidates = scores.some(
-              (s) => (s.composite_score ?? 0) >= STRATEGY_PARAMS[effectiveMode].buyThreshold && (s.confidence ?? 0) >= 0.65,
+              (s) => {
+                const mcr = MEGA_CAP_PRIORITY_CODES.has(s.stock_code) ? MEGA_CAP_PRIORITY_CODES.get(s.stock_code)!.thresholdReduction : 0;
+                return (s.composite_score ?? 0) >= (preFilterThreshold - mcr) && (s.confidence ?? 0) >= 0.60;
+              },
             );
           }
         }

@@ -45,7 +45,7 @@ export function routeByRegime(
 
   switch (regimeResult.regime) {
     case 'TREND_BULL': {
-      // MACD!=BEARISH + ADX>25 + (vol>=1.2 OR VWAP ABOVE) → 2/3 통과 시 진입
+      // 강세장: 적극적 진입 — buyThreshold -10, 2/3 통과 시 라우터 직접 진입
       const checks = [
         tech.macdCrossover !== 'BEARISH',
         tech.adx14 > 25,
@@ -56,10 +56,12 @@ export function routeByRegime(
         return {
           ...base,
           routed: true,
+          buyThresholdAdj: -10,  // 강세장 buyThreshold 완화 (70→60)
           reason: `TREND_BULL: ${passed}/3 통과 (ADX=${tech.adx14.toFixed(0)}, MACD=${tech.macdCrossover}, vol=${tech.volumeRatio.toFixed(2)}x)`,
         };
       }
-      return { ...base, reason: `TREND_BULL: ${passed}/3 미달 → 기존 필터 체인` };
+      // 2/3 미달이라도 강세장이면 threshold -5 완화
+      return { ...base, buyThresholdAdj: -5, reason: `TREND_BULL: ${passed}/3 미달 → 기존 필터 (threshold -5)` };
     }
 
     case 'RANGE_LOW_VOL': {
