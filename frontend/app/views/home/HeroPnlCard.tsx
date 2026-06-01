@@ -25,6 +25,8 @@ interface HeroPnlCardProps {
   domesticCash: number;
   overseasCashUsd: number;
   domesticInvested: number;
+  domesticEval: number;
+  overseasMarketKrw: number;
   chainsLength: number;
   usHoldingsLength: number;
   withdrawConfig: any;
@@ -40,13 +42,14 @@ export default function HeroPnlCard({
   hasOverseasHoldings, privacyMode, setPrivacyMode,
   krTabHasData, usTodaySells, krTabPnl, krTabPct, usTabPnlUsd,
   todayRealizedPnl, animToday, domesticCash, overseasCashUsd,
-  domesticInvested, chainsLength, usHoldingsLength, withdrawConfig, todayTradesLength,
+  domesticInvested, domesticEval, overseasMarketKrw, chainsLength, usHoldingsLength, withdrawConfig, todayTradesLength,
   totalValue, totalInvested, fxRate,
 }: HeroPnlCardProps) {
-  // 통합증거금: 시가 기반 투자비중 (현금+투자=100%)
-  const investedPct = totalValue > 0 && domesticCash < totalValue
-    ? Math.round(((totalValue - domesticCash) / totalValue) * 100) : 0;
   const totalHoldings = chainsLength + usHoldingsLength;
+  // 국내/해외 시가평가 기준 비중 (totalValue = 현금 + 국내시가 + 해외시가)
+  const krPct = totalValue > 0 ? Math.round((domesticEval / totalValue) * 100) : 0;
+  const usPct = totalValue > 0 ? Math.round((overseasMarketKrw / totalValue) * 100) : 0;
+  const cashPct = Math.max(0, 100 - krPct - usPct);
   const mask = (v: string) => privacyMode ? '••••••' : v;
 
   return (
@@ -104,8 +107,17 @@ export default function HeroPnlCard({
           {fxRate > 0 && <div className="text-[8px] text-slate-600 mt-0.5">${mask(String(Math.round(domesticCash / fxRate)))}</div>}
         </div>
         <div className="bg-white/[0.04] rounded-xl px-2 sm:px-3 py-2">
-          <div className="text-[9px] text-slate-500 mb-0.5">투자비중</div>
-          <div className={`text-sm font-bold tabular-nums ${investedPct > 60 ? 'text-amber-400' : 'text-blue-400'}`}>{investedPct}% <span className="text-[9px] text-slate-600">({totalHoldings}종목)</span></div>
+          <div className="text-[9px] text-slate-500 mb-0.5">투자비중 <span className="text-slate-600">({totalHoldings}종목)</span></div>
+          <div className="flex items-baseline gap-1.5">
+            {krPct > 0 && <span className="text-sm font-bold tabular-nums text-blue-400">🇰🇷{krPct}%</span>}
+            {usPct > 0 && <span className="text-sm font-bold tabular-nums text-indigo-400">🇺🇸{usPct}%</span>}
+            {krPct === 0 && usPct === 0 && <span className="text-sm font-bold tabular-nums text-slate-500">0%</span>}
+          </div>
+          <div className="h-1 rounded-full overflow-hidden bg-white/[0.04] flex mt-1">
+            {krPct > 0 && <div className="h-full bg-blue-500/70" style={{ width: `${krPct}%` }} />}
+            {usPct > 0 && <div className="h-full bg-indigo-500/70" style={{ width: `${usPct}%` }} />}
+            <div className="h-full bg-slate-600/30 flex-1" />
+          </div>
         </div>
         <div className="bg-white/[0.04] rounded-xl px-2 sm:px-3 py-2">
           <div className="text-[9px] text-slate-500 mb-0.5">{withdrawConfig?.totalReserved > 0 ? '인출예약' : '오늘매매'}</div>

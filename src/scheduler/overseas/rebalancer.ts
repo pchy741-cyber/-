@@ -49,7 +49,11 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
     const actualCashPct = rbTotal > 0 ? (cash / rbTotal) * 100 : 100;
     const usdKrw = await fetchExchangeRate();
 
-    const overweightThreshold = 5.0;
+    // 소액 포트폴리오($5000 미만): 1주=큰 비중이므로 리밸런싱 문턱 완화
+    const isSmallPortfolio = rbTotal < 5000;
+    const overweightThreshold = isSmallPortfolio ? 15.0 : 5.0;
+    // $3000 미만: 리밸런싱 자체가 무의미 (수수료 대비 효과 없음)
+    if (rbTotal < 3000) return { rebalanceAlerts, cash };
     const overweight = positionWeights.filter(p => p.weight > targetWeightPer + overweightThreshold);
 
     if (overweight.length > 0 || (actualCashPct < 5 && holdingCount >= 3)) {

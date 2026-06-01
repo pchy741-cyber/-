@@ -40,11 +40,52 @@ export const GEMINI_SCALPING_ADDON = `
 캡쳐 이미지/텍스트에서 강하게 언급된 '타겟 종목'과 '목표 가격'을 1순위로 추출하세요.
 타겟 종목은 source_confidence를 "HIGH"로 설정하세요.`;
 
-export function buildGeminiPrompt(mode: string): string {
+// ── 레짐별 포커싱 질문 (Phase 5: Gemini 프롬프트 레짐 연동) ──
+export type RegimeHint = 'TREND_BULL' | 'TREND_BEAR' | 'RANGE_LOW_VOL' | 'RANGE_HIGH_VOL' | 'BREAKOUT' | 'DISTRIBUTION' | null;
+
+const REGIME_FOCUS: Record<string, string> = {
+  TREND_BULL: `
+## [레짐: 강한 상승추세]
+모멘텀 진입 적합도를 최우선 분석하세요:
+- 거래량 상승일 우세 여부 (최근 5일 중 3일+ 양봉 + 거래량 증가)
+- ADX 강도 (25 이상 = 강한 추세 확인)
+- 고점 갱신 여부 (신고가 = 저항 없음, 추세 지속)
+- MACD 히스토그램 상승 → 모멘텀 가속 확인`,
+
+  RANGE_LOW_VOL: `
+## [레짐: 저변동 횡보]
+평균회귀 반등 가능성을 최우선 분석하세요:
+- 지지선 근접 여부 (52주 저점, 볼린저 하단, 피보나치 레벨)
+- RSI 과매도 (30 이하 = 반등 확률 68%)
+- 거래량 소진 (하락 시 거래량 감소 = 매도세 소진)
+- 최근 3~5일 내 반전 캔들 패턴 (망치형, 인걸핑)`,
+
+  BREAKOUT: `
+## [레짐: 돌파 임박]
+돌파 지속 확률을 최우선 분석하세요:
+- 스퀴즈(횡보) 기간 (길수록 돌파 파워 강함)
+- 돌파 시 거래량 동반 여부 (2배+ = 진짜 돌파)
+- 첫 돌파 캔들 강도 (긴 양봉 + 짧은 윗꼬리 = 강한 돌파)
+- 이전 저항선이 새 지지선으로 전환되는지 확인`,
+
+  TREND_BEAR: `
+## [레짐: 하락추세]
+모든 종목에 보수적 관점을 적용하세요:
+- 하락 추세에서 반등은 일시적일 가능성 높음
+- 거래량 없는 반등 = 데드캣 바운스 경고
+- 극단적 과매도(RSI<25) + 거래량 급감만 반등 가능성 인정`,
+};
+
+export function buildGeminiPrompt(mode: string, regimeHint?: RegimeHint): string {
   let prompt = GEMINI_BASE_PROMPT;
 
   if (mode === 'DEFENSE') prompt += GEMINI_DEFENSE_ADDON;
   if (mode === 'SCALPING') prompt += GEMINI_SCALPING_ADDON;
+
+  // 레짐 힌트가 있으면 포커싱 질문 추가
+  if (regimeHint && REGIME_FOCUS[regimeHint]) {
+    prompt += REGIME_FOCUS[regimeHint];
+  }
 
   return prompt;
 }

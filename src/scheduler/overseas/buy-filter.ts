@@ -107,8 +107,8 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       const ai = aiMap.get(t.code);
       const reentryThreshold = isPaper ? 0.55 : 0.80;
       if (ai?.action === 'BUY' && ai.confidence >= reentryThreshold) return true;
-      // Paper: AI 없어도 STRONG_BUY + score 40 이상이면 허용
-      if (isPaper && !ai && t.signal === 'STRONG_BUY' && t.score >= 40) return true;
+      // Paper: AI 없어도 STRONG_BUY + score 50 이상 + MA20 위면 허용 (score 40→50, MA20 추가)
+      if (isPaper && !ai && t.signal === 'STRONG_BUY' && t.score >= 50 && t.aboveMA20) return true;
       logger.info(`⚠️ 최근 손실 종목 재진입 차단: ${t.code} AI 확신 부족 (${ai ? `${(ai.confidence * 100).toFixed(0)}%` : 'AI 없음'} < ${(reentryThreshold * 100).toFixed(0)}%)`, { component: 'OVERSEAS' });
       return false;
     })

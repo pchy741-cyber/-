@@ -158,7 +158,7 @@ export async function ensureOverseasTable(): Promise<void> {
   }
 }
 
-export async function getHoldings(isPaper?: boolean): Promise<Map<string, { qty: number; avgPrice: number; boughtAt: string; exchange: string; tpPct: number | null; slPct: number | null }>> {
+export async function getHoldings(isPaper?: boolean): Promise<Map<string, { qty: number; avgPrice: number; boughtAt: string; exchange: string; tpPct: number | null; slPct: number | null; bucket: string }>> {
   const paper = isPaper ?? getCtxIsPaper();
   const map = new Map();
   try {
@@ -168,24 +168,26 @@ export async function getHoldings(isPaper?: boolean): Promise<Map<string, { qty:
         qty: Number(r.quantity), avgPrice: Number(r.avg_price), boughtAt: r.bought_at, exchange: r.exchange,
         tpPct: r.tp_pct != null ? Number(r.tp_pct) : null,
         slPct: r.sl_pct != null ? Number(r.sl_pct) : null,
+        bucket: r.strategy_bucket ?? 'SWING',
       });
     }
   } catch { /* table might not exist yet */ }
   return map;
 }
 
-export async function setHolding(code: string, exchange: string, qty: number, avgPrice: number, isPaper?: boolean, opts?: { tpPct?: number; slPct?: number }): Promise<void> {
+export async function setHolding(code: string, exchange: string, qty: number, avgPrice: number, isPaper?: boolean, opts?: { tpPct?: number; slPct?: number; bucket?: string }): Promise<void> {
   const paper = isPaper ?? getCtxIsPaper();
   if (qty <= 0) {
     await getPool().query('DELETE FROM overseas_holdings WHERE exchange = $1 AND stock_code = $2 AND is_paper = $3', [exchange, code, paper]);
   } else {
     await getPool().query(
-      `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper, tp_pct, sl_pct)
-       VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7)
+      `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper, tp_pct, sl_pct, strategy_bucket)
+       VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, $8)
        ON CONFLICT (exchange, stock_code, is_paper) DO UPDATE SET quantity = $3, avg_price = $4,
          tp_pct = COALESCE($6, overseas_holdings.tp_pct),
-         sl_pct = COALESCE($7, overseas_holdings.sl_pct)`,
-      [code, exchange, qty, avgPrice, paper, opts?.tpPct ?? null, opts?.slPct ?? null],
+         sl_pct = COALESCE($7, overseas_holdings.sl_pct),
+         strategy_bucket = COALESCE($8, overseas_holdings.strategy_bucket)`,
+      [code, exchange, qty, avgPrice, paper, opts?.tpPct ?? null, opts?.slPct ?? null, opts?.bucket ?? null],
     );
   }
 }
@@ -368,4 +370,33 @@ export async function cleanupPositionState(code: string, isPaper?: boolean): Pro
     `DELETE FROM overseas_state WHERE key = $1 AND value = $2`,
     [`${pfx}concentration_code`, code],
   ).catch(() => {});
+}
+
+/**
+ * 황금비율 버킷별 투자 비중 계산
+ * holdings 맵에서 해당 bucket의 invested 합산 / 포트폴리오 총액
+ */
+export function getBucketWeight(
+  holdings: Map<string, { qty: number; avgPrice: number; bucket: string }>,
+  portfolioValue: number,
+  bucket: string,
+): number {
+  if (portfolioValue <= 0) return 0;
+  let bucketValue = 0;
+  for (const [, h] of holdings) {
+    if (h.bucket === bucket) bucketValue += h.qty * h.avgPrice;
+  }
+  return bucketValue / portfolioValue;
+}
+
+/**
+ * 진입 전략 기반 버킷 자동 분류
+ * - Premarket Dip / Vision Scalp 진입 → TACTICAL
+ * - Momentum / BigMover / 추세확인 → SWING
+ * - 우량주(BLUE_CHIP) + 장기시그널 → CORE
+ */
+export function classifyBucket(entrySource: string, isBlueChip = false): string {
+  if (entrySource === 'DIP_BUY' || entrySource === 'SCALP') return 'TACTICAL';
+  if (isBlueChip && (entrySource === 'TECHNICAL' || entrySource === 'OVERSOLD')) return 'CORE';
+  return 'SWING';
 }

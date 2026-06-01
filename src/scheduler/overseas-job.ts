@@ -4,7 +4,7 @@
  * 이 파일은 runOverseasJob() 메인 루프만 담당
  */
 import { analyzeTechnicals, type OHLCV } from '../analysis/indicators.js';
-import { OVERSEAS, SECTOR_CLASS, OVERSEAS_FEE_PCT } from '../config/constants.js';
+import { OVERSEAS, SECTOR_CLASS, OVERSEAS_FEE_PCT, ALLOCATION_GOLDEN } from '../config/constants.js';
 import { config, setTradingModeOverride } from '../config/index.js';
 import { runWithMode } from '../config/context.js';
 import { getPool, logSystem } from '../db/client.js';
@@ -36,12 +36,13 @@ import { GLOBAL_WATCHLIST } from './overseas/watchlist.js';
 import { getOverseasDynamic } from '../config/constants.js';
 import {
   ensureOverseasTable, getHoldings, getCash, updateTradeState,
+  getBucketWeight, classifyBucket,
 } from './overseas/state.js';
 import { overseasState, getOpenMarketRegions, getKSTDateString, getUSSessionId, setSessionStartValue, modeKey, getSessionCache, setSessionCache, type SessionCache } from './overseas/session.js';
 import { getRecentPerfSummary, getOverseasWinRates, getPendingOverseasStocks, type OverseasWinRate } from './overseas/analytics.js';
 import { syncPendingOverseasOrders, getUserInsights, getLossCooldownStocks, getRecentLossStocks, getManualSellCooldownStocks } from './overseas/order-sync.js';
 import { syncHoldingsFromKIS, reconcileCashWithKIS } from './overseas/kis-sync.js';
-import { executeOverseasOrder, deployIdleCash } from './overseas/executor.js';
+import { executeOverseasOrder } from './overseas/executor.js';
 import {
   calcDynamicTrailDrop, calcDynamicTpSl, getVixRegime,
   getGradualCooldown, getGradualCooldownStocks,
@@ -66,9 +67,11 @@ import { filterAndRankBuyTargets } from './overseas/buy-filter.js';
 import { sendBuyRecommendations, sendHoldingAlerts } from './overseas/notifications.js';
 import { monitorVisionScalp } from './overseas/vision-scalp.js';
 import { rebalancePortfolio } from './overseas/rebalancer.js';
-import { calcTurtleSignal, processTurtleExits } from './overseas/turtle.js';
+// turtle 전략 비활성화 — main buy-filter와 중복, 황금비율 체계로 대체
+// import { calcTurtleSignal, processTurtleExits } from './overseas/turtle.js';
 import { enforceConcentrationCap } from './overseas/concentration-cap.js';
-import { executeRotationSelling } from './overseas/rotation-selling.js';
+// rotation-selling 비활성화 — rebalancer에 흡수
+// import { executeRotationSelling } from './overseas/rotation-selling.js';
 import { calcPositionSize } from './overseas/position-sizing.js';
 import { processScaleIns, shouldUseScaleIn, buildScaleInReservation } from './overseas/scale-in-manager.js';
 
@@ -285,32 +288,8 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       return;
     }
 
-    // ── 1-d. 터틀 트레이딩 신호 계산 (20일 Donchian 돌파) ──
-    const turtleMap = new Map<string, ReturnType<typeof calcTurtleSignal>>();
-    for (const t of techResults) {
-      const chart = getSessionCache(region)?.techCache.get(t.code);
-      // 차트 캐시에서 재사용 불가 — 원본 OHLCV 필요, isBigMover/isMomentum으로 대리 판단
-      // 신고점 돌파 판단: 52주 고점 근처(dayRangePct >= 80%) + 강한 추세(ADX>25)
-      const isTurtleBreakout = t.dayRangePct >= 80 && t.adx > 25 && t.aboveMA20 && t.aboveMA60
-        && (t.isBigMover || t.isMomentum || t.score > 40);
-      if (isTurtleBreakout) {
-        const atrAbs = t.price.currentPrice * (t.atrPct / 100);
-        const sl = t.price.currentPrice - atrAbs * 2;
-        turtleMap.set(t.code, {
-          code: t.code,
-          breakoutPct: t.dayRangePct,
-          donchian20High: t.price.currentPrice,
-          donchian10Low: sl,
-          atr: atrAbs,
-          slPrice: sl,
-          unitSize: 0, // overseas-job에서 동적 계산
-          isBreakout: true,
-        });
-      }
-    }
-    if (turtleMap.size > 0) {
-      logger.info(`🐢 터틀 돌파 신호: ${[...turtleMap.keys()].join(', ')} (20일 고점 돌파 + ADX>25)`, { component: 'OVERSEAS' });
-    }
+    // ── 1-d. 터틀 전략 비활성화 (buy-filter 12단계 필터와 중복 → 제거) ──
+    // 기존 터틀 돌파 종목은 sell-logic이 관리 (호환)
 
     // ── 1-b. 대시보드용 점수 캐시 갱신 ──
     const regionMap = new Map(GLOBAL_WATCHLIST.map(stock => [stock.code, stock.region as 'US' | 'JP' | 'TW']));
@@ -474,9 +453,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     const sellOrders = sellResult.sellOrders;
     cash = sellResult.cash;
 
-    // ── 4-c. 터틀 탈출 체크 (→ overseas/turtle.ts) ──
-    const turtleResult = await processTurtleExits({ holdings, pendingOrderStocks, sellOrders, techResults, cash, isPaper: isPaper() });
-    cash = turtleResult.cash;
+    // ── 4-c. 터틀 전략 비활성화 — sell-logic이 기존 터틀 포지션도 관리 ──
 
     // ── 5. 리스크 관리 ──
     const mk = modeKey(isPaper());
@@ -674,16 +651,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         earningsDrift,
       });
 
-      // ── 터틀 돌파 종목: 일반 필터 통과 여부와 무관하게 후보 추가 ──
-      for (const [code, turtle] of turtleMap) {
-        if (updatedHoldings.has(code) || lossCooldownSet.has(code)) continue;
-        if (buyTargets.some(t => t.code === code)) continue; // 이미 있으면 스킵
-        const tech = techResults.find(t => t.code === code);
-        if (!tech) continue;
-        const ai = aiMap.get(code);
-        buyTargets.push({ ...tech, ai, _turtle: turtle } as any);
-        logger.info(`🐢 터틀 진입 추가: ${code} (일반 필터 외 채널 돌파 진입)`, { component: 'OVERSEAS' });
-      }
+      // ── 터틀 돌파 전략 비활성화 — buy-filter 12단계로 통합 ──
 
       if (buyTargets.length === 0) {
         logger.info(`🔍 매수 후보 없음 — techResults:${techResults.length} aiMap:${aiMap.size} extended:${isUSExtended} mq:${mktSignal?.marketQuality ?? 'N/A'} recovery:${recoveryMode}`, { component: 'OVERSEAS' });
@@ -710,14 +678,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         });
       }
 
-      // ── 순환 매도 (→ overseas/rotation-selling.ts) ──
-      if (buyTargets.length > 0) {
-        const rotResult = await executeRotationSelling({
-          topTarget: buyTargets[0], updatedHoldings, techResults, pendingOrderStocks, sellOrders,
-          cash, portfolioValue, kellyResult, vixRegime, gradualCooldown, isPaper: isPaper(),
-        });
-        cash = rotResult.cash;
-      }
+      // ── 순환 매도 비활성화 — rebalancer에 흡수 (황금비율 현금유보 9%와 충돌 방지) ──
 
       // ── Scale-In 확인 (→ overseas/scale-in-manager.ts) ──
       const scaleInResult = await processScaleIns({ techResults, buyOrders, cash, isPaper: isPaper() });
@@ -814,12 +775,21 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         const wrTag = wrInfo && wrInfo.sampleCount >= 5 ? ` 승률${(wrInfo.winRate * 100).toFixed(0)}%/${wrInfo.sampleCount}건` : '';
         const evTag = stockEV && stockEV.sampleCount >= 3 ? ` EV${stockEV.evPct >= 0 ? '+' : ''}${stockEV.evPct.toFixed(1)}%` : '';
         // 진입 소스 태그: 추후 승률 분석용
-        const entrySource = (target as any)._turtle ? 'TURTLE'
-          : target.isBigMover ? 'BIGMOVER'
+        const entrySource = target.isBigMover ? 'BIGMOVER'
           : target.isMomentum ? 'MOMENTUM'
           : target.bollingerBreakout === 'UP' ? 'BB_BREAKOUT'
           : target.rsi <= 35 ? 'OVERSOLD'
           : 'TECHNICAL';
+
+        // 황금비율 버킷 분류 + 한도 체크
+        const isBlueChipEntry = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'AVGO', 'TSM', 'LLY', 'V'].includes(target.code);
+        const targetBucket = classifyBucket(entrySource, isBlueChipEntry);
+        const bucketLimit = ALLOCATION_GOLDEN[`${targetBucket}_PCT` as keyof typeof ALLOCATION_GOLDEN];
+        const currentBucketWeight = getBucketWeight(updatedHoldings as any, portfolioValue, targetBucket);
+        if (currentBucketWeight >= bucketLimit) {
+          logger.info(`📊 버킷 한도 초과: ${target.code} [${targetBucket}] ${(currentBucketWeight * 100).toFixed(1)}% >= ${(bucketLimit * 100).toFixed(1)}%`, { component: 'OVERSEAS' });
+          continue;
+        }
         const reason = `${buyMode} [${entrySource}] 사이징x${sizingMult}: score=${target.score} RSI=${target.rsi.toFixed(0)} ADX=${target.adx.toFixed(0)} sig=${target.signal}${wrTag}${evTag}`;
 
         logger.info(`🔧 ${target.code}: 매수 실행 시도 qty=${qty} @$${target.price.currentPrice.toFixed(2)} posSize=$${positionSize.toFixed(0)} fullQty=${fullQty}`, { component: 'OVERSEAS' });
@@ -846,8 +816,10 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           vixRegime,
           isMomentum: target.isMomentum,
         });
-        // 매수 시점 동적 TP/SL을 overseas_holdings에 영속 저장 (한번 잡히면 유지)
+        // 매수 시점 동적 TP/SL + 버킷을 overseas_holdings에 영속 저장
         await updateTradeState({ code: target.code, exchange: target.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper(), tpPct, slPct: -slPct });
+        // 황금비율 버킷 태깅
+        getPool().query('UPDATE overseas_holdings SET strategy_bucket = $1 WHERE stock_code = $2 AND is_paper = $3', [targetBucket, target.code, isPaper()]).catch(() => {});
         const tpPrice = (entryP * (1 + tpPct / 100)).toFixed(2);
         const slPrice = (entryP * (1 - slPct / 100)).toFixed(2);
         const kellyTag = kellyResult.sampleCount >= 10 ? ` Kelly${(kellyResult.halfKelly * 100).toFixed(0)}%` : '';
@@ -860,14 +832,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         buyOrders.push(buyLog);
         await logSystem('TRADE', 'OVERSEAS', `BUY ${target.code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} | 사이징x${sizingMult}${kellyTag} VIX:${vixRegime.regime} (conf=${((target.ai?.confidence ?? 0) * 100).toFixed(0)}% score=${target.score}) | ${reason}`);
 
-        // 터틀 진입이면 10일 저점 트레일 스탑 저장 (탈출 기준)
-        const turtleSig = turtleMap.get(target.code);
-        if (turtleSig) {
-          const turtleTrailKey = `${isPaper() ? 'p_' : 'l_'}turtle_trail_${target.code}`;
-          getPool().query(`INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
-            [turtleTrailKey, (exec.filledPrice * 0.92).toString()]).catch(() => {});
-          logger.info(`🐢 터틀 트레일 설정: ${target.code} 초기스탑 $${(exec.filledPrice * 0.92).toFixed(2)} (진입가 -8%)`, { component: 'OVERSEAS' });
-        }
+        // 터틀 전략 비활성화 — 트레일 스탑은 sell-logic ATR 트레일로 통합
 
         // Scale-In 예약 (→ overseas/scale-in-manager.ts)
         if (scaleInRemainder > 0) {
@@ -886,14 +851,9 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     const rebalanceAlerts = rbResult.rebalanceAlerts;
     cash = rbResult.cash;
 
-    // ── 5-c. 유휴현금 운용 (킬스위치 시 스킵 — 매수 행위) ──
-    const avgTechScore = techResults.length > 0 ? techResults.reduce((sum, t) => sum + t.score, 0) / techResults.length : 0;
-    const idleCashHoldings = await getHoldings(isPaper());
-    const idleResult = killSwitchBuyBlock
-      ? { cashUsed: 0, actions: [] as string[] }
-      : await deployIdleCash({ cash, holdings: idleCashHoldings, techResults, isUSSession, avgScore: avgTechScore, isPaper: isPaper() });
-    if (idleResult.cashUsed !== 0) cash -= idleResult.cashUsed;
-    const idleActions = idleResult.actions;
+    // ── 5-c. 유휴현금 운용 비활성화 — 황금비율 현금유보 9%와 충돌 ──
+    // 버킷 한도 내에서 자동 재투자는 매수 루프에서 처리
+    const idleActions: string[] = [];
 
     // ── 6. 결과 로그 ──
     const totalActions = buyOrders.length + sellOrders.length + idleActions.length + rebalanceAlerts.length;

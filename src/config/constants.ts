@@ -89,7 +89,7 @@ export const STRATEGY_PARAMS = {
     earlyTpPct: 3.5,        // 조기 부분익절: +3.5% 도달 시 50% 즉시 매도 → 수익금 극대화
     takeProfitPct: 7.0,     // 잔여 50% 트레일링 최종 목표 (+7% 또는 동적 트레일링 발동)
     takeProfitRatio: 0.5,   // 50% 부분 매도 → 잔여 트레일링
-    stopLossPct: -3.0,
+    stopLossPct: -4.5, // 2026-06: -3%→-4.5% (ATR 조기손절 방지, 승자에게 충분한 시간)
     maxHoldingDays: 12,
   },
 
@@ -196,6 +196,21 @@ export const KIS_TR_ID = {
     DAILY_CHART: 'FHKST01010400',
     MINUTE_CHART: 'FHKST01010500',
     INVESTOR_FLOW: 'FHKST01010900',
+    BROKER_INFO: 'FHKST01010600',          // 거래원(회원사) 정보
+  },
+  // 시장 시그널 (market-signals.ts 전용)
+  SIGNAL: {
+    TRADING_INTENSITY: 'FHPST01680000',     // 체결강도
+    SHORT_SELLING: 'FHPST04830000',         // 공매도 일별추이
+    PROGRAM_TRADING: 'FHPPG04650101',       // 프로그램매매 종합
+    ORDERBOOK_RANKING: 'FHPST01720000',     // 호가잔량 순위
+    SECTOR_INDEX: 'FHPUP02100000',          // 업종별 지수
+    INTRADAY_INVESTOR: 'HHPTJ04160200',     // 투자자별 추정가집계 (장중)
+    FOREIGN_INST_TOP: 'FHPTJ04400000',      // 외국인/기관 매매종목 가집계
+    EXPECTED_FILL: 'FHPST01820000',         // 예상체결 상승/하락 순위
+    CREDIT_BALANCE: 'FHKST17010000',        // 신용잔고 순위
+    STOCK_LENDING: 'HHPST074500C0',         // 대차거래추이
+    NEAR_52W_HIGH_LOW: 'FHPST01870000',     // 신고가/신저가 근접
   },
 } as const;
 
@@ -345,6 +360,17 @@ export const SECTOR_CLASS = {
  */
 export const OVERSEAS_FEE_PCT = 0.0035;
 
+
+// ── 황금비율 자금배분 (해외) — 피보나치 기반 ──
+// SWING 38.2% + CORE 38.2% + TACTICAL 14.6% + CASH 9.0% = 100%
+export const ALLOCATION_GOLDEN = {
+  SWING_PCT: 0.382,     // 중타 (TP +7~25%, 보유 3~14일)
+  CORE_PCT: 0.382,      // 장타 우량주 (TP +15~30%, 보유 14~30일)
+  TACTICAL_PCT: 0.146,  // 단타 장중매매 (TP +3.5~5%, 당일~1일)
+  CASH_PCT: 0.090,      // 현금 유보 (기회 대기)
+} as const;
+
+export type StrategyBucket = 'SWING' | 'CORE' | 'TACTICAL';
 
 // ── 미국주식 해외 (통합증거금: 원화→해외주식 직접 주문) ──
 export const OVERSEAS = {

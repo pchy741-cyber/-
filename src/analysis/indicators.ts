@@ -165,51 +165,38 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   if (current < sma5Now && sma5Now < sma20Now && sma20Now < sma60Now) score -= 20;
   else if (current < sma20Now && sma20Now < sma60Now) score -= 10;
 
-  // 골든/데드크로스
-  if (goldenCross) score += 18;
-  if (deathCross) score -= 18;
+  // 골든/데드크로스 (SMA 정배열과 중복 → 축소)
+  if (goldenCross) score += 8;
+  if (deathCross) score -= 8;
 
-  // 스토캐스틱
-  if (stochSignal === 'OVERSOLD') score += 10;
-  if (stochSignal === 'OVERBOUGHT') score -= 10;
+  // 스토캐스틱 (RSI와 상관도 80%+ → RSI 경계구간에서만 보조)
+  if (stochSignal === 'OVERSOLD' && rsi14 >= 28 && rsi14 <= 35) score += 3;
+  if (stochSignal === 'OVERBOUGHT' && rsi14 >= 65 && rsi14 <= 72) score -= 3;
 
-  // Williams %R
-  const wrValues = williamsR(candlesAsc, 14);
-  const wr14 = wrValues[wrValues.length - 1] ?? -50;
-  if (wr14 < -80) score += 8;
-  else if (wr14 > -20) score -= 8;
+  // Williams %R 제거 — RSI/Stochastic과 상관도 80%+, 점수 과대 팽창 원인
 
-  // ROC
+  // ROC (축소 — 독자 정보 적으나 추세 확인용으로 소폭 유지)
   const rocValues = roc(closesAsc, 12);
   const roc12 = rocValues[rocValues.length - 1] ?? 0;
-  if (roc12 > 8) score += 20;
-  else if (roc12 > 3) score += 12;
-  else if (roc12 < -8) score -= 12;
-  else if (roc12 < -3) score -= 6;
+  if (roc12 > 8) score += 4;
+  else if (roc12 > 3) score += 2;
+  else if (roc12 < -8) score -= 4;
+  else if (roc12 < -3) score -= 2;
 
-  // 볼륨 돌파 보너스
+  // 통합 거래량 보너스 (서지+비율 통합 → 단일 계산 0~+15, 승수 제거)
   const vol2dAvg = (volumes[1] + volumes[2]) / 2;
   const todayVolSurge = vol2dAvg > 0 ? volumes[0] / vol2dAvg : 1;
-  if (todayVolSurge >= 2.0 && current > sma5Now) {
-    score += 15;
-  } else if (todayVolSurge >= 1.5 && current > sma5Now) {
-    score += 8;
-  }
+  const volScore = current > sma5Now
+    ? (todayVolSurge >= 2.5 ? 15 : todayVolSurge >= 2.0 ? 12 : todayVolSurge >= 1.5 ? 8 : todayVolSurge >= 1.3 ? 4 : 0)
+    : 0;
+  if (volumeRatio < 0.5 && score > 0) score = Math.floor(score * 0.7);  // 극저거래량 패널티만 유지
+  score += volScore;
 
   // ADX 필터
   if (trendStrength === 'WEAK') {
     if (score > 0) score = Math.floor(score * 0.6);
   } else if (trendStrength === 'STRONG') {
     if (score > 0) score = Math.floor(score * 1.35);
-  }
-
-  // 거래량 확인 필터
-  if (volumeRatio >= 2.0 && score > 0) {
-    score = Math.floor(score * 1.2);
-  } else if (volumeRatio >= 1.5 && score > 0) {
-    score = Math.floor(score * 1.1);
-  } else if (volumeRatio < 0.5 && score > 0) {
-    score = Math.floor(score * 0.7);
   }
 
   // 캔들스틱 패턴
@@ -229,18 +216,15 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   const vwapCross: TechnicalSummary['vwapCross'] =
     prevClose < vwapPrev && current > vwapNow ? 'JUST_ABOVE' :
     prevClose > vwapPrev && current < vwapNow ? 'JUST_BELOW' : 'NONE';
-  if (vwapCross === 'JUST_ABOVE') score += 20;
-  else if (vwapCross === 'JUST_BELOW') score -= 15;
-  else if (vwapPosition === 'ABOVE') score += 12;
-  else if (vwapPosition === 'BELOW') score -= 8;
+  if (vwapCross === 'JUST_ABOVE') score += 15;
+  else if (vwapCross === 'JUST_BELOW') score -= 12;
+  else if (vwapPosition === 'ABOVE') score += 8;
+  else if (vwapPosition === 'BELOW') score -= 6;
 
   // 볼린저 스퀴즈 돌파
   if (bollingerBreakout === 'UP') score += 22;
   else if (bollingerBreakout === 'DOWN') score -= 18;
   else if (bollingerSqueeze && macdCross === 'BULLISH') score += 10;
-
-  // 중간 거래량 보너스
-  if (todayVolSurge >= 1.3 && todayVolSurge < 1.5 && current > sma5Now) score += 4;
 
   // 2-day RSI
   const rsi2Values = rsi(closesAsc, 2);
@@ -261,7 +245,7 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   }
   const nearVwap = Math.abs(vwapDiff) < 0.5;
   const vwapPullback = recentVwapBreak && nearVwap && current > vwapNow * 0.995;
-  if (vwapPullback) score += 15;
+  if (vwapPullback) score += 10;
 
   // TTM 스퀴즈
   const ttmSqueezeResult = ttmSqueeze(candles);
@@ -303,9 +287,7 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
     score += 20;
   }
 
-  // 엔벨로프 하단 터치
-  if (envelopeResult.position === 'BELOW_LOWER' && volumeRatio >= 0.7) score += 12;
-  else if (envelopeResult.position === 'NEAR_LOWER' && volumeRatio >= 0.7) score += 6;
+  // 엔벨로프 하단 터치 제거 — BB 하단과 중복 (bollingerPosition BELOW_LOWER/NEAR_LOWER와 동시 발동)
 
   // 거래대금 연속성
   const avgVol20ForConsistency = volumes.slice(0, 20).reduce((s, v) => s + v, 0) / 20;

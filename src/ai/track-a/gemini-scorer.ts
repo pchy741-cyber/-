@@ -3,7 +3,7 @@ import { type ScoringResult, ScoringResultSchema } from '../../db/models.js';
 import { safeParseScoresJson } from '../../utils/json-repair.js';
 import { logger } from '../../utils/logger.js';
 import { callVertexGemini } from '../../utils/vertex-gemini.js';
-import { buildScoringPrompt } from '../prompts/track-a-scoring.js';
+import { buildScoringPrompt, type RegimeHint } from '../prompts/track-a-scoring.js';
 import type { GeminiAnalysis } from './gemini.js';
 
 // Gemini 스코어링 응답의 최상위 구조에 대한 스키마 정의
@@ -19,10 +19,11 @@ export async function runGeminiScoring(params: {
   mode: string;
   geminiAnalysis: GeminiAnalysis;
   customPrompt?: string;
+  regimeHint?: RegimeHint;
 }): Promise<ScoringResult[]> {
-  const { mode, geminiAnalysis, customPrompt } = params;
+  const { mode, geminiAnalysis, customPrompt, regimeHint } = params;
 
-  const basePrompt = buildScoringPrompt(mode);
+  const basePrompt = buildScoringPrompt(mode, regimeHint);
   const systemPrompt = customPrompt ? `${basePrompt}\n\n${customPrompt}` : basePrompt;
 
   logger.info(`Gemini 스코어링 시작 (${geminiAnalysis.stocks.length}개 종목, 모드: ${mode})`, {

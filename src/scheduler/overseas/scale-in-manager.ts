@@ -28,15 +28,15 @@ export async function processScaleIns(params: {
     const code = row.key.replace(scaleInPrefix, '');
     const info = JSON.parse(row.value) as { remainingQty: number; entryPrice: number; createdAt: string; exchange: string };
     const holdingDays = (Date.now() - new Date(info.createdAt).getTime()) / (1000 * 60 * 60 * 24);
-    if (holdingDays > 3) {
+    if (holdingDays > 2) {
       await getPool().query(`DELETE FROM overseas_state WHERE key = $1`, [row.key]).catch(() => {});
-      logger.info(`📋 Scale-In 취소: ${code} (3일 초과, 미확인)`, { component: 'OVERSEAS' });
+      logger.info(`📋 Scale-In 취소: ${code} (2일 초과, 미확인)`, { component: 'OVERSEAS' });
       continue;
     }
     const tech = techResults.find(t => t.code === code);
     if (!tech) continue;
     const pnlFromEntry = ((tech.price.currentPrice - info.entryPrice) / info.entryPrice) * 100;
-    if (pnlFromEntry >= 2.0 && cash >= info.remainingQty * tech.price.currentPrice * 1.0025) {
+    if (pnlFromEntry >= 1.2 && cash >= info.remainingQty * tech.price.currentPrice * 1.0025) {
       const exec = await executeOverseasOrder(code, 'BUY', info.remainingQty, tech.price.currentPrice, info.exchange,
         `📈 Scale-In 추가매수 (+${pnlFromEntry.toFixed(1)}% 확인) — 나머지 ${info.remainingQty}주`, 0, 0, { isPaper });
       if (exec.submitted && exec.filledQty > 0) {
@@ -52,10 +52,12 @@ export async function processScaleIns(params: {
   return { cash };
 }
 
-/** Scale-In 결정: 모멘텀/빅무버/강한추세는 100% 즉시매수, 나머지는 60% 진입 */
+/** Scale-In 결정: 모멘텀/빅무버/강한추세/확인된추세는 100% 즉시매수, 나머지는 60% 진입 */
 export function shouldUseScaleIn(target: BuyTarget): boolean {
   const isStrongTrend = target.ai?.action === 'STRONG_BUY' && target.adx >= 35;
-  return !target.isMomentum && !target.isBigMover && !isStrongTrend;
+  // ADX>=25 + MA20 위 = 추세 확인됨 → 100% 즉시매수 (Scale-In 불필요)
+  const isConfirmedTrend = target.adx >= 25 && target.aboveMA20;
+  return !target.isMomentum && !target.isBigMover && !isStrongTrend && !isConfirmedTrend;
 }
 
 /** Scale-In 예약 데이터 빌드 */

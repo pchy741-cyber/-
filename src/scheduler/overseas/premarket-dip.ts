@@ -29,12 +29,12 @@ const BLUE_CHIP_CODES = new Set([
   'LLY', 'V', 'NFLX', 'ORCL', 'CRM', 'AMD', 'AAPL',
 ]);
 
-// 딥바이 파라미터
+// 딥바이 파라미터 (수수료 0.7% 커버 후 순익 확보)
 const DIP_PCT = -2.0;        // 프리마켓 종가 대비 -2% 진입
-const TP_PCT = 2.0;          // +2% 익절 (소폭 확실한 이익)
-const SL_PCT = 1.5;          // -1.5% 손절 (빠르게 컷)
+const TP_PCT = 4.0;          // +4% 익절 (수수료 0.7% 후 순익 +3.3%)
+const SL_PCT = 2.5;          // -2.5% 손절 (RR비 1.6:1)
 const MAX_POSITIONS = 3;     // 딥바이 최대 동시 포지션
-const MAX_BUDGET_PCT = 0.25; // 포트폴리오의 25%까지만 딥바이
+const MAX_BUDGET_PCT = 0.146; // 황금비율 단타 한도 = 14.6%
 
 // ── Types ──
 
@@ -260,15 +260,19 @@ export async function checkDipBuyFills(isPaper = true): Promise<string[]> {
           }
 
           // 체결 처리
+          // scalp TP/SL 절대가격 계산 (vision-scalp에서 모니터링)
+          const scalpTpPrice = +(fillPrice * (1 + TP_PCT / 100)).toFixed(2);
+          const scalpSlPrice = +(fillPrice * (1 - SL_PCT / 100)).toFixed(2);
+
           await withTransaction(async (tx) => {
             await tx.query(`
-              INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper, tp_pct, sl_pct, is_scalp)
-              VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, TRUE)
+              INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper, tp_pct, sl_pct, is_scalp, scalp_tp, scalp_sl)
+              VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, TRUE, $8, $9)
               ON CONFLICT (exchange, stock_code, is_paper) DO UPDATE
                 SET quantity = overseas_holdings.quantity + $3,
                     avg_price = (overseas_holdings.avg_price * overseas_holdings.quantity + $4 * $3) / (overseas_holdings.quantity + $3),
-                    tp_pct = $6, sl_pct = $7, is_scalp = TRUE
-            `, [order.code, order.exchange, order.qty, fillPrice, isPaper, TP_PCT, -SL_PCT]);
+                    tp_pct = $6, sl_pct = $7, is_scalp = TRUE, scalp_tp = $8, scalp_sl = $9
+            `, [order.code, order.exchange, order.qty, fillPrice, isPaper, TP_PCT, -SL_PCT, scalpTpPrice, scalpSlPrice]);
 
             await tx.query(
               `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price,

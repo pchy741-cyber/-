@@ -295,15 +295,18 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       for (const sr of stRows) stateMap.set(sr.key, sr.value);
     }
 
-    // Live 모드: last_price=0인 종목 실시간 시세 조회 (최대 3종목, 추가 API 호출)
-    if (!viewIsPaper) {
-      const needPrice = osRows.filter((r: any) => Number(r.last_price ?? 0) <= 0).slice(0, 3);
-      for (const r of needPrice) {
+    // last_price=0인 종목: 인메모리 캐시 → KIS API 조회 (최대 3종목)
+    const needPrice = osRows.filter((r: any) => Number(r.last_price ?? 0) <= 0).slice(0, 3);
+    for (const r of needPrice) {
+      // 인메모리 캐시 우선 조회 (Paper/Live 공통)
+      const memP = cacheGet<{ price: number }>(`overseas:lastprice:${r.stock_code}`)?.price ?? 0;
+      if (memP > 0) { r.last_price = memP; continue; }
+      // Live 모드: KIS API 폴백
+      if (!viewIsPaper) {
         try {
           const p = await withTimeout(getOverseasPrice(String(r.stock_code), String(r.exchange)), 3000, null as any);
           if (p?.currentPrice > 0) {
             r.last_price = p.currentPrice;
-            // DB도 비동기 업데이트 (다음 조회 시 캐시 효과)
             getPool().query(
               'UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2 AND is_paper = false',
               [p.currentPrice, r.stock_code],
@@ -404,7 +407,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   } catch { /* overseas table may not exist */ }
 
   // ── 국내 + 해외 합산 ──
-  const FX_RATE = await getFxRate();
+  let FX_RATE = await getFxRate();
+  if (FX_RATE <= 0) FX_RATE = 1420; // 비상 폴백 (환율 조회 실패 시)
   const overseasInvestedKrw = (isNaN(overseasTotalInvested) ? 0 : overseasTotalInvested) * FX_RATE;
   const overseasMarketValueKrw = (isNaN(overseasMarketValueUsd) ? 0 : overseasMarketValueUsd) * FX_RATE;
 
@@ -453,8 +457,11 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     }
   }
 
-  // 총자산 = 통합현금 + 국내 시가 + 해외 시가
-  const grandTotalValue = (actualCash || 0) + domesticMarketValue + overseasMarketValueKrw;
+  // 총자산 = 통합현금 + 국내 시가 + 해외 시가 (NaN 가드)
+  const safeCash = isNaN(actualCash) || !actualCash ? 0 : actualCash;
+  const safeDomestic = isNaN(domesticMarketValue) ? 0 : domesticMarketValue;
+  const safeOverseasMV = isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw;
+  const grandTotalValue = safeCash + safeDomestic + safeOverseasMV;
 
   // 비중(weight) 계산 — grandTotalValue 기준 시가 기반 통합 비중
   for (const ch of enrichedChains as any[]) {
@@ -621,7 +628,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
 
     // ── 월간 목표 진행률 ──
     monthlyGoal: (() => {
-      const monthlyTargetPct = 3; // 월 3% 목표
+      const monthlyTargetPct = 50; // 월 50% 목표 (6Phase 업그레이드 후 공격적 타겟)
       const seedKr = grandTotalValue > 0 ? grandTotalValue : 10_000_000;
       const targetAmount = Math.round(seedKr * monthlyTargetPct / 100);
       const overseasUnrealizedForGoal = isNaN(overseasMarketValueKrw - overseasInvestedKrw) ? 0 : (overseasMarketValueKrw - overseasInvestedKrw);

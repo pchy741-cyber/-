@@ -17,6 +17,7 @@ import type { TradeDecision } from '../../db/models.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { getPaperBalance } from '../../risk/paper-balance.js';
 import { getBatchPrices, getDailyChart, isMarketOpen, getChangeRankingStocks, getOrderbook } from '../../kis/market.js';
+import { getBatchStockSignals } from '../../kis/market-signals.js';
 import { logger } from '../../utils/logger.js';
 import { buildDefenseParkExitDecisions, getDefenseParkState, PARK_STOCK_CODE } from './defense-park.js';
 import { IDLE_PARK_STOCK_CODE } from './cash-manager.js';
@@ -124,10 +125,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const isOpeningBell = kstH === 9 && kstM < 15;  // 09:00~09:14 (15분 윈도우 — 09:15+ 진입 시 09:30 TP 도달 불가)
     const dbMode = (strategy?.mode ?? 'SWING') as StrategyMode;
     // SNIPER/DEFENSE는 개장벨에도 모드 유지 (SNIPER는 CEO가 명시적으로 설정한 집중 전략)
-    const mode: StrategyMode = (isOpeningBell && dbMode !== 'DEFENSE' && dbMode !== 'SNIPER') ? 'SCALPING' : dbMode;
-    if (isOpeningBell && mode === 'SCALPING') {
-      logger.info('🔔 개장 초단타 모드 자동 활성화 (09:00~09:14) — SCALPING +1.5% 목표, 10:00 데드라인', { component: 'TRACK_B' });
-    }
+    // SCALPING 자동 활성화 비활성화 (2026-06 성과 검토: 승률 25.7%, profit factor 0.98 → 실질 손실)
+    const mode: StrategyMode = dbMode;
     // SCALPING 10:00 데드라인: 이후 신규 매수는 SWING 기준으로 전환 (기존 체인은 강제청산 유지)
     const isPastScalpDeadline = dbMode === 'SCALPING' && kstH >= 10;
     const isScalpingMode = dbMode === 'SCALPING';
@@ -548,11 +547,22 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         })
       : adjustedScores;
 
+    // ── KIS 시장 시그널 수집 (체결강도, 공매도, 수급 등) ──
+    const filteredWatchlist = watchlist
+      .filter((w) => w.stock_code !== PARK_STOCK_CODE)
+      .map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name }));
+    let marketSignals: Map<string, import('../../kis/market-signals.js').StockSignals> | undefined;
+    try {
+      const signalCodes = filteredWatchlist.map(w => w.stock_code);
+      marketSignals = await getBatchStockSignals(signalCodes);
+      logger.info(`📡 시장 시그널 수집: ${marketSignals.size}/${signalCodes.length}개 종목`, { component: 'TRACK_B' });
+    } catch (err) {
+      logger.warn(`📡 시장 시그널 수집 실패 (파이프라인 계속): ${err}`, { component: 'TRACK_B' });
+    }
+
     const decisions = await technicalFallbackDecisions({
       mode: effectiveMode,
-      watchlist: watchlist
-        .filter((w) => w.stock_code !== PARK_STOCK_CODE)
-        .map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
+      watchlist: filteredWatchlist,
       livePrices,
       chartData,
       openChains,
@@ -566,7 +576,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       stopLossPct: resolvedSl,
       buyThreshold: feedbackThreshold,
       winRates,
-      requirePullback: true, // 항상 눌림 필수 — 꼭대기 진입 차단 (피드백 여부 무관)
+      requirePullback: false, // 2026-06: 눌림목 필수 해제 — 19단계 필터에서 진입 기회 차단 과다
       minVolumeRatio: Math.max(winFeedback.minVolumeRatio, 1.2), // 거래량 최소 1.2x 보장
       // penalty=1(조정장) 단독으로는 차단 안함 → adaptive threshold +2 로 대응
       // penalty=2(하락장, KOSPI<MA60)만 차단. SCALPING 모드면 macro/regime 면제
@@ -580,6 +590,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       currentStockValue,
       junkStockCodes,
       orderbookBlockedCodes,
+      marketSignals,
     });
 
     // AI 손실 조기청산 비활성화 — 정상 조정(-2%)도 강제청산해서 승률 저하 (4월→5월 13%로 하락 원인)

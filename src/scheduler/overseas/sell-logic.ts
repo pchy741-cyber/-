@@ -135,8 +135,8 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       sellReason = `손절(${stopLossPct}%): ${pnlPct.toFixed(1)}%`;
     } else if (maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {
       sellReason = `ATR트레일(${effectiveTrailDropPct.toFixed(1)}%/ATR${atrPctValue.toFixed(1)}%${vixRegime.trailTighten > 0 ? `/VIX${vixRegime.regime}` : ''}): 고점 +${maxPnlPct.toFixed(1)}% → 현재 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
-    // ── 개선#1: 마이크로 트레일 — +3%~트레일활성화 구간 수익 보호 ──
-    } else if (maxPnlPct >= 3.0 && maxPnlPct < trailActivatePct && drawdownFromPeak <= -2.0 && !tech.isMomentum) {
+    // ── 개선#1: 마이크로 트레일 — +4%~트레일활성화 구간 수익 보호 (추세 유지 시 제외) ──
+    } else if (maxPnlPct >= 4.0 && maxPnlPct < trailActivatePct && drawdownFromPeak <= -2.5 && !tech.isMomentum && !(tech.aboveMA20 && tech.adx >= 20)) {
       sellReason = `마이크로트레일(+${maxPnlPct.toFixed(1)}%→${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%): 고점 대비 ${drawdownFromPeak.toFixed(1)}% 하락 → 수익보호`;
     } else if (pnlPct >= hardTpPct && !isWinnerRiding(tech, holdingDays)) {
       sellReason = `익절(${hardTpPct}%): +${pnlPct.toFixed(1)}%`;
@@ -212,10 +212,10 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
 /** 승자 라이딩 — 강한 종목은 익절 지연 (트레일링만 적용) */
 function isWinnerRiding(tech: TechResult, holdingDays: number): boolean {
   // ADX 40+ 초강세 → 보유기간 무관 즉시 라이딩 허용
-  if (tech.adx >= 40 && tech.rsi >= 45 && tech.rsi <= 75) return true;
+  if (tech.adx >= 40 && tech.rsi >= 45 && tech.rsi <= 76) return true;
   if (holdingDays < 1) return false;
-  // ADX 30+ & RSI 50~73 유지 → 강한 추세 지속
-  if (tech.adx >= 30 && tech.rsi >= 50 && tech.rsi <= 73) return true;
+  // ADX 25+ & RSI 50~75 유지 → 추세 지속 (30→25 완화, 73→75 완화)
+  if (tech.adx >= 25 && tech.rsi >= 50 && tech.rsi <= 75) return true;
   // MA20 상방 + 모멘텀 → 상승 지속
   if (tech.aboveMA20 && tech.aboveMA60 && tech.isMomentum) return true;
   return false;

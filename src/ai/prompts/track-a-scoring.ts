@@ -93,11 +93,44 @@ export const GPT_SCALPING_ADDON = `
 - Gemini가 source_confidence="HIGH"로 타겟팅한 종목: 95점 고정
 - 나머지 종목은 스코어링 스킵 (0점 NO_DATA)`;
 
-export function buildScoringPrompt(mode: string): string {
+// ── 레짐별 스코어링 보정 (Phase 5) ──
+export type RegimeHint = 'TREND_BULL' | 'TREND_BEAR' | 'RANGE_LOW_VOL' | 'RANGE_HIGH_VOL' | 'BREAKOUT' | 'DISTRIBUTION' | null;
+
+const REGIME_SCORING: Record<string, string> = {
+  TREND_BULL: `
+## [레짐 보정: 강한 상승추세]
+- 모멘텀/돌파 진입 종목 +5점 가산 (거래량 동반 상승 + ADX>25)
+- 추세 역행(MA20<MA60) 종목은 -10점 강화 감점
+- 고점 갱신 + 거래량 급증 = 최우선 매수 대상`,
+
+  RANGE_LOW_VOL: `
+## [레짐 보정: 저변동 횡보]
+- RSI 과매도 + 지지선 근처 종목 +8점 가산 (평균회귀 매수)
+- 거래량 없는 상승 종목 -5점 (가짜 돌파 위험)
+- 볼린저 하단 터치 + 거래량 소진 = 최적 매수 타점`,
+
+  BREAKOUT: `
+## [레짐 보정: 돌파 임박]
+- 볼린저 스퀴즈 5봉+ → TTM 발사 동반 시 +10점
+- 거래량 1.5배+ 돌파 종목 최우선
+- 스퀴즈 없이 단순 횡보는 가산 없음`,
+
+  TREND_BEAR: `
+## [레짐 보정: 하락추세]
+- 모든 종목 최종 점수에서 -15점 강제 감점
+- 극과매도(RSI<25) 반등 후보만 감점 면제
+- 거래량 없는 반등 종목 추가 -5점`,
+};
+
+export function buildScoringPrompt(mode: string, regimeHint?: RegimeHint): string {
   let prompt = GPT_BASE_PROMPT;
 
   if (mode === 'DEFENSE') prompt += GPT_DEFENSE_ADDON;
   if (mode === 'SCALPING') prompt += GPT_SCALPING_ADDON;
+
+  if (regimeHint && REGIME_SCORING[regimeHint]) {
+    prompt += REGIME_SCORING[regimeHint];
+  }
 
   return prompt;
 }

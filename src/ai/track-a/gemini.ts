@@ -2,7 +2,7 @@ import { config } from '../../config/index.js';
 import type { DailyCandle } from '../../kis/market.js';
 import { safeParseJson } from '../../utils/json-repair.js';
 import { logger } from '../../utils/logger.js';
-import { buildGeminiPrompt } from '../prompts/track-a-analysis.js';
+import { buildGeminiPrompt, type RegimeHint } from '../prompts/track-a-analysis.js';
 import { analyzeTechnicals } from '../../analysis/indicators.js';
 
 export interface GeminiAnalysis {
@@ -39,11 +39,12 @@ export async function runGeminiAnalysis(params: {
   dividendData?: Map<string, number>; // 종목별 배당수익률 (%)
   additionalSources?: string; // CEO가 입력한 유튜브/리포트 텍스트
   customPrompt?: string; // CEO 커스텀 프롬프트 (대시보드에서 입력)
+  regimeHint?: RegimeHint; // 레짐 힌트 (Phase 5)
 }): Promise<GeminiAnalysis> {
-  const { mode, watchlist, chartData, dividendData, additionalSources, customPrompt } = params;
+  const { mode, watchlist, chartData, dividendData, additionalSources, customPrompt, regimeHint } = params;
 
   // 기본 프롬프트 + CEO 커스텀 프롬프트 병합 (항상 기본이 베이스)
-  const basePrompt = buildGeminiPrompt(mode);
+  const basePrompt = buildGeminiPrompt(mode, regimeHint);
   const systemPrompt = customPrompt ? `${basePrompt}\n\n${customPrompt}` : basePrompt;
 
   // 차트 데이터를 텍스트로 변환

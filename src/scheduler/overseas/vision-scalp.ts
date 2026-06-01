@@ -9,7 +9,7 @@ import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
 import { getCash, updateTradeState, cleanupPositionState } from './state.js';
 
-const DAILY_SCALP_CAP = 4; // 하루 최대 4회 청산 (fee drag 방지)
+const DAILY_SCALP_CAP = 3; // 하루 최대 3회 청산 (수수료 드래그 억제)
 
 export async function monitorVisionScalp(isPaper: boolean): Promise<void> {
   try {

@@ -269,7 +269,34 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       combinedSources = combinedSources ? `${combinedSources}\n\n${investorFlowSection}` : investorFlowSection;
     }
 
-    // 5. 3단 폴백: Gemini+GPT → Gemini+Claude → Gemini+기술적 → Claude 단독
+    // 5. 레짐 감지 → 프롬프트 힌트
+    let regimeHint: import('../prompts/track-a-analysis.js').RegimeHint = null;
+    try {
+      const { analyzeTechnicals: analyzeTech } = await import('../../analysis/indicators.js');
+      const { detectRegimeV2 } = await import('../track-b/regime-v2.js');
+      // 대표 종목(첫 5개)의 차트로 시장 레짐 판단
+      const sampleStocks = allStocks.slice(0, 5);
+      const regimeCounts = new Map<string, number>();
+      for (const s of sampleStocks) {
+        const candles = chartData.get(s.stock_code) ?? [];
+        if (candles.length < 30) continue;
+        const tech = analyzeTech(candles);
+        if (!tech) continue;
+        const closes = candles.map(c => c.close);
+        const result = detectRegimeV2(tech, closes);
+        regimeCounts.set(result.regime, (regimeCounts.get(result.regime) ?? 0) + 1);
+      }
+      // 최다 레짐을 시장 레짐으로 설정
+      let maxCount = 0;
+      for (const [regime, count] of regimeCounts) {
+        if (count > maxCount) { maxCount = count; regimeHint = regime as any; }
+      }
+      if (regimeHint) {
+        logger.info(`🎯 시장 레짐: ${regimeHint} (${maxCount}/${sampleStocks.length}개 종목)`, { component: 'TRACK_A' });
+      }
+    } catch { /* 레짐 감지 실패 시 null — 프롬프트 영향 없음 */ }
+
+    // 5-1. 3단 폴백: Gemini+GPT → Gemini+Claude → Gemini+기술적 → Claude 단독
     let scores: ScoringResult[] = [];
     let geminiResult: Awaited<ReturnType<typeof runGeminiAnalysis>> | null = null;
     // 폴백 단계 추적 — 'gemini'만 기존 점수 덮어쓰기 허용
@@ -284,6 +311,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         dividendData: dividendData.size > 0 ? dividendData : undefined,
         additionalSources: combinedSources || undefined,
         customPrompt: customGeminiPrompt ?? undefined,
+        regimeHint,
       });
     } catch (geminiErr) {
       logger.warn(`⚠️ Gemini 실패: ${geminiErr}`, { component: 'TRACK_A' });
@@ -296,6 +324,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
           mode,
           geminiAnalysis: geminiResult,
           customPrompt: customGptPrompt ?? undefined,
+          regimeHint,
         });
         if (scores.length > 0) scoringSource = 'gemini';
       } catch (geminiScoreErr) {

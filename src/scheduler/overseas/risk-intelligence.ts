@@ -175,8 +175,11 @@ export async function calcUncertaintyPenalty(params: {
     const recentSells = rows.filter((r: { ai_reasoning: string | null }) =>
       String(r.ai_reasoning ?? '').includes('손절') || String(r.ai_reasoning ?? '').includes('stopLoss')
     );
-    if (recentSells.length >= 2) {
-      penalty += 0.08;
+    if (recentSells.length >= 3) {
+      penalty += 0.20;
+      reasons.push(`연속손절${recentSells.length}회(블랙)`);
+    } else if (recentSells.length >= 2) {
+      penalty += 0.15;
       reasons.push(`연속손절${recentSells.length}회`);
     }
   } catch { /* skip */ }
@@ -203,13 +206,14 @@ export function getPartialTpStages(sector: string): PartialTpStage[] {
 
   if (isHighBeta) {
     return [
-      { stage: 1, triggerPct: 12.0, sellRatio: 0.20 },
-      { stage: 2, triggerPct: 25.0, sellRatio: 0.25 },
+      { stage: 1, triggerPct: 8.0, sellRatio: 0.20 },
+      { stage: 2, triggerPct: 18.0, sellRatio: 0.25 },
+      { stage: 3, triggerPct: 30.0, sellRatio: 0.30 },
     ];
   }
   return [
-    { stage: 1, triggerPct: 10.0, sellRatio: 0.20 },
-    { stage: 2, triggerPct: 20.0, sellRatio: 0.25 },
+    { stage: 1, triggerPct: 7.0, sellRatio: 0.20 },
+    { stage: 2, triggerPct: 15.0, sellRatio: 0.25 },
   ];
 }
 
