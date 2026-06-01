@@ -513,7 +513,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       domesticInvested: Math.round(domesticInvested),
       domesticEval: Math.round(domesticMarketValue), // 국내 증권 시가평가 (비중 계산용)
       domesticCash: unifiedCash, // 통합증거금: 국내/해외 구분 없음
-      unrealizedPnl: Math.round((viewIsPaper ? totalChainPnl : (balance.totalProfitLoss || totalChainPnl)) + (overseasMarketValueKrw - overseasInvestedKrw)),
+      unrealizedPnl: Math.round(viewIsPaper ? totalChainPnl : (balance.totalProfitLoss || totalChainPnl)), // 국내 전용 (해외는 overseas.unrealizedPnlKrw)
       realizedPnl: viewIsPaper ? Math.round(balance.totalProfitLoss ?? 0) : 0,
       pnl: Math.round(totalPnl + (isNaN(overseasMarketValueKrw - overseasInvestedKrw) ? 0 : (overseasMarketValueKrw - overseasInvestedKrw))),
       pnlPct: Math.round(totalPnlPct * 100) / 100,
