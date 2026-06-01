@@ -313,6 +313,20 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       }
     }
 
+    // Step 5-3b: Gemini Flash도 실패 → Claude Haiku 폴백 (ANTHROPIC_API_KEY 있을 때)
+    if (scores.length === 0 && process.env.ANTHROPIC_API_KEY) {
+      try {
+        const { runClaudeScoring } = await import('./claude-scorer.js');
+        scores = await runClaudeScoring(mode, allStocks, chartData);
+        if (scores.length > 0) {
+          scoringSource = 'flash'; // flash로 분류 (Claude 별도 source 없음)
+          logger.info(`✅ Claude Haiku 폴백 성공: ${scores.length}개 스코어 (Gemini 할당량 초과 대체)`, { component: 'TRACK_A' });
+        }
+      } catch (claudeErr) {
+        logger.warn(`⚠️ Claude 폴백 실패: ${claudeErr}`, { component: 'TRACK_A' });
+      }
+    }
+
     // Step 5-4: 모두 실패 → 기술적 지표로 스코어 생성 (scoringSource 기본값 'technical')
     if (scores.length === 0) {
       logger.info('⚙️ AI 모두 실패 → 기술적 지표 기반 스코어 생성 (BUY/SELL 신호 활성)', { component: 'TRACK_A' });
