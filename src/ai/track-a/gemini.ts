@@ -3,6 +3,7 @@ import type { DailyCandle } from '../../kis/market.js';
 import { safeParseJson } from '../../utils/json-repair.js';
 import { logger } from '../../utils/logger.js';
 import { buildGeminiPrompt } from '../prompts/track-a-analysis.js';
+import { analyzeTechnicals } from '../../analysis/indicators.js';
 
 export interface GeminiAnalysis {
   market_sentiment: 'bullish' | 'neutral' | 'bearish' | 'panic';
@@ -58,8 +59,16 @@ export async function runGeminiAnalysis(params: {
 
       const dvr = dividendData?.get(stock.stock_code) ?? 0;
       const dvrText = dvr > 0 ? `, 배당수익률: ${dvr.toFixed(2)}%` : '';
+
+      // 눌림목 신호: MA 이탈 후 반등 (최적 진입 타이밍 확인)
+      const tech = candles.length >= 30 ? analyzeTechnicals(candles) : null;
+      const pullbackStr = tech?.pullbackSignal ? '눌림목_확인=true' : '눌림목_확인=false';
+      const rsiStr = tech ? ` RSI=${tech.rsi14.toFixed(0)}` : '';
+      const volStr = tech ? ` 거래량비율=${tech.volumeRatio.toFixed(1)}x` : '';
+
       return `${stock.stock_name}(${stock.stock_code}):
   최근 종가: ${latest?.close}, 52주 고가: ${high52w}, 고점 대비: ${dropFromHigh}%${dvrText}
+  ${pullbackStr}${rsiStr}${volStr}
   최근 5일 거래량: ${candles
     .slice(0, 5)
     .map((c) => c.volume)

@@ -116,9 +116,14 @@ export async function runRSSScoring(
     const momentumBonus = getMomentumScore(w.stock_code, candles, topGainerCodes, topVolumeCodes);
     const flowBonus = getFlowBonus(flowAdjMap.get(w.stock_code) ?? 0);
 
-    const composite = Math.min(100, baseScore + newsBonus + momentumBonus + flowBonus);
+    // 눌림목 보너스: MA 이탈 후 반등 확인 = 최적 매수 타점
+    const pullbackBonus = tech.pullbackSignal ? 8 : 0;
+    // 눌림목 없고 base도 낮으면 과매수 주의 감점
+    const overextendedPenalty = (!tech.pullbackSignal && baseScore < 70 && tech.volumeRatio < 1.3) ? -5 : 0;
 
-    // 신호 결정
+    const composite = Math.min(100, baseScore + newsBonus + momentumBonus + flowBonus + pullbackBonus + overextendedPenalty);
+
+    // 신호 결정 + 눌림목 확인 시 confidence 상향
     let signal: ScoringResult['signal'] = 'HOLD';
     let confidence = 0.55;
     if (composite >= 85) { signal = 'STRONG_BUY'; confidence = 0.72; }
@@ -126,11 +131,18 @@ export async function runRSSScoring(
     else if (composite <= 35) { signal = 'SELL'; confidence = 0.65; }
     else if (composite <= 25) { signal = 'STRONG_SELL'; confidence = 0.72; }
 
+    // 눌림목 + 거래량 콤보: confidence 추가 상향 (Track B 진입 문턱 넘기 용이)
+    if (tech.pullbackSignal && composite >= 78 && tech.volumeRatio >= 1.3) {
+      confidence = Math.min(0.82, confidence + 0.10);
+    }
+
     const reasoningParts = [
       `[RSS] tech=${baseScore}`,
+      pullbackBonus > 0 ? `pb+${pullbackBonus}` : '',
       newsBonus !== 0 ? `news${newsBonus > 0 ? '+' : ''}${newsBonus}` : '',
       momentumBonus > 0 ? `momentum+${momentumBonus}` : '',
       flowBonus !== 0 ? `flow${flowBonus > 0 ? '+' : ''}${flowBonus}` : '',
+      overextendedPenalty < 0 ? `overextended${overextendedPenalty}` : '',
       `RSI=${tech.rsi14.toFixed(0)} vol=${tech.volumeRatio.toFixed(1)}x`,
     ].filter(Boolean).join(' ');
 
