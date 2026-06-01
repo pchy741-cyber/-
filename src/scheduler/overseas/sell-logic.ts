@@ -133,11 +133,27 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
 
     if (pnlPct <= stopLossPct) {
       sellReason = `손절(${stopLossPct}%): ${pnlPct.toFixed(1)}%`;
+
+    // ── 개선: 하락 추세 조기 탈출 — SL 기다리지 말고 약세 확인 시 바로 매도 ──
+    // "계속 떨어질 거 같으면 빨리 팔아라" — score 음수 + MA20 아래 + RSI 하락 = 약세 확정
+    } else if (pnlPct < -1.5 && pnlPct > stopLossPct && tech.score <= -10
+      && !tech.aboveMA20 && tech.rsi < 45 && holdingDays >= 1) {
+      sellReason = `약세조기탈출(${pnlPct.toFixed(1)}%): score=${tech.score} RSI=${tech.rsi.toFixed(0)} MA20↓ → SL전 정리`;
+
     } else if (maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {
       sellReason = `ATR트레일(${effectiveTrailDropPct.toFixed(1)}%/ATR${atrPctValue.toFixed(1)}%${vixRegime.trailTighten > 0 ? `/VIX${vixRegime.regime}` : ''}): 고점 +${maxPnlPct.toFixed(1)}% → 현재 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
-    // ── 개선#1: 마이크로 트레일 — +4%~트레일활성화 구간 수익 보호 (추세 유지 시 제외) ──
-    } else if (maxPnlPct >= 4.0 && maxPnlPct < trailActivatePct && drawdownFromPeak <= -2.5 && !tech.isMomentum && !(tech.aboveMA20 && tech.adx >= 20)) {
+
+    // ── 개선: 수익 보호 강화 — 고점 대비 40% 이상 반납 시 매도 (추세 유지 시 제외) ──
+    // "+7% 찍고 +2%까지 떨어지는 것" 방지: 수익의 40% 이상 반납하면 즉시 수익확정
+    } else if (maxPnlPct >= 3.0 && pnlPct >= 0 && pnlPct < maxPnlPct * 0.60
+      && !tech.isMomentum && !(tech.aboveMA20 && tech.adx >= 25)) {
+      sellReason = `수익보호(+${maxPnlPct.toFixed(1)}%→+${pnlPct.toFixed(1)}%): 고점 대비 ${((1 - pnlPct / maxPnlPct) * 100).toFixed(0)}% 반납 → 확정`;
+
+    // ── 개선: 마이크로 트레일 — +2%~트레일활성화 구간 (기존 +4% → +2%로 강화) ──
+    } else if (maxPnlPct >= 2.0 && maxPnlPct < trailActivatePct && drawdownFromPeak <= -2.0
+      && !tech.isMomentum && !(tech.aboveMA20 && tech.adx >= 20)) {
       sellReason = `마이크로트레일(+${maxPnlPct.toFixed(1)}%→${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%): 고점 대비 ${drawdownFromPeak.toFixed(1)}% 하락 → 수익보호`;
+
     } else if (pnlPct >= hardTpPct && !isWinnerRiding(tech, holdingDays)) {
       sellReason = `익절(${hardTpPct}%): +${pnlPct.toFixed(1)}%`;
     } else if (ai?.action === 'SELL' && ai.confidence >= 0.90) {
