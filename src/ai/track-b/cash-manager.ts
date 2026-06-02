@@ -74,7 +74,8 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
   const { orderableCash, totalAssets, hasBuyCandidates, confirmedBuyCount, openChains, livePrices, chartData, mode, blockNewBuys } = params;
 
   if (mode === 'DEFENSE') return []; // defense-park.ts가 처리
-  if (blockNewBuys) return [];
+  // 파킹은 마의시간대에도 허용 (대형주 파킹은 신규매수 차단 대상 아님)
+  // blockNewBuys는 파킹 해제 판단에만 영향 (confirmedBuyCount가 0이면 해제 안 함)
 
   const decisions: TradeDecision[] = [];
 
