@@ -81,11 +81,11 @@ export function entryTimingGate(input: GateInput): GateResult {
 
   const tech = analyzeTechnicals(candles);
   const rsi = tech?.rsi14 ?? 50;
-  if (rsi >= 75) return { passed: false, reason: `🔴 RSI 과매수 차단: ${rsi.toFixed(1)} ≥ 75` };
+  if (rsi >= 80) return { passed: false, reason: `🔴 RSI 과매수 차단: ${rsi.toFixed(1)} ≥ 80` };
 
   const recent3High = Math.max(c1.high, c2.high, c3.high);
   const pctFromHigh = recent3High > 0 ? ((current - recent3High) / recent3High) * 100 : -5;
-  if (pctFromHigh > 2.0) return { passed: false, reason: `🔴 고점 추격 차단: +${pctFromHigh.toFixed(1)}%` };
+  if (pctFromHigh > 3.0) return { passed: false, reason: `🔴 고점 추격 차단: +${pctFromHigh.toFixed(1)}%` };
 
   const body0 = Math.abs(c0.close - c0.open);
   const range0 = c0.high - c0.low;
@@ -208,19 +208,21 @@ export async function newsGate(stockCode: string): Promise<GateResult> {
 // ── 재진입 쿨다운 (SCALPING 전용) ──
 export async function reEntryCooldownGate(input: GateInput): Promise<GateResult> {
   if (input.strategyMode !== 'SCALPING') return { passed: true, reason: 'SCALPING 외 — 생략' };
+  const reEntryCooldownMs = config.isPaper ? 5 * 60_000 : GATE.REENTRY_COOLDOWN_MS;
+  const reEntryIntervalSql = config.isPaper ? '5 minutes' : '30 minutes';
   try {
     const { rows } = await getPool().query(
       `SELECT created_at FROM orders
        WHERE stock_code = $1 AND side = 'BUY'
          AND status IN ('FILLED', 'PENDING', 'PARTIAL')
-         AND created_at >= NOW() - INTERVAL '30 minutes'
+         AND created_at >= NOW() - INTERVAL '${reEntryIntervalSql}'
          AND trading_mode = $2
        ORDER BY created_at DESC LIMIT 1`,
       [input.stockCode, config.tradingMode],
     );
     if (rows.length > 0) {
       const elapsed = Date.now() - new Date(rows[0].created_at).getTime();
-      const remaining = Math.ceil((GATE.REENTRY_COOLDOWN_MS - elapsed) / 60_000);
+      const remaining = Math.ceil((reEntryCooldownMs - elapsed) / 60_000);
       return { passed: false, reason: `재진입 쿨다운: ${remaining}분 남음` };
     }
   } catch { /* DB 실패 시 통과 */ }

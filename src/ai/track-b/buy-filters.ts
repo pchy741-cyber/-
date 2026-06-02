@@ -128,7 +128,7 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
     const adjustedVolRatio = tech.volumeRatio / timeElapsedRatio;
 
     // ─── 보너스 계산 (게이트 판단 전 산출) ──────────────────────────────
-    const baseMinTechScore = megaCap ? 55 : mode === 'SCALPING' ? 50 : 65;
+    const baseMinTechScore = megaCap ? 45 : mode === 'SCALPING' ? 50 : 55;
     const minTechScore = baseMinTechScore;
     const priorityBonus = megaCap
       ? 10 + megaCap.bonus
@@ -184,7 +184,7 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
       return true;
     })();
     const qRsiTiming = (() => {
-      const rsiCap = 70;
+      const rsiCap = megaCap ? 80 : 75;
       const aiBypassRsi = aiScore >= buyThreshold && tech.rsi14 <= 80;
       if (tech.rsi14 > rsiCap && !aiBypassRsi) return false;
       // RSI 구간별 타이밍 검증
@@ -194,7 +194,7 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
       const isPullback = tech.rsi14 >= 45 && tech.rsi14 <= 65 && tech.macdCrossover !== 'BEARISH' && (
         truePullbackPattern || isFibSupport || tech.macdCrossover === 'BULLISH' || aiScore >= buyThreshold || effectiveTechScore >= minTechScore
       );
-      const isMomentum = tech.rsi14 > 65 && tech.rsi14 <= 70 && (aiScore >= buyThreshold || effectiveTechScore >= minTechScore + 5);
+      const isMomentum = tech.rsi14 > 65 && tech.rsi14 <= 75 && (aiScore >= buyThreshold || effectiveTechScore >= minTechScore + 5);
       const isHighConviction = (aiScore >= 80 || effectiveTechScore >= minTechScore + 15) && (effectiveTechScore >= minTechScore || aiScore >= buyThreshold);
       return isOversold || isEarlyBounce || isPullback || isMomentum || isHighConviction || isFibSupport;
     })();
@@ -212,7 +212,7 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
       };
       const cfCount = Object.values(cf).filter(Boolean).length;
       const noAiForCf = noAiScores || aiScore === 0;
-      const minCf = aiScore >= 85 ? 1 : aiScore >= 80 ? 2 : noAiForCf ? 2 : 3;
+      const minCf = aiScore >= 85 ? 1 : aiScore >= 70 ? 2 : noAiForCf ? 2 : 2;
       return cfCount >= minCf;
     })();
 
@@ -223,7 +223,7 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
 
     const qualityChecks = [qVolume, qTrendStrength, qTrendDirection, qRsiTiming, qConfluence, qSignalFlow];
     const qualityPassed = qualityChecks.filter(Boolean).length;
-    const minQuality = aiScore >= 85 ? 2 : 3;
+    const minQuality = aiScore >= 85 ? 1 : aiScore >= 70 ? 2 : 3;
 
     if (qualityPassed < minQuality) {
       logger.info(`  🔍 ${stock.stock_code}: 품질게이트 ${qualityPassed}/${minQuality} 미달 [vol=${qVolume} trend=${qTrendStrength} dir=${qTrendDirection} rsi=${qRsiTiming} cf=${qConfluence} sig=${qSignalFlow}] → 스킵`, { component: 'TRACK_B' });
@@ -252,8 +252,9 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
 
     const riskChecks = [rHighChase, rTechScore, rVolumeProfile, rShortPressure];
     const riskPassed = riskChecks.filter(Boolean).length;
-    if (riskPassed < 2) {
-      logger.info(`  ⚠️ ${stock.stock_code}: 리스크게이트 ${riskPassed}/2 미달 [chase=${rHighChase} tech=${rTechScore} vp=${rVolumeProfile} short=${rShortPressure}] → 스킵`, { component: 'TRACK_B' });
+    const minRisk = regimeRoute?.regime === 'TREND_BULL' ? 1 : 2;
+    if (riskPassed < minRisk) {
+      logger.info(`  ⚠️ ${stock.stock_code}: 리스크게이트 ${riskPassed}/${minRisk} 미달 [chase=${rHighChase} tech=${rTechScore} vp=${rVolumeProfile} short=${rShortPressure}] → 스킵`, { component: 'TRACK_B' });
       continue;
     }
     // ═══════════════════════════════════════════════════════════════════
@@ -261,7 +262,7 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
     // ── 레짐 라우터 빠른 진입 경로: routed=true이면 기존 필터 통과로 간주 ──
     if (regimeRoute.routed && mode !== 'SCALPING') {
       // 최소 기술점수 확인만 (절대하한)
-      const routeMinScore = 40;
+      const routeMinScore = 30;
       if (tech.score + candleBonus >= routeMinScore) {
         candidates.push({ stock_code: stock.stock_code, tech, price, candleBonus, regimeRoute });
         logger.info(`  ✅ ${stock.stock_code}: 레짐라우터 진입 [${regimeRoute.reason}] score=${tech.score}`, { component: 'TRACK_B' });

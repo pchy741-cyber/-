@@ -103,9 +103,10 @@ async function getConsecutiveLosses(): Promise<number> {
 
 export async function cooldownGate(): Promise<GateResult> {
   const consecutive = await getConsecutiveLosses();
-  const cooldownMs =
-    consecutive >= 5 ? GATE.CONSECUTIVE_LOSS_HALT_MS :
-    consecutive >= 3 ? GATE.CONSECUTIVE_LOSS_WARN_MS : 0;
+  // Paper 모드: 쿨다운 대폭 완화 (5연패 10분, 3-4연패 5분)
+  const cooldownMs = config.isPaper
+    ? (consecutive >= 5 ? 10 * 60_000 : consecutive >= 3 ? 5 * 60_000 : 0)
+    : (consecutive >= 5 ? GATE.CONSECUTIVE_LOSS_HALT_MS : consecutive >= 3 ? GATE.CONSECUTIVE_LOSS_WARN_MS : 0);
 
   if (cooldownMs > 0) {
     try {
@@ -143,9 +144,9 @@ export async function cooldownGate(): Promise<GateResult> {
 export async function getCooldownStatus(): Promise<CooldownStatus> {
   try {
     const consecutive = await getConsecutiveLosses();
-    const cooldownMs =
-      consecutive >= 5 ? GATE.CONSECUTIVE_LOSS_HALT_MS :
-      consecutive >= 3 ? GATE.CONSECUTIVE_LOSS_WARN_MS : 0;
+    const cooldownMs = config.isPaper
+      ? (consecutive >= 5 ? 10 * 60_000 : consecutive >= 3 ? 5 * 60_000 : 0)
+      : (consecutive >= 5 ? GATE.CONSECUTIVE_LOSS_HALT_MS : consecutive >= 3 ? GATE.CONSECUTIVE_LOSS_WARN_MS : 0);
 
     if (cooldownMs > 0) {
       const params: any[] = [config.isPaper];
