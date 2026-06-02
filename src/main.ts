@@ -18,6 +18,7 @@ import { backtestRoutes } from './backtest/api.js';
 import reviewRoutes from './api/routes/review.js';
 import { kakaoAlertRoutes } from './api/routes/kakao-alert.js';
 import { requireAuth } from './api/middleware/auth.js';
+import { webauthnPublicRoutes, webauthnProtectedRoutes } from './api/routes/webauthn.js';
 import { initBigQuery } from './automation/bigquery-pipeline.js';
 import { setupMonitoring } from './automation/gcp-monitoring.js';
 import { initRedisCache } from './cache/redis.js';
@@ -94,8 +95,10 @@ app.use('*', async (c, next) => {
 // 공개 (인증 불필요)
 app.route('/', healthRoutes);          // GET  /api/health
 app.route('/', authRoutes);            // POST /api/auth/login, GET /api/auth/me
+app.route('/', webauthnPublicRoutes);  // POST /api/auth/webauthn/authenticate/*, GET /api/auth/webauthn/available
 // 🔒 이하 모든 라우트: x-api-key 헤더 필요
 app.use('*', requireAuth);
+app.route('/', webauthnProtectedRoutes); // POST /api/auth/webauthn/register/*
 app.route('/', healthDetailRoutes);     // GET  /api/health/detail (인증 필요)
 app.route('/', reviewRoutes);          // POST /api/review/*, /api/capture/*
 app.route('/', dashboardRoutes);       // GET  /api/dashboard, /api/sell/:id, /api/manual-buy ...

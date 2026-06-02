@@ -226,6 +226,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
       });
       logger.info(`✅ 전량 매도 완료 (모의): ${stockCode} ${totalQty}주 [${triggerSource}] (${openChains.length}체인)`, { component: 'DASHBOARD' });
       invalidateCurrentModeCache();
+      invalidateStockCache(stockCode).catch(() => {});
       return c.json({ ok: true, message: `${stockCode} ${totalQty}주 전량 매도 완료 (모의투자)` });
     }
 
@@ -302,6 +303,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
       await notifySell(stockCode, totalQty, fillPrice, pnlPct, sellReason);
     } catch { /* 알림 실패 무시 */ }
     invalidateCurrentModeCache();
+    invalidateStockCache(stockCode).catch(() => {});
     return c.json({
       ok: true, orderNo: kisOrderNo, pending: !fillConfirmed,
       message: `${stockCode} ${totalQty}주 ${fillConfirmed ? '전량 매도 완료' : '매도 접수 (체결 대기)'}`,
@@ -363,6 +365,7 @@ sellRoutes.post('/sell-overseas/:stockCode', async (c) => {
           [stockCode, qty, fillPrice, fakeOrderNo, paperReasoning, avgPrice]);
       });
       logger.info(`✅ CEO 해외 수동 매도 완료 (모의투자): ${stockCode} ${qty}주 @$${fillPrice}`, { component: 'DASHBOARD' });
+      invalidateCurrentModeCache();
       return c.json({ ok: true, orderNo: fakeOrderNo, message: `${stockCode} ${qty}주 ${isPartial ? '부분' : '전량'} 매도 완료 (모의투자)` });
     }
 
@@ -424,6 +427,7 @@ sellRoutes.post('/sell-overseas/:stockCode', async (c) => {
         [stockCode, qty, fillPrice, result.orderNo ?? '', paperReasoning, avgPrice]);
       logger.warn(`⏳ CEO 해외 수동 매도 접수 (미체결): ${stockCode} ${qty}주 — 다음 sync에서 확인`, { component: 'DASHBOARD' });
     }
+    invalidateCurrentModeCache();
     return c.json({ ok: true, orderNo: result.orderNo, status: orderStatus, message: `${stockCode} ${qty}주 ${isPartial ? '부분' : '전량'} 매도 ${confirmed ? '체결 완료' : '주문 접수 (체결 대기)'}` });
   } catch (err: any) {
     logger.error(`해외 수동 매도 예외: ${err.message}`, { component: 'DASHBOARD' });
@@ -707,6 +711,8 @@ sellRoutes.post('/manual-buy', async (c) => {
       );
       logger.info(`🤖 Claude 매수 (모의): ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 ${rrStr} — ${reasoning}`, { component: 'CLAUDE_BUY' });
       try { await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑'); } catch { /* 알림 실패 무시 */ }
+      invalidateCurrentModeCache();
+      invalidateStockCache(stock_code).catch(() => {});
       return c.json({ ok: true, orderNo: fakeOrderNo, stock_code, quantity, price: curPrice, totalInvested, takeProfitPct, stopLossPct });
     }
 
@@ -748,6 +754,8 @@ sellRoutes.post('/manual-buy', async (c) => {
     );
     logger.info(`🤖 Claude 매수 ${confirmed ? '체결' : '접수'}: ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 (${kisOrderNo}) ${rrStr} — ${reasoning}`, { component: 'CLAUDE_BUY' });
     try { await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑'); } catch { /* 알림 실패 무시 */ }
+    invalidateCurrentModeCache();
+    invalidateStockCache(stock_code).catch(() => {});
     return c.json({ ok: true, orderNo: kisOrderNo, status: orderStatus, stock_code, quantity, price: curPrice, totalInvested, takeProfitPct, stopLossPct });
   } catch (err: any) {
     logger.error(`Claude 매수 예외: ${err.message}`, { component: 'CLAUDE_BUY' });

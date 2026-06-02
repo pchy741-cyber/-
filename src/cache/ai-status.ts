@@ -54,6 +54,21 @@ export function setActiveEngine(engine: AiStatus['activeEngine']): void {
   _status.lastUpdatedAt = Date.now();
 }
 
+/** 수동 리셋 — AI 크레딧 충전/오류 해결 후 대시보드에서 호출 */
+export function resetAiStatus(engine?: 'claude' | 'gemini'): void {
+  if (!engine || engine === 'claude') {
+    _status.claude = 'unknown';
+    delete _status.claudeErrorAt;
+    delete _status.claudeErrorMsg;
+  }
+  if (!engine || engine === 'gemini') {
+    _status.gemini = 'unknown';
+    delete _status.geminiErrorAt;
+    delete _status.geminiErrorMsg;
+  }
+  _status.lastUpdatedAt = Date.now();
+}
+
 export function getAiStatus(): Readonly<AiStatus> {
   // quota/error 30분 경과 시 자동 만료 → 재시도 허용
   const now = Date.now();

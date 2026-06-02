@@ -84,8 +84,8 @@ export function getDashBuildingByMode() { return _dashBuildingByMode; }
 export function getDashCacheTTL(): number {
   const now = new Date();
   const kstMins = ((now.getUTCHours() + 9) % 24) * 60 + now.getUTCMinutes();
-  // 장중(09:00~15:30 KST): 20초, 장외: 120초
-  return (kstMins >= 540 && kstMins < 930) ? 20_000 : 120_000;
+  // 장중(09:00~15:30 KST): 20초, 장외: 5분 (API 호출 절감)
+  return (kstMins >= 540 && kstMins < 930) ? 20_000 : 300_000;
 }
 
 // Soft invalidate: TTL만 만료시키고 데이터는 보존 (SWR: 다음 요청 시 재빌드하되, 빌드 중에는 stale 데이터 반환)

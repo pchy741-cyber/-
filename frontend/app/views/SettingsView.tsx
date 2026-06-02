@@ -12,6 +12,7 @@ import { StrategySettingsPanel } from './settings/StrategySettingsPanel';
 import { StrategyDocPanel } from './settings/StrategyDocPanel';
 import { AiPipelinePanel } from './settings/AiPipelinePanel';
 import { FeatureFlagsPanel } from './settings/FeatureFlagsPanel';
+import { BiometricSection } from './settings/BiometricSection';
 
 const DEFAULT_STRATEGY_DOC = `# 매매 전략서
 
@@ -187,7 +188,11 @@ function SettingsView({ strategy, setStrategy, secrets, killSwitch, toggleKill, 
 
       {/* 앱 보안 */}
       <Panel title="앱 보안">
-        <div className="px-6 py-5">
+        <div className="px-6 py-5 space-y-5">
+          {/* 생체인증 등록 */}
+          <BiometricSection toast={toast} />
+
+          {/* PIN 변경 */}
           <div className="flex flex-col sm:flex-row sm:items-center gap-3">
             <p className="text-[12px] text-slate-500 shrink-0 font-medium">잠금 PIN 변경</p>
             <form onSubmit={async (e) => {
@@ -205,11 +210,6 @@ function SettingsView({ strategy, setStrategy, secrets, killSwitch, toggleKill, 
               <input name="pin" type="password" inputMode="numeric" autoComplete="new-password" data-1p-ignore data-lpignore="true" maxLength={6} placeholder="새 PIN (4~6자리)" className="flex-1 bg-white/[0.05] border-0 ring-1 ring-white/[0.08] rounded-xl px-3.5 py-2.5 text-sm text-center tracking-widest font-mono text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all" />
               <button type="submit" className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-sm font-semibold shrink-0 transition-all shadow-sm">변경</button>
             </form>
-            <button type="button" onClick={() => {
-              localStorage.removeItem('quantops_cred_id');
-              localStorage.removeItem('quantops_auth_ts');
-              toast?.('생체인증 초기화 완료', 'ok');
-            }} className="text-[11px] text-slate-600 hover:text-slate-400 shrink-0 transition-colors">생체인증 초기화</button>
           </div>
         </div>
       </Panel>

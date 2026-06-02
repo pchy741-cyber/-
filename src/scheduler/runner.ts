@@ -682,7 +682,7 @@ export function startScheduler(): void {
   }, 10_000); // 10초 후 (DB 연결 안정화 대기)
 
   logger.info('✅ 스케줄러 등록 완료 (자동화 모듈 16개 + 미국주식)', { component: 'SCHEDULER' });
-  logger.info('  Track A: 07:30/12:30/14:00/18:00 | Track B: 3분 | 뉴스: 15분', { component: 'SCHEDULER' });
+  logger.info(`  Track A: 07:30/12:30/14:00/18:00 | Track B: ${SCHEDULE.TRACK_B_INTERVAL_MINUTES}분 | 뉴스: 15분`, { component: 'SCHEDULER' });
   logger.info('  이상감지: 30분 | 장세전환: 08:00/12:00 | 리포트: 15:40 | 🌙시간외: 15:42/52', { component: 'SCHEDULER' });
   logger.info('  🎯 스나이퍼: 15분 (수급/기술/공시 고확률 자동 진입)', { component: 'SCHEDULER' });
   logger.info('  Self-Heal: 10분 | 아카이빙: 일요일 02:00', { component: 'SCHEDULER' });

@@ -469,6 +469,8 @@ dashboardAnalysisRoutes.post('/release-defense-park', async (c) => {
       logger.warn(`포지션 자동 복구 실패: ${syncErr.message}`, { component: 'MANUAL' });
     }
 
+    const { invalidateCurrentModeCache } = await import('./dashboard/helpers.js');
+    invalidateCurrentModeCache();
     return c.json({ ok: true, message: `파킹 해제 완료. ${sellMsg}${syncMsg}자동매매 재개`.trim() });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
@@ -641,6 +643,8 @@ dashboardAnalysisRoutes.post('/sync-positions', async (c) => {
       }
     }
 
+    const { invalidateCurrentModeCache } = await import('./dashboard/helpers.js');
+    invalidateCurrentModeCache();
     return c.json({
       ok: true,
       synced: synced.length,

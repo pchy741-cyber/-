@@ -25,6 +25,13 @@ export function setOverseasScores(scores: OverseasScoreEntry[], isPaper?: boolea
   _cache.set(key, scores);
 }
 
+/** 특정 종목의 캐시된 점수 제거 (매매 체결 후 호출) */
+export function invalidateOverseasScoreForStock(stockCode: string): void {
+  for (const [key, entries] of _cache) {
+    _cache.set(key, entries.filter((s) => s.code !== stockCode));
+  }
+}
+
 /** 30분 이내 캐시만 반환. 빈 배열이면 해외 시장 닫힘 */
 export function getOverseasScores(isPaper?: boolean): OverseasScoreEntry[] {
   // isPaper 미지정 시 양쪽 캐시 병합 (대시보드용)

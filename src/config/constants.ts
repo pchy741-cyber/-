@@ -21,8 +21,8 @@ export const KR_FEE = {
 export const SCHEDULE = {
   // Track A: 무거운 분석 (하루 4회 — 파워풀 모드)
   TRACK_A_CRON: ['30 7 * * 1-5', '0 10 * * 1-5', '30 12 * * 1-5', '0 18 * * 1-5'], // 07:30, 10:00, 12:30, 18:00 KST 평일
-  // Track B: 실시간 감시 (장중 3분 간격 — 반응 속도 최적화)
-  TRACK_B_INTERVAL_MINUTES: 3,
+  // Track B: 실시간 감시 (장중 5분 간격 — 비용/반응 균형)
+  TRACK_B_INTERVAL_MINUTES: 5,
 } as const;
 
 // ── 주문 관련 Enum ──
@@ -377,7 +377,7 @@ export const OVERSEAS = {
   UNIFIED_MARGIN: true,                     // 통합증거금 모드 (별도 USD 환전 불필요)
   TOP_COUNT: 20,                            // 세션 캐시 상위 종목 수 (35종목 풀 → 상위 20 AI 분석)
   ASIA_TOP_COUNT: 6,                        // 아시아장 세션 캐시 상위 종목 수
-  AI_INTERVAL_MS: 15 * 60_000,             // AI 호출 최소 간격: 15분 (비용 절감)
+  AI_INTERVAL_MS: 25 * 60_000,             // AI 호출 최소 간격: 25분 (비용 절감, 15→25분)
   PARKING_MIN_ORDER: 20,                    // 파킹 최소 주문 금액 ($)
   CONCENTRATION_MIN_PNL_PCT: 4.0,           // 집중 대상 최소 수익률 (위너에 일찍 집중)
   // 아래 값들은 레거시 폴백 — 실제 사용은 getOverseasDynamic() 동적 함수
