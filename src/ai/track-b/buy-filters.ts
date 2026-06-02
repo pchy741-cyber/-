@@ -31,10 +31,14 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
       logger.info(`  🚫 ${stock.stock_code}(${stock.stock_name}): 매수 차단 목록 — 스킵`, { component: 'TRACK_B' });
       continue;
     }
-    // 14일 이내 손절 쿨다운 종목 재진입 금지
+    // 14일 이내 손절 쿨다운 종목 재진입 금지 (AI 70+ 시 쿨다운 무시)
     if (lossBlockedCodes?.has(stock.stock_code)) {
-      logger.info(`  🚫 ${stock.stock_code}(${stock.stock_name}): 손절 쿨다운 (14일) — 재진입 금지`, { component: 'TRACK_B' });
-      continue;
+      const aiForCooldown = aiScoreMap.get(stock.stock_code) ?? 0;
+      if (aiForCooldown < 70) {
+        logger.info(`  🚫 ${stock.stock_code}(${stock.stock_name}): 손절 쿨다운 (14일) — 재진입 금지`, { component: 'TRACK_B' });
+        continue;
+      }
+      logger.info(`  🔓 ${stock.stock_code}(${stock.stock_name}): 손절 쿨다운 무시 (AI ${aiForCooldown}점 ≥ 70)`, { component: 'TRACK_B' });
     }
     // 24시간 이내 CEO 수동 매도 종목 재진입 금지
     if (manuallySoldCodes?.has(stock.stock_code)) {
