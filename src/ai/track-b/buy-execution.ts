@@ -277,6 +277,8 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
       ? kellyResult.kellyPct * (blendedScore >= 85 ? 1.5 : blendedScore >= 70 ? 1.2 : 1.0) // 점수 비례 스케일
       : null;
     let baseAllocPct = kellyAllocPct ?? getDbAllocPct(blendedScore) ?? hardcodedAllocPct;
+    // Kelly/DB 배분이 하드코딩 최소값 미만이면 하드코딩으로 바닥 보장
+    baseAllocPct = Math.max(baseAllocPct, hardcodedAllocPct);
     // 소자산(현금 50만 미만): 배분율 최소 30% (있는 돈으로 1-2종목 집중)
     // 중자산(50만~200만): 배분율 최소 20%
     // orderableCash 기준 (totalAssets는 KIS 장애 시 0이 되므로 신뢰 불가)
