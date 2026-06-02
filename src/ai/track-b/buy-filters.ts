@@ -289,13 +289,13 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
     const entryReason = entryTags.join('+');
     // ─────────────────────────────────────────────────────────────────────
 
-    // AI 점수 없음/0점: 기술점수 75+ 단독 진입 허용 (Track A 장애 시에도 매수 가능)
+    // AI 점수 없음/0점: 기술점수 55+ 단독 진입 허용
     if (!aiScore || !Number.isFinite(aiScore) || aiScore === 0) {
-      if (effectiveTechScore >= 75) {
+      if (effectiveTechScore >= minTechScore) {
         candidates.push({ stock_code: stock.stock_code, tech, price, candleBonus, regimeRoute });
-        logger.info(`  ✅ ${stock.stock_code}: AI 부재 → 기술점수 단독 진입(${effectiveTechScore}점>=75)`, { component: 'TRACK_B' });
+        logger.info(`  ✅ ${stock.stock_code}: AI 부재 → 기술점수 단독 진입(${effectiveTechScore}점>=${minTechScore})`, { component: 'TRACK_B' });
       } else {
-        logger.info(`  ⛔ ${stock.stock_code}: AI 없음 + 기술(${effectiveTechScore})<75 → 스킵`, { component: 'TRACK_B' });
+        logger.info(`  ⛔ ${stock.stock_code}: AI 없음 + 기술(${effectiveTechScore})<${minTechScore} → 스킵`, { component: 'TRACK_B' });
       }
       continue;
     }
