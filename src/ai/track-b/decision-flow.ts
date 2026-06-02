@@ -87,11 +87,13 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   decisions = filterSectorConcentration(decisions, openChains);
 
   // ── 4. 유휴 현금 파킹 해제 (SELL만 먼저 — BUY는 포지션사이저 이후 step 7.5에서 추가) ──
+  // confirmedBuyCount: rawDecisions 중 실제 BUY 결정 수 (buy-filters 통과한 것)
+  const confirmedBuyCount = decisions.filter(d => d.action === 'BUY' || d.action === 'AVERAGE_DOWN').length;
   let _parkingBuyDecisions: import('../../db/models.js').TradeDecision[] = [];
   {
     const { manageCashParking } = await import('./cash-manager.js');
     const cashDecisions = manageCashParking({
-      orderableCash, totalAssets, hasBuyCandidates,
+      orderableCash, totalAssets, hasBuyCandidates, confirmedBuyCount,
       openChains, livePrices, chartData, mode, blockNewBuys,
     });
     for (const d of cashDecisions) {

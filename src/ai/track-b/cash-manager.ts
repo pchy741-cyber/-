@@ -57,6 +57,8 @@ export interface CashManagerParams {
   orderableCash: number;
   totalAssets: number;
   hasBuyCandidates: boolean;
+  /** 실제 BUY 액션이 존재하는 결정 수 (trade-gate 통과한 것만) */
+  confirmedBuyCount?: number;
   openChains: TransactionChain[];
   livePrices: Map<string, CurrentPrice>;
   chartData?: Map<string, DailyCandle[]>;
@@ -69,7 +71,7 @@ export interface CashManagerParams {
  * 반환값: SELL(파킹 해제) 결정은 decisions 앞에, BUY(파킹) 결정은 뒤에 추가할 것
  */
 export function manageCashParking(params: CashManagerParams): TradeDecision[] {
-  const { orderableCash, totalAssets, hasBuyCandidates, openChains, livePrices, chartData, mode, blockNewBuys } = params;
+  const { orderableCash, totalAssets, hasBuyCandidates, confirmedBuyCount, openChains, livePrices, chartData, mode, blockNewBuys } = params;
 
   if (mode === 'DEFENSE') return []; // defense-park.ts가 처리
   if (blockNewBuys) return [];
@@ -80,14 +82,23 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
   const parkingCodes = new Set(MEGA_CAP_PARK_CANDIDATES.map(c => c.code));
   const parkChains = openChains.filter(c => parkingCodes.has(c.stock_code));
 
-  // ── 파킹 자동 해제: 좋은 매수 신호 등장 시 파킹 청산 → 더 큰 수익 기회에 재투자 ──
-  if (hasBuyCandidates && parkChains.length > 0) {
+  // ── 파킹 자동 해제 조건 ──
+  // 1) 실제 BUY 결정이 확정된 경우만 해제 (hasBuyCandidates만으로 해제 X)
+  // 2) 최소 30분 보유 후에만 해제 (단타 방지)
+  const MIN_PARK_HOLD_MS = 30 * 60_000;
+  if ((confirmedBuyCount ?? 0) > 0 && parkChains.length > 0) {
     for (const parkChain of parkChains) {
       const qty = Number(parkChain.total_quantity ?? 0);
       if (qty <= 0) continue;
+      const holdMs = parkChain.opened_at ? Date.now() - new Date(parkChain.opened_at).getTime() : 0;
+      if (holdMs < MIN_PARK_HOLD_MS) {
+        const remainMin = Math.ceil((MIN_PARK_HOLD_MS - holdMs) / 60_000);
+        logger.info(`⏳ 파킹 유지: ${parkChain.stock_code} 최소 보유 ${remainMin}분 남음`, { component: 'CASH_MANAGER' });
+        continue;
+      }
       const name = MEGA_CAP_PARK_CANDIDATES.find(c => c.code === parkChain.stock_code)?.name ?? parkChain.stock_code;
       logger.info(
-        `🔄 파킹 해제: ${name}(${parkChain.stock_code}) ${qty}주 → 더 큰 수익 기회로 현금 재배치`,
+        `🔄 파킹 해제: ${name}(${parkChain.stock_code}) ${qty}주 → 확정 매수 신호로 현금 재배치`,
         { component: 'CASH_MANAGER' },
       );
       decisions.push({
@@ -95,11 +106,11 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
         stock_code: parkChain.stock_code,
         quantity: qty,
         price_type: 'MARKET',
-        reasoning: `🔄 파킹 해제 — 고확신 매수 신호 등장, 현금 재투입`,
+        reasoning: `🔄 파킹 해제 — 확정 매수 신호 등장, 현금 재투입`,
         confidence: 0.90,
       });
     }
-    return decisions; // 해제 결정만 반환, 신규 파킹 매수 없음
+    if (decisions.length > 0) return decisions;
   }
 
   // ── 파킹 매수 조건 ──
