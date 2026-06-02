@@ -40,6 +40,7 @@ export interface DecisionFlowParams {
   hasBuyCandidates: boolean;
   blockNewBuys: boolean;
   adjMaxPositionKrw: number;
+  chartData?: Map<string, import('../../kis/market.js').DailyCandle[]>;
   kstH: number;
   kstM: number;
 }
@@ -48,7 +49,7 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   const {
     rawDecisions, openChains, livePrices, mode, manuallySoldCodes, scores,
     totalAssets, kospiRegime, resolvedSl, resolvedTp, orderableCash,
-    hasBuyCandidates, blockNewBuys, adjMaxPositionKrw, kstH, kstM,
+    hasBuyCandidates, blockNewBuys, adjMaxPositionKrw, chartData, kstH, kstM,
   } = params;
 
   let decisions = [...rawDecisions];
@@ -91,7 +92,7 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
     const { manageCashParking } = await import('./cash-manager.js');
     const cashDecisions = manageCashParking({
       orderableCash, totalAssets, hasBuyCandidates,
-      openChains, livePrices, mode, blockNewBuys,
+      openChains, livePrices, chartData, mode, blockNewBuys,
     });
     for (const d of cashDecisions) {
       if (d.action === 'SELL') decisions.unshift(d);  // 파킹 해제 즉시

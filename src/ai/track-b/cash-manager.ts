@@ -10,8 +10,9 @@
  */
 
 import type { TradeDecision, TransactionChain } from '../../db/models.js';
-import type { CurrentPrice } from '../../kis/market.js';
+import type { CurrentPrice, DailyCandle } from '../../kis/market.js';
 import type { StrategyMode } from '../../config/constants.js';
+import { analyzeTechnicals } from '../../analysis/indicators.js';
 import { logger } from '../../utils/logger.js';
 
 // 총자산 대비 최소 현금 보유 비율 (defense-park.ts도 임포트)
@@ -58,6 +59,7 @@ export interface CashManagerParams {
   hasBuyCandidates: boolean;
   openChains: TransactionChain[];
   livePrices: Map<string, CurrentPrice>;
+  chartData?: Map<string, DailyCandle[]>;
   mode: StrategyMode;
   blockNewBuys: boolean;
 }
@@ -67,7 +69,7 @@ export interface CashManagerParams {
  * 반환값: SELL(파킹 해제) 결정은 decisions 앞에, BUY(파킹) 결정은 뒤에 추가할 것
  */
 export function manageCashParking(params: CashManagerParams): TradeDecision[] {
-  const { orderableCash, totalAssets, hasBuyCandidates, openChains, livePrices, mode, blockNewBuys } = params;
+  const { orderableCash, totalAssets, hasBuyCandidates, openChains, livePrices, chartData, mode, blockNewBuys } = params;
 
   if (mode === 'DEFENSE') return []; // defense-park.ts가 처리
   if (blockNewBuys) return [];
@@ -110,15 +112,53 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
   // 이미 파킹 중인 종목 제외
   const alreadyParked = new Set(openChains.map(c => c.stock_code));
 
-  // 대형주 선택: 급등(+5%↑) 추격은 방지, 급락(-3%↓)은 제외. 소폭 하락은 허용(단기 파킹)
-  const candidates = MEGA_CAP_PARK_CANDIDATES
+  // 대형주 선택: 기술분석 타이밍 기반 (RSI 눌림목, MACD, 지지선 등)
+  const scored = MEGA_CAP_PARK_CANDIDATES
     .filter(c => !alreadyParked.has(c.code))
-    .map(c => ({ ...c, price: livePrices.get(c.code) }))
-    .filter(c => c.price && c.price.changePct >= -3.0 && c.price.changePct <= 5.0)
-    .sort((a, b) => (b.price?.changePct ?? 0) - (a.price?.changePct ?? 0));
+    .map(c => {
+      const price = livePrices.get(c.code);
+      const candles = chartData?.get(c.code);
+      const tech = candles && candles.length >= 30 ? analyzeTechnicals(candles) : null;
+      // 타이밍 점수: RSI 눌림목 + MACD 상승 + 볼린저 반등 등
+      let timingScore = 0;
+      if (tech) {
+        // RSI 30-50: 눌림목 최적 구간 (+15), 50-60: 양호 (+5), 60+: 감점
+        if (tech.rsi14 < 30) timingScore += 10;
+        else if (tech.rsi14 < 50) timingScore += 15;
+        else if (tech.rsi14 < 60) timingScore += 5;
+        else if (tech.rsi14 > 70) timingScore -= 10;
+        // MACD 골든크로스/상승 전환
+        if (tech.macdCrossover === 'BULLISH') timingScore += 12;
+        else if (tech.macdHistogram > 0) timingScore += 5;
+        else if (tech.macdCrossover === 'BEARISH') timingScore -= 8;
+        // 볼린저 하단 반등
+        if (tech.bollingerBreakout === 'DOWN') timingScore += 8;
+        if (tech.bollingerSqueeze) timingScore += 5;
+        // VWAP 근처
+        if (tech.vwapPullback) timingScore += 8;
+        if (tech.vwapCross === 'JUST_ABOVE') timingScore += 6;
+        // 캔들 패턴
+        if (tech.candlePatterns.some(p => p.bullish && p.strength === 'STRONG')) timingScore += 10;
+        else if (tech.candlePatterns.some(p => p.bullish)) timingScore += 4;
+      }
+      return { ...c, price, tech, timingScore };
+    })
+    .filter(c => c.price && c.price.changePct >= -3.0 && c.price.changePct <= 5.0);
+
+  // 타이밍 점수 기준 정렬 (최고 타이밍 우선)
+  const candidates = scored.sort((a, b) => b.timingScore - a.timingScore);
 
   if (candidates.length === 0) {
-    logger.info(`💤 유휴현금 파킹 후보 없음 (현금 ${(cashRatio * 100).toFixed(0)}%, 당일 상승 대형주 없음)`, { component: 'CASH_MANAGER' });
+    logger.info(`💤 유휴현금 파킹 후보 없음 (현금 ${(cashRatio * 100).toFixed(0)}%)`, { component: 'CASH_MANAGER' });
+    return decisions;
+  }
+
+  const best = candidates[0];
+  logger.info(`🎯 파킹 타이밍: ${best.name} 점수=${best.timingScore} RSI=${best.tech?.rsi14.toFixed(0) ?? '?'} MACD=${best.tech?.macdCrossover ?? '?'}`, { component: 'CASH_MANAGER' });
+
+  // 타이밍 점수 음수면 파킹 안 함 (전부 안 좋은 타이밍)
+  if (best.timingScore < 0) {
+    logger.info(`💤 파킹 보류 — 대형주 전체 타이밍 부적합 (최고=${best.timingScore}점)`, { component: 'CASH_MANAGER' });
     return decisions;
   }
 

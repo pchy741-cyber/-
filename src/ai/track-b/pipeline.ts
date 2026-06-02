@@ -696,6 +696,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       hasBuyCandidates,
       blockNewBuys,
       adjMaxPositionKrw,
+      chartData,
       kstH,
       kstM,
     });
