@@ -145,6 +145,7 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
       action: 'BUY',
       stock_code: target.code,
       quantity,
+      limit_price: targetPrice,
       price_type: 'MARKET',
       reasoning: `💰 유휴현금 대형주 파킹: ${target.name} 당일 ${target.price!.changePct >= 0 ? '+' : ''}${target.price!.changePct.toFixed(2)}% — 현금 ${(cashRatio * 100).toFixed(0)}% 유휴`,
       confidence: 0.70,
