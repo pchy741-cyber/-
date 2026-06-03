@@ -42,11 +42,11 @@ const MAX_PARK_RATIO = 0.30;
 /** 최소 보유 시간 (ms) — 2시간 (v1: 30분 → 삼성 3회 회전 재발 방지) */
 const MIN_PARK_HOLD_MS = 2 * 60 * 60_000;
 
-/** Paper 모드 최소 보유 — 30분 (학습 가속, 실전보다 짧게) */
-const MIN_PARK_HOLD_MS_PAPER = 30 * 60_000;
+/** Paper 모드 최소 보유 — 1시간 (실전과 유사하게 테스트) */
+const MIN_PARK_HOLD_MS_PAPER = 60 * 60_000;
 
-/** 해제 손실 보호 임계: 이 이하 손실이면 해제 금지 (회복 대기) */
-const UNPARK_MAX_LOSS_PCT = -1.5;
+/** 해제 손실 보호: 손실이면 해제 금지 (파킹은 무조건 본전 이상에서만 해제) */
+const UNPARK_MAX_LOSS_PCT = 0;
 
 /** 해제 강제 타임아웃: 6시간 넘으면 손실이어도 해제 (묶이지 않게) */
 const UNPARK_FORCE_TIMEOUT_MS = 6 * 60 * 60_000;
@@ -187,16 +187,16 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
         const forceTimeout = holdMs >= UNPARK_FORCE_TIMEOUT_MS;
         if (pnlPct < UNPARK_MAX_LOSS_PCT && !forceTimeout) {
           logger.info(
-            `🛡️ 파킹 손실보호: ${name} ${pnlPct.toFixed(1)}% (임계 ${UNPARK_MAX_LOSS_PCT}%) — 회복 대기 (${Math.round(holdMs / 60_000)}분 보유)`,
+            `🛡️ 파킹 손실보호: ${name} ${pnlPct.toFixed(1)}% — 손실 중 해제 금지, 본전 이상 대기 (${Math.round(holdMs / 60_000)}분 보유)`,
             { component: 'CASH_MANAGER' },
           );
           continue;
         }
 
         // 해제 승인
-        const reason = forceTimeout && pnlPct < UNPARK_MAX_LOSS_PCT
+        const reason = forceTimeout && pnlPct < 0
           ? `⏰ 파킹 타임아웃 해제: ${name} ${pnlPct.toFixed(1)}% (${Math.round(holdMs / 3600_000)}h 초과) — 묶임 방지`
-          : `🔄 파킹 해제: ${name} ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}% — 확정 매수 ${confirmedBuyCount}건`;
+          : `🔄 파킹 해제: ${name} +${pnlPct.toFixed(1)}% — 확정 매수 ${confirmedBuyCount}건 (본전↑ 확인)`;
         logger.info(reason, { component: 'CASH_MANAGER' });
         decisions.push({
           action: 'SELL',
