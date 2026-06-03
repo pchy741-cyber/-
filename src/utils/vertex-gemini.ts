@@ -20,9 +20,11 @@ const VERTEX_ENDPOINT = `https://${VERTEX_REGION}-aiplatform.googleapis.com/v1/p
 const auth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
 let _vertexAvailable = true; // Vertex AI 인증 실패 시 세션 내 비활성화
 
-// ── Vertex AI 일일 예산 ($5/일 = 크레딧 200일+ 사용) ──
-const VERTEX_DAILY_BUDGET_USD = 5;
+// ── 일일 예산 ──
+const VERTEX_DAILY_BUDGET_USD = 5;    // Vertex AI (크레딧 소진)
+const STUDIO_DAILY_MAX_CALLS = 50;    // AI Studio 폴백 일일 최대 (과금 방어!)
 const _vertexDailyCost = { usd: 0, resetAt: 0 };
+const _studioDailyCalls = { count: 0, resetAt: 0 };
 
 function isVertexBudgetAvailable(): boolean {
   const now = Date.now();
@@ -122,6 +124,8 @@ export function getAiCostSummary() {
       vertexDailyBudgetUsd: VERTEX_DAILY_BUDGET_USD,
       vertexDailySpentUsd: Math.round(_vertexDailyCost.usd * 10000) / 10000,
       vertexAvailable: _vertexAvailable && isVertexBudgetAvailable(),
+      studioCallsUsed: _studioDailyCalls.count,
+      studioCallsMax: STUDIO_DAILY_MAX_CALLS,
     },
     recentCalls: _usageLog.slice(-10).map(e => ({
       label: e.label,
@@ -161,9 +165,23 @@ export async function callVertexGemini(
     }
   }
 
-  // 2순위: AI Studio (무료 1500 RPD)
+  // 2순위: AI Studio (일일 호출 제한으로 과금 방어)
   const geminiKey = process.env.GEMINI_API_KEY;
   if (!geminiKey) throw new Error('GEMINI_API_KEY 미설정 + Vertex AI 불가 — AI 호출 불가');
+
+  // AI Studio 일일 호출 제한 체크 (과금 폭탄 방어)
+  const now = Date.now();
+  const kstNow = new Date(now + 9 * 3600_000);
+  const todayMs = Date.UTC(kstNow.getUTCFullYear(), kstNow.getUTCMonth(), kstNow.getUTCDate()) - 9 * 3600_000;
+  if (_studioDailyCalls.resetAt < todayMs) {
+    _studioDailyCalls.count = 0;
+    _studioDailyCalls.resetAt = todayMs;
+  }
+  if (_studioDailyCalls.count >= STUDIO_DAILY_MAX_CALLS) {
+    logger.error(`🚫 AI Studio 일일 ${STUDIO_DAILY_MAX_CALLS}회 제한 도달 — AI 호출 차단 (과금 방어)`, { component: 'AI_COST' });
+    throw new Error(`AI Studio 일일 제한 초과 (${STUDIO_DAILY_MAX_CALLS}회) — 기술분석 폴백 사용`);
+  }
+  _studioDailyCalls.count++;
   return await callViaAiStudio(geminiKey, body, opts);
 }
 
