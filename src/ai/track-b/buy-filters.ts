@@ -9,7 +9,7 @@ import { routeByRegime } from './strategy-router.js';
  * 매수 후보 필터링 (차단/잡주/거래량/ADX/RSI/컨플루언스)
  */
 export async function filterBuyCandidates(params: TechnicalFallbackParams): Promise<BuyCandidate[]> {
-  const { mode, watchlist, livePrices, chartData, openChains, junkStockCodes, lossBlockedCodes, manuallySoldCodes, winRates, marketSignals } = params;
+  const { mode, watchlist, livePrices, chartData, openChains, junkStockCodes, lossBlockedCodes, manuallySoldCodes, recentlySoldCodes, winRates, marketSignals } = params;
   const strategyParams = resolveStrategyParams(mode, params);
   const aiScoreMap = buildAiScoreMap(params.aiScores);
   const noAiScores = hasNoAiScores(params.aiScores);
@@ -43,6 +43,11 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
     // 24시간 이내 CEO 수동 매도 종목 재진입 금지
     if (manuallySoldCodes?.has(stock.stock_code)) {
       logger.info(`  🚫 ${stock.stock_code}(${stock.stock_name}): CEO 수동 매도 쿨다운 (24h) — 재진입 금지`, { component: 'TRACK_B' });
+      continue;
+    }
+    // 2시간 이내 매도 종목 재진입 쿨다운 (반복매수 방지)
+    if (recentlySoldCodes?.has(stock.stock_code)) {
+      logger.info(`  🕐 ${stock.stock_code}(${stock.stock_name}): 매도 후 2h 쿨다운 — 재진입 대기`, { component: 'TRACK_B' });
       continue;
     }
 
@@ -239,7 +244,8 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
       if (aiScore >= 95) return true;
       const todayRange = candles[0].high - candles[0].low;
       let priceInRange: number;
-      if (todayRange > 100) {
+      // v2: 고정 100원 → 현재가의 0.3% (10만원 주식=300원, 5천원 주식=15원)
+      if (todayRange > curPrice * 0.003) {
         priceInRange = (curPrice - candles[0].low) / todayRange;
       } else {
         const prevClose = Number(candles[1]?.close ?? candles[0].close);
@@ -289,14 +295,10 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
     const entryReason = entryTags.join('+');
     // ─────────────────────────────────────────────────────────────────────
 
-    // AI 점수 없음/0점: 기술점수 55+ 단독 진입 허용
+    // AI 필수 게이트: AI=0이면 절대 매수 금지 (기술지표만 진입 → 21% 승률 → 돈만 잃음)
+    // 해외(VisionScalp) 59% 승률 = AI 확인 후 진입. 국내도 동일 원칙 적용.
     if (!aiScore || !Number.isFinite(aiScore) || aiScore === 0) {
-      if (effectiveTechScore >= minTechScore) {
-        candidates.push({ stock_code: stock.stock_code, tech, price, candleBonus, regimeRoute });
-        logger.info(`  ✅ ${stock.stock_code}: AI 부재 → 기술점수 단독 진입(${effectiveTechScore}점>=${minTechScore})`, { component: 'TRACK_B' });
-      } else {
-        logger.info(`  ⛔ ${stock.stock_code}: AI 없음 + 기술(${effectiveTechScore})<${minTechScore} → 스킵`, { component: 'TRACK_B' });
-      }
+      logger.info(`  🚫 ${stock.stock_code}: AI 점수 없음 → 매수 차단 (tech=${effectiveTechScore})`, { component: 'TRACK_B' });
       continue;
     }
 

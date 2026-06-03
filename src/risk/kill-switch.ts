@@ -1,5 +1,6 @@
 import { insertRiskEvent, logSystem } from '../db/client.js';
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -42,7 +43,7 @@ const MAX_CONSECUTIVE_ERRORS = 5;
 const updatingKeys = new Set<string>(); // 스코프별 동시 발동 방지
 
 function stateKey(scope: KillSwitchScope): string {
-  return `${config.isPaper ? 'paper' : 'live'}_${scope.toLowerCase()}`;
+  return `${getCtxIsPaper() ? 'paper' : 'live'}_${scope.toLowerCase()}`;
 }
 
 function getState(scope: KillSwitchScope): KillSwitchState {
@@ -90,8 +91,8 @@ export async function activateKillSwitch(reason: string, manual = false, scope: 
   if (s.active || updatingKeys.has(key)) return;
   updatingKeys.add(key);
 
-  const mode = config.tradingMode;
-  const isPaper = config.isPaper;
+  const isPaper = getCtxIsPaper();
+  const mode = isPaper ? 'paper' : 'live';
   const scopeLabel = scope === 'OVERSEAS' ? '해외' : '국내';
 
   try {
@@ -149,8 +150,8 @@ export async function deactivateKillSwitch(force = false, scope: KillSwitchScope
     return;
   }
 
-  const mode = config.tradingMode;
-  const isPaper = config.isPaper;
+  const isPaper = getCtxIsPaper();
+  const mode = isPaper ? 'paper' : 'live';
   const prevReason = s.reason;
 
   setState(scope, DEFAULT_STATE());

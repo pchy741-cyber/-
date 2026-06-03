@@ -16,6 +16,7 @@ import { roundKrw } from '../utils/money.js';
 import { invalidateStockCache } from '../cache/redis.js';
 import { invalidateDashboardCache } from '../api/routes/dashboard.js';
 import { chainManager } from './chain.js';
+import { registerBuyIntent, releaseBuyIntent } from './buy-intent.js';
 
 /**
  * 매매 실행기 (Trade Executor)
@@ -34,13 +35,23 @@ export class TradeExecutor {
 
   /**
    * AI 결정 배열을 일괄 처리
+   * @param source 매수 출처 라벨 (TRACK_B, SNIPER, OPENING_BELL, AFTER_HOURS 등)
    */
-  async processDecisions(decisions: TradeDecision[], mode: StrategyMode): Promise<void> {
+  async processDecisions(decisions: TradeDecision[], mode: StrategyMode, source?: string): Promise<void> {
     for (const decision of decisions) {
+      const isBuyAction = decision.action === 'BUY' || decision.action === 'AVERAGE_DOWN';
+      const intentSource = decision.trigger_source ?? source ?? mode;
+
+      // 🔒 매수 의도 레지스트리: 전 전략 교차 중복 매수 방지
+      if (isBuyAction && !registerBuyIntent(decision.stock_code, intentSource)) {
+        continue; // 다른 전략이 이미 매수 진행 중 → 스킵
+      }
+
       try {
         await this.executeDecision(decision, mode);
         reportSuccess();
       } catch (error) {
+        if (isBuyAction) releaseBuyIntent(decision.stock_code);
         const msg = error instanceof Error ? error.message : String(error);
         logger.error(`주문 실행 실패 [${decision.stock_code}]: ${msg}`, { component: 'EXECUTOR' });
         await reportError('EXECUTOR', msg);
@@ -60,7 +71,7 @@ export class TradeExecutor {
    * 개별 결정 실행
    */
   private async executeDecision(decision: TradeDecision, mode: StrategyMode): Promise<void> {
-    const { action, stock_code, quantity, price_type, limit_price, reasoning } = decision;
+    const { action, stock_code, quantity, price_type, limit_price, reasoning, trigger_source } = decision;
 
     // 수량 0 이하 방어
     if (!quantity || quantity <= 0) {
@@ -104,7 +115,7 @@ export class TradeExecutor {
 
       switch (action) {
         case 'BUY':
-          await this.executeBuy(stock_code, quantity, price_type, limit_price, effectiveMode, reasoning, decision.ai_score, tpSlHints);
+          await this.executeBuy(stock_code, quantity, price_type, limit_price, effectiveMode, reasoning, decision.ai_score, tpSlHints, trigger_source);
           break;
         case 'AVERAGE_DOWN':
           await this.executeAverageDown(stock_code, quantity, price_type, limit_price, reasoning);
@@ -136,10 +147,11 @@ export class TradeExecutor {
     reasoning: string,
     aiScore?: number,
     tpSlHints?: import('../config/constants.js').DomesticTpSlHints,
+    triggerSource?: string,
   ): Promise<void> {
     const isPaperSnapshot = getCtxIsPaper();
 
-    // 이미 열린 체인이 있으면 물타기로 전환
+    // 이미 열린 체인이 있으면 물타기로 전환 (intent는 유지 — 물타기도 매수)
     const existingChain = await chainManager.findOpenChain(stockCode);
     if (existingChain) {
       logger.info(`이미 열린 체인 존재 → 물타기로 전환`, { component: 'EXECUTOR' });
@@ -150,6 +162,7 @@ export class TradeExecutor {
     // 동시 포지션 한도 확인 (신규 매수만 해당 — 물타기/청산은 제외)
     const allOpenChains = await getOpenChains();
     if (allOpenChains.length >= config.risk.maxConcurrentPositions) {
+      releaseBuyIntent(stockCode);
       logger.warn(
         `⛔ 동시 포지션 한도 초과 (${allOpenChains.length}/${config.risk.maxConcurrentPositions}) → 신규 매수 차단: ${stockCode}`,
         { component: 'EXECUTOR' },
@@ -176,6 +189,7 @@ export class TradeExecutor {
     }
 
     if (!estimatedPrice || estimatedPrice <= 0) {
+      releaseBuyIntent(stockCode);
       logger.warn(`⛔ 현재가+캐시 모두 0 → 매수 스킵: ${stockCode}`, { component: 'EXECUTOR' });
       await logSystem('WARN', 'EXECUTOR', `매수 스킵: ${stockCode} - 현재가 조회 실패 (0원)`);
       return;
@@ -205,6 +219,7 @@ export class TradeExecutor {
       };
       const gateResult = await runTradeGates(gateInput);
       if (!gateResult.passed) {
+        releaseBuyIntent(stockCode);
         logger.warn(`🚦 게이트 차단 [${stockCode}]: ${gateResult.reason}`, { component: 'EXECUTOR' });
         await logSystem('WARN', 'TRADE_GATE', `매수 차단: ${stockCode} - ${gateResult.reason}`);
         return;
@@ -213,6 +228,7 @@ export class TradeExecutor {
     } catch (e) {
       const errMsg = (e as Error).message;
       // fail-closed: 게이트 장애 시 매수 허용하면 리스크 통제 우회 — 차단이 안전
+      releaseBuyIntent(stockCode);
       logger.warn(`게이트 에러 (매수 차단): ${errMsg}`, { component: 'EXECUTOR' });
       await logSystem('WARN', 'EXECUTOR', `게이트 오류 (차단): ${stockCode} - ${errMsg}`);
       return;
@@ -222,6 +238,7 @@ export class TradeExecutor {
     if (skipGates) {
       const { isKillSwitchActive } = await import('../risk/kill-switch.js');
       if (isKillSwitchActive()) {
+        releaseBuyIntent(stockCode);
         logger.warn(`🛑 Kill Switch 활성 → ETF 파킹 스킵: ${stockCode}`, { component: 'EXECUTOR' });
         return;
       }
@@ -235,6 +252,7 @@ export class TradeExecutor {
       });
 
       if (!riskCheck.approved) {
+        releaseBuyIntent(stockCode);
         logger.warn(`❌ 매수 거부 [${stockCode}]: ${riskCheck.reason}`, { component: 'EXECUTOR' });
         await logSystem('WARN', 'EXECUTOR', `매수 거부: ${stockCode} - ${riskCheck.reason}`);
         return;
@@ -249,6 +267,7 @@ export class TradeExecutor {
         const entryCandles = await getDailyChart(stockCode, 20).catch(() => []);
         const entryCheck = await checkLargeOrderEntryTiming(stockCode, estimatedPrice, orderAmountKrw, entryCandles, reasoning);
         if (!entryCheck.approved) {
+          releaseBuyIntent(stockCode);
           logger.warn(`🎯 진입타이밍 AI 거부 [${stockCode} ${Math.round(orderAmountKrw / 10000)}만원]: ${entryCheck.reason}`, { component: 'EXECUTOR' });
           await logSystem('WARN', 'ENTRY_TIMING', `대형주문 진입거부: ${stockCode} ${Math.round(orderAmountKrw / 10000)}만원 — ${entryCheck.reason}`);
           return;
@@ -264,6 +283,7 @@ export class TradeExecutor {
         const ask1 = book[0]?.askPrice ?? 0;
         const ask2 = book[1]?.askPrice ?? 0;
         if (ask1 > 0 && ask2 > 0 && estimatedPrice > ask2) {
+          releaseBuyIntent(stockCode);
           logger.warn(`⏸️ 호가 진입 보류: ${stockCode} 현재가 ${estimatedPrice} > ask2 ${ask2} — 스킵`, { component: 'EXECUTOR' });
           await logSystem('WARN', 'EXECUTOR', `호가 진입 보류: ${stockCode} 현재가=${estimatedPrice} ask2=${ask2}`);
           return;
@@ -280,17 +300,24 @@ export class TradeExecutor {
       side: 'BUY',
       quantity: gatedQuantity,
       price: priceType === 'LIMIT' ? limitPrice : undefined,
-      triggerSource: 'TRACK_B',
+      triggerSource: triggerSource ?? 'TRACK_B',
       aiReasoning: reasoning,
     });
 
-    if (result.success) {
+    if (!result.success) {
+      releaseBuyIntent(stockCode);
+      return;
+    }
+
+    {
       const fill = await this.confirmFill(result.orderNo, stockCode, gatedQuantity, estimatedPrice);
       if (!fill) {
+        releaseBuyIntent(stockCode);
         logger.error(`체결 미확인 → 체인 생성 보류: ${stockCode}`, { component: 'EXECUTOR' });
         return;
       }
       if (fill.filledQty <= 0) {
+        releaseBuyIntent(stockCode);
         logger.error(`매수 체결 수량 0 → 체인 생성 보류 (주문 거부 또는 미체결): ${stockCode}`, { component: 'EXECUTOR' });
         return;
       }
@@ -576,7 +603,7 @@ export class TradeExecutor {
     }
   }
 
-  /** 실제 주문 실행 (Paper / Live 분기) — config.isPaper 서버 설정에 따라 라우팅 */
+  /** 실제 주문 실행 (Paper / Live 분기) — getCtxIsPaper() 컨텍스트에 따라 라우팅 */
   private async executeOrder(params: {
     stockCode: string;
     side: 'BUY' | 'SELL';
@@ -620,7 +647,7 @@ export class TradeExecutor {
       filled_quantity: 0,
       filled_price: null,
       status: result.success ? 'PENDING' : 'FAILED',
-      trading_mode: config.tradingMode,
+      trading_mode: getCtxIsPaper() ? 'paper' : 'live',
       trigger_source: params.triggerSource ?? null,
       ai_reasoning: params.aiReasoning ?? null,
     });

@@ -179,7 +179,7 @@ export async function runSniperScan(): Promise<void> {
 
     // 매매 실행
     if (decisions.length > 0) {
-      await tradeExecutor.processDecisions(decisions, mode);
+      await tradeExecutor.processDecisions(decisions, mode, 'SNIPER');
       logger.info(`🎯 스나이퍼 실행 완료: ${decisions.length}건`, { component: 'SNIPER' });
     }
   } catch (error) {

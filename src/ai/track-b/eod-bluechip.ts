@@ -91,6 +91,7 @@ export function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: EodCon
         limit_price: p.currentPrice,
         reasoning: `EOD줍줍: 하락장 블루칩 (당일${p.changePct.toFixed(1)}%) → 익일 장시작 청산 예정`,
         confidence: 0.80,
+        trigger_source: 'EOD_BLUECHIP',
       });
       logger.info(`🛒 EOD줍줍 매수: ${code} x${qty} @${p.currentPrice} (당일${p.changePct.toFixed(1)}%)`, { component: 'EOD_BLUECHIP' });
     }
@@ -135,6 +136,7 @@ export function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: EodCon
           : `시간외줍줍: 장후 급락종목 (당일${p.changePct.toFixed(1)}%) → 익일 장시작 갭회복 매도 예정`,
         confidence: 0.75,
         ...(isScanned && { strategy_mode: 'BOTTOM_FISHING' }),
+        trigger_source: isScanned ? 'BOTTOM_FISHING' : 'AFTER_HOURS',
       });
       afterHoursBuyCount++;
       logger.info(

@@ -1,5 +1,4 @@
 import { STRATEGY_PARAMS, REFRESH, type StrategyMode } from '../../config/constants.js';
-import { config } from '../../config/index.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import {
   enableMemoryMode,
@@ -10,6 +9,7 @@ import {
   getPool,
   getRecentLossStocks,
   getRecentManuallySoldStocks,
+  getRecentlySoldStocks,
   getTodayRepeatStopCodes,
   logSystem,
 } from '../../db/client.js';
@@ -103,6 +103,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const [watchlist, openChains, strategy, recentLossCodes, manuallySoldCodes] = await dbLoadWithFallback();
     // 당일 1회 이상 손절 종목 → 당일 재진입 완전 차단 (recentLossCodes = 7일 손실차단)
     const todayRepeatStopCodes = await getTodayRepeatStopCodes(1);
+    // 최근 2시간 매도 종목 → 재진입 쿨다운 (삼성 반복매수 방지)
+    const recentlySoldCodes = await getRecentlySoldStocks(2);
     if (todayRepeatStopCodes.size > 0) {
       logger.warn(`🚫 당일 반복손절 재진입 차단: ${[...todayRepeatStopCodes].join(', ')}`, { component: 'TRACK_B' });
     }
@@ -143,13 +145,25 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       return buildDefenseParkExitDecisions([orphanedKodex], 'KODEX 200 잔여 포지션 청산');
     }
 
-    // ── AI 스코어 로드 ────────────────────────────────────────────────
+    // ── AI 스코어 로드 (워치리스트 + 발굴종목 전체) ──────────────────────
     const stockCodes: string[] = watchlist.map((w) => w.stock_code);
     const { getCachedScores } = await import('../../cache/redis.js');
     let scores = await getCachedScores(stockCodes);
+    // 워치리스트만 조회 → 발굴종목 누락 → DB에서 오늘 전체 AI 점수 보충
+    if (scores.length < stockCodes.length * 0.5) {
+      const { getAllRecentScores } = await import('../../db/client.js');
+      const allScores = await getAllRecentScores();
+      // 기존 Redis 점수 + DB 전체 점수 병합 (Redis 우선)
+      const existing = new Set(scores.map((s: any) => s.stock_code));
+      for (const s of allScores) {
+        if (!existing.has(s.stock_code)) scores.push(s);
+      }
+    }
     if (scores.length === 0) scores = await getLatestScores(stockCodes);
     if (scores.length === 0) {
       logger.warn('오늘의 AI 스코어가 없습니다 (Track A 미실행?) → 기술적 지표 fallback 진행', { component: 'TRACK_B' });
+    } else {
+      logger.info(`🎯 AI 스코어 ${scores.length}개 로드 (워치리스트 ${stockCodes.length}종목)`, { component: 'TRACK_B' });
     }
 
     // ── 실시간 시세 수집 (KIS rate limit 방지: 상위 35종목 + 보유종목) ──
@@ -212,7 +226,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
     const macroRiskOff = !ctxIsPaper && macroSnapshot?.regime === 'RISK_OFF';
     if (macroSnapshot?.regime === 'RISK_OFF') {
-      logger.info(`🌐 매크로 RISK_OFF (Fear&Greed=${macroSnapshot?.fearGreedIndex ?? '?'}, VKOSPI=${macroSnapshot?.vkospi ?? '?'}) → ${config.isPaper ? '모의투자 — 차단 스킵' : '신규 매수 추가 제한'}`, { component: 'TRACK_B' });
+      logger.info(`🌐 매크로 RISK_OFF (Fear&Greed=${macroSnapshot?.fearGreedIndex ?? '?'}, VKOSPI=${macroSnapshot?.vkospi ?? '?'}) → ${ctxIsPaper ? '모의투자 — 차단 스킵' : '신규 매수 추가 제한'}`, { component: 'TRACK_B' });
     }
 
     // 현재 주식 포지션 가치
@@ -402,14 +416,19 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     if (portfolioStress >= 1) {
       logger.warn(`⚠️ 포트폴리오 스트레스 레벨 ${portfolioStress} (미실현 손실 누적)`, { component: 'TRACK_B' });
     }
+    // RISK_OFF: 완전 차단 대신 비율 축소로 대응 (조정장에도 % 줄여서 매매)
+    // 차단 대상: 장마감, 마의시간, 일일손실초과, 서킷브레이커, 미실현 위험만
     const blockNewBuys =
       isPastClose ||
       isLunchBan ||
       dailyLoss.blocked ||
       kospiRegime.flashCrash ||
-      (!isScalpingMode && kospiRegime.penalty >= 2) ||
-      (!isScalpingMode && macroRiskOff) ||
       portfolioStress >= 2;  // 미실현 손실 -3.5% 이상 → 신규매수 전면차단
+    // RISK_OFF/하락장은 포지션 축소 배율로 대응 (0→1.0, 1→0.7, 2→0.5, RISK_OFF→0.5)
+    const macroSizingMult = macroRiskOff ? 0.5
+      : kospiRegime.penalty >= 2 ? 0.5
+      : kospiRegime.penalty >= 1 ? 0.7
+      : 1.0;
 
     if (blockNewBuys) {
       const blockReason =
@@ -417,10 +436,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         isLunchBan ? `마의시간대(10:20~13:00) 신규매수금지` :
         dailyLoss.blocked ? `일일손실초과(${dailyLoss.dailyPnlPct.toFixed(1)}%)` :
         kospiRegime.flashCrash ? 'KOSPI급락서킷브레이커' :
-        kospiRegime.penalty >= 2 ? `KOSPI하락장(penalty=2,KOSPI<MA60)` :
-        portfolioStress >= 2 ? `포트폴리오위험(미실현손실-3.5%↑)` :
-        `매크로RISK_OFF(VKOSPI=${macroSnapshot?.vkospi?.toFixed(1) ?? '?'})`;
+        `포트폴리오위험(미실현손실-3.5%↑)`;
       logger.warn(`🚫 신규매수 차단: ${blockReason}`, { component: 'TRACK_B' });
+    }
+    if (macroSizingMult < 1.0) {
+      logger.info(`📉 매크로/레짐 포지션 축소: ×${macroSizingMult} (RISK_OFF=${macroRiskOff} penalty=${kospiRegime.penalty})`, { component: 'TRACK_B' });
     }
 
     const todayDate = new Date().toISOString().split('T')[0]; // "2026-05-07"
@@ -430,13 +450,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     if (kospiPenaltyAdj !== 0) {
       logger.info(`📉 KOSPI 레짐 점수 보정: penalty=${kospiRegime.penalty} todayDown=${kospiRegime.todayDown} → 전종목 ${kospiPenaltyAdj}점 감산`, { component: 'TRACK_B' });
     }
-    // confidence 임계값 강화: 0.55 → 0.65 (저확신 진입 차단 → 승률 개선)
-    // 대형 우선주(MEGA_CAP)는 0.55 유지 (변동성 낮아 confidence 낮게 나오는 보정)
+    // confidence 임계값: 0.45 (AI 점수 활용률 극대화 — 0.65에서 50%+ 탈락하던 문제 해결)
+    // AI 없이 기술지표만으로 진입 시 21% 승률 → AI 점수가 있으면 0.45라도 쓰는 게 나음
     const adjustedScores = scores
       .filter((s: any) => {
         const conf = s.confidence ?? 0;
-        const isMegaCap = MEGA_CAP_PRIORITY_CODES.has(s.stock_code);
-        return conf >= (isMegaCap ? 0.55 : 0.65);
+        return conf >= 0.45;
       })
       .map((s: any) => {
         const base = s.composite_score ?? 0;
@@ -588,6 +607,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       totalAssets,
       lossBlockedCodes: new Set([...recentLossCodes, ...todayRepeatStopCodes]),
       manuallySoldCodes,
+      recentlySoldCodes,
       aiScores: finalScores, // AI 꽁돈 진입(>=92점)만 활성화, 손실청산 보조
       takeProfitPct: resolvedTp,
       stopLossPct: resolvedSl,
@@ -598,6 +618,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       // penalty=1(조정장) 단독으로는 차단 안함 → adaptive threshold +2 로 대응
       // penalty=2(하락장, KOSPI<MA60)만 차단. SCALPING 모드면 macro/regime 면제
       blockNewBuys,
+      macroSizingMult,
       kospiBoost: kospiRegime.boost,
       allocationTarget: allocCfg ? {
         stock_pct: Number(allocCfg.stock_pct),
@@ -699,6 +720,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       chartData,
       kstH,
       kstM,
+      macroRiskOff,
+      isPaper: getCtxIsPaper(),
     });
 
     if (hasBuyCandidates && !actionable.some((d) => ['BUY', 'AVERAGE_DOWN'].includes(d.action))) {

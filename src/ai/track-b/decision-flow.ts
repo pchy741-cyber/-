@@ -43,6 +43,8 @@ export interface DecisionFlowParams {
   chartData?: Map<string, import('../../kis/market.js').DailyCandle[]>;
   kstH: number;
   kstM: number;
+  macroRiskOff?: boolean;
+  isPaper?: boolean;
 }
 
 export async function applyDecisionFlow(params: DecisionFlowParams): Promise<TradeDecision[]> {
@@ -53,6 +55,15 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   } = params;
 
   let decisions = [...rawDecisions];
+
+  // ── 0. DIVIDEND 모드: 신규 매수 완전 차단 (배당주/ETF 파킹 모드) ────
+  if (mode === 'DIVIDEND') {
+    const buys = decisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
+    if (buys.length > 0) {
+      logger.info(`🏦 DIVIDEND 모드: 신규 매수 ${buys.length}건 차단 (배당 자산 파킹 중)`, { component: 'DECISION_FLOW' });
+    }
+    decisions = decisions.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
+  }
 
   // ── 1. 집중도 부분매도 주입 ─────────────────────────────────────────
   const concentrationTargets = getConcentrationSellTargets(openChains, livePrices, totalAssets);
@@ -95,6 +106,8 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
     const cashDecisions = manageCashParking({
       orderableCash, totalAssets, hasBuyCandidates, confirmedBuyCount,
       openChains, livePrices, chartData, mode, blockNewBuys,
+      macroRiskOff: params.macroRiskOff,
+      isPaper: params.isPaper,
     });
     for (const d of cashDecisions) {
       if (d.action === 'SELL') decisions.unshift(d);  // 파킹 해제 즉시

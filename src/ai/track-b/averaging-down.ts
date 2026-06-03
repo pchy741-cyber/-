@@ -74,7 +74,9 @@ export async function generateAveragingDecisions(
         continue;
       }
       const avgDownSize = Math.min(effectiveMaxPos / splitCount, cash / 4);
-      if (avgDownSize >= 50000) {
+      // 물타기 최소 금액: effectiveMaxPos의 5% 또는 1만원 중 큰 값 (고정금액 제거)
+      const minAvgDownSize = Math.max(10_000, effectiveMaxPos * 0.05);
+      if (avgDownSize >= minAvgDownSize) {
         const qty = Math.floor(avgDownSize / price.currentPrice);
         if (qty > 0) {
           decisions.push({

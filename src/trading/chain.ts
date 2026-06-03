@@ -182,11 +182,41 @@ export class ChainManager {
         : null;
       const outcome = pnlPct > 0.1 ? 'WIN' : pnlPct < -0.1 ? 'LOSS' : 'BREAK_EVEN';
 
+      // 진입 핑거프린트 추출 — 첫 BUY 주문의 ai_reasoning에서 fp= 태그 또는 RSI/vol 파싱
+      let entryFingerprint: string | null = null;
+      try {
+        const { rows: buyOrders } = await pool.query(
+          `SELECT ai_reasoning FROM orders WHERE chain_id = $1 AND side = 'BUY' ORDER BY created_at ASC LIMIT 1`,
+          [chainId],
+        );
+        if (buyOrders[0]?.ai_reasoning) {
+          const r = String(buyOrders[0].ai_reasoning);
+          // 1차: fp= 태그에서 직접 추출 (buy-execution에서 생성)
+          const fpTag = r.match(/fp=([a-z_]+\|[a-z_]+\|[a-z_]+\|[a-z_]+\|[a-z_]+)/);
+          if (fpTag) {
+            entryFingerprint = fpTag[1];
+          } else {
+            // 2차: 레거시 — RSI/vol 파싱으로 재계산
+            const rsiMatch = r.match(/RSI=(\d+)/);
+            const volMatch = r.match(/vol=([0-9.]+)x/);
+            const rsi = rsiMatch ? Number(rsiMatch[1]) : 50;
+            const vol = volMatch ? Number(volMatch[1]) : 1.0;
+            const smaMatch = r.match(/SMA=([a-z_]+)/);
+            const hasSMA = smaMatch ? smaMatch[1] : (r.includes('SMA5>SMA20') ? 'bull' : r.includes('SMA5<SMA20') ? 'bear' : 'neutral');
+            const macdMatch = r.match(/MACD=([A-Z]+)/);
+            const adxMatch = r.match(/ADX=\d+\(([A-Z]+)\)/);
+            const { computeFingerprint, fingerprintKey } = await import('../analysis/entry-fingerprint.js');
+            const fp = computeFingerprint({ rsi, volumeRatio: vol, smaAlignment: hasSMA, macdState: macdMatch?.[1], adxStrength: adxMatch?.[1] });
+            entryFingerprint = fingerprintKey(fp);
+          }
+        }
+      } catch { /* 핑거프린트 추출 실패 시 null — 무시 */ }
+
       const insertResult = await pool.query(
         `INSERT INTO score_accuracy
            (stock_code, chain_id, entry_score, entry_signal, entry_confidence,
-            realized_pnl_pct, outcome, holding_days, close_reason, strategy_mode, is_paper)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            realized_pnl_pct, outcome, holding_days, close_reason, strategy_mode, is_paper, entry_fingerprint)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
          ON CONFLICT (chain_id) DO NOTHING`,
         [
           chain.stock_code,
@@ -200,12 +230,13 @@ export class ChainManager {
           reason,
           (chain as any).strategy_mode ?? null,
           (chain as any).is_paper ?? getCtxIsPaper(),
+          entryFingerprint,
         ],
       );
       if ((insertResult as any).rowCount === 0) {
         logger.info(`📝 스코어 정확도: ${chain.stock_code} 이미 기록됨 (중복 체인 종료)`, { component: 'CHAIN' });
       } else {
-        logger.info(`📝 스코어 정확도 기록: ${chain.stock_code} ${outcome} (${pnlPct > 0 ? '+' : ''}${pnlPct}%)`, { component: 'CHAIN' });
+        logger.info(`📝 스코어 정확도 기록: ${chain.stock_code} ${outcome} (${pnlPct > 0 ? '+' : ''}${pnlPct}%)${entryFingerprint ? ` [${entryFingerprint}]` : ''}`, { component: 'CHAIN' });
       }
     } catch (err) {
       logger.warn(`스코어 정확도 기록 실패: ${err}`, { component: 'CHAIN' });

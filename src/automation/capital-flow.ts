@@ -1,5 +1,6 @@
 import type { StrategyMode } from '../config/constants.js';
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { getActiveStrategy, getActiveWatchlist, getLatestScores, getPool, logSystem } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import { getAccountBalance } from '../kis/account.js';
@@ -112,7 +113,7 @@ export async function analyzeCapitalFlow(): Promise<void> {
      WHERE tc.status IN ('OPEN', 'AVERAGING', 'PROFIT_TAKING')
        AND tc.is_paper = $1
      GROUP BY tc.id`,
-    [config.isPaper],
+    [getCtxIsPaper()],
   );
   const chains = chainsRaw;
 
@@ -120,7 +121,7 @@ export async function analyzeCapitalFlow(): Promise<void> {
 
   // 서버 모드에 맞는 잔고 조회 (paper → getPaperBalance 사용, live → KIS 실계좌)
   const { getPaperBalance } = await import('../risk/engine.js');
-  const balance = config.isPaper ? await getPaperBalance() : await getAccountBalance();
+  const balance = getCtxIsPaper() ? await getPaperBalance() : await getAccountBalance();
   const totalPortfolio = balance.totalDeposit + balance.totalEvalAmount;
   const cashRatio = totalPortfolio > 0 ? (balance.orderableCash / totalPortfolio) * 100 : 100;
 
@@ -364,7 +365,7 @@ export async function analyzeCapitalFlow(): Promise<void> {
       { component: 'FLOW' },
     );
 
-    await tradeExecutor.processDecisions(decisions, mode);
+    await tradeExecutor.processDecisions(decisions, mode, 'CAPITAL_FLOW');
 
     await logSystem(
       'TRADE',
@@ -396,7 +397,7 @@ export async function analyzeCapitalFlow(): Promise<void> {
  */
 export async function checkCashRatio(): Promise<{ ratio: number; healthy: boolean }> {
   const { getPaperBalance } = await import('../risk/engine.js');
-  const balance = config.isPaper ? await getPaperBalance() : await getAccountBalance();
+  const balance = getCtxIsPaper() ? await getPaperBalance() : await getAccountBalance();
   const total = balance.totalDeposit + balance.totalEvalAmount;
   const ratio = total > 0 ? (balance.orderableCash / total) * 100 : 100;
 

@@ -61,6 +61,7 @@ export const StrategyMode = {
   SWING: 'SWING',       // 🟢 평상시 스윙
   DEFENSE: 'DEFENSE',   // 🔴 폭락장 방어
   SCALPING: 'SCALPING', // 🔥 초단타
+  DIVIDEND: 'DIVIDEND', // 🏦 배당 자산 파킹 (매수 차단, 장기 보유)
   SNIPER: 'SNIPER',     // 🎯 저격수 (AI 88점+ 2종목만, 대형 포지션)
   BOTTOM_FISHING: 'BOTTOM_FISHING', // 🎣 바닥낚시 (시간외 RSI 과매도 우량주)
 } as const;
@@ -89,7 +90,7 @@ export const STRATEGY_PARAMS = {
     earlyTpPct: 3.5,        // 조기 부분익절: +3.5% 도달 시 50% 즉시 매도 → 수익금 극대화
     takeProfitPct: 7.0,     // 잔여 50% 트레일링 최종 목표 (+7% 또는 동적 트레일링 발동)
     takeProfitRatio: 0.5,   // 50% 부분 매도 → 잔여 트레일링
-    stopLossPct: -4.5, // 2026-06: -3%→-4.5% (ATR 조기손절 방지, 승자에게 충분한 시간)
+    stopLossPct: -5.5, // v2: -4.5%→-5.5% (KOSPI 일중 3~5% 등락 감안, 조기손절 방지)
     maxHoldingDays: 12,
   },
 
@@ -127,15 +128,15 @@ export const STRATEGY_PARAMS = {
   },
 
   DIVIDEND: {
-    // 공황장 자산 파킹 모드 — 신규 매수 사실상 금지, ETF 파킹만
-    buyThreshold: 99,       // 99점 이상만 매수 (사실상 진입 없음)
+    // 배당 자산 파킹 모드 — 신규 매수 decision-flow에서 차단, 보유종목 장기 유지
+    buyThreshold: 99,       // 99점 이상만 매수 (이중안전장치)
     splitCount: 1,
     averageDownPct: 0,
     maxAveragingCount: 0,
-    takeProfitPct: 3.0,
-    takeProfitRatio: 1.0,
-    stopLossPct: -1.5,      // 타이트한 손절 (파킹 중 손실 최소화)
-    maxHoldingDays: 1,
+    takeProfitPct: 5.0,     // 배당주 TP 여유있게 (장기 보유)
+    takeProfitRatio: 0.5,   // 반만 익절 (나머지 배당 수령)
+    stopLossPct: -3.0,      // 배당주 SL 넓게 (배당으로 만회)
+    maxHoldingDays: 90,     // 최대 90일 (분기 배당 수령)
   },
 
   SNIPER: {
@@ -280,21 +281,23 @@ export interface DomesticTpSlHints {
 }
 
 export function getDynamicDomesticTpSl(h: DomesticTpSlHints): { takeProfitPct: number; stopLossPct: number; label: string } {
-  // 1. 점수 베이스
+  // 1. 점수 베이스 — v2: KOSPI 일중 변동폭(2~4%) 감안하여 SL 확대
+  // v1 문제: SL -2.5~-3.2% → 정상적인 일중 등락에도 강제청산 → 손실만 누적
+  // v2: 고확신(93+)도 -4.0% 이상 여유, 저확신(<80)은 -6.0%까지 인내
   let tp: number;
   let sl: number;
-  if (h.score >= 93)      { tp = 8.5; sl = -2.5; }
-  else if (h.score >= 88) { tp = 7.5; sl = -2.8; }
-  else if (h.score >= 83) { tp = 6.5; sl = -3.0; }
-  else if (h.score >= 80) { tp = 5.5; sl = -3.0; }
-  else                    { tp = 5.0; sl = -3.2; }
+  if (h.score >= 93)      { tp = 9.0; sl = -4.0; }  // 최고확신 → 넓은 SL로 충분한 검증 시간
+  else if (h.score >= 88) { tp = 8.0; sl = -4.5; }
+  else if (h.score >= 83) { tp = 7.0; sl = -5.0; }
+  else if (h.score >= 80) { tp = 6.0; sl = -5.5; }
+  else                    { tp = 5.0; sl = -6.0; }   // 저확신 → 넓은 SL이지만 작은 포지션
 
   const parts: string[] = [`s${h.score}`];
 
-  // 2. 눌림매매 신호 — 반등 여지 더 넓음
+  // 2. 눌림매매 신호 — 이미 하락 중 진입이므로 SL 더 넓게 (v1은 반대로 조였음!)
   if (h.pullbackSignal) {
     tp += 0.5;
-    sl = Math.min(sl + 0.3, -1.5); // 손절 타이트 (진입 좋으면 빨리 확인)
+    sl -= 0.5; // 눌림목 진입 = 추가 하락 여유 필요 (v1: 조임 → v2: 확대)
     parts.push('pb+0.5');
   }
 
@@ -315,9 +318,9 @@ export function getDynamicDomesticTpSl(h: DomesticTpSlHints): { takeProfitPct: n
   // 6. 엔벨로프 하단 이탈 — 반등 여지 극대
   if (h.envelopePos === 'BELOW_LOWER') { tp += 0.5; parts.push('env+0.5'); }
 
-  // 7. 범위 제한
+  // 7. 범위 제한 — SL 최대 -7% (v1: -5% 캡으로 넓은 SL 무효화됐음)
   tp = Math.round(Math.min(tp, 12.0) * 10) / 10;
-  sl = Math.round(Math.max(sl, -5.0) * 10) / 10;
+  sl = Math.round(Math.max(sl, -7.0) * 10) / 10;
 
   return { takeProfitPct: tp, stopLossPct: sl, label: parts.join('/') };
 }
@@ -380,14 +383,7 @@ export const OVERSEAS = {
   AI_INTERVAL_MS: 25 * 60_000,             // AI 호출 최소 간격: 25분 (비용 절감, 15→25분)
   PARKING_MIN_ORDER: 20,                    // 파킹 최소 주문 금액 ($)
   CONCENTRATION_MIN_PNL_PCT: 4.0,           // 집중 대상 최소 수익률 (위너에 일찍 집중)
-  // 아래 값들은 레거시 폴백 — 실제 사용은 getOverseasDynamic() 동적 함수
-  MAX_POSITIONS: 8,
-  POSITION_SIZE_USD: 3000,
-  POSITION_PCT: 0.25,
-  PARKING_CASH_BUFFER: 500,
-  MAX_HOLD_DAYS: 21,
-  CONCENTRATION_CASH_BUFFER: 400,
-  CONCENTRATION_MIN_INVEST: 60,
+  // 고정형 상수 제거 완료 — 모든 동적 파라미터는 getOverseasDynamic() 사용
 } as const;
 
 /** 포트폴리오 규모 기반 동적 파라미터 — 고정형 상수 대체 */
@@ -402,12 +398,12 @@ export function getOverseasDynamic(portfolioUsd: number, isPaper = false) {
     : Math.max(2, Math.min(8, Math.floor(p / 1500)));
   return {
     maxPositions:       maxPos,
-    positionSizeUsd:    Math.max(80, Math.min(p * 0.25, 5000)),             // 포트폴리오 25% 캡, 최소 $80
+    positionSizeUsd:    Math.round(Math.min(p * 0.25, 5000)),                // 포트폴리오 25% 캡 (고정$ 최소 폐지)
     positionPct:        p < 2000 ? 0.40 : p < 10000 ? 0.25 : 0.18,         // 소액→40%(집중), 중형→25%, 대형→18%
-    parkingCashBuffer:  Math.max(p < 500 ? 10 : 50, Math.round(p * 0.05)), // 소액: $10 최소, 일반: $50 최소
+    parkingCashBuffer:  Math.round(p * 0.05),                               // 포트폴리오 5% (고정$ 폐지)
     maxHoldDays:        p < 2000 ? 14 : p < 10000 ? 21 : 30,               // 소액→14일, 중형→21일, 대형→30일
-    concentrationCashBuffer: Math.max(30, Math.round(p * 0.04)),            // 4% 집중전략 현금
-    concentrationMinInvest:  Math.max(30, Math.round(p * 0.01)),            // 1% 최소 집중투자
+    concentrationCashBuffer: Math.round(p * 0.04),                          // 포트폴리오 4% (고정$ 폐지)
+    concentrationMinInvest:  Math.round(p * 0.01),                          // 포트폴리오 1% (고정$ 폐지)
   };
 }
 

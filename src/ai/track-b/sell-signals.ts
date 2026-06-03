@@ -27,14 +27,14 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // 동일 종목 중복 매도 신호 방지 (다중 체인 시 첫 번째 체인만 처리)
     if (processedSellCodes.has(chain.stock_code)) continue;
 
-    // SCALPING 09:30 이후: 수익/손실 무관 즉시 전량 강제청산 (SCALPING은 개장 30분 한정)
+    // SCALPING forceCloseTime 이후: 수익/손실 무관 즉시 전량 강제청산
     if (chain.strategy_mode === 'SCALPING' && isPastScalpDeadline && chain.total_quantity > 0) {
       decisions.push({
         action: 'FORCE_CLOSE',
         stock_code: chain.stock_code,
         quantity: chain.total_quantity,
         price_type: 'MARKET',
-        reasoning: `SCALPING 강제청산(09:30): 개장 윈도우 종료, 전량 청산 (${pnlPct.toFixed(1)}%)`,
+        reasoning: `SCALPING 강제청산(${STRATEGY_PARAMS.SCALPING.forceCloseTime}): 개장 윈도우 종료, 전량 청산 (${pnlPct.toFixed(1)}%)`,
         confidence: 1.0,
       });
       processedSellCodes.add(chain.stock_code);

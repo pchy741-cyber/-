@@ -1,4 +1,5 @@
 import { getPool, logSystem } from '../db/client.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { getVolumeRankingStocks, getChangeRankingStocks, getCurrentPrice } from '../kis/market.js';
 import { getInvestorFlow } from './investor-flow.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
@@ -34,7 +35,7 @@ export async function runWatchlistRotation(): Promise<void> {
 
     // 현재 보유 중인 종목 코드 목록 (절대 제거 금지)
     const { rows: holdingRows } = await pool.query(
-      `SELECT DISTINCT stock_code FROM transaction_chains WHERE status = 'OPEN' AND total_quantity > 0 AND is_paper = false`,
+      `SELECT DISTINCT stock_code FROM transaction_chains WHERE status = 'OPEN' AND total_quantity > 0 AND is_paper = $1`, [getCtxIsPaper()],
     );
     const holdingCodes = new Set(holdingRows.map((r: any) => String(r.stock_code)));
 
@@ -189,7 +190,7 @@ export async function runDailyMarketScan(): Promise<void> {
 
     // ── 0. 현재 보유 중인 종목 (절대 비활성화 금지) ──────────────────────
     const { rows: holdingRows } = await pool.query(
-      `SELECT DISTINCT stock_code FROM transaction_chains WHERE status = 'OPEN' AND total_quantity > 0 AND is_paper = false`,
+      `SELECT DISTINCT stock_code FROM transaction_chains WHERE status = 'OPEN' AND total_quantity > 0 AND is_paper = $1`, [getCtxIsPaper()],
     );
     const holdingCodes = new Set(holdingRows.map((r: any) => String(r.stock_code)));
 

@@ -10,6 +10,7 @@
 
 import { GATE } from '../config/constants.js';
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { logger } from '../utils/logger.js';
 import { getWinRateStats } from './trade-gate-stats.js';
 import {
@@ -35,7 +36,7 @@ import type { GateInput, GateResult } from './trade-gate-types.js';
 // ══════════════════════════════════════
 
 export async function expectedValueGate(_input: GateInput): Promise<GateResult> {
-  if (config.isPaper) {
+  if (getCtxIsPaper()) {
     return { passed: true, reason: '모의투자 — 기대값 게이트 스킵', expectedValue: 0 };
   }
 

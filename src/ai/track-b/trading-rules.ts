@@ -63,20 +63,21 @@ export const PRIORITY_SECTOR_CODES = new Set([
  * 3. 횡보장(ADX WEAK) 진입 허용
  */
 export const MEGA_CAP_PRIORITY_CODES = new Map<string, { name: string; bonus: number; thresholdReduction: number }>([
-  // ── 시가총액 Top 10 대형주 (파킹 겸용) ──
-  ['005930', { name: '삼성전자', bonus: 20, thresholdReduction: 8 }],
-  ['005935', { name: '삼성전자(우)', bonus: 20, thresholdReduction: 8 }],
-  ['000660', { name: 'SK하이닉스', bonus: 20, thresholdReduction: 8 }],
-  ['005380', { name: '현대차', bonus: 15, thresholdReduction: 6 }],
-  ['000270', { name: '기아', bonus: 15, thresholdReduction: 6 }],
-  ['012330', { name: '현대모비스', bonus: 12, thresholdReduction: 5 }],
-  ['035420', { name: 'NAVER', bonus: 15, thresholdReduction: 6 }],
+  // ── 시가총액 Top 10 대형주 — 보너스 축소 (2026-06: 삼성 반복매수 방지) ──
+  // 대형주는 변동성 낮아 minTechScore 하향(45)으로 이미 혜택 → bonus는 최소화
+  ['005930', { name: '삼성전자', bonus: 8, thresholdReduction: 3 }],
+  ['005935', { name: '삼성전자(우)', bonus: 8, thresholdReduction: 3 }],
+  ['000660', { name: 'SK하이닉스', bonus: 8, thresholdReduction: 3 }],
+  ['005380', { name: '현대차', bonus: 6, thresholdReduction: 3 }],
+  ['000270', { name: '기아', bonus: 6, thresholdReduction: 3 }],
+  ['012330', { name: '현대모비스', bonus: 5, thresholdReduction: 2 }],
+  ['035420', { name: 'NAVER', bonus: 6, thresholdReduction: 3 }],
   // ── 방산/한화 대형주 ──
-  ['012450', { name: '한화에어로스페이스', bonus: 18, thresholdReduction: 6 }],
-  ['272210', { name: '한화시스템', bonus: 15, thresholdReduction: 5 }],
-  ['042660', { name: '한화오션', bonus: 15, thresholdReduction: 5 }],
-  ['064350', { name: '현대로템', bonus: 15, thresholdReduction: 5 }],
+  ['012450', { name: '한화에어로스페이스', bonus: 8, thresholdReduction: 3 }],
+  ['272210', { name: '한화시스템', bonus: 6, thresholdReduction: 2 }],
+  ['042660', { name: '한화오션', bonus: 6, thresholdReduction: 2 }],
+  ['064350', { name: '현대로템', bonus: 6, thresholdReduction: 2 }],
   // ── 반도체 소재/장비 ──
-  ['042700', { name: '한미반도체', bonus: 12, thresholdReduction: 4 }],
+  ['042700', { name: '한미반도체', bonus: 5, thresholdReduction: 2 }],
 ]);
 

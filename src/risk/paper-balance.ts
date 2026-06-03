@@ -177,3 +177,67 @@ export function resetPaperBalance() {
   paperRestored = false;
   paperLedgerCache = null;
 }
+
+// ── Paper 자금 자동 리필 (자율학습 모드) ──────────────────────────────
+// 현금이 시드의 20% 미만이고 보유종목 없으면 → 기존 주문 아카이브 + 시드 리셋
+const PAPER_REFILL_THRESHOLD = 0.20; // 시드 대비 20% 미만이면 리필
+let lastRefillCheck = 0;
+
+/**
+ * Paper 자금 고갈 시 자동 리필
+ * - 남은 현금 < 시드 20% + 보유종목 0건 → 리필 트리거
+ * - 기존 paper 주문을 archived로 표시 (학습 데이터 보존)
+ * - 순수 현금 시드로 리셋
+ * @returns true if refill happened
+ */
+export async function checkAndRefillPaper(): Promise<boolean> {
+  const now = Date.now();
+  // 30분에 1번만 체크
+  if (now - lastRefillCheck < 30 * 60 * 1000) return false;
+  lastRefillCheck = now;
+
+  try {
+    const balance = await getPaperBalance();
+    const cashRatio = balance.orderableCash / PAPER_INITIAL_CAPITAL;
+    const hasPositions = balance.positions.length > 0;
+
+    // 아직 여유 있거나 보유종목 있으면 스킵
+    if (cashRatio >= PAPER_REFILL_THRESHOLD || hasPositions) return false;
+
+    const pool = getPool();
+    // 세대 번호 부여 (몇 번째 리필인지 추적)
+    const { rows: genRows } = await pool.query(
+      `SELECT COALESCE(MAX(CAST(NULLIF(regexp_replace(value, '[^0-9]', '', 'g'), '') AS int)), 0) + 1 as next_gen
+       FROM overseas_state WHERE key LIKE 'paper_kr_gen_%'`
+    );
+    const gen = genRows[0]?.next_gen ?? 1;
+
+    // 기존 paper 주문을 아카이브 (학습 데이터 보존: trading_mode → paper_archived_N)
+    const { rowCount } = await pool.query(
+      `UPDATE orders SET trading_mode = $1
+       WHERE trading_mode = 'paper' AND stock_code ~ '^[0-9]{6}$' AND status = 'FILLED'`,
+      [`paper_archived_${gen}`],
+    );
+
+    // 리셋
+    resetPaperBalance();
+
+    // 세대 기록
+    await pool.query(
+      `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
+      [`paper_kr_gen_${gen}`, JSON.stringify({
+        archivedAt: new Date().toISOString(),
+        ordersArchived: rowCount,
+        finalCash: balance.orderableCash,
+        finalPnl: balance.totalProfitLoss,
+        winRate: null, // 일일학습에서 계산
+      })],
+    );
+
+    logger.info(`🔄 [PAPER-REFILL] 국내 모의자금 리필 (세대 #${gen}): ${balance.orderableCash.toLocaleString()}원 → ${PAPER_INITIAL_CAPITAL.toLocaleString()}원 (${rowCount}건 아카이브, 누적PnL ${Math.round(balance.totalProfitLoss).toLocaleString()}원)`, { component: 'PAPER' });
+    return true;
+  } catch (e) {
+    logger.warn(`Paper 리필 체크 실패: ${e}`, { component: 'PAPER' });
+    return false;
+  }
+}

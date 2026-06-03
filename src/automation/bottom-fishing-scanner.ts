@@ -45,10 +45,10 @@ export async function runBottomFishingScanner(): Promise<BottomFishingCandidate[
   const prices = await getBatchPrices(allCodes);
   const priceFiltered = allCodes.filter((code) => {
     const p = prices.get(code);
-    return p && p.marketCapEok >= 1000 && p.changePct <= -2.0;
+    return p && p.marketCapEok >= 500 && p.changePct <= -1.5;
   });
 
-  logger.info(`🎣 바닥낚시 가격 필터: ${priceFiltered.length}종목 (시총 1000억↑, 당일 -2%↓)`, { component: 'BOTTOM_FISHING' });
+  logger.info(`🎣 바닥낚시 가격 필터: ${priceFiltered.length}종목 (시총 500억↑, 당일 -1.5%↓)`, { component: 'BOTTOM_FISHING' });
 
   if (priceFiltered.length === 0) return [];
 
@@ -65,7 +65,7 @@ export async function runBottomFishingScanner(): Promise<BottomFishingCandidate[
       const rsiValues = rsi(closes, 14);
       const rsi14 = rsiValues[rsiValues.length - 1] ?? 50;
 
-      if (rsi14 >= 40) continue;
+      if (rsi14 >= 45) continue;
 
       const p = prices.get(code)!;
       candidates.push({

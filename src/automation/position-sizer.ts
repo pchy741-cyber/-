@@ -1,5 +1,6 @@
 import { sma } from '../analysis/indicators.js';
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { getPool } from '../db/client.js';
 import { getDailyChart } from '../kis/market.js';
 import { logger } from '../utils/logger.js';
@@ -151,7 +152,7 @@ export async function getDynamicPositionSize(
       `SELECT total_value FROM portfolio_snapshots
        WHERE snapshot_at >= CURRENT_DATE AND is_paper = $1
        ORDER BY snapshot_at ASC LIMIT 1`,
-      [config.isPaper],
+      [getCtxIsPaper()],
     );
 
     if (snapshotRows.length > 0) {
@@ -159,7 +160,7 @@ export async function getDynamicPositionSize(
         `SELECT total_value FROM portfolio_snapshots
          WHERE is_paper = $1
          ORDER BY snapshot_at DESC LIMIT 1`,
-        [config.isPaper],
+        [getCtxIsPaper()],
       );
 
       if (currentRows.length > 0) {
@@ -188,7 +189,7 @@ export async function getDynamicPositionSize(
     const { rows: recentTrades } = await getPool().query(
       `SELECT realized_pnl FROM transaction_chains
        WHERE status = 'CLOSED' AND is_paper = $1 ORDER BY closed_at DESC LIMIT 3`,
-      [config.isPaper],
+      [getCtxIsPaper()],
     );
 
     if (recentTrades.length >= 3) {
@@ -208,7 +209,7 @@ export async function getDynamicPositionSize(
       `SELECT realized_pnl FROM transaction_chains
        WHERE status = 'CLOSED' AND stock_code = $1 AND is_paper = $2
        ORDER BY closed_at DESC LIMIT 2`,
-      [stockCode, config.isPaper],
+      [stockCode, getCtxIsPaper()],
     );
 
     if (stockHistory.length > 0) {
@@ -237,8 +238,8 @@ export async function getDynamicPositionSize(
   finalMultiplier = Math.max(0.3, Math.min(1.5, finalMultiplier));
 
   let amount = Math.round(baseAmount * finalMultiplier);
-  // 최소 주문금액 보장 (5만원 미만이면 매매 불가)
-  const MIN_ORDER_KRW = 50_000;
+  // 최소 주문금액 보장 (baseAmount의 20% 또는 1만원 중 큰 값)
+  const MIN_ORDER_KRW = Math.max(10_000, Math.round(baseAmount * 0.20));
   if (amount < MIN_ORDER_KRW && baseAmount >= MIN_ORDER_KRW) {
     amount = MIN_ORDER_KRW;
     reasons.push(`최소 주문금액 ${MIN_ORDER_KRW.toLocaleString()}원 적용`);
@@ -258,7 +259,7 @@ export async function calcPositionSize(baseBudget: number): Promise<PositionSize
   const { rows: trades } = await getPool().query(
     `SELECT realized_pnl, closed_at FROM transaction_chains
      WHERE status = 'CLOSED' AND is_paper = $1 ORDER BY closed_at DESC LIMIT 20`,
-    [config.isPaper],
+    [getCtxIsPaper()],
   );
 
   // 데이터 부족 시 기본값

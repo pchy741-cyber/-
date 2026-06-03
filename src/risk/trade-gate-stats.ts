@@ -3,7 +3,7 @@
  */
 
 import { GATE } from '../config/constants.js';
-import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { getPool } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
@@ -49,7 +49,7 @@ export async function getWinRateStats(days: number = 30): Promise<WinRateStats> 
         AND closed_at >= NOW() - ($1 * INTERVAL '1 day')
         AND avg_buy_price > 0
         AND is_paper = $2
-    `, [days, config.isPaper]);
+    `, [days, getCtxIsPaper()]);
 
     if (rows.length < 5) return defaultStats;
 
@@ -74,7 +74,7 @@ export async function getWinRateStats(days: number = 30): Promise<WinRateStats> 
 
 async function getConsecutiveLosses(): Promise<number> {
   try {
-    const params: any[] = [config.isPaper];
+    const params: any[] = [getCtxIsPaper()];
     let resetFilter = '';
     if (cooldownResetAt) {
       params.push(cooldownResetAt.toISOString());
@@ -104,13 +104,14 @@ async function getConsecutiveLosses(): Promise<number> {
 export async function cooldownGate(): Promise<GateResult> {
   const consecutive = await getConsecutiveLosses();
   // Paper 모드: 쿨다운 대폭 완화 (5연패 10분, 3-4연패 5분)
-  const cooldownMs = config.isPaper
+  const isPaper = getCtxIsPaper();
+  const cooldownMs = isPaper
     ? (consecutive >= 5 ? 10 * 60_000 : consecutive >= 3 ? 5 * 60_000 : 0)
     : (consecutive >= 5 ? GATE.CONSECUTIVE_LOSS_HALT_MS : consecutive >= 3 ? GATE.CONSECUTIVE_LOSS_WARN_MS : 0);
 
   if (cooldownMs > 0) {
     try {
-      const params: any[] = [config.isPaper];
+      const params: any[] = [isPaper];
       let resetFilter = '';
       if (cooldownResetAt) {
         params.push(cooldownResetAt.toISOString());
@@ -144,12 +145,13 @@ export async function cooldownGate(): Promise<GateResult> {
 export async function getCooldownStatus(): Promise<CooldownStatus> {
   try {
     const consecutive = await getConsecutiveLosses();
-    const cooldownMs = config.isPaper
+    const isPaper = getCtxIsPaper();
+    const cooldownMs = isPaper
       ? (consecutive >= 5 ? 10 * 60_000 : consecutive >= 3 ? 5 * 60_000 : 0)
       : (consecutive >= 5 ? GATE.CONSECUTIVE_LOSS_HALT_MS : consecutive >= 3 ? GATE.CONSECUTIVE_LOSS_WARN_MS : 0);
 
     if (cooldownMs > 0) {
-      const params: any[] = [config.isPaper];
+      const params: any[] = [isPaper];
       let resetFilter = '';
       if (cooldownResetAt) {
         params.push(cooldownResetAt.toISOString());

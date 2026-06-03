@@ -1,6 +1,7 @@
 import { getDailyChart } from '../../kis/market.js';
 import { getCurrentPrice } from '../../kis/market.js';
 import { config } from '../../config/index.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import { logger } from '../../utils/logger.js';
 import { logSystem } from '../../db/client.js';
 import type { TransactionChain } from '../../db/models.js';
@@ -195,7 +196,7 @@ export async function checkDailyLoss(params: {
         AND tc.avg_buy_price IS NOT NULL
         AND tc.is_paper = $2
         AND o.trading_mode = $3
-    `, [today.toISOString(), config.isPaper, config.tradingMode]);
+    `, [today.toISOString(), getCtxIsPaper(), config.tradingMode]);
     const realizedPnl = Number(rows[0]?.realized_pnl ?? 0);
 
     const unrealizedPnl = params.openChains

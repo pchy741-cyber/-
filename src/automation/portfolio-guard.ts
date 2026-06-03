@@ -80,20 +80,39 @@ export async function getPerformanceMultiplier(): Promise<number> {
     const totalPnl = Number(rows[0]?.total_pnl ?? 0);
     const winRate = wins / total;
 
+    const isPaper = getCtxIsPaper();
+
+    // ── v2: 고정 금액(300K/500K) 폐지 → 포트폴리오 % 기반 ──
+    // v1 문제: 9만원 포트폴리오에서 300K 수익 불가능, 8.7M 포트폴리오에서 500K 손실은 5.7%인데 방어모드
+    // v2: 총자산 기준 비율로 전환 (최소 폴백 100K)
+    let portfolioValue = 0;
+    try {
+      const { rows: snapRows } = await pool.query(
+        `SELECT total_value FROM daily_snapshots WHERE is_paper = $1 ORDER BY snapshot_date DESC LIMIT 1`,
+        [isPaper],
+      );
+      portfolioValue = snapRows[0]?.total_value ? Number(snapRows[0].total_value) : 0;
+    } catch { /* 스냅샷 없으면 기본 비율만 적용 */ }
+    // 포트폴리오 값 폴백
+    if (portfolioValue <= 0) portfolioValue = isPaper ? 10_000_000 : 8_700_000;
+    const profitThreshold = Math.max(portfolioValue * 0.03, 10_000);   // 3% 수익이면 공격
+    const lossThresholdHard = -Math.max(portfolioValue * 0.05, 10_000); // -5% 심각
+    const lossThresholdSoft = -Math.max(portfolioValue * 0.03, 5_000);  // -3% 방어
+
     let mult: number;
     let label: string;
-    if (winRate >= 0.65 && totalPnl > 300_000) {
+    if (winRate >= 0.65 && totalPnl > profitThreshold) {
       mult = 1.2;
       label = '공격';
     } else if (winRate >= 0.55 && totalPnl > 0) {
       mult = 1.1;
       label = '약공격';
-    } else if (winRate < 0.30 || totalPnl < -500_000) {
-      mult = 0.5;
-      label = '심각손실 — 신규진입 최소화';
-    } else if (winRate < 0.40 || totalPnl < -300_000) {
-      mult = 0.7;
-      label = '방어';
+    } else if (winRate < 0.30 || totalPnl < lossThresholdHard) {
+      mult = isPaper ? 0.85 : 0.7;
+      label = isPaper ? '연습모드 보수' : `심각손실(${(totalPnl / portfolioValue * 100).toFixed(1)}%)`;
+    } else if (winRate < 0.40 || totalPnl < lossThresholdSoft) {
+      mult = isPaper ? 0.90 : 0.80;
+      label = isPaper ? '연습모드 약보수' : '방어';
     } else if (winRate < 0.50) {
       mult = 0.85;
       label = '보수';

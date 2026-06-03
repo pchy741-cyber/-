@@ -8,6 +8,7 @@ dotenv.config();
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'staging', 'production']).default('development'),
   TRADING_MODE: z.enum(['paper', 'live']).default('paper'),
+  PAPER_ONLY: z.coerce.boolean().default(false), // true → live 파이프라인 완전 스킵 (자율학습 모드)
 
   // KIS (한국투자증권) — 모의투자
   KIS_APP_KEY: z.string().default(''),
@@ -90,6 +91,9 @@ export function getEffectiveTradingMode(): 'paper' | 'live' {
  */
 export const baseTradingMode: 'paper' | 'live' = env.TRADING_MODE;
 export const baseIsPaper: boolean = env.TRADING_MODE === 'paper';
+
+/** 자율학습 모드: true면 live 파이프라인 완전 스킵 (paper만 실행) */
+export const paperOnly: boolean = env.PAPER_ONLY;
 
 // KIS 설정은 Secret Manager 로드 후 process.env가 갱신되므로 getter로 동적 읽기
 function getKisAccountNo(isLive: boolean) {

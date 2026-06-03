@@ -5,6 +5,7 @@
 import { analyzeTechnicals, atr, sma, type OHLCV } from '../analysis/indicators.js';
 import { GATE } from '../config/constants.js';
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { getPool } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 import { checkNewsForStock } from '../automation/news-sentinel.js';
@@ -16,7 +17,7 @@ export function chartVerificationGate(input: GateInput): GateResult {
   const { candles, stopLossPct, takeProfitPct } = input;
 
   if (candles.length < 30) {
-    if (config.isPaper) return { passed: true, reason: '일봉 부족 — 모의투자 통과' };
+    if (getCtxIsPaper()) return { passed: true, reason: '일봉 부족 — 모의투자 통과' };
     return { passed: false, reason: '일봉 데이터 부족 (30일 미만)' };
   }
 
@@ -59,12 +60,12 @@ export function chartVerificationGate(input: GateInput): GateResult {
     logger.info(`🟡 [R:R 소프트] ${input.stockCode}: R:R=${riskRewardRatio.toFixed(2)} < ${minRR} — 포지션 50% 축소 권장`, { component: 'TRADE_GATE' });
   }
 
-  // ATR 대비 손절폭 검증
-  if (!config.isPaper && !isScalping) {
+  // ATR 대비 손절폭 검증 (0.35배로 완화 — 0.5배는 고변동 종목 전부 차단)
+  if (!getCtxIsPaper() && !isScalping) {
     const currentPrice = candles[0]?.close ?? input.estimatedPrice;
     const atrPct = currentPrice > 0 ? (tech.atr14 / currentPrice) * 100 : 0;
-    if (atrPct > 0 && absStopLoss < atrPct * 0.5) {
-      return { passed: false, reason: `손절 너무 타이트: ${absStopLoss}% < ATR의 0.5배(${(atrPct * 0.5).toFixed(1)}%)`, riskRewardRatio };
+    if (atrPct > 0 && absStopLoss < atrPct * 0.35) {
+      return { passed: false, reason: `손절 너무 타이트: ${absStopLoss}% < ATR의 0.35배(${(atrPct * 0.35).toFixed(1)}%)`, riskRewardRatio };
     }
   }
 
@@ -85,7 +86,7 @@ export function entryTimingGate(input: GateInput): GateResult {
 
   const recent3High = Math.max(c1.high, c2.high, c3.high);
   const pctFromHigh = recent3High > 0 ? ((current - recent3High) / recent3High) * 100 : -5;
-  if (pctFromHigh > 3.0) return { passed: false, reason: `🔴 고점 추격 차단: +${pctFromHigh.toFixed(1)}%` };
+  if (pctFromHigh > 8.0) return { passed: false, reason: `🔴 고점 추격 차단: +${pctFromHigh.toFixed(1)}%` };
 
   const body0 = Math.abs(c0.close - c0.open);
   const range0 = c0.high - c0.low;
@@ -104,10 +105,10 @@ export function entryTimingGate(input: GateInput): GateResult {
   const recent5Low = Math.min(c0.low, c1.low, c2.low, c3.low, c4.low);
   const pctFromLow = recent5Low > 0 ? ((current - recent5Low) / recent5Low) * 100 : 0;
   const hasGoodPattern = isVBounce || isBullishEngulfing || isHammer || isBullishCandle;
-  const isTooFarFromLow = pctFromLow > 5 && rsi > 60;
+  const isTooFarFromLow = pctFromLow > 10 && rsi > 65;
 
   if (isTooFarFromLow && !hasGoodPattern) {
-    if (config.isPaper) return { passed: true, reason: `⚠️ [모의투자] 최적 타이밍 아님` };
+    if (getCtxIsPaper()) return { passed: true, reason: `⚠️ [모의투자] 최적 타이밍 아님` };
     return { passed: false, reason: `🔴 진입 타이밍 부적합: 5일저점+${pctFromLow.toFixed(1)}%` };
   }
 
@@ -208,8 +209,9 @@ export async function newsGate(stockCode: string): Promise<GateResult> {
 // ── 재진입 쿨다운 (SCALPING 전용) ──
 export async function reEntryCooldownGate(input: GateInput): Promise<GateResult> {
   if (input.strategyMode !== 'SCALPING') return { passed: true, reason: 'SCALPING 외 — 생략' };
-  const reEntryCooldownMs = config.isPaper ? 5 * 60_000 : GATE.REENTRY_COOLDOWN_MS;
-  const reEntryIntervalSql = config.isPaper ? '5 minutes' : '30 minutes';
+  const isPaper = getCtxIsPaper();
+  const reEntryCooldownMs = isPaper ? 5 * 60_000 : GATE.REENTRY_COOLDOWN_MS;
+  const reEntryIntervalSql = isPaper ? '5 minutes' : '30 minutes';
   try {
     const { rows } = await getPool().query(
       `SELECT created_at FROM orders
@@ -218,7 +220,7 @@ export async function reEntryCooldownGate(input: GateInput): Promise<GateResult>
          AND created_at >= NOW() - INTERVAL '${reEntryIntervalSql}'
          AND trading_mode = $2
        ORDER BY created_at DESC LIMIT 1`,
-      [input.stockCode, config.tradingMode],
+      [input.stockCode, isPaper ? 'paper' : 'live'],
     );
     if (rows.length > 0) {
       const elapsed = Date.now() - new Date(rows[0].created_at).getTime();

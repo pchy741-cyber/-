@@ -15,7 +15,7 @@ export interface StockWinRate {
  * 종목 코드 목록의 90일 내 승률 조회
  * 최소 3건 이상인 종목만 반환 (표본 부족 종목은 neutral 처리)
  */
-export async function getStockWinRates(stockCodes: string[]): Promise<Map<string, StockWinRate>> {
+export async function getStockWinRates(stockCodes: string[], market: 'KR' | 'US' = 'KR'): Promise<Map<string, StockWinRate>> {
   const map = new Map<string, StockWinRate>();
   if (stockCodes.length === 0) return map;
   try {
@@ -29,9 +29,10 @@ export async function getStockWinRates(stockCodes: string[]): Promise<Map<string
       WHERE stock_code = ANY($1)
         AND recorded_at >= NOW() - INTERVAL '90 days'
         AND is_paper = $2
+        AND market = $3
       GROUP BY stock_code
       HAVING COUNT(*) >= 3
-    `, [stockCodes, getCtxIsPaper()]);
+    `, [stockCodes, getCtxIsPaper(), market]);
     for (const r of rows) {
       map.set(String(r.stock_code), {
         winRate: Number(r.wins) / Number(r.total),

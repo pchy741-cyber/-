@@ -18,6 +18,8 @@ export interface TechnicalFallbackParams {
   lossBlockedCodes?: Set<string>;
   /** 24시간 이내 CEO 수동 매도 종목 코드 — 재진입 금지 */
   manuallySoldCodes?: Set<string>;
+  /** 최근 2시간 매도 종목 코드 — 재진입 쿨다운 (반복매수 방지) */
+  recentlySoldCodes?: Set<string>;
   /** 전체 자산 규모 (포지션 크기 동적 계산용) */
   totalAssets?: number;
   /** DB 전략 설정값 — 있으면 STRATEGY_PARAMS 하드코딩 대신 사용 */
@@ -46,6 +48,8 @@ export interface TechnicalFallbackParams {
   allowScalpingBuys?: boolean;
   /** KIS 시장 시그널 (체결강도, 공매도, 수급 등) — pipeline에서 한 번 수집 후 전달 */
   marketSignals?: Map<string, StockSignals>;
+  /** 매크로/레짐 기반 포지션 축소 배율 (RISK_OFF=0.5, 하락장=0.5, 조정=0.7, 정상=1.0) */
+  macroSizingMult?: number;
 }
 
 export interface BuyCandidate {
@@ -69,12 +73,18 @@ export function resolveStrategyParams(mode: StrategyMode, params: TechnicalFallb
 
 export type ResolvedStrategyParams = ReturnType<typeof resolveStrategyParams>;
 
-/** KST 시간 계산 (매도/매수 양쪽 사용) */
+/** KST 시간 계산 (매도/매수 양쪽 사용) — SCALPING forceCloseTime(constants.ts) 참조 */
+const _scalpDeadline = (() => {
+  const t = STRATEGY_PARAMS.SCALPING.forceCloseTime; // '10:00'
+  const [h, m] = t.split(':').map(Number);
+  return { h, m };
+})();
+
 export function getKstScalpTime() {
   const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
   const h = now.getUTCHours();
   const m = now.getUTCMinutes();
-  return { h, m, isPastScalpDeadline: h > 9 || (h === 9 && m >= 30) };
+  return { h, m, isPastScalpDeadline: h > _scalpDeadline.h || (h === _scalpDeadline.h && m >= _scalpDeadline.m) };
 }
 
 /** aiScores 배열 → Map 변환 */

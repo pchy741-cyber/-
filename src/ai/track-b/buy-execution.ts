@@ -1,6 +1,8 @@
 import { analyzeTechnicals, analyzeIntraday } from '../../analysis/indicators.js';
+import { computeFingerprint, getPatternFeedback, fingerprintKey } from '../../analysis/entry-fingerprint.js';
 import { getWinRateConfidenceBoost, winRateSummary } from '../../analysis/win-rate.js';
-import { config } from '../../config/index.js';
+import { getCtxIsPaper } from '../../config/context.js';
+import { getDynamicDomesticTpSl } from '../../config/constants.js';
 import { getPool } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { getMinuteChart, isMarketOpen } from '../../kis/market.js';
@@ -28,7 +30,7 @@ async function calcDomesticKelly(days: number = 30): Promise<DomesticKellyResult
         AND closed_at >= NOW() - ($1 * INTERVAL '1 day')
         AND avg_buy_price > 0
         AND is_paper = $2
-    `, [days, config.isPaper]);
+    `, [days, getCtxIsPaper()]);
 
     if (rows.length < 10) return null; // 최소 10건
 
@@ -71,15 +73,18 @@ async function calcDomesticKelly(days: number = 30): Promise<DomesticKellyResult
  * 매수 실행: 후보 정렬 + 분봉 MTF + 교체매매 + 포지션사이징 + 매수 + 현금소진 + 물타기
  */
 export async function executeBuyDecisions(params: TechnicalFallbackParams & { candidates: BuyCandidate[] }): Promise<TradeDecision[]> {
-  const { mode, livePrices, chartData, openChains, orderableCash, maxPositionKrw, totalAssets, winRates, candidates } = params;
+  const { mode, livePrices, chartData, openChains, orderableCash, maxPositionKrw, totalAssets, winRates, candidates, macroSizingMult: _macroMult } = params;
+  const macroSizingMult = _macroMult ?? 1.0;
   const strategyParams = resolveStrategyParams(mode, params);
   const aiScoreMap = buildAiScoreMap(params.aiScores);
   const noAiScores = hasNoAiScores(params.aiScores);
   const decisions: TradeDecision[] = [];
 
   // 종목당 최대 비중: SNIPER=30%, 일반=25% (portfolio-guard 집중도 25%와 정합)
-  // 소자산(50만 미만): 80%까지 허용 (1-2종목 집중)
-  const maxPosFraction = (totalAssets && totalAssets < 500000) ? 0.80
+  // 소자산: 3종목 분산 불가 시 80%까지 집중 허용
+  // 기준: effectiveMaxPos(=totalAssets×25%)로 1주 최소가(1만원) 3개 이상 살 수 없으면 소자산
+  const canDiversify3 = (totalAssets ?? 0) > 0 && ((totalAssets ?? 0) * 0.25 >= 30_000);
+  const maxPosFraction = (!canDiversify3) ? 0.80
     : mode === 'SNIPER' ? 0.30 : 0.25;
   const effectiveMaxPos = totalAssets
     ? Math.min(maxPositionKrw, Math.round(totalAssets * maxPosFraction))
@@ -242,7 +247,27 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
     // 기준: 60점=8%, 70점=12%, 80점=16%, 90점+=20%
     // DEFENSE/SCALPING은 절반 비율 적용 (보수 운용)
     const techScore = Math.min(100, cand.tech.score + (cand.candleBonus ?? 0) * 0.5);
-    const blendedScore = aiScore > 0 ? techScore * 0.5 + aiScore * 0.5 : techScore;
+    let blendedScore = aiScore > 0 ? techScore * 0.5 + aiScore * 0.5 : techScore;
+
+    // ── 핑거프린트 패턴 피드백: 과거 동일 패턴 승률 기반 점수 보정 ──────────
+    const smaAlign = cand.tech.sma5 > cand.tech.sma20 && cand.tech.sma20 > cand.tech.sma60 ? 'full_bull'
+      : cand.tech.sma5 > cand.tech.sma20 ? 'partial_bull'
+      : cand.tech.sma5 < cand.tech.sma20 && cand.tech.sma20 < cand.tech.sma60 ? 'full_bear'
+      : cand.tech.sma5 < cand.tech.sma20 ? 'partial_bear' : 'neutral';
+    const fp = computeFingerprint({
+      rsi: cand.tech.rsi14,
+      volumeRatio: cand.tech.volumeRatio,
+      smaAlignment: smaAlign,
+      regime: cand.regimeRoute?.regime,
+      adxStrength: cand.tech.trendStrength,
+      macdState: cand.tech.macdCrossover,
+    });
+    const fpKey = fingerprintKey(fp);
+    const patternFb = await getPatternFeedback(fp);
+    if (patternFb.scoreAdj !== 0) {
+      blendedScore = Math.max(0, Math.min(100, blendedScore + patternFb.scoreAdj));
+      logger.info(`  🔬 ${cand.stock_code}: 패턴피드백 [${fpKey}] ${patternFb.reason}→ blend=${blendedScore.toFixed(0)}`, { component: 'TRACK_B' });
+    }
 
     // DB 실거래 역산 비율 사용 (샘플 10건 이상인 티어만), 부족하면 하드코딩 fallback
     const getDbAllocPct = (score: number): number | null => {
@@ -276,15 +301,20 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
     const kellyAllocPct = kellyResult
       ? kellyResult.kellyPct * (blendedScore >= 85 ? 1.5 : blendedScore >= 70 ? 1.2 : 1.0) // 점수 비례 스케일
       : null;
-    let baseAllocPct = kellyAllocPct ?? getDbAllocPct(blendedScore) ?? hardcodedAllocPct;
-    // Kelly/DB 배분이 하드코딩 최소값 미만이면 하드코딩으로 바닥 보장
-    baseAllocPct = Math.max(baseAllocPct, hardcodedAllocPct);
-    // 소자산(현금 50만 미만): 배분율 최소 30% (있는 돈으로 1-2종목 집중)
-    // 중자산(50만~200만): 배분율 최소 20%
-    // orderableCash 기준 (totalAssets는 KIS 장애 시 0이 되므로 신뢰 불가)
-    if (orderableCash < 500000) {
+    const dbAllocPct = getDbAllocPct(blendedScore);
+    let baseAllocPct = kellyAllocPct ?? dbAllocPct ?? hardcodedAllocPct;
+    // Kelly/DB 데이터 존재 시: 하드코딩의 50%까지 축소 허용 (리스크 관리 우선)
+    // 데이터 없으면(폴백): 하드코딩 그대로
+    if (kellyAllocPct != null || dbAllocPct != null) {
+      baseAllocPct = Math.max(baseAllocPct, hardcodedAllocPct * 0.50);
+    }
+    // 소자산: 3종목 분산 불가 시 배분율 최소 30% (1-2종목 집중)
+    // 중자산: 6종목 이하 시 배분율 최소 20%
+    // 비율 기반: 분산 가능 종목 수로 판단 (고정금액 제거)
+    if (!canDiversify3) {
       baseAllocPct = Math.max(baseAllocPct, 0.30);
-    } else if (orderableCash < 2000000) {
+    } else if ((totalAssets ?? 0) > 0 && (totalAssets ?? 0) * 0.15 < 30_000) {
+      // 15% 비중으로 1주(3만원) 못 사면 중소자산 → 20% 최소 배분
       baseAllocPct = Math.max(baseAllocPct, 0.20);
     }
     const modeScale = mode === 'SCALPING' ? 0.5 : mode === 'DEFENSE' ? 0.6 : 1.0;
@@ -323,33 +353,50 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
       : blendedScore >= 85 ? (allocationBoostFirstEntry ? 0.80 : 0.72)  // 72~80% 1차 진입 (물타기 여지 20~28%)
       : splitCount <= 1 ? 1.0
       : splitCount <= 2 ? (allocationBoostFirstEntry ? 0.78 : 0.70) : (allocationBoostFirstEntry ? 0.75 : 0.65);
-    // AI 포지션 배율 제거 — AI 90점+ 승률 14.3% (2026-06 성과 검토 결과, 과신 방지)
     const aiPosMultiplier = 1.0;
-    const targetKrw = totalAssets
-      ? Math.round(totalAssets * baseAllocPct * modeScale * winRateMultiplier * priorityBonus * firstEntryRatio * aiPosMultiplier * signalMultiplier)
-      : Math.round(effectiveMaxPos * firstEntryRatio * aiPosMultiplier * signalMultiplier);
+
+    // ── TP/SL 리스크 기반 사이징 (해외 스타일) ──────────────────────────────
+    // position = riskBudget / |stopLossPct| — SL이 작으면 큰 포지션, SL이 크면 작은 포지션
+    // 기존 비율 기반(targetKrwAlloc)과 리스크 기반(targetKrwRisk) 중 큰 값 사용
+    const tpSlHints = getDynamicDomesticTpSl({
+      score: blendedScore,
+      rsi: cand.tech.rsi14,
+      volumeRatio: cand.tech.volumeRatio,
+      pullbackSignal: cand.tech.sma20 > 0 && cand.price.currentPrice >= cand.tech.sma20 * 0.98,
+    });
+    const riskPct = blendedScore >= 85 ? 0.025 : blendedScore >= 70 ? 0.02 : 0.015; // 총자산 대비 리스크 예산
+    const absSl = Math.abs(tpSlHints.stopLossPct) / 100;
+    const targetKrwRisk = totalAssets && absSl > 0
+      ? Math.round((totalAssets * riskPct / absSl) * modeScale * macroSizingMult * signalMultiplier)
+      : 0;
+    const targetKrwAlloc = totalAssets
+      ? Math.round(totalAssets * baseAllocPct * modeScale * macroSizingMult * winRateMultiplier * priorityBonus * firstEntryRatio * aiPosMultiplier * signalMultiplier)
+      : Math.round(effectiveMaxPos * firstEntryRatio * macroSizingMult * aiPosMultiplier * signalMultiplier);
+    // 두 방식 중 큰 값 사용 — 소액일수록 리스크 기반이 더 큰 포지션 산출
+    const targetKrw = Math.max(targetKrwAlloc, targetKrwRisk);
+    if (targetKrwRisk > targetKrwAlloc && targetKrwRisk > 0) {
+      logger.info(`  📐 ${cand.stock_code}: TP/SL 리스크사이징 ${Math.round(targetKrwRisk/10000)}만 > 비율사이징 ${Math.round(targetKrwAlloc/10000)}만 (SL=${tpSlHints.stopLossPct}% risk=${(riskPct*100).toFixed(1)}%)`, { component: 'TRACK_B' });
+    }
 
     // AI 고확신: 포지션 한도 확대 (최대 총자산 25% 캡 — portfolio-guard 집중도와 일치)
-    // 소자산(50만 미만)은 maxPosFraction=80%이므로 별도 상한 적용 안 함
-    const concentrationCap = (totalAssets && totalAssets < 500000)
-      ? totalAssets * 0.80
+    // 소자산(분산 불가)은 maxPosFraction=80%이므로 별도 상한 적용 안 함
+    const concentrationCap = !canDiversify3
+      ? (totalAssets ? totalAssets * 0.80 : Infinity)
       : totalAssets ? totalAssets * 0.25 : Infinity;
     const aiMaxPos = aiPosMultiplier > 1.0 && totalAssets
       ? Math.min(effectiveMaxPos * aiPosMultiplier, concentrationCap)
       : effectiveMaxPos;
     // 상한: aiMaxPos (AI확신도 반영 종목당 한도), 남은 현금의 95%까지 사용 (현금 최대 활용)
     const positionSize = Math.min(targetKrw, aiMaxPos, remainingCash * 0.95);
-    // 소자산 모드: 현금 50만 미만이면 남은 현금의 80%를 직접 사용 (배분율/maxPos 무시)
-    // totalAssets가 KIS 장애 등으로 0이 되면 effectiveMaxPos도 0이 되므로
-    // 실제 잔고(orderableCash) 기준으로 판단
-    const isSmallAccount = orderableCash < 500000;
-    const effectivePositionSize = isSmallAccount
-      ? Math.round(remainingCash * 0.80)   // 있는 돈의 80% 직접 사용 (maxPos 캡 제거)
+    // 소자산 모드: 분산 불가 시에도 비율 계산 반영 (positionSize vs 현금 80% 중 작은 값)
+    // Kelly/점수가 축소 시그널 → positionSize가 줄어들면 그대로 존중
+    const effectivePositionSize = !canDiversify3
+      ? Math.round(Math.min(positionSize, remainingCash * 0.80))
       : positionSize;
-    // 최소 매수금액: 총자산 비례 동적 계산 (고정 금액 제거)
+    // 최소 매수금액: 총자산 비례 동적 계산 (절대 최소 1만원)
     const minPositionKrw = totalAssets
-      ? Math.max(50000, Math.round(totalAssets * (aiApproved ? 0.04 : 0.025)))
-      : Math.max(50000, Math.round(orderableCash * (aiApproved ? 0.08 : 0.05)));
+      ? Math.max(10_000, Math.round(totalAssets * (aiApproved ? 0.04 : 0.025)))
+      : Math.max(10_000, Math.round(orderableCash * (aiApproved ? 0.08 : 0.05)));
     if (effectivePositionSize < minPositionKrw) {
       logger.info(`  ❌ ${cand.stock_code}: 포지션크기 ${Math.round(effectivePositionSize).toLocaleString()}원 < 최소 ${minPositionKrw.toLocaleString()}원 (blend=${blendedScore.toFixed(0)} alloc=${(baseAllocPct*100).toFixed(0)}% cash=${Math.round(remainingCash).toLocaleString()}) → 스킵`, { component: 'TRACK_B' });
       continue;
@@ -374,7 +421,7 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
       quantity,
       price_type: 'MARKET',
       limit_price: cand.price.currentPrice,
-      reasoning: `기술적 매수: score=${cand.tech.score}(blend=${blendedScore.toFixed(0)})${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''}${idBonus !== 0 ? `${idBonus > 0 ? '+' : ''}${idBonus}분봉` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${allocStr}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))}`,
+      reasoning: `기술적 매수: score=${cand.tech.score}(blend=${blendedScore.toFixed(0)})${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''}${idBonus !== 0 ? `${idBonus > 0 ? '+' : ''}${idBonus}분봉` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x SMA=${smaAlign}${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${allocStr}${patternFb.scoreAdj !== 0 ? ` [패턴${patternFb.scoreAdj > 0 ? '+' : ''}${patternFb.scoreAdj}]` : ''}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))} fp=${fpKey}`,
       confidence: Math.min(0.95, Math.max(0.5, cand.tech.score / 100 + getWinRateConfidenceBoost(winRates?.get(cand.stock_code)) + (cand.candleBonus > 0 ? 0.05 : 0))),
       ai_score: aiScore > 0 ? aiScore : cand.tech.score, // 점수 기반 TP/SL 계산용
     });
@@ -395,7 +442,7 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
     // 이미 매수 결정한 AI허락 종목에 물타기가 아닌 추가 비중 투입
     for (const cand of extraCandidates.slice(0, 2)) {
       const addSize = Math.min(Math.round(remainingCash * 0.50), effectiveMaxPos);
-      const minAddSize = Math.max(50000, Math.round((totalAssets ?? orderableCash) * 0.03));
+      const minAddSize = Math.max(10_000, Math.round((totalAssets ?? orderableCash) * 0.03));
       if (addSize < minAddSize) continue;
       const qty = Math.floor(addSize / cand.price.currentPrice);
       if (qty <= 0) continue;

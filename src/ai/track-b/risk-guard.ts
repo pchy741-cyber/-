@@ -98,15 +98,26 @@ export async function applyHardRules(params: {
     );
     if (alreadySelling) continue;
 
-    const stopPct = chain.stop_loss_pct != null
+    const baseStop = chain.stop_loss_pct != null
       ? Number(chain.stop_loss_pct)
       : (stopLossPct ?? baseParams.stopLossPct);
 
+    // ── 진입 초기 여유 버퍼: 1시간 미만 보유 시 SL 1.5% 완화 ──
+    // v1 문제: 매수 직후 -3% 순간 터치 → 즉시 FORCE_CLOSE → 직후 반등
+    // v2: 1시간 동안은 SL을 넓혀서 포지션이 안정화될 시간 확보
+    // 단, 하드플로어(-8%) 초과 손실은 즉시 청산 (대참사 방지)
+    const holdMs = chain.opened_at ? Date.now() - new Date(chain.opened_at).getTime() : Infinity;
+    const EARLY_HOLD_MS = 60 * 60_000; // 1시간
+    const EARLY_BUFFER = 1.5; // 1.5% 추가 여유
+    const HARD_FLOOR = -8.0; // 절대 손절선: -8% (어떤 상황에서도 청산)
+    const earlyBuffer = holdMs < EARLY_HOLD_MS ? EARLY_BUFFER : 0;
+    const stopPct = Math.max(baseStop - earlyBuffer, HARD_FLOOR);
+
     // PROFIT_TAKING 상태: 트레일링 스탑은 technical-fallback 전담, 하드 손절은 여기서도 강제
     if (chain.status === 'PROFIT_TAKING') {
-      if (pnlPct <= stopPct) {
+      if (pnlPct <= baseStop) { // PROFIT_TAKING은 이미 수익 실현한 상태 → 버퍼 없이 원래 SL
         logger.info(
-          `🔒 PROFIT_TAKING 하드 손절: ${chain.stock_code} ${pnlPct.toFixed(1)}% ≤ ${stopPct}% — 잔여 포지션 강제 청산`,
+          `🔒 PROFIT_TAKING 하드 손절: ${chain.stock_code} ${pnlPct.toFixed(1)}% ≤ ${baseStop}% — 잔여 포지션 강제 청산`,
           { component: 'RISK_GUARD' },
         );
         result.push({
@@ -114,7 +125,7 @@ export async function applyHardRules(params: {
           stock_code: chain.stock_code,
           quantity: chain.total_quantity,
           price_type: 'MARKET',
-          reasoning: `PROFIT_TAKING 하드 손절: ${pnlPct.toFixed(1)}% (한도 ${stopPct}%) — 잔여 포지션 강제 실행`,
+          reasoning: `PROFIT_TAKING 하드 손절: ${pnlPct.toFixed(1)}% (한도 ${baseStop}%) — 잔여 포지션 강제 실행`,
           confidence: 1.0,
         });
       }
@@ -140,8 +151,9 @@ export async function applyHardRules(params: {
         });
       }
     } else if (pnlPct <= stopPct) {
+      const bufferNote = earlyBuffer > 0 ? ` (초기버퍼 ${EARLY_BUFFER}%, ${Math.round(holdMs / 60_000)}분 보유)` : '';
       logger.info(
-        `🔒 하드 손절: ${chain.stock_code} ${pnlPct.toFixed(1)}% (한도 ${stopPct}%) — AI HOLD 무시`,
+        `🔒 하드 손절: ${chain.stock_code} ${pnlPct.toFixed(1)}% (한도 ${stopPct.toFixed(1)}%)${bufferNote} — AI HOLD 무시`,
         { component: 'RISK_GUARD' },
       );
       result.push({
@@ -149,7 +161,7 @@ export async function applyHardRules(params: {
         stock_code: chain.stock_code,
         quantity: chain.total_quantity,
         price_type: 'MARKET',
-        reasoning: `하드 손절: ${pnlPct.toFixed(1)}% (한도 ${stopPct}%) — AI 결정 무관 강제 실행`,
+        reasoning: `하드 손절: ${pnlPct.toFixed(1)}% (한도 ${stopPct.toFixed(1)}%)${bufferNote}`,
         confidence: 1.0,
       });
     }

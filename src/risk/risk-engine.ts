@@ -113,7 +113,7 @@ export class RiskEngine {
       const today = kstNow.toISOString().split('T')[0];
       const tradingMode = isPaper ? 'paper' : 'live';
       const { rows } = await pool.query<{ count: string }>(
-        `SELECT COUNT(*)::text AS count FROM orders WHERE created_at >= $1::date AND created_at < ($1::date + INTERVAL '1 day') AND trading_mode = $2`,
+        `SELECT COUNT(*)::text AS count FROM orders WHERE created_at >= $1::date AND created_at < ($1::date + INTERVAL '1 day') AND trading_mode = $2 AND side = 'BUY' AND (trigger_source IS NULL OR trigger_source != 'OVERSEAS')`,
         [today, tradingMode],
       );
       const todayCount = Number(rows[0]?.count ?? 0);
@@ -140,9 +140,11 @@ export class RiskEngine {
 
     const totalAssets = balance.totalEvalAmount ?? 0;
     // 황금비율 포지션 캡: 소계좌일수록 집중도 허용 (단일주도 못 사는 상황 방지)
-    // 피보나치 수열 기반: 50% → 38.2% → 25% (계좌 규모별 단계적 수렴)
-    const capRatio = totalAssets < 500_000 ? 0.50
-      : totalAssets < 5_000_000 ? 0.382
+    // 기준: 25%로 최소 1주(3만원) 분산 가능 여부로 단계 결정 (고정금액 제거)
+    const canDiv3 = totalAssets * 0.25 >= 30_000;   // 3종목 분산 가능
+    const canDiv5 = totalAssets * 0.20 >= 30_000;   // 5종목 분산 가능
+    const capRatio = !canDiv3 ? 0.50
+      : !canDiv5 ? 0.382
       : 0.25;
     const dynamicLimit = totalAssets > 0
       ? Math.min(Math.round(totalAssets * capRatio), config.risk.maxPositionKrw)
