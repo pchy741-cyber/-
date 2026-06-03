@@ -59,7 +59,7 @@ export async function checkLargeOrderEntryTiming(
       '진입 타이밍 승인/거부를 JSON으로 응답하세요.',
     ].join('\n');
 
-    const text = await callVertexGemini(ENTRY_PROMPT, context, { temperature: 0.1, maxOutputTokens: 120 });
+    const text = await callVertexGemini(ENTRY_PROMPT, context, { temperature: 0.1, maxOutputTokens: 120, label: '진입타이밍' });
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('JSON 없음');
 

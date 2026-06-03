@@ -147,7 +147,7 @@ export async function generateAndSaveInsights(): Promise<void> {
     }
 
     const summary = buildSummary(trades);
-    const text = await callVertexGemini(INSIGHTS_PROMPT, summary, { temperature: 0.2, maxOutputTokens: 400 });
+    const text = await callVertexGemini(INSIGHTS_PROMPT, summary, { temperature: 0.2, maxOutputTokens: 400, label: '해외-인사이트' });
 
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('JSON 없음');

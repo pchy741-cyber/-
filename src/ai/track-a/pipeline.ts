@@ -28,18 +28,16 @@ async function runGeminiFallbackAnalysis(
 ): Promise<ScoringResult[]> {
   const { callVertexGemini } = await import('../../utils/vertex-gemini.js');
 
+  // ⚡ 토큰 절감: 20일 종가 제거 (5일이면 트렌드 판단 충분)
   const chartSummary = watchlist.map((stock) => {
     const candles = chartData.get(stock.stock_code) ?? [];
-    if (candles.length === 0) return `${stock.stock_name}(${stock.stock_code}): 차트 데이터 없음`;
+    if (candles.length === 0) return `${stock.stock_name}(${stock.stock_code}): 데이터없음`;
     const latest = candles[0];
     const high52w = Math.max(...candles.map((c) => c.high));
     const dropPct = latest ? (((latest.close - high52w) / high52w) * 100).toFixed(1) : 'N/A';
-    return `${stock.stock_name}(${stock.stock_code}):
-  종가: ${latest?.close}, 52주고가: ${high52w}, 고점대비: ${dropPct}%
-  5일거래량: ${candles.slice(0, 5).map((c) => c.volume).join(',')}
-  5일종가: ${candles.slice(0, 5).map((c) => c.close).join(',')}
-  20일종가: ${candles.slice(0, 20).map((c) => c.close).join(',')}`;
-  }).join('\n\n');
+    return `${stock.stock_name}(${stock.stock_code}): 종가${latest?.close} 고점대비${dropPct}%
+  5일종가:${candles.slice(0, 5).map((c) => c.close).join(',')} 5일거래량:${candles.slice(0, 5).map((c) => c.volume).join(',')}`;
+  }).join('\n');
 
   const ceoPrompt = strategy?.gemini_prompt || strategy?.gpt_prompt || '';
 
@@ -65,7 +63,7 @@ ${chartSummary}
 ## 출력 (JSON만, 다른 텍스트 금지)
 {"scores":[{"stock_code":"코드","stock_name":"이름","composite_score":0,"fundamental_score":0,"technical_score":0,"sentiment_score":0,"confidence":0.0,"signal":"STRONG_BUY|BUY|HOLD|SELL|STRONG_SELL|NO_DATA","target_price":0,"stop_loss_price":0,"reasoning":"근거"}]}`;
 
-  const text = await callVertexGemini('당신은 주식 분석 전문가입니다. JSON 형식으로만 응답합니다.', userMsg, { temperature: 0.2 });
+  const text = await callVertexGemini('당신은 주식 분석 전문가입니다. JSON 형식으로만 응답합니다.', userMsg, { temperature: 0.2, label: 'TrackA-Flash폴백' });
 
   // Resilient JSON parsing — 잘린 응답에서도 개별 스코어 복구
   const parsedResponse = safeParseScoresJson(text, 'GeminiFlashFallback');
@@ -198,7 +196,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     const CHART_BATCH = 5;
     for (let i = 0; i < allStocks.length; i += CHART_BATCH) {
       const batch = allStocks.slice(i, i + CHART_BATCH);
-      const results = await Promise.allSettled(batch.map((w) => getDailyChart(w.stock_code, 60)));
+      const results = await Promise.allSettled(batch.map((w) => getDailyChart(w.stock_code, 30)));
       for (let j = 0; j < batch.length; j++) {
         const r = results[j];
         if (r.status === 'fulfilled') {

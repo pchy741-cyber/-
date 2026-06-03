@@ -77,6 +77,7 @@ export async function reviewCompletedTrade(params: {
     const rawResponse = await callVertexGemini(systemPrompt, userMessage, {
       temperature: 0.3,
       maxOutputTokens: 300,
+      label: '해외-매매복기',
     });
 
     // JSON 파싱

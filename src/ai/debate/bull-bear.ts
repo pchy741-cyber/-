@@ -133,7 +133,7 @@ async function callAgent(role: 'BULL' | 'BEAR', prompt: string): Promise<{ argum
         ? '당신은 월가의 낙관적 애널리스트입니다. 매수 기회를 적극적으로 찾되, 근거 없는 낙관은 금지합니다. 반드시 JSON으로만 응답하세요.'
         : '당신은 월가의 비관적 리스크 매니저입니다. 모든 리스크를 날카롭게 지적하되, 근거 없는 비관은 금지합니다. 반드시 JSON으로만 응답하세요.';
 
-    const text = await callVertexGemini(systemInstruction, prompt, { temperature: role === 'BULL' ? 0.3 : 0.4 });
+    const text = await callVertexGemini(systemInstruction, prompt, { temperature: role === 'BULL' ? 0.3 : 0.4, label: `토론-${role}` });
 
     // 마크다운 코드블록 제거 후 JSON 추출
     const cleaned = text.replace(/```json?\s*/gi, '').replace(/```/g, '');
@@ -178,7 +178,7 @@ ${bear.arguments.map((a, i) => `${i + 1}. ${a}`).join('\n')}
 양측 논거를 종합하여 판결하세요.
 JSON 형식: {"verdict": "STRONG_BUY|BUY|HOLD|SELL|STRONG_SELL", "confidence": 0.0~1.0, "reasoning": "판결 이유 2줄"}`;
 
-    const text = await callVertexGemini(judgeSystem, judgePrompt, { temperature: 0.1 });
+    const text = await callVertexGemini(judgeSystem, judgePrompt, { temperature: 0.1, label: '토론-심판' });
 
     const cleaned = text.replace(/```json?\s*/gi, '').replace(/```/g, '');
     const json = cleaned.match(/\{[\s\S]*\}/)?.[0];

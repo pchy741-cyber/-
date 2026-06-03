@@ -101,7 +101,7 @@ ${stockLines}
     const raw = await callVertexGemini(
       '당신은 한국 주식 단타 전문가입니다. JSON 형식으로만 응답합니다.',
       userMsg,
-      { temperature: 0.1, maxOutputTokens: 2048 },
+      { temperature: 0.1, maxOutputTokens: 2048, label: '장전퀵스코어' },
     );
 
     const jsonMatch = raw.match(/\{[\s\S]*\}/);

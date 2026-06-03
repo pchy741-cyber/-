@@ -157,6 +157,7 @@ export async function generateSessionBrief(): Promise<SessionStrategyBrief | nul
     const response = await callVertexGemini(SESSION_STRATEGY_PROMPT, fullMessage, {
       temperature: 0.2,
       maxOutputTokens: 500,
+      label: '해외-세션전략',
     });
 
     const jsonMatch = response.match(/\{[\s\S]*\}/);
@@ -286,6 +287,7 @@ export async function generateSessionSummary(log: SessionLog): Promise<void> {
     const summary = await callVertexGemini(SESSION_SUMMARY_PROMPT, userMessage, {
       temperature: 0.3,
       maxOutputTokens: 400,
+      label: '해외-세션요약',
     });
 
     // DB 저장

@@ -19,6 +19,7 @@ import { technicalFallbackDecisions } from '../ai/track-b/technical-fallback.js'
 import { tradeExecutor } from '../trading/executor.js';
 import { getAccountBalance } from '../kis/account.js';
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 
 // ── 캐시 (워밍업 → 사이클 공유) ──────────────────────────────────────────
 interface WarmCache {
@@ -112,7 +113,7 @@ JSON만 반환 (다른 텍스트 없이):
 {"scores":[{"code":"종목코드","score":점수,"reason":"한줄사유"},...]}`;
 
         const userMsg = JSON.stringify(stockSummaries, null, 0);
-        const raw = await callVertexGemini(prompt, userMsg, { temperature: 0.1, maxOutputTokens: 1024 });
+        const raw = await callVertexGemini(prompt, userMsg, { temperature: 0.1, maxOutputTokens: 1024, label: '개장벨-스코어' });
         const match = raw.match(/\{[\s\S]*\}/);
         if (match) {
           const parsed = JSON.parse(match[0]) as { scores?: Array<{ code: string; score: number; reason: string }> };
@@ -149,7 +150,7 @@ export async function runOpeningBellCycle(): Promise<void> {
   if (h !== 9 || m > 12) return;
 
   // 스캘핑 15% 승률 — paper 모드에서 비활성화 (SWING 집중)
-  if (config.isPaper) {
+  if (getCtxIsPaper()) {
     logger.info('[OPENING] Paper 모드 — 스캘핑 스킵 (SWING 집중 전략)', { component: 'OPENING_BELL' });
     return;
   }
@@ -169,7 +170,7 @@ export async function runOpeningBellCycle(): Promise<void> {
       getActiveWatchlist(),
       getOpenChains(),
       getActiveStrategy(),
-      config.isPaper
+      getCtxIsPaper()
         ? import('../risk/engine.js').then(m => m.getPaperBalance())
         : getAccountBalance(),
     ]);
@@ -237,7 +238,7 @@ export async function runOpeningBellCycle(): Promise<void> {
 갭이 이미 많이 올랐으면 추격 위험 → 낮춰라. 거래량 터지고 BB 돌파 중이면 → 높여라.
 JSON만: {"scores":[{"code":"코드","score":점수},...]}`;
 
-        const raw = await callVertexGemini(realtimePrompt, JSON.stringify(realtimeDetails), { temperature: 0.05, maxOutputTokens: 256 });
+        const raw = await callVertexGemini(realtimePrompt, JSON.stringify(realtimeDetails), { temperature: 0.05, maxOutputTokens: 256, label: '개장벨-실시간' });
         const match = raw.match(/\{[\s\S]*\}/);
         if (match) {
           const parsed = JSON.parse(match[0]) as { scores?: Array<{ code: string; score: number }> };
@@ -289,7 +290,7 @@ JSON만: {"scores":[{"code":"코드","score":점수},...]}`;
 
     if (decisions.length > 0) {
       logger.info(`⚡ [OPENING] 개장 결정 ${decisions.length}건 실행`, { component: 'OPENING_BELL' });
-      await tradeExecutor.processDecisions(decisions, 'SCALPING');
+      await tradeExecutor.processDecisions(decisions, 'SCALPING', 'OPENING_BELL');
     } else {
       logger.info(`[OPENING] 09:0${m} — 매매 신호 없음`, { component: 'OPENING_BELL' });
     }

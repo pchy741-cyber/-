@@ -95,7 +95,7 @@ ${additionalSources ?? '추가 소스 없음'}
   );
 
   const { callVertexGemini } = await import('../../utils/vertex-gemini.js');
-  const responseText = await callVertexGemini(systemPrompt, userMessage, { temperature: 0.1 });
+  const responseText = await callVertexGemini(systemPrompt, userMessage, { temperature: 0.1, label: 'TrackA-분석' });
 
   // Resilient JSON parsing — Gemini 응답이 깨져도 최대한 복구
   const parsed = safeParseJson<GeminiAnalysis>(responseText, 'GeminiAnalysis');

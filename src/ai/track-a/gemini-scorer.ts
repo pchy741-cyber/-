@@ -37,7 +37,7 @@ ${JSON.stringify(geminiAnalysis.stocks, null, 2)}
 
 위 분석 결과를 바탕으로 각 종목의 점수를 산출해주세요.`;
 
-  const content = await callVertexGemini(systemPrompt, userMessage, { temperature: 0.2 });
+  const content = await callVertexGemini(systemPrompt, userMessage, { temperature: 0.2, label: 'TrackA-스코어링' });
 
   // Resilient JSON parsing — 잘린 응답에서도 개별 스코어 복구
   const parsedResponse = safeParseScoresJson(content, 'GeminiScoring');
