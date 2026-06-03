@@ -13,6 +13,7 @@ import { StrategyDocPanel } from './settings/StrategyDocPanel';
 import { AiPipelinePanel } from './settings/AiPipelinePanel';
 import { FeatureFlagsPanel } from './settings/FeatureFlagsPanel';
 import { BiometricSection } from './settings/BiometricSection';
+import type { Strategy, Secrets, KillSwitch, ToastFn, ConfirmFn } from '../types';
 
 const DEFAULT_STRATEGY_DOC = `# 매매 전략서
 
@@ -70,12 +71,73 @@ const DEFAULT_RISK_PROMPT = `## 리스크 운영 지시사항
 - 누적 수익 10% 달성 시 수익분 30% 인출 예약 자동 설정
 - 인출 후 남은 원금으로 동일 전략 반복`;
 
-function SettingsView({ strategy, setStrategy, secrets, killSwitch, toggleKill, toast, confirm, onFeatureFlagChange }: any) {
+const DEFAULT_GEMINI_PROMPT = `## CEO 분석 지시사항
+
+### 분석 우선순위
+1. 기관/외국인 수급 데이터를 최우선으로 분석. 3일 연속 순매수 종목만 주목.
+2. 최근 실적(영업이익) 증가 확인 필수. 적자전환·실적 악화 종목은 즉시 제외.
+3. 52주 고점 대비 -10%~-25% 구간의 눌림목 종목을 우선 분석.
+4. 거래량 폭발(평소 3배 이상) + 양봉 조합은 최고 우선순위.
+
+### 섹터 집중
+- 반도체(삼성전자, SK하이닉스, 한미반도체): HBM/AI 수혜 → 적극 분석
+- 방산/조선(한화에어로, HD한국조선해양): 구조적 성장 → 장기 관심
+- 바이오: 임상결과/FDA 일정 있을 때만 단기 매매
+
+### 제외 조건
+- 시가총액 3000억 미만 소형주 (유동성 리스크)
+- 하루 +15% 이상 급등한 테마주/작전주
+- 최근 30일 내 유상증자/CB 발행/대주주 매도 종목
+- 관리종목, 투자주의, 거래정지 이력 종목
+
+### 분석 정밀도 강화
+- "상승 가능성 있음" 같은 애매한 표현 금지. 구체적 수치 근거 제시.
+- confidence가 0.7 미만이면 솔직하게 "데이터 불충분" 명시.
+- 최근 5거래일 차트 패턴(지지선, 저항선, 추세선) 반드시 언급.`;
+
+const DEFAULT_CLAUDE_PROMPT = `## CEO 매매 실행 규칙
+
+### 매수 원칙
+- 장 시작 30분(09:00~09:30)은 관망. 변동성 안정 후 진입.
+- 14:30 이후 신규 매수 금지 (장 마감 리스크).
+- 동일 종목 하루 1회만 매수. 물타기는 -3% 이상 하락 시에만.
+- AI 점수 75점 이상 + confidence 0.7 이상만 매수 허용.
+- 3종목 이상 동시 보유 금지 (집중 투자).
+
+### 매도 원칙
+- 손절은 반드시 기계적으로 실행. "조금만 더 기다리면" 판단 절대 금지.
+- 2일 연속 하락 + 거래량 증가 시 즉시 전량 매도.
+- 익절 시 "조금 더 벌 수 있을 텐데" 판단 금지. 목표가 도달 시 즉시 실행.
+- 부분 익절(30%) 후 나머지는 트레일링 스톱으로 자동 관리.
+
+### 포지션 사이즈
+- 1종목 최대 투자 비중: 총 자산의 25%
+- AI 점수 90점 이상 고확신 종목: 최대 30%까지 허용
+- 하락장(KOSPI MA60 하회) 시: 1종목 최대 15%로 축소
+
+### 시장 상황별 대응
+- 코스피 -1% 이상 하락일: 신규 매수 사이즈 50% 축소
+- VIX(VKOSPI) 급등 시: 현금 비중 50% 이상 유지
+- 외국인 3일 연속 순매도 시: 대형주만 매수, 중소형주 매수 금지`;
+
+interface SettingsViewProps {
+  strategy: Strategy | null;
+  setStrategy: (s: Strategy) => void;
+  secrets: Secrets | null;
+  killSwitch: KillSwitch | null;
+  toggleKill: (scope?: 'KR' | 'OVERSEAS') => Promise<void>;
+  toast: ToastFn;
+  confirm: ConfirmFn;
+  onFeatureFlagChange: (key: string, enabled: boolean) => void;
+}
+
+function SettingsView({ strategy, setStrategy, secrets, killSwitch, toggleKill, toast, confirm, onFeatureFlagChange }: SettingsViewProps) {
   const [nbSources, setNbSources] = useState<NbSource[]>(() => parseNbSources(strategy?.notebooklm_prompt));
 
   // 프롬프트 로컬 상태 — strategy 최초 로드 시 한 번만 초기화
-  const [geminiPrompt, setGeminiPrompt] = useState<string>(() => strategy?.gemini_prompt ?? '');
-  const [claudePrompt, setClaudePrompt] = useState<string>(() => strategy?.claude_prompt ?? '');
+  // 빈 문자열이면 기본 프롬프트를 채워넣어 바로 편집·복사 가능하게
+  const [geminiPrompt, setGeminiPrompt] = useState<string>(() => strategy?.gemini_prompt || DEFAULT_GEMINI_PROMPT);
+  const [claudePrompt, setClaudePrompt] = useState<string>(() => strategy?.claude_prompt || DEFAULT_CLAUDE_PROMPT);
   const [strategyDoc, setStrategyDoc] = useState<string>(() => strategy?.strategy_document || DEFAULT_STRATEGY_DOC);
   const [riskPrompt, setRiskPrompt] = useState<string>(() => strategy?.risk_prompt || DEFAULT_RISK_PROMPT);
   const [strategyDocTab, setStrategyDocTab] = useState<'doc' | 'risk'>('doc');
@@ -83,8 +145,8 @@ function SettingsView({ strategy, setStrategy, secrets, killSwitch, toggleKill, 
   const promptsInitialized = React.useRef(false);
   React.useEffect(() => {
     if (!promptsInitialized.current && strategy) {
-      setGeminiPrompt(strategy.gemini_prompt ?? '');
-      setClaudePrompt(strategy.claude_prompt ?? '');
+      setGeminiPrompt(strategy.gemini_prompt || DEFAULT_GEMINI_PROMPT);
+      setClaudePrompt(strategy.claude_prompt || DEFAULT_CLAUDE_PROMPT);
       setStrategyDoc(strategy.strategy_document || DEFAULT_STRATEGY_DOC);
       setRiskPrompt(strategy.risk_prompt || DEFAULT_RISK_PROMPT);
       promptsInitialized.current = true;
@@ -110,11 +172,11 @@ function SettingsView({ strategy, setStrategy, secrets, killSwitch, toggleKill, 
   };
 
   const saveStrategy = async () => {
-    try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify(buildBody()) }); setStrategy(u); toast?.('프롬프트 저장 완료', 'ok'); } catch (err: any) { toast?.(err.message, 'err'); }
+    try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify(buildBody()) }); setStrategy(u); toast?.('프롬프트 저장 완료', 'ok'); } catch (err: unknown) { toast?.((err as Error).message, 'err'); }
   };
 
   const saveStrategyDoc = async () => {
-    try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify(buildBody()) }); setStrategy(u); toast?.('전략서 저장 완료', 'ok'); } catch (err: any) { toast?.(err.message, 'err'); }
+    try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify(buildBody()) }); setStrategy(u); toast?.('전략서 저장 완료', 'ok'); } catch (err: unknown) { toast?.((err as Error).message, 'err'); }
   };
 
   const saveSecrets = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -123,7 +185,7 @@ function SettingsView({ strategy, setStrategy, secrets, killSwitch, toggleKill, 
     const body: Record<string, string> = {};
     fd.forEach((v, k) => { if (typeof v === 'string' && v.trim()) body[k] = v.trim(); });
     if (!Object.keys(body).length) { toast?.('변경할 키를 입력하세요', 'info'); return; }
-    try { await api('/secrets', { method: 'PUT', body: JSON.stringify(body) }); (e.target as HTMLFormElement).reset(); toast?.('API 키 저장 완료', 'ok'); } catch (err: any) { toast?.(err.message, 'err'); }
+    try { await api('/secrets', { method: 'PUT', body: JSON.stringify(body) }); (e.target as HTMLFormElement).reset(); toast?.('API 키 저장 완료', 'ok'); } catch (err: unknown) { toast?.((err as Error).message, 'err'); }
   };
 
   return (
