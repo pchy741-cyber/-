@@ -306,6 +306,73 @@ export async function clearMaxPrice(code: string, isPaper?: boolean): Promise<vo
   ).catch(() => {});
 }
 
+// ── Paper 해외 자금 자동 리필 (자율학습 모드) ──────────────────────────
+const OVERSEAS_REFILL_THRESHOLD = 0.15; // 시드 대비 15% 미만이면 리필
+let lastOverseasRefillCheck = 0;
+
+/**
+ * Paper 해외 자금 고갈 시 자동 리필
+ * - 남은 현금 < 시드 15% + 보유종목 0건 → 리필 트리거
+ * - 기존 overseas paper 주문을 아카이브
+ * @returns true if refill happened
+ */
+export async function checkAndRefillOverseasPaper(): Promise<boolean> {
+  const now = Date.now();
+  if (now - lastOverseasRefillCheck < 30 * 60 * 1000) return false;
+  lastOverseasRefillCheck = now;
+
+  try {
+    const cash = await computePaperCash();
+    const cashRatio = cash / PAPER_OVERSEAS_SEED;
+    const holdings = await getHoldings(true);
+    const hasPositions = [...holdings.values()].some(h => h.qty > 0);
+
+    if (cashRatio >= OVERSEAS_REFILL_THRESHOLD || hasPositions) return false;
+
+    const pool = getPool();
+    // 세대 번호
+    const { rows: genRows } = await pool.query(
+      `SELECT COALESCE(MAX(CAST(NULLIF(regexp_replace(value, '[^0-9]', '', 'g'), '') AS int)), 0) + 1 as next_gen
+       FROM overseas_state WHERE key LIKE 'paper_us_gen_%'`
+    );
+    const gen = genRows[0]?.next_gen ?? 1;
+
+    // 기존 overseas paper 주문 아카이브
+    const { rowCount } = await pool.query(
+      `UPDATE orders SET trading_mode = $1
+       WHERE trading_mode = 'paper' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'`,
+      [`paper_archived_${gen}`],
+    );
+
+    // overseas_holdings paper 삭제
+    await pool.query(`DELETE FROM overseas_holdings WHERE is_paper = true`);
+
+    // cash_paper 리셋
+    await pool.query(
+      `INSERT INTO overseas_state (key, value) VALUES ('cash_paper', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1`,
+      [PAPER_OVERSEAS_SEED.toFixed(2)],
+    );
+
+    // 세대 기록
+    await pool.query(
+      `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
+      [`paper_us_gen_${gen}`, JSON.stringify({
+        archivedAt: new Date().toISOString(),
+        ordersArchived: rowCount,
+        finalCash: cash,
+        seedUsd: PAPER_OVERSEAS_SEED,
+      })],
+    );
+
+    logger.info(`🔄 [PAPER-REFILL] 해외 모의자금 리필 (세대 #${gen}): $${cash.toFixed(0)} → $${PAPER_OVERSEAS_SEED} (${rowCount}건 아카이브)`, { component: 'OVERSEAS' });
+    return true;
+  } catch (e) {
+    logger.warn(`해외 Paper 리필 체크 실패: ${e}`, { component: 'OVERSEAS' });
+    return false;
+  }
+}
+
 /** 동적 TP/SL 저장 — 매매 엔진이 계산한 실시간 값을 대시보드에 동기화 */
 export async function saveDynamicTpSl(code: string, tpPct: number, slPct: number, isPaper?: boolean): Promise<void> {
   const pfx = modePrefix(isPaper);

@@ -1,5 +1,6 @@
 import { KIS_TR_ID, type OrderSide, OrderType } from '../config/constants.js';
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { logger } from '../utils/logger.js';
 import { adjustToTickSize } from '../utils/money.js';
 import { getHashkey } from './auth.js';
@@ -34,7 +35,7 @@ export async function placeOrder(params: {
   orderType?: OrderType;
 }): Promise<OrderResult> {
   const { stockCode, side, quantity, price, orderType = OrderType.MARKET } = params;
-  const trIds = config.isPaper ? KIS_TR_ID.PAPER : KIS_TR_ID.LIVE;
+  const trIds = getCtxIsPaper() ? KIS_TR_ID.PAPER : KIS_TR_ID.LIVE;
   const trId = side === 'BUY' ? trIds.BUY : trIds.SELL;
 
   const body: Record<string, string> = {
@@ -76,7 +77,7 @@ export async function placeOrder(params: {
  * 체결 내역 조회 (주문 후 실제 체결 확인용 — Double Check)
  */
 export async function getOrderFills(orderNo: string): Promise<FillInfo | null> {
-  const trIds = config.isPaper ? KIS_TR_ID.PAPER : KIS_TR_ID.LIVE;
+  const trIds = getCtxIsPaper() ? KIS_TR_ID.PAPER : KIS_TR_ID.LIVE;
   const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
 
   const res = await kisRequest({
@@ -124,7 +125,7 @@ export async function cancelOrder(params: {
   stockCode: string;
   quantity: number;
 }): Promise<OrderResult> {
-  const trIds = config.isPaper ? KIS_TR_ID.PAPER : KIS_TR_ID.LIVE;
+  const trIds = getCtxIsPaper() ? KIS_TR_ID.PAPER : KIS_TR_ID.LIVE;
 
   const body = {
     CANO: config.kis.accountNo,

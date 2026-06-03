@@ -44,12 +44,23 @@ export async function runTrackBJob(): Promise<void> {
 
     // Kill Switch 활성 시 매수 차단, 매도(탈출)만 실행
     const killActive = isKillSwitchActive('KR');
-    const filtered = killActive
+    let filtered = killActive
       ? decisions.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action))
       : decisions;
 
     if (killActive && filtered.length < decisions.length) {
       logger.warn(`🛑 Kill Switch 활성 — 매수 ${decisions.length - filtered.length}건 차단, 매도 ${filtered.length}건 실행`, { component: 'SCHEDULER' });
+    }
+
+    // 개장벨 시간대(09:00~09:12) Track B 신규매수 양보 — 개장벨이 초단타 전문
+    const kstNow = new Date(Date.now() + 9 * 3600000);
+    const kstH = kstNow.getUTCHours(), kstM = kstNow.getUTCMinutes();
+    if (kstH === 9 && kstM <= 12) {
+      const before = filtered.length;
+      filtered = filtered.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
+      if (filtered.length < before) {
+        logger.info(`⚡ 개장벨 양보: Track B 매수 ${before - filtered.length}건 스킵 (09:00~09:12 개장벨 우선)`, { component: 'SCHEDULER' });
+      }
     }
 
     if (filtered.length === 0) {
@@ -63,7 +74,7 @@ export async function runTrackBJob(): Promise<void> {
     const mode = (strategy?.mode ?? 'SWING') as StrategyMode;
 
     // 3. 매매 실행
-    await tradeExecutor.processDecisions(filtered, mode);
+    await tradeExecutor.processDecisions(filtered, mode, 'TRACK_B');
     reportSuccess();
 
     // 4. 텔레그램 알림 (HOLD 제외한 결정만)

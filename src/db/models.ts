@@ -121,6 +121,7 @@ export const TradeDecisionSchema = z.object({
   confidence: z.number().min(0).max(1),
   ai_score: z.number().optional(), // 매수 당시 AI 복합 점수 (점수 기반 TP/SL 계산용)
   strategy_mode: z.string().optional(), // per-decision 모드 오버라이드 (BOTTOM_FISHING 등)
+  trigger_source: z.string().optional(), // 매수 출처: 'TRACK_B' | 'SNIPER' | 'OPENING_BELL' | 'AFTER_HOURS' | 'EOD_BLUECHIP'
   // 동적 TP/SL 계산용 기술지표 힌트 (use_dynamic_tpsl=true 시 활용)
   rsi: z.number().optional(),
   volume_ratio: z.number().optional(),

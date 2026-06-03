@@ -5,7 +5,7 @@
  */
 import { analyzeTechnicals, type OHLCV } from '../analysis/indicators.js';
 import { OVERSEAS, SECTOR_CLASS, OVERSEAS_FEE_PCT, ALLOCATION_GOLDEN } from '../config/constants.js';
-import { config, setTradingModeOverride } from '../config/index.js';
+import { config, setTradingModeOverride, paperOnly } from '../config/index.js';
 import { runWithMode } from '../config/context.js';
 import { getPool, logSystem } from '../db/client.js';
 import { getOverseasDailyChart, getOverseasPrice, type OverseasPrice } from '../kis/overseas.js';
@@ -26,6 +26,7 @@ import { setOverseasScores } from '../cache/overseas-scores.js';
 import { getFearGreedIndex, getUpcomingEarnings, interpretMarketSentiment } from '../market/external-signals.js';
 import { checkUsEarnings } from '../automation/earnings-sentinel.js';
 import { fetchExchangeRate } from '../automation/macro-data.js';
+import { touchActivity } from '../utils/cloud-sql-wake.js';
 
 // ── 모듈 re-export (기존 import 경로 유지) ──
 export { setShuttingDown, isOverseasJobRunning, resetUSSessionCache, resetAsiaSessionCache, restoreSessionStartValue } from './overseas/session.js';
@@ -190,6 +191,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       logger.info(`세션 캐시 사용 — 전 종목(${activeStocks.length}) 시세 갱신 + 차트분석 캐시 재사용`, { component: 'OVERSEAS' });
     }
 
+    touchActivity(); // 스케줄러 활동 → idle watcher에 알림
     logger.info(`${regionFlags} 해외주식 자동매매 시작 (${activeStocks.length}/${allActiveStocks.length}종목, 시장: ${[...openRegions].join('/')})`, { component: 'OVERSEAS' });
 
     // ── 1. 시세 + 차트 병렬 수집 ──
@@ -512,9 +514,14 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     if (mktSignal) logger.info(`📊 시장 신호: ${mktSignal.reason}`, { component: 'OVERSEAS' });
 
     const quality = mktSignal?.marketQuality ?? 'OK';
-    const riskBlockPct = (quality === 'GREAT' || quality === 'OK') ? 5 : 3;
+    // Paper: 학습용이므로 리스크 차단 관대 (15%) / Live: 보수적 (3-5%)
+    const riskBlockPct = isPaper()
+      ? 15
+      : (quality === 'GREAT' || quality === 'OK') ? 5 : 3;
     const riskBlocked = lossPctOfPortfolio >= riskBlockPct;
-    const recoveryMode = lossPctOfPortfolio >= 3 && !riskBlocked;
+    const recoveryMode = isPaper()
+      ? lossPctOfPortfolio >= 8 && !riskBlocked   // Paper: 8%부터 회복모드
+      : lossPctOfPortfolio >= 3 && !riskBlocked;
     if (riskBlocked) {
       logger.warn(`⛔ 총자산 대비 -${lossPctOfPortfolio.toFixed(1)}% → 신규 매수 차단 (한도 ${riskBlockPct}%)`, { component: 'OVERSEAS' });
       await logSystem('WARN', 'OVERSEAS', `총자산 손실 -${lossPctOfPortfolio.toFixed(1)}% → 신규 매수 차단`);
@@ -538,7 +545,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         // 국내 투자중 금액이 $100 이상일 때만 비중 체크 (통합증거금 현금만 있으면 스킵)
         if (domesticInvestedUsd >= 100) {
           const grandInvestedUsd = (holdingEvalUsd || 0) + domesticInvestedUsd;
-          const { rows: allocRows } = await getPool().query('SELECT us_pct FROM portfolio_allocation_config LIMIT 1');
+          const { rows: allocRows } = await getPool().query('SELECT us_pct FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1', [isPaper()]);
           let targetUsPct = Number(allocRows[0]?.us_pct ?? 30);
           // 크로스마켓 로테이션: DB에 저장된 최신 로테이션 신호로 동적 조정
           try {
@@ -564,16 +571,17 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       } catch { /* alloc config 미존재 시 무시 */ }
     }
 
-    if (riskBlocked || allocBlocked || currentHoldingCount >= MAX_POSITIONS || cash < 50) {
+    const minCashForBuy = portfolioValue * 0.09; // PHI.CASH (9%) — 포트폴리오 비례
+    if (riskBlocked || allocBlocked || currentHoldingCount >= MAX_POSITIONS || cash < minCashForBuy) {
       const reasons: string[] = [];
       if (riskBlocked) reasons.push(`리스크차단(-${lossPctOfPortfolio.toFixed(1)}%)`);
       if (allocBlocked) reasons.push('해외비중초과');
       if (currentHoldingCount >= MAX_POSITIONS) reasons.push(`보유풀(${currentHoldingCount}/${MAX_POSITIONS})`);
-      if (cash < 50) reasons.push(`현금부족($${cash.toFixed(0)}<$50)`);
+      if (cash < minCashForBuy) reasons.push(`현금부족($${cash.toFixed(0)}<$${minCashForBuy.toFixed(0)})`);
       logger.info(`🚫 매수 블록 진입 불가 — ${reasons.join(', ')}`, { component: 'OVERSEAS' });
     }
 
-    if (!riskBlocked && !allocBlocked && currentHoldingCount < MAX_POSITIONS && cash >= 50) {
+    if (!riskBlocked && !allocBlocked && currentHoldingCount < MAX_POSITIONS && cash >= minCashForBuy) {
       const [lossCooldownSet, recentLossSet, manualSellCdSet] = await Promise.all([
         getLossCooldownStocks(isPaper()), getRecentLossStocks(isPaper()), getManualSellCooldownStocks(),
       ]);
@@ -696,9 +704,11 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       const mtfResults = await batchMultiTF(mtfStocks).catch(() => new Map());
 
       // ── 방어 모드 적용: 매수 차단 / 트레일링 타이트닝 ──
-      const defenseBlockBuys = defenseSignal.blockNewBuys;
-      if (defenseBlockBuys) {
-        logger.warn(`🛡️ 방어 모드 ${defenseSignal.level} — 신규 매수 차단 (${defenseSignal.reasons.join(', ')})`, { component: 'OVERSEAS' });
+      // Paper: 학습용이므로 방어모드 매수차단 바이패스 (매도 방어는 유지)
+      const defenseBlockBuys = isPaper() ? false : defenseSignal.blockNewBuys;
+      if (defenseSignal.blockNewBuys) {
+        const bypass = isPaper() ? ' (Paper 바이패스)' : '';
+        logger.warn(`🛡️ 방어 모드 ${defenseSignal.level} — 신규 매수 차단${bypass} (${defenseSignal.reasons.join(', ')})`, { component: 'OVERSEAS' });
       }
 
       // ── 매수 실행 (Rolling Kelly + EV배율 + VIX 레짐 + 점진적 쿨다운 + 상관관계 + MTF 반영) ──
@@ -737,10 +747,10 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           winRate: wrData?.winRate, winRateSamples: wrData?.sampleCount,
           marketBreadth: freshBreadth,
         });
-        // 최소 포지션: position-sizing.ts에서 $80(paper)/$150(live) 바닥 적용
-        const minPositionSize = 20;
+        // 최소 포지션: 포트폴리오의 10% (MIN_POSITION_PCT) — 고정 $ 폐지
+        const minPositionSize = portfolioValue * 0.10;
         if (positionSize < minPositionSize) {
-          logger.info(`🔧 ${target.code}: positionSize=$${positionSize.toFixed(2)} < $${minPositionSize} → BREAK (sizing=${sizingMult} cash=$${cash.toFixed(0)})`, { component: 'OVERSEAS' });
+          logger.info(`🔧 ${target.code}: positionSize=$${positionSize.toFixed(2)} < $${minPositionSize.toFixed(0)}(10%) → BREAK (sizing=${sizingMult} cash=$${cash.toFixed(0)})`, { component: 'OVERSEAS' });
           break;
         }
 
@@ -883,8 +893,8 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     // ── Memory Agent: 거래 패턴 자동 추출 (세션당 1회) ──
     extractTradingPatterns().catch(() => {});
 
-    // ── 매도 후 빠른 재투자: 현금 해방 시 60초 후 재스캔 ──
-    if (sellOrders.length > 0 && finalHoldings.size < MAX_POSITIONS && cash >= 50) {
+    // ── 매도 후 빠른 재투자: 현금 해방 시 30초 후 재스캔 ──
+    if (sellOrders.length > 0 && finalHoldings.size < MAX_POSITIONS && cash >= portfolioValue * 0.09) {
       const rescanMode = isPaper();
       logger.info(`🔄 매도 ${sellOrders.length}건 완료 → 30초 후 재스캔 (현금 $${cash.toFixed(0)} 재투자, ${rescanMode ? 'PAPER' : 'LIVE'})`, { component: 'OVERSEAS' });
       setTimeout(() => {
@@ -926,6 +936,7 @@ export async function runOverseasDual(): Promise<void> {
     catch (e) { logger.error(`해외주식 paper 실패: ${e}`, { component: 'OVERSEAS' }); }
   });
 
+  if (paperOnly) return; // 자율학습 모드: live 완전 스킵
   await runWithMode(false, async () => {
     try { await runOverseasJob({ isPaper: false }); }
     catch (e) { logger.error(`해외주식 live 실패: ${e}`, { component: 'OVERSEAS' }); }

@@ -182,7 +182,7 @@ export async function runHoldingCheckJob(): Promise<void> {
     }
 
     if (forceCloseDecisions.length > 0) {
-      await tradeExecutor.processDecisions(forceCloseDecisions, mode);
+      await tradeExecutor.processDecisions(forceCloseDecisions, mode, 'HOLDING_CHECK');
 
       const summary = forceCloseDecisions.map((d) => `${d.stock_code} x${d.quantity} (${d.reasoning})`).join('\n');
       await sendTelegramMessage(`⏰ 시간 손절 실행:\n${summary}`);
@@ -442,7 +442,7 @@ async function checkEscapeTargets(chains: any[]): Promise<void> {
 
   const strategy = await getActiveStrategy();
   const mode = ((strategy?.mode ?? 'SWING') as StrategyMode);
-  await tradeExecutor.processDecisions(decisions, mode);
+  await tradeExecutor.processDecisions(decisions, mode, 'HOLDING_CHECK');
 
   // 매도 실행 성공 후 escape_target_price 초기화 (실행 전에 하면 실패 시 탈출 기회 상실)
   for (const chain of escapeChains) {

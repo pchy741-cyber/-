@@ -3,6 +3,7 @@
  */
 import { Hono } from 'hono';
 import { config, baseIsPaper } from '../../../config/index.js';
+import { runWithMode } from '../../../config/context.js';
 import { watchlistRoutes } from './watchlist-routes.js';
 import { tradeRoutes } from './trade-routes.js';
 import { sellRoutes } from './sell-routes.js';
@@ -21,14 +22,20 @@ dashboardRoutes.get('/dashboard', async (c) => {
 
   const cached = getDashCache(cacheKey);
   if (cached) {
-    const stale = Date.now() - cached.ts >= getDashCacheTTL();
+    const age = Date.now() - cached.ts;
+    const stale = age >= getDashCacheTTL();
     if (!stale) return c.json(cached.data);
-    if (!getDashBuildingByMode().has(cacheKey)) {
-      getOrBuildDashPayload(viewIsPaper)
-        .then(p => setDashCache(cacheKey, p))
-        .catch(() => {});
+    // 2분 미만 stale → SWR (stale 반환 + 백그라운드 빌드)
+    // 2분 이상 stale → fresh 빌드 대기 (오래된 숫자 표시 방지)
+    if (age < 120_000) {
+      if (!getDashBuildingByMode().has(cacheKey)) {
+        runWithMode(viewIsPaper, () => getOrBuildDashPayload(viewIsPaper))
+          .then(p => setDashCache(cacheKey, p))
+          .catch(() => {});
+      }
+      return c.json(cached.data);
     }
-    return c.json(cached.data);
+    // 2분+ stale → fall through to fresh build below
   }
   const timeoutMs = 25_000;
   const timeoutPromise = new Promise<never>((_, rej) =>

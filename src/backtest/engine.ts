@@ -97,6 +97,7 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
     SWING: 45,
     DEFENSE: 55,
     SCALPING: 45,
+    DIVIDEND: 99,
     SNIPER: 88,
     BOTTOM_FISHING: 0,
   };

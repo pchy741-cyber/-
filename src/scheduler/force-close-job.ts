@@ -63,7 +63,7 @@ export async function runForceCloseJob(): Promise<void> {
   }
 
   if (toClose.length > 0) {
-    await tradeExecutor.processDecisions(toClose, 'SCALPING');
+    await tradeExecutor.processDecisions(toClose, 'SCALPING', 'FORCE_CLOSE');
     logger.warn(`🔥 마감 손절 완료: ${toClose.length}건`, { component: 'FORCE_CLOSE' });
   }
 

@@ -79,15 +79,17 @@ sseRoutes.get('/stream', (c) => {
         const overseasHoldingCount = overseasHoldings?.length ?? 0;
 
         // 체인별 실시간 가격 (캐시 기반 — 추가 KIS 호출 없음)
-        const chainPrices = chains.map((ch: any) => {
+        // 캐시 미스 시 avg_buy_price 폴백 → PnL=0% 깜빡임 방지: 캐시 있는 종목만 전송
+        const chainPrices = chains.reduce((acc: any[], ch: any) => {
           const cached = getCachedPriceMemory(ch.stock_code);
-          const currentPrice = cached ?? Number(ch.avg_buy_price ?? 0);
+          if (cached == null || cached <= 0) return acc; // 캐시 없으면 스킵 — 기존 값 유지
           const avgPrice = Number(ch.avg_buy_price ?? 0);
           const qty = Number(ch.total_quantity ?? 0);
-          const unrealizedPnl = currentPrice > 0 && avgPrice > 0 ? (currentPrice - avgPrice) * qty : 0;
-          const unrealizedPnlPct = currentPrice > 0 && avgPrice > 0 ? ((currentPrice - avgPrice) / avgPrice) * 100 : 0;
-          return { stock_code: ch.stock_code, currentPrice, unrealizedPnl, unrealizedPnlPct };
-        });
+          const unrealizedPnl = avgPrice > 0 ? (cached - avgPrice) * qty : 0;
+          const unrealizedPnlPct = avgPrice > 0 ? ((cached - avgPrice) / avgPrice) * 100 : 0;
+          acc.push({ stock_code: ch.stock_code, currentPrice: cached, unrealizedPnl, unrealizedPnlPct });
+          return acc;
+        }, []);
 
         const payload = {
           timestamp: new Date().toISOString(),

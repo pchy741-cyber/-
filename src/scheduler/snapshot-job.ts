@@ -1,4 +1,5 @@
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { insertSnapshot } from '../db/client.js';
 import { getAccountBalance } from '../kis/account.js';
 import { getPaperBalance } from '../risk/engine.js';
@@ -9,9 +10,12 @@ import { logger } from '../utils/logger.js';
  * — 대시보드 viewMode 전환 시 어떤 모드든 손실한도 기준값 확보
  */
 export async function runSnapshotJob(): Promise<void> {
+  const isPaper = getCtxIsPaper();
+  const modeLabel = isPaper ? 'paper' : 'live';
+
   // 1) 현재 서버 모드 스냅샷 (기존 로직)
   try {
-    const balance = config.isPaper
+    const balance = isPaper
       ? await getPaperBalance()
       : await getAccountBalance();
 
@@ -23,19 +27,19 @@ export async function runSnapshotJob(): Promise<void> {
       daily_pnl: balance.totalProfitLoss,
       daily_pnl_pct: balance.totalProfitLossPct,
       positions: balance.positions,
-      is_paper: config.isPaper,
+      is_paper: isPaper,
     });
 
-    logger.info(`📸 스냅샷 저장 [${config.tradingMode}]: 총 ${(balance.totalDeposit + balance.totalEvalAmount).toLocaleString()}원, 투자 ${balance.totalEvalAmount.toLocaleString()}원, 포지션 ${balance.positions.length}개`, {
+    logger.info(`📸 스냅샷 저장 [${modeLabel}]: 총 ${(balance.totalDeposit + balance.totalEvalAmount).toLocaleString()}원, 투자 ${balance.totalEvalAmount.toLocaleString()}원, 포지션 ${balance.positions.length}개`, {
       component: 'SNAPSHOT',
     });
   } catch (error) {
-    logger.error(`스냅샷 실패 [${config.tradingMode}]: ${error}`, { component: 'SNAPSHOT' });
+    logger.error(`스냅샷 실패 [${modeLabel}]: ${error}`, { component: 'SNAPSHOT' });
   }
 
   // 2) 반대 모드 스냅샷 (뷰 전환용)
   try {
-    if (config.isPaper) {
+    if (isPaper) {
       // 서버 paper → live 스냅샷 추가 (실계좌 잔고)
       const liveBalance = await getAccountBalance(true);
       // 실계좌 잔고가 0이면 live 자격증명 미설정 → 스킵

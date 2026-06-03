@@ -1,4 +1,5 @@
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { logger } from '../utils/logger.js';
 import { clearTokenCache, getAccessToken, getAccessTokenForMode } from './auth.js';
 
@@ -96,12 +97,12 @@ const _liveKisLimiter = new RateLimiter(15);
 const _liveOverseasLimiter = new RateLimiter(15);
 
 export const kisRateLimiter = {
-  acquire: () => config.isPaper ? _paperLimiter.acquire() : _liveKisLimiter.acquire(),
-  get pendingCount() { return config.isPaper ? _paperLimiter.pendingCount : _liveKisLimiter.pendingCount; },
+  acquire: () => getCtxIsPaper() ? _paperLimiter.acquire() : _liveKisLimiter.acquire(),
+  get pendingCount() { return getCtxIsPaper() ? _paperLimiter.pendingCount : _liveKisLimiter.pendingCount; },
 };
 export const overseasRateLimiter = {
-  acquire: () => config.isPaper ? _paperLimiter.acquire() : _liveOverseasLimiter.acquire(),
-  get pendingCount() { return config.isPaper ? _paperLimiter.pendingCount : _liveOverseasLimiter.pendingCount; },
+  acquire: () => getCtxIsPaper() ? _paperLimiter.acquire() : _liveOverseasLimiter.acquire(),
+  get pendingCount() { return getCtxIsPaper() ? _paperLimiter.pendingCount : _liveOverseasLimiter.pendingCount; },
 };
 export const marketDataRateLimiter = new RateLimiter(4);
 
@@ -116,7 +117,7 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
 
   // forceMode: 서버 모드와 무관하게 특정 모드의 URL/credential 사용
   // (예: paper 서버에서 live 잔고 조회, 또는 그 반대)
-  const resolvedLive = forceMode ? forceMode === 'live' : !config.isPaper;
+  const resolvedLive = forceMode ? forceMode === 'live' : !getCtxIsPaper();
   const resolvedBaseUrl = (useRealUrl || (forceMode === 'live'))
     ? 'https://openapi.koreainvestment.com:9443'
     : forceMode === 'paper'

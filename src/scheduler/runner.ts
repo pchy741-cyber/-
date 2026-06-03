@@ -16,7 +16,7 @@ import { runDailyLearning } from '../automation/self-learning.js';
 
 import { runSniperScan } from '../automation/snipers/runner.js';
 import { MARKET, SCHEDULE } from '../config/constants.js';
-import { setTradingModeOverride } from '../config/index.js';
+import { setTradingModeOverride, paperOnly } from '../config/index.js';
 import { runWithMode } from '../config/context.js';
 import { logger } from '../utils/logger.js';
 import { runHoldingCheckJob } from './holding-check-job.js';
@@ -35,11 +35,13 @@ import { runIntegrityCheck } from './integrity-check-job.js';
 /**
  * paper → live 순으로 동일 작업을 실행 (국내 이중 모드 병행운영)
  * overseas-job의 runOverseasDual() 패턴과 동일
+ * PAPER_ONLY=true 시 live 스킵 (자율학습 모드 — API 호출·비용 절약)
  */
 async function runDomesticDual(label: string, fn: () => Promise<unknown>): Promise<void> {
   await runWithMode(true, async () => {
     try { await fn(); } catch (e) { logger.error(`${label} paper 실패: ${e}`, { component: 'SCHEDULER' }); }
   });
+  if (paperOnly) return; // 자율학습 모드: live 완전 스킵
   await runWithMode(false, async () => {
     try { await fn(); } catch (e) { logger.error(`${label} live 실패: ${e}`, { component: 'SCHEDULER' }); }
   });
@@ -103,32 +105,14 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 10:00 — Track A 오전 재분석 (황금 오전 구간 시작 직후 — 신선한 점수)
-  cron.schedule(
-    SCHEDULE.TRACK_A_CRON[1],
-    () => {
-      logger.info('⏰ Track A (오전 재분석 10:00)', { component: 'SCHEDULER' });
-      withTimeout('Track A 오전재분석', () => runTrackAJob(), 300_000);
-    },
-    { timezone: MARKET.TIMEZONE },
-  );
-
-  // 12:30 — Track A 점심 재분석 (장중 흐름 반영)
+  // 12:30 — Track A 점심 재분석 (장중 흐름 반영, 유일한 장중 AI 분석)
+  // ⚡ 비용 최적화: 10:00/14:00 제거 → 07:30 + 12:30 + 18:00 = 3회/일
+  //    Track B가 캐시된 점수로 3분 간격 실시간 대응하므로 장중 재분석 1회면 충분
   cron.schedule(
     SCHEDULE.TRACK_A_CRON[2],
     () => {
       logger.info('⏰ Track A (점심 재분석)', { component: 'SCHEDULER' });
       withTimeout('Track A 점심', () => runTrackAJob(), 300_000);
-    },
-    { timezone: MARKET.TIMEZONE },
-  );
-
-  // 14:00 — Track A 오후 재분석 (마감 전 포지션 점검)
-  cron.schedule(
-    '0 14 * * 1-5',
-    () => {
-      logger.info('⏰ Track A (오후 재분석)', { component: 'SCHEDULER' });
-      withTimeout('Track A 오후', () => runTrackAJob(), 300_000);
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -399,10 +383,11 @@ export function startScheduler(): void {
   );
 
   // 🌙 15:42, 15:52 — 장후 시간외 줍줍 (급락 종목 시간외 단일가 매수)
+  // runDomesticDual로 감싸서 PAPER_ONLY 모드 존중
   cron.schedule(
     '42,52 15 * * 1-5',
     () => {
-      import('./after-hours-job.js').then((m) => m.runAfterHoursJob()).catch((e) => logger.error(`시간외 줍줍 실패: ${e}`, { component: 'SCHEDULER' }));
+      runDomesticDual('시간외줍줍', () => import('./after-hours-job.js').then((m) => m.runAfterHoursJob())).catch((e) => logger.error(`시간외 줍줍 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -464,6 +449,24 @@ export function startScheduler(): void {
     '30 18 * * 1-5',
     () => {
       runDailyLearning().catch((e) => logger.error(`자기학습 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🔄 Paper 모의자금 리필 체크 — 평일 18:45 (자기학습 직후, 자금 고갈 시 자동 리셋)
+  cron.schedule(
+    '45 18 * * 1-5',
+    async () => {
+      try {
+        const { checkAndRefillPaper } = await import('../risk/paper-balance.js');
+        const { checkAndRefillOverseasPaper } = await import('./overseas/state.js');
+        await runWithMode(true, async () => {
+          await checkAndRefillPaper();
+          await checkAndRefillOverseasPaper();
+        });
+      } catch (e) {
+        logger.error(`Paper 리필 체크 실패: ${e}`, { component: 'SCHEDULER' });
+      }
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -682,7 +685,7 @@ export function startScheduler(): void {
   }, 10_000); // 10초 후 (DB 연결 안정화 대기)
 
   logger.info('✅ 스케줄러 등록 완료 (자동화 모듈 16개 + 미국주식)', { component: 'SCHEDULER' });
-  logger.info(`  Track A: 07:30/12:30/14:00/18:00 | Track B: ${SCHEDULE.TRACK_B_INTERVAL_MINUTES}분 | 뉴스: 15분`, { component: 'SCHEDULER' });
+  logger.info(`  Track A: 07:30/12:30/18:00 (3회, 비용최적화) | Track B: ${SCHEDULE.TRACK_B_INTERVAL_MINUTES}분 | 뉴스: 15분`, { component: 'SCHEDULER' });
   logger.info('  이상감지: 30분 | 장세전환: 08:00/12:00 | 리포트: 15:40 | 🌙시간외: 15:42/52', { component: 'SCHEDULER' });
   logger.info('  🎯 스나이퍼: 15분 (수급/기술/공시 고확률 자동 진입)', { component: 'SCHEDULER' });
   logger.info('  Self-Heal: 10분 | 아카이빙: 일요일 02:00', { component: 'SCHEDULER' });

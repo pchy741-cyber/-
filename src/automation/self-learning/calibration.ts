@@ -93,6 +93,7 @@ export async function calibrateScoreTierParams(): Promise<void> {
        WHERE recorded_at >= NOW() - INTERVAL '120 days'
          AND entry_score IS NOT NULL
          AND is_paper = false
+         AND (market IS NULL OR market = 'KR')
        ORDER BY recorded_at DESC`,
     );
 

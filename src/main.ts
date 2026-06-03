@@ -16,6 +16,7 @@ import { sseRoutes } from './api/routes/sse.js';
 import { journalRoutes } from './api/routes/journal.js';
 import { backtestRoutes } from './backtest/api.js';
 import reviewRoutes from './api/routes/review.js';
+import { aiCostRoutes } from './api/routes/ai-cost.js';
 import { kakaoAlertRoutes } from './api/routes/kakao-alert.js';
 import { requireAuth } from './api/middleware/auth.js';
 import { webauthnPublicRoutes, webauthnProtectedRoutes } from './api/routes/webauthn.js';
@@ -114,6 +115,7 @@ app.route('/', backtestRoutes);        // GET  /api/backtest/*
 app.route('/', journalRoutes);         // GET  /api/journal/*
 app.route('/', overseasRoutes);        // GET  /api/overseas/dashboard, /api/overseas/scores ...
 app.route('/', kakaoAlertRoutes);      // POST /api/kakao-alert (카카오페이 알림 webhook)
+app.route('/', aiCostRoutes);          // GET  /api/ai-cost (AI 비용 현황)
 
 // 확장 기능 (OFF by default, 설정에서 켜야 사용)
 import { dividendRoutes } from './api/routes/dividend.js';

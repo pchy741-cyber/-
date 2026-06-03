@@ -217,13 +217,13 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       effectiveConfMap.set(t.code, effectiveConf);
 
       // ════════════════════════════════════════════════════════
-      // 🚫 Gemini AI 매수 차단 모드 (2025-05 한달 운영 결과)
-      // Gemini 무료 매수 판단은 승률 저조 → 매수는 기술적 필터만 사용
-      // AI는 매도/분석/인사이트 용도로만 활용
-      // 유료 AI(Claude/GPT) 충전 시 아래 블록을 해제하면 됨
+      // Gemini AI 매수 — Live는 차단 (무료 승률 저조), Paper는 학습용 활성화
+      // 유료 AI(Claude/GPT) 충전 시 Live도 해제하면 됨
       // ════════════════════════════════════════════════════════
-      // if (ai?.action === 'BUY' && effectiveConf >= confFloorAdj) return true;
-      // if (ai?.action === 'BUY' && (t.signal === 'STRONG_BUY' || t.isMomentum) && effectiveConf >= confFloorMom) return true;
+      if (isPaper) {
+        if (ai?.action === 'BUY' && effectiveConf >= confFloorAdj) return true;
+        if (ai?.action === 'BUY' && (t.signal === 'STRONG_BUY' || t.isMomentum) && effectiveConf >= confFloorMom) return true;
+      }
 
       // VIX CRISIS → 기술적 진입도 차단 (위기 시 매수 자제)
       if (vixRegime.regime === 'CRISIS' && !vixRegime.allowNewBuy) {
@@ -239,7 +239,10 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       const hasGoodWinRate = wr && wr.sampleCount >= 5 && wr.winRate >= 0.55;
       const hasBadWinRate = wr && wr.sampleCount >= 5 && wr.winRate <= 0.35;
       // 승률 나쁜 종목은 기술적으로도 차단 (Memory Agent와 이중 보호)
-      if (hasBadWinRate && !t.isBigMover) {
+      // Paper: 학습 데이터 수집을 위해 완화 (sample 10건 이상 + 승률 25% 미만만 차단)
+      const paperRelaxedBadWR = isPaper && wr && wr.sampleCount >= 10 && wr.winRate <= 0.25;
+      const effectiveBadWR = isPaper ? paperRelaxedBadWR : hasBadWinRate;
+      if (effectiveBadWR && !t.isBigMover) {
         logger.info(`  ⛔ 승률 피드백 차단: ${t.code} 승률 ${(wr!.winRate * 100).toFixed(0)}% (${wr!.sampleCount}건)`, { component: 'OVERSEAS' });
         return false;
       }
@@ -256,21 +259,24 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       }
 
       // ── 기술적 진입 경로 (강→약 순서) ──
+      // Paper: 학습 데이터 수집을 위해 score 임계값 완화 (-5pt)
+      const sAdj = isPaper ? 5 : 0; // score adjustment for paper
       // 1. BigMover (급등주) — 승률 피드백 강화: 우량주만 + 과열 제외
-      //    "급등주는 추천 안합니다, 우량주로 하시는게 안전" → BigMover도 MA20 위 + RSI<70
-      if (t.isBigMover && t.score >= 18 && t.rsi >= 38 && t.rsi <= 70 && t.aboveMA20 && !hasBadWinRate) return true;
+      if (t.isBigMover && t.score >= 18 - sAdj && t.rsi >= 35 && t.rsi <= 72 && t.aboveMA20 && !effectiveBadWR) return true;
       // 2. Momentum (모멘텀 확인: 볼륨+추세)
-      if (t.isMomentum && t.score >= 20 && t.aboveMA20 && t.rsi >= 40 && t.rsi <= 72) return true;
+      if (t.isMomentum && t.score >= 20 - sAdj && t.aboveMA20 && t.rsi >= 38 && t.rsi <= 74) return true;
       // 3. STRONG_BUY 기술 시그널 (복합 지표 합산 최상위)
-      if (t.signal === 'STRONG_BUY' && t.score >= 25 && t.adx >= 18 && t.rsi >= 40 && t.rsi <= 72) return true;
+      if (t.signal === 'STRONG_BUY' && t.score >= 25 - sAdj && t.adx >= (isPaper ? 15 : 18) && t.rsi >= 38 && t.rsi <= 74) return true;
       // 4. Bollinger 돌파 + 모멘텀
-      if (t.bollingerBreakout === 'UP' && t.score >= 20 && t.aboveMA20 && t.rsi >= 40 && t.rsi <= 75) return true;
+      if (t.bollingerBreakout === 'UP' && t.score >= 20 - sAdj && t.aboveMA20 && t.rsi >= 38 && t.rsi <= 75) return true;
       // 5. BUY 시그널 + 트렌드 확인 (ADX 확인, RSI 적정 범위)
-      if (t.signal === 'BUY' && t.score >= 30 && t.adx >= 20 && t.rsi >= 45 && t.rsi <= 68 && t.aboveMA20) return true;
-      // 6. 과매도 반등 (RSI ≤ 35 + 트렌드 약하지 않음 — 이미 isOversold로 체크됨)
-      if (isOversold && t.aboveMA60 && t.score >= 20) return true;
+      if (t.signal === 'BUY' && t.score >= 30 - sAdj && t.adx >= (isPaper ? 16 : 20) && t.rsi >= 42 && t.rsi <= 70 && t.aboveMA20) return true;
+      // 6. 과매도 반등 (RSI ≤ 35 + 트렌드 약하지 않음)
+      if (isOversold && t.aboveMA60 && t.score >= 20 - sAdj) return true;
       // 7. 고승률 종목 완화 진입 (5거래 이상, 승률 55%+)
-      if (hasGoodWinRate && t.signal !== 'SELL' && t.score >= 15 && t.rsi >= 35 && t.rsi <= 72 && t.aboveMA20) return true;
+      if (hasGoodWinRate && t.signal !== 'SELL' && t.score >= 15 - sAdj && t.rsi >= 35 && t.rsi <= 72 && t.aboveMA20) return true;
+      // 8. Paper 전용: BUY 시그널 + score≥20 + RSI 적정 — 추가 진입 경로
+      if (isPaper && t.signal === 'BUY' && t.score >= 20 && t.rsi >= 40 && t.rsi <= 72 && t.aboveMA20) return true;
 
       // 개선#7: 어닝 드리프트 진입 — 실적 서프라이즈 후 갭업 +5%+ 고거래량 = 추격 매수
       const drift = ctx.earningsDrift?.find(d => d.code === t.code && d.direction === 'BULL' && d.strength >= 0.5);

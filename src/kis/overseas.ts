@@ -1,4 +1,5 @@
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { kisRequest, overseasRateLimiter } from './client.js';
 import { logger } from '../utils/logger.js';
 
@@ -22,7 +23,7 @@ async function overseasKisRequest<T = unknown>(opts: Parameters<typeof kisReques
 
 // ── KIS 해외주식 tr_id (모드 전환 시 항상 최신값 반영되도록 getter 사용) ──
 function getOverseasTrId() {
-  const p = config.isPaper;
+  const p = getCtxIsPaper();
   return {
     PRICE: 'HHDFS00000300',
     DAILY_CHART: 'HHDFS76240000',
@@ -221,7 +222,7 @@ export async function placeFractionalOverseasBuy(params: {
 }): Promise<{ success: boolean; orderNo: string; message: string }> {
   const { stockCode, exchange = 'NASDAQ', amountUsd } = params;
   const excd = ORDER_EXCD_MAP[exchange] ?? EXCHANGE_MAP[exchange] ?? 'NAS';
-  const trId = config.isPaper ? 'VTTT3016U' : 'TTTT3016U';
+  const trId = getCtxIsPaper() ? 'VTTT3016U' : 'TTTT3016U';
 
   const body: Record<string, string> = {
     CANO: config.kis.accountNo,
@@ -261,7 +262,7 @@ export async function cancelOverseasOrder(params: {
 }): Promise<{ success: boolean; message: string }> {
   const { stockCode, exchange = 'NASDAQ', orderNo, quantity } = params;
   const excd = ORDER_EXCD_MAP[exchange] ?? 'NASD';
-  const trId = config.isPaper ? 'VTTT1004U' : 'TTTT1004U';
+  const trId = getCtxIsPaper() ? 'VTTT1004U' : 'TTTT1004U';
 
   const body: Record<string, string> = {
     CANO: config.kis.accountNo,

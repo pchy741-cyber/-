@@ -189,7 +189,13 @@ export function startDbHealthWatcher(checkDb: () => Promise<boolean>, onReconnec
       if (ok) return; // DB 정상
     } catch { /* connection failed */ }
 
-    // DB 연결 실패 — pool 리셋 + wake 시도 (쿨다운 적용)
+    // DB 연결 실패 — 즉시 메모리 모드 전환 (대시보드 8초 타임아웃 방지)
+    try {
+      const { enableMemoryMode, isMemoryMode } = await import('../db/client.js');
+      if (!isMemoryMode()) enableMemoryMode();
+    } catch { /* ignore */ }
+
+    // pool 리셋 + wake 시도 (쿨다운 적용)
     logger.warn('🔌 DB 연결 끊김 감지 → pool 리셋 + 자동 복구 시도', { component: 'SQL_WAKE' });
     try {
       const { resetPool } = await import('../db/client.js');

@@ -4,7 +4,7 @@
 import { getCachedScores, getScoresWithFallback, cachePrice, getLastKnownPrices } from '../../../cache/redis.js';
 import { cachePriceMemory, getLastKnownPricesMemory, getCachedPriceMemory, cacheGet } from '../../../cache/memory.js';
 import { config, baseIsPaper } from '../../../config/index.js';
-import { getActiveStrategy, getActiveWatchlist, getOpenChains, getPool, getTodayStartSnapshot } from '../../../db/client.js';
+import { getActiveStrategy, getActiveWatchlist, getOpenChains, getTodayStartSnapshot, isMemoryMode, safeQuery } from '../../../db/client.js';
 import { getAccountBalance } from '../../../kis/account.js';
 import { getCurrentPrice, getBatchPrices, isMarketOpen } from '../../../kis/market.js';
 import { getDefenseParkState } from '../../../ai/track-b/defense-park.js';
@@ -67,7 +67,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     balanceFn().catch(() => defaultBalance),
     getOpenChains(viewIsPaper).catch(() => []),
     getActiveStrategy().catch(() => null),
-    getPool().query(
+    safeQuery(
       `SELECT id, category, insight, confidence, sample_count, last_updated, is_manual,
               recommendation, param_change, is_applied, applied_at, is_paper
        FROM learned_insights ORDER BY is_manual DESC, confidence DESC LIMIT 30`
@@ -140,17 +140,19 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   }
 
   // 종목명 백그라운드 보정: watchlist + transaction_chains 모두 코드명 → 실제명으로 업데이트
-  for (const [code, name] of nameMap) {
-    const wName = String(watchlistNameMap.get(code) ?? '');
-    if (isInvalidStockName(wName, code)) {
-      getPool().query('UPDATE watchlist SET stock_name = $1 WHERE stock_code = $2', [name, code]).catch(() => {});
-    }
-    const cName = String(chainNameMap.get(code) ?? '');
-    if (isInvalidStockName(cName, code)) {
-      getPool().query(
-        "UPDATE transaction_chains SET stock_name = $1 WHERE stock_code = $2 AND (stock_name IS NULL OR stock_name = $2 OR stock_name ~ '^[0-9]{6}$' OR stock_name !~ '[A-Za-z가-힣]')",
-        [name, code]
-      ).catch(() => {});
+  if (!isMemoryMode()) {
+    for (const [code, name] of nameMap) {
+      const wName = String(watchlistNameMap.get(code) ?? '');
+      if (isInvalidStockName(wName, code)) {
+        safeQuery('UPDATE watchlist SET stock_name = $1 WHERE stock_code = $2', [name, code]).catch(() => {});
+      }
+      const cName = String(chainNameMap.get(code) ?? '');
+      if (isInvalidStockName(cName, code)) {
+        safeQuery(
+          "UPDATE transaction_chains SET stock_name = $1 WHERE stock_code = $2 AND (stock_name IS NULL OR stock_name = $2 OR stock_name ~ '^[0-9]{6}$' OR stock_name !~ '[A-Za-z가-힣]')",
+          [name, code]
+        ).catch(() => {});
+      }
     }
   }
 
@@ -271,12 +273,12 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     const pfx = viewIsPaper ? 'p_' : 'l_';
 
     // Paper: orders 기반 실시간 계산 (USD), Live: DB에서 KRW 읽기
-    const { rows: osRows } = await getPool().query(
+    const { rows: osRows } = await safeQuery(
       'SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1', [viewIsPaper]);
     if (viewIsPaper) {
       overseasCash = await computePaperCash(); // USD (결정론적 — orders 기반)
     } else {
-      const { rows: osCashRows } = await getPool().query(
+      const { rows: osCashRows } = await safeQuery(
         `SELECT value, EXTRACT(EPOCH FROM (NOW() - COALESCE(updated_at, NOW() - INTERVAL '999 hours'))) AS age_sec
          FROM overseas_state WHERE key = 'cash'`);
       osCashAge = osCashRows.length > 0 ? Number(osCashRows[0].age_sec) : Infinity;
@@ -290,7 +292,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     ]);
     const stateMap = new Map<string, string>();
     if (stateKeys.length > 0) {
-      const { rows: stRows } = await getPool().query(
+      const { rows: stRows } = await safeQuery(
         'SELECT key, value FROM overseas_state WHERE key = ANY($1)', [stateKeys]);
       for (const sr of stRows) stateMap.set(sr.key, sr.value);
     }
@@ -307,7 +309,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
           const p = await withTimeout(getOverseasPrice(String(r.stock_code), String(r.exchange)), 3000, null as any);
           if (p?.currentPrice > 0) {
             r.last_price = p.currentPrice;
-            getPool().query(
+            safeQuery(
               'UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2 AND is_paper = false',
               [p.currentPrice, r.stock_code],
             ).catch(() => {});

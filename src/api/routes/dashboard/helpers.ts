@@ -104,3 +104,6 @@ export function invalidateDashboardCache(): void {
 
 // 특정 모드 캐시 무효화 (모드 전환 시 — 새 모드 캐시만 제거)
 export function invalidateModeCache(mode: string): void { _softInvalidate(mode); }
+
+// Hard invalidate — 캐시 데이터 완전 삭제 (DB 복구 후 stale 데이터 제거)
+export function hardInvalidateDashboardCache(): void { _dashCacheByMode.clear(); }

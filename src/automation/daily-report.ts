@@ -1,4 +1,5 @@
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { getOpenChains, getPool } from '../db/client.js';
 import { getAccountBalance } from '../kis/account.js';
 import { getDinnerMoneyStats } from './profit-withdraw.js';
@@ -19,7 +20,7 @@ import { logger } from '../utils/logger.js';
 export async function generateDailyReport(): Promise<void> {
   try {
     const { getPaperBalance } = await import('../risk/engine.js');
-    const balance = config.isPaper ? await getPaperBalance() : await getAccountBalance();
+    const balance = getCtxIsPaper() ? await getPaperBalance() : await getAccountBalance();
     const chains = await getOpenChains();
     const today = new Date().toISOString().split('T')[0];
     const { todayAmount: reserved } = await getDinnerMoneyStats();
@@ -36,7 +37,7 @@ export async function generateDailyReport(): Promise<void> {
     // 오늘 닫힌 체인 (실현 손익)
     const { rows: closedToday } = await getPool().query(
       'SELECT * FROM transaction_chains WHERE status = $1 AND closed_at >= $2 AND is_paper = $3',
-      ['CLOSED', `${today}T00:00:00`, config.isPaper],
+      ['CLOSED', `${today}T00:00:00`, getCtxIsPaper()],
     );
     const realizedPnl = closedToday.reduce((sum: number, c: any) => sum + Number(c.realized_pnl ?? 0), 0);
 
@@ -57,7 +58,7 @@ export async function generateDailyReport(): Promise<void> {
     const weekStart = getWeekStart(today);
     const { rows: weekData } = await getPool().query(
       'SELECT realized_pnl FROM transaction_chains WHERE status = $1 AND closed_at >= $2 AND is_paper = $3',
-      ['CLOSED', `${weekStart}T00:00:00`, config.isPaper],
+      ['CLOSED', `${weekStart}T00:00:00`, getCtxIsPaper()],
     );
     const weekPnl = weekData.reduce((s: number, c: any) => s + Number(c.realized_pnl ?? 0), 0);
     const weekWins = weekData.filter((c: any) => Number(c.realized_pnl) > 0).length;
@@ -67,7 +68,7 @@ export async function generateDailyReport(): Promise<void> {
     const monthStart = `${today.slice(0, 7)}-01`;
     const { rows: monthData } = await getPool().query(
       'SELECT realized_pnl FROM transaction_chains WHERE status = $1 AND closed_at >= $2 AND is_paper = $3',
-      ['CLOSED', `${monthStart}T00:00:00`, config.isPaper],
+      ['CLOSED', `${monthStart}T00:00:00`, getCtxIsPaper()],
     );
     const monthPnl = monthData.reduce((s: number, c: any) => s + Number(c.realized_pnl ?? 0), 0);
     const monthWins = monthData.filter((c: any) => Number(c.realized_pnl) > 0).length;
@@ -85,7 +86,7 @@ export async function generateDailyReport(): Promise<void> {
     const dailyEmoji = balance.totalProfitLoss >= 0 ? '📈' : '📉';
 
     const report = [
-      `📊 *QUANTOPS 일일 리포트* [${config.isPaper ? '연습' : '실전'}]`,
+      `📊 *QUANTOPS 일일 리포트* [${getCtxIsPaper() ? '연습' : '실전'}]`,
       `━━━━━━━━━━━━━━━━━`,
       `📅 ${today}`,
       ``,

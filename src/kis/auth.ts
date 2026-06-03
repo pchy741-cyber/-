@@ -1,4 +1,5 @@
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { logger } from '../utils/logger.js';
 
 interface KISToken {
@@ -136,7 +137,7 @@ export async function getAccessTokenForMode(mode: 'paper' | 'live'): Promise<str
 }
 
 export async function getAccessToken(): Promise<string> {
-  const isPaper = config.isPaper;
+  const isPaper = getCtxIsPaper();
   if (cachedToken && !isExpired(cachedToken) && cachedTokenIsPaper === isPaper) {
     return cachedToken.accessToken;
   }
@@ -248,7 +249,7 @@ export function clearTokenCache() {
     try {
       const { getPool, isMemoryMode } = await import('../db/client.js');
       if (isMemoryMode()) return;
-      const key = config.isPaper ? 'kis_token_paper' : 'kis_token_live';
+      const key = getCtxIsPaper() ? 'kis_token_paper' : 'kis_token_live';
       await getPool().query('DELETE FROM system_state WHERE key = $1', [key]);
       logger.info(`KIS 토큰 DB 캐시 삭제: ${key}`, { component: 'KIS_AUTH' });
     } catch (err) {

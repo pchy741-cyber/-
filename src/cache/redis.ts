@@ -39,7 +39,7 @@ function getRedis(): Redis | null {
 // TTL: 4시간 (Track A가 07:30, 18:00에 실행하므로 4시간이면 충분)
 // Track A 실패 시 stale 데이터 서빙 방지
 
-const SCORE_TTL = 60 * 30; // 30분 (매매 후 빠른 갱신)
+const SCORE_TTL = 60 * 60 * 6; // 6시간 (Track A 간격 2~5시간 커버)
 
 export async function cacheScores(scores: AIScore[]): Promise<void> {
   const r = getRedis();

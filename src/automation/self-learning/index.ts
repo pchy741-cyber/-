@@ -1,4 +1,5 @@
 import { config } from '../../config/index.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, logSystem } from '../../db/client.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
@@ -68,7 +69,7 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
      WHERE tc.status = 'CLOSED' AND tc.closed_at >= $1 AND tc.is_paper = $2
      GROUP BY tc.id
      ORDER BY tc.closed_at DESC`,
-    [ninetyDaysAgo.toISOString(), config.isPaper],
+    [ninetyDaysAgo.toISOString(), getCtxIsPaper()],
   );
 
   if (!chains || chains.length < 3) {
@@ -136,7 +137,7 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
     })),
     ...(await analyzeBuyThreshold()),
     // ── 해외주식 학습 (섹터/체결사유/종목/보유기간) ──
-    ...(await analyzeOverseasAll(config.isPaper)),
+    ...(await analyzeOverseasAll(getCtxIsPaper())),
   ];
 
   if (insights.length > 0) {
@@ -151,7 +152,7 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
 
 async function saveInsights(insights: LearnedInsight[]): Promise<void> {
   if (insights.length > 0) {
-    const isPaper = config.isPaper;
+    const isPaper = getCtxIsPaper();
     await getPool().query(
       `DELETE FROM learned_insights
        WHERE is_manual IS NOT TRUE
@@ -296,7 +297,7 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
   if (toApply.length === 0) return;
 
   try {
-    const isPaper = config.isPaper;
+    const isPaper = getCtxIsPaper();
     const { rows } = await getPool().query(
       `SELECT * FROM strategy_config WHERE is_active = true AND is_paper = $1 ORDER BY updated_at DESC LIMIT 1`,
       [isPaper],
@@ -480,7 +481,7 @@ export async function runDailyLearning(): Promise<void> {
     logger.info(`🧠 자기학습 인사이트 ${insights.length}건 저장`, { component: 'LEARN' });
     await autoApplyInsights(insights);
     await calibrateScoreTierParams().catch((e) => logger.warn(`티어 파라미터 보정 실패: ${e}`, { component: 'LEARN' }));
-    if (!config.isPaper) {
+    if (!getCtxIsPaper()) {
       await validatePromotedInsights().catch((e) => logger.warn(`프로모션 검증 실패: ${e}`, { component: 'LEARN' }));
     }
   } catch (err) {
