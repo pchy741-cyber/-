@@ -4,6 +4,7 @@ import React from 'react';
 import { Panel, SideBadge, EmptyMsg } from '@/components/ui';
 import { fmt, fmtWon, fmtUsd, fmtTime, pc } from '../../lib/utils';
 import { toDisplayName, isUnresolvedStockName } from '../../lib/helpers';
+import type { Trade } from '../../types';
 
 /** AI 사유를 초보자 친화적 한글로 요약 */
 function simplifyReason(raw: string | null | undefined): string {
@@ -31,7 +32,7 @@ function simplifyReason(raw: string | null | undefined): string {
 }
 
 interface RecentTradesPanelProps {
-  filled: any[];
+  filled: Trade[];
   holdingsTab: 'KR' | 'US';
   expandedTradeIdx: number | null;
   setExpandedTradeIdx: (v: number | null) => void;
@@ -42,17 +43,17 @@ export default function RecentTradesPanel({
   filled, holdingsTab, expandedTradeIdx, setExpandedTradeIdx, getStockName,
 }: RecentTradesPanelProps) {
   const isUsTab = holdingsTab === 'US';
-  const tabFiltered = filled.filter((t: any) => {
+  const tabFiltered = filled.filter((t: Trade) => {
     const isOv = t.trigger_source === 'OVERSEAS' || Number(t.filled_price) < 1000;
     return isUsTab ? isOv : !isOv;
   });
-  const todayTabTrades = tabFiltered.filter((t: any) => new Date(t.created_at).toDateString() === new Date().toDateString());
+  const todayTabTrades = tabFiltered.filter((t: Trade) => new Date(t.created_at).toDateString() === new Date().toDateString());
 
   return (
     <Panel title={isUsTab ? '최근 매매 (미국)' : '최근 매매'} badge={`오늘 ${todayTabTrades.length}건`} badgeColor={todayTabTrades.length > 0 ? 'emerald' : undefined}>
       {tabFiltered.length === 0 ? <EmptyMsg>매매 기록 없음</EmptyMsg> : (
         <div className="divide-y divide-white/[0.03]">
-          {tabFiltered.slice(0, 10).map((t: any, i: number) => {
+          {tabFiltered.slice(0, 10).map((t: Trade, i: number) => {
             const isOverseasTrade = t.trigger_source === 'OVERSEAS' || Number(t.filled_price) < 1000;
             const isExpanded = expandedTradeIdx === i;
             return (

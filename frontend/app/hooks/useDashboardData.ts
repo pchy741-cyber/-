@@ -1,34 +1,47 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { api, BACKEND_URL } from '../lib/utils';
+import { api } from '../lib/utils';
+import { useSSEStream } from './useSSEStream';
+import type {
+  Health, Dashboard, WatchlistItem, Strategy, Trade, KillSwitch,
+  Secrets, UsDashboard, WithdrawConfig, AllocConfig, LoopStatus,
+} from '../types';
 
 export function useDashboardData() {
-  const [health, setHealth] = useState<any>(null);
-  const [dash, setDash] = useState<any>(null);
-  const [watchlist, setWatchlist] = useState<any[]>([]);
-  const [strategy, setStrategy] = useState<any>(null);
-  const [trades, setTrades] = useState<any[]>([]);
-  const [killSwitch, setKillSwitch] = useState<any>(null);
-  const [secrets, setSecrets] = useState<any>(null);
-  const [usDash, setUsDash] = useState<any>(null);
-  const [withdrawConfig, setWithdrawConfig] = useState<any>(null);
-  const [withdrawHistory, setWithdrawHistory] = useState<any[]>([]);
-  const [allocConfig, setAllocConfig] = useState<any>(null);
+  const [health, setHealth] = useState<Health | null>(null);
+  const [dash, setDash] = useState<Dashboard | null>(null);
+  const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
+  const [strategy, setStrategy] = useState<Strategy | null>(null);
+  const [trades, setTrades] = useState<Trade[]>([]);
+  const [killSwitch, setKillSwitch] = useState<KillSwitch | null>(null);
+  const [secrets, setSecrets] = useState<Secrets | null>(null);
+  const [usDash, setUsDash] = useState<UsDashboard | null>(null);
+  const [withdrawConfig, setWithdrawConfig] = useState<WithdrawConfig | null>(null);
+  const [withdrawHistory, setWithdrawHistory] = useState<WithdrawConfig[]>([]);
+  const [allocConfig, setAllocConfig] = useState<AllocConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState(new Date());
-  const [loopStatus, setLoopStatus] = useState<any>(null);
+  const [loopStatus, setLoopStatus] = useState<LoopStatus | null>(null);
   const [sseHealthScore, setSseHealthScore] = useState<number>(0);
   const [featureFlags, setFeatureFlags] = useState<Record<string, boolean>>({});
 
-  const [viewMode, setViewMode] = useState<'live'|'paper'>('live');
+  // localStorage에서 동기적으로 viewMode 복원 — useEffect 비동기 복원 시
+  // live→paper 전환 사이에 SSE가 live 모드로 연결되어 1초간 실전 데이터 표시되는 버그 방지
+  const [viewMode, setViewMode] = useState<'live'|'paper'>(() => {
+    try {
+      const saved = localStorage.getItem('quantops_viewMode');
+      if (saved === 'paper' || saved === 'live') return saved;
+    } catch {}
+    return 'live';
+  });
 
   const loadingRef = useRef(false);
   const loadGenRef = useRef(0);
   const staticLoadedRef = useRef(false);
   const tradesLoadedRef = useRef(false);
   const tradesLastFetchRef = useRef(0);
-  const viewModeRef = useRef<'live'|'paper'>('live');
+  const viewModeRef = useRef<'live'|'paper'>(viewMode);
 
   const loadStatic = async (gen: number, vmOverride?: string) => {
     const vm = vmOverride ?? viewModeRef.current;
@@ -54,7 +67,7 @@ export function useDashboardData() {
 
   const refreshTrades = (gen: number, vmOverride?: string) => {
     const vm = vmOverride ?? viewModeRef.current;
-    api(`/trades?limit=100&viewMode=${vm}`).then((t: any) => {
+    api(`/trades?limit=100&viewMode=${vm}`).then((t: Trade[]) => {
       if (loadGenRef.current !== gen) return;
       if (Array.isArray(t)) {
         setTrades(t);
@@ -93,33 +106,25 @@ export function useDashboardData() {
         }
       }
 
-      api(`/overseas/dashboard?viewMode=${vm}`).then(ifCurrent((us: any) => {
+      api(`/overseas/dashboard?viewMode=${vm}`).then(ifCurrent((us: UsDashboard) => {
         if (!us) return;
         setUsDash(us);
       })).catch(() => {});
       if (!staticLoadedRef.current) {
-        api('/portfolio/allocation').then(ifCurrent((ac: any) => { if (ac) setAllocConfig(ac); })).catch(() => {});
+        api('/portfolio/allocation').then(ifCurrent((ac: AllocConfig) => { if (ac) setAllocConfig(ac); })).catch(() => {});
       }
     } catch (err) { setLoading(false); console.error('[QUANTOPS] 데이터 로드 실패:', err); }
     finally { loadingRef.current = false; }
   }, []);
 
-  // localStorage에서 viewMode 복원
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem('quantops_viewMode');
-      if (saved === 'paper' || saved === 'live') {
-        viewModeRef.current = saved;
-        if (saved !== 'live') setViewMode(saved);
-      }
-    } catch {}
-  }, []);
+  // viewMode는 useState 초기화에서 동기적으로 localStorage 복원됨 (위 참조)
+  // 별도 useEffect 불필요 — SSE/API 레이스 컨디션 원천 차단
 
   // feature flags 로드
   useEffect(() => {
-    api('/feature-flags').then((r: any) => {
+    api('/feature-flags').then((r: { flags?: Array<{ key: string; enabled: boolean }> }) => {
       const map: Record<string, boolean> = {};
-      (r.flags || []).forEach((f: any) => { map[f.key] = f.enabled; });
+      (r.flags || []).forEach((f) => { map[f.key] = f.enabled; });
       setFeatureFlags(map);
     }).catch(() => {});
   }, [viewMode]);
@@ -144,88 +149,7 @@ export function useDashboardData() {
   }, [load]);
 
   // SSE 실시간 스트림
-  useEffect(() => {
-    const vm = viewMode;
-    const base = BACKEND_URL.endsWith('/') ? BACKEND_URL.slice(0, -1) : BACKEND_URL;
-    let es: EventSource | null = null;
-    let prevChainCount = -1;
-    let prevOverseasCount = -1;
-    let retryCount = 0;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
-    let disposed = false;
-
-    const connect = () => {
-      if (disposed) return;
-      es = new EventSource(`${base}/api/stream?viewMode=${vm}`, { withCredentials: true });
-
-      es.addEventListener('update', (e: MessageEvent) => {
-        retryCount = 0;
-        try {
-          const data = JSON.parse(e.data);
-          if (Array.isArray(data.recentTrades) && data.recentTrades.length > 0) {
-            setTrades(prev => {
-              const incomingMap = new Map<string, any>(data.recentTrades.map((t: any) => [String(t.id), t]));
-              const existingIds = new Set(prev.map((t: any) => String(t.id)));
-              const updated = prev.map((t: any) => {
-                const fresh = incomingMap.get(String(t.id));
-                return fresh ? { ...t, ...fresh } : t;
-              });
-              const brandNew = data.recentTrades.filter((t: any) => !existingIds.has(String(t.id)));
-              return brandNew.length > 0 ? [...brandNew, ...updated].slice(0, 200) : updated;
-            });
-          }
-          if (data.strategy) {
-            setStrategy((prev: any) => prev ? { ...prev, ...data.strategy } : data.strategy);
-          }
-          // SSE chainPrices → dash.chains 실시간 업데이트 (5초마다 PnL 갱신)
-          if (Array.isArray(data.chainPrices) && data.chainPrices.length > 0) {
-            setDash((prev: any) => {
-              if (!prev?.chains) return prev;
-              const priceMap = new Map<string, {stock_code:string;currentPrice:number;unrealizedPnl:number;unrealizedPnlPct:number}>(data.chainPrices.map((cp: any) => [cp.stock_code, cp]));
-              const updatedChains = prev.chains.map((ch: any) => {
-                const cp = priceMap.get(ch.stock_code);
-                if (!cp || cp.currentPrice <= 0) return ch;
-                return { ...ch, currentPrice: cp.currentPrice, unrealizedPnl: cp.unrealizedPnl, unrealizedPnlPct: cp.unrealizedPnlPct };
-              });
-              const updatedPortfolio = data.portfolio?.unrealizedPnl != null
-                ? { ...prev.portfolio, unrealizedPnl: data.portfolio.unrealizedPnl }
-                : prev.portfolio;
-              return { ...prev, chains: updatedChains, portfolio: updatedPortfolio };
-            });
-          }
-          const chainsChanged = prevChainCount !== -1 && data.activeChains !== prevChainCount;
-          const overseasChanged = prevOverseasCount !== -1 && data.overseasHoldingCount !== undefined && data.overseasHoldingCount !== prevOverseasCount;
-          if (chainsChanged || overseasChanged) {
-            api(`/dashboard?viewMode=${vm}`).then((d: any) => { if (d) setDash(d); }).catch(() => {});
-            api(`/trades?limit=200&viewMode=${vm}`).then((t: any) => { if (Array.isArray(t) && t.length > 0) setTrades(t); }).catch(() => {});
-            api(`/overseas/dashboard?viewMode=${vm}`).then((us: any) => {
-              if (us) setUsDash(us);
-            }).catch(() => {});
-          }
-          prevChainCount = data.activeChains ?? prevChainCount;
-          if (data.overseasHoldingCount !== undefined) prevOverseasCount = data.overseasHoldingCount;
-          if (data.loopMode) setLoopStatus({ ...data.loopMode, openMarkets: data.loopMode.openMarkets ?? [] });
-          if (data.healthScore != null) setSseHealthScore(data.healthScore);
-        } catch { /* ignore */ }
-      });
-
-      es.onerror = () => {
-        es?.close();
-        if (disposed) return;
-        retryCount = Math.min(retryCount + 1, 5);
-        const delay = Math.min(2000 * Math.pow(2, retryCount), 30000);
-        retryTimer = setTimeout(connect, delay);
-      };
-    };
-
-    connect();
-
-    return () => {
-      disposed = true;
-      es?.close();
-      if (retryTimer) clearTimeout(retryTimer);
-    };
-  }, [viewMode]);
+  useSSEStream(viewMode, { setTrades, setStrategy, setDash, setUsDash, setLoopStatus, setSseHealthScore });
 
   const switchView = useCallback((mode: 'live' | 'paper') => {
     if (viewModeRef.current === mode) return;

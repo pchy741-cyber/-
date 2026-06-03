@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { api } from '../lib/utils';
+import type { Strategy } from '../types';
 
 // Re-export split modules for backward compatibility
 export { ArcGauge, ScoreBar, RiskGaugePanel, CorrelationWarningPanel, ShortSellingPanel } from './RiskPanels';
@@ -12,10 +13,16 @@ export { PnlBreakdownPanel } from './PnlBreakdownPanel';
 // STRATEGY TIMELINE PANEL
 // ═══════════════════════════════════════
 
-export function StrategyTimelinePanel({ strategy }: { strategy: any }) {
-  const [history, setHistory] = React.useState<any[]>([]);
+interface StrategyHistoryEntry {
+  from: string;
+  to: string;
+  ts: string;
+}
+
+export function StrategyTimelinePanel({ strategy }: { strategy: Strategy | null }) {
+  const [history, setHistory] = React.useState<StrategyHistoryEntry[]>([]);
   React.useEffect(() => {
-    api('/strategy/history').then((r: any) => { if (Array.isArray(r)) setHistory(r.slice(0, 10)); }).catch(() => {});
+    api('/strategy/history').then((r: unknown) => { if (Array.isArray(r)) setHistory(r.slice(0, 10)); }).catch(() => {});
   }, []);
 
   const modeColor: Record<string, string> = {
@@ -25,7 +32,7 @@ export function StrategyTimelinePanel({ strategy }: { strategy: any }) {
     SCALPING: 'bg-purple-500/70 text-purple-100',
     SNIPER: 'bg-orange-500/70 text-orange-100',
   };
-  const currentMode = strategy?.mode ?? 'SWING';
+  const currentMode = String(strategy?.mode ?? 'SWING');
   const currentColor = modeColor[currentMode] ?? 'bg-slate-500/70 text-slate-100';
 
   return (
@@ -38,7 +45,7 @@ export function StrategyTimelinePanel({ strategy }: { strategy: any }) {
         <div className="text-[10px] text-slate-600 py-1">전략 전환 없음 — 안정 운영 중</div>
       ) : (
         <div className="flex flex-wrap gap-1.5 mt-1">
-          {history.slice().reverse().map((ev: any, i: number) => {
+          {history.slice().reverse().map((ev, i) => {
             const fromC = (modeColor[ev.from] ?? 'bg-slate-500/50 text-slate-300').split(' ');
             const toC = (modeColor[ev.to] ?? 'bg-slate-500/50 text-slate-300').split(' ');
             return (

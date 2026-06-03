@@ -4,6 +4,15 @@ import React from 'react';
 import { Panel } from '@/components/ui';
 import { api } from '../lib/utils';
 
+interface InvestorFlowItem {
+  stock_code: string;
+  stock_name: string;
+  trend: string;
+  foreignStreak: number;
+  foreignNet: number;
+  institutionNet: number;
+}
+
 const TREND_META: Record<string, { color: string; label: string }> = {
   STRONG_BUY:  { color: 'text-emerald-300', label: '강매수' },
   BUY:         { color: 'text-emerald-400', label: '매수' },
@@ -13,12 +22,12 @@ const TREND_META: Record<string, { color: string; label: string }> = {
 };
 
 export default function InvestorFlowPanel() {
-  const [items, setItems] = React.useState<any[]>([]);
+  const [items, setItems] = React.useState<InvestorFlowItem[]>([]);
   const [loading, setLoading] = React.useState(true);
 
   React.useEffect(() => {
     api('/market/investor-flow', { timeout: 30000 })
-      .then((d: any) => setItems(d.items ?? []))
+      .then((d: Record<string, unknown>) => setItems((d.items as InvestorFlowItem[]) ?? []))
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);

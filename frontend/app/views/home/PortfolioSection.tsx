@@ -3,15 +3,21 @@
 import React, { useState } from 'react';
 import { api, fmt, fmtWon, fmtUsd } from '../../lib/utils';
 import { toDisplayName, isUnresolvedStockName } from '../../lib/helpers';
+import type { Dashboard, Chain, UsHolding, UsWatchlistItem, AllocConfig, MpData } from '../../types';
+
+interface StrategyInfo {
+  mode?: string;
+  [key: string]: unknown;
+}
 
 interface PortfolioSectionProps {
-  allocConfig: any;
-  setAllocConfig: (v: any) => void;
+  allocConfig: AllocConfig | null;
+  setAllocConfig: (v: AllocConfig) => void;
   onGoToSettings?: () => void;
-  dash: any;
-  chains: any[];
-  usHoldings: any[];
-  usW: any[];
+  dash: Dashboard | null;
+  chains: Chain[];
+  usHoldings: UsHolding[];
+  usW: UsWatchlistItem[];
   totalValue: number;
   totalInvested: number;
   domesticInvested: number;
@@ -27,9 +33,9 @@ interface PortfolioSectionProps {
   investedPctExact: number;
   cashPctExact: number;
   overseasCashPctExact: number;
-  strategy: any;
+  strategy: StrategyInfo | null;
   getStockName: (code: string) => string;
-  mpData?: any;
+  mpData?: MpData | null;
 }
 
 export default function PortfolioSection(props: PortfolioSectionProps) {
@@ -48,7 +54,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
   const krTarget = Number(allocConfig?.kr_pct ?? 70);
   const usTarget = Number(allocConfig?.us_pct ?? 30);
   const krActualPct = domesticInvested > 0
-    ? (chains.reduce((s: number, ch: any) => s + (ch.unrealizedPnl ?? 0), 0) / domesticInvested) * 100
+    ? (chains.reduce((s: number, ch: Chain) => s + (ch.unrealizedPnl ?? 0), 0) / domesticInvested) * 100
     : 0;
   const usActualPct = overseasInvestedUsd > 0 ? (overseasPnlUsd / overseasInvestedUsd) * 100 : 0;
   const krUnderperform = chains.length > 0 && usHoldings.length > 0 && krActualPct < usActualPct - 2;
@@ -126,7 +132,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
           {(() => {
             const f = mpData?.futures;
             const fValueKrw = f?.currentValueKrw ?? (f?.investedKrw ?? 0);
-            const fReturnPct = f?.investedKrw > 0 ? ((fValueKrw - f.investedKrw) / f.investedKrw) * 100 : 0;
+            const fReturnPct = (f?.investedKrw ?? 0) > 0 ? ((fValueKrw - f!.investedKrw!) / f!.investedKrw!) * 100 : 0;
             return (
               <div className={`rounded-xl px-2 sm:px-3 py-2.5 ${fReturnPct >= 0 ? 'bg-violet-950/30 border border-violet-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>
                 <div className="text-[9px] text-slate-500 mb-0.5">⚡ 선물</div>
@@ -205,7 +211,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
               {domesticInvested > 0 && usHoldings.length > 0 && (
                 <div className="text-[10px] text-slate-500 font-medium">국내 ({fmtWon(domesticInvested)})</div>
               )}
-              {chains.map((ch: any, i: number) => {
+              {chains.map((ch: Chain, i: number) => {
                 const inv = Number(ch.invested) || 0;
                 const pct = totalValue > 0 ? (inv / totalValue) * 100 : 0;
                 return (
@@ -220,7 +226,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
                       <span className="text-slate-500">{fmtWon(inv)} ({pct.toFixed(0)}%)</span>
                     </div>
                     <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
-                      <div className={`h-full rounded-full ${ch.unrealizedPnl >= 0 ? 'bg-emerald-500/60' : 'bg-rose-500/60'}`} style={{ width: `${pct}%` }} />
+                      <div className={`h-full rounded-full ${(ch.unrealizedPnl ?? 0) >= 0 ? 'bg-emerald-500/60' : 'bg-rose-500/60'}`} style={{ width: `${pct}%` }} />
                     </div>
                   </div>
                 );
@@ -232,12 +238,12 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
             <div className="mt-3 pt-3 border-t border-white/[0.04]">
               <div className="text-[10px] text-slate-500 font-medium mb-2">해외 ({fmtWon(overseasInvestedKrw)})</div>
               <div className="space-y-2">
-                {usHoldings.map((h: any, i: number) => {
+                {usHoldings.map((h: UsHolding, i: number) => {
                   const invUsd = h.avg_price * h.quantity;
                   const invKrw = invUsd * fxRate;
                   const pct = totalValue > 0 ? (invKrw / totalValue) * 100 : 0;
-                  const priceData = usW.find((s: any) => s.code === h.stock_code);
-                  const curPriceAlloc = (priceData?.price ?? 0) > 0 ? priceData!.price : (h.last_price ?? 0);
+                  const priceData = usW.find((s: UsWatchlistItem) => s.code === h.stock_code);
+                  const curPriceAlloc = (priceData?.price ?? 0) > 0 ? (priceData!.price ?? 0) : (h.last_price ?? 0);
                   const curPnl = curPriceAlloc > 0 ? (curPriceAlloc - h.avg_price) * h.quantity : 0;
                   return (
                     <div key={`us-${i}`}>

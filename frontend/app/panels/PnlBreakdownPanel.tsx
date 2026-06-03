@@ -2,12 +2,22 @@
 
 import React from 'react';
 import { fmtWon, pc } from '../lib/utils';
+import type { Chain, Trade } from '../types';
 
-export function PnlBreakdownPanel({ chains, trades }: { chains: any[]; trades: any[] }) {
-  const filled = trades.filter((t: any) => t.status === 'FILLED' && t.side === 'SELL');
+interface PnlTrade extends Trade {
+  trading_mode?: string;
+}
+
+interface PnlChain extends Chain {
+  dividendYield?: number;
+  holdingDays?: number;
+}
+
+export function PnlBreakdownPanel({ chains, trades }: { chains: PnlChain[]; trades: PnlTrade[] }) {
+  const filled = trades.filter((t) => t.status === 'FILLED' && t.side === 'SELL');
 
   // 시세차익
-  const swingPnl = filled.filter((t: any) => ['SWING','DEFENSE','SCALPING','SNIPER'].includes(t.trading_mode ?? '')).reduce((sum: number, t: any) => {
+  const swingPnl = filled.filter((t) => ['SWING','DEFENSE','SCALPING','SNIPER'].includes(t.trading_mode ?? '')).reduce((sum, t) => {
     const pnl = typeof t.realized_pnl === 'number' ? Number(t.realized_pnl) : null;
     if (pnl === null) {
       const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
@@ -18,7 +28,7 @@ export function PnlBreakdownPanel({ chains, trades }: { chains: any[]; trades: a
   }, 0);
 
   // 배당 적립
-  const dividendAccrual = chains.filter((c: any) => c.strategy_mode === 'DIVIDEND').reduce((sum: number, c: any) => {
+  const dividendAccrual = chains.filter((c) => c.strategy_mode === 'DIVIDEND').reduce((sum, c) => {
     const dvd = Number(c.dividendYield ?? 0);
     const holdDays = Number(c.holdingDays ?? 0);
     const invested = Number(c.invested ?? 0) || (Number(c.avg_buy_price) * Number(c.total_quantity));
@@ -26,7 +36,7 @@ export function PnlBreakdownPanel({ chains, trades }: { chains: any[]; trades: a
   }, 0);
 
   // 파킹 ETF 수익
-  const parkingPnl = filled.filter((t: any) => t.stock_code === '333940').reduce((sum: number, t: any) => {
+  const parkingPnl = filled.filter((t) => t.stock_code === '333940').reduce((sum, t) => {
     const pnl = typeof t.realized_pnl === 'number' ? Number(t.realized_pnl) : 0;
     return sum + pnl;
   }, 0);

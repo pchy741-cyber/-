@@ -3,9 +3,10 @@
 import React, { useState, useEffect } from 'react';
 import { Panel } from '@/components/ui';
 import { api } from '../../lib/utils';
+import type { ToastFn, ConfirmFn, FeatureFlag } from '../../types';
 
-export function FeatureFlagsPanel({ toast, confirm, onFlagChange }: { toast: any; confirm: (opts: {title: string, description?: string, confirmLabel?: string, confirmVariant?: 'danger'|'primary'|'ghost'}) => Promise<boolean>; onFlagChange?: (key: string, enabled: boolean) => void }) {
-  const [flags, setFlags] = useState<Array<{ key: string; enabled: boolean; config: any }>>([]);
+export function FeatureFlagsPanel({ toast, confirm, onFlagChange }: { toast: ToastFn; confirm: ConfirmFn; onFlagChange?: (key: string, enabled: boolean) => void }) {
+  const [flags, setFlags] = useState<FeatureFlag[]>([]);
 
   useEffect(() => {
     api('/feature-flags').then(r => setFlags(r.flags || [])).catch(() => {});
@@ -25,7 +26,7 @@ export function FeatureFlagsPanel({ toast, confirm, onFlagChange }: { toast: any
       setFlags(prev => prev.map(f => f.key === key ? { ...f, enabled } : f));
       onFlagChange?.(key, enabled);
       toast?.(`${label} ${enabled ? 'ON' : 'OFF'}`, 'ok');
-    } catch (e: any) { toast?.(e.message, 'err'); }
+    } catch (e: unknown) { toast?.((e as Error).message, 'err'); }
   };
 
   const flagMeta: Record<string, { icon: string; label: string; desc: string }> = {

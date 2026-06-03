@@ -3,6 +3,21 @@
 import React from 'react';
 import { Panel } from '@/components/ui';
 import { api } from '../lib/utils';
+import type { UsDashboard, ToastFn } from '../types';
+
+interface ScoredStock {
+  code: string;
+  name?: string;
+  score?: number;
+  ai_score?: number;
+  signal?: string;
+  price?: number;
+  changePct?: number;
+  rsi?: number;
+  exchange?: string;
+  confidence?: number;
+  reason?: string;
+}
 
 export const US_SECTOR_MAP: Record<string, string> = {
   NVDA: 'AI반도체', AMD: 'AI반도체', AVGO: 'AI반도체',
@@ -15,31 +30,31 @@ export const US_SECTOR_MAP: Record<string, string> = {
 };
 export const US_SECTORS = ['전체', 'AI반도체', '빅테크', '방산', '클라우드', '산업인프라', '대만반도체', '일본'];
 
-export default function OverseasScorePanel({ usDash, toast }: { usDash?: any; toast?: (msg: string, type?: string) => void }) {
-  const allScored = (usDash?.watchlist ?? []).filter((s: any) => typeof s.score === 'number');
+export default function OverseasScorePanel({ usDash, toast }: { usDash?: UsDashboard | null; toast?: ToastFn }) {
+  const allScored = (usDash?.watchlist ?? []).filter(s => typeof s.score === 'number') as ScoredStock[];
   const [sector, setSector] = React.useState('전체');
   const [buyingCode, setBuyingCode] = React.useState<string | null>(null);
   const [confirmCode, setConfirmCode] = React.useState<string | null>(null);
   const [manualAmount, setManualAmount] = React.useState(0); // 0 = 서버 자동
   const [showAll, setShowAll] = React.useState(false);
   const signalMap: Record<string, string> = { STRONG_BUY: '강력 추천', BUY: '매수', HOLD: '관망', SELL: '매도', STRONG_SELL: '강력 매도' };
-  const filtered = sector === '전체' ? allScored : allScored.filter((s: any) => US_SECTOR_MAP[s.code] === sector);
-  const sorted = [...filtered].sort((a: any, b: any) => (b.score ?? 0) - (a.score ?? 0));
+  const filtered = sector === '전체' ? allScored : allScored.filter(s => US_SECTOR_MAP[s.code] === sector);
+  const sorted = [...filtered].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
   const visible = showAll ? sorted : sorted.slice(0, 10);
 
   const openConfirm = (code: string) => { setConfirmCode(code); setManualAmount(0); };
   const cancelConfirm = () => setConfirmCode(null);
 
-  const manualBuy = async (sc: any) => {
+  const manualBuy = async (sc: ScoredStock) => {
     setBuyingCode(sc.code);
     setConfirmCode(null);
     try {
       const ex = sc.exchange ?? (sc.code?.length <= 4 ? 'NASDAQ' : 'NYSE');
-      const body: any = { ticker: sc.code, exchange: ex, reasoning: `수동진입 점수${sc.score?.toFixed(0)} RSI${sc.rsi?.toFixed(0)} ${sc.signal}` };
+      const body: Record<string, unknown> = { ticker: sc.code, exchange: ex, reasoning: `수동진입 점수${sc.score?.toFixed(0)} RSI${sc.rsi?.toFixed(0)} ${sc.signal}` };
       if (manualAmount > 0) body.amountUsd = manualAmount;
       const res = await api('/overseas/vision-scalp/execute', { method: 'POST', body: JSON.stringify(body) });
       toast?.(`${sc.code} ${res.qty}주 @$${res.price?.toFixed(2)} ($${res.amountUsed}) TP+${res.tpPct}%/SL-${res.slPct}%`, 'ok');
-    } catch (e: any) { toast?.(e.message, 'err'); }
+    } catch (e: unknown) { toast?.((e as Error).message, 'err'); }
     setBuyingCode(null);
   };
 
@@ -57,12 +72,12 @@ export default function OverseasScorePanel({ usDash, toast }: { usDash?: any; to
             ))}
           </div>
           <div className="space-y-1">
-            {visible.map((sc: any) => {
+            {visible.map((sc) => {
               const raw = Number(sc.score);
               const pct = Math.max(2, Math.min(100, (raw + 100) / 2));
               const barColor = pct >= 75 ? 'bg-emerald-500' : pct >= 60 ? 'bg-blue-500' : pct >= 45 ? 'bg-amber-500' : 'bg-slate-600';
               const textColor = pct >= 75 ? 'text-emerald-400' : pct >= 60 ? 'text-blue-400' : 'text-slate-500';
-              const label = signalMap[sc.signal] ?? sc.signal ?? '';
+              const label = signalMap[sc.signal ?? ''] ?? sc.signal ?? '';
               const sectorLabel = US_SECTOR_MAP[sc.code] ?? '';
               const isBuying = buyingCode === sc.code;
               const isConfirming = confirmCode === sc.code;
@@ -116,7 +131,7 @@ export default function OverseasScorePanel({ usDash, toast }: { usDash?: any; to
                   )}
                   <div className="flex items-center gap-3 mt-1 pl-1 text-[9px] flex-wrap">
                     {sc.rsi != null && <span className="text-slate-500">RSI <b className={Number(sc.rsi) > 70 ? 'text-rose-400' : Number(sc.rsi) < 30 ? 'text-emerald-400' : 'text-slate-300'}>{Number(sc.rsi).toFixed(0)}</b></span>}
-                    {sc.price > 0 && <span className="text-slate-400">${Number(sc.price).toFixed(2)}</span>}
+                    {(sc.price ?? 0) > 0 && <span className="text-slate-400">${Number(sc.price).toFixed(2)}</span>}
                     <span className={Number(sc.changePct) >= 0 ? 'text-emerald-400' : 'text-rose-400'}>{Number(sc.changePct) >= 0 ? '+' : ''}{Number(sc.changePct ?? 0).toFixed(2)}%</span>
                   </div>
                 </div>

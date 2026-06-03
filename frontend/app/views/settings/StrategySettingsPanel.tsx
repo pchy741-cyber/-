@@ -2,9 +2,10 @@
 
 import React from 'react';
 import { Panel, Sel } from '@/components/ui';
+import type { StrategyConfig } from '../../types';
 
 export function StrategySettingsPanel({ strategy, setField }: {
-  strategy: any;
+  strategy: StrategyConfig | null;
   setField: (field: string, val: string | number | boolean) => Promise<void>;
 }) {
   if (!strategy) return null;
@@ -12,13 +13,13 @@ export function StrategySettingsPanel({ strategy, setField }: {
     <Panel title="전략 설정" badge={strategy.mode === 'SWING' ? '스윙' : strategy.mode === 'DEFENSE' ? '방어' : strategy.mode === 'SNIPER' ? '저격수' : '단타'} badgeColor={strategy.mode === 'SWING' ? 'blue' : strategy.mode === 'DEFENSE' ? 'rose' : strategy.mode === 'SNIPER' ? 'amber' : 'amber'}>
       <div className="px-6 py-5 space-y-4">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <Sel label="매매 방식" value={strategy.mode} opts={[['SWING','스윙 (중단기)'],['DEFENSE','방어 (하락장)'],['SCALPING','단타 (당일)'],['SNIPER','🎯 저격수 (AI 88점+ 2종목 집중)']]} onChange={v => setField('mode', v)} />
-          <Sel label="AI 확신도 (높을수록 신중)" value={strategy.buy_threshold} opts={[[70,'70점'],[75,'75점'],[78,'78점'],[80,'80점'],[83,'83점 (현재)'],[85,'85점'],[88,'88점'],[90,'90점']]} onChange={v => setField('buy_threshold', Number(v))} />
+          <Sel label="매매 방식" value={String(strategy.mode ?? 'SWING')} opts={[['SWING','스윙 (중단기)'],['DEFENSE','방어 (하락장)'],['SCALPING','단타 (당일)'],['SNIPER','🎯 저격수 (AI 88점+ 2종목 집중)']]} onChange={v => setField('mode', v)} />
+          <Sel label="AI 확신도 (높을수록 신중)" value={Number(strategy.buy_threshold ?? 83)} opts={[[70,'70점'],[75,'75점'],[78,'78점'],[80,'80점'],[83,'83점 (현재)'],[85,'85점'],[88,'88점'],[90,'90점']]} onChange={v => setField('buy_threshold', Number(v))} />
           {!strategy.use_dynamic_tpsl && (
-            <Sel label="손실 한계 (이 이상 빠지면 매도)" value={strategy.stop_loss_pct} opts={[[-1.5,'-1.5% (타이트)'],[-2,'-2%'],[-2.5,'-2.5%'],[-3,'-3% (현재)'],[-4,'-4%'],[-5,'-5% (여유)']]} onChange={v => setField('stop_loss_pct', Number(v))} />
+            <Sel label="손실 한계 (이 이상 빠지면 매도)" value={Number(strategy.stop_loss_pct ?? -3)} opts={[[-1.5,'-1.5% (타이트)'],[-2,'-2%'],[-2.5,'-2.5%'],[-3,'-3% (현재)'],[-4,'-4%'],[-5,'-5% (여유)']]} onChange={v => setField('stop_loss_pct', Number(v))} />
           )}
           {!strategy.use_dynamic_tpsl && (
-            <Sel label="목표 수익 (이 이상 오르면 매도)" value={strategy.take_profit_pct} opts={[[3,'+3%'],[4,'+4%'],[5,'+5%'],[5.5,'+5.5% (현재)'],[6,'+6%'],[7,'+7%'],[8,'+8%']]} onChange={v => setField('take_profit_pct', Number(v))} />
+            <Sel label="목표 수익 (이 이상 오르면 매도)" value={Number(strategy.take_profit_pct ?? 5.5)} opts={[[3,'+3%'],[4,'+4%'],[5,'+5%'],[5.5,'+5.5% (현재)'],[6,'+6%'],[7,'+7%'],[8,'+8%']]} onChange={v => setField('take_profit_pct', Number(v))} />
           )}
         </div>
         {/* 동적 TP/SL 토글 */}

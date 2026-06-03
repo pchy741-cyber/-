@@ -3,17 +3,18 @@
 import React from 'react';
 import { Button } from '@/components/ui';
 import { api } from '../../lib/utils';
+import type { Dashboard, DefensePark, TradingStatus, TradingStatusBlock, AiStatus, ToastFn, ConfirmFn } from '../../types';
 
 interface StatusBannersProps {
-  dash: any;
+  dash: Dashboard | null;
   busyAction: string | null;
   guard: (key: string, fn: () => Promise<void>) => () => Promise<void>;
-  toast: any;
+  toast: ToastFn;
   onRefresh: () => void;
-  tradingStatus: any;
-  aiStatus: any;
-  defensePark: any;
-  confirm: (opts: { title: string; description?: string; confirmLabel?: string; confirmVariant?: 'danger' | 'primary' | 'ghost' }) => Promise<boolean>;
+  tradingStatus: TradingStatus | null;
+  aiStatus: AiStatus | null;
+  defensePark: DefensePark | undefined;
+  confirm: ConfirmFn;
 }
 
 export default function StatusBanners({ dash, busyAction, guard, toast, onRefresh, tradingStatus, aiStatus, defensePark, confirm }: StatusBannersProps) {
@@ -32,12 +33,12 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
               className="ml-auto bg-orange-500/20 hover:bg-orange-500/40 text-orange-200 shrink-0"
               disabled={!!busyAction}
               onClick={guard('cooldown', async () => {
-                if (!await confirm({ title: `${dash.cooldown.consecutive}연패 쿨다운을 수동으로 해제할까요?`, description: '나는 이 결정에 책임집니다', confirmLabel: '쿨다운 해제', confirmVariant: 'danger' })) return;
+                if (!await confirm({ title: `${dash!.cooldown!.consecutive}연패 쿨다운을 수동으로 해제할까요?`, description: '나는 이 결정에 책임집니다', confirmLabel: '쿨다운 해제', confirmVariant: 'danger' })) return;
                 try {
                   await api('/cooldown/reset', { method: 'POST' });
                   toast?.('쿨다운 해제 완료 — 다음 루프에서 매수 재개', 'ok');
                   onRefresh();
-                } catch (e: any) { toast?.('실패: ' + (e as any).message, 'error'); }
+                } catch (e: unknown) { toast?.('실패: ' + (e as Error).message, 'err'); }
               })}
             >🔓 쿨다운 수동 해제</Button>
           </div>
@@ -59,7 +60,7 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
             <span className="text-[10px] text-slate-500 ml-auto whitespace-nowrap">{tradingStatus.mode} · {tradingStatus.buyThreshold}점</span>
           </div>
           <div className="flex flex-wrap gap-2">
-            {(tradingStatus.blocks ?? []).map((b: any, i: number) => (
+            {(tradingStatus.blocks ?? []).map((b: TradingStatusBlock, i: number) => (
               <div key={i} className={`flex items-center gap-1.5 text-[11px] rounded-lg px-2.5 py-1 ${
                 b.severity === 'warn' ? 'bg-amber-500/15 text-amber-300' : 'bg-white/[0.04] text-slate-400'
               }`}>
@@ -68,10 +69,10 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
               </div>
             ))}
           </div>
-          {tradingStatus.topScore > 0 && (
+          {(tradingStatus.topScore ?? 0) > 0 && (
             <div className="mt-2 text-[10px] text-slate-500">
               감시종목 최고점수 <b className="text-slate-300">{tradingStatus.topScore}점</b> / 기준 <b className="text-slate-300">{tradingStatus.buyThreshold}점</b>
-              {tradingStatus.candidateCount > 0 && <span className="ml-2 text-emerald-400">→ {tradingStatus.candidateCount}종목 후보 있음</span>}
+              {(tradingStatus.candidateCount ?? 0) > 0 && <span className="ml-2 text-emerald-400">→ {tradingStatus.candidateCount}종목 후보 있음</span>}
             </div>
           )}
           {tradingStatus.mode === 'DEFENSE' && (
@@ -87,7 +88,7 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
                     const r = await api('/defense-mode/deactivate', { method: 'POST' });
                     toast?.(r?.message ?? 'DEFENSE 모드 해제 완료', 'ok');
                     onRefresh();
-                  } catch (e: any) { toast?.('실패: ' + (e as any).message, 'error'); }
+                  } catch (e: unknown) { toast?.('실패: ' + (e as Error).message, 'err'); }
                 })}
               >🔓 DEFENSE 모드 수동 해제</Button>
             </div>
@@ -98,7 +99,7 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
         <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/[0.06] px-4 py-2.5 flex flex-wrap items-center gap-x-2 gap-y-2">
           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
           <span className="text-xs font-semibold text-emerald-300 whitespace-nowrap">자동매매 정상 운영 중</span>
-          {tradingStatus.candidateCount > 0 && (
+          {(tradingStatus.candidateCount ?? 0) > 0 && (
             <span className="text-xs text-emerald-400/70">— {tradingStatus.candidateCount}종목 대기</span>
           )}
           <span className="text-[10px] text-slate-500 whitespace-nowrap">{tradingStatus.mode} · {tradingStatus.buyThreshold}점</span>
@@ -125,7 +126,7 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
                 const r = await api('/release-defense-park', { method: 'POST' });
                 toast?.(r?.message ?? '파킹 해제 완료', 'ok');
                 onRefresh();
-              } catch (e: any) { toast?.('실패: ' + (e as any).message, 'error'); }
+              } catch (e: unknown) { toast?.('실패: ' + (e as Error).message, 'err'); }
             })}
           >강제 해제</Button>
         </div>

@@ -1,10 +1,11 @@
 import React from 'react';
 import { toDisplayName } from '../../lib/helpers';
+import type { WatchlistItem, StockScore, Chain } from '../../types';
 
 interface StockCardProps {
-  stock: any;
-  score: any;
-  chain: any;
+  stock: WatchlistItem;
+  score: StockScore | undefined;
+  chain: Chain | undefined;
   sparkline?: number[];
   isSelected: boolean;
   fastAnalyzing?: boolean;
@@ -74,7 +75,7 @@ function StockCard({ stock, score, chain, sparkline, isSelected, fastAnalyzing, 
           </span>
         </div>
       )}
-      {!fastAnalyzing && s.source && s.source !== 'MANUAL' && (
+      {!fastAnalyzing && String(s.source ?? '') !== '' && String(s.source ?? '') !== 'MANUAL' && (
         <div className="mt-1">
           <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${
             s.source === 'KIS_SYNC' ? 'bg-blue-500/15 text-blue-400' : 'bg-violet-500/15 text-violet-400'

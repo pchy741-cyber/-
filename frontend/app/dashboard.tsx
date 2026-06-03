@@ -5,8 +5,10 @@ import { ConfirmModal, Button } from '@/components/ui';
 import { api } from './lib/utils';
 import { useToast, useConfirm } from './lib/hooks';
 import { useDashboardData } from './hooks/useDashboardData';
+import type { MpData } from './types';
 import { DashboardSidebar } from './components/DashboardSidebar';
 import { DashboardHeader } from './components/DashboardHeader';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 import HomeView from './views/HomeView';
 import TradesView from './views/TradesView';
@@ -38,7 +40,7 @@ export default function Dashboard() {
     viewMode, switchView, load,
   } = data;
 
-  const [mpData, setMpData] = useState<any>(null);
+  const [mpData, setMpData] = useState<MpData | null>(null);
   const refreshMp = React.useCallback(() => {
     api('/money-printer/summary').then(setMpData).catch(() => {});
   }, []);
@@ -69,8 +71,8 @@ export default function Dashboard() {
       await api('/trading-mode', { method: 'POST', body: JSON.stringify({ mode }) });
       toast(mode === 'live' ? '실전모드로 전환됐습니다' : '연습모드로 전환됐습니다', 'ok');
       load(false);
-    } catch (e: any) {
-      toast('모드 전환 실패: ' + (e?.message ?? ''), 'err');
+    } catch (e: unknown) {
+      toast('모드 전환 실패: ' + ((e as Error)?.message ?? ''), 'err');
     } finally {
       modeTogglingRef.current = false;
       setModeToggling(false);
@@ -143,14 +145,30 @@ export default function Dashboard() {
             </div>
           ) : (
             <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px] mx-auto">
-              {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={data.withdrawConfig} watchlist={watchlist} strategy={strategy} setStrategy={setStrategy} toast={toast} confirm={confirm} onRefresh={load} allocConfig={allocConfig} setAllocConfig={setAllocConfig} onGoToSettings={() => setTab('settings')} viewMode={viewMode} onMarketTabChange={setMarketTab} mpData={mpData} />}
-              {tab === 'trades' && <TradesView trades={trades} watchlist={watchlist} />}
-              {tab === 'journal' && <JournalView viewMode={viewMode} />}
-              {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} toast={toast} confirm={confirm} onRefresh={load} viewMode={viewMode} />}
-              {tab === 'news' && <NewsView watchlist={watchlist} setWatchlist={setWatchlist} />}
-              {tab === 'dividend' && <DividendView toast={toast} viewMode={viewMode} confirm={confirm} mpData={mpData} onRefreshMp={refreshMp} />}
-              {tab === 'futures' && <FuturesView toast={toast} viewMode={viewMode} confirm={confirm} mpData={mpData} onRefreshMp={refreshMp} />}
-              {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} killSwitch={killSwitch} toggleKill={toggleKill} toast={toast} confirm={confirm} onFeatureFlagChange={(key: string, enabled: boolean) => setFeatureFlags(prev => ({ ...prev, [key]: enabled }))} />}
+              <ErrorBoundary fallbackTitle="홈 화면 로딩 오류">
+                {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={data.withdrawConfig} watchlist={watchlist} strategy={strategy} setStrategy={setStrategy} toast={toast} confirm={confirm} onRefresh={load} allocConfig={allocConfig} setAllocConfig={setAllocConfig} onGoToSettings={() => setTab('settings')} viewMode={viewMode} onMarketTabChange={setMarketTab} mpData={mpData} />}
+              </ErrorBoundary>
+              <ErrorBoundary fallbackTitle="매매내역 로딩 오류">
+                {tab === 'trades' && <TradesView trades={trades} watchlist={watchlist} />}
+              </ErrorBoundary>
+              <ErrorBoundary fallbackTitle="저널 로딩 오류">
+                {tab === 'journal' && <JournalView viewMode={viewMode} />}
+              </ErrorBoundary>
+              <ErrorBoundary fallbackTitle="감시목록 로딩 오류">
+                {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} toast={toast} confirm={confirm} onRefresh={load} viewMode={viewMode} />}
+              </ErrorBoundary>
+              <ErrorBoundary fallbackTitle="뉴스 로딩 오류">
+                {tab === 'news' && <NewsView watchlist={watchlist} setWatchlist={setWatchlist} />}
+              </ErrorBoundary>
+              <ErrorBoundary fallbackTitle="배당 로딩 오류">
+                {tab === 'dividend' && <DividendView toast={toast} viewMode={viewMode} confirm={confirm} mpData={mpData} onRefreshMp={refreshMp} />}
+              </ErrorBoundary>
+              <ErrorBoundary fallbackTitle="선물 로딩 오류">
+                {tab === 'futures' && <FuturesView toast={toast} viewMode={viewMode} confirm={confirm} mpData={mpData} onRefreshMp={refreshMp} />}
+              </ErrorBoundary>
+              <ErrorBoundary fallbackTitle="설정 로딩 오류">
+                {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} killSwitch={killSwitch} toggleKill={toggleKill} toast={toast} confirm={confirm} onFeatureFlagChange={(key: string, enabled: boolean) => setFeatureFlags(prev => ({ ...prev, [key]: enabled }))} />}
+              </ErrorBoundary>
             </div>
           )}
         </main>

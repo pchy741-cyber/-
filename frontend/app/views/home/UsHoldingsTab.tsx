@@ -7,17 +7,18 @@ import { toDisplayName } from '../../lib/helpers';
 import VisionScalpPanel from '../../panels/VisionScalpPanel';
 import ManualBuyModal from '../../panels/ManualBuyModal';
 import { UsHoldingTpSlBar } from './UsHoldingTpSlBar';
+import type { UsHolding, UsWatchlistItem, Dashboard, ToastFn, ConfirmFn, ViewMode } from '../../types';
 
 interface UsHoldingsTabProps {
-  usHoldings: any[];
-  usW: any[];
-  dash: any;
+  usHoldings: UsHolding[];
+  usW: UsWatchlistItem[];
+  dash: Dashboard | null;
   busyAction: string | null;
   guard: (key: string, fn: () => Promise<void>) => () => Promise<void>;
   onRefresh: () => void;
-  toast: any;
-  confirm: (opts: {title: string, description?: string, confirmLabel?: string, confirmVariant?: 'danger'|'primary'|'ghost'}) => Promise<boolean>;
-  viewMode?: 'paper' | 'live';
+  toast: ToastFn;
+  confirm: ConfirmFn;
+  viewMode?: ViewMode;
   insightsDraft: string;
   setInsightsDraft: (v: string) => void;
   insightsSaving: boolean;
@@ -48,18 +49,18 @@ export default function UsHoldingsTab({
       setEditingTpSl(null);
       toast?.('TP/SL 저장됨', 'ok');
       onRefresh();
-    } catch (e: any) { toast?.(e.message || '저장 실패', 'err'); }
+    } catch (e: unknown) { toast?.((e as Error).message || '저장 실패', 'err'); }
   }, [editTp, editSl, viewMode, toast, onRefresh]);
 
   return (
     <div>
       {usHoldings.length > 0 && (
         <div className="divide-y divide-white/[0.03]">
-          {usHoldings.map((h: any) => {
-            const priceData = usW.find((s: any) => s.code === h.stock_code);
-            const curPrice = (priceData?.price ?? 0) > 0 ? priceData!.price : (h.last_price ?? 0);
+          {usHoldings.map((h: UsHolding) => {
+            const priceData = usW.find((s: UsWatchlistItem) => s.code === h.stock_code);
+            const curPrice = (priceData?.price ?? 0) > 0 ? (priceData!.price ?? 0) : (h.last_price ?? 0);
             const isStale = (priceData?.price ?? 0) === 0 && curPrice > 0;
-            const displayPrice = curPrice > 0 ? curPrice : (h.avg_price ?? 0);
+            const displayPrice = curPrice > 0 ? curPrice : h.avg_price;
             const isAvgFallback = curPrice === 0 && displayPrice > 0;
             const invested = h.avg_price * h.quantity;
             const pnl = displayPrice > 0 ? (displayPrice - h.avg_price) * h.quantity : 0;
@@ -71,15 +72,15 @@ export default function UsHoldingsTab({
             const isScalp = !!h.is_scalp;
             const scalpTpPct = isScalp && h.scalp_tp && h.avg_price > 0 ? ((h.scalp_tp - h.avg_price) / h.avg_price) * 100 : null;
             const scalpSlPct = isScalp && h.scalp_sl && h.avg_price > 0 ? ((h.scalp_sl - h.avg_price) / h.avg_price) * 100 : null;
-            const effectiveTp: number | null = scalpTpPct ?? tpPct;
-            const effectiveSl: number | null = scalpSlPct ?? slPct;
+            const effectiveTp: number | null = scalpTpPct ?? tpPct ?? null;
+            const effectiveSl: number | null = scalpSlPct ?? slPct ?? null;
             // 트레일링 / 부분익절 데이터
             const trailPct = h.trail_pct ?? 8;
             const trailActive = !!h.trail_active;
             const trailStopPct = h.trail_stop_pct ?? (slPct ?? -5);
             const maxPnlPct = h.max_pnl_pct ?? 0;
             const partialStage = h.partial_tp_stage ?? 0;
-            const nextPartialTpPct = h.next_partial_tp_pct;
+            const nextPartialTpPct = h.next_partial_tp_pct ?? null;
             return (
               <div key={h.stock_code} className="px-4 py-3 space-y-2">
                 {/* 상단: 종목명 + 수익률 + 매도버튼 */}
@@ -115,7 +116,7 @@ export default function UsHoldingsTab({
                             const r = await api(`/sell-overseas/${h.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper', quantity: sellQty }), timeout: 40000 });
                             toast(r.message || '매도 완료', 'ok');
                             onRefresh();
-                          } catch (err: any) { toast('매도 실패: ' + err.message, 'err'); }
+                          } catch (err: unknown) { toast('매도 실패: ' + (err as Error).message, 'err'); }
                         })}>
                           {pct}%
                         </Button>
@@ -129,13 +130,13 @@ export default function UsHoldingsTab({
                         const r = await api(`/sell-overseas/${h.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 });
                         toast(r.message || '매도 완료', 'ok');
                         onRefresh();
-                      } catch (err: any) {
-                        if (await confirm({title: `매도 실패: ${err.message}`, description: `장마감 등으로 KIS 주문 불가 시, 강제 DB 청산하시겠습니까?\n(마지막 시세 $${displayPrice.toFixed(2)} 기준 정산)`, confirmLabel: '강제 청산', confirmVariant: 'danger'})) {
+                      } catch (err: unknown) {
+                        if (await confirm({title: `매도 실패: ${(err as Error).message}`, description: `장마감 등으로 KIS 주문 불가 시, 강제 DB 청산하시겠습니까?\n(마지막 시세 $${displayPrice.toFixed(2)} 기준 정산)`, confirmLabel: '강제 청산', confirmVariant: 'danger'})) {
                           try {
                             const r2 = await api(`/sell-overseas-force/${h.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 20000 });
                             toast(r2.message || '강제 청산 완료', 'ok');
                             onRefresh();
-                          } catch (e2: any) { toast('강제 청산 실패: ' + e2.message, 'err'); }
+                          } catch (e2: unknown) { toast('강제 청산 실패: ' + (e2 as Error).message, 'err'); }
                         }
                       }
                     })}>
@@ -177,7 +178,7 @@ export default function UsHoldingsTab({
                   const r = await api('/sell-overseas-all', { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper', force_db: true }), timeout: 60000 });
                   toast(r.message || '전종목 청산 완료', 'ok');
                   onRefresh();
-                } catch (err: any) { toast('일괄 청산 실패: ' + err.message, 'err'); }
+                } catch (err: unknown) { toast('일괄 청산 실패: ' + (err as Error).message, 'err'); }
               })}>
                 전종목 일괄 청산 ({usHoldings.length}종목)
               </Button>
@@ -193,18 +194,18 @@ export default function UsHoldingsTab({
         </Button>
       </div>
       {/* 제보 단타 */}
-      <VisionScalpPanel toast={toast} />
+      <VisionScalpPanel toast={toast as (msg: string, type?: string) => void} />
       {/* 감시 종목 그리드 */}
       {usW.length > 0 && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3.5">
-          {usW.map((s: any) => {
-            const held = usHoldings.find((h: any) => h.stock_code === s.code);
+          {usW.map((s: UsWatchlistItem) => {
+            const held = usHoldings.find((h: UsHolding) => h.stock_code === s.code);
             const usDisplayName = toDisplayName(s.name, s.code);
-            const hasPrice = s.price > 0;
+            const hasPrice = (s.price ?? 0) > 0;
             return (
               <div key={s.code} className={`rounded-xl border p-3 text-center transition-all hover:scale-[1.02] ${hasPrice ? pbg(s.changePct) : ''} ${held ? 'border-blue-500/40' : 'border-slate-700/30'}`}>
                 <div className="text-xs font-bold text-slate-300 truncate">{usDisplayName} {held ? '📌' : ''}</div>
-                <div className={`text-base font-bold mt-1 ${!hasPrice ? 'text-slate-600' : ''}`}>{hasPrice ? `$${s.price.toFixed(1)}` : '-'}</div>
+                <div className={`text-base font-bold mt-1 ${!hasPrice ? 'text-slate-600' : ''}`}>{hasPrice ? `$${s.price!.toFixed(1)}` : '-'}</div>
                 <div className={`text-[11px] font-semibold mt-0.5 ${hasPrice ? pc(s.changePct) : 'text-slate-600'}`}>{hasPrice ? fmtPct(s.changePct) : '장마감'}</div>
               </div>
             );
@@ -223,10 +224,10 @@ export default function UsHoldingsTab({
         open={showManualBuy}
         onClose={() => setShowManualBuy(false)}
         onSuccess={onRefresh}
-        toast={toast}
+        toast={toast as (msg: string, type?: string) => void}
         confirm={confirm}
         viewMode={viewMode}
-        watchlist={usW.map((s: any) => ({ code: s.code, name: s.name ?? s.code, exchange: s.exchange ?? 'NASDAQ' }))}
+        watchlist={usW.map((s: UsWatchlistItem) => ({ code: s.code, name: s.name ?? s.code, exchange: s.exchange ?? 'NASDAQ' }))}
       />
       {/* 운영자 인사이트 입력 */}
       <div className="border-t border-white/[0.04] px-4 py-3">

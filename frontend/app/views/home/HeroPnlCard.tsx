@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { fmtWon, pc } from '../../lib/utils';
+import type { Trade, WithdrawConfig } from '../../types';
 
 interface HeroPnlCardProps {
   holdingsTab: 'KR' | 'US';
@@ -16,7 +17,7 @@ interface HeroPnlCardProps {
   privacyMode: boolean;
   setPrivacyMode: (fn: (v: boolean) => boolean) => void;
   krTabHasData: boolean;
-  usTodaySells: any[];
+  usTodaySells: Trade[];
   krTabPnl: number;
   krTabPct: number | null;
   usTabPnlUsd: number;
@@ -29,7 +30,7 @@ interface HeroPnlCardProps {
   overseasMarketKrw: number;
   chainsLength: number;
   usHoldingsLength: number;
-  withdrawConfig: any;
+  withdrawConfig: WithdrawConfig | null;
   todayTradesLength: number;
   totalValue: number;
   totalInvested: number;
@@ -120,9 +121,9 @@ export default function HeroPnlCard({
           </div>
         </div>
         <div className="bg-white/[0.04] rounded-xl px-2 sm:px-3 py-2">
-          <div className="text-[9px] text-slate-500 mb-0.5">{withdrawConfig?.totalReserved > 0 ? '인출예약' : '오늘매매'}</div>
-          {withdrawConfig?.totalReserved > 0 ? (
-            <div className="text-sm font-bold text-amber-400 truncate">{mask(fmtWon(withdrawConfig.totalReserved))}</div>
+          <div className="text-[9px] text-slate-500 mb-0.5">{(withdrawConfig?.totalReserved ?? 0) > 0 ? '인출예약' : '오늘매매'}</div>
+          {(withdrawConfig?.totalReserved ?? 0) > 0 ? (
+            <div className="text-sm font-bold text-amber-400 truncate">{mask(fmtWon(withdrawConfig!.totalReserved!))}</div>
           ) : (
             <div className="text-sm font-bold text-slate-200">{todayTradesLength}<span className="text-[9px] text-slate-500 ml-0.5">건</span></div>
           )}

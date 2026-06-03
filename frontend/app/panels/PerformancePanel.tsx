@@ -2,15 +2,16 @@
 
 import React from 'react';
 import { api, fmtWon } from '../lib/utils';
+import type { Trade, Strategy, ToastFn } from '../types';
 
-export default function PerformancePanel({ trades, strategy, setStrategy, toast, fxRate = 1420 }: { trades: any[]; strategy: any; setStrategy?: (s: any) => void; toast?: (msg: string, type: string) => void; fxRate?: number }) {
+export default function PerformancePanel({ trades, strategy, setStrategy, toast, fxRate = 1420 }: { trades: Trade[]; strategy: Strategy | null; setStrategy?: (s: Strategy) => void; toast?: ToastFn; fxRate?: number }) {
   const [quickPrompt, setQuickPrompt] = React.useState('');
   const [savingPrompt, setSavingPrompt] = React.useState(false);
 
-  const isOverseasTrade = (t: any) => !/^[0-9]{6}$/.test(String(t.stock_code ?? ''));
+  const isOverseasTrade = (t: Trade) => !/^[0-9]{6}$/.test(String(t.stock_code ?? ''));
 
   // 일별 실현 손익 계산 (SELL 체결 기준) — 해외 USD → KRW 변환
-  const sellTrades = trades.filter((t: any) => t.status === 'FILLED' && t.side === 'SELL');
+  const sellTrades = trades.filter(t => t.status === 'FILLED' && t.side === 'SELL');
   const dailyMap = new Map<string, number>();
   for (const t of sellTrades) {
     const date = new Date(t.created_at).toISOString().slice(0, 10);
@@ -47,8 +48,8 @@ export default function PerformancePanel({ trades, strategy, setStrategy, toast,
   const allPnls = dailySeries.map(d => d.pnl);
   const avgPnl = allPnls.length > 0 ? allPnls.reduce((s, v) => s + v, 0) / allPnls.length : 0;
   const tradePnls = sellTrades
-    .filter((t: any) => t.realized_pnl != null)
-    .map((t: any) => {
+    .filter(t => t.realized_pnl != null)
+    .map(t => {
       const pnl = Number(t.realized_pnl);
       return isOverseasTrade(t) ? pnl * fxRate : pnl;
     });

@@ -8,16 +8,28 @@ import StockCard from './watchlist/StockCard';
 import StockAnalysisPanel from './watchlist/StockAnalysisPanel';
 import SoldStocksPanel from './watchlist/SoldStocksPanel';
 import { USWatchlistPanel } from './watchlist/USWatchlistPanel';
+import type { Dashboard, UsDashboard, WatchlistItem, Chain, StockScore, ToastFn, ConfirmFn, ViewMode } from '../types';
 
-function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, confirm, onRefresh, viewMode = 'live' }: any) {
+interface WatchlistViewProps {
+  watchlist: WatchlistItem[];
+  setWatchlist: (w: WatchlistItem[] | ((prev: WatchlistItem[]) => WatchlistItem[])) => void;
+  dash: Dashboard | null;
+  usDash: UsDashboard | null;
+  toast: ToastFn;
+  confirm: ConfirmFn;
+  onRefresh: () => void;
+  viewMode?: ViewMode;
+}
+
+function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, confirm, onRefresh, viewMode = 'live' }: WatchlistViewProps) {
   const usW = usDash?.watchlist || [];
   const chains = dash?.chains || [];
   const getWatchlistName = (code: string) => {
-    const item = watchlist.find((s: any) => s.stock_code === code);
+    const item = watchlist.find((s: WatchlistItem) => s.stock_code === code);
     return toDisplayName(item?.stock_name, code);
   };
   const [selectedStock, setSelectedStock] = useState<string | null>(null);
-  const [analysis, setAnalysis] = useState<any>(null);
+  const [analysis, setAnalysis] = useState<Record<string, unknown> | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const analysisAbortRef = useRef<AbortController | null>(null);
   const [fastAnalyzing, setFastAnalyzing] = useState<Set<string>>(new Set());
@@ -80,23 +92,23 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, confirm, 
         setTimeout(() => setFastAnalyzing((prev) => { const next = new Set(prev); next.delete(target.code); return next; }), 180_000);
       }
       const w = await api('/watchlist'); setWatchlist(Array.isArray(w) ? w : []);
-    } catch (err: any) { toast(err.message, 'err'); }
+    } catch (err: unknown) { toast(err instanceof Error ? err.message : String(err), 'err'); }
   };
 
   const del = async (code: string) => {
     if (!await confirm({ title: `${code} 삭제`, description: '감시목록에서 삭제합니다', confirmLabel: '삭제', confirmVariant: 'danger' })) return;
     await api(`/watchlist/${code}`, { method: 'DELETE' });
-    setWatchlist((prev: any[]) => prev.filter(s => s.stock_code !== code));
+    setWatchlist((prev: WatchlistItem[]) => prev.filter(s => s.stock_code !== code));
   };
 
   // 스코어 스파크라인 캐시
   const [sparklines, setSparklines] = useState<Map<string, number[]>>(new Map());
   React.useEffect(() => {
-    const codes = watchlist.map((s: any) => s.stock_code).filter((c: string) => /^[0-9]{6}$/.test(c));
+    const codes = watchlist.map((s: WatchlistItem) => s.stock_code).filter((c: string) => /^[0-9]{6}$/.test(c));
     codes.forEach((code: string) => {
-      api(`/stock/${code}/score-history`).then((rows: any) => {
+      api(`/stock/${code}/score-history`).then((rows: Array<{ score: number }>) => {
         if (Array.isArray(rows) && rows.length >= 2) {
-          setSparklines((prev) => new Map(prev).set(code, rows.map((r: any) => Number(r.score))));
+          setSparklines((prev) => new Map(prev).set(code, rows.map((r: { score: number }) => Number(r.score))));
         }
       }).catch(() => {});
     });
@@ -172,15 +184,26 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, confirm, 
 }
 
 // ── 국내 감시목록 패널 ──
-function KRWatchlistPanel({ watchlist, chains, dash, sparklines, selectedStock, fastAnalyzing, onSelect, onDelete }: any) {
+interface KRWatchlistPanelProps {
+  watchlist: WatchlistItem[];
+  chains: Chain[];
+  dash: Dashboard | null;
+  sparklines: Map<string, number[]>;
+  selectedStock: string | null;
+  fastAnalyzing: Set<string>;
+  onSelect: (code: string) => void;
+  onDelete: (code: string) => void;
+}
+
+function KRWatchlistPanel({ watchlist, chains, dash, sparklines, selectedStock, fastAnalyzing, onSelect, onDelete }: KRWatchlistPanelProps) {
   const [krFilter, setKrFilter] = useState<'전체' | 'KOSPI' | 'KOSDAQ' | '투자중' | '매수근접' | '최근매도'>('전체');
-  const krFiltered = watchlist.filter((s: any) => {
+  const krFiltered = watchlist.filter((s: WatchlistItem) => {
     if (krFilter === '전체') return true;
     if (krFilter === 'KOSPI') return s.market === 'KOSPI' || (!s.market && /^[013]/.test(s.stock_code));
     if (krFilter === 'KOSDAQ') return s.market === 'KOSDAQ' || (!s.market && /^[278]/.test(s.stock_code));
-    if (krFilter === '투자중') return chains.some((ch: any) => ch.stock_code === s.stock_code && ch.status !== 'CLOSED');
+    if (krFilter === '투자중') return chains.some((ch: Chain) => ch.stock_code === s.stock_code && ch.status !== 'CLOSED');
     if (krFilter === '매수근접') {
-      const sc = dash?.scores?.find((sc: any) => sc.stock_code === s.stock_code);
+      const sc = dash?.scores?.find((sc: StockScore) => sc.stock_code === s.stock_code);
       return sc && Number(sc.composite_score) >= 78;
     }
     if (krFilter === '최근매도') return s.last_sell_at != null;
@@ -188,13 +211,13 @@ function KRWatchlistPanel({ watchlist, chains, dash, sparklines, selectedStock, 
   });
   const KR_FILTERS: Array<typeof krFilter> = ['전체', 'KOSPI', 'KOSDAQ', '투자중', '매수근접', '최근매도'];
 
-  const sorted = [...krFiltered].sort((a: any, b: any) => {
-    const chainA = chains.find((ch: any) => ch.stock_code === a.stock_code);
-    const chainB = chains.find((ch: any) => ch.stock_code === b.stock_code);
+  const sorted = [...krFiltered].sort((a: WatchlistItem, b: WatchlistItem) => {
+    const chainA = chains.find((ch: Chain) => ch.stock_code === a.stock_code);
+    const chainB = chains.find((ch: Chain) => ch.stock_code === b.stock_code);
     if (chainA && !chainB) return -1;
     if (!chainA && chainB) return 1;
-    const valA = dash?.scores?.find((sc: any) => sc.stock_code === a.stock_code)?.composite_score ?? -1;
-    const valB = dash?.scores?.find((sc: any) => sc.stock_code === b.stock_code)?.composite_score ?? -1;
+    const valA = dash?.scores?.find((sc: StockScore) => sc.stock_code === a.stock_code)?.composite_score ?? -1;
+    const valB = dash?.scores?.find((sc: StockScore) => sc.stock_code === b.stock_code)?.composite_score ?? -1;
     return Number(valB) - Number(valA);
   });
 
@@ -209,12 +232,12 @@ function KRWatchlistPanel({ watchlist, chains, dash, sparklines, selectedStock, 
         ))}
       </div>
       <div className="grid grid-cols-2 gap-2 p-3">
-        {sorted.map((s: any) => (
+        {sorted.map((s: WatchlistItem) => (
           <StockCard
             key={s.stock_code}
             stock={s}
-            score={dash?.scores?.find((sc: any) => sc.stock_code === s.stock_code)}
-            chain={chains.find((ch: any) => ch.stock_code === s.stock_code)}
+            score={dash?.scores?.find((sc: StockScore) => sc.stock_code === s.stock_code)}
+            chain={chains.find((ch: Chain) => ch.stock_code === s.stock_code)}
             sparkline={sparklines.get(s.stock_code)}
             isSelected={selectedStock === s.stock_code}
             fastAnalyzing={fastAnalyzing.has(s.stock_code)}

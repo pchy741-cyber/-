@@ -3,9 +3,10 @@
 import React from 'react';
 import { Panel } from '@/components/ui';
 import { api, fmtWon } from '../../lib/utils';
+import type { Dashboard, StockScore, ToastFn, ConfirmFn, ViewMode } from '../../types';
 
 interface KrAiScorePanelProps {
-  dash: any;
+  dash: Dashboard | null;
   showAllKRScores: boolean;
   setShowAllKRScores: (fn: (v: boolean) => boolean) => void;
   buyingStock: string | null;
@@ -13,9 +14,9 @@ interface KrAiScorePanelProps {
   busyAction: string | null;
   guard: (key: string, fn: () => Promise<void>) => () => Promise<void>;
   getStockName: (code: string) => string;
-  toast: any;
-  confirm: (opts: {title: string, description?: string, confirmLabel?: string, confirmVariant?: 'danger'|'primary'|'ghost'}) => Promise<boolean>;
-  viewMode?: 'paper' | 'live';
+  toast: ToastFn;
+  confirm: ConfirmFn;
+  viewMode?: ViewMode;
 }
 
 export default function KrAiScorePanel({
@@ -24,13 +25,13 @@ export default function KrAiScorePanel({
   viewMode = 'live',
 }: KrAiScorePanelProps) {
   return (
-    <Panel title="AI가 보는 종목 점수" badge={dash?.scores?.length > 0 ? `${dash.scores.length}종목` : undefined} badgeColor="blue">
-      {dash?.scores?.length > 0 ? (() => {
-        const sorted = [...dash.scores].sort((a: any, b: any) => (b.composite_score ?? 0) - (a.composite_score ?? 0));
+    <Panel title="AI가 보는 종목 점수" badge={(dash?.scores?.length ?? 0) > 0 ? `${dash!.scores!.length}종목` : undefined} badgeColor="blue">
+      {(dash?.scores?.length ?? 0) > 0 ? (() => {
+        const sorted = [...dash!.scores!].sort((a: StockScore, b: StockScore) => (b.composite_score ?? 0) - (a.composite_score ?? 0));
         const visible = showAllKRScores ? sorted : sorted.slice(0, 10);
         return (
           <div className="p-3.5">
-            {visible.map((sc: any) => {
+            {visible.map((sc: StockScore) => {
               const score = Number(sc.composite_score);
               const barColor = score >= 75 ? 'bg-emerald-500' : score >= 50 ? 'bg-blue-500' : score >= 25 ? 'bg-amber-500' : 'bg-slate-600';
               const textColor = score >= 75 ? 'text-emerald-400' : score >= 50 ? 'text-blue-400' : 'text-slate-500';
@@ -65,7 +66,7 @@ export default function KrAiScorePanel({
                         try {
                           await api('/manual-buy', { method: 'POST', body: JSON.stringify({ stock_code: sc.stock_code, ai_score: score, is_paper: viewMode === 'paper', reasoning: `수동진입 AI${score}점 conf${conf}% 목표${fmtWon(targetP)}` }) });
                           toast?.('매수 접수', 'ok');
-                        } catch (e: any) { toast?.(e.message, 'err'); }
+                        } catch (e: unknown) { toast?.((e as Error).message, 'err'); }
                         setBuyingStock(null);
                       })} className="text-[10px] px-2 py-1 bg-blue-600/70 hover:bg-blue-500/70 disabled:opacity-40 rounded-lg whitespace-nowrap shrink-0">
                         {isBuying ? '...' : '매수'}

@@ -4,21 +4,47 @@ import React from 'react';
 import { Panel } from '@/components/ui';
 import { api, pc, fmtWon } from '../lib/utils';
 
+interface SectorHeatmapItem {
+  name: string;
+  pct: number;
+}
+
+interface HighScannerItem {
+  stock_code: string;
+  stock_name: string;
+  current: number;
+  high52w: number;
+  dropFromHigh: number;
+  isNearHigh: boolean;
+}
+
+interface PerformancePoint {
+  date?: string;
+  value: number;
+}
+
+interface TaxEstimateData {
+  year: number;
+  transactionTax: number;
+  netGain: number;
+  totalSellAmount: number;
+}
+
 // ═══════════════════════════════════════
 // 업종 히트맵
 // ═══════════════════════════════════════
 
 export function SectorHeatmapPanel() {
-  const [items, setItems] = React.useState<any[]>([]);
+  const [items, setItems] = React.useState<SectorHeatmapItem[]>([]);
   React.useEffect(() => {
-    api('/market/sector-heatmap', { timeout: 10000 }).then((d: any) => setItems(d.items ?? [])).catch(() => {});
+    api('/market/sector-heatmap', { timeout: 10000 }).then((d: Record<string, unknown>) => setItems((d.items as SectorHeatmapItem[]) ?? [])).catch(() => {});
   }, []);
   if (items.length === 0) return null;
-  const maxAbs = Math.max(...items.map((it: any) => Math.abs(it.pct)), 0.1);
+  const maxAbs = Math.max(...items.map((it) => Math.abs(it.pct)), 0.1);
   return (
     <Panel title="업종 현황">
       <div className="px-3 pb-3 flex flex-wrap gap-1.5">
-        {items.map((it: any, i: number) => {
+        {items.map((it, i) => {
           const intensity = Math.min(1, Math.abs(it.pct) / maxAbs);
           const bg = it.pct > 0
             ? `rgba(52,211,153,${0.08 + intensity * 0.25})`
@@ -44,16 +70,16 @@ export function SectorHeatmapPanel() {
 // ═══════════════════════════════════════
 
 export function HighScannerPanel() {
-  const [items, setItems] = React.useState<any[]>([]);
+  const [items, setItems] = React.useState<HighScannerItem[]>([]);
   React.useEffect(() => {
-    api('/market/52w-highs', { timeout: 30000 }).then((d: any) => setItems(d.items ?? [])).catch(() => {});
+    api('/market/52w-highs', { timeout: 30000 }).then((d: Record<string, unknown>) => setItems((d.items as HighScannerItem[]) ?? [])).catch(() => {});
   }, []);
   const nearHigh = items.filter(it => it.isNearHigh);
   if (nearHigh.length === 0) return null;
   return (
     <Panel title="52주 신고가 근접" badge={`${nearHigh.length}종목`}>
       <div className="px-4 pb-3 space-y-2">
-        {nearHigh.map((it: any) => (
+        {nearHigh.map((it) => (
           <div key={it.stock_code} className="flex items-center justify-between">
             <div>
               <span className="text-xs font-semibold text-slate-200">{it.stock_name}</span>
@@ -75,7 +101,7 @@ export function HighScannerPanel() {
 // ═══════════════════════════════════════
 
 export function PerformanceVsKospiPanel({ viewMode = 'live' }: { viewMode?: string }) {
-  const [data, setData] = React.useState<{ bot: any[]; kospi: any[] } | null>(null);
+  const [data, setData] = React.useState<{ bot: PerformancePoint[]; kospi: PerformancePoint[] } | null>(null);
   React.useEffect(() => {
     api(`/market/performance-vs-kospi?viewMode=${viewMode}`, { timeout: 15000 }).then(setData).catch(() => {});
   }, [viewMode]);
@@ -121,7 +147,7 @@ export function PerformanceVsKospiPanel({ viewMode = 'live' }: { viewMode?: stri
 // ═══════════════════════════════════════
 
 export function TaxEstimatePanel({ viewMode = 'live' }: { viewMode?: string }) {
-  const [data, setData] = React.useState<any>(null);
+  const [data, setData] = React.useState<TaxEstimateData | null>(null);
   React.useEffect(() => {
     api(`/market/tax-estimate?viewMode=${viewMode}`).then(setData).catch(() => {});
   }, [viewMode]);

@@ -3,8 +3,15 @@
 import React from 'react';
 import { Panel } from '@/components/ui';
 import { api } from '../lib/utils';
+import type { AllocConfig, ToastFn } from '../types';
 
-export default function GoldenRatioPanel({ allocConfig, setAllocConfig, toast }: any) {
+interface GoldenRatioPanelProps {
+  allocConfig: AllocConfig | null;
+  setAllocConfig: (config: AllocConfig) => void;
+  toast?: ToastFn;
+}
+
+export default function GoldenRatioPanel({ allocConfig, setAllocConfig, toast }: GoldenRatioPanelProps) {
   const cfg = allocConfig ?? { kr_pct: 70, us_pct: 30, sector_semiconductor: 30, sector_bio: 20, sector_defense: 25, sector_finance: 20, sector_etc: 30, trailing_stop_pct: 5 };
   const [kr, setKr] = React.useState<number>(Number(cfg.kr_pct ?? 70));
   const [us, setUs] = React.useState<number>(Number(cfg.us_pct ?? 30));
@@ -39,7 +46,7 @@ export default function GoldenRatioPanel({ allocConfig, setAllocConfig, toast }:
   const save = async () => {
     if (!krUsValid) { toast?.('국내+미국 합계가 100%여야 합니다', 'err'); return; }
     try {
-      const updated = await api('/portfolio/allocation', { method: 'PUT', body: JSON.stringify({
+      const updated: AllocConfig = await api('/portfolio/allocation', { method: 'PUT', body: JSON.stringify({
         kr_pct: kr, us_pct: us,
         sector_semiconductor: semi, sector_bio: bio, sector_defense: defense, sector_finance: finance, sector_etc: etc,
         trailing_stop_pct: trailStop,

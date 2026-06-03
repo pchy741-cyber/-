@@ -1,9 +1,10 @@
 import React from 'react';
 import { Panel, Indicator, EmptyMsg } from '@/components/ui';
+import type { StockAnalysis } from '../../types';
 
 interface StockAnalysisPanelProps {
   stockName: string;
-  analysis: any;
+  analysis: StockAnalysis | null;
   isLoading: boolean;
 }
 
@@ -69,7 +70,7 @@ function StockAnalysisPanel({ stockName, analysis, isLoading }: StockAnalysisPan
               {con ? (
                 <div className="space-y-2 text-xs">
                   <div className="flex justify-between"><span className="text-slate-500">예상 목표가</span><span className="font-bold">{con.targetPrice?.toLocaleString()}원</span></div>
-                  <div className="flex justify-between"><span className="text-slate-500">얼마나 오를 수 있나</span><span className={con.upsidePct > 0 ? 'text-emerald-400' : 'text-rose-400'}>{Number(con.upsidePct) > 0 ? '+' : ''}{Number(con.upsidePct ?? 0).toFixed(1)}%</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">얼마나 오를 수 있나</span><span className={(con.upsidePct ?? 0) > 0 ? 'text-emerald-400' : 'text-rose-400'}>{Number(con.upsidePct ?? 0) > 0 ? '+' : ''}{Number(con.upsidePct ?? 0).toFixed(1)}%</span></div>
                   <div className="flex justify-between"><span className="text-slate-500">전문가 의견</span><span>사라 {con.buyCount}명 · 보유 {con.holdCount}명 · 팔아라 {con.sellCount}명</span></div>
                   <div className="flex justify-between"><span className="text-slate-500">종합</span><span className={con.consensusRating === 'STRONG_BUY' || con.consensusRating === 'BUY' ? 'text-emerald-400' : 'text-slate-400'}>{con.consensusRating === 'STRONG_BUY' ? '적극 매수' : con.consensusRating === 'BUY' ? '매수' : con.consensusRating === 'HOLD' ? '보유' : con.consensusRating === 'SELL' ? '매도' : '의견 없음'}</span></div>
                 </div>

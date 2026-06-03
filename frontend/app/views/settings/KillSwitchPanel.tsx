@@ -2,8 +2,9 @@
 
 import React from 'react';
 import { Panel, Button } from '@/components/ui';
+import type { KillSwitch } from '../../types';
 
-export function KillSwitchPanel({ killSwitch, toggleKill }: { killSwitch: any; toggleKill: (scope?: 'KR' | 'OVERSEAS') => void }) {
+export function KillSwitchPanel({ killSwitch, toggleKill }: { killSwitch: KillSwitch | null; toggleKill: (scope?: 'KR' | 'OVERSEAS') => void }) {
   return (
     <Panel title="긴급 제어">
       <div className="px-6 py-5 space-y-3">

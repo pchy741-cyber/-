@@ -5,20 +5,21 @@ import { Panel, EmptyMsg } from '@/components/ui';
 import { api, fmtPct, pc, pbg } from '../../lib/utils';
 import { toDisplayName } from '../../lib/helpers';
 import { US_SECTOR_MAP, US_SECTORS } from '../../panels/OverseasScorePanel';
+import type { UsWatchlistItem } from '../../types';
 
-export function USWatchlistPanel({ usW }: { usW: any[] }) {
-  const [usScores, setUsScores] = useState<any[]>([]);
+export function USWatchlistPanel({ usW }: { usW: UsWatchlistItem[] }) {
+  const [usScores, setUsScores] = useState<UsWatchlistItem[]>([]);
   const [scoresLoading, setScoresLoading] = useState(false);
 
   React.useEffect(() => {
-    const hasScores = usW.some((s: any) => typeof s.score === 'number');
+    const hasScores = usW.some((s) => typeof s.score === 'number');
     if (hasScores) { setUsScores(usW); return; }
     setScoresLoading(true);
-    api('/overseas/scores').then((data: any) => {
+    api('/overseas/scores').then((data: UsWatchlistItem[]) => {
       if (Array.isArray(data) && data.length > 0) {
-        const scoreMap = new Map(data.map((s: any) => [s.code, s]));
-        const merged = (usW.length > 0 ? usW : data).map((s: any) => {
-          const sc = scoreMap.get(s.code ?? s.stock_code);
+        const scoreMap = new Map(data.map((s) => [s.code, s]));
+        const merged = (usW.length > 0 ? usW : data).map((s) => {
+          const sc = scoreMap.get(s.code);
           return sc ? { ...s, score: sc.score, signal: sc.signal, rsi: sc.rsi } : s;
         });
         setUsScores(merged.length > 0 ? merged : data);
@@ -31,7 +32,7 @@ export function USWatchlistPanel({ usW }: { usW: any[] }) {
 
   const [usSector, setUsSector] = useState('전체');
   const allDisplayList = usScores.length > 0 ? usScores : usW;
-  const displayList = usSector === '전체' ? allDisplayList : allDisplayList.filter((s: any) => US_SECTOR_MAP[s.code ?? s.stock_code] === usSector);
+  const displayList = usSector === '전체' ? allDisplayList : allDisplayList.filter((s) => US_SECTOR_MAP[s.code] === usSector);
 
   return (
     <Panel title="미국주식 감시" badge={scoresLoading ? '계산 중...' : `${displayList.length}/${allDisplayList.length}종목`}>
@@ -50,8 +51,8 @@ export function USWatchlistPanel({ usW }: { usW: any[] }) {
         </div>
       )}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 p-3">
-        {displayList.map((s: any) => {
-          const code = s.code ?? s.stock_code;
+        {displayList.map((s) => {
+          const code = s.code;
           const name = s.name ?? code;
           const usDisplayName = toDisplayName(name, code);
           const score = typeof s.score === 'number' ? s.score : null;
@@ -67,7 +68,7 @@ export function USWatchlistPanel({ usW }: { usW: any[] }) {
                 <span className={`text-[10px] font-medium shrink-0 ${pc(s.changePct)}`}>{fmtPct(s.changePct)}</span>
               </div>
               {sectorTag && <div className="text-[9px] text-slate-600 mb-1">{sectorTag}</div>}
-              <div className="text-base font-bold">{s.price > 0 ? `$${s.price.toFixed(2)}` : '-'}</div>
+              <div className="text-base font-bold">{(s.price ?? 0) > 0 ? `$${s.price!.toFixed(2)}` : '-'}</div>
               {score !== null && (
                 <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                   <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${signalColor} bg-white/[0.04]`}>

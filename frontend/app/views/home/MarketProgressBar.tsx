@@ -2,9 +2,10 @@
 
 import React from 'react';
 import { fmtWon } from '../../lib/utils';
+import type { Health } from '../../types';
 
 interface MarketProgressBarProps {
-  health: any;
+  health: Health | null;
   holdingsTab: 'KR' | 'US';
   currentTimeStr: string;
   marketProgress: number;

@@ -3,17 +3,18 @@
 import React from 'react';
 import { api, fmt, fmtWon, pc } from '../../lib/utils';
 import { toDisplayName, isUnresolvedStockName } from '../../lib/helpers';
+import type { Chain, Dashboard, ToastFn, ConfirmFn, ViewMode } from '../../types';
 
 interface KrHoldingsTabProps {
-  chains: any[];
-  dash: any;
+  chains: Chain[];
+  dash: Dashboard | null;
   busyAction: string | null;
   guard: (key: string, fn: () => Promise<void>) => () => Promise<void>;
   getStockName: (code: string) => string;
   onRefresh: () => void;
-  viewMode?: 'paper' | 'live';
-  toast: (msg: string, type: 'ok' | 'err' | 'info') => void;
-  confirm: (opts: { title: string; description?: string; confirmLabel?: string; confirmVariant?: 'danger' | 'primary' | 'ghost' }) => Promise<boolean>;
+  viewMode?: ViewMode;
+  toast: ToastFn;
+  confirm: ConfirmFn;
 }
 
 const STRATEGY_TP_SL: Record<string, [number, number]> = {
@@ -33,7 +34,7 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-white/[0.03]">
-      {chains.map((ch: any, i: number) => {
+      {chains.map((ch: Chain, i: number) => {
         const avgPrice = Number(ch.avg_buy_price) || 0;
         const qty = Number(ch.total_quantity) || 0;
         const invested = Number(ch.invested) || avgPrice * qty;
@@ -70,7 +71,7 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
               </div>
               <div>
                 <div className="text-[9px] text-slate-500">평단 / 현재가</div>
-                <div className="text-[12px] font-bold text-slate-300">{fmtWon(avgPrice)} → {ch.currentPrice > 0 ? fmtWon(ch.currentPrice) : '-'}</div>
+                <div className="text-[12px] font-bold text-slate-300">{fmtWon(avgPrice)} → {(ch.currentPrice ?? 0) > 0 ? fmtWon(ch.currentPrice!) : '-'}</div>
               </div>
               <div className="ml-auto text-right">
                 <div className="text-[9px] text-sky-600">자산비중</div>
@@ -82,7 +83,7 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
                 const lwP = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
                 if (!await confirm({ title: `${lwP}${displayName} ${qty}주 전량 매도하시겠습니까?`, description: '파킹 해제', confirmLabel: '매도', confirmVariant: 'danger' })) return;
                 try { const r = await api(`/sell-stock/${ch.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 }); toast(r.message || '매도 완료', 'ok'); onRefresh(); }
-                catch (err: any) { toast('매도 실패: ' + err.message, 'err'); }
+                catch (err: unknown) { toast('매도 실패: ' + (err as Error).message, 'err'); }
               })} className="text-xs px-3 py-1.5 rounded-lg bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 transition-colors border border-white/[0.05] disabled:opacity-40">
                 파킹 해제
               </button>
@@ -107,7 +108,7 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
                 <div className="text-[11px] text-slate-500 mt-0.5">평단 {fmtWon(avgPrice)} · {fmt(qty)}주{weight !== null ? ` · 비중 ${weight}%` : ''}</div>
               </div>
               <div className="text-right shrink-0">
-                {ch.currentPrice > 0 ? (
+                {(ch.currentPrice ?? 0) > 0 ? (
                   <>
                     <div className={`text-lg font-black ${pc(pnl)}`}>{pnlPct > 0 ? '+' : ''}{pnlPct.toFixed(2)}%</div>
                     <div className={`text-[11px] ${pc(pnl)}`}>{pnl > 0 ? '+' : ''}{fmtWon(pnl)}</div>
@@ -115,7 +116,7 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
                 ) : <span className="text-xs text-slate-600">시세 로딩중</span>}
               </div>
             </div>
-            {ch.currentPrice > 0 && avgPrice > 0 && (
+            {(ch.currentPrice ?? 0) > 0 && avgPrice > 0 && (
               <div className="mt-3">
                 <div className="relative h-1.5 bg-white/[0.05] rounded-full overflow-visible">
                   <div className={`absolute h-full rounded-full transition-all duration-700 ${pnlPct >= 0 ? 'bg-emerald-500' : 'bg-rose-500'}`} style={{ width: `${barPos}%` }} />
@@ -135,7 +136,7 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
               <div>
                 <div className="text-[9px] text-slate-500 mb-0.5">진입가 → 현재</div>
                 <div className="text-[10px] font-bold text-slate-300">{fmtWon(avgPrice)}</div>
-                <div className="text-[10px] font-bold">{ch.currentPrice > 0 ? fmtWon(ch.currentPrice) : '-'}</div>
+                <div className="text-[10px] font-bold">{(ch.currentPrice ?? 0) > 0 ? fmtWon(ch.currentPrice!) : '-'}</div>
               </div>
               <div>
                 <div className="text-[9px] text-slate-500 mb-0.5">목표가 / 손절가</div>
@@ -153,7 +154,7 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
                 {ch.escape_target_price ? (
                   <button disabled={!!busyAction} onClick={guard(`esc-del-${ch.id}`, async () => {
                     try { await api(`/escape/${ch.id}`, { method: 'DELETE' }); onRefresh(); }
-                    catch (err: any) { toast('취소 실패: ' + err.message, 'err'); }
+                    catch (err: unknown) { toast('취소 실패: ' + (err as Error).message, 'err'); }
                   })} className="text-xs px-2.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 font-bold border border-amber-500/30 animate-pulse whitespace-nowrap disabled:opacity-40">
                     탈출대기
                   </button>
@@ -164,7 +165,7 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
                       const r = await api(`/escape/${ch.id}`, { method: 'POST' });
                       toast(`탈출가 설정: ${fmtWon(r.escape_target_price)}`, 'ok');
                       onRefresh();
-                    } catch (err: any) { toast('탈출 설정 실패: ' + err.message, 'err'); }
+                    } catch (err: unknown) { toast('탈출 설정 실패: ' + (err as Error).message, 'err'); }
                   })} className="text-xs px-2.5 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 font-bold border border-amber-500/20 whitespace-nowrap disabled:opacity-40">
                     탈출
                   </button>
@@ -173,7 +174,7 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
                   const liveW = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
                   if (!await confirm({ title: `${liveW}${displayName} ${qty}주 전량 시장가 매도하시겠습니까?`, confirmLabel: '매도', confirmVariant: 'danger' })) return;
                   try { const r = await api(`/sell-stock/${ch.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 }); toast(r.message || '매도 완료', 'ok'); onRefresh(); }
-                  catch (err: any) { toast('매도 실패: ' + err.message, 'err'); }
+                  catch (err: unknown) { toast('매도 실패: ' + (err as Error).message, 'err'); }
                 })} className="text-xs px-2.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 font-medium border border-white/[0.04] whitespace-nowrap disabled:opacity-40">
                   전량 매도
                 </button>

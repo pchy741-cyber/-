@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import type { Dashboard, Health, KillSwitch, Trade, UsDashboard, WithdrawConfig, WatchlistItem, Strategy, AllocConfig, ViewMode, ToastFn, ConfirmFn, UsHolding, UsWatchlistItem, Chain, MpData, SystemEvent, TradingStatus, AiStatus } from '../types';
 import { api, fmtWon, pc } from '../lib/utils';
 import { useCountUp } from '../lib/hooks';
 import { toDisplayName } from '../lib/helpers';
@@ -22,14 +23,35 @@ import RecentTradesPanel from './home/RecentTradesPanel';
 import KrAiScorePanel from './home/KrAiScorePanel';
 import SuggestedActionsPanel from '../panels/SuggestedActionsPanel';
 
-function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, strategy, setStrategy, toast, confirm, onRefresh, allocConfig, setAllocConfig, onGoToSettings, viewMode = 'live', onMarketTabChange, mpData }: any) {
+interface HomeViewProps {
+  dash: Dashboard | null;
+  health: Health | null;
+  killSwitch: KillSwitch | null;
+  trades: Trade[];
+  usDash: UsDashboard | null;
+  withdrawConfig: WithdrawConfig | null;
+  watchlist: WatchlistItem[];
+  strategy: Strategy | null;
+  setStrategy: (s: Strategy) => void;
+  toast: ToastFn;
+  confirm: ConfirmFn;
+  onRefresh: (forceStatic?: boolean) => void;
+  allocConfig: AllocConfig | null;
+  setAllocConfig: (c: AllocConfig) => void;
+  onGoToSettings: () => void;
+  viewMode?: ViewMode;
+  onMarketTabChange?: (tab: 'KR' | 'US') => void;
+  mpData: MpData | null;
+}
+
+function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, strategy, setStrategy, toast, confirm, onRefresh, allocConfig, setAllocConfig, onGoToSettings, viewMode = 'live', onMarketTabChange, mpData }: HomeViewProps) {
   const [holdingsTab, setHoldingsTab] = React.useState<'KR' | 'US'>('KR');
   const [userPickedTab, setUserPickedTab] = React.useState(false);
   const [usInsights, setUsInsights] = React.useState('');
   const [insightsDraft, setInsightsDraft] = React.useState('');
   const [insightsSaving, setInsightsSaving] = React.useState(false);
-  const [tradingStatus, setTradingStatus] = React.useState<any>(null);
-  const [aiStatus, setAiStatus] = React.useState<any>(null);
+  const [tradingStatus, setTradingStatus] = React.useState<TradingStatus | null>(null);
+  const [aiStatus, setAiStatus] = React.useState<AiStatus | null>(null);
   const [privacyMode, setPrivacyMode] = React.useState(false);
   const [showAllKRScores, setShowAllKRScores] = React.useState(false);
   const [expandedTradeIdx, setExpandedTradeIdx] = React.useState<number | null>(null);
@@ -45,11 +67,11 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
     };
   }, []);
   React.useEffect(() => {
-    api('/overseas/insights').then((r: any) => {
-      if (r?.insights != null) { setUsInsights(r.insights); setInsightsDraft(r.insights); }
+    api('/overseas/insights').then((r: Record<string, unknown>) => {
+      if (r?.insights != null) { setUsInsights(r.insights as string); setInsightsDraft(r.insights as string); }
     }).catch(() => {});
-    api('/trading-status').then((r: any) => setTradingStatus(r)).catch(() => {});
-    api('/ai-status').then((r: any) => setAiStatus(r)).catch(() => {});
+    api('/trading-status').then((r: Record<string, unknown>) => setTradingStatus(r)).catch(() => {});
+    api('/ai-status').then((r: Record<string, unknown>) => setAiStatus(r)).catch(() => {});
   }, []);
   React.useEffect(() => {
     if (!userPickedTab) {
@@ -63,14 +85,14 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   // ── 파생값 ──
   const p = dash?.portfolio;
   const os = dash?.overseas;
-  const stockNameMap = new Map((watchlist ?? []).map((w: any) => [w.stock_code, w.stock_name]));
+  const stockNameMap = new Map((watchlist ?? []).map((w: WatchlistItem) => [w.stock_code, w.stock_name]));
   const getStockName = (code: string): string => toDisplayName(stockNameMap.get(code), code);
   const chains = dash?.chains || [];
   const usW = usDash?.watchlist || [];
   const usHoldings = usDash?.holdings || (dash?.overseas?.holdings ?? []);
-  const filled = trades.filter((t: any) => t.status === 'FILLED' || (t.status === 'PENDING' && t.trigger_source === 'OVERSEAS'))
-    .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  const todayTrades = filled.filter((t: any) => new Date(t.created_at).toDateString() === new Date().toDateString());
+  const filled = trades.filter((t: Trade) => t.status === 'FILLED' || (t.status === 'PENDING' && t.trigger_source === 'OVERSEAS'))
+    .sort((a: Trade, b: Trade) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  const todayTrades = filled.filter((t: Trade) => new Date(t.created_at).toDateString() === new Date().toDateString());
 
   const unrealizedPnl = p?.unrealizedPnl ?? 0;
   const realizedPnl   = p?.realizedPnl ?? 0;
@@ -96,11 +118,11 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const investedPct = Math.round(investedPctExact);
   const overseasCashPctExact = 0; // 통합증거금: 별도 해외현금 없음
 
-  const overseasPnlUsd = usHoldings.reduce((sum: number, h: any) => {
-    const priceData = usW.find((s: any) => s.code === h.stock_code);
-    const curPrice = (priceData?.price ?? 0) > 0 ? priceData!.price : (h.last_price ?? 0);
+  const overseasPnlUsd = usHoldings.reduce((sum: number, h: UsHolding) => {
+    const priceData = usW.find((s: UsWatchlistItem) => s.code === h.stock_code);
+    const curPrice = (priceData?.price ?? 0) > 0 ? priceData!.price! : (h.last_price ?? 0);
     if (curPrice <= 0 || h.avg_price <= 0) return sum;
-    return sum + (curPrice - h.avg_price) * h.quantity;
+    return sum + (curPrice! - h.avg_price) * h.quantity;
   }, 0);
   const overseasPnlKrw = Math.round(overseasPnlUsd * fxRate);
   const showOnlyKr = holdingsTab === 'KR';
@@ -114,8 +136,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const hasOverseasHoldings = usHoldings.length > 0;
 
   const todayStr = new Date().toDateString();
-  const krTodaySells = todayTrades.filter((t: any) => t.side === 'SELL' && t.trigger_source !== 'OVERSEAS');
-  const krRealizedPnl = krTodaySells.reduce((sum: number, t: any) => {
+  const krTodaySells = todayTrades.filter((t: Trade) => t.side === 'SELL' && t.trigger_source !== 'OVERSEAS');
+  const krRealizedPnl = krTodaySells.reduce((sum: number, t: Trade) => {
     if (t.realized_pnl != null) return sum + Number(t.realized_pnl);
     const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
     const filledPx = Number(t.filled_price) || 0;
@@ -126,17 +148,17 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   }, 0);
   const krTabPnl = krRealizedPnl;
   const krTabHasData = krTodaySells.length > 0;
-  const krSellsCostBasis = krTodaySells.reduce((sum: number, t: any) => {
+  const krSellsCostBasis = krTodaySells.reduce((sum: number, t: Trade) => {
     const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
     const qty = Number(t.filled_quantity ?? t.quantity) || 0;
     return avgBuy > 0 ? sum + avgBuy * qty : sum;
   }, 0);
   const krTabPct = krSellsCostBasis > 0 ? (krTabPnl / krSellsCostBasis) * 100 : null;
-  const usTodaySells = trades.filter((t: any) =>
+  const usTodaySells = trades.filter((t: Trade) =>
     t.status === 'FILLED' && t.side === 'SELL' && t.trigger_source === 'OVERSEAS' &&
     new Date(t.created_at).toDateString() === todayStr
   );
-  const usTabPnlUsd = usTodaySells.reduce((sum: number, t: any) => {
+  const usTabPnlUsd = usTodaySells.reduce((sum: number, t: Trade) => {
     const reasoningMatch = String(t.ai_reasoning ?? '').match(/\[avgBuy:([\d.]+)\]/);
     const avgBuy = reasoningMatch ? Number(reasoningMatch[1]) : (Number(t.transaction_chains?.avg_buy_price) || 0);
     const filledPx = Number(t.filled_price) || 0;
@@ -201,7 +223,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
 
       {(() => {
         const dailyLossPct = unrealizedPnl < 0 ? Math.min(100, Math.round((Math.abs(unrealizedPnl) / dailyLossLimit) * 100)) : 0;
-        const maxInvested = chains.reduce((mx: number, ch: any) => Math.max(mx, Number(ch.invested) || 0), 0);
+        const maxInvested = chains.reduce((mx: number, ch: Chain) => Math.max(mx, Number(ch.invested) || 0), 0);
         const concPct = totalInvested > 0 ? Math.round((maxInvested / totalInvested) * 100) : 0;
         return <RiskGaugePanel investedPct={investedPct} dailyLossPct={dailyLossPct} concentrationPct={concPct} />;
       })()}
@@ -225,10 +247,10 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       <PerformancePanel trades={trades} strategy={strategy} setStrategy={setStrategy} toast={toast} fxRate={fxRate} />
       <InsightsPanel insights={dash?.insights ?? []} trades={trades} onRefresh={onRefresh} toast={toast} />
 
-      {(health?.recentEvents?.length > 0) && (
-        <Panel title="시스템 로그" badge={`${health.recentEvents.length}건`}>
+      {(health?.recentEvents?.length ?? 0) > 0 && (
+        <Panel title="시스템 로그" badge={`${health!.recentEvents!.length}건`}>
           <div className="max-h-32 overflow-y-auto divide-y divide-slate-800/20">
-            {health.recentEvents.map((ev: any, i: number) => (
+            {health!.recentEvents!.map((ev: SystemEvent, i: number) => (
               <div key={i} className="flex items-center gap-2 px-3 py-1.5 text-[11px]">
                 <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${ev.status === 'success' ? 'bg-emerald-400' : ev.status === 'error' ? 'bg-rose-400' : 'bg-blue-400'}`} />
                 <span className="text-slate-500 shrink-0 w-16">{(() => { const d = new Date(ev.timestamp); return `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`; })()}</span>

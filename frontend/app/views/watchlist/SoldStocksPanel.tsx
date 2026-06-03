@@ -43,8 +43,8 @@ function SoldStocksPanel({ toast, onReAdd, viewMode = 'live' }: { toast: (msg: s
       });
       toast(`${toDisplayName(stock.stock_name, stock.stock_code)} 감시목록에 다시 추가`);
       onReAdd();
-    } catch (err: any) {
-      toast(`추가 실패: ${err.message}`);
+    } catch (err: unknown) {
+      toast(`추가 실패: ${(err as Error).message}`);
     }
   };
 

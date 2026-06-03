@@ -3,6 +3,7 @@
 import React from 'react';
 import { Panel } from '@/components/ui';
 import { api, pc } from '../lib/utils';
+import type { CorrelationWarning, ShortSellingItem } from '../types';
 
 // ═══════════════════════════════════════
 // ARC GAUGE
@@ -76,15 +77,15 @@ export function RiskGaugePanel({ investedPct, dailyLossPct, concentrationPct }: 
 // ═══════════════════════════════════════
 
 export function CorrelationWarningPanel({ viewMode = 'live' }: { viewMode?: string }) {
-  const [warnings, setWarnings] = React.useState<any[]>([]);
+  const [warnings, setWarnings] = React.useState<CorrelationWarning[]>([]);
   React.useEffect(() => {
-    api(`/market/correlation?viewMode=${viewMode}`).then((d: any) => setWarnings(d.warnings ?? [])).catch(() => {});
+    api(`/market/correlation?viewMode=${viewMode}`).then((d: Record<string, unknown>) => setWarnings((d.warnings as CorrelationWarning[]) ?? [])).catch(() => {});
   }, [viewMode]);
   if (warnings.length === 0) return null;
   return (
     <Panel title="섹터 쏠림 경고" badge={`${warnings.length}건`}>
       <div className="px-4 pb-3 space-y-2">
-        {warnings.map((w: any) => (
+        {warnings.map((w) => (
           <div key={w.sector} className="flex items-start gap-2 bg-amber-950/20 border border-amber-900/30 rounded-xl px-3 py-2">
             <span className="text-amber-400 text-sm">⚠</span>
             <div>
@@ -109,15 +110,15 @@ const SHORT_RISK: Record<string, { color: string; label: string }> = {
 };
 
 export function ShortSellingPanel() {
-  const [items, setItems] = React.useState<any[]>([]);
+  const [items, setItems] = React.useState<ShortSellingItem[]>([]);
   React.useEffect(() => {
-    api('/market/short-selling', { timeout: 20000 }).then((d: any) => setItems(d.items ?? [])).catch(() => {});
+    api('/market/short-selling', { timeout: 20000 }).then((d: Record<string, unknown>) => setItems((d.items as ShortSellingItem[]) ?? [])).catch(() => {});
   }, []);
   if (items.length === 0) return null;
   return (
     <Panel title="보유종목 공매도 현황">
       <div className="px-4 pb-3 divide-y divide-slate-800/30">
-        {items.map((it: any) => {
+        {items.map((it) => {
           const risk = SHORT_RISK[it.riskLevel] ?? SHORT_RISK.LOW;
           return (
             <div key={it.stock_code} className="flex items-center justify-between py-2">

@@ -236,7 +236,7 @@ export function EmptyMsg({ children, icon }: { children: React.ReactNode; icon?:
 export function Sel({
   label, value, opts, onChange,
 }: {
-  label: string; value: any; opts: [any, string][]; onChange: (v: string) => void;
+  label: string; value: string | number; opts: [string | number, string][]; onChange: (v: string) => void;
 }) {
   const numVal = Number(value);
   const matched = opts.find(([v]) => Number(v) === numVal)?.[0] ?? value;

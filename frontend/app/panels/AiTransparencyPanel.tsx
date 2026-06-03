@@ -3,6 +3,35 @@
 import React from 'react';
 import { api, fmtWon, fmtTime } from '../lib/utils';
 import { ScoreBar } from './SmallPanels';
+import type { WatchlistItem, UsDashboard, UsWatchlistItem } from '../types';
+
+interface AiHolding {
+  stock_code: string;
+  stock_name: string;
+  entry_score?: number;
+  current_score?: number;
+  current_signal?: string;
+  avg_buy_price?: number;
+  total_quantity?: number;
+  buy_reason?: string;
+  opened_at?: string;
+}
+
+interface AiDecision {
+  side: 'BUY' | 'SELL';
+  stock_name: string;
+  ai_reasoning?: string;
+  created_at: string;
+}
+
+interface AiTransparencyData {
+  holdings: AiHolding[];
+  decisions: AiDecision[];
+  winRate: number | null;
+  wins?: number;
+  losses?: number;
+  totalTrades?: number;
+}
 
 /**
  * AI 판단 근거 투명성 — 보유 종목 중심
@@ -10,31 +39,31 @@ import { ScoreBar } from './SmallPanels';
  * 기존: watchlist 랜덤 종목의 무관한 점수 나열
  * 개선: 실제 보유 종목의 매수 이유, 진입/현재 점수, 최근 결정, 적중률
  */
-export default function AiTransparencyPanel({ watchlist, tab, usDash, viewMode = 'live' }: { watchlist: any[]; tab?: 'KR' | 'US'; usDash?: any; viewMode?: string }) {
-  const [data, setData] = React.useState<any>(null);
+export default function AiTransparencyPanel({ watchlist, tab, usDash, viewMode = 'live' }: { watchlist: WatchlistItem[]; tab?: 'KR' | 'US'; usDash?: UsDashboard | null; viewMode?: string }) {
+  const [data, setData] = React.useState<AiTransparencyData | null>(null);
   const [selected, setSelected] = React.useState<string | null>(null);
   const [usSel, setUsSel] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (tab === 'US') return;
-    api(`/ai-transparency?viewMode=${viewMode}`).then((r: any) => {
+    api(`/ai-transparency?viewMode=${viewMode}`).then((r: AiTransparencyData) => {
       if (r) setData(r);
     }).catch(() => {});
   }, [viewMode, tab]);
 
   // US 탭: 기존 로직 유지
   if (tab === 'US') {
-    const usStocks: any[] = (usDash?.watchlist ?? []).filter((s: any) => typeof s.score === 'number' || typeof s.ai_score === 'number').slice(0, 8);
+    const usStocks = (usDash?.watchlist ?? []).filter(s => typeof s.score === 'number' || typeof s.ai_score === 'number').slice(0, 8);
     if (usStocks.length === 0) return null;
     const activeUsSel = usSel ?? usStocks[0]?.code ?? null;
-    const selStock = usStocks.find((s: any) => s.code === activeUsSel);
+    const selStock = usStocks.find(s => s.code === activeUsSel);
     const score = selStock?.score ?? selStock?.ai_score ?? 0;
     const signal = selStock?.signal ?? '';
     return (
       <div className="glass rounded-2xl border border-white/[0.04] px-4 py-3">
         <div className="text-[11px] font-semibold text-slate-400 mb-2">AI 판단 근거</div>
         <div className="flex gap-1 flex-wrap mb-3">
-          {usStocks.map((s: any) => {
+          {usStocks.map(s => {
             const sc = s.score ?? s.ai_score ?? 0;
             const active = activeUsSel === s.code;
             return (
@@ -64,22 +93,22 @@ export default function AiTransparencyPanel({ watchlist, tab, usDash, viewMode =
   }
 
   // KR 탭 — 보유 종목 중심 투명성
-  const holdings: any[] = data?.holdings ?? [];
-  const decisions: any[] = data?.decisions ?? [];
+  const holdings = data?.holdings ?? [];
+  const decisions = data?.decisions ?? [];
   const winRate = data?.winRate;
   const totalTrades = data?.totalTrades ?? 0;
 
   if (holdings.length === 0 && decisions.length === 0) return null;
 
   const sel = selected ?? holdings[0]?.stock_code ?? null;
-  const selH = holdings.find((h: any) => h.stock_code === sel);
+  const selH = holdings.find(h => h.stock_code === sel);
 
   return (
     <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden">
       {/* 헤더 + 적중률 */}
       <div className="px-4 py-3 flex items-center justify-between">
         <span className="text-[11px] font-semibold text-slate-400">AI 판단 근거</span>
-        {winRate !== null && totalTrades > 0 && (
+        {winRate != null && totalTrades > 0 && (
           <div className="flex items-center gap-1.5">
             <span className={`text-[11px] font-bold ${winRate >= 50 ? 'text-emerald-400' : 'text-rose-400'}`}>
               적중 {winRate}%
@@ -93,7 +122,7 @@ export default function AiTransparencyPanel({ watchlist, tab, usDash, viewMode =
       {holdings.length > 0 && (
         <div className="px-4 pb-2">
           <div className="flex gap-1 flex-wrap">
-            {holdings.map((h: any) => {
+            {holdings.map(h => {
               const score = Number(h.current_score ?? 0);
               const active = sel === h.stock_code;
               return (
@@ -161,7 +190,7 @@ export default function AiTransparencyPanel({ watchlist, tab, usDash, viewMode =
       {decisions.length > 0 && (
         <div className="border-t border-white/[0.04] px-4 py-3 space-y-1.5">
           <div className="text-[9px] text-slate-600 mb-1">최근 AI 결정</div>
-          {decisions.map((d: any, i: number) => (
+          {decisions.map((d, i) => (
             <div key={i} className="flex items-start gap-2">
               <span className={`text-[9px] font-bold shrink-0 mt-0.5 ${d.side === 'BUY' ? 'text-emerald-400' : 'text-rose-400'}`}>
                 {d.side === 'BUY' ? '매수' : '매도'}

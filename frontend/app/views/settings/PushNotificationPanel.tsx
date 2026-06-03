@@ -4,8 +4,9 @@ import React, { useState, useEffect } from 'react';
 import { Panel } from '@/components/ui';
 import { api } from '../../lib/utils';
 import type { PushStatus } from './settings-types';
+import type { ToastFn, ConfirmFn } from '../../types';
 
-export function PushNotificationPanel({ toast, confirm }: { toast?: (msg: string, type?: 'ok' | 'err' | 'info') => void; confirm?: (opts: { title: string; description?: string; confirmLabel?: string; confirmVariant?: string }) => Promise<boolean> }) {
+export function PushNotificationPanel({ toast, confirm }: { toast?: ToastFn; confirm?: ConfirmFn }) {
   const [pushStatus, setPushStatus] = useState<PushStatus>({
     ready: false,
     publicKey: '',
@@ -60,9 +61,10 @@ export function PushNotificationPanel({ toast, confirm }: { toast?: (msg: string
           const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: serverStatus.publicKey });
           await api('/push/subscribe', { method: 'POST', body: JSON.stringify(sub) });
           setPushStatus(prev => ({ ...prev, subscribed: true, deviceCount: prev.deviceCount + 1, error: null }));
-        } catch (e: any) {
-          console.warn('[QUANTOPS] 자동 푸시 등록 실패:', e.message);
-          setPushStatus(prev => ({ ...prev, error: `자동 등록 실패: ${e.message} — 아래 "이 기기에 등록" 버튼을 눌러주세요` }));
+        } catch (e: unknown) {
+          const msg = (e as Error).message;
+          console.warn('[QUANTOPS] 자동 푸시 등록 실패:', msg);
+          setPushStatus(prev => ({ ...prev, error: `자동 등록 실패: ${msg} — 아래 "이 기기에 등록" 버튼을 눌러주세요` }));
         }
       }
     })();
@@ -98,7 +100,7 @@ export function PushNotificationPanel({ toast, confirm }: { toast?: (msg: string
             setPushStatus(prev => ({ ...prev, subscribed: true }));
           }
         }
-      } catch (e: any) { console.warn('[QUANTOPS] 구독 헬스체크 실패:', e.message); }
+      } catch (e: unknown) { console.warn('[QUANTOPS] 구독 헬스체크 실패:', (e as Error).message); }
     };
     const interval = setInterval(checkAndRenew, 5 * 60 * 1000);
     document.addEventListener('visibilitychange', checkAndRenew);
@@ -186,8 +188,8 @@ export function PushNotificationPanel({ toast, confirm }: { toast?: (msg: string
                   error: null,
                 }));
                 toast?.('이 기기에 알림 등록 완료 — 매수/매도 즉시 알림됩니다', 'ok');
-              } catch (err: any) {
-                setPushStatus(prev => ({ ...prev, registering: false, error: err.message || '알 수 없는 오류' }));
+              } catch (err: unknown) {
+                setPushStatus(prev => ({ ...prev, registering: false, error: (err as Error).message || '알 수 없는 오류' }));
               }
             }}
             className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-xs font-semibold transition-all shadow-sm flex items-center justify-center gap-1.5"

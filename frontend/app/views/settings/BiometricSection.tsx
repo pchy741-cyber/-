@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { api } from '../../lib/utils';
+import type { ToastFn } from '../../types';
 
 interface Credential {
   id: string;
@@ -10,7 +11,7 @@ interface Credential {
   last_used_at: string | null;
 }
 
-export function BiometricSection({ toast }: { toast?: (msg: string, type: string) => void }) {
+export function BiometricSection({ toast }: { toast?: ToastFn }) {
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [loading, setLoading] = useState(false);
   const [supported, setSupported] = useState(false);
@@ -56,11 +57,11 @@ export function BiometricSection({ toast }: { toast?: (msg: string, type: string
       } else {
         toast?.(result.error ?? '등록 실패', 'err');
       }
-    } catch (err: any) {
-      if (err.name === 'NotAllowedError') {
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'NotAllowedError') {
         toast?.('등록이 취소되었습니다', 'info');
       } else {
-        toast?.(err.message ?? '생체인증 등록 실패', 'err');
+        toast?.((err as Error).message ?? '생체인증 등록 실패', 'err');
       }
     } finally {
       setLoading(false);

@@ -82,8 +82,8 @@ export default function ManualBuyModal({ open, onClose, onSuccess, toast, confir
       setQty(data.recommendedQty);
       setTpPct(data.tpPct);
       setSlPct(data.slPct);
-    } catch (e: any) {
-      toast?.(e.message || '추천값 조회 실패', 'err');
+    } catch (e: unknown) {
+      toast?.((e as Error).message || '추천값 조회 실패', 'err');
     }
     setLoading(false);
   };
@@ -111,8 +111,8 @@ export default function ManualBuyModal({ open, onClose, onSuccess, toast, confir
       toast?.(`${rec.code} ${r.qty}주 매수 완료 @$${r.price?.toFixed(2)}`, 'ok');
       onSuccess();
       onClose();
-    } catch (e: any) {
-      toast?.(e.message || '매수 실패', 'err');
+    } catch (e: unknown) {
+      toast?.((e as Error).message || '매수 실패', 'err');
     }
     setExecuting(false);
   };
@@ -186,7 +186,7 @@ export default function ManualBuyModal({ open, onClose, onSuccess, toast, confir
                 <div>
                   <label className="text-[10px] text-emerald-400/70 mb-1 block">목표 수익 (TP %)</label>
                   <input type="number" step="0.5" min="1" value={tpPct}
-                    onChange={e => setTpPct(Number(e.target.value))}
+                    onChange={e => setTpPct(Number(e.target.value) || 0)}
                     className="w-full bg-white/[0.05] ring-1 ring-emerald-500/20 rounded-xl px-3 py-2 text-sm text-emerald-400 text-center tabular-nums focus:outline-none focus:ring-2 focus:ring-emerald-500/40 transition-all" />
                   <div className="text-[9px] text-slate-600 mt-0.5 text-center">
                     ${(rec.price * (1 + tpPct / 100)).toFixed(2)}
@@ -195,7 +195,7 @@ export default function ManualBuyModal({ open, onClose, onSuccess, toast, confir
                 <div>
                   <label className="text-[10px] text-rose-400/70 mb-1 block">손절 (SL %)</label>
                   <input type="number" step="0.5" max="0" value={-slPct}
-                    onChange={e => setSlPct(-Number(e.target.value))}
+                    onChange={e => setSlPct(-(Number(e.target.value) || 0))}
                     className="w-full bg-white/[0.05] ring-1 ring-rose-500/20 rounded-xl px-3 py-2 text-sm text-rose-400 text-center tabular-nums focus:outline-none focus:ring-2 focus:ring-rose-500/40 transition-all" />
                   <div className="text-[9px] text-slate-600 mt-0.5 text-center">
                     ${(rec.price * (1 - slPct / 100)).toFixed(2)}
