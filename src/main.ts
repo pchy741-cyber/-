@@ -24,13 +24,14 @@ import { setupMonitoring } from './automation/gcp-monitoring.js';
 import { initRedisCache } from './cache/redis.js';
 import { config, setTradingModeOverride, baseIsPaper } from './config/index.js';
 import { runWithMode } from './config/context.js';
-import { checkDb, disableMemoryMode, enableMemoryMode, isMemoryMode, logSystem } from './db/client.js';
+import { checkDb, checkDbWithRetry, disableMemoryMode, enableMemoryMode, isMemoryMode, logSystem, resetPool } from './db/client.js';
 import { injectDbLogger } from './utils/logger.js';
 import { getAccessToken } from './kis/auth.js';
 import { initTelegram } from './notifications/telegram.js';
 import { initSlack } from './notifications/slack.js';
 import { startScheduler } from './scheduler/runner.js';
 import { logger } from './utils/logger.js';
+import { wakeCloudSqlIfNeeded, tryWakeIfNeeded, startIdleWatcher, startDbHealthWatcher, stopIdleWatcher, touchActivity } from './utils/cloud-sql-wake.js';
 
 // ── Hono App (Express 대비 4x 빠름, TypeScript-first) ──
 const app = new Hono();
@@ -42,6 +43,8 @@ app.use('*', cors({
   credentials: true,
 }));
 app.use('*', honoLogger());
+// ☁️ Cloud SQL 유휴 감시용 — 요청 시 활동 시간 갱신
+app.use('*', async (c, next) => { touchActivity(); return next(); });
 
 // ── API Rate Limiting (인메모리) ──
 const rateMap = new Map<string, { count: number; resetAt: number }>();
@@ -164,10 +167,10 @@ async function bootstrap() {
   logger.info(`  프레임워크: Hono (고성능)`);
   logger.info('========================================');
 
-  // 1. PostgreSQL 연결 확인
+  // 1. PostgreSQL 연결 확인 (최대 4회 재시도, 5초 간격)
   try {
-    const ok = await checkDb();
-    if (!ok) throw new Error('DB health check failed');
+    const ok = await checkDbWithRetry(4, 5_000);
+    if (!ok) throw new Error('DB health check failed after 4 retries');
     logger.info('✅ PostgreSQL 연결 성공', { component: 'BOOT' });
     injectDbLogger(logSystem);
     // 1-1. SQL 마이그레이션 파일 순차 실행 (src/db/migrations/*.sql)
@@ -234,14 +237,30 @@ async function bootstrap() {
     enableMemoryMode();
     logger.info('📦 인메모리 DB 모드로 전환 (감시목록 7종목 자동 로드)', { component: 'BOOT' });
 
-    // DB 복구 감시 — 60초마다 재시도, 연결 성공 시 메모리 모드 해제
+    // ☁️ Cloud SQL 자동 기상 — DB 꺼져있으면 API로 켠다 (2~3분 후 연결됨)
+    try {
+      await wakeCloudSqlIfNeeded();
+    } catch (wakeErr) {
+      logger.error(`☁️ Cloud SQL 자동기상 실패: ${wakeErr}`, { component: 'BOOT' });
+    }
+
+    // DB 복구 감시 — 30초마다 재시도, 연결 성공 시 메모리 모드 해제
     const recoveryInterval = setInterval(async () => {
       if (!isMemoryMode()) { clearInterval(recoveryInterval); return; }
+      // DB 연결 실패 지속 시 → Cloud SQL 자동기상 재시도 (5분 쿨다운)
+      try { await tryWakeIfNeeded(); } catch { /* ignore */ }
+      // stale pool 폐기 → 새 커넥션으로 재시도
+      try { await resetPool(); } catch { /* ignore */ }
       try {
         const ok = await checkDb();
         if (ok) {
           disableMemoryMode();
           clearInterval(recoveryInterval);
+          // 대시보드 캐시 완전 삭제 — 오래된 stale 데이터 표시 방지
+          try {
+            const { hardInvalidateDashboardCache } = await import('./api/routes/dashboard/helpers.js');
+            hardInvalidateDashboardCache();
+          } catch { /* ignore */ }
           // 마이그레이션 + 모드 오버라이드 복원
           try {
             const { runMigrations } = await import('./db/migrate.js');
@@ -258,7 +277,7 @@ async function bootstrap() {
           } catch { /* ignore */ }
         }
       } catch { /* ignore */ }
-    }, 60_000);
+    }, 30_000); // 30초 (자동기상 후 빠른 재연결)
   }
 
   // 2. Redis 캐시 초기화
@@ -457,6 +476,34 @@ async function bootstrap() {
   // 7. 스케줄러 시작
   startScheduler();
 
+  // 7-0. Cloud SQL 유휴 자동 중지 감시 (30분 미사용 + 장외시간 → DB 끔)
+  startIdleWatcher();
+
+  // 7-0b. DB 헬스 워처 — 부팅 후에도 DB 끊기면 자동 기상 + 재연결 (2분 주기)
+  startDbHealthWatcher(checkDb, async () => {
+    await resetPool(); // stale 커넥션 폐기 → 새 pool 생성
+    disableMemoryMode();
+    // 대시보드 캐시 완전 삭제 — 오래된 stale 데이터 표시 방지
+    try {
+      const { hardInvalidateDashboardCache } = await import('./api/routes/dashboard/helpers.js');
+      hardInvalidateDashboardCache();
+      logger.info('🔄 대시보드 캐시 hard invalidate (DB 복구)', { component: 'BOOT' });
+    } catch { /* ignore */ }
+    try {
+      const { runMigrations } = await import('./db/migrate.js');
+      await runMigrations();
+    } catch { /* ignore */ }
+    try {
+      const { getPool: gp } = await import('./db/client.js');
+      const { rows: tmRows } = await gp().query('SELECT trading_mode_override FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1', [config.isPaper]);
+      const dbMode = tmRows[0]?.trading_mode_override;
+      if (dbMode === 'paper' || dbMode === 'live') {
+        setTradingModeOverride(dbMode);
+        logger.info(`✅ DB 복구 후 거래 모드 복원: ${dbMode.toUpperCase()}`, { component: 'BOOT' });
+      }
+    } catch { /* ignore */ }
+  });
+
   // 7-1. 미종료 루프 세션 자동 재개
   try {
     const { checkPendingLoop } = await import('./scheduler/loop-mode.js');
@@ -494,9 +541,11 @@ async function bootstrap() {
     logger.info(`📡 SSE: http://localhost:${PORT}/api/stream`, { component: 'BOOT' });
   });
 
-  // 대시보드 캐시 선제 빌드 — 재시작 후 첫 접속 30초 대기 방지
+  // 대시보드 캐시 선제 빌드 — DB 연결 확인 후에만 (메모리 모드면 빈 캐시 방지)
   setTimeout(() => {
-    import('./api/routes/dashboard.js').then(({ prewarmDashboard }) => prewarmDashboard()).catch(() => {});
+    if (!isMemoryMode()) {
+      import('./api/routes/dashboard.js').then(({ prewarmDashboard }) => prewarmDashboard()).catch(() => {});
+    }
   }, 3000);
 
   if (config.isPaper) {
@@ -518,6 +567,7 @@ async function bootstrap() {
         await new Promise(r => setTimeout(r, 500));
       }
     } catch {}
+    stopIdleWatcher();
     try { (await import('./db/client.js')).getPool().end(); } catch {}
     logger.info('Graceful shutdown 완료', { component: 'BOOT' });
     process.exit(0);

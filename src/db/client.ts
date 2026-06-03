@@ -26,6 +26,32 @@ const { Pool } = pg;
 
 let pool: pg.Pool | null = null;
 let useMemory = false;
+let _poolErrorCount = 0;
+
+// 재시도 대상 에러 코드 (일시적 연결 문제)
+const RETRIABLE_CODES = new Set([
+  'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN',
+  'CONNECTION_LOST', 'PROTOCOL_CONNECTION_LOST',
+  '57P01', // admin_shutdown
+  '57P03', // cannot_connect_now (DB restarting)
+  '08003', // connection_does_not_exist
+  '08006', // connection_failure
+  '08001', // sqlclient_unable_to_establish_sqlconnection
+]);
+
+function isRetriableError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as Record<string, unknown>;
+  const code = String(e.code ?? '');
+  if (RETRIABLE_CODES.has(code)) return true;
+  const msg = String(e.message ?? '').toLowerCase();
+  return msg.includes('connection terminated') ||
+    msg.includes('connection refused') ||
+    msg.includes('timeout') ||
+    msg.includes('econnreset') ||
+    msg.includes('cannot connect') ||
+    msg.includes('server closed the connection');
+}
 
 /** DB 사용 불가 시 인메모리 모드 전환 */
 export function isMemoryMode(): boolean {
@@ -41,42 +67,72 @@ export function disableMemoryMode(): void {
   logger.info('✅ DB 복구 확인 — 인메모리 모드 해제', { component: 'DB' });
 }
 
+/** 기존 Pool 파괴 후 새로 생성 — DB 복구 시 stale 커넥션 제거 */
+export async function resetPool(): Promise<void> {
+  if (pool) {
+    try {
+      await pool.end();
+    } catch (err) {
+      logger.warn(`Pool 종료 중 에러 (무시): ${err}`, { component: 'DB' });
+    }
+    pool = null;
+  }
+  _poolErrorCount = 0;
+  logger.info('🔄 DB Pool 리셋 완료 — 새 커넥션으로 재연결', { component: 'DB' });
+}
+
+function createPool(): pg.Pool {
+  const poolDefaults = {
+    max: 8,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 8_000,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10_000,
+  };
+
+  let newPool: pg.Pool;
+
+  if (config.db.unixSocket) {
+    newPool = new Pool({
+      ...poolDefaults,
+      user: config.db.user,
+      password: config.db.password,
+      database: config.db.database,
+      host: config.db.unixSocket,
+    });
+  } else if (config.db.databaseUrl) {
+    newPool = new Pool({ ...poolDefaults, connectionString: config.db.databaseUrl });
+  } else {
+    newPool = new Pool({
+      ...poolDefaults,
+      host: config.db.host,
+      port: config.db.port,
+      database: config.db.database,
+      user: config.db.user,
+      password: config.db.password,
+      ssl: config.env === 'production' ? { rejectUnauthorized: true } : false,
+    });
+  }
+
+  newPool.on('error', (err) => {
+    _poolErrorCount++;
+    logger.error(`PostgreSQL pool 에러 (#${_poolErrorCount}): ${err.message}`, { component: 'DB' });
+    // 연속 에러 5회 이상 → pool 폐기 (다음 getPool()에서 새로 생성)
+    if (_poolErrorCount >= 5) {
+      logger.warn('⚠️ Pool 에러 5회 초과 → pool 폐기 (다음 요청 시 재생성)', { component: 'DB' });
+      newPool.end().catch(() => {});
+      if (pool === newPool) pool = null;
+      _poolErrorCount = 0;
+    }
+  });
+
+  return newPool;
+}
+
 export function getPool(): pg.Pool {
   if (!pool) {
-    const poolDefaults = {
-      max: 8,
-      idleTimeoutMillis: 30_000,      // 30s idle 후 반환 (커넥션 절감)
-      connectionTimeoutMillis: 8_000,  // 8s (파이프라인 풀 경합 시 빠른 실패 → 폴백)
-      keepAlive: true,
-      keepAliveInitialDelayMillis: 10_000,
-    };
-
-    if (config.db.unixSocket) {
-      // Cloud Run → Cloud SQL (Unix socket)
-      pool = new Pool({
-        ...poolDefaults,
-        user: config.db.user,
-        password: config.db.password,
-        database: config.db.database,
-        host: config.db.unixSocket,
-      });
-    } else if (config.db.databaseUrl) {
-      pool = new Pool({ ...poolDefaults, connectionString: config.db.databaseUrl });
-    } else {
-      pool = new Pool({
-        ...poolDefaults,
-        host: config.db.host,
-        port: config.db.port,
-        database: config.db.database,
-        user: config.db.user,
-        password: config.db.password,
-        ssl: config.env === 'production' ? { rejectUnauthorized: true } : false,
-      });
-    }
-
-    pool.on('error', (err) => {
-      logger.error(`PostgreSQL pool 에러: ${err.message}`, { component: 'DB' });
-    });
+    pool = createPool();
+    _poolErrorCount = 0;
   }
   return pool;
 }
@@ -85,17 +141,82 @@ export function getPool(): pg.Pool {
 export async function checkDb(): Promise<boolean> {
   try {
     await getPool().query('SELECT 1');
+    _poolErrorCount = 0;
     return true;
   } catch {
     return false;
   }
 }
 
+/**
+ * 부팅 시 DB 연결 — 최대 retries회 재시도 (delayMs 간격)
+ * Cloud SQL 기상 직후 연결 지연 대비, 매 실패마다 풀 리셋
+ */
+export async function checkDbWithRetry(retries = 4, delayMs = 5_000): Promise<boolean> {
+  for (let i = 1; i <= retries; i++) {
+    try {
+      await getPool().query('SELECT 1');
+      _poolErrorCount = 0;
+      if (i > 1) logger.info(`✅ DB 연결 성공 (${i}/${retries}번째 시도)`, { component: 'DB' });
+      return true;
+    } catch (err) {
+      logger.warn(`DB 연결 시도 ${i}/${retries} 실패: ${err}`, { component: 'DB' });
+      if (i < retries) {
+        await resetPool();
+        await new Promise(r => setTimeout(r, delayMs));
+      }
+    }
+  }
+  return false;
+}
+
+/** 메모리 모드 안전 쿼리 — 메모리 모드면 빈 결과 반환, 아니면 queryWithRetry */
+export async function safeQuery<T extends pg.QueryResultRow = any>(
+  text: string,
+  values?: unknown[],
+): Promise<pg.QueryResult<T>> {
+  if (useMemory) return { rows: [] as T[], command: '', rowCount: 0, oid: 0, fields: [] };
+  return queryWithRetry<T>(text, values);
+}
+
+/**
+ * 쿼리 실행 + 일시적 에러 자동 재시도 (최대 2회)
+ * - 연결 끊김, 타임아웃 등 일시적 에러만 재시도
+ * - 쿼리 문법 에러 등은 즉시 throw
+ */
+export async function queryWithRetry<T extends pg.QueryResultRow = any>(
+  text: string,
+  values?: unknown[],
+  maxRetries = 2,
+): Promise<pg.QueryResult<T>> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await getPool().query<T>(text, values);
+      if (attempt > 0) _poolErrorCount = 0;
+      return result;
+    } catch (err) {
+      if (attempt < maxRetries && isRetriableError(err)) {
+        logger.warn(
+          `DB 쿼리 재시도 ${attempt + 1}/${maxRetries}: ${String((err as Error).message).slice(0, 80)}`,
+          { component: 'DB' },
+        );
+        await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+        if (_poolErrorCount >= 3) {
+          await resetPool();
+        }
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('queryWithRetry: unreachable');
+}
+
 // ── Watchlist ──
 
 export async function getActiveWatchlist(): Promise<WatchlistItem[]> {
   if (useMemory) return memGetActiveWatchlist();
-  const { rows } = await getPool().query('SELECT * FROM watchlist WHERE is_active = true ORDER BY added_at ASC');
+  const { rows } = await queryWithRetry('SELECT * FROM watchlist WHERE is_active = true ORDER BY added_at ASC');
   return rows;
 }
 
@@ -113,7 +234,7 @@ export async function upsertWatchlistItem(
   // 깨진 종목명으로 기존 정상 이름을 덮어쓰지 않음
   const nameIsGarbled = isGarbledStockName(item.stock_name);
   if (nameIsGarbled) {
-    await getPool().query(
+    await queryWithRetry(
       `INSERT INTO watchlist (stock_code, stock_name, market, source)
        VALUES ($1, $2, $3, $4)
        ON CONFLICT (stock_code) DO UPDATE SET market = $3
@@ -121,7 +242,7 @@ export async function upsertWatchlistItem(
       [item.stock_code, item.stock_code, item.market, source],
     );
   } else {
-    await getPool().query(
+    await queryWithRetry(
       `INSERT INTO watchlist (stock_code, stock_name, market, source)
        VALUES ($1, $2, $3, $4)
        ON CONFLICT (stock_code) DO UPDATE SET stock_name = $2, market = $3`,
@@ -134,7 +255,7 @@ export async function upsertWatchlistItem(
 
 export async function upsertAIScore(score: Omit<AIScore, 'id' | 'created_at'>) {
   if (useMemory) { memUpsertAIScore(score); return; }
-  await getPool().query(
+  await queryWithRetry(
     `INSERT INTO ai_scores (stock_code, score_date, gemini_summary, composite_score,
        fundamental_score, technical_score, sentiment_score, confidence, reasoning,
        signal, target_price, stop_loss_price)
@@ -170,7 +291,7 @@ export async function getLatestScores(stockCodes: string[]): Promise<AIScore[]> 
   const placeholders = validCodes.map((_, i) => `$${i + 1}`).join(',');
 
   // 오늘 스코어 먼저 조회
-  const { rows } = await getPool().query(
+  const { rows } = await queryWithRetry(
     `SELECT * FROM ai_scores WHERE stock_code IN (${placeholders}) AND score_date = $${validCodes.length + 1}
      AND composite_score > 0
      ORDER BY composite_score DESC`,
@@ -181,7 +302,7 @@ export async function getLatestScores(stockCodes: string[]): Promise<AIScore[]> 
 
   // 오늘 없으면 최근 7일 이내 스코어 fallback (주말/공휴일 대비)
   const twoDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-  const { rows: fallbackRows } = await getPool().query(
+  const { rows: fallbackRows } = await queryWithRetry(
     `SELECT DISTINCT ON (stock_code) * FROM ai_scores
      WHERE stock_code IN (${placeholders}) AND score_date >= $${validCodes.length + 1}
      AND composite_score > 0
@@ -192,12 +313,30 @@ export async function getLatestScores(stockCodes: string[]): Promise<AIScore[]> 
   return fallbackRows;
 }
 
+/** 오늘(또는 최근 7일) 채점된 전체 종목 점수 조회 — 워치리스트 범위 불일치 해결 */
+export async function getAllRecentScores(): Promise<AIScore[]> {
+  if (useMemory) return [];
+  const today = new Date().toISOString().split('T')[0];
+  const { rows } = await queryWithRetry(
+    `SELECT * FROM ai_scores WHERE score_date = $1 AND composite_score > 0 ORDER BY composite_score DESC`,
+    [today],
+  );
+  if (rows.length > 0) return rows;
+  // 오늘 없으면 최근 2일 fallback
+  const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const { rows: fallback } = await queryWithRetry(
+    `SELECT DISTINCT ON (stock_code) * FROM ai_scores WHERE score_date >= $1 AND composite_score > 0 ORDER BY stock_code, score_date DESC`,
+    [twoDaysAgo],
+  );
+  return fallback;
+}
+
 // ── Market Sources (CEO 참고 소스) ──
 
 export async function getRecentSources(limit = 20): Promise<Array<{ title: string; url: string; source_type: string; memo: string | null }>> {
   if (useMemory) return [];
   try {
-    const { rows } = await getPool().query(
+    const { rows } = await queryWithRetry(
       'SELECT title, url, source_type, memo FROM market_sources ORDER BY is_pinned DESC, added_at DESC LIMIT $1',
       [limit],
     );
@@ -229,7 +368,7 @@ export async function withTransaction<T>(fn: (client: pg.PoolClient) => Promise<
 export async function getOpenChains(isPaperOverride?: boolean): Promise<TransactionChain[]> {
   if (useMemory) return memGetOpenChains();
   const isPaper = isPaperOverride ?? getCtxIsPaper();
-  const { rows } = await getPool().query(
+  const { rows } = await queryWithRetry(
     `SELECT tc.*, w.stock_name, tc.peak_price_since_open,
        (SELECT trigger_source FROM orders WHERE chain_id = tc.id AND side = 'BUY' ORDER BY created_at ASC LIMIT 1) AS trigger_source
      FROM transaction_chains tc
@@ -246,7 +385,7 @@ export async function createChain(
   chain: Omit<TransactionChain, 'id' | 'opened_at' | 'closed_at' | 'close_reason'>,
 ): Promise<string> {
   if (useMemory) return memCreateChain(chain);
-  const { rows } = await getPool().query(
+  const { rows } = await queryWithRetry(
     `INSERT INTO transaction_chains (stock_code, status, strategy_mode, avg_buy_price,
        total_quantity, total_invested, realized_pnl, target_profit_pct, stop_loss_pct,
        max_averaging_count, current_averaging_count, is_paper)
@@ -282,14 +421,14 @@ export async function updateChain(id: string, updates: Partial<TransactionChain>
   if (keys.length === 0) return;
   const setClauses = keys.map((k, i) => `${k} = $${i + 2}`);
   const values = keys.map((k) => (updates as Record<string, unknown>)[k]);
-  await getPool().query(`UPDATE transaction_chains SET ${setClauses.join(', ')} WHERE id = $1`, [id, ...values]);
+  await queryWithRetry(`UPDATE transaction_chains SET ${setClauses.join(', ')} WHERE id = $1`, [id, ...values]);
 }
 
 // ── Orders ──
 
 export async function insertOrder(order: Omit<Order, 'id' | 'created_at' | 'updated_at'>): Promise<string> {
   if (useMemory) return memInsertOrder(order);
-  const { rows } = await getPool().query(
+  const { rows } = await queryWithRetry(
     `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price,
        kis_order_no, kis_status, filled_quantity, filled_price, status, trading_mode,
        trigger_source, ai_reasoning, avg_buy_price)
@@ -328,7 +467,7 @@ export async function updateOrder(id: string, updates: Partial<Order>) {
   const setClauses = keys.map((k, i) => `${k} = $${i + 2}`);
   setClauses.push(`updated_at = NOW()`);
   const values = keys.map((k) => (updates as Record<string, unknown>)[k]);
-  await getPool().query(`UPDATE orders SET ${setClauses.join(', ')} WHERE id = $1`, [id, ...values]);
+  await queryWithRetry(`UPDATE orders SET ${setClauses.join(', ')} WHERE id = $1`, [id, ...values]);
 }
 
 export async function updateOrderByKisOrderNo(kisOrderNo: string, updates: Partial<Order>) {
@@ -338,18 +477,18 @@ export async function updateOrderByKisOrderNo(kisOrderNo: string, updates: Parti
   const setClauses = keys.map((k, i) => `${k} = $${i + 2}`);
   setClauses.push(`updated_at = NOW()`);
   const values = keys.map((k) => (updates as Record<string, unknown>)[k]);
-  await getPool().query(`UPDATE orders SET ${setClauses.join(', ')} WHERE kis_order_no = $1`, [kisOrderNo, ...values]);
+  await queryWithRetry(`UPDATE orders SET ${setClauses.join(', ')} WHERE kis_order_no = $1`, [kisOrderNo, ...values]);
 }
 
 export async function getOrdersByChain(chainId: string): Promise<Order[]> {
   if (useMemory) return memGetOrdersByChain(chainId);
-  const { rows } = await getPool().query('SELECT * FROM orders WHERE chain_id = $1 ORDER BY created_at ASC', [chainId]);
+  const { rows } = await queryWithRetry('SELECT * FROM orders WHERE chain_id = $1 ORDER BY created_at ASC', [chainId]);
   return rows;
 }
 
 export async function getPendingDomesticOrders(): Promise<Order[]> {
   if (useMemory) return [];
-  const { rows } = await getPool().query(
+  const { rows } = await queryWithRetry(
     `SELECT * FROM orders
      WHERE status IN ('PENDING', 'PARTIAL')
        AND (trigger_source IS NULL OR trigger_source != 'OVERSEAS')
@@ -375,7 +514,7 @@ export async function insertSnapshot(snapshot: {
   is_paper?: boolean;
 }) {
   if (useMemory) { memInsertSnapshot(snapshot); return; }
-  await getPool().query(
+  await queryWithRetry(
     `INSERT INTO portfolio_snapshots (total_value, cash_balance, invested_value,
        unrealized_pnl, daily_pnl, daily_pnl_pct, positions, is_paper)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
@@ -396,7 +535,7 @@ export async function getTodayStartSnapshot(isPaperOverride?: boolean) {
   if (useMemory) return memGetTodayStartSnapshot();
   const isPaper = isPaperOverride ?? getCtxIsPaper();
   const today = new Date().toISOString().split('T')[0];
-  const { rows } = await getPool().query(
+  const { rows } = await queryWithRetry(
     `SELECT * FROM portfolio_snapshots WHERE snapshot_at >= $1 AND is_paper = $2
      ORDER BY snapshot_at ASC LIMIT 1`,
     [`${today}T00:00:00`, isPaper],
@@ -408,7 +547,7 @@ export async function getTodayStartSnapshot(isPaperOverride?: boolean) {
 
 export async function getActiveStrategy(): Promise<StrategyConfig | null> {
   if (useMemory) return memGetActiveStrategy();
-  const { rows } = await getPool().query(
+  const { rows } = await queryWithRetry(
     `SELECT * FROM strategy_config WHERE is_active = true AND is_paper = $1
      ORDER BY updated_at DESC LIMIT 1`,
     [getCtxIsPaper()],
@@ -433,9 +572,15 @@ export async function logSystem(
       details ? JSON.stringify(details) : null,
     ]);
   } catch (err) {
-    logger.error(`시스템 로그 DB 기록 실패: ${err}`);
+    // DB 미연결 시 에러 스팸 방지: 60초에 1번만 경고
+    const now = Date.now();
+    if (now - _lastLogErrorAt > 60_000) {
+      _lastLogErrorAt = now;
+      logger.error(`시스템 로그 DB 기록 실패 (60초 스로틀): ${err}`);
+    }
   }
 }
+let _lastLogErrorAt = 0;
 
 // ── 손실 종목 쿨다운 ──
 
@@ -443,13 +588,30 @@ export async function logSystem(
 export async function getRecentManuallySoldStocks(hoursBack = 24): Promise<Set<string>> {
   if (useMemory) return new Set();
   try {
-    const { rows } = await getPool().query(
+    const { rows } = await queryWithRetry(
       `SELECT DISTINCT stock_code FROM transaction_chains
        WHERE status = 'CLOSED'
          AND close_reason = 'CEO 수동 매도'
          AND is_paper = $1
          AND closed_at > NOW() - ($2 || ' hours')::interval`,
-      [config.isPaper, hoursBack],
+      [getCtxIsPaper(), hoursBack],
+    );
+    return new Set(rows.map((r: { stock_code: string }) => r.stock_code));
+  } catch {
+    return new Set();
+  }
+}
+
+/** 최근 매도(CLOSED) 종목 쿨다운 — 매도 후 재진입 방지 (삼성 반복매수 등) */
+export async function getRecentlySoldStocks(hoursBack = 2): Promise<Set<string>> {
+  if (useMemory) return new Set();
+  try {
+    const { rows } = await queryWithRetry(
+      `SELECT DISTINCT stock_code FROM transaction_chains
+       WHERE status = 'CLOSED'
+         AND is_paper = $1
+         AND closed_at > NOW() - ($2 || ' hours')::interval`,
+      [getCtxIsPaper(), hoursBack],
     );
     return new Set(rows.map((r: { stock_code: string }) => r.stock_code));
   } catch {
@@ -466,7 +628,7 @@ export async function getRecentLossStocks(daysBack = 14): Promise<Set<string>> {
   if (useMemory) return new Set();
   try {
     // 1) 일반 손실 7일 + 대손실 14일 졸업식 차단
-    const { rows } = await getPool().query(
+    const { rows } = await queryWithRetry(
       `SELECT DISTINCT stock_code FROM transaction_chains
        WHERE status = 'CLOSED'
          AND is_paper = $1
@@ -475,12 +637,12 @@ export async function getRecentLossStocks(daysBack = 14): Promise<Set<string>> {
            OR
            (realized_pnl < -50000 AND closed_at > NOW() - INTERVAL '14 days')
          )`,
-      [config.isPaper],
+      [getCtxIsPaper()],
     );
     const blocked = new Set(rows.map((r: { stock_code: string }) => r.stock_code));
 
     // 2) ATR/손절 사유로 매도된 종목 7일 추가 차단
-    const { rows: slRows } = await getPool().query(
+    const { rows: slRows } = await queryWithRetry(
       `SELECT DISTINCT o.stock_code FROM orders o
        WHERE o.side = 'SELL' AND o.status = 'FILLED'
          AND o.trading_mode = $1
@@ -503,7 +665,7 @@ export async function getRecentLossStocks(daysBack = 14): Promise<Set<string>> {
 export async function getTodayRepeatStopCodes(minStops = 2): Promise<Set<string>> {
   if (useMemory) return new Set();
   try {
-    const { rows } = await getPool().query(
+    const { rows } = await queryWithRetry(
       `SELECT stock_code, COUNT(*) AS stop_count
          FROM transaction_chains
         WHERE status = 'CLOSED'
@@ -512,7 +674,7 @@ export async function getTodayRepeatStopCodes(minStops = 2): Promise<Set<string>
           AND closed_at >= CURRENT_DATE AT TIME ZONE 'Asia/Seoul'
         GROUP BY stock_code
        HAVING COUNT(*) >= $2`,
-      [config.isPaper, minStops],
+      [getCtxIsPaper(), minStops],
     );
     return new Set(rows.map((r: { stock_code: string }) => r.stock_code));
   } catch {
@@ -530,7 +692,7 @@ export async function insertRiskEvent(event: {
 }) {
   if (useMemory) { memInsertRiskEvent(event); return; }
   try {
-    await getPool().query(
+    await queryWithRetry(
       'INSERT INTO risk_events (event_type, severity, details, action_taken) VALUES ($1,$2,$3,$4)',
       [event.event_type, event.severity, event.details ? JSON.stringify(event.details) : null, event.action_taken],
     );
