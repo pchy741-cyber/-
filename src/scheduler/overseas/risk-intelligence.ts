@@ -205,31 +205,31 @@ export function getPartialTpStages(sector: string): PartialTpStage[] {
   const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
   const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
 
-  // 2.5% 간격 분할매도 — 6~7% 도달 후 되돌림 시 수익 날려버리는 문제 해결
+  // 조기 수익확정 강화 — 작은 수익이라도 확보 (되돌림 시 수익 증발 방지)
   if (isHighBeta) {
     return [
-      { stage: 1, triggerPct: 3.0, sellRatio: 0.10 },  // 일찍 10% 확보
-      { stage: 2, triggerPct: 6.0, sellRatio: 0.15 },
-      { stage: 3, triggerPct: 10.0, sellRatio: 0.20 },
-      { stage: 4, triggerPct: 18.0, sellRatio: 0.20 },
-      { stage: 5, triggerPct: 30.0, sellRatio: 0.25 },
+      { stage: 1, triggerPct: 2.0, sellRatio: 0.15 },  // +2% → 15% 조기 확보
+      { stage: 2, triggerPct: 4.0, sellRatio: 0.15 },
+      { stage: 3, triggerPct: 7.0, sellRatio: 0.20 },
+      { stage: 4, triggerPct: 12.0, sellRatio: 0.20 },
+      { stage: 5, triggerPct: 20.0, sellRatio: 0.25 },
     ];
   }
   if (isDefense) {
     return [
-      { stage: 1, triggerPct: 2.0, sellRatio: 0.15 },  // 방어주: 성장 느림, 더 일찍 확보
-      { stage: 2, triggerPct: 4.0, sellRatio: 0.20 },
-      { stage: 3, triggerPct: 7.0, sellRatio: 0.25 },
-      { stage: 4, triggerPct: 12.0, sellRatio: 0.25 },
+      { stage: 1, triggerPct: 1.5, sellRatio: 0.20 },  // 방어주: 성장 느림, +1.5%에 20% 확보
+      { stage: 2, triggerPct: 3.0, sellRatio: 0.20 },
+      { stage: 3, triggerPct: 5.0, sellRatio: 0.25 },
+      { stage: 4, triggerPct: 8.0, sellRatio: 0.25 },
     ];
   }
-  // 일반 종목: 2.5% 간격
+  // 일반 종목
   return [
-    { stage: 1, triggerPct: 2.5, sellRatio: 0.15 },   // +2.5% → 15% 수익확정
-    { stage: 2, triggerPct: 5.0, sellRatio: 0.15 },   // +5.0% → 추가 15%
-    { stage: 3, triggerPct: 8.0, sellRatio: 0.20 },   // +8.0% → 추가 20% (누적 50%)
-    { stage: 4, triggerPct: 13.0, sellRatio: 0.20 },
-    { stage: 5, triggerPct: 20.0, sellRatio: 0.25 },
+    { stage: 1, triggerPct: 1.5, sellRatio: 0.15 },   // +1.5% → 15% 수익확정
+    { stage: 2, triggerPct: 3.5, sellRatio: 0.15 },   // +3.5% → 추가 15%
+    { stage: 3, triggerPct: 6.0, sellRatio: 0.20 },   // +6.0% → 추가 20% (누적 50%)
+    { stage: 4, triggerPct: 10.0, sellRatio: 0.20 },
+    { stage: 5, triggerPct: 15.0, sellRatio: 0.25 },
   ];
 }
 
@@ -285,11 +285,12 @@ export function calcDynamicTpSl(params: {
   const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
 
   // Trade Tuner 오버라이드가 있으면 base 값 조정
+  // TP 현실화: 기존 20~25%는 스윙매매에서 거의 도달 불가 → 10~15%로 하향
   const tunerTpAdj = tunerOverrides?.tp_base_pct;
   const tunerSlAdj = tunerOverrides?.sl_base_pct;
   const baseTp = tunerTpAdj != null
     ? tunerTpAdj
-    : isHighBeta ? 25.0 : isMediumBeta ? 20.0 : isDefense ? 18.0 : 20.0;
+    : isHighBeta ? 15.0 : isMediumBeta ? 12.0 : isDefense ? 10.0 : 12.0;
   const baseSl = tunerSlAdj != null
     ? tunerSlAdj
     : isHighBeta ? 8.0 : isMediumBeta ? 5.0 : isDefense ? 4.0 : 5.0;
@@ -318,8 +319,9 @@ export function calcDynamicTpSl(params: {
   const aiSlAdj = aiAction === 'SELL' && aiConfidence >= 0.80 ? -1.0 : 0;
   const scoreSlAdj = aiScore != null && aiScore >= 85 ? 0.5 : 0;
 
-  const tpFloor = isHighBeta ? 25.0 : isMediumBeta ? 20.0 : isDefense ? 15.0 : 20.0;
-  const tpCeil = isHighBeta ? 55.0 : isMediumBeta ? 48.0 : isDefense ? 35.0 : 48.0;
+  // TP 바닥 현실화: 기존 15~25%는 도달률 극히 낮아 사실상 익절 불가 → 8~12%
+  const tpFloor = isHighBeta ? 12.0 : isMediumBeta ? 10.0 : isDefense ? 8.0 : 10.0;
+  const tpCeil = isHighBeta ? 40.0 : isMediumBeta ? 35.0 : isDefense ? 25.0 : 35.0;
   const tpPct = Math.min(tpCeil, Math.max(tpFloor, baseTp + momentumExt + overboughtCut + aiTpBonus + scoreTpBonus + vixTpAdj));
   const slPct = Math.max(isHighBeta ? 5.0 : 2.5, baseSl + aiSlAdj + scoreSlAdj);
 

@@ -149,6 +149,9 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     if (!isPaper()) {
       await reconcileCashWithKIS();
     }
+    // ── 환율 1회 조회 — 사이클 전체에서 동일 환율 사용 (환율 drift 방지) ──
+    const cycleFxRate = await fetchExchangeRate();
+
     const allActiveStocks = GLOBAL_WATCHLIST.filter(stock =>
       openRegions.has(stock.region) || (isUSExtended && stock.region === 'US'));
     const isUSSession = openRegions.has('US') || isUSExtended;
@@ -157,7 +160,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
 
     const holdings = await getHoldings(isPaper());
     const pendingOrderStocks = await getPendingOverseasStocks(isPaper());
-    let cash = await getCash(isPaper());
+    let cash = await getCash(isPaper(), cycleFxRate);
     const usCodes = GLOBAL_WATCHLIST.filter(stock => stock.region === 'US').map(stock => stock.code);
 
     // ── 루프 헬스 요약 ──
@@ -478,7 +481,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     // 매크로 RISK_OFF Lv3 → 트레일 추가 타이트닝
     const macroTighten = macroEvents.some(e => e.impact === 'RISK_OFF' && e.severity >= 3) ? 1.0 : 0;
     if (macroTighten > 0) effectiveVixRegime.trailTighten += macroTighten;
-    const sellResult = await evaluateSells({ holdings, pendingOrderStocks, techResults, aiMap, vixRegime: effectiveVixRegime, cash, isPaper: isPaper(), portfolioValue });
+    const sellResult = await evaluateSells({ holdings, pendingOrderStocks, techResults, aiMap, vixRegime: effectiveVixRegime, cash, isPaper: isPaper(), portfolioValue, fxRate: cycleFxRate });
     const sellOrders = sellResult.sellOrders;
     cash = sellResult.cash;
 
@@ -559,7 +562,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     // ── 포트폴리오 배분 비중 체크 — kr_pct / us_pct 목표 준수 (Live 전용) ──
     // Paper 모드는 국내 포트폴리오가 없어 해외비중 100%로 잡히므로 스킵
     let allocBlocked = false;
-    const fxNow = await fetchExchangeRate();
+    const fxNow = cycleFxRate; // 사이클 환율 재사용
     if (!isPaper()) {
       try {
         // 국내 투자중 금액 확인 (현금 제외 — 통합증거금은 국내/해외 공유)
@@ -864,7 +867,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           isMomentum: target.isMomentum,
         });
         // 매수 시점 동적 TP/SL + 버킷을 overseas_holdings에 영속 저장
-        await updateTradeState({ code: target.code, exchange: target.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper(), tpPct, slPct: -slPct });
+        await updateTradeState({ code: target.code, exchange: target.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper(), fxRate: cycleFxRate, tpPct, slPct: -slPct });
         // 황금비율 버킷 태깅
         getPool().query('UPDATE overseas_holdings SET strategy_bucket = $1 WHERE stock_code = $2 AND is_paper = $3', [targetBucket, target.code, isPaper()]).catch(() => {});
         const tpPrice = (entryP * (1 + tpPct / 100)).toFixed(2);

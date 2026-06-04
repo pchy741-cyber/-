@@ -51,6 +51,7 @@ export interface SellContext {
   cash: number;
   isPaper?: boolean;
   portfolioValue?: number; // 동적 MAX_HOLD_DAYS 계산용
+  fxRate?: number; // 사이클 환율 (동일 루프 내 일관성 보장)
 }
 
 export interface SellResult {
@@ -120,25 +121,23 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
 
     // ATR 동적 트레일링 스톱 + VIX 레짐 타이트닝
     const atrPctValue = tech.atrPct ?? 2.0;
-    // TP/SL: overseas_holdings에 매수 시 저장된 값 우선 사용 (recalc 불필요)
-    let hardTpPct: number;
+    // TP/SL: 매 사이클마다 현재 조건으로 재계산 (DB 저장값은 참고용)
+    // 기존 문제: DB에 20~25% TP가 박혀서 사실상 익절 불가 → 항상 현재 조건 반영
+    const dyn = calcDynamicTpSl({
+      sector, adx: tech.adx ?? 20, rsi: tech.rsi ?? 50,
+      aiConfidence: ai?.confidence, aiAction: ai?.action, vixRegime, isMomentum: tech.isMomentum,
+      tunerOverrides,
+    });
+    let hardTpPct = dyn.tpPct;
     let stopLossPct: number;
-    if (holding.tpPct != null && holding.slPct != null) {
-      hardTpPct = holding.tpPct;
-      stopLossPct = holding.slPct; // 이미 음수
+    if (holding.slPct != null) {
+      stopLossPct = holding.slPct; // SL은 매수 시점 기준 유지 (안정성)
     } else {
-      // 레거시 보유종목 (tp_pct/sl_pct 미설정) → 1회 계산 후 DB 저장
-      const dyn = calcDynamicTpSl({
-        sector, adx: tech.adx ?? 20, rsi: tech.rsi ?? 50,
-        aiConfidence: ai?.confidence, aiAction: ai?.action, vixRegime, isMomentum: tech.isMomentum,
-        tunerOverrides,
-      });
-      hardTpPct = dyn.tpPct;
       stopLossPct = -dyn.slPct; // slPct는 절댓값(양수) → 비교용 음수로 변환
-      // 레거시 보유종목 1회성 DB 저장 (다음 사이클부터 recalc 불필요)
-      const { updateHoldingTpSl } = await import('./state.js');
-      updateHoldingTpSl(code, hardTpPct, stopLossPct, paperMode).catch(() => {});
     }
+    // DB 동기화 (대시보드 표시용)
+    const { updateHoldingTpSl } = await import('./state.js');
+    updateHoldingTpSl(code, hardTpPct, stopLossPct, paperMode).catch(() => {});
     const dynamicTrailDrop = calcDynamicTrailDrop({ sector, atrPct: atrPctValue, maxPnlPct, adx: tech.adx, rsi: tech.rsi });
     // 수익 크기 비례 트레일 타이트닝: 수익 클수록 보호 강화 (2×ATR 연구 — 드로다운 32% 감소 검증)
     // maxPnl 10%+: 추가 0.5% 타이트, 15%+: 1.0% 타이트, 20%+: 1.5% 타이트
@@ -155,53 +154,69 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     // ── 개선#9: ADX/승률 기반 동적 보유기간 ──
     const effectiveMaxHold = calcDynamicHoldDays(maxHoldDays, tech, holdingDays);
 
+    // ════════════════════════════════════════════════════════
+    // 매도 판단 우선순위 (위에서부터 체크, 먼저 걸리면 매도)
+    //  1. 긴급 손절/리스크 관리 (SL, 하락장, 약세)
+    //  2. 트레일링 스톱 (ATR, 수익보호, 마이크로)
+    //  3. 하드 익절 — TP% 도달하면 무조건 매도 (isWinnerRiding 무시)
+    //  4. 시간 기반 익절 — 오래 들고 있는데 작은 수익 → 확정
+    //  5. AI/기술적 매도
+    //  6. 시간 손절/약세 정리
+    // ════════════════════════════════════════════════════════
+
+    // ── 1. 손절 ──
     if (pnlPct <= stopLossPct) {
       sellReason = `손절(${stopLossPct}%): ${pnlPct.toFixed(1)}%`;
 
-    // ── 하락장 빠른 정리 — VIX STRESS/CRISIS 시 손실 포지션 빠르게 정리해서 현금 확보 ──
+    // ── 1b. 하락장 빠른 정리 ──
     } else if (vixRegime.regime !== 'CALM' && pnlPct < -1.0 && pnlPct > stopLossPct
       && tech.score <= -5 && !tech.aboveMA20 && holdingDays >= 0.5) {
       sellReason = `하락장정리(${vixRegime.regime}/${pnlPct.toFixed(1)}%): score=${tech.score} MA20↓ → 현금확보`;
 
-    // ── 약세 조기 탈출 — SL 기다리지 말고 약세 확인 시 바로 매도 ──
+    // ── 1c. 약세 조기 탈출 ──
     } else if (pnlPct < -1.5 && pnlPct > stopLossPct && tech.score <= -10
       && !tech.aboveMA20 && tech.rsi < 45 && holdingDays >= 1) {
       sellReason = `약세조기탈출(${pnlPct.toFixed(1)}%): score=${tech.score} RSI=${tech.rsi.toFixed(0)} MA20↓ → SL전 정리`;
 
+    // ── 2. ATR 트레일링 스톱 ──
     } else if (maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {
       sellReason = `ATR트레일(${effectiveTrailDropPct.toFixed(1)}%/ATR${atrPctValue.toFixed(1)}%${vixRegime.trailTighten > 0 ? `/VIX${vixRegime.regime}` : ''}): 고점 +${maxPnlPct.toFixed(1)}% → 현재 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
 
-    // ── 수익 보호 — 고점 대비 50% 이상 반납 시 매도 (부분익절과 역할 분담) ──
-    // 부분익절이 2.5% 간격으로 선매도하므로, 전량매도는 5%+ 고점에서 50% 반납 시만
-    } else if (maxPnlPct >= 5.0 && pnlPct >= 0 && pnlPct < maxPnlPct * 0.50
-      && !tech.isMomentum && !(tech.aboveMA20 && tech.adx >= 25)) {
+    // ── 2b. 수익 보호 — 고점 대비 50% 이상 반납 시 매도 ──
+    } else if (maxPnlPct >= 3.0 && pnlPct >= 0 && pnlPct < maxPnlPct * 0.50
+      && !tech.isMomentum && !(tech.aboveMA20 && tech.adx >= 35)) {
       sellReason = `수익보호(+${maxPnlPct.toFixed(1)}%→+${pnlPct.toFixed(1)}%): 고점 대비 ${((1 - pnlPct / maxPnlPct) * 100).toFixed(0)}% 반납 → 확정`;
 
-    // ── 개선: 마이크로 트레일 — +2%~트레일활성화 구간 (기존 +4% → +2%로 강화) ──
-    } else if (maxPnlPct >= 2.0 && maxPnlPct < trailActivatePct && drawdownFromPeak <= -2.0
-      && !tech.isMomentum && !(tech.aboveMA20 && tech.adx >= 20)) {
+    // ── 2c. 마이크로 트레일 — +2%~트레일활성화 구간 ──
+    } else if (maxPnlPct >= 2.0 && maxPnlPct < trailActivatePct && drawdownFromPeak <= -1.5
+      && !tech.isMomentum && !(tech.aboveMA20 && tech.adx >= 30)) {
       sellReason = `마이크로트레일(+${maxPnlPct.toFixed(1)}%→${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%): 고점 대비 ${drawdownFromPeak.toFixed(1)}% 하락 → 수익보호`;
 
-    } else if (pnlPct >= hardTpPct && !isWinnerRiding(tech, holdingDays)) {
+    // ── 3. 하드 익절 — TP% 도달하면 무조건 매도 (isWinnerRiding 무관) ──
+    } else if (pnlPct >= hardTpPct) {
       sellReason = `익절(${hardTpPct}%): +${pnlPct.toFixed(1)}%`;
+
+    // ── 4. 시간 기반 익절 — 3일+ 보유 & +2% 이상인데 모멘텀 없음 → 수익 확정 ──
+    } else if (holdingDays >= 3 && pnlPct >= 2.0 && !tech.isMomentum
+      && !(tech.aboveMA20 && tech.adx >= 30) && tech.rsi < 70) {
+      sellReason = `시간익절(${holdingDays.toFixed(0)}일/+${pnlPct.toFixed(1)}%): 모멘텀 없음 → 수익확정`;
+
+    // ── 5. AI/기술적 매도 ──
     } else if (ai?.action === 'SELL' && ai.confidence >= 0.90) {
       sellReason = `AI 급매도(${(ai.confidence * 100).toFixed(0)}%): ${ai.reasoning}`;
     } else if (ai?.action === 'SELL' && ai.confidence >= minAiSellConf && holdingDays >= minHoldForSell) {
       sellReason = `AI 매도(${(ai.confidence * 100).toFixed(0)}%): ${ai.reasoning}`;
-    // 기술적 매도: AI 없거나, AI가 SELL 리턴했지만 확신도 미달인 경우에도 허용
-    // (이전: !ai만 허용 → AI 낮은확신 SELL이 기술적매도 차단하는 데드존 버그)
-    } else if ((!ai || (ai.action === 'SELL' && ai.confidence < minAiSellConf)) && tech.rsi > 78 && tech.score < 10 && pnlPct >= trailActivatePct && holdingDays >= minHoldForSell) {
+    } else if ((!ai || (ai.action === 'SELL' && ai.confidence < minAiSellConf)) && tech.rsi > 78 && tech.score < 10 && pnlPct >= 3.0 && holdingDays >= minHoldForSell) {
       sellReason = `기술 익절(과매수): RSI=${tech.rsi.toFixed(0)} +${pnlPct.toFixed(1)}% ${ai ? `(AI=${(ai.confidence*100).toFixed(0)}%보강)` : ''}`;
     } else if ((!ai || (ai.action === 'SELL' && ai.confidence < minAiSellConf)) && tech.score <= -30 && (tech.signal === 'SELL' || tech.signal === 'STRONG_SELL') && holdingDays >= minHoldForSell) {
       sellReason = `기술적 매도: score=${tech.score} RSI=${tech.rsi.toFixed(0)} ${ai ? `(AI SELL ${(ai.confidence*100).toFixed(0)}%보강)` : ''}`;
+
+    // ── 6. 시간 손절/약세 정리 ──
     } else if (holdingDays >= 3 && pnlPct <= -5.5 && !tech.isMomentum) {
-      // 3일+ & -5.5% 이하 & 모멘텀 없음 → 반등 기대 어려움, 조기 손절
       sellReason = `시간SL(${holdingDays.toFixed(0)}일/${pnlPct.toFixed(1)}%): 반등 없이 하락 → 조기손절`;
     } else if (holdingDays >= 5 && pnlPct <= -3.0 && tech.score < 0 && !tech.aboveMA20) {
-      // 5일+ & -3% & score 음수 & MA20 아래 → 약세 지속
       sellReason = `시간손절(${holdingDays.toFixed(0)}일/${pnlPct.toFixed(1)}%): score=${tech.score} MA20↓ → 조기정리`;
     } else if (holdingDays >= 7 && pnlPct <= -2.0 && pnlPct > -5.5 && tech.adx < 18) {
-      // 7일+ & 소폭 손실 & 추세 없음 → 횡보 하락, 자본 묶임 방지
       sellReason = `횡보손절(${holdingDays.toFixed(0)}일/${pnlPct.toFixed(1)}%): ADX=${tech.adx.toFixed(0)} 추세없음 → 정리`;
     } else if (holdingDays > effectiveMaxHold && pnlPct < 3.0) {
       sellReason = pnlPct < 0
@@ -211,10 +226,11 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       sellReason = `약세종목 정리: ADX=${tech.adx.toFixed(0)} 횡보${holdingDays.toFixed(0)}일 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
     }
 
-    // ── 3단계 부분 익절 (승자 라이딩 시 스킵, 개선#5: ATR 확장 시 스킵) ──
-    // ATR 확장 중 = 추세 가속 → 부분 매도 보류 (더 큰 수익 가능)
-    const atrExpanding = atrPctValue > 2.5 && tech.adx >= 25;
-    if (!sellReason && holding.qty >= 2 && !isWinnerRiding(tech, holdingDays) && !atrExpanding) {
+    // ── 부분 익절 — isWinnerRiding 무관하게 항상 실행 ──
+    // 수익 있을 때 조금씩 확정하는 게 핵심 (승자 라이딩은 잔여 수량으로 충분)
+    // ATR 급확장(ADX 35+ & ATR 3%+)일 때만 보류
+    const atrExpanding = atrPctValue > 3.0 && tech.adx >= 35;
+    if (!sellReason && holding.qty >= 2 && !atrExpanding) {
       const tpStages = getPartialTpStages(sector);
       const currentStage = await getPartialTpStageNum(code);
       const nextStage = tpStages.find(st => st.stage > currentStage && pnlPct >= st.triggerPct);
@@ -226,7 +242,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
         if (exec.submitted && exec.filledQty > 0) {
           const proceeds = exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
           cash += proceeds;
-          await updateTradeState({ code, exchange: tech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: paperMode });
+          await updateTradeState({ code, exchange: tech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: paperMode, fxRate: ctx.fxRate });
           await setPartialTpStageNum(code, nextStage.stage, paperMode);
           sellOrders.push(`부분익절${nextStage.stage} ${code} x${partialQty} @$${exec.filledPrice.toFixed(2)} (${partialReason})`);
         }
@@ -244,7 +260,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       }
       const proceeds = exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
       cash += proceeds;
-      await updateTradeState({ code, exchange: tech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: paperMode });
+      await updateTradeState({ code, exchange: tech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: paperMode, fxRate: ctx.fxRate });
       if (exec.finalQty <= 0) {
         await cleanupPositionState(code, paperMode);
       }
@@ -253,18 +269,6 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
   }
 
   return { sellOrders, cash };
-}
-
-/** 승자 라이딩 — 강한 종목은 익절 지연 (트레일링만 적용) */
-function isWinnerRiding(tech: TechResult, holdingDays: number): boolean {
-  // ADX 40+ 초강세 → 보유기간 무관 즉시 라이딩 허용
-  if (tech.adx >= 40 && tech.rsi >= 45 && tech.rsi <= 76) return true;
-  if (holdingDays < 1) return false;
-  // ADX 25+ & RSI 50~75 유지 → 추세 지속 (30→25 완화, 73→75 완화)
-  if (tech.adx >= 25 && tech.rsi >= 50 && tech.rsi <= 75) return true;
-  // MA20 상방 + 모멘텀 → 상승 지속
-  if (tech.aboveMA20 && tech.aboveMA60 && tech.isMomentum) return true;
-  return false;
 }
 
 /** 개선#9: ADX 기반 동적 보유기간 — 강한 추세는 오래, 횡보는 빨리 */

@@ -204,9 +204,10 @@ export async function updateHoldingTpSl(code: string, tpPct: number | null, slPc
 /**
  * 현금 조회 — USD 반환 (트레이딩 로직용)
  * - Paper: orders 기반 결정론적 계산 (USD)
- * - Live: DB에 KRW 저장 → 현재 환율로 USD 변환 반환
+ * - Live: DB에 KRW 저장 → 환율로 USD 변환 반환
+ * @param fxRate 동일 사이클 내 일관된 환율 전달 (미전달 시 자체 조회)
  */
-export async function getCash(isPaper?: boolean): Promise<number> {
+export async function getCash(isPaper?: boolean, fxRate?: number): Promise<number> {
   const paper = isPaper ?? getCtxIsPaper();
   if (paper) {
     return computePaperCash();
@@ -214,8 +215,8 @@ export async function getCash(isPaper?: boolean): Promise<number> {
   // Live: DB에 KRW 저장 → USD로 변환
   const krw = await getCashKrw();
   if (krw <= 0) return 0;
-  const fxRate = await fetchExchangeRate();
-  return fxRate > 0 ? krw / fxRate : 0;
+  const rate = fxRate ?? await fetchExchangeRate();
+  return rate > 0 ? krw / rate : 0;
 }
 
 /**
