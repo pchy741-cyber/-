@@ -13,6 +13,7 @@ export interface LoopStatus {
   brief: { regime: string; risk: string; narrative: string } | null;
   openMarkets: string[];
   anyMarketOpen: boolean;
+  autoPilot?: { overridesSet: number; decisions: string[]; lastRunAt: string | null } | null;
 }
 
 export interface CopilotData {

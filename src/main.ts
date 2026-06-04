@@ -17,6 +17,7 @@ import { journalRoutes } from './api/routes/journal.js';
 import { backtestRoutes } from './backtest/api.js';
 import reviewRoutes from './api/routes/review.js';
 import { aiCostRoutes } from './api/routes/ai-cost.js';
+import { aiLoopRoutes } from './api/routes/ai-loop.js';
 import { kakaoAlertRoutes } from './api/routes/kakao-alert.js';
 import { requireAuth } from './api/middleware/auth.js';
 import { webauthnPublicRoutes, webauthnProtectedRoutes } from './api/routes/webauthn.js';
@@ -40,7 +41,7 @@ const app = new Hono();
 // ── 미들웨어 ──
 app.use('*', secureHeaders());
 app.use('*', cors({
-  origin: ['https://quantops-807105550136.asia-northeast3.run.app', 'http://localhost:8080', 'http://localhost:3000'],
+  origin: ['https://ai-auto-bot-ang2aozjiq-du.a.run.app', 'https://ai-auto-bot-807105550136.asia-northeast3.run.app', 'http://localhost:8080', 'http://localhost:3000'],
   credentials: true,
 }));
 app.use('*', honoLogger());
@@ -116,6 +117,9 @@ app.route('/', journalRoutes);         // GET  /api/journal/*
 app.route('/', overseasRoutes);        // GET  /api/overseas/dashboard, /api/overseas/scores ...
 app.route('/', kakaoAlertRoutes);      // POST /api/kakao-alert (카카오페이 알림 webhook)
 app.route('/', aiCostRoutes);          // GET  /api/ai-cost (AI 비용 현황)
+app.route('/', aiLoopRoutes);          // GET  /api/ai-loop/* (AI Loop 매매 조절)
+import { referenceRoutes } from './api/routes/references.js';
+app.route('/', referenceRoutes);        // GET/POST/DELETE /api/references (트레이딩 레퍼런스)
 
 // 확장 기능 (OFF by default, 설정에서 켜야 사용)
 import { dividendRoutes } from './api/routes/dividend.js';
@@ -163,7 +167,7 @@ const PORT = Number(process.env.PORT ?? 8080);
 
 async function bootstrap() {
   logger.info('========================================');
-  logger.info('  👑 QUANTOPS v0.2.0 시작');
+  logger.info('  🤖 AI Auto Bot v0.2.0 시작');
   logger.info(`  모드: ${config.tradingMode.toUpperCase()}`);
   logger.info(`  환경: ${config.env}`);
   logger.info(`  프레임워크: Hono (고성능)`);
@@ -289,6 +293,12 @@ async function bootstrap() {
   } catch (err) {
     logger.warn(`⚠️ Redis 미연결 (DB fallback): ${err}`, { component: 'BOOT' });
   }
+
+  // 2.3. AI Loop 오버라이드 캐시 로드
+  try {
+    const { loadOverridesCache } = await import('./ai/ai-overrides.js');
+    await loadOverridesCache();
+  } catch { /* 마이그레이션 전이면 무시 */ }
 
   // 2.5. Secret Manager에서 API 키 로드 (KIS 토큰 발급 전에 실행)
   try {
@@ -543,12 +553,22 @@ async function bootstrap() {
     logger.info(`📡 SSE: http://localhost:${PORT}/api/stream`, { component: 'BOOT' });
   });
 
-  // 대시보드 캐시 선제 빌드 — DB 연결 확인 후에만 (메모리 모드면 빈 캐시 방지)
+  // 대시보드 캐시 선제 빌드 — 콜드 스타트 시 첫 로딩 개선 (1초 후 시작)
   setTimeout(() => {
     if (!isMemoryMode()) {
       import('./api/routes/dashboard.js').then(({ prewarmDashboard }) => prewarmDashboard()).catch(() => {});
+      // 즐겨찾기/블랙리스트 초기 시딩 (최초 1회 — 이미 값 있으면 스킵)
+      import('./scheduler/overseas/utils.js').then(async ({ getOverseasState, setOverseasState }) => {
+        if (!await getOverseasState('user_favorites')) await setOverseasState('user_favorites', JSON.stringify(['VRT', 'SMCI', 'AMD']));
+        if (!await getOverseasState('user_blacklist')) await setOverseasState('user_blacklist', JSON.stringify(['TSLA', 'AAPL', 'META']));
+      }).catch(() => {});
     }
-  }, 3000);
+  }, 1000);
+
+  // AI Loop 오버라이드 만료 정리 (1시간마다)
+  setInterval(() => {
+    import('./ai/ai-overrides.js').then(({ cleanupExpired }) => cleanupExpired()).catch(() => {});
+  }, 3_600_000);
 
   if (config.isPaper) {
     logger.info('📝 *** 모의투자(Paper Trading) 모드 ***', { component: 'BOOT' });

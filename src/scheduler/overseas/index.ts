@@ -7,7 +7,7 @@ export { overseasState, setShuttingDown, isOverseasJobRunning, resetUSSessionCac
 export type { SessionCache } from './session.js';
 export { getRecentPerfSummary, getOverseasWinRates, getPendingOverseasStocks } from './analytics.js';
 export type { OverseasExecutionResult, OverseasWinRate } from './analytics.js';
-export { syncPendingOverseasOrders, confirmOverseasFillFromBalance, cancelAllPendingOverseasOrders, getUserInsights, setUserInsights, getLossCooldownStocks, getRecentLossStocks } from './order-sync.js';
+export { syncPendingOverseasOrders, confirmOverseasFillFromBalance, cancelAllPendingOverseasOrders, getUserInsights, setUserInsights, getLossCooldownStocks, getRecentLossStocks, getBigLossBlockedOverseas } from './order-sync.js';
 export { syncHoldingsFromKIS, reconcileCashWithKIS } from './kis-sync.js';
 export { executeOverseasOrder, deployIdleCash } from './executor.js';
 export { evaluateSells } from './sell-logic.js';

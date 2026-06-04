@@ -13,6 +13,7 @@ build/
 .env
 .env.local
 .env.production
+.api-key
 
 # KIS token cache
 kis_token.json

@@ -203,17 +203,33 @@ export interface PartialTpStage {
 
 export function getPartialTpStages(sector: string): PartialTpStage[] {
   const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
+  const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
 
+  // 2.5% 간격 분할매도 — 6~7% 도달 후 되돌림 시 수익 날려버리는 문제 해결
   if (isHighBeta) {
     return [
-      { stage: 1, triggerPct: 8.0, sellRatio: 0.20 },
-      { stage: 2, triggerPct: 18.0, sellRatio: 0.25 },
-      { stage: 3, triggerPct: 30.0, sellRatio: 0.30 },
+      { stage: 1, triggerPct: 3.0, sellRatio: 0.10 },  // 일찍 10% 확보
+      { stage: 2, triggerPct: 6.0, sellRatio: 0.15 },
+      { stage: 3, triggerPct: 10.0, sellRatio: 0.20 },
+      { stage: 4, triggerPct: 18.0, sellRatio: 0.20 },
+      { stage: 5, triggerPct: 30.0, sellRatio: 0.25 },
     ];
   }
+  if (isDefense) {
+    return [
+      { stage: 1, triggerPct: 2.0, sellRatio: 0.15 },  // 방어주: 성장 느림, 더 일찍 확보
+      { stage: 2, triggerPct: 4.0, sellRatio: 0.20 },
+      { stage: 3, triggerPct: 7.0, sellRatio: 0.25 },
+      { stage: 4, triggerPct: 12.0, sellRatio: 0.25 },
+    ];
+  }
+  // 일반 종목: 2.5% 간격
   return [
-    { stage: 1, triggerPct: 7.0, sellRatio: 0.20 },
-    { stage: 2, triggerPct: 15.0, sellRatio: 0.25 },
+    { stage: 1, triggerPct: 2.5, sellRatio: 0.15 },   // +2.5% → 15% 수익확정
+    { stage: 2, triggerPct: 5.0, sellRatio: 0.15 },   // +5.0% → 추가 15%
+    { stage: 3, triggerPct: 8.0, sellRatio: 0.20 },   // +8.0% → 추가 20% (누적 50%)
+    { stage: 4, triggerPct: 13.0, sellRatio: 0.20 },
+    { stage: 5, triggerPct: 20.0, sellRatio: 0.25 },
   ];
 }
 

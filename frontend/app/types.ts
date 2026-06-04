@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════
-// quantops 프론트엔드 공유 타입 정의
+// ai-auto-bot 프론트엔드 공유 타입 정의
 // ═══════════════════════════════════════
 
 export type ViewMode = 'live' | 'paper';
@@ -197,6 +197,7 @@ export interface Cooldown {
   active?: boolean;
   reason?: string;
   consecutive?: number;
+  eodOnly?: boolean;
 }
 
 // ── Dashboard (메인 대시보드 응답) ──
@@ -346,6 +347,7 @@ export interface LoopStatus {
   brief: { regime: string; risk: string; narrative: string } | null;
   openMarkets: string[];
   anyMarketOpen: boolean;
+  autoPilot?: { overridesSet: number; decisions: string[]; lastRunAt: string | null } | null;
 }
 
 // ── Feature Flag ──

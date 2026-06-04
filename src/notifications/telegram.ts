@@ -34,7 +34,7 @@ export function initTelegram(): void {
       const ks = getKillSwitchStatusAll();
 
       const msg = [
-        `🤖 *QUANTOPS 상태*`,
+        `🤖 *시스템 상태*`,
         ``,
         `💰 총 자산: ${(balance.totalDeposit + balance.totalEvalAmount).toLocaleString()}원`,
         `💵 예수금: ${balance.orderableCash.toLocaleString()}원`,

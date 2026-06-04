@@ -4,12 +4,13 @@ import { logger } from '../../utils/logger.js';
 import { BUY_BLOCKED_CODES, PRIORITY_SECTOR_CODES, MEGA_CAP_PRIORITY_CODES } from './trading-rules.js';
 import { type TechnicalFallbackParams, type BuyCandidate, resolveStrategyParams, buildAiScoreMap, hasNoAiScores } from './technical-fallback-types.js';
 import { routeByRegime } from './strategy-router.js';
+import { getOverride } from '../ai-overrides.js';
 
 /**
  * 매수 후보 필터링 (차단/잡주/거래량/ADX/RSI/컨플루언스)
  */
 export async function filterBuyCandidates(params: TechnicalFallbackParams): Promise<BuyCandidate[]> {
-  const { mode, watchlist, livePrices, chartData, openChains, junkStockCodes, lossBlockedCodes, manuallySoldCodes, recentlySoldCodes, winRates, marketSignals } = params;
+  const { mode, watchlist, livePrices, chartData, openChains, junkStockCodes, lossBlockedCodes, bigLossBlockedCodes, manuallySoldCodes, recentlySoldCodes, winRates, marketSignals } = params;
   const strategyParams = resolveStrategyParams(mode, params);
   const aiScoreMap = buildAiScoreMap(params.aiScores);
   const noAiScores = hasNoAiScores(params.aiScores);
@@ -30,6 +31,15 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
     if (BUY_BLOCKED_CODES.has(stock.stock_code)) {
       logger.info(`  🚫 ${stock.stock_code}(${stock.stock_name}): 매수 차단 목록 — 스킵`, { component: 'TRACK_B' });
       continue;
+    }
+    // -5% 초과 손실 종목 → 30일 절대 차단 (CEO allowRebuy override만 해제 가능, AI 점수 무관)
+    if (bigLossBlockedCodes?.has(stock.stock_code)) {
+      const allowRebuy = getOverride<boolean>(`${stock.stock_code}_allowRebuy`);
+      if (!allowRebuy) {
+        logger.info(`  🚫 ${stock.stock_code}(${stock.stock_name}): -5%초과 손실 30일 차단 (allowRebuy 필요)`, { component: 'TRACK_B' });
+        continue;
+      }
+      logger.info(`  🔓 ${stock.stock_code}: allowRebuy override로 -5% 차단 해제`, { component: 'TRACK_B' });
     }
     // 14일 이내 손절 쿨다운 종목 재진입 금지 (AI 70+ 시 쿨다운 무시)
     if (lossBlockedCodes?.has(stock.stock_code)) {
@@ -176,7 +186,17 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
       continue;
     }
 
-    const effectiveTechScore = tech.score + priorityBonus + candleBonus + structBonus + vpBonus + pullbackBonus + fibBonus + signalBonus;
+    // RSI 다이버전스: 가격 lower low + RSI higher low = 평균회귀 최적 진입 (모멘텀+회귀 결합 전략, Sharpe 비율 향상 검증)
+    const rsiDivBonus = tech.rsiDivergence?.type === 'BULLISH' ? Math.round(8 * (tech.rsiDivergence.strength || 0.5)) : 0;
+    if (rsiDivBonus > 0) {
+      logger.info(`  🔄 ${stock.stock_code}: RSI 불리쉬 다이버전스 → +${rsiDivBonus}점 (strength=${tech.rsiDivergence?.strength?.toFixed(2)})`, { component: 'TRACK_B' });
+    }
+    // 볼린저 스퀴즈 돌파: 변동성 응축 후 상방 돌파 = 강력한 breakout 신호 (+10)
+    const bbSqueezeBonus = tech.bollingerBreakout === 'UP' && tech.bollingerSqueeze ? 10 : 0;
+    if (bbSqueezeBonus > 0) {
+      logger.info(`  💥 ${stock.stock_code}: 볼린저 스퀴즈 상방돌파 → +${bbSqueezeBonus}점`, { component: 'TRACK_B' });
+    }
+    const effectiveTechScore = tech.score + priorityBonus + candleBonus + structBonus + vpBonus + pullbackBonus + fibBonus + signalBonus + rsiDivBonus + bbSqueezeBonus;
     const isFibSupport = fibBonus >= 10 && tech.macdCrossover !== 'BEARISH';
 
     // ─── 품질 게이트 (5개 중 N개 통과) ──────────────────────────────────
@@ -280,8 +300,15 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
       }
     }
 
-    // SCALPING 신규 매수: opening-bell-job(allowScalpingBuys=true)만 허용, Track B 일반 루프는 스킵
-    if (mode === 'SCALPING' && !params.allowScalpingBuys) continue;
+    // SCALPING 신규 매수: opening-bell-job(allowScalpingBuys=true) 또는 ScalpRadar scalpTarget 오버라이드만 허용
+    const scalpTarget = getOverride<boolean>(`${stock.stock_code}_scalpTarget`);
+    if (mode === 'SCALPING' && !params.allowScalpingBuys && !scalpTarget) continue;
+    // ScalpRadar 감지 종목: SWING 모드에서도 SCALPING 파라미터로 진입
+    if (scalpTarget && mode !== 'SCALPING') {
+      logger.info(`  🎯 ${stock.stock_code}: ScalpRadar 모멘텀 감지 → 스캘핑 진입 (SWING 모드 유지)`, { component: 'TRACK_B' });
+      candidates.push({ stock_code: stock.stock_code, tech, price, candleBonus, regimeRoute, isScalpOverride: true });
+      continue;
+    }
     // ───────────────────────────────────────────────────────────────────
     // 진입 사유 구성 (병렬 게이트 기반)
     const entryTags = [

@@ -5,7 +5,9 @@
 import { analyzeTechnicals, type OHLCV } from '../../analysis/indicators.js';
 import { getFuturesDailyChart, getFuturesPrice, MICRO_FUTURES, getActiveSymbol } from '../../kis/futures.js';
 import { fetchExchangeRate } from '../../automation/macro-data.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import { logger } from '../../utils/logger.js';
+import { loadTunerParams } from './futures-tuner.js';
 import type { FuturesSignal, FuturesTPSL } from './types.js';
 
 const COMP = 'FUTURES';
@@ -13,6 +15,7 @@ const COMP = 'FUTURES';
 /** MES/MNQ 2종목 스캔 → 유효 신호만 반환 */
 export async function scanFuturesSignals(): Promise<FuturesSignal[]> {
   const signals: FuturesSignal[] = [];
+  const tuner = await loadTunerParams(getCtxIsPaper());
   // 유동성 높은 2종목만 (MES=S&P, MNQ=Nasdaq)
   const targets = MICRO_FUTURES.filter(p => ['MES', 'MNQ'].includes(p.product));
 
@@ -58,7 +61,7 @@ export async function scanFuturesSignals(): Promise<FuturesSignal[]> {
         if (tech.trendStrength === 'STRONG') { confidence += 10; reasons.push('강추세'); }
       }
 
-      if (direction && confidence >= 60) {
+      if (direction && confidence >= tuner.minConfidence) {
         signals.push({
           symbol, product: product.product, direction, confidence,
           rsi: tech.rsi14, macdHist: tech.macdHistogram, atrPct: tech.atrPct,
@@ -76,16 +79,17 @@ export async function scanFuturesSignals(): Promise<FuturesSignal[]> {
   return signals;
 }
 
-/** ATR 기반 동적 TP/SL 계산 */
+/** ATR 기반 동적 TP/SL 계산 — 튜너 배수 적용 */
 export function calcFuturesTPSL(params: {
   entryPrice: number;
   direction: 'LONG' | 'SHORT';
   atrPct: number;
+  tpMultiplier?: number;
+  slMultiplier?: number;
 }): FuturesTPSL {
-  const { entryPrice, direction, atrPct } = params;
-  // TP = ATR × 2.0, SL = ATR × 1.5 (Risk:Reward ~1.3:1)
-  const tpPct = Math.max(0.5, atrPct * 2.0);
-  const slPct = Math.max(0.3, atrPct * 1.5);
+  const { entryPrice, direction, atrPct, tpMultiplier = 2.0, slMultiplier = 1.5 } = params;
+  const tpPct = Math.max(0.5, atrPct * tpMultiplier);
+  const slPct = Math.max(0.3, atrPct * slMultiplier);
 
   const sign = direction === 'LONG' ? 1 : -1;
   return {

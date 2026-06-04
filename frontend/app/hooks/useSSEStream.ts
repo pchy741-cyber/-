@@ -75,7 +75,7 @@ export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
           }
           prevChainCount = data.activeChains ?? prevChainCount;
           if (data.overseasHoldingCount !== undefined) prevOverseasCount = data.overseasHoldingCount;
-          if (data.loopMode) setLoopStatus({ ...data.loopMode, openMarkets: data.loopMode.openMarkets ?? [] });
+          if (data.loopMode) setLoopStatus({ ...data.loopMode, openMarkets: data.loopMode.openMarkets ?? [], autoPilot: data.autoPilot ?? null });
           if (data.healthScore != null) setSseHealthScore(data.healthScore);
         } catch { /* ignore */ }
       });

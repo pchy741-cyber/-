@@ -98,6 +98,9 @@ export function AutoPilotButton({ loopStatusProp, capturing, toast }: {
   const phaseLabel = loopStatus?.marketPhase ? MARKET_PHASE_LABEL[loopStatus.marketPhase] ?? loopStatus.marketPhase : '';
   const briefLine = loopStatus?.brief ? `${loopStatus.brief.regime}/${loopStatus.brief.risk}` : '';
   const hasErrors = (loopStatus?.consecutiveErrors ?? 0) > 0;
+  const ap = loopStatus?.autoPilot;
+  const scalpDecision = ap?.decisions?.find(d => d.startsWith('scalpRadar'));
+  const hasScalp = !!scalpDecision;
 
   return (
     <button
@@ -114,7 +117,7 @@ export function AutoPilotButton({ loopStatusProp, capturing, toast }: {
         confirmStop
           ? '다시 클릭하면 중지됩니다'
           : loopStatus?.active
-            ? `${loopName} ON (${loopStatus.totalRuns}회)\n${phaseLabel} ${briefLine}\n클릭 → 중지 확인`
+            ? `${loopName} ON (${loopStatus.totalRuns}회)\n${phaseLabel} ${briefLine}${ap?.overridesSet ? `\nAP: ${ap.overridesSet}건 조절` : ''}${scalpDecision ? `\n${scalpDecision}` : ''}\n클릭 → 중지 확인`
             : `${loopName} OFF\n클릭하면 5분 간격 자동 실행 시작`
       }
     >
@@ -129,6 +132,7 @@ export function AutoPilotButton({ loopStatusProp, capturing, toast }: {
             <span className="text-[9px] font-black tracking-wider">{loopLabel}</span>
             <span className="text-[11px] font-bold mt-0.5">{loopStatus.totalRuns}</span>
             {phaseLabel && <span className="text-[7px] opacity-70 mt-0.5">{phaseLabel}</span>}
+            {ap?.overridesSet ? <span className="text-[7px] text-amber-300 mt-0.5">AP:{ap.overridesSet}</span> : null}
             {countdown && <span className="text-[7px] opacity-50">{countdown}</span>}
           </>
         ) : (
@@ -139,6 +143,12 @@ export function AutoPilotButton({ loopStatusProp, capturing, toast }: {
         )}
       </div>
 
+      {/* 스캘핑 감지 뱃지 */}
+      {hasScalp && loopStatus?.active && !hasErrors && (
+        <span className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 text-white text-[7px] font-bold rounded-full flex items-center justify-center animate-bounce">
+          S
+        </span>
+      )}
       {/* 연속 에러 뱃지 */}
       {hasErrors && loopStatus?.active && (
         <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-600 text-white text-[8px] font-bold rounded-full flex items-center justify-center animate-pulse">

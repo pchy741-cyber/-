@@ -26,24 +26,52 @@ export function injectDbLogger(logSystem: (level: 'ERROR' | 'WARN' | 'INFO' | 'T
   DbTransport._logSystem = logSystem;
 }
 
+// Cloud Run 감지: K_SERVICE 또는 CLOUD_RUN 환경변수 존재 시
+const isCloudRun = !!(process.env.K_SERVICE || process.env.K_REVISION);
+
+// Cloud Run 전용: severity 필드를 Cloud Logging이 인식하는 형태로 매핑
+// https://cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#LogSeverity
+const SEVERITY_MAP: Record<string, string> = {
+  error: 'ERROR',
+  warn: 'WARNING',
+  info: 'INFO',
+  debug: 'DEBUG',
+};
+
+// Cloud Run: JSON structured logging (Cloud Logging 자동 수집)
+const cloudRunFormat = winston.format.printf(({ timestamp, level, message, component, service, ...meta }) => {
+  const severity = SEVERITY_MAP[level] ?? 'DEFAULT';
+  const entry: Record<string, unknown> = {
+    severity,
+    message: component ? `[${component}] ${message}` : String(message),
+    timestamp,
+    component,
+  };
+  const extraKeys = Object.keys(meta);
+  if (extraKeys.length > 0) entry.metadata = meta;
+  return JSON.stringify(entry);
+});
+
+// 로컬: 컬러 + 사람이 읽기 쉬운 형태
+const localFormat = winston.format.combine(
+  winston.format.colorize(),
+  winston.format.printf(({ timestamp, level, message, component, ...meta }) => {
+    const comp = component ? `[${component}]` : '';
+    const extra = Object.keys(meta).length > 1 ? ` ${JSON.stringify(meta)}` : '';
+    return `${timestamp} ${level} ${comp} ${message}${extra}`;
+  }),
+);
+
 export const logger = winston.createLogger({
   level: 'info',
   format: winston.format.combine(
     winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
     winston.format.errors({ stack: true }),
-    winston.format.json(),
   ),
-  defaultMeta: { service: 'quantops' },
+  defaultMeta: { service: 'ai-auto-bot' },
   transports: [
     new winston.transports.Console({
-      format: winston.format.combine(
-        winston.format.colorize(),
-        winston.format.printf(({ timestamp, level, message, component, ...meta }) => {
-          const comp = component ? `[${component}]` : '';
-          const extra = Object.keys(meta).length > 1 ? ` ${JSON.stringify(meta)}` : '';
-          return `${timestamp} ${level} ${comp} ${message}${extra}`;
-        }),
-      ),
+      format: isCloudRun ? cloudRunFormat : localFormat,
     }),
     new DbTransport({ level: 'warn' }),
   ],

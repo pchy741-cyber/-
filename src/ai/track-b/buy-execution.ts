@@ -55,11 +55,14 @@ async function calcDomesticKelly(days: number = 30): Promise<DomesticKellyResult
     const q = 1 - winRate;
     const fullKelly = (b * winRate - q) / b;
 
-    // Quarter-Kelly (0.5% ~ 18% 클램프) — 10% 캡은 과도히 보수적이었음
-    const quarterKelly = Math.max(0.005, Math.min(0.18, fullKelly * 0.25));
+    // 적응형 Kelly: 승률+샘플 기반으로 Quarter↔Half 자동 전환
+    // Half-Kelly는 최적 성장률의 ~75% 캡처하면서 드로다운 대폭 축소 (논문 검증)
+    // 조건: 승률 55%+ AND 샘플 20건+ → Half-Kelly, 그 외 → Quarter-Kelly
+    const kellyFraction = (winRate >= 0.55 && total >= 20) ? 0.50 : 0.25;
+    const quarterKelly = Math.max(0.005, Math.min(0.18, fullKelly * kellyFraction));
 
     logger.info(
-      `📊 국내 Kelly (${days}d, ${total}건): 승률 ${(winRate * 100).toFixed(0)}%, 평균수익 +${avgWin.toFixed(1)}%, 평균손실 -${avgLoss.toFixed(1)}% → Q-Kelly ${(quarterKelly * 100).toFixed(1)}%`,
+      `📊 국내 Kelly (${days}d, ${total}건): 승률 ${(winRate * 100).toFixed(0)}%, 평균수익 +${avgWin.toFixed(1)}%, 평균손실 -${avgLoss.toFixed(1)}% → ${kellyFraction === 0.5 ? 'Half' : 'Quarter'}-Kelly ${(quarterKelly * 100).toFixed(1)}%`,
       { component: 'TRACK_B' },
     );
 
@@ -415,15 +418,18 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
     }
 
     const allocStr = ` [비율${(baseAllocPct * modeScale * firstEntryRatio * 100).toFixed(0)}%→${Math.round(effectivePositionSize / 10000)}만원]`;
+    const scalpTag = cand.isScalpOverride ? ' [🎯ScalpRadar]' : '';
     decisions.push({
       action: 'BUY',
       stock_code: cand.stock_code,
       quantity,
       price_type: 'MARKET',
       limit_price: cand.price.currentPrice,
-      reasoning: `기술적 매수: score=${cand.tech.score}(blend=${blendedScore.toFixed(0)})${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''}${idBonus !== 0 ? `${idBonus > 0 ? '+' : ''}${idBonus}분봉` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x SMA=${smaAlign}${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${allocStr}${patternFb.scoreAdj !== 0 ? ` [패턴${patternFb.scoreAdj > 0 ? '+' : ''}${patternFb.scoreAdj}]` : ''}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))} fp=${fpKey}`,
+      reasoning: `${cand.isScalpOverride ? '🎯 ScalpRadar 스캘핑' : '기술적'} 매수: score=${cand.tech.score}(blend=${blendedScore.toFixed(0)})${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''}${idBonus !== 0 ? `${idBonus > 0 ? '+' : ''}${idBonus}분봉` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x SMA=${smaAlign}${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${allocStr}${patternFb.scoreAdj !== 0 ? ` [패턴${patternFb.scoreAdj > 0 ? '+' : ''}${patternFb.scoreAdj}]` : ''}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))} fp=${fpKey}${scalpTag}`,
       confidence: Math.min(0.95, Math.max(0.5, cand.tech.score / 100 + getWinRateConfidenceBoost(winRates?.get(cand.stock_code)) + (cand.candleBonus > 0 ? 0.05 : 0))),
-      ai_score: aiScore > 0 ? aiScore : cand.tech.score, // 점수 기반 TP/SL 계산용
+      ai_score: aiScore > 0 ? aiScore : cand.tech.score,
+      // ScalpRadar 감지 종목: SCALPING 모드로 체인 생성 → TP/SL + forceClose 자동 적용
+      ...(cand.isScalpOverride ? { strategy_mode: 'SCALPING', trigger_source: 'SCALP_RADAR' } : {}),
     });
 
     remainingCash -= quantity * cand.price.currentPrice;

@@ -1,82 +1,150 @@
 /**
  * 통합 코파일럿 진단 — /review/copilot (정합성 + 리스크 + 액션)
+ * 크로스오염 수정: viewIsPaper에 따라 KIS(live) 또는 DB(paper) 데이터 분리 사용
  */
 import { Hono } from 'hono';
 
 const app = new Hono();
 
+/** KIS Position과 호환되는 통합 포지션 타입 */
+interface CopilotPosition {
+  stockCode: string;
+  stockName: string;
+  quantity: number;
+  avgBuyPrice: number;
+  evalAmount: number;
+  profitLossPct: number;
+}
+
 app.get('/review/copilot', async (c) => {
   try {
     const { getPool } = await import('../../../db/client.js');
-    const { baseIsPaper } = await import('../../../config/index.js');
     const pool = getPool();
 
-    // 대시보드 viewMode를 쿼리 파라미터로 받아 해당 모드 데이터 조회
     const viewModeParam = c.req.query('viewMode');
+    const { baseIsPaper } = await import('../../../config/index.js');
     const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
+
+    // ── 포지션 데이터 로드 (모드별 분리) ──
+    let positions: CopilotPosition[] = [];
+    let netAsset = 0;
+    let cash = 0;
+
+    if (!viewIsPaper) {
+      // LIVE: KIS 실계좌 조회
+      try {
+        const { getAccountBalance } = await import('../../../kis/account.js');
+        const bal = await getAccountBalance(true);
+        positions = (bal.positions ?? []).map((p: any) => ({
+          stockCode: p.stockCode,
+          stockName: p.stockName ?? p.stockCode,
+          quantity: p.quantity ?? 0,
+          avgBuyPrice: p.avgBuyPrice ?? 0,
+          evalAmount: p.evalAmount ?? 0,
+          profitLossPct: p.profitLossPct ?? 0,
+        }));
+        netAsset = (bal as any).netAsset ?? 0;
+        cash = bal.orderableCash ?? 0;
+      } catch {}
+    } else {
+      // PAPER: DB에서 포지션 구성
+      try {
+        const { rows: chains } = await pool.query(`
+          SELECT tc.stock_code, w.stock_name, tc.total_quantity, tc.avg_buy_price, tc.total_invested
+          FROM transaction_chains tc
+          LEFT JOIN watchlist w ON w.stock_code = tc.stock_code
+          WHERE tc.status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND tc.is_paper = true`);
+        positions = chains.map((r: any) => {
+          const qty = Number(r.total_quantity) || 0;
+          const avg = Number(r.avg_buy_price) || 0;
+          const invested = Number(r.total_invested) || qty * avg;
+          return {
+            stockCode: r.stock_code,
+            stockName: r.stock_name ?? r.stock_code,
+            quantity: qty,
+            avgBuyPrice: avg,
+            evalAmount: invested, // paper는 현재가 없으므로 투자금 기준
+            profitLossPct: 0,
+          };
+        });
+        // paper 총자산은 최신 스냅샷에서
+        const { rows: snap } = await pool.query(
+          `SELECT total_value FROM portfolio_snapshots WHERE is_paper = true ORDER BY snapshot_at DESC LIMIT 1`);
+        if (snap.length > 0) {
+          netAsset = Number(snap[0].total_value);
+          const evalTotal = positions.reduce((s, p) => s + p.evalAmount, 0);
+          cash = Math.max(0, netAsset - evalTotal);
+        }
+      } catch {}
+    }
 
     // ── 1. 데이터 정합성 검증 ──
     const integrity: { id: string; status: 'ok' | 'warn' | 'danger'; label: string; detail: string }[] = [];
 
-    // 1a. KIS 실계좌 vs DB 포지션 비교
-    let kisPositions: any[] = [];
-    let kisNetAsset = 0;
-    let kisCash = 0;
-    try {
-      const { getAccountBalance } = await import('../../../kis/account.js');
-      const bal = await getAccountBalance(true);
-      kisPositions = bal.positions ?? [];
-      kisNetAsset = (bal as any).netAsset ?? 0;
-      kisCash = bal.orderableCash ?? 0;
+    // 1a. KIS↔DB 포지션 비교 (live만 의미 있음)
+    if (!viewIsPaper) {
+      try {
+        const { rows: dbChains } = await pool.query(
+          "SELECT stock_code, total_quantity FROM transaction_chains WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND is_paper = $1",
+          [viewIsPaper]);
+        const dbMap = new Map(dbChains.map((r: any) => [r.stock_code, Number(r.total_quantity)]));
+        const kisMap = new Map(positions.map(p => [p.stockCode, p.quantity]));
 
-      const { rows: dbChains } = await pool.query(
-        "SELECT stock_code, total_quantity FROM transaction_chains WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND is_paper = false");
-      const dbMap = new Map(dbChains.map((r: any) => [r.stock_code, Number(r.total_quantity)]));
-      const kisMap = new Map(kisPositions.map((p: any) => [p.stockCode, p.quantity]));
+        const mismatches: string[] = [];
+        for (const [code, qty] of kisMap) {
+          const dbQty = dbMap.get(code) ?? 0;
+          if (Math.abs(qty - dbQty) >= 1) mismatches.push(`${code}: KIS ${qty}주 vs DB ${dbQty}주`);
+        }
+        for (const [code, qty] of dbMap) {
+          if (!kisMap.has(code) && qty > 0) mismatches.push(`${code}: DB ${qty}주, KIS 없음`);
+        }
 
-      const mismatches: string[] = [];
-      for (const [code, qty] of kisMap) {
-        const dbQty = dbMap.get(code) ?? 0;
-        if (Math.abs(qty - dbQty) >= 1) mismatches.push(`${code}: KIS ${qty}주 vs DB ${dbQty}주`);
+        if (mismatches.length === 0) {
+          integrity.push({ id: 'kis_vs_db', status: 'ok', label: 'KIS↔DB 포지션', detail: `${positions.length}종목 일치` });
+        } else {
+          integrity.push({ id: 'kis_vs_db', status: 'danger', label: 'KIS↔DB 포지션 불일치', detail: mismatches.join(', ') });
+        }
+      } catch (e: any) {
+        integrity.push({ id: 'kis_vs_db', status: 'warn', label: 'KIS 잔고 조회 실패', detail: e.message?.slice(0, 80) ?? 'unknown' });
       }
-      for (const [code, qty] of dbMap) {
-        if (!kisMap.has(code) && qty > 0) mismatches.push(`${code}: DB ${qty}주, KIS 없음`);
-      }
-
-      if (mismatches.length === 0) {
-        integrity.push({ id: 'kis_vs_db', status: 'ok', label: 'KIS↔DB 포지션', detail: `${kisPositions.length}종목 일치` });
-      } else {
-        integrity.push({ id: 'kis_vs_db', status: 'danger', label: 'KIS↔DB 포지션 불일치', detail: mismatches.join(', ') });
-      }
-    } catch (e: any) {
-      integrity.push({ id: 'kis_vs_db', status: 'warn', label: 'KIS 잔고 조회 실패', detail: e.message?.slice(0, 80) ?? 'unknown' });
+    } else {
+      // Paper: KIS 비교 불필요, DB 체인 상태만 표시
+      integrity.push({
+        id: 'kis_vs_db', status: 'ok', label: 'DB 포지션 (Paper)',
+        detail: `${positions.length}종목 보유 중`,
+      });
     }
 
-    // 1b. 해외 현금 정합성
+    // 1b. 해외 현금 정합성 (모드별 분리)
     try {
-      const { rows: osState } = await pool.query("SELECT key, value FROM overseas_state WHERE key IN ('cash', 'cash_paper')");
-      const osMap = new Map(osState.map((r: any) => [r.key, Number(r.value)]));
-      const liveCash = osMap.get('cash') ?? 0;
-      const paperCash = osMap.get('cash_paper') ?? 0;
-      const { rows: liveH } = await pool.query("SELECT COUNT(*) as cnt FROM overseas_holdings WHERE quantity > 0 AND is_paper = false");
-      const { rows: paperH } = await pool.query("SELECT COUNT(*) as cnt FROM overseas_holdings WHERE quantity > 0 AND is_paper = true");
+      const cashKey = viewIsPaper ? 'cash_paper' : 'cash';
+      const { rows: osState } = await pool.query(
+        "SELECT value FROM overseas_state WHERE key = $1", [cashKey]);
+      const osCash = Number(osState[0]?.value ?? 0);
+      const { rows: holdings } = await pool.query(
+        "SELECT COUNT(*) as cnt FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1",
+        [viewIsPaper]);
+      const holdingCnt = Number(holdings[0]?.cnt ?? 0);
 
-      const detail = `Live: $${liveCash.toFixed(0)} (${Number(liveH[0]?.cnt)}종목) / Paper: $${paperCash.toFixed(0)} (${Number(paperH[0]?.cnt)}종목)`;
-      if (liveCash > 5000 && Number(liveH[0]?.cnt) === 0) {
-        integrity.push({ id: 'os_cash', status: 'warn', label: '해외 Live 현금 이상', detail: `$${liveCash.toFixed(0)} 잔고 있으나 보유종목 0 — 오염 가능성` });
+      const modeLabel = viewIsPaper ? 'Paper' : 'Live';
+      const detail = `${modeLabel}: $${osCash.toFixed(0)} (${holdingCnt}종목)`;
+
+      if (!viewIsPaper && osCash > 5000 && holdingCnt === 0) {
+        integrity.push({ id: 'os_cash', status: 'warn', label: '해외 Live 현금 이상', detail: `$${osCash.toFixed(0)} 잔고 있으나 보유종목 0 — 오염 가능성` });
       } else {
-        integrity.push({ id: 'os_cash', status: 'ok', label: '해외 현금 정합성', detail });
+        integrity.push({ id: 'os_cash', status: 'ok', label: `해외 현금 (${modeLabel})`, detail });
       }
     } catch {
       integrity.push({ id: 'os_cash', status: 'warn', label: '해외 데이터 조회 실패', detail: '-' });
     }
 
-    // 1c. 주문-체인 정합성
+    // 1c. 주문-체인 정합성 (viewIsPaper 사용)
     try {
       const { rows: orphanOrders } = await pool.query(`
         SELECT COUNT(*) as cnt FROM orders
         WHERE chain_id IS NULL AND status = 'FILLED' AND side = 'BUY' AND trigger_source != 'OVERSEAS'
-          AND created_at >= NOW() - INTERVAL '7 days' AND trading_mode = $1`, [baseIsPaper ? 'paper' : 'live']);
+          AND created_at >= NOW() - INTERVAL '7 days' AND trading_mode = $1`,
+        [viewIsPaper ? 'paper' : 'live']);
       const orphans = Number(orphanOrders[0]?.cnt ?? 0);
       if (orphans > 0) {
         integrity.push({ id: 'orphan_orders', status: 'warn', label: '미연결 주문', detail: `${orphans}건의 체인 미연결 매수 주문 (7일내)` });
@@ -88,7 +156,7 @@ app.get('/review/copilot', async (c) => {
     }
 
     // ── 2. 리스크 레이더 ──
-    const risk: { id: string; label: string; value: number; max: number; unit: string; level: 'ok' | 'warn' | 'danger' }[] = [];
+    const risk: { id: string; label: string; value: number; max: number; unit: string; level: 'ok' | 'warn' | 'danger'; detail?: string }[] = [];
 
     // 2a. 월간 MDD
     try {
@@ -114,23 +182,23 @@ app.get('/review/copilot', async (c) => {
     // 2b. 일일 손실한도 소진율 — 총자산의 30%
     try {
       const { calcDailyLossLimit } = await import('../../../risk/seed-capital.js');
-      const totalPortfolioKrw = kisNetAsset > 0 ? kisNetAsset : (kisCash + kisPositions.reduce((s: number, p: any) => s + ((p.avgBuyPrice ?? 0) * (p.quantity ?? 0)), 0));
+      const totalPortfolioKrw = netAsset > 0 ? netAsset : (cash + positions.reduce((s, p) => s + (p.avgBuyPrice * p.quantity), 0));
       const limit = calcDailyLossLimit(totalPortfolioKrw);
-      const evalKrw = kisPositions.reduce((s: number, p: any) => s + (p.evalAmount ?? 0), 0);
-      const investedKrw = kisPositions.reduce((s: number, p: any) => s + ((p.avgBuyPrice ?? 0) * (p.quantity ?? 0)), 0);
+      const evalKrw = positions.reduce((s, p) => s + p.evalAmount, 0);
+      const investedKrw = positions.reduce((s, p) => s + (p.avgBuyPrice * p.quantity), 0);
       const unrealizedLoss = Math.max(0, investedKrw - evalKrw);
       const usedPct = limit.limitAmount > 0 ? (unrealizedLoss / limit.limitAmount) * 100 : 0;
       risk.push({
         id: 'daily_loss', label: `손실한도(총자산${limit.pct}%)`, value: Math.round(usedPct), max: 100, unit: '%',
         level: usedPct >= 80 ? 'danger' : usedPct >= 50 ? 'warn' : 'ok',
         detail: `${Math.round(unrealizedLoss).toLocaleString()}원 / ${Math.round(limit.limitAmount).toLocaleString()}원 (총자산 ${Math.round(totalPortfolioKrw).toLocaleString()}원)`,
-      } as any);
+      });
     } catch {}
 
     // 2c. 현금 비율
     try {
-      const totalVal = kisNetAsset > 0 ? kisNetAsset : kisCash;
-      const evalAmt = kisPositions.reduce((s: number, p: any) => s + (p.evalAmount ?? 0), 0);
+      const totalVal = netAsset > 0 ? netAsset : cash;
+      const evalAmt = positions.reduce((s, p) => s + p.evalAmount, 0);
       const cashRatio = totalVal > 0 ? ((totalVal - evalAmt) / totalVal) * 100 : 100;
       risk.push({
         id: 'cash_ratio', label: '현금 비율', value: Math.round(cashRatio), max: 100, unit: '%',
@@ -140,11 +208,11 @@ app.get('/review/copilot', async (c) => {
 
     // 2d. 종목 집중도 (HHI)
     try {
-      if (kisPositions.length > 0) {
-        const totalEval = kisPositions.reduce((s: number, p: any) => s + (p.evalAmount ?? 0), 0);
+      if (positions.length > 0) {
+        const totalEval = positions.reduce((s, p) => s + p.evalAmount, 0);
         if (totalEval > 0) {
-          const hhi = kisPositions.reduce((s: number, p: any) => {
-            const w = (p.evalAmount ?? 0) / totalEval;
+          const hhi = positions.reduce((s, p) => {
+            const w = p.evalAmount / totalEval;
             return s + w * w;
           }, 0);
           const hhiPct = Math.round(hhi * 10000) / 100;
@@ -198,35 +266,33 @@ app.get('/review/copilot', async (c) => {
     // ── 3. 액션 제안 ──
     const actions: { type: 'cut_loss' | 'take_profit' | 'rebalance' | 'anomaly' | 'opportunity'; icon: string; title: string; detail: string; urgency: 'high' | 'mid' | 'low' }[] = [];
 
-    for (const pos of kisPositions) {
-      const pnlPct = pos.profitLossPct ?? 0;
-      if (pnlPct <= -5) {
+    for (const pos of positions) {
+      if (pos.profitLossPct <= -5) {
         actions.push({
-          type: 'cut_loss', icon: '!!', title: `${pos.stockName ?? pos.stockCode} 손절 검토`,
-          detail: `${pnlPct.toFixed(1)}% 손실 — 추가 하락 리스크 평가 필요`,
-          urgency: pnlPct <= -10 ? 'high' : 'mid',
+          type: 'cut_loss', icon: '!!', title: `${pos.stockName} 손절 검토`,
+          detail: `${pos.profitLossPct.toFixed(1)}% 손실 — 추가 하락 리스크 평가 필요`,
+          urgency: pos.profitLossPct <= -10 ? 'high' : 'mid',
         });
       }
     }
 
-    for (const pos of kisPositions) {
-      const pnlPct = pos.profitLossPct ?? 0;
-      if (pnlPct >= 8) {
+    for (const pos of positions) {
+      if (pos.profitLossPct >= 8) {
         actions.push({
-          type: 'take_profit', icon: '$', title: `${pos.stockName ?? pos.stockCode} 익절 검토`,
-          detail: `+${pnlPct.toFixed(1)}% 수익 — 일부 실현 고려`,
-          urgency: pnlPct >= 15 ? 'high' : 'low',
+          type: 'take_profit', icon: '$', title: `${pos.stockName} 익절 검토`,
+          detail: `+${pos.profitLossPct.toFixed(1)}% 수익 — 일부 실현 고려`,
+          urgency: pos.profitLossPct >= 15 ? 'high' : 'low',
         });
       }
     }
 
-    const totalEval = kisPositions.reduce((s: number, p: any) => s + (p.evalAmount ?? 0), 0);
-    for (const pos of kisPositions) {
+    const totalEval = positions.reduce((s, p) => s + p.evalAmount, 0);
+    for (const pos of positions) {
       if (totalEval > 0) {
-        const weight = ((pos.evalAmount ?? 0) / totalEval) * 100;
+        const weight = (pos.evalAmount / totalEval) * 100;
         if (weight >= 40) {
           actions.push({
-            type: 'rebalance', icon: '%', title: `${pos.stockName ?? pos.stockCode} 비중 ${weight.toFixed(0)}%`,
+            type: 'rebalance', icon: '%', title: `${pos.stockName} 비중 ${weight.toFixed(0)}%`,
             detail: `단일 종목 40% 초과 — 리밸런싱 검토`,
             urgency: 'mid',
           });
@@ -250,7 +316,6 @@ app.get('/review/copilot', async (c) => {
     } catch {}
 
     try {
-      const totalEval = kisPositions.reduce((s: number, p: any) => s + (p.evalAmount ?? 0), 0);
       if (totalEval > 0) {
         const stress5 = Math.round(totalEval * 0.05);
         const stress10 = Math.round(totalEval * 0.10);

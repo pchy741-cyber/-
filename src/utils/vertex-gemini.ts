@@ -1,10 +1,10 @@
 /**
- * Gemini 공통 클라이언트 — Vertex AI 우선 (GenAI 크레딧 ₩143만 활용) + AI Studio 폴백
- * 1순위: Vertex AI (크레딧 소진용, ADC 인증, 일일 $5 제한)
- * 2순위: AI Studio (무료 1500 RPD, GEMINI_API_KEY)
+ * Gemini 공통 클라이언트 — AI Studio 우선 (무료) + Vertex AI 폴백
+ * 1순위: AI Studio (무료 1500 RPD, 그라운딩 포함, GEMINI_API_KEY)
+ * 2순위: Vertex AI (폴백, ADC 인증, 일일 $1.5 제한)
  * 3순위: 호출자의 AI-free 폴백 (Momentum Cascade 등)
  *
- * 크레딧 초과 방지: 일일 Vertex AI 예산 $5 (약 ₩7,000) → 200일+ 사용 가능
+ * GenAI App Builder 크레딧(₩143만)은 Vertex AI Search 전용 — Gemini API에 미적용
  */
 import { GoogleAuth } from 'google-auth-library';
 import { logger } from './logger.js';
@@ -21,8 +21,8 @@ const auth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-pl
 let _vertexAvailable = true; // Vertex AI 인증 실패 시 세션 내 비활성화
 
 // ── 일일 예산 ──
-const VERTEX_DAILY_BUDGET_USD = 5;    // Vertex AI (크레딧 소진)
-const STUDIO_DAILY_MAX_CALLS = 50;    // AI Studio 폴백 일일 최대 (과금 방어!)
+const VERTEX_DAILY_BUDGET_USD = 3.0;  // Vertex AI — 배치분석+그라운딩 (₩4,000/일)
+const STUDIO_DAILY_MAX_CALLS = 200;   // AI Studio — 일반 분석 주력 (무료 1500 RPD)
 const _vertexDailyCost = { usd: 0, resetAt: 0 };
 const _studioDailyCalls = { count: 0, resetAt: 0 };
 
@@ -47,6 +47,7 @@ export interface GeminiCallOptions {
   temperature?: number;
   maxOutputTokens?: number;
   label?: string; // 호출 목적 라벨 (비용 추적용)
+  grounded?: boolean; // Google Search 그라운딩 (실시간 뉴스·시장 정보)
 }
 
 // ── AI 비용 추적 (인메모리, 24시간 롤링) ──
@@ -141,7 +142,7 @@ export async function callVertexGemini(
   userMessage: string,
   opts: GeminiCallOptions = {},
 ): Promise<string> {
-  const body = {
+  const body: Record<string, unknown> = {
     system_instruction: { parts: [{ text: systemPrompt }] },
     contents: [{ role: 'user', parts: [{ text: userMessage }] }],
     generationConfig: {
@@ -149,40 +150,77 @@ export async function callVertexGemini(
       ...(opts.maxOutputTokens ? { maxOutputTokens: opts.maxOutputTokens } : {}),
     },
   };
+  // Google Search 그라운딩 — 실시간 뉴스·시장 정보 결합 (GenAI App Builder 크레딧 소진)
+  if (opts.grounded) {
+    body.tools = [{ google_search: {} }];
+  }
 
-  // 1순위: Vertex AI (크레딧 사용, 일일 예산 내)
+  // ── 라우팅 전략 ──
+  // 대량 분석(TrackA 등): Vertex 우선 (AI Studio RPM 제한 회피)
+  // 소량 호출: AI Studio 우선 (무료) → Vertex 폴백
+
+  const geminiKey = process.env.GEMINI_API_KEY;
+  const isBatchLabel = opts.label?.startsWith('TrackA') || opts.label?.startsWith('TrackB');
+
+  // 대량 분석은 Vertex 우선 (AI Studio 10 RPM 제한 회피)
+  if (isBatchLabel && _vertexAvailable && isVertexBudgetAvailable()) {
+    try {
+      return await callViaVertex(body, opts);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`⚠️ Vertex 배치 실패 → AI Studio 폴백: ${msg.slice(0, 100)}`, { component: 'AI_COST' });
+      if (msg.includes('403') || msg.includes('401') || msg.includes('PERMISSION_DENIED')) {
+        _vertexAvailable = false;
+      }
+      // AI Studio로 폴백 (아래로 계속)
+    }
+  }
+
+  // AI Studio (무료)
+  if (geminiKey) {
+    const now = Date.now();
+    const kstNow = new Date(now + 9 * 3600_000);
+    const todayMs = Date.UTC(kstNow.getUTCFullYear(), kstNow.getUTCMonth(), kstNow.getUTCDate()) - 9 * 3600_000;
+    if (_studioDailyCalls.resetAt < todayMs) {
+      _studioDailyCalls.count = 0;
+      _studioDailyCalls.resetAt = todayMs;
+    }
+    if (_studioDailyCalls.count < STUDIO_DAILY_MAX_CALLS) {
+      _studioDailyCalls.count++;
+      try {
+        return await callViaAiStudio(geminiKey, body, opts);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // 429 = rate limit → 10초 대기 후 1회 재시도
+        if (msg.includes('429')) {
+          logger.info('⏳ AI Studio 429 → 10초 대기 후 재시도', { component: 'AI_COST' });
+          await new Promise(r => setTimeout(r, 10_000));
+          try {
+            return await callViaAiStudio(geminiKey, body, opts);
+          } catch {
+            logger.warn('⚠️ AI Studio 재시도 실패 → Vertex 폴백', { component: 'AI_COST' });
+          }
+        } else {
+          logger.warn(`⚠️ AI Studio 실패 → Vertex 폴백: ${msg.slice(0, 100)}`, { component: 'AI_COST' });
+        }
+      }
+    }
+  }
+
+  // 최종 폴백: Vertex AI
   if (_vertexAvailable && isVertexBudgetAvailable()) {
     try {
       return await callViaVertex(body, opts);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logger.warn(`⚠️ Vertex AI 실패 → AI Studio 폴백: ${msg.slice(0, 200)}`, { component: 'AI_COST' });
-      // 인증/권한 문제면 세션 내 비활성화
       if (msg.includes('403') || msg.includes('401') || msg.includes('PERMISSION_DENIED')) {
         _vertexAvailable = false;
-        logger.warn('🔒 Vertex AI 권한 없음 — 이번 세션 동안 AI Studio만 사용', { component: 'AI_COST' });
       }
+      throw err;
     }
   }
 
-  // 2순위: AI Studio (일일 호출 제한으로 과금 방어)
-  const geminiKey = process.env.GEMINI_API_KEY;
-  if (!geminiKey) throw new Error('GEMINI_API_KEY 미설정 + Vertex AI 불가 — AI 호출 불가');
-
-  // AI Studio 일일 호출 제한 체크 (과금 폭탄 방어)
-  const now = Date.now();
-  const kstNow = new Date(now + 9 * 3600_000);
-  const todayMs = Date.UTC(kstNow.getUTCFullYear(), kstNow.getUTCMonth(), kstNow.getUTCDate()) - 9 * 3600_000;
-  if (_studioDailyCalls.resetAt < todayMs) {
-    _studioDailyCalls.count = 0;
-    _studioDailyCalls.resetAt = todayMs;
-  }
-  if (_studioDailyCalls.count >= STUDIO_DAILY_MAX_CALLS) {
-    logger.error(`🚫 AI Studio 일일 ${STUDIO_DAILY_MAX_CALLS}회 제한 도달 — AI 호출 차단 (과금 방어)`, { component: 'AI_COST' });
-    throw new Error(`AI Studio 일일 제한 초과 (${STUDIO_DAILY_MAX_CALLS}회) — 기술분석 폴백 사용`);
-  }
-  _studioDailyCalls.count++;
-  return await callViaAiStudio(geminiKey, body, opts);
+  throw new Error('AI 호출 불가 — AI Studio 한도 + Vertex 예산 모두 소진');
 }
 
 // ── Vertex AI 호출 (ADC 인증) ──
@@ -209,7 +247,10 @@ async function callViaVertex(
   }
 
   const data = (await response.json()) as {
-    candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+    candidates: Array<{
+      content: { parts: Array<{ text: string }> };
+      groundingMetadata?: { searchEntryPoint?: { renderedContent?: string }; groundingChunks?: Array<{ web?: { uri: string; title: string } }> };
+    }>;
     usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number };
   };
 
@@ -218,8 +259,16 @@ async function callViaVertex(
     trackUsage(opts.label ?? 'unknown', 'vertex', data.usageMetadata);
   }
 
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  const candidate = data.candidates?.[0];
+  const text = candidate?.content?.parts?.[0]?.text;
   if (!text) throw new Error('Vertex AI 응답 텍스트 없음');
+
+  // 그라운딩 출처 로그 (디버그용)
+  const gm = candidate?.groundingMetadata;
+  if (gm?.groundingChunks?.length) {
+    logger.debug(`🔍 그라운딩 출처 ${gm.groundingChunks.length}건: ${gm.groundingChunks.slice(0, 3).map(c => c.web?.title).join(', ')}`, { component: 'AI_GROUNDING' });
+  }
+
   return text;
 }
 

@@ -77,11 +77,12 @@ dividendRoutes.patch('/dividend/watchlist/:id', async (c) => {
   try {
     const id = c.req.param('id');
     const body = await c.req.json<{ dividend_yield?: number; annual_dividend_per_share?: number; expense_ratio?: number; aum_billion?: number; notes?: string }>();
+    const ALLOWED_COLS = new Set(['dividend_yield', 'annual_dividend_per_share', 'expense_ratio', 'aum_billion', 'notes']);
     const sets: string[] = [];
     const vals: any[] = [];
     let idx = 1;
     for (const [k, v] of Object.entries(body)) {
-      if (v !== undefined) { sets.push(`${k} = $${idx}`); vals.push(v); idx++; }
+      if (v !== undefined && ALLOWED_COLS.has(k)) { sets.push(`${k} = $${idx}`); vals.push(v); idx++; }
     }
     if (sets.length === 0) return c.json({ error: '업데이트 필드 없음' }, 400);
     vals.push(id);
@@ -236,10 +237,22 @@ dividendRoutes.post('/dividend/auto-invest', async (c) => {
 
     // 배분 + 매수
     const pool = getPool();
-    const results: Array<{ code: string; shares: number; invested: number; price: number }> = [];
+    const { placeOverseasOrder } = await import('../../kis/overseas.js');
+    const results: Array<{ code: string; shares: number; invested: number; price: number; ordered: boolean }> = [];
     let totalInvested = 0;
 
-    for (const [code, weight] of Object.entries(ETF_WEIGHTS)) {
+    // 튜닝된 배분 비중이 있으면 우선 사용
+    const { getOverseasState } = await import('../../scheduler/overseas/utils.js');
+    let weights = ETF_WEIGHTS;
+    try {
+      const tunedRaw = await getOverseasState(`dividend_alloc_tuned_${isPaper ? 'paper' : 'live'}`);
+      if (tunedRaw) {
+        const tuned = JSON.parse(tunedRaw);
+        if (tuned.weights && Object.keys(tuned.weights).length > 0) weights = tuned.weights;
+      }
+    } catch { /* use defaults */ }
+
+    for (const [code, weight] of Object.entries(weights)) {
       const price = prices[code];
       if (!price || price <= 0) continue;
       const allocation = totalUsd * weight;
@@ -249,6 +262,18 @@ dividendRoutes.post('/dividend/auto-invest', async (c) => {
       totalInvested += invested;
 
       const exchange = code === 'O' ? 'NYSE' : 'NASDAQ';
+
+      // Live 모드: 실제 KIS 해외주문 실행
+      let ordered = false;
+      if (!isPaper) {
+        try {
+          await placeOverseasOrder({ stockCode: code, exchange, side: 'BUY', quantity: shares });
+          ordered = true;
+        } catch (e: any) {
+          logger.warn(`[MoneyPrinter] ${code} 실주문 실패: ${e.message}`, { component: 'DIVIDEND' });
+        }
+      }
+
       await pool.query(
         `INSERT INTO dividend_holdings (stock_code, exchange, quantity, avg_price, total_dividends_received, is_paper)
          VALUES ($1, $2, $3, $4, 0, $5)
@@ -257,7 +282,7 @@ dividendRoutes.post('/dividend/auto-invest', async (c) => {
            quantity = dividend_holdings.quantity + $3`,
         [code, exchange, shares, price, isPaper]
       );
-      results.push({ code, shares, invested, price });
+      results.push({ code, shares, invested, price, ordered });
     }
 
     // 투자금 기록 (모드별 키: dividend_invested_krw_paper / dividend_invested_krw_live)
@@ -384,6 +409,21 @@ dividendRoutes.post('/trade-tuner/run', async (c) => {
     const { runTradeTuner } = await import('../../scheduler/overseas/trade-tuner.js');
     const result = await runTradeTuner(true);
     return c.json({ ok: true, result });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// ── 배당 배분 자동 튜닝 결과 조회 ──
+dividendRoutes.get('/dividend/allocation-tuned', async (c) => {
+  try {
+    const mode = resolveIsPaper(c.req.query('mode') as 'paper' | 'live' | undefined) ? 'paper' : 'live';
+    const { rows } = await getPool().query(
+      `SELECT value FROM overseas_state WHERE key = $1`,
+      [`dividend_alloc_tuned_${mode}`],
+    );
+    if (rows[0]?.value) return c.json(JSON.parse(rows[0].value));
+    return c.json({ weights: null });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }

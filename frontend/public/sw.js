@@ -1,4 +1,4 @@
-const CACHE_NAME = 'quantops-v6';
+const CACHE_NAME = 'aab-v6';
 const STATIC_ASSETS = [
   '/manifest.json',
   '/icon-192.png',
@@ -35,15 +35,15 @@ self.addEventListener('push', (event) => {
   } catch {
     try {
       const text = event.data ? event.data.text() : '';
-      data = { title: 'QUANTOPS', body: text || '새 알림이 도착했습니다.' };
+      data = { title: 'AI Bot', body: text || '새 알림이 도착했습니다.' };
     } catch {
-      data = { title: 'QUANTOPS', body: '새 알림이 도착했습니다.' };
+      data = { title: 'AI Bot', body: '새 알림이 도착했습니다.' };
     }
   }
 
-  const title = data.title || 'QUANTOPS';
+  const title = data.title || 'AI Bot';
   const body = data.body || '새 알림이 도착했습니다.';
-  const tag = data.tag || ('quantops-' + Date.now());
+  const tag = data.tag || ('aab-' + Date.now());
   const url = data.url || '/';
 
   const isBuy = tag.startsWith('buy-') || tag.startsWith('overseas-buy-');

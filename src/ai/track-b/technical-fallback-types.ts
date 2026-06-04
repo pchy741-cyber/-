@@ -16,6 +16,8 @@ export interface TechnicalFallbackParams {
   aiScores?: Array<{ stock_code: string; score: number }>;
   /** 손절 쿨다운 종목 코드 — 재진입 금지 (14일) */
   lossBlockedCodes?: Set<string>;
+  /** -5% 초과 손실 매도 종목 — 30일 절대 차단 (allowRebuy override만 해제) */
+  bigLossBlockedCodes?: Set<string>;
   /** 24시간 이내 CEO 수동 매도 종목 코드 — 재진입 금지 */
   manuallySoldCodes?: Set<string>;
   /** 최근 2시간 매도 종목 코드 — 재진입 쿨다운 (반복매수 방지) */
@@ -58,6 +60,8 @@ export interface BuyCandidate {
   price: CurrentPrice;
   candleBonus: number;
   regimeRoute?: import('./strategy-router.js').RouteResult;
+  /** ScalpingRadar가 감지한 모멘텀 종목 → SCALPING 파라미터로 진입 */
+  isScalpOverride?: boolean;
 }
 
 /** STRATEGY_PARAMS[mode] + DB 오버라이드 병합 */

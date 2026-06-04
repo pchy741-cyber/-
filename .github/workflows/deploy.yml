@@ -1,4 +1,4 @@
-name: Deploy QUANTOPS to Cloud Run
+name: Deploy AI Auto Bot to Cloud Run
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 env:
   PROJECT_ID: quantops-trading
   REGION: asia-northeast3
-  SERVICE: quantops
+  SERVICE: ai-auto-bot
   REPO: quantops
 
 jobs:
@@ -40,14 +40,14 @@ jobs:
 
       - name: Build & Push
         run: |
-          IMAGE=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/quantops:${{ github.sha }}
+          IMAGE=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/ai-auto-bot:${{ github.sha }}
           docker build -t $IMAGE .
           docker push $IMAGE
 
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy ${{ env.SERVICE }} \
-            --image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/quantops:${{ github.sha }} \
+            --image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/ai-auto-bot:${{ github.sha }} \
             --region=${{ env.REGION }} \
             --platform=managed \
             --min-instances=1 \

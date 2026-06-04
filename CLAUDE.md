@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
-# QUANTOPS — 자동매매 시스템 & Claude Code 루프 지시어
+# AI Auto Bot — 시스템 & Claude Code 루프 지시어
 
 ## 개발 명령어
 
@@ -119,8 +119,8 @@ cash = rbResult.cash
 
 ## 루프 실행 환경 변수
 ```powershell
-$env:QUANTOPS_URL = "https://quantops-807105550136.asia-northeast3.run.app"
-$env:QUANTOPS_PW  = "<DASHBOARD_PASSWORD>"
+$env:AAB_URL = "https://ai-auto-bot-ang2aozjiq-du.a.run.app"
+$env:AAB_PW  = "<DASHBOARD_PASSWORD>"
 ```
 
 ---
@@ -157,7 +157,7 @@ KST = UTC+9. PowerShell: `(Get-Date).ToUniversalTime().AddHours(9).ToString("HH:
 ### 1. 데이터 수집
 ```bash
 # 실전 잔금 기준 (기본값 — 루프는 항상 이 URL 사용)
-curl -s -H "x-api-key: <DASHBOARD_PASSWORD>" "https://quantops-807105550136.asia-northeast3.run.app/api/dashboard?viewMode=live" -o "C:/Temp/qops_dash.json"
+curl -s -H "x-api-key: <DASHBOARD_PASSWORD>" "https://ai-auto-bot-ang2aozjiq-du.a.run.app/api/dashboard?viewMode=live" -o "C:/Temp/qops_dash.json"
 ```
 
 **실제 JSON 필드명**:
@@ -191,13 +191,13 @@ curl -s -H "x-api-key: <DASHBOARD_PASSWORD>" "https://quantops-807105550136.asia
 매도 실행:
 ```bash
 # 긴급 손절
-curl -s -X POST "https://quantops-807105550136.asia-northeast3.run.app/api/sell/<CHAIN_ID>" \
+curl -s -X POST "https://ai-auto-bot-ang2aozjiq-du.a.run.app/api/sell/<CHAIN_ID>" \
   -H "x-api-key: <DASHBOARD_PASSWORD>" \
   -H "Content-Type: application/json" \
   -d '{"source":"CLAUDE","reason":"긴급손절 -2.5% 초과"}'
 
 # 퀵플립 익절
-curl -s -X POST "https://quantops-807105550136.asia-northeast3.run.app/api/sell/<CHAIN_ID>" \
+curl -s -X POST "https://ai-auto-bot-ang2aozjiq-du.a.run.app/api/sell/<CHAIN_ID>" \
   -H "x-api-key: <DASHBOARD_PASSWORD>" \
   -H "Content-Type: application/json" \
   -d '{"source":"CLAUDE","reason":"퀵플립 익절"}'
@@ -237,7 +237,7 @@ max_buys  = 3 if bull_market else 2
 #### Step 2 — 2차 필터 (기술 분석 API)
 ```bash
 curl -s -H "x-api-key: <DASHBOARD_PASSWORD>" \
-  "https://quantops-807105550136.asia-northeast3.run.app/api/stock/XXXXXX/analysis"
+  "https://ai-auto-bot-ang2aozjiq-du.a.run.app/api/stock/XXXXXX/analysis"
 ```
 
 | 조건 | 기준 | 실패 시 |
@@ -264,7 +264,7 @@ if not pullbackSignal and envelope_pos not in ('BELOW_LOWER', 'NEAR_LOWER'):
 #### Step 3 — 포지션 사이징 후 실행
 ```bash
 # 실전 매수 (is_paper: false — 실잔금 기준 복리 사이징)
-curl -s -X POST "https://quantops-807105550136.asia-northeast3.run.app/api/manual-buy" \
+curl -s -X POST "https://ai-auto-bot-ang2aozjiq-du.a.run.app/api/manual-buy" \
   -H "Content-Type: application/json" \
   -H "x-api-key: <DASHBOARD_PASSWORD>" \
   -d "{\"stock_code\":\"XXXXXX\",\"ai_score\":SCORE,\"is_paper\":false,\"reasoning\":\"pullback AI82 conf0.70 RSI48 vol1.5x pb=True env=NEAR_LOWER volC=3d\"}"
@@ -315,7 +315,7 @@ curl -s -X POST "https://quantops-807105550136.asia-northeast3.run.app/api/manua
 ### 데이터 수집
 ```bash
 curl -s -H "x-api-key: <DASHBOARD_PASSWORD>" \
-  "https://quantops-807105550136.asia-northeast3.run.app/api/overseas/dashboard" \
+  "https://ai-auto-bot-ang2aozjiq-du.a.run.app/api/overseas/dashboard" \
   -o "C:/Temp/qops_us.json"
 ```
 
@@ -332,7 +332,7 @@ curl -s -H "x-api-key: <DASHBOARD_PASSWORD>" \
 **③ Progressive Trailing**: overseas-job.ts 처리 중
 
 ```bash
-curl -s -X POST "https://quantops-807105550136.asia-northeast3.run.app/api/overseas/sell" \
+curl -s -X POST "https://ai-auto-bot-ang2aozjiq-du.a.run.app/api/overseas/sell" \
   -H "Content-Type: application/json" \
   -H "x-api-key: <DASHBOARD_PASSWORD>" \
   -d "{\"stock_code\":\"XXXXXX\",\"quantity\":N,\"reason\":\"야간감시 -8% 손절\"}"
@@ -380,7 +380,7 @@ curl -s -X POST "https://quantops-807105550136.asia-northeast3.run.app/api/overs
 - 해외: SONY 1주 live (-2.79%) / 손절선 -8%
 
 ### 인프라
-- Cloud Run: `quantops-807105550136.asia-northeast3.run.app`
+- Cloud Run: `ai-auto-bot-ang2aozjiq-du.a.run.app`
 - DB: PostgreSQL (migration 050까지 적용)
 - 알림: Telegram + Slack + Web Push + 카카오페이 webhook
-- 비밀번호: `$env:QUANTOPS_PW` (PowerShell에서 설정 — git에 저장 안 함)
+- 비밀번호: `$env:AAB_PW` (PowerShell에서 설정 — git에 저장 안 함)

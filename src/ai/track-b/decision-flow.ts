@@ -164,6 +164,24 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
     watchlistCodes: scores.map((s) => s.stock_code),
   });
 
+  // ── 9.5. 컨센서스 기반 매수 필터 — 하락세 종목 매수 차단 ──────────
+  {
+    const { getConsensusTrend } = await import('../../market/consensus.js');
+    for (const d of decisions) {
+      if (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') {
+        const signal = getConsensusTrend(d.stock_code);
+        if (signal?.trend === 'BEARISH') {
+          logger.info(`🐻 컨센서스 하락세 매수 차단: ${d.stock_code} ${signal.name} (하향${signal.downgradeCount} 상향${signal.upgradeCount})`, { component: 'CONSENSUS' });
+          d.action = 'HOLD';
+          d.reasoning = `[컨센서스 하락세] ${d.reasoning}`;
+        } else if (signal?.trend === 'BULLISH' && d.confidence) {
+          d.confidence = Math.min(1.0, d.confidence + 0.05);
+          d.reasoning = `[컨센서스 상승세↑] ${d.reasoning}`;
+        }
+      }
+    }
+  }
+
   // ── 10. 최종 필터: HOLD 제거 + 가격 검증 + 실행 순서 정렬 ──────────
   const filtered = decisions.filter((d) => {
     if (d.action === 'HOLD') return false;

@@ -40,6 +40,8 @@ export interface BuyFilterContext {
   isPaper?: boolean;
   sessionBrief?: SessionStrategyBrief | null;
   earningsDrift?: { code: string; direction: 'BULL' | 'BEAR'; gapPct: number; strength: number }[];  // 개선#7
+  userBlacklist?: Set<string>;   // CEO 블랙리스트 (절대 매수 금지)
+  userFavorites?: Set<string>;   // CEO 즐겨찾기 (매수 우선순위 +20)
 }
 
 export type BuyTarget = TechResult & { ai?: AIDecision; _effectiveConf?: number };
@@ -73,7 +75,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
     upcomingEarnings, sentinelBlockedCodes, mktSignal,
     sectorValues, portfolioValue, aiMap, freshBreadth,
     uncertaintyMap, overseasWinRates, isUSExtended, recoveryMode, isPaper,
-    sessionBrief,
+    sessionBrief, userBlacklist, userFavorites,
   } = ctx;
 
   // 세션전략에서 avoidStocks/priorityStocks/confidenceFloor 추출
@@ -92,6 +94,14 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
     .filter(t => {
       if (avoidSet.has(t.code)) {
         logger.info(`🚫 세션전략 회피 차단: ${t.code} (avoidStocks)`, { component: 'OVERSEAS' });
+        return false;
+      }
+      return true;
+    })
+    // 1-c. CEO 블랙리스트 (절대 매수 금지)
+    .filter(t => {
+      if (userBlacklist?.has(t.code)) {
+        logger.info(`🚫 CEO 블랙리스트: ${t.code} (매수 차단)`, { component: 'OVERSEAS' });
         return false;
       }
       return true;
@@ -125,17 +135,19 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
     })
     // 5. VIX 위기 / 점진적 쿨다운
     .filter(t => {
-      if (!vixRegime.allowNewBuy) {
-        // VIX CRISIS 예외: Paper 모드 허용 / STRONG_BUY+높은확신 or BigMover는 공포 속 매수 기회
+      if (vixRegime.regime === 'CRISIS') {
+        // VIX CRISIS: 오버솔드 반등 + 고확신 + BigMover만 허용
         const ai = aiMap.get(t.code);
+        const oversoldBounce = t.rsi !== undefined && t.rsi <= 30; // RSI 30 이하 = 과매도 반등 기회
         const crisisOverride = isPaper
+          || oversoldBounce
           || (ai?.action === 'BUY' && ai.confidence >= 0.85 && t.signal === 'STRONG_BUY')
           || (t.isBigMover && t.score >= 30);
         if (crisisOverride) {
-          logger.info(`🔥 VIX CRISIS 기회매수 통과: ${t.code} (VIX=${vixValue.toFixed(0)}, ${isPaper ? 'PAPER' : t.isBigMover ? 'BigMover' : `AI${((ai?.confidence ?? 0) * 100).toFixed(0)}%`})`, { component: 'OVERSEAS' });
+          logger.info(`🔥 VIX CRISIS 기회매수: ${t.code} (VIX=${vixValue.toFixed(0)}, RSI=${t.rsi?.toFixed(0) ?? '?'}, ${oversoldBounce ? '과매도반등' : isPaper ? 'PAPER' : t.isBigMover ? 'BigMover' : `AI${((ai?.confidence ?? 0) * 100).toFixed(0)}%`})`, { component: 'OVERSEAS' });
           return true;
         }
-        logger.info(`🌡️ VIX CRISIS 매수 차단: ${t.code} (VIX=${vixValue.toFixed(0)})`, { component: 'OVERSEAS' }); return false;
+        logger.info(`🌡️ VIX CRISIS 매수 제한: ${t.code} (VIX=${vixValue.toFixed(0)}, RSI=${t.rsi?.toFixed(0) ?? '?'} — 과매도 아님)`, { component: 'OVERSEAS' }); return false;
       }
       if (gradualCooldown.level >= 2 && !t.isBigMover) { logger.info(`⏸️ 쿨다운Lv${gradualCooldown.level} 전체 차단: ${t.code}`, { component: 'OVERSEAS' }); return false; }
       return true;
@@ -225,10 +237,13 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         if (ai?.action === 'BUY' && (t.signal === 'STRONG_BUY' || t.isMomentum) && effectiveConf >= confFloorMom) return true;
       }
 
-      // VIX CRISIS → 기술적 진입도 차단 (위기 시 매수 자제)
-      if (vixRegime.regime === 'CRISIS' && !vixRegime.allowNewBuy) {
-        logger.info(`  ⛔ VIX CRISIS 매수 차단: ${t.code}`, { component: 'OVERSEAS' });
-        return false;
+      // VIX CRISIS → 기술적 진입은 오버솔드 반등만 허용
+      if (vixRegime.regime === 'CRISIS') {
+        const oversold = t.rsi !== undefined && t.rsi <= 30;
+        if (!oversold && !t.isBigMover) {
+          logger.info(`  ⛔ VIX CRISIS 기술적 매수 제한: ${t.code} (RSI=${t.rsi?.toFixed(0) ?? '?'} — 과매도 아님)`, { component: 'OVERSEAS' });
+          return false;
+        }
       }
 
       // ════════════════════════════════════════════════════════
@@ -313,6 +328,9 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       const losspenB = recentLossSet.has(b.code) ? (b.price.changePct >= 3 && b.score >= 25 ? -8 : -25) : 0;
       const priorityA = prioritySet.has(a.code) ? 12 : 0;
       const priorityB = prioritySet.has(b.code) ? 12 : 0;
+      // CEO 즐겨찾기: +20점 (세션 priority보다 강력)
+      const favA = userFavorites?.has(a.code) ? 20 : 0;
+      const favB = userFavorites?.has(b.code) ? 20 : 0;
       const sectorBoostA = focusSectorSet.has((a.sector ?? '').toUpperCase()) ? 8 : 0;
       const sectorBoostB = focusSectorSet.has((b.sector ?? '').toUpperCase()) ? 8 : 0;
       const techA = a.score * 0.6 + (a.isMomentum ? 20 : 0) + (a.isBigMover ? 15 : 0) + Math.min(a.adx * 0.3, 12);
@@ -330,8 +348,8 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       const driftB = ctx.earningsDrift?.find(d => d.code === b.code && d.direction === 'BULL');
       const driftScoreA = driftA ? Math.min(20, driftA.strength * 25) : 0;
       const driftScoreB = driftB ? Math.min(20, driftB.strength * 25) : 0;
-      const sa = techA + wrScoreA + losspenA + priorityA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA;
-      const sb = techB + wrScoreB + losspenB + priorityB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB;
+      const sa = techA + wrScoreA + losspenA + priorityA + favA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA;
+      const sb = techB + wrScoreB + losspenB + priorityB + favB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB;
       return sb - sa;
     });
 }

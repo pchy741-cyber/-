@@ -7,6 +7,7 @@
  */
 
 import { logger } from './logger.js';
+import { getCtxIsPaper } from '../config/context.js';
 
 const locks = new Map<string, { lockedAt: Date; owner: string }>();
 const LOCK_TIMEOUT_MS = 120_000; // 2분 초과하면 자동 해제 (체결 확인 최대 60초 + 여유분)
@@ -16,7 +17,10 @@ const LOCK_TIMEOUT_MS = 120_000; // 2분 초과하면 자동 해제 (체결 확�
  * @returns unlock 함수. 반드시 finally에서 호출할 것.
  */
 export async function acquireLock(stockCode: string, owner: string): Promise<(() => void) | null> {
-  const existing = locks.get(stockCode);
+  // paper/live 모드별 독립 락 — paper 005930 매매가 live 005930을 차단하지 않음
+  const modePrefix = getCtxIsPaper() ? 'P:' : 'L:';
+  const lockKey = `${modePrefix}${stockCode}`;
+  const existing = locks.get(lockKey);
 
   // 이미 락이 잡혀있으면
   if (existing) {
@@ -24,8 +28,8 @@ export async function acquireLock(stockCode: string, owner: string): Promise<(()
 
     // 타임아웃 초과 → 강제 해제
     if (elapsed > LOCK_TIMEOUT_MS) {
-      logger.warn(`🔓 종목 락 타임아웃 강제 해제: ${stockCode} (owner: ${existing.owner}, ${Math.round(elapsed / 1000)}초)`, { component: 'LOCK' });
-      locks.delete(stockCode);
+      logger.warn(`🔓 종목 락 타임아웃 강제 해제: ${lockKey} (owner: ${existing.owner}, ${Math.round(elapsed / 1000)}초)`, { component: 'LOCK' });
+      locks.delete(lockKey);
     } else {
       // 락 획득 실패
       return null;
@@ -33,10 +37,10 @@ export async function acquireLock(stockCode: string, owner: string): Promise<(()
   }
 
   // 락 획득
-  locks.set(stockCode, { lockedAt: new Date(), owner });
+  locks.set(lockKey, { lockedAt: new Date(), owner });
 
   return () => {
-    locks.delete(stockCode);
+    locks.delete(lockKey);
   };
 }
 

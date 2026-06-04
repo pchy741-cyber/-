@@ -132,8 +132,8 @@ function LoginScreen({ onUnlock }: { onUnlock: () => void }) {
       <div className="w-full max-w-xs px-6 text-center">
         {/* 로고 */}
         <div className="mb-8">
-          <h1 className="text-2xl font-black bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">QUANTOPS</h1>
-          <p className="text-xs text-slate-600 mt-1">AI 자동매매 시스템</p>
+          <h1 className="text-2xl font-black bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">AI Bot</h1>
+          <p className="text-xs text-slate-600 mt-1">Auto Bot Dashboard</p>
         </div>
 
         {/* 잠금 아이콘 */}

@@ -48,3 +48,35 @@ export async function getOverseasState(key: string): Promise<string | null> {
 export async function deleteOverseasState(key: string): Promise<void> {
   await getPool().query('DELETE FROM overseas_state WHERE key = $1', [key]);
 }
+
+// ── 즐겨찾기 / 블랙리스트 ──
+
+/** 사용자 즐겨찾기 종목 목록 (mode-independent — 통합 관리) */
+export async function getUserFavorites(): Promise<Set<string>> {
+  const raw = await getOverseasState('user_favorites');
+  return new Set(raw ? JSON.parse(raw) as string[] : []);
+}
+
+/** 사용자 블랙리스트 종목 목록 */
+export async function getUserBlacklist(): Promise<Set<string>> {
+  const raw = await getOverseasState('user_blacklist');
+  return new Set(raw ? JSON.parse(raw) as string[] : []);
+}
+
+/** 즐겨찾기 토글 */
+export async function toggleFavorite(code: string): Promise<boolean> {
+  const favs = await getUserFavorites();
+  const wasActive = favs.has(code);
+  if (wasActive) favs.delete(code); else favs.add(code);
+  await setOverseasState('user_favorites', JSON.stringify([...favs]));
+  return !wasActive; // returns new state
+}
+
+/** 블랙리스트 토글 */
+export async function toggleBlacklist(code: string): Promise<boolean> {
+  const list = await getUserBlacklist();
+  const wasActive = list.has(code);
+  if (wasActive) list.delete(code); else list.add(code);
+  await setOverseasState('user_blacklist', JSON.stringify([...list]));
+  return !wasActive;
+}

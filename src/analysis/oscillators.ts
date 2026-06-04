@@ -41,6 +41,56 @@ export function rsi(prices: number[], period: number = 14): number[] {
   return result;
 }
 
+// ── RSI 다이버전스 감지 (Momentum+Mean Reversion 결합 — Serban 2010, Velissaris 2016 검증) ──
+// Bullish divergence: 가격 lower low + RSI higher low → 평균회귀 매수 신호
+// Bearish divergence: 가격 higher high + RSI lower high → 모멘텀 약화 매도 신호
+export interface RsiDivergence {
+  type: 'BULLISH' | 'BEARISH' | 'NONE';
+  strength: number; // 0~1 (RSI 차이 크기 비례)
+}
+
+export function detectRsiDivergence(
+  prices: number[],  // 최신→과거 (desc)
+  rsiValues: number[], // 최신→과거 (desc) — rsi() 결과를 reverse한 것
+  lookback: number = 14,
+): RsiDivergence {
+  if (prices.length < lookback || rsiValues.length < lookback) return { type: 'NONE', strength: 0 };
+
+  // 최근 lookback 기간 내 가격 저점 2개, 고점 2개 찾기
+  let priceMinIdx1 = 0, priceMinIdx2 = -1;
+  let priceMaxIdx1 = 0, priceMaxIdx2 = -1;
+
+  // 가장 최근 저점/고점
+  for (let i = 1; i < lookback; i++) {
+    if (prices[i] < prices[priceMinIdx1]) { priceMinIdx2 = priceMinIdx1; priceMinIdx1 = i; }
+    else if (priceMinIdx2 < 0 || prices[i] < prices[priceMinIdx2]) priceMinIdx2 = i;
+    if (prices[i] > prices[priceMaxIdx1]) { priceMaxIdx2 = priceMaxIdx1; priceMaxIdx1 = i; }
+    else if (priceMaxIdx2 < 0 || prices[i] > prices[priceMaxIdx2]) priceMaxIdx2 = i;
+  }
+
+  // Bullish: 현재 가격이 이전 저점보다 낮지만, RSI는 이전보다 높음
+  if (priceMinIdx2 >= 0 && priceMinIdx1 < priceMinIdx2) {
+    const priceDrop = prices[priceMinIdx1] < prices[priceMinIdx2]; // price lower low
+    const rsiRise = rsiValues[priceMinIdx1] > rsiValues[priceMinIdx2]; // RSI higher low
+    if (priceDrop && rsiRise) {
+      const rsiDiff = rsiValues[priceMinIdx1] - rsiValues[priceMinIdx2];
+      return { type: 'BULLISH', strength: Math.min(1, rsiDiff / 15) };
+    }
+  }
+
+  // Bearish: 현재 가격이 이전 고점보다 높지만, RSI는 이전보다 낮음
+  if (priceMaxIdx2 >= 0 && priceMaxIdx1 < priceMaxIdx2) {
+    const priceRise = prices[priceMaxIdx1] > prices[priceMaxIdx2]; // price higher high
+    const rsiFall = rsiValues[priceMaxIdx1] < rsiValues[priceMaxIdx2]; // RSI lower high
+    if (priceRise && rsiFall) {
+      const rsiDiff = rsiValues[priceMaxIdx2] - rsiValues[priceMaxIdx1];
+      return { type: 'BEARISH', strength: Math.min(1, rsiDiff / 15) };
+    }
+  }
+
+  return { type: 'NONE', strength: 0 };
+}
+
 // ── MACD (Moving Average Convergence Divergence) ──
 
 export interface MACDResult {

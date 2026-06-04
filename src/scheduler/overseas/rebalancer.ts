@@ -109,6 +109,89 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
       rebalanceAlerts.push(...overweight.map(p => `📊 리밸런싱 추천: ${p.code} ${p.weight.toFixed(1)}%→${targetWeightPer.toFixed(1)}%`));
     }
 
+    // ── 패자→승자 로테이션 (Paper 자동 / Live 추천) ──
+    // -3% 이하 패자 → 기술적 강세인 승자로 자금 이동
+    const LOSER_THRESHOLD = -3.0;      // 패자 기준: -3% 이하
+    const WINNER_MIN_PNL = 1.0;        // 승자 기준: +1% 이상
+    const MIN_HOLD_DAYS_FOR_ROTATION = 1; // 최소 보유기간 1일 (당일 매수 즉시 로테이션 방지)
+
+    const losers = positionWeights.filter(p => {
+      if (p.pnl >= LOSER_THRESHOLD) return false;
+      // 보유기간 체크
+      const holding = rbHoldings.get(p.code);
+      if (!holding) return false;
+      const holdDays = (Date.now() - new Date(holding.boughtAt).getTime()) / (1000 * 60 * 60 * 24);
+      if (holdDays < MIN_HOLD_DAYS_FOR_ROTATION) return false;
+      // 이미 매도 주문 나간 종목 제외
+      if (sellOrders.some(o => o.includes(p.code))) return false;
+      return true;
+    }).sort((a, b) => a.pnl - b.pnl); // 가장 나쁜 순
+
+    const winners = positionWeights.filter(p => {
+      if (p.pnl < WINNER_MIN_PNL) return false;
+      const tech = techResults.find(t => t.code === p.code);
+      if (!tech) return false;
+      // 기술적 강세: score > 0 또는 MA20 위 또는 모멘텀
+      return tech.score > 0 || tech.aboveMA20 || tech.isMomentum;
+    }).sort((a, b) => b.pnl - a.pnl); // 가장 좋은 순
+
+    if (losers.length > 0 && winners.length > 0) {
+      for (const loser of losers.slice(0, 2)) { // 최대 2종목 로테이션/사이클
+        const winner = winners[0]; // 최고 승자에 집중
+        const tech = techResults.find(t => t.code === winner.code);
+        if (!tech) continue;
+
+        // 로테이션 수량: 패자 보유량의 절반 (점진적 이동)
+        const rotateQty = Math.max(1, Math.floor(loser.qty / 2));
+        const rotateValue = rotateQty * loser.price;
+
+        if (isPaper) {
+          // Paper: 자동 실행
+          const sellExec = await executeOverseasOrder(
+            loser.code, 'SELL', rotateQty, loser.price, loser.exchange,
+            `🔄 로테이션매도: ${loser.code}(${loser.pnl.toFixed(1)}%)→${winner.code}(+${winner.pnl.toFixed(1)}%)`,
+            loser.qty, loser.avgPrice, { isPaper },
+          );
+          if (sellExec.submitted && sellExec.filledQty > 0) {
+            const proceeds = sellExec.filledPrice * sellExec.filledQty * (1 - OVERSEAS_FEE_PCT);
+            cash += proceeds;
+            await updateTradeState({ code: loser.code, exchange: loser.exchange, qty: sellExec.finalQty, avgPrice: sellExec.finalAvgPrice, newCash: cash, isPaper });
+            sellOrders.push(`🔄 로테이션 ${loser.code}(${loser.pnl.toFixed(1)}%) x${sellExec.filledQty} → ${winner.code} 매수 대기`);
+
+            // 승자 추가 매수
+            const buyQty = Math.max(1, Math.floor((proceeds * 0.95) / winner.price)); // 5% 여유
+            if (buyQty > 0) {
+              const buyExec = await executeOverseasOrder(
+                winner.code, 'BUY', buyQty, winner.price, winner.exchange,
+                `🔄 로테이션매수: ${loser.code}→${winner.code} (승자 집중)`,
+                winner.qty, winner.avgPrice, { isPaper },
+              );
+              if (buyExec.submitted && buyExec.filledQty > 0) {
+                cash -= buyExec.filledPrice * buyExec.filledQty * (1 + OVERSEAS_FEE_PCT);
+                await updateTradeState({ code: winner.code, exchange: winner.exchange, qty: buyExec.finalQty, avgPrice: buyExec.finalAvgPrice, newCash: cash, isPaper });
+                sellOrders.push(`🔄 로테이션 매수 ${winner.code} x${buyExec.filledQty} @$${buyExec.filledPrice.toFixed(2)}`);
+              }
+            }
+          }
+          logger.info(
+            `🔄 패자→승자 로테이션: ${loser.code}(${loser.pnl.toFixed(1)}%) x${rotateQty} → ${winner.code}(+${winner.pnl.toFixed(1)}%) $${rotateValue.toFixed(0)}`,
+            { component: 'REBALANCE' },
+          );
+        } else {
+          // Live: 추천만
+          rebalanceAlerts.push(`🔄 로테이션 추천: ${loser.code}(${loser.pnl.toFixed(1)}%) → ${winner.code}(+${winner.pnl.toFixed(1)}%) $${rotateValue.toFixed(0)}`);
+          const lastRotKey = `rotation_${loser.code}`;
+          const lastRot = extendedAlertSentAt.get(lastRotKey) ?? 0;
+          if (Date.now() - lastRot > 60 * 60_000) { // 1시간 쿨다운
+            await sendTelegramMessage(
+              `🔄 *패자→승자 로테이션 추천*\n매도: ${loser.code} x${rotateQty} (${loser.pnl.toFixed(1)}%)\n매수: ${winner.code} (${winner.pnl >= 0 ? '+' : ''}${winner.pnl.toFixed(1)}%, score=${tech.score})\n금액: $${rotateValue.toFixed(0)}`,
+            ).catch(() => {});
+            extendedAlertSentAt.set(lastRotKey, Date.now());
+          }
+        }
+      }
+    }
+
     return { rebalanceAlerts, cash };
   } catch (rbErr) {
     logger.warn(`포트폴리오 리밸런싱 분석 실패: ${(rbErr as Error).message}`, { component: 'OVERSEAS' });

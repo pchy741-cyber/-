@@ -428,6 +428,17 @@ futuresRoutes.get('/futures/integrity-check', async (c) => {
       issues.push({ severity: 'info', msg: `KIS 선물예수금: $${kisDeposit.totalDeposit.toFixed(0)} (가용 $${kisDeposit.availableMargin.toFixed(0)}, 사용 $${kisDeposit.usedMargin.toFixed(0)})` });
     }
 
+    // ── 배당 크로스오염 점검 ──
+    const [{ rows: divPaper }, { rows: divLive }, { rows: divKeys }] = await Promise.all([
+      pool.query(`SELECT stock_code, quantity FROM dividend_holdings WHERE is_paper = TRUE AND quantity > 0`),
+      pool.query(`SELECT stock_code, quantity FROM dividend_holdings WHERE is_paper = FALSE AND quantity > 0`),
+      pool.query(`SELECT key, value FROM overseas_state WHERE key LIKE 'dividend_invested_krw%'`),
+    ]);
+    const divKeyMap = Object.fromEntries(divKeys.map((r: any) => [r.key, Number(r.value ?? 0)]));
+    if (divKeyMap['dividend_invested_krw'] && !divKeyMap['dividend_invested_krw_paper'] && !divKeyMap['dividend_invested_krw_live']) {
+      issues.push({ severity: 'warn', msg: `배당 invested_krw 레거시 키 잔존 → paper/live 분리 필요` });
+    }
+
     const allOk = issues.filter(i => i.severity === 'danger').length === 0;
     return c.json({
       ok: allOk,
@@ -445,6 +456,7 @@ futuresRoutes.get('/futures/integrity-check', async (c) => {
           legacyPnl,
         },
       },
+      dividend: { paperHoldings: divPaper.length, liveHoldings: divLive.length },
       issues,
     });
   } catch (e: any) {
@@ -537,6 +549,21 @@ futuresRoutes.get('/feature-flags', async (c) => {
   try {
     const { rows } = await getPool().query('SELECT * FROM feature_flags ORDER BY key');
     return c.json({ flags: rows });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// ── 선물 튜너 상태 조회 ──
+futuresRoutes.get('/futures/tuner-status', async (c) => {
+  try {
+    const mode = c.req.query('mode') === 'live' ? 'live' : 'paper';
+    const { rows } = await getPool().query(
+      `SELECT value FROM overseas_state WHERE key = $1`,
+      [`futures_tuner_${mode}`],
+    );
+    if (rows[0]?.value) return c.json(JSON.parse(rows[0].value));
+    return c.json({ totalTrades: 0 });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }

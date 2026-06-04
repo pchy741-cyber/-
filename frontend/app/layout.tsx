@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'QUANTOPS - AI 자동매매 시스템',
-  description: 'AI 기반 완전 자동매매 운영 콘솔',
+  title: 'AI Auto Bot',
+  description: 'AI Auto Bot Dashboard',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

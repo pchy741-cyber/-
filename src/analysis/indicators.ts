@@ -12,8 +12,8 @@
 export { sma, ema, envelope, vwap } from './moving-averages.js';
 export type { OHLCV, EnvelopeResult } from './moving-averages.js';
 
-export { rsi, macd, bollingerBands, stochastic, williamsR, roc, atr, adx, ttmSqueeze } from './oscillators.js';
-export type { MACDResult, BollingerResult, StochasticResult, TTMSqueezeResult } from './oscillators.js';
+export { rsi, macd, bollingerBands, stochastic, williamsR, roc, atr, adx, ttmSqueeze, detectRsiDivergence } from './oscillators.js';
+export type { MACDResult, BollingerResult, StochasticResult, TTMSqueezeResult, RsiDivergence } from './oscillators.js';
 
 export { detectCandlePatterns, calcFibonacciLevels, volumeProfile, detectStructuralPatterns } from './patterns.js';
 export type { CandlePatternResult, FibonacciLevel, FibonacciResult, VolumeLevelResult, StructuralPattern } from './patterns.js';
@@ -21,7 +21,7 @@ export type { CandlePatternResult, FibonacciLevel, FibonacciResult, VolumeLevelR
 // ── Internal imports for analyzeTechnicals ──
 import type { OHLCV, EnvelopeResult } from './moving-averages.js';
 import { sma, ema, envelope, vwap } from './moving-averages.js';
-import { rsi, macd, bollingerBands, stochastic, williamsR, roc, atr, adx, ttmSqueeze, type TTMSqueezeResult } from './oscillators.js';
+import { rsi, macd, bollingerBands, stochastic, williamsR, roc, atr, adx, ttmSqueeze, detectRsiDivergence, type TTMSqueezeResult, type RsiDivergence } from './oscillators.js';
 import { detectCandlePatterns, calcFibonacciLevels, type CandlePatternResult, type FibonacciResult } from './patterns.js';
 
 // ── 종합 분석 리포트 ──
@@ -61,6 +61,7 @@ export interface TechnicalSummary {
   pullbackSignal: boolean;
   volumeConsistency: number;
   fibResult: FibonacciResult | null;
+  rsiDivergence: RsiDivergence;
 }
 
 export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
@@ -342,6 +343,7 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
     pullbackSignal,
     volumeConsistency,
     fibResult: calcFibonacciLevels(candles, current),
+    rsiDivergence: detectRsiDivergence(closes, [...rsiValues].reverse(), 14),
   };
 }
 

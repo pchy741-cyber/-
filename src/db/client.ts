@@ -660,6 +660,27 @@ export async function getRecentLossStocks(daysBack = 14): Promise<Set<string>> {
 }
 
 /**
+ * 5% 초과 손실 매도 종목 — 30일 절대 차단 (CEO allowRebuy override 없이 재매수 불가)
+ * AI 점수와 무관하게 차단. 손해보고 판 걸 또 사는 건 금지.
+ */
+export async function getBigLossBlockedStocks(): Promise<Set<string>> {
+  if (useMemory) return new Set();
+  try {
+    const { rows } = await queryWithRetry(
+      `SELECT DISTINCT stock_code FROM transaction_chains
+       WHERE status = 'CLOSED'
+         AND is_paper = $1
+         AND pnl_pct < -5.0
+         AND closed_at > NOW() - INTERVAL '30 days'`,
+      [getCtxIsPaper()],
+    );
+    return new Set(rows.map((r: { stock_code: string }) => r.stock_code));
+  } catch {
+    return new Set();
+  }
+}
+
+/**
  * 당일 손절 2회 이상 종목 — 재진입 금지 (당일 한정)
  */
 export async function getTodayRepeatStopCodes(minStops = 2): Promise<Set<string>> {

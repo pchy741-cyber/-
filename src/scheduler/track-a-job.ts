@@ -1,6 +1,7 @@
 import { runTrackAPipeline } from '../ai/track-a/pipeline.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { reportError, reportSuccess } from '../risk/kill-switch.js';
+import { refreshConsensusSignals } from '../market/consensus.js';
 import { logger } from '../utils/logger.js';
 
 let isRunning = false;
@@ -15,6 +16,10 @@ export async function runTrackAJob(additionalSources?: string): Promise<void> {
   const start = Date.now();
 
   try {
+    // 컨센서스 시그널 갱신 (4시간 캐시, Track A와 동기화)
+    await refreshConsensusSignals().catch(e =>
+      logger.warn(`컨센서스 갱신 스킵: ${e}`, { component: 'CONSENSUS' }));
+
     await runTrackAPipeline(additionalSources);
     reportSuccess();
 

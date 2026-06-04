@@ -140,7 +140,7 @@ export default function ScreenshotReview(props: ScreenshotProps) {
     const ts = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
     capturedScreenshots.current.forEach((s, i) => {
       const safeName = s.tab.replace(/[\s[\]]/g, '_');
-      downloadPng(s.base64, `quantops_${ts}_${i}_${safeName}.png`);
+      downloadPng(s.base64, `aab_${ts}_${i}_${safeName}.png`);
     });
   }, []);
 
@@ -148,7 +148,7 @@ export default function ScreenshotReview(props: ScreenshotProps) {
     if (!copilot && !xray) return;
     const lines: string[] = [];
     if (copilot) {
-      lines.push(`QuantOps Copilot ${copilot.timestamp}`, `Mode: ${copilot.mode}`, '');
+      lines.push(`AI Bot Copilot ${copilot.timestamp}`, `Mode: ${copilot.mode}`, '');
       lines.push('=== INTEGRITY ===');
       lines.push(...copilot.integrity.map(i => `[${i.status.toUpperCase()}] ${i.label}: ${i.detail}`));
       lines.push('', '=== RISK ===');

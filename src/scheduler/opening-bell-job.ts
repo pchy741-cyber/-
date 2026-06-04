@@ -149,11 +149,8 @@ export async function runOpeningBellCycle(): Promise<void> {
   // 09:00~09:12 구간만 실행 (약간 여유)
   if (h !== 9 || m > 12) return;
 
-  // 스캘핑 15% 승률 — paper 모드에서 비활성화 (SWING 집중)
-  if (getCtxIsPaper()) {
-    logger.info('[OPENING] Paper 모드 — 스캘핑 스킵 (SWING 집중 전략)', { component: 'OPENING_BELL' });
-    return;
-  }
+  // Paper 모드: AI Loop ScalpingRadar가 주도 — 기존 Gemini 스캘핑만 스킵, 기술지표 매매는 허용
+  // (해외는 paper에서 잘 잡히는데 국내만 안 잡힘 → 이 early return이 원인이었음)
 
   logger.info(`⚡ [OPENING] 개장 사이클 ${h}:${String(m).padStart(2, '0')}`, { component: 'OPENING_BELL' });
 

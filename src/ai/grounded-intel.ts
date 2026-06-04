@@ -1,0 +1,139 @@
+/**
+ * 실시간 시장 인텔리전스 — Vertex AI + Google Search 그라운딩
+ * GenAI App Builder 크레딧 ₩143만 활용 → 실시간 뉴스/이벤트 기반 매매 판단 강화
+ *
+ * 용도:
+ * 1. 보유종목 악재/호재 실시간 감지 → 매도/홀드 판단 보강
+ * 2. 매수 후보 뉴스 체크 → 어닝스 미스, 소송, FDA 리젝트 등 위험 회피
+ * 3. 매크로 이벤트 감지 → Fed 발표, CPI, 고용지표 등 시장 방향성
+ */
+import { callVertexGemini } from '../utils/vertex-gemini.js';
+import { logger } from '../utils/logger.js';
+
+// 쿨다운: 같은 종목 30분 내 중복 조회 방지 (크레딧 절약)
+const _lastCheck = new Map<string, number>();
+const COOLDOWN_MS = 60 * 60_000; // 1시간 쿨다운 (비용 절약)
+
+export interface GroundedSignal {
+  code: string;
+  action: 'URGENT_SELL' | 'SELL_WARNING' | 'POSITIVE' | 'NEUTRAL';
+  headline: string;
+  reasoning: string;
+  confidence: number; // 0~1
+}
+
+/**
+ * 보유종목 실시간 뉴스 체크 — 악재 감지 시 매도 신호 강화
+ * overseas-job 매도 판단 전에 호출
+ */
+export async function checkHoldingsNews(
+  holdings: Array<{ code: string; name: string; pnlPct: number }>,
+): Promise<GroundedSignal[]> {
+  // 5종목 초과 시 손실 큰 순으로 우선 체크
+  const sorted = [...holdings].sort((a, b) => a.pnlPct - b.pnlPct);
+  const targets = sorted.slice(0, 5);
+
+  // 쿨다운 필터
+  const now = Date.now();
+  const toCheck = targets.filter(t => {
+    const last = _lastCheck.get(t.code) ?? 0;
+    return now - last > COOLDOWN_MS;
+  });
+  if (toCheck.length === 0) return [];
+
+  const codeList = toCheck.map(t => `${t.code}(${t.name})`).join(', ');
+
+  try {
+    const result = await callVertexGemini(
+      `You are a financial news analyst for US stock trading. Current time: ${new Date().toISOString()}.
+Analyze ONLY breaking news, earnings reports, FDA decisions, lawsuits, analyst downgrades, or other material events from the LAST 24 HOURS.
+Do NOT analyze price movements or technical indicators.
+Respond in JSON array format only.`,
+      `Check for any material news in the last 24 hours for these stocks: ${codeList}
+
+For each stock, respond with:
+{"code":"TICKER","action":"URGENT_SELL|SELL_WARNING|POSITIVE|NEUTRAL","headline":"one-line summary","reasoning":"brief explanation","confidence":0.0-1.0}
+
+Rules:
+- URGENT_SELL: earnings miss, FDA rejection, major lawsuit, fraud, bankruptcy risk (conf >= 0.85)
+- SELL_WARNING: analyst downgrade, guidance cut, sector headwind (conf >= 0.70)
+- POSITIVE: earnings beat, upgrade, new contract, buyback (conf >= 0.70)
+- NEUTRAL: no material news (conf = 0)
+- Only flag REAL news events, not speculation
+
+Respond as JSON array: [...]`,
+      { temperature: 0.1, maxOutputTokens: 500, label: '그라운딩-보유종목뉴스', grounded: true },
+    );
+
+    // 쿨다운 갱신
+    for (const t of toCheck) _lastCheck.set(t.code, now);
+
+    // JSON 파싱
+    const cleaned = result.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+    const signals: GroundedSignal[] = JSON.parse(cleaned);
+    const actionable = signals.filter(s => s.action !== 'NEUTRAL' && s.confidence >= 0.70);
+
+    if (actionable.length > 0) {
+      logger.info(
+        `🔍 그라운딩 뉴스: ${actionable.map(s => `${s.code}=${s.action}(${(s.confidence * 100).toFixed(0)}%) "${s.headline}"`).join(' | ')}`,
+        { component: 'GROUNDED_INTEL' },
+      );
+    }
+
+    return actionable;
+  } catch (err) {
+    logger.warn(`그라운딩 뉴스 체크 실패: ${err instanceof Error ? err.message : err}`, { component: 'GROUNDED_INTEL' });
+    return [];
+  }
+}
+
+/**
+ * 매크로 이벤트 체크 — 시장 전체에 영향 줄 이벤트 감지
+ * 하루 2~3회 호출 (개장 전, 장중, 장 마감 전)
+ */
+let _lastMacroCheck = 0;
+const MACRO_COOLDOWN_MS = 6 * 3600_000; // 6시간 쿨다운 (비용 절약)
+
+export interface MacroSignal {
+  event: string;
+  impact: 'RISK_OFF' | 'RISK_ON' | 'NEUTRAL';
+  severity: 1 | 2 | 3; // 1=minor, 2=moderate, 3=major
+  reasoning: string;
+}
+
+export async function checkMacroEvents(): Promise<MacroSignal[]> {
+  const now = Date.now();
+  if (now - _lastMacroCheck < MACRO_COOLDOWN_MS) return [];
+  _lastMacroCheck = now;
+
+  try {
+    const result = await callVertexGemini(
+      `You are a macro economist monitoring US market-moving events. Current time: ${new Date().toISOString()}.
+Only report events from the LAST 6 HOURS that could move the US stock market significantly.`,
+      `What major economic events, Fed announcements, geopolitical developments, or market-moving news happened in the last 6 hours?
+
+Respond as JSON array:
+[{"event":"brief description","impact":"RISK_OFF|RISK_ON|NEUTRAL","severity":1-3,"reasoning":"why this matters"}]
+
+severity: 1=minor, 2=moderate (+/-1% market), 3=major (+/-2%+ market)
+If nothing significant, respond: []`,
+      { temperature: 0.1, maxOutputTokens: 400, label: '그라운딩-매크로이벤트', grounded: true },
+    );
+
+    const cleaned = result.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+    const events: MacroSignal[] = JSON.parse(cleaned);
+    const significant = events.filter(e => e.severity >= 2);
+
+    if (significant.length > 0) {
+      logger.info(
+        `🌍 매크로 이벤트: ${significant.map(e => `[Lv${e.severity}] ${e.impact} "${e.event}"`).join(' | ')}`,
+        { component: 'GROUNDED_INTEL' },
+      );
+    }
+
+    return significant;
+  } catch (err) {
+    logger.warn(`매크로 이벤트 체크 실패: ${err instanceof Error ? err.message : err}`, { component: 'GROUNDED_INTEL' });
+    return [];
+  }
+}

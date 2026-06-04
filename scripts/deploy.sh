@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================
-# 👑 QUANTOPS 배포 스크립트
+# 👑 AI AUTO BOT 배포 스크립트
 #
 # 사용법:
 #   bash scripts/deploy.sh            → staging 배포 (연습모드, 트래픽 0%)
@@ -21,9 +21,9 @@ PROJECT_ID="quantops-trading"
 ERP_PROJECT="proscom-482505"
 REGION="asia-northeast3"
 REPO="quantops"
-SERVICE="quantops"
+SERVICE="ai-auto-bot"
 TAG=$(git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M)
-IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/quantops"
+IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/ai-auto-bot"
 
 # 공통 secrets (staging/live 동일)
 SECRETS="\
@@ -117,9 +117,9 @@ fi
 # ────────────────────────────────────────────
 echo ""
 if [ "$CMD" = "live" ]; then
-    echo "🚀 QUANTOPS 실전 직접 배포 (긴급)"
+    echo "🚀 AI AUTO BOT 실전 직접 배포 (긴급)"
 else
-    echo "🧪 QUANTOPS STAGING 배포 (연습모드 검수)"
+    echo "🧪 AI AUTO BOT STAGING 배포 (연습모드 검수)"
 fi
 echo "   프로젝트: $PROJECT_ID"
 echo "   태그: $TAG"

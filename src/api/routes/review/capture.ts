@@ -58,7 +58,7 @@ app.get('/review/image/:index', (c) => {
   return new Response(buffer, {
     headers: {
       'Content-Type': 'image/jpeg',
-      'Content-Disposition': `inline; filename="quantops_${idx}.jpg"`,
+      'Content-Disposition': `inline; filename="aab_${idx}.jpg"`,
       'X-Tab': encodeURIComponent(cap.tab),
       'X-Captured-At': cap.capturedAt,
     },

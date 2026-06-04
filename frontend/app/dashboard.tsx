@@ -127,6 +127,7 @@ export default function Dashboard() {
         lastUpdate={lastUpdate} load={load}
         featureFlags={featureFlags}
         isPaper={isPaper} isUS={isUS} theme={theme}
+        loopStatus={loopStatus}
       />
 
       <div className="flex-1 flex flex-col min-w-0">
@@ -146,7 +147,7 @@ export default function Dashboard() {
           ) : (
             <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px] mx-auto">
               <ErrorBoundary fallbackTitle="홈 화면 로딩 오류">
-                {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={data.withdrawConfig} watchlist={watchlist} strategy={strategy} setStrategy={setStrategy} toast={toast} confirm={confirm} onRefresh={load} allocConfig={allocConfig} setAllocConfig={setAllocConfig} onGoToSettings={() => setTab('settings')} viewMode={viewMode} onMarketTabChange={setMarketTab} mpData={mpData} />}
+                {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={data.withdrawConfig} watchlist={watchlist} strategy={strategy} setStrategy={setStrategy} toast={toast} confirm={confirm} onRefresh={load} allocConfig={allocConfig} setAllocConfig={setAllocConfig} onGoToSettings={() => setTab('settings')} viewMode={viewMode} onMarketTabChange={setMarketTab} mpData={mpData} loopStatus={loopStatus} />}
               </ErrorBoundary>
               <ErrorBoundary fallbackTitle="매매내역 로딩 오류">
                 {tab === 'trades' && <TradesView trades={trades} watchlist={watchlist} />}

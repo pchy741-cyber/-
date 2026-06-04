@@ -187,6 +187,46 @@ overseasRoutes.get('/overseas/watchlist', (c) => {
   return c.json(GLOBAL_WATCHLIST);
 });
 
+// ── 즐겨찾기 / 블랙리스트 ──
+overseasRoutes.get('/overseas/favorites', async (c) => {
+  const { getUserFavorites, getUserBlacklist } = await import('../../scheduler/overseas/utils.js');
+  const [favs, bl] = await Promise.all([getUserFavorites(), getUserBlacklist()]);
+  return c.json({ favorites: [...favs], blacklist: [...bl] });
+});
+
+overseasRoutes.post('/overseas/favorites/toggle', async (c) => {
+  const { code } = await c.req.json<{ code: string }>();
+  if (!code) return c.json({ error: '종목 코드 필요' }, 400);
+  const { toggleFavorite } = await import('../../scheduler/overseas/utils.js');
+  const isNowFav = await toggleFavorite(code.toUpperCase());
+  return c.json({ ok: true, code: code.toUpperCase(), favorite: isNowFav });
+});
+
+overseasRoutes.post('/overseas/blacklist/toggle', async (c) => {
+  const { code } = await c.req.json<{ code: string }>();
+  if (!code) return c.json({ error: '종목 코드 필요' }, 400);
+  const { toggleBlacklist } = await import('../../scheduler/overseas/utils.js');
+  const isNowBlocked = await toggleBlacklist(code.toUpperCase());
+  return c.json({ ok: true, code: code.toUpperCase(), blacklisted: isNowBlocked });
+});
+
+// 초기 시딩 (최초 1회 — 이미 값이 있으면 스킵)
+overseasRoutes.post('/overseas/favorites/seed', async (c) => {
+  const { getOverseasState, setOverseasState } = await import('../../scheduler/overseas/utils.js');
+  const results: string[] = [];
+  const existingFavs = await getOverseasState('user_favorites');
+  if (!existingFavs) {
+    await setOverseasState('user_favorites', JSON.stringify(['VRT', 'SMCI', 'AMD']));
+    results.push('favorites seeded: VRT, SMCI, AMD');
+  } else { results.push('favorites already exists'); }
+  const existingBl = await getOverseasState('user_blacklist');
+  if (!existingBl) {
+    await setOverseasState('user_blacklist', JSON.stringify(['TSLA', 'AAPL', 'META']));
+    results.push('blacklist seeded: TSLA, AAPL, META');
+  } else { results.push('blacklist already exists'); }
+  return c.json({ ok: true, results });
+});
+
 // ── 온디맨드 기술점수 계산 (AI 없음, 순수 지표) ──
 // 캐시가 30분 이내면 즉시 반환, 아니면 차트 fetch + analyzeTechnicals 실행
 let _scoringInProgress = false;

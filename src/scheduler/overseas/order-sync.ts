@@ -246,6 +246,30 @@ export async function getRecentLossStocks(isPaper?: boolean): Promise<Set<string
 }
 
 /**
+ * -5% 초과 손실 매도 종목 — 30일 절대 차단 (CEO allowRebuy override만 해제)
+ * 손해보고 판 종목을 승인 없이 재매수하지 않음
+ */
+export async function getBigLossBlockedOverseas(isPaperMode?: boolean): Promise<Set<string>> {
+  const mode = (isPaperMode ?? getCtxIsPaper()) ? 'paper' : 'live';
+  try {
+    // filled_price < avg_buy_price * 0.95 → 5% 초과 손실 매도
+    const { rows } = await getPool().query(`
+      SELECT DISTINCT o.stock_code
+      FROM orders o
+      WHERE o.side = 'SELL'
+        AND o.trigger_source = 'OVERSEAS'
+        AND o.trading_mode = $1
+        AND o.status = 'FILLED'
+        AND o.created_at >= NOW() - INTERVAL '30 days'
+        AND o.filled_price > 0
+        AND o.ai_reasoning ~ '\\[avgBuy:[0-9.]+'
+        AND o.filled_price::numeric < REGEXP_REPLACE(o.ai_reasoning, '.*\\[avgBuy:([0-9.]+)\\].*', '\\1')::numeric * 0.95
+    `, [mode]);
+    return new Set(rows.map((r: { stock_code: string }) => String(r.stock_code)));
+  } catch { return new Set(); }
+}
+
+/**
  * 수동매도 쿨다운 종목 조회 (live only)
  * 사용자가 KIS 앱에서 직접 매도한 종목은 2시간 동안 자동 재매수 금지
  * — 의도적 매도를 시스템이 즉시 되돌리는 상황 방지

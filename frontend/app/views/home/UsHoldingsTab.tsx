@@ -4,10 +4,10 @@ import React, { useState, useCallback } from 'react';
 import { Button } from '@/components/ui';
 import { api, fmtPct, pc, pbg } from '../../lib/utils';
 import { toDisplayName } from '../../lib/helpers';
-import VisionScalpPanel from '../../panels/VisionScalpPanel';
+import ReferencePanel from '../../panels/ReferencePanel';
 import ManualBuyModal from '../../panels/ManualBuyModal';
 import { UsHoldingTpSlBar } from './UsHoldingTpSlBar';
-import type { UsHolding, UsWatchlistItem, Dashboard, ToastFn, ConfirmFn, ViewMode } from '../../types';
+import type { UsHolding, UsWatchlistItem, Dashboard, ToastFn, ConfirmFn, ViewMode, LoopStatus } from '../../types';
 
 interface UsHoldingsTabProps {
   usHoldings: UsHolding[];
@@ -25,12 +25,18 @@ interface UsHoldingsTabProps {
   setInsightsSaving: (v: boolean) => void;
   usInsights: string;
   setUsInsights: (v: string) => void;
+  loopStatus?: LoopStatus | null;
+  favorites?: Set<string>;
+  blacklist?: Set<string>;
+  onToggleFavorite?: (code: string) => void;
+  onToggleBlacklist?: (code: string) => void;
 }
 
 export default function UsHoldingsTab({
   usHoldings, usW, dash, busyAction, guard, onRefresh, toast, confirm,
   insightsDraft, setInsightsDraft, insightsSaving, setInsightsSaving, usInsights, setUsInsights,
-  viewMode = 'live',
+  viewMode = 'live', loopStatus,
+  favorites, blacklist, onToggleFavorite, onToggleBlacklist,
 }: UsHoldingsTabProps) {
   const [editingTpSl, setEditingTpSl] = useState<string | null>(null);
   const [editTp, setEditTp] = useState('');
@@ -193,8 +199,23 @@ export default function UsHoldingsTab({
           수동 매수
         </Button>
       </div>
-      {/* 제보 단타 */}
-      <VisionScalpPanel toast={toast as (msg: string, type?: string) => void} />
+      {/* AI Loop 연결 상태 */}
+      {loopStatus?.active && (
+        <div className="mx-3.5 mt-2 flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-500/8 border border-emerald-500/15">
+          <span className="relative flex h-2 w-2 shrink-0">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+          </span>
+          <span className="text-[11px] font-semibold text-emerald-400">AI Loop 연결</span>
+          <span className="text-[10px] text-slate-500">{loopStatus.totalRuns}회 실행</span>
+          {loopStatus.brief && <span className="text-[10px] text-cyan-400/70 ml-auto">{loopStatus.brief.regime}/{loopStatus.brief.risk}</span>}
+          {(loopStatus.autoPilot?.overridesSet ?? 0) > 0 && <span className="text-[10px] text-amber-400/70">AP {loopStatus.autoPilot!.overridesSet}건</span>}
+        </div>
+      )}
+      {/* 트레이딩 레퍼런스 */}
+      <div className="px-3.5 py-2">
+        <ReferencePanel toast={toast} viewMode={viewMode} />
+      </div>
       {/* 감시 종목 그리드 */}
       {usW.length > 0 && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3.5">
@@ -202,11 +223,29 @@ export default function UsHoldingsTab({
             const held = usHoldings.find((h: UsHolding) => h.stock_code === s.code);
             const usDisplayName = toDisplayName(s.name, s.code);
             const hasPrice = (s.price ?? 0) > 0;
+            const isFav = favorites?.has(s.code) ?? false;
+            const isBlocked = blacklist?.has(s.code) ?? false;
             return (
-              <div key={s.code} className={`rounded-xl border p-3 text-center transition-all hover:scale-[1.02] ${hasPrice ? pbg(s.changePct) : ''} ${held ? 'border-blue-500/40' : 'border-slate-700/30'}`}>
-                <div className="text-xs font-bold text-slate-300 truncate">{usDisplayName} {held ? '📌' : ''}</div>
+              <div key={s.code} className={`relative rounded-xl border p-3 text-center transition-all hover:scale-[1.02] ${isBlocked ? 'opacity-40 border-rose-500/30' : hasPrice ? pbg(s.changePct) : ''} ${held ? 'border-blue-500/40' : isBlocked ? '' : 'border-slate-700/30'}`}>
+                {/* 즐겨찾기 별표 */}
+                <button
+                  className={`absolute top-1 left-1.5 text-sm transition-all ${isFav ? 'text-amber-400 scale-110' : 'text-slate-700 hover:text-amber-400/60'}`}
+                  onClick={(e) => { e.stopPropagation(); onToggleFavorite?.(s.code); }}
+                  title={isFav ? '즐겨찾기 해제' : '즐겨찾기 추가'}
+                >
+                  {isFav ? '\u2605' : '\u2606'}
+                </button>
+                {/* 블랙리스트 토글 */}
+                <button
+                  className={`absolute top-1 right-1.5 text-[10px] transition-all ${isBlocked ? 'text-rose-400 font-bold' : 'text-slate-700/50 hover:text-rose-400/60'}`}
+                  onClick={(e) => { e.stopPropagation(); onToggleBlacklist?.(s.code); }}
+                  title={isBlocked ? '블랙리스트 해제' : '블랙리스트 등록 (매수 차단)'}
+                >
+                  {isBlocked ? '\u26d4' : '\u00d7'}
+                </button>
+                <div className="text-xs font-bold text-slate-300 truncate">{usDisplayName} {held ? '\ud83d\udccc' : ''}</div>
                 <div className={`text-base font-bold mt-1 ${!hasPrice ? 'text-slate-600' : ''}`}>{hasPrice ? `$${s.price!.toFixed(1)}` : '-'}</div>
-                <div className={`text-[11px] font-semibold mt-0.5 ${hasPrice ? pc(s.changePct) : 'text-slate-600'}`}>{hasPrice ? fmtPct(s.changePct) : '장마감'}</div>
+                <div className={`text-[11px] font-semibold mt-0.5 ${hasPrice ? pc(s.changePct) : 'text-slate-600'}`}>{hasPrice ? fmtPct(s.changePct) : '\uc7a5\ub9c8\uac10'}</div>
               </div>
             );
           })}

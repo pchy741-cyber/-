@@ -74,11 +74,17 @@ async function dbCreateSession(brief: SessionStrategyBrief | null): Promise<numb
   }
 }
 
+const ALLOWED_SESSION_COLS = new Set([
+  'phase', 'session_brief', 'total_runs', 'last_run_result',
+  'adaptive_interval_ms', 'ended_at', 'end_reason',
+]);
+
 async function dbUpdateSession(id: number | null, updates: Record<string, unknown>): Promise<void> {
   if (!id) return;
   try {
     const { getPool } = await import('../db/client.js');
-    const keys = Object.keys(updates);
+    const keys = Object.keys(updates).filter(k => ALLOWED_SESSION_COLS.has(k));
+    if (keys.length === 0) return;
     const sets = keys.map((k, i) => `${k} = $${i + 2}`).join(', ');
     await getPool().query(`UPDATE loop_sessions SET ${sets} WHERE id = $1`, [id, ...keys.map(k => updates[k])]);
   } catch (e) {

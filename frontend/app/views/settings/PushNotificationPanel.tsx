@@ -38,10 +38,10 @@ export function PushNotificationPanel({ toast, confirm }: { toast?: ToastFn; con
               const b64 = btoa(String.fromCharCode(...new Uint8Array(akBuf)))
                 .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
               if (b64 !== serverStatus.publicKey) {
-                console.info('[QUANTOPS] VAPID 키 변경 감지 → 재등록');
+                console.info('[AAB] VAPID 키 변경 감지 → 재등록');
                 await existing.unsubscribe();
               } else if (serverStatus.deviceCount === 0) {
-                console.info('[QUANTOPS] 서버 구독 누락 감지 → 재등록');
+                console.info('[AAB] 서버 구독 누락 감지 → 재등록');
                 await existing.unsubscribe();
               } else {
                 subscribed = true;
@@ -63,7 +63,7 @@ export function PushNotificationPanel({ toast, confirm }: { toast?: ToastFn; con
           setPushStatus(prev => ({ ...prev, subscribed: true, deviceCount: prev.deviceCount + 1, error: null }));
         } catch (e: unknown) {
           const msg = (e as Error).message;
-          console.warn('[QUANTOPS] 자동 푸시 등록 실패:', msg);
+          console.warn('[AAB] 자동 푸시 등록 실패:', msg);
           setPushStatus(prev => ({ ...prev, error: `자동 등록 실패: ${msg} — 아래 "이 기기에 등록" 버튼을 눌러주세요` }));
         }
       }
@@ -86,21 +86,21 @@ export function PushNotificationPanel({ toast, confirm }: { toast?: ToastFn; con
           const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: serverStatus.publicKey });
           await api('/push/subscribe', { method: 'POST', body: JSON.stringify(sub) });
           setPushStatus(prev => ({ ...prev, subscribed: true }));
-          console.info('[QUANTOPS] 푸시 구독 자동 재등록 완료');
+          console.info('[AAB] 푸시 구독 자동 재등록 완료');
           return;
         }
         const akBuf = existing.options?.applicationServerKey as ArrayBuffer | null;
         if (akBuf && serverStatus.publicKey) {
           const b64 = btoa(String.fromCharCode(...new Uint8Array(akBuf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
           if (b64 !== serverStatus.publicKey) {
-            console.info('[QUANTOPS] VAPID 키 불일치 감지 → 재등록');
+            console.info('[AAB] VAPID 키 불일치 감지 → 재등록');
             await existing.unsubscribe();
             const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: serverStatus.publicKey });
             await api('/push/subscribe', { method: 'POST', body: JSON.stringify(sub) });
             setPushStatus(prev => ({ ...prev, subscribed: true }));
           }
         }
-      } catch (e: unknown) { console.warn('[QUANTOPS] 구독 헬스체크 실패:', (e as Error).message); }
+      } catch (e: unknown) { console.warn('[AAB] 구독 헬스체크 실패:', (e as Error).message); }
     };
     const interval = setInterval(checkAndRenew, 5 * 60 * 1000);
     document.addEventListener('visibilitychange', checkAndRenew);

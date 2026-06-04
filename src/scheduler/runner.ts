@@ -31,6 +31,7 @@ import { warmupOpeningBell, runOpeningBellCycle } from './opening-bell-job.js';
 import { runHotSectorWatchlist } from '../automation/hot-sector-watchlist.js';
 import { runPortfolioHealthCheck } from '../automation/portfolio-guard.js';
 import { runIntegrityCheck } from './integrity-check-job.js';
+import { runAutoPilotDual } from '../ai/auto-pilot.js';
 
 /**
  * paper → live 순으로 동일 작업을 실행 (국내 이중 모드 병행운영)
@@ -38,6 +39,12 @@ import { runIntegrityCheck } from './integrity-check-job.js';
  * PAPER_ONLY=true 시 live 스킵 (자율학습 모드 — API 호출·비용 절약)
  */
 async function runDomesticDual(label: string, fn: () => Promise<unknown>): Promise<void> {
+  // 공휴일·주말 가드 — 한국 장 안 열리는 날은 전체 스킵
+  const { isTradingDay } = await import('../utils/holidays.js');
+  if (!isTradingDay()) {
+    logger.debug(`📅 ${label} 스킵 — 비거래일(공휴일/주말)`, { component: 'SCHEDULER' });
+    return;
+  }
   await runWithMode(true, async () => {
     try { await fn(); } catch (e) { logger.error(`${label} paper 실패: ${e}`, { component: 'SCHEDULER' }); }
   });
@@ -304,6 +311,16 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 🤖 AutoPilot — 10분 간격 (AI API $0, DB만 읽어서 부담 없음)
+  // 시장 레짐 + 승률 + 컨센서스 기반 자동 매매 파라미터 조절
+  cron.schedule(
+    '*/10 9-15 * * 1-5',
+    () => {
+      withTimeout('AutoPilot', () => runAutoPilotDual(), 120_000);
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 스나이퍼 — 30분 간격 (+2분 오프셋)
   cron.schedule(
     '2,32 9-15 * * 1-5',
@@ -368,6 +385,28 @@ export function startScheduler(): void {
     `${MARKET.FORCE_SELL_MINUTE} ${MARKET.FORCE_SELL_HOUR} * * 1-5`,
     () => {
       import('./force-close-job.js').then((m) => m.runForceCloseJob()).catch((e) => logger.error(`강제 청산 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🎰 15:15 — 종가베팅 매수 (거래대금 1,000억+ 주도주, 캔들 상단 20%)
+  cron.schedule(
+    '15 15 * * 1-5',
+    () => {
+      import('./eod-betting-job.js')
+        .then(m => runDomesticDual('종가베팅', () => m.runEodBettingJob()))
+        .catch(e => logger.error(`종가베팅 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🌅 09:02 — 종가베팅 익일 강제매도 (갭수익/손절, 기계적 전량 매도)
+  cron.schedule(
+    '2 9 * * 1-5',
+    () => {
+      import('./eod-betting-job.js')
+        .then(m => runDomesticDual('종가베팅매도', () => m.runEodMorningSell()))
+        .catch(e => logger.error(`종가베팅 매도 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -497,15 +536,8 @@ export function startScheduler(): void {
   //  🌏 해외 주식 (미국/일본/대만)
   // ═══════════════════════════════════════════
 
-  // 🇯🇵 일본(KST 09:00~15:30) + 🇹🇼 대만(KST 10:00~14:30) — 10분 간격
-  // 장 좋을 때 매도 후 현금이 10분 이상 놀지 않도록 (isRunning 가드로 중복 방지)
-  cron.schedule(
-    '*/10 9-15 * * 1-5',
-    () => {
-      runOverseasDual().catch((e) => logger.error(`아시아주식 실패: ${e}`, { component: 'SCHEDULER' }));
-    },
-    { timezone: MARKET.TIMEZONE },
-  );
+  // 🇯🇵🇹🇼 아시아 해외주식 cron 제거 — 워치리스트 전부 region:'US' (미국 ADR)
+  // US 장 시간(22:30~06:00 KST)에만 매매. 아시아 시간 실행은 "종목풀 0" 낭비.
 
   // 🌏 아시아장 세션 캐시 초기화 — 08:50 (장 시작 전, 당일 스캔 준비)
   cron.schedule(
@@ -684,9 +716,9 @@ export function startScheduler(): void {
     fixWatchlistNames().catch((e) => logger.error(`종목명 보정(시작시) 실패: ${e}`, { component: 'SCHEDULER' }));
   }, 10_000); // 10초 후 (DB 연결 안정화 대기)
 
-  logger.info('✅ 스케줄러 등록 완료 (자동화 모듈 16개 + 미국주식)', { component: 'SCHEDULER' });
+  logger.info('✅ 스케줄러 등록 완료 (자동화 모듈 17개 + 미국주식)', { component: 'SCHEDULER' });
   logger.info(`  Track A: 07:30/12:30/18:00 (3회, 비용최적화) | Track B: ${SCHEDULE.TRACK_B_INTERVAL_MINUTES}분 | 뉴스: 15분`, { component: 'SCHEDULER' });
-  logger.info('  이상감지: 30분 | 장세전환: 08:00/12:00 | 리포트: 15:40 | 🌙시간외: 15:42/52', { component: 'SCHEDULER' });
+  logger.info('  이상감지: 30분 | 장세전환: 08:00/12:00 | 리포트: 15:40 | 🌙시간외: 15:42/52 | 🎰종가베팅: 15:15→09:02', { component: 'SCHEDULER' });
   logger.info('  🎯 스나이퍼: 15분 (수급/기술/공시 고확률 자동 진입)', { component: 'SCHEDULER' });
   logger.info('  Self-Heal: 10분 | 아카이빙: 일요일 02:00', { component: 'SCHEDULER' });
   logger.info('  🌏 해외주식: 🇯🇵🇹🇼 09:00~15:00 + 🇺🇸 23:30~06:30 10분 (기술적 지표)', { component: 'SCHEDULER' });

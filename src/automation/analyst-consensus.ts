@@ -110,7 +110,7 @@ async function tryIntegrationApi(stockCode: string): Promise<AnalystConsensus | 
     const url = `https://m.stock.naver.com/api/stock/${stockCode}/integration`;
     const res = await fetch(url, {
       headers: {
-        'User-Agent': 'QUANTOPS/0.2.0',
+        'User-Agent': 'AIBot/0.2.0',
         'Accept': 'application/json',
       },
       signal: AbortSignal.timeout(10000),
@@ -171,7 +171,7 @@ async function tryAnalystApi(stockCode: string): Promise<AnalystConsensus | null
     const url = `https://m.stock.naver.com/api/stock/${stockCode}/analyst`;
     const res = await fetch(url, {
       headers: {
-        'User-Agent': 'QUANTOPS/0.2.0',
+        'User-Agent': 'AIBot/0.2.0',
         'Accept': 'application/json',
       },
       signal: AbortSignal.timeout(10000),
@@ -250,7 +250,7 @@ async function fetchCurrentPrice(stockCode: string): Promise<number> {
   try {
     const url = `https://m.stock.naver.com/api/stock/${stockCode}/basic`;
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'QUANTOPS/0.2.0' },
+      headers: { 'User-Agent': 'AIBot/0.2.0' },
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return 0;

@@ -4,6 +4,7 @@
 import { getCachedScores, getScoresWithFallback, cachePrice, getLastKnownPrices } from '../../../cache/redis.js';
 import { cachePriceMemory, getLastKnownPricesMemory, getCachedPriceMemory, cacheGet } from '../../../cache/memory.js';
 import { config, baseIsPaper } from '../../../config/index.js';
+import { runWithMode } from '../../../config/context.js';
 import { getActiveStrategy, getActiveWatchlist, getOpenChains, getTodayStartSnapshot, isMemoryMode, safeQuery } from '../../../db/client.js';
 import { getAccountBalance } from '../../../kis/account.js';
 import { getCurrentPrice, getBatchPrices, isMarketOpen } from '../../../kis/market.js';
@@ -550,7 +551,12 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     })),
     strategy: strategy ?? { mode: 'SWING' },
     killSwitch: getKillSwitchStatusAll(),
-    cooldown: await getCooldownStatus().catch(() => ({ active: false, consecutive: 0, remainingMinutes: 0, reason: '' })),
+    cooldown: await runWithMode(viewIsPaper, async () => {
+      const status = await getCooldownStatus().catch(() => ({ active: false, consecutive: 0, remainingMinutes: 0, reason: '' }));
+      const { isEodOnlyMode } = await import('../../../risk/trade-gate-stats.js');
+      const eodOnly = await isEodOnlyMode().catch(() => false);
+      return { ...status, eodOnly };
+    }),
     tradingMode: config.tradingMode,
     viewMode: viewIsPaper ? 'paper' : 'live',
     riskLimits: (() => {

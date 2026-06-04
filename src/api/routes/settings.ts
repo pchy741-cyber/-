@@ -248,7 +248,7 @@ settingsRoutes.post('/push/test', async (c) => {
   const { sendPushNotification, isVapidReady } = await import('../../notifications/web-push.js');
   if (!isVapidReady()) return c.json({ ok: false, error: 'VAPID 미준비' }, 503);
   await sendPushNotification({
-    title: '🔔 QUANTOPS 알림 테스트',
+    title: '🔔 알림 테스트',
     body: '매수·매도·긴급상황 알림이 이렇게 옵니다. 실제 거래 시 즉시 알림됩니다.',
     tag: 'test-' + Date.now(),
     url: '/',

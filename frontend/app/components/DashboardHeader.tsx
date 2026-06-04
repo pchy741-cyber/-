@@ -19,7 +19,7 @@ export function DashboardHeader({ viewMode, switchView, dash, killSwitch, toggle
         <button onClick={() => setMobileMenu(true)} className="text-slate-400">
           <svg width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18M3 12h18M3 18h18" /></svg>
         </button>
-        <span className="font-bold text-sm bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">QUANTOPS</span>
+        <span className="font-bold text-sm bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">AI Bot</span>
         <div className="mx-auto">
           <ViewModeToggle viewMode={viewMode} onChange={switchView} size="sm" />
         </div>

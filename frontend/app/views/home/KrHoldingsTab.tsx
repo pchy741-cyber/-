@@ -18,7 +18,7 @@ interface KrHoldingsTabProps {
 }
 
 const STRATEGY_TP_SL: Record<string, [number, number]> = {
-  SWING: [5.5, -3.0], DEFENSE: [5.0, -2.0], SCALPING: [0.8, -0.8], DIVIDEND: [3.0, -1.5], SNIPER: [8.0, -4.0],
+  SWING: [5.5, -3.0], DEFENSE: [5.0, -2.0], SCALPING: [0.8, -0.8], DIVIDEND: [3.0, -1.5], SNIPER: [8.0, -4.0], EOD_BETTING: [5.0, -3.0],
 };
 
 export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStockName, onRefresh, viewMode = 'live', toast, confirm }: KrHoldingsTabProps) {

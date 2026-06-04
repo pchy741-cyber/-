@@ -14,6 +14,7 @@ import { logger } from '../../../utils/logger.js';
 import { runWithMode } from '../../../config/context.js';
 import { invalidateCurrentModeCache } from './helpers.js';
 import { invalidateStockCache } from '../../../cache/redis.js';
+import { invalidateBalanceCache } from '../../../kis/account.js';
 
 export const sellRoutes = new Hono();
 
@@ -99,7 +100,9 @@ sellRoutes.post('/sell/:chainId', async (c) => {
         const pnlPct = chain.avg_buy_price > 0 ? ((fillPrice - Number(chain.avg_buy_price)) / Number(chain.avg_buy_price)) * 100 : 0;
         await notifySell(chain.stock_code, chain.total_quantity, fillPrice, pnlPct, sellReason);
       } catch { /* 알림 실패 무시 */ }
-      invalidateCurrentModeCache();
+      invalidateBalanceCache();
+      invalidateBalanceCache();
+    invalidateCurrentModeCache();
       invalidateStockCache(chain.stock_code).catch(() => {});
       return c.json({ ok: true, orderNo: fakeOrderNo, message: `${chain.stock_code} ${chain.total_quantity}주 전량 매도 완료 (모의투자)` });
     }
@@ -170,6 +173,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
       const pnlPct = chain.avg_buy_price > 0 ? ((fillPrice - Number(chain.avg_buy_price)) / Number(chain.avg_buy_price)) * 100 : 0;
       await notifySell(chain.stock_code, chain.total_quantity, fillPrice, pnlPct, sellReason);
     } catch { /* 알림 실패 무시 */ }
+    invalidateBalanceCache();
     invalidateCurrentModeCache();
     invalidateStockCache(chain.stock_code).catch(() => {});
     return c.json({
@@ -225,7 +229,9 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
         }
       });
       logger.info(`✅ 전량 매도 완료 (모의): ${stockCode} ${totalQty}주 [${triggerSource}] (${openChains.length}체인)`, { component: 'DASHBOARD' });
-      invalidateCurrentModeCache();
+      invalidateBalanceCache();
+      invalidateBalanceCache();
+    invalidateCurrentModeCache();
       invalidateStockCache(stockCode).catch(() => {});
       return c.json({ ok: true, message: `${stockCode} ${totalQty}주 전량 매도 완료 (모의투자)` });
     }
@@ -302,6 +308,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
       const pnlPct = avgBuy > 0 ? ((fillPrice - avgBuy) / avgBuy) * 100 : 0;
       await notifySell(stockCode, totalQty, fillPrice, pnlPct, sellReason);
     } catch { /* 알림 실패 무시 */ }
+    invalidateBalanceCache();
     invalidateCurrentModeCache();
     invalidateStockCache(stockCode).catch(() => {});
     return c.json({
@@ -365,7 +372,9 @@ sellRoutes.post('/sell-overseas/:stockCode', async (c) => {
           [stockCode, qty, fillPrice, fakeOrderNo, paperReasoning, avgPrice]);
       });
       logger.info(`✅ CEO 해외 수동 매도 완료 (모의투자): ${stockCode} ${qty}주 @$${fillPrice}`, { component: 'DASHBOARD' });
-      invalidateCurrentModeCache();
+      invalidateBalanceCache();
+      invalidateBalanceCache();
+    invalidateCurrentModeCache();
       return c.json({ ok: true, orderNo: fakeOrderNo, message: `${stockCode} ${qty}주 ${isPartial ? '부분' : '전량'} 매도 완료 (모의투자)` });
     }
 
@@ -427,6 +436,7 @@ sellRoutes.post('/sell-overseas/:stockCode', async (c) => {
         [stockCode, qty, fillPrice, result.orderNo ?? '', paperReasoning, avgPrice]);
       logger.warn(`⏳ CEO 해외 수동 매도 접수 (미체결): ${stockCode} ${qty}주 — 다음 sync에서 확인`, { component: 'DASHBOARD' });
     }
+    invalidateBalanceCache();
     invalidateCurrentModeCache();
     return c.json({ ok: true, orderNo: result.orderNo, status: orderStatus, message: `${stockCode} ${qty}주 ${isPartial ? '부분' : '전량'} 매도 ${confirmed ? '체결 완료' : '주문 접수 (체결 대기)'}` });
   } catch (err: any) {
@@ -479,6 +489,7 @@ sellRoutes.post('/sell-overseas-force/:stockCode', async (c) => {
     });
 
     logger.info(`🔨 강제 DB 청산: ${stockCode} ${qty}주 @$${fillPrice.toFixed(2)} (${reason})`, { component: 'DASHBOARD' });
+    invalidateBalanceCache();
     invalidateCurrentModeCache();
     return c.json({ ok: true, message: `${stockCode} ${qty}주 강제 청산 완료 ($${proceeds.toFixed(2)} 반환)` });
   } catch (err: any) {
@@ -555,6 +566,7 @@ sellRoutes.post('/sell-overseas-all', async (c) => {
     }
 
     logger.info(`🚨 전종목 긴급 청산 완료: ${allHoldings.length}종목 $${totalProceeds.toFixed(2)} 반환`, { component: 'DASHBOARD' });
+    invalidateBalanceCache();
     invalidateCurrentModeCache();
     return c.json({
       ok: true,
@@ -711,7 +723,9 @@ sellRoutes.post('/manual-buy', async (c) => {
       );
       logger.info(`🤖 Claude 매수 (모의): ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 ${rrStr} — ${reasoning}`, { component: 'CLAUDE_BUY' });
       try { await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑'); } catch { /* 알림 실패 무시 */ }
-      invalidateCurrentModeCache();
+      invalidateBalanceCache();
+      invalidateBalanceCache();
+    invalidateCurrentModeCache();
       invalidateStockCache(stock_code).catch(() => {});
       return c.json({ ok: true, orderNo: fakeOrderNo, stock_code, quantity, price: curPrice, totalInvested, takeProfitPct, stopLossPct });
     }
@@ -754,6 +768,7 @@ sellRoutes.post('/manual-buy', async (c) => {
     );
     logger.info(`🤖 Claude 매수 ${confirmed ? '체결' : '접수'}: ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 (${kisOrderNo}) ${rrStr} — ${reasoning}`, { component: 'CLAUDE_BUY' });
     try { await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑'); } catch { /* 알림 실패 무시 */ }
+    invalidateBalanceCache();
     invalidateCurrentModeCache();
     invalidateStockCache(stock_code).catch(() => {});
     return c.json({ ok: true, orderNo: kisOrderNo, status: orderStatus, stock_code, quantity, price: curPrice, totalInvested, takeProfitPct, stopLossPct });

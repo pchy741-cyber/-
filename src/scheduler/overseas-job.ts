@@ -41,7 +41,7 @@ import {
 } from './overseas/state.js';
 import { overseasState, getOpenMarketRegions, getKSTDateString, getUSSessionId, setSessionStartValue, modeKey, getSessionCache, setSessionCache, type SessionCache } from './overseas/session.js';
 import { getRecentPerfSummary, getOverseasWinRates, getPendingOverseasStocks, type OverseasWinRate } from './overseas/analytics.js';
-import { syncPendingOverseasOrders, getUserInsights, getLossCooldownStocks, getRecentLossStocks, getManualSellCooldownStocks } from './overseas/order-sync.js';
+import { syncPendingOverseasOrders, getUserInsights, getLossCooldownStocks, getRecentLossStocks, getManualSellCooldownStocks, getBigLossBlockedOverseas } from './overseas/order-sync.js';
 import { syncHoldingsFromKIS, reconcileCashWithKIS } from './overseas/kis-sync.js';
 import { executeOverseasOrder } from './overseas/executor.js';
 import {
@@ -358,9 +358,14 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     const intervalMs = OVERSEAS.AI_INTERVAL_MS;
     const lastAiCall = isPaper() ? s.lastPaperAiCallAt : s.lastUSAiCallAt;
     const aiCooldownOk = isUSSession ? (now_ms - lastAiCall >= intervalMs) : true;
-    const shouldCallAI = (hasBuyCandidates || hasSellCandidates) && aiCooldownOk;
-    if ((hasBuyCandidates || hasSellCandidates) && !aiCooldownOk) {
+    // 🔧 보유종목 악화 신호 시 쿨다운 바이패스 — 매도 결정 지연 방지
+    const hasUrgentSell = aiInputs.some(si => si.isHolding && (si.score <= -15 || si.rsi > 72));
+    const shouldCallAI = (hasBuyCandidates || hasSellCandidates) && (aiCooldownOk || hasUrgentSell);
+    if ((hasBuyCandidates || hasSellCandidates) && !aiCooldownOk && !hasUrgentSell) {
       logger.info(`🤖 AI 대기 중 — 다음 호출까지 ${Math.ceil((intervalMs - (now_ms - lastAiCall)) / 60000)}분 (무료 한도 절약)`, { component: 'OVERSEAS' });
+    }
+    if (hasUrgentSell && !aiCooldownOk) {
+      logger.info(`🚨 보유종목 악화 감지 → AI 쿨다운 바이패스 (매도 판단 우선)`, { component: 'OVERSEAS' });
     }
 
     // ── 선행 신호 수집 (AI 호출과 무관하게) ──
@@ -447,10 +452,32 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     const dynParams = getOverseasDynamic(portfolioValue, isPaper());
     const MAX_POSITIONS = dynParams.maxPositions;
 
+    // ── 3-b. 실시간 뉴스 그라운딩 (Google Search) — 매도 판단 전 악재/호재 감지 ──
+    const { checkHoldingsNews, checkMacroEvents } = await import('../ai/grounded-intel.js');
+    const holdingsForNews = [...holdings.entries()].map(([code, h]) => {
+      const tech = techResults.find(t => t.code === code);
+      const pnlPct = tech ? ((tech.price.currentPrice - h.avgPrice) / h.avgPrice) * 100 : 0;
+      return { code, name: tech?.name ?? code, pnlPct };
+    });
+    const [groundedSignals, macroEvents] = await Promise.all([
+      checkHoldingsNews(holdingsForNews).catch(() => []),
+      checkMacroEvents().catch(() => []),
+    ]);
+    // 그라운딩 URGENT_SELL → AI override 주입 (매도 판단 강화)
+    for (const sig of groundedSignals) {
+      if (sig.action === 'URGENT_SELL' && sig.confidence >= 0.85) {
+        aiMap.set(sig.code, { code: sig.code, action: 'SELL', confidence: sig.confidence, reasoning: `🔍 실시간뉴스: ${sig.headline}` });
+        logger.warn(`🔍 그라운딩 긴급매도 주입: ${sig.code} — ${sig.headline}`, { component: 'GROUNDED_INTEL' });
+      }
+    }
+
     // ── 4. 매도 판단 (→ overseas/sell-logic.ts) — 방어 모드 트레일 타이트닝 반영 ──
     const effectiveVixRegime = defenseSignal.trailTighten > 0
       ? { ...vixRegime, trailTighten: vixRegime.trailTighten + defenseSignal.trailTighten }
       : vixRegime;
+    // 매크로 RISK_OFF Lv3 → 트레일 추가 타이트닝
+    const macroTighten = macroEvents.some(e => e.impact === 'RISK_OFF' && e.severity >= 3) ? 1.0 : 0;
+    if (macroTighten > 0) effectiveVixRegime.trailTighten += macroTighten;
     const sellResult = await evaluateSells({ holdings, pendingOrderStocks, techResults, aiMap, vixRegime: effectiveVixRegime, cash, isPaper: isPaper(), portfolioValue });
     const sellOrders = sellResult.sellOrders;
     cash = sellResult.cash;
@@ -582,11 +609,16 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     }
 
     if (!riskBlocked && !allocBlocked && currentHoldingCount < MAX_POSITIONS && cash >= minCashForBuy) {
-      const [lossCooldownSet, recentLossSet, manualSellCdSet] = await Promise.all([
-        getLossCooldownStocks(isPaper()), getRecentLossStocks(isPaper()), getManualSellCooldownStocks(),
+      const [lossCooldownSet, recentLossSet, manualSellCdSet, bigLossSet] = await Promise.all([
+        getLossCooldownStocks(isPaper()), getRecentLossStocks(isPaper()), getManualSellCooldownStocks(), getBigLossBlockedOverseas(isPaper()),
       ]);
       if (lossCooldownSet.size > 0) logger.info(`🚫 손절 쿨다운 종목 (24h): ${[...lossCooldownSet].join(', ')}`, { component: 'OVERSEAS' });
       if (recentLossSet.size > 0) logger.info(`⚠️ 최근 손실 종목 (7일, AI≥80% 필수): ${[...recentLossSet].join(', ')}`, { component: 'OVERSEAS' });
+      // -5% 초과 손실 종목 → 30일 절대 차단 (allowRebuy override만 해제 가능)
+      if (bigLossSet.size > 0) {
+        for (const code of bigLossSet) lossCooldownSet.add(code);
+        logger.info(`🚫 -5%초과 손실 30일 차단: ${[...bigLossSet].join(', ')} (allowRebuy 필요)`, { component: 'OVERSEAS' });
+      }
       // 수동매도 쿨다운: live 모드에서 사용자가 직접 판 종목은 2h 재매수 금지
       for (const code of manualSellCdSet) lossCooldownSet.add(code);
       if (manualSellCdSet.size > 0) logger.info(`🙋 수동매도 쿨다운 (2h): ${[...manualSellCdSet].join(', ')} — 자동 재매수 금지`, { component: 'OVERSEAS' });
@@ -648,6 +680,8 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
 
       // ── 매수 필터 체인 (→ overseas/buy-filter.ts) ──
       const brief = getActiveSessionBrief();
+      const { getUserBlacklist, getUserFavorites } = await import('./overseas/utils.js');
+      const [userBlacklist, userFavorites] = await Promise.all([getUserBlacklist(), getUserFavorites()]);
       const buyTargets = filterAndRankBuyTargets({
         techResults, updatedHoldings, pendingOrderStocks,
         lossCooldownSet, recentLossSet, memoryBlockedStocks,
@@ -657,6 +691,8 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         uncertaintyMap, overseasWinRates, isUSExtended, recoveryMode, isPaper: isPaper(),
         sessionBrief: brief,
         earningsDrift,
+        userBlacklist,
+        userFavorites,
       });
 
       // ── 터틀 돌파 전략 비활성화 — buy-filter 12단계로 통합 ──

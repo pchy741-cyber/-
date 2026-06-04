@@ -68,7 +68,7 @@ const STOCK_NEWS_ALLOWED_DOMAINS = [
 async function fetchRSSFeed(url: string, source: string, maxItems = 5): Promise<NewsItem[]> {
   try {
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; QUANTOPS/0.5.0)' },
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; AIBot/0.5.0)' },
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) return [];
@@ -101,7 +101,7 @@ async function fetchStockNews(stockName: string): Promise<NewsItem[]> {
     const url = `https://news.google.com/rss/search?q=${encodeURIComponent(stockName + ' 주가 실적')}&hl=ko&gl=KR&ceid=KR:ko`;
 
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; QUANTOPS/0.5.0)' },
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; AIBot/0.5.0)' },
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) return [];

@@ -38,18 +38,23 @@ export default function FuturesView({ toast, viewMode, confirm, mpData, onRefres
   const [trades, setTrades] = useState<any[]>([]);
   const [stats, setStats] = useState<any>(null);
   const [customAmount, setCustomAmount] = useState('');
+  const [tuner, setTuner] = useState<any>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const dash = await api('/futures/dashboard');
+      const [dash, tunerRaw] = await Promise.all([
+        api('/futures/dashboard'),
+        api(`/futures/tuner-status?mode=${viewMode}`).catch(() => null),
+      ]);
       setBudget(dash.budget);
       setPositions(dash.positions || []);
       setTrades(dash.trades || []);
       setStats(dash.stats);
+      if (tunerRaw) setTuner(tunerRaw);
     } catch (e: any) { toast(e.message || '로딩 실패', 'err'); }
     setLoading(false);
-  }, [toast]);
+  }, [toast, viewMode]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -191,6 +196,37 @@ export default function FuturesView({ toast, viewMode, confirm, mpData, onRefres
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── AI 자동 튜닝 ── */}
+      {tuner && tuner.totalTrades > 0 && (
+        <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden shadow-xl shadow-black/40">
+          <div className="px-5 py-3.5 border-b border-white/[0.04] flex items-center justify-between">
+            <h2 className="text-sm font-bold text-slate-200">AI 자동 최적화</h2>
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-400 font-medium">30일 학습</span>
+          </div>
+          <div className="p-5">
+            <div className="grid grid-cols-3 gap-2 mb-3">
+              <div className="bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl p-2.5 text-center">
+                <div className="text-[9px] text-slate-500">학습 승률</div>
+                <div className={`text-sm font-bold tabular-nums ${tuner.winRate >= 50 ? 'text-emerald-400' : 'text-rose-400'}`}>{tuner.winRate}%</div>
+              </div>
+              <div className="bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl p-2.5 text-center">
+                <div className="text-[9px] text-slate-500">TP 배수</div>
+                <div className="text-sm font-bold text-slate-200 tabular-nums">×{tuner.tpMultiplier}</div>
+              </div>
+              <div className="bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl p-2.5 text-center">
+                <div className="text-[9px] text-slate-500">SL 배수</div>
+                <div className="text-sm font-bold text-slate-200 tabular-nums">×{tuner.slMultiplier}</div>
+              </div>
+            </div>
+            <div className="flex items-center justify-between text-[10px] px-1">
+              <span className="text-slate-500">신호 임계값: <span className="text-slate-300 font-medium">{tuner.minConfidence}%</span></span>
+              <span className="text-slate-500">Kelly 승률: <span className="text-slate-300 font-medium">{(tuner.kellyWinRate * 100).toFixed(0)}%</span></span>
+              <span className="text-slate-600">{tuner.totalTrades}건 학습</span>
+            </div>
           </div>
         </div>
       )}

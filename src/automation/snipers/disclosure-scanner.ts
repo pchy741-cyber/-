@@ -52,7 +52,7 @@ async function fetchDisclosures(): Promise<DisclosureItem[]> {
     // 네이버 금융 공시 RSS (DART 대체)
     const url = 'https://news.google.com/rss/search?q=자사주+매입+OR+수주+공시+주식&hl=ko&gl=KR&ceid=KR:ko';
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'QUANTOPS/0.2.0' },
+      headers: { 'User-Agent': 'AIBot/0.2.0' },
       signal: AbortSignal.timeout(10000),
     });
 

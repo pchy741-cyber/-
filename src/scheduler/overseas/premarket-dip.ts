@@ -88,8 +88,10 @@ export async function runPremarketDipBuy(isPaper = true): Promise<DipBuyResult> 
       return result;
     }
 
-    // 4. 종목별 승률 조회
-    const blueChipList = GLOBAL_WATCHLIST.filter(w => BLUE_CHIP_CODES.has(w.code));
+    // 4. 블랙리스트 + 종목별 승률 조회
+    const { getUserBlacklist } = await import('./utils.js');
+    const userBlacklist = await getUserBlacklist();
+    const blueChipList = GLOBAL_WATCHLIST.filter(w => BLUE_CHIP_CODES.has(w.code) && !userBlacklist.has(w.code));
     const codes = blueChipList.map(w => w.code);
     const winRates = await getOverseasWinRates(codes, isPaper);
 

@@ -142,6 +142,35 @@ export async function cooldownGate(): Promise<GateResult> {
   return { passed: true, reason: consecutive > 0 ? `최근 ${consecutive}연패 (쿨다운 미해당)` : '연속손실 없음' };
 }
 
+/**
+ * 🎰 EOD-only 모드: 연패 시 장중 매매 전면 차단, 종가베팅만 허용
+ * Live: 3연패+ → EOD-only | Paper: 5연패+ → EOD-only
+ * 승리 1회 시 자동 해제 (getConsecutiveLosses()가 0이면 해제)
+ */
+// 로그 스팸 방지: 마지막 로그 시점 추적 (대시보드 조회 때마다 안 찍히게)
+const _eodLoggedAt = new Map<string, number>();
+
+export async function isEodOnlyMode(): Promise<boolean> {
+  try {
+    const consecutive = await getConsecutiveLosses();
+    const isPaper = getCtxIsPaper();
+    const threshold = isPaper ? 5 : 3;
+    if (consecutive >= threshold) {
+      // 같은 모드(paper/live)에서 5분 이내 중복 로그 방지
+      const key = isPaper ? 'paper' : 'live';
+      const now = Date.now();
+      if (!_eodLoggedAt.has(key) || now - (_eodLoggedAt.get(key) ?? 0) > 300_000) {
+        logger.info(`🎰 EOD-only 모드 활성: ${consecutive}연패 (임계값 ${threshold})`, { component: 'TRADE_GATE' });
+        _eodLoggedAt.set(key, now);
+      }
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 export async function getCooldownStatus(): Promise<CooldownStatus> {
   try {
     const consecutive = await getConsecutiveLosses();

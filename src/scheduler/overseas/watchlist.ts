@@ -44,6 +44,7 @@ const EXTENDED_WATCHLIST = [
   // 🤖 AI/반도체 추가
   { code: 'MRVL',  name: 'Marvell Tech',    exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
   { code: 'MU',    name: 'Micron',           exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
+  { code: 'SMCI',  name: 'Super Micro',      exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
   // ☁️ SaaS/클라우드 추가
   { code: 'CRM',   name: 'Salesforce',       exchange: 'NYSE',   region: 'US', sector: 'CLOUD' },
   { code: 'SNOW',  name: 'Snowflake',        exchange: 'NYSE',   region: 'US', sector: 'CLOUD' },

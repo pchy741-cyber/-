@@ -64,6 +64,7 @@ export const StrategyMode = {
   DIVIDEND: 'DIVIDEND', // 🏦 배당 자산 파킹 (매수 차단, 장기 보유)
   SNIPER: 'SNIPER',     // 🎯 저격수 (AI 88점+ 2종목만, 대형 포지션)
   BOTTOM_FISHING: 'BOTTOM_FISHING', // 🎣 바닥낚시 (시간외 RSI 과매도 우량주)
+  EOD_BETTING: 'EOD_BETTING',       // 🎰 종가베팅 (15:15 매수 → 익일 09:00 매도)
 } as const;
 export type StrategyMode = (typeof StrategyMode)[keyof typeof StrategyMode];
 
@@ -170,6 +171,22 @@ export const STRATEGY_PARAMS = {
     takeProfitRatio: 1.0,   // 전량 즉시 익절 (트레일링 없음)
     stopLossPct: -2.5,      // -2.5% 손절
     maxHoldingDays: 5,      // 5영업일 → 반등 못 하면 퇴장
+  },
+
+  EOD_BETTING: {
+    // ┌─ 종가베팅 (15:15~15:20 매수 → 익일 09:00~09:10 기계적 매도) ────────┐
+    // │ 당일 거래대금 1,000억+ 주도주, 종가 부근(캔들 상단 20%)만 진입       │
+    // │ 재탕 종목(전일 급등주) 제외, 최대 12종목, 시드 12%/포지션            │
+    // │ 익일 장시작 기계적 매도 — 갭수익 or 손절, 무조건 청산               │
+    // └────────────────────────────────────────────────────────────────────────┘
+    buyThreshold: 0,        // 스캐너 자체 필터 (AI 점수 불필요)
+    splitCount: 1,          // 분할 없음 — 종가 1회 진입
+    averageDownPct: 0,
+    maxAveragingCount: 0,
+    takeProfitPct: 5.0,     // +5% 갭업 시 즉시 익절
+    takeProfitRatio: 1.0,   // 전량 매도
+    stopLossPct: -3.0,      // -3% 갭다운 시 즉시 손절
+    maxHoldingDays: 1,      // 1일 (익일 강제청산)
   },
 
 } as const;
@@ -389,13 +406,11 @@ export const OVERSEAS = {
 /** 포트폴리오 규모 기반 동적 파라미터 — 고정형 상수 대체 */
 export function getOverseasDynamic(portfolioUsd: number, isPaper = false) {
   const p = Math.max(100, portfolioUsd);
-  // Paper: $500당 1종목 (최소 2, 최대 10)
-  // Live: 소액(<$500) → 황금비율 기반 3~5종목, 일반 → $1500당 1종목 (최소 2, 최대 8)
-  const maxPos = isPaper
-    ? Math.max(2, Math.min(10, Math.floor(p / 500)))
-    : p < 250 ? 3                                                       // 마이크로: 3종목 극집중 (PHI.MAX 61.8% ÷ 3)
-    : p < 500 ? Math.max(3, Math.min(5, Math.floor(p / 120)))           // 소액: $120당 1종목 (3~5)
-    : Math.max(2, Math.min(8, Math.floor(p / 1500)));
+  // 100% 비율 기반 — 고정 달러 폐지
+  // Paper: 포지션당 10% (=최대 10종목), 최소 2종목
+  // Live: positionPct 기반 (소액 40%→2~3종목, 중형 25%→4종목, 대형 18%→5~6종목)
+  const posPct = isPaper ? 0.10 : (p < 2000 ? 0.40 : p < 10000 ? 0.25 : 0.18);
+  const maxPos = Math.max(2, Math.min(isPaper ? 10 : 8, Math.floor(1 / posPct)));
   return {
     maxPositions:       maxPos,
     positionSizeUsd:    Math.round(Math.min(p * 0.25, 5000)),                // 포트폴리오 25% 캡 (고정$ 최소 폐지)

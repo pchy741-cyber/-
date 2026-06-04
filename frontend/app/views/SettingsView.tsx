@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Panel } from '@/components/ui';
+import { Panel, Button } from '@/components/ui';
 import { api } from '../lib/utils';
 import { StrategyTimelinePanel } from '../panels/SmallPanels';
 import { parseNbSources } from './settings/settings-types';
@@ -234,29 +234,31 @@ function SettingsView({ strategy, setStrategy, secrets, killSwitch, toggleKill, 
 
       {/* API 키 */}
       <Panel title="API 키 관리">
-        <form onSubmit={saveSecrets} autoComplete="off" className="px-6 py-5 space-y-3.5">
+        <form onSubmit={saveSecrets} autoComplete="off" className="px-5 py-4 space-y-3">
           <input type="text" name="fake_user" className="hidden" tabIndex={-1} />
           <input type="password" name="fake_pass" className="hidden" tabIndex={-1} />
           {[['gemini','Gemini AI'],['openai','OpenAI'],['anthropic','Anthropic AI'],['kis_appkey','KIS 앱키'],['kis_appsecret','KIS 시크릿'],['kis_account','KIS 계좌번호']].map(([k, l]) => (
-            <div key={k} className="flex items-center gap-3">
-              <span className="w-24 text-[12px] text-slate-400 shrink-0 font-medium">{l}</span>
-              {secrets?.[k]?.exists && <span className="text-[9px] bg-emerald-900/40 text-emerald-400 px-2 py-0.5 rounded-full ring-1 ring-emerald-500/20 shrink-0">설정됨</span>}
-              <input name={k} type="text" autoComplete="off" data-1p-ignore data-lpignore="true" placeholder={secrets?.[k]?.masked || '미설정'} className="flex-1 bg-white/[0.05] border-0 ring-1 ring-white/[0.08] rounded-xl px-3.5 py-2.5 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all [-webkit-text-security:disc]" />
+            <div key={k} className="flex items-center gap-2.5">
+              <span className="w-20 sm:w-24 text-[11px] text-slate-400 shrink-0 font-medium">{l}</span>
+              {secrets?.[k]?.exists && <span className="text-[9px] bg-emerald-900/40 text-emerald-400 px-1.5 py-0.5 rounded-full ring-1 ring-emerald-500/20 shrink-0">설정됨</span>}
+              <input name={k} type="text" autoComplete="off" data-1p-ignore data-lpignore="true" placeholder={secrets?.[k]?.masked || '미설정'} className="flex-1 min-w-0 bg-white/[0.05] border-0 ring-1 ring-white/[0.08] rounded-xl px-3 py-2 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all [-webkit-text-security:disc]" />
             </div>
           ))}
-          <button type="submit" className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-sm font-semibold transition-all shadow-sm mt-1">키 저장</button>
+          <div className="pt-1">
+            <Button variant="primary" size="sm" className="px-5 py-2" type="submit">키 저장</Button>
+          </div>
         </form>
       </Panel>
 
       {/* 앱 보안 */}
       <Panel title="앱 보안">
-        <div className="px-6 py-5 space-y-5">
+        <div className="px-5 py-4 space-y-4">
           {/* 생체인증 등록 */}
           <BiometricSection toast={toast} />
 
           {/* PIN 변경 */}
-          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-            <p className="text-[12px] text-slate-500 shrink-0 font-medium">잠금 PIN 변경</p>
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 pt-2 border-t border-white/[0.04]">
+            <p className="text-[11px] text-slate-500 shrink-0 font-medium w-20 sm:w-24">잠금 PIN</p>
             <form onSubmit={async (e) => {
               e.preventDefault();
               const fd = new FormData(e.currentTarget);
@@ -265,12 +267,12 @@ function SettingsView({ strategy, setStrategy, secrets, killSwitch, toggleKill, 
               const data = new TextEncoder().encode(newPin);
               const hash = await crypto.subtle.digest('SHA-256', data);
               const hex = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
-              localStorage.setItem('quantops_pin', hex);
+              localStorage.setItem('aab_pin', hex);
               toast?.('PIN 변경 완료', 'ok');
               (e.target as HTMLFormElement).reset();
-            }} className="flex gap-2.5 flex-1 max-w-sm">
-              <input name="pin" type="password" inputMode="numeric" autoComplete="new-password" data-1p-ignore data-lpignore="true" maxLength={6} placeholder="새 PIN (4~6자리)" className="flex-1 bg-white/[0.05] border-0 ring-1 ring-white/[0.08] rounded-xl px-3.5 py-2.5 text-sm text-center tracking-widest font-mono text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all" />
-              <button type="submit" className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-sm font-semibold shrink-0 transition-all shadow-sm">변경</button>
+            }} className="flex gap-2 flex-1 max-w-sm items-center">
+              <input name="pin" type="password" inputMode="numeric" autoComplete="new-password" data-1p-ignore data-lpignore="true" maxLength={6} placeholder="새 PIN (4~6자리)" className="flex-1 bg-white/[0.05] border-0 ring-1 ring-white/[0.08] rounded-xl px-3 py-2 text-sm text-center tracking-widest font-mono text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all" />
+              <Button variant="primary" size="sm" className="px-4 py-2 shrink-0" type="submit">변경</Button>
             </form>
           </div>
         </div>

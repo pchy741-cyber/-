@@ -30,7 +30,7 @@ export function useDashboardData() {
   // live→paper 전환 사이에 SSE가 live 모드로 연결되어 1초간 실전 데이터 표시되는 버그 방지
   const [viewMode, setViewMode] = useState<'live'|'paper'>(() => {
     try {
-      const saved = localStorage.getItem('quantops_viewMode');
+      const saved = localStorage.getItem('aab_viewMode');
       if (saved === 'paper' || saved === 'live') return saved;
     } catch {}
     return 'live';
@@ -113,7 +113,7 @@ export function useDashboardData() {
       if (!staticLoadedRef.current) {
         api('/portfolio/allocation').then(ifCurrent((ac: AllocConfig) => { if (ac) setAllocConfig(ac); })).catch(() => {});
       }
-    } catch (err) { setLoading(false); console.error('[QUANTOPS] 데이터 로드 실패:', err); }
+    } catch (err) { setLoading(false); console.error('[AAB] 데이터 로드 실패:', err); }
     finally { loadingRef.current = false; }
   }, []);
 
@@ -155,7 +155,7 @@ export function useDashboardData() {
     if (viewModeRef.current === mode) return;
     viewModeRef.current = mode;
     setViewMode(mode);
-    try { localStorage.setItem('quantops_viewMode', mode); } catch {}
+    try { localStorage.setItem('aab_viewMode', mode); } catch {}
     setDash(null);
     setUsDash(null);
     loadingRef.current = false;

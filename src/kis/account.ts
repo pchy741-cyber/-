@@ -26,11 +26,21 @@ export interface AccountBalance {
   positions: Position[];
 }
 
+// ── 계좌 잔고 메모리 캐시 (KIS API 호출 최소화) ──
+const _balanceCache = new Map<string, { data: AccountBalance; ts: number }>();
+const BALANCE_CACHE_TTL = 120_000; // 2분 — KIS API 호출 최소화 (PWA 접속 시 토큰 재발급 알림 폭탄 방지)
+
+/** 캐시를 무효화 (매수/매도 후 호출) */
+export function invalidateBalanceCache(): void { _balanceCache.clear(); }
+
 /**
- * 계좌 잔고 + 보유 종목 조회
+ * 계좌 잔고 + 보유 종목 조회 (30초 메모리 캐시)
  * forceLive=true: 서버가 paper 모드여도 live KIS 서버에 live credential로 조회
  */
 export async function getAccountBalance(forceLive = false): Promise<AccountBalance> {
+  const cacheKey = forceLive ? 'live' : 'default';
+  const cached = _balanceCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < BALANCE_CACHE_TTL) return cached.data;
   const isPaper = !forceLive && config.isPaper;
   const trIds = isPaper ? KIS_TR_ID.PAPER : KIS_TR_ID.LIVE;
 
@@ -99,7 +109,7 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
   const nass = Number(summary?.nass_amt ?? 0);
   const pchs = Number(summary?.pchs_amt_smtl_amt ?? 0);
 
-  return {
+  const result: AccountBalance = {
     totalDeposit: effectiveDeposit,
     orderableCash: effectiveCash,
     totalEvalAmount: scts_evlu,
@@ -110,6 +120,8 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
     purchaseCost: pchs,
     positions,
   };
+  _balanceCache.set(cacheKey, { data: result, ts: Date.now() });
+  return result;
 }
 
 /**

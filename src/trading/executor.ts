@@ -15,6 +15,7 @@ import { logger } from '../utils/logger.js';
 import { roundKrw } from '../utils/money.js';
 import { invalidateStockCache } from '../cache/redis.js';
 import { invalidateDashboardCache } from '../api/routes/dashboard.js';
+import { invalidateBalanceCache } from '../kis/account.js';
 import { chainManager } from './chain.js';
 import { registerBuyIntent, releaseBuyIntent } from './buy-intent.js';
 
@@ -526,6 +527,7 @@ export class TradeExecutor {
       const pnlPct = avgBuy > 0 ? ((fill.filledPrice - avgBuy) / avgBuy) * 100 : 0;
       await chainManager.partialProfit(chain.id, soldQty, fill.filledPrice, chain);
       invalidateStockCache(stockCode).catch(() => {});
+      invalidateBalanceCache();
       invalidateDashboardCache();
       notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, reasoning).catch((err) =>
         logger.warn(`알림 발송 오류 (SELL): ${err}`, { component: 'EXECUTOR' })
@@ -577,6 +579,7 @@ export class TradeExecutor {
         await chainManager.partialProfit(chain.id, soldQty, fill.filledPrice, chain);
       }
       invalidateStockCache(stockCode).catch(() => {});
+      invalidateBalanceCache();
       invalidateDashboardCache();
       notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, closeReason).catch((err) =>
         logger.warn(`알림 발송 오류 (CLOSE): ${err}`, { component: 'EXECUTOR' })

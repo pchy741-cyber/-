@@ -86,7 +86,7 @@ export async function generateDailyReport(): Promise<void> {
     const dailyEmoji = balance.totalProfitLoss >= 0 ? '📈' : '📉';
 
     const report = [
-      `📊 *QUANTOPS 일일 리포트* [${getCtxIsPaper() ? '연습' : '실전'}]`,
+      `📊 *일일 리포트* [${getCtxIsPaper() ? '연습' : '실전'}]`,
       `━━━━━━━━━━━━━━━━━`,
       `📅 ${today}`,
       ``,

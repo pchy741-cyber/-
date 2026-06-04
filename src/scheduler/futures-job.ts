@@ -7,6 +7,7 @@ import { runWithMode } from '../config/context.js';
 import { getPool } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 import { loadFuturesConfig, monitorFuturesTPSL, executeFuturesEntry } from './futures/auto-executor.js';
+import { runFuturesTuner } from './futures/futures-tuner.js';
 
 const COMP = 'FUTURES';
 
@@ -17,6 +18,10 @@ export async function runFuturesJob(): Promise<void> {
   if (flagRows[0]?.enabled !== true) return;
 
   logger.info('📈 선물 자동매매 시작', { component: COMP });
+
+  // 매 실행마다 튜너 갱신 (30일 승률 기반 TP/SL/confidence 조정)
+  await runWithMode(true, async () => { await runFuturesTuner(); });
+  await runWithMode(false, async () => { await runFuturesTuner(); });
 
   // Paper → Live 순차 실행 (각 모드별 config 별도 로드)
   await runWithMode(true, async () => {

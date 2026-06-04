@@ -36,6 +36,7 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
   const [investing, setInvesting] = useState(false);
   const [holdings, setHoldings] = useState<any[]>([]);
   const [customAmount, setCustomAmount] = useState('');
+  const [tunedWeights, setTunedWeights] = useState<Record<string, number> | null>(null);
 
   const div = mpData?.dividend;
   const FX_RATE = mpData?.fx ?? DEFAULT_FX;
@@ -43,8 +44,12 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const hold = await api(`/dividend/holdings?viewMode=${viewMode}`);
+      const [hold, alloc] = await Promise.all([
+        api(`/dividend/holdings?viewMode=${viewMode}`),
+        api(`/dividend/allocation-tuned?mode=${viewMode}`).catch(() => null),
+      ]);
       setHoldings(hold.holdings || []);
+      if (alloc?.weights) setTunedWeights(alloc.weights);
     } catch (e: any) { toast(e.message || '로딩 실패', 'err'); }
     setLoading(false);
   }, [viewMode, toast]);
@@ -116,7 +121,16 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
               {investing ? '투자 중...' : '투자'}
             </Button>
           </div>
-          <p className="text-[9px] text-slate-600 text-center">JEPQ 25% · JEPI 25% · SCHD 20% · QYLD 15% · XYLD 10% · O 5%</p>
+          {tunedWeights ? (
+            <div className="text-[9px] text-center">
+              <span className="text-cyan-400/70">수익률 기반 자동 조정: </span>
+              <span className="text-slate-500">
+                {Object.entries(tunedWeights).map(([k, v]) => `${k} ${(v * 100).toFixed(0)}%`).join(' · ')}
+              </span>
+            </div>
+          ) : (
+            <p className="text-[9px] text-slate-600 text-center">JEPQ 25% · JEPI 25% · SCHD 20% · QYLD 15% · XYLD 10% · O 5%</p>
+          )}
         </div>
       </div>
 

@@ -9,6 +9,7 @@ import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
 import { budgetCol } from '../../api/guards/live-pin.js';
 import { scanFuturesSignals, calcFuturesTPSL, calcFuturesQty } from './signal-generator.js';
+import { loadTunerParams } from './futures-tuner.js';
 import type { FuturesAutoConfig } from './types.js';
 
 const COMP = 'FUTURES';
@@ -131,9 +132,11 @@ export async function executeFuturesEntry(config: FuturesAutoConfig): Promise<vo
   const spec = FUTURES_BY_PRODUCT.get(best.product);
   if (!spec) return;
 
+  const tuner = await loadTunerParams(isPaper);
   const qty = await calcFuturesQty({
     allocatedKrw: config.allocatedKrw,
     marginPerContract: spec.marginApprox,
+    winRate: tuner.kellyWinRate,
   });
   if (qty <= 0) return;
 
@@ -144,6 +147,8 @@ export async function executeFuturesEntry(config: FuturesAutoConfig): Promise<vo
     entryPrice: price.price,
     direction: best.direction,
     atrPct: best.atrPct,
+    tpMultiplier: tuner.tpMultiplier,
+    slMultiplier: tuner.slMultiplier,
   });
 
   const side = best.direction === 'LONG' ? 'BUY' : 'SELL';

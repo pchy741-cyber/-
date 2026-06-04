@@ -132,7 +132,7 @@ async function fetchCorpDisclosures(
     const url = `https://opendart.fss.or.kr/api/list.json?crtfc_key=${apiKey}&bgn_de=${beginDate}&end_de=${endDate}&corp_code=${corpCode}&page_count=100`;
 
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'QUANTOPS/0.2.0' },
+      headers: { 'User-Agent': 'AIBot/0.2.0' },
       signal: AbortSignal.timeout(15000),
     });
 

@@ -30,8 +30,8 @@ import { createSessionToken, setSessionCookie } from '../middleware/auth.js';
 import { logger } from '../../utils/logger.js';
 
 // RP (Relying Party) 설정 — 환경변수 또는 기본값
-const rpName = 'QuantOps';
-const rpID = process.env.WEBAUTHN_RP_ID || 'quantops-ang2aozjiq-du.a.run.app';
+const rpName = 'AI Auto Bot';
+const rpID = process.env.WEBAUTHN_RP_ID || 'ai-auto-bot-ang2aozjiq-du.a.run.app';
 const origin = process.env.WEBAUTHN_ORIGIN || `https://${rpID}`;
 
 // 챌린지 임시 저장 (인메모리, 5분 TTL) — 단일 인스턴스이므로 충분

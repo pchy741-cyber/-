@@ -3,6 +3,7 @@ import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
 import type { TradeDecision } from '../../db/models.js';
 import { logger } from '../../utils/logger.js';
 import { type TechnicalFallbackParams, resolveStrategyParams, getKstScalpTime, buildAiScoreMap } from './technical-fallback-types.js';
+import { getOverride } from '../ai-overrides.js';
 
 /**
  * 보유 종목 매도 판단 (손절/익절/강제청산/기술매도)
@@ -27,18 +28,54 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // 동일 종목 중복 매도 신호 방지 (다중 체인 시 첫 번째 체인만 처리)
     if (processedSellCodes.has(chain.stock_code)) continue;
 
-    // SCALPING forceCloseTime 이후: 수익/손실 무관 즉시 전량 강제청산
-    if (chain.strategy_mode === 'SCALPING' && isPastScalpDeadline && chain.total_quantity > 0) {
+    // AI Loop forceHold: Claude Code가 매도 보류 지시 (실적 발표 대기 등)
+    const aiForceHold = getOverride<boolean>(`${chain.stock_code}_forceHold`);
+    if (aiForceHold && pnlPct > -5) {  // 손절 한도(-5%) 이상이면 AI 홀드 존중
+      logger.info(`🤖 AI Loop forceHold: ${chain.stock_code} 매도 보류 (pnl=${pnlPct.toFixed(1)}%)`, { component: 'AI_LOOP' });
+      processedSellCodes.add(chain.stock_code);
+      continue;
+    }
+    // AI Loop forceSell: Claude Code가 즉시 매도 지시
+    const aiForceSell = getOverride<boolean>(`${chain.stock_code}_forceSell`);
+    if (aiForceSell) {
       decisions.push({
-        action: 'FORCE_CLOSE',
+        action: 'SELL',
         stock_code: chain.stock_code,
         quantity: chain.total_quantity,
         price_type: 'MARKET',
-        reasoning: `SCALPING 강제청산(${STRATEGY_PARAMS.SCALPING.forceCloseTime}): 개장 윈도우 종료, 전량 청산 (${pnlPct.toFixed(1)}%)`,
-        confidence: 1.0,
+        reasoning: `🤖 AI Loop 강제매도 (pnl=${pnlPct.toFixed(1)}%)`,
+        confidence: 0.95,
       });
       processedSellCodes.add(chain.stock_code);
       continue;
+    }
+
+    // SCALPING 강제청산: 진입 후 60분 또는 고정 10:00 중 이른 시각 (ScalpRadar 장중 진입 대응)
+    if (chain.strategy_mode === 'SCALPING' && chain.total_quantity > 0) {
+      const nowMs = Date.now();
+      const openedMs = chain.opened_at ? new Date(chain.opened_at).getTime() : 0;
+      const dynamicDeadlineMs = openedMs > 0 ? openedMs + 60 * 60_000 : 0; // 진입+60분
+      // 장 마감 15:15 하드 데드라인
+      const kstNow = new Date(nowMs + 9 * 60 * 60_000);
+      const todayDate = kstNow.toISOString().split('T')[0];
+      const hardDeadlineMs = new Date(`${todayDate}T15:15:00+09:00`).getTime();
+      // 기존 10:00 고정 데드라인 (개장벨 진입 호환)
+      const fixedDeadlineMs = isPastScalpDeadline ? nowMs - 1 : Infinity;
+      const effectiveDeadlineMs = Math.min(dynamicDeadlineMs || Infinity, hardDeadlineMs, fixedDeadlineMs);
+
+      if (nowMs >= effectiveDeadlineMs) {
+        const elapsedMin = openedMs > 0 ? Math.round((nowMs - openedMs) / 60_000) : 0;
+        decisions.push({
+          action: 'FORCE_CLOSE',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `SCALPING 강제청산(${elapsedMin}분 경과): 윈도우 종료, 전량 청산 (${pnlPct.toFixed(1)}%)`,
+          confidence: 1.0,
+        });
+        processedSellCodes.add(chain.stock_code);
+        continue;
+      }
     }
 
     // 외국인+기관 동반 이탈(STRONG_SELL 수급) 보유 종목 → 50% 부분 매도 (CEO 가이드)
@@ -140,10 +177,11 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       }
     }
 
-    // ─── 2단계 익절 전략 ────────────────────────────────────────────────
-    // 1단계: takeProfitPct(2.5%) 도달 → 50% 부분 매도 (수익 확정)
-    // 2단계: PROFIT_TAKING 상태에서 추가 상승 +5.0% 또는 트레일링 스톱(-0.8% from peak) → 잔여 전량 청산
-    // 효과: 손익비 1.67:1 유지, 수익 반납 방지
+    // ─── 3단계 익절 전략 ────────────────────────────────────────────────
+    // 1단계: TP 도달 → 25% 부분 매도 (수익 확정, 상태→PROFIT_TAKING)
+    // 2단계: TP+3% 도달 → 추가 35% 매도 (잔여 ~40%)
+    // 3단계: 트레일링 스톱 또는 TP+8% → 잔여 전량 청산
+    // 효과: 수익 꼬리 길게 잡기 + 반납 최소화
     if (chain.status !== 'PROFIT_TAKING' && pnlPct >= effectiveTp) {
       // SCALPING: 전량 즉시 익절 (takeProfitRatio=1.0, 분할 없음)
       if (isScalpChain && chain.total_quantity > 0) {
@@ -158,15 +196,15 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         processedSellCodes.add(chain.stock_code);
         continue;
       }
-      // 1단계: 첫 익절 — 30% 부분 매도 (낮은 타점에서 소량만 확정, 나머지 70%는 더 오른 후 청산)
-      const sellQty = Math.ceil(chain.total_quantity * 0.3);
+      // 1단계: 첫 익절 — 25% 부분 매도
+      const sellQty = Math.ceil(chain.total_quantity * 0.25);
       if (sellQty > 0 && sellQty < chain.total_quantity) {
         decisions.push({
           action: 'PARTIAL_SELL',
           stock_code: chain.stock_code,
           quantity: sellQty,
           price_type: 'MARKET',
-          reasoning: `1단계 익절(30%): +${pnlPct.toFixed(1)}% 도달 (목표 ${effectiveTp.toFixed(1)}% AI${realtimeAiScore}점) → 나머지 70% 트레일링 대기`,
+          reasoning: `1단계 익절(25%): +${pnlPct.toFixed(1)}% 도달 (목표 ${effectiveTp.toFixed(1)}% AI${realtimeAiScore}점) → 나머지 75% 트레일링 대기`,
           confidence: 0.9,
         });
         processedSellCodes.add(chain.stock_code);
@@ -191,11 +229,10 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     const sellCheckCandles = chartData.get(chain.stock_code);
     const sellTech = sellCheckCandles && sellCheckCandles.length >= 30 ? analyzeTechnicals(sellCheckCandles) : null;
 
-    // 2단계: 부분 익절 후 잔여 수량 트레일링 스톱
+    // 2~3단계: PROFIT_TAKING 상태에서 추가 익절 + 트레일링 스톱
     if (chain.status === 'PROFIT_TAKING') {
       // peak_price가 DB에 없으면 트레일링 기준 없음 → 손실 구간에서 오발동 방지
       if (!(chain as any).peak_price && pnlPct < 0) {
-        // 브레이크이븐 스톱: 손실 -1% 초과 시에만 청산
         if (pnlPct <= -1.0) {
           decisions.push({
             action: 'FORCE_CLOSE',
@@ -209,13 +246,37 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         }
         continue;
       }
+
+      // 2단계: TP+3% 도달 → 추가 35% 매도 (아직 잔여량 많으면)
+      // 원래 수량 대비 현재 보유가 60%+ 남아있으면 아직 2단계 미실행
+      const origQty = (chain as any).original_quantity ?? chain.total_quantity;
+      const remainRatio = origQty > 0 ? chain.total_quantity / origQty : 1;
+      if (remainRatio > 0.6 && pnlPct >= effectiveTp + 3.0) {
+        const sellQty2 = Math.ceil(chain.total_quantity * 0.47); // 잔여의 ~47% (전체의 ~35%)
+        if (sellQty2 > 0 && sellQty2 < chain.total_quantity) {
+          decisions.push({
+            action: 'PARTIAL_SELL',
+            stock_code: chain.stock_code,
+            quantity: sellQty2,
+            price_type: 'MARKET',
+            reasoning: `2단계 익절(35%): +${pnlPct.toFixed(1)}% (TP+3% 달성) → 잔여 ${chain.total_quantity - sellQty2}주 트레일링`,
+            confidence: 0.9,
+          });
+          processedSellCodes.add(chain.stock_code);
+          continue;
+        }
+      }
+
+      // 3단계: 트레일링 스톱 또는 최종 목표(+8%) → 잔여 전량 청산
       const peakPrice = (chain as any).peak_price ? Number((chain as any).peak_price) : Number(chain.avg_buy_price) * (1 + strategyParams.takeProfitPct / 100);
       const trailDropPct = ((price.currentPrice - peakPrice) / peakPrice) * 100;
-      // ATR 동적 트레일링: 2×ATR% (min -1.5%, max -5.0%) — 변동성 낮은 종목은 더 촘촘하게 잠금
       const trailAtrPct = sellTech?.atrPct ?? 1.5;
-      const dynamicTrailPct = Math.max(-5.0, Math.min(-1.5, -(trailAtrPct * 2.0)));
+      const baseTrailPct = Math.max(-5.0, Math.min(-1.5, -(trailAtrPct * 2.0)));
+      const profitTightenDom = pnlPct >= 8 ? 0.5 : pnlPct >= 5 ? 0.3 : 0;
+      const aiTrailTighten = getOverride<number>(`${chain.stock_code}_trailTighten`) ?? 0;
+      const dynamicTrailPct = baseTrailPct + profitTightenDom + aiTrailTighten;
       const isTrailTriggered = trailDropPct <= dynamicTrailPct;
-      const isTargetReached = pnlPct >= 5.0;         // +5.0% 추가 목표 달성 시 전량 익절
+      const isTargetReached = pnlPct >= 8.0; // 3단계: +8% 최종 목표 (기존 5% → 8%로 상향)
 
       if (isTargetReached || isTrailTriggered) {
         decisions.push({
@@ -224,12 +285,33 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
           quantity: chain.total_quantity,
           price_type: 'MARKET',
           reasoning: isTargetReached
-            ? `2단계 익절(잔여전량): +${pnlPct.toFixed(1)}% 목표달성`
-            : `트레일링 스톱: peak 대비 ${trailDropPct.toFixed(2)}% 하락 (ATR기준 ${dynamicTrailPct.toFixed(1)}%, peak=${peakPrice.toFixed(0)}원)`,
+            ? `3단계 익절(잔여전량): +${pnlPct.toFixed(1)}% 최종목표 달성`
+            : `트레일링 스톱: peak 대비 ${trailDropPct.toFixed(2)}% 하락 (ATR ${dynamicTrailPct.toFixed(1)}%, peak=${peakPrice.toFixed(0)}원)`,
           confidence: 0.9,
         });
         processedSellCodes.add(chain.stock_code);
         continue;
+      }
+    }
+    // ──────────────────────────────────────────────────────────────────────
+
+    // ── 모멘텀 가드: 진입 직후 기술지표 반전 → SL 타이트닝 ────────────
+    // 진입 후 10분 이내 MACD/RSI 꺾이면 모멘텀 소진 가능성 높음 → SL -2%로 축소
+    if (chain.opened_at && sellTech && !isScalpChain && chain.status !== 'PROFIT_TAKING') {
+      const holdingMin = (Date.now() - new Date(chain.opened_at).getTime()) / 60_000;
+      if (holdingMin <= 10) {
+        const macdBearish = sellTech.macdCrossover === 'BEARISH';
+        const rsiFading = sellTech.rsi14 < 45; // 진입 시 50+ 기대, 45 미만으로 급락
+        if (macdBearish || rsiFading) {
+          const guardSl = -2.0;
+          if (effectiveSl < guardSl) {
+            logger.info(
+              `⚡ 모멘텀가드: ${chain.stock_code} ${holdingMin.toFixed(0)}분 보유 — ${macdBearish ? 'MACD↓' : ''}${rsiFading ? `RSI${sellTech.rsi14.toFixed(0)}` : ''} → SL ${effectiveSl.toFixed(1)}%→${guardSl}%`,
+              { component: 'TRACK_B' },
+            );
+            effectiveSl = guardSl;
+          }
+        }
       }
     }
     // ──────────────────────────────────────────────────────────────────────

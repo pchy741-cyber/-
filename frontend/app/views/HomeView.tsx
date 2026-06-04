@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import type { Dashboard, Health, KillSwitch, Trade, UsDashboard, WithdrawConfig, WatchlistItem, Strategy, AllocConfig, ViewMode, ToastFn, ConfirmFn, UsHolding, UsWatchlistItem, Chain, MpData, SystemEvent, TradingStatus, AiStatus } from '../types';
+import type { Dashboard, Health, KillSwitch, Trade, UsDashboard, WithdrawConfig, WatchlistItem, Strategy, AllocConfig, ViewMode, ToastFn, ConfirmFn, UsHolding, UsWatchlistItem, Chain, MpData, SystemEvent, TradingStatus, AiStatus, LoopStatus } from '../types';
 import { api, fmtWon, pc } from '../lib/utils';
 import { useCountUp } from '../lib/hooks';
 import { toDisplayName } from '../lib/helpers';
@@ -42,9 +42,10 @@ interface HomeViewProps {
   viewMode?: ViewMode;
   onMarketTabChange?: (tab: 'KR' | 'US') => void;
   mpData: MpData | null;
+  loopStatus?: LoopStatus | null;
 }
 
-function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, strategy, setStrategy, toast, confirm, onRefresh, allocConfig, setAllocConfig, onGoToSettings, viewMode = 'live', onMarketTabChange, mpData }: HomeViewProps) {
+function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, strategy, setStrategy, toast, confirm, onRefresh, allocConfig, setAllocConfig, onGoToSettings, viewMode = 'live', onMarketTabChange, mpData, loopStatus }: HomeViewProps) {
   const [holdingsTab, setHoldingsTab] = React.useState<'KR' | 'US'>('KR');
   const [userPickedTab, setUserPickedTab] = React.useState(false);
   const [usInsights, setUsInsights] = React.useState('');
@@ -57,6 +58,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const [expandedTradeIdx, setExpandedTradeIdx] = React.useState<number | null>(null);
   const [buyingStock, setBuyingStock] = React.useState<string | null>(null);
   const [busyAction, setBusyAction] = React.useState<string | null>(null);
+  const [favorites, setFavorites] = React.useState<Set<string>>(new Set());
+  const [blacklist, setBlacklist] = React.useState<Set<string>>(new Set());
   const busyRef = React.useRef<string | null>(null);
   const guard = React.useCallback((key: string, fn: () => Promise<void>) => {
     return async () => {
@@ -72,7 +75,32 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
     }).catch(() => {});
     api('/trading-status').then((r: Record<string, unknown>) => setTradingStatus(r)).catch(() => {});
     api('/ai-status').then((r: Record<string, unknown>) => setAiStatus(r)).catch(() => {});
+    api('/overseas/favorites').then((r: any) => {
+      if (r?.favorites) setFavorites(new Set(r.favorites));
+      if (r?.blacklist) setBlacklist(new Set(r.blacklist));
+    }).catch(() => {});
   }, []);
+  const handleToggleFavorite = React.useCallback(async (code: string) => {
+    try {
+      const r = await api('/overseas/favorites/toggle', { method: 'POST', body: JSON.stringify({ code }) });
+      setFavorites(prev => {
+        const next = new Set(prev);
+        if (r.favorite) next.add(code); else next.delete(code);
+        return next;
+      });
+    } catch { toast?.('즐겨찾기 변경 실패', 'err'); }
+  }, [toast]);
+  const handleToggleBlacklist = React.useCallback(async (code: string) => {
+    try {
+      const r = await api('/overseas/blacklist/toggle', { method: 'POST', body: JSON.stringify({ code }) });
+      setBlacklist(prev => {
+        const next = new Set(prev);
+        if (r.blacklisted) next.add(code); else next.delete(code);
+        return next;
+      });
+      toast?.(r.blacklisted ? `${code} 블랙리스트 등록` : `${code} 블랙리스트 해제`, 'info');
+    } catch { toast?.('블랙리스트 변경 실패', 'err'); }
+  }, [toast]);
   React.useEffect(() => {
     if (!userPickedTab) {
       const newTab = health?.usMarketOpen ? 'US' : 'KR';
@@ -216,7 +244,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
           </button>
         </div>
         {holdingsTab === 'KR' && <KrHoldingsTab chains={chains} dash={dash} busyAction={busyAction} guard={guard} getStockName={getStockName} onRefresh={onRefresh} toast={toast} confirm={confirm} viewMode={viewMode} />}
-        {holdingsTab === 'US' && <UsHoldingsTab usHoldings={usHoldings} usW={usW} dash={dash} busyAction={busyAction} guard={guard} onRefresh={onRefresh} toast={toast} confirm={confirm} insightsDraft={insightsDraft} setInsightsDraft={setInsightsDraft} insightsSaving={insightsSaving} setInsightsSaving={setInsightsSaving} usInsights={usInsights} setUsInsights={setUsInsights} viewMode={viewMode} />}
+        {holdingsTab === 'US' && <UsHoldingsTab usHoldings={usHoldings} usW={usW} dash={dash} busyAction={busyAction} guard={guard} onRefresh={onRefresh} toast={toast} confirm={confirm} insightsDraft={insightsDraft} setInsightsDraft={setInsightsDraft} insightsSaving={insightsSaving} setInsightsSaving={setInsightsSaving} usInsights={usInsights} setUsInsights={setUsInsights} viewMode={viewMode} loopStatus={loopStatus} favorites={favorites} blacklist={blacklist} onToggleFavorite={handleToggleFavorite} onToggleBlacklist={handleToggleBlacklist} />}
       </div>
 
       <MoneyStatsPanel key={`${viewMode}-${holdingsTab}`} market={holdingsTab} viewMode={viewMode} />

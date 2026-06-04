@@ -5,7 +5,7 @@ import { Button } from '@/components/ui';
 
 type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'settings' | 'dividend' | 'futures';
 
-export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, health, dash, viewMode, switchView, killSwitch, toggleKill, lastUpdate, load, featureFlags, isPaper, isUS, theme }: {
+export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, health, dash, viewMode, switchView, killSwitch, toggleKill, lastUpdate, load, featureFlags, isPaper, isUS, theme, loopStatus }: {
   tab: Tab; setTab: (t: Tab) => void;
   mobileMenu: boolean; setMobileMenu: (v: boolean) => void;
   health: any; dash: any;
@@ -14,6 +14,7 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
   lastUpdate: Date; load: (force?: boolean) => void;
   featureFlags: Record<string, boolean>;
   isPaper: boolean; isUS: boolean; theme: any;
+  loopStatus?: any;
 }) {
   const isKillActive = killSwitch?.kr?.active || killSwitch?.overseas?.active;
 
@@ -33,8 +34,8 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
       {mobileMenu && <div className="fixed inset-0 bg-black/60 z-40 lg:hidden" onClick={() => setMobileMenu(false)} />}
       <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-[220px] backdrop-blur-xl flex flex-col shrink-0 transform transition-all duration-500 bg-[var(--theme-side-95)] border-r border-[var(--theme-border)] ${mobileMenu ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
         <div className="px-5 py-5 border-b border-white/[0.04]">
-          <h1 className="text-lg font-black tracking-tight bg-gradient-to-r from-blue-400 via-cyan-400 to-emerald-400 bg-clip-text text-transparent">QUANTOPS</h1>
-          <p className="text-[10px] text-slate-600 mt-0.5 font-medium">AI 자동매매 v0.2</p>
+          <h1 className="text-lg font-black tracking-tight bg-gradient-to-r from-blue-400 via-cyan-400 to-emerald-400 bg-clip-text text-transparent">AI Bot</h1>
+          <p className="text-[10px] text-slate-600 mt-0.5 font-medium">Auto Bot v0.2</p>
         </div>
 
         <div className="px-4 py-3.5 space-y-2.5 border-b border-white/[0.04]">
@@ -51,6 +52,49 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
             </div>
           ))}
         </div>
+
+        {/* AI Loop 상태 패널 */}
+        {loopStatus?.active && (
+          <div className="mx-3 mt-3 rounded-xl bg-gradient-to-br from-emerald-500/10 via-cyan-500/5 to-transparent border border-emerald-500/20 p-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+              </span>
+              <span className="text-[11px] font-bold text-emerald-400">AI Loop 연결됨</span>
+            </div>
+            <div className="space-y-1.5 text-[10px] text-slate-400">
+              <div className="flex justify-between">
+                <span>실행</span>
+                <span className="text-slate-300 font-medium">{loopStatus.totalRuns}회</span>
+              </div>
+              {loopStatus.brief && (
+                <div className="flex justify-between">
+                  <span>전략</span>
+                  <span className="text-cyan-400 font-medium">{loopStatus.brief.regime}/{loopStatus.brief.risk}</span>
+                </div>
+              )}
+              {loopStatus.autoPilot?.overridesSet > 0 && (
+                <div className="flex justify-between">
+                  <span>AP 조절</span>
+                  <span className="text-amber-400 font-medium">{loopStatus.autoPilot.overridesSet}건</span>
+                </div>
+              )}
+              {loopStatus.autoPilot?.decisions?.length > 0 && (
+                <div className="mt-1.5 pt-1.5 border-t border-white/5 space-y-0.5">
+                  {loopStatus.autoPilot.decisions.slice(0, 3).map((d: string, i: number) => (
+                    <div key={i} className="text-[9px] text-slate-500 truncate" title={d}>
+                      {d}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {loopStatus.lastRunResult === 'error' && (
+                <div className="text-red-400 font-medium">오류 {loopStatus.consecutiveErrors}회</div>
+              )}
+            </div>
+          </div>
+        )}
 
         <nav className="flex-1 p-2.5 space-y-0.5">
           {navItems.map(item => (

@@ -9,6 +9,7 @@ import { getPaperBalance } from '../../risk/engine.js';
 import { getLoopStatus } from '../../scheduler/loop-mode.js';
 import { cacheGet, getCachedPriceMemory } from '../../cache/memory.js';
 import { getCopilotLiteScore } from './review/copilot-lite.js';
+import { getLastAutoPilotResult } from '../../ai/auto-pilot.js';
 
 export const sseRoutes = new Hono();
 
@@ -112,6 +113,7 @@ sseRoutes.get('/stream', (c) => {
           healthScore: healthLite.score,
           healthIssues: healthLite.issues,
           loopMode: (() => { try { const ls = getLoopStatus(); return { active: ls.active, phase: ls.phase, totalRuns: ls.totalRuns, lastRunAt: ls.lastRunAt, lastRunResult: ls.lastRunResult, startedAt: ls.startedAt, adaptiveIntervalMs: ls.adaptiveIntervalMs, consecutiveErrors: ls.consecutiveErrors, marketPhase: ls.marketPhase, openMarkets: ls.openMarkets, anyMarketOpen: ls.anyMarketOpen, brief: ls.sessionBrief ? { regime: ls.sessionBrief.marketRegime, risk: ls.sessionBrief.riskLevel, narrative: ls.sessionBrief.narrative } : null }; } catch { return null; } })(),
+          autoPilot: (() => { try { const ap = getLastAutoPilotResult(); const r = viewIsPaper ? ap.paper : ap.live; return r ? { overridesSet: r.overridesSet, decisions: r.decisions.slice(0, 5), lastRunAt: ap.lastRunAt } : null; } catch { return null; } })(),
         };
 
         await stream.writeSSE({
@@ -127,8 +129,8 @@ sseRoutes.get('/stream', (c) => {
         });
       }
 
-      // 장중: 5초 (실시간 PnL 업데이트), 장외: 60초
-      const interval = isMarketOpen() ? 5000 : 60000;
+      // 장중: 10초 (KIS API 부하 + 카톡 알림 최소화), 장외: 120초
+      const interval = isMarketOpen() ? 10_000 : 120_000;
       await stream.sleep(interval);
     }
   });
