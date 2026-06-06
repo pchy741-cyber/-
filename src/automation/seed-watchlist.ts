@@ -85,25 +85,24 @@ const SEED_STOCKS: Array<{ code: string; name: string; theme: string }> = [
 export async function seedWatchlist(): Promise<void> {
   try {
     const pool = getPool();
-    let added = 0;
-    let skipped = 0;
 
-    for (const s of SEED_STOCKS) {
-      try {
-        const { rowCount } = await pool.query(
-          `INSERT INTO watchlist (stock_code, stock_name, market, is_active, source)
-           VALUES ($1, $2, 'KOSPI', true, 'SEED')
-           ON CONFLICT (stock_code) DO NOTHING`,
-          [s.code, s.name],
-        );
-        if ((rowCount ?? 0) > 0) added++;
-        else skipped++;
-      } catch { skipped++; }
-    }
+    // 배치 INSERT — 47개 순차 쿼리 → 1개 쿼리로 최적화
+    const values = SEED_STOCKS.map((_, i) =>
+      `($${i * 2 + 1}, $${i * 2 + 2}, 'KOSPI', true, 'SEED')`,
+    ).join(', ');
+    const params = SEED_STOCKS.flatMap(s => [s.code, s.name]);
 
+    const { rowCount } = await pool.query(
+      `INSERT INTO watchlist (stock_code, stock_name, market, is_active, source)
+       VALUES ${values}
+       ON CONFLICT (stock_code) DO NOTHING`,
+      params,
+    );
+
+    const added = rowCount ?? 0;
     if (added > 0) {
       logger.info(
-        `🌱 씨앗 감시목록 등록: ${added}개 신규 / ${skipped}개 기존`,
+        `🌱 씨앗 감시목록 등록: ${added}개 신규 / ${SEED_STOCKS.length - added}개 기존`,
         { component: 'SEED_WATCHLIST' },
       );
     }

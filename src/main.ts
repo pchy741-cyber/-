@@ -124,8 +124,17 @@ app.route('/', referenceRoutes);        // GET/POST/DELETE /api/references (트�
 // 확장 기능 (OFF by default, 설정에서 켜야 사용)
 import { dividendRoutes } from './api/routes/dividend.js';
 import { futuresRoutes } from './api/routes/futures.js';
+import { strategyLabRoutes } from './api/routes/strategy-lab.js';
 app.route('/', dividendRoutes);         // GET  /api/dividend/*, 월배당 투자
 app.route('/', futuresRoutes);          // GET  /api/futures/*, 해외선물 마이크로 트레이딩
+app.route('/', strategyLabRoutes);      // GET/POST /api/strategy-lab/*, 전략 Lab
+
+// ── 전역 에러 핸들러: 내부 에러 메시지를 클라이언트에 노출하지 않음 ──
+app.onError((err, c) => {
+  const reqPath = c.req.path;
+  logger.error(`API 에러 [${c.req.method} ${reqPath}]: ${err.message}`, { component: 'API', stack: err.stack?.split('\n').slice(0, 3).join(' | ') });
+  return c.json({ error: '서버 오류가 발생했습니다' }, 500);
+});
 
 // ── 루트 앱 (프론트엔드 프록시 + API) ──
 // 모든 API 경로는 /api 하위 — Non-API는 Next.js(localhost:3000)로 프록시
@@ -171,6 +180,18 @@ async function bootstrap() {
   logger.info(`  모드: ${config.tradingMode.toUpperCase()}`);
   logger.info(`  환경: ${config.env}`);
   logger.info(`  프레임워크: Hono (고성능)`);
+
+  // 빌드 메타 검증 — Docker 빌드 시점 기록, 캐시/마이그레이션 문제 진단
+  try {
+    const { readFileSync } = await import('fs');
+    const { resolve } = await import('path');
+    const metaPath = resolve(import.meta.dirname ?? '.', 'build-meta.json');
+    const meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
+    logger.info(`  빌드: ${meta.builtAt} (${meta.nodeVersion})`);
+  } catch {
+    logger.info('  빌드: 로컬 개발 (build-meta.json 없음)');
+  }
+
   logger.info('========================================');
 
   // 1. PostgreSQL 연결 확인 (최대 4회 재시도, 5초 간격)
@@ -210,10 +231,10 @@ async function bootstrap() {
       const activeMode = (sr[0]?.mode ?? 'SWING') as keyof typeof STRATEGY_PARAMS;
       const sp = STRATEGY_PARAMS[activeMode] ?? STRATEGY_PARAMS.SWING;
       await gp().query(
-        `UPDATE strategy_config SET take_profit_pct=$1, stop_loss_pct=$2, buy_threshold=$3 WHERE is_active = true AND is_paper = $4`,
+        `UPDATE strategy_config SET take_profit_pct=$1, stop_loss_pct=$2, buy_threshold=$3, use_dynamic_tpsl=true WHERE is_active = true AND is_paper = $4`,
         [sp.takeProfitPct, sp.stopLossPct, sp.buyThreshold, baseIsPaper],
       );
-      logger.info(`✅ 전략 파라미터 동기화 (${baseIsPaper ? 'paper' : 'live'}): buy_threshold=${sp.buyThreshold} take_profit=${sp.takeProfitPct}% stop_loss=${sp.stopLossPct}%`, { component: 'BOOT' });
+      logger.info(`✅ 전략 파라미터 동기화 (${baseIsPaper ? 'paper' : 'live'}): buy_threshold=${sp.buyThreshold} take_profit=${sp.takeProfitPct}% stop_loss=${sp.stopLossPct}% dynamic_tpsl=ON`, { component: 'BOOT' });
       // is_paper 분리: 현재 모드 체인만 null값 보충 — live 체인에 paper SL 덮어쓰기 방지
       await gp().query(
         `UPDATE transaction_chains SET stop_loss_pct=$1 WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND stop_loss_pct IS NULL AND is_paper = $2`,
@@ -286,29 +307,40 @@ async function bootstrap() {
     }, 30_000); // 30초 (자동기상 후 빠른 재연결)
   }
 
-  // 2. Redis 캐시 초기화
-  try {
-    await initRedisCache();
-    logger.info('✅ Upstash Redis 캐시 연결', { component: 'BOOT' });
-  } catch (err) {
-    logger.warn(`⚠️ Redis 미연결 (DB fallback): ${err}`, { component: 'BOOT' });
-  }
+  // 2. 인프라 서비스 병렬 초기화 ──────────────────────────────────────────
+  // Secrets는 KIS 토큰 발급 전 필수 → 나머지와 동시 실행
+  const bootParallel1 = [
+    // Redis
+    initRedisCache()
+      .then(() => logger.info('✅ Upstash Redis 캐시 연결', { component: 'BOOT' }))
+      .catch(err => logger.warn(`⚠️ Redis 미연결 (DB fallback): ${err}`, { component: 'BOOT' })),
+    // AI Loop 오버라이드 캐시
+    import('./ai/ai-overrides.js')
+      .then(({ loadOverridesCache }) => loadOverridesCache())
+      .catch(() => {}),
+    // VAPID 푸시 알림
+    import('./notifications/web-push.js')
+      .then(({ initVapid }) => initVapid())
+      .then(() => logger.info('✅ VAPID 푸시 알림 초기화 완료', { component: 'BOOT' }))
+      .catch(err => logger.warn(`⚠️ VAPID 초기화 실패 (알림 비활성): ${err}`, { component: 'BOOT' })),
+    // Monitoring (동기지만 Promise로 래핑)
+    Promise.resolve().then(() => {
+      setupMonitoring();
+      logger.info('✅ Cloud Monitoring 연결', { component: 'BOOT' });
+    }).catch(err => logger.warn(`⚠️ Monitoring 초기화 실패: ${err}`, { component: 'BOOT' })),
+    // BigQuery
+    initBigQuery()
+      .then(() => logger.info('✅ BigQuery 파이프라인 연결', { component: 'BOOT' }))
+      .catch(err => logger.warn(`⚠️ BigQuery 초기화 실패: ${err}`, { component: 'BOOT' })),
+  ];
 
-  // 2.3. AI Loop 오버라이드 캐시 로드
-  try {
-    const { loadOverridesCache } = await import('./ai/ai-overrides.js');
-    await loadOverridesCache();
-  } catch { /* 마이그레이션 전이면 무시 */ }
+  // Secrets 로드 (KIS 토큰 발급 전 완료 필요) — 나머지와 병렬
+  const secretsReady = import('./api/routes/secrets.js')
+    .then(({ loadSecretsToEnv }) => loadSecretsToEnv())
+    .catch(err => logger.warn(`Secret Manager 로드 실패 (환경변수 fallback): ${err}`, { component: 'BOOT' }));
 
-  // 2.5. Secret Manager에서 API 키 로드 (KIS 토큰 발급 전에 실행)
-  try {
-    const { loadSecretsToEnv } = await import('./api/routes/secrets.js');
-    await loadSecretsToEnv();
-  } catch (err) {
-    logger.warn(`Secret Manager 로드 실패 (환경변수 fallback): ${err}`, { component: 'BOOT' });
-  }
-
-  // 3. KIS 토큰 발급
+  // Secrets 완료 후 → KIS 토큰 발급
+  await secretsReady;
   try {
     await getAccessToken();
     logger.info('✅ KIS 토큰 발급 성공', { component: 'BOOT' });
@@ -316,62 +348,33 @@ async function bootstrap() {
     logger.error(`❌ KIS 토큰 발급 실패: ${err}`, { component: 'BOOT' });
   }
 
-  // 3-1. KIS API로 연간 휴장일 캐시 갱신 (공휴일·대체공휴일 정확 판정)
-  try {
-    const { refreshMarketHolidayCache } = await import('./kis/market.js');
-    await refreshMarketHolidayCache();
-    // 매일 KST 00:05에 재갱신 (연말 특별 휴장 등 대응)
-    const msUntilMidnight = (() => {
-      const now = new Date();
-      const kstMs = now.getTime() + 9 * 3600_000;
-      const kstDate = new Date(kstMs);
-      const nextMidnight = new Date(
-        Date.UTC(kstDate.getUTCFullYear(), kstDate.getUTCMonth(), kstDate.getUTCDate() + 1, -9, 5),
-      );
-      return Math.max(nextMidnight.getTime() - now.getTime(), 60_000);
-    })();
-    setTimeout(function tick() {
-      refreshMarketHolidayCache().catch(() => {});
-      setTimeout(tick, 24 * 3600_000);
-    }, msUntilMidnight);
-  } catch (err) {
-    logger.warn(`⚠️ KIS 휴장일 캐시 갱신 실패 (하드코딩 fallback): ${err}`, { component: 'BOOT' });
-  }
+  // KIS 토큰 이후: 휴장일 캐시 + Telegram/Slack (나머지 병렬 완료 대기)
+  bootParallel1.push(
+    import('./kis/market.js').then(async ({ refreshMarketHolidayCache }) => {
+      await refreshMarketHolidayCache();
+      const msUntilMidnight = (() => {
+        const now = new Date();
+        const kstMs = now.getTime() + 9 * 3600_000;
+        const kstDate = new Date(kstMs);
+        const nextMidnight = new Date(
+          Date.UTC(kstDate.getUTCFullYear(), kstDate.getUTCMonth(), kstDate.getUTCDate() + 1, -9, 5),
+        );
+        return Math.max(nextMidnight.getTime() - now.getTime(), 60_000);
+      })();
+      setTimeout(function tick() {
+        refreshMarketHolidayCache().catch(() => {});
+        setTimeout(tick, 24 * 3600_000);
+      }, msUntilMidnight);
+    }).catch(err => logger.warn(`⚠️ KIS 휴장일 캐시 갱신 실패 (하드코딩 fallback): ${err}`, { component: 'BOOT' })),
+  );
 
-  // 4. 텔레그램 봇 시작
-  try {
-    initTelegram();
-  } catch (err) {
-    logger.warn(`⚠️ Telegram 초기화 실패: ${err}`, { component: 'BOOT' });
-  }
-
-  // 4-a. Slack Webhook 초기화
+  // Telegram/Slack (빠름, 병렬 포함)
+  try { initTelegram(); } catch (err) { logger.warn(`⚠️ Telegram 초기화 실패: ${err}`, { component: 'BOOT' }); }
   const { config: cfg } = await import('./config/index.js');
   if (cfg.slack.webhookUrl) initSlack(cfg.slack.webhookUrl);
 
-  // 4-b. VAPID 푸시 알림 초기화 (DB 준비 완료 후 — 구독 유효성 보장)
-  try {
-    const { initVapid } = await import('./notifications/web-push.js');
-    await initVapid();
-    logger.info('✅ VAPID 푸시 알림 초기화 완료', { component: 'BOOT' });
-  } catch (err) {
-    logger.warn(`⚠️ VAPID 초기화 실패 (알림 비활성): ${err}`, { component: 'BOOT' });
-  }
-
-  // 5. GCP 서비스 초기화 (Monitoring + BigQuery)
-  try {
-    setupMonitoring();
-    logger.info('✅ Cloud Monitoring 연결', { component: 'BOOT' });
-  } catch (err) {
-    logger.warn(`⚠️ Monitoring 초기화 실패: ${err}`, { component: 'BOOT' });
-  }
-
-  try {
-    await initBigQuery();
-    logger.info('✅ BigQuery 파이프라인 연결', { component: 'BOOT' });
-  } catch (err) {
-    logger.warn(`⚠️ BigQuery 초기화 실패: ${err}`, { component: 'BOOT' });
-  }
+  // 모든 병렬 서비스 완료 대기
+  await Promise.allSettled(bootParallel1);
 
   // 5.5. 씨앗 감시목록 — KOSPI 시총 상위 우량주 자동 등록 (없으면 insert)
   try {
@@ -395,13 +398,16 @@ async function bootstrap() {
       '352820': '하이브', '012610': '경인양행',
     };
     const wl = await getActiveWatchlist();
-    for (const item of wl) {
-      const known = NAME_MAP[item.stock_code];
-      const needsFix = !item.stock_name || item.stock_name === item.stock_code
+    // 이름 보정이 필요한 종목만 필터
+    const toFix = wl.filter(item => {
+      return !item.stock_name || item.stock_name === item.stock_code
         || /^\d{6}$/.test(item.stock_name) || /[^\w\sㄱ-ㅎ가-힣().-]/.test(item.stock_name);
-      if (needsFix) {
-        let name = known;
-        // KIS API (장중) → Naver Finance (24시간) 순으로 시도
+    });
+    // 5개씩 병렬 처리 (KIS API rate limit 20 req/s 안전 범위)
+    for (let i = 0; i < toFix.length; i += 5) {
+      const batch = toFix.slice(i, i + 5);
+      await Promise.allSettled(batch.map(async (item) => {
+        let name = NAME_MAP[item.stock_code];
         if (!name) {
           try { const q = await getCurrentPrice(item.stock_code); name = q.stockName?.trim(); } catch { /* skip */ }
         }
@@ -418,7 +424,7 @@ async function bootstrap() {
           await getPool().query('UPDATE watchlist SET stock_name = $1 WHERE stock_code = $2', [name, item.stock_code]);
           logger.info(`종목명 보정: ${item.stock_code} → ${name}`, { component: 'BOOT' });
         }
-      }
+      }));
     }
   } catch { /* skip */ }
 
@@ -437,37 +443,21 @@ async function bootstrap() {
     logger.warn(`자기학습 초기화 체크 실패: ${e.message}`, { component: 'BOOT' });
   }
 
-  // 6. Kill Switch DB 복원 (재배포 후에도 수동 정지 상태 유지)
-  try {
-    const { initKillSwitchFromDB } = await import('./risk/kill-switch.js');
-    await initKillSwitchFromDB();
-  } catch (e: any) {
-    logger.warn(`Kill Switch 복원 실패 (무시): ${e.message}`, { component: 'BOOT' });
-  }
-
-  // 6-b. 해외 세션 시작 포트폴리오값 복원 (재배포 시 일일 손실 추적 유지)
-  try {
-    const { restoreSessionStartValue } = await import('./scheduler/overseas-job.js');
-    await restoreSessionStartValue();
-  } catch (e: any) {
-    logger.warn(`해외 세션 시작값 복원 실패 (무시): ${e.message}`, { component: 'BOOT' });
-  }
-
-  // 6-c2. 기준자본(Seed Capital) DB 로드 (손실한도 계산 기준점)
-  try {
-    const { initSeedCapital } = await import('./risk/seed-capital.js');
-    await initSeedCapital();
-  } catch (e: any) {
-    logger.warn(`기준자본 로드 실패 (기본값 사용): ${e.message}`, { component: 'BOOT' });
-  }
-
-  // 6-c. 쿨다운 리셋 상태 복원 (대시보드에서 수동 리셋한 상태 유지)
-  try {
-    const { restoreCooldownResetAt } = await import('./risk/trade-gate.js');
-    await restoreCooldownResetAt();
-  } catch (e: any) {
-    logger.warn(`쿨다운 리셋 복원 실패 (무시): ${e.message}`, { component: 'BOOT' });
-  }
+  // 6. 상태 복원 병렬 실행 (Kill Switch, 해외 세션, 기준자본, 쿨다운)
+  await Promise.allSettled([
+    import('./risk/kill-switch.js')
+      .then(({ initKillSwitchFromDB }) => initKillSwitchFromDB())
+      .catch((e: any) => logger.warn(`Kill Switch 복원 실패 (무시): ${e.message}`, { component: 'BOOT' })),
+    import('./scheduler/overseas-job.js')
+      .then(({ restoreSessionStartValue }) => restoreSessionStartValue())
+      .catch((e: any) => logger.warn(`해외 세션 시작값 복원 실패 (무시): ${e.message}`, { component: 'BOOT' })),
+    import('./risk/seed-capital.js')
+      .then(({ initSeedCapital }) => initSeedCapital())
+      .catch((e: any) => logger.warn(`기준자본 로드 실패 (기본값 사용): ${e.message}`, { component: 'BOOT' })),
+    import('./risk/trade-gate.js')
+      .then(({ restoreCooldownResetAt }) => restoreCooldownResetAt())
+      .catch((e: any) => logger.warn(`쿨다운 리셋 복원 실패 (무시): ${e.message}`, { component: 'BOOT' })),
+  ]);
 
   // 6-2. 필수 시크릿 검증 — 없으면 킬스위치 자동 활성화 (사고 방지)
   {
@@ -562,6 +552,23 @@ async function bootstrap() {
         if (!await getOverseasState('user_favorites')) await setOverseasState('user_favorites', JSON.stringify(['VRT', 'SMCI', 'AMD']));
         if (!await getOverseasState('user_blacklist')) await setOverseasState('user_blacklist', JSON.stringify(['TSLA', 'AAPL', 'META']));
       }).catch(() => {});
+
+      // 감시종목 자동 정리 (부팅 시 1회 — 30일+ AUTO/KIS_SYNC 미보유·미거래 항목 비활성화)
+      import('./db/client.js').then(({ getPool }) =>
+        getPool().query(`
+          UPDATE watchlist SET is_active = false
+          WHERE is_active = true
+            AND source IN ('AUTO', 'KIS_SYNC')
+            AND stock_code NOT IN (SELECT DISTINCT stock_code FROM transaction_chains WHERE status != 'CLOSED')
+            AND added_at < NOW() - INTERVAL '30 days'
+            AND stock_code NOT IN (
+              SELECT DISTINCT stock_code FROM orders WHERE status = 'FILLED' AND created_at > NOW() - INTERVAL '14 days'
+            )
+        `).then(r => {
+          if ((r.rowCount ?? 0) > 0)
+            logger.info(`🧹 감시종목 부팅 정리: ${r.rowCount}개 비활성화`, { component: 'BOOT' });
+        })
+      ).catch(() => {});
     }
   }, 1000);
 
