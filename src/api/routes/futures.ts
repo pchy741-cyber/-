@@ -25,7 +25,8 @@ const COMP = 'FUTURES';
 let _flagCache: { value: boolean; ts: number } | null = null;
 const FLAG_TTL = 30_000;
 
-async function checkFuturesEnabled(): Promise<boolean> {
+async function checkFuturesEnabled(isPaper?: boolean): Promise<boolean> {
+  if (isPaper) return true; // Paper 모드: 실험 기능 항상 허용
   const now = Date.now();
   if (_flagCache && now - _flagCache.ts < FLAG_TTL) return _flagCache.value;
   try {
@@ -44,7 +45,7 @@ futuresRoutes.get('/futures/dashboard', async (c) => {
     const pool = getPool();
 
     const [enabled, { rows: budgetRows }, { rows: positions }, { rows: trades }, { rows: stats }] = await Promise.all([
-      checkFuturesEnabled(),
+      checkFuturesEnabled(isPaper),
       pool.query('SELECT * FROM futures_budget WHERE id = 1'),
       pool.query('SELECT * FROM futures_positions WHERE status = $1 AND is_paper = $2 ORDER BY opened_at DESC', ['open', isPaper]),
       pool.query('SELECT * FROM futures_trades WHERE is_paper = $1 ORDER BY executed_at DESC LIMIT 20', [isPaper]),
@@ -114,7 +115,8 @@ futuresRoutes.get('/futures/chart/:symbol', async (c) => {
 // ── KIS 실제 포지션/예수금 조회 ──
 futuresRoutes.get('/futures/kis-status', async (c) => {
   try {
-    const enabled = await checkFuturesEnabled();
+    const isPaper = resolveIsPaper(c.req.query('mode') as 'paper' | 'live' | undefined);
+    const enabled = await checkFuturesEnabled(isPaper);
     if (!enabled) return c.json({ enabled: false, positions: [], deposit: null });
 
     const [positions, deposit] = await Promise.all([getFuturesPositions(), getFuturesDeposit()]);
@@ -127,13 +129,13 @@ futuresRoutes.get('/futures/kis-status', async (c) => {
 // ── 예산 할당 (명시적 승인 필요, 모드 분리, live=PIN 필수) ──
 futuresRoutes.post('/futures/budget/allocate', async (c) => {
   try {
-    const enabled = await checkFuturesEnabled();
-    if (!enabled) return c.json({ enabled: false, error: '설정에서 선물 기능을 먼저 켜주세요' });
-
     const body = await c.req.json<{ amount_krw: number; confirm: boolean; mode?: 'paper' | 'live'; pin?: string }>();
     if (!body.confirm) return c.json({ error: '승인(confirm: true) 필요' }, 400);
 
     const isPaper = resolveIsPaper(body.mode);
+    const enabled = await checkFuturesEnabled(isPaper);
+    if (!enabled) return c.json({ enabled: false, error: '설정에서 선물 기능을 먼저 켜주세요' });
+
     const pinCheck = validateLivePin(isPaper, body.pin);
     if (!pinCheck.ok) return c.json({ error: pinCheck.error }, 403);
 
@@ -164,9 +166,6 @@ futuresRoutes.post('/futures/budget/allocate', async (c) => {
 // ── 선물 주문 (승인 필수, 극소액 제한, live=PIN 필수) ──
 futuresRoutes.post('/futures/order', async (c) => {
   try {
-    const enabled = await checkFuturesEnabled();
-    if (!enabled) return c.json({ enabled: false, error: '설정에서 선물 기능을 먼저 켜주세요' });
-
     const body = await c.req.json<{
       symbol: string;
       side: 'BUY' | 'SELL';
@@ -185,6 +184,9 @@ futuresRoutes.post('/futures/order', async (c) => {
     if (body.quantity < 1 || body.quantity > 5) return c.json({ error: '수량은 1~5계약만 가능' }, 400);
 
     const isPaper = resolveIsPaper(body.mode);
+    const enabled = await checkFuturesEnabled(isPaper);
+    if (!enabled) return c.json({ enabled: false, error: '설정에서 선물 기능을 먼저 켜주세요' });
+
     const pinCheck = validateLivePin(isPaper, body.pin);
     if (!pinCheck.ok) return c.json({ error: pinCheck.error }, 403);
 

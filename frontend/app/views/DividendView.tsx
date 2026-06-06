@@ -45,7 +45,7 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
     setLoading(true);
     try {
       const [hold, alloc] = await Promise.all([
-        api(`/dividend/holdings?viewMode=${viewMode}`),
+        api(`/dividend/holdings?mode=${viewMode}`),
         api(`/dividend/allocation-tuned?mode=${viewMode}`).catch(() => null),
       ]);
       setHoldings(hold.holdings || []);
@@ -68,7 +68,7 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
     try {
       const res = await api('/dividend/auto-invest', {
         method: 'POST',
-        body: JSON.stringify({ amount_krw: krw }),
+        body: JSON.stringify({ amount_krw: krw, mode: viewMode }),
         timeout: 30000,
       });
       if (res.ok) {

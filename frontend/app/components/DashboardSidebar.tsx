@@ -3,7 +3,7 @@
 import React from 'react';
 import { Button } from '@/components/ui';
 
-type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'settings' | 'dividend' | 'futures';
+type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'settings' | 'dividend' | 'futures' | 'strategy-lab';
 
 export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, health, dash, viewMode, switchView, killSwitch, toggleKill, lastUpdate, load, featureFlags, isPaper, isUS, theme, loopStatus }: {
   tab: Tab; setTab: (t: Tab) => void;
@@ -18,16 +18,18 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
 }) {
   const isKillActive = killSwitch?.kr?.active || killSwitch?.overseas?.active;
 
-  const navItems: { id: Tab; label: string; icon: string }[] = [
+  const allNavItems: { id: Tab; label: string; icon: string; paperOnly?: boolean }[] = [
     { id: 'home', label: '대시보드', icon: '📊' },
     { id: 'trades', label: '매매내역', icon: '📋' },
     { id: 'journal', label: '매매일지', icon: '📓' },
     { id: 'watchlist', label: '감시목록', icon: '👁' },
     { id: 'news', label: '뉴스', icon: '📰' },
-    { id: 'dividend' as Tab, label: '배당', icon: '💰' },
-    { id: 'futures' as Tab, label: '선물', icon: '📈' },
+    { id: 'dividend', label: '배당', icon: '💰', paperOnly: true },
+    { id: 'futures', label: '선물', icon: '📈', paperOnly: true },
+    { id: 'strategy-lab', label: '전략 Lab', icon: '🧪', paperOnly: true },
     { id: 'settings', label: '설정', icon: '⚙️' },
   ];
+  const navItems = allNavItems.filter(item => !item.paperOnly || isPaper);
 
   return (
     <>

@@ -44,7 +44,7 @@ export default function FuturesView({ toast, viewMode, confirm, mpData, onRefres
     setLoading(true);
     try {
       const [dash, tunerRaw] = await Promise.all([
-        api('/futures/dashboard'),
+        api(`/futures/dashboard?mode=${viewMode}`),
         api(`/futures/tuner-status?mode=${viewMode}`).catch(() => null),
       ]);
       setBudget(dash.budget);
@@ -70,7 +70,7 @@ export default function FuturesView({ toast, viewMode, confirm, mpData, onRefres
     try {
       const res = await api('/futures/auto-deposit', {
         method: 'POST',
-        body: JSON.stringify({ amount_krw: krw }),
+        body: JSON.stringify({ amount_krw: krw, mode: viewMode }),
       });
       if (res.ok) {
         toast(`선물 입금 완료: 총 ₩${res.totalAllocatedKrw.toLocaleString()}`, 'ok');

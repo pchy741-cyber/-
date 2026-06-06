@@ -18,7 +18,8 @@ export const dividendRoutes = new Hono();
 let _divFlagCache: { value: boolean; ts: number } | null = null;
 const FLAG_TTL = 30_000;
 
-async function checkDividendEnabled(): Promise<boolean> {
+async function checkDividendEnabled(isPaper?: boolean): Promise<boolean> {
+  if (isPaper) return true; // Paper 모드: 실험 기능 항상 허용
   const now = Date.now();
   if (_divFlagCache && now - _divFlagCache.ts < FLAG_TTL) return _divFlagCache.value;
   try {
@@ -32,10 +33,11 @@ async function checkDividendEnabled(): Promise<boolean> {
 // ── 감시목록 조회 ──
 dividendRoutes.get('/dividend/watchlist', async (c) => {
   try {
+    const isPaper = resolveIsPaper(c.req.query('mode') as 'paper' | 'live' | undefined);
     const { rows } = await getPool().query(
       `SELECT * FROM dividend_watchlist ORDER BY dividend_yield DESC NULLS LAST, added_at`
     );
-    const enabled = await checkDividendEnabled();
+    const enabled = await checkDividendEnabled(isPaper);
     return c.json({ enabled, watchlist: rows });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
@@ -424,6 +426,154 @@ dividendRoutes.get('/dividend/allocation-tuned', async (c) => {
     );
     if (rows[0]?.value) return c.json(JSON.parse(rows[0].value));
     return c.json({ weights: null });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// v4: 배당 Paper 자동 셋업 — 월 목표 배당금 기준 최소 자본 계산 + 투자
+// ═══════════════════════════════════════════════════════
+
+/** ETF별 예상 배당 수익률 (연간, %) — watchlist에서 업데이트되면 DB값 우선 */
+const DEFAULT_YIELDS: Record<string, number> = {
+  JEPQ: 10.0, JEPI: 8.0, SCHD: 3.5, QYLD: 12.0, XYLD: 10.0, O: 5.0,
+};
+
+dividendRoutes.post('/dividend/auto-setup-paper', async (c) => {
+  try {
+    const body = await c.req.json<{ target_monthly_krw?: number }>();
+    const targetMonthly = body.target_monthly_krw ?? 1_000_000; // 기본: 월100만원
+    if (targetMonthly < 10000) return c.json({ error: '최소 월 1만원 이상' }, 400);
+
+    const fx = await fetchExchangeRate().catch(() => 1400);
+    const pool = getPool();
+
+    // DB에서 실제 배당수익률 가져오기 (없으면 기본값)
+    const { rows: watchlist } = await pool.query(
+      `SELECT stock_code, dividend_yield FROM dividend_watchlist WHERE stock_code = ANY($1)`,
+      [Object.keys(ETF_WEIGHTS)],
+    );
+    const dbYields: Record<string, number> = {};
+    for (const w of watchlist) {
+      if (w.dividend_yield) dbYields[w.stock_code] = Number(w.dividend_yield);
+    }
+
+    // 가중 평균 수익률 계산
+    let weightedYield = 0;
+    for (const [code, weight] of Object.entries(ETF_WEIGHTS)) {
+      const yieldPct = (dbYields[code] ?? DEFAULT_YIELDS[code] ?? 5) / 100;
+      weightedYield += weight * yieldPct;
+    }
+
+    // 최소 자본 계산: target = investedUsd * weightedYield * 0.846 / 12 * fxRate
+    // → investedUsd = target * 12 / (weightedYield * 0.846 * fxRate)
+    const targetMonthlyUsd = targetMonthly / fx;
+    const minInvestedUsd = targetMonthlyUsd * 12 / (weightedYield * 0.846);
+    const minInvestedKrw = Math.ceil(minInvestedUsd * fx);
+
+    // 기존 Paper 투자금 확인
+    const { rows: existingRows } = await pool.query(
+      `SELECT COALESCE(value::numeric, 0) AS v FROM overseas_state WHERE key = 'dividend_invested_krw_paper'`,
+    );
+    const existingKrw = Number(existingRows[0]?.v ?? 0);
+
+    // 이미 충분하면 스킵
+    if (existingKrw >= minInvestedKrw) {
+      return c.json({
+        ok: true,
+        message: '이미 목표 달성 가능한 자본 보유',
+        targetMonthlyKrw: targetMonthly,
+        minCapitalKrw: minInvestedKrw,
+        existingKrw,
+        weightedYieldPct: +(weightedYield * 100).toFixed(2),
+        fx,
+      });
+    }
+
+    // 추가 필요 금액 계산
+    const additionalKrw = minInvestedKrw - existingKrw;
+    const additionalUsd = additionalKrw / fx;
+
+    // ETF 현재가 조회 (가격 기반 주수 계산용)
+    const { getOverseasPrice } = await import('../../kis/overseas.js');
+    const etfCodes = Object.keys(ETF_WEIGHTS);
+    const priceResults = await Promise.allSettled(
+      etfCodes.map(async (code) => {
+        const p = await Promise.race([
+          getOverseasPrice(code, code === 'O' ? 'NYSE' : 'NASDAQ'),
+          new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
+        ]);
+        return { code, price: Number((p as any).currentPrice) || 0 };
+      }),
+    );
+    const prices: Record<string, number> = {};
+    for (const r of priceResults) {
+      if (r.status === 'fulfilled' && r.value.price > 0) prices[r.value.code] = r.value.price;
+    }
+
+    // 가격 없으면 평균 추정가 사용
+    const avgEstPrice = Object.values(prices).length > 0
+      ? Object.values(prices).reduce((a, b) => a + b, 0) / Object.values(prices).length
+      : 50; // 폴백 추정가
+
+    // Paper 매수 실행
+    const results: Array<{ code: string; shares: number; invested: number }> = [];
+    let totalInvested = 0;
+
+    for (const [code, weight] of Object.entries(ETF_WEIGHTS)) {
+      const price = prices[code] || avgEstPrice;
+      const allocation = additionalUsd * weight;
+      const shares = Math.floor(allocation / price);
+      if (shares <= 0) continue;
+      const invested = shares * price;
+      totalInvested += invested;
+
+      const exchange = code === 'O' ? 'NYSE' : 'NASDAQ';
+      await pool.query(
+        `INSERT INTO dividend_holdings (stock_code, exchange, quantity, avg_price, total_dividends_received, is_paper)
+         VALUES ($1, $2, $3, $4, 0, true)
+         ON CONFLICT (stock_code, exchange, is_paper) DO UPDATE SET
+           avg_price = (dividend_holdings.avg_price * dividend_holdings.quantity + $4 * $3) / (dividend_holdings.quantity + $3),
+           quantity = dividend_holdings.quantity + $3`,
+        [code, exchange, shares, price],
+      );
+      results.push({ code, shares, invested: +invested.toFixed(2) });
+    }
+
+    // 투자금 기록
+    await Promise.all([
+      pool.query(
+        `INSERT INTO overseas_state (key, value) VALUES ('dividend_invested_krw_paper', $1::text)
+         ON CONFLICT (key) DO UPDATE SET value = (COALESCE(overseas_state.value::numeric, 0) + $1::numeric)::text`,
+        [additionalKrw],
+      ),
+      pool.query(`UPDATE feature_flags SET enabled = TRUE WHERE key = 'dividend_investing' AND enabled = FALSE`),
+    ]);
+
+    // 예상 월 배당금 계산
+    const estMonthlyUsd = totalInvested * weightedYield * 0.846 / 12;
+    const totalMonthlyUsd = (existingKrw / fx + totalInvested) * weightedYield * 0.846 / 12;
+
+    logger.info(
+      `[MoneyPrinter] Paper 자동셋업: 목표 월₩${targetMonthly.toLocaleString()} → 투자 ₩${additionalKrw.toLocaleString()} ($${totalInvested.toFixed(0)})`,
+      { component: 'DIVIDEND' },
+    );
+
+    return c.json({
+      ok: true,
+      targetMonthlyKrw: targetMonthly,
+      minCapitalKrw: minInvestedKrw,
+      investedKrw: additionalKrw,
+      investedUsd: +totalInvested.toFixed(2),
+      existingKrw,
+      totalKrw: existingKrw + additionalKrw,
+      weightedYieldPct: +(weightedYield * 100).toFixed(2),
+      estMonthlyDivUsd: +totalMonthlyUsd.toFixed(2),
+      estMonthlyDivKrw: +Math.floor(totalMonthlyUsd * fx),
+      fx,
+      etfs: results,
+    });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }
