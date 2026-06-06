@@ -6,6 +6,7 @@ import { logger } from '../../utils/logger.js';
 import { applyEodBluechipStrategy } from './eod-bluechip.js';
 import { adjustPositionSizes } from './position-sizer.js';
 import { applyHardRules, deduplicateSells, filterEarlySells, filterManualCooldown, filterSectorConcentration } from './risk-guard.js';
+import type { CrashSignal } from '../../automation/crash-profit.js';
 
 /**
  * 매매 결정 필터 체인 — 우선순위 순서 절대 고정
@@ -39,22 +40,37 @@ export interface DecisionFlowParams {
   orderableCash: number;
   hasBuyCandidates: boolean;
   blockNewBuys: boolean;
+  blockEodBuys: boolean;
   adjMaxPositionKrw: number;
   chartData?: Map<string, import('../../kis/market.js').DailyCandle[]>;
   kstH: number;
   kstM: number;
   macroRiskOff?: boolean;
   isPaper?: boolean;
+  crashSignal?: CrashSignal;
 }
 
 export async function applyDecisionFlow(params: DecisionFlowParams): Promise<TradeDecision[]> {
   const {
     rawDecisions, openChains, livePrices, mode, manuallySoldCodes, scores,
     totalAssets, kospiRegime, resolvedSl, resolvedTp, orderableCash,
-    hasBuyCandidates, blockNewBuys, adjMaxPositionKrw, chartData, kstH, kstM,
+    hasBuyCandidates, blockNewBuys, blockEodBuys, adjMaxPositionKrw, chartData, kstH, kstM,
   } = params;
 
   let decisions = [...rawDecisions];
+
+  // ── 0-pre. 실험 전략 실전 차단: BREAKOUT/SNIPER/BOTTOM_FISHING은 Paper에서 승률 검증 후 실전 적용 ──
+  // 실전(Live) = SWING + EOD_BETTING + DEFENSE/PARKING만 매수 허용
+  // 연습(Paper) = 전체 전략 허용 → 승률 데이터 축적
+  const PAPER_ONLY_MODES = new Set(['BREAKOUT', 'SNIPER', 'BOTTOM_FISHING']);
+  if (!params.isPaper && PAPER_ONLY_MODES.has(mode)) {
+    const buys = decisions.filter(d => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
+    if (buys.length > 0) {
+      logger.info(`🧪 ${mode} 실험모드: 실전 신규매수 ${buys.length}건 차단 (Paper에서 승률 검증 중)`, { component: 'DECISION_FLOW' });
+    }
+    // 매도/손절은 허용 (기존 보유분 정리)
+    decisions = decisions.filter(d => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
+  }
 
   // ── 0. DIVIDEND 모드: 신규 매수 완전 차단 (배당주/ETF 파킹 모드) ────
   if (mode === 'DIVIDEND') {
@@ -63,6 +79,24 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
       logger.info(`🏦 DIVIDEND 모드: 신규 매수 ${buys.length}건 차단 (배당 자산 파킹 중)`, { component: 'DECISION_FLOW' });
     }
     decisions = decisions.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
+  }
+
+  // ── 0b. 인버스 ETF 결정 보호 (crash-profit 결정은 필터 우회) ────
+  const { INVERSE_ETF } = await import('../../automation/crash-profit.js');
+  const inverseDecisions = decisions.filter(d => d.stock_code === INVERSE_ETF.code);
+  decisions = decisions.filter(d => d.stock_code !== INVERSE_ETF.code);
+
+  // ── 0c. BREAKOUT 모드: 비돌파 매수 차단 (BREAKOUT 전용 매수만 허용) ────
+  if (mode === 'BREAKOUT') {
+    const nonBreakoutBuys = decisions.filter((d) =>
+      (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && d.strategy_mode !== 'BREAKOUT',
+    );
+    if (nonBreakoutBuys.length > 0) {
+      logger.info(`📈 BREAKOUT 모드: 비돌파 매수 ${nonBreakoutBuys.length}건 차단`, { component: 'DECISION_FLOW' });
+      decisions = decisions.filter((d) =>
+        !((d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && d.strategy_mode !== 'BREAKOUT'),
+      );
+    }
   }
 
   // ── 1. 집중도 부분매도 주입 ─────────────────────────────────────────
@@ -160,9 +194,25 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
     todayDown: kospiRegime.todayDown,
     kospiPenalty: kospiRegime.penalty,
     adjMaxPositionKrw,
-    blockNewBuys,
+    totalAssets,
+    blockNewBuys: blockEodBuys,   // EOD 전략은 isPastClose/eodOnlyActive 제외한 하드블록만
     watchlistCodes: scores.map((s) => s.stock_code),
   });
+
+  // ── 9a. 실험 전략 개별 매수 실전 차단 (eod-bluechip에서 주입된 BOTTOM_FISHING 등) ──
+  if (!params.isPaper) {
+    const before = decisions.length;
+    decisions = decisions.filter(d => {
+      if ((d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && PAPER_ONLY_MODES.has(d.strategy_mode ?? '')) {
+        logger.info(`🧪 ${d.stock_code}: ${d.strategy_mode} 실험전략 실전매수 차단`, { component: 'DECISION_FLOW' });
+        return false;
+      }
+      return true;
+    });
+    if (decisions.length < before) {
+      logger.info(`🧪 실험전략 실전매수 ${before - decisions.length}건 차단됨`, { component: 'DECISION_FLOW' });
+    }
+  }
 
   // ── 9.5. 컨센서스 기반 매수 필터 — 하락세 종목 매수 차단 ──────────
   {
@@ -182,6 +232,11 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
     }
   }
 
+  // ── 9.8. 인버스 ETF 결정 재주입 (필터 우회 — crash-profit 전략 보호) ──
+  if (inverseDecisions.length > 0) {
+    decisions.unshift(...inverseDecisions);
+  }
+
   // ── 10. 최종 필터: HOLD 제거 + 가격 검증 + 실행 순서 정렬 ──────────
   const filtered = decisions.filter((d) => {
     if (d.action === 'HOLD') return false;
@@ -194,8 +249,13 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   });
 
   const scoreMap = new Map(scores.map((s) => [s.stock_code, Number(s.composite_score ?? 0)]));
-  const actionOrder = (d: TradeDecision) =>
-    d.action === 'SELL' ? 0 : d.action === 'AVERAGE_DOWN' ? 1 : 2;
+  const actionOrder = (d: TradeDecision) => {
+    // 인버스 ETF / CRASH_PROFIT 결정은 최우선
+    if (d.stock_code === INVERSE_ETF.code) return -2;
+    if (d.trigger_source?.startsWith('CRASH_PROFIT')) return -1;
+    return d.action === 'SELL' || d.action === 'FORCE_CLOSE' || d.action === 'PARTIAL_SELL' ? 0
+      : d.action === 'AVERAGE_DOWN' ? 1 : 2;
+  };
   filtered.sort((a, b) => {
     const orderDiff = actionOrder(a) - actionOrder(b);
     if (orderDiff !== 0) return orderDiff;
