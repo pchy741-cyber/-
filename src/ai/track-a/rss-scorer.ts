@@ -1,13 +1,17 @@
 /**
- * RSS 뉴스 + 거래량 기반 스코어링 — AI 쿼터 없이 80~90점 생성
+ * RSS 뉴스 감성분석 + 기술지표 스코어링 — AI API 없이 무료 종합 판단
  *
  * 점수 구성:
- *   기술지표(analyzeTechnicals): 최대 75점
- *   뉴스 감성 보너스:           최대 +15점
- *   거래량/모멘텀 보너스:        최대 +10점
- *   외국인/기관 수급 보너스:     최대 +8점
+ *   기술지표(analyzeTechnicals): 최대 82점 (베이스)
+ *   뉴스 감성(70+ 키워드):      ±15점 (종목 뉴스 NLP)
+ *   시장 감성(KOSPI/증시):      ±5점  (시장 전체 톤)
+ *   거래량/모멘텀:              +10점 (등락률/거래량/추세)
+ *   수급(외국인/기관):          ±8점
+ *   눌림목:                    +8점
  *   ─────────────────────────
- *   합계: 최대 108점 → min(100, 합계)
+ *   합계: min(100, 합계)
+ *
+ * 비용: $0/일 (Google News RSS 무료)
  */
 import type { DailyCandle } from '../../kis/market.js';
 import type { ScoringResult } from '../../db/models.js';
@@ -16,37 +20,168 @@ import { logger } from '../../utils/logger.js';
 
 const COMP = 'RSS_SCORER';
 
-// 한국 긍정/부정 키워드 (단순 감성 분석)
-const POSITIVE_KW = ['실적개선','어닝서프라이즈','목표가상향','매수추천','신고가','수주','호재','수익증가','배당확대','자사주매입','영업이익','흑자','상향','증가','성장'];
-const NEGATIVE_KW = ['실적부진','어닝쇼크','목표가하향','손실확대','악재','우려','감소','적자','하락','규제','소송','리콜','하향','감소','둔화'];
+// ── 한국 긍정/부정 키워드 (감성 분석) ──
+// weight: 3=강한 시그널, 2=중간, 1=약한
+const POSITIVE: [string, number][] = [
+  // 실적 (강)
+  ['어닝서프라이즈', 3], ['실적개선', 3], ['영업이익 증가', 3], ['사상최대', 3], ['흑자전환', 3],
+  ['매출 증가', 2], ['수익증가', 2], ['실적 호조', 2], ['순이익', 2],
+  // 투자의견 (강)
+  ['목표가 상향', 3], ['매수 추천', 3], ['투자의견 상향', 3], ['아웃퍼폼', 2],
+  // 수급 (중)
+  ['외국인 순매수', 2], ['기관 순매수', 2], ['자사주 매입', 2], ['자사주 취득', 2],
+  // 사업 (중)
+  ['대규모 수주', 2], ['신규 수주', 2], ['수출 증가', 2], ['공급계약', 2], ['MOU', 1],
+  // 주가 (중)
+  ['신고가', 2], ['52주 최고', 2], ['상한가', 2], ['급등', 2],
+  // 배당/주주 (중)
+  ['배당 확대', 2], ['배당금 인상', 2], ['주주환원', 2],
+  // 테마/성장 (약)
+  ['성장', 1], ['호재', 1], ['상향', 1], ['증가', 1], ['개선', 1], ['확대', 1], ['반등', 1], ['회복', 1],
+  ['AI 수혜', 2], ['반도체 호황', 2], ['수출 호조', 2],
+];
+const NEGATIVE: [string, number][] = [
+  // 실적 (강)
+  ['어닝쇼크', 3], ['실적 부진', 3], ['적자 전환', 3], ['적자 확대', 3], ['영업손실', 3],
+  ['매출 감소', 2], ['실적 악화', 2], ['수익 감소', 2],
+  // 투자의견 (강)
+  ['목표가 하향', 3], ['투자의견 하향', 3], ['매도 추천', 3], ['언더퍼폼', 2],
+  // 리스크 (강)
+  ['상장폐지', 3], ['횡령', 3], ['분식회계', 3], ['검찰', 2], ['압수수색', 3],
+  // 수급 (중)
+  ['외국인 순매도', 2], ['기관 순매도', 2], ['대량 매도', 2], ['블록딜', 2],
+  // 사업 (중)
+  ['소송', 2], ['리콜', 2], ['규제', 2], ['제재', 2], ['과징금', 2],
+  // 주가 (중)
+  ['52주 최저', 2], ['하한가', 2], ['급락', 2], ['폭락', 2],
+  // 일반 (약)
+  ['우려', 1], ['하락', 1], ['둔화', 1], ['감소', 1], ['악재', 1], ['하향', 1], ['위축', 1],
+  ['금리 인상', 2], ['경기침체', 2], ['무역분쟁', 2],
+];
 
 interface WatchlistItem { stock_code: string; stock_name: string; }
 
 /** Google News RSS로 종목 뉴스 감성 점수 계산 (-15 ~ +15) */
-async function getNewsScore(stockCode: string, stockName: string): Promise<number> {
+async function getNewsScore(stockCode: string, stockName: string): Promise<{ score: number; headlines: string[] }> {
   try {
     const url = `https://news.google.com/rss/search?q=${encodeURIComponent(stockName)}&hl=ko&gl=KR&ceid=KR:ko`;
     const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
-    if (!res.ok) return 0;
+    if (!res.ok) return { score: 0, headlines: [] };
     const xml = await res.text();
 
-    // 최근 뉴스 제목 추출 (최대 5개)
     const titles = [...xml.matchAll(/<title><!\[CDATA\[(.*?)\]\]><\/title>/g)]
-      .slice(1, 6) // 첫번째는 피드 제목
+      .slice(1, 8) // 최대 7개 (더 넓은 범위)
       .map(m => m[1]);
 
-    if (titles.length === 0) return 0;
+    if (titles.length === 0) return { score: 0, headlines: [] };
 
     let score = 0;
     for (const title of titles) {
-      const pos = POSITIVE_KW.filter(kw => title.includes(kw)).length;
-      const neg = NEGATIVE_KW.filter(kw => title.includes(kw)).length;
-      score += (pos - neg) * 3;
+      for (const [kw, weight] of POSITIVE) { if (title.includes(kw)) score += weight; }
+      for (const [kw, weight] of NEGATIVE) { if (title.includes(kw)) score -= weight; }
     }
 
-    return Math.max(-15, Math.min(15, score));
+    return { score: Math.max(-15, Math.min(15, score)), headlines: titles.slice(0, 3) };
+  } catch {
+    return { score: 0, headlines: [] };
+  }
+}
+
+/** 시장 전체 뉴스 감성 (-10 ~ +10) — KOSPI/코스닥/경제 전반 */
+let _marketSentimentCache: { score: number; fetchedAt: number } | null = null;
+async function getMarketSentiment(): Promise<number> {
+  if (_marketSentimentCache && Date.now() - _marketSentimentCache.fetchedAt < 30 * 60_000) {
+    return _marketSentimentCache.score;
+  }
+  try {
+    const url = `https://news.google.com/rss/search?q=${encodeURIComponent('코스피 증시')}&hl=ko&gl=KR&ceid=KR:ko`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+    if (!res.ok) return 0;
+    const xml = await res.text();
+    const titles = [...xml.matchAll(/<title><!\[CDATA\[(.*?)\]\]><\/title>/g)]
+      .slice(1, 6).map(m => m[1]);
+
+    let score = 0;
+    const MARKET_POS: [string, number][] = [['상승', 2], ['반등', 2], ['랠리', 3], ['외국인 매수', 2], ['최고치', 2], ['호조', 1]];
+    const MARKET_NEG: [string, number][] = [['하락', 2], ['폭락', 3], ['급락', 3], ['외국인 매도', 2], ['경기침체', 3], ['금리', 1], ['공포', 2]];
+    for (const title of titles) {
+      for (const [kw, w] of MARKET_POS) { if (title.includes(kw)) score += w; }
+      for (const [kw, w] of MARKET_NEG) { if (title.includes(kw)) score -= w; }
+    }
+    const clamped = Math.max(-10, Math.min(10, score));
+    _marketSentimentCache = { score: clamped, fetchedAt: Date.now() };
+    return clamped;
   } catch {
     return 0;
+  }
+}
+
+// ── 유튜브 인플루언서 시장 분위기 감지 (무료, 30분 캐시) ──
+// 삼프로TV: 한국 증시 #1 채널, 슈카월드: 경제/매크로 #1
+const YT_CHANNELS = [
+  { id: 'UChlv4GSd7OQl3js-jkLOnFA', name: '삼프로TV' },
+  { id: 'UCsJ6RuBiTVWRX156FVbeaGg', name: '슈카월드' },
+];
+// 유튜버 제목은 자극적 → 강한 시그널 키워드만 추출
+const YT_BULLISH: [string, number][] = [
+  ['상승장', 3], ['불장', 3], ['랠리', 3], ['바닥', 2], ['반등 시작', 3],
+  ['매수', 2], ['사야', 2], ['저점', 2], ['골든크로스', 2], ['신고가', 2],
+  ['호황', 2], ['급등', 2], ['돌파', 2], ['기회', 1], ['회복', 1],
+];
+const YT_BEARISH: [string, number][] = [
+  ['폭락', 3], ['하락장', 3], ['공포', 3], ['위기', 3], ['폭풍전야', 3],
+  ['매도', 2], ['팔아야', 2], ['빠져라', 2], ['데드크로스', 2], ['추락', 2],
+  ['붕괴', 3], ['급락', 2], ['조정', 1], ['하락', 1], ['침체', 2],
+];
+
+let _ytSentimentCache: { score: number; detail: string; fetchedAt: number } | null = null;
+
+/** 유튜브 인플루언서 시장 감성 (-5 ~ +5) — 최근 48시간 영상 제목 분석 */
+async function getYouTubeSentiment(): Promise<{ score: number; detail: string }> {
+  if (_ytSentimentCache && Date.now() - _ytSentimentCache.fetchedAt < 30 * 60_000) {
+    return { score: _ytSentimentCache.score, detail: _ytSentimentCache.detail };
+  }
+  try {
+    const cutoff = Date.now() - 48 * 3600_000; // 48시간 이내만
+    let totalScore = 0;
+    let matchedTitles: string[] = [];
+
+    const feeds = await Promise.allSettled(
+      YT_CHANNELS.map(async ch => {
+        const url = `https://www.youtube.com/feeds/videos.xml?channel_id=${ch.id}`;
+        const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        if (!res.ok) return [];
+        const xml = await res.text();
+        // Atom 형식: <entry><title>...</title><published>...</published></entry>
+        const entries = [...xml.matchAll(/<entry>[\s\S]*?<title>(.*?)<\/title>[\s\S]*?<published>(.*?)<\/published>[\s\S]*?<\/entry>/g)];
+        return entries
+          .filter(e => new Date(e[2]).getTime() > cutoff)
+          .map(e => ({ title: e[1], channel: ch.name }));
+      }),
+    );
+
+    for (const result of feeds) {
+      if (result.status !== 'fulfilled') continue;
+      for (const { title, channel } of result.value) {
+        let entryScore = 0;
+        for (const [kw, w] of YT_BULLISH) { if (title.includes(kw)) entryScore += w; }
+        for (const [kw, w] of YT_BEARISH) { if (title.includes(kw)) entryScore -= w; }
+        if (entryScore !== 0) {
+          totalScore += entryScore;
+          matchedTitles.push(`${channel}:"${title.slice(0, 25)}"`);
+        }
+      }
+    }
+
+    const clamped = Math.max(-5, Math.min(5, totalScore));
+    const detail = matchedTitles.length > 0 ? matchedTitles.slice(0, 2).join(', ') : '';
+    _ytSentimentCache = { score: clamped, detail, fetchedAt: Date.now() };
+    if (clamped !== 0) {
+      logger.info(`📺 유튜브 감성: ${clamped > 0 ? '+' : ''}${clamped} (${detail})`, { component: COMP });
+    }
+    return { score: clamped, detail };
+  } catch {
+    return { score: 0, detail: '' };
   }
 }
 
@@ -85,21 +220,27 @@ export async function runRSSScoring(
   topVolumeCodes: Set<string>,
   flowAdjMap: Map<string, number>,
 ): Promise<ScoringResult[]> {
-  logger.info(`RSS 스코어링 시작: ${watchlist.length}종목 (Gemini 대체)`, { component: COMP });
+  logger.info(`RSS 스코어링 시작: ${watchlist.length}종목 (뉴스 감성 + 기술지표)`, { component: COMP });
   const results: ScoringResult[] = [];
 
-  // 뉴스 스코어는 상위 20종목만 (rate limit 방지)
+  // 시장 전체 감성 (30분 캐시) + 유튜브 인플루언서 감성
+  const [marketSentiment, ytSentiment] = await Promise.all([
+    getMarketSentiment(),
+    getYouTubeSentiment(),
+  ]);
+
+  // 종목별 뉴스 스코어 (상위 20종목, rate limit 방지)
   const topCandidates = watchlist.slice(0, 20);
-  const newsScores = new Map<string, number>();
+  const newsScores = new Map<string, { score: number; headlines: string[] }>();
 
   await Promise.allSettled(
     topCandidates.map(async w => {
-      const score = await getNewsScore(w.stock_code, w.stock_name);
-      if (score !== 0) newsScores.set(w.stock_code, score);
+      const result = await getNewsScore(w.stock_code, w.stock_name);
+      if (result.score !== 0) newsScores.set(w.stock_code, result);
     })
   );
 
-  logger.info(`뉴스 스코어 완료: ${newsScores.size}종목`, { component: COMP });
+  logger.info(`뉴스 감성 완료: ${newsScores.size}종목 시그널, 시장감성=${marketSentiment > 0 ? '+' : ''}${marketSentiment}, 유튜브=${ytSentiment.score > 0 ? '+' : ''}${ytSentiment.score}`, { component: COMP });
 
   for (const w of watchlist) {
     const candles = chartData.get(w.stock_code) ?? [];
@@ -112,16 +253,21 @@ export async function runRSSScoring(
     let baseScore = 50 + Math.round(tech.score * 0.6);
     baseScore = Math.max(0, Math.min(82, baseScore)); // RSS 단독 상한 82
 
-    const newsBonus = newsScores.get(w.stock_code) ?? 0;
+    const newsResult = newsScores.get(w.stock_code);
+    const newsBonus = newsResult?.score ?? 0;
     const momentumBonus = getMomentumScore(w.stock_code, candles, topGainerCodes, topVolumeCodes);
     const flowBonus = getFlowBonus(flowAdjMap.get(w.stock_code) ?? 0);
 
-    // 눌림목 보너스: MA 이탈 후 반등 확인 = 최적 매수 타점
+    // 눌림목 보너스
     const pullbackBonus = tech.pullbackSignal ? 8 : 0;
-    // 눌림목 없고 base도 낮으면 과매수 주의 감점
+    // 과매수 감점
     const overextendedPenalty = (!tech.pullbackSignal && baseScore < 70 && tech.volumeRatio < 1.3) ? -5 : 0;
+    // 시장 감성 반영 (±10 → ±5점으로 축소 적용, 개별 종목보다 영향 낮게)
+    const marketBonus = Math.round(marketSentiment * 0.5);
+    // 유튜브 인플루언서 감성 (±5, 시장 레짐 보정)
+    const ytBonus = ytSentiment.score;
 
-    const composite = Math.min(100, baseScore + newsBonus + momentumBonus + flowBonus + pullbackBonus + overextendedPenalty);
+    const composite = Math.min(100, baseScore + newsBonus + momentumBonus + flowBonus + pullbackBonus + overextendedPenalty + marketBonus + ytBonus);
 
     // 신호 결정 + 눌림목 확인 시 confidence 상향
     let signal: ScoringResult['signal'] = 'HOLD';
@@ -137,13 +283,16 @@ export async function runRSSScoring(
     }
 
     const reasoningParts = [
-      `[RSS] tech=${baseScore}`,
+      `[RSS+NLP] tech=${baseScore}`,
       pullbackBonus > 0 ? `pb+${pullbackBonus}` : '',
       newsBonus !== 0 ? `news${newsBonus > 0 ? '+' : ''}${newsBonus}` : '',
+      marketBonus !== 0 ? `mkt${marketBonus > 0 ? '+' : ''}${marketBonus}` : '',
       momentumBonus > 0 ? `momentum+${momentumBonus}` : '',
+      ytBonus !== 0 ? `yt${ytBonus > 0 ? '+' : ''}${ytBonus}` : '',
       flowBonus !== 0 ? `flow${flowBonus > 0 ? '+' : ''}${flowBonus}` : '',
       overextendedPenalty < 0 ? `overextended${overextendedPenalty}` : '',
       `RSI=${tech.rsi14.toFixed(0)} vol=${tech.volumeRatio.toFixed(1)}x`,
+      newsResult?.headlines?.[0] ? `"${newsResult.headlines[0].slice(0, 30)}"` : '',
     ].filter(Boolean).join(' ');
 
     results.push({
