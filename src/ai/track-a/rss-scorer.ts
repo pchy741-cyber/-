@@ -120,7 +120,8 @@ async function getMarketSentiment(): Promise<number> {
 // 삼프로TV: 한국 증시 #1 채널, 슈카월드: 경제/매크로 #1
 const YT_CHANNELS = [
   { id: 'UChlv4GSd7OQl3js-jkLOnFA', name: '삼프로TV' },
-  { id: 'UCsJ6RuBiTVWRX156FVbeaGg', name: '슈카월드' },
+  { id: 'UCWskYkV4c4S9D__rsfOl2JA', name: '한경글로벌마켓' },
+  { id: 'UCvil4OAt-zShzkKHsg9EQAw', name: '김작가TV' },
 ];
 // 유튜버 제목은 자극적 → 강한 시그널 키워드만 추출
 const YT_BULLISH: [string, number][] = [
