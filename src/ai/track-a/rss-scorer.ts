@@ -117,23 +117,26 @@ async function getMarketSentiment(): Promise<number> {
 }
 
 // ── 유튜브 인플루언서 시장 분위기 감지 (무료, 30분 캐시) ──
-// 삼프로TV: 한국 증시 #1 채널, 슈카월드: 경제/매크로 #1
+// weight: 채널 신뢰도 (클릭베이트 채널은 낮게)
 const YT_CHANNELS = [
-  { id: 'UChlv4GSd7OQl3js-jkLOnFA', name: '삼프로TV' },
-  { id: 'UCWskYkV4c4S9D__rsfOl2JA', name: '한경글로벌마켓' },
-  { id: 'UCvil4OAt-zShzkKHsg9EQAw', name: '김작가TV' },
+  { id: 'UChlv4GSd7OQl3js-jkLOnFA', name: '삼프로TV', weight: 1.0 },
+  { id: 'UCWskYkV4c4S9D__rsfOl2JA', name: '한경글로벌마켓', weight: 1.0 },
+  { id: 'UCvil4OAt-zShzkKHsg9EQAw', name: '김작가TV', weight: 0.3 },
 ];
-// 유튜버 제목은 자극적 → 강한 시그널 키워드만 추출
 const YT_BULLISH: [string, number][] = [
-  ['상승장', 3], ['불장', 3], ['랠리', 3], ['바닥', 2], ['반등 시작', 3],
+  ['상승장', 3], ['불장', 3], ['랠리', 3], ['반등 시작', 3],
   ['매수', 2], ['사야', 2], ['저점', 2], ['골든크로스', 2], ['신고가', 2],
-  ['호황', 2], ['급등', 2], ['돌파', 2], ['기회', 1], ['회복', 1],
+  ['호황', 2], ['급등', 2], ['폭등', 3], ['돌파', 2], ['기회', 1], ['회복', 1],
+  ['바닥 확인', 2], ['상승 전환', 2],
 ];
 const YT_BEARISH: [string, number][] = [
   ['폭락', 3], ['하락장', 3], ['공포', 3], ['위기', 3], ['폭풍전야', 3],
   ['매도', 2], ['팔아야', 2], ['빠져라', 2], ['데드크로스', 2], ['추락', 2],
   ['붕괴', 3], ['급락', 2], ['조정', 1], ['하락', 1], ['침체', 2],
+  ['위험', 2], ['도망', 2], ['떨어진다', 1], ['녹는다', 2], ['녹아내', 2],
 ];
+// 질문형/가정문 → 실제 시장 공포가 아니라 분석 콘텐츠 → 점수 감쇄
+const YT_DAMPEN_PATTERNS = [/할까\??$/, /될까\??$/, /일까\??$/, /수 있다/, /전에/, /기 전/];
 
 let _ytSentimentCache: { score: number; detail: string; fetchedAt: number } | null = null;
 
@@ -157,18 +160,22 @@ async function getYouTubeSentiment(): Promise<{ score: number; detail: string }>
         const entries = [...xml.matchAll(/<entry>[\s\S]*?<title>(.*?)<\/title>[\s\S]*?<published>(.*?)<\/published>[\s\S]*?<\/entry>/g)];
         return entries
           .filter(e => new Date(e[2]).getTime() > cutoff)
-          .map(e => ({ title: e[1], channel: ch.name }));
+          .map(e => ({ title: e[1], channel: ch.name, weight: ch.weight }));
       }),
     );
 
     for (const result of feeds) {
       if (result.status !== 'fulfilled') continue;
-      for (const { title, channel } of result.value) {
+      for (const { title, channel, weight } of result.value) {
         let entryScore = 0;
         for (const [kw, w] of YT_BULLISH) { if (title.includes(kw)) entryScore += w; }
         for (const [kw, w] of YT_BEARISH) { if (title.includes(kw)) entryScore -= w; }
+        // 질문형/가정문 감쇄 ("~할까?", "~수 있다" → 분석 영상, 점수 반감)
+        if (entryScore !== 0 && YT_DAMPEN_PATTERNS.some(p => p.test(title))) {
+          entryScore = Math.round(entryScore * 0.5);
+        }
         if (entryScore !== 0) {
-          totalScore += entryScore;
+          totalScore += Math.round(entryScore * weight);
           matchedTitles.push(`${channel}:"${title.slice(0, 25)}"`);
         }
       }
