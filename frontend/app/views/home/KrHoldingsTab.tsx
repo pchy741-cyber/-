@@ -1,8 +1,9 @@
 'use client';
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { api, fmt, fmtWon, pc } from '../../lib/utils';
 import { toDisplayName, isUnresolvedStockName } from '../../lib/helpers';
+import { usePriceFlash } from '../../hooks/usePriceFlash';
 import type { Chain, Dashboard, ToastFn, ConfirmFn, ViewMode } from '../../types';
 
 interface KrHoldingsTabProps {
@@ -22,6 +23,13 @@ const STRATEGY_TP_SL: Record<string, [number, number]> = {
 };
 
 export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStockName, onRefresh, viewMode = 'live', toast, confirm }: KrHoldingsTabProps) {
+  const priceMap = useMemo(() => {
+    const m: Record<string, number> = {};
+    chains.forEach(ch => { if ((ch.currentPrice ?? 0) > 0) m[ch.stock_code] = ch.currentPrice!; });
+    return m;
+  }, [chains]);
+  const flashMap = usePriceFlash(priceMap);
+
   if (chains.length === 0) {
     return (
       <div className="p-8 text-center space-y-3">
@@ -102,15 +110,21 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
                 <div className="flex items-center gap-1.5">
                   <span className="text-sm font-bold truncate">{displayName}</span>
                   {isClaudeBought && <span className="text-[10px] bg-violet-500/20 text-violet-300 border border-violet-500/40 px-1.5 py-0.5 rounded font-bold shrink-0">AI픽</span>}
-                  <span className="text-[10px] bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded font-medium shrink-0">{ch.strategy_mode}</span>
+                  {ch.strategy_mode === 'EOD_BETTING'
+                    ? <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1.5 py-0.5 rounded font-bold shrink-0">🎰 종가베팅</span>
+                    : <span className="text-[10px] bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded font-medium shrink-0">{ch.strategy_mode}</span>}
                   {ch.status === 'PROFIT_TAKING' && <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.5 rounded font-bold shrink-0">2단계↑</span>}
                 </div>
                 <div className="text-[11px] text-slate-500 mt-0.5">평단 {fmtWon(avgPrice)} · {fmt(qty)}주{weight !== null ? ` · 비중 ${weight}%` : ''}</div>
               </div>
-              <div className="text-right shrink-0">
+              <div className={`text-right shrink-0 rounded-lg px-1.5 py-0.5 transition-colors duration-300 ${flashMap[ch.stock_code] === 'up' ? 'bg-emerald-500/15' : flashMap[ch.stock_code] === 'down' ? 'bg-rose-500/15' : ''}`}>
                 {(ch.currentPrice ?? 0) > 0 ? (
                   <>
-                    <div className={`text-lg font-black ${pc(pnl)}`}>{pnlPct > 0 ? '+' : ''}{pnlPct.toFixed(2)}%</div>
+                    <div className={`text-lg font-black ${pc(pnl)}`}>
+                      {flashMap[ch.stock_code] === 'up' && <span className="text-emerald-400 text-xs mr-0.5">&#9650;</span>}
+                      {flashMap[ch.stock_code] === 'down' && <span className="text-rose-400 text-xs mr-0.5">&#9660;</span>}
+                      {pnlPct > 0 ? '+' : ''}{pnlPct.toFixed(2)}%
+                    </div>
                     <div className={`text-[11px] ${pc(pnl)}`}>{pnl > 0 ? '+' : ''}{fmtWon(pnl)}</div>
                   </>
                 ) : <span className="text-xs text-slate-600">시세 로딩중</span>}
@@ -147,7 +161,7 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
             <div className="flex items-center gap-1.5 mt-3">
               <div className="flex gap-0.5">
                 {Array.from({ length: maxAvg }, (_, j) => (
-                  <span key={j} className={`w-3.5 h-3.5 rounded-full text-[7px] font-bold flex items-center justify-center ${j < curAvg ? 'bg-blue-500 text-white' : 'bg-white/[0.06] text-slate-600'}`}>{j + 1}</span>
+                  <span key={j} className={`w-3.5 h-3.5 rounded-full text-[8px] font-bold flex items-center justify-center ${j < curAvg ? 'bg-blue-500 text-white' : 'bg-white/[0.06] text-slate-600'}`}>{j + 1}</span>
                 ))}
               </div>
               <div className="ml-auto flex items-center gap-1">

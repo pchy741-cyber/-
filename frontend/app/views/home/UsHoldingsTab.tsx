@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { Button } from '@/components/ui';
 import { api, fmtPct, pc, pbg } from '../../lib/utils';
 import { toDisplayName } from '../../lib/helpers';
+import { usePriceFlash } from '../../hooks/usePriceFlash';
 import ReferencePanel from '../../panels/ReferencePanel';
 import ManualBuyModal from '../../panels/ManualBuyModal';
 import { UsHoldingTpSlBar } from './UsHoldingTpSlBar';
@@ -42,6 +43,17 @@ export default function UsHoldingsTab({
   const [editTp, setEditTp] = useState('');
   const [editSl, setEditSl] = useState('');
   const [showManualBuy, setShowManualBuy] = useState(false);
+
+  const usPriceMap = useMemo(() => {
+    const m: Record<string, number> = {};
+    usHoldings.forEach(h => {
+      const p = usW.find(s => s.code === h.stock_code);
+      const price = (p?.price ?? 0) > 0 ? p!.price! : (h.last_price ?? 0);
+      if (price > 0) m[h.stock_code] = price;
+    });
+    return m;
+  }, [usHoldings, usW]);
+  const flashMap = usePriceFlash(usPriceMap);
 
   const saveTpSl = useCallback(async (code: string) => {
     const tp = parseFloat(editTp);
@@ -100,10 +112,14 @@ export default function UsHoldingsTab({
                     </div>
                     <div className="text-[11px] text-slate-500">평단 ${h.avg_price.toFixed(2)} · 투자 ${invested.toFixed(0)}</div>
                   </div>
-                  <div className="text-right">
+                  <div className={`text-right rounded-lg px-1.5 py-0.5 transition-colors duration-300 ${flashMap[h.stock_code] === 'up' ? 'bg-emerald-500/15' : flashMap[h.stock_code] === 'down' ? 'bg-rose-500/15' : ''}`}>
                     {displayPrice > 0 ? (
                       <>
-                        <div className={`text-base font-bold ${pc(pnl)}`}>{pnlPct > 0 ? '+' : ''}{pnlPct.toFixed(1)}%</div>
+                        <div className={`text-base font-bold ${pc(pnl)}`}>
+                          {flashMap[h.stock_code] === 'up' && <span className="text-emerald-400 text-xs mr-0.5">&#9650;</span>}
+                          {flashMap[h.stock_code] === 'down' && <span className="text-rose-400 text-xs mr-0.5">&#9660;</span>}
+                          {pnlPct > 0 ? '+' : ''}{pnlPct.toFixed(1)}%
+                        </div>
                         <div className={`text-[11px] ${pc(pnl)}`}>${pnl.toFixed(0)}</div>
                         {isAvgFallback && <div className="text-[10px] text-slate-600">매수가 기준</div>}
                         {isStale && !isAvgFallback && <div className="text-[10px] text-slate-600">장마감 시세</div>}

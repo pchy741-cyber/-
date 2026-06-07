@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react';
 import { api, BACKEND_URL } from '../lib/utils';
-import type { Dashboard, Trade, UsDashboard, Strategy, LoopStatus } from '../types';
+import type { Dashboard, Trade, UsDashboard, Strategy, LoopStatus, Health, TodayStats } from '../types';
 
 interface SSESetters {
   setTrades: React.Dispatch<React.SetStateAction<Trade[]>>;
@@ -11,10 +11,12 @@ interface SSESetters {
   setUsDash: React.Dispatch<React.SetStateAction<UsDashboard | null>>;
   setLoopStatus: React.Dispatch<React.SetStateAction<LoopStatus | null>>;
   setSseHealthScore: React.Dispatch<React.SetStateAction<number>>;
+  setHealth: React.Dispatch<React.SetStateAction<Health | null>>;
+  setTodayStats: React.Dispatch<React.SetStateAction<TodayStats | null>>;
 }
 
 export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
-  const { setTrades, setStrategy, setDash, setUsDash, setLoopStatus, setSseHealthScore } = setters;
+  const { setTrades, setStrategy, setDash, setUsDash, setLoopStatus, setSseHealthScore, setHealth, setTodayStats } = setters;
 
   useEffect(() => {
     const vm = viewMode;
@@ -26,11 +28,39 @@ export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let disposed = false;
 
+    // 공통: chainPrices 머지 로직
+    const mergeChainPrices = (data: { chainPrices?: any[]; portfolio?: { unrealizedPnl?: number } }) => {
+      if (!Array.isArray(data.chainPrices) || data.chainPrices.length === 0) return;
+      setDash(prev => {
+        if (!prev?.chains) return prev;
+        const priceMap = new Map<string, {stock_code:string;currentPrice:number;unrealizedPnl:number;unrealizedPnlPct:number;weight?:number}>(data.chainPrices!.map((cp: any) => [cp.stock_code, cp]));
+        const updatedChains = prev.chains.map(ch => {
+          const cp = priceMap.get(ch.stock_code);
+          if (!cp || cp.currentPrice <= 0) return ch;
+          return { ...ch, currentPrice: cp.currentPrice, unrealizedPnl: cp.unrealizedPnl, unrealizedPnlPct: cp.unrealizedPnlPct, ...(cp.weight != null ? { weight: cp.weight } : {}) };
+        });
+        const updatedPortfolio = data.portfolio?.unrealizedPnl != null
+          ? { ...prev.portfolio, unrealizedPnl: data.portfolio.unrealizedPnl }
+          : prev.portfolio;
+        return { ...prev, chains: updatedChains, portfolio: updatedPortfolio };
+      });
+    };
+
     const connect = () => {
       if (disposed) return;
       es = new EventSource(`${base}/api/stream?viewMode=${vm}`, { withCredentials: true });
 
-      es.addEventListener('update', (e: MessageEvent) => {
+      // 경량 가격 틱 (3초) — chainPrices만 처리
+      es.addEventListener('prices', (e: MessageEvent) => {
+        retryCount = 0;
+        try {
+          const data = JSON.parse(e.data);
+          mergeChainPrices(data);
+        } catch { /* ignore */ }
+      });
+
+      // 전체 메타 페이로드 (30초) — 기존 update 로직
+      es.addEventListener('meta', (e: MessageEvent) => {
         retryCount = 0;
         try {
           const data = JSON.parse(e.data);
@@ -49,21 +79,7 @@ export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
           if (data.strategy) {
             setStrategy(prev => prev ? { ...prev, ...data.strategy } : data.strategy);
           }
-          if (Array.isArray(data.chainPrices) && data.chainPrices.length > 0) {
-            setDash(prev => {
-              if (!prev?.chains) return prev;
-              const priceMap = new Map<string, {stock_code:string;currentPrice:number;unrealizedPnl:number;unrealizedPnlPct:number}>(data.chainPrices.map((cp: {stock_code:string;currentPrice:number;unrealizedPnl:number;unrealizedPnlPct:number}) => [cp.stock_code, cp]));
-              const updatedChains = prev.chains.map(ch => {
-                const cp = priceMap.get(ch.stock_code);
-                if (!cp || cp.currentPrice <= 0) return ch;
-                return { ...ch, currentPrice: cp.currentPrice, unrealizedPnl: cp.unrealizedPnl, unrealizedPnlPct: cp.unrealizedPnlPct };
-              });
-              const updatedPortfolio = data.portfolio?.unrealizedPnl != null
-                ? { ...prev.portfolio, unrealizedPnl: data.portfolio.unrealizedPnl }
-                : prev.portfolio;
-              return { ...prev, chains: updatedChains, portfolio: updatedPortfolio };
-            });
-          }
+          mergeChainPrices(data);
           const chainsChanged = prevChainCount !== -1 && data.activeChains !== prevChainCount;
           const overseasChanged = prevOverseasCount !== -1 && data.overseasHoldingCount !== undefined && data.overseasHoldingCount !== prevOverseasCount;
           if (chainsChanged || overseasChanged) {
@@ -77,6 +93,22 @@ export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
           if (data.overseasHoldingCount !== undefined) prevOverseasCount = data.overseasHoldingCount;
           if (data.loopMode) setLoopStatus({ ...data.loopMode, openMarkets: data.loopMode.openMarkets ?? [], autoPilot: data.autoPilot ?? null });
           if (data.healthScore != null) setSseHealthScore(data.healthScore);
+          if (Array.isArray(data.recentEvents)) {
+            setHealth(prev => prev ? { ...prev, recentEvents: data.recentEvents } : prev);
+          }
+          if (data.todayStats) setTodayStats(data.todayStats);
+        } catch { /* ignore */ }
+      });
+
+      // 하위 호환: 기존 'update' 이벤트도 처리 (배포 전환 중)
+      es.addEventListener('update', (e: MessageEvent) => {
+        retryCount = 0;
+        try {
+          const data = JSON.parse(e.data);
+          mergeChainPrices(data);
+          if (data.loopMode) setLoopStatus({ ...data.loopMode, openMarkets: data.loopMode.openMarkets ?? [], autoPilot: data.autoPilot ?? null });
+          if (data.healthScore != null) setSseHealthScore(data.healthScore);
+          if (data.todayStats) setTodayStats(data.todayStats);
         } catch { /* ignore */ }
       });
 
@@ -96,5 +128,5 @@ export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
       es?.close();
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [viewMode, setTrades, setStrategy, setDash, setUsDash, setLoopStatus, setSseHealthScore]);
+  }, [viewMode, setTrades, setStrategy, setDash, setUsDash, setLoopStatus, setSseHealthScore, setHealth, setTodayStats]);
 }

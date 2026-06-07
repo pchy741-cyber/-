@@ -13,8 +13,8 @@ class MemoryCache {
   private cleanupInterval: ReturnType<typeof setInterval>;
 
   constructor() {
-    // 5분마다 만료된 항목 정리
-    this.cleanupInterval = setInterval(() => this.cleanup(), 300_000);
+    // 30분마다 만료된 항목 정리 (v3: 5m→30m, GC 부담 축소)
+    this.cleanupInterval = setInterval(() => this.cleanup(), 1_800_000);
   }
 
   set<T>(key: string, value: T, ttlSeconds: number): void {
@@ -49,10 +49,10 @@ class MemoryCache {
 
 export const memCache = new MemoryCache();
 
-// ── 가격 캐시 (30초 TTL — 거의 실시간이지만 중복 호출 방지) ──
+// ── 가격 캐시 (15초 TTL — 3초 SSE 틱에서 빠르게 stale 감지) ──
 
 export function cachePriceMemory(stockCode: string, price: number): void {
-  if (price > 0) memCache.set(`price:${stockCode}`, price, 60);
+  if (price > 0) memCache.set(`price:${stockCode}`, price, 15);
   // 장기 캐시도 유지 (2시간 — 장 마감 후 fallback용)
   if (price > 0) memCache.set(`price:last:${stockCode}`, price, 7200);
 }
