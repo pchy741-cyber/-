@@ -32,10 +32,10 @@ export async function generateAveragingDecisions(
     const isBelowSma20Deep = chainTech ? price.currentPrice < chainTech.sma20 * 0.97 : false; // SMA20 -3% 이상 이탈 시 물타기 금지
     // 하드 손실 한도: -8% 초과 수중에서는 물타기 절대 금지 (나락 방지)
     const isTooDeepUnderwater = pnlPct <= -8.0;
-    // 포지션 집중도 한도: 총자산의 10% 이상이면 추가 물타기 차단 (단일 종목 집중 방지)
+    // 포지션 집중도 한도: 총자산의 25% 이상이면 추가 물타기 차단 (Hard Cap과 동기화)
     const positionValue = price.currentPrice * Number(chain.total_quantity ?? 0);
     const concentrationPct = (totalAssets ?? 0) > 0 ? positionValue / totalAssets! : 0;
-    const isTooConcentrated = concentrationPct >= 0.10;
+    const isTooConcentrated = concentrationPct >= 0.25;
     // ── 지지선 + 반등신호 없는 물타기 차단 ──────────────────────────────────
     // 지지선 근처(BB하단/RSI과매도)에 있더라도, 실제 반전 신호가 있어야 물타기 허용
     // "제이마니아 판정": 차트에서 반등 시그널 확인 후 추가매수 (기계적 % 물타기 금지)
@@ -73,7 +73,10 @@ export async function generateAveragingDecisions(
         logger.info(`  ⏳ ${chain.stock_code}: 미체결 BUY 주문 존재 → 물타기 중복 차단`, { component: 'TRACK_B' });
         continue;
       }
-      const avgDownSize = Math.min(effectiveMaxPos / splitCount, cash / 4);
+      // 물타기 후 총 비중이 Hard Cap 25%를 넘지 않도록 잔여 한도 계산
+      const maxAllowedValue = (totalAssets ?? 0) * 0.25;
+      const remainingRoom = Math.max(0, maxAllowedValue - positionValue);
+      const avgDownSize = Math.min(effectiveMaxPos / splitCount, cash / 4, remainingRoom);
       // 물타기 최소 금액: effectiveMaxPos의 5% 또는 1만원 중 큰 값 (고정금액 제거)
       const minAvgDownSize = Math.max(10_000, effectiveMaxPos * 0.05);
       if (avgDownSize >= minAvgDownSize) {

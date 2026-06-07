@@ -508,12 +508,13 @@ export const OVERSEAS_FEE_PCT = 0.0035;
 
 
 // ── 황금비율 자금배분 (해외) — 피보나치 기반 ──
-// SWING 38.2% + CORE 38.2% + TACTICAL 14.6% + CASH 9.0% = 100%
+// SWING 38.2% + CORE 38.2% + TACTICAL 8.6% + CASH 15.0% = 100%
+// CASH 9→15% 상향 (폭락장 헷지 + 기회 대기 버퍼 확보)
 export const ALLOCATION_GOLDEN = {
   SWING_PCT: 0.382,     // 중타 (TP +7~25%, 보유 3~14일)
   CORE_PCT: 0.382,      // 장타 우량주 (TP +15~30%, 보유 14~30일)
-  TACTICAL_PCT: 0.146,  // 단타 장중매매 (TP +3.5~5%, 당일~1일)
-  CASH_PCT: 0.090,      // 현금 유보 (기회 대기)
+  TACTICAL_PCT: 0.086,  // 단타 장중매매 (TP +3.5~5%, 당일~1일)
+  CASH_PCT: 0.150,      // 현금 유보 (폭락장 방어 + 기회 대기)
 } as const;
 
 export type StrategyBucket = 'SWING' | 'CORE' | 'TACTICAL';

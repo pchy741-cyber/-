@@ -248,6 +248,15 @@ export class RiskEngine {
       };
     }
 
+    // 소프트 리밋: Live에서 한도의 80%(=2.0%) 도달 시 신규 진입 차단
+    // (슬리피지로 -2.5% 초과 체결 방지 — 킬스위치 발동 전 선제 방어)
+    if (!isPaper && dailyLoss > limitAmount * 0.80) {
+      return {
+        approved: false,
+        reason: `⚠️ 소프트 리밋: 일일 손실 ${dailyLoss.toLocaleString()}원(${lossPct}%) — 한도 80% 도달, 신규 진입 차단`,
+      };
+    }
+
     if (dailyLoss > limitAmount * 0.7) {
       logger.warn(
         `⚠️ 일일 손실 경고: ${dailyLoss.toLocaleString()}원(${lossPct}%) — 한도의 ${((dailyLoss / limitAmount) * 100).toFixed(0)}%`,
