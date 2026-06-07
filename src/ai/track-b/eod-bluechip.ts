@@ -1,6 +1,7 @@
 import type { TransactionChain, TradeDecision } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
+import { getKSTNow } from '../../utils/time.js';
 
 // 삼성전자, SK하이닉스, 한화에어로스페이스
 export const EOD_BLUECHIP_CODES = ['005930', '000660', '012450'] as const;
@@ -13,6 +14,7 @@ interface EodContext {
   todayDown: boolean;
   kospiPenalty: number;
   adjMaxPositionKrw: number;
+  totalAssets: number;            // 총자산 (cascading multiplier 미적용 원본)
   blockNewBuys: boolean;
   watchlistCodes?: string[]; // 워치리스트 종목 코드 (시간외 줍줍용)
   scannedStocks?: Array<{ stock_code: string; stock_name: string }>; // 바닥낚시 스캐너 결과
@@ -28,7 +30,7 @@ interface EodContext {
  * 호출 위치: deduplicateSells() AFTER → 이미 청산 결정 있으면 중복 추가 안 함
  */
 export function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: EodContext): TradeDecision[] {
-  const { kstH, kstM, openChains, livePrices, todayDown, kospiPenalty, adjMaxPositionKrw, blockNewBuys, watchlistCodes, scannedStocks } = ctx;
+  const { kstH, kstM, openChains, livePrices, todayDown, kospiPenalty, totalAssets, blockNewBuys, watchlistCodes, scannedStocks } = ctx;
   const result = [...decisions];
 
   const isEodBuyWindow = kstH === 14 && kstM >= 50;
@@ -38,7 +40,7 @@ export function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: EodCon
 
   // ── 익일 오전: 전날 14:45 이후 매수한 포지션 장시작 강제 청산 ──
   if (isMorningExitWindow) {
-    const todayKst = new Date(Date.now() + 9 * 3600000);
+    const todayKst = getKSTNow();
     const todayStr = todayKst.toISOString().split('T')[0];
     for (const chain of openChains) {
       if (Number(chain.total_quantity) <= 0) continue;
@@ -77,7 +79,9 @@ export function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: EodCon
       if (openChains.some((c) => c.stock_code === code && Number(c.total_quantity) > 0)) continue;
       const p = livePrices.get(code);
       if (!p || p.currentPrice <= 0 || p.changePct > -0.5) continue;
-      const qty = Math.floor((adjMaxPositionKrw * 0.5) / p.currentPrice);
+      // 총자산 10% 직접 사용 (pipeline cascading multiplier 우회 — EOD 단타는 별도 사이징)
+      const eodPositionKrw = Math.round(totalAssets * 0.10);
+      const qty = Math.floor(eodPositionKrw / p.currentPrice);
       if (qty <= 0) continue;
       const alreadyBuying = result.some(
         (d) => d.stock_code === code && (d.action === 'BUY' || d.action === 'AVERAGE_DOWN'),
@@ -117,7 +121,9 @@ export function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: EodCon
       if (!p || p.currentPrice <= 0) continue;
       // 시간외는 더 보수적: -1.5% 이상 급락만 (장중 EOD는 -0.5%)
       if (p.changePct > -1.5) continue;
-      const qty = Math.floor((adjMaxPositionKrw * 0.3) / p.currentPrice); // 포지션 30% (장중 50%보다 보수적)
+      // 총자산 7% 직접 사용 (장중 10%보다 보수적, cascading multiplier 우회)
+      const afterHoursPositionKrw = Math.round(totalAssets * 0.07);
+      const qty = Math.floor(afterHoursPositionKrw / p.currentPrice);
       if (qty <= 0) continue;
       const alreadyBuying = result.some(
         (d) => d.stock_code === code && (d.action === 'BUY' || d.action === 'AVERAGE_DOWN'),

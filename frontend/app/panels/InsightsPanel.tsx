@@ -12,9 +12,9 @@ import type { Trade, Insight, ToastFn } from '../types';
 function validationBadge(i: Insight) {
   if (i.source_mode !== 'promoted_from_paper') return null;
   const status = i.live_validation_status;
-  if (status === 'validated') return <span className="text-[8px] bg-emerald-900/50 text-emerald-300 px-1.5 py-0.5 rounded-full font-medium">실전확인</span>;
-  if (status === 'invalidated') return <span className="text-[8px] bg-slate-800/60 text-slate-500 px-1.5 py-0.5 rounded-full font-medium line-through">미검증</span>;
-  return <span className="text-[8px] bg-cyan-900/40 text-cyan-300 px-1.5 py-0.5 rounded-full font-medium">연습검증</span>;
+  if (status === 'validated') return <span className="text-[10px] bg-emerald-900/50 text-emerald-300 px-1.5 py-0.5 rounded-full font-medium">실전확인</span>;
+  if (status === 'invalidated') return <span className="text-[10px] bg-slate-800/60 text-slate-500 px-1.5 py-0.5 rounded-full font-medium line-through">미검증</span>;
+  return <span className="text-[10px] bg-cyan-900/40 text-cyan-300 px-1.5 py-0.5 rounded-full font-medium">연습검증</span>;
 }
 
 export default function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast }: { insights: Insight[]; trades?: Trade[]; onRefresh: () => void; toast?: ToastFn }) {

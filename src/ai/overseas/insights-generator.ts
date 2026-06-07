@@ -1,4 +1,5 @@
 import { getPool } from '../../db/client.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import { callVertexGemini } from '../../utils/vertex-gemini.js';
 import { logger } from '../../utils/logger.js';
 
@@ -24,6 +25,7 @@ interface TradeRecord {
 }
 
 async function fetchCompletedTrades(): Promise<TradeRecord[]> {
+  const tradingMode = getCtxIsPaper() ? 'paper' : 'live';
   const { rows } = await getPool().query(`
     SELECT
       b.stock_code AS code,
@@ -40,6 +42,7 @@ async function fetchCompletedTrades(): Promise<TradeRecord[]> {
         AND side = 'SELL'
         AND status = 'FILLED'
         AND trigger_source = 'OVERSEAS'
+        AND trading_mode = $1
         AND created_at > b.created_at
         AND filled_price IS NOT NULL
       ORDER BY created_at ASC
@@ -48,12 +51,13 @@ async function fetchCompletedTrades(): Promise<TradeRecord[]> {
     WHERE b.side = 'BUY'
       AND b.status = 'FILLED'
       AND b.trigger_source = 'OVERSEAS'
+      AND b.trading_mode = $1
       AND b.created_at >= NOW() - INTERVAL '30 days'
       AND b.filled_price IS NOT NULL
       AND b.filled_price > 0
     ORDER BY b.created_at DESC
     LIMIT 60
-  `);
+  `, [tradingMode]);
 
   return rows.map((r: Record<string, unknown>) => {
     const buyPrice = Number(r.buy_price);
@@ -130,6 +134,8 @@ export async function getAIGeneratedInsights(): Promise<string> {
 }
 
 export async function generateAndSaveInsights(): Promise<void> {
+  const { config } = await import('../../config/index.js');
+  if (!config.geminiEnabled) { logger.info('💡 인사이트 생성 스킵 (Gemini OFF)', { component: 'INSIGHTS' }); return; }
   try {
     // 4시간 이내 재생성 방지
     const { rows: tsRows } = await getPool().query(

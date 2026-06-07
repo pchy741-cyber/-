@@ -3,6 +3,7 @@
  */
 
 import { GATE } from '../config/constants.js';
+import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { getPool } from '../db/client.js';
 import { logger } from '../utils/logger.js';
@@ -103,11 +104,14 @@ async function getConsecutiveLosses(): Promise<number> {
 
 export async function cooldownGate(): Promise<GateResult> {
   const consecutive = await getConsecutiveLosses();
-  // Paper 모드: 쿨다운 대폭 완화 (5연패 10분, 3-4연패 5분)
+  // Paper 모드: 쿨다운 대폭 완화 (config.paperRisk.cooldownMultiplier 적용)
   const isPaper = getCtxIsPaper();
-  const cooldownMs = isPaper
-    ? (consecutive >= 5 ? 10 * 60_000 : consecutive >= 3 ? 5 * 60_000 : 0)
-    : (consecutive >= 5 ? GATE.CONSECUTIVE_LOSS_HALT_MS : consecutive >= 3 ? GATE.CONSECUTIVE_LOSS_WARN_MS : 0);
+  const mult = isPaper ? config.paperRisk.cooldownMultiplier : 1;
+  const cooldownMs = consecutive >= 5
+    ? Math.round(GATE.CONSECUTIVE_LOSS_HALT_MS * mult)
+    : consecutive >= 3
+      ? Math.round(GATE.CONSECUTIVE_LOSS_WARN_MS * mult)
+      : 0;
 
   if (cooldownMs > 0) {
     try {
@@ -175,9 +179,12 @@ export async function getCooldownStatus(): Promise<CooldownStatus> {
   try {
     const consecutive = await getConsecutiveLosses();
     const isPaper = getCtxIsPaper();
-    const cooldownMs = isPaper
-      ? (consecutive >= 5 ? 10 * 60_000 : consecutive >= 3 ? 5 * 60_000 : 0)
-      : (consecutive >= 5 ? GATE.CONSECUTIVE_LOSS_HALT_MS : consecutive >= 3 ? GATE.CONSECUTIVE_LOSS_WARN_MS : 0);
+    const mult = isPaper ? config.paperRisk.cooldownMultiplier : 1;
+    const cooldownMs = consecutive >= 5
+      ? Math.round(GATE.CONSECUTIVE_LOSS_HALT_MS * mult)
+      : consecutive >= 3
+        ? Math.round(GATE.CONSECUTIVE_LOSS_WARN_MS * mult)
+        : 0;
 
     if (cooldownMs > 0) {
       const params: any[] = [isPaper];

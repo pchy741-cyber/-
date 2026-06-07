@@ -212,6 +212,22 @@ export class ChainManager {
         }
       } catch { /* 핑거프린트 추출 실패 시 null — 무시 */ }
 
+      // 2026-06: 보정된 점수(adjusted score)를 우선 사용 — raw composite_score는 피드백 왜곡 유발
+      // 매수 주문의 ai_reasoning에서 blend=XX 추출 → 실제 진입 시 사용한 점수 기록
+      let adjustedScore: number | null = null;
+      try {
+        const { rows: buyOrders2 } = await pool.query(
+          `SELECT ai_reasoning FROM orders WHERE chain_id = $1 AND side = 'BUY' ORDER BY created_at ASC LIMIT 1`,
+          [chainId],
+        );
+        if (buyOrders2[0]?.ai_reasoning) {
+          const blendMatch = String(buyOrders2[0].ai_reasoning).match(/blend=(\d+)/);
+          if (blendMatch) adjustedScore = Number(blendMatch[1]);
+        }
+      } catch { /* 추출 실패 → raw score 사용 */ }
+
+      const entryScore = adjustedScore ?? score?.composite_score ?? null;
+
       const insertResult = await pool.query(
         `INSERT INTO score_accuracy
            (stock_code, chain_id, entry_score, entry_signal, entry_confidence,
@@ -221,7 +237,7 @@ export class ChainManager {
         [
           chain.stock_code,
           chainId,
-          score?.composite_score ?? null,
+          entryScore,
           score?.signal ?? null,
           score?.confidence ?? null,
           pnlPct,

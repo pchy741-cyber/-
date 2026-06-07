@@ -294,53 +294,87 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       }
     } catch { /* 레짐 감지 실패 시 null — 프롬프트 영향 없음 */ }
 
-    // 5-1. 3단 폴백: Gemini+GPT → Gemini+Claude → Gemini+기술적 → Claude 단독
+    // 5-0. 앙상블 모드 분기
     let scores: ScoringResult[] = [];
     let geminiResult: Awaited<ReturnType<typeof runGeminiAnalysis>> | null = null;
-    // 폴백 단계 추적 — 'gemini'만 기존 점수 덮어쓰기 허용
     let scoringSource: 'gemini' | 'flash' | 'technical' = 'technical';
 
-    // Step 5-1: Gemini 분석
-    try {
-      geminiResult = await runGeminiAnalysis({
-        mode,
-        watchlist: allStocks,
-        chartData,
-        dividendData: dividendData.size > 0 ? dividendData : undefined,
-        additionalSources: combinedSources || undefined,
-        customPrompt: customGeminiPrompt ?? undefined,
-        regimeHint,
+    const { config: appConfig } = await import('../../config/index.js');
+    const ensembleEnabled = strategy?.ai_scoring_mode === 'ensemble';
+
+    if (ensembleEnabled) {
+      // 앙상블: Gemini 분석 먼저 시도 (있으면 ensemble에 제공, 없어도 OK)
+      if (appConfig.geminiEnabled) {
+        try {
+          geminiResult = await runGeminiAnalysis({
+            mode, watchlist: allStocks, chartData,
+            dividendData: dividendData.size > 0 ? dividendData : undefined,
+            additionalSources: combinedSources || undefined,
+            customPrompt: customGeminiPrompt ?? undefined, regimeHint,
+          });
+        } catch (geminiErr) {
+          logger.warn(`⚠️ 앙상블 Gemini 분석 실패 (계속 진행): ${geminiErr}`, { component: 'TRACK_A' });
+        }
+      }
+
+      const topVolumeSet = new Set(
+        volumeTop.status === 'fulfilled' ? volumeTop.value.slice(0, 30).map(s => s.stock_code) : []
+      );
+      const topGainerSet = new Set(
+        changeTop.status === 'fulfilled' ? changeTop.value.slice(0, 20).map(s => s.stock_code) : []
+      );
+
+      const { runEnsembleScoring } = await import('./ensemble.js');
+      scores = await runEnsembleScoring({
+        mode, watchlist: allStocks, chartData,
+        geminiAnalysis: geminiResult,
+        strategy, regimeHint,
+        ensembleConfig: strategy?.ensemble_config ?? undefined,
+        topGainerCodes: topGainerSet,
+        topVolumeCodes: topVolumeSet,
       });
-    } catch (geminiErr) {
-      logger.warn(`⚠️ Gemini 실패: ${geminiErr}`, { component: 'TRACK_A' });
+      if (scores.length > 0) scoringSource = 'gemini'; // 앙상블 성공 → 최우선 source
+      // 앙상블 실패 시 scores=[] → 아래 폴백 체인으로 자연스럽게 진입
     }
 
-    // Step 5-2: Gemini 스코어링 (1순위 — 무료)
-    if (geminiResult) {
+    // 5-1. 폴백 체인 (앙상블 미사용 or 앙상블 실패 시)
+    if (scores.length === 0 && !ensembleEnabled && appConfig.geminiEnabled) {
+      // Step 5-1: Gemini 분석
       try {
-        scores = await runGeminiScoring({
-          mode,
-          geminiAnalysis: geminiResult,
-          customPrompt: customGptPrompt ?? undefined,
-          regimeHint,
+        geminiResult = await runGeminiAnalysis({
+          mode, watchlist: allStocks, chartData,
+          dividendData: dividendData.size > 0 ? dividendData : undefined,
+          additionalSources: combinedSources || undefined,
+          customPrompt: customGeminiPrompt ?? undefined, regimeHint,
         });
-        if (scores.length > 0) scoringSource = 'gemini';
-      } catch (geminiScoreErr) {
-        logger.warn(`⚠️ Gemini 스코어링 실패: ${geminiScoreErr}`, { component: 'TRACK_A' });
+      } catch (geminiErr) {
+        logger.warn(`⚠️ Gemini 실패: ${geminiErr}`, { component: 'TRACK_A' });
       }
+
+      // Step 5-2: Gemini 스코어링
+      if (geminiResult) {
+        try {
+          scores = await runGeminiScoring({ mode, geminiAnalysis: geminiResult, customPrompt: customGptPrompt ?? undefined, regimeHint });
+          if (scores.length > 0) scoringSource = 'gemini';
+        } catch (geminiScoreErr) {
+          logger.warn(`⚠️ Gemini 스코어링 실패: ${geminiScoreErr}`, { component: 'TRACK_A' });
+        }
+      }
+
+      // Step 5-3: Gemini Flash 통합 폴백
+      if (scores.length === 0) {
+        try {
+          scores = await runGeminiFallbackAnalysis(mode, allStocks, chartData, strategy);
+          if (scores.length > 0) scoringSource = 'flash';
+        } catch (flashErr) {
+          logger.warn(`⚠️ Gemini 통합 폴백 실패: ${flashErr}`, { component: 'TRACK_A' });
+        }
+      }
+    } else if (!ensembleEnabled && !appConfig.geminiEnabled) {
+      logger.info('🔌 Gemini OFF → RSS/기술적 스코어링 직행 ($0)', { component: 'TRACK_A' });
     }
 
-    // Step 5-3: Gemini 스코어링 실패 → Gemini Flash 통합 분석 (2순위 폴백)
-    if (scores.length === 0) {
-      try {
-        scores = await runGeminiFallbackAnalysis(mode, allStocks, chartData, strategy);
-        if (scores.length > 0) scoringSource = 'flash';
-      } catch (flashErr) {
-        logger.warn(`⚠️ Gemini 통합 폴백 실패: ${flashErr}`, { component: 'TRACK_A' });
-      }
-    }
-
-    // Step 5-3b: Gemini Flash도 실패 → RSS 뉴스+거래량 스코어링 (무료, 쿼터 없음)
+    // Step 5-3b: RSS 뉴스+거래량 스코어링 (무료) — Gemini OFF 시 1순위 / 앙상블 실패 시 폴백
     if (scores.length === 0) {
       try {
         const { runRSSScoring } = await import('./rss-scorer.js');
@@ -361,8 +395,8 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       }
     }
 
-    // Step 5-3c: RSS도 실패 → Claude Haiku 폴백 (ANTHROPIC_API_KEY 있을 때)
-    if (scores.length === 0 && process.env.ANTHROPIC_API_KEY) {
+    // Step 5-3c: RSS도 실패 → Claude Haiku 폴백 (geminiEnabled + ANTHROPIC_API_KEY 있을 때)
+    if (scores.length === 0 && appConfig.geminiEnabled && process.env.ANTHROPIC_API_KEY) {
       try {
         const { runClaudeScoring } = await import('./claude-scorer.js');
         scores = await runClaudeScoring(mode, allStocks, chartData);

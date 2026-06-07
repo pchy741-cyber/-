@@ -83,6 +83,8 @@ const SESSION_STRATEGY_PROMPT = `당신은 알고리즘 트레이딩 세션 전�
 }`;
 
 export async function generateSessionBrief(): Promise<SessionStrategyBrief | null> {
+  const { config } = await import('../../config/index.js');
+  if (!config.geminiEnabled) { logger.info('📋 세션전략 스킵 (Gemini OFF)', { component: 'SESSION' }); return null; }
   try {
     _sessionId = `sess_${Date.now()}`;
 
@@ -264,6 +266,8 @@ const SESSION_SUMMARY_PROMPT = `당신은 트레이딩 세션 리뷰어입니다
 
 export async function generateSessionSummary(log: SessionLog): Promise<void> {
   if (!_activeBrief) return;
+  const { config } = await import('../../config/index.js');
+  if (!config.geminiEnabled) return;
 
   try {
     const perfSummary = await getRecentPerfSummary().catch(() => '');

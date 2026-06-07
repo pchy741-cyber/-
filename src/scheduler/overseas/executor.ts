@@ -8,6 +8,7 @@ import { getPool, insertOrder } from '../../db/client.js';
 import { placeOverseasOrder } from '../../kis/overseas.js';
 import { logger } from '../../utils/logger.js';
 import { updateOrder } from '../../db/client.js';
+import { hardInvalidateDashboardCache } from '../../cache/dashboard-cache.js';
 import { resolveOverseasStockName } from './watchlist.js';
 import { updateTradeState } from './state.js';
 import { confirmOverseasFillFromBalance } from './order-sync.js';
@@ -92,6 +93,7 @@ export async function executeOverseasOrder(
     });
 
     logger.info(`📝 [US_PAPER] ${side} ${code} x${qty} @$${fillPrice.toFixed(2)} (${fakeOrderNo})`, { component: 'OVERSEAS' });
+    hardInvalidateDashboardCache();
 
     const { notifyOverseasBuy: nb, notifyOverseasSell: ns } = await import('../../notifications/web-push.js');
     if (side === 'BUY') {
@@ -146,6 +148,7 @@ export async function executeOverseasOrder(
             status: confirmed.filledQty >= qty ? 'FILLED' : 'PARTIAL',
             kis_status: confirmed.filledQty >= qty ? 'FILLED' : 'PARTIAL',
           });
+          hardInvalidateDashboardCache();
           const { notifyOverseasBuy: nb, notifyOverseasSell: ns } = await import('../../notifications/web-push.js');
           if (side === 'BUY') {
             nb(code, stockName, confirmed.filledQty, confirmed.filledPrice, reasoning).catch(() => {});

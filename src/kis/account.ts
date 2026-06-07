@@ -1,6 +1,8 @@
 import { KIS_TR_ID } from '../config/constants.js';
 import { config } from '../config/index.js';
 import { kisRequest } from './client.js';
+import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
 
 // ── 보유 종목 ──
 export interface Position {
@@ -29,6 +31,16 @@ export interface AccountBalance {
 // ── 계좌 잔고 메모리 캐시 (KIS API 호출 최소화) ──
 const _balanceCache = new Map<string, { data: AccountBalance; ts: number }>();
 const BALANCE_CACHE_TTL = 120_000; // 2분 — KIS API 호출 최소화 (PWA 접속 시 토큰 재발급 알림 폭탄 방지)
+const BALANCE_CACHE_TTL_MORNING = 30_000; // 30초 — 장 개시 09:00~09:30 KST (정산 반영 지연 대응)
+
+/** 현재 KST 기준 캐시 TTL 반환 — 아침에는 짧게 */
+function getBalanceCacheTTL(): number {
+  const kst = getKSTNow();
+  const h = kst.getUTCHours(), m = kst.getUTCMinutes();
+  // 09:00~09:30 장 개시 + 15:15~15:30 종가베팅 타이밍 → 캐시 단축
+  if ((h === 9 && m < 30) || (h === 15 && m >= 15 && m <= 30)) return BALANCE_CACHE_TTL_MORNING;
+  return BALANCE_CACHE_TTL;
+}
 
 /** 캐시를 무효화 (매수/매도 후 호출) */
 export function invalidateBalanceCache(): void { _balanceCache.clear(); }
@@ -38,10 +50,11 @@ export function invalidateBalanceCache(): void { _balanceCache.clear(); }
  * forceLive=true: 서버가 paper 모드여도 live KIS 서버에 live credential로 조회
  */
 export async function getAccountBalance(forceLive = false): Promise<AccountBalance> {
-  const cacheKey = forceLive ? 'live' : 'default';
-  const cached = _balanceCache.get(cacheKey);
-  if (cached && Date.now() - cached.ts < BALANCE_CACHE_TTL) return cached.data;
+  // context-aware 캐시 키 — paper/live 절대 충돌 방지
   const isPaper = !forceLive && config.isPaper;
+  const cacheKey = forceLive ? 'live' : (isPaper ? 'paper' : 'live');
+  const cached = _balanceCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < getBalanceCacheTTL()) return cached.data;
   const trIds = isPaper ? KIS_TR_ID.PAPER : KIS_TR_ID.LIVE;
 
   // forceLive=true && 서버가 paper → live credential/URL 강제 사용
@@ -96,18 +109,34 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
   // 계좌 요약 파싱 (output2)
   const summary = (Array.isArray(res.output2) ? res.output2[0] : res.output2) as Record<string, string>;
 
-  // ord_psbl_cash = CMA 전용 필드; 일반 위탁계좌는 absent → dnca_tot_amt로 폴백
-  const orderableCash = Number(summary?.ord_psbl_cash || summary?.dnca_tot_amt || 0);
-  const totalDeposit = Number(summary?.dnca_tot_amt ?? 0);
+  const scts_evlu = Number(summary?.scts_evlu_amt ?? 0);
+  const nass = Number(summary?.nass_amt ?? 0);
+  const pchs = Number(summary?.pchs_amt_smtl_amt ?? 0);
+
+  // KIS 잔고 필드 파싱
+  const ordPsblCash = Number(summary?.ord_psbl_cash ?? 0);       // CMA 주문가능현금
+  const totalDeposit = Number(summary?.dnca_tot_amt ?? 0);        // 예수금 총액 (KIS 앱 "예수금"과 일치)
+  const d2Deposit = Number(summary?.prvs_rcdl_excc_amt ?? 0);     // D+2 예수금
+  const computedCash = nass > 0 && scts_evlu >= 0 ? Math.max(0, nass - scts_evlu) : 0; // 순자산 - 증권
+
+  // 주문가능 현금: ord_psbl_cash(CMA) → D+2 예수금(실제 주문가능) → 예수금 → nass-evlu → 0
+  const orderableCash = ordPsblCash > 0
+    ? ordPsblCash
+    : (d2Deposit > 0 ? d2Deposit : (totalDeposit > 0 ? totalDeposit : (computedCash > 0 ? computedCash : 0)));
+
+  // 항상 로그 (산출 경로 디버그)
+  const source = ordPsblCash > 0 ? 'ord_psbl_cash' : (d2Deposit > 0 ? 'd2_deposit' : (totalDeposit > 0 ? 'dnca_tot_amt' : (computedCash > 0 ? 'nass-evlu' : 'zero')));
+  logger.info(
+    `💰 잔고조회 [${forceLive ? 'forceLive' : (isPaper ? 'paper' : 'live')}]: ` +
+    `ord_psbl=${ordPsblCash.toLocaleString()} deposit=${totalDeposit.toLocaleString()} d2=${d2Deposit.toLocaleString()} ` +
+    `nass=${nass.toLocaleString()} evlu=${scts_evlu.toLocaleString()} computed=${computedCash.toLocaleString()} → ${source}=${orderableCash.toLocaleString()}`,
+    { component: 'BALANCE' },
+  );
 
   // 모의투자 계좌 예수금이 0원이면 가상 자금 1,000만원 부여
   const PAPER_DEFAULT_CASH = 10_000_000;
   const effectiveCash = isPaper && orderableCash === 0 ? PAPER_DEFAULT_CASH : orderableCash;
   const effectiveDeposit = isPaper && totalDeposit === 0 ? PAPER_DEFAULT_CASH : totalDeposit;
-
-  const scts_evlu = Number(summary?.scts_evlu_amt ?? 0);
-  const nass = Number(summary?.nass_amt ?? 0);
-  const pchs = Number(summary?.pchs_amt_smtl_amt ?? 0);
 
   const result: AccountBalance = {
     totalDeposit: effectiveDeposit,

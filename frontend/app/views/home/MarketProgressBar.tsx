@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { ProgressBar } from '@/components/ProgressBar';
 import { fmtWon } from '../../lib/utils';
 import type { Health } from '../../types';
 
@@ -65,9 +66,7 @@ export default function MarketProgressBar({
           </>
         ) : health?.usMarketOpen ? (
           <>
-            <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-blue-600 to-indigo-500 rounded-full transition-all duration-1000" style={{ width: `${usMarketProgress}%` }} />
-            </div>
+            <ProgressBar value={usMarketProgress} colorClass="bg-gradient-to-r from-blue-600 to-indigo-500" transition="transition-all duration-1000" />
             <div className="flex justify-between mt-0.5 text-[9px] text-slate-600">
               <span>23:30</span><span>06:00</span>
             </div>

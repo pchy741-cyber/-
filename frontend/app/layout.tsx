@@ -27,7 +27,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           dangerouslySetInnerHTML={{
             __html: `
               if ('serviceWorker' in navigator) {
-                navigator.serviceWorker.register('/sw.js').catch(function() {});
+                navigator.serviceWorker.register('/sw.js').then(function(reg) {
+                  // 1분마다 SW 업데이트 체크 (배포 반영 가속)
+                  setInterval(function() { reg.update(); }, 60000);
+                }).catch(function() {});
               }
             `,
           }}

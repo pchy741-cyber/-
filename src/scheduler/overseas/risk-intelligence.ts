@@ -277,8 +277,9 @@ export function calcDynamicTpSl(params: {
   vixRegime: RegimeAdjustment;
   isMomentum?: boolean;
   tunerOverrides?: Record<string, number>; // Trade Tuner 자동 최적화 값
+  atrPct?: number; // ATR/가격 % — SL이 최소 2×ATR 보장 (노이즈 손절 방지)
 }): DynamicTpSlResult {
-  const { sector, adx, rsi, aiConfidence = 0.5, aiAction = 'HOLD', aiScore, vixRegime, isMomentum = false, tunerOverrides } = params;
+  const { sector, adx, rsi, aiConfidence = 0.5, aiAction = 'HOLD', aiScore, vixRegime, isMomentum = false, tunerOverrides, atrPct } = params;
 
   const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
   const isMediumBeta = SECTOR_CLASS.MEDIUM_BETA.includes(sector);
@@ -323,7 +324,16 @@ export function calcDynamicTpSl(params: {
   const tpFloor = isHighBeta ? 12.0 : isMediumBeta ? 10.0 : isDefense ? 8.0 : 10.0;
   const tpCeil = isHighBeta ? 40.0 : isMediumBeta ? 35.0 : isDefense ? 25.0 : 35.0;
   const tpPct = Math.min(tpCeil, Math.max(tpFloor, baseTp + momentumExt + overboughtCut + aiTpBonus + scoreTpBonus + vixTpAdj));
-  const slPct = Math.max(isHighBeta ? 5.0 : 2.5, baseSl + aiSlAdj + scoreSlAdj);
+  let slPct = Math.max(isHighBeta ? 5.0 : 2.5, baseSl + aiSlAdj + scoreSlAdj);
+
+  // ATR 기반 SL 바닥: 최소 2×ATR% (일간 변동성의 2배 — 노이즈 손절 방지)
+  // 예: NVDA ATR 3.5% → SL 최소 7%, 기존 5% SL에 걸리던 허위손절 제거
+  if (atrPct && atrPct > 0) {
+    const atrFloor = Math.round(atrPct * 2.0 * 10) / 10;
+    if (atrFloor > slPct) {
+      slPct = Math.min(atrFloor, isHighBeta ? 12.0 : 8.0); // 안전 상한: HIGH_BETA 12%, 기타 8%
+    }
+  }
 
   const parts: string[] = [`base${baseTp}`];
   if (momentumExt) parts.push(`mom${momentumExt > 0 ? '+' : ''}${momentumExt}`);
@@ -331,6 +341,7 @@ export function calcDynamicTpSl(params: {
   if (aiTpBonus) parts.push(`AI${aiTpBonus > 0 ? '+' : ''}${aiTpBonus}`);
   if (scoreTpBonus) parts.push(`s${aiScore}+${scoreTpBonus}`);
   if (vixTpAdj) parts.push(`VIX${vixTpAdj > 0 ? '+' : ''}${vixTpAdj}`);
+  if (atrPct && atrPct > 0) parts.push(`ATR${atrPct.toFixed(1)}`);
 
   return { tpPct, slPct, tpLabel: parts.join('/') };
 }

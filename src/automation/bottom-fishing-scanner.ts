@@ -11,17 +11,29 @@ export interface BottomFishingCandidate {
   score: number; // (40 - rsi14) + abs(changePct)
 }
 
+/** 하락장 공격성 옵션 — CRASH/PANIC 시 필터 완화 */
+export interface CrashAggressiveOptions {
+  minMarketCapEok?: number;   // 기본 500 → 하락장 300
+  minChangePct?: number;      // 기본 -1.5 → 하락장 -1.0
+  maxRsi?: number;            // 기본 45 → 하락장 50
+  maxResults?: number;        // 기본 4 → 하락장 6
+}
+
 /**
  * 시장 전체 바닥낚시 스캐너
  *
  * 1. 거래량 + 등락률 랭킹 → ~100개 후보 수집
- * 2. 시총 1000억↑ + 당일 -2%↓ 필터
- * 3. RSI(14) < 40 과매도 필터
- * 4. score 정렬 → 상위 4종목 반환
+ * 2. 시총 필터 + 당일 하락 필터
+ * 3. RSI(14) 과매도 필터
+ * 4. score 정렬 → 상위 N종목 반환
  *
- * KIS API: 4(랭킹) + ~100(가격) + ~20(차트) ≈ 125 calls → ~11초 (12/sec)
+ * crashOptions: CRASH/PANIC 시 필터 완화 (더 많은 후보, 더 넓은 RSI)
  */
-export async function runBottomFishingScanner(): Promise<BottomFishingCandidate[]> {
+export async function runBottomFishingScanner(crashOptions?: CrashAggressiveOptions): Promise<BottomFishingCandidate[]> {
+  const minCap = crashOptions?.minMarketCapEok ?? 500;
+  const minChange = crashOptions?.minChangePct ?? -1.5;
+  const maxRsi = crashOptions?.maxRsi ?? 45;
+  const maxResults = crashOptions?.maxResults ?? 4;
   // 1. 랭킹 API 4개 병렬 호출
   const [volJ, volQ, chgJ, chgQ] = await Promise.all([
     getVolumeRankingStocks('J', 50).catch(() => []),
@@ -45,10 +57,10 @@ export async function runBottomFishingScanner(): Promise<BottomFishingCandidate[
   const prices = await getBatchPrices(allCodes);
   const priceFiltered = allCodes.filter((code) => {
     const p = prices.get(code);
-    return p && p.marketCapEok >= 500 && p.changePct <= -1.5;
+    return p && p.marketCapEok >= minCap && p.changePct <= minChange;
   });
 
-  logger.info(`🎣 바닥낚시 가격 필터: ${priceFiltered.length}종목 (시총 500억↑, 당일 -1.5%↓)`, { component: 'BOTTOM_FISHING' });
+  logger.info(`🎣 바닥낚시 가격 필터: ${priceFiltered.length}종목 (시총 ${minCap}억↑, 당일 ${minChange}%↓)`, { component: 'BOTTOM_FISHING' });
 
   if (priceFiltered.length === 0) return [];
 
@@ -65,7 +77,7 @@ export async function runBottomFishingScanner(): Promise<BottomFishingCandidate[
       const rsiValues = rsi(closes, 14);
       const rsi14 = rsiValues[rsiValues.length - 1] ?? 50;
 
-      if (rsi14 >= 45) continue;
+      if (rsi14 >= maxRsi) continue;
 
       const p = prices.get(code)!;
       candidates.push({
@@ -81,9 +93,9 @@ export async function runBottomFishingScanner(): Promise<BottomFishingCandidate[
     }
   }
 
-  // 5. 스코어 내림차순 → 상위 4종목
+  // 5. 스코어 내림차순 → 상위 N종목
   candidates.sort((a, b) => b.score - a.score);
-  const result = candidates.slice(0, 4);
+  const result = candidates.slice(0, maxResults);
 
   if (result.length > 0) {
     logger.info(

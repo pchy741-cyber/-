@@ -2,6 +2,7 @@ import { getActiveWatchlist } from '../db/client.js';
 import { getCurrentPrice } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
+import { sleep } from '../utils/sleep.js';
 
 /**
  * 이상 거래량 / 급등락 자동 감지
@@ -108,7 +109,7 @@ export async function detectAnomalies(): Promise<AnomalyAlert[]> {
       });
 
       // rate limit
-      await new Promise((r) => setTimeout(r, 100));
+      await sleep(100);
     } catch (err) {
       logger.warn(`이상감지 개별 종목 실패: ${err}`, { component: 'ANOMALY' });
     }

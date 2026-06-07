@@ -44,6 +44,22 @@ interface DebateContext {
 export async function runBullBearDebate(ctx: DebateContext): Promise<DebateResult> {
   const { stockCode, stockName } = ctx;
 
+  // Gemini OFF → 토론 스킵, 기존 AI 스코어 기반 기본 판정
+  const { config } = await import('../../config/index.js');
+  if (!config.geminiEnabled) {
+    const score = ctx.aiScore?.composite_score ?? 50;
+    const signal = ctx.aiScore?.signal ?? 'HOLD';
+    // Gemini OFF → 토론 없이 판정: 85+ 아니면 BUY 안 함 (75점은 너무 관대 → 손실)
+    const verdict = score >= 85 ? 'BUY' : score >= 60 ? 'HOLD' : score <= 30 ? 'SELL' : 'HOLD';
+    logger.info(`🐂🐻 토론 스킵 (Gemini OFF): ${stockName} → ${verdict} (score=${score})`, { component: 'DEBATE' });
+    return {
+      stockCode, finalVerdict: verdict as DebateResult['finalVerdict'],
+      confidence: Math.min(1, score / 100), bullScore: score, bearScore: 100 - score,
+      bullArguments: [`AI score ${score} / signal ${signal}`], bearArguments: ['Gemini OFF — 규칙기반'],
+      judgeReasoning: `Gemini OFF: AI score=${score}, signal=${signal}`, rounds: 0,
+    };
+  }
+
   logger.info(`🐂🐻 토론 시작: ${stockName} (${stockCode})`, { component: 'DEBATE' });
 
   const marketContext = buildMarketContext(ctx);

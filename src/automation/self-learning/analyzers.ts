@@ -423,6 +423,143 @@ export function analyzeProfitRatio(wins: EnrichedChain[], losses: EnrichedChain[
     });
   }
 
+  // ── 세이버메트릭스: R배수 + Profit Factor + 손익분기 승률 분석 ──
+  insights.push(...analyzeSabermetrics(wins, losses, avgWinPct, avgLossPct, ratio));
+
+  return insights;
+}
+
+/**
+ * 세이버메트릭스(Sabermetrics) 기반 거래 품질 분석
+ *
+ * 야구의 세이버메트릭스를 매매에 적용:
+ *   R배수(R-Multiple) = 실현손익 / 초기리스크 (타율이 아닌 장타율)
+ *   Profit Factor = 총수익 / 총손실 (팀 득점/실점)
+ *   손익분기 승률 = 1 / (1 + R:R) (최소 필요 승률)
+ *   기대값(EV) = 승률×평균수익 - 패률×평균손실 (WAR)
+ *   켈리 최적 비중 = (bp - q) / b (최적 배팅 비율)
+ */
+function analyzeSabermetrics(
+  wins: EnrichedChain[],
+  losses: EnrichedChain[],
+  avgWinPct: number,
+  avgLossPct: number,
+  profitRatio: number,
+): LearnedInsight[] {
+  const insights: LearnedInsight[] = [];
+  const total = wins.length + losses.length;
+  if (total < 8) return insights;
+
+  const winRate = wins.length / total;
+  const lossRate = 1 - winRate;
+
+  // ── 1. R배수(R-Multiple) 분포 분석 ──
+  // R = 실현PnL / 초기리스크(SL%). SL을 모르면 평균손실을 R=1로 치환
+  const riskUnit = avgLossPct > 0 ? avgLossPct : 3.0; // 1R = 평균 손실폭
+  const winRMultiples = wins.map(c => c.pnlPct / riskUnit);
+  const lossRMultiples = losses.map(c => c.pnlPct / riskUnit); // 음수
+  const avgWinR = winRMultiples.reduce((s, r) => s + r, 0) / winRMultiples.length;
+  const avgLossR = Math.abs(lossRMultiples.reduce((s, r) => s + r, 0) / lossRMultiples.length);
+  const bigWins = winRMultiples.filter(r => r >= 2.0); // 2R+ 대형 수익
+  const bigWinPct = bigWins.length / total;
+
+  // ── 2. Profit Factor = 총수익 / 총손실 ──
+  const grossProfit = wins.reduce((s, c) => s + c.pnlPct, 0);
+  const grossLoss = Math.abs(losses.reduce((s, c) => s + c.pnlPct, 0));
+  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 99 : 0;
+
+  // ── 3. 손익분기 승률 (Breakeven Win Rate) ──
+  const breakevenWinRate = avgLossPct > 0 ? 1 / (1 + profitRatio) : 0.5;
+  const winRateMargin = winRate - breakevenWinRate; // 양수=안전, 음수=위험
+
+  // ── 4. 기대값(Expected Value) per trade ──
+  const evPerTrade = winRate * avgWinPct - lossRate * avgLossPct;
+
+  // ── 5. 켈리 최적 비중 ──
+  const b = avgLossPct > 0 ? avgWinPct / avgLossPct : 1;
+  const kellyFull = b > 0 ? (b * winRate - lossRate) / b : 0;
+  const kellyHalf = Math.max(0, kellyFull * 0.5); // Half Kelly (안전)
+
+  // ── 인사이트 생성 ──
+
+  // [A] 종합 세이버메트릭스 리포트
+  insights.push({
+    category: 'SIZING',
+    insight: `⚾ 세이버메트릭스 — 승률 ${(winRate * 100).toFixed(0)}% | R배수 ${avgWinR.toFixed(1)}R | PF ${profitFactor.toFixed(2)} | EV ${evPerTrade >= 0 ? '+' : ''}${evPerTrade.toFixed(2)}%/건 | 손익분기 ${(breakevenWinRate * 100).toFixed(0)}% | Kelly ${(kellyHalf * 100).toFixed(1)}%`,
+    recommendation: evPerTrade > 0
+      ? `양의 기대값 +${evPerTrade.toFixed(2)}% — 현재 전략 유지. 승률 마진 +${(winRateMargin * 100).toFixed(1)}%p 안전`
+      : `음의 기대값 ${evPerTrade.toFixed(2)}% — SL 타이트닝 또는 TP 확대로 R배수 개선 필요`,
+    confidence: Math.min(0.90, 0.60 + total * 0.01),
+    sampleCount: total,
+    lastUpdated: now,
+    details: {
+      winRate, avgWinPct, avgLossPct, profitRatio,
+      avgWinR, avgLossR, profitFactor, breakevenWinRate,
+      winRateMargin, evPerTrade, kellyFull, kellyHalf,
+      bigWinPct, bigWinCount: bigWins.length, totalTrades: total,
+    },
+  });
+
+  // [B] 승률 마진 경고/안전 판단
+  if (winRateMargin < 0) {
+    // 승률이 손익분기 이하 → 위험!
+    const neededWinRate = breakevenWinRate + 0.05;
+    const neededTP = avgLossPct * (neededWinRate / (1 - neededWinRate));
+    insights.push({
+      category: 'LOSS_PATTERN',
+      insight: `⚠️ 승률(${(winRate * 100).toFixed(0)}%) < 손익분기(${(breakevenWinRate * 100).toFixed(0)}%) — R배수 ${profitRatio.toFixed(2)}에서 최소 ${(breakevenWinRate * 100).toFixed(0)}% 승률 필요.`,
+      recommendation: `방법1: TP를 +${neededTP.toFixed(1)}%로 올려 R배수 개선. 방법2: 진입 기준 상향(스코어 +10)으로 승률 높이기.`,
+      paramChange: evPerTrade < -0.5
+        ? { field: 'buy_threshold', value: 85, reason: `EV ${evPerTrade.toFixed(2)}% 음수 — 엄격 필터링` }
+        : undefined,
+      confidence: 0.82,
+      sampleCount: total,
+      lastUpdated: now,
+    });
+  } else if (winRateMargin >= 0.15) {
+    // 승률 마진 15%p 이상 → 여유 있음, 포지션 확대 가능
+    insights.push({
+      category: 'WIN_PATTERN',
+      insight: `✅ 승률 마진 +${(winRateMargin * 100).toFixed(1)}%p 안전 (승률 ${(winRate * 100).toFixed(0)}% vs 분기 ${(breakevenWinRate * 100).toFixed(0)}%). Kelly ${(kellyHalf * 100).toFixed(1)}% 사이징 권장.`,
+      recommendation: `포지션 비중을 현재 대비 ${kellyHalf > 0.15 ? '확대' : '유지'}. Half Kelly ${(kellyHalf * 100).toFixed(1)}% 기준.`,
+      confidence: 0.78,
+      sampleCount: total,
+      lastUpdated: now,
+    });
+  }
+
+  // [C] R배수 기반 TP/SL 최적화 제안
+  if (avgWinR < 1.5 && profitFactor < 1.5) {
+    // 평균 수익이 1.5R 미만 → TP가 너무 낮거나 조기 익절
+    const targetTP = riskUnit * 2.0; // 목표 2R
+    insights.push({
+      category: 'SIZING',
+      insight: `R배수 ${avgWinR.toFixed(1)}R 낮음 — 평균 수익이 리스크의 ${avgWinR.toFixed(1)}배. 목표 2.0R 이상 필요.`,
+      recommendation: `TP를 +${targetTP.toFixed(1)}%로 상향. "승률 40%에도 수익" 구조로 전환.`,
+      paramChange: {
+        field: 'take_profit_pct',
+        value: Math.round(targetTP * 10) / 10,
+        reason: `R배수 ${avgWinR.toFixed(1)}→2.0R 목표`,
+      },
+      confidence: 0.75,
+      sampleCount: total,
+      lastUpdated: now,
+    });
+  }
+
+  // [D] 대형 수익(2R+) 빈도 분석 — "장타율"
+  if (bigWins.length >= 2) {
+    const bigWinAvgR = bigWins.reduce((s, r) => s + r, 0) / bigWins.length;
+    insights.push({
+      category: 'WIN_PATTERN',
+      insight: `⚾ 장타율: 2R+ 대형수익 ${bigWins.length}건(${(bigWinPct * 100).toFixed(0)}%). 평균 ${bigWinAvgR.toFixed(1)}R. 이들이 전체 수익의 핵심 — 대형 수익 시 홀딩 지속.`,
+      recommendation: `2R+ 도달 시 부분익절만 하고 나머지는 ATR 트레일링으로 극대화. 조기 전량 매도 자제.`,
+      confidence: 0.72,
+      sampleCount: bigWins.length,
+      lastUpdated: now,
+    });
+  }
+
   return insights;
 }
 

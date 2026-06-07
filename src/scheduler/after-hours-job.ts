@@ -11,11 +11,12 @@ import type { StrategyMode } from '../config/constants.js';
 import { getActiveStrategy } from '../db/client.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
 import { runBottomFishingScanner } from '../automation/bottom-fishing-scanner.js';
 import type { TradeDecision } from '../db/models.js';
 
-// ── 중복 매수 방지: 오늘 이미 주문한 종목 추적 ──
-let _todayBoughtCodes = new Set<string>();
+// ── 중복 매수 방지: 오늘 이미 주문한 종목 추적 (paper/live 모드별 분리) ──
+const _todayBoughtCodes = new Map<string, Set<string>>(); // key: 'paper'|'live'
 let _todayBoughtDate = '';
 
 /**
@@ -133,7 +134,7 @@ function scoreCandidate(
 }
 
 export async function runAfterHoursJob(): Promise<void> {
-  const kst = new Date(Date.now() + 9 * 3600000);
+  const kst = getKSTNow();
   const kstH = kst.getUTCHours();
   const kstM = kst.getUTCMinutes();
 
@@ -148,9 +149,11 @@ export async function runAfterHoursJob(): Promise<void> {
   // 중복 매수 방지: 날짜 변경 시 리셋
   const todayStr = kst.toISOString().split('T')[0];
   if (_todayBoughtDate !== todayStr) {
-    _todayBoughtCodes = new Set();
+    _todayBoughtCodes.clear();
     _todayBoughtDate = todayStr;
   }
+  const modeKey = isPaper ? 'paper' : 'live';
+  if (!_todayBoughtCodes.has(modeKey)) _todayBoughtCodes.set(modeKey, new Set());
 
   logger.info(`🌙 시간외 잡 시작 (${isPaper ? 'paper' : 'live'})`, { component: 'AFTER_HOURS' });
 
@@ -240,7 +243,7 @@ export async function runAfterHoursJob(): Promise<void> {
     const dropCandidates: { code: string; price: CurrentPrice }[] = [];
 
     for (const code of allCodes) {
-      if (_todayBoughtCodes.has(code)) continue;        // 오늘 이미 주문
+      if (_todayBoughtCodes.get(modeKey)!.has(code)) continue;  // 오늘 이미 주문
       if (heldCodes.has(code)) continue;                 // 이미 보유
       const p = livePrices.get(code);
       if (!p || p.currentPrice <= 0) continue;
@@ -346,7 +349,7 @@ export async function runAfterHoursJob(): Promise<void> {
     reportSuccess();
 
     // 중복 매수 방지: 주문 기록
-    for (const d of buyDecisions) _todayBoughtCodes.add(d.stock_code);
+    for (const d of buyDecisions) _todayBoughtCodes.get(modeKey)!.add(d.stock_code);
 
     // 1-J. 텔레그램 알림
     const msg = buyDecisions

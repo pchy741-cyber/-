@@ -9,7 +9,7 @@
 import { callVertexGemini } from '../utils/vertex-gemini.js';
 import { logger } from '../utils/logger.js';
 
-const AI_STUDIO_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+const AI_STUDIO_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
 
 export interface RefAction {
   code: string;
@@ -77,6 +77,8 @@ function parseAnalysis(text: string): ReferenceAnalysis {
 
 /** 텍스트 레퍼런스 분석 */
 export async function analyzeTextReference(content: string): Promise<ReferenceAnalysis> {
+  const { config } = await import('../config/index.js');
+  if (!config.geminiEnabled) throw new Error('Gemini OFF — 레퍼런스 분석 불가');
   logger.info(`[Reference] 텍스트 분석 시작 (${content.length}자)`, { component: 'REFERENCE' });
   const response = await callVertexGemini(SYSTEM_PROMPT, content, { maxOutputTokens: 1024, label: 'reference-text' });
   return parseAnalysis(response);
@@ -84,6 +86,8 @@ export async function analyzeTextReference(content: string): Promise<ReferenceAn
 
 /** 이미지 레퍼런스 분석 (텍스트 + 이미지) */
 export async function analyzeImageReference(content: string, imageBase64: string, mimeType: string): Promise<ReferenceAnalysis> {
+  const { config } = await import('../config/index.js');
+  if (!config.geminiEnabled) throw new Error('Gemini OFF — 이미지 분석 불가');
   logger.info(`[Reference] 이미지 분석 시작`, { component: 'REFERENCE' });
 
   const geminiKey = process.env.GEMINI_API_KEY;

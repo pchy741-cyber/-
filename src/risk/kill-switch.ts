@@ -117,7 +117,7 @@ export async function activateKillSwitch(reason: string, manual = false, scope: 
 
     await logSystem('ERROR', 'KILL_SWITCH', `긴급 정지 발동 [${scopeLabel}]${manual ? ' [수동]' : ''} [${mode}]: ${reason}`);
 
-    persistKillSwitchToDB(true, reason, manual, isPaper, scope).catch(() => {});
+    await persistKillSwitchToDB(true, reason, manual, isPaper, scope).catch(e => logger.error(`킬스위치 DB 저장 실패: ${e}`, { component: 'KILL_SWITCH' }));
   } finally {
     updatingKeys.delete(key);
   }
@@ -166,7 +166,7 @@ export async function deactivateKillSwitch(force = false, scope: KillSwitchScope
     )
   ).catch(() => {});
 
-  persistKillSwitchToDB(false, '', false, isPaper, scope).catch(() => {});
+  await persistKillSwitchToDB(false, '', false, isPaper, scope).catch(e => logger.warn(`킬스위치 해제 DB 저장 실패: ${e}`, { component: 'KILL_SWITCH' }));
 }
 
 /** KR+OVERSEAS 동시 해제 (대시보드/텔레그램) */
@@ -221,8 +221,8 @@ async function persistKillSwitchToDB(active: boolean, reason: string, manual: bo
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
       [key, JSON.stringify({ active, reason, manual, scope, updatedAt: new Date().toISOString() })],
     );
-  } catch {
-    // system_state 테이블 없으면 무시
+  } catch (e) {
+    logger.error(`킬스위치 DB 저장 실패 [${scope}/${isPaper ? 'paper' : 'live'}]: ${e}`, { component: 'KILL_SWITCH' });
   }
 }
 

@@ -8,6 +8,7 @@ import { getPool } from '../../db/client.js';
 import { SECTOR_CLASS } from '../../config/constants.js';
 import { GLOBAL_WATCHLIST } from '../../scheduler/overseas/watchlist.js';
 import { logger } from '../../utils/logger.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import type { LearnedInsight } from './index.js';
 
 /** 호출 시점 timestamp (모듈 로드 시 고정 방지) */
@@ -434,9 +435,10 @@ export async function analyzeOverseasAll(isPaper: boolean): Promise<LearnedInsig
 export async function getOverseasInsightsForPrompt(): Promise<string> {
   const { rows } = await getPool().query(
     `SELECT * FROM learned_insights
-     WHERE insight LIKE '[해외]%'
+     WHERE insight LIKE '[해외]%' AND is_paper = $1
      ORDER BY confidence DESC, sample_count DESC
      LIMIT 10`,
+    [getCtxIsPaper()],
   ).catch(() => ({ rows: [] }));
 
   if (rows.length === 0) return '';

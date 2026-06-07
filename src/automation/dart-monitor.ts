@@ -1,6 +1,7 @@
 import { getActiveWatchlist } from '../db/client.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
+import { sleep } from '../utils/sleep.js';
 
 /**
  * DART 공시 모니터링 모듈
@@ -207,7 +208,7 @@ export async function fetchRecentDisclosures(stockCodes: string[]): Promise<Dart
 
     // rate limit (DART API: 분당 1000건이지만 안전하게)
     if (i + batchSize < stockCodes.length) {
-      await new Promise((r) => setTimeout(r, 500));
+      await sleep(500);
     }
   }
 

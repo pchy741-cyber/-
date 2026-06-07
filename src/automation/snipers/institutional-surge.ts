@@ -2,6 +2,7 @@ import { getActiveWatchlist } from '../../db/client.js';
 import { kisRequest } from '../../kis/client.js';
 import { getDailyChart } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
+import { sleep } from '../../utils/sleep.js';
 import { emitSniperSignal, type SniperSignal } from './index.js';
 
 /**
@@ -132,7 +133,7 @@ export async function scanInstitutionalSurge(): Promise<SniperSignal[]> {
       }
 
       // rate limit
-      await new Promise((r) => setTimeout(r, 200));
+      await sleep(200);
     } catch (error) {
       logger.warn(`기관 수급 스캔 실패 (${stock.stock_name}): ${error}`, { component: 'SNIPER' });
     }

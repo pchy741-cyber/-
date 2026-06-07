@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { config, baseIsPaper } from '../../config/index.js';
+import { config } from '../../config/index.js';
+import { resolveRequestMode } from '../guards/live-pin.js';
 import { getActiveStrategy, getOpenChains, getPool } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { getCurrentPrice, isMarketOpen } from '../../kis/market.js';
@@ -154,8 +155,7 @@ async function getRecentTrades(isPaper?: boolean) {
  */
 sseRoutes.get('/stream', (c) => {
   // ?viewMode=paper|live — 보기 모드 (서버 거래 모드와 독립)
-  const viewModeParam = c.req.query('viewMode');
-  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
+  const viewIsPaper = resolveRequestMode(c);
 
   return streamSSE(c, async (stream) => {
     let id = 0;

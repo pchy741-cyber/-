@@ -23,10 +23,16 @@ import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice, DailyCandle } from '../../kis/market.js';
 import type { StrategyMode } from '../../config/constants.js';
 import { analyzeTechnicals } from '../../analysis/indicators.js';
+import { config } from '../../config/index.js';
 import { logger } from '../../utils/logger.js';
 
 // ── 총자산 대비 최소 현금 보유 비율 (defense-park.ts도 임포트) ──
 export const CASH_RESERVE_RATIO = 0.20;
+
+/** 모드별 현금 보유 비율: Paper 3% / Live 20% */
+export function getCashReserveRatio(isPaper?: boolean): number {
+  return isPaper ? config.paperRisk.cashReserveRatio : CASH_RESERVE_RATIO;
+}
 
 // ── v2 핵심 상수: 전부 비율(%) 기반, 고정 금액 없음 ──
 

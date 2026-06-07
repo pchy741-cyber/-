@@ -2,7 +2,7 @@
 
 import React, { useMemo } from 'react';
 import { api, fmt, fmtWon, pc } from '../../lib/utils';
-import { toDisplayName, isUnresolvedStockName } from '../../lib/helpers';
+import { toDisplayName, isUnresolvedStockName, livePrefix } from '../../lib/helpers';
 import { usePriceFlash } from '../../hooks/usePriceFlash';
 import type { Chain, Dashboard, ToastFn, ConfirmFn, ViewMode } from '../../types';
 
@@ -88,7 +88,7 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
             </div>
             <div className="flex justify-end mt-3">
               <button disabled={!!busyAction} onClick={guard(`sell-park-${ch.stock_code}`, async () => {
-                const lwP = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
+                const lwP = livePrefix(viewMode);
                 if (!await confirm({ title: `${lwP}${displayName} ${qty}주 전량 매도하시겠습니까?`, description: '파킹 해제', confirmLabel: '매도', confirmVariant: 'danger' })) return;
                 try { const r = await api(`/sell-stock/${ch.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 }); toast(r.message || '매도 완료', 'ok'); onRefresh(); }
                 catch (err: unknown) { toast('매도 실패: ' + (err as Error).message, 'err'); }
@@ -185,7 +185,7 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
                   </button>
                 )}
                 <button disabled={!!busyAction} onClick={guard(`sell-${ch.stock_code}`, async () => {
-                  const liveW = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
+                  const liveW = livePrefix(viewMode);
                   if (!await confirm({ title: `${liveW}${displayName} ${qty}주 전량 시장가 매도하시겠습니까?`, confirmLabel: '매도', confirmVariant: 'danger' })) return;
                   try { const r = await api(`/sell-stock/${ch.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 }); toast(r.message || '매도 완료', 'ok'); onRefresh(); }
                   catch (err: unknown) { toast('매도 실패: ' + (err as Error).message, 'err'); }

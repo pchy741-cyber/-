@@ -1,4 +1,5 @@
 import type { StrategyMode } from '../config/constants.js';
+import { sleep } from '../utils/sleep.js';
 import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { getActiveStrategy, getActiveWatchlist, getLatestScores, getPool, logSystem } from '../db/client.js';
@@ -121,7 +122,7 @@ export async function analyzeCapitalFlow(): Promise<void> {
 
   // 서버 모드에 맞는 잔고 조회 (paper → getPaperBalance 사용, live → KIS 실계좌)
   const { getPaperBalance } = await import('../risk/engine.js');
-  const balance = getCtxIsPaper() ? await getPaperBalance() : await getAccountBalance();
+  const balance = getCtxIsPaper() ? await getPaperBalance() : await getAccountBalance(true);
   const totalPortfolio = balance.totalDeposit + balance.totalEvalAmount;
   const cashRatio = totalPortfolio > 0 ? (balance.orderableCash / totalPortfolio) * 100 : 100;
 
@@ -153,7 +154,7 @@ export async function analyzeCapitalFlow(): Promise<void> {
       const volatilityPct = price.currentPrice > 0 ? (atr / price.currentPrice) * 100 : 0;
 
       positionData.push({ chain, price, volatilityPct, chartData });
-      await new Promise((r) => setTimeout(r, 100)); // rate limit
+      await sleep(100); // rate limit
     } catch {
       // 개별 종목 실패 무시
     }
@@ -397,7 +398,7 @@ export async function analyzeCapitalFlow(): Promise<void> {
  */
 export async function checkCashRatio(): Promise<{ ratio: number; healthy: boolean }> {
   const { getPaperBalance } = await import('../risk/engine.js');
-  const balance = getCtxIsPaper() ? await getPaperBalance() : await getAccountBalance();
+  const balance = getCtxIsPaper() ? await getPaperBalance() : await getAccountBalance(true);
   const total = balance.totalDeposit + balance.totalEvalAmount;
   const ratio = total > 0 ? (balance.orderableCash / total) * 100 : 100;
 

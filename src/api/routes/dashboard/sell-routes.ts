@@ -1,28 +1,34 @@
 /**
- * 매도/탈출/수동매수 라우트 — /sell/*, /escape/*, /sell-stock/*, /sell-overseas/*, /manual-buy
+ * 매도/탈출 라우트 — /sell/*, /escape/*, /sell-stock/*
+ * 해외매도(/sell-overseas/*) → overseas-sell.ts, 수동매수(/manual-buy) → manual-buy.ts
  */
 import { Hono } from 'hono';
+import { sleep } from '../../../utils/sleep.js';
 import { config } from '../../../config/index.js';
-import { STRATEGY_PARAMS, getScoreBasedParams, OVERSEAS_FEE_PCT, KR_FEE } from '../../../config/constants.js';
-import { createChain, getPool, getActiveStrategy } from '../../../db/client.js';
+import { STRATEGY_PARAMS, KR_FEE } from '../../../config/constants.js';
+import { getPool } from '../../../db/client.js';
 import { getAccountBalance } from '../../../kis/account.js';
 import { getCurrentPrice } from '../../../kis/market.js';
 import { placeOrder } from '../../../kis/order.js';
 import { getPaperBalance, riskEngine } from '../../../risk/engine.js';
-import { notifyBuy, notifySell } from '../../../notifications/web-push.js';
+import { notifySell } from '../../../notifications/web-push.js';
 import { logger } from '../../../utils/logger.js';
-import { runWithMode } from '../../../config/context.js';
+import { runWithMode, getCtxIsPaper } from '../../../config/context.js';
 import { invalidateCurrentModeCache } from './helpers.js';
 import { invalidateStockCache } from '../../../cache/redis.js';
 import { invalidateBalanceCache } from '../../../kis/account.js';
+import { registerManualBuyRoutes } from './manual-buy.js';
+import { registerOverseasSellRoutes } from './overseas-sell.js';
 
 export const sellRoutes = new Hono();
+registerManualBuyRoutes(sellRoutes);
+registerOverseasSellRoutes(sellRoutes);
 
 // ── 탈출 모드 등록: +0.5% 돌파 순간 자동 전량 매도 ──
 sellRoutes.post('/escape/:chainId', async (c) => {
   const chainId = c.req.param('chainId');
   try {
-    const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1', [chainId]);
+    const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1 AND is_paper = $2', [chainId, getCtxIsPaper()]);
     const chain = rows[0];
     if (!chain) return c.json({ error: '체인을 찾을 수 없습니다' }, 404);
     if (chain.total_quantity <= 0) return c.json({ error: '매도할 수량이 없습니다' }, 400);
@@ -53,7 +59,7 @@ sellRoutes.post('/escape/:chainId', async (c) => {
 sellRoutes.delete('/escape/:chainId', async (c) => {
   const chainId = c.req.param('chainId');
   try {
-    await getPool().query('UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1', [chainId]);
+    await getPool().query('UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1 AND is_paper = $2', [chainId, getCtxIsPaper()]);
     return c.json({ ok: true });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
@@ -68,7 +74,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
     const triggerSource: string = (body.source as string) || 'MANUAL';
     const sellReason: string = (body.reason as string) || 'CEO 수동 매도';
 
-    const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1', [chainId]);
+    const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1 AND is_paper = $2', [chainId, getCtxIsPaper()]);
     const chain = rows[0];
     if (!chain) return c.json({ error: '체인을 찾을 수 없습니다' }, 404);
     if (chain.status === 'CLOSED') return c.json({ error: '이미 청산된 포지션입니다' }, 400);
@@ -101,8 +107,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
         await notifySell(chain.stock_code, chain.total_quantity, fillPrice, pnlPct, sellReason);
       } catch { /* 알림 실패 무시 */ }
       invalidateBalanceCache();
-      invalidateBalanceCache();
-    invalidateCurrentModeCache();
+      invalidateCurrentModeCache();
       invalidateStockCache(chain.stock_code).catch(() => {});
       return c.json({ ok: true, orderNo: fakeOrderNo, message: `${chain.stock_code} ${chain.total_quantity}주 전량 매도 완료 (모의투자)` });
     }
@@ -114,7 +119,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
       let result = await runWithMode(false, () => placeOrder({ stockCode: chain.stock_code, side: 'SELL', quantity: chain.total_quantity }));
       if (!result.success) {
         logger.warn(`수동 매도 1차 실패 (${chain.stock_code}): ${result.message} — 2초 후 재시도`, { component: 'DASHBOARD' });
-        await new Promise((r) => setTimeout(r, 2000));
+        await sleep(2000);
         result = await runWithMode(false, () => placeOrder({ stockCode: chain.stock_code, side: 'SELL', quantity: chain.total_quantity }));
       }
       if (!result.success) {
@@ -144,7 +149,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
     let fillConfirmed = isGhost;
     if (!isGhost) {
       try {
-        await new Promise((r) => setTimeout(r, 2000));
+        await sleep(2000);
         const bal = await getAccountBalance(true);
         const pos = bal.positions?.find((p: any) => p.stockCode === chain.stock_code);
         fillConfirmed = !pos || pos.quantity === 0;
@@ -230,8 +235,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
       });
       logger.info(`✅ 전량 매도 완료 (모의): ${stockCode} ${totalQty}주 [${triggerSource}] (${openChains.length}체인)`, { component: 'DASHBOARD' });
       invalidateBalanceCache();
-      invalidateBalanceCache();
-    invalidateCurrentModeCache();
+      invalidateCurrentModeCache();
       invalidateStockCache(stockCode).catch(() => {});
       return c.json({ ok: true, message: `${stockCode} ${totalQty}주 전량 매도 완료 (모의투자)` });
     }
@@ -240,7 +244,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
     try {
       let result = await runWithMode(isPaper, () => placeOrder({ stockCode, side: 'SELL', quantity: totalQty }));
       if (!result.success) {
-        await new Promise((r) => setTimeout(r, 2000));
+        await sleep(2000);
         try {
           const { getAccountBalance } = await import('../../../kis/account.js');
           const bal = await getAccountBalance(true);
@@ -275,7 +279,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
     let fillConfirmed = isGhostSell;
     if (!isGhostSell) {
       try {
-        await new Promise((r) => setTimeout(r, 2000));
+        await sleep(2000);
         const bal2 = await getAccountBalance(true);
         const pos2 = bal2.positions?.find((p: any) => p.stockCode === stockCode);
         fillConfirmed = !pos2 || pos2.quantity === 0;
@@ -321,459 +325,5 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
   }
 });
 
-// ── 해외주식 수동 매도 (CEO 긴급 탈출) ──
-sellRoutes.post('/sell-overseas/:stockCode', async (c) => {
-  const stockCode = c.req.param('stockCode');
-  try {
-    const body = await c.req.json().catch(() => ({}));
-    const isPaper: boolean = config.isPaper; // 🔒 서버 설정만 사용 (클라이언트 오버라이드 차단)
-    const { rows } = await getPool().query(
-      'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0 AND is_paper = $2', [stockCode, isPaper]);
-    const holding = rows[0];
-    if (!holding) return c.json({ error: '보유 종목을 찾을 수 없습니다' }, 404);
-    const totalQty = Number(holding.quantity);
-    const reqQty = body.quantity != null ? Math.min(Math.max(1, Math.floor(Number(body.quantity))), totalQty) : totalQty;
-    const qty = reqQty;
-    const isPartial = qty < totalQty;
-    const exchange = String(holding.exchange ?? 'NASDAQ');
-    const avgPrice = Number(holding.avg_price ?? 0);
-
-    let fillPrice = Number(holding.last_price ?? 0);
-    try {
-      const { getOverseasPrice } = await import('../../../kis/overseas.js');
-      const px = await getOverseasPrice(stockCode, exchange);
-      if ((px?.currentPrice ?? 0) > 0) fillPrice = px.currentPrice;
-    } catch { /* 시세 조회 실패 시 DB 저장가 사용 */ }
-    if (fillPrice <= 0) fillPrice = avgPrice;
-
-    const paperReasoning = isPartial ? `CEO 해외주식 수동 부분매도 (${qty}/${totalQty}주)` : 'CEO 해외주식 수동 전량 매도';
-    const proceeds = fillPrice * qty * (1 - OVERSEAS_FEE_PCT);
-
-    if (isPaper) {
-      const fakeOrderNo = `POS${Date.now().toString(36)}`;
-      const { withTransaction } = await import('../../../db/client.js');
-      await withTransaction(async (tx) => {
-        if (isPartial) {
-          await tx.query('UPDATE overseas_holdings SET quantity = quantity - $1 WHERE stock_code = $2 AND exchange = $3 AND is_paper = true', [qty, stockCode, exchange]);
-        } else {
-          await tx.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = true', [stockCode, exchange]);
-          await tx.query('DELETE FROM overseas_state WHERE key = ANY($1)', [[
-            `p_maxprice_${stockCode}`, `p_partial_tp_stage_${stockCode}`, `p_dynamic_tpsl_${stockCode}`,
-            `p_scale_in_${stockCode}`, `p_turtle_trail_${stockCode}`, `sync_sell_pending_${stockCode}`,
-          ]]);
-        }
-        await tx.query(
-          `INSERT INTO overseas_state (key, value) VALUES ('cash_paper', $1::text)
-           ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
-          [proceeds]);
-        await tx.query(
-          `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
-           VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','paper','OVERSEAS',$5,$6)`,
-          [stockCode, qty, fillPrice, fakeOrderNo, paperReasoning, avgPrice]);
-      });
-      logger.info(`✅ CEO 해외 수동 매도 완료 (모의투자): ${stockCode} ${qty}주 @$${fillPrice}`, { component: 'DASHBOARD' });
-      invalidateBalanceCache();
-      invalidateBalanceCache();
-    invalidateCurrentModeCache();
-      return c.json({ ok: true, orderNo: fakeOrderNo, message: `${stockCode} ${qty}주 ${isPartial ? '부분' : '전량'} 매도 완료 (모의투자)` });
-    }
-
-    // 실거래: KIS 해외 주문 — isPaper 컨텍스트 명시 (서버 기본=paper이므로 live 보장 필수)
-    const { placeOverseasOrder } = await import('../../../kis/overseas.js');
-    let result = await runWithMode(isPaper, () => placeOverseasOrder({ stockCode, exchange, side: 'SELL', quantity: qty, price: 0 }));
-    if (!result.success) {
-      await new Promise((r) => setTimeout(r, 2000));
-      result = await runWithMode(isPaper, () => placeOverseasOrder({ stockCode, exchange, side: 'SELL', quantity: qty, price: 0 }));
-    }
-    if (!result.success) {
-      logger.error(`해외 수동 매도 최종 실패 (${stockCode}): ${result.message}`, { component: 'DASHBOARD' });
-      return c.json({ error: `KIS 매도 거부: ${result.message}` }, 502);
-    }
-
-    // 체결 확인: 3초 후 KIS 잔고 조회하여 실제 체결 여부 판정
-    await new Promise((r) => setTimeout(r, 3000));
-    let confirmed = false;
-    try {
-      const { getOverseasBalance } = await import('../../../kis/overseas.js');
-      const bal = await runWithMode(isPaper, () => getOverseasBalance(exchange));
-      const pos = bal?.find((p: any) => p.stockCode === stockCode);
-      confirmed = isPartial
-        ? (!pos || pos.quantity <= totalQty - qty) // 부분매도: 잔량이 예상 이하면 체결
-        : (!pos || pos.quantity === 0);            // 전량매도: 포지션 소멸
-    } catch {
-      logger.warn(`해외 수동 매도 체결 확인 실패 (${stockCode}) — 주문 접수 상태로 기록`, { component: 'DASHBOARD' });
-    }
-
-    const orderStatus = confirmed ? 'FILLED' : 'PENDING';
-    const { withTransaction: withTx } = await import('../../../db/client.js');
-
-    if (confirmed) {
-      await withTx(async (tx) => {
-        if (isPartial) {
-          await tx.query('UPDATE overseas_holdings SET quantity = quantity - $1 WHERE stock_code = $2 AND exchange = $3 AND is_paper = false', [qty, stockCode, exchange]);
-        } else {
-          await tx.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = false', [stockCode, exchange]);
-          await tx.query('DELETE FROM overseas_state WHERE key = ANY($1)', [[
-            `l_maxprice_${stockCode}`, `l_partial_tp_stage_${stockCode}`, `l_dynamic_tpsl_${stockCode}`,
-            `l_scale_in_${stockCode}`, `l_turtle_trail_${stockCode}`, `sync_sell_pending_${stockCode}`,
-          ]]);
-        }
-        await tx.query(
-          `INSERT INTO overseas_state (key, value) VALUES ('cash', $1::text)
-           ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
-          [proceeds]);
-        await tx.query(
-          `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
-           VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','live','OVERSEAS',$5,$6)`,
-          [stockCode, qty, fillPrice, result.orderNo ?? '', paperReasoning, avgPrice]);
-      });
-      logger.info(`✅ CEO 해외 수동 매도 체결 확인: ${stockCode} ${qty}주 (주문번호 ${result.orderNo})`, { component: 'DASHBOARD' });
-    } else {
-      // 미체결: 주문만 기록, 보유종목 유지 (다음 overseas-job sync에서 처리)
-      await getPool().query(
-        `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
-         VALUES ($1,'SELL','MARKET',$2,$3, 0, 0, $4,'PENDING','live','OVERSEAS',$5,$6)`,
-        [stockCode, qty, fillPrice, result.orderNo ?? '', paperReasoning, avgPrice]);
-      logger.warn(`⏳ CEO 해외 수동 매도 접수 (미체결): ${stockCode} ${qty}주 — 다음 sync에서 확인`, { component: 'DASHBOARD' });
-    }
-    invalidateBalanceCache();
-    invalidateCurrentModeCache();
-    return c.json({ ok: true, orderNo: result.orderNo, status: orderStatus, message: `${stockCode} ${qty}주 ${isPartial ? '부분' : '전량'} 매도 ${confirmed ? '체결 완료' : '주문 접수 (체결 대기)'}` });
-  } catch (err: any) {
-    logger.error(`해외 수동 매도 예외: ${err.message}`, { component: 'DASHBOARD' });
-    return c.json({ error: err.message }, 500);
-  }
-});
-
-// ── 해외주식 강제 DB 청산 (장마감 시/KIS 거부 시 DB만 정리) ──
-sellRoutes.post('/sell-overseas-force/:stockCode', async (c) => {
-  const stockCode = c.req.param('stockCode');
-  try {
-    const body = await c.req.json().catch(() => ({}));
-    const isPaper: boolean = config.isPaper; // 🔒 서버 설정만 사용 (클라이언트 오버라이드 차단)
-    const pfx = isPaper ? 'p_' : 'l_';
-    const cashKey = isPaper ? 'cash_paper' : 'cash';
-
-    const { rows } = await getPool().query(
-      'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0 AND is_paper = $2', [stockCode, isPaper]);
-    const holding = rows[0];
-    if (!holding) return c.json({ error: '보유 종목을 찾을 수 없습니다' }, 404);
-
-    const qty = Number(holding.quantity);
-    const avgPrice = Number(holding.avg_price ?? 0);
-    const lastPrice = Number(holding.last_price ?? avgPrice);
-    const fillPrice = lastPrice > 0 ? lastPrice : avgPrice;
-    const proceeds = fillPrice * qty * (1 - OVERSEAS_FEE_PCT);
-    const pnlPct = avgPrice > 0 ? ((fillPrice - avgPrice) / avgPrice) * 100 : 0;
-    const exchange = String(holding.exchange ?? 'NASDAQ');
-    const reason = `강제 DB 청산 (장마감/KIS미연동): ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
-
-    const { withTransaction } = await import('../../../db/client.js');
-    await withTransaction(async (tx) => {
-      await tx.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [stockCode, exchange, isPaper]);
-      // state 정리: 모든 관련 키 일괄 삭제
-      await tx.query('DELETE FROM overseas_state WHERE key = ANY($1)', [[
-        `${pfx}maxprice_${stockCode}`, `${pfx}partial_tp_stage_${stockCode}`, `${pfx}dynamic_tpsl_${stockCode}`,
-        `${pfx}scale_in_${stockCode}`, `${pfx}turtle_trail_${stockCode}`, `sync_sell_pending_${stockCode}`,
-      ]]);
-      // 현금 복원
-      await tx.query(
-        `INSERT INTO overseas_state (key, value) VALUES ($1, $2::text)
-         ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $2)::text`,
-        [cashKey, proceeds]);
-      // 주문 기록
-      await tx.query(
-        `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
-         VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED',$5,'OVERSEAS',$6,$7)`,
-        [stockCode, qty, fillPrice, `FORCE_${Date.now().toString(36)}`, isPaper ? 'paper' : 'live', reason, avgPrice]);
-    });
-
-    logger.info(`🔨 강제 DB 청산: ${stockCode} ${qty}주 @$${fillPrice.toFixed(2)} (${reason})`, { component: 'DASHBOARD' });
-    invalidateBalanceCache();
-    invalidateCurrentModeCache();
-    return c.json({ ok: true, message: `${stockCode} ${qty}주 강제 청산 완료 ($${proceeds.toFixed(2)} 반환)` });
-  } catch (err: any) {
-    logger.error(`강제 DB 청산 예외: ${err.message}`, { component: 'DASHBOARD' });
-    return c.json({ error: err.message }, 500);
-  }
-});
-
-// ── 해외주식 전종목 일괄 탈출 (긴급) ──
-sellRoutes.post('/sell-overseas-all', async (c) => {
-  try {
-    const body = await c.req.json().catch(() => ({}));
-    const isPaper: boolean = config.isPaper; // 🔒 서버 설정만 사용 (클라이언트 오버라이드 차단)
-    const forceDb: boolean = !!body.force_db; // true면 KIS 안거치고 DB만 청산
-    const pfx = isPaper ? 'p_' : 'l_';
-    const cashKey = isPaper ? 'cash_paper' : 'cash';
-
-    const { rows: allHoldings } = await getPool().query(
-      'SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1', [isPaper]);
-    if (allHoldings.length === 0) return c.json({ error: '보유 종목이 없습니다' }, 404);
-
-    const results: string[] = [];
-    let totalProceeds = 0;
-
-    for (const holding of allHoldings) {
-      const code = String(holding.stock_code);
-      const qty = Number(holding.quantity);
-      const avgPrice = Number(holding.avg_price ?? 0);
-      const lastPrice = Number(holding.last_price ?? avgPrice);
-      const fillPrice = lastPrice > 0 ? lastPrice : avgPrice;
-      const exchange = String(holding.exchange ?? 'NASDAQ');
-      const proceeds = fillPrice * qty * (1 - OVERSEAS_FEE_PCT);
-      const pnlPct = avgPrice > 0 ? ((fillPrice - avgPrice) / avgPrice) * 100 : 0;
-
-      let sold = false;
-      let kisOrderNo = '';
-
-      // KIS 매도 시도 (forceDb가 아닌 경우)
-      if (!forceDb && !isPaper) {
-        try {
-          const { placeOverseasOrder } = await import('../../../kis/overseas.js');
-          const result = await runWithMode(false, () => placeOverseasOrder({ stockCode: code, exchange, side: 'SELL', quantity: qty, price: 0 }));
-          if (result.success) {
-            kisOrderNo = result.orderNo ?? '';
-            sold = true;
-          }
-        } catch { /* KIS 실패 → DB 청산으로 폴백 */ }
-      }
-
-      // DB 청산 (paper이거나, forceDb이거나, KIS 실패한 경우)
-      const reason = sold
-        ? `긴급 일괄 청산 (KIS 체결): ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`
-        : `긴급 일괄 강제청산 (DB): ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
-
-      const { withTransaction } = await import('../../../db/client.js');
-      await withTransaction(async (tx) => {
-        await tx.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [code, exchange, isPaper]);
-        await tx.query('DELETE FROM overseas_state WHERE key = ANY($1)', [[
-          `${pfx}maxprice_${code}`, `${pfx}partial_tp_stage_${code}`, `${pfx}dynamic_tpsl_${code}`,
-          `${pfx}scale_in_${code}`, `${pfx}turtle_trail_${code}`, `sync_sell_pending_${code}`,
-        ]]);
-        await tx.query(
-          `INSERT INTO overseas_state (key, value) VALUES ($1, $2::text)
-           ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $2)::text`,
-          [cashKey, proceeds]);
-        await tx.query(
-          `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
-           VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED',$5,'OVERSEAS',$6,$7)`,
-          [code, qty, fillPrice, kisOrderNo || `FORCE_${Date.now().toString(36)}`, isPaper ? 'paper' : 'live', reason, avgPrice]);
-      });
-
-      totalProceeds += proceeds;
-      results.push(`${code} ${qty}주 @$${fillPrice.toFixed(2)} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)`);
-    }
-
-    logger.info(`🚨 전종목 긴급 청산 완료: ${allHoldings.length}종목 $${totalProceeds.toFixed(2)} 반환`, { component: 'DASHBOARD' });
-    invalidateBalanceCache();
-    invalidateCurrentModeCache();
-    return c.json({
-      ok: true,
-      count: allHoldings.length,
-      totalProceeds: totalProceeds.toFixed(2),
-      details: results,
-      message: `${allHoldings.length}종목 전량 청산 완료 ($${totalProceeds.toFixed(2)} 반환)`,
-    });
-  } catch (err: any) {
-    logger.error(`전종목 긴급 청산 예외: ${err.message}`, { component: 'DASHBOARD' });
-    return c.json({ error: err.message }, 500);
-  }
-});
-
-// ── Claude Code 수동 매수 (복리 동적 사이징) ──
-sellRoutes.post('/manual-buy', async (c) => {
-  let body: { stock_code?: string; amount_krw?: number; ai_score?: number; reasoning?: string; is_paper?: boolean; rsi?: number; volume_ratio?: number; pullback_signal?: boolean; envelope_pos?: string; confidence?: number };
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: '요청 형식 오류' }, 400);
-  }
-
-  const stock_code = String(body.stock_code ?? '').trim().replace(/\D/g, '');
-  const { reasoning } = body;
-  const aiScore = body.ai_score ?? 0;
-  // 대시보드 paper/live 뷰 존중 — is_paper 명시 시 사용, 없으면 서버 모드 폴백 (Claude Code 직접 호출 등)
-  const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
-  const tradingMode = isPaper ? 'paper' : 'live';
-  if (!stock_code || stock_code.length !== 6) {
-    return c.json({ error: 'stock_code는 숫자 6자리여야 합니다' }, 400);
-  }
-
-  // 동적 TP/SL: use_dynamic_tpsl=true이면 기술지표 힌트 기반 계산
-  const dbStrategy = await getActiveStrategy().catch(() => null);
-  const useDynamic = (dbStrategy as any)?.use_dynamic_tpsl === true;
-  let takeProfitPct: number;
-  let stopLossPct: number;
-  let tpSlLabel = '';
-  if (aiScore >= 70) {
-    if (useDynamic) {
-      const { getDynamicDomesticTpSl } = await import('../../../config/constants.js');
-      const dyn = getDynamicDomesticTpSl({
-        score: aiScore,
-        confidence: body.confidence,
-        rsi: body.rsi,
-        volumeRatio: body.volume_ratio,
-        pullbackSignal: body.pullback_signal,
-        envelopePos: body.envelope_pos,
-      });
-      takeProfitPct = dyn.takeProfitPct;
-      stopLossPct = dyn.stopLossPct;
-      tpSlLabel = dyn.label;
-    } else {
-      ({ takeProfitPct, stopLossPct } = getScoreBasedParams(aiScore));
-    }
-  } else {
-    takeProfitPct = STRATEGY_PARAMS.SWING.takeProfitPct;
-    stopLossPct = STRATEGY_PARAMS.SWING.stopLossPct;
-  }
-
-  try {
-    let amount_krw = body.amount_krw ?? 0;
-    if (amount_krw < 10000) {
-      try {
-        const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
-        const totalCapital = balance.totalEvalAmount + balance.orderableCash;
-        const availCash = balance.orderableCash;
-        const slFraction = Math.abs(stopLossPct) / 100;
-        const riskBudget = totalCapital * 0.015;
-        const computed = Math.round(riskBudget / slFraction);
-
-        // 동적 포지션 비중 — 종목 품질(점수·규모·리스크)에 따라 자동 조절
-        const { getDynamicPositionSizePct } = await import('../../../config/constants.js');
-        const { MEGA_CAP_PRIORITY_CODES } = await import('../.././../ai/track-b/trading-rules.js');
-        const dynPct = getDynamicPositionSizePct({
-          score: aiScore,
-          confidence: body.confidence,
-          isMegaCap: MEGA_CAP_PRIORITY_CODES.has(stock_code),
-          pullbackSignal: body.pullback_signal,
-        }) / 100;
-        const capByAlloc = Math.round(totalCapital * dynPct);
-        const capByCash = Math.round(availCash * 0.95);
-        amount_krw = Math.max(Math.min(computed, capByAlloc, capByCash), 10000);
-        logger.info(
-          `💰 동적 사이징: score=${aiScore} megacap=${MEGA_CAP_PRIORITY_CODES.has(stock_code)} → 비중${(dynPct * 100).toFixed(0)}% | 총자본 ${(totalCapital / 10000).toFixed(0)}만원 → ${(amount_krw / 10000).toFixed(1)}만원`,
-          { component: 'CLAUDE_BUY' },
-        );
-      } catch (e) {
-        logger.error(`잔고 조회 실패 — 주문 중단: ${e}`, { component: 'CLAUDE_BUY' });
-        return c.json({ error: `잔고 조회 실패로 주문 중단: ${e instanceof Error ? e.message : e}` }, 503);
-      }
-    }
-
-    const priceData = await getCurrentPrice(stock_code);
-    const curPrice = priceData.currentPrice;
-    if (!curPrice || curPrice <= 0) return c.json({ error: '현재가 조회 실패' }, 500);
-
-    const quantity = Math.floor(amount_krw / curPrice);
-    if (quantity < 1) return c.json({ error: `수량 부족: ${curPrice.toLocaleString()}원 × 1주 > ${amount_krw.toLocaleString()}원` }, 400);
-
-    // 실전 모드만 리스크 엔진 검증 — 모의투자는 실전 자금 제약 없이 자유롭게 테스트
-    if (!isPaper) {
-      try {
-        const riskResult = await riskEngine.validateOrder({
-          stockCode: stock_code,
-          side: 'BUY',
-          quantity,
-          estimatedPrice: curPrice,
-          isPaper: false,
-        });
-        if (!riskResult.approved) {
-          logger.warn(`🚫 수동매수 리스크 거부: ${stock_code} — ${riskResult.reason}`, { component: 'CLAUDE_BUY' });
-          return c.json({ error: `리스크 체크 거부: ${riskResult.reason}` }, 403);
-        }
-      } catch (e) {
-        logger.warn(`리스크 엔진 조회 실패 — 매수 진행 차단: ${e}`, { component: 'CLAUDE_BUY' });
-        return c.json({ error: '리스크 엔진 조회 실패 — 안전을 위해 매수 차단' }, 500);
-      }
-    }
-
-    const totalInvested = quantity * curPrice;
-    const rrStr = `TP+${takeProfitPct}%/SL${stopLossPct}%(${(takeProfitPct / Math.abs(stopLossPct)).toFixed(2)}:1)${tpSlLabel ? ` [${tpSlLabel}]` : ''}`;
-
-    // 중복 OPEN 체인 방지
-    const dupCheck = await getPool().query(
-      `SELECT id FROM transaction_chains WHERE stock_code = $1 AND is_paper = $2 AND status = 'OPEN' LIMIT 1`,
-      [stock_code, isPaper],
-    );
-    if (dupCheck.rows.length > 0) {
-      return c.json({ error: `이미 OPEN 포지션 있음: ${stock_code} — 중복 매수 불가` }, 409);
-    }
-
-    if (isPaper) {
-      const fakeOrderNo = `CLD${Date.now().toString(36).toUpperCase()}`;
-      const chainId = await createChain({
-        stock_code,
-        status: 'OPEN',
-        strategy_mode: 'SWING',
-        avg_buy_price: curPrice,
-        total_quantity: quantity,
-        total_invested: totalInvested,
-        realized_pnl: 0,
-        target_profit_pct: takeProfitPct,
-        stop_loss_pct: stopLossPct,
-        max_averaging_count: STRATEGY_PARAMS.SWING.maxAveragingCount,
-        current_averaging_count: 0,
-        is_paper: true,
-      });
-      await getPool().query(
-        `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
-         VALUES ($1, $2, 'BUY', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, 'CLAUDE', $7)`,
-        [chainId, stock_code, quantity, curPrice, fakeOrderNo, tradingMode, reasoning ?? 'Claude Code 눌림매매'],
-      );
-      logger.info(`🤖 Claude 매수 (모의): ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 ${rrStr} — ${reasoning}`, { component: 'CLAUDE_BUY' });
-      try { await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑'); } catch { /* 알림 실패 무시 */ }
-      invalidateBalanceCache();
-      invalidateBalanceCache();
-    invalidateCurrentModeCache();
-      invalidateStockCache(stock_code).catch(() => {});
-      return c.json({ ok: true, orderNo: fakeOrderNo, stock_code, quantity, price: curPrice, totalInvested, takeProfitPct, stopLossPct });
-    }
-
-    const result = await runWithMode(isPaper, () => placeOrder({ stockCode: stock_code, side: 'BUY', quantity }));
-    if (!result.success) return c.json({ error: `KIS 매수 거부: ${result.message}` }, 502);
-    const kisOrderNo = result.orderNo ?? '';
-
-    // 체결 확인: 3초 대기 후 잔고 조회
-    await new Promise((r) => setTimeout(r, 3000));
-    let confirmed = false;
-    try {
-      const bal = await getAccountBalance(true);
-      confirmed = bal.positions.some((p: any) => String(p.stockCode) === stock_code);
-    } catch {
-      logger.warn(`매수 체결 확인 실패 (${stock_code}) — PENDING으로 기록`, { component: 'CLAUDE_BUY' });
-    }
-
-    const orderStatus = confirmed ? 'FILLED' : 'PENDING';
-    const chainId = await createChain({
-      stock_code,
-      status: 'OPEN',
-      strategy_mode: 'SWING',
-      avg_buy_price: curPrice,
-      total_quantity: confirmed ? quantity : 0,
-      total_invested: confirmed ? totalInvested : 0,
-      realized_pnl: 0,
-      target_profit_pct: takeProfitPct,
-      stop_loss_pct: stopLossPct,
-      max_averaging_count: STRATEGY_PARAMS.SWING.maxAveragingCount,
-      current_averaging_count: 0,
-      is_paper: false,
-    });
-    await getPool().query(
-      `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
-       VALUES ($1, $2, 'BUY', 'MARKET', $3, $4, $5, $6, $7, $8, $9, 'CLAUDE', $10)`,
-      [chainId, stock_code, quantity, curPrice,
-       confirmed ? quantity : 0, confirmed ? curPrice : 0,
-       kisOrderNo, orderStatus, tradingMode, reasoning ?? 'Claude Code 눌림매매'],
-    );
-    logger.info(`🤖 Claude 매수 ${confirmed ? '체결' : '접수'}: ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 (${kisOrderNo}) ${rrStr} — ${reasoning}`, { component: 'CLAUDE_BUY' });
-    try { await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑'); } catch { /* 알림 실패 무시 */ }
-    invalidateBalanceCache();
-    invalidateCurrentModeCache();
-    invalidateStockCache(stock_code).catch(() => {});
-    return c.json({ ok: true, orderNo: kisOrderNo, status: orderStatus, stock_code, quantity, price: curPrice, totalInvested, takeProfitPct, stopLossPct });
-  } catch (err: any) {
-    logger.error(`Claude 매수 예외: ${err.message}`, { component: 'CLAUDE_BUY' });
-    return c.json({ error: err.message }, 500);
-  }
-});
+// 해외매도(/sell-overseas/*) → overseas-sell.ts
+// 수동매수(/manual-buy) → manual-buy.ts

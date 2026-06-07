@@ -37,7 +37,7 @@ export const TransactionChainSchema = z.object({
   id: z.string().uuid(),
   stock_code: z.string(),
   status: z.enum(['OPEN', 'AVERAGING', 'PROFIT_TAKING', 'CLOSED']),
-  strategy_mode: z.enum(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER', 'BOTTOM_FISHING', 'EOD_BETTING']),
+  strategy_mode: z.enum(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER', 'BOTTOM_FISHING', 'EOD_BETTING', 'BREAKOUT']),
   avg_buy_price: z.number().nullable(),
   total_quantity: z.number(),
   total_invested: z.number(),
@@ -95,7 +95,7 @@ export type PortfolioSnapshot = z.infer<typeof PortfolioSnapshotSchema>;
 // ── CEO 전략 설정 ──
 export const StrategyConfigSchema = z.object({
   id: z.string().uuid(),
-  mode: z.enum(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER', 'BOTTOM_FISHING', 'EOD_BETTING']),
+  mode: z.enum(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER', 'BOTTOM_FISHING', 'EOD_BETTING', 'BREAKOUT']),
   is_active: z.boolean(),
   notebooklm_prompt: z.string().optional().default(''),
   gemini_prompt: z.string(),
@@ -106,6 +106,12 @@ export const StrategyConfigSchema = z.object({
   take_profit_pct: z.number(),
   strategy_document: z.string().optional().default(''),
   risk_prompt: z.string().optional().default(''),
+  ai_scoring_mode: z.enum(['fallback', 'ensemble']).default('fallback'),
+  ensemble_config: z.object({
+    weights: z.object({ gemini: z.number(), gpt: z.number(), claude: z.number(), rss: z.number() }),
+    strategy: z.enum(['weighted_avg', 'majority_vote', 'conservative']),
+    minModels: z.number(),
+  }).optional(),
   updated_at: z.string(),
 });
 export type StrategyConfig = z.infer<typeof StrategyConfigSchema>;

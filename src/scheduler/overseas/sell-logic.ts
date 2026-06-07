@@ -126,7 +126,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     const dyn = calcDynamicTpSl({
       sector, adx: tech.adx ?? 20, rsi: tech.rsi ?? 50,
       aiConfidence: ai?.confidence, aiAction: ai?.action, vixRegime, isMomentum: tech.isMomentum,
-      tunerOverrides,
+      tunerOverrides, atrPct: atrPctValue,
     });
     let hardTpPct = dyn.tpPct;
     let stopLossPct: number;

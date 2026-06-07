@@ -6,6 +6,7 @@ import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, updateOrder } from '../../db/client.js';
 import { cancelOverseasOrder, getOverseasBalance } from '../../kis/overseas.js';
 import { logger } from '../../utils/logger.js';
+import { sleep } from '../../utils/sleep.js';
 import { GLOBAL_WATCHLIST } from './watchlist.js';
 import type { OverseasExecutionResult } from './analytics.js';
 
@@ -88,7 +89,7 @@ export async function confirmOverseasFillFromBalance(params: {
   const retryDelays = [2000, 4000, 7000];
 
   for (let i = 0; i < retryDelays.length; i++) {
-    await new Promise((r) => setTimeout(r, retryDelays[i]));
+    await sleep(retryDelays[i]);
     try {
       const balances = await getOverseasBalance(exchange);
       const position = balances.find((b) => b.stockCode === code);

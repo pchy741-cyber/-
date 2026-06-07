@@ -17,7 +17,7 @@ export async function runSnapshotJob(): Promise<void> {
   try {
     const balance = isPaper
       ? await getPaperBalance()
-      : await getAccountBalance();
+      : await getAccountBalance(true);
 
     await insertSnapshot({
       total_value: balance.totalDeposit + balance.totalEvalAmount,

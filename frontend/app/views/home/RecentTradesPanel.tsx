@@ -69,6 +69,7 @@ export default function RecentTradesPanel({
                       })()}
                     </span>
                     {isOverseasTrade && <span className="text-[9px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded-md">🇺🇸</span>}
+                    {t.status === 'PENDING' && <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded-md animate-pulse font-bold">{t.side === 'BUY' ? '구매중' : '매도중'}</span>}
                     <span className="text-[10px] text-slate-600">{fmtTime(t.created_at)}</span>
                   </div>
                   <div className={`text-[11px] text-slate-500 mt-0.5 ${isExpanded ? 'whitespace-pre-wrap break-words' : 'truncate'}`}>

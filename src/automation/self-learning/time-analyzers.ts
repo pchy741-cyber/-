@@ -1,6 +1,7 @@
 import { getPool } from '../../db/client.js';
 import { getDailyChart } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
+import { sleep } from '../../utils/sleep.js';
 import type { EnrichedChain, LearnedInsight } from './index.js';
 
 const now = new Date().toISOString();
@@ -85,7 +86,7 @@ export async function analyzeOptimalTrailingStop(enrichedChains: EnrichedChain[]
         }
         totalPnlByMultiplier.set(multiplier, (totalPnlByMultiplier.get(multiplier) ?? 0) + simulatedPnl);
       }
-      await new Promise((r) => setTimeout(r, 300)); // KIS API Rate Limit
+      await sleep(300); // KIS API Rate Limit
     }
 
     let bestMultiplier = -1;

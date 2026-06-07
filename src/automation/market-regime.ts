@@ -4,6 +4,7 @@ import { kisRequest } from '../kis/client.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { getMacroSnapshot, calculateFearGreedIndex } from './macro-data.js';
 import { logger } from '../utils/logger.js';
+import { getCtxIsPaper } from '../config/context.js';
 
 /**
  * 장세 자동 감지 & 전략 모드 자동 전환 (v2)
@@ -266,21 +267,22 @@ export async function autoSwitchStrategy(): Promise<void> {
     const newBuyThreshold = modeParams?.buyThreshold ?? 65;
     const newStopLoss = modeParams?.stopLossPct ?? -5.0;
 
+    const isPaper = getCtxIsPaper();
     const { rowCount: updCount } = await getPool().query(
-      `UPDATE strategy_config SET mode=$1, buy_threshold=$2, stop_loss_pct=$3, updated_at=NOW() WHERE is_active=true`,
-      [targetMode, newBuyThreshold, newStopLoss],
+      `UPDATE strategy_config SET mode=$1, buy_threshold=$2, stop_loss_pct=$3, updated_at=NOW() WHERE is_active=true AND is_paper=$4`,
+      [targetMode, newBuyThreshold, newStopLoss, isPaper],
     );
 
     if ((updCount ?? 0) === 0) {
       await getPool().query(
         `INSERT INTO strategy_config
            (mode, is_active, gemini_prompt, gpt_prompt, claude_prompt,
-            buy_threshold, stop_loss_pct, take_profit_pct, notebooklm_prompt, strategy_document, risk_prompt)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+            buy_threshold, stop_loss_pct, take_profit_pct, notebooklm_prompt, strategy_document, risk_prompt, is_paper)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
         [targetMode, true,
           currentStrategy?.gemini_prompt ?? '', currentStrategy?.gpt_prompt ?? '', currentStrategy?.claude_prompt ?? '',
           newBuyThreshold, newStopLoss, currentStrategy?.take_profit_pct ?? 8.0,
-          currentStrategy?.notebooklm_prompt ?? '', currentStrategy?.strategy_document ?? '', currentStrategy?.risk_prompt ?? ''],
+          currentStrategy?.notebooklm_prompt ?? '', currentStrategy?.strategy_document ?? '', currentStrategy?.risk_prompt ?? '', isPaper],
       );
     }
 

@@ -28,6 +28,7 @@ import { config, setTradingModeOverride, baseIsPaper } from './config/index.js';
 import { runWithMode } from './config/context.js';
 import { checkDb, checkDbWithRetry, disableMemoryMode, enableMemoryMode, isMemoryMode, logSystem, resetPool } from './db/client.js';
 import { injectDbLogger } from './utils/logger.js';
+import { getKSTNow } from './utils/time.js';
 import { getAccessToken } from './kis/auth.js';
 import { initTelegram } from './notifications/telegram.js';
 import { initSlack } from './notifications/slack.js';
@@ -50,12 +51,25 @@ app.use('*', async (c, next) => { touchActivity(); return next(); });
 
 // ── API Rate Limiting (인메모리) ──
 const rateMap = new Map<string, { count: number; resetAt: number }>();
+const RATE_MAP_MAX = 10_000;
 function rateLimit(max: number, windowMs: number) {
   return async (c: any, next: any) => {
     // Cloud Run: x-forwarded-for 마지막 값이 진짜 클라이언트 IP
     const xff = c.req.header('x-forwarded-for') as string | undefined;
     const ip = xff?.split(',').pop()?.trim() ?? 'unknown';
-    if (rateMap.size > 10_000) rateMap.clear(); // DoS 방어: 메모리 폭발 방지
+    // DoS 방어: 만료된 엔트리부터 제거 (핵클리어 대신 점진적 정리)
+    if (rateMap.size > RATE_MAP_MAX) {
+      const now = Date.now();
+      for (const [k, v] of rateMap) {
+        if (now > v.resetAt) rateMap.delete(k);
+        if (rateMap.size <= RATE_MAP_MAX * 0.7) break;
+      }
+      if (rateMap.size > RATE_MAP_MAX) {
+        // 만료 엔트리 없으면 가장 오래된 30% 제거
+        const entries = [...rateMap.entries()].sort((a, b) => a[1].resetAt - b[1].resetAt);
+        entries.slice(0, Math.floor(entries.length * 0.3)).forEach(([k]) => rateMap.delete(k));
+      }
+    }
     const now = Date.now();
     const entry = rateMap.get(ip);
     if (!entry || now > entry.resetAt) {
@@ -66,8 +80,8 @@ function rateLimit(max: number, windowMs: number) {
     return next();
   };
 }
-// 5분마다 만료 엔트리 정리
-setInterval(() => { const n = Date.now(); for (const [k, v] of rateMap) if (n > v.resetAt) rateMap.delete(k); }, 300_000);
+// 2분마다 만료 엔트리 정리 (5분→2분, 장기운영 메모리 방지)
+setInterval(() => { const n = Date.now(); for (const [k, v] of rateMap) if (n > v.resetAt) rateMap.delete(k); }, 120_000);
 
 // Rate limit 적용: 로그인 5회/분, 매매 엔드포인트 10회/분
 app.use('/auth/login', rateLimit(5, 60_000));
@@ -521,7 +535,7 @@ async function bootstrap() {
     const codes = wl.map((w: any) => w.stock_code).slice(0, 5);
     if (codes.length > 0) {
       const scores = await getLatestScores(codes);
-      const kstNow = new Date(Date.now() + 9 * 3600_000);
+      const kstNow = getKSTNow();
       const today = `${kstNow.getUTCFullYear()}-${String(kstNow.getUTCMonth() + 1).padStart(2, '0')}-${String(kstNow.getUTCDate()).padStart(2, '0')}`;
       const hasTodayScore = scores.some((s: any) => s.score_date === today && (s.composite_score ?? 0) > 0);
       if (!hasTodayScore) {

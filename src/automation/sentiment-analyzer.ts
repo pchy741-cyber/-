@@ -1,5 +1,6 @@
 import { getActiveWatchlist } from '../db/client.js';
 import { logger } from '../utils/logger.js';
+import { sleep } from '../utils/sleep.js';
 import { getTodayNews } from './news-collector.js';
 
 /**
@@ -154,7 +155,7 @@ export async function analyzeNewsSentiment(headlines: string[]): Promise<NewsSen
 
     // rate limit
     if (i + batchSize < headlines.length) {
-      await new Promise((r) => setTimeout(r, 300));
+      await sleep(300);
     }
   }
 

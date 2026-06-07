@@ -12,8 +12,66 @@ const GeminiScoringResponseSchema = z.object({
   scores: z.array(z.unknown()),
 });
 
+// 배치당 종목 수 — 70개 이하로 분할하여 Gemini 응답 시간 단축
+const SCORING_BATCH_SIZE = 70;
+
 /**
- * Vertex AI Gemini로 종목 스코어링 (GPT 대체)
+ * 단일 배치 스코어링 호출
+ */
+async function scoreBatch(
+  systemPrompt: string,
+  sentiment: string,
+  stocks: GeminiAnalysis['stocks'],
+  batchIdx: number,
+  totalBatches: number,
+): Promise<ScoringResult[]> {
+  const userMessage = `## Gemini 분석 결과 (배치 ${batchIdx + 1}/${totalBatches})
+시장 분위기: ${sentiment}
+
+${JSON.stringify(stocks, null, 2)}
+
+위 분석 결과를 바탕으로 각 종목의 점수를 산출해주세요.`;
+
+  const content = await callVertexGemini(systemPrompt, userMessage, {
+    temperature: 0.2,
+    maxOutputTokens: 16384,
+    label: 'TrackA-스코어링',
+  });
+
+  // Resilient JSON parsing — 잘린 응답에서도 개별 스코어 복구
+  const parsedResponse = safeParseScoresJson(content, `GeminiScoring-B${batchIdx}`);
+
+  if (!parsedResponse || parsedResponse.scores.length === 0) {
+    logger.warn(`Gemini 스코어링 배치${batchIdx + 1} 응답 파싱 실패 — 빈 배열`, {
+      component: 'TRACK_A',
+      rawLength: content.length,
+      rawPreview: content.slice(0, 300),
+    });
+    return [];
+  }
+
+  const validScores: ScoringResult[] = [];
+  for (const score of parsedResponse.scores) {
+    const zod = ScoringResultSchema.safeParse(score);
+    if (zod.success) {
+      if (zod.data.signal !== 'NO_DATA') {
+        validScores.push(zod.data);
+      }
+    } else {
+      const stockCode = typeof score === 'object' && score !== null && 'stock_code' in score ? String((score as any).stock_code) : 'UNKNOWN';
+      logger.warn(`Gemini 스코어 검증 실패 (${stockCode}): ${zod.error?.message}`, {
+        component: 'TRACK_A',
+        invalidData: score,
+      });
+    }
+  }
+
+  return validScores;
+}
+
+/**
+ * Vertex AI Gemini로 종목 스코어링 (배치 분할)
+ * 70개씩 나눠서 호출 → 응답 시간 단축 + 출력 토큰 안정성
  */
 export async function runGeminiScoring(params: {
   mode: string;
@@ -26,59 +84,38 @@ export async function runGeminiScoring(params: {
   const basePrompt = buildScoringPrompt(mode, regimeHint);
   const systemPrompt = customPrompt ? `${basePrompt}\n\n${customPrompt}` : basePrompt;
 
-  logger.info(`Gemini 스코어링 시작 (${geminiAnalysis.stocks.length}개 종목, 모드: ${mode})`, {
+  const allStocks = geminiAnalysis.stocks;
+  const totalBatches = Math.ceil(allStocks.length / SCORING_BATCH_SIZE);
+
+  logger.info(`Gemini 스코어링 시작 (${allStocks.length}개 종목, ${totalBatches}배치, 모드: ${mode})`, {
     component: 'TRACK_A',
   });
 
-  const userMessage = `## Gemini 분석 결과
-시장 분위기: ${geminiAnalysis.market_sentiment}
-
-${JSON.stringify(geminiAnalysis.stocks, null, 2)}
-
-위 분석 결과를 바탕으로 각 종목의 점수를 산출해주세요.`;
-
-  const content = await callVertexGemini(systemPrompt, userMessage, { temperature: 0.2, label: 'TrackA-스코어링' });
-
-  // Resilient JSON parsing — 잘린 응답에서도 개별 스코어 복구
-  const parsedResponse = safeParseScoresJson(content, 'GeminiScoring');
-
-  if (!parsedResponse || parsedResponse.scores.length === 0) {
-    logger.warn('Gemini 스코어링 응답에서 스코어를 추출할 수 없음 — 빈 배열 반환', {
-      component: 'TRACK_A',
-      rawLength: content.length,
-      rawPreview: content.slice(0, 500),
-    });
-    return []; // throw 대신 빈 배열 반환 — 파이프라인이 폴백으로 진행
-  }
-
-  // 각 개별 스코어 객체 검증 (Zod)
-  const validScores: ScoringResult[] = [];
-  for (const score of parsedResponse.scores) {
-    const zod = ScoringResultSchema.safeParse(score);
-    if (zod.success) {
-      if (zod.data.signal !== 'NO_DATA') {
-        validScores.push(zod.data);
-      } else {
-        const stockCode = typeof score === 'object' && score !== null && 'stock_code' in score ? String((score as any).stock_code) : 'UNKNOWN';
-        logger.info(`Gemini 스코어 NO_DATA 제외 (${stockCode}): 데이터 부족 신호`, {
-          component: 'TRACK_A',
-        });
-      }
-    } else {
-      const stockCode = typeof score === 'object' && score !== null && 'stock_code' in score ? String((score as any).stock_code) : 'UNKNOWN';
-      logger.warn(`Gemini 스코어 검증 실패 (${stockCode}): ${zod.error?.message}`, {
+  // 배치별 순차 호출 (Vertex API rate limit 고려)
+  const allScores: ScoringResult[] = [];
+  for (let i = 0; i < totalBatches; i++) {
+    const batch = allStocks.slice(i * SCORING_BATCH_SIZE, (i + 1) * SCORING_BATCH_SIZE);
+    try {
+      const scores = await scoreBatch(systemPrompt, geminiAnalysis.market_sentiment, batch, i, totalBatches);
+      allScores.push(...scores);
+      logger.info(`스코어링 배치${i + 1}/${totalBatches} 완료: ${scores.length}/${batch.length}개`, {
         component: 'TRACK_A',
-        invalidData: score,
       });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`스코어링 배치${i + 1}/${totalBatches} 실패: ${msg.slice(0, 200)}`, {
+        component: 'TRACK_A',
+      });
+      // 실패한 배치는 건너뛰고 계속 진행
     }
   }
 
-  const maxScore = validScores.length > 0 ? Math.max(...validScores.map((s) => s.composite_score)) : 0;
+  const maxScore = allScores.length > 0 ? Math.max(...allScores.map((s) => s.composite_score)) : 0;
 
   logger.info(
-    `Gemini 스코어링 완료: ${validScores.length}/${parsedResponse.scores.length}개 유효, 최고점=${maxScore}`,
+    `Gemini 스코어링 완료: ${allScores.length}/${allStocks.length}개 유효, 최고점=${maxScore}`,
     { component: 'TRACK_A' },
   );
 
-  return validScores;
+  return allScores;
 }

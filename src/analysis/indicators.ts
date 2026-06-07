@@ -62,6 +62,12 @@ export interface TechnicalSummary {
   volumeConsistency: number;
   fibResult: FibonacciResult | null;
   rsiDivergence: RsiDivergence;
+  // v4: 카테고리별 점수 (자기학습 피드백용)
+  catTrend: number;       // 추세 카테고리 (-25~+25)
+  catMomentum: number;    // 모멘텀 카테고리 (-25~+25)
+  catVolatility: number;  // 변동성 카테고리 (-25~+25)
+  catVolume: number;      // 거래량 카테고리 (-25~+25)
+  catPositive: number;    // 양수 카테고리 수 (0~4)
 }
 
 export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
@@ -136,78 +142,24 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   const avgVol20 = volumes.slice(0, 20).reduce((s, v) => s + v, 0) / 20;
   const volumeRatio = avgVol20 > 0 ? volumes[0] / avgVol20 : 1;
 
-  // ══════════════════════════════════════════════════
-  // 종합 점수 계산 (연구 기반 가중치)
-  // ══════════════════════════════════════════════════
-  let score = 0;
+  // ══════════════════════════════════════════════════════════════════
+  // 카테고리별 Cap 점수 시스템 (v4 — 2026-06 승률 개선)
+  //
+  // 문제: 상관관계 높은 지표들이 중복 가산 → 평범한 종목도 STRONG_BUY
+  // 해결: 4개 독립 카테고리로 분리, 각각 ±25 cap → 합계 ±100
+  //       최소 3/4 카테고리 양수여야 BUY 신호 발동 (다중확인 필수)
+  // ══════════════════════════════════════════════════════════════════
 
-  // RSI
-  if (rsi14 < 30) score += 15;
-  else if (rsi14 < 40) score += 7;
-  else if (rsi14 >= 45 && rsi14 <= 62) score += 18;
-  else if (rsi14 > 70) score -= 25;
-  else if (rsi14 > 65) score -= 12;
+  // ── 카테고리 1: 추세 (Trend) — cap ±25 ──
+  // SMA 정배열, 골든/데드크로스, VWAP 위치 (모두 "가격 vs 이동평균" 계열)
+  let trendScore = 0;
+  if (current > sma5Now && sma5Now > sma20Now && sma20Now > sma60Now) trendScore += 20;
+  else if (current > sma20Now && sma20Now > sma60Now) trendScore += 10;
+  if (current < sma5Now && sma5Now < sma20Now && sma20Now < sma60Now) trendScore -= 20;
+  else if (current < sma20Now && sma20Now < sma60Now) trendScore -= 10;
+  if (goldenCross) trendScore += 5;
+  if (deathCross) trendScore -= 5;
 
-  // MACD
-  if (macdCross === 'BULLISH') score += 25;
-  else if (macdCross === 'BEARISH') score -= 20;
-  else if (macdHist > 0) score += 8;
-  else score -= 8;
-
-  // 볼린저 밴드
-  if (bbPos === 'BELOW_LOWER') score += 10;
-  else if (bbPos === 'NEAR_LOWER') score += 5;
-  else if (bbPos === 'ABOVE_UPPER') score -= 12;
-  else if (bbPos === 'NEAR_UPPER') score -= 3;
-
-  // 이동평균 정배열
-  if (current > sma5Now && sma5Now > sma20Now && sma20Now > sma60Now) score += 28;
-  else if (current > sma20Now && sma20Now > sma60Now) score += 14;
-  if (current < sma5Now && sma5Now < sma20Now && sma20Now < sma60Now) score -= 20;
-  else if (current < sma20Now && sma20Now < sma60Now) score -= 10;
-
-  // 골든/데드크로스 (SMA 정배열과 중복 → 축소)
-  if (goldenCross) score += 8;
-  if (deathCross) score -= 8;
-
-  // 스토캐스틱 (RSI와 상관도 80%+ → RSI 경계구간에서만 보조)
-  if (stochSignal === 'OVERSOLD' && rsi14 >= 28 && rsi14 <= 35) score += 3;
-  if (stochSignal === 'OVERBOUGHT' && rsi14 >= 65 && rsi14 <= 72) score -= 3;
-
-  // Williams %R 제거 — RSI/Stochastic과 상관도 80%+, 점수 과대 팽창 원인
-
-  // ROC (축소 — 독자 정보 적으나 추세 확인용으로 소폭 유지)
-  const rocValues = roc(closesAsc, 12);
-  const roc12 = rocValues[rocValues.length - 1] ?? 0;
-  if (roc12 > 8) score += 4;
-  else if (roc12 > 3) score += 2;
-  else if (roc12 < -8) score -= 4;
-  else if (roc12 < -3) score -= 2;
-
-  // 통합 거래량 보너스 (서지+비율 통합 → 단일 계산 0~+15, 승수 제거)
-  const vol2dAvg = (volumes[1] + volumes[2]) / 2;
-  const todayVolSurge = vol2dAvg > 0 ? volumes[0] / vol2dAvg : 1;
-  const volScore = current > sma5Now
-    ? (todayVolSurge >= 2.5 ? 15 : todayVolSurge >= 2.0 ? 12 : todayVolSurge >= 1.5 ? 8 : todayVolSurge >= 1.3 ? 4 : 0)
-    : 0;
-  if (volumeRatio < 0.5 && score > 0) score = Math.floor(score * 0.7);  // 극저거래량 패널티만 유지
-  score += volScore;
-
-  // ADX 필터
-  if (trendStrength === 'WEAK') {
-    if (score > 0) score = Math.floor(score * 0.6);
-  } else if (trendStrength === 'STRONG') {
-    if (score > 0) score = Math.floor(score * 1.35);
-  }
-
-  // 캔들스틱 패턴
-  const candlePatterns = detectCandlePatterns(candles);
-  for (const p of candlePatterns) {
-    const pts = p.strength === 'STRONG' ? 12 : p.strength === 'MODERATE' ? 7 : 3;
-    score += p.bullish ? pts : -pts;
-  }
-
-  // VWAP
   const vwapValues = vwap(candlesAsc.slice(-20));
   const vwapNow = vwapValues[vwapValues.length - 1] ?? current;
   const vwapPrev = vwapValues[vwapValues.length - 2] ?? vwapNow;
@@ -217,25 +169,84 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   const vwapCross: TechnicalSummary['vwapCross'] =
     prevClose < vwapPrev && current > vwapNow ? 'JUST_ABOVE' :
     prevClose > vwapPrev && current < vwapNow ? 'JUST_BELOW' : 'NONE';
-  if (vwapCross === 'JUST_ABOVE') score += 15;
-  else if (vwapCross === 'JUST_BELOW') score -= 12;
-  else if (vwapPosition === 'ABOVE') score += 8;
-  else if (vwapPosition === 'BELOW') score -= 6;
+  if (vwapCross === 'JUST_ABOVE') trendScore += 8;
+  else if (vwapCross === 'JUST_BELOW') trendScore -= 8;
+  else if (vwapPosition === 'ABOVE') trendScore += 4;
+  else if (vwapPosition === 'BELOW') trendScore -= 4;
 
-  // 볼린저 스퀴즈 돌파
-  if (bollingerBreakout === 'UP') score += 22;
-  else if (bollingerBreakout === 'DOWN') score -= 18;
-  else if (bollingerSqueeze && macdCross === 'BULLISH') score += 10;
+  trendScore = Math.max(-25, Math.min(25, trendScore));
 
-  // 2-day RSI
+  // ── 카테고리 2: 모멘텀 (Momentum) — cap ±25 ──
+  // RSI, MACD, Stochastic, ROC, RSI2, 캔들 패턴 (모두 "가격 변화율/진동" 계열)
+  let momentumScore = 0;
+  if (rsi14 < 30) momentumScore += 10;
+  else if (rsi14 < 40) momentumScore += 5;
+  else if (rsi14 >= 45 && rsi14 <= 62) momentumScore += 8;
+  else if (rsi14 > 70) momentumScore -= 15;
+  else if (rsi14 > 65) momentumScore -= 8;
+
+  if (macdCross === 'BULLISH') momentumScore += 12;
+  else if (macdCross === 'BEARISH') momentumScore -= 12;
+  else if (macdHist > 0) momentumScore += 4;
+  else momentumScore -= 4;
+
+  if (stochSignal === 'OVERSOLD' && rsi14 >= 28 && rsi14 <= 35) momentumScore += 3;
+  if (stochSignal === 'OVERBOUGHT' && rsi14 >= 65 && rsi14 <= 72) momentumScore -= 3;
+
+  const rocValues = roc(closesAsc, 12);
+  const roc12 = rocValues[rocValues.length - 1] ?? 0;
+  if (roc12 > 8) momentumScore += 3;
+  else if (roc12 > 3) momentumScore += 1;
+  else if (roc12 < -8) momentumScore -= 3;
+  else if (roc12 < -3) momentumScore -= 1;
+
   const rsi2Values = rsi(closesAsc, 2);
   const rsi2 = rsi2Values[rsi2Values.length - 1] ?? 50;
-  if (rsi2 < 15) score += 18;
-  else if (rsi2 < 25) score += 10;
-  else if (rsi2 > 85) score -= 18;
-  else if (rsi2 > 75) score -= 10;
+  if (rsi2 < 15) momentumScore += 8;
+  else if (rsi2 < 25) momentumScore += 4;
+  else if (rsi2 > 85) momentumScore -= 8;
+  else if (rsi2 > 75) momentumScore -= 4;
 
-  // VWAP 풀백
+  const candlePatterns = detectCandlePatterns(candles);
+  for (const p of candlePatterns) {
+    const pts = p.strength === 'STRONG' ? 5 : p.strength === 'MODERATE' ? 3 : 1;
+    momentumScore += p.bullish ? pts : -pts;
+  }
+
+  momentumScore = Math.max(-25, Math.min(25, momentumScore));
+
+  // ── 카테고리 3: 변동성/돌파 (Volatility) — cap ±25 ──
+  // 볼린저밴드, TTM 스퀴즈, 눌림매매, ADX 추세강도
+  let volatilityScore = 0;
+  if (bbPos === 'BELOW_LOWER') volatilityScore += 6;
+  else if (bbPos === 'NEAR_LOWER') volatilityScore += 3;
+  else if (bbPos === 'ABOVE_UPPER') volatilityScore -= 8;
+  else if (bbPos === 'NEAR_UPPER') volatilityScore -= 3;
+
+  const ttmSqueezeResult = ttmSqueeze(candles);
+  if (ttmSqueezeResult.fireSignal === 'LONG') volatilityScore += 12;
+  else if (ttmSqueezeResult.fireSignal === 'SHORT') volatilityScore -= 12;
+  else if (ttmSqueezeResult.squeezeState === 'ON' && ttmSqueezeResult.consecutiveSqueezeOn >= 5) volatilityScore += 4;
+
+  if (bollingerBreakout === 'UP') volatilityScore += 10;
+  else if (bollingerBreakout === 'DOWN') volatilityScore -= 10;
+  else if (bollingerSqueeze && macdCross === 'BULLISH') volatilityScore += 5;
+
+  // ADX 보정: 약한 추세에서 양수 변동성 점수 감소
+  if (trendStrength === 'WEAK' && volatilityScore > 0) volatilityScore = Math.floor(volatilityScore * 0.7);
+
+  volatilityScore = Math.max(-25, Math.min(25, volatilityScore));
+
+  // ── 카테고리 4: 거래량 (Volume) — cap ±25 ──
+  const vol2dAvg = (volumes[1] + volumes[2]) / 2;
+  const todayVolSurge = vol2dAvg > 0 ? volumes[0] / vol2dAvg : 1;
+  let volumeScore = 0;
+  if (current > sma5Now) {
+    volumeScore += todayVolSurge >= 2.5 ? 12 : todayVolSurge >= 2.0 ? 9 : todayVolSurge >= 1.5 ? 6 : todayVolSurge >= 1.3 ? 3 : 0;
+  }
+  if (volumeRatio < 0.5) volumeScore -= 10;  // 극저거래량 경고
+
+  // VWAP 풀백 (거래량 기반 확인)
   const vwapHistory = vwapValues.slice(-4);
   const closeHistory = closesAsc.slice(-4);
   let recentVwapBreak = false;
@@ -246,13 +257,40 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   }
   const nearVwap = Math.abs(vwapDiff) < 0.5;
   const vwapPullback = recentVwapBreak && nearVwap && current > vwapNow * 0.995;
-  if (vwapPullback) score += 10;
+  if (vwapPullback) volumeScore += 6;
 
-  // TTM 스퀴즈
-  const ttmSqueezeResult = ttmSqueeze(candles);
-  if (ttmSqueezeResult.fireSignal === 'LONG') score += 25;
-  else if (ttmSqueezeResult.fireSignal === 'SHORT') score -= 20;
-  else if (ttmSqueezeResult.squeezeState === 'ON' && ttmSqueezeResult.consecutiveSqueezeOn >= 5) score += 8;
+  // 거래대금 연속성
+  const avgVol20ForConsistency = volumes.slice(0, 20).reduce((s, v) => s + v, 0) / 20;
+  let volumeConsistency = 0;
+  for (let i = 0; i < Math.min(5, volumes.length); i++) {
+    if (volumes[i] >= avgVol20ForConsistency) volumeConsistency++;
+  }
+  if (volumeConsistency >= 4) volumeScore += 5;
+  else if (volumeConsistency <= 1) volumeScore -= 5;
+
+  volumeScore = Math.max(-25, Math.min(25, volumeScore));
+
+  // ── 종합: 4개 카테고리 합산 + 다중확인 보너스/페널티 ──
+  let score = trendScore + momentumScore + volatilityScore + volumeScore;
+
+  // 다중확인(Multi-Confirmation): 3/4 카테고리 이상 양수여야 매수 신호 유효
+  const positiveCats = [trendScore > 0, momentumScore > 0, volatilityScore > 0, volumeScore > 0].filter(Boolean).length;
+  const negativeCats = [trendScore < 0, momentumScore < 0, volatilityScore < 0, volumeScore < 0].filter(Boolean).length;
+  if (positiveCats < 3 && score > 0) score = Math.floor(score * 0.5);  // 확인 부족 → 신호 약화
+  if (negativeCats >= 3 && score > -15) score = Math.min(score, -15);   // 3/4 음수 → 최소 SELL
+
+  // 눌림매매 (Pullback Signal) — 카테고리 외 구조 보너스
+  const sma10Val = sma(closesAsc, 10);
+  const sma10Now = sma10Val[sma10Val.length - 1] ?? current;
+  let recentDipBelowMA = false;
+  const lookback = Math.min(5, closesAsc.length - 1);
+  for (let i = 1; i <= lookback; i++) {
+    const pastClose = closesAsc[closesAsc.length - 1 - i] ?? current;
+    const pastSma5 = sma5Val[sma5Val.length - 1 - i] ?? sma5Now;
+    if (pastClose < pastSma5) { recentDipBelowMA = true; break; }
+  }
+  const pullbackSignal = recentDipBelowMA && current > sma5Now && current > sma10Now && volumeRatio >= 0.8;
+  if (pullbackSignal && positiveCats >= 3) score += 8;  // 다중확인 통과한 경우만 풀백 보너스
 
   score = Math.max(-100, Math.min(100, score));
 
@@ -271,42 +309,6 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
 
   // 엔벨로프
   const envelopeResult = envelope(closesAsc, 20, 0.05);
-
-  // 눌림매매 (Pullback Signal)
-  const sma10Val = sma(closesAsc, 10);
-  const sma10Now = sma10Val[sma10Val.length - 1] ?? current;
-  let recentDipBelowMA = false;
-  const lookback = Math.min(5, closesAsc.length - 1);
-  for (let i = 1; i <= lookback; i++) {
-    const pastClose = closesAsc[closesAsc.length - 1 - i] ?? current;
-    const pastSma5 = sma5Val[sma5Val.length - 1 - i] ?? sma5Now;
-    if (pastClose < pastSma5) { recentDipBelowMA = true; break; }
-  }
-  const pullbackSignal = recentDipBelowMA && current > sma5Now && current > sma10Now && volumeRatio >= 0.8;
-
-  if (pullbackSignal) {
-    score += 20;
-  }
-
-  // 엔벨로프 하단 터치 제거 — BB 하단과 중복 (bollingerPosition BELOW_LOWER/NEAR_LOWER와 동시 발동)
-
-  // 거래대금 연속성
-  const avgVol20ForConsistency = volumes.slice(0, 20).reduce((s, v) => s + v, 0) / 20;
-  let volumeConsistency = 0;
-  for (let i = 0; i < Math.min(5, volumes.length); i++) {
-    if (volumes[i] >= avgVol20ForConsistency) volumeConsistency++;
-  }
-  if (volumeConsistency >= 4 && score > 0) score = Math.floor(score * 1.12);
-  else if (volumeConsistency <= 1 && score > 0) score = Math.floor(score * 0.85);
-
-  score = Math.max(-100, Math.min(100, score));
-
-  // overallSignal 재계산
-  if (score >= 40) overallSignal = 'STRONG_BUY';
-  else if (score >= 15) overallSignal = 'BUY';
-  else if (score <= -40) overallSignal = 'STRONG_SELL';
-  else if (score <= -15) overallSignal = 'SELL';
-  else overallSignal = 'NEUTRAL';
 
   return {
     rsi14,
@@ -344,6 +346,12 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
     volumeConsistency,
     fibResult: calcFibonacciLevels(candles, current),
     rsiDivergence: detectRsiDivergence(closes, [...rsiValues].reverse(), 14),
+    // v4: 카테고리별 점수 (자기학습 피드백용)
+    catTrend: trendScore,
+    catMomentum: momentumScore,
+    catVolatility: volatilityScore,
+    catVolume: volumeScore,
+    catPositive: positiveCats,
   };
 }
 

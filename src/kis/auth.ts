@@ -138,8 +138,19 @@ export async function getAccessTokenForMode(mode: 'paper' | 'live'): Promise<str
 
 export async function getAccessToken(): Promise<string> {
   const isPaper = getCtxIsPaper();
+  const mode = isPaper ? 'paper' : 'live';
+
+  // 1차: 메인 캐시 (동일 모드 연속 호출 — 최빈 경로)
   if (cachedToken && !isExpired(cachedToken) && cachedTokenIsPaper === isPaper) {
     return cachedToken.accessToken;
+  }
+
+  // 2차: 모드별 캐시 (Paper↔Live 전환 시 DB 조회 없이 즉시 반환)
+  const modeCached = modeTokenCache.get(mode);
+  if (modeCached && !isExpired(modeCached)) {
+    cachedToken = modeCached;
+    cachedTokenIsPaper = isPaper;
+    return modeCached.accessToken;
   }
 
   // 동시 발급 방지: 이미 진행 중인 발급 요청이 있으면 그 결과를 공유
@@ -153,12 +164,13 @@ export async function getAccessToken(): Promise<string> {
         if (dbToken) {
           cachedToken = dbToken;
           cachedTokenIsPaper = isPaper;
+          modeTokenCache.set(mode, dbToken); // 모드별 캐시에도 저장
           logger.info(`KIS 토큰 DB 복원 성공, 만료: ${dbToken.expiresAt.toISOString()}`, { component: 'KIS_AUTH', isPaper });
           return dbToken.accessToken;
         }
       }
 
-      logger.info('KIS 토큰 발급 요청', { component: 'KIS_AUTH', isPaper });
+      logger.info('KIS 토큰 신규 발급 요청', { component: 'KIS_AUTH', isPaper });
 
       // config.kis is a dynamic getter — returns correct live/paper credentials based on current mode
       const appKey = config.kis.appKey;
@@ -191,6 +203,7 @@ export async function getAccessToken(): Promise<string> {
         expiresAt: new Date(data.access_token_token_expired ?? ''),
       };
       cachedTokenIsPaper = isPaper;
+      modeTokenCache.set(mode, cachedToken); // 모드별 캐시에도 저장
 
       logger.info(`KIS 토큰 발급 완료, 만료: ${cachedToken.expiresAt.toISOString()}`, {
         component: 'KIS_AUTH',

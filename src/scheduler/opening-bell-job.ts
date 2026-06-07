@@ -15,6 +15,7 @@ import { getBatchPrices, getDailyChart } from '../kis/market.js';
 import { analyzeTechnicals } from '../analysis/indicators.js';
 import { callVertexGemini } from '../utils/vertex-gemini.js';
 import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
 import { technicalFallbackDecisions } from '../ai/track-b/technical-fallback.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { getAccountBalance } from '../kis/account.js';
@@ -98,7 +99,9 @@ export async function warmupOpeningBell(): Promise<void> {
       }).filter(Boolean);
 
       if (stockSummaries.length > 0) {
-        const prompt = `당신은 한국 주식 개장 초단타 전문가입니다.
+        const { config: appCfg } = await import('../config/index.js');
+        if (appCfg.geminiEnabled) {
+          const prompt = `당신은 한국 주식 개장 초단타 전문가입니다.
 아래는 09:00 개장 직전 종목별 기술 지표와 갭 현황입니다.
 각 종목의 개장 10분 내 단타 매수 적합성을 0~100점으로 평가하세요.
 
@@ -112,20 +115,35 @@ export async function warmupOpeningBell(): Promise<void> {
 JSON만 반환 (다른 텍스트 없이):
 {"scores":[{"code":"종목코드","score":점수,"reason":"한줄사유"},...]}`;
 
-        const userMsg = JSON.stringify(stockSummaries, null, 0);
-        const raw = await callVertexGemini(prompt, userMsg, { temperature: 0.1, maxOutputTokens: 1024, label: '개장벨-스코어' });
-        const match = raw.match(/\{[\s\S]*\}/);
-        if (match) {
-          const parsed = JSON.parse(match[0]) as { scores?: Array<{ code: string; score: number; reason: string }> };
-          for (const s of parsed.scores ?? []) {
-            if (s.code && typeof s.score === 'number') {
-              geminiScores.set(s.code, Math.max(0, Math.min(100, s.score)));
+          const userMsg = JSON.stringify(stockSummaries, null, 0);
+          const raw = await callVertexGemini(prompt, userMsg, { temperature: 0.1, maxOutputTokens: 1024, label: '개장벨-스코어' });
+          const match = raw.match(/\{[\s\S]*\}/);
+          if (match) {
+            const parsed = JSON.parse(match[0]) as { scores?: Array<{ code: string; score: number; reason: string }> };
+            for (const s of parsed.scores ?? []) {
+              if (s.code && typeof s.score === 'number') {
+                geminiScores.set(s.code, Math.max(0, Math.min(100, s.score)));
+              }
             }
+            logger.info(
+              `🤖 [OPENING] Gemini 사전분석 완료 (${geminiScores.size}종목): ${[...geminiScores.entries()].sort((a,b)=>b[1]-a[1]).slice(0,5).map(([c,s])=>`${c}(${s})`).join(', ')}`,
+              { component: 'OPENING_BELL' },
+            );
           }
-          logger.info(
-            `🤖 [OPENING] Gemini 사전분석 완료 (${geminiScores.size}종목): ${[...geminiScores.entries()].sort((a,b)=>b[1]-a[1]).slice(0,5).map(([c,s])=>`${c}(${s})`).join(', ')}`,
-            { component: 'OPENING_BELL' },
-          );
+        } else {
+          // 규칙기반: 기술 지표로 직접 스코어링 ($0)
+          for (const ss of stockSummaries as Array<Record<string, any>>) {
+            let sc = 50;
+            if (ss.gap >= 1 && ss.gap <= 3) sc += 15;
+            else if (ss.gap > 3) sc -= 10;
+            if (ss.vol >= 3.0) sc += 15; else if (ss.vol >= 2.0) sc += 8;
+            if (ss.rsi >= 45 && ss.rsi <= 68) sc += 10; else if (ss.rsi > 70) sc -= 15;
+            if (ss.bb === 'UP') sc += 8;
+            if (ss.macd === 'BULLISH') sc += 5;
+            if (ss.adx >= 25) sc += 5;
+            geminiScores.set(ss.code as string, Math.max(0, Math.min(100, sc)));
+          }
+          logger.info(`📊 [OPENING] 규칙기반 스코어링 (${geminiScores.size}종목, Gemini OFF)`, { component: 'OPENING_BELL' });
         }
       }
     } catch (gemErr) {
@@ -142,7 +160,7 @@ JSON만 반환 (다른 텍스트 없이):
 
 // ── 09:00~09:10 매 사이클 (1분 간격) ────────────────────────────────────
 export async function runOpeningBellCycle(): Promise<void> {
-  const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const nowKst = getKSTNow();
   const h = nowKst.getUTCHours();
   const m = nowKst.getUTCMinutes();
 
@@ -169,7 +187,7 @@ export async function runOpeningBellCycle(): Promise<void> {
       getActiveStrategy(),
       getCtxIsPaper()
         ? import('../risk/engine.js').then(m => m.getPaperBalance())
-        : getAccountBalance(),
+        : getAccountBalance(true),
     ]);
 
     const stockCodes = watchlist.map(w => w.stock_code);
@@ -230,12 +248,27 @@ export async function runOpeningBellCycle(): Promise<void> {
       });
 
       try {
-        const realtimePrompt = `개장 단타 실시간 판단 (현재 09:0${m}).
+        const { config: appCfg2 } = await import('../config/index.js');
+        let raw = '';
+        if (appCfg2.geminiEnabled) {
+          const realtimePrompt = `개장 단타 실시간 판단 (현재 09:0${m}).
 아래 상위 후보 종목들의 지금 이 순간 매수 확신도를 0~100으로 재평가하세요.
 갭이 이미 많이 올랐으면 추격 위험 → 낮춰라. 거래량 터지고 BB 돌파 중이면 → 높여라.
 JSON만: {"scores":[{"code":"코드","score":점수},...]}`;
 
-        const raw = await callVertexGemini(realtimePrompt, JSON.stringify(realtimeDetails), { temperature: 0.05, maxOutputTokens: 256, label: '개장벨-실시간' });
+          raw = await callVertexGemini(realtimePrompt, JSON.stringify(realtimeDetails), { temperature: 0.05, maxOutputTokens: 256, label: '개장벨-실시간' });
+        } else {
+          // 규칙기반: 기술지표로 실시간 재스코어링
+          const ruleScores = realtimeDetails.map((d: any) => {
+            let sc = d.baseScore;
+            if (d.gapPct > 4) sc -= 15;
+            if (d.volumeRatio >= 3) sc += 10;
+            if (d.bbBreakout === 'UP') sc += 8;
+            if (d.rsi14 > 70) sc -= 10;
+            return { code: d.code, score: Math.max(0, Math.min(100, sc)) };
+          });
+          raw = JSON.stringify({ scores: ruleScores });
+        }
         const match = raw.match(/\{[\s\S]*\}/);
         if (match) {
           const parsed = JSON.parse(match[0]) as { scores?: Array<{ code: string; score: number }> };

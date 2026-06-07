@@ -26,6 +26,8 @@ import {
   type AiCommand,
   type OverrideCategory,
 } from '../../ai/ai-overrides.js';
+import { computePaperCash } from '../../scheduler/overseas/state.js';
+import { getFxRate } from './dashboard/helpers.js';
 import { logger } from '../../utils/logger.js';
 
 export const aiLoopRoutes = new Hono();
@@ -51,7 +53,7 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
       getOpenChains(isPaper),
       getActiveWatchlist(),
       getAllOverrides(isPaper),
-      isPaper ? getPaperBalance() : getAccountBalance(false).catch(() => null),
+      isPaper ? getPaperBalance() : getAccountBalance(true).catch(() => null),
       getPool().query(
         'SELECT stock_code, exchange, quantity, avg_price FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1',
         [isPaper],
@@ -104,13 +106,29 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
       };
     });
 
-    // 해외 포지션
-    const overseasPositions = overseasResult.rows.map((r: Record<string, unknown>) => ({
-      stockCode: r.stock_code,
-      exchange: r.exchange,
-      quantity: Number(r.quantity),
-      avgPrice: Number(r.avg_price),
-    }));
+    // 해외 포지션 + 투자금 합산
+    let overseasInvestedUsd = 0;
+    const overseasPositions = overseasResult.rows.map((r: Record<string, unknown>) => {
+      const qty = Number(r.quantity);
+      const avg = Number(r.avg_price);
+      overseasInvestedUsd += qty * avg;
+      return { stockCode: r.stock_code, exchange: r.exchange, quantity: qty, avgPrice: avg };
+    });
+
+    // 해외 현금 + 환율 → 통합증거금 계산
+    let overseasCashKrw = 0;
+    let FX_RATE = await getFxRate().catch(() => 1420);
+    if (FX_RATE <= 0) FX_RATE = 1420;
+    if (isPaper) {
+      const usdCash = await computePaperCash().catch(() => 0);
+      overseasCashKrw = usdCash * FX_RATE;
+    } else {
+      const { rows: osCashRows } = await getPool().query(
+        `SELECT value FROM overseas_state WHERE key = 'cash'`
+      ).catch(() => ({ rows: [] }));
+      overseasCashKrw = osCashRows.length > 0 ? Number(osCashRows[0].value) : 0;
+    }
+    const overseasInvestedKrw = overseasInvestedUsd * FX_RATE;
 
     // 승률 요약
     const winRateStats = winRateResult.rows.map((r: Record<string, unknown>) => ({
@@ -160,12 +178,21 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
           return await isEodOnlyMode();
         } catch { return false; }
       })(),
-      balance: balance ? {
-        totalAsset: balance.netAsset || balance.totalEvalAmount || 0,
-        cash: balance.orderableCash || 0,
-        invested: balance.purchaseCost || 0,
-        profitLoss: balance.totalProfitLoss || 0,
-      } : null,
+      balance: balance ? (() => {
+        const domCash = balance.orderableCash || 0;
+        const domInvested = balance.purchaseCost || balance.totalEvalAmount || 0;
+        const unifiedCash = Math.round(domCash + overseasCashKrw);
+        const totalInvested = Math.round(domInvested + overseasInvestedKrw);
+        return {
+          totalAsset: Math.round(unifiedCash + domInvested + overseasInvestedKrw),
+          cash: unifiedCash,
+          invested: totalInvested,
+          profitLoss: balance.totalProfitLoss || 0,
+          // 디버그: 내역 분리
+          _domestic: { cash: Math.round(domCash), invested: Math.round(domInvested) },
+          _overseas: { cashKrw: Math.round(overseasCashKrw), investedKrw: Math.round(overseasInvestedKrw), fxRate: FX_RATE },
+        };
+      })() : null,
       regime: regimeResult.rows[0] ?? null,
       consensus: consensusSentiment,
       positions,

@@ -30,11 +30,11 @@ export function getLastAutoPilotResult() { return _lastResult; }
 
 // ── 자동 조절 규칙 상수 ─────────────────────────────────────────────
 const RULES = {
-  // 시장 레짐 기반 minBuyScore
-  REGIME_NORMAL_THRESHOLD: 70,      // 정상장
-  REGIME_ADJUST_THRESHOLD: 78,      // 조정장 (penalty=1)
-  REGIME_DOWN_THRESHOLD: 85,        // 하락장 (penalty=2)
-  REGIME_CRASH_THRESHOLD: 92,       // 급락장 (flashCrash)
+  // 시장 레짐 기반 minBuyScore (하락장 95+ 아니면 다 잃음 → 상향)
+  REGIME_NORMAL_THRESHOLD: 75,      // 정상장
+  REGIME_ADJUST_THRESHOLD: 83,      // 조정장 (penalty=1)
+  REGIME_DOWN_THRESHOLD: 90,        // 하락장 (penalty=2)
+  REGIME_CRASH_THRESHOLD: 95,       // 급락장 (flashCrash)
   REGIME_BOOST_THRESHOLD: 65,       // 강세장 (boost)
 
   // 승률 기반
@@ -140,10 +140,16 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
         }
       }
 
-      // 퍼포먼스 멀티플라이어 보정
-      if (perfMultiplier < 0.7) {
-        targetThreshold = Math.min(95, targetThreshold + 5);
-        reason += ` + 최근 성과 부진(×${perfMultiplier.toFixed(2)})`;
+      // 퍼포먼스 멀티플라이어 보정 (단계별 강화)
+      if (perfMultiplier <= 0.5) {
+        targetThreshold = Math.min(95, targetThreshold + 10);
+        reason += ` + 성과 심각(×${perfMultiplier.toFixed(2)})`;
+      } else if (perfMultiplier < 0.7) {
+        targetThreshold = Math.min(95, targetThreshold + 7);
+        reason += ` + 성과 부진(×${perfMultiplier.toFixed(2)})`;
+      } else if (perfMultiplier < 0.85) {
+        targetThreshold = Math.min(95, targetThreshold + 3);
+        reason += ` + 성과 방어(×${perfMultiplier.toFixed(2)})`;
       } else if (perfMultiplier > 1.1) {
         targetThreshold = Math.max(55, targetThreshold - 2);
         reason += ` + 최근 성과 우수(×${perfMultiplier.toFixed(2)})`;
@@ -268,17 +274,13 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
       }
     } catch { /* 해외 데이터 없으면 무시 */ }
 
-    // ── Rule 6: ScalpingRadar — 모멘텀 스캘핑 자동 감지 ───
-    try {
-      const { runScalpingRadar } = await import('./scalping-radar.js');
-      const radar = await runScalpingRadar(isPaper);
-      if (radar.detected > 0 || radar.exits > 0) {
-        overridesSet += radar.detected;
-        decisions.push(`scalpRadar: ${radar.detected}감지 ${radar.exits}퇴출 (${radar.details.join(', ')})`);
-      }
-    } catch (err) {
-      logger.warn(`ScalpRadar [${mode}] 오류: ${err}`, { component: 'AUTO_PILOT' });
-    }
+    // ── Rule 6: ScalpingRadar — 비활성화 (2026-06 성과 검토: SCALPING WR 25.7%, -227K) ───
+    // ScalpRadar 모멘텀 감지가 Track B에서 스캘핑 진입 유발 → 25.7% 승률로 손실 확대
+    // try {
+    //   const { runScalpingRadar } = await import('./scalping-radar.js');
+    //   const radar = await runScalpingRadar(isPaper);
+    //   ...
+    // }
 
     // ── Rule 7: 레퍼런스 만료 정리 ────────────────────────
     try {

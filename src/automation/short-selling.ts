@@ -1,6 +1,7 @@
 import { getActiveWatchlist } from '../db/client.js';
 import { kisRequest, marketDataRateLimiter } from '../kis/client.js';
 import { logger } from '../utils/logger.js';
+import { sleep } from '../utils/sleep.js';
 
 // ── 공매도 현황 분석 ──
 
@@ -213,7 +214,7 @@ export async function analyzeWatchlistShortSelling(): Promise<Map<string, ShortS
 
     // 배치 사이 500ms 대기 (다른 모듈과의 rate limit 충돌 방지)
     if (i + batchSize < watchlist.length) {
-      await new Promise((r) => setTimeout(r, 500));
+      await sleep(500);
     }
   }
 

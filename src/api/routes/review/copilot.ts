@@ -21,9 +21,8 @@ app.get('/review/copilot', async (c) => {
     const { getPool } = await import('../../../db/client.js');
     const pool = getPool();
 
-    const viewModeParam = c.req.query('viewMode');
-    const { baseIsPaper } = await import('../../../config/index.js');
-    const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
+    const { resolveRequestMode } = await import('../../guards/live-pin.js');
+    const viewIsPaper = resolveRequestMode(c);
 
     // ── 포지션 데이터 로드 (모드별 분리) ──
     let positions: CopilotPosition[] = [];

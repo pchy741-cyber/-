@@ -9,11 +9,10 @@ const app = new Hono();
 app.get('/review/copilot-lite', async (c) => {
   try {
     const { getPool } = await import('../../../db/client.js');
-    const { baseIsPaper } = await import('../../../config/index.js');
+    const { resolveRequestMode } = await import('../../guards/live-pin.js');
     const pool = getPool();
 
-    const viewModeParam = c.req.query('viewMode');
-    const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
+    const viewIsPaper = resolveRequestMode(c);
 
     let score = 100;
     const issues: { id: string; level: 'warn' | 'danger'; label: string }[] = [];

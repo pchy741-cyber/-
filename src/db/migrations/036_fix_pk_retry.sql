@@ -8,4 +8,4 @@ ALTER TABLE overseas_holdings DROP CONSTRAINT IF EXISTS overseas_holdings_pkey;
 ALTER TABLE overseas_holdings ADD PRIMARY KEY (exchange, stock_code, is_paper);
 
 -- 기존 unique index 삭제 (PK가 이미 유니크를 보장하므로 중복)
-DROP INDEX IF EXISTS overseas_holdings_exch_code_paper_idx
+DROP INDEX IF EXISTS overseas_holdings_exch_code_paper_idx;

@@ -84,6 +84,18 @@ dashboardNewsRoutes.get('/news/summary', async (c) => {
       return m ? `${m[1]} (${m[2]})` : l.replace(/^- /, '');
     }).join('\n');
 
+    // Gemini OFF → 헤드라인 상위 3개를 직접 요약 (무료)
+    const { config } = await import('../../config/index.js');
+    if (!config.geminiEnabled) {
+      const topLines = headlineLines.slice(0, 5).map(l => {
+        const m = l.match(/^\- \[(.+?)\]\(.+?\)/);
+        return m ? m[1] : l.replace(/^- /, '');
+      });
+      const summary = topLines.join(' / ');
+      if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now() };
+      return c.json({ summary, geminiOk: false, error: null, headlineCount, cached: false });
+    }
+
     const { callVertexGemini: callVertexNews } = await import('../../utils/vertex-gemini.js');
     const summaryPromise = callVertexNews(
       '당신은 주식 투자 전문가입니다. 뉴스를 투자자 관점에서 간결하게 요약합니다.',
@@ -131,6 +143,12 @@ dashboardNewsRoutes.get('/news/theme', async (c) => {
       }).slice(0, 20).join('\n');
 
     if (!headlines) return c.json({ theme: '', reason: '', stocks: [] });
+
+    // Gemini OFF → 테마 분석 스킵
+    const { config } = await import('../../config/index.js');
+    if (!config.geminiEnabled) {
+      return c.json({ theme: '', reason: 'Gemini OFF', stocks: [] });
+    }
 
     const { callVertexGemini: callVertexTheme } = await import('../../utils/vertex-gemini.js');
 

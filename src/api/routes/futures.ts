@@ -10,7 +10,7 @@ import { Hono } from 'hono';
 import { getPool } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
 import { baseIsPaper } from '../../config/index.js';
-import { validateLivePin, resolveIsPaper, budgetCol, getFuturesPnlByMode } from '../guards/live-pin.js';
+import { validateLivePin, resolveIsPaper, resolveRequestMode, budgetCol, getFuturesPnlByMode } from '../guards/live-pin.js';
 import {
   MICRO_FUTURES, FUTURES_BY_PRODUCT, getActiveSymbol, getFuturesPrice,
   getFuturesDailyChart, getFuturesPositions, getFuturesDeposit,
@@ -40,7 +40,7 @@ async function checkFuturesEnabled(isPaper?: boolean): Promise<boolean> {
 // ── 대시보드 (요약 정보) — 모드별 분리 ──
 futuresRoutes.get('/futures/dashboard', async (c) => {
   try {
-    const isPaper = resolveIsPaper(c.req.query('mode') as 'paper' | 'live' | undefined);
+    const isPaper = resolveRequestMode(c);
     const cols = budgetCol(isPaper);
     const pool = getPool();
 
@@ -115,7 +115,7 @@ futuresRoutes.get('/futures/chart/:symbol', async (c) => {
 // ── KIS 실제 포지션/예수금 조회 ──
 futuresRoutes.get('/futures/kis-status', async (c) => {
   try {
-    const isPaper = resolveIsPaper(c.req.query('mode') as 'paper' | 'live' | undefined);
+    const isPaper = resolveRequestMode(c);
     const enabled = await checkFuturesEnabled(isPaper);
     if (!enabled) return c.json({ enabled: false, positions: [], deposit: null });
 
@@ -559,7 +559,7 @@ futuresRoutes.get('/feature-flags', async (c) => {
 // ── 선물 튜너 상태 조회 ──
 futuresRoutes.get('/futures/tuner-status', async (c) => {
   try {
-    const mode = c.req.query('mode') === 'live' ? 'live' : 'paper';
+    const mode = resolveRequestMode(c) ? 'paper' : 'live';
     const { rows } = await getPool().query(
       `SELECT value FROM overseas_state WHERE key = $1`,
       [`futures_tuner_${mode}`],

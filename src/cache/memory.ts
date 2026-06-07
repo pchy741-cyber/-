@@ -11,14 +11,23 @@ interface CacheEntry<T> {
 class MemoryCache {
   private store = new Map<string, CacheEntry<unknown>>();
   private cleanupInterval: ReturnType<typeof setInterval>;
+  private static readonly MAX_ENTRIES = 10_000; // 장기운영 메모리 비대화 방지
 
   constructor() {
-    // 30분마다 만료된 항목 정리 (v3: 5m→30m, GC 부담 축소)
-    this.cleanupInterval = setInterval(() => this.cleanup(), 1_800_000);
+    // 10분마다 만료된 항목 정리 (30m→10m, 장기운영 메모리 축적 방지)
+    this.cleanupInterval = setInterval(() => this.cleanup(), 600_000);
   }
 
   set<T>(key: string, value: T, ttlSeconds: number): void {
     this.store.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
+    // 상한 초과 시 만료 엔트리 정리, 그래도 초과면 가장 오래된 20% 제거
+    if (this.store.size > MemoryCache.MAX_ENTRIES) {
+      this.cleanup();
+      if (this.store.size > MemoryCache.MAX_ENTRIES) {
+        const entries = [...this.store.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt);
+        entries.slice(0, Math.floor(entries.length * 0.2)).forEach(([k]) => this.store.delete(k));
+      }
+    }
   }
 
   get<T>(key: string): T | null {

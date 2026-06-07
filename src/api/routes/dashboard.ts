@@ -12,6 +12,7 @@
 export {
   dashboardRoutes,
   invalidateDashboardCache,
+  hardInvalidateDashboardCache,
   invalidateModeCache,
   isInvalidStockName,
   getKnownStockName,

@@ -20,6 +20,7 @@ import { getCtxIsPaper } from '../config/context.js';
 /** 현재 overseas-job 실행 모드 (AsyncLocalStorage 컨텍스트 → 전역 폴백) */
 function isPaper(): boolean { return getCtxIsPaper(); }
 import { logger } from '../utils/logger.js';
+import { sleep } from '../utils/sleep.js';
 import { analyzeOverseasWithAI, type OverseasStockInput } from '../ai/overseas/analyzer.js';
 import { getAIGeneratedInsights } from '../ai/overseas/insights-generator.js';
 import { setOverseasScores } from '../cache/overseas-scores.js';
@@ -264,7 +265,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       }
 
       if (i + BATCH < activeStocks.length) {
-        await new Promise(r => setTimeout(r, 100));
+        await sleep(100);
       }
     }
 
@@ -978,7 +979,9 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     clearTimeout(jobTimeout);
     s.isRunning = false;
     if (lockClient) {
-      try { await lockClient.query('SELECT pg_advisory_unlock($1)', [LOCK_ID]); } catch {}
+      try { await lockClient.query('SELECT pg_advisory_unlock($1)', [LOCK_ID]); } catch (unlockErr) {
+        logger.error(`🚨 해외주식 advisory lock 해제 실패 (DB 재시작 필요할 수 있음): ${unlockErr}`, { component: 'OVERSEAS' });
+      }
       lockClient.release();
     }
   }

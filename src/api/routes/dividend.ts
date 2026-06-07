@@ -8,9 +8,8 @@
 import { Hono } from 'hono';
 import { getPool } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
-import { baseIsPaper } from '../../config/index.js';
 import { fetchExchangeRate } from '../../automation/macro-data.js';
-import { validateLivePin, resolveIsPaper } from '../guards/live-pin.js';
+import { validateLivePin, resolveIsPaper, resolveRequestMode } from '../guards/live-pin.js';
 
 export const dividendRoutes = new Hono();
 
@@ -33,7 +32,7 @@ async function checkDividendEnabled(isPaper?: boolean): Promise<boolean> {
 // ── 감시목록 조회 ──
 dividendRoutes.get('/dividend/watchlist', async (c) => {
   try {
-    const isPaper = resolveIsPaper(c.req.query('mode') as 'paper' | 'live' | undefined);
+    const isPaper = resolveRequestMode(c);
     const { rows } = await getPool().query(
       `SELECT * FROM dividend_watchlist ORDER BY dividend_yield DESC NULLS LAST, added_at`
     );
@@ -98,7 +97,7 @@ dividendRoutes.patch('/dividend/watchlist/:id', async (c) => {
 // ── 배당 보유종목 조회 ──
 dividendRoutes.get('/dividend/holdings', async (c) => {
   try {
-    const isPaper = resolveIsPaper(c.req.query('mode') as 'paper' | 'live' | undefined);
+    const isPaper = resolveRequestMode(c);
     const { rows } = await getPool().query(
       `SELECT dh.*, dw.name, dw.dividend_yield, dw.payment_frequency, dw.sector
        FROM dividend_holdings dh
@@ -201,6 +200,14 @@ const ETF_WEIGHTS: Record<string, number> = {
   JEPQ: 0.25, JEPI: 0.25, SCHD: 0.20, QYLD: 0.15, XYLD: 0.10, O: 0.05,
 };
 
+/** ETF 거래소 매핑 — watchlist JOIN 정합성 보장 */
+const ETF_EXCHANGE: Record<string, string> = {
+  JEPQ: 'NASDAQ', JEPI: 'NYSE', SCHD: 'NYSE', QYLD: 'NASDAQ',
+  XYLD: 'NYSE', O: 'NYSE', MAIN: 'NYSE', STAG: 'NYSE',
+  DIVO: 'NYSE', PFF: 'NASDAQ',
+};
+function getEtfExchange(code: string): string { return ETF_EXCHANGE[code] ?? 'NASDAQ'; }
+
 // ── 배당 ETF 자동투자 (금액 입력 → 자동 배분, live=PIN 필수) ──
 dividendRoutes.post('/dividend/auto-invest', async (c) => {
   try {
@@ -223,7 +230,7 @@ dividendRoutes.post('/dividend/auto-invest', async (c) => {
     const priceResults = await Promise.allSettled(
       etfCodes.map(async (code) => {
         const p = await Promise.race([
-          getOverseasPrice(code, code === 'O' ? 'NYSE' : 'NASDAQ'),
+          getOverseasPrice(code, getEtfExchange(code)),
           new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
         ]);
         return { code, price: Number((p as any).currentPrice) || 0 };
@@ -263,7 +270,7 @@ dividendRoutes.post('/dividend/auto-invest', async (c) => {
       const invested = shares * price;
       totalInvested += invested;
 
-      const exchange = code === 'O' ? 'NYSE' : 'NASDAQ';
+      const exchange = getEtfExchange(code);
 
       // Live 모드: 실제 KIS 해외주문 실행
       let ordered = false;
@@ -309,7 +316,7 @@ dividendRoutes.post('/dividend/auto-invest', async (c) => {
 dividendRoutes.get('/money-printer/summary', async (c) => {
   try {
     const pool = getPool();
-    const isPaper = resolveIsPaper(c.req.query('mode') as 'paper' | 'live' | undefined);
+    const isPaper = resolveRequestMode(c);
     const investKey = isPaper ? 'dividend_invested_krw_paper' : 'dividend_invested_krw_live';
 
     // 모든 독립 쿼리 병렬 실행
@@ -419,13 +426,31 @@ dividendRoutes.post('/trade-tuner/run', async (c) => {
 // ── 배당 배분 자동 튜닝 결과 조회 ──
 dividendRoutes.get('/dividend/allocation-tuned', async (c) => {
   try {
-    const mode = resolveIsPaper(c.req.query('mode') as 'paper' | 'live' | undefined) ? 'paper' : 'live';
+    const mode = resolveRequestMode(c) ? 'paper' : 'live';
     const { rows } = await getPool().query(
       `SELECT value FROM overseas_state WHERE key = $1`,
       [`dividend_alloc_tuned_${mode}`],
     );
     if (rows[0]?.value) return c.json(JSON.parse(rows[0].value));
     return c.json({ weights: null });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// ── 배당 보유종목 exchange 일괄 수정 (watchlist 기준 정합성 맞춤) ──
+dividendRoutes.post('/dividend/fix-exchange', async (c) => {
+  try {
+    const pool = getPool();
+    let fixed = 0;
+    for (const [code, exchange] of Object.entries(ETF_EXCHANGE)) {
+      const { rowCount } = await pool.query(
+        `UPDATE dividend_holdings SET exchange = $1 WHERE stock_code = $2 AND exchange != $1`,
+        [exchange, code],
+      );
+      if (rowCount && rowCount > 0) fixed += rowCount;
+    }
+    return c.json({ ok: true, fixed });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }
@@ -501,7 +526,7 @@ dividendRoutes.post('/dividend/auto-setup-paper', async (c) => {
     const priceResults = await Promise.allSettled(
       etfCodes.map(async (code) => {
         const p = await Promise.race([
-          getOverseasPrice(code, code === 'O' ? 'NYSE' : 'NASDAQ'),
+          getOverseasPrice(code, getEtfExchange(code)),
           new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
         ]);
         return { code, price: Number((p as any).currentPrice) || 0 };
@@ -529,7 +554,7 @@ dividendRoutes.post('/dividend/auto-setup-paper', async (c) => {
       const invested = shares * price;
       totalInvested += invested;
 
-      const exchange = code === 'O' ? 'NYSE' : 'NASDAQ';
+      const exchange = getEtfExchange(code);
       await pool.query(
         `INSERT INTO dividend_holdings (stock_code, exchange, quantity, avg_price, total_dividends_received, is_paper)
          VALUES ($1, $2, $3, $4, 0, true)

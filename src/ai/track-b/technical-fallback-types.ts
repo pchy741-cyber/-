@@ -1,4 +1,5 @@
 import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
+import { getKSTNow } from '../../utils/time.js';
 import type { StockWinRate } from '../../analysis/win-rate.js';
 import type { TransactionChain } from '../../db/models.js';
 import type { CurrentPrice, DailyCandle } from '../../kis/market.js';
@@ -62,6 +63,8 @@ export interface BuyCandidate {
   regimeRoute?: import('./strategy-router.js').RouteResult;
   /** ScalpingRadar가 감지한 모멘텀 종목 → SCALPING 파라미터로 진입 */
   isScalpOverride?: boolean;
+  /** BREAKOUT 전략 감지 결과 — breakout-detection.ts에서 생성 */
+  breakoutSignal?: import('../../analysis/breakout-detection.js').BreakoutSignal;
 }
 
 /** STRATEGY_PARAMS[mode] + DB 오버라이드 병합 */
@@ -85,7 +88,7 @@ const _scalpDeadline = (() => {
 })();
 
 export function getKstScalpTime() {
-  const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const now = getKSTNow();
   const h = now.getUTCHours();
   const m = now.getUTCMinutes();
   return { h, m, isPastScalpDeadline: h > _scalpDeadline.h || (h === _scalpDeadline.h && m >= _scalpDeadline.m) };

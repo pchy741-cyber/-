@@ -43,9 +43,14 @@ export async function archiveOldData(): Promise<void> {
 
   // portfolio_snapshots 정리 (365일 — 포트폴리오 추이 분석)
   try {
-    const { rowCount } = await getPool().query('DELETE FROM portfolio_snapshots WHERE snapshot_at < $1 AND is_paper = $2', [dataCutoff.toISOString(), config.isPaper]);
-    totalDeleted += rowCount ?? 0;
-    logger.info(`  portfolio_snapshots: ${rowCount ?? 0}건 삭제`, { component: 'ARCHIVE' });
+    // 양쪽 모드(paper + live) 모두 정리 — config.isPaper 한쪽만 정리 시 반대 모드 데이터 방치
+    let snapDeleted = 0;
+    for (const isPaperMode of [true, false]) {
+      const { rowCount: rc } = await getPool().query('DELETE FROM portfolio_snapshots WHERE snapshot_at < $1 AND is_paper = $2', [dataCutoff.toISOString(), isPaperMode]);
+      snapDeleted += rc ?? 0;
+    }
+    totalDeleted += snapDeleted;
+    logger.info(`  portfolio_snapshots: ${snapDeleted}건 삭제 (paper+live)`, { component: 'ARCHIVE' });
   } catch (e) {
     logger.warn(`  portfolio_snapshots 정리 실패: ${e}`, { component: 'ARCHIVE' });
   }

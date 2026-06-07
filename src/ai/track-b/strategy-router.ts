@@ -45,7 +45,8 @@ export function routeByRegime(
 
   switch (regimeResult.regime) {
     case 'TREND_BULL': {
-      // 강세장: 적극적 진입 — buyThreshold -10, 2/3 통과 시 라우터 직접 진입
+      // v4: 강세장 완화 축소 — -10→-5 (실질 threshold 최소 75 유지)
+      // 이전: buyThreshold 80 - 10 = 70 → 약한 AI 종목도 진입 → 승률 저하
       const checks = [
         tech.macdCrossover !== 'BEARISH',
         tech.adx14 > 25,
@@ -56,12 +57,12 @@ export function routeByRegime(
         return {
           ...base,
           routed: true,
-          buyThresholdAdj: -10,  // 강세장 buyThreshold 완화 (70→60)
+          buyThresholdAdj: -5,   // v4: -10→-5 (80→75, 약한 신호 차단)
           reason: `TREND_BULL: ${passed}/3 통과 (ADX=${tech.adx14.toFixed(0)}, MACD=${tech.macdCrossover}, vol=${tech.volumeRatio.toFixed(2)}x)`,
         };
       }
-      // 2/3 미달이라도 강세장이면 threshold -5 완화
-      return { ...base, buyThresholdAdj: -5, reason: `TREND_BULL: ${passed}/3 미달 → 기존 필터 (threshold -5)` };
+      // 2/3 미달 → threshold 조정 없음 (기존 -5→0)
+      return { ...base, buyThresholdAdj: 0, reason: `TREND_BULL: ${passed}/3 미달 → 기존 필터 (조정 없음)` };
     }
 
     case 'RANGE_LOW_VOL': {

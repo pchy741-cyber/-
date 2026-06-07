@@ -25,6 +25,7 @@ import {
   isInvalidStockName, getKnownStockName, getFxRate,
   getDashCache, setDashCache, getDashBuildingByMode,
 } from './helpers.js';
+import { buildSuggestedActions, buildMonthlyGoal, buildFxImpact } from './builder-helpers.js';
 
 // 동시 빌드 dedup: 같은 모드의 buildDashPayload가 두 번 동시 실행되지 않게
 export async function getOrBuildDashPayload(viewIsPaper: boolean): Promise<unknown> {
@@ -572,96 +573,9 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     insights: insightRows.rows,
     defensePark,
 
-    // ── 오늘의 추천 액션 ──
-    suggestedActions: (() => {
-      const actions: Array<{ type: string; priority: 'high' | 'medium' | 'low'; message: string; detail?: string }> = [];
-
-      // 해외 보유종목: 부분익절 임박 + 트레일링 스톱 알림 (단일 루프)
-      for (const h of overseasHoldings as any[]) {
-        if (h.last_price <= 0 || h.avg_price <= 0) continue;
-        const curPnlPct = ((h.last_price - h.avg_price) / h.avg_price) * 100;
-
-        if (h.next_partial_tp_pct != null) {
-          const gap = h.next_partial_tp_pct - curPnlPct;
-          if (gap > 0 && gap <= 3) {
-            actions.push({
-              type: 'partial_tp_near',
-              priority: 'high',
-              message: `${h.stock_code} 부분익절 ${h.partial_tp_stage + 1}단계 임박`,
-              detail: `현재 +${curPnlPct.toFixed(1)}% → 목표 +${h.next_partial_tp_pct}% (${gap.toFixed(1)}% 남음)`,
-            });
-          }
-        }
-
-        if (h.trail_active) {
-          actions.push({
-            type: 'trail_active',
-            priority: 'medium',
-            message: `${h.stock_code} 트레일링 스톱 가동 중`,
-            detail: `고점 대비 +${h.max_pnl_pct.toFixed(1)}% / 현재 +${curPnlPct.toFixed(1)}% / 스톱 ${h.trail_stop_pct.toFixed(1)}%`,
-          });
-        }
-      }
-
-      // 현금 비중 과다 (60%↑) → 투자 여력 있음
-      const cashRatio = grandTotalValue > 0 ? ((actualCash || 0) / grandTotalValue) * 100 : 0;
-      if (cashRatio > 60 && grandTotalValue > 100000) {
-        actions.push({
-          type: 'high_cash',
-          priority: 'low',
-          message: `현금 비중 ${Math.round(cashRatio)}% — 자동매매가 기회 탐색 중`,
-          detail: `유휴 자금 ₩${Math.round(actualCash || 0).toLocaleString()} 대기`,
-        });
-      }
-
-      // 국내 체인 중 큰 손실 종목 경고
-      for (const ch of displayChains as any[]) {
-        const pnlPct = ch.unrealizedPnlPct ?? 0;
-        if (pnlPct < -10) {
-          actions.push({
-            type: 'deep_loss',
-            priority: 'high',
-            message: `${ch.stock_name || ch.stock_code} 손실 ${pnlPct.toFixed(1)}%`,
-            detail: '자동 손절 조건 모니터링 중',
-          });
-        }
-      }
-
-      return actions.slice(0, 8);
-    })(),
-
-    // ── 월간 목표 진행률 ──
-    monthlyGoal: (() => {
-      const monthlyTargetPct = 50; // 월 50% 목표 (6Phase 업그레이드 후 공격적 타겟)
-      const seedKr = grandTotalValue > 0 ? grandTotalValue : 10_000_000;
-      const targetAmount = Math.round(seedKr * monthlyTargetPct / 100);
-      const overseasUnrealizedForGoal = isNaN(overseasMarketValueKrw - overseasInvestedKrw) ? 0 : (overseasMarketValueKrw - overseasInvestedKrw);
-      const currentPnl = Math.round(totalPnl + overseasUnrealizedForGoal);
-      const progressPct = targetAmount > 0 ? Math.min(200, Math.round((currentPnl / targetAmount) * 100)) : 0;
-      return {
-        targetPct: monthlyTargetPct,
-        targetAmount,
-        currentPnl,
-        progressPct,
-        remaining: Math.max(0, targetAmount - currentPnl),
-      };
-    })(),
-
-    // ── 환율 영향 분석 ──
-    fxImpact: (() => {
-      if (overseasTotalInvested <= 0 || FX_RATE <= 0) return null;
-      const impactPer10Won = Math.round(overseasMarketValueUsd * 10); // ₩10 변동 시 원화 영향
-      const overseasPnlUsd = overseasMarketValueUsd - overseasTotalInvested;
-      const overseasPnlKrw = Math.round(overseasPnlUsd * FX_RATE);
-      return {
-        fxRate: FX_RATE,
-        exposureUsd: Math.round(overseasMarketValueUsd * 100) / 100,
-        exposureKrw: Math.round(overseasMarketValueUsd * FX_RATE),
-        impactPer10Won,
-        overseasPnlUsd: Math.round(overseasPnlUsd * 100) / 100,
-        overseasPnlKrw,
-      };
-    })(),
+    suggestedActions: buildSuggestedActions(overseasHoldings, displayChains, grandTotalValue, actualCash),
+    monthlyGoal: buildMonthlyGoal(grandTotalValue, totalPnl, overseasMarketValueKrw, overseasInvestedKrw),
+    fxImpact: buildFxImpact(overseasTotalInvested, overseasMarketValueUsd, FX_RATE),
   };
   return dashPayload;
 }

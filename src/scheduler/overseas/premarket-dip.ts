@@ -284,13 +284,16 @@ export async function checkDipBuyFills(isPaper = true): Promise<string[]> {
                isPaper ? 'paper' : 'live',
                `프리마켓딥바이 -2%진입 @$${fillPrice.toFixed(2)} (목표$${order.targetPrice}) TP+${TP_PCT}%:$${order.tpPrice} SL-${SL_PCT}%:$${order.slPrice} [avgBuy:${fillPrice.toFixed(4)}]`]);
 
-            if (!isPaper) {
-              await tx.query(
-                `UPDATE overseas_state SET value = (CAST(value AS NUMERIC) - $2)::text WHERE key = $1`,
-                ['cash', totalCost.toFixed(2)],
-              );
-            }
+            // Live 현금: KIS 동기화로 반영 (USD→KRW 단위 오염 방지). Paper는 computed.
           });
+
+          // Live: KIS 동기화로 현금 갱신
+          if (!isPaper) {
+            const { reconcileCashWithKIS } = await import('./kis-sync.js');
+            const { runWithMode } = await import('../../config/context.js');
+            await runWithMode(false, () => reconcileCashWithKIS()).catch((e: any) =>
+              logger.warn(`딥바이 후 현금 동기화 실패 (무시): ${e.message}`, { component: 'DIP_BUY' }));
+          }
 
           fills.push(`🎯 딥바이 체결! ${order.code} x${order.qty} @$${fillPrice.toFixed(2)} (목표$${order.targetPrice})`);
           logger.info(fills[fills.length - 1], { component: 'DIP_BUY' });

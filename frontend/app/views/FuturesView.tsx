@@ -44,8 +44,8 @@ export default function FuturesView({ toast, viewMode, confirm, mpData, onRefres
     setLoading(true);
     try {
       const [dash, tunerRaw] = await Promise.all([
-        api(`/futures/dashboard?mode=${viewMode}`),
-        api(`/futures/tuner-status?mode=${viewMode}`).catch(() => null),
+        api(`/futures/dashboard?viewMode=${viewMode}`),
+        api(`/futures/tuner-status?viewMode=${viewMode}`).catch(() => null),
       ]);
       setBudget(dash.budget);
       setPositions(dash.positions || []);

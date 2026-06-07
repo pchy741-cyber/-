@@ -6,6 +6,7 @@ import { getCtxIsPaper } from '../config/context.js';
 import { getOpenChains, getPool, getTodayStartSnapshot, insertRiskEvent, insertSnapshot } from '../db/client.js';
 import { getAccountBalance, type AccountBalance } from '../kis/account.js';
 import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
 import { activateKillSwitch, isKillSwitchActive } from './kill-switch.js';
 import { getPaperBalance } from './paper-balance.js';
 import { calcDailyLossLimit } from './seed-capital.js';
@@ -33,7 +34,7 @@ export class RiskEngine {
     isPaper?: boolean;
   }): Promise<PreTradeCheckResult> {
     const { stockCode, side, quantity, estimatedPrice } = params;
-    const isPaper = typeof params.isPaper === 'boolean' ? params.isPaper : config.isPaper;
+    const isPaper = typeof params.isPaper === 'boolean' ? params.isPaper : getCtxIsPaper();
     const orderValue = quantity * estimatedPrice;
 
     // 매도는 항상 허용 (킬스위치와 무관 — 포지션 탈출은 절대 막으면 안 됨)
@@ -88,12 +89,13 @@ export class RiskEngine {
 
       const tradingChains = chains;
 
-      if (tradingChains.length >= config.risk.maxConcurrentPositions) {
-        const msg = `동시 보유 종목 수 한도: ${tradingChains.length}/${config.risk.maxConcurrentPositions}종목 — 신규 매수 차단`;
+      const maxPos = isPaper ? config.paperRisk.maxConcurrentPositions : config.risk.maxConcurrentPositions;
+      if (tradingChains.length >= maxPos) {
+        const msg = `동시 보유 종목 수 한도: ${tradingChains.length}/${maxPos}종목 — 신규 매수 차단`;
         await insertRiskEvent({
           event_type: 'CONCURRENT_LIMIT',
           severity: 'WARNING',
-          details: { stockCode, currentPositions: tradingChains.length, limit: config.risk.maxConcurrentPositions },
+          details: { stockCode, currentPositions: tradingChains.length, limit: maxPos },
           action_taken: '주문 거부',
         });
         return { approved: false, reason: msg };
@@ -109,7 +111,7 @@ export class RiskEngine {
   private async checkDailyTradeCount(isPaper: boolean): Promise<PreTradeCheckResult> {
     try {
       const pool = getPool();
-      const kstNow = new Date(Date.now() + 9 * 3600_000);
+      const kstNow = getKSTNow();
       const today = kstNow.toISOString().split('T')[0];
       const tradingMode = isPaper ? 'paper' : 'live';
       const { rows } = await pool.query<{ count: string }>(
@@ -118,10 +120,11 @@ export class RiskEngine {
       );
       const todayCount = Number(rows[0]?.count ?? 0);
 
-      if (todayCount >= config.risk.maxDailyTrades) {
+      const maxTrades = isPaper ? config.paperRisk.maxDailyTrades : config.risk.maxDailyTrades;
+      if (todayCount >= maxTrades) {
         return {
           approved: false,
-          reason: `일일 매매 횟수 한도: ${todayCount}/${config.risk.maxDailyTrades}회 — 과매매 방지`,
+          reason: `일일 매매 횟수 한도: ${todayCount}/${maxTrades}회 — 과매매 방지`,
         };
       }
 
@@ -140,9 +143,12 @@ export class RiskEngine {
 
     // 총자산 = 순자산(주식평가 + 현금 - 미수금) — totalEvalAmount만 쓰면 현금 미포함 버그
     const totalAssets = balance.netAsset ?? ((balance.totalEvalAmount ?? 0) + Math.max(0, balance.orderableCash ?? 0));
-    // Hard Cap 25% — 일일손실 2.5% 방어 (소자산은 집중 허용)
-    const canDiv3 = totalAssets * 0.25 >= 30_000;   // 3종목 분산 가능
-    const capRatio = !canDiv3 ? 0.50 : 0.25;
+    // Hard Cap: Paper 40% / Live 25% — 소자산은 집중 허용
+    const liveCapRatio = 0.25;
+    const paperCapRatio = config.paperRisk.positionCapRatio;
+    const baseCapRatio = isPaper ? paperCapRatio : liveCapRatio;
+    const canDiv3 = totalAssets * baseCapRatio >= 30_000;
+    const capRatio = !canDiv3 ? 0.50 : baseCapRatio;
     const dynamicLimit = totalAssets > 0
       ? Math.min(Math.round(totalAssets * capRatio), config.risk.maxPositionKrw)
       : config.risk.maxPositionKrw;
@@ -263,20 +269,18 @@ export class RiskEngine {
     const afterExposurePct = ((balance.totalEvalAmount + orderValue) / totalPortfolio) * 100;
 
     // 레짐 기반 동적 투자비율 캡 — 장 좋으면 적극 집행, 나쁘면 보수적
-    // buy_threshold 낮을수록(=확신↑) → 캡 높임 | 높을수록(=방어↑) → 캡 낮춤
-    let dynamicCap = config.risk.maxTotalInvestedPct; // 기본 88%
-    try {
-      const { rows } = await getPool().query(
-        `SELECT buy_threshold FROM strategy_config WHERE is_active = true AND is_paper = $1 LIMIT 1`,
-        [isPaper],
-      );
-      const bt = Number(rows[0]?.buy_threshold ?? 80);
-      // bt ≤ 65 (BOOST/BULL): 캡 95% → 거의 풀 집행
-      // bt 65-75 (NORMAL): 캡 92%
-      // bt 75-85 (ADJUST): 캡 88% (기본값)
-      // bt ≥ 85 (DOWN/CRASH): 캡 80% → 현금 많이 보유
-      dynamicCap = bt <= 65 ? 95 : bt <= 75 ? 92 : bt <= 85 ? 88 : 80;
-    } catch { /* DB 실패 시 기본값 유지 */ }
+    // Paper 모드: 97% 고정 (거의 전액 집행, 로그 축적 극대화)
+    let dynamicCap = isPaper ? config.paperRisk.maxTotalInvestedPct : config.risk.maxTotalInvestedPct;
+    if (!isPaper) {
+      try {
+        const { rows } = await getPool().query(
+          `SELECT buy_threshold FROM strategy_config WHERE is_active = true AND is_paper = $1 LIMIT 1`,
+          [isPaper],
+        );
+        const bt = Number(rows[0]?.buy_threshold ?? 80);
+        dynamicCap = bt <= 65 ? 95 : bt <= 75 ? 92 : bt <= 85 ? 88 : 80;
+      } catch { /* DB 실패 시 기본값 유지 */ }
+    }
 
     if (afterExposurePct > dynamicCap) {
       return {
@@ -325,7 +329,7 @@ export class RiskEngine {
       }
 
       const pool = getPool();
-      const kstMonth = new Date(Date.now() + 9 * 3600_000);
+      const kstMonth = getKSTNow();
       kstMonth.setUTCDate(1);
       kstMonth.setUTCHours(0, 0, 0, 0);
       const { rows } = await pool.query<{ total_value: string }>(
@@ -344,8 +348,8 @@ export class RiskEngine {
       }
       const mddPct = ((peakValue - latestValue) / peakValue) * 100;
 
-      const mddLimit = isPaper ? 40 : 8;
-      const mddWarn = isPaper ? 30 : 6;
+      const mddLimit = isPaper ? config.paperRisk.mddLimit : 8;
+      const mddWarn = isPaper ? config.paperRisk.mddLimit * 0.75 : 6;
       if (mddPct >= mddLimit) {
         await activateKillSwitch(
           `월간 MDD 한도 초과: 고점 대비 -${mddPct.toFixed(1)}% (한도 -${mddLimit}%)`,

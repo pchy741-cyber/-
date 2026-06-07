@@ -72,11 +72,8 @@ export function clearSessionCookie(c: Context): void {
 export async function requireAuth(c: Context, next: Next): Promise<Response | void> {
   const secret = getSecret();
 
-  // 패스워드 미설정 시: 개발/로컬 환경 무조건 통과, 프로덕션 차단
+  // 패스워드 미설정 시: 모든 환경에서 차단 (보안)
   if (!secret) {
-    if (process.env.NODE_ENV !== 'production') {
-      return next();
-    }
     return c.json({ error: '서버 패스워드 미설정 — 관리자에게 문의' }, 503);
   }
 

@@ -187,6 +187,33 @@ export function getOpenMarketRegions(): Set<string> {
   return open;
 }
 
+// ── 종가베팅: US 마감 전 N분 구간 확인 ──
+/**
+ * 미국 정규장 마감 전 N분 구간인지 확인 (종가베팅 매수 윈도우)
+ * Summer: 04:30~05:00 KST (N=30), Winter: 05:30~06:00 KST
+ */
+export function isUSMarketLastNMinutes(minutes: number = 30): boolean {
+  const now = new Date();
+  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const mins = kst.getUTCHours() * 60 + kst.getUTCMinutes();
+  const shift = isUSDST() ? 0 : 60;
+  const usClose = 5 * 60 + shift; // 05:00 KST (summer) / 06:00 KST (winter)
+  const windowStart = usClose - minutes;
+  return mins >= windowStart && mins <= usClose;
+}
+
+/** US 마감까지 남은 분 수 */
+export function getMinutesToUSClose(): number {
+  const now = new Date();
+  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const mins = kst.getUTCHours() * 60 + kst.getUTCMinutes();
+  const shift = isUSDST() ? 0 : 60;
+  const usClose = 5 * 60 + shift;
+  // 자정 전후 처리: 22:30~24:00 → close까지 남은 분 = (24*60 - mins) + close
+  if (mins >= 22 * 60) return (24 * 60 - mins) + usClose;
+  return Math.max(0, usClose - mins);
+}
+
 /** KST 날짜 문자열 반환 */
 export function getKSTDateString(): string {
   const now = new Date();

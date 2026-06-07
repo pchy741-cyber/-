@@ -352,33 +352,18 @@ export async function getOverseasBuyableAmount(exchange: string = 'NASDAQ'): Pro
       logger.info(`💱 psamount 응답: ${fields}`, { component: 'OVERSEAS' });
     }
 
-    const usd = Number(output?.frcr_ord_psbl_amt1 ?? 0);
     const exrt = Number(output?.exrt ?? 0);
 
-    // 원화 주문가능금액 후보 필드 (통합증거금)
-    // ovrs_ord_psbl_amt: 해외주문가능총금액(원화)
-    // ovrs_re_use_amt_wcrc: 해외재사용가능금액(원화)
-    // echm_af_ord_psbl_amt: 원화대용후주문가능금액
-    const krwCandidates = [
-      output?.ovrs_ord_psbl_amt,
-      output?.ovrs_re_use_amt_wcrc,
-      output?.echm_af_ord_psbl_amt,
-      output?.ord_psbl_frcr_amt,
-    ];
-    let krw: number | null = null;
-    for (const c of krwCandidates) {
-      const v = Number(c);
-      if (Number.isFinite(v) && v > 0) {
-        krw = v;
-        break;
-      }
-    }
+    // 통합증거금 psamount 필드 매핑 (tr_crcy_cd=USD 기준):
+    // ord_psbl_frcr_amt: 실제 주문가능 외화금액 (KIS 앱 "달러화" 표시값) ← 이것이 실제 USD
+    // frcr_ord_psbl_amt1: 원화 포함 이론적 최대 외화주문가능금액 (KRW→USD 환산 포함)
+    // ovrs_ord_psbl_amt: 해외주문가능금액 (USD, ord_psbl_frcr_amt과 유사)
+    const usd = Number(output?.ord_psbl_frcr_amt ?? output?.ovrs_ord_psbl_amt ?? 0);
+    const maxUsd = Number(output?.frcr_ord_psbl_amt1 ?? 0); // 원화 포함 최대치 (참고용)
 
-    // Sanity check: KRW 값이 환율보다 작으면 USD가 KRW로 오인된 것 (₩1000 미만 = 불가능)
-    // → USD × 환율로 KRW 변환하여 반환
-    if (krw !== null && krw < 10_000 && usd > 0 && exrt > 1000) {
-      krw = Math.round(usd * exrt);
-    }
+    // KRW: 실제 USD × 환율 (KIS 앱 "주문가능원화"와 일치)
+    // 통합증거금이므로 maxUsd × exrt가 KIS 앱의 주문가능원화에 더 가까움
+    const krw = exrt > 0 ? Math.round(Math.max(usd, maxUsd) * exrt) : null;
 
     return { usd, krw };
   } catch {

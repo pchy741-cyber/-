@@ -63,21 +63,21 @@ export const PRIORITY_SECTOR_CODES = new Set([
  * 3. 횡보장(ADX WEAK) 진입 허용
  */
 export const MEGA_CAP_PRIORITY_CODES = new Map<string, { name: string; bonus: number; thresholdReduction: number }>([
-  // ── 시가총액 Top 10 대형주 — 보너스 축소 (2026-06: 삼성 반복매수 방지) ──
-  // 대형주는 변동성 낮아 minTechScore 하향(45)으로 이미 혜택 → bonus는 최소화
-  ['005930', { name: '삼성전자', bonus: 8, thresholdReduction: 3 }],
-  ['005935', { name: '삼성전자(우)', bonus: 8, thresholdReduction: 3 }],
-  ['000660', { name: 'SK하이닉스', bonus: 8, thresholdReduction: 3 }],
-  ['005380', { name: '현대차', bonus: 6, thresholdReduction: 3 }],
-  ['000270', { name: '기아', bonus: 6, thresholdReduction: 3 }],
-  ['012330', { name: '현대모비스', bonus: 5, thresholdReduction: 2 }],
-  ['035420', { name: 'NAVER', bonus: 6, thresholdReduction: 3 }],
+  // ── 시가총액 Top 10 대형주 ──
+  // thresholdReduction=0: 대형주도 동일 기준 적용 (v3: 낮은 기준으로 반복매수 방지)
+  ['005930', { name: '삼성전자', bonus: 8, thresholdReduction: 0 }],
+  ['005935', { name: '삼성전자(우)', bonus: 8, thresholdReduction: 0 }],
+  ['000660', { name: 'SK하이닉스', bonus: 8, thresholdReduction: 0 }],
+  ['005380', { name: '현대차', bonus: 6, thresholdReduction: 0 }],
+  ['000270', { name: '기아', bonus: 6, thresholdReduction: 0 }],
+  ['012330', { name: '현대모비스', bonus: 5, thresholdReduction: 0 }],
+  ['035420', { name: 'NAVER', bonus: 6, thresholdReduction: 0 }],
   // ── 방산/한화 대형주 ──
-  ['012450', { name: '한화에어로스페이스', bonus: 8, thresholdReduction: 3 }],
-  ['272210', { name: '한화시스템', bonus: 6, thresholdReduction: 2 }],
-  ['042660', { name: '한화오션', bonus: 6, thresholdReduction: 2 }],
-  ['064350', { name: '현대로템', bonus: 6, thresholdReduction: 2 }],
+  ['012450', { name: '한화에어로스페이스', bonus: 8, thresholdReduction: 0 }],
+  ['272210', { name: '한화시스템', bonus: 6, thresholdReduction: 0 }],
+  ['042660', { name: '한화오션', bonus: 6, thresholdReduction: 0 }],
+  ['064350', { name: '현대로템', bonus: 6, thresholdReduction: 0 }],
   // ── 반도체 소재/장비 ──
-  ['042700', { name: '한미반도체', bonus: 5, thresholdReduction: 2 }],
+  ['042700', { name: '한미반도체', bonus: 5, thresholdReduction: 0 }],
 ]);
 

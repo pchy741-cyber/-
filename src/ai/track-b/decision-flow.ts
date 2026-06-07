@@ -48,6 +48,7 @@ export interface DecisionFlowParams {
   macroRiskOff?: boolean;
   isPaper?: boolean;
   crashSignal?: CrashSignal;
+  overseasValueKrw?: number;
 }
 
 export async function applyDecisionFlow(params: DecisionFlowParams): Promise<TradeDecision[]> {
@@ -59,10 +60,11 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
 
   let decisions = [...rawDecisions];
 
-  // ── 0-pre. 실험 전략 실전 차단: BREAKOUT/SNIPER/BOTTOM_FISHING은 Paper에서 승률 검증 후 실전 적용 ──
-  // 실전(Live) = SWING + EOD_BETTING + DEFENSE/PARKING만 매수 허용
+  // ── 0-pre. 실험 전략 실전 차단: 졸업 전까지 Paper에서 승률 검증 ──
+  // 졸업 시스템 연동: AUTO_APPLIED/APPROVED된 전략은 Live 매수 허용
   // 연습(Paper) = 전체 전략 허용 → 승률 데이터 축적
-  const PAPER_ONLY_MODES = new Set(['BREAKOUT', 'SNIPER', 'BOTTOM_FISHING']);
+  const { getPaperOnlyModes } = await import('../../automation/strategy-graduation.js');
+  const PAPER_ONLY_MODES = await getPaperOnlyModes();
   if (!params.isPaper && PAPER_ONLY_MODES.has(mode)) {
     const buys = decisions.filter(d => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
     if (buys.length > 0) {
@@ -100,7 +102,7 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   }
 
   // ── 1. 집중도 부분매도 주입 ─────────────────────────────────────────
-  const concentrationTargets = getConcentrationSellTargets(openChains, livePrices, totalAssets);
+  const concentrationTargets = getConcentrationSellTargets(openChains, livePrices, totalAssets, params.overseasValueKrw);
   for (const code of concentrationTargets) {
     const chain = openChains.find((c) => c.stock_code === code);
     if (!chain || chain.total_quantity < 3) continue;
@@ -129,7 +131,7 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   });
 
   // ── 3. 섹터 집중 매수 차단 ──────────────────────────────────────────
-  decisions = filterSectorConcentration(decisions, openChains);
+  decisions = filterSectorConcentration(decisions, openChains, params.isPaper);
 
   // ── 4. 유휴 현금 파킹 해제 (SELL만 먼저 — BUY는 포지션사이저 이후 step 7.5에서 추가) ──
   // confirmedBuyCount: confidence 0.6+ 인 확정 매수만 카운트 (저품질 매수로 파킹 깨지 않게)

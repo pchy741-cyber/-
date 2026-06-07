@@ -1,6 +1,7 @@
 import { XMLParser } from 'fast-xml-parser';
 import { getActiveWatchlist } from '../db/client.js';
 import { logger } from '../utils/logger.js';
+import { sleep } from '../utils/sleep.js';
 
 /**
  * 뉴스 RSS 자동 수집기
@@ -193,7 +194,7 @@ export async function collectWatchlistNews(): Promise<string> {
     }
 
     if (i + batchSize < watchlist.length) {
-      await new Promise((r) => setTimeout(r, 1000));
+      await sleep(1000);
     }
   }
 

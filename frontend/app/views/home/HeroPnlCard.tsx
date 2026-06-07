@@ -105,7 +105,7 @@ export default function HeroPnlCard({
         <div className="bg-white/[0.04] rounded-xl px-2 sm:px-3 py-2">
           <div className="text-[9px] text-slate-500 mb-0.5">주문가능</div>
           <div className="text-sm font-bold text-slate-200 tabular-nums truncate">{mask(fmtWon(domesticCash))}</div>
-          {fxRate > 0 && <div className="text-[8px] text-slate-600 mt-0.5">${mask(String(Math.round(domesticCash / fxRate)))}</div>}
+          {fxRate > 0 && <div className="text-[10px] text-slate-600 mt-0.5">${mask(String(Math.round(domesticCash / fxRate)))}</div>}
         </div>
         <div className="bg-white/[0.04] rounded-xl px-2 sm:px-3 py-2">
           <div className="text-[9px] text-slate-500 mb-0.5">투자비중 <span className="text-slate-600">({totalHoldings}종목)</span></div>

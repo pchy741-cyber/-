@@ -32,6 +32,7 @@ import { runHotSectorWatchlist } from '../automation/hot-sector-watchlist.js';
 import { runPortfolioHealthCheck } from '../automation/portfolio-guard.js';
 import { runIntegrityCheck } from './integrity-check-job.js';
 import { runAutoPilotDual } from '../ai/auto-pilot.js';
+import { invalidateBalanceCache } from '../kis/account.js';
 
 /**
  * paper → live 순으로 동일 작업을 실행 (국내 이중 모드 병행운영)
@@ -49,6 +50,8 @@ async function runDomesticDual(label: string, fn: () => Promise<unknown>): Promi
     try { await fn(); } catch (e) { logger.error(`${label} paper 실패: ${e}`, { component: 'SCHEDULER' }); }
   });
   if (paperOnly) return; // 자율학습 모드: live 완전 스킵
+  // paper→live 전환 시 잔고 캐시 무효화 — paper 잔고가 live로 오염되는 것 방지
+  invalidateBalanceCache();
   await runWithMode(false, async () => {
     try { await fn(); } catch (e) { logger.error(`${label} live 실패: ${e}`, { component: 'SCHEDULER' }); }
   });
@@ -185,16 +188,23 @@ export function startScheduler(): void {
   // ═══════════════════════════════════════════
 
   // Track B 중복 실행 방지 mutex (paper → live 순차 실행)
-  // 단일 mutex로 충분 — runDomesticDual이 paper→live 순차 실행하므로 모드별 분리 불필요
-  // 이 mutex는 "이전 사이클(paper+live)이 끝나기 전에 다음 사이클 시작 방지" 역할
   let _trackBRunning = false;
+  let _trackBStartedAt = 0;
+  const TRACK_B_MAX_MS = 960_000; // 16분
   const runTrackBSafe = () => {
+    // 안전장치: 이전 실행이 TRACK_B_MAX_MS 초과 시 stuck으로 간주, 강제 리셋
+    if (_trackBRunning && Date.now() - _trackBStartedAt > TRACK_B_MAX_MS + 30_000) {
+      logger.error('🔧 Track B stuck 감지 — 강제 리셋', { component: 'SCHEDULER' });
+      _trackBRunning = false;
+    }
     if (_trackBRunning) {
       logger.warn('⏭️ Track B 이미 실행 중 — 스킵 (중복 방지)', { component: 'SCHEDULER' });
       return;
     }
     _trackBRunning = true;
-    withTimeout('Track B dual', () => runDomesticDual('Track B', runTrackBJob), 960_000)
+    _trackBStartedAt = Date.now();
+    withTimeout('Track B dual', () => runDomesticDual('Track B', runTrackBJob), TRACK_B_MAX_MS)
+      .catch(e => logger.error(`Track B 실행 오류: ${e}`, { component: 'SCHEDULER' }))
       .finally(() => { _trackBRunning = false; });
   };
 
@@ -221,7 +231,8 @@ export function startScheduler(): void {
   cron.schedule(
     '0 9 * * 1-5',
     () => {
-      logger.info('🔔 개장 Track B 선제 실행 (09:00)', { component: 'SCHEDULER' });
+      logger.info('🔔 개장 Track B 선제 실행 (09:00) — 잔고 캐시 초기화', { component: 'SCHEDULER' });
+      invalidateBalanceCache(); // 장 개시 시 stale 캐시 제거 → 정산 반영된 최신 잔고 사용
       runTrackBSafe();
     },
     { timezone: MARKET.TIMEZONE },
@@ -416,7 +427,7 @@ export function startScheduler(): void {
     '40 15 * * 1-5',
     () => {
       generateDailyReport().catch((e) => logger.error(`리포트 실패: ${e}`, { component: 'SCHEDULER' }));
-      import('../trading/executor.js').then((m) => m.tradeExecutor.clearConfirmedOrders()).catch(() => {});
+      import('../trading/executor.js').then((m) => m.tradeExecutor.clearConfirmedOrders()).catch(e => logger.warn(`체결캐시 클리어 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -517,6 +528,56 @@ export function startScheduler(): void {
       import('./overseas/trade-tuner.js')
         .then(m => m.runTradeTuner(true))
         .catch(e => logger.error(`Trade Tuner 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🎓 전략 졸업 + 강등 검사 + 성과 요약 — 평일 19:15 (Trade Tuner 후)
+  cron.schedule(
+    '15 19 * * 1-5',
+    () => {
+      import('../risk/strategy-performance.js')
+        .then(m => m.logStrategyPerformanceSummary(30, true))
+        .catch(e => logger.error(`전략 성과 요약 실패: ${e}`, { component: 'SCHEDULER' }));
+      import('../automation/strategy-graduation.js')
+        .then(m => {
+          m.autoGraduate().catch(e => logger.error(`전략 졸업 검사 실패: ${e}`, { component: 'SCHEDULER' }));
+          m.checkDemotion().catch(e => logger.error(`전략 강등 검사 실패: ${e}`, { component: 'SCHEDULER' }));
+        })
+        .catch(e => logger.error(`졸업/강등 모듈 로드 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 📈 전략 최적화기 — 평일 19:30 (자기학습 + 졸업 검사 후, TP/SL 그리드 서치)
+  cron.schedule(
+    '30 19 * * 1-5',
+    () => {
+      import('../automation/strategy-optimizer.js')
+        .then(m => m.runStrategyOptimizer())
+        .catch(e => logger.error(`전략 최적화 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🧪 전략 Lab 인사이트 갱신 — 평일 19:40 (최적화 후, 60일 데이터 분석)
+  cron.schedule(
+    '40 19 * * 1-5',
+    () => {
+      import('../automation/strategy-lab/insight-engine.js')
+        .then(m => m.generateAndStoreInsights(60))
+        .catch(e => logger.error(`전략 인사이트 갱신 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 📊 Paper 전략 토너먼트 — 장중 15분 간격 (모든 전략 동시 실행, 성과 비교)
+  cron.schedule(
+    '7,22,37,52 9-15 * * 1-5',
+    () => {
+      import('./paper-tournament.js')
+        .then(m => m.runPaperTournament())
+        .catch(e => logger.error(`Paper 토너먼트 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -702,11 +763,45 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 데이터 아카이빙 — 매주 일요일 02:00
+  // 데이터 아카이빙 — 매주 월요일 02:00 (일→월 변경: 주말 Cloud SQL 중지 유지)
   cron.schedule(
-    '0 2 * * 0',
+    '0 2 * * 1',
     () => {
       archiveOldData().catch((e) => logger.error(`아카이빙 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 📊 비중 자동조정 — 평일 02:30 (30일 성과 기반, ≤5%p 자동적용, 큰 변동은 승인 필요)
+  cron.schedule(
+    '30 2 * * 1-5',
+    () => {
+      import('../automation/cross-market-rotation.js')
+        .then(m => m.proposeAllocationRebalance())
+        .catch(e => logger.error(`비중 제안 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🌙 주말 동면 — 토요일 09:00 KST: Cloud SQL 중지 + Cloud Run min=0
+  cron.schedule(
+    '0 9 * * 6',
+    async () => {
+      logger.info('🌙 주말 동면 cron 트리거', { component: 'SCHEDULER' });
+      const { weekendHibernate } = await import('../utils/cloud-sql-wake.js');
+      await weekendHibernate().catch(e => logger.error(`주말 동면 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // ☀️ 월요일 기상 — 06:00 KST: Cloud Run min=1 복원 (Cloud SQL은 부팅 시 자동 기상)
+  cron.schedule(
+    '0 6 * * 1',
+    async () => {
+      logger.info('☀️ 월요일 기상 cron 트리거', { component: 'SCHEDULER' });
+      const { weekdayWakeUp, wakeCloudSqlIfNeeded } = await import('../utils/cloud-sql-wake.js');
+      await wakeCloudSqlIfNeeded().catch(e => logger.error(`Cloud SQL 기상 실패: ${e}`, { component: 'SCHEDULER' }));
+      await weekdayWakeUp().catch(e => logger.error(`Cloud Run 기상 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

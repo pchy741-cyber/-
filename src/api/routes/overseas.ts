@@ -1,9 +1,11 @@
 import { Hono } from 'hono';
+import { sleep } from '../../utils/sleep.js';
 import { OVERSEAS_FEE_PCT, SECTOR_CLASS } from '../../config/constants.js';
 import { getOverseasBalance, getOverseasDailyChart, getOverseasPrice, placeOverseasOrder } from '../../kis/overseas.js';
 import { config, baseIsPaper } from '../../config/index.js';
 import { runWithMode } from '../../config/context.js';
 import { getPool } from '../../db/client.js';
+import { resolveRequestMode } from '../guards/live-pin.js';
 import { cacheGet, cacheSet } from '../../cache/memory.js';
 import { logger } from '../../utils/logger.js';
 import { getOverseasScores, setOverseasScores, type OverseasScoreEntry } from '../../cache/overseas-scores.js';
@@ -12,13 +14,14 @@ import { notifyOverseasSell } from '../../notifications/web-push.js';
 import { GLOBAL_WATCHLIST } from '../../scheduler/overseas/watchlist.js';
 import { calcDynamicTpSl, getVixRegime } from '../../scheduler/overseas/risk-intelligence.js';
 import { getFearGreedIndex } from '../../market/external-signals.js';
+import { hardInvalidateDashboardCache } from '../../cache/dashboard-cache.js';
+import { positionStateKeys } from '../../scheduler/overseas/utils.js';
 
 export const overseasRoutes = new Hono();
 
 // 해외주식 대시보드 (60초 캐시)
 overseasRoutes.get('/overseas/dashboard', async (c) => {
-  const viewModeParam = c.req.query('viewMode');
-  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
+  const viewIsPaper = resolveRequestMode(c);
   const cacheKey = `overseas:dashboard:${viewIsPaper ? 'paper' : 'live'}`;
   const cached = cacheGet<any>(cacheKey);
   if (cached) return c.json(cached);
@@ -67,7 +70,7 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
             cacheSet(`overseas:lastprice:${stock.code}`, { price: p.currentPrice, changePct: p.changePct, volume: p.volume }, 7200);
           }
         }
-        if (i + BATCH < GLOBAL_WATCHLIST.length) await new Promise(r => setTimeout(r, 150));
+        if (i + BATCH < GLOBAL_WATCHLIST.length) await sleep(150);
       }
     })().catch(() => {});
 
@@ -153,7 +156,7 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
             if (!tech) continue;
             results.push({ code: stock.code, name: stock.name, exchange: stock.exchange, region: 'US', score: tech.score, signal: tech.overallSignal, price: price?.currentPrice ?? 0, changePct: price?.changePct ?? 0, rsi: tech.rsi14, cachedAt: Date.now() });
           }
-          if (i + BATCH < usStocks.length) await new Promise(r => setTimeout(r, 100));
+          if (i + BATCH < usStocks.length) await sleep(100);
         }
         if (results.length > 0) {
           setOverseasScores(results);
@@ -278,7 +281,7 @@ overseasRoutes.get('/overseas/scores', async (c) => {
           cachedAt: Date.now(),
         });
       }
-      if (i + BATCH < usStocks.length) await new Promise(r => setTimeout(r, 100));
+      if (i + BATCH < usStocks.length) await sleep(100);
     }
 
     if (results.length > 0) setOverseasScores(results);
@@ -575,20 +578,22 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
         [sanitizedTicker, qty, filledPrice, orderNo, baseIsPaper ? 'paper' : 'live',
          `수동매수 $${safeAmount.toFixed(0)} (TP+${tpPct.toFixed(1)}%:$${tpPrice} SL-${slPct.toFixed(1)}%:$${slPrice}) [${tpLabel}]`]);
 
-      // Live만 overseas_state 현금 차감 (Paper는 computed)
-      if (!baseIsPaper) {
-        await tx.query(
-          `UPDATE overseas_state SET value = (CAST(value AS NUMERIC) - $2)::text WHERE key = $1`,
-          [vsCashKey, totalCost.toFixed(2)],
-        );
-      }
+      // Live 현금: KIS 동기화로 반영 (USD→KRW 단위 오염 방지). Paper는 computed.
     });
+
+    // Live: KIS 동기화로 현금 갱신
+    if (!baseIsPaper) {
+      const { reconcileCashWithKIS } = await import('../../scheduler/overseas/kis-sync.js');
+      await runWithMode(false, () => reconcileCashWithKIS()).catch((e: any) =>
+        logger.warn(`수동매수 후 현금 동기화 실패 (무시): ${e.message}`, { component: 'OVERSEAS' }));
+    }
 
     logger.info(`[수동매수] ${sanitizedTicker} ${qty}주 @$${filledPrice.toFixed(2)} (TP+${tpPct.toFixed(1)}%:$${tpPrice} SL-${slPct.toFixed(1)}%:$${slPrice}) $${safeAmount.toFixed(0)}/${cashUsd.toFixed(0)} [${tpLabel}] [${baseIsPaper ? 'PAPER' : 'LIVE'}]`, { component: 'OVERSEAS' });
     const vsMode = baseIsPaper ? 'paper' : 'live';
     cacheSet(`overseas:dashboard:${vsMode}`, null as any, 0);
     cacheSet(`overseas:holdings:${vsMode}`, null as any, 0);
     cacheSet(`overseas:balance:${vsMode}`, null as any, 0);
+    hardInvalidateDashboardCache();
 
     return c.json({
       ok: true,
@@ -677,10 +682,7 @@ overseasRoutes.post('/overseas/sell', async (c) => {
       await withTransaction(async (client) => {
         if (qty >= totalQty) {
           await client.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = true', [stock_code, exchange]);
-          await client.query('DELETE FROM overseas_state WHERE key = ANY($1)', [[
-            `p_maxprice_${stock_code}`, `p_partial_tp_stage_${stock_code}`, `p_dynamic_tpsl_${stock_code}`,
-            `p_scale_in_${stock_code}`, `p_turtle_trail_${stock_code}`, `sync_sell_pending_${stock_code}`,
-          ]]);
+          await client.query('DELETE FROM overseas_state WHERE key = ANY($1)', [positionStateKeys(stock_code, true)]);
         } else {
           await client.query('UPDATE overseas_holdings SET quantity = quantity - $3 WHERE stock_code = $1 AND exchange = $2 AND is_paper = true', [stock_code, exchange, qty]);
         }
@@ -693,6 +695,7 @@ overseasRoutes.post('/overseas/sell', async (c) => {
       logger.info(`[OverseasSell] ${stock_code} ${qty}주 @$${fillPrice} (야간감시 모의)`, { component: 'OVERSEAS' });
       cacheSet('overseas:dashboard:paper', null as any, 0);
       cacheSet('overseas:holdings:paper', null as any, 0);
+      hardInvalidateDashboardCache();
       try {
         const stockName = GLOBAL_WATCHLIST.find(s => s.code === stock_code)?.name ?? stock_code;
         const pnlPct = avgPrice > 0 ? ((fillPrice - avgPrice) / avgPrice) * 100 : 0;
@@ -709,26 +712,25 @@ overseasRoutes.post('/overseas/sell', async (c) => {
       if (qty >= totalQty) {
         const pfx = isPaper ? 'p_' : 'l_';
         await client.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [stock_code, exchange, isPaper]);
-        await client.query('DELETE FROM overseas_state WHERE key = ANY($1)', [[
-          `${pfx}maxprice_${stock_code}`, `${pfx}partial_tp_stage_${stock_code}`, `${pfx}dynamic_tpsl_${stock_code}`,
-          `${pfx}scale_in_${stock_code}`, `${pfx}turtle_trail_${stock_code}`, `sync_sell_pending_${stock_code}`,
-        ]]);
+        await client.query('DELETE FROM overseas_state WHERE key = ANY($1)', [positionStateKeys(stock_code)]);
       } else {
         await client.query('UPDATE overseas_holdings SET quantity = quantity - $3 WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [stock_code, exchange, qty, isPaper]);
       }
-      await client.query(
-        `INSERT INTO overseas_state (key, value) VALUES ($2, $1::text)
-         ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
-        [liveProceeds, osCashKey]);
+      // Live 현금: KIS 동기화로 반영 (USD→KRW 단위 오염 방지)
       await client.query(
         `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
          VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','live','OVERSEAS',$5,$6)`,
         [stock_code, qty, fillPrice, result.orderNo ?? '', reason, avgPrice]);
     });
+    // KIS 동기화: 실제 주문가능금액으로 현금 갱신
+    const { reconcileCashWithKIS } = await import('../../scheduler/overseas/kis-sync.js');
+    await runWithMode(false, () => reconcileCashWithKIS()).catch((e: any) =>
+      logger.warn(`야간매도 후 현금 동기화 실패 (무시): ${e.message}`, { component: 'OVERSEAS' }));
     logger.info(`[OverseasSell] ${stock_code} ${qty}주 (야간감시 실거래 ${result.orderNo})`, { component: 'OVERSEAS' });
     cacheSet('overseas:dashboard:live', null as any, 0);
     cacheSet('overseas:holdings:live', null as any, 0);
     cacheSet(`overseas:balance:live`, null as any, 0);
+    hardInvalidateDashboardCache();
     try {
       const stockName = GLOBAL_WATCHLIST.find(s => s.code === stock_code)?.name ?? stock_code;
       const pnlPct = avgPrice > 0 ? ((fillPrice - avgPrice) / avgPrice) * 100 : 0;

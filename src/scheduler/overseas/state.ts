@@ -15,7 +15,8 @@ import { cacheSet } from '../../cache/memory.js';
 import { logger } from '../../utils/logger.js';
 import { modePrefix } from './utils.js';
 
-const PAPER_OVERSEAS_SEED = 10000; // Paper 해외 시드 $10K (기존 주문 이력 기준 복원)
+/** 통합증거금: Paper 시드 (KRW) — 환율 환산 후 USD로 거래 */
+const PAPER_OVERSEAS_SEED_KRW = Number(process.env.PAPER_OVERSEAS_SEED_KRW) || 50_000_000;
 
 /** paper/live 별 현금 키 */
 export function cashKey(isPaper?: boolean): string {
@@ -23,12 +24,16 @@ export function cashKey(isPaper?: boolean): string {
 }
 
 /**
- * Paper 현금을 orders 테이블에서 결정론적 계산
- * cash = SEED - Σ(매수비용+수수료) + Σ(매도수익-수수료)
+ * Paper 현금을 orders 테이블에서 결정론적 계산 (통합증거금)
+ * seedUsd = ₩50,000,000 / 환율
+ * cash = seedUsd - Σ(매수비용+수수료) + Σ(매도수익-수수료)
  * → overseas_state 오염/리셋과 무관하게 항상 정확
+ * → 환율 변동에 따라 USD 시드가 자연 조정 (실제 통합증거금과 동일)
  */
-export async function computePaperCash(): Promise<number> {
+export async function computePaperCash(fxRate?: number): Promise<number> {
   try {
+    const rate = fxRate ?? await fetchExchangeRate();
+    const seedUsd = rate > 0 ? PAPER_OVERSEAS_SEED_KRW / rate : 36500; // 폴백 ~$36.5K
     const { rows } = await getPool().query(`
       SELECT
         COALESCE(SUM(CASE WHEN side = 'BUY'
@@ -42,10 +47,16 @@ export async function computePaperCash(): Promise<number> {
     `);
     const totalBuy = Number(rows[0]?.total_buy ?? 0);
     const totalSell = Number(rows[0]?.total_sell ?? 0);
-    return Math.max(0, PAPER_OVERSEAS_SEED - totalBuy + totalSell);
+    return Math.max(0, seedUsd - totalBuy + totalSell);
   } catch {
-    return PAPER_OVERSEAS_SEED; // DB 실패 시 시드값 폴백
+    const rate = fxRate ?? 1370;
+    return PAPER_OVERSEAS_SEED_KRW / rate; // DB 실패 시 시드값 폴백
   }
+}
+
+/** 통합증거금 KRW 시드 반환 (표시용) */
+export function getPaperSeedKrw(): number {
+  return PAPER_OVERSEAS_SEED_KRW;
 }
 
 export async function ensureOverseasTable(): Promise<void> {
@@ -121,6 +132,26 @@ export async function ensureOverseasTable(): Promise<void> {
       logger.warn(`해외 정합성 마이그레이션 실패 (다음 사이클 재시도): ${(e as Error).message}`, { component: 'OVERSEAS' });
     }
 
+    // ── 1회성: ₩50M 통합증거금 전환 — 기존 paper 주문 아카이브 ──
+    try {
+      const { rows: seedMig } = await getPool().query(
+        "SELECT value FROM overseas_state WHERE key = '_seed_50m_v1'");
+      if (seedMig.length === 0) {
+        const { rowCount } = await getPool().query(
+          `UPDATE orders SET trading_mode = 'p_arch'
+           WHERE trading_mode = 'paper' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'`
+        );
+        await getPool().query(`DELETE FROM overseas_holdings WHERE is_paper = true`);
+        await getPool().query(
+          `INSERT INTO overseas_state (key, value) VALUES ('_seed_50m_v1', $1) ON CONFLICT (key) DO UPDATE SET value = $1`,
+          [JSON.stringify({ migratedAt: new Date().toISOString(), ordersArchived: rowCount, seedKrw: PAPER_OVERSEAS_SEED_KRW })],
+        );
+        logger.info(`🔄 통합증거금 전환: ${rowCount}건 paper 주문 아카이브 → ₩${(PAPER_OVERSEAS_SEED_KRW/10000).toFixed(0)}만 클린스타트`, { component: 'OVERSEAS' });
+      }
+    } catch (e) {
+      logger.warn(`통합증거금 전환 마이그레이션 실패: ${(e as Error).message}`, { component: 'OVERSEAS' });
+    }
+
     // ══════════════════════════════════════════════════
     // Live 해외 현금: 통합증거금 — KIS API에서 실제 주문가능금액 조회
     // 매매 이력 유무와 무관하게 항상 KIS 기준 동기화
@@ -132,15 +163,17 @@ export async function ensureOverseasTable(): Promise<void> {
     // ══════════════════════════════════════════════════
     // Paper 해외 현금: computed 방식 (orders 테이블 기반 결정론적 계산)
     // overseas_state['cash_paper']는 캐시 역할만 — 실제 값은 항상 computePaperCash()
+    // 통합증거금: ₩50M KRW → 환율 환산 USD
     // ══════════════════════════════════════════════════
     const paperKey = cashKey(true);
-    const computed = await computePaperCash();
+    const fxRate = await fetchExchangeRate();
+    const computed = await computePaperCash(fxRate);
     const { rows: pkRows } = await getPool().query("SELECT value FROM overseas_state WHERE key = $1", [paperKey]);
     if (pkRows.length === 0) {
       await getPool().query(
         `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING`,
         [paperKey, computed.toFixed(2)]);
-      logger.info(`💰 Paper 해외 현금 초기화: $${computed.toFixed(2)} (computed)`, { component: 'OVERSEAS' });
+      logger.info(`💰 Paper 통합증거금 초기화: ₩${(PAPER_OVERSEAS_SEED_KRW/10000).toFixed(0)}만 → $${computed.toFixed(2)} (환율 ${fxRate.toFixed(0)})`, { component: 'OVERSEAS' });
     } else {
       const stored = Number(pkRows[0].value);
       const diff = Math.abs(computed - stored);
@@ -149,7 +182,7 @@ export async function ensureOverseasTable(): Promise<void> {
           `UPDATE overseas_state SET value = $1 WHERE key = $2`,
           [computed.toFixed(2), paperKey]);
         logger.warn(
-          `🔧 Paper 현금 보정: $${stored.toFixed(2)} → $${computed.toFixed(2)} (orders 기반 계산)`,
+          `🔧 Paper 현금 보정: $${stored.toFixed(2)} → $${computed.toFixed(2)} (통합증거금 ₩${(PAPER_OVERSEAS_SEED_KRW/10000).toFixed(0)}만 / 환율 ${fxRate.toFixed(0)})`,
           { component: 'OVERSEAS' });
       }
     }
@@ -210,7 +243,7 @@ export async function updateHoldingTpSl(code: string, tpPct: number | null, slPc
 export async function getCash(isPaper?: boolean, fxRate?: number): Promise<number> {
   const paper = isPaper ?? getCtxIsPaper();
   if (paper) {
-    return computePaperCash();
+    return computePaperCash(fxRate);
   }
   // Live: DB에 KRW 저장 → USD로 변환
   const krw = await getCashKrw();
@@ -312,7 +345,7 @@ const OVERSEAS_REFILL_THRESHOLD = 0.15; // 시드 대비 15% 미만이면 리필
 let lastOverseasRefillCheck = 0;
 
 /**
- * Paper 해외 자금 고갈 시 자동 리필
+ * Paper 해외 자금 고갈 시 자동 리필 (통합증거금 ₩50M 기준)
  * - 남은 현금 < 시드 15% + 보유종목 0건 → 리필 트리거
  * - 기존 overseas paper 주문을 아카이브
  * @returns true if refill happened
@@ -323,8 +356,10 @@ export async function checkAndRefillOverseasPaper(): Promise<boolean> {
   lastOverseasRefillCheck = now;
 
   try {
-    const cash = await computePaperCash();
-    const cashRatio = cash / PAPER_OVERSEAS_SEED;
+    const fxRate = await fetchExchangeRate();
+    const seedUsd = fxRate > 0 ? PAPER_OVERSEAS_SEED_KRW / fxRate : 36500;
+    const cash = await computePaperCash(fxRate);
+    const cashRatio = cash / seedUsd;
     const holdings = await getHoldings(true);
     const hasPositions = [...holdings.values()].some(h => h.qty > 0);
 
@@ -338,21 +373,20 @@ export async function checkAndRefillOverseasPaper(): Promise<boolean> {
     );
     const gen = genRows[0]?.next_gen ?? 1;
 
-    // 기존 overseas paper 주문 아카이브
+    // 기존 overseas paper 주문 아카이브 (varchar(10) 제한 → 'p_arch' 사용)
     const { rowCount } = await pool.query(
-      `UPDATE orders SET trading_mode = $1
-       WHERE trading_mode = 'paper' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'`,
-      [`paper_archived_${gen}`],
+      `UPDATE orders SET trading_mode = 'p_arch'
+       WHERE trading_mode = 'paper' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'`
     );
 
     // overseas_holdings paper 삭제
     await pool.query(`DELETE FROM overseas_holdings WHERE is_paper = true`);
 
-    // cash_paper 리셋
+    // cash_paper 리셋 (환율 기준 USD)
     await pool.query(
       `INSERT INTO overseas_state (key, value) VALUES ('cash_paper', $1)
        ON CONFLICT (key) DO UPDATE SET value = $1`,
-      [PAPER_OVERSEAS_SEED.toFixed(2)],
+      [seedUsd.toFixed(2)],
     );
 
     // 세대 기록
@@ -361,12 +395,14 @@ export async function checkAndRefillOverseasPaper(): Promise<boolean> {
       [`paper_us_gen_${gen}`, JSON.stringify({
         archivedAt: new Date().toISOString(),
         ordersArchived: rowCount,
-        finalCash: cash,
-        seedUsd: PAPER_OVERSEAS_SEED,
+        finalCashUsd: cash,
+        seedKrw: PAPER_OVERSEAS_SEED_KRW,
+        fxRate,
+        seedUsd,
       })],
     );
 
-    logger.info(`🔄 [PAPER-REFILL] 해외 모의자금 리필 (세대 #${gen}): $${cash.toFixed(0)} → $${PAPER_OVERSEAS_SEED} (${rowCount}건 아카이브)`, { component: 'OVERSEAS' });
+    logger.info(`🔄 [PAPER-REFILL] 통합증거금 리필 (세대 #${gen}): $${cash.toFixed(0)} → $${seedUsd.toFixed(0)} (₩${(PAPER_OVERSEAS_SEED_KRW/10000).toFixed(0)}만 / 환율 ${fxRate.toFixed(0)}) — ${rowCount}건 아카이브`, { component: 'OVERSEAS' });
     return true;
   } catch (e) {
     logger.warn(`해외 Paper 리필 체크 실패: ${e}`, { component: 'OVERSEAS' });

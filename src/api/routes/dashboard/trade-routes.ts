@@ -3,19 +3,19 @@
  */
 import { Hono } from 'hono';
 import { KR_FEE } from '../../../config/constants.js';
-import { config, baseIsPaper } from '../../../config/index.js';
 import { getPool } from '../../../db/client.js';
 import { getBatchPrices, type CurrentPrice } from '../../../kis/market.js';
 import { getDinnerMoneyStats } from '../../../automation/profit-withdraw.js';
 import { isInvalidStockName, getKnownStockName } from './helpers.js';
+import { getTodayTradeStats } from '../sse.js';
+import { resolveRequestMode } from '../../guards/live-pin.js';
 
 export const tradeRoutes = new Hono();
 
 // ── 매매 기록 ──
 tradeRoutes.get('/trades', async (c) => {
   const limit = Math.min(Math.max(1, Number(c.req.query('limit') ?? 50)), 500);
-  const viewModeParam = c.req.query('viewMode');
-  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
+  const viewIsPaper = resolveRequestMode(c);
   const tradeMode = viewIsPaper ? 'paper' : 'live';
   try {
     const { rows } = await getPool().query(
@@ -121,13 +121,15 @@ tradeRoutes.get('/trades', async (c) => {
       if (p) {
         return { ...r, realized_pnl: p.pnl, realized_pnl_pct: p.pct, realized_pnl_usd: p.isUsd ? p.pnl : null };
       }
+      // 폴백: chain avg_buy_price → order-level avg_buy_price (해외주식은 chain 없이 order에 직접 저장)
       const chainAvgBuy = r.transaction_chains?.avg_buy_price;
-      if (String(r.side) === 'SELL' && chainAvgBuy) {
+      const orderAvgBuy = r.avg_buy_price;
+      const avgBuy = Number(chainAvgBuy || orderAvgBuy || 0);
+      if (String(r.side) === 'SELL' && avgBuy > 0) {
         const qty = Math.max(0, Number(r.filled_quantity ?? 0));
         const sellPx = Math.max(0, Number(r.filled_price ?? 0));
-        const avgBuy = Number(chainAvgBuy);
         const isUsd = !/^[0-9]{6}$/.test(String(r.stock_code ?? ''));
-        if (qty > 0 && sellPx > 0 && avgBuy > 0) {
+        if (qty > 0 && sellPx > 0) {
           const costBasis = avgBuy * qty;
           const sellValue = sellPx * qty;
           const sellFee = isUsd ? 0 : Math.round(sellValue * 0.00245);
@@ -189,6 +191,13 @@ tradeRoutes.get('/trades', async (c) => {
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
+});
+
+// ── 오늘 매매 통계 (서버 KST 기준) ──
+tradeRoutes.get('/trades/today-stats', async (c) => {
+  const viewIsPaper = resolveRequestMode(c);
+  const stats = await getTodayTradeStats(viewIsPaper);
+  return c.json(stats);
 });
 
 // ── 시장 참고 소스 ──
@@ -277,8 +286,7 @@ tradeRoutes.patch('/withdraw/:id/status', async (c) => {
 
 // ── 일자별 손익 요약 ──
 tradeRoutes.get('/trades/daily-summary', async (c) => {
-  const viewModeParam = c.req.query('viewMode');
-  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
+  const viewIsPaper = resolveRequestMode(c);
   const tradeMode = viewIsPaper ? 'paper' : 'live';
   const days = Math.min(Math.max(1, Number(c.req.query('days') ?? 30)), 365);
 
@@ -357,8 +365,7 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
 // ── 특정일 매매 상세 ──
 tradeRoutes.get('/trades/by-date/:date', async (c) => {
   const dateParam = c.req.param('date'); // YYYY-MM-DD
-  const viewModeParam = c.req.query('viewMode');
-  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
+  const viewIsPaper = resolveRequestMode(c);
   const tradeMode = viewIsPaper ? 'paper' : 'live';
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
@@ -417,8 +424,7 @@ tradeRoutes.get('/trades/by-date/:date', async (c) => {
 
 // ── 승률 분석: 점수 구간별 WIN/LOSS 집계 ──
 tradeRoutes.get('/stats/win-rate-bands', async (c) => {
-  const viewModeParam = c.req.query('viewMode');
-  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
+  const viewIsPaper = resolveRequestMode(c);
   try {
     const { rows } = await getPool().query<{
       band: string;

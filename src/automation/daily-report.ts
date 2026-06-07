@@ -20,7 +20,7 @@ import { logger } from '../utils/logger.js';
 export async function generateDailyReport(): Promise<void> {
   try {
     const { getPaperBalance } = await import('../risk/engine.js');
-    const balance = getCtxIsPaper() ? await getPaperBalance() : await getAccountBalance();
+    const balance = getCtxIsPaper() ? await getPaperBalance() : await getAccountBalance(true);
     const chains = await getOpenChains();
     const today = new Date().toISOString().split('T')[0];
     const { todayAmount: reserved } = await getDinnerMoneyStats();
@@ -28,7 +28,7 @@ export async function generateDailyReport(): Promise<void> {
     // 오늘 체결된 주문
     const { rows: todayOrders } = await getPool().query(
       'SELECT * FROM orders WHERE created_at >= $1 AND status = $2 AND trading_mode = $3 ORDER BY created_at ASC',
-      [`${today}T00:00:00`, 'FILLED', config.tradingMode],
+      [`${today}T00:00:00`, 'FILLED', getCtxIsPaper() ? 'paper' : 'live'],
     );
 
     const buyOrders = todayOrders.filter((o: any) => o.side === 'BUY');

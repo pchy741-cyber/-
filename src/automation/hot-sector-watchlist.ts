@@ -15,6 +15,7 @@ import { getCurrentPrice } from '../kis/market.js';
 import { getPool } from '../db/client.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
+import { sleep } from '../utils/sleep.js';
 
 const COMPONENT = 'HOT_SECTOR';
 
@@ -111,7 +112,7 @@ async function fetchSectorIndices(): Promise<SectorInfo[]> {
     }
 
     if (i + batchSize < sectorCodes.length) {
-      await new Promise((r) => setTimeout(r, 500));
+      await sleep(500);
     }
   }
 
@@ -248,7 +249,7 @@ export async function runHotSectorWatchlist(): Promise<void> {
 
     for (const sector of hotSectors) {
       const stocks = await fetchSectorStocks(sector.code);
-      await new Promise((r) => setTimeout(r, 300));
+      await sleep(300);
 
       // 이미 워치리스트에 있으면 스킵
       const newStocks = stocks.filter((s) => !activeCodes.has(s.stock_code));
@@ -285,7 +286,7 @@ export async function runHotSectorWatchlist(): Promise<void> {
           }
         }
       }
-      await new Promise((r) => setTimeout(r, 300));
+      await sleep(300);
     }
 
     if (validCandidates.length === 0) {

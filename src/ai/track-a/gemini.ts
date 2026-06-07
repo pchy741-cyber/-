@@ -90,7 +90,7 @@ ${additionalSources ?? '추가 소스 없음'}
 위 데이터를 분석하여 종목별 팩트를 추출해주세요.`;
 
   logger.info(
-    `Gemini 분석 시작 (${watchlist.length}개 종목, 모드: ${mode}, engine: AI Studio)`,
+    `Gemini 분석 시작 (${watchlist.length}개 종목, 모드: ${mode}, 라우팅: Vertex우선)`,
     { component: 'TRACK_A' },
   );
 

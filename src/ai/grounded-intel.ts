@@ -29,6 +29,9 @@ export interface GroundedSignal {
 export async function checkHoldingsNews(
   holdings: Array<{ code: string; name: string; pnlPct: number }>,
 ): Promise<GroundedSignal[]> {
+  // Gemini OFF 시 빈 배열 → overseas-job은 규칙기반만 사용
+  const { config } = await import('../config/index.js');
+  if (!config.geminiEnabled) return [];
   // 5종목 초과 시 손실 큰 순으로 우선 체크
   const sorted = [...holdings].sort((a, b) => a.pnlPct - b.pnlPct);
   const targets = sorted.slice(0, 5);
@@ -102,6 +105,8 @@ export interface MacroSignal {
 }
 
 export async function checkMacroEvents(): Promise<MacroSignal[]> {
+  const { config } = await import('../config/index.js');
+  if (!config.geminiEnabled) return [];
   const now = Date.now();
   if (now - _lastMacroCheck < MACRO_COOLDOWN_MS) return [];
   _lastMacroCheck = now;

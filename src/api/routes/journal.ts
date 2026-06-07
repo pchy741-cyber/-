@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
-import { config, baseIsPaper } from '../../config/index.js';
 import { OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { getPool } from '../../db/client.js';
 import { fetchExchangeRate } from '../../automation/macro-data.js';
 import { logger } from '../../utils/logger.js';
+import { resolveRequestMode } from '../guards/live-pin.js';
 
 export const journalRoutes = new Hono();
 
@@ -39,8 +39,7 @@ interface ReasonStat {
  */
 journalRoutes.get('/journal', async (c) => {
   const days = Math.min(90, Math.max(1, Number(c.req.query('days') ?? 30)));
-  const viewModeParam = c.req.query('viewMode');
-  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
+  const viewIsPaper = resolveRequestMode(c);
   const viewTradingMode = viewIsPaper ? 'paper' : 'live';
   const pool = getPool();
   const trades: JournalTrade[] = [];

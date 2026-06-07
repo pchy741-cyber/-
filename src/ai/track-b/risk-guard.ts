@@ -1,4 +1,5 @@
 import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
+import { config } from '../../config/index.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
@@ -49,9 +50,17 @@ export function filterEarlySells(params: {
     // FORCE_CLOSE = 시간 기반 강제청산(SCALPING 09:45 등) 또는 모드 전환 청산 — 무조건 허용
     if (d.action === 'FORCE_CLOSE') return true;
 
-    if ((d.action === 'SELL' || d.action === 'PARTIAL_SELL') && pnlPct > _stopPct && pnlPct < _tpPct) {
+    // 체인별 동적 TP 우선: 진입 시 설정된 target_profit_pct 사용 (글로벌 TP보다 정확)
+    // 글로벌 _tpPct=7%인데 체인 TP=6%일 때, 6.8% 수익이면 → 체인 기준 TP 도달 → 매도 허용
+    const chainTp = chain.target_profit_pct != null ? Number(chain.target_profit_pct) : _tpPct;
+    const chainSl = chain.stop_loss_pct != null ? Number(chain.stop_loss_pct) : _stopPct;
+
+    // 고확신 매도 (confidence ≥ 0.85) — sell-signals가 확실한 근거로 내린 결정은 존중
+    if (d.confidence != null && d.confidence >= 0.85) return true;
+
+    if ((d.action === 'SELL' || d.action === 'PARTIAL_SELL') && pnlPct > chainSl && pnlPct < chainTp) {
       logger.warn(
-        `🛡️ AI 중간 매도 차단: ${d.stock_code} 현재 ${pnlPct.toFixed(1)}% — 트레일링/하드룰 처리 대기`,
+        `🛡️ AI 중간 매도 차단: ${d.stock_code} 현재 ${pnlPct.toFixed(1)}% (SL ${chainSl}% ~ TP ${chainTp}%) — 트레일링/하드룰 처리 대기`,
         { component: 'RISK_GUARD' },
       );
       return false;
@@ -102,14 +111,14 @@ export async function applyHardRules(params: {
       ? Number(chain.stop_loss_pct)
       : (stopLossPct ?? baseParams.stopLossPct);
 
-    // ── 진입 초기 여유 버퍼: 1시간 미만 보유 시 SL 1.5% 완화 ──
-    // v1 문제: 매수 직후 -3% 순간 터치 → 즉시 FORCE_CLOSE → 직후 반등
-    // v2: 1시간 동안은 SL을 넓혀서 포지션이 안정화될 시간 확보
-    // 단, 하드플로어(-8%) 초과 손실은 즉시 청산 (대참사 방지)
+    // ── 진입 초기 여유 버퍼: 비활성화 (2026-06 성과 검토) ──
+    // v2 문제: WR 30.8%에서 earlyBuffer 1.5%는 70% 잘못된 진입의 손실을 -3%→-4.5%로 확대
+    // v3: earlyBuffer 제거, baseStop 그대로 적용. 빠른 손절이 평균 손실 감소 효과.
+    // 10분 미만 보유는 약간의 여유(0.5%)만 제공 — 체결 직후 노이즈 방지
     const holdMs = chain.opened_at ? Date.now() - new Date(chain.opened_at).getTime() : Infinity;
-    const EARLY_HOLD_MS = 60 * 60_000; // 1시간
-    const EARLY_BUFFER = 1.5; // 1.5% 추가 여유
-    const HARD_FLOOR = -8.0; // 절대 손절선: -8% (어떤 상황에서도 청산)
+    const EARLY_HOLD_MS = 10 * 60_000; // 10분 (기존 1시간→10분 축소)
+    const EARLY_BUFFER = 0.5; // 0.5% 최소 여유 (기존 1.5%→0.5%)
+    const HARD_FLOOR = -6.0; // 절대 손절선: -6% (기존 -8%→-6% 축소)
     const earlyBuffer = holdMs < EARLY_HOLD_MS ? EARLY_BUFFER : 0;
     const stopPct = Math.max(baseStop - earlyBuffer, HARD_FLOOR);
 
@@ -188,7 +197,9 @@ const SECTOR_MAP: Record<string, string> = {
 export function filterSectorConcentration(
   decisions: TradeDecision[],
   openChains: TransactionChain[],
+  isPaper?: boolean,
 ): TradeDecision[] {
+  const maxPerSector = isPaper ? config.paperRisk.sectorMaxPerSector : 2;
   const heldSectorCounts: Record<string, number> = {};
   for (const c of openChains) {
     if (Number(c.total_quantity) <= 0) continue;
@@ -196,7 +207,7 @@ export function filterSectorConcentration(
     if (sector) heldSectorCounts[sector] = (heldSectorCounts[sector] ?? 0) + 1;
   }
   const blockedSectors = new Set(
-    Object.entries(heldSectorCounts).filter(([, n]) => n >= 2).map(([s]) => s),
+    Object.entries(heldSectorCounts).filter(([, n]) => n >= maxPerSector).map(([s]) => s),
   );
   if (blockedSectors.size === 0) return decisions;
 
@@ -204,7 +215,7 @@ export function filterSectorConcentration(
     if (d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN') return true;
     const sector = SECTOR_MAP[d.stock_code];
     if (sector && blockedSectors.has(sector)) {
-      logger.warn(`🚫 섹터 집중 차단: ${d.stock_code} (${sector}) — 이미 ${heldSectorCounts[sector]}종목 보유`, { component: 'RISK_GUARD' });
+      logger.warn(`🚫 섹터 집중 차단: ${d.stock_code} (${sector}) — 이미 ${heldSectorCounts[sector]}종목 보유 (한도 ${maxPerSector})`, { component: 'RISK_GUARD' });
       return false;
     }
     return true;

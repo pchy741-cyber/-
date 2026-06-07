@@ -1,6 +1,5 @@
 import { analyzeTechnicals } from '../analysis/indicators.js';
 import type { DailyCandle } from '../kis/market.js';
-import { callVertexGemini } from '../utils/vertex-gemini.js';
 import { logger } from '../utils/logger.js';
 
 export interface EntryTimingResult {
@@ -48,25 +47,41 @@ export async function checkLargeOrderEntryTiming(
     const prevClose = candles.length >= 2 ? Number(candles[candles.length - 2].close) : currentPrice;
     const todayChangePct = prevClose > 0 ? ((currentPrice - prevClose) / prevClose) * 100 : 0;
 
-    const context = [
-      `종목: ${stockCode} | 현재가: ${currentPrice.toLocaleString()}원 | 주문: ${Math.round(orderAmountKrw / 10000)}만원`,
-      tech
-        ? `RSI=${tech.rsi14.toFixed(0)} ADX=${tech.adx14.toFixed(0)} score=${tech.score} trend=${tech.trendStrength}`
-        : 'indicators: N/A',
-      `일중위치: ${dayRangePct.toFixed(0)}% | 당일등락: ${todayChangePct >= 0 ? '+' : ''}${todayChangePct.toFixed(2)}%`,
-      `기존판단: ${existingReasoning.slice(0, 150)}`,
-      '',
-      '진입 타이밍 승인/거부를 JSON으로 응답하세요.',
-    ].join('\n');
+    // 규칙기반 진입 타이밍 검증 (Gemini 대체 — $0)
+    let approved = true;
+    let confidence = 0.65;
+    let reason = '';
 
-    const text = await callVertexGemini(ENTRY_PROMPT, context, { temperature: 0.1, maxOutputTokens: 120, label: '진입타이밍' });
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('JSON 없음');
+    // 다일 고점 추격 감지: 5일 최고가 대비 현재가 위치
+    const recentHighs = candles.slice(-6, -1); // 최근 5일 (오늘 제외)
+    const high5d = recentHighs.length > 0 ? Math.max(...recentHighs.map(c => Number(c.high))) : 0;
+    const atMultiDayHigh = high5d > 0 && currentPrice >= high5d * 0.995; // 5일 고점 0.5% 이내
 
-    const parsed = JSON.parse(jsonMatch[0]) as { approved?: boolean; confidence?: number; reason?: string };
-    const approved = Boolean(parsed.approved ?? true);
-    const confidence = Math.min(1, Math.max(0, Number(parsed.confidence ?? 0.6)));
-    const reason = String(parsed.reason ?? '');
+    if (tech) {
+      // 거부 조건 (Gemini 프롬프트와 동일 + 고점추격 방어)
+      if (tech.rsi14 > 73) {
+        approved = false; confidence = 0.80; reason = `RSI=${tech.rsi14.toFixed(0)} 과매수`;
+      } else if (dayRangePct >= 75 && atMultiDayHigh) {
+        // 돌파매매 방어: 오늘 고점 + 5일 고점 동시 → 저항선 돌파 실패 위험
+        approved = false; confidence = 0.85; reason = `일중${dayRangePct.toFixed(0)}%+5일고점 돌파실패위험`;
+      } else if (dayRangePct >= 80) {
+        approved = false; confidence = 0.75; reason = `일중${dayRangePct.toFixed(0)}% 고점매수위험`;
+      } else if (todayChangePct >= 3 && tech.rsi14 > 65 && tech.volumeRatio < 1.5) {
+        // +3% 급등 + RSI 65+ + 거래량 부족 = 무성량 급등 (돌파 확인 안 됨)
+        approved = false; confidence = 0.75; reason = `급등${todayChangePct.toFixed(1)}%+RSI${tech.rsi14.toFixed(0)} 무성량`;
+      } else if (tech.score < -20) {
+        approved = false; confidence = 0.70; reason = `score=${tech.score} 약세`;
+      } else if (todayChangePct <= -2 && tech.trendStrength === 'WEAK') {
+        approved = false; confidence = 0.75; reason = `하락${todayChangePct.toFixed(1)}% weak추세`;
+      } else {
+        // 승인 — confidence 조건부 (고점 근처면 감점)
+        const baseConf = (tech.rsi14 >= 40 && tech.rsi14 <= 70 && tech.adx14 >= 18 && tech.score >= 0) ? 0.75 : 0.60;
+        confidence = atMultiDayHigh ? Math.min(baseConf, 0.55) : baseConf;
+        reason = `RSI=${tech.rsi14.toFixed(0)} ADX=${tech.adx14.toFixed(0)} score=${tech.score}${atMultiDayHigh ? ' 5일고점근처' : ''}`;
+      }
+    } else {
+      reason = 'indicators N/A — 허용';
+    }
 
     logger.info(
       `🎯 진입타이밍 [${stockCode}] ${approved ? '✅승인' : '❌거부'} (${(confidence * 100).toFixed(0)}%): ${reason}`,

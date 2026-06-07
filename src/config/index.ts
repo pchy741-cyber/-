@@ -174,6 +174,23 @@ export const config = {
     maxDailyTrades: env.RISK_MAX_DAILY_TRADES,
   },
 
+  /**
+   * Paper 모드 리스크 오버라이드 — 로그 최대 축적, 승률 학습 가속
+   * 연습모드는 모의돈이므로 제한을 최대한 풀어 거래 데이터를 빠르게 쌓는다.
+   * 이 데이터가 실전모드 파라미터 최적화의 근거가 된다.
+   */
+  paperRisk: {
+    maxConcurrentPositions: 20,     // 8 → 20종목 (다양한 패턴 학습)
+    maxDailyTrades: 20,             // 3 → 20건 (장중 신호 다 잡기)
+    maxTotalInvestedPct: 97,        // 88 → 97% (현금 3%만 보유)
+    positionCapRatio: 0.40,         // 25% → 40% (집중 투자 테스트)
+    cashReserveRatio: 0.03,         // 20% → 3% (거의 전액 집행)
+    buyThresholdOffset: -10,        // 80→70점으로 실질 하향 (더 많은 종목 진입)
+    sectorMaxPerSector: 5,          // 2 → 5종목 (섹터 제한 완화)
+    cooldownMultiplier: 0.2,        // 쿨다운 80% 단축 (5연패 60분→12분)
+    mddLimit: 60,                   // 40% → 60% (거의 안 터짐)
+  },
+
   /** Gemini API 자동 호출 ON/OFF — false면 규칙기반만 사용 (AI 비용 $0) */
   geminiEnabled: (process.env.GEMINI_ENABLED ?? 'false') === 'true',
 };

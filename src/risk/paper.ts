@@ -3,6 +3,7 @@ import { insertOrder } from '../db/client.js';
 import { getCurrentPrice } from '../kis/market.js';
 import type { OrderResult } from '../kis/order.js';
 import { logger } from '../utils/logger.js';
+import { hardInvalidateDashboardCache } from '../cache/dashboard-cache.js';
 
 // 순환 참조 방지: engine.ts에서 직접 import 하지 않고 lazy import
 let _addPaper: ((n: number) => void) | null = null;
@@ -94,6 +95,7 @@ export async function paperTradeOrder(params: {
     }
   } catch { /* paper cash tracking 실패해도 주문은 진행 */ }
 
+  hardInvalidateDashboardCache();
   logger.info(`📝 [PAPER] ${side} ${stockCode} x${quantity} @${filledPrice.toLocaleString()} (${fakeOrderNo}) | 금액${orderValue.toLocaleString()} 수수료${fee.toLocaleString()}원`, {
     component: 'PAPER_TRADE',
   });

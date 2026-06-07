@@ -4,7 +4,7 @@ import { getCtxIsPaper } from '../config/context.js';
 import { getActiveStrategy, getOpenChains, insertOrder, logSystem, updateOrderByKisOrderNo, upsertWatchlistItem } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import { getCurrentPrice, getDailyChart } from '../kis/market.js';
-import { getOrderFills, type OrderResult, placeOrder } from '../kis/order.js';
+import { cancelOrder, getOrderFills, type OrderResult, placeOrder } from '../kis/order.js';
 import { riskEngine } from '../risk/engine.js';
 import { reportError, reportSuccess } from '../risk/kill-switch.js';
 import { notifyBuy, notifySell } from '../notifications/web-push.js';
@@ -12,9 +12,10 @@ import { runTradeGates, type GateInput } from '../risk/trade-gate.js';
 import { paperTradeOrder } from '../risk/paper.js';
 import { acquireLock } from '../utils/lock.js';
 import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
 import { roundKrw } from '../utils/money.js';
 import { invalidateStockCache } from '../cache/redis.js';
-import { invalidateDashboardCache } from '../api/routes/dashboard.js';
+import { invalidateDashboardCache, hardInvalidateDashboardCache } from '../cache/dashboard-cache.js';
 import { invalidateBalanceCache } from '../kis/account.js';
 import { chainManager } from './chain.js';
 import { registerBuyIntent, releaseBuyIntent } from './buy-intent.js';
@@ -277,6 +278,8 @@ export class TradeExecutor {
     }
 
     // 호가 진입 타이밍 — ask2 이하일 때만 매수 (ETF 파킹/바닥낚시 제외 — 시간외 단일가는 호가 무의미)
+    // + 스마트 매수: ask1 지정가 주문으로 시장가 슬리피지 방지
+    let smartBuyPrice: number | undefined;
     if (!skipGates) {
       try {
         const { getOrderbook } = await import('../kis/market.js');
@@ -289,18 +292,20 @@ export class TradeExecutor {
           await logSystem('WARN', 'EXECUTOR', `호가 진입 보류: ${stockCode} 현재가=${estimatedPrice} ask2=${ask2}`);
           return;
         }
-        if (ask2 > 0) {
-          logger.info(`✅ 호가 진입 허용: ${stockCode} 현재가 ${estimatedPrice} ≤ ask2 ${ask2}`, { component: 'EXECUTOR' });
+        // 스마트 매수: ask1(매도1호가) 지정가 → 시장가 대비 슬리피지 차단
+        if (ask1 > 0) {
+          smartBuyPrice = ask1;
+          logger.info(`💰 스마트 매수: ${stockCode} ask1=${ask1.toLocaleString()} → 지정가 주문`, { component: 'EXECUTOR' });
         }
-      } catch { /* 호가 조회 실패 시 진입 허용 (fail-open) */ }
+      } catch { /* 호가 조회 실패 시 시장가 폴백 (fail-open) */ }
     }
 
-    // 주문 실행
+    // 주문 실행 (지정가 우선 → 호가 없으면 시장가 폴백)
     const result = await this.executeOrder({
       stockCode,
       side: 'BUY',
       quantity: gatedQuantity,
-      price: priceType === 'LIMIT' ? limitPrice : undefined,
+      price: priceType === 'LIMIT' ? limitPrice : smartBuyPrice,
       triggerSource: triggerSource ?? 'TRACK_B',
       aiReasoning: reasoning,
     });
@@ -327,21 +332,18 @@ export class TradeExecutor {
         logger.warn(`⚠️ 매수 부분체결 반영: ${stockCode} 요청 ${gatedQuantity}주 → 체결 ${filledQty}주`, { component: 'EXECUTOR' });
       }
 
-      // 동적 TP/SL: use_dynamic_tpsl ON → score+기술지표 복합 계산
-      // OFF → 기존 score 티어 기반, DB 전략값 폴백
+      // 동적 TP/SL: 항상 다팩터 엔진 사용 (v4: 플래그 폐지 → 해외와 동등)
+      // 팩터: AI score + ADX + ATR + RSI + 거래량 + 시장레짐 + 수급
       const dbStrategy = await getActiveStrategy().catch(() => null);
-      const useDynamic = (dbStrategy as any)?.use_dynamic_tpsl === true;
       let scoreParams: { takeProfitPct: number; stopLossPct: number } | null = null;
       if (mode !== 'SCALPING' && aiScore && aiScore >= 60) {
-        if (useDynamic && tpSlHints) {
-          const { getDynamicDomesticTpSl } = await import('../config/constants.js');
-          const dyn = getDynamicDomesticTpSl({ ...tpSlHints, score: aiScore });
-          scoreParams = { takeProfitPct: dyn.takeProfitPct, stopLossPct: dyn.stopLossPct };
-          logger.info(`🎯 동적 TP/SL [${dyn.label}]: score=${aiScore} → TP ${dyn.takeProfitPct}% / SL ${dyn.stopLossPct}%`, { component: 'EXECUTOR' });
-        } else {
-          scoreParams = getScoreBasedParams(aiScore);
-          logger.info(`🎯 점수 기반 TP/SL: score=${aiScore} → TP ${scoreParams.takeProfitPct}% / SL ${scoreParams.stopLossPct}%`, { component: 'EXECUTOR' });
-        }
+        const { getDynamicDomesticTpSl } = await import('../config/constants.js');
+        // 자기학습 피드백: strategy_config에 학습된 TP/SL → 30% 블렌딩
+        const learnedTp = (dbStrategy as any)?.take_profit_pct as number | undefined;
+        const learnedSl = (dbStrategy as any)?.stop_loss_pct as number | undefined;
+        const dyn = getDynamicDomesticTpSl({ ...tpSlHints, score: aiScore, learnedTp, learnedSl });
+        scoreParams = { takeProfitPct: dyn.takeProfitPct, stopLossPct: dyn.stopLossPct };
+        logger.info(`🎯 동적 TP/SL [${dyn.label}]: score=${aiScore} → TP ${dyn.takeProfitPct}% / SL ${dyn.stopLossPct}%`, { component: 'EXECUTOR' });
       }
       const targetProfitPct = scoreParams?.takeProfitPct ?? (dbStrategy as any)?.take_profit_pct ?? params.takeProfitPct;
       let stopLossPct = scoreParams?.stopLossPct ?? (dbStrategy as any)?.stop_loss_pct ?? params.stopLossPct;
@@ -358,16 +360,22 @@ export class TradeExecutor {
         }
       } catch { /* ATR 실패 시 기본값 유지 */ }
 
-      await chainManager.openChain({
-        stockCode,
-        mode,
-        buyPrice: fill.filledPrice,
-        quantity: filledQty,
-        targetProfitPct,
-        stopLossPct,
-        maxAveragingCount: params.maxAveragingCount,
-        isPaper: isPaperSnapshot,
-      });
+      try {
+        await chainManager.openChain({
+          stockCode,
+          mode,
+          buyPrice: fill.filledPrice,
+          quantity: filledQty,
+          targetProfitPct,
+          stopLossPct,
+          maxAveragingCount: params.maxAveragingCount,
+          isPaper: isPaperSnapshot,
+        });
+      } catch (chainErr) {
+        // 체인 생성 실패 = 포지션 추적 불가 → 즉시 경고 (체결은 이미 완료됨)
+        logger.error(`🚨 체인 생성 실패 (체결은 완료됨): ${stockCode} ${filledQty}주 @${fill.filledPrice} err=${chainErr}`, { component: 'EXECUTOR' });
+        await logSystem('ERROR', 'EXECUTOR', `체인 생성 실패: ${stockCode} ${filledQty}주 @${fill.filledPrice} — fill-reconciler가 복구 필요`);
+      }
 
       // 감시목록 자동 등록 + 종목명 즉시 보정 (코드 저장 후 KRX API로 이름 조회)
       upsertWatchlistItem({ stock_code: stockCode, stock_name: stockCode, market: 'KOSPI' }, 'AUTO')
@@ -376,7 +384,7 @@ export class TradeExecutor {
 
       // 캐시 무효화 + 푸시 알림
       invalidateStockCache(stockCode).catch(() => {});
-      notifyBuy(stockCode, filledQty, fill.filledPrice, reasoning).catch((err) =>
+      notifyBuy(stockCode, filledQty, fill.filledPrice, reasoning, triggerSource).catch((err) =>
         logger.warn(`알림 발송 오류 (BUY): ${err}`, { component: 'EXECUTOR' })
       );
     }
@@ -454,11 +462,25 @@ export class TradeExecutor {
       return;
     }
 
+    // 스마트 물타기: ask1 지정가 주문 (시장가 슬리피지 방지)
+    let smartBuyPrice: number | undefined;
+    if (priceType !== 'LIMIT') {
+      try {
+        const { getOrderbook } = await import('../kis/market.js');
+        const book = await getOrderbook(stockCode);
+        const ask1 = book[0]?.askPrice ?? 0;
+        if (ask1 > 0) {
+          smartBuyPrice = ask1;
+          logger.info(`💰 스마트 물타기: ${stockCode} ask1=${ask1.toLocaleString()} → 지정가`, { component: 'EXECUTOR' });
+        }
+      } catch { /* 호가 조회 실패 → 시장가 폴백 */ }
+    }
+
     const result = await this.executeOrder({
       stockCode,
       side: 'BUY',
       quantity,
-      price: priceType === 'LIMIT' ? limitPrice : undefined,
+      price: priceType === 'LIMIT' ? limitPrice : smartBuyPrice,
       chainId: chain.id,
       triggerSource: 'TRACK_B',
       aiReasoning: reasoning,
@@ -496,10 +518,23 @@ export class TradeExecutor {
       return;
     }
 
+    // 스마트 익절: bid1(매수1호가) 지정가 → 시장가 슬리피지 방지
+    let smartSellPrice: number | undefined;
+    try {
+      const { getOrderbook } = await import('../kis/market.js');
+      const book = await getOrderbook(stockCode);
+      const bid1 = book[0]?.bidPrice ?? 0;
+      if (bid1 > 0) {
+        smartSellPrice = bid1;
+        logger.info(`💰 스마트 익절: ${stockCode} bid1=${bid1.toLocaleString()} → 지정가`, { component: 'EXECUTOR' });
+      }
+    } catch { /* 호가 조회 실패 → 시장가 폴백 */ }
+
     const result = await this.executeOrder({
       stockCode,
       side: 'SELL',
       quantity: safeQty,
+      price: smartSellPrice,
       chainId: chain.id,
       triggerSource: 'TRACK_B',
       aiReasoning: reasoning,
@@ -528,8 +563,8 @@ export class TradeExecutor {
       await chainManager.partialProfit(chain.id, soldQty, fill.filledPrice, chain);
       invalidateStockCache(stockCode).catch(() => {});
       invalidateBalanceCache();
-      invalidateDashboardCache();
-      notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, reasoning).catch((err) =>
+      hardInvalidateDashboardCache();
+      notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, reasoning, chain.strategy_mode).catch((err) =>
         logger.warn(`알림 발송 오류 (SELL): ${err}`, { component: 'EXECUTOR' })
       );
     }
@@ -542,10 +577,25 @@ export class TradeExecutor {
     const chain = await chainManager.findOpenChain(stockCode);
     if (!chain || chain.total_quantity === 0) return;
 
+    // 스마트 매도: 일반 SELL → bid1 지정가, FORCE_CLOSE → 시장가 (확실한 체결 우선)
+    let smartSellPrice: number | undefined;
+    if (action !== 'FORCE_CLOSE') {
+      try {
+        const { getOrderbook } = await import('../kis/market.js');
+        const book = await getOrderbook(stockCode);
+        const bid1 = book[0]?.bidPrice ?? 0;
+        if (bid1 > 0) {
+          smartSellPrice = bid1;
+          logger.info(`💰 스마트 매도: ${stockCode} bid1=${bid1.toLocaleString()} → 지정가`, { component: 'EXECUTOR' });
+        }
+      } catch { /* 호가 조회 실패 → 시장가 폴백 */ }
+    }
+
     const result = await this.executeOrder({
       stockCode,
       side: 'SELL',
       quantity: chain.total_quantity,
+      price: smartSellPrice,
       chainId: chain.id,
       triggerSource: 'TRACK_B',
       aiReasoning: reasoning,
@@ -580,8 +630,8 @@ export class TradeExecutor {
       }
       invalidateStockCache(stockCode).catch(() => {});
       invalidateBalanceCache();
-      invalidateDashboardCache();
-      notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, closeReason).catch((err) =>
+      hardInvalidateDashboardCache();
+      notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, closeReason, chain.strategy_mode).catch((err) =>
         logger.warn(`알림 발송 오류 (CLOSE): ${err}`, { component: 'EXECUTOR' })
       );
 
@@ -621,7 +671,7 @@ export class TradeExecutor {
     }
 
     // 장후 시간외 자동 감지 (15:40~16:00 KST → ORD_DVSN '06')
-    const kstNow = new Date(Date.now() + 9 * 3600000);
+    const kstNow = getKSTNow();
     const kH = kstNow.getUTCHours(), kM = kstNow.getUTCMinutes();
     const isAfterHours = (kH === 15 && kM >= 40) || (kH === 16 && kM === 0);
     const orderType = isAfterHours
@@ -637,23 +687,28 @@ export class TradeExecutor {
       orderType,
     });
 
-    // DB 기록
-    await insertOrder({
-      chain_id: params.chainId ?? null,
-      stock_code: params.stockCode,
-      side: params.side,
-      order_type: orderType,
-      quantity: params.quantity,
-      price: params.price ?? null,
-      kis_order_no: result.orderNo,
-      kis_status: result.success ? 'SUBMITTED' : 'FAILED',
-      filled_quantity: 0,
-      filled_price: null,
-      status: result.success ? 'PENDING' : 'FAILED',
-      trading_mode: getCtxIsPaper() ? 'paper' : 'live',
-      trigger_source: params.triggerSource ?? null,
-      ai_reasoning: params.aiReasoning ?? null,
-    });
+    // DB 기록 — 실패 시에도 주문은 KIS에 전송됨, 반드시 기록 시도
+    try {
+      await insertOrder({
+        chain_id: params.chainId ?? null,
+        stock_code: params.stockCode,
+        side: params.side,
+        order_type: orderType,
+        quantity: params.quantity,
+        price: params.price ?? null,
+        kis_order_no: result.orderNo,
+        kis_status: result.success ? 'SUBMITTED' : 'FAILED',
+        filled_quantity: 0,
+        filled_price: null,
+        status: result.success ? 'PENDING' : 'FAILED',
+        trading_mode: getCtxIsPaper() ? 'paper' : 'live',
+        trigger_source: params.triggerSource ?? null,
+        ai_reasoning: params.aiReasoning ?? null,
+      });
+    } catch (dbErr) {
+      // DB 기록 실패 시에도 KIS 주문은 이미 전송됨 — 로그로 추적 가능하게 기록
+      logger.error(`🚨 주문 DB 기록 실패 (KIS 주문은 전송됨): ${params.side} ${params.stockCode} x${params.quantity} orderNo=${result.orderNo} err=${dbErr}`, { component: 'EXECUTOR' });
+    }
 
     await logSystem(
       'TRADE',
@@ -745,14 +800,24 @@ export class TradeExecutor {
       }
     }
 
-    // 최종 실패: 추정가 사용하지 않고 -1 반환 → 호출측에서 체인 업데이트 보류
-    logger.error(`🛑 체결 미확인 (${retryDelays.length}회 시도): ${orderNo} → 매매 중단, 수동 확인 필요`, {
+    // 최종 실패: 미체결 지정가 주문 취소 → 호출측에서 체인 업데이트 보류
+    logger.error(`🛑 체결 미확인 (${retryDelays.length}회 시도): ${orderNo} → 주문 취소 시도`, {
       component: 'EXECUTOR',
     });
-    await logSystem('ERROR', 'EXECUTOR', `체결 미확인: ${orderNo}. 해당 종목 매매 일시 중단. 수동 확인 필요.`);
+
+    // 미체결 지정가 주문 자동 취소 (이미 체결된 시장가면 취소 실패 → 무시)
+    try {
+      await cancelOrder({ orderNo, stockCode, quantity: expectedQty });
+      logger.warn(`🔄 미체결 주문 취소 완료: ${orderNo}`, { component: 'EXECUTOR' });
+      await logSystem('WARN', 'EXECUTOR', `미체결 주문 취소: ${orderNo} (${stockCode})`);
+    } catch {
+      logger.warn(`⚠️ 주문 취소 실패 (이미 체결?): ${orderNo}`, { component: 'EXECUTOR' });
+    }
+
+    await logSystem('ERROR', 'EXECUTOR', `체결 미확인: ${orderNo}. 주문 취소 시도 완료. 수동 확인 필요.`);
 
     const { sendTelegramMessage } = await import('../notifications/telegram.js');
-    await sendTelegramMessage(`🛑 체결 미확인 경고!\n주문번호: ${orderNo}\n종목: ${stockCode}\n수동 확인 후 조치 필요`);
+    await sendTelegramMessage(`🛑 체결 미확인 경고!\n주문번호: ${orderNo}\n종목: ${stockCode}\n주문 취소 시도 완료. 수동 확인 필요`);
 
     return null; // 체결 실패 시그널
   }

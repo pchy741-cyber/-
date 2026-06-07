@@ -200,7 +200,8 @@ async function saveInsights(insights: LearnedInsight[]): Promise<void> {
 
 export async function getLearnedInsightsForPrompt(): Promise<string> {
   const { rows: data } = await getPool().query(
-    'SELECT * FROM learned_insights ORDER BY confidence DESC, sample_count DESC LIMIT 15',
+    'SELECT * FROM learned_insights WHERE is_paper = $1 ORDER BY confidence DESC, sample_count DESC LIMIT 15',
+    [getCtxIsPaper()],
   );
 
   if (!data || data.length === 0) return '';
@@ -234,7 +235,7 @@ export async function getLearnedInsightsForPrompt(): Promise<string> {
     lines.push('\n### ✅ 수익 패턴 — 다음 조건이 충족되면 BUY를 적극 검토하세요:');
     for (const insight of winPatterns) {
       const confidence = (insight.confidence * 100).toFixed(0);
-      const mandatory = insight.confidence >= 0.8 ? '【높은 신뢰도 — PRIORITIZE】' : '【참고】';
+      const mandatory = insight.confidence >= 0.85 ? '【필수적용】' : insight.confidence >= 0.7 ? '【높은 신뢰도 — PRIORITIZE】' : '【참고】';
       lines.push(`  ${validationTag(insight)}${mandatory} ${insight.insight} (신뢰도 ${confidence}%, 근거 ${insight.sample_count}건)`);
     }
   }
@@ -293,11 +294,21 @@ export async function getLearnedInsightsForPrompt(): Promise<string> {
 }
 
 export async function autoApplyInsights(insights: LearnedInsight[]): Promise<void> {
-  const toApply = insights.filter((i) => i.confidence >= 0.8 && i.paramChange && !i.isApplied);
+  // v4: Live 모드에서도 고신뢰 인사이트 자동 적용 (신뢰도 0.85+ & 표본 15건+)
+  // Paper: 신뢰도 0.7+ (기존 유지)
+  // Live:  신뢰도 0.85+ & sampleCount 15+ (안전한 자동 적용)
+  const isPaper = getCtxIsPaper();
+  const minConfidence = isPaper ? 0.7 : 0.85;
+  const minSamples = isPaper ? 0 : 15;
+  const toApply = insights.filter((i) =>
+    i.confidence >= minConfidence
+    && i.paramChange
+    && !i.isApplied
+    && (i.sampleCount ?? 0) >= minSamples
+  );
   if (toApply.length === 0) return;
 
   try {
-    const isPaper = getCtxIsPaper();
     const { rows } = await getPool().query(
       `SELECT * FROM strategy_config WHERE is_active = true AND is_paper = $1 ORDER BY updated_at DESC LIMIT 1`,
       [isPaper],
@@ -313,7 +324,7 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
 
     const ALLOWED_PARAM_FIELDS = ['stop_loss_pct', 'take_profit_pct', 'buy_threshold', 'mode'] as const;
     const applied: string[] = [];
-    for (const insight of sorted.slice(0, 3)) {
+    for (const insight of sorted.slice(0, 5)) {
       const { field, value } = insight.paramChange!;
       if (!(ALLOWED_PARAM_FIELDS as readonly string[]).includes(field)) {
         logger.warn(`🚫 허용되지 않은 필드 업데이트 차단: ${field}`, { component: 'LEARN' });
@@ -464,17 +475,19 @@ export async function runDailyLearning(): Promise<void> {
       logger.info('자기학습: 분석 결과 없음', { component: 'LEARN' });
       return;
     }
+    const isPaper = getCtxIsPaper();
     for (const ins of insights) {
       await getPool().query(
-        `INSERT INTO learned_insights (category, insight, confidence, sample_count, details, recommendation, param_change, last_updated)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
-         ON CONFLICT (category, insight)
+        `INSERT INTO learned_insights (category, insight, confidence, sample_count, details, recommendation, param_change, is_paper, last_updated)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+         ON CONFLICT (category, insight, is_paper)
          DO UPDATE SET confidence=$3, sample_count=$4, details=$5, recommendation=$6, param_change=$7, last_updated=NOW()`,
         [
           ins.category, ins.insight, ins.confidence, ins.sampleCount,
           ins.details ? JSON.stringify(ins.details) : null,
           ins.recommendation ?? null,
           ins.paramChange ? JSON.stringify(ins.paramChange) : null,
+          isPaper,
         ],
       ).catch(() => {});
     }

@@ -102,15 +102,23 @@ app.get('/review/xray', async (c) => {
       const map = new Map(rows.map((r: any) => [r.key, Number(r.value)]));
       const hasLive = map.has('cash');
       const hasPaper = map.has('cash_paper');
-      const liveCash = map.get('cash') ?? 0;
-      const paperCash = map.get('cash_paper') ?? 0;
+      const liveCashKrw = map.get('cash') ?? 0;
+      const paperCash = map.get('cash_paper') ?? 0; // Paper: 이미 USD
+
+      // Live: DB에 KRW 저장 → USD 변환
+      let liveCashUsd = 0;
+      if (liveCashKrw > 0) {
+        const { fetchExchangeRate } = await import('../../../automation/macro-data.js');
+        const fxRate = await fetchExchangeRate();
+        liveCashUsd = fxRate > 0 ? liveCashKrw / fxRate : 0;
+      }
 
       if (!hasLive && !hasPaper) {
         checks.push({ id: 'overseas_cash_sep', status: 'warn', label: '해외 현금 키 없음', detail: 'overseas_state에 cash/cash_paper 키 없음' });
-      } else if (liveCash > 0 && paperCash > 0 && Math.abs(liveCash - paperCash) < 1) {
-        checks.push({ id: 'overseas_cash_sep', status: 'danger', label: '해외 현금 오염 의심', detail: `cash=${liveCash.toFixed(0)} vs cash_paper=${paperCash.toFixed(0)} — 동일값, 공유 가능성` });
+      } else if (liveCashUsd > 0 && paperCash > 0 && Math.abs(liveCashUsd - paperCash) < 1) {
+        checks.push({ id: 'overseas_cash_sep', status: 'danger', label: '해외 현금 오염 의심', detail: `cash=$${liveCashUsd.toFixed(0)} vs cash_paper=$${paperCash.toFixed(0)} — 동일값, 공유 가능성` });
       } else {
-        checks.push({ id: 'overseas_cash_sep', status: 'ok', label: '해외 현금 분리', detail: `Live $${liveCash.toFixed(0)} / Paper $${paperCash.toFixed(0)}` });
+        checks.push({ id: 'overseas_cash_sep', status: 'ok', label: '해외 현금 분리', detail: `Live $${liveCashUsd.toFixed(0)} / Paper $${paperCash.toFixed(0)}` });
       }
     } catch {
       checks.push({ id: 'overseas_cash_sep', status: 'warn', label: '해외 현금 분리', detail: '조회 실패' });

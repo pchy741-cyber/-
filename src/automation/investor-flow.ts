@@ -2,6 +2,7 @@ import { KIS_TR_ID } from '../config/constants.js';
 import { getActiveWatchlist } from '../db/client.js';
 import { kisRequest, marketDataRateLimiter } from '../kis/client.js';
 import { logger } from '../utils/logger.js';
+import { sleep } from '../utils/sleep.js';
 
 // ── 투자자별 매매동향 (외국인/기관/개인) ──
 
@@ -251,7 +252,7 @@ export async function analyzeWatchlistFlows(): Promise<Map<string, InvestorFlowR
     }
 
     if (i + batchSize < watchlist.length) {
-      await new Promise((r) => setTimeout(r, 1000));
+      await sleep(1000);
     }
   }
 

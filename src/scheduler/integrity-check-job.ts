@@ -14,6 +14,7 @@
 import { getPool } from '../db/client.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
+import { logSystemEvent } from '../api/routes/health.js';
 
 const COMPONENT = 'INTEGRITY';
 
@@ -43,11 +44,12 @@ export async function runIntegrityCheck(): Promise<void> {
       issues.push({ severity: '🔴', message: `수량 불일치: ${r.stock_code} 체인=${r.chain_qty}주 vs 주문합산=${r.order_qty}주 (chain ${r.id.slice(0,8)})` });
     }
 
-    // 2. 고아 체인 — OPEN인데 FILLED 주문이 0건
+    // 2. 고아 체인 — OPEN인데 FILLED 주문이 0건 (5분 이상 경과한 체인만 — 신규 체인 오탐 방지)
     const { rows: orphanChains } = await pool.query(`
       SELECT tc.id, tc.stock_code, tc.total_quantity
       FROM transaction_chains tc
       WHERE tc.status IN ('OPEN','AVERAGING','PROFIT_TAKING')
+        AND tc.opened_at < NOW() - INTERVAL '5 minutes'
         AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.chain_id = tc.id AND o.status = 'FILLED')
     `);
     for (const r of orphanChains) {
@@ -116,6 +118,7 @@ export async function runIntegrityCheck(): Promise<void> {
 
     // ── 결과 보고 ──
     if (issues.length === 0) {
+      logSystemEvent('정합성', 'success', '데이터 정합성 체크 통과');
       logger.info('✅ 데이터 정합성 체크 통과 (이상 없음)', { component: COMPONENT });
       return;
     }
@@ -133,6 +136,7 @@ export async function runIntegrityCheck(): Promise<void> {
       msg += warning.map(i => `${i.severity} ${i.message}`).join('\n');
     }
 
+    logSystemEvent('정합성', critical.length > 0 ? 'error' : 'running', `${critical.length}건 치명, ${warning.length}건 경고`);
     await sendTelegramMessage(msg);
     logger.warn(`정합성 체크: ${critical.length}건 치명, ${warning.length}건 경고`, { component: COMPONENT });
 

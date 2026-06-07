@@ -11,15 +11,16 @@ const BACKEND_URL =
     ? (process.env.NEXT_PUBLIC_API_BASE_URL || (window.location.port === '3000' ? 'http://localhost:8080' : window.location.origin))
     : (process.env.NEXT_PUBLIC_API_BASE_URL || '');
 
-async function checkServerAuth(): Promise<boolean> {
+/** 서버 인증 확인 — 'yes' | 'no' | 'unreachable' */
+async function checkServerAuth(): Promise<'yes' | 'no' | 'unreachable'> {
   try {
     const base = BACKEND_URL.endsWith('/') ? BACKEND_URL.slice(0, -1) : BACKEND_URL;
     const res = await fetch(`${base}/api/auth/me`, { credentials: 'include' });
-    if (!res.ok) return false;
+    if (!res.ok) return 'unreachable'; // 500, 503 등 서버 문제
     const data = await res.json();
-    return data.loggedIn === true || data.noPassword === true;
+    return (data.loggedIn === true || data.noPassword === true) ? 'yes' : 'no';
   } catch {
-    return false;
+    return 'unreachable'; // 네트워크 에러, 서버 다운
   }
 }
 
@@ -205,13 +206,27 @@ export default function Page() {
   const [checked, setChecked] = useState(false);
 
   useEffect(() => {
-    checkServerAuth().then(ok => {
-      setLoggedIn(ok);
+    checkServerAuth().then(result => {
+      if (result === 'yes') {
+        setLoggedIn(true);
+        try { localStorage.setItem('aab_auth', 'true'); } catch {}
+      } else if (result === 'unreachable') {
+        // 서버 연결 불가 — 이전 로그인 + 캐시 데이터 있으면 바로 대시보드
+        const hadAuth = localStorage.getItem('aab_auth') === 'true';
+        const hasCache = localStorage.getItem('aab_dash_cache') != null;
+        if (hadAuth && hasCache) setLoggedIn(true);
+      }
+      // result === 'no': 명시적 로그인 필요 → loggedIn = false
       setChecked(true);
     });
   }, []);
 
+  const handleUnlock = useCallback(() => {
+    setLoggedIn(true);
+    try { localStorage.setItem('aab_auth', 'true'); } catch {}
+  }, []);
+
   if (!checked) return null;
-  if (!loggedIn) return <LoginScreen onUnlock={() => setLoggedIn(true)} />;
+  if (!loggedIn) return <LoginScreen onUnlock={handleUnlock} />;
   return <Dashboard />;
 }

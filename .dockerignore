@@ -1,0 +1,36 @@
+# ── 로컬 아티팩트 (Docker 빌드에 절대 포함 안 됨) ──
+node_modules
+dist
+.git
+.gitignore
+.env*
+*.log
+
+# 프론트엔드 로컬 빌드 산출물
+frontend/node_modules
+frontend/.next
+frontend/out
+
+# IDE/에디터
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 테스트/개발 전용
+tests
+coverage
+*.test.ts
+*.spec.ts
+vitest.config.*
+jest.config.*
+
+# Claude/개발 도구
+.claude
+CLAUDE.md
+*.md
+!frontend/README.md

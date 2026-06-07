@@ -55,8 +55,12 @@ export async function reviewCompletedTrade(params: {
       return;
     }
 
-    // Gemini 복기 요청
-    const systemPrompt = `당신은 주식 매매 복기 전문가입니다. 매매 결과를 분석하고 개선점을 제시합니다.
+    // 규칙기반 복기 (Gemini OFF 대응) 또는 Gemini 복기
+    const { config: appCfg } = await import('../../config/index.js');
+    let rawResponse = '';
+
+    if (appCfg.geminiEnabled) {
+      const systemPrompt = `당신은 주식 매매 복기 전문가입니다. 매매 결과를 분석하고 개선점을 제시합니다.
 반드시 아래 JSON 형식으로만 응답하세요:
 {"lesson": "1줄 교훈", "sectorConfAdj": 0.00}
 - lesson: 이 매매에서 배울 수 있는 핵심 교훈 (한국어, 1줄)
@@ -65,7 +69,7 @@ export async function reviewCompletedTrade(params: {
   - 수익 매매: 음수(-) → 약간 공격적으로
   - 정상 범위: 0`;
 
-    const userMessage = `매매 복기 요청:
+      const userMessage = `매매 복기 요청:
 - 종목: ${code} (섹터: ${sector})
 - 수익률: ${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%
 - 보유일: ${holdingDays.toFixed(0)}일
@@ -74,11 +78,17 @@ export async function reviewCompletedTrade(params: {
 - 진입 RSI: ${entryRsi.toFixed(0)} → 청산 RSI: ${exitRsi.toFixed(0)}
 - 결과: ${pnlPct > 0 ? '수익' : '손실'}`;
 
-    const rawResponse = await callVertexGemini(systemPrompt, userMessage, {
-      temperature: 0.3,
-      maxOutputTokens: 300,
-      label: '해외-매매복기',
-    });
+      rawResponse = await callVertexGemini(systemPrompt, userMessage, {
+        temperature: 0.3, maxOutputTokens: 300, label: '해외-매매복기',
+      });
+    } else {
+      // 규칙기반 복기 — 통계적 교훈 자동 생성
+      const adj = pnlPct < -5 ? 0.03 : pnlPct < 0 ? 0.01 : pnlPct > 10 ? -0.02 : 0;
+      const les = pnlPct < 0 && entryRsi > 65 ? '고RSI 진입 패턴 — confidence 상향 필요' :
+        pnlPct < 0 ? `손실 ${pnlPct.toFixed(1)}% — ${exitReason}` :
+        `수익 +${pnlPct.toFixed(1)}% (${holdingDays.toFixed(0)}일) — 정상`;
+      rawResponse = JSON.stringify({ lesson: les, sectorConfAdj: adj });
+    }
 
     // JSON 파싱
     let lesson = '복기 완료';

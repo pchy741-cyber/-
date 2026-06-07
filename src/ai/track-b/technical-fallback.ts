@@ -15,7 +15,7 @@ export async function technicalFallbackDecisions(params: TechnicalFallbackParams
 
   // 장 마감 전 — 신규 매수 차단 (매도/손절 결정만 반환)
   if (params.blockNewBuys) {
-    logger.info('⏰ 15:10 이후 — 신규 매수 차단 (마감 20분 전)', { component: 'TRACK_B' });
+    logger.info('⏰ 신규 매수 차단 (blockNewBuys 활성)', { component: 'TRACK_B' });
     return sellDecisions;
   }
 

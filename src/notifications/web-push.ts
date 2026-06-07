@@ -258,8 +258,8 @@ function compactReasoning(reasoning: string, prefixRegex: RegExp): string {
 //  매매 이벤트별 알림 헬퍼
 // ══════════════════════════════════════
 
-export async function notifyBuy(stockCode: string, qty: number, price: number, reasoning: string) {
-  logger.info(`📣 notifyBuy 호출: ${stockCode} x${qty} @${price}`, { component: 'WEB_PUSH' });
+export async function notifyBuy(stockCode: string, qty: number, price: number, reasoning: string, triggerSource?: string) {
+  logger.info(`📣 notifyBuy 호출: ${stockCode} x${qty} @${price} src=${triggerSource ?? '-'}`, { component: 'WEB_PUSH' });
   const name = await resolveStockName(stockCode);
   const totalKrw = Math.round(qty * price);
   const shortReason = compactReasoning(reasoning, /^(매수|BUY|buy)\s*[:：]?\s*/i);
@@ -269,18 +269,21 @@ export async function notifyBuy(stockCode: string, qty: number, price: number, r
     ? `${Math.round(totalKrw / 10000)}만원`
     : `${totalKrw.toLocaleString()}원`;
 
+  const isEod = triggerSource === 'EOD_BETTING';
+  const titlePrefix = isEod ? '🎰 종가베팅 매수' : '🟢 매수';
+
   await sendPushNotification({
-    title: `🟢 매수 — ${name}`,
+    title: `${titlePrefix} — ${name}`,
     body: `${qty}주 × ${price.toLocaleString()}원 = ${totalStr}\n${shortReason}`,
     tag: `buy-${stockCode}`,
     url: '/',
-    data: { stockCode, action: 'BUY', price, qty, totalKrw },
+    data: { stockCode, action: 'BUY', price, qty, totalKrw, triggerSource },
   });
 
   try {
     const { sendTelegramMessage } = await import('./telegram.js');
     await sendTelegramMessage(
-      `🟢 *매수 체결*\n` +
+      `${isEod ? '🎰' : '🟢'} *${isEod ? '종가베팅 매수' : '매수 체결'}*\n` +
       `종목: *${name}* (\`${stockCode}\`)\n` +
       `수량: ${qty}주 × ${price.toLocaleString()}원\n` +
       `총액: ${totalKrw.toLocaleString()}원\n` +
@@ -289,11 +292,12 @@ export async function notifyBuy(stockCode: string, qty: number, price: number, r
   } catch { /* telegram optional */ }
 }
 
-export async function notifySell(stockCode: string, qty: number, price: number, pnlPct: number, reasoning: string) {
-  logger.info(`📣 notifySell 호출: ${stockCode} x${qty} @${price} pnl=${pnlPct.toFixed(2)}%`, { component: 'WEB_PUSH' });
+export async function notifySell(stockCode: string, qty: number, price: number, pnlPct: number, reasoning: string, triggerSource?: string) {
+  logger.info(`📣 notifySell 호출: ${stockCode} x${qty} @${price} pnl=${pnlPct.toFixed(2)}% src=${triggerSource ?? '-'}`, { component: 'WEB_PUSH' });
   const name = await resolveStockName(stockCode);
   const isProfit = pnlPct >= 0;
-  const emoji = pnlPct >= 5 ? '🎉' : pnlPct >= 2 ? '✅' : pnlPct >= 0 ? '🟡' : pnlPct >= -2 ? '🟠' : '🔻';
+  const isEod = triggerSource === 'EOD_BETTING' || reasoning.includes('종가베팅');
+  const emoji = isEod ? '🎰' : (pnlPct >= 5 ? '🎉' : pnlPct >= 2 ? '✅' : pnlPct >= 0 ? '🟡' : pnlPct >= -2 ? '🟠' : '🔻');
   const pnlStr = (isProfit ? '+' : '') + pnlPct.toFixed(2) + '%';
   const shortReason = compactReasoning(reasoning, /^(매도|SELL|sell|강제\s*청산)\s*[:：]?\s*/i);
 
@@ -303,18 +307,20 @@ export async function notifySell(stockCode: string, qty: number, price: number, 
     ? `${pnlSign}${Math.round(pnlKrw / 1000) / 10}만원`
     : `${pnlSign}${pnlKrw.toLocaleString()}원`;
 
+  const sellLabel = isEod ? '종가베팅 매도' : '매도';
+
   await sendPushNotification({
-    title: `${emoji} 매도 — ${name} ${pnlStr}`,
+    title: `${emoji} ${sellLabel} — ${name} ${pnlStr}`,
     body: `${qty}주 × ${price.toLocaleString()}원 (${pnlKrwStr})\n${shortReason}`,
     tag: `sell-${stockCode}`,
     url: '/?tab=trades',
-    data: { stockCode, action: 'SELL', price, qty, pnlPct, pnlKrw },
+    data: { stockCode, action: 'SELL', price, qty, pnlPct, pnlKrw, triggerSource },
   });
 
   try {
     const { sendTelegramMessage } = await import('./telegram.js');
     await sendTelegramMessage(
-      `${emoji} *매도 체결* (${pnlStr})\n` +
+      `${emoji} *${sellLabel} 체결* (${pnlStr})\n` +
       `종목: *${name}* (\`${stockCode}\`)\n` +
       `수량: ${qty}주 × ${price.toLocaleString()}원\n` +
       `손익: ${pnlKrwStr}\n` +

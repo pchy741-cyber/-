@@ -1,4 +1,4 @@
-const CACHE_NAME = 'aab-v6';
+const CACHE_NAME = 'aab-v7';
 const STATIC_ASSETS = [
   '/manifest.json',
   '/icon-192.png',
@@ -13,7 +13,7 @@ self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
 
-// Activate: clean up ALL old caches immediately
+// Activate: clean up ALL old caches immediately (v6 포함 전부 삭제)
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
@@ -147,7 +147,7 @@ self.addEventListener('notificationclose', (_event) => {
 });
 
 // ══════════════════════════════════════
-//  Fetch: network-first
+//  Fetch: 페이지는 network-only, 정적에셋만 캐시
 // ══════════════════════════════════════
 self.addEventListener('fetch', (event) => {
   const { request } = event;
@@ -155,7 +155,21 @@ self.addEventListener('fetch', (event) => {
 
   if (request.method !== 'GET') return;
 
-  // 정적 에셋만 캐시 우선
+  // API 호출: 네트워크 직접 (캐시 안 함)
+  if (url.pathname.startsWith('/api')) return;
+
+  // HTML 페이지 요청 (navigation): 절대 캐시 안 함 — 구버전 HTML 서빙 원천 차단
+  if (request.mode === 'navigate' || request.destination === 'document') {
+    event.respondWith(
+      fetch(request).catch(() => new Response(
+        '<html><body style="font-family:sans-serif;text-align:center;padding:60px"><h2>오프라인</h2><p>네트워크 연결을 확인해주세요.</p><button onclick="location.reload()">새로고침</button></body></html>',
+        { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+      ))
+    );
+    return;
+  }
+
+  // 정적 에셋 (아이콘, manifest): 캐시 우선
   if (STATIC_ASSETS.some((asset) => url.pathname === asset)) {
     event.respondWith(
       caches.match(request).then((cached) => {
@@ -170,15 +184,27 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 나머지는 network-first
-  event.respondWith(
-    fetch(request)
-      .then((response) => {
-        if (url.pathname.startsWith('/api') || !response.ok) return response;
-        const clone = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
-        return response;
-      })
-      .catch(() => caches.match(request).then((cached) => cached || new Response('Offline', { status: 503 })))
-  );
+  // JS/CSS/이미지: network-first, 오프라인 시 캐시 폴백 (캐시 30개 제한)
+  if (url.pathname.startsWith('/_next/') || request.destination === 'script' || request.destination === 'style' || request.destination === 'image') {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (!response.ok) return response;
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(request, clone);
+            cache.keys().then((keys) => {
+              if (keys.length > 30) {
+                keys.slice(0, keys.length - 30).forEach((key) => cache.delete(key));
+              }
+            });
+          });
+          return response;
+        })
+        .catch(() => caches.match(request).then((cached) => cached || new Response('', { status: 503 })))
+    );
+    return;
+  }
+
+  // 그 외: 네트워크 직접
 });

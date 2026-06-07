@@ -13,7 +13,8 @@ interface TradingCtx {
 
 const _store = new AsyncLocalStorage<TradingCtx>();
 
-const _BASE_IS_PAPER = process.env.TRADING_MODE !== 'live';
+// PAPER_ONLY=true → 대시보드/API 기본 컨텍스트도 paper (TRADING_MODE=live는 KIS API 접속용 유지)
+const _BASE_IS_PAPER = process.env.PAPER_ONLY === 'true' || process.env.TRADING_MODE !== 'live';
 
 /**
  * fn을 지정된 isPaper 컨텍스트 안에서 실행합니다.

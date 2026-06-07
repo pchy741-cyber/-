@@ -12,6 +12,7 @@ import { logger } from '../../utils/logger.js';
 import { GLOBAL_WATCHLIST } from './watchlist.js';
 import { getCash, getCashKrw, setCash, cleanupPositionState } from './state.js';
 import { logSystem } from '../../db/client.js';
+import { hardInvalidateDashboardCache } from '../../cache/dashboard-cache.js';
 
 /**
  * KIS 실계좌 잔고와 DB 동기화 — 수동매매 간섭 방지 핵심 함수
@@ -37,6 +38,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
     const allHoldings = new Map<string, { qty: number; avgPrice: number; exchange: string }>();
     const kisPriceMap = new Map<string, number>(); // 현재가 수집 (last_price 업데이트용)
     const successExchanges = new Set<string>(); // API 성공한 거래소만 추적
+    let syncChanged = false; // 매매 변동 감지 시 캐시 무효화
 
     for (const exch of exchanges) {
       try {
@@ -156,6 +158,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
         const msg = `🚪 수동매도 감지: ${code}\n${dbQty}주 @$${sellPrice.toFixed(2)}\n${emoji} PnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%\norders 기록 완료`;
         logger.info(`🔄 KIS동기화: ${code} 수동매도 → SELL 기록 (PnL ${pnlPct.toFixed(2)}%) → 2h 재매수 쿨다운 설정`, { component: 'OVERSEAS' });
         sendTelegramMessage(msg).catch(() => {});
+        syncChanged = true;
 
       } else if (Math.abs(kisItem.qty - dbQty) >= 1) {
         // 포지션 확인됨 → 잔여 debounce 상태 제거
@@ -195,6 +198,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
             const emoji = pnlPct >= 0 ? '💰' : '📉';
             logger.info(`🔄 KIS동기화: ${code} 부분매도 ${soldQty}주 (PnL ${pnlPct.toFixed(2)}%)`, { component: 'OVERSEAS' });
             sendTelegramMessage(`🔄 수동부분매도: ${code} ${soldQty}주\n${emoji} PnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`).catch(() => {});
+            syncChanged = true;
           }
         } else {
           // ── 수동 추가매수 감지 → BUY 기록 ──
@@ -218,6 +222,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
 
           logger.info(`🔄 KIS동기화: ${code} 추가매수 ${addedQty}주`, { component: 'OVERSEAS' });
           sendTelegramMessage(`🛒 수동추가매수: ${code} +${addedQty}주 @$${kisItem.avgPrice.toFixed(2)}`).catch(() => {});
+          syncChanged = true;
         }
 
         // exchange는 DB 기존값 유지 (watchlist 기준, KIS 쿼리 거래소와 다를 수 있음)
@@ -272,7 +277,11 @@ export async function syncHoldingsFromKIS(): Promise<void> {
       ).catch(() => {});
       logger.info(`🔄 KIS동기화: ${code} 수동매수 감지 → BUY 기록 (${item.qty}주 @$${item.avgPrice})`, { component: 'OVERSEAS' });
       sendTelegramMessage(`🛒 수동매수 감지: ${code} ${item.qty}주 @$${item.avgPrice.toFixed(2)}\norders 기록 완료`).catch(() => {});
+      syncChanged = true;
     }
+
+    // 매매 변동 감지 시 대시보드 캐시 무효화
+    if (syncChanged) hardInvalidateDashboardCache();
 
     // ── KIS 현재가 → DB last_price 업데이트 (대시보드 정합성) ──
     // kisPriceMap은 초기 balance API 호출 시 수집한 현재가 (추가 API 호출 없음)
@@ -347,6 +356,15 @@ export async function reconcileCashWithKIS(): Promise<void> {
     if (kisKrw < 1000 && dbKrw > 100_000) {
       logger.warn(`💰 Cash zeroing 차단: KIS=₩${kisKrw.toFixed(0)} (의심), DB=₩${dbKrw.toFixed(0)} 유지`, { component: 'OVERSEAS' });
       return;
+    }
+
+    // 실제 주문가능 USD 항상 저장 (KIS ord_psbl_frcr_amt — 대시보드 표시용)
+    if (buyable?.usd != null && buyable.usd >= 0) {
+      await getPool().query(
+        `INSERT INTO overseas_state (key, value, updated_at) VALUES ('cash_live_usd', $1, NOW())
+         ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+        [String(buyable.usd)],
+      ).catch(() => {});
     }
 
     const diff = Math.abs(kisKrw - dbKrw);

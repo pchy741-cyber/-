@@ -11,6 +11,7 @@ import { cachePriceMemory, getLastKnownPricesMemory } from '../../../cache/memor
 import { getPortfolioFlowStatus } from '../../../automation/ceo-workflow.js';
 import { logger } from '../../../utils/logger.js';
 import { isInvalidStockName, getKnownStockName } from './helpers.js';
+import { resolveRequestMode } from '../../guards/live-pin.js';
 
 export const watchlistRoutes = new Hono();
 
@@ -114,8 +115,7 @@ watchlistRoutes.get('/search/stock', async (c) => {
 // ── 감시 목록 CRUD ──
 watchlistRoutes.get('/watchlist', async (c) => {
   try {
-    const viewModeParam = c.req.query('viewMode');
-    const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
+    const viewIsPaper = resolveRequestMode(c);
     const data = await getActiveWatchlist();
     const unresolvedDomestic = [...new Set(
       data
@@ -301,8 +301,7 @@ watchlistRoutes.post('/watchlist/sync', async (c) => {
 // ── 매도 후 추적 — 최근 매도 종목의 현재가 변동 ──
 watchlistRoutes.get('/watchlist/sold-tracking', async (c) => {
   try {
-    const viewModeParam = c.req.query('viewMode');
-    const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
+    const viewIsPaper = resolveRequestMode(c);
     const { rows } = await getPool().query(`
       SELECT DISTINCT ON (tc.stock_code)
         tc.stock_code,
@@ -318,7 +317,7 @@ watchlistRoutes.get('/watchlist/sold-tracking', async (c) => {
       LEFT JOIN watchlist w ON tc.stock_code = w.stock_code
       WHERE tc.status = 'CLOSED'
         AND tc.is_paper = $1
-        AND tc.closed_at > NOW() - INTERVAL '60 days'
+        AND tc.closed_at > NOW() - INTERVAL '30 days'
       ORDER BY tc.stock_code, tc.closed_at DESC
     `, [viewIsPaper]);
 
@@ -327,7 +326,7 @@ watchlistRoutes.get('/watchlist/sold-tracking', async (c) => {
     const sorted = rows
       .filter((r: any) => Number(r.sell_price ?? 0) > 0)
       .sort((a: any, b: any) => new Date(b.closed_at).getTime() - new Date(a.closed_at).getTime())
-      .slice(0, 15);
+      .slice(0, 20);
 
     const codes = sorted.map((r: any) => String(r.stock_code));
 
@@ -354,14 +353,17 @@ watchlistRoutes.get('/watchlist/sold-tracking', async (c) => {
       const buyPrice = Number(r.avg_buy_price);
       const currentPrice = priceMap.get(r.stock_code) ?? 0;
       const sellPnlPct = buyPrice > 0 ? ((sellPrice - buyPrice) / buyPrice) * 100 : 0;
+      const realizedPnl = Number(r.realized_pnl ?? 0);
       const postSellPct = sellPrice > 0 && currentPrice > 0
         ? ((currentPrice - sellPrice) / sellPrice) * 100 : null;
       return {
         stock_code: r.stock_code,
         stock_name: r.stock_name,
+        buy_price: buyPrice,
         sell_price: sellPrice,
         sell_date: r.closed_at,
         sell_pnl_pct: Math.round(sellPnlPct * 10) / 10,
+        realized_pnl: Math.round(realizedPnl),
         current_price: currentPrice,
         post_sell_pct: postSellPct != null ? Math.round(postSellPct * 10) / 10 : null,
         close_reason: r.close_reason,
@@ -420,6 +422,38 @@ watchlistRoutes.post('/watchlist/scan', async (c) => {
     return c.json({ ok: true, added, scanned: candidates.length, message: msg });
   } catch (err: any) {
     return c.json({ error: err?.message ?? '시장 스캔 실패' }, 500);
+  }
+});
+
+// ── 감시종목 자동 정리 (오래된/저점수 AUTO 항목 비활성화) ──
+watchlistRoutes.post('/watchlist/cleanup', async (c) => {
+  try {
+    const pool = getPool();
+    const isPaper = baseIsPaper;
+    const tradingMode = isPaper ? 'paper' : 'live';
+
+    // 현재 보유 중인 종목은 제외 (현재 모드만)
+    const { rows: openChains } = await pool.query(
+      `SELECT DISTINCT stock_code FROM transaction_chains WHERE status != 'CLOSED' AND is_paper = $1`, [isPaper]);
+    const heldCodes = new Set(openChains.map((r: any) => String(r.stock_code)));
+
+    // AUTO/KIS_SYNC 소스 중 30일 이상 된 항목 비활성화 (MANUAL 제외, 보유종목 제외)
+    const { rowCount } = await pool.query(`
+      UPDATE watchlist SET is_active = false
+      WHERE is_active = true
+        AND source IN ('AUTO', 'KIS_SYNC')
+        AND stock_code NOT IN (SELECT DISTINCT stock_code FROM transaction_chains WHERE status != 'CLOSED' AND is_paper = $1)
+        AND added_at < NOW() - INTERVAL '30 days'
+        AND stock_code NOT IN (
+          SELECT DISTINCT stock_code FROM orders
+          WHERE status = 'FILLED' AND trading_mode = $2 AND created_at > NOW() - INTERVAL '14 days'
+        )
+    `, [isPaper, tradingMode]);
+
+    logger.info(`🧹 감시종목 정리: ${rowCount ?? 0}개 비활성화 (30일+ AUTO/KIS_SYNC, 미보유, 14일내 미거래)`, { component: 'WATCHLIST' });
+    return c.json({ ok: true, deactivated: rowCount ?? 0 });
+  } catch (err: any) {
+    return c.json({ error: err?.message }, 500);
   }
 });
 

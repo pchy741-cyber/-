@@ -1,6 +1,6 @@
 import { logger } from '../../utils/logger.js';
 
-const AI_STUDIO_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`;
+const AI_STUDIO_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent`;
 
 export interface VisionScalpSignal {
   ticker: string;
@@ -61,6 +61,8 @@ async function callAiStudioVision(apiKey: string, imageBase64: string, mimeType:
 }
 
 export async function analyzeImageForScalp(imageBase64: string, mimeType: string): Promise<VisionScalpSignal> {
+  const { config } = await import('../../config/index.js');
+  if (!config.geminiEnabled) throw new Error('Gemini OFF — 이미지 스캘핑 분석 불가');
   const geminiKey = process.env.GEMINI_API_KEY;
   if (!geminiKey) throw new Error('GEMINI_API_KEY 미설정 — AI Studio 키 필요');
   return await callAiStudioVision(geminiKey, imageBase64, mimeType);

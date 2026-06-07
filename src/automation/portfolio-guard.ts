@@ -133,6 +133,92 @@ export async function getPerformanceMultiplier(): Promise<number> {
   }
 }
 
+// ── Paper→Live 크로스 모드 피드백 ────────────────────────────────────────
+export interface CrossModeBoost {
+  thresholdAdj: number;     // buyThreshold 조정 (-5 ~ +3)
+  sizingMult: number;       // 포지션 사이징 배율 (0.9 ~ 1.2)
+  reason: string;
+}
+
+let _crossModeCache: { data: CrossModeBoost; ts: number } | null = null;
+const CROSS_MODE_CACHE_MS = 30 * 60 * 1000; // 30분 캐시
+
+/**
+ * Paper 모드의 실적을 기반으로 Live 모드 공격성 조절
+ * - Live 모드에서만 호출 (Paper에서는 무조건 중립 반환)
+ * - Paper 승률 60%+: 진입 완화(-3) + 사이징 확대(1.1x)
+ * - Paper 승률 55%+: 진입 완화(-2)
+ * - Paper 승률 40%-: 진입 강화(+3) + 사이징 축소(0.9x)
+ */
+export async function getCrossModeBoost(): Promise<CrossModeBoost> {
+  const neutral: CrossModeBoost = { thresholdAdj: 0, sizingMult: 1.0, reason: '' };
+  const isPaper = getCtxIsPaper();
+  if (isPaper) return neutral; // Paper 모드에서는 자기 자신 피드백 불필요
+
+  const now = Date.now();
+  if (_crossModeCache && now - _crossModeCache.ts < CROSS_MODE_CACHE_MS) {
+    return _crossModeCache.data;
+  }
+
+  try {
+    const pool = getPool();
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 30);
+
+    const { rows } = await pool.query(
+      `SELECT
+         COUNT(*)                                       AS total,
+         COUNT(CASE WHEN realized_pnl > 0 THEN 1 END) AS wins,
+         COALESCE(SUM(realized_pnl), 0)::numeric        AS total_pnl,
+         COALESCE(AVG(CASE WHEN realized_pnl > 0 THEN realized_pnl END), 0)::numeric AS avg_win,
+         COALESCE(AVG(CASE WHEN realized_pnl < 0 THEN realized_pnl END), 0)::numeric AS avg_loss
+       FROM transaction_chains
+       WHERE status = 'CLOSED'
+         AND closed_at >= $1
+         AND stock_code ~ '^[0-9]{6}$'
+         AND is_paper = true`,
+      [cutoff.toISOString()],
+    );
+
+    const total = Number(rows[0]?.total ?? 0);
+    if (total < 10) {
+      _crossModeCache = { data: neutral, ts: now };
+      return neutral; // 최소 10건 이상 데이터 필요
+    }
+
+    const wins = Number(rows[0]?.wins ?? 0);
+    const winRate = wins / total;
+    const totalPnl = Number(rows[0]?.total_pnl ?? 0);
+    const avgWin = Number(rows[0]?.avg_win ?? 0);
+    const avgLoss = Math.abs(Number(rows[0]?.avg_loss ?? 1));
+    const profitFactor = avgLoss > 0 ? avgWin / avgLoss : 1.0;
+
+    let result: CrossModeBoost;
+
+    if (winRate >= 0.60 && profitFactor >= 1.5) {
+      result = { thresholdAdj: -5, sizingMult: 1.15, reason: `Paper 실증: WR ${(winRate * 100).toFixed(0)}% PF ${profitFactor.toFixed(1)} (${total}건) → Live 공격 강화` };
+    } else if (winRate >= 0.60) {
+      result = { thresholdAdj: -3, sizingMult: 1.10, reason: `Paper 검증: WR ${(winRate * 100).toFixed(0)}% (${total}건) → Live 진입 완화` };
+    } else if (winRate >= 0.55 && totalPnl > 0) {
+      result = { thresholdAdj: -2, sizingMult: 1.05, reason: `Paper 양호: WR ${(winRate * 100).toFixed(0)}% 수익 ${totalPnl.toLocaleString()}원 → Live 소폭 완화` };
+    } else if (winRate < 0.40) {
+      result = { thresholdAdj: 3, sizingMult: 0.90, reason: `Paper 부진: WR ${(winRate * 100).toFixed(0)}% (${total}건) → Live 방어 강화` };
+    } else {
+      result = neutral;
+    }
+
+    if (result.thresholdAdj !== 0) {
+      logger.info(`🔗 Paper→Live 크로스 피드백: ${result.reason}`, { component: COMPONENT });
+    }
+
+    _crossModeCache = { data: result, ts: now };
+    return result;
+  } catch (err) {
+    logger.warn(`Paper→Live 크로스 피드백 조회 실패: ${err}`, { component: COMPONENT });
+    return neutral;
+  }
+}
+
 // ── 승률 피드백 루프 ──────────────────────────────────────────────────────
 export interface WinRateFeedback {
   recentWinRate: number;
@@ -257,13 +343,31 @@ const MAX_SINGLE_STOCK_PCT = 0.25; // 단일 종목 25% 초과 → 경고
 export async function runPortfolioHealthCheck(): Promise<void> {
   try {
     const { getPaperBalance } = await import('../risk/engine.js');
-    const balance = getCtxIsPaper() ? await getPaperBalance() : await getAccountBalance();
+    const balance = getCtxIsPaper() ? await getPaperBalance() : await getAccountBalance(true);
     const positions = balance.positions;
 
     if (positions.length === 0) return;
 
-    const totalPortfolio = balance.totalDeposit + balance.totalEvalAmount;
-    if (totalPortfolio <= 0) return;
+    const domesticPortfolio = balance.totalDeposit + balance.totalEvalAmount;
+    if (domesticPortfolio <= 0) return;
+
+    // 해외 포함 총자산 (집중도 체크용 — 통합증거금 기준 정확한 비중)
+    let overseasValueKrw = 0;
+    try {
+      const isPaper = getCtxIsPaper();
+      const { rows } = await getPool().query(
+        'SELECT SUM(last_price * quantity) AS total_usd FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1',
+        [isPaper],
+      );
+      const totalUsd = Number(rows[0]?.total_usd ?? 0);
+      if (totalUsd > 0) {
+        const { getFxRate } = await import('../api/routes/dashboard/helpers.js');
+        const fx = await getFxRate();
+        overseasValueKrw = totalUsd * (fx > 0 ? fx : 1420);
+      }
+    } catch { /* 해외 데이터 없으면 국내만 사용 */ }
+
+    const totalPortfolio = domesticPortfolio + overseasValueKrw;
 
     // 미실현 손실 합계
     const totalUnrealizedPnl = positions.reduce((s, p) => s + p.profitLoss, 0);
@@ -323,9 +427,12 @@ export function getConcentrationSellTargets(
   openChains: TransactionChain[],
   livePrices: Map<string, { currentPrice: number }>,
   totalAssets: number,
+  overseasValueKrw?: number,
 ): Set<string> {
+  // 집중도 분모: 해외 포함 총자산 (통합증거금 기준 — 국내만 사용 시 불필요한 부분매도 발생)
+  const totalPortfolio = totalAssets + (overseasValueKrw ?? 0);
   const targets = new Set<string>();
-  if (totalAssets <= 0) return targets;
+  if (totalPortfolio <= 0) return targets;
 
   for (const chain of openChains) {
     if (chain.total_quantity <= 0 || !chain.avg_buy_price) continue;
@@ -333,7 +440,7 @@ export function getConcentrationSellTargets(
     if (price <= 0) continue;
 
     const evalValue = price * chain.total_quantity;
-    const pct = evalValue / totalAssets;
+    const pct = evalValue / totalPortfolio;
 
     // 25% 초과 + 수익 상태일 때만 자동 부분매도
     const unrealizedPnlPct = chain.avg_buy_price > 0

@@ -1,9 +1,10 @@
 import { Hono } from 'hono';
 import { config } from '../../config/index.js';
-import { checkDb } from '../../db/client.js';
+import { checkDb, isMemoryMode } from '../../db/client.js';
 import { isMarketOpen } from '../../kis/market.js';
 import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
 import { getActiveLocks } from '../../utils/lock.js';
+import { isWaking } from '../../utils/cloud-sql-wake.js';
 
 export const healthRoutes = new Hono();
 
@@ -23,10 +24,15 @@ export function logSystemEvent(component: string, status: 'success' | 'error' | 
   if (recentEvents.length > MAX_EVENTS) recentEvents.length = MAX_EVENTS;
 }
 
+export function getRecentEvents(limit = 10): SystemEvent[] {
+  return recentEvents.slice(0, limit);
+}
 
 // 공개: 최소 정보만 (운영 정보 노출 차단)
+// db 필드: PWA가 DB 기상 상태를 알 수 있도록 추가
 healthRoutes.get('/health', (c) => {
-  return c.json({ status: 'ok' }, 200);
+  const mem = isMemoryMode();
+  return c.json({ status: 'ok', db: mem ? (isWaking() ? 'waking' : 'offline') : 'ok' }, 200);
 });
 
 // 인증 후 상세 헬스 — requireAuth 미들웨어 뒤에서 마운트 필요
@@ -37,11 +43,13 @@ healthDetailRoutes.get('/health/detail', async (c) => {
   const hour = kst.getUTCHours();
   const usMarketOpen = hour >= 23 || hour < 6;
 
+  const kstStr = `${kst.getUTCFullYear()}-${String(kst.getUTCMonth() + 1).padStart(2, '0')}-${String(kst.getUTCDate()).padStart(2, '0')} ${String(hour).padStart(2, '0')}:${String(kst.getUTCMinutes()).padStart(2, '0')}:${String(kst.getUTCSeconds()).padStart(2, '0')} KST`;
   const checks: Record<string, unknown> = {
     status: 'ok',
     version: '0.2.0',
     framework: 'hono',
     timestamp: now.toISOString(),
+    serverTimeKst: kstStr,
     tradingMode: config.tradingMode,
     marketOpen: isMarketOpen(),
     usMarketOpen,

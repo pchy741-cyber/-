@@ -14,9 +14,14 @@ FROM node:22-slim AS backend-builder
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.build.json ./
 COPY src/ ./src/
-RUN npm run build && cp -r src/db/migrations dist/db/migrations
+
+# Clean build: rm -rf dist → tsc (삭제된 .ts의 .js 잔류 원천 차단)
+# Build hash: 빌드 시점 기록 → 부팅 시 검증 가능
+RUN npm run build \
+    && cp -r src/db/migrations dist/db/migrations \
+    && echo "{\"builtAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"nodeVersion\":\"$(node -v)\"}" > dist/build-meta.json
 
 # ── Stage 3: Production ──
 FROM node:22-slim AS runner

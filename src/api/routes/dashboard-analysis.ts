@@ -15,14 +15,12 @@ import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
 import { getDinnerMoneyStats } from '../../automation/profit-withdraw.js';
 import { logger } from '../../utils/logger.js';
 import { getKnownStockName, isInvalidStockName } from './dashboard.js';
+import { resolveRequestMode } from '../guards/live-pin.js';
 
 export const dashboardAnalysisRoutes = new Hono();
 
-// viewMode 파싱 헬퍼 — ?viewMode=paper|live → boolean
-function resolveViewIsPaper(c: { req: { query: (k: string) => string | undefined } }): boolean {
-  const vm = c.req.query('viewMode');
-  return vm === 'paper' ? true : vm === 'live' ? false : baseIsPaper;
-}
+// 통합 헬퍼 사용 — viewMode/mode 양쪽 지원
+const resolveViewIsPaper = resolveRequestMode;
 
 // ── 종목 상세 분석 (기술적 지표 + 수급 + 공매도 + 목표가) ──
 dashboardAnalysisRoutes.get('/stock/:code/analysis', async (c) => {
@@ -407,10 +405,12 @@ dashboardAnalysisRoutes.post('/release-defense-park', async (c) => {
     await deactivateDefensePark('CEO 수동 해제');
     logger.info('방어 파킹 수동 강제 해제됨', { component: 'MANUAL' });
 
-    // strategy_config도 SWING으로 복원
+    // strategy_config도 SWING으로 복원 (현재 모드만)
     try {
+      const isPaper = resolveViewIsPaper(c);
       await getPool().query(
-        `UPDATE strategy_config SET mode='SWING', buy_threshold=70, updated_at=NOW() WHERE is_active=true`,
+        `UPDATE strategy_config SET mode='SWING', buy_threshold=70, updated_at=NOW() WHERE is_active=true AND is_paper=$1`,
+        [isPaper],
       );
     } catch { /* 실패해도 계속 */ }
 
@@ -586,8 +586,9 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
 // ── KIS 잔고 → DB 포지션 동기화 (고아 포지션 복구) ──
 dashboardAnalysisRoutes.post('/sync-positions', async (c) => {
   try {
-    const balanceFn = config.isPaper ? getPaperBalance : getAccountBalance;
-    const [balance, openChains] = await Promise.all([balanceFn(), getOpenChains()]);
+    const viewIsPaper = resolveViewIsPaper(c);
+    const balanceFn = viewIsPaper ? getPaperBalance : getAccountBalance;
+    const [balance, openChains] = await Promise.all([balanceFn(), getOpenChains(viewIsPaper)]);
 
     const kisPositions: Array<{ stockCode: string; quantity: number; avgBuyPrice: number; stockName?: string }> =
       (balance.positions ?? [])

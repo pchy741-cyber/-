@@ -174,12 +174,9 @@ export async function getOrderbook(stockCode: string): Promise<OrderbookEntry[]>
   return entries;
 }
 
-// ── KST 시간 유틸 (UTC+9 고정 — Intl/locale 의존 제거) ──
-export function getKSTNow(): Date {
-  const now = new Date();
-  // UTC ms + 9시간 → KST Date (getHours/getMinutes/getDay 안전)
-  return new Date(now.getTime() + 9 * 60 * 60 * 1000);
-}
+// ── KST 시간 유틸 (re-export from utils/time.ts — 순환 의존 방지) ──
+import { getKSTNow } from '../utils/time.js';
+export { getKSTNow };
 
 // ── 장 열림 여부 확인 (공휴일 포함) ──
 export function isMarketOpen(): boolean {

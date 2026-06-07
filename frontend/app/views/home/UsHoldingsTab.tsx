@@ -3,7 +3,7 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { Button } from '@/components/ui';
 import { api, fmtPct, pc, pbg } from '../../lib/utils';
-import { toDisplayName } from '../../lib/helpers';
+import { toDisplayName, livePrefix } from '../../lib/helpers';
 import { usePriceFlash } from '../../hooks/usePriceFlash';
 import ReferencePanel from '../../panels/ReferencePanel';
 import ManualBuyModal from '../../panels/ManualBuyModal';
@@ -132,7 +132,7 @@ export default function UsHoldingsTab({
                       return (
                         <Button key={pct} variant="ghost" size="sm" className="text-[10px] px-1.5 py-1 hover:bg-amber-500/10 hover:text-amber-400 text-slate-600 border border-white/[0.03]"
                           disabled={!!busyAction} onClick={guard(`sell-us-${h.stock_code}-${pct}`, async () => {
-                          const liveUS = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
+                          const liveUS = livePrefix(viewMode);
                           if (!await confirm({title: `${liveUS}${usDisplayName} ${sellQty}주 (${pct}%) 시장가 매도하시겠습니까?`, confirmLabel: '매도', confirmVariant: 'danger'})) return;
                           try {
                             const r = await api(`/sell-overseas/${h.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper', quantity: sellQty }), timeout: 40000 });
@@ -146,7 +146,7 @@ export default function UsHoldingsTab({
                     })}
                     <Button variant="ghost" size="sm" className="text-xs hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 border border-white/[0.04] whitespace-nowrap"
                       disabled={!!busyAction} onClick={guard(`sell-us-${h.stock_code}`, async () => {
-                      const liveUS = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
+                      const liveUS = livePrefix(viewMode);
                       if (!await confirm({title: `${liveUS}${usDisplayName} ${h.quantity}주 전량 시장가 매도하시겠습니까?`, confirmLabel: '전량 매도', confirmVariant: 'danger'})) return;
                       try {
                         const r = await api(`/sell-overseas/${h.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 });
@@ -194,7 +194,7 @@ export default function UsHoldingsTab({
             <div className="px-4 py-2 border-t border-white/[0.04]">
               <Button variant="ghost" size="sm" className="w-full py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20"
                 disabled={!!busyAction} onClick={guard('sell-us-all', async () => {
-                const liveUS = viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
+                const liveUS = livePrefix(viewMode);
                 if (!await confirm({title: `${liveUS}해외 보유종목 ${usHoldings.length}종목 전부 일괄 청산하시겠습니까?`, description: '장마감 시 마지막 시세 기준 DB 강제 청산됩니다.', confirmLabel: '일괄 청산', confirmVariant: 'danger'})) return;
                 try {
                   const r = await api('/sell-overseas-all', { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper', force_db: true }), timeout: 60000 });

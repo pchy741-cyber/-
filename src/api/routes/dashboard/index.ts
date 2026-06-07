@@ -2,22 +2,21 @@
  * dashboard 모듈 배럴 — 모든 대시보드 라우트를 단일 진입점으로 조합
  */
 import { Hono } from 'hono';
-import { config, baseIsPaper } from '../../../config/index.js';
 import { runWithMode } from '../../../config/context.js';
+import { resolveRequestMode } from '../../guards/live-pin.js';
 import { watchlistRoutes } from './watchlist-routes.js';
 import { tradeRoutes } from './trade-routes.js';
 import { sellRoutes } from './sell-routes.js';
 import {
   getDashCache, setDashCache, getDashBuildingByMode, getDashCacheTTL,
-} from './helpers.js';
+} from '../../../cache/dashboard-cache.js';
 import { getOrBuildDashPayload } from './builder.js';
 
 export const dashboardRoutes = new Hono();
 
 // ── 대시보드 요약 ──
 dashboardRoutes.get('/dashboard', async (c) => {
-  const viewModeParam = c.req.query('viewMode');
-  const viewIsPaper = viewModeParam === 'paper' ? true : viewModeParam === 'live' ? false : baseIsPaper;
+  const viewIsPaper = resolveRequestMode(c);
   const cacheKey = viewIsPaper ? 'paper' : 'live';
 
   const cached = getDashCache(cacheKey);
@@ -59,5 +58,6 @@ dashboardRoutes.route('/', tradeRoutes);
 dashboardRoutes.route('/', sellRoutes);
 
 // 하위 호환 re-export
-export { invalidateDashboardCache, invalidateModeCache, isInvalidStockName, getKnownStockName } from './helpers.js';
+export { invalidateDashboardCache, hardInvalidateDashboardCache, invalidateModeCache } from '../../../cache/dashboard-cache.js';
+export { isInvalidStockName, getKnownStockName } from './helpers.js';
 export { prewarmDashboard } from './builder.js';

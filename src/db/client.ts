@@ -24,6 +24,11 @@ import type { AIScore, Order, StrategyConfig, TransactionChain, WatchlistItem } 
 
 const { Pool } = pg;
 
+// DATE(1082) → 문자열 그대로 반환 ("2026-06-04")
+// pg-types v2의 기본 동작은 new Date(year, month, day)로 로컬 타임존 Date 객체 생성
+// → .toISOString()하면 UTC 변환 시 날짜가 하루 밀리는 버그 발생
+pg.types.setTypeParser(1082, (val: string) => val);
+
 let pool: pg.Pool | null = null;
 let useMemory = false;
 let _poolErrorCount = 0;
@@ -216,7 +221,12 @@ export async function queryWithRetry<T extends pg.QueryResultRow = any>(
 
 export async function getActiveWatchlist(): Promise<WatchlistItem[]> {
   if (useMemory) return memGetActiveWatchlist();
+  // 10분 캐시 — 워치리스트는 자주 변하지 않음 (Track B 매 사이클 DB hit 제거)
+  const { cacheGet, cacheSet } = await import('../cache/memory.js');
+  const cached = cacheGet<WatchlistItem[]>('db:watchlist:active');
+  if (cached) return cached;
   const { rows } = await queryWithRetry('SELECT * FROM watchlist WHERE is_active = true ORDER BY added_at ASC');
+  cacheSet('db:watchlist:active', rows, 600); // 10분 TTL
   return rows;
 }
 
@@ -249,6 +259,8 @@ export async function upsertWatchlistItem(
       [item.stock_code, item.stock_name, item.market, source],
     );
   }
+  // 워치리스트 캐시 무효화
+  import('../cache/memory.js').then(m => m.cacheSet('db:watchlist:active', null, 0));
 }
 
 // ── AI Scores ──
@@ -368,6 +380,11 @@ export async function withTransaction<T>(fn: (client: pg.PoolClient) => Promise<
 export async function getOpenChains(isPaperOverride?: boolean): Promise<TransactionChain[]> {
   if (useMemory) return memGetOpenChains();
   const isPaper = isPaperOverride ?? getCtxIsPaper();
+  // 60초 캐시 — Track B 3분 간격이므로 충분, 매매 발생 시 invalidate됨
+  const { cacheGet, cacheSet } = await import('../cache/memory.js');
+  const cacheKey = `db:chains:open:${isPaper}`;
+  const cached = cacheGet<TransactionChain[]>(cacheKey);
+  if (cached) return cached;
   const { rows } = await queryWithRetry(
     `SELECT tc.*, w.stock_name, tc.peak_price_since_open,
        (SELECT trigger_source FROM orders WHERE chain_id = tc.id AND side = 'BUY' ORDER BY created_at ASC LIMIT 1) AS trigger_source
@@ -378,6 +395,7 @@ export async function getOpenChains(isPaperOverride?: boolean): Promise<Transact
      ORDER BY tc.opened_at DESC`,
     [isPaper],
   );
+  cacheSet(cacheKey, rows, 60); // 60초 TTL
   return rows;
 }
 
@@ -405,6 +423,8 @@ export async function createChain(
       chain.is_paper ?? getCtxIsPaper(),
     ],
   );
+  // 체인 캐시 무효화 — 새 포지션 진입 시 즉시 반영
+  import('../cache/memory.js').then(m => { m.cacheSet('db:chains:open:true', null, 0); m.cacheSet('db:chains:open:false', null, 0); });
   return rows[0].id;
 }
 
@@ -422,6 +442,8 @@ export async function updateChain(id: string, updates: Partial<TransactionChain>
   const setClauses = keys.map((k, i) => `${k} = $${i + 2}`);
   const values = keys.map((k) => (updates as Record<string, unknown>)[k]);
   await queryWithRetry(`UPDATE transaction_chains SET ${setClauses.join(', ')} WHERE id = $1`, [id, ...values]);
+  // 체인 캐시 무효화 — 상태 변경 즉시 반영
+  import('../cache/memory.js').then(m => { m.cacheSet('db:chains:open:true', null, 0); m.cacheSet('db:chains:open:false', null, 0); });
 }
 
 // ── Orders ──
@@ -486,8 +508,18 @@ export async function getOrdersByChain(chainId: string): Promise<Order[]> {
   return rows;
 }
 
-export async function getPendingDomesticOrders(): Promise<Order[]> {
+export async function getPendingDomesticOrders(mode?: string): Promise<Order[]> {
   if (useMemory) return [];
+  // 컨텍스트 기반 모드 결정: 명시적 파라미터 > AsyncLocalStorage > 글로벌 폴백
+  let tradingMode = mode;
+  if (!tradingMode) {
+    try {
+      const { getCtxIsPaper } = await import('../config/context.js');
+      tradingMode = getCtxIsPaper() ? 'paper' : 'live';
+    } catch {
+      tradingMode = config.tradingMode;
+    }
+  }
   const { rows } = await queryWithRetry(
     `SELECT * FROM orders
      WHERE status IN ('PENDING', 'PARTIAL')
@@ -496,7 +528,7 @@ export async function getPendingDomesticOrders(): Promise<Order[]> {
        AND kis_order_no IS NOT NULL
        AND trading_mode = $1
      ORDER BY created_at ASC`,
-    [config.tradingMode],
+    [tradingMode],
   );
   return rows;
 }
@@ -526,7 +558,7 @@ export async function insertSnapshot(snapshot: {
       snapshot.daily_pnl,
       snapshot.daily_pnl_pct,
       JSON.stringify(snapshot.positions),
-      snapshot.is_paper ?? config.isPaper,
+      snapshot.is_paper ?? getCtxIsPaper(),
     ],
   );
 }
@@ -649,7 +681,7 @@ export async function getRecentLossStocks(daysBack = 14): Promise<Set<string>> {
          AND o.created_at > NOW() - INTERVAL '7 days'
          AND (o.ai_reasoning LIKE '%손절%' OR o.ai_reasoning LIKE '%ATR트레일%'
               OR o.ai_reasoning LIKE '%FORCE_CLOSE%' OR o.ai_reasoning LIKE '%시간 손절%')`,
-      [config.tradingMode],
+      [getCtxIsPaper() ? 'paper' : 'live'],
     );
     for (const r of slRows) blocked.add(r.stock_code);
 

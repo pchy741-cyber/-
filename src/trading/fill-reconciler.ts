@@ -93,7 +93,9 @@ export async function reconcilePendingOrders(): Promise<void> {
  */
 export async function reconcileExternalSells(): Promise<void> {
   // Paper 모드: 체인이 KIS에 없는 게 정상 → 외부매도 감지 불필요
-  if (config.isPaper) return;
+  // getCtxIsPaper(): AsyncLocalStorage 컨텍스트 기반 (runWithMode 호환)
+  const { getCtxIsPaper } = await import('../config/context.js');
+  if (getCtxIsPaper()) return;
 
   try {
     const chains = await getOpenChains();
@@ -146,10 +148,12 @@ export async function reconcileExternalSells(): Promise<void> {
            WHERE id = $1`,
           [chain.id, '외부매도 (KIS 앱 직접 매도)', fillPrice],
         );
+        // 체인의 is_paper에서 trading_mode 결정 (config.tradingMode은 글로벌 값이라 불일치 위험)
+        const chainMode = chain.is_paper ? 'paper' : 'live';
         await getPool().query(
           `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
            VALUES ($1, $2, 'SELL', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, 'EXTERNAL', '외부 매도 감지')`,
-          [chain.id, chain.stock_code, chain.total_quantity, fillPrice, ghostOrderNo, config.tradingMode],
+          [chain.id, chain.stock_code, chain.total_quantity, fillPrice, ghostOrderNo, chainMode],
         );
 
         logger.warn(

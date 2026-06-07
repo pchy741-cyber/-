@@ -6,6 +6,7 @@ import { sendTelegramMessage } from '../notifications/telegram.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { reconcileExternalSells } from '../trading/fill-reconciler.js';
 import { logger } from '../utils/logger.js';
+import { sleep } from '../utils/sleep.js';
 import { calcPnlPct } from '../utils/money.js';
 
 /**
@@ -89,7 +90,7 @@ export async function runHoldingCheckJob(): Promise<void> {
             break;
           }
         } catch {
-          if (attempt < 2) await new Promise(r => setTimeout(r, 1000));
+          if (attempt < 2) await sleep(1000);
         }
       }
 

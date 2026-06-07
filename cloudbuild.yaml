@@ -35,7 +35,7 @@ steps:
       - '--max-instances'
       - '1'
       - '--memory'
-      - '512Mi'
+      - '1Gi'
       - '--cpu'
       - '1'
       - '--port'
@@ -45,15 +45,15 @@ steps:
       - '--add-cloudsql-instances'
       - 'quantops-trading:asia-northeast3:quantops-db'
       - '--set-env-vars'
-      - 'NODE_ENV=production,INSTANCE_UNIX_SOCKET=/cloudsql/quantops-trading:asia-northeast3:quantops-db,DB_DATABASE=quantops,DB_USER=postgres,RISK_MAX_DAILY_DRAWDOWN_KRW=500000,RISK_MAX_POSITION_KRW=3000000,RISK_MAX_TOTAL_INVESTED_PCT=90,TRADING_MODE=live,PAPER_ONLY=true'
+      - 'TZ=UTC,NODE_ENV=production,INSTANCE_UNIX_SOCKET=/cloudsql/quantops-trading:asia-northeast3:quantops-db,DB_DATABASE=quantops,DB_USER=postgres,RISK_MAX_DAILY_DRAWDOWN_KRW=500000,RISK_MAX_POSITION_KRW=3000000,RISK_MAX_TOTAL_INVESTED_PCT=90,TRADING_MODE=live,PAPER_ONLY=false'
       - '--set-secrets'
-      - 'KIS_APP_KEY=kis-app-key:latest,KIS_APP_SECRET=kis-app-secret:latest,KIS_ACCOUNT_NO=kis-account-no:latest,KIS_APP_KEY_LIVE=kis-app-key-live:latest,KIS_APP_SECRET_LIVE=kis-app-secret-live:latest,KIS_ACCOUNT_NO_LIVE=kis-account-no-live:latest,GEMINI_API_KEY=gemini-api-key:latest,OPENAI_API_KEY=openai-api-key:latest,ANTHROPIC_API_KEY=anthropic-api-key:latest,DB_PASSWORD=db-password:latest,DASHBOARD_PASSWORD=dashboard-password:latest,VAPID_PUBLIC_KEY=vapid-public-key:latest,VAPID_PRIVATE_KEY=vapid-private-key:latest'
+      - 'KIS_APP_KEY=kis-app-key:latest,KIS_APP_SECRET=kis-app-secret:latest,KIS_ACCOUNT_NO=kis-account-no:latest,KIS_APP_KEY_LIVE=kis-app-key-live:latest,KIS_APP_SECRET_LIVE=kis-app-secret-live:latest,KIS_ACCOUNT_NO_LIVE=kis-account-no-live:latest,OPENAI_API_KEY=openai-api-key:latest,ANTHROPIC_API_KEY=anthropic-api-key:latest,DB_PASSWORD=db-password:latest,DASHBOARD_PASSWORD=dashboard-password:latest,VAPID_PUBLIC_KEY=vapid-public-key:latest,VAPID_PRIVATE_KEY=vapid-private-key:latest'
 
 substitutions:
   _REGION: asia-northeast3
   _REPO: quantops
   _SERVICE: ai-auto-bot
-  _TAG: v0-70-78
+  _TAG: v0-72-50m
 
 options:
   logging: CLOUD_LOGGING_ONLY

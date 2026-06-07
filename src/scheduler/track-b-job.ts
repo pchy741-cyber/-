@@ -1,16 +1,20 @@
 import { runTrackBPipeline } from '../ai/track-b/pipeline.js';
 import type { StrategyMode } from '../config/constants.js';
+import { getCtxIsPaper, runWithMode } from '../config/context.js';
 import { getActiveStrategy } from '../db/client.js';
 import { isMarketOpen } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { isKillSwitchActive, reportError, reportSuccess } from '../risk/kill-switch.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
+import { logSystemEvent } from '../api/routes/health.js';
 
 let isRunning = false;
 let runningStartedAt = 0;
 let runGeneration = 0; // 강제 리셋 시 세대 증가 → 이전 실행의 finally가 새 실행을 종료하지 않도록
 const MAX_RUNTIME_MS = 10 * 60 * 1000; // 10분 초과 시 강제 해제
+let pendingRescanTimer: ReturnType<typeof setTimeout> | null = null; // rescan 타이머 추적
 
 export async function runTrackBJob(): Promise<void> {
   // 동시 실행 방지 — 단, 10분 초과 시 강제 리셋 (API hang 방지)
@@ -53,7 +57,7 @@ export async function runTrackBJob(): Promise<void> {
     }
 
     // 개장벨 시간대(09:00~09:12) Track B 신규매수 양보 — 개장벨이 초단타 전문
-    const kstNow = new Date(Date.now() + 9 * 3600000);
+    const kstNow = getKSTNow();
     const kstH = kstNow.getUTCHours(), kstM = kstNow.getUTCMinutes();
     if (kstH === 9 && kstM <= 12) {
       const before = filtered.length;
@@ -65,6 +69,7 @@ export async function runTrackBJob(): Promise<void> {
 
     if (filtered.length === 0) {
       logger.info('Track B: 실행할 매매 없음', { component: 'SCHEDULER' });
+      logSystemEvent('Track B', 'success', `스캔 완료 — 매매 없음 (${decisions.length}종목 분석)`);
       reportSuccess();
       return;
     }
@@ -77,24 +82,31 @@ export async function runTrackBJob(): Promise<void> {
     await tradeExecutor.processDecisions(filtered, mode, 'TRACK_B');
     reportSuccess();
 
-    // 4. 텔레그램 알림 (HOLD 제외한 결정만)
+    // 4. 시스템 로그 + 텔레그램 알림 (HOLD 제외한 결정만)
     const actionable = decisions.filter((d) => d.action !== 'HOLD');
     if (actionable.length > 0) {
       const summary = actionable.map((d) => `${d.action} ${d.stock_code} x${d.quantity}`).join('\n');
+      logSystemEvent('Track B', 'success', actionable.map((d) => `${d.action} ${d.stock_code} ${d.quantity}주`).join(', '));
       await sendTelegramMessage(`🤖 Track B 실행:\n${summary}`).catch(() => {});
     }
 
-    // 5. 매도 체결 후 60초 뒤 즉시 재스캔 (해방된 현금으로 바로 매수 기회 포착)
+    // 5. 매도 체결 후 60초 뒤 재스캔 — 이전 예약 타이머가 있으면 취소 (중복 방지)
     const hasSell = decisions.some((d) => d.action === 'SELL');
     if (hasSell) {
-      setTimeout(() => {
-        logger.info('🔄 매도 후 즉시 재스캔 (60초)', { component: 'SCHEDULER' });
-        runTrackBJob().catch(() => {});
+      if (pendingRescanTimer) clearTimeout(pendingRescanTimer);
+      const rescanIsPaper = getCtxIsPaper();
+      pendingRescanTimer = setTimeout(() => {
+        pendingRescanTimer = null;
+        logger.info(`🔄 매도 후 재스캔 (60초, ${rescanIsPaper ? 'paper' : 'live'})`, { component: 'SCHEDULER' });
+        runWithMode(rescanIsPaper, () => runTrackBJob()).catch((e) => {
+          logger.warn(`🔄 매도 후 재스캔 실패: ${e}`, { component: 'SCHEDULER' });
+        });
       }, 60_000);
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     await reportError('TRACK_B', msg);
+    logSystemEvent('Track B', 'error', msg.slice(0, 100));
     logger.error(`Track B 작업 실패: ${msg}`, { component: 'SCHEDULER' });
   } finally {
     // 내 세대가 현재 세대와 같을 때만 플래그 해제 (강제 리셋 후엔 새 실행이 이미 isRunning=true)

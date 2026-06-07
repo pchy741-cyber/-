@@ -90,7 +90,9 @@ export function TradeListPanel({
                 </td>
                 <td className="px-4 py-3 text-center"><StatusBadge status={t.status} /></td>
                 <td className="px-4 py-3 text-center">
-                  {chain?.strategy_mode
+                  {chain?.strategy_mode === 'EOD_BETTING'
+                    ? <span className="px-1.5 py-0.5 rounded text-[11px] bg-amber-900/30 text-amber-300 font-bold">🎰 종가</span>
+                    : chain?.strategy_mode
                     ? <span className="px-1.5 py-0.5 rounded text-[11px] bg-blue-900/30 text-blue-300">{chain.strategy_mode}</span>
                     : t.trigger_source === 'OVERSEAS'
                       ? <span className="px-1.5 py-0.5 rounded text-[11px] bg-purple-900/30 text-purple-300">미국</span>

@@ -10,7 +10,10 @@ import { notifyAlert } from '../notifications/web-push.js';
 const UNFILLED_TIMEOUT_MS = 5 * 60 * 1000; // 5분
 
 export async function runUnfilledOrderCheck(): Promise<void> {
-  if (config.isPaper) return; // Paper 모드는 즉시 체결이므로 불필요
+  // Paper 모드는 즉시 체결이므로 불필요
+  // getCtxIsPaper(): AsyncLocalStorage 컨텍스트 기반 (runDomesticDual 호환)
+  const { getCtxIsPaper } = await import('../config/context.js');
+  if (getCtxIsPaper()) return;
 
   try {
     const pool = getPool();
@@ -28,7 +31,6 @@ export async function runUnfilledOrderCheck(): Promise<void> {
       `SELECT kis_order_no, stock_code, quantity, side, order_type, created_at
        FROM orders
        WHERE status = 'PENDING'
-         AND order_type = '00'
          AND trading_mode = 'live'
          AND created_at < $1
        ORDER BY created_at ASC`,

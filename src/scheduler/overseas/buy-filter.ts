@@ -111,14 +111,12 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       if (lossCooldownSet.has(t.code)) { logger.info(`🚫 손절 쿨다운 차단: ${t.code} (24h 재매수 금지)`, { component: 'OVERSEAS' }); return false; }
       return true;
     })
-    // 3. 최근 손실 종목 재진입 (Paper: 55%, Live: 80%)
+    // 3. 최근 손실 종목 재진입 (Paper/Live 동일 80% — 55%는 손절 후 재매수 반복 유발)
     .filter(t => {
       if (!recentLossSet.has(t.code)) return true;
       const ai = aiMap.get(t.code);
-      const reentryThreshold = isPaper ? 0.55 : 0.80;
+      const reentryThreshold = 0.80;
       if (ai?.action === 'BUY' && ai.confidence >= reentryThreshold) return true;
-      // Paper: AI 없어도 STRONG_BUY + score 50 이상 + MA20 위면 허용 (score 40→50, MA20 추가)
-      if (isPaper && !ai && t.signal === 'STRONG_BUY' && t.score >= 50 && t.aboveMA20) return true;
       logger.info(`⚠️ 최근 손실 종목 재진입 차단: ${t.code} AI 확신 부족 (${ai ? `${(ai.confidence * 100).toFixed(0)}%` : 'AI 없음'} < ${(reentryThreshold * 100).toFixed(0)}%)`, { component: 'OVERSEAS' });
       return false;
     })
@@ -197,11 +195,11 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       const dayRangeCap = bullDay ? 85 : 70;
       const dayRangeOk = t.isMomentum || t.isBigMover || t.dayRangePct === undefined || t.dayRangePct < dayRangeCap;
       if (!dayRangeOk) { logger.info(`  ⛔ 고점 진입 차단: ${t.code} dayRangePct=${t.dayRangePct?.toFixed(0)}%`, { component: 'OVERSEAS' }); return false; }
-      // Paper: 중베타 RSI 과열 75, Live: 70 (62→70 완화: 소액 계좌 진입 기회 확보)
+      // 중베타 RSI 과열 70 (Paper/Live 동일 — paper 75는 과열 진입 유발)
       if (!t.isMomentum && !isOversold) {
         const entryWatchSector = GLOBAL_WATCHLIST.find(w => w.code === t.code)?.sector ?? '';
         const isMedBetaEntry = SECTOR_CLASS.MEDIUM_BETA.includes(entryWatchSector);
-        const rsiOverheatLimit = isPaper ? 75 : 70;
+        const rsiOverheatLimit = 70;
         if (isMedBetaEntry && t.rsi > rsiOverheatLimit) { logger.info(`  ⛔ 중베타 RSI 과열 차단: ${t.code} RSI=${t.rsi.toFixed(0)}`, { component: 'OVERSEAS' }); return false; }
       }
       const mq = mktSignal?.marketQuality ?? 'OK';
@@ -209,8 +207,8 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       const breadthBonus = freshBreadth >= 0.65 ? 0.02 : 0;
       const breadthAdj = breadthPenalty - breadthBonus;
       const isBigMoverTarget = t.isBigMover;
-      // Paper: AI 확신도 기준 15% 낮게 (더 공격적 진입)
-      const paperDiscount = isPaper ? 0.15 : 0;
+      // Paper/Live 동일 기준 (Paper 할인 제거 — 낮은 확신 진입이 56% 손실의 원인)
+      const paperDiscount = 0;
       const baseMinConf = recoveryMode ? 0.85 - paperDiscount
         : mq === 'GREAT' ? 0.66 - paperDiscount : mq === 'CAUTIOUS' ? 0.76 - paperDiscount : mq === 'DANGER' ? 0.82 - paperDiscount : 0.68 - paperDiscount;
       const minConf = (isBigMoverTarget ? Math.max(isPaper ? 0.50 : 0.65, baseMinConf - 0.05 + breadthAdj) : baseMinConf + breadthAdj) + vixRegime.confBoost;
@@ -229,13 +227,10 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       effectiveConfMap.set(t.code, effectiveConf);
 
       // ════════════════════════════════════════════════════════
-      // Gemini AI 매수 — Live는 차단 (무료 승률 저조), Paper는 학습용 활성화
-      // 유료 AI(Claude/GPT) 충전 시 Live도 해제하면 됨
+      // Gemini AI 단독 매수 — Paper/Live 모두 차단 (무료 Gemini 승률 저조)
+      // AI는 보조 지표로만 사용, 기술적 필터 통과 필수
+      // 유료 AI(Claude/GPT) 충전 시 해제 가능
       // ════════════════════════════════════════════════════════
-      if (isPaper) {
-        if (ai?.action === 'BUY' && effectiveConf >= confFloorAdj) return true;
-        if (ai?.action === 'BUY' && (t.signal === 'STRONG_BUY' || t.isMomentum) && effectiveConf >= confFloorMom) return true;
-      }
 
       // VIX CRISIS → 기술적 진입은 오버솔드 반등만 허용
       if (vixRegime.regime === 'CRISIS') {
@@ -274,24 +269,23 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       }
 
       // ── 기술적 진입 경로 (강→약 순서) ──
-      // Paper: 학습 데이터 수집을 위해 score 임계값 완화 (-5pt)
-      const sAdj = isPaper ? 5 : 0; // score adjustment for paper
+      // Paper/Live 동일 기준 (Paper score 할인 제거 — 약한 셋업 진입이 손실 원인)
+      const sAdj = 0;
       // 1. BigMover (급등주) — 승률 피드백 강화: 우량주만 + 과열 제외
       if (t.isBigMover && t.score >= 18 - sAdj && t.rsi >= 35 && t.rsi <= 72 && t.aboveMA20 && !effectiveBadWR) return true;
       // 2. Momentum (모멘텀 확인: 볼륨+추세)
       if (t.isMomentum && t.score >= 20 - sAdj && t.aboveMA20 && t.rsi >= 38 && t.rsi <= 74) return true;
       // 3. STRONG_BUY 기술 시그널 (복합 지표 합산 최상위)
-      if (t.signal === 'STRONG_BUY' && t.score >= 25 - sAdj && t.adx >= (isPaper ? 15 : 18) && t.rsi >= 38 && t.rsi <= 74) return true;
+      if (t.signal === 'STRONG_BUY' && t.score >= 25 - sAdj && t.adx >= 18 && t.rsi >= 38 && t.rsi <= 74) return true;
       // 4. Bollinger 돌파 + 모멘텀
       if (t.bollingerBreakout === 'UP' && t.score >= 20 - sAdj && t.aboveMA20 && t.rsi >= 38 && t.rsi <= 75) return true;
       // 5. BUY 시그널 + 트렌드 확인 (ADX 확인, RSI 적정 범위)
-      if (t.signal === 'BUY' && t.score >= 30 - sAdj && t.adx >= (isPaper ? 16 : 20) && t.rsi >= 42 && t.rsi <= 70 && t.aboveMA20) return true;
+      if (t.signal === 'BUY' && t.score >= 30 - sAdj && t.adx >= 20 && t.rsi >= 42 && t.rsi <= 70 && t.aboveMA20) return true;
       // 6. 과매도 반등 (RSI ≤ 35 + 트렌드 약하지 않음)
       if (isOversold && t.aboveMA60 && t.score >= 20 - sAdj) return true;
       // 7. 고승률 종목 완화 진입 (5거래 이상, 승률 55%+)
       if (hasGoodWinRate && t.signal !== 'SELL' && t.score >= 15 - sAdj && t.rsi >= 35 && t.rsi <= 72 && t.aboveMA20) return true;
-      // 8. Paper 전용: BUY 시그널 + score≥20 + RSI 적정 — 추가 진입 경로
-      if (isPaper && t.signal === 'BUY' && t.score >= 20 && t.rsi >= 40 && t.rsi <= 72 && t.aboveMA20) return true;
+      // 8. Paper 전용 추가 진입 경로 제거 (낮은 기준이 손실 원인)
 
       // 개선#7: 어닝 드리프트 진입 — 실적 서프라이즈 후 갭업 +5%+ 고거래량 = 추격 매수
       const drift = ctx.earningsDrift?.find(d => d.code === t.code && d.direction === 'BULL' && d.strength >= 0.5);

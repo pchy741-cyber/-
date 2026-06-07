@@ -10,13 +10,14 @@
 import { getOpenChains, logSystem } from '../db/client.js';
 import { getPool } from '../db/client.js';
 import { getCtxIsPaper } from '../config/context.js';
-import { getAccountBalance } from '../kis/account.js';
+import { getAccountBalance, invalidateBalanceCache } from '../kis/account.js';
 import { getPaperBalance } from '../risk/paper-balance.js';
 import { getVolumeRankingStocks, getCurrentPrice, getBatchPrices, type CurrentPrice } from '../kis/market.js';
 import { isKillSwitchActive, reportSuccess } from '../risk/kill-switch.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
 import type { TradeDecision } from '../db/models.js';
 
 // ── 설정 ──
@@ -28,8 +29,13 @@ const MORNING_SELL_END_H = 9, MORNING_SELL_END_M = 10;
 const MIN_TRADE_VALUE_EOK = 1000;    // 거래대금 최소 1,000억원
 const CANDLE_TOP_PCT = 0.80;          // 캔들 상단 20% (0.80 이상)
 const YESTERDAY_SURGE_PCT = 5.0;      // 전일 +5% 이상이면 재탕 종목 제외
-const MAX_STOCKS = 12;                // 최대 12종목
+const MAX_STOCKS = 12;                // 최대 12종목 (CRASH: 4, CORRECTION: 8)
 const POSITION_SIZE_PCT = 0.12;       // 시드의 12%/포지션
+
+// ── 하락장 방어 ──
+const KOSPI_DROP_BLOCK_PCT = -2.0;    // KOSPI -2% 이상 하락 → 종가베팅 차단
+const KOSPI_DROP_REDUCE_PCT = -1.0;   // KOSPI -1% 이상 → 종목수 축소
+const DAILY_LOSS_BLOCK_PCT = -1.5;    // 포트폴리오 일일손실 -1.5% → 종가베팅 차단
 
 // 중복 매수 방지 — paper/live 분리 (크로스오염 방지)
 const _eodBoughtToday = new Map<string, Set<string>>(); // key: 'paper'|'live'
@@ -39,7 +45,7 @@ let _eodBoughtDate = '';
  * 🎰 종가베팅 메인 — 15:15 KST 크론에서 호출
  */
 export async function runEodBettingJob(): Promise<void> {
-  const kst = new Date(Date.now() + 9 * 3600000);
+  const kst = getKSTNow();
   const kstH = kst.getUTCHours();
   const kstM = kst.getUTCMinutes();
   const isPaper = getCtxIsPaper();
@@ -57,6 +63,76 @@ export async function runEodBettingJob(): Promise<void> {
   // Kill Switch 확인
   if (isKillSwitchActive()) {
     logger.debug('🛑 Kill Switch 활성 — 종가베팅 스킵', { component: 'EOD_BETTING' });
+    return;
+  }
+
+  // ── 하락장 방어: KOSPI 하락률 + 시장체제 + 일일손실 ──
+  let eodMaxStocks = MAX_STOCKS;
+  try {
+    const { fetchKospiRegime, checkDailyLoss } = await import('../ai/track-b/market-regime.js');
+    const regime = await fetchKospiRegime();
+
+    // 1) KOSPI 당일 하락률 체크
+    if (regime.todayDown) {
+      const { getCurrentPrice } = await import('../kis/market.js');
+      const kospiLive = await getCurrentPrice('0001').catch(() => null);
+      const kospiCandles = regime.atrPct; // atrPct는 이미 계산됨
+      // todayDown = KOSPI -0.3% 이상 하락 확인됨
+      // 추가: KOSPI 실시간 가격 기반 정밀 하락률 체크 (getDailyChart 캐시 사용)
+      const { getDailyChart } = await import('../kis/market.js');
+      const charts = await getDailyChart('0001', 2).catch(() => []);
+      const todayClose = charts[0]?.close ?? 0;
+      const prevClose = charts[1]?.close ?? 0;
+      const kospiDropPct = prevClose > 0 ? (todayClose - prevClose) / prevClose * 100 : 0;
+
+      if (kospiDropPct <= KOSPI_DROP_BLOCK_PCT) {
+        logger.warn(`🛑 종가베팅 차단: KOSPI ${kospiDropPct.toFixed(2)}% 하락 (기준 ${KOSPI_DROP_BLOCK_PCT}%) — 오버나이트 리스크 과대`, { component: 'EOD_BETTING' });
+        await logSystem('WARN', 'EOD_BETTING', `KOSPI ${kospiDropPct.toFixed(2)}% 하락 → 종가베팅 차단`);
+        return;
+      }
+      if (kospiDropPct <= KOSPI_DROP_REDUCE_PCT) {
+        eodMaxStocks = Math.min(eodMaxStocks, 6);
+        logger.info(`⚠️ KOSPI ${kospiDropPct.toFixed(2)}% 하락 → 종가베팅 종목수 ${eodMaxStocks}개로 축소`, { component: 'EOD_BETTING' });
+      }
+    }
+
+    // 2) 시장체제 연동: CRASH → 차단, CORRECTION → 축소
+    if (regime.penalty >= 2) {
+      logger.warn(`🛑 종가베팅 차단: CRASH 체제 (KOSPI < MA60) — 하락장 종가베팅 금지`, { component: 'EOD_BETTING' });
+      await logSystem('WARN', 'EOD_BETTING', `CRASH 체제 → 종가베팅 차단`);
+      return;
+    }
+    if (regime.penalty >= 1) {
+      eodMaxStocks = Math.min(eodMaxStocks, 4);
+      logger.info(`⚠️ CORRECTION 체제 → 종가베팅 종목수 ${eodMaxStocks}개로 축소`, { component: 'EOD_BETTING' });
+    }
+
+    // 3) 일일손실 체크: 이미 -1.5% 이상 손실이면 추가 베팅 금지
+    if (!isPaper) {
+      const { getAccountBalance: getAccBal } = await import('../kis/account.js');
+      const bal = await getAccBal(false);
+      const totalAssets = bal.netAsset || (bal.orderableCash + bal.totalEvalAmount);
+      const openChains = await getOpenChains();
+      const { getBatchPrices } = await import('../kis/market.js');
+      const holdCodes = openChains.filter(c => Number(c.total_quantity) > 0).map(c => c.stock_code);
+      const livePrices = holdCodes.length > 0 ? await getBatchPrices(holdCodes) : new Map();
+      const dailyLoss = await checkDailyLoss({ openChains, livePrices, totalAssets });
+      if (dailyLoss.dailyPnlPct <= DAILY_LOSS_BLOCK_PCT) {
+        logger.warn(`🛑 종가베팅 차단: 일일 손실 ${dailyLoss.dailyPnlPct.toFixed(2)}% (기준 ${DAILY_LOSS_BLOCK_PCT}%) — 추가 리스크 금지`, { component: 'EOD_BETTING' });
+        await logSystem('WARN', 'EOD_BETTING', `일일 손실 ${dailyLoss.dailyPnlPct.toFixed(2)}% → 종가베팅 차단`);
+        return;
+      }
+    }
+
+    // Flash Crash → 즉시 차단
+    if (regime.flashCrash) {
+      logger.warn(`🛑 종가베팅 차단: KOSPI Flash Crash 감지 — 오버나이트 리스크 과대`, { component: 'EOD_BETTING' });
+      return;
+    }
+  } catch (err) {
+    // fail-safe: 안전장치 체크 실패 시 종가베팅 차단 (이전: 계속 진행 → 위험)
+    logger.error(`🛑 하락장 방어 체크 실패 → 종가베팅 차단 (fail-safe): ${err}`, { component: 'EOD_BETTING' });
+    await logSystem('ERROR', 'EOD_BETTING', `하락장 방어 체크 실패 → 종가베팅 차단: ${err}`);
     return;
   }
 
@@ -137,18 +213,22 @@ export async function runEodBettingJob(): Promise<void> {
       return;
     }
 
-    // ── STEP 4: 순위 정렬 (거래대금 내림차순) + 상위 12 ──
+    // ── STEP 4: 순위 정렬 (거래대금 내림차순) + 상위 N (하락장 연동) ──
     const top = freshCandidates
       .sort((a, b) => b.tradeValueEok - a.tradeValueEok)
-      .slice(0, MAX_STOCKS);
+      .slice(0, eodMaxStocks);
 
-    // ── STEP 5: 포지션 사이징 ──
-    const balance = isPaper ? await getPaperBalance() : await getAccountBalance();
+    // ── STEP 5: 포지션 사이징 ── (캐시 무효화 → 최신 잔고로 정확한 사이징)
+    if (!isPaper) invalidateBalanceCache();
+    const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
     const totalAssets = balance.netAsset || (balance.orderableCash + balance.totalEvalAmount);
     const positionKrw = Math.floor(totalAssets * POSITION_SIZE_PCT);
 
-    if (positionKrw < 50_000) {
-      logger.warn('🎰 종가베팅: 포지션 크기 5만원 미만 → 스킵', { component: 'EOD_BETTING' });
+    // 최소 포지션 가드: 총자산 대비 3% 미만이면 잔고 계산 오류로 간주
+    const MIN_POSITION_KRW = 200_000; // 최소 20만원 (5만원 매수 방지)
+    if (positionKrw < MIN_POSITION_KRW) {
+      logger.warn(`🎰 종가베팅: 포지션 ${positionKrw.toLocaleString()}원 < 최소 ${MIN_POSITION_KRW.toLocaleString()}원 → 잔고 재확인 필요`, { component: 'EOD_BETTING' });
+      logger.warn(`  💰 잔고 디버그: netAsset=${balance.netAsset?.toLocaleString()} orderable=${balance.orderableCash?.toLocaleString()} eval=${balance.totalEvalAmount?.toLocaleString()} totalAssets=${totalAssets.toLocaleString()}`, { component: 'EOD_BETTING' });
       return;
     }
 
@@ -208,7 +288,7 @@ export async function runEodBettingJob(): Promise<void> {
  * 🌅 종가베팅 익일 강제매도 — 09:02 KST 크론에서 호출
  */
 export async function runEodMorningSell(): Promise<void> {
-  const kst = new Date(Date.now() + 9 * 3600000);
+  const kst = getKSTNow();
   const kstH = kst.getUTCHours();
   const kstM = kst.getUTCMinutes();
   const isPaper = getCtxIsPaper();
@@ -223,7 +303,7 @@ export async function runEodMorningSell(): Promise<void> {
 
   try {
     const openChains = await getOpenChains();
-    const todayKst = new Date(Date.now() + 9 * 3600000);
+    const todayKst = getKSTNow();
     const todayStr = todayKst.toISOString().split('T')[0];
 
     const sellDecisions: TradeDecision[] = [];

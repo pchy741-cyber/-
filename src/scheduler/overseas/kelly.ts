@@ -18,6 +18,7 @@ export async function calcRollingKelly(days: number = 30, isPaper?: boolean): Pr
   const defaultResult: KellyResult = {
     fullKelly: 0.20, halfKelly: 0.10,
     winRate: 0.5, avgWin: 5.0, avgLoss: 3.0, sampleCount: 0,
+    profitFactor: 1.0, rMultiple: 1.67, evPerTrade: 0, breakevenWinRate: 0.5,
   };
 
   try {
@@ -71,12 +72,18 @@ export async function calcRollingKelly(days: number = 30, isPaper?: boolean): Pr
     const kellyRatio = winRate >= 0.60 ? 0.67 : winRate >= 0.50 ? 0.55 : 0.50;
     const halfKelly = fullKelly * kellyRatio;
 
+    // ── 세이버메트릭스 지표 ──
+    const profitFactor = totalLossPct > 0 ? totalWinPct / totalLossPct : totalWinPct > 0 ? 99 : 0;
+    const rMultiple = b; // R배수 = avgWin / avgLoss
+    const evPerTrade = winRate * avgWin - q * avgLoss;
+    const breakevenWinRate = b > 0 ? 1 / (1 + b) : 0.5;
+
     logger.info(
-      `📊 Rolling Kelly (${days}d, ${total}건): 승률 ${(winRate * 100).toFixed(0)}%, 평균수익 +${avgWin.toFixed(1)}%, 평균손실 -${avgLoss.toFixed(1)}% → Kelly ${(fullKelly * 100).toFixed(1)}% / Half ${(halfKelly * 100).toFixed(1)}%`,
+      `📊 Rolling Kelly (${days}d, ${total}건): 승률 ${(winRate * 100).toFixed(0)}% | R ${rMultiple.toFixed(1)} | PF ${profitFactor.toFixed(2)} | EV ${evPerTrade >= 0 ? '+' : ''}${evPerTrade.toFixed(2)}% | BEP ${(breakevenWinRate * 100).toFixed(0)}% | Kelly ${(fullKelly * 100).toFixed(1)}%/${(halfKelly * 100).toFixed(1)}%`,
       { component: 'RISK_INTEL' },
     );
 
-    return { fullKelly, halfKelly, winRate, avgWin, avgLoss, sampleCount: total };
+    return { fullKelly, halfKelly, winRate, avgWin, avgLoss, sampleCount: total, profitFactor, rMultiple, evPerTrade, breakevenWinRate };
   } catch {
     return defaultResult;
   }

@@ -15,6 +15,7 @@ import { setOverseasState } from './overseas/utils.js';
 const COMP = 'DIVIDEND';
 
 async function isDividendEnabled(): Promise<boolean> {
+  if (getCtxIsPaper()) return true; // Paper: 항상 실행 (트랙레코드 축적)
   try {
     const { rows } = await getPool().query(
       "SELECT enabled FROM feature_flags WHERE key = 'dividend_investing'",

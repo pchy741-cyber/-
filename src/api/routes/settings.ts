@@ -9,7 +9,7 @@ import { resetCooldown, getCooldownStatus } from '../../risk/trade-gate.js';
 import { getSeedCapitalStatus, setSeedCapital } from '../../risk/seed-capital.js';
 import { runTrackAJob } from '../../scheduler/track-a-job.js';
 import { logger } from '../../utils/logger.js';
-import { invalidateDashboardCache } from './dashboard.js';
+import { invalidateDashboardCache } from '../../cache/dashboard-cache.js';
 
 export const settingsRoutes = new Hono();
 
@@ -118,6 +118,8 @@ settingsRoutes.put('/strategy', async (c) => {
   const requestedMode = (body.mode ?? 'SWING') as keyof typeof STRATEGY_PARAMS;
   const modeBase = STRATEGY_PARAMS[requestedMode] ?? STRATEGY_PARAMS.SWING;
   const useDynamic: boolean = body.use_dynamic_tpsl === true;
+  const aiScoringMode: 'fallback' | 'ensemble' = body.ai_scoring_mode === 'ensemble' ? 'ensemble' : 'fallback';
+  const ensembleConfig = body.ensemble_config ?? null; // JSONB — null이면 DB 기본값 유지
   const strategyData = {
     mode: requestedMode,
     notebooklm_prompt: body.notebooklm_prompt ?? '',
@@ -131,6 +133,8 @@ settingsRoutes.put('/strategy', async (c) => {
     strategy_document: body.strategy_document ?? '',
     risk_prompt: body.risk_prompt ?? '',
     use_dynamic_tpsl: useDynamic,
+    ai_scoring_mode: aiScoringMode,
+    ensemble_config: ensembleConfig,
   };
 
   // 감사 로그: 변경 전 상태 스냅샷
@@ -153,23 +157,29 @@ settingsRoutes.put('/strategy', async (c) => {
       `UPDATE strategy_config
        SET mode=$1, notebooklm_prompt=$2, gemini_prompt=$3, gpt_prompt=$4, claude_prompt=$5,
            buy_threshold=$6, stop_loss_pct=$7, take_profit_pct=$8, strategy_document=$9, risk_prompt=$10,
-           use_dynamic_tpsl=$11, updated_at=NOW()
+           use_dynamic_tpsl=$11, ai_scoring_mode=$13,
+           ensemble_config=COALESCE($14::jsonb, ensemble_config),
+           updated_at=NOW()
        WHERE is_active = true AND is_paper = $12`,
       [strategyData.mode, strategyData.notebooklm_prompt, strategyData.gemini_prompt,
        strategyData.gpt_prompt, strategyData.claude_prompt, strategyData.buy_threshold,
        strategyData.stop_loss_pct, strategyData.take_profit_pct,
-       strategyData.strategy_document, strategyData.risk_prompt, strategyData.use_dynamic_tpsl, isPaper],
+       strategyData.strategy_document, strategyData.risk_prompt, strategyData.use_dynamic_tpsl, isPaper,
+       strategyData.ai_scoring_mode,
+       strategyData.ensemble_config ? JSON.stringify(strategyData.ensemble_config) : null],
     );
 
     if ((rowCount ?? 0) === 0) {
       // 활성 전략이 없으면 새로 INSERT
       await getPool().query(
-        `INSERT INTO strategy_config (mode, is_active, notebooklm_prompt, gemini_prompt, gpt_prompt, claude_prompt, buy_threshold, stop_loss_pct, take_profit_pct, strategy_document, risk_prompt, use_dynamic_tpsl, is_paper)
-         VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        `INSERT INTO strategy_config (mode, is_active, notebooklm_prompt, gemini_prompt, gpt_prompt, claude_prompt, buy_threshold, stop_loss_pct, take_profit_pct, strategy_document, risk_prompt, use_dynamic_tpsl, is_paper, ai_scoring_mode, ensemble_config)
+         VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, COALESCE($14::jsonb, '{"weights":{"gemini":0.30,"gpt":0.35,"claude":0.20,"rss":0.15},"strategy":"weighted_avg","minModels":2}'::jsonb))`,
         [strategyData.mode, strategyData.notebooklm_prompt, strategyData.gemini_prompt,
          strategyData.gpt_prompt, strategyData.claude_prompt, strategyData.buy_threshold,
          strategyData.stop_loss_pct, strategyData.take_profit_pct,
-         strategyData.strategy_document, strategyData.risk_prompt, strategyData.use_dynamic_tpsl, isPaper],
+         strategyData.strategy_document, strategyData.risk_prompt, strategyData.use_dynamic_tpsl, isPaper,
+         strategyData.ai_scoring_mode,
+         strategyData.ensemble_config ? JSON.stringify(strategyData.ensemble_config) : null],
       );
     }
 
@@ -213,7 +223,7 @@ function buildStrategyDiff(
   next: Record<string, unknown>,
 ): string {
   if (!prev) return `신규 설정 (mode=${next.mode})`;
-  const KEYS = ['mode', 'buy_threshold', 'stop_loss_pct', 'take_profit_pct'] as const;
+  const KEYS = ['mode', 'buy_threshold', 'stop_loss_pct', 'take_profit_pct', 'ai_scoring_mode'] as const;
   const changed = KEYS.filter((k) => String(prev[k] ?? '') !== String(next[k] ?? ''));
   if (changed.length === 0) return '프롬프트 텍스트만 변경';
   return changed.map((k) => `${k}: ${prev[k]} → ${next[k]}`).join(', ');
@@ -635,12 +645,34 @@ settingsRoutes.post('/run-self-learning', async (c) => {
 // ── 거래 모드 전환 (모의/실전) ──
 settingsRoutes.get('/trading-mode', async (c) => {
   try {
+    const { isLiveEnabled } = await import('../guards/live-pin.js');
     const { rows } = await getPool().query('SELECT trading_mode_override FROM portfolio_allocation_config WHERE is_paper = false ORDER BY id DESC LIMIT 1');
     const dbMode = rows[0]?.trading_mode_override ?? null;
-    return c.json({ mode: dbMode ?? getEffectiveTradingMode(), dbOverride: dbMode });
+    return c.json({ mode: dbMode ?? getEffectiveTradingMode(), dbOverride: dbMode, liveEnabled: isLiveEnabled() });
   } catch {
-    return c.json({ mode: getEffectiveTradingMode(), dbOverride: null });
+    const { isLiveEnabled } = await import('../guards/live-pin.js');
+    return c.json({ mode: getEffectiveTradingMode(), dbOverride: null, liveEnabled: isLiveEnabled() });
   }
+});
+
+// v4: Live 거래 마스터 스위치 ON/OFF
+settingsRoutes.post('/live-toggle', async (c) => {
+  const body = await c.req.json<{ enabled: boolean; pin?: string }>();
+  const { setLiveEnabled, isLiveEnabled } = await import('../guards/live-pin.js');
+
+  if (body.enabled) {
+    // Live 켜기 → PIN 필수
+    if (body.pin !== '7012') {
+      return c.json({ error: '실전모드 활성화: PIN이 틀렸습니다' }, 403);
+    }
+    setLiveEnabled(true);
+    logger.info('🔴 Live 거래 활성화 (CEO 승인)', { component: 'SETTINGS' });
+  } else {
+    setLiveEnabled(false);
+    logger.info('🟢 Live 거래 비활성화 → Paper 전용', { component: 'SETTINGS' });
+  }
+
+  return c.json({ liveEnabled: isLiveEnabled() });
 });
 
 settingsRoutes.post('/trading-mode', async (c) => {
@@ -791,6 +823,52 @@ settingsRoutes.post('/defense-mode/deactivate', async (c) => {
   } catch (err: any) {
     return c.json({ ok: false, error: err?.message ?? 'defense deactivate failed' }, 500);
   }
+});
+
+// ── 비중 자동조정 제안 (pending_decisions category='rebalance') ──
+
+// 대기 중인 비중 제안 목록
+settingsRoutes.get('/portfolio/rebalance-proposals', async (c) => {
+  const pool = getPool();
+  const { rows } = await pool.query(
+    `SELECT id, situation, context, created_at, expires_at
+     FROM pending_decisions
+     WHERE category = 'rebalance' AND status = 'PENDING' AND expires_at > NOW()
+     ORDER BY created_at DESC LIMIT 10`,
+  );
+  return c.json({ proposals: rows });
+});
+
+// 비중 제안 승인
+settingsRoutes.post('/portfolio/rebalance-proposals/:id/approve', async (c) => {
+  const decisionId = Number(c.req.param('id'));
+  if (!decisionId) return c.json({ ok: false, error: 'invalid id' }, 400);
+  const { approveAllocationProposal } = await import('../../automation/cross-market-rotation.js');
+  const result = await approveAllocationProposal(decisionId);
+  if (result.ok) invalidateDashboardCache();
+  return c.json(result, result.ok ? 200 : 400);
+});
+
+// 비중 제안 거부
+settingsRoutes.post('/portfolio/rebalance-proposals/:id/reject', async (c) => {
+  const decisionId = Number(c.req.param('id'));
+  if (!decisionId) return c.json({ ok: false, error: 'invalid id' }, 400);
+  const pool = getPool();
+  await pool.query(
+    `UPDATE pending_decisions SET status='DECIDED', decision=$1, decided_at=NOW() WHERE id=$2 AND category='rebalance'`,
+    [JSON.stringify({ action: 'REJECTED' }), decisionId],
+  );
+  logger.info(`❌ 비중 제안 거부 (id=${decisionId})`, { component: 'SETTINGS' });
+  return c.json({ ok: true, message: '제안이 거부되었습니다' });
+});
+
+// 비중 제안 수동 트리거 (성과 분석 후 즉시 제안)
+settingsRoutes.post('/portfolio/propose-rebalance', async (c) => {
+  const { proposeAllocationRebalance } = await import('../../automation/cross-market-rotation.js');
+  proposeAllocationRebalance()
+    .then(() => logger.info('📊 비중 제안 수동 트리거 완료', { component: 'SETTINGS' }))
+    .catch(e => logger.error(`비중 제안 수동 트리거 실패: ${e}`, { component: 'SETTINGS' }));
+  return c.json({ ok: true, message: '30일 성과 분석 중... 제안이 생성되면 알림이 발송됩니다' });
 });
 
 // 워치리스트 순환 즉시 실행 (일요일 19:00 자동 외 수동 트리거)

@@ -44,6 +44,15 @@ export async function getOverseasState(key: string): Promise<string | null> {
   return rows.length > 0 ? String(rows[0].value) : null;
 }
 
+/** 포지션 종료 시 정리해야 할 overseas_state 키 배열 반환 */
+export function positionStateKeys(code: string, isPaper?: boolean): string[] {
+  const pfx = modePrefix(isPaper);
+  return [
+    `${pfx}maxprice_${code}`, `${pfx}partial_tp_stage_${code}`, `${pfx}dynamic_tpsl_${code}`,
+    `${pfx}scale_in_${code}`, `${pfx}turtle_trail_${code}`, `sync_sell_pending_${code}`,
+  ];
+}
+
 /** overseas_state KV 삭제 */
 export async function deleteOverseasState(key: string): Promise<void> {
   await getPool().query('DELETE FROM overseas_state WHERE key = $1', [key]);
@@ -57,10 +66,14 @@ export async function getUserFavorites(): Promise<Set<string>> {
   return new Set(raw ? JSON.parse(raw) as string[] : []);
 }
 
-/** 사용자 블랙리스트 종목 목록 */
+// CEO 기본 블랙리스트 (코드에서 관리 — 왠만하면 매수 금지 종목)
+const CEO_DEFAULT_BLACKLIST = new Set(['META']);
+
+/** 사용자 블랙리스트 종목 목록 (CEO 기본 + DB 저장분 합산) */
 export async function getUserBlacklist(): Promise<Set<string>> {
   const raw = await getOverseasState('user_blacklist');
-  return new Set(raw ? JSON.parse(raw) as string[] : []);
+  const dbList = raw ? JSON.parse(raw) as string[] : [];
+  return new Set([...CEO_DEFAULT_BLACKLIST, ...dbList]);
 }
 
 /** 즐겨찾기 토글 */

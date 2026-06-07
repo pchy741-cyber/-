@@ -8,6 +8,7 @@ import { timingSafeEqual } from 'crypto';
 import { Hono } from 'hono';
 import { getCookie } from 'hono/cookie';
 import { clearSessionCookie, createSessionToken, setSessionCookie, verifySessionToken } from '../middleware/auth.js';
+import { sleep } from '../../utils/sleep.js';
 
 export const authRoutes = new Hono();
 
@@ -42,7 +43,7 @@ authRoutes.post('/auth/login', async (c) => {
 
   if (!match) {
     // 브루트포스 방지: 500ms 지연
-    await new Promise((r) => setTimeout(r, 500));
+    await sleep(500);
     return c.json({ error: '패스워드가 틀렸습니다' }, 401);
   }
 

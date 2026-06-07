@@ -7,10 +7,12 @@
  * Cloud Run 서비스 계정에 `Cloud SQL Admin` 역할 필요
  */
 import { logger } from './logger.js';
+import { getKSTNow } from './time.js';
 
 const PROJECT = process.env.GCP_PROJECT ?? 'quantops-trading';
 const INSTANCE = process.env.CLOUD_SQL_INSTANCE ?? 'quantops-db';
-const IDLE_SHUTDOWN_MS = 30 * 60_000; // 30분 미사용 시 자동 중지
+const IDLE_SHUTDOWN_MS = 30 * 60_000; // 평일: 30분 미사용 시 자동 중지
+const IDLE_SHUTDOWN_WEEKEND_MS = 10 * 60_000; // 주말: 10분 미사용 시 공격적 중지
 
 let _lastActivityAt = Date.now();
 let _idleTimer: ReturnType<typeof setInterval> | null = null;
@@ -133,6 +135,9 @@ export async function tryWakeIfNeeded(): Promise<void> {
   await wakeCloudSqlIfNeeded();
 }
 
+/** Cloud SQL 기상 중인지 확인 */
+export function isWaking(): boolean { return _waking; }
+
 /** API 요청 시 호출 — 활동 시간 갱신 */
 export function touchActivity(): void {
   _lastActivityAt = Date.now();
@@ -148,14 +153,23 @@ export function startIdleWatcher(): void {
 
   _idleTimer = setInterval(async () => {
     const idleMs = Date.now() - _lastActivityAt;
-    if (idleMs < IDLE_SHUTDOWN_MS) return;
 
-    // 장중에는 자동 중지 안 함 (스케줄러가 DB 사용 중)
-    const kst = new Date(Date.now() + 9 * 3600000);
+    // 주말 판별: 토 09:00 ~ 월 06:00 KST = 전 세계 시장 휴장
+    const kst = getKSTNow();
+    const day = kst.getUTCDay();
     const h = kst.getUTCHours();
-    if (h >= 7 && h < 20) return;  // 국내 장중+저녁 Job 07:00~20:00 KST 보호 (배당/학습/튜너 18~19시)
-    if (h >= 22 || h < 7) return;  // 해외 장중 22:00~07:00 KST 보호 (미국 프리마켓 포함)
-    // → 자동 중지 가능: 20:00~22:00 KST만 (2시간 창)
+    const isWeekend = day === 0 || (day === 6 && h >= 9) || (day === 1 && h < 6);
+
+    const threshold = isWeekend ? IDLE_SHUTDOWN_WEEKEND_MS : IDLE_SHUTDOWN_MS;
+    if (idleMs < threshold) return;
+
+    // 평일: 장중 보호 시간대에는 자동 중지 안 함
+    if (!isWeekend) {
+      if (h >= 7 && h < 20) return;  // 국내 장중+저녁 Job 07:00~20:00 KST 보호
+      if (h >= 22 || h < 7) return;  // 해외 장중 22:00~07:00 KST 보호
+      // → 평일 자동 중지 가능: 20:00~22:00 KST만 (2시간 창)
+    }
+    // 주말: 보호 시간대 없음 → 10분 유휴 시 바로 중지
 
     try {
       const token = await getAccessToken();
@@ -164,7 +178,7 @@ export function startIdleWatcher(): void {
       const policy = await getActivationPolicy(token);
       if (policy !== 'ALWAYS') return; // 이미 꺼져있음
 
-      logger.info(`💤 ${Math.round(idleMs / 60000)}분 미사용 → Cloud SQL 자동 중지`, { component: 'SQL_WAKE' });
+      logger.info(`💤 ${Math.round(idleMs / 60000)}분 미사용${isWeekend ? ' (주말)' : ''} → Cloud SQL 자동 중지`, { component: 'SQL_WAKE' });
       await stopInstance(token);
       logger.info('💤 Cloud SQL 자동 중지 완료 (비용 절약)', { component: 'SQL_WAKE' });
     } catch (err) {
@@ -184,6 +198,12 @@ export function startDbHealthWatcher(checkDb: () => Promise<boolean>, onReconnec
   if (_healthTimer) return;
 
   _healthTimer = setInterval(async () => {
+    // 주말 가드: 의도적 Cloud SQL 중지 상태 → wake 시도 차단 (핑퐁 방지)
+    const kstH = getKSTNow();
+    const d = kstH.getUTCDay(), hh = kstH.getUTCHours();
+    const isWeekendOff = d === 0 || (d === 6 && hh >= 9) || (d === 1 && hh < 6);
+    if (isWeekendOff) return; // 주말 동면 중 — DB 복구 시도 안 함
+
     try {
       const ok = await checkDb();
       if (ok) return; // DB 정상
@@ -213,6 +233,91 @@ export function startDbHealthWatcher(checkDb: () => Promise<boolean>, onReconnec
       }
     } catch { /* 다음 주기에 재시도 */ }
   }, 2 * 60_000); // 2분마다 체크
+}
+
+// ── Cloud Run 자동 스케일링 — 주말 min=0, 평일 min=1 ──
+const CR_SERVICE = process.env.K_SERVICE ?? 'ai-auto-bot';
+const CR_REGION = 'asia-northeast3';
+
+/**
+ * Cloud Run min-instances 변경 (Cloud Run Admin API v2)
+ * 서비스 계정에 `Cloud Run Developer` 또는 `Cloud Run Admin` 역할 필요
+ */
+async function setCloudRunMinInstances(min: number): Promise<void> {
+  const token = await getAccessToken();
+  if (!token) return; // 로컬 환경
+
+  const baseUrl = `https://run.googleapis.com/v2/projects/${PROJECT}/locations/${CR_REGION}/services/${CR_SERVICE}`;
+
+  // 1. 현재 설정 조회 (변경 필요 여부 확인)
+  const getRes = await fetch(baseUrl, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!getRes.ok) throw new Error(`Cloud Run GET ${getRes.status}: ${await getRes.text()}`);
+  const svc = await getRes.json() as Record<string, unknown>;
+  const template = (svc.template ?? {}) as Record<string, unknown>;
+  const scaling = (template.scaling ?? {}) as Record<string, unknown>;
+  const current = scaling.minInstanceCount ?? 1;
+  if (current === min) {
+    logger.info(`🚀 Cloud Run min-instances 이미 ${min} → 변경 불필요`, { component: 'CR_SCALE' });
+    return;
+  }
+
+  // 2. updateMask로 변경할 필드만 PATCH (read-only 필드 충돌 방지)
+  const patchUrl = `${baseUrl}?updateMask=template.scaling.minInstanceCount`;
+  const patchRes = await fetch(patchUrl, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      template: { scaling: { minInstanceCount: min } },
+    }),
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!patchRes.ok) throw new Error(`Cloud Run PATCH ${patchRes.status}: ${await patchRes.text()}`);
+  logger.info(`🚀 Cloud Run min-instances: ${current} → ${min}`, { component: 'CR_SCALE' });
+}
+
+/**
+ * 주말 동면 — Cloud SQL 중지 + Cloud Run min=0
+ * 토요일 09:00 KST cron에서 호출
+ */
+export async function weekendHibernate(): Promise<void> {
+  logger.info('🌙 주말 동면 시작 — Cloud SQL 중지 + Cloud Run min=0', { component: 'HIBERNATE' });
+
+  try {
+    const token = await getAccessToken();
+    if (!token) { logger.info('🌙 로컬 환경 — 동면 스킵', { component: 'HIBERNATE' }); return; }
+
+    // Cloud SQL 중지
+    try {
+      const policy = await getActivationPolicy(token);
+      if (policy === 'ALWAYS') {
+        await stopInstance(token);
+        logger.info('💤 Cloud SQL 중지 완료', { component: 'HIBERNATE' });
+      }
+    } catch (e) { logger.warn(`💤 Cloud SQL 중지 실패: ${e}`, { component: 'HIBERNATE' }); }
+
+    // Cloud Run min=0
+    try {
+      await setCloudRunMinInstances(0);
+    } catch (e) { logger.warn(`🚀 Cloud Run min=0 실패: ${e}`, { component: 'HIBERNATE' }); }
+
+    logger.info('🌙 주말 동면 완료 — 월요일 06:00 자동 기상 예정', { component: 'HIBERNATE' });
+  } catch (e) {
+    logger.error(`🌙 주말 동면 실패: ${e}`, { component: 'HIBERNATE' });
+  }
+}
+
+/**
+ * 월요일 기상 — Cloud Run min=1 복원 (Cloud SQL은 wakeCloudSqlIfNeeded에서 처리)
+ * 부팅 시 또는 월요일 06:00 cron에서 호출
+ */
+export async function weekdayWakeUp(): Promise<void> {
+  logger.info('☀️ 평일 기상 — Cloud Run min=1 복원', { component: 'HIBERNATE' });
+  try {
+    await setCloudRunMinInstances(1);
+  } catch (e) { logger.warn(`☀️ Cloud Run min=1 복원 실패: ${e}`, { component: 'HIBERNATE' }); }
 }
 
 /** 정리 (shutdown 시) */

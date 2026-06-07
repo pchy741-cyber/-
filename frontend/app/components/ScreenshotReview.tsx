@@ -83,14 +83,19 @@ export default function ScreenshotReview(props: ScreenshotProps) {
     const screenshots: { tab: string; base64: string }[] = [];
 
     let enabledOptional: typeof OPTIONAL_TABS = [];
-    try {
-      const [divWl, futDash] = await Promise.all([
-        api('/dividend/watchlist').catch(() => ({ enabled: false })),
-        api('/futures/dashboard').catch(() => ({ enabled: false })),
-      ]);
-      if ((divWl as any).enabled) enabledOptional.push(OPTIONAL_TABS[0]);
-      if ((futDash as any).enabled) enabledOptional.push(OPTIONAL_TABS[1]);
-    } catch {}
+    if (viewMode === 'paper') {
+      // Paper 모드: 배당/선물 항상 캡쳐 (트랙레코드 축적 중)
+      enabledOptional = [...OPTIONAL_TABS];
+    } else {
+      try {
+        const [divWl, futDash] = await Promise.all([
+          api('/dividend/watchlist').catch(() => ({ enabled: false })),
+          api('/futures/dashboard').catch(() => ({ enabled: false })),
+        ]);
+        if ((divWl as any).enabled) enabledOptional.push(OPTIONAL_TABS[0]);
+        if ((futDash as any).enabled) enabledOptional.push(OPTIONAL_TABS[1]);
+      } catch {}
+    }
     const TAB_LIST = [...CORE_TABS, ...enabledOptional];
 
     const dualCount = skipDualCapture ? 0 : DUAL_MODE_TABS.length;

@@ -92,7 +92,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
               <span className="text-[9px] text-slate-600">{totalValue > 0 ? ((domesticEval / totalValue) * 100).toFixed(0) : 0}%</span>
               <span className={`text-[9px] font-medium ${krActualPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{krActualPct > 0 ? '+' : ''}{krActualPct.toFixed(1)}%</span>
             </div>
-            <div className="text-[8px] text-slate-600 mt-0.5">{chains.length}종목</div>
+            <div className="text-[10px] text-slate-600 mt-0.5">{chains.length}종목</div>
           </div>
           <div className="rounded-xl px-2 sm:px-3 py-2.5 bg-slate-800/40 border border-white/[0.06]">
             <div className="text-[9px] text-slate-500 mb-0.5">주문가능</div>
@@ -100,7 +100,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
             <div className="flex items-center justify-between mt-1">
               <span className="text-[9px] text-slate-600">{totalValue > 0 ? ((domesticCash / totalValue) * 100).toFixed(0) : 0}%</span>
             </div>
-            <div className="text-[8px] text-slate-600 mt-0.5">통합증거금</div>
+            <div className="text-[10px] text-slate-600 mt-0.5">통합증거금</div>
           </div>
           <div className={`rounded-xl px-2 sm:px-3 py-2.5 ${usActualPct >= 0 ? 'bg-indigo-950/40 border border-indigo-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>
             <div className="text-[9px] text-slate-500 mb-0.5">🇺🇸 미국주식</div>
@@ -109,7 +109,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
               <span className="text-[9px] text-slate-600">{totalValue > 0 ? ((overseasMarketKrw / totalValue) * 100).toFixed(0) : 0}%</span>
               <span className={`text-[9px] font-medium ${usActualPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{usActualPct > 0 ? '+' : ''}{usActualPct.toFixed(1)}%</span>
             </div>
-            <div className="text-[8px] text-slate-600 mt-0.5">{usHoldings.length}종목</div>
+            <div className="text-[10px] text-slate-600 mt-0.5">{usHoldings.length}종목</div>
           </div>
           {/* 배당 ETF */}
           {(() => {
@@ -124,7 +124,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
                   <span className="text-[9px] text-slate-600">{d?.investedKrw ? `₩${Math.round(d.investedKrw / 10000)}만` : '미투자'}</span>
                   {d?.investedKrw ? <span className={`text-[9px] font-medium ${divReturnPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{divReturnPct > 0 ? '+' : ''}{divReturnPct.toFixed(1)}%</span> : null}
                 </div>
-                <div className="text-[8px] text-slate-600 mt-0.5">{d?.holdings?.length ?? 0}종목 · 월${(d?.monthlyDivUsd ?? 0).toFixed(0)}</div>
+                <div className="text-[10px] text-slate-600 mt-0.5">{d?.holdings?.length ?? 0}종목 · 월${(d?.monthlyDivUsd ?? 0).toFixed(0)}</div>
               </div>
             );
           })()}
@@ -141,7 +141,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
                   <span className="text-[9px] text-slate-600">{f?.investedKrw ? `₩${Math.round(f.investedKrw / 10000)}만` : '미투자'}</span>
                   {f?.investedKrw ? <span className={`text-[9px] font-medium ${fReturnPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{fReturnPct > 0 ? '+' : ''}{fReturnPct.toFixed(1)}%</span> : null}
                 </div>
-                <div className="text-[8px] text-slate-600 mt-0.5">{f?.trades ?? 0}건 · 승률{f?.winRate ?? 0}%</div>
+                <div className="text-[10px] text-slate-600 mt-0.5">{f?.trades ?? 0}건 · 승률{f?.winRate ?? 0}%</div>
               </div>
             );
           })()}

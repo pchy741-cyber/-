@@ -100,7 +100,9 @@ async function dbInsertTick(sessionId: number | null, tickNum: number, result: s
       `INSERT INTO loop_ticks (session_id, tick_num, result, duration_ms, interval_ms, market_phase) VALUES ($1, $2, $3, $4, $5, $6)`,
       [sessionId, tickNum, result, durationMs, intervalMs, getUSMarketPhase()],
     );
-  } catch {}
+  } catch (e) {
+    logger.warn(`Loop tick DB 기록 실패: ${e}`, { component: 'LOOP' });
+  }
 }
 
 /** 임계 이벤트 시 Copilot Lite 점검 → DB 저장 + Telegram */
@@ -133,12 +135,13 @@ async function runCopilotCheck(reason: string): Promise<void> {
 async function tick(): Promise<void> {
   if (!state.active) return;
 
-  // PAUSED 체크: 모든 시장 마감 → PAUSED, 아무 시장이라도 열리면 TRADING
-  const currentPhase = getUSMarketPhase();
-  const openRegions = getOpenMarketRegions();
-  const anyMarketOpen = openRegions.size > 0;
+  // ── 0. 시장 상태 1회 캐시 (tick 전체에서 재사용 — 중복 호출 제거) ──
+  const tickMarketPhase = getUSMarketPhase();
+  const tickOpenRegions = getOpenMarketRegions();
+  const anyMarketOpen = tickOpenRegions.size > 0;
 
-  if (!anyMarketOpen && (currentPhase === 'CLOSED' || currentPhase === 'PREMARKET')) {
+  // PAUSED 체크: 모든 시장 마감 → PAUSED
+  if (!anyMarketOpen && (tickMarketPhase === 'CLOSED' || tickMarketPhase === 'PREMARKET')) {
     if (state.phase === 'TRADING') {
       state.phase = 'PAUSED';
       const prevInterval = state.adaptiveIntervalMs;
@@ -146,28 +149,27 @@ async function tick(): Promise<void> {
       logger.info(`Auto Pilot: 전체 장외 시간 → PAUSED (${prevInterval / 1000}s → ${PAUSE_CHECK_MS / 1000}s)`, { component: 'LOOP' });
       dbUpdateSession(state.dbSessionId, { phase: 'PAUSED' }).catch(() => {});
     }
-    // PAUSED 상태: 장 열릴 때까지 대기
     scheduleNext();
     return;
   }
 
-  // PAUSED → TRADING 자동 복귀 (아무 시장이라도 열리면)
+  // PAUSED → TRADING 자동 복귀
   if (state.phase === 'PAUSED' && anyMarketOpen) {
-    const regions = [...openRegions].join(',');
+    const regions = [...tickOpenRegions].join(',');
     state.phase = 'TRADING';
     state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
     logger.info(`Auto Pilot: 장 오픈 감지 (${regions}) → TRADING 복귀`, { component: 'LOOP' });
     dbUpdateSession(state.dbSessionId, { phase: 'TRADING' }).catch(() => {});
   }
 
-  // Kill Switch 로그 (매도 탈출은 각 job 내부에서 처리)
+  // Kill Switch 로그
   if (isKillSwitchActive('KR')) logger.info('Auto Pilot: KR Kill Switch 활성 — 국내 매도만 실행', { component: 'LOOP' });
   if (isKillSwitchActive('OVERSEAS')) {
     logger.info('Auto Pilot: OVERSEAS Kill Switch 활성 — 해외 매도만 실행', { component: 'LOOP' });
     runCopilotCheck('kill_switch').catch(() => {});
   }
 
-  // ── 1. 전략 유효성 체크 (3틱마다 — 외부 API 절약) ──
+  // ── 1. 전략 유효성 체크 (3틱마다) ──
   const shouldCheckValidity = state.totalRuns % 3 === 0;
   const validity = shouldCheckValidity
     ? await checkStrategyValidity().catch(() => ({ adjusted: false, regenerate: false, reason: undefined as string | undefined }))
@@ -183,9 +185,9 @@ async function tick(): Promise<void> {
     }
   }
 
-  // ── 2. 매매 실행 — 열린 시장에 따라 분기 ──
-  const krOpen = openRegions.has('KR');
-  const overseasOpen = [...openRegions].some(r => r !== 'KR');
+  // ── 2. 매매 실행 — 국내/해외 분기 ──
+  const krOpen = tickOpenRegions.has('KR');
+  const overseasOpen = [...tickOpenRegions].some(r => r !== 'KR');
   const activeMarkets = [krOpen && '🇰🇷국내', overseasOpen && '🌏해외'].filter(Boolean).join('+');
   logger.info(`Auto Pilot 틱 #${state.totalRuns + 1}: ${activeMarkets || '장외'} 실행`, { component: 'LOOP' });
 
@@ -194,20 +196,30 @@ async function tick(): Promise<void> {
   const t0 = Date.now();
 
   try {
-    // 국내장 열림 → Track B paper+live 실행
+    // 국내장 + 해외장 동시 실행 가능 시 병렬화
+    const jobs: Promise<void>[] = [];
+
     if (krOpen) {
+      // Track B paper+live 병렬 (독립 컨텍스트 — 충돌 없음)
       const { runTrackBJob } = await import('./track-b-job.js');
-      await runWithMode(true, () => runTrackBJob()).catch(e => logger.error(`Loop KR paper 실패: ${e}`, { component: 'LOOP' }));
-      await runWithMode(false, () => runTrackBJob()).catch(e => logger.error(`Loop KR live 실패: ${e}`, { component: 'LOOP' }));
+      jobs.push(
+        Promise.all([
+          runWithMode(true, () => runTrackBJob()).catch(e => logger.error(`Loop KR paper: ${e}`, { component: 'LOOP' })),
+          runWithMode(false, () => runTrackBJob()).catch(e => logger.error(`Loop KR live: ${e}`, { component: 'LOOP' })),
+        ]).then(() => {}),
+      );
     }
-    // 해외장 열림 → 해외 dual 실행
     if (overseasOpen) {
       const { runOverseasDual } = await import('./overseas-job.js');
-      await runOverseasDual();
+      jobs.push(runOverseasDual());
     }
+
+    if (jobs.length > 0) await Promise.all(jobs);
+
     state.lastRunDurationMs = Date.now() - t0;
     state.lastRunResult = 'ok';
     state.consecutiveErrors = 0;
+    state.consecutiveNoBuyCandidates = 0; // 실행 성공 시 idle 카운터 리셋
   } catch (err) {
     state.lastRunDurationMs = Date.now() - t0;
     state.lastRunResult = 'error';
@@ -227,21 +239,23 @@ async function tick(): Promise<void> {
   dbInsertTick(state.dbSessionId, state.totalRuns, state.lastRunResult ?? 'error', state.lastRunDurationMs, state.adaptiveIntervalMs).catch(() => {});
   dbUpdateSession(state.dbSessionId, {
     total_runs: state.totalRuns,
-    consecutive_errors: state.consecutiveErrors,
+    last_run_result: state.lastRunResult,
   }).catch(() => {});
 
-  // ── 3. 적응형 인터벌 조정 ──
+  // ── 3. 적응형 인터벌 조정 (캐시된 시장 상태 전달) ──
   const prevInterval = state.adaptiveIntervalMs;
-  adaptiveInterval();
+  adaptiveInterval(tickOpenRegions, tickMarketPhase);
   if (prevInterval !== state.adaptiveIntervalMs) {
-    logger.debug(`interval: ${prevInterval / 60_000}m→${state.adaptiveIntervalMs / 60_000}m (${getUSMarketPhase()})`, { component: 'LOOP' });
+    logger.debug(`interval: ${prevInterval / 60_000}m→${state.adaptiveIntervalMs / 60_000}m (${tickMarketPhase})`, { component: 'LOOP' });
   }
   scheduleNext();
 }
 
-function adaptiveInterval(): void {
+const DEEP_IDLE_INTERVAL_MS = 15 * 60_000; // 15분 (3연속 무활동 시 깊은 유휴)
+
+function adaptiveInterval(cachedRegions?: Set<string>, cachedPhase?: USMarketPhase): void {
   const brief = getActiveSessionBrief();
-  const openRegions = getOpenMarketRegions();
+  const openRegions = cachedRegions ?? getOpenMarketRegions();
   const krOpen = openRegions.has('KR');
 
   // VIX STRESS/CRISIS → 가속 (3분)
@@ -261,13 +275,12 @@ function adaptiveInterval(): void {
       state.adaptiveIntervalMs = FAST_INTERVAL_MS;
       return;
     }
-    // 국내장 중 (마의시간대 포함) → 5분
     state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
     return;
   }
 
-  // 미국장 시간대별 차등
-  const usPhase = getUSMarketPhase();
+  // 미국장 시간대별 차등 (캐시된 phase 사용)
+  const usPhase = cachedPhase ?? getUSMarketPhase();
   if (usPhase === 'OPEN_VOLATILE' || usPhase === 'PRIME' || usPhase === 'POWER_HOUR') {
     state.adaptiveIntervalMs = FAST_INTERVAL_MS;
     return;
@@ -277,7 +290,12 @@ function adaptiveInterval(): void {
     return;
   }
 
-  // 유휴 상태 감지: 2연속 매수 후보 없음 → 감속 (8분)
+  // 깊은 유휴: 3연속 무활동 → 15분 (API/DB 부하 최소화)
+  if (state.consecutiveNoBuyCandidates >= 3) {
+    state.adaptiveIntervalMs = DEEP_IDLE_INTERVAL_MS;
+    return;
+  }
+  // 유휴: 2연속 무활동 → 8분
   if (state.consecutiveNoBuyCandidates >= 2) {
     state.adaptiveIntervalMs = SLOW_INTERVAL_MS;
     return;

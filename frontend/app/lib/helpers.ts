@@ -33,6 +33,11 @@ export function toDisplayName(name: unknown, code?: string): string {
   return n;
 }
 
+/** confirm 다이얼로그 제목 접두사 — 실전/연습 모드 구분 */
+export function livePrefix(viewMode: 'live' | 'paper'): string {
+  return viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';
+}
+
 export function simplifyReason(reason: string | null | undefined, side: string): string {
   if (!reason) return side === 'BUY' ? '매수' : '매도';
   if (reason.includes('15:20') || reason.includes('강제 청산')) return '마감 청산';

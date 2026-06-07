@@ -125,33 +125,33 @@ export function AutoPilotButton({ loopStatusProp, capturing, toast }: {
         {confirmStop ? (
           <>
             <span className="text-[9px] font-black">중지?</span>
-            <span className="text-[8px] mt-0.5 opacity-80">확인</span>
+            <span className="text-[10px] mt-0.5 opacity-80">확인</span>
           </>
         ) : loopStatus?.active ? (
           <>
             <span className="text-[9px] font-black tracking-wider">{loopLabel}</span>
             <span className="text-[11px] font-bold mt-0.5">{loopStatus.totalRuns}</span>
-            {phaseLabel && <span className="text-[7px] opacity-70 mt-0.5">{phaseLabel}</span>}
-            {ap?.overridesSet ? <span className="text-[7px] text-amber-300 mt-0.5">AP:{ap.overridesSet}</span> : null}
-            {countdown && <span className="text-[7px] opacity-50">{countdown}</span>}
+            {phaseLabel && <span className="text-[9px] opacity-70 mt-0.5">{phaseLabel}</span>}
+            {ap?.overridesSet ? <span className="text-[9px] text-amber-300 mt-0.5">AP:{ap.overridesSet}</span> : null}
+            {countdown && <span className="text-[9px] opacity-50">{countdown}</span>}
           </>
         ) : (
           <>
             <span className="text-[9px] font-black tracking-wider">{loopLabel}</span>
-            <span className="text-[8px] mt-0.5 opacity-60">루프</span>
+            <span className="text-[10px] mt-0.5 opacity-60">루프</span>
           </>
         )}
       </div>
 
       {/* 스캘핑 감지 뱃지 */}
       {hasScalp && loopStatus?.active && !hasErrors && (
-        <span className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 text-white text-[7px] font-bold rounded-full flex items-center justify-center animate-bounce">
+        <span className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center animate-bounce">
           S
         </span>
       )}
       {/* 연속 에러 뱃지 */}
       {hasErrors && loopStatus?.active && (
-        <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-600 text-white text-[8px] font-bold rounded-full flex items-center justify-center animate-pulse">
+        <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-600 text-white text-[10px] font-bold rounded-full flex items-center justify-center animate-pulse">
           {loopStatus.consecutiveErrors}
         </span>
       )}

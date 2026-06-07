@@ -122,20 +122,27 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
     return bTotal - aTotal;
   });
 
-  // ─── 분봉 멀티타임프레임 확인 (상위 5개 후보, 장중에만) ──────────────────
-  // 프로 트레이더 기준: 일봉 BUY + 15분봉 비하락 + 1분봉 양수 = 3중 확인
+  // ─── 분봉 멀티타임프레임 확인 (상위 10개 후보, 장중에만) ──────────────────
+  // 프로 트레이더 기준: 일봉 BUY + 15분봉 비하락 + 1분봉 양수 + VWAP 위치 = 4중 확인
   const intradayBonus = new Map<string, number>();
   const intraday15mDown = new Set<string>();  // 15분봉 하락 종목
+  const intradayVwapBelow = new Set<string>(); // VWAP 아래 종목 (싸게 사기 보너스)
   if (isMarketOpen() && candidates.length > 0) {
-    const top5 = candidates.slice(0, 5);
-    await Promise.allSettled(top5.map(async (cand) => {
+    const topN = candidates.slice(0, 10); // 5→10개로 확대 (더 많은 종목 분봉 확인)
+    await Promise.allSettled(topN.map(async (cand) => {
       try {
         const minuteCandles = await getMinuteChart(cand.stock_code);
         if (minuteCandles.length >= 5) {
           const intraday = analyzeIntraday(minuteCandles);
-          intradayBonus.set(cand.stock_code, intraday.score);
+          // VWAP 아래서 사면 유리 → 보너스 +5, 위에서 사면 페널티 -3
+          const vwapAdj = intraday.vwapPosition === 'BELOW' ? 5
+            : intraday.vwapPosition === 'ABOVE' ? -3 : 0;
+          intradayBonus.set(cand.stock_code, intraday.score + vwapAdj);
           if (intraday.trend15m === 'DOWN') intraday15mDown.add(cand.stock_code);
-          logger.info(`  ⏱️ ${cand.stock_code}: 분봉=${intraday.trend}(${intraday.score}) 15m=${intraday.trend15m} VWAP=${intraday.vwapPosition} vol급등=${intraday.volumeSurge} | ${intraday.reason}`, { component: 'TRACK_B' });
+          if (intraday.vwapPosition === 'BELOW') {
+            intradayVwapBelow.add(cand.stock_code);
+          }
+          logger.info(`  ⏱️ ${cand.stock_code}: 분봉=${intraday.trend}(${intraday.score}) 15m=${intraday.trend15m} VWAP=${intraday.vwapPosition}(${vwapAdj >= 0 ? '+' : ''}${vwapAdj}) vol급등=${intraday.volumeSurge} | ${intraday.reason}`, { component: 'TRACK_B' });
         }
       } catch {
         // 분봉 실패 시 무시 — 일봉 분석으로 진행

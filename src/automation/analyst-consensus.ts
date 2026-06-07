@@ -1,5 +1,6 @@
 import { getActiveWatchlist } from '../db/client.js';
 import { logger } from '../utils/logger.js';
+import { sleep } from '../utils/sleep.js';
 
 /**
  * 애널리스트 컨센서스 수집기
@@ -327,7 +328,7 @@ export async function analyzeWatchlistConsensus(): Promise<Map<string, AnalystCo
 
     // rate limit 딜레이
     if (i + batchSize < watchlist.length) {
-      await new Promise((r) => setTimeout(r, 500));
+      await sleep(500);
     }
   }
 

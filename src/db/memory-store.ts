@@ -50,6 +50,7 @@ const store = {
     buy_threshold: 55,
     stop_loss_pct: -2,
     take_profit_pct: 4,
+    ai_scoring_mode: 'fallback' as const,
     updated_at: new Date().toISOString(),
   } as StrategyConfig,
   systemLogs: [] as Array<{ level: string; component: string; message: string; details: unknown }>,

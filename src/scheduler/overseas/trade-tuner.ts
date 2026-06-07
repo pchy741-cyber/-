@@ -379,6 +379,104 @@ function generateRecommendations(ctx: {
     }
   }
 
+  // ── 6. 세이버메트릭스: 파라미터 감도 분석 (Parameter Sensitivity) ──
+  // 다양한 SL/TP 조합으로 가상 시뮬레이션 → 최적 R배수 역산
+  recs.push(...runParameterSensitivity(ctx.trades, ctx.globalWinRate));
+
+  return recs;
+}
+
+/**
+ * 세이버메트릭스 파라미터 감도 분석
+ * 과거 거래의 max_price를 활용해 "만약 TP/SL을 X%로 했다면?" 시뮬레이션
+ */
+function runParameterSensitivity(
+  trades: TradeRecord[],
+  currentWinRate: number,
+): TuneRecommendation[] {
+  if (trades.length < 15) return [];
+
+  const recs: TuneRecommendation[] = [];
+  const tradesWithMax = trades.filter(t => t.max_price > t.avg_buy * 1.001);
+  if (tradesWithMax.length < 10) return recs;
+
+  // SL 후보: 3~12%, TP 후보: 5~25% — 각 조합의 가상 PF 계산
+  const slCandidates = [3, 4, 5, 6, 7, 8, 10, 12];
+  const tpCandidates = [5, 7, 10, 12, 15, 20];
+
+  let bestPF = 0;
+  let bestEV = -Infinity;
+  let bestSL = 5;
+  let bestTP = 12;
+
+  for (const sl of slCandidates) {
+    for (const tp of tpCandidates) {
+      if (tp / sl < 1.5) continue; // R:R 1.5 미만은 건너뜀
+
+      let simWins = 0;
+      let simGrossWin = 0;
+      let simGrossLoss = 0;
+
+      for (const t of tradesWithMax) {
+        const maxPnlPct = ((t.max_price - t.avg_buy) / t.avg_buy) * 100;
+        const actualPnlPct = t.pnl_pct;
+
+        // 시뮬레이션: TP에 먼저 도달했으면 TP에서 매도, 아니면 SL 또는 실제값
+        if (maxPnlPct >= tp) {
+          // TP 도달 → 수익
+          simWins++;
+          simGrossWin += tp;
+        } else if (actualPnlPct <= -sl) {
+          // SL 발동 → 손실
+          simGrossLoss += sl;
+        } else {
+          // TP/SL 모두 미발동 → 실제 결과 사용
+          if (actualPnlPct >= 0) {
+            simWins++;
+            simGrossWin += actualPnlPct;
+          } else {
+            simGrossLoss += Math.abs(actualPnlPct);
+          }
+        }
+      }
+
+      const simWinRate = simWins / tradesWithMax.length;
+      const simPF = simGrossLoss > 0 ? simGrossWin / simGrossLoss : simGrossWin > 0 ? 99 : 0;
+      const simAvgWin = simWins > 0 ? simGrossWin / simWins : 0;
+      const simLosses = tradesWithMax.length - simWins;
+      const simAvgLoss = simLosses > 0 ? simGrossLoss / simLosses : 1;
+      const simEV = simWinRate * simAvgWin - (1 - simWinRate) * simAvgLoss;
+
+      if (simEV > bestEV && simPF > 1.0) {
+        bestEV = simEV;
+        bestPF = simPF;
+        bestSL = sl;
+        bestTP = tp;
+      }
+    }
+  }
+
+  // 현재 대비 의미있는 개선이 있으면 추천
+  const currentAvgWin = trades.filter(t => t.pnl_pct > 0).reduce((s, t) => s + t.pnl_pct, 0);
+  const currentAvgLoss = Math.abs(trades.filter(t => t.pnl_pct <= 0).reduce((s, t) => s + t.pnl_pct, 0));
+  const currentPF = currentAvgLoss > 0 ? currentAvgWin / currentAvgLoss : 1;
+
+  if (bestPF > currentPF * 1.15 && bestEV > 0.5) {
+    // 15% 이상 PF 개선 + EV 0.5% 이상
+    recs.push({
+      param: 'sensitivity_optimal_sl',
+      current: Math.round(currentAvgLoss / trades.filter(t => t.pnl_pct <= 0).length * 10) / 10,
+      recommended: bestSL,
+      reason: `⚾ 감도분석: SL ${bestSL}% + TP ${bestTP}% → PF ${bestPF.toFixed(2)} (현재 ${currentPF.toFixed(2)}) EV +${bestEV.toFixed(2)}%/건`,
+    });
+    recs.push({
+      param: 'sensitivity_optimal_tp',
+      current: Math.round(currentAvgWin / Math.max(1, trades.filter(t => t.pnl_pct > 0).length) * 10) / 10,
+      recommended: bestTP,
+      reason: `⚾ 감도분석: R:R ${(bestTP / bestSL).toFixed(1)} 최적 (${tradesWithMax.length}건 시뮬)`,
+    });
+  }
+
   return recs;
 }
 
@@ -387,7 +485,14 @@ function generateRecommendations(ctx: {
 function buildOverrides(recs: TuneRecommendation[]): Record<string, number> {
   const overrides: Record<string, number> = {};
   for (const r of recs) {
-    overrides[r.param] = r.recommended;
+    // 감도분석 결과는 실제 파라미터명으로 매핑
+    if (r.param === 'sensitivity_optimal_sl') {
+      overrides['sl_base_pct'] = r.recommended;
+    } else if (r.param === 'sensitivity_optimal_tp') {
+      overrides['tp_base_pct'] = r.recommended;
+    } else {
+      overrides[r.param] = r.recommended;
+    }
   }
   return overrides;
 }
@@ -407,10 +512,20 @@ export async function getTunerOverrides(isPaper = true): Promise<Record<string, 
 // ── 리포트 ──
 
 function formatReport(r: TuneResult): string {
+  // 세이버메트릭스 요약 계산
+  const wins = r.analyzedTrades * r.globalWinRate;
+  const losses = r.analyzedTrades - wins;
+  const avgWin = wins > 0 ? (r.avgPnlPct * r.analyzedTrades + Math.abs(r.avgPnlPct) * losses) / wins : 0; // 추정
+  const avgLoss = r.avgLeakPct > 0 ? r.avgLeakPct : 3;
+  const rMultiple = avgLoss > 0 ? Math.abs(avgWin) / avgLoss : 1;
+  const bep = rMultiple > 0 ? 1 / (1 + rMultiple) : 0.5;
+  const margin = r.globalWinRate - bep;
+
   const lines = [
-    `🔧 Trade Tuner 분석 완료`,
-    `📊 ${r.analyzedTrades}건 분석 | 승률 ${(r.globalWinRate * 100).toFixed(0)}% | 평균 ${r.avgPnlPct >= 0 ? '+' : ''}${r.avgPnlPct.toFixed(2)}%`,
-    `💸 평균 수익 누출: ${r.avgLeakPct.toFixed(1)}% (고점 대비 덜 벌고 매도)`,
+    `🔧 Trade Tuner + ⚾ Sabermetrics 분석`,
+    `📊 ${r.analyzedTrades}건 | 승률 ${(r.globalWinRate * 100).toFixed(0)}% | 평균 ${r.avgPnlPct >= 0 ? '+' : ''}${r.avgPnlPct.toFixed(2)}%`,
+    `⚾ R배수 ${rMultiple.toFixed(1)} | 손익분기 ${(bep * 100).toFixed(0)}% | 마진 ${margin >= 0 ? '+' : ''}${(margin * 100).toFixed(1)}%p`,
+    `💸 수익누출: ${r.avgLeakPct.toFixed(1)}% (고점 대비)`,
   ];
 
   if (r.sectorStats.length > 0) {

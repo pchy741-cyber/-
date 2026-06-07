@@ -7,6 +7,20 @@ export const BACKEND_URL =
     ? (process.env.NEXT_PUBLIC_API_BASE_URL || (window.location.port === '3000' ? 'http://localhost:8080' : window.location.origin))
     : (process.env.NEXT_PUBLIC_API_BASE_URL || '');
 
+// DB 연결 에러 패턴 — raw 에러 대신 친절한 메시지로 교체
+const DB_ERROR_PATTERNS = ['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'connection refused',
+  'Connection terminated', 'no pg_hba.conf', 'the database system is starting up',
+  'could not connect', 'connect ECONNRESET', 'memory mode'];
+
+function isDbError(msg: string): boolean {
+  return DB_ERROR_PATTERNS.some(p => msg.includes(p));
+}
+
+/** DB 에러 발생 시 전역 이벤트 발생 → Dashboard에서 워밍 오버레이 재표시 */
+export function emitDbUnavailable() {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('db-unavailable'));
+}
+
 export async function api(path: string, opts?: RequestInit & { timeout?: number }) {
   const base = BACKEND_URL.endsWith('/') ? BACKEND_URL.slice(0, -1) : BACKEND_URL;
   const ms = opts?.timeout ?? (path.includes('overseas') ? 15000 : 12000);
@@ -15,13 +29,27 @@ export async function api(path: string, opts?: RequestInit & { timeout?: number 
   try {
     const { timeout: _, ...fetchOpts } = opts ?? {};
     const res = await fetch(`${base}/api${path}`, { ...fetchOpts, signal: controller.signal, cache: 'no-store', credentials: 'include', headers: { 'Content-Type': 'application/json', ...fetchOpts?.headers } });
-    if (res.status === 401) { window.location.href = '/'; throw new Error('UNAUTHORIZED'); }
+    if (res.status === 401) {
+      // DB 에러 상태에서 401이면 리다이렉트하지 않음 (세션 유효하지만 서버 문제)
+      try { const b = await res.clone().json(); if (b?.error && isDbError(b.error)) { emitDbUnavailable(); throw new Error('DB 연결 중입니다.'); } } catch (e) { if (e instanceof Error && e.message.includes('DB')) throw e; }
+      window.location.href = '/'; throw new Error('UNAUTHORIZED');
+    }
     if (!res.ok) {
       let errMsg = `API ${path} (${res.status})`;
       try { const body = await res.json(); if (body?.error) errMsg = body.error; } catch {}
+      if (isDbError(errMsg)) {
+        emitDbUnavailable();
+        throw new Error('DB 연결 중입니다. 잠시 후 자동으로 재시도합니다.');
+      }
       throw new Error(errMsg);
     }
     return res.json();
+  } catch (err) {
+    if (err instanceof TypeError && err.message.includes('fetch')) {
+      emitDbUnavailable();
+      throw new Error('서버에 연결할 수 없습니다. 잠시 후 재시도합니다.');
+    }
+    throw err;
   } finally {
     clearTimeout(timeoutId);
   }

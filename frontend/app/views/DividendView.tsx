@@ -45,8 +45,8 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
     setLoading(true);
     try {
       const [hold, alloc] = await Promise.all([
-        api(`/dividend/holdings?mode=${viewMode}`),
-        api(`/dividend/allocation-tuned?mode=${viewMode}`).catch(() => null),
+        api(`/dividend/holdings?viewMode=${viewMode}`),
+        api(`/dividend/allocation-tuned?viewMode=${viewMode}`).catch(() => null),
       ]);
       setHoldings(hold.holdings || []);
       if (alloc?.weights) setTunedWeights(alloc.weights);

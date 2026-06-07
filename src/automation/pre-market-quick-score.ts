@@ -26,6 +26,8 @@ export function getPreMarketSharedScores(): Map<string, number> | null {
 }
 
 export async function runPreMarketQuickScore(): Promise<void> {
+  const { config } = await import('../config/index.js');
+  if (!config.geminiEnabled) { logger.info('⚡ 장전 스코어링 스킵 (Gemini OFF — Track A RSS가 대체)', { component: 'PRE_MARKET_QS' }); return; }
   logger.info('⚡ 장전 빠른 스코어링 시작 (08:55)', { component: 'PRE_MARKET_QS' });
 
   try {
