@@ -37,7 +37,7 @@ const PHI = {
   MAJOR:  0.382,  // 38.2% — 주력 포지션 비율
   MEDIUM: 0.236,  // 23.6% — 중간 포지션
   MINOR:  0.146,  // 14.6% — 소형 포지션
-  CASH:   0.090,  // 9.0%  — 최소 현금 보유
+  CASH:   0.150,  // 15.0% — 최소 현금 보유 (폭락장 방어)
   MAX:    0.618,  // 61.8% — 단일 포지션 최대 (소액 집중)
 } as const;
 
@@ -59,7 +59,9 @@ export function calcSizingMultiplier(params: {
   const scoreFactor = Math.min(1, Math.max(0, (score + 30) / 110));
   const combined = confFactor * 0.50 + scoreFactor * 0.50;
   const wrMult = 1.0 + winRateBonus;
-  const rawMult = Math.round((0.6 + combined * 1.4) * evMult * vixSizingMult * cooldownPenalty * wrMult * 100) / 100;
+  // 배율 스택 캡: evMult × wrMult 합산이 1.5x 초과 방지 (과집중 사고 방지)
+  const combinedBoostMult = Math.min(evMult * wrMult, 1.50);
+  const rawMult = Math.round((0.6 + combined * 1.4) * combinedBoostMult * vixSizingMult * cooldownPenalty * 100) / 100;
   return isPaper ? Math.max(rawMult, 0.50) : rawMult;
 }
 
@@ -85,10 +87,23 @@ export function calcPositionSize(params: SizingParams): SizingResult {
     : breadth >= 0.35 ? 0.90
     : 0.80;
 
+  // ── 세이버메트릭스 배율: Kelly EV/PF 기반 사이징 조정 ──
+  const kellyEV = kellyResult.evPerTrade ?? 0;
+  const kellyPF = kellyResult.profitFactor ?? 1.0;
+  const kellyBEP = kellyResult.breakevenWinRate ?? 0.5;
+  const wR = kellyResult.winRate ?? 0.5;
+  // EV 음수→0.7x 축소, EV 양수(3%+)→1.2x 확대, PF<1.0→0.8x
+  const saberMult = kellyEV < -0.5 ? 0.70
+    : kellyPF < 1.0 ? 0.80
+    : (wR < kellyBEP) ? 0.85 // 손익분기 미달
+    : kellyEV >= 3.0 ? 1.20
+    : kellyEV >= 1.5 ? 1.10
+    : 1.0;
+
   const sizingMult = calcSizingMultiplier({
     confidence: effectiveConf,
     score: target.score,
-    evMult: evMultiplier * (sessionSizingMult ?? 1.0) * regimeMult,
+    evMult: evMultiplier * (sessionSizingMult ?? 1.0) * regimeMult * saberMult,
     vixSizingMult: vixRegime.sizingMult,
     cooldownPenalty: gradualCooldown.sizingPenalty,
     isPaper,
@@ -115,8 +130,12 @@ export function calcPositionSize(params: SizingParams): SizingResult {
   const kellyCap = isSmallAccount ? PHI.MAX : PHI.MAJOR;
   const baseSize = portfolioValue * Math.min(kellyPct, kellyCap);
 
-  // 현금 활용: 최소 CASH(9%) 남기고 사용 → 나머지 91% 활용 가능
-  const cashUsageCap = 1.0 - PHI.CASH;  // 91% (고정 — 포트폴리오 크기 무관)
+  // 현금 활용: 레짐 기반 동적 현금유보 — 장 좋으면 적극, 나쁘면 보수적
+  // breadth ≥ 0.65 (BULL): 3% 유보 → 97% 활용
+  // breadth 0.45-0.65 (NORMAL): 6% 유보 → 94% 활용
+  // breadth < 0.45 (BEAR): 9% 유보 → 91% 활용 (기존 고정값)
+  const dynamicCashReserve = breadth >= 0.65 ? 0.03 : breadth >= 0.45 ? 0.06 : PHI.CASH;
+  const cashUsageCap = 1.0 - dynamicCashReserve;
 
   // 복합 감소기 바닥 0.40 (여러 팩터 곱셈 붕괴 방지)
   const flooredSizingMult = Math.max(sizingMult, 0.40);

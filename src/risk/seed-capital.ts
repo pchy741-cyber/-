@@ -147,8 +147,8 @@ export function calcDailyLossLimit(totalPortfolio: number, isPaper?: boolean): D
   return { basis: totalPortfolio, pct, limitAmount };
 }
 
-/** 해외 손실 단계 (%) */
-export const OVERSEAS_LOSS_TIERS = { warnPct: 10, blockPct: 20, killPct: 30 } as const;
+/** 해외 손실 단계 (%) — Live 일일 2.5% / 월간 MDD 8% 정합성 */
+export const OVERSEAS_LOSS_TIERS = { warnPct: 3, blockPct: 5, killPct: 8 } as const;
 
 /** 서버 시작 시 DB에서 기준자본 로드 */
 export async function initSeedCapital(): Promise<void> {

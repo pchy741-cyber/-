@@ -55,11 +55,19 @@ async function calcDomesticKelly(days: number = 30): Promise<DomesticKellyResult
     const q = 1 - winRate;
     const fullKelly = (b * winRate - q) / b;
 
+    // Kelly 음수 = "배팅하지 마라" → 하드코딩 비율로 폴백 (null 반환)
+    // 승률 30% 미만이면 Kelly 비활성화 (학습 단계에서 소액 분산 방지)
+    if (fullKelly <= 0 || winRate < 0.30) {
+      logger.info(
+        `📊 국내 Kelly (${days}d, ${total}건): 승률 ${(winRate * 100).toFixed(0)}%, fullKelly=${(fullKelly * 100).toFixed(1)}% → 음수/저승률 → 하드코딩 비율 사용`,
+        { component: 'TRACK_B' },
+      );
+      return null; // 하드코딩 allocPct로 폴백
+    }
+
     // 적응형 Kelly: 승률+샘플 기반으로 Quarter↔Half 자동 전환
-    // Half-Kelly는 최적 성장률의 ~75% 캡처하면서 드로다운 대폭 축소 (논문 검증)
-    // 조건: 승률 55%+ AND 샘플 20건+ → Half-Kelly, 그 외 → Quarter-Kelly
     const kellyFraction = (winRate >= 0.55 && total >= 20) ? 0.50 : 0.25;
-    const quarterKelly = Math.max(0.005, Math.min(0.18, fullKelly * kellyFraction));
+    const quarterKelly = Math.max(0.03, Math.min(0.18, fullKelly * kellyFraction));
 
     logger.info(
       `📊 국내 Kelly (${days}d, ${total}건): 승률 ${(winRate * 100).toFixed(0)}%, 평균수익 +${avgWin.toFixed(1)}%, 평균손실 -${avgLoss.toFixed(1)}% → ${kellyFraction === 0.5 ? 'Half' : 'Quarter'}-Kelly ${(quarterKelly * 100).toFixed(1)}%`,
@@ -83,12 +91,17 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
   const noAiScores = hasNoAiScores(params.aiScores);
   const decisions: TradeDecision[] = [];
 
-  // 종목당 최대 비중: SNIPER=30%, 일반=25% (portfolio-guard 집중도 25%와 정합)
+  // 종목당 최대 비중: 확신도 기반 동적 캡 — 장 좋고 확신 높으면 적극 집중
   // 소자산: 3종목 분산 불가 시 80%까지 집중 허용
   // 기준: effectiveMaxPos(=totalAssets×25%)로 1주 최소가(1만원) 3개 이상 살 수 없으면 소자산
   const canDiversify3 = (totalAssets ?? 0) > 0 && ((totalAssets ?? 0) * 0.25 >= 30_000);
+  // 최고확신(AI 90+) → 35%, SNIPER → 35%, 고확신(85+) → 30%, 기본 → 25%
+  const topAiScoreAll = Math.max(...(params.aiScores ?? []).map(s => s.score), 0);
   const maxPosFraction = (!canDiversify3) ? 0.80
-    : mode === 'SNIPER' ? 0.30 : 0.25;
+    : mode === 'SNIPER' ? 0.35
+    : topAiScoreAll >= 90 ? 0.35
+    : topAiScoreAll >= 85 ? 0.30
+    : 0.25;
   const effectiveMaxPos = totalAssets
     ? Math.min(maxPositionKrw, Math.round(totalAssets * maxPosFraction))
     : maxPositionKrw;
@@ -206,11 +219,45 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
 
   // 현금 여유 확인하면서 매수 결정
   let remainingCash = orderableCash;
-  // SCALPING: 최대 2종목 (3→2, 상위 고점수 집중 — 분산 시 승률 희석) / SNIPER: 최대 2종목 / 일반: 최대 4종목
-  const maxBuys = mode === 'SCALPING' ? 2 : mode === 'SNIPER' ? 2 : 4;
+  // SCALPING: 최대 2종목 / SNIPER: 최대 2종목 / 일반: 최대 3종목 (4→3, 소액분산 방지)
+  const maxBuys = mode === 'SCALPING' ? 2 : mode === 'SNIPER' ? 2 : 3;
   const splitCount = strategyParams.splitCount || 2;
 
   for (const cand of candidates.slice(0, maxBuys)) {
+    // ── BREAKOUT 전용 사이징 + 태깅 ──────────────────────────────────────
+    if (mode === 'BREAKOUT' && cand.breakoutSignal) {
+      const brkSig = cand.breakoutSignal;
+      // Williams: 소형 포지션(8%), 나머지: 중형(15%)
+      const isWilliams = brkSig.subStrategy === 'WILLIAMS_VOLATILITY';
+      const breakoutAllocPct = isWilliams ? 0.08 : 0.15;
+      const brkTargetKrw = totalAssets
+        ? Math.round(totalAssets * breakoutAllocPct * (macroSizingMult ?? 1.0))
+        : Math.round(effectiveMaxPos * 0.5);
+      const brkPositionSize = Math.min(brkTargetKrw, effectiveMaxPos, remainingCash * 0.95);
+      const brkMinKrw = Math.max(10_000, Math.round((totalAssets ?? orderableCash) * 0.03));
+      if (brkPositionSize < brkMinKrw) {
+        logger.info(`  ❌ ${cand.stock_code}: BREAKOUT 포지션 ${Math.round(brkPositionSize).toLocaleString()}원 < 최소 ${brkMinKrw.toLocaleString()}원 → 스킵`, { component: 'TRACK_B' });
+        continue;
+      }
+      let brkQty = Math.floor(brkPositionSize / cand.price.currentPrice);
+      if (brkQty <= 0 && remainingCash >= cand.price.currentPrice) brkQty = 1;
+      if (brkQty <= 0) continue;
+
+      decisions.push({
+        action: 'BUY',
+        stock_code: cand.stock_code,
+        quantity: brkQty,
+        price_type: 'MARKET',
+        limit_price: cand.price.currentPrice,
+        reasoning: `BREAKOUT [${brkSig.subStrategy}]: ${brkSig.reason} vol=${brkSig.details.volumeRatio.toFixed(1)}x conf=${brkSig.confidence.toFixed(2)} [${Math.round(brkPositionSize/10000)}만원/${(breakoutAllocPct*100).toFixed(0)}%]`,
+        confidence: brkSig.confidence,
+        strategy_mode: 'BREAKOUT',
+        trigger_source: `BREAKOUT_${brkSig.subStrategy}`,
+      });
+      remainingCash -= brkQty * cand.price.currentPrice;
+      continue;
+    }
+
     // ── 멀티타임프레임 인트라데이 게이트 (프로 트레이더 기준 강화) ──────────
     // AI 없는 기술 단독 진입은 분봉 양수 필수 (불량 진입 원천 차단)
     const idBonus = intradayBonus.get(cand.stock_code) ?? 0;
@@ -284,16 +331,16 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
     // 기술지표만 통과(AI 미허락) → 소액 탐색(4-5%)으로 제한
     const aiApproved = aiScore >= strategyParams.buyThreshold;
 
-    // 황금비율 v2: 확신도 비례 투입 (portfolio-guard 25% 상한과 정합)
+    // 황금비율 v2: 확신도 비례 투입 (동적 maxPosFraction과 정합)
     const hardcodedAllocPct = aiApproved
       ? (mode === 'SNIPER'
-          // SNIPER: 단일 최고확신 종목 집중 — 총자산의 25/22/20%
+          // SNIPER: 단일 최고확신 종목 집중 — Hard Cap 25% 준수
           ? (blendedScore >= 90 ? 0.25 :
-             blendedScore >= 85 ? 0.22 : 0.20)
-          : (blendedScore >= 90 ? 0.22 :   // 90+: 22% (고확신, effectiveMaxPos 25%에 근접)
-             blendedScore >= 85 ? 0.18 :   // 85-89: 18%
-             blendedScore >= 80 ? 0.12 :   // 80-84: 12% (데이터 경계구간)
-             blendedScore >= 75 ? 0.06 :   // 75-79: 소액 탐색 (데드존 해제, 2026-06 성과 검토)
+             blendedScore >= 85 ? 0.22 : 0.18)
+          : (blendedScore >= 90 ? 0.25 :   // 90+: 25% (Hard Cap, 일일손실 2.5% 방어)
+             blendedScore >= 85 ? 0.22 :   // 85-89: 22%
+             blendedScore >= 80 ? 0.15 :   // 80-84: 15%
+             blendedScore >= 75 ? 0.08 :   // 75-79: 소액 탐색
              blendedScore >= 70 ? 0.14 : 0.10))
       : (noAiScores || aiScore === 0)
         // AI 부재(전체 미실행 또는 개별종목 AI=0) → 기술지표만으로 판단, 배분 상향
@@ -348,12 +395,14 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
     })();
 
     // 목표 금액 = 총자산 × 비율 × 보정들
-    // AI허락 고확신(85점+) → 1차에 72~80% 진입 (물타기 여지 20~28% 확보)
-    // AI허락 일반(70-84점) → 1차 65~75%
+    // 고확신(90+) → 1차 90% (확률싸움: 확신 높으면 적극 투입)
+    // 고확신(85+) → 1차 82~85%
+    // 일반(70-84점) → 1차 70~78%
     // AI 미허락 탐색 → 1차 100% (소액이므로 분할 의미 없음)
     const firstEntryRatio = mode === 'SNIPER' ? 1.0   // 저격수: 한 번에 풀 포지션
       : !aiApproved ? 1.0
-      : blendedScore >= 85 ? (allocationBoostFirstEntry ? 0.80 : 0.72)  // 72~80% 1차 진입 (물타기 여지 20~28%)
+      : blendedScore >= 90 ? 0.90  // 최고확신: 90% 진입 (물타기 10% 여지)
+      : blendedScore >= 85 ? (allocationBoostFirstEntry ? 0.85 : 0.82)
       : splitCount <= 1 ? 1.0
       : splitCount <= 2 ? (allocationBoostFirstEntry ? 0.78 : 0.70) : (allocationBoostFirstEntry ? 0.75 : 0.65);
     const aiPosMultiplier = 1.0;
@@ -364,8 +413,14 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
     const tpSlHints = getDynamicDomesticTpSl({
       score: blendedScore,
       rsi: cand.tech.rsi14,
+      adx: cand.tech.adx14,
+      atrPct: cand.tech.atrPct,
+      isMomentum: cand.tech.sma5 > cand.tech.sma20 && cand.tech.adx14 > 22,
       volumeRatio: cand.tech.volumeRatio,
       pullbackSignal: cand.tech.sma20 > 0 && cand.price.currentPrice >= cand.tech.sma20 * 0.98,
+      // 자기학습 피드백: strategy_config 학습 TP/SL → 30% 블렌딩
+      learnedTp: strategyParams.takeProfitPct,
+      learnedSl: strategyParams.stopLossPct,
     });
     const riskPct = blendedScore >= 85 ? 0.025 : blendedScore >= 70 ? 0.02 : 0.015; // 총자산 대비 리스크 예산
     const absSl = Math.abs(tpSlHints.stopLossPct) / 100;
@@ -425,7 +480,7 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
       quantity,
       price_type: 'MARKET',
       limit_price: cand.price.currentPrice,
-      reasoning: `${cand.isScalpOverride ? '🎯 ScalpRadar 스캘핑' : '기술적'} 매수: score=${cand.tech.score}(blend=${blendedScore.toFixed(0)})${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''}${idBonus !== 0 ? `${idBonus > 0 ? '+' : ''}${idBonus}분봉` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x SMA=${smaAlign}${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${allocStr}${patternFb.scoreAdj !== 0 ? ` [패턴${patternFb.scoreAdj > 0 ? '+' : ''}${patternFb.scoreAdj}]` : ''}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))} fp=${fpKey}${scalpTag}`,
+      reasoning: `${cand.isScalpOverride ? '🎯 ScalpRadar 스캘핑' : '기술적'} 매수: score=${cand.tech.score}(blend=${blendedScore.toFixed(0)}) cat=${cand.tech.catTrend}/${cand.tech.catMomentum}/${cand.tech.catVolatility}/${cand.tech.catVolume}(${cand.tech.catPositive}/4)${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''}${idBonus !== 0 ? `${idBonus > 0 ? '+' : ''}${idBonus}분봉` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x SMA=${smaAlign}${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${allocStr}${patternFb.scoreAdj !== 0 ? ` [패턴${patternFb.scoreAdj > 0 ? '+' : ''}${patternFb.scoreAdj}]` : ''}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))} fp=${fpKey}${scalpTag}`,
       confidence: Math.min(0.95, Math.max(0.5, cand.tech.score / 100 + getWinRateConfidenceBoost(winRates?.get(cand.stock_code)) + (cand.candleBonus > 0 ? 0.05 : 0))),
       ai_score: aiScore > 0 ? aiScore : cand.tech.score,
       // ScalpRadar 감지 종목: SCALPING 모드로 체인 생성 → TP/SL + forceClose 자동 적용
@@ -447,7 +502,10 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
     });
     // 이미 매수 결정한 AI허락 종목에 물타기가 아닌 추가 비중 투입
     for (const cand of extraCandidates.slice(0, 2)) {
-      const addSize = Math.min(Math.round(remainingCash * 0.50), effectiveMaxPos);
+      // 확률싸움: AI 고득점 후보 많으면 잔여현금 75% 투입 (기존 50%)
+      const extraAiScore = aiScoreMap.get(cand.stock_code) ?? 0;
+      const surplusPct = extraAiScore >= 85 ? 0.75 : 0.50;
+      const addSize = Math.min(Math.round(remainingCash * surplusPct), effectiveMaxPos);
       const minAddSize = Math.max(10_000, Math.round((totalAssets ?? orderableCash) * 0.03));
       if (addSize < minAddSize) continue;
       const qty = Math.floor(addSize / cand.price.currentPrice);

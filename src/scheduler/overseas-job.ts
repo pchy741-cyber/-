@@ -111,10 +111,8 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
   } catch (lockErr) {
     lockClient?.release();
     lockClient = null;
-    if (!isPaper()) {
-      logger.error(`Advisory lock 획득 실패 (LIVE 모드) — 안전을 위해 중단: ${(lockErr as Error).message}`, { component: 'OVERSEAS' });
-      return;
-    }
+    logger.error(`Advisory lock 획득 실패 [${isPaper() ? 'paper' : 'live'}] — 안전을 위해 중단: ${(lockErr as Error).message}`, { component: 'OVERSEAS' });
+    return;
   }
 
   s.isRunning = true;
@@ -387,9 +385,6 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
 
     let aiDecisions: Awaited<ReturnType<typeof analyzeOverseasWithAI>> = [];
     if (shouldCallAI) {
-      const [perfSummary, userInsights, aiInsights] = await Promise.all([
-        getRecentPerfSummary(), getUserInsights(), getAIGeneratedInsights(),
-      ]);
       const [fgEarly, earningsEarly] = await Promise.all([
         getFearGreedIndex().catch(() => null),
         getUpcomingEarnings(usCodes).catch(() => [] as import('../market/external-signals.js').EarningsEvent[]),
@@ -413,22 +408,33 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         fearGreed: fgEarly.fearGreedScore, fearGreedLabel: fgEarly.fearGreedLabel,
         vix: fgEarly.vix, earningsRisk: earningsRiskCodes, breadthPct, sectorMomentum: sectorMomentumStr,
       } : { breadthPct, sectorMomentum: sectorMomentumStr };
-      const brief = getActiveSessionBrief();
-      const sessionCtx = brief ? `[세션전략] ${brief.marketRegime}/${brief.riskLevel} | 집중:${brief.focusSectors.join(',')} | ${brief.narrative}` : '';
-      const crossCtx = crossSignals.length > 0 ? `[크로스마켓] ${crossSignals.map(s => `${s.usCode} ${s.signalType}(아시아 ${s.asiaCode} ${s.asiaChangePct >= 0 ? '+' : ''}${s.asiaChangePct.toFixed(1)}%)`).join(', ')}` : '';
-      const driftCtx = earningsDrift.length > 0 ? `[어닝드리프트] ${earningsDrift.map(s => `${s.code} ${s.direction} gap${s.gapPct >= 0 ? '+' : ''}${s.gapPct.toFixed(1)}% vol${s.volumeRatio.toFixed(1)}x`).join(', ')}` : '';
-      const squeezeCtx = squeezeSignals.length > 0 ? `[스퀴즈돌파] ${squeezeSignals.map(s => `${s.code} str${s.strength.toFixed(2)}`).join(', ')}` : '';
-      // 해외 매매일지 학습 인사이트 → 종목별 AI 분석에 직접 주입 (세션전략 경유가 아닌 직통)
-      const { getOverseasInsightsForPrompt } = await import('../automation/self-learning/overseas-analyzers.js');
-      const overseasLearnedInsights = await getOverseasInsightsForPrompt().catch(() => '');
-      const combinedInsights = [userInsights, aiInsights ? `[AI자기학습]\n${aiInsights}` : '', overseasLearnedInsights, sessionCtx, crossCtx, driftCtx, squeezeCtx, tradeReviewCtx ? `[매매복기]\n${tradeReviewCtx}` : ''].filter(Boolean).join('\n\n') || undefined;
-      aiDecisions = await analyzeOverseasWithAI(aiInputs, cash, holdings.size, perfSummary, combinedInsights, mktCtx);
+
+      // Gemini 활성 → AI 분석, 비활성 → 규칙기반 ($0)
+      const { config: appConfig } = await import('../config/index.js');
+      if (appConfig.geminiEnabled) {
+        const [perfSummary, userInsights, aiInsights] = await Promise.all([
+          getRecentPerfSummary(), getUserInsights(), getAIGeneratedInsights(),
+        ]);
+        const brief = getActiveSessionBrief();
+        const sessionCtx = brief ? `[세션전략] ${brief.marketRegime}/${brief.riskLevel} | 집중:${brief.focusSectors.join(',')} | ${brief.narrative}` : '';
+        const crossCtx = crossSignals.length > 0 ? `[크로스마켓] ${crossSignals.map(s2 => `${s2.usCode} ${s2.signalType}(아시아 ${s2.asiaCode} ${s2.asiaChangePct >= 0 ? '+' : ''}${s2.asiaChangePct.toFixed(1)}%)`).join(', ')}` : '';
+        const driftCtx = earningsDrift.length > 0 ? `[어닝드리프트] ${earningsDrift.map(s2 => `${s2.code} ${s2.direction} gap${s2.gapPct >= 0 ? '+' : ''}${s2.gapPct.toFixed(1)}% vol${s2.volumeRatio.toFixed(1)}x`).join(', ')}` : '';
+        const squeezeCtx = squeezeSignals.length > 0 ? `[스퀴즈돌파] ${squeezeSignals.map(s2 => `${s2.code} str${s2.strength.toFixed(2)}`).join(', ')}` : '';
+        const { getOverseasInsightsForPrompt } = await import('../automation/self-learning/overseas-analyzers.js');
+        const overseasLearnedInsights = await getOverseasInsightsForPrompt().catch(() => '');
+        const combinedInsights = [userInsights, aiInsights ? `[AI자기학습]\n${aiInsights}` : '', overseasLearnedInsights, sessionCtx, crossCtx, driftCtx, squeezeCtx, tradeReviewCtx ? `[매매복기]\n${tradeReviewCtx}` : ''].filter(Boolean).join('\n\n') || undefined;
+        aiDecisions = await analyzeOverseasWithAI(aiInputs, cash, holdings.size, perfSummary, combinedInsights, mktCtx);
+      } else {
+        const { analyzeOverseasRuleBased } = await import('../ai/overseas/rule-based-analyzer.js');
+        aiDecisions = analyzeOverseasRuleBased(aiInputs, cash, holdings.size, mktCtx, crossSignals);
+      }
+
       if (isUSSession) {
         if (isPaper()) s.lastPaperAiCallAt = Date.now();
         else s.lastUSAiCallAt = Date.now();
       }
     } else {
-      logger.info('🤖 AI 생략 — 후보 없음 또는 쿨다운 중 (무료 한도 절약)', { component: 'OVERSEAS' });
+      logger.info('🤖 분석 생략 — 후보 없음 또는 쿨다운 중', { component: 'OVERSEAS' });
     }
 
     const aiMap = new Map(aiDecisions.map(d => [d.code, d]));
@@ -601,7 +607,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       } catch { /* alloc config 미존재 시 무시 */ }
     }
 
-    const minCashForBuy = portfolioValue * 0.09; // PHI.CASH (9%) — 포트폴리오 비례
+    const minCashForBuy = portfolioValue * 0.15; // CASH_PCT 15% — 폭락장 방어 버퍼
     if (riskBlocked || allocBlocked || currentHoldingCount >= MAX_POSITIONS || cash < minCashForBuy) {
       const reasons: string[] = [];
       if (riskBlocked) reasons.push(`리스크차단(-${lossPctOfPortfolio.toFixed(1)}%)`);
@@ -725,7 +731,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         });
       }
 
-      // ── 순환 매도 비활성화 — rebalancer에 흡수 (황금비율 현금유보 9%와 충돌 방지) ──
+      // ── 순환 매도 비활성화 — rebalancer에 흡수 (황금비율 현금유보 15%와 충돌 방지) ──
 
       // ── Scale-In 확인 (→ overseas/scale-in-manager.ts) ──
       const scaleInResult = await processScaleIns({ techResults, buyOrders, cash, isPaper: isPaper() });
@@ -750,11 +756,23 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         logger.warn(`🛡️ 방어 모드 ${defenseSignal.level} — 신규 매수 차단${bypass} (${defenseSignal.reasons.join(', ')})`, { component: 'OVERSEAS' });
       }
 
+      // ── 종가베팅 (조건부): 장이 나쁘면 마감 30분 전에만 매수, 좋으면 스윙 ──
+      // 장세 판단: breadth(상승종목 비율) + VIX + 방어모드
+      const { isUSMarketLastNMinutes, getMinutesToUSClose } = await import('./overseas/session.js');
+      const isEodWindow = isUSMarketLastNMinutes(30);
+      const isBadMarket = freshBreadth < 0.35 || vixRegime.regime === 'STRESS' || vixRegime.regime === 'CRISIS' || defenseSignal.blockNewBuys;
+      const eodBlockBuys = openRegions.has('US') && !isEodWindow && isBadMarket;
+      if (eodBlockBuys && buyTargets.length > 0) {
+        logger.info(`⏰ 종가베팅: 약세장(breadth=${(freshBreadth*100).toFixed(0)}% VIX=${vixRegime.regime}) 마감 ${getMinutesToUSClose()}분 전 — 후보 ${buyTargets.length}종목 대기`, { component: 'OVERSEAS' });
+      } else if (openRegions.has('US') && !isBadMarket) {
+        logger.info(`📈 스윙모드: 정상장(breadth=${(freshBreadth*100).toFixed(0)}%) — 매수 활성`, { component: 'OVERSEAS' });
+      }
+
       // ── 매수 실행 (Rolling Kelly + EV배율 + VIX 레짐 + 점진적 쿨다운 + 상관관계 + MTF 반영) ──
       if (killSwitchBuyBlock) {
         logger.warn(`🛑 Kill Switch 활성 — 해외 매수 ${buyTargets.length}건 건너뜀`, { component: 'OVERSEAS' });
       }
-      const slotsAvailable = (killSwitchBuyBlock || defenseBlockBuys) ? 0 : MAX_POSITIONS - currentHoldingCount;
+      const slotsAvailable = (killSwitchBuyBlock || defenseBlockBuys || eodBlockBuys) ? 0 : MAX_POSITIONS - currentHoldingCount;
       logger.info(`🔧 매수 루프: slots=${slotsAvailable} (max=${MAX_POSITIONS} held=${currentHoldingCount} kill=${killSwitchBuyBlock} defense=${defenseBlockBuys}) cash=$${cash.toFixed(0)} targets=${buyTargets.length}`, { component: 'OVERSEAS' });
       for (const target of buyTargets.slice(0, slotsAvailable)) {
         // 상관관계 차단: 같은 그룹 내 보유 초과
@@ -865,6 +883,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           aiAction: target.ai?.action,
           vixRegime,
           isMomentum: target.isMomentum,
+          atrPct: entryAtrPct,
         });
         // 매수 시점 동적 TP/SL + 버킷을 overseas_holdings에 영속 저장
         await updateTradeState({ code: target.code, exchange: target.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper(), fxRate: cycleFxRate, tpPct, slPct: -slPct });
@@ -901,7 +920,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     const rebalanceAlerts = rbResult.rebalanceAlerts;
     cash = rbResult.cash;
 
-    // ── 5-c. 유휴현금 운용 비활성화 — 황금비율 현금유보 9%와 충돌 ──
+    // ── 5-c. 유휴현금 운용 비활성화 — 황금비율 현금유보 15%와 충돌 ──
     // 버킷 한도 내에서 자동 재투자는 매수 루프에서 처리
     const idleActions: string[] = [];
 
@@ -927,13 +946,19 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
 
     logger.info(summary, { component: 'OVERSEAS' });
     await logSystem('INFO', 'OVERSEAS', summary);
+    // 시스템 이벤트 로그 (대시보드 표시용)
+    const { logSystemEvent } = await import('../api/routes/health.js');
+    const shortSummary = totalActions > 0
+      ? [...buyOrders.map(o => `BUY ${o}`), ...sellOrders.map(o => `SELL ${o}`)].join(', ').slice(0, 120)
+      : `스캔 ${techResults.length}종목 — 매매 없음`;
+    logSystemEvent('해외주식', 'success', shortSummary);
     if (totalActions > 0) await sendTelegramMessage(summary);
 
     // ── Memory Agent: 거래 패턴 자동 추출 (세션당 1회) ──
     extractTradingPatterns().catch(() => {});
 
     // ── 매도 후 빠른 재투자: 현금 해방 시 30초 후 재스캔 ──
-    if (sellOrders.length > 0 && finalHoldings.size < MAX_POSITIONS && cash >= portfolioValue * 0.09) {
+    if (sellOrders.length > 0 && finalHoldings.size < MAX_POSITIONS && cash >= portfolioValue * 0.15) {
       const rescanMode = isPaper();
       logger.info(`🔄 매도 ${sellOrders.length}건 완료 → 30초 후 재스캔 (현금 $${cash.toFixed(0)} 재투자, ${rescanMode ? 'PAPER' : 'LIVE'})`, { component: 'OVERSEAS' });
       setTimeout(() => {
@@ -969,6 +994,10 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
  *   (KIS TR ID, API키, reconcileCashWithKIS 등)
  */
 export async function runOverseasDual(): Promise<void> {
+  // 주말 가드: 토 09:00 ~ 월 06:00 KST = 전 세계 시장 휴장 → DB 접근 차단 (비용 절약)
+  const { isWeekendClosed } = await import('../utils/holidays.js');
+  if (isWeekendClosed()) return;
+
   // AsyncLocalStorage로 격리 — 전역 오버라이드 없이 paper/live 독립 실행
   await runWithMode(true, async () => {
     try { await runOverseasJob({ isPaper: true }); }
