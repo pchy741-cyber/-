@@ -8,7 +8,7 @@ dotenv.config();
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'staging', 'production']).default('development'),
   TRADING_MODE: z.enum(['paper', 'live']).default('paper'),
-  PAPER_ONLY: z.coerce.boolean().default(false), // true → live 파이프라인 완전 스킵 (자율학습 모드)
+  PAPER_ONLY: z.string().default('false').transform(v => v === 'true' || v === '1').pipe(z.boolean()), // true → live 파이프라인 완전 스킵 (자율학습 모드)
 
   // KIS (한국투자증권) — 모의투자
   KIS_APP_KEY: z.string().default(''),
@@ -49,15 +49,15 @@ const envSchema = z.object({
   FINNHUB_API_KEY: z.string().default(''),
 
   // 리스크 한도
-  // • 일일 최대 손실: 총자산 30% (seed-capital.ts DAILY_LOSS_PCT, 킬스위치 기준)
-  // • 종목당 한도: 총자산 20~25% 동적 (position-sizer/pipeline에서 자동 스케일, config값은 절대 안전 상한)
+  // • 일일 최대 손실: Live 2.5% / Paper 30% (seed-capital.ts, 킬스위치 기준)
+  // • 종목당 한도: 총자산 8~25% 동적 (position-sizer/pipeline에서 자동 스케일, Hard Cap 25%)
   // • 최대 동시 포지션: 8종목
   // • 총 투자 비중: 최대 88% (적극 모드)
   RISK_MAX_DAILY_DRAWDOWN_KRW: z.coerce.number().default(200000),  // 레거시 절대값 (실제 한도는 seed-capital.ts 30% 사용)
   RISK_MAX_POSITION_KRW: z.coerce.number().default(50000000),      // 종목당 절대 안전 상한 (실제 사이징은 totalAssets×20~25% 동적 계산)
   RISK_MAX_TOTAL_INVESTED_PCT: z.coerce.number().default(88),       // 최대 88% 투자 (적극 모드)
   RISK_MAX_CONCURRENT_POSITIONS: z.coerce.number().default(8),      // 동시 8종목
-  RISK_MAX_DAILY_TRADES: z.coerce.number().default(15),             // 하루 15건 (SCALPING 수수료 드래그 방지)
+  RISK_MAX_DAILY_TRADES: z.coerce.number().default(3),              // v4: 15→3건 (과잉거래 방지, 고품질 신호만)
 });
 
 // ── 파싱 & Export ──
@@ -90,7 +90,8 @@ export function getEffectiveTradingMode(): 'paper' | 'live' {
  * API 레이어에서 사용: runOverseasDual() 중에도 오염되지 않는 stable fallback
  */
 export const baseTradingMode: 'paper' | 'live' = env.TRADING_MODE;
-export const baseIsPaper: boolean = env.TRADING_MODE === 'paper';
+// PAPER_ONLY=true → 대시보드/API 기본 뷰도 paper (live 잔고 혼동 방지)
+export const baseIsPaper: boolean = env.PAPER_ONLY || env.TRADING_MODE === 'paper';
 
 /** 자율학습 모드: true면 live 파이프라인 완전 스킵 (paper만 실행) */
 export const paperOnly: boolean = env.PAPER_ONLY;
@@ -172,6 +173,9 @@ export const config = {
     maxConcurrentPositions: env.RISK_MAX_CONCURRENT_POSITIONS,
     maxDailyTrades: env.RISK_MAX_DAILY_TRADES,
   },
+
+  /** Gemini API 자동 호출 ON/OFF — false면 규칙기반만 사용 (AI 비용 $0) */
+  geminiEnabled: (process.env.GEMINI_ENABLED ?? 'false') === 'true',
 };
 
 export type Config = typeof config;

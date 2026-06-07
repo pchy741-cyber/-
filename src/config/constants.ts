@@ -65,6 +65,7 @@ export const StrategyMode = {
   SNIPER: 'SNIPER',     // 🎯 저격수 (AI 88점+ 2종목만, 대형 포지션)
   BOTTOM_FISHING: 'BOTTOM_FISHING', // 🎣 바닥낚시 (시간외 RSI 과매도 우량주)
   EOD_BETTING: 'EOD_BETTING',       // 🎰 종가베팅 (15:15 매수 → 익일 09:00 매도)
+  BREAKOUT: 'BREAKOUT',             // 📈 돌파매매 (5일선/Williams/SEPA/Darvas)
 } as const;
 export type StrategyMode = (typeof StrategyMode)[keyof typeof StrategyMode];
 
@@ -79,20 +80,24 @@ export type StrategyMode = (typeof StrategyMode)[keyof typeof StrategyMode];
 //
 export const STRATEGY_PARAMS = {
   SWING: {
-    // ┌─ 실거래 데이터 기반 최적화 (92건 분석) ────────────────────────────┐
-    // │ 실 승률 46.7% / 평균 수익 +3.91% / 평균 손실 -1.59%              │
-    // │ Half-Kelly 포지션 12.5% / 손익비 2.46:1 / 월 40~50건 목표        │
-    // │ earlyTpPct 2.5%: 50% 조기 해제 → 현금 회전율 2배 향상             │
+    // ┌─ 전략 최적화 v4 (2026-06: 카테고리Cap + 철저손절) ────────────────┐
+    // │ buyThreshold 80: 유지 (조정값 상한 -5 제한으로 실질 75+)          │
+    // │ stopLossPct -2.5%: v3 -3.0%→-2.5% (더 빠른 손절, 손실 최소화)   │
+    // │ takeProfitPct 5.0%: v3 7.0%→5.0% (달성 확률↑, 실현 수익↑)      │
+    // │ 기대수익: p×(5.0-0.21)-(1-p)×(2.5+0.21) > 0 → 손익분기 36.1%  │
+    // │ R:R = 4.79:2.71 = 1.77:1 (현실적 손익비)                        │
+    // │ maxDailyTrades 3: 일일 최대 3건 (과잉거래 방지, 수수료 절감)     │
     // └────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 70,
+    buyThreshold: 80,
     splitCount: 2,
     averageDownPct: 0,
     maxAveragingCount: 0,
-    earlyTpPct: 3.5,        // 조기 부분익절: +3.5% 도달 시 50% 즉시 매도 → 수익금 극대화
-    takeProfitPct: 7.0,     // 잔여 50% 트레일링 최종 목표 (+7% 또는 동적 트레일링 발동)
-    takeProfitRatio: 0.5,   // 50% 부분 매도 → 잔여 트레일링
-    stopLossPct: -5.5, // v2: -4.5%→-5.5% (KOSPI 일중 3~5% 등락 감안, 조기손절 방지)
-    maxHoldingDays: 12,
+    earlyTpPct: 0,
+    takeProfitPct: 5.0,     // v4: 7.0%→5.0% (달성률 높여 실현 수익 증가)
+    takeProfitRatio: 0.5,
+    stopLossPct: -2.5,      // v4: -3.0%→-2.5% (더 빠른 손절)
+    maxHoldingDays: 8,      // v4: 12일→8일 (데드머니 조기 탈출)
+    maxDailyTrades: 3,      // v4 신규: 일일 최대 신규 매수 3건
   },
 
   DEFENSE: {
@@ -109,21 +114,21 @@ export const STRATEGY_PARAMS = {
   },
 
   SCALPING: {
-    // ┌─ 수익 구조 ─────────────────────────────────────────────────────────┐
-    // │ 진입: 09:00~09:14 (14분 윈도우) / 강제청산: 10:00 (최대 60분 보유) │
-    // │ 익절 +1.5% → 순수익 +1.29% / 손절 -1.2% → 순손실 -1.41%          │
-    // │ 손익비 1.08:1 / 손익분기 승률 48% — 여유로운 TP 달성 기회 확보     │
+    // ┌─ 수익 구조 v2 ───────────────────────────────────────────────────────┐
+    // │ 진입: 09:00~09:14 (14분 윈도우) / 강제청산: 10:00 (최대 60분 보유)  │
+    // │ 익절 +2.0% → 순수익 +1.74% / 손절 -1.2% → 순손실 -1.46%           │
+    // │ R:R = 1.19:1 / 손익분기 승률 45.6% — 수수료 반영 후에도 양의 기대값 │
     // └────────────────────────────────────────────────────────────────────┘
     buyThreshold: 87,
     // 87점: 최고확신 종목만 진입 — 상위 ~5% 신호만
     splitCount: 1,          // 분할 없이 한 번에 전량 진입 (개장 직후 속도 최우선)
     averageDownPct: 0,      // 물타기 절대 금지 (시간 없음)
     maxAveragingCount: 0,
-    takeProfitPct: 1.5,
-    // +1.5% — 수수료(0.21%) 제해도 순수익 +1.29%, 60분 윈도우로 달성 가능
+    takeProfitPct: 2.0,
+    // +2.0% — 수수료(0.26%) 반영 순수익 +1.74%, R:R 1.19:1 (v1 0.85:1→역전 해소)
     takeProfitRatio: 1.0,   // 전량 즉시 익절
     stopLossPct: -1.2,
-    // -1.2% 손절 (개장 노이즈 필터, TP:SL 비율 개선)
+    // -1.2% 손절 (개장 노이즈 필터)
     maxHoldingDays: 0,      // 당일 청산 필수
     forceCloseTime: '10:00',// 10:00 강제청산 (여유 60분 윈도우)
   },
@@ -189,6 +194,29 @@ export const STRATEGY_PARAMS = {
     maxHoldingDays: 1,      // 1일 (익일 강제청산)
   },
 
+  BREAKOUT: {
+    // ┌─ 돌파매매 전략 (4가지 서브패턴 통합) ──────────────────────────────┐
+    // │ A. 차트박사 5일선 돌파: 60일 신고가→20MA 눌림→5MA 상향돌파        │
+    // │ B. 래리 윌리엄스 변동성 돌파: 당일시가+전일range×K, 익일 시가매도  │
+    // │ C. 미너비니 SEPA: 150>200MA 상승, 52주저+25%, 횡보후 돌파          │
+    // │ D. 다바스 박스 돌파: 박스 상단 돌파 + 거래량 1.5x 확인             │
+    // │                                                                    │
+    // │ 공통: 거래량 1.5x+ 확인 필수 (가짜돌파 필터)                       │
+    // │ TP +8% (돌파 모멘텀 확장) / SL -5% (차트박사 기준 기계적 손절)     │
+    // │ R:R = 8:5 = 1.6:1 / 손익분기 승률 38.5%                           │
+    // │ 1등 주도주 + 강한 거래대금 쏠림 종목만 진입 (미모사 원칙)          │
+    // └────────────────────────────────────────────────────────────────────┘
+    buyThreshold: 0,          // AI 점수 불필요 — 기술적 돌파 신호 기반
+    splitCount: 2,            // 돌파확인 + 눌림추가매수
+    averageDownPct: -3.0,     // -3% 눌림 추가매수 허용
+    maxAveragingCount: 1,
+    earlyTpPct: 0,
+    takeProfitPct: 8.0,       // 돌파 모멘텀 타겟
+    takeProfitRatio: 0.5,     // 50% 부분익절 → 잔여 트레일링
+    stopLossPct: -5.0,        // 차트박사 기준 5% 기계적 손절
+    maxHoldingDays: 10,       // 최대 10일 (Williams는 1일 — sell-signals에서 별도 처리)
+  },
+
 } as const;
 
 // ── KIS API Transaction IDs ──
@@ -248,7 +276,7 @@ export function getScoreBasedParams(score: number): { takeProfitPct: number; sto
 
 // ── 동적 포지션 사이징 — 기업 규모 × 수익률 × 리스크 복합 ──
 // 국내주식 매수 시 종목 품질에 따라 투자 비중 자동 조절
-// 고확신 대형주 → 최대 35%, 고변동 소형주 → 최소 8%
+// 고확신 대형주 → 최대 25%, 고변동 소형주 → 최소 8% (일일손실 2.5% 방어)
 export interface PositionSizeHints {
   score: number;
   confidence?: number;
@@ -282,62 +310,160 @@ export function getDynamicPositionSizePct(p: PositionSizeHints): number {
   // 리스크 — 고변동 종목은 비중 축소
   if (p.isHighBeta) pct -= 5;
 
-  return Math.max(8, Math.min(35, Math.round(pct)));
+  return Math.max(8, Math.min(25, Math.round(pct))); // Hard Cap 25% (일일손실 2.5% 방어: 25%×SL-4%=-1%)
 }
 
-// ── 완전 동적 TP/SL — score + 기술지표 복합 계산 ──
-// use_dynamic_tpsl=true 시 고정값 대신 이 함수 사용
-// 진입 품질(눌림/거래량/RSI/확신도)에 따라 TP/SL 자동 최적화
+// ── 완전 동적 TP/SL — 해외주식 calcDynamicTpSl과 동등한 다팩터 엔진 ──
+// 진입 + 보유 중 모두 사용. use_dynamic_tpsl 플래그 폐지 → 항상 동적
+// 팩터: AI score + ADX(추세) + ATR%(변동성) + RSI + 거래량 + 시장레짐 + 수급
 export interface DomesticTpSlHints {
   score: number;
   confidence?: number;  // 0~1
   rsi?: number;
+  adx?: number;         // 추세 강도 (해외의 ADX 대응)
+  // 자기학습 피드백 — strategy_config에서 읽은 학습된 TP/SL
+  learnedTp?: number;   // 양수 (e.g. 6.5) — 학습 결과 최적 TP
+  learnedSl?: number;   // 음수 (e.g. -2.8) — 학습 결과 최적 SL
+  atrPct?: number;      // ATR/가격 % (변동성)
   volumeRatio?: number;
   pullbackSignal?: boolean;
   envelopePos?: string; // 'BELOW_LOWER' | 'NEAR_LOWER' | 'MIDDLE' | ...
+  isMomentum?: boolean; // SMA5 > SMA20 + ADX > 22
+  marketRegime?: 'BULL' | 'NORMAL' | 'CORRECTION' | 'CRASH'; // KOSPI 레짐
+  foreignNetBuy?: boolean;  // 외국인 순매수
+  institutionNetBuy?: boolean; // 기관 순매수
 }
 
 export function getDynamicDomesticTpSl(h: DomesticTpSlHints): { takeProfitPct: number; stopLossPct: number; label: string } {
-  // 1. 점수 베이스 — v2: KOSPI 일중 변동폭(2~4%) 감안하여 SL 확대
-  // v1 문제: SL -2.5~-3.2% → 정상적인 일중 등락에도 강제청산 → 손실만 누적
-  // v2: 고확신(93+)도 -4.0% 이상 여유, 저확신(<80)은 -6.0%까지 인내
+  // ── 1. AI 점수 베이스 (5단계) ──
   let tp: number;
   let sl: number;
-  if (h.score >= 93)      { tp = 9.0; sl = -4.0; }  // 최고확신 → 넓은 SL로 충분한 검증 시간
-  else if (h.score >= 88) { tp = 8.0; sl = -4.5; }
-  else if (h.score >= 83) { tp = 7.0; sl = -5.0; }
-  else if (h.score >= 80) { tp = 6.0; sl = -5.5; }
-  else                    { tp = 5.0; sl = -6.0; }   // 저확신 → 넓은 SL이지만 작은 포지션
+  if (h.score >= 93)      { tp = 9.0; sl = -2.5; }  // 최고확신: 3.6:1 R:R
+  else if (h.score >= 88) { tp = 8.0; sl = -2.8; }  // 초고확신: 2.86:1 R:R
+  else if (h.score >= 83) { tp = 7.0; sl = -3.0; }  // 고확신: 2.33:1 R:R
+  else if (h.score >= 80) { tp = 6.0; sl = -3.2; }  // 중확신: 1.88:1 R:R
+  else                    { tp = 5.0; sl = -3.5; }   // 저확신: 1.43:1 R:R
+
+  // ── 1b. 자기학습 피드백 블렌딩 (30% 학습 + 70% 점수기반) ──
+  // 확률싸움: 내역 쌓일수록 학습된 최적 TP/SL이 점수기반을 점진 보정
+  if (h.learnedTp != null && h.learnedTp > 0) {
+    tp = tp * 0.70 + h.learnedTp * 0.30;
+  }
+  if (h.learnedSl != null && h.learnedSl < 0) {
+    sl = sl * 0.70 + h.learnedSl * 0.30;
+  }
 
   const parts: string[] = [`s${h.score}`];
 
-  // 2. 눌림매매 신호 — 이미 하락 중 진입이므로 SL 더 넓게 (v1은 반대로 조였음!)
-  if (h.pullbackSignal) {
-    tp += 0.5;
-    sl -= 0.5; // 눌림목 진입 = 추가 하락 여유 필요 (v1: 조임 → v2: 확대)
-    parts.push('pb+0.5');
+  // ── 2. ADX 추세 강도 (해외 calcDynamicTpSl 대응) ──
+  const adx = h.adx ?? 25;
+  if (adx >= 35) {
+    // 강한 추세 → TP 확장 (승자를 더 오래 보유), SL 약간 여유
+    tp *= 1.4;  // +40% TP (해외: +10% base + sector)
+    sl -= 0.3;
+    parts.push('ADX35+');
+  } else if (adx >= 25) {
+    // 중간 추세 → 약간 확장
+    tp *= 1.15;
+    parts.push('ADX25+');
+  } else if (adx < 18) {
+    // 횡보장 (추세 없음) → TP 축소 (빠른 수익 확정)
+    tp *= 0.85;
+    sl += 0.3; // SL 타이트 (방향 없으면 빠르게 탈출)
+    parts.push('ADX<18');
   }
 
-  // 3. 거래량 급증 — 강한 모멘텀
-  const vol = h.volumeRatio ?? 1;
-  if (vol >= 3.0)      { tp += 1.0; parts.push('v3x+1'); }
-  else if (vol >= 2.0) { tp += 0.5; parts.push('v2x+0.5'); }
+  // ── 3. ATR% 변동성 반영 (해외의 VIX 레짐 대응) ──
+  const atrPct = h.atrPct ?? 2.0; // KOSPI 대형주 평균 1~2%
+  if (atrPct >= 4.0) {
+    // 고변동: SL 넓히고 TP도 넓힘 (노이즈에 안 걸리게)
+    sl -= 1.0;
+    tp += 1.5;
+    parts.push('히변동');
+  } else if (atrPct >= 3.0) {
+    sl -= 0.5;
+    tp += 0.5;
+    parts.push('중변동');
+  } else if (atrPct < 1.5) {
+    // 저변동: SL 타이트, TP도 현실적
+    sl += 0.3;
+    parts.push('저변동');
+  }
 
-  // 4. RSI — 과매도는 반등 여지, 과매수는 목표 줄임
+  // ── 4. 모멘텀 (SMA5>SMA20 + ADX>22) ──
+  if (h.isMomentum) {
+    tp += 1.0;  // 모멘텀 상승 중 → TP 확장 (추세 타기)
+    parts.push('MTM+1');
+  }
+
+  // ── 5. RSI — 과매도 반등 / 과매수 주의 ──
   const rsi = h.rsi ?? 50;
-  if (rsi < 35)      { tp += 0.5; parts.push('rsiOS+0.5'); }
-  else if (rsi > 65) { tp -= 0.5; parts.push('rsiOB-0.5'); }
+  if (rsi < 30)       { tp += 1.0; sl -= 0.3; parts.push('rsiOS30'); }
+  else if (rsi < 40)  { tp += 0.5; parts.push('rsiOS40'); }
+  else if (rsi > 70)  { tp -= 1.0; sl += 0.5; parts.push('rsiOB70'); }
+  else if (rsi > 60)  { tp -= 0.3; parts.push('rsiOB60'); }
 
-  // 5. 확신도 높으면 보너스
+  // ── 6. 거래량 급증 ──
+  const vol = h.volumeRatio ?? 1;
+  if (vol >= 3.0)      { tp += 1.0; parts.push('v3x'); }
+  else if (vol >= 2.0) { tp += 0.5; parts.push('v2x'); }
+
+  // ── 7. 확신도 ──
   const conf = h.confidence ?? 0.65;
-  if (conf >= 0.85) { tp += 0.5; parts.push('c+0.5'); }
+  if (conf >= 0.90)      { tp += 1.0; parts.push('c90+'); }
+  else if (conf >= 0.80) { tp += 0.5; parts.push('c80+'); }
 
-  // 6. 엔벨로프 하단 이탈 — 반등 여지 극대
-  if (h.envelopePos === 'BELOW_LOWER') { tp += 0.5; parts.push('env+0.5'); }
+  // ── 8. 눌림매매 신호 ──
+  if (h.pullbackSignal) {
+    tp += 0.5;
+    sl -= 0.3;
+    parts.push('PB');
+  }
 
-  // 7. 범위 제한 — SL 최대 -7% (v1: -5% 캡으로 넓은 SL 무효화됐음)
-  tp = Math.round(Math.min(tp, 12.0) * 10) / 10;
-  sl = Math.round(Math.max(sl, -7.0) * 10) / 10;
+  // ── 9. 엔벨로프 위치 ──
+  if (h.envelopePos === 'BELOW_LOWER') { tp += 0.5; parts.push('env↓'); }
+
+  // ── 10. 시장 레짐 (해외 VIX 대응) ──
+  const regime = h.marketRegime ?? 'NORMAL';
+  if (regime === 'CRASH') {
+    tp -= 1.5; sl += 0.8; // 폭락장: TP 낮추고 SL 타이트 (빠른 탈출)
+    parts.push('CRASH');
+  } else if (regime === 'CORRECTION') {
+    tp -= 0.5; sl += 0.3;
+    parts.push('CORR');
+  } else if (regime === 'BULL') {
+    tp += 1.0; // 강세장: TP 확장 (상승 여력 큼)
+    parts.push('BULL');
+  }
+
+  // ── 11. 수급 (외국인/기관 순매수 → 안정적 상승 확률) ──
+  if (h.foreignNetBuy && h.institutionNetBuy) {
+    tp += 1.0; sl -= 0.3; // 동반 순매수 → 강한 지지
+    parts.push('쌍수급');
+  } else if (h.foreignNetBuy) {
+    tp += 0.5;
+    parts.push('외인+');
+  } else if (h.institutionNetBuy) {
+    tp += 0.3;
+    parts.push('기관+');
+  }
+
+  // ── 범위 제한 ──
+  tp = Math.round(Math.min(Math.max(tp, 3.0), 15.0) * 10) / 10;
+  sl = Math.round(Math.max(Math.min(sl, -1.5), -8.0) * 10) / 10;
+
+  // ── R:R 비율 검증 — 확률싸움에서 비현실적 비율 방지 ──
+  // R:R = TP / |SL|, 1.5:1 ~ 4:1 범위 강제 (10:1 같은 비현실적 비율 차단)
+  const rr = tp / Math.abs(sl);
+  if (rr > 4.0) {
+    // R:R 너무 높음 → SL을 TP/4로 넓힘 (TP 유지, SL 조정)
+    sl = -Math.round((tp / 4.0) * 10) / 10;
+    parts.push('RR>4→조정');
+  } else if (rr < 1.5) {
+    // R:R 너무 낮음 → TP를 |SL|×1.5로 올림
+    tp = Math.round(Math.abs(sl) * 1.5 * 10) / 10;
+    parts.push('RR<1.5→조정');
+  }
 
   return { takeProfitPct: tp, stopLossPct: sl, label: parts.join('/') };
 }
@@ -403,22 +529,50 @@ export const OVERSEAS = {
   // 고정형 상수 제거 완료 — 모든 동적 파라미터는 getOverseasDynamic() 사용
 } as const;
 
-/** 포트폴리오 규모 기반 동적 파라미터 — 고정형 상수 대체 */
+/** 포트폴리오 규모 기반 동적 파라미터 — 고정형 상수 대체
+ *  히스테리시스(deadband) 적용: 경계값 ±15% 범위에서 급변 방지
+ *  예: $2000 경계 → $1700 이하에서야 소액 tier, $2300 이상에서야 중형 tier
+ */
+let _lastTier: 'micro' | 'small' | 'large' = 'small';
 export function getOverseasDynamic(portfolioUsd: number, isPaper = false) {
   const p = Math.max(100, portfolioUsd);
-  // 100% 비율 기반 — 고정 달러 폐지
-  // Paper: 포지션당 10% (=최대 10종목), 최소 2종목
-  // Live: positionPct 기반 (소액 40%→2~3종목, 중형 25%→4종목, 대형 18%→5~6종목)
-  const posPct = isPaper ? 0.10 : (p < 2000 ? 0.40 : p < 10000 ? 0.25 : 0.18);
-  const maxPos = Math.max(2, Math.min(isPaper ? 10 : 8, Math.floor(1 / posPct)));
+
+  // 히스테리시스 tier 결정 — 경계값 왕복 whipsaw 방지
+  // 상승 시 높은 경계, 하락 시 낮은 경계 (deadband ±15%)
+  if (!isPaper) {
+    if (_lastTier === 'micro') {
+      if (p >= 2300) _lastTier = 'small';       // 2000 * 1.15
+      if (p >= 11500) _lastTier = 'large';      // 10000 * 1.15
+    } else if (_lastTier === 'small') {
+      if (p < 1700) _lastTier = 'micro';        // 2000 * 0.85
+      if (p >= 11500) _lastTier = 'large';
+    } else { // large
+      if (p < 8500) _lastTier = 'small';        // 10000 * 0.85
+      if (p < 1700) _lastTier = 'micro';
+    }
+  }
+
+  // Paper/Live 동일 tier 기반 (Paper 10종목 고정은 과다 분산 → 56% 손실 원인)
+  // Paper도 포트폴리오 규모에 맞춰 동적 조정
+  const tier = isPaper
+    ? (p < 2000 ? 'micro' : p < 10000 ? 'small' : 'large')
+    : _lastTier;
+  const posPct = tier === 'micro' ? 0.40
+    : tier === 'small' ? 0.25
+    : 0.18;
+  const holdDays = tier === 'micro' ? 14
+    : tier === 'small' ? 21
+    : 30;
+
+  const maxPos = Math.max(2, Math.min(8, Math.floor(1 / posPct)));
   return {
     maxPositions:       maxPos,
-    positionSizeUsd:    Math.round(Math.min(p * 0.25, 5000)),                // 포트폴리오 25% 캡 (고정$ 최소 폐지)
-    positionPct:        p < 2000 ? 0.40 : p < 10000 ? 0.25 : 0.18,         // 소액→40%(집중), 중형→25%, 대형→18%
-    parkingCashBuffer:  Math.round(p * 0.05),                               // 포트폴리오 5% (고정$ 폐지)
-    maxHoldDays:        p < 2000 ? 14 : p < 10000 ? 21 : 30,               // 소액→14일, 중형→21일, 대형→30일
-    concentrationCashBuffer: Math.round(p * 0.04),                          // 포트폴리오 4% (고정$ 폐지)
-    concentrationMinInvest:  Math.round(p * 0.01),                          // 포트폴리오 1% (고정$ 폐지)
+    positionSizeUsd:    Math.round(Math.min(p * 0.25, 5000)),                // 포트폴리오 25% 캡
+    positionPct:        posPct,
+    parkingCashBuffer:  Math.round(p * 0.05),                               // 포트폴리오 5%
+    maxHoldDays:        holdDays,
+    concentrationCashBuffer: Math.round(p * 0.04),                          // 포트폴리오 4%
+    concentrationMinInvest:  Math.round(p * 0.01),                          // 포트폴리오 1%
   };
 }
 

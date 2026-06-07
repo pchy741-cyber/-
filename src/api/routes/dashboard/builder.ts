@@ -61,7 +61,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     Promise.race([p, new Promise<T>(res => setTimeout(() => res(fallback), ms))]);
 
   const balanceFn = viewIsPaper
-    ? () => withTimeout(getPaperBalance(), 5000, defaultBalance as any)
+    ? () => withTimeout(getPaperBalance(), 10000, defaultBalance as any)
     : () => withTimeout(getAccountBalance(true), 6000, defaultBalance as any);
 
   const [balanceResult, chains, strategy, insightRows, defensePark] = await Promise.all([
@@ -71,7 +71,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     safeQuery(
       `SELECT id, category, insight, confidence, sample_count, last_updated, is_manual,
               recommendation, param_change, is_applied, applied_at, is_paper
-       FROM learned_insights ORDER BY is_manual DESC, confidence DESC LIMIT 30`
+       FROM learned_insights WHERE is_paper = $1 ORDER BY is_manual DESC, confidence DESC LIMIT 30`,
+      [viewIsPaper]
     ).catch(() => ({ rows: [] as any[] })),
     getDefenseParkState().catch(() => ({ isActive: false, parkStockCode: '069500', parkStockName: 'KODEX 200', entryReason: null, enteredAt: null })),
   ]);
@@ -242,7 +243,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   let actualCash: number;
 
   if (viewIsPaper) {
-    totalInvested = totalChainInvested;
+    // 체인이 없어도 getPaperBalance()의 totalEvalAmount(보유원가)를 폴백으로 사용
+    totalInvested = totalChainInvested > 0 ? totalChainInvested : (balance.totalEvalAmount ?? 0);
     totalPnl = totalChainPnl + (balance.totalProfitLoss ?? 0);
     actualCash = rawCash;
   } else {
@@ -435,18 +437,12 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     // Paper: 국내 현금(rawCash) + 해외 현금(USD→KRW) = 통합 현금
     actualCash = (actualCash || 0) + overseasCashKrw;
   } else {
-    // Live: overseas_state.cash 우선 (KIS psamount 기반, KRW)
-    // 스테일 가드: 6시간 초과 시 국내 잔고 API 폴백, 없으면 overseas_state 유지
-    const STALE_SEC = 6 * 60 * 60;
-    if (overseasCashKrw > 0 && osCashAge < STALE_SEC) {
-      actualCash = overseasCashKrw;
-    } else if (rawCash > 0) {
+    // Live: KIS 국내 잔고 API(rawCash) 우선 — KIS 앱 "주문가능원화"와 일치
+    // overseas_state.cash(psamount KRW)는 결제주기/미수금 차이로 실제 주문가능과 불일치 가능
+    if (rawCash > 0) {
       actualCash = rawCash;
-      if (overseasCashKrw > 0 && osCashAge >= STALE_SEC) {
-        logger.warn(`대시보드: overseas_state.cash 스테일 (${Math.round(osCashAge / 60)}분) → 국내 잔고 API 폴백`, { component: 'DASHBOARD' });
-      }
     } else if (overseasCashKrw > 0) {
-      // 스테일이지만 다른 소스 없음 → overseas_state 값 그대로 사용 (0보다 나음)
+      // 국내 잔고 API 실패 시 overseas_state.cash 폴백
       actualCash = overseasCashKrw;
     } else {
       // 전부 실패 → netAsset 기반 추정
@@ -561,7 +557,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     viewMode: viewIsPaper ? 'paper' : 'live',
     riskLimits: (() => {
       // 통합증거금: 전체 포트폴리오 기준 일일손실한도
-      const limit = calcDailyLossLimit(Math.round(grandTotalValue));
+      const limit = calcDailyLossLimit(Math.round(grandTotalValue), viewIsPaper);
       // 해외: 현금(KRW) + 보유종목 시가평가(KRW) 기준
       const osPortfolioKrw = (actualCash || 0) + (isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw);
       const osPortfolioUsd = FX_RATE > 0 ? osPortfolioKrw / FX_RATE : 0;
@@ -569,7 +565,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
         maxDailyDrawdownKrw: limit.limitAmount,
         dailyDrawdownPct: limit.pct,
         basis: limit.basis,
-        overseasLimitUsd: Math.round(osPortfolioUsd * 0.30),
+        overseasLimitUsd: Math.round(osPortfolioUsd * limit.pct / 100),
         overseasBasisUsd: Math.round(osPortfolioUsd),
       };
     })(),

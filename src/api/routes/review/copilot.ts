@@ -115,24 +115,83 @@ app.get('/review/copilot', async (c) => {
       });
     }
 
-    // 1b. 해외 현금 정합성 (모드별 분리)
+    // 1b. 해외 현금 정합성 (모드별 분리) + 보유종목 현재가
     try {
-      const cashKey = viewIsPaper ? 'cash_paper' : 'cash';
-      const { rows: osState } = await pool.query(
-        "SELECT value FROM overseas_state WHERE key = $1", [cashKey]);
-      const osCash = Number(osState[0]?.value ?? 0);
-      const { rows: holdings } = await pool.query(
-        "SELECT COUNT(*) as cnt FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1",
+      const { fetchExchangeRate } = await import('../../../automation/macro-data.js');
+      const fxRate = await fetchExchangeRate();
+      let osCashUsd = 0;
+      let krwInfo = '';
+      let syncAgo = '미동기화';
+
+      if (!viewIsPaper) {
+        // Live: KIS psamount API 실시간 조회 (DB 캐시 대신 직접)
+        try {
+          const { getOverseasBuyableAmount } = await import('../../../kis/overseas.js');
+          const buyable = await getOverseasBuyableAmount();
+          // buyable.usd = ord_psbl_frcr_amt (KIS 앱 "달러화"와 일치하는 실제 주문가능 USD)
+          // buyable.krw = maxUsd × exrt (KIS 앱 "주문가능원화"와 일치하는 통합증거금 KRW)
+          if (buyable && (buyable.usd > 0 || (buyable.krw ?? 0) > 0)) {
+            osCashUsd = buyable.usd;
+            krwInfo = buyable.krw ? ` (₩${Math.round(buyable.krw).toLocaleString()})` : '';
+            syncAgo = '실시간';
+          }
+        } catch {
+          // KIS API 실패 시 DB 폴백
+          const { rows: osState } = await pool.query(
+            "SELECT value, updated_at FROM overseas_state WHERE key = 'cash'");
+          const osCashRaw = Number(osState[0]?.value ?? 0);
+          const syncAt = osState[0]?.updated_at ? new Date(osState[0].updated_at) : null;
+          syncAgo = syncAt ? `${Math.round((Date.now() - syncAt.getTime()) / 60000)}분전` : '미동기화';
+          if (osCashRaw > 0) {
+            osCashUsd = fxRate > 0 ? osCashRaw / fxRate : 0;
+            krwInfo = ` (₩${Math.round(osCashRaw).toLocaleString()})`;
+          }
+        }
+      } else {
+        // Paper: DB에서 USD 직접 조회
+        const { rows: osState } = await pool.query(
+          "SELECT value, updated_at FROM overseas_state WHERE key = 'cash_paper'");
+        osCashUsd = Number(osState[0]?.value ?? 0);
+        const syncAt = osState[0]?.updated_at ? new Date(osState[0].updated_at) : null;
+        syncAgo = syncAt ? `${Math.round((Date.now() - syncAt.getTime()) / 60000)}분전` : '미동기화';
+      }
+
+      // 보유종목 현재가 조회
+      const { rows: holdingRows } = await pool.query(
+        "SELECT stock_code, exchange, quantity, avg_price FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1",
         [viewIsPaper]);
-      const holdingCnt = Number(holdings[0]?.cnt ?? 0);
+      const holdingCnt = holdingRows.length;
+      const holdingDetails: string[] = [];
+      let totalEval = 0;
+
+      for (const h of holdingRows) {
+        const code = h.stock_code;
+        const qty = Number(h.quantity);
+        const avgPx = Number(h.avg_price ?? 0);
+        let curPx = avgPx;
+        try {
+          const { getOverseasPrice } = await import('../../../kis/overseas.js');
+          const px = await getOverseasPrice(code, h.exchange ?? 'NASDAQ');
+          if (px?.currentPrice && px.currentPrice > 0) curPx = px.currentPrice;
+        } catch { /* 시세 조회 실패 시 매입가 사용 */ }
+        const eval$ = curPx * qty;
+        const pnl = avgPx > 0 ? ((curPx - avgPx) / avgPx * 100) : 0;
+        totalEval += eval$;
+        holdingDetails.push(`${code} ${qty}주 @$${curPx.toFixed(2)} (${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}%)`);
+      }
 
       const modeLabel = viewIsPaper ? 'Paper' : 'Live';
-      const detail = `${modeLabel}: $${osCash.toFixed(0)} (${holdingCnt}종목)`;
+      const totalAsset = osCashUsd + totalEval;
+      const detail = `${modeLabel}: 현금$${osCashUsd.toFixed(0)}${krwInfo} + 평가$${totalEval.toFixed(0)} = 총$${totalAsset.toFixed(0)} [동기화:${syncAgo}]`;
 
-      if (!viewIsPaper && osCash > 5000 && holdingCnt === 0) {
-        integrity.push({ id: 'os_cash', status: 'warn', label: '해외 Live 현금 이상', detail: `$${osCash.toFixed(0)} 잔고 있으나 보유종목 0 — 오염 가능성` });
+      if (!viewIsPaper && osCashUsd > 5000 && holdingCnt === 0) {
+        integrity.push({ id: 'os_cash', status: 'warn', label: '해외 Live 현금 이상', detail: `$${osCashUsd.toFixed(0)} 잔고 있으나 보유종목 0 — 오염 가능성` });
       } else {
-        integrity.push({ id: 'os_cash', status: 'ok', label: `해외 현금 (${modeLabel})`, detail });
+        integrity.push({ id: 'os_cash', status: 'ok', label: `해외 자산 (${modeLabel})`, detail });
+      }
+      // 보유종목 상세
+      if (holdingDetails.length > 0) {
+        integrity.push({ id: 'os_holdings', status: 'ok', label: `해외 보유종목`, detail: holdingDetails.join(' | ') });
       }
     } catch {
       integrity.push({ id: 'os_cash', status: 'warn', label: '해외 데이터 조회 실패', detail: '-' });
@@ -179,11 +238,12 @@ app.get('/review/copilot', async (c) => {
       }
     } catch {}
 
-    // 2b. 일일 손실한도 소진율 — 총자산의 30%
+    // 2b. 일일 손실한도 소진율 — Live 2.5% / Paper 30%
     try {
       const { calcDailyLossLimit } = await import('../../../risk/seed-capital.js');
+      const { getCtxIsPaper } = await import('../../../config/context.js');
       const totalPortfolioKrw = netAsset > 0 ? netAsset : (cash + positions.reduce((s, p) => s + (p.avgBuyPrice * p.quantity), 0));
-      const limit = calcDailyLossLimit(totalPortfolioKrw);
+      const limit = calcDailyLossLimit(totalPortfolioKrw, getCtxIsPaper());
       const evalKrw = positions.reduce((s, p) => s + p.evalAmount, 0);
       const investedKrw = positions.reduce((s, p) => s + (p.avgBuyPrice * p.quantity), 0);
       const unrealizedLoss = Math.max(0, investedKrw - evalKrw);

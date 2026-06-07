@@ -138,14 +138,24 @@ export class RiskEngine {
     const currentInvested = existing ? existing.quantity * existing.avgBuyPrice : 0;
     const totalAfter = currentInvested + orderValue;
 
-    const totalAssets = balance.totalEvalAmount ?? 0;
-    // 황금비율 포지션 캡: 소계좌일수록 집중도 허용 (단일주도 못 사는 상황 방지)
-    // 기준: 25%로 최소 1주(3만원) 분산 가능 여부로 단계 결정 (고정금액 제거)
+    // 총자산 = 순자산(주식평가 + 현금 - 미수금) — totalEvalAmount만 쓰면 현금 미포함 버그
+    const totalAssets = balance.netAsset ?? ((balance.totalEvalAmount ?? 0) + Math.max(0, balance.orderableCash ?? 0));
+    // 황금비율 포지션 캡: 소계좌→집중 허용, 일반→확신도 기반 동적 캡
+    // buy_threshold 기반 레짐 연동 — 장 좋으면(bt≤65) 35%까지, 장 나쁘면(bt≥85) 20%
     const canDiv3 = totalAssets * 0.25 >= 30_000;   // 3종목 분산 가능
     const canDiv5 = totalAssets * 0.20 >= 30_000;   // 5종목 분산 가능
+    let baseCap = 0.25;
+    try {
+      const { rows: scRows } = await getPool().query(
+        `SELECT buy_threshold FROM strategy_config WHERE is_active = true AND is_paper = $1 LIMIT 1`,
+        [isPaper],
+      );
+      const bt = Number(scRows[0]?.buy_threshold ?? 80);
+      baseCap = bt <= 65 ? 0.35 : bt <= 75 ? 0.30 : bt <= 85 ? 0.25 : 0.20;
+    } catch { /* 기본값 유지 */ }
     const capRatio = !canDiv3 ? 0.50
       : !canDiv5 ? 0.382
-      : 0.25;
+      : baseCap;
     const dynamicLimit = totalAssets > 0
       ? Math.min(Math.round(totalAssets * capRatio), config.risk.maxPositionKrw)
       : config.risk.maxPositionKrw;
@@ -221,10 +231,9 @@ export class RiskEngine {
       return { approved: true, reason: '외부 매도 감지 — 스냅샷 재설정, 매매 허용' };
     }
 
-    // 국내 포트폴리오 기준 30% 손실한도 — startValue를 기준으로 계산 (현재가 아닌 시작가 기준)
-    // 현재값이 급감해도 시작값 기준이면 정확한 % 산출
+    // 일일 손실한도: Live 2.5% / Paper 30% — startValue 기준 (현재가 아닌 시작가 기준)
     const basisValue = Math.max(startValue, currentValue); // 더 큰 쪽 기준 (외부 입출금 고려)
-    const { basis, pct, limitAmount } = calcDailyLossLimit(basisValue);
+    const { basis, pct, limitAmount } = calcDailyLossLimit(basisValue, isPaper);
     const lossPct = basis > 0 ? ((dailyLoss / basis) * 100).toFixed(1) : '0';
 
     if (dailyLoss > limitAmount) {
@@ -257,25 +266,45 @@ export class RiskEngine {
 
     const afterExposurePct = ((balance.totalEvalAmount + orderValue) / totalPortfolio) * 100;
 
-    if (afterExposurePct > config.risk.maxTotalInvestedPct) {
+    // 레짐 기반 동적 투자비율 캡 — 장 좋으면 적극 집행, 나쁘면 보수적
+    // buy_threshold 낮을수록(=확신↑) → 캡 높임 | 높을수록(=방어↑) → 캡 낮춤
+    let dynamicCap = config.risk.maxTotalInvestedPct; // 기본 88%
+    try {
+      const { rows } = await getPool().query(
+        `SELECT buy_threshold FROM strategy_config WHERE is_active = true AND is_paper = $1 LIMIT 1`,
+        [isPaper],
+      );
+      const bt = Number(rows[0]?.buy_threshold ?? 80);
+      // bt ≤ 65 (BOOST/BULL): 캡 95% → 거의 풀 집행
+      // bt 65-75 (NORMAL): 캡 92%
+      // bt 75-85 (ADJUST): 캡 88% (기본값)
+      // bt ≥ 85 (DOWN/CRASH): 캡 80% → 현금 많이 보유
+      dynamicCap = bt <= 65 ? 95 : bt <= 75 ? 92 : bt <= 85 ? 88 : 80;
+    } catch { /* DB 실패 시 기본값 유지 */ }
+
+    if (afterExposurePct > dynamicCap) {
       return {
         approved: false,
-        reason: `총 투자 비율 한도 초과: ${afterExposurePct.toFixed(1)}% > ${config.risk.maxTotalInvestedPct}%`,
+        reason: `총 투자 비율 한도 초과: ${afterExposurePct.toFixed(1)}% > ${dynamicCap}% (레짐 동적)`,
       };
     }
 
     // 국내 배분 비중 체크 — kr_pct 목표 준수
     // 소자산(200만 미만) 또는 연습모드(해외 상태 미분리)는 배분 비중 체크 면제
+    // ⚠️ 통합증거금: 현금(KRW) 단일 풀 → 현금을 특정 시장에 귀속시키지 않음
+    //   배분 비중은 "투자중 금액"(주식 보유액)만 기준으로 계산
+    //   이전 로직은 totalDeposit(전체 현금)을 국내 쪽에 포함 + 해외 현금도 합산 → 현금 이중 계산
     if (!isPaper && totalPortfolio >= 2000000) {
       try {
-        const [osCash, osHoldings, fx] = await Promise.all([getOverseasCash(), getOverseasHoldings(), getFxRate()]);
+        const [, osHoldings, fx] = await Promise.all([getOverseasCash(), getOverseasHoldings(), getFxRate()]);
         const osHoldingCostUsd = Array.from(osHoldings.values()).reduce((sum, h) => sum + h.qty * h.avgPrice, 0);
-        const osPortfolioKrw = Math.round((osCash + osHoldingCostUsd) * fx);
-        const grandTotal = totalPortfolio + osPortfolioKrw;
-        if (grandTotal > 0 && osPortfolioKrw > 0) {  // 해외 포트폴리오 없으면 비율 체크 불필요
+        const osInvestedKrw = Math.round(osHoldingCostUsd * fx); // 해외 주식 보유액만 (현금 제외)
+        const domesticInvested = balance.totalEvalAmount; // 국내 주식 보유액만 (현금 제외)
+        const totalInvested = domesticInvested + osInvestedKrw;
+        if (totalInvested > 0 && osInvestedKrw > 0) {  // 해외 투자 없으면 비율 체크 불필요
           const { rows: allocRows } = await getPool().query('SELECT kr_pct FROM portfolio_allocation_config WHERE is_paper = $1 LIMIT 1', [getCtxIsPaper()]);
           const targetKrPct = Number(allocRows[0]?.kr_pct ?? 70);
-          const currentKrPct = (totalPortfolio / grandTotal) * 100;
+          const currentKrPct = (domesticInvested / totalInvested) * 100;
           if (currentKrPct > targetKrPct * 1.15) {
             return {
               approved: false,

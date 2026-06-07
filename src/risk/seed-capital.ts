@@ -127,21 +127,24 @@ export function getSeedCapitalStatus() {
 }
 
 // ── 일일 손실한도 ──
-// 투자금(종목에 들어간 돈)의 30%
+// Live: 총자산의 2.5% (월간 MDD 8%의 1/3 — 3연속 최대손실 시 MDD 도달)
+// Paper: 총자산의 30% (실험 자유도 확보)
 // 순수 함수: DB 쿼리 없음, caller가 투자금을 전달한다.
 
-export const DAILY_LOSS_PCT = 30;
+export const DAILY_LOSS_PCT_LIVE = 2.5;
+export const DAILY_LOSS_PCT_PAPER = 30;
 
 export interface DailyLossLimit {
   basis: number;       // 총자산 (caller가 전달: 현금+투자 합계)
-  pct: number;         // 30%
-  limitAmount: number; // basis × 30%
+  pct: number;         // Live 2.5% / Paper 30%
+  limitAmount: number; // basis × pct%
 }
 
-/** 총자산의 30% = 손실한도. caller가 총자산(현금+투자) 전달. */
-export function calcDailyLossLimit(totalPortfolio: number): DailyLossLimit {
-  const limitAmount = Math.round(totalPortfolio * DAILY_LOSS_PCT / 100);
-  return { basis: totalPortfolio, pct: DAILY_LOSS_PCT, limitAmount };
+/** 총자산의 N% = 손실한도. caller가 총자산(현금+투자) 전달. */
+export function calcDailyLossLimit(totalPortfolio: number, isPaper?: boolean): DailyLossLimit {
+  const pct = isPaper ? DAILY_LOSS_PCT_PAPER : DAILY_LOSS_PCT_LIVE;
+  const limitAmount = Math.round(totalPortfolio * pct / 100);
+  return { basis: totalPortfolio, pct, limitAmount };
 }
 
 /** 해외 손실 단계 (%) */
