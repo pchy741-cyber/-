@@ -1,12 +1,35 @@
 'use client';
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { api } from '../lib/utils';
 import type { ScreenshotProps, Tab, CopilotData, XrayData } from './screenshot/screenshot-types';
 import { CaptureOverlay } from './screenshot/CaptureOverlay';
 import { CopilotResultPanel } from './screenshot/CopilotResultPanel';
 import { AutoPilotButton } from './screenshot/AutoPilotButton';
 import { waitForStable, captureTab, downloadPng, timeAgo } from './screenshot/screenshot-utils';
+
+// sessionStorage 키 — 캡쳐 결과 영속화 (페이지 이탈 후 복귀 시 유지)
+const SS_KEY = 'aab_capture_result';
+
+function loadCaptureCache(): { copilot: CopilotData | null; xray: XrayData | null; time: string | null } {
+  try {
+    const raw = sessionStorage.getItem(SS_KEY);
+    if (!raw) return { copilot: null, xray: null, time: null };
+    const parsed = JSON.parse(raw);
+    // 30분 이상 된 캐시는 폐기
+    if (parsed.time && Date.now() - new Date(parsed.time).getTime() > 30 * 60_000) {
+      sessionStorage.removeItem(SS_KEY);
+      return { copilot: null, xray: null, time: null };
+    }
+    return parsed;
+  } catch { return { copilot: null, xray: null, time: null }; }
+}
+
+function saveCaptureCache(copilot: CopilotData | null, xray: XrayData | null, time: string | null) {
+  try {
+    sessionStorage.setItem(SS_KEY, JSON.stringify({ copilot, xray, time }));
+  } catch { /* quota 초과 무시 */ }
+}
 
 const CORE_TABS: { id: Tab; label: string }[] = [
   { id: 'home', label: '대시보드' },
@@ -34,6 +57,16 @@ export default function ScreenshotReview(props: ScreenshotProps) {
   const [lastCaptureTime, setLastCaptureTime] = useState<string | null>(null);
   const capturedScreenshots = useRef<{ tab: string; base64: string }[]>([]);
 
+  // 마운트 시 sessionStorage에서 캡쳐 결과 복원
+  useEffect(() => {
+    const cached = loadCaptureCache();
+    if (cached.copilot || cached.xray) {
+      setCopilot(cached.copilot);
+      setXray(cached.xray);
+      setLastCaptureTime(cached.time);
+    }
+  }, []);
+
   const captureAllTabs = useCallback(async () => {
     if (capturing) return;
     setCapturing(true);
@@ -44,6 +77,9 @@ export default function ScreenshotReview(props: ScreenshotProps) {
     const originalTab = currentTab;
     const originalMode = viewMode;
     const otherMode = viewMode === 'live' ? 'paper' : 'live';
+    // PAPER_ONLY 서버: live 캡쳐 스킵 (live 잔고 14만원 수준 — 혼동 방지)
+    const serverIsPaper = props.health?.tradingMode === 'paper';
+    const skipDualCapture = serverIsPaper && otherMode === 'live';
     const screenshots: { tab: string; base64: string }[] = [];
 
     let enabledOptional: typeof OPTIONAL_TABS = [];
@@ -57,7 +93,8 @@ export default function ScreenshotReview(props: ScreenshotProps) {
     } catch {}
     const TAB_LIST = [...CORE_TABS, ...enabledOptional];
 
-    const totalSteps = TAB_LIST.length + DUAL_MODE_TABS.length + 1;
+    const dualCount = skipDualCapture ? 0 : DUAL_MODE_TABS.length;
+    const totalSteps = TAB_LIST.length + dualCount + 1;
     setTotal(totalSteps);
 
     let failedTabs: string[] = [];
@@ -80,32 +117,35 @@ export default function ScreenshotReview(props: ScreenshotProps) {
         }
       }
 
-      setProgress(`${otherMode.toUpperCase()} 전환`);
-      switchViewMode(otherMode);
-      await new Promise((r) => setTimeout(r, 3000));
+      if (!skipDualCapture) {
+        setProgress(`${otherMode.toUpperCase()} 전환`);
+        switchViewMode(otherMode);
+        await new Promise((r) => setTimeout(r, 3000));
 
-      for (let i = 0; i < DUAL_MODE_TABS.length; i++) {
-        const tabId = DUAL_MODE_TABS[i];
-        const tabInfo = TAB_LIST.find((t) => t.id === tabId)!;
-        setStep(TAB_LIST.length + i + 1);
-        setProgress(`[${otherMode.toUpperCase()}] ${tabInfo.label}`);
-        setTab(tabId);
-        const mainEl = document.querySelector('main');
-        if (mainEl) await waitForStable(mainEl, 300, 3000);
-        try {
-          const base64 = await captureTab(tabInfo.label, props, otherMode);
-          if (base64) screenshots.push({ tab: `${tabInfo.label} [${otherMode.toUpperCase()}]`, base64 });
-          else failedTabs.push(`${tabInfo.label}[${otherMode}]`);
-        } catch {
-          failedTabs.push(`${tabInfo.label}[${otherMode}]`);
-          props.toast?.(`캡쳐 실패: ${tabInfo.label} [${otherMode}]`, 'err');
-          document.getElementById('__diag_banner__')?.remove();
+        for (let i = 0; i < DUAL_MODE_TABS.length; i++) {
+          const tabId = DUAL_MODE_TABS[i];
+          const tabInfo = TAB_LIST.find((t) => t.id === tabId)!;
+          setStep(TAB_LIST.length + i + 1);
+          setProgress(`[${otherMode.toUpperCase()}] ${tabInfo.label}`);
+          setTab(tabId);
+          const mainEl = document.querySelector('main');
+          if (mainEl) await waitForStable(mainEl, 300, 3000);
+          try {
+            const base64 = await captureTab(tabInfo.label, props, otherMode);
+            if (base64) screenshots.push({ tab: `${tabInfo.label} [${otherMode.toUpperCase()}]`, base64 });
+            else failedTabs.push(`${tabInfo.label}[${otherMode}]`);
+          } catch {
+            failedTabs.push(`${tabInfo.label}[${otherMode}]`);
+            props.toast?.(`캡쳐 실패: ${tabInfo.label} [${otherMode}]`, 'err');
+            document.getElementById('__diag_banner__')?.remove();
+          }
         }
+
+        switchViewMode(originalMode);
+        await new Promise((r) => setTimeout(r, 500));
       }
 
-      switchViewMode(originalMode);
       setTab(originalTab);
-      await new Promise((r) => setTimeout(r, 500));
 
       setStep(totalSteps);
       setProgress('AI Copilot + X-Ray 분석');
@@ -116,10 +156,15 @@ export default function ScreenshotReview(props: ScreenshotProps) {
       ]);
 
       capturedScreenshots.current = screenshots;
-      if (copilotRes) setCopilot(copilotRes as CopilotData);
-      if (xrayRes) setXray(xrayRes as XrayData);
+      const newCopilot = copilotRes as CopilotData | null;
+      const newXray = xrayRes as XrayData | null;
+      const newTime = new Date().toISOString();
+      if (newCopilot) setCopilot(newCopilot);
+      if (newXray) setXray(newXray);
       setShowPanel(true);
-      setLastCaptureTime(new Date().toISOString());
+      setLastCaptureTime(newTime);
+      // sessionStorage에 결과 저장 (페이지 이탈 후 복귀 시 유지)
+      saveCaptureCache(newCopilot, newXray, newTime);
       if (failedTabs.length > 0) {
         props.toast?.(`${screenshots.length}/${screenshots.length + failedTabs.length} 탭 캡쳐 완료, ${failedTabs.length}개 실패`, 'info');
       }
@@ -214,13 +259,13 @@ export default function ScreenshotReview(props: ScreenshotProps) {
         ) : (copilot || xray) ? (
           <div className="flex flex-col items-center leading-none">
             <span className={`text-[11px] font-black ${scoreColor(healthScore)}`}>{healthScore}</span>
-            <span className="text-[7px] text-slate-400 mt-0.5">SCORE</span>
-            {lastCaptureTime && <span className="text-[6px] text-slate-500">{timeAgo(lastCaptureTime)}</span>}
+            <span className="text-[9px] text-slate-400 mt-0.5">SCORE</span>
+            {lastCaptureTime && <span className="text-[8px] text-slate-500">{timeAgo(lastCaptureTime)}</span>}
           </div>
         ) : sseScore > 0 ? (
           <div className="flex flex-col items-center leading-none">
             <span className={`text-[11px] font-black ${scoreColor(sseScore)}`}>{sseScore}</span>
-            <span className="text-[6px] text-slate-500 mt-0.5">LIVE</span>
+            <span className="text-[8px] text-slate-500 mt-0.5">LIVE</span>
           </div>
         ) : (
           <div className="relative">
