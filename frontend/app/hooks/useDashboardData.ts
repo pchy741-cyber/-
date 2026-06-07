@@ -5,36 +5,65 @@ import { api } from '../lib/utils';
 import { useSSEStream } from './useSSEStream';
 import type {
   Health, Dashboard, WatchlistItem, Strategy, Trade, KillSwitch,
-  Secrets, UsDashboard, WithdrawConfig, AllocConfig, LoopStatus,
+  Secrets, UsDashboard, WithdrawConfig, AllocConfig, LoopStatus, TodayStats,
 } from '../types';
 
+// ── Stale-While-Revalidate 캐시 ──
+// DB가 꺼져있어도 마지막 데이터를 즉시 표시 → 백그라운드에서 새 데이터 갱신
+const CACHE_KEY = 'aab_dash_cache';
+
+interface DashCache {
+  dash: Dashboard | null;
+  trades: Trade[];
+  killSwitch: KillSwitch | null;
+  watchlist: WatchlistItem[];
+  usDash: UsDashboard | null;
+  todayStats: TodayStats | null;
+  viewMode: string;
+  savedAt: number;
+}
+
+function loadCache(vm: string): DashCache | null {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const c = JSON.parse(raw) as DashCache;
+    if (c.viewMode !== vm) return null;
+    return c;
+  } catch { return null; }
+}
+
+function saveCache(c: Omit<DashCache, 'savedAt'>) {
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ...c, savedAt: Date.now() })); } catch {}
+}
+
 export function useDashboardData() {
+  // 캐시 복원: 즉시 렌더링용
+  const initVm = (() => { try { return localStorage.getItem('aab_viewMode') as 'live'|'paper' || 'paper'; } catch { return 'paper' as const; } })();
+  const cached = typeof window !== 'undefined' ? loadCache(initVm) : null;
+
   const [health, setHealth] = useState<Health | null>(null);
-  const [dash, setDash] = useState<Dashboard | null>(null);
-  const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
+  const [dash, setDash] = useState<Dashboard | null>(cached?.dash ?? null);
+  const [watchlist, setWatchlist] = useState<WatchlistItem[]>(cached?.watchlist ?? []);
   const [strategy, setStrategy] = useState<Strategy | null>(null);
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const [killSwitch, setKillSwitch] = useState<KillSwitch | null>(null);
+  const [trades, setTrades] = useState<Trade[]>(cached?.trades ?? []);
+  const [killSwitch, setKillSwitch] = useState<KillSwitch | null>(cached?.killSwitch ?? null);
   const [secrets, setSecrets] = useState<Secrets | null>(null);
-  const [usDash, setUsDash] = useState<UsDashboard | null>(null);
+  const [usDash, setUsDash] = useState<UsDashboard | null>(cached?.usDash ?? null);
   const [withdrawConfig, setWithdrawConfig] = useState<WithdrawConfig | null>(null);
   const [withdrawHistory, setWithdrawHistory] = useState<WithdrawConfig[]>([]);
   const [allocConfig, setAllocConfig] = useState<AllocConfig | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [lastUpdate, setLastUpdate] = useState(new Date());
+  const [loading, setLoading] = useState(!cached?.dash);
+  const [lastUpdate, setLastUpdate] = useState(cached ? new Date(cached.savedAt) : new Date());
   const [loopStatus, setLoopStatus] = useState<LoopStatus | null>(null);
   const [sseHealthScore, setSseHealthScore] = useState<number>(0);
   const [featureFlags, setFeatureFlags] = useState<Record<string, boolean>>({});
+  const [todayStats, setTodayStats] = useState<TodayStats | null>(cached?.todayStats ?? null);
+  const [isStale, setIsStale] = useState(!!cached?.dash); // 캐시 데이터면 stale
 
-  // localStorage에서 동기적으로 viewMode 복원 — useEffect 비동기 복원 시
-  // live→paper 전환 사이에 SSE가 live 모드로 연결되어 1초간 실전 데이터 표시되는 버그 방지
-  const [viewMode, setViewMode] = useState<'live'|'paper'>(() => {
-    try {
-      const saved = localStorage.getItem('aab_viewMode');
-      if (saved === 'paper' || saved === 'live') return saved;
-    } catch {}
-    return 'live';
-  });
+  // 서버 모드 기준 기본값 — PAPER_ONLY=true일 때 localStorage에 'live'가 남아있으면
+  // live 잔고가 표시되는 혼동 발생. 항상 paper로 시작하고 서버 확인 후 동기화.
+  const [viewMode, setViewMode] = useState<'live'|'paper'>('paper');
 
   const loadingRef = useRef(false);
   const loadGenRef = useRef(0);
@@ -45,11 +74,12 @@ export function useDashboardData() {
 
   const loadStatic = async (gen: number, vmOverride?: string) => {
     const vm = vmOverride ?? viewModeRef.current;
-    const [w, s, t, sec, wc, wh] = await Promise.allSettled([
+    const [w, s, t, sec, wc, wh, ts] = await Promise.allSettled([
       api(`/watchlist?viewMode=${vm}`), api('/strategy'),
       api(`/trades?limit=100&viewMode=${vm}`), api('/secrets'),
       api('/withdraw/config').catch(() => null),
       api('/withdraw/history').catch(() => []),
+      api(`/trades/today-stats?viewMode=${vm}`),
     ]);
     if (loadGenRef.current !== gen) return;
     if (w.status === 'fulfilled') setWatchlist(Array.isArray(w.value) ? w.value : []);
@@ -62,6 +92,7 @@ export function useDashboardData() {
     if (sec.status === 'fulfilled') setSecrets(sec.value);
     if (wc.status === 'fulfilled' && wc.value) setWithdrawConfig(wc.value);
     if (wh.status === 'fulfilled') setWithdrawHistory(Array.isArray(wh.value) ? wh.value : []);
+    if (ts.status === 'fulfilled' && ts.value?.totalTrades != null) setTodayStats(ts.value);
     staticLoadedRef.current = true;
   };
 
@@ -92,7 +123,7 @@ export function useDashboardData() {
       ]);
       if (gen !== loadGenRef.current) return;
       if (h.status === 'fulfilled') setHealth(h.value);
-      if (d.status === 'fulfilled' && d.value) setDash(d.value);
+      if (d.status === 'fulfilled' && d.value) { setDash(d.value); setIsStale(false); }
       if (k.status === 'fulfilled') setKillSwitch(k.value);
       setLastUpdate(new Date());
       setLoading(false);
@@ -101,7 +132,7 @@ export function useDashboardData() {
         loadStatic(gen, vm).catch(() => {});
       } else {
         const tradesStaleSec = (Date.now() - tradesLastFetchRef.current) / 1000;
-        if (!tradesLoadedRef.current || tradesStaleSec > 60) {
+        if (!tradesLoadedRef.current || tradesStaleSec > 20) {
           refreshTrades(gen, vm);
         }
       }
@@ -132,13 +163,15 @@ export function useDashboardData() {
   // 초기 로드 + 폴링
   useEffect(() => {
     load(true);
+    // SSE가 실시간 데이터를 3초/30초 주기로 보내므로
+    // 폴링은 풀 대시보드 갱신 용도로만 (네트워크 70% 절감)
     const getInterval = () => {
       const h = new Date().getHours(), m = new Date().getMinutes();
       const mins = h * 60 + m;
       const isMarket = mins >= 9 * 60 && mins < 15 * 60 + 30;
       const visible = document.visibilityState === 'visible';
-      if (!visible) return 300000;
-      return isMarket ? 20000 : 120000;
+      if (!visible) return 600000;       // 백그라운드: 10분 (SSE가 처리)
+      return isMarket ? 120000 : 300000; // 장중: 2분, 장외: 5분
     };
     let iv: ReturnType<typeof setInterval>;
     const schedule = () => { iv = setInterval(() => { load(); clearInterval(iv); schedule(); }, getInterval()); };
@@ -148,8 +181,14 @@ export function useDashboardData() {
     return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVisibility); };
   }, [load]);
 
+  // 캐시 저장 — dash가 갱신될 때마다 localStorage에 저장
+  useEffect(() => {
+    if (!dash || isStale) return;
+    saveCache({ dash, trades, killSwitch, watchlist, usDash, todayStats, viewMode });
+  }, [dash, trades, killSwitch, watchlist, usDash, todayStats, viewMode, isStale]);
+
   // SSE 실시간 스트림
-  useSSEStream(viewMode, { setTrades, setStrategy, setDash, setUsDash, setLoopStatus, setSseHealthScore });
+  useSSEStream(viewMode, { setTrades, setStrategy, setDash, setUsDash, setLoopStatus, setSseHealthScore, setHealth, setTodayStats });
 
   const switchView = useCallback((mode: 'live' | 'paper') => {
     if (viewModeRef.current === mode) return;
@@ -158,6 +197,7 @@ export function useDashboardData() {
     try { localStorage.setItem('aab_viewMode', mode); } catch {}
     setDash(null);
     setUsDash(null);
+    setTodayStats(null);
     loadingRef.current = false;
     tradesLoadedRef.current = false;
     staticLoadedRef.current = false;
@@ -169,6 +209,6 @@ export function useDashboardData() {
     trades, killSwitch, setKillSwitch, secrets, usDash,
     withdrawConfig, setWithdrawConfig, withdrawHistory, setWithdrawHistory,
     allocConfig, setAllocConfig, loading, lastUpdate, loopStatus, sseHealthScore,
-    featureFlags, setFeatureFlags, viewMode, switchView, load,
+    featureFlags, setFeatureFlags, viewMode, switchView, load, todayStats, isStale,
   };
 }

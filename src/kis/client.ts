@@ -27,7 +27,7 @@ interface KISResponse<T = unknown> {
   output2?: T;
 }
 
-const MAX_RETRIES = 5;
+const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1000;
 
 // ── KIS API Rate Limiter (초당 20건 제한 대응) ──
@@ -92,7 +92,8 @@ class RateLimiter {
 // Paper: domestic + overseas가 동일 APP KEY → 단일 limiter 공유 (1/sec 초과 방지)
 // marketData는 useRealUrl=true로 실서버 호출 → 버스트 과부하 방지로 4/sec 제한
 // 모드 전환 시에도 정확한 rate 적용: 초기화 시 고정이 아닌 런타임 config 참조
-const _paperLimiter = new RateLimiter(1);
+// Paper 모드: 5 req/sec (연습모드 속도 5배 향상, KIS 모의투자 제한에 여유)
+const _paperLimiter = new RateLimiter(5);
 const _liveKisLimiter = new RateLimiter(15);
 const _liveOverseasLimiter = new RateLimiter(15);
 
@@ -171,15 +172,19 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
         method,
         headers,
         body: body ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(10000),
       });
 
       // KIS가 토큰 만료 시 JSON 대신 평문 "LOGOUT" 반환 → 토큰 캐시 초기화 후 재시도
       const rawText = await res.text();
       if (!rawText || rawText.trim() === '') {
+        // HTTP 4xx = 데이터 없음 (404 등) → 재시도 무의미, 즉시 실패
+        if (res.status >= 400 && res.status < 500) {
+          throw new Error(`KIS 빈 응답 [${trId}] HTTP${res.status} — 데이터 없음`);
+        }
         if (attempt < MAX_RETRIES) {
           logger.warn(`KIS 빈 응답 [${trId}] HTTP${res.status}, 재시도 ${attempt}/${MAX_RETRIES}`, { component: 'KIS' });
-          await sleep(2000 * attempt);
+          await sleep(1000 * attempt);
           continue;
         }
         throw new Error(`KIS 빈 응답 [${trId}] — 반복 재시도 실패`);
@@ -245,6 +250,8 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
       };
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
+      // 4xx 에러 (404 데이터 없음 등) → 재시도 무의미, 즉시 종료
+      if (lastError.message.includes('데이터 없음')) throw lastError;
       if (attempt < MAX_RETRIES) {
         logger.warn(`KIS 요청 실패, 재시도 ${attempt}/${MAX_RETRIES}: ${lastError.message}`, {
           component: 'KIS',

@@ -1,4 +1,3 @@
-import html2canvas from 'html2canvas';
 import type { ScreenshotProps } from './screenshot-types';
 
 export function buildDiagBanner(tabLabel: string, props: ScreenshotProps): HTMLDivElement {
@@ -67,6 +66,7 @@ export async function captureTab(tabLabel: string, props: ScreenshotProps, modeO
     const fullHeight = Math.max(mainEl.scrollHeight, mainEl.offsetHeight, 800);
     const bgColor = effectiveMode === 'paper' ? '#0d0a06' : '#06080f';
     const cappedHeight = Math.min(fullHeight, 4000);
+    const { default: html2canvas } = await import('html2canvas');
     const capturePromise = html2canvas(mainEl as HTMLElement, {
       backgroundColor: bgColor, scale: 1.5, useCORS: true, logging: false,
       windowWidth: 1200, windowHeight: cappedHeight, height: cappedHeight, y: 0, scrollY: 0,

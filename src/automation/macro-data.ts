@@ -44,7 +44,7 @@ let cacheTimestamp = 0;
 // fetchExchangeRate() 전용 캐시 — getCash() 등 핫패스에서 매 호출마다 Naver API 치는 것 방지
 let cachedFxRate: number | null = null;
 let cachedFxTimestamp = 0;
-const FX_CACHE_TTL_MS = 10 * 60 * 1000; // 10분
+const FX_CACHE_TTL_MS = 5 * 60 * 1000; // 5분 (환율 변동 빠른 반영)
 
 // ── Helper: safe fetch with timeout ──
 
