@@ -4,7 +4,7 @@
  * 포트폴리오 크기에 관계없이 동일한 % 비율로 동작:
  *   - Kelly/캡/바닥 모두 포트폴리오 대비 %
  *   - 최소 포지션도 고정 $ 대신 포트폴리오 대비 %
- *   - 황금비율: 38.2%, 23.6%, 14.6%, 9.0%, 61.8%
+ *   - 황금비율: 38.2%, 23.6%, 15.0%(CASH), 14.6%, 61.8%
  */
 import type { RegimeAdjustment } from './vix-regime.js';
 import type { KellyResult, GradualCooldown } from './types.js';
@@ -133,7 +133,7 @@ export function calcPositionSize(params: SizingParams): SizingResult {
   // 현금 활용: 레짐 기반 동적 현금유보 — 장 좋으면 적극, 나쁘면 보수적
   // breadth ≥ 0.65 (BULL): 3% 유보 → 97% 활용
   // breadth 0.45-0.65 (NORMAL): 6% 유보 → 94% 활용
-  // breadth < 0.45 (BEAR): 9% 유보 → 91% 활용 (기존 고정값)
+  // breadth < 0.45 (BEAR): 15% 유보 → 85% 활용 (PHI.CASH)
   const dynamicCashReserve = breadth >= 0.65 ? 0.03 : breadth >= 0.45 ? 0.06 : PHI.CASH;
   const cashUsageCap = 1.0 - dynamicCashReserve;
 

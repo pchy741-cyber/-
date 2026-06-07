@@ -498,7 +498,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     if (s.sessionStartPortfolioValue.get(mk) === null || s.sessionStartPortfolioValue.get(mk) === undefined) await setSessionStartValue(portfolioValue, isPaper());
     const sessionStart = s.sessionStartPortfolioValue.get(mk) ?? portfolioValue;
 
-    // 손실 한도 — 해외 포트폴리오(USD) 기준 30%
+    // 손실 한도 — 해외 포트폴리오(USD) 기준 warn 3% / block 5% / kill 8%
     const osLimit = OVERSEAS_LOSS_TIERS;
     const holdingCostUsd = Array.from(holdings.entries()).reduce((sum, [, h]) => sum + h.qty * h.avgPrice, 0);
     const unrealizedLossUsd = holdingCostUsd - holdingEvalUsd; // 양수 = 손실

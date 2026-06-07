@@ -140,22 +140,9 @@ export class RiskEngine {
 
     // 총자산 = 순자산(주식평가 + 현금 - 미수금) — totalEvalAmount만 쓰면 현금 미포함 버그
     const totalAssets = balance.netAsset ?? ((balance.totalEvalAmount ?? 0) + Math.max(0, balance.orderableCash ?? 0));
-    // 황금비율 포지션 캡: 소계좌→집중 허용, 일반→확신도 기반 동적 캡
-    // buy_threshold 기반 레짐 연동 — 장 좋으면(bt≤65) 35%까지, 장 나쁘면(bt≥85) 20%
+    // Hard Cap 25% — 일일손실 2.5% 방어 (소자산은 집중 허용)
     const canDiv3 = totalAssets * 0.25 >= 30_000;   // 3종목 분산 가능
-    const canDiv5 = totalAssets * 0.20 >= 30_000;   // 5종목 분산 가능
-    let baseCap = 0.25;
-    try {
-      const { rows: scRows } = await getPool().query(
-        `SELECT buy_threshold FROM strategy_config WHERE is_active = true AND is_paper = $1 LIMIT 1`,
-        [isPaper],
-      );
-      const bt = Number(scRows[0]?.buy_threshold ?? 80);
-      baseCap = bt <= 65 ? 0.35 : bt <= 75 ? 0.30 : bt <= 85 ? 0.25 : 0.20;
-    } catch { /* 기본값 유지 */ }
-    const capRatio = !canDiv3 ? 0.50
-      : !canDiv5 ? 0.382
-      : baseCap;
+    const capRatio = !canDiv3 ? 0.50 : 0.25;
     const dynamicLimit = totalAssets > 0
       ? Math.min(Math.round(totalAssets * capRatio), config.risk.maxPositionKrw)
       : config.risk.maxPositionKrw;

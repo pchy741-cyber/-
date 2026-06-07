@@ -95,13 +95,8 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
   // 소자산: 3종목 분산 불가 시 80%까지 집중 허용
   // 기준: effectiveMaxPos(=totalAssets×25%)로 1주 최소가(1만원) 3개 이상 살 수 없으면 소자산
   const canDiversify3 = (totalAssets ?? 0) > 0 && ((totalAssets ?? 0) * 0.25 >= 30_000);
-  // 최고확신(AI 90+) → 35%, SNIPER → 35%, 고확신(85+) → 30%, 기본 → 25%
-  const topAiScoreAll = Math.max(...(params.aiScores ?? []).map(s => s.score), 0);
-  const maxPosFraction = (!canDiversify3) ? 0.80
-    : mode === 'SNIPER' ? 0.35
-    : topAiScoreAll >= 90 ? 0.35
-    : topAiScoreAll >= 85 ? 0.30
-    : 0.25;
+  // Hard Cap 25% — 일일손실 2.5% 방어 (소자산은 80% 집중 허용)
+  const maxPosFraction = (!canDiversify3) ? 0.80 : 0.25;
   const effectiveMaxPos = totalAssets
     ? Math.min(maxPositionKrw, Math.round(totalAssets * maxPosFraction))
     : maxPositionKrw;
