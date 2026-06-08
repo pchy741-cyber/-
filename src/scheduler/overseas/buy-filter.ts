@@ -298,6 +298,12 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       if (!isPaper && (mq === 'GREAT' || mq === 'OK')) {
         if (t.signal === 'BUY' && t.score >= 25 && t.adx >= 18 && t.rsi >= 42 && t.rsi <= 70 && t.aboveMA20 && !hasBadWinRate) return true;
       }
+      // 9. AI 미사용시 기술적 보통 진입 — NEUTRAL 장에서도 양호한 셋업 진입
+      // 조건: AI 결과 없음 + score>0 + MA20↑ + RSI 적정 + ADX 추세 확인 + 과열 아님
+      if (aiMap.size === 0 && t.score >= 5 && t.aboveMA20 && t.rsi >= 42 && t.rsi <= 68 && t.adx >= 20 && !hasBadWinRate) {
+        logger.info(`  ✅ AI폴백 기술진입: ${t.code} score=${t.score} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)}`, { component: 'OVERSEAS' });
+        return true;
+      }
 
       logger.info(`  ⛔ 기술적 필터 미달: ${t.code} sig=${t.signal} score=${t.score} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)} ${wr ? `승률${(wr.winRate * 100).toFixed(0)}%` : ''}`, { component: 'OVERSEAS' });
       return false;

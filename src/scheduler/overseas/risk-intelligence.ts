@@ -296,9 +296,9 @@ export function calcDynamicTpSl(params: {
     ? tunerSlAdj
     : isHighBeta ? 6.0 : isMediumBeta ? 4.0 : isDefense ? 3.0 : 4.0;
 
-  const momentumExt = adx >= 35 && rsi >= 45 && rsi <= 68 ? 10.0
-                    : adx >= 28 && rsi >= 45 && rsi <= 70 ? 5.0
-                    : isMomentum ? 3.0 : 0;
+  const momentumExt = adx >= 35 && rsi >= 45 && rsi <= 68 ? 5.0
+                    : adx >= 28 && rsi >= 45 && rsi <= 70 ? 2.0
+                    : isMomentum ? 1.0 : 0;
 
   const overboughtCut = rsi > 78 ? -8.0 : rsi > 75 ? -5.0 : 0;
 
@@ -312,9 +312,9 @@ export function calcDynamicTpSl(params: {
     ? aiScore >= 90 ? 5.0 : aiScore >= 80 ? 2.5 : aiScore >= 70 ? 1.0 : 0
     : 0;
 
-  const vixTpAdj = vixRegime.regime === 'CRISIS' ? -7.0
-                 : vixRegime.regime === 'STRESS' ? -3.0
-                 : vixRegime.regime === 'CALM' ? 3.0
+  const vixTpAdj = vixRegime.regime === 'CRISIS' ? -5.0
+                 : vixRegime.regime === 'STRESS' ? -2.0
+                 : vixRegime.regime === 'CALM' ? 1.0
                  : 0;
 
   const aiSlAdj = aiAction === 'SELL' && aiConfidence >= 0.80 ? -1.0 : 0;
