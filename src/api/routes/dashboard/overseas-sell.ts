@@ -153,7 +153,7 @@ export function registerOverseasSellRoutes(app: Hono) {
       const { withTransaction } = await import('../../../db/client.js');
       await withTransaction(async (tx) => {
         await tx.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [stockCode, exchange, isPaper]);
-        await tx.query('DELETE FROM overseas_state WHERE key = ANY($1)', [positionStateKeys(stockCode)]);
+        await tx.query('DELETE FROM overseas_state WHERE key = ANY($1)', [positionStateKeys(stockCode, isPaper)]);
         if (isPaper) {
           await tx.query(
             `INSERT INTO overseas_state (key, value) VALUES ($1, $2::text)
@@ -229,7 +229,7 @@ export function registerOverseasSellRoutes(app: Hono) {
         const { withTransaction } = await import('../../../db/client.js');
         await withTransaction(async (tx) => {
           await tx.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [code, exchange, isPaper]);
-          await tx.query('DELETE FROM overseas_state WHERE key = ANY($1)', [positionStateKeys(code)]);
+          await tx.query('DELETE FROM overseas_state WHERE key = ANY($1)', [positionStateKeys(code, isPaper)]);
           if (isPaper) {
             await tx.query(
               `INSERT INTO overseas_state (key, value) VALUES ($1, $2::text)

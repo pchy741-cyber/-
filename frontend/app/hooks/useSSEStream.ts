@@ -52,6 +52,7 @@ export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
 
       // 경량 가격 틱 (3초) — chainPrices만 처리
       es.addEventListener('prices', (e: MessageEvent) => {
+        if (disposed) return;
         retryCount = 0;
         try {
           const data = JSON.parse(e.data);
@@ -61,6 +62,7 @@ export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
 
       // 전체 메타 페이로드 (30초) — 기존 update 로직
       es.addEventListener('meta', (e: MessageEvent) => {
+        if (disposed) return;
         retryCount = 0;
         try {
           const data = JSON.parse(e.data);
@@ -83,10 +85,11 @@ export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
           const chainsChanged = prevChainCount !== -1 && data.activeChains !== prevChainCount;
           const overseasChanged = prevOverseasCount !== -1 && data.overseasHoldingCount !== undefined && data.overseasHoldingCount !== prevOverseasCount;
           if (chainsChanged || overseasChanged) {
-            api(`/dashboard?viewMode=${vm}`).then((d: Dashboard) => { if (d) setDash(d); }).catch(() => {});
-            api(`/trades?limit=200&viewMode=${vm}`).then((t: Trade[]) => { if (Array.isArray(t) && t.length > 0) setTrades(t); }).catch(() => {});
+            // disposed 체크: 모드 전환 시 stale API 응답이 새 모드 데이터 덮어쓰기 방지
+            api(`/dashboard?viewMode=${vm}`).then((d: Dashboard) => { if (!disposed && d) setDash(d); }).catch(() => {});
+            api(`/trades?limit=200&viewMode=${vm}`).then((t: Trade[]) => { if (!disposed && Array.isArray(t) && t.length > 0) setTrades(t); }).catch(() => {});
             api(`/overseas/dashboard?viewMode=${vm}`).then((us: UsDashboard) => {
-              if (us) setUsDash(us);
+              if (!disposed && us) setUsDash(us);
             }).catch(() => {});
           }
           prevChainCount = data.activeChains ?? prevChainCount;
@@ -102,6 +105,7 @@ export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
 
       // 하위 호환: 기존 'update' 이벤트도 처리 (배포 전환 중)
       es.addEventListener('update', (e: MessageEvent) => {
+        if (disposed) return;
         retryCount = 0;
         try {
           const data = JSON.parse(e.data);

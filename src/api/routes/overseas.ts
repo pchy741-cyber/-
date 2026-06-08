@@ -712,9 +712,8 @@ overseasRoutes.post('/overseas/sell', async (c) => {
     const { withTransaction } = await import('../../db/client.js');
     await withTransaction(async (client) => {
       if (qty >= totalQty) {
-        const pfx = isPaper ? 'p_' : 'l_';
         await client.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [stock_code, exchange, isPaper]);
-        await client.query('DELETE FROM overseas_state WHERE key = ANY($1)', [positionStateKeys(stock_code)]);
+        await client.query('DELETE FROM overseas_state WHERE key = ANY($1)', [positionStateKeys(stock_code, isPaper)]);
       } else {
         await client.query('UPDATE overseas_holdings SET quantity = quantity - $3 WHERE stock_code = $1 AND exchange = $2 AND is_paper = $4', [stock_code, exchange, qty, isPaper]);
       }
