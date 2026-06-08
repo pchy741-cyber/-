@@ -182,10 +182,8 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     } else if (maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {
       sellReason = `ATR트레일(${effectiveTrailDropPct.toFixed(1)}%/ATR${atrPctValue.toFixed(1)}%${vixRegime.trailTighten > 0 ? `/VIX${vixRegime.regime}` : ''}): 고점 +${maxPnlPct.toFixed(1)}% → 현재 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
 
-    // ── 2b. 수익 보호 — 고점 대비 50% 이상 반납 시 매도 ──
-    } else if (maxPnlPct >= 3.0 && pnlPct >= 0 && pnlPct < maxPnlPct * 0.50
-      && !tech.isMomentum && !(tech.aboveMA20 && tech.adx >= 35)) {
-      sellReason = `수익보호(+${maxPnlPct.toFixed(1)}%→+${pnlPct.toFixed(1)}%): 고점 대비 ${((1 - pnlPct / maxPnlPct) * 100).toFixed(0)}% 반납 → 확정`;
+    // ── 2b. 수익보호 50% retrace 제거 — ATR 트레일링이 담당, 정상 풀백에서 위너 조기 절단 방지 ──
+    // (기존: maxPnlPct >= 3.0 && pnlPct < maxPnlPct * 0.50 → 매도 → 삭제)
 
     // ── 2c. 마이크로 트레일 — +2%~트레일활성화 구간 ──
     } else if (maxPnlPct >= 2.0 && maxPnlPct < trailActivatePct && drawdownFromPeak <= -1.5

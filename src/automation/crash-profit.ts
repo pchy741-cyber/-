@@ -82,6 +82,7 @@ export function assessCrashLevel(ctx: CrashContext): CrashSignal {
   if (ctx.kospiChangePct != null) {
     if (ctx.kospiChangePct <= -3.0) { score += 15; reasons.push(`KOSPI${ctx.kospiChangePct.toFixed(1)}%`); }
     else if (ctx.kospiChangePct <= -2.0) { score += 10; reasons.push(`KOSPI${ctx.kospiChangePct.toFixed(1)}%`); }
+    else if (ctx.kospiChangePct <= -1.0) { score += 5; reasons.push(`KOSPI${ctx.kospiChangePct.toFixed(1)}%`); }
   }
 
   // Fear & Greed
@@ -91,8 +92,8 @@ export function assessCrashLevel(ctx: CrashContext): CrashSignal {
 
   const level: CrashSignal['level'] =
     score >= 70 ? 'PANIC' :
-    score >= 45 ? 'CRASH' :
-    score >= 25 ? 'CAUTION' :
+    score >= 35 ? 'CRASH' :       // v2: 45→35 (일반 하락일에도 인버스 진입)
+    score >= 20 ? 'CAUTION' :     // v2: 25→20 (조기 감지)
     'NONE';
 
   return { level, score, reasons };
@@ -160,12 +161,14 @@ export function generateInverseDecisions(params: InverseDecisionParams): TradeDe
     }
   }
 
-  // ── 매수: CRASH/PANIC → 인버스 진입 ──
-  if ((signal.level === 'CRASH' || signal.level === 'PANIC') && !existingInverse) {
+  // ── 매수: CAUTION 이상 → 인버스 진입 ──
+  if ((signal.level === 'CAUTION' || signal.level === 'CRASH' || signal.level === 'PANIC') && !existingInverse) {
     if (!inversePrice || inversePrice.currentPrice <= 0) return decisions;
 
-    // PANIC: 25%, CRASH: 15% 배분
-    const allocPct = signal.level === 'PANIC' ? 0.25 : 0.15;
+    // PANIC: 25%, CRASH: 15%, CAUTION: 8% 배분
+    const allocPct = signal.level === 'PANIC' ? 0.25
+      : signal.level === 'CRASH' ? 0.15
+      : 0.08;  // CAUTION: 소규모 헤지
     const targetKrw = Math.round(totalAssets * allocPct);
     const investAmount = Math.min(targetKrw, Math.round(orderableCash * 0.90));
 

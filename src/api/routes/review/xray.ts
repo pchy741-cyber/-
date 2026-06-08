@@ -21,7 +21,8 @@ app.get('/review/xray', async (c) => {
 
   try {
     const { getPool } = await import('../../../db/client.js');
-    const { baseIsPaper } = await import('../../../config/index.js');
+    const { resolveRequestMode } = await import('../../guards/live-pin.js');
+    const viewIsPaper = resolveRequestMode(c);
     const pool = getPool();
 
     // ── 1. 체인/주문 모드 경계 ──────────────────────────────────
@@ -61,7 +62,7 @@ app.get('/review/xray', async (c) => {
       const { rows: stratRows } = await pool.query(`SELECT buy_threshold FROM strategy_config WHERE is_active = true ORDER BY updated_at DESC LIMIT 1`);
       const baseThreshold: number = Number(stratRows[0]?.buy_threshold ?? 83);
 
-      const winFeedback = await getWinRateFeedback(baseIsPaper);
+      const winFeedback = await getWinRateFeedback(viewIsPaper);
       const effectiveThreshold = baseThreshold + winFeedback.thresholdBonus;
 
       // 오늘 또는 최근 7일 최고 점수
@@ -101,17 +102,20 @@ app.get('/review/xray', async (c) => {
       const { rows } = await pool.query(`SELECT key, value FROM overseas_state WHERE key IN ('cash', 'cash_paper')`);
       const map = new Map(rows.map((r: any) => [r.key, Number(r.value)]));
       const hasLive = map.has('cash');
-      const hasPaper = map.has('cash_paper');
       const liveCashKrw = map.get('cash') ?? 0;
-      const paperCash = map.get('cash_paper') ?? 0; // Paper: 이미 USD
 
       // Live: DB에 KRW 저장 → USD 변환
+      const { fetchExchangeRate } = await import('../../../automation/macro-data.js');
+      const fxRate = await fetchExchangeRate();
       let liveCashUsd = 0;
       if (liveCashKrw > 0) {
-        const { fetchExchangeRate } = await import('../../../automation/macro-data.js');
-        const fxRate = await fetchExchangeRate();
         liveCashUsd = fxRate > 0 ? liveCashKrw / fxRate : 0;
       }
+
+      // Paper: orders 기반 결정론적 계산 (overseas_state['cash_paper']는 stale)
+      const { computePaperCash } = await import('../../../scheduler/overseas/state.js');
+      const paperCash = await computePaperCash(fxRate);
+      const hasPaper = paperCash > 0;
 
       if (!hasLive && !hasPaper) {
         checks.push({ id: 'overseas_cash_sep', status: 'warn', label: '해외 현금 키 없음', detail: 'overseas_state에 cash/cash_paper 키 없음' });
@@ -158,7 +162,7 @@ app.get('/review/xray', async (c) => {
       const paperAcc = rows.find((r: any) => r.is_paper);
       const liveCnt = Number(liveAcc?.cnt ?? 0);
       const paperCnt = Number(paperAcc?.cnt ?? 0);
-      if (liveCnt > 0 && paperCnt === 0 && baseIsPaper) {
+      if (liveCnt > 0 && paperCnt === 0 && viewIsPaper) {
         checks.push({ id: 'score_accuracy_mode', status: 'danger', label: '승률 데이터 모드 불일치', detail: `현재 Paper 모드이나 score_accuracy는 Live만 ${liveCnt}건 — 승률 피드백이 Live 기준으로 오염` });
       } else if (liveCnt > 0 || paperCnt > 0) {
         checks.push({ id: 'score_accuracy_mode', status: 'ok', label: '승률 데이터 모드 태깅', detail: `Live ${liveCnt}건 / Paper ${paperCnt}건 (30일)` });
@@ -188,7 +192,7 @@ app.get('/review/xray', async (c) => {
         issues.push(`마이그레이션 미적용: allocated_krw=${legacyAllocated} 분리 필요`);
       }
       // live에 paper 돈이 흘러간 경우
-      if (liveAllocated > 0 && baseIsPaper) {
+      if (liveAllocated > 0 && viewIsPaper) {
         issues.push(`live 예산 ${liveAllocated.toLocaleString()}원 존재 (paper 서버인데?)`);
       }
 
@@ -237,7 +241,7 @@ app.get('/review/xray', async (c) => {
 
     return c.json({
       ts: new Date().toISOString(),
-      mode: baseIsPaper ? 'paper' : 'live',
+      mode: viewIsPaper ? 'paper' : 'live',
       summary: { danger, warn, ok, total: checks.length },
       checks,
     });

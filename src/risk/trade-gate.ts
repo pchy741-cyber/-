@@ -49,11 +49,15 @@ export async function expectedValueGate(_input: GateInput): Promise<GateResult> 
   const lossRate = 1 - winRate;
   const ev = winRate * stats.avgWinPct - lossRate * Math.abs(stats.avgLossPct) - GATE.SLIPPAGE_PCT;
 
-  if (ev <= -0.5) {
-    return { passed: false, reason: `기대값 음수: EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%)`, expectedValue: ev };
+  // 학습 단계(30건 미만): 게이트 완화하여 거래 기회 확보 (사망 스파이럴 방지)
+  const isLearningPhase = stats.totalTrades < 30;
+  const evFloor = isLearningPhase ? -1.5 : -0.5;
+  if (ev <= evFloor) {
+    return { passed: false, reason: `기대값 음수: EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%, 바닥=${evFloor})`, expectedValue: ev };
   }
-  if (winRate < 0.25) {
-    return { passed: false, reason: `승률 과소: ${(winRate * 100).toFixed(0)}%`, expectedValue: ev };
+  const wrFloor = isLearningPhase ? 0.15 : 0.20;
+  if (winRate < wrFloor) {
+    return { passed: false, reason: `승률 과소: ${(winRate * 100).toFixed(0)}% < ${(wrFloor * 100).toFixed(0)}%`, expectedValue: ev };
   }
 
   return { passed: true, reason: `EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%, ${stats.totalTrades}건)`, expectedValue: ev };

@@ -25,15 +25,21 @@ function extractSignals(signals: ScoringInput['signals']): SignalData {
   };
 }
 
-/** 시그널 보너스 계산 (기술점수에 가산) */
+/** 시그널 보너스 계산 (기술점수에 가산) — v6: 수급 가중치 대폭 강화 */
 function calcSignalBonus(s: SignalData): number {
   return (
-    (s.intensity >= 120 ? 6 : s.intensity >= 105 ? 3 : 0) +
-    (s.foreignNetEst > 0 && s.instNetEst > 0 ? 5 : 0) +
-    (s.foreignBrokerBuy ? 3 : 0) +
-    (s.shortRatio > 5 ? -4 : 0) +
-    (s.lendingRatio > 10 ? -3 : 0) +
-    (s.bidAskRatio >= 1.5 ? 3 : s.bidAskRatio <= 0.6 ? -4 : 0)
+    // 체결강도: 매수>매도 비율 (120↑ = 강한 매수세)
+    (s.intensity >= 130 ? 10 : s.intensity >= 120 ? 7 : s.intensity >= 105 ? 3 : s.intensity < 85 ? -5 : 0) +
+    // 외국인+기관 동반 매수 = 기관 컨센서스 (가장 강력한 선행지표)
+    (s.foreignNetEst > 0 && s.instNetEst > 0 ? 10 : s.foreignNetEst < 0 && s.instNetEst < 0 ? -12 : 0) +
+    // 외국계 증권사 순매수 = 외국인 대형 유입 신호
+    (s.foreignBrokerBuy ? 5 : 0) +
+    // 공매도 비율: 높으면 하방 압력 또는 숏스퀴즈 (8%↑ = 주의)
+    (s.shortRatio > 10 ? -8 : s.shortRatio > 5 ? -4 : 0) +
+    // 대차잔고: 공매도 대기 물량 (15%↑ = 위험, 10%↑ = 주의)
+    (s.lendingRatio > 15 ? -6 : s.lendingRatio > 10 ? -3 : 0) +
+    // 호가 비대칭: 매수벽(1.8↑) = 강한 지지, 매도벽(0.5↓) = 급락 위험
+    (s.bidAskRatio >= 1.8 ? 6 : s.bidAskRatio >= 1.3 ? 2 : s.bidAskRatio <= 0.5 ? -8 : s.bidAskRatio <= 0.7 ? -3 : 0)
   );
 }
 

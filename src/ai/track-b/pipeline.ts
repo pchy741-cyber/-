@@ -139,6 +139,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const kstM = Number(_kstParts.find(p => p.type === 'minute')!.value);
     const isOpeningBell = kstH === 9 && kstM < 15;  // 09:00~09:14 (15분 윈도우 — 09:15+ 진입 시 09:30 TP 도달 불가)
     const dbMode = (strategy?.mode ?? 'SWING') as StrategyMode;
+    // ── 장초반 09:00-09:30 신규 매수 차단 (매도는 허용) ──
+    // SCALPING 모드 + 연습모드는 예외 (CEO가 명시적으로 스캘핑 지시한 경우)
+    const isOpeningVolatility = kstH === 9 && kstM < 30 && !getCtxIsPaper() && dbMode !== 'SCALPING';
     // SNIPER/DEFENSE는 개장벨에도 모드 유지 (SNIPER는 CEO가 명시적으로 설정한 집중 전략)
     // SCALPING 자동 활성화 비활성화 (2026-06 성과 검토: 승률 25.7%, profit factor 0.98 → 실질 손실)
     const mode: StrategyMode = dbMode;
@@ -502,14 +505,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // ── 신규매수 차단 플래그 (한 곳에서 정의) ──────────────────────────
     // 2026-06 성과 검토: 15:10 → 14:50으로 앞당김 (15:10~15:20 진입 → 강제 청산 -76K 손실)
-    const isPastClose = kstH > 14 || (kstH === 14 && kstM >= 50);
+    const isPastClose = !ctxIsPaper && (kstH > 14 || (kstH === 14 && kstM >= 50)); // Paper: 마감시간 무시
     // 마의 시간대: 10:30~12:30 (축소: 기존 10:20~13:00 → 핵심 저유동성 구간만)
     // AI 스코어 85+ 고확신은 10:30~12:30에도 진입 허용
     const isLunchHours = !isScalpingMode && (
       (kstH === 10 && kstM >= 30) || kstH === 11 || (kstH === 12 && kstM < 30)
     );
     const hasHighConviction = hasScores && scores.some((s: any) => (s.composite_score ?? 0) >= 85);
-    const isLunchBan = isLunchHours && !hasHighConviction;
+    const isLunchBan = isLunchHours && !hasHighConviction && !ctxIsPaper; // Paper: 마의시간 무시
     const portfolioStress = calcPortfolioStressLevel(openChains, livePrices, totalAssets);
     if (portfolioStress >= 1) {
       logger.warn(`⚠️ 포트폴리오 스트레스 레벨 ${portfolioStress} (미실현 손실 누적)`, { component: 'TRACK_B' });
@@ -540,10 +543,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       dailyLoss.blocked ||
       kospiRegime.flashCrash;
 
-    // RISK_OFF/하락장은 포지션 축소 배율로 대응 (0→1.0, 1→0.7, 2→0.5, RISK_OFF→0.5)
-    const macroSizingMult = macroRiskOff ? 0.5
-      : kospiRegime.penalty >= 2 ? 0.5
-      : kospiRegime.penalty >= 1 ? 0.7
+    // RISK_OFF/하락장: 축소하되 기회 유지 (극공포=역발상 매수 기회)
+    const macroSizingMult = macroRiskOff ? 0.7
+      : kospiRegime.penalty >= 2 ? 0.6
+      : kospiRegime.penalty >= 1 ? 0.8
       : 1.0;
 
     if (!blockNewBuys && hasHighConvictionStock && kospiRegime.penalty >= 2) {
@@ -723,17 +726,17 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       .filter((w) => w.stock_code !== PARK_STOCK_CODE)
       .map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name }));
 
-    // ── KIS 시장 시그널: 상위 3종목만 (blockNewBuys 시 skip) ──
+    // ── KIS 시장 시그널: 상위 5종목 (v6: 3→5 확대, 수급·호가·공매도 정확도 강화) ──
     let marketSignals: Map<string, import('../../kis/market-signals.js').StockSignals> | undefined;
     if (!blockNewBuys) {
       try {
         const topCodes = [...finalScores]
           .sort((a, b) => b.score - a.score)
-          .slice(0, 3)
+          .slice(0, 5)
           .map(s => s.stock_code);
         if (topCodes.length > 0) {
           marketSignals = await getBatchStockSignals(topCodes);
-          logger.info(`📡 시그널 수집: ${marketSignals.size}/${topCodes.length}개 (상위3)`, { component: 'TRACK_B' });
+          logger.info(`📡 시그널 수집: ${marketSignals.size}/${topCodes.length}개 (상위5)`, { component: 'TRACK_B' });
         }
       } catch (err) {
         logger.warn(`📡 시그널 수집 실패 (계속): ${err}`, { component: 'TRACK_B' });
@@ -894,6 +897,16 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       overseasValueKrw,
     });
 
+    // ── 장초반 09:00-09:30 신규 매수 필터링 (매도는 유지) ──
+    if (isOpeningVolatility) {
+      const beforeCount = actionable.length;
+      const filtered = actionable.filter(d => !['BUY', 'AVERAGE_DOWN'].includes(d.action));
+      if (filtered.length < beforeCount) {
+        logger.info(`⏰ 장초반(${kstH}:${String(kstM).padStart(2, '0')}) 매수 ${beforeCount - filtered.length}건 차단 (매도 ${filtered.length}건 유지)`, { component: 'TRACK_B' });
+      }
+      return filtered;
+    }
+
     if (hasBuyCandidates && !actionable.some((d) => ['BUY', 'AVERAGE_DOWN'].includes(d.action))) {
       logger.info('⏭️ 매수 후보 있으나 BUY 결정 없음 → KIS 관심종목 재동기화', { component: 'TRACK_B' });
       import('../../kis/interest-group.js').then(m => m.syncInterestGroups()).catch(() => {});
@@ -903,7 +916,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const idleCashPct = totalAssets > 0 ? (orderableCash / totalAssets * 100).toFixed(1) : '0.0';
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     await logSystem('INFO', 'TRACK_B', `파이프라인 완료 (${elapsed}초): ${decisions.length}개 판단, ${actionable.length}개 실행 대기`);
-    logger.info(`✅ Track B 완료 (${elapsed}초): 총 ${decisions.length}개 판단, ${actionable.length}개 액션 | 유휴현금 ${idleCashPct}% (${orderableCash.toLocaleString()}원)`, { component: 'TRACK_B' });
+    const tbModeTag = ctxIsPaper ? '🧪PAPER' : '💰LIVE';
+    logger.info(`✅ [${tbModeTag}] Track B 완료 (${elapsed}초): 총 ${decisions.length}개 판단, ${actionable.length}개 액션 | 유휴현금 ${idleCashPct}% (${orderableCash.toLocaleString()}원)`, { component: 'TRACK_B' });
 
     return actionable;
   } catch (error) {

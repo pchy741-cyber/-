@@ -185,7 +185,7 @@ export const config = {
     maxTotalInvestedPct: 97,        // 88 → 97% (현금 3%만 보유)
     positionCapRatio: 0.40,         // 25% → 40% (집중 투자 테스트)
     cashReserveRatio: 0.03,         // 20% → 3% (거의 전액 집행)
-    buyThresholdOffset: -10,        // 80→70점으로 실질 하향 (더 많은 종목 진입)
+    buyThresholdOffset: -25,        // 65→40점으로 실질 하향 (적극적 매매 — Gemini OFF 백업)
     sectorMaxPerSector: 5,          // 2 → 5종목 (섹터 제한 완화)
     cooldownMultiplier: 0.2,        // 쿨다운 80% 단축 (5연패 60분→12분)
     mddLimit: 60,                   // 40% → 60% (거의 안 터짐)

@@ -79,9 +79,11 @@ const SYSTEM_PROMPT = `당신은 글로벌 주식(미국 주력 + 일본·대만
 - 0.68 이상: 고베타 성장주(PLTR) BUY (추세 확인 필수)
 - 0.70 이상: 일반 종목·일본ADR·대만ADR BUY
 - 0.72~0.88: 강한 신호 (최대 0.88)
-- 일중 저가 근처(dayRangePct < 25): +0.05 보너스 부여
-- 모멘텀(isMomentum=true): +0.05 보너스 부여
-- 빅무버(isBigMover=true): +0.07 보너스 부여 (촉매가 명확하므로)
+- confidence 보너스 (해당 조건 합산, 총합 최대 +0.10 캡):
+  · 일중 저가 근처(dayRangePct < 25): +0.04
+  · 모멘텀(isMomentum=true): +0.04
+  · 빅무버(isBigMover=true): +0.06 (촉매 명확)
+  → 예: 모멘텀+빅무버 → +0.10 (캡). 보너스 없으면 기본 confidence만 사용
 
 【SELL — 보유 종목만】
 - PnL +10% 이상 + RSI 명확 하락추세(70↓) + score 급락(-20↓) → 수익 실현 SELL (스윙 목표 15~20% 전제 — 조기 청산 금지)
@@ -96,8 +98,8 @@ const SYSTEM_PROMPT = `당신은 글로벌 주식(미국 주력 + 일본·대만
 - RSI < 50 이고 trendStrength=WEAK인 종목 BUY 금지 (하락추세 진입 금지)
 - dayRangePct ≥ 80 이고 isMomentum=false이고 isBigMover=false인 종목 BUY 금지 (일중 고점 매수 금지)
   단, 시장 breadth ≥ 65%(강세장): dayRangePct 85 미만까지 허용
-- 시장 breadth(양봉 비율) < 35%: 시장 전반 약세 → 확신도 기준 +0.05 상향 적용
-- 시장 breadth ≥ 65%(강세장): 확신도 기준 -0.02 완화 허용 (시장이 돕는 날은 공격적으로)
+- 시장 breadth(양봉 비율) < 35%: 시장 약세 → BUY하려면 기본 기준보다 confidence 0.05 더 높아야 함 (예: 기본 0.70 → 0.75 필요). 약세장에서 낮은 confidence로 BUY 금지
+- 시장 breadth ≥ 65%(강세장): BUY 기준 0.02 완화 (예: 기본 0.70 → 0.68 OK). 강세장은 대부분 종목이 오르므로 약간 공격적 허용
 - PnL +4~9% 구간에서 단순 RSI 하락만으로 SELL 금지 — 스윙 추세 내 정상 조정
 - 확신 없으면 HOLD. 조건 미달 종목에 억지로 BUY 하지 말 것
 

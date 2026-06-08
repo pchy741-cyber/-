@@ -119,19 +119,38 @@ export async function restorePaperState(): Promise<void> {
 async function getPaperPositions(): Promise<Position[]> {
   try {
     const state = await loadPaperLedger();
-    return Object.entries(state.holdings)
-      .filter(([, h]) => h.qty > 0)
-      .map(([stockCode, h]) => {
+    const entries = Object.entries(state.holdings).filter(([, h]) => h.qty > 0);
+    if (entries.length === 0) return [];
+
+    // 실시간 시세 조회 (useRealUrl=true → live 서버에서 가격 가져옴)
+    let priceMap = new Map<string, number>();
+    try {
+      const { getBatchPrices } = await import('../kis/market.js');
+      const codes = entries.map(([code]) => code);
+      const batchResult = await Promise.race([
+        getBatchPrices(codes),
+        new Promise<Map<string, any>>((res) => setTimeout(() => res(new Map()), 5000)),
+      ]);
+      for (const [code, quote] of batchResult) {
+        if (quote.currentPrice > 0) priceMap.set(code, quote.currentPrice);
+      }
+    } catch { /* 시세 실패 시 매수가 폴백 */ }
+
+    return entries.map(([stockCode, h]) => {
       const avgPrice = h.qty > 0 ? h.totalCost / h.qty : 0;
+      const livePrice = priceMap.get(stockCode) ?? Math.round(avgPrice);
+      const evalAmount = livePrice * h.qty;
+      const profitLoss = evalAmount - Math.round(h.totalCost);
+      const profitLossPct = avgPrice > 0 ? ((livePrice - avgPrice) / avgPrice) * 100 : 0;
       return {
         stockCode,
         stockName: stockCode,
         quantity: h.qty,
         avgBuyPrice: Math.round(avgPrice),
-        currentPrice: Math.round(avgPrice),
-        evalAmount: Math.round(h.totalCost),
-        profitLoss: 0,
-        profitLossPct: 0,
+        currentPrice: livePrice,
+        evalAmount,
+        profitLoss,
+        profitLossPct,
       };
     });
   } catch {
@@ -149,7 +168,9 @@ export async function getPaperBalance(): Promise<AccountBalance> {
   const cash = Math.max(0, Math.round(PAPER_INITIAL_CAPITAL + paperRealizedPnl - invested));
   return {
     totalDeposit: cash,
+    d2Deposit: cash,
     orderableCash: cash,
+    cashSource: 'd2_deposit',
     totalEvalAmount: invested,
     totalProfitLoss: paperRealizedPnl,
     totalProfitLossPct: PAPER_INITIAL_CAPITAL > 0 ? (paperRealizedPnl / PAPER_INITIAL_CAPITAL) * 100 : 0,

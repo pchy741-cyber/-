@@ -93,7 +93,7 @@ app.use('/sell-overseas/*', rateLimit(5, 60_000));
 app.use('/kill-switch/*', rateLimit(3, 60_000));
 // 🔒 추가 보안: 위험한 설정 변경 엔드포인트 제한
 app.use('/trading-mode', rateLimit(2, 60_000));      // 거래 모드 전환
-app.use('/strategy', rateLimit(3, 60_000));           // 전략 변경
+// /strategy: rate limit 제거 — 인증 뒤이므로 보호 충분, prefix match로 GET/PUT 모두 카운트되어 대시보드 사용 불편
 app.use('/overseas-holdings-fix', rateLimit(2, 60_000)); // 포지션 조작
 app.use('/secrets', rateLimit(3, 60_000));            // 시크릿 관리
 app.use('/run-track-*', rateLimit(2, 60_000));        // 수동 작업 트리거

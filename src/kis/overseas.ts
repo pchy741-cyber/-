@@ -113,6 +113,7 @@ export async function getOverseasPrice(stockCode: string, exchange: string = 'NA
   const res = await overseasKisRequest({
     path: '/uapi/overseas-price/v1/quotations/price',
     trId: getOverseasTrId().PRICE,
+    useRealUrl: true,
     params: {
       AUTH: '',
       EXCD: excd,
@@ -146,6 +147,7 @@ export async function getOverseasDailyChart(stockCode: string, exchange: string 
   const res = await overseasKisRequest({
     path: '/uapi/overseas-price/v1/quotations/dailyprice',
     trId: getOverseasTrId().DAILY_CHART,
+    useRealUrl: true,
     params: {
       AUTH: '',
       EXCD: excd,
@@ -321,8 +323,10 @@ export async function getOverseasBalance(exchange: string = 'NASDAQ') {
  * USD + KRW(원화) 모두 반환. 통합증거금 계좌는 원화 필드가 정확.
  */
 export interface OverseasBuyableResult {
-  usd: number;
-  krw: number | null; // 원화 주문가능금액 (통합증거금)
+  usd: number;        // ord_psbl_frcr_amt: 실제 주문가능 외화(USD)
+  maxUsd: number;     // frcr_ord_psbl_amt1: 원화 포함 통합증거금 환산 최대 USD
+  krw: number | null; // 주문가능원화 (통합증거금 기준 KRW)
+  exrt: number;       // KIS 적용 환율
 }
 
 export async function getOverseasBuyableAmount(exchange: string = 'NASDAQ'): Promise<OverseasBuyableResult | null> {
@@ -355,17 +359,17 @@ export async function getOverseasBuyableAmount(exchange: string = 'NASDAQ'): Pro
     const exrt = Number(output?.exrt ?? 0);
 
     // 통합증거금 psamount 필드 매핑 (tr_crcy_cd=USD 기준):
-    // ord_psbl_frcr_amt: 실제 주문가능 외화금액 (KIS 앱 "달러화" 표시값) ← 이것이 실제 USD
-    // frcr_ord_psbl_amt1: 원화 포함 이론적 최대 외화주문가능금액 (KRW→USD 환산 포함)
+    // ord_psbl_frcr_amt: 실제 주문가능 외화금액 (KIS 앱 "달러화" 표시값) ← 외화 풀만
+    // frcr_ord_psbl_amt1: 원화 포함 이론적 최대 외화주문가능금액 (KRW→USD 환산 포함) ← 통합증거금 전체
     // ovrs_ord_psbl_amt: 해외주문가능금액 (USD, ord_psbl_frcr_amt과 유사)
     const usd = Number(output?.ord_psbl_frcr_amt ?? output?.ovrs_ord_psbl_amt ?? 0);
-    const maxUsd = Number(output?.frcr_ord_psbl_amt1 ?? 0); // 원화 포함 최대치 (참고용)
+    const maxUsd = Number(output?.frcr_ord_psbl_amt1 ?? 0);
 
-    // KRW: 실제 USD × 환율 (KIS 앱 "주문가능원화"와 일치)
-    // 통합증거금이므로 maxUsd × exrt가 KIS 앱의 주문가능원화에 더 가까움
-    const krw = exrt > 0 ? Math.round(Math.max(usd, maxUsd) * exrt) : null;
+    // KRW: 통합증거금 기준 주문가능원화 = maxUsd × 환율
+    // maxUsd는 원화 풀까지 포함한 최대 주문가능액 (KIS 앱 "주문가능원화" / 환율)
+    const krw = exrt > 0 ? Math.round(maxUsd * exrt) : null;
 
-    return { usd, krw };
+    return { usd, maxUsd, krw, exrt };
   } catch {
     return null;
   }

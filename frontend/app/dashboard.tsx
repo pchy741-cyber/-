@@ -31,7 +31,13 @@ export default function Dashboard() {
   const [mobileMenu, setMobileMenu] = useState(false);
   const [modeToggling, setModeToggling] = useState(false);
   const [liveConfirmOpen, setLiveConfirmOpen] = useState(false);
-  const [marketTab, setMarketTab] = useState<'KR'|'US'>('KR');
+  const [marketTab, setMarketTab] = useState<'KR'|'US'>(() => {
+    const now = new Date();
+    const h = now.getHours(), m = now.getMinutes(), mins = h * 60 + m;
+    const day = now.getDay();
+    // 국내장: 평일 09:00~15:30 → KR, 그 외 → US
+    return (day >= 1 && day <= 5 && mins >= 540 && mins < 930) ? 'KR' : 'US';
+  });
 
   const data = useDashboardData();
   const {

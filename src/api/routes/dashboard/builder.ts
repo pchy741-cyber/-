@@ -55,8 +55,8 @@ export async function prewarmDashboard(): Promise<void> {
 async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   // KIS API 실패 시 기본값 — 실전모드는 0 (10M 가짜잔고 표시 방지), 연습모드만 1000만원
   const defaultBalance = viewIsPaper
-    ? { totalDeposit: 10000000, totalEvalAmount: 0, orderableCash: 10000000, totalProfitLoss: 0, totalProfitLossPct: 0, netAsset: 10000000, purchaseCost: 0, positions: [] }
-    : { totalDeposit: 0, totalEvalAmount: 0, orderableCash: 0, totalProfitLoss: 0, totalProfitLossPct: 0, netAsset: 0, purchaseCost: 0, positions: [] };
+    ? { totalDeposit: 10000000, d2Deposit: 10000000, orderableCash: 10000000, cashSource: 'd2_deposit' as const, totalProfitLoss: 0, totalProfitLossPct: 0, netAsset: 10000000, totalEvalAmount: 0, purchaseCost: 0, positions: [] }
+    : { totalDeposit: 0, d2Deposit: 0, orderableCash: 0, cashSource: 'zero' as const, totalProfitLoss: 0, totalProfitLossPct: 0, netAsset: 0, totalEvalAmount: 0, purchaseCost: 0, positions: [] };
 
   const withTimeout = <T>(p: Promise<T>, ms: number, fallback: T): Promise<T> =>
     Promise.race([p, new Promise<T>(res => setTimeout(() => res(fallback), ms))]);
@@ -434,17 +434,22 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     ? kisDomEval : (totalChainInvested + totalChainPnl);
 
   // ══ 통합증거금: 현금 계산 ══
+  let actualCashSource: string = balance.cashSource ?? 'unknown';
   if (viewIsPaper) {
-    // Paper: 국내 현금(rawCash) + 해외 현금(USD→KRW) = 통합 현금
-    actualCash = (actualCash || 0) + overseasCashKrw;
+    // Paper: 국내(₩10M)와 해외(₩50M seed)는 별도 시뮬레이션 → 해외 현금만 사용
+    // 국내 Paper는 paper-balance.ts의 독립 원장, 해외는 computePaperCash()의 독립 원장
+    actualCash = overseasCashKrw;
+    actualCashSource = 'paper_computed';
   } else {
     // Live: KIS 국내 잔고 API(rawCash) 우선 — KIS 앱 "주문가능원화"와 일치
     // overseas_state.cash(psamount KRW)는 결제주기/미수금 차이로 실제 주문가능과 불일치 가능
     if (rawCash > 0) {
       actualCash = rawCash;
+      // actualCashSource = balance.cashSource (이미 설정됨)
     } else if (overseasCashKrw > 0) {
       // 국내 잔고 API 실패 시 overseas_state.cash 폴백
       actualCash = overseasCashKrw;
+      actualCashSource = 'overseas_state';
     } else {
       // 전부 실패 → netAsset 기반 추정
       const netAsset = (balance as any).netAsset ?? 0;
@@ -453,6 +458,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
         if (overseasInvestedKrw > 0) {
           actualCash = Math.max(0, actualCash - overseasInvestedKrw);
         }
+        actualCashSource = 'nass-evlu';
       }
     }
   }
@@ -556,6 +562,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     }),
     tradingMode: config.tradingMode,
     viewMode: viewIsPaper ? 'paper' : 'live',
+    cashSource: actualCashSource,
     riskLimits: (() => {
       // 통합증거금: 전체 포트폴리오 기준 일일손실한도
       const limit = calcDailyLossLimit(Math.round(grandTotalValue), viewIsPaper);

@@ -68,7 +68,17 @@ export async function runUnfilledOrderCheck(): Promise<void> {
           });
         }
       } catch (err) {
-        logger.error(`미체결 취소 에러: ${order.kis_order_no} - ${err}`, { component: 'UNFILLED' });
+        const errMsg = String(err);
+        // KIS에서 원주문 없음 = 이미 체결/취소된 유령 주문 → DB 정리
+        if (errMsg.includes('APBK0344') || errMsg.includes('원주문정보')) {
+          await updateOrderByKisOrderNo(order.kis_order_no, {
+            status: 'CANCELLED',
+            kis_status: 'GHOST_CLEANED',
+          });
+          logger.warn(`🧹 유령 주문 정리: ${order.kis_order_no} (KIS에 없음 → CANCELLED)`, { component: 'UNFILLED' });
+        } else {
+          logger.error(`미체결 취소 에러: ${order.kis_order_no} - ${err}`, { component: 'UNFILLED' });
+        }
       }
     }
 

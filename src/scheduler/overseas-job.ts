@@ -583,7 +583,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         if (domesticInvestedUsd >= 100) {
           const grandInvestedUsd = (holdingEvalUsd || 0) + domesticInvestedUsd;
           const { rows: allocRows } = await getPool().query('SELECT us_pct FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1', [isPaper()]);
-          let targetUsPct = Number(allocRows[0]?.us_pct ?? 30);
+          let targetUsPct = Number(allocRows[0]?.us_pct ?? 70);
           // 크로스마켓 로테이션: DB에 저장된 최신 로테이션 신호로 동적 조정
           try {
             const rotKey = isPaper() ? 'p_rotation_signal' : 'l_rotation_signal';

@@ -18,8 +18,10 @@ export interface Position {
 
 // ── 계좌 잔고 ──
 export interface AccountBalance {
-  totalDeposit: number; // 예수금 총액
-  orderableCash: number; // 주문가능 현금
+  totalDeposit: number; // 예수금 총액 (dnca_tot_amt) — 미정산 포함, 실제 주문가능과 다를 수 있음
+  d2Deposit: number; // D+2 예수금 (prvs_rcdl_excc_amt) — 정산 완료, 실제 주문가능에 가까움
+  orderableCash: number; // 주문가능 현금 — TTTC8908R nrcvb_buy_amt 우선, 폴백 체인
+  cashSource: 'buyable_api' | 'ord_psbl_cash' | 'd2_deposit' | 'dnca_tot_amt' | 'nass-evlu' | 'zero'; // 산출 경로
   totalEvalAmount: number; // 유가증권 평가금액 (scts_evlu_amt)
   totalProfitLoss: number; // 총 손익
   totalProfitLossPct: number;
@@ -72,13 +74,17 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
     ? (acctRaw.split('-')[1] || '01')
     : (needForceMode ? '01' : config.kis.accountProductCode);
 
-  const res = await kisRequest({
+  const effAcctNo = acctNo ?? config.kis.accountNo;
+  const effAcctProd = acctProd ?? config.kis.accountProductCode;
+
+  // 잔고조회 + 매수가능조회(Live only) 병렬 호출
+  const balancePromise = kisRequest({
     path: '/uapi/domestic-stock/v1/trading/inquire-balance',
     trId: trIds.BALANCE,
     forceMode,
     params: {
-      CANO: acctNo ?? config.kis.accountNo,
-      ACNT_PRDT_CD: acctProd ?? config.kis.accountProductCode,
+      CANO: effAcctNo,
+      ACNT_PRDT_CD: effAcctProd,
       AFHR_FLPR_YN: 'N',
       OFL_YN: '',
       INQR_DVSN: '02',
@@ -90,6 +96,27 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
       CTX_AREA_NK100: '',
     },
   });
+
+  // TTTC8908R 매수가능조회 — nrcvb_buy_amt = KIS 앱 "주문가능원화"
+  const buyablePromise = isPaper ? Promise.resolve(null) : kisRequest({
+    path: '/uapi/domestic-stock/v1/trading/inquire-psbl-order',
+    trId: trIds.BUYABLE,
+    forceMode,
+    params: {
+      CANO: effAcctNo,
+      ACNT_PRDT_CD: effAcctProd,
+      PDNO: '005930',        // 삼성전자 (기준 종목 — 주문가능원화 산출용)
+      ORD_UNPR: '0',         // 0 = 시장가 기준
+      ORD_DVSN: '01',        // 시장가
+      CMA_EVLU_AMT_ICLD_YN: 'N',
+      OVRS_ICLD_YN: 'N',
+    },
+  }).catch((e: unknown) => {
+    logger.warn(`⚠️ 매수가능조회(TTTC8908R) 실패 — 잔고 폴백 사용: ${e instanceof Error ? e.message : e}`, { component: 'BALANCE' });
+    return null;
+  });
+
+  const [res, buyableRes] = await Promise.all([balancePromise, buyablePromise]);
 
   // 보유 종목 파싱 (output1)
   const positionItems = (res.output1 ?? []) as Record<string, string>[];
@@ -119,16 +146,53 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
   const d2Deposit = Number(summary?.prvs_rcdl_excc_amt ?? 0);     // D+2 예수금
   const computedCash = nass > 0 && scts_evlu >= 0 ? Math.max(0, nass - scts_evlu) : 0; // 순자산 - 증권
 
-  // 주문가능 현금: ord_psbl_cash(CMA) → D+2 예수금(실제 주문가능) → 예수금 → nass-evlu → 0
-  const orderableCash = ordPsblCash > 0
-    ? ordPsblCash
-    : (d2Deposit > 0 ? d2Deposit : (totalDeposit > 0 ? totalDeposit : (computedCash > 0 ? computedCash : 0)));
+  // 매수가능조회 결과 파싱 (TTTC8908R) — output 또는 output1 (KIS API 불일치 대비)
+  const buyableRaw = (buyableRes?.output ?? buyableRes?.output1) as Record<string, string> | undefined;
+  if (buyableRes && !buyableRaw) {
+    // 응답은 왔지만 output이 비어있는 경우 전체 구조 덤프
+    logger.warn(`⚠️ 매수가능조회(8908R) 응답 구조 이상 — output=${JSON.stringify(buyableRes.output)}, output1=${JSON.stringify(buyableRes.output1)}, msg=${buyableRes.msg1}`, { component: 'BALANCE' });
+  }
+  const nrcvbBuyAmt = Number(buyableRaw?.nrcvb_buy_amt ?? 0);  // 미수없는매수금액 (마진 미사용)
+  const maxBuyAmt = Number(buyableRaw?.max_buy_amt ?? 0);       // 최대매수금액 (KIS 앱 "최대주문가능금액")
+  const buyableOrdCash = Number(buyableRaw?.ord_psbl_cash ?? 0); // 매수가능조회의 주문가능현금
+  if (buyableRaw) {
+    logger.info(
+      `💰 매수가능조회(8908R): nrcvb=${nrcvbBuyAmt.toLocaleString()} max=${maxBuyAmt.toLocaleString()} ` +
+      `cash=${buyableOrdCash.toLocaleString()} sbst=${buyableRaw.ord_psbl_sbst ?? '0'} keys=[${Object.keys(buyableRaw).join(',')}]`,
+      { component: 'BALANCE' },
+    );
+  }
 
-  // 항상 로그 (산출 경로 디버그)
-  const source = ordPsblCash > 0 ? 'ord_psbl_cash' : (d2Deposit > 0 ? 'd2_deposit' : (totalDeposit > 0 ? 'dnca_tot_amt' : (computedCash > 0 ? 'nass-evlu' : 'zero')));
+  // 주문가능원화: TTTC8908R 최우선 → 잔고API → 예수금 폴백
+  // max_buy_amt = 최대매수금액 = KIS 앱 "최대주문가능금액" (대용+재사용 포함)
+  // nrcvb_buy_amt = 미수없는매수금액 (마진 미포함, 대용 포함)
+  let orderableCash: number;
+  let source: AccountBalance['cashSource'];
+  if (maxBuyAmt > 0) {
+    orderableCash = maxBuyAmt;
+    source = 'buyable_api';
+  } else if (nrcvbBuyAmt > 0) {
+    orderableCash = nrcvbBuyAmt;
+    source = 'buyable_api';
+  } else if (ordPsblCash > 0) {
+    orderableCash = ordPsblCash;
+    source = 'ord_psbl_cash';
+  } else if (d2Deposit > 0) {
+    orderableCash = d2Deposit;
+    source = 'd2_deposit';
+  } else if (totalDeposit > 0) {
+    orderableCash = computedCash > 0 ? Math.min(totalDeposit, computedCash) : totalDeposit;
+    source = 'dnca_tot_amt';
+  } else if (computedCash > 0) {
+    orderableCash = computedCash;
+    source = 'nass-evlu';
+  } else {
+    orderableCash = 0;
+    source = 'zero';
+  }
   logger.info(
     `💰 잔고조회 [${forceLive ? 'forceLive' : (isPaper ? 'paper' : 'live')}]: ` +
-    `ord_psbl=${ordPsblCash.toLocaleString()} deposit=${totalDeposit.toLocaleString()} d2=${d2Deposit.toLocaleString()} ` +
+    `buyable=${nrcvbBuyAmt.toLocaleString()} ord_psbl=${ordPsblCash.toLocaleString()} deposit=${totalDeposit.toLocaleString()} d2=${d2Deposit.toLocaleString()} ` +
     `nass=${nass.toLocaleString()} evlu=${scts_evlu.toLocaleString()} computed=${computedCash.toLocaleString()} → ${source}=${orderableCash.toLocaleString()}`,
     { component: 'BALANCE' },
   );
@@ -140,7 +204,9 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
 
   const result: AccountBalance = {
     totalDeposit: effectiveDeposit,
+    d2Deposit: isPaper ? effectiveCash : d2Deposit,
     orderableCash: effectiveCash,
+    cashSource: isPaper ? 'd2_deposit' : source,
     totalEvalAmount: scts_evlu,
     totalProfitLoss: Number(summary?.evlu_pfls_smtl_amt ?? 0),
     totalProfitLossPct: Number(summary?.evlu_pfls_rt ?? 0),

@@ -10,7 +10,7 @@ import { fetchExchangeRate } from '../../automation/macro-data.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
 import { GLOBAL_WATCHLIST } from './watchlist.js';
-import { getCash, getCashKrw, setCash, cleanupPositionState } from './state.js';
+import { getCash, getCashKrw, setCash, cleanupPositionState, getTimeSinceLastTrade } from './state.js';
 import { logSystem } from '../../db/client.js';
 import { hardInvalidateDashboardCache } from '../../cache/dashboard-cache.js';
 
@@ -315,6 +315,12 @@ async function estimateSellPrice(code: string, exchange: string): Promise<number
  */
 export async function reconcileCashWithKIS(): Promise<void> {
   if (getCtxIsPaper()) return;
+  // 매매 직후 3분간 KIS 동기화 스킵 — T+1 미결제로 KIS가 매수 전 잔고 반환하여 현금 복원 버그 방지
+  const cooldownMs = 3 * 60 * 1000;
+  if (getTimeSinceLastTrade() < cooldownMs) {
+    logger.info('💱 매매 후 쿨다운 중 — KIS 현금 동기화 스킵', { component: 'OVERSEAS' });
+    return;
+  }
   try {
     let kisKrw: number | null = null;
 
@@ -325,12 +331,16 @@ export async function reconcileCashWithKIS(): Promise<void> {
       logger.info(`💱 통합증거금: psamount KRW 직접 사용 ₩${kisKrw.toLocaleString()}`, { component: 'OVERSEAS' });
     }
 
-    // 2차: psamount USD → KRW 변환 (KRW 필드 없는 경우)
-    if (kisKrw === null && buyable?.usd != null && buyable.usd > 0) {
-      const fxRate = await fetchExchangeRate();
-      if (fxRate > 0) {
-        kisKrw = buyable.usd * fxRate;
-        logger.info(`💱 psamount USD→KRW 변환: $${buyable.usd.toFixed(2)} × ${fxRate.toFixed(0)} = ₩${kisKrw.toFixed(0)}`, { component: 'OVERSEAS' });
+    // 2차: psamount maxUsd(통합증거금) → KRW 변환 (KRW 필드 없는 경우)
+    if (kisKrw === null && buyable != null) {
+      const bestUsd = buyable.maxUsd > 0 ? buyable.maxUsd : buyable.usd;
+      if (bestUsd > 0) {
+        // KIS 환율 우선, 없으면 외부 환율
+        const rate = buyable.exrt > 0 ? buyable.exrt : await fetchExchangeRate();
+        if (rate > 0) {
+          kisKrw = bestUsd * rate;
+          logger.info(`💱 psamount USD→KRW 변환: $${bestUsd.toFixed(2)} × ${rate.toFixed(0)} = ₩${kisKrw.toFixed(0)}`, { component: 'OVERSEAS' });
+        }
       }
     }
 
@@ -358,12 +368,14 @@ export async function reconcileCashWithKIS(): Promise<void> {
       return;
     }
 
-    // 실제 주문가능 USD 항상 저장 (KIS ord_psbl_frcr_amt — 대시보드 표시용)
-    if (buyable?.usd != null && buyable.usd >= 0) {
+    // 실제 주문가능 USD 항상 저장 (대시보드 표시용)
+    if (buyable != null) {
+      const usdVal = buyable.usd >= 0 ? buyable.usd : 0;
       await getPool().query(
+        // 외화 풀 USD (ord_psbl_frcr_amt) — SSE 대시보드 표시용
         `INSERT INTO overseas_state (key, value, updated_at) VALUES ('cash_live_usd', $1, NOW())
          ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
-        [String(buyable.usd)],
+        [String(usdVal)],
       ).catch(() => {});
     }
 

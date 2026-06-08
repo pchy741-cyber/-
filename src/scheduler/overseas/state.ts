@@ -30,6 +30,14 @@ export function cashKey(isPaper?: boolean): string {
  * → overseas_state 오염/리셋과 무관하게 항상 정확
  * → 환율 변동에 따라 USD 시드가 자연 조정 (실제 통합증거금과 동일)
  */
+let _lastPaperCash: number | null = null; // DB 실패 시 마지막 정상값 반환용
+let _lastTradeAt = 0; // 마지막 매매 시점 (ms) — reconcile 쿨다운용
+
+/** 매매 발생 기록 — reconcileCashWithKIS 쿨다운 트리거 */
+export function markTradeExecuted(): void { _lastTradeAt = Date.now(); }
+/** 마지막 매매 후 경과 시간(ms) */
+export function getTimeSinceLastTrade(): number { return Date.now() - _lastTradeAt; }
+
 export async function computePaperCash(fxRate?: number): Promise<number> {
   try {
     const rate = fxRate ?? await fetchExchangeRate();
@@ -47,10 +55,15 @@ export async function computePaperCash(fxRate?: number): Promise<number> {
     `);
     const totalBuy = Number(rows[0]?.total_buy ?? 0);
     const totalSell = Number(rows[0]?.total_sell ?? 0);
-    return Math.max(0, seedUsd - totalBuy + totalSell);
+    const computed = Math.max(0, seedUsd - totalBuy + totalSell);
+    _lastPaperCash = computed; // 성공 시 캐시
+    return computed;
   } catch {
+    // DB 실패 시: 마지막 정상값 반환 (없으면 시드 폴백)
+    // 이전에는 항상 full seed를 반환 → 매수 후 현금 증가 버그 유발
+    if (_lastPaperCash !== null) return _lastPaperCash;
     const rate = fxRate ?? 1370;
-    return PAPER_OVERSEAS_SEED_KRW / rate; // DB 실패 시 시드값 폴백
+    return PAPER_OVERSEAS_SEED_KRW / rate;
   }
 }
 
@@ -286,6 +299,7 @@ export async function updateTradeState(p: {
   newCash: number; isPaper?: boolean; fxRate?: number; tpPct?: number; slPct?: number;
 }): Promise<void> {
   const paper = p.isPaper ?? getCtxIsPaper();
+  markTradeExecuted(); // reconcileCashWithKIS 쿨다운 시작
   await withTransaction(async (client) => {
     if (p.qty <= 0) {
       await client.query('DELETE FROM overseas_holdings WHERE exchange=$1 AND stock_code=$2 AND is_paper=$3', [p.exchange, p.code, paper]);

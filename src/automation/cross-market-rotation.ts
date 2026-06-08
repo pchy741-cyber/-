@@ -44,8 +44,8 @@ export async function calcRotationSignal(): Promise<RotationSignal> {
     'SELECT kr_pct, us_pct FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1',
     [getCtxIsPaper()],
   );
-  const baseKrPct = Number(allocRows[0]?.kr_pct ?? 70);
-  const baseUsPct = Number(allocRows[0]?.us_pct ?? 30);
+  const baseKrPct = Number(allocRows[0]?.kr_pct ?? 30);
+  const baseUsPct = Number(allocRows[0]?.us_pct ?? 70);
 
   // 2. 시장 레짐 수집
   let krRegime: MarketRegime | null = null;
@@ -302,8 +302,8 @@ export async function proposeAllocationRebalance(): Promise<void> {
       'SELECT kr_pct, us_pct FROM portfolio_allocation_config WHERE is_paper = $1 LIMIT 1',
       [isPaper],
     );
-    const currentKrPct = Number(allocRows[0]?.kr_pct ?? 70);
-    const currentUsPct = Number(allocRows[0]?.us_pct ?? 30);
+    const currentKrPct = Number(allocRows[0]?.kr_pct ?? 30);
+    const currentUsPct = Number(allocRows[0]?.us_pct ?? 70);
 
     // 4. 성과 점수 계산 — profit factor × sqrt(거래수) (샘플 보정)
     const krScore = krPerf.profitFactor * Math.sqrt(Math.min(krPerf.tradeCount, 30));

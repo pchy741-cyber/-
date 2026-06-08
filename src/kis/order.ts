@@ -144,7 +144,7 @@ export async function cancelOrder(params: {
   const res = await kisRequest({
     path: '/uapi/domestic-stock/v1/trading/order-rvsecncl',
     method: 'POST',
-    trId: trIds.BUY, // 취소도 동일 tr_id 사용
+    trId: trIds.CANCEL,
     body,
     hashkey,
   });

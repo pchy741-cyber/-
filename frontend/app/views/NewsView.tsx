@@ -7,6 +7,9 @@ import { toDisplayName } from '../lib/helpers';
 import { TodayThemePanel } from './news/TodayThemePanel';
 import { NewsSummaryPanel } from './news/NewsSummaryPanel';
 
+interface RegimeSummary { summary: string; regime: string; score: number; recommended: string; reasons: string[] }
+interface YTVideo { title: string; link: string; channel: string; publishedAt: string; sentiment: 'bullish' | 'bearish' | 'neutral'; sentimentScore: number }
+
 function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist: (v: any) => void }) {
   const [stockNews, setStockNews] = useState<any[]>([]);
   const [macroNews, setMacroNews] = useState<string[]>([]);
@@ -23,6 +26,12 @@ function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist:
   const [theme, setTheme] = useState<{ theme: string; reason: string; stocks: Array<{ code: string; name: string; market: string }> } | null>(null);
   const [themeLoading, setThemeLoading] = useState(true);
   const [addingCode, setAddingCode] = useState<string | null>(null);
+
+  // 장세 한마디
+  const [regime, setRegime] = useState<RegimeSummary | null>(null);
+  // 유튜브
+  const [ytVideos, setYtVideos] = useState<YTVideo[]>([]);
+  const [ytLoading, setYtLoading] = useState(true);
 
   const getStockName = (code: string) => {
     const item = watchlist.find((s: any) => s.stock_code === code);
@@ -85,10 +94,46 @@ function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist:
       .then((data: any) => setTheme(data?.theme ? data : null))
       .catch(() => setTheme(null))
       .finally(() => setThemeLoading(false));
+
+    // 장세 한마디
+    api('/news/regime-summary')
+      .then((d: any) => setRegime(d?.summary ? d : null))
+      .catch(() => {});
+
+    // 유튜브 시황
+    api('/news/youtube')
+      .then((d: any) => setYtVideos(Array.isArray(d?.videos) ? d.videos : []))
+      .catch(() => setYtVideos([]))
+      .finally(() => setYtLoading(false));
   }, []);
+
+  const regimeIcon = regime ? (
+    regime.regime === 'BULLISH' ? '🟢' :
+    regime.regime === 'BEARISH' ? '🔴' :
+    regime.regime === 'PANIC' ? '💀' : '⚪'
+  ) : '';
 
   return (
     <div className="space-y-5 sm:space-y-6">
+      {/* 장세 한마디 */}
+      {regime && (
+        <div className="rounded-xl bg-slate-900/80 border border-slate-800/60 p-4 flex items-start gap-3">
+          <span className="text-2xl leading-none mt-0.5">{regimeIcon}</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm text-slate-200 leading-relaxed">{regime.summary}</p>
+            {regime.reasons.length > 0 && (
+              <p className="text-[11px] text-slate-500 mt-1">{regime.reasons.slice(0, 3).join(' · ')}</p>
+            )}
+          </div>
+          <span className={`text-xs font-medium px-2 py-0.5 rounded ${
+            regime.regime === 'BULLISH' ? 'bg-emerald-900/50 text-emerald-400' :
+            regime.regime === 'BEARISH' ? 'bg-rose-900/50 text-rose-400' :
+            regime.regime === 'PANIC' ? 'bg-red-900/60 text-red-400' :
+            'bg-slate-800 text-slate-400'
+          }`}>{regime.recommended}</span>
+        </div>
+      )}
+
       <TodayThemePanel theme={theme} themeLoading={themeLoading} isInWatchlist={isInWatchlist} addingCode={addingCode} addThemeStock={addThemeStock} />
 
       <NewsSummaryPanel
@@ -97,6 +142,37 @@ function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist:
         aiEngineStatus={aiEngineStatus} geminiTest={geminiTest} geminiTesting={geminiTesting}
         testGemini={testGemini} fetchSummary={fetchSummary}
       />
+
+      {/* 유튜브 시황 */}
+      <Panel title="유튜브 시황" badge={ytLoading ? '로딩 중' : `${ytVideos.length}건`}>
+        <div className="p-4">
+          {ytLoading ? (
+            <div className="flex justify-center py-4">
+              <div className="w-5 h-5 border-2 border-red-400 border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : ytVideos.length === 0 ? (
+            <p className="text-sm text-slate-500 text-center py-3">유튜브 영상이 없습니다</p>
+          ) : (
+            <ul className="space-y-2">
+              {ytVideos.map((v, i) => (
+                <li key={i} className="flex items-start gap-2 text-sm">
+                  <span className={`shrink-0 mt-0.5 text-xs font-bold ${
+                    v.sentiment === 'bullish' ? 'text-emerald-400' :
+                    v.sentiment === 'bearish' ? 'text-rose-400' : 'text-slate-600'
+                  }`}>
+                    {v.sentiment === 'bullish' ? '▲' : v.sentiment === 'bearish' ? '▼' : '—'}
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <a href={v.link} target="_blank" rel="noopener noreferrer"
+                       className="text-slate-300 hover:text-white hover:underline line-clamp-2">{v.title}</a>
+                    <span className="text-slate-600 text-[10px] ml-1.5">{v.channel}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </Panel>
 
       {/* 매크로/시황 뉴스 */}
       <Panel title="시황 · 매크로 뉴스">

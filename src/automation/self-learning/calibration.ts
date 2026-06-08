@@ -165,8 +165,15 @@ export async function calibrateScoreTierParams(): Promise<void> {
         kelly = winRate - (1 - winRate) / ratio;
       }
 
-      if (kelly < 0) kelly = 0.04;
-      else kelly = Math.min(kelly * 0.3, 0.22);
+      // Kelly 음수 시 tier별 차별화 유지 (기존: 전 티어 0.04 → 점수 구분 무의미)
+      if (kelly < 0) {
+        kelly = tier.min >= 90 ? 0.10
+          : tier.min >= 80 ? 0.08
+          : tier.min >= 70 ? 0.06
+          : 0.04;
+      } else {
+        kelly = Math.min(kelly * 0.3, 0.22);
+      }
 
       let allocPct = kelly;
       if (stats.data.length < 10) {

@@ -89,23 +89,25 @@ class RateLimiter {
 }
 
 // KIS API rate limit: 실전 20건/sec, 모의투자 1건/sec per APP KEY
-// Paper: domestic + overseas가 동일 APP KEY → 단일 limiter 공유 (1/sec 초과 방지)
-// marketData는 useRealUrl=true로 실서버 호출 → 버스트 과부하 방지로 4/sec 제한
-// 모드 전환 시에도 정확한 rate 적용: 초기화 시 고정이 아닌 런타임 config 참조
-// Paper 모드: 5 req/sec (연습모드 속도 5배 향상, KIS 모의투자 제한에 여유)
-const _paperLimiter = new RateLimiter(5);
-const _liveKisLimiter = new RateLimiter(15);
-const _liveOverseasLimiter = new RateLimiter(15);
+// _globalLiveLimiter: kisRequest 내부에서 live 도메인 호출 시 자동 적용 (최종 게이트)
+// _paperServerLimiter: 모의투자 도메인 호출 시 적용
+// 외부 limiter(kisRateLimiter 등)는 카테고리별 burst 방지용 (내부와 이중 적용)
+const _globalLiveLimiter = new RateLimiter(10); // 20/sec 한도, 버스트 방지 10/sec
+const _paperServerLimiter = new RateLimiter(1);  // 모의투자 서버 1/sec
 
+// 외부 limiter — burst 방지용 (kisRequest 내부 global limiter와 이중 적용)
 export const kisRateLimiter = {
-  acquire: () => getCtxIsPaper() ? _paperLimiter.acquire() : _liveKisLimiter.acquire(),
-  get pendingCount() { return getCtxIsPaper() ? _paperLimiter.pendingCount : _liveKisLimiter.pendingCount; },
+  acquire: async () => { /* 내부 global limiter가 조율하므로 noop */ },
+  get pendingCount() { return _globalLiveLimiter.pendingCount; },
 };
 export const overseasRateLimiter = {
-  acquire: () => getCtxIsPaper() ? _paperLimiter.acquire() : _liveOverseasLimiter.acquire(),
-  get pendingCount() { return getCtxIsPaper() ? _paperLimiter.pendingCount : _liveOverseasLimiter.pendingCount; },
+  acquire: async () => { /* 내부 global limiter가 조율하므로 noop */ },
+  get pendingCount() { return _globalLiveLimiter.pendingCount; },
 };
-export const marketDataRateLimiter = new RateLimiter(4);
+export const marketDataRateLimiter = {
+  acquire: async () => { /* 내부 global limiter가 조율하므로 noop */ },
+  get pendingCount() { return _globalLiveLimiter.pendingCount; },
+};
 
 /**
  * KIS REST API 범용 클라이언트
@@ -116,23 +118,26 @@ export const marketDataRateLimiter = new RateLimiter(4);
 export async function kisRequest<T = unknown>(options: KISRequestOptions): Promise<KISResponse<T>> {
   const { path, method = 'GET', trId, params, body, hashkey, useRealUrl, skipRateLimiter, forceMode } = options;
 
+  // useRealUrl=true → 시세 조회는 항상 실서버 도메인+credential 필요
+  // forceMode 미지정 시 useRealUrl이면 live credential 강제 적용
+  const effectiveForceMode = forceMode ?? (useRealUrl ? 'live' as const : undefined);
+
   // forceMode: 서버 모드와 무관하게 특정 모드의 URL/credential 사용
-  // (예: paper 서버에서 live 잔고 조회, 또는 그 반대)
-  const resolvedLive = forceMode ? forceMode === 'live' : !getCtxIsPaper();
-  const resolvedBaseUrl = (useRealUrl || (forceMode === 'live'))
+  const resolvedLive = effectiveForceMode ? effectiveForceMode === 'live' : !getCtxIsPaper();
+  const resolvedBaseUrl = (useRealUrl || (effectiveForceMode === 'live'))
     ? 'https://openapi.koreainvestment.com:9443'
-    : forceMode === 'paper'
+    : effectiveForceMode === 'paper'
       ? 'https://openapivts.koreainvestment.com:29443'
       : config.kis.baseUrl;
 
-  // forceMode 시 해당 모드의 credential 사용 (live_key → paper_key 폴백)
-  const resolvedAppKey = forceMode
-    ? (forceMode === 'live'
+  // effectiveForceMode 시 해당 모드의 credential 사용 (live_key → paper_key 폴백)
+  const resolvedAppKey = effectiveForceMode
+    ? (effectiveForceMode === 'live'
         ? (process.env.KIS_APP_KEY_LIVE || process.env.KIS_APP_KEY || config.kis.appKey)
         : (process.env.KIS_APP_KEY || config.kis.appKey))
     : config.kis.appKey;
-  const resolvedAppSecret = forceMode
-    ? (forceMode === 'live'
+  const resolvedAppSecret = effectiveForceMode
+    ? (effectiveForceMode === 'live'
         ? (process.env.KIS_APP_SECRET_LIVE || process.env.KIS_APP_SECRET || config.kis.appSecret)
         : (process.env.KIS_APP_SECRET || config.kis.appSecret))
     : config.kis.appSecret;
@@ -159,13 +164,18 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
 
   let lastError: Error | null = null;
 
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    // 매 시도마다 토큰 갱신 (forceMode 시 해당 모드 토큰 사용)
-    const token = forceMode ? await getAccessTokenForMode(forceMode) : await getAccessToken();
-    headers.authorization = `Bearer ${token}`;
+  // ── Global Rate Limiter: resolved URL 기반 최종 게이트 ──
+  const isLiveServer = resolvedBaseUrl.includes('openapi.koreainvestment.com');
+  if (isLiveServer) {
+    await _globalLiveLimiter.acquire();
+  } else {
+    await _paperServerLimiter.acquire();
+  }
 
-    // Rate Limiter 대기 (해외 호출은 별도 limiter 사용 → 여기서 스킵)
-    if (!skipRateLimiter) await kisRateLimiter.acquire();
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    // 매 시도마다 토큰 갱신 (effectiveForceMode 시 해당 모드 토큰 사용)
+    const token = effectiveForceMode ? await getAccessTokenForMode(effectiveForceMode) : await getAccessToken();
+    headers.authorization = `Bearer ${token}`;
 
     try {
       const res = await fetch(url.toString(), {

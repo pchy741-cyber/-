@@ -245,15 +245,15 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         processedSellCodes.add(chain.stock_code);
         continue;
       }
-      // 1단계: 첫 익절 — 25% 부분 매도
-      const sellQty = Math.ceil(chain.total_quantity * 0.25);
+      // 1단계: 첫 익절 — 35% 부분 매도 (25%→35% 상향: 반전 시 확보 수익 증가)
+      const sellQty = Math.ceil(chain.total_quantity * 0.35);
       if (sellQty > 0 && sellQty < chain.total_quantity) {
         decisions.push({
           action: 'PARTIAL_SELL',
           stock_code: chain.stock_code,
           quantity: sellQty,
           price_type: 'MARKET',
-          reasoning: `1단계 익절(25%): +${pnlPct.toFixed(1)}% 도달 (목표 ${effectiveTp.toFixed(1)}% AI${realtimeAiScore}점) → 나머지 75% 트레일링 대기`,
+          reasoning: `1단계 익절(35%): +${pnlPct.toFixed(1)}% 도달 (목표 ${effectiveTp.toFixed(1)}% AI${realtimeAiScore}점) → 나머지 65% 트레일링 대기`,
           confidence: 0.9,
         });
         processedSellCodes.add(chain.stock_code);
@@ -370,22 +370,22 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     if (chain.strategy_mode !== 'SCALPING' && chain.status !== 'PROFIT_TAKING' && chain.opened_at) {
       const holdingDays = Math.floor((Date.now() - new Date(chain.opened_at).getTime()) / (24 * 60 * 60_000));
 
-      // 8일+ 보유 + 수익 < 2% → 모멘텀 부족, 현금 재배치
-      if (holdingDays >= 8 && pnlPct < 2.0 && pnlPct >= 0) {
+      // 6일+ 보유 + 수익 < 1.5% → 모멘텀 부족, 현금 재배치 (8일→6일, 2%→1.5% 강화)
+      if (holdingDays >= 6 && pnlPct < 1.5 && pnlPct >= 0) {
         decisions.push({
           action: 'SELL',
           stock_code: chain.stock_code,
           quantity: chain.total_quantity,
           price_type: 'MARKET',
-          reasoning: `데드머니탈출(${holdingDays}일 보유 +${pnlPct.toFixed(1)}%<2%): 모멘텀 부족 → 현금 재배치`,
+          reasoning: `데드머니탈출(${holdingDays}일 보유 +${pnlPct.toFixed(1)}%<1.5%): 모멘텀 부족 → 현금 재배치`,
           confidence: 0.80,
         });
         processedSellCodes.add(chain.stock_code);
         continue;
       }
 
-      // 5일+ 보유 + PnL ±1% 이내 → 기회비용 청산
-      if (holdingDays >= 5 && Math.abs(pnlPct) <= 1.0) {
+      // 4일+ 보유 + PnL ±0.8% 이내 → 기회비용 청산 (5일→4일, ±1%→±0.8% 강화)
+      if (holdingDays >= 4 && Math.abs(pnlPct) <= 0.8) {
         decisions.push({
           action: 'SELL',
           stock_code: chain.stock_code,

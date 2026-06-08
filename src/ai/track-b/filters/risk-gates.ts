@@ -49,14 +49,22 @@ export function checkRiskGates(input: RiskGateInput): GateResult {
   // ─ rVolumeProfile ─
   const rVolumeProfile = !nearResistance;
 
-  // ─ rShortPressure ─
-  const rShortPressure = !signals ? true : (signalData.shortRatio < 8 && signalData.lendingRatio < 15);
+  // ─ rShortPressure ─ v6: 공매도+대차잔고 강화, 호가벽 추가
+  const rShortPressure = !signals ? true : (
+    signalData.shortRatio < 8 && signalData.lendingRatio < 15 && signalData.bidAskRatio > 0.5
+  );
 
-  // ─ rBreakoutConfirm ─
+  // ─ rBreakoutConfirm ─ v6: 호가 비대칭 검증 추가 (매수잔량 부족 돌파 = 가짜)
   const rBreakoutConfirm = (() => {
     if (!atMultiDayHigh) return true;
+    // 돌파 + 거래량 확인 = OK
     if (todayChangePct >= 2 && adjustedVolRatio >= 1.5) return true;
     if (todayChangePct < 1) return true;
+    // v6: 돌파인데 매도벽(bid/ask < 0.8) = 기관이 물량 던지는 중 → 가짜
+    if (signals && signalData.bidAskRatio < 0.8 && adjustedVolRatio < 2.0) {
+      logger.info(`  🚫 ${input.stockCode}: 돌파+매도벽(bid/ask=${signalData.bidAskRatio.toFixed(2)}) → 가짜돌파 차단`, { component: 'TRACK_B' });
+      return false;
+    }
     return false;
   })();
 

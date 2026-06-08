@@ -177,11 +177,12 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
     // 9. 기술적 진입 필터 (RSI/ADX/MA/BB/dayRange) + AI 확신도
     .filter(t => {
       const ai = aiMap.get(t.code);
-      const isOversold = t.rsi <= 35 && t.trendStrength !== 'WEAK';
+      const isOversold = t.rsi <= 38 && t.trendStrength !== 'WEAK';
       const isAbove50 = t.rsi >= 50;
-      // Paper: ADX 12, Live: ADX 15 (소액 계좌 진입 허용)
-      const adxThreshold = isPaper ? 12 : 15;
-      const trendFilterOk = t.isMomentum || t.isBigMover || isOversold || (isAbove50 && t.adx > adxThreshold);
+      // RSI "developing zone" (38-49): 추세 발전 중, ADX가 확인해주면 진입 허용
+      const isDeveloping = t.rsi >= 38 && t.rsi < 50 && t.adx >= 20 && t.aboveMA20;
+      const adxThreshold = isPaper ? 12 : 13;
+      const trendFilterOk = t.isMomentum || t.isBigMover || isOversold || isDeveloping || (isAbove50 && t.adx > adxThreshold);
       if (!trendFilterOk) { logger.info(`  ⛔ 진입 필터 탈락: ${t.code} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)}`, { component: 'OVERSEAS' }); return false; }
       // MA20/MA60/BB 스퀴즈 필터 완화 — 강한 시그널이면 통과
       const paperSignalPass = isPaper && (t.signal === 'STRONG_BUY' || t.signal === 'BUY');
@@ -190,7 +191,8 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       const signalPass = paperSignalPass || liveSignalPass;
       if (!t.isMomentum && !isOversold && t.aboveMA20 === false && !signalPass) { logger.info(`  ⛔ MA20 하방 진입 차단: ${t.code}`, { component: 'OVERSEAS' }); return false; }
       if (!t.isMomentum && t.aboveMA60 === false && !signalPass) { logger.info(`  ⛔ MA60 하방 진입 차단: ${t.code}`, { component: 'OVERSEAS' }); return false; }
-      if (t.bollingerSqueeze && t.bollingerBreakout !== 'UP' && !t.isMomentum && !signalPass) { logger.info(`  ⛔ BB 스퀴즈 차단: ${t.code}`, { component: 'OVERSEAS' }); return false; }
+      const squeezeBypass = t.adx >= 20 && t.rsi >= 42 && t.aboveMA20; // 추세 발전 중 squeeze는 breakout 전조
+      if (t.bollingerSqueeze && t.bollingerBreakout !== 'UP' && !t.isMomentum && !signalPass && !squeezeBypass) { logger.info(`  ⛔ BB 스퀴즈 차단: ${t.code}`, { component: 'OVERSEAS' }); return false; }
       const bullDay = freshBreadth >= 0.65;
       const dayRangeCap = bullDay ? 85 : 70;
       const dayRangeOk = t.isMomentum || t.isBigMover || t.dayRangePct === undefined || t.dayRangePct < dayRangeCap;
@@ -209,13 +211,14 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       const isBigMoverTarget = t.isBigMover;
       // Paper/Live 동일 기준 (Paper 할인 제거 — 낮은 확신 진입이 56% 손실의 원인)
       const paperDiscount = 0;
-      const baseMinConf = recoveryMode ? 0.85 - paperDiscount
-        : mq === 'GREAT' ? 0.66 - paperDiscount : mq === 'CAUTIOUS' ? 0.76 - paperDiscount : mq === 'DANGER' ? 0.82 - paperDiscount : 0.68 - paperDiscount;
-      const minConf = (isBigMoverTarget ? Math.max(isPaper ? 0.50 : 0.65, baseMinConf - 0.05 + breadthAdj) : baseMinConf + breadthAdj) + vixRegime.confBoost;
-      const minConfMomentum = (isBigMoverTarget ? Math.max(isPaper ? 0.45 : 0.60, (recoveryMode ? 0.83 - paperDiscount
-        : mq === 'GREAT' ? 0.63 - paperDiscount : mq === 'CAUTIOUS' ? 0.73 - paperDiscount : mq === 'DANGER' ? 0.80 - paperDiscount : 0.66 - paperDiscount) - 0.05 + breadthAdj)
-        : (recoveryMode ? 0.83 - paperDiscount
-        : mq === 'GREAT' ? 0.63 - paperDiscount : mq === 'CAUTIOUS' ? 0.73 - paperDiscount : mq === 'DANGER' ? 0.80 - paperDiscount : 0.66 - paperDiscount) + breadthAdj) + vixRegime.confBoost;
+      // 신뢰도 바닥: Gemini 출력 0.68-0.72 현실 반영 (CAUTIOUS 0.76→0.68, DANGER 0.82→0.78, Recovery 0.85→0.78)
+      const baseMinConf = recoveryMode ? 0.78 - paperDiscount
+        : mq === 'GREAT' ? 0.63 - paperDiscount : mq === 'CAUTIOUS' ? 0.68 - paperDiscount : mq === 'DANGER' ? 0.78 - paperDiscount : 0.65 - paperDiscount;
+      const minConf = (isBigMoverTarget ? Math.max(isPaper ? 0.50 : 0.60, baseMinConf - 0.05 + breadthAdj) : baseMinConf + breadthAdj) + vixRegime.confBoost;
+      const minConfMomentum = (isBigMoverTarget ? Math.max(isPaper ? 0.45 : 0.55, (recoveryMode ? 0.75 - paperDiscount
+        : mq === 'GREAT' ? 0.60 - paperDiscount : mq === 'CAUTIOUS' ? 0.65 - paperDiscount : mq === 'DANGER' ? 0.75 - paperDiscount : 0.62 - paperDiscount) - 0.05 + breadthAdj)
+        : (recoveryMode ? 0.75 - paperDiscount
+        : mq === 'GREAT' ? 0.60 - paperDiscount : mq === 'CAUTIOUS' ? 0.65 - paperDiscount : mq === 'DANGER' ? 0.75 - paperDiscount : 0.62 - paperDiscount) + breadthAdj) + vixRegime.confBoost;
       // 불확실성 보정
       const uncPenalty = uncertaintyMap.get(t.code);
       const effectiveConf = uncPenalty ? applyUncertaintyPenalty(ai?.confidence ?? 0, uncPenalty) : (ai?.confidence ?? 0);

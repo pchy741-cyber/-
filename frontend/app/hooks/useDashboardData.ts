@@ -37,9 +37,26 @@ function saveCache(c: Omit<DashCache, 'savedAt'>) {
   try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ...c, savedAt: Date.now() })); } catch {}
 }
 
+// 1회성 오염 정리 — paper 캐시만 제거, live 캐시는 SWR용으로 유지
+const CLEAN_VER = 'aab_clean_v2';
+if (typeof window !== 'undefined') {
+  try {
+    if (!localStorage.getItem(CLEAN_VER)) {
+      localStorage.removeItem('aab_viewMode');
+      sessionStorage.removeItem('aab_capture_result');
+      // paper 캐시만 제거 (live 캐시는 SWR 즉시표시용으로 보존)
+      const raw = localStorage.getItem(CACHE_KEY);
+      if (raw) {
+        const c = JSON.parse(raw);
+        if (c.viewMode !== 'live') localStorage.removeItem(CACHE_KEY);
+      }
+      localStorage.setItem(CLEAN_VER, '1');
+    }
+  } catch {}
+}
+
 export function useDashboardData() {
-  // 캐시 복원: 즉시 렌더링용
-  const initVm = (() => { try { return localStorage.getItem('aab_viewMode') as 'live'|'paper' || 'paper'; } catch { return 'paper' as const; } })();
+  const initVm = 'live' as const;
   const cached = typeof window !== 'undefined' ? loadCache(initVm) : null;
 
   const [health, setHealth] = useState<Health | null>(null);
@@ -61,9 +78,7 @@ export function useDashboardData() {
   const [todayStats, setTodayStats] = useState<TodayStats | null>(cached?.todayStats ?? null);
   const [isStale, setIsStale] = useState(!!cached?.dash); // 캐시 데이터면 stale
 
-  // 서버 모드 기준 기본값 — PAPER_ONLY=true일 때 localStorage에 'live'가 남아있으면
-  // live 잔고가 표시되는 혼동 발생. 항상 paper로 시작하고 서버 확인 후 동기화.
-  const [viewMode, setViewMode] = useState<'live'|'paper'>('paper');
+  const [viewMode, setViewMode] = useState<'live'|'paper'>(initVm);
 
   const loadingRef = useRef(false);
   const loadGenRef = useRef(0);
@@ -148,9 +163,6 @@ export function useDashboardData() {
     finally { loadingRef.current = false; }
   }, []);
 
-  // viewMode는 useState 초기화에서 동기적으로 localStorage 복원됨 (위 참조)
-  // 별도 useEffect 불필요 — SSE/API 레이스 컨디션 원천 차단
-
   // feature flags 로드
   useEffect(() => {
     api('/feature-flags').then((r: { flags?: Array<{ key: string; enabled: boolean }> }) => {
@@ -194,7 +206,7 @@ export function useDashboardData() {
     if (viewModeRef.current === mode) return;
     viewModeRef.current = mode;
     setViewMode(mode);
-    try { localStorage.setItem('aab_viewMode', mode); } catch {}
+    // localStorage 저장 제거 — 새로고침 시 항상 live로 시작
     setDash(null);
     setUsDash(null);
     setTodayStats(null);

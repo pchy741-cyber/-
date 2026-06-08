@@ -64,10 +64,14 @@ export function checkQualityGates(input: QualityGateInput): GateResult {
     return cfCount >= minCf;
   })();
 
-  // ─ qSignalFlow ─
-  const qSignalFlow = !signalData.raw ? true : (
-    signalData.intensity >= 100 || signalData.foreignNetEst > 0 || signalData.instNetEst > 0 || signalData.foreignBrokerBuy
-  );
+  // ─ qSignalFlow ─ v6: 외국인+기관 동반 매도 시 하드 차단 (AI 90+ 제외)
+  const qSignalFlow = !signalData.raw ? true : (() => {
+    // 외국인+기관 동시 매도 = 기관 컨센서스 매도 → 개인만 매수 중 → 위험
+    if (signalData.foreignNetEst < 0 && signalData.instNetEst < 0 && aiScore < 90) return false;
+    // 체결강도 < 85 (매도 압도) + 호가 매도벽 → 하방 압력
+    if (signalData.intensity > 0 && signalData.intensity < 85 && signalData.bidAskRatio < 0.7) return false;
+    return signalData.intensity >= 100 || signalData.foreignNetEst > 0 || signalData.instNetEst > 0 || signalData.foreignBrokerBuy;
+  })();
 
   const details = { vol: qVolume, trend: qTrendStrength, dir: qTrendDirection, rsi: qRsiTiming, cf: qConfluence, sig: qSignalFlow };
   const count = Object.values(details).filter(Boolean).length;

@@ -127,11 +127,12 @@ app.get('/review/copilot', async (c) => {
         try {
           const { getOverseasBuyableAmount } = await import('../../../kis/overseas.js');
           const buyable = await getOverseasBuyableAmount();
-          // buyable.usd = ord_psbl_frcr_amt (KIS 앱 "달러화"와 일치하는 실제 주문가능 USD)
-          // buyable.krw = maxUsd × exrt (KIS 앱 "주문가능원화"와 일치하는 통합증거금 KRW)
-          if (buyable && (buyable.usd > 0 || (buyable.krw ?? 0) > 0)) {
-            osCashUsd = buyable.usd;
-            krwInfo = buyable.krw ? ` (₩${Math.round(buyable.krw).toLocaleString()})` : '';
+          // buyable.usd = 외화 풀 주문가능 USD, buyable.maxUsd = 통합증거금 전체 USD
+          // buyable.krw = 통합증거금 주문가능원화 (KIS 앱 표시값)
+          if (buyable && (buyable.maxUsd > 0 || buyable.usd > 0 || (buyable.krw ?? 0) > 0)) {
+            osCashUsd = buyable.maxUsd > 0 ? buyable.maxUsd : buyable.usd;
+            const krwVal = buyable.krw ?? 0;
+            krwInfo = krwVal > 0 ? ` (₩${Math.round(krwVal).toLocaleString()}, 외화$${buyable.usd.toFixed(0)})` : '';
             syncAgo = '실시간';
           }
         } catch {
@@ -147,12 +148,10 @@ app.get('/review/copilot', async (c) => {
           }
         }
       } else {
-        // Paper: DB에서 USD 직접 조회
-        const { rows: osState } = await pool.query(
-          "SELECT value, updated_at FROM overseas_state WHERE key = 'cash_paper'");
-        osCashUsd = Number(osState[0]?.value ?? 0);
-        const syncAt = osState[0]?.updated_at ? new Date(osState[0].updated_at) : null;
-        syncAgo = syncAt ? `${Math.round((Date.now() - syncAt.getTime()) / 60000)}분전` : '미동기화';
+        // Paper: orders 기반 결정론적 계산 (overseas_state['cash_paper']는 갱신 안 됨 → stale)
+        const { computePaperCash } = await import('../../../scheduler/overseas/state.js');
+        osCashUsd = await computePaperCash(fxRate);
+        syncAgo = '실시간계산';
       }
 
       // 보유종목 현재가 조회
@@ -240,9 +239,8 @@ app.get('/review/copilot', async (c) => {
     // 2b. 일일 손실한도 소진율 — Live 2.5% / Paper 30%
     try {
       const { calcDailyLossLimit } = await import('../../../risk/seed-capital.js');
-      const { getCtxIsPaper } = await import('../../../config/context.js');
       const totalPortfolioKrw = netAsset > 0 ? netAsset : (cash + positions.reduce((s, p) => s + (p.avgBuyPrice * p.quantity), 0));
-      const limit = calcDailyLossLimit(totalPortfolioKrw, getCtxIsPaper());
+      const limit = calcDailyLossLimit(totalPortfolioKrw, viewIsPaper);
       const evalKrw = positions.reduce((s, p) => s + p.evalAmount, 0);
       const investedKrw = positions.reduce((s, p) => s + (p.avgBuyPrice * p.quantity), 0);
       const unrealizedLoss = Math.max(0, investedKrw - evalKrw);

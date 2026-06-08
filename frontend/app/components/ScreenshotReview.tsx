@@ -157,7 +157,7 @@ export default function ScreenshotReview(props: ScreenshotProps) {
       const [, copilotRes, xrayRes] = await Promise.all([
         api('/review/capture', { method: 'POST', body: JSON.stringify({ screenshots }) }),
         api(`/review/copilot?viewMode=${viewMode}`).catch(() => null),
-        api('/review/xray').catch(() => null),
+        api(`/review/xray?viewMode=${viewMode}`).catch(() => null),
       ]);
 
       capturedScreenshots.current = screenshots;

@@ -65,9 +65,11 @@ export function isHardBlocked(input: HardGateInput): boolean {
 
   // ── 잡주/저품질 종목 필터 (3중 게이트) ──
 
-  // 1) 저가주: 2,000원 미만
+  // 1) 저가주: 2,000원 미만 (ETF 제외 — KODEX 인버스 등 저가 ETF는 정상 종목)
+  const ETF_BRANDS = ['KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'KOSEF'];
+  const isETF = ETF_BRANDS.some(b => name.toUpperCase().includes(b));
   const earlyPrice = livePrices.get(code);
-  if (earlyPrice && earlyPrice.currentPrice > 0 && earlyPrice.currentPrice < 2000) {
+  if (earlyPrice && earlyPrice.currentPrice > 0 && earlyPrice.currentPrice < 2000 && !isETF) {
     logger.info(`  🗑️ ${code}(${name}): 저가주(${earlyPrice.currentPrice}원 < 2000) — 잡주 필터`, { component: 'TRACK_B' });
     return true;
   }

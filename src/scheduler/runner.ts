@@ -50,8 +50,9 @@ async function runDomesticDual(label: string, fn: () => Promise<unknown>): Promi
     try { await fn(); } catch (e) { logger.error(`${label} paper 실패: ${e}`, { component: 'SCHEDULER' }); }
   });
   if (paperOnly) return; // 자율학습 모드: live 완전 스킵
-  // paper→live 전환 시 잔고 캐시 무효화 — paper 잔고가 live로 오염되는 것 방지
+  // paper→live 전환 시 잔고 캐시 무효화 + 3초 쿨다운 (KIS rate limit EGW00201 방지)
   invalidateBalanceCache();
+  await new Promise(r => setTimeout(r, 3000));
   await runWithMode(false, async () => {
     try { await fn(); } catch (e) { logger.error(`${label} live 실패: ${e}`, { component: 'SCHEDULER' }); }
   });
@@ -143,6 +144,10 @@ export function startScheduler(): void {
     '0 8 * * 1-5',
     () => {
       autoSwitchStrategy().catch((e) => logger.error(`장세 감지 실패: ${e}`, { component: 'SCHEDULER' }));
+      // 뉴스 프리페치 (매크로RSS + 요약 + 유튜브 캐시 워밍 — 앱 열면 즉시 표시)
+      import('../api/routes/dashboard-news.js')
+        .then(m => m.prefetchAllNews())
+        .catch(e => logger.error(`뉴스 프리페치 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

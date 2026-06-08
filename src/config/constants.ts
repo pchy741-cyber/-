@@ -21,8 +21,8 @@ export const KR_FEE = {
 export const SCHEDULE = {
   // Track A: 무거운 분석 (하루 4회 — 파워풀 모드)
   TRACK_A_CRON: ['30 7 * * 1-5', '0 10 * * 1-5', '30 12 * * 1-5', '0 18 * * 1-5'], // 07:30, 10:00, 12:30, 18:00 KST 평일
-  // Track B: 실시간 감시 (장중 5분 간격 — 비용/반응 균형)
-  TRACK_B_INTERVAL_MINUTES: 5,
+  // Track B: 실시간 감시 (장중 3분 간격 — 트레일링 반응 속도 개선)
+  TRACK_B_INTERVAL_MINUTES: 3,
 } as const;
 
 // ── 주문 관련 Enum ──
@@ -88,9 +88,9 @@ export const STRATEGY_PARAMS = {
     // │ R:R = 4.79:2.71 = 1.77:1 (현실적 손익비)                        │
     // │ maxDailyTrades 3: 일일 최대 3건 (과잉거래 방지, 수수료 절감)     │
     // └────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 80,
+    buyThreshold: 65,       // v5: 80→65 (매매 빈도 증가, paper -10 → 실질 55)
     splitCount: 2,
-    averageDownPct: 0,
+    averageDownPct: 0,      // v6: 물타기 비활성화 (21% WR에서 추가매수 = 손실확대)
     maxAveragingCount: 0,
     earlyTpPct: 0,
     takeProfitPct: 5.0,     // v4: 7.0%→5.0% (달성률 높여 실현 수익 증가)
@@ -225,14 +225,18 @@ export const KIS_TR_ID = {
   LIVE: {
     BUY: 'TTTC0802U',
     SELL: 'TTTC0801U',
+    CANCEL: 'TTTC0803U',
     BALANCE: 'TTTC8434R',
+    BUYABLE: 'TTTC8908R',  // 매수가능조회 — nrcvb_buy_amt = 실제 주문가능원화
     ORDER_STATUS: 'TTTC8001R',
   },
   // 모의투자
   PAPER: {
     BUY: 'VTTC0802U',
     SELL: 'VTTC0801U',
+    CANCEL: 'VTTC0803U',
     BALANCE: 'VTTC8434R',
+    BUYABLE: 'VTTC8908R',  // 매수가능조회 (모의)
     ORDER_STATUS: 'VTTC8001R',
   },
   // 시세 조회 (공통)
@@ -480,8 +484,8 @@ export const REFRESH = {
 export const GATE = {
   SLIPPAGE_PCT: 0.26,                      // 왕복 수수료 0.21% + 슬리피지 0.05% = 실질 거래비용
   REENTRY_COOLDOWN_MS: 30 * 60_000,        // 동일 종목 재진입 쿨다운 (SCALPING, 30분)
-  CONSECUTIVE_LOSS_HALT_MS: 60 * 60_000,   // 5연패 → 1시간 쿨다운
-  CONSECUTIVE_LOSS_WARN_MS: 45 * 60_000,   // 3연패 → 45분 쿨다운
+  CONSECUTIVE_LOSS_HALT_MS: 30 * 60_000,   // 5연패 → 30분 쿨다운 (60→30분, 반등 타이밍 확보)
+  CONSECUTIVE_LOSS_WARN_MS: 20 * 60_000,   // 3연패 → 20분 쿨다운 (45→20분)
   COOLDOWN_NOTIFY_MS: 30 * 60_000,         // 쿨다운 알림 최소 간격
 } as const;
 

@@ -11,6 +11,82 @@ interface NewsTheme { theme: string; reason: string; stocks: Array<{ code: strin
 let _newsThemeCache: { data: NewsTheme | null; fetchedAt: number } = { data: null, fetchedAt: 0 };
 const NEWS_THEME_TTL = 120 * 60 * 1000;
 
+// ── 유튜브 캐시 ──
+interface YouTubeVideo {
+  title: string; link: string; channel: string;
+  publishedAt: string; sentiment: 'bullish' | 'bearish' | 'neutral'; sentimentScore: number;
+}
+let _ytCache: { videos: YouTubeVideo[]; fetchedAt: number } = { videos: [], fetchedAt: 0 };
+const YT_TTL = 30 * 60 * 1000;
+
+const YT_CHANNELS = [
+  { id: 'UChlv4GSd7OQl3js-jkLOnFA', name: '삼프로TV' },
+  { id: 'UCWskYkV4c4S9D__rsfOl2JA', name: '한경글로벌마켓' },
+  { id: 'UCvil4OAt-zShzkKHsg9EQAw', name: '김작가TV' },
+];
+const BULL_KW = ['상승장', '불장', '랠리', '반등', '매수', '저점', '신고가', '급등', '기회', '회복', '돌파', '호재', '최고'];
+const BEAR_KW = ['폭락', '하락장', '공포', '위기', '매도', '급락', '붕괴', '추락', '침체', '위험', '악재', '하락'];
+
+// ── 한글 뉴스 요약 (Gemini OFF 폴백) ──
+function generateFreeKoreanSummary(headlineLines: string[]): string {
+  const koreanLines = headlineLines.filter(l => /[\u3131-\uD7A3]/.test(l));
+  const englishLines = headlineLines.filter(l => !/[\u3131-\uD7A3]/.test(l));
+  const all = [...koreanLines, ...englishLines];
+  const allText = all.join(' ').toLowerCase();
+
+  let bull = 0, bear = 0;
+  for (const kw of BULL_KW) if (allText.includes(kw)) bull++;
+  for (const kw of BEAR_KW) if (allText.includes(kw)) bear++;
+  for (const kw of ['rally', 'rise', 'surge', 'gain', 'record', 'bull']) if (allText.includes(kw)) bull++;
+  for (const kw of ['fall', 'drop', 'plunge', 'fear', 'crash', 'bear', 'sell-off']) if (allText.includes(kw)) bear++;
+
+  const mood = bull > bear + 1 ? '긍정적' : bear > bull + 1 ? '부정적' : '혼조';
+
+  const extract = (lines: string[], n: number) =>
+    lines.slice(0, n).map(l => { const m = l.match(/^\- \[(.+?)\]/); return m?.[1] || ''; }).filter(Boolean);
+
+  const topKr = extract(koreanLines, 2);
+  const topEn = extract(englishLines, 2);
+
+  let summary = `글로벌 시장 분위기는 ${mood}입니다.`;
+  if (topKr.length > 0) summary += ` 국내: ${topKr.join(', ')}.`;
+  if (topEn.length > 0) summary += ` 해외: ${topEn.join(', ')}.`;
+  return summary;
+}
+
+// ── 유튜브 영상 가져오기 (공유 로직) ──
+async function fetchYouTubeVideos(): Promise<YouTubeVideo[]> {
+  if (_ytCache.videos.length > 0 && Date.now() - _ytCache.fetchedAt < YT_TTL) {
+    return _ytCache.videos;
+  }
+  const cutoff = Date.now() - 72 * 3600_000;
+  const videos: YouTubeVideo[] = [];
+  const feeds = await Promise.allSettled(
+    YT_CHANNELS.map(async ch => {
+      const res = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${ch.id}`, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) return [];
+      const xml = await res.text();
+      const entries = [...xml.matchAll(/<entry>[\s\S]*?<link[^>]*href="([^"]*)"[^>]*\/>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<published>([\s\S]*?)<\/published>[\s\S]*?<\/entry>/g)];
+      return entries
+        .filter(e => new Date(e[3]).getTime() > cutoff)
+        .slice(0, 5)
+        .map(e => ({ title: e[2].trim(), link: e[1], channel: ch.name, publishedAt: e[3].trim() }));
+    }),
+  );
+  for (const r of feeds) {
+    if (r.status !== 'fulfilled') continue;
+    for (const v of r.value) {
+      let score = 0;
+      for (const kw of BULL_KW) if (v.title.includes(kw)) score++;
+      for (const kw of BEAR_KW) if (v.title.includes(kw)) score--;
+      videos.push({ ...v, sentimentScore: score, sentiment: score > 0 ? 'bullish' : score < 0 ? 'bearish' : 'neutral' });
+    }
+  }
+  videos.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+  _ytCache = { videos, fetchedAt: Date.now() };
+  return videos;
+}
+
 // ── 매크로 환경 ──
 dashboardNewsRoutes.get('/macro', async (c) => {
   try {
@@ -54,6 +130,33 @@ dashboardNewsRoutes.get('/news/macro', async (c) => {
   }
 });
 
+// ── 장세 한마디 (한글 종합) ──
+dashboardNewsRoutes.get('/news/regime-summary', async (c) => {
+  try {
+    const { detectMarketRegime, generateMarketSummaryKorean } = await import('../../automation/market-regime.js');
+    const regime = await detectMarketRegime();
+    return c.json({
+      summary: generateMarketSummaryKorean(regime),
+      regime: regime.regime,
+      score: regime.score,
+      recommended: regime.recommendedMode,
+      reasons: regime.reasons,
+    });
+  } catch {
+    return c.json({ summary: '', regime: 'NEUTRAL', score: 0, recommended: 'SWING', reasons: [] });
+  }
+});
+
+// ── 유튜브 시황 ──
+dashboardNewsRoutes.get('/news/youtube', async (c) => {
+  try {
+    const videos = await fetchYouTubeVideos();
+    return c.json({ videos });
+  } catch {
+    return c.json({ videos: [] });
+  }
+});
+
 // ── 매크로 뉴스 AI 한 줄 요약 (Gemini 2.0 Flash) ──
 dashboardNewsRoutes.get('/news/summary', async (c) => {
   const forceRefresh = c.req.query('refresh') === '1';
@@ -84,14 +187,10 @@ dashboardNewsRoutes.get('/news/summary', async (c) => {
       return m ? `${m[1]} (${m[2]})` : l.replace(/^- /, '');
     }).join('\n');
 
-    // Gemini OFF → 헤드라인 상위 3개를 직접 요약 (무료)
+    // Gemini OFF → 한글 키워드 기반 자연스러운 요약
     const { config } = await import('../../config/index.js');
     if (!config.geminiEnabled) {
-      const topLines = headlineLines.slice(0, 5).map(l => {
-        const m = l.match(/^\- \[(.+?)\]\(.+?\)/);
-        return m ? m[1] : l.replace(/^- /, '');
-      });
-      const summary = topLines.join(' / ');
+      const summary = generateFreeKoreanSummary(headlineLines);
       if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now() };
       return c.json({ summary, geminiOk: false, error: null, headlineCount, cached: false });
     }
@@ -193,3 +292,51 @@ ${headlines}
     return c.json({ theme: '', reason: '', stocks: [] });
   }
 });
+
+// ── 스케줄러용 프리페치 (08:00 캐시 워밍) ──
+export async function prefetchAllNews(): Promise<void> {
+  try {
+    // 1. 매크로 뉴스 RSS 수집
+    const { collectMacroNews } = await import('../../automation/news-collector.js');
+    const raw = await Promise.race([
+      collectMacroNews(),
+      new Promise<string>((resolve) => setTimeout(() => resolve(''), 15000)),
+    ]);
+
+    // 2. 뉴스 요약 캐시 워밍
+    if (raw) {
+      const headlineLines = raw.split('\n').filter(l => l.startsWith('- ['));
+      if (headlineLines.length > 0) {
+        const { config } = await import('../../config/index.js');
+        if (!config.geminiEnabled) {
+          const summary = generateFreeKoreanSummary(headlineLines);
+          if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now() };
+        } else {
+          try {
+            const headlines = headlineLines.map(l => {
+              const m = l.match(/^\- \[(.+?)\]\(.+?\)\s*—\s*(.+)$/);
+              return m ? `${m[1]} (${m[2]})` : l.replace(/^- /, '');
+            }).join('\n');
+            const { callVertexGemini } = await import('../../utils/vertex-gemini.js');
+            const summary = await Promise.race([
+              callVertexGemini(
+                '당신은 주식 투자 전문가입니다.',
+                `오늘 글로벌 금융 뉴스를 투자자 관점에서 한국어 2~3문장으로 요약하세요.\n\n${headlines}`,
+                { temperature: 0.2 },
+              ),
+              new Promise<string>((resolve) => setTimeout(() => resolve(''), 12000)),
+            ]);
+            if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now() };
+          } catch { /* Gemini 실패 시 무시 */ }
+        }
+      }
+    }
+
+    // 3. 유튜브 캐시 워밍
+    await fetchYouTubeVideos();
+
+    logger.info(`📰 뉴스 프리페치 완료: 요약=${_newsSummaryCache.summary ? 'OK' : 'SKIP'} 유튜브=${_ytCache.videos.length}건`, { component: 'NEWS_PREFETCH' });
+  } catch (e) {
+    logger.warn(`뉴스 프리페치 실패: ${e}`, { component: 'NEWS_PREFETCH' });
+  }
+}

@@ -156,12 +156,14 @@ const _eodLoggedAt = new Map<string, number>();
 
 export async function isEodOnlyMode(): Promise<boolean> {
   try {
-    const consecutive = await getConsecutiveLosses();
     const isPaper = getCtxIsPaper();
-    const threshold = isPaper ? 5 : 3;
+    // Paper 모드: EOD-only 비활성 (적극적 매매 학습 목적)
+    if (isPaper) return false;
+
+    const consecutive = await getConsecutiveLosses();
+    const threshold = 3;
     if (consecutive >= threshold) {
-      // 같은 모드(paper/live)에서 5분 이내 중복 로그 방지
-      const key = isPaper ? 'paper' : 'live';
+      const key = 'live';
       const now = Date.now();
       if (!_eodLoggedAt.has(key) || now - (_eodLoggedAt.get(key) ?? 0) > 300_000) {
         logger.info(`🎰 EOD-only 모드 활성: ${consecutive}연패 (임계값 ${threshold})`, { component: 'TRADE_GATE' });

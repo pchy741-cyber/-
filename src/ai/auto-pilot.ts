@@ -161,13 +161,18 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
         reason += ` + 전체 승률 저조(${(winRateFeedback.recentWinRate * 100).toFixed(0)}%)`;
       }
 
-      const currentOverride = getOverride<number>('minBuyScore', isPaper);
-      if (currentOverride !== targetThreshold) {
-        const res = await setOverride('threshold', 'minBuyScore', targetThreshold, `[AutoPilot] ${reason}`, RULES.TTL_REGIME, isPaper);
-        if (res.ok) {
-          overridesSet++;
-          decisions.push(`minBuyScore=${targetThreshold} (${reason})`);
+      // Paper 모드: 임계값 오버라이드 비활성 (적극적 매매 학습 목적)
+      if (!isPaper) {
+        const currentOverride = getOverride<number>('minBuyScore', isPaper);
+        if (currentOverride !== targetThreshold) {
+          const res = await setOverride('threshold', 'minBuyScore', targetThreshold, `[AutoPilot] ${reason}`, RULES.TTL_REGIME, isPaper);
+          if (res.ok) {
+            overridesSet++;
+            decisions.push(`minBuyScore=${targetThreshold} (${reason})`);
+          }
         }
+      } else {
+        decisions.push(`minBuyScore 스킵 (paper 적극매매 모드)`);
       }
     }
 

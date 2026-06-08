@@ -108,12 +108,11 @@ async function updateHoldingDividendTotals(): Promise<void> {
       UPDATE dividend_holdings dh
       SET total_dividends_received = sub.total
       FROM (
-        SELECT stock_code, exchange, is_paper, COALESCE(SUM(net_amount_usd), 0) AS total
-        FROM dividend_history GROUP BY stock_code, exchange, is_paper
+        SELECT stock_code, exchange, COALESCE(SUM(net_amount_usd), 0) AS total
+        FROM dividend_history GROUP BY stock_code, exchange
       ) sub
       WHERE dh.stock_code = sub.stock_code
         AND dh.exchange = sub.exchange
-        AND dh.is_paper = sub.is_paper
         AND dh.is_paper = $1
     `, [isPaper]);
   } catch (e: any) {

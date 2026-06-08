@@ -56,8 +56,8 @@ async function calcDomesticKelly(days: number = 30): Promise<DomesticKellyResult
     const fullKelly = (b * winRate - q) / b;
 
     // Kelly 음수 = "배팅하지 마라" → 하드코딩 비율로 폴백 (null 반환)
-    // 승률 30% 미만이면 Kelly 비활성화 (학습 단계에서 소액 분산 방지)
-    if (fullKelly <= 0 || winRate < 0.30) {
+    // 승률 22% 미만에서만 폴백 (21% WR에서도 Kelly 활성 → 자동 소형 포지션)
+    if (fullKelly <= 0 || winRate < 0.22) {
       logger.info(
         `📊 국내 Kelly (${days}d, ${total}건): 승률 ${(winRate * 100).toFixed(0)}%, fullKelly=${(fullKelly * 100).toFixed(1)}% → 음수/저승률 → 하드코딩 비율 사용`,
         { component: 'TRACK_B' },
@@ -268,7 +268,8 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
     const id15mPenalty = intraday15mDown.has(cand.stock_code) ? -10 : 0;
     const effectiveIdBonus = idBonus + id15mPenalty;
     // AI 확신도별 통과 기준 (높을수록 인트라데이 약세 허용)
-    const idPassThreshold = _idAiScore >= 85 ? -20 : _idAiScore >= 80 ? -10 : _idAiScore >= (strategyParams.buyThreshold ?? 72) ? -3 : 0;
+    // AI 점수 없거나 낮아도 분봉 약세 소폭 허용 (일봉 강세 시 1분봉 노이즈 무시)
+    const idPassThreshold = _idAiScore >= 85 ? -20 : _idAiScore >= 80 ? -10 : _idAiScore >= (strategyParams.buyThreshold ?? 72) ? -3 : -5;
     if (effectiveIdBonus < idPassThreshold) {
       logger.info(`  ⏸️ ${cand.stock_code}: 분봉게이트 미달(${idBonus}${id15mPenalty < 0 ? `+15m${id15mPenalty}` : ''}=${effectiveIdBonus} < ${idPassThreshold}, AI=${_idAiScore}) → 진입 보류`, { component: 'TRACK_B' });
       continue;
@@ -464,12 +465,13 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
 
     let quantity = Math.floor(effectivePositionSize / cand.price.currentPrice);
     if (quantity <= 0) {
-      // 고가주(1주 > positionSize): 현금이 충분하면 최소 1주 매수
-      if (remainingCash >= cand.price.currentPrice) {
+      // 고가주(1주 > positionSize): 주가가 종목한도 이내이고 현금 충분하면 최소 1주
+      // 주가가 effectiveMaxPos 초과 시 1주 강제 매수하면 리스크 한도 우회됨 (Live ₩125K 주식 + ₩140K 계좌 → 89% 집중)
+      if (remainingCash >= cand.price.currentPrice && cand.price.currentPrice <= effectiveMaxPos) {
         quantity = 1;
         logger.info(`  💡 ${cand.stock_code}: positionSize(${Math.round(effectivePositionSize / 10000)}만원) < 주가(${cand.price.currentPrice.toLocaleString()}원) → 최소 1주 매수`, { component: 'TRACK_B' });
       } else {
-        logger.info(`  ❌ ${cand.stock_code}: 주가 ${cand.price.currentPrice.toLocaleString()}원 > 잔여현금 ${Math.round(remainingCash).toLocaleString()}원 → 매수불가`, { component: 'TRACK_B' });
+        logger.info(`  ❌ ${cand.stock_code}: 주가 ${cand.price.currentPrice.toLocaleString()}원 > 종목한도 ${effectiveMaxPos.toLocaleString()}원 또는 현금부족 → 매수불가`, { component: 'TRACK_B' });
         continue;
       }
     }

@@ -154,11 +154,12 @@ export async function getPatternFeedback(fp: EntryFingerprint): Promise<PatternF
     } else if (winRate >= 0.55) {
       scoreAdj = Math.round(5 * dataBias);
       reason = `양호 패턴(${(winRate * 100).toFixed(0)}%, ${data.length}건) → +${scoreAdj}`;
-    } else if (winRate <= 0.25 && data.length >= 5) {
-      scoreAdj = Math.round(-15 * dataBias);
+    } else if (winRate <= 0.25 && data.length >= 8) {
+      // 8건 이상에서만 강한 페널티 (5건은 샘플 부족), 캡 -10 (기존 -15 → 스파이럴 방지)
+      scoreAdj = Math.round(Math.max(-10, -10 * dataBias));
       reason = `위험 패턴(${(winRate * 100).toFixed(0)}%, ${data.length}건) → ${scoreAdj}`;
     } else if (winRate <= 0.35) {
-      scoreAdj = Math.round(-8 * dataBias);
+      scoreAdj = Math.round(Math.max(-6, -6 * dataBias));
       reason = `저승률 패턴(${(winRate * 100).toFixed(0)}%, ${data.length}건) → ${scoreAdj}`;
     } else {
       reason = `보통 패턴(${(winRate * 100).toFixed(0)}%, ${data.length}건)`;

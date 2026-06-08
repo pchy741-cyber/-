@@ -8,6 +8,7 @@
 import { logger } from '../../../utils/logger.js';
 import { winRateSummary } from '../../../analysis/win-rate.js';
 import { getOverride } from '../../ai-overrides.js';
+import { config } from '../../../config/index.js';
 import type { EntryInput, EntryVerdict } from './types.js';
 
 /** 진입 사유 문자열 생성 */
@@ -34,16 +35,17 @@ export function tryRegimeRouterEntry(input: EntryInput): EntryVerdict {
 
   if (!regimeRoute.routed || mode === 'SCALPING') return { action: 'CONTINUE' };
 
-  // AI 점수 필수
-  if (!aiScore || aiScore === 0) {
+  // AI 점수 체크: Gemini OFF면 기술점수만으로 진입 허용
+  const hasAI = aiScore && aiScore > 0;
+  if (!hasAI && config.geminiEnabled) {
     logger.info(`  🚫 ${stockCode}: 레짐라우터 AI없음 → 차단 (score=${tech.score})`, { component: 'TRACK_B' });
-    return { action: 'CONTINUE' }; // 아래 AI 필수 게이트에서 최종 차단
+    return { action: 'CONTINUE' };
   }
 
-  // v4: routeMinScore 55→60 (카테고리Cap 시스템에서 60 = 최소 3/4 카테고리 양수)
   const routeMinScore = 60;
   const routeEffectiveScore = tech.score + candleBonus + structBonus;
-  if (routeEffectiveScore >= routeMinScore && aiScore >= buyThreshold) {
+  const aiOk = hasAI ? aiScore >= buyThreshold : !config.geminiEnabled; // Gemini OFF → AI 조건 면제
+  if (routeEffectiveScore >= routeMinScore && aiOk) {
     logger.info(`  ✅ ${stockCode}: 레짐라우터 진입 [${regimeRoute.reason}] score=${routeEffectiveScore} AI=${aiScore}`, { component: 'TRACK_B' });
     return { action: 'BUY', reason: `레짐라우터: ${regimeRoute.reason}` };
   }
@@ -79,16 +81,20 @@ export function tryFinalEntry(input: EntryInput): EntryVerdict {
   const { stockCode, aiScore, buyThreshold, scoring, winRates } = input;
   const { effectiveTechScore, minTechScore, priorityBonus, candleBonus } = scoring;
 
-  // AI 필수 게이트
-  if (!aiScore || !Number.isFinite(aiScore) || aiScore === 0) {
+  // AI 게이트: Gemini ON → AI 필수, Gemini OFF → 기술지표 단독 매매 허용
+  const hasAI = aiScore && Number.isFinite(aiScore) && aiScore > 0;
+
+  if (!hasAI && config.geminiEnabled) {
+    // Gemini 활성 상태인데 AI 점수 없음 → 차단 (정상: AI가 아직 미산출)
     logger.info(`  🚫 ${stockCode}: AI 점수 없음 → 매수 차단 (tech=${effectiveTechScore})`, { component: 'TRACK_B' });
     return { action: 'SKIP', reason: 'AI 없음' };
   }
 
-  // v4: 꽁돈 경로 폐지 — AI 고점수만으로 기술분석 부족 보완 불가
-  // 이전: AI>=88~93이면 tech 낮아도 진입 → 승률 저하 원인
-  // 변경: 반드시 tech>=minTechScore(55) AND AI>=buyThreshold 동시 충족
-  const v4MinTechScore = Math.max(minTechScore, 55);  // 최소 55 보장
+  // Gemini OFF + AI 없음 → 기술지표만으로 판단 (임계값 대폭 상향 — 75점 이상만 진입)
+  const techOnlyMode = !hasAI && !config.geminiEnabled;
+  const v4MinTechScore = techOnlyMode
+    ? Math.max(minTechScore, 75)   // AI없이 기술지표 단독: 75점 이상 (60→75 강화, 블라인드 진입 방지)
+    : Math.max(minTechScore, 55);  // AI 병행 시: 55점 이상
 
   if (effectiveTechScore >= v4MinTechScore) {
     const entryReason = buildEntryReason(input);
@@ -97,7 +103,8 @@ export function tryFinalEntry(input: EntryInput): EntryVerdict {
       priorityBonus > 0 ? `+${priorityBonus}테마` : '',
       candleBonus > 0 ? `+${candleBonus}캔들` : '',
     ].filter(Boolean).join('');
-    logger.info(`  ✅ ${stockCode}: 기술=${effectiveTechScore}점(>=${v4MinTechScore}) AI=${aiScore} [${entryReason}] RSI=${input.tech.rsi14.toFixed(0)} vol=${input.tech.volumeRatio.toFixed(2)}x → 매수 후보${bonusStr}${wrInfo}`, { component: 'TRACK_B' });
+    const aiStr = hasAI ? `AI=${aiScore}` : 'AI=OFF(기술단독)';
+    logger.info(`  ✅ ${stockCode}: 기술=${effectiveTechScore}점(>=${v4MinTechScore}) ${aiStr} [${entryReason}] RSI=${input.tech.rsi14.toFixed(0)} vol=${input.tech.volumeRatio.toFixed(2)}x → 매수 후보${bonusStr}${wrInfo}`, { component: 'TRACK_B' });
     return { action: 'BUY', reason: entryReason };
   }
 

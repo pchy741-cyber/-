@@ -126,8 +126,8 @@ settingsRoutes.put('/strategy', async (c) => {
     gemini_prompt: body.gemini_prompt ?? '',
     gpt_prompt: body.gpt_prompt ?? '',
     claude_prompt: body.claude_prompt ?? '',
-    // UI 입력값이 constants 최솟값 미달이면 constants 우선 (동적모드에서는 사실상 무시됨)
-    buy_threshold: body.buy_threshold != null ? Math.max(body.buy_threshold, modeBase.buyThreshold) : modeBase.buyThreshold,
+    // UI 입력값 허용 (최소 50, 최대 99)
+    buy_threshold: body.buy_threshold != null ? Math.max(Math.min(body.buy_threshold, 99), 50) : modeBase.buyThreshold,
     stop_loss_pct: body.stop_loss_pct != null ? Math.min(body.stop_loss_pct, modeBase.stopLossPct) : modeBase.stopLossPct,
     take_profit_pct: body.take_profit_pct != null ? Math.max(body.take_profit_pct, modeBase.takeProfitPct) : modeBase.takeProfitPct,
     strategy_document: body.strategy_document ?? '',
@@ -151,35 +151,31 @@ settingsRoutes.put('/strategy', async (c) => {
   }
 
   try {
-    // UPDATE 우선 (기존 활성 전략 덮어쓰기) → 없으면 INSERT
+    // ── 통합 설정: CEO 대시보드에서 변경 시 paper/live 모두 동일하게 적용 ──
     const isPaper = baseIsPaper;
+    const setParams = [strategyData.mode, strategyData.notebooklm_prompt, strategyData.gemini_prompt,
+       strategyData.gpt_prompt, strategyData.claude_prompt, strategyData.buy_threshold,
+       strategyData.stop_loss_pct, strategyData.take_profit_pct,
+       strategyData.strategy_document, strategyData.risk_prompt, strategyData.use_dynamic_tpsl,
+       strategyData.ai_scoring_mode,
+       strategyData.ensemble_config ? JSON.stringify(strategyData.ensemble_config) : null];
     const { rowCount } = await getPool().query(
       `UPDATE strategy_config
        SET mode=$1, notebooklm_prompt=$2, gemini_prompt=$3, gpt_prompt=$4, claude_prompt=$5,
            buy_threshold=$6, stop_loss_pct=$7, take_profit_pct=$8, strategy_document=$9, risk_prompt=$10,
-           use_dynamic_tpsl=$11, ai_scoring_mode=$13,
-           ensemble_config=COALESCE($14::jsonb, ensemble_config),
+           use_dynamic_tpsl=$11, ai_scoring_mode=$12,
+           ensemble_config=COALESCE($13::jsonb, ensemble_config),
            updated_at=NOW()
-       WHERE is_active = true AND is_paper = $12`,
-      [strategyData.mode, strategyData.notebooklm_prompt, strategyData.gemini_prompt,
-       strategyData.gpt_prompt, strategyData.claude_prompt, strategyData.buy_threshold,
-       strategyData.stop_loss_pct, strategyData.take_profit_pct,
-       strategyData.strategy_document, strategyData.risk_prompt, strategyData.use_dynamic_tpsl, isPaper,
-       strategyData.ai_scoring_mode,
-       strategyData.ensemble_config ? JSON.stringify(strategyData.ensemble_config) : null],
+       WHERE is_active = true`,
+      setParams,
     );
 
     if ((rowCount ?? 0) === 0) {
-      // 활성 전략이 없으면 새로 INSERT
+      // 활성 전략이 없으면 현재 모드로 INSERT
       await getPool().query(
         `INSERT INTO strategy_config (mode, is_active, notebooklm_prompt, gemini_prompt, gpt_prompt, claude_prompt, buy_threshold, stop_loss_pct, take_profit_pct, strategy_document, risk_prompt, use_dynamic_tpsl, is_paper, ai_scoring_mode, ensemble_config)
          VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, COALESCE($14::jsonb, '{"weights":{"gemini":0.30,"gpt":0.35,"claude":0.20,"rss":0.15},"strategy":"weighted_avg","minModels":2}'::jsonb))`,
-        [strategyData.mode, strategyData.notebooklm_prompt, strategyData.gemini_prompt,
-         strategyData.gpt_prompt, strategyData.claude_prompt, strategyData.buy_threshold,
-         strategyData.stop_loss_pct, strategyData.take_profit_pct,
-         strategyData.strategy_document, strategyData.risk_prompt, strategyData.use_dynamic_tpsl, isPaper,
-         strategyData.ai_scoring_mode,
-         strategyData.ensemble_config ? JSON.stringify(strategyData.ensemble_config) : null],
+        [...setParams.slice(0, 11), isPaper, ...setParams.slice(11)],
       );
     }
 
@@ -188,9 +184,9 @@ settingsRoutes.put('/strategy', async (c) => {
       [isPaper],
     );
     const diff = buildStrategyDiff(prevStrategy, strategyData);
-    await logSystem('INFO', 'STRATEGY_AUDIT', `전략 변경: ${diff}`, { prev: prevStrategy, next: strategyData }).catch(() => {});
-    logger.info(`📋 전략 변경 감사: ${diff}`, { component: 'SETTINGS' });
-    invalidateDashboardCache(); // 모드 변경 즉시 캐시 무효화 → 프론트엔드 즉시 반영
+    await logSystem('INFO', 'STRATEGY_AUDIT', `전략 변경 (통합): ${diff}`, { prev: prevStrategy, next: strategyData }).catch(() => {});
+    logger.info(`📋 전략 변경 감사 (통합): ${diff}`, { component: 'SETTINGS' });
+    invalidateDashboardCache();
     return c.json(rows[0]);
   } catch (err: any) {
     // DB 실패 시 인메모리 폴백 — 경고 포함
@@ -731,9 +727,21 @@ settingsRoutes.post('/trading-mode', async (c) => {
 
 // ── 투자비율 설정 (국내/미국 비율 + 섹터 한도) ──
 const ALLOC_DEFAULTS = {
-  kr_pct: 70, us_pct: 30,
+  kr_pct: 30, us_pct: 70,
   sector_semiconductor: 30, sector_bio: 20, sector_defense: 25, sector_finance: 20, sector_etc: 30,
   trailing_stop_pct: 5,
+};
+
+// 설정 필드별 연결 상태 — 프론트엔드에서 "미연결" 경고 표시용
+const SETTINGS_META = {
+  kr_pct: { connected: true, desc: '국내 비중 — risk-engine, overseas-job, cross-market-rotation에서 사용' },
+  us_pct: { connected: true, desc: '미국 비중 — overseas-job, cross-market-rotation에서 사용' },
+  trailing_stop_pct: { connected: true, desc: '트레일링 스탑 — risk-guard에서 사용' },
+  sector_semiconductor: { connected: false, desc: '반도체 섹터 한도 — 미연결 (risk-guard는 종목수 기반 하드코딩 사용)' },
+  sector_bio: { connected: false, desc: '바이오 섹터 한도 — 미연결' },
+  sector_defense: { connected: false, desc: '방산 섹터 한도 — 미연결' },
+  sector_finance: { connected: false, desc: '금융 섹터 한도 — 미연결' },
+  sector_etc: { connected: false, desc: '기타 섹터 한도 — 미연결' },
 };
 
 settingsRoutes.get('/portfolio/allocation', async (c) => {
@@ -743,21 +751,21 @@ settingsRoutes.get('/portfolio/allocation', async (c) => {
     if (rows.length === 0) {
       const { rows: ins } = await getPool().query(
         `INSERT INTO portfolio_allocation_config (kr_pct, us_pct, sector_semiconductor, sector_bio, sector_defense, sector_finance, sector_etc, trailing_stop_pct, is_paper)
-         VALUES (70, 30, 30, 20, 25, 20, 30, 5, $1) RETURNING *`,
+         VALUES (30, 70, 30, 20, 25, 20, 30, 5, $1) RETURNING *`,
         [isPaper],
       );
-      return c.json(ins[0]);
+      return c.json({ ...ins[0], _settingsMeta: SETTINGS_META });
     }
-    return c.json(rows[0]);
+    return c.json({ ...rows[0], _settingsMeta: SETTINGS_META });
   } catch (err: any) {
-    return c.json(ALLOC_DEFAULTS);
+    return c.json({ ...ALLOC_DEFAULTS, _settingsMeta: SETTINGS_META });
   }
 });
 
 settingsRoutes.put('/portfolio/allocation', async (c) => {
   const body = await c.req.json();
-  const kr = Math.max(0, Math.min(100, Number(body.kr_pct ?? 70)));
-  const us = Math.max(0, Math.min(100, Number(body.us_pct ?? 30)));
+  const kr = Math.max(0, Math.min(100, Number(body.kr_pct ?? 30)));
+  const us = Math.max(0, Math.min(100, Number(body.us_pct ?? 70)));
   if (Math.abs(kr + us - 100) > 1) return c.json({ error: `국내+미국 합계가 100%여야 합니다 (현재 ${kr + us}%)` }, 400);
 
   const semi = Math.max(0, Math.min(100, Number(body.sector_semiconductor ?? 30)));

@@ -204,6 +204,35 @@ export async function detectMarketRegime(): Promise<MarketRegime> {
 }
 
 /**
+ * 장세 한글 종합 한마디 — 프론트엔드 뉴스탭 표시용
+ */
+export function generateMarketSummaryKorean(regime: MarketRegime): string {
+  const moodKr: Record<string, string> = {
+    BULLISH: '상승장', NEUTRAL: '보합장', BEARISH: '하락장', PANIC: '공황장',
+  };
+  const mood = moodKr[regime.regime] || '보합장';
+  const factors: string[] = [];
+
+  if (regime.foreignNetBuy > 500) factors.push('외국인 매수세 강함');
+  else if (regime.foreignNetBuy < -500) factors.push('외국인 매도세 지속');
+
+  if (regime.vix >= 25) factors.push('변동성 높은 불안한 장세');
+  else if (regime.vix > 0 && regime.vix <= 18) factors.push('변동성 낮아 안정적');
+
+  if (regime.consecutiveDays >= 3) factors.push(`${regime.consecutiveDays}일 연속 상승 중`);
+  else if (regime.consecutiveDays <= -3) factors.push(`${Math.abs(regime.consecutiveDays)}일 연속 하락 중`);
+
+  if (regime.fearGreed >= 70) factors.push('탐욕 구간 진입');
+  else if (regime.fearGreed > 0 && regime.fearGreed <= 30) factors.push('공포 구간');
+
+  if (regime.kospiChange >= 1.0) factors.push(`KOSPI +${regime.kospiChange.toFixed(1)}%`);
+  else if (regime.kospiChange <= -1.0) factors.push(`KOSPI ${regime.kospiChange.toFixed(1)}%`);
+
+  const factorStr = factors.length > 0 ? ` ${factors.join(', ')}.` : '';
+  return `오늘은 ${mood} 분위기입니다 (스코어 ${regime.score >= 0 ? '+' : ''}${regime.score}).${factorStr}`;
+}
+
+/**
  * 장세 감지 → 전략 자동 전환
  */
 export async function autoSwitchStrategy(): Promise<void> {

@@ -534,12 +534,19 @@ futuresRoutes.post('/feature-flags/:key/toggle', async (c) => {
   try {
     const key = c.req.param('key');
     const body = await c.req.json<{ enabled: boolean }>();
-    await getPool().query(
+    const { rowCount } = await getPool().query(
       'UPDATE feature_flags SET enabled = $1, updated_at = NOW() WHERE key = $2',
       [body.enabled, key]
     );
-    _flagCache = null; // 캐시 무효화
-    logger.info(`기능 플래그 ${key} = ${body.enabled}`, { component: 'SETTINGS' });
+    if (!rowCount || rowCount === 0) {
+      return c.json({ error: `Feature flag '${key}' not found` }, 404);
+    }
+    _flagCache = null;
+    try {
+      const { invalidateDashboardCache } = await import('../../cache/dashboard-cache.js');
+      invalidateDashboardCache();
+    } catch { /* 캐시 모듈 없으면 무시 */ }
+    logger.info(`✅ 기능 플래그 ${key} = ${body.enabled}`, { component: 'SETTINGS' });
     return c.json({ ok: true, key, enabled: body.enabled });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);

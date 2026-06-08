@@ -168,7 +168,7 @@ function SettingsView({ strategy, setStrategy, secrets, killSwitch, toggleKill, 
 
   const setField = async (field: string, val: string | number | boolean) => {
     const body = { ...buildBody(), [field]: val };
-    try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify(body) }); setStrategy(u); toast?.('설정 저장됨', 'ok'); } catch { toast?.('설정 저장 실패', 'err'); }
+    try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify(body) }); setStrategy(u); toast?.('설정 저장됨', 'ok'); } catch (err: unknown) { toast?.((err instanceof Error && err.message) ? err.message : '설정 저장 실패', 'err'); }
   };
 
   const saveStrategy = async () => {

@@ -70,11 +70,15 @@ export async function getDividendSchedule(params?: {
   }
 }
 
-/** 해외주식 거래내역에서 배당금 수령 추출 */
+/** 해외주식 거래내역에서 배당금 수령 추출 (Live 전용 — Paper 모드는 KIS TR 미지원) */
 export async function getDividendReceipts(params?: {
   startDate?: string;
   endDate?: string;
 }): Promise<Array<{ stockCode: string; amount: number; tax: number; netAmount: number; date: string; currency: string }>> {
+  // CTOS4001R은 실전전용 TR — Paper 모드에서 호출 시 "모의투자 TR 이 아닙니다" 에러
+  if (config.isPaper) {
+    return [];
+  }
   try {
     const now = new Date();
     const start = params?.startDate || new Date(now.getTime() - 365 * 24 * 60 * 60_000).toISOString().slice(0, 10).replace(/-/g, '');

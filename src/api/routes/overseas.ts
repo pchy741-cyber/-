@@ -691,6 +691,8 @@ overseasRoutes.post('/overseas/sell', async (c) => {
           `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
            VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','paper','OVERSEAS',$5,$6)`,
           [stock_code, qty, fillPrice, orderNo, reason, avgPrice]);
+        // 부분매도 후 quantity ≤ 0 된 zombie 행 정리
+        await client.query('DELETE FROM overseas_holdings WHERE quantity <= 0');
       });
       logger.info(`[OverseasSell] ${stock_code} ${qty}주 @$${fillPrice} (야간감시 모의)`, { component: 'OVERSEAS' });
       cacheSet('overseas:dashboard:paper', null as any, 0);
@@ -714,13 +716,15 @@ overseasRoutes.post('/overseas/sell', async (c) => {
         await client.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [stock_code, exchange, isPaper]);
         await client.query('DELETE FROM overseas_state WHERE key = ANY($1)', [positionStateKeys(stock_code)]);
       } else {
-        await client.query('UPDATE overseas_holdings SET quantity = quantity - $3 WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [stock_code, exchange, qty, isPaper]);
+        await client.query('UPDATE overseas_holdings SET quantity = quantity - $3 WHERE stock_code = $1 AND exchange = $2 AND is_paper = $4', [stock_code, exchange, qty, isPaper]);
       }
       // Live 현금: KIS 동기화로 반영 (USD→KRW 단위 오염 방지)
       await client.query(
         `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
          VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','live','OVERSEAS',$5,$6)`,
         [stock_code, qty, fillPrice, result.orderNo ?? '', reason, avgPrice]);
+      // 부분매도 후 quantity ≤ 0 된 zombie 행 정리
+      await client.query('DELETE FROM overseas_holdings WHERE quantity <= 0');
     });
     // KIS 동기화: 실제 주문가능금액으로 현금 갱신
     const { reconcileCashWithKIS } = await import('../../scheduler/overseas/kis-sync.js');

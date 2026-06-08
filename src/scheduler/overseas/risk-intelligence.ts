@@ -205,31 +205,31 @@ export function getPartialTpStages(sector: string): PartialTpStage[] {
   const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
   const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
 
-  // 조기 수익확정 강화 — 작은 수익이라도 확보 (되돌림 시 수익 증발 방지)
+  // 부분익절: 노이즈 스킵 — 1단계 트리거 상향 (일간 변동 범위 밖에서만 확정)
   if (isHighBeta) {
     return [
-      { stage: 1, triggerPct: 2.0, sellRatio: 0.15 },  // +2% → 15% 조기 확보
-      { stage: 2, triggerPct: 4.0, sellRatio: 0.15 },
-      { stage: 3, triggerPct: 7.0, sellRatio: 0.20 },
-      { stage: 4, triggerPct: 12.0, sellRatio: 0.20 },
-      { stage: 5, triggerPct: 20.0, sellRatio: 0.25 },
+      { stage: 1, triggerPct: 3.5, sellRatio: 0.15 },  // +3.5% → 15% (기존 2.0%, 고베타 일간 변동 2-3%)
+      { stage: 2, triggerPct: 6.0, sellRatio: 0.15 },
+      { stage: 3, triggerPct: 10.0, sellRatio: 0.20 },
+      { stage: 4, triggerPct: 15.0, sellRatio: 0.20 },
+      { stage: 5, triggerPct: 22.0, sellRatio: 0.25 },
     ];
   }
   if (isDefense) {
     return [
-      { stage: 1, triggerPct: 1.5, sellRatio: 0.20 },  // 방어주: 성장 느림, +1.5%에 20% 확보
-      { stage: 2, triggerPct: 3.0, sellRatio: 0.20 },
-      { stage: 3, triggerPct: 5.0, sellRatio: 0.25 },
-      { stage: 4, triggerPct: 8.0, sellRatio: 0.25 },
+      { stage: 1, triggerPct: 2.5, sellRatio: 0.20 },  // +2.5% (기존 1.5%, 방어주 일간 변동 0.5-1.5%)
+      { stage: 2, triggerPct: 4.0, sellRatio: 0.20 },
+      { stage: 3, triggerPct: 6.0, sellRatio: 0.25 },
+      { stage: 4, triggerPct: 9.0, sellRatio: 0.25 },
     ];
   }
   // 일반 종목
   return [
-    { stage: 1, triggerPct: 1.5, sellRatio: 0.15 },   // +1.5% → 15% 수익확정
-    { stage: 2, triggerPct: 3.5, sellRatio: 0.15 },   // +3.5% → 추가 15%
-    { stage: 3, triggerPct: 6.0, sellRatio: 0.20 },   // +6.0% → 추가 20% (누적 50%)
-    { stage: 4, triggerPct: 10.0, sellRatio: 0.20 },
-    { stage: 5, triggerPct: 15.0, sellRatio: 0.25 },
+    { stage: 1, triggerPct: 3.0, sellRatio: 0.15 },   // +3.0% (기존 1.5%, 일간 노이즈 1-2% 스킵)
+    { stage: 2, triggerPct: 5.0, sellRatio: 0.15 },   // +5.0% → 추가 15%
+    { stage: 3, triggerPct: 8.0, sellRatio: 0.20 },   // +8.0% → 추가 20% (누적 50%)
+    { stage: 4, triggerPct: 12.0, sellRatio: 0.20 },
+    { stage: 5, triggerPct: 18.0, sellRatio: 0.25 },
   ];
 }
 

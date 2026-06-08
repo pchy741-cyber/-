@@ -143,15 +143,18 @@ export class RiskEngine {
 
     // 총자산 = 순자산(주식평가 + 현금 - 미수금) — totalEvalAmount만 쓰면 현금 미포함 버그
     const totalAssets = balance.netAsset ?? ((balance.totalEvalAmount ?? 0) + Math.max(0, balance.orderableCash ?? 0));
+    // fail-closed: 총자산 0 이하면 잔고 조회 실패 → 매수 차단 (글로벌 한도 폴백 제거)
+    if (totalAssets <= 0) {
+      logger.warn(`⚠️ 총자산 0원 — 잔고 조회 실패 가능성, 매수 차단 (fail-closed)`, { component: 'RISK' });
+      return { approved: false, reason: '총자산 0원 — 잔고 조회 실패 가능성, 매수 차단 (fail-closed)' };
+    }
     // Hard Cap: Paper 40% / Live 25% — 소자산은 집중 허용
     const liveCapRatio = 0.25;
     const paperCapRatio = config.paperRisk.positionCapRatio;
     const baseCapRatio = isPaper ? paperCapRatio : liveCapRatio;
     const canDiv3 = totalAssets * baseCapRatio >= 30_000;
     const capRatio = !canDiv3 ? 0.50 : baseCapRatio;
-    const dynamicLimit = totalAssets > 0
-      ? Math.min(Math.round(totalAssets * capRatio), config.risk.maxPositionKrw)
-      : config.risk.maxPositionKrw;
+    const dynamicLimit = Math.min(Math.round(totalAssets * capRatio), config.risk.maxPositionKrw);
 
     if (totalAfter > dynamicLimit) {
       const capPct = Math.round(capRatio * 100);
@@ -303,7 +306,7 @@ export class RiskEngine {
         const totalInvested = domesticInvested + osInvestedKrw;
         if (totalInvested > 0 && osInvestedKrw > 0) {  // 해외 투자 없으면 비율 체크 불필요
           const { rows: allocRows } = await getPool().query('SELECT kr_pct FROM portfolio_allocation_config WHERE is_paper = $1 LIMIT 1', [getCtxIsPaper()]);
-          const targetKrPct = Number(allocRows[0]?.kr_pct ?? 70);
+          const targetKrPct = Number(allocRows[0]?.kr_pct ?? 30);
           const currentKrPct = (domesticInvested / totalInvested) * 100;
           if (currentKrPct > targetKrPct * 1.15) {
             return {

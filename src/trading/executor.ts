@@ -85,7 +85,8 @@ export class TradeExecutor {
     // 분당 1회 중복 주문 가드 (같은 종목 같은 분에 매수/매도 2번 방지)
     const minuteKey = this._minuteKey(stock_code, action);
     if (this._recentOrderKeys.has(minuteKey)) {
-      logger.warn(`⏳ 분당 중복 주문 차단: ${action} ${stock_code} (이미 이 분에 처리됨)`, { component: 'EXECUTOR' });
+      const dupModeTag = getCtxIsPaper() ? '🧪PAPER' : '💰LIVE';
+      logger.warn(`⏳ [${dupModeTag}] 분당 중복 주문 차단: ${action} ${stock_code} (이미 이 분에 처리됨)`, { component: 'EXECUTOR' });
       return;
     }
     this._recentOrderKeys.add(minuteKey);
@@ -98,7 +99,8 @@ export class TradeExecutor {
     }
 
     try {
-      logger.info(`▶ 실행: ${action} ${stock_code} x${quantity}`, { component: 'EXECUTOR' });
+      const modeTag = getCtxIsPaper() ? '🧪PAPER' : '💰LIVE';
+      logger.info(`▶ [${modeTag}] 실행: ${action} ${stock_code} x${quantity}`, { component: 'EXECUTOR' });
 
       // per-decision 모드 오버라이드 (BOTTOM_FISHING 등)
       const effectiveMode = (decision.strategy_mode && decision.strategy_mode in STRATEGY_PARAMS)
@@ -204,7 +206,8 @@ export class TradeExecutor {
     const params = STRATEGY_PARAMS[mode];
     let gatedQuantity = quantity;
     if (skipGates) {
-      logger.info(`⏭️ 게이트 생략 (${mode === 'BOTTOM_FISHING' ? '바닥낚시' : 'ETF파킹'}): ${stockCode} → 직접 주문`, { component: 'EXECUTOR' });
+      const skipModeTag = getCtxIsPaper() ? '🧪PAPER' : '💰LIVE';
+      logger.info(`⏭️ [${skipModeTag}] 게이트 생략 (${mode === 'BOTTOM_FISHING' ? '바닥낚시' : 'ETF파킹'}): ${stockCode} → 직접 주문`, { component: 'EXECUTOR' });
     } else
     try {
       const candles = await getDailyChart(stockCode, 65).catch(() => []);
@@ -308,6 +311,7 @@ export class TradeExecutor {
       price: priceType === 'LIMIT' ? limitPrice : smartBuyPrice,
       triggerSource: triggerSource ?? 'TRACK_B',
       aiReasoning: reasoning,
+      isPaper: isPaperSnapshot,
     });
 
     if (!result.success) {
@@ -484,6 +488,7 @@ export class TradeExecutor {
       chainId: chain.id,
       triggerSource: 'TRACK_B',
       aiReasoning: reasoning,
+      isPaper: isPaperSnapshot,
     });
 
     if (result.success) {
@@ -508,6 +513,7 @@ export class TradeExecutor {
    * 부분 익절
    */
   private async executePartialSell(stockCode: string, quantity: number, reasoning: string): Promise<void> {
+    const isPaperSnapshot = getCtxIsPaper();
     const chain = await chainManager.findOpenChain(stockCode);
     if (!chain) return;
 
@@ -538,6 +544,7 @@ export class TradeExecutor {
       chainId: chain.id,
       triggerSource: 'TRACK_B',
       aiReasoning: reasoning,
+      isPaper: isPaperSnapshot,
     });
 
     if (result.success) {
@@ -574,22 +581,22 @@ export class TradeExecutor {
    * 전량 청산 (손절/강제)
    */
   private async executeClose(stockCode: string, reasoning: string, action: string): Promise<void> {
+    const isPaperSnapshot = getCtxIsPaper();
     const chain = await chainManager.findOpenChain(stockCode);
     if (!chain || chain.total_quantity === 0) return;
 
-    // 스마트 매도: 일반 SELL → bid1 지정가, FORCE_CLOSE → 시장가 (확실한 체결 우선)
+    // 스마트 매도: SELL/FORCE_CLOSE 모두 bid1 지정가 시도 → 실패 시 시장가 폴백
+    // FORCE_CLOSE도 bid1이면 즉시 체결 가능 (이미 매수자 존재), 시장가 대비 ~0.05% 슬리피지 절감
     let smartSellPrice: number | undefined;
-    if (action !== 'FORCE_CLOSE') {
-      try {
-        const { getOrderbook } = await import('../kis/market.js');
-        const book = await getOrderbook(stockCode);
-        const bid1 = book[0]?.bidPrice ?? 0;
-        if (bid1 > 0) {
-          smartSellPrice = bid1;
-          logger.info(`💰 스마트 매도: ${stockCode} bid1=${bid1.toLocaleString()} → 지정가`, { component: 'EXECUTOR' });
-        }
-      } catch { /* 호가 조회 실패 → 시장가 폴백 */ }
-    }
+    try {
+      const { getOrderbook } = await import('../kis/market.js');
+      const book = await getOrderbook(stockCode);
+      const bid1 = book[0]?.bidPrice ?? 0;
+      if (bid1 > 0) {
+        smartSellPrice = bid1;
+        logger.info(`💰 스마트 매도: ${stockCode} bid1=${bid1.toLocaleString()} → 지정가 (${action})`, { component: 'EXECUTOR' });
+      }
+    } catch { /* 호가 조회 실패 → 시장가 폴백 */ }
 
     const result = await this.executeOrder({
       stockCode,
@@ -599,6 +606,7 @@ export class TradeExecutor {
       chainId: chain.id,
       triggerSource: 'TRACK_B',
       aiReasoning: reasoning,
+      isPaper: isPaperSnapshot,
     });
 
     if (result.success) {
@@ -656,7 +664,7 @@ export class TradeExecutor {
     }
   }
 
-  /** 실제 주문 실행 (Paper / Live 분기) — getCtxIsPaper() 컨텍스트에 따라 라우팅 */
+  /** 실제 주문 실행 (Paper / Live 분기) — isPaper 스냅샷을 명시적으로 전달 (AsyncLocalStorage 교차오염 방지) */
   private async executeOrder(params: {
     stockCode: string;
     side: 'BUY' | 'SELL';
@@ -665,8 +673,10 @@ export class TradeExecutor {
     chainId?: string;
     triggerSource?: string;
     aiReasoning?: string;
+    isPaper?: boolean;
   }): Promise<OrderResult> {
-    if (getCtxIsPaper()) {
+    const isPaper = params.isPaper ?? getCtxIsPaper();
+    if (isPaper) {
       return paperTradeOrder(params);
     }
 
@@ -701,7 +711,7 @@ export class TradeExecutor {
         filled_quantity: 0,
         filled_price: null,
         status: result.success ? 'PENDING' : 'FAILED',
-        trading_mode: getCtxIsPaper() ? 'paper' : 'live',
+        trading_mode: isPaper ? 'paper' : 'live',
         trigger_source: params.triggerSource ?? null,
         ai_reasoning: params.aiReasoning ?? null,
       });
