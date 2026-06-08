@@ -324,23 +324,14 @@ export async function reconcileCashWithKIS(): Promise<void> {
   try {
     let kisKrw: number | null = null;
 
-    // 1차: psamount API — KRW 필드 직접 사용 (FX 변환 없이 정확)
+    // 1차: psamount API — ord_psbl_frcr_amt(실제 USD 주문가능) 우선 사용
+    // frcr_ord_psbl_amt1(통합증거금 이론최대)은 예수금과 비슷하여 실제 주문가능과 괴리
     const buyable = await getOverseasBuyableAmount();
-    if (buyable?.krw != null && buyable.krw > 0) {
-      kisKrw = buyable.krw;
-      logger.info(`💱 통합증거금: psamount KRW 직접 사용 ₩${kisKrw.toLocaleString()}`, { component: 'OVERSEAS' });
-    }
-
-    // 2차: psamount maxUsd(통합증거금) → KRW 변환 (KRW 필드 없는 경우)
-    if (kisKrw === null && buyable != null) {
-      const bestUsd = buyable.maxUsd > 0 ? buyable.maxUsd : buyable.usd;
-      if (bestUsd > 0) {
-        // KIS 환율 우선, 없으면 외부 환율
-        const rate = buyable.exrt > 0 ? buyable.exrt : await fetchExchangeRate();
-        if (rate > 0) {
-          kisKrw = bestUsd * rate;
-          logger.info(`💱 psamount USD→KRW 변환: $${bestUsd.toFixed(2)} × ${rate.toFixed(0)} = ₩${kisKrw.toFixed(0)}`, { component: 'OVERSEAS' });
-        }
+    if (buyable != null && buyable.usd > 0) {
+      const rate = buyable.exrt > 0 ? buyable.exrt : await fetchExchangeRate();
+      if (rate > 0) {
+        kisKrw = buyable.usd * rate;
+        logger.info(`💱 해외현금: ord_psbl_frcr_amt=$${buyable.usd.toFixed(2)} × ${rate.toFixed(0)} = ₩${kisKrw.toFixed(0)} (maxUsd=$${buyable.maxUsd.toFixed(2)})`, { component: 'OVERSEAS' });
       }
     }
 

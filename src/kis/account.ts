@@ -109,7 +109,7 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
       ORD_UNPR: '0',         // 0 = 시장가 기준
       ORD_DVSN: '01',        // 시장가
       CMA_EVLU_AMT_ICLD_YN: 'N',
-      OVRS_ICLD_YN: 'N',
+      OVRS_ICLD_YN: 'Y',
     },
   }).catch((e: unknown) => {
     logger.warn(`⚠️ 매수가능조회(TTTC8908R) 실패 — 잔고 폴백 사용: ${e instanceof Error ? e.message : e}`, { component: 'BALANCE' });
