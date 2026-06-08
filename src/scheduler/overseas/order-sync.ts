@@ -203,6 +203,9 @@ export async function getLossCooldownStocks(isPaper?: boolean): Promise<Set<stri
         AND trading_mode = $1
         AND status = 'FILLED'
         AND created_at >= NOW() - INTERVAL '24 hours'
+        AND ai_reasoning NOT LIKE '%집중도 캡%'
+        AND ai_reasoning NOT LIKE '%집중캡%'
+        AND ai_reasoning NOT LIKE '%강제 분산%'
         AND (
           ai_reasoning LIKE '%손절%'
           OR ai_reasoning LIKE '%stopLoss%'
@@ -232,6 +235,9 @@ export async function getRecentLossStocks(isPaper?: boolean): Promise<Set<string
         AND status = 'FILLED'
         AND created_at >= NOW() - INTERVAL '7 days'
         AND created_at < NOW() - INTERVAL '24 hours'
+        AND ai_reasoning NOT LIKE '%집중도 캡%'
+        AND ai_reasoning NOT LIKE '%집중캡%'
+        AND ai_reasoning NOT LIKE '%강제 분산%'
         AND (
           ai_reasoning LIKE '%손절%'
           OR ai_reasoning LIKE '%stopLoss%'

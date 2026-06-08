@@ -827,10 +827,17 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         if (qtyBySizing === 0 && positionSize >= target.price.currentPrice * 0.99) {
           qtyBySizing = 1; // 1주 가격 ±1% 내면 수수료 무시하고 매수
         }
-        const fullQty = Math.min(qtyBySizing, qtyBy1PctRule > 0 ? qtyBy1PctRule : qtyBySizing);
+        // 집중캡 사전 체크: 매수 후 25% 초과 방지 (매수→즉시매도 루프 방어)
+        const existingHolding = updatedHoldings.get(target.code);
+        const existingQty = existingHolding?.qty ?? 0;
+        const CONC_CAP_PCT = 0.25;
+        const maxQtyByConc = portfolioValue > 0
+          ? Math.max(0, Math.floor((portfolioValue * CONC_CAP_PCT) / priceWithFee) - existingQty)
+          : Infinity;
+        const fullQty = Math.min(qtyBySizing, qtyBy1PctRule > 0 ? qtyBy1PctRule : qtyBySizing, maxQtyByConc);
 
         if (fullQty <= 0) {
-          logger.info(`🔧 ${target.code}: fullQty=0 → SKIP (sizing=${qtyBySizing} risk=${qtyBy1PctRule} price=$${target.price.currentPrice.toFixed(2)} posSize=$${positionSize.toFixed(0)})`, { component: 'OVERSEAS' });
+          logger.info(`🔧 ${target.code}: fullQty=0 → SKIP (sizing=${qtyBySizing} risk=${qtyBy1PctRule} conc=${maxQtyByConc} price=$${target.price.currentPrice.toFixed(2)} posSize=$${positionSize.toFixed(0)})`, { component: 'OVERSEAS' });
           continue;
         }
 
