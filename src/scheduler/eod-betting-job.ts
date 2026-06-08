@@ -30,7 +30,12 @@ const MIN_TRADE_VALUE_EOK = 1000;    // 거래대금 최소 1,000억원
 const CANDLE_TOP_PCT = 0.80;          // 캔들 상단 20% (0.80 이상)
 const YESTERDAY_SURGE_PCT = 5.0;      // 전일 +5% 이상이면 재탕 종목 제외
 const MAX_STOCKS = 12;                // 최대 12종목 (CRASH: 4, CORRECTION: 8)
-const POSITION_SIZE_PCT = 0.12;       // 시드의 12%/포지션
+
+// ── 황금비율 기반 동적 포지션 사이징 (고정 12% 폐지) ──
+// 전체 EOD 베팅 한도: 포트폴리오의 PHI 비율 → 종목 수로 균등 분할
+const PHI_TOTAL_NORMAL = 0.382;   // 38.2% — 정상 장세 총 EOD 한도
+const PHI_TOTAL_CAUTION = 0.236;  // 23.6% — 하락 경계 시 축소
+const PHI_TOTAL_STRESS  = 0.146;  // 14.6% — 스트레스 장세 최소
 
 // ── 하락장 방어 ──
 const KOSPI_DROP_BLOCK_PCT = -2.0;    // KOSPI -2% 이상 하락 → 종가베팅 차단
@@ -218,17 +223,29 @@ export async function runEodBettingJob(): Promise<void> {
       .sort((a, b) => b.tradeValueEok - a.tradeValueEok)
       .slice(0, eodMaxStocks);
 
-    // ── STEP 5: 포지션 사이징 ── (캐시 무효화 → 최신 잔고로 정확한 사이징)
+    // ── STEP 5: 황금비율 동적 포지션 사이징 ── (캐시 무효화 → 최신 잔고로 정확한 사이징)
     if (!isPaper) invalidateBalanceCache();
     const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
     const totalAssets = balance.netAsset || (balance.orderableCash + balance.totalEvalAmount);
-    const positionKrw = Math.floor(totalAssets * POSITION_SIZE_PCT);
+
+    // 황금비율: 총 EOD 배팅 한도 (레짐 연동)
+    const phiTotal = eodMaxStocks <= 4 ? PHI_TOTAL_STRESS     // CRASH/심각 하락 → 14.6%
+      : eodMaxStocks <= 8 ? PHI_TOTAL_CAUTION                 // CORRECTION/경계 → 23.6%
+      : PHI_TOTAL_NORMAL;                                      // 정상 → 38.2%
+    const totalEodBudget = totalAssets * phiTotal;
+    const positionKrw = Math.floor(totalEodBudget / top.length); // 균등 분할
+
+    logger.info(`🎰 사이징: 총자산=${totalAssets.toLocaleString()}원 한도=${phiTotal * 100}%(${Math.round(totalEodBudget).toLocaleString()}원) ${top.length}종목 → ${positionKrw.toLocaleString()}원/종목 ${isPaper ? 'PAPER' : 'LIVE'}`, { component: 'EOD_BETTING' });
+
+    // 현금 가드: 주문가능 현금의 90% 이내
+    const cashCap = Math.floor(balance.orderableCash * 0.90 / top.length);
+    const effectivePositionKrw = Math.min(positionKrw, cashCap);
 
     // 최소 포지션 가드: 총자산 대비 3% 미만이면 잔고 계산 오류로 간주
     const MIN_POSITION_KRW = 200_000; // 최소 20만원 (5만원 매수 방지)
-    if (positionKrw < MIN_POSITION_KRW) {
-      logger.warn(`🎰 종가베팅: 포지션 ${positionKrw.toLocaleString()}원 < 최소 ${MIN_POSITION_KRW.toLocaleString()}원 → 잔고 재확인 필요`, { component: 'EOD_BETTING' });
-      logger.warn(`  💰 잔고 디버그: netAsset=${balance.netAsset?.toLocaleString()} orderable=${balance.orderableCash?.toLocaleString()} eval=${balance.totalEvalAmount?.toLocaleString()} totalAssets=${totalAssets.toLocaleString()}`, { component: 'EOD_BETTING' });
+    if (effectivePositionKrw < MIN_POSITION_KRW) {
+      logger.warn(`🎰 종가베팅: 포지션 ${effectivePositionKrw.toLocaleString()}원 < 최소 ${MIN_POSITION_KRW.toLocaleString()}원 → 잔고 재확인 필요`, { component: 'EOD_BETTING' });
+      logger.warn(`  💰 잔고 디버그: netAsset=${balance.netAsset?.toLocaleString()} orderable=${balance.orderableCash?.toLocaleString()} eval=${balance.totalEvalAmount?.toLocaleString()} totalAssets=${totalAssets.toLocaleString()} phiTotal=${phiTotal}`, { component: 'EOD_BETTING' });
       return;
     }
 
@@ -236,7 +253,7 @@ export async function runEodBettingJob(): Promise<void> {
     const buyDecisions: TradeDecision[] = [];
 
     for (const cand of top) {
-      const qty = Math.floor(positionKrw / cand.price.currentPrice);
+      const qty = Math.floor(effectivePositionKrw / cand.price.currentPrice);
       if (qty <= 0) continue;
 
       buyDecisions.push({
