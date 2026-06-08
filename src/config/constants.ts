@@ -562,7 +562,7 @@ export function getOverseasDynamic(portfolioUsd: number, isPaper = false) {
   const tier = isPaper
     ? (p < 2000 ? 'micro' : p < 10000 ? 'small' : 'large')
     : _lastTier;
-  const posPct = tier === 'micro' ? 0.40
+  const posPct = tier === 'micro' ? 0.25
     : tier === 'small' ? 0.25
     : 0.18;
   const holdDays = tier === 'micro' ? 14

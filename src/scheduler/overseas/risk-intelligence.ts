@@ -320,8 +320,8 @@ export function calcDynamicTpSl(params: {
   const aiSlAdj = aiAction === 'SELL' && aiConfidence >= 0.80 ? -1.0 : 0;
   const scoreSlAdj = aiScore != null && aiScore >= 85 ? 0.5 : 0;
 
-  // TP 바닥 현실화: 기존 15~25%는 도달률 극히 낮아 사실상 익절 불가 → 8~12%
-  const tpFloor = isHighBeta ? 12.0 : isMediumBeta ? 10.0 : isDefense ? 8.0 : 10.0;
+  // TP 바닥 현실화: 8~12% → 5~8% (소규모 포트폴리오에서도 익절 실행 가능)
+  const tpFloor = isHighBeta ? 8.0 : isMediumBeta ? 6.0 : isDefense ? 5.0 : 6.0;
   const tpCeil = isHighBeta ? 40.0 : isMediumBeta ? 35.0 : isDefense ? 25.0 : 35.0;
   const tpPct = Math.min(tpCeil, Math.max(tpFloor, baseTp + momentumExt + overboughtCut + aiTpBonus + scoreTpBonus + vixTpAdj));
   let slPct = Math.max(isHighBeta ? 5.0 : 2.5, baseSl + aiSlAdj + scoreSlAdj);
