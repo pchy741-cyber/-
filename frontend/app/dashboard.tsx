@@ -36,7 +36,7 @@ export default function Dashboard() {
     const h = now.getHours(), m = now.getMinutes(), mins = h * 60 + m;
     const day = now.getDay();
     // 국내장: 평일 09:00~15:30 → KR, 그 외 → US
-    return (day >= 1 && day <= 5 && mins >= 540 && mins < 930) ? 'KR' : 'US';
+    return (day >= 1 && day <= 5 && mins >= 540 && mins <= 930) ? 'KR' : 'US';
   });
 
   const data = useDashboardData();

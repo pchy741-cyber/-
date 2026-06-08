@@ -170,7 +170,7 @@ export function useDashboardData() {
       (r.flags || []).forEach((f) => { map[f.key] = f.enabled; });
       setFeatureFlags(map);
     }).catch(() => {});
-  }, [viewMode]);
+  }, []);
 
   // 초기 로드 + 폴링
   useEffect(() => {
