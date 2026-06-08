@@ -999,7 +999,14 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
 export async function runOverseasDual(): Promise<void> {
   // 주말 가드: 토 09:00 ~ 월 06:00 KST = 전 세계 시장 휴장 → DB 접근 차단 (비용 절약)
   const { isWeekendClosed } = await import('../utils/holidays.js');
-  if (isWeekendClosed()) return;
+  const { getKSTNow } = await import('../utils/time.js');
+  if (isWeekendClosed()) {
+    const kst = getKSTNow();
+    logger.info(`🌙 주말 휴장 스킵 (KST day=${kst.getUTCDay()} h=${kst.getUTCHours()})`, { component: 'OVERSEAS' });
+    return;
+  }
+
+  logger.info('🇺🇸 runOverseasDual 시작 (paper→live)', { component: 'OVERSEAS' });
 
   // AsyncLocalStorage로 격리 — 전역 오버라이드 없이 paper/live 독립 실행
   await runWithMode(true, async () => {
@@ -1007,7 +1014,10 @@ export async function runOverseasDual(): Promise<void> {
     catch (e) { logger.error(`해외주식 paper 실패: ${e}`, { component: 'OVERSEAS' }); }
   });
 
-  if (paperOnly) return; // 자율학습 모드: live 완전 스킵
+  if (paperOnly) {
+    logger.info('🇺🇸 paperOnly 모드 — live 스킵', { component: 'OVERSEAS' });
+    return;
+  }
   await runWithMode(false, async () => {
     try { await runOverseasJob({ isPaper: false }); }
     catch (e) { logger.error(`해외주식 live 실패: ${e}`, { component: 'OVERSEAS' }); }
