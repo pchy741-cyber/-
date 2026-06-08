@@ -286,12 +286,12 @@ export function calcDynamicTpSl(params: {
   const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
 
   // Trade Tuner 오버라이드가 있으면 base 값 조정
-  // TP 현실화: 소규모 포트폴리오 자본 회전 → 5~8% 도달 가능 목표
+  // TP 현실화: 소규모 포트폴리오 빠른 자본 회전 → 4~6% (모멘텀 추가시 6~8%)
   const tunerTpAdj = tunerOverrides?.tp_base_pct;
   const tunerSlAdj = tunerOverrides?.sl_base_pct;
   const baseTp = tunerTpAdj != null
     ? tunerTpAdj
-    : isHighBeta ? 8.0 : isMediumBeta ? 6.0 : isDefense ? 5.0 : 6.0;
+    : isHighBeta ? 6.0 : isMediumBeta ? 4.0 : isDefense ? 4.0 : 4.0;
   const baseSl = tunerSlAdj != null
     ? tunerSlAdj
     : isHighBeta ? 6.0 : isMediumBeta ? 4.0 : isDefense ? 3.0 : 4.0;
@@ -320,8 +320,8 @@ export function calcDynamicTpSl(params: {
   const aiSlAdj = aiAction === 'SELL' && aiConfidence >= 0.80 ? -1.0 : 0;
   const scoreSlAdj = aiScore != null && aiScore >= 85 ? 0.5 : 0;
 
-  // TP 바닥: base와 동일 레벨 (보너스만 올릴 수 있게)
-  const tpFloor = isHighBeta ? 6.0 : isMediumBeta ? 5.0 : isDefense ? 4.0 : 5.0;
+  // TP 바닥: base와 동일 (보너스만 올릴 수 있게)
+  const tpFloor = isHighBeta ? 6.0 : isMediumBeta ? 4.0 : isDefense ? 4.0 : 4.0;
   const tpCeil = isHighBeta ? 40.0 : isMediumBeta ? 35.0 : isDefense ? 25.0 : 35.0;
   const tpPct = Math.min(tpCeil, Math.max(tpFloor, baseTp + momentumExt + overboughtCut + aiTpBonus + scoreTpBonus + vixTpAdj));
   let slPct = Math.max(isHighBeta ? 5.0 : 2.5, baseSl + aiSlAdj + scoreSlAdj);
