@@ -167,7 +167,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
     })
     // 8. 섹터 그룹 / 단일 섹터 집중도
     .filter(t => {
-      const groupCheck = checkSectorGroupLimit({ targetSector: t.sector, sectorValues, portfolioValue });
+      const groupCheck = checkSectorGroupLimit({ targetSector: t.sector, sectorValues, portfolioValue, holdingCount: updatedHoldings.size });
       if (groupCheck?.blocked) { logger.info(`📊 섹터 그룹 초과: ${t.code}(${groupCheck.group}) ${groupCheck.currentPct.toFixed(0)}% ≥ ${groupCheck.limitPct}%`, { component: 'OVERSEAS' }); return false; }
       const sectorValue = sectorValues.get(t.sector) ?? 0;
       const sectorWeight = portfolioValue > 0 ? sectorValue / portfolioValue : 0;

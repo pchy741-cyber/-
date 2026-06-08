@@ -130,16 +130,21 @@ export function checkSectorGroupLimit(params: {
   targetSector: string;
   sectorValues: Map<string, number>;
   portfolioValue: number;
+  holdingCount?: number;
 }): { blocked: boolean; group: string; currentPct: number; limitPct: number } | null {
-  const { targetSector, sectorValues, portfolioValue } = params;
+  const { targetSector, sectorValues, portfolioValue, holdingCount } = params;
   if (portfolioValue <= 0) return null;
 
   for (const [, group] of Object.entries(SECTOR_GROUP_LIMITS)) {
     if (!group.sectors.includes(targetSector)) continue;
     const groupValue = group.sectors.reduce((sum, s) => sum + (sectorValues.get(s) ?? 0), 0);
     const groupPct = (groupValue / portfolioValue) * 100;
-    if (groupPct >= group.maxWeightPct) {
-      return { blocked: true, group: group.label, currentPct: groupPct, limitPct: group.maxWeightPct };
+    // 소형 포트폴리오(4종목 이하): 섹터캡 +15% 완화 (2종목에 1종목 65%는 자연스러움)
+    const effectiveLimit = (holdingCount ?? 99) <= 4
+      ? group.maxWeightPct + 15
+      : group.maxWeightPct;
+    if (groupPct >= effectiveLimit) {
+      return { blocked: true, group: group.label, currentPct: groupPct, limitPct: effectiveLimit };
     }
   }
   return null;
