@@ -384,11 +384,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 개선: 메가캡 종목은 threshold-8, 일반도 threshold-5 여유 (buy-filters에서 정밀 판단)
     const preFilterThreshold = STRATEGY_PARAMS[effectiveMode].buyThreshold - 5;
     // BREAKOUT 모드: AI 점수 불필요 — 기술적 돌파 신호 기반이므로 preFilter 무조건 통과
+    const confFloor = ctxIsPaper ? 0.45 : 0.60;
     let hasBuyCandidates = effectiveMode === 'BREAKOUT' || scores.some(
       (s) => {
         const megaCapReduction = MEGA_CAP_PRIORITY_CODES.has(s.stock_code)
           ? MEGA_CAP_PRIORITY_CODES.get(s.stock_code)!.thresholdReduction : 0;
-        return (s.composite_score ?? 0) >= (preFilterThreshold - megaCapReduction) && (s.confidence ?? 0) >= 0.60;
+        return (s.composite_score ?? 0) >= (preFilterThreshold - megaCapReduction) && (s.confidence ?? 0) >= confFloor;
       },
     );
     const hasOpenPositions = openChains.some((c) => Number(c.total_quantity) > 0);
@@ -411,7 +412,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
             hasBuyCandidates = scores.some(
               (s) => {
                 const mcr = MEGA_CAP_PRIORITY_CODES.has(s.stock_code) ? MEGA_CAP_PRIORITY_CODES.get(s.stock_code)!.thresholdReduction : 0;
-                return (s.composite_score ?? 0) >= (preFilterThreshold - mcr) && (s.confidence ?? 0) >= 0.60;
+                return (s.composite_score ?? 0) >= (preFilterThreshold - mcr) && (s.confidence ?? 0) >= confFloor;
               },
             );
           }
