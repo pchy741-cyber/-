@@ -294,8 +294,9 @@ export async function getWinRateFeedback(isPaper: boolean): Promise<WinRateFeedb
     const lowVolWinRate = lowVol.length >= 3 ? lowVol.filter(t => t.win).length / lowVol.length : null;
 
     let thresholdBonus = 0;
-    if (winRate < 0.25) thresholdBonus = 5;
-    else if (winRate < 0.35) thresholdBonus = 3;
+    if (winRate < 0.20) thresholdBonus = 10;      // Kelly 완전 음수 구간 → 매우 강한 제한
+    else if (winRate < 0.25) thresholdBonus = 7;  // Kelly 음수 가능성 높음 (was 5)
+    else if (winRate < 0.35) thresholdBonus = 4;  // 부진 구간 (was 3)
     else if (winRate < 0.45) thresholdBonus = 2;
 
     const requirePullback = pbWinRate !== null && noPbWinRate !== null

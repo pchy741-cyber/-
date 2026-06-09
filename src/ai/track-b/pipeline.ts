@@ -555,7 +555,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     if (blockNewBuys) {
       const blockReason =
         isPastClose ? '마감시간(14:50+)' :
-        isLunchBan ? `마의시간대(10:20~13:00) 신규매수금지` :
+        isLunchBan ? `마의시간대(10:30~12:30) 신규매수금지` :
         dailyLoss.blocked ? `일일손실초과(${dailyLoss.dailyPnlPct.toFixed(1)}%)` :
         kospiRegime.flashCrash ? 'KOSPI급락서킷브레이커' :
         (kospiRegime.penalty >= 2 && kospiRegime.todayDown) ? `하락장매수차단(penalty${kospiRegime.penalty}+당일하락) [top=${topScore}점]` :
