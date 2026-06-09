@@ -159,23 +159,31 @@ async function getPaperPositions(): Promise<Position[]> {
 }
 
 export async function getPaperBalance(): Promise<AccountBalance> {
-  await restorePaperState();
   const state = await loadPaperLedger();
   paperRealizedPnl = state.realizedPnl;
+
+  // 매수원가 기준 (시가평가액이 아님) — 현금은 체결시에만 변동, 주가 변동과 무관
+  const holdingsCost = Object.values(state.holdings)
+    .filter(h => h.qty > 0)
+    .reduce((s, h) => s + h.totalCost, 0);
+  paperCashUsed = holdingsCost;
+
+  const cash = Math.max(0, Math.round(PAPER_INITIAL_CAPITAL + paperRealizedPnl - holdingsCost));
+
+  // 시가평가액은 UI 표시 전용 (현금 계산과 분리)
   const positions = await getPaperPositions();
-  const invested = positions.reduce((s, p) => s + p.evalAmount, 0);
-  paperCashUsed = invested;
-  const cash = Math.max(0, Math.round(PAPER_INITIAL_CAPITAL + paperRealizedPnl - invested));
+  const marketValue = positions.reduce((s, p) => s + p.evalAmount, 0);
+
   return {
     totalDeposit: cash,
     d2Deposit: cash,
     orderableCash: cash,
     cashSource: 'd2_deposit',
-    totalEvalAmount: invested,
+    totalEvalAmount: marketValue,
     totalProfitLoss: paperRealizedPnl,
     totalProfitLossPct: PAPER_INITIAL_CAPITAL > 0 ? (paperRealizedPnl / PAPER_INITIAL_CAPITAL) * 100 : 0,
-    netAsset: cash + invested,
-    purchaseCost: invested,
+    netAsset: cash + marketValue,
+    purchaseCost: Math.round(holdingsCost),
     positions,
   };
 }

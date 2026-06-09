@@ -42,8 +42,9 @@ const PARK_TRIGGER_RATIO = 0.30;
 /** 파킹 최소 금액: 총자산의 2% (절대 최소 1만원은 소자산 폴백) */
 const MIN_PARK_RATIO = 0.02;
 
-/** 파킹 최대 비중: 총자산의 30% (단일 종목이므로 집중 제한) */
-const MAX_PARK_RATIO = 0.30;
+/** 파킹 최대 비중: 총자산의 30% live / 40% paper (positionCapRatio와 정렬) */
+const MAX_PARK_RATIO_LIVE = 0.30;
+const MAX_PARK_RATIO_PAPER = 0.40;
 
 /** 최소 보유 시간 (ms) — 2시간 (v1: 30분 → 삼성 3회 회전 재발 방지) */
 const MIN_PARK_HOLD_MS = 2 * 60 * 60_000;
@@ -104,15 +105,27 @@ export interface CashManagerParams {
 }
 
 // ── 동적 파킹 비율 산출: 현금잔고 + 타이밍 품질 → 총자산 대비 % ──
-function getDynamicParkPct(cashRatio: number, timingScore: number): number {
-  // 현금 비율 기반 베이스 (현금 많을수록 더 많이 파킹)
+// Paper: 황금비율 — 유휴현금 적극 배치 (학습 가속, 모의자금이므로 리스크 허용 상향)
+// Live: 보수적 — 실자금 보호 우선
+function getDynamicParkPct(cashRatio: number, timingScore: number, isPaper = false): number {
   let basePct: number;
-  if (cashRatio >= 0.80) basePct = 0.22;       // 80%+ → 총자산 22% 파킹
-  else if (cashRatio >= 0.65) basePct = 0.16;   // 65-80% → 16%
-  else if (cashRatio >= 0.50) basePct = 0.12;   // 50-65% → 12%
-  else if (cashRatio >= 0.40) basePct = 0.08;   // 40-50% → 8%
-  else if (cashRatio >= PARK_TRIGGER_RATIO) basePct = 0.05; // 30-40% → 5%
-  else return 0;
+  if (isPaper) {
+    // Paper 황금비율: 현금 많을수록 공격적으로 배치
+    if (cashRatio >= 0.80) basePct = 0.35;       // 80%+ → 35%
+    else if (cashRatio >= 0.65) basePct = 0.28;   // 65-80% → 28%
+    else if (cashRatio >= 0.50) basePct = 0.20;   // 50-65% → 20%
+    else if (cashRatio >= 0.40) basePct = 0.13;   // 40-50% → 13%
+    else if (cashRatio >= PARK_TRIGGER_RATIO) basePct = 0.08; // 30-40% → 8%
+    else return 0;
+  } else {
+    // Live 보수적 유지
+    if (cashRatio >= 0.80) basePct = 0.22;
+    else if (cashRatio >= 0.65) basePct = 0.16;
+    else if (cashRatio >= 0.50) basePct = 0.12;
+    else if (cashRatio >= 0.40) basePct = 0.08;
+    else if (cashRatio >= PARK_TRIGGER_RATIO) basePct = 0.05;
+    else return 0;
+  }
 
   // 타이밍 품질 승수 (0.6x ~ 1.4x)
   const timingMult = timingScore >= 35 ? 1.4
@@ -121,8 +134,9 @@ function getDynamicParkPct(cashRatio: number, timingScore: number): number {
     : timingScore >= 0 ? 0.8
     : 0.6;
 
+  const maxRatio = isPaper ? MAX_PARK_RATIO_PAPER : MAX_PARK_RATIO_LIVE;
   const rawPct = basePct * timingMult;
-  return Math.min(rawPct, MAX_PARK_RATIO);
+  return Math.min(rawPct, maxRatio);
 }
 
 /**
@@ -270,8 +284,9 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
       }
       return { ...c, price, tech, timingScore };
     })
-    // 당일 급락(-2%+) 종목 제외 (칼잡이 방지), 과열(+5%+) 종목도 제외
-    .filter(c => c.price && c.price.changePct >= -2.0 && c.price.changePct <= 5.0);
+    // 당일 급락 종목 제외 (칼잡이 방지), 과열 종목도 제외
+    // paper는 -3% 허용 (대형주 일시 조정도 파킹 학습 기회)
+    .filter(c => c.price && c.price.changePct >= (isPaper ? -3.0 : -2.0) && c.price.changePct <= 5.0);
 
   // 타이밍 점수 정렬
   const candidates = scored.sort((a, b) => b.timingScore - a.timingScore);
@@ -283,19 +298,21 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
 
   const best = candidates[0];
 
-  // 타이밍 음수면 스킵
-  if (best.timingScore < 0) {
-    logger.info(`💤 파킹 보류 — 타이밍 부적합 (최고=${best.timingScore}점)`, { component: 'CASH_MANAGER' });
+  // 타이밍 점수 하한: live=0, paper=-5 (대형주 소폭 눌림도 파킹 허용)
+  const timingFloor = isPaper ? -5 : 0;
+  if (best.timingScore < timingFloor) {
+    logger.info(`💤 파킹 보류 — 타이밍 부적합 (최고=${best.timingScore}점, 기준=${timingFloor})`, { component: 'CASH_MANAGER' });
     return decisions;
   }
 
-  // ── 동적 파킹 비율 산출 ──
-  const parkPct = getDynamicParkPct(cashRatio, best.timingScore);
+  // ── 동적 파킹 비율 산출 (황금비율) ──
+  const parkPct = getDynamicParkPct(cashRatio, best.timingScore, isPaper);
   if (parkPct <= 0) return decisions;
 
   const targetBudget = totalAssets * parkPct;
-  // 현금의 40% 초과 파킹 금지 (나머지 60%는 자동매매용)
-  const parkBudget = Math.min(targetBudget, orderableCash * 0.40);
+  // 현금 사용 한도: paper=60% (유휴현금 적극 배치), live=40% (나머지 자동매매용)
+  const cashCeilRatio = isPaper ? 0.60 : 0.40;
+  const parkBudget = Math.min(targetBudget, orderableCash * cashCeilRatio);
   if (parkBudget < minParkAmount) return decisions;
 
   const targetPrice = best.price!.currentPrice;
