@@ -129,11 +129,14 @@ export default function HeroPnlCard({
           </div>
         </div>
         <div className="bg-white/[0.04] rounded-xl px-2 sm:px-3 py-2">
-          <div className="text-[9px] text-slate-500 mb-0.5">{(withdrawConfig?.totalReserved ?? 0) > 0 ? '인출예약' : '오늘매매'}</div>
+          <div className="text-[9px] text-slate-500 mb-0.5">{(withdrawConfig?.totalReserved ?? 0) > 0 ? '인출예약' : '총 자산'}</div>
           {(withdrawConfig?.totalReserved ?? 0) > 0 ? (
             <div className="text-sm font-bold text-amber-400 truncate">{mask(fmtWon(withdrawConfig!.totalReserved!))}</div>
           ) : (
-            <div className="text-sm font-bold text-slate-200">{todayTradesLength}<span className="text-[9px] text-slate-500 ml-0.5">건</span></div>
+            <>
+              <div className="text-sm font-bold text-slate-200 truncate">{mask(fmtWon(totalValue))}</div>
+              <div className="text-[9px] text-slate-600 mt-0.5">{todayTradesLength}건 매매</div>
+            </>
           )}
         </div>
       </div>

@@ -44,7 +44,15 @@ export default function SuggestedActionsPanel({
   const actions = suggestedActions ?? [];
   const goal = monthlyGoal;
 
-  if (actions.length === 0 && !goal && !fxImpact) return null;
+  // 아무 데이터도 없으면 → 감시중 idle 상태로 항상 표시 (패널이 사라지면 시스템 상태 파악 불가)
+  if (actions.length === 0 && !goal && !fxImpact) {
+    return (
+      <div className="glass rounded-2xl border border-white/[0.04] px-4 py-3 flex items-center gap-3">
+        <span className="w-2 h-2 rounded-full bg-emerald-500/70 animate-pulse shrink-0" />
+        <span className="text-[11px] text-slate-500">자동매매 감시 중 — 매수 기회 대기 중</span>
+      </div>
+    );
+  }
 
   return (
     <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden">
