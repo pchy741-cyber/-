@@ -145,10 +145,9 @@ export async function setOverride(
     await getPool().query(
       `INSERT INTO ai_overrides (category, key, value, reason, is_paper, expires_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, NOW())
-       ON CONFLICT (key) DO UPDATE SET
+       ON CONFLICT (key, is_paper) DO UPDATE SET
          value = EXCLUDED.value,
          reason = EXCLUDED.reason,
-         is_paper = EXCLUDED.is_paper,
          expires_at = EXCLUDED.expires_at,
          updated_at = NOW()`,
       [category, key, JSON.stringify(value), reason, mode, expiresAt],

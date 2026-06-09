@@ -13,7 +13,7 @@
  * - paper/live 양쪽 독립 실행
  */
 import { getPool, getOpenChains, getLatestScores } from '../db/client.js';
-import { getCtxIsPaper } from '../config/context.js';
+import { getCtxIsPaper, runWithMode } from '../config/context.js';
 import { fetchKospiRegime } from './track-b/market-regime.js';
 import { getWinRateFeedback, getPerformanceMultiplier } from '../automation/portfolio-guard.js';
 import { getStockWinRates } from '../analysis/win-rate.js';
@@ -140,15 +140,18 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
         }
       }
 
-      // 퍼포먼스 멀티플라이어 보정 (단계별 강화)
-      if (perfMultiplier <= 0.5) {
-        targetThreshold = Math.min(95, targetThreshold + 10);
+      // 퍼포먼스 멀티플라이어 보정 — paper 강세장 시 패널티 면제 (적극매매)
+      const skipPerfPenalty = isPaper && regime.boost;
+      if (skipPerfPenalty) {
+        reason += ` + 강세장 paper → 성과 패널티 면제`;
+      } else if (perfMultiplier <= 0.5) {
+        targetThreshold = Math.min(95, targetThreshold + 5);   // A: 10→5
         reason += ` + 성과 심각(×${perfMultiplier.toFixed(2)})`;
       } else if (perfMultiplier < 0.7) {
-        targetThreshold = Math.min(95, targetThreshold + 7);
+        targetThreshold = Math.min(95, targetThreshold + 3);   // A: 7→3
         reason += ` + 성과 부진(×${perfMultiplier.toFixed(2)})`;
       } else if (perfMultiplier < 0.85) {
-        targetThreshold = Math.min(95, targetThreshold + 3);
+        targetThreshold = Math.min(95, targetThreshold + 2);   // A: 3→2
         reason += ` + 성과 방어(×${perfMultiplier.toFixed(2)})`;
       } else if (perfMultiplier > 1.1) {
         targetThreshold = Math.max(55, targetThreshold - 2);
@@ -380,8 +383,8 @@ export async function runAutoPilotDual(): Promise<void> {
   await loadOverridesCache().catch(() => {});
 
   const [paperResult, liveResult] = await Promise.all([
-    runAutoPilot(true),
-    runAutoPilot(false),
+    runWithMode(true, () => runAutoPilot(true)),
+    runWithMode(false, () => runAutoPilot(false)),
   ]);
 
   const totalSet = paperResult.overridesSet + liveResult.overridesSet;
