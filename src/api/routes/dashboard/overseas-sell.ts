@@ -18,7 +18,7 @@ export function registerOverseasSellRoutes(app: Hono) {
     const stockCode = c.req.param('stockCode');
     try {
       const body = await c.req.json().catch(() => ({}));
-      const isPaper: boolean = config.isPaper; // 🔒 서버 설정만 사용
+      const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
       const { rows } = await getPool().query(
         'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0 AND is_paper = $2', [stockCode, isPaper]);
       const holding = rows[0];
@@ -132,7 +132,7 @@ export function registerOverseasSellRoutes(app: Hono) {
     const stockCode = c.req.param('stockCode');
     try {
       const body = await c.req.json().catch(() => ({}));
-      const isPaper: boolean = config.isPaper; // 🔒 서버 설정만 사용
+      const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
       const pfx = isPaper ? 'p_' : 'l_';
       const cashKey = isPaper ? 'cash_paper' : 'cash';
 
@@ -186,7 +186,7 @@ export function registerOverseasSellRoutes(app: Hono) {
   app.post('/sell-overseas-all', async (c) => {
     try {
       const body = await c.req.json().catch(() => ({}));
-      const isPaper: boolean = config.isPaper; // 🔒 서버 설정만 사용
+      const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
       const forceDb: boolean = !!body.force_db;
       const pfx = isPaper ? 'p_' : 'l_';
       const cashKey = isPaper ? 'cash_paper' : 'cash';
