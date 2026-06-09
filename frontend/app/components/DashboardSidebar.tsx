@@ -24,9 +24,9 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
     { id: 'journal', label: '매매일지', icon: '📓' },
     { id: 'watchlist', label: '감시목록', icon: '👁' },
     { id: 'news', label: '뉴스', icon: '📰' },
-    { id: 'dividend', label: '배당', icon: '💰', paperOnly: true },
-    { id: 'futures', label: '선물', icon: '📈', paperOnly: true },
-    { id: 'strategy-lab', label: '전략 Lab', icon: '🧪', paperOnly: true },
+    { id: 'dividend', label: '배당', icon: '💰' },
+    { id: 'futures', label: '선물', icon: '📈' },
+    { id: 'strategy-lab', label: '전략 Lab', icon: '🧪' },
     { id: 'settings', label: '설정', icon: '⚙️' },
   ];
   const navItems = allNavItems.filter(item => !item.paperOnly || isPaper);

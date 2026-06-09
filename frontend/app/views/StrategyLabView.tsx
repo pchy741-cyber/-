@@ -19,6 +19,7 @@ interface Props {
 
 export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [strategies, setStrategies] = useState<StrategyLabOverview[]>([]);
   const [pending, setPending] = useState<StrategyGraduation[]>([]);
   const [history, setHistory] = useState<StrategyGraduation[]>([]);
@@ -29,6 +30,7 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const [ov, ap, ins] = await Promise.all([
         api('/strategy-lab/overview'),
@@ -39,7 +41,11 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
       setPending(ap.pending || []);
       setHistory(ap.history || []);
       setInsights(ins.insights || []);
-    } catch (e: any) { toast(e.message || '로딩 실패', 'err'); }
+    } catch (e: any) {
+      const msg = e.message || '로딩 실패';
+      setError(msg);
+      toast(msg, 'err');
+    }
     setLoading(false);
   }, [toast]);
 
@@ -115,8 +121,28 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
     </div>
   );
 
+  if (error) return (
+    <div className="max-w-5xl mx-auto space-y-4">
+      <div className="rounded-2xl border border-rose-500/20 bg-rose-950/20 p-6 text-center space-y-3">
+        <div className="text-2xl">⚠️</div>
+        <div className="text-sm font-semibold text-rose-400">전략 Lab 로딩 실패</div>
+        <div className="text-xs text-slate-500">{error}</div>
+        <button onClick={() => load()} className="mt-2 px-4 py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] text-xs text-slate-300 transition-colors">
+          다시 시도
+        </button>
+      </div>
+    </div>
+  );
+
   return (
     <div className="space-y-5 max-w-5xl mx-auto">
+      {/* ─── Paper 모드 경고 배너 ─── */}
+      {viewMode === 'paper' && (
+        <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl border border-amber-500/20 bg-amber-950/15 text-amber-400">
+          <span className="text-sm shrink-0">⚠️</span>
+          <span className="text-xs font-medium">연습 모드 보기 중 — 아래 성과는 Paper Trading 결과이며 실전 손익과 다릅니다</span>
+        </div>
+      )}
       {/* ─── Hero Stats Bar ─── */}
       <div className="grid grid-cols-3 gap-3">
         <div className="relative overflow-hidden rounded-2xl border border-white/[0.06] p-4 bg-gradient-to-br from-slate-900/80 to-slate-950/40">

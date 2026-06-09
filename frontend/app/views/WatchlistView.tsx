@@ -56,20 +56,29 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, confirm, 
   const [selectedResult, setSelectedResult] = useState<{ code: string; name: string; market: string } | null>(null);
   const [showDropdown, setShowDropdown] = useState(false);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
 
   const handleSearchInput = (q: string) => {
     setSearchQuery(q);
     setSelectedResult(null);
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchAbortRef.current?.abort();
     if (q.length < 1) { setSearchResults([]); setShowDropdown(false); return; }
     searchTimerRef.current = setTimeout(async () => {
+      const ctrl = new AbortController();
+      searchAbortRef.current = ctrl;
       setSearchLoading(true);
       try {
-        const results = await api(`/search/stock?q=${encodeURIComponent(q)}`);
-        setSearchResults(Array.isArray(results) ? results : []);
-        setShowDropdown(true);
-      } catch { setSearchResults([]); }
-      finally { setSearchLoading(false); }
+        const results = await api(`/search/stock?q=${encodeURIComponent(q)}`, { signal: ctrl.signal });
+        if (!ctrl.signal.aborted) {
+          setSearchResults(Array.isArray(results) ? results : []);
+          setShowDropdown(true);
+        }
+      } catch (e: any) {
+        if (e?.name !== 'AbortError') setSearchResults([]);
+      } finally {
+        if (!ctrl.signal.aborted) setSearchLoading(false);
+      }
     }, 300);
   };
 

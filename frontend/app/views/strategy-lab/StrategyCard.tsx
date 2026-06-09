@@ -31,7 +31,7 @@ export function StrategyCard({ s, expanded, onToggle }: { s: StrategyLabOverview
     Math.min(1, p.totalTrades / c.trades) * 0.25 +
     Math.min(1, p.winRate / c.wr) * 0.25 +
     Math.min(1, p.profitFactor / c.pf) * 0.25 +
-    (p.maxDrawdownPct >= c.mdd ? 1 : Math.max(0, 1 - Math.abs(p.maxDrawdownPct - c.mdd) / Math.abs(c.mdd))) * 0.25
+    (p.maxDrawdownPct >= c.mdd ? 1 : (Math.abs(c.mdd) > 0 ? Math.max(0, 1 - Math.abs(p.maxDrawdownPct - c.mdd) / Math.abs(c.mdd)) : 1)) * 0.25
   ) * 100);
 
   return (

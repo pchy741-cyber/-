@@ -86,15 +86,46 @@ strategyLabRoutes.post('/strategy-lab/approvals/:id/approve', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const reason = (body as any).reason ?? '';
 
-  const { rowCount } = await getPool().query(`
-    UPDATE strategy_graduations
-    SET status = 'APPROVED', decided_by = 'CEO', approval_reason = $1, decided_at = NOW()
-    WHERE id = $2 AND status = 'PENDING'
-  `, [reason, id]);
+  const pool = getPool();
 
-  if (!rowCount) return c.json({ ok: false, error: '유효한 대기 건이 없습니다' }, 404);
-  logger.info(`🎓 CEO 승인: 졸업 #${id}`, { component: 'STRATEGY_LAB' });
-  return c.json({ ok: true });
+  // 승인 대상 졸업 기록 조회 (applied_changes 기록용)
+  const { rows } = await pool.query(
+    `SELECT id, strategy_mode, risk_level, trades, win_rate, profit_factor, mdd, total_pnl_krw
+     FROM strategy_graduations WHERE id = $1 AND status = 'PENDING'`,
+    [id],
+  );
+  if (!rows.length) return c.json({ ok: false, error: '유효한 대기 건이 없습니다' }, 404);
+
+  const grad = rows[0];
+  const appliedChanges = {
+    approvedAt: new Date().toISOString(),
+    approvedBy: 'CEO',
+    reason,
+    strategyMode: grad.strategy_mode,
+    riskLevel: grad.risk_level,
+    promotedStats: {
+      trades: grad.trades,
+      winRate: Number(grad.win_rate),
+      profitFactor: Number(grad.profit_factor),
+      mdd: Number(grad.mdd),
+      totalPnlKrw: Number(grad.total_pnl_krw),
+    },
+  };
+
+  const { rowCount } = await pool.query(`
+    UPDATE strategy_graduations
+    SET status = 'APPROVED', decided_by = 'CEO', approval_reason = $1,
+        decided_at = NOW(), applied_changes = $2
+    WHERE id = $3
+  `, [reason, JSON.stringify(appliedChanges), id]);
+
+  if (!rowCount) return c.json({ ok: false, error: '업데이트 실패' }, 500);
+
+  // 캐시 무효화 — 다음 조회 시 최신 상태 반영
+  cacheSet('api:strategy-lab:overview', null as any, 0);
+
+  logger.info(`🎓 CEO 승인: 졸업 #${id} (${grad.strategy_mode}) → LIVE 전략 반영`, { component: 'STRATEGY_LAB' });
+  return c.json({ ok: true, strategyMode: grad.strategy_mode, appliedChanges });
 });
 
 // ── POST /strategy-lab/approvals/:id/reject ─────────────────────

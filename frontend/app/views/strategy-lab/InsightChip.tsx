@@ -8,9 +8,12 @@ export function InsightChip({ i }: { i: StrategyInsightRow }) {
   const label = STRATEGY_LABELS[i.strategy_mode] || i.strategy_mode;
 
   return (
-    <div className={`inline-flex items-center gap-2 px-3 py-2 rounded-xl border transition-colors hover:bg-white/[0.03] ${
-      i.is_actionable ? 'border-cyan-500/15 bg-cyan-500/[0.03]' : 'border-white/[0.04] bg-white/[0.01]'
-    }`}>
+    <div
+      className={`inline-flex items-center gap-2 px-3 py-2 rounded-xl border transition-colors hover:bg-white/[0.03] ${
+        i.is_actionable ? 'border-cyan-500/15 bg-cyan-500/[0.03]' : 'border-white/[0.08] bg-white/[0.02]'
+      }`}
+      title={i.is_actionable ? undefined : '참고용 인사이트 — AI 추천 기준 미달 (표본 부족 또는 승률 낮음)'}
+    >
       <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${wr > 0.6 ? 'bg-emerald-400' : wr > 0.5 ? 'bg-amber-400' : 'bg-rose-400'}`} />
       <span className="text-[10px] text-slate-200 max-w-[200px] truncate">{i.insight_text}</span>
       <span className={`text-[10px] font-bold ${pc(pnl)}`}>{fmtPct(pnl)}</span>
