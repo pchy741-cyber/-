@@ -586,7 +586,16 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     insights: insightRows.rows,
     defensePark,
 
-    suggestedActions: buildSuggestedActions(overseasHoldings, displayChains, grandTotalValue, actualCash),
+    suggestedActions: (() => {
+      const thisMode = viewIsPaper ? 'paper' : 'live';
+      const otherMode = viewIsPaper ? 'live' : 'paper';
+      const current = buildSuggestedActions(overseasHoldings, displayChains, grandTotalValue, actualCash)
+        .map(a => ({ ...a, mode: thisMode as 'paper' | 'live' }));
+      const otherCache = getDashCache(otherMode) as any;
+      const other = ((otherCache?.data as any)?.suggestedActions ?? [])
+        .map((a: any) => ({ ...a, mode: otherMode as 'paper' | 'live' }));
+      return [...current, ...other].slice(0, 10);
+    })(),
     monthlyGoal: buildMonthlyGoal(grandTotalValue, totalPnl, overseasMarketValueKrw, overseasInvestedKrw),
     fxImpact: buildFxImpact(overseasTotalInvested, overseasMarketValueUsd, FX_RATE),
   };

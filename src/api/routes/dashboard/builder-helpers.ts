@@ -7,6 +7,7 @@ export interface SuggestedAction {
   priority: 'high' | 'medium' | 'low';
   message: string;
   detail?: string;
+  mode?: 'paper' | 'live';
 }
 
 export function buildSuggestedActions(
