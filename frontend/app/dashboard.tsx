@@ -93,6 +93,24 @@ export default function Dashboard() {
     doSwitchMode('paper');
   };
 
+  // 태블릿 화면 꺼짐 방지 (WakeLock)
+  React.useEffect(() => {
+    if (typeof window === 'undefined' || !('wakeLock' in navigator)) return;
+    const isTablet = window.innerWidth >= 600 && navigator.maxTouchPoints > 0;
+    if (!isTablet) return;
+    let lock: WakeLockSentinel | null = null;
+    const acquire = async () => {
+      try { lock = await (navigator as any).wakeLock.request('screen'); } catch {}
+    };
+    acquire();
+    const onVisible = () => { if (document.visibilityState === 'visible') acquire(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      lock?.release().catch(() => {});
+    };
+  }, []);
+
   // DB 기상: 캐시 데이터 없으면 오버레이, 있으면 상단 배너만
   const [dbSyncing, setDbSyncing] = React.useState(false);
   const dbDown = health?.db != null && health.db !== 'ok';

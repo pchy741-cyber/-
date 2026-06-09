@@ -3,6 +3,7 @@
  * - HMAC-SHA256 서명된 세션 쿠키 (httpOnly, Secure, SameSite=Strict)
  * - 타이밍 공격 방지: timingSafeEqual 사용
  * - DASHBOARD_PASSWORD 미설정 시 개발 환경에서만 무조건 통과
+ * - 모바일폰 단일 세션: 새 로그인 시 이전 폰 세션 자동 무효화
  */
 import { createHmac, timingSafeEqual } from 'crypto';
 import type { Context, Next } from 'hono';
@@ -10,6 +11,31 @@ import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 
 const SESSION_COOKIE = 'qops_session';
 const SESSION_MAX_AGE = 60 * 60 * 24 * 7; // 7일
+
+// 모바일폰 단일 세션 레지스트리 (현재 유효한 phone 세션 nonce)
+let _mobileNonce: string | null = null;
+
+export function isMobilePhone(ua: string): boolean {
+  return /iPhone|Android.*Mobile|Windows Phone/i.test(ua) && !/iPad/i.test(ua);
+}
+
+/** 모바일 로그인 시 새 nonce 등록 — 이전 폰 세션 자동 무효화 */
+export function registerMobileSession(nonce: string): void {
+  _mobileNonce = nonce;
+}
+
+/** 토큰에서 nonce(두 번째 페이로드 필드) 추출 */
+export function extractSessionNonce(token: string): string | null {
+  try {
+    const decoded = Buffer.from(token, 'base64url').toString('utf8');
+    const lastDot = decoded.lastIndexOf('.');
+    if (lastDot < 0) return null;
+    const payload = decoded.slice(0, lastDot);
+    return payload.split('.')[1] ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function getSecret(): string {
   return process.env.DASHBOARD_PASSWORD ?? '';
@@ -19,9 +45,11 @@ function signPayload(payload: string, secret: string): string {
   return createHmac('sha256', secret).update(payload).digest('hex');
 }
 
-export function createSessionToken(): string {
+/** nonce 지정 시 재사용 (세션 롤링용), 미지정 시 신규 생성 */
+export function createSessionToken(nonce?: string): string {
   const secret = getSecret();
-  const payload = `${Date.now()}.${Math.random().toString(36).slice(2)}`;
+  const sessionNonce = nonce ?? Math.random().toString(36).slice(2);
+  const payload = `${Date.now()}.${sessionNonce}`;
   const sig = signPayload(payload, secret);
   return Buffer.from(`${payload}.${sig}`).toString('base64url');
 }
@@ -86,6 +114,18 @@ export async function requireAuth(c: Context, next: Next): Promise<Response | vo
 
   const token = getCookie(c, SESSION_COOKIE);
   if (token && verifySessionToken(token)) {
+    const ua = c.req.header('user-agent') ?? '';
+    const nonce = extractSessionNonce(token);
+
+    // 모바일폰 단일 세션 검증: 다른 곳에서 로그인하면 이전 세션 무효화
+    if (isMobilePhone(ua) && nonce && _mobileNonce !== null && _mobileNonce !== nonce) {
+      clearSessionCookie(c);
+      return c.json({ error: '다른 기기에서 로그인됨', redirect: '/login' }, 401);
+    }
+
+    // 세션 갱신: 동일 nonce로 만료 시간 연장 (태블릿 장기 운영 지원)
+    const newToken = createSessionToken(nonce ?? undefined);
+    setSessionCookie(c, newToken);
     return next();
   }
 

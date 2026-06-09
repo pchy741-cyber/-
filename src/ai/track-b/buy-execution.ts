@@ -221,8 +221,9 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
 
   // 현금 여유 확인하면서 매수 결정
   let remainingCash = orderableCash;
-  // SCALPING: 최대 2종목 / SNIPER: 최대 2종목 / 일반: 최대 3종목 (4→3, 소액분산 방지)
-  const maxBuys = mode === 'SCALPING' ? 2 : mode === 'SNIPER' ? 2 : 3;
+  // Paper: 최대 5종목 (데이터 수집 극대화) / SCALPING: 2 / SNIPER: 2 / 일반: 3
+  const ctxPaper = getCtxIsPaper();
+  const maxBuys = ctxPaper ? 5 : (mode === 'SCALPING' ? 2 : mode === 'SNIPER' ? 2 : 3);
   const splitCount = strategyParams.splitCount || 2;
 
   for (const cand of candidates.slice(0, maxBuys)) {

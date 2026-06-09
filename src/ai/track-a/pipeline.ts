@@ -8,6 +8,12 @@ import { type ScoringResult, ScoringResultSchema } from '../../db/models.js';
 import { runGeminiAnalysis } from './gemini.js';
 import { runGeminiScoring } from './gemini-scorer.js';
 import { getStockAccuracyContext } from '../../automation/self-learning.js';
+import { fetchStockDisclosures } from '../../market/krx-disclosure.js';
+import { getKrTrendSignals } from '../../market/google-trends.js';
+import { analyzeNewsWithGroq } from './groq-news.js';
+import { getMacroSignal } from '../../market/macro-signal.js';
+import { getCommunitysentiment } from '../../market/community-sentiment.js';
+import { getKrxOptionsSignal } from '../../market/krx-options.js';
 
 function normalizeStockCode(raw: unknown): string {
   const text = String(raw ?? '').trim().toUpperCase();
@@ -265,6 +271,83 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     // 4-c. 기관/외국인 수급 데이터 주입
     if (investorFlowSection) {
       combinedSources = combinedSources ? `${combinedSources}\n\n${investorFlowSection}` : investorFlowSection;
+    }
+
+    // 4-d / 4-e / 4-f. 시장 인텔리전스 병렬 수집 (실패해도 파이프라인 계속)
+    try {
+      const stockMeta = allStocks.map((s) => ({ stockCode: s.stock_code, companyName: s.stock_name }));
+
+      const [disclosures, trendSignals, groqSentiments, macroResult, communityResult, optionsResult] = await Promise.allSettled([
+        fetchStockDisclosures(stockMeta),   // 4-d. KRX KIND 공시
+        getKrTrendSignals(stockMeta),       // 4-f. Google Trends KR
+        analyzeNewsWithGroq(stockMeta),     // 4-e. Groq 뉴스 감성
+        getMacroSignal(),                   // 4-g. 거시경제 신호 (USD/KRW + Nasdaq + FRED)
+        getCommunitysentiment(stockMeta),   // 4-h. 네이버 토론방 커뮤니티 감성
+        getKrxOptionsSignal(),              // 4-i. KRX 옵션 P/C + VKOSPI
+      ]);
+
+      // 4-d. KRX KIND 공시 섹션
+      if (disclosures.status === 'fulfilled' && disclosures.value.length > 0) {
+        const lines = disclosures.value.map(
+          (d) => `[${d.companyName}(${d.stockCode})] ${d.summary}`,
+        );
+        const section = `## KRX KIND 당일 공시 (호재/악재 분류)\n${lines.join('\n')}`;
+        combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
+        logger.info(`KIND 공시 ${disclosures.value.length}종목 Gemini에 주입`, { component: 'TRACK_A' });
+      }
+
+      // 4-e. Groq 뉴스 감성 섹션
+      if (groqSentiments.status === 'fulfilled' && groqSentiments.value.length > 0) {
+        const lines = groqSentiments.value
+          .filter((g) => Math.abs(g.score) >= 20) // 중립(±20 미만) 제외
+          .map((g) => `${g.companyName}(${g.stockCode}): ${g.score > 0 ? '+' : ''}${g.score}점 — ${g.summary}`);
+        if (lines.length > 0) {
+          const section = `## Groq AI 뉴스 감성 분석 (Google News 기반)\n${lines.join('\n')}`;
+          combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
+          logger.info(`Groq 뉴스 감성 ${lines.length}건 Gemini에 주입`, { component: 'TRACK_A' });
+        }
+      }
+
+      // 4-f. Google Trends 급등 섹션
+      if (trendSignals.status === 'fulfilled' && trendSignals.value.length > 0) {
+        const lines = trendSignals.value.map(
+          (t) => `${t.companyName}(${t.stockCode}): Google Trends KR ${t.rank}위 (검색량 급등)`,
+        );
+        const section = `## Google Trends 한국 검색량 급등 종목\n${lines.join('\n')}`;
+        combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
+        logger.info(`Google Trends ${trendSignals.value.length}종목 Gemini에 주입`, { component: 'TRACK_A' });
+      }
+
+      // 4-g. 거시경제 신호 섹션
+      if (macroResult.status === 'fulfilled') {
+        const macro = macroResult.value;
+        const section = `## 거시경제 신호 (${macro.direction})\n${macro.summary}\n점수 보정: ${macro.scoreAdj > 0 ? '+' : ''}${macro.scoreAdj}점 (전종목 반영)`;
+        combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
+        logger.info(`거시경제 신호 Gemini에 주입: ${macro.direction} (${macro.summary})`, { component: 'TRACK_A' });
+      }
+
+      // 4-h. 커뮤니티 감성 섹션
+      if (communityResult.status === 'fulfilled' && communityResult.value.length > 0) {
+        const meaningful = communityResult.value.filter((c) => Math.abs(c.score) >= 30);
+        if (meaningful.length > 0) {
+          const lines = meaningful.map(
+            (c) => `${c.companyName}(${c.stockCode}): 커뮤니티 ${c.score > 0 ? '+' : ''}${c.score}점 (게시글 ${c.postCount}건)`,
+          );
+          const section = `## 네이버 금융 토론방 커뮤니티 감성\n${lines.join('\n')}`;
+          combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
+          logger.info(`커뮤니티 감성 ${meaningful.length}종목 Gemini에 주입`, { component: 'TRACK_A' });
+        }
+      }
+
+      // 4-i. KRX 옵션 플로우 섹션
+      if (optionsResult.status === 'fulfilled') {
+        const opt = optionsResult.value;
+        const section = `## KRX 옵션 플로우 (기관 선행 지표)\n${opt.summary}\n공포지수(VKOSPI): ${opt.fearLevel} | P/C 비율: ${opt.pcRatio?.toFixed(2) ?? 'N/A'} | 시장 방향: ${opt.direction}`;
+        combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
+        logger.info(`KRX 옵션 신호 Gemini에 주입: ${opt.direction} fearLevel=${opt.fearLevel}`, { component: 'TRACK_A' });
+      }
+    } catch (err) {
+      logger.warn(`시장 인텔리전스 수집 실패 (스킵): ${err}`, { component: 'TRACK_A' });
     }
 
     // 5. 레짐 감지 → 프롬프트 힌트

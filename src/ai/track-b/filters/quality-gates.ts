@@ -4,12 +4,14 @@
  * qVolume, qTrendStrength, qTrendDirection, qRsiTiming, qConfluence, qSignalFlow
  */
 
+import { getCtxIsPaper } from '../../../config/context.js';
 import type { QualityGateInput, GateResult } from './types.js';
 
 export function checkQualityGates(input: QualityGateInput): GateResult {
   const { tech, scoring, mode, aiScore, buyThreshold, megaCap, noAiForStock, feedbackMinVolRatio, curPrice } = input;
   const { adjustedVolRatio, hasBullishCandle, effectiveTechScore, minTechScore,
     isFibSupport, truePullbackPattern, signalData } = scoring;
+  const isPaper = getCtxIsPaper();
 
   // ─ qVolume ─
   const volThreshold = Math.max(
@@ -21,10 +23,10 @@ export function checkQualityGates(input: QualityGateInput): GateResult {
   // ─ qTrendStrength ─
   const qTrendStrength = tech.trendStrength !== 'WEAK' || aiScore >= 80 || !!megaCap;
 
-  // ─ qTrendDirection ─
+  // ─ qTrendDirection ─ (paper: SMA 정렬 요건 면제 — 연습매매 활성화)
   const qTrendDirection = (() => {
-    if (mode === 'SWING' && tech.sma20 < tech.sma60 && aiScore < 85 && tech.rsi14 >= 30) return false;
-    if (mode === 'SWING' && tech.sma5 < tech.sma20 && aiScore < 85 && tech.rsi14 >= 35) return false;
+    if (!isPaper && mode === 'SWING' && tech.sma20 < tech.sma60 && aiScore < 85 && tech.rsi14 >= 30) return false;
+    if (!isPaper && mode === 'SWING' && tech.sma5 < tech.sma20 && aiScore < 85 && tech.rsi14 >= 35) return false;
     if (mode === 'DEFENSE' && curPrice < tech.sma20 && aiScore < 65 && tech.score < 50) return false;
     return true;
   })();
@@ -59,25 +61,28 @@ export function checkQualityGates(input: QualityGateInput): GateResult {
       trend: tech.trendStrength !== 'WEAK',
     };
     const cfCount = Object.values(cf).filter(Boolean).length;
-    // 2026-06: 최소 2개 컨플루언스 필수 (AI 85+도 1개는 허점)
-    const minCf = aiScore >= 90 ? 2 : aiScore >= 70 ? 3 : noAiForStock ? 3 : 3;
+    // paper: 컨플루언스 1개로 충분 (연습매매 활성화), live: 기존 기준 유지
+    const minCf = isPaper ? 1 : aiScore >= 90 ? 2 : aiScore >= 70 ? 3 : noAiForStock ? 3 : 3;
     return cfCount >= minCf;
   })();
 
   // ─ qSignalFlow ─ v6: 외국인+기관 동반 매도 시 하드 차단 (AI 90+ 제외)
-  const qSignalFlow = !signalData.raw ? true : (() => {
+  // paper: 실시간 KIS 시그널 불필요 → 항상 통과 (연습매매 활성화)
+  const qSignalFlow = isPaper ? true : (!signalData.raw ? true : (() => {
     // 외국인+기관 동시 매도 = 기관 컨센서스 매도 → 개인만 매수 중 → 위험
     if (signalData.foreignNetEst < 0 && signalData.instNetEst < 0 && aiScore < 90) return false;
     // 체결강도 < 85 (매도 압도) + 호가 매도벽 → 하방 압력
     if (signalData.intensity > 0 && signalData.intensity < 85 && signalData.bidAskRatio < 0.7) return false;
     return signalData.intensity >= 100 || signalData.foreignNetEst > 0 || signalData.instNetEst > 0 || signalData.foreignBrokerBuy;
-  })();
+  })());
 
   const details = { vol: qVolume, trend: qTrendStrength, dir: qTrendDirection, rsi: qRsiTiming, cf: qConfluence, sig: qSignalFlow };
   const count = Object.values(details).filter(Boolean).length;
   // 2026-06 성과 검토: WR 30.8% → 품질 게이트 최소 2개로 상향 (AI 85+도 1개는 불충분)
   // 기존: AI≥85 → min=1 → 사실상 무필터 → 잘못된 진입 70% → 승률 30.8%
-  const min = buyThreshold >= 85 ? (aiScore >= 92 ? 2 : 3) : aiScore >= 90 ? 2 : aiScore >= 70 ? 3 : 4;
+  // paper: min=2로 고정 (연습매매 활성화 — live 기준 유지로 오염 없음)
+  const liveMin = buyThreshold >= 85 ? (aiScore >= 92 ? 2 : 3) : aiScore >= 90 ? 2 : aiScore >= 70 ? 3 : 4;
+  const min = isPaper ? 2 : liveMin;
 
   return { passed: count >= min, count, min, details };
 }

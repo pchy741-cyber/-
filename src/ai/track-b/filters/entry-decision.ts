@@ -9,6 +9,7 @@ import { logger } from '../../../utils/logger.js';
 import { winRateSummary } from '../../../analysis/win-rate.js';
 import { getOverride } from '../../ai-overrides.js';
 import { config } from '../../../config/index.js';
+import { getCtxIsPaper } from '../../../config/context.js';
 import type { EntryInput, EntryVerdict } from './types.js';
 
 /** 진입 사유 문자열 생성 */
@@ -100,8 +101,8 @@ export function tryFinalEntry(input: EntryInput): EntryVerdict {
   // techOnlyMode: Gemini OFF 또는 전역 AI 탈락(globalNoAi) → 기술지표만으로 판단
   const techOnlyMode = !hasAI && (!config.geminiEnabled || globalNoAi);
   const v4MinTechScore = techOnlyMode
-    ? Math.max(minTechScore, 72)   // AI없이 기술지표 단독: 72점 이상 (블라인드 진입 방지)
-    : Math.max(minTechScore, 55);  // AI 병행 시: 55점 이상
+    ? Math.max(minTechScore, getCtxIsPaper() ? 55 : 72)  // AI없이: Paper=55(연습활성화), Live=72(블라인드방지)
+    : Math.max(minTechScore, 55);                          // AI 병행 시: 55점 이상
 
   if (effectiveTechScore >= v4MinTechScore) {
     const entryReason = buildEntryReason(input);

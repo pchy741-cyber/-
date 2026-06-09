@@ -39,6 +39,7 @@ import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { getConsensusTrend } from '../../market/consensus.js';
 import { analyzeTechnicals } from '../../analysis/indicators.js';
 import { getOverride } from '../ai-overrides.js';
+import { fetchStockDisclosures } from '../../market/krx-disclosure.js';
 
 // DART 캐시 갱신 추적 — paper/live 모드별 분리 (크로스오염 방지)
 const _lastDartRefreshAt = new Map<string, number>();
@@ -87,7 +88,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           getActiveWatchlist(),
           getOpenChains(),
           getActiveStrategy(),
-          getRecentLossStocks(7),
+          getRecentLossStocks(getCtxIsPaper() ? 1 : 7), // Paper: 1일 쿨다운 (7일 → 적극적 데이터 수집)
           getRecentManuallySoldStocks(24),
         ]);
       } catch (dbErr: any) {
@@ -104,7 +105,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
             getActiveWatchlist(),
             getOpenChains(),
             getActiveStrategy(),
-            getRecentLossStocks(7),
+            getRecentLossStocks(getCtxIsPaper() ? 1 : 7), // Paper: 1일 쿨다운
             getRecentManuallySoldStocks(24),
           ]);
         }
@@ -456,6 +457,32 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       logger.info(`🗑️ 잡주 필터 대상(STRONG_SELL): ${[...junkStockCodes].join(', ')}`, { component: 'TRACK_B' });
     }
 
+    // ── KIND 공시 악재 즉각 반응 (신규 매수 차단 + 오픈 포지션 텔레그램 경보) ──
+    try {
+      const stockMeta = watchlist.map((s) => ({ stockCode: s.stock_code, companyName: s.stock_name }));
+      const disclosures = await fetchStockDisclosures(stockMeta);
+      const bearishCodes = disclosures.filter((d) => d.hasBearish).map((d) => d.stockCode);
+
+      if (bearishCodes.length > 0) {
+        // 악재 공시 종목 → 잡주 필터에 추가 (신규 매수 차단)
+        for (const code of bearishCodes) junkStockCodes.add(code);
+        logger.warn(`⚠️ KIND 악재 공시 종목 매수 차단: ${bearishCodes.join(', ')}`, { component: 'KRX_DISCLOSURE' });
+
+        // 오픈 포지션과 겹치면 텔레그램 경보
+        const openCodes = new Set(openChains.map((c) => c.stock_code));
+        const alertCodes = bearishCodes.filter((c) => openCodes.has(c));
+        if (alertCodes.length > 0) {
+          const alertLines = alertCodes.map((code) => {
+            const d = disclosures.find((x) => x.stockCode === code);
+            return `• ${d?.companyName ?? code}(${code}): ${d?.summary ?? '악재 공시 감지'}`;
+          }).join('\n');
+          sendTelegramMessage(`🚨 [KIND 공시 경보] 보유 종목 악재 공시 감지!\n${alertLines}\n\n⚠️ 손절선 도달 전 수동 확인 권장`).catch(() => {});
+        }
+      }
+    } catch (err) {
+      logger.debug(`KIND 공시 Track-B 체크 실패 (스킵): ${err}`, { component: 'KRX_DISCLOSURE' });
+    }
+
     const allocCfg = await import('../../db/client.js')
       .then(m => m.getPool().query('SELECT * FROM portfolio_allocation_config WHERE is_active = true AND is_paper = $1 LIMIT 1', [getCtxIsPaper()]))
       .then(r => r.rows[0] ?? null).catch(() => null);
@@ -532,17 +559,18 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const topScore = scores.reduce((mx, s) => Math.max(mx, s.composite_score ?? 0), 0);
     const hasHighConvictionStock = topScore >= 90;
     const blockNewBuys =
-      isPastClose ||
-      isLunchBan ||
-      dailyLoss.blocked ||
-      kospiRegime.flashCrash ||
-      (kospiRegime.penalty >= 2 && kospiRegime.todayDown && !hasHighConvictionStock) || // v4: 90+ 고확신 → 하락장에도 매수 허용
-      (portfolioStress >= 2 && !hasHighConvictionStock) ||  // 90+ 고확신이면 포트폴리오 스트레스도 우회
-      eodOnlyActive;            // 🎰 연패 EOD-only 모드 → 장중 매수 차단
+      isPastClose ||    // Paper 이미 면제 (line 510)
+      isLunchBan ||     // Paper 이미 면제 (line 517)
+      (!ctxIsPaper && dailyLoss.blocked) ||               // Paper: 일일손실 차단 면제 (데이터 수집 우선)
+      kospiRegime.flashCrash ||                           // 급락 서킷브레이커: Paper도 차단 유지
+      (!ctxIsPaper && kospiRegime.penalty >= 2 && kospiRegime.todayDown && !hasHighConvictionStock) || // Paper: 하락장 면제
+      (!ctxIsPaper && portfolioStress >= 2 && !hasHighConvictionStock) ||  // Paper: 포트스트레스 면제
+      eodOnlyActive;    // 🎰 연패 EOD-only 모드 (Paper는 이미 false 반환)
 
     // EOD 전용 차단: isPastClose/eodOnlyActive 제외 (14:50+ 종가베팅은 허용)
+    // Paper: dailyLoss 면제 (급락 서킷만 유지)
     const blockEodBuys =
-      dailyLoss.blocked ||
+      (!ctxIsPaper && dailyLoss.blocked) ||
       kospiRegime.flashCrash;
 
     // RISK_OFF/하락장: 축소하되 기회 유지 (극공포=역발상 매수 기회)
@@ -576,12 +604,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     if (kospiPenaltyAdj !== 0) {
       logger.info(`📉 KOSPI 레짐 점수 보정: penalty=${kospiRegime.penalty} todayDown=${kospiRegime.todayDown} → 전종목 ${kospiPenaltyAdj}점 감산`, { component: 'TRACK_B' });
     }
-    // confidence 임계값: 0.60 (v3: 0.45→0.60, 약한 시그널 제거 + 승률 향상)
-    // 0.45는 coin-flip 수준 → 0.60으로 상향해 의미 있는 확신만 진입
+    // confidence 임계값: live=0.60 (v3: 0.45→0.60), paper=0.45 (연습매매 활성화)
+    const confMin = getCtxIsPaper() ? 0.45 : 0.60;
     const adjustedScores = scores
       .filter((s: any) => {
         const conf = s.confidence ?? 0;
-        if (conf < 0.60) return false;
+        if (conf < confMin) return false;
         // AI Loop 블랙리스트: Claude Code가 특정 종목 매수 차단
         const aiBlacklist = getOverride<boolean>(`${s.stock_code}_blacklist`);
         if (aiBlacklist) {

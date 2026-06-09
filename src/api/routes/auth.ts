@@ -7,7 +7,7 @@
 import { timingSafeEqual } from 'crypto';
 import { Hono } from 'hono';
 import { getCookie } from 'hono/cookie';
-import { clearSessionCookie, createSessionToken, setSessionCookie, verifySessionToken } from '../middleware/auth.js';
+import { clearSessionCookie, createSessionToken, extractSessionNonce, isMobilePhone, registerMobileSession, setSessionCookie, verifySessionToken } from '../middleware/auth.js';
 import { sleep } from '../../utils/sleep.js';
 
 export const authRoutes = new Hono();
@@ -49,6 +49,14 @@ authRoutes.post('/auth/login', async (c) => {
 
   const token = createSessionToken();
   setSessionCookie(c, token);
+
+  // 모바일폰에서 패스워드 로그인: 이전 폰 세션 무효화
+  const ua = c.req.header('user-agent') ?? '';
+  if (isMobilePhone(ua)) {
+    const nonce = extractSessionNonce(token);
+    if (nonce) registerMobileSession(nonce);
+  }
+
   return c.json({ ok: true });
 });
 
