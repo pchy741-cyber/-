@@ -232,6 +232,17 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 🔔 10:00 — 개장벨 스캘핑 전량 청산 (데이트레이드 원칙, 09:00~09:13 진입분)
+  cron.schedule(
+    '0 10 * * 1-5',
+    () => {
+      import('./force-close-job.js')
+        .then(m => runDomesticDual('개장벨청산', () => m.runOpeningBellForceClose()))
+        .catch(e => logger.error(`개장벨 청산 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 🔔 09:00 개장 즉시 — 기존 Track B도 병행 (SCALPING 모드 자동 강제)
   cron.schedule(
     '0 9 * * 1-5',
@@ -400,7 +411,7 @@ export function startScheduler(): void {
   cron.schedule(
     `${MARKET.FORCE_SELL_MINUTE} ${MARKET.FORCE_SELL_HOUR} * * 1-5`,
     () => {
-      import('./force-close-job.js').then((m) => m.runForceCloseJob()).catch((e) => logger.error(`강제 청산 실패: ${e}`, { component: 'SCHEDULER' }));
+      import('./force-close-job.js').then((m) => runDomesticDual('단타마감청산', () => m.runForceCloseJob())).catch((e) => logger.error(`강제 청산 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -713,10 +724,14 @@ export function startScheduler(): void {
   // 🎯 프리마켓 딥바이 — 미장 오픈 직후 (23:31 KST) 프리마켓 종가 -2% 지정가 대기
   cron.schedule(
     '31 23 * * 1-5',
-    () => {
-      import('./overseas/premarket-dip.js')
-        .then(m => m.runPremarketDipBuy(true))
-        .catch(e => logger.error(`딥바이 실패: ${e}`, { component: 'SCHEDULER' }));
+    async () => {
+      try {
+        const { runPremarketDipBuy } = await import('./overseas/premarket-dip.js');
+        await runPremarketDipBuy(true);  // paper
+        await runPremarketDipBuy(false); // live
+      } catch (e) {
+        logger.error(`딥바이 실패: ${e}`, { component: 'SCHEDULER' });
+      }
     },
     { timezone: MARKET.TIMEZONE },
   );

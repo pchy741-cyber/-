@@ -26,6 +26,7 @@ import { getCtxIsPaper } from '../config/context.js';
 interface WarmCache {
   chartData: Map<string, import('../kis/market.js').DailyCandle[]>;
   geminiScores: Map<string, number>; // stock_code → Gemini 실시간 점수 (0~100)
+  judeojuCodes: Set<string>;         // 전일 거래대금 500억+ 주도주 종목코드
   warmAt: number;
 }
 let _warmCache: WarmCache | null = null;
@@ -151,7 +152,28 @@ JSON만 반환 (다른 텍스트 없이):
     }
     } // end else (sharedScores 없을 때만 Gemini 호출)
 
-    _warmCache = { chartData, geminiScores, warmAt: Date.now() };
+    // 주도주 필터: 전일 거래대금 500억+ (개장 초단타는 유동성 확보 필수)
+    const JUDO_MIN_TRADED = 50_000_000_000; // 500억 KRW
+    const judeojuCodes = new Set<string>();
+    for (const [code, candles] of chartData) {
+      if (candles.length === 0) continue;
+      const last = candles[candles.length - 1];
+      if (Number(last.close) * Number(last.volume) >= JUDO_MIN_TRADED) judeojuCodes.add(code);
+    }
+    if (judeojuCodes.size < 3) {
+      // fallback: top-5 by 거래대금
+      const top5 = [...chartData.entries()]
+        .filter(([, c]) => c.length > 0)
+        .sort(([, a], [, b]) => Number(b[b.length-1].close) * Number(b[b.length-1].volume) - Number(a[a.length-1].close) * Number(a[a.length-1].volume))
+        .slice(0, 5)
+        .map(([code]) => code);
+      for (const code of top5) judeojuCodes.add(code);
+      logger.info(`[OPENING] 주도주 500억 미달 → top-5 fallback (${judeojuCodes.size}종목)`, { component: 'OPENING_BELL' });
+    } else {
+      logger.info(`[OPENING] 주도주 필터: ${judeojuCodes.size}종목 (전일 거래대금 500억+)`, { component: 'OPENING_BELL' });
+    }
+
+    _warmCache = { chartData, geminiScores, judeojuCodes, warmAt: Date.now() };
     logger.info(`✅ [OPENING] 워밍업 완료 (${((Date.now() - t0) / 1000).toFixed(1)}초, 차트 ${chartData.size}종목)`, { component: 'OPENING_BELL' });
   } catch (err) {
     logger.error(`[OPENING] 워밍업 실패: ${err}`, { component: 'OPENING_BELL' });
@@ -304,9 +326,19 @@ JSON만: {"scores":[{"code":"코드","score":점수},...]}`;
       return true;
     });
 
+    // 주도주 필터 — 워밍업에서 캐시된 전일 거래대금 500억+ 종목만 허용
+    const judeojuCodes = cache?.judeojuCodes;
+    const judeojuFiltered = judeojuCodes && judeojuCodes.size > 0
+      ? gapFilteredWatchlist.filter(w => {
+          const ok = judeojuCodes.has(w.stock_code);
+          if (!ok) logger.info(`[OPENING] ${w.stock_code} 주도주 아님 — 개장 스킵`, { component: 'OPENING_BELL' });
+          return ok;
+        })
+      : gapFilteredWatchlist;
+
     const decisions = await technicalFallbackDecisions({
       mode: 'SCALPING',
-      watchlist: gapFilteredWatchlist.map(w => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
+      watchlist: judeojuFiltered.map(w => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
       livePrices,
       chartData,
       openChains,

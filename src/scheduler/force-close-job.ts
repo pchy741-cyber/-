@@ -1,4 +1,4 @@
-import { getActiveStrategy, getOpenChains } from '../db/client.js';
+import { getOpenChains } from '../db/client.js';
 import { getCurrentPrice } from '../kis/market.js';
 import type { TradeDecision } from '../db/models.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
@@ -9,7 +9,7 @@ import { calcPnlPct } from '../utils/money.js';
 
 /**
  * 단타 모드 장 마감 점검 (15:20 KST)
- * - SCALPING 모드 체인만 대상
+ * - SCALPING 체인만 대상 (DB 전략 모드 무관 — 개장벨이 DEFENSE 중에도 스캘핑 체인 생성)
  * - 손실 -2% 이상 → 강제 청산 (실제 손상된 포지션만)
  * - -2% 미만 손실 or 수익 중 → 오버나잇 유지 (억지로 손실 실현 금지)
  */
@@ -20,9 +20,6 @@ export async function runForceCloseJob(): Promise<void> {
   if (isKillSwitchActive()) {
     logger.info('🛑 Kill Switch 활성 중이나 강제청산(매도)은 실행', { component: 'FORCE_CLOSE' });
   }
-
-  const strategy = await getActiveStrategy();
-  if (strategy?.mode !== 'SCALPING') return;
 
   const chains = await getOpenChains();
   const scalpingChains = chains.filter((c) => c.strategy_mode === 'SCALPING' && c.total_quantity > 0);
@@ -75,5 +72,65 @@ export async function runForceCloseJob(): Promise<void> {
 
   if (lines.length > 0) {
     await sendTelegramMessage(`📊 15:20 마감 점검:\n${lines.join('\n')}`);
+  }
+}
+
+/**
+ * 10:00 개장벨 포지션 전량 청산 (데이트레이드 원칙)
+ * - 09:00~09:13 UTC 00:00~00:13 개장 중 진입한 SCALPING 체인 전량 청산
+ * - 수익/손실 무관하게 당일 중 기계적 청산 (오버나잇 절대 금지)
+ */
+export async function runOpeningBellForceClose(): Promise<void> {
+  if (isKillSwitchActive()) {
+    logger.info('🛑 Kill Switch 활성 중이나 개장벨 청산은 실행', { component: 'FORCE_CLOSE' });
+  }
+
+  const chains = await getOpenChains();
+  const bellChains = chains.filter(c => {
+    if (c.strategy_mode !== 'SCALPING' || c.total_quantity <= 0 || !c.opened_at) return false;
+    const openedAt = new Date(String(c.opened_at));
+    // KST 09:00~09:13 = UTC 00:00~00:13
+    return openedAt.getUTCHours() === 0 && openedAt.getUTCMinutes() <= 13;
+  });
+
+  if (bellChains.length === 0) {
+    logger.info('[FORCE_CLOSE] 10:00 개장벨 청산 대상 없음', { component: 'FORCE_CLOSE' });
+    return;
+  }
+
+  logger.warn(`🔔 10:00 개장벨 청산: ${bellChains.length}건 (데이트레이드 원칙)`, { component: 'FORCE_CLOSE' });
+
+  const toClose: TradeDecision[] = [];
+  for (const chain of bellChains) {
+    try {
+      const quote = await getCurrentPrice(chain.stock_code);
+      const pnlPct = calcPnlPct(Number(chain.avg_buy_price), quote.currentPrice);
+      const label = pnlPct >= 0 ? `+${pnlPct.toFixed(1)}%` : `${pnlPct.toFixed(1)}%`;
+      toClose.push({
+        action: 'FORCE_CLOSE' as const,
+        stock_code: chain.stock_code,
+        quantity: chain.total_quantity,
+        price_type: 'MARKET' as const,
+        reasoning: `10:00 개장벨 마감 (${label}, 데이트레이드 원칙)`,
+        confidence: 1.0,
+      });
+      logger.info(`  🔔 ${chain.stock_code} ${label} → 개장벨 청산`, { component: 'FORCE_CLOSE' });
+    } catch {
+      logger.warn(`  ⚠️ ${chain.stock_code} 시세 조회 실패 → 시장가 청산 강행`, { component: 'FORCE_CLOSE' });
+      toClose.push({
+        action: 'FORCE_CLOSE' as const,
+        stock_code: chain.stock_code,
+        quantity: chain.total_quantity,
+        price_type: 'MARKET' as const,
+        reasoning: '10:00 개장벨 마감 (시세실패, 시장가 강행)',
+        confidence: 1.0,
+      });
+    }
+  }
+
+  if (toClose.length > 0) {
+    await tradeExecutor.processDecisions(toClose, 'SCALPING', 'FORCE_CLOSE');
+    const codes = toClose.map(d => d.stock_code).join(', ');
+    await sendTelegramMessage(`🔔 10:00 개장벨 청산 완료 (${toClose.length}건): ${codes}`);
   }
 }
