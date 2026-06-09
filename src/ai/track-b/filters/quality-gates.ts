@@ -73,7 +73,7 @@ export function checkQualityGates(input: QualityGateInput): GateResult {
     if (signalData.foreignNetEst < 0 && signalData.instNetEst < 0 && aiScore < 90) return false;
     // 체결강도 < 85 (매도 압도) + 호가 매도벽 → 하방 압력
     if (signalData.intensity > 0 && signalData.intensity < 85 && signalData.bidAskRatio < 0.7) return false;
-    return signalData.intensity >= 100 || signalData.foreignNetEst > 0 || signalData.instNetEst > 0 || signalData.foreignBrokerBuy;
+    return signalData.intensity >= 90 || signalData.foreignNetEst > 0 || signalData.instNetEst > 0 || signalData.foreignBrokerBuy;
   })());
 
   const details = { vol: qVolume, trend: qTrendStrength, dir: qTrendDirection, rsi: qRsiTiming, cf: qConfluence, sig: qSignalFlow };
