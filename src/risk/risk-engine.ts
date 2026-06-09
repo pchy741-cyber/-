@@ -4,6 +4,7 @@
 import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { getOpenChains, getPool, getTodayStartSnapshot, insertRiskEvent, insertSnapshot } from '../db/client.js';
+import { getAllocRisk } from '../db/alloc-risk-cache.js';
 import { getAccountBalance, type AccountBalance } from '../kis/account.js';
 import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
@@ -89,7 +90,8 @@ export class RiskEngine {
 
       const tradingChains = chains;
 
-      const maxPos = isPaper ? config.paperRisk.maxConcurrentPositions : config.risk.maxConcurrentPositions;
+      const ar = await getAllocRisk(isPaper);
+      const maxPos = ar.maxPositions;
       if (tradingChains.length >= maxPos) {
         const msg = `동시 보유 종목 수 한도: ${tradingChains.length}/${maxPos}종목 — 신규 매수 차단`;
         await insertRiskEvent({
@@ -120,7 +122,8 @@ export class RiskEngine {
       );
       const todayCount = Number(rows[0]?.count ?? 0);
 
-      const maxTrades = isPaper ? config.paperRisk.maxDailyTrades : config.risk.maxDailyTrades;
+      const ar2 = await getAllocRisk(isPaper);
+      const maxTrades = ar2.maxDailyTrades;
       if (todayCount >= maxTrades) {
         return {
           approved: false,
@@ -148,10 +151,9 @@ export class RiskEngine {
       logger.warn(`⚠️ 총자산 0원 — 잔고 조회 실패 가능성, 매수 차단 (fail-closed)`, { component: 'RISK' });
       return { approved: false, reason: '총자산 0원 — 잔고 조회 실패 가능성, 매수 차단 (fail-closed)' };
     }
-    // Hard Cap: Paper 40% / Live 25% — 소자산은 집중 허용
-    const liveCapRatio = 0.25;
-    const paperCapRatio = config.paperRisk.positionCapRatio;
-    const baseCapRatio = isPaper ? paperCapRatio : liveCapRatio;
+    // Hard Cap: Paper 40% / Live 25% (DB 설정 기반, 기본값 사용) — 소자산은 집중 허용
+    const ar3 = await getAllocRisk(isPaper);
+    const baseCapRatio = ar3.positionCapPct / 100;
     const canDiv3 = totalAssets * baseCapRatio >= 30_000;
     const capRatio = !canDiv3 ? 0.50 : baseCapRatio;
     // Paper: simulated money → no live KRW hard cap (19.4M @ 40% allowed)
@@ -277,7 +279,8 @@ export class RiskEngine {
 
     // 레짐 기반 동적 투자비율 캡 — 장 좋으면 적극 집행, 나쁘면 보수적
     // Paper 모드: 97% 고정 (거의 전액 집행, 로그 축적 극대화)
-    let dynamicCap = isPaper ? config.paperRisk.maxTotalInvestedPct : config.risk.maxTotalInvestedPct;
+    const ar4 = await getAllocRisk(isPaper);
+    let dynamicCap = isPaper ? ar4.maxInvestedPct : config.risk.maxTotalInvestedPct;
     if (!isPaper) {
       try {
         const { rows } = await getPool().query(

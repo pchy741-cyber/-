@@ -10,6 +10,7 @@ import { getSeedCapitalStatus, setSeedCapital } from '../../risk/seed-capital.js
 import { runTrackAJob } from '../../scheduler/track-a-job.js';
 import { logger } from '../../utils/logger.js';
 import { invalidateDashboardCache } from '../../cache/dashboard-cache.js';
+import { invalidateAllocCache } from '../../db/alloc-risk-cache.js';
 
 export const settingsRoutes = new Hono();
 
@@ -746,19 +747,41 @@ const SETTINGS_META = {
 
 settingsRoutes.get('/portfolio/allocation', async (c) => {
   try {
-    const isPaper = baseIsPaper;
+    // ?isPaper=true/false 쿼리 파라미터로 모드 명시 가능, 없으면 현재 모드
+    const qp = c.req.query('isPaper');
+    const isPaper = qp !== undefined ? qp === 'true' : baseIsPaper;
     const { rows } = await getPool().query('SELECT * FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1', [isPaper]);
     if (rows.length === 0) {
       const { rows: ins } = await getPool().query(
-        `INSERT INTO portfolio_allocation_config (kr_pct, us_pct, sector_semiconductor, sector_bio, sector_defense, sector_finance, sector_etc, trailing_stop_pct, is_paper)
-         VALUES (30, 70, 30, 20, 25, 20, 30, 5, $1) RETURNING *`,
-        [isPaper],
+        `INSERT INTO portfolio_allocation_config
+         (kr_pct, us_pct, sector_semiconductor, sector_bio, sector_defense, sector_finance, sector_etc,
+          trailing_stop_pct, is_paper, position_cap_pct, max_invested_pct, cash_reserve_pct, max_positions, max_daily_trades)
+         VALUES (30, 70, 30, 20, 25, 20, 30, 5, $1, $2, $3, $4, $5, $6) RETURNING *`,
+        [isPaper,
+          isPaper ? 40 : 25, isPaper ? 97 : 88, isPaper ? 3 : 20,
+          isPaper ? 20 : 8,  isPaper ? 20 : 3],
       );
       return c.json({ ...ins[0], _settingsMeta: SETTINGS_META });
     }
     return c.json({ ...rows[0], _settingsMeta: SETTINGS_META });
   } catch (err: any) {
     return c.json({ ...ALLOC_DEFAULTS, _settingsMeta: SETTINGS_META });
+  }
+});
+
+// 실전/연습 양쪽 동시 반환 — 프론트엔드 독립 설정 패널용
+settingsRoutes.get('/portfolio/allocation/both', async (c) => {
+  try {
+    const pool = getPool();
+    const [liveRes, paperRes] = await Promise.all([
+      pool.query('SELECT * FROM portfolio_allocation_config WHERE is_paper = false ORDER BY id DESC LIMIT 1'),
+      pool.query('SELECT * FROM portfolio_allocation_config WHERE is_paper = true ORDER BY id DESC LIMIT 1'),
+    ]);
+    const live  = liveRes.rows[0]  ?? { kr_pct: 30, us_pct: 70, position_cap_pct: 25, max_invested_pct: 88, cash_reserve_pct: 20, max_positions: 8,  max_daily_trades: 3  };
+    const paper = paperRes.rows[0] ?? { kr_pct: 70, us_pct: 30, position_cap_pct: 40, max_invested_pct: 97, cash_reserve_pct: 3,  max_positions: 20, max_daily_trades: 20 };
+    return c.json({ live, paper });
+  } catch (err: any) {
+    return c.json({ error: err?.message }, 500);
   }
 });
 
@@ -774,26 +797,58 @@ settingsRoutes.put('/portfolio/allocation', async (c) => {
   const finance = Math.max(0, Math.min(100, Number(body.sector_finance ?? 20)));
   const etc = Math.max(0, Math.min(100, Number(body.sector_etc ?? 30)));
   const trailStop = Math.max(1, Math.min(20, Number(body.trailing_stop_pct ?? 5)));
+  // 리스크 파라미터 — body에 있으면 사용, 없으면 현재 DB 값 유지
+  const posCapPct    = body.position_cap_pct  !== undefined ? Math.max(5, Math.min(60,  Number(body.position_cap_pct)))  : null;
+  const maxInvPct    = body.max_invested_pct  !== undefined ? Math.max(50, Math.min(100, Number(body.max_invested_pct))) : null;
+  const cashResPct   = body.cash_reserve_pct  !== undefined ? Math.max(0, Math.min(50,  Number(body.cash_reserve_pct)))  : null;
+  const maxPos       = body.max_positions     !== undefined ? Math.max(1, Math.min(30,  Number(body.max_positions)))     : null;
+  const maxDailyTr   = body.max_daily_trades  !== undefined ? Math.max(1, Math.min(50,  Number(body.max_daily_trades)))  : null;
 
   try {
-    const isPaperAlloc = baseIsPaper;
-    const { rows: existing } = await getPool().query('SELECT id FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1', [isPaperAlloc]);
+    // body.isPaper 명시 우선, 없으면 현재 서버 모드 — 실전/연습 교차 오염 방지
+    const isPaperAlloc = body.isPaper !== undefined ? Boolean(body.isPaper) : baseIsPaper;
+    const { rows: existing } = await getPool().query(
+      'SELECT * FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1',
+      [isPaperAlloc],
+    );
     let result;
     if (existing.length > 0) {
+      const ex = existing[0];
       const { rows } = await getPool().query(
-        `UPDATE portfolio_allocation_config SET kr_pct=$1, us_pct=$2, sector_semiconductor=$3, sector_bio=$4,
-         sector_defense=$5, sector_finance=$6, sector_etc=$7, trailing_stop_pct=$8, updated_at=NOW() WHERE id=$9 RETURNING *`,
-        [kr, us, semi, bio, defense, finance, etc, trailStop, existing[0].id],
+        `UPDATE portfolio_allocation_config
+         SET kr_pct=$1, us_pct=$2, sector_semiconductor=$3, sector_bio=$4,
+             sector_defense=$5, sector_finance=$6, sector_etc=$7, trailing_stop_pct=$8,
+             position_cap_pct=$9, max_invested_pct=$10, cash_reserve_pct=$11,
+             max_positions=$12, max_daily_trades=$13, updated_at=NOW()
+         WHERE id=$14 RETURNING *`,
+        [kr, us, semi, bio, defense, finance, etc, trailStop,
+          posCapPct  ?? ex.position_cap_pct,
+          maxInvPct  ?? ex.max_invested_pct,
+          cashResPct ?? ex.cash_reserve_pct,
+          maxPos     ?? ex.max_positions,
+          maxDailyTr ?? ex.max_daily_trades,
+          ex.id],
       );
       result = rows[0];
     } else {
+      const def = isPaperAlloc
+        ? { cap: 40, inv: 97, cash: 3, pos: 20, tr: 20 }
+        : { cap: 25, inv: 88, cash: 20, pos: 8, tr: 3 };
       const { rows } = await getPool().query(
-        `INSERT INTO portfolio_allocation_config (kr_pct, us_pct, sector_semiconductor, sector_bio, sector_defense, sector_finance, sector_etc, trailing_stop_pct, is_paper)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-        [kr, us, semi, bio, defense, finance, etc, trailStop, isPaperAlloc],
+        `INSERT INTO portfolio_allocation_config
+         (kr_pct, us_pct, sector_semiconductor, sector_bio, sector_defense, sector_finance, sector_etc,
+          trailing_stop_pct, is_paper, position_cap_pct, max_invested_pct, cash_reserve_pct, max_positions, max_daily_trades)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+        [kr, us, semi, bio, defense, finance, etc, trailStop, isPaperAlloc,
+          posCapPct  ?? def.cap,
+          maxInvPct  ?? def.inv,
+          cashResPct ?? def.cash,
+          maxPos     ?? def.pos,
+          maxDailyTr ?? def.tr],
       );
       result = rows[0];
     }
+    invalidateAllocCache();
     return c.json(result);
   } catch (err: any) {
     return c.json({ error: err?.message }, 500);
