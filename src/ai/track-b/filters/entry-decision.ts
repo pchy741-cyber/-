@@ -35,9 +35,10 @@ export function tryRegimeRouterEntry(input: EntryInput): EntryVerdict {
 
   if (!regimeRoute.routed || mode === 'SCALPING') return { action: 'CONTINUE' };
 
-  // AI 점수 체크: Gemini OFF면 기술점수만으로 진입 허용
+  // AI 점수 체크: Gemini OFF 또는 전역 AI 탈락(globalNoAi) → 기술점수만으로 진입 허용
   const hasAI = aiScore && aiScore > 0;
-  if (!hasAI && config.geminiEnabled) {
+  const globalNoAi = input.noAiScores === true;
+  if (!hasAI && config.geminiEnabled && !globalNoAi) {
     logger.info(`  🚫 ${stockCode}: 레짐라우터 AI없음 → 차단 (score=${tech.score})`, { component: 'TRACK_B' });
     return { action: 'CONTINUE' };
   }
@@ -83,17 +84,23 @@ export function tryFinalEntry(input: EntryInput): EntryVerdict {
 
   // AI 게이트: Gemini ON → AI 필수, Gemini OFF → 기술지표 단독 매매 허용
   const hasAI = aiScore && Number.isFinite(aiScore) && aiScore > 0;
+  // 전역 AI 탈락: confidence 필터로 전체 스코어가 제거된 상태 (RSS폴백 0.55 → 0.60 미달 등)
+  // 이 경우 "AI없음"으로 차단하지 않고 기술지표 단독 모드로 폴백 (Gemini 설정은 ON이지만 실질적 데이터 없음)
+  const globalNoAi = input.noAiScores === true;
 
-  if (!hasAI && config.geminiEnabled) {
-    // Gemini 활성 상태인데 AI 점수 없음 → 차단 (정상: AI가 아직 미산출)
+  if (!hasAI && config.geminiEnabled && !globalNoAi) {
+    // Gemini 활성 + 개별 AI 없음 + 전역 스코어도 있음 → 진짜 미산출 → 차단
     logger.info(`  🚫 ${stockCode}: AI 점수 없음 → 매수 차단 (tech=${effectiveTechScore})`, { component: 'TRACK_B' });
     return { action: 'SKIP', reason: 'AI 없음' };
   }
+  if (!hasAI && globalNoAi) {
+    logger.info(`  ⚡ ${stockCode}: AI 전량 탈락(confidence 필터) → 기술지표 단독 폴백 (tech=${effectiveTechScore})`, { component: 'TRACK_B' });
+  }
 
-  // Gemini OFF + AI 없음 → 기술지표만으로 판단 (임계값 대폭 상향 — 75점 이상만 진입)
-  const techOnlyMode = !hasAI && !config.geminiEnabled;
+  // techOnlyMode: Gemini OFF 또는 전역 AI 탈락(globalNoAi) → 기술지표만으로 판단
+  const techOnlyMode = !hasAI && (!config.geminiEnabled || globalNoAi);
   const v4MinTechScore = techOnlyMode
-    ? Math.max(minTechScore, 75)   // AI없이 기술지표 단독: 75점 이상 (60→75 강화, 블라인드 진입 방지)
+    ? Math.max(minTechScore, 72)   // AI없이 기술지표 단독: 72점 이상 (블라인드 진입 방지)
     : Math.max(minTechScore, 55);  // AI 병행 시: 55점 이상
 
   if (effectiveTechScore >= v4MinTechScore) {

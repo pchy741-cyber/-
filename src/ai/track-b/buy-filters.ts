@@ -154,6 +154,7 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
       stockCode: stock.stock_code, tech, price, scoring,
       regimeRoute, aiScore, buyThreshold, mode,
       allowScalpingBuys: params.allowScalpingBuys, winRates,
+      noAiScores,  // 전역 AI 탈락 여부 → entry-decision 폴백 판단용
     };
 
     // 5a. 레짐 라우터 빠른 진입

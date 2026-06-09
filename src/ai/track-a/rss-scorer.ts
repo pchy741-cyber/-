@@ -278,16 +278,18 @@ export async function runRSSScoring(
     const composite = Math.min(100, baseScore + newsBonus + momentumBonus + flowBonus + pullbackBonus + overextendedPenalty + marketBonus + ytBonus);
 
     // 신호 결정 + 눌림목 확인 시 confidence 상향
+    // HOLD 기본값 0.65: Gemini 실패 시 RSS 폴백이 pipeline 0.60 필터를 통과하도록 보장
+    // (구 0.55는 필터 탈락 → adjustedScores=[] → aiScore=0 → 전 종목 매수 차단 버그)
     let signal: ScoringResult['signal'] = 'HOLD';
-    let confidence = 0.55;
-    if (composite >= 85) { signal = 'STRONG_BUY'; confidence = 0.72; }
-    else if (composite >= 78) { signal = 'BUY'; confidence = 0.65; }
-    else if (composite <= 35) { signal = 'SELL'; confidence = 0.65; }
-    else if (composite <= 25) { signal = 'STRONG_SELL'; confidence = 0.72; }
+    let confidence = 0.65;
+    if (composite >= 85) { signal = 'STRONG_BUY'; confidence = 0.82; }
+    else if (composite >= 78) { signal = 'BUY'; confidence = 0.72; }
+    else if (composite <= 25) { signal = 'STRONG_SELL'; confidence = 0.80; }
+    else if (composite <= 35) { signal = 'SELL'; confidence = 0.70; }
 
     // 눌림목 + 거래량 콤보: confidence 추가 상향 (Track B 진입 문턱 넘기 용이)
     if (tech.pullbackSignal && composite >= 78 && tech.volumeRatio >= 1.3) {
-      confidence = Math.min(0.82, confidence + 0.10);
+      confidence = Math.min(0.90, confidence + 0.08);
     }
 
     const reasoningParts = [

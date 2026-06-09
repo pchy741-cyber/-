@@ -868,8 +868,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     setActiveEngine('technical');
+    // adjustedScores = confidence 0.60 필터 통과한 실제 사용 스코어 (scores는 전체 DB 조회수 — 오해 방지용 구분)
+    if (hasScores && adjustedScores.length === 0) {
+      logger.warn(`⚠️ AI 스코어 전량 필터링: DB=${scores.length}개 조회됐으나 confidence<0.60으로 전부 탈락 → 기술지표 단독 매매`, { component: 'TRACK_B' });
+    }
     logger.info(
-      `📊 기술적 지표 매매 실행 [${hasScores ? 'technical+AI힌트' : 'technical'}] (AI점수=${scores.length}개, 결정=${decisions.length}개)`,
+      `📊 기술적 지표 매매 실행 [${hasScores ? 'technical+AI힌트' : 'technical'}] (AI점수=${adjustedScores.length}개 사용/${scores.length}개 DB, 결정=${decisions.length}개)`,
       { component: 'TRACK_B' },
     );
 

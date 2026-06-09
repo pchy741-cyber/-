@@ -131,6 +131,8 @@ export interface EntryInput {
   mode: StrategyMode;
   allowScalpingBuys?: boolean;
   winRates?: Map<string, StockWinRate>;
+  /** 전역 AI 스코어 전량 탈락 여부 (confidence 필터로 모두 제거됨 → 기술지표 단독 폴백) */
+  noAiScores?: boolean;
 }
 
 export type EntryVerdict =
