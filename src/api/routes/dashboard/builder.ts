@@ -436,9 +436,9 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   // ══ 통합증거금: 현금 계산 ══
   let actualCashSource: string = balance.cashSource ?? 'unknown';
   if (viewIsPaper) {
-    // Paper: 국내(₩10M)와 해외(₩50M seed)는 별도 시뮬레이션 → 해외 현금만 사용
-    // 국내 Paper는 paper-balance.ts의 독립 원장, 해외는 computePaperCash()의 독립 원장
-    actualCash = overseasCashKrw;
+    // Paper: actualCash = rawCash = 국내 paper 현금 (getPaperBalance().orderableCash, executor가 KR 매수에 사용)
+    // 해외 paper 현금은 overseasCashKrw 별도 (computePaperCash() * FX_RATE)
+    // actualCash는 line 250에서 이미 rawCash로 설정 → 오버라이드하지 않음
     actualCashSource = 'paper_computed';
   } else {
     // Live: KIS 국내 잔고 API(rawCash) 우선 — KIS 앱 "주문가능원화"와 일치
@@ -463,11 +463,14 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     }
   }
 
-  // 총자산 = 통합현금 + 국내 시가 + 해외 시가 (NaN 가드)
+  // 총자산 = 국내현금 + 국내 시가 + 해외현금 + 해외 시가 (NaN 가드)
+  // Paper: 국내 현금(rawCash) + 해외 현금(overseasCashKrw) 둘 다 포함
+  // Live: 통합증거금(actualCash) + 해외 시가
   const safeCash = isNaN(actualCash) || !actualCash ? 0 : actualCash;
   const safeDomestic = isNaN(domesticMarketValue) ? 0 : domesticMarketValue;
   const safeOverseasMV = isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw;
-  const grandTotalValue = safeCash + safeDomestic + safeOverseasMV;
+  const safeOverseasCash = viewIsPaper ? (isNaN(overseasCashKrw) ? 0 : overseasCashKrw) : 0;
+  const grandTotalValue = safeCash + safeDomestic + safeOverseasMV + safeOverseasCash;
 
   // 비중(weight) 계산 — grandTotalValue 기준 시가 기반 통합 비중
   for (const ch of enrichedChains as any[]) {
@@ -514,18 +517,20 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
 
   const grandTotalInvested = domesticInvested + overseasInvestedKrw;
 
-  // 통합증거금: 현금은 하나 (Live/Paper 모두 portfolio.cash = overseas.cashKrw = 동일)
+  // 국내 주문가능 현금 (domesticCash용 — KR 매수에 쓰이는 실제 잔고)
   const unifiedCash = Math.round(actualCash);
-  const unifiedCashUsd = FX_RATE > 0 ? Math.round((actualCash / FX_RATE) * 100) / 100 : 0;
+  // 해외 현금: Paper=overseas paper cash(KRW), Live=통합증거금(국내와 동일)
+  const overseasCashForDisplay = viewIsPaper ? Math.round(overseasCashKrw) : unifiedCash;
+  const overseasCashUsdDisplay = FX_RATE > 0 ? Math.round((overseasCashForDisplay / FX_RATE) * 100) / 100 : 0;
 
   const dashPayload = {
     portfolio: {
       totalValue: Math.round(grandTotalValue),
-      cash: unifiedCash,
+      cash: Math.round(safeCash + safeOverseasCash), // 총현금 (Paper=국내+해외, Live=통합증거금)
       invested: Math.round(grandTotalInvested),
       domesticInvested: Math.round(domesticInvested),
       domesticEval: Math.round(domesticMarketValue), // 국내 증권 시가평가 (비중 계산용)
-      domesticCash: unifiedCash, // 통합증거금: 국내/해외 구분 없음
+      domesticCash: unifiedCash, // 국내 주문가능 현금 (KR 매수 한도 기준)
       unrealizedPnl: Math.round(viewIsPaper ? totalChainPnl : (balance.totalProfitLoss || totalChainPnl)), // 국내 전용 (해외는 overseas.unrealizedPnlKrw)
       realizedPnl: viewIsPaper ? Math.round(balance.totalProfitLoss ?? 0) : 0,
       pnl: Math.round(totalPnl + (isNaN(overseasMarketValueKrw - overseasInvestedKrw) ? 0 : (overseasMarketValueKrw - overseasInvestedKrw))),
@@ -540,8 +545,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       totalMarketValueKrw: overseasMarketValueKrw,
       unrealizedPnlKrw: Math.round(overseasMarketValueKrw - overseasInvestedKrw),
       unrealizedPnlPct: overseasInvestedKrw > 0 ? Math.round((overseasMarketValueKrw - overseasInvestedKrw) / overseasInvestedKrw * 10000) / 100 : 0,
-      cashUsd: unifiedCashUsd,
-      cashKrw: unifiedCash, // 통합증거금: cash = 주문가능원화
+      cashUsd: overseasCashUsdDisplay,
+      cashKrw: overseasCashForDisplay, // Paper=해외 paper 현금(KRW), Live=통합증거금
       fxRate: FX_RATE,
       scores: getOverseasScores(),
     },
@@ -567,7 +572,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       // 통합증거금: 전체 포트폴리오 기준 일일손실한도
       const limit = calcDailyLossLimit(Math.round(grandTotalValue), viewIsPaper);
       // 해외: 현금(KRW) + 보유종목 시가평가(KRW) 기준
-      const osPortfolioKrw = (actualCash || 0) + (isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw);
+      // Paper: overseasCashForDisplay=해외 paper 현금; Live: overseasCashForDisplay=통합증거금
+      const osPortfolioKrw = (overseasCashForDisplay || 0) + (isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw);
       const osPortfolioUsd = FX_RATE > 0 ? osPortfolioKrw / FX_RATE : 0;
       return {
         maxDailyDrawdownKrw: limit.limitAmount,

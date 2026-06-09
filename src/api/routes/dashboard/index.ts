@@ -40,7 +40,7 @@ dashboardRoutes.get('/dashboard', async (c) => {
   const timeoutPromise = new Promise<never>((_, rej) =>
     setTimeout(() => rej(new Error('dashboard timeout')), timeoutMs));
   try {
-    const payload = await Promise.race([getOrBuildDashPayload(viewIsPaper), timeoutPromise]);
+    const payload = await Promise.race([runWithMode(viewIsPaper, () => getOrBuildDashPayload(viewIsPaper)), timeoutPromise]);
     setDashCache(cacheKey, payload);
     return c.json(payload);
   } catch (e: any) {

@@ -154,7 +154,11 @@ export class RiskEngine {
     const baseCapRatio = isPaper ? paperCapRatio : liveCapRatio;
     const canDiv3 = totalAssets * baseCapRatio >= 30_000;
     const capRatio = !canDiv3 ? 0.50 : baseCapRatio;
-    const dynamicLimit = Math.min(Math.round(totalAssets * capRatio), config.risk.maxPositionKrw);
+    // Paper: simulated money → no live KRW hard cap (19.4M @ 40% allowed)
+    // Live: hard cap (3M) protects real account from oversized single positions
+    const dynamicLimit = isPaper
+      ? Math.round(totalAssets * capRatio)
+      : Math.min(Math.round(totalAssets * capRatio), config.risk.maxPositionKrw);
 
     if (totalAfter > dynamicLimit) {
       const capPct = Math.round(capRatio * 100);
