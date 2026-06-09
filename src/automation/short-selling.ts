@@ -7,9 +7,9 @@ import { sleep } from '../utils/sleep.js';
 
 const COMPONENT = 'SHORT_SELLING';
 
-// ── 30분 캐시 (Track B 5분 사이클마다 KIS 호출 방지) ──
-const _shortCache = new Map<string, { data: ShortSellingData; fetchedAt: number }>();
-const SHORT_CACHE_TTL_MS = 60 * 60 * 1000; // 60분 (KIS rate limit 방지)
+const _shortCache = new Map<string, { data: ShortSellingData; fetchedAt: number; isError?: boolean }>();
+const SHORT_CACHE_TTL_MS = 60 * 60 * 1000;       // 60분 — 성공 응답
+const SHORT_ERROR_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6시간 — 404/오류 (재시작 후 재폭발 방지)
 
 /** 공매도 TR ID (일별 공매도 현황) */
 const TR_SHORT_SELLING = 'FHKST03010400';
@@ -109,7 +109,8 @@ function determineRiskLevel(ratio: number, increasing: boolean): ShortRiskLevel 
  */
 export async function fetchShortSellingData(stockCode: string, days: number = 5): Promise<ShortSellingData> {
   const cached = _shortCache.get(stockCode);
-  if (cached && Date.now() - cached.fetchedAt < SHORT_CACHE_TTL_MS) {
+  const ttl = cached?.isError ? SHORT_ERROR_CACHE_TTL_MS : SHORT_CACHE_TTL_MS;
+  if (cached && Date.now() - cached.fetchedAt < ttl) {
     return cached.data;
   }
 
@@ -145,9 +146,15 @@ export async function fetchShortSellingData(stockCode: string, days: number = 5)
     return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    logger.error(`공매도 데이터 조회 실패 (${stockCode}): ${message}`, { component: COMPONENT });
+    // HTTP404 = 공매도 불가 종목 (모의투자 또는 비대상 — 정상적 미지원, ERROR 아님)
+    const isUnsupported = message.includes('HTTP404') || message.includes('데이터 없음');
+    if (isUnsupported) {
+      logger.warn(`공매도 미지원 종목 스킵 (${stockCode}) — 6시간 캐시`, { component: COMPONENT });
+    } else {
+      logger.warn(`공매도 조회 실패 (${stockCode}): ${message}`, { component: COMPONENT });
+    }
     const fallback: ShortSellingData = { stockCode, shortVolume: 0, shortRatio: 0, shortTrend: [], isIncreasing: false, riskLevel: 'LOW' };
-    _shortCache.set(stockCode, { data: fallback, fetchedAt: Date.now() });
+    _shortCache.set(stockCode, { data: fallback, fetchedAt: Date.now(), isError: true });
     return fallback;
   }
 }

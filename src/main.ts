@@ -528,7 +528,8 @@ async function bootstrap() {
     logger.warn(`루프 자동재개 실패: ${e.message}`, { component: 'BOOT' });
   }
 
-  // 6-1. 오늘 AI 점수가 없으면 즉시 Track A 실행 (재배포 후 점수 공백 자동 복구)
+  // 6-1. AI 점수 시간대별 자동 갱신 — 재시작 후 스케줄 누락 자동 복구
+  // 단순 "오늘 점수 있음" → 스킵이 아니라, 12:30 / 18:00 KST 세션 이후 재시작이면 재실행
   try {
     const { getActiveWatchlist, getLatestScores } = await import('./db/client.js');
     const wl = await getActiveWatchlist();
@@ -537,13 +538,33 @@ async function bootstrap() {
       const scores = await getLatestScores(codes);
       const kstNow = getKSTNow();
       const today = `${kstNow.getUTCFullYear()}-${String(kstNow.getUTCMonth() + 1).padStart(2, '0')}-${String(kstNow.getUTCDate()).padStart(2, '0')}`;
-      const hasTodayScore = scores.some((s: any) => s.score_date === today && (s.composite_score ?? 0) > 0);
-      if (!hasTodayScore) {
+      const todayScores = scores.filter((s: any) => s.score_date === today && (s.composite_score ?? 0) > 0);
+
+      if (todayScores.length === 0) {
         logger.info('🔄 오늘 AI 점수 없음 → Track A 자동 실행', { component: 'BOOT' });
         const { runTrackAJob } = await import('./scheduler/track-a-job.js');
         runTrackAJob().catch((e: Error) => logger.error(`부팅 Track A 실패: ${e.message}`, { component: 'BOOT' }));
       } else {
-        logger.info('✅ 오늘 AI 점수 존재 — Track A 스킵', { component: 'BOOT' });
+        // 마지막 점수 생성 시각 → KST 분(minute) 환산
+        const latestCreatedMs = todayScores
+          .map((s: any) => new Date(s.created_at).getTime())
+          .reduce((max: number, t: number) => Math.max(max, t), 0);
+        const latestKST = new Date(latestCreatedMs + 9 * 60 * 60 * 1000);
+        const latestKSTMinutes = latestKST.getUTCHours() * 60 + latestKST.getUTCMinutes();
+        const kstH = kstNow.getUTCHours();
+        const kstM = kstNow.getUTCMinutes();
+        const nowKSTMinutes = kstH * 60 + kstM;
+        // Track A 정규 세션: 07:30(450), 12:30(750), 18:00(1080) KST
+        const missedNoon    = nowKSTMinutes >= 750  && latestKSTMinutes < 750;
+        const missedEvening = nowKSTMinutes >= 1080 && latestKSTMinutes < 1080;
+        if (missedNoon || missedEvening) {
+          const session = missedEvening ? '18:00 KST' : '12:30 KST';
+          logger.info(`🔄 ${session} 세션 이후 재시작 감지 (마지막 점수: ${latestKST.getUTCHours()}:${String(latestKST.getUTCMinutes()).padStart(2, '0')} KST) → Track A 재실행`, { component: 'BOOT' });
+          const { runTrackAJob } = await import('./scheduler/track-a-job.js');
+          runTrackAJob().catch((e: Error) => logger.error(`부팅 Track A 세션 재실행 실패: ${e.message}`, { component: 'BOOT' }));
+        } else {
+          logger.info(`✅ 오늘 AI 점수 존재 (${latestKST.getUTCHours()}:${String(latestKST.getUTCMinutes()).padStart(2, '0')} KST 기준) — Track A 스킵`, { component: 'BOOT' });
+        }
       }
     }
   } catch (e: any) {

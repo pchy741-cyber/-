@@ -214,16 +214,18 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       logger.info(`🎯 AI 스코어 ${scores.length}개 로드 (워치리스트 ${stockCodes.length}종목)`, { component: 'TRACK_B' });
     }
 
-    // ── 실시간 시세 수집 (KIS rate limit 방지: 상위 35종목 + 보유종목) ──
-    // 워치리스트 전체(~79종목) 동시 조회 시 KIS 1000 req/10min 한도 초과 → rate limit storm
-    // AI 스코어 상위 35개만 BUY 평가, 보유종목은 무조건 포함 (TP/SL 트리거)
+    // ── 실시간 시세 수집 (KIS rate limit 방지: AI 점수 상위 20종목 + 보유종목) ──
+    // AI 점수 없는 종목 포함 시 buy-filter에서 전량 차단 → KIS 쿼터 낭비
+    // AI 점수 있는 종목만 추려서 composite_score 상위 20개 평가 (35→20 부하 43% 감소)
     const chainStockCodes = openChains.map((c) => c.stock_code);
     const scoreMapPre = new Map(scores.map((s: any) => [s.stock_code, (s.composite_score ?? 0) as number]));
+    const aiScoredCodes = new Set(scores.map((s: any) => s.stock_code as string));
     const sortedWatchlistCodes = [...stockCodes]
+      .filter(code => aiScoredCodes.has(code))
       .sort((a, b) => (scoreMapPre.get(b) ?? 0) - (scoreMapPre.get(a) ?? 0))
-      .slice(0, 35);
+      .slice(0, 20);
     const allStockCodes = [...new Set([...sortedWatchlistCodes, ...chainStockCodes, PARK_STOCK_CODE, IDLE_PARK_STOCK_CODE, INVERSE_ETF.code])];
-    logger.info(`📡 시세 조회: ${allStockCodes.length}종목 (워치리스트 상위 ${sortedWatchlistCodes.length} + 보유 ${chainStockCodes.length})`, { component: 'TRACK_B' });
+    logger.info(`📡 시세 조회: ${allStockCodes.length}종목 (AI점수 상위 ${sortedWatchlistCodes.length}/${aiScoredCodes.size}개 + 보유 ${chainStockCodes.length})`, { component: 'TRACK_B' });
     const livePrices = await getBatchPrices(allStockCodes);
 
     const _rawOrderableCash = Math.max(0, balance.orderableCash ?? 0);

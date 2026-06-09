@@ -26,6 +26,8 @@ const resolveViewIsPaper = resolveRequestMode;
 dashboardAnalysisRoutes.get('/stock/:code/analysis', async (c) => {
   const stockCode = c.req.param('code');
   const defaultResult = { technicals: null, flow: null, shorts: null, consensus: null };
+  // 모의투자 모드에서는 KIS 공매도 API 미지원 (HTTP404 폭탄 방지)
+  const isPaperView = resolveViewIsPaper(c);
 
   const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T> =>
     Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
@@ -34,7 +36,7 @@ dashboardAnalysisRoutes.get('/stock/:code/analysis', async (c) => {
     const [chart, flow, shorts, consensus] = await Promise.allSettled([
       withTimeout(getDailyChart(stockCode, 65), 6000),
       withTimeout(getInvestorFlow(stockCode, 5).catch(() => null), 4000),
-      withTimeout(fetchShortSellingData(stockCode, 5).catch(() => null), 4000),
+      isPaperView ? Promise.resolve(null) : withTimeout(fetchShortSellingData(stockCode, 5).catch(() => null), 4000),
       withTimeout(fetchAnalystConsensus(stockCode).catch(() => null), 4000),
     ]);
 
