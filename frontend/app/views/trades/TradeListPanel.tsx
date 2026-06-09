@@ -4,7 +4,21 @@ import React from 'react';
 import { Panel, SideBadge, StatusBadge } from '@/components/ui';
 import { fmt, fmtWon, fmtUsd, fmtTime } from '../../lib/utils';
 import { simplifyReason } from '../../lib/helpers';
+import { STRATEGY_LABELS } from '../strategy-lab/constants';
 import type { Trade } from '../../types';
+
+const STRATEGY_COLORS: Record<string, string> = {
+  SWING:         'bg-blue-900/30 text-blue-300',
+  PULLBACK:      'bg-violet-900/30 text-violet-300',
+  BREAKOUT:      'bg-orange-900/30 text-orange-300',
+  SCALPING:      'bg-yellow-900/30 text-yellow-300',
+  PARKING:       'bg-teal-900/30 text-teal-300',
+  EOD_BETTING:   'bg-amber-900/30 text-amber-300',
+  SNIPER:        'bg-rose-900/30 text-rose-300',
+  DEFENSE:       'bg-cyan-900/30 text-cyan-300',
+  BOTTOM_FISHING:'bg-emerald-900/30 text-emerald-300',
+  DIVIDEND:      'bg-lime-900/30 text-lime-300',
+};
 
 export function TradeListPanel({
   filtered,
@@ -90,10 +104,17 @@ export function TradeListPanel({
                 </td>
                 <td className="px-4 py-3 text-center"><StatusBadge status={t.status} /></td>
                 <td className="px-4 py-3 text-center">
-                  {chain?.strategy_mode === 'EOD_BETTING'
-                    ? <span className="px-1.5 py-0.5 rounded text-[11px] bg-amber-900/30 text-amber-300 font-bold">🎰 종가</span>
-                    : chain?.strategy_mode
-                    ? <span className="px-1.5 py-0.5 rounded text-[11px] bg-blue-900/30 text-blue-300">{chain.strategy_mode}</span>
+                  {chain?.strategy_mode
+                    ? (() => {
+                        const m = chain.strategy_mode;
+                        const label = STRATEGY_LABELS[m] ?? m;
+                        const colors = STRATEGY_COLORS[m] ?? 'bg-blue-900/30 text-blue-300';
+                        return (
+                          <span className={`px-1.5 py-0.5 rounded text-[11px] ${colors}${m === 'EOD_BETTING' ? ' font-bold' : ''}`}>
+                            {m === 'EOD_BETTING' ? '🎰 ' : ''}{label}
+                          </span>
+                        );
+                      })()
                     : t.trigger_source === 'OVERSEAS'
                       ? <span className="px-1.5 py-0.5 rounded text-[11px] bg-purple-900/30 text-purple-300">미국</span>
                       : t.trigger_source === 'MANUAL'
@@ -120,7 +141,7 @@ export function TradeListPanel({
                         <p className="text-slate-500 font-medium mb-1.5">매매 전략</p>
                         {chain?.strategy_mode ? (
                           <div className="space-y-1 text-slate-400">
-                            <p>전략: <span className="text-slate-200 font-medium">{chain.strategy_mode}</span></p>
+                            <p>전략: <span className="text-slate-200 font-medium">{STRATEGY_LABELS[chain.strategy_mode] ?? chain.strategy_mode}</span></p>
                             <p>평단가: <span className="text-slate-200">{Number(chain.avg_buy_price).toLocaleString()}원</span></p>
                             <p>상태: <span className="text-slate-200">{chain.status}</span></p>
                           </div>
