@@ -5,6 +5,9 @@ import { logger } from '../../utils/logger.js';
 import { type TechnicalFallbackParams, resolveStrategyParams, getKstScalpTime, buildAiScoreMap } from './technical-fallback-types.js';
 import { getOverride } from '../ai-overrides.js';
 
+// TP 도달 전 수익권 포지션 최고 수익률 추적 (서버 재시작 시 리셋 — 허용)
+const _preTpPeakMap = new Map<string, number>(); // stock_code → peak pnlPct
+
 // 자기학습 TP/SL 캐시 (3분 TTL — 매 사이클 DB 조회 방지)
 let _learnedCache: { tp?: number; sl?: number; expiresAt: number } | null = null;
 async function _getLearnedTpSl(): Promise<{ tp?: number; sl?: number } | null> {
@@ -32,6 +35,22 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
   const { h: _scalpH, m: _scalpM, isPastScalpDeadline } = getKstScalpTime();
   const decisions: TradeDecision[] = [];
 
+  // 포트폴리오 전체 PnL 계산 (급락 보호용 — 매 사이클 1회)
+  let _portfolioCost = 0;
+  let _portfolioValue = 0;
+  for (const c of openChains) {
+    const p = livePrices.get(c.stock_code);
+    if (!p || !c.avg_buy_price) continue;
+    _portfolioCost += Number(c.avg_buy_price) * c.total_quantity;
+    _portfolioValue += p.currentPrice * c.total_quantity;
+  }
+  const portfolioPnlPct = _portfolioCost > 0
+    ? ((_portfolioValue - _portfolioCost) / _portfolioCost) * 100
+    : 0;
+
+  // 하락장 레짐: 분할매도 금지 → 전량 즉시 청산 (단계별 추가 손실 방지)
+  const isDowntrendMode = (params.macroSizingMult ?? 1.0) < 0.8;
+
   // 1. 보유 종목 매도 판단 (손절/익절)
   // 동일 종목에 다중 체인(분할 매수)이 있을 경우 중복 매도 신호 방지
   const processedSellCodes = new Set<string>();
@@ -44,6 +63,65 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
 
     // 동일 종목 중복 매도 신호 방지 (다중 체인 시 첫 번째 체인만 처리)
     if (processedSellCodes.has(chain.stock_code)) continue;
+
+    // ── 포트폴리오 수익 보호: 하락장 감지 시 수익권 종목 선제 청산 ──
+    // 포트폴리오 전체 수익 +2% 이상 + RISK_OFF/하락장(macroSizingMult<0.8) + 이 종목 수익권
+    // → 개별 TP 미도달이라도 즉시 청산 (수익 반납 방지)
+    if (
+      portfolioPnlPct >= 2.0 &&
+      (params.macroSizingMult ?? 1.0) < 0.8 &&
+      pnlPct >= 0.5 &&
+      chain.total_quantity > 0
+    ) {
+      decisions.push({
+        action: 'SELL',
+        stock_code: chain.stock_code,
+        quantity: chain.total_quantity,
+        price_type: 'MARKET',
+        reasoning: `포트폴리오 수익보호(포트폴리오 +${portfolioPnlPct.toFixed(1)}%/하락장레짐): 수익 +${pnlPct.toFixed(1)}% → 급락전 선제청산`,
+        confidence: 0.88,
+      });
+      processedSellCodes.add(chain.stock_code);
+      _preTpPeakMap.delete(chain.stock_code);
+      continue;
+    }
+    // ────────────────────────────────────────────────────────────────────
+
+    // ── TP 도달 전 수익 구간 트레일링 스탑 ──────────────────────────────
+    // 기존 트레일링은 PROFIT_TAKING 진입 후에만 작동 → +2~4% 수익권은 보호 없음
+    // 이 로직: TP 미도달이라도 고점 대비 ATR×1.5 하락 시 익절
+    if (chain.status !== 'PROFIT_TAKING' && chain.strategy_mode !== 'SCALPING') {
+      const prevPeak = _preTpPeakMap.get(chain.stock_code) ?? pnlPct;
+      const curPeak = Math.max(prevPeak, pnlPct);
+      _preTpPeakMap.set(chain.stock_code, curPeak);
+
+      if (curPeak >= 1.5) {
+        const earlyChart = chartData.get(chain.stock_code);
+        const earlyTech = earlyChart && earlyChart.length >= 20 ? analyzeTechnicals(earlyChart) : null;
+        const atrPct = earlyTech?.atrPct ?? 1.5;
+        const trailThreshold = Math.max(-(atrPct * 1.5), -3.0); // ATR×1.5, 최대 -3%
+        const dropFromPeak = pnlPct - curPeak;
+
+        if (dropFromPeak <= trailThreshold && chain.total_quantity > 0) {
+          logger.info(
+            `📉 Pre-TP 트레일링: ${chain.stock_code} 고점 +${curPeak.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}% (${dropFromPeak.toFixed(1)}%, 임계 ${trailThreshold.toFixed(1)}%)`,
+            { component: 'TRACK_B' },
+          );
+          decisions.push({
+            action: 'SELL',
+            stock_code: chain.stock_code,
+            quantity: chain.total_quantity,
+            price_type: 'MARKET',
+            reasoning: `수익보호 트레일링(TP전): 고점 +${curPeak.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}% (고점대비 ${dropFromPeak.toFixed(1)}%)`,
+            confidence: 0.88,
+          });
+          processedSellCodes.add(chain.stock_code);
+          _preTpPeakMap.delete(chain.stock_code);
+          continue;
+        }
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────
 
     // AI Loop forceHold: Claude Code가 매도 보류 지시 (실적 발표 대기 등)
     const aiForceHold = getOverride<boolean>(`${chain.stock_code}_forceHold`);
@@ -124,9 +202,21 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       // → 아래 일반 매도 로직에서 strategy_mode별 파라미터로 처리됨
     }
 
-    // 외국인+기관 동반 이탈(STRONG_SELL 수급) 보유 종목 → 50% 부분 매도 (CEO 가이드)
-    // junkStockCodes는 pipeline.ts에서 외국인+기관 동반 순매도 종목으로 구성됨
+    // 외국인+기관 동반 이탈(STRONG_SELL 수급) 보유 종목
+    // 하락장: 전량 즉시 청산 / 정상장: 50% 부분 매도
     if (junkStockCodes?.has(chain.stock_code) && chain.total_quantity > 0) {
+      if (isDowntrendMode) {
+        decisions.push({
+          action: 'SELL',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `외국인+기관 동반이탈(하락장): 전량 즉시 청산 → 추가 손실 방지`,
+          confidence: 0.90,
+        });
+        processedSellCodes.add(chain.stock_code);
+        continue;
+      }
       const partialQty = Math.ceil(chain.total_quantity * 0.5);
       if (partialQty > 0 && partialQty < chain.total_quantity) {
         decisions.push({
@@ -140,19 +230,16 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         processedSellCodes.add(chain.stock_code);
         continue;
       }
-      // 1주 등 분할 불가 → 전량 매도
-      if (chain.total_quantity > 0) {
-        decisions.push({
-          action: 'SELL',
-          stock_code: chain.stock_code,
-          quantity: chain.total_quantity,
-          price_type: 'MARKET',
-          reasoning: `외국인+기관 동반이탈(STRONG_SELL): 분할불가 전량매도 → 수급 리스크 차단`,
-          confidence: 0.85,
-        });
-        processedSellCodes.add(chain.stock_code);
-        continue;
-      }
+      decisions.push({
+        action: 'SELL',
+        stock_code: chain.stock_code,
+        quantity: chain.total_quantity,
+        price_type: 'MARKET',
+        reasoning: `외국인+기관 동반이탈(STRONG_SELL): 분할불가 전량매도 → 수급 리스크 차단`,
+        confidence: 0.85,
+      });
+      processedSellCodes.add(chain.stock_code);
+      continue;
     }
 
     // 마감 근접 수익 확정 — 3단계: 충분한 수익만, 그다음 소폭, 마지막에 손익분기만 확정
@@ -210,10 +297,11 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         learnedSl: learned?.sl,
       });
 
-      // 진입 시 DB 저장된 TP/SL과 실시간 계산값 중 유리한 쪽 사용
+      // chain TP = CEO 설정 상한선 (dynTp가 더 높아도 chain TP 초과 금지)
+      // SL = 더 타이트한 쪽 (손실 최소화)
       const chainTp = chain.target_profit_pct ?? STRATEGY_PARAMS[chain.strategy_mode as StrategyMode]?.takeProfitPct ?? 7;
       const chainSl = chain.stop_loss_pct ?? STRATEGY_PARAMS[chain.strategy_mode as StrategyMode]?.stopLossPct ?? -3;
-      effectiveTp = Math.max(Number(chainTp), dyn.takeProfitPct); // 더 넓은 TP
+      effectiveTp = Math.min(Number(chainTp), dyn.takeProfitPct); // chain TP 상한 — 설정값 초과 방지
       effectiveSl = Math.min(Number(chainSl), dyn.stopLossPct);   // 더 타이트한 SL
 
       // AI 약세 전환 + 수익 구간 → 빠른 수익 확정
@@ -245,7 +333,20 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         processedSellCodes.add(chain.stock_code);
         continue;
       }
-      // 1단계: 첫 익절 — 35% 부분 매도 (25%→35% 상향: 반전 시 확보 수익 증가)
+      // 1단계: 첫 익절 — 하락장이면 전량, 정상장이면 35% 부분 매도
+      if (isDowntrendMode && chain.total_quantity > 0) {
+        decisions.push({
+          action: 'SELL',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `하락장 익절(전량): +${pnlPct.toFixed(1)}% 도달 (목표 ${effectiveTp.toFixed(1)}%) → 분할 없이 즉시 청산`,
+          confidence: 0.92,
+        });
+        processedSellCodes.add(chain.stock_code);
+        _preTpPeakMap.delete(chain.stock_code);
+        continue;
+      }
       const sellQty = Math.ceil(chain.total_quantity * 0.35);
       if (sellQty > 0 && sellQty < chain.total_quantity) {
         decisions.push({

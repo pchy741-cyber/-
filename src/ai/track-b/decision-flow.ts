@@ -6,7 +6,7 @@ import { logger } from '../../utils/logger.js';
 import { applyEodBluechipStrategy } from './eod-bluechip.js';
 import { adjustPositionSizes } from './position-sizer.js';
 import { applyHardRules, deduplicateSells, filterEarlySells, filterManualCooldown, filterSectorConcentration } from './risk-guard.js';
-import type { CrashSignal } from '../../automation/crash-profit.js';
+import { INVERSE_ETF_CODES, type CrashSignal } from '../../automation/crash-profit.js';
 
 /**
  * 매매 결정 필터 체인 — 우선순위 순서 절대 고정
@@ -83,10 +83,35 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
     decisions = decisions.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
   }
 
+  // ── 0a. CEO 매수금지 종목 보유분 강제청산 ─────────────────────────────
+  // 인버스 ETF 제외: crash-profit.ts가 신호 기반으로 직접 관리 (NONE→청산, CAUTION→손절)
+  {
+    const { BUY_BLOCKED_CODES } = await import('./trading-rules.js');
+    const { INVERSE_ETF_CODES: _inverseSet } = await import('../../automation/crash-profit.js');
+    for (const chain of openChains) {
+      if (!BUY_BLOCKED_CODES.has(chain.stock_code)) continue;
+      if (_inverseSet.has(chain.stock_code)) continue; // 인버스 ETF는 crash-profit이 관리
+      if ((chain.total_quantity ?? 0) <= 0) continue;
+      const alreadyExiting = decisions.some(
+        (d) => d.stock_code === chain.stock_code && ['SELL', 'FORCE_CLOSE', 'PARTIAL_SELL'].includes(d.action),
+      );
+      if (alreadyExiting) continue;
+      logger.warn(`🚫 매수금지 종목 보유분 강제청산: ${chain.stock_code} ×${chain.total_quantity}`, { component: 'DECISION_FLOW' });
+      decisions.push({
+        action: 'FORCE_CLOSE',
+        stock_code: chain.stock_code,
+        quantity: chain.total_quantity,
+        price_type: 'MARKET',
+        reasoning: 'CEO 지시 매수금지 종목 보유 → 즉시 청산',
+        confidence: 1.0,
+      });
+    }
+  }
+
   // ── 0b. 인버스 ETF 결정 보호 (crash-profit 결정은 필터 우회) ────
-  const { INVERSE_ETF } = await import('../../automation/crash-profit.js');
-  const inverseDecisions = decisions.filter(d => d.stock_code === INVERSE_ETF.code);
-  decisions = decisions.filter(d => d.stock_code !== INVERSE_ETF.code);
+  const { INVERSE_ETF_CODES } = await import('../../automation/crash-profit.js');
+  const inverseDecisions = decisions.filter(d => INVERSE_ETF_CODES.has(d.stock_code));
+  decisions = decisions.filter(d => !INVERSE_ETF_CODES.has(d.stock_code));
 
   // ── 0c. BREAKOUT 모드: 비돌파 매수 차단 (BREAKOUT 전용 매수만 허용) ────
   if (mode === 'BREAKOUT') {
@@ -253,7 +278,7 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   const scoreMap = new Map(scores.map((s) => [s.stock_code, Number(s.composite_score ?? 0)]));
   const actionOrder = (d: TradeDecision) => {
     // 인버스 ETF / CRASH_PROFIT 결정은 최우선
-    if (d.stock_code === INVERSE_ETF.code) return -2;
+    if (INVERSE_ETF_CODES.has(d.stock_code)) return -2;
     if (d.trigger_source?.startsWith('CRASH_PROFIT')) return -1;
     return d.action === 'SELL' || d.action === 'FORCE_CLOSE' || d.action === 'PARTIAL_SELL' ? 0
       : d.action === 'AVERAGE_DOWN' ? 1 : 2;

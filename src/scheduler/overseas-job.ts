@@ -25,6 +25,7 @@ import { analyzeOverseasWithAI, type OverseasStockInput } from '../ai/overseas/a
 import { getAIGeneratedInsights } from '../ai/overseas/insights-generator.js';
 import { setOverseasScores } from '../cache/overseas-scores.js';
 import { getFearGreedIndex, getUpcomingEarnings, interpretMarketSentiment } from '../market/external-signals.js';
+import { getMacroSignal } from '../market/macro-signal.js';
 import { checkUsEarnings } from '../automation/earnings-sentinel.js';
 import { fetchExchangeRate } from '../automation/macro-data.js';
 import { touchActivity } from '../utils/cloud-sql-wake.js';
@@ -72,6 +73,7 @@ import { rebalancePortfolio } from './overseas/rebalancer.js';
 // turtle 전략 비활성화 — main buy-filter와 중복, 황금비율 체계로 대체
 // import { calcTurtleSignal, processTurtleExits } from './overseas/turtle.js';
 import { enforceConcentrationCap } from './overseas/concentration-cap.js';
+import { fetchKospiRegime } from '../ai/track-b/market-regime.js';
 // rotation-selling 비활성화 — rebalancer에 흡수
 // import { executeRotationSelling } from './overseas/rotation-selling.js';
 import { calcPositionSize } from './overseas/position-sizing.js';
@@ -445,10 +447,14 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       logger.info(`📈 해외 승률 데이터: ${overseasWinRates.size}종목`, { component: 'OVERSEAS' });
     }
 
-    // ── VIX 레짐 감지 (매도·매수 공통) ──
-    const earlyVixData = await getFearGreedIndex().catch(() => null);
+    // ── VIX 레짐 감지 + 나스닥 전일 등락 (매도·매수 공통) ──
+    const [earlyVixData, macroSigForSell] = await Promise.all([
+      getFearGreedIndex().catch(() => null),
+      getMacroSignal().catch(() => null),
+    ]);
     const vixValue = earlyVixData?.vix ?? 0;
     const vixRegime = getVixRegime(vixValue);
+    const nasdaqChange1d = macroSigForSell?.nasdaqChange1d ?? null;
     if (vixRegime.regime !== 'CALM') {
       logger.info(`🌡️ VIX 레짐: ${vixRegime.regime} (VIX=${vixValue.toFixed(1)}) — 사이징x${vixRegime.sizingMult} 트레일${vixRegime.trailTighten > 0 ? `-${vixRegime.trailTighten}%p` : '정상'}`, { component: 'OVERSEAS' });
     }
@@ -488,7 +494,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     // 매크로 RISK_OFF Lv3 → 트레일 추가 타이트닝
     const macroTighten = macroEvents.some(e => e.impact === 'RISK_OFF' && e.severity >= 3) ? 1.0 : 0;
     if (macroTighten > 0) effectiveVixRegime.trailTighten += macroTighten;
-    const sellResult = await evaluateSells({ holdings, pendingOrderStocks, techResults, aiMap, vixRegime: effectiveVixRegime, cash, isPaper: isPaper(), portfolioValue, fxRate: cycleFxRate });
+    const sellResult = await evaluateSells({ holdings, pendingOrderStocks, techResults, aiMap, vixRegime: effectiveVixRegime, cash, isPaper: isPaper(), portfolioValue, fxRate: cycleFxRate, nasdaqChange1d });
     const sellOrders = sellResult.sellOrders;
     cash = sellResult.cash;
 
@@ -691,7 +697,10 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       // ── 매수 필터 체인 (→ overseas/buy-filter.ts) ──
       const brief = getActiveSessionBrief();
       const { getUserBlacklist, getUserFavorites } = await import('./overseas/utils.js');
-      const [userBlacklist, userFavorites] = await Promise.all([getUserBlacklist(), getUserFavorites()]);
+      const [userBlacklist, userFavorites, kospiRegime] = await Promise.all([
+        getUserBlacklist(), getUserFavorites(),
+        fetchKospiRegime().catch(() => ({ penalty: 0 as const })),
+      ]);
       const buyTargets = filterAndRankBuyTargets({
         techResults, updatedHoldings, pendingOrderStocks,
         lossCooldownSet, recentLossSet, memoryBlockedStocks,
@@ -703,6 +712,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         earningsDrift,
         userBlacklist,
         userFavorites,
+        kospiPenalty: kospiRegime.penalty,
       });
 
       // ── 터틀 돌파 전략 비활성화 — buy-filter 12단계로 통합 ──

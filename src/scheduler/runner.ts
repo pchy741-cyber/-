@@ -261,6 +261,13 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 🌅 황금시간 Track B 가속 — 1분 간격 (mutex가 중복 실행 자동 방지)
+  // 개장 직후 09:13~10:20 (개장벨 09:12 종료 후) + 오후 13:00~15:20 (장마감 강제청산 전)
+  // 실제 실행 빈도는 Track B 실행 소요 시간(~1~2분)에 의해 자연 조절됨
+  for (const goldenCron of ['13-59 9 * * 1-5', '0-20 10 * * 1-5', '*/1 13,14 * * 1-5', '0-20 15 * * 1-5']) {
+    cron.schedule(goldenCron, () => { runTrackBSafe(); }, { timezone: MARKET.TIMEZONE });
+  }
+
   // ── 보조 모듈 (모의투자: rate limit 충돌 방지, Track B와 겹치지 않게 오프셋) ──
 
   // 뉴스 RSS — 30분 간격 (Track B +3분 오프셋)
@@ -366,9 +373,9 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 보유일 손절 체크 — 장중 매시 30분 (paper → live 이중 실행)
+  // 보유일 손절 체크 — 장중 10분 간격 (paper → live 이중 실행)
   cron.schedule(
-    '30 9-15 * * 1-5',
+    '*/10 9-15 * * 1-5',
     () => {
       runDomesticDual('보유체크', runHoldingCheckJob).catch((e) => logger.error(`보유일 체크 실패: ${e}`, { component: 'SCHEDULER' }));
     },
@@ -832,7 +839,7 @@ export function startScheduler(): void {
   }, 10_000); // 10초 후 (DB 연결 안정화 대기)
 
   logger.info('✅ 스케줄러 등록 완료 (자동화 모듈 17개 + 미국주식)', { component: 'SCHEDULER' });
-  logger.info(`  Track A: 07:30/12:30/18:00 (3회, 비용최적화) | Track B: ${SCHEDULE.TRACK_B_INTERVAL_MINUTES}분 | 뉴스: 15분`, { component: 'SCHEDULER' });
+  logger.info(`  Track A: 07:30/12:30/18:00 (3회, 비용최적화) | Track B: ${SCHEDULE.TRACK_B_INTERVAL_MINUTES}분 (황금시간 1분) | 뉴스: 15분`, { component: 'SCHEDULER' });
   logger.info('  이상감지: 30분 | 장세전환: 08:00/12:00 | 리포트: 15:40 | 🌙시간외: 15:42/52 | 🎰종가베팅: 15:15→09:02', { component: 'SCHEDULER' });
   logger.info('  🎯 스나이퍼: 15분 (수급/기술/공시 고확률 자동 진입)', { component: 'SCHEDULER' });
   logger.info('  Self-Heal: 10분 | 아카이빙: 일요일 02:00', { component: 'SCHEDULER' });

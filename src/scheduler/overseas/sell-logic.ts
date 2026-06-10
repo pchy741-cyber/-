@@ -52,6 +52,7 @@ export interface SellContext {
   isPaper?: boolean;
   portfolioValue?: number; // 동적 MAX_HOLD_DAYS 계산용
   fxRate?: number; // 사이클 환율 (동일 루프 내 일관성 보장)
+  nasdaqChange1d?: number | null; // 나스닥 전일 등락률 — 급락 선제 청산용
 }
 
 export interface SellResult {
@@ -177,6 +178,25 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     } else if (pnlPct < -1.5 && pnlPct > stopLossPct && tech.score <= -10
       && !tech.aboveMA20 && tech.rsi < 45 && holdingDays >= 1) {
       sellReason = `약세조기탈출(${pnlPct.toFixed(1)}%): score=${tech.score} RSI=${tech.rsi.toFixed(0)} MA20↓ → SL전 정리`;
+
+    // ── 1d. 시장 급락 수익 선제 확정 ──
+    // VIX FEAR/PANIC + 수익 구간 → 마이너스 전환 전 즉시 청산 (수익 반납 방지)
+    } else if (
+      (vixRegime.regime === 'STRESS' || vixRegime.regime === 'CRISIS') &&
+      pnlPct >= 1.0 &&
+      holdingDays >= 0.25
+    ) {
+      sellReason = `VIX급락 수익선제확정(${vixRegime.regime}): +${pnlPct.toFixed(1)}% → 급락전 청산`;
+
+    // ── 1e. 나스닥 급락 선제 청산 ──
+    // 전일 나스닥 -2% 이하 + 수익 구간 → 당일 미국장 약세 선반영, 수익 잠금
+    } else if (
+      ctx.nasdaqChange1d != null &&
+      ctx.nasdaqChange1d <= -2.0 &&
+      pnlPct >= 0.5 &&
+      holdingDays >= 0.1
+    ) {
+      sellReason = `나스닥급락 선제청산(${ctx.nasdaqChange1d.toFixed(1)}%): +${pnlPct.toFixed(1)}% → 미국장 하락 선반영 즉시 수익확정`;
 
     // ── 2. ATR 트레일링 스톱 ──
     } else if (maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {

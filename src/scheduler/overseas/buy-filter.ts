@@ -42,6 +42,7 @@ export interface BuyFilterContext {
   earningsDrift?: { code: string; direction: 'BULL' | 'BEAR'; gapPct: number; strength: number }[];  // 개선#7
   userBlacklist?: Set<string>;   // CEO 블랙리스트 (절대 매수 금지)
   userFavorites?: Set<string>;   // CEO 즐겨찾기 (매수 우선순위 +20)
+  kospiPenalty?: number;         // 0=정상, 1=조정, 2=하락장 — penalty≥2시 비모멘텀 해외 매수 차단
 }
 
 export type BuyTarget = TechResult & { ai?: AIDecision; _effectiveConf?: number };
@@ -75,7 +76,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
     upcomingEarnings, sentinelBlockedCodes, mktSignal,
     sectorValues, portfolioValue, aiMap, freshBreadth,
     uncertaintyMap, overseasWinRates, isUSExtended, recoveryMode, isPaper,
-    sessionBrief, userBlacklist, userFavorites,
+    sessionBrief, userBlacklist, userFavorites, kospiPenalty,
   } = ctx;
 
   // 세션전략에서 avoidStocks/priorityStocks/confidenceFloor 추출
@@ -164,6 +165,13 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       if (!mktSignal.allowBuy && !mktSignal.aggressive) { logger.info(`📊 시장 과열/공황 차단: ${t.code} — ${mktSignal.reason}`, { component: 'OVERSEAS' }); return false; }
       if (mktSignal.marketQuality === 'DANGER' && SECTOR_CLASS.DANGER_HIGH_BETA.includes(t.sector)) { logger.info(`📊 DANGER 장세 고베타 차단: ${t.code}(${t.sector})`, { component: 'OVERSEAS' }); return false; }
       return true;
+    })
+    // 7.5. KOSPI 하락장 크로스전략 — penalty≥2 시 비모멘텀 해외 신규 매수 차단
+    .filter(t => {
+      if (!kospiPenalty || kospiPenalty < 2) return true;
+      if (t.isMomentum || t.signal === 'STRONG_BUY') return true;
+      logger.info(`📉 KOSPI 하락장(p=${kospiPenalty}) 해외 매수 차단: ${t.code}`, { component: 'OVERSEAS' });
+      return false;
     })
     // 8. 섹터 그룹 / 단일 섹터 집중도
     .filter(t => {

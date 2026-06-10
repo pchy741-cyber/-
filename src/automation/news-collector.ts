@@ -9,7 +9,8 @@ import { sleep } from '../utils/sleep.js';
  * 장중 15분마다 실행 → 감시 종목 관련 뉴스를 자동 수집
  * Track A 파이프라인의 additionalSources로 자동 주입
  *
- * 매크로 뉴스: Reuters · CNBC · AP Finance (글로벌 신뢰도 높은 소스)
+ * 매크로 뉴스: Reuters · CNBC · AP Finance · MarketWatch · 연합뉴스 (글로벌 신뢰도)
+ *            YouTube: 한경글로벌마켓 · 슈카월드 · 월가월부 · 한국경제TV · Yahoo Finance · CNBC TV
  * 종목 뉴스:   연합뉴스 · 한국경제 · 매일경제 · 서울경제만 수집
  */
 
@@ -49,6 +50,14 @@ const MACRO_RSS_FEEDS = [
   { url: 'https://feeds.marketwatch.com/marketwatch/topstories/', source: 'MarketWatch', max: 4 },
   // Yonhap (연합뉴스) — 한국 공신력 1위
   { url: 'https://www.yonhapnewstv.co.kr/browse/feed/?cat=0&category=economy', source: '연합뉴스', max: 4 },
+  // YouTube — 미국 증시 한국어 해설
+  { url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCWskYkV4c4S9D__rsfOl2JA', source: '한경글로벌마켓', max: 4 },
+  { url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCsJ6RuBiTVWRX156FVbeaGg', source: '슈카월드', max: 3 },
+  { url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCIipmgxpUxDmPP-ma3Ahvbw', source: '월가월부', max: 4 },
+  { url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCF8AeLlUbEpKju6v1H6p8Eg', source: '한국경제TV', max: 3 },
+  // YouTube — 미국 증시 영어 (US stocks)
+  { url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCEAZeUIeJs0IjQiqTCdVSIg', source: 'Yahoo Finance', max: 3 },
+  { url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCvJJ_dzjViJCoLf5uKUTwoA', source: 'CNBC TV', max: 2 },
 ] as const;
 
 // 한국 종목 뉴스: 공신력 있는 경제지만 허용

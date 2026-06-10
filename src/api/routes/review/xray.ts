@@ -152,18 +152,26 @@ app.get('/review/xray', async (c) => {
 
     // ── 5. score_accuracy 모드 태깅 확인 ─────────────────────────
     try {
-      const { rows } = await pool.query(`
-        SELECT is_paper, COUNT(*) AS cnt
-        FROM score_accuracy
-        WHERE recorded_at >= NOW() - INTERVAL '30 days'
-        GROUP BY is_paper
-      `);
-      const liveAcc = rows.find((r: any) => !r.is_paper);
-      const paperAcc = rows.find((r: any) => r.is_paper);
+      const [accRows, chainRows] = await Promise.all([
+        pool.query(`
+          SELECT is_paper, COUNT(*) AS cnt
+          FROM score_accuracy
+          WHERE recorded_at >= NOW() - INTERVAL '30 days'
+          GROUP BY is_paper
+        `),
+        pool.query(`
+          SELECT COUNT(*) AS cnt FROM transaction_chains
+          WHERE status = 'CLOSED' AND is_paper = true AND closed_at >= NOW() - INTERVAL '30 days'
+        `),
+      ]);
+      const liveAcc = accRows.rows.find((r: any) => !r.is_paper);
+      const paperAcc = accRows.rows.find((r: any) => r.is_paper);
       const liveCnt = Number(liveAcc?.cnt ?? 0);
       const paperCnt = Number(paperAcc?.cnt ?? 0);
-      if (liveCnt > 0 && paperCnt === 0 && viewIsPaper) {
-        checks.push({ id: 'score_accuracy_mode', status: 'danger', label: '승률 데이터 모드 불일치', detail: `현재 Paper 모드이나 score_accuracy는 Live만 ${liveCnt}건 — 승률 피드백이 Live 기준으로 오염` });
+      const paperChainCnt = Number(chainRows.rows[0]?.cnt ?? 0);
+      // DANGER: paper trades closed but no paper score_accuracy → tagging bug
+      if (paperChainCnt > 0 && paperCnt === 0 && liveCnt > 0) {
+        checks.push({ id: 'score_accuracy_mode', status: 'danger', label: '승률 데이터 모드 불일치', detail: `Paper 청산 ${paperChainCnt}건 있으나 paper score_accuracy 없음 — 승률 피드백 누락` });
       } else if (liveCnt > 0 || paperCnt > 0) {
         checks.push({ id: 'score_accuracy_mode', status: 'ok', label: '승률 데이터 모드 태깅', detail: `Live ${liveCnt}건 / Paper ${paperCnt}건 (30일)` });
       } else {
@@ -190,10 +198,6 @@ app.get('/review/xray', async (c) => {
       // 레거시 컬럼에 값이 있는데 분리 컬럼이 0이면 마이그레이션 미적용
       if (legacyAllocated > 0 && paperAllocated === 0 && liveAllocated === 0) {
         issues.push(`마이그레이션 미적용: allocated_krw=${legacyAllocated} 분리 필요`);
-      }
-      // live에 paper 돈이 흘러간 경우
-      if (liveAllocated > 0 && viewIsPaper) {
-        issues.push(`live 예산 ${liveAllocated.toLocaleString()}원 존재 (paper 서버인데?)`);
       }
 
       // paper 포지션이 live PnL에 기록된 경우 (trades 크로스체크)

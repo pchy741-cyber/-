@@ -92,7 +92,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
       const fakeOrderNo = `P${Date.now().toString(36)}`;
       await getPool().query(
         `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2, total_quantity = 0,
-          realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + ($3 * (1 - 0.00195) - avg_buy_price) * total_quantity ELSE realized_pnl END
+          realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + ($3 * (1 - ${KR_FEE.SELL_FEE_PCT}) - avg_buy_price) * total_quantity ELSE realized_pnl END
          WHERE id = $1`,
         [chainId, sellReason, fillPrice],
       );
@@ -159,7 +159,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
     if (fillConfirmed) {
       await getPool().query(
         `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2, total_quantity = 0,
-          realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + ($3 * (1 - 0.00195) - avg_buy_price) * total_quantity ELSE realized_pnl END
+          realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + ($3 * (1 - ${KR_FEE.SELL_FEE_PCT}) - avg_buy_price) * total_quantity ELSE realized_pnl END
          WHERE id = $1`,
         [chainId, sellReason, fillPrice],
       );
@@ -206,7 +206,30 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
       `SELECT * FROM transaction_chains WHERE stock_code = $1 AND status != 'CLOSED' AND is_paper = $2 ORDER BY created_at ASC`,
       [stockCode, isPaper],
     );
-    if (openChains.length === 0) return c.json({ error: '보유 포지션이 없습니다' }, 404);
+    if (openChains.length === 0) {
+      // DB에 체인 없음 — KIS 잔고 직접 확인 후 매도 (수동 매수 포지션 대응)
+      if (!isPaper) {
+        try {
+          const balDirect = await getAccountBalance(true);
+          const kisPos = balDirect.positions?.find((p: any) => p.stockCode === stockCode);
+          if (kisPos && Number(kisPos.quantity) > 0) {
+            const kisQty = Number(kisPos.quantity);
+            let directResult = await runWithMode(false, () => placeOrder({ stockCode, side: 'SELL', quantity: kisQty }));
+            if (!directResult.success) {
+              await sleep(2000);
+              directResult = await runWithMode(false, () => placeOrder({ stockCode, side: 'SELL', quantity: kisQty }));
+            }
+            if (!directResult.success) return c.json({ error: `KIS 매도 거부: ${directResult.message}` }, 502);
+            invalidateBalanceCache();
+            logger.info(`✅ KIS직접매도 완료 (수동보유): ${stockCode} ${kisQty}주`, { component: 'DASHBOARD' });
+            return c.json({ ok: true, orderNo: directResult.orderNo, message: `${stockCode} ${kisQty}주 매도 완료 (수동보유 직접매도)` });
+          }
+        } catch (e: any) {
+          logger.error(`KIS직접매도 실패 (${stockCode}): ${e.message}`, { component: 'DASHBOARD' });
+        }
+      }
+      return c.json({ error: '보유 포지션이 없습니다' }, 404);
+    }
 
     const totalQty = openChains.reduce((s: number, ch: any) => s + Number(ch.total_quantity || 0), 0);
     if (totalQty <= 0) return c.json({ error: '매도할 수량이 없습니다' }, 400);
@@ -222,7 +245,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
         for (const chain of openChains) {
           await tx.query(
             `UPDATE transaction_chains SET status='CLOSED', closed_at=NOW(), close_reason=$2, total_quantity=0,
-              realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + ($3 * (1 - 0.00195) - avg_buy_price) * total_quantity ELSE realized_pnl END
+              realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + ($3 * (1 - ${KR_FEE.SELL_FEE_PCT}) - avg_buy_price) * total_quantity ELSE realized_pnl END
              WHERE id=$1`,
             [chain.id, sellReason, fillPrice],
           );
@@ -291,7 +314,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
         if (fillConfirmed) {
           await tx.query(
             `UPDATE transaction_chains SET status='CLOSED', closed_at=NOW(), close_reason=$2, total_quantity=0,
-              realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + ($3 * (1 - 0.00195) - avg_buy_price) * total_quantity ELSE realized_pnl END
+              realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + ($3 * (1 - ${KR_FEE.SELL_FEE_PCT}) - avg_buy_price) * total_quantity ELSE realized_pnl END
              WHERE id=$1`,
             [chain.id, sellReason, fillPrice],
           );

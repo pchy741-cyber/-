@@ -5,7 +5,7 @@ import { Button } from '@/components/ui';
 import type { CopilotData, XrayData } from './screenshot-types';
 
 function RiskGauge({ item }: { item: CopilotData['risk'][0] }) {
-  const pct = Math.min(100, (item.value / item.max) * 100);
+  const pct = Math.max(0, Math.min(100, (item.value / item.max) * 100));
   const barColor = item.level === 'danger' ? 'bg-red-500' : item.level === 'warn' ? 'bg-amber-500' : 'bg-emerald-500';
   const textColor = item.level === 'danger' ? 'text-red-400' : item.level === 'warn' ? 'text-amber-400' : 'text-emerald-400';
   return (

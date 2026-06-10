@@ -28,6 +28,13 @@ export function buildDiagBanner(tabLabel: string, props: ScreenshotProps): HTMLD
   }
   const pv = dash?.portfolio?.totalValue;
   if (pv != null) parts.push(pill('자산', `${Math.round(pv).toLocaleString()}원`));
+  const openChains = (dash as any)?.chains?.filter?.((c: any) => c.status !== 'CLOSED')?.length;
+  if (openChains != null) parts.push(pill('포지션', `${openChains}개`));
+  const pnl = dash?.portfolio?.pnl;
+  if (pnl != null) {
+    const pnlColor = pnl >= 0 ? '#10b981' : '#ef4444';
+    parts.push(pill('PnL', `${pnl >= 0 ? '+' : ''}${Math.round(pnl).toLocaleString()}원`, pnlColor));
+  }
   el.innerHTML = parts.join('');
   return el;
 }
@@ -65,7 +72,7 @@ export async function captureTab(tabLabel: string, props: ScreenshotProps, modeO
   try {
     const fullHeight = Math.max(mainEl.scrollHeight, mainEl.offsetHeight, 800);
     const bgColor = effectiveMode === 'paper' ? '#0d0a06' : '#06080f';
-    const cappedHeight = Math.min(fullHeight, 4000);
+    const cappedHeight = Math.min(fullHeight, 8000);
     const { default: html2canvas } = await import('html2canvas');
     const capturePromise = html2canvas(mainEl as HTMLElement, {
       backgroundColor: bgColor, scale: 1.5, useCORS: true, logging: false,
@@ -75,7 +82,7 @@ export async function captureTab(tabLabel: string, props: ScreenshotProps, modeO
         if (clonedMain) { (clonedMain as HTMLElement).style.overflow = 'visible'; (clonedMain as HTMLElement).style.height = 'auto'; }
       },
     });
-    const timeoutPromise = new Promise<null>((_, reject) => setTimeout(() => reject(new Error('캡쳐 타임아웃 (10초)')), 10_000));
+    const timeoutPromise = new Promise<null>((_, reject) => setTimeout(() => reject(new Error('캡쳐 타임아웃 (20초)')), 20_000));
     const canvas = await Promise.race([capturePromise, timeoutPromise]);
     if (!canvas) return null;
     return canvas.toDataURL('image/jpeg', 0.72).split(',')[1];

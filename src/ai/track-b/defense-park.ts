@@ -14,7 +14,7 @@ import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { getCashReserveRatio } from './cash-manager.js';
-import { INVERSE_ETF, type CrashSignal } from '../../automation/crash-profit.js';
+import { INVERSE_ETF, INVERSE_ETF_CODES, INVERSE_ETFS, type CrashSignal } from '../../automation/crash-profit.js';
 
 export const PARK_STOCK_CODE = '069500'; // KODEX 200
 export const PARK_STOCK_NAME = 'KODEX 200';
@@ -137,14 +137,14 @@ export async function isMarketRecovering(
   livePrices: Map<string, CurrentPrice>,
 ): Promise<{ recovering: boolean; reason: string }> {
   // 1. KODEX 200 또는 인버스 포지션 수익률 확인
-  const parkChain = openChains.find(c => c.stock_code === PARK_STOCK_CODE || c.stock_code === INVERSE_ETF.code);
+  const parkChain = openChains.find(c => c.stock_code === PARK_STOCK_CODE || INVERSE_ETF_CODES.has(c.stock_code));
   if (parkChain && parkChain.avg_buy_price) {
     const price = livePrices.get(parkChain.stock_code);
     if (price && price.currentPrice > 0) {
       const avgBuy = Number(parkChain.avg_buy_price);
       const pnlPct = ((price.currentPrice - avgBuy) / avgBuy) * 100;
       if (pnlPct >= RECOVERY_PARK_PROFIT_PCT) {
-        const assetName = parkChain.stock_code === INVERSE_ETF.code ? INVERSE_ETF.name : PARK_STOCK_NAME;
+        const assetName = INVERSE_ETFS.find(e => e.code === parkChain.stock_code)?.name ?? PARK_STOCK_NAME;
         return {
           recovering: true,
           reason: `${assetName} 수익률 +${pnlPct.toFixed(1)}% (기준 +${RECOVERY_PARK_PROFIT_PCT}%)`,
@@ -208,7 +208,7 @@ export async function isMarketRecovering(
  * 2) CRASH/PANIC → KODEX 인버스 매수 (하락 수익화)
  *    그 외 → KODEX 200 매수 (안전 파킹)
  */
-export async function buildDefenseParkEntryDecisions(
+async function buildDefenseParkEntryDecisions(
   openChains: TransactionChain[],
   livePrices: Map<string, CurrentPrice>,
   orderableCash: number,
@@ -231,7 +231,7 @@ export async function buildDefenseParkEntryDecisions(
 
   // 1. 손실 포지션만 청산 (파킹 자산 및 수익 중 종목 제외)
   for (const chain of openChains) {
-    if (chain.stock_code === PARK_STOCK_CODE || chain.stock_code === INVERSE_ETF.code) continue;
+    if (chain.stock_code === PARK_STOCK_CODE || INVERSE_ETF_CODES.has(chain.stock_code)) continue;
     const livePrice = livePrices.get(chain.stock_code);
     const avgBuy = Number(chain.avg_buy_price ?? 0);
     const currentPx = livePrice?.currentPrice ?? 0;
@@ -299,11 +299,11 @@ export async function buildDefenseParkExitDecisions(
   ).catch(() => {});
 
   // KODEX 200 또는 인버스 둘 다 확인
-  const parkChains = openChains.filter(c => c.stock_code === PARK_STOCK_CODE || c.stock_code === INVERSE_ETF.code);
+  const parkChains = openChains.filter(c => c.stock_code === PARK_STOCK_CODE || INVERSE_ETF_CODES.has(c.stock_code));
   if (parkChains.length === 0) return [];
 
   return parkChains.map(chain => {
-    const name = chain.stock_code === INVERSE_ETF.code ? INVERSE_ETF.name : PARK_STOCK_NAME;
+    const name = INVERSE_ETFS.find(e => e.code === chain.stock_code)?.name ?? PARK_STOCK_NAME;
     return {
       action: 'SELL' as const,
       stock_code: chain.stock_code,

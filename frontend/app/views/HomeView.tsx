@@ -78,6 +78,14 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const [favorites, setFavorites] = React.useState<Set<string>>(new Set());
   const [blacklist, setBlacklist] = React.useState<Set<string>>(new Set());
   const busyRef = React.useRef<string | null>(null);
+  const logContainerRef = React.useRef<HTMLDivElement>(null);
+  const firstLogTs = health?.recentEvents?.[0]?.timestamp ?? '';
+  React.useEffect(() => {
+    const el = logContainerRef.current;
+    if (!el) return;
+    // 사용자가 이미 아래로 스크롤 중이면 강제 리셋 하지 않음
+    if (el.scrollTop < 48) el.scrollTop = 0;
+  }, [firstLogTs]);
   const guard = React.useCallback((key: string, fn: () => Promise<void>) => {
     return async () => {
       if (busyRef.current) return;
@@ -158,7 +166,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   // 통합증거금: portfolio.cash = 통합 주문가능원화 (국내/해외 공용)
   const domesticCash = Number(p?.cash ?? 0);
   // 통합증거금: 시가 기반 비중 (현금+투자 = 100%)
-  const cashPctExact = totalValue > 0 ? (domesticCash / totalValue) * 100 : 0;
+  const cashPctExact = totalValue > 0 ? Math.min(100, (domesticCash / totalValue) * 100) : 0;
   const investedPctExact = totalValue > 0 ? Math.max(0, 100 - cashPctExact) : 0;
   const investedPct = Math.round(investedPctExact);
   const overseasCashPctExact = 0; // 통합증거금: 별도 해외현금 없음
@@ -298,13 +306,13 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
 
       {(health?.recentEvents?.length ?? 0) > 0 && (
         <Panel title="시스템 로그" badge={`${health!.recentEvents!.length}건`}>
-          <div className="max-h-32 overflow-y-auto divide-y divide-slate-800/20">
+          <div ref={logContainerRef} className="max-h-56 overflow-y-auto divide-y divide-slate-800/20">
             {health!.recentEvents!.map((ev: SystemEvent, i: number) => (
-              <div key={i} className="flex items-center gap-2 px-3 py-1.5 text-[11px]">
+              <div key={ev.timestamp + ev.component + i} className="flex items-center gap-2 px-3 py-1.5 text-[11px]">
                 <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${ev.status === 'success' ? 'bg-emerald-400' : ev.status === 'error' ? 'bg-rose-400' : 'bg-blue-400'}`} />
-                <span className="text-slate-500 shrink-0 w-16">{(() => { const d = new Date(ev.timestamp); return `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`; })()}</span>
-                <span className="text-slate-400 font-medium">[{ev.component}]</span>
-                <span className="text-slate-300 truncate">{ev.message}</span>
+                <span className="text-slate-500 shrink-0 w-12">{(() => { const d = new Date(ev.timestamp); return `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`; })()}</span>
+                <span className="text-slate-400 font-medium shrink-0">[{ev.component}]</span>
+                <span className="text-slate-300 truncate" title={ev.message}>{ev.message}</span>
               </div>
             ))}
           </div>

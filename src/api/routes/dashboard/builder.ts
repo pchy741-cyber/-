@@ -65,7 +65,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     ? () => withTimeout(getPaperBalance(), 10000, defaultBalance as any)
     : () => withTimeout(getAccountBalance(true), 6000, defaultBalance as any);
 
-  const [balanceResult, chains, strategy, insightRows, defensePark] = await Promise.all([
+  const [balanceResult, chains, strategy, insightRows, defensePark, liveBalanceForCap] = await Promise.all([
     balanceFn().catch(() => defaultBalance),
     getOpenChains(viewIsPaper).catch(() => []),
     getActiveStrategy().catch(() => null),
@@ -76,8 +76,15 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       [viewIsPaper]
     ).catch(() => ({ rows: [] as any[] })),
     getDefenseParkState().catch(() => ({ isActive: false, parkStockCode: '069500', parkStockName: 'KODEX 200', entryReason: null, enteredAt: null })),
+    // 연습모드: 실전 순자산의 50%를 한도로 설정 (실전 API 병렬 조회)
+    viewIsPaper
+      ? withTimeout(getAccountBalance(true), 3000, defaultBalance as any).catch(() => null)
+      : Promise.resolve(null),
   ]);
   const balance = balanceResult ?? defaultBalance;
+  // 연습모드 한도: 실전 순자산 50% (실전 API 실패 시 초기자본으로 하드캡)
+  const liveNetAssetForCap = viewIsPaper ? ((liveBalanceForCap as any)?.netAsset ?? 0) : 0;
+  const paperCap = liveNetAssetForCap > 0 ? Math.round(liveNetAssetForCap * 0.5) : PAPER_INITIAL_CAPITAL;
 
   const watchlist = await getActiveWatchlist().catch(() => []);
   const stockCodes = watchlist.map((w) => w.stock_code);
@@ -209,25 +216,35 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     for (const pos of balance.positions as any[]) {
       if (pos.quantity > 0 && !chainCodeSet.has(pos.stockCode)) {
         const invested = pos.avgBuyPrice * pos.quantity;
+        // KIS evlu_pfls_amt가 0이면 현재가-평단으로 직접 계산 (수동매수 포지션 미실현손익 표기 보호)
+        const kisPnl = pos.profitLoss ?? 0;
+        const kisPnlPct = pos.profitLossPct ?? 0;
+        const cp = pos.currentPrice ?? 0;
+        const avg = pos.avgBuyPrice ?? 0;
+        const qty = pos.quantity ?? 0;
+        const compPnl = cp > 0 && avg > 0 ? (cp - avg) * qty : 0;
+        const compPnlPct = cp > 0 && avg > 0 ? ((cp - avg) / avg) * 100 : 0;
+        const finalPnl = kisPnl !== 0 ? kisPnl : compPnl;
+        const finalPnlPct = kisPnlPct !== 0 ? kisPnlPct : compPnlPct;
         totalChainInvested += invested;
-        totalChainPnl += pos.profitLoss ?? 0;
+        totalChainPnl += finalPnl;
         enrichedChains.push({
           id: `KIS_SYNC_${pos.stockCode}`,
           stock_code: pos.stockCode,
           stock_name: pos.stockName || pos.stockCode,
           status: 'OPEN',
           strategy_mode: 'SWING',
-          avg_buy_price: pos.avgBuyPrice,
-          total_quantity: pos.quantity,
+          avg_buy_price: avg,
+          total_quantity: qty,
           total_invested: invested,
           realized_pnl: 0,
           current_averaging_count: 0,
           max_averaging_count: 0,
           is_paper: false,
           trigger_source: 'KIS_SYNC',
-          currentPrice: pos.currentPrice,
-          unrealizedPnl: pos.profitLoss ?? 0,
-          unrealizedPnlPct: pos.profitLossPct ?? 0,
+          currentPrice: cp,
+          unrealizedPnl: finalPnl,
+          unrealizedPnlPct: finalPnlPct,
           invested,
           isParking: false,
           opened_at: null,
@@ -243,17 +260,26 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   let totalPnl: number;
   let actualCash: number;
 
+  let liveRealizedPnl = 0;
   if (viewIsPaper) {
     // 체인이 없어도 getPaperBalance()의 totalEvalAmount(보유원가)를 폴백으로 사용
     totalInvested = totalChainInvested > 0 ? totalChainInvested : (balance.totalEvalAmount ?? 0);
     totalPnl = totalChainPnl + (balance.totalProfitLoss ?? 0);
-    actualCash = rawCash;
+    // 연습모드 한도 = min(paper 잔고, 실전 순자산 50%)
+    actualCash = paperCap < Infinity ? Math.min(rawCash, paperCap) : rawCash;
   } else {
     // Live: purchaseCost(원가) 사용, 없으면 체인 원가 합산
     totalInvested = (balance as any).purchaseCost > 0
       ? (balance as any).purchaseCost
       : totalChainInvested;
-    totalPnl = balance.totalProfitLoss ?? 0;
+    // KIS evlu_pfls_smtl_amt = 미실현손익만 → DB 누적 실현손익 합산
+    const realizedRows = await safeQuery<{ total: string }>(
+      `SELECT COALESCE(SUM(realized_pnl), 0)::text AS total
+       FROM transaction_chains WHERE status='CLOSED' AND is_paper=false`,
+      [],
+    );
+    liveRealizedPnl = Number(realizedRows.rows[0]?.total ?? 0);
+    totalPnl = (balance.totalProfitLoss ?? 0) + liveRealizedPnl;
     actualCash = rawCash;
   }
 
@@ -429,9 +455,14 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   // 국내 투자원가: Live=KIS purchaseCost 우선
   const domesticInvested = !viewIsPaper && kisPurchaseCost > 0
     ? kisPurchaseCost : (totalInvested || 0);
-  // 국내 시가평가: Live=KIS totalEvalAmount 우선 (DB 체인보다 KIS가 정확)
-  const domesticMarketValue = !viewIsPaper && kisDomEval > 0
-    ? kisDomEval : (totalChainInvested + totalChainPnl);
+  // 국내 시가평가:
+  // - Live: KIS totalEvalAmount 우선 (DB 체인보다 KIS가 정확)
+  // - Paper: balance.totalEvalAmount 사용 (cash와 같은 FIFO 원장 소스 — transaction_chains와 혼용 시 이중계산 방지)
+  const domesticMarketValue = kisDomEval > 0
+    ? kisDomEval
+    : viewIsPaper
+      ? (balance.totalEvalAmount ?? 0)
+      : (totalChainInvested + totalChainPnl);
 
   // ══ 통합증거금: 현금 계산 ══
   let actualCashSource: string = balance.cashSource ?? 'unknown';
@@ -464,13 +495,21 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   }
 
   // 총자산 = 국내현금 + 국내 시가 + 해외현금 + 해외 시가 (NaN 가드)
+  // Live: KIS netAsset(nass_amt=순자산) 기반 — maxBuyAmt+totalEvalAmount 이중계산 방지
   // Paper: 국내 현금(rawCash) + 해외 현금(overseasCashKrw) 둘 다 포함
-  // Live: 통합증거금(actualCash) + 해외 시가
+  const kisNetAsset = !viewIsPaper ? ((balance as any).netAsset ?? 0) : 0;
   const safeCash = isNaN(actualCash) || !actualCash ? 0 : actualCash;
   const safeDomestic = isNaN(domesticMarketValue) ? 0 : domesticMarketValue;
   const safeOverseasMV = isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw;
   const safeOverseasCash = viewIsPaper ? (isNaN(overseasCashKrw) ? 0 : overseasCashKrw) : 0;
-  const grandTotalValue = safeCash + safeDomestic + safeOverseasMV + safeOverseasCash;
+  // Live: netAsset이 있으면 그것만 사용(이미 현금+증권 포함)
+  // Paper: 실전 순자산 50% 한도 적용 (주문가능금액과 동일 기준)
+  const paperTotalRaw = safeCash + safeDomestic + safeOverseasMV + safeOverseasCash;
+  const grandTotalValue = !viewIsPaper && kisNetAsset > 0
+    ? kisNetAsset + safeOverseasMV
+    : viewIsPaper && paperCap < Infinity
+      ? Math.min(paperTotalRaw, paperCap)
+      : paperTotalRaw;
 
   // 비중(weight) 계산 — grandTotalValue 기준 시가 기반 통합 비중
   for (const ch of enrichedChains as any[]) {
@@ -517,7 +556,9 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
 
   const grandTotalInvested = domesticInvested + overseasInvestedKrw;
 
-  // 국내 주문가능 현금 (domesticCash용 — KR 매수에 쓰이는 실제 잔고)
+  // 국내 주문가능 현금: actualCash = rawCash(TTTC8908R max_buy_amt) 우선 (line 469)
+  // kisNetAsset - domesticInvested 는 미실현손익 포함으로 틀림 → 제거
+  // Paper: min(paper 잔고, 실전 순자산 50%) 한도 적용됨 (line 261)
   const unifiedCash = Math.round(actualCash);
   // 해외 현금: Paper=overseas paper cash(KRW), Live=통합증거금(국내와 동일)
   const overseasCashForDisplay = viewIsPaper ? Math.round(overseasCashKrw) : unifiedCash;
@@ -526,13 +567,13 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   const dashPayload = {
     portfolio: {
       totalValue: Math.round(grandTotalValue),
-      cash: Math.round(safeCash + safeOverseasCash), // 총현금 (Paper=국내+해외, Live=통합증거금)
+      cash: !viewIsPaper && kisNetAsset > 0 ? unifiedCash : Math.round(safeCash + safeOverseasCash), // 총현금 (Paper=국내+해외, Live=순자산-투자중)
       invested: Math.round(grandTotalInvested),
       domesticInvested: Math.round(domesticInvested),
       domesticEval: Math.round(domesticMarketValue), // 국내 증권 시가평가 (비중 계산용)
       domesticCash: unifiedCash, // 국내 주문가능 현금 (KR 매수 한도 기준)
       unrealizedPnl: Math.round(viewIsPaper ? totalChainPnl : (balance.totalProfitLoss || totalChainPnl)), // 국내 전용 (해외는 overseas.unrealizedPnlKrw)
-      realizedPnl: viewIsPaper ? Math.round(balance.totalProfitLoss ?? 0) : 0,
+      realizedPnl: viewIsPaper ? Math.round(balance.totalProfitLoss ?? 0) : Math.round(liveRealizedPnl),
       pnl: Math.round(totalPnl + (isNaN(overseasMarketValueKrw - overseasInvestedKrw) ? 0 : (overseasMarketValueKrw - overseasInvestedKrw))),
       pnlPct: Math.round(totalPnlPct * 100) / 100,
       positions: balance.positions ?? [],

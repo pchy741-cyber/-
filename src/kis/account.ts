@@ -35,12 +35,13 @@ const _balanceCache = new Map<string, { data: AccountBalance; ts: number }>();
 const BALANCE_CACHE_TTL = 120_000; // 2분 — KIS API 호출 최소화 (PWA 접속 시 토큰 재발급 알림 폭탄 방지)
 const BALANCE_CACHE_TTL_MORNING = 30_000; // 30초 — 장 개시 09:00~09:30 KST (정산 반영 지연 대응)
 
-/** 현재 KST 기준 캐시 TTL 반환 — 아침에는 짧게 */
+/** 현재 KST 기준 캐시 TTL 반환 — 장중 전체 30초, 장외 2분 */
 function getBalanceCacheTTL(): number {
   const kst = getKSTNow();
   const h = kst.getUTCHours(), m = kst.getUTCMinutes();
-  // 09:00~09:30 장 개시 + 15:15~15:30 종가베팅 타이밍 → 캐시 단축
-  if ((h === 9 && m < 30) || (h === 15 && m >= 15 && m <= 30)) return BALANCE_CACHE_TTL_MORNING;
+  // 장중 전체 (09:00~15:30 KST): 30초 — KIS 직접 매도 후 빠른 반영
+  const totalMin = h * 60 + m;
+  if (totalMin >= 9 * 60 && totalMin <= 15 * 60 + 30) return BALANCE_CACHE_TTL_MORNING;
   return BALANCE_CACHE_TTL;
 }
 

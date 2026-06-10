@@ -226,7 +226,9 @@ export class ChainManager {
         }
       } catch { /* 추출 실패 → raw score 사용 */ }
 
-      const entryScore = adjustedScore ?? score?.composite_score ?? null;
+      const entryScore = adjustedScore != null ? Math.round(adjustedScore)
+        : score?.composite_score != null ? Math.round(Number(score.composite_score))
+        : null;
 
       const insertResult = await pool.query(
         `INSERT INTO score_accuracy

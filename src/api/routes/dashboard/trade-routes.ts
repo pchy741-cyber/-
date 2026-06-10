@@ -298,10 +298,18 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
         COUNT(*) FILTER (WHERE o.side = 'BUY') AS buy_count,
         COUNT(*) FILTER (WHERE o.side = 'SELL') AS sell_count,
         COUNT(*) AS total_count,
-        -- 체인 기반 실현손익 (매도만)
+        -- 체인 기반 실현손익 (매도만, 국내 수수료 0.195% 차감)
         COALESCE(SUM(
           CASE WHEN o.side = 'SELL' AND tc.avg_buy_price > 0 THEN
-            (COALESCE(o.filled_price, 0) - tc.avg_buy_price) * COALESCE(o.filled_quantity, o.quantity, 0)
+            CASE WHEN o.stock_code ~ '^[0-9]{6}$' THEN
+              -- 국내: 매도수수료 차감
+              (COALESCE(o.filled_price, 0) * COALESCE(o.filled_quantity, o.quantity, 0)
+               - ROUND(COALESCE(o.filled_price, 0) * COALESCE(o.filled_quantity, o.quantity, 0) * ${KR_FEE.SELL_FEE_PCT}))
+              - (tc.avg_buy_price * COALESCE(o.filled_quantity, o.quantity, 0))
+            ELSE
+              -- 해외: 수수료 없음
+              (COALESCE(o.filled_price, 0) - tc.avg_buy_price) * COALESCE(o.filled_quantity, o.quantity, 0)
+            END
           END
         ), 0) AS realized_pnl,
         -- 해외/국내 구분

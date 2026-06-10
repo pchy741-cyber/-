@@ -18,6 +18,59 @@ import { invalidateStockCache } from '../../../cache/redis.js';
 import { invalidateBalanceCache } from '../../../kis/account.js';
 
 export function registerManualBuyRoutes(app: Hono) {
+  // GET /manual-buy/estimate — 매수 전 예상 금액 조회 (confirm 다이얼로그에 표시용)
+  app.get('/manual-buy/estimate', async (c) => {
+    const stockCode = String(c.req.query('stock_code') ?? '').trim().replace(/\D/g, '');
+    const aiScore = Number(c.req.query('ai_score') ?? 70);
+    const isPaper = c.req.query('is_paper') === 'true';
+    const pullbackSignal = c.req.query('pullback_signal') === 'true';
+    const confidence = c.req.query('confidence') ? Number(c.req.query('confidence')) : undefined;
+
+    if (!stockCode || stockCode.length !== 6) return c.json({ error: 'stock_code 6자리 필요' }, 400);
+
+    const { getDynamicPositionSizePct } = await import('../../../config/constants.js');
+    const { MEGA_CAP_PRIORITY_CODES } = await import('../.././../ai/track-b/trading-rules.js');
+
+    const dbStrategy = await getActiveStrategy().catch(() => null);
+    const useDynamic = (dbStrategy as any)?.use_dynamic_tpsl === true;
+    let stopLossPct: number;
+    if (aiScore >= 70 && useDynamic) {
+      const { getDynamicDomesticTpSl } = await import('../../../config/constants.js');
+      stopLossPct = getDynamicDomesticTpSl({ score: aiScore, confidence, pullbackSignal }).stopLossPct;
+    } else {
+      ({ stopLossPct } = getScoreBasedParams(aiScore));
+    }
+    const slFraction = Math.abs(stopLossPct) / 100;
+    const isMegaCap = MEGA_CAP_PRIORITY_CODES.has(stockCode);
+
+    async function calcAmt(paper: boolean) {
+      const balance = paper ? await getPaperBalance() : await getAccountBalance(true);
+      const totalCapital = balance.totalEvalAmount + balance.orderableCash;
+      const availCash = balance.orderableCash;
+      const dynPct = getDynamicPositionSizePct({ score: aiScore, confidence, isMegaCap, pullbackSignal }) / 100;
+      const computed = Math.round(totalCapital * 0.015 / slFraction);
+      const amount_krw = Math.max(Math.min(computed, Math.round(totalCapital * dynPct), Math.round(availCash * 0.95)), 10000);
+      return { amount_krw, dynPctInt: Math.round(dynPct * 100), totalCapital };
+    }
+
+    try {
+      const main = await calcAmt(isPaper);
+      const isElite = aiScore >= 90;
+      const live = isPaper && isElite ? await calcAmt(false).catch(() => null) : null;
+      return c.json({
+        amount_krw: main.amount_krw,
+        dynPct: main.dynPctInt,
+        totalCapital: main.totalCapital,
+        stopLossPct,
+        isElite,
+        liveAmount: live?.amount_krw ?? null,
+        liveTotalCapital: live?.totalCapital ?? null,
+      });
+    } catch (e) {
+      return c.json({ error: `잔고 조회 실패: ${e instanceof Error ? e.message : e}` }, 503);
+    }
+  });
+
   app.post('/manual-buy', async (c) => {
     let body: { stock_code?: string; amount_krw?: number; ai_score?: number; reasoning?: string; is_paper?: boolean; rsi?: number; volume_ratio?: number; pullback_signal?: boolean; envelope_pos?: string; confidence?: number };
     try {
@@ -229,7 +282,61 @@ export function registerManualBuyRoutes(app: Hono) {
         invalidateBalanceCache();
         invalidateCurrentModeCache();
         invalidateStockCache(stock_code).catch(() => {});
-        return c.json({ ok: true, orderNo: fakeOrderNo, stock_code, quantity, price: curPrice, totalInvested, takeProfitPct, stopLossPct });
+
+        // 엘리트 자동 실전 프로모션 — 연습 AI 90점+ → 실전 동시 매수
+        let livePromoted = false;
+        let liveAmount: number | undefined;
+        if (aiScore >= 90) {
+          try {
+            const liveDup = await getPool().query(
+              `SELECT id FROM transaction_chains WHERE stock_code = $1 AND is_paper = false AND status = 'OPEN' LIMIT 1`,
+              [stock_code],
+            );
+            if (liveDup.rows.length === 0) {
+              const { getDynamicPositionSizePct } = await import('../../../config/constants.js');
+              const { MEGA_CAP_PRIORITY_CODES } = await import('../.././../ai/track-b/trading-rules.js');
+              const liveBal = await getAccountBalance(true);
+              const liveTotalCapital = liveBal.totalEvalAmount + liveBal.orderableCash;
+              const liveAvailCash = liveBal.orderableCash;
+              const slFractionLive = Math.abs(stopLossPct) / 100;
+              const liveDynPct = getDynamicPositionSizePct({
+                score: aiScore, confidence: body.confidence,
+                isMegaCap: MEGA_CAP_PRIORITY_CODES.has(stock_code), pullbackSignal: body.pullback_signal,
+              }) / 100;
+              const liveAmountKrw = Math.max(Math.min(
+                Math.round(liveTotalCapital * 0.015 / slFractionLive),
+                Math.round(liveTotalCapital * liveDynPct),
+                Math.round(liveAvailCash * 0.95),
+              ), 10000);
+              const liveQty = Math.floor(liveAmountKrw / curPrice);
+              if (liveQty >= 1 && liveAvailCash >= liveQty * curPrice) {
+                const liveResult = await runWithMode(false, () => placeOrder({ stockCode: stock_code, side: 'BUY', quantity: liveQty }));
+                if (liveResult.success) {
+                  const liveTotalInvested = liveQty * curPrice;
+                  const liveChainId = await createChain({
+                    stock_code, status: 'OPEN', strategy_mode: 'SWING',
+                    avg_buy_price: curPrice, total_quantity: liveQty, total_invested: liveTotalInvested,
+                    realized_pnl: 0, target_profit_pct: takeProfitPct, stop_loss_pct: stopLossPct,
+                    max_averaging_count: STRATEGY_PARAMS.SWING.maxAveragingCount, current_averaging_count: 0, is_paper: false,
+                  });
+                  await getPool().query(
+                    `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
+                     VALUES ($1, $2, 'BUY', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', 'live', 'CLAUDE', $6)`,
+                    [liveChainId, stock_code, liveQty, curPrice, liveResult.orderNo ?? '', `AUTO_PROMOTE AI${aiScore}점 연습→실전`],
+                  );
+                  livePromoted = true;
+                  liveAmount = liveTotalInvested;
+                  logger.info(`⭐ 엘리트 자동 실전 매수: ${stock_code} ${liveQty}주 @${curPrice.toLocaleString()}원 (AI${aiScore}점)`, { component: 'CLAUDE_BUY' });
+                  invalidateBalanceCache();
+                }
+              }
+            }
+          } catch (e) {
+            logger.warn(`자동 실전 프로모션 실패 (연습만 진행): ${e}`, { component: 'CLAUDE_BUY' });
+          }
+        }
+
+        return c.json({ ok: true, orderNo: fakeOrderNo, stock_code, quantity, price: curPrice, totalInvested, takeProfitPct, stopLossPct, livePromoted, liveAmount });
       }
 
       const result = await runWithMode(isPaper, () => placeOrder({ stockCode: stock_code, side: 'BUY', quantity }));

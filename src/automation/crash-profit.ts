@@ -21,12 +21,25 @@ import { logger } from '../utils/logger.js';
 import type { TradeDecision, TransactionChain } from '../db/models.js';
 import type { CurrentPrice } from '../kis/market.js';
 
-// ── 인버스 ETF 코드 ────────────────────────────────────────────────────
+// ── 인버스 ETF 목록 ───────────────────────────────────────────────────
 
-export const INVERSE_ETF = {
-  code: '114800',
-  name: 'KODEX 인버스',        // KOSPI200 -1x
-} as const;
+export const INVERSE_ETF = { code: '114800', name: 'KODEX 인버스' } as const; // 하위 호환
+
+interface InverseETFConfig {
+  code: string;
+  name: string;
+  leverage: number; // 배율 (1=1x, 2=2x)
+  alloc: { CAUTION: number; CRASH: number; PANIC: number }; // 총자산 대비 배분 비율
+}
+
+// CAUTION=8%, CRASH=15%, PANIC=25%
+export const INVERSE_ETFS: InverseETFConfig[] = [
+  { code: '114800', name: 'KODEX 인버스',          leverage: 1, alloc: { CAUTION: 0.06, CRASH: 0.08, PANIC: 0.10 } }, // KOSPI200 -1x
+  { code: '252670', name: 'KODEX 200선물인버스2X', leverage: 2, alloc: { CAUTION: 0.00, CRASH: 0.04, PANIC: 0.09 } }, // KOSPI200 -2x
+  { code: '251340', name: 'KODEX 코스닥150인버스', leverage: 1, alloc: { CAUTION: 0.02, CRASH: 0.03, PANIC: 0.06 } }, // KOSDAQ150 -1x
+];
+
+export const INVERSE_ETF_CODES = new Set(INVERSE_ETFS.map(e => e.code));
 
 // ── 신호 강도 기준 ──────────────────────────────────────────────────────
 
@@ -44,6 +57,7 @@ interface CrashContext {
   vkospi?: number;           // 한국 VIX
   kospiChangePct?: number;   // KOSPI 당일 변동 %
   fearGreedIndex?: number;   // 0-100
+  nasdaqChange1d?: number | null; // 나스닥 전일 등락률 — 선행 지표
 }
 
 /**
@@ -90,6 +104,13 @@ export function assessCrashLevel(ctx: CrashContext): CrashSignal {
     score += 10; reasons.push(`F&G=${ctx.fearGreedIndex.toFixed(0)}(극공포)`);
   }
 
+  // 나스닥 전일 등락 (선행 지표 — 한국장 개장 전 미국 상황 반영)
+  if (ctx.nasdaqChange1d != null) {
+    if (ctx.nasdaqChange1d <= -3.0) { score += 25; reasons.push(`나스닥${ctx.nasdaqChange1d.toFixed(1)}%(폭락)`); }
+    else if (ctx.nasdaqChange1d <= -2.0) { score += 15; reasons.push(`나스닥${ctx.nasdaqChange1d.toFixed(1)}%(급락)`); }
+    else if (ctx.nasdaqChange1d <= -1.0) { score += 8; reasons.push(`나스닥${ctx.nasdaqChange1d.toFixed(1)}%(하락)`); }
+  }
+
   const level: CrashSignal['level'] =
     score >= 70 ? 'PANIC' :
     score >= 35 ? 'CRASH' :       // v2: 45→35 (일반 하락일에도 인버스 진입)
@@ -110,80 +131,100 @@ interface InverseDecisionParams {
 }
 
 /**
- * 인버스 ETF 매수/매도 결정 생성
+ * 인버스 ETF 매수/매도 결정 생성 (다중 ETF 지원)
  *
- * 매수: CRASH 이상 → 총자산의 15-25% 인버스 매수
- * 매도: 시장 회복(penalty=0) → 인버스 전량 매도
- * 이미 보유 시 중복 매수 안 함
+ * - NONE:           보유 인버스 전량 청산 (시장 회복)
+ * - CAUTION:        보유분 +3% 익절; 114800·251340 소규모 헤지 진입
+ * - CRASH:          3종 모두 진입 (KOSPI -1x·-2x + KOSDAQ -1x), 합산 15%
+ * - PANIC:          3종 최대 진입, 합산 25% (2x 비중 최대)
+ * - 이미 보유 시 중복 매수 안 함 (ETF별 개별 체크)
  */
 export function generateInverseDecisions(params: InverseDecisionParams): TradeDecision[] {
   const { signal, openChains, livePrices, orderableCash, totalAssets } = params;
   const decisions: TradeDecision[] = [];
+  let remainingCash = orderableCash;
 
-  const existingInverse = openChains.find(c => c.stock_code === INVERSE_ETF.code && c.total_quantity > 0);
-  const inversePrice = livePrices.get(INVERSE_ETF.code);
+  for (const etf of INVERSE_ETFS) {
+    const holding = openChains.find(c => c.stock_code === etf.code && c.total_quantity > 0);
+    const price = livePrices.get(etf.code);
 
-  // ── 매도: 시장 회복 시 인버스 청산 ──
-  if (existingInverse && signal.level === 'NONE') {
-    decisions.push({
-      action: 'SELL',
-      stock_code: INVERSE_ETF.code,
-      quantity: existingInverse.total_quantity,
-      price_type: 'MARKET',
-      reasoning: `📈 인버스 청산: 시장 정상화 (score=${signal.score})`,
-      confidence: 0.9,
-      strategy_mode: 'DEFENSE',
-      trigger_source: 'CRASH_PROFIT_EXIT',
-    });
-    return decisions;
-  }
+    // ── 매도: 시장 회복 (NONE) → 전량 청산 ──
+    if (holding && signal.level === 'NONE') {
+      decisions.push({
+        action: 'SELL',
+        stock_code: etf.code,
+        quantity: holding.total_quantity,
+        price_type: 'MARKET',
+        reasoning: `📈 ${etf.name} 청산: 시장 정상화 (score=${signal.score})`,
+        confidence: 0.9,
+        strategy_mode: 'DEFENSE',
+        trigger_source: 'CRASH_PROFIT_EXIT',
+      });
+      continue;
+    }
 
-  // CAUTION에서도 인버스 보유 중이면 익절 확인
-  if (existingInverse && signal.level === 'CAUTION') {
-    const avgBuy = Number(existingInverse.avg_buy_price ?? 0);
-    const currentPx = inversePrice?.currentPrice ?? 0;
-    if (avgBuy > 0 && currentPx > 0) {
-      const pnlPct = ((currentPx - avgBuy) / avgBuy) * 100;
-      // +3% 이상 수익이면 익절
-      if (pnlPct >= 3.0) {
-        decisions.push({
-          action: 'SELL',
-          stock_code: INVERSE_ETF.code,
-          quantity: existingInverse.total_quantity,
-          price_type: 'MARKET',
-          reasoning: `📈 인버스 익절: +${pnlPct.toFixed(1)}% (시장 안정화 조짐)`,
-          confidence: 0.85,
-          strategy_mode: 'DEFENSE',
-          trigger_source: 'CRASH_PROFIT_TP',
-        });
-        return decisions;
+    // ── 익절/손절: CAUTION 전환 시 보유분 정리 ──
+    if (holding && signal.level === 'CAUTION') {
+      const avgBuy = Number(holding.avg_buy_price ?? 0);
+      const currentPx = price?.currentPrice ?? 0;
+      if (avgBuy > 0 && currentPx > 0) {
+        const pnlPct = ((currentPx - avgBuy) / avgBuy) * 100;
+        if (pnlPct >= 3.0) {
+          decisions.push({
+            action: 'SELL',
+            stock_code: etf.code,
+            quantity: holding.total_quantity,
+            price_type: 'MARKET',
+            reasoning: `📈 ${etf.name} 익절: +${pnlPct.toFixed(1)}% (시장 안정화 조짐)`,
+            confidence: 0.85,
+            strategy_mode: 'DEFENSE',
+            trigger_source: 'CRASH_PROFIT_TP',
+          });
+          continue;
+        }
+        // CAUTION인데 손실 -5% 초과 → 하락장 재진입 실패 손절
+        if (pnlPct <= -5.0) {
+          decisions.push({
+            action: 'SELL',
+            stock_code: etf.code,
+            quantity: holding.total_quantity,
+            price_type: 'MARKET',
+            reasoning: `🔴 ${etf.name} 손절: ${pnlPct.toFixed(1)}% (CAUTION 구간 손실 초과)`,
+            confidence: 0.9,
+            strategy_mode: 'DEFENSE',
+            trigger_source: 'CRASH_PROFIT_SL',
+          });
+          continue;
+        }
       }
     }
-  }
 
-  // ── 매수: CAUTION 이상 → 인버스 진입 ──
-  if ((signal.level === 'CAUTION' || signal.level === 'CRASH' || signal.level === 'PANIC') && !existingInverse) {
-    if (!inversePrice || inversePrice.currentPrice <= 0) return decisions;
+    // ── 매수: 미보유 + 해당 레벨 배분이 있으면 진입 ──
+    if (holding) continue; // 이미 보유 → 중복 매수 안 함
+    if (signal.level === 'NONE') continue;
 
-    // PANIC: 25%, CRASH: 15%, CAUTION: 8% 배분
-    const allocPct = signal.level === 'PANIC' ? 0.25
-      : signal.level === 'CRASH' ? 0.15
-      : 0.08;  // CAUTION: 소규모 헤지
+    const allocPct = etf.alloc[signal.level];
+    if (allocPct <= 0) continue; // 이 레벨에서 해당 ETF 배분 없음
+
+    if (!price || price.currentPrice <= 0) continue;
+
     const targetKrw = Math.round(totalAssets * allocPct);
-    const investAmount = Math.min(targetKrw, Math.round(orderableCash * 0.90));
+    const investAmount = Math.min(targetKrw, Math.round(remainingCash * 0.90));
+    if (investAmount < 50_000) continue;
 
-    if (investAmount < 50_000) return decisions; // 최소 5만원
+    const qty = Math.floor(investAmount / price.currentPrice);
+    if (qty <= 0) continue;
 
-    const qty = Math.floor(investAmount / inversePrice.currentPrice);
-    if (qty <= 0) return decisions;
+    const actualCost = qty * price.currentPrice;
+    remainingCash = Math.max(0, remainingCash - actualCost);
 
     decisions.push({
       action: 'BUY',
-      stock_code: INVERSE_ETF.code,
+      stock_code: etf.code,
       quantity: qty,
       price_type: 'MARKET',
-      limit_price: inversePrice.currentPrice,
-      reasoning: `🔻 인버스 매수 [${signal.level}]: ${signal.reasons.join(', ')} (score=${signal.score}, ${(allocPct*100).toFixed(0)}%=${Math.round(investAmount/10000)}만원)`,
+      limit_price: price.currentPrice,
+      reasoning: `🔻 ${etf.name}(${etf.leverage}x) [${signal.level}]: ${signal.reasons.join(', ')} (score=${signal.score}, ${(allocPct*100).toFixed(0)}%=${Math.round(investAmount/10000)}만원)`,
       confidence: Math.min(0.95, 0.6 + signal.score / 200),
       strategy_mode: 'DEFENSE',
       trigger_source: `CRASH_PROFIT_${signal.level}`,
@@ -209,7 +250,7 @@ export function generatePanicSellDecisions(
 
   for (const chain of openChains) {
     if (chain.total_quantity <= 0) continue;
-    if (chain.stock_code === INVERSE_ETF.code) continue; // 인버스는 유지
+    if (INVERSE_ETF_CODES.has(chain.stock_code)) continue; // 인버스는 유지
     if (chain.stock_code === '069500') continue; // KODEX200 파킹 유지
 
     const price = livePrices.get(chain.stock_code);
@@ -248,20 +289,21 @@ export async function getInverseHoldingStatus(): Promise<{
   if (isMemoryMode()) return null;
 
   try {
+    const codes = INVERSE_ETFS.map(e => e.code);
     const { rows } = await getPool().query(`
-      SELECT total_quantity, avg_buy_price
+      SELECT stock_code, total_quantity, avg_buy_price
       FROM transaction_chains
-      WHERE stock_code = $1 AND status != 'CLOSED' AND total_quantity > 0
+      WHERE stock_code = ANY($1) AND status != 'CLOSED' AND total_quantity > 0
         AND is_paper = $2
-      LIMIT 1
-    `, [INVERSE_ETF.code, getCtxIsPaper()]);
+    `, [codes, getCtxIsPaper()]);
 
     if (rows.length === 0) return { holding: false, quantity: 0, pnlPct: 0, crashLevel: 'NONE' };
 
+    const totalQty = rows.reduce((s: number, r: { total_quantity: string }) => s + Number(r.total_quantity), 0);
     return {
       holding: true,
-      quantity: Number(rows[0].total_quantity),
-      pnlPct: 0, // 실시간 가격은 호출측에서 계산
+      quantity: totalQty,
+      pnlPct: 0,
       crashLevel: 'UNKNOWN',
     };
   } catch {

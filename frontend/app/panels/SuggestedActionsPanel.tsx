@@ -122,38 +122,47 @@ export default function SuggestedActionsPanel({
         </div>
       )}
 
-      {/* 추천 액션 */}
-      {actions.length > 0 && (
-        <div className={`${goal || fxImpact ? 'border-t border-white/[0.04]' : ''}`}>
-          <div className="px-4 py-2.5 border-b border-white/[0.04] flex items-center gap-2">
-            <span className="text-[11px] font-semibold text-slate-400">자동매매 현황</span>
-            <span className="text-[10px] bg-white/[0.06] text-slate-500 px-1.5 py-0.5 rounded-full ml-auto">
-              {actions.length}건
-            </span>
-          </div>
-          <div className="divide-y divide-white/[0.03]">
-            {actions.map((a, i) => {
-              const s = PRIORITY_STYLE[a.priority];
-              return (
-                <div key={i} className={`px-4 py-2 flex items-start gap-2.5 border-l-2 ${s.border} ${s.bg}`}>
-                  <span className={`w-1.5 h-1.5 rounded-full mt-1 shrink-0 ${s.dot}`} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-[11px] font-medium text-slate-200 leading-tight">{a.message}</span>
-                      {a.mode && (
-                        <span className={`text-[9px] font-semibold px-1 py-0.5 rounded ${a.mode === 'live' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-500/20 text-slate-400'}`}>
-                          {a.mode === 'live' ? '실전' : '연습'}
-                        </span>
-                      )}
+      {/* 추천 액션 — 실전 / 연습 분리 */}
+      {actions.length > 0 && (() => {
+        const liveActions = actions.filter(a => !a.mode || a.mode === 'live');
+        const paperActions = actions.filter(a => a.mode === 'paper');
+
+        const renderList = (list: SuggestedAction[], label: string, accent: 'emerald' | 'amber') => (
+          <div className={`${goal || fxImpact ? 'border-t border-white/[0.04]' : ''}`}>
+            <div className="px-4 py-2.5 border-b border-white/[0.04] flex items-center gap-2">
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${accent === 'emerald' ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+              <span className="text-[11px] font-semibold text-slate-400">{label}</span>
+              <span className="text-[10px] bg-white/[0.06] text-slate-500 px-1.5 py-0.5 rounded-full ml-auto">
+                {list.length}건
+              </span>
+            </div>
+            {/* 최대 6줄(~240px) 고정, 넘치면 스크롤 — 최신순(맨 위) */}
+            <div className="overflow-y-auto max-h-[240px] divide-y divide-white/[0.03]">
+              {list.map((a, i) => {
+                const s = PRIORITY_STYLE[a.priority];
+                return (
+                  <div key={i} className={`px-4 py-2 flex items-start gap-2.5 border-l-2 ${s.border} ${s.bg}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full mt-1 shrink-0 ${s.dot}`} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[11px] font-medium text-slate-200 leading-tight">{a.message}</span>
+                      </div>
+                      {a.detail && <div className="text-[10px] text-slate-500 mt-0.5 leading-snug">{a.detail}</div>}
                     </div>
-                    {a.detail && <div className="text-[10px] text-slate-500 mt-0.5 leading-snug">{a.detail}</div>}
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
-        </div>
-      )}
+        );
+
+        return (
+          <>
+            {liveActions.length > 0 && renderList(liveActions, '자동매매 현황 — 실전', 'emerald')}
+            {paperActions.length > 0 && renderList(paperActions, '자동매매 현황 — 연습', 'amber')}
+          </>
+        );
+      })()}
     </div>
   );
 }

@@ -82,10 +82,10 @@ export const STRATEGY_PARAMS = {
   SWING: {
     // ┌─ 전략 최적화 v4 (2026-06: 카테고리Cap + 철저손절) ────────────────┐
     // │ buyThreshold 80: 유지 (조정값 상한 -5 제한으로 실질 75+)          │
-    // │ stopLossPct -2.5%: v3 -3.0%→-2.5% (더 빠른 손절, 손실 최소화)   │
+    // │ stopLossPct -3.5%: v5 -2.5%→-3.5% (KOSPI 1-2% 일노이즈 감안, 스윙 홀딩)│
     // │ takeProfitPct 5.0%: v3 7.0%→5.0% (달성 확률↑, 실현 수익↑)      │
-    // │ 기대수익: p×(5.0-0.21)-(1-p)×(2.5+0.21) > 0 → 손익분기 36.1%  │
-    // │ R:R = 4.79:2.71 = 1.77:1 (현실적 손익비)                        │
+    // │ 기대수익: p×(5.0-0.21)-(1-p)×(3.5+0.21) > 0 → 손익분기 43.7%  │
+    // │ R:R = 4.79:3.71 = 1.29:1 → getDynamicDomesticTpSl이 실질 조정  │
     // │ maxDailyTrades 3: 일일 최대 3건 (과잉거래 방지, 수수료 절감)     │
     // └────────────────────────────────────────────────────────────────────┘
     buyThreshold: 65,       // v5: 80→65 (매매 빈도 증가, paper -10 → 실질 55)
@@ -95,7 +95,7 @@ export const STRATEGY_PARAMS = {
     earlyTpPct: 0,
     takeProfitPct: 5.0,     // v4: 7.0%→5.0% (달성률 높여 실현 수익 증가)
     takeProfitRatio: 0.5,
-    stopLossPct: -2.5,      // v4: -3.0%→-2.5% (더 빠른 손절)
+    stopLossPct: -3.5,      // v5: -2.5%→-3.5% (KOSPI 일노이즈 1-2% 감안, 스윙 조기손절 방지)
     maxHoldingDays: 8,      // v4: 12일→8일 (데드머니 조기 탈출)
     maxDailyTrades: 3,      // v4 신규: 일일 최대 신규 매수 3건
   },
@@ -272,15 +272,15 @@ export const KIS_TR_ID = {
 //   • 80-89 (고확신): 강한 신호 → 수익 극대화 허용, ATR 기반 여유 손절
 //   • 90+  (엘리트): 최강 신호 → 큰 수익 목표, 손절 타이트 (확신이 높으므로)
 export function getScoreBasedParams(score: number): { takeProfitPct: number; stopLossPct: number } {
-  if (score >= 90) return { takeProfitPct: 8.0, stopLossPct: -2.0 };  // 엘리트: 4:1 R:R
-  if (score >= 80) return { takeProfitPct: 6.0, stopLossPct: -2.5 };  // 고확신: 2.4:1 R:R
-  if (score >= 70) return { takeProfitPct: 5.0, stopLossPct: -2.5 };  // 보통: 2:1 R:R
-  return                 { takeProfitPct: 5.0, stopLossPct: -2.5 };   // 마진컬(60-69): 2:1 R:R (최소 기준)
+  if (score >= 90) return { takeProfitPct: 8.0, stopLossPct: -3.0 };  // 엘리트: 2.67:1 R:R
+  if (score >= 80) return { takeProfitPct: 6.0, stopLossPct: -3.5 };  // 고확신: 1.71:1 R:R
+  if (score >= 70) return { takeProfitPct: 5.0, stopLossPct: -3.5 };  // 보통: 1.43:1 → RR조정
+  return                 { takeProfitPct: 5.0, stopLossPct: -4.0 };   // 마진컬(60-69): RR자동조정
 }
 
-// ── 동적 포지션 사이징 — 기업 규모 × 수익률 × 리스크 복합 ──
-// 국내주식 매수 시 종목 품질에 따라 투자 비중 자동 조절
-// 고확신 대형주 → 최대 25%, 고변동 소형주 → 최소 8% (일일손실 2.5% 방어)
+// ── 동적 포지션 사이징 — 황금비율: 장이 나쁘면 매수 없고, 매수하면 그만큼 확실한 것 ──
+// 고확신 대형주 눌림 → 최대 35%, 평범한 매수 → 25%, 고변동 소형주 → 최소 8%
+// 장이 안 좋으면 매수 자체가 안 나오므로 매수 발생 = 상위 필터 통과 = 비중 확대 정당
 export interface PositionSizeHints {
   score: number;
   confidence?: number;
@@ -291,13 +291,13 @@ export interface PositionSizeHints {
 }
 
 export function getDynamicPositionSizePct(p: PositionSizeHints): number {
-  let pct = 25; // 기본 25% (파워풀 모드 — 이전 20%에서 상향)
+  let pct = 25; // 기본 25% (조건 충족 매수 = 이미 검증된 기회)
 
-  // 점수 — 확신 강할수록 더 투자
-  if (p.score >= 93)      pct += 6;
-  else if (p.score >= 88) pct += 4;
-  else if (p.score >= 83) pct += 2;
-  else if (p.score < 78)  pct -= 5;
+  // 점수 — 확신 강할수록 더 투자 (황금비율 핵심)
+  if (p.score >= 93)      pct += 8;  // 최고확신 → 33%
+  else if (p.score >= 88) pct += 5;  // 고확신 → 30%
+  else if (p.score >= 83) pct += 3;  // 중확신 → 28%
+  else if (p.score < 78)  pct -= 5;  // 저확신 → 20%
 
   // 기업 규모 — 대형주는 유동성·안정성 우위
   if (p.isMegaCap) pct += 4;
@@ -307,14 +307,16 @@ export function getDynamicPositionSizePct(p: PositionSizeHints): number {
   if (conf >= 0.85)      pct += 3;
   else if (conf < 0.60)  pct -= 4;
 
-  // 기술적 품질
-  if (p.pullbackSignal) pct += 2;
+  // 기술적 품질 — 눌림매매는 최적 진입점
+  if (p.pullbackSignal) pct += 3;
   if (p.nearHigh52w)    pct -= 3;
 
   // 리스크 — 고변동 종목은 비중 축소
   if (p.isHighBeta) pct -= 5;
 
-  return Math.max(8, Math.min(25, Math.round(pct))); // Hard Cap 25% (일일손실 2.5% 방어: 25%×SL-4%=-1%)
+  // Hard Cap 35% — 황금비율 상한 (일일손실 35%×SL-3.5%=-1.2% 허용 범위)
+  // 실제 캐시 잔고·동시포지션 한도가 2차 방어선으로 작동
+  return Math.max(8, Math.min(35, Math.round(pct)));
 }
 
 // ── 완전 동적 TP/SL — 해외주식 calcDynamicTpSl과 동등한 다팩터 엔진 ──
@@ -342,11 +344,11 @@ export function getDynamicDomesticTpSl(h: DomesticTpSlHints): { takeProfitPct: n
   // ── 1. AI 점수 베이스 (5단계) ──
   let tp: number;
   let sl: number;
-  if (h.score >= 93)      { tp = 9.0; sl = -2.5; }  // 최고확신: 3.6:1 R:R
-  else if (h.score >= 88) { tp = 8.0; sl = -2.8; }  // 초고확신: 2.86:1 R:R
-  else if (h.score >= 83) { tp = 7.0; sl = -3.0; }  // 고확신: 2.33:1 R:R
-  else if (h.score >= 80) { tp = 6.0; sl = -3.2; }  // 중확신: 1.88:1 R:R
-  else                    { tp = 5.0; sl = -3.5; }   // 저확신: 1.43:1 R:R
+  if (h.score >= 93)      { tp = 9.0; sl = -3.0; }  // 최고확신: 3.0:1 R:R (KOSPI 노이즈 여유)
+  else if (h.score >= 88) { tp = 8.0; sl = -3.3; }  // 초고확신: 2.42:1 R:R
+  else if (h.score >= 83) { tp = 7.0; sl = -3.5; }  // 고확신: 2.0:1 R:R
+  else if (h.score >= 80) { tp = 6.0; sl = -3.8; }  // 중확신: 1.58:1 R:R
+  else                    { tp = 5.0; sl = -4.0; }   // 저확신: 1.25:1 → RR<1.5→TP자동조정
 
   // ── 1b. 자기학습 피드백 블렌딩 (30% 학습 + 70% 점수기반) ──
   // 확률싸움: 내역 쌓일수록 학습된 최적 TP/SL이 점수기반을 점진 보정

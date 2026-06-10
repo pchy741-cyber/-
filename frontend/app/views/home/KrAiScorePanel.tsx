@@ -61,11 +61,28 @@ export default function KrAiScorePanel({
                     {curP > 0 && (
                       <button disabled={isBuying || !!busyAction} onClick={guard(`buy-${sc.stock_code}`, async () => {
                         const modeLabel = viewMode === 'paper' ? '[연습] ' : '[실전] ';
-                        if (!await confirm({ title: `${modeLabel}${stockLabel} 수동 매수`, description: `AI ${score}점 — 가용자본 기준 자동 사이징`, confirmLabel: '매수', confirmVariant: 'primary' })) return;
+                        // 예상 금액 조회
+                        let estDesc = `AI ${score}점 — 가용자본 기준 자동 사이징`;
+                        let isElite = false;
+                        try {
+                          const qp = new URLSearchParams({ stock_code: sc.stock_code, ai_score: String(score), is_paper: String(viewMode === 'paper'), ...(conf != null ? { confidence: String(conf / 100) } : {}) });
+                          const est = await api(`/manual-buy/estimate?${qp}`) as { amount_krw?: number; dynPct?: number; totalCapital?: number; isElite?: boolean; liveAmount?: number };
+                          if (est?.amount_krw) {
+                            const amtMan = Math.round(est.amount_krw / 10000);
+                            const pct = est.dynPct ?? 0;
+                            estDesc = `약 ${amtMan}만원 매수 예정 (총자본 ${pct}%)`;
+                            isElite = !!est.isElite;
+                            if (isElite && viewMode === 'paper' && est.liveAmount) {
+                              const liveMan = Math.round(est.liveAmount / 10000);
+                              estDesc += ` | ★ AI 90점+ — 실전도 약 ${liveMan}만원 동시매수`;
+                            }
+                          }
+                        } catch { /* 조회 실패 시 기본 문구 사용 */ }
+                        if (!await confirm({ title: `${modeLabel}${stockLabel} 수동 매수`, description: estDesc, confirmLabel: '매수', confirmVariant: 'primary' })) return;
                         setBuyingStock(sc.stock_code);
                         try {
-                          await api('/manual-buy', { method: 'POST', body: JSON.stringify({ stock_code: sc.stock_code, ai_score: score, is_paper: viewMode === 'paper', reasoning: `수동진입 AI${score}점 conf${conf}% 목표${fmtWon(targetP)}` }) });
-                          toast?.('매수 접수', 'ok');
+                          const res = await api('/manual-buy', { method: 'POST', body: JSON.stringify({ stock_code: sc.stock_code, ai_score: score, is_paper: viewMode === 'paper', reasoning: `수동진입 AI${score}점 conf${conf}% 목표${fmtWon(targetP)}` }) }) as { livePromoted?: boolean };
+                          toast?.(res?.livePromoted ? '매수 접수 (연습+실전 동시)' : '매수 접수', 'ok');
                         } catch (e: unknown) { toast?.((e as Error).message, 'err'); }
                         setBuyingStock(null);
                       })} className="text-[10px] px-2 py-1 bg-blue-600/70 hover:bg-blue-500/70 disabled:opacity-40 rounded-lg whitespace-nowrap shrink-0">

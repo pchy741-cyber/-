@@ -256,7 +256,7 @@ app.get('/review/copilot', async (c) => {
     try {
       const totalVal = netAsset > 0 ? netAsset : cash;
       const evalAmt = positions.reduce((s, p) => s + p.evalAmount, 0);
-      const cashRatio = totalVal > 0 ? ((totalVal - evalAmt) / totalVal) * 100 : 100;
+      const cashRatio = Math.max(0, Math.min(100, totalVal > 0 ? ((totalVal - evalAmt) / totalVal) * 100 : 100));
       risk.push({
         id: 'cash_ratio', label: '현금 비율', value: Math.round(cashRatio), max: 100, unit: '%',
         level: cashRatio < 10 ? 'danger' : cashRatio < 25 ? 'warn' : 'ok',

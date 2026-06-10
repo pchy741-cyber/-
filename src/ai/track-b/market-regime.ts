@@ -7,7 +7,7 @@ import { logSystem } from '../../db/client.js';
 import type { TransactionChain } from '../../db/models.js';
 import type { CurrentPrice, DailyCandle } from '../../kis/market.js';
 import { PARK_STOCK_CODE } from './defense-park.js';
-import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
+import { STRATEGY_PARAMS, KR_FEE, type StrategyMode } from '../../config/constants.js';
 
 /** 전략 모드별 시장 상황 최적화 파라미터 */
 export interface AdaptiveStrategyParams {
@@ -184,7 +184,10 @@ export async function checkDailyLoss(params: {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const { rows } = await getPool().query(`
       SELECT COALESCE(SUM(
-        (o.filled_price - tc.avg_buy_price) * o.filled_quantity
+        -- 국내 매도: 수수료(0.195%) 차감 후 실현손익 (trigger_source!=OVERSEAS 필터로 국내만)
+        (o.filled_price * o.filled_quantity
+         - ROUND(o.filled_price * o.filled_quantity * ${KR_FEE.SELL_FEE_PCT}))
+        - (tc.avg_buy_price * o.filled_quantity)
       ), 0) AS realized_pnl
       FROM orders o
       JOIN transaction_chains tc ON tc.id = o.chain_id
