@@ -37,6 +37,7 @@ export { syncPendingOverseasOrders, cancelAllPendingOverseasOrders, getUserInsig
 // ── 모듈 import ──
 import { GLOBAL_WATCHLIST } from './overseas/watchlist.js';
 import { getOverseasDynamic } from '../config/constants.js';
+import { getAllocRisk } from '../db/alloc-risk-cache.js';
 import {
   ensureOverseasTable, getHoldings, getCash, updateTradeState,
   getBucketWeight, classifyBucket,
@@ -170,7 +171,8 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     // ── 루프 헬스 요약 ──
     const holdingCost = Array.from(holdings.values()).reduce((s, h) => s + h.qty * h.avgPrice, 0);
     const earlyEstPortfolio = cash + holdingCost;
-    const earlyMaxPos = getOverseasDynamic(earlyEstPortfolio, isPaper()).maxPositions;
+    const allocRisk = await getAllocRisk(isPaper());
+    const earlyMaxPos = getOverseasDynamic(earlyEstPortfolio, isPaper(), allocRisk.positionCapPct / 100).maxPositions;
     logger.info(
       `📊 해외 루프 ${regionFlags} | 현금 $${cash.toFixed(0)} | 보유 ${holdings.size}/${earlyMaxPos} ($${holdingCost.toFixed(0)}) | 종목풀 ${allActiveStocks.length} | ${isPaper() ? 'PAPER' : 'LIVE'}`,
       { component: 'OVERSEAS' },
@@ -468,7 +470,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       return sum + (tech ? tech.price.currentPrice * h.qty : h.avgPrice * h.qty);
     }, 0);
     const portfolioValue = cash + holdingEvalUsd;
-    const dynParams = getOverseasDynamic(portfolioValue, isPaper());
+    const dynParams = getOverseasDynamic(portfolioValue, isPaper(), allocRisk.positionCapPct / 100);
     const MAX_POSITIONS = dynParams.maxPositions;
 
     // ── 3-b. 실시간 뉴스 그라운딩 (Google Search) — 매도 판단 전 악재/호재 감지 ──

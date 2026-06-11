@@ -3,6 +3,7 @@
  * overseas-job.ts에서 추출
  */
 import { OVERSEAS, SECTOR_CLASS, OVERSEAS_FEE_PCT, getOverseasDynamic } from '../../config/constants.js';
+import { getAllocRisk } from '../../db/alloc-risk-cache.js';
 import { config } from '../../config/index.js';
 import { logger } from '../../utils/logger.js';
 import { getOverride } from '../../ai/ai-overrides.js';
@@ -71,7 +72,8 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
   let { cash } = ctx;
   const sellOrders: string[] = [];
   // 동적 파라미터 1회 캐싱 (루프 밖)
-  const dynP = getOverseasDynamic(ctx.portfolioValue ?? 5000);
+  const _allocRisk = await getAllocRisk(ctx.isPaper ?? false).catch(() => ({ positionCapPct: 25 }));
+  const dynP = getOverseasDynamic(ctx.portfolioValue ?? 5000, ctx.isPaper, _allocRisk.positionCapPct / 100);
   // Trade Tuner 오버라이드 로드 (1회)
   const tunerOverrides: Record<string, number> = await getTunerOverrides(paperMode).catch(() => ({}));
   const maxHoldDays = tunerOverrides.max_hold_days ?? dynP.maxHoldDays;

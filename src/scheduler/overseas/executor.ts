@@ -2,6 +2,7 @@
  * 주문 실행 (Paper/Live) & 승자 집중 전략
  */
 import { OVERSEAS } from '../../config/constants.js';
+import { getAllocRisk } from '../../db/alloc-risk-cache.js';
 import { config } from '../../config/index.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, insertOrder } from '../../db/client.js';
@@ -206,7 +207,9 @@ export async function deployIdleCash(params: {
 
   // 동적: 포트폴리오 규모 기반 집중전략 파라미터
   const holdingValue = Array.from(holdings.values()).reduce((s, h) => s + h.qty * h.avgPrice, 0);
-  const dynP = getOverseasDynamic(cash + holdingValue);
+  const isPaperCtx = params.isPaper ?? getCtxIsPaper();
+  const allocRisk = await getAllocRisk(isPaperCtx);
+  const dynP = getOverseasDynamic(cash + holdingValue, isPaperCtx, allocRisk.positionCapPct / 100);
   const investable = cash - dynP.concentrationCashBuffer;
   if (investable < dynP.concentrationMinInvest) return { actions: [], cashUsed: 0 };
 

@@ -541,9 +541,11 @@ export const OVERSEAS = {
 /** 포트폴리오 규모 기반 동적 파라미터 — 고정형 상수 대체
  *  히스테리시스(deadband) 적용: 경계값 ±15% 범위에서 급변 방지
  *  예: $2000 경계 → $1700 이하에서야 소액 tier, $2300 이상에서야 중형 tier
+ *  posCapPct: portfolio_allocation_config.position_cap_pct / 100 (live=0.25, paper=0.40)
+ *  — alloc-risk-cache.getAllocRisk(isPaper).positionCapPct / 100 을 caller에서 주입
  */
 let _lastTier: 'micro' | 'small' | 'large' = 'small';
-export function getOverseasDynamic(portfolioUsd: number, isPaper = false) {
+export function getOverseasDynamic(portfolioUsd: number, isPaper = false, posCapPct = 0.25) {
   const p = Math.max(100, portfolioUsd);
 
   // 히스테리시스 tier 결정 — 경계값 왕복 whipsaw 방지
@@ -566,9 +568,8 @@ export function getOverseasDynamic(portfolioUsd: number, isPaper = false) {
   const tier = isPaper
     ? (p < 2000 ? 'micro' : p < 10000 ? 'small' : 'large')
     : _lastTier;
-  const posPct = tier === 'micro' ? 0.25
-    : tier === 'small' ? 0.25
-    : 0.18;
+  // large 포트폴리오는 분산 강화 (0.18 고정), 그 외는 DB posCapPct 사용
+  const posPct = tier === 'large' ? Math.min(0.18, posCapPct) : posCapPct;
   const holdDays = tier === 'micro' ? 14
     : tier === 'small' ? 21
     : 30;
@@ -576,7 +577,7 @@ export function getOverseasDynamic(portfolioUsd: number, isPaper = false) {
   const maxPos = Math.max(2, Math.min(8, Math.floor(1 / posPct)));
   return {
     maxPositions:       maxPos,
-    positionSizeUsd:    Math.round(Math.min(p * 0.25, 5000)),                // 포트폴리오 25% 캡
+    positionSizeUsd:    Math.round(Math.min(p * posCapPct, 5000)),           // DB position_cap_pct 기반
     positionPct:        posPct,
     parkingCashBuffer:  Math.round(p * 0.05),                               // 포트폴리오 5%
     maxHoldDays:        holdDays,
