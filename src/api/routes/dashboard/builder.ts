@@ -501,12 +501,14 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   const rawCashSafe = isNaN(rawCash) || !rawCash ? 0 : rawCash;
   const safeDomestic = isNaN(domesticMarketValue) ? 0 : domesticMarketValue;
   const safeOverseasMV = isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw;
-  const safeOverseasCash = viewIsPaper ? (isNaN(overseasCashKrw) ? 0 : overseasCashKrw) : 0;
-  // Live: netAsset이 있으면 그것만 사용(이미 현금+증권 포함)
-  // Paper: 총자산은 미제한 현금 기준 — paperCap은 주문가능(actualCash)에만 적용
-  const paperTotalRaw = rawCashSafe + safeDomestic + safeOverseasMV + safeOverseasCash;
-  const grandTotalValue = !viewIsPaper && kisNetAsset > 0
-    ? Math.max(kisNetAsset + safeOverseasMV, isNaN(actualCash) ? 0 : actualCash) // T+2: max_buy_amt가 nass_amt 초과 시 총자산이 주문가능보다 작아지는 현상 방지
+  const safeOverseasCashKrw = isNaN(overseasCashKrw) ? 0 : Math.max(0, overseasCashKrw);
+  // Live: domestic(T+2: kisNetAsset vs rawCash 중 큰 값) + 해외증권 + 해외현금
+  // Paper: 미제한 현금 기준 — paperCap은 주문가능(actualCash)에만 적용
+  const paperTotalRaw = rawCashSafe + safeDomestic + safeOverseasMV + safeOverseasCashKrw;
+  const grandTotalValue = !viewIsPaper
+    ? (kisNetAsset > 0
+        ? Math.max(kisNetAsset, rawCashSafe) + safeOverseasMV + safeOverseasCashKrw // T+2: max_buy_amt > nass_amt 방지
+        : rawCashSafe + safeDomestic + safeOverseasMV + safeOverseasCashKrw)
     : paperTotalRaw;
 
   // 비중(weight) 계산 — grandTotalValue 기준 시가 기반 통합 비중
@@ -559,13 +561,13 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   // Paper: min(paper 잔고, 실전 순자산 50%) 한도 적용됨 (line 261)
   const unifiedCash = Math.round(actualCash);
   // 해외 현금: Paper=overseas paper cash(KRW), Live=통합증거금(국내와 동일)
-  const overseasCashForDisplay = viewIsPaper ? Math.round(overseasCashKrw) : unifiedCash;
+  const overseasCashForDisplay = Math.round(safeOverseasCashKrw); // 실제 해외현금(overseas_state) — live/paper 공통
   const overseasCashUsdDisplay = FX_RATE > 0 ? Math.round((overseasCashForDisplay / FX_RATE) * 100) / 100 : 0;
 
   const dashPayload = {
     portfolio: {
       totalValue: Math.round(grandTotalValue),
-      cash: !viewIsPaper && kisNetAsset > 0 ? unifiedCash : Math.round((isNaN(actualCash) || !actualCash ? 0 : actualCash) + safeOverseasCash), // 총현금 (Paper=국내+해외, Live=순자산-투자중)
+      cash: !viewIsPaper && kisNetAsset > 0 ? unifiedCash + safeOverseasCashKrw : Math.round(rawCashSafe + safeOverseasCashKrw), // 총현금 (국내주문가능 + 해외현금)
       invested: Math.round(grandTotalInvested),
       domesticInvested: Math.round(domesticInvested),
       domesticEval: Math.round(domesticMarketValue), // 국내 증권 시가평가 (비중 계산용)

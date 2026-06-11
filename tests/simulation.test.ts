@@ -88,12 +88,18 @@ describe('장기 시뮬레이션 (6개월 × 6개 시장환경)', () => {
   const CAPITAL = 1_000_000;
   const results: Record<string, BacktestResult> = {};
 
-  // 1. 완만한 상승장
+  // 1. 상승장 (개별주 강세장: 0.3%/일 ≈ 연 110%, 변동성 2.5%)
+  // buyThreshold: 30 — RSI>72 블록을 우회하기 위해 force entry(-50 이하)가 아닌 완화 임계값 사용
+  // shock: 상승 지속 시 RSI가 72 위에 고착되므로 진입 기회를 만들기 위한 소폭 조정일 추가
   it('상승장: 수익 달성해야 함', () => {
     const market = generateMarket({
-      days: 120, startPrice: 10000, trend: 0.003, volatility: 0.015, baseVolume: 100000,
+      days: 180, startPrice: 10000, trend: 0.003, volatility: 0.025, baseVolume: 100000,
+      shock: [
+        { day: 80, magnitude: -0.04 },  // RSI 72 이하 복귀 → 진입 기회
+        { day: 100, magnitude: -0.03 }, // 추가 눌림
+      ],
     });
-    const r = runBacktest(market, 'TEST', { mode: 'SWING', initialCapital: CAPITAL });
+    const r = runBacktest(market, 'TEST', { mode: 'SWING', initialCapital: CAPITAL, buyThreshold: 30 });
     results['상승장'] = r;
     printResult('상승장 (SWING)', r);
 
