@@ -44,7 +44,9 @@ export function buildSuggestedActions(
     }
   }
 
-  const cashRatio = grandTotalValue > 0 ? ((actualCash || 0) / grandTotalValue) * 100 : 0;
+  // KIS T+2 정산 타이밍 불일치 시 현금 > 총자산 발생 가능 — 실제 현금 포함한 유효 총액으로 비중 계산
+  const effectiveTotal = Math.max(grandTotalValue, actualCash || 0);
+  const cashRatio = effectiveTotal > 0 ? ((actualCash || 0) / effectiveTotal) * 100 : 0;
   if (cashRatio > 60 && grandTotalValue > 100000) {
     actions.push({
       type: 'high_cash',
