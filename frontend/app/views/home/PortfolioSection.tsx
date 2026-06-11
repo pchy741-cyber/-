@@ -98,7 +98,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
             <div className="text-[9px] text-slate-500 mb-0.5">주문가능</div>
             <div className="text-sm font-bold tabular-nums text-slate-200 truncate">{fmtWon(domesticCash)}</div>
             <div className="flex items-center justify-between mt-1">
-              <span className="text-[9px] text-slate-600">{totalValue > 0 ? ((domesticCash / totalValue) * 100).toFixed(0) : 0}%</span>
+              <span className="text-[9px] text-slate-600">{totalValue > 0 ? Math.max(0, 100 - Math.round((domesticEval / totalValue) * 100) - Math.round((overseasMarketKrw / totalValue) * 100)) : 0}%</span>
             </div>
             <div className="text-[10px] text-slate-600 mt-0.5">통합증거금</div>
           </div>

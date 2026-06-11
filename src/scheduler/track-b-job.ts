@@ -5,6 +5,7 @@ import { getActiveStrategy } from '../db/client.js';
 import { isMarketOpen } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { isKillSwitchActive, reportError, reportSuccess } from '../risk/kill-switch.js';
+import { reportNoBuyCandidates } from './loop-mode.js';
 import { INVERSE_ETF_CODES } from '../automation/crash-profit.js';
 import { isRiskOffToday } from '../automation/market-routing.js';
 import { tradeExecutor } from '../trading/executor.js';
@@ -47,6 +48,7 @@ export async function runTrackBJob(): Promise<void> {
   try {
     // 1. Track B 파이프라인 실행 → 매매 판단
     const decisions = await runTrackBPipeline();
+    reportNoBuyCandidates(!decisions.some(d => d.action === 'BUY' || d.action === 'AVERAGE_DOWN'));
 
     // Kill Switch 활성 시 매수 차단, 매도(탈출)만 실행
     // 예외: 인버스 ETF 매수는 허용 — 하락장 킬스위치 발동 시에도 수익화 가능해야 함

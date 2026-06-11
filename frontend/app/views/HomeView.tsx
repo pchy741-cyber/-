@@ -165,9 +165,11 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const totalValue = Number(p?.totalValue ?? 0);
   // 통합증거금: portfolio.cash = 통합 주문가능원화 (국내/해외 공용)
   const domesticCash = Number(p?.cash ?? 0);
-  // 통합증거금: 시가 기반 비중 (현금+투자 = 100%)
-  const cashPctExact = totalValue > 0 ? Math.min(100, (domesticCash / totalValue) * 100) : 0;
-  const investedPctExact = totalValue > 0 ? Math.max(0, 100 - cashPctExact) : 0;
+  // 실제 보유 증권 시가 기준 (HeroPnlCard와 동일 산식, T+1 미결제는 현금으로 분류)
+  const investedPctExact = totalValue > 0
+    ? Math.min(100, ((domesticEval + overseasMarketKrw) / totalValue) * 100)
+    : 0;
+  const cashPctExact = Math.max(0, 100 - investedPctExact);
   const investedPct = Math.round(investedPctExact);
   const overseasCashPctExact = 0; // 통합증거금: 별도 해외현금 없음
 

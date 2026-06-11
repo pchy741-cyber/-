@@ -41,6 +41,7 @@ import { getConsensusTrend } from '../../market/consensus.js';
 import { analyzeTechnicals } from '../../analysis/indicators.js';
 import { getOverride } from '../ai-overrides.js';
 import { fetchStockDisclosures } from '../../market/krx-disclosure.js';
+import { logScanSession } from '../../db/scan-logger.js';
 
 // DART 캐시 갱신 추적 — paper/live 모드별 분리 (크로스오염 방지)
 const _lastDartRefreshAt = new Map<string, number>();
@@ -889,7 +890,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         const curPrice = liveP.currentPrice;
         const recentHigh5 = candles.length >= 6 ? Math.max(...candles.slice(1, 6).map(c => c.high)) : 0;
         const truePullbackPattern = tech.sma20 > 0 && recentHigh5 > tech.sma20 * 1.04 &&
-          curPrice >= tech.sma20 * 0.98 && curPrice <= tech.sma20 * 1.05;
+          curPrice >= tech.sma20 * 0.98 && curPrice <= tech.sma20 * 1.02;
         if (!truePullbackPattern) continue;
         const now = Date.now();
         const lastAlert = getAlertMap().get(candidate.stock_code) ?? 0;
@@ -964,6 +965,39 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     await logSystem('INFO', 'TRACK_B', `파이프라인 완료 (${elapsed}초): ${decisions.length}개 판단, ${actionable.length}개 실행 대기`);
     const tbModeTag = ctxIsPaper ? '🧪PAPER' : '💰LIVE';
     logger.info(`✅ [${tbModeTag}] Track B 완료 (${elapsed}초): 총 ${decisions.length}개 판단, ${actionable.length}개 액션 | 유휴현금 ${idleCashPct}% (${orderableCash.toLocaleString()}원)`, { component: 'TRACK_B' });
+
+    // 데이터 마스터 로그 (비동기, 파이프라인 블로킹 없음)
+    logScanSession(
+      {
+        isPaper: ctxIsPaper,
+        effectiveMode,
+        kospiPenalty: kospiRegime.penalty,
+        kospiBoost: kospiRegime.boost ?? false,
+        blockNewBuys,
+        flashCrash: kospiRegime.flashCrash ?? false,
+        dailyPnlPct: dailyLoss.dailyPnlPct,
+        totalAssets,
+        orderableCash,
+        scoresCount: scores.length,
+        macroRegime: macroSnapshot?.regime,
+        crashSignalLevel: crashSignal?.level,
+        elapsedMs: Date.now() - startTime,
+      },
+      actionable,
+      actionable.map(d => {
+        const adj = adjustedScores.find(a => a.stock_code === d.stock_code);
+        const raw = (scores as any[]).find(s => s.stock_code === d.stock_code);
+        return {
+          stockCode: d.stock_code,
+          aiScoreRaw: raw?.composite_score ?? undefined,
+          aiScoreAdjusted: adj?.score ?? undefined,
+          confidence: raw?.confidence ?? undefined,
+          action: d.action,
+          quantity: (d as any).quantity ?? undefined,
+          isPaper: ctxIsPaper,
+        };
+      }),
+    ).catch(() => {});
 
     return actionable;
   } catch (error) {
