@@ -496,20 +496,18 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
 
   // 총자산 = 국내현금 + 국내 시가 + 해외현금 + 해외 시가 (NaN 가드)
   // Live: KIS netAsset(nass_amt=순자산) 기반 — maxBuyAmt+totalEvalAmount 이중계산 방지
-  // Paper: 국내 현금(rawCash) + 해외 현금(overseasCashKrw) 둘 다 포함
+  // Paper: rawCash(미제한) 사용 — actualCash(paperCap 제한)는 주문가능 표시에만 사용
   const kisNetAsset = !viewIsPaper ? ((balance as any).netAsset ?? 0) : 0;
-  const safeCash = isNaN(actualCash) || !actualCash ? 0 : actualCash;
+  const rawCashSafe = isNaN(rawCash) || !rawCash ? 0 : rawCash;
   const safeDomestic = isNaN(domesticMarketValue) ? 0 : domesticMarketValue;
   const safeOverseasMV = isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw;
   const safeOverseasCash = viewIsPaper ? (isNaN(overseasCashKrw) ? 0 : overseasCashKrw) : 0;
   // Live: netAsset이 있으면 그것만 사용(이미 현금+증권 포함)
-  // Paper: 실전 순자산 50% 한도 적용 (주문가능금액과 동일 기준)
-  const paperTotalRaw = safeCash + safeDomestic + safeOverseasMV + safeOverseasCash;
+  // Paper: 총자산은 미제한 현금 기준 — paperCap은 주문가능(actualCash)에만 적용
+  const paperTotalRaw = rawCashSafe + safeDomestic + safeOverseasMV + safeOverseasCash;
   const grandTotalValue = !viewIsPaper && kisNetAsset > 0
     ? kisNetAsset + safeOverseasMV
-    : viewIsPaper && paperCap < Infinity
-      ? Math.min(paperTotalRaw, paperCap)
-      : paperTotalRaw;
+    : paperTotalRaw;
 
   // 비중(weight) 계산 — grandTotalValue 기준 시가 기반 통합 비중
   for (const ch of enrichedChains as any[]) {
@@ -567,7 +565,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   const dashPayload = {
     portfolio: {
       totalValue: Math.round(grandTotalValue),
-      cash: !viewIsPaper && kisNetAsset > 0 ? unifiedCash : Math.round(safeCash + safeOverseasCash), // 총현금 (Paper=국내+해외, Live=순자산-투자중)
+      cash: !viewIsPaper && kisNetAsset > 0 ? unifiedCash : Math.round(rawCashSafe + safeOverseasCash), // 총현금 (Paper=국내+해외, Live=순자산-투자중)
       invested: Math.round(grandTotalInvested),
       domesticInvested: Math.round(domesticInvested),
       domesticEval: Math.round(domesticMarketValue), // 국내 증권 시가평가 (비중 계산용)
