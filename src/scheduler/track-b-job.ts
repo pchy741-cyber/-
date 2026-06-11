@@ -16,7 +16,7 @@ let isRunning = false;
 let runningStartedAt = 0;
 let runGeneration = 0; // 강제 리셋 시 세대 증가 → 이전 실행의 finally가 새 실행을 종료하지 않도록
 const MAX_RUNTIME_MS = 10 * 60 * 1000; // 10분 초과 시 강제 해제
-let pendingRescanTimer: ReturnType<typeof setTimeout> | null = null; // rescan 타이머 추적
+const pendingRescanTimers = new Map<'paper' | 'live', ReturnType<typeof setTimeout> | null>(); // 모드별 rescan 타이머
 
 export async function runTrackBJob(): Promise<void> {
   // 동시 실행 방지 — 단, 10분 초과 시 강제 리셋 (API hang 방지)
@@ -108,18 +108,19 @@ export async function runTrackBJob(): Promise<void> {
       await sendTelegramMessage(`🤖 Track B 실행:\n${summary}`).catch(() => {});
     }
 
-    // 5. 매도 체결 후 60초 뒤 재스캔 — 이전 예약 타이머가 있으면 취소 (중복 방지)
+    // 5. 매도 체결 후 60초 뒤 재스캔 — 모드별 타이머 분리 (paper/live 상호 취소 방지)
     const hasSell = decisions.some((d) => d.action === 'SELL');
     if (hasSell) {
-      if (pendingRescanTimer) clearTimeout(pendingRescanTimer);
-      const rescanIsPaper = getCtxIsPaper();
-      pendingRescanTimer = setTimeout(() => {
-        pendingRescanTimer = null;
-        logger.info(`🔄 매도 후 재스캔 (60초, ${rescanIsPaper ? 'paper' : 'live'})`, { component: 'SCHEDULER' });
-        runWithMode(rescanIsPaper, () => runTrackBJob()).catch((e) => {
+      const rescanMode: 'paper' | 'live' = getCtxIsPaper() ? 'paper' : 'live';
+      const existingTimer = pendingRescanTimers.get(rescanMode);
+      if (existingTimer) clearTimeout(existingTimer);
+      pendingRescanTimers.set(rescanMode, setTimeout(() => {
+        pendingRescanTimers.set(rescanMode, null);
+        logger.info(`🔄 매도 후 재스캔 (60초, ${rescanMode})`, { component: 'SCHEDULER' });
+        runWithMode(rescanMode === 'paper', () => runTrackBJob()).catch((e) => {
           logger.warn(`🔄 매도 후 재스캔 실패: ${e}`, { component: 'SCHEDULER' });
         });
-      }, 60_000);
+      }, 60_000));
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);

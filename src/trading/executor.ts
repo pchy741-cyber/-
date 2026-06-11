@@ -32,7 +32,8 @@ export class TradeExecutor {
   private _minuteKey(stockCode: string, action: string): string {
     const now = new Date();
     const ymd = now.toISOString().slice(0, 16).replace(/[-:T]/g, ''); // YYYYMMDDHHmm
-    return `${stockCode}-${action}-${ymd}`;
+    const mode = getCtxIsPaper() ? 'paper' : 'live';
+    return `${mode}-${stockCode}-${action}-${ymd}`;
   }
 
   /**

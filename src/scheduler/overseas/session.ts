@@ -24,7 +24,7 @@ type Mode = 'paper' | 'live';
 
 /** 모듈간 공유되는 런타임 상태 — paper/live 분리 필요한 필드는 Map 구조 */
 export const overseasState = {
-  isRunning: false,
+  isRunning: new Map<Mode, boolean>([['paper', false], ['live', false]]),
   _shuttingDown: false,
   // ── 세션캐시: paper/live 완전 격리 (techCache 크로스오염 방지) ──
   usSessionCache: new Map<Mode, SessionCache | null>([['paper', null], ['live', null]]),
@@ -58,7 +58,8 @@ export function setSessionCache(region: 'US' | 'ASIA', cache: SessionCache | nul
 }
 
 export const setShuttingDown = (v: boolean) => { overseasState._shuttingDown = v; };
-export const isOverseasJobRunning = () => overseasState.isRunning;
+export const isOverseasJobRunning = () =>
+  overseasState.isRunning.get('paper') === true || overseasState.isRunning.get('live') === true;
 
 /** 세션 시작 포트폴리오값 DB 영속화 (서버 재시작 시 복원용) */
 async function persistSessionStartValue(value: number | null, mode?: Mode): Promise<void> {

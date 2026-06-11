@@ -87,8 +87,9 @@ import { processScaleIns, shouldUseScaleIn, buildScaleInReservation } from './ov
 export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void> {
   // isPaper는 runWithMode(ctx)로 주입 — getCtxIsPaper()로 읽음
   const s = overseasState; // shorthand
+  const modeK = modeKey(isPaper()); // paper/live 모드 키
 
-  if (s.isRunning) return;
+  if (s.isRunning.get(modeK)) return;
   if (s._shuttingDown) {
     logger.info('Shutdown 진행 중 — 해외 Job 스킵', { component: 'OVERSEAS' });
     return;
@@ -118,11 +119,11 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     return;
   }
 
-  s.isRunning = true;
+  s.isRunning.set(modeK, true);
   const jobTimeout = setTimeout(() => {
-    if (s.isRunning) {
+    if (s.isRunning.get(modeK)) {
       logger.error('해외 Job 3분 타임아웃 — isRunning 강제 해제', { component: 'OVERSEAS' });
-      s.isRunning = false;
+      s.isRunning.set(modeK, false);
     }
   }, 180_000);
 
@@ -996,7 +997,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     await reportError('OVERSEAS', msg, SCOPE);
   } finally {
     clearTimeout(jobTimeout);
-    s.isRunning = false;
+    s.isRunning.set(modeK, false);
     if (lockClient) {
       try { await lockClient.query('SELECT pg_advisory_unlock($1)', [LOCK_ID]); } catch (unlockErr) {
         logger.error(`🚨 해외주식 advisory lock 해제 실패 (DB 재시작 필요할 수 있음): ${unlockErr}`, { component: 'OVERSEAS' });

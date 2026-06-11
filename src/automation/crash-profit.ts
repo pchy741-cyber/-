@@ -32,11 +32,12 @@ interface InverseETFConfig {
   alloc: { CAUTION: number; CRASH: number; PANIC: number }; // 총자산 대비 배분 비율
 }
 
-// CAUTION=8%, CRASH=15%, PANIC=25%
+// 황금비율 배분 (주문가능현금 기준, 2x:1x ≈ φ=1.618)
+// CAUTION: 현금57%, CRASH: 현금89%, PANIC: 현금~98% (순차매수+90%캡 적용)
 export const INVERSE_ETFS: InverseETFConfig[] = [
-  { code: '114800', name: 'KODEX 인버스',          leverage: 1, alloc: { CAUTION: 0.06, CRASH: 0.08, PANIC: 0.10 } }, // KOSPI200 -1x
-  { code: '252670', name: 'KODEX 200선물인버스2X', leverage: 2, alloc: { CAUTION: 0.00, CRASH: 0.04, PANIC: 0.09 } }, // KOSPI200 -2x
-  { code: '251340', name: 'KODEX 코스닥150인버스', leverage: 1, alloc: { CAUTION: 0.02, CRASH: 0.03, PANIC: 0.06 } }, // KOSDAQ150 -1x
+  { code: '252670', name: 'KODEX 200선물인버스2X', leverage: 2, alloc: { CAUTION: 0.35, CRASH: 0.52, PANIC: 0.62 } }, // KOSPI200 -2x 주력 (거래대금1위)
+  { code: '114800', name: 'KODEX 인버스',          leverage: 1, alloc: { CAUTION: 0.22, CRASH: 0.32, PANIC: 0.38 } }, // KOSPI200 -1x 보조
+  { code: '251340', name: 'KODEX 코스닥150인버스', leverage: 1, alloc: { CAUTION: 0.00, CRASH: 0.05, PANIC: 0.08 } }, // KOSDAQ -1x (PANIC+)
 ];
 
 export const INVERSE_ETF_CODES = new Set(INVERSE_ETFS.map(e => e.code));
@@ -135,14 +136,15 @@ interface InverseDecisionParams {
  *
  * - NONE:           보유 인버스 전량 청산 (시장 회복)
  * - CAUTION:        보유분 +3% 익절; 114800·251340 소규모 헤지 진입
- * - CRASH:          3종 모두 진입 (KOSPI -1x·-2x + KOSDAQ -1x), 합산 15%
- * - PANIC:          3종 최대 진입, 합산 25% (2x 비중 최대)
- * - 이미 보유 시 중복 매수 안 함 (ETF별 개별 체크)
+ * - CRASH:          3종 진입; 현금 89% 배분 (252670 52% + 114800 32% + 251340 5%)
+ * - PANIC:          3종 최대 진입; 현금 ~98% (252670 62% + 114800 38% + 251340 8%)
+ * - 배분 기준: totalAssets 아닌 orderableCash (도달 가능한 실제 현금 기준)
  */
 export function generateInverseDecisions(params: InverseDecisionParams): TradeDecision[] {
   const { signal, openChains, livePrices, orderableCash, totalAssets } = params;
   const decisions: TradeDecision[] = [];
   let remainingCash = orderableCash;
+  const cashBase = orderableCash; // 주문 전 현금 스냅샷 — 배분 기준점 (totalAssets 아님)
 
   for (const etf of INVERSE_ETFS) {
     const holding = openChains.find(c => c.stock_code === etf.code && c.total_quantity > 0);
@@ -199,17 +201,22 @@ export function generateInverseDecisions(params: InverseDecisionParams): TradeDe
       }
     }
 
-    // ── 매수: 미보유 + 해당 레벨 배분이 있으면 진입 ──
-    if (holding) continue; // 이미 보유 → 중복 매수 안 함
+    // ── 매수/추가매수: 목표 배분 대비 부족분 top-up ──
     if (signal.level === 'NONE') continue;
 
     const allocPct = etf.alloc[signal.level];
-    if (allocPct <= 0) continue; // 이 레벨에서 해당 ETF 배분 없음
+    if (allocPct <= 0) continue;
 
     if (!price || price.currentPrice <= 0) continue;
 
-    const targetKrw = Math.round(totalAssets * allocPct);
-    const investAmount = Math.min(targetKrw, Math.round(remainingCash * 0.90));
+    // 목표 금액 대비 현재 보유 평가액 → 부족분만 추가매수 (top-up 지원)
+    const currentValue = holding ? price.currentPrice * Number(holding.total_quantity ?? 0) : 0;
+    const targetKrw = Math.round(cashBase * allocPct); // 주문가능현금 기준 (실제 도달 가능)
+    // 목표의 80% 이상 이미 보유 → 추가 불필요
+    if (currentValue >= targetKrw * 0.80) continue;
+
+    const shortfallKrw = targetKrw - currentValue;
+    const investAmount = Math.min(shortfallKrw, Math.round(remainingCash * 0.90));
     if (investAmount < 50_000) continue;
 
     const qty = Math.floor(investAmount / price.currentPrice);
@@ -217,6 +224,7 @@ export function generateInverseDecisions(params: InverseDecisionParams): TradeDe
 
     const actualCost = qty * price.currentPrice;
     remainingCash = Math.max(0, remainingCash - actualCost);
+    const label = holding ? `TOP-UP(현재${Math.round(currentValue/10000)}만→목표${Math.round(targetKrw/10000)}만)` : '신규';
 
     decisions.push({
       action: 'BUY',
@@ -224,7 +232,7 @@ export function generateInverseDecisions(params: InverseDecisionParams): TradeDe
       quantity: qty,
       price_type: 'MARKET',
       limit_price: price.currentPrice,
-      reasoning: `🔻 ${etf.name}(${etf.leverage}x) [${signal.level}]: ${signal.reasons.join(', ')} (score=${signal.score}, ${(allocPct*100).toFixed(0)}%=${Math.round(investAmount/10000)}만원)`,
+      reasoning: `🔻 ${etf.name}(${etf.leverage}x) [${signal.level}] ${label}: ${signal.reasons.join(', ')} (score=${signal.score}, ${(allocPct*100).toFixed(0)}%=${Math.round(investAmount/10000)}만원)`,
       confidence: Math.min(0.95, 0.6 + signal.score / 200),
       strategy_mode: 'DEFENSE',
       trigger_source: `CRASH_PROFIT_${signal.level}`,
