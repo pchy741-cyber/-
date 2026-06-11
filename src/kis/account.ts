@@ -109,7 +109,7 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
       PDNO: '005930',        // 삼성전자 (기준 종목 — 주문가능원화 산출용)
       ORD_UNPR: '0',         // 0 = 시장가 기준
       ORD_DVSN: '01',        // 시장가
-      CMA_EVLU_AMT_ICLD_YN: 'N',
+      CMA_EVLU_AMT_ICLD_YN: 'Y',
       OVRS_ICLD_YN: 'Y',
     },
   }).catch((e: unknown) => {
