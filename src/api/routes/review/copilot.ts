@@ -154,24 +154,30 @@ app.get('/review/copilot', async (c) => {
         syncAgo = '실시간계산';
       }
 
-      // 보유종목 현재가 조회
+      // 보유종목 현재가 조회 (병렬 — 순차 루프는 KIS 레이트리밋 + 타임아웃 유발)
       const { rows: holdingRows } = await pool.query(
         "SELECT stock_code, exchange, quantity, avg_price FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1",
         [viewIsPaper]);
       const holdingCnt = holdingRows.length;
-      const holdingDetails: string[] = [];
       let totalEval = 0;
 
-      for (const h of holdingRows) {
-        const code = h.stock_code;
-        const qty = Number(h.quantity);
-        const avgPx = Number(h.avg_price ?? 0);
-        let curPx = avgPx;
-        try {
-          const { getOverseasPrice } = await import('../../../kis/overseas.js');
-          const px = await getOverseasPrice(code, h.exchange ?? 'NASDAQ');
-          if (px?.currentPrice && px.currentPrice > 0) curPx = px.currentPrice;
-        } catch { /* 시세 조회 실패 시 매입가 사용 */ }
+      const { getOverseasPrice } = await import('../../../kis/overseas.js');
+      const priceResults = await Promise.all(
+        holdingRows.map(async (h: any) => {
+          const code = h.stock_code;
+          const qty = Number(h.quantity);
+          const avgPx = Number(h.avg_price ?? 0);
+          let curPx = avgPx;
+          try {
+            const px = await getOverseasPrice(code, h.exchange ?? 'NASDAQ');
+            if (px?.currentPrice && px.currentPrice > 0) curPx = px.currentPrice;
+          } catch { /* 시세 조회 실패 시 매입가 사용 */ }
+          return { code, qty, avgPx, curPx };
+        }),
+      );
+
+      const holdingDetails: string[] = [];
+      for (const { code, qty, avgPx, curPx } of priceResults) {
         const eval$ = curPx * qty;
         const pnl = avgPx > 0 ? ((curPx - avgPx) / avgPx * 100) : 0;
         totalEval += eval$;

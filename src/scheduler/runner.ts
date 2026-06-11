@@ -27,7 +27,9 @@ import { runOverseasJob, runOverseasDual } from './overseas-job.js';
 import { syncInterestGroups, syncHoldingsToWatchlist, fixWatchlistNames } from '../kis/interest-group.js';
 import { runUnfilledOrderCheck } from './unfilled-order-job.js';
 import { runPreMarketQuickScore } from '../automation/pre-market-quick-score.js';
+import { runMorningBrief } from '../automation/morning-brief.js';
 import { warmupOpeningBell, runOpeningBellCycle } from './opening-bell-job.js';
+import { runClosingBellJob } from './closing-bell-job.js';
 import { runHotSectorWatchlist } from '../automation/hot-sector-watchlist.js';
 import { runPortfolioHealthCheck } from '../automation/portfolio-guard.js';
 import { runIntegrityCheck } from './integrity-check-job.js';
@@ -166,6 +168,26 @@ export function startScheduler(): void {
     '55 8 * * 1-5',
     () => {
       runPreMarketQuickScore().catch((e) => logger.error(`장전 빠른 스코어링 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 08:40 — 장전 모닝브리프: 뉴스+매크로 → Gemini 합산 → opening-bell 프롬프트 컨텍스트 생성
+  cron.schedule(
+    '40 8 * * 1-5',
+    () => {
+      runMorningBrief().catch(e => logger.error(`모닝브리프 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 08:45 — 시장 라우팅: 미국 야간 지수 스캔 → Risk-On/Off 판정 → SOFR 파킹/언파킹
+  cron.schedule(
+    '45 8 * * 1-5',
+    () => {
+      import('../automation/market-routing.js')
+        .then(m => runDomesticDual('시장라우팅', () => m.dailyMarketRouting()))
+        .catch(e => logger.error(`시장라우팅 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -419,6 +441,16 @@ export function startScheduler(): void {
     `${MARKET.FORCE_SELL_MINUTE} ${MARKET.FORCE_SELL_HOUR} * * 1-5`,
     () => {
       import('./force-close-job.js').then((m) => runDomesticDual('단타마감청산', () => m.runForceCloseJob())).catch((e) => logger.error(`강제 청산 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🎯 15:10 — 개떡락 줍줍 (감시목록 -5~-15%, 거래량 2x+, AI점수 75+)
+  cron.schedule(
+    '10 15 * * 1-5',
+    () => {
+      runDomesticDual('개떡락줍줍', () => runClosingBellJob())
+        .catch(e => logger.error(`개떡락줍줍 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

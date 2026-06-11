@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { flushSync } from 'react-dom';
 import { api } from '../lib/utils';
 import type { ScreenshotProps, Tab, CopilotData, XrayData } from './screenshot/screenshot-types';
 import { CaptureOverlay } from './screenshot/CaptureOverlay';
@@ -94,7 +95,7 @@ export default function ScreenshotReview(props: ScreenshotProps) {
         const { id, label } = TAB_LIST[i];
         setStep(i + 1);
         setProgress(`[${originalMode.toUpperCase()}] ${label}`);
-        setTab(id);
+        flushSync(() => setTab(id));
         const mainEl = document.querySelector('main');
         if (mainEl) await waitForStable(mainEl, 300, 3000);
         try {
@@ -118,7 +119,7 @@ export default function ScreenshotReview(props: ScreenshotProps) {
           const tabInfo = TAB_LIST.find((t) => t.id === tabId)!;
           setStep(TAB_LIST.length + i + 1);
           setProgress(`[${otherMode.toUpperCase()}] ${tabInfo.label}`);
-          setTab(tabId);
+          flushSync(() => setTab(tabId));
           const mainEl = document.querySelector('main');
           if (mainEl) await waitForStable(mainEl, 300, 3000);
           try {
@@ -139,11 +140,14 @@ export default function ScreenshotReview(props: ScreenshotProps) {
       setTab(originalTab);
 
       setStep(totalSteps);
+      setProgress('캡처 업로드 중...');
+      // 이미지 여러 장 POST → 타임아웃 60초; copilot/xray는 capture 완료 후 병렬 호출
+      await api('/review/capture', { method: 'POST', body: JSON.stringify({ screenshots }), timeout: 60_000 });
+
       setProgress('AI Copilot + X-Ray 분석');
-      const [, copilotRes, xrayRes] = await Promise.all([
-        api('/review/capture', { method: 'POST', body: JSON.stringify({ screenshots }) }),
-        api(`/review/copilot?viewMode=${viewMode}`).catch(() => null),
-        api(`/review/xray?viewMode=${viewMode}`).catch(() => null),
+      const [copilotRes, xrayRes] = await Promise.all([
+        api(`/review/copilot?viewMode=${viewMode}`, { timeout: 40_000 }).catch(() => null),
+        api(`/review/xray?viewMode=${viewMode}`, { timeout: 20_000 }).catch(() => null),
       ]);
 
       capturedScreenshots.current = screenshots;
@@ -229,6 +233,7 @@ export default function ScreenshotReview(props: ScreenshotProps) {
 
       {/* 플로팅 버튼 */}
       <button
+        data-html2canvas-ignore="true"
         onClick={captureAllTabs}
         disabled={capturing}
         className={`fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full shadow-lg shadow-black/50 flex items-center justify-center transition-all duration-300 group ${
@@ -270,7 +275,7 @@ export default function ScreenshotReview(props: ScreenshotProps) {
 
       {/* 알림 뱃지 */}
       {(copilot || xray) && !showPanel && (dangerCount > 0 || highActions > 0) && (
-        <div className="fixed bottom-[82px] right-6 z-50 flex gap-1">
+        <div data-html2canvas-ignore="true" className="fixed bottom-[82px] right-6 z-50 flex gap-1">
           {dangerCount > 0 && <span className="bg-red-600 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full animate-pulse">{dangerCount}</span>}
           {highActions > 0 && <span className="bg-amber-600 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full">{highActions}</span>}
         </div>
@@ -278,6 +283,7 @@ export default function ScreenshotReview(props: ScreenshotProps) {
 
       {(copilot || xray) && !showPanel && (
         <button
+          data-html2canvas-ignore="true"
           onClick={() => setShowPanel(true)}
           className="fixed bottom-[82px] right-[76px] z-50 bg-slate-900/95 border border-white/10 rounded-lg px-3 py-1.5 shadow-xl cursor-pointer hover:bg-slate-800 transition-colors"
         >

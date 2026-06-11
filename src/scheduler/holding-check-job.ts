@@ -1,4 +1,5 @@
 import { STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
+import { INVERSE_ETF_CODES } from '../automation/crash-profit.js';
 import { getActiveStrategy, getOpenChains, getPool } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import { getCurrentPrice } from '../kis/market.js';
@@ -70,7 +71,9 @@ export async function runHoldingCheckJob(): Promise<void> {
         ? chain.strategy_mode as keyof typeof STRATEGY_PARAMS
         : mode;
       const params = STRATEGY_PARAMS[chainMode];
-      const maxDays = params.maxHoldingDays;
+      const isInverseEtf = INVERSE_ETF_CODES.has(chain.stock_code);
+      // 인버스 ETF: 일일 리밸런싱 손실 방지 — 전략 설정 무관하게 4영업일 하드 타임아웃
+      const maxDays = isInverseEtf ? 4 : params.maxHoldingDays;
       if (maxDays <= 0) continue;
 
       // 영업일 계산 (주말 제외)
@@ -161,8 +164,8 @@ export async function runHoldingCheckJob(): Promise<void> {
       // ── 최대 보유일 초과 ──
       if (businessDays < maxDays) continue;
 
-      // 수익이 충분히 나고 있으면 계속 보유
-      if (pnlPct > 1.0) {
+      // 수익이 충분히 나고 있으면 계속 보유 (인버스 ETF는 제외 — 일일 리밸런싱 decay 방지)
+      if (pnlPct > 1.0 && !isInverseEtf) {
         logger.info(`⏰ ${chain.stock_code}: ${businessDays}일 보유, 수익 ${pnlPct.toFixed(2)}% → 유지`, {
           component: 'HOLDING_CHECK',
         });

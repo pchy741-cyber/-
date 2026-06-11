@@ -4,7 +4,7 @@
  * 이 파일은 runOverseasJob() 메인 루프만 담당
  */
 import { analyzeTechnicals, type OHLCV } from '../analysis/indicators.js';
-import { OVERSEAS, SECTOR_CLASS, OVERSEAS_FEE_PCT, ALLOCATION_GOLDEN } from '../config/constants.js';
+import { OVERSEAS, SECTOR_CLASS, OVERSEAS_FEE_PCT, ALLOCATION_GOLDEN, GATE } from '../config/constants.js';
 import { config, setTradingModeOverride, paperOnly } from '../config/index.js';
 import { runWithMode } from '../config/context.js';
 import { getPool, logSystem } from '../db/client.js';
@@ -161,7 +161,9 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
 
     const holdings = await getHoldings(isPaper());
     const pendingOrderStocks = await getPendingOverseasStocks(isPaper());
-    let cash = await getCash(isPaper(), cycleFxRate);
+    const rawCash = await getCash(isPaper(), cycleFxRate);
+    // 통합증거금(원화주문): live 모드에서 FX 환율 급변에 의한 외화 미수금 방지 — 5% 안전마진 적용
+    let cash = (!isPaper() && rawCash > 0) ? rawCash * (1 - GATE.FX_SAFETY_MARGIN) : rawCash;
     const usCodes = GLOBAL_WATCHLIST.filter(stock => stock.region === 'US').map(stock => stock.code);
 
     // ── 루프 헬스 요약 ──

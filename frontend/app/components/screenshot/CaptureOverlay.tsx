@@ -4,7 +4,7 @@ import React from 'react';
 
 export function CaptureOverlay({ step, total, progress }: { step: number; total: number; progress: string }) {
   return (
-    <div className="fixed inset-0 z-[9999] bg-black/70 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+    <div data-html2canvas-ignore="true" className="fixed inset-0 z-[9999] bg-black/70 backdrop-blur-sm flex items-center justify-center pointer-events-none">
       <div className="bg-[#0c1021] border border-white/10 rounded-2xl px-10 py-8 shadow-2xl text-center pointer-events-auto min-w-[280px]">
         <div className="relative w-20 h-20 mx-auto mb-5">
           <svg className="w-20 h-20 -rotate-90" viewBox="0 0 80 80">

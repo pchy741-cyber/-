@@ -11,6 +11,7 @@
 
 import { getActiveWatchlist, getLatestScores, getOpenChains, getActiveStrategy } from '../db/client.js';
 import { getPreMarketSharedScores } from '../automation/pre-market-quick-score.js';
+import { getMorningBriefContext } from '../automation/morning-brief.js';
 import { getBatchPrices, getDailyChart } from '../kis/market.js';
 import { analyzeTechnicals } from '../analysis/indicators.js';
 import { callVertexGemini } from '../utils/vertex-gemini.js';
@@ -21,6 +22,7 @@ import { tradeExecutor } from '../trading/executor.js';
 import { getAccountBalance } from '../kis/account.js';
 import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
+import { isRiskOffToday } from '../automation/market-routing.js';
 
 // ── 캐시 (워밍업 → 사이클 공유) ──────────────────────────────────────────
 interface WarmCache {
@@ -102,9 +104,26 @@ export async function warmupOpeningBell(): Promise<void> {
       if (stockSummaries.length > 0) {
         const { config: appCfg } = await import('../config/index.js');
         if (appCfg.geminiEnabled) {
+          // 모닝브리프 컨텍스트 (08:40에 수집된 뉴스+매크로 합산)
+          const brief = getMorningBriefContext();
+          const briefSection = brief
+            ? `## 오늘 시장 컨텍스트 (장전 브리프)
+- 상황 요약: ${brief.marketSummary}
+- 리스크 레벨: ${brief.riskLevel} (VKOSPI=${brief.vkospi.toFixed(0)}, F&G=${brief.fearGreedIndex.toFixed(0)}, USD/KRW=${brief.usdKrw.toFixed(0)})
+- 주요 뉴스: ${brief.macroHeadlines.slice(0, 3).join(' | ') || '없음'}
+${brief.stockSentiments.size > 0 ? `- 종목 뉴스 보정 (뉴스기반 ±점수): ${[...brief.stockSentiments.entries()].map(([c, v]) => `${c}${v > 0 ? '+' : ''}${v}`).join(', ')}` : ''}`
+            : '## 오늘 시장 컨텍스트\n- 장전 브리프 미수집 (기술지표만 평가)';
+
+          // HIGH/EXTREME 리스크일 때 평가 기준 조정
+          const riskGuidance = brief && (brief.riskLevel === 'HIGH' || brief.riskLevel === 'EXTREME')
+            ? `\n⚠️ 오늘은 ${brief.riskLevel} 리스크 장세입니다. 갭하락 종목은 더 가혹하게 감점하고, 진입 기준을 높이세요.`
+            : '';
+
           const prompt = `당신은 한국 주식 개장 초단타 전문가입니다.
 아래는 09:00 개장 직전 종목별 기술 지표와 갭 현황입니다.
 각 종목의 개장 10분 내 단타 매수 적합성을 0~100점으로 평가하세요.
+
+${briefSection}
 
 평가 기준:
 - 갭상승 +1~3% + 거래량 2배 이상 + RSI 45~68 → 고점수
@@ -112,6 +131,7 @@ export async function warmupOpeningBell(): Promise<void> {
 - RSI > 70 또는 < 35 → 과매수/과매도, 감점
 - BB 상단 돌파(UP) + 거래량 → 가점
 - MACD BULLISH → 가점
+- 종목 뉴스 보정값이 있으면 해당 점수를 기술지표 점수에 가감하세요${riskGuidance}
 
 JSON만 반환 (다른 텍스트 없이):
 {"scores":[{"code":"종목코드","score":점수,"reason":"한줄사유"},...]}`;
@@ -188,6 +208,11 @@ export async function runOpeningBellCycle(): Promise<void> {
 
   // 09:00~09:12 구간만 실행 (약간 여유)
   if (h !== 9 || m > 12) return;
+
+  if (isRiskOffToday()) {
+    logger.info('🚨 Risk-Off — 개장벨 신규 스캔 차단', { component: 'OPENING_BELL' });
+    return;
+  }
 
   // Paper 모드: AI Loop ScalpingRadar가 주도 — 기존 Gemini 스캘핑만 스킵, 기술지표 매매는 허용
   // (해외는 paper에서 잘 잡히는데 국내만 안 잡힘 → 이 early return이 원인이었음)

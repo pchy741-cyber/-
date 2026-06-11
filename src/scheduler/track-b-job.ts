@@ -5,6 +5,8 @@ import { getActiveStrategy } from '../db/client.js';
 import { isMarketOpen } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { isKillSwitchActive, reportError, reportSuccess } from '../risk/kill-switch.js';
+import { INVERSE_ETF_CODES } from '../automation/crash-profit.js';
+import { isRiskOffToday } from '../automation/market-routing.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
@@ -47,13 +49,26 @@ export async function runTrackBJob(): Promise<void> {
     const decisions = await runTrackBPipeline();
 
     // Kill Switch 활성 시 매수 차단, 매도(탈출)만 실행
+    // 예외: 인버스 ETF 매수는 허용 — 하락장 킬스위치 발동 시에도 수익화 가능해야 함
     const killActive = isKillSwitchActive('KR');
     let filtered = killActive
-      ? decisions.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action))
+      ? decisions.filter((d) =>
+          ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action) ||
+          (d.action === 'BUY' && INVERSE_ETF_CODES.has(d.stock_code))
+        )
       : decisions;
 
     if (killActive && filtered.length < decisions.length) {
       logger.warn(`🛑 Kill Switch 활성 — 매수 ${decisions.length - filtered.length}건 차단, 매도 ${filtered.length}건 실행`, { component: 'SCHEDULER' });
+    }
+
+    // Risk-Off: 신규 매수 전면 차단 (매도/청산은 허용)
+    if (isRiskOffToday()) {
+      const before = filtered.length;
+      filtered = filtered.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action));
+      if (filtered.length < before) {
+        logger.info(`🚨 Risk-Off — Track B 매수 ${before - filtered.length}건 차단, 매도 ${filtered.length}건 실행`, { component: 'SCHEDULER' });
+      }
     }
 
     // 개장벨 시간대(09:00~09:12) Track B 신규매수 양보 — 개장벨이 초단타 전문

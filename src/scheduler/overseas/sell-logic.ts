@@ -170,13 +170,15 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       sellReason = `손절(${stopLossPct}%): ${pnlPct.toFixed(1)}%`;
 
     // ── 1b. 하락장 빠른 정리 ──
-    } else if (vixRegime.regime !== 'CALM' && pnlPct < -1.0 && pnlPct > stopLossPct
-      && tech.score <= -5 && !tech.aboveMA20 && holdingDays >= 0.5) {
+    // score<=-20 조건으로 강화 — 시장 전체 급락 시 전종목 동시 발동 방지
+    } else if (vixRegime.regime !== 'CALM' && pnlPct < -2.5 && pnlPct > stopLossPct
+      && tech.score <= -20 && !tech.aboveMA20 && holdingDays >= 1.0) {
       sellReason = `하락장정리(${vixRegime.regime}/${pnlPct.toFixed(1)}%): score=${tech.score} MA20↓ → 현금확보`;
 
     // ── 1c. 약세 조기 탈출 ──
-    } else if (pnlPct < -1.5 && pnlPct > stopLossPct && tech.score <= -10
-      && !tech.aboveMA20 && tech.rsi < 45 && holdingDays >= 1) {
+    // 시장 전체 하락과 개별 종목 약세를 구분하기 위해 임계값 강화
+    } else if (pnlPct < -3.0 && pnlPct > stopLossPct && tech.score <= -25
+      && !tech.aboveMA20 && tech.rsi < 40 && holdingDays >= 1) {
       sellReason = `약세조기탈출(${pnlPct.toFixed(1)}%): score=${tech.score} RSI=${tech.rsi.toFixed(0)} MA20↓ → SL전 정리`;
 
     // ── 1d. 시장 급락 수익 선제 확정 ──

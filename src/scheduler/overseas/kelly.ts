@@ -4,6 +4,7 @@
  */
 import { getPool } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
+import { GATE } from '../../config/constants.js';
 import { ctxMode } from './utils.js';
 import type { KellyResult } from './types.js';
 
@@ -126,7 +127,8 @@ export async function calcStockEVMultipliers(codes: string[], isPaper?: boolean)
       const avgWin = Number(r.avg_win_pct);
       const avgLoss = Number(r.avg_loss_pct);
       const winRate = total > 0 ? wins / total : 0.5;
-      const evPct = winRate * avgWin - (1 - winRate) * avgLoss;
+      // Gross EV에서 미국 왕복 마찰비용(0.70%) 차감 → Net EV 기준으로 사이징
+      const evPct = winRate * avgWin - (1 - winRate) * avgLoss - GATE.US_SLIPPAGE_PCT;
 
       let evMultiplier: number;
       if (total < 3) {

@@ -76,7 +76,7 @@ journalRoutes.get('/journal', async (c) => {
       FROM transaction_chains tc
       LEFT JOIN watchlist w ON w.stock_code = tc.stock_code
       WHERE tc.status = 'CLOSED'
-        AND tc.closed_at >= NOW() - ($1 || ' days')::interval
+        AND tc.closed_at >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Seoul') - ($1 * INTERVAL '1 day')) AT TIME ZONE 'Asia/Seoul'
         AND tc.is_paper = $2
       ORDER BY tc.closed_at DESC
       LIMIT 200

@@ -14,6 +14,7 @@ import { getAccountBalance, invalidateBalanceCache } from '../kis/account.js';
 import { getPaperBalance } from '../risk/paper-balance.js';
 import { getVolumeRankingStocks, getCurrentPrice, getBatchPrices, type CurrentPrice } from '../kis/market.js';
 import { isKillSwitchActive, reportSuccess } from '../risk/kill-switch.js';
+import { isRiskOffToday } from '../automation/market-routing.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
@@ -68,6 +69,11 @@ export async function runEodBettingJob(): Promise<void> {
   // Kill Switch 확인
   if (isKillSwitchActive()) {
     logger.debug('🛑 Kill Switch 활성 — 종가베팅 스킵', { component: 'EOD_BETTING' });
+    return;
+  }
+
+  if (isRiskOffToday()) {
+    logger.info('🚨 Risk-Off — 종가베팅 스킵', { component: 'EOD_BETTING' });
     return;
   }
 

@@ -324,7 +324,7 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
       LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
       WHERE o.trading_mode = $1
         AND o.status = 'FILLED'
-        AND o.created_at >= NOW() - ($2 * INTERVAL '1 day')
+        AND o.created_at >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Seoul') - ($2 * INTERVAL '1 day')) AT TIME ZONE 'Asia/Seoul'
       GROUP BY trade_date
       ORDER BY trade_date DESC
     `, [tradeMode, days]);

@@ -104,6 +104,7 @@ export function AutoPilotButton({ loopStatusProp, capturing, toast }: {
 
   return (
     <button
+      data-html2canvas-ignore="true"
       onClick={toggleLoop}
       disabled={togglingLoop || capturing}
       className={`fixed bottom-6 right-[88px] z-50 h-14 px-3 rounded-full shadow-lg shadow-black/50 flex items-center justify-center transition-all duration-300 ${

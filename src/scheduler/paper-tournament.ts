@@ -14,6 +14,7 @@ import { isMarketOpen } from '../kis/market.js';
 import { runTrackBPipeline } from '../ai/track-b/pipeline.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { isKillSwitchActive, reportSuccess } from '../risk/kill-switch.js';
+import { INVERSE_ETF_CODES } from '../automation/crash-profit.js';
 import { logger } from '../utils/logger.js';
 import { getRegimeAllocation } from '../automation/regime-allocator.js';
 
@@ -69,10 +70,13 @@ export async function runPaperTournament(): Promise<void> {
           // 파이프라인 실행
           const decisions = await runTrackBPipeline();
 
-          // Kill Switch → 매도만
+          // Kill Switch → 매도만 (예외: 인버스 ETF 매수는 허용)
           const killActive = isKillSwitchActive('KR');
           let filtered = killActive
-            ? decisions.filter(d => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action))
+            ? decisions.filter(d =>
+                ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action) ||
+                (d.action === 'BUY' && INVERSE_ETF_CODES.has(d.stock_code))
+              )
             : decisions;
 
           // 체제 가중치 반영: 포지션 수량 스케일링
