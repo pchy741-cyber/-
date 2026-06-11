@@ -506,7 +506,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   // Paper: 총자산은 미제한 현금 기준 — paperCap은 주문가능(actualCash)에만 적용
   const paperTotalRaw = rawCashSafe + safeDomestic + safeOverseasMV + safeOverseasCash;
   const grandTotalValue = !viewIsPaper && kisNetAsset > 0
-    ? kisNetAsset + safeOverseasMV
+    ? Math.max(kisNetAsset + safeOverseasMV, isNaN(actualCash) ? 0 : actualCash) // T+2: max_buy_amt가 nass_amt 초과 시 총자산이 주문가능보다 작아지는 현상 방지
     : paperTotalRaw;
 
   // 비중(weight) 계산 — grandTotalValue 기준 시가 기반 통합 비중
@@ -565,7 +565,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   const dashPayload = {
     portfolio: {
       totalValue: Math.round(grandTotalValue),
-      cash: !viewIsPaper && kisNetAsset > 0 ? unifiedCash : Math.round(rawCashSafe + safeOverseasCash), // 총현금 (Paper=국내+해외, Live=순자산-투자중)
+      cash: !viewIsPaper && kisNetAsset > 0 ? unifiedCash : Math.round((isNaN(actualCash) || !actualCash ? 0 : actualCash) + safeOverseasCash), // 총현금 (Paper=국내+해외, Live=순자산-투자중)
       invested: Math.round(grandTotalInvested),
       domesticInvested: Math.round(domesticInvested),
       domesticEval: Math.round(domesticMarketValue), // 국내 증권 시가평가 (비중 계산용)
