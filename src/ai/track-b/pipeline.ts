@@ -120,6 +120,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const bigLossBlocked = await getBigLossBlockedStocks();
     // 최근 30분 매도 종목 → 재진입 쿨다운 (v4: 2h→30m 단축 — 눌림목 반등 재진입 허용)
     const recentlySoldCodes = await getRecentlySoldStocks(0.5);
+    // 인버스 ETF는 쿨다운 예외 — 하락장 지속 시 즉시 재진입 가능해야 함
+    for (const code of INVERSE_ETF_CODES) recentlySoldCodes.delete(code);
     if (todayRepeatStopCodes.size > 0) {
       logger.warn(`🚫 당일 반복손절 재진입 차단: ${[...todayRepeatStopCodes].join(', ')}`, { component: 'TRACK_B' });
     }

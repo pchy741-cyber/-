@@ -109,7 +109,7 @@ export async function getPerformanceMultiplier(): Promise<number> {
       label = '약공격';
     } else if (winRate < 0.30 || totalPnl < lossThresholdHard) {
       mult = isPaper ? 0.85 : 0.7;
-      label = isPaper ? '연습모드 보수' : `심각손실(${(totalPnl / portfolioValue * 100).toFixed(1)}%)`;
+      label = isPaper ? '연습모드 보수' : `심각손실(WR${(winRate * 100).toFixed(0)}%/${(totalPnl / portfolioValue * 100).toFixed(1)}%)`;
     } else if (winRate < 0.40 || totalPnl < lossThresholdSoft) {
       mult = isPaper ? 0.90 : 0.80;
       label = isPaper ? '연습모드 약보수' : '방어';

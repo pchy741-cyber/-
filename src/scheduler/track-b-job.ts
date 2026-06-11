@@ -62,10 +62,13 @@ export async function runTrackBJob(): Promise<void> {
       logger.warn(`🛑 Kill Switch 활성 — 매수 ${decisions.length - filtered.length}건 차단, 매도 ${filtered.length}건 실행`, { component: 'SCHEDULER' });
     }
 
-    // Risk-Off: 신규 매수 전면 차단 (매도/청산은 허용)
+    // Risk-Off: 신규 매수 전면 차단 (매도/청산은 허용, 인버스 ETF 매수는 예외)
     if (isRiskOffToday()) {
       const before = filtered.length;
-      filtered = filtered.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action));
+      filtered = filtered.filter((d) =>
+        ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action) ||
+        (d.action === 'BUY' && INVERSE_ETF_CODES.has(d.stock_code))
+      );
       if (filtered.length < before) {
         logger.info(`🚨 Risk-Off — Track B 매수 ${before - filtered.length}건 차단, 매도 ${filtered.length}건 실행`, { component: 'SCHEDULER' });
       }

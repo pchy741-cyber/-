@@ -3,6 +3,7 @@ import { getPool } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { logger } from '../../utils/logger.js';
 import { type TechnicalFallbackParams, resolveStrategyParams } from './technical-fallback-types.js';
+import { INVERSE_ETF_CODES } from '../../automation/crash-profit.js';
 
 /**
  * 보유 종목 물타기 판단 (지지선+반등신호 게이트)
@@ -19,6 +20,8 @@ export async function generateAveragingDecisions(
   let cash = remainingCash;
 
   for (const chain of openChains) {
+    // 인버스 ETF는 crash-profit.ts가 단독 관리 — 물타기 로직 건너뜀
+    if (INVERSE_ETF_CODES.has(chain.stock_code)) continue;
     const price = livePrices.get(chain.stock_code);
     if (!price || !chain.avg_buy_price) continue;
 
