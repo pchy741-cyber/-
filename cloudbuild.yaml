@@ -53,7 +53,7 @@ substitutions:
   _REGION: asia-northeast3
   _REPO: quantops
   _SERVICE: ai-auto-bot
-  _TAG: v0-72-55m
+  _TAG: v0-72-56m
 
 options:
   logging: CLOUD_LOGGING_ONLY
