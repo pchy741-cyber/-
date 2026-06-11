@@ -7,7 +7,7 @@
  */
 
 import type { TechnicalSummary } from '../../analysis/indicators.js';
-import { detectRegimeV2, getRegimeEntryConfig, type RegimeV2, type RegimeV2Result, type RegimeEntryConfig } from './regime-v2.js';
+import { detectRegimeV2, getRegimeEntryConfig, type RegimeV2, type RegimeEntryConfig } from './regime-v2.js';
 
 export interface RouteResult {
   routed: boolean;           // 라우터가 진입을 승인했는가
@@ -112,8 +112,8 @@ export function routeByRegime(
     }
 
     case 'RANGE_HIGH_VOL': {
-      // 넓은 SL + 소량 — 라우터 미적용, 기존 필터에서 positionScale만 적용
-      return { ...base, reason: 'RANGE_HIGH_VOL: 기존 필터 + 포지션 50% 축소' };
+      // 고변동 횡보: 진입 기준 +8pt 상향 + 포지션 50% 축소 (저품질 진입 차단)
+      return { ...base, buyThresholdAdj: 8, reason: 'RANGE_HIGH_VOL: buyThreshold +8 + 포지션 50% 축소' };
     }
 
     case 'DISTRIBUTION': {

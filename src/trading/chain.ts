@@ -4,6 +4,7 @@ import { getCtxIsPaper } from '../config/context.js';
 import { createChain, getOpenChains, getOrdersByChain, updateChain, getPool, withTransaction, isMemoryMode } from '../db/client.js';
 import type { TransactionChain } from '../db/models.js';
 import { logger } from '../utils/logger.js';
+import { recordTradeOutcome } from '../risk/loss-streak.js';
 
 /**
  * 트랜잭션 체인 매니저
@@ -160,6 +161,10 @@ export class ChainManager {
 
     // 스코어 정확도 기록 — 비동기 fire-and-forget
     this.recordScoreAccuracy(chainId, chain, Number(pnlPct), reason).catch(() => {});
+
+    // 연속손실 트래커 업데이트 — 포지션 사이징 배율 자동 조정
+    const isWin = Number(pnlPct) > 0.1;
+    recordTradeOutcome(isWin, chain.is_paper ?? false).catch(() => {});
   }
 
   /** 체인 종료 후 진입 당시 AI 스코어 vs 결과를 score_accuracy에 기록 */

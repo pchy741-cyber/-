@@ -76,15 +76,12 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       [viewIsPaper]
     ).catch(() => ({ rows: [] as any[] })),
     getDefenseParkState().catch(() => ({ isActive: false, parkStockCode: '069500', parkStockName: 'KODEX 200', entryReason: null, enteredAt: null })),
-    // 연습모드: 실전 순자산의 50%를 한도로 설정 (실전 API 병렬 조회)
-    viewIsPaper
-      ? withTimeout(getAccountBalance(true), 3000, defaultBalance as any).catch(() => null)
-      : Promise.resolve(null),
+    // 연습모드 한도: 실전 API 독립 (실전 잔고 오염 제거 — paperCap = 자체 시드)
+    Promise.resolve(null),
   ]);
   const balance = balanceResult ?? defaultBalance;
-  // 연습모드 한도: 실전 순자산 50% (실전 API 실패 시 초기자본으로 하드캡)
-  const liveNetAssetForCap = viewIsPaper ? ((liveBalanceForCap as any)?.netAsset ?? 0) : 0;
-  const paperCap = liveNetAssetForCap > 0 ? Math.round(liveNetAssetForCap * 0.5) : PAPER_INITIAL_CAPITAL;
+  // 연습모드 한도: 자체 시드 고정 (실전 순자산에 의존하면 실전 API 실패/900K 잔고가 연습 현금을 오염)
+  const paperCap = PAPER_INITIAL_CAPITAL;
 
   const watchlist = await getActiveWatchlist().catch(() => []);
   const stockCodes = watchlist.map((w) => w.stock_code);
@@ -348,6 +345,9 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       }
     }
 
+    if (viewIsPaper && osRows.length > 0) {
+      logger.info(`[PAPER_OS_HOLDINGS] ${osRows.length}행: ${osRows.map((r: any) => `${r.stock_code} qty=${r.quantity} avg=${r.avg_price} last=${r.last_price}`).join(' | ')}`, { component: 'DASHBOARD' });
+    }
     for (const r of osRows) {
       const code = String(r.stock_code);
       const qty = Number(r.quantity);
@@ -505,10 +505,13 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   // Live: domestic(T+2: kisNetAsset vs rawCash 중 큰 값) + 해외증권 + 해외현금
   // Paper: 미제한 현금 기준 — paperCap은 주문가능(actualCash)에만 적용
   const paperTotalRaw = rawCashSafe + safeDomestic + safeOverseasMV + safeOverseasCashKrw;
+  if (viewIsPaper) {
+    logger.info(`[PAPER_TOTAL_DEBUG] krCash=${rawCashSafe} krMV=${safeDomestic} osMV_krw=${safeOverseasMV} osCash_krw=${safeOverseasCashKrw} osUSD=${overseasMarketValueUsd.toFixed(2)} osCashUSD=${overseasCash?.toFixed?.(2)??0} fx=${FX_RATE} total=${paperTotalRaw}`, { component: 'DASHBOARD' });
+  }
   const grandTotalValue = !viewIsPaper
     ? (kisNetAsset > 0
-        ? Math.max(kisNetAsset, rawCashSafe) + safeOverseasMV + safeOverseasCashKrw // T+2: max_buy_amt > nass_amt 방지
-        : rawCashSafe + safeDomestic + safeOverseasMV + safeOverseasCashKrw)
+        ? Math.max(kisNetAsset, rawCashSafe) + safeOverseasMV // 통합증거금: overseas_cash는 kisNetAsset(nass_amt)에 이미 포함 — 이중계산 방지
+        : rawCashSafe + safeDomestic + safeOverseasMV)
     : paperTotalRaw;
 
   // 비중(weight) 계산 — grandTotalValue 기준 시가 기반 통합 비중
@@ -567,7 +570,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   const dashPayload = {
     portfolio: {
       totalValue: Math.round(grandTotalValue),
-      cash: !viewIsPaper && kisNetAsset > 0 ? unifiedCash + safeOverseasCashKrw : Math.round(rawCashSafe + safeOverseasCashKrw), // 총현금 (국내주문가능 + 해외현금)
+      cash: !viewIsPaper ? unifiedCash : Math.round(rawCashSafe + safeOverseasCashKrw), // 총현금: Live=국내주문가능(통합증거금), Paper=국내+해외현금
       invested: Math.round(grandTotalInvested),
       domesticInvested: Math.round(domesticInvested),
       domesticEval: Math.round(domesticMarketValue), // 국내 증권 시가평가 (비중 계산용)
@@ -612,9 +615,10 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     riskLimits: (() => {
       // 통합증거금: 전체 포트폴리오 기준 일일손실한도
       const limit = calcDailyLossLimit(Math.round(grandTotalValue), viewIsPaper);
-      // 해외: 현금(KRW) + 보유종목 시가평가(KRW) 기준
-      // Paper: overseasCashForDisplay=해외 paper 현금; Live: overseasCashForDisplay=통합증거금
-      const osPortfolioKrw = (overseasCashForDisplay || 0) + (isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw);
+      // 해외 리스크 베이스: Paper=해외현금+시가, Live=시가만(현금은 통합증거금으로 kisNetAsset에 포함)
+      const osPortfolioKrw = !viewIsPaper
+        ? (isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw)
+        : (overseasCashForDisplay || 0) + (isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw);
       const osPortfolioUsd = FX_RATE > 0 ? osPortfolioKrw / FX_RATE : 0;
       return {
         maxDailyDrawdownKrw: limit.limitAmount,

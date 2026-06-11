@@ -55,16 +55,23 @@ export function adjustPositionSizes(params: {
       // 강세장: 상한 1.8x / 정상: 1.4x
       const multCeiling = kospiBoost ? 1.4 : 1.2;
       const convMult = Math.round((0.6 + combined * multCeiling) * 100) / 100;
-      // 예산 = baseBudget × convMult, 절대 상한으로 클램프
-      const rawBudget = Math.floor(baseBudget * convMult);
-      const budget = Math.min(rawBudget, absoluteCap);
+      // 예산 = baseBudget × convMult × regimeScale, 절대 상한으로 클램프
+      const regimeScale = d.regime_position_scale ?? 1.0;
+      const rawBudget = Math.floor(baseBudget * convMult * regimeScale);
+      const rawBudgetCapped = Math.min(rawBudget, absoluteCap);
+      // 1회 손실 ≤ 총자산 1.5% 하드캡 (리스크 절대 한도)
+      const slPct = Math.abs(_params.stopLossPct) / 100;
+      const maxBudgetByLoss = totalAssets > 0 && slPct > 0
+        ? Math.floor(totalAssets * 0.015 / slPct)
+        : rawBudgetCapped;
+      const budget = Math.min(rawBudgetCapped, maxBudgetByLoss);
       const targetQty = Math.max(1, Math.floor(budget / price));
       const currentQty = d.quantity ?? 0;
 
       if (currentQty !== targetQty && (currentQty < targetQty || currentQty > targetQty * 2)) {
         const dir = currentQty < targetQty ? '상향' : '하향';
         logger.info(
-          `📊 수량 보정(${dir} conf=${(confFactor * 100).toFixed(0)}% score=${aiScore}점 ×${convMult}): ${d.stock_code} ${currentQty}주 → ${targetQty}주 (예산 ${budget.toLocaleString()}원, 상한 ${absoluteCap.toLocaleString()}원)`,
+          `📊 수량 보정(${dir} conf=${(confFactor * 100).toFixed(0)}% score=${aiScore}점 ×${convMult}${regimeScale !== 1.0 ? ` regime×${regimeScale}` : ''}): ${d.stock_code} ${currentQty}주 → ${targetQty}주 (예산 ${budget.toLocaleString()}원, 상한 ${absoluteCap.toLocaleString()}원)`,
           { component: 'SIZER' },
         );
         d.quantity = targetQty;

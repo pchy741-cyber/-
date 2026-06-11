@@ -204,6 +204,9 @@ export function generateInverseDecisions(params: InverseDecisionParams): TradeDe
     // ── 매수/추가매수: 목표 배분 대비 부족분 top-up ──
     if (signal.level === 'NONE') continue;
 
+    // CAUTION 시 2x 주력(252670)만 사용 — 1x 보조(114800)는 이중헤징 비용 낭비
+    if (signal.level === 'CAUTION' && etf.code !== '252670') continue;
+
     const allocPct = etf.alloc[signal.level];
     if (allocPct <= 0) continue;
 

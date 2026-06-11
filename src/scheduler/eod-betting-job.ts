@@ -24,12 +24,13 @@ import type { TradeDecision } from '../db/models.js';
 // ── 설정 ──
 const EOD_BUY_START_H = 15, EOD_BUY_START_M = 15;
 const EOD_BUY_END_H = 15, EOD_BUY_END_M = 20;
-const MORNING_SELL_START_H = 9, MORNING_SELL_START_M = 0;
-const MORNING_SELL_END_H = 9, MORNING_SELL_END_M = 10;
+const MORNING_SELL_START_H = 9, MORNING_SELL_START_M = 17; // 개장벨(09:00~09:12) 종료 후
+const MORNING_SELL_END_H = 9, MORNING_SELL_END_M = 25;
 
 const MIN_TRADE_VALUE_EOK = 1000;    // 거래대금 최소 1,000억원
 const CANDLE_TOP_PCT = 0.80;          // 캔들 상단 20% (0.80 이상)
 const YESTERDAY_SURGE_PCT = 5.0;      // 전일 +5% 이상이면 재탕 종목 제외
+const INTRADAY_SURGE_SKIP_PCT = 7.0;  // 당일 +7% 이상 급등 → 추격 매수 금지 (고점 매수 리스크)
 const MAX_STOCKS = 12;                // 최대 12종목 (CRASH: 4, CORRECTION: 8)
 
 // ── 황금비율 기반 동적 포지션 사이징 (고정 12% 폐지) ──
@@ -204,6 +205,9 @@ export async function runEodBettingJob(): Promise<void> {
       const candlePosition = (p.currentPrice - p.lowPrice) / range;
       if (candlePosition < CANDLE_TOP_PCT) continue;
 
+      // 당일 급등 추격 매수 방지: 이미 +7% 이상 뛴 종목은 종가 추가 모멘텀 기대 불가
+      if (p.changePct > INTRADAY_SURGE_SKIP_PCT) continue;
+
       candidates.push({
         code: stock.stock_code,
         name: stock.stock_name || p.stockName,
@@ -344,6 +348,17 @@ export async function runEodMorningSell(): Promise<void> {
       // 전일 15시 이후 매수인지 확인
       const openedH = openedKst.getUTCHours();
       if (openedH < 15) continue; // 15시 이전 매수는 종가베팅이 아님
+
+      // 동일 종목에 EOD_BETTING 외 전략 체인이 공존하면 스킵 (executor가 chain_id로 구분 불가)
+      const conflictChain = openChains.find(c =>
+        c.stock_code === chain.stock_code &&
+        c.strategy_mode !== 'EOD_BETTING' &&
+        Number(c.total_quantity) > 0,
+      );
+      if (conflictChain) {
+        logger.warn(`🌅 종가베팅 익일청산 스킵: ${chain.stock_code} — ${conflictChain.strategy_mode} 포지션 공존 (수동청산 필요)`, { component: 'EOD_BETTING' });
+        continue;
+      }
 
       sellDecisions.push({
         action: 'FORCE_CLOSE',

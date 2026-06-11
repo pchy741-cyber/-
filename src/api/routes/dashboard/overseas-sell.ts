@@ -53,7 +53,7 @@ export function registerOverseasSellRoutes(app: Hono) {
           }
           await tx.query(
             `INSERT INTO overseas_state (key, value) VALUES ('cash_paper', $1::text)
-             ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1)::text`,
+             ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $1::numeric)::text`,
             [proceeds]);
           await tx.query(
             `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
@@ -157,7 +157,7 @@ export function registerOverseasSellRoutes(app: Hono) {
         if (isPaper) {
           await tx.query(
             `INSERT INTO overseas_state (key, value) VALUES ($1, $2::text)
-             ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $2)::text`,
+             ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $2::numeric)::text`,
             [cashKey, proceeds]);
         }
         await tx.query(
@@ -233,7 +233,7 @@ export function registerOverseasSellRoutes(app: Hono) {
           if (isPaper) {
             await tx.query(
               `INSERT INTO overseas_state (key, value) VALUES ($1, $2::text)
-               ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $2)::text`,
+               ON CONFLICT (key) DO UPDATE SET value = (CAST(overseas_state.value AS NUMERIC) + $2::numeric)::text`,
               [cashKey, proceeds]);
           }
           await tx.query(

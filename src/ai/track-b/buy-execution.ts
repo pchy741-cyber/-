@@ -3,6 +3,7 @@ import { computeFingerprint, getPatternFeedback, fingerprintKey } from '../../an
 import { getWinRateConfidenceBoost, winRateSummary } from '../../analysis/win-rate.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getDynamicDomesticTpSl } from '../../config/constants.js';
+import { getLossStreakMultiplier } from '../../risk/loss-streak.js';
 import { getPool } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { getMinuteChart, isMarketOpen } from '../../kis/market.js';
@@ -411,6 +412,12 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
       : splitCount <= 2 ? (allocationBoostFirstEntry ? 0.78 : 0.70) : (allocationBoostFirstEntry ? 0.75 : 0.65);
     const aiPosMultiplier = 1.0;
 
+    // 연속손실 배율 — 2연속 손실 시 0.7x, 3+연속 시 0.5x
+    const lossStreakMult = await getLossStreakMultiplier(getCtxIsPaper());
+    if (lossStreakMult < 1.0) {
+      logger.info(`  ⚠️ ${cand.stock_code}: 연속손실 배율 ×${lossStreakMult} → 포지션 축소`, { component: 'TRACK_B' });
+    }
+
     // ── TP/SL 리스크 기반 사이징 (해외 스타일) ──────────────────────────────
     // position = riskBudget / |stopLossPct| — SL이 작으면 큰 포지션, SL이 크면 작은 포지션
     // 기존 비율 기반(targetKrwAlloc)과 리스크 기반(targetKrwRisk) 중 큰 값 사용
@@ -429,11 +436,11 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
     const riskPct = blendedScore >= 85 ? 0.025 : blendedScore >= 70 ? 0.02 : 0.015; // 총자산 대비 리스크 예산
     const absSl = Math.abs(tpSlHints.stopLossPct) / 100;
     const targetKrwRisk = totalAssets && absSl > 0
-      ? Math.round((totalAssets * riskPct / absSl) * modeScale * macroSizingMult * signalMultiplier)
+      ? Math.round((totalAssets * riskPct / absSl) * modeScale * macroSizingMult * signalMultiplier * lossStreakMult)
       : 0;
     const targetKrwAlloc = totalAssets
-      ? Math.round(totalAssets * baseAllocPct * modeScale * macroSizingMult * winRateMultiplier * priorityBonus * firstEntryRatio * aiPosMultiplier * signalMultiplier)
-      : Math.round(effectiveMaxPos * firstEntryRatio * macroSizingMult * aiPosMultiplier * signalMultiplier);
+      ? Math.round(totalAssets * baseAllocPct * modeScale * macroSizingMult * winRateMultiplier * priorityBonus * firstEntryRatio * aiPosMultiplier * signalMultiplier * lossStreakMult)
+      : Math.round(effectiveMaxPos * firstEntryRatio * macroSizingMult * aiPosMultiplier * signalMultiplier * lossStreakMult);
     // 두 방식 중 큰 값 사용 — 소액일수록 리스크 기반이 더 큰 포지션 산출
     const targetKrw = Math.max(targetKrwAlloc, targetKrwRisk);
     if (targetKrwRisk > targetKrwAlloc && targetKrwRisk > 0) {
@@ -488,6 +495,7 @@ export async function executeBuyDecisions(params: TechnicalFallbackParams & { ca
       reasoning: `${cand.isScalpOverride ? '🎯 ScalpRadar 스캘핑' : '기술적'} 매수: score=${cand.tech.score}(blend=${blendedScore.toFixed(0)}) cat=${cand.tech.catTrend}/${cand.tech.catMomentum}/${cand.tech.catVolatility}/${cand.tech.catVolume}(${cand.tech.catPositive}/4)${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''}${idBonus !== 0 ? `${idBonus > 0 ? '+' : ''}${idBonus}분봉` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x SMA=${smaAlign}${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${allocStr}${patternFb.scoreAdj !== 0 ? ` [패턴${patternFb.scoreAdj > 0 ? '+' : ''}${patternFb.scoreAdj}]` : ''}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))} fp=${fpKey}${scalpTag}`,
       confidence: Math.min(0.95, Math.max(0.5, cand.tech.score / 100 + getWinRateConfidenceBoost(winRates?.get(cand.stock_code)) + (cand.candleBonus > 0 ? 0.05 : 0))),
       ai_score: aiScore > 0 ? aiScore : cand.tech.score,
+      regime_position_scale: cand.regimeRoute?.entryConfig?.positionScale,
       // ScalpRadar 감지 종목: SCALPING 모드로 체인 생성 → TP/SL + forceClose 자동 적용
       ...(cand.isScalpOverride ? { strategy_mode: 'SCALPING', trigger_source: 'SCALP_RADAR' } : {}),
     });

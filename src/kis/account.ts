@@ -96,6 +96,9 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
       CTX_AREA_FK100: '',
       CTX_AREA_NK100: '',
     },
+  }).catch((e: unknown) => {
+    logger.warn(`⚠️ 잔고조회(TTTC8101R) 실패 — zero 폴백: ${e instanceof Error ? e.message : e}`, { component: 'BALANCE' });
+    return null;
   });
 
   // TTTC8908R 매수가능조회 — nrcvb_buy_amt = KIS 앱 "주문가능원화"
@@ -118,6 +121,17 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
   });
 
   const [res, buyableRes] = await Promise.all([balancePromise, buyablePromise]);
+
+  // TTTC8101R 실패 시 zero 결과 조기 반환 (짧은 TTL로 빠른 재시도 허용)
+  if (!res) {
+    const result: AccountBalance = {
+      totalDeposit: 0, d2Deposit: 0, orderableCash: 0, cashSource: 'zero',
+      totalEvalAmount: 0, totalProfitLoss: 0, totalProfitLossPct: 0,
+      netAsset: 0, purchaseCost: 0, positions: [],
+    };
+    _balanceCache.set(cacheKey, { data: result, ts: Date.now() - (BALANCE_CACHE_TTL - 30_000) });
+    return result;
+  }
 
   // 보유 종목 파싱 (output1)
   const positionItems = (res.output1 ?? []) as Record<string, string>[];

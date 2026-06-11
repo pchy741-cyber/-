@@ -55,7 +55,7 @@ function calcAdjustedVolRatio(rawVolRatio: number): number {
  * 전체 스코어링 계산
  */
 export function computeScoring(input: ScoringInput): ScoringResult {
-  const { stock, tech, candles, price, signals, mode, megaCap, aiScore, feedbackMinVolRatio } = input;
+  const { stock, tech, candles, price, signals, mode, megaCap } = input;
   const code = stock.stock_code;
   const curPrice = price.currentPrice;
 
@@ -97,7 +97,7 @@ export function computeScoring(input: ScoringInput): ScoringResult {
   // ── 눌림목 ──
   const recentHigh5 = candles.length >= 6 ? Math.max(...candles.slice(1, 6).map(c => c.high)) : 0;
   const truePullbackPattern = tech.sma20 > 0 && recentHigh5 > tech.sma20 * 1.04 &&
-    curPrice >= tech.sma20 * 0.98 && curPrice <= tech.sma20 * 1.05;
+    curPrice >= tech.sma20 * 0.98 && curPrice <= tech.sma20 * 1.02;
   const pullbackBonus = truePullbackPattern ? 12 : 0;
   if (truePullbackPattern) {
     logger.info(`  🎯 ${code}: 눌림목 타점 +12점`, { component: 'TRACK_B' });

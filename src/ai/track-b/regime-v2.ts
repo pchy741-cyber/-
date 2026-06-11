@@ -35,12 +35,14 @@ export interface RegimeEntryConfig {
 }
 
 // ── Lag-1 수익률 자기상관 ──
+// closes는 내림차순 (closes[0] = 최신), period개의 최근 수익률을 사용
 export function calcLag1Autocorrelation(closes: number[], period: number = 20): number {
   if (closes.length < period + 2) return 0;
 
   const returns: number[] = [];
   for (let i = 1; i <= period; i++) {
-    returns.push((closes[closes.length - i] - closes[closes.length - i - 1]) / closes[closes.length - i - 1]);
+    // closes[i-1] = 더 최근, closes[i] = 하루 전 → 당일 수익률
+    returns.push((closes[i - 1] - closes[i]) / closes[i]);
   }
 
   const mean = returns.reduce((s, v) => s + v, 0) / returns.length;

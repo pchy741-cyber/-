@@ -242,11 +242,12 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       continue;
     }
 
-    // 마감 근접 수익 확정 — 3단계: 충분한 수익만, 그다음 소폭, 마지막에 손익분기만 확정
-    // 15:00~15:10: 1.0%+ 수익만 청산 | 15:10~15:20: 0.3%+ | 15:20~15:25: 0%+ (진짜 마감 직전)
+    // 마감 근접 수익 확정 — 3단계: 충분한 수익만, 그다음 소폭, 마지막에 세금+수수료 최소 커버
+    // 국내 거래세 0.20% + 수수료 ~0.04% + 마감 슬리피지 버퍼 → 최소 0.25% 이상 수익 필요
+    // 15:00~15:10: 1.0%+ | 15:10~15:20: 0.5%+ (슬리피지 포함 순수익 양수 보장) | 15:20~15:25: 0.25%+
     const isNearClose = _scalpH === 15 && _scalpM < 25;
     if (isNearClose && chain.strategy_mode !== 'SCALPING' && chain.total_quantity > 0) {
-      const closeThreshold = _scalpM >= 20 ? 0.0 : _scalpM >= 10 ? 0.3 : 1.0;
+      const closeThreshold = _scalpM >= 20 ? 0.25 : _scalpM >= 10 ? 0.5 : 1.0;
       const closeLabel = _scalpM >= 20 ? '15:20+' : _scalpM >= 10 ? '15:10+' : '15:00+';
       if (pnlPct >= closeThreshold) {
         logger.info(

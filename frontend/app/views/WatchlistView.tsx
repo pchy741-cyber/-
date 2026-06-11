@@ -206,6 +206,21 @@ interface KRWatchlistPanelProps {
 
 function KRWatchlistPanel({ watchlist, chains, dash, sparklines, selectedStock, fastAnalyzing, onSelect, onDelete }: KRWatchlistPanelProps) {
   const [krFilter, setKrFilter] = useState<'전체' | 'KOSPI' | 'KOSDAQ' | '투자중' | '매수근접' | '최근매도'>('전체');
+  const KR_FILTERS: Array<typeof krFilter> = ['전체', 'KOSPI', 'KOSDAQ', '투자중', '매수근접', '최근매도'];
+
+  // 필터별 종목 수 (버튼에 표시)
+  const filterCounts = React.useMemo(() => ({
+    '전체': watchlist.length,
+    'KOSPI': watchlist.filter((s: WatchlistItem) => s.market === 'KOSPI' || (!s.market && /^[013]/.test(s.stock_code))).length,
+    'KOSDAQ': watchlist.filter((s: WatchlistItem) => s.market === 'KOSDAQ' || (!s.market && /^[278]/.test(s.stock_code))).length,
+    '투자중': watchlist.filter((s: WatchlistItem) => chains.some((ch: Chain) => ch.stock_code === s.stock_code && ch.status !== 'CLOSED')).length,
+    '매수근접': watchlist.filter((s: WatchlistItem) => {
+      const sc = dash?.scores?.find((sc: StockScore) => sc.stock_code === s.stock_code);
+      return sc && Number(sc.composite_score) >= 78;
+    }).length,
+    '최근매도': watchlist.filter((s: WatchlistItem) => s.last_sell_at != null).length,
+  }), [watchlist, chains, dash?.scores]);
+
   const krFiltered = watchlist.filter((s: WatchlistItem) => {
     if (krFilter === '전체') return true;
     if (krFilter === 'KOSPI') return s.market === 'KOSPI' || (!s.market && /^[013]/.test(s.stock_code));
@@ -218,9 +233,14 @@ function KRWatchlistPanel({ watchlist, chains, dash, sparklines, selectedStock, 
     if (krFilter === '최근매도') return s.last_sell_at != null;
     return true;
   });
-  const KR_FILTERS: Array<typeof krFilter> = ['전체', 'KOSPI', 'KOSDAQ', '투자중', '매수근접', '최근매도'];
 
   const sorted = [...krFiltered].sort((a: WatchlistItem, b: WatchlistItem) => {
+    // 최근매도: 매도일 최신순 (언제 팔았는지가 중요)
+    if (krFilter === '최근매도') {
+      const dA = a.last_sell_at ? new Date(a.last_sell_at).getTime() : 0;
+      const dB = b.last_sell_at ? new Date(b.last_sell_at).getTime() : 0;
+      return dB - dA;
+    }
     const chainA = chains.find((ch: Chain) => ch.stock_code === a.stock_code);
     const chainB = chains.find((ch: Chain) => ch.stock_code === b.stock_code);
     if (chainA && !chainB) return -1;
@@ -233,12 +253,15 @@ function KRWatchlistPanel({ watchlist, chains, dash, sparklines, selectedStock, 
   return (
     <Panel title="로봇이 감시하는 종목들" badge={`${krFiltered.length}/${watchlist.length}종목`}>
       <div className="px-3 pt-3 pb-1 flex gap-1 flex-wrap">
-        {KR_FILTERS.map(f => (
-          <button key={f} onClick={() => setKrFilter(f)}
-            className={`text-[10px] px-2 py-1 rounded-lg transition-all ${krFilter === f ? 'bg-violet-600 text-white' : 'bg-white/[0.04] text-slate-400 hover:bg-white/[0.08]'}`}>
-            {f}
-          </button>
-        ))}
+        {KR_FILTERS.map(f => {
+          const cnt = filterCounts[f];
+          return (
+            <button key={f} onClick={() => setKrFilter(f)}
+              className={`text-[10px] px-2 py-1 rounded-lg transition-all ${krFilter === f ? 'bg-violet-600 text-white' : 'bg-white/[0.04] text-slate-400 hover:bg-white/[0.08]'}`}>
+              {f}{f !== '전체' && <span className={`ml-0.5 text-[9px] ${krFilter === f ? 'opacity-70' : 'opacity-40'}`}>{cnt}</span>}
+            </button>
+          );
+        })}
       </div>
       <div className="grid grid-cols-2 gap-2 p-3">
         {sorted.map((s: WatchlistItem) => (

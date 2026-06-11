@@ -199,12 +199,14 @@ export function startScheduler(): void {
       logger.info('📸 장시작 스냅샷', { component: 'SCHEDULER' });
       await runSnapshotJob().catch((e) => logger.error(`스냅샷 실패: ${e}`, { component: 'SCHEDULER' }));
 
-      const { isKillSwitchActive, deactivateKillSwitch, resetDailyErrorCount } = await import('../risk/kill-switch.js');
-      // 국내 전용 리셋 (해외는 22:20에 별도 리셋)
+      const { isKillSwitchActiveForMode, deactivateKillSwitchForMode, resetDailyErrorCount } = await import('../risk/kill-switch.js');
+      // 국내 전용 리셋 — paper + live 양쪽 모두 (해외는 22:20에 별도 리셋)
       resetDailyErrorCount('KR');
-      if (isKillSwitchActive('KR')) {
-        logger.info('🔄 Kill Switch 자동 리셋 시도 [국내] (새 장)', { component: 'SCHEDULER' });
-        await deactivateKillSwitch(false, 'KR');
+      for (const isPaperMode of [true, false]) {
+        if (isKillSwitchActiveForMode('KR', isPaperMode)) {
+          logger.info(`🔄 Kill Switch 자동 리셋 시도 [국내][${isPaperMode ? 'paper' : 'live'}] (새 장)`, { component: 'SCHEDULER' });
+          await deactivateKillSwitchForMode(false, isPaperMode, 'KR');
+        }
       }
     },
     { timezone: MARKET.TIMEZONE },
@@ -466,9 +468,9 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 🌅 09:02 — 종가베팅 익일 강제매도 (갭수익/손절, 기계적 전량 매도)
+  // 🌅 09:17 — 종가베팅 익일 강제매도 (개장벨 09:00~09:12 종료 후 실행, 스케줄 충돌 방지)
   cron.schedule(
-    '2 9 * * 1-5',
+    '17 9 * * 1-5',
     () => {
       import('./eod-betting-job.js')
         .then(m => runDomesticDual('종가베팅매도', () => m.runEodMorningSell()))
@@ -673,12 +675,14 @@ export function startScheduler(): void {
   cron.schedule(
     '20 22 * * 1-5',
     async () => {
-      const { isKillSwitchActive, deactivateKillSwitch, resetDailyErrorCount } = await import('../risk/kill-switch.js');
-      // 해외 전용 리셋 (국내는 08:50에 별도 리셋)
+      const { isKillSwitchActiveForMode, deactivateKillSwitchForMode, resetDailyErrorCount } = await import('../risk/kill-switch.js');
+      // 해외 전용 리셋 — paper + live 양쪽 모두 (국내는 08:50에 별도 리셋)
       resetDailyErrorCount('OVERSEAS');
-      if (isKillSwitchActive('OVERSEAS')) {
-        logger.info('🔄 Kill Switch 자동 리셋 시도 [해외] (미국장 준비)', { component: 'SCHEDULER' });
-        await deactivateKillSwitch(false, 'OVERSEAS');
+      for (const isPaperMode of [true, false]) {
+        if (isKillSwitchActiveForMode('OVERSEAS', isPaperMode)) {
+          logger.info(`🔄 Kill Switch 자동 리셋 시도 [해외][${isPaperMode ? 'paper' : 'live'}] (미국장 준비)`, { component: 'SCHEDULER' });
+          await deactivateKillSwitchForMode(false, isPaperMode, 'OVERSEAS');
+        }
       }
       // 미국장 세션 캐시 초기화 — 22:30 첫 사이클에서 전 종목 재스캔
       const { resetUSSessionCache } = await import('./overseas-job.js');

@@ -898,7 +898,7 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         const entryP = exec.filledPrice;
         const entryAtrPct = target.atrPct ?? 2.0;
         const entryTrailDrop = calcDynamicTrailDrop({ sector: targetWatchItem?.sector ?? '', atrPct: entryAtrPct, maxPnlPct: 0, adx: target.adx, rsi: target.rsi });
-        const { tpPct, slPct, tpLabel } = calcDynamicTpSl({
+        const { tpPct, slPct: dynSlPct, tpLabel } = calcDynamicTpSl({
           sector: targetWatchItem?.sector ?? '',
           adx: target.adx,
           rsi: target.rsi,
@@ -908,17 +908,20 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
           isMomentum: target.isMomentum,
           atrPct: entryAtrPct,
         });
+        // TACTICAL(스캘핑/딥바이) SL 강화: -1.5% (오버나이트 갭 리스크 최소화)
+        const effectiveSlPct = targetBucket === 'TACTICAL' ? 1.5 : dynSlPct;
         // 매수 시점 동적 TP/SL + 버킷을 overseas_holdings에 영속 저장
-        await updateTradeState({ code: target.code, exchange: target.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper(), fxRate: cycleFxRate, tpPct, slPct: -slPct });
+        await updateTradeState({ code: target.code, exchange: target.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: isPaper(), fxRate: cycleFxRate, tpPct, slPct: -effectiveSlPct });
         // 황금비율 버킷 태깅
         getPool().query('UPDATE overseas_holdings SET strategy_bucket = $1 WHERE stock_code = $2 AND is_paper = $3', [targetBucket, target.code, isPaper()]).catch(() => {});
         const tpPrice = (entryP * (1 + tpPct / 100)).toFixed(2);
-        const slPrice = (entryP * (1 - slPct / 100)).toFixed(2);
+        const slPrice = (entryP * (1 - effectiveSlPct / 100)).toFixed(2);
         const kellyTag = kellyResult.sampleCount >= 10 ? ` Kelly${(kellyResult.halfKelly * 100).toFixed(0)}%` : '';
         const evLogTag = stockEV && stockEV.sampleCount >= 3 ? ` EV${stockEV.evPct >= 0 ? '+' : ''}${stockEV.evPct.toFixed(1)}%×${evMult.toFixed(2)}` : '';
+        const slTag = targetBucket === 'TACTICAL' ? ' ⚡SL-1.5%' : '';
         const buyLog = [
-          `매수 ${target.code} x${exec.filledQty} @$${entryP.toFixed(2)} ${buyMode}`,
-          `📌 목표: $${tpPrice}(+${tpPct.toFixed(1)}%) | 손절: $${slPrice}(-${slPct.toFixed(1)}%) | ATR트레일: ${entryTrailDrop.toFixed(1)}%(ATR${entryAtrPct.toFixed(1)}%) [${tpLabel}]`,
+          `매수 ${target.code} x${exec.filledQty} @$${entryP.toFixed(2)} ${buyMode}${slTag}`,
+          `📌 목표: $${tpPrice}(+${tpPct.toFixed(1)}%) | 손절: $${slPrice}(-${effectiveSlPct.toFixed(1)}%) | ATR트레일: ${entryTrailDrop.toFixed(1)}%(ATR${entryAtrPct.toFixed(1)}%) [${tpLabel}]`,
           `(AI ${((target.ai?.confidence ?? 0) * 100).toFixed(0)}% 사이징x${sizingMult}${kellyTag}${evLogTag} VIX:${vixRegime.regime}) [수수료 $${(exec.filledQty * exec.filledPrice * OVERSEAS_FEE_PCT).toFixed(2)}]`,
         ].join('\n');
         buyOrders.push(buyLog);

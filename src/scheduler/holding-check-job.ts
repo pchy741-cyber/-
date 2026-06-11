@@ -237,13 +237,33 @@ async function checkAndUpdateTrailingStop(
   const avgBuy = Number(chain.avg_buy_price);
   if (avgBuy <= 0 || currentPrice <= 0) return null;
 
-  // 트레일링 미활성화 구간 (수익 불충분)
-  if (pnlPct < TRAILING_ACTIVATE_PCT) return null;
-
-  // 분할 익절 판단
+  // 분할 익절 상태 확인 (본절 방어에도 필요하므로 early return 전에 선언)
   const storedPeakRaw = Number(chain.peak_price_since_open ?? 0);
   const partialSoldAlready = storedPeakRaw < 0;
   const storedPeak = Math.abs(storedPeakRaw);
+
+  // 🛡️ 본절 방어: 한때 트레일링 활성화됐다가 수익이 0%대로 복귀 → 즉시 청산
+  // NYC 데이트레이더 원칙: +1.5% 찍고 0% 복귀는 손실과 동일
+  const hadTrailingActivation = storedPeak >= avgBuy * (1 + TRAILING_ACTIVATE_PCT / 100);
+  const breakEvenThreshold = partialSoldAlready ? -0.5 : 0.3;
+  if (hadTrailingActivation && pnlPct < breakEvenThreshold) {
+    const peakPnlPct = ((storedPeak - avgBuy) / avgBuy) * 100;
+    logger.info(
+      `🛡️ 본절 방어 발동: ${chain.stock_code} 한때 +${peakPnlPct.toFixed(1)}% 도달 → 현재 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}% (기준 +${breakEvenThreshold}% 미만) → 즉시 청산`,
+      { component: 'TRAILING' },
+    );
+    return {
+      action: 'FORCE_CLOSE' as const,
+      stock_code: chain.stock_code,
+      quantity: chain.total_quantity,
+      price_type: 'MARKET' as const,
+      reasoning: `🛡️ 본절 방어: 트레일링 활성(고점 +${peakPnlPct.toFixed(1)}%) 후 수익 반납 → 현재 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`,
+      confidence: 1.0,
+    };
+  }
+
+  // 트레일링 미활성화 구간 (수익 불충분)
+  if (pnlPct < TRAILING_ACTIVATE_PCT) return null;
   const chainTp = Number(chain.target_profit_pct) || params.takeProfitPct;
   const chainMode = chain.strategy_mode as keyof typeof STRATEGY_PARAMS | undefined;
   const modeParams = chainMode && chainMode in STRATEGY_PARAMS ? STRATEGY_PARAMS[chainMode] : null;

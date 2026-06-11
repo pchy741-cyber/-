@@ -134,6 +134,12 @@ export function getSeedCapitalStatus() {
 export const DAILY_LOSS_PCT_LIVE = 2.5;
 export const DAILY_LOSS_PCT_PAPER = 30;
 
+// ── 주간 손실한도 ──
+// Live: 총자산의 5% (일일 2.5% × 2일 연속 최대손실 수준)
+// Paper: 총자산의 60% (실험 자유도)
+export const WEEKLY_LOSS_PCT_LIVE = 5.0;
+export const WEEKLY_LOSS_PCT_PAPER = 60;
+
 export interface DailyLossLimit {
   basis: number;       // 총자산 (caller가 전달: 현금+투자 합계)
   pct: number;         // Live 2.5% / Paper 30%

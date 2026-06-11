@@ -10,7 +10,7 @@ import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
 import { activateKillSwitch, isKillSwitchActive } from './kill-switch.js';
 import { getPaperBalance } from './paper-balance.js';
-import { calcDailyLossLimit } from './seed-capital.js';
+import { calcDailyLossLimit, WEEKLY_LOSS_PCT_LIVE, WEEKLY_LOSS_PCT_PAPER } from './seed-capital.js';
 import { getCash as getOverseasCash, getHoldings as getOverseasHoldings } from '../scheduler/overseas/state.js';
 import { getFxRate } from '../api/routes/dashboard/helpers.js';
 
@@ -63,6 +63,10 @@ export class RiskEngine {
     // 5. 일일 최대 손실 (Drawdown) 체크
     const drawdownCheck = await this.checkDailyDrawdown(isPaper);
     if (!drawdownCheck.approved) return drawdownCheck;
+
+    // 5-A. 주간 손실 한도 체크 (Live 5% / Paper 60%)
+    const weeklyCheck = await this.checkWeeklyDrawdown(isPaper);
+    if (!weeklyCheck.approved) return weeklyCheck;
 
     // 5-B. 월간 MDD -8% 체크
     const monthlyMddCheck = await this.checkMonthlyMDD(isPaper);
@@ -326,6 +330,61 @@ export class RiskEngine {
     }
 
     return { approved: true, reason: 'OK' };
+  }
+
+  private async checkWeeklyDrawdown(isPaper: boolean): Promise<PreTradeCheckResult> {
+    try {
+      // 이번 주 월요일 00:00 KST 계산
+      const now = getKSTNow();
+      const dayOfWeek = now.getUTCDay(); // 0=일, 1=월 ... 6=토
+      const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+      const weekStart = new Date(now);
+      weekStart.setUTCDate(now.getUTCDate() - daysFromMonday);
+      weekStart.setUTCHours(0, 0, 0, 0);
+
+      const pool = getPool();
+      const { rows } = await pool.query<{ total_value: string }>(
+        `SELECT total_value FROM portfolio_snapshots
+         WHERE snapshot_at >= $1 AND is_paper = $2
+         ORDER BY snapshot_at ASC LIMIT 1`,
+        [weekStart.toISOString(), isPaper],
+      );
+      if (rows.length === 0) return { approved: true, reason: 'OK' };
+
+      const weekStartValue = Number(rows[0].total_value);
+      if (weekStartValue <= 0) return { approved: true, reason: 'OK' };
+
+      const currentBalance = await getBalance(isPaper);
+      const currentValue = currentBalance.netAsset ?? ((currentBalance.totalEvalAmount ?? 0) + Math.max(0, currentBalance.orderableCash ?? 0));
+
+      // 소자산 면제 (20만 미만)
+      if (currentValue < 200_000) return { approved: true, reason: '소자산 — 주간 Drawdown 면제' };
+
+      const weeklyLossPct = ((weekStartValue - currentValue) / weekStartValue) * 100;
+      const limit = isPaper ? WEEKLY_LOSS_PCT_PAPER : WEEKLY_LOSS_PCT_LIVE;
+      const warn = limit * 0.7;
+
+      if (weeklyLossPct >= limit) {
+        logger.warn(
+          `🛑 주간 손실 한도 초과: -${weeklyLossPct.toFixed(1)}% (주초 ${Math.round(weekStartValue / 10000)}만 → 현재 ${Math.round(currentValue / 10000)}만)`,
+          { component: 'RISK' },
+        );
+        return {
+          approved: false,
+          reason: `🛑 주간 손실 -${weeklyLossPct.toFixed(1)}% — 이번 주 한도 ${limit}% 초과, 신규 매수 차단`,
+        };
+      }
+      if (weeklyLossPct >= warn) {
+        logger.warn(
+          `⚠️ 주간 손실 경고: -${weeklyLossPct.toFixed(1)}% (한도 ${limit}%)`,
+          { component: 'RISK' },
+        );
+      }
+      return { approved: true, reason: 'OK' };
+    } catch (err) {
+      logger.warn(`⚠️ 주간 Drawdown 조회 실패 — 일시 장애로 간주, 매매 허용 (fail-open): ${err}`, { component: 'RISK' });
+      return { approved: true, reason: 'OK (주간 Drawdown DB 조회 실패 — 일시 허용)' };
+    }
   }
 
   private async checkMonthlyMDD(isPaper: boolean): Promise<PreTradeCheckResult> {

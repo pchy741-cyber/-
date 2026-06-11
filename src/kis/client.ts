@@ -226,7 +226,7 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
         }
 
         // rate limit 초과 → 최대 2회 재시도, 짧게 대기 (쌓이면 Cloud Run 포화)
-        if (msg.includes('초당') || msg.includes('거래건수')) {
+        if (String(data.msg_cd ?? '') === 'EGW00201' || msg.includes('초당') || msg.includes('거래건수')) {
           const MAX_RATE_RETRIES = 2;
           if (attempt <= MAX_RATE_RETRIES) {
             logger.warn(`KIS rate limit 초과, ${attempt * 2}초 대기 후 재시도 ${attempt}/${MAX_RATE_RETRIES}`, { component: 'KIS' });

@@ -6,9 +6,11 @@ import { toDisplayName } from '../../lib/helpers';
 interface SoldStock {
   stock_code: string;
   stock_name: string;
+  buy_price: number | null;
   sell_price: number;
   sell_date: string;
   sell_pnl_pct: number;
+  realized_pnl: number | null;
   current_price: number;
   post_sell_pct: number | null;
   close_reason: string;
@@ -81,26 +83,34 @@ function SoldStocksPanel({ toast, onReAdd, viewMode = 'live' }: { toast: (msg: s
               </div>
 
               <div className="text-[10px] text-slate-500 mt-1">
-                매도가 {s.sell_price.toLocaleString()}원
+                {s.buy_price != null
+                  ? <>{s.buy_price.toLocaleString()} → <span className="text-slate-400">{s.sell_price.toLocaleString()}원</span></>
+                  : <>매도가 {s.sell_price.toLocaleString()}원</>}
               </div>
 
               <div className="mt-1.5 flex flex-col gap-0.5">
                 <div className={`text-[10px] font-medium ${s.sell_pnl_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                  매도수익 {s.sell_pnl_pct >= 0 ? '+' : ''}{s.sell_pnl_pct.toFixed(1)}%
+                  {s.sell_pnl_pct >= 0 ? '+' : ''}{s.sell_pnl_pct.toFixed(1)}%
+                  {s.realized_pnl != null && (
+                    <span className="ml-1 text-[9px] opacity-70">
+                      ({s.realized_pnl >= 0 ? '+' : ''}{Math.round(s.realized_pnl).toLocaleString()}원)
+                    </span>
+                  )}
                 </div>
-                {psp != null && (
-                  <div className={`text-[11px] font-bold ${
-                    missedGain ? 'text-amber-400' : goodSell ? 'text-sky-400' : psp >= 0 ? 'text-amber-400/70' : 'text-sky-400/70'
-                  }`}>
-                    {missedGain
+                <div className={`text-[11px] font-bold ${
+                  psp == null ? 'text-slate-600' :
+                  missedGain ? 'text-amber-400' : goodSell ? 'text-sky-400' : psp >= 0 ? 'text-amber-400/70' : 'text-sky-400/70'
+                }`}>
+                  {psp == null
+                    ? '매도 후 추적중...'
+                    : missedGain
                       ? `아쉽다 ↑+${psp.toFixed(1)}%`
                       : goodSell
                         ? `잘 팔았다 ↓${psp.toFixed(1)}%`
                         : psp >= 0
                           ? `매도 후 ↑+${psp.toFixed(1)}%`
                           : `매도 후 ↓${psp.toFixed(1)}%`}
-                  </div>
-                )}
+                </div>
                 {s.current_price > 0 && (
                   <div className="text-[10px] text-slate-600">
                     현재 {s.current_price.toLocaleString()}원

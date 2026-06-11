@@ -21,6 +21,7 @@ import {
 } from './risk-intelligence.js';
 import { executeOverseasOrder } from './executor.js';
 import { getTunerOverrides } from './trade-tuner.js';
+import { isUSMarketLastNMinutes } from './session.js';
 
 
 // ── 타입 ──
@@ -39,6 +40,7 @@ export interface TechResult {
 export interface Holding {
   qty: number; avgPrice: number; boughtAt: string; exchange: string;
   tpPct: number | null; slPct: number | null;
+  bucket?: string;
 }
 
 import type { AIDecision } from './types.js';
@@ -159,6 +161,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
 
     // ════════════════════════════════════════════════════════
     // 매도 판단 우선순위 (위에서부터 체크, 먼저 걸리면 매도)
+    //  0. TACTICAL(스캘핑) 오버나이트 금지 / 갭 방어
     //  1. 긴급 손절/리스크 관리 (SL, 하락장, 약세)
     //  2. 트레일링 스톱 (ATR, 수익보호, 마이크로)
     //  3. 하드 익절 — TP% 도달하면 무조건 매도 (isWinnerRiding 무시)
@@ -167,8 +170,16 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     //  6. 시간 손절/약세 정리
     // ════════════════════════════════════════════════════════
 
+    // ── 0. TACTICAL 오버나이트 금지 — 미국장 마감 30분 전 강제청산 (갭 리스크 방지) ──
+    if (holding.bucket === 'TACTICAL' && isUSMarketLastNMinutes(30)) {
+      sellReason = `스캘핑 마감 강제청산 (오버나이트 갭 방지): ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
+
+    // ── 0b. TACTICAL 갭 방어 하드플로어 — SL 뚫린 갭다운 즉시 탈출 ──
+    } else if (holding.bucket === 'TACTICAL' && pnlPct <= -4.0) {
+      sellReason = `TACTICAL 갭방어 손절(-4% 하드플로어): ${pnlPct.toFixed(1)}%`;
+
     // ── 1. 손절 ──
-    if (pnlPct <= stopLossPct) {
+    } else if (pnlPct <= stopLossPct) {
       sellReason = `손절(${stopLossPct}%): ${pnlPct.toFixed(1)}%`;
 
     // ── 1b. 하락장 빠른 정리 ──

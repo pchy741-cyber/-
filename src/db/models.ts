@@ -133,6 +133,7 @@ export const TradeDecisionSchema = z.object({
   volume_ratio: z.number().optional(),
   pullback_signal: z.boolean().optional(),
   envelope_pos: z.string().optional(),
+  regime_position_scale: z.number().optional(), // 레짐별 포지션 배율 (RANGE_HIGH_VOL=0.5, DIST=0.4, BEAR=0.3, BULL=1.2)
 });
 export type TradeDecision = z.infer<typeof TradeDecisionSchema>;
 

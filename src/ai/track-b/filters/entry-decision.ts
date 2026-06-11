@@ -12,6 +12,9 @@ import { config } from '../../../config/index.js';
 import { getCtxIsPaper } from '../../../config/context.js';
 import type { EntryInput, EntryVerdict } from './types.js';
 
+/** 레짐 신뢰도 No-Trade 임계값 — 이 미만이면 레짐 불확실 → 진입 금지 */
+const REGIME_CONFIDENCE_THRESHOLD = 0.65;
+
 /** 진입 사유 문자열 생성 */
 function buildEntryReason(input: EntryInput): string {
   const { tech, scoring, regimeRoute } = input;
@@ -36,6 +39,15 @@ export function tryRegimeRouterEntry(input: EntryInput): EntryVerdict {
 
   if (!regimeRoute.routed || mode === 'SCALPING') return { action: 'CONTINUE' };
 
+  // No-Trade 게이트: 레짐 신뢰도 부족 → 진입 금지
+  if (regimeRoute.regimeConfidence < REGIME_CONFIDENCE_THRESHOLD) {
+    logger.info(
+      `  🚫 ${stockCode}: 레짐 불확실 (confidence=${(regimeRoute.regimeConfidence * 100).toFixed(0)}% < ${REGIME_CONFIDENCE_THRESHOLD * 100}%) → No-Trade`,
+      { component: 'TRACK_B' },
+    );
+    return { action: 'SKIP', reason: `레짐 신뢰도 부족 (${(regimeRoute.regimeConfidence * 100).toFixed(0)}%)` };
+  }
+
   // AI 점수 체크: Gemini OFF 또는 전역 AI 탈락(globalNoAi) → 기술점수만으로 진입 허용
   const hasAI = aiScore && aiScore > 0;
   const globalNoAi = input.noAiScores === true;
@@ -59,7 +71,7 @@ export function tryRegimeRouterEntry(input: EntryInput): EntryVerdict {
  * 스캘핑/ScalpRadar 판정
  */
 export function tryScalpEntry(input: EntryInput): EntryVerdict {
-  const { stockCode, mode, allowScalpingBuys } = input;
+  const { stockCode, mode } = input;
   const scalpTarget = getOverride<boolean>(`${stockCode}_scalpTarget`);
 
   // 2026-06 성과 검토: SCALPING WR 25.7% → 전면 비활성화
@@ -82,6 +94,15 @@ export function tryScalpEntry(input: EntryInput): EntryVerdict {
 export function tryFinalEntry(input: EntryInput): EntryVerdict {
   const { stockCode, aiScore, buyThreshold, scoring, winRates } = input;
   const { effectiveTechScore, minTechScore, priorityBonus, candleBonus } = scoring;
+
+  // No-Trade 게이트: 레짐 신뢰도 부족 → 진입 금지 (모든 진입 경로 공통 적용)
+  if (input.regimeRoute.regimeConfidence < REGIME_CONFIDENCE_THRESHOLD) {
+    logger.info(
+      `  🚫 ${stockCode}: 레짐 불확실 (confidence=${(input.regimeRoute.regimeConfidence * 100).toFixed(0)}%) → No-Trade 강제`,
+      { component: 'TRACK_B' },
+    );
+    return { action: 'SKIP', reason: `레짐 신뢰도 부족 (${(input.regimeRoute.regimeConfidence * 100).toFixed(0)}%)` };
+  }
 
   // AI 게이트: Gemini ON → AI 필수, Gemini OFF → 기술지표 단독 매매 허용
   const hasAI = aiScore && Number.isFinite(aiScore) && aiScore > 0;

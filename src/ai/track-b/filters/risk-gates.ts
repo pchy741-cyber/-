@@ -23,7 +23,7 @@ export function isBreakoutBlocked(input: RiskGateInput): boolean {
 }
 
 export function checkRiskGates(input: RiskGateInput): GateResult {
-  const { tech, candles, scoring, aiScore, signals, regimeRoute, curPrice } = input;
+  const { tech, candles, scoring, aiScore, signals, curPrice } = input;
   const { effectiveTechScore, minTechScore, nearResistance, atMultiDayHigh,
     todayChangePct, adjustedVolRatio, signalData } = scoring;
 
@@ -70,7 +70,7 @@ export function checkRiskGates(input: RiskGateInput): GateResult {
 
   const details = { chase: rHighChase, tech: rTechScore, vp: rVolumeProfile, short: rShortPressure, breakout: rBreakoutConfirm };
   const count = Object.values(details).filter(Boolean).length;
-  const min = regimeRoute?.regime === 'TREND_BULL' ? 1 : 2;
+  const min = 2;
 
   return { passed: count >= min, count, min, details };
 }

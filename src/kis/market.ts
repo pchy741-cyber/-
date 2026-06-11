@@ -229,7 +229,7 @@ export interface RankingStock {
 export async function getVolumeRankingStocks(market: 'J' | 'Q' = 'J', limit = 30): Promise<RankingStock[]> {
   try {
     const res = await kisRequest({
-      path: '/uapi/domestic-stock/v1/ranking/volume',
+      path: '/uapi/domestic-stock/v1/quotations/volume-rank',
       trId: 'FHPST01710000',
       useRealUrl: true,
       params: {

@@ -178,6 +178,51 @@ export async function deactivateKillSwitchAll(force = false): Promise<void> {
 }
 
 /**
+ * 모드 명시적 지정 Kill Switch 해제 — ALS 컨텍스트 없이 호출 가능
+ * (스케줄러 08:50 자동 리셋, 설정 API에서 paper+live 동시 처리용)
+ */
+export async function deactivateKillSwitchForMode(
+  force: boolean,
+  isPaper: boolean,
+  scope: KillSwitchScope = 'KR',
+): Promise<void> {
+  const sKey = `${isPaper ? 'paper' : 'live'}_${scope.toLowerCase()}`;
+  const s = states[sKey];
+  if (!s.active) return;
+  if (s.manuallyTriggered && !force) {
+    logger.warn(
+      `🛡️ Kill Switch 자동 해제 거부 [${scope}][${isPaper ? 'paper' : 'live'}]: 수동 발동 중 — 대시보드에서 수동 해제 필요`,
+      { component: 'KILL_SWITCH' },
+    );
+    return;
+  }
+
+  const prevReason = s.reason;
+  const mode = isPaper ? 'paper' : 'live';
+  const scopeLabel = scope === 'OVERSEAS' ? '해외' : '국내';
+
+  states[sKey] = DEFAULT_STATE();
+
+  logger.info(`✅ Kill Switch 해제 [${scopeLabel}]${force ? ' [강제]' : ''} [${mode}]`, { component: 'KILL_SWITCH' });
+  await logSystem('INFO', 'KILL_SWITCH', `긴급 정지 해제 [${scopeLabel}]${force ? ' [강제]' : ''} [${mode}] (사유: ${prevReason})`);
+
+  import('../notifications/web-push.js').then(m =>
+    m.notifyAlert(
+      force ? `🔓 긴급정지 수동 해제 [${scopeLabel}]` : `🔓 긴급정지 자동 해제 [${scopeLabel}]`,
+      `[${mode}] 이전 사유: ${prevReason.slice(0, 80)}\n${scopeLabel} 매매 재개됨`,
+    )
+  ).catch(() => {});
+
+  await persistKillSwitchToDB(false, '', false, isPaper, scope).catch(() => {});
+}
+
+/** 모드 명시적 지정 — 활성 여부 확인 (ALS 컨텍스트 없이 호출 가능) */
+export function isKillSwitchActiveForMode(scope: KillSwitchScope, isPaper: boolean): boolean {
+  const sKey = `${isPaper ? 'paper' : 'live'}_${scope.toLowerCase()}`;
+  return states[sKey].active;
+}
+
+/**
  * 에러 누적 카운터 — 연속 에러 시 자동 Kill Switch (스코프별 독립)
  */
 export async function reportError(component: string, error: string, scope: KillSwitchScope = 'KR'): Promise<void> {

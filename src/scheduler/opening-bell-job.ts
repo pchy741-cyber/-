@@ -23,6 +23,7 @@ import { getAccountBalance } from '../kis/account.js';
 import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { isRiskOffToday } from '../automation/market-routing.js';
+import { isKillSwitchActive } from '../risk/kill-switch.js';
 
 // ── 캐시 (워밍업 → 사이클 공유) ──────────────────────────────────────────
 interface WarmCache {
@@ -208,6 +209,11 @@ export async function runOpeningBellCycle(): Promise<void> {
 
   // 09:00~09:12 구간만 실행 (약간 여유)
   if (h !== 9 || m > 12) return;
+
+  if (isKillSwitchActive('KR')) {
+    logger.info('🛑 Kill Switch 활성 — 개장벨 신규 스캔 차단', { component: 'OPENING_BELL' });
+    return;
+  }
 
   if (isRiskOffToday()) {
     logger.info('🚨 Risk-Off — 개장벨 신규 스캔 차단', { component: 'OPENING_BELL' });

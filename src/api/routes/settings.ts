@@ -3,7 +3,7 @@ import { STRATEGY_PARAMS } from '../../config/constants.js';
 import { config, baseIsPaper, setTradingModeOverride, getEffectiveTradingMode } from '../../config/index.js';
 import { getActiveStrategy, getPool, isMemoryMode, logSystem } from '../../db/client.js';
 import { memSetActiveStrategy } from '../../db/memory-store.js';
-import { activateKillSwitchAll, deactivateKillSwitchAll, getKillSwitchStatusAll, activateKillSwitch, deactivateKillSwitch, getKillSwitchStatus } from '../../risk/kill-switch.js';
+import { activateKillSwitchAll, deactivateKillSwitchAll, getKillSwitchStatusAll, activateKillSwitch, deactivateKillSwitch, deactivateKillSwitchForMode, getKillSwitchStatus } from '../../risk/kill-switch.js';
 import type { KillSwitchScope } from '../../risk/kill-switch.js';
 import { resetCooldown, getCooldownStatus } from '../../risk/trade-gate.js';
 import { getSeedCapitalStatus, setSeedCapital } from '../../risk/seed-capital.js';
@@ -48,29 +48,32 @@ settingsRoutes.post('/kill-switch/deactivate', async (c) => {
     const force = body.force === true;
     const scope = body.scope as KillSwitchScope | undefined;
 
-    if (scope === 'KR' || scope === 'OVERSEAS') {
-      await deactivateKillSwitch(force, scope);
-    } else {
-      await deactivateKillSwitchAll(force);
-    }
+    // paper + live 양쪽 모두 해제 — ALS 컨텍스트 의존 제거
+    const scopes: KillSwitchScope[] = (scope === 'KR' || scope === 'OVERSEAS') ? [scope] : ['KR', 'OVERSEAS'];
+    await Promise.all(
+      [true, false].flatMap(isPaper => scopes.map(sc => deactivateKillSwitchForMode(force, isPaper, sc))),
+    );
 
-    // Kill Switch 해제 시 스냅샷도 현재 잔고로 리셋 → 재활성화 방지
+    // Kill Switch 해제 시 스냅샷도 현재 잔고로 리셋 → 재활성화 방지 (paper + live 모두)
     try {
       const { getAccountBalance } = await import('../../kis/account.js');
       const { getPaperBalance } = await import('../../risk/paper-balance.js');
       const { insertSnapshot } = await import('../../db/client.js');
-      const balance = baseIsPaper ? await getPaperBalance() : await getAccountBalance();
-      const totalValue = balance.totalDeposit + balance.totalEvalAmount;
-      await insertSnapshot({
-        total_value: totalValue,
-        cash_balance: balance.orderableCash,
-        invested_value: balance.totalEvalAmount,
-        unrealized_pnl: balance.totalProfitLoss,
-        daily_pnl: 0,
-        daily_pnl_pct: 0,
-        positions: balance.positions,
-      });
-      logger.info(`✅ Kill Switch 해제 + 스냅샷 리셋 (${totalValue.toLocaleString()}원)`, { component: 'SETTINGS' });
+      for (const isPaper of [true, false]) {
+        const balance = isPaper ? await getPaperBalance() : await getAccountBalance();
+        const totalValue = balance.totalDeposit + balance.totalEvalAmount;
+        await insertSnapshot({
+          total_value: totalValue,
+          cash_balance: balance.orderableCash,
+          invested_value: balance.totalEvalAmount,
+          unrealized_pnl: balance.totalProfitLoss,
+          daily_pnl: 0,
+          daily_pnl_pct: 0,
+          positions: balance.positions,
+          is_paper: isPaper,
+        });
+      }
+      logger.info(`✅ Kill Switch 해제 + 스냅샷 리셋 (paper + live 양쪽)`, { component: 'SETTINGS' });
     } catch (snapErr) {
       logger.warn(`⚠️ Kill Switch 해제 성공, 스냅샷 리셋 실패: ${snapErr}`, { component: 'SETTINGS' });
     }
