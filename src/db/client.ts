@@ -692,19 +692,58 @@ export async function getRecentManuallySoldStocks(hoursBack = 24): Promise<Set<s
   }
 }
 
-/** 최근 매도(CLOSED) 종목 쿨다운 — 손절/수동매도만 차단, TP 익절(+3%↑)은 즉시 재진입 허용 */
+/** 최근 매도(CLOSED) 종목 쿨다운 — 손절/수동매도만 차단, TP 익절(+3%↑)은 즉시 재진입 허용
+ *  강화 (2026-06-12 #11): 종목 30일 승률 70%+ → 쿨다운 5분으로 자동 단축 (모멘텀 놓치지 않음)
+ */
 export async function getRecentlySoldStocks(hoursBack = 2): Promise<Set<string>> {
   if (useMemory) return new Set();
   try {
-    const { rows } = await queryWithRetry(
-      `SELECT DISTINCT stock_code FROM transaction_chains
+    // 모든 최근 매도 종목
+    const { rows: allRows } = await queryWithRetry(
+      `SELECT DISTINCT stock_code, closed_at FROM transaction_chains
        WHERE status = 'CLOSED'
          AND is_paper = $1
          AND closed_at > NOW() - ($2 || ' hours')::interval
          AND (pnl_pct IS NULL OR pnl_pct < 3.0)`,
       [getCtxIsPaper(), hoursBack],
     );
-    return new Set(rows.map((r: { stock_code: string }) => r.stock_code));
+    if (allRows.length === 0) return new Set();
+
+    // 종목별 30일 승률 동시 조회
+    const codes = [...new Set(allRows.map((r: any) => r.stock_code as string))];
+    const { rows: wrRows } = await queryWithRetry(
+      `SELECT stock_code,
+              COUNT(*) FILTER (WHERE pnl_pct > 0) AS wins,
+              COUNT(*) AS total
+       FROM transaction_chains
+       WHERE stock_code = ANY($1) AND is_paper = $2 AND status = 'CLOSED'
+         AND closed_at > NOW() - INTERVAL '30 days'
+       GROUP BY stock_code`,
+      [codes, getCtxIsPaper()],
+    );
+    const winRates = new Map<string, number>();
+    for (const r of wrRows) {
+      const wins = Number(r.wins ?? 0);
+      const total = Number(r.total ?? 0);
+      if (total >= 5) winRates.set(r.stock_code, wins / total);
+    }
+
+    // 쿨다운 적용: 승률 70%+ 종목은 5분 쿨다운만 (즉시 재진입에 가까움)
+    const result = new Set<string>();
+    const nowMs = Date.now();
+    for (const row of allRows) {
+      const code = row.stock_code as string;
+      const closedMs = new Date(row.closed_at).getTime();
+      const minutesSince = (nowMs - closedMs) / 60_000;
+      const wr = winRates.get(code) ?? 0;
+      const shortCooldown = wr >= 0.7;
+      // 검증된 종목은 5분 쿨다운, 일반은 hoursBack * 60분
+      const cooldownMin = shortCooldown ? 5 : hoursBack * 60;
+      if (minutesSince < cooldownMin) {
+        result.add(code);
+      }
+    }
+    return result;
   } catch {
     return new Set();
   }

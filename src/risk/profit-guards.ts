@@ -17,30 +17,73 @@ import { logger } from '../utils/logger.js';
 
 const COMP = 'PROFIT_GUARDS';
 
-// ── 가드 #1: R:R 비율 검증 ──────────────────────────────
+// ── 가드 #1: EV (Expected Value) 게이트 — 동적 검증 ──
+// 정적 R:R 1.5 강제 → 종목별 실 승률+익률+손률 기반 EV 계산
+// CEO 철학: "수수료보다 좋기만 하면 악착같이 매매"
+export interface EvCheck {
+  passed: boolean;
+  ev: number; // 기대값 % (수수료 차감 후)
+  rrRatio: number;
+  effectiveWinRate: number;
+  reason: string;
+}
+
+// 거래 비용 (왕복) — KR 0.21%, US 0.7%
+const KR_FEE_ROUNDTRIP_PCT = 0.21;
+const US_FEE_ROUNDTRIP_PCT = 0.7;
+// EV 최소 안전 마진 (수수료의 1.5배 = "어쨌든 수수료 + α 남는다" 보장)
+const EV_SAFETY_MULTIPLIER = 1.5;
+
+/**
+ * EV 검증 — TP/SL과 종목 승률로 기대값 계산.
+ * EV가 수수료의 1.5배 이상 양수면 매매 허용.
+ * 종목 승률 데이터 없으면 보수적 50% 가정.
+ */
+export function checkExpectedValue(params: {
+  takeProfitPct: number;
+  stopLossPct: number;
+  winRate?: number; // 0~1, 미지정 시 0.5
+  isUs?: boolean;
+}): EvCheck {
+  const absSL = Math.abs(params.stopLossPct);
+  if (absSL === 0) return { passed: false, ev: 0, rrRatio: 0, effectiveWinRate: 0, reason: 'SL=0 (위험 무방어)' };
+
+  const wr = params.winRate ?? 0.5;
+  const fee = params.isUs ? US_FEE_ROUNDTRIP_PCT : KR_FEE_ROUNDTRIP_PCT;
+  const minEv = fee * EV_SAFETY_MULTIPLIER;
+
+  // EV = (승률 × 익) - ((1-승률) × 손) - 수수료
+  const ev = wr * params.takeProfitPct - (1 - wr) * absSL - fee;
+  const rrRatio = params.takeProfitPct / absSL;
+
+  if (ev < minEv) {
+    return {
+      passed: false,
+      ev,
+      rrRatio,
+      effectiveWinRate: wr,
+      reason: `EV ${ev.toFixed(2)}% < 최소 ${minEv.toFixed(2)}% (승률 ${(wr * 100).toFixed(0)}%, TP+${params.takeProfitPct.toFixed(1)}%, SL${params.stopLossPct.toFixed(1)}%, 수수료 ${fee}%)`,
+    };
+  }
+  return {
+    passed: true,
+    ev,
+    rrRatio,
+    effectiveWinRate: wr,
+    reason: `EV +${ev.toFixed(2)}% ✓ (승률 ${(wr * 100).toFixed(0)}%, R:R ${rrRatio.toFixed(2)}:1)`,
+  };
+}
+
+/** 레거시 호환 — 기존 checkRiskReward 호출처가 있으면 EV로 동작 */
 export interface RrCheck {
   passed: boolean;
   rrRatio: number;
   reason: string;
 }
-
-/** TP/SL 비율 검증 — 매수 전 호출 */
-export function checkRiskReward(takeProfitPct: number, stopLossPct: number, minRr = 1.5): RrCheck {
-  const absSL = Math.abs(stopLossPct);
-  if (absSL === 0) return { passed: false, rrRatio: 0, reason: 'SL=0 (위험 무방어)' };
-  const rrRatio = takeProfitPct / absSL;
-  if (rrRatio < minRr) {
-    return {
-      passed: false,
-      rrRatio,
-      reason: `R:R ${rrRatio.toFixed(2)}:1 < 최소 ${minRr}:1 (TP+${takeProfitPct.toFixed(1)}% / SL${stopLossPct.toFixed(1)}%)`,
-    };
-  }
-  return {
-    passed: true,
-    rrRatio,
-    reason: `R:R ${rrRatio.toFixed(2)}:1 ✓`,
-  };
+export function checkRiskReward(takeProfitPct: number, stopLossPct: number, _minRr = 1.5): RrCheck {
+  // EV 게이트로 위임 (승률 미지정 = 50% 가정)
+  const ev = checkExpectedValue({ takeProfitPct, stopLossPct });
+  return { passed: ev.passed, rrRatio: ev.rrRatio, reason: ev.reason };
 }
 
 // ── 가드 #2: 종목별 승률 기반 사이징 ───────────────────
@@ -166,7 +209,7 @@ export interface BuyGateResult {
   amountMultiplier: number;
   reason: string;
   details: {
-    rr: RrCheck;
+    ev: EvCheck;
     sizing: StockWinRateSizing;
     dailyLoss: DailyLossStatus;
   };
@@ -177,15 +220,22 @@ export async function checkBuyGate(params: {
   takeProfitPct: number;
   stopLossPct: number;
   isPaper?: boolean;
-  minRr?: number;
+  isUs?: boolean;
+  minRr?: number; // 레거시 호환 (사용 안 됨, EV로 대체)
 }): Promise<BuyGateResult> {
   const isPaper = params.isPaper ?? false;
-  const minRr = params.minRr ?? 1.5;
   const [sizing, dailyLoss] = await Promise.all([
     getStockSizing(params.stockCode, isPaper),
     checkDailyLossStop(isPaper),
   ]);
-  const rr = checkRiskReward(params.takeProfitPct, params.stopLossPct, minRr);
+  // EV 게이트: 종목 실제 승률로 계산 (없으면 50% 보수적)
+  const wr = sizing.sampleCount >= 3 ? sizing.recentWinRate : 0.5;
+  const ev = checkExpectedValue({
+    takeProfitPct: params.takeProfitPct,
+    stopLossPct: params.stopLossPct,
+    winRate: wr,
+    isUs: params.isUs,
+  });
 
   // 일일 손실 정지가 최우선
   if (dailyLoss.shouldStop) {
@@ -193,16 +243,16 @@ export async function checkBuyGate(params: {
       allowed: false,
       amountMultiplier: 0,
       reason: dailyLoss.reason,
-      details: { rr, sizing, dailyLoss },
+      details: { ev, sizing, dailyLoss },
     };
   }
-  // R:R 미달
-  if (!rr.passed) {
+  // EV 미달
+  if (!ev.passed) {
     return {
       allowed: false,
       amountMultiplier: 0,
-      reason: rr.reason,
-      details: { rr, sizing, dailyLoss },
+      reason: ev.reason,
+      details: { ev, sizing, dailyLoss },
     };
   }
   // 승률 사이징 — multiplier=0이면 차단
@@ -211,14 +261,57 @@ export async function checkBuyGate(params: {
       allowed: false,
       amountMultiplier: 0,
       reason: sizing.reason,
-      details: { rr, sizing, dailyLoss },
+      details: { ev, sizing, dailyLoss },
     };
   }
 
   return {
     allowed: true,
     amountMultiplier: sizing.multiplier,
-    reason: `허용 (${rr.reason}, ${sizing.reason})`,
-    details: { rr, sizing, dailyLoss },
+    reason: `허용 (${ev.reason}, ${sizing.reason})`,
+    details: { ev, sizing, dailyLoss },
+  };
+}
+
+// ── 마이크로 스캘핑 파라미터 — 고승률 종목 전용 ──
+// 종목 승률 60%+ → 작은 익절(0.5~1%) + 작은 손절(0.3~0.5%)로 회전율 극대화
+// 수수료 0.21% 후 순익 0.3%+ 보장 (EV 양수)
+export function getMicroScalpParams(winRate: number): { takeProfitPct: number; stopLossPct: number } | null {
+  if (winRate >= 0.8) return { takeProfitPct: 0.7, stopLossPct: -0.4 }; // 1.75:1
+  if (winRate >= 0.7) return { takeProfitPct: 0.9, stopLossPct: -0.5 }; // 1.8:1
+  if (winRate >= 0.6) return { takeProfitPct: 1.0, stopLossPct: -0.6 }; // 1.67:1
+  return null; // 60% 미만은 스캘핑 부적합
+}
+
+/**
+ * 종목별 최적 매매 파라미터 선택
+ * - 승률 60%+ → 마이크로 스캘핑 (악착스러운 단타)
+ * - 승률 < 60% → 점수 기반 SWING
+ * CEO 철학: "악착같이 매매해서 돈을 조금이라도"
+ */
+export async function getOptimalTradeParams(params: {
+  stockCode: string;
+  aiScore: number;
+  isPaper?: boolean;
+}): Promise<{ takeProfitPct: number; stopLossPct: number; mode: 'MICRO_SCALP' | 'SWING'; reason: string }> {
+  const sizing = await getStockSizing(params.stockCode, params.isPaper ?? false);
+  if (sizing.sampleCount >= 5) {
+    const micro = getMicroScalpParams(sizing.recentWinRate);
+    if (micro) {
+      return {
+        ...micro,
+        mode: 'MICRO_SCALP',
+        reason: `종목 승률 ${(sizing.recentWinRate * 100).toFixed(0)}% (${sizing.sampleCount}건) → 마이크로 스캘핑`,
+      };
+    }
+  }
+  // 점수 기반 SWING (강화된 동적 TP)
+  const { getScoreBasedParams } = await import('../config/constants.js');
+  const sp = getScoreBasedParams(params.aiScore);
+  return {
+    takeProfitPct: sp.takeProfitPct,
+    stopLossPct: sp.stopLossPct,
+    mode: 'SWING',
+    reason: `AI ${params.aiScore}점 → SWING (TP+${sp.takeProfitPct}%/SL${sp.stopLossPct}%)`,
   };
 }

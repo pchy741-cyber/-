@@ -263,18 +263,19 @@ export const KIS_TR_ID = {
   },
 } as const;
 
-// ── 점수 기반 동적 익절/손절 파라미터 ──
+// ── 점수 기반 동적 익절/손절 파라미터 (2026-06-12 강화) ──
 // 매수 당시 AI 점수 → 확신 티어별 최적 TP/SL 계산
-// 근거: Kelly Criterion + 손익비 최적화
-//   • 60-69 (마진컬): 낮은 확신 → 빠른 실현, 타이트한 손절로 기대값 보전
-//   • 70-79 (보통): 적당한 확신 → 손익비 2:1 타겟
-//   • 80-89 (고확신): 강한 신호 → 수익 극대화 허용, ATR 기반 여유 손절
-//   • 90+  (엘리트): 최강 신호 → 큰 수익 목표, 손절 타이트 (확신이 높으므로)
+// CEO 철학: "점수 낮으면 1%라도 빨리 익절, 점수 높으면 5%까지 기다림"
+//   • 60-69 (마진컬): 1.5% 익절 + 1.0% 손절 → 1.5:1 R:R, 빨리 빠짐
+//   • 70-79 (보통): 3.0% 익절 + 1.5% 손절 → 2.0:1 R:R
+//   • 80-89 (고확신): 5.0% 익절 + 2.0% 손절 → 2.5:1 R:R
+//   • 90+  (엘리트): 8.0% 익절 + 3.0% 손절 → 2.67:1 R:R
+// 핵심: 낮은 점수일수록 TP를 작게 → 5%까지 기다리다 -4%로 손실확정 패턴 차단
 export function getScoreBasedParams(score: number): { takeProfitPct: number; stopLossPct: number } {
-  if (score >= 90) return { takeProfitPct: 8.0, stopLossPct: -3.0 }; // 엘리트: 2.67:1 R:R
-  if (score >= 80) return { takeProfitPct: 6.0, stopLossPct: -3.5 }; // 고확신: 1.71:1 R:R
-  if (score >= 70) return { takeProfitPct: 5.0, stopLossPct: -3.5 }; // 보통: 1.43:1 → RR조정
-  return { takeProfitPct: 5.0, stopLossPct: -4.0 }; // 마진컬(60-69): RR자동조정
+  if (score >= 90) return { takeProfitPct: 8.0, stopLossPct: -3.0 }; // 엘리트: 2.67:1
+  if (score >= 80) return { takeProfitPct: 5.0, stopLossPct: -2.0 }; // 고확신: 2.5:1
+  if (score >= 70) return { takeProfitPct: 3.0, stopLossPct: -1.5 }; // 보통: 2.0:1
+  return { takeProfitPct: 1.5, stopLossPct: -1.0 }; // 마진컬(60-69): 1.5:1 빠른 회전
 }
 
 // ── 동적 포지션 사이징 — 황금비율: 장이 나쁘면 매수 없고, 매수하면 그만큼 확실한 것 ──
