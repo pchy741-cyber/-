@@ -359,16 +359,19 @@ export async function runRSSScoring(
   // 시장 전체 감성 (30분 캐시) + 유튜브 인플루언서 감성
   const [marketSentiment, ytSentiment] = await Promise.all([getMarketSentiment(), getYouTubeSentiment()]);
 
-  // 종목별 뉴스 스코어 (상위 20종목, rate limit 방지)
-  const topCandidates = watchlist.slice(0, 20);
+  // 종목별 뉴스 스코어 — 전종목 배치 처리 (Google RSS rate limit 대응: 30개씩, 300ms 간격)
   const newsScores = new Map<string, { score: number; headlines: string[] }>();
-
-  await Promise.allSettled(
-    topCandidates.map(async (w) => {
-      const result = await getNewsScore(w.stock_code, w.stock_name);
-      if (result.score !== 0) newsScores.set(w.stock_code, result);
-    }),
-  );
+  const NEWS_BATCH = 30;
+  for (let i = 0; i < watchlist.length; i += NEWS_BATCH) {
+    const batch = watchlist.slice(i, i + NEWS_BATCH);
+    await Promise.allSettled(
+      batch.map(async (w) => {
+        const result = await getNewsScore(w.stock_code, w.stock_name);
+        if (result.score !== 0) newsScores.set(w.stock_code, result);
+      }),
+    );
+    if (i + NEWS_BATCH < watchlist.length) await new Promise((r) => setTimeout(r, 300));
+  }
 
   logger.info(
     `뉴스 감성 완료: ${newsScores.size}종목 시그널, 시장감성=${marketSentiment > 0 ? '+' : ''}${marketSentiment}, 유튜브=${ytSentiment.score > 0 ? '+' : ''}${ytSentiment.score}`,

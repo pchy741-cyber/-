@@ -486,7 +486,6 @@ function adaptiveInterval(cachedRegions?: Set<string>, cachedPhase?: USMarketPha
       case 'CURSED': // 10:20~13:00 ☠️ 마의 시간대 — 신규매수 금지
         state.adaptiveIntervalMs = CURSED_INTERVAL_MS;
         return;
-      case 'CLOSED':
       default:
         state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
         return;
@@ -591,9 +590,49 @@ export function reportNoBuyCandidates(noCandidates: boolean): void {
   }
 }
 
+// 강화 P1-5: 서버 Auto Pilot + Claude Code /loop 동시 실행 차단
+// DB advisory lock으로 단일 인스턴스만 활성 보장 (Cloud Run 다중 인스턴스 + Claude 토큰 루프 모두 차단)
+const LOOP_ADVISORY_LOCK_ID = 73091234; // 임의 큰 정수 (loop-mode 전용)
+let _lockClient: import('pg').PoolClient | null = null;
+
+async function acquireLoopLock(): Promise<boolean> {
+  try {
+    const { getPool } = await import('../db/client.js');
+    const pool = getPool();
+    _lockClient = await pool.connect();
+    const { rows } = await _lockClient.query('SELECT pg_try_advisory_lock($1) AS acquired', [LOOP_ADVISORY_LOCK_ID]);
+    const acquired = rows[0]?.acquired === true;
+    if (!acquired) {
+      _lockClient.release();
+      _lockClient = null;
+    }
+    return acquired;
+  } catch (e) {
+    logger.warn(`Loop advisory lock 획득 실패: ${(e as Error).message}`, { component: 'LOOP' });
+    return true; // DB 실패 시 락 없이 진행 (가용성 우선)
+  }
+}
+
+async function releaseLoopLock(): Promise<void> {
+  if (!_lockClient) return;
+  try {
+    await _lockClient.query('SELECT pg_advisory_unlock($1)', [LOOP_ADVISORY_LOCK_ID]).catch(() => {});
+    _lockClient.release();
+  } catch {
+    /* ignore */
+  }
+  _lockClient = null;
+}
+
 export async function startLoop(): Promise<{ ok: boolean; error?: string; warning?: string }> {
   if (state.active) return { ok: false, error: '이미 실행 중' };
   if (isKillSwitchActive('OVERSEAS')) return { ok: false, error: 'Kill Switch 활성 — 먼저 해제하세요' };
+
+  // 강화 P1-5: 다른 인스턴스/Claude /loop이 이미 활성이면 차단
+  const lockAcquired = await acquireLoopLock();
+  if (!lockAcquired) {
+    return { ok: false, error: '다른 곳에서 이미 루프 실행 중 (DB advisory lock) — 그쪽 정지 후 재시도' };
+  }
 
   // 장외 시간 경고 (시작은 허용)
   const marketPhase = getUSMarketPhase();
@@ -654,6 +693,8 @@ export async function stopLoop(reason?: string): Promise<{ ok: boolean }> {
   const wasActive = state.active;
   state.active = false;
   state.phase = 'STOPPED';
+  // 강화 P1-5: advisory lock 해제 (다른 인스턴스가 이어받을 수 있도록)
+  await releaseLoopLock();
 
   if (wasActive) {
     const msg = `🤖 Auto Pilot 정지${reason ? `: ${reason}` : ''}\n총 ${state.totalRuns}회 실행`;

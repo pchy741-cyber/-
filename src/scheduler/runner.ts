@@ -55,6 +55,13 @@ async function runDomesticDual(label: string, fn: () => Promise<unknown>): Promi
     }
   });
   if (paperOnly) return; // 자율학습 모드: live 완전 스킵
+  // env DISABLE_LIVE_LOOP=true → live 측 스킵 (Claude Code /loop이 live 매매를 담당하는 경우)
+  if (process.env.DISABLE_LIVE_LOOP === 'true') {
+    logger.debug(`${label} live 스킵: DISABLE_LIVE_LOOP=true (Claude /loop 단독 운영 모드)`, {
+      component: 'SCHEDULER',
+    });
+    return;
+  }
   // paper→live 전환 시 잔고 캐시 무효화 + 3초 쿨다운 (KIS rate limit EGW00201 방지)
   invalidateBalanceCache();
   await new Promise((r) => setTimeout(r, 3000));
@@ -174,6 +181,17 @@ export function startScheduler(): void {
           await m.triggerCapture('scheduled', 'paper', null).catch(() => {});
         })
         .catch((e) => logger.error(`정기 캡쳐 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 💀 MDD 자동 가드 — 매시간 7분 (월간 MDD 임계 초과 시 신규매수 자동 차단/해제)
+  cron.schedule(
+    '7 * * * *',
+    () => {
+      import('../automation/mdd-guard.js')
+        .then((m) => m.runMddGuard())
+        .catch((e) => logger.error(`MDD 가드 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

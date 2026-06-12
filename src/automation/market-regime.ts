@@ -306,20 +306,33 @@ export async function autoSwitchStrategy(): Promise<void> {
 
     let targetMode = regime.recommendedMode as string;
 
-    // DEFENSE 지속 중 여전히 BEARISH → DIVIDEND 에스컬레이션 (24시간 이상 지속 후에만)
-    if (currentMode === 'DEFENSE' && (regime.regime === 'BEARISH' || regime.regime === 'PANIC')) {
+    // DEFENSE 지속 중 여전히 PANIC → DIVIDEND 에스컬레이션 (24h 지속 + score <= -5 동시 조건)
+    // BEARISH(score -5~-3) 정도로는 에스컬레이션 안 함 (데드락 방지)
+    if (currentMode === 'DEFENSE' && regime.regime === 'PANIC' && regime.score <= -5) {
       if (hoursSinceSwitch >= 24) {
         targetMode = 'DIVIDEND';
-        regime.reasons.push(`DEFENSE ${hoursSinceSwitch.toFixed(0)}h 지속 → DIVIDEND 에스컬레이션`);
+        regime.reasons.push(
+          `DEFENSE ${hoursSinceSwitch.toFixed(0)}h 지속 + PANIC(${regime.score}) → DIVIDEND 에스컬레이션`,
+        );
       } else {
-        targetMode = 'DEFENSE'; // 24시간 미경과 → 에스컬레이션 보류
+        targetMode = 'DEFENSE';
         regime.reasons.push(`DEFENSE 유지 (전환 후 ${hoursSinceSwitch.toFixed(0)}h < 24h)`);
       }
     }
-    // DIVIDEND 중 장세 회복 → SWING 복귀
-    else if ((currentMode as string) === 'DIVIDEND' && (regime.regime === 'NEUTRAL' || regime.regime === 'BULLISH')) {
-      targetMode = 'SWING';
-      regime.reasons.push('장세 회복 → DIVIDEND → SWING 복귀');
+    // DIVIDEND 탈출 — BEARISH(-3~-5)에서도 SWING 복귀 (데드락 방지). 단 점수 -5 미만은 유지
+    else if ((currentMode as string) === 'DIVIDEND') {
+      if (regime.regime === 'NEUTRAL' || regime.regime === 'BULLISH') {
+        targetMode = 'SWING';
+        regime.reasons.push('장세 회복(NEUTRAL+) → DIVIDEND → SWING 복귀');
+      } else if (regime.regime === 'BEARISH' && regime.score >= -4 && hoursSinceSwitch >= 24) {
+        // 약한 BEARISH (-3~-4)이고 24h+ 머물면 SWING으로 회복 시도 (학습 데이터 확보)
+        targetMode = 'SWING';
+        regime.reasons.push(`약 BEARISH(${regime.score}) ${hoursSinceSwitch.toFixed(0)}h+ → DIVIDEND 탈출 SWING 복귀`);
+      } else if (hoursSinceSwitch >= 168) {
+        // 데드락 안전망: DIVIDEND 7일 초과 시 무조건 SWING 복귀 (시장이 영구 패닉인 경우 없음)
+        targetMode = 'SWING';
+        regime.reasons.push(`데드락 안전망: DIVIDEND ${(hoursSinceSwitch / 24).toFixed(0)}일 초과 → 강제 SWING 복귀`);
+      }
     }
     // SCALPING은 강세장 스코어 6이상 + 현재 SWING일 때만 전환 (과도한 전환 방지)
     if (targetMode === 'SCALPING' && currentMode !== 'SWING') {

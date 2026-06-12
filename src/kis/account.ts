@@ -32,8 +32,11 @@ export interface AccountBalance {
 
 // ── 계좌 잔고 메모리 캐시 (KIS API 호출 최소화) ──
 const _balanceCache = new Map<string, { data: AccountBalance; ts: number }>();
+// 마지막 성공 잔고 — API 일시 실패(EGW00201 등)시 zero 대신 사용
+const _lastKnownBalance = new Map<string, { data: AccountBalance; ts: number }>();
 const BALANCE_CACHE_TTL = 120_000; // 2분 — KIS API 호출 최소화 (PWA 접속 시 토큰 재발급 알림 폭탄 방지)
 const BALANCE_CACHE_TTL_MORNING = 30_000; // 30초 — 장 개시 09:00~09:30 KST (정산 반영 지연 대응)
+const LAST_KNOWN_MAX_AGE = 30 * 60_000; // 30분 이내 마지막 성공 잔고까지 폴백 허용
 
 /** 현재 KST 기준 캐시 TTL 반환 — 장중 전체 30초, 장외 2분 */
 function getBalanceCacheTTL(): number {
@@ -133,8 +136,20 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
 
   const [res, buyableRes] = await Promise.all([balancePromise, buyablePromise]);
 
-  // TTTC8101R 실패 시 zero 결과 조기 반환 (짧은 TTL로 빠른 재시도 허용)
+  // TTTC8101R 실패 시 — 마지막 성공 잔고 폴백 → 없으면 zero
   if (!res) {
+    const lastKnown = _lastKnownBalance.get(cacheKey);
+    if (lastKnown && Date.now() - lastKnown.ts < LAST_KNOWN_MAX_AGE) {
+      const ageMin = Math.round((Date.now() - lastKnown.ts) / 60_000);
+      logger.warn(
+        `⚠️ 잔고조회 실패 → 마지막 성공 잔고 폴백 (${ageMin}분 전): orderableCash=${lastKnown.data.orderableCash.toLocaleString()}`,
+        { component: 'BALANCE' },
+      );
+      // 단축 TTL로 캐시 — 다음 사이클에 재시도
+      _balanceCache.set(cacheKey, { data: lastKnown.data, ts: Date.now() - (BALANCE_CACHE_TTL - 30_000) });
+      return lastKnown.data;
+    }
+    // 마지막 성공 잔고도 없거나 너무 오래됨 → zero 반환
     const result: AccountBalance = {
       totalDeposit: 0,
       d2Deposit: 0,
@@ -252,6 +267,8 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
     positions,
   };
   _balanceCache.set(cacheKey, { data: result, ts: Date.now() });
+  // 성공 시 last-known 갱신 (다음 실패 시 폴백용)
+  _lastKnownBalance.set(cacheKey, { data: result, ts: Date.now() });
   return result;
 }
 
