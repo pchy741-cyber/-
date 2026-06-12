@@ -196,6 +196,20 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // ⚡ Quick Re-Score — 매 3분 (장중 평일, 장세 적응형 내부 결정)
+  // 황금구간: 3분 (cron 그대로) / BULLISH: 5분 / NEUTRAL: 10분 / 마의시간: 15분 / BEARISH: 20분 / PANIC: 60분
+  // paid AI 0 호출 — RSS 무료 스코어러, 상위 30종목, GCP 유지비 영향 미미
+  cron.schedule(
+    '*/3 9-15 * * 1-5',
+    () => {
+      runWithMode(false, async () => {
+        const { runQuickRescore } = await import('../ai/track-a/quick-rescore.js');
+        await runQuickRescore().catch((e) => logger.error(`Quick Re-Score 실패: ${e}`, { component: 'SCHEDULER' }));
+      });
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 🏦 FRED 매크로 워밍업 — 매일 23:00 KST (Fed 데이터 일일 갱신)
   cron.schedule(
     '0 23 * * *',
