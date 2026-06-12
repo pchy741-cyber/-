@@ -11,8 +11,13 @@
  *   3. 텔레그램 알림 발송 + 선택적 자동매수 트리거
  */
 import { Hono } from 'hono';
+import { getScoreBasedParams, STRATEGY_PARAMS } from '../../config/constants.js';
 import { config } from '../../config/index.js';
-import { getOpenChains, getPool, logSystem } from '../../db/client.js';
+import { createChain, getOpenChains, getPool, logSystem } from '../../db/client.js';
+import { invalidateBalanceCache } from '../../kis/account.js';
+import { getCurrentPrice } from '../../kis/market.js';
+import { notifyBuy } from '../../notifications/web-push.js';
+import { addPaperInvestment, getPaperBalance } from '../../risk/engine.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
 
@@ -133,6 +138,65 @@ kakaoAlertRoutes.post('/kakao-alert', async (c) => {
   if (signal === 'BUY_TARGET' && aiScore >= 80 && confidence >= 0.65 && !alreadyOpen) {
     action = '★ 매수 후보 (조건충족)';
     emoji = '🚀';
+
+    // 연습모드: 3분 파이프라인 대기 없이 즉시 매수 실행
+    if (config.isPaper) {
+      try {
+        const priceData = await getCurrentPrice(stock.code);
+        const curPrice = priceData.currentPrice;
+        if (curPrice && curPrice > 0) {
+          const balance = await getPaperBalance();
+          const totalCapital = balance.totalEvalAmount + balance.orderableCash;
+          const { stopLossPct, takeProfitPct } = getScoreBasedParams(aiScore);
+          const slFraction = Math.abs(stopLossPct) / 100;
+          const computed = Math.round((totalCapital * 0.015) / slFraction);
+          const dynCap = Math.round(totalCapital * 0.05); // 카카오 이벤트 매수: 최대 5% 비중
+          const amount_krw = Math.max(Math.min(computed, dynCap), 10000);
+          const quantity = Math.floor(amount_krw / curPrice);
+          if (quantity >= 1) {
+            const fakeOrderNo = `KKO${Date.now().toString(36).toUpperCase()}`;
+            const chainId = await createChain({
+              stock_code: stock.code,
+              status: 'OPEN',
+              strategy_mode: 'SWING',
+              avg_buy_price: curPrice,
+              total_quantity: quantity,
+              total_invested: quantity * curPrice,
+              realized_pnl: 0,
+              target_profit_pct: takeProfitPct,
+              stop_loss_pct: stopLossPct,
+              max_averaging_count: STRATEGY_PARAMS.SWING.maxAveragingCount,
+              current_averaging_count: 0,
+              is_paper: true,
+            });
+            await getPool().query(
+              `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
+               VALUES ($1, $2, 'BUY', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', 'paper', 'KAKAO', $6)`,
+              [
+                chainId,
+                stock.code,
+                quantity,
+                curPrice,
+                fakeOrderNo,
+                `카카오알림 즉시매수 AI${aiScore}점 conf=${confidence.toFixed(2)}`,
+              ],
+            );
+            addPaperInvestment(quantity * curPrice);
+            invalidateBalanceCache();
+            action = `✅ 즉시매수 완료 (${quantity}주 @${curPrice.toLocaleString()}원)`;
+            emoji = '✅';
+            await notifyBuy(
+              stock.code,
+              quantity,
+              curPrice,
+              `카카오알림 즉시매수 AI${aiScore}점`,
+            ).catch(() => {});
+          }
+        }
+      } catch (e) {
+        logger.warn(`[KAKAO_ALERT] 즉시매수 실패 (Telegram만 발송): ${e}`, { component: 'KAKAO' });
+      }
+    }
   } else if (signal === 'BUY_TARGET' && aiScore >= 70 && !alreadyOpen) {
     action = '매수 검토 (점수 낮음)';
     emoji = '📊';

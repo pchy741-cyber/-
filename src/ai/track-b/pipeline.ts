@@ -137,20 +137,20 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       }
     };
     const [watchlist, openChains, strategy, recentLossCodes, manuallySoldCodes] = await dbLoadWithFallback();
-    // 당일 1회 이상 손절 종목 → 당일 재진입 완전 차단 (recentLossCodes = 7일 손실차단)
-    const todayRepeatStopCodes = await getTodayRepeatStopCodes(1);
-    // -5% 초과 손실 종목 → 30일 절대 차단 (CEO allowRebuy override만 해제 가능)
-    const bigLossBlocked = await getBigLossBlockedStocks();
-    // 최근 30분 매도 종목 → 재진입 쿨다운 (v4: 2h→30m 단축 — 눌림목 반등 재진입 허용)
-    const recentlySoldCodes = await getRecentlySoldStocks(0.5);
+    const ctxIsPaper = getCtxIsPaper(); // runWithMode 컨텍스트 우선, 없으면 서버 기본값
+    // 2차 쿼리 병렬 실행 (순차 3개 + 잔고 → Promise.all로 단축)
+    const [todayRepeatStopCodes, bigLossBlocked, recentlySoldCodes, balanceRaw] = await Promise.all([
+      getTodayRepeatStopCodes(1),      // 당일 1회 이상 손절 → 당일 재진입 차단
+      getBigLossBlockedStocks(),        // -5% 초과 손실 → 30일 절대 차단
+      getRecentlySoldStocks(0.5),       // 최근 30분 매도 → 재진입 쿨다운
+      ctxIsPaper ? getPaperBalance() : getAccountBalance(true),
+    ]);
+    const balance = balanceRaw as any;
     // 인버스 ETF는 쿨다운 예외 — 하락장 지속 시 즉시 재진입 가능해야 함
     for (const code of INVERSE_ETF_CODES) recentlySoldCodes.delete(code);
     if (todayRepeatStopCodes.size > 0) {
       logger.warn(`🚫 당일 반복손절 재진입 차단: ${[...todayRepeatStopCodes].join(', ')}`, { component: 'TRACK_B' });
     }
-    const ctxIsPaper = getCtxIsPaper(); // runWithMode 컨텍스트 우선, 없으면 서버 기본값
-    const balanceRaw = ctxIsPaper ? await getPaperBalance() : await getAccountBalance(true);
-    const balance = balanceRaw as any;
 
     if (watchlist.length === 0) {
       logger.warn('감시 목록이 비어있습니다', { component: 'TRACK_B' });

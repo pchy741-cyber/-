@@ -266,14 +266,18 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       // (기존: maxPnlPct >= 3.0 && pnlPct < maxPnlPct * 0.50 → 매도 → 삭제)
 
       // ── 2c. 마이크로 트레일 — +2%~트레일활성화 구간 ──
+      // 🛡️ 강화 (2026-06-12): pnlPct >= 0 추가. 현재 손실 중이면 "수익보호"가 아니라 손실확정 →
+      //   손절 임계까지 보유하거나 시간기반 손절(섹션 6)이 처리하게 양보
+      //   과거 SONY 케이스: maxPnlPct=2.0 잠깐 가고 -1.19%에서 매도 (7회 누적 -11.7%)
     } else if (
       maxPnlPct >= 2.0 &&
       maxPnlPct < trailActivatePct &&
+      pnlPct >= 0 && // 🛡️ 핵심 가드: 현재 수익 상태일 때만
       drawdownFromPeak <= -1.5 &&
       !tech.isMomentum &&
       !(tech.aboveMA20 && tech.adx >= 30)
     ) {
-      sellReason = `마이크로트레일(+${maxPnlPct.toFixed(1)}%→${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%): 고점 대비 ${drawdownFromPeak.toFixed(1)}% 하락 → 수익보호`;
+      sellReason = `마이크로트레일(+${maxPnlPct.toFixed(1)}%→+${pnlPct.toFixed(1)}%): 고점 대비 ${drawdownFromPeak.toFixed(1)}% 하락 → 수익보호`;
 
       // ── 3. 하드 익절 — TP% 도달하면 무조건 매도 (isWinnerRiding 무관) ──
     } else if (pnlPct >= hardTpPct) {
