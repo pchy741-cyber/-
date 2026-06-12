@@ -126,12 +126,11 @@ export function calcPositionSize(params: SizingParams): SizingResult {
 
   // ── 황금비율 기반 Kelly % (포트폴리오 크기 무관, 순수 비율) ──
   // 포트폴리오 크기별 최적 집중도:
-  //   <$250:  PHI.MAX(61.8%) — 2~3종목 극집중 (작은 돈은 분산하면 의미 없음)
-  //   <$500:  PHI.MAJOR+PHI.MEDIUM = 61.8% — 3~4종목
-  //   <$2000: PHI.MAJOR(38.2%) — 5~7종목
-  //   $2000+: Kelly 롤링 또는 기본 38.2%
-  const isSmallAccount = portfolioValue < 500;
-  const isMicroAccount = portfolioValue < 250;
+  //   <$500:   PHI.MAX(61.8%) — 2~3종목 극집중 (작은 돈은 분산하면 의미 없음)
+  //   <$2000:  PHI.MAJOR+PHI.MEDIUM = 61.8% — 3~5종목
+  //   $2000+:  Kelly 롤링 또는 기본 38.2%
+  const isSmallAccount = portfolioValue < 2000;
+  const isMicroAccount = portfolioValue < 500;
 
   const kellyPct = isMicroAccount
     ? PHI.MAX // 61.8% 극집중
@@ -154,8 +153,9 @@ export function calcPositionSize(params: SizingParams): SizingResult {
   const dynamicCashReserve = breadth >= 0.65 ? 0.03 : breadth >= 0.45 ? 0.06 : PHI.CASH;
   const cashUsageCap = 1.0 - dynamicCashReserve;
 
-  // 복합 감소기 바닥 0.40 (여러 팩터 곱셈 붕괴 방지)
-  const flooredSizingMult = Math.max(sizingMult, 0.4);
+  // 복합 감소기 바닥: 소액 0.60 / 일반 0.40 (여러 팩터 곱셈 붕괴 방지)
+  const sizingFloor = isSmallAccount ? 0.6 : 0.4;
+  const flooredSizingMult = Math.max(sizingMult, sizingFloor);
   let positionSize = Math.min(baseSize * flooredSizingMult, cash * cashUsageCap);
 
   // 최소 포지션: 포트폴리오의 10% (고정 $ 대신 비율)

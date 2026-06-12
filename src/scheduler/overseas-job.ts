@@ -1223,9 +1223,9 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
         const isHighBetaEntry = SECTOR_CLASS.HIGH_BETA.includes(targetWatchItem?.sector ?? '');
         const isDefenseEntry = SECTOR_CLASS.DEFENSE.includes(targetWatchItem?.sector ?? '');
         const slDecimal = isHighBetaEntry ? 0.08 : isDefenseEntry ? 0.04 : 0.05;
-        // 리스크캡: 소액(<$500)은 5%, 일반은 Paper 2.5% / Live 2%
-        // $187 × 2% = $3.74 → 대부분 종목 0주 되므로 소액 완화 필수
-        const riskPct = portfolioValue < 500 ? 0.05 : isPaper() ? 0.025 : 0.02;
+        // 리스크캡: 소액(<$2000)은 5%, 일반은 Paper 2.5% / Live 2%
+        // $521 × 2% = $10.42 → RTX $184 × 5% SL = $9.22 → 1주만 허용
+        const riskPct = portfolioValue < 2000 ? 0.05 : isPaper() ? 0.025 : 0.02;
         const maxRiskUSD = portfolioValue * riskPct;
         const qtyBy1PctRule =
           maxRiskUSD > 0 ? Math.floor(maxRiskUSD / (target.price.currentPrice * slDecimal)) : Infinity;
@@ -1235,10 +1235,10 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
         if (qtyBySizing === 0 && positionSize >= target.price.currentPrice * 0.99) {
           qtyBySizing = 1; // 1주 가격 ±1% 내면 수수료 무시하고 매수
         }
-        // 집중캡 사전 체크: 매수 후 25% 초과 방지 (매수→즉시매도 루프 방어)
+        // 집중캡 사전 체크: 소액은 50%, 일반은 25% (매수→즉시매도 루프 방어)
         const existingHolding = updatedHoldings.get(target.code);
         const existingQty = existingHolding?.qty ?? 0;
-        const CONC_CAP_PCT = 0.25;
+        const CONC_CAP_PCT = portfolioValue < 2000 ? 0.50 : 0.25;
         const maxQtyByConc =
           portfolioValue > 0
             ? Math.max(0, Math.floor((portfolioValue * CONC_CAP_PCT) / priceWithFee) - existingQty)
