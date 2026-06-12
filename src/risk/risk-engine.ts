@@ -410,6 +410,8 @@ export class RiskEngine {
   }
 
   private async checkMonthlyMDD(isPaper: boolean): Promise<PreTradeCheckResult> {
+    // 연습모드는 MDD 락 없음 — 돈 다 잃어도 자유 매매
+    if (isPaper) return { approved: true, reason: '연습모드 MDD 제한 없음' };
     try {
       // 소자산 포트폴리오(20만 미만)는 월간 MDD 체크 면제
       // 외부 매도/입출금으로 잔고 급감 시 MDD가 -90%+ 되어 영구 차단되는 문제 방지

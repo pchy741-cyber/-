@@ -15,12 +15,15 @@ import { logger } from '../utils/logger.js';
 
 export type KillSwitchScope = 'KR' | 'OVERSEAS';
 
+const MDD_GRACE_PERIOD_MS = 10 * 60 * 1000; // 수동 해제 후 10분간 자동 재발동 차단
+
 interface KillSwitchState {
   active: boolean;
   reason: string;
   activatedAt: Date | null;
   consecutiveErrors: number;
   manuallyTriggered: boolean;
+  forcedDeactivatedAt: Date | null;
 }
 
 const DEFAULT_STATE = (): KillSwitchState => ({
@@ -29,6 +32,7 @@ const DEFAULT_STATE = (): KillSwitchState => ({
   activatedAt: null,
   consecutiveErrors: 0,
   manuallyTriggered: false,
+  forcedDeactivatedAt: null,
 });
 
 // 4개 독립 상태 — paper/live × KR/OVERSEAS
@@ -89,6 +93,16 @@ export async function activateKillSwitch(reason: string, manual = false, scope: 
   const key = stateKey(scope);
   const s = getState(scope);
   if (s.active || updatingKeys.has(key)) return;
+
+  // 수동 해제 후 grace period 내 자동 재발동 차단 (MDD re-trigger 방지)
+  if (!manual && s.forcedDeactivatedAt) {
+    const elapsed = Date.now() - s.forcedDeactivatedAt.getTime();
+    if (elapsed < MDD_GRACE_PERIOD_MS) {
+      const remainMin = Math.ceil((MDD_GRACE_PERIOD_MS - elapsed) / 60000);
+      logger.info(`⏳ Kill Switch 자동 재발동 차단 [${scope}]: 수동 해제 후 grace period ${remainMin}분 남음`, { component: 'KILL_SWITCH' });
+      return;
+    }
+  }
   updatingKeys.add(key);
 
   const isPaper = getCtxIsPaper();
@@ -164,7 +178,9 @@ export async function deactivateKillSwitch(force = false, scope: KillSwitchScope
   const mode = isPaper ? 'paper' : 'live';
   const prevReason = s.reason;
 
-  setState(scope, DEFAULT_STATE());
+  const newState = DEFAULT_STATE();
+  if (force) newState.forcedDeactivatedAt = new Date();
+  setState(scope, newState);
 
   logger.info(`✅ Kill Switch 해제 [${scopeLabel}]${force ? ' [강제]' : ''} [${mode}]`, { component: 'KILL_SWITCH' });
   await logSystem(
@@ -216,7 +232,10 @@ export async function deactivateKillSwitchForMode(
   const mode = isPaper ? 'paper' : 'live';
   const scopeLabel = scope === 'OVERSEAS' ? '해외' : '국내';
 
-  states[sKey] = DEFAULT_STATE();
+  // force 해제 시 grace period 기록 — 10분간 자동 재발동 차단
+  const newState = DEFAULT_STATE();
+  if (force) newState.forcedDeactivatedAt = new Date();
+  states[sKey] = newState;
 
   logger.info(`✅ Kill Switch 해제 [${scopeLabel}]${force ? ' [강제]' : ''} [${mode}]`, { component: 'KILL_SWITCH' });
   await logSystem(
