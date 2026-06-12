@@ -51,13 +51,16 @@ async function checkMddGuardActive(isPaper: boolean): Promise<boolean> {
 }
 
 // ── 자동 조절 규칙 상수 ─────────────────────────────────────────────
+// CEO 지시 (2026-06-12): "장 좋앗다는데 실전매매 무반응인게 화남"
+// "유지비만 몇십만원인데 돈 거의 못 벌고 있음"
+// → 임계 대폭 완화 (이전 75→65, 83→75 등) + 시간대별 동적 조정
 const RULES = {
-  // 시장 레짐 기반 minBuyScore (하락장 95+ 아니면 다 잃음 → 상향)
-  REGIME_NORMAL_THRESHOLD: 75, // 정상장
-  REGIME_ADJUST_THRESHOLD: 83, // 조정장 (penalty=1)
-  REGIME_DOWN_THRESHOLD: 90, // 하락장 (penalty=2)
-  REGIME_CRASH_THRESHOLD: 95, // 급락장 (flashCrash)
-  REGIME_BOOST_THRESHOLD: 65, // 강세장 (boost)
+  // 시장 레짐 기반 minBuyScore (악착 매매로 회전 우선)
+  REGIME_NORMAL_THRESHOLD: 65, // 정상장 (이전 75 → 65)
+  REGIME_ADJUST_THRESHOLD: 75, // 조정장 (이전 83 → 75)
+  REGIME_DOWN_THRESHOLD: 85, // 하락장 (이전 90 → 85)
+  REGIME_CRASH_THRESHOLD: 95, // 급락장 (그대로)
+  REGIME_BOOST_THRESHOLD: 55, // 강세장 (이전 65 → 55)
 
   // 승률 기반
   WINRATE_BAD_THRESHOLD: 0.35, // 35% 미만 → 방어 모드
@@ -155,27 +158,49 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
         }
       }
 
-      // 퍼포먼스 멀티플라이어 보정 — paper 강세장 시 패널티 면제 (적극매매)
+      // 퍼포먼스 멀티플라이어 보정 — 대폭 완화 (악착 매매 우선)
+      // 이전 +5/+3/+2 → +2/+1/+0 으로 축소. 성과방어 핑계 매매 정체 차단
       const skipPerfPenalty = isPaper && regime.boost;
       if (skipPerfPenalty) {
         reason += ` + 강세장 paper → 성과 패널티 면제`;
       } else if (perfMultiplier <= 0.5) {
-        targetThreshold = Math.min(95, targetThreshold + 5); // A: 10→5
+        targetThreshold = Math.min(95, targetThreshold + 2); // 이전 +5 → +2
         reason += ` + 성과 심각(×${perfMultiplier.toFixed(2)})`;
       } else if (perfMultiplier < 0.7) {
-        targetThreshold = Math.min(95, targetThreshold + 3); // A: 7→3
+        targetThreshold = Math.min(95, targetThreshold + 1); // 이전 +3 → +1
         reason += ` + 성과 부진(×${perfMultiplier.toFixed(2)})`;
       } else if (perfMultiplier < 0.85) {
-        targetThreshold = Math.min(95, targetThreshold + 2); // A: 3→2
-        reason += ` + 성과 방어(×${perfMultiplier.toFixed(2)})`;
+        // 이전: +2 → 0 (방어 단계는 보정 없음)
+        reason += ` + 성과 방어(×${perfMultiplier.toFixed(2)}) — 임계 유지`;
       } else if (perfMultiplier > 1.1) {
-        targetThreshold = Math.max(55, targetThreshold - 2);
+        targetThreshold = Math.max(55, targetThreshold - 3); // 이전 -2 → -3
         reason += ` + 최근 성과 우수(×${perfMultiplier.toFixed(2)})`;
       }
 
-      // 승률 피드백 반영
+      // 🕐 시간대별 동적 임계 (CEO 지시 — 황금구간 적극 매매)
+      // 황금 오전 09:30~10:20, 황금 오후 13:00~15:00 → -10점
+      // 개장벨 09:00~09:30 → -3 (백엔드 자동 구간이지만 후보 검출)
+      // 마의시간 10:20~13:00 → +5 (신규 매수 금지 구간 안전망)
+      try {
+        const { getKrMarketPhase } = await import('../scheduler/loop-mode.js');
+        const phase = getKrMarketPhase();
+        if (phase === 'GOLDEN_AM' || phase === 'GOLDEN_PM') {
+          targetThreshold = Math.max(50, targetThreshold - 10);
+          reason += ` + 황금구간(${phase}) 임계 -10`;
+        } else if (phase === 'CURSED') {
+          targetThreshold = Math.min(99, targetThreshold + 5);
+          reason += ` + 마의시간 임계 +5`;
+        } else if (phase === 'OPENING_BELL') {
+          targetThreshold = Math.max(55, targetThreshold - 3);
+          reason += ` + 개장벨 임계 -3`;
+        }
+      } catch {
+        /* phase 조회 실패 시 시간대 보정 없이 진행 */
+      }
+
+      // 승률 피드백 반영 — 완화 (+5 → +2, 매매 정체 차단)
       if (winRateFeedback && winRateFeedback.recentWinRate < RULES.WINRATE_BAD_THRESHOLD) {
-        targetThreshold = Math.min(95, targetThreshold + 5);
+        targetThreshold = Math.min(95, targetThreshold + 2);
         reason += ` + 전체 승률 저조(${(winRateFeedback.recentWinRate * 100).toFixed(0)}%)`;
       }
 

@@ -97,14 +97,20 @@ journalRoutes.get('/journal', async (c) => {
       const qty = Number(r.total_quantity ?? 0);
       const invested = Number(r.total_invested ?? 0);
 
+      // realized_pnl=0은 손익분기(외부 매도 등 실제 0원 수익) — null일 때만 가격 기반 폴백
       const pnlGross =
-        r.realized_pnl != null && Number(r.realized_pnl) !== 0
+        r.realized_pnl != null
           ? Number(r.realized_pnl)
           : exitPrice > 0 && entryPrice > 0
             ? (exitPrice - entryPrice) * qty
             : 0;
+      // exitPrice=0(외부 매도 → SELL 주문 없음 → NULL) 시 -100% 오표시 방지
       const pnlPctGross =
-        invested > 0 ? (pnlGross / invested) * 100 : entryPrice > 0 ? ((exitPrice - entryPrice) / entryPrice) * 100 : 0;
+        invested > 0
+          ? (pnlGross / invested) * 100
+          : entryPrice > 0 && exitPrice > 0
+            ? ((exitPrice - entryPrice) / entryPrice) * 100
+            : 0;
 
       // 국내 수수료: 매수 0.015% + 매도 0.015% + 거래세 0.18% ≈ 0.21%
       const krFeeRate = 0.0021;

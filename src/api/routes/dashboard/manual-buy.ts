@@ -289,6 +289,7 @@ export function registerManualBuyRoutes(app: Hono) {
             quantity,
             estimatedPrice: curPrice,
             isPaper: false,
+            ceoManual: true,
           });
           if (!riskResult.approved) {
             logger.warn(`🚫 수동매수 리스크 거부: ${stock_code} — ${riskResult.reason}`, { component: 'CLAUDE_BUY' });

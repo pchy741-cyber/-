@@ -34,6 +34,7 @@ export class RiskEngine {
     quantity: number;
     estimatedPrice: number;
     isPaper?: boolean;
+    ceoManual?: boolean; // CEO 수동매수: 월간 MDD 킬스위치 재발동 루프 우회
   }): Promise<PreTradeCheckResult> {
     const { stockCode, side, quantity, estimatedPrice } = params;
     const isPaper = typeof params.isPaper === 'boolean' ? params.isPaper : getCtxIsPaper();
@@ -45,6 +46,7 @@ export class RiskEngine {
     }
 
     // Kill Switch 확인 (국내 매수만 차단)
+    // CEO 수동매수는 킬스위치 해제 후 진입 허용 — MDD 체크에서 재발동하지 않음
     if (isKillSwitchActive('KR')) {
       return { approved: false, reason: '🛑 Kill Switch 활성화 상태 — 국내 매수 차단 (매도는 허용)' };
     }
@@ -70,8 +72,12 @@ export class RiskEngine {
     if (!weeklyCheck.approved) return weeklyCheck;
 
     // 5-B. 월간 MDD -8% 체크
-    const monthlyMddCheck = await this.checkMonthlyMDD(isPaper);
-    if (!monthlyMddCheck.approved) return monthlyMddCheck;
+    // CEO 수동매수(ceoManual=true)는 스킵 — 킬스위치 해제 후 MDD가 재발동하는 악순환 방지
+    // 포지션 생성 후 stop_loss/take_profit은 transaction_chains로 자동 관리됨
+    if (!params.ceoManual) {
+      const monthlyMddCheck = await this.checkMonthlyMDD(isPaper);
+      if (!monthlyMddCheck.approved) return monthlyMddCheck;
+    }
 
     // 6. 총 투자 비율 체크
     const exposureCheck = await this.checkTotalExposure(orderValue, isPaper);
