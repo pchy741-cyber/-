@@ -8,7 +8,7 @@ import { ALLOCATION_GOLDEN, GATE, OVERSEAS, OVERSEAS_FEE_PCT, SECTOR_CLASS } fro
 import { runWithMode } from '../config/context.js';
 import { paperOnly } from '../config/index.js';
 import { getPool, logSystem } from '../db/client.js';
-import { getOverseasDailyChart, getOverseasPrice, placeFractionalOverseasBuy } from '../kis/overseas.js';
+import { getOverseasDailyChart, getOverseasPrice } from '../kis/overseas.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { activateKillSwitch, isKillSwitchActive, reportError, reportSuccess } from '../risk/kill-switch.js';
 import { OVERSEAS_LOSS_TIERS } from '../risk/seed-capital.js';
@@ -1246,36 +1246,11 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
         const fullQty = Math.min(qtyBySizing, qtyBy1PctRule > 0 ? qtyBy1PctRule : qtyBySizing, maxQtyByConc);
 
         if (fullQty <= 0) {
-          // 소수점 매수 폴백: positionSize >= $10이면 fractional buy 시도 (NVDA 등 고가주 대응)
-          const fracAmount = Math.min(positionSize, cash * 0.95);
-          if (fracAmount >= 10 && target.price.currentPrice > 0) {
-            logger.info(
-              `🔧 ${target.code}: fullQty=0 → 소수점 매수 시도 $${fracAmount.toFixed(0)} (price=$${target.price.currentPrice.toFixed(2)})`,
-              { component: 'OVERSEAS' },
-            );
-            try {
-              const fracResult = await placeFractionalOverseasBuy({
-                stockCode: target.code,
-                exchange: target.exchange,
-                amountUsd: fracAmount,
-              });
-              if (fracResult.success) {
-                const estQty = +(fracAmount / target.price.currentPrice).toFixed(4);
-                cash -= fracAmount * 1.0025;
-                buyOrders.push(`소수점매수 ${target.code} ~${estQty}주 $${fracAmount.toFixed(0)} (${fracResult.orderNo})`);
-                logger.info(`✅ ${target.code}: 소수점 매수 성공 $${fracAmount.toFixed(0)} (${fracResult.orderNo})`, { component: 'OVERSEAS' });
-              } else {
-                logger.warn(`❌ ${target.code}: 소수점 매수 실패 — ${fracResult.message}`, { component: 'OVERSEAS' });
-              }
-            } catch (e) {
-              logger.warn(`❌ ${target.code}: 소수점 매수 오류 — ${(e as Error).message}`, { component: 'OVERSEAS' });
-            }
-          } else {
-            logger.info(
-              `🔧 ${target.code}: fullQty=0 → SKIP (sizing=${qtyBySizing} risk=${qtyBy1PctRule} conc=${maxQtyByConc} price=$${target.price.currentPrice.toFixed(2)} posSize=$${positionSize.toFixed(0)})`,
-              { component: 'OVERSEAS' },
-            );
-          }
+          // KIS TTTT3016U 소수점 매수는 미지원 (IGW00012 에러) → 1주 미만이면 스킵
+          logger.info(
+            `🔧 ${target.code}: fullQty=0 → SKIP (sizing=${qtyBySizing} risk=${qtyBy1PctRule} conc=${maxQtyByConc} price=$${target.price.currentPrice.toFixed(2)} posSize=$${positionSize.toFixed(0)} cash=$${cash.toFixed(0)})`,
+            { component: 'OVERSEAS' },
+          );
           continue;
         }
 
