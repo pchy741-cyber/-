@@ -43,8 +43,9 @@ export default function RecentTradesPanel({
   filled, holdingsTab, expandedTradeIdx, setExpandedTradeIdx, getStockName,
 }: RecentTradesPanelProps) {
   const isUsTab = holdingsTab === 'US';
+  const isOverseasCode = (code: string) => !/^[0-9]{6}$/.test(code);
   const tabFiltered = filled.filter((t: Trade) => {
-    const isOv = t.trigger_source === 'OVERSEAS' || Number(t.filled_price) < 1000;
+    const isOv = t.trigger_source === 'OVERSEAS' && isOverseasCode(t.stock_code);
     return isUsTab ? isOv : !isOv;
   });
   const todayTabTrades = tabFiltered.filter((t: Trade) => new Date(t.created_at).toDateString() === new Date().toDateString());
@@ -54,7 +55,7 @@ export default function RecentTradesPanel({
       {tabFiltered.length === 0 ? <EmptyMsg>매매 기록 없음</EmptyMsg> : (
         <div className="divide-y divide-white/[0.03]">
           {tabFiltered.slice(0, 10).map((t: Trade, i: number) => {
-            const isOverseasTrade = t.trigger_source === 'OVERSEAS' || Number(t.filled_price) < 1000;
+            const isOverseasTrade = t.trigger_source === 'OVERSEAS' && isOverseasCode(t.stock_code);
             const isExpanded = expandedTradeIdx === i;
             return (
               <div key={i} onClick={() => setExpandedTradeIdx(isExpanded ? null : i)}

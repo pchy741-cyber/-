@@ -399,6 +399,7 @@ overseasRoutes.get('/overseas/buy-recommend/:code', async (c) => {
     .toUpperCase()
     .replace(/[^A-Z0-9.]/g, '');
   const exchange = c.req.query('exchange') || 'NASDAQ';
+  const isPaper = resolveRequestMode(c);
   try {
     const price = await getOverseasPrice(code, exchange);
     if (!price.currentPrice || price.currentPrice <= 0) {
@@ -432,10 +433,10 @@ overseasRoutes.get('/overseas/buy-recommend/:code', async (c) => {
     let holdingCount = 0;
     try {
       const { getCash: getOsCashFn } = await import('../../scheduler/overseas/state.js');
-      cashUsd = await getOsCashFn(baseIsPaper);
+      cashUsd = await getOsCashFn(isPaper);
       const { rows: holdRows } = await getPool().query(
         'SELECT SUM(avg_price * quantity) AS total, COUNT(*) AS cnt FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1',
-        [baseIsPaper],
+        [isPaper],
       );
       const holdVal = holdRows[0]?.total ? Number(holdRows[0].total) : 0;
       holdingCount = Number(holdRows[0]?.cnt ?? 0);
@@ -500,7 +501,7 @@ overseasRoutes.get('/overseas/buy-recommend/:code', async (c) => {
       totalCost,
       vix: vixValue,
       vixRegime: vixRegime.regime,
-      mode: baseIsPaper ? 'paper' : 'live',
+      mode: isPaper ? 'paper' : 'live',
       stockName: watchItem?.name ?? code,
     });
   } catch (e: any) {
@@ -511,6 +512,7 @@ overseasRoutes.get('/overseas/buy-recommend/:code', async (c) => {
 // POST /overseas/vision-scalp/execute  body: { ticker, exchange, amountUsd, reasoning }
 overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
   try {
+    const isPaper = resolveRequestMode(c);
     const body = await c.req.json<{
       ticker: string;
       exchange: string;
@@ -549,10 +551,10 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
     let portfolio = 0;
     try {
       const { getCash: getOsCashFn } = await import('../../scheduler/overseas/state.js');
-      cashUsd = await getOsCashFn(baseIsPaper);
+      cashUsd = await getOsCashFn(isPaper);
       const { rows: holdRows } = await getPool().query(
         'SELECT SUM(avg_price * quantity) AS total, COUNT(*) AS cnt FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1',
-        [baseIsPaper],
+        [isPaper],
       );
       const holdVal = holdRows[0]?.total ? Number(holdRows[0].total) : 0;
       const holdCount = Number(holdRows[0]?.cnt ?? 0);
@@ -612,7 +614,7 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
       const vixValue = vixData?.vix ?? 0;
       const vixRegime = getVixRegime(vixValue);
       const { getTunerOverrides } = await import('../../scheduler/overseas/trade-tuner.js');
-      const tunerOv = await getTunerOverrides(baseIsPaper).catch(() => ({}));
+      const tunerOv = await getTunerOverrides(isPaper).catch(() => ({}));
       ({ tpPct, slPct, tpLabel } = calcDynamicTpSl({
         sector,
         adx,
@@ -625,12 +627,12 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
     }
     const tpPrice = +(price.currentPrice * (1 + tpPct / 100)).toFixed(2);
     const slPrice = +(price.currentPrice * (1 - slPct / 100)).toFixed(2);
-    const _vsCashKey = baseIsPaper ? 'cash_paper' : 'cash';
+    const _vsCashKey = isPaper ? 'cash_paper' : 'cash';
 
     const filledPrice = price.currentPrice;
     let orderNo = `VSP${Date.now().toString(36)}`;
 
-    if (!baseIsPaper) {
+    if (!isPaper) {
       // 실전 모드: KIS 실주문 — live 컨텍스트 명시
       const result = await runWithMode(false, () =>
         placeOverseasOrder({
@@ -656,7 +658,7 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
     const { getCash: getOsCash } = await import('../../scheduler/overseas/state.js');
 
     // Paper: computed cash 확인 / Live: overseas_state 확인
-    const currentCash = await getOsCash(baseIsPaper);
+    const currentCash = await getOsCash(isPaper);
     if (!Number.isFinite(currentCash) || currentCash < totalCost) {
       return c.json(
         { error: `해외 현금 부족 (보유: $${currentCash.toFixed(0)}, 필요: $${totalCost.toFixed(0)})` },
@@ -675,7 +677,7 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
               scalp_tp = $5, scalp_sl = $6, is_scalp = TRUE,
               tp_pct = $8, sl_pct = $9
       `,
-        [sanitizedTicker, exchange, qty, filledPrice, tpPrice, slPrice, baseIsPaper, tpPct, -slPct],
+        [sanitizedTicker, exchange, qty, filledPrice, tpPrice, slPrice, isPaper, tpPct, -slPct],
       );
 
       // 매수 주문 기록 (Paper computed cash에 필수 — 이전에 누락됐던 부분)
@@ -688,7 +690,7 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
           qty,
           filledPrice,
           orderNo,
-          baseIsPaper ? 'paper' : 'live',
+          isPaper ? 'paper' : 'live',
           `수동매수 $${safeAmount.toFixed(0)} (TP+${tpPct.toFixed(1)}%:$${tpPrice} SL-${slPct.toFixed(1)}%:$${slPrice}) [${tpLabel}]`,
         ],
       );
@@ -697,7 +699,7 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
     });
 
     // Live: KIS 동기화로 현금 갱신
-    if (!baseIsPaper) {
+    if (!isPaper) {
       const { reconcileCashWithKIS } = await import('../../scheduler/overseas/kis-sync.js');
       await runWithMode(false, () => reconcileCashWithKIS()).catch((e: any) =>
         logger.warn(`수동매수 후 현금 동기화 실패 (무시): ${e.message}`, { component: 'OVERSEAS' }),
@@ -705,10 +707,10 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
     }
 
     logger.info(
-      `[수동매수] ${sanitizedTicker} ${qty}주 @$${filledPrice.toFixed(2)} (TP+${tpPct.toFixed(1)}%:$${tpPrice} SL-${slPct.toFixed(1)}%:$${slPrice}) $${safeAmount.toFixed(0)}/${cashUsd.toFixed(0)} [${tpLabel}] [${baseIsPaper ? 'PAPER' : 'LIVE'}]`,
+      `[수동매수] ${sanitizedTicker} ${qty}주 @$${filledPrice.toFixed(2)} (TP+${tpPct.toFixed(1)}%:$${tpPrice} SL-${slPct.toFixed(1)}%:$${slPrice}) $${safeAmount.toFixed(0)}/${cashUsd.toFixed(0)} [${tpLabel}] [${isPaper ? 'PAPER' : 'LIVE'}]`,
       { component: 'OVERSEAS' },
     );
-    const vsMode = baseIsPaper ? 'paper' : 'live';
+    const vsMode = isPaper ? 'paper' : 'live';
     cacheSet(`overseas:dashboard:${vsMode}`, null as any, 0);
     cacheSet(`overseas:holdings:${vsMode}`, null as any, 0);
     cacheSet(`overseas:balance:${vsMode}`, null as any, 0);
@@ -730,7 +732,7 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
       cashRemaining: +(cashUsd - totalCost).toFixed(2),
       cashUsedPct: +((totalCost / cashUsd) * 100).toFixed(1),
       reasoning,
-      mode: baseIsPaper ? 'paper' : 'live',
+      mode: isPaper ? 'paper' : 'live',
     });
   } catch (e: any) {
     logger.error(`[VisionScalp] 실행 실패: ${e.message}`, { component: 'OVERSEAS' });
@@ -743,7 +745,7 @@ overseasRoutes.patch('/overseas/holdings/:code/tpsl', async (c) => {
   const code = c.req.param('code');
   try {
     const body = await c.req.json<{ tp_pct?: number; sl_pct?: number; is_paper?: boolean }>();
-    const isPaper = baseIsPaper; // 🔒 서버 설정만 사용 (클라이언트 오버라이드 차단)
+    const isPaper = resolveRequestMode(c);
     const tpPct = body.tp_pct != null ? Number(body.tp_pct) : null;
     const slPct = body.sl_pct != null ? Number(body.sl_pct) : null;
     if (tpPct == null && slPct == null) return c.json({ error: 'tp_pct 또는 sl_pct 필요' }, 400);
@@ -784,7 +786,7 @@ overseasRoutes.post('/overseas/sell', async (c) => {
 
   try {
     const { getPool } = await import('../../db/client.js');
-    const isPaper = baseIsPaper;
+    const isPaper = resolveRequestMode(c);
     const { rows } = await getPool().query(
       'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0 AND is_paper = $2',
       [stock_code, isPaper],

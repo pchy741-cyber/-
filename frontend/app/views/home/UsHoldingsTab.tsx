@@ -60,9 +60,9 @@ export default function UsHoldingsTab({
     const sl = parseFloat(editSl);
     if (isNaN(tp) || isNaN(sl)) { toast?.('숫자를 입력하세요', 'err'); return; }
     try {
-      await api(`/overseas/holdings/${code}/tpsl`, {
+      await api(`/overseas/holdings/${code}/tpsl?viewMode=${viewMode}`, {
         method: 'PATCH',
-        body: JSON.stringify({ tp_pct: tp, sl_pct: sl < 0 ? sl : -sl, is_paper: viewMode === 'paper' }),
+        body: JSON.stringify({ tp_pct: tp, sl_pct: sl < 0 ? sl : -sl }),
       });
       setEditingTpSl(null);
       toast?.('TP/SL 저장됨', 'ok');

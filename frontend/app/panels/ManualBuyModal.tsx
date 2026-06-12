@@ -77,7 +77,7 @@ export default function ManualBuyModal({ open, onClose, onSuccess, toast, confir
     setRec(null);
     try {
       const ex = exchange || watchlist.find(w => w.code === code)?.exchange || 'NASDAQ';
-      const data = await api(`/overseas/buy-recommend/${code}?exchange=${ex}`, { timeout: 10000 });
+      const data = await api(`/overseas/buy-recommend/${code}?exchange=${ex}&viewMode=${viewMode}`, { timeout: 10000 });
       setRec(data);
       setQty(data.recommendedQty);
       setTpPct(data.tpPct);
@@ -96,7 +96,7 @@ export default function ManualBuyModal({ open, onClose, onSuccess, toast, confir
     setExecuting(true);
     try {
       const amountUsd = qty * rec.price * 1.0025;
-      const r = await api('/overseas/vision-scalp/execute', {
+      const r = await api(`/overseas/vision-scalp/execute?viewMode=${viewMode}`, {
         method: 'POST',
         body: JSON.stringify({
           ticker: rec.code,
