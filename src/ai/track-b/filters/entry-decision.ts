@@ -85,14 +85,14 @@ export function tryScalpEntry(input: EntryInput): EntryVerdict {
   const { stockCode, mode } = input;
   const scalpTarget = getOverride<boolean>(`${stockCode}_scalpTarget`);
 
-  // 2026-06 성과 검토: SCALPING WR 25.7% → 전면 비활성화
-  if (mode === 'SCALPING') {
-    return { action: 'SKIP', reason: 'SCALPING 비활성화 (WR 25.7%)' };
+  // 2026-06 성과 검토: SCALPING WR 25.7% → 실전 비활성화 (연습모드는 허용)
+  if (mode === 'SCALPING' && !getCtxIsPaper()) {
+    return { action: 'SKIP', reason: 'SCALPING 비활성화 (WR 25.7%, 실전 전용)' };
   }
 
-  // ScalpRadar도 비활성화 — 모멘텀 스캘핑 진입 차단
-  if (scalpTarget) {
-    logger.info(`  🚫 ${stockCode}: ScalpRadar 무시 (SCALPING 비활성화)`, { component: 'TRACK_B' });
+  // ScalpRadar 비활성화 — 실전에서만 차단, 연습모드는 통과
+  if (scalpTarget && !getCtxIsPaper()) {
+    logger.info(`  🚫 ${stockCode}: ScalpRadar 무시 (SCALPING 비활성화, 실전)`, { component: 'TRACK_B' });
     return { action: 'CONTINUE' }; // 일반 진입 로직으로 평가
   }
 
