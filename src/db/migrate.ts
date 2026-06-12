@@ -42,12 +42,27 @@ function splitSqlStatements(sql: string): string[] {
 }
 
 /**
+ * 파괴적 SQL 패턴 감지 (DELETE/TRUNCATE/DROP TABLE)
+ * -- DESTRUCTIVE_APPROVED 마커 없으면 실행 차단
+ */
+const DESTRUCTIVE_PATTERN = /^\s*(DELETE\s+FROM|TRUNCATE\s+TABLE|TRUNCATE\s+\w|DROP\s+TABLE)/im;
+const DESTRUCTIVE_APPROVAL_MARKER = '-- DESTRUCTIVE_APPROVED';
+
+function hasDestructiveStatements(sql: string): boolean {
+  // 주석 제거 후 확인
+  const withoutComments = sql.replace(/--[^\n]*/g, '');
+  return DESTRUCTIVE_PATTERN.test(withoutComments);
+}
+
+/**
  * SQL 마이그레이션 파일을 순서대로 실행한다.
  * - schema_migrations 테이블로 적용 여부 추적
  * - 단일 커넥션 재사용
  * - 각 파일을 구문 단위로 개별 실행 (전체 파일 트랜잭션 금지)
  *   → 한 구문이 롤백돼도 이전 구문의 변경이 유지됨
  * - 이미 적용된 DDL 재실행은 경고로 처리 후 통과
+ * - 파괴적 SQL(DELETE/TRUNCATE/DROP) 포함 시 -- DESTRUCTIVE_APPROVED 마커 필수
+ *   → 마커 없으면 실행 차단 (데이터 유실 방지)
  * - 마이그레이션은 모든 구문 시도 후 항상 적용 완료로 표시
  *   (서버 시작 블로킹 방지)
  */
@@ -77,6 +92,16 @@ export async function runMigrations(): Promise<void> {
       if (appliedSet.has(file)) continue;
 
       const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
+
+      // 파괴적 SQL 감지 — 승인 마커 없으면 차단 (데이터 유실 방지)
+      if (hasDestructiveStatements(sql) && !sql.includes(DESTRUCTIVE_APPROVAL_MARKER)) {
+        logger.error(
+          `🚫 [DESTRUCTIVE_BLOCKED] ${file}: DELETE/TRUNCATE/DROP 감지 — 파일 상단에 '${DESTRUCTIVE_APPROVAL_MARKER}' 마커 필요. 실행 차단됨.`,
+          { component: 'MIGRATE' },
+        );
+        continue; // schema_migrations에 기록 안 함 → 다음 배포에도 계속 차단
+      }
+
       const stmts = splitSqlStatements(sql);
       let errorCount = 0;
 
