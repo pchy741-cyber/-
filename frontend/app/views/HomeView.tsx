@@ -321,7 +321,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
         </Panel>
       )}
 
-      <PortfolioSection allocConfig={allocConfig} setAllocConfig={setAllocConfig} onGoToSettings={onGoToSettings} dash={dash} chains={chains} usHoldings={usHoldings} usW={usW} totalValue={totalValue} totalInvested={totalInvested} domesticInvested={domesticInvested} domesticEval={domesticEval} domesticCash={domesticCash} overseasInvestedUsd={overseasInvestedUsd} overseasInvestedKrw={overseasInvestedKrw} overseasMarketKrw={overseasMarketKrw} overseasCashUsd={overseasCashUsd} overseasCashKrw={overseasCashKrw} overseasPnlUsd={overseasPnlUsd} fxRate={fxRate} investedPctExact={investedPctExact} cashPctExact={cashPctExact} overseasCashPctExact={overseasCashPctExact} strategy={strategy} getStockName={getStockName} mpData={mpData} />
+      <PortfolioSection allocConfig={allocConfig} setAllocConfig={setAllocConfig} onGoToSettings={onGoToSettings} dash={dash} chains={chains} usHoldings={usHoldings} usW={usW} totalValue={totalValue} totalInvested={totalInvested} domesticInvested={domesticInvested} domesticEval={domesticEval} domesticCash={domesticCash} overseasInvestedUsd={overseasInvestedUsd} overseasInvestedKrw={overseasInvestedKrw} overseasMarketKrw={overseasMarketKrw} overseasCashUsd={overseasCashUsd} overseasCashKrw={overseasCashKrw} overseasPnlUsd={overseasPnlUsd} fxRate={fxRate} investedPctExact={investedPctExact} cashPctExact={cashPctExact} overseasCashPctExact={overseasCashPctExact} strategy={strategy} getStockName={getStockName} mpData={mpData} viewMode={viewMode} />
     </div>
   );
 }

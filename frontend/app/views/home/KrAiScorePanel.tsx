@@ -129,9 +129,16 @@ export default function KrAiScorePanel({
       })() : (
         <div className="p-6 text-center space-y-3">
           <div className="text-2xl opacity-30">🤖</div>
-          <p className="text-sm text-slate-500">AI 스코어가 아직 없습니다</p>
-          <p className="text-[11px] text-slate-600">매일 오전 7:30 / 오후 6시에 자동 실행됩니다.</p>
-          <p className="text-[10px] text-blue-400/60">스코어 없는 동안 기술적 지표 기반으로 자동매매가 동작합니다</p>
+          <p className="text-sm text-slate-300 font-bold">현재 <span className="text-blue-400">기술폴백 모드</span>로 자동매매 중</p>
+          <p className="text-[11px] text-slate-500">RSI · MA20 · 거래량 · 모멘텀 + Track B 3분 사이클</p>
+          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-blue-500/10 ring-1 ring-blue-500/20 text-[11px] text-blue-300">
+            <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+            매매 정상 동작 — AI 점수 갱신 대기 중
+          </div>
+          <p className="text-[10px] text-slate-600 mt-2">
+            정기 갱신: 07:30 / 10:00 / 12:30 / 18:00 KST<br />
+            장중 매 3분 RSS 재스코어링 (황금구간 1분)
+          </p>
         </div>
       )}
       {modalStock && (

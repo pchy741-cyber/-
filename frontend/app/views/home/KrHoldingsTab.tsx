@@ -137,8 +137,12 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
                   <div className="absolute h-3 w-0.5 bg-white/20 rounded-full top-1/2 -translate-y-1/2" style={{ left: `${((0 - stopPct) / range) * 100}%` }} />
                 </div>
                 <div className="flex justify-between mt-0.5">
-                  <span className="text-[9px] text-rose-500">{stopPct}%</span>
-                  <span className="text-[9px] text-emerald-500">+{targetPct}%</span>
+                  <span className="text-[9px] text-rose-500 tabular-nums">
+                    {stopPct}% <span className="text-rose-600">({fmtWon(Math.round(avgPrice * (1 + stopPct / 100)))})</span>
+                  </span>
+                  <span className="text-[9px] text-emerald-500 tabular-nums">
+                    +{targetPct}% <span className="text-emerald-600">({fmtWon(Math.round(avgPrice * (1 + targetPct / 100)))})</span>
+                  </span>
                 </div>
               </div>
             )}

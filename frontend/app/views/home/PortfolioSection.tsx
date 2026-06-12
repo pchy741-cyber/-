@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { api, fmt, fmtWon, fmtUsd } from '../../lib/utils';
 import { toDisplayName, isUnresolvedStockName } from '../../lib/helpers';
 import { SegmentedBar, WeightBar } from '@/components/SegmentedBar';
+import { CumulativePnlChart } from '@/components/CumulativePnlChart';
 import type { Dashboard, Chain, UsHolding, UsWatchlistItem, AllocConfig, MpData } from '../../types';
 
 interface StrategyInfo {
@@ -37,6 +38,7 @@ interface PortfolioSectionProps {
   strategy: StrategyInfo | null;
   getStockName: (code: string) => string;
   mpData?: MpData | null;
+  viewMode?: 'paper' | 'live';
 }
 
 export default function PortfolioSection(props: PortfolioSectionProps) {
@@ -46,7 +48,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
     overseasInvestedUsd, overseasInvestedKrw, overseasMarketKrw,
     overseasCashUsd, overseasCashKrw, overseasPnlUsd, fxRate,
     investedPctExact, cashPctExact, overseasCashPctExact,
-    strategy, getStockName, mpData,
+    strategy, getStockName, mpData, viewMode,
   } = props;
 
   const [showPortfolio, setShowPortfolio] = useState(false);
@@ -84,6 +86,8 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
       </div>
       {/* 항상 보이는 영역 */}
       <div className="px-4 pb-4 space-y-3">
+        {/* 14일 누적 실현손익 미니 차트 (CEO 지시 2026-06-12) */}
+        <CumulativePnlChart viewMode={viewMode ?? 'live'} days={14} />
         {/* 자금 흐름 시각화 — 3칸 */}
         <div className="grid grid-cols-3 lg:grid-cols-5 gap-1.5 sm:gap-2">
           <div className={`rounded-xl px-2 sm:px-3 py-2.5 ${krActualPct >= 0 ? 'bg-blue-950/40 border border-blue-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>

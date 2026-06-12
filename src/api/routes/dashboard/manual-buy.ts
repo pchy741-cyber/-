@@ -7,6 +7,7 @@ import { getScoreBasedParams, STRATEGY_PARAMS } from '../../../config/constants.
 import { runWithMode } from '../../../config/context.js';
 import { config } from '../../../config/index.js';
 import { createChain, getActiveStrategy, getPool } from '../../../db/client.js';
+import { resolveRequestMode } from '../../guards/live-pin.js';
 import { getAccountBalance, invalidateBalanceCache } from '../../../kis/account.js';
 import { getCurrentPrice } from '../../../kis/market.js';
 import { placeOrder } from '../../../kis/order.js';
@@ -98,7 +99,7 @@ export function registerManualBuyRoutes(app: Hono) {
       .replace(/\D/g, '');
     const { reasoning } = body;
     const aiScore = body.ai_score ?? 0;
-    const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
+    const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : resolveRequestMode(c);
     const tradingMode = isPaper ? 'paper' : 'live';
     if (!stock_code || stock_code.length !== 6) {
       return c.json({ error: 'stock_code는 숫자 6자리여야 합니다' }, 400);

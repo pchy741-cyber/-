@@ -92,6 +92,13 @@ export function ScoreSparkline({
   const lastY = pad + innerH - ((last.score - minS) / range) * innerH;
 
   const lineColor = lastDelta != null && lastDelta < 0 ? '#fb7185' : '#34d399';
+  // 부스트 뱃지: +5점 spike 이상 = ⚡, -5점 drop 이상 = 🔻
+  const showBoost = lastDelta != null && Math.abs(lastDelta) >= 5;
+  const boostBadge = showBoost
+    ? lastDelta! >= 5
+      ? '⚡'
+      : '🔻'
+    : '';
 
   return (
     <div className="inline-flex items-center gap-1">
@@ -104,7 +111,11 @@ export function ScoreSparkline({
           {last.score.toFixed(0)}
         </span>
         {lastDelta != null && (
-          <span className="tabular-nums" style={{ color: lineColor }}>
+          <span
+            className={`tabular-nums ${showBoost ? 'font-black animate-pulse' : ''}`}
+            style={{ color: lineColor }}
+          >
+            {boostBadge}
             {lastDelta >= 0 ? '+' : ''}
             {lastDelta.toFixed(1)}
           </span>

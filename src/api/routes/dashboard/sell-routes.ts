@@ -8,6 +8,7 @@ import { KR_FEE } from '../../../config/constants.js';
 import { getCtxIsPaper, runWithMode } from '../../../config/context.js';
 import { config } from '../../../config/index.js';
 import { getPool } from '../../../db/client.js';
+import { resolveRequestMode } from '../../guards/live-pin.js';
 import { getAccountBalance, invalidateBalanceCache } from '../../../kis/account.js';
 import { getCurrentPrice } from '../../../kis/market.js';
 import { placeOrder } from '../../../kis/order.js';
@@ -252,7 +253,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
     const triggerSource: string = (body.source as string) || 'MANUAL';
     const sellReason: string = (body.reason as string) || 'CEO 수동 매도';
     // 대시보드 viewMode에서 is_paper를 전달받거나, 없으면 서버 모드로 폴백
-    const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
+    const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : resolveRequestMode(c);
     const stockTradingMode = isPaper ? 'paper' : 'live';
 
     const { rows: openChains } = await getPool().query(

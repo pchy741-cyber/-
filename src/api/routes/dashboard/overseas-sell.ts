@@ -6,6 +6,7 @@ import { OVERSEAS_FEE_PCT } from '../../../config/constants.js';
 import { runWithMode } from '../../../config/context.js';
 import { config } from '../../../config/index.js';
 import { getPool } from '../../../db/client.js';
+import { resolveRequestMode } from '../../guards/live-pin.js';
 import { invalidateBalanceCache } from '../../../kis/account.js';
 import { positionStateKeys } from '../../../scheduler/overseas/utils.js';
 import { logger } from '../../../utils/logger.js';
@@ -18,7 +19,7 @@ export function registerOverseasSellRoutes(app: Hono) {
     const stockCode = c.req.param('stockCode');
     try {
       const body = await c.req.json().catch(() => ({}));
-      const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
+      const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : resolveRequestMode(c);
       const { rows } = await getPool().query(
         'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0 AND is_paper = $2',
         [stockCode, isPaper],
@@ -173,7 +174,7 @@ export function registerOverseasSellRoutes(app: Hono) {
     const stockCode = c.req.param('stockCode');
     try {
       const body = await c.req.json().catch(() => ({}));
-      const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
+      const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : resolveRequestMode(c);
       const _pfx = isPaper ? 'p_' : 'l_';
       const cashKey = isPaper ? 'cash_paper' : 'cash';
 
@@ -238,7 +239,7 @@ export function registerOverseasSellRoutes(app: Hono) {
   app.post('/sell-overseas-all', async (c) => {
     try {
       const body = await c.req.json().catch(() => ({}));
-      const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
+      const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : resolveRequestMode(c);
       const forceDb: boolean = !!body.force_db;
       const _pfx = isPaper ? 'p_' : 'l_';
       const cashKey = isPaper ? 'cash_paper' : 'cash';

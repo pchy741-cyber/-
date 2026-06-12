@@ -3,6 +3,7 @@
 import React from 'react';
 import { Button } from '@/components/ui';
 import { ViewModeToggle } from '@/components/ViewModeToggle';
+import { MarketTicker } from '@/components/MarketTicker';
 
 export function DashboardHeader({ viewMode, switchView, dash, killSwitch, toggleKill, marketTab, setMobileMenu, isPaper, isUS, theme }: {
   viewMode: 'live' | 'paper'; switchView: (m: 'live' | 'paper') => void;
@@ -57,6 +58,11 @@ export function DashboardHeader({ viewMode, switchView, dash, killSwitch, toggle
           )}
         </div>
       </header>
+
+      {/* 시장 정보 헤더 — 데스크탑+모바일 */}
+      <div className="px-3 py-1.5 border-b border-[var(--theme-border)] bg-[var(--theme-side-60)]">
+        <MarketTicker />
+      </div>
     </>
   );
 }
