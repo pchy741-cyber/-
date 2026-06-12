@@ -57,6 +57,8 @@ const EXTENDED_WATCHLIST = [
   // 💰 금융 (금리 수혜)
   { code: 'GS', name: 'Goldman Sachs', exchange: 'NYSE', region: 'US', sector: 'FINANCE' },
   { code: 'V', name: 'Visa', exchange: 'NYSE', region: 'US', sector: 'FINANCE' },
+  // 🚀 우주·항공 (2026 최대 IPO)
+  { code: 'SPCX', name: 'SpaceX', exchange: 'NASDAQ', region: 'US', sector: 'DEFENSE' },
   // ⚡ EV/에너지전환
   { code: 'TSLA', name: 'Tesla', exchange: 'NASDAQ', region: 'US', sector: 'EV' },
   // 🎮 엔터테인먼트

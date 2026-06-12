@@ -23,7 +23,7 @@ export const US_SECTOR_MAP: Record<string, string> = {
   NVDA: 'AI반도체', AMD: 'AI반도체', AVGO: 'AI반도체',
   TSM: '대만반도체', UMC: '대만반도체',
   META: '빅테크', AAPL: '빅테크', MSFT: '빅테크',
-  RTX: '방산', LMT: '방산', GEV: '방산', PLTR: '방산',
+  RTX: '방산', LMT: '방산', GEV: '방산', PLTR: '방산', SPCX: '방산',
   ETN: '산업인프라', PWR: '산업인프라', ANET: '산업인프라', VRT: '산업인프라',
   AMZN: '클라우드', GOOGL: '클라우드', ORCL: '클라우드', NOW: '클라우드', MELI: '클라우드',
   TM: '일본', SONY: '일본', MUFG: '일본',
