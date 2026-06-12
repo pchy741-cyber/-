@@ -557,16 +557,14 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     }
   }
 
-  // 총자산 = 국내현금 + 국내 시가 + 해외현금 + 해외 시가 (NaN 가드)
-  // Live: KIS netAsset(nass_amt=순자산) 기반 — maxBuyAmt+totalEvalAmount 이중계산 방지
+  // 총자산 = 국내순자산(nass) + 해외증권 + 해외현금
+  // Live: KIS nass_amt(순자산=국내현금+증권평가)는 국내 전용 — 해외 USD는 미포함!
   // Paper: rawCash(미제한) 사용 — actualCash(paperCap 제한)는 주문가능 표시에만 사용
   const kisNetAsset = !viewIsPaper ? ((balance as any).netAsset ?? 0) : 0;
   const rawCashSafe = Number.isNaN(rawCash) || !rawCash ? 0 : rawCash;
   const safeDomestic = Number.isNaN(domesticMarketValue) ? 0 : domesticMarketValue;
   const safeOverseasMV = Number.isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw;
   const safeOverseasCashKrw = Number.isNaN(overseasCashKrw) ? 0 : Math.max(0, overseasCashKrw);
-  // Live: domestic(T+2: kisNetAsset vs rawCash 중 큰 값) + 해외증권 + 해외현금
-  // Paper: 미제한 현금 기준 — paperCap은 주문가능(actualCash)에만 적용
   const paperTotalRaw = rawCashSafe + safeDomestic + safeOverseasMV + safeOverseasCashKrw;
   if (viewIsPaper) {
     logger.info(
@@ -574,10 +572,13 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       { component: 'DASHBOARD' },
     );
   }
+  // Live 총자산: nass(국내순자산) + 해외증권시가 + 해외현금(overseas_state)
+  // ⚠️ nass_amt는 국내 전용 (증권평가+예수금). 해외 USD 현금은 별도!
+  // ⚠️ rawCash(maxBuyAmt)는 대용/담보 포함 주문가능금액이라 총자산 기준으로 부적합
   const grandTotalValue = !viewIsPaper
     ? kisNetAsset > 0
-      ? Math.max(kisNetAsset, rawCashSafe) + safeOverseasMV // 통합증거금: overseas_cash는 kisNetAsset(nass_amt)에 이미 포함 — 이중계산 방지
-      : rawCashSafe + safeDomestic + safeOverseasMV
+      ? kisNetAsset + safeOverseasMV + safeOverseasCashKrw
+      : rawCashSafe + safeDomestic + safeOverseasMV + safeOverseasCashKrw
     : paperTotalRaw;
 
   // 비중(weight) 계산 — grandTotalValue 기준 시가 기반 통합 비중
@@ -623,18 +624,19 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
 
   const grandTotalInvested = domesticInvested + overseasInvestedKrw;
 
-  // 국내 주문가능 현금: actualCash = rawCash(TTTC8908R max_buy_amt) 우선 (line 469)
-  // kisNetAsset - domesticInvested 는 미실현손익 포함으로 틀림 → 제거
-  // Paper: min(paper 잔고, 실전 순자산 50%) 한도 적용됨 (line 261)
+  // 국내 주문가능 현금: actualCash = rawCash(TTTC8908R max_buy_amt) — 대용 포함, KR 매수 한도용
   const unifiedCash = Math.round(actualCash);
-  // 해외 현금: Paper=overseas paper cash(KRW), Live=통합증거금(국내와 동일)
-  const overseasCashForDisplay = Math.round(safeOverseasCashKrw); // 실제 해외현금(overseas_state) — live/paper 공통
+  // 총현금: 국내실현금(nass-증권평가) + 해외현금
+  const trueDomesticCash = kisNetAsset > 0 ? Math.max(0, kisNetAsset - safeDomestic) : rawCashSafe;
+  const totalCash = Math.round(trueDomesticCash + safeOverseasCashKrw);
+  // 해외 현금 표시
+  const overseasCashForDisplay = Math.round(safeOverseasCashKrw);
   const overseasCashUsdDisplay = FX_RATE > 0 ? Math.round((overseasCashForDisplay / FX_RATE) * 100) / 100 : 0;
 
   const dashPayload = {
     portfolio: {
       totalValue: Math.round(grandTotalValue),
-      cash: !viewIsPaper ? unifiedCash : Math.round(rawCashSafe + safeOverseasCashKrw), // 총현금: Live=국내주문가능(통합증거금), Paper=국내+해외현금
+      cash: !viewIsPaper ? totalCash : Math.round(rawCashSafe + safeOverseasCashKrw), // 총현금: Live=국내실현금+해외현금, Paper=국내+해외현금
       invested: Math.round(grandTotalInvested),
       domesticInvested: Math.round(domesticInvested),
       domesticEval: Math.round(domesticMarketValue), // 국내 증권 시가평가 (비중 계산용)
