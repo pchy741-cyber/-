@@ -218,11 +218,12 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // ⚡ Quick Re-Score — 매 3분 (장중 평일, 장세 적응형 내부 결정)
-  // 황금구간: 3분 (cron 그대로) / BULLISH: 5분 / NEUTRAL: 10분 / 마의시간: 15분 / BEARISH: 20분 / PANIC: 60분
-  // paid AI 0 호출 — RSS 무료 스코어러, 상위 30종목, GCP 유지비 영향 미미
+  // ⚡ Quick Re-Score — 매 1분 (장중 평일, 내부에서 황금구간 1분 / 그 외 적응형)
+  // 황금구간: 1분 cron 그대로 (CEO 강화) / 마의시간: 15분 내부 throttle
+  // BULLISH: 5분 / NEUTRAL: 10분 / BEARISH: 20분 / PANIC: 60분
+  // paid AI 0 호출 — 황금구간엔 15종목, 그 외 30종목
   cron.schedule(
-    '*/3 9-15 * * 1-5',
+    '*/1 9-15 * * 1-5',
     () => {
       runWithMode(false, async () => {
         const { runQuickRescore } = await import('../ai/track-a/quick-rescore.js');
@@ -231,6 +232,21 @@ export function startScheduler(): void {
     },
     { timezone: MARKET.TIMEZONE },
   );
+
+  // ⚡ 이벤트 기반 재스코어 — node-cron 최소 1분이므로 setInterval로 30초
+  // 거래량 spike / 갭업·다운 즉시 감지 → 해당 종목만 재스코어 (paid AI 0)
+  setInterval(() => {
+    const now = new Date();
+    const kstH = (now.getUTCHours() + 9) % 24;
+    const kstM = now.getUTCMinutes();
+    const isWeekday = now.getUTCDay() >= 1 && now.getUTCDay() <= 5;
+    const inKrMarket = kstH >= 9 && (kstH < 15 || (kstH === 15 && kstM <= 30));
+    if (!isWeekday || !inKrMarket) return;
+    runWithMode(false, async () => {
+      const { runEventRescore } = await import('../ai/track-a/event-rescore.js');
+      await runEventRescore().catch((e) => logger.error(`이벤트 재스코어 실패: ${e}`, { component: 'SCHEDULER' }));
+    });
+  }, 30_000);
 
   // 🏦 FRED 매크로 워밍업 — 매일 23:00 KST (Fed 데이터 일일 갱신)
   cron.schedule(

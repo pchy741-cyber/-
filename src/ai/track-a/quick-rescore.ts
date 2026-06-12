@@ -22,7 +22,10 @@ import { logger } from '../../utils/logger.js';
 import { runRSSScoring } from './rss-scorer.js';
 
 const COMP = 'QUICK_RESCORE';
-const MAX_STOCKS = 30; // 상위 30종목만 (KIS rate limit 보호)
+// 황금구간 1분 간격 시: 15종목으로 축소 (KIS rate limit 보호)
+// 비 황금구간: 30종목 (기존)
+const MAX_STOCKS_GOLDEN = 15;
+const MAX_STOCKS = 30;
 
 // 장세별 최소 간격 (분) — GCP 유지비 영향 미미하므로 타이트하게
 // (KIS API rate limit + RSS Google News만 사용 — 무료)
@@ -58,15 +61,16 @@ async function shouldRunNow(): Promise<{ run: boolean; reason: string; intervalM
   const regime = await getCurrentRegime();
   _lastRegime = regime;
 
-  // KST 황금구간 (09:30~10:20, 13:00~15:00) → 장세 무관 최대 타이트 (3분)
-  // 매의 시간대 (10:20~13:00) → 약간 느슨 (15분, 매매 안 함)
+  // KST 황금구간 → 1분 간격 (CEO 강화: "반응 더 좋게")
+  // 마의시간 → 15분
+  // 그 외 → 장세별 5-60분
   const now = new Date();
   const kstH = (now.getUTCHours() + 9) % 24;
   const kstM = now.getUTCMinutes();
   const t = kstH * 100 + kstM;
   const inGolden = (t >= 930 && t < 1020) || (t >= 1300 && t < 1500);
   const inCursed = t >= 1020 && t < 1300;
-  const intervalMin = inGolden ? 3 : inCursed ? 15 : (MIN_INTERVAL_MIN[regime] ?? 10);
+  const intervalMin = inGolden ? 1 : inCursed ? 15 : (MIN_INTERVAL_MIN[regime] ?? 10);
 
   const elapsedMin = (Date.now() - _lastRunAt) / 60_000;
   if (elapsedMin < intervalMin) {
@@ -100,8 +104,9 @@ export async function runQuickRescore(): Promise<{ scored: number; errors: numbe
       return { scored: 0, errors: 0 };
     }
 
-    // 최근 점수 상위 30종목 우선
-    const codes = fullWatchlist.slice(0, MAX_STOCKS).map((w) => w.stock_code);
+    // 황금구간(1분 간격) 시 15종목, 아니면 30종목
+    const maxStocks = decision.intervalMin === 1 ? MAX_STOCKS_GOLDEN : MAX_STOCKS;
+    const codes = fullWatchlist.slice(0, maxStocks).map((w) => w.stock_code);
     logger.info(`⚡ Quick Re-Score 시작: ${codes.length}종목 (RSS only, paid AI 0)`, { component: COMP });
 
     // 일봉 차트 데이터 병렬 수집 (10개씩 배치, 1초 간격 — KIS rate limit)
