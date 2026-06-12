@@ -131,7 +131,20 @@ export function registerManualBuyRoutes(app: Hono) {
       stopLossPct = STRATEGY_PARAMS.SWING.stopLossPct;
     }
 
-    // 🏆 수익 가드 3종 (R:R + 종목 승률 + 일일 손실)
+    // 🎯 진입 타이밍 가드 — 시간대(마의시간 차단/장외 보너스) + 기술지표 다중 확증
+    const { checkEntryTiming } = await import('../../../risk/entry-timing-guard.js');
+    const entryCheck = checkEntryTiming({
+      tech: { rsi: body.rsi, volumeRatio: body.volume_ratio },
+      aiScore,
+      marketCode: 'KR',
+      isClaudeManual: true,
+    });
+    if (!entryCheck.allowed) {
+      logger.warn(`🚫 진입타이밍: ${stock_code} — ${entryCheck.reason}`, { component: 'CLAUDE_BUY' });
+      return c.json({ error: `진입타이밍 차단: ${entryCheck.reason}`, details: entryCheck.details }, 422);
+    }
+
+    // 🏆 수익 가드 5종 (EV + 종목 승률 + 일일 손실 + 다양화 + 실패 학습)
     const { checkBuyGate } = await import('../../../risk/profit-guards.js');
     const buyGate = await checkBuyGate({
       stockCode: stock_code,

@@ -60,28 +60,41 @@ settingsRoutes.post('/kill-switch/deactivate', async (c) => {
       [true, false].flatMap((isPaper) => scopes.map((sc) => deactivateKillSwitchForMode(force, isPaper, sc))),
     );
 
-    // Kill Switch 해제 시 스냅샷도 현재 잔고로 리셋 → 재활성화 방지 (paper + live 모두)
-    try {
-      const { getAccountBalance } = await import('../../kis/account.js');
-      const { getPaperBalance } = await import('../../risk/paper-balance.js');
-      const { insertSnapshot } = await import('../../db/client.js');
-      for (const isPaper of [true, false]) {
-        const balance = isPaper ? await getPaperBalance() : await getAccountBalance();
-        const totalValue = balance.totalDeposit + balance.totalEvalAmount;
-        await insertSnapshot({
-          total_value: totalValue,
-          cash_balance: balance.orderableCash,
-          invested_value: balance.totalEvalAmount,
-          unrealized_pnl: balance.totalProfitLoss,
-          daily_pnl: 0,
-          daily_pnl_pct: 0,
-          positions: balance.positions,
-          is_paper: isPaper,
-        });
+    // Kill Switch 강제 해제 시 이번달 스냅샷 전체 삭제 후 현재값 재설정 → MDD 재트리거 방지
+    // 단순 insertSnapshot으로는 이번달 고점이 DB에 남아 Track B가 3분 후 재발동하는 루프 발생
+    if (force) {
+      try {
+        const { getAccountBalance } = await import('../../kis/account.js');
+        const { getPaperBalance } = await import('../../risk/paper-balance.js');
+        const { insertSnapshot } = await import('../../db/client.js');
+        const pool = getPool();
+        // KST 월 시작일 계산
+        const kstMonth = new Date();
+        kstMonth.setUTCDate(1);
+        kstMonth.setUTCHours(0, 0, 0, 0);
+        for (const isPaper of [true, false]) {
+          // 이번달 스냅샷 전부 삭제 → MDD 고점 리셋
+          await pool.query(
+            `DELETE FROM portfolio_snapshots WHERE snapshot_at >= $1 AND is_paper = $2`,
+            [kstMonth.toISOString(), isPaper],
+          );
+          const balance = isPaper ? await getPaperBalance() : await getAccountBalance();
+          const totalValue = balance.totalDeposit + balance.totalEvalAmount;
+          await insertSnapshot({
+            total_value: totalValue,
+            cash_balance: balance.orderableCash,
+            invested_value: balance.totalEvalAmount,
+            unrealized_pnl: balance.totalProfitLoss,
+            daily_pnl: 0,
+            daily_pnl_pct: 0,
+            positions: balance.positions,
+            is_paper: isPaper,
+          });
+        }
+        logger.info(`✅ Kill Switch 강제 해제 + 이달 MDD 기준점 리셋 (paper + live 양쪽)`, { component: 'SETTINGS' });
+      } catch (snapErr) {
+        logger.warn(`⚠️ Kill Switch 해제 성공, MDD 리셋 실패: ${snapErr}`, { component: 'SETTINGS' });
       }
-      logger.info(`✅ Kill Switch 해제 + 스냅샷 리셋 (paper + live 양쪽)`, { component: 'SETTINGS' });
-    } catch (snapErr) {
-      logger.warn(`⚠️ Kill Switch 해제 성공, 스냅샷 리셋 실패: ${snapErr}`, { component: 'SETTINGS' });
     }
 
     return c.json({ ok: true, status: getKillSwitchStatusAll() });
