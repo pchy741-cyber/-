@@ -13,7 +13,6 @@ import { placeOrder } from '../../../kis/order.js';
 import { notifyBuy } from '../../../notifications/web-push.js';
 import { addPaperInvestment, getPaperBalance, riskEngine } from '../../../risk/engine.js';
 import { logger } from '../../../utils/logger.js';
-import { sleep } from '../../../utils/sleep.js';
 import { hardInvalidateMode } from './helpers.js';
 
 export function registerManualBuyRoutes(app: Hono) {
