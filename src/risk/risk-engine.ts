@@ -161,14 +161,16 @@ export class RiskEngine {
 
     // 총자산 = 순자산(주식평가 + 현금 - 미수금) — totalEvalAmount만 쓰면 현금 미포함 버그
     const totalAssets = balance.netAsset ?? (balance.totalEvalAmount ?? 0) + Math.max(0, balance.orderableCash ?? 0);
+    // 연습모드 — 종목당 한도 없음
+    if (isPaper) return { approved: true, reason: '연습모드 종목당 한도 없음' };
     // fail-closed: 총자산 0 이하면 잔고 조회 실패 → 매수 차단 (글로벌 한도 폴백 제거)
     if (totalAssets <= 0) {
       logger.warn(`⚠️ 총자산 0원 — 잔고 조회 실패 가능성, 매수 차단 (fail-closed)`, { component: 'RISK' });
       return { approved: false, reason: '총자산 0원 — 잔고 조회 실패 가능성, 매수 차단 (fail-closed)' };
     }
-    // Hard Cap: Paper 40% / Live 25% (DB 설정 기반, 기본값 사용) — 소자산은 집중 허용
+    // Hard Cap: Live 25% (DB 설정 기반) — 소액계좌(3M 미만)는 40% 완화
     const ar3 = await getAllocRisk(isPaper);
-    const baseCapRatio = ar3.positionCapPct / 100;
+    const baseCapRatio = totalAssets < 3_000_000 ? 0.4 : ar3.positionCapPct / 100;
     const canDiv3 = totalAssets * baseCapRatio >= 30_000;
     const capRatio = !canDiv3 ? 0.5 : baseCapRatio;
     // Paper: simulated money → no live KRW hard cap (19.4M @ 40% allowed)
