@@ -193,16 +193,6 @@ function SettingsView({ strategy, setStrategy, secrets, killSwitch, toggleKill, 
     <div className="space-y-5 sm:space-y-6">
       <StrategyTimelinePanel strategy={strategy} />
 
-      {/* KIS 미설정 경고 */}
-      {(!secrets?.kis_appkey?.exists || !secrets?.kis_appsecret?.exists) && (
-        <div className="bg-amber-950/30 border border-amber-500/20 rounded-2xl p-4 flex items-start gap-3">
-          <span className="text-amber-400 text-lg shrink-0">!</span>
-          <div>
-            <p className="text-sm font-bold text-amber-300">한국투자증권 API 키 미설정</p>
-            <p className="text-[11px] text-slate-400 mt-1">실전 매매를 위해 아래 API 키 관리에서 KIS Key, Secret, 계좌번호를 입력하세요. 현재 모의투자 모드로 동작합니다.</p>
-          </div>
-        </div>
-      )}
 
       {/* 킬스위치 + 알림 */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

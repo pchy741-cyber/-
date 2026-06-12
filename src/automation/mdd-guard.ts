@@ -18,7 +18,10 @@ import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
 
 const COMP = 'MDD_GUARD';
-const BLOCK_TTL_MINUTES = 6 * 60; // 6시간 (재진단 후 자동 갱신/해제)
+// CEO 지시 (2026-06-12): "MDD 가드 DEADLOCK 해제 — 회복 조건 완화"
+//   이전: 6h TTL + MDD < 75% (Live 6%) 회복 → 매매 0이면 영원히 차단됨
+//   변경: 1h TTL + MDD < 150% (Live 12%) 회복 → 아주 조금만 회복돼도 재개
+const BLOCK_TTL_MINUTES = 60; // 6h → 1h 단축 (다음 시간 재평가)
 const GUARD_REASON_PREFIX = 'mdd_guard:';
 
 /** 월간 MDD 계산 (peak → latest 낙폭 %) */
@@ -43,7 +46,10 @@ async function computeMonthlyMdd(isPaper: boolean): Promise<number> {
 async function runForMode(isPaper: boolean): Promise<void> {
   const mode = isPaper ? 'paper' : 'live';
   const limit = isPaper ? 40 : 8;
-  const recoverAt = limit * 0.75; // 회복 임계 (Live 6%, Paper 30%)
+  // 회복 임계 완화 (DEADLOCK 방지): 75% → 150% 즉 limit의 1.5배
+  // Live: MDD < 12% 면 해제 (이전 6%), Paper: MDD < 60% 면 해제 (이전 30%)
+  // 의미: "악화하지만 않으면 매매 재개" — 매매가 일어나야 회복도 가능
+  const recoverAt = limit * 1.5;
 
   let mdd = 0;
   try {
@@ -54,8 +60,9 @@ async function runForMode(isPaper: boolean): Promise<void> {
   }
 
   // 현재 가드 상태 (ai_overrides에 mdd_guard 표식 있는지)
+  // 가드 강도 80~90 (이전 95 단일) → 임계값 80+ 면 가드 active로 판정
   const currentOverride = getOverride<number>('minBuyScore', isPaper);
-  const isGuardActive = currentOverride !== undefined && currentOverride !== null && currentOverride >= 95;
+  const isGuardActive = currentOverride !== undefined && currentOverride !== null && currentOverride >= 80;
   // 가드 메타 확인 (reason으로 식별)
   const { rows: metaRows } = await getPool()
     .query(
@@ -69,10 +76,15 @@ async function runForMode(isPaper: boolean): Promise<void> {
 
   // ── 차단 발동 ──
   if (mdd >= limit && !isGuardActive) {
+    // 가드 강도 결정 — MDD 초과 정도에 따라 차등
+    //   limit~limit×1.5: 80 (고확신만 허용, 매매 가능)
+    //   limit×1.5 이상:   90 (엘리트만)
+    //   이전: 무조건 95 (완전 차단) → DEADLOCK
+    const guardScore = mdd >= limit * 1.5 ? 90 : 80;
     await setOverride(
       'threshold',
       'minBuyScore',
-      95, // 95 = 사실상 모든 매수 차단 (실제 점수는 99 캡)
+      guardScore,
       `${GUARD_REASON_PREFIX}MDD ${mdd.toFixed(1)}% >= 임계 ${limit}%`,
       BLOCK_TTL_MINUTES,
       isPaper,
