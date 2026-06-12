@@ -438,11 +438,27 @@ export function startScheduler(): void {
   //  장 마감 후
   // ═══════════════════════════════════════════
 
-  // 15:20 — 단타 강제 청산 (오버나잇 방지)
+  // 15:20 — 단타 강제 청산 (오버나잇 방지) + Shadow KR EOD 청산
   cron.schedule(
     `${MARKET.FORCE_SELL_MINUTE} ${MARKET.FORCE_SELL_HOUR} * * 1-5`,
     () => {
       import('./force-close-job.js').then((m) => runDomesticDual('단타마감청산', () => m.runForceCloseJob())).catch((e) => logger.error(`강제 청산 실패: ${e}`, { component: 'SCHEDULER' }));
+      import('../shadow/shadow-tracker.js').then(async (st) => {
+        await st.closeShadowMarketEnd('KR', new Map());
+        await st.logShadowStats('KR');
+      }).catch(() => {});
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 06:05 — Shadow US EOD 청산 (미국 장 마감 후, ~06:00 KST)
+  cron.schedule(
+    '5 6 * * 2-6',
+    () => {
+      import('../shadow/shadow-tracker.js').then(async (st) => {
+        await st.closeShadowMarketEnd('US', new Map());
+        await st.logShadowStats('US');
+      }).catch(() => {});
     },
     { timezone: MARKET.TIMEZONE },
   );

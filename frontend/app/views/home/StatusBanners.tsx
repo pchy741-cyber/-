@@ -103,6 +103,34 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
             <span className="text-xs text-emerald-400/70">— {tradingStatus.candidateCount}종목 대기</span>
           )}
           <span className="text-[10px] text-slate-500 whitespace-nowrap">{tradingStatus.mode} · {tradingStatus.buyThreshold}점</span>
+          {tradingStatus.kospiRegime?.boost && (
+            <span className="text-[10px] text-emerald-400/80">🚀 KOSPI 상승장 부스트</span>
+          )}
+        </div>
+      )}
+
+      {/* ── KOSPI 레짐 상세 배너 (Live penalty >= 2 + 오버라이드 버튼) ── */}
+      {tradingStatus && !tradingStatus.kospiRegime?.flashCrash && (tradingStatus.kospiRegime?.penalty ?? 0) >= 2 && tradingStatus.kospiRegime?.todayDown && (
+        <div className="rounded-2xl border border-yellow-500/30 bg-yellow-500/[0.06] px-4 py-3">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="text-base shrink-0">📉</span>
+            <span className="text-sm font-bold text-yellow-300">KOSPI 하락장 (Live 매수 차단)</span>
+            <span className="text-[11px] text-yellow-200/70 ml-1">KOSPI MA60 하회 + 당일 하락 — Paper는 정상 운영 중</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto bg-yellow-500/20 hover:bg-yellow-500/40 text-yellow-200 shrink-0"
+              disabled={!!busyAction}
+              onClick={guard('kospi-override', async () => {
+                if (!await confirm({ title: 'KOSPI 하락장 차단을 이번 세션만 우회할까요?', description: '오늘 하루 동안만 Live 매수를 허용합니다. 리스크는 본인 책임입니다.', confirmLabel: '하락장 우회 (오늘만)', confirmVariant: 'danger' })) return;
+                try {
+                  await api('/kospi-regime/override', { method: 'POST' });
+                  toast?.('KOSPI 레짐 차단 우회 완료 — 다음 루프에서 매수 재개', 'ok');
+                  onRefresh();
+                } catch (e: unknown) { toast?.('실패: ' + (e as Error).message, 'err'); }
+              })}
+            >🔓 하락장 차단 우회</Button>
+          </div>
         </div>
       )}
 

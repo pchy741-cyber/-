@@ -634,7 +634,7 @@ export async function getRecentManuallySoldStocks(hoursBack = 24): Promise<Set<s
   }
 }
 
-/** 최근 매도(CLOSED) 종목 쿨다운 — 매도 후 재진입 방지 (삼성 반복매수 등) */
+/** 최근 매도(CLOSED) 종목 쿨다운 — 손절/수동매도만 차단, TP 익절(+3%↑)은 즉시 재진입 허용 */
 export async function getRecentlySoldStocks(hoursBack = 2): Promise<Set<string>> {
   if (useMemory) return new Set();
   try {
@@ -642,7 +642,8 @@ export async function getRecentlySoldStocks(hoursBack = 2): Promise<Set<string>>
       `SELECT DISTINCT stock_code FROM transaction_chains
        WHERE status = 'CLOSED'
          AND is_paper = $1
-         AND closed_at > NOW() - ($2 || ' hours')::interval`,
+         AND closed_at > NOW() - ($2 || ' hours')::interval
+         AND (pnl_pct IS NULL OR pnl_pct < 3.0)`,
       [getCtxIsPaper(), hoursBack],
     );
     return new Set(rows.map((r: { stock_code: string }) => r.stock_code));

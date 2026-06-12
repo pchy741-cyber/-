@@ -40,6 +40,7 @@ import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { getConsensusTrend } from '../../market/consensus.js';
 import { analyzeTechnicals } from '../../analysis/indicators.js';
 import { getOverride } from '../ai-overrides.js';
+import { isKospiOverrideActive } from '../../api/routes/settings.js';
 import { fetchStockDisclosures } from '../../market/krx-disclosure.js';
 import { logScanSession } from '../../db/scan-logger.js';
 
@@ -157,7 +158,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // ── 방어 파킹 시스템 ──────────────────────────────────────────────
     // 2026-06 성과 검토: 파킹 즉시 해제 → 하락장 재진입 → 추가 손실 루프
     // v3: 파킹 중에는 isMarketRecovering 판정에 맡기고, pipeline에서 강제 해제하지 않음
-    const parkState = await getDefenseParkState();
+    // Paper 모드: 방어 파킹 완전 면제 — 연습매매는 하락장에서도 거래 데이터를 수집해야 함
+    const parkState = ctxIsPaper
+      ? { isActive: false, parkStockCode: PARK_STOCK_CODE, parkStockName: 'KODEX 200', entryReason: null, enteredAt: null }
+      : await getDefenseParkState();
     if (parkState.isActive) {
       // 회복 판정만 수행 — 즉시 해제 금지
       const { isMarketRecovering } = await import('./defense-park.js');
@@ -232,6 +236,17 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const allStockCodes = [...new Set([...sortedWatchlistCodes, ...chainStockCodes, PARK_STOCK_CODE, IDLE_PARK_STOCK_CODE, ...Array.from(INVERSE_ETF_CODES)])];
     logger.info(`📡 시세 조회: ${allStockCodes.length}종목 (AI점수 상위 ${sortedWatchlistCodes.length}/${aiScoredCodes.size}개 + 보유 ${chainStockCodes.length})`, { component: 'TRACK_B' });
     const livePrices = await getBatchPrices(allStockCodes);
+
+    // ── Shadow Tracker: KR AI 점수 상위 3종목 가상진입 (OOS 검증) ──
+    try {
+      const { recordShadowEntries, updateShadowPositions } = await import('../../shadow/shadow-tracker.js');
+      const shadowPicks = sortedWatchlistCodes.slice(0, 3)
+        .map((code) => ({ stockCode: code, score: scoreMapPre.get(code) ?? 0, entryPrice: livePrices.get(code)?.currentPrice ?? 0 }))
+        .filter((p) => p.entryPrice > 0);
+      await recordShadowEntries('KR', shadowPicks);
+      const krPriceMap = new Map([...livePrices].map(([k, v]) => [k, v.currentPrice]));
+      await updateShadowPositions('KR', krPriceMap);
+    } catch { /* shadow is non-critical */ }
 
     const _rawOrderableCash = Math.max(0, balance.orderableCash ?? 0);
 
@@ -576,7 +591,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       isSwingEodRestricted ||  // SWING 14:30 이전: 종가 구간 대기 (BREAKOUT 제외, 95+ 예외)
       (!ctxIsPaper && dailyLoss.blocked) ||               // Paper: 일일손실 차단 면제 (데이터 수집 우선)
       kospiRegime.flashCrash ||                           // 급락 서킷브레이커: Paper/Live 모두 차단
-      (kospiRegime.penalty >= 2 && kospiRegime.todayDown && !hasHighConvictionStock) || // 하락장+당일하락: Paper도 매수 차단 (떡락 손실 방지)
+      (!ctxIsPaper && !isKospiOverrideActive() && kospiRegime.penalty >= 2 && kospiRegime.todayDown && !hasHighConvictionStock) || // 하락장+당일하락: Live만 차단 (Paper 면제, CEO 우회 시 면제)
       (!ctxIsPaper && portfolioStress >= 2 && !hasHighConvictionStock) ||  // Paper: 포트스트레스 면제
       eodOnlyActive;    // 🎰 연패 EOD-only 모드 (Paper는 이미 false 반환)
 
@@ -697,7 +712,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // Live 모드: Paper 실적 기반 크로스 피드백 (승률 높으면 공격적)
     const crossBoost = await getCrossModeBoost();
     const paperOffset = getCtxIsPaper() ? (config.paperRisk.buyThresholdOffset ?? 0) : crossBoost.thresholdAdj;
-    const feedbackThreshold = Math.max(50, resolvedThreshold + winFeedback.thresholdBonus + paperOffset);
+    // Paper 모드: 패배 피드백이 임계값 올리는 것 차단 (학습 목적 — 진입 기회 보존)
+    const thresholdBonus = ctxIsPaper ? Math.min(0, winFeedback.thresholdBonus) : winFeedback.thresholdBonus;
+    const feedbackThreshold = Math.max(50, resolvedThreshold + thresholdBonus + paperOffset);
     if (winFeedback.thresholdBonus > 0 || winFeedback.requirePullback || winFeedback.minVolumeRatio > 1.0) {
       logger.info(`🎯 승률피드백 적용: ${winFeedback.summary}`, { component: 'TRACK_B' });
     }
@@ -822,6 +839,57 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       orderbookBlockedCodes,
       marketSignals,
     });
+
+    // ── Paper 모드: BREAKOUT 전략 병행 실행 (다전략 수익 극대화) ──────────────
+    // SWING 메인 패스 후 BREAKOUT 패스를 추가 실행 → 돌파 신호 종목 보완 진입
+    if (ctxIsPaper && effectiveMode !== 'BREAKOUT' && !blockNewBuys) {
+      try {
+        const breakoutDecisions = await technicalFallbackDecisions({
+          mode: 'BREAKOUT',
+          watchlist: filteredWatchlist,
+          livePrices,
+          chartData,
+          openChains,
+          orderableCash,
+          maxPositionKrw: adjMaxPositionKrw,
+          totalAssets,
+          lossBlockedCodes: new Set([...recentLossCodes, ...todayRepeatStopCodes]),
+          bigLossBlockedCodes: bigLossBlocked,
+          manuallySoldCodes,
+          recentlySoldCodes,
+          aiScores: finalScores,
+          takeProfitPct: resolvedTp,
+          stopLossPct: resolvedSl,
+          buyThreshold: feedbackThreshold,
+          winRates,
+          requirePullback: false,
+          minVolumeRatio: 1.0,
+          blockNewBuys,
+          macroSizingMult,
+          kospiBoost: kospiRegime.boost,
+          allocationTarget: null,
+          currentStockValue,
+          junkStockCodes,
+          orderbookBlockedCodes,
+          marketSignals,
+        });
+        const existingBuyStocks = new Set(
+          decisions.filter(d => d.action === 'BUY' || d.action === 'AVERAGE_DOWN').map(d => d.stock_code)
+        );
+        const openChainCodes = new Set(openChains.map(c => c.stock_code));
+        const newBreakoutBuys = breakoutDecisions.filter(d =>
+          (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') &&
+          !existingBuyStocks.has(d.stock_code) &&
+          !openChainCodes.has(d.stock_code)
+        );
+        if (newBreakoutBuys.length > 0) {
+          logger.info(`📈 Paper BREAKOUT 병행 ${newBreakoutBuys.length}건 추가: ${newBreakoutBuys.map(d => d.stock_code).join(', ')}`, { component: 'TRACK_B' });
+          decisions.push(...newBreakoutBuys);
+        }
+      } catch (err) {
+        logger.warn(`Paper BREAKOUT 병행 패스 실패 (스킵): ${err}`, { component: 'TRACK_B' });
+      }
+    }
 
     // ── 하락장 수익화 결정 주입 ─────────────────────────────────────────
     // 우선순위: ① 인버스 매수/매도 ② 패닉 긴급축소 (일반 매매 decisions 앞에 삽입)

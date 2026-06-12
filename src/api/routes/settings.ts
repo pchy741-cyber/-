@@ -891,6 +891,25 @@ settingsRoutes.post('/defense-mode/deactivate', async (c) => {
   }
 });
 
+// ── KOSPI 레짐 차단 당일 우회 (인메모리 override, 당일만 유효) ──
+let _kospiOverrideExpiry = 0;
+
+export function isKospiOverrideActive(): boolean {
+  return Date.now() < _kospiOverrideExpiry;
+}
+
+settingsRoutes.post('/kospi-regime/override', async (c) => {
+  // 오늘 자정까지 유효한 우회 플래그 설정
+  const now = new Date();
+  const midnight = new Date(now);
+  midnight.setHours(23, 59, 59, 999);
+  _kospiOverrideExpiry = midnight.getTime();
+  logger.warn('⚠️ KOSPI 레짐 차단 수동 우회 활성화 (당일만)', { component: 'SETTINGS' });
+  const { notifyAlert } = await import('../../notifications/web-push.js');
+  notifyAlert('⚠️ KOSPI 하락장 차단 우회', 'CEO 수동 지시 — Live 매수 오늘 하루 우회 활성').catch(() => {});
+  return c.json({ ok: true, expiresAt: midnight.toISOString(), message: 'KOSPI 레짐 차단 우회 활성 (자정 자동 해제)' });
+});
+
 // ── 비중 자동조정 제안 (pending_decisions category='rebalance') ──
 
 // 대기 중인 비중 제안 목록

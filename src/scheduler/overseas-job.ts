@@ -79,6 +79,7 @@ import { fetchKospiRegime } from '../ai/track-b/market-regime.js';
 // import { executeRotationSelling } from './overseas/rotation-selling.js';
 import { calcPositionSize } from './overseas/position-sizing.js';
 import { processScaleIns, shouldUseScaleIn, buildScaleInReservation } from './overseas/scale-in-manager.js';
+import { logSystemEvent } from '../api/routes/health.js';
 
 /**
  * 글로벌 주식 자동매매 Job
@@ -728,6 +729,19 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
         logger.info(`✅ 매수 후보 ${buyTargets.length}종목: ${buyTargets.slice(0, 3).map(t => `${t.code}(${t.score}점 AI${((t.ai?.confidence ?? 0) * 100).toFixed(0)}%)`).join(', ')}`, { component: 'OVERSEAS' });
       }
 
+      // ── Shadow Tracker: US AI 점수 상위 3종목 가상진입 + 기존 포지션 TP/SL 체크 (OOS 검증) ──
+      try {
+        const { recordShadowEntries, updateShadowPositions } = await import('../shadow/shadow-tracker.js');
+        const shadowPicks = [...techResults]
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 3)
+          .map((t) => ({ stockCode: t.code, score: t.score, entryPrice: t.price.currentPrice }))
+          .filter((p) => p.entryPrice > 0);
+        await recordShadowEntries('US', shadowPicks);
+        const usPriceMap = new Map(techResults.map((t) => [t.code, t.price.currentPrice]));
+        await updateShadowPositions('US', usPriceMap);
+      } catch { /* shadow is non-critical */ }
+
       // Auto Pilot 루프 적응형 인터벌 피드백 — live 모드에서만 보고
       if (isLoopActive() && !isPaper()) {
         reportNoBuyCandidates(buyTargets.length === 0);
@@ -970,14 +984,14 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
       holdingList.length > 0 ? `\n포트폴리오: ${holdingList.join(', ')}` : '',
     ].filter(Boolean).join('\n');
 
-    logger.info(summary, { component: 'OVERSEAS' });
-    await logSystem('INFO', 'OVERSEAS', summary);
+    const modeTag = isPaper() ? 'P' : 'L';
+    logger.info(summary, { component: 'OVERSEAS', mode: modeTag });
+    await logSystem('INFO', `OVERSEAS[${modeTag}]`, summary);
     // 시스템 이벤트 로그 (대시보드 표시용)
-    const { logSystemEvent } = await import('../api/routes/health.js');
     const shortSummary = totalActions > 0
       ? [...buyOrders.map(o => `BUY ${o}`), ...sellOrders.map(o => `SELL ${o}`)].join(', ').slice(0, 120)
       : `스캔 ${techResults.length}종목 — 매매 없음`;
-    logSystemEvent('해외주식', 'success', shortSummary);
+    logSystemEvent(`해외주식[${modeTag}]`, 'success', shortSummary);
     if (totalActions > 0) await sendTelegramMessage(summary);
 
     // ── Memory Agent: 거래 패턴 자동 추출 (세션당 1회) ──
@@ -998,7 +1012,9 @@ export async function runOverseasJob(opts?: { isPaper?: boolean }): Promise<void
     reportSuccess(SCOPE);
   } catch (e) {
     const msg = (e as Error).message;
-    logger.error(`해외주식 자동매매 실패: ${msg}`, { component: 'OVERSEAS' });
+    const modeTag = isPaper() ? 'P' : 'L';
+    logger.error(`해외주식 자동매매 실패[${modeTag}]: ${msg}`, { component: 'OVERSEAS', mode: modeTag });
+    logSystemEvent(`해외주식[${modeTag}]`, 'error', msg.slice(0, 120));
     await reportError('OVERSEAS', msg, SCOPE);
   } finally {
     clearTimeout(jobTimeout);

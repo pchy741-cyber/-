@@ -63,7 +63,7 @@ dashboardAnalysisRoutes.get('/stock/:code/analysis', async (c) => {
 // ── 매매 상태 진단 (왜 매수 안 하는지) ──
 dashboardAnalysisRoutes.get('/trading-status', async (c) => {
   try {
-    const [killSwitch, defensePark, strategy, scores, watchlist, recentLossCodes] = await Promise.all([
+    const [killSwitch, defensePark, strategy, scores, watchlist, recentLossCodes, kospiRegime, cooldownStatus, eodOnly] = await Promise.all([
       Promise.resolve(getKillSwitchStatusAll()),
       getDefenseParkState().catch(() => ({ isActive: false, entryReason: null })),
       getActiveStrategy().catch(() => null),
@@ -76,6 +76,18 @@ dashboardAnalysisRoutes.get('/trading-status', async (c) => {
       (async () => {
         const { getRecentLossStocks } = await import('../../db/client.js');
         return getRecentLossStocks(7).catch(() => new Set<string>());
+      })(),
+      (async () => {
+        const { fetchKospiRegime } = await import('../../ai/track-b/market-regime.js');
+        return fetchKospiRegime().catch(() => ({ penalty: 0, boost: false, todayDown: false, flashCrash: false, adaptive: {}, atrPct: 1.0 }));
+      })(),
+      (async () => {
+        const { getCooldownStatus } = await import('../../risk/trade-gate-stats.js');
+        return getCooldownStatus().catch(() => null);
+      })(),
+      (async () => {
+        const { isEodOnlyMode } = await import('../../risk/trade-gate-stats.js');
+        return isEodOnlyMode().catch(() => false);
       })(),
     ]);
 
@@ -106,6 +118,22 @@ dashboardAnalysisRoutes.get('/trading-status', async (c) => {
       blocks.push({ reason: 'DEFENSE 모드', detail: `AI 점수 ${buyThreshold}점 이상만 진입 — 기준 매우 높음`, severity: 'warn' });
     }
 
+    // KOSPI 레짐 블록 (Live 전용)
+    if (kospiRegime.flashCrash) {
+      blocks.push({ reason: '🚨 KOSPI 급락 서킷브레이커', detail: '5분 내 1%+ 하락 감지 — 신규 매수 전면 차단 (자동 해제)', severity: 'warn' });
+    } else if (kospiRegime.penalty >= 2 && kospiRegime.todayDown) {
+      blocks.push({ reason: `📉 하락장 매수 차단 (penalty ${kospiRegime.penalty})`, detail: `KOSPI MA60 하회 + 당일 하락 — Live 신규 매수 차단 (Paper는 정상 운영)`, severity: 'warn' });
+    } else if (kospiRegime.penalty >= 1) {
+      blocks.push({ reason: `⚠️ KOSPI 약세 조정 중 (penalty ${kospiRegime.penalty})`, detail: 'KOSPI MA20~MA60 사이 — 진입 기준 상향 (자동)', severity: 'info' });
+    } else if (kospiRegime.todayDown) {
+      blocks.push({ reason: '📊 KOSPI 당일 소폭 하락', detail: '당일 -0.3% 이하 — 임계값 소폭 조정 (자동)', severity: 'info' });
+    }
+
+    // EOD-only 모드
+    if (eodOnly) {
+      blocks.push({ reason: `🎰 EOD-only 모드 (${cooldownStatus?.consecutive ?? '?'}연패)`, detail: '연패 누적 → 장중 매수 차단, 14:50 이후 종가베팅만 허용', severity: 'warn' });
+    }
+
     const candidates = scores.filter((s: any) => (s.composite_score ?? 0) >= buyThreshold);
     const topScore = scores.length > 0 ? Math.max(...scores.map((s: any) => s.composite_score ?? 0)) : 0;
     if (scores.length === 0) {
@@ -127,9 +155,9 @@ dashboardAnalysisRoutes.get('/trading-status', async (c) => {
     }
 
     const hasHardBlock = blocks.some(b => b.severity === 'warn' && (
-      b.reason.includes('긴급정지') || b.reason.includes('방어 파킹') || b.reason.includes('후보 없음') || b.reason.includes('DEFENSE')
+      b.reason.includes('긴급정지') || b.reason.includes('방어 파킹') || b.reason.includes('후보 없음') || b.reason.includes('DEFENSE') || b.reason.includes('하락장') || b.reason.includes('서킷') || b.reason.includes('EOD-only')
     ));
-    const overallStatus: 'ACTIVE' | 'WATCHING' | 'BLOCKED' = killSwitch.kr.active || killSwitch.overseas.active || defensePark.isActive
+    const overallStatus: 'ACTIVE' | 'WATCHING' | 'BLOCKED' = killSwitch.kr.active || killSwitch.overseas.active || defensePark.isActive || kospiRegime.flashCrash
       ? 'BLOCKED'
       : hasHardBlock
         ? 'WATCHING'
@@ -154,6 +182,9 @@ dashboardAnalysisRoutes.get('/trading-status', async (c) => {
       watchlistCount: watchlist.length,
       lossBlockedCount: recentLossCodes.size,
       aiEngine: { claude: aiEngineStatus.claude, gemini: aiEngineStatus.gemini, active: aiEngineStatus.activeEngine },
+      kospiRegime: { penalty: kospiRegime.penalty, todayDown: kospiRegime.todayDown, flashCrash: kospiRegime.flashCrash, boost: kospiRegime.boost },
+      eodOnly,
+      consecutiveLosses: cooldownStatus?.consecutive ?? 0,
       blocks,
     });
   } catch (err) {

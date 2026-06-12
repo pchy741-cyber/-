@@ -13,24 +13,26 @@ import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
 import { logSystemEvent } from '../api/routes/health.js';
 
-let isRunning = false;
-let runningStartedAt = 0;
+const isRunningMap = new Map<'paper' | 'live', boolean>([['paper', false], ['live', false]]);
+const runningStartedAtMap = new Map<'paper' | 'live', number>([['paper', 0], ['live', 0]]);
 let runGeneration = 0; // 강제 리셋 시 세대 증가 → 이전 실행의 finally가 새 실행을 종료하지 않도록
 const MAX_RUNTIME_MS = 10 * 60 * 1000; // 10분 초과 시 강제 해제
 const pendingRescanTimers = new Map<'paper' | 'live', ReturnType<typeof setTimeout> | null>(); // 모드별 rescan 타이머
 
 export async function runTrackBJob(): Promise<void> {
+  const modeKey: 'paper' | 'live' = getCtxIsPaper() ? 'paper' : 'live';
+
   // 동시 실행 방지 — 단, 10분 초과 시 강제 리셋 (API hang 방지)
-  if (isRunning) {
-    const elapsed = Date.now() - runningStartedAt;
+  if (isRunningMap.get(modeKey)) {
+    const elapsed = Date.now() - (runningStartedAtMap.get(modeKey) ?? 0);
     if (elapsed < MAX_RUNTIME_MS) {
-      logger.debug('Track B 이미 실행 중 — 스킵', { component: 'SCHEDULER' });
+      logger.debug(`Track B 이미 실행 중 [${modeKey}] — 스킵`, { component: 'SCHEDULER' });
       return;
     }
     // 강제 리셋: 이전 실행의 finally가 새 실행을 건드리지 못하도록 세대 증가
     runGeneration++;
-    logger.warn(`⚠️ Track B 잠금 ${Math.round(elapsed / 60000)}분 초과 → 강제 해제 (generation=${runGeneration})`, { component: 'SCHEDULER' });
-    isRunning = false;
+    logger.warn(`⚠️ Track B 잠금 [${modeKey}] ${Math.round(elapsed / 60000)}분 초과 → 강제 해제 (generation=${runGeneration})`, { component: 'SCHEDULER' });
+    isRunningMap.set(modeKey, false);
   }
 
   // 장 열림 확인
@@ -41,8 +43,8 @@ export async function runTrackBJob(): Promise<void> {
 
   logger.info('🟢 Track B 실행 시작 (장 열림 확인)', { component: 'SCHEDULER' });
 
-  isRunning = true;
-  runningStartedAt = Date.now();
+  isRunningMap.set(modeKey, true);
+  runningStartedAtMap.set(modeKey, Date.now());
   const myGeneration = runGeneration;
 
   try {
@@ -87,9 +89,10 @@ export async function runTrackBJob(): Promise<void> {
       }
     }
 
+    const mt = modeKey === 'paper' ? 'P' : 'L';
     if (filtered.length === 0) {
-      logger.info('Track B: 실행할 매매 없음', { component: 'SCHEDULER' });
-      logSystemEvent('Track B', 'success', `스캔 완료 — 매매 없음 (${decisions.length}종목 분석)`);
+      logger.info(`Track B[${mt}]: 실행할 매매 없음`, { component: 'SCHEDULER', mode: mt });
+      logSystemEvent(`Track B[${mt}]`, 'success', `스캔 완료 — 매매 없음 (${decisions.length}종목 분석)`);
       reportSuccess();
       return;
     }
@@ -106,8 +109,8 @@ export async function runTrackBJob(): Promise<void> {
     const actionable = decisions.filter((d) => d.action !== 'HOLD');
     if (actionable.length > 0) {
       const summary = actionable.map((d) => `${d.action} ${d.stock_code} x${d.quantity}`).join('\n');
-      logSystemEvent('Track B', 'success', actionable.map((d) => `${d.action} ${d.stock_code} ${d.quantity}주`).join(', '));
-      await sendTelegramMessage(`🤖 Track B 실행:\n${summary}`).catch(() => {});
+      logSystemEvent(`Track B[${mt}]`, 'success', actionable.map((d) => `${d.action} ${d.stock_code} ${d.quantity}주`).join(', '));
+      await sendTelegramMessage(`🤖 Track B[${mt}] 실행:\n${summary}`).catch(() => {});
     }
 
     // 5. 매도 체결 후 60초 뒤 재스캔 — 모드별 타이머 분리 (paper/live 상호 취소 방지)
@@ -126,13 +129,14 @@ export async function runTrackBJob(): Promise<void> {
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
+    const mt = modeKey === 'paper' ? 'P' : 'L';
     await reportError('TRACK_B', msg);
-    logSystemEvent('Track B', 'error', msg.slice(0, 100));
-    logger.error(`Track B 작업 실패: ${msg}`, { component: 'SCHEDULER' });
+    logSystemEvent(`Track B[${mt}]`, 'error', msg.slice(0, 100));
+    logger.error(`Track B[${mt}] 작업 실패: ${msg}`, { component: 'SCHEDULER', mode: mt });
   } finally {
-    // 내 세대가 현재 세대와 같을 때만 플래그 해제 (강제 리셋 후엔 새 실행이 이미 isRunning=true)
+    // 내 세대가 현재 세대와 같을 때만 플래그 해제 (강제 리셋 후엔 새 실행이 이미 true)
     if (myGeneration === runGeneration) {
-      isRunning = false;
+      isRunningMap.set(modeKey, false);
     }
   }
 }

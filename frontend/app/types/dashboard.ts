@@ -15,6 +15,10 @@ export interface TradingStatus {
   topScore?: number;
   candidateCount?: number;
   blocks?: TradingStatusBlock[];
+  kospiRegime?: { penalty: number; todayDown: boolean; flashCrash: boolean; boost: boolean };
+  eodOnly?: boolean;
+  consecutiveLosses?: number;
+  marketOpen?: boolean;
   [key: string]: unknown;
 }
 

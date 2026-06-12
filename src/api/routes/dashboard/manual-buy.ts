@@ -9,7 +9,7 @@ import { createChain, getPool, getActiveStrategy } from '../../../db/client.js';
 import { getAccountBalance } from '../../../kis/account.js';
 import { getCurrentPrice } from '../../../kis/market.js';
 import { placeOrder } from '../../../kis/order.js';
-import { getPaperBalance, riskEngine } from '../../../risk/engine.js';
+import { getPaperBalance, addPaperInvestment, riskEngine } from '../../../risk/engine.js';
 import { notifyBuy } from '../../../notifications/web-push.js';
 import { logger } from '../../../utils/logger.js';
 import { runWithMode } from '../../../config/context.js';
@@ -204,23 +204,22 @@ export function registerManualBuyRoutes(app: Hono) {
         logger.warn(`수동매수 기술지표 조회 실패 (진행): ${e}`, { component: 'CLAUDE_BUY' });
       }
 
-      const quantity = Math.floor(amount_krw / curPrice);
+      let quantity = Math.floor(amount_krw / curPrice);
       if (quantity < 1) return c.json({ error: `수량 부족: ${curPrice.toLocaleString()}원 × 1주 > ${amount_krw.toLocaleString()}원` }, 400);
 
-      // 포지션 비중 제한: 최대 25%
+      // 포지션 비중 제한: 초과 시 422 차단 대신 자동 수량 조정 (거래 차단 방지)
       try {
         const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
         const totalCapital = balance.totalEvalAmount + balance.orderableCash;
+        const CAP_PCT = 35; // getDynamicPositionSizePct 상한(35%)에 맞춤
         const positionPct = (quantity * curPrice) / totalCapital * 100;
-        if (positionPct > 25) {
-          const maxQty = Math.floor(totalCapital * 0.25 / curPrice);
-          logger.warn(`⚠️ 수동매수 비중 초과: ${stock_code} ${positionPct.toFixed(0)}% > 25% → ${maxQty}주로 축소`, { component: 'CLAUDE_BUY' });
-          return c.json({
-            error: `비중 ${positionPct.toFixed(0)}% 초과 (한도 25%). 최대 ${maxQty}주 (${(maxQty * curPrice).toLocaleString()}원)`,
-            maxQuantity: maxQty,
-            maxAmount: maxQty * curPrice,
-            warnings,
-          }, 422);
+        if (positionPct > CAP_PCT) {
+          const maxQty = Math.floor(totalCapital * (CAP_PCT / 100) / curPrice);
+          if (maxQty < 1) {
+            return c.json({ error: `잔고 부족: 1주(${curPrice.toLocaleString()}원) 구매 불가` }, 422);
+          }
+          logger.info(`⚖️ 비중 ${positionPct.toFixed(0)}% → ${CAP_PCT}% 자동 조정: ${stock_code} ${quantity}주 → ${maxQty}주`, { component: 'CLAUDE_BUY' });
+          quantity = maxQty;
         }
       } catch { /* 잔고 조회 실패 시 패스 */ }
 
@@ -278,6 +277,7 @@ export function registerManualBuyRoutes(app: Hono) {
           [chainId, stock_code, quantity, curPrice, fakeOrderNo, tradingMode, reasoning ?? 'Claude Code 눌림매매'],
         );
         logger.info(`🤖 Claude 매수 (모의): ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 ${rrStr} — ${reasoning}`, { component: 'CLAUDE_BUY' });
+        addPaperInvestment(quantity * curPrice); // 연습 원장 캐시 즉시 무효화 + 현금 차감 반영
         try { await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑'); } catch { /* 알림 실패 무시 */ }
         invalidateBalanceCache();
         invalidateCurrentModeCache();
