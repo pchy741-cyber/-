@@ -39,25 +39,31 @@ export function isHardBlocked(input: HardGateInput): boolean {
     return true;
   }
 
-  // -5% 초과 손실 종목 → 30일 절대 차단
+  // -5% 초과 손실 종목 → 30일 절대 차단 (AI 90+ 시 재진입 허용)
   if (bigLossBlockedCodes?.has(code)) {
     const allowRebuy = getOverride<boolean>(`${code}_allowRebuy`);
-    if (!allowRebuy) {
-      logger.info(`  🚫 ${code}(${name}): -5%초과 손실 30일 차단 (allowRebuy 필요)`, { component: 'TRACK_B' });
+    const aiForBigLoss = aiScoreMap.get(code) ?? 0;
+    const highConviction = Number.isFinite(aiForBigLoss) && aiForBigLoss >= 90;
+    if (!allowRebuy && !highConviction) {
+      logger.info(`  🚫 ${code}(${name}): -5%초과 손실 30일 차단 (AI ${aiForBigLoss}점 < 90, allowRebuy 필요)`, { component: 'TRACK_B' });
       return true;
     }
-    logger.info(`  🔓 ${code}: allowRebuy override로 -5% 차단 해제`, { component: 'TRACK_B' });
+    if (highConviction) {
+      logger.info(`  🔓 ${code}(${name}): -5% 30일 차단 무시 (AI ${aiForBigLoss}점 ≥ 90 고확신 재진입)`, { component: 'TRACK_B' });
+    } else {
+      logger.info(`  🔓 ${code}: allowRebuy override로 -5% 차단 해제`, { component: 'TRACK_B' });
+    }
   }
 
-  // 14일 이내 손절 쿨다운 (AI 85+ 시 쿨다운 무시)
+  // 14일 이내 손절 쿨다운 (AI 80+ 시 쿨다운 무시 — 매수 기본 기준선과 일치)
   if (lossBlockedCodes?.has(code)) {
     const aiForCooldown = aiScoreMap.get(code) ?? 0;
-    // NaN 방어: Number.isFinite 체크 (NaN < 85 = false → 쿨다운 우회 버그 방지)
-    if (!Number.isFinite(aiForCooldown) || aiForCooldown < 85) {
+    // NaN 방어: Number.isFinite 체크 (NaN < 80 = false → 쿨다운 우회 버그 방지)
+    if (!Number.isFinite(aiForCooldown) || aiForCooldown < 80) {
       logger.info(`  🚫 ${code}(${name}): 손절 쿨다운 (14일) — 재진입 금지`, { component: 'TRACK_B' });
       return true;
     }
-    logger.info(`  🔓 ${code}(${name}): 손절 쿨다운 무시 (AI ${aiForCooldown}점 ≥ 85)`, { component: 'TRACK_B' });
+    logger.info(`  🔓 ${code}(${name}): 손절 쿨다운 무시 (AI ${aiForCooldown}점 ≥ 80)`, { component: 'TRACK_B' });
   }
 
   // 24시간 이내 CEO 수동 매도 재진입 금지
