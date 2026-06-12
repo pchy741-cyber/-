@@ -13,12 +13,12 @@
 import { getPool } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 
-const TP_PCT = 0.05;   // +5%
-const SL_PCT = 0.025;  // -2.5% (손절, 양수로 저장)
+const TP_PCT = 0.05; // +5%
+const SL_PCT = 0.025; // -2.5% (손절, 양수로 저장)
 
 const FRICTION_PCT: Record<'KR' | 'US', number> = {
-  KR: 0.25,  // %
-  US: 0.03,  // %
+  KR: 0.25, // %
+  US: 0.03, // %
 };
 
 // 시장별 마지막 Shadow 진입 시각 (메모리 캐시)
@@ -58,7 +58,7 @@ export async function recordShadowEntries(market: 'KR' | 'US', picks: ShadowPick
       );
     }
     logger.info(
-      `👻 Shadow[${market}] 가상진입 ${validPicks.length}종목: ${validPicks.map((p) => `${p.stockCode}(${p.score.toFixed(0)}점 @${p.entryPrice}`).join(', ')}`,
+      `👻 Shadow[${market}] 가상진입 ${validPicks.length}종목: ${validPicks.map((p) => `${p.stockCode}(${Number(p.score).toFixed(0)}점 @${p.entryPrice}`).join(', ')}`,
       { component: 'SHADOW' },
     );
   } catch (e) {
@@ -175,11 +175,11 @@ export async function logShadowStats(market: 'KR' | 'US'): Promise<void> {
       [market],
     );
     const r = rows[0];
-    if (!r || parseInt(r.cnt) === 0) return;
+    if (!r || parseInt(r.cnt, 10) === 0) return;
 
-    const cnt = parseInt(r.cnt);
+    const cnt = parseInt(r.cnt, 10);
     const avgNet = parseFloat(r.avg_net ?? '0');
-    const wins = parseInt(r.wins ?? '0');
+    const wins = parseInt(r.wins ?? '0', 10);
     const winRate = cnt > 0 ? ((wins / cnt) * 100).toFixed(0) : '0';
     logger.info(
       `👻 Shadow[${market}] 일간: ${cnt}건 평균 net ${avgNet >= 0 ? '+' : ''}${avgNet.toFixed(2)}%, 승률 ${winRate}% (${wins}/${cnt})`,
