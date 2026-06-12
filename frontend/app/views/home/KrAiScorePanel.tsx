@@ -1,9 +1,10 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import { Panel } from '@/components/ui';
 import { ScoreSparkline } from '@/components/ScoreSparkline';
 import { ScoreRefreshTimer } from '@/components/ScoreRefreshTimer';
+import KrManualBuyModal from '../../panels/KrManualBuyModal';
 import { api, fmtWon } from '../../lib/utils';
 import type { Dashboard, StockScore, ToastFn, ConfirmFn, ViewMode } from '../../types';
 
@@ -26,6 +27,18 @@ export default function KrAiScorePanel({
   buyingStock, setBuyingStock, busyAction, guard, getStockName, toast, confirm,
   viewMode = 'live',
 }: KrAiScorePanelProps) {
+  // CEO 자유도 매수 모달 상태
+  const [modalStock, setModalStock] = useState<{
+    code: string;
+    name: string;
+    score: number;
+    confidence?: number;
+    rsi?: number;
+    volumeRatio?: number;
+    pullbackSignal?: boolean;
+    currentPrice: number;
+  } | null>(null);
+
   return (
     <Panel title="AI가 보는 종목 점수" badge={(dash?.scores?.length ?? 0) > 0 ? `${dash!.scores!.length}종목` : undefined} badgeColor="blue">
       {(dash?.scores?.length ?? 0) > 0 ? (() => {
@@ -67,33 +80,22 @@ export default function KrAiScorePanel({
                     <span className={`text-sm font-black w-8 text-right ${textColor}`}>{score}</span>
                     <span className={`text-[10px] font-medium w-14 text-right ${textColor}`}>{signalLabel}</span>
                     {curP > 0 && (
-                      <button disabled={isBuying || !!busyAction} onClick={guard(`buy-${sc.stock_code}`, async () => {
-                        const modeLabel = viewMode === 'paper' ? '[연습] ' : '[실전] ';
-                        // 예상 금액 조회
-                        let estDesc = `AI ${score}점 — 가용자본 기준 자동 사이징`;
-                        let isElite = false;
-                        try {
-                          const qp = new URLSearchParams({ stock_code: sc.stock_code, ai_score: String(score), is_paper: String(viewMode === 'paper'), ...(conf != null ? { confidence: String(conf / 100) } : {}) });
-                          const est = await api(`/manual-buy/estimate?${qp}`) as { amount_krw?: number; dynPct?: number; totalCapital?: number; isElite?: boolean; liveAmount?: number };
-                          if (est?.amount_krw) {
-                            const amtMan = Math.round(est.amount_krw / 10000);
-                            const pct = est.dynPct ?? 0;
-                            estDesc = `약 ${amtMan}만원 매수 예정 (총자본 ${pct}%)`;
-                            isElite = !!est.isElite;
-                            if (isElite && viewMode === 'paper' && est.liveAmount) {
-                              const liveMan = Math.round(est.liveAmount / 10000);
-                              estDesc += ` | ★ AI 90점+ — 실전도 약 ${liveMan}만원 동시매수`;
-                            }
-                          }
-                        } catch { /* 조회 실패 시 기본 문구 사용 */ }
-                        if (!await confirm({ title: `${modeLabel}${stockLabel} 수동 매수`, description: estDesc, confirmLabel: '매수', confirmVariant: 'primary' })) return;
-                        setBuyingStock(sc.stock_code);
-                        try {
-                          const res = await api('/manual-buy', { method: 'POST', body: JSON.stringify({ stock_code: sc.stock_code, ai_score: score, is_paper: viewMode === 'paper', reasoning: `수동진입 AI${score}점 conf${conf}% 목표${fmtWon(targetP)}` }) }) as { livePromoted?: boolean };
-                          toast?.(res?.livePromoted ? '매수 접수 (연습+실전 동시)' : '매수 접수', 'ok');
-                        } catch (e: unknown) { toast?.((e as Error).message, 'err'); }
-                        setBuyingStock(null);
-                      })} className="text-[10px] px-2 py-1 bg-blue-600/70 hover:bg-blue-500/70 disabled:opacity-40 rounded-lg whitespace-nowrap shrink-0">
+                      <button
+                        disabled={isBuying || !!busyAction}
+                        onClick={() =>
+                          setModalStock({
+                            code: sc.stock_code,
+                            name: stockLabel,
+                            score,
+                            confidence: conf != null ? conf / 100 : undefined,
+                            rsi: (sc as any).rsi ?? undefined,
+                            volumeRatio: (sc as any).volume_ratio ?? undefined,
+                            pullbackSignal: (sc as any).pullback_signal ?? undefined,
+                            currentPrice: curP,
+                          })
+                        }
+                        className="text-[10px] px-2 py-1 bg-blue-600/70 hover:bg-blue-500/70 disabled:opacity-40 rounded-lg whitespace-nowrap shrink-0"
+                      >
                         {isBuying ? '...' : '매수'}
                       </button>
                     )}
@@ -131,6 +133,26 @@ export default function KrAiScorePanel({
           <p className="text-[11px] text-slate-600">매일 오전 7:30 / 오후 6시에 자동 실행됩니다.</p>
           <p className="text-[10px] text-blue-400/60">스코어 없는 동안 기술적 지표 기반으로 자동매매가 동작합니다</p>
         </div>
+      )}
+      {modalStock && (
+        <KrManualBuyModal
+          open={!!modalStock}
+          stockCode={modalStock.code}
+          stockName={modalStock.name}
+          aiScore={modalStock.score}
+          confidence={modalStock.confidence}
+          rsi={modalStock.rsi}
+          volumeRatio={modalStock.volumeRatio}
+          pullbackSignal={modalStock.pullbackSignal}
+          currentPrice={modalStock.currentPrice}
+          viewMode={viewMode}
+          onClose={() => setModalStock(null)}
+          onSuccess={() => {
+            toast?.(`${modalStock.code} 매수 접수`, 'ok');
+            setModalStock(null);
+          }}
+          toast={toast}
+        />
       )}
     </Panel>
   );
