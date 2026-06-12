@@ -35,6 +35,7 @@ healthRoutes.get('/health', (c) => {
   return c.json({ status: 'ok', db: mem ? (isWaking() ? 'waking' : 'offline') : 'ok' }, 200);
 });
 
+
 // 인증 후 상세 헬스 — requireAuth 미들웨어 뒤에서 마운트 필요
 export const healthDetailRoutes = new Hono();
 healthDetailRoutes.get('/health/detail', async (c) => {

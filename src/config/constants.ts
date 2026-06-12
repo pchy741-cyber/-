@@ -535,7 +535,7 @@ export const REFRESH = {
 export const GATE = {
   SLIPPAGE_PCT: 0.26, // 국내 왕복 마찰비용: 수수료 0.21% + 슬리피지 0.05%
   US_SLIPPAGE_PCT: 0.7, // 미국 왕복 마찰비용: KIS수수료 0.50% + 슬리피지 0.20%
-  FX_SAFETY_MARGIN: 0.05, // 통합증거금 FX 안전마진 5% (환율 급변 미수 방지)
+  FX_SAFETY_MARGIN: 0.02, // 통합증거금 FX 안전마진 2% (환율 급변 미수 방지, 5%→2% 적극 운용)
   REENTRY_COOLDOWN_MS: 30 * 60_000, // 동일 종목 재진입 쿨다운 (SCALPING, 30분)
   CONSECUTIVE_LOSS_HALT_MS: 30 * 60_000, // 5연패 → 30분 쿨다운 (60→30분, 반등 타이밍 확보)
   CONSECUTIVE_LOSS_WARN_MS: 20 * 60_000, // 3연패 → 20분 쿨다운 (45→20분)

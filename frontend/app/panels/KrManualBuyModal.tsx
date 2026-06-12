@@ -161,9 +161,9 @@ export default function KrManualBuyModal({
         onClick={(e) => e.stopPropagation()}
       >
         {/* 헤더 */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.04]">
+        <div className={`flex items-center justify-between px-5 py-4 border-b ${viewMode === 'paper' ? 'border-amber-500/30 bg-amber-500/5' : 'border-rose-500/30 bg-rose-500/5'}`}>
           <h2 className="text-sm font-bold text-slate-200">국내주식 수동매수</h2>
-          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${modeColor}`}>{modeLabel}</span>
+          <span className={`text-[11px] px-3 py-1 rounded-full font-bold ${modeColor}`}>{modeLabel} 모드</span>
         </div>
 
         <div className="px-5 py-4 space-y-4">
@@ -286,7 +286,7 @@ export default function KrManualBuyModal({
                   ? '매수 중...'
                   : actualQty <= 0
                     ? '잔고 부족'
-                    : `${stockCode} ${actualQty}주 매수 (₩${actualCost.toLocaleString('ko-KR')})`}
+                    : `[${modeLabel}] ${stockCode} ${actualQty}주 매수 (₩${actualCost.toLocaleString('ko-KR')})`}
               </Button>
             </>
           ) : (

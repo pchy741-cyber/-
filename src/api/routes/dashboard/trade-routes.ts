@@ -22,7 +22,7 @@ tradeRoutes.get('/trades', async (c) => {
   const viewIsPaper = resolveRequestMode(c);
   const tradeMode = viewIsPaper ? 'paper' : 'live';
   const marketClause = isOverseasFilter
-    ? `AND o.trigger_source = 'OVERSEAS'`
+    ? `AND o.trigger_source = 'OVERSEAS' AND o.stock_code !~ '^[0-9]{6}$'`
     : market === 'KR'
       ? `AND (o.trigger_source != 'OVERSEAS' OR o.trigger_source IS NULL)`
       : '';

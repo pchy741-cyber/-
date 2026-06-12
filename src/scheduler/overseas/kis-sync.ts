@@ -366,15 +366,18 @@ export async function reconcileCashWithKIS(): Promise<void> {
   try {
     let kisKrw: number | null = null;
 
-    // 1차: psamount API — ord_psbl_frcr_amt(실제 USD 주문가능) 우선 사용
-    // frcr_ord_psbl_amt1(통합증거금 이론최대)은 예수금과 비슷하여 실제 주문가능과 괴리
+    // 1차: psamount API — frcr_ord_psbl_amt1(통합증거금 전체) 우선 사용
+    // 통합증거금: 원화+외화 전체 주문가능금액 (KIS 앱 "주문가능원화"/환율)
+    // ord_psbl_frcr_amt는 외화 풀만 → 통합증거금 환경에서 과소 평가
     const buyable = await getOverseasBuyableAmount();
-    if (buyable != null && buyable.usd > 0) {
+    if (buyable != null) {
       const rate = buyable.exrt > 0 ? buyable.exrt : await fetchExchangeRate();
-      if (rate > 0) {
-        kisKrw = buyable.usd * rate;
+      // 통합증거금: maxUsd(원화+외화 전체) 우선, 폴백으로 usd(외화만)
+      const effectiveUsd = buyable.maxUsd > 0 ? buyable.maxUsd : buyable.usd;
+      if (rate > 0 && effectiveUsd > 0) {
+        kisKrw = effectiveUsd * rate;
         logger.info(
-          `💱 해외현금: ord_psbl_frcr_amt=$${buyable.usd.toFixed(2)} × ${rate.toFixed(0)} = ₩${kisKrw.toFixed(0)} (maxUsd=$${buyable.maxUsd.toFixed(2)})`,
+          `💱 해외현금(통합증거금): $${effectiveUsd.toFixed(2)} × ${rate.toFixed(0)} = ₩${kisKrw.toFixed(0)} (usd=$${buyable.usd.toFixed(2)}, maxUsd=$${buyable.maxUsd.toFixed(2)})`,
           { component: 'OVERSEAS' },
         );
       }

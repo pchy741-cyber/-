@@ -46,13 +46,16 @@ function TradesView({ trades, watchlist, viewMode: dashViewMode }: { trades: Tra
     fetchedModeRef.current = null;
   }, [dashViewMode]);
 
+  const isKrCode = (code: string) => /^[0-9]{6}$/.test(code);
   const filled = trades.filter((t: Trade) => t.status === 'FILLED' || (t.status === 'PENDING' && t.trigger_source === 'OVERSEAS'));
-  const isOverseas = (t: Trade) => t.trigger_source === 'OVERSEAS';
-  const overseasFilled = (overseasTrades ?? []).filter((t: Trade) => t.status === 'FILLED' || (t.status === 'PENDING' && t.trigger_source === 'OVERSEAS'));
+  const isOverseas = (t: Trade) => t.trigger_source === 'OVERSEAS' && !isKrCode(t.stock_code);
+  // 해외 탭: 백엔드 필터 + 클라이언트 이중 필터 (한국 6자리 코드 완전 제외)
+  const overseasFilled = (overseasTrades ?? [])
+    .filter((t: Trade) => (t.status === 'FILLED' || (t.status === 'PENDING' && t.trigger_source === 'OVERSEAS')) && !isKrCode(t.stock_code));
   const filtered = mktFilter === 'ALL'
     ? filled
     : mktFilter === 'KR'
-      ? filled.filter((t: Trade) => !isOverseas(t))
+      ? filled.filter((t: Trade) => isKrCode(t.stock_code) || t.trigger_source !== 'OVERSEAS')
       : overseasFilled;
 
   const dailySummaries = useTradeSummaries(filtered, isOverseas);

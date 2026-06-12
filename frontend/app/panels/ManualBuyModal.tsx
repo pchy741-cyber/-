@@ -126,10 +126,10 @@ export default function ManualBuyModal({ open, onClose, onSuccess, toast, confir
     <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center" onClick={onClose}>
       <div className="w-full sm:w-[420px] max-h-[85vh] overflow-y-auto bg-[#0f1422] border border-white/[0.08] rounded-t-2xl sm:rounded-2xl shadow-2xl" onClick={e => e.stopPropagation()}>
         {/* 헤더 */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.04]">
+        <div className={`flex items-center justify-between px-5 py-4 border-b ${viewMode === 'paper' ? 'border-amber-500/30 bg-amber-500/5' : 'border-rose-500/30 bg-rose-500/5'}`}>
           <h2 className="text-sm font-bold text-slate-200">해외주식 수동매수</h2>
-          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${viewMode === 'live' ? 'bg-rose-500/20 text-rose-400' : 'bg-amber-500/20 text-amber-400'}`}>
-            {viewMode === 'live' ? '실전' : '연습'}
+          <span className={`text-[11px] px-3 py-1 rounded-full font-bold ${viewMode === 'live' ? 'bg-rose-500/20 text-rose-400' : 'bg-amber-500/20 text-amber-400'}`}>
+            {viewMode === 'live' ? '실전' : '연습'} 모드
           </span>
         </div>
 

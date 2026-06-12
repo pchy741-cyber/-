@@ -900,7 +900,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
       }
     }
 
-    const minCashForBuy = portfolioValue * 0.15; // CASH_PCT 15% — 폭락장 방어 버퍼
+    const minCashForBuy = portfolioValue * (isPaper() ? 0.15 : 0.05); // Live 5%, Paper 15% — 통합증거금 적극 활용
     if (riskBlocked || allocBlocked || currentHoldingCount >= MAX_POSITIONS || cash < minCashForBuy) {
       const reasons: string[] = [];
       if (riskBlocked) reasons.push(`리스크차단(-${lossPctOfPortfolio.toFixed(1)}%)`);
