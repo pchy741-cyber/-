@@ -15,24 +15,33 @@
  *   GET  /auth/webauthn/credentials           — 등록된 디바이스 목록
  *   DELETE /auth/webauthn/credentials/:id     — 디바이스 삭제
  */
-import { Hono } from 'hono';
-import {
-  generateRegistrationOptions,
-  verifyRegistrationResponse,
-  generateAuthenticationOptions,
-  verifyAuthenticationResponse,
-} from '@simplewebauthn/server';
-import type {
-  AuthenticatorTransportFuture,
-} from '@simplewebauthn/server';
-import { getPool } from '../../db/client.js';
-import { createSessionToken, setSessionCookie } from '../middleware/auth.js';
-import { logger } from '../../utils/logger.js';
 
-// RP (Relying Party) 설정 — 환경변수 또는 기본값
+import type { AuthenticatorTransportFuture } from '@simplewebauthn/server';
+import {
+  generateAuthenticationOptions,
+  generateRegistrationOptions,
+  verifyAuthenticationResponse,
+  verifyRegistrationResponse,
+} from '@simplewebauthn/server';
+import { Hono } from 'hono';
+import { getPool } from '../../db/client.js';
+import { logger } from '../../utils/logger.js';
+import { createSessionToken, setSessionCookie } from '../middleware/auth.js';
+
+// RP (Relying Party) 설정 — 요청 Host 헤더에서 동적으로 유도 (staging/live URL 공용 대응)
 const rpName = 'AI Auto Bot';
-const rpID = process.env.WEBAUTHN_RP_ID || 'ai-auto-bot-ang2aozjiq-du.a.run.app';
-const origin = process.env.WEBAUTHN_ORIGIN || `https://${rpID}`;
+const FALLBACK_RP_ID = process.env.WEBAUTHN_RP_ID || 'ai-auto-bot-ang2aozjiq-du.a.run.app';
+
+/** 요청 컨텍스트에서 RP ID 추출 (Host > X-Forwarded-Host > 환경변수 순) */
+function getRpId(c: { req: { header: (name: string) => string | undefined } }): string {
+  if (process.env.WEBAUTHN_RP_ID) return process.env.WEBAUTHN_RP_ID;
+  const host = c.req.header('x-forwarded-host') || c.req.header('host') || FALLBACK_RP_ID;
+  return host.split(':')[0].toLowerCase();
+}
+
+function getOrigin(rpId: string): string {
+  return process.env.WEBAUTHN_ORIGIN || `https://${rpId}`;
+}
 
 // 챌린지 임시 저장 (인메모리, 5분 TTL) — 단일 인스턴스이므로 충분
 const challenges = new Map<string, { challenge: string; expiresAt: number }>();
@@ -84,7 +93,13 @@ async function getCredentialById(credId: string): Promise<StoredCredential | nul
   );
   if (rows.length === 0) return null;
   const r = rows[0] as any;
-  return { id: r.id, public_key: r.public_key, counter: Number(r.counter), device_name: r.device_name, transports: r.transports };
+  return {
+    id: r.id,
+    public_key: r.public_key,
+    counter: Number(r.counter),
+    device_name: r.device_name,
+    transports: r.transports,
+  };
 }
 
 // ── 라우트 ──
@@ -110,8 +125,9 @@ webauthnPublicRoutes.post('/auth/webauthn/authenticate/options', async (c) => {
       return c.json({ error: '등록된 생체인증이 없습니다. 먼저 비밀번호로 로그인 후 등록하세요.' }, 404);
     }
 
+    const rpId = getRpId(c);
     const options = await generateAuthenticationOptions({
-      rpID,
+      rpID: rpId,
       allowCredentials: creds.map((cred) => ({
         id: cred.id,
         transports: (cred.transports ?? []) as AuthenticatorTransportFuture[],
@@ -143,11 +159,12 @@ webauthnPublicRoutes.post('/auth/webauthn/authenticate/verify', async (c) => {
       return c.json({ error: '등록되지 않은 디바이스입니다' }, 401);
     }
 
+    const rpId = getRpId(c);
     const verification = await verifyAuthenticationResponse({
       response: body,
       expectedChallenge,
-      expectedOrigin: origin,
-      expectedRPID: rpID,
+      expectedOrigin: getOrigin(rpId),
+      expectedRPID: rpId,
       credential: {
         id: cred.id,
         publicKey: new Uint8Array(cred.public_key),
@@ -161,10 +178,10 @@ webauthnPublicRoutes.post('/auth/webauthn/authenticate/verify', async (c) => {
     }
 
     // counter 업데이트 (replay 방지)
-    await getPool().query(
-      'UPDATE webauthn_credentials SET counter = $1, last_used_at = NOW() WHERE id = $2',
-      [verification.authenticationInfo.newCounter, credId],
-    );
+    await getPool().query('UPDATE webauthn_credentials SET counter = $1, last_used_at = NOW() WHERE id = $2', [
+      verification.authenticationInfo.newCounter,
+      credId,
+    ]);
 
     // 세션 쿠키 발급
     const token = createSessionToken();
@@ -182,9 +199,10 @@ webauthnProtectedRoutes.post('/auth/webauthn/register/options', async (c) => {
   try {
     const existingCreds = await getStoredCredentials();
 
+    const rpId = getRpId(c);
     const options = await generateRegistrationOptions({
       rpName,
-      rpID,
+      rpID: rpId,
       userName: 'ceo',
       userDisplayName: 'CEO',
       attestationType: 'none', // attestation 불필요 (단일 사용자)
@@ -218,11 +236,12 @@ webauthnProtectedRoutes.post('/auth/webauthn/register/verify', async (c) => {
       return c.json({ error: '챌린지 만료 — 다시 시도하세요' }, 400);
     }
 
+    const rpId = getRpId(c);
     const verification = await verifyRegistrationResponse({
       response: body.credential,
       expectedChallenge,
-      expectedOrigin: origin,
-      expectedRPID: rpID,
+      expectedOrigin: getOrigin(rpId),
+      expectedRPID: rpId,
     });
 
     if (!verification.verified || !verification.registrationInfo) {
@@ -235,13 +254,7 @@ webauthnProtectedRoutes.post('/auth/webauthn/register/verify', async (c) => {
       `INSERT INTO webauthn_credentials (id, public_key, counter, device_name, transports)
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (id) DO UPDATE SET public_key = $2, counter = $3, device_name = $4`,
-      [
-        credential.id,
-        Buffer.from(credential.publicKey),
-        credential.counter,
-        deviceName,
-        credential.transports ?? [],
-      ],
+      [credential.id, Buffer.from(credential.publicKey), credential.counter, deviceName, credential.transports ?? []],
     );
 
     logger.info(`🔐 WebAuthn 디바이스 등록 완료: ${deviceName}`, { component: 'WEBAUTHN' });
