@@ -2,6 +2,26 @@
 
 import React from 'react';
 import { Button } from '@/components/ui';
+import { BarOverlay } from '@/components/BarSegment';
+
+// 절대위치 마커 (1px 또는 3px 폭) — TP/SL bar 안에서 위치 표시
+function BarMarker({
+  posPct,
+  className,
+  title,
+}: {
+  posPct: number;
+  className: string;
+  title?: string;
+}) {
+  return (
+    <div
+      className={`absolute top-0 h-full ${className}`}
+      style={{ '--marker-pos': `${posPct}%`, left: 'var(--marker-pos)' } as React.CSSProperties}
+      title={title}
+    />
+  );
+}
 
 interface TpSlBarProps {
   stockCode: string;
@@ -59,28 +79,29 @@ export function UsHoldingTpSlBar({
             <div className="absolute inset-0">
               <div className="h-full w-full bg-gradient-to-r from-rose-500/40 to-slate-600/20" />
             </div>
-            <div
-              className={`absolute top-0 left-0 h-full rounded-full transition-all ${pnlPct >= 0 ? 'bg-emerald-500' : 'bg-rose-500'}`}
-              style={{ width: `${progress}%` }}
+            <BarOverlay
+              progressPct={progress}
+              className={`rounded-full ${pnlPct >= 0 ? 'bg-emerald-500' : 'bg-rose-500'}`}
+              transition="transition-all"
             />
             {nextPartialTpPct != null && nextPartialTpPct !== effectiveTp && range > 0 && (
-              <div
-                className="absolute top-0 h-full w-px bg-cyan-400/50"
-                style={{ left: `${Math.max(0, Math.min(100, ((nextPartialTpPct - effectiveSl) / range) * 100))}%` }}
+              <BarMarker
+                posPct={Math.max(0, Math.min(100, ((nextPartialTpPct - effectiveSl) / range) * 100))}
+                className="w-px bg-cyan-400/50"
                 title={`부분익절 +${nextPartialTpPct}%`}
               />
             )}
             {range > 0 && !trailActive && (
-              <div
-                className="absolute top-0 h-full w-px bg-yellow-500/40"
-                style={{ left: `${Math.max(0, Math.min(100, ((trailPct - effectiveSl) / range) * 100))}%` }}
+              <BarMarker
+                posPct={Math.max(0, Math.min(100, ((trailPct - effectiveSl) / range) * 100))}
+                className="w-px bg-yellow-500/40"
                 title={`트레일 활성: +${trailPct}%`}
               />
             )}
             {trailActive && range > 0 && (
-              <div
-                className="absolute top-0 h-full w-[3px] bg-yellow-400/80 rounded-full"
-                style={{ left: `${Math.max(0, Math.min(100, ((trailStopPct - effectiveSl) / range) * 100))}%` }}
+              <BarMarker
+                posPct={Math.max(0, Math.min(100, ((trailStopPct - effectiveSl) / range) * 100))}
+                className="w-[3px] bg-yellow-400/80 rounded-full"
                 title={`트레일 스톱: ${trailStopPct >= 0 ? '+' : ''}${trailStopPct.toFixed(1)}%`}
               />
             )}

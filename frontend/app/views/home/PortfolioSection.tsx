@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { api, fmt, fmtWon, fmtUsd } from '../../lib/utils';
 import { toDisplayName, isUnresolvedStockName } from '../../lib/helpers';
+import { SegmentedBar, WeightBar } from '@/components/SegmentedBar';
 import type { Dashboard, Chain, UsHolding, UsWatchlistItem, AllocConfig, MpData } from '../../types';
 
 interface StrategyInfo {
@@ -170,10 +171,12 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
             <span>🇰🇷 국내 목표 {krTarget}%</span>
             <span>🇺🇸 해외 목표 {usTarget}%</span>
           </div>
-          <div className="h-2 rounded-full overflow-hidden bg-white/[0.04] flex">
-            <div className="h-full bg-blue-500/70 transition-all duration-500" style={{ width: `${krTarget}%` }} />
-            <div className="h-full bg-indigo-500/70 transition-all duration-500" style={{ width: `${usTarget}%` }} />
-          </div>
+          <SegmentedBar
+            segments={[
+              { widthPct: krTarget, className: 'bg-blue-500/70' },
+              { widthPct: usTarget, className: 'bg-indigo-500/70' },
+            ]}
+          />
         </div>
         {/* 프리셋 버튼 */}
         <div className="flex gap-1.5 flex-wrap">
@@ -198,12 +201,13 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
               <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-gradient-to-r from-blue-500 to-cyan-500 shrink-0" />투자 중 {investedPctExact.toFixed(0)}%</span>
               <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-slate-400/50 shrink-0" />현금 {cashPctExact.toFixed(0)}%</span>
             </div>
-            <div className="h-3 bg-white/[0.04] rounded-full overflow-hidden">
-              <div className="h-full flex">
-                <div className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 transition-all duration-500" style={{ width: `${pctClamp(investedPctExact)}%` }} />
-                <div className="h-full bg-slate-400/50 transition-all duration-500" style={{ width: `${pctClamp(cashPctExact)}%` }} />
-              </div>
-            </div>
+            <SegmentedBar
+              height="h-3"
+              segments={[
+                { widthPct: pctClamp(investedPctExact), className: 'bg-gradient-to-r from-blue-500 to-cyan-500' },
+                { widthPct: pctClamp(cashPctExact), className: 'bg-slate-400/50' },
+              ]}
+            />
           </div>
           {/* 종목별 비중 — 국내 */}
           {chains.length > 0 && (
@@ -225,9 +229,10 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
                       </span>
                       <span className="text-slate-500">{fmtWon(inv)} ({pct.toFixed(0)}%)</span>
                     </div>
-                    <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
-                      <div className={`h-full rounded-full ${(ch.unrealizedPnl ?? 0) >= 0 ? 'bg-emerald-500/60' : 'bg-rose-500/60'}`} style={{ width: `${pct}%` }} />
-                    </div>
+                    <WeightBar
+                      pct={pct}
+                      colorClass={(ch.unrealizedPnl ?? 0) >= 0 ? 'bg-emerald-500/60' : 'bg-rose-500/60'}
+                    />
                   </div>
                 );
               })}
@@ -251,9 +256,10 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
                         <span className="font-medium text-blue-300">{toDisplayName(priceData?.name, h.stock_code)}</span>
                         <span className="text-slate-500">{fmtWon(invKrw)} ({pct.toFixed(0)}%)</span>
                       </div>
-                      <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
-                        <div className={`h-full rounded-full ${curPnl >= 0 ? 'bg-blue-500/60' : 'bg-rose-500/60'}`} style={{ width: `${pct}%` }} />
-                      </div>
+                      <WeightBar
+                        pct={pct}
+                        colorClass={curPnl >= 0 ? 'bg-blue-500/60' : 'bg-rose-500/60'}
+                      />
                     </div>
                   );
                 })}

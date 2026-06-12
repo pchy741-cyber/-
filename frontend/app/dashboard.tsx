@@ -4,6 +4,7 @@ import React, { useState, type CSSProperties } from 'react';
 import { ConfirmModal, Button } from '@/components/ui';
 import { api } from './lib/utils';
 import { useToast, useConfirm } from './lib/hooks';
+import { useMediaQuery, MEDIA } from './lib/useMediaQuery';
 import { useDashboardData } from './hooks/useDashboardData';
 import type { MpData } from './types';
 import { DashboardSidebar } from './components/DashboardSidebar';
@@ -93,23 +94,29 @@ export default function Dashboard() {
     doSwitchMode('paper');
   };
 
-  // 태블릿 화면 꺼짐 방지 (WakeLock)
+  // 태블릿 화면 꺼짐 방지 (WakeLock) — matchMedia 기반 resize/회전 자동 반응
+  const isTablet = useMediaQuery(MEDIA.tablet);
   React.useEffect(() => {
     if (typeof window === 'undefined' || !('wakeLock' in navigator)) return;
-    const isTablet = window.innerWidth >= 600 && navigator.maxTouchPoints > 0;
     if (!isTablet) return;
     let lock: WakeLockSentinel | null = null;
     const acquire = async () => {
-      try { lock = await (navigator as any).wakeLock.request('screen'); } catch {}
+      try {
+        lock = await (navigator as any).wakeLock.request('screen');
+      } catch {
+        /* ignore */
+      }
     };
     acquire();
-    const onVisible = () => { if (document.visibilityState === 'visible') acquire(); };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') acquire();
+    };
     document.addEventListener('visibilitychange', onVisible);
     return () => {
       document.removeEventListener('visibilitychange', onVisible);
       lock?.release().catch(() => {});
     };
-  }, []);
+  }, [isTablet]);
 
   // DB 기상: 캐시 데이터 없으면 오버레이, 있으면 상단 배너만
   const [dbSyncing, setDbSyncing] = React.useState(false);

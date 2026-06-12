@@ -2,6 +2,8 @@
 
 import React from 'react';
 import { ProgressBar } from '@/components/ProgressBar';
+import { BarSegment, BarOverlay } from '@/components/BarSegment';
+import { BarLabel } from '@/components/BarLabel';
 import { fmtWon } from '../../lib/utils';
 import type { Health } from '../../types';
 
@@ -87,26 +89,34 @@ export default function MarketProgressBar({
             {/* 구간별 배경 영역 */}
             <div className="relative h-2.5 rounded-full overflow-hidden bg-white/[0.03]">
               {/* 개장 자동구간 09:00~09:30 — 회색 */}
-              <div className="absolute top-0 h-full bg-sky-900/40" style={{ left: '0%', width: `${pct930}%` }} />
+              <BarSegment startPct={0} widthPct={pct930} bgClass="bg-sky-900/40" />
               {/* 황금 오전 09:30~10:20 — 초록 */}
-              <div className="absolute top-0 h-full bg-emerald-900/50" style={{ left: `${pct930}%`, width: `${pct1020 - pct930}%` }} />
+              <BarSegment startPct={pct930} widthPct={pct1020 - pct930} bgClass="bg-emerald-900/50" />
               {/* 마의 구간 10:20~13:00 — 빨강 */}
-              <div className="absolute top-0 h-full bg-rose-900/40" style={{ left: `${pct1020}%`, width: `${pct1300 - pct1020}%` }} />
+              <BarSegment startPct={pct1020} widthPct={pct1300 - pct1020} bgClass="bg-rose-900/40" />
               {/* 황금 오후 13:00~15:00 — 초록 */}
-              <div className="absolute top-0 h-full bg-emerald-900/50" style={{ left: `${pct1300}%`, width: `${pct1500 - pct1300}%` }} />
+              <BarSegment startPct={pct1300} widthPct={pct1500 - pct1300} bgClass="bg-emerald-900/50" />
               {/* 마감 준비 15:00~15:20 — 주황 */}
-              <div className="absolute top-0 h-full bg-amber-900/30" style={{ left: `${pct1500}%`, width: `${pct1520 - pct1500}%` }} />
+              <BarSegment startPct={pct1500} widthPct={pct1520 - pct1500} bgClass="bg-amber-900/30" />
               {/* 진행 오버레이 */}
-              <div className="absolute top-0 left-0 h-full bg-white/20 rounded-full transition-all duration-1000" style={{ width: `${marketProgress}%` }} />
+              <BarOverlay progressPct={marketProgress} />
             </div>
             {/* 구간 라벨 */}
-            <div className="flex mt-0.5 text-[9px] relative" style={{ height: '12px' }}>
-              <span className="absolute text-sky-700" style={{ left: '0%' }}>09:00</span>
-              <span className="absolute text-emerald-700 font-semibold" style={{ left: `${pct930}%`, transform: 'translateX(-50%)' }}>09:30</span>
-              <span className="absolute text-rose-700 font-semibold" style={{ left: `${pct1020}%`, transform: 'translateX(-50%)' }}>10:20</span>
-              <span className="absolute text-emerald-700 font-semibold" style={{ left: `${pct1300}%`, transform: 'translateX(-50%)' }}>13:00</span>
-              <span className="absolute text-amber-700" style={{ left: `${pct1500}%`, transform: 'translateX(-50%)' }}>15:00</span>
-              <span className="absolute text-slate-600" style={{ right: '0%' }}>15:30</span>
+            <div className="flex mt-0.5 text-[9px] relative h-3">
+              <BarLabel position={{ side: 'left', pct: 0 }} className="text-sky-700">09:00</BarLabel>
+              <BarLabel position={{ side: 'left', pct: pct930 }} centered className="text-emerald-700 font-semibold">
+                09:30
+              </BarLabel>
+              <BarLabel position={{ side: 'left', pct: pct1020 }} centered className="text-rose-700 font-semibold">
+                10:20
+              </BarLabel>
+              <BarLabel position={{ side: 'left', pct: pct1300 }} centered className="text-emerald-700 font-semibold">
+                13:00
+              </BarLabel>
+              <BarLabel position={{ side: 'left', pct: pct1500 }} centered className="text-amber-700">
+                15:00
+              </BarLabel>
+              <BarLabel position={{ side: 'right', pct: 0 }} className="text-slate-600">15:30</BarLabel>
             </div>
           </>
         ) : health?.usMarketOpen ? (
