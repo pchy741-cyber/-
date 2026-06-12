@@ -137,26 +137,62 @@ export async function runQuickRescore(): Promise<{ scored: number; errors: numbe
 
     const results = await runRSSScoring('SWING', watchlistForRss, chartData, emptySet, emptySet, emptyMap);
 
-    // ai_scores UPSERT
+    // 🎯 Score Enhancer — 외부 무료 신호로 후처리 가산 (FRED + 거래량 + 시간대)
+    const { enhanceScoreBatch } = await import('../score-enhancer.js');
+    const enhanced = await enhanceScoreBatch(
+      results.map((r) => ({
+        stock_code: r.stock_code,
+        composite_score: r.composite_score,
+        // 거래량/등락률은 chartData에서 추출 (이번 빌드는 단순 — 다음 빌드에 정밀화)
+      })),
+      false, // KR 종목
+    );
+
+    // ai_scores UPSERT + history INSERT (시계열 추적)
     let scored = 0;
     let errors = 0;
     const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10); // KST
     for (const r of results) {
+      const enh = enhanced.get(r.stock_code);
+      const finalScore = enh ? enh.finalScore : r.composite_score;
       try {
         await upsertAIScore({
           stock_code: r.stock_code,
           score_date: today,
           gemini_summary: null as any,
-          composite_score: r.composite_score,
+          composite_score: finalScore,
           fundamental_score: r.fundamental_score ?? 0,
           technical_score: r.technical_score ?? 0,
           sentiment_score: r.sentiment_score ?? 0,
           confidence: r.confidence ?? 0.5,
-          reasoning: r.reasoning ?? 'Quick Re-Score (RSS)',
+          reasoning:
+            r.reasoning ??
+            (enh && enh.delta !== 0
+              ? `Quick Re-Score + Enhanced (Δ${enh.delta >= 0 ? '+' : ''}${enh.delta}: ${enh.breakdown.map((b) => b.source).join(',')})`
+              : 'Quick Re-Score (RSS)'),
           signal: r.signal ?? 'HOLD',
           target_price: r.target_price ?? null,
           stop_loss_price: r.stop_loss_price ?? null,
         });
+
+        // 시계열 적재 (UI 그래프용)
+        try {
+          const { rows: prev } = await getPool().query(
+            `SELECT composite_score FROM ai_scores_history
+             WHERE stock_code = $1 ORDER BY recorded_at DESC LIMIT 1`,
+            [r.stock_code],
+          );
+          const prevScore = prev[0]?.composite_score != null ? Number(prev[0].composite_score) : null;
+          const delta = prevScore != null ? finalScore - prevScore : null;
+          await getPool().query(
+            `INSERT INTO ai_scores_history
+               (stock_code, composite_score, technical_score, sentiment_score, source, delta_from_prev)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [r.stock_code, finalScore, r.technical_score ?? 0, r.sentiment_score ?? 0, 'quick_enhanced', delta],
+          );
+        } catch {
+          /* history 테이블 미생성 시 무시 */
+        }
         scored++;
       } catch (e) {
         errors++;

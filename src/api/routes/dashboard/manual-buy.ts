@@ -85,6 +85,8 @@ export function registerManualBuyRoutes(app: Hono) {
       pullback_signal?: boolean;
       envelope_pos?: string;
       confidence?: number;
+      ceo_override?: boolean; // CEO 책임 — 시스템 cap 초과 매수 허용
+      override_reason?: string;
     };
     try {
       body = await c.req.json();

@@ -117,6 +117,7 @@ export async function activateKillSwitch(reason: string, manual = false, scope: 
       activatedAt: now,
       consecutiveErrors: s.consecutiveErrors,
       manuallyTriggered: manual,
+      forcedDeactivatedAt: null,
     });
 
     logger.error(`🛑 KILL SWITCH 발동 [${scopeLabel}]${manual ? ' [수동]' : ''} [${mode}]: ${reason}`, {
@@ -342,6 +343,7 @@ async function loadKillSwitchState(isPaper: boolean, scope: KillSwitchScope): Pr
       activatedAt: new Date(),
       consecutiveErrors: 0,
       manuallyTriggered: saved.manual ?? false,
+      forcedDeactivatedAt: null,
     };
 
     const sKey = `${isPaper ? 'paper' : 'live'}_${scope.toLowerCase()}`;

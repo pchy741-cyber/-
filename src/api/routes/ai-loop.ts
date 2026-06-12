@@ -519,6 +519,91 @@ aiLoopRoutes.get('/ai-loop/queue-stats', async (c) => {
   }
 });
 
+// ── GET /api/ai-loop/scores/history — AI 점수 시계열 (UI 그래프용) ──
+aiLoopRoutes.get('/ai-loop/scores/history', async (c) => {
+  try {
+    const code = c.req.query('stock_code') ?? '';
+    const hours = Math.min(168, Math.max(1, Number(c.req.query('hours') ?? 24)));
+    const limit = Math.min(500, Math.max(10, Number(c.req.query('limit') ?? 100)));
+    if (!code) return c.json({ error: 'stock_code required' }, 400);
+
+    const { rows } = await getPool().query(
+      `SELECT composite_score, technical_score, sentiment_score, source, delta_from_prev, recorded_at
+       FROM ai_scores_history
+       WHERE stock_code = $1
+         AND recorded_at > NOW() - ($2 || ' hours')::interval
+       ORDER BY recorded_at ASC LIMIT $3`,
+      [code, hours, limit],
+    );
+
+    // 마지막 갱신 시각 + 다음 갱신 예상 시각
+    const { getKrMarketPhase } = await import('../../scheduler/loop-mode.js');
+    const phase = getKrMarketPhase();
+    const intervalMin =
+      phase === 'GOLDEN_AM' || phase === 'GOLDEN_PM' ? 3 : phase === 'CURSED' ? 15 : 10;
+    const lastRunAt = rows[rows.length - 1]?.recorded_at ?? null;
+    const nextRunAt = lastRunAt
+      ? new Date(new Date(lastRunAt).getTime() + intervalMin * 60_000).toISOString()
+      : null;
+
+    return c.json({
+      stock_code: code,
+      points: rows.map((r) => ({
+        score: Number(r.composite_score),
+        technical: Number(r.technical_score),
+        sentiment: Number(r.sentiment_score),
+        source: r.source,
+        delta: r.delta_from_prev != null ? Number(r.delta_from_prev) : null,
+        at: r.recorded_at,
+      })),
+      meta: {
+        phase,
+        intervalMin,
+        lastRunAt,
+        nextRunAt,
+      },
+    });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── GET /api/ai-loop/scores/refresh-status — 다음 갱신 카운트다운 ──
+aiLoopRoutes.get('/ai-loop/scores/refresh-status', async (c) => {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT value FROM system_state WHERE key = 'quick_rescore_last_run' LIMIT 1`,
+    );
+    const data = rows[0]?.value;
+    const lastRun =
+      data != null
+        ? typeof data === 'string'
+          ? JSON.parse(data)
+          : data
+        : null;
+    const { getKrMarketPhase } = await import('../../scheduler/loop-mode.js');
+    const phase = getKrMarketPhase();
+    const intervalMin =
+      phase === 'GOLDEN_AM' || phase === 'GOLDEN_PM' ? 3 : phase === 'CURSED' ? 15 : 10;
+    const lastAt = lastRun?.at ?? null;
+    const nextAt = lastAt
+      ? new Date(new Date(lastAt).getTime() + intervalMin * 60_000).toISOString()
+      : null;
+    const secondsToNext = nextAt ? Math.max(0, Math.floor((new Date(nextAt).getTime() - Date.now()) / 1000)) : null;
+    return c.json({
+      phase,
+      intervalMin,
+      lastRunAt: lastAt,
+      nextRunAt: nextAt,
+      secondsToNext,
+      scored: lastRun?.scored ?? 0,
+      elapsedSec: lastRun?.elapsedSec ?? null,
+    });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── GET /api/loop/sessions — 루프 세션 히스토리 + 메트릭 ──
 // 강화 #1: 세션별 매수/매도/PnL/에러/킬스위치 정지 횟수 등 노출
 aiLoopRoutes.get('/loop/sessions', async (c) => {
