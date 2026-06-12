@@ -131,13 +131,14 @@ export function registerManualBuyRoutes(app: Hono) {
       stopLossPct = STRATEGY_PARAMS.SWING.stopLossPct;
     }
 
-    // 🎯 진입 타이밍 가드 — 시간대(마의시간 차단/장외 보너스) + 기술지표 다중 확증
+    // 🎯 진입 타이밍 가드 — 저녁 18-24 KST 하드블락 + 마의시간 + 단기전략 차단 + 기술지표
     const { checkEntryTiming } = await import('../../../risk/entry-timing-guard.js');
     const entryCheck = checkEntryTiming({
       tech: { rsi: body.rsi, volumeRatio: body.volume_ratio },
       aiScore,
       marketCode: 'KR',
       isClaudeManual: true,
+      strategyMode: 'SWING', // manual-buy는 기본 SWING (단기 전략 차단)
     });
     if (!entryCheck.allowed) {
       logger.warn(`🚫 진입타이밍: ${stock_code} — ${entryCheck.reason}`, { component: 'CLAUDE_BUY' });
