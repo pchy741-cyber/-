@@ -838,6 +838,41 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 🔥 11:30, 13:30 — 핫 업종 추가 스캔 (10:00 이후 섹터 로테이션 포착)
+  for (const time of ['30 11', '30 13']) {
+    cron.schedule(
+      `${time} * * 1-5`,
+      () => {
+        runHotSectorWatchlist().catch((e) => logger.error(`핫 업종 편입 실패(${time}): ${e}`, { component: 'SCHEDULER' }));
+      },
+      { timezone: MARKET.TIMEZONE },
+    );
+  }
+
+  // ⚡ 급등/거래대금 실시간 감지 + KIS 즐겨찾기 동기화 — 30분 간격 (09:30~15:00)
+  // CEO KIS 앱 즐겨찾기 → 즉시 워치리스트 반영 + 거래대금 급등주 자동 포착
+  cron.schedule(
+    '*/30 9-15 * * 1-5',
+    () => {
+      import('../automation/surge-detector.js')
+        .then((m) => m.runSurgeDetector())
+        .catch((e) => logger.error(`급등 감지 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 📊 일일 시장 발굴 — 14:15 (장 중반 수급 데이터 확정 후)
+  // runDailyMarketScan: 거래량/급등 상위 + 기관/외국인 수급 검증 후 워치리스트 편입
+  cron.schedule(
+    '15 14 * * 1-5',
+    () => {
+      import('../automation/watchlist-rotation.js')
+        .then((m) => m.runDailyMarketScan())
+        .catch((e) => logger.error(`일일 시장 발굴 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 10:05 Track A 제거 — 10:00과 5분 간격 중복. KIS API 부하 + Gemini 호출 절약
 
   // ═══════════════════════════════════════════

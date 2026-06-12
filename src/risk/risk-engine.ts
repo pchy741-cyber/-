@@ -12,6 +12,7 @@ import { getCash as getOverseasCash, getHoldings as getOverseasHoldings } from '
 import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
 import { activateKillSwitch, isKillSwitchActive } from './kill-switch.js';
+import { getMonthlyMddSnapshot } from './mdd-calculator.js';
 import { getPaperBalance } from './paper-balance.js';
 import { calcDailyLossLimit, WEEKLY_LOSS_PCT_LIVE, WEEKLY_LOSS_PCT_PAPER } from './seed-capital.js';
 
@@ -423,28 +424,18 @@ export class RiskEngine {
         return { approved: true, reason: '소자산 포트폴리오 — 월간 MDD 면제' };
       }
 
-      const pool = getPool();
-      const kstMonth = getKSTNow();
-      kstMonth.setUTCDate(1);
-      kstMonth.setUTCHours(0, 0, 0, 0);
-      const { rows } = await pool.query<{ total_value: string }>(
-        `SELECT total_value FROM portfolio_snapshots WHERE snapshot_at >= $1 AND is_paper = $2 ORDER BY snapshot_at ASC`,
-        [kstMonth.toISOString(), isPaper],
-      );
-      if (rows.length < 2) return { approved: true, reason: 'OK' };
+      const snap = await getMonthlyMddSnapshot(isPaper);
+      if (snap.samples < 2) return { approved: true, reason: 'OK' };
 
-      const values = rows.map((r) => Number(r.total_value));
-      const peakValue = Math.max(...values);
-      const latestValue = values[values.length - 1];
+      const { peak: peakValue, latest: latestValue, externalActivity, mddPct } = snap;
       // 외부 입출금 감지: 고점 대비 50% 이상 급감 → 외부 매도/출금, 실제 MDD 아님
-      if (peakValue > 0 && latestValue < peakValue * 0.5) {
+      if (externalActivity) {
         logger.warn(
           `⚠️ 월간 MDD 외부 매도 감지: 고점 ${Math.round(peakValue / 10000)}만 → 현재 ${Math.round(latestValue / 10000)}만 (${((1 - latestValue / peakValue) * 100).toFixed(0)}% 감소) → MDD 체크 스킵`,
           { component: 'RISK' },
         );
         return { approved: true, reason: '외부 매도/입출금 감지 — 월간 MDD 체크 면제' };
       }
-      const mddPct = ((peakValue - latestValue) / peakValue) * 100;
 
       const mddLimit = isPaper ? config.paperRisk.mddLimit : 8;
       const mddWarn = isPaper ? config.paperRisk.mddLimit * 0.75 : 6;

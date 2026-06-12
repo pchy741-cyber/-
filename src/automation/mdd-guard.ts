@@ -15,6 +15,7 @@ import { getOverride, removeOverride, setOverride } from '../ai/ai-overrides.js'
 import { runWithMode } from '../config/context.js';
 import { getPool } from '../db/client.js';
 import { sendByPaperFlag } from '../notifications/mode-message.js';
+import { getMonthlyMddSnapshot } from '../risk/mdd-calculator.js';
 import { logger } from '../utils/logger.js';
 
 const COMP = 'MDD_GUARD';
@@ -23,25 +24,6 @@ const COMP = 'MDD_GUARD';
 //   변경: 1h TTL + MDD < 150% (Live 12%) 회복 → 아주 조금만 회복돼도 재개
 const BLOCK_TTL_MINUTES = 60; // 6h → 1h 단축 (다음 시간 재평가)
 const GUARD_REASON_PREFIX = 'mdd_guard:';
-
-/** 월간 MDD 계산 (peak → latest 낙폭 %) */
-async function computeMonthlyMdd(isPaper: boolean): Promise<number> {
-  const monthStart = new Date();
-  monthStart.setDate(1);
-  monthStart.setHours(0, 0, 0, 0);
-  const { rows } = await getPool().query(
-    `SELECT total_value FROM portfolio_snapshots
-     WHERE snapshot_at >= $1 AND is_paper = $2
-     ORDER BY snapshot_at ASC`,
-    [monthStart.toISOString(), isPaper],
-  );
-  if (rows.length < 2) return 0;
-  const values = rows.map((r: any) => Number(r.total_value)).filter((v) => v > 0);
-  if (values.length < 2) return 0;
-  const peak = Math.max(...values);
-  const latest = values[values.length - 1];
-  return peak > 0 ? ((peak - latest) / peak) * 100 : 0;
-}
 
 async function runForMode(isPaper: boolean): Promise<void> {
   const mode = isPaper ? 'paper' : 'live';
@@ -53,7 +35,8 @@ async function runForMode(isPaper: boolean): Promise<void> {
 
   let mdd = 0;
   try {
-    mdd = await computeMonthlyMdd(isPaper);
+    const snap = await getMonthlyMddSnapshot(isPaper);
+    mdd = snap.mddPct;
   } catch (e) {
     logger.warn(`MDD 계산 실패 [${mode}]: ${(e as Error).message}`, { component: COMP });
     return;

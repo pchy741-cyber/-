@@ -262,6 +262,39 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       });
     }
 
+    // ── 임시점수 주입: SURGE/KIS_SYNC/ANCHOR 신규 편입 종목 (순환참조 해결) ──────
+    // ai_scores FK → watchlist 순환: 신규 편입 종목은 AI 점수가 없어 파이프라인에서 완전 차단됨.
+    // SURGE(거래대금 급등) / KIS_SYNC(CEO 즐겨찾기) / ANCHOR(삼성·하이닉스)는
+    // 실시간 발굴 근거가 있으므로 provisional score 62 주입 → 분봉·수급 분석으로 본평가 진행.
+    if (stockCodes.length > 0) {
+      try {
+        const todayKst = getKSTNow().toISOString().split('T')[0];
+        const existingScoreCodes = new Set(scores.map((s: any) => s.stock_code as string));
+        const { rows: newlyTagged } = await getPool().query(
+          `SELECT stock_code FROM watchlist
+           WHERE is_active = true
+             AND source IN ('SURGE', 'KIS_SYNC', 'ANCHOR', 'THEME_CLUSTER')
+             AND added_at >= NOW() - INTERVAL '24 hours'
+             AND stock_code NOT IN (
+               SELECT DISTINCT stock_code FROM ai_scores
+                WHERE score_date >= CURRENT_DATE - INTERVAL '3 days'
+             )
+             AND stock_code = ANY($1)`,
+          [stockCodes],
+        );
+        for (const row of newlyTagged) {
+          if (!existingScoreCodes.has(row.stock_code)) {
+            scores.push({ stock_code: row.stock_code, composite_score: 62, confidence: 0, score_date: todayKst } as any);
+            logger.info(`🔀 임시점수(62) 주입: ${row.stock_code} — SURGE/KIS 신규편입 (순환참조 우회)`, {
+              component: 'TRACK_B',
+            });
+          }
+        }
+      } catch {
+        /* 주입 실패 시 기존 동작 유지 */
+      }
+    }
+
     // ── 실시간 시세 수집 (KIS rate limit 방지: AI 점수 상위 20종목 + 보유종목) ──
     // AI 점수 없는 종목 포함 시 buy-filter에서 전량 차단 → KIS 쿼터 낭비
     // AI 점수 있는 종목만 추려서 composite_score 상위 20개 평가 (35→20 부하 43% 감소)
@@ -752,6 +785,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       isSwingEodRestricted || // SWING 14:30 이전: 종가 구간 대기 (BREAKOUT 제외, 95+ 예외)
       (!ctxIsPaper && dailyLoss.blocked) || // Paper: 일일손실 차단 면제 (데이터 수집 우선)
       (!ctxIsPaper && kospiRegime.flashCrash) || // 급락 서킷브레이커: Live만 차단 (Paper 면제 — 모의자금)
+      (!ctxIsPaper && !isKospiOverrideActive() && kospiRegime.todayDown && !hasHighConvictionStock) || // 코스피 당일 -0.3%+ 하락: 고확신 없으면 신규매수 전면 차단
       (!ctxIsPaper &&
         !isKospiOverrideActive() &&
         kospiRegime.penalty >= 2 &&

@@ -169,13 +169,18 @@ export async function executeBuyDecisions(
             const intraday = analyzeIntraday(minuteCandles);
             // VWAP 아래서 사면 유리 → 보너스 +5, 위에서 사면 페널티 -3
             const vwapAdj = intraday.vwapPosition === 'BELOW' ? 5 : intraday.vwapPosition === 'ABOVE' ? -3 : 0;
-            intradayBonus.set(cand.stock_code, intraday.score + vwapAdj);
+            // 5분 반등 확인: 현재가 > 5분 전 가격이면 반등 중, 아니면 하락세로 진입 금지
+            const currentClose = minuteCandles[0].close;
+            const close5mAgo = minuteCandles[4].close;
+            const isBouncing = currentClose > close5mAgo;
+            const bounceAdj = isBouncing ? 0 : -15; // 5분 하락 중 진입 페널티 -15
+            intradayBonus.set(cand.stock_code, intraday.score + vwapAdj + bounceAdj);
             if (intraday.trend15m === 'DOWN') intraday15mDown.add(cand.stock_code);
             if (intraday.vwapPosition === 'BELOW') {
               intradayVwapBelow.add(cand.stock_code);
             }
             logger.info(
-              `  ⏱️ ${cand.stock_code}: 분봉=${intraday.trend}(${intraday.score}) 15m=${intraday.trend15m} VWAP=${intraday.vwapPosition}(${vwapAdj >= 0 ? '+' : ''}${vwapAdj}) vol급등=${intraday.volumeSurge} | ${intraday.reason}`,
+              `  ⏱️ ${cand.stock_code}: 분봉=${intraday.trend}(${intraday.score}) 15m=${intraday.trend15m} VWAP=${intraday.vwapPosition}(${vwapAdj >= 0 ? '+' : ''}${vwapAdj}) 반등=${isBouncing ? '✅' : '❌'}(${bounceAdj}) vol급등=${intraday.volumeSurge} | ${intraday.reason}`,
               { component: 'TRACK_B' },
             );
           }

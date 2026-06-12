@@ -86,12 +86,45 @@ export function checkRiskReward(takeProfitPct: number, stopLossPct: number, _min
   return { passed: ev.passed, rrRatio: ev.rrRatio, reason: ev.reason };
 }
 
-// ── 가드 #2: 종목별 승률 기반 사이징 ───────────────────
+// ── 가드 #2: 종목별 승률 기반 사이징 (Half-Kelly 통합) ─────
+// 학술 근거 (Kelly 1956, Substack 2025):
+//   - Full Kelly f* = (bp - q) / b 는 장기 최적이지만 단기 변동성 극대
+//   - Half-Kelly (×0.5)는 변동성 50% 감소, 수익 25%만 감소 (trade-off 우수)
+//   - N < 50 거래 시 추정 오차 ±5%p → Kelly 사이즈 3배 차이 발생
+//   - → 50건 미달 시 추가 0.5× 보정 (총 0.25× Kelly)
 export interface StockWinRateSizing {
   multiplier: number; // 0 (차단) ~ 1.0 (정상) ~ 1.2 (강세)
   recentWinRate: number;
   sampleCount: number;
+  /** Half-Kelly 권장 비중 (총자본 대비 %) */
+  kellyFractionPct: number | null;
+  /** 통계 신뢰도 (50건+ = 신뢰, 5~50 = 보통, <5 = 낮음) */
+  confidenceLabel: 'HIGH' | 'MEDIUM' | 'LOW';
   reason: string;
+}
+
+/**
+ * Half-Kelly 공식 계산
+ * f* = (bp - q) / b
+ *   b = TP / |SL|  (보상/위험)
+ *   p = winRate
+ *   q = 1 - p
+ * 반환: Half-Kelly fraction (0~1, 음수면 0)
+ */
+export function computeHalfKelly(params: {
+  winRate: number;
+  takeProfitPct: number;
+  stopLossPct: number;
+}): number {
+  const { winRate, takeProfitPct, stopLossPct } = params;
+  const absSL = Math.abs(stopLossPct);
+  if (absSL === 0 || winRate <= 0 || winRate >= 1) return 0;
+  const b = takeProfitPct / absSL;
+  const fullKelly = (b * winRate - (1 - winRate)) / b;
+  // 음수(EV-) 면 0
+  if (fullKelly <= 0) return 0;
+  // Half-Kelly 적용
+  return fullKelly * 0.5;
 }
 
 /** 종목별 최근 30일 승률 → 사이즈 multiplier 반환 */
@@ -109,20 +142,34 @@ export async function getStockSizing(stockCode: string, isPaper = false): Promis
     );
     const wins = Number(rows[0]?.wins ?? 0);
     const total = Number(rows[0]?.total ?? 0);
+    // 통계 신뢰도 라벨 (학술 근거: N<50 시 추정 오차 큼)
+    const confidenceLabel: 'HIGH' | 'MEDIUM' | 'LOW' =
+      total >= 50 ? 'HIGH' : total >= 10 ? 'MEDIUM' : 'LOW';
+
     if (total < 3) {
       return {
         multiplier: 1.0,
         recentWinRate: 0,
         sampleCount: total,
+        kellyFractionPct: null,
+        confidenceLabel,
         reason: `샘플 부족 (${total}건) — 기본 사이즈`,
       };
     }
     const wr = wins / total;
+    // Half-Kelly 계산 (TP +5/SL -2 가정, 동적이 아닌 추정값 사용)
+    const halfKelly = computeHalfKelly({ winRate: wr, takeProfitPct: 5, stopLossPct: -2 });
+    // 50건 미만 시 추가 0.5× 보정 (총 0.25× Kelly = 보수적)
+    const adjustedKelly = total < 50 ? halfKelly * 0.5 : halfKelly;
+    const kellyFractionPct = adjustedKelly * 100;
+
     if (wr < 0.25) {
       return {
         multiplier: 0,
         recentWinRate: wr,
         sampleCount: total,
+        kellyFractionPct: 0,
+        confidenceLabel,
         reason: `🚫 승률 ${(wr * 100).toFixed(0)}% < 25% (${total}건) — 매수 차단`,
       };
     }
@@ -131,7 +178,9 @@ export async function getStockSizing(stockCode: string, isPaper = false): Promis
         multiplier: 0.5,
         recentWinRate: wr,
         sampleCount: total,
-        reason: `⚠️ 승률 ${(wr * 100).toFixed(0)}% < 40% (${total}건) — 사이즈 50% 축소`,
+        kellyFractionPct,
+        confidenceLabel,
+        reason: `⚠️ 승률 ${(wr * 100).toFixed(0)}% < 40% (${total}건, ${confidenceLabel}) — Half-Kelly ${kellyFractionPct.toFixed(1)}%`,
       };
     }
     if (wr >= 0.7) {
@@ -139,17 +188,28 @@ export async function getStockSizing(stockCode: string, isPaper = false): Promis
         multiplier: 1.2,
         recentWinRate: wr,
         sampleCount: total,
-        reason: `⭐ 승률 ${(wr * 100).toFixed(0)}% >= 70% (${total}건) — 사이즈 +20%`,
+        kellyFractionPct,
+        confidenceLabel,
+        reason: `⭐ 승률 ${(wr * 100).toFixed(0)}% >= 70% (${total}건, ${confidenceLabel}) — Half-Kelly ${kellyFractionPct.toFixed(1)}%`,
       };
     }
     return {
       multiplier: 1.0,
       recentWinRate: wr,
       sampleCount: total,
-      reason: `승률 ${(wr * 100).toFixed(0)}% (${total}건) — 정상 사이즈`,
+      kellyFractionPct,
+      confidenceLabel,
+      reason: `승률 ${(wr * 100).toFixed(0)}% (${total}건, ${confidenceLabel}) — Half-Kelly ${kellyFractionPct.toFixed(1)}%`,
     };
   } catch {
-    return { multiplier: 1.0, recentWinRate: 0, sampleCount: 0, reason: '승률 조회 실패 — 기본' };
+    return {
+      multiplier: 1.0,
+      recentWinRate: 0,
+      sampleCount: 0,
+      kellyFractionPct: null,
+      confidenceLabel: 'LOW',
+      reason: '승률 조회 실패 — 기본',
+    };
   }
 }
 
