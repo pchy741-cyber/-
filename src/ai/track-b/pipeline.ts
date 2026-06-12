@@ -751,7 +751,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       isLunchBan || // Paper 이미 면제 (line 517)
       isSwingEodRestricted || // SWING 14:30 이전: 종가 구간 대기 (BREAKOUT 제외, 95+ 예외)
       (!ctxIsPaper && dailyLoss.blocked) || // Paper: 일일손실 차단 면제 (데이터 수집 우선)
-      kospiRegime.flashCrash || // 급락 서킷브레이커: Paper/Live 모두 차단
+      (!ctxIsPaper && kospiRegime.flashCrash) || // 급락 서킷브레이커: Live만 차단 (Paper 면제 — 모의자금)
       (!ctxIsPaper &&
         !isKospiOverrideActive() &&
         kospiRegime.penalty >= 2 &&
@@ -762,7 +762,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // EOD 전용 차단: isPastClose/eodOnlyActive 제외 (14:50+ 종가베팅은 허용)
     // Paper: dailyLoss 면제 (급락 서킷만 유지)
-    const blockEodBuys = (!ctxIsPaper && dailyLoss.blocked) || kospiRegime.flashCrash;
+    const blockEodBuys = (!ctxIsPaper && dailyLoss.blocked) || (!ctxIsPaper && kospiRegime.flashCrash);
 
     // RISK_OFF/하락장: 축소하되 기회 유지 (극공포=역발상 매수 기회)
     const macroSizingMult = macroRiskOff ? 0.7 : kospiRegime.penalty >= 2 ? 0.6 : kospiRegime.penalty >= 1 ? 0.8 : 1.0;
@@ -1093,6 +1093,50 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         }
       } catch (err) {
         logger.warn(`Paper BREAKOUT 병행 패스 실패 (스킵): ${err}`, { component: 'TRACK_B' });
+      }
+    }
+
+    // ── Paper 모드: AI 상위픽 무조건 자동매수 (데이터 수집 + 점수 정확도 검증) ────
+    // 매 사이클 AI 1위 종목을 모의 매수 → score vs 실제 수익률 상관관계 일지/전략랩 데이터 축적
+    // 데이터스누핑 방지: is_paper=true + trigger_source='PAPER_AUTO_TOP' 태깅 → live 전략 분리
+    if (ctxIsPaper && finalScores.length > 0 && orderableCash > 10000) {
+      try {
+        const openCodes = new Set(openChains.map((c) => c.stock_code));
+        const decidedBuyCodes = new Set(
+          decisions
+            .filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN')
+            .map((d) => d.stock_code),
+        );
+        const topPick = [...finalScores]
+          .sort((a, b) => b.score - a.score)
+          .find((s) => !openCodes.has(s.stock_code) && !decidedBuyCodes.has(s.stock_code));
+        if (topPick) {
+          const priceInfo = livePrices.get(topPick.stock_code);
+          const curPrice = priceInfo?.currentPrice ?? 0;
+          if (curPrice > 0) {
+            const buyAmount = Math.max(Math.min(orderableCash * 0.05, adjMaxPositionKrw), 50000);
+            const quantity = Math.floor(buyAmount / curPrice);
+            if (quantity >= 1) {
+              decisions.push({
+                action: 'BUY',
+                stock_code: topPick.stock_code,
+                quantity,
+                price_type: 'MARKET',
+                reasoning: `🎯 Paper AI상위픽 자동매수: ${topPick.score}점 (연습 데이터 수집)`,
+                confidence: 0.7,
+                ai_score: topPick.score,
+                strategy_mode: effectiveMode,
+                trigger_source: 'PAPER_AUTO_TOP',
+              });
+              logger.info(
+                `🎯 Paper AI상위픽: ${topPick.stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 (score=${topPick.score})`,
+                { component: 'TRACK_B' },
+              );
+            }
+          }
+        }
+      } catch (err) {
+        logger.warn(`Paper AI상위픽 자동매수 실패 (스킵): ${err}`, { component: 'TRACK_B' });
       }
     }
 

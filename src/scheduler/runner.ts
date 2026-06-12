@@ -196,6 +196,39 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 🏦 FRED 매크로 워밍업 — 매일 23:00 KST (Fed 데이터 일일 갱신)
+  cron.schedule(
+    '0 23 * * *',
+    () => {
+      import('../market/fred-macro.js')
+        .then((m) => m.getFredMacro())
+        .catch((e) => logger.error(`FRED 워밍업 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 👽 Reddit/WSB 멘션 spike — 매시간 (시장 시간만)
+  cron.schedule(
+    '30 * * * 1-5',
+    () => {
+      import('../market/reddit-mentions.js')
+        .then((m) => m.getRedditMentions())
+        .catch((e) => logger.error(`Reddit 멘션 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 📋 Google Sheets 매매일지 백업 — 매일 18:30 KST
+  cron.schedule(
+    '30 18 * * *',
+    () => {
+      import('../automation/sheets-journal.js')
+        .then((m) => m.backupJournalToSheets())
+        .catch((e) => logger.error(`Sheets 백업 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 08:00 — 장세 자동 감지 → SWING/DEFENSE 자동 전환
   cron.schedule(
     '0 8 * * 1-5',

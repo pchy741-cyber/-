@@ -168,63 +168,65 @@ export function registerManualBuyRoutes(app: Hono) {
       const curPrice = priceData.currentPrice;
       if (!curPrice || curPrice <= 0) return c.json({ error: '현재가 조회 실패' }, 500);
 
-      // 기술지표 안전 게이트
-      const warnings: string[] = [];
-      try {
-        const { getDailyChart } = await import('../../../kis/market.js');
-        const { analyzeTechnicals } = await import('../../../analysis/indicators.js');
-        const chart = await getDailyChart(stock_code, 60);
-        if (chart && chart.length >= 20) {
-          const tech = analyzeTechnicals(chart);
-          if (tech) {
-            const techScore = tech.score;
-            if (techScore < 45) {
-              warnings.push(`기술점수=${techScore} (기준 55 미달 — 매수 부적합)`);
-            } else if (techScore < 55) {
-              warnings.push(`기술점수=${techScore} (양호하나 기준 55 미달)`);
-            }
-            if (tech.macdCrossover === 'BEARISH') {
-              warnings.push(`MACD=BEARISH (하락 모멘텀)`);
-            }
-            if (tech.rsi14 > 70) {
-              warnings.push(`RSI=${tech.rsi14.toFixed(0)} (과매수 위험구간)`);
-            }
-            if (tech.trendStrength === 'STRONG' && tech.sma5 < tech.sma20) {
-              warnings.push(`강한 하락추세 (ADX=${tech.adx14.toFixed(0)}, SMA5<SMA20)`);
-            }
-            if (tech.sma5 < tech.sma20 && tech.sma20 < tech.sma60) {
-              warnings.push(`SMA 역배열 (5<20<60) — 하락 추세`);
-            }
-            if (tech.trendStrength === 'WEAK' && tech.volumeRatio < 0.8) {
-              warnings.push(`약한 추세 + 저유동성 (vol=${tech.volumeRatio.toFixed(1)}x)`);
-            }
+      // 기술지표 안전 게이트 — 실전만 적용 (연습: AI 점수 vs 수익 상관관계 관찰 우선)
+      if (!isPaper) {
+        const warnings: string[] = [];
+        try {
+          const { getDailyChart } = await import('../../../kis/market.js');
+          const { analyzeTechnicals } = await import('../../../analysis/indicators.js');
+          const chart = await getDailyChart(stock_code, 60);
+          if (chart && chart.length >= 20) {
+            const tech = analyzeTechnicals(chart);
+            if (tech) {
+              const techScore = tech.score;
+              if (techScore < 45) {
+                warnings.push(`기술점수=${techScore} (기준 55 미달 — 매수 부적합)`);
+              } else if (techScore < 55) {
+                warnings.push(`기술점수=${techScore} (양호하나 기준 55 미달)`);
+              }
+              if (tech.macdCrossover === 'BEARISH') {
+                warnings.push(`MACD=BEARISH (하락 모멘텀)`);
+              }
+              if (tech.rsi14 > 70) {
+                warnings.push(`RSI=${tech.rsi14.toFixed(0)} (과매수 위험구간)`);
+              }
+              if (tech.trendStrength === 'STRONG' && tech.sma5 < tech.sma20) {
+                warnings.push(`강한 하락추세 (ADX=${tech.adx14.toFixed(0)}, SMA5<SMA20)`);
+              }
+              if (tech.sma5 < tech.sma20 && tech.sma20 < tech.sma60) {
+                warnings.push(`SMA 역배열 (5<20<60) — 하락 추세`);
+              }
+              if (tech.trendStrength === 'WEAK' && tech.volumeRatio < 0.8) {
+                warnings.push(`약한 추세 + 저유동성 (vol=${tech.volumeRatio.toFixed(1)}x)`);
+              }
 
-            if (warnings.length >= 2) {
-              logger.warn(`🚫 수동매수 기술 차단: ${stock_code} — ${warnings.join(' | ')}`, {
-                component: 'CLAUDE_BUY',
-              });
-              return c.json(
-                {
-                  error: `기술지표 안전 차단 (${warnings.length}건 경고)`,
-                  warnings,
-                  techScore,
-                  rsi: tech.rsi14,
-                  macd: tech.macdCrossover,
-                  hint: '기술적 조건 불리 — 진입 재고 필요',
-                },
-                422,
-              );
-            }
+              if (warnings.length >= 2) {
+                logger.warn(`🚫 수동매수 기술 차단: ${stock_code} — ${warnings.join(' | ')}`, {
+                  component: 'CLAUDE_BUY',
+                });
+                return c.json(
+                  {
+                    error: `기술지표 안전 차단 (${warnings.length}건 경고)`,
+                    warnings,
+                    techScore,
+                    rsi: tech.rsi14,
+                    macd: tech.macdCrossover,
+                    hint: '기술적 조건 불리 — 진입 재고 필요',
+                  },
+                  422,
+                );
+              }
 
-            if (warnings.length > 0) {
-              logger.warn(`⚠️ 수동매수 경고(진행): ${stock_code} — ${warnings.join(' | ')}`, {
-                component: 'CLAUDE_BUY',
-              });
+              if (warnings.length > 0) {
+                logger.warn(`⚠️ 수동매수 경고(진행): ${stock_code} — ${warnings.join(' | ')}`, {
+                  component: 'CLAUDE_BUY',
+                });
+              }
             }
           }
+        } catch (e) {
+          logger.warn(`수동매수 기술지표 조회 실패 (진행): ${e}`, { component: 'CLAUDE_BUY' });
         }
-      } catch (e) {
-        logger.warn(`수동매수 기술지표 조회 실패 (진행): ${e}`, { component: 'CLAUDE_BUY' });
       }
 
       let quantity = Math.floor(amount_krw / curPrice);

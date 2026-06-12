@@ -119,12 +119,13 @@ async function fetchKospi200Change(): Promise<number> {
 export async function detectMarketRegime(): Promise<MarketRegime> {
   const reasons: string[] = [];
 
-  // 병렬 데이터 수집
-  const [macro, kospiHistory, foreignNet, kospi200Change] = await Promise.all([
+  // 병렬 데이터 수집 (FRED 매크로 추가 — Gemini 미관여, 독립 신호)
+  const [macro, kospiHistory, foreignNet, kospi200Change, fredAdj] = await Promise.all([
     getMacroSnapshot().catch(() => null),
     fetchKospiHistory(),
     fetchMarketForeignNet(),
     fetchKospi200Change(),
+    import('../market/fred-macro.js').then((m) => m.getFredMacroAdjustment()).catch(() => ({ score: 0, reasons: [] })),
   ]);
 
   const kospiChange = macro?.kospiChange ?? 0;
@@ -217,6 +218,13 @@ export async function detectMarketRegime(): Promise<MarketRegime> {
   if (kospi200Change <= -2.0) {
     score -= 2;
     reasons.push(`KOSPI200 ${kospi200Change.toFixed(1)}% 급락`);
+  }
+
+  // ⑦ FRED 미국 매크로 (Fed 금리/CPI/실업률/수익률곡선/VIX) — 독립 신호
+  // 한국장도 미국 매크로에 큰 영향, 점수 반영 (FRED_API_KEY 없으면 0점)
+  if (fredAdj.score !== 0) {
+    score += fredAdj.score;
+    for (const r of fredAdj.reasons) reasons.push(`FRED: ${r}`);
   }
 
   // ── 체제 판단 ──

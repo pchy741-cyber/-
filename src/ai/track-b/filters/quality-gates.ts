@@ -124,9 +124,9 @@ export function checkQualityGates(input: QualityGateInput): GateResult {
   const count = Object.values(details).filter(Boolean).length;
   // 2026-06 성과 검토: WR 30.8% → 품질 게이트 최소 2개로 상향 (AI 85+도 1개는 불충분)
   // 기존: AI≥85 → min=1 → 사실상 무필터 → 잘못된 진입 70% → 승률 30.8%
-  // paper: min=2로 고정 (연습매매 활성화 — live 기준 유지로 오염 없음)
+  // paper: min=0 (연습모드 전면 개방 — 데이터 수집 최대화, is_paper 플래그로 live 오염 차단)
   const liveMin = buyThreshold >= 85 ? (aiScore >= 92 ? 2 : 3) : aiScore >= 90 ? 2 : aiScore >= 70 ? 3 : 4;
-  const min = isPaper ? 2 : liveMin;
+  const min = isPaper ? 0 : liveMin;
 
   return { passed: count >= min, count, min, details };
 }
