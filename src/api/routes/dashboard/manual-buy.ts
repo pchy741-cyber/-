@@ -51,10 +51,7 @@ export function registerManualBuyRoutes(app: Hono) {
       const cashCap = paper ? totalCapital * 0.95 : balance.orderableCash * 0.95;
       const dynPct = getDynamicPositionSizePct({ score: aiScore, confidence, isMegaCap, pullbackSignal }) / 100;
       const computed = Math.round((totalCapital * 0.015) / slFraction);
-      const amount_krw = Math.max(
-        Math.min(computed, Math.round(totalCapital * dynPct), Math.round(cashCap)),
-        10000,
-      );
+      const amount_krw = Math.max(Math.min(computed, Math.round(totalCapital * dynPct), Math.round(cashCap)), 10000);
       return { amount_krw, dynPctInt: Math.round(dynPct * 100), totalCapital };
     }
 
