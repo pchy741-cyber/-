@@ -216,7 +216,38 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     } else if (holding.bucket === 'TACTICAL' && pnlPct <= -4.0) {
       sellReason = `TACTICAL 갭방어 손절(-4% 하드플로어): ${pnlPct.toFixed(1)}%`;
 
-      // ── 1. 손절 ──
+      // ── 0c. 시간 가중치 트레일링 스탑 (CEO 지시 #C, 2026-06-12) ──
+      // Phase 1 (0~48h): 초기 휩소 방어 — 구조적 SL만 허용
+      // Phase 2 (48~72h): 본절 이동
+      // Phase 3 (72h+): 트레일링 강화
+      // SWING bucket (장기 보유)만 적용 (TACTICAL/SCALPING은 위에서 처리)
+    } else if (holding.bucket === 'SWING') {
+      const { getTimeWeightedStop } = await import('../../risk/entry-timing-guard.js');
+      const tws = getTimeWeightedStop({
+        holdingHours: holdingDays * 24,
+        pnlPct,
+        baseSlPct: stopLossPct,
+        belowMa20: !tech.aboveMA20,
+        belowPrevLow: false, // TODO: 전저점 데이터 필요 시 채움
+      });
+      if (tws.action === 'EXECUTE_SL') {
+        sellReason = `시간가중치 SL: ${tws.reason}`;
+      } else if (tws.action === 'BREAK_EVEN' && pnlPct < 0) {
+        // 본절 이동 후 손실 진입 → 손절 (본절 = 0%)
+        sellReason = `본절 SL (Phase2): PnL ${pnlPct.toFixed(1)}% < 본절 0%`;
+      } else if (tws.action === 'TRAIL_TIGHTEN' && pnlPct < tws.effectiveSlPct) {
+        // 트레일링 SL 발동
+        sellReason = `트레일링 SL (Phase3): PnL ${pnlPct.toFixed(1)}% < 트레일 ${tws.effectiveSlPct.toFixed(1)}%`;
+      } else if (tws.action === 'HOLD') {
+        // Phase 1 휩소 방어 중 — 다른 매도 조건 평가 건너뛰기
+        // (sellReason 비워두면 매도 안 함)
+      }
+      // sellReason 비어있으면 아래 조건 계속 평가 (TP 등)
+      if (!sellReason && pnlPct <= stopLossPct && tws.action !== 'HOLD') {
+        sellReason = `손절(${stopLossPct}%): ${pnlPct.toFixed(1)}%`;
+      }
+
+      // ── 1. 손절 (SWING 외) ──
     } else if (pnlPct <= stopLossPct) {
       sellReason = `손절(${stopLossPct}%): ${pnlPct.toFixed(1)}%`;
 

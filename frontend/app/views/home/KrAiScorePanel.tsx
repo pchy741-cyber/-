@@ -2,6 +2,8 @@
 
 import React from 'react';
 import { Panel } from '@/components/ui';
+import { ScoreSparkline } from '@/components/ScoreSparkline';
+import { ScoreRefreshTimer } from '@/components/ScoreRefreshTimer';
 import { api, fmtWon } from '../../lib/utils';
 import type { Dashboard, StockScore, ToastFn, ConfirmFn, ViewMode } from '../../types';
 
@@ -31,6 +33,10 @@ export default function KrAiScorePanel({
         const visible = showAllKRScores ? sorted : sorted.slice(0, 10);
         return (
           <div className="p-3.5">
+            {/* 점수 갱신 카운트다운 */}
+            <div className="mb-3">
+              <ScoreRefreshTimer />
+            </div>
             {visible.map((sc: StockScore) => {
               const score = Number(sc.composite_score);
               const barColor = score >= 75 ? 'bg-emerald-500' : score >= 50 ? 'bg-blue-500' : score >= 25 ? 'bg-amber-500' : 'bg-slate-600';
@@ -56,6 +62,8 @@ export default function KrAiScorePanel({
                         <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${Math.max(2, Math.min(100, score))}%` }} />
                       </div>
                     </div>
+                    {/* 점수 추이 미니 그래프 */}
+                    <ScoreSparkline stockCode={sc.stock_code} hours={24} width={60} height={20} />
                     <span className={`text-sm font-black w-8 text-right ${textColor}`}>{score}</span>
                     <span className={`text-[10px] font-medium w-14 text-right ${textColor}`}>{signalLabel}</span>
                     {curP > 0 && (
