@@ -5,6 +5,7 @@ import { getAccountBalance } from '../kis/account.js';
 import { getDinnerMoneyStats } from './profit-withdraw.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
 
 /**
  * 일일 자동 리포트 (장 마감 후 15:40 KST 자동 발송)
@@ -22,7 +23,7 @@ export async function generateDailyReport(): Promise<void> {
     const { getPaperBalance } = await import('../risk/engine.js');
     const balance = getCtxIsPaper() ? await getPaperBalance() : await getAccountBalance(true);
     const chains = await getOpenChains();
-    const today = new Date().toISOString().split('T')[0];
+    const today = getKSTNow().toISOString().split('T')[0];
     const { todayAmount: reserved } = await getDinnerMoneyStats();
 
     // 오늘 체결된 주문

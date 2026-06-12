@@ -3,6 +3,7 @@ import { getActiveWatchlist } from '../db/client.js';
 import { kisRequest, marketDataRateLimiter } from '../kis/client.js';
 import { logger } from '../utils/logger.js';
 import { sleep } from '../utils/sleep.js';
+import { getKSTNow } from '../utils/time.js';
 
 // ── 투자자별 매매동향 (외국인/기관/개인) ──
 
@@ -33,8 +34,8 @@ interface DailyInvestorData {
  * KIS API에서 투자자별 매매동향 원시 데이터 조회
  */
 async function fetchInvestorRawData(stockCode: string, days: number): Promise<DailyInvestorData[]> {
-  const endDate = new Date().toISOString().split('T')[0].replace(/-/g, '');
-  const startDate = new Date(Date.now() - days * 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0].replace(/-/g, '');
+  const endDate = getKSTNow().toISOString().split('T')[0].replace(/-/g, '');
+  const startDate = new Date(Date.now() + 9*3600_000 - days * 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0].replace(/-/g, '');
 
   await marketDataRateLimiter.acquire();
   const res = await kisRequest<Record<string, string>[]>({

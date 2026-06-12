@@ -1,6 +1,6 @@
 import { cacheScores } from '../../cache/redis.js';
 import { getActiveStrategy, getActiveWatchlist, getPool, getRecentSources, isMemoryMode, logSystem, upsertAIScore } from '../../db/client.js';
-import { type DailyCandle, getDailyChart, getVolumeRankingStocks, getChangeRankingStocks, getBatchPrices, getBatchInvestorFlow } from '../../kis/market.js';
+import { type DailyCandle, getDailyChart, getVolumeRankingStocks, getChangeRankingStocks, getBatchPrices, getBatchInvestorFlow, getKSTNow } from '../../kis/market.js';
 import { safeParseScoresJson } from '../../utils/json-repair.js';
 import { logger } from '../../utils/logger.js';
 import { config } from '../../config/index.js';
@@ -548,7 +548,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     }
 
     // 6. DB에 스코어 캐싱 (병렬 upsert — DB는 각 row 독립적)
-    const today = new Date().toISOString().split('T')[0];
+    const today = getKSTNow().toISOString().split('T')[0]; // KST 기준 — UTC 아님 (새벽 07:30 실행 시 UTC prev-day 방지)
     const geminiSummaryByCode = new Map((geminiResult?.stocks ?? []).map((s) => [s.stock_code, s.analysis]));
 
     // 폴백(Flash / 기술적) 시 오늘 이미 스코어가 있는 종목은 덮어쓰지 않음

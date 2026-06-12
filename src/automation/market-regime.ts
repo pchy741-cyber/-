@@ -68,8 +68,8 @@ function calcConsecutiveDays(prices: number[]): number {
 // ── KIS 시장 외국인 수급 (KOSPI 전체) ──
 async function fetchMarketForeignNet(): Promise<number> {
   try {
-    const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
-    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0].replace(/-/g, '');
+    const today = new Date(Date.now() + 9*3600_000).toISOString().split('T')[0].replace(/-/g, '');
+    const weekAgo = new Date(Date.now() + 9*3600_000 - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0].replace(/-/g, '');
     const res = await kisRequest({
       path: '/uapi/domestic-stock/v1/quotations/inquire-investor',
       trId: KIS_TR_ID.QUOTE.INVESTOR_FLOW,

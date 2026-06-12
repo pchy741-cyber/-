@@ -7,7 +7,7 @@
  * 무료 Gemini 소모: 1~2 call (2.0-flash 1500 RPD 한도 대비 극소)
  */
 import { getPool, upsertAIScore } from '../db/client.js';
-import { getChangeRankingStocks, getVolumeRankingStocks, getBatchPrices } from '../kis/market.js';
+import { getChangeRankingStocks, getVolumeRankingStocks, getBatchPrices, getKSTNow } from '../kis/market.js';
 import { cacheScores } from '../cache/redis.js';
 import { callVertexGemini } from '../utils/vertex-gemini.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
@@ -32,7 +32,7 @@ export async function runPreMarketQuickScore(): Promise<void> {
 
   try {
     const pool = getPool();
-    const today = new Date().toISOString().split('T')[0];
+    const today = getKSTNow().toISOString().split('T')[0]; // KST 기준 — UTC 아님
 
     // 1. 오늘 이미 스코어가 있는 종목 확인
     const { rows: scoredRows } = await pool.query(

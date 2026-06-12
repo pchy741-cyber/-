@@ -2,6 +2,7 @@ import { getActiveWatchlist } from '../db/client.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
 import { sleep } from '../utils/sleep.js';
+import { getKSTNow } from '../utils/time.js';
 
 /**
  * DART 공시 모니터링 모듈
@@ -268,7 +269,7 @@ export async function monitorDisclosures(): Promise<DartDisclosure[]> {
   }
 
   // 날짜 변경 시 캐시 초기화
-  const today = new Date().toISOString().split('T')[0];
+  const today = getKSTNow().toISOString().split('T')[0];
   if (lastCacheDate !== today) {
     disclosureCache = new Map();
     lastCacheDate = today;

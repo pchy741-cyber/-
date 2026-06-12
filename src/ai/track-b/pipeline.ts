@@ -18,7 +18,7 @@ import {
 import type { TradeDecision } from '../../db/models.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { getPaperBalance } from '../../risk/paper-balance.js';
-import { getBatchPrices, getDailyChart, isMarketOpen, getChangeRankingStocks, getOrderbook } from '../../kis/market.js';
+import { getBatchPrices, getDailyChart, isMarketOpen, getChangeRankingStocks, getOrderbook, getKSTNow } from '../../kis/market.js';
 import { getBatchStockSignals } from '../../kis/market-signals.js';
 import { logger } from '../../utils/logger.js';
 import { buildDefenseParkExitDecisions, getDefenseParkState, PARK_STOCK_CODE } from './defense-park.js';
@@ -205,8 +205,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       logger.warn('오늘의 AI 스코어가 없습니다 (Track A 미실행?) → 기술적 지표 fallback 진행', { component: 'TRACK_B' });
     } else {
       // 스코어 freshness 체크: Track A 실패 감지
-      // UTC 기준 (Track A 저장 형식과 동일: new Date().toISOString().split('T')[0])
-      const todayDate = new Date().toISOString().split('T')[0];
+      const todayDate = getKSTNow().toISOString().split('T')[0]; // KST 기준 — Track A 저장 형식과 일치
       const staleScores = scores.filter((s: any) => {
         if (!s.score_date) return false;
         // score_date: pg DATE → string (setTypeParser 적용) | Redis → string
@@ -361,38 +360,48 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const highScoreCount = scores.filter(s => (s.composite_score ?? 0) >= 90).length;
     const autoShouldSniper = dbMode === 'SWING' && highScoreCount >= 3 && !autoShouldDefense && dailyLoss.dailyPnlPct > -1.0;
 
-    const effectiveMode: StrategyMode = isPastScalpDeadline
+    const effectiveModeRaw: StrategyMode = isPastScalpDeadline
       ? 'SWING'
       : autoShouldDefense ? 'DEFENSE'
       : autoShouldSniper ? 'SNIPER'
       : autoShouldRevertSwing ? 'SWING'
       : (scores.length === 0 && mode === 'DEFENSE') ? 'SWING'
       : mode;
+    // Paper는 Live의 DEFENSE 전파 차단 — 연습은 항상 SWING 이상으로 실행
+    const effectiveMode: StrategyMode = (ctxIsPaper && effectiveModeRaw === 'DEFENSE') ? 'SWING' : effectiveModeRaw;
+    // Paper DB행 자가 복구: Paper 행이 DEFENSE로 오염된 경우 자동으로 SWING 복귀 (멱등 조건)
+    if (ctxIsPaper && mode === 'DEFENSE') {
+      getPool().query(
+        `UPDATE strategy_config SET mode='SWING', updated_at=NOW() WHERE is_active=true AND is_paper=true AND mode='DEFENSE'`
+      ).then(({ rowCount }) => {
+        if (rowCount && rowCount > 0) logger.warn('🩹 Paper DB행 자가복구: DEFENSE→SWING (Live 오염 감지 — 현재 배포로 재발 방지됨)', { component: 'TRACK_B' });
+      }).catch(() => {});
+    }
 
     if (isPastScalpDeadline) {
       logger.info('⏰ SCALPING 09:30 이후 → 신규 매수 SWING 기준 전환 (기존 SCALPING 포지션은 강제청산)', { component: 'TRACK_B' });
-      // DB 모드 자동 전환 (SCALPING → SWING) — 한 번만 실행 (WHERE mode='SCALPING' 조건으로 멱등)
-      getPool().query(
-        `UPDATE strategy_config SET mode='SWING', updated_at=NOW() WHERE is_active=true AND mode='SCALPING'`
+      // DB 모드 자동 전환 (SCALPING → SWING) — Live 행만, Paper 행 및 Paper 컨텍스트 모두 차단
+      if (!ctxIsPaper) getPool().query(
+        `UPDATE strategy_config SET mode='SWING', updated_at=NOW() WHERE is_active=true AND mode='SCALPING' AND is_paper=false`
       ).then(({ rowCount }) => {
         if (rowCount && rowCount > 0) logger.info('✅ DB 모드 자동전환: SCALPING → SWING (09:30 이후)', { component: 'TRACK_B' });
       }).catch((e: Error) => logger.warn(`모드 자동전환 DB 업데이트 실패: ${e.message}`, { component: 'TRACK_B' }));
     } else if (autoShouldDefense) {
       const reason = kospiRegime.flashCrash ? '급락 서킷브레이커' : `하락장(penalty${kospiRegime.penalty})+당일하락+손실${dailyLoss.dailyPnlPct.toFixed(1)}%`;
-      logger.warn(`🔴 자동 DEFENSE 모드 전환: ${reason} → 신규 매수 극제한`, { component: 'TRACK_B' });
-      // DB 모드 전환 (SWING → DEFENSE) — 멱등 조건
-      getPool().query(
-        `UPDATE strategy_config SET mode='DEFENSE', updated_at=NOW() WHERE is_active=true AND mode='SWING'`
+      logger.warn(`🔴 자동 DEFENSE 모드 전환: ${reason} → 신규 매수 극제한${ctxIsPaper ? ' (Paper: DB쓰기 차단)' : ''}`, { component: 'TRACK_B' });
+      // DB 모드 전환 (SWING → DEFENSE) — Live 행만, Paper 행 오염 방지 (AND is_paper=false)
+      if (!ctxIsPaper) getPool().query(
+        `UPDATE strategy_config SET mode='DEFENSE', updated_at=NOW() WHERE is_active=true AND mode='SWING' AND is_paper=false`
       ).then(({ rowCount }) => {
         if (rowCount && rowCount > 0) logger.warn(`✅ DB 모드 자동전환: SWING → DEFENSE (${reason})`, { component: 'TRACK_B' });
       }).catch((e: Error) => logger.warn(`모드 전환 DB 실패: ${e.message}`, { component: 'TRACK_B' }));
     } else if (autoShouldSniper) {
       logger.info(`🎯 자동 SNIPER 모드: 90점+ ${highScoreCount}종목 감지 → 고확신 집중 포착 (TP +8%, SL -4%)`, { component: 'TRACK_B' });
     } else if (autoShouldRevertSwing) {
-      logger.info(`🟢 자동 SWING 복귀: KOSPI 정상(penalty=0) + 당일 무하락 + 손실${dailyLoss.dailyPnlPct.toFixed(1)}% → DEFENSE 해제`, { component: 'TRACK_B' });
-      // DB 모드 복귀 (DEFENSE → SWING) — 멱등 조건
-      getPool().query(
-        `UPDATE strategy_config SET mode='SWING', updated_at=NOW() WHERE is_active=true AND mode='DEFENSE'`
+      logger.info(`🟢 자동 SWING 복귀: KOSPI 정상(penalty=0) + 당일 무하락 + 손실${dailyLoss.dailyPnlPct.toFixed(1)}% → DEFENSE 해제${ctxIsPaper ? ' (Paper: DB쓰기 차단)' : ''}`, { component: 'TRACK_B' });
+      // DB 모드 복귀 (DEFENSE → SWING) — Live 행만, Paper 행 오염 방지 (AND is_paper=false)
+      if (!ctxIsPaper) getPool().query(
+        `UPDATE strategy_config SET mode='SWING', updated_at=NOW() WHERE is_active=true AND mode='DEFENSE' AND is_paper=false`
       ).then(({ rowCount }) => {
         if (rowCount && rowCount > 0) logger.info('✅ DB 모드 자동전환: DEFENSE → SWING (시장 정상화)', { component: 'TRACK_B' });
       }).catch((e: Error) => logger.warn(`모드 자동복귀 DB 업데이트 실패: ${e.message}`, { component: 'TRACK_B' }));
@@ -626,7 +635,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       logger.info(`📉 매크로/레짐 포지션 축소: ×${macroSizingMult} (RISK_OFF=${macroRiskOff} penalty=${kospiRegime.penalty})`, { component: 'TRACK_B' });
     }
 
-    const todayDate = new Date().toISOString().split('T')[0]; // "2026-05-07"
+    const todayDate = getKSTNow().toISOString().split('T')[0];
     // KOSPI 레짐에 따른 전종목 점수 감산: 조정장(penalty=1) -10, 하락장(penalty=2) -15, 당일하락(todayDown) -5
     // 이유: AI 점수는 개별 팩터만 반영하며 시장 방향성 무관. 하락장 낙칼 방지를 위해 threshold 상향 대신 점수 직접 감산.
     const kospiPenaltyAdj = kospiRegime.penalty >= 2 ? -15 : kospiRegime.penalty >= 1 ? -10 : kospiRegime.todayDown ? -5 : 0;

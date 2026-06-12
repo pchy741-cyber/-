@@ -3,6 +3,7 @@ import { getCurrentPrice } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
 import { sleep } from '../utils/sleep.js';
+import { getKSTNow } from '../utils/time.js';
 
 /**
  * 이상 거래량 / 급등락 자동 감지
@@ -16,7 +17,7 @@ const priceHistory = new Map<string, { price: number; volume: number; checkedAt:
 let lastCleanupDate = '';
 
 function cleanupPriceHistory() {
-  const today = new Date().toISOString().split('T')[0];
+  const today = getKSTNow().toISOString().split('T')[0];
   if (lastCleanupDate !== today) {
     priceHistory.clear();
     lastCleanupDate = today;
