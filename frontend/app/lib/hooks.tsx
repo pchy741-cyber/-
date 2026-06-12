@@ -26,20 +26,47 @@ export function useCountUp(target: number, duration = 500) {
 }
 
 // ── 토스트 알림 시스템 ──
+// CEO 지시 (2026-06-12): "알림도 실전/연습 컬러 구분"
+//   mode='live' → 좌측 빨간 띠 + 🔴 [실전] 뱃지
+//   mode='paper' → 좌측 노란 띠 + 🟡 [연습] 뱃지
+//   mode 미지정 → 기본 (시스템 알림)
+export type ToastMode = 'live' | 'paper' | undefined;
 export function useToast() {
-  const [toasts, setToasts] = useState<Array<{ id: number; msg: string; type: 'ok' | 'err' | 'info' }>>([]);
-  const show = (msg: string, type: 'ok' | 'err' | 'info' = 'ok') => {
+  const [toasts, setToasts] = useState<
+    Array<{ id: number; msg: string; type: 'ok' | 'err' | 'info'; mode?: ToastMode }>
+  >([]);
+  const show = (msg: string, type: 'ok' | 'err' | 'info' = 'ok', mode?: ToastMode) => {
     const id = Date.now();
-    setToasts(prev => [...prev, { id, msg, type }]);
-    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
+    setToasts((prev) => [...prev, { id, msg, type, mode }]);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 3000);
   };
   const ToastContainer = () => (
     <div className="fixed top-4 right-4 z-[999] space-y-2 pointer-events-none">
-      {toasts.map(t => (
-        <div key={t.id} className={`pointer-events-auto px-4 py-2.5 rounded-xl text-sm font-medium shadow-lg backdrop-blur-md animate-[fadeIn_0.2s_ease] ${
-          t.type === 'ok' ? 'bg-emerald-600/90 text-white' : t.type === 'err' ? 'bg-rose-600/90 text-white' : 'bg-blue-600/90 text-white'
-        }`}>{t.msg}</div>
-      ))}
+      {toasts.map((t) => {
+        const baseColor =
+          t.type === 'ok' ? 'bg-emerald-600/90' : t.type === 'err' ? 'bg-rose-600/90' : 'bg-blue-600/90';
+        const modeBorder =
+          t.mode === 'live'
+            ? 'border-l-4 border-rose-400 ring-2 ring-rose-500/30'
+            : t.mode === 'paper'
+              ? 'border-l-4 border-amber-400 ring-2 ring-amber-500/30'
+              : '';
+        const modeBadge =
+          t.mode === 'live' ? (
+            <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-rose-900/60 text-rose-100 mr-1.5">🔴 실전</span>
+          ) : t.mode === 'paper' ? (
+            <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-amber-900/60 text-amber-100 mr-1.5">🟡 연습</span>
+          ) : null;
+        return (
+          <div
+            key={t.id}
+            className={`pointer-events-auto px-4 py-2.5 rounded-xl text-sm font-medium shadow-lg backdrop-blur-md animate-[fadeIn_0.2s_ease] flex items-center text-white ${baseColor} ${modeBorder}`}
+          >
+            {modeBadge}
+            {t.msg}
+          </div>
+        );
+      })}
     </div>
   );
   return { show, ToastContainer };

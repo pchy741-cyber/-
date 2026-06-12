@@ -14,7 +14,7 @@
 import { getOverride, removeOverride, setOverride } from '../ai/ai-overrides.js';
 import { runWithMode } from '../config/context.js';
 import { getPool } from '../db/client.js';
-import { sendTelegramMessage } from '../notifications/telegram.js';
+import { sendByPaperFlag } from '../notifications/mode-message.js';
 import { logger } from '../utils/logger.js';
 
 const COMP = 'MDD_GUARD';
@@ -93,11 +93,9 @@ async function runForMode(isPaper: boolean): Promise<void> {
       `🚫 MDD 가드 발동 [${mode}]: MDD ${mdd.toFixed(1)}% >= ${limit}% — minBuyScore=99 (TTL ${BLOCK_TTL_MINUTES / 60}h)`,
       { component: COMP },
     );
-    sendTelegramMessage(
-      `🚫 *MDD 가드 자동 발동* [${mode === 'paper' ? '연습' : '실전'}]\n` +
-        `MDD ${mdd.toFixed(1)}% (임계 ${limit}%)\n` +
-        `신규 매수 ${BLOCK_TTL_MINUTES / 60}h 자동 차단\n` +
-        `회복 임계 ${recoverAt.toFixed(1)}% 미만이면 자동 해제`,
+    sendByPaperFlag(
+      isPaper,
+      `🚫 *MDD 가드 자동 발동*\nMDD ${mdd.toFixed(1)}% (임계 ${limit}%)\n신규 매수 ${BLOCK_TTL_MINUTES / 60}h 자동 차단\n회복 임계 ${recoverAt.toFixed(1)}% 미만이면 자동 해제`,
     ).catch(() => {});
     // 캡쳐 트리거
     import('../api/routes/review/capture-trigger.js')
@@ -112,10 +110,9 @@ async function runForMode(isPaper: boolean): Promise<void> {
     logger.info(`🟢 MDD 가드 해제 [${mode}]: MDD ${mdd.toFixed(1)}% < 회복 임계 ${recoverAt.toFixed(1)}% — 매수 재개`, {
       component: COMP,
     });
-    sendTelegramMessage(
-      `🟢 *MDD 가드 자동 해제* [${mode === 'paper' ? '연습' : '실전'}]\n` +
-        `MDD ${mdd.toFixed(1)}% < 회복 임계 ${recoverAt.toFixed(1)}%\n` +
-        `신규 매수 재개`,
+    sendByPaperFlag(
+      isPaper,
+      `🟢 *MDD 가드 자동 해제*\nMDD ${mdd.toFixed(1)}% < 회복 임계 ${recoverAt.toFixed(1)}%\n신규 매수 재개`,
     ).catch(() => {});
     return;
   }

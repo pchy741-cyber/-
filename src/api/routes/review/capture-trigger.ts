@@ -11,6 +11,7 @@
  */
 
 import { sendTelegramMessage } from '../../../notifications/telegram.js';
+import { sendModeMessage } from '../../../notifications/mode-message.js';
 import { logger } from '../../../utils/logger.js';
 import { type CopilotAction, getCopilotLiteScore } from './copilot-lite.js';
 
@@ -118,7 +119,7 @@ export async function triggerCapture(
   // Telegram 푸시 (쿨다운 적용)
   if (shouldPush(trigger, mode)) {
     try {
-      await sendTelegramMessage(formatTelegram(snap));
+      await sendModeMessage(snap.mode, formatTelegram(snap));
       if (snap.id) {
         const { getPool } = await import('../../../db/client.js');
         await getPool()
