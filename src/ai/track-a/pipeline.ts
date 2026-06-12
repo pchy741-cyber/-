@@ -1,27 +1,44 @@
+import { getStockAccuracyContext } from '../../automation/self-learning.js';
 import { cacheScores } from '../../cache/redis.js';
-import { getActiveStrategy, getActiveWatchlist, getPool, getRecentSources, isMemoryMode, logSystem, upsertAIScore } from '../../db/client.js';
-import { type DailyCandle, getDailyChart, getVolumeRankingStocks, getChangeRankingStocks, getBatchPrices, getBatchInvestorFlow, getKSTNow } from '../../kis/market.js';
+import {
+  getActiveStrategy,
+  getActiveWatchlist,
+  getPool,
+  getRecentSources,
+  isMemoryMode,
+  logSystem,
+  upsertAIScore,
+} from '../../db/client.js';
+import { type ScoringResult, ScoringResultSchema } from '../../db/models.js';
+import {
+  type DailyCandle,
+  getBatchInvestorFlow,
+  getBatchPrices,
+  getChangeRankingStocks,
+  getDailyChart,
+  getKSTNow,
+  getVolumeRankingStocks,
+  isDelistingRisk,
+} from '../../kis/market.js';
+import { getCommunitysentiment } from '../../market/community-sentiment.js';
+import { getKrTrendSignals } from '../../market/google-trends.js';
+import { fetchStockDisclosures } from '../../market/krx-disclosure.js';
+import { getKrxOptionsSignal } from '../../market/krx-options.js';
+import { getMacroSignal } from '../../market/macro-signal.js';
 import { safeParseScoresJson } from '../../utils/json-repair.js';
 import { logger } from '../../utils/logger.js';
-import { config } from '../../config/index.js';
-import { type ScoringResult, ScoringResultSchema } from '../../db/models.js';
 import { runGeminiAnalysis } from './gemini.js';
 import { runGeminiScoring } from './gemini-scorer.js';
-import { getStockAccuracyContext } from '../../automation/self-learning.js';
-import { fetchStockDisclosures } from '../../market/krx-disclosure.js';
-import { getKrTrendSignals } from '../../market/google-trends.js';
 import { analyzeNewsWithGroq } from './groq-news.js';
-import { getMacroSignal } from '../../market/macro-signal.js';
-import { getCommunitysentiment } from '../../market/community-sentiment.js';
-import { getKrxOptionsSignal } from '../../market/krx-options.js';
 
 function normalizeStockCode(raw: unknown): string {
-  const text = String(raw ?? '').trim().toUpperCase();
+  const text = String(raw ?? '')
+    .trim()
+    .toUpperCase();
   if (!text) return '';
   if (/^\d{1,6}$/.test(text)) return text.padStart(6, '0');
-  return text.replace(/[^A-Z0-9.\-]/g, '');
+  return text.replace(/[^A-Z0-9.-]/g, '');
 }
-
 
 /**
  * Gemini Flash 통합 분석+스코어링 (Gemini 스코어링 실패 시 폴백 — 무료 티어)
@@ -35,15 +52,23 @@ async function runGeminiFallbackAnalysis(
   const { callVertexGemini } = await import('../../utils/vertex-gemini.js');
 
   // ⚡ 토큰 절감: 20일 종가 제거 (5일이면 트렌드 판단 충분)
-  const chartSummary = watchlist.map((stock) => {
-    const candles = chartData.get(stock.stock_code) ?? [];
-    if (candles.length === 0) return `${stock.stock_name}(${stock.stock_code}): 데이터없음`;
-    const latest = candles[0];
-    const high52w = Math.max(...candles.map((c) => c.high));
-    const dropPct = latest ? (((latest.close - high52w) / high52w) * 100).toFixed(1) : 'N/A';
-    return `${stock.stock_name}(${stock.stock_code}): 종가${latest?.close} 고점대비${dropPct}%
-  5일종가:${candles.slice(0, 5).map((c) => c.close).join(',')} 5일거래량:${candles.slice(0, 5).map((c) => c.volume).join(',')}`;
-  }).join('\n');
+  const chartSummary = watchlist
+    .map((stock) => {
+      const candles = chartData.get(stock.stock_code) ?? [];
+      if (candles.length === 0) return `${stock.stock_name}(${stock.stock_code}): 데이터없음`;
+      const latest = candles[0];
+      const high52w = Math.max(...candles.map((c) => c.high));
+      const dropPct = latest ? (((latest.close - high52w) / high52w) * 100).toFixed(1) : 'N/A';
+      return `${stock.stock_name}(${stock.stock_code}): 종가${latest?.close} 고점대비${dropPct}%
+  5일종가:${candles
+    .slice(0, 5)
+    .map((c) => c.close)
+    .join(',')} 5일거래량:${candles
+    .slice(0, 5)
+    .map((c) => c.volume)
+    .join(',')}`;
+    })
+    .join('\n');
 
   const ceoPrompt = strategy?.gemini_prompt || strategy?.gpt_prompt || '';
 
@@ -69,7 +94,10 @@ ${chartSummary}
 ## 출력 (JSON만, 다른 텍스트 금지)
 {"scores":[{"stock_code":"코드","stock_name":"이름","composite_score":0,"fundamental_score":0,"technical_score":0,"sentiment_score":0,"confidence":0.0,"signal":"STRONG_BUY|BUY|HOLD|SELL|STRONG_SELL|NO_DATA","target_price":0,"stop_loss_price":0,"reasoning":"근거"}]}`;
 
-  const text = await callVertexGemini('당신은 주식 분석 전문가입니다. JSON 형식으로만 응답합니다.', userMsg, { temperature: 0.2, label: 'TrackA-Flash폴백' });
+  const text = await callVertexGemini('당신은 주식 분석 전문가입니다. JSON 형식으로만 응답합니다.', userMsg, {
+    temperature: 0.2,
+    label: 'TrackA-Flash폴백',
+  });
 
   // Resilient JSON parsing — 잘린 응답에서도 개별 스코어 복구
   const parsedResponse = safeParseScoresJson(text, 'GeminiFlashFallback');
@@ -89,11 +117,16 @@ ${chartSummary}
     if (result.success && result.data.signal !== 'NO_DATA') {
       validScores.push(result.data);
     } else if (!result.success) {
-      const code = typeof score === 'object' && score !== null && 'stock_code' in score ? String((score as any).stock_code) : 'UNKNOWN';
+      const code =
+        typeof score === 'object' && score !== null && 'stock_code' in score
+          ? String((score as any).stock_code)
+          : 'UNKNOWN';
       logger.warn(`Flash 폴백 스코어 검증 실패 (${code}): ${result.error.message}`, { component: 'TRACK_A' });
     }
   }
-  logger.info(`Gemini Flash 통합 분석 완료: ${validScores.length}/${rawScores.length}개 유효`, { component: 'TRACK_A' });
+  logger.info(`Gemini Flash 통합 분석 완료: ${validScores.length}/${rawScores.length}개 유효`, {
+    component: 'TRACK_A',
+  });
   return validScores;
 }
 
@@ -138,14 +171,16 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     // 발굴 종목을 watchlist에 inactive로 미리 등록 (ai_scores FK 제약 충족용)
     // Track B는 is_active=false 종목을 무시하므로 실제 매매 영향 없음
     if (discoveryList.length > 0 && !isMemoryMode()) {
-      await Promise.allSettled(discoveryList.map((s) =>
-        getPool().query(
-          `INSERT INTO watchlist (stock_code, stock_name, is_active)
+      await Promise.allSettled(
+        discoveryList.map((s) =>
+          getPool().query(
+            `INSERT INTO watchlist (stock_code, stock_name, is_active)
            VALUES ($1, $2, false)
            ON CONFLICT (stock_code) DO NOTHING`,
-          [normalizeStockCode(s.stock_code), s.stock_name || s.stock_code],
-        )
-      ));
+            [normalizeStockCode(s.stock_code), s.stock_name || s.stock_code],
+          ),
+        ),
+      );
       logger.info(`발굴 종목 ${discoveryList.length}개 watchlist 임시 등록 (inactive)`, { component: 'TRACK_A' });
     }
 
@@ -165,7 +200,10 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       });
     }
     const allStocks = [...allStocksMap.values()];
-    logger.info(`감시 종목: ${watchlist.length}개 + 발굴 후보: ${discoveryList.length}개 = 합계 ${allStocks.length}개 (중복제거 후)`, { component: 'TRACK_A' });
+    logger.info(
+      `감시 종목: ${watchlist.length}개 + 발굴 후보: ${discoveryList.length}개 = 합계 ${allStocks.length}개 (중복제거 후)`,
+      { component: 'TRACK_A' },
+    );
 
     // 2. CEO 전략 설정 로드
     const strategy = await getActiveStrategy();
@@ -175,11 +213,14 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     const rawNb = strategy?.notebooklm_prompt?.trim() || '';
     if (rawNb) {
       try {
-        const sources = JSON.parse(rawNb) as Array<{ id?: string; title?: string; content?: string; created_at?: string }>;
+        const sources = JSON.parse(rawNb) as Array<{
+          id?: string;
+          title?: string;
+          content?: string;
+          created_at?: string;
+        }>;
         if (Array.isArray(sources) && sources.length > 0) {
-          notebookPrompt = sources
-            .map((s) => `### ${s.title || '소스'}\n${s.content || ''}`)
-            .join('\n\n');
+          notebookPrompt = sources.map((s) => `### ${s.title || '소스'}\n${s.content || ''}`).join('\n\n');
           const totalChars = notebookPrompt.length;
           logger.info(
             `📚 NotebookLM: ${sources.length}개 소스 Gemini 주입 (${totalChars}자) — [${sources.map((s) => s.title || '제목없음').join(', ')}]`,
@@ -214,16 +255,33 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       }
     }
 
-    // 3-b. 종목별 배당수익률 일괄 조회 (현재가 API의 dvr 필드)
+    // 3-b. 배당수익률 일괄 조회 + 상폐리스크 필터 (관리종목/거래정지/경고 종목 스코어링 제외)
     const dividendData = new Map<string, number>();
     try {
       const priceMap = await getBatchPrices(allStocks.map((s) => s.stock_code));
+
+      // 상폐리스크 종목 스코어링 제외 — 워치리스트에서 제거하지 않음 (매수만 차단하면 충분)
+      const delistRiskCodes: string[] = [];
       for (const [code, price] of priceMap.entries()) {
+        if (isDelistingRisk(price)) {
+          delistRiskCodes.push(code);
+          logger.warn(
+            `⚠️ 상폐리스크 종목 스코어링 제외: ${code} ${price.stockName} (halt=${price.haltYn} mang=${price.mangIssuClsCode} warn=${price.mrktWarnClsCode})`,
+            { component: 'TRACK_A' },
+          );
+        }
         if (price.dividendYield > 0) dividendData.set(code, price.dividendYield);
+      }
+      if (delistRiskCodes.length > 0) {
+        const riskSet = new Set(delistRiskCodes);
+        allStocks.splice(0, allStocks.length, ...allStocks.filter((s) => !riskSet.has(s.stock_code)));
+        logger.info(`상폐리스크 필터: ${delistRiskCodes.length}개 제외 → 잔여 ${allStocks.length}개 스코어링`, {
+          component: 'TRACK_A',
+        });
       }
       logger.info(`배당수익률 조회: ${dividendData.size}개 종목`, { component: 'TRACK_A' });
     } catch (err) {
-      logger.warn(`배당수익률 조회 실패 (스킵): ${err}`, { component: 'TRACK_A' });
+      logger.warn(`배당수익률/상폐리스크 조회 실패 (스킵): ${err}`, { component: 'TRACK_A' });
     }
 
     // 3-c. 종목별 기관/외국인 수급 조회 (KIS INVESTOR_FLOW)
@@ -234,8 +292,14 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         const lines = [...flowMap.values()]
           .filter((f) => f.institutionNet !== 0 || f.foreignNet !== 0)
           .map((f) => {
-            const inst = f.institutionNet > 0 ? `기관 순매수 +${f.institutionNet.toLocaleString()}주` : `기관 순매도 ${f.institutionNet.toLocaleString()}주`;
-            const frgn = f.foreignNet > 0 ? `외국인 순매수 +${f.foreignNet.toLocaleString()}주` : `외국인 순매도 ${f.foreignNet.toLocaleString()}주`;
+            const inst =
+              f.institutionNet > 0
+                ? `기관 순매수 +${f.institutionNet.toLocaleString()}주`
+                : `기관 순매도 ${f.institutionNet.toLocaleString()}주`;
+            const frgn =
+              f.foreignNet > 0
+                ? `외국인 순매수 +${f.foreignNet.toLocaleString()}주`
+                : `외국인 순매도 ${f.foreignNet.toLocaleString()}주`;
             return `${f.stockCode}: ${inst}, ${frgn}, 외국인보유율 ${f.foreignHoldingPct.toFixed(1)}%`;
           });
         if (lines.length > 0) {
@@ -251,11 +315,22 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     const dbSources = await getRecentSources(10);
     let combinedSources = additionalSources ?? '';
     if (dbSources.length > 0) {
-      const sourcesText = dbSources.map((s) => {
-        const typeLabel = s.source_type === 'youtube' ? '[YouTube]' : s.source_type === 'research' ? '[리서치]' : s.source_type === 'news' ? '[뉴스]' : '[기사]';
-        return `${typeLabel} ${s.title}: ${s.url}${s.memo ? ` (메모: ${s.memo})` : ''}`;
-      }).join('\n');
-      combinedSources = combinedSources ? `${combinedSources}\n\n## CEO 등록 참고소스\n${sourcesText}` : `## CEO 등록 참고소스\n${sourcesText}`;
+      const sourcesText = dbSources
+        .map((s) => {
+          const typeLabel =
+            s.source_type === 'youtube'
+              ? '[YouTube]'
+              : s.source_type === 'research'
+                ? '[리서치]'
+                : s.source_type === 'news'
+                  ? '[뉴스]'
+                  : '[기사]';
+          return `${typeLabel} ${s.title}: ${s.url}${s.memo ? ` (메모: ${s.memo})` : ''}`;
+        })
+        .join('\n');
+      combinedSources = combinedSources
+        ? `${combinedSources}\n\n## CEO 등록 참고소스\n${sourcesText}`
+        : `## CEO 등록 참고소스\n${sourcesText}`;
       logger.info(`참고소스 ${dbSources.length}건 Gemini에 주입`, { component: 'TRACK_A' });
     }
 
@@ -266,7 +341,9 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         combinedSources = combinedSources ? `${combinedSources}\n${accuracyCtx}` : accuracyCtx;
         logger.info('실거래 정확도 컨텍스트 스코어링에 주입', { component: 'TRACK_A' });
       }
-    } catch { /* 실패해도 스코어링 계속 */ }
+    } catch {
+      /* 실패해도 스코어링 계속 */
+    }
 
     // 4-c. 기관/외국인 수급 데이터 주입
     if (investorFlowSection) {
@@ -277,20 +354,19 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     try {
       const stockMeta = allStocks.map((s) => ({ stockCode: s.stock_code, companyName: s.stock_name }));
 
-      const [disclosures, trendSignals, groqSentiments, macroResult, communityResult, optionsResult] = await Promise.allSettled([
-        fetchStockDisclosures(stockMeta),   // 4-d. KRX KIND 공시
-        getKrTrendSignals(stockMeta),       // 4-f. Google Trends KR
-        analyzeNewsWithGroq(stockMeta),     // 4-e. Groq 뉴스 감성
-        getMacroSignal(),                   // 4-g. 거시경제 신호 (USD/KRW + Nasdaq + FRED)
-        getCommunitysentiment(stockMeta),   // 4-h. 네이버 토론방 커뮤니티 감성
-        getKrxOptionsSignal(),              // 4-i. KRX 옵션 P/C + VKOSPI
-      ]);
+      const [disclosures, trendSignals, groqSentiments, macroResult, communityResult, optionsResult] =
+        await Promise.allSettled([
+          fetchStockDisclosures(stockMeta), // 4-d. KRX KIND 공시
+          getKrTrendSignals(stockMeta), // 4-f. Google Trends KR
+          analyzeNewsWithGroq(stockMeta), // 4-e. Groq 뉴스 감성
+          getMacroSignal(), // 4-g. 거시경제 신호 (USD/KRW + Nasdaq + FRED)
+          getCommunitysentiment(stockMeta), // 4-h. 네이버 토론방 커뮤니티 감성
+          getKrxOptionsSignal(), // 4-i. KRX 옵션 P/C + VKOSPI
+        ]);
 
       // 4-d. KRX KIND 공시 섹션
       if (disclosures.status === 'fulfilled' && disclosures.value.length > 0) {
-        const lines = disclosures.value.map(
-          (d) => `[${d.companyName}(${d.stockCode})] ${d.summary}`,
-        );
+        const lines = disclosures.value.map((d) => `[${d.companyName}(${d.stockCode})] ${d.summary}`);
         const section = `## KRX KIND 당일 공시 (호재/악재 분류)\n${lines.join('\n')}`;
         combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
         logger.info(`KIND 공시 ${disclosures.value.length}종목 Gemini에 주입`, { component: 'TRACK_A' });
@@ -331,7 +407,8 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         const meaningful = communityResult.value.filter((c) => Math.abs(c.score) >= 30);
         if (meaningful.length > 0) {
           const lines = meaningful.map(
-            (c) => `${c.companyName}(${c.stockCode}): 커뮤니티 ${c.score > 0 ? '+' : ''}${c.score}점 (게시글 ${c.postCount}건)`,
+            (c) =>
+              `${c.companyName}(${c.stockCode}): 커뮤니티 ${c.score > 0 ? '+' : ''}${c.score}점 (게시글 ${c.postCount}건)`,
           );
           const section = `## 네이버 금융 토론방 커뮤니티 감성\n${lines.join('\n')}`;
           combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
@@ -344,7 +421,9 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         const opt = optionsResult.value;
         const section = `## KRX 옵션 플로우 (기관 선행 지표)\n${opt.summary}\n공포지수(VKOSPI): ${opt.fearLevel} | P/C 비율: ${opt.pcRatio?.toFixed(2) ?? 'N/A'} | 시장 방향: ${opt.direction}`;
         combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
-        logger.info(`KRX 옵션 신호 Gemini에 주입: ${opt.direction} fearLevel=${opt.fearLevel}`, { component: 'TRACK_A' });
+        logger.info(`KRX 옵션 신호 Gemini에 주입: ${opt.direction} fearLevel=${opt.fearLevel}`, {
+          component: 'TRACK_A',
+        });
       }
     } catch (err) {
       logger.warn(`시장 인텔리전스 수집 실패 (스킵): ${err}`, { component: 'TRACK_A' });
@@ -363,19 +442,26 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         if (candles.length < 30) continue;
         const tech = analyzeTech(candles);
         if (!tech) continue;
-        const closes = candles.map(c => c.close);
+        const closes = candles.map((c) => c.close);
         const result = detectRegimeV2(tech, closes);
         regimeCounts.set(result.regime, (regimeCounts.get(result.regime) ?? 0) + 1);
       }
       // 최다 레짐을 시장 레짐으로 설정
       let maxCount = 0;
       for (const [regime, count] of regimeCounts) {
-        if (count > maxCount) { maxCount = count; regimeHint = regime as any; }
+        if (count > maxCount) {
+          maxCount = count;
+          regimeHint = regime as any;
+        }
       }
       if (regimeHint) {
-        logger.info(`🎯 시장 레짐: ${regimeHint} (${maxCount}/${sampleStocks.length}개 종목)`, { component: 'TRACK_A' });
+        logger.info(`🎯 시장 레짐: ${regimeHint} (${maxCount}/${sampleStocks.length}개 종목)`, {
+          component: 'TRACK_A',
+        });
       }
-    } catch { /* 레짐 감지 실패 시 null — 프롬프트 영향 없음 */ }
+    } catch {
+      /* 레짐 감지 실패 시 null — 프롬프트 영향 없음 */
+    }
 
     // 5-0. 앙상블 모드 분기
     let scores: ScoringResult[] = [];
@@ -390,10 +476,13 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       if (appConfig.geminiEnabled) {
         try {
           geminiResult = await runGeminiAnalysis({
-            mode, watchlist: allStocks, chartData,
+            mode,
+            watchlist: allStocks,
+            chartData,
             dividendData: dividendData.size > 0 ? dividendData : undefined,
             additionalSources: combinedSources || undefined,
-            customPrompt: customGeminiPrompt ?? undefined, regimeHint,
+            customPrompt: customGeminiPrompt ?? undefined,
+            regimeHint,
           });
         } catch (geminiErr) {
           logger.warn(`⚠️ 앙상블 Gemini 분석 실패 (계속 진행): ${geminiErr}`, { component: 'TRACK_A' });
@@ -401,17 +490,20 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       }
 
       const topVolumeSet = new Set(
-        volumeTop.status === 'fulfilled' ? volumeTop.value.slice(0, 30).map(s => s.stock_code) : []
+        volumeTop.status === 'fulfilled' ? volumeTop.value.slice(0, 30).map((s) => s.stock_code) : [],
       );
       const topGainerSet = new Set(
-        changeTop.status === 'fulfilled' ? changeTop.value.slice(0, 20).map(s => s.stock_code) : []
+        changeTop.status === 'fulfilled' ? changeTop.value.slice(0, 20).map((s) => s.stock_code) : [],
       );
 
       const { runEnsembleScoring } = await import('./ensemble.js');
       scores = await runEnsembleScoring({
-        mode, watchlist: allStocks, chartData,
+        mode,
+        watchlist: allStocks,
+        chartData,
         geminiAnalysis: geminiResult,
-        strategy, regimeHint,
+        strategy,
+        regimeHint,
         ensembleConfig: strategy?.ensemble_config ?? undefined,
         topGainerCodes: topGainerSet,
         topVolumeCodes: topVolumeSet,
@@ -425,10 +517,13 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       // Step 5-1: Gemini 분석
       try {
         geminiResult = await runGeminiAnalysis({
-          mode, watchlist: allStocks, chartData,
+          mode,
+          watchlist: allStocks,
+          chartData,
           dividendData: dividendData.size > 0 ? dividendData : undefined,
           additionalSources: combinedSources || undefined,
-          customPrompt: customGeminiPrompt ?? undefined, regimeHint,
+          customPrompt: customGeminiPrompt ?? undefined,
+          regimeHint,
         });
       } catch (geminiErr) {
         logger.warn(`⚠️ Gemini 실패: ${geminiErr}`, { component: 'TRACK_A' });
@@ -437,7 +532,12 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       // Step 5-2: Gemini 스코어링
       if (geminiResult) {
         try {
-          scores = await runGeminiScoring({ mode, geminiAnalysis: geminiResult, customPrompt: customGptPrompt ?? undefined, regimeHint });
+          scores = await runGeminiScoring({
+            mode,
+            geminiAnalysis: geminiResult,
+            customPrompt: customGptPrompt ?? undefined,
+            regimeHint,
+          });
           if (scores.length > 0) scoringSource = 'gemini';
         } catch (geminiScoreErr) {
           logger.warn(`⚠️ Gemini 스코어링 실패: ${geminiScoreErr}`, { component: 'TRACK_A' });
@@ -463,15 +563,17 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         const { runRSSScoring } = await import('./rss-scorer.js');
         // 거래량/등락률 상위 Set 구성 (이미 수집된 discoveryStocks 활용)
         const topVolumeSet = new Set(
-          volumeTop.status === 'fulfilled' ? volumeTop.value.slice(0, 30).map(s => s.stock_code) : []
+          volumeTop.status === 'fulfilled' ? volumeTop.value.slice(0, 30).map((s) => s.stock_code) : [],
         );
         const topGainerSet = new Set(
-          changeTop.status === 'fulfilled' ? changeTop.value.slice(0, 20).map(s => s.stock_code) : []
+          changeTop.status === 'fulfilled' ? changeTop.value.slice(0, 20).map((s) => s.stock_code) : [],
         );
         scores = await runRSSScoring(mode, allStocks, chartData, topGainerSet, topVolumeSet, new Map());
         if (scores.length > 0) {
           scoringSource = 'flash';
-          logger.info(`✅ RSS 스코어링 폴백 성공: ${scores.length}개 (Gemini/Claude 불필요, 무료)`, { component: 'TRACK_A' });
+          logger.info(`✅ RSS 스코어링 폴백 성공: ${scores.length}개 (Gemini/Claude 불필요, 무료)`, {
+            component: 'TRACK_A',
+          });
         }
       } catch (rssErr) {
         logger.warn(`⚠️ RSS 스코어링 폴백 실패: ${rssErr}`, { component: 'TRACK_A' });
@@ -485,7 +587,9 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         scores = await runClaudeScoring(mode, allStocks, chartData);
         if (scores.length > 0) {
           scoringSource = 'flash'; // flash로 분류 (Claude 별도 source 없음)
-          logger.info(`✅ Claude Haiku 폴백 성공: ${scores.length}개 스코어 (Gemini 할당량 초과 대체)`, { component: 'TRACK_A' });
+          logger.info(`✅ Claude Haiku 폴백 성공: ${scores.length}개 스코어 (Gemini 할당량 초과 대체)`, {
+            component: 'TRACK_A',
+          });
         }
       } catch (claudeErr) {
         logger.warn(`⚠️ Claude 폴백 실패: ${claudeErr}`, { component: 'TRACK_A' });
@@ -523,13 +627,17 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         if (tech) {
           if (tech.overallSignal === 'STRONG_BUY' || (tech.score >= 25 && tech.goldenCross)) {
             // 폴백 신뢰도 0.72→0.58: AI 검증 없는 기술 신호는 과신하지 않는다
-            signal = 'STRONG_BUY'; confidence = 0.58;
+            signal = 'STRONG_BUY';
+            confidence = 0.58;
           } else if (tech.overallSignal === 'BUY' || tech.score >= 15) {
-            signal = 'BUY'; confidence = 0.62;
+            signal = 'BUY';
+            confidence = 0.62;
           } else if (tech.overallSignal === 'STRONG_SELL' || (tech.score <= -20 && tech.deathCross)) {
-            signal = 'STRONG_SELL'; confidence = 0.68;
+            signal = 'STRONG_SELL';
+            confidence = 0.68;
           } else if (tech.overallSignal === 'SELL' || tech.score <= -10) {
-            signal = 'SELL'; confidence = 0.58;
+            signal = 'SELL';
+            confidence = 0.58;
           }
         }
         return {
@@ -537,7 +645,8 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
           composite_score: compositeScore,
           fundamental_score: 50,
           technical_score: technicalScore,
-          sentiment_score: geminiResult?.market_sentiment === 'bullish' ? 65 : geminiResult?.market_sentiment === 'bearish' ? 35 : 50,
+          sentiment_score:
+            geminiResult?.market_sentiment === 'bullish' ? 65 : geminiResult?.market_sentiment === 'bearish' ? 35 : 50,
           confidence,
           reasoning: `[기술적폴백] ${reasoning}`,
           signal,
@@ -556,15 +665,17 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     let existingTodayCodes = new Set<string>();
     if (scoringSource !== 'gemini' && !isMemoryMode()) {
       try {
-        const { rows } = await getPool().query(
-          `SELECT stock_code FROM ai_scores WHERE score_date = $1`,
-          [today],
-        );
+        const { rows } = await getPool().query(`SELECT stock_code FROM ai_scores WHERE score_date = $1`, [today]);
         existingTodayCodes = new Set(rows.map((r: any) => String(r.stock_code)));
         if (existingTodayCodes.size > 0) {
-          logger.info(`⚙️ ${scoringSource === 'technical' ? '기술적' : 'Flash'} 폴백: 오늘 기존 점수 ${existingTodayCodes.size}개 보존 (덮어쓰기 생략)`, { component: 'TRACK_A' });
+          logger.info(
+            `⚙️ ${scoringSource === 'technical' ? '기술적' : 'Flash'} 폴백: 오늘 기존 점수 ${existingTodayCodes.size}개 보존 (덮어쓰기 생략)`,
+            { component: 'TRACK_A' },
+          );
         }
-      } catch { /* 조회 실패 시 전체 upsert 진행 */ }
+      } catch {
+        /* 조회 실패 시 전체 upsert 진행 */
+      }
     }
 
     await Promise.all(
@@ -595,22 +706,28 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       const aiWorking = scores.some((s) => (s.confidence ?? 0) >= 0.3);
       const topDiscovery = scores.filter((s) => {
         if (!discoverySet.has(s.stock_code)) return false;
-        if (aiWorking) return s.composite_score >= 70 && (s.confidence ?? 0) >= 0.60;
+        if (aiWorking) return s.composite_score >= 70 && (s.confidence ?? 0) >= 0.6;
         return s.composite_score >= 75; // AI 실패 시 기술 점수만으로 판단
       });
       if (topDiscovery.length > 0) {
-        await Promise.allSettled(topDiscovery.map((s) =>
-          getPool().query(
-            `UPDATE watchlist SET is_active = true, stock_name = COALESCE(NULLIF(stock_name, stock_code), $2), source = 'AUTO'
+        await Promise.allSettled(
+          topDiscovery.map((s) =>
+            getPool().query(
+              `UPDATE watchlist SET is_active = true, stock_name = COALESCE(NULLIF(stock_name, stock_code), $2), source = 'AUTO'
              WHERE stock_code = $1`,
-            [s.stock_code, (s as any).stock_name ?? s.stock_code],
-          )
-        ));
+              [s.stock_code, (s as any).stock_name ?? s.stock_code],
+            ),
+          ),
+        );
         logger.info(
           `🌟 발굴 종목 ${topDiscovery.length}개 자동 활성화: ${topDiscovery.map((s) => `${s.stock_code}(${s.composite_score}점)`).join(', ')}`,
           { component: 'TRACK_A' },
         );
-        await logSystem('INFO', 'TRACK_A', `발굴 종목 자동 활성화: ${topDiscovery.map((s) => s.stock_code).join(', ')}`);
+        await logSystem(
+          'INFO',
+          'TRACK_A',
+          `발굴 종목 자동 활성화: ${topDiscovery.map((s) => s.stock_code).join(', ')}`,
+        );
       }
     }
 

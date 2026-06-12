@@ -2,25 +2,26 @@
  * 수동 매수 라우트 — /manual-buy (Claude Code 복리 동적 사이징)
  */
 import type { Hono } from 'hono';
-import { sleep } from '../../../utils/sleep.js';
+import { invalidateStockCache } from '../../../cache/redis.js';
+import { getScoreBasedParams, STRATEGY_PARAMS } from '../../../config/constants.js';
+import { runWithMode } from '../../../config/context.js';
 import { config } from '../../../config/index.js';
-import { STRATEGY_PARAMS, getScoreBasedParams } from '../../../config/constants.js';
-import { createChain, getPool, getActiveStrategy } from '../../../db/client.js';
-import { getAccountBalance } from '../../../kis/account.js';
+import { createChain, getActiveStrategy, getPool } from '../../../db/client.js';
+import { getAccountBalance, invalidateBalanceCache } from '../../../kis/account.js';
 import { getCurrentPrice } from '../../../kis/market.js';
 import { placeOrder } from '../../../kis/order.js';
-import { getPaperBalance, addPaperInvestment, riskEngine } from '../../../risk/engine.js';
 import { notifyBuy } from '../../../notifications/web-push.js';
+import { addPaperInvestment, getPaperBalance, riskEngine } from '../../../risk/engine.js';
 import { logger } from '../../../utils/logger.js';
-import { runWithMode } from '../../../config/context.js';
+import { sleep } from '../../../utils/sleep.js';
 import { invalidateCurrentModeCache } from './helpers.js';
-import { invalidateStockCache } from '../../../cache/redis.js';
-import { invalidateBalanceCache } from '../../../kis/account.js';
 
 export function registerManualBuyRoutes(app: Hono) {
   // GET /manual-buy/estimate — 매수 전 예상 금액 조회 (confirm 다이얼로그에 표시용)
   app.get('/manual-buy/estimate', async (c) => {
-    const stockCode = String(c.req.query('stock_code') ?? '').trim().replace(/\D/g, '');
+    const stockCode = String(c.req.query('stock_code') ?? '')
+      .trim()
+      .replace(/\D/g, '');
     const aiScore = Number(c.req.query('ai_score') ?? 70);
     const isPaper = c.req.query('is_paper') === 'true';
     const pullbackSignal = c.req.query('pullback_signal') === 'true';
@@ -46,10 +47,14 @@ export function registerManualBuyRoutes(app: Hono) {
     async function calcAmt(paper: boolean) {
       const balance = paper ? await getPaperBalance() : await getAccountBalance(true);
       const totalCapital = balance.totalEvalAmount + balance.orderableCash;
-      const availCash = balance.orderableCash;
+      // Paper: 현금 집계 지연 대응 → 총자산 기준 캡 적용 (availCash 고갈 시 소액매수 방지)
+      const cashCap = paper ? totalCapital * 0.95 : balance.orderableCash * 0.95;
       const dynPct = getDynamicPositionSizePct({ score: aiScore, confidence, isMegaCap, pullbackSignal }) / 100;
-      const computed = Math.round(totalCapital * 0.015 / slFraction);
-      const amount_krw = Math.max(Math.min(computed, Math.round(totalCapital * dynPct), Math.round(availCash * 0.95)), 10000);
+      const computed = Math.round((totalCapital * 0.015) / slFraction);
+      const amount_krw = Math.max(
+        Math.min(computed, Math.round(totalCapital * dynPct), Math.round(cashCap)),
+        10000,
+      );
       return { amount_krw, dynPctInt: Math.round(dynPct * 100), totalCapital };
     }
 
@@ -72,14 +77,27 @@ export function registerManualBuyRoutes(app: Hono) {
   });
 
   app.post('/manual-buy', async (c) => {
-    let body: { stock_code?: string; amount_krw?: number; ai_score?: number; reasoning?: string; is_paper?: boolean; rsi?: number; volume_ratio?: number; pullback_signal?: boolean; envelope_pos?: string; confidence?: number };
+    let body: {
+      stock_code?: string;
+      amount_krw?: number;
+      ai_score?: number;
+      reasoning?: string;
+      is_paper?: boolean;
+      rsi?: number;
+      volume_ratio?: number;
+      pullback_signal?: boolean;
+      envelope_pos?: string;
+      confidence?: number;
+    };
     try {
       body = await c.req.json();
     } catch {
       return c.json({ error: '요청 형식 오류' }, 400);
     }
 
-    const stock_code = String(body.stock_code ?? '').trim().replace(/\D/g, '');
+    const stock_code = String(body.stock_code ?? '')
+      .trim()
+      .replace(/\D/g, '');
     const { reasoning } = body;
     const aiScore = body.ai_score ?? 0;
     const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : config.isPaper;
@@ -122,22 +140,23 @@ export function registerManualBuyRoutes(app: Hono) {
         try {
           const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
           const totalCapital = balance.totalEvalAmount + balance.orderableCash;
-          const availCash = balance.orderableCash;
+          // Paper: 현금 집계 지연 대응 → 총자산 기준 캡 적용
+          const cashCap2 = isPaper ? totalCapital * 0.95 : balance.orderableCash * 0.95;
           const slFraction = Math.abs(stopLossPct) / 100;
           const riskBudget = totalCapital * 0.015;
           const computed = Math.round(riskBudget / slFraction);
 
           const { getDynamicPositionSizePct } = await import('../../../config/constants.js');
           const { MEGA_CAP_PRIORITY_CODES } = await import('../.././../ai/track-b/trading-rules.js');
-          const dynPct = getDynamicPositionSizePct({
-            score: aiScore,
-            confidence: body.confidence,
-            isMegaCap: MEGA_CAP_PRIORITY_CODES.has(stock_code),
-            pullbackSignal: body.pullback_signal,
-          }) / 100;
+          const dynPct =
+            getDynamicPositionSizePct({
+              score: aiScore,
+              confidence: body.confidence,
+              isMegaCap: MEGA_CAP_PRIORITY_CODES.has(stock_code),
+              pullbackSignal: body.pullback_signal,
+            }) / 100;
           const capByAlloc = Math.round(totalCapital * dynPct);
-          const capByCash = Math.round(availCash * 0.95);
-          amount_krw = Math.max(Math.min(computed, capByAlloc, capByCash), 10000);
+          amount_krw = Math.max(Math.min(computed, capByAlloc, Math.round(cashCap2)), 10000);
           logger.info(
             `💰 동적 사이징: score=${aiScore} megacap=${MEGA_CAP_PRIORITY_CODES.has(stock_code)} → 비중${(dynPct * 100).toFixed(0)}% | 총자본 ${(totalCapital / 10000).toFixed(0)}만원 → ${(amount_krw / 10000).toFixed(1)}만원`,
             { component: 'CLAUDE_BUY' },
@@ -184,19 +203,26 @@ export function registerManualBuyRoutes(app: Hono) {
             }
 
             if (warnings.length >= 2) {
-              logger.warn(`🚫 수동매수 기술 차단: ${stock_code} — ${warnings.join(' | ')}`, { component: 'CLAUDE_BUY' });
-              return c.json({
-                error: `기술지표 안전 차단 (${warnings.length}건 경고)`,
-                warnings,
-                techScore,
-                rsi: tech.rsi14,
-                macd: tech.macdCrossover,
-                hint: '기술적 조건 불리 — 진입 재고 필요',
-              }, 422);
+              logger.warn(`🚫 수동매수 기술 차단: ${stock_code} — ${warnings.join(' | ')}`, {
+                component: 'CLAUDE_BUY',
+              });
+              return c.json(
+                {
+                  error: `기술지표 안전 차단 (${warnings.length}건 경고)`,
+                  warnings,
+                  techScore,
+                  rsi: tech.rsi14,
+                  macd: tech.macdCrossover,
+                  hint: '기술적 조건 불리 — 진입 재고 필요',
+                },
+                422,
+              );
             }
 
             if (warnings.length > 0) {
-              logger.warn(`⚠️ 수동매수 경고(진행): ${stock_code} — ${warnings.join(' | ')}`, { component: 'CLAUDE_BUY' });
+              logger.warn(`⚠️ 수동매수 경고(진행): ${stock_code} — ${warnings.join(' | ')}`, {
+                component: 'CLAUDE_BUY',
+              });
             }
           }
         }
@@ -205,23 +231,32 @@ export function registerManualBuyRoutes(app: Hono) {
       }
 
       let quantity = Math.floor(amount_krw / curPrice);
-      if (quantity < 1) return c.json({ error: `수량 부족: ${curPrice.toLocaleString()}원 × 1주 > ${amount_krw.toLocaleString()}원` }, 400);
+      if (quantity < 1)
+        return c.json(
+          { error: `수량 부족: ${curPrice.toLocaleString()}원 × 1주 > ${amount_krw.toLocaleString()}원` },
+          400,
+        );
 
       // 포지션 비중 제한: 초과 시 422 차단 대신 자동 수량 조정 (거래 차단 방지)
       try {
         const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
         const totalCapital = balance.totalEvalAmount + balance.orderableCash;
         const CAP_PCT = 35; // getDynamicPositionSizePct 상한(35%)에 맞춤
-        const positionPct = (quantity * curPrice) / totalCapital * 100;
+        const positionPct = ((quantity * curPrice) / totalCapital) * 100;
         if (positionPct > CAP_PCT) {
-          const maxQty = Math.floor(totalCapital * (CAP_PCT / 100) / curPrice);
+          const maxQty = Math.floor((totalCapital * (CAP_PCT / 100)) / curPrice);
           if (maxQty < 1) {
             return c.json({ error: `잔고 부족: 1주(${curPrice.toLocaleString()}원) 구매 불가` }, 422);
           }
-          logger.info(`⚖️ 비중 ${positionPct.toFixed(0)}% → ${CAP_PCT}% 자동 조정: ${stock_code} ${quantity}주 → ${maxQty}주`, { component: 'CLAUDE_BUY' });
+          logger.info(
+            `⚖️ 비중 ${positionPct.toFixed(0)}% → ${CAP_PCT}% 자동 조정: ${stock_code} ${quantity}주 → ${maxQty}주`,
+            { component: 'CLAUDE_BUY' },
+          );
           quantity = maxQty;
         }
-      } catch { /* 잔고 조회 실패 시 패스 */ }
+      } catch {
+        /* 잔고 조회 실패 시 패스 */
+      }
 
       // 리스크 엔진 검증 (실전만)
       if (!isPaper) {
@@ -276,17 +311,31 @@ export function registerManualBuyRoutes(app: Hono) {
            VALUES ($1, $2, 'BUY', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, 'CLAUDE', $7)`,
           [chainId, stock_code, quantity, curPrice, fakeOrderNo, tradingMode, reasoning ?? 'Claude Code 눌림매매'],
         );
-        logger.info(`🤖 Claude 매수 (모의): ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 ${rrStr} — ${reasoning}`, { component: 'CLAUDE_BUY' });
+        logger.info(
+          `🤖 Claude 매수 (모의): ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 ${rrStr} — ${reasoning}`,
+          { component: 'CLAUDE_BUY' },
+        );
         addPaperInvestment(quantity * curPrice); // 연습 원장 캐시 즉시 무효화 + 현금 차감 반영
-        try { await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑'); } catch { /* 알림 실패 무시 */ }
+        try {
+          await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑');
+        } catch {
+          /* 알림 실패 무시 */
+        }
         invalidateBalanceCache();
         invalidateCurrentModeCache();
         invalidateStockCache(stock_code).catch(() => {});
 
-        // 엘리트 자동 실전 프로모션 — 연습 AI 90점+ → 실전 동시 매수
+        // 엘리트 자동 실전 프로모션 — 기본 OFF (CEO 철학: Live=안정 스윙만, Paper=실험)
+        // env ENABLE_ELITE_AUTO_PROMOTE=true 명시 시에만 활성화
         let livePromoted = false;
         let liveAmount: number | undefined;
-        if (aiScore >= 90) {
+        const elitePromoteEnabled = process.env.ENABLE_ELITE_AUTO_PROMOTE === 'true';
+        if (aiScore >= 90 && !elitePromoteEnabled) {
+          logger.info(`⏸️ 엘리트 자동 프로모션 스킵 (default OFF — Live는 안정 스윙만): ${stock_code} AI${aiScore}점`, {
+            component: 'CLAUDE_BUY',
+          });
+        }
+        if (aiScore >= 90 && elitePromoteEnabled) {
           try {
             const liveDup = await getPool().query(
               `SELECT id FROM transaction_chains WHERE stock_code = $1 AND is_paper = false AND status = 'OPEN' LIMIT 1`,
@@ -299,34 +348,60 @@ export function registerManualBuyRoutes(app: Hono) {
               const liveTotalCapital = liveBal.totalEvalAmount + liveBal.orderableCash;
               const liveAvailCash = liveBal.orderableCash;
               const slFractionLive = Math.abs(stopLossPct) / 100;
-              const liveDynPct = getDynamicPositionSizePct({
-                score: aiScore, confidence: body.confidence,
-                isMegaCap: MEGA_CAP_PRIORITY_CODES.has(stock_code), pullbackSignal: body.pullback_signal,
-              }) / 100;
-              const liveAmountKrw = Math.max(Math.min(
-                Math.round(liveTotalCapital * 0.015 / slFractionLive),
-                Math.round(liveTotalCapital * liveDynPct),
-                Math.round(liveAvailCash * 0.95),
-              ), 10000);
+              const liveDynPct =
+                getDynamicPositionSizePct({
+                  score: aiScore,
+                  confidence: body.confidence,
+                  isMegaCap: MEGA_CAP_PRIORITY_CODES.has(stock_code),
+                  pullbackSignal: body.pullback_signal,
+                }) / 100;
+              const liveAmountKrw = Math.max(
+                Math.min(
+                  Math.round((liveTotalCapital * 0.015) / slFractionLive),
+                  Math.round(liveTotalCapital * liveDynPct),
+                  Math.round(liveAvailCash * 0.95),
+                ),
+                10000,
+              );
               const liveQty = Math.floor(liveAmountKrw / curPrice);
               if (liveQty >= 1 && liveAvailCash >= liveQty * curPrice) {
-                const liveResult = await runWithMode(false, () => placeOrder({ stockCode: stock_code, side: 'BUY', quantity: liveQty }));
+                const liveResult = await runWithMode(false, () =>
+                  placeOrder({ stockCode: stock_code, side: 'BUY', quantity: liveQty }),
+                );
                 if (liveResult.success) {
                   const liveTotalInvested = liveQty * curPrice;
                   const liveChainId = await createChain({
-                    stock_code, status: 'OPEN', strategy_mode: 'SWING',
-                    avg_buy_price: curPrice, total_quantity: liveQty, total_invested: liveTotalInvested,
-                    realized_pnl: 0, target_profit_pct: takeProfitPct, stop_loss_pct: stopLossPct,
-                    max_averaging_count: STRATEGY_PARAMS.SWING.maxAveragingCount, current_averaging_count: 0, is_paper: false,
+                    stock_code,
+                    status: 'OPEN',
+                    strategy_mode: 'SWING',
+                    avg_buy_price: curPrice,
+                    total_quantity: liveQty,
+                    total_invested: liveTotalInvested,
+                    realized_pnl: 0,
+                    target_profit_pct: takeProfitPct,
+                    stop_loss_pct: stopLossPct,
+                    max_averaging_count: STRATEGY_PARAMS.SWING.maxAveragingCount,
+                    current_averaging_count: 0,
+                    is_paper: false,
                   });
                   await getPool().query(
                     `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
                      VALUES ($1, $2, 'BUY', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', 'live', 'CLAUDE', $6)`,
-                    [liveChainId, stock_code, liveQty, curPrice, liveResult.orderNo ?? '', `AUTO_PROMOTE AI${aiScore}점 연습→실전`],
+                    [
+                      liveChainId,
+                      stock_code,
+                      liveQty,
+                      curPrice,
+                      liveResult.orderNo ?? '',
+                      `AUTO_PROMOTE AI${aiScore}점 연습→실전`,
+                    ],
                   );
                   livePromoted = true;
                   liveAmount = liveTotalInvested;
-                  logger.info(`⭐ 엘리트 자동 실전 매수: ${stock_code} ${liveQty}주 @${curPrice.toLocaleString()}원 (AI${aiScore}점)`, { component: 'CLAUDE_BUY' });
+                  logger.info(
+                    `⭐ 엘리트 자동 실전 매수: ${stock_code} ${liveQty}주 @${curPrice.toLocaleString()}원 (AI${aiScore}점)`,
+                    { component: 'CLAUDE_BUY' },
+                  );
                   invalidateBalanceCache();
                 }
               }
@@ -336,7 +411,18 @@ export function registerManualBuyRoutes(app: Hono) {
           }
         }
 
-        return c.json({ ok: true, orderNo: fakeOrderNo, stock_code, quantity, price: curPrice, totalInvested, takeProfitPct, stopLossPct, livePromoted, liveAmount });
+        return c.json({
+          ok: true,
+          orderNo: fakeOrderNo,
+          stock_code,
+          quantity,
+          price: curPrice,
+          totalInvested,
+          takeProfitPct,
+          stopLossPct,
+          livePromoted,
+          liveAmount,
+        });
       }
 
       const result = await runWithMode(isPaper, () => placeOrder({ stockCode: stock_code, side: 'BUY', quantity }));
@@ -370,16 +456,42 @@ export function registerManualBuyRoutes(app: Hono) {
       await getPool().query(
         `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
          VALUES ($1, $2, 'BUY', 'MARKET', $3, $4, $5, $6, $7, $8, $9, 'CLAUDE', $10)`,
-        [chainId, stock_code, quantity, curPrice,
-         confirmed ? quantity : 0, confirmed ? curPrice : 0,
-         kisOrderNo, orderStatus, tradingMode, reasoning ?? 'Claude Code 눌림매매'],
+        [
+          chainId,
+          stock_code,
+          quantity,
+          curPrice,
+          confirmed ? quantity : 0,
+          confirmed ? curPrice : 0,
+          kisOrderNo,
+          orderStatus,
+          tradingMode,
+          reasoning ?? 'Claude Code 눌림매매',
+        ],
       );
-      logger.info(`🤖 Claude 매수 ${confirmed ? '체결' : '접수'}: ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 (${kisOrderNo}) ${rrStr} — ${reasoning}`, { component: 'CLAUDE_BUY' });
-      try { await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑'); } catch { /* 알림 실패 무시 */ }
+      logger.info(
+        `🤖 Claude 매수 ${confirmed ? '체결' : '접수'}: ${stock_code} ${quantity}주 @${curPrice.toLocaleString()}원 (${kisOrderNo}) ${rrStr} — ${reasoning}`,
+        { component: 'CLAUDE_BUY' },
+      );
+      try {
+        await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑');
+      } catch {
+        /* 알림 실패 무시 */
+      }
       invalidateBalanceCache();
       invalidateCurrentModeCache();
       invalidateStockCache(stock_code).catch(() => {});
-      return c.json({ ok: true, orderNo: kisOrderNo, status: orderStatus, stock_code, quantity, price: curPrice, totalInvested, takeProfitPct, stopLossPct });
+      return c.json({
+        ok: true,
+        orderNo: kisOrderNo,
+        status: orderStatus,
+        stock_code,
+        quantity,
+        price: curPrice,
+        totalInvested,
+        takeProfitPct,
+        stopLossPct,
+      });
     } catch (err: any) {
       logger.error(`Claude 매수 예외: ${err.message}`, { component: 'CLAUDE_BUY' });
       return c.json({ error: err.message }, 500);

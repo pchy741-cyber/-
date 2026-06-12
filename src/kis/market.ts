@@ -1,6 +1,6 @@
 import { KIS_TR_ID, MARKET } from '../config/constants.js';
-import { logger } from '../utils/logger.js';
 import { isTradingDay, setApiHolidayCache } from '../utils/holidays.js';
+import { logger } from '../utils/logger.js';
 import { kisRequest, marketDataRateLimiter } from './client.js';
 
 // ── 현재가 조회 ──
@@ -16,8 +16,13 @@ export interface CurrentPrice {
   openPrice: number;
   prevClosePrice: number;
   dividendYield: number; // 배당수익률 (%, dvr 필드)
-  per: number;           // PER
-  marketCapEok: number;  // 시가총액 (억원, hts_avls)
+  per: number; // PER
+  marketCapEok: number; // 시가총액 (억원, hts_avls)
+  // 상폐리스크 필드
+  haltYn: string; // 거래정지 여부 (Y: 정지)
+  mangIssuClsCode: string; // 관리종목구분코드 (0: 정상, 1+: 관리)
+  mrktWarnClsCode: string; // 시장경보구분코드 (00: 정상, 01: 주의, 02+: 경고)
+  invtCafulYn: string; // 투자주의환기종목여부 (Y: 해당)
 }
 
 export async function getCurrentPrice(stockCode: string): Promise<CurrentPrice> {
@@ -49,7 +54,19 @@ export async function getCurrentPrice(stockCode: string): Promise<CurrentPrice> 
     dividendYield: Number(o.dvr ?? 0),
     per: Number(o.per ?? 0),
     marketCapEok: Number(o.hts_avls ?? 0),
+    haltYn: String(o.halt_yn ?? ''),
+    mangIssuClsCode: String(o.mang_issu_cls_code ?? '0'),
+    mrktWarnClsCode: String(o.mrkt_warn_cls_code ?? '00'),
+    invtCafulYn: String(o.invt_caful_yn ?? ''),
   };
+}
+
+/** 상폐리스크 여부 판단 — true이면 AI 스코어링 대상에서 제외 */
+export function isDelistingRisk(p: CurrentPrice): boolean {
+  if (p.haltYn === 'Y') return true; // 거래정지
+  if (p.mangIssuClsCode !== '' && p.mangIssuClsCode !== '0') return true; // 관리종목
+  if (p.mrktWarnClsCode >= '02') return true; // 경고 이상 (02: 경고, 03: 위험예고, 04: 위험)
+  return false;
 }
 
 // ── 일봉 차트 (60일) ──
@@ -83,7 +100,7 @@ export async function getDailyChart(stockCode: string, days: number = 60): Promi
   });
 
   // KIS API는 output 또는 output2로 반환 (API 버전에 따라 다름)
-  const items = ((res.output2 ?? res.output ?? []) as unknown as Record<string, string>[]);
+  const items = (res.output2 ?? res.output ?? []) as unknown as Record<string, string>[];
   if (!Array.isArray(items)) return [];
 
   return items.map((c) => ({
@@ -98,8 +115,8 @@ export async function getDailyChart(stockCode: string, days: number = 60): Promi
 
 // ── 분봉 차트 ──
 export interface MinuteCandle {
-  time: string;   // HHmmss
-  date: string;   // YYYYMMDD
+  time: string; // HHmmss
+  date: string; // YYYYMMDD
   open: number;
   high: number;
   low: number;
@@ -129,8 +146,8 @@ export async function getMinuteChart(stockCode: string): Promise<MinuteCandle[]>
   const items = (res.output2 ?? []) as unknown as Record<string, string>[];
   if (!Array.isArray(items)) return [];
   return items
-    .filter(c => c.stck_cntg_hour && Number(c.stck_prpr ?? c.stck_clpr ?? 0) > 0)
-    .map(c => ({
+    .filter((c) => c.stck_cntg_hour && Number(c.stck_prpr ?? c.stck_clpr ?? 0) > 0)
+    .map((c) => ({
       time: c.stck_cntg_hour ?? '',
       date: c.stck_bsop_date ?? '',
       open: Number(c.stck_oprc ?? 0),
@@ -176,6 +193,7 @@ export async function getOrderbook(stockCode: string): Promise<OrderbookEntry[]>
 
 // ── KST 시간 유틸 (re-export from utils/time.ts — 순환 의존 방지) ──
 import { getKSTNow } from '../utils/time.js';
+
 export { getKSTNow };
 
 // ── 장 열림 여부 확인 (공휴일 포함) ──
@@ -200,7 +218,10 @@ export function isMarketOpen(): boolean {
   const closeTime = MARKET.CLOSE_HOUR * 100 + MARKET.CLOSE_MINUTE; // 1530
 
   const open = timeNum >= openTime && timeNum <= closeTime;
-  logger.debug(`장 상태: ${open ? '열림' : '닫힘'} (KST ${hour}:${String(minute).padStart(2, '0')}, timeNum=${timeNum})`, { component: 'MARKET' });
+  logger.debug(
+    `장 상태: ${open ? '열림' : '닫힘'} (KST ${hour}:${String(minute).padStart(2, '0')}, timeNum=${timeNum})`,
+    { component: 'MARKET' },
+  );
   return open;
 }
 
@@ -247,7 +268,8 @@ export async function getVolumeRankingStocks(market: 'J' | 'Q' = 'J', limit = 30
       },
     });
     const output = (res.output as Record<string, string>[]) ?? [];
-    return output.slice(0, limit)
+    return output
+      .slice(0, limit)
       .map((o) => ({ stock_code: o.stck_shrn_iscd ?? '', stock_name: o.hts_kor_isnm ?? '' }))
       .filter((s) => s.stock_code && !s.stock_code.startsWith('1')); // ETF 제외
   } catch (err) {
@@ -281,7 +303,8 @@ export async function getChangeRankingStocks(limit = 20, market: 'J' | 'Q' = 'J'
       },
     });
     const output = (res.output as Record<string, string>[]) ?? [];
-    return output.slice(0, limit)
+    return output
+      .slice(0, limit)
       .map((o) => ({ stock_code: o.stck_shrn_iscd ?? '', stock_name: o.hts_kor_isnm ?? '' }))
       .filter((s) => s.stock_code && !s.stock_code.startsWith('1'));
   } catch (err) {
@@ -359,9 +382,7 @@ export async function getBatchInvestorFlow(stockCodes: string[]): Promise<Map<st
  * 부팅 시 1회 + 자정 이후 매일 1회 호출.
  */
 export async function refreshMarketHolidayCache(): Promise<void> {
-  const kstYear = Number(
-    new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(new Date()).split('-')[0],
-  );
+  const kstYear = Number(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(new Date()).split('-')[0]);
   const closureDates = new Set<string>();
 
   // 상반기(0101) + 하반기(0701) 2회 조회 → 연간 전체 커버
@@ -378,7 +399,7 @@ export async function refreshMarketHolidayCache(): Promise<void> {
       const items: Array<Record<string, string>> = Array.isArray(res.output) ? res.output : [];
       for (const item of items) {
         const dt = item.bass_dt ?? item.BASS_DT ?? '';
-        if (!dt || !dt.startsWith(String(kstYear))) continue;
+        if (!dt?.startsWith(String(kstYear))) continue;
         // opnd_yn='N': 개장 안함 = 시장 휴장일 (주말·공휴일 모두 포함)
         if ((item.opnd_yn ?? item.OPND_YN) === 'N') {
           closureDates.add(`${dt.slice(0, 4)}-${dt.slice(4, 6)}-${dt.slice(6, 8)}`);
