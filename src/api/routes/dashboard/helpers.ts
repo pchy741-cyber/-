@@ -121,6 +121,7 @@ export {
   getDashCache,
   getDashCacheTTL,
   hardInvalidateDashboardCache,
+  hardInvalidateMode,
   invalidateCurrentModeCache,
   invalidateDashboardCache,
   invalidateModeCache,

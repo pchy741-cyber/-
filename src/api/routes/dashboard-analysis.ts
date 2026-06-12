@@ -880,8 +880,8 @@ dashboardAnalysisRoutes.post('/sync-positions', async (c) => {
       }
     }
 
-    const { invalidateCurrentModeCache } = await import('./dashboard/helpers.js');
-    invalidateCurrentModeCache();
+    const { hardInvalidateMode } = await import('./dashboard/helpers.js');
+    hardInvalidateMode(viewIsPaper);
     return c.json({
       ok: true,
       synced: synced.length,

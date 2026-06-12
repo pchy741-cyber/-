@@ -14,7 +14,7 @@ import { notifyBuy } from '../../../notifications/web-push.js';
 import { addPaperInvestment, getPaperBalance, riskEngine } from '../../../risk/engine.js';
 import { logger } from '../../../utils/logger.js';
 import { sleep } from '../../../utils/sleep.js';
-import { invalidateCurrentModeCache } from './helpers.js';
+import { hardInvalidateMode } from './helpers.js';
 
 export function registerManualBuyRoutes(app: Hono) {
   // GET /manual-buy/estimate — 매수 전 예상 금액 조회 (confirm 다이얼로그에 표시용)
@@ -345,7 +345,7 @@ export function registerManualBuyRoutes(app: Hono) {
           /* 알림 실패 무시 */
         }
         invalidateBalanceCache();
-        invalidateCurrentModeCache();
+        hardInvalidateMode(isPaper);
         invalidateStockCache(stock_code).catch(() => {});
 
         // 엘리트 자동 실전 프로모션 — 기본 OFF (CEO 철학: Live=안정 스윙만, Paper=실험)
@@ -502,7 +502,7 @@ export function registerManualBuyRoutes(app: Hono) {
         /* 알림 실패 무시 */
       }
       invalidateBalanceCache();
-      invalidateCurrentModeCache();
+      hardInvalidateMode(isPaper);
       invalidateStockCache(stock_code).catch(() => {});
       return c.json({
         ok: true,

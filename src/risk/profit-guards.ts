@@ -203,7 +203,7 @@ export async function checkDailyLossStop(isPaper = false): Promise<DailyLossStat
   }
 }
 
-// ── 종합 매수 가드 (3가지 모두 통과해야 매수 허용) ──
+// ── 종합 매수 가드 (4가지 모두 통과해야 매수 허용) ──
 export interface BuyGateResult {
   allowed: boolean;
   amountMultiplier: number;
@@ -212,6 +212,7 @@ export interface BuyGateResult {
     ev: EvCheck;
     sizing: StockWinRateSizing;
     dailyLoss: DailyLossStatus;
+    diversification?: { allowed: boolean; reason: string; count24h: number; count1h: number };
   };
 }
 
@@ -224,9 +225,10 @@ export async function checkBuyGate(params: {
   minRr?: number; // 레거시 호환 (사용 안 됨, EV로 대체)
 }): Promise<BuyGateResult> {
   const isPaper = params.isPaper ?? false;
-  const [sizing, dailyLoss] = await Promise.all([
+  const [sizing, dailyLoss, diversification] = await Promise.all([
     getStockSizing(params.stockCode, isPaper),
     checkDailyLossStop(isPaper),
+    import('./diversification-guard.js').then((m) => m.checkDiversification(params.stockCode, isPaper)),
   ]);
   // EV 게이트: 종목 실제 승률로 계산 (없으면 50% 보수적)
   const wr = sizing.sampleCount >= 3 ? sizing.recentWinRate : 0.5;
@@ -243,7 +245,16 @@ export async function checkBuyGate(params: {
       allowed: false,
       amountMultiplier: 0,
       reason: dailyLoss.reason,
-      details: { ev, sizing, dailyLoss },
+      details: { ev, sizing, dailyLoss, diversification },
+    };
+  }
+  // 다양화 강제 (SONY 반복매수 패턴 차단)
+  if (!diversification.allowed) {
+    return {
+      allowed: false,
+      amountMultiplier: 0,
+      reason: `🔀 다양화: ${diversification.reason}`,
+      details: { ev, sizing, dailyLoss, diversification },
     };
   }
   // EV 미달
@@ -252,7 +263,7 @@ export async function checkBuyGate(params: {
       allowed: false,
       amountMultiplier: 0,
       reason: ev.reason,
-      details: { ev, sizing, dailyLoss },
+      details: { ev, sizing, dailyLoss, diversification },
     };
   }
   // 승률 사이징 — multiplier=0이면 차단
@@ -261,7 +272,7 @@ export async function checkBuyGate(params: {
       allowed: false,
       amountMultiplier: 0,
       reason: sizing.reason,
-      details: { ev, sizing, dailyLoss },
+      details: { ev, sizing, dailyLoss, diversification },
     };
   }
 
@@ -269,7 +280,7 @@ export async function checkBuyGate(params: {
     allowed: true,
     amountMultiplier: sizing.multiplier,
     reason: `허용 (${ev.reason}, ${sizing.reason})`,
-    details: { ev, sizing, dailyLoss },
+    details: { ev, sizing, dailyLoss, diversification },
   };
 }
 

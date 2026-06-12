@@ -49,6 +49,11 @@ export function invalidateModeCache(mode: string): void {
   _softInvalidate(mode);
 }
 
+// Hard invalidate — 해당 모드만 삭제 (paper/live 독립성 보장)
+export function hardInvalidateMode(isPaper: boolean): void {
+  _dashCacheByMode.delete(isPaper ? 'paper' : 'live');
+}
+
 // Hard invalidate — 캐시 데이터 완전 삭제 (DB 복구 후 stale 데이터 제거)
 export function hardInvalidateDashboardCache(): void {
   _dashCacheByMode.clear();

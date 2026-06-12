@@ -14,7 +14,7 @@ import { placeOrder } from '../../../kis/order.js';
 import { notifySell } from '../../../notifications/web-push.js';
 import { logger } from '../../../utils/logger.js';
 import { sleep } from '../../../utils/sleep.js';
-import { invalidateCurrentModeCache } from './helpers.js';
+import { hardInvalidateMode } from './helpers.js';
 import { registerManualBuyRoutes } from './manual-buy.js';
 import { registerOverseasSellRoutes } from './overseas-sell.js';
 
@@ -130,7 +130,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
         /* 알림 실패 무시 */
       }
       invalidateBalanceCache();
-      invalidateCurrentModeCache();
+      hardInvalidateMode(chain.is_paper);
       invalidateStockCache(chain.stock_code).catch(() => {});
       return c.json({
         ok: true,
@@ -230,7 +230,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
       /* 알림 실패 무시 */
     }
     invalidateBalanceCache();
-    invalidateCurrentModeCache();
+    hardInvalidateMode(chain.is_paper);
     invalidateStockCache(chain.stock_code).catch(() => {});
     return c.json({
       ok: true,
@@ -334,7 +334,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
         { component: 'DASHBOARD' },
       );
       invalidateBalanceCache();
-      invalidateCurrentModeCache();
+      hardInvalidateMode(isPaper);
       invalidateStockCache(stockCode).catch(() => {});
       return c.json({ ok: true, message: `${stockCode} ${totalQty}주 전량 매도 완료 (모의투자)` });
     }
@@ -435,7 +435,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
       /* 알림 실패 무시 */
     }
     invalidateBalanceCache();
-    invalidateCurrentModeCache();
+    hardInvalidateMode(isPaper);
     invalidateStockCache(stockCode).catch(() => {});
     return c.json({
       ok: true,

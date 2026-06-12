@@ -196,6 +196,28 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 🎓 자동 실패 학습 — 매일 02:30 KST (paper + live 양쪽 분석)
+  cron.schedule(
+    '30 2 * * *',
+    () => {
+      import('../automation/failure-learning.js')
+        .then((m) => m.runFailureLearningBoth())
+        .catch((e) => logger.error(`실패 학습 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 📊 일일 학습 리포트 — 매일 18:30 KST (paper + live, Telegram)
+  cron.schedule(
+    '30 18 * * *',
+    () => {
+      import('../automation/daily-learning-report.js')
+        .then((m) => m.runDailyLearningReport())
+        .catch((e) => logger.error(`일일 리포트 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // ⚡ Quick Re-Score — 매 3분 (장중 평일, 장세 적응형 내부 결정)
   // 황금구간: 3분 (cron 그대로) / BULLISH: 5분 / NEUTRAL: 10분 / 마의시간: 15분 / BEARISH: 20분 / PANIC: 60분
   // paid AI 0 호출 — RSS 무료 스코어러, 상위 30종목, GCP 유지비 영향 미미

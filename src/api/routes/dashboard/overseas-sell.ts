@@ -10,7 +10,7 @@ import { invalidateBalanceCache } from '../../../kis/account.js';
 import { positionStateKeys } from '../../../scheduler/overseas/utils.js';
 import { logger } from '../../../utils/logger.js';
 import { sleep } from '../../../utils/sleep.js';
-import { invalidateCurrentModeCache } from './helpers.js';
+import { hardInvalidateMode } from './helpers.js';
 
 export function registerOverseasSellRoutes(app: Hono) {
   // ── 해외주식 수동 매도 ──
@@ -79,7 +79,7 @@ export function registerOverseasSellRoutes(app: Hono) {
           component: 'DASHBOARD',
         });
         invalidateBalanceCache();
-        invalidateCurrentModeCache();
+        hardInvalidateMode(isPaper);
         return c.json({
           ok: true,
           orderNo: fakeOrderNo,
@@ -155,7 +155,7 @@ export function registerOverseasSellRoutes(app: Hono) {
         });
       }
       invalidateBalanceCache();
-      invalidateCurrentModeCache();
+      hardInvalidateMode(isPaper);
       return c.json({
         ok: true,
         orderNo: result.orderNo,
@@ -226,7 +226,7 @@ export function registerOverseasSellRoutes(app: Hono) {
         component: 'DASHBOARD',
       });
       invalidateBalanceCache();
-      invalidateCurrentModeCache();
+      hardInvalidateMode(isPaper);
       return c.json({ ok: true, message: `${stockCode} ${qty}주 강제 청산 완료 ($${proceeds.toFixed(2)} 반환)` });
     } catch (err: any) {
       logger.error(`강제 DB 청산 예외: ${err.message}`, { component: 'DASHBOARD' });
@@ -329,7 +329,7 @@ export function registerOverseasSellRoutes(app: Hono) {
         component: 'DASHBOARD',
       });
       invalidateBalanceCache();
-      invalidateCurrentModeCache();
+      hardInvalidateMode(isPaper);
       return c.json({
         ok: true,
         count: allHoldings.length,
