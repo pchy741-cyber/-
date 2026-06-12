@@ -206,7 +206,7 @@ export default function Dashboard() {
                 {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={data.withdrawConfig} watchlist={watchlist} strategy={strategy} setStrategy={setStrategy} toast={toast} confirm={confirm} onRefresh={load} allocConfig={allocConfig} setAllocConfig={setAllocConfig} onGoToSettings={() => setTab('settings')} viewMode={viewMode} onMarketTabChange={setMarketTab} mpData={mpData} loopStatus={loopStatus} todayStats={todayStats} />}
               </ErrorBoundary>
               <ErrorBoundary fallbackTitle="매매내역 로딩 오류">
-                {tab === 'trades' && <TradesView trades={trades} watchlist={watchlist} />}
+                {tab === 'trades' && <TradesView trades={trades} watchlist={watchlist} viewMode={viewMode} />}
               </ErrorBoundary>
               <ErrorBoundary fallbackTitle="저널 로딩 오류">
                 {tab === 'journal' && <JournalView viewMode={viewMode} />}

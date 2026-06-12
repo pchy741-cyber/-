@@ -64,7 +64,8 @@ export async function getCurrentPrice(stockCode: string): Promise<CurrentPrice> 
 /** 상폐리스크 여부 판단 — true이면 AI 스코어링 대상에서 제외 */
 export function isDelistingRisk(p: CurrentPrice): boolean {
   if (p.haltYn === 'Y') return true; // 거래정지
-  if (p.mangIssuClsCode !== '' && p.mangIssuClsCode !== '0') return true; // 관리종목
+  // KIS API: mang_issu_cls_code → 'N'=정상, '0'=정상(구버전), 그 외=관리종목
+  if (p.mangIssuClsCode !== '' && p.mangIssuClsCode !== '0' && p.mangIssuClsCode !== 'N') return true;
   if (p.mrktWarnClsCode >= '02') return true; // 경고 이상 (02: 경고, 03: 위험예고, 04: 위험)
   return false;
 }

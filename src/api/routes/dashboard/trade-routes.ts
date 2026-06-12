@@ -14,9 +14,18 @@ export const tradeRoutes = new Hono();
 
 // ── 매매 기록 ──
 tradeRoutes.get('/trades', async (c) => {
-  const limit = Math.min(Math.max(1, Number(c.req.query('limit') ?? 50)), 500);
+  const market = c.req.query('market'); // 'KR' | 'OVERSEAS' | undefined
+  const isOverseasFilter = market === 'OVERSEAS';
+  const defaultLimit = isOverseasFilter ? 2000 : 100;
+  const maxLimit = isOverseasFilter ? 5000 : 500;
+  const limit = Math.min(Math.max(1, Number(c.req.query('limit') ?? defaultLimit)), maxLimit);
   const viewIsPaper = resolveRequestMode(c);
   const tradeMode = viewIsPaper ? 'paper' : 'live';
+  const marketClause = isOverseasFilter
+    ? `AND o.trigger_source = 'OVERSEAS'`
+    : market === 'KR'
+      ? `AND (o.trigger_source != 'OVERSEAS' OR o.trigger_source IS NULL)`
+      : '';
   try {
     const { rows } = await getPool().query(
       `SELECT o.*,
@@ -40,6 +49,7 @@ tradeRoutes.get('/trades', async (c) => {
        LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
        LEFT JOIN watchlist w ON o.stock_code = w.stock_code
        WHERE o.trading_mode = $2
+       ${marketClause}
        ORDER BY o.created_at DESC
        LIMIT $1`,
       [limit, tradeMode],

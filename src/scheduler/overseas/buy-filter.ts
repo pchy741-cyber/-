@@ -423,6 +423,23 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // 5. BUY 시그널 + 트렌드 확인 (ADX 확인, RSI 적정 범위)
         if (t.signal === 'BUY' && t.score >= 30 - sAdj && t.adx >= 20 && t.rsi >= 42 && t.rsi <= 70 && t.aboveMA20)
           return true;
+        // 5b. Paper BUY 완화 — positiveCats<3 점수 반감(score≥15 → <30)으로 path-5 탈락하는 케이스 구제
+        if (
+          isPaper &&
+          t.signal === 'BUY' &&
+          t.score >= 15 &&
+          t.adx >= 20 &&
+          t.rsi >= 45 &&
+          t.rsi <= 68 &&
+          t.aboveMA20 &&
+          !effectiveBadWR
+        ) {
+          logger.info(
+            `  ✅ Paper BUY완화진입: ${t.code} score=${t.score} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)}`,
+            { component: 'OVERSEAS' },
+          );
+          return true;
+        }
         // 6. 과매도 반등 (RSI ≤ 35 + 트렌드 약하지 않음)
         if (isOversold && t.aboveMA60 && t.score >= 20 - sAdj) return true;
         // 7. 고승률 종목 완화 진입 (5거래 이상, 승률 55%+)

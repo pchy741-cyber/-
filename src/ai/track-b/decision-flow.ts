@@ -108,30 +108,31 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
     decisions = decisions.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
   }
 
-  // ── 0a. CEO 매수금지 종목 보유분 강제청산 ─────────────────────────────
-  // 인버스 ETF 제외: crash-profit.ts가 신호 기반으로 직접 관리 (NONE→청산, CAUTION→손절)
+  // ── 0a. CEO 매수금지 종목 보유분 처리 ─────────────────────────────
+  //
+  // CEO 지시 (2026-06-12): 강제청산 → 익절/손절 도달까지 hold 로 완화
+  //   Why: ARIRANG 단기채권 사례 — 정책 추가로 강제청산 2회, -75k 손실 확정
+  //   How:
+  //     - 신규 매수는 hard-gates.ts에서 이미 차단 중 (보유 0인 종목은 진입 불가)
+  //     - 기존 보유분은 일반 TP/SL/트레일링 신호 따름
+  //     - 단, 신규 매수/물타기 신호는 무조건 차단 (이중 안전장치)
+  //   인버스 ETF는 crash-profit.ts가 신호 기반으로 직접 관리 (별도)
   {
     const { BUY_BLOCKED_CODES } = await import('./trading-rules.js');
-    const { INVERSE_ETF_CODES: _inverseSet } = await import('../../automation/crash-profit.js');
-    for (const chain of openChains) {
-      if (!BUY_BLOCKED_CODES.has(chain.stock_code)) continue;
-      if (_inverseSet.has(chain.stock_code)) continue; // 인버스 ETF는 crash-profit이 관리
-      if ((chain.total_quantity ?? 0) <= 0) continue;
-      const alreadyExiting = decisions.some(
-        (d) => d.stock_code === chain.stock_code && ['SELL', 'FORCE_CLOSE', 'PARTIAL_SELL'].includes(d.action),
+    const blockedBuys = decisions.filter(
+      (d) =>
+        BUY_BLOCKED_CODES.has(d.stock_code) &&
+        (d.action === 'BUY' || d.action === 'AVERAGE_DOWN'),
+    );
+    if (blockedBuys.length > 0) {
+      logger.warn(
+        `🚫 매수금지 종목 신규매수 ${blockedBuys.length}건 차단: ${blockedBuys.map((d) => d.stock_code).join(', ')}`,
+        { component: 'DECISION_FLOW' },
       );
-      if (alreadyExiting) continue;
-      logger.warn(`🚫 매수금지 종목 보유분 강제청산: ${chain.stock_code} ×${chain.total_quantity}`, {
-        component: 'DECISION_FLOW',
-      });
-      decisions.push({
-        action: 'FORCE_CLOSE',
-        stock_code: chain.stock_code,
-        quantity: chain.total_quantity,
-        price_type: 'MARKET',
-        reasoning: 'CEO 지시 매수금지 종목 보유 → 즉시 청산',
-        confidence: 1.0,
-      });
+      decisions = decisions.filter(
+        (d) =>
+          !(BUY_BLOCKED_CODES.has(d.stock_code) && (d.action === 'BUY' || d.action === 'AVERAGE_DOWN')),
+      );
     }
   }
 

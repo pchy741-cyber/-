@@ -752,12 +752,17 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // ── 신규매수 차단 플래그 (한 곳에서 정의) ──────────────────────────
     // 2026-06 성과 검토: 15:10 → 14:50으로 앞당김 (15:10~15:20 진입 → 강제 청산 -76K 손실)
-    const isPastClose = !ctxIsPaper && (kstH > 14 || (kstH === 14 && kstM >= 50)); // Paper: 마감시간 무시
+    //
+    // CEO 지시 (2026-06-12): "어떻게 운영되든 오늘 실현 +면 됨"
+    //   Why: paper에서 마의시간/장마감 직전 진입이 오늘 -193k 실현손실의 핵심 원인
+    //   (7건 중 5건이 12:37, 15:01, 15:22, 15:23 진입 — 전부 금지/제한 시간대)
+    //   How: paper도 live와 동일한 시간 가드 적용 — 학습 환경에서도 일관된 운영
+    const isPastClose = kstH > 14 || (kstH === 14 && kstM >= 50);
     // 마의 시간대: 10:30~12:30 (축소: 기존 10:20~13:00 → 핵심 저유동성 구간만)
-    // AI 스코어 85+ 고확신은 10:30~12:30에도 진입 허용
+    // AI 스코어 90+ 고확신은 10:30~12:30에도 진입 허용
     const isLunchHours = !isScalpingMode && ((kstH === 10 && kstM >= 30) || kstH === 11 || (kstH === 12 && kstM < 30));
     const hasHighConviction = hasScores && scores.some((s: any) => (s.composite_score ?? 0) >= 90);
-    const isLunchBan = isLunchHours && !hasHighConviction && !ctxIsPaper; // Paper: 마의시간 무시
+    const isLunchBan = isLunchHours && !hasHighConviction;
     const portfolioStress = calcPortfolioStressLevel(openChains, livePrices, totalAssets);
     if (portfolioStress >= 1) {
       logger.warn(`⚠️ 포트폴리오 스트레스 레벨 ${portfolioStress} (미실현 손실 누적)`, { component: 'TRACK_B' });

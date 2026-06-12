@@ -1,14 +1,15 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ToggleGroup } from '@/components/ToggleGroup';
 import { toDisplayName, isUnresolvedStockName } from '../lib/helpers';
+import { api } from '../lib/utils';
 import type { Trade, WatchlistItem } from '../types';
 import { useTradeSummaries } from './trades/useTradeSummaries';
 import { DailySummaryPanel } from './trades/DailySummaryPanel';
 import { TradeListPanel } from './trades/TradeListPanel';
 
-function TradesView({ trades, watchlist }: { trades: Trade[]; watchlist: WatchlistItem[] }) {
+function TradesView({ trades, watchlist, viewMode: dashViewMode }: { trades: Trade[]; watchlist: WatchlistItem[]; viewMode?: 'live' | 'paper' }) {
   const nameMap = new Map(watchlist.map((w: WatchlistItem) => [w.stock_code, w.stock_name]));
   const getName = (t: Trade) => {
     const apiName = toDisplayName(t.stock_name, t.stock_code);
@@ -18,10 +19,41 @@ function TradesView({ trades, watchlist }: { trades: Trade[]; watchlist: Watchli
   const [mktFilter, setMktFilter] = useState<'ALL' | 'KR' | 'US'>('ALL');
   const [viewMode, setViewMode] = useState<'DAILY' | 'ALL'>('DAILY');
   const [expandedDate, setExpandedDate] = useState<string | null>(null);
+  const [overseasTrades, setOverseasTrades] = useState<Trade[] | null>(null);
+  const [overseasLoading, setOverseasLoading] = useState(false);
+  const fetchedModeRef = useRef<string | null>(null);
+
+  // "해외" 탭 선택 시 전체 해외 거래 내역 별도 fetch (한달 이상 포함)
+  useEffect(() => {
+    const vm = dashViewMode ?? 'live';
+    const cacheKey = `overseas_${vm}`;
+    if (mktFilter !== 'US' || (overseasTrades !== null && fetchedModeRef.current === cacheKey)) return;
+    setOverseasLoading(true);
+    api(`/trades?market=OVERSEAS&viewMode=${vm}`)
+      .then((t: Trade[]) => {
+        if (Array.isArray(t)) {
+          setOverseasTrades(t);
+          fetchedModeRef.current = cacheKey;
+        }
+      })
+      .catch(() => {})
+      .finally(() => setOverseasLoading(false));
+  }, [mktFilter, dashViewMode, overseasTrades]);
+
+  // dashViewMode 변경 시 캐시 초기화
+  useEffect(() => {
+    setOverseasTrades(null);
+    fetchedModeRef.current = null;
+  }, [dashViewMode]);
 
   const filled = trades.filter((t: Trade) => t.status === 'FILLED' || (t.status === 'PENDING' && t.trigger_source === 'OVERSEAS'));
   const isOverseas = (t: Trade) => t.trigger_source === 'OVERSEAS';
-  const filtered = mktFilter === 'ALL' ? filled : mktFilter === 'KR' ? filled.filter((t: Trade) => !isOverseas(t)) : filled.filter((t: Trade) => isOverseas(t));
+  const overseasFilled = (overseasTrades ?? []).filter((t: Trade) => t.status === 'FILLED' || (t.status === 'PENDING' && t.trigger_source === 'OVERSEAS'));
+  const filtered = mktFilter === 'ALL'
+    ? filled
+    : mktFilter === 'KR'
+      ? filled.filter((t: Trade) => !isOverseas(t))
+      : overseasFilled;
 
   const dailySummaries = useTradeSummaries(filtered, isOverseas);
 
@@ -42,7 +74,7 @@ function TradesView({ trades, watchlist }: { trades: Trade[]; watchlist: Watchli
           items={[
             { value: 'ALL' as const, label: '전체' },
             { value: 'KR' as const, label: '국내' },
-            { value: 'US' as const, label: '해외' },
+            { value: 'US' as const, label: overseasLoading ? '해외 로딩...' : `해외${overseasTrades ? ` ${overseasFilled.length}건` : ''}` },
           ]}
           onChange={setMktFilter}
         />

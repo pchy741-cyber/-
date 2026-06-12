@@ -13,6 +13,12 @@ import {
 // TP 도달 전 수익권 포지션 최고 수익률 추적 (서버 재시작 시 리셋 — 허용)
 const _preTpPeakMap = new Map<string, number>(); // stock_code → peak pnlPct
 
+// CEO 지시 (2026-06-12): STRONG_SELL 분할매도 쿨다운
+//   Why: 한화비전 사례 — 같은 종목 14건 분할매도, 회당 수수료 0.195% 누적
+//   How: 종목별 마지막 STRONG_SELL 시각 기록, 15분 내 중복 매도 신호 차단
+const _strongSellCooldown = new Map<string, number>(); // stock_code → lastFireMs
+const STRONG_SELL_COOLDOWN_MS = 15 * 60_000;
+
 // 자기학습 TP/SL 캐시 (3분 TTL — 매 사이클 DB 조회 방지)
 let _learnedCache: { tp?: number; sl?: number; expiresAt: number } | null = null;
 async function _getLearnedTpSl(): Promise<{ tp?: number; sl?: number } | null> {
@@ -90,12 +96,20 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // ── TP 도달 전 수익 구간 트레일링 스탑 ──────────────────────────────
     // 기존 트레일링은 PROFIT_TAKING 진입 후에만 작동 → +2~4% 수익권은 보호 없음
     // 이 로직: TP 미도달이라도 고점 대비 ATR×1.5 하락 시 익절
+    //
+    // CEO 지시 (2026-06-12): TP 50% 도달 전 트레일링 발동 차단
+    //   Why: 수산세보틱스 사례 — 고점 +2.1% 후 -3.2% 풀백에 -1.1% 손실로 stop out
+    //   How: 활성화 임계를 1.5% 고정값 → max(target_profit_pct * 0.5, 2.5%)
     if (chain.status !== 'PROFIT_TAKING' && chain.strategy_mode !== 'SCALPING') {
       const prevPeak = _preTpPeakMap.get(chain.stock_code) ?? pnlPct;
       const curPeak = Math.max(prevPeak, pnlPct);
       _preTpPeakMap.set(chain.stock_code, curPeak);
 
-      if (curPeak >= 1.5) {
+      const chainTp = chain.target_profit_pct != null
+        ? Number(chain.target_profit_pct)
+        : (STRATEGY_PARAMS[chain.strategy_mode as StrategyMode]?.takeProfitPct ?? 5.5);
+      const activateAt = Math.max(chainTp * 0.5, 2.5);
+      if (curPeak >= activateAt) {
         const earlyChart = chartData.get(chain.stock_code);
         const earlyTech = earlyChart && earlyChart.length >= 20 ? analyzeTechnicals(earlyChart) : null;
         const atrPct = earlyTech?.atrPct ?? 1.5;
@@ -207,7 +221,14 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
 
     // 외국인+기관 동반 이탈(STRONG_SELL 수급) 보유 종목
     // 하락장: 전량 즉시 청산 / 정상장: 50% 부분 매도
+    // 쿨다운 적용: 같은 종목 15분 내 중복 STRONG_SELL 차단 (수수료 누적 방지)
     if (junkStockCodes?.has(chain.stock_code) && chain.total_quantity > 0) {
+      const lastFire = _strongSellCooldown.get(chain.stock_code) ?? 0;
+      if (Date.now() - lastFire < STRONG_SELL_COOLDOWN_MS) {
+        // 쿨다운 중 — 스킵 (다음 사이클에서 재평가)
+        continue;
+      }
+      _strongSellCooldown.set(chain.stock_code, Date.now());
       if (isDowntrendMode) {
         decisions.push({
           action: 'SELL',
