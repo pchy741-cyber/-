@@ -276,21 +276,32 @@ export function registerManualBuyRoutes(app: Hono) {
         );
 
       // 포지션 비중 제한: 초과 시 422 차단 대신 자동 수량 조정 (거래 차단 방지)
+      // CEO 책임 모드 (ceo_override=true): cap 무시 — 사용자가 더 살 수 있음
       try {
         const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
         const totalCapital = balance.totalEvalAmount + balance.orderableCash;
         const CAP_PCT = 35; // getDynamicPositionSizePct 상한(35%)에 맞춤
         const positionPct = ((quantity * curPrice) / totalCapital) * 100;
         if (positionPct > CAP_PCT) {
-          const maxQty = Math.floor((totalCapital * (CAP_PCT / 100)) / curPrice);
-          if (maxQty < 1) {
-            return c.json({ error: `잔고 부족: 1주(${curPrice.toLocaleString()}원) 구매 불가` }, 422);
+          if (body.ceo_override) {
+            // CEO 책임 — cap 무시 (단 잔고 부족은 그대로 차단)
+            const cashCap = Math.floor(balance.orderableCash / curPrice);
+            if (quantity > cashCap) quantity = Math.max(1, cashCap);
+            logger.warn(
+              `⚠️ CEO 책임 매수 (cap ${CAP_PCT}% 초과): ${stock_code} 비중 ${positionPct.toFixed(0)}% ${quantity}주 (사유: ${body.override_reason ?? 'CEO 직접'})`,
+              { component: 'CLAUDE_BUY' },
+            );
+          } else {
+            const maxQty = Math.floor((totalCapital * (CAP_PCT / 100)) / curPrice);
+            if (maxQty < 1) {
+              return c.json({ error: `잔고 부족: 1주(${curPrice.toLocaleString()}원) 구매 불가` }, 422);
+            }
+            logger.info(
+              `⚖️ 비중 ${positionPct.toFixed(0)}% → ${CAP_PCT}% 자동 조정: ${stock_code} ${quantity}주 → ${maxQty}주`,
+              { component: 'CLAUDE_BUY' },
+            );
+            quantity = maxQty;
           }
-          logger.info(
-            `⚖️ 비중 ${positionPct.toFixed(0)}% → ${CAP_PCT}% 자동 조정: ${stock_code} ${quantity}주 → ${maxQty}주`,
-            { component: 'CLAUDE_BUY' },
-          );
-          quantity = maxQty;
         }
       } catch {
         /* 잔고 조회 실패 시 패스 */
@@ -468,13 +479,10 @@ export function registerManualBuyRoutes(app: Hono) {
       if (!result.success) return c.json({ error: `KIS 매수 거부: ${result.message}` }, 502);
       const kisOrderNo = result.orderNo ?? '';
 
-      await sleep(3000);
-      let confirmed = false;
-      try {
-        const bal = await getAccountBalance(true);
-        confirmed = bal.positions.some((p: any) => String(p.stockCode) === stock_code);
-      } catch {
-        logger.warn(`매수 체결 확인 실패 (${stock_code}) — PENDING으로 기록`, { component: 'CLAUDE_BUY' });
+      // KIS 시장가 주문 수락 = 즉시 체결 — 잔고 반영 딜레이(3-10s) 기다리다 quantity=0 되는 버그 방지
+      const confirmed = result.success;
+      if (!confirmed) {
+        logger.warn(`매수 주문 미수락 (${stock_code}) — PENDING으로 기록`, { component: 'CLAUDE_BUY' });
       }
 
       const orderStatus = confirmed ? 'FILLED' : 'PENDING';

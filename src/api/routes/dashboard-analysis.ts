@@ -823,8 +823,34 @@ dashboardAnalysisRoutes.post('/sync-positions', async (c) => {
     const chainedCodes = new Set(openChains.map((ch: any) => ch.stock_code));
     const orphans = tradingPositions.filter((p) => !chainedCodes.has(p.stockCode));
 
+    // 0주 체인 복구: 체인은 있는데 total_quantity=0이고 KIS에 실제 보유 있는 경우
+    // (매수 직후 잔고 반영 딜레이로 confirmed=false 저장된 경우)
+    const ghostChains = openChains.filter(
+      (ch: any) => Number(ch.total_quantity) === 0 && Number(ch.avg_buy_price) > 0,
+    );
+    const fixedCodes: string[] = [];
+    for (const ghost of ghostChains) {
+      const kisPos = kisPositions.find((p) => p.stockCode === ghost.stock_code);
+      if (kisPos) {
+        await getPool().query(
+          `UPDATE chains SET total_quantity = $1, total_invested = $2 WHERE id = $3`,
+          [kisPos.quantity, kisPos.avgBuyPrice * kisPos.quantity, ghost.id],
+        );
+        fixedCodes.push(ghost.stock_code);
+        logger.info(
+          `🔧 0주 체인 복구: ${ghost.stock_code} → ${kisPos.quantity}주 @ ${kisPos.avgBuyPrice.toLocaleString()}원`,
+          { component: 'SYNC' },
+        );
+      }
+    }
+
+    if (orphans.length === 0 && fixedCodes.length === 0) {
+      return c.json({ ok: true, synced: 0, fixed: 0, message: '동기화할 포지션 없음 (이미 정상 상태)' });
+    }
     if (orphans.length === 0) {
-      return c.json({ ok: true, synced: 0, message: '동기화할 고아 포지션 없음 (이미 정상 상태)' });
+      const { hardInvalidateMode } = await import('./dashboard/helpers.js');
+      hardInvalidateMode(viewIsPaper);
+      return c.json({ ok: true, synced: 0, fixed: fixedCodes.length, fixedCodes, message: `0주 체인 ${fixedCodes.length}종목 복구 완료` });
     }
 
     const { createChain, insertOrder } = await import('../../db/client.js');
@@ -885,8 +911,10 @@ dashboardAnalysisRoutes.post('/sync-positions', async (c) => {
     return c.json({
       ok: true,
       synced: synced.length,
+      fixed: fixedCodes.length,
       codes: synced,
-      message: `${synced.length}종목 복구 완료 — 다음 Track B 실행부터 손절/익절 자동 적용`,
+      fixedCodes,
+      message: `${synced.length}종목 신규 복구, ${fixedCodes.length}종목 0주 체인 수정 완료`,
     });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
