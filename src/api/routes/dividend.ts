@@ -438,10 +438,11 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
     const divReturnPct =
       divInvestedKrw > 0 ? ((divCurrentUsd * fx + divDividendsUsd * fx) / divInvestedKrw - 1) * 100 : 0;
 
-    // 선물 현황 (paper + live 합산)
+    // 🛡️ 크로스오염 수정 (2026-06-12): viewMode에 맞는 컬럼만 사용
+    // 이전 버그: paper(40,000) + live(0) 합산 → live 화면에 paper 데이터 흘러옴
     const fb = fBudget[0] || {};
-    const fInvestedKrw = Number(fb.allocated_krw_paper ?? 0) + Number(fb.allocated_krw_live ?? 0);
-    const fPnlUsd = Number(fb.total_pnl_usd_paper ?? 0) + Number(fb.total_pnl_usd_live ?? 0);
+    const fInvestedKrw = Number(isPaper ? fb.allocated_krw_paper ?? 0 : fb.allocated_krw_live ?? 0);
+    const fPnlUsd = Number(isPaper ? fb.total_pnl_usd_paper ?? 0 : fb.total_pnl_usd_live ?? 0);
     const fTotal = Number(fStats[0]?.total ?? 0);
     const fWins = Number(fStats[0]?.wins ?? 0);
     const fCurrentKrw = fInvestedKrw + fPnlUsd * fx;

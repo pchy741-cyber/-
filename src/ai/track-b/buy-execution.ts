@@ -29,14 +29,15 @@ interface DomesticKellyResult {
 
 async function calcDomesticKelly(days: number = 30): Promise<DomesticKellyResult | null> {
   try {
+    // realized_pnl / total_invested 기반 — paper 매도는 filled_price=NULL이라 orders 조인 불가
     const { rows } = await getPool().query(
       `
-      SELECT avg_buy_price,
-        (SELECT filled_price FROM orders WHERE chain_id = tc.id AND side = 'SELL' ORDER BY created_at DESC LIMIT 1) as sell_price
-      FROM transaction_chains tc
+      SELECT realized_pnl, total_invested, avg_buy_price
+      FROM transaction_chains
       WHERE status = 'CLOSED'
         AND closed_at >= NOW() - ($1 * INTERVAL '1 day')
         AND avg_buy_price > 0
+        AND total_invested > 0
         AND is_paper = $2
     `,
       [days, getCtxIsPaper()],
@@ -49,9 +50,7 @@ async function calcDomesticKelly(days: number = 30): Promise<DomesticKellyResult
       totalWinPct = 0,
       totalLossPct = 0;
     for (const r of rows) {
-      const buyPrice = Number(r.avg_buy_price);
-      const sellPrice = Number(r.sell_price ?? buyPrice);
-      const pnlPct = buyPrice > 0 ? ((sellPrice - buyPrice) / buyPrice) * 100 : 0;
+      const pnlPct = (Number(r.realized_pnl) / Number(r.total_invested)) * 100;
       if (pnlPct > 0) {
         wins++;
         totalWinPct += pnlPct;
