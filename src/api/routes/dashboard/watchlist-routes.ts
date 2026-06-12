@@ -125,10 +125,14 @@ watchlistRoutes.get('/search/stock', async (c) => {
 });
 
 // ── 감시 목록 CRUD ──
+// CEO 지시 (2026-06-12): "감시목록 다 보이게" — includeInactive=true 옵션 지원
 watchlistRoutes.get('/watchlist', async (c) => {
   try {
     const viewIsPaper = resolveRequestMode(c);
-    const data = await getActiveWatchlist();
+    const includeInactive = c.req.query('includeInactive') === 'true';
+    const data = includeInactive
+      ? (await getPool().query('SELECT * FROM watchlist ORDER BY is_active DESC, added_at ASC')).rows
+      : await getActiveWatchlist();
     const unresolvedDomestic = [
       ...new Set(
         data

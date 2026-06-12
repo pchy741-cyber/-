@@ -38,7 +38,9 @@ interface ReasonStat {
  * 국내(KR) + 해외(US) 완결 매매 통합 조회 + 승률 인사이트
  */
 journalRoutes.get('/journal', async (c) => {
-  const days = Math.min(90, Math.max(1, Number(c.req.query('days') ?? 30)));
+  // 🛡️ 백테스팅용 데이터 보존: max 90 → 730일 (2년) 확장, default 30 → 180 확장
+  // CEO 지시 (2026-06-12): "매매일지 내역 다 보이게"
+  const days = Math.min(730, Math.max(1, Number(c.req.query('days') ?? 180)));
   const viewIsPaper = resolveRequestMode(c);
   const viewTradingMode = viewIsPaper ? 'paper' : 'live';
   const pool = getPool();
@@ -84,7 +86,7 @@ journalRoutes.get('/journal', async (c) => {
         AND tc.closed_at >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Seoul') - ($1 * INTERVAL '1 day')) AT TIME ZONE 'Asia/Seoul'
         AND tc.is_paper = $2
       ORDER BY tc.closed_at DESC
-      LIMIT 200
+      LIMIT 2000
     `,
       [days, viewIsPaper],
     );
@@ -171,7 +173,7 @@ journalRoutes.get('/journal', async (c) => {
         AND (s.avg_buy_price IS NOT NULL OR s.ai_reasoning ~ '\\[avgBuy:[0-9]')
         AND s.trading_mode = $2
       ORDER BY s.created_at DESC
-      LIMIT 200
+      LIMIT 2000
     `,
       [days, viewTradingMode],
     );
