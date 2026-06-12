@@ -23,16 +23,18 @@ let lastLoadedAt = 0;
 async function load(): Promise<void> {
   if (Date.now() - lastLoadedAt < RESYNC_TTL_MS) return;
   try {
-    const { rows } = await getPool().query(
-      `SELECT key, value FROM system_state WHERE key IN ($1, $2)`,
-      [KEY_LIVE, KEY_PAPER],
-    );
+    const { rows } = await getPool().query(`SELECT key, value FROM system_state WHERE key IN ($1, $2)`, [
+      KEY_LIVE,
+      KEY_PAPER,
+    ]);
     for (const r of rows) {
       const v = parseInt(r.value, 10);
       if (r.key === KEY_LIVE) streakLive = Number.isNaN(v) ? 0 : v;
       if (r.key === KEY_PAPER) streakPaper = Number.isNaN(v) ? 0 : v;
     }
-  } catch { /* DB 없으면 0으로 시작 */ }
+  } catch {
+    /* DB 없으면 0으로 시작 */
+  }
   lastLoadedAt = Date.now();
 }
 
@@ -45,7 +47,9 @@ async function persist(isPaper: boolean): Promise<void> {
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
       [key, val],
     );
-  } catch { /* non-critical */ }
+  } catch {
+    /* non-critical */
+  }
 }
 
 function calcMultiplier(streak: number): number {
@@ -58,16 +62,15 @@ function calcMultiplier(streak: number): number {
 export async function recordTradeOutcome(win: boolean, isPaper: boolean): Promise<void> {
   await load();
   if (win) {
-    if (isPaper) streakPaper = 0; else streakLive = 0;
+    if (isPaper) streakPaper = 0;
+    else streakLive = 0;
   } else {
-    if (isPaper) streakPaper += 1; else streakLive += 1;
+    if (isPaper) streakPaper += 1;
+    else streakLive += 1;
   }
   const streak = isPaper ? streakPaper : streakLive;
   const mult = calcMultiplier(streak);
-  logger.info(
-    `📉 연속손실 ${streak}회 → 포지션 배율 ×${mult}${mult < 1 ? ' ⚠️ 축소 중' : ''}`,
-    { component: 'RISK' },
-  );
+  logger.info(`📉 연속손실 ${streak}회 → 포지션 배율 ×${mult}${mult < 1 ? ' ⚠️ 축소 중' : ''}`, { component: 'RISK' });
   await persist(isPaper);
 }
 

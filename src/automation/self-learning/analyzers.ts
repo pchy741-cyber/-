@@ -78,7 +78,10 @@ export function analyzeModePerformance(enrichedChains: EnrichedChain[]): Learned
     const total = stats.wins + stats.losses;
     if (total >= 5) {
       const winRate = stats.wins / total;
-      if (winRate > bestWinRate) { bestWinRate = winRate; bestMode = mode; }
+      if (winRate > bestWinRate) {
+        bestWinRate = winRate;
+        bestMode = mode;
+      }
     }
   }
 
@@ -100,7 +103,11 @@ export function analyzeModePerformance(enrichedChains: EnrichedChain[]): Learned
 
       if (isBad && bestMode && bestMode !== mode) {
         insight.recommendation = `${mode} 모드 승률 ${winRatePct}%로 부진. ${bestMode} 모드(승률 ${(bestWinRate * 100).toFixed(0)}%)로 전환하면 성과 개선 가능.`;
-        insight.paramChange = { field: 'mode', value: bestMode, reason: `${mode} 승률 ${winRatePct}% → ${bestMode} 우위` };
+        insight.paramChange = {
+          field: 'mode',
+          value: bestMode,
+          reason: `${mode} 승률 ${winRatePct}% → ${bestMode} 우위`,
+        };
       } else if (isBest && winRate >= 0.65) {
         insight.recommendation = `${mode} 모드가 현재 가장 효과적. 계속 유지 권장.`;
       }
@@ -168,8 +175,8 @@ export function analyzeStockWinRateAcceleration(enrichedChains: EnrichedChain[])
     const older = sorted.slice(0, half);
     const newer = sorted.slice(half);
 
-    const olderWinRate = older.filter(t => t.pnlPct > 0).length / older.length;
-    const newerWinRate = newer.filter(t => t.pnlPct > 0).length / newer.length;
+    const olderWinRate = older.filter((t) => t.pnlPct > 0).length / older.length;
+    const newerWinRate = newer.filter((t) => t.pnlPct > 0).length / newer.length;
     const olderAvgPnl = older.reduce((s, t) => s + t.pnlPct, 0) / older.length;
     const newerAvgPnl = newer.reduce((s, t) => s + t.pnlPct, 0) / newer.length;
 
@@ -177,18 +184,18 @@ export function analyzeStockWinRateAcceleration(enrichedChains: EnrichedChain[])
       insights.push({
         category: 'WIN_PATTERN',
         insight: `종목 '${code}' 최근 승률 가속: 이전 ${(olderWinRate * 100).toFixed(0)}% → 최근 ${(newerWinRate * 100).toFixed(0)}% (${trades.length}건). 전략 적합성 향상 중 — 신호 시 우선 진입.`,
-        confidence: Math.min(0.90, 0.65 + trades.length * 0.03),
+        confidence: Math.min(0.9, 0.65 + trades.length * 0.03),
         sampleCount: trades.length,
         lastUpdated: now,
         details: { code, olderWinRate, newerWinRate, olderAvgPnl, newerAvgPnl },
       });
     }
 
-    if (newerWinRate < olderWinRate - 0.30 && newerAvgPnl < 0 && trades.length >= 5) {
+    if (newerWinRate < olderWinRate - 0.3 && newerAvgPnl < 0 && trades.length >= 5) {
       insights.push({
         category: 'LOSS_PATTERN',
         insight: `종목 '${code}' 최근 성과 악화: 이전 승률 ${(olderWinRate * 100).toFixed(0)}% → 최근 ${(newerWinRate * 100).toFixed(0)}% (${trades.length}건). 진입 기준 강화 또는 워치리스트 제거 검토.`,
-        confidence: Math.min(0.85, 0.60 + trades.length * 0.03),
+        confidence: Math.min(0.85, 0.6 + trades.length * 0.03),
         sampleCount: trades.length,
         lastUpdated: now,
         recommendation: `${code} 매수 기준 +10점 상향, 지속 부진 시 워치리스트 제거.`,
@@ -407,7 +414,11 @@ export function analyzeProfitRatio(wins: EnrichedChain[], losses: EnrichedChain[
       category: 'LOSS_PATTERN',
       insight: `손익비 ${ratio.toFixed(2)} (평균 수익 +${avgWinPct.toFixed(1)}% vs 평균 손실 -${avgLossPct.toFixed(1)}%). 손절 지연이 손익비를 악화시키고 있음.`,
       recommendation: `손절 기준을 ${suggestedStopLoss}%로 타이트하게 조정하면 손익비 개선 가능. 현재 평균 손실 -${avgLossPct.toFixed(1)}%의 70% 수준.`,
-      paramChange: { field: 'stop_loss_pct', value: Number(suggestedStopLoss), reason: `손익비 ${ratio.toFixed(2)} 개선 필요` },
+      paramChange: {
+        field: 'stop_loss_pct',
+        value: Number(suggestedStopLoss),
+        reason: `손익비 ${ratio.toFixed(2)} 개선 필요`,
+      },
       confidence: 0.8,
       sampleCount: wins.length + losses.length,
       lastUpdated: now,
@@ -456,11 +467,11 @@ function analyzeSabermetrics(
   // ── 1. R배수(R-Multiple) 분포 분석 ──
   // R = 실현PnL / 초기리스크(SL%). SL을 모르면 평균손실을 R=1로 치환
   const riskUnit = avgLossPct > 0 ? avgLossPct : 3.0; // 1R = 평균 손실폭
-  const winRMultiples = wins.map(c => c.pnlPct / riskUnit);
-  const lossRMultiples = losses.map(c => c.pnlPct / riskUnit); // 음수
+  const winRMultiples = wins.map((c) => c.pnlPct / riskUnit);
+  const lossRMultiples = losses.map((c) => c.pnlPct / riskUnit); // 음수
   const avgWinR = winRMultiples.reduce((s, r) => s + r, 0) / winRMultiples.length;
   const avgLossR = Math.abs(lossRMultiples.reduce((s, r) => s + r, 0) / lossRMultiples.length);
-  const bigWins = winRMultiples.filter(r => r >= 2.0); // 2R+ 대형 수익
+  const bigWins = winRMultiples.filter((r) => r >= 2.0); // 2R+ 대형 수익
   const bigWinPct = bigWins.length / total;
 
   // ── 2. Profit Factor = 총수익 / 총손실 ──
@@ -486,17 +497,29 @@ function analyzeSabermetrics(
   insights.push({
     category: 'SIZING',
     insight: `⚾ 세이버메트릭스 — 승률 ${(winRate * 100).toFixed(0)}% | R배수 ${avgWinR.toFixed(1)}R | PF ${profitFactor.toFixed(2)} | EV ${evPerTrade >= 0 ? '+' : ''}${evPerTrade.toFixed(2)}%/건 | 손익분기 ${(breakevenWinRate * 100).toFixed(0)}% | Kelly ${(kellyHalf * 100).toFixed(1)}%`,
-    recommendation: evPerTrade > 0
-      ? `양의 기대값 +${evPerTrade.toFixed(2)}% — 현재 전략 유지. 승률 마진 +${(winRateMargin * 100).toFixed(1)}%p 안전`
-      : `음의 기대값 ${evPerTrade.toFixed(2)}% — SL 타이트닝 또는 TP 확대로 R배수 개선 필요`,
-    confidence: Math.min(0.90, 0.60 + total * 0.01),
+    recommendation:
+      evPerTrade > 0
+        ? `양의 기대값 +${evPerTrade.toFixed(2)}% — 현재 전략 유지. 승률 마진 +${(winRateMargin * 100).toFixed(1)}%p 안전`
+        : `음의 기대값 ${evPerTrade.toFixed(2)}% — SL 타이트닝 또는 TP 확대로 R배수 개선 필요`,
+    confidence: Math.min(0.9, 0.6 + total * 0.01),
     sampleCount: total,
     lastUpdated: now,
     details: {
-      winRate, avgWinPct, avgLossPct, profitRatio,
-      avgWinR, avgLossR, profitFactor, breakevenWinRate,
-      winRateMargin, evPerTrade, kellyFull, kellyHalf,
-      bigWinPct, bigWinCount: bigWins.length, totalTrades: total,
+      winRate,
+      avgWinPct,
+      avgLossPct,
+      profitRatio,
+      avgWinR,
+      avgLossR,
+      profitFactor,
+      breakevenWinRate,
+      winRateMargin,
+      evPerTrade,
+      kellyFull,
+      kellyHalf,
+      bigWinPct,
+      bigWinCount: bigWins.length,
+      totalTrades: total,
     },
   });
 
@@ -509,9 +532,10 @@ function analyzeSabermetrics(
       category: 'LOSS_PATTERN',
       insight: `⚠️ 승률(${(winRate * 100).toFixed(0)}%) < 손익분기(${(breakevenWinRate * 100).toFixed(0)}%) — R배수 ${profitRatio.toFixed(2)}에서 최소 ${(breakevenWinRate * 100).toFixed(0)}% 승률 필요.`,
       recommendation: `방법1: TP를 +${neededTP.toFixed(1)}%로 올려 R배수 개선. 방법2: 진입 기준 상향(스코어 +10)으로 승률 높이기.`,
-      paramChange: evPerTrade < -0.5
-        ? { field: 'buy_threshold', value: 85, reason: `EV ${evPerTrade.toFixed(2)}% 음수 — 엄격 필터링` }
-        : undefined,
+      paramChange:
+        evPerTrade < -0.5
+          ? { field: 'buy_threshold', value: 85, reason: `EV ${evPerTrade.toFixed(2)}% 음수 — 엄격 필터링` }
+          : undefined,
       confidence: 0.82,
       sampleCount: total,
       lastUpdated: now,

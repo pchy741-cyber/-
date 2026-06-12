@@ -2,9 +2,10 @@
  * 멀티 타임프레임 합류 분석
  * 주봉/일봉/4시간봉 방향 일치 여부로 진입 신뢰도 판단
  */
-import { logger } from '../../utils/logger.js';
-import { getOverseasDailyChart } from '../../kis/overseas.js';
+
 import { sma } from '../../analysis/indicators.js';
+import { getOverseasDailyChart } from '../../kis/overseas.js';
+import { logger } from '../../utils/logger.js';
 
 // ── 타입 ──
 
@@ -14,10 +15,10 @@ export interface MultiTFResult {
   code: string;
   weekly: TimeframeDirection;
   daily: TimeframeDirection;
-  h4: TimeframeDirection;        // 4시간봉 (일봉 데이터로 추정)
-  confluence: number;            // 0~3 (UP 방향 일치 수)
-  confidenceBonus: number;       // 0, +0.05, +0.10
-  blocked: boolean;              // confluence < 2이면 차단
+  h4: TimeframeDirection; // 4시간봉 (일봉 데이터로 추정)
+  confluence: number; // 0~3 (UP 방향 일치 수)
+  confidenceBonus: number; // 0, +0.05, +0.10
+  blocked: boolean; // confluence < 2이면 차단
 }
 
 // ── 캐시 (30분 TTL) ──
@@ -55,10 +56,7 @@ function direction(current: number, reference: number, threshold: number): Timef
  * - daily:  최근 종가 vs 5일 SMA (±1%)
  * - h4:     최근 2일 추세 close[0] vs close[1] (±0.5%)
  */
-export async function analyzeMultiTimeframe(
-  code: string,
-  exchange: string,
-): Promise<MultiTFResult> {
+export async function analyzeMultiTimeframe(code: string, exchange: string): Promise<MultiTFResult> {
   // 캐시 확인
   const cached = getCached(code);
   if (cached) return cached;
@@ -68,38 +66,44 @@ export async function analyzeMultiTimeframe(
   if (candles.length < 21) {
     logger.warn(`[MultiTF] ${code}: 데이터 부족 (${candles.length}일)`);
     const fallback: MultiTFResult = {
-      code, weekly: 'NEUTRAL', daily: 'NEUTRAL', h4: 'NEUTRAL',
-      confluence: 2, confidenceBonus: 0.05, blocked: false,
+      code,
+      weekly: 'NEUTRAL',
+      daily: 'NEUTRAL',
+      h4: 'NEUTRAL',
+      confluence: 2,
+      confidenceBonus: 0.05,
+      blocked: false,
     };
     setCache(code, fallback);
     return fallback;
   }
 
   // 캔들은 최신순 (index 0 = 최근)
-  const closes = candles.map(c => c.close);
+  const closes = candles.map((c) => c.close);
 
   // weekly: 최근 종가 vs 20일(4주) 전 종가
   const weekly = direction(closes[0], closes[Math.min(19, closes.length - 1)], 2);
 
   // daily: 최근 종가 vs 5일 SMA
   const sma5 = sma(closes.slice(0, 5), 5);
-  const daily = sma5.length > 0
-    ? direction(closes[0], sma5[0], 1)
-    : 'NEUTRAL' as TimeframeDirection;
+  const daily = sma5.length > 0 ? direction(closes[0], sma5[0], 1) : ('NEUTRAL' as TimeframeDirection);
 
   // h4: 최근 2일 추세 (close[0] vs close[1])
-  const h4 = closes.length >= 2
-    ? direction(closes[0], closes[1], 0.5)
-    : 'NEUTRAL' as TimeframeDirection;
+  const h4 = closes.length >= 2 ? direction(closes[0], closes[1], 0.5) : ('NEUTRAL' as TimeframeDirection);
 
   // 합류도: UP 방향 일치 수
-  const confluence = [weekly, daily, h4].filter(d => d === 'UP').length;
-  const confidenceBonus = confluence >= 3 ? 0.10 : confluence >= 2 ? 0.05 : 0;
+  const confluence = [weekly, daily, h4].filter((d) => d === 'UP').length;
+  const confidenceBonus = confluence >= 3 ? 0.1 : confluence >= 2 ? 0.05 : 0;
   const blocked = confluence < 2;
 
   const result: MultiTFResult = {
-    code, weekly, daily, h4,
-    confluence, confidenceBonus, blocked,
+    code,
+    weekly,
+    daily,
+    h4,
+    confluence,
+    confidenceBonus,
+    blocked,
   };
 
   setCache(code, result);
@@ -117,17 +121,13 @@ export async function analyzeMultiTimeframe(
  * 여러 종목 배치 분석 (4개씩 병렬)
  * 에러 시 해당 종목 스킵 (기본값: confluence=2, blocked=false)
  */
-export async function batchMultiTF(
-  stocks: { code: string; exchange: string }[],
-): Promise<Map<string, MultiTFResult>> {
+export async function batchMultiTF(stocks: { code: string; exchange: string }[]): Promise<Map<string, MultiTFResult>> {
   const results = new Map<string, MultiTFResult>();
   const BATCH_SIZE = 4;
 
   for (let i = 0; i < stocks.length; i += BATCH_SIZE) {
     const batch = stocks.slice(i, i + BATCH_SIZE);
-    const settled = await Promise.allSettled(
-      batch.map(s => analyzeMultiTimeframe(s.code, s.exchange)),
-    );
+    const settled = await Promise.allSettled(batch.map((s) => analyzeMultiTimeframe(s.code, s.exchange)));
 
     for (let j = 0; j < settled.length; j++) {
       const stock = batch[j];
@@ -139,13 +139,19 @@ export async function batchMultiTF(
         logger.warn(`[MultiTF] ${stock.code} 분석 실패: ${outcome.reason}`);
         results.set(stock.code, {
           code: stock.code,
-          weekly: 'NEUTRAL', daily: 'NEUTRAL', h4: 'NEUTRAL',
-          confluence: 2, confidenceBonus: 0.05, blocked: false,
+          weekly: 'NEUTRAL',
+          daily: 'NEUTRAL',
+          h4: 'NEUTRAL',
+          confluence: 2,
+          confidenceBonus: 0.05,
+          blocked: false,
         });
       }
     }
   }
 
-  logger.info(`[MultiTF] ${results.size}개 종목 분석 완료 — 차단 ${Array.from(results.values()).filter(r => r.blocked).length}개`);
+  logger.info(
+    `[MultiTF] ${results.size}개 종목 분석 완료 — 차단 ${Array.from(results.values()).filter((r) => r.blocked).length}개`,
+  );
   return results;
 }

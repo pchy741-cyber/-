@@ -13,14 +13,14 @@ import { logger } from '../utils/logger.js';
 // ── 타입 ──
 
 export interface ConsensusChange {
-  code: string;          // 종목코드 (6자리)
-  name: string;          // 종목명
-  direction: 'UP' | 'DOWN';  // 상향/하향
-  rating: string;        // 현재 투자의견 (BUY, HOLD, etc.)
-  prevRating: string;    // 이전 투자의견
-  broker: string;        // 증권사
-  analyst: string;       // 애널리스트
-  date: string;          // 등록일 (YYYYMMDD)
+  code: string; // 종목코드 (6자리)
+  name: string; // 종목명
+  direction: 'UP' | 'DOWN'; // 상향/하향
+  rating: string; // 현재 투자의견 (BUY, HOLD, etc.)
+  prevRating: string; // 이전 투자의견
+  broker: string; // 증권사
+  analyst: string; // 애널리스트
+  date: string; // 등록일 (YYYYMMDD)
   consensusScore: number; // 컨센서스 점수 (1~5, 5=Strong Buy)
 }
 
@@ -28,10 +28,10 @@ export interface ConsensusSignal {
   code: string;
   name: string;
   trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
-  upgradeCount: number;    // 최근 상향 수
-  downgradeCount: number;  // 최근 하향 수
-  netScore: number;        // upgradeCount - downgradeCount
-  consensusAvg: number;    // 평균 컨센서스 점수 (1~5)
+  upgradeCount: number; // 최근 상향 수
+  downgradeCount: number; // 최근 하향 수
+  netScore: number; // upgradeCount - downgradeCount
+  consensusAvg: number; // 평균 컨센서스 점수 (1~5)
   latestDate: string;
 }
 
@@ -68,7 +68,7 @@ async function fetchRatingChanges(direction: 'U' | 'D', pages = 3): Promise<Cons
       });
       if (!res.ok) break;
 
-      const json = await res.json() as { data: WiseReportItem[] };
+      const json = (await res.json()) as { data: WiseReportItem[] };
       if (!json.data?.length) break;
 
       for (const item of json.data) {
@@ -86,9 +86,11 @@ async function fetchRatingChanges(direction: 'U' | 'D', pages = 3): Promise<Cons
       }
 
       // rate limit 존중
-      if (page < pages) await new Promise(r => setTimeout(r, 1000));
+      if (page < pages) await new Promise((r) => setTimeout(r, 1000));
     } catch (err) {
-      logger.warn(`와이즈리포트 ${direction === 'U' ? '상향' : '하향'} 페이지${page} 실패: ${err}`, { component: 'CONSENSUS' });
+      logger.warn(`와이즈리포트 ${direction === 'U' ? '상향' : '하향'} 페이지${page} 실패: ${err}`, {
+        component: 'CONSENSUS',
+      });
       break;
     }
   }
@@ -156,16 +158,13 @@ export async function refreshConsensusSignals(): Promise<Map<string, ConsensusSi
   }
 
   try {
-    const [upgrades, downgrades] = await Promise.all([
-      fetchRatingChanges('U', 3),
-      fetchRatingChanges('D', 3),
-    ]);
+    const [upgrades, downgrades] = await Promise.all([fetchRatingChanges('U', 3), fetchRatingChanges('D', 3)]);
 
     const signals = buildSignals(upgrades, downgrades);
     _cache = { signals, fetchedAt: Date.now() };
 
-    const bullish = [...signals.values()].filter(s => s.trend === 'BULLISH').length;
-    const bearish = [...signals.values()].filter(s => s.trend === 'BEARISH').length;
+    const bullish = [...signals.values()].filter((s) => s.trend === 'BULLISH').length;
+    const bearish = [...signals.values()].filter((s) => s.trend === 'BEARISH').length;
     logger.info(
       `📊 컨센서스 갱신: ${signals.size}종목 (상승세 ${bullish}, 하락세 ${bearish}, 중립 ${signals.size - bullish - bearish})`,
       { component: 'CONSENSUS' },
@@ -195,7 +194,7 @@ export function getConsensusTrend(code: string): ConsensusSignal | null {
 export function getConsensusConfidenceAdj(code: string): number {
   const signal = getConsensusTrend(code);
   if (!signal) return 0;
-  if (signal.trend === 'BULLISH') return 0.10;
+  if (signal.trend === 'BULLISH') return 0.1;
   if (signal.trend === 'BEARISH') return -0.15;
   return 0;
 }
@@ -207,6 +206,6 @@ export function getConsensusConfidenceAdj(code: string): number {
 export function getMarketSentiment(): { bullishRatio: number; total: number } {
   if (!_cache || _cache.signals.size === 0) return { bullishRatio: 0.5, total: 0 };
   const signals = [..._cache.signals.values()];
-  const bullish = signals.filter(s => s.trend === 'BULLISH').length;
+  const bullish = signals.filter((s) => s.trend === 'BULLISH').length;
   return { bullishRatio: bullish / signals.length, total: signals.length };
 }

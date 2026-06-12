@@ -87,4 +87,3 @@ export const MEGA_CAP_PRIORITY_CODES = new Map<string, { name: string; bonus: nu
   // ── 반도체 소재/장비 ──
   ['042700', { name: '한미반도체', bonus: 5, thresholdReduction: 0 }],
 ]);
-

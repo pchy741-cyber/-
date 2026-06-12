@@ -1,7 +1,7 @@
-import { getPool } from '../../db/client.js';
 import { getCtxIsPaper } from '../../config/context.js';
-import { callVertexGemini } from '../../utils/vertex-gemini.js';
+import { getPool } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
+import { callVertexGemini } from '../../utils/vertex-gemini.js';
 
 const INSIGHTS_PROMPT = `당신은 알고리즘 트레이딩 퍼포먼스 분석 전문가입니다.
 최근 30일 해외주식 자동매매 실적 데이터를 분석하여
@@ -26,7 +26,8 @@ interface TradeRecord {
 
 async function fetchCompletedTrades(): Promise<TradeRecord[]> {
   const tradingMode = getCtxIsPaper() ? 'paper' : 'live';
-  const { rows } = await getPool().query(`
+  const { rows } = await getPool().query(
+    `
     SELECT
       b.stock_code AS code,
       b.filled_price AS buy_price,
@@ -57,7 +58,9 @@ async function fetchCompletedTrades(): Promise<TradeRecord[]> {
       AND b.filled_price > 0
     ORDER BY b.created_at DESC
     LIMIT 60
-  `, [tradingMode]);
+  `,
+    [tradingMode],
+  );
 
   return rows.map((r: Record<string, unknown>) => {
     const buyPrice = Number(r.buy_price);
@@ -66,31 +69,34 @@ async function fetchCompletedTrades(): Promise<TradeRecord[]> {
     const reasoning = String(r.buy_reasoning ?? '');
     const rsiMatch = reasoning.match(/RSI[=\s]?(\d+)/i);
     const entryRsi = rsiMatch ? Number(rsiMatch[1]) : null;
-    const holdingHours = (new Date(r.sold_at as string).getTime() - new Date(r.bought_at as string).getTime()) / 3_600_000;
+    const holdingHours =
+      (new Date(r.sold_at as string).getTime() - new Date(r.bought_at as string).getTime()) / 3_600_000;
     return { code: String(r.code), pnlPct, entryRsi, holdingHours };
   });
 }
 
 function buildSummary(trades: TradeRecord[]): string {
-  const wins = trades.filter(t => t.pnlPct >= 0);
-  const losses = trades.filter(t => t.pnlPct < 0);
+  const wins = trades.filter((t) => t.pnlPct >= 0);
+  const losses = trades.filter((t) => t.pnlPct < 0);
   const totalPnl = trades.reduce((s, t) => s + t.pnlPct, 0);
 
   // RSI 구간별 성과
   const ranges = [
-    { label: 'RSI<50',    min: 0,    max: 49.9 },
-    { label: 'RSI 50-55', min: 50,   max: 55   },
-    { label: 'RSI 55-60', min: 55.1, max: 60   },
-    { label: 'RSI 60-65', min: 60.1, max: 65   },
-    { label: 'RSI 65-70', min: 65.1, max: 70   },
-    { label: 'RSI>70',    min: 70.1, max: 100  },
+    { label: 'RSI<50', min: 0, max: 49.9 },
+    { label: 'RSI 50-55', min: 50, max: 55 },
+    { label: 'RSI 55-60', min: 55.1, max: 60 },
+    { label: 'RSI 60-65', min: 60.1, max: 65 },
+    { label: 'RSI 65-70', min: 65.1, max: 70 },
+    { label: 'RSI>70', min: 70.1, max: 100 },
   ];
-  const rsiLines = ranges.flatMap(r => {
-    const bucket = trades.filter(t => t.entryRsi !== null && t.entryRsi >= r.min && t.entryRsi <= r.max);
+  const rsiLines = ranges.flatMap((r) => {
+    const bucket = trades.filter((t) => t.entryRsi !== null && t.entryRsi >= r.min && t.entryRsi <= r.max);
     if (bucket.length === 0) return [];
-    const w = bucket.filter(t => t.pnlPct >= 0).length;
+    const w = bucket.filter((t) => t.pnlPct >= 0).length;
     const avg = bucket.reduce((s, t) => s + t.pnlPct, 0) / bucket.length;
-    return [`  ${r.label}: ${w}/${bucket.length}건 승률${((w / bucket.length) * 100).toFixed(0)}% 평균PnL${avg >= 0 ? '+' : ''}${avg.toFixed(2)}%`];
+    return [
+      `  ${r.label}: ${w}/${bucket.length}건 승률${((w / bucket.length) * 100).toFixed(0)}% 평균PnL${avg >= 0 ? '+' : ''}${avg.toFixed(2)}%`,
+    ];
   });
 
   // 종목별 성과 (2건 이상)
@@ -104,8 +110,11 @@ function buildSummary(trades: TradeRecord[]): string {
   }
   const codeLines = Array.from(byCode.entries())
     .filter(([, v]) => v.total >= 2)
-    .sort((a, b) => (b[1].pnl / b[1].total) - (a[1].pnl / a[1].total))
-    .map(([code, v]) => `  ${code}: ${v.wins}/${v.total}건 승률${((v.wins / v.total) * 100).toFixed(0)}% 평균PnL${(v.pnl / v.total) >= 0 ? '+' : ''}${(v.pnl / v.total).toFixed(2)}%`);
+    .sort((a, b) => b[1].pnl / b[1].total - a[1].pnl / a[1].total)
+    .map(
+      ([code, v]) =>
+        `  ${code}: ${v.wins}/${v.total}건 승률${((v.wins / v.total) * 100).toFixed(0)}% 평균PnL${(v.pnl / v.total) >= 0 ? '+' : ''}${(v.pnl / v.total).toFixed(2)}%`,
+    );
 
   const avgWinHold = wins.length > 0 ? wins.reduce((s, t) => s + t.holdingHours, 0) / wins.length : 0;
   const avgLossHold = losses.length > 0 ? losses.reduce((s, t) => s + t.holdingHours, 0) / losses.length : 0;
@@ -126,16 +135,19 @@ function buildSummary(trades: TradeRecord[]): string {
 
 export async function getAIGeneratedInsights(): Promise<string> {
   try {
-    const { rows } = await getPool().query(
-      "SELECT value FROM overseas_state WHERE key = 'ai_generated_insights'",
-    );
+    const { rows } = await getPool().query("SELECT value FROM overseas_state WHERE key = 'ai_generated_insights'");
     return rows.length > 0 ? String(rows[0].value) : '';
-  } catch { return ''; }
+  } catch {
+    return '';
+  }
 }
 
 export async function generateAndSaveInsights(): Promise<void> {
   const { config } = await import('../../config/index.js');
-  if (!config.geminiEnabled) { logger.info('💡 인사이트 생성 스킵 (Gemini OFF)', { component: 'INSIGHTS' }); return; }
+  if (!config.geminiEnabled) {
+    logger.info('💡 인사이트 생성 스킵 (Gemini OFF)', { component: 'INSIGHTS' });
+    return;
+  }
   try {
     // 4시간 이내 재생성 방지
     const { rows: tsRows } = await getPool().query(
@@ -153,7 +165,11 @@ export async function generateAndSaveInsights(): Promise<void> {
     }
 
     const summary = buildSummary(trades);
-    const text = await callVertexGemini(INSIGHTS_PROMPT, summary, { temperature: 0.2, maxOutputTokens: 400, label: '해외-인사이트' });
+    const text = await callVertexGemini(INSIGHTS_PROMPT, summary, {
+      temperature: 0.2,
+      maxOutputTokens: 400,
+      label: '해외-인사이트',
+    });
 
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('JSON 없음');

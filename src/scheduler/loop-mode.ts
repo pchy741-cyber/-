@@ -3,23 +3,32 @@
  * 라이프사이클: REVIEWING → TRADING ↔ PAUSED → STOPPED → 세션 요약
  * DB 영속 (loop_sessions/loop_ticks) + 서버 재시작 시 자동 재개
  */
-import { logger } from '../utils/logger.js';
+
+import { getCopilotLiteScore } from '../api/routes/review/copilot-lite.js';
+import { runWithMode } from '../config/context.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { isKillSwitchActive } from '../risk/kill-switch.js';
+import { logger } from '../utils/logger.js';
+import { getOpenMarketRegions } from './overseas/session.js';
 import {
-  generateSessionBrief, checkStrategyValidity, generateSessionSummary,
-  clearSessionBrief, getActiveSessionBrief,
+  checkStrategyValidity,
+  clearSessionBrief,
+  generateSessionBrief,
+  generateSessionSummary,
+  getActiveSessionBrief,
   type SessionStrategyBrief,
 } from './overseas/session-strategy.js';
-import { getCopilotLiteScore } from '../api/routes/review/copilot-lite.js';
-import { getOpenMarketRegions } from './overseas/session.js';
-import { runWithMode } from '../config/context.js';
 
 const DEFAULT_INTERVAL_MS = 5 * 60_000; // 5분
-const FAST_INTERVAL_MS = 3 * 60_000;    // 3분 (VIX STRESS/CRISIS, 활성 매도)
-const SLOW_INTERVAL_MS = 8 * 60_000;    // 8분 (유휴 상태)
-const PAUSE_CHECK_MS = 30 * 60_000;     // 30분 (장외 PAUSED 상태 체크 간격)
+const FAST_INTERVAL_MS = 3 * 60_000; // 3분 (VIX STRESS/CRISIS, 황금구간)
+const TURBO_INTERVAL_MS = 2 * 60_000; // 2분 (개장벨 09:00~09:30, 마감벨 15:00~15:20)
+const SLOW_INTERVAL_MS = 8 * 60_000; // 8분 (유휴 상태)
+const CURSED_INTERVAL_MS = 10 * 60_000; // 10분 (10:20~13:00 마의시간대 — 신규매수 금지)
+const PAUSE_CHECK_MS = 30 * 60_000; // 30분 (장외 PAUSED 상태 체크 간격)
 const MAX_CONSECUTIVE_ERRORS = 3;
+const RECOVERY_COOLDOWN_MS = 5 * 60_000; // 5분 — 에러 정지 후 자동 재시도까지 대기
+const MAX_RECOVERY_ATTEMPTS = 3; // 자동 재시도 최대 횟수 (이후 진짜 정지)
+const RESUME_WINDOW_MIN = 60; // checkPendingLoop 윈도우 10분 → 1시간
 
 export type LoopPhase = 'REVIEWING' | 'TRADING' | 'PAUSED' | 'STOPPED';
 export type USMarketPhase = 'PREMARKET' | 'OPEN_VOLATILE' | 'PRIME' | 'MIDDAY' | 'LUNCH' | 'POWER_HOUR' | 'CLOSED';
@@ -38,6 +47,17 @@ interface LoopState {
   sessionBrief: SessionStrategyBrief | null;
   consecutiveNoBuyCandidates: number;
   dbSessionId: number | null;
+  // 메트릭 (강화 #1)
+  buyCount: number;
+  sellCount: number;
+  realizedPnlKrw: number;
+  errorCountTotal: number;
+  // 자동 복구 (강화 #3)
+  recoveryAttempts: number;
+  lastRecoveryAt: string | null;
+  // 킬스위치 연동 (강화 #4)
+  pausedReason: string | null;
+  killSwitchPauses: number;
 }
 
 const state: LoopState = {
@@ -54,6 +74,14 @@ const state: LoopState = {
   sessionBrief: null,
   consecutiveNoBuyCandidates: 0,
   dbSessionId: null,
+  buyCount: 0,
+  sellCount: 0,
+  realizedPnlKrw: 0,
+  errorCountTotal: 0,
+  recoveryAttempts: 0,
+  lastRecoveryAt: null,
+  pausedReason: null,
+  killSwitchPauses: 0,
 };
 
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -75,24 +103,42 @@ async function dbCreateSession(brief: SessionStrategyBrief | null): Promise<numb
 }
 
 const ALLOWED_SESSION_COLS = new Set([
-  'phase', 'session_brief', 'total_runs', 'last_run_result',
-  'adaptive_interval_ms', 'ended_at', 'end_reason',
+  'phase',
+  'session_brief',
+  'total_runs',
+  'buy_count',
+  'sell_count',
+  'realized_pnl_krw',
+  'error_count',
+  'last_recovery_at',
+  'paused_reason',
+  'kill_switch_pauses',
+  'last_run_result',
+  'adaptive_interval_ms',
+  'ended_at',
+  'end_reason',
 ]);
 
 async function dbUpdateSession(id: number | null, updates: Record<string, unknown>): Promise<void> {
   if (!id) return;
   try {
     const { getPool } = await import('../db/client.js');
-    const keys = Object.keys(updates).filter(k => ALLOWED_SESSION_COLS.has(k));
+    const keys = Object.keys(updates).filter((k) => ALLOWED_SESSION_COLS.has(k));
     if (keys.length === 0) return;
     const sets = keys.map((k, i) => `${k} = $${i + 2}`).join(', ');
-    await getPool().query(`UPDATE loop_sessions SET ${sets} WHERE id = $1`, [id, ...keys.map(k => updates[k])]);
+    await getPool().query(`UPDATE loop_sessions SET ${sets} WHERE id = $1`, [id, ...keys.map((k) => updates[k])]);
   } catch (e) {
     logger.warn(`loop_sessions UPDATE 실패: ${(e as Error).message}`, { component: 'LOOP' });
   }
 }
 
-async function dbInsertTick(sessionId: number | null, tickNum: number, result: string, durationMs: number | null, intervalMs: number): Promise<void> {
+async function dbInsertTick(
+  sessionId: number | null,
+  tickNum: number,
+  result: string,
+  durationMs: number | null,
+  intervalMs: number,
+): Promise<void> {
   if (!sessionId) return;
   try {
     const { getPool } = await import('../db/client.js');
@@ -109,10 +155,12 @@ async function dbInsertTick(sessionId: number | null, tickNum: number, result: s
 async function runCopilotCheck(reason: string): Promise<void> {
   try {
     const result = await getCopilotLiteScore(false); // live 기준
-    logger.info(`🩺 Auto Copilot [${reason}]: score=${result.score}, issues=${result.issues.length}`, { component: 'LOOP' });
+    logger.info(`🩺 Auto Copilot [${reason}]: score=${result.score}, issues=${result.issues.length}`, {
+      component: 'LOOP',
+    });
 
     if (result.issues.length > 0) {
-      const issueText = result.issues.map(i => `[${i.level}] ${i.label}`).join(', ');
+      const issueText = result.issues.map((i) => `[${i.level}] ${i.label}`).join(', ');
       sendTelegramMessage(`🩺 Auto Copilot (${reason})\nScore: ${result.score}\n${issueText}`).catch(() => {});
     }
 
@@ -127,6 +175,72 @@ async function runCopilotCheck(reason: string): Promise<void> {
     }
   } catch (e) {
     logger.warn(`Auto Copilot 실패: ${(e as Error).message}`, { component: 'LOOP' });
+  }
+}
+
+// ── 세션 메트릭 집계 (강화 #1) ──
+// 직전 메트릭 누적 시점부터 dbSessionId 기간 동안의 orders 테이블 집계
+let _lastMetricsAt = 0;
+async function updateSessionMetrics(): Promise<void> {
+  if (!state.dbSessionId || !state.startedAt) return;
+  // 1분 내 중복 집계 스킵 (오버헤드 방지)
+  const now = Date.now();
+  if (now - _lastMetricsAt < 60_000) return;
+  _lastMetricsAt = now;
+  try {
+    const { getPool } = await import('../db/client.js');
+    const startIso = state.startedAt;
+    const { rows } = await getPool().query(
+      `SELECT
+        COUNT(*) FILTER (WHERE side = 'BUY' AND status = 'FILLED') AS buys,
+        COUNT(*) FILTER (WHERE side = 'SELL' AND status = 'FILLED') AS sells,
+        COALESCE(SUM(CASE WHEN side = 'SELL' AND status = 'FILLED' AND avg_buy_price IS NOT NULL
+          THEN (filled_price - avg_buy_price) * filled_quantity END), 0) AS realized_pnl
+       FROM orders
+       WHERE created_at >= $1 AND stock_code ~ '^[0-9]{6}$'`,
+      [startIso],
+    );
+    state.buyCount = Number(rows[0]?.buys ?? 0);
+    state.sellCount = Number(rows[0]?.sells ?? 0);
+    state.realizedPnlKrw = Number(rows[0]?.realized_pnl ?? 0);
+  } catch {
+    // 집계 실패는 루프 진행에 영향 없음
+  }
+}
+
+/** 최근 N개 루프 세션 히스토리 — /api/loop/sessions 노출용 */
+export async function getLoopSessionsHistory(limit = 20): Promise<unknown[]> {
+  try {
+    const { getPool } = await import('../db/client.js');
+    const { rows } = await getPool().query(
+      `SELECT id, started_at, ended_at, phase, total_runs,
+              buy_count, sell_count, realized_pnl_krw, error_count,
+              kill_switch_pauses, last_recovery_at, paused_reason,
+              session_brief, stop_reason, last_run_result
+       FROM loop_sessions
+       ORDER BY id DESC LIMIT $1`,
+      [limit],
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      startedAt: r.started_at,
+      endedAt: r.ended_at,
+      phase: r.phase,
+      totalRuns: Number(r.total_runs ?? 0),
+      buyCount: Number(r.buy_count ?? 0),
+      sellCount: Number(r.sell_count ?? 0),
+      realizedPnlKrw: Number(r.realized_pnl_krw ?? 0),
+      errorCount: Number(r.error_count ?? 0),
+      killSwitchPauses: Number(r.kill_switch_pauses ?? 0),
+      lastRecoveryAt: r.last_recovery_at,
+      pausedReason: r.paused_reason,
+      stopReason: r.stop_reason,
+      lastRunResult: r.last_run_result,
+      regime: r.session_brief?.marketRegime ?? null,
+      risk: r.session_brief?.riskLevel ?? null,
+    }));
+  } catch {
+    return [];
   }
 }
 
@@ -146,33 +260,72 @@ async function tick(): Promise<void> {
       state.phase = 'PAUSED';
       const prevInterval = state.adaptiveIntervalMs;
       state.adaptiveIntervalMs = PAUSE_CHECK_MS;
-      logger.info(`Auto Pilot: 전체 장외 시간 → PAUSED (${prevInterval / 1000}s → ${PAUSE_CHECK_MS / 1000}s)`, { component: 'LOOP' });
+      logger.info(`Auto Pilot: 전체 장외 시간 → PAUSED (${prevInterval / 1000}s → ${PAUSE_CHECK_MS / 1000}s)`, {
+        component: 'LOOP',
+      });
       dbUpdateSession(state.dbSessionId, { phase: 'PAUSED' }).catch(() => {});
     }
     scheduleNext();
     return;
   }
 
-  // PAUSED → TRADING 자동 복귀
-  if (state.phase === 'PAUSED' && anyMarketOpen) {
-    const regions = [...tickOpenRegions].join(',');
-    state.phase = 'TRADING';
-    state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
-    logger.info(`Auto Pilot: 장 오픈 감지 (${regions}) → TRADING 복귀`, { component: 'LOOP' });
-    dbUpdateSession(state.dbSessionId, { phase: 'TRADING' }).catch(() => {});
+  // ── 킬스위치 자동 PAUSED 연동 (강화 #4) ──
+  // 양 스코프 모두 발동 시 → 매매 자체가 의미 없음 → PAUSED 전환
+  const krKs = isKillSwitchActive('KR');
+  const ovKs = isKillSwitchActive('OVERSEAS');
+  if (krKs && ovKs && state.phase === 'TRADING') {
+    state.phase = 'PAUSED';
+    state.pausedReason = 'kill_switch_both';
+    state.killSwitchPauses++;
+    state.adaptiveIntervalMs = PAUSE_CHECK_MS;
+    logger.warn(`Auto Pilot: KR+OVERSEAS Kill Switch 양쪽 발동 → PAUSED 자동 전환`, { component: 'LOOP' });
+    dbUpdateSession(state.dbSessionId, {
+      phase: 'PAUSED',
+      paused_reason: 'kill_switch_both',
+      kill_switch_pauses: state.killSwitchPauses,
+    }).catch(() => {});
+    sendTelegramMessage('🛑 Auto Pilot 자동 PAUSED — KR+OVERSEAS 킬스위치 양쪽 발동').catch(() => {});
+    runCopilotCheck('kill_switch_both').catch(() => {});
+    // 캡쳐 강화 #2: 자동 트리거 (paper + live 둘 다)
+    import('../api/routes/review/capture-trigger.js')
+      .then(async (m) => {
+        await m.triggerCapture('kill_switch', 'live', state.dbSessionId).catch(() => {});
+        await m.triggerCapture('kill_switch', 'paper', state.dbSessionId).catch(() => {});
+      })
+      .catch(() => {});
+    scheduleNext();
+    return;
   }
 
-  // Kill Switch 로그
-  if (isKillSwitchActive('KR')) logger.info('Auto Pilot: KR Kill Switch 활성 — 국내 매도만 실행', { component: 'LOOP' });
-  if (isKillSwitchActive('OVERSEAS')) {
-    logger.info('Auto Pilot: OVERSEAS Kill Switch 활성 — 해외 매도만 실행', { component: 'LOOP' });
+  // PAUSED → TRADING 자동 복귀 (시장 오픈 OR 킬스위치 해제)
+  if (state.phase === 'PAUSED' && anyMarketOpen && !(krKs && ovKs)) {
+    const regions = [...tickOpenRegions].join(',');
+    const wasKsPause = state.pausedReason === 'kill_switch_both';
+    state.phase = 'TRADING';
+    state.pausedReason = null;
+    state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
+    logger.info(`Auto Pilot: ${wasKsPause ? '킬스위치 해제' : '장 오픈'} (${regions}) → TRADING 복귀`, {
+      component: 'LOOP',
+    });
+    dbUpdateSession(state.dbSessionId, { phase: 'TRADING', paused_reason: null }).catch(() => {});
+    if (wasKsPause) sendTelegramMessage(`🟢 Auto Pilot TRADING 복귀 — 킬스위치 해제 감지`).catch(() => {});
+  }
+
+  // Kill Switch 부분 발동 로그
+  if (krKs && !ovKs) logger.info('Auto Pilot: KR Kill Switch 활성 — 국내 매도만', { component: 'LOOP' });
+  if (ovKs && !krKs) {
+    logger.info('Auto Pilot: OVERSEAS Kill Switch 활성 — 해외 매도만', { component: 'LOOP' });
     runCopilotCheck('kill_switch').catch(() => {});
   }
 
   // ── 1. 전략 유효성 체크 (3틱마다) ──
   const shouldCheckValidity = state.totalRuns % 3 === 0;
   const validity = shouldCheckValidity
-    ? await checkStrategyValidity().catch(() => ({ adjusted: false, regenerate: false, reason: undefined as string | undefined }))
+    ? await checkStrategyValidity().catch(() => ({
+        adjusted: false,
+        regenerate: false,
+        reason: undefined as string | undefined,
+      }))
     : { adjusted: false, regenerate: false, reason: undefined as string | undefined };
   if (validity.regenerate) {
     logger.info(`🔄 전략 재생성 트리거: ${validity.reason}`, { component: 'LOOP' });
@@ -180,14 +333,16 @@ async function tick(): Promise<void> {
     if (newBrief) {
       state.sessionBrief = newBrief;
       dbUpdateSession(state.dbSessionId, { session_brief: JSON.stringify(newBrief) }).catch(() => {});
-      sendTelegramMessage(`🔄 세션 전략 재수립: ${newBrief.marketRegime}/${newBrief.riskLevel}\n${newBrief.narrative}`).catch(() => {});
+      sendTelegramMessage(
+        `🔄 세션 전략 재수립: ${newBrief.marketRegime}/${newBrief.riskLevel}\n${newBrief.narrative}`,
+      ).catch(() => {});
       runCopilotCheck('strategy_regen').catch(() => {});
     }
   }
 
   // ── 2. 매매 실행 — 국내/해외 분기 ──
   const krOpen = tickOpenRegions.has('KR');
-  const overseasOpen = [...tickOpenRegions].some(r => r !== 'KR');
+  const overseasOpen = [...tickOpenRegions].some((r) => r !== 'KR');
   const activeMarkets = [krOpen && '🇰🇷국내', overseasOpen && '🌏해외'].filter(Boolean).join('+');
   logger.info(`Auto Pilot 틱 #${state.totalRuns + 1}: ${activeMarkets || '장외'} 실행`, { component: 'LOOP' });
 
@@ -204,8 +359,12 @@ async function tick(): Promise<void> {
       const { runTrackBJob } = await import('./track-b-job.js');
       jobs.push(
         Promise.all([
-          runWithMode(true, () => runTrackBJob()).catch(e => logger.error(`Loop KR paper: ${e}`, { component: 'LOOP' })),
-          runWithMode(false, () => runTrackBJob()).catch(e => logger.error(`Loop KR live: ${e}`, { component: 'LOOP' })),
+          runWithMode(true, () => runTrackBJob()).catch((e) =>
+            logger.error(`Loop KR paper: ${e}`, { component: 'LOOP' }),
+          ),
+          runWithMode(false, () => runTrackBJob()).catch((e) =>
+            logger.error(`Loop KR live: ${e}`, { component: 'LOOP' }),
+          ),
         ]).then(() => {}),
       );
     }
@@ -224,29 +383,77 @@ async function tick(): Promise<void> {
     state.lastRunDurationMs = Date.now() - t0;
     state.lastRunResult = 'error';
     state.consecutiveErrors++;
-    logger.error(`Auto Pilot 에러 (${state.consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}): ${(err as Error).message}`, { component: 'LOOP' });
+    state.errorCountTotal++;
+    logger.error(`Auto Pilot 에러 (${state.consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}): ${(err as Error).message}`, {
+      component: 'LOOP',
+    });
 
     if (state.consecutiveErrors === 2) {
       runCopilotCheck('consecutive_errors_2').catch(() => {});
     }
     if (state.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-      stopLoop(`연속 ${MAX_CONSECUTIVE_ERRORS}회 에러 — 자동 정지`);
+      // 자동 복구 (강화 #3): MAX_RECOVERY_ATTEMPTS 까지 쿨다운 후 자동 재시도
+      if (state.recoveryAttempts < MAX_RECOVERY_ATTEMPTS) {
+        state.recoveryAttempts++;
+        state.lastRecoveryAt = new Date().toISOString();
+        const cooldown = RECOVERY_COOLDOWN_MS * state.recoveryAttempts; // 지수 backoff: 5m, 10m, 15m
+        logger.warn(
+          `Auto Pilot 자동 복구 #${state.recoveryAttempts}/${MAX_RECOVERY_ATTEMPTS} — ${cooldown / 60_000}분 쿨다운 후 재시도`,
+          { component: 'LOOP' },
+        );
+        sendTelegramMessage(
+          `🔄 Auto Pilot 자동복구 #${state.recoveryAttempts}/${MAX_RECOVERY_ATTEMPTS} — ${cooldown / 60_000}분 후 재시도`,
+        ).catch(() => {});
+        // 캡쳐 강화 #2: 에러 폭주 자동 트리거
+        import('../api/routes/review/capture-trigger.js')
+          .then((m) => m.triggerCapture('error_burst', 'live', state.dbSessionId).catch(() => {}))
+          .catch(() => {});
+        state.consecutiveErrors = 0; // 재시도 위해 초기화
+        state.adaptiveIntervalMs = cooldown;
+        dbUpdateSession(state.dbSessionId, {
+          last_recovery_at: state.lastRecoveryAt,
+          error_count: state.errorCountTotal,
+        }).catch(() => {});
+        scheduleNext();
+        return;
+      }
+      stopLoop(`연속 ${MAX_CONSECUTIVE_ERRORS}회 에러 × ${MAX_RECOVERY_ATTEMPTS}회 복구 시도 모두 실패 — 진짜 정지`);
       return;
     }
   }
 
+  // 성공 시 복구 카운터 리셋
+  if (state.lastRunResult === 'ok' && state.recoveryAttempts > 0) {
+    logger.info(`Auto Pilot 복구 성공 (시도 ${state.recoveryAttempts}회)`, { component: 'LOOP' });
+    state.recoveryAttempts = 0;
+  }
+
   // DB 틱 기록
-  dbInsertTick(state.dbSessionId, state.totalRuns, state.lastRunResult ?? 'error', state.lastRunDurationMs, state.adaptiveIntervalMs).catch(() => {});
+  dbInsertTick(
+    state.dbSessionId,
+    state.totalRuns,
+    state.lastRunResult ?? 'error',
+    state.lastRunDurationMs,
+    state.adaptiveIntervalMs,
+  ).catch(() => {});
+  // 메트릭 누적 (강화 #1): 직전 틱 이후 발생한 매수/매도/PnL을 orders 테이블에서 집계
+  updateSessionMetrics().catch(() => {});
   dbUpdateSession(state.dbSessionId, {
     total_runs: state.totalRuns,
     last_run_result: state.lastRunResult,
+    buy_count: state.buyCount,
+    sell_count: state.sellCount,
+    realized_pnl_krw: Math.round(state.realizedPnlKrw),
+    error_count: state.errorCountTotal,
   }).catch(() => {});
 
   // ── 3. 적응형 인터벌 조정 (캐시된 시장 상태 전달) ──
   const prevInterval = state.adaptiveIntervalMs;
   adaptiveInterval(tickOpenRegions, tickMarketPhase);
   if (prevInterval !== state.adaptiveIntervalMs) {
-    logger.debug(`interval: ${prevInterval / 60_000}m→${state.adaptiveIntervalMs / 60_000}m (${tickMarketPhase})`, { component: 'LOOP' });
+    logger.debug(`interval: ${prevInterval / 60_000}m→${state.adaptiveIntervalMs / 60_000}m (${tickMarketPhase})`, {
+      component: 'LOOP',
+    });
   }
   scheduleNext();
 }
@@ -264,19 +471,26 @@ function adaptiveInterval(cachedRegions?: Set<string>, cachedPhase?: USMarketPha
     return;
   }
 
-  // 국내장 황금 구간 (09:30~10:20, 13:00~15:00) → 3분 빠르게
+  // ── 국내장 시간대별 정밀 인터벌 (CLAUDE.md 시간대 규칙 반영) ──
   if (krOpen) {
-    const now = new Date();
-    const kstH = (now.getUTCHours() + 9) % 24;
-    const kstM = now.getUTCMinutes();
-    const kstTime = kstH * 100 + kstM;
-    const isKrPrime = (kstTime >= 930 && kstTime < 1020) || (kstTime >= 1300 && kstTime < 1500);
-    if (isKrPrime) {
-      state.adaptiveIntervalMs = FAST_INTERVAL_MS;
-      return;
+    const phase = getKrMarketPhase();
+    switch (phase) {
+      case 'OPENING_BELL': // 09:00~09:30 백엔드 자동, Claude 매수금지 — 단축 폴링
+      case 'CLOSING_BELL': // 15:00~15:20 신규 금지, 손절 모니터만
+        state.adaptiveIntervalMs = TURBO_INTERVAL_MS;
+        return;
+      case 'GOLDEN_AM': // 09:30~10:20 ★ 황금 오전
+      case 'GOLDEN_PM': // 13:00~15:00 ★ 황금 오후
+        state.adaptiveIntervalMs = FAST_INTERVAL_MS;
+        return;
+      case 'CURSED': // 10:20~13:00 ☠️ 마의 시간대 — 신규매수 금지
+        state.adaptiveIntervalMs = CURSED_INTERVAL_MS;
+        return;
+      case 'CLOSED':
+      default:
+        state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
+        return;
     }
-    state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
-    return;
   }
 
   // 미국장 시간대별 차등 (캐시된 phase 사용)
@@ -320,6 +534,28 @@ function isUSDST(d: Date): boolean {
   const novSun1 = nov1.getUTCDay() === 0 ? 1 : 8 - nov1.getUTCDay();
   const dstEnd = Date.UTC(year, 10, novSun1, 6);
   return d.getTime() >= dstStart && d.getTime() < dstEnd;
+}
+
+// ── 한국 시장 정밀 페이즈 (CLAUDE.md 황금/마의 시간대 규칙) ──
+export type KrMarketPhase =
+  | 'OPENING_BELL' // 09:00~09:30 백엔드 자동매매, Claude 신규금지
+  | 'GOLDEN_AM' // 09:30~10:20 ★ 황금 오전
+  | 'CURSED' // 10:20~13:00 ☠️ 마의 시간대 (신규 매수 금지)
+  | 'GOLDEN_PM' // 13:00~15:00 ★ 황금 오후
+  | 'CLOSING_BELL' // 15:00~15:20 신규 금지, 손절 모니터만
+  | 'CLOSED';
+
+export function getKrMarketPhase(date?: Date): KrMarketPhase {
+  const now = date ?? new Date();
+  const kstH = (now.getUTCHours() + 9) % 24;
+  const kstM = now.getUTCMinutes();
+  const t = kstH * 100 + kstM;
+  if (t < 900 || t >= 1530) return 'CLOSED';
+  if (t < 930) return 'OPENING_BELL';
+  if (t < 1020) return 'GOLDEN_AM';
+  if (t < 1300) return 'CURSED';
+  if (t < 1500) return 'GOLDEN_PM';
+  return 'CLOSING_BELL';
 }
 
 export function getUSMarketPhase(date?: Date): USMarketPhase {
@@ -411,7 +647,10 @@ export async function startLoop(): Promise<{ ok: boolean; error?: string; warnin
 }
 
 export async function stopLoop(reason?: string): Promise<{ ok: boolean }> {
-  if (timer) { clearTimeout(timer); timer = null; }
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
   const wasActive = state.active;
   state.active = false;
   state.phase = 'STOPPED';
@@ -451,14 +690,15 @@ export async function stopLoop(reason?: string): Promise<{ ok: boolean }> {
   return { ok: true };
 }
 
-/** 서버 시작 시 미종료 세션 자동 재개 (10분 이내) */
+/** 서버 시작 시 미종료 세션 자동 재개 (RESUME_WINDOW_MIN 이내) */
 export async function checkPendingLoop(): Promise<void> {
   try {
     const { getPool } = await import('../db/client.js');
     const { rows } = await getPool().query(
-      `SELECT id, started_at, total_runs, consecutive_errors, session_brief
+      `SELECT id, started_at, total_runs, consecutive_errors, session_brief,
+              buy_count, sell_count, realized_pnl_krw, error_count, kill_switch_pauses
        FROM loop_sessions
-       WHERE ended_at IS NULL AND started_at > NOW() - INTERVAL '10 minutes'
+       WHERE ended_at IS NULL AND started_at > NOW() - INTERVAL '${RESUME_WINDOW_MIN} minutes'
        ORDER BY id DESC LIMIT 1`,
     );
     if (rows.length === 0) return;
@@ -473,6 +713,13 @@ export async function checkPendingLoop(): Promise<void> {
     state.consecutiveErrors = session.consecutive_errors ?? 0;
     state.sessionBrief = session.session_brief;
     state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
+    // 메트릭 복원 (강화 #1)
+    state.buyCount = Number(session.buy_count ?? 0);
+    state.sellCount = Number(session.sell_count ?? 0);
+    state.realizedPnlKrw = Number(session.realized_pnl_krw ?? 0);
+    state.errorCountTotal = Number(session.error_count ?? 0);
+    state.killSwitchPauses = Number(session.kill_switch_pauses ?? 0);
+    state.recoveryAttempts = 0; // 재개 시 복구 시도 리셋
 
     const resumeMarketPhase = getUSMarketPhase();
     const resumeOpenRegions = getOpenMarketRegions();
@@ -485,7 +732,9 @@ export async function checkPendingLoop(): Promise<void> {
 
     dbUpdateSession(state.dbSessionId, { phase: state.phase }).catch(() => {});
     const regions = [...resumeOpenRegions].join(',') || 'NONE';
-    sendTelegramMessage(`🔄 Auto Pilot 자동 재개 (세션 #${session.id}, ${state.totalRuns}회, 시장:${regions})`).catch(() => {});
+    sendTelegramMessage(`🔄 Auto Pilot 자동 재개 (세션 #${session.id}, ${state.totalRuns}회, 시장:${regions})`).catch(
+      () => {},
+    );
     scheduleNext();
   } catch (e) {
     logger.warn(`checkPendingLoop 실패: ${(e as Error).message}`, { component: 'LOOP' });

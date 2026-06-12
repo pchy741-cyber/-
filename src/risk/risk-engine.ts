@@ -1,18 +1,19 @@
 /**
  * 리스크 통제 엔진 — 모든 국내 주문은 이 엔진을 거쳐야 함
  */
-import { config } from '../config/index.js';
+
+import { getFxRate } from '../api/routes/dashboard/helpers.js';
 import { getCtxIsPaper } from '../config/context.js';
-import { getOpenChains, getPool, getTodayStartSnapshot, insertRiskEvent, insertSnapshot } from '../db/client.js';
+import { config } from '../config/index.js';
 import { getAllocRisk } from '../db/alloc-risk-cache.js';
-import { getAccountBalance, type AccountBalance } from '../kis/account.js';
+import { getOpenChains, getPool, getTodayStartSnapshot, insertRiskEvent, insertSnapshot } from '../db/client.js';
+import { type AccountBalance, getAccountBalance } from '../kis/account.js';
+import { getCash as getOverseasCash, getHoldings as getOverseasHoldings } from '../scheduler/overseas/state.js';
 import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
 import { activateKillSwitch, isKillSwitchActive } from './kill-switch.js';
 import { getPaperBalance } from './paper-balance.js';
 import { calcDailyLossLimit, WEEKLY_LOSS_PCT_LIVE, WEEKLY_LOSS_PCT_PAPER } from './seed-capital.js';
-import { getCash as getOverseasCash, getHoldings as getOverseasHoldings } from '../scheduler/overseas/state.js';
-import { getFxRate } from '../api/routes/dashboard/helpers.js';
 
 async function getBalance(isPaper: boolean): Promise<AccountBalance> {
   if (isPaper) {
@@ -142,14 +143,18 @@ export class RiskEngine {
     }
   }
 
-  private async checkPositionLimit(stockCode: string, orderValue: number, isPaper: boolean): Promise<PreTradeCheckResult> {
+  private async checkPositionLimit(
+    stockCode: string,
+    orderValue: number,
+    isPaper: boolean,
+  ): Promise<PreTradeCheckResult> {
     const balance = await getBalance(isPaper);
     const existing = balance.positions.find((p) => p.stockCode === stockCode);
     const currentInvested = existing ? existing.quantity * existing.avgBuyPrice : 0;
     const totalAfter = currentInvested + orderValue;
 
     // 총자산 = 순자산(주식평가 + 현금 - 미수금) — totalEvalAmount만 쓰면 현금 미포함 버그
-    const totalAssets = balance.netAsset ?? ((balance.totalEvalAmount ?? 0) + Math.max(0, balance.orderableCash ?? 0));
+    const totalAssets = balance.netAsset ?? (balance.totalEvalAmount ?? 0) + Math.max(0, balance.orderableCash ?? 0);
     // fail-closed: 총자산 0 이하면 잔고 조회 실패 → 매수 차단 (글로벌 한도 폴백 제거)
     if (totalAssets <= 0) {
       logger.warn(`⚠️ 총자산 0원 — 잔고 조회 실패 가능성, 매수 차단 (fail-closed)`, { component: 'RISK' });
@@ -159,7 +164,7 @@ export class RiskEngine {
     const ar3 = await getAllocRisk(isPaper);
     const baseCapRatio = ar3.positionCapPct / 100;
     const canDiv3 = totalAssets * baseCapRatio >= 30_000;
-    const capRatio = !canDiv3 ? 0.50 : baseCapRatio;
+    const capRatio = !canDiv3 ? 0.5 : baseCapRatio;
     // Paper: simulated money → no live KRW hard cap (19.4M @ 40% allowed)
     // Live: hard cap (3M) protects real account from oversized single positions
     const dynamicLimit = isPaper
@@ -213,12 +218,14 @@ export class RiskEngine {
     // 2) 소자산(20만 미만) → 절대 손실금이 의미 없어 Kill Switch 스킵
     //    (30% of 120K = 36K → Kill Switch 발동하면 12만원짜리 계좌가 영구 차단)
     if (startValue > 0 && currentValue < 200000) {
-      logger.warn(`⚠️ 소자산 포트폴리오(${currentValue.toLocaleString()}원) — 일일 Drawdown 체크 스킵`, { component: 'RISK' });
+      logger.warn(`⚠️ 소자산 포트폴리오(${currentValue.toLocaleString()}원) — 일일 Drawdown 체크 스킵`, {
+        component: 'RISK',
+      });
       return { approved: true, reason: '소자산 포트폴리오 — Drawdown 체크 면제' };
     }
-    if (startValue > 0 && dailyLoss > startValue * 0.20) {
+    if (startValue > 0 && dailyLoss > startValue * 0.2) {
       logger.warn(
-        `⚠️ 외부 매도/입출금 감지: 스냅샷 ${startValue.toLocaleString()}원 → 현재 ${currentValue.toLocaleString()}원 (${((dailyLoss/startValue)*100).toFixed(0)}% 감소) → Kill Switch 스킵, 스냅샷 재설정`,
+        `⚠️ 외부 매도/입출금 감지: 스냅샷 ${startValue.toLocaleString()}원 → 현재 ${currentValue.toLocaleString()}원 (${((dailyLoss / startValue) * 100).toFixed(0)}% 감소) → Kill Switch 스킵, 스냅샷 재설정`,
         { component: 'RISK' },
       );
       // 스냅샷을 현재 잔고로 재설정 (외부 매도 후 기준점 리셋)
@@ -233,7 +240,9 @@ export class RiskEngine {
           positions: currentBalance.positions,
           is_paper: isPaper,
         });
-      } catch { /* 스냅샷 실패해도 무시 */ }
+      } catch {
+        /* 스냅샷 실패해도 무시 */
+      }
       return { approved: true, reason: '외부 매도 감지 — 스냅샷 재설정, 매매 허용' };
     }
 
@@ -256,7 +265,7 @@ export class RiskEngine {
 
     // 소프트 리밋: Live에서 한도의 80%(=2.0%) 도달 시 신규 진입 차단
     // (슬리피지로 -2.5% 초과 체결 방지 — 킬스위치 발동 전 선제 방어)
-    if (!isPaper && dailyLoss > limitAmount * 0.80) {
+    if (!isPaper && dailyLoss > limitAmount * 0.8) {
       return {
         approved: false,
         reason: `⚠️ 소프트 리밋: 일일 손실 ${dailyLoss.toLocaleString()}원(${lossPct}%) — 한도 80% 도달, 신규 진입 차단`,
@@ -293,7 +302,9 @@ export class RiskEngine {
         );
         const bt = Number(rows[0]?.buy_threshold ?? 80);
         dynamicCap = bt <= 65 ? 95 : bt <= 75 ? 92 : bt <= 85 ? 88 : 80;
-      } catch { /* DB 실패 시 기본값 유지 */ }
+      } catch {
+        /* DB 실패 시 기본값 유지 */
+      }
     }
 
     if (afterExposurePct > dynamicCap) {
@@ -315,8 +326,12 @@ export class RiskEngine {
         const osInvestedKrw = Math.round(osHoldingCostUsd * fx); // 해외 주식 보유액만 (현금 제외)
         const domesticInvested = balance.totalEvalAmount; // 국내 주식 보유액만 (현금 제외)
         const totalInvested = domesticInvested + osInvestedKrw;
-        if (totalInvested > 0 && osInvestedKrw > 0) {  // 해외 투자 없으면 비율 체크 불필요
-          const { rows: allocRows } = await getPool().query('SELECT kr_pct FROM portfolio_allocation_config WHERE is_paper = $1 LIMIT 1', [getCtxIsPaper()]);
+        if (totalInvested > 0 && osInvestedKrw > 0) {
+          // 해외 투자 없으면 비율 체크 불필요
+          const { rows: allocRows } = await getPool().query(
+            'SELECT kr_pct FROM portfolio_allocation_config WHERE is_paper = $1 LIMIT 1',
+            [getCtxIsPaper()],
+          );
           const targetKrPct = Number(allocRows[0]?.kr_pct ?? 30);
           const currentKrPct = (domesticInvested / totalInvested) * 100;
           if (currentKrPct > targetKrPct * 1.15) {
@@ -326,7 +341,9 @@ export class RiskEngine {
             };
           }
         }
-      } catch (err) { logger.warn(`⚠️ 포트폴리오 배분 비중 조회 실패 — 기존 로직만 적용: ${err}`, { component: 'RISK' }); }
+      } catch (err) {
+        logger.warn(`⚠️ 포트폴리오 배분 비중 조회 실패 — 기존 로직만 적용: ${err}`, { component: 'RISK' });
+      }
     }
 
     return { approved: true, reason: 'OK' };
@@ -355,7 +372,9 @@ export class RiskEngine {
       if (weekStartValue <= 0) return { approved: true, reason: 'OK' };
 
       const currentBalance = await getBalance(isPaper);
-      const currentValue = currentBalance.netAsset ?? ((currentBalance.totalEvalAmount ?? 0) + Math.max(0, currentBalance.orderableCash ?? 0));
+      const currentValue =
+        currentBalance.netAsset ??
+        (currentBalance.totalEvalAmount ?? 0) + Math.max(0, currentBalance.orderableCash ?? 0);
 
       // 소자산 면제 (20만 미만)
       if (currentValue < 200_000) return { approved: true, reason: '소자산 — 주간 Drawdown 면제' };
@@ -375,10 +394,7 @@ export class RiskEngine {
         };
       }
       if (weeklyLossPct >= warn) {
-        logger.warn(
-          `⚠️ 주간 손실 경고: -${weeklyLossPct.toFixed(1)}% (한도 ${limit}%)`,
-          { component: 'RISK' },
-        );
+        logger.warn(`⚠️ 주간 손실 경고: -${weeklyLossPct.toFixed(1)}% (한도 ${limit}%)`, { component: 'RISK' });
       }
       return { approved: true, reason: 'OK' };
     } catch (err) {
@@ -411,8 +427,11 @@ export class RiskEngine {
       const peakValue = Math.max(...values);
       const latestValue = values[values.length - 1];
       // 외부 입출금 감지: 고점 대비 50% 이상 급감 → 외부 매도/출금, 실제 MDD 아님
-      if (peakValue > 0 && latestValue < peakValue * 0.50) {
-        logger.warn(`⚠️ 월간 MDD 외부 매도 감지: 고점 ${Math.round(peakValue/10000)}만 → 현재 ${Math.round(latestValue/10000)}만 (${((1-latestValue/peakValue)*100).toFixed(0)}% 감소) → MDD 체크 스킵`, { component: 'RISK' });
+      if (peakValue > 0 && latestValue < peakValue * 0.5) {
+        logger.warn(
+          `⚠️ 월간 MDD 외부 매도 감지: 고점 ${Math.round(peakValue / 10000)}만 → 현재 ${Math.round(latestValue / 10000)}만 (${((1 - latestValue / peakValue) * 100).toFixed(0)}% 감소) → MDD 체크 스킵`,
+          { component: 'RISK' },
+        );
         return { approved: true, reason: '외부 매도/입출금 감지 — 월간 MDD 체크 면제' };
       }
       const mddPct = ((peakValue - latestValue) / peakValue) * 100;

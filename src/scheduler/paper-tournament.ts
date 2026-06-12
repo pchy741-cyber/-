@@ -7,23 +7,21 @@
  * 토큰 비용: $0 (DB + 기존 파이프라인만 사용)
  */
 
+import { runTrackBPipeline } from '../ai/track-b/pipeline.js';
+import { INVERSE_ETF_CODES } from '../automation/crash-profit.js';
+import { getRegimeAllocation } from '../automation/regime-allocator.js';
+import type { StrategyMode } from '../config/constants.js';
 import { runWithMode } from '../config/context.js';
-import { type StrategyMode } from '../config/constants.js';
 import { getPool } from '../db/client.js';
 import { isMarketOpen } from '../kis/market.js';
-import { runTrackBPipeline } from '../ai/track-b/pipeline.js';
-import { tradeExecutor } from '../trading/executor.js';
 import { isKillSwitchActive, reportSuccess } from '../risk/kill-switch.js';
-import { INVERSE_ETF_CODES } from '../automation/crash-profit.js';
+import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
-import { getRegimeAllocation } from '../automation/regime-allocator.js';
 
 const COMP = 'TOURNAMENT';
 
 // 토너먼트 대상 전략 (EOD_BETTING은 별도 크론, DIVIDEND는 파킹 모드)
-const TOURNAMENT_MODES: StrategyMode[] = [
-  'SWING', 'DEFENSE', 'SCALPING', 'SNIPER', 'BOTTOM_FISHING', 'BREAKOUT',
-];
+const TOURNAMENT_MODES: StrategyMode[] = ['SWING', 'DEFENSE', 'SCALPING', 'SNIPER', 'BOTTOM_FISHING', 'BREAKOUT'];
 
 let _tournamentRunning = false;
 
@@ -73,16 +71,17 @@ export async function runPaperTournament(): Promise<void> {
           // Kill Switch → 매도만 (예외: 인버스 ETF 매수는 허용)
           const killActive = isKillSwitchActive('KR');
           let filtered = killActive
-            ? decisions.filter(d =>
-                ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action) ||
-                (d.action === 'BUY' && INVERSE_ETF_CODES.has(d.stock_code))
+            ? decisions.filter(
+                (d) =>
+                  ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action) ||
+                  (d.action === 'BUY' && INVERSE_ETF_CODES.has(d.stock_code)),
               )
             : decisions;
 
           // 체제 가중치 반영: 포지션 수량 스케일링
           if (weight < 100) {
             const scale = weight / 100;
-            filtered = filtered.map(d => {
+            filtered = filtered.map((d) => {
               if (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') {
                 return { ...d, quantity: Math.max(1, Math.floor((d.quantity ?? 1) * scale)) };
               }
@@ -106,16 +105,17 @@ export async function runPaperTournament(): Promise<void> {
           [originalMode],
         );
       } catch (restoreErr) {
-        logger.error(`🚨 토너먼트 모드 복원 실패 (현재 모드 오염됨, 원래=${originalMode}): ${restoreErr}`, { component: COMP });
+        logger.error(`🚨 토너먼트 모드 복원 실패 (현재 모드 오염됨, 원래=${originalMode}): ${restoreErr}`, {
+          component: COMP,
+        });
       }
 
       reportSuccess();
 
       const elapsed = ((Date.now() - startMs) / 1000).toFixed(1);
-      logger.info(
-        `📊 토너먼트 완료: ${TOURNAMENT_MODES.length}전략 스캔, ${executed}건 실행 (${elapsed}s)`,
-        { component: COMP },
-      );
+      logger.info(`📊 토너먼트 완료: ${TOURNAMENT_MODES.length}전략 스캔, ${executed}건 실행 (${elapsed}s)`, {
+        component: COMP,
+      });
     });
   } catch (e) {
     logger.error(`📊 토너먼트 전체 실패: ${e}`, { component: COMP });

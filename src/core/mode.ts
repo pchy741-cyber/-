@@ -10,8 +10,8 @@
  */
 
 export {
-  runWithMode,
   getCtxIsPaper,
+  runWithMode,
 } from '../config/context.js';
 
 export { baseIsPaper } from '../config/index.js';

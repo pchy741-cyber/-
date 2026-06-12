@@ -26,7 +26,9 @@ export async function initVapid(): Promise<void> {
          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
         [vapidPublic, vapidPrivate],
       );
-    } catch { /* DB 동기화 실패는 무시 */ }
+    } catch {
+      /* DB 동기화 실패는 무시 */
+    }
     logger.info(`✅ VAPID 키 로드 (환경변수) pub=${vapidPublic.slice(0, 16)}...`, { component: 'WEB_PUSH' });
     return;
   }
@@ -41,9 +43,9 @@ export async function initVapid(): Promise<void> {
     const dbMap: Record<string, string> = {};
     for (const r of rows) dbMap[r.key] = r.value;
 
-    if (dbMap['vapid_public'] && dbMap['vapid_private']) {
-      vapidPublic = dbMap['vapid_public'];
-      vapidPrivate = dbMap['vapid_private'];
+    if (dbMap.vapid_public && dbMap.vapid_private) {
+      vapidPublic = dbMap.vapid_public;
+      vapidPrivate = dbMap.vapid_private;
       webpush.setVapidDetails('mailto:proscom2208@gmail.com', vapidPublic, vapidPrivate);
       vapidReady = true;
       logger.info('✅ VAPID 키 로드 (DB)', { component: 'WEB_PUSH' });
@@ -76,7 +78,7 @@ export async function initVapid(): Promise<void> {
     if (vapidReady) return;
     const delay = [3000, 8000, 15000, 30000][attempt];
     logger.warn(`VAPID 초기화 실패 — ${delay / 1000}초 후 재시도 (${attempt + 1}/4)`, { component: 'WEB_PUSH' });
-    await new Promise(r => setTimeout(r, delay));
+    await new Promise((r) => setTimeout(r, delay));
   }
   logger.error('VAPID 초기화 최종 실패 — 알림 비활성화', { component: 'WEB_PUSH' });
 })().catch(() => {});
@@ -97,15 +99,18 @@ const memSubscriptions: webpush.PushSubscription[] = [];
  */
 export async function saveSubscription(subscription: webpush.PushSubscription): Promise<void> {
   // 메모리에도 항상 저장 (DB 실패 대비)
-  if (!memSubscriptions.find(s => s.endpoint === subscription.endpoint)) {
+  if (!memSubscriptions.find((s) => s.endpoint === subscription.endpoint)) {
     memSubscriptions.push(subscription);
   }
 
   const p256dh = subscription.keys?.p256dh ?? (subscription as any).keys?.p256dh ?? null;
-  const auth   = subscription.keys?.auth   ?? (subscription as any).keys?.auth   ?? null;
+  const auth = subscription.keys?.auth ?? (subscription as any).keys?.auth ?? null;
 
   if (!p256dh || !auth) {
-    logger.error(`❌ 구독 키 누락 — DB 저장 스킵 (메모리만 저장). subscription=${JSON.stringify(subscription).slice(0, 200)}`, { component: 'WEB_PUSH' });
+    logger.error(
+      `❌ 구독 키 누락 — DB 저장 스킵 (메모리만 저장). subscription=${JSON.stringify(subscription).slice(0, 200)}`,
+      { component: 'WEB_PUSH' },
+    );
     logger.info('📱 푸시 구독 등록 (메모리)', { component: 'WEB_PUSH' });
     return;
   }
@@ -150,7 +155,7 @@ export async function sendPushNotification(payload: {
   if (!vapidReady) {
     // 아직 초기화 중이면 최대 10초 대기 후 재시도
     for (let i = 0; i < 5; i++) {
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise((r) => setTimeout(r, 2000));
       if (vapidReady) break;
     }
     if (!vapidReady) {
@@ -176,15 +181,20 @@ export async function sendPushNotification(payload: {
       const isTrade = tag.startsWith('buy-') || tag.startsWith('sell-') || tag.startsWith('overseas-');
       await webpush.sendNotification(sub, data, {
         TTL: isTrade ? 7200 : 3600, // 매매 알림 2시간, 나머지 1시간
-        urgency: (tag.startsWith('alert') || isTrade) ? 'high' : 'normal',
+        urgency: tag.startsWith('alert') || isTrade ? 'high' : 'normal',
       });
       sent++;
     } catch (err: any) {
       if (err.statusCode === 410 || err.statusCode === 404 || err.statusCode === 403) {
-        logger.warn(`구독 만료/거부 (${err.statusCode}) → 삭제: ...${sub.endpoint.slice(-20)}`, { component: 'WEB_PUSH' });
+        logger.warn(`구독 만료/거부 (${err.statusCode}) → 삭제: ...${sub.endpoint.slice(-20)}`, {
+          component: 'WEB_PUSH',
+        });
         await removeSubscription(sub.endpoint);
       } else {
-        logger.error(`푸시 발송 실패: ${err.statusCode} ${err.message} | ${JSON.stringify(err.body ?? '').slice(0, 200)}`, { component: 'WEB_PUSH' });
+        logger.error(
+          `푸시 발송 실패: ${err.statusCode} ${err.message} | ${JSON.stringify(err.body ?? '').slice(0, 200)}`,
+          { component: 'WEB_PUSH' },
+        );
       }
     }
   }
@@ -208,16 +218,18 @@ async function getAllSubscriptions(): Promise<webpush.PushSubscription[]> {
     return memSubscriptions;
   }
   // DB 성공 시: DB 결과 + 메모리 전용 구독 합치기 (메모리에만 있는 항목 추가)
-  const dbEndpoints = new Set(dbSubs.map(s => s.endpoint));
-  const memOnly = memSubscriptions.filter(s => !dbEndpoints.has(s.endpoint));
+  const dbEndpoints = new Set(dbSubs.map((s) => s.endpoint));
+  const memOnly = memSubscriptions.filter((s) => !dbEndpoints.has(s.endpoint));
   return [...dbSubs, ...memOnly];
 }
 
 async function removeSubscription(endpoint: string): Promise<void> {
   try {
     await getPool().query('DELETE FROM push_subscriptions WHERE endpoint = $1', [endpoint]);
-  } catch { /* ignore */ }
-  const idx = memSubscriptions.findIndex(s => s.endpoint === endpoint);
+  } catch {
+    /* ignore */
+  }
+  const idx = memSubscriptions.findIndex((s) => s.endpoint === endpoint);
   if (idx >= 0) memSubscriptions.splice(idx, 1);
 }
 
@@ -226,7 +238,9 @@ export async function purgeAllSubscriptions(): Promise<number> {
   try {
     const { rowCount } = await getPool().query('DELETE FROM push_subscriptions');
     count = rowCount ?? 0;
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   const memCount = memSubscriptions.length;
   memSubscriptions.length = 0;
   logger.info(`🗑️ 모든 푸시 구독 삭제: ${count + memCount}건`, { component: 'WEB_PUSH' });
@@ -239,13 +253,12 @@ export async function purgeAllSubscriptions(): Promise<number> {
 
 async function resolveStockName(code: string): Promise<string> {
   try {
-    const { rows } = await getPool().query(
-      `SELECT stock_name FROM watchlist WHERE stock_code = $1 LIMIT 1`,
-      [code],
-    );
+    const { rows } = await getPool().query(`SELECT stock_name FROM watchlist WHERE stock_code = $1 LIMIT 1`, [code]);
     const name = rows[0]?.stock_name;
     if (name && name !== code && !/^\d{6}$/.test(name)) return name;
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return code;
 }
 
@@ -258,16 +271,25 @@ function compactReasoning(reasoning: string, prefixRegex: RegExp): string {
 //  매매 이벤트별 알림 헬퍼
 // ══════════════════════════════════════
 
-export async function notifyBuy(stockCode: string, qty: number, price: number, reasoning: string, triggerSource?: string) {
-  logger.info(`📣 notifyBuy 호출: ${stockCode} x${qty} @${price} src=${triggerSource ?? '-'}`, { component: 'WEB_PUSH' });
+export async function notifyBuy(
+  stockCode: string,
+  qty: number,
+  price: number,
+  reasoning: string,
+  triggerSource?: string,
+) {
+  logger.info(`📣 notifyBuy 호출: ${stockCode} x${qty} @${price} src=${triggerSource ?? '-'}`, {
+    component: 'WEB_PUSH',
+  });
   const name = await resolveStockName(stockCode);
   const totalKrw = Math.round(qty * price);
   const shortReason = compactReasoning(reasoning, /^(매수|BUY|buy)\s*[:：]?\s*/i);
-  const totalStr = totalKrw >= 10_000_000
-    ? `${(totalKrw / 10_000_000).toFixed(1)}천만원`
-    : totalKrw >= 10000
-    ? `${Math.round(totalKrw / 10000)}만원`
-    : `${totalKrw.toLocaleString()}원`;
+  const totalStr =
+    totalKrw >= 10_000_000
+      ? `${(totalKrw / 10_000_000).toFixed(1)}천만원`
+      : totalKrw >= 10000
+        ? `${Math.round(totalKrw / 10000)}만원`
+        : `${totalKrw.toLocaleString()}원`;
 
   const isEod = triggerSource === 'EOD_BETTING';
   const titlePrefix = isEod ? '🎰 종가베팅 매수' : '🟢 매수';
@@ -284,28 +306,51 @@ export async function notifyBuy(stockCode: string, qty: number, price: number, r
     const { sendTelegramMessage } = await import('./telegram.js');
     await sendTelegramMessage(
       `${isEod ? '🎰' : '🟢'} *${isEod ? '종가베팅 매수' : '매수 체결'}*\n` +
-      `종목: *${name}* (\`${stockCode}\`)\n` +
-      `수량: ${qty}주 × ${price.toLocaleString()}원\n` +
-      `총액: ${totalKrw.toLocaleString()}원\n` +
-      `사유: ${shortReason}`
+        `종목: *${name}* (\`${stockCode}\`)\n` +
+        `수량: ${qty}주 × ${price.toLocaleString()}원\n` +
+        `총액: ${totalKrw.toLocaleString()}원\n` +
+        `사유: ${shortReason}`,
     );
-  } catch { /* telegram optional */ }
+  } catch {
+    /* telegram optional */
+  }
 }
 
-export async function notifySell(stockCode: string, qty: number, price: number, pnlPct: number, reasoning: string, triggerSource?: string) {
-  logger.info(`📣 notifySell 호출: ${stockCode} x${qty} @${price} pnl=${pnlPct.toFixed(2)}% src=${triggerSource ?? '-'}`, { component: 'WEB_PUSH' });
+export async function notifySell(
+  stockCode: string,
+  qty: number,
+  price: number,
+  pnlPct: number,
+  reasoning: string,
+  triggerSource?: string,
+) {
+  logger.info(
+    `📣 notifySell 호출: ${stockCode} x${qty} @${price} pnl=${pnlPct.toFixed(2)}% src=${triggerSource ?? '-'}`,
+    { component: 'WEB_PUSH' },
+  );
   const name = await resolveStockName(stockCode);
   const isProfit = pnlPct >= 0;
   const isEod = triggerSource === 'EOD_BETTING' || reasoning.includes('종가베팅');
-  const emoji = isEod ? '🎰' : (pnlPct >= 5 ? '🎉' : pnlPct >= 2 ? '✅' : pnlPct >= 0 ? '🟡' : pnlPct >= -2 ? '🟠' : '🔻');
-  const pnlStr = (isProfit ? '+' : '') + pnlPct.toFixed(2) + '%';
+  const emoji = isEod
+    ? '🎰'
+    : pnlPct >= 5
+      ? '🎉'
+      : pnlPct >= 2
+        ? '✅'
+        : pnlPct >= 0
+          ? '🟡'
+          : pnlPct >= -2
+            ? '🟠'
+            : '🔻';
+  const pnlStr = `${(isProfit ? '+' : '') + pnlPct.toFixed(2)}%`;
   const shortReason = compactReasoning(reasoning, /^(매도|SELL|sell|강제\s*청산)\s*[:：]?\s*/i);
 
   const pnlKrw = Math.round(qty * price * (pnlPct / 100));
   const pnlSign = pnlKrw >= 0 ? '+' : '';
-  const pnlKrwStr = Math.abs(pnlKrw) >= 10000
-    ? `${pnlSign}${Math.round(pnlKrw / 1000) / 10}만원`
-    : `${pnlSign}${pnlKrw.toLocaleString()}원`;
+  const pnlKrwStr =
+    Math.abs(pnlKrw) >= 10000
+      ? `${pnlSign}${Math.round(pnlKrw / 1000) / 10}만원`
+      : `${pnlSign}${pnlKrw.toLocaleString()}원`;
 
   const sellLabel = isEod ? '종가베팅 매도' : '매도';
 
@@ -321,15 +366,23 @@ export async function notifySell(stockCode: string, qty: number, price: number, 
     const { sendTelegramMessage } = await import('./telegram.js');
     await sendTelegramMessage(
       `${emoji} *${sellLabel} 체결* (${pnlStr})\n` +
-      `종목: *${name}* (\`${stockCode}\`)\n` +
-      `수량: ${qty}주 × ${price.toLocaleString()}원\n` +
-      `손익: ${pnlKrwStr}\n` +
-      `사유: ${shortReason}`
+        `종목: *${name}* (\`${stockCode}\`)\n` +
+        `수량: ${qty}주 × ${price.toLocaleString()}원\n` +
+        `손익: ${pnlKrwStr}\n` +
+        `사유: ${shortReason}`,
     );
-  } catch { /* telegram optional */ }
+  } catch {
+    /* telegram optional */
+  }
 }
 
-export async function notifyOverseasBuy(stockCode: string, stockName: string, qty: number, priceUsd: number, reasoning: string) {
+export async function notifyOverseasBuy(
+  stockCode: string,
+  stockName: string,
+  qty: number,
+  priceUsd: number,
+  reasoning: string,
+) {
   const shortReason = compactReasoning(reasoning, /^(매수|BUY|buy)\s*[:：]?\s*/i);
   const totalUsd = qty * priceUsd;
 
@@ -345,12 +398,14 @@ export async function notifyOverseasBuy(stockCode: string, stockName: string, qt
     const { sendTelegramMessage } = await import('./telegram.js');
     await sendTelegramMessage(
       `🟢 *해외 매수 체결*\n` +
-      `종목: *${stockName}* (\`${stockCode}\`)\n` +
-      `수량: ${qty}주 × $${priceUsd.toFixed(2)}\n` +
-      `총액: $${totalUsd.toFixed(2)}\n` +
-      `사유: ${shortReason}`,
+        `종목: *${stockName}* (\`${stockCode}\`)\n` +
+        `수량: ${qty}주 × $${priceUsd.toFixed(2)}\n` +
+        `총액: $${totalUsd.toFixed(2)}\n` +
+        `사유: ${shortReason}`,
     );
-  } catch { /* telegram optional */ }
+  } catch {
+    /* telegram optional */
+  }
 }
 
 export async function notifyOverseasSell(
@@ -381,19 +436,23 @@ export async function notifyOverseasSell(
     const { sendTelegramMessage } = await import('./telegram.js');
     await sendTelegramMessage(
       `${emoji} *해외 매도 체결* (${pnlStr})\n` +
-      `종목: *${stockName}* (\`${stockCode}\`)\n` +
-      `수량: ${qty}주 × $${priceUsd.toFixed(2)}\n` +
-      `손익: ${pnlUsdStr}\n` +
-      `사유: ${shortReason}`,
+        `종목: *${stockName}* (\`${stockCode}\`)\n` +
+        `수량: ${qty}주 × $${priceUsd.toFixed(2)}\n` +
+        `손익: ${pnlUsdStr}\n` +
+        `사유: ${shortReason}`,
     );
-  } catch { /* telegram optional */ }
+  } catch {
+    /* telegram optional */
+  }
 }
 
 export async function notifyAlert(title: string, body: string) {
-  await sendPushNotification({ title, body, tag: 'alert-' + Date.now(), url: '/' });
+  await sendPushNotification({ title, body, tag: `alert-${Date.now()}`, url: '/' });
 
   try {
     const { sendTelegramMessage } = await import('./telegram.js');
     await sendTelegramMessage(`⚠️ *${title}*\n${body}`);
-  } catch { /* telegram optional */ }
+  } catch {
+    /* telegram optional */
+  }
 }

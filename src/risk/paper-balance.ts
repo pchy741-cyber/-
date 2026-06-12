@@ -3,15 +3,15 @@
  */
 import { KR_FEE } from '../config/constants.js';
 import { getPool } from '../db/client.js';
-import { type AccountBalance, type Position } from '../kis/account.js';
+import type { AccountBalance, Position } from '../kis/account.js';
 import { logger } from '../utils/logger.js';
 
 export const PAPER_INITIAL_CAPITAL = Number(process.env.PAPER_INITIAL_CAPITAL_KRW) || 30_000_000;
 const PAPER_BUY_FEE_PCT = KR_FEE.BUY_FEE_PCT;
 const PAPER_SELL_FEE_PCT = KR_FEE.SELL_FEE_PCT;
-let paperCashUsed = 0;       // 현재 투자 중인 매수 원가 합
-let paperRealizedPnl = 0;    // 확정 수익/손실 누적
-let paperRestored = false;   // 서버 시작 후 DB에서 복원했는지
+let paperCashUsed = 0; // 현재 투자 중인 매수 원가 합
+let paperRealizedPnl = 0; // 확정 수익/손실 누적
+let paperRestored = false; // 서버 시작 후 DB에서 복원했는지
 let paperLedgerCache: { fetchedAt: number; state: PaperLedgerState } | null = null;
 
 interface PaperHoldingState {
@@ -41,7 +41,7 @@ function applyPaperOrder(
   if (row.side === 'BUY') {
     const buyFee = Math.round(value * PAPER_BUY_FEE_PCT);
     h.qty += qty;
-    h.totalCost += (value + buyFee);
+    h.totalCost += value + buyFee;
     return { bought: value, sold: 0, realizedPnl: 0 };
   }
 
@@ -86,7 +86,12 @@ async function loadPaperLedger(force = false): Promise<PaperLedgerState> {
   let totalSold = 0;
   let realizedPnl = 0;
 
-  for (const row of rows as Array<{ stock_code: string; side: 'BUY' | 'SELL'; filled_quantity: number; filled_price: number }>) {
+  for (const row of rows as Array<{
+    stock_code: string;
+    side: 'BUY' | 'SELL';
+    filled_quantity: number;
+    filled_price: number;
+  }>) {
     const result = applyPaperOrder(holdings, row);
     totalBought += result.bought;
     totalSold += result.sold;
@@ -109,8 +114,11 @@ export async function restorePaperState(): Promise<void> {
     paperCashUsed = Object.values(state.holdings).reduce((sum, h) => sum + h.totalCost, 0);
     paperRestored = true;
 
-    const posCount = Object.values(state.holdings).filter(h => h.qty > 0).length;
-    logger.info(`📦 Paper 상태 복원: 총매수 ${state.totalBought.toLocaleString()}원, 총매도 ${state.totalSold.toLocaleString()}원, 보유 ${posCount}종목, 투자중 ${Math.round(paperCashUsed).toLocaleString()}원, 실현PnL ${Math.round(paperRealizedPnl).toLocaleString()}원`, { component: 'PAPER' });
+    const posCount = Object.values(state.holdings).filter((h) => h.qty > 0).length;
+    logger.info(
+      `📦 Paper 상태 복원: 총매수 ${state.totalBought.toLocaleString()}원, 총매도 ${state.totalSold.toLocaleString()}원, 보유 ${posCount}종목, 투자중 ${Math.round(paperCashUsed).toLocaleString()}원, 실현PnL ${Math.round(paperRealizedPnl).toLocaleString()}원`,
+      { component: 'PAPER' },
+    );
   } catch (err) {
     logger.error(`Paper 상태 복원 실패: ${err}`, { component: 'PAPER' });
   }
@@ -123,7 +131,7 @@ async function getPaperPositions(): Promise<Position[]> {
     if (entries.length === 0) return [];
 
     // 실시간 시세 조회 (useRealUrl=true → live 서버에서 가격 가져옴)
-    let priceMap = new Map<string, number>();
+    const priceMap = new Map<string, number>();
     try {
       const { getBatchPrices } = await import('../kis/market.js');
       const codes = entries.map(([code]) => code);
@@ -134,7 +142,9 @@ async function getPaperPositions(): Promise<Position[]> {
       for (const [code, quote] of batchResult) {
         if (quote.currentPrice > 0) priceMap.set(code, quote.currentPrice);
       }
-    } catch { /* 시세 실패 시 매수가 폴백 */ }
+    } catch {
+      /* 시세 실패 시 매수가 폴백 */
+    }
 
     return entries.map(([stockCode, h]) => {
       const avgPrice = h.qty > 0 ? h.totalCost / h.qty : 0;
@@ -164,7 +174,7 @@ export async function getPaperBalance(): Promise<AccountBalance> {
 
   // 매수원가 기준 (시가평가액이 아님) — 현금은 체결시에만 변동, 주가 변동과 무관
   const holdingsCost = Object.values(state.holdings)
-    .filter(h => h.qty > 0)
+    .filter((h) => h.qty > 0)
     .reduce((s, h) => s + h.totalCost, 0);
   paperCashUsed = holdingsCost;
 
@@ -196,7 +206,7 @@ export function addPaperInvestment(amount: number) {
 // 매도: 매수 원가 복원 + 차액을 실현손익에 반영
 export function removePaperInvestment(sellAmount: number, buyAmount?: number) {
   const cost = buyAmount ?? sellAmount;
-  paperRealizedPnl += (sellAmount - cost);
+  paperRealizedPnl += sellAmount - cost;
   paperCashUsed = Math.max(0, paperCashUsed - cost);
   paperLedgerCache = null;
 }
@@ -209,7 +219,7 @@ export function resetPaperBalance() {
 
 // ── Paper 자금 자동 리필 (자율학습 모드) ──────────────────────────────
 // 현금이 시드의 20% 미만이고 보유종목 없으면 → 기존 주문 아카이브 + 시드 리셋
-const PAPER_REFILL_THRESHOLD = 0.20; // 시드 대비 20% 미만이면 리필
+const PAPER_REFILL_THRESHOLD = 0.2; // 시드 대비 20% 미만이면 리필
 let lastRefillCheck = 0;
 
 /**
@@ -237,7 +247,7 @@ export async function checkAndRefillPaper(): Promise<boolean> {
     // 세대 번호 부여 (몇 번째 리필인지 추적)
     const { rows: genRows } = await pool.query(
       `SELECT COALESCE(MAX(CAST(NULLIF(regexp_replace(value, '[^0-9]', '', 'g'), '') AS int)), 0) + 1 as next_gen
-       FROM overseas_state WHERE key LIKE 'paper_kr_gen_%'`
+       FROM overseas_state WHERE key LIKE 'paper_kr_gen_%'`,
     );
     const gen = genRows[0]?.next_gen ?? 1;
 
@@ -254,16 +264,22 @@ export async function checkAndRefillPaper(): Promise<boolean> {
     // 세대 기록
     await pool.query(
       `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
-      [`paper_kr_gen_${gen}`, JSON.stringify({
-        archivedAt: new Date().toISOString(),
-        ordersArchived: rowCount,
-        finalCash: balance.orderableCash,
-        finalPnl: balance.totalProfitLoss,
-        winRate: null, // 일일학습에서 계산
-      })],
+      [
+        `paper_kr_gen_${gen}`,
+        JSON.stringify({
+          archivedAt: new Date().toISOString(),
+          ordersArchived: rowCount,
+          finalCash: balance.orderableCash,
+          finalPnl: balance.totalProfitLoss,
+          winRate: null, // 일일학습에서 계산
+        }),
+      ],
     );
 
-    logger.info(`🔄 [PAPER-REFILL] 국내 모의자금 리필 (세대 #${gen}): ${balance.orderableCash.toLocaleString()}원 → ${PAPER_INITIAL_CAPITAL.toLocaleString()}원 (${rowCount}건 아카이브, 누적PnL ${Math.round(balance.totalProfitLoss).toLocaleString()}원)`, { component: 'PAPER' });
+    logger.info(
+      `🔄 [PAPER-REFILL] 국내 모의자금 리필 (세대 #${gen}): ${balance.orderableCash.toLocaleString()}원 → ${PAPER_INITIAL_CAPITAL.toLocaleString()}원 (${rowCount}건 아카이브, 누적PnL ${Math.round(balance.totalProfitLoss).toLocaleString()}원)`,
+      { component: 'PAPER' },
+    );
     return true;
   } catch (e) {
     logger.warn(`Paper 리필 체크 실패: ${e}`, { component: 'PAPER' });

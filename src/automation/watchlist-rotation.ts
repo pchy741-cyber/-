@@ -1,9 +1,9 @@
-import { getPool, logSystem } from '../db/client.js';
 import { getCtxIsPaper } from '../config/context.js';
-import { getVolumeRankingStocks, getChangeRankingStocks, getCurrentPrice } from '../kis/market.js';
-import { getInvestorFlow } from './investor-flow.js';
+import { getPool, logSystem } from '../db/client.js';
+import { getChangeRankingStocks, getCurrentPrice, getVolumeRankingStocks } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
+import { getInvestorFlow } from './investor-flow.js';
 
 /**
  * 워치리스트 자동 순환 (Weekly)
@@ -35,7 +35,8 @@ export async function runWatchlistRotation(): Promise<void> {
 
     // 현재 보유 중인 종목 코드 목록 (절대 제거 금지)
     const { rows: holdingRows } = await pool.query(
-      `SELECT DISTINCT stock_code FROM transaction_chains WHERE status = 'OPEN' AND total_quantity > 0 AND is_paper = $1`, [getCtxIsPaper()],
+      `SELECT DISTINCT stock_code FROM transaction_chains WHERE status = 'OPEN' AND total_quantity > 0 AND is_paper = $1`,
+      [getCtxIsPaper()],
     );
     const holdingCodes = new Set(holdingRows.map((r: any) => String(r.stock_code)));
 
@@ -114,7 +115,9 @@ export async function runWatchlistRotation(): Promise<void> {
           [code],
         );
         if (rowCount && rowCount > 0) {
-          logger.info(`♻️ 워치리스트 재활성화: ${code}(${stockName}) — 7일 평균 ${avgScore.toFixed(1)}점`, { component: 'WATCHLIST_ROTATION' });
+          logger.info(`♻️ 워치리스트 재활성화: ${code}(${stockName}) — 7일 평균 ${avgScore.toFixed(1)}점`, {
+            component: 'WATCHLIST_ROTATION',
+          });
           added.push(`${code}(${avgScore.toFixed(0)}점, 재활성화)`);
         }
         continue;
@@ -127,10 +130,9 @@ export async function runWatchlistRotation(): Promise<void> {
         [code, stockName],
       );
       existingCodes.add(code); // 중복 추가 방지
-      logger.info(
-        `✨ 워치리스트 자동 추가: ${code}(${stockName}) — 7일 평균 ${avgScore.toFixed(1)}점`,
-        { component: 'WATCHLIST_ROTATION' },
-      );
+      logger.info(`✨ 워치리스트 자동 추가: ${code}(${stockName}) — 7일 평균 ${avgScore.toFixed(1)}점`, {
+        component: 'WATCHLIST_ROTATION',
+      });
       added.push(`${code}(${avgScore.toFixed(0)}점)`);
     }
 
@@ -157,7 +159,9 @@ export async function runWatchlistRotation(): Promise<void> {
         added.length > 0 ? `♻️ 재활성(${added.length}): ${added.join(', ')}` : '',
         marketAdded.length > 0 ? `🔍 시장발굴(${marketAdded.length}): ${marketAdded.join(', ')}` : '',
         skipped.length > 0 ? `보유중 유지(${skipped.length}): ${skipped.join(', ')}` : '',
-      ].filter(Boolean).join('\n');
+      ]
+        .filter(Boolean)
+        .join('\n');
       await sendTelegramMessage(msg);
     } else {
       logger.info('워치리스트 순환: 변경 없음', { component: 'WATCHLIST_ROTATION' });
@@ -190,7 +194,8 @@ export async function runDailyMarketScan(): Promise<void> {
 
     // ── 0. 현재 보유 중인 종목 (절대 비활성화 금지) ──────────────────────
     const { rows: holdingRows } = await pool.query(
-      `SELECT DISTINCT stock_code FROM transaction_chains WHERE status = 'OPEN' AND total_quantity > 0 AND is_paper = $1`, [getCtxIsPaper()],
+      `SELECT DISTINCT stock_code FROM transaction_chains WHERE status = 'OPEN' AND total_quantity > 0 AND is_paper = $1`,
+      [getCtxIsPaper()],
     );
     const holdingCodes = new Set(holdingRows.map((r: any) => String(r.stock_code)));
 
@@ -225,22 +230,21 @@ export async function runDailyMarketScan(): Promise<void> {
       if (recordCount >= 2 && avgScore < 48) {
         await pool.query(`UPDATE watchlist SET is_active = false WHERE stock_code = $1`, [code]);
         dailyRemoved.push(`${code}(${row.stock_name ?? code}, ${avgScore.toFixed(0)}점)`);
-        logger.info(`🗑️ 일일정리: ${code}(${row.stock_name}) — 3일 평균 ${avgScore.toFixed(1)}점`, { component: 'DAILY_MARKET_SCAN' });
+        logger.info(`🗑️ 일일정리: ${code}(${row.stock_name}) — 3일 평균 ${avgScore.toFixed(1)}점`, {
+          component: 'DAILY_MARKET_SCAN',
+        });
         continue;
       }
 
       // 스마트머니 이탈 체크 (기관+외국인 동시 순매도 + 외국인 연속 3일+)
       if (recordCount >= 1) {
         const flow = await getInvestorFlow(code, 5).catch(() => null);
-        if (
-          flow &&
-          flow.institutionNet < 0 &&
-          flow.foreignNet < 0 &&
-          flow.foreignStreak <= -3
-        ) {
+        if (flow && flow.institutionNet < 0 && flow.foreignNet < 0 && flow.foreignStreak <= -3) {
           await pool.query(`UPDATE watchlist SET is_active = false WHERE stock_code = $1`, [code]);
           dailyRemoved.push(`${code}(${row.stock_name ?? code}, 스마트머니이탈)`);
-          logger.info(`🗑️ 일일정리: ${code}(${row.stock_name}) — 기관+외국인 동시 이탈 ${flow.foreignStreak}일`, { component: 'DAILY_MARKET_SCAN' });
+          logger.info(`🗑️ 일일정리: ${code}(${row.stock_name}) — 기관+외국인 동시 이탈 ${flow.foreignStreak}일`, {
+            component: 'DAILY_MARKET_SCAN',
+          });
         }
       }
     }
@@ -263,7 +267,10 @@ export async function runDailyMarketScan(): Promise<void> {
       return;
     }
 
-    logger.info(`시장 발굴 후보: KOSPI거래량${kospiVol.length} + KOSDAQ거래량${kosdaqVol.length} + KOSPI급등${kospiChg.length} + KOSDAQ급등${kosdaqChg.length} = 총${allRankingStocks.length}개`, { component: 'DAILY_MARKET_SCAN' });
+    logger.info(
+      `시장 발굴 후보: KOSPI거래량${kospiVol.length} + KOSDAQ거래량${kosdaqVol.length} + KOSPI급등${kospiChg.length} + KOSDAQ급등${kosdaqChg.length} = 총${allRankingStocks.length}개`,
+      { component: 'DAILY_MARKET_SCAN' },
+    );
 
     // 현재 워치리스트 전체 (활성/비활성 구분) — 정리 후 재조회
     const { rows: watchlistRows } = await pool.query(`SELECT stock_code, is_active FROM watchlist`);
@@ -311,8 +318,14 @@ export async function runDailyMarketScan(): Promise<void> {
               supplyScore += 3;
               reasons.push(`기관+외국인 동시순매수`);
             } else {
-              if (instBuy) { supplyScore += 1; reasons.push(`기관순매수`); }
-              if (foreignBuy) { supplyScore += 1; reasons.push(`외국인순매수`); }
+              if (instBuy) {
+                supplyScore += 1;
+                reasons.push(`기관순매수`);
+              }
+              if (foreignBuy) {
+                supplyScore += 1;
+                reasons.push(`외국인순매수`);
+              }
             }
             if (retailOnly) {
               supplyScore -= 2;
@@ -345,7 +358,9 @@ export async function runDailyMarketScan(): Promise<void> {
     const slotsAvailable = Math.max(0, MAX_WATCHLIST_SIZE - currentActiveCount);
 
     if (slotsAvailable === 0) {
-      logger.info(`🚫 감시종목 하드캡 도달 (${currentActiveCount}/${MAX_WATCHLIST_SIZE}) — 신규 편입 스킵`, { component: 'DAILY_MARKET_SCAN' });
+      logger.info(`🚫 감시종목 하드캡 도달 (${currentActiveCount}/${MAX_WATCHLIST_SIZE}) — 신규 편입 스킵`, {
+        component: 'DAILY_MARKET_SCAN',
+      });
     }
 
     // 수급 점수 내림차순 정렬 → 슬롯 여유만큼 편입, 최대 10개
@@ -357,9 +372,13 @@ export async function runDailyMarketScan(): Promise<void> {
 
     for (const item of toAdd) {
       if (item.isInactive) {
-        await pool.query(`UPDATE watchlist SET is_active = true, source = 'AUTO' WHERE stock_code = $1`, [item.stock_code]);
+        await pool.query(`UPDATE watchlist SET is_active = true, source = 'AUTO' WHERE stock_code = $1`, [
+          item.stock_code,
+        ]);
         reactivated.push(`${item.stock_code}(${item.stock_name}, ${item.reason})`);
-        logger.info(`♻️ 재활성: ${item.stock_code}(${item.stock_name}) — ${item.reason}`, { component: 'DAILY_MARKET_SCAN' });
+        logger.info(`♻️ 재활성: ${item.stock_code}(${item.stock_name}) — ${item.reason}`, {
+          component: 'DAILY_MARKET_SCAN',
+        });
       } else {
         await pool.query(
           `INSERT INTO watchlist (stock_code, stock_name, market, is_active, source)
@@ -368,7 +387,9 @@ export async function runDailyMarketScan(): Promise<void> {
           [item.stock_code, item.stock_name || item.stock_code],
         );
         newlyAdded.push(`${item.stock_code}(${item.stock_name}, ${item.reason})`);
-        logger.info(`✨ 신규 편입: ${item.stock_code}(${item.stock_name}) — ${item.reason}`, { component: 'DAILY_MARKET_SCAN' });
+        logger.info(`✨ 신규 편입: ${item.stock_code}(${item.stock_name}) — ${item.reason}`, {
+          component: 'DAILY_MARKET_SCAN',
+        });
       }
     }
 
@@ -379,7 +400,9 @@ export async function runDailyMarketScan(): Promise<void> {
         dailyRemoved.length > 0 ? `🗑️ 정리(${dailyRemoved.length}): ${dailyRemoved.join(' | ')}` : '',
         newlyAdded.length > 0 ? `✨ 신규(${newlyAdded.length}): ${newlyAdded.join(' | ')}` : '',
         reactivated.length > 0 ? `♻️ 재활성(${reactivated.length}): ${reactivated.join(' | ')}` : '',
-      ].filter(Boolean).join('\n');
+      ]
+        .filter(Boolean)
+        .join('\n');
       await sendTelegramMessage(msg);
     } else {
       logger.info('일일 정비: 변경 없음', { component: 'DAILY_MARKET_SCAN' });

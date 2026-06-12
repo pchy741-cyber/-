@@ -1,4 +1,4 @@
-import type { TransactionChain, TradeDecision } from '../../db/models.js';
+import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { getKSTNow } from '../../utils/time.js';
@@ -14,7 +14,7 @@ interface EodContext {
   todayDown: boolean;
   kospiPenalty: number;
   adjMaxPositionKrw: number;
-  totalAssets: number;            // 총자산 (cascading multiplier 미적용 원본)
+  totalAssets: number; // 총자산 (cascading multiplier 미적용 원본)
   blockNewBuys: boolean;
   watchlistCodes?: string[]; // 워치리스트 종목 코드 (시간외 줍줍용)
   scannedStocks?: Array<{ stock_code: string; stock_name: string }>; // 바닥낚시 스캐너 결과
@@ -30,7 +30,18 @@ interface EodContext {
  * 호출 위치: deduplicateSells() AFTER → 이미 청산 결정 있으면 중복 추가 안 함
  */
 export function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: EodContext): TradeDecision[] {
-  const { kstH, kstM, openChains, livePrices, todayDown, kospiPenalty, totalAssets, blockNewBuys, watchlistCodes, scannedStocks } = ctx;
+  const {
+    kstH,
+    kstM,
+    openChains,
+    livePrices,
+    todayDown,
+    kospiPenalty,
+    totalAssets,
+    blockNewBuys,
+    watchlistCodes,
+    scannedStocks,
+  } = ctx;
   const result = [...decisions];
 
   const isEodBuyWindow = kstH === 14 && kstM >= 50;
@@ -54,8 +65,9 @@ export function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: EodCon
       // BOTTOM_FISHING 체인은 TP/SL로 관리 — 익일 강제청산 제외
       if (chain.strategy_mode === 'BOTTOM_FISHING') continue;
       // EOD/시간외 줍줍 종목인지 확인 (줍줍 아닌 종목은 일반 전략이 관리)
-      const isEodTarget = (EOD_BLUECHIP_CODES as readonly string[]).includes(chain.stock_code)
-        || (watchlistCodes ?? []).includes(chain.stock_code);
+      const isEodTarget =
+        (EOD_BLUECHIP_CODES as readonly string[]).includes(chain.stock_code) ||
+        (watchlistCodes ?? []).includes(chain.stock_code);
       if (!isEodTarget) continue;
       const alreadySelling = result.some(
         (d) => d.stock_code === chain.stock_code && ['SELL', 'FORCE_CLOSE'].includes(d.action),
@@ -80,7 +92,7 @@ export function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: EodCon
       const p = livePrices.get(code);
       if (!p || p.currentPrice <= 0 || p.changePct > -0.5) continue;
       // 총자산 10% 직접 사용 (pipeline cascading multiplier 우회 — EOD 단타는 별도 사이징)
-      const eodPositionKrw = Math.round(totalAssets * 0.10);
+      const eodPositionKrw = Math.round(totalAssets * 0.1);
       const qty = Math.floor(eodPositionKrw / p.currentPrice);
       if (qty <= 0) continue;
       const alreadyBuying = result.some(
@@ -94,10 +106,12 @@ export function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: EodCon
         price_type: 'MARKET',
         limit_price: p.currentPrice,
         reasoning: `EOD줍줍: 하락장 블루칩 (당일${p.changePct.toFixed(1)}%) → 익일 장시작 청산 예정`,
-        confidence: 0.80,
+        confidence: 0.8,
         trigger_source: 'EOD_BLUECHIP',
       });
-      logger.info(`🛒 EOD줍줍 매수: ${code} x${qty} @${p.currentPrice} (당일${p.changePct.toFixed(1)}%)`, { component: 'EOD_BLUECHIP' });
+      logger.info(`🛒 EOD줍줍 매수: ${code} x${qty} @${p.currentPrice} (당일${p.changePct.toFixed(1)}%)`, {
+        component: 'EOD_BLUECHIP',
+      });
     }
   }
 
@@ -106,11 +120,7 @@ export function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: EodCon
   // 블루칩 + 워치리스트 + 바닥낚시 스캔 종목 중 급락한 것만
   if (isAfterHoursBuyWindow && !blockNewBuys) {
     const scannedCodeSet = new Set((scannedStocks ?? []).map((s) => s.stock_code));
-    const afterHoursCodes = new Set([
-      ...EOD_BLUECHIP_CODES,
-      ...(watchlistCodes ?? []),
-      ...scannedCodeSet,
-    ]);
+    const afterHoursCodes = new Set([...EOD_BLUECHIP_CODES, ...(watchlistCodes ?? []), ...scannedCodeSet]);
     let afterHoursBuyCount = 0;
     const maxAfterHoursBuys = 4; // 시간외 최대 4종목 (바닥낚시 확장)
 

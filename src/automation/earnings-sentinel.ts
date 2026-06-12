@@ -49,7 +49,7 @@ export async function checkKrEarnings(code: string): Promise<EarningsCheckResult
     const data = (await res.json()) as unknown;
     const items: Array<Record<string, unknown>> = Array.isArray(data)
       ? (data as Array<Record<string, unknown>>)
-      : ((data as Record<string, unknown>)?.list as Array<Record<string, unknown>> ?? []);
+      : (((data as Record<string, unknown>)?.list as Array<Record<string, unknown>>) ?? []);
 
     const EARNINGS_MARKERS = ['실적발표', '잠정실적', '분기실적', '영업실적'];
     for (const item of items) {
@@ -58,7 +58,7 @@ export async function checkKrEarnings(code: string): Promise<EarningsCheckResult
         const dateRaw = String(item.date ?? item.startDate ?? item.eventDate ?? '');
         const normalized = dateRaw.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
         const eventDate = normalized ? new Date(normalized) : null;
-        if (eventDate && !isNaN(eventDate.getTime())) {
+        if (eventDate && !Number.isNaN(eventDate.getTime())) {
           const daysUntil = Math.round((eventDate.getTime() - today.getTime()) / 86400000);
           if (daysUntil >= 0 && daysUntil <= REFRESH.EARNINGS_WINDOW_DAYS) {
             const result: EarningsCheckResult = {
@@ -67,10 +67,9 @@ export async function checkKrEarnings(code: string): Promise<EarningsCheckResult
               daysUntil,
             };
             _cache.set(cacheKey, { result, expires: Date.now() + REFRESH.EARNINGS_CACHE_TTL_MS });
-            logger.info(
-              `📅 KR실적발표 [${code}] D+${daysUntil}일 (${dateRaw}) → 매수 차단`,
-              { component: 'EARNINGS_SENTINEL' },
-            );
+            logger.info(`📅 KR실적발표 [${code}] D+${daysUntil}일 (${dateRaw}) → 매수 차단`, {
+              component: 'EARNINGS_SENTINEL',
+            });
             return result;
           }
         }
@@ -103,8 +102,8 @@ export async function checkUsEarnings(symbol: string): Promise<EarningsCheckResu
     const json = (await res.json()) as Record<string, unknown>;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const earningsDates: number[] = (json as any)
-      ?.quoteSummary?.result?.[0]?.calendarEvents?.earnings?.earningsDate ?? [];
+    const earningsDates: number[] =
+      (json as any)?.quoteSummary?.result?.[0]?.calendarEvents?.earnings?.earningsDate ?? [];
 
     const nowSec = Date.now() / 1000;
     for (const ts of earningsDates) {
@@ -117,10 +116,9 @@ export async function checkUsEarnings(symbol: string): Promise<EarningsCheckResu
           daysUntil: Math.max(0, daysUntil),
         };
         _cache.set(cacheKey, { result, expires: Date.now() + REFRESH.EARNINGS_CACHE_TTL_MS });
-        logger.info(
-          `📅 US실적발표 [${symbol}] D+${daysUntil}일 (${dateStr}) → 매수 차단`,
-          { component: 'EARNINGS_SENTINEL' },
-        );
+        logger.info(`📅 US실적발표 [${symbol}] D+${daysUntil}일 (${dateStr}) → 매수 차단`, {
+          component: 'EARNINGS_SENTINEL',
+        });
         return result;
       }
     }

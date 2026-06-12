@@ -11,10 +11,10 @@
  */
 export {
   dashboardRoutes,
-  invalidateDashboardCache,
+  getKnownStockName,
   hardInvalidateDashboardCache,
+  invalidateDashboardCache,
   invalidateModeCache,
   isInvalidStockName,
-  getKnownStockName,
   prewarmDashboard,
 } from './dashboard/index.js';

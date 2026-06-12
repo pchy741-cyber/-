@@ -1,6 +1,6 @@
 import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
-import { config } from '../../config/index.js';
 import { getCtxIsPaper } from '../../config/context.js';
+import { config } from '../../config/index.js';
 import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
@@ -90,9 +90,14 @@ export async function applyHardRules(params: {
   let trailingStopThreshold = -2.5;
   try {
     const { getPool } = await import('../../db/client.js');
-    const { rows } = await getPool().query('SELECT trailing_stop_pct FROM portfolio_allocation_config WHERE is_paper = $1 LIMIT 1', [getCtxIsPaper()]);
+    const { rows } = await getPool().query(
+      'SELECT trailing_stop_pct FROM portfolio_allocation_config WHERE is_paper = $1 LIMIT 1',
+      [getCtxIsPaper()],
+    );
     if (rows[0]?.trailing_stop_pct) trailingStopThreshold = -Math.abs(Number(rows[0].trailing_stop_pct));
-  } catch { /* 기본값 사용 */ }
+  } catch {
+    /* 기본값 사용 */
+  }
 
   for (const chain of openChains) {
     const price = livePrices.get(chain.stock_code);
@@ -107,9 +112,8 @@ export async function applyHardRules(params: {
     );
     if (alreadySelling) continue;
 
-    const baseStop = chain.stop_loss_pct != null
-      ? Number(chain.stop_loss_pct)
-      : (stopLossPct ?? baseParams.stopLossPct);
+    const baseStop =
+      chain.stop_loss_pct != null ? Number(chain.stop_loss_pct) : (stopLossPct ?? baseParams.stopLossPct);
 
     // ── 진입 초기 여유 버퍼: 비활성화 (2026-06 성과 검토) ──
     // v2 문제: WR 30.8%에서 earlyBuffer 1.5%는 70% 잘못된 진입의 손실을 -3%→-4.5%로 확대
@@ -124,7 +128,8 @@ export async function applyHardRules(params: {
 
     // PROFIT_TAKING 상태: 트레일링 스탑은 technical-fallback 전담, 하드 손절은 여기서도 강제
     if (chain.status === 'PROFIT_TAKING') {
-      if (pnlPct <= baseStop) { // PROFIT_TAKING은 이미 수익 실현한 상태 → 버퍼 없이 원래 SL
+      if (pnlPct <= baseStop) {
+        // PROFIT_TAKING은 이미 수익 실현한 상태 → 버퍼 없이 원래 SL
         logger.info(
           `🔒 PROFIT_TAKING 하드 손절: ${chain.stock_code} ${pnlPct.toFixed(1)}% ≤ ${baseStop}% — 잔여 포지션 강제 청산`,
           { component: 'RISK_GUARD' },
@@ -181,13 +186,35 @@ export async function applyHardRules(params: {
 
 // 섹터 집중도 차단에 사용하는 정적 섹터 맵
 const SECTOR_MAP: Record<string, string> = {
-  '000660': '반도체', '005930': '반도체', '042700': '반도체', '005290': '반도체', '357780': '반도체', '403870': '반도체',
-  '051910': '배터리', '006400': '배터리', '247540': '배터리', '373220': '배터리', '336260': '배터리', '003670': '배터리',
-  '012450': '방산', '079550': '방산', '034020': '방산',
-  '035420': '인터넷', '035720': '인터넷', '377300': '인터넷',
-  '207940': '바이오', '068270': '바이오', '328130': '바이오', '196170': '바이오', '028300': '바이오',
-  '055550': '금융', '105560': '금융', '316140': '금융',
-  '267260': '전력', '009540': '조선', '066570': '가전',
+  '000660': '반도체',
+  '005930': '반도체',
+  '042700': '반도체',
+  '005290': '반도체',
+  '357780': '반도체',
+  '403870': '반도체',
+  '051910': '배터리',
+  '006400': '배터리',
+  '247540': '배터리',
+  '373220': '배터리',
+  '336260': '배터리',
+  '003670': '배터리',
+  '012450': '방산',
+  '079550': '방산',
+  '034020': '방산',
+  '035420': '인터넷',
+  '035720': '인터넷',
+  '377300': '인터넷',
+  '207940': '바이오',
+  '068270': '바이오',
+  '328130': '바이오',
+  '196170': '바이오',
+  '028300': '바이오',
+  '055550': '금융',
+  '105560': '금융',
+  '316140': '금융',
+  '267260': '전력',
+  '009540': '조선',
+  '066570': '가전',
 };
 
 /**
@@ -207,7 +234,9 @@ export function filterSectorConcentration(
     if (sector) heldSectorCounts[sector] = (heldSectorCounts[sector] ?? 0) + 1;
   }
   const blockedSectors = new Set(
-    Object.entries(heldSectorCounts).filter(([, n]) => n >= maxPerSector).map(([s]) => s),
+    Object.entries(heldSectorCounts)
+      .filter(([, n]) => n >= maxPerSector)
+      .map(([s]) => s),
   );
   if (blockedSectors.size === 0) return decisions;
 
@@ -215,7 +244,10 @@ export function filterSectorConcentration(
     if (d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN') return true;
     const sector = SECTOR_MAP[d.stock_code];
     if (sector && blockedSectors.has(sector)) {
-      logger.warn(`🚫 섹터 집중 차단: ${d.stock_code} (${sector}) — 이미 ${heldSectorCounts[sector]}종목 보유 (한도 ${maxPerSector})`, { component: 'RISK_GUARD' });
+      logger.warn(
+        `🚫 섹터 집중 차단: ${d.stock_code} (${sector}) — 이미 ${heldSectorCounts[sector]}종목 보유 (한도 ${maxPerSector})`,
+        { component: 'RISK_GUARD' },
+      );
       return false;
     }
     return true;
@@ -223,10 +255,7 @@ export function filterSectorConcentration(
 }
 
 /** CEO 수동 매도 쿨다운 필터 (24시간 재진입 금지) */
-export function filterManualCooldown(
-  decisions: TradeDecision[],
-  manuallySoldCodes: Set<string>,
-): TradeDecision[] {
+export function filterManualCooldown(decisions: TradeDecision[], manuallySoldCodes: Set<string>): TradeDecision[] {
   if (manuallySoldCodes.size === 0) return decisions;
   const before = decisions.length;
   const result = decisions.filter((d) => {
@@ -237,7 +266,9 @@ export function filterManualCooldown(
     return true;
   });
   if (result.length < before) {
-    logger.info(`🚫 수동 매도 쿨다운: ${before - result.length}건 BUY 차단 (${[...manuallySoldCodes].join(', ')})`, { component: 'RISK_GUARD' });
+    logger.info(`🚫 수동 매도 쿨다운: ${before - result.length}건 BUY 차단 (${[...manuallySoldCodes].join(', ')})`, {
+      component: 'RISK_GUARD',
+    });
   }
   return result;
 }
@@ -257,10 +288,9 @@ export function deduplicateSells(decisions: TradeDecision[]): TradeDecision[] {
       if (!existing || (SELL_PRIORITY[d.action] ?? 0) > (SELL_PRIORITY[existing.action] ?? 0)) {
         sellMap.set(d.stock_code, d);
       } else {
-        logger.warn(
-          `🔇 중복 매도 신호 제거: ${d.stock_code} ${d.action} (이미 ${existing.action} 존재)`,
-          { component: 'RISK_GUARD' },
-        );
+        logger.warn(`🔇 중복 매도 신호 제거: ${d.stock_code} ${d.action} (이미 ${existing.action} 존재)`, {
+          component: 'RISK_GUARD',
+        });
       }
     } else {
       nonSellDecisions.push(d);

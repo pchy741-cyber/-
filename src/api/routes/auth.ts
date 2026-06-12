@@ -4,11 +4,19 @@
  * POST /auth/logout  — 세션 쿠키 삭제
  * GET  /auth/me      — 현재 로그인 상태 확인
  */
-import { timingSafeEqual } from 'crypto';
+import { timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { getCookie } from 'hono/cookie';
-import { clearSessionCookie, createSessionToken, extractSessionNonce, isMobilePhone, registerMobileSession, setSessionCookie, verifySessionToken } from '../middleware/auth.js';
 import { sleep } from '../../utils/sleep.js';
+import {
+  clearSessionCookie,
+  createSessionToken,
+  extractSessionNonce,
+  isMobilePhone,
+  registerMobileSession,
+  setSessionCookie,
+  verifySessionToken,
+} from '../middleware/auth.js';
 
 export const authRoutes = new Hono();
 

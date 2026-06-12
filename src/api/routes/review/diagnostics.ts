@@ -37,8 +37,16 @@ app.get('/review/diag', async (c) => {
     ]);
 
     const [strategyResult, snapshotResult] = await Promise.all([
-      pool.query(`SELECT mode, buy_threshold, stop_loss_pct, take_profit_pct, is_active FROM strategy_config WHERE is_active = true LIMIT 1`).catch(() => ({ rows: [] })),
-      pool.query(`SELECT is_paper, total_value, cash_balance, invested_value, snapshot_at FROM portfolio_snapshots ORDER BY snapshot_at DESC LIMIT 4`).catch(() => ({ rows: [] })),
+      pool
+        .query(
+          `SELECT mode, buy_threshold, stop_loss_pct, take_profit_pct, is_active FROM strategy_config WHERE is_active = true LIMIT 1`,
+        )
+        .catch(() => ({ rows: [] })),
+      pool
+        .query(
+          `SELECT is_paper, total_value, cash_balance, invested_value, snapshot_at FROM portfolio_snapshots ORDER BY snapshot_at DESC LIMIT 4`,
+        )
+        .catch(() => ({ rows: [] })),
     ]);
 
     let kisBalance = null;
@@ -50,7 +58,14 @@ app.get('/review/diag', async (c) => {
         totalEvalAmount: bal.totalEvalAmount,
         totalProfitLoss: bal.totalProfitLoss,
         positionCount: bal.positions?.length ?? 0,
-        positions: bal.positions?.map(p => ({ code: p.stockCode, name: p.stockName, qty: p.quantity, avg: p.avgBuyPrice, cur: p.currentPrice, pnl: p.profitLoss })),
+        positions: bal.positions?.map((p) => ({
+          code: p.stockCode,
+          name: p.stockName,
+          qty: p.quantity,
+          avg: p.avgBuyPrice,
+          cur: p.currentPrice,
+          pnl: p.profitLoss,
+        })),
       };
     } catch {}
 
@@ -63,7 +78,9 @@ app.get('/review/diag', async (c) => {
             THEN (COALESCE(filled_price,price)-avg_buy_price)*quantity ELSE 0 END)::numeric, 2) as realized_pnl
         FROM orders WHERE trigger_source='OVERSEAS' AND trading_mode='paper' AND status='FILLED'
         GROUP BY side`);
-      const { rows: osState } = await pool.query("SELECT key, value FROM overseas_state WHERE key IN ('cash_paper','cash')");
+      const { rows: osState } = await pool.query(
+        "SELECT key, value FROM overseas_state WHERE key IN ('cash_paper','cash')",
+      );
       overseasPaperStats = { trades: osStat, state: osState };
     } catch {}
 
@@ -90,7 +107,8 @@ app.post('/review/paper-reset', async (c) => {
     const currentCash = Number(stateRows.find((r: any) => r.key === 'cash_paper')?.value ?? 0);
 
     const { rows: holdingRows } = await pool.query(
-      'SELECT stock_code, exchange, quantity, avg_price FROM overseas_holdings WHERE is_paper = true');
+      'SELECT stock_code, exchange, quantity, avg_price FROM overseas_holdings WHERE is_paper = true',
+    );
     const holdingsCost = holdingRows.reduce((s: number, r: any) => s + Number(r.quantity) * Number(r.avg_price), 0);
 
     const { rows: sellRows } = await pool.query(`
@@ -117,7 +135,12 @@ app.post('/review/paper-reset', async (c) => {
       const fee = price * qty * OVERSEAS_FEE_PCT;
       totalRealizedPnl += pnl;
       return {
-        stock_code: r.stock_code, qty, price, avgBuy, pnl: +pnl.toFixed(2), fee: +fee.toFixed(2),
+        stock_code: r.stock_code,
+        qty,
+        price,
+        avgBuy,
+        pnl: +pnl.toFixed(2),
+        fee: +fee.toFixed(2),
         date: r.created_at,
       };
     });
@@ -126,7 +149,7 @@ app.post('/review/paper-reset', async (c) => {
     const totalSellVolume = sellRows.reduce((s: number, r: any) => s + Number(r.qty) * Number(r.price), 0);
     const estFees = (totalBuyVolume + totalSellVolume) * OVERSEAS_FEE_PCT;
 
-    const body = await c.req.json().catch(() => ({})) as any;
+    const body = (await c.req.json().catch(() => ({}))) as any;
     const targetCash = body.target ?? 10000;
 
     const deficit = targetCash - (currentCash + holdingsCost);
@@ -134,12 +157,15 @@ app.post('/review/paper-reset', async (c) => {
       await pool.query('DELETE FROM overseas_holdings WHERE is_paper = true');
       await pool.query(
         "INSERT INTO overseas_state (key, value) VALUES ('cash_paper', $1) ON CONFLICT (key) DO UPDATE SET value = $1",
-        [String(targetCash)]);
+        [String(targetCash)],
+      );
       return c.json({
         action: 'RESET_COMPLETE',
         previousCash: +currentCash.toFixed(2),
         previousHoldings: holdingRows.map((r: any) => ({
-          code: r.stock_code, qty: +Number(r.quantity).toFixed(4), avg: +Number(r.avg_price).toFixed(2),
+          code: r.stock_code,
+          qty: +Number(r.quantity).toFixed(4),
+          avg: +Number(r.avg_price).toFixed(2),
         })),
         newCash: targetCash,
         analysis: {
@@ -158,7 +184,9 @@ app.post('/review/paper-reset', async (c) => {
       action: 'DRY_RUN',
       currentCash: +currentCash.toFixed(2),
       holdings: holdingRows.map((r: any) => ({
-        code: r.stock_code, qty: +Number(r.quantity).toFixed(4), avg: +Number(r.avg_price).toFixed(2),
+        code: r.stock_code,
+        qty: +Number(r.quantity).toFixed(4),
+        avg: +Number(r.avg_price).toFixed(2),
         cost: +(Number(r.quantity) * Number(r.avg_price)).toFixed(2),
       })),
       holdingsCost: +holdingsCost.toFixed(2),

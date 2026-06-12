@@ -8,7 +8,7 @@ import { sleep } from '../utils/sleep.js';
 const COMPONENT = 'SHORT_SELLING';
 
 const _shortCache = new Map<string, { data: ShortSellingData; fetchedAt: number; isError?: boolean }>();
-const SHORT_CACHE_TTL_MS = 60 * 60 * 1000;       // 60분 — 성공 응답
+const SHORT_CACHE_TTL_MS = 60 * 60 * 1000; // 60분 — 성공 응답
 const SHORT_ERROR_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6시간 — 404/오류 (재시작 후 재폭발 방지)
 
 /** 공매도 TR ID (일별 공매도 현황) */
@@ -39,10 +39,7 @@ interface DailyShortData {
  */
 async function fetchShortSellingRawData(stockCode: string, days: number): Promise<DailyShortData[]> {
   const endDate = new Date().toISOString().split('T')[0].replace(/-/g, '');
-  const startDate = new Date(Date.now() - days * 2 * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .split('T')[0]
-    .replace(/-/g, '');
+  const startDate = new Date(Date.now() - days * 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0].replace(/-/g, '');
 
   await marketDataRateLimiter.acquire();
   const res = await kisRequest<Record<string, string>[]>({
@@ -141,7 +138,14 @@ export async function fetchShortSellingData(stockCode: string, days: number = 5)
       { component: COMPONENT },
     );
 
-    const result: ShortSellingData = { stockCode, shortVolume, shortRatio, shortTrend, isIncreasing: increasing, riskLevel };
+    const result: ShortSellingData = {
+      stockCode,
+      shortVolume,
+      shortRatio,
+      shortTrend,
+      isIncreasing: increasing,
+      riskLevel,
+    };
     _shortCache.set(stockCode, { data: result, fetchedAt: Date.now() });
     return result;
   } catch (err) {
@@ -153,7 +157,14 @@ export async function fetchShortSellingData(stockCode: string, days: number = 5)
     } else {
       logger.warn(`공매도 조회 실패 (${stockCode}): ${message}`, { component: COMPONENT });
     }
-    const fallback: ShortSellingData = { stockCode, shortVolume: 0, shortRatio: 0, shortTrend: [], isIncreasing: false, riskLevel: 'LOW' };
+    const fallback: ShortSellingData = {
+      stockCode,
+      shortVolume: 0,
+      shortRatio: 0,
+      shortTrend: [],
+      isIncreasing: false,
+      riskLevel: 'LOW',
+    };
     _shortCache.set(stockCode, { data: fallback, fetchedAt: Date.now(), isError: true });
     return fallback;
   }

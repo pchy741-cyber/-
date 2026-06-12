@@ -22,16 +22,16 @@ export interface GeminiCallOptions {
 
 // ── 레이트 리미터: 무료 티어 한도 준수 ──
 const RATE_LIMIT = {
-  RPM: 10,        // 분당 10건
-  RPD: 250,       // 일 250건
-  TPM: 250_000,   // 분당 25만 토큰
+  RPM: 10, // 분당 10건
+  RPD: 250, // 일 250건
+  TPM: 250_000, // 분당 25만 토큰
 } as const;
 
 interface RateState {
-  minuteSlots: number[];    // 최근 1분 호출 타임스탬프
-  dailyCalls: number;       // 오늘 호출 수
-  dailyResetAt: number;     // 일 리셋 시각 (midnight PT)
-  minuteTokens: number[];   // 최근 1분 토큰 사용 [{ts, tokens}]
+  minuteSlots: number[]; // 최근 1분 호출 타임스탬프
+  dailyCalls: number; // 오늘 호출 수
+  dailyResetAt: number; // 일 리셋 시각 (midnight PT)
+  minuteTokens: number[]; // 최근 1분 토큰 사용 [{ts, tokens}]
 }
 
 const _rate: RateState = {
@@ -42,7 +42,7 @@ const _rate: RateState = {
 };
 
 function resetDailyIfNeeded(): void {
-  const now = Date.now();
+  const _now = Date.now();
   // midnight Pacific Time 기준 리셋 (UTC-7 → +7h offset)
   const todayMidnightPT = new Date().setUTCHours(7, 0, 0, 0);
   if (_rate.dailyResetAt < todayMidnightPT) {
@@ -67,7 +67,7 @@ function checkRateLimit(): { ok: boolean; waitMs: number; reason: string } {
   }
 
   // RPM 체크
-  _rate.minuteSlots = _rate.minuteSlots.filter(t => now - t < 60_000);
+  _rate.minuteSlots = _rate.minuteSlots.filter((t) => now - t < 60_000);
   if (_rate.minuteSlots.length >= RATE_LIMIT.RPM) {
     const waitMs = 60_000 - (now - _rate.minuteSlots[0]) + 100;
     return { ok: false, waitMs, reason: `분당 한도 (${_rate.minuteSlots.length}/${RATE_LIMIT.RPM} RPM)` };
@@ -76,7 +76,7 @@ function checkRateLimit(): { ok: boolean; waitMs: number; reason: string } {
   return { ok: true, waitMs: 0, reason: '' };
 }
 
-function recordCall(tokens: number): void {
+function recordCall(_tokens: number): void {
   const now = Date.now();
   _rate.minuteSlots.push(now);
   _rate.dailyCalls++;
@@ -85,8 +85,12 @@ function recordCall(tokens: number): void {
 
 // ── AI 비용 추적 (대시보드용) ──
 const _dailyTotals = {
-  inputTokens: 0, outputTokens: 0, totalTokens: 0,
-  calls: 0, vertexCalls: 0, studioCalls: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  totalTokens: 0,
+  calls: 0,
+  vertexCalls: 0,
+  studioCalls: 0,
 };
 
 interface CallRecord {
@@ -110,7 +114,7 @@ export function getAiCostSummary() {
       inputTokens: _dailyTotals.inputTokens,
       outputTokens: _dailyTotals.outputTokens,
       totalTokens: _dailyTotals.totalTokens,
-      estimatedCostUsd: 0,  // 무료 티어 → 항상 $0
+      estimatedCostUsd: 0, // 무료 티어 → 항상 $0
       vertexDailyBudgetUsd: 0,
       vertexDailySpentUsd: 0,
       vertexAvailable: false,
@@ -151,7 +155,7 @@ export async function callVertexGemini(
   let rateCheck = checkRateLimit();
   if (!rateCheck.ok && rateCheck.waitMs > 0) {
     logger.info(`⏳ AI Studio RPM 대기 ${Math.ceil(rateCheck.waitMs / 1000)}초 [${label}]`, { component: 'AI_COST' });
-    await new Promise(r => setTimeout(r, rateCheck.waitMs));
+    await new Promise((r) => setTimeout(r, rateCheck.waitMs));
     rateCheck = checkRateLimit();
   }
   if (!rateCheck.ok) {

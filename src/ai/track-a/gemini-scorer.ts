@@ -7,7 +7,7 @@ import { buildScoringPrompt, type RegimeHint } from '../prompts/track-a-scoring.
 import type { GeminiAnalysis } from './gemini.js';
 
 // Gemini 스코어링 응답의 최상위 구조에 대한 스키마 정의
-const GeminiScoringResponseSchema = z.object({
+const _GeminiScoringResponseSchema = z.object({
   // scores 배열의 각 항목은 우선 unknown으로 파싱 후 개별적으로 검증
   scores: z.array(z.unknown()),
 });
@@ -58,7 +58,10 @@ ${JSON.stringify(stocks, null, 2)}
         validScores.push(zod.data);
       }
     } else {
-      const stockCode = typeof score === 'object' && score !== null && 'stock_code' in score ? String((score as any).stock_code) : 'UNKNOWN';
+      const stockCode =
+        typeof score === 'object' && score !== null && 'stock_code' in score
+          ? String((score as any).stock_code)
+          : 'UNKNOWN';
       logger.warn(`Gemini 스코어 검증 실패 (${stockCode}): ${zod.error?.message}`, {
         component: 'TRACK_A',
         invalidData: score,
@@ -112,10 +115,9 @@ export async function runGeminiScoring(params: {
 
   const maxScore = allScores.length > 0 ? Math.max(...allScores.map((s) => s.composite_score)) : 0;
 
-  logger.info(
-    `Gemini 스코어링 완료: ${allScores.length}/${allStocks.length}개 유효, 최고점=${maxScore}`,
-    { component: 'TRACK_A' },
-  );
+  logger.info(`Gemini 스코어링 완료: ${allScores.length}/${allStocks.length}개 유효, 최고점=${maxScore}`, {
+    component: 'TRACK_A',
+  });
 
   return allScores;
 }

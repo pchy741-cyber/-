@@ -1,4 +1,3 @@
-import { config } from '../config/index.js';
 import { getPool, logSystem } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 
@@ -19,13 +18,18 @@ export async function archiveOldData(): Promise<void> {
   const dataCutoff = new Date();
   dataCutoff.setDate(dataCutoff.getDate() - 365);
 
-  logger.info(`🗄️ 데이터 아카이빙 시작 (로그: ${logCutoff.toISOString().split('T')[0]} 이전, 데이터: ${dataCutoff.toISOString().split('T')[0]} 이전)`, { component: 'ARCHIVE' });
+  logger.info(
+    `🗄️ 데이터 아카이빙 시작 (로그: ${logCutoff.toISOString().split('T')[0]} 이전, 데이터: ${dataCutoff.toISOString().split('T')[0]} 이전)`,
+    { component: 'ARCHIVE' },
+  );
 
   let totalDeleted = 0;
 
   // system_log 정리 (90일 — 순수 로그)
   try {
-    const { rowCount } = await getPool().query('DELETE FROM system_log WHERE timestamp < $1', [logCutoff.toISOString()]);
+    const { rowCount } = await getPool().query('DELETE FROM system_log WHERE timestamp < $1', [
+      logCutoff.toISOString(),
+    ]);
     totalDeleted += rowCount ?? 0;
     logger.info(`  system_log: ${rowCount ?? 0}건 삭제`, { component: 'ARCHIVE' });
   } catch (e) {
@@ -34,7 +38,9 @@ export async function archiveOldData(): Promise<void> {
 
   // ai_scores 정리 (365일 — 패턴 학습에 활용)
   try {
-    const { rowCount } = await getPool().query('DELETE FROM ai_scores WHERE created_at < $1', [dataCutoff.toISOString()]);
+    const { rowCount } = await getPool().query('DELETE FROM ai_scores WHERE created_at < $1', [
+      dataCutoff.toISOString(),
+    ]);
     totalDeleted += rowCount ?? 0;
     logger.info(`  ai_scores: ${rowCount ?? 0}건 삭제`, { component: 'ARCHIVE' });
   } catch (e) {
@@ -46,7 +52,10 @@ export async function archiveOldData(): Promise<void> {
     // 양쪽 모드(paper + live) 모두 정리 — config.isPaper 한쪽만 정리 시 반대 모드 데이터 방치
     let snapDeleted = 0;
     for (const isPaperMode of [true, false]) {
-      const { rowCount: rc } = await getPool().query('DELETE FROM portfolio_snapshots WHERE snapshot_at < $1 AND is_paper = $2', [dataCutoff.toISOString(), isPaperMode]);
+      const { rowCount: rc } = await getPool().query(
+        'DELETE FROM portfolio_snapshots WHERE snapshot_at < $1 AND is_paper = $2',
+        [dataCutoff.toISOString(), isPaperMode],
+      );
       snapDeleted += rc ?? 0;
     }
     totalDeleted += snapDeleted;
@@ -57,7 +66,9 @@ export async function archiveOldData(): Promise<void> {
 
   // risk_events 정리 (365일 — 리스크 패턴 학습)
   try {
-    const { rowCount } = await getPool().query('DELETE FROM risk_events WHERE created_at < $1', [dataCutoff.toISOString()]);
+    const { rowCount } = await getPool().query('DELETE FROM risk_events WHERE created_at < $1', [
+      dataCutoff.toISOString(),
+    ]);
     totalDeleted += rowCount ?? 0;
     logger.info(`  risk_events: ${rowCount ?? 0}건 삭제`, { component: 'ARCHIVE' });
   } catch (e) {

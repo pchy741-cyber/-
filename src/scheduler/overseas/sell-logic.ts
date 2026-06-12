@@ -2,44 +2,57 @@
  * 매도 판단 로직 — SL/TP/ATR트레일/부분익절/AI매도/기술적매도
  * overseas-job.ts에서 추출
  */
-import { OVERSEAS, SECTOR_CLASS, OVERSEAS_FEE_PCT, getOverseasDynamic } from '../../config/constants.js';
-import { getAllocRisk } from '../../db/alloc-risk-cache.js';
-import { config } from '../../config/index.js';
-import { logger } from '../../utils/logger.js';
-import { getOverride } from '../../ai/ai-overrides.js';
-import type { OverseasPrice } from '../../kis/overseas.js';
-import {
-  GLOBAL_WATCHLIST,
-} from './watchlist.js';
-import {
-  updateTradeState, getMaxPrice, setMaxPrice,
-  cleanupPositionState,
-} from './state.js';
-import {
-  calcDynamicTrailDrop, calcDynamicTpSl, type RegimeAdjustment,
-  getPartialTpStages, getPartialTpStageNum, setPartialTpStageNum,
-} from './risk-intelligence.js';
-import { executeOverseasOrder } from './executor.js';
-import { getTunerOverrides } from './trade-tuner.js';
-import { isUSMarketLastNMinutes } from './session.js';
 
+import { getOverride } from '../../ai/ai-overrides.js';
+import { getOverseasDynamic, OVERSEAS_FEE_PCT, SECTOR_CLASS } from '../../config/constants.js';
+import { getAllocRisk } from '../../db/alloc-risk-cache.js';
+import type { OverseasPrice } from '../../kis/overseas.js';
+import { logger } from '../../utils/logger.js';
+import { executeOverseasOrder } from './executor.js';
+import {
+  calcDynamicTpSl,
+  calcDynamicTrailDrop,
+  getPartialTpStageNum,
+  getPartialTpStages,
+  type RegimeAdjustment,
+  setPartialTpStageNum,
+} from './risk-intelligence.js';
+import { isUSMarketLastNMinutes } from './session.js';
+import { cleanupPositionState, getMaxPrice, setMaxPrice, updateTradeState } from './state.js';
+import { getTunerOverrides } from './trade-tuner.js';
+import { GLOBAL_WATCHLIST } from './watchlist.js';
 
 // ── 타입 ──
 
 export interface TechResult {
-  code: string; name: string; exchange: string; sector: string;
-  price: OverseasPrice; signal: string; score: number;
-  rsi: number; adx: number; trendStrength: string;
-  dayRangePct: number; isMomentum: boolean; isBigMover: boolean;
-  aboveMA20: boolean; aboveMA60: boolean;
-  bollingerSqueeze: boolean; bollingerBreakout: 'UP' | 'DOWN' | 'NONE';
+  code: string;
+  name: string;
+  exchange: string;
+  sector: string;
+  price: OverseasPrice;
+  signal: string;
+  score: number;
+  rsi: number;
+  adx: number;
+  trendStrength: string;
+  dayRangePct: number;
+  isMomentum: boolean;
+  isBigMover: boolean;
+  aboveMA20: boolean;
+  aboveMA60: boolean;
+  bollingerSqueeze: boolean;
+  bollingerBreakout: 'UP' | 'DOWN' | 'NONE';
   atrPct: number;
-  vwapPosition?: 'ABOVE' | 'BELOW' | 'AT';  // 개선#4: VWAP 대비 위치
+  vwapPosition?: 'ABOVE' | 'BELOW' | 'AT'; // 개선#4: VWAP 대비 위치
 }
 
 export interface Holding {
-  qty: number; avgPrice: number; boughtAt: string; exchange: string;
-  tpPct: number | null; slPct: number | null;
+  qty: number;
+  avgPrice: number;
+  boughtAt: string;
+  exchange: string;
+  tpPct: number | null;
+  slPct: number | null;
   bucket?: string;
 }
 
@@ -85,7 +98,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       logger.info(`⏳ 미체결 주문 존재 → ${code} 추가 주문 스킵`, { component: 'OVERSEAS' });
       continue;
     }
-    const tech = techResults.find(t => t.code === code);
+    const tech = techResults.find((t) => t.code === code);
     if (!tech) continue;
 
     const curPrice = tech.price.currentPrice;
@@ -94,15 +107,28 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
 
     // AI Loop forceHold: Claude Code가 매도 보류 지시 (실적 발표 대기 등)
     const aiForceHold = getOverride<boolean>(`${code}_forceHold`);
-    if (aiForceHold && pnlPct > -8) {  // 손절 한도(-8%) 이상이면 AI 홀드 존중
-      logger.info(`🤖 AI Loop forceHold(해외): ${code} 매도 보류 (pnl=${pnlPct.toFixed(1)}%)`, { component: 'AI_LOOP' });
+    if (aiForceHold && pnlPct > -8) {
+      // 손절 한도(-8%) 이상이면 AI 홀드 존중
+      logger.info(`🤖 AI Loop forceHold(해외): ${code} 매도 보류 (pnl=${pnlPct.toFixed(1)}%)`, {
+        component: 'AI_LOOP',
+      });
       continue;
     }
     // AI Loop forceSell: Claude Code가 즉시 매도 지시
     const aiForceSell = getOverride<boolean>(`${code}_forceSell`);
     if (aiForceSell) {
       const reason = `🤖 AI Loop 강제매도 (pnl=${pnlPct.toFixed(1)}%)`;
-      const exec = await executeOverseasOrder(code, 'SELL', holding.qty, curPrice, holding.exchange, reason, holding.qty, holding.avgPrice, { isPaper: paperMode });
+      const exec = await executeOverseasOrder(
+        code,
+        'SELL',
+        holding.qty,
+        curPrice,
+        holding.exchange,
+        reason,
+        holding.qty,
+        holding.avgPrice,
+        { isPaper: paperMode },
+      );
       if (exec.submitted && exec.filledQty > 0) {
         cash += exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
         sellOrders.push(`${code} AI강제매도 ${exec.filledQty}주`);
@@ -118,22 +144,28 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
 
     let sellReason = '';
 
-    const watchItem = GLOBAL_WATCHLIST.find(w => w.code === code);
+    const watchItem = GLOBAL_WATCHLIST.find((w) => w.code === code);
     const sector = watchItem?.sector ?? '';
     const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
     const isMediumBeta = SECTOR_CLASS.MEDIUM_BETA.includes(sector);
-    const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
+    const _isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
 
     // ATR 동적 트레일링 스톱 + VIX 레짐 타이트닝
     const atrPctValue = tech.atrPct ?? 2.0;
     // TP/SL: 매 사이클마다 현재 조건으로 재계산 (DB 저장값은 참고용)
     // 기존 문제: DB에 20~25% TP가 박혀서 사실상 익절 불가 → 항상 현재 조건 반영
     const dyn = calcDynamicTpSl({
-      sector, adx: tech.adx ?? 20, rsi: tech.rsi ?? 50,
-      aiConfidence: ai?.confidence, aiAction: ai?.action, vixRegime, isMomentum: tech.isMomentum,
-      tunerOverrides, atrPct: atrPctValue,
+      sector,
+      adx: tech.adx ?? 20,
+      rsi: tech.rsi ?? 50,
+      aiConfidence: ai?.confidence,
+      aiAction: ai?.action,
+      vixRegime,
+      isMomentum: tech.isMomentum,
+      tunerOverrides,
+      atrPct: atrPctValue,
     });
-    let hardTpPct = dyn.tpPct;
+    const hardTpPct = dyn.tpPct;
     let stopLossPct: number;
     if (holding.slPct != null) {
       stopLossPct = holding.slPct; // SL은 매수 시점 기준 유지 (안정성)
@@ -143,7 +175,13 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     // DB 동기화 (대시보드 표시용)
     const { updateHoldingTpSl } = await import('./state.js');
     updateHoldingTpSl(code, hardTpPct, stopLossPct, paperMode).catch(() => {});
-    const dynamicTrailDrop = calcDynamicTrailDrop({ sector, atrPct: atrPctValue, maxPnlPct, adx: tech.adx, rsi: tech.rsi });
+    const dynamicTrailDrop = calcDynamicTrailDrop({
+      sector,
+      atrPct: atrPctValue,
+      maxPnlPct,
+      adx: tech.adx,
+      rsi: tech.rsi,
+    });
     // 수익 크기 비례 트레일 타이트닝: 수익 클수록 보호 강화 (2×ATR 연구 — 드로다운 32% 감소 검증)
     // maxPnl 10%+: 추가 0.5% 타이트, 15%+: 1.0% 타이트, 20%+: 1.5% 타이트
     const profitTighten = maxPnlPct >= 20 ? 1.5 : maxPnlPct >= 15 ? 1.0 : maxPnlPct >= 10 ? 0.5 : 0;
@@ -154,7 +192,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     const holdingDays = (Date.now() - new Date(holding.boughtAt).getTime()) / (1000 * 60 * 60 * 24);
     // 🔧 강한 매도 신호(score≤-30 + 과매수) → minHold 완화 (HIGH_BETA 3→1일)
     const strongSellSignal = tech.score <= -30 && (tech.signal === 'SELL' || tech.signal === 'STRONG_SELL');
-    const minHoldForSell = strongSellSignal ? 1 : (isHighBeta ? 3 : 2);
+    const minHoldForSell = strongSellSignal ? 1 : isHighBeta ? 3 : 2;
 
     // ── 개선#9: ADX/승률 기반 동적 보유기간 ──
     const effectiveMaxHold = calcDynamicHoldDays(maxHoldDays, tech, holdingDays);
@@ -174,28 +212,40 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     if (holding.bucket === 'TACTICAL' && isUSMarketLastNMinutes(30)) {
       sellReason = `스캘핑 마감 강제청산 (오버나이트 갭 방지): ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
 
-    // ── 0b. TACTICAL 갭 방어 하드플로어 — SL 뚫린 갭다운 즉시 탈출 ──
+      // ── 0b. TACTICAL 갭 방어 하드플로어 — SL 뚫린 갭다운 즉시 탈출 ──
     } else if (holding.bucket === 'TACTICAL' && pnlPct <= -4.0) {
       sellReason = `TACTICAL 갭방어 손절(-4% 하드플로어): ${pnlPct.toFixed(1)}%`;
 
-    // ── 1. 손절 ──
+      // ── 1. 손절 ──
     } else if (pnlPct <= stopLossPct) {
       sellReason = `손절(${stopLossPct}%): ${pnlPct.toFixed(1)}%`;
 
-    // ── 1b. 하락장 빠른 정리 ──
-    // score<=-20 조건으로 강화 — 시장 전체 급락 시 전종목 동시 발동 방지
-    } else if (vixRegime.regime !== 'CALM' && pnlPct < -2.5 && pnlPct > stopLossPct
-      && tech.score <= -20 && !tech.aboveMA20 && holdingDays >= 1.0) {
+      // ── 1b. 하락장 빠른 정리 ──
+      // score<=-20 조건으로 강화 — 시장 전체 급락 시 전종목 동시 발동 방지
+    } else if (
+      vixRegime.regime !== 'CALM' &&
+      pnlPct < -2.5 &&
+      pnlPct > stopLossPct &&
+      tech.score <= -20 &&
+      !tech.aboveMA20 &&
+      holdingDays >= 1.0
+    ) {
       sellReason = `하락장정리(${vixRegime.regime}/${pnlPct.toFixed(1)}%): score=${tech.score} MA20↓ → 현금확보`;
 
-    // ── 1c. 약세 조기 탈출 ──
-    // 시장 전체 하락과 개별 종목 약세를 구분하기 위해 임계값 강화
-    } else if (pnlPct < -3.0 && pnlPct > stopLossPct && tech.score <= -25
-      && !tech.aboveMA20 && tech.rsi < 40 && holdingDays >= 1) {
+      // ── 1c. 약세 조기 탈출 ──
+      // 시장 전체 하락과 개별 종목 약세를 구분하기 위해 임계값 강화
+    } else if (
+      pnlPct < -3.0 &&
+      pnlPct > stopLossPct &&
+      tech.score <= -25 &&
+      !tech.aboveMA20 &&
+      tech.rsi < 40 &&
+      holdingDays >= 1
+    ) {
       sellReason = `약세조기탈출(${pnlPct.toFixed(1)}%): score=${tech.score} RSI=${tech.rsi.toFixed(0)} MA20↓ → SL전 정리`;
 
-    // ── 1d. 시장 급락 수익 선제 확정 ──
-    // VIX FEAR/PANIC + 수익 구간 → 마이너스 전환 전 즉시 청산 (수익 반납 방지)
+      // ── 1d. 시장 급락 수익 선제 확정 ──
+      // VIX FEAR/PANIC + 수익 구간 → 마이너스 전환 전 즉시 청산 (수익 반납 방지)
     } else if (
       (vixRegime.regime === 'STRESS' || vixRegime.regime === 'CRISIS') &&
       pnlPct >= 1.0 &&
@@ -203,48 +253,64 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     ) {
       sellReason = `VIX급락 수익선제확정(${vixRegime.regime}): +${pnlPct.toFixed(1)}% → 급락전 청산`;
 
-    // ── 1e. 나스닥 급락 선제 청산 ──
-    // 전일 나스닥 -2% 이하 + 수익 구간 → 당일 미국장 약세 선반영, 수익 잠금
-    } else if (
-      ctx.nasdaqChange1d != null &&
-      ctx.nasdaqChange1d <= -2.0 &&
-      pnlPct >= 0.5 &&
-      holdingDays >= 0.1
-    ) {
+      // ── 1e. 나스닥 급락 선제 청산 ──
+      // 전일 나스닥 -2% 이하 + 수익 구간 → 당일 미국장 약세 선반영, 수익 잠금
+    } else if (ctx.nasdaqChange1d != null && ctx.nasdaqChange1d <= -2.0 && pnlPct >= 0.5 && holdingDays >= 0.1) {
       sellReason = `나스닥급락 선제청산(${ctx.nasdaqChange1d.toFixed(1)}%): +${pnlPct.toFixed(1)}% → 미국장 하락 선반영 즉시 수익확정`;
 
-    // ── 2. ATR 트레일링 스톱 ──
+      // ── 2. ATR 트레일링 스톱 ──
     } else if (maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {
       sellReason = `ATR트레일(${effectiveTrailDropPct.toFixed(1)}%/ATR${atrPctValue.toFixed(1)}%${vixRegime.trailTighten > 0 ? `/VIX${vixRegime.regime}` : ''}): 고점 +${maxPnlPct.toFixed(1)}% → 현재 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
 
-    // ── 2b. 수익보호 50% retrace 제거 — ATR 트레일링이 담당, 정상 풀백에서 위너 조기 절단 방지 ──
-    // (기존: maxPnlPct >= 3.0 && pnlPct < maxPnlPct * 0.50 → 매도 → 삭제)
+      // ── 2b. 수익보호 50% retrace 제거 — ATR 트레일링이 담당, 정상 풀백에서 위너 조기 절단 방지 ──
+      // (기존: maxPnlPct >= 3.0 && pnlPct < maxPnlPct * 0.50 → 매도 → 삭제)
 
-    // ── 2c. 마이크로 트레일 — +2%~트레일활성화 구간 ──
-    } else if (maxPnlPct >= 2.0 && maxPnlPct < trailActivatePct && drawdownFromPeak <= -1.5
-      && !tech.isMomentum && !(tech.aboveMA20 && tech.adx >= 30)) {
+      // ── 2c. 마이크로 트레일 — +2%~트레일활성화 구간 ──
+    } else if (
+      maxPnlPct >= 2.0 &&
+      maxPnlPct < trailActivatePct &&
+      drawdownFromPeak <= -1.5 &&
+      !tech.isMomentum &&
+      !(tech.aboveMA20 && tech.adx >= 30)
+    ) {
       sellReason = `마이크로트레일(+${maxPnlPct.toFixed(1)}%→${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%): 고점 대비 ${drawdownFromPeak.toFixed(1)}% 하락 → 수익보호`;
 
-    // ── 3. 하드 익절 — TP% 도달하면 무조건 매도 (isWinnerRiding 무관) ──
+      // ── 3. 하드 익절 — TP% 도달하면 무조건 매도 (isWinnerRiding 무관) ──
     } else if (pnlPct >= hardTpPct) {
       sellReason = `익절(${hardTpPct}%): +${pnlPct.toFixed(1)}%`;
 
-    // ── 4. 시간 기반 익절 — 3일+ 보유 & +2% 이상인데 모멘텀 없음 → 수익 확정 ──
-    } else if (holdingDays >= 3 && pnlPct >= 2.0 && !tech.isMomentum
-      && !(tech.aboveMA20 && tech.adx >= 30) && tech.rsi < 70) {
+      // ── 4. 시간 기반 익절 — 3일+ 보유 & +2% 이상인데 모멘텀 없음 → 수익 확정 ──
+    } else if (
+      holdingDays >= 3 &&
+      pnlPct >= 2.0 &&
+      !tech.isMomentum &&
+      !(tech.aboveMA20 && tech.adx >= 30) &&
+      tech.rsi < 70
+    ) {
       sellReason = `시간익절(${holdingDays.toFixed(0)}일/+${pnlPct.toFixed(1)}%): 모멘텀 없음 → 수익확정`;
 
-    // ── 5. AI/기술적 매도 ──
-    } else if (ai?.action === 'SELL' && ai.confidence >= 0.90) {
+      // ── 5. AI/기술적 매도 ──
+    } else if (ai?.action === 'SELL' && ai.confidence >= 0.9) {
       sellReason = `AI 급매도(${(ai.confidence * 100).toFixed(0)}%): ${ai.reasoning}`;
     } else if (ai?.action === 'SELL' && ai.confidence >= minAiSellConf && holdingDays >= minHoldForSell) {
       sellReason = `AI 매도(${(ai.confidence * 100).toFixed(0)}%): ${ai.reasoning}`;
-    } else if ((!ai || (ai.action === 'SELL' && ai.confidence < minAiSellConf)) && tech.rsi > 78 && tech.score < 10 && pnlPct >= 3.0 && holdingDays >= minHoldForSell) {
-      sellReason = `기술 익절(과매수): RSI=${tech.rsi.toFixed(0)} +${pnlPct.toFixed(1)}% ${ai ? `(AI=${(ai.confidence*100).toFixed(0)}%보강)` : ''}`;
-    } else if ((!ai || (ai.action === 'SELL' && ai.confidence < minAiSellConf)) && tech.score <= -30 && (tech.signal === 'SELL' || tech.signal === 'STRONG_SELL') && holdingDays >= minHoldForSell) {
-      sellReason = `기술적 매도: score=${tech.score} RSI=${tech.rsi.toFixed(0)} ${ai ? `(AI SELL ${(ai.confidence*100).toFixed(0)}%보강)` : ''}`;
+    } else if (
+      (!ai || (ai.action === 'SELL' && ai.confidence < minAiSellConf)) &&
+      tech.rsi > 78 &&
+      tech.score < 10 &&
+      pnlPct >= 3.0 &&
+      holdingDays >= minHoldForSell
+    ) {
+      sellReason = `기술 익절(과매수): RSI=${tech.rsi.toFixed(0)} +${pnlPct.toFixed(1)}% ${ai ? `(AI=${(ai.confidence * 100).toFixed(0)}%보강)` : ''}`;
+    } else if (
+      (!ai || (ai.action === 'SELL' && ai.confidence < minAiSellConf)) &&
+      tech.score <= -30 &&
+      (tech.signal === 'SELL' || tech.signal === 'STRONG_SELL') &&
+      holdingDays >= minHoldForSell
+    ) {
+      sellReason = `기술적 매도: score=${tech.score} RSI=${tech.rsi.toFixed(0)} ${ai ? `(AI SELL ${(ai.confidence * 100).toFixed(0)}%보강)` : ''}`;
 
-    // ── 6. 시간 손절/약세 정리 ──
+      // ── 6. 시간 손절/약세 정리 ──
     } else if (holdingDays >= 3 && pnlPct <= -5.5 && !tech.isMomentum) {
       sellReason = `시간SL(${holdingDays.toFixed(0)}일/${pnlPct.toFixed(1)}%): 반등 없이 하락 → 조기손절`;
     } else if (holdingDays >= 5 && pnlPct <= -3.0 && tech.score < 0 && !tech.aboveMA20) {
@@ -252,9 +318,10 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     } else if (holdingDays >= 7 && pnlPct <= -2.0 && pnlPct > -5.5 && tech.adx < 18) {
       sellReason = `횡보손절(${holdingDays.toFixed(0)}일/${pnlPct.toFixed(1)}%): ADX=${tech.adx.toFixed(0)} 추세없음 → 정리`;
     } else if (holdingDays > effectiveMaxHold && pnlPct < 3.0) {
-      sellReason = pnlPct < 0
-        ? `보유기한 초과(${holdingDays.toFixed(0)}일/손실): ${pnlPct.toFixed(1)}% → 청산`
-        : `보유기한 초과(${holdingDays.toFixed(0)}일/미미한 수익): ${pnlPct.toFixed(1)}% → 청산`;
+      sellReason =
+        pnlPct < 0
+          ? `보유기한 초과(${holdingDays.toFixed(0)}일/손실): ${pnlPct.toFixed(1)}% → 청산`
+          : `보유기한 초과(${holdingDays.toFixed(0)}일/미미한 수익): ${pnlPct.toFixed(1)}% → 청산`;
     } else if (isWeakStock(tech, holdingDays, pnlPct)) {
       sellReason = `약세종목 정리: ADX=${tech.adx.toFixed(0)} 횡보${holdingDays.toFixed(0)}일 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
     }
@@ -266,25 +333,58 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     if (!sellReason && holding.qty >= 2 && !atrExpanding) {
       const tpStages = getPartialTpStages(sector);
       const currentStage = await getPartialTpStageNum(code);
-      const nextStage = tpStages.find(st => st.stage > currentStage && pnlPct >= st.triggerPct);
+      const nextStage = tpStages.find((st) => st.stage > currentStage && pnlPct >= st.triggerPct);
       if (nextStage) {
         const partialQty = Math.max(1, Math.floor(holding.qty * nextStage.sellRatio));
         const partialReason = `부분익절${nextStage.stage}단계(+${nextStage.triggerPct}%) +${pnlPct.toFixed(1)}% → ${(nextStage.sellRatio * 100).toFixed(0)}% 실현`;
-        logger.info(`[PartialTP-${nextStage.stage}] ${code} ${partialQty}주 @ $${curPrice.toFixed(2)} (${partialReason})`, { component: 'OVERSEAS' });
-        const exec = await executeOverseasOrder(code, 'SELL', partialQty, curPrice, tech.exchange, partialReason, holding.qty, holding.avgPrice, { isPaper: paperMode });
+        logger.info(
+          `[PartialTP-${nextStage.stage}] ${code} ${partialQty}주 @ $${curPrice.toFixed(2)} (${partialReason})`,
+          { component: 'OVERSEAS' },
+        );
+        const exec = await executeOverseasOrder(
+          code,
+          'SELL',
+          partialQty,
+          curPrice,
+          tech.exchange,
+          partialReason,
+          holding.qty,
+          holding.avgPrice,
+          { isPaper: paperMode },
+        );
         if (exec.submitted && exec.filledQty > 0) {
           const proceeds = exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
           cash += proceeds;
-          await updateTradeState({ code, exchange: tech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: paperMode, fxRate: ctx.fxRate });
+          await updateTradeState({
+            code,
+            exchange: tech.exchange,
+            qty: exec.finalQty,
+            avgPrice: exec.finalAvgPrice,
+            newCash: cash,
+            isPaper: paperMode,
+            fxRate: ctx.fxRate,
+          });
           await setPartialTpStageNum(code, nextStage.stage, paperMode);
-          sellOrders.push(`부분익절${nextStage.stage} ${code} x${partialQty} @$${exec.filledPrice.toFixed(2)} (${partialReason})`);
+          sellOrders.push(
+            `부분익절${nextStage.stage} ${code} x${partialQty} @$${exec.filledPrice.toFixed(2)} (${partialReason})`,
+          );
         }
         continue;
       }
     }
 
     if (sellReason) {
-      const exec = await executeOverseasOrder(code, 'SELL', holding.qty, curPrice, tech.exchange, sellReason, holding.qty, holding.avgPrice, { isPaper: paperMode });
+      const exec = await executeOverseasOrder(
+        code,
+        'SELL',
+        holding.qty,
+        curPrice,
+        tech.exchange,
+        sellReason,
+        holding.qty,
+        holding.avgPrice,
+        { isPaper: paperMode },
+      );
       if (!exec.submitted) continue;
       if (exec.filledQty <= 0) {
         pendingOrderStocks.add(code);
@@ -293,11 +393,21 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       }
       const proceeds = exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
       cash += proceeds;
-      await updateTradeState({ code, exchange: tech.exchange, qty: exec.finalQty, avgPrice: exec.finalAvgPrice, newCash: cash, isPaper: paperMode, fxRate: ctx.fxRate });
+      await updateTradeState({
+        code,
+        exchange: tech.exchange,
+        qty: exec.finalQty,
+        avgPrice: exec.finalAvgPrice,
+        newCash: cash,
+        isPaper: paperMode,
+        fxRate: ctx.fxRate,
+      });
       if (exec.finalQty <= 0) {
         await cleanupPositionState(code, paperMode);
       }
-      sellOrders.push(`매도 ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (${sellReason}) [수수료 $${(exec.filledPrice * exec.filledQty * OVERSEAS_FEE_PCT).toFixed(2)}]`);
+      sellOrders.push(
+        `매도 ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (${sellReason}) [수수료 $${(exec.filledPrice * exec.filledQty * OVERSEAS_FEE_PCT).toFixed(2)}]`,
+      );
     }
   }
 

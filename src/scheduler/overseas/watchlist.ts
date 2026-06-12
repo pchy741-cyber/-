@@ -6,63 +6,63 @@
 // 근거: 2025년 리서치 — 방산/산업인프라가 빅테크 대비 초과 수익 (방산 +60~87% vs FAANG +36%)
 const CORE_WATCHLIST = [
   // 🤖 AI 반도체·인프라 (핵심 모멘텀 섹터)
-  { code: 'NVDA',  name: 'NVIDIA',          exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
-  { code: 'AMD',   name: 'AMD',             exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
-  { code: 'ANET',  name: 'Arista Networks', exchange: 'NYSE',   region: 'US', sector: 'INFRA' },
-  { code: 'VRT',   name: 'Vertiv',          exchange: 'NYSE',   region: 'US', sector: 'INFRA' },
+  { code: 'NVDA', name: 'NVIDIA', exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
+  { code: 'AMD', name: 'AMD', exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
+  { code: 'ANET', name: 'Arista Networks', exchange: 'NYSE', region: 'US', sector: 'INFRA' },
+  { code: 'VRT', name: 'Vertiv', exchange: 'NYSE', region: 'US', sector: 'INFRA' },
   // 🏛️ 빅테크 선별 (유동성 확보)
-  { code: 'META',  name: 'Meta',            exchange: 'NASDAQ', region: 'US', sector: 'TECH' },
-  { code: 'AAPL',  name: 'Apple',           exchange: 'NASDAQ', region: 'US', sector: 'TECH' },
-  { code: 'MSFT',  name: 'Microsoft',       exchange: 'NASDAQ', region: 'US', sector: 'TECH' },
+  { code: 'META', name: 'Meta', exchange: 'NASDAQ', region: 'US', sector: 'TECH' },
+  { code: 'AAPL', name: 'Apple', exchange: 'NASDAQ', region: 'US', sector: 'TECH' },
+  { code: 'MSFT', name: 'Microsoft', exchange: 'NASDAQ', region: 'US', sector: 'TECH' },
   // 🛡️ 방산·항공우주 (2025 최강 섹터, 글로벌 군비 지출 +9.4% YoY)
-  { code: 'RTX',   name: 'RTX Corp',        exchange: 'NYSE',   region: 'US', sector: 'DEFENSE' },
-  { code: 'LMT',   name: 'Lockheed Martin', exchange: 'NYSE',   region: 'US', sector: 'DEFENSE' },
-  { code: 'GEV',   name: 'GE Vernova',      exchange: 'NYSE',   region: 'US', sector: 'DEFENSE' },
-  { code: 'PLTR',  name: 'Palantir',        exchange: 'NYSE',   region: 'US', sector: 'DEFENSE' },
+  { code: 'RTX', name: 'RTX Corp', exchange: 'NYSE', region: 'US', sector: 'DEFENSE' },
+  { code: 'LMT', name: 'Lockheed Martin', exchange: 'NYSE', region: 'US', sector: 'DEFENSE' },
+  { code: 'GEV', name: 'GE Vernova', exchange: 'NYSE', region: 'US', sector: 'DEFENSE' },
+  { code: 'PLTR', name: 'Palantir', exchange: 'NYSE', region: 'US', sector: 'DEFENSE' },
   // 🏭 산업·에너지인프라 (AI 데이터센터 전력 수요 폭증 수혜)
-  { code: 'ETN',   name: 'Eaton Corp',      exchange: 'NYSE',   region: 'US', sector: 'INDUSTRIAL' },
-  { code: 'PWR',   name: 'Quanta Services', exchange: 'NYSE',   region: 'US', sector: 'INDUSTRIAL' },
+  { code: 'ETN', name: 'Eaton Corp', exchange: 'NYSE', region: 'US', sector: 'INDUSTRIAL' },
+  { code: 'PWR', name: 'Quanta Services', exchange: 'NYSE', region: 'US', sector: 'INDUSTRIAL' },
   // ☁️ 클라우드·엔터프라이즈 소프트웨어
-  { code: 'AMZN',  name: 'Amazon',          exchange: 'NASDAQ', region: 'US', sector: 'CLOUD' },
-  { code: 'GOOGL', name: 'Alphabet',        exchange: 'NASDAQ', region: 'US', sector: 'CLOUD' },
-  { code: 'ORCL',  name: 'Oracle',          exchange: 'NYSE',   region: 'US', sector: 'CLOUD' },
-  { code: 'NOW',   name: 'ServiceNow',      exchange: 'NYSE',   region: 'US', sector: 'CLOUD' },
-  { code: 'MELI',  name: 'MercadoLibre',    exchange: 'NASDAQ', region: 'US', sector: 'GROWTH' },
-  { code: 'AVGO',  name: 'Broadcom',        exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
+  { code: 'AMZN', name: 'Amazon', exchange: 'NASDAQ', region: 'US', sector: 'CLOUD' },
+  { code: 'GOOGL', name: 'Alphabet', exchange: 'NASDAQ', region: 'US', sector: 'CLOUD' },
+  { code: 'ORCL', name: 'Oracle', exchange: 'NYSE', region: 'US', sector: 'CLOUD' },
+  { code: 'NOW', name: 'ServiceNow', exchange: 'NYSE', region: 'US', sector: 'CLOUD' },
+  { code: 'MELI', name: 'MercadoLibre', exchange: 'NASDAQ', region: 'US', sector: 'GROWTH' },
+  { code: 'AVGO', name: 'Broadcom', exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
   // 🇯🇵 일본 ADR (NYSE 상장 — 미국 세션 거래, 엔화 약세 수혜 수출주)
-  { code: 'TM',    name: 'Toyota Motor',    exchange: 'NYSE',   region: 'US', sector: 'JP_AUTO' },
-  { code: 'SONY',  name: 'Sony Group',      exchange: 'NYSE',   region: 'US', sector: 'JP_TECH' },
-  { code: 'MUFG',  name: 'Mitsubishi UFJ',  exchange: 'NYSE',   region: 'US', sector: 'JP_BANK' },
+  { code: 'TM', name: 'Toyota Motor', exchange: 'NYSE', region: 'US', sector: 'JP_AUTO' },
+  { code: 'SONY', name: 'Sony Group', exchange: 'NYSE', region: 'US', sector: 'JP_TECH' },
+  { code: 'MUFG', name: 'Mitsubishi UFJ', exchange: 'NYSE', region: 'US', sector: 'JP_BANK' },
   // 🇹🇼 대만 ADR (NYSE 상장 — 미국 세션 거래, AI 반도체 공급망 핵심)
-  { code: 'TSM',   name: 'TSMC',            exchange: 'NYSE',   region: 'US', sector: 'TW_SEMI' },
-  { code: 'UMC',   name: 'United Micro',    exchange: 'NYSE',   region: 'US', sector: 'TW_SEMI' },
+  { code: 'TSM', name: 'TSMC', exchange: 'NYSE', region: 'US', sector: 'TW_SEMI' },
+  { code: 'UMC', name: 'United Micro', exchange: 'NYSE', region: 'US', sector: 'TW_SEMI' },
 ];
 
 // ── Extended 감시 목록 — 모멘텀/볼륨 기반 보조 후보 (12종목) ──
 // 대형주 유동성 + 섹터 다각화 보강 → Core에 없는 기회 포착
 const EXTENDED_WATCHLIST = [
   // 🤖 AI/반도체 추가
-  { code: 'MRVL',  name: 'Marvell Tech',    exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
-  { code: 'MU',    name: 'Micron',           exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
-  { code: 'SMCI',  name: 'Super Micro',      exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
+  { code: 'MRVL', name: 'Marvell Tech', exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
+  { code: 'MU', name: 'Micron', exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
+  { code: 'SMCI', name: 'Super Micro', exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
   // ☁️ SaaS/클라우드 추가
-  { code: 'CRM',   name: 'Salesforce',       exchange: 'NYSE',   region: 'US', sector: 'CLOUD' },
-  { code: 'SNOW',  name: 'Snowflake',        exchange: 'NYSE',   region: 'US', sector: 'CLOUD' },
+  { code: 'CRM', name: 'Salesforce', exchange: 'NYSE', region: 'US', sector: 'CLOUD' },
+  { code: 'SNOW', name: 'Snowflake', exchange: 'NYSE', region: 'US', sector: 'CLOUD' },
   // 🏭 인프라/산업 추가
-  { code: 'CAT',   name: 'Caterpillar',      exchange: 'NYSE',   region: 'US', sector: 'INDUSTRIAL' },
-  { code: 'GE',    name: 'GE Aerospace',     exchange: 'NYSE',   region: 'US', sector: 'DEFENSE' },
+  { code: 'CAT', name: 'Caterpillar', exchange: 'NYSE', region: 'US', sector: 'INDUSTRIAL' },
+  { code: 'GE', name: 'GE Aerospace', exchange: 'NYSE', region: 'US', sector: 'DEFENSE' },
   // 💊 헬스케어 (비상관 섹터 다각화)
-  { code: 'LLY',   name: 'Eli Lilly',        exchange: 'NYSE',   region: 'US', sector: 'HEALTH' },
-  { code: 'UNH',   name: 'UnitedHealth',     exchange: 'NYSE',   region: 'US', sector: 'HEALTH' },
+  { code: 'LLY', name: 'Eli Lilly', exchange: 'NYSE', region: 'US', sector: 'HEALTH' },
+  { code: 'UNH', name: 'UnitedHealth', exchange: 'NYSE', region: 'US', sector: 'HEALTH' },
   // 💰 금융 (금리 수혜)
-  { code: 'GS',    name: 'Goldman Sachs',    exchange: 'NYSE',   region: 'US', sector: 'FINANCE' },
-  { code: 'V',     name: 'Visa',             exchange: 'NYSE',   region: 'US', sector: 'FINANCE' },
+  { code: 'GS', name: 'Goldman Sachs', exchange: 'NYSE', region: 'US', sector: 'FINANCE' },
+  { code: 'V', name: 'Visa', exchange: 'NYSE', region: 'US', sector: 'FINANCE' },
   // ⚡ EV/에너지전환
-  { code: 'TSLA',  name: 'Tesla',            exchange: 'NASDAQ', region: 'US', sector: 'EV' },
+  { code: 'TSLA', name: 'Tesla', exchange: 'NASDAQ', region: 'US', sector: 'EV' },
   // 🎮 엔터테인먼트
-  { code: 'NFLX',  name: 'Netflix',          exchange: 'NASDAQ', region: 'US', sector: 'TECH' },
+  { code: 'NFLX', name: 'Netflix', exchange: 'NASDAQ', region: 'US', sector: 'TECH' },
   // 💊 헬스케어 추가 (CEO 요청)
-  { code: 'PMI',   name: 'Picard Medical',   exchange: 'AMEX',   region: 'US', sector: 'HEALTH' },
+  { code: 'PMI', name: 'Picard Medical', exchange: 'AMEX', region: 'US', sector: 'HEALTH' },
 ];
 
 // ── 통합 감시 목록 (Core 23 + Extended 12 = 35종목) ──
@@ -73,11 +73,17 @@ export const GLOBAL_WATCHLIST = [...CORE_WATCHLIST, ...EXTENDED_WATCHLIST];
 
 /** try-catch 래퍼 — 실패 시 null 반환, 오류 무시 */
 export async function safely<T>(fn: () => Promise<T>): Promise<T | null> {
-  try { return await fn(); } catch { return null; }
+  try {
+    return await fn();
+  } catch {
+    return null;
+  }
 }
 
 export function resolveOverseasStockName(code: string, exchange: string): string {
-  return GLOBAL_WATCHLIST.find((s) => s.code === code && s.exchange === exchange)?.name
-    ?? GLOBAL_WATCHLIST.find((s) => s.code === code)?.name
-    ?? code;
+  return (
+    GLOBAL_WATCHLIST.find((s) => s.code === code && s.exchange === exchange)?.name ??
+    GLOBAL_WATCHLIST.find((s) => s.code === code)?.name ??
+    code
+  );
 }

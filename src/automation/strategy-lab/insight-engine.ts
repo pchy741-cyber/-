@@ -33,7 +33,8 @@ export async function generateAndStoreInsights(days: number = 60): Promise<void>
   let upserted = 0;
   for (const i of insights) {
     try {
-      await pool.query(`
+      await pool.query(
+        `
         INSERT INTO strategy_insights
           (strategy_mode, condition_key, condition_label, win_rate, profit_factor,
            sample_count, avg_pnl_pct, insight_text, is_actionable, updated_at)
@@ -42,13 +43,23 @@ export async function generateAndStoreInsights(days: number = 60): Promise<void>
           condition_label = $3, win_rate = $4, profit_factor = $5,
           sample_count = $6, avg_pnl_pct = $7, insight_text = $8,
           is_actionable = $9, updated_at = NOW()
-      `, [
-        i.strategyMode, i.conditionKey, i.conditionLabel,
-        i.winRate, i.profitFactor, i.sampleCount, i.avgPnlPct,
-        i.insightText, i.isActionable,
-      ]);
+      `,
+        [
+          i.strategyMode,
+          i.conditionKey,
+          i.conditionLabel,
+          i.winRate,
+          i.profitFactor,
+          i.sampleCount,
+          i.avgPnlPct,
+          i.insightText,
+          i.isActionable,
+        ],
+      );
       upserted++;
-    } catch { /* individual insert fail → skip */ }
+    } catch {
+      /* individual insert fail → skip */
+    }
   }
 
   logger.info(`🧪 인사이트 갱신: ${upserted}/${insights.length}건 저장`, { component: 'STRATEGY_LAB' });
@@ -71,12 +82,13 @@ export async function generateStrategyInsights(days: number = 60): Promise<Strat
     logger.warn(`인사이트 분석 실패: ${e}`, { component: 'STRATEGY_LAB' });
   }
 
-  return insights.filter(i => i.sampleCount >= MIN_SAMPLES);
+  return insights.filter((i) => i.sampleCount >= MIN_SAMPLES);
 }
 
 // ── 전략별 전체 비교 ──────────────────────────────────────────────────
 async function analyzeByStrategyMode(days: number): Promise<StrategyInsight[]> {
-  const { rows } = await getPool().query(`
+  const { rows } = await getPool().query(
+    `
     SELECT strategy_mode,
       COUNT(*) as total,
       COUNT(*) FILTER (WHERE realized_pnl > 0) as wins,
@@ -91,14 +103,17 @@ async function analyzeByStrategyMode(days: number): Promise<StrategyInsight[]> {
       AND closed_at >= NOW() - ($1 * INTERVAL '1 day')
     GROUP BY strategy_mode
     HAVING COUNT(*) >= $2
-  `, [days, MIN_SAMPLES]);
+  `,
+    [days, MIN_SAMPLES],
+  );
 
   return rows.map((r: any) => buildInsight(r.strategy_mode, 'mode:overall', '전체', r, `${r.strategy_mode} 전체 성과`));
 }
 
 // ── 시간대별 분석 ──────────────────────────────────────────────────────
 async function analyzeByHour(days: number): Promise<StrategyInsight[]> {
-  const { rows } = await getPool().query(`
+  const { rows } = await getPool().query(
+    `
     SELECT strategy_mode,
       EXTRACT(HOUR FROM opened_at AT TIME ZONE 'Asia/Seoul')::int as entry_hour,
       COUNT(*) as total,
@@ -114,17 +129,26 @@ async function analyzeByHour(days: number): Promise<StrategyInsight[]> {
       AND closed_at >= NOW() - ($1 * INTERVAL '1 day')
     GROUP BY strategy_mode, entry_hour
     HAVING COUNT(*) >= $2
-  `, [days, MIN_SAMPLES]);
+  `,
+    [days, MIN_SAMPLES],
+  );
 
   return rows.map((r: any) =>
-    buildInsight(r.strategy_mode, `hour:${r.entry_hour}`, `${r.entry_hour}시대 진입`, r,
-      `${r.strategy_mode} ${r.entry_hour}시대 진입`));
+    buildInsight(
+      r.strategy_mode,
+      `hour:${r.entry_hour}`,
+      `${r.entry_hour}시대 진입`,
+      r,
+      `${r.strategy_mode} ${r.entry_hour}시대 진입`,
+    ),
+  );
 }
 
 // ── 요일별 분석 ──────────────────────────────────────────────────────
 async function analyzeByDayOfWeek(days: number): Promise<StrategyInsight[]> {
   const dowNames = ['일', '월', '화', '수', '목', '금', '토'];
-  const { rows } = await getPool().query(`
+  const { rows } = await getPool().query(
+    `
     SELECT strategy_mode,
       EXTRACT(DOW FROM opened_at AT TIME ZONE 'Asia/Seoul')::int as entry_dow,
       COUNT(*) as total,
@@ -140,16 +164,25 @@ async function analyzeByDayOfWeek(days: number): Promise<StrategyInsight[]> {
       AND closed_at >= NOW() - ($1 * INTERVAL '1 day')
     GROUP BY strategy_mode, entry_dow
     HAVING COUNT(*) >= $2
-  `, [days, MIN_SAMPLES]);
+  `,
+    [days, MIN_SAMPLES],
+  );
 
   return rows.map((r: any) =>
-    buildInsight(r.strategy_mode, `dow:${r.entry_dow}`, `${dowNames[r.entry_dow]}요일 진입`, r,
-      `${r.strategy_mode} ${dowNames[r.entry_dow]}요일 진입`));
+    buildInsight(
+      r.strategy_mode,
+      `dow:${r.entry_dow}`,
+      `${dowNames[r.entry_dow]}요일 진입`,
+      r,
+      `${r.strategy_mode} ${dowNames[r.entry_dow]}요일 진입`,
+    ),
+  );
 }
 
 // ── 보유기간별 분석 ──────────────────────────────────────────────────
 async function analyzeByHoldingBucket(days: number): Promise<StrategyInsight[]> {
-  const { rows } = await getPool().query(`
+  const { rows } = await getPool().query(
+    `
     SELECT strategy_mode,
       CASE
         WHEN EXTRACT(EPOCH FROM (closed_at - opened_at))/3600 < 8 THEN 'intraday'
@@ -170,19 +203,31 @@ async function analyzeByHoldingBucket(days: number): Promise<StrategyInsight[]> 
       AND closed_at >= NOW() - ($1 * INTERVAL '1 day')
     GROUP BY strategy_mode, hold_bucket
     HAVING COUNT(*) >= $2
-  `, [days, MIN_SAMPLES]);
+  `,
+    [days, MIN_SAMPLES],
+  );
 
   const bucketLabels: Record<string, string> = {
-    'intraday': '당일 청산', '1-3d': '1~3일 보유', '3-7d': '3~7일 보유', '7d+': '7일+ 보유',
+    intraday: '당일 청산',
+    '1-3d': '1~3일 보유',
+    '3-7d': '3~7일 보유',
+    '7d+': '7일+ 보유',
   };
   return rows.map((r: any) =>
-    buildInsight(r.strategy_mode, `hold:${r.hold_bucket}`, bucketLabels[r.hold_bucket] ?? r.hold_bucket, r,
-      `${r.strategy_mode} ${bucketLabels[r.hold_bucket] ?? r.hold_bucket}`));
+    buildInsight(
+      r.strategy_mode,
+      `hold:${r.hold_bucket}`,
+      bucketLabels[r.hold_bucket] ?? r.hold_bucket,
+      r,
+      `${r.strategy_mode} ${bucketLabels[r.hold_bucket] ?? r.hold_bucket}`,
+    ),
+  );
 }
 
 // ── 진입소스별 분석 ──────────────────────────────────────────────────
 async function analyzeByEntrySource(days: number): Promise<StrategyInsight[]> {
-  const { rows } = await getPool().query(`
+  const { rows } = await getPool().query(
+    `
     SELECT tc.strategy_mode,
       COALESCE(
         (SELECT o.trigger_source FROM orders o WHERE o.chain_id = tc.id AND o.side = 'BUY' ORDER BY o.created_at LIMIT 1),
@@ -201,17 +246,27 @@ async function analyzeByEntrySource(days: number): Promise<StrategyInsight[]> {
       AND tc.closed_at >= NOW() - ($1 * INTERVAL '1 day')
     GROUP BY tc.strategy_mode, entry_source
     HAVING COUNT(*) >= $2
-  `, [days, MIN_SAMPLES]);
+  `,
+    [days, MIN_SAMPLES],
+  );
 
   return rows.map((r: any) =>
-    buildInsight(r.strategy_mode, `source:${r.entry_source}`, `${r.entry_source} 진입`, r,
-      `${r.strategy_mode} ${r.entry_source} 진입`));
+    buildInsight(
+      r.strategy_mode,
+      `source:${r.entry_source}`,
+      `${r.entry_source} 진입`,
+      r,
+      `${r.strategy_mode} ${r.entry_source} 진입`,
+    ),
+  );
 }
 
 // ── 헬퍼 ──────────────────────────────────────────────────────────────
 
 function buildInsight(
-  mode: string, key: string, label: string,
+  mode: string,
+  key: string,
+  label: string,
   row: { total: number; wins: number; avg_win: number | null; avg_loss: number | null; avg_pnl_pct: number | null },
   prefix: string,
 ): StrategyInsight {

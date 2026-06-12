@@ -2,14 +2,15 @@
  * 롤링 Kelly 사이징 + EV 기반 포지션 사이징 배율
  * 연구 근거: Kelly criterion (QuantifiedStrategies)
  */
+
+import { GATE } from '../../config/constants.js';
 import { getPool } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
-import { GATE } from '../../config/constants.js';
-import { ctxMode } from './utils.js';
 import type { KellyResult } from './types.js';
+import { ctxMode } from './utils.js';
 
 export interface StockEVResult {
-  evPct: number;       // 기대값 % (winRate×avgWin - lossRate×avgLoss)
+  evPct: number; // 기대값 % (winRate×avgWin - lossRate×avgLoss)
   evMultiplier: number; // 포지션 사이즈 배율 (0.5~1.5)
   winRate: number;
   sampleCount: number;
@@ -17,14 +18,22 @@ export interface StockEVResult {
 
 export async function calcRollingKelly(days: number = 30, isPaper?: boolean): Promise<KellyResult> {
   const defaultResult: KellyResult = {
-    fullKelly: 0.20, halfKelly: 0.10,
-    winRate: 0.5, avgWin: 5.0, avgLoss: 3.0, sampleCount: 0,
-    profitFactor: 1.0, rMultiple: 1.67, evPerTrade: 0, breakevenWinRate: 0.5,
+    fullKelly: 0.2,
+    halfKelly: 0.1,
+    winRate: 0.5,
+    avgWin: 5.0,
+    avgLoss: 3.0,
+    sampleCount: 0,
+    profitFactor: 1.0,
+    rMultiple: 1.67,
+    evPerTrade: 0,
+    breakevenWinRate: 0.5,
   };
 
   try {
     const mode = ctxMode(isPaper);
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT
         filled_price,
         avg_buy_price
@@ -37,12 +46,16 @@ export async function calcRollingKelly(days: number = 30, isPaper?: boolean): Pr
         AND filled_price > 0
         AND created_at >= NOW() - make_interval(days => $1)
       ORDER BY created_at DESC
-    `, [days, mode]);
+    `,
+      [days, mode],
+    );
 
     if (rows.length < 10) return defaultResult; // 표본 부족 시 기본값
 
-    let wins = 0, losses = 0;
-    let totalWinPct = 0, totalLossPct = 0;
+    let wins = 0,
+      losses = 0;
+    let totalWinPct = 0,
+      totalLossPct = 0;
 
     for (const r of rows) {
       const sellPrice = Number(r.filled_price);
@@ -68,9 +81,9 @@ export async function calcRollingKelly(days: number = 30, isPaper?: boolean): Pr
     // Kelly Criterion: f = (b×p - q) / b, where b=avgWin/avgLoss, p=winRate, q=1-p
     const b = avgLoss > 0 ? avgWin / avgLoss : 1.0;
     const q = 1 - winRate;
-    const fullKelly = Math.max(0.05, Math.min(0.30, (b * winRate - q) / b));
+    const fullKelly = Math.max(0.05, Math.min(0.3, (b * winRate - q) / b));
     // 승률 기반 동적 Kelly 비율: 60%+→2/3 Kelly, 50%+→55%, 나머지→half Kelly
-    const kellyRatio = winRate >= 0.60 ? 0.67 : winRate >= 0.50 ? 0.55 : 0.50;
+    const kellyRatio = winRate >= 0.6 ? 0.67 : winRate >= 0.5 ? 0.55 : 0.5;
     const halfKelly = fullKelly * kellyRatio;
 
     // ── 세이버메트릭스 지표 ──
@@ -84,7 +97,18 @@ export async function calcRollingKelly(days: number = 30, isPaper?: boolean): Pr
       { component: 'RISK_INTEL' },
     );
 
-    return { fullKelly, halfKelly, winRate, avgWin, avgLoss, sampleCount: total, profitFactor, rMultiple, evPerTrade, breakevenWinRate };
+    return {
+      fullKelly,
+      halfKelly,
+      winRate,
+      avgWin,
+      avgLoss,
+      sampleCount: total,
+      profitFactor,
+      rMultiple,
+      evPerTrade,
+      breakevenWinRate,
+    };
   } catch {
     return defaultResult;
   }
@@ -103,7 +127,8 @@ export async function calcStockEVMultipliers(codes: string[], isPaper?: boolean)
 
   try {
     const mode = ctxMode(isPaper);
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT stock_code,
              COUNT(*) AS total,
              COUNT(*) FILTER (WHERE filled_price > avg_buy_price) AS wins,
@@ -118,7 +143,9 @@ export async function calcStockEVMultipliers(codes: string[], isPaper?: boolean)
         AND stock_code = ANY($1)
         AND created_at >= NOW() - INTERVAL '90 days'
       GROUP BY stock_code
-    `, [codes, mode]);
+    `,
+      [codes, mode],
+    );
 
     for (const r of rows) {
       const code = String(r.stock_code);

@@ -12,8 +12,12 @@ const LIVE_PIN = '7012';
 
 /** v4: 실전 거래 마스터 스위치 — false면 모든 live 요청 차단 */
 let _liveEnabled = (process.env.LIVE_ENABLED ?? 'false') === 'true';
-export function isLiveEnabled(): boolean { return _liveEnabled; }
-export function setLiveEnabled(enabled: boolean): void { _liveEnabled = enabled; }
+export function isLiveEnabled(): boolean {
+  return _liveEnabled;
+}
+export function setLiveEnabled(enabled: boolean): void {
+  _liveEnabled = enabled;
+}
 
 export interface PinValidation {
   ok: boolean;

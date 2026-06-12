@@ -1,8 +1,8 @@
 import type { TradeDecision } from '../../db/models.js';
 import { logger } from '../../utils/logger.js';
-import { generateSellDecisions } from './sell-signals.js';
-import { filterBuyCandidates } from './buy-filters.js';
 import { executeBuyDecisions } from './buy-execution.js';
+import { filterBuyCandidates } from './buy-filters.js';
+import { generateSellDecisions } from './sell-signals.js';
 import type { TechnicalFallbackParams } from './technical-fallback-types.js';
 
 /**

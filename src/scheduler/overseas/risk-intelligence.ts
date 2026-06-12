@@ -4,25 +4,25 @@
  */
 import { SECTOR_CLASS } from '../../config/constants.js';
 import { getPool } from '../../db/client.js';
-import { ctxMode, modePrefix } from './utils.js';
 import type { GradualCooldown } from './types.js';
+import { ctxMode, modePrefix } from './utils.js';
 import type { RegimeAdjustment } from './vix-regime.js';
 
-// ── re-export (기존 import 경로 유지) ──
-export type { VixRegime, RegimeAdjustment } from './vix-regime.js';
-export { getVixRegime } from './vix-regime.js';
-export type { KellyResult } from './types.js';
 export type { StockEVResult } from './kelly.js';
 export { calcRollingKelly, calcStockEVMultipliers } from './kelly.js';
 export type { TradingPattern } from './patterns.js';
 export { extractTradingPatterns, getMemoryBlockedStocks } from './patterns.js';
+export type { KellyResult } from './types.js';
+// ── re-export (기존 import 경로 유지) ──
+export type { RegimeAdjustment, VixRegime } from './vix-regime.js';
+export { getVixRegime } from './vix-regime.js';
 
 export function calcDynamicTrailDrop(params: {
   sector: string;
   atrPct: number; // ATR(14) / 현재가 × 100
   maxPnlPct: number;
-  adx?: number;   // ADX(14) — 트렌드 강도
-  rsi?: number;   // RSI(14) — 과매수/과매도
+  adx?: number; // ADX(14) — 트렌드 강도
+  rsi?: number; // RSI(14) — 과매수/과매도
 }): number {
   const { sector, atrPct, maxPnlPct, adx, rsi } = params;
   const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
@@ -37,7 +37,7 @@ export function calcDynamicTrailDrop(params: {
   // 트렌드 강도 기반 동적 조정 (강한 추세 → 넓은 트레일, 약한 추세 → 타이트)
   if (adx !== undefined && rsi !== undefined) {
     if (adx >= 30 && rsi >= 50 && rsi <= 70) {
-      trail *= 1.20;
+      trail *= 1.2;
     } else if (adx < 20) {
       trail *= 0.85;
     }
@@ -60,7 +60,8 @@ export function calcDynamicTrailDrop(params: {
 export async function getGradualCooldown(isPaper?: boolean): Promise<GradualCooldown> {
   try {
     const mode = ctxMode(isPaper);
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT COUNT(*) AS loss_count,
              COUNT(DISTINCT stock_code) AS stock_count
       FROM orders
@@ -74,14 +75,21 @@ export async function getGradualCooldown(isPaper?: boolean): Promise<GradualCool
           OR ai_reasoning LIKE '%stopLoss%'
           OR ai_reasoning LIKE '%보유기한 초과%'
         )
-    `, [mode]);
+    `,
+      [mode],
+    );
     const lossCount = Number(rows[0]?.loss_count ?? 0);
 
     if (lossCount >= 3) {
-      return { level: 3, cooldownMs: 12 * 60 * 60_000, sizingPenalty: 0.65, message: `3연속 손절 → 12h 쿨다운 + 포지션 65%` };
+      return {
+        level: 3,
+        cooldownMs: 12 * 60 * 60_000,
+        sizingPenalty: 0.65,
+        message: `3연속 손절 → 12h 쿨다운 + 포지션 65%`,
+      };
     }
     if (lossCount >= 2) {
-      return { level: 2, cooldownMs: 6 * 60 * 60_000, sizingPenalty: 0.80, message: `2연속 손절 → 6h 전체 쿨다운` };
+      return { level: 2, cooldownMs: 6 * 60 * 60_000, sizingPenalty: 0.8, message: `2연속 손절 → 6h 전체 쿨다운` };
     }
     if (lossCount >= 1) {
       return { level: 1, cooldownMs: 4 * 60 * 60_000, sizingPenalty: 1.0, message: `1회 손절 → 해당 종목 4h 쿨다운` };
@@ -99,7 +107,8 @@ export async function getGradualCooldownStocks(cooldown: GradualCooldown, isPape
   try {
     const mode = ctxMode(isPaper);
     const intervalHours = Math.ceil(cooldown.cooldownMs / (60 * 60_000));
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT DISTINCT stock_code
       FROM orders
       WHERE side = 'SELL'
@@ -112,9 +121,13 @@ export async function getGradualCooldownStocks(cooldown: GradualCooldown, isPape
           OR ai_reasoning LIKE '%stopLoss%'
           OR ai_reasoning LIKE '%보유기한 초과%'
         )
-    `, [intervalHours, mode]);
+    `,
+      [intervalHours, mode],
+    );
     return new Set(rows.map((r: { stock_code: string }) => String(r.stock_code)));
-  } catch { return new Set(); }
+  } catch {
+    return new Set();
+  }
 }
 
 export const SECTOR_GROUP_LIMITS: Record<string, { sectors: string[]; maxWeightPct: number; label: string }> = {
@@ -140,9 +153,7 @@ export function checkSectorGroupLimit(params: {
     const groupValue = group.sectors.reduce((sum, s) => sum + (sectorValues.get(s) ?? 0), 0);
     const groupPct = (groupValue / portfolioValue) * 100;
     // 소형 포트폴리오(4종목 이하): 섹터캡 +15% 완화 (2종목에 1종목 65%는 자연스러움)
-    const effectiveLimit = (holdingCount ?? 99) <= 4
-      ? group.maxWeightPct + 15
-      : group.maxWeightPct;
+    const effectiveLimit = (holdingCount ?? 99) <= 4 ? group.maxWeightPct + 15 : group.maxWeightPct;
     if (groupPct >= effectiveLimit) {
       return { blocked: true, group: group.label, currentPct: groupPct, limitPct: effectiveLimit };
     }
@@ -167,7 +178,8 @@ export async function calcUncertaintyPenalty(params: {
 
   try {
     const mode = ctxMode(isPaper);
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT ai_reasoning FROM orders
       WHERE stock_code = $1
         AND trading_mode = $2
@@ -175,24 +187,35 @@ export async function calcUncertaintyPenalty(params: {
         AND status = 'FILLED'
         AND created_at >= NOW() - INTERVAL '5 days'
       ORDER BY created_at DESC LIMIT 10
-    `, [code, mode]);
+    `,
+      [code, mode],
+    );
 
-    const recentSells = rows.filter((r: { ai_reasoning: string | null }) =>
-      String(r.ai_reasoning ?? '').includes('손절') || String(r.ai_reasoning ?? '').includes('stopLoss')
+    const recentSells = rows.filter(
+      (r: { ai_reasoning: string | null }) =>
+        String(r.ai_reasoning ?? '').includes('손절') || String(r.ai_reasoning ?? '').includes('stopLoss'),
     );
     if (recentSells.length >= 3) {
-      penalty += 0.20;
+      penalty += 0.2;
       reasons.push(`연속손절${recentSells.length}회(블랙)`);
     } else if (recentSells.length >= 2) {
       penalty += 0.15;
       reasons.push(`연속손절${recentSells.length}회`);
     }
-  } catch { /* skip */ }
+  } catch {
+    /* skip */
+  }
 
-  if (vix && vix > 25) { penalty += 0.05; reasons.push(`VIX=${vix.toFixed(0)}`); }
-  if (sectorDown) { penalty += 0.05; reasons.push('섹터하락'); }
+  if (vix && vix > 25) {
+    penalty += 0.05;
+    reasons.push(`VIX=${vix.toFixed(0)}`);
+  }
+  if (sectorDown) {
+    penalty += 0.05;
+    reasons.push('섹터하락');
+  }
 
-  return { penalty: Math.min(0.20, penalty), reasons };
+  return { penalty: Math.min(0.2, penalty), reasons };
 }
 
 /** 불확실성 보정 적용 — effective confidence 반환 */
@@ -213,27 +236,27 @@ export function getPartialTpStages(sector: string): PartialTpStage[] {
   // 부분익절: 노이즈 스킵 — 1단계 트리거 상향 (일간 변동 범위 밖에서만 확정)
   if (isHighBeta) {
     return [
-      { stage: 1, triggerPct: 3.5, sellRatio: 0.15 },  // +3.5% → 15% (기존 2.0%, 고베타 일간 변동 2-3%)
+      { stage: 1, triggerPct: 3.5, sellRatio: 0.15 }, // +3.5% → 15% (기존 2.0%, 고베타 일간 변동 2-3%)
       { stage: 2, triggerPct: 6.0, sellRatio: 0.15 },
-      { stage: 3, triggerPct: 10.0, sellRatio: 0.20 },
-      { stage: 4, triggerPct: 15.0, sellRatio: 0.20 },
+      { stage: 3, triggerPct: 10.0, sellRatio: 0.2 },
+      { stage: 4, triggerPct: 15.0, sellRatio: 0.2 },
       { stage: 5, triggerPct: 22.0, sellRatio: 0.25 },
     ];
   }
   if (isDefense) {
     return [
-      { stage: 1, triggerPct: 2.5, sellRatio: 0.20 },  // +2.5% (기존 1.5%, 방어주 일간 변동 0.5-1.5%)
-      { stage: 2, triggerPct: 4.0, sellRatio: 0.20 },
+      { stage: 1, triggerPct: 2.5, sellRatio: 0.2 }, // +2.5% (기존 1.5%, 방어주 일간 변동 0.5-1.5%)
+      { stage: 2, triggerPct: 4.0, sellRatio: 0.2 },
       { stage: 3, triggerPct: 6.0, sellRatio: 0.25 },
       { stage: 4, triggerPct: 9.0, sellRatio: 0.25 },
     ];
   }
   // 일반 종목
   return [
-    { stage: 1, triggerPct: 3.0, sellRatio: 0.15 },   // +3.0% (기존 1.5%, 일간 노이즈 1-2% 스킵)
-    { stage: 2, triggerPct: 5.0, sellRatio: 0.15 },   // +5.0% → 추가 15%
-    { stage: 3, triggerPct: 8.0, sellRatio: 0.20 },   // +8.0% → 추가 20% (누적 50%)
-    { stage: 4, triggerPct: 12.0, sellRatio: 0.20 },
+    { stage: 1, triggerPct: 3.0, sellRatio: 0.15 }, // +3.0% (기존 1.5%, 일간 노이즈 1-2% 스킵)
+    { stage: 2, triggerPct: 5.0, sellRatio: 0.15 }, // +5.0% → 추가 15%
+    { stage: 3, triggerPct: 8.0, sellRatio: 0.2 }, // +8.0% → 추가 20% (누적 50%)
+    { stage: 4, triggerPct: 12.0, sellRatio: 0.2 },
     { stage: 5, triggerPct: 18.0, sellRatio: 0.25 },
   ];
 }
@@ -241,29 +264,31 @@ export function getPartialTpStages(sector: string): PartialTpStage[] {
 /** DB에서 현재 부분익절 단계 조회 (paper/live 분리) */
 export async function getPartialTpStageNum(code: string, isPaper?: boolean): Promise<number> {
   try {
-    const { rows } = await getPool().query(
-      "SELECT value FROM overseas_state WHERE key = $1",
-      [`${modePrefix(isPaper)}partial_tp_stage_${code}`],
-    );
+    const { rows } = await getPool().query('SELECT value FROM overseas_state WHERE key = $1', [
+      `${modePrefix(isPaper)}partial_tp_stage_${code}`,
+    ]);
     return rows.length > 0 ? Number(rows[0].value) : 0;
-  } catch { return 0; }
+  } catch {
+    return 0;
+  }
 }
 
 /** 부분익절 단계 저장 (paper/live 분리) */
 export async function setPartialTpStageNum(code: string, stage: number, isPaper?: boolean): Promise<void> {
-  await getPool().query(
-    `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
+  await getPool()
+    .query(
+      `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
      ON CONFLICT (key) DO UPDATE SET value = $2`,
-    [`${modePrefix(isPaper)}partial_tp_stage_${code}`, String(stage)],
-  ).catch(() => {});
+      [`${modePrefix(isPaper)}partial_tp_stage_${code}`, String(stage)],
+    )
+    .catch(() => {});
 }
 
 /** 부분익절 단계 초기화 (포지션 청산 시, paper/live 분리) */
 export async function clearPartialTpStageNum(code: string, isPaper?: boolean): Promise<void> {
-  await getPool().query(
-    "DELETE FROM overseas_state WHERE key = $1",
-    [`${modePrefix(isPaper)}partial_tp_stage_${code}`],
-  ).catch(() => {});
+  await getPool()
+    .query('DELETE FROM overseas_state WHERE key = $1', [`${modePrefix(isPaper)}partial_tp_stage_${code}`])
+    .catch(() => {});
 }
 
 export interface DynamicTpSlResult {
@@ -284,7 +309,18 @@ export function calcDynamicTpSl(params: {
   tunerOverrides?: Record<string, number>; // Trade Tuner 자동 최적화 값
   atrPct?: number; // ATR/가격 % — SL이 최소 2×ATR 보장 (노이즈 손절 방지)
 }): DynamicTpSlResult {
-  const { sector, adx, rsi, aiConfidence = 0.5, aiAction = 'HOLD', aiScore, vixRegime, isMomentum = false, tunerOverrides, atrPct } = params;
+  const {
+    sector,
+    adx,
+    rsi,
+    aiConfidence = 0.5,
+    aiAction = 'HOLD',
+    aiScore,
+    vixRegime,
+    isMomentum = false,
+    tunerOverrides,
+    atrPct,
+  } = params;
 
   const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
   const isMediumBeta = SECTOR_CLASS.MEDIUM_BETA.includes(sector);
@@ -294,41 +330,40 @@ export function calcDynamicTpSl(params: {
   // TP 현실화: 소규모 포트폴리오 빠른 자본 회전 → 4~6% (모멘텀 추가시 6~8%)
   const tunerTpAdj = tunerOverrides?.tp_base_pct;
   const tunerSlAdj = tunerOverrides?.sl_base_pct;
-  const baseTp = tunerTpAdj != null
-    ? tunerTpAdj
-    : isHighBeta ? 6.0 : isMediumBeta ? 4.0 : isDefense ? 4.0 : 4.0;
-  const baseSl = tunerSlAdj != null
-    ? tunerSlAdj
-    : isHighBeta ? 6.0 : isMediumBeta ? 4.0 : isDefense ? 3.0 : 4.0;
+  const baseTp = tunerTpAdj != null ? tunerTpAdj : isHighBeta ? 6.0 : isMediumBeta ? 4.0 : isDefense ? 4.0 : 4.0;
+  const baseSl = tunerSlAdj != null ? tunerSlAdj : isHighBeta ? 6.0 : isMediumBeta ? 4.0 : isDefense ? 3.0 : 4.0;
 
-  const momentumExt = adx >= 35 && rsi >= 45 && rsi <= 68 ? 5.0
-                    : adx >= 28 && rsi >= 45 && rsi <= 70 ? 2.0
-                    : isMomentum ? 1.0 : 0;
+  const momentumExt =
+    adx >= 35 && rsi >= 45 && rsi <= 68 ? 5.0 : adx >= 28 && rsi >= 45 && rsi <= 70 ? 2.0 : isMomentum ? 1.0 : 0;
 
   const overboughtCut = rsi > 78 ? -8.0 : rsi > 75 ? -5.0 : 0;
 
-  const aiTpBonus = aiAction === 'BUY' && aiConfidence >= 0.85 ? 5.0
-                  : aiAction === 'BUY' && aiConfidence >= 0.75 ? 2.5
-                  : aiAction === 'HOLD' && aiConfidence >= 0.80 ? 1.0
-                  : aiAction === 'SELL' ? -5.0
-                  : 0;
+  const aiTpBonus =
+    aiAction === 'BUY' && aiConfidence >= 0.85
+      ? 5.0
+      : aiAction === 'BUY' && aiConfidence >= 0.75
+        ? 2.5
+        : aiAction === 'HOLD' && aiConfidence >= 0.8
+          ? 1.0
+          : aiAction === 'SELL'
+            ? -5.0
+            : 0;
 
-  const scoreTpBonus = aiScore != null
-    ? aiScore >= 90 ? 5.0 : aiScore >= 80 ? 2.5 : aiScore >= 70 ? 1.0 : 0
-    : 0;
+  const scoreTpBonus = aiScore != null ? (aiScore >= 90 ? 5.0 : aiScore >= 80 ? 2.5 : aiScore >= 70 ? 1.0 : 0) : 0;
 
-  const vixTpAdj = vixRegime.regime === 'CRISIS' ? -5.0
-                 : vixRegime.regime === 'STRESS' ? -2.0
-                 : vixRegime.regime === 'CALM' ? 1.0
-                 : 0;
+  const vixTpAdj =
+    vixRegime.regime === 'CRISIS' ? -5.0 : vixRegime.regime === 'STRESS' ? -2.0 : vixRegime.regime === 'CALM' ? 1.0 : 0;
 
-  const aiSlAdj = aiAction === 'SELL' && aiConfidence >= 0.80 ? -1.0 : 0;
+  const aiSlAdj = aiAction === 'SELL' && aiConfidence >= 0.8 ? -1.0 : 0;
   const scoreSlAdj = aiScore != null && aiScore >= 85 ? 0.5 : 0;
 
   // TP 바닥: base와 동일 (보너스만 올릴 수 있게)
   const tpFloor = isHighBeta ? 6.0 : isMediumBeta ? 4.0 : isDefense ? 4.0 : 4.0;
   const tpCeil = isHighBeta ? 40.0 : isMediumBeta ? 35.0 : isDefense ? 25.0 : 35.0;
-  const tpPct = Math.min(tpCeil, Math.max(tpFloor, baseTp + momentumExt + overboughtCut + aiTpBonus + scoreTpBonus + vixTpAdj));
+  const tpPct = Math.min(
+    tpCeil,
+    Math.max(tpFloor, baseTp + momentumExt + overboughtCut + aiTpBonus + scoreTpBonus + vixTpAdj),
+  );
   let slPct = Math.max(isHighBeta ? 5.0 : 2.5, baseSl + aiSlAdj + scoreSlAdj);
 
   // ATR 기반 SL 바닥: 최소 2×ATR% (일간 변동성의 2배 — 노이즈 손절 방지)

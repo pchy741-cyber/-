@@ -1,4 +1,3 @@
-import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { insertSnapshot } from '../db/client.js';
 import { getAccountBalance } from '../kis/account.js';
@@ -15,9 +14,7 @@ export async function runSnapshotJob(): Promise<void> {
 
   // 1) 현재 서버 모드 스냅샷 (기존 로직)
   try {
-    const balance = isPaper
-      ? await getPaperBalance()
-      : await getAccountBalance(true);
+    const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
 
     await insertSnapshot({
       total_value: balance.totalDeposit + balance.totalEvalAmount,
@@ -30,9 +27,12 @@ export async function runSnapshotJob(): Promise<void> {
       is_paper: isPaper,
     });
 
-    logger.info(`📸 스냅샷 저장 [${modeLabel}]: 총 ${(balance.totalDeposit + balance.totalEvalAmount).toLocaleString()}원, 투자 ${balance.totalEvalAmount.toLocaleString()}원, 포지션 ${balance.positions.length}개`, {
-      component: 'SNAPSHOT',
-    });
+    logger.info(
+      `📸 스냅샷 저장 [${modeLabel}]: 총 ${(balance.totalDeposit + balance.totalEvalAmount).toLocaleString()}원, 투자 ${balance.totalEvalAmount.toLocaleString()}원, 포지션 ${balance.positions.length}개`,
+      {
+        component: 'SNAPSHOT',
+      },
+    );
   } catch (error) {
     logger.error(`스냅샷 실패 [${modeLabel}]: ${error}`, { component: 'SNAPSHOT' });
   }
@@ -54,7 +54,10 @@ export async function runSnapshotJob(): Promise<void> {
           positions: liveBalance.positions,
           is_paper: false,
         });
-        logger.info(`📸 스냅샷 저장 [live 보조]: 총 ${(liveBalance.totalDeposit + liveBalance.totalEvalAmount).toLocaleString()}원`, { component: 'SNAPSHOT' });
+        logger.info(
+          `📸 스냅샷 저장 [live 보조]: 총 ${(liveBalance.totalDeposit + liveBalance.totalEvalAmount).toLocaleString()}원`,
+          { component: 'SNAPSHOT' },
+        );
       }
     } else {
       // 서버 live → paper 스냅샷 추가

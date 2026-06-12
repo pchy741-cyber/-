@@ -3,9 +3,8 @@ import Transport from 'winston-transport';
 
 // WARN/ERROR 레벨을 system_log DB에 직접 저장 (로그 유실 방지)
 class DbTransport extends Transport {
-  constructor(opts?: Transport.TransportStreamOptions) {
-    super(opts);
-  }
+  // 500ms 이내 동일 메시지 중복 DB 기록 방지 (logger.warn + 호출부 logSystem() 이중 기록 차단)
+  private readonly _recent = new Map<string, number>();
 
   log(info: any, callback: () => void) {
     setImmediate(() => this.emit('logged', info));
@@ -14,15 +13,43 @@ class DbTransport extends Transport {
     if (logFn && (info.level === 'warn' || info.level === 'error')) {
       const component = info.component ?? 'SYSTEM';
       const level: 'ERROR' | 'WARN' = info.level === 'error' ? 'ERROR' : 'WARN';
+      const dedupKey = `${level}:${component}:${String(info.message).slice(0, 120)}`;
+      const now = Date.now();
+      // 500ms 이내 중복이면 DB 기록 스킵
+      if ((this._recent.get(dedupKey) ?? 0) > now - 500) {
+        callback();
+        return;
+      }
+      this._recent.set(dedupKey, now);
+      // 오래된 항목 정리 (메모리 누수 방지, 5초 이상 경과)
+      if (this._recent.size > 200) {
+        for (const [k, t] of this._recent) {
+          if (t < now - 5000) this._recent.delete(k);
+        }
+      }
       logFn(level, component, String(info.message).slice(0, 500)).catch(() => {});
     }
     callback();
   }
 
-  static _logSystem: ((level: 'ERROR' | 'WARN' | 'INFO' | 'TRADE', component: string, message: string, details?: unknown) => Promise<void>) | null = null;
+  static _logSystem:
+    | ((
+        level: 'ERROR' | 'WARN' | 'INFO' | 'TRADE',
+        component: string,
+        message: string,
+        details?: unknown,
+      ) => Promise<void>)
+    | null = null;
 }
 
-export function injectDbLogger(logSystem: (level: 'ERROR' | 'WARN' | 'INFO' | 'TRADE', component: string, message: string, details?: unknown) => Promise<void>) {
+export function injectDbLogger(
+  logSystem: (
+    level: 'ERROR' | 'WARN' | 'INFO' | 'TRADE',
+    component: string,
+    message: string,
+    details?: unknown,
+  ) => Promise<void>,
+) {
   DbTransport._logSystem = logSystem;
 }
 
@@ -39,7 +66,7 @@ const SEVERITY_MAP: Record<string, string> = {
 };
 
 // Cloud Run: JSON structured logging (Cloud Logging 자동 수집)
-const cloudRunFormat = winston.format.printf(({ timestamp, level, message, component, service, ...meta }) => {
+const cloudRunFormat = winston.format.printf(({ timestamp, level, message, component, mode, service, ...meta }) => {
   const severity = SEVERITY_MAP[level] ?? 'DEFAULT';
   const entry: Record<string, unknown> = {
     severity,
@@ -47,6 +74,7 @@ const cloudRunFormat = winston.format.printf(({ timestamp, level, message, compo
     timestamp,
     component,
   };
+  if (mode) entry.mode = mode;
   const extraKeys = Object.keys(meta);
   if (extraKeys.length > 0) entry.metadata = meta;
   return JSON.stringify(entry);

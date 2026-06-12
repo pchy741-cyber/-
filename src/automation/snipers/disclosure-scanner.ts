@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash } from 'node:crypto';
 import { getActiveWatchlist } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
 import { emitSniperSignal, type SniperSignal } from './index.js';

@@ -120,7 +120,14 @@ export async function analyzeOptimalTrailingStop(enrichedChains: EnrichedChain[]
 }
 
 export function analyzeTimeOfDayPerformance(
-  enrichedChains: { chain: any; pnlPct: number; holdingDays: number; entryType: string; sniperType: string | null; initialConfidence: number | null }[],
+  enrichedChains: {
+    chain: any;
+    pnlPct: number;
+    holdingDays: number;
+    entryType: string;
+    sniperType: string | null;
+    initialConfidence: number | null;
+  }[],
 ): LearnedInsight[] {
   const insights: LearnedInsight[] = [];
   const now = new Date().toISOString();
@@ -173,7 +180,14 @@ export function analyzeTimeOfDayPerformance(
 }
 
 export function analyzeDayOfWeekPerformance(
-  enrichedChains: { chain: any; pnlPct: number; holdingDays: number; entryType: string; sniperType: string | null; initialConfidence: number | null }[],
+  enrichedChains: {
+    chain: any;
+    pnlPct: number;
+    holdingDays: number;
+    entryType: string;
+    sniperType: string | null;
+    initialConfidence: number | null;
+  }[],
 ): LearnedInsight[] {
   const insights: LearnedInsight[] = [];
   const now = new Date().toISOString();
@@ -248,9 +262,7 @@ export async function analyzeParkingDecisions(): Promise<LearnedInsight[]> {
     if (parkChains.length < 3) return [];
 
     const parkReturns = parkChains.map((c: any) => {
-      const pnlPct = Number(c.total_invested) > 0
-        ? (Number(c.realized_pnl) / Number(c.total_invested)) * 100
-        : 0;
+      const pnlPct = Number(c.total_invested) > 0 ? (Number(c.realized_pnl) / Number(c.total_invested)) * 100 : 0;
       const holdDays = (new Date(c.closed_at).getTime() - new Date(c.opened_at).getTime()) / (1000 * 60 * 60 * 24);
       return { pnlPct, holdDays, openedAt: c.opened_at, closedAt: c.closed_at };
     });

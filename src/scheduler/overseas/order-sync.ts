@@ -1,14 +1,14 @@
 /**
  * 주문 동기화 — PENDING 재처리, 마감 취소, 인사이트, 손절 쿨다운
  */
-import { config } from '../../config/index.js';
+
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, updateOrder } from '../../db/client.js';
 import { cancelOverseasOrder, getOverseasBalance } from '../../kis/overseas.js';
 import { logger } from '../../utils/logger.js';
 import { sleep } from '../../utils/sleep.js';
-import { GLOBAL_WATCHLIST } from './watchlist.js';
 import type { OverseasExecutionResult } from './analytics.js';
+import { GLOBAL_WATCHLIST } from './watchlist.js';
 
 /**
  * PENDING 해외주문 재동기화 — 매 사이클 실행
@@ -34,7 +34,9 @@ export async function syncPendingOverseasOrders(): Promise<void> {
 
       if (ageMin >= 240) {
         await updateOrder(order.id, { status: 'CANCELLED', kis_status: 'TIMEOUT' });
-        logger.info(`⏰ ${order.stock_code} PENDING 타임아웃 (${ageMin.toFixed(0)}분) → CANCELLED`, { component: 'OVERSEAS' });
+        logger.info(`⏰ ${order.stock_code} PENDING 타임아웃 (${ageMin.toFixed(0)}분) → CANCELLED`, {
+          component: 'OVERSEAS',
+        });
         continue;
       }
 
@@ -53,7 +55,9 @@ export async function syncPendingOverseasOrders(): Promise<void> {
               status: 'FILLED',
               kis_status: 'FILLED',
             });
-            logger.info(`✅ ${order.stock_code} BUY PENDING→FILLED (잔고 확인: ${currentQty}주)`, { component: 'OVERSEAS' });
+            logger.info(`✅ ${order.stock_code} BUY PENDING→FILLED (잔고 확인: ${currentQty}주)`, {
+              component: 'OVERSEAS',
+            });
           } else if (order.side === 'SELL' && currentQty === 0) {
             await updateOrder(order.id, {
               filled_quantity: Number(order.quantity),
@@ -64,7 +68,9 @@ export async function syncPendingOverseasOrders(): Promise<void> {
             logger.info(`✅ ${order.stock_code} SELL PENDING→FILLED (잔고 0 확인)`, { component: 'OVERSEAS' });
           }
         } catch (e) {
-          logger.warn(`PENDING 재동기화 실패 (${order.stock_code}): ${(e as Error).message}`, { component: 'OVERSEAS' });
+          logger.warn(`PENDING 재동기화 실패 (${order.stock_code}): ${(e as Error).message}`, {
+            component: 'OVERSEAS',
+          });
         }
       }
     }
@@ -129,7 +135,8 @@ export async function confirmOverseasFillFromBalance(params: {
 export async function cancelAllPendingOverseasOrders(isPaper?: boolean): Promise<void> {
   const mode = (isPaper ?? getCtxIsPaper()) ? 'paper' : 'live';
   try {
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT id, stock_code, exchange, quantity, kis_order_no
       FROM orders
       WHERE trigger_source = 'OVERSEAS'
@@ -137,7 +144,9 @@ export async function cancelAllPendingOverseasOrders(isPaper?: boolean): Promise
         AND status = 'PENDING'
         AND created_at >= NOW() - INTERVAL '24 hours'
       ORDER BY created_at ASC
-    `, [mode]);
+    `,
+      [mode],
+    );
 
     if (rows.length === 0) {
       logger.info('🇺🇸 미국장 마감: 취소할 PENDING 주문 없음', { component: 'OVERSEAS' });
@@ -147,7 +156,9 @@ export async function cancelAllPendingOverseasOrders(isPaper?: boolean): Promise
     logger.info(`🇺🇸 미국장 마감: PENDING 주문 ${rows.length}건 강제 취소`, { component: 'OVERSEAS' });
     for (const order of rows) {
       if (!order.kis_order_no) {
-        await getPool().query(`UPDATE orders SET status = 'CANCELLED', kis_status = 'MARKET_CLOSED' WHERE id = $1`, [order.id]);
+        await getPool().query(`UPDATE orders SET status = 'CANCELLED', kis_status = 'MARKET_CLOSED' WHERE id = $1`, [
+          order.id,
+        ]);
         continue;
       }
       const result = await cancelOverseasOrder({
@@ -157,10 +168,10 @@ export async function cancelAllPendingOverseasOrders(isPaper?: boolean): Promise
         quantity: Number(order.quantity),
       }).catch(() => ({ success: false, message: 'cancel failed' }));
 
-      await getPool().query(
-        `UPDATE orders SET status = 'CANCELLED', kis_status = $1 WHERE id = $2`,
-        [result.success ? 'MARKET_CLOSED_CANCEL' : 'CANCEL_FAILED', order.id],
-      );
+      await getPool().query(`UPDATE orders SET status = 'CANCELLED', kis_status = $1 WHERE id = $2`, [
+        result.success ? 'MARKET_CLOSED_CANCEL' : 'CANCEL_FAILED',
+        order.id,
+      ]);
       logger.info(
         `  ${result.success ? '✅' : '⚠️'} ${order.stock_code} 취소 ${result.success ? '성공' : '실패'}: ${result.message}`,
         { component: 'OVERSEAS' },
@@ -174,11 +185,11 @@ export async function cancelAllPendingOverseasOrders(isPaper?: boolean): Promise
 // ── 사용자 인사이트 ──
 export async function getUserInsights(): Promise<string> {
   try {
-    const { rows } = await getPool().query(
-      "SELECT value FROM overseas_state WHERE key = 'user_insights'",
-    );
+    const { rows } = await getPool().query("SELECT value FROM overseas_state WHERE key = 'user_insights'");
     return rows.length > 0 ? String(rows[0].value) : '';
-  } catch { return ''; }
+  } catch {
+    return '';
+  }
 }
 
 export async function setUserInsights(text: string): Promise<void> {
@@ -195,7 +206,8 @@ export async function setUserInsights(text: string): Promise<void> {
 export async function getLossCooldownStocks(isPaper?: boolean): Promise<Set<string>> {
   const mode = (isPaper ?? getCtxIsPaper()) ? 'paper' : 'live';
   try {
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT DISTINCT stock_code
       FROM orders
       WHERE side = 'SELL'
@@ -215,9 +227,13 @@ export async function getLossCooldownStocks(isPaper?: boolean): Promise<Set<stri
             AND filled_price::numeric < REGEXP_REPLACE(ai_reasoning, '.*\\[avgBuy:([0-9.]+)\\].*', '\\1')::numeric
           )
         )
-    `, [mode]);
+    `,
+      [mode],
+    );
     return new Set(rows.map((r: { stock_code: string }) => String(r.stock_code)));
-  } catch { return new Set(); }
+  } catch {
+    return new Set();
+  }
 }
 
 /**
@@ -226,7 +242,8 @@ export async function getLossCooldownStocks(isPaper?: boolean): Promise<Set<stri
 export async function getRecentLossStocks(isPaper?: boolean): Promise<Set<string>> {
   const mode = (isPaper ?? getCtxIsPaper()) ? 'paper' : 'live';
   try {
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT DISTINCT stock_code
       FROM orders
       WHERE side = 'SELL'
@@ -247,9 +264,13 @@ export async function getRecentLossStocks(isPaper?: boolean): Promise<Set<string
             AND filled_price::numeric < REGEXP_REPLACE(ai_reasoning, '.*\\[avgBuy:([0-9.]+)\\].*', '\\1')::numeric
           )
         )
-    `, [mode]);
+    `,
+      [mode],
+    );
     return new Set(rows.map((r: { stock_code: string }) => String(r.stock_code)));
-  } catch { return new Set(); }
+  } catch {
+    return new Set();
+  }
 }
 
 /**
@@ -260,7 +281,8 @@ export async function getBigLossBlockedOverseas(isPaperMode?: boolean): Promise<
   const mode = (isPaperMode ?? getCtxIsPaper()) ? 'paper' : 'live';
   try {
     // filled_price < avg_buy_price * 0.95 → 5% 초과 손실 매도
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT DISTINCT o.stock_code
       FROM orders o
       WHERE o.side = 'SELL'
@@ -271,9 +293,13 @@ export async function getBigLossBlockedOverseas(isPaperMode?: boolean): Promise<
         AND o.filled_price > 0
         AND o.ai_reasoning ~ '\\[avgBuy:[0-9.]+'
         AND o.filled_price::numeric < REGEXP_REPLACE(o.ai_reasoning, '.*\\[avgBuy:([0-9.]+)\\].*', '\\1')::numeric * 0.95
-    `, [mode]);
+    `,
+      [mode],
+    );
     return new Set(rows.map((r: { stock_code: string }) => String(r.stock_code)));
-  } catch { return new Set(); }
+  } catch {
+    return new Set();
+  }
 }
 
 /**
@@ -286,11 +312,16 @@ export async function getManualSellCooldownStocks(): Promise<Set<string>> {
   if (getCtxIsPaper()) return new Set();
   try {
     const cutoff = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT key FROM overseas_state
       WHERE key LIKE 'manual_sell_cd_%'
         AND value::jsonb->>'at' > $1
-    `, [cutoff]);
+    `,
+      [cutoff],
+    );
     return new Set(rows.map((r: { key: string }) => String(r.key).replace('manual_sell_cd_', '')));
-  } catch { return new Set(); }
+  } catch {
+    return new Set();
+  }
 }

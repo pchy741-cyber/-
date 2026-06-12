@@ -1,8 +1,8 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { getPool } from './client.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { logger } from '../utils/logger.js';
+import { getPool } from './client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.join(__dirname, 'migrations');
@@ -22,7 +22,7 @@ const IGNORABLE = [
 
 function isIgnorable(msg: string): boolean {
   const m = msg.toLowerCase();
-  return IGNORABLE.some(p => m.includes(p));
+  return IGNORABLE.some((p) => m.includes(p));
 }
 
 /**
@@ -32,8 +32,8 @@ function isIgnorable(msg: string): boolean {
 function splitSqlStatements(sql: string): string[] {
   return sql
     .split(';')
-    .map(s => s.trim())
-    .filter(s => {
+    .map((s) => s.trim())
+    .filter((s) => {
       if (!s) return false;
       // 주석 제거 후 실제 SQL이 있는지 확인
       const withoutComments = s.replace(/--[^\n]*/g, '').trim();
@@ -64,12 +64,13 @@ export async function runMigrations(): Promise<void> {
     `);
 
     const { rows: applied } = await client.query<{ filename: string }>(
-      'SELECT filename FROM schema_migrations ORDER BY filename'
+      'SELECT filename FROM schema_migrations ORDER BY filename',
     );
-    const appliedSet = new Set(applied.map(r => r.filename));
+    const appliedSet = new Set(applied.map((r) => r.filename));
 
-    const files = fs.readdirSync(MIGRATIONS_DIR)
-      .filter(f => f.endsWith('.sql'))
+    const files = fs
+      .readdirSync(MIGRATIONS_DIR)
+      .filter((f) => f.endsWith('.sql'))
       .sort();
 
     for (const file of files) {
@@ -85,32 +86,33 @@ export async function runMigrations(): Promise<void> {
         } catch (err: any) {
           const msg = String(err?.message ?? '');
           if (isIgnorable(msg)) {
-            logger.warn(
-              `⚠️ ${file} 구문 건너뜀: ${stmt.slice(0, 60).replace(/\n/g, ' ')} — ${msg.slice(0, 100)}`,
-              { component: 'MIGRATE' },
-            );
+            logger.warn(`⚠️ ${file} 구문 건너뜀: ${stmt.slice(0, 60).replace(/\n/g, ' ')} — ${msg.slice(0, 100)}`, {
+              component: 'MIGRATE',
+            });
           } else {
             errorCount++;
-            logger.error(
-              `❌ ${file} 구문 오류: ${stmt.slice(0, 60).replace(/\n/g, ' ')} — ${msg}`,
-              { component: 'MIGRATE' },
-            );
+            logger.error(`❌ ${file} 구문 오류: ${stmt.slice(0, 60).replace(/\n/g, ' ')} — ${msg}`, {
+              component: 'MIGRATE',
+            });
           }
         }
       }
 
       // 모든 구문 시도 후 항상 적용 완료로 표시 (서버 시작 블로킹 방지)
       try {
-        await client.query(
-          'INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
-          [file],
-        );
-      } catch { /* ignore */ }
+        await client.query('INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING', [
+          file,
+        ]);
+      } catch {
+        /* ignore */
+      }
 
       if (errorCount === 0) {
         logger.info(`✅ 마이그레이션 적용: ${file} (${stmts.length}개 구문)`, { component: 'MIGRATE' });
       } else {
-        logger.warn(`⚠️ 마이그레이션 부분 적용: ${file} (${errorCount}개 오류, ${stmts.length}개 구문)`, { component: 'MIGRATE' });
+        logger.warn(`⚠️ 마이그레이션 부분 적용: ${file} (${errorCount}개 오류, ${stmts.length}개 구문)`, {
+          component: 'MIGRATE',
+        });
       }
     }
 

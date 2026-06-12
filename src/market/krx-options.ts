@@ -10,10 +10,10 @@
 import { logger } from '../utils/logger.js';
 
 export interface KrxOptionsSignal {
-  vkospi: number | null;           // 변동성 지수 (VIX 한국판)
-  pcRatio: number | null;          // Put/Call 미결제약정 비율
+  vkospi: number | null; // 변동성 지수 (VIX 한국판)
+  pcRatio: number | null; // Put/Call 미결제약정 비율
   direction: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
-  scoreAdj: number;                // Gemini 점수 보정 (-15~+10)
+  scoreAdj: number; // Gemini 점수 보정 (-15~+10)
   fearLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'PANIC';
   summary: string;
 }
@@ -55,7 +55,7 @@ async function fetchVkospi(): Promise<number | null> {
 
   const data = (await res.json()) as { output?: Array<{ CLSPRC_IDX?: string }> };
   const val = parseFloat(data.output?.[0]?.CLSPRC_IDX ?? '');
-  return isFinite(val) ? val : null;
+  return Number.isFinite(val) ? val : null;
 }
 
 // ── P/C Ratio 수집 ─────────────────────────────────────────────────
@@ -92,7 +92,7 @@ async function fetchPcRatio(): Promise<number | null> {
   // 필드명 추정 (KRX API 변경 가능)
   const put = parseFloat(row.PUT_OI ?? row.MKTPRC_PUT ?? '');
   const call = parseFloat(row.CALL_OI ?? row.MKTPRC_CALL ?? '');
-  if (!isFinite(put) || !isFinite(call) || call === 0) return null;
+  if (!Number.isFinite(put) || !Number.isFinite(call) || call === 0) return null;
   return put / call;
 }
 
@@ -108,26 +108,38 @@ function computeOptionsSignal(
   let fearLevel: KrxOptionsSignal['fearLevel'] = 'LOW';
   if (vkospi !== null) {
     if (vkospi >= 30) {
-      fearLevel = 'PANIC'; adj -= 15;
+      fearLevel = 'PANIC';
+      adj -= 15;
       notes.push(`VKOSPI ${vkospi.toFixed(1)}(패닉)`);
     } else if (vkospi >= 25) {
-      fearLevel = 'HIGH'; adj -= 8;
+      fearLevel = 'HIGH';
+      adj -= 8;
       notes.push(`VKOSPI ${vkospi.toFixed(1)}(공포)`);
     } else if (vkospi >= 20) {
-      fearLevel = 'MEDIUM'; adj -= 3;
+      fearLevel = 'MEDIUM';
+      adj -= 3;
       notes.push(`VKOSPI ${vkospi.toFixed(1)}(주의)`);
     } else {
-      fearLevel = 'LOW'; adj += 5;
+      fearLevel = 'LOW';
+      adj += 5;
       notes.push(`VKOSPI ${vkospi.toFixed(1)}(안정)`);
     }
   }
 
   // P/C Ratio: 1.0 이상 = 하락 헤지 수요 과다 = 단기 반등 역발상 신호
   if (pcRatio !== null) {
-    if (pcRatio >= 1.3) { adj += 5; notes.push(`P/C ${pcRatio.toFixed(2)}(반등기대)`); }
-    else if (pcRatio >= 1.0) { adj += 2; notes.push(`P/C ${pcRatio.toFixed(2)}(높음)`); }
-    else if (pcRatio <= 0.5) { adj -= 5; notes.push(`P/C ${pcRatio.toFixed(2)}(낙관과다→주의)`); }
-    else { notes.push(`P/C ${pcRatio.toFixed(2)}(중립)`); }
+    if (pcRatio >= 1.3) {
+      adj += 5;
+      notes.push(`P/C ${pcRatio.toFixed(2)}(반등기대)`);
+    } else if (pcRatio >= 1.0) {
+      adj += 2;
+      notes.push(`P/C ${pcRatio.toFixed(2)}(높음)`);
+    } else if (pcRatio <= 0.5) {
+      adj -= 5;
+      notes.push(`P/C ${pcRatio.toFixed(2)}(낙관과다→주의)`);
+    } else {
+      notes.push(`P/C ${pcRatio.toFixed(2)}(중립)`);
+    }
   }
 
   const clamped = Math.max(-15, Math.min(10, adj));
@@ -147,6 +159,9 @@ export async function getKrxOptionsSignal(): Promise<KrxOptionsSignal> {
 
   const signal: KrxOptionsSignal = { vkospi, pcRatio, direction, scoreAdj, fearLevel, summary };
   _cache = { data: signal, fetchedAt: Date.now() };
-  logger.info(`📈 KRX 옵션 신호: ${direction} 공포=${fearLevel} (보정${scoreAdj > 0 ? '+' : ''}${scoreAdj}점) — ${summary}`, { component: 'KRX_OPT' });
+  logger.info(
+    `📈 KRX 옵션 신호: ${direction} 공포=${fearLevel} (보정${scoreAdj > 0 ? '+' : ''}${scoreAdj}점) — ${summary}`,
+    { component: 'KRX_OPT' },
+  );
   return signal;
 }

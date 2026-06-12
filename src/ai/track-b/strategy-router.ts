@@ -7,15 +7,15 @@
  */
 
 import type { TechnicalSummary } from '../../analysis/indicators.js';
-import { detectRegimeV2, getRegimeEntryConfig, type RegimeV2, type RegimeEntryConfig } from './regime-v2.js';
+import { detectRegimeV2, getRegimeEntryConfig, type RegimeEntryConfig, type RegimeV2 } from './regime-v2.js';
 
 export interface RouteResult {
-  routed: boolean;           // 라우터가 진입을 승인했는가
+  routed: boolean; // 라우터가 진입을 승인했는가
   regime: RegimeV2;
   regimeConfidence: number;
   entryConfig: RegimeEntryConfig;
   reason: string;
-  buyThresholdAdj: number;   // buyThreshold 조정값 (TREND_BEAR: +25 등)
+  buyThresholdAdj: number; // buyThreshold 조정값 (TREND_BEAR: +25 등)
 }
 
 /**
@@ -26,11 +26,7 @@ export interface RouteResult {
  * @param aiScore - AI 점수 (0이면 없음)
  * @returns RouteResult — routed=true이면 기존 필터 체인 스킵 가능
  */
-export function routeByRegime(
-  tech: TechnicalSummary,
-  closes: number[],
-  aiScore: number,
-): RouteResult {
+export function routeByRegime(tech: TechnicalSummary, closes: number[], _aiScore: number): RouteResult {
   const regimeResult = detectRegimeV2(tech, closes);
   const entryConfig = getRegimeEntryConfig(regimeResult.regime);
 
@@ -57,7 +53,7 @@ export function routeByRegime(
         return {
           ...base,
           routed: true,
-          buyThresholdAdj: -5,   // v4: -10→-5 (80→75, 약한 신호 차단)
+          buyThresholdAdj: -5, // v4: -10→-5 (80→75, 약한 신호 차단)
           reason: `TREND_BULL: ${passed}/3 통과 (ADX=${tech.adx14.toFixed(0)}, MACD=${tech.macdCrossover}, vol=${tech.volumeRatio.toFixed(2)}x)`,
         };
       }

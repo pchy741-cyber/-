@@ -1,11 +1,10 @@
-import { getPendingDomesticOrders, updateOrderByKisOrderNo, logSystem, getOpenChains, getPool } from '../db/client.js';
-import { getOrderFills, cancelOrder } from '../kis/order.js';
+import { KR_FEE } from '../config/constants.js';
+import { getOpenChains, getPendingDomesticOrders, getPool, logSystem, updateOrderByKisOrderNo } from '../db/client.js';
 import { getAccountBalance, type Position as KisPosition } from '../kis/account.js';
 import { getCurrentPrice } from '../kis/market.js';
+import { cancelOrder, getOrderFills } from '../kis/order.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
-import { config } from '../config/index.js';
-import { KR_FEE } from '../config/constants.js';
 
 const PENDING_TIMEOUT_MS = 10 * 60 * 1000; // 10분 초과 미체결 → 취소
 const EXTERNAL_SELL_COOLDOWN_MS = 5 * 60 * 1000; // 체인 오픈 5분 이내는 체크 스킵 (체결 지연 여유)
@@ -28,7 +27,7 @@ const _kisSyncSnapshot = new Map<string, KisSyncSnap>();
  * Track B 사이클 시작마다 호출
  */
 export async function reconcilePendingOrders(): Promise<void> {
-  let pendingOrders;
+  let pendingOrders: Awaited<ReturnType<typeof getPendingDomesticOrders>>;
   try {
     // PENDING + PARTIAL 상태 모두 조회하여 부분체결 주문도 재모니터링
     pendingOrders = await getPendingDomesticOrders();
@@ -84,9 +83,15 @@ export async function reconcilePendingOrders(): Promise<void> {
             `⏰ 미체결 취소: ${order.stock_code} ${order.side} 잔여${remainQty}주 (체결${filledQty}주, ${Math.round(ageMs / 60000)}분 경과)`,
             { component: 'RECONCILER' },
           );
-          await logSystem('WARN', 'RECONCILER', `미체결 취소: ${order.stock_code} ${order.side} 잔여${remainQty}주 (체결${filledQty}주, ${Math.round(ageMs / 60000)}분 경과)`);
+          await logSystem(
+            'WARN',
+            'RECONCILER',
+            `미체결 취소: ${order.stock_code} ${order.side} 잔여${remainQty}주 (체결${filledQty}주, ${Math.round(ageMs / 60000)}분 경과)`,
+          );
         } else {
-          logger.warn(`취소 실패: ${order.stock_code} ${kisOrderNo} — ${cancelResult.message}`, { component: 'RECONCILER' });
+          logger.warn(`취소 실패: ${order.stock_code} ${kisOrderNo} — ${cancelResult.message}`, {
+            component: 'RECONCILER',
+          });
         }
       }
     } catch (e) {
@@ -118,7 +123,7 @@ export async function reconcileExternalSells(): Promise<void> {
     let kisPositions: Map<string, number>;
     try {
       balance = await getAccountBalance(true);
-      kisPositions = new Map(balance.positions.map(p => [p.stockCode, p.quantity]));
+      kisPositions = new Map(balance.positions.map((p) => [p.stockCode, p.quantity]));
     } catch (e) {
       logger.warn(`외부 매도 감지: KIS 잔고 조회 실패 — 스킵 (${e})`, { component: 'RECONCILER' });
       return;
@@ -130,7 +135,7 @@ export async function reconcileExternalSells(): Promise<void> {
     if (chains.length === 0) return;
 
     const now = Date.now();
-    const ghostChains = chains.filter(chain => {
+    const ghostChains = chains.filter((chain) => {
       // 오픈 직후는 체결 지연 여유 제공
       const ageMs = now - new Date(chain.opened_at).getTime();
       if (ageMs < EXTERNAL_SELL_COOLDOWN_MS) return false;
@@ -149,14 +154,14 @@ export async function reconcileExternalSells(): Promise<void> {
         try {
           const px = await getCurrentPrice(chain.stock_code);
           fillPrice = px.currentPrice;
-        } catch { /* 시세 실패 시 평균매수가로 폴백 */ }
+        } catch {
+          /* 시세 실패 시 평균매수가로 폴백 */
+        }
 
         const avgBuy = Number(chain.avg_buy_price ?? 0);
         // 가격 조회 실패 시 평균매수가로 폴백 (fillPrice=0 → P&L 오염 방지)
         if (fillPrice <= 0 && avgBuy > 0) fillPrice = avgBuy;
-        const pnlPct = avgBuy > 0 && fillPrice > 0
-          ? (((fillPrice - avgBuy) / avgBuy) * 100).toFixed(2)
-          : '?';
+        const pnlPct = avgBuy > 0 && fillPrice > 0 ? (((fillPrice - avgBuy) / avgBuy) * 100).toFixed(2) : '?';
 
         const ghostOrderNo = `EXT_${Date.now().toString(36)}`;
         await getPool().query(
@@ -177,8 +182,14 @@ export async function reconcileExternalSells(): Promise<void> {
           `🚪 유령 체인 정리: ${chain.stock_code} ${chain.total_quantity}주 → CLOSED (외부매도, ${pnlPct}%)`,
           { component: 'RECONCILER' },
         );
-        await logSystem('WARN', 'RECONCILER', `외부매도 감지: ${chain.stock_code} ${chain.total_quantity}주 체인 #${chain.id} CLOSED`);
-        await sendTelegramMessage(`🚪 외부 매도 감지\n종목: ${chain.stock_code}\n수량: ${chain.total_quantity}주\n수익률: ${pnlPct}%\n→ KIS 잔고 없음, DB 체인 정리 완료`);
+        await logSystem(
+          'WARN',
+          'RECONCILER',
+          `외부매도 감지: ${chain.stock_code} ${chain.total_quantity}주 체인 #${chain.id} CLOSED`,
+        );
+        await sendTelegramMessage(
+          `🚪 외부 매도 감지\n종목: ${chain.stock_code}\n수량: ${chain.total_quantity}주\n수익률: ${pnlPct}%\n→ KIS 잔고 없음, DB 체인 정리 완료`,
+        );
       } catch (e) {
         logger.error(`외부 매도 처리 오류 [${chain.stock_code} #${chain.id}]: ${e}`, { component: 'RECONCILER' });
       }
@@ -198,7 +209,7 @@ async function _reconcileKisSyncExternalSells(
   kisQtyMap: Map<string, number>,
   dbChains: Array<{ stock_code: string }>,
 ): Promise<void> {
-  const dbChainCodes = new Set(dbChains.map(c => c.stock_code));
+  const dbChainCodes = new Set(dbChains.map((c) => c.stock_code));
   const now = Date.now();
 
   // 현재 KIS 잔고로 스냅샷 갱신 (DB 체인 없는 수동매수만)
@@ -227,10 +238,9 @@ async function _reconcileKisSyncExternalSells(
     }
 
     // watchlist 존재 여부 확인 (transaction_chains.stock_code FK 제약)
-    const { rows: wl } = await getPool().query(
-      `SELECT stock_code, stock_name FROM watchlist WHERE stock_code = $1`,
-      [stockCode],
-    );
+    const { rows: wl } = await getPool().query(`SELECT stock_code, stock_name FROM watchlist WHERE stock_code = $1`, [
+      stockCode,
+    ]);
     const wlName: string = wl[0]?.stock_name || snap.stockName;
 
     // watchlist에 없으면 INSERT 후 진행
@@ -248,18 +258,22 @@ async function _reconcileKisSyncExternalSells(
 
     // 매도 체결가 추정 (현재 시세 → 폴백 평단)
     let sellPrice = 0;
-    try { sellPrice = (await getCurrentPrice(stockCode)).currentPrice; } catch { /* ignore */ }
+    try {
+      sellPrice = (await getCurrentPrice(stockCode)).currentPrice;
+    } catch {
+      /* ignore */
+    }
     if (sellPrice <= 0) sellPrice = snap.avgBuyPrice;
 
     const pnl = (sellPrice - snap.avgBuyPrice) * snap.quantity;
-    const pnlPct = snap.avgBuyPrice > 0
-      ? (((sellPrice - snap.avgBuyPrice) / snap.avgBuyPrice) * 100).toFixed(2)
-      : '?';
+    const pnlPct = snap.avgBuyPrice > 0 ? (((sellPrice - snap.avgBuyPrice) / snap.avgBuyPrice) * 100).toFixed(2) : '?';
     const invested = snap.avgBuyPrice * snap.quantity;
 
     try {
       // transaction_chain 생성 (CLOSED, realized_pnl 포함)
-      const { rows: [chain] } = await getPool().query(
+      const {
+        rows: [chain],
+      } = await getPool().query(
         `INSERT INTO transaction_chains
            (stock_code, status, strategy_mode, avg_buy_price, total_quantity, total_invested,
             realized_pnl, is_paper, opened_at, closed_at, close_reason)
@@ -283,7 +297,11 @@ async function _reconcileKisSyncExternalSells(
         `✅ KIS_SYNC 외부매도 기록: ${wlName}(${stockCode}) ${snap.quantity}주 @${sellPrice}원 수익률 ${pnlPct}%`,
         { component: 'RECONCILER' },
       );
-      await logSystem('INFO', 'RECONCILER', `KIS_SYNC 외부매도 자동 기록: ${stockCode} ${snap.quantity}주 수익률 ${pnlPct}%`);
+      await logSystem(
+        'INFO',
+        'RECONCILER',
+        `KIS_SYNC 외부매도 자동 기록: ${stockCode} ${snap.quantity}주 수익률 ${pnlPct}%`,
+      );
       await sendTelegramMessage(
         `📋 KIS 외부매도 자동 기록\n종목: ${wlName}(${stockCode})\n수량: ${snap.quantity}주\n평단: ${snap.avgBuyPrice.toLocaleString()}원\n매도가: ${sellPrice.toLocaleString()}원\n수익률: ${pnlPct}%\n손익: ${Math.round(pnl).toLocaleString()}원`,
       );

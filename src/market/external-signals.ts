@@ -8,24 +8,24 @@
 import { logger } from '../utils/logger.js';
 
 export interface MarketSentiment {
-  fearGreedScore: number;   // 0(극공포)~100(극탐욕)
-  fearGreedLabel: string;   // 'Extreme Fear' | 'Fear' | 'Neutral' | 'Greed' | 'Extreme Greed'
-  vix: number;              // VIX 수치 (18 미만=안정, 25+ 위험, 35+ 공황)
+  fearGreedScore: number; // 0(극공포)~100(극탐욕)
+  fearGreedLabel: string; // 'Extreme Fear' | 'Fear' | 'Neutral' | 'Greed' | 'Extreme Greed'
+  vix: number; // VIX 수치 (18 미만=안정, 25+ 위험, 35+ 공황)
   updatedAt: Date;
 }
 
 export interface EarningsEvent {
   code: string;
-  date: string;       // YYYY-MM-DD
+  date: string; // YYYY-MM-DD
   epsEstimate: number | null;
   revenueEstimate: number | null;
-  daysUntil: number;  // 음수=지남
+  daysUntil: number; // 음수=지남
 }
 
 export interface NewsSentiment {
   code: string;
-  sentimentScore: number;   // -1(매우부정)~1(매우긍정)
-  bullishPct: number;       // 0~100
+  sentimentScore: number; // -1(매우부정)~1(매우긍정)
+  bullishPct: number; // 0~100
   bearishPct: number;
   articleCount: number;
   updatedAt: Date;
@@ -49,7 +49,7 @@ export async function getFearGreedIndex(): Promise<MarketSentiment | null> {
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = await res.json() as any;
+    const json = (await res.json()) as any;
     const score = Math.round(json?.fear_and_greed?.score ?? -1);
     const rating = (json?.fear_and_greed?.rating ?? '') as string;
     if (score < 0) throw new Error('score 파싱 실패');
@@ -57,15 +57,17 @@ export async function getFearGreedIndex(): Promise<MarketSentiment | null> {
     // VIX — Yahoo Finance
     let vix = 0;
     try {
-      const vixRes = await fetch(
-        'https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=1d',
-        { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(6000) },
-      );
-      const vixJson = await vixRes.json() as any;
+      const vixRes = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=1d', {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(6000),
+      });
+      const vixJson = (await vixRes.json()) as any;
       vix = vixJson?.chart?.result?.[0]?.meta?.regularMarketPrice ?? 0;
-    } catch { /* VIX 실패해도 F&G만 반환 */ }
+    } catch {
+      /* VIX 실패해도 F&G만 반환 */
+    }
 
-    const label = rating.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || scorToLabel(score);
+    const label = rating.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) || scorToLabel(score);
     const data: MarketSentiment = { fearGreedScore: score, fearGreedLabel: label, vix, updatedAt: new Date() };
     _fgCache = { data, fetchedAt: Date.now() };
     logger.info(`📊 Fear&Greed: ${score}(${label}) VIX: ${vix.toFixed(1)}`, { component: 'EXT_SIGNAL' });
@@ -92,19 +94,18 @@ export async function getUpcomingEarnings(codes: string[]): Promise<EarningsEven
   if (!key) return [];
 
   if (_earningsCache && Date.now() - _earningsCache.fetchedAt < CACHE_TTL) {
-    return _earningsCache.data.filter(e => codes.includes(e.code));
+    return _earningsCache.data.filter((e) => codes.includes(e.code));
   }
 
   try {
     const today = new Date();
     const from = today.toISOString().slice(0, 10);
     const to = new Date(today.getTime() + 30 * 86400000).toISOString().slice(0, 10);
-    const res = await fetch(
-      `https://finnhub.io/api/v1/calendar/earnings?from=${from}&to=${to}&token=${key}`,
-      { signal: AbortSignal.timeout(8000) },
-    );
+    const res = await fetch(`https://finnhub.io/api/v1/calendar/earnings?from=${from}&to=${to}&token=${key}`, {
+      signal: AbortSignal.timeout(8000),
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = await res.json() as any;
+    const json = (await res.json()) as any;
     const events: EarningsEvent[] = (json?.earningsCalendar ?? [])
       .filter((e: any) => codes.includes(e.symbol))
       .map((e: any) => {
@@ -119,9 +120,11 @@ export async function getUpcomingEarnings(codes: string[]): Promise<EarningsEven
       });
     _earningsCache = { data: events, fetchedAt: Date.now() };
     if (events.length > 0) {
-      logger.info(`📅 어닝 캘린더: ${events.map(e => `${e.code}(D+${e.daysUntil})`).join(', ')}`, { component: 'EXT_SIGNAL' });
+      logger.info(`📅 어닝 캘린더: ${events.map((e) => `${e.code}(D+${e.daysUntil})`).join(', ')}`, {
+        component: 'EXT_SIGNAL',
+      });
     }
-    return events.filter(e => codes.includes(e.code));
+    return events.filter((e) => codes.includes(e.code));
   } catch (err: any) {
     logger.warn(`Finnhub 어닝 조회 실패: ${err.message}`, { component: 'EXT_SIGNAL' });
     return [];
@@ -139,12 +142,11 @@ export async function getNewsSentiment(code: string): Promise<NewsSentiment | nu
   if (cached && Date.now() - cached.fetchedAt < CACHE_TTL) return cached.data;
 
   try {
-    const res = await fetch(
-      `https://finnhub.io/api/v1/news-sentiment?symbol=${code}&token=${key}`,
-      { signal: AbortSignal.timeout(6000) },
-    );
+    const res = await fetch(`https://finnhub.io/api/v1/news-sentiment?symbol=${code}&token=${key}`, {
+      signal: AbortSignal.timeout(6000),
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = await res.json() as any;
+    const json = (await res.json()) as any;
     const sent = json?.sentiment;
     if (!sent) return null;
 
@@ -177,7 +179,7 @@ export type MarketQuality = 'GREAT' | 'OK' | 'CAUTIOUS' | 'DANGER';
 
 export function interpretMarketSentiment(s: MarketSentiment): {
   allowBuy: boolean;
-  aggressive: boolean;  // 극공포 → 역매수 기회
+  aggressive: boolean; // 극공포 → 역매수 기회
   marketQuality: MarketQuality;
   reason: string;
 } {
@@ -185,31 +187,66 @@ export function interpretMarketSentiment(s: MarketSentiment): {
 
   // VIX 30+ = 공황 수준 → 방어 섹터만 허용
   if (vix > 30 && fg > 25) {
-    return { allowBuy: true, aggressive: false, marketQuality: 'DANGER', reason: `VIX 위험(${vix.toFixed(0)}) → 방어 섹터만` };
+    return {
+      allowBuy: true,
+      aggressive: false,
+      marketQuality: 'DANGER',
+      reason: `VIX 위험(${vix.toFixed(0)}) → 방어 섹터만`,
+    };
   }
   // VIX 35+ + 탐욕 = 완전 정지
   if (vix > 35 && fg > 40) {
-    return { allowBuy: false, aggressive: false, marketQuality: 'DANGER', reason: `VIX 공황(${vix.toFixed(0)}) + 탐욕(${fg}) → 매수 금지` };
+    return {
+      allowBuy: false,
+      aggressive: false,
+      marketQuality: 'DANGER',
+      reason: `VIX 공황(${vix.toFixed(0)}) + 탐욕(${fg}) → 매수 금지`,
+    };
   }
   // 극공포(≤20) = 역매수 최적 구간
   if (fg <= 20) {
-    return { allowBuy: true, aggressive: true, marketQuality: 'CAUTIOUS', reason: `극공포(${fg}) 역매수 구간 — 방어+저점 종목만` };
+    return {
+      allowBuy: true,
+      aggressive: true,
+      marketQuality: 'CAUTIOUS',
+      reason: `극공포(${fg}) 역매수 구간 — 방어+저점 종목만`,
+    };
   }
   // 극탐욕(≥80) = 과열, 신규 매수 자제
   if (fg >= 80) {
-    return { allowBuy: false, aggressive: false, marketQuality: 'DANGER', reason: `극탐욕(${fg}) 과열 — 신규 매수 자제` };
+    return {
+      allowBuy: false,
+      aggressive: false,
+      marketQuality: 'DANGER',
+      reason: `극탐욕(${fg}) 과열 — 신규 매수 자제`,
+    };
   }
   // 최고 진입 환경 (F&G 중립 + VIX 안정)
   if (fg >= 40 && fg <= 65 && vix < 18) {
-    return { allowBuy: true, aggressive: false, marketQuality: 'GREAT', reason: `최적 진입 환경 F&G ${fg} VIX ${vix.toFixed(0)}` };
+    return {
+      allowBuy: true,
+      aggressive: false,
+      marketQuality: 'GREAT',
+      reason: `최적 진입 환경 F&G ${fg} VIX ${vix.toFixed(0)}`,
+    };
   }
   // 주의 구간 (F&G 쏠림 or VIX 상승)
   if (fg < 30 || fg >= 70 || vix >= 22) {
-    return { allowBuy: true, aggressive: false, marketQuality: 'CAUTIOUS', reason: `주의 구간 F&G ${fg} VIX ${vix.toFixed(0)} — 고확신만` };
+    return {
+      allowBuy: true,
+      aggressive: false,
+      marketQuality: 'CAUTIOUS',
+      reason: `주의 구간 F&G ${fg} VIX ${vix.toFixed(0)} — 고확신만`,
+    };
   }
-  return { allowBuy: true, aggressive: false, marketQuality: 'OK', reason: `F&G ${fg}(${s.fearGreedLabel}) VIX ${vix.toFixed(0)}` };
+  return {
+    allowBuy: true,
+    aggressive: false,
+    marketQuality: 'OK',
+    reason: `F&G ${fg}(${s.fearGreedLabel}) VIX ${vix.toFixed(0)}`,
+  };
 }
 
 export function hasEarningsRisk(code: string, earnings: EarningsEvent[], daysWindow = 3): boolean {
-  return earnings.some(e => e.code === code && e.daysUntil >= 0 && e.daysUntil <= daysWindow);
+  return earnings.some((e) => e.code === code && e.daysUntil >= 0 && e.daysUntil <= daysWindow);
 }

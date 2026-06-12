@@ -42,8 +42,16 @@ const MACRO_RSS_FEEDS = [
   { url: 'https://feeds.reuters.com/reuters/businessNews', source: 'Reuters Business', max: 5 },
   { url: 'https://feeds.reuters.com/reuters/markets', source: 'Reuters Markets', max: 5 },
   // CNBC
-  { url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664', source: 'CNBC Markets', max: 5 },
-  { url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258', source: 'CNBC Finance', max: 3 },
+  {
+    url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664',
+    source: 'CNBC Markets',
+    max: 5,
+  },
+  {
+    url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258',
+    source: 'CNBC Finance',
+    max: 3,
+  },
   // AP Finance
   { url: 'https://feeds.apnews.com/rss/finance', source: 'AP Finance', max: 4 },
   // MarketWatch
@@ -51,12 +59,20 @@ const MACRO_RSS_FEEDS = [
   // Yonhap (연합뉴스) — 한국 공신력 1위
   { url: 'https://www.yonhapnewstv.co.kr/browse/feed/?cat=0&category=economy', source: '연합뉴스', max: 4 },
   // YouTube — 미국 증시 한국어 해설
-  { url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCWskYkV4c4S9D__rsfOl2JA', source: '한경글로벌마켓', max: 4 },
+  {
+    url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCWskYkV4c4S9D__rsfOl2JA',
+    source: '한경글로벌마켓',
+    max: 4,
+  },
   { url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCsJ6RuBiTVWRX156FVbeaGg', source: '슈카월드', max: 3 },
   { url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCIipmgxpUxDmPP-ma3Ahvbw', source: '월가월부', max: 4 },
   { url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCF8AeLlUbEpKju6v1H6p8Eg', source: '한국경제TV', max: 3 },
   // YouTube — 미국 증시 영어 (US stocks)
-  { url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCEAZeUIeJs0IjQiqTCdVSIg', source: 'Yahoo Finance', max: 3 },
+  {
+    url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCEAZeUIeJs0IjQiqTCdVSIg',
+    source: 'Yahoo Finance',
+    max: 3,
+  },
   { url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCvJJ_dzjViJCoLf5uKUTwoA', source: 'CNBC TV', max: 2 },
 ] as const;
 
@@ -91,13 +107,16 @@ async function fetchRSSFeed(url: string, source: string, maxItems = 5): Promise<
 
     const itemArray = Array.isArray(rssItems) ? rssItems : [rssItems];
 
-    return itemArray.slice(0, maxItems).map((item: any) => {
-      const title = cleanTitle(String(item.title ?? ''));
-      // Atom <link href="..."> vs RSS <link>
-      const link = String(item.link?.['@_href'] ?? item.link ?? '');
-      const pubDate = String(item.pubDate ?? item.updated ?? item.published ?? '');
-      return { title, link, source, publishedAt: pubDate, relevance: 'HIGH' as const };
-    }).filter((item) => item.title.length > 8);
+    return itemArray
+      .slice(0, maxItems)
+      .map((item: any) => {
+        const title = cleanTitle(String(item.title ?? ''));
+        // Atom <link href="..."> vs RSS <link>
+        const link = String(item.link?.['@_href'] ?? item.link ?? '');
+        const pubDate = String(item.pubDate ?? item.updated ?? item.published ?? '');
+        return { title, link, source, publishedAt: pubDate, relevance: 'HIGH' as const };
+      })
+      .filter((item) => item.title.length > 8);
   } catch {
     return [];
   }
@@ -108,7 +127,7 @@ async function fetchRSSFeed(url: string, source: string, maxItems = 5): Promise<
  */
 async function fetchStockNews(stockName: string): Promise<NewsItem[]> {
   try {
-    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(stockName + ' 주가 실적')}&hl=ko&gl=KR&ceid=KR:ko`;
+    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(`${stockName} 주가 실적`)}&hl=ko&gl=KR&ceid=KR:ko`;
 
     const res = await fetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; AIBot/0.5.0)' },
@@ -284,14 +303,14 @@ export async function collectMacroNews(): Promise<string> {
   }
 
   macroNewsCache = { headlines, collectedAt: now };
-  logger.info(`📰 매크로 뉴스 ${headlines.length}건 수집 (Reuters/CNBC/AP/MarketWatch/연합뉴스)`, { component: 'NEWS' });
+  logger.info(`📰 매크로 뉴스 ${headlines.length}건 수집 (Reuters/CNBC/AP/MarketWatch/연합뉴스)`, {
+    component: 'NEWS',
+  });
   return formatMacroForAPI(headlines);
 }
 
 /** API 응답용: "[title](link) — source" 마크다운 형태 */
 function formatMacroForAPI(headlines: MacroHeadline[]): string {
   if (headlines.length === 0) return '';
-  return headlines
-    .map((h) => `- [${h.title}](${h.link || '#'}) — ${h.source}`)
-    .join('\n');
+  return headlines.map((h) => `- [${h.title}](${h.link || '#'}) — ${h.source}`).join('\n');
 }

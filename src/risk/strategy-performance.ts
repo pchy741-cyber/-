@@ -13,13 +13,13 @@ export interface StrategyPerformance {
   totalTrades: number;
   wins: number;
   losses: number;
-  winRate: number;              // 0-1
-  avgWinPct: number;            // 평균 수익 %
-  avgLossPct: number;           // 평균 손실 % (양수)
-  totalPnlKrw: number;          // 확정 PnL 합계 (KRW)
-  totalPnlPct: number;          // 가중 평균 PnL %
-  maxDrawdownPct: number;       // 연속 손실 기반 최대 드로다운
-  profitFactor: number;         // 총이익 / 총손실
+  winRate: number; // 0-1
+  avgWinPct: number; // 평균 수익 %
+  avgLossPct: number; // 평균 손실 % (양수)
+  totalPnlKrw: number; // 확정 PnL 합계 (KRW)
+  totalPnlPct: number; // 가중 평균 PnL %
+  maxDrawdownPct: number; // 연속 손실 기반 최대 드로다운
+  profitFactor: number; // 총이익 / 총손실
   avgHoldingDays: number;
   bestTrade: { stockCode: string; pnlPct: number } | null;
   worstTrade: { stockCode: string; pnlPct: number } | null;
@@ -45,7 +45,8 @@ export async function getStrategyPerformance(
   days: number = 30,
   isPaper: boolean = true,
 ): Promise<StrategyPerformance> {
-  const { rows } = await getPool().query<ClosedChainRow>(`
+  const { rows } = await getPool().query<ClosedChainRow>(
+    `
     SELECT tc.stock_code, tc.strategy_mode, tc.avg_buy_price, tc.total_invested,
            tc.realized_pnl, tc.opened_at, tc.closed_at,
            (SELECT o.filled_price FROM orders o
@@ -57,7 +58,9 @@ export async function getStrategyPerformance(
       AND tc.closed_at >= NOW() - ($2 * INTERVAL '1 day')
       AND tc.is_paper = $3
     ORDER BY tc.closed_at DESC
-  `, [mode, days, isPaper]);
+  `,
+    [mode, days, isPaper],
+  );
 
   return computePerformance(mode, rows);
 }
@@ -69,7 +72,8 @@ export async function getAllStrategyPerformances(
   days: number = 30,
   isPaper: boolean = true,
 ): Promise<StrategyPerformance[]> {
-  const { rows } = await getPool().query<ClosedChainRow>(`
+  const { rows } = await getPool().query<ClosedChainRow>(
+    `
     SELECT tc.stock_code, tc.strategy_mode, tc.avg_buy_price, tc.total_invested,
            tc.realized_pnl, tc.opened_at, tc.closed_at,
            (SELECT o.filled_price FROM orders o
@@ -80,7 +84,9 @@ export async function getAllStrategyPerformances(
       AND tc.closed_at >= NOW() - ($1 * INTERVAL '1 day')
       AND tc.is_paper = $2
     ORDER BY tc.strategy_mode, tc.closed_at DESC
-  `, [days, isPaper]);
+  `,
+    [days, isPaper],
+  );
 
   // 전략별 그룹핑
   const groups = new Map<string, ClosedChainRow[]>();
@@ -105,16 +111,30 @@ function computePerformance(mode: string, rows: ClosedChainRow[]): StrategyPerfo
 
   if (rows.length === 0) {
     return {
-      mode, totalTrades: 0, wins: 0, losses: 0, winRate: 0,
-      avgWinPct: 0, avgLossPct: 0, totalPnlKrw: 0, totalPnlPct: 0,
-      maxDrawdownPct: 0, profitFactor: 0, avgHoldingDays: 0,
-      bestTrade: null, worstTrade: null, lastUpdated: now,
+      mode,
+      totalTrades: 0,
+      wins: 0,
+      losses: 0,
+      winRate: 0,
+      avgWinPct: 0,
+      avgLossPct: 0,
+      totalPnlKrw: 0,
+      totalPnlPct: 0,
+      maxDrawdownPct: 0,
+      profitFactor: 0,
+      avgHoldingDays: 0,
+      bestTrade: null,
+      worstTrade: null,
+      lastUpdated: now,
     };
   }
 
-  let wins = 0, losses = 0;
-  let totalWinPct = 0, totalLossPct = 0;
-  let grossProfit = 0, grossLoss = 0;
+  let wins = 0,
+    losses = 0;
+  let totalWinPct = 0,
+    totalLossPct = 0;
+  let grossProfit = 0,
+    grossLoss = 0;
   let totalPnlKrw = 0;
   let totalHoldingMs = 0;
   let bestTrade: { stockCode: string; pnlPct: number } | null = null;
@@ -203,7 +223,9 @@ export async function logStrategyPerformanceSummary(days: number = 30, isPaper: 
   try {
     const perfs = await getAllStrategyPerformances(days, isPaper);
     if (perfs.length === 0) {
-      logger.info(`📊 전략 성과: ${days}일간 CLOSED 거래 없음 (${isPaper ? 'paper' : 'live'})`, { component: 'STRATEGY_PERF' });
+      logger.info(`📊 전략 성과: ${days}일간 CLOSED 거래 없음 (${isPaper ? 'paper' : 'live'})`, {
+        component: 'STRATEGY_PERF',
+      });
       return;
     }
 
@@ -212,9 +234,9 @@ export async function logStrategyPerformanceSummary(days: number = 30, isPaper: 
     for (const p of perfs) {
       logger.info(
         `  ${p.mode}: ${p.totalTrades}건 승률${(p.winRate * 100).toFixed(0)}% ` +
-        `평균+${p.avgWinPct.toFixed(1)}%/-${p.avgLossPct.toFixed(1)}% ` +
-        `PF=${p.profitFactor.toFixed(2)} MDD=${p.maxDrawdownPct.toFixed(1)}% ` +
-        `PnL=${(p.totalPnlKrw / 10000).toFixed(0)}만원 보유${p.avgHoldingDays.toFixed(1)}일`,
+          `평균+${p.avgWinPct.toFixed(1)}%/-${p.avgLossPct.toFixed(1)}% ` +
+          `PF=${p.profitFactor.toFixed(2)} MDD=${p.maxDrawdownPct.toFixed(1)}% ` +
+          `PnL=${(p.totalPnlKrw / 10000).toFixed(0)}만원 보유${p.avgHoldingDays.toFixed(1)}일`,
         { component: 'STRATEGY_PERF' },
       );
     }

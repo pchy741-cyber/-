@@ -1,6 +1,6 @@
 import { sma } from '../analysis/indicators.js';
-import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
+import { config } from '../config/index.js';
 import { getPool } from '../db/client.js';
 import { getDailyChart } from '../kis/market.js';
 import { logger } from '../utils/logger.js';
@@ -239,7 +239,7 @@ export async function getDynamicPositionSize(
 
   let amount = Math.round(baseAmount * finalMultiplier);
   // 최소 주문금액 보장 (baseAmount의 20% 또는 1만원 중 큰 값)
-  const MIN_ORDER_KRW = Math.max(10_000, Math.round(baseAmount * 0.20));
+  const MIN_ORDER_KRW = Math.max(10_000, Math.round(baseAmount * 0.2));
   if (amount < MIN_ORDER_KRW && baseAmount >= MIN_ORDER_KRW) {
     amount = MIN_ORDER_KRW;
     reasons.push(`최소 주문금액 ${MIN_ORDER_KRW.toLocaleString()}원 적용`);

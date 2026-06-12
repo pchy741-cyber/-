@@ -27,7 +27,8 @@ export interface OverseasWinRate {
 export async function getRecentPerfSummary(isPaper?: boolean): Promise<string> {
   try {
     const mode = ctxMode(isPaper);
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT ai_reasoning, filled_price, quantity
       FROM orders
       WHERE trigger_source = 'OVERSEAS'
@@ -38,10 +39,15 @@ export async function getRecentPerfSummary(isPaper?: boolean): Promise<string> {
         AND created_at >= NOW() - INTERVAL '14 days'
       ORDER BY created_at DESC
       LIMIT 20
-    `, [mode]);
+    `,
+      [mode],
+    );
     if (rows.length === 0) return '';
 
-    let wins = 0, losses = 0, totalPnlPct = 0, counted = 0;
+    let wins = 0,
+      losses = 0,
+      totalPnlPct = 0,
+      counted = 0;
     for (const r of rows) {
       const match = String(r.ai_reasoning ?? '').match(/\[avgBuy:([\d.]+)\]/);
       if (!match) continue;
@@ -49,7 +55,8 @@ export async function getRecentPerfSummary(isPaper?: boolean): Promise<string> {
       const fillPx = Number(r.filled_price);
       if (avgBuy <= 0 || fillPx <= 0) continue;
       const pnlPct = ((fillPx - avgBuy) / avgBuy) * 100;
-      if (pnlPct >= 0) wins++; else losses++;
+      if (pnlPct >= 0) wins++;
+      else losses++;
       totalPnlPct += pnlPct;
       counted++;
     }
@@ -68,7 +75,8 @@ export async function getOverseasWinRates(codes: string[], isPaper?: boolean): P
   if (codes.length === 0) return map;
   try {
     const mode = ctxMode(isPaper);
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT
         stock_code,
         COUNT(*)::int AS total,
@@ -92,7 +100,9 @@ export async function getOverseasWinRates(codes: string[], isPaper?: boolean): P
       WHERE realized_pnl_pct IS NOT NULL
       GROUP BY stock_code
       HAVING COUNT(*) >= 2
-    `, [codes, mode]);
+    `,
+      [codes, mode],
+    );
     for (const r of rows) {
       map.set(String(r.stock_code), {
         winRate: Number(r.wins) / Number(r.total),
@@ -100,7 +110,9 @@ export async function getOverseasWinRates(codes: string[], isPaper?: boolean): P
         sampleCount: Number(r.total),
       });
     }
-  } catch { /* DB 없으면 빈 맵 */ }
+  } catch {
+    /* DB 없으면 빈 맵 */
+  }
   return map;
 }
 

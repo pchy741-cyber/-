@@ -1,21 +1,21 @@
 import { Hono } from 'hono';
 import { getDefenseParkState } from '../../ai/track-b/defense-park.js';
-import { getCachedScores, getScoresWithFallback } from '../../cache/redis.js';
-import { config, baseIsPaper } from '../../config/index.js';
+import { analyzeTechnicals } from '../../analysis/indicators.js';
+import { fetchAnalystConsensus } from '../../automation/analyst-consensus.js';
+import { getInvestorFlow } from '../../automation/investor-flow.js';
+import { getDinnerMoneyStats } from '../../automation/profit-withdraw.js';
+import { fetchShortSellingData } from '../../automation/short-selling.js';
+import { getAiStatus } from '../../cache/ai-status.js';
+import { getScoresWithFallback } from '../../cache/redis.js';
+import { baseIsPaper, config } from '../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getOpenChains, getPool } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { getDailyChart, isMarketOpen } from '../../kis/market.js';
-import { analyzeTechnicals } from '../../analysis/indicators.js';
-import { getInvestorFlow } from '../../automation/investor-flow.js';
-import { fetchShortSellingData } from '../../automation/short-selling.js';
-import { fetchAnalystConsensus } from '../../automation/analyst-consensus.js';
-import { getAiStatus } from '../../cache/ai-status.js';
 import { getPaperBalance } from '../../risk/engine.js';
 import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
-import { getDinnerMoneyStats } from '../../automation/profit-withdraw.js';
 import { logger } from '../../utils/logger.js';
-import { getKnownStockName, isInvalidStockName } from './dashboard.js';
 import { resolveRequestMode } from '../guards/live-pin.js';
+import { getKnownStockName, isInvalidStockName } from './dashboard.js';
 
 export const dashboardAnalysisRoutes = new Hono();
 
@@ -29,21 +29,37 @@ dashboardAnalysisRoutes.get('/stock/:code/analysis', async (c) => {
   // 모의투자 모드에서는 KIS 공매도 API 미지원 (HTTP404 폭탄 방지)
   const isPaperView = resolveViewIsPaper(c);
 
-  const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T> =>
+  const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T> =>
     Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
 
   try {
     const [chart, flow, shorts, consensus] = await Promise.allSettled([
       withTimeout(getDailyChart(stockCode, 65), 6000),
-      withTimeout(getInvestorFlow(stockCode, 5).catch(() => null), 4000),
-      isPaperView ? Promise.resolve(null) : withTimeout(fetchShortSellingData(stockCode, 5).catch(() => null), 4000),
-      withTimeout(fetchAnalystConsensus(stockCode).catch(() => null), 4000),
+      withTimeout(
+        getInvestorFlow(stockCode, 5).catch(() => null),
+        4000,
+      ),
+      isPaperView
+        ? Promise.resolve(null)
+        : withTimeout(
+            fetchShortSellingData(stockCode, 5).catch(() => null),
+            4000,
+          ),
+      withTimeout(
+        fetchAnalystConsensus(stockCode).catch(() => null),
+        4000,
+      ),
     ]);
 
     let technicals = null;
     if (chart.status === 'fulfilled' && chart.value.length >= 20) {
       const candles = chart.value.map((c: any) => ({
-        date: c.date, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
+        date: c.date,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
       }));
       technicals = analyzeTechnicals(candles);
     }
@@ -63,7 +79,17 @@ dashboardAnalysisRoutes.get('/stock/:code/analysis', async (c) => {
 // ── 매매 상태 진단 (왜 매수 안 하는지) ──
 dashboardAnalysisRoutes.get('/trading-status', async (c) => {
   try {
-    const [killSwitch, defensePark, strategy, scores, watchlist, recentLossCodes, kospiRegime, cooldownStatus, eodOnly] = await Promise.all([
+    const [
+      killSwitch,
+      defensePark,
+      strategy,
+      scores,
+      watchlist,
+      recentLossCodes,
+      kospiRegime,
+      cooldownStatus,
+      eodOnly,
+    ] = await Promise.all([
       Promise.resolve(getKillSwitchStatusAll()),
       getDefenseParkState().catch(() => ({ isActive: false, entryReason: null })),
       getActiveStrategy().catch(() => null),
@@ -79,7 +105,14 @@ dashboardAnalysisRoutes.get('/trading-status', async (c) => {
       })(),
       (async () => {
         const { fetchKospiRegime } = await import('../../ai/track-b/market-regime.js');
-        return fetchKospiRegime().catch(() => ({ penalty: 0, boost: false, todayDown: false, flashCrash: false, adaptive: {}, atrPct: 1.0 }));
+        return fetchKospiRegime().catch(() => ({
+          penalty: 0,
+          boost: false,
+          todayDown: false,
+          flashCrash: false,
+          adaptive: {},
+          atrPct: 1.0,
+        }));
       })(),
       (async () => {
         const { getCooldownStatus } = await import('../../risk/trade-gate-stats.js');
@@ -100,14 +133,26 @@ dashboardAnalysisRoutes.get('/trading-status', async (c) => {
     const blocks: { reason: string; detail: string; severity: 'warn' | 'info' | 'ok' }[] = [];
 
     if (killSwitch.kr.active) {
-      blocks.push({ reason: '긴급정지 [국내] (Kill Switch)', detail: killSwitch.kr.reason ?? '수동 발동', severity: 'warn' });
+      blocks.push({
+        reason: '긴급정지 [국내] (Kill Switch)',
+        detail: killSwitch.kr.reason ?? '수동 발동',
+        severity: 'warn',
+      });
     }
     if (killSwitch.overseas.active) {
-      blocks.push({ reason: '긴급정지 [해외] (Kill Switch)', detail: killSwitch.overseas.reason ?? '수동 발동', severity: 'warn' });
+      blocks.push({
+        reason: '긴급정지 [해외] (Kill Switch)',
+        detail: killSwitch.overseas.reason ?? '수동 발동',
+        severity: 'warn',
+      });
     }
 
     if (defensePark.isActive) {
-      blocks.push({ reason: '방어 파킹 중', detail: defensePark.entryReason ?? '하락세 감지 → 현금 ETF 보호', severity: 'warn' });
+      blocks.push({
+        reason: '방어 파킹 중',
+        detail: defensePark.entryReason ?? '하락세 감지 → 현금 ETF 보호',
+        severity: 'warn',
+      });
     }
 
     if (!marketOpen) {
@@ -115,61 +160,118 @@ dashboardAnalysisRoutes.get('/trading-status', async (c) => {
     }
 
     if (mode === 'DEFENSE') {
-      blocks.push({ reason: 'DEFENSE 모드', detail: `AI 점수 ${buyThreshold}점 이상만 진입 — 기준 매우 높음`, severity: 'warn' });
+      blocks.push({
+        reason: 'DEFENSE 모드',
+        detail: `AI 점수 ${buyThreshold}점 이상만 진입 — 기준 매우 높음`,
+        severity: 'warn',
+      });
     }
 
     // KOSPI 레짐 블록 (Live 전용)
     if (kospiRegime.flashCrash) {
-      blocks.push({ reason: '🚨 KOSPI 급락 서킷브레이커', detail: '5분 내 1%+ 하락 감지 — 신규 매수 전면 차단 (자동 해제)', severity: 'warn' });
+      blocks.push({
+        reason: '🚨 KOSPI 급락 서킷브레이커',
+        detail: '5분 내 1%+ 하락 감지 — 신규 매수 전면 차단 (자동 해제)',
+        severity: 'warn',
+      });
     } else if (kospiRegime.penalty >= 2 && kospiRegime.todayDown) {
-      blocks.push({ reason: `📉 하락장 매수 차단 (penalty ${kospiRegime.penalty})`, detail: `KOSPI MA60 하회 + 당일 하락 — Live 신규 매수 차단 (Paper는 정상 운영)`, severity: 'warn' });
+      blocks.push({
+        reason: `📉 하락장 매수 차단 (penalty ${kospiRegime.penalty})`,
+        detail: `KOSPI MA60 하회 + 당일 하락 — Live 신규 매수 차단 (Paper는 정상 운영)`,
+        severity: 'warn',
+      });
     } else if (kospiRegime.penalty >= 1) {
-      blocks.push({ reason: `⚠️ KOSPI 약세 조정 중 (penalty ${kospiRegime.penalty})`, detail: 'KOSPI MA20~MA60 사이 — 진입 기준 상향 (자동)', severity: 'info' });
+      blocks.push({
+        reason: `⚠️ KOSPI 약세 조정 중 (penalty ${kospiRegime.penalty})`,
+        detail: 'KOSPI MA20~MA60 사이 — 진입 기준 상향 (자동)',
+        severity: 'info',
+      });
     } else if (kospiRegime.todayDown) {
-      blocks.push({ reason: '📊 KOSPI 당일 소폭 하락', detail: '당일 -0.3% 이하 — 임계값 소폭 조정 (자동)', severity: 'info' });
+      blocks.push({
+        reason: '📊 KOSPI 당일 소폭 하락',
+        detail: '당일 -0.3% 이하 — 임계값 소폭 조정 (자동)',
+        severity: 'info',
+      });
     }
 
     // EOD-only 모드
     if (eodOnly) {
-      blocks.push({ reason: `🎰 EOD-only 모드 (${cooldownStatus?.consecutive ?? '?'}연패)`, detail: '연패 누적 → 장중 매수 차단, 14:50 이후 종가베팅만 허용', severity: 'warn' });
+      blocks.push({
+        reason: `🎰 EOD-only 모드 (${cooldownStatus?.consecutive ?? '?'}연패)`,
+        detail: '연패 누적 → 장중 매수 차단, 14:50 이후 종가베팅만 허용',
+        severity: 'warn',
+      });
     }
 
     const candidates = scores.filter((s: any) => (s.composite_score ?? 0) >= buyThreshold);
     const topScore = scores.length > 0 ? Math.max(...scores.map((s: any) => s.composite_score ?? 0)) : 0;
     if (scores.length === 0) {
-      blocks.push({ reason: 'AI 스코어 없음', detail: 'Track A 미실행 or 캐시 만료 — 기술적 지표 fallback 사용 중', severity: 'info' });
+      blocks.push({
+        reason: 'AI 스코어 없음',
+        detail: 'Track A 미실행 or 캐시 만료 — 기술적 지표 fallback 사용 중',
+        severity: 'info',
+      });
     } else if (candidates.length === 0) {
-      blocks.push({ reason: `매수 후보 없음 (최고 ${topScore}점)`, detail: `현재 임계치 ${buyThreshold}점 — 모든 감시 종목 점수 미달`, severity: 'warn' });
+      blocks.push({
+        reason: `매수 후보 없음 (최고 ${topScore}점)`,
+        detail: `현재 임계치 ${buyThreshold}점 — 모든 감시 종목 점수 미달`,
+        severity: 'warn',
+      });
     }
 
     if (recentLossCodes.size > 0) {
       const watchCodes = new Set(watchlist.map((w: any) => w.stock_code));
       const bannedInWatch = [...recentLossCodes].filter((c) => watchCodes.has(c));
       if (bannedInWatch.length > 0) {
-        blocks.push({ reason: `손실 밴 ${bannedInWatch.length}종목`, detail: `7일 내 손절 ${bannedInWatch.length}종목 재진입 금지: ${bannedInWatch.slice(0, 3).join(', ')}`, severity: 'info' });
+        blocks.push({
+          reason: `손실 밴 ${bannedInWatch.length}종목`,
+          detail: `7일 내 손절 ${bannedInWatch.length}종목 재진입 금지: ${bannedInWatch.slice(0, 3).join(', ')}`,
+          severity: 'info',
+        });
       }
     }
 
     if (watchlist.length < 3) {
-      blocks.push({ reason: '감시목록 부족', detail: `현재 ${watchlist.length}종목 — 3종목 이상 권장`, severity: 'warn' });
+      blocks.push({
+        reason: '감시목록 부족',
+        detail: `현재 ${watchlist.length}종목 — 3종목 이상 권장`,
+        severity: 'warn',
+      });
     }
 
-    const hasHardBlock = blocks.some(b => b.severity === 'warn' && (
-      b.reason.includes('긴급정지') || b.reason.includes('방어 파킹') || b.reason.includes('후보 없음') || b.reason.includes('DEFENSE') || b.reason.includes('하락장') || b.reason.includes('서킷') || b.reason.includes('EOD-only')
-    ));
-    const overallStatus: 'ACTIVE' | 'WATCHING' | 'BLOCKED' = killSwitch.kr.active || killSwitch.overseas.active || defensePark.isActive || kospiRegime.flashCrash
-      ? 'BLOCKED'
-      : hasHardBlock
-        ? 'WATCHING'
-        : 'ACTIVE';
+    const hasHardBlock = blocks.some(
+      (b) =>
+        b.severity === 'warn' &&
+        (b.reason.includes('긴급정지') ||
+          b.reason.includes('방어 파킹') ||
+          b.reason.includes('후보 없음') ||
+          b.reason.includes('DEFENSE') ||
+          b.reason.includes('하락장') ||
+          b.reason.includes('서킷') ||
+          b.reason.includes('EOD-only')),
+    );
+    const overallStatus: 'ACTIVE' | 'WATCHING' | 'BLOCKED' =
+      killSwitch.kr.active || killSwitch.overseas.active || defensePark.isActive || kospiRegime.flashCrash
+        ? 'BLOCKED'
+        : hasHardBlock
+          ? 'WATCHING'
+          : 'ACTIVE';
 
     const aiEngineStatus = getAiStatus();
     const geminiBlocked = aiEngineStatus.gemini === 'quota' || aiEngineStatus.gemini === 'error';
     const claudeBlocked = aiEngineStatus.claude === 'no_credit' || aiEngineStatus.claude === 'error';
     if (geminiBlocked && claudeBlocked) {
-      blocks.push({ reason: 'AI 엔진 전체 실패', detail: '기술적 지표 fallback으로 자동 매매 계속 진행 중 — AI 점수 기반 필터만 비활성 (30분 후 자동 재시도)', severity: 'info' });
+      blocks.push({
+        reason: 'AI 엔진 전체 실패',
+        detail: '기술적 지표 fallback으로 자동 매매 계속 진행 중 — AI 점수 기반 필터만 비활성 (30분 후 자동 재시도)',
+        severity: 'info',
+      });
     } else if (geminiBlocked) {
-      blocks.push({ reason: 'Gemini 오류/한도', detail: `${aiEngineStatus.gemini === 'quota' ? '무료 할당량 초과' : '연결 오류'} — 30분 후 자동 재시도`, severity: 'info' });
+      blocks.push({
+        reason: 'Gemini 오류/한도',
+        detail: `${aiEngineStatus.gemini === 'quota' ? '무료 할당량 초과' : '연결 오류'} — 30분 후 자동 재시도`,
+        severity: 'info',
+      });
     }
 
     return c.json({
@@ -182,7 +284,12 @@ dashboardAnalysisRoutes.get('/trading-status', async (c) => {
       watchlistCount: watchlist.length,
       lossBlockedCount: recentLossCodes.size,
       aiEngine: { claude: aiEngineStatus.claude, gemini: aiEngineStatus.gemini, active: aiEngineStatus.activeEngine },
-      kospiRegime: { penalty: kospiRegime.penalty, todayDown: kospiRegime.todayDown, flashCrash: kospiRegime.flashCrash, boost: kospiRegime.boost },
+      kospiRegime: {
+        penalty: kospiRegime.penalty,
+        todayDown: kospiRegime.todayDown,
+        flashCrash: kospiRegime.flashCrash,
+        boost: kospiRegime.boost,
+      },
       eodOnly,
       consecutiveLosses: cooldownStatus?.consecutive ?? 0,
       blocks,
@@ -208,7 +315,15 @@ dashboardAnalysisRoutes.get('/ai/gemini-test', async (c) => {
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout_10s')), 10000)),
     ]);
     const latencyMs = Date.now() - start;
-    return c.json({ ok: !!text, latencyMs, model: TEST_MODEL, error: null, errorDetail: null, rawError: '', response: text?.slice(0, 50) });
+    return c.json({
+      ok: !!text,
+      latencyMs,
+      model: TEST_MODEL,
+      error: null,
+      errorDetail: null,
+      rawError: '',
+      response: text?.slice(0, 50),
+    });
   } catch (err) {
     const errStr = String(err);
     const latencyMs = Date.now() - start;
@@ -216,16 +331,33 @@ dashboardAnalysisRoutes.get('/ai/gemini-test', async (c) => {
     let errorDetail = '원인 불명 — 로그를 확인하세요';
     const rawError = errStr.slice(0, 300);
 
-    if (errStr.includes('timeout')) { error = 'timeout'; errorDetail = '10초 내 응답 없음 — Cloud Run 네트워크 또는 Gemini 서버 과부하'; }
-    else if (errStr.includes('429') || errStr.includes('quota') || errStr.includes('RESOURCE_EXHAUSTED') || errStr.includes('Resource has been exhausted')) {
-      error = 'quota'; errorDetail = '무료 할당량 초과 (429) — Google AI Studio에서 사용량 확인 후 내일 재시도';
+    if (errStr.includes('timeout')) {
+      error = 'timeout';
+      errorDetail = '10초 내 응답 없음 — Cloud Run 네트워크 또는 Gemini 서버 과부하';
+    } else if (
+      errStr.includes('429') ||
+      errStr.includes('quota') ||
+      errStr.includes('RESOURCE_EXHAUSTED') ||
+      errStr.includes('Resource has been exhausted')
+    ) {
+      error = 'quota';
+      errorDetail = '무료 할당량 초과 (429) — Google AI Studio에서 사용량 확인 후 내일 재시도';
+    } else if (
+      (errStr.includes('400') && (errStr.includes('API key') || errStr.includes('API_KEY'))) ||
+      errStr.includes('INVALID_ARGUMENT')
+    ) {
+      error = 'invalid_key';
+      errorDetail = 'API 키가 유효하지 않습니다 — 설정에서 키를 재발급하세요';
+    } else if (errStr.includes('404') || errStr.includes('NOT_FOUND')) {
+      error = 'model_not_found';
+      errorDetail = `모델 없음 (404) — ${TEST_MODEL} 접근 불가`;
+    } else if (errStr.includes('403') || errStr.includes('PERMISSION_DENIED')) {
+      error = 'permission';
+      errorDetail = '접근 권한 없음 (403) — API 키 허용 범위 확인 필요';
+    } else if (errStr.includes('503') || errStr.includes('UNAVAILABLE')) {
+      error = 'unavailable';
+      errorDetail = 'Gemini 서비스 일시 불가 (503) — 잠시 후 재시도';
     }
-    else if ((errStr.includes('400') && (errStr.includes('API key') || errStr.includes('API_KEY'))) || errStr.includes('INVALID_ARGUMENT')) {
-      error = 'invalid_key'; errorDetail = 'API 키가 유효하지 않습니다 — 설정에서 키를 재발급하세요';
-    }
-    else if (errStr.includes('404') || errStr.includes('NOT_FOUND')) { error = 'model_not_found'; errorDetail = `모델 없음 (404) — ${TEST_MODEL} 접근 불가`; }
-    else if (errStr.includes('403') || errStr.includes('PERMISSION_DENIED')) { error = 'permission'; errorDetail = '접근 권한 없음 (403) — API 키 허용 범위 확인 필요'; }
-    else if (errStr.includes('503') || errStr.includes('UNAVAILABLE')) { error = 'unavailable'; errorDetail = 'Gemini 서비스 일시 불가 (503) — 잠시 후 재시도'; }
 
     logger.warn('Gemini 연결 테스트 실패', { error, rawError, component: 'GEMINI_TEST' });
     return c.json({ ok: false, latencyMs, model: TEST_MODEL, error, errorDetail, rawError });
@@ -320,7 +452,16 @@ dashboardAnalysisRoutes.get('/stock/:code/score-detail', async (c) => {
       summary: (() => {
         const gs = r.gemini_summary;
         if (!gs) return null;
-        const obj = typeof gs === 'string' ? (() => { try { return JSON.parse(gs); } catch { return null; } })() : gs;
+        const obj =
+          typeof gs === 'string'
+            ? (() => {
+                try {
+                  return JSON.parse(gs);
+                } catch {
+                  return null;
+                }
+              })()
+            : gs;
         if (obj?.key_facts?.length > 0) return (obj.key_facts as string[]).slice(0, 3).join(' · ');
         if (typeof gs === 'string') return gs.slice(0, 200);
         return null;
@@ -399,7 +540,7 @@ dashboardAnalysisRoutes.get('/ai-transparency', async (c) => {
     const winRate = total > 0 ? Math.round((wins / total) * 100) : null;
 
     return c.json({ holdings, decisions, winRate, totalTrades: total, wins, losses });
-  } catch (err: any) {
+  } catch (_err: any) {
     return c.json({ holdings: [], decisions: [], winRate: null, totalTrades: 0 }, 200);
   }
 });
@@ -445,13 +586,18 @@ dashboardAnalysisRoutes.post('/release-defense-park', async (c) => {
         `UPDATE strategy_config SET mode='SWING', buy_threshold=70, updated_at=NOW() WHERE is_active=true AND is_paper=$1`,
         [isPaper],
       );
-    } catch { /* 실패해도 계속 */ }
+    } catch {
+      /* 실패해도 계속 */
+    }
 
     const position = await getPositionForStock('069500');
     let sellMsg = '';
     if (position && position.quantity > 0) {
       const result = await placeOrder({ stockCode: '069500', side: 'SELL', quantity: position.quantity });
-      logger.info(`🛡️ KODEX 200 즉시 매도: ${position.quantity}주 → ${result.success ? '성공' : '실패'} (${result.message})`, { component: 'MANUAL' });
+      logger.info(
+        `🛡️ KODEX 200 즉시 매도: ${position.quantity}주 → ${result.success ? '성공' : '실패'} (${result.message})`,
+        { component: 'MANUAL' },
+      );
       sellMsg = `KODEX 200 ${position.quantity}주 매도 완료. `;
     }
 
@@ -467,7 +613,9 @@ dashboardAnalysisRoutes.post('/release-defense-park', async (c) => {
           avgBuyPrice: Number(p.avgBuyPrice ?? p.purchasePrice ?? 0),
           stockName: p.stockName ?? undefined,
         }))
-        .filter((p) => p.stockCode.length === 6 && p.quantity > 0 && p.avgBuyPrice > 0 && !chainedCodes.has(p.stockCode));
+        .filter(
+          (p) => p.stockCode.length === 6 && p.quantity > 0 && p.avgBuyPrice > 0 && !chainedCodes.has(p.stockCode),
+        );
 
       if (orphans.length > 0) {
         const { createChain, insertOrder } = await import('../../db/client.js');
@@ -480,20 +628,38 @@ dashboardAnalysisRoutes.post('/release-defense-park', async (c) => {
               [pos.stockCode, knownName],
             );
             const chainId = await createChain({
-              stock_code: pos.stockCode, status: 'OPEN', strategy_mode: 'SWING',
-              avg_buy_price: pos.avgBuyPrice, total_quantity: pos.quantity,
-              total_invested: pos.avgBuyPrice * pos.quantity, realized_pnl: 0,
-              target_profit_pct: 2.5, stop_loss_pct: -1.5, max_averaging_count: 1, current_averaging_count: 0,
+              stock_code: pos.stockCode,
+              status: 'OPEN',
+              strategy_mode: 'SWING',
+              avg_buy_price: pos.avgBuyPrice,
+              total_quantity: pos.quantity,
+              total_invested: pos.avgBuyPrice * pos.quantity,
+              realized_pnl: 0,
+              target_profit_pct: 2.5,
+              stop_loss_pct: -1.5,
+              max_averaging_count: 1,
+              current_averaging_count: 0,
             });
             await insertOrder({
-              chain_id: chainId, stock_code: pos.stockCode, side: 'BUY', order_type: '01',
-              quantity: pos.quantity, price: pos.avgBuyPrice, kis_order_no: `SYNC_${pos.stockCode}`,
-              kis_status: null, filled_quantity: pos.quantity, filled_price: pos.avgBuyPrice,
-              status: 'FILLED', trading_mode: config.tradingMode, trigger_source: 'SYNC',
+              chain_id: chainId,
+              stock_code: pos.stockCode,
+              side: 'BUY',
+              order_type: '01',
+              quantity: pos.quantity,
+              price: pos.avgBuyPrice,
+              kis_order_no: `SYNC_${pos.stockCode}`,
+              kis_status: null,
+              filled_quantity: pos.quantity,
+              filled_price: pos.avgBuyPrice,
+              status: 'FILLED',
+              trading_mode: config.tradingMode,
+              trigger_source: 'SYNC',
               ai_reasoning: 'KIS 잔고 동기화 — 파킹 해제 시 자동 복구',
             });
             synced.push(pos.stockCode);
-          } catch { /* skip individual failure */ }
+          } catch {
+            /* skip individual failure */
+          }
         }
         syncMsg = `보유종목 ${synced.length}개 대시보드 복구 완료.`;
         logger.info(`🔄 파킹 해제 후 포지션 자동 복구: ${synced.join(', ')}`, { component: 'MANUAL' });
@@ -524,7 +690,8 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
       // 국내: transaction_chains 기반 (기존)
       const codeFilter = `AND stock_code ~ '^[0-9]{6}$'`;
 
-      const { rows: monthly } = await pool.query(`
+      const { rows: monthly } = await pool.query(
+        `
         SELECT
           to_char(closed_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM') AS month,
           SUM(realized_pnl) AS pnl,
@@ -536,24 +703,32 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
           ${codeFilter}
         GROUP BY 1
         ORDER BY 1 ASC
-      `, [isPaper]);
+      `,
+        [isPaper],
+      );
 
-      const { rows: total } = await pool.query(`
+      const { rows: total } = await pool.query(
+        `
         SELECT COALESCE(SUM(realized_pnl), 0) AS total_pnl
         FROM transaction_chains
         WHERE status = 'CLOSED'
           AND is_paper = $1
           ${codeFilter}
-      `, [isPaper]);
+      `,
+        [isPaper],
+      );
 
-      const { rows: thisMonth } = await pool.query(`
+      const { rows: thisMonth } = await pool.query(
+        `
         SELECT COALESCE(SUM(realized_pnl), 0) AS pnl
         FROM transaction_chains
         WHERE status = 'CLOSED'
           AND closed_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')
           AND is_paper = $1
           ${codeFilter}
-      `, [isPaper]);
+      `,
+        [isPaper],
+      );
 
       const dinnerMoney = await getDinnerMoneyStats();
 
@@ -575,7 +750,8 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
           AND (filled_price / avg_buy_price) <= 2.0
           AND (avg_buy_price / filled_price) <= 2.0`;
 
-      const { rows: monthly } = await pool.query(`
+      const { rows: monthly } = await pool.query(
+        `
         SELECT
           to_char(created_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM') AS month,
           SUM((filled_price - avg_buy_price) * filled_quantity) AS pnl,
@@ -586,22 +762,30 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
           AND created_at >= NOW() - INTERVAL '12 months'
         GROUP BY 1
         ORDER BY 1 ASC
-      `, [tradingMode]);
+      `,
+        [tradingMode],
+      );
 
-      const { rows: total } = await pool.query(`
+      const { rows: total } = await pool.query(
+        `
         SELECT COALESCE(SUM((filled_price - avg_buy_price) * filled_quantity), 0) AS total_pnl
         FROM orders
         WHERE ${osFilter}
           AND trading_mode = $1
-      `, [tradingMode]);
+      `,
+        [tradingMode],
+      );
 
-      const { rows: thisMonth } = await pool.query(`
+      const { rows: thisMonth } = await pool.query(
+        `
         SELECT COALESCE(SUM((filled_price - avg_buy_price) * filled_quantity), 0) AS pnl
         FROM orders
         WHERE ${osFilter}
           AND trading_mode = $1
           AND created_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')
-      `, [tradingMode]);
+      `,
+        [tradingMode],
+      );
 
       return c.json({
         market,
@@ -623,16 +807,17 @@ dashboardAnalysisRoutes.post('/sync-positions', async (c) => {
     const balanceFn = viewIsPaper ? getPaperBalance : getAccountBalance;
     const [balance, openChains] = await Promise.all([balanceFn(), getOpenChains(viewIsPaper)]);
 
-    const kisPositions: Array<{ stockCode: string; quantity: number; avgBuyPrice: number; stockName?: string }> =
-      (balance.positions ?? [])
-        .filter((p: any) => Number(p.quantity ?? p.holdingQuantity ?? 0) > 0)
-        .map((p: any) => ({
-          stockCode: String(p.stockCode ?? ''),
-          quantity: Number(p.quantity ?? p.holdingQuantity ?? 0),
-          avgBuyPrice: Number(p.avgBuyPrice ?? p.purchasePrice ?? 0),
-          stockName: p.stockName ?? undefined,
-        }))
-        .filter((p: any) => p.stockCode.length === 6 && p.quantity > 0 && p.avgBuyPrice > 0);
+    const kisPositions: Array<{ stockCode: string; quantity: number; avgBuyPrice: number; stockName?: string }> = (
+      balance.positions ?? []
+    )
+      .filter((p: any) => Number(p.quantity ?? p.holdingQuantity ?? 0) > 0)
+      .map((p: any) => ({
+        stockCode: String(p.stockCode ?? ''),
+        quantity: Number(p.quantity ?? p.holdingQuantity ?? 0),
+        avgBuyPrice: Number(p.avgBuyPrice ?? p.purchasePrice ?? 0),
+        stockName: p.stockName ?? undefined,
+      }))
+      .filter((p: any) => p.stockCode.length === 6 && p.quantity > 0 && p.avgBuyPrice > 0);
 
     const tradingPositions = kisPositions;
     const chainedCodes = new Set(openChains.map((ch: any) => ch.stock_code));
@@ -656,22 +841,40 @@ dashboardAnalysisRoutes.post('/sync-positions', async (c) => {
         );
 
         const chainId = await createChain({
-          stock_code: pos.stockCode, status: 'OPEN', strategy_mode: 'SWING',
-          avg_buy_price: pos.avgBuyPrice, total_quantity: pos.quantity,
-          total_invested: pos.avgBuyPrice * pos.quantity, realized_pnl: 0,
-          target_profit_pct: 2.5, stop_loss_pct: -1.5, max_averaging_count: 1, current_averaging_count: 0,
+          stock_code: pos.stockCode,
+          status: 'OPEN',
+          strategy_mode: 'SWING',
+          avg_buy_price: pos.avgBuyPrice,
+          total_quantity: pos.quantity,
+          total_invested: pos.avgBuyPrice * pos.quantity,
+          realized_pnl: 0,
+          target_profit_pct: 2.5,
+          stop_loss_pct: -1.5,
+          max_averaging_count: 1,
+          current_averaging_count: 0,
         });
 
         await insertOrder({
-          chain_id: chainId, stock_code: pos.stockCode, side: 'BUY', order_type: '01',
-          quantity: pos.quantity, price: pos.avgBuyPrice, kis_order_no: `SYNC_${pos.stockCode}`,
-          kis_status: null, filled_quantity: pos.quantity, filled_price: pos.avgBuyPrice,
-          status: 'FILLED', trading_mode: config.tradingMode, trigger_source: 'SYNC',
+          chain_id: chainId,
+          stock_code: pos.stockCode,
+          side: 'BUY',
+          order_type: '01',
+          quantity: pos.quantity,
+          price: pos.avgBuyPrice,
+          kis_order_no: `SYNC_${pos.stockCode}`,
+          kis_status: null,
+          filled_quantity: pos.quantity,
+          filled_price: pos.avgBuyPrice,
+          status: 'FILLED',
+          trading_mode: config.tradingMode,
+          trigger_source: 'SYNC',
           ai_reasoning: 'KIS 잔고 동기화 — 기존 보유 포지션 복구',
         });
 
         synced.push(pos.stockCode);
-        logger.info(`🔄 포지션 동기화: ${pos.stockCode} ${pos.quantity}주 @ ${pos.avgBuyPrice.toLocaleString()}원`, { component: 'SYNC' });
+        logger.info(`🔄 포지션 동기화: ${pos.stockCode} ${pos.quantity}주 @ ${pos.avgBuyPrice.toLocaleString()}원`, {
+          component: 'SYNC',
+        });
       } catch (innerErr: any) {
         logger.error(`포지션 동기화 실패 (${pos.stockCode}): ${innerErr.message}`, { component: 'SYNC' });
       }
@@ -698,7 +901,8 @@ dashboardAnalysisRoutes.get('/strategy/performance', async (c) => {
   try {
     const pool = getPool();
     const isPaper = resolveViewIsPaper(c);
-    const { rows } = await pool.query(`
+    const { rows } = await pool.query(
+      `
       SELECT
         tc.strategy_mode,
         COUNT(*) AS trades,
@@ -720,17 +924,21 @@ dashboardAnalysisRoutes.get('/strategy/performance', async (c) => {
         AND tc.created_at >= NOW() - INTERVAL '90 days'
       GROUP BY tc.strategy_mode
       ORDER BY total_pnl DESC
-    `, [isPaper]);
-    return c.json(rows.map((r: any) => ({
-      mode: r.strategy_mode ?? 'UNKNOWN',
-      trades: Number(r.trades),
-      wins: Number(r.wins),
-      winRate: Number(r.trades) > 0 ? Math.round(Number(r.wins) / Number(r.trades) * 100) : 0,
-      avgPnl: Number(r.avg_pnl),
-      totalPnl: Number(r.total_pnl),
-      avgPnlPct: Number(r.avg_pnl_pct ?? 0),
-      avgHoldHours: Number(r.avg_hold_hours ?? 0),
-    })));
+    `,
+      [isPaper],
+    );
+    return c.json(
+      rows.map((r: any) => ({
+        mode: r.strategy_mode ?? 'UNKNOWN',
+        trades: Number(r.trades),
+        wins: Number(r.wins),
+        winRate: Number(r.trades) > 0 ? Math.round((Number(r.wins) / Number(r.trades)) * 100) : 0,
+        avgPnl: Number(r.avg_pnl),
+        totalPnl: Number(r.total_pnl),
+        avgPnlPct: Number(r.avg_pnl_pct ?? 0),
+        avgHoldHours: Number(r.avg_hold_hours ?? 0),
+      })),
+    );
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
@@ -741,7 +949,8 @@ dashboardAnalysisRoutes.get('/trades/by-hour', async (c) => {
   try {
     const isPaper = resolveViewIsPaper(c);
     const pool = getPool();
-    const { rows } = await pool.query(`
+    const { rows } = await pool.query(
+      `
       SELECT
         EXTRACT(HOUR FROM o.created_at AT TIME ZONE 'Asia/Seoul')::int AS hour,
         o.side,
@@ -766,14 +975,18 @@ dashboardAnalysisRoutes.get('/trades/by-hour', async (c) => {
         AND o.filled_price IS NOT NULL
       GROUP BY hour, o.side
       ORDER BY hour ASC, o.side ASC
-    `, [isPaper]);
-    return c.json(rows.map((r: any) => ({
-      hour: Number(r.hour),
-      side: r.side,
-      count: Number(r.count),
-      avgPnlPct: Number(r.avg_pnl_pct ?? 0),
-      winRate: Number(r.count) > 0 ? Math.round(Number(r.win_count) / Number(r.count) * 100) : 0,
-    })));
+    `,
+      [isPaper],
+    );
+    return c.json(
+      rows.map((r: any) => ({
+        hour: Number(r.hour),
+        side: r.side,
+        count: Number(r.count),
+        avgPnlPct: Number(r.avg_pnl_pct ?? 0),
+        winRate: Number(r.count) > 0 ? Math.round((Number(r.win_count) / Number(r.count)) * 100) : 0,
+      })),
+    );
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
@@ -785,7 +998,8 @@ dashboardAnalysisRoutes.get('/market/performance-vs-kospi', async (c) => {
     const pool = getPool();
     const isPaper = resolveViewIsPaper(c);
     // 최근 60일 일별 실현손익 합계
-    const { rows: pnlRows } = await pool.query(`
+    const { rows: pnlRows } = await pool.query(
+      `
       SELECT DATE(o.created_at AT TIME ZONE 'Asia/Seoul') AS day,
              SUM((o.filled_price - tc.avg_buy_price) * o.filled_quantity) AS daily_pnl,
              SUM(tc.avg_buy_price * o.filled_quantity) AS cost_basis
@@ -797,17 +1011,19 @@ dashboardAnalysisRoutes.get('/market/performance-vs-kospi', async (c) => {
         AND o.filled_price IS NOT NULL AND tc.avg_buy_price IS NOT NULL
         AND o.created_at >= NOW() - INTERVAL '60 days'
       GROUP BY day ORDER BY day ASC
-    `, [isPaper]);
+    `,
+      [isPaper],
+    );
     // KOSPI 60일 차트 — Yahoo Finance ^KS11 (primary) → Naver Finance (fallback)
     const kospiPoints = await (async () => {
       // 1차: Yahoo Finance (VIX 조회에 이미 검증된 API)
       try {
-        const res = await fetch(
-          'https://query1.finance.yahoo.com/v8/finance/chart/%5EKS11?interval=1d&range=90d',
-          { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) },
-        );
+        const res = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5EKS11?interval=1d&range=90d', {
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+          signal: AbortSignal.timeout(8000),
+        });
         if (!res.ok) throw new Error(`Yahoo HTTP ${res.status}`);
-        const json = await res.json() as any;
+        const json = (await res.json()) as any;
         const result = json?.chart?.result?.[0];
         const timestamps: number[] = result?.timestamp ?? [];
         const closes: (number | null)[] = result?.indicators?.quote?.[0]?.close ?? [];
@@ -817,10 +1033,10 @@ dashboardAnalysisRoutes.get('/market/performance-vs-kospi', async (c) => {
             date: new Date(ts * 1000).toISOString().slice(0, 10).replace(/-/g, ''),
             price: closes[i] ?? 0,
           }))
-          .filter(d => d.price > 0)
+          .filter((d) => d.price > 0)
           .sort((a, b) => a.date.localeCompare(b.date));
         const base = sorted[0]?.price ?? 0;
-        return sorted.map(d => ({ date: d.date, value: base > 0 ? ((d.price - base) / base) * 100 : 0 }));
+        return sorted.map((d) => ({ date: d.date, value: base > 0 ? ((d.price - base) / base) * 100 : 0 }));
       } catch {
         // 2차 fallback: Naver Finance (다양한 필드명 시도)
         const end = new Date();
@@ -829,21 +1045,22 @@ dashboardAnalysisRoutes.get('/market/performance-vs-kospi', async (c) => {
         const url = `https://m.stock.naver.com/api/index/KOSPI/price?startTime=${fmt(start)}&endTime=${fmt(end)}&pageSize=70&type=DAYBYDAY`;
         const res2 = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) });
         if (!res2.ok) return [];
-        const data2 = await res2.json() as Record<string, unknown>[];
+        const data2 = (await res2.json()) as Record<string, unknown>[];
         if (!Array.isArray(data2)) return [];
         const sorted2 = data2
           .map((d: any) => ({
             date: String(d.localDate ?? d.bizdate ?? d.date ?? ''),
             price: Number(d.closePrice ?? d.endPrice ?? d.closingPrice ?? d.close ?? 0),
           }))
-          .filter(d => d.date && d.price > 0)
+          .filter((d) => d.date && d.price > 0)
           .sort((a, b) => a.date.localeCompare(b.date));
         const base2 = sorted2[0]?.price ?? 0;
-        return sorted2.map(d => ({ date: d.date, value: base2 > 0 ? ((d.price - base2) / base2) * 100 : 0 }));
+        return sorted2.map((d) => ({ date: d.date, value: base2 > 0 ? ((d.price - base2) / base2) * 100 : 0 }));
       }
     })().catch(() => [] as { date: string; value: number }[]);
     // 봇 누적수익률 (일별 합산)
-    let cumPnl = 0; let cumCost = 0;
+    let cumPnl = 0;
+    let cumCost = 0;
     const botPoints = pnlRows.map((r: any) => {
       cumPnl += Number(r.daily_pnl ?? 0);
       cumCost += Number(r.cost_basis ?? 0);
@@ -861,7 +1078,8 @@ dashboardAnalysisRoutes.get('/market/tax-estimate', async (c) => {
     const pool = getPool();
     const isPaper = resolveViewIsPaper(c);
     const year = new Date().getFullYear();
-    const { rows } = await pool.query(`
+    const { rows } = await pool.query(
+      `
       SELECT
         SUM(GREATEST(0, (o.filled_price - tc.avg_buy_price) * o.filled_quantity)) AS gross_gain,
         SUM(GREATEST(0, (tc.avg_buy_price - o.filled_price) * o.filled_quantity)) AS gross_loss,
@@ -874,7 +1092,9 @@ dashboardAnalysisRoutes.get('/market/tax-estimate', async (c) => {
         AND tc.is_paper = $2
         AND EXTRACT(YEAR FROM o.created_at) = $1
         AND o.filled_price IS NOT NULL AND tc.avg_buy_price IS NOT NULL
-    `, [year, isPaper]);
+    `,
+      [year, isPaper],
+    );
     const r = rows[0] ?? {};
     const grossGain = Number(r.gross_gain ?? 0);
     const grossLoss = Number(r.gross_loss ?? 0);
@@ -882,7 +1102,15 @@ dashboardAnalysisRoutes.get('/market/tax-estimate', async (c) => {
     const transactionTax = Number(r.transaction_tax ?? 0);
     // 소액주주 국내 상장 주식: 양도세 없음 (단, 대주주 판정 기준 50억 미만)
     const capitalGainsTax = 0;
-    return c.json({ year, grossGain, grossLoss, netGain, transactionTax, capitalGainsTax, totalSellAmount: Number(r.total_sell_amount ?? 0) });
+    return c.json({
+      year,
+      grossGain,
+      grossLoss,
+      netGain,
+      transactionTax,
+      capitalGainsTax,
+      totalSellAmount: Number(r.total_sell_amount ?? 0),
+    });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
@@ -894,15 +1122,17 @@ let _highRefreshing = false;
 async function _refreshHighs() {
   const watchlist = await getActiveWatchlist();
   const targets = watchlist.slice(0, 20);
-  const results = await Promise.allSettled(targets.map(async (w) => {
-    const candles = await getDailyChart(w.stock_code, 252).catch(() => []);
-    if (candles.length < 10) return null;
-    const high52w = Math.max(...candles.map((c: any) => c.high ?? c.close));
-    const current = candles[0]?.close ?? 0;
-    const dropFromHigh = high52w > 0 ? ((current - high52w) / high52w) * 100 : 0;
-    const isNearHigh = dropFromHigh >= -3;
-    return { stock_code: w.stock_code, stock_name: w.stock_name, current, high52w, dropFromHigh, isNearHigh };
-  }));
+  const results = await Promise.allSettled(
+    targets.map(async (w) => {
+      const candles = await getDailyChart(w.stock_code, 252).catch(() => []);
+      if (candles.length < 10) return null;
+      const high52w = Math.max(...candles.map((c: any) => c.high ?? c.close));
+      const current = candles[0]?.close ?? 0;
+      const dropFromHigh = high52w > 0 ? ((current - high52w) / high52w) * 100 : 0;
+      const isNearHigh = dropFromHigh >= -3;
+      return { stock_code: w.stock_code, stock_name: w.stock_name, current, high52w, dropFromHigh, isNearHigh };
+    }),
+  );
   return results
     .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled' && r.value !== null)
     .map((r) => r.value)
@@ -914,13 +1144,22 @@ dashboardAnalysisRoutes.get('/market/52w-highs', async (c) => {
     if (_highCache.data.length > 0) {
       if (stale && !_highRefreshing) {
         _highRefreshing = true;
-        _refreshHighs().then(items => { _highCache = { data: items, fetchedAt: Date.now() }; }).catch(() => {}).finally(() => { _highRefreshing = false; });
+        _refreshHighs()
+          .then((items) => {
+            _highCache = { data: items, fetchedAt: Date.now() };
+          })
+          .catch(() => {})
+          .finally(() => {
+            _highRefreshing = false;
+          });
       }
       return c.json({ items: _highCache.data });
     }
     if (_highRefreshing) return c.json({ items: [] });
     _highRefreshing = true;
-    const items = await _refreshHighs().finally(() => { _highRefreshing = false; });
+    const items = await _refreshHighs().finally(() => {
+      _highRefreshing = false;
+    });
     _highCache = { data: items, fetchedAt: Date.now() };
     return c.json({ items });
   } catch (err: any) {
@@ -934,11 +1173,20 @@ let _shortRefreshing = false;
 async function _refreshShorts() {
   const openChains = await getOpenChains();
   const targets = openChains.filter((ch: any) => Number(ch.total_quantity) > 0);
-  const results = await Promise.allSettled(targets.map(async (ch: any) => {
-    const s = await fetchShortSellingData(ch.stock_code, 5).catch(() => null);
-    if (!s) return null;
-    return { stock_code: ch.stock_code, stock_name: (ch as any).stock_name ?? ch.stock_code, shortRatio: s.shortRatio, isIncreasing: s.isIncreasing, riskLevel: s.riskLevel, trend: s.shortTrend };
-  }));
+  const results = await Promise.allSettled(
+    targets.map(async (ch: any) => {
+      const s = await fetchShortSellingData(ch.stock_code, 5).catch(() => null);
+      if (!s) return null;
+      return {
+        stock_code: ch.stock_code,
+        stock_name: (ch as any).stock_name ?? ch.stock_code,
+        shortRatio: s.shortRatio,
+        isIncreasing: s.isIncreasing,
+        riskLevel: s.riskLevel,
+        trend: s.shortTrend,
+      };
+    }),
+  );
   return results
     .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled' && r.value !== null)
     .map((r) => r.value)
@@ -950,13 +1198,22 @@ dashboardAnalysisRoutes.get('/market/short-selling', async (c) => {
     if (_shortCache.data.length > 0) {
       if (stale && !_shortRefreshing) {
         _shortRefreshing = true;
-        _refreshShorts().then(items => { _shortCache = { data: items, fetchedAt: Date.now() }; }).catch(() => {}).finally(() => { _shortRefreshing = false; });
+        _refreshShorts()
+          .then((items) => {
+            _shortCache = { data: items, fetchedAt: Date.now() };
+          })
+          .catch(() => {})
+          .finally(() => {
+            _shortRefreshing = false;
+          });
       }
       return c.json({ items: _shortCache.data });
     }
     if (_shortRefreshing) return c.json({ items: [] });
     _shortRefreshing = true;
-    const items = await _refreshShorts().finally(() => { _shortRefreshing = false; });
+    const items = await _refreshShorts().finally(() => {
+      _shortRefreshing = false;
+    });
     _shortCache = { data: items, fetchedAt: Date.now() };
     return c.json({ items });
   } catch (err: any) {
@@ -979,15 +1236,19 @@ dashboardAnalysisRoutes.get('/market/sector-heatmap', async (c) => {
     const html = new TextDecoder('euc-kr').decode(buf);
     const rows: any[] = [];
     const rowRe = /<tr[^>]*>[\s\S]*?<\/tr>/g;
-    let m;
-    while ((m = rowRe.exec(html)) !== null) {
+    let m: RegExpExecArray | null = rowRe.exec(html);
+    while (m !== null) {
       const tdRe = /<td[^>]*>([\s\S]*?)<\/td>/g;
       const tds: string[] = [];
-      let td;
-      while ((td = tdRe.exec(m[0])) !== null) tds.push(td[1].replace(/<[^>]+>/g, '').trim());
-      if (tds.length >= 3 && tds[0] && !isNaN(parseFloat(tds[2]?.replace(/[^-0-9.]/g, '')))) {
+      let td: RegExpExecArray | null = tdRe.exec(m[0]);
+      while (td !== null) {
+        tds.push(td[1].replace(/<[^>]+>/g, '').trim());
+        td = tdRe.exec(m[0]);
+      }
+      if (tds.length >= 3 && tds[0] && !Number.isNaN(parseFloat(tds[2]?.replace(/[^-0-9.]/g, '')))) {
         rows.push({ name: tds[0], pct: parseFloat(tds[2].replace(/[^-0-9.]/g, '')) || 0 });
       }
+      m = rowRe.exec(html);
     }
     const items = rows.filter((r) => r.name && r.name.length > 1).slice(0, 20);
     if (items.length > 0) _sectorCache = { data: items, fetchedAt: Date.now() };
@@ -999,13 +1260,35 @@ dashboardAnalysisRoutes.get('/market/sector-heatmap', async (c) => {
 
 // ── 포트폴리오 상관관계 경고 ──
 const SECTOR_MAP: Record<string, string> = {
-  '000660': '반도체', '005930': '반도체', '042700': '반도체', '005290': '반도체', '357780': '반도체', '403870': '반도체',
-  '051910': '배터리', '006400': '배터리', '247540': '배터리', '373220': '배터리', '336260': '배터리', '003670': '배터리',
-  '012450': '방산', '079550': '방산', '034020': '방산',
-  '035420': '인터넷', '035720': '인터넷', '377300': '인터넷',
-  '207940': '바이오', '068270': '바이오', '328130': '바이오', '196170': '바이오', '028300': '바이오',
-  '055550': '금융', '105560': '금융', '316140': '금융',
-  '267260': '전력', '009540': '조선', '066570': '가전',
+  '000660': '반도체',
+  '005930': '반도체',
+  '042700': '반도체',
+  '005290': '반도체',
+  '357780': '반도체',
+  '403870': '반도체',
+  '051910': '배터리',
+  '006400': '배터리',
+  '247540': '배터리',
+  '373220': '배터리',
+  '336260': '배터리',
+  '003670': '배터리',
+  '012450': '방산',
+  '079550': '방산',
+  '034020': '방산',
+  '035420': '인터넷',
+  '035720': '인터넷',
+  '377300': '인터넷',
+  '207940': '바이오',
+  '068270': '바이오',
+  '328130': '바이오',
+  '196170': '바이오',
+  '028300': '바이오',
+  '055550': '금융',
+  '105560': '금융',
+  '316140': '금융',
+  '267260': '전력',
+  '009540': '조선',
+  '066570': '가전',
 };
 dashboardAnalysisRoutes.get('/market/correlation', async (c) => {
   try {
@@ -1037,13 +1320,20 @@ async function _refreshFlow() {
   const results = await Promise.allSettled(
     targets.map(async (w) => {
       const flow = await getInvestorFlow(w.stock_code, 5);
-      return { stock_code: w.stock_code, stock_name: w.stock_name, foreignNet: flow.foreignNet, institutionNet: flow.institutionNet, foreignStreak: flow.foreignStreak, trend: flow.trend };
+      return {
+        stock_code: w.stock_code,
+        stock_name: w.stock_name,
+        foreignNet: flow.foreignNet,
+        institutionNet: flow.institutionNet,
+        foreignStreak: flow.foreignStreak,
+        trend: flow.trend,
+      };
     }),
   );
   return results
     .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled')
     .map((r) => r.value)
-    .sort((a, b) => (b.foreignNet + b.institutionNet) - (a.foreignNet + a.institutionNet));
+    .sort((a, b) => b.foreignNet + b.institutionNet - (a.foreignNet + a.institutionNet));
 }
 dashboardAnalysisRoutes.get('/market/investor-flow', async (c) => {
   try {
@@ -1051,13 +1341,22 @@ dashboardAnalysisRoutes.get('/market/investor-flow', async (c) => {
     if (_flowCache.data.length > 0) {
       if (stale && !_flowRefreshing) {
         _flowRefreshing = true;
-        _refreshFlow().then(items => { _flowCache = { data: items, fetchedAt: Date.now() }; }).catch(() => {}).finally(() => { _flowRefreshing = false; });
+        _refreshFlow()
+          .then((items) => {
+            _flowCache = { data: items, fetchedAt: Date.now() };
+          })
+          .catch(() => {})
+          .finally(() => {
+            _flowRefreshing = false;
+          });
       }
       return c.json({ items: _flowCache.data, cached: true });
     }
     if (_flowRefreshing) return c.json({ items: [], cached: true });
     _flowRefreshing = true;
-    const items = await _refreshFlow().finally(() => { _flowRefreshing = false; });
+    const items = await _refreshFlow().finally(() => {
+      _flowRefreshing = false;
+    });
     _flowCache = { data: items, fetchedAt: Date.now() };
     return c.json({ items, cached: false });
   } catch (err: any) {
@@ -1070,7 +1369,8 @@ dashboardAnalysisRoutes.get('/market/investor-flow', async (c) => {
 dashboardAnalysisRoutes.get('/performance/attribution', async (c) => {
   try {
     const isPaper = resolveViewIsPaper(c);
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT
         tc.strategy_mode                                            AS mode,
         COUNT(*)                                                    AS trades,
@@ -1096,7 +1396,9 @@ dashboardAnalysisRoutes.get('/performance/attribution', async (c) => {
         AND tc.avg_buy_price IS NOT NULL
       GROUP BY tc.strategy_mode
       ORDER BY gross_pnl DESC
-    `, [isPaper]);
+    `,
+      [isPaper],
+    );
 
     const result = rows.map((r: any) => {
       const trades = Number(r.trades);
@@ -1131,7 +1433,8 @@ dashboardAnalysisRoutes.get('/performance/export-csv', async (c) => {
     const modeClause = modeFilter ? 'AND tc.strategy_mode = $3' : '';
     if (modeFilter) params.push(modeFilter);
 
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT
         o.created_at                                      AS "체결일시",
         tc.stock_code                                     AS "종목코드",
@@ -1159,7 +1462,9 @@ dashboardAnalysisRoutes.get('/performance/export-csv', async (c) => {
         AND o.filled_price IS NOT NULL
         AND tc.avg_buy_price IS NOT NULL
       ORDER BY o.created_at DESC
-    `, params);
+    `,
+      params,
+    );
 
     if (rows.length === 0) {
       c.header('Content-Type', 'text/csv; charset=utf-8');
@@ -1168,13 +1473,13 @@ dashboardAnalysisRoutes.get('/performance/export-csv', async (c) => {
     }
 
     const headers = Object.keys(rows[0]);
-    const escape = (v: unknown) => {
+    const csvEscape = (v: unknown) => {
       const s = String(v ?? '');
       return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const csvLines = [
-      '﻿' + headers.join(','),
-      ...rows.map((row: any) => headers.map((h) => escape(row[h])).join(',')),
+      `﻿${headers.join(',')}`,
+      ...rows.map((row: any) => headers.map((h) => csvEscape(row[h])).join(',')),
     ];
 
     const filename = `trades_${new Date().toISOString().slice(0, 10)}.csv`;

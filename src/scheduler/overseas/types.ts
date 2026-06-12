@@ -5,7 +5,10 @@
 
 /** AI 분석 결과 */
 export interface AIDecision {
-  code: string; action: string; confidence: number; reasoning: string;
+  code: string;
+  action: string;
+  confidence: number;
+  reasoning: string;
 }
 
 /** Rolling Kelly 결과 (세이버메트릭스 확장) */
@@ -17,10 +20,10 @@ export interface KellyResult {
   avgLoss: number;
   sampleCount: number;
   // 세이버메트릭스 추가 지표
-  profitFactor: number;      // 총수익/총손실 (>1.0 = 수익 구조)
-  rMultiple: number;          // 평균 R배수 (avgWin/avgLoss)
-  evPerTrade: number;         // 기대값 %/건
-  breakevenWinRate: number;   // 손익분기 승률
+  profitFactor: number; // 총수익/총손실 (>1.0 = 수익 구조)
+  rMultiple: number; // 평균 R배수 (avgWin/avgLoss)
+  evPerTrade: number; // 기대값 %/건
+  breakevenWinRate: number; // 손익분기 승률
 }
 
 /** 점진적 쿨다운 (완전한 버전) */

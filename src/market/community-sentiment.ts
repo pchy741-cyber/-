@@ -12,19 +12,52 @@ import { logger } from '../utils/logger.js';
 export interface CommunitySentiment {
   stockCode: string;
   companyName: string;
-  score: number;       // -100(극부정)~100(극긍정)
-  postCount: number;   // 수집 게시글 수
+  score: number; // -100(극부정)~100(극긍정)
+  postCount: number; // 수집 게시글 수
 }
 
 const CACHE_TTL_MS = 2 * 60 * 60 * 1000;
 const _cache = new Map<string, { data: CommunitySentiment; fetchedAt: number }>();
 
-const POSITIVE_WORDS = ['상승', '급등', '호재', '매수', '돌파', '강세', '신고가', '저점', '반등', '추천', '목표가', '상향', '흑자', '성장', '기대'];
-const NEGATIVE_WORDS = ['하락', '급락', '악재', '매도', '주의', '약세', '신저가', '고점', '손절', '폭락', '위험', '하향', '적자', '우려', '조심'];
+const POSITIVE_WORDS = [
+  '상승',
+  '급등',
+  '호재',
+  '매수',
+  '돌파',
+  '강세',
+  '신고가',
+  '저점',
+  '반등',
+  '추천',
+  '목표가',
+  '상향',
+  '흑자',
+  '성장',
+  '기대',
+];
+const NEGATIVE_WORDS = [
+  '하락',
+  '급락',
+  '악재',
+  '매도',
+  '주의',
+  '약세',
+  '신저가',
+  '고점',
+  '손절',
+  '폭락',
+  '위험',
+  '하향',
+  '적자',
+  '우려',
+  '조심',
+];
 
 function scoreTitles(titles: string[]): number {
   if (titles.length === 0) return 0;
-  let pos = 0, neg = 0;
+  let pos = 0,
+    neg = 0;
   for (const t of titles) {
     for (const w of POSITIVE_WORDS) if (t.includes(w)) pos++;
     for (const w of NEGATIVE_WORDS) if (t.includes(w)) neg++;
@@ -51,10 +84,11 @@ async function fetchNaverBoardTitles(stockCode: string): Promise<string[]> {
 
   // <a class="title" ...>제목</a> 패턴 추출
   const re = /class="title"[^>]*>\s*([^<]{2,60})\s*</g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(html)) !== null && titles.length < 15) {
+  let m: RegExpExecArray | null = re.exec(html);
+  while (m !== null && titles.length < 15) {
     const t = m[1].trim();
     if (t && !t.includes('등록') && t.length > 2) titles.push(t);
+    m = re.exec(html);
   }
   return titles;
 }

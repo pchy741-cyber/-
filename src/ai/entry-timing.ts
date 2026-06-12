@@ -8,7 +8,7 @@ export interface EntryTimingResult {
   reason: string;
 }
 
-const ENTRY_PROMPT = `당신은 주식 진입 타이밍 검토 AI입니다.
+const _ENTRY_PROMPT = `당신은 주식 진입 타이밍 검토 AI입니다.
 매수 주문 실행 직전 최종 타이밍을 검토합니다.
 
 ✅ 승인 조건:
@@ -32,9 +32,9 @@ JSON만 응답:
 export async function checkLargeOrderEntryTiming(
   stockCode: string,
   currentPrice: number,
-  orderAmountKrw: number,
+  _orderAmountKrw: number,
   candles: DailyCandle[],
-  existingReasoning: string,
+  _existingReasoning: string,
 ): Promise<EntryTimingResult> {
   try {
     const tech = candles.length >= 20 ? analyzeTechnicals(candles) : null;
@@ -54,28 +54,40 @@ export async function checkLargeOrderEntryTiming(
 
     // 다일 고점 추격 감지: 5일 최고가 대비 현재가 위치
     const recentHighs = candles.slice(-6, -1); // 최근 5일 (오늘 제외)
-    const high5d = recentHighs.length > 0 ? Math.max(...recentHighs.map(c => Number(c.high))) : 0;
+    const high5d = recentHighs.length > 0 ? Math.max(...recentHighs.map((c) => Number(c.high))) : 0;
     const atMultiDayHigh = high5d > 0 && currentPrice >= high5d * 0.995; // 5일 고점 0.5% 이내
 
     if (tech) {
       // 거부 조건 (Gemini 프롬프트와 동일 + 고점추격 방어)
       if (tech.rsi14 > 73) {
-        approved = false; confidence = 0.80; reason = `RSI=${tech.rsi14.toFixed(0)} 과매수`;
+        approved = false;
+        confidence = 0.8;
+        reason = `RSI=${tech.rsi14.toFixed(0)} 과매수`;
       } else if (dayRangePct >= 75 && atMultiDayHigh) {
         // 돌파매매 방어: 오늘 고점 + 5일 고점 동시 → 저항선 돌파 실패 위험
-        approved = false; confidence = 0.85; reason = `일중${dayRangePct.toFixed(0)}%+5일고점 돌파실패위험`;
+        approved = false;
+        confidence = 0.85;
+        reason = `일중${dayRangePct.toFixed(0)}%+5일고점 돌파실패위험`;
       } else if (dayRangePct >= 80) {
-        approved = false; confidence = 0.75; reason = `일중${dayRangePct.toFixed(0)}% 고점매수위험`;
+        approved = false;
+        confidence = 0.75;
+        reason = `일중${dayRangePct.toFixed(0)}% 고점매수위험`;
       } else if (todayChangePct >= 3 && tech.rsi14 > 65 && tech.volumeRatio < 1.5) {
         // +3% 급등 + RSI 65+ + 거래량 부족 = 무성량 급등 (돌파 확인 안 됨)
-        approved = false; confidence = 0.75; reason = `급등${todayChangePct.toFixed(1)}%+RSI${tech.rsi14.toFixed(0)} 무성량`;
+        approved = false;
+        confidence = 0.75;
+        reason = `급등${todayChangePct.toFixed(1)}%+RSI${tech.rsi14.toFixed(0)} 무성량`;
       } else if (tech.score < -20) {
-        approved = false; confidence = 0.70; reason = `score=${tech.score} 약세`;
+        approved = false;
+        confidence = 0.7;
+        reason = `score=${tech.score} 약세`;
       } else if (todayChangePct <= -2 && tech.trendStrength === 'WEAK') {
-        approved = false; confidence = 0.75; reason = `하락${todayChangePct.toFixed(1)}% weak추세`;
+        approved = false;
+        confidence = 0.75;
+        reason = `하락${todayChangePct.toFixed(1)}% weak추세`;
       } else {
         // 승인 — confidence 조건부 (고점 근처면 감점)
-        const baseConf = (tech.rsi14 >= 40 && tech.rsi14 <= 70 && tech.adx14 >= 18 && tech.score >= 0) ? 0.75 : 0.60;
+        const baseConf = tech.rsi14 >= 40 && tech.rsi14 <= 70 && tech.adx14 >= 18 && tech.score >= 0 ? 0.75 : 0.6;
         confidence = atMultiDayHigh ? Math.min(baseConf, 0.55) : baseConf;
         reason = `RSI=${tech.rsi14.toFixed(0)} ADX=${tech.adx14.toFixed(0)} score=${tech.score}${atMultiDayHigh ? ' 5일고점근처' : ''}`;
       }

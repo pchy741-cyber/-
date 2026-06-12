@@ -1,39 +1,37 @@
-/**
- * 프리마켓 딥바이 전략 — 커뮤니티 꿀팁 구현
- *
- * 전략: 본장 시작 시 프리마켓 종가 대비 -2% 에서 지정가 매수 걸어둠
- * 근거: "장 시작하면 프리마켓 종가 기준 ±2% 이내로 움직이다 한번은 터치해줌"
- *
- * 조건:
- * - 우량주만 (GLOBAL_WATCHLIST Core 종목)
- * - 급등주/BigMover 제외 (안전한 단타)
- * - 승률 80%+ 목표 → 소폭 TP(+1.5~3%), 타이트 SL(-1.5%)
- * - 당일 청산 (데이트레이드)
- *
- * 실행 타이밍: 미국장 오픈 직후 (23:30 KST)
- */
-import { getPool } from '../../db/client.js';
-import { logger } from '../../utils/logger.js';
-import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { getOverseasPrice } from '../../kis/overseas.js';
-import { GLOBAL_WATCHLIST } from './watchlist.js';
-import { getCash, getHoldings } from './state.js';
+import { sendTelegramMessage } from '../../notifications/telegram.js';
+import { logger } from '../../utils/logger.js';
 import { getOverseasWinRates } from './analytics.js';
-import { setOverseasState, getOverseasState } from './utils.js';
+import { getCash, getHoldings } from './state.js';
+import { getOverseasState, setOverseasState } from './utils.js';
+import { GLOBAL_WATCHLIST } from './watchlist.js';
 
 // ── 설정 ──
 
 // 우량주 = 시가총액 최상위 + 유동성 풍부한 종목만
 const BLUE_CHIP_CODES = new Set([
-  'NVDA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'AVGO', 'TSM',
-  'LLY', 'V', 'NFLX', 'ORCL', 'CRM', 'AMD', 'AAPL',
+  'NVDA',
+  'AAPL',
+  'MSFT',
+  'GOOGL',
+  'AMZN',
+  'META',
+  'AVGO',
+  'TSM',
+  'LLY',
+  'V',
+  'NFLX',
+  'ORCL',
+  'CRM',
+  'AMD',
+  'AAPL',
 ]);
 
 // 딥바이 파라미터 (수수료 0.7% 커버 후 순익 확보)
-const DIP_PCT = -2.0;        // 프리마켓 종가 대비 -2% 진입
-const TP_PCT = 4.0;          // +4% 익절 (수수료 0.7% 후 순익 +3.3%)
-const SL_PCT = 2.5;          // -2.5% 손절 (RR비 1.6:1)
-const MAX_POSITIONS = 3;     // 딥바이 최대 동시 포지션
+const DIP_PCT = -2.0; // 프리마켓 종가 대비 -2% 진입
+const TP_PCT = 4.0; // +4% 익절 (수수료 0.7% 후 순익 +3.3%)
+const SL_PCT = 2.5; // -2.5% 손절 (RR비 1.6:1)
+const MAX_POSITIONS = 3; // 딥바이 최대 동시 포지션
 const MAX_BUDGET_PCT = 0.146; // 황금비율 단타 한도 = 14.6%
 
 // ── Types ──
@@ -91,8 +89,8 @@ export async function runPremarketDipBuy(isPaper = true): Promise<DipBuyResult> 
     // 4. 블랙리스트 + 종목별 승률 조회
     const { getUserBlacklist } = await import('./utils.js');
     const userBlacklist = await getUserBlacklist();
-    const blueChipList = GLOBAL_WATCHLIST.filter(w => BLUE_CHIP_CODES.has(w.code) && !userBlacklist.has(w.code));
-    const codes = blueChipList.map(w => w.code);
+    const blueChipList = GLOBAL_WATCHLIST.filter((w) => BLUE_CHIP_CODES.has(w.code) && !userBlacklist.has(w.code));
+    const codes = blueChipList.map((w) => w.code);
     const winRates = await getOverseasWinRates(codes, isPaper);
 
     // 5. 프리마켓 종가 조회 + 딥 타겟 계산
@@ -163,7 +161,7 @@ export async function runPremarketDipBuy(isPaper = true): Promise<DipBuyResult> 
     // 7. 포지션당 예산 배분
     const budgetPerPosition = Math.min(
       Math.floor(maxBudget / selected.length),
-      Math.floor(cash * 0.30), // 현금의 30%까지
+      Math.floor(cash * 0.3), // 현금의 30%까지
     );
 
     // 8. 딥바이 주문 기록 (overseas_state에 저장 → 루프에서 감시)
@@ -191,25 +189,23 @@ export async function runPremarketDipBuy(isPaper = true): Promise<DipBuyResult> 
         qty,
       });
 
-      result.placed.push(`${c.code} @$${c.dipTarget.toFixed(2)} (프리${c.preMarketClose.toFixed(2)}→딥-2%) TP$${c.tpPrice.toFixed(2)} SL$${c.slPrice.toFixed(2)} x${qty}`);
+      result.placed.push(
+        `${c.code} @$${c.dipTarget.toFixed(2)} (프리${c.preMarketClose.toFixed(2)}→딥-2%) TP$${c.tpPrice.toFixed(2)} SL$${c.slPrice.toFixed(2)} x${qty}`,
+      );
     }
 
     if (dipOrders.length > 0) {
       // 딥바이 대기 주문 overseas_state에 저장
-      await setOverseasState(
-        isPaper ? 'dip_buy_pending' : 'dip_buy_pending_live',
-        JSON.stringify(dipOrders),
-      );
-      await setOverseasState(
-        isPaper ? 'dip_buy_last_run' : 'dip_buy_last_run_live',
-        today,
-      );
+      await setOverseasState(isPaper ? 'dip_buy_pending' : 'dip_buy_pending_live', JSON.stringify(dipOrders));
+      await setOverseasState(isPaper ? 'dip_buy_last_run' : 'dip_buy_last_run_live', today);
 
       const msg = [
         `🎯 프리마켓 딥바이 ${dipOrders.length}건 대기`,
-        ...result.placed.map(p => `  • ${p}`),
+        ...result.placed.map((p) => `  • ${p}`),
         result.skipped.length > 0 ? `⏭️ 제외: ${result.skipped.join(', ')}` : '',
-      ].filter(Boolean).join('\n');
+      ]
+        .filter(Boolean)
+        .join('\n');
       logger.info(msg, { component: 'DIP_BUY' });
       await sendTelegramMessage(msg).catch(() => {});
     }
@@ -235,8 +231,13 @@ export async function checkDipBuyFills(isPaper = true): Promise<string[]> {
     if (!raw) return fills;
 
     const orders = JSON.parse(raw) as Array<{
-      code: string; exchange: string; targetPrice: number;
-      tpPrice: number; slPrice: number; budget: number; qty: number;
+      code: string;
+      exchange: string;
+      targetPrice: number;
+      tpPrice: number;
+      slPrice: number;
+      budget: number;
+      qty: number;
     }>;
     if (orders.length === 0) return fills;
 
@@ -246,7 +247,10 @@ export async function checkDipBuyFills(isPaper = true): Promise<string[]> {
     for (const order of orders) {
       try {
         const price = await getOverseasPrice(order.code, order.exchange);
-        if (!price.currentPrice) { remaining.push(order); continue; }
+        if (!price.currentPrice) {
+          remaining.push(order);
+          continue;
+        }
 
         // 목표가 터치 확인: 현재가 ≤ 딥 목표가
         if (price.currentPrice <= order.targetPrice) {
@@ -256,7 +260,9 @@ export async function checkDipBuyFills(isPaper = true): Promise<string[]> {
           // 현금 확인
           const cash = await getCash(isPaper);
           if (cash < totalCost) {
-            logger.info(`💰 딥바이 ${order.code} 현금 부족 ($${cash.toFixed(0)} < $${totalCost.toFixed(0)})`, { component: 'DIP_BUY' });
+            logger.info(`💰 딥바이 ${order.code} 현금 부족 ($${cash.toFixed(0)} < $${totalCost.toFixed(0)})`, {
+              component: 'DIP_BUY',
+            });
             remaining.push(order);
             continue;
           }
@@ -267,22 +273,31 @@ export async function checkDipBuyFills(isPaper = true): Promise<string[]> {
           const scalpSlPrice = +(fillPrice * (1 - SL_PCT / 100)).toFixed(2);
 
           await withTransaction(async (tx) => {
-            await tx.query(`
+            await tx.query(
+              `
               INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper, tp_pct, sl_pct, is_scalp, scalp_tp, scalp_sl)
               VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, TRUE, $8, $9)
               ON CONFLICT (exchange, stock_code, is_paper) DO UPDATE
                 SET quantity = overseas_holdings.quantity + $3,
                     avg_price = (overseas_holdings.avg_price * overseas_holdings.quantity + $4 * $3) / (overseas_holdings.quantity + $3),
                     tp_pct = $6, sl_pct = $7, is_scalp = TRUE, scalp_tp = $8, scalp_sl = $9
-            `, [order.code, order.exchange, order.qty, fillPrice, isPaper, TP_PCT, -SL_PCT, scalpTpPrice, scalpSlPrice]);
+            `,
+              [order.code, order.exchange, order.qty, fillPrice, isPaper, TP_PCT, -SL_PCT, scalpTpPrice, scalpSlPrice],
+            );
 
             await tx.query(
               `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price,
                 kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
                VALUES ($1, 'BUY', 'LIMIT', $2, $3, $2, $3, $4, 'FILLED', $5, 'OVERSEAS', $6)`,
-              [order.code, order.qty, fillPrice, `DIP${Date.now().toString(36)}`,
-               isPaper ? 'paper' : 'live',
-               `프리마켓딥바이 -2%진입 @$${fillPrice.toFixed(2)} (목표$${order.targetPrice}) TP+${TP_PCT}%:$${order.tpPrice} SL-${SL_PCT}%:$${order.slPrice} [avgBuy:${fillPrice.toFixed(4)}]`]);
+              [
+                order.code,
+                order.qty,
+                fillPrice,
+                `DIP${Date.now().toString(36)}`,
+                isPaper ? 'paper' : 'live',
+                `프리마켓딥바이 -2%진입 @$${fillPrice.toFixed(2)} (목표$${order.targetPrice}) TP+${TP_PCT}%:$${order.tpPrice} SL-${SL_PCT}%:$${order.slPrice} [avgBuy:${fillPrice.toFixed(4)}]`,
+              ],
+            );
 
             // Live 현금: KIS 동기화로 반영 (USD→KRW 단위 오염 방지). Paper는 computed.
           });
@@ -292,10 +307,13 @@ export async function checkDipBuyFills(isPaper = true): Promise<string[]> {
             const { reconcileCashWithKIS } = await import('./kis-sync.js');
             const { runWithMode } = await import('../../config/context.js');
             await runWithMode(false, () => reconcileCashWithKIS()).catch((e: any) =>
-              logger.warn(`딥바이 후 현금 동기화 실패 (무시): ${e.message}`, { component: 'DIP_BUY' }));
+              logger.warn(`딥바이 후 현금 동기화 실패 (무시): ${e.message}`, { component: 'DIP_BUY' }),
+            );
           }
 
-          fills.push(`🎯 딥바이 체결! ${order.code} x${order.qty} @$${fillPrice.toFixed(2)} (목표$${order.targetPrice})`);
+          fills.push(
+            `🎯 딥바이 체결! ${order.code} x${order.qty} @$${fillPrice.toFixed(2)} (목표$${order.targetPrice})`,
+          );
           logger.info(fills[fills.length - 1], { component: 'DIP_BUY' });
           await sendTelegramMessage(fills[fills.length - 1]).catch(() => {});
         } else {

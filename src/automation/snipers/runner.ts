@@ -2,7 +2,13 @@ import { runBullBearDebate } from '../../ai/debate/bull-bear.js';
 import { analyzeTechnicals } from '../../analysis/indicators.js';
 import type { StrategyMode } from '../../config/constants.js';
 import { config } from '../../config/index.js';
-import { getActiveStrategy, getLatestScores, getOpenChains, getTodayRepeatStopCodes, getRecentLossStocks } from '../../db/client.js';
+import {
+  getActiveStrategy,
+  getLatestScores,
+  getOpenChains,
+  getRecentLossStocks,
+  getTodayRepeatStopCodes,
+} from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { getCurrentPrice, getDailyChart } from '../../kis/market.js';
 import { isKillSwitchActive } from '../../risk/kill-switch.js';
@@ -117,16 +123,14 @@ export async function runSniperScan(): Promise<void> {
           });
 
           // DEBATE AI가 전부 실패(분析 실패)했으면 Track A 스코어로 폴백
-          const debateFailed =
-            debate.bullArguments[0] === '분析 실패' && debate.bearArguments[0] === '분析 실패';
+          const debateFailed = debate.bullArguments[0] === '분析 실패' && debate.bearArguments[0] === '분析 실패';
           if (debateFailed && scores[0]) {
             const score = scores[0].composite_score ?? 0;
             debateVerdict = score >= 75 ? 'BUY' : score >= 85 ? 'STRONG_BUY' : 'HOLD';
             debateSource = `TRACK_A_FALLBACK(${score}점)`;
-            logger.warn(
-              `🏛️ DEBATE AI 실패 → Track A 폴백: ${stockCode} 스코어 ${score}점 → ${debateVerdict}`,
-              { component: 'SNIPER' },
-            );
+            logger.warn(`🏛️ DEBATE AI 실패 → Track A 폴백: ${stockCode} 스코어 ${score}점 → ${debateVerdict}`, {
+              component: 'SNIPER',
+            });
           } else {
             debateVerdict = debate.finalVerdict;
           }
@@ -136,7 +140,9 @@ export async function runSniperScan(): Promise<void> {
             { component: 'SNIPER' },
           );
         } catch (debateErr) {
-          logger.error(`AI 토론 실패 (${stockCode}), 스나이퍼 시그널 강도로 판단: ${debateErr}`, { component: 'SNIPER' });
+          logger.error(`AI 토론 실패 (${stockCode}), 스나이퍼 시그널 강도로 판단: ${debateErr}`, {
+            component: 'SNIPER',
+          });
           // 예외 발생 시: 시그널 신뢰도가 충분히 높으면 통과 (자사주 매입 등 강력한 공시)
           debateVerdict = signal.confidence >= 0.85 ? 'BUY' : undefined;
           debateSource = 'SIGNAL_CONFIDENCE_FALLBACK';

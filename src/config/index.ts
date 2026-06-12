@@ -8,7 +8,11 @@ dotenv.config();
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'staging', 'production']).default('development'),
   TRADING_MODE: z.enum(['paper', 'live']).default('paper'),
-  PAPER_ONLY: z.string().default('false').transform(v => v === 'true' || v === '1').pipe(z.boolean()), // true → live 파이프라인 완전 스킵 (자율학습 모드)
+  PAPER_ONLY: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true' || v === '1')
+    .pipe(z.boolean()), // true → live 파이프라인 완전 스킵 (자율학습 모드)
 
   // KIS (한국투자증권) — 모의투자
   KIS_APP_KEY: z.string().default(''),
@@ -53,11 +57,11 @@ const envSchema = z.object({
   // • 종목당 한도: 총자산 8~25% 동적 (position-sizer/pipeline에서 자동 스케일, Hard Cap 25%)
   // • 최대 동시 포지션: 8종목
   // • 총 투자 비중: 최대 88% (적극 모드)
-  RISK_MAX_DAILY_DRAWDOWN_KRW: z.coerce.number().default(200000),  // 레거시 절대값 (실제 한도는 seed-capital.ts 30% 사용)
-  RISK_MAX_POSITION_KRW: z.coerce.number().default(50000000),      // 종목당 절대 안전 상한 (실제 사이징은 totalAssets×20~25% 동적 계산)
-  RISK_MAX_TOTAL_INVESTED_PCT: z.coerce.number().default(88),       // 최대 88% 투자 (적극 모드)
-  RISK_MAX_CONCURRENT_POSITIONS: z.coerce.number().default(8),      // 동시 8종목
-  RISK_MAX_DAILY_TRADES: z.coerce.number().default(3),              // v4: 15→3건 (과잉거래 방지, 고품질 신호만)
+  RISK_MAX_DAILY_DRAWDOWN_KRW: z.coerce.number().default(200000), // 레거시 절대값 (실제 한도는 seed-capital.ts 30% 사용)
+  RISK_MAX_POSITION_KRW: z.coerce.number().default(50000000), // 종목당 절대 안전 상한 (실제 사이징은 totalAssets×20~25% 동적 계산)
+  RISK_MAX_TOTAL_INVESTED_PCT: z.coerce.number().default(88), // 최대 88% 투자 (적극 모드)
+  RISK_MAX_CONCURRENT_POSITIONS: z.coerce.number().default(8), // 동시 8종목
+  RISK_MAX_DAILY_TRADES: z.coerce.number().default(3), // v4: 15→3건 (과잉거래 방지, 고품질 신호만)
 });
 
 // ── 파싱 & Export ──
@@ -116,25 +120,27 @@ function getKisProductCode(isLive: boolean) {
 
 export const config = {
   env: env.NODE_ENV,
-  get tradingMode() { return getEffectiveTradingMode(); },
-  get isPaper() { return getEffectiveTradingMode() === 'paper'; },
+  get tradingMode() {
+    return getEffectiveTradingMode();
+  },
+  get isPaper() {
+    return getEffectiveTradingMode() === 'paper';
+  },
 
   get kis() {
     const isLive = getEffectiveTradingMode() === 'live';
     const appKey = isLive
-      ? (process.env.KIS_APP_KEY_LIVE || env.KIS_APP_KEY_LIVE || process.env.KIS_APP_KEY || env.KIS_APP_KEY)
-      : (process.env.KIS_APP_KEY || env.KIS_APP_KEY);
+      ? process.env.KIS_APP_KEY_LIVE || env.KIS_APP_KEY_LIVE || process.env.KIS_APP_KEY || env.KIS_APP_KEY
+      : process.env.KIS_APP_KEY || env.KIS_APP_KEY;
     const appSecret = isLive
-      ? (process.env.KIS_APP_SECRET_LIVE || env.KIS_APP_SECRET_LIVE || process.env.KIS_APP_SECRET || env.KIS_APP_SECRET)
-      : (process.env.KIS_APP_SECRET || env.KIS_APP_SECRET);
+      ? process.env.KIS_APP_SECRET_LIVE || env.KIS_APP_SECRET_LIVE || process.env.KIS_APP_SECRET || env.KIS_APP_SECRET
+      : process.env.KIS_APP_SECRET || env.KIS_APP_SECRET;
     return {
       appKey,
       appSecret,
       accountNo: getKisAccountNo(isLive),
       accountProductCode: getKisProductCode(isLive),
-      baseUrl: isLive
-        ? 'https://openapi.koreainvestment.com:9443'
-        : 'https://openapivts.koreainvestment.com:29443',
+      baseUrl: isLive ? 'https://openapi.koreainvestment.com:9443' : 'https://openapivts.koreainvestment.com:29443',
     };
   },
 
@@ -180,15 +186,15 @@ export const config = {
    * 이 데이터가 실전모드 파라미터 최적화의 근거가 된다.
    */
   paperRisk: {
-    maxConcurrentPositions: 20,     // 8 → 20종목 (다양한 패턴 학습)
-    maxDailyTrades: 20,             // 3 → 20건 (장중 신호 다 잡기)
-    maxTotalInvestedPct: 97,        // 88 → 97% (현금 3%만 보유)
-    positionCapRatio: 0.40,         // 25% → 40% (집중 투자 테스트)
-    cashReserveRatio: 0.03,         // 20% → 3% (거의 전액 집행)
-    buyThresholdOffset: -25,        // 65→40점으로 실질 하향 (적극적 매매 — Gemini OFF 백업)
-    sectorMaxPerSector: 5,          // 2 → 5종목 (섹터 제한 완화)
-    cooldownMultiplier: 0.2,        // 쿨다운 80% 단축 (5연패 60분→12분)
-    mddLimit: 60,                   // 40% → 60% (거의 안 터짐)
+    maxConcurrentPositions: 20, // 8 → 20종목 (다양한 패턴 학습)
+    maxDailyTrades: 20, // 3 → 20건 (장중 신호 다 잡기)
+    maxTotalInvestedPct: 97, // 88 → 97% (현금 3%만 보유)
+    positionCapRatio: 0.4, // 25% → 40% (집중 투자 테스트)
+    cashReserveRatio: 0.03, // 20% → 3% (거의 전액 집행)
+    buyThresholdOffset: -25, // 65→40점으로 실질 하향 (적극적 매매 — Gemini OFF 백업)
+    sectorMaxPerSector: 5, // 2 → 5종목 (섹터 제한 완화)
+    cooldownMultiplier: 0.2, // 쿨다운 80% 단축 (5연패 60분→12분)
+    mddLimit: 60, // 40% → 60% (거의 안 터짐)
   },
 
   /** Gemini API 자동 호출 ON/OFF — false면 규칙기반만 사용 (AI 비용 $0) */

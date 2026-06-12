@@ -65,7 +65,9 @@ export async function loadSecretsToEnv(): Promise<void> {
         process.env[envVar] = value;
         logger.info(`Secret 로드: ${key} (${envVar})`, { component: 'SECRETS' });
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
   }
 }
 
@@ -80,10 +82,14 @@ secretsRoutes.get('/secrets', async (c) => {
   for (const [key, { secret, envVar }] of Object.entries(KEY_MAP)) {
     // 환경변수 먼저 확인 (가장 빠름), 없으면 Secret Manager
     const envVal = process.env[envVar];
-    const value = envVal || await getSecretValue(secret);
+    const value = envVal || (await getSecretValue(secret));
     result[key] = {
       exists: !!value,
-      masked: value ? (value.length > 8 ? `${value.slice(0, 2)}${'*'.repeat(Math.min(value.length - 2, 10))}` : '***') : '',
+      masked: value
+        ? value.length > 8
+          ? `${value.slice(0, 2)}${'*'.repeat(Math.min(value.length - 2, 10))}`
+          : '***'
+        : '',
     };
   }
   cacheSet('secrets:status', result, 30);
@@ -92,9 +98,15 @@ secretsRoutes.get('/secrets', async (c) => {
 
 // 🔒 보안: KIS 인증정보, 비밀번호, 텔레그램은 API로 변경 불가 (GCP Console만 허용)
 const BLOCKED_SECRETS = new Set([
-  'kis_appkey', 'kis_appsecret', 'kis_account',
-  'kis_appkey_live', 'kis_appsecret_live', 'kis_account_live',
-  'dashboard_password', 'telegram_token', 'telegram_chat',
+  'kis_appkey',
+  'kis_appsecret',
+  'kis_account',
+  'kis_appkey_live',
+  'kis_appsecret_live',
+  'kis_account_live',
+  'dashboard_password',
+  'telegram_token',
+  'telegram_chat',
 ]);
 
 // PUT /api/secrets — AI API 키만 저장 가능 (KIS/비밀번호 차단)

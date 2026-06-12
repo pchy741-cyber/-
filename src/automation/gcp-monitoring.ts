@@ -84,11 +84,7 @@ async function writeTimeSeries(point: TimeSeriesPoint): Promise<void> {
 /**
  * 매매 발생 시 메트릭 기록
  */
-export async function recordTradeMetric(
-  side: 'buy' | 'sell',
-  stockCode: string,
-  amount: number,
-): Promise<void> {
+export async function recordTradeMetric(side: 'buy' | 'sell', stockCode: string, amount: number): Promise<void> {
   await writeTimeSeries({
     metricType: 'trade_count',
     value: 1,
@@ -103,28 +99,21 @@ export async function recordTradeMetric(
 /**
  * 포트폴리오 가치 & 일일 손익 기록
  */
-export async function recordPortfolioMetric(
-  totalValue: number,
-  pnl: number,
-): Promise<void> {
+export async function recordPortfolioMetric(totalValue: number, pnl: number): Promise<void> {
   await Promise.all([
     writeTimeSeries({ metricType: 'portfolio_value', value: totalValue }),
     writeTimeSeries({ metricType: 'daily_pnl', value: pnl }),
   ]);
 
-  logger.info(
-    `포트폴리오 메트릭 기록: 총액 ${totalValue.toLocaleString()}원, PnL ${pnl.toLocaleString()}원`,
-    { component: 'monitoring' },
-  );
+  logger.info(`포트폴리오 메트릭 기록: 총액 ${totalValue.toLocaleString()}원, PnL ${pnl.toLocaleString()}원`, {
+    component: 'monitoring',
+  });
 }
 
 /**
  * 에러 카운트 기록
  */
-export async function recordErrorMetric(
-  component: string,
-  errorType: string,
-): Promise<void> {
+export async function recordErrorMetric(component: string, errorType: string): Promise<void> {
   await writeTimeSeries({
     metricType: 'error_count',
     value: 1,
@@ -145,10 +134,7 @@ export async function recordAiScoreMetric(avgScore: number): Promise<void> {
 /**
  * 시스템 컴포넌트 상태 기록 (1 = 정상, 0 = 비정상)
  */
-export async function recordSystemMetric(
-  component: string,
-  status: 'healthy' | 'unhealthy',
-): Promise<void> {
+export async function recordSystemMetric(component: string, status: 'healthy' | 'unhealthy'): Promise<void> {
   await writeTimeSeries({
     metricType: 'system_health',
     value: status === 'healthy' ? 1 : 0,

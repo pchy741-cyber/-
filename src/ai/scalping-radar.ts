@@ -13,66 +13,72 @@
  * - 최대 동시 2종목, 당일 5건 한도
  * - Paper/Live 독립 실행
  */
-import { getPool, getActiveWatchlist, getOpenChains, getLatestScores } from '../db/client.js';
-import { getBatchPrices, type CurrentPrice } from '../kis/market.js';
-import { getOrderbookDepth } from '../kis/market-signals.js';
+
 import { analyzeTechnicals } from '../analysis/indicators.js';
-import { getDailyChart } from '../kis/market.js';
-import { setOverride, getOverride, removeOverride, getOverridesByPrefix } from './ai-overrides.js';
+import { getActiveWatchlist, getLatestScores, getOpenChains, getPool } from '../db/client.js';
+import { type CurrentPrice, getBatchPrices, getDailyChart } from '../kis/market.js';
+import { getOrderbookDepth } from '../kis/market-signals.js';
 import { logger } from '../utils/logger.js';
-import { STRATEGY_PARAMS } from '../config/constants.js';
+import { getOverride, getOverridesByPrefix, setOverride } from './ai-overrides.js';
 
 // ── 상수 ────────────────────────────────────────────────────────────
 const SCALP = {
   // 필터 조건
-  MIN_CHANGE_PCT: 0.5,        // 전일 대비 최소 +0.5% 상승 중
-  MAX_CHANGE_PCT: 5.0,        // 갭 추격 방지: +5% 초과는 과열
-  MIN_VOLUME_RATIO: 2.0,      // 20일 평균 대비 거래량 2배+
-  MIN_BID_ASK_RATIO: 1.2,     // 매수 호가 ≥ 매도 호가 × 1.2
-  MIN_AI_SCORE: 55,           // AI 스코어 최소 55점 (pre-filter)
-  MIN_TECH_SCORE: 60,         // 기술지표 점수 최소 60점
+  MIN_CHANGE_PCT: 0.5, // 전일 대비 최소 +0.5% 상승 중
+  MAX_CHANGE_PCT: 5.0, // 갭 추격 방지: +5% 초과는 과열
+  MIN_VOLUME_RATIO: 2.0, // 20일 평균 대비 거래량 2배+
+  MIN_BID_ASK_RATIO: 1.2, // 매수 호가 ≥ 매도 호가 × 1.2
+  MIN_AI_SCORE: 55, // AI 스코어 최소 55점 (pre-filter)
+  MIN_TECH_SCORE: 60, // 기술지표 점수 최소 60점
 
   // 리스크 제한
-  MAX_CONCURRENT_SCALPS: 2,   // 동시 스캘핑 최대 2종목
-  MAX_DAILY_SCALPS: 5,        // 당일 스캘핑 최대 5건
-  TTL_TARGET: 15,             // scalpTarget TTL (분)
-  TTL_EXIT: 10,               // scalpExit TTL (분)
+  MAX_CONCURRENT_SCALPS: 2, // 동시 스캘핑 최대 2종목
+  MAX_DAILY_SCALPS: 5, // 당일 스캘핑 최대 5건
+  TTL_TARGET: 15, // scalpTarget TTL (분)
+  TTL_EXIT: 10, // scalpExit TTL (분)
 
   // 시간 윈도우
-  START_HOUR: 9, START_MIN: 5,   // 09:05 (개장 5분 노이즈 회피)
-  END_HOUR: 14, END_MIN: 30,     // 14:30 (마감 30분 전 중단)
+  START_HOUR: 9,
+  START_MIN: 5, // 09:05 (개장 5분 노이즈 회피)
+  END_HOUR: 14,
+  END_MIN: 30, // 14:30 (마감 30분 전 중단)
 
   // 퇴출 조건
-  EXIT_BID_ASK_RATIO: 0.8,   // 매수/매도 비율 0.8 미만 → 매도 압력
+  EXIT_BID_ASK_RATIO: 0.8, // 매수/매도 비율 0.8 미만 → 매도 압력
 } as const;
 
 // ── 유틸: KST 시간 확인 ─────────────────────────────────────────────
 function getKSTTime(): { h: number; m: number } {
   const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Seoul', hour: 'numeric', minute: 'numeric', hour12: false,
+    timeZone: 'Asia/Seoul',
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: false,
   }).formatToParts(new Date());
   return {
-    h: Number(parts.find(p => p.type === 'hour')!.value),
-    m: Number(parts.find(p => p.type === 'minute')!.value),
+    h: Number(parts.find((p) => p.type === 'hour')!.value),
+    m: Number(parts.find((p) => p.type === 'minute')!.value),
   };
 }
 
 function isInScalpWindow(): boolean {
   const { h, m } = getKSTTime();
   const now = h * 60 + m;
-  return now >= SCALP.START_HOUR * 60 + SCALP.START_MIN
-    && now <= SCALP.END_HOUR * 60 + SCALP.END_MIN;
+  return now >= SCALP.START_HOUR * 60 + SCALP.START_MIN && now <= SCALP.END_HOUR * 60 + SCALP.END_MIN;
 }
 
 // ── 당일 스캘핑 건수 조회 ───────────────────────────────────────────
 async function getTodayScalpCount(isPaper: boolean): Promise<number> {
   try {
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT COUNT(*) AS cnt FROM transaction_chains
       WHERE strategy_mode = 'SCALPING'
         AND is_paper = $1
         AND opened_at >= CURRENT_DATE
-    `, [isPaper]);
+    `,
+      [isPaper],
+    );
     return Number(rows[0]?.cnt ?? 0);
   } catch {
     return 0;
@@ -83,7 +89,7 @@ async function getTodayScalpCount(isPaper: boolean): Promise<number> {
 async function getCurrentScalpPositions(isPaper: boolean): Promise<number> {
   try {
     const chains = await getOpenChains(isPaper);
-    return chains.filter(c => c.strategy_mode === 'SCALPING').length;
+    return chains.filter((c) => c.strategy_mode === 'SCALPING').length;
   } catch {
     return 0;
   }
@@ -123,28 +129,27 @@ export async function runScalpingRadar(isPaper: boolean): Promise<{
     return { scanned: 0, detected: 0, exits, details };
   }
 
-  const remaining = Math.min(
-    SCALP.MAX_DAILY_SCALPS - todayCount,
-    SCALP.MAX_CONCURRENT_SCALPS - currentPositions,
-  );
+  const remaining = Math.min(SCALP.MAX_DAILY_SCALPS - todayCount, SCALP.MAX_CONCURRENT_SCALPS - currentPositions);
 
   // 3. AI 스코어 기반 pre-filter (KIS rate limit 보호)
   const watchlist = await getActiveWatchlist();
-  const scores = await getLatestScores(watchlist.map(w => w.stock_code)).catch(() => []);
+  const scores = await getLatestScores(watchlist.map((w) => w.stock_code)).catch(() => []);
   const scoreMap = new Map<string, number>();
   for (const s of scores) scoreMap.set(s.stock_code, s.composite_score ?? 0);
 
   // 이미 보유 중이거나 이미 scalpTarget인 종목 제외
   const chains = await getOpenChains(isPaper);
-  const holdingCodes = new Set(chains.map(c => c.stock_code));
+  const holdingCodes = new Set(chains.map((c) => c.stock_code));
   const existingTargets = getOverridesByPrefix('scalpTarget', isPaper);
 
   const candidates = watchlist
-    .filter(w => {
+    .filter((w) => {
       const score = scoreMap.get(w.stock_code) ?? 0;
-      return score >= SCALP.MIN_AI_SCORE
-        && !holdingCodes.has(w.stock_code)
-        && !existingTargets.has(`${w.stock_code}_scalpTarget`);
+      return (
+        score >= SCALP.MIN_AI_SCORE &&
+        !holdingCodes.has(w.stock_code) &&
+        !existingTargets.has(`${w.stock_code}_scalpTarget`)
+      );
     })
     .sort((a, b) => (scoreMap.get(b.stock_code) ?? 0) - (scoreMap.get(a.stock_code) ?? 0))
     .slice(0, 10); // 최대 10종목만 (rate limit: 10 × 2 req = ~5초)
@@ -156,10 +161,10 @@ export async function runScalpingRadar(isPaper: boolean): Promise<{
   }
 
   // 4. 실시간 데이터 수집 (병렬)
-  const codes = candidates.map(c => c.stock_code);
+  const codes = candidates.map((c) => c.stock_code);
   const [prices, ...orderbooks] = await Promise.all([
     getBatchPrices(codes).catch(() => new Map<string, CurrentPrice>()),
-    ...codes.slice(0, 5).map(c => getOrderbookDepth(c).catch(() => null)), // 상위 5종목만 호가 조회
+    ...codes.slice(0, 5).map((c) => getOrderbookDepth(c).catch(() => null)), // 상위 5종목만 호가 조회
   ]);
 
   const obMap = new Map<string, { bidAskRatio: number }>();
@@ -173,7 +178,7 @@ export async function runScalpingRadar(isPaper: boolean): Promise<{
   const techMap = new Map<string, ReturnType<typeof analyzeTechnicals>>();
   for (let i = 0; i < codes.length; i += chartBatch) {
     const batch = codes.slice(i, i + chartBatch);
-    const charts = await Promise.allSettled(batch.map(c => getDailyChart(c, 30)));
+    const charts = await Promise.allSettled(batch.map((c) => getDailyChart(c, 30)));
     for (let j = 0; j < batch.length; j++) {
       const r = charts[j];
       if (r.status === 'fulfilled' && r.value.length >= 10) {
@@ -230,12 +235,20 @@ export async function runScalpingRadar(isPaper: boolean): Promise<{
 
   let setCount = 0;
   for (const target of toSet) {
-    const res = await setOverride('signal', `${target.code}_scalpTarget`, true,
-      `[ScalpRadar] ${target.reason}`, SCALP.TTL_TARGET, isPaper);
+    const res = await setOverride(
+      'signal',
+      `${target.code}_scalpTarget`,
+      true,
+      `[ScalpRadar] ${target.reason}`,
+      SCALP.TTL_TARGET,
+      isPaper,
+    );
     if (res.ok) {
       setCount++;
       details.push(`🎯 ${target.code}: ${target.reason}`);
-      logger.info(`🎯 ScalpRadar [${mode}]: ${target.code} 모멘텀 감지 — ${target.reason}`, { component: 'SCALP_RADAR' });
+      logger.info(`🎯 ScalpRadar [${mode}]: ${target.code} 모멘텀 감지 — ${target.reason}`, {
+        component: 'SCALP_RADAR',
+      });
     }
   }
 
@@ -249,7 +262,7 @@ export async function runScalpingRadar(isPaper: boolean): Promise<{
 async function checkScalpExits(isPaper: boolean): Promise<number> {
   const mode = isPaper ? 'paper' : 'live';
   const chains = await getOpenChains(isPaper);
-  const scalpChains = chains.filter(c => c.strategy_mode === 'SCALPING' && c.total_quantity > 0);
+  const scalpChains = chains.filter((c) => c.strategy_mode === 'SCALPING' && c.total_quantity > 0);
 
   if (scalpChains.length === 0) return 0;
 
@@ -265,9 +278,14 @@ async function checkScalpExits(isPaper: boolean): Promise<number> {
     if (ob && ob.bidAskRatio < SCALP.EXIT_BID_ASK_RATIO) {
       const existing = getOverride<boolean>(`${code}_forceSell`, isPaper);
       if (!existing) {
-        await setOverride('signal', `${code}_forceSell`, true,
+        await setOverride(
+          'signal',
+          `${code}_forceSell`,
+          true,
           `[ScalpRadar] 매도 압력 급증 (bid/ask=${ob.bidAskRatio.toFixed(2)})`,
-          SCALP.TTL_EXIT, isPaper);
+          SCALP.TTL_EXIT,
+          isPaper,
+        );
         exits++;
         logger.info(`🚨 ScalpRadar [${mode}]: ${code} 매도 압력 → forceSell`, { component: 'SCALP_RADAR' });
       }
@@ -281,9 +299,14 @@ async function checkScalpExits(isPaper: boolean): Promise<number> {
       if (elapsedMin >= 45 && peakPnl < 0.5) {
         const existing = getOverride<boolean>(`${code}_forceSell`, isPaper);
         if (!existing) {
-          await setOverride('signal', `${code}_forceSell`, true,
+          await setOverride(
+            'signal',
+            `${code}_forceSell`,
+            true,
             `[ScalpRadar] 45분 경과 + 모멘텀 소진 (peak ${peakPnl.toFixed(1)}%)`,
-            SCALP.TTL_EXIT, isPaper);
+            SCALP.TTL_EXIT,
+            isPaper,
+          );
           exits++;
           logger.info(`⏰ ScalpRadar [${mode}]: ${code} 45분+모멘텀소진 → forceSell`, { component: 'SCALP_RADAR' });
         }

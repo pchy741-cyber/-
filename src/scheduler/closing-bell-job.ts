@@ -16,30 +16,30 @@
  * 포지션 크기: maxPositionKrw × 0.5 (오버나이트 할인)
  */
 
-import { getActiveWatchlist, getOpenChains, getLatestScores, logSystem } from '../db/client.js';
-import { getBatchPrices, getDailyChart } from '../kis/market.js';
 import { analyzeTechnicals } from '../analysis/indicators.js';
-import { callVertexGemini } from '../utils/vertex-gemini.js';
-import { getAccountBalance, invalidateBalanceCache } from '../kis/account.js';
-import { getPaperBalance } from '../risk/paper-balance.js';
-import { tradeExecutor } from '../trading/executor.js';
-import { sendTelegramMessage } from '../notifications/telegram.js';
-import { logger } from '../utils/logger.js';
-import { getKSTNow } from '../utils/time.js';
-import { isKillSwitchActive, reportSuccess } from '../risk/kill-switch.js';
 import { isRiskOffToday } from '../automation/market-routing.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { config } from '../config/index.js';
+import { getActiveWatchlist, getLatestScores, getOpenChains, logSystem } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
+import { getAccountBalance, invalidateBalanceCache } from '../kis/account.js';
+import { getBatchPrices, getDailyChart } from '../kis/market.js';
+import { sendTelegramMessage } from '../notifications/telegram.js';
+import { isKillSwitchActive, reportSuccess } from '../risk/kill-switch.js';
+import { getPaperBalance } from '../risk/paper-balance.js';
+import { tradeExecutor } from '../trading/executor.js';
+import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
+import { callVertexGemini } from '../utils/vertex-gemini.js';
 
 // ── 필터 파라미터 ──
-const DIP_MIN_PCT = -15.0;   // 하락률 하한 (-15% 이하는 뭔가 문제 있는 종목)
-const DIP_MAX_PCT = -5.0;    // 하락률 상한 (-5% 이상 하락이어야 개떡락)
+const DIP_MIN_PCT = -15.0; // 하락률 하한 (-15% 이하는 뭔가 문제 있는 종목)
+const DIP_MAX_PCT = -5.0; // 하락률 상한 (-5% 이상 하락이어야 개떡락)
 const MIN_VOLUME_RATIO = 2.0; // 거래량 비율 최소 (공황매도 확인)
-const MIN_AI_SCORE = 75;     // AI 스코어 최소 (우량 감시목록 확인)
-const MAX_STOCKS = 3;        // 최대 3종목 (오버나이트 집중 방지)
+const MIN_AI_SCORE = 75; // AI 스코어 최소 (우량 감시목록 확인)
+const MAX_STOCKS = 3; // 최대 3종목 (오버나이트 집중 방지)
 const POSITION_OVERNIGHT_DISC = 0.5; // 포지션 크기 50% 할인 (오버나이트 리스크)
-const MIN_POSITION_KRW = 100_000;    // 최소 10만원
+const MIN_POSITION_KRW = 100_000; // 최소 10만원
 
 // 중복 매수 방지 (당일 1회)
 const _boughtToday = new Map<string, Set<string>>(); // key: 'paper'|'live'
@@ -75,23 +75,22 @@ export async function runClosingBellJob(): Promise<void> {
   }
 
   const modeKey = isPaper ? 'paper' : 'live';
-  logger.info(`🎯 종가줍줍 스캔 시작 (${isPaper ? 'paper' : 'live'}, ${kstH}:${String(kstM).padStart(2, '0')})`, { component: 'CLOSING_BELL' });
+  logger.info(`🎯 종가줍줍 스캔 시작 (${isPaper ? 'paper' : 'live'}, ${kstH}:${String(kstM).padStart(2, '0')})`, {
+    component: 'CLOSING_BELL',
+  });
 
   try {
     // ── STEP 1: 감시목록 + 실시간 시세 ──
-    const [watchlist, openChains] = await Promise.all([
-      getActiveWatchlist(),
-      getOpenChains(),
-    ]);
+    const [watchlist, openChains] = await Promise.all([getActiveWatchlist(), getOpenChains()]);
 
     if (watchlist.length === 0) {
       logger.warn('[CLOSING_BELL] 감시목록 비어있음', { component: 'CLOSING_BELL' });
       return;
     }
 
-    const stockCodes = watchlist.map(w => w.stock_code);
+    const stockCodes = watchlist.map((w) => w.stock_code);
     const livePrices = await getBatchPrices(stockCodes);
-    const heldCodes = new Set(openChains.filter(c => Number(c.total_quantity) > 0).map(c => c.stock_code));
+    const heldCodes = new Set(openChains.filter((c) => Number(c.total_quantity) > 0).map((c) => c.stock_code));
     const alreadyBought = _boughtToday.get(modeKey) ?? new Set<string>();
 
     // ── STEP 2: 당일 하락률 필터 (-5% ~ -15%) ──
@@ -105,8 +104,8 @@ export async function runClosingBellJob(): Promise<void> {
     for (const w of watchlist) {
       const p = livePrices.get(w.stock_code);
       if (!p || p.currentPrice <= 0) continue;
-      if (heldCodes.has(w.stock_code)) continue;        // 이미 보유 중
-      if (alreadyBought.has(w.stock_code)) continue;    // 오늘 이미 매수
+      if (heldCodes.has(w.stock_code)) continue; // 이미 보유 중
+      if (alreadyBought.has(w.stock_code)) continue; // 오늘 이미 매수
 
       const dropPct = p.changePct; // 당일 등락률 (%)
       if (dropPct > DIP_MAX_PCT || dropPct < DIP_MIN_PCT) continue;
@@ -119,16 +118,16 @@ export async function runClosingBellJob(): Promise<void> {
       });
     }
 
-    logger.info(`🎯 하락률 필터(${DIP_MAX_PCT}%~${DIP_MIN_PCT}%): ${dipCandidates.length}종목`, { component: 'CLOSING_BELL' });
+    logger.info(`🎯 하락률 필터(${DIP_MAX_PCT}%~${DIP_MIN_PCT}%): ${dipCandidates.length}종목`, {
+      component: 'CLOSING_BELL',
+    });
     if (dipCandidates.length === 0) {
       logger.info('[CLOSING_BELL] 개떡락 조건 충족 종목 없음 → 종료', { component: 'CLOSING_BELL' });
       return;
     }
 
     // ── STEP 3: 차트 로드 + 거래량 비율 필터 ──
-    const chartResults = await Promise.allSettled(
-      dipCandidates.map(c => getDailyChart(c.code, 30)),
-    );
+    const chartResults = await Promise.allSettled(dipCandidates.map((c) => getDailyChart(c.code, 30)));
 
     const volFiltered: Array<{
       code: string;
@@ -146,7 +145,10 @@ export async function runClosingBellJob(): Promise<void> {
       const tech = analyzeTechnicals(result.value);
       if (!tech) continue;
       if (tech.volumeRatio < MIN_VOLUME_RATIO) {
-        logger.debug(`[CLOSING_BELL] ${cand.code} 거래량 부족 (${tech.volumeRatio.toFixed(1)}x < ${MIN_VOLUME_RATIO}x)`, { component: 'CLOSING_BELL' });
+        logger.debug(
+          `[CLOSING_BELL] ${cand.code} 거래량 부족 (${tech.volumeRatio.toFixed(1)}x < ${MIN_VOLUME_RATIO}x)`,
+          { component: 'CLOSING_BELL' },
+        );
         continue;
       }
 
@@ -160,13 +162,15 @@ export async function runClosingBellJob(): Promise<void> {
     }
 
     // ── STEP 4: AI 스코어 필터 (DB ai_scores, ≥75점) ──
-    const aiScoreRows = await getLatestScores(volFiltered.map(c => c.code));
-    const scoreMap = new Map(aiScoreRows.map(s => [s.stock_code, Number(s.composite_score ?? 0)]));
+    const aiScoreRows = await getLatestScores(volFiltered.map((c) => c.code));
+    const scoreMap = new Map(aiScoreRows.map((s) => [s.stock_code, Number(s.composite_score ?? 0)]));
 
-    const scoreFiltered = volFiltered.filter(c => {
+    const scoreFiltered = volFiltered.filter((c) => {
       const score = scoreMap.get(c.code) ?? 0;
       if (score < MIN_AI_SCORE) {
-        logger.debug(`[CLOSING_BELL] ${c.code} AI점수 부족 (${score} < ${MIN_AI_SCORE})`, { component: 'CLOSING_BELL' });
+        logger.debug(`[CLOSING_BELL] ${c.code} AI점수 부족 (${score} < ${MIN_AI_SCORE})`, {
+          component: 'CLOSING_BELL',
+        });
         return false;
       }
       return true;
@@ -178,9 +182,11 @@ export async function runClosingBellJob(): Promise<void> {
     let finalCandidates = scoreFiltered;
     if (finalCandidates.length === 0 && volFiltered.length > 0) {
       const FALLBACK_SCORE = 60;
-      const fallback = volFiltered.filter(c => (scoreMap.get(c.code) ?? 0) >= FALLBACK_SCORE);
+      const fallback = volFiltered.filter((c) => (scoreMap.get(c.code) ?? 0) >= FALLBACK_SCORE);
       if (fallback.length > 0) {
-        logger.info(`[CLOSING_BELL] AI점수 fallback(≥${FALLBACK_SCORE}): ${fallback.length}종목`, { component: 'CLOSING_BELL' });
+        logger.info(`[CLOSING_BELL] AI점수 fallback(≥${FALLBACK_SCORE}): ${fallback.length}종목`, {
+          component: 'CLOSING_BELL',
+        });
         finalCandidates = fallback;
       } else {
         logger.info('[CLOSING_BELL] AI점수 조건 충족 종목 없음 → 종료', { component: 'CLOSING_BELL' });
@@ -205,7 +211,7 @@ export async function runClosingBellJob(): Promise<void> {
 JSON만 반환 (다른 텍스트 없이):
 {"scores":[{"code":"종목코드","score":점수,"reason":"한줄사유"},...]}`;
 
-        const details = finalCandidates.map(c => ({
+        const details = finalCandidates.map((c) => ({
           code: c.code,
           name: c.name,
           changePct: c.changePct.toFixed(1),
@@ -228,7 +234,9 @@ JSON만 반환 (다른 텍스트 없이):
               const dbScore = scoreMap.get(s.code) ?? s.score;
               const blended = Math.round(s.score * 0.7 + dbScore * 0.3);
               scoreMap.set(s.code, blended);
-              logger.info(`🤖 [CLOSING_BELL] ${s.code} Gemini: ${s.score}점 → 블렌드: ${blended}점 (${s.reason})`, { component: 'CLOSING_BELL' });
+              logger.info(`🤖 [CLOSING_BELL] ${s.code} Gemini: ${s.score}점 → 블렌드: ${blended}점 (${s.reason})`, {
+                component: 'CLOSING_BELL',
+              });
             }
           }
         }
@@ -249,15 +257,21 @@ JSON만 반환 (다른 텍스트 없이):
 
     const basePositionKrw = config.risk.maxPositionKrw;
     const overnightPositionKrw = Math.floor(basePositionKrw * POSITION_OVERNIGHT_DISC);
-    const cashPerStock = Math.floor(orderableCash * 0.90 / top.length);
+    const cashPerStock = Math.floor((orderableCash * 0.9) / top.length);
     const effectivePositionKrw = Math.min(overnightPositionKrw, cashPerStock);
 
     if (effectivePositionKrw < MIN_POSITION_KRW) {
-      logger.warn(`[CLOSING_BELL] 포지션 ${effectivePositionKrw.toLocaleString()}원 < 최소 ${MIN_POSITION_KRW.toLocaleString()}원 → 잔고 부족`, { component: 'CLOSING_BELL' });
+      logger.warn(
+        `[CLOSING_BELL] 포지션 ${effectivePositionKrw.toLocaleString()}원 < 최소 ${MIN_POSITION_KRW.toLocaleString()}원 → 잔고 부족`,
+        { component: 'CLOSING_BELL' },
+      );
       return;
     }
 
-    logger.info(`🎯 사이징: ${overnightPositionKrw.toLocaleString()}원/종목 (기본${basePositionKrw.toLocaleString()} × 50% 오버나이트 할인), ${top.length}종목`, { component: 'CLOSING_BELL' });
+    logger.info(
+      `🎯 사이징: ${overnightPositionKrw.toLocaleString()}원/종목 (기본${basePositionKrw.toLocaleString()} × 50% 오버나이트 할인), ${top.length}종목`,
+      { component: 'CLOSING_BELL' },
+    );
 
     // ── STEP 8: 매수 결정 생성 ──
     const buyDecisions: TradeDecision[] = [];
@@ -274,7 +288,7 @@ JSON만 반환 (다른 텍스트 없이):
         quantity: qty,
         price_type: 'MARKET',
         reasoning: `🎯 개떡락줍줍: ${cand.changePct.toFixed(1)}% 하락 vol=${cand.volumeRatio.toFixed(1)}x AI=${score} (BOTTOM_FISHING TP+6% SL-2.5%)`,
-        confidence: Math.min(0.90, 0.65 + score / 500),
+        confidence: Math.min(0.9, 0.65 + score / 500),
         strategy_mode: 'BOTTOM_FISHING',
         trigger_source: 'CLOSING_BELL',
       });
@@ -298,13 +312,15 @@ JSON만 반환 (다른 텍스트 없이):
     for (const d of buyDecisions) _boughtToday.get(modeKey)!.add(d.stock_code);
 
     // ── STEP 10: 알림 ──
-    const summary = buyDecisions
-      .map(d => `  • ${d.stock_code} ×${d.quantity} — ${d.reasoning}`)
-      .join('\n');
-    await sendTelegramMessage(`🎯 종가줍줍 매수 ${buyDecisions.length}건\n${summary}\n📌 Track B TP+6%/SL-2.5% 청산`).catch(() => {});
+    const summary = buyDecisions.map((d) => `  • ${d.stock_code} ×${d.quantity} — ${d.reasoning}`).join('\n');
+    await sendTelegramMessage(
+      `🎯 종가줍줍 매수 ${buyDecisions.length}건\n${summary}\n📌 Track B TP+6%/SL-2.5% 청산`,
+    ).catch(() => {});
     await logSystem('INFO', 'CLOSING_BELL', `개떡락줍줍: ${buyDecisions.length}건 매수`);
 
-    logger.info(`🎯 종가줍줍 완료: ${buyDecisions.length}종목 매수 (BOTTOM_FISHING 모드)`, { component: 'CLOSING_BELL' });
+    logger.info(`🎯 종가줍줍 완료: ${buyDecisions.length}종목 매수 (BOTTOM_FISHING 모드)`, {
+      component: 'CLOSING_BELL',
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`종가줍줍 실패: ${msg}`, { component: 'CLOSING_BELL' });

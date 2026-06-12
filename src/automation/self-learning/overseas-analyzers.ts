@@ -4,15 +4,17 @@
  * - 체결사유별 TP/SL 최적화
  * - 데이터 축적 복리 신뢰도 부스트
  */
+
+import { getCtxIsPaper } from '../../config/context.js';
 import { getPool } from '../../db/client.js';
-import { SECTOR_CLASS } from '../../config/constants.js';
 import { GLOBAL_WATCHLIST } from '../../scheduler/overseas/watchlist.js';
 import { logger } from '../../utils/logger.js';
-import { getCtxIsPaper } from '../../config/context.js';
 import type { LearnedInsight } from './index.js';
 
 /** 호출 시점 timestamp (모듈 로드 시 고정 방지) */
-function now(): string { return new Date().toISOString(); }
+function now(): string {
+  return new Date().toISOString();
+}
 
 interface OverseasTrade {
   stockCode: string;
@@ -52,7 +54,7 @@ async function getOverseasTrades(days: number, isPaper: boolean): Promise<Overse
     const qty = Number(r.quantity ?? 0);
     const pnlUsd = avgBuy > 0 && filled > 0 ? (filled - avgBuy) * qty : 0;
     const pnlPct = avgBuy > 0 && filled > 0 ? ((filled - avgBuy) / avgBuy) * 100 : 0;
-    const wItem = GLOBAL_WATCHLIST.find(w => w.code === r.stock_code);
+    const wItem = GLOBAL_WATCHLIST.find((w) => w.code === r.stock_code);
     const reasoning = String(r.ai_reasoning ?? '');
     // 체결사유 추출: AI reasoning에서 핵심 사유 파싱
     const closeReason = parseCloseReason(reasoning);
@@ -76,8 +78,10 @@ function parseCloseReason(reasoning: string): string {
   const lower = reasoning.toLowerCase();
   if (lower.includes('trailing') || lower.includes('트레일링') || lower.includes('trail')) return 'TRAILING_STOP';
   if (lower.includes('partial') || lower.includes('부분익절') || lower.includes('partial_tp')) return 'PARTIAL_TP';
-  if (lower.includes('stop') && lower.includes('loss') || lower.includes('손절') || lower.includes('SL')) return 'STOP_LOSS';
-  if (lower.includes('take') && lower.includes('profit') || lower.includes('익절') || lower.includes('TP')) return 'TAKE_PROFIT';
+  if ((lower.includes('stop') && lower.includes('loss')) || lower.includes('손절') || lower.includes('SL'))
+    return 'STOP_LOSS';
+  if ((lower.includes('take') && lower.includes('profit')) || lower.includes('익절') || lower.includes('TP'))
+    return 'TAKE_PROFIT';
   if (lower.includes('수동') || lower.includes('ceo') || lower.includes('manual')) return 'MANUAL';
   if (lower.includes('turtle') || lower.includes('터틀')) return 'TURTLE_EXIT';
   if (lower.includes('concentration') || lower.includes('집중도')) return 'CONCENTRATION_CAP';
@@ -119,7 +123,8 @@ export async function analyzeOverseasSectorPerformance(isPaper: boolean): Promis
   const sectorStats = new Map<string, { wins: number; losses: number; totalPnlPct: number; totalPnlUsd: number }>();
   for (const t of trades) {
     const stat = sectorStats.get(t.sector) ?? { wins: 0, losses: 0, totalPnlPct: 0, totalPnlUsd: 0 };
-    if (t.pnlPct > 0) stat.wins++; else stat.losses++;
+    if (t.pnlPct > 0) stat.wins++;
+    else stat.losses++;
     stat.totalPnlPct += t.pnlPct;
     stat.totalPnlUsd += t.pnlUsd;
     sectorStats.set(t.sector, stat);
@@ -136,10 +141,16 @@ export async function analyzeOverseasSectorPerformance(isPaper: boolean): Promis
     if (total < 3) continue;
     const winRate = stat.wins / total;
     const avgPnlPct = stat.totalPnlPct / total;
-    if (winRate > bestWinRate) { bestWinRate = winRate; bestSector = sector; }
-    if (winRate < worstWinRate) { worstWinRate = winRate; worstSector = sector; }
+    if (winRate > bestWinRate) {
+      bestWinRate = winRate;
+      bestSector = sector;
+    }
+    if (winRate < worstWinRate) {
+      worstWinRate = winRate;
+      worstSector = sector;
+    }
 
-    if (winRate >= 0.70 && total >= 5) {
+    if (winRate >= 0.7 && total >= 5) {
       insights.push({
         category: 'WIN_PATTERN',
         insight: `[해외] ${sector} 섹터 승률 ${(winRate * 100).toFixed(0)}% (${total}건, 평균 +${avgPnlPct.toFixed(1)}%) — 이 섹터 매수 시그널 적극 대응.`,
@@ -168,7 +179,7 @@ export async function analyzeOverseasSectorPerformance(isPaper: boolean): Promis
       insights.push({
         category: 'SIZING',
         insight: `[해외] ${bestSector}(승률 ${(bestWinRate * 100).toFixed(0)}%) → ${worstSector}(승률 ${(worstWinRate * 100).toFixed(0)}%) 대비 우위. ${bestSector} 비중 확대, ${worstSector} 축소 권장.`,
-        confidence: compoundConfidence(0.80, bestTotal + worstTotal),
+        confidence: compoundConfidence(0.8, bestTotal + worstTotal),
         sampleCount: bestTotal + worstTotal,
         lastUpdated: now(),
         details: { bestSector, bestWinRate, worstSector, worstWinRate },
@@ -186,10 +197,14 @@ export async function analyzeCloseReasonOptimization(isPaper: boolean): Promise<
   const trades = await getOverseasTrades(120, isPaper);
   if (trades.length < 8) return [];
 
-  const reasonStats = new Map<string, { wins: number; losses: number; totalPnlPct: number; avgHoldDays: number; count: number }>();
+  const reasonStats = new Map<
+    string,
+    { wins: number; losses: number; totalPnlPct: number; avgHoldDays: number; count: number }
+  >();
   for (const t of trades) {
     const stat = reasonStats.get(t.closeReason) ?? { wins: 0, losses: 0, totalPnlPct: 0, avgHoldDays: 0, count: 0 };
-    if (t.pnlPct > 0) stat.wins++; else stat.losses++;
+    if (t.pnlPct > 0) stat.wins++;
+    else stat.losses++;
     stat.totalPnlPct += t.pnlPct;
     stat.count++;
     reasonStats.set(t.closeReason, stat);
@@ -198,9 +213,9 @@ export async function analyzeCloseReasonOptimization(isPaper: boolean): Promise<
   const insights: LearnedInsight[] = [];
 
   // 최고 성과 exit 전략 찾기
-  let bestReason = '';
+  let _bestReason = '';
   let bestAvgPnl = -Infinity;
-  let bestWinRate = 0;
+  let _bestWinRate = 0;
 
   for (const [reason, stat] of reasonStats) {
     const total = stat.wins + stat.losses;
@@ -210,14 +225,14 @@ export async function analyzeCloseReasonOptimization(isPaper: boolean): Promise<
 
     if (avgPnl > bestAvgPnl) {
       bestAvgPnl = avgPnl;
-      bestReason = reason;
-      bestWinRate = winRate;
+      _bestReason = reason;
+      _bestWinRate = winRate;
     }
 
     const krName = CLOSE_REASON_KR[reason] ?? reason;
 
     // 특정 exit 전략이 일관되게 좋으면 알림
-    if (winRate >= 0.70 && total >= 5) {
+    if (winRate >= 0.7 && total >= 5) {
       insights.push({
         category: 'WIN_PATTERN',
         insight: `[해외] '${krName}' 매도 전략 승률 ${(winRate * 100).toFixed(0)}% (${total}건, 평균 +${avgPnl.toFixed(1)}%) — 이 exit 전략이 가장 효과적.`,
@@ -229,11 +244,11 @@ export async function analyzeCloseReasonOptimization(isPaper: boolean): Promise<
     }
 
     // 특정 exit 전략이 일관되게 나쁘면 경고
-    if (winRate <= 0.30 && total >= 5 && avgPnl < -1) {
+    if (winRate <= 0.3 && total >= 5 && avgPnl < -1) {
       insights.push({
         category: 'LOSS_PATTERN',
         insight: `[해외] '${krName}' 매도 전략 승률 ${(winRate * 100).toFixed(0)}% (${total}건, 평균 ${avgPnl.toFixed(1)}%) — 이 exit 방식 개선 필요.`,
-        confidence: compoundConfidence(0.80, total),
+        confidence: compoundConfidence(0.8, total),
         sampleCount: total,
         lastUpdated: now(),
         details: { market: 'OVERSEAS', closeReason: reason, winRate, avgPnl },
@@ -254,7 +269,7 @@ export async function analyzeCloseReasonOptimization(isPaper: boolean): Promise<
         insights.push({
           category: 'SIZING',
           insight: `[해외] 트레일링 스톱(평균 +${trailAvg.toFixed(1)}%)이 고정 익절(평균 +${tpAvg.toFixed(1)}%)보다 우수. 트레일링 활성화 기준을 낮춰 더 많은 종목에 적용 권장.`,
-          confidence: compoundConfidence(0.80, trailTotal + tpTotal),
+          confidence: compoundConfidence(0.8, trailTotal + tpTotal),
           sampleCount: trailTotal + tpTotal,
           lastUpdated: now(),
         });
@@ -262,7 +277,7 @@ export async function analyzeCloseReasonOptimization(isPaper: boolean): Promise<
         insights.push({
           category: 'SIZING',
           insight: `[해외] 고정 익절(평균 +${tpAvg.toFixed(1)}%)이 트레일링 스톱(평균 +${trailAvg.toFixed(1)}%)보다 우수. 빠른 익절이 현재 시장에 더 적합.`,
-          confidence: compoundConfidence(0.80, trailTotal + tpTotal),
+          confidence: compoundConfidence(0.8, trailTotal + tpTotal),
           sampleCount: trailTotal + tpTotal,
           lastUpdated: now(),
         });
@@ -277,7 +292,7 @@ export async function analyzeCloseReasonOptimization(isPaper: boolean): Promise<
     if (partialTotal >= 3) {
       const partialAvg = partialStats.totalPnlPct / partialTotal;
       const partialWR = partialStats.wins / partialTotal;
-      if (partialWR >= 0.70) {
+      if (partialWR >= 0.7) {
         insights.push({
           category: 'WIN_PATTERN',
           insight: `[해외] 부분익절 승률 ${(partialWR * 100).toFixed(0)}% (${partialTotal}건, 평균 +${partialAvg.toFixed(1)}%) — 익절 시 전량보다 부분매도가 유리.`,
@@ -302,7 +317,8 @@ export async function analyzeOverseasStockPerformance(isPaper: boolean): Promise
   const stockStats = new Map<string, { wins: number; losses: number; totalPnlPct: number; sector: string }>();
   for (const t of trades) {
     const stat = stockStats.get(t.stockCode) ?? { wins: 0, losses: 0, totalPnlPct: 0, sector: t.sector };
-    if (t.pnlPct > 0) stat.wins++; else stat.losses++;
+    if (t.pnlPct > 0) stat.wins++;
+    else stat.losses++;
     stat.totalPnlPct += t.pnlPct;
     stockStats.set(t.stockCode, stat);
   }
@@ -323,11 +339,11 @@ export async function analyzeOverseasStockPerformance(isPaper: boolean): Promise
         lastUpdated: now(),
         details: { market: 'OVERSEAS', code, sector: stat.sector, winRate },
       });
-    } else if (winRate <= 0.30 && total >= 3) {
+    } else if (winRate <= 0.3 && total >= 3) {
       insights.push({
         category: 'LOSS_PATTERN',
         insight: `[해외] ${code}(${stat.sector}) 승률 ${(winRate * 100).toFixed(0)}% (${total}건, 평균 ${avgPnl.toFixed(1)}%) — 반복 손실 종목, 진입 기준 강화 필요.`,
-        confidence: compoundConfidence(0.70, total),
+        confidence: compoundConfidence(0.7, total),
         sampleCount: total,
         lastUpdated: now(),
         details: { market: 'OVERSEAS', code, sector: stat.sector, winRate },
@@ -366,20 +382,20 @@ export async function analyzeOverseasHoldingPeriod(isPaper: boolean): Promise<Le
   // 간이 보유기간 추정: 같은 종목의 직전 매수~매도
   const holdingDays: { days: number; win: boolean }[] = [];
   for (const sell of sells) {
-    const matchBuy = buys.filter((b: any) =>
-      b.stock_code === sell.stock_code &&
-      new Date(b.created_at) < new Date(sell.created_at),
-    ).pop(); // 가장 가까운 매수
+    const matchBuy = buys
+      .filter((b: any) => b.stock_code === sell.stock_code && new Date(b.created_at) < new Date(sell.created_at))
+      .pop(); // 가장 가까운 매수
     if (!matchBuy) continue;
-    const days = (new Date(sell.created_at).getTime() - new Date(matchBuy.created_at).getTime()) / (1000 * 60 * 60 * 24);
+    const days =
+      (new Date(sell.created_at).getTime() - new Date(matchBuy.created_at).getTime()) / (1000 * 60 * 60 * 24);
     const win = Number(sell.filled_price) > Number(sell.avg_buy_price ?? matchBuy.filled_price);
     holdingDays.push({ days, win });
   }
 
   if (holdingDays.length < 5) return [];
 
-  const wins = holdingDays.filter(h => h.win);
-  const losses = holdingDays.filter(h => !h.win);
+  const wins = holdingDays.filter((h) => h.win);
+  const losses = holdingDays.filter((h) => !h.win);
   const avgWinHold = wins.length > 0 ? wins.reduce((s, h) => s + h.days, 0) / wins.length : 0;
   const avgLossHold = losses.length > 0 ? losses.reduce((s, h) => s + h.days, 0) / losses.length : 0;
 
@@ -389,7 +405,7 @@ export async function analyzeOverseasHoldingPeriod(isPaper: boolean): Promise<Le
     insights.push({
       category: 'TIMING',
       insight: `[해외] 수익 매매 평균 ${avgWinHold.toFixed(1)}일 vs 손실 매매 평균 ${avgLossHold.toFixed(1)}일 — 손절을 더 빨리 해야 함.`,
-      confidence: compoundConfidence(0.80, holdingDays.length),
+      confidence: compoundConfidence(0.8, holdingDays.length),
       sampleCount: holdingDays.length,
       lastUpdated: now(),
     });
@@ -399,7 +415,7 @@ export async function analyzeOverseasHoldingPeriod(isPaper: boolean): Promise<Le
     insights.push({
       category: 'TIMING',
       insight: `[해외] 수익 매매 평균 보유기간 ${avgWinHold.toFixed(1)}일 — 단기 트레이딩 전략이 효과적.`,
-      confidence: compoundConfidence(0.70, wins.length),
+      confidence: compoundConfidence(0.7, wins.length),
       sampleCount: wins.length,
       lastUpdated: now(),
     });
@@ -421,7 +437,10 @@ export async function analyzeOverseasAll(isPaper: boolean): Promise<LearnedInsig
     ]);
 
     const all = [...sectorInsights, ...closeReasonInsights, ...stockInsights, ...holdingInsights];
-    logger.info(`🌏 해외 자기학습: ${all.length}개 인사이트 (섹터 ${sectorInsights.length}, 사유 ${closeReasonInsights.length}, 종목 ${stockInsights.length}, 보유기간 ${holdingInsights.length})`, { component: 'LEARN' });
+    logger.info(
+      `🌏 해외 자기학습: ${all.length}개 인사이트 (섹터 ${sectorInsights.length}, 사유 ${closeReasonInsights.length}, 종목 ${stockInsights.length}, 보유기간 ${holdingInsights.length})`,
+      { component: 'LEARN' },
+    );
     return all;
   } catch (err) {
     logger.warn(`해외 자기학습 실패: ${err}`, { component: 'LEARN' });
@@ -433,19 +452,19 @@ export async function analyzeOverseasAll(isPaper: boolean): Promise<LearnedInsig
 // 6. 해외 인사이트 → AI 프롬프트 컨텍스트
 // ══════════════════════════════════════════════════════════════
 export async function getOverseasInsightsForPrompt(): Promise<string> {
-  const { rows } = await getPool().query(
-    `SELECT * FROM learned_insights
+  const { rows } = await getPool()
+    .query(
+      `SELECT * FROM learned_insights
      WHERE insight LIKE '[해외]%' AND is_paper = $1
      ORDER BY confidence DESC, sample_count DESC
      LIMIT 10`,
-    [getCtxIsPaper()],
-  ).catch(() => ({ rows: [] }));
+      [getCtxIsPaper()],
+    )
+    .catch(() => ({ rows: [] }));
 
   if (rows.length === 0) return '';
 
-  const lines = [
-    '\n## 🌏 해외주식 학습 인사이트 — 해외 매매 판단에 반영하세요',
-  ];
+  const lines = ['\n## 🌏 해외주식 학습 인사이트 — 해외 매매 판단에 반영하세요'];
 
   for (const r of rows) {
     const tag = r.confidence >= 0.85 ? '【필수】' : r.confidence >= 0.75 ? '【권장】' : '【참고】';

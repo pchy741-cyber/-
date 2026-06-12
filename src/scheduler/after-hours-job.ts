@@ -1,19 +1,17 @@
-import { getActiveWatchlist, getOpenChains, logSystem, getAllRecentScores } from '../db/client.js';
-import { getBatchPrices, getDailyChart, getBatchInvestorFlow } from '../kis/market.js';
+import { EOD_BLUECHIP_CODES } from '../ai/track-b/eod-bluechip.js';
+import { analyzeTechnicals, type TechnicalSummary } from '../analysis/indicators.js';
+import { runBottomFishingScanner } from '../automation/bottom-fishing-scanner.js';
+import type { StrategyMode } from '../config/constants.js';
+import { getCtxIsPaper } from '../config/context.js';
+import { getActiveStrategy, getActiveWatchlist, getAllRecentScores, getOpenChains, logSystem } from '../db/client.js';
+import type { TradeDecision } from '../db/models.js';
 import type { CurrentPrice } from '../kis/market.js';
+import { getBatchInvestorFlow, getBatchPrices, getDailyChart } from '../kis/market.js';
+import { sendTelegramMessage } from '../notifications/telegram.js';
 import { isKillSwitchActive, reportSuccess } from '../risk/kill-switch.js';
 import { tradeExecutor } from '../trading/executor.js';
-import { EOD_BLUECHIP_CODES } from '../ai/track-b/eod-bluechip.js';
-import { fetchKospiRegime } from '../ai/track-b/market-regime.js';
-import { analyzeTechnicals, type TechnicalSummary } from '../analysis/indicators.js';
-import { getCtxIsPaper } from '../config/context.js';
-import type { StrategyMode } from '../config/constants.js';
-import { getActiveStrategy } from '../db/client.js';
-import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
-import { runBottomFishingScanner } from '../automation/bottom-fishing-scanner.js';
-import type { TradeDecision } from '../db/models.js';
 
 // ── 중복 매수 방지: 오늘 이미 주문한 종목 추적 (paper/live 모드별 분리) ──
 const _todayBoughtCodes = new Map<string, Set<string>>(); // key: 'paper'|'live'
@@ -60,24 +58,41 @@ function scoreCandidate(
   // ═══ 1축: 기술지표 (0~40점) ═══
   if (tech) {
     // RSI(14) 과매도
-    if (tech.rsi14 < 25) { score += 20; reasons.push(`RSI${tech.rsi14.toFixed(0)}`); }
-    else if (tech.rsi14 < 35) { score += 12; reasons.push(`RSI${tech.rsi14.toFixed(0)}`); }
-    else if (tech.rsi14 < 45) { score += 5; }
+    if (tech.rsi14 < 25) {
+      score += 20;
+      reasons.push(`RSI${tech.rsi14.toFixed(0)}`);
+    } else if (tech.rsi14 < 35) {
+      score += 12;
+      reasons.push(`RSI${tech.rsi14.toFixed(0)}`);
+    } else if (tech.rsi14 < 45) {
+      score += 5;
+    }
 
     // RSI(2) 극단적 과매도 (단기 반등 확률 극대화)
-    if (tech.rsi2 < 10) { score += 10; reasons.push('RSI2극단'); }
-    else if (tech.rsi2 < 20) { score += 5; reasons.push(`RSI2=${tech.rsi2.toFixed(0)}`); }
+    if (tech.rsi2 < 10) {
+      score += 10;
+      reasons.push('RSI2극단');
+    } else if (tech.rsi2 < 20) {
+      score += 5;
+      reasons.push(`RSI2=${tech.rsi2.toFixed(0)}`);
+    }
 
     // 볼린저밴드 위치 (하단 돌파 = 과매도 확인)
-    if (tech.bollingerPosition === 'BELOW_LOWER') { score += 8; reasons.push('BB하단'); }
+    if (tech.bollingerPosition === 'BELOW_LOWER') {
+      score += 8;
+      reasons.push('BB하단');
+    }
 
     // 이동평균 추세 — 핵심 필터
     if (tech.deathCross) {
-      score -= 20; reasons.push('데드크로스');
+      score -= 20;
+      reasons.push('데드크로스');
     } else if (tech.sma5 > tech.sma20 && tech.sma20 > tech.sma60) {
-      score += 10; reasons.push('정배열풀백');
+      score += 10;
+      reasons.push('정배열풀백');
     } else if (tech.sma5 > tech.sma20) {
-      score += 5; reasons.push('단기상승');
+      score += 5;
+      reasons.push('단기상승');
     }
 
     // 반전 캔들 패턴 (해머, 모닝스타 등)
@@ -90,44 +105,83 @@ function scoreCandidate(
     }
 
     // MACD 모멘텀
-    if (tech.macdCrossover === 'BULLISH') { score += 5; reasons.push('MACD+'); }
+    if (tech.macdCrossover === 'BULLISH') {
+      score += 5;
+      reasons.push('MACD+');
+    }
 
     // 풀백 시그널
-    if (tech.pullbackSignal) { score += 4; reasons.push('풀백'); }
+    if (tech.pullbackSignal) {
+      score += 4;
+      reasons.push('풀백');
+    }
 
     // 거래량 급증 (캐피추레이션 = 바닥 신호)
-    if (tech.volumeRatio > 3) { score += 10; reasons.push(`거래량${tech.volumeRatio.toFixed(1)}x`); }
-    else if (tech.volumeRatio > 2) { score += 6; reasons.push(`거래량${tech.volumeRatio.toFixed(1)}x`); }
-    else if (tech.volumeRatio > 1.5) { score += 3; }
+    if (tech.volumeRatio > 3) {
+      score += 10;
+      reasons.push(`거래량${tech.volumeRatio.toFixed(1)}x`);
+    } else if (tech.volumeRatio > 2) {
+      score += 6;
+      reasons.push(`거래량${tech.volumeRatio.toFixed(1)}x`);
+    } else if (tech.volumeRatio > 1.5) {
+      score += 3;
+    }
   }
 
   // ═══ 2축: AI 점수 (-15~+20점) ═══
   if (aiComposite != null && aiComposite > 0) {
-    if (aiComposite >= 65) { score += 20; reasons.push(`AI${aiComposite}`); }
-    else if (aiComposite >= 55) { score += 12; reasons.push(`AI${aiComposite}`); }
-    else if (aiComposite >= 45) { score += 5; }
-    else if (aiComposite < 35) { score -= 15; reasons.push(`AI약${aiComposite}`); }
+    if (aiComposite >= 65) {
+      score += 20;
+      reasons.push(`AI${aiComposite}`);
+    } else if (aiComposite >= 55) {
+      score += 12;
+      reasons.push(`AI${aiComposite}`);
+    } else if (aiComposite >= 45) {
+      score += 5;
+    } else if (aiComposite < 35) {
+      score -= 15;
+      reasons.push(`AI약${aiComposite}`);
+    }
   }
 
   // ═══ 3축: 스마트머니 수급 (-15~+20점) ═══
   const instBuy = instNet > 0;
   const forgBuy = foreignNet > 0;
-  if (instBuy && forgBuy) { score += 20; reasons.push('기관외인매수'); }
-  else if (instBuy) { score += 12; reasons.push('기관매수'); }
-  else if (forgBuy) { score += 8; reasons.push('외인매수'); }
-  else if (instNet < 0 && foreignNet < 0) { score -= 15; reasons.push('기관외인매도'); }
+  if (instBuy && forgBuy) {
+    score += 20;
+    reasons.push('기관외인매수');
+  } else if (instBuy) {
+    score += 12;
+    reasons.push('기관매수');
+  } else if (forgBuy) {
+    score += 8;
+    reasons.push('외인매수');
+  } else if (instNet < 0 && foreignNet < 0) {
+    score -= 15;
+    reasons.push('기관외인매도');
+  }
 
   // ═══ 4축: 하락 품질 (0~15점) ═══
   const drop = Math.abs(price.changePct);
   // 적정 하락 구간 (-2% ~ -8%)이 최적 — 너무 적으면 반등 약하고 너무 크면 펀더멘탈 문제
-  if (drop >= 2 && drop <= 5) { score += 10; reasons.push(`낙폭${price.changePct.toFixed(1)}%`); }
-  else if (drop > 5 && drop <= 8) { score += 8; reasons.push(`급락${price.changePct.toFixed(1)}%`); }
-  else if (drop > 8 && drop <= 12) { score += 3; reasons.push(`폭락${price.changePct.toFixed(1)}%`); }
-  else if (drop > 12) { score -= 10; reasons.push(`위험낙폭${price.changePct.toFixed(1)}%`); }
+  if (drop >= 2 && drop <= 5) {
+    score += 10;
+    reasons.push(`낙폭${price.changePct.toFixed(1)}%`);
+  } else if (drop > 5 && drop <= 8) {
+    score += 8;
+    reasons.push(`급락${price.changePct.toFixed(1)}%`);
+  } else if (drop > 8 && drop <= 12) {
+    score += 3;
+    reasons.push(`폭락${price.changePct.toFixed(1)}%`);
+  } else if (drop > 12) {
+    score -= 10;
+    reasons.push(`위험낙폭${price.changePct.toFixed(1)}%`);
+  }
 
   // 블루칩 보너스 (삼성전자, SK하이닉스, 한화에어로)
   if ((EOD_BLUECHIP_CODES as readonly string[]).includes(code)) {
-    score += 5; reasons.push('블루칩');
+    score += 5;
+    reasons.push('블루칩');
   }
 
   return { score, reasons };
@@ -243,12 +297,12 @@ export async function runAfterHoursJob(): Promise<void> {
     const dropCandidates: { code: string; price: CurrentPrice }[] = [];
 
     for (const code of allCodes) {
-      if (_todayBoughtCodes.get(modeKey)!.has(code)) continue;  // 오늘 이미 주문
-      if (heldCodes.has(code)) continue;                 // 이미 보유
+      if (_todayBoughtCodes.get(modeKey)!.has(code)) continue; // 오늘 이미 주문
+      if (heldCodes.has(code)) continue; // 이미 보유
       const p = livePrices.get(code);
       if (!p || p.currentPrice <= 0) continue;
-      if (p.changePct > -1.5) continue;                  // 최소 -1.5% 하락
-      if (p.changePct < -15) continue;                   // -15% 초과 = 위험 (상폐/악재)
+      if (p.changePct > -1.5) continue; // 최소 -1.5% 하락
+      if (p.changePct < -15) continue; // -15% 초과 = 위험 (상폐/악재)
       dropCandidates.push({ code, price: p });
     }
 
@@ -257,7 +311,9 @@ export async function runAfterHoursJob(): Promise<void> {
       return;
     }
 
-    logger.info(`🧠 스마트장외: 1차 필터 ${dropCandidates.length}종목 → 멀티팩터 분석 시작`, { component: 'AFTER_HOURS' });
+    logger.info(`🧠 스마트장외: 1차 필터 ${dropCandidates.length}종목 → 멀티팩터 분석 시작`, {
+      component: 'AFTER_HOURS',
+    });
 
     // 1-D. 멀티팩터 데이터 수집 (병렬)
     const candCodes = dropCandidates.map((c) => c.code);
@@ -309,7 +365,9 @@ export async function runAfterHoursJob(): Promise<void> {
     }
 
     if (qualified.length === 0) {
-      logger.info(`🧠 스마트장외: 40점 이상 종목 없음 (최고 ${scored[0]?.score ?? 0}점) → 매수 없음`, { component: 'AFTER_HOURS' });
+      logger.info(`🧠 스마트장외: 40점 이상 종목 없음 (최고 ${scored[0]?.score ?? 0}점) → 매수 없음`, {
+        component: 'AFTER_HOURS',
+      });
       return;
     }
 
@@ -318,12 +376,12 @@ export async function runAfterHoursJob(): Promise<void> {
       const p = livePrices.get(c.stock_code)?.currentPrice ?? Number(c.avg_buy_price ?? 0);
       return sum + p * Number(c.total_quantity ?? 0);
     }, 0);
-    const maxPosKrw = Math.max(500_000, balance * 0.10);
+    const maxPosKrw = Math.max(500_000, balance * 0.1);
 
     // 1-H. 매수 결정 생성 (점수 비례 포지션 사이징)
     const buyDecisions: TradeDecision[] = [];
     for (const c of qualified) {
-      const sizePct = c.score >= 70 ? 0.40 : c.score >= 55 ? 0.30 : 0.25;
+      const sizePct = c.score >= 70 ? 0.4 : c.score >= 55 ? 0.3 : 0.25;
       const qty = Math.floor((maxPosKrw * sizePct) / c.price.currentPrice);
       if (qty <= 0) continue;
       buyDecisions.push({
@@ -352,11 +410,13 @@ export async function runAfterHoursJob(): Promise<void> {
     for (const d of buyDecisions) _todayBoughtCodes.get(modeKey)!.add(d.stock_code);
 
     // 1-J. 텔레그램 알림
-    const msg = buyDecisions
-      .map((d) => `  • 🧠 ${d.stock_code} x${d.quantity} — ${d.reasoning}`)
-      .join('\n');
+    const msg = buyDecisions.map((d) => `  • 🧠 ${d.stock_code} x${d.quantity} — ${d.reasoning}`).join('\n');
     await sendTelegramMessage(`🧠 스마트장외 매수 ${buyDecisions.length}건\n${msg}`).catch(() => {});
-    await logSystem('INFO', 'AFTER_HOURS', `스마트장외: ${buyDecisions.length}건 (${qualified.map((q) => `${q.code}=${q.score}점`).join(', ')})`);
+    await logSystem(
+      'INFO',
+      'AFTER_HOURS',
+      `스마트장외: ${buyDecisions.length}건 (${qualified.map((q) => `${q.code}=${q.score}점`).join(', ')})`,
+    );
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     logger.error(`시간외 잡 실패: ${msg}`, { component: 'AFTER_HOURS' });

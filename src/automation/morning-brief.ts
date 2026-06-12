@@ -8,20 +8,20 @@
  * 결과는 getMorningBriefContext()로 캐시 제공 → opening-bell-job 워밍업 프롬프트에 주입
  */
 
-import { getMacroSnapshot } from './macro-data.js';
-import { collectMacroNews, collectWatchlistNews, getTodayNews } from './news-collector.js';
-import { callVertexGemini } from '../utils/vertex-gemini.js';
 import { getActiveWatchlist } from '../db/client.js';
 import { logger } from '../utils/logger.js';
+import { callVertexGemini } from '../utils/vertex-gemini.js';
+import { getMacroSnapshot } from './macro-data.js';
+import { collectMacroNews, collectWatchlistNews, getTodayNews } from './news-collector.js';
 
 export interface MorningBriefContext {
-  marketSummary: string;           // "VKOSPI=28 공포, KOSPI선물 -1.2%, 나스닥 -0.8% — 방어적 장세"
+  marketSummary: string; // "VKOSPI=28 공포, KOSPI선물 -1.2%, 나스닥 -0.8% — 방어적 장세"
   riskLevel: 'LOW' | 'NEUTRAL' | 'HIGH' | 'EXTREME'; // 오늘 리스크 수준
   fearGreedIndex: number;
   vkospi: number;
   usdKrw: number;
   stockSentiments: Map<string, number>; // stock_code → -15 ~ +15
-  macroHeadlines: string[];             // 주요 매크로 뉴스 3~5줄
+  macroHeadlines: string[]; // 주요 매크로 뉴스 3~5줄
   collectedAt: number;
 }
 
@@ -51,7 +51,7 @@ export async function runMorningBrief(): Promise<void> {
 
     // 2. 종목별 뉴스 읽기
     const stockNewsMap = getTodayNews();
-    const stockCodes = watchlist.map(w => w.stock_code);
+    const stockCodes = watchlist.map((w) => w.stock_code);
 
     // 3. 리스크 레벨 결정 (Gemini 전 선행 판단)
     const riskLevel = assessRiskLevel(macro.vkospi, macro.fearGreedIndex, macro.kospiChange);
@@ -67,11 +67,11 @@ export async function runMorningBrief(): Promise<void> {
       const { config: appCfg } = await import('../config/index.js');
       if (appCfg.geminiEnabled && (stockNewsMap.size > 0 || macroHeadlines.length > 0)) {
         const stockNewsLines = stockCodes
-          .filter(code => stockNewsMap.has(code))
-          .map(code => {
+          .filter((code) => stockNewsMap.has(code))
+          .map((code) => {
             const items = stockNewsMap.get(code)!.slice(0, 2);
-            const name = watchlist.find(w => w.stock_code === code)?.stock_name ?? code;
-            return `${code}(${name}): ${items.map(i => i.title).join(' | ')}`;
+            const name = watchlist.find((w) => w.stock_code === code)?.stock_name ?? code;
+            return `${code}(${name}): ${items.map((i) => i.title).join(' | ')}`;
           })
           .slice(0, 15); // 최대 15종목
 
@@ -155,11 +155,7 @@ adjustment 기준:
 
 // ── 내부 헬퍼 ───────────────────────────────────────────────────────────────
 
-function assessRiskLevel(
-  vkospi: number,
-  fearGreed: number,
-  kospiChange: number,
-): MorningBriefContext['riskLevel'] {
+function assessRiskLevel(vkospi: number, fearGreed: number, kospiChange: number): MorningBriefContext['riskLevel'] {
   if (vkospi >= 35 || fearGreed < 15 || kospiChange <= -3.0) return 'EXTREME';
   if (vkospi >= 25 || fearGreed < 30 || kospiChange <= -1.5) return 'HIGH';
   if (vkospi >= 18 || fearGreed < 45) return 'NEUTRAL';
@@ -178,8 +174,14 @@ function extractHeadlines(newsText: string, maxCount: number): string[] {
   if (!newsText) return [];
   return newsText
     .split('\n')
-    .filter(line => line.startsWith('- [') || line.startsWith('- '))
-    .map(line => line.replace(/^- \[/, '').replace(/\]\(.+?\)/, '').replace(/^- /, '').trim())
+    .filter((line) => line.startsWith('- [') || line.startsWith('- '))
+    .map((line) =>
+      line
+        .replace(/^- \[/, '')
+        .replace(/\]\(.+?\)/, '')
+        .replace(/^- /, '')
+        .trim(),
+    )
     .filter(Boolean)
     .slice(0, maxCount);
 }

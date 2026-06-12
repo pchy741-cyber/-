@@ -8,21 +8,53 @@
  * 이 파일: analyzeTechnicals + analyzeIntraday + re-exports
  */
 
+export type { EnvelopeResult, OHLCV } from './moving-averages.js';
 // ── Re-exports (기존 import 호환) ──
-export { sma, ema, envelope, vwap } from './moving-averages.js';
-export type { OHLCV, EnvelopeResult } from './moving-averages.js';
-
-export { rsi, macd, bollingerBands, stochastic, williamsR, roc, atr, adx, ttmSqueeze, detectRsiDivergence } from './oscillators.js';
-export type { MACDResult, BollingerResult, StochasticResult, TTMSqueezeResult, RsiDivergence } from './oscillators.js';
-
-export { detectCandlePatterns, calcFibonacciLevels, volumeProfile, detectStructuralPatterns } from './patterns.js';
-export type { CandlePatternResult, FibonacciLevel, FibonacciResult, VolumeLevelResult, StructuralPattern } from './patterns.js';
+export { ema, envelope, sma, vwap } from './moving-averages.js';
+export type { BollingerResult, MACDResult, RsiDivergence, StochasticResult, TTMSqueezeResult } from './oscillators.js';
+export {
+  adx,
+  atr,
+  bollingerBands,
+  detectRsiDivergence,
+  macd,
+  roc,
+  rsi,
+  stochastic,
+  ttmSqueeze,
+  williamsR,
+} from './oscillators.js';
+export type {
+  CandlePatternResult,
+  FibonacciLevel,
+  FibonacciResult,
+  StructuralPattern,
+  VolumeLevelResult,
+} from './patterns.js';
+export { calcFibonacciLevels, detectCandlePatterns, detectStructuralPatterns, volumeProfile } from './patterns.js';
 
 // ── Internal imports for analyzeTechnicals ──
-import type { OHLCV, EnvelopeResult } from './moving-averages.js';
-import { sma, ema, envelope, vwap } from './moving-averages.js';
-import { rsi, macd, bollingerBands, stochastic, williamsR, roc, atr, adx, ttmSqueeze, detectRsiDivergence, type TTMSqueezeResult, type RsiDivergence } from './oscillators.js';
-import { detectCandlePatterns, calcFibonacciLevels, type CandlePatternResult, type FibonacciResult } from './patterns.js';
+import type { EnvelopeResult, OHLCV } from './moving-averages.js';
+import { envelope, sma, vwap } from './moving-averages.js';
+import {
+  adx,
+  atr,
+  bollingerBands,
+  detectRsiDivergence,
+  macd,
+  type RsiDivergence,
+  roc,
+  rsi,
+  stochastic,
+  type TTMSqueezeResult,
+  ttmSqueeze,
+} from './oscillators.js';
+import {
+  type CandlePatternResult,
+  calcFibonacciLevels,
+  detectCandlePatterns,
+  type FibonacciResult,
+} from './patterns.js';
 
 // ── 종합 분석 리포트 ──
 
@@ -63,11 +95,11 @@ export interface TechnicalSummary {
   fibResult: FibonacciResult | null;
   rsiDivergence: RsiDivergence;
   // v4: 카테고리별 점수 (자기학습 피드백용)
-  catTrend: number;       // 추세 카테고리 (-25~+25)
-  catMomentum: number;    // 모멘텀 카테고리 (-25~+25)
-  catVolatility: number;  // 변동성 카테고리 (-25~+25)
-  catVolume: number;      // 거래량 카테고리 (-25~+25)
-  catPositive: number;    // 양수 카테고리 수 (0~4)
+  catTrend: number; // 추세 카테고리 (-25~+25)
+  catMomentum: number; // 모멘텀 카테고리 (-25~+25)
+  catVolatility: number; // 변동성 카테고리 (-25~+25)
+  catVolume: number; // 거래량 카테고리 (-25~+25)
+  catPositive: number; // 양수 카테고리 수 (0~4)
 }
 
 export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
@@ -102,8 +134,11 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   const prevBbWidth = bb.width[bb.width.length - 2] ?? bbWidth;
   const prevSqueeze = prevBbWidth < bbWidthAvg20 * 0.8;
   const bollingerBreakout: TechnicalSummary['bollingerBreakout'] =
-    prevSqueeze && current > (bb.upper[bb.upper.length - 1] ?? current) ? 'UP' :
-    prevSqueeze && current < (bb.lower[bb.lower.length - 1] ?? current) ? 'DOWN' : 'NONE';
+    prevSqueeze && current > (bb.upper[bb.upper.length - 1] ?? current)
+      ? 'UP'
+      : prevSqueeze && current < (bb.lower[bb.lower.length - 1] ?? current)
+        ? 'DOWN'
+        : 'NONE';
 
   let bbPos: TechnicalSummary['bollingerPosition'] = 'MIDDLE';
   if (current > bbUpper) bbPos = 'ABOVE_UPPER';
@@ -164,11 +199,14 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   const vwapNow = vwapValues[vwapValues.length - 1] ?? current;
   const vwapPrev = vwapValues[vwapValues.length - 2] ?? vwapNow;
   const prevClose = closesAsc[closesAsc.length - 2] ?? current;
-  const vwapDiff = (current - vwapNow) / vwapNow * 100;
+  const vwapDiff = ((current - vwapNow) / vwapNow) * 100;
   const vwapPosition: TechnicalSummary['vwapPosition'] = vwapDiff > 1 ? 'ABOVE' : vwapDiff < -1 ? 'BELOW' : 'AT';
   const vwapCross: TechnicalSummary['vwapCross'] =
-    prevClose < vwapPrev && current > vwapNow ? 'JUST_ABOVE' :
-    prevClose > vwapPrev && current < vwapNow ? 'JUST_BELOW' : 'NONE';
+    prevClose < vwapPrev && current > vwapNow
+      ? 'JUST_ABOVE'
+      : prevClose > vwapPrev && current < vwapNow
+        ? 'JUST_BELOW'
+        : 'NONE';
   if (vwapCross === 'JUST_ABOVE') trendScore += 8;
   else if (vwapCross === 'JUST_BELOW') trendScore -= 8;
   else if (vwapPosition === 'ABOVE') trendScore += 4;
@@ -242,9 +280,10 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   const todayVolSurge = vol2dAvg > 0 ? volumes[0] / vol2dAvg : 1;
   let volumeScore = 0;
   if (current > sma5Now) {
-    volumeScore += todayVolSurge >= 2.5 ? 12 : todayVolSurge >= 2.0 ? 9 : todayVolSurge >= 1.5 ? 6 : todayVolSurge >= 1.3 ? 3 : 0;
+    volumeScore +=
+      todayVolSurge >= 2.5 ? 12 : todayVolSurge >= 2.0 ? 9 : todayVolSurge >= 1.5 ? 6 : todayVolSurge >= 1.3 ? 3 : 0;
   }
-  if (volumeRatio < 0.5) volumeScore -= 10;  // 극저거래량 경고
+  if (volumeRatio < 0.5) volumeScore -= 10; // 극저거래량 경고
 
   // VWAP 풀백 (거래량 기반 확인)
   const vwapHistory = vwapValues.slice(-4);
@@ -253,7 +292,10 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   for (let i = 1; i < Math.min(3, vwapHistory.length - 1); i++) {
     const pastClose = closeHistory[closeHistory.length - 1 - i] ?? 0;
     const pastVwap = vwapHistory[vwapHistory.length - 1 - i] ?? 0;
-    if (pastClose > pastVwap * 1.005) { recentVwapBreak = true; break; }
+    if (pastClose > pastVwap * 1.005) {
+      recentVwapBreak = true;
+      break;
+    }
   }
   const nearVwap = Math.abs(vwapDiff) < 0.5;
   const vwapPullback = recentVwapBreak && nearVwap && current > vwapNow * 0.995;
@@ -276,8 +318,8 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   // 다중확인(Multi-Confirmation): 3/4 카테고리 이상 양수여야 매수 신호 유효
   const positiveCats = [trendScore > 0, momentumScore > 0, volatilityScore > 0, volumeScore > 0].filter(Boolean).length;
   const negativeCats = [trendScore < 0, momentumScore < 0, volatilityScore < 0, volumeScore < 0].filter(Boolean).length;
-  if (positiveCats < 3 && score > 0) score = Math.floor(score * 0.5);  // 확인 부족 → 신호 약화
-  if (negativeCats >= 3 && score > -15) score = Math.min(score, -15);   // 3/4 음수 → 최소 SELL
+  if (positiveCats < 3 && score > 0) score = Math.floor(score * 0.5); // 확인 부족 → 신호 약화
+  if (negativeCats >= 3 && score > -15) score = Math.min(score, -15); // 3/4 음수 → 최소 SELL
 
   // 눌림매매 (Pullback Signal) — 카테고리 외 구조 보너스
   const sma10Val = sma(closesAsc, 10);
@@ -287,10 +329,13 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   for (let i = 1; i <= lookback; i++) {
     const pastClose = closesAsc[closesAsc.length - 1 - i] ?? current;
     const pastSma5 = sma5Val[sma5Val.length - 1 - i] ?? sma5Now;
-    if (pastClose < pastSma5) { recentDipBelowMA = true; break; }
+    if (pastClose < pastSma5) {
+      recentDipBelowMA = true;
+      break;
+    }
   }
   const pullbackSignal = recentDipBelowMA && current > sma5Now && current > sma10Now && volumeRatio >= 0.8;
-  if (pullbackSignal && positiveCats >= 3) score += 8;  // 다중확인 통과한 경우만 풀백 보너스
+  if (pullbackSignal && positiveCats >= 3) score += 8; // 다중확인 통과한 경우만 풀백 보너스
 
   score = Math.max(-100, Math.min(100, score));
 
@@ -303,7 +348,13 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
 
   // 가격 위치 정보
   const recent3High = Math.max(candles[0].high, candles[1]?.high ?? 0, candles[2]?.high ?? 0);
-  const recent5Low = Math.min(candles[0].low, candles[1]?.low ?? Infinity, candles[2]?.low ?? Infinity, candles[3]?.low ?? Infinity, candles[4]?.low ?? Infinity);
+  const recent5Low = Math.min(
+    candles[0].low,
+    candles[1]?.low ?? Infinity,
+    candles[2]?.low ?? Infinity,
+    candles[3]?.low ?? Infinity,
+    candles[4]?.low ?? Infinity,
+  );
   const pctFrom3DayHigh = recent3High > 0 ? ((current - recent3High) / recent3High) * 100 : 0;
   const pctFrom5DayLow = recent5Low > 0 && recent5Low < Infinity ? ((current - recent5Low) / recent5Low) * 100 : 0;
 
@@ -376,8 +427,8 @@ export function aggregateToTimeframe(minuteCandles: OHLCV[], minutes: number): O
     result.push({
       date: chunk[0].date,
       open: chunk[0].open,
-      high: Math.max(...chunk.map(c => c.high)),
-      low: Math.min(...chunk.map(c => c.low)),
+      high: Math.max(...chunk.map((c) => c.high)),
+      low: Math.min(...chunk.map((c) => c.low)),
       close: chunk[chunk.length - 1].close,
       volume: chunk.reduce((s, c) => s + c.volume, 0),
     });
@@ -386,23 +437,34 @@ export function aggregateToTimeframe(minuteCandles: OHLCV[], minutes: number): O
 }
 
 export function analyzeIntraday(minuteCandles: OHLCV[]): IntradaySignal {
-  const empty: IntradaySignal = { score: 0, trend: 'NEUTRAL', trend15m: 'NEUTRAL', volumeSurge: false, vwapPosition: 'AT', reason: '데이터부족' };
+  const empty: IntradaySignal = {
+    score: 0,
+    trend: 'NEUTRAL',
+    trend15m: 'NEUTRAL',
+    volumeSurge: false,
+    vwapPosition: 'AT',
+    reason: '데이터부족',
+  };
   if (minuteCandles.length < 10) return empty;
   const asc = [...minuteCandles].reverse();
-  const closes = asc.map(c => c.close);
-  const highs = asc.map(c => c.high);
-  const lows = asc.map(c => c.low);
-  const vols = asc.map(c => c.volume);
+  const closes = asc.map((c) => c.close);
+  const highs = asc.map((c) => c.high);
+  const lows = asc.map((c) => c.low);
+  const vols = asc.map((c) => c.volume);
   let score = 0;
   const tags: string[] = [];
 
   // 1. RSI (분봉)
   const rsiPeriod = Math.min(14, closes.length - 1);
   const rsiNow = rsi(closes, rsiPeriod).pop() ?? 50;
-  if (rsiNow < 30) { score += 12; tags.push(`분봉RSI과매도(${rsiNow.toFixed(0)})`); }
-  else if (rsiNow < 40) score += 6;
-  else if (rsiNow > 70) { score -= 12; tags.push(`분봉RSI과매수(${rsiNow.toFixed(0)})`); }
-  else if (rsiNow > 60) score -= 6;
+  if (rsiNow < 30) {
+    score += 12;
+    tags.push(`분봉RSI과매도(${rsiNow.toFixed(0)})`);
+  } else if (rsiNow < 40) score += 6;
+  else if (rsiNow > 70) {
+    score -= 12;
+    tags.push(`분봉RSI과매수(${rsiNow.toFixed(0)})`);
+  } else if (rsiNow > 60) score -= 6;
 
   // 2. 단기 MACD (5/13/4)
   if (closes.length >= 14) {
@@ -410,32 +472,43 @@ export function analyzeIntraday(minuteCandles: OHLCV[]): IntradaySignal {
     const h = m.histogram;
     const hNow = h[h.length - 1] ?? 0;
     const hPrev = h[h.length - 2] ?? hNow;
-    if (hNow > 0 && hNow > hPrev) { score += 10; tags.push('분봉MACD상승'); }
-    else if (hNow < 0 && hNow < hPrev) score -= 10;
+    if (hNow > 0 && hNow > hPrev) {
+      score += 10;
+      tags.push('분봉MACD상승');
+    } else if (hNow < 0 && hNow < hPrev) score -= 10;
     else if (hNow > 0) score += 4;
     else score -= 4;
   }
 
   // 3. 최근 5봉 가격 추세
   if (closes.length >= 5) {
-    const pct = (closes[closes.length - 1] - closes[closes.length - 5]) / (closes[closes.length - 5] || 1) * 100;
-    if (pct > 0.5) { score += 8; tags.push('단기상승'); }
-    else if (pct > 0.2) score += 4;
-    else if (pct < -0.5) { score -= 8; tags.push('단기하락'); }
-    else if (pct < -0.2) score -= 4;
+    const pct = ((closes[closes.length - 1] - closes[closes.length - 5]) / (closes[closes.length - 5] || 1)) * 100;
+    if (pct > 0.5) {
+      score += 8;
+      tags.push('단기상승');
+    } else if (pct > 0.2) score += 4;
+    else if (pct < -0.5) {
+      score -= 8;
+      tags.push('단기하락');
+    } else if (pct < -0.2) score -= 4;
   }
 
   // 4. 거래량 서지
-  const surgeRatio = vols.length >= 15
-    ? (vols.slice(-5).reduce((a, b) => a + b, 0) / 5) / (vols.slice(-15, -5).reduce((a, b) => a + b, 0) / 10 || 1)
-    : 1;
+  const surgeRatio =
+    vols.length >= 15
+      ? vols.slice(-5).reduce((a, b) => a + b, 0) / 5 / (vols.slice(-15, -5).reduce((a, b) => a + b, 0) / 10 || 1)
+      : 1;
   const volumeSurge = surgeRatio >= 1.5;
-  if (volumeSurge && score > 0) { score += 5; tags.push(`거래량급증(${surgeRatio.toFixed(1)}x)`); }
+  if (volumeSurge && score > 0) {
+    score += 5;
+    tags.push(`거래량급증(${surgeRatio.toFixed(1)}x)`);
+  }
 
   // 5. 분봉 VWAP 위치
   let vwapPosition: IntradaySignal['vwapPosition'] = 'AT';
   if (closes.length >= 20 && vols.length >= 20) {
-    let cumPV = 0, cumVol = 0;
+    let cumPV = 0,
+      cumVol = 0;
     for (let i = 0; i < closes.length; i++) {
       const typical = (highs[i] + lows[i] + closes[i]) / 3;
       cumPV += typical * vols[i];
@@ -446,10 +519,12 @@ export function analyzeIntraday(minuteCandles: OHLCV[]): IntradaySignal {
     const vwapPct = ((curPrice - vwapVal) / vwapVal) * 100;
     if (vwapPct > 0.15) {
       vwapPosition = 'ABOVE';
-      score += 5; tags.push('VWAP상방');
+      score += 5;
+      tags.push('VWAP상방');
     } else if (vwapPct < -0.15) {
       vwapPosition = 'BELOW';
-      score -= 5; tags.push('VWAP하방');
+      score -= 5;
+      tags.push('VWAP하방');
     }
   }
 
@@ -460,29 +535,45 @@ export function analyzeIntraday(minuteCandles: OHLCV[]): IntradaySignal {
     const bbL = bbResult.lower[bbResult.lower.length - 1] ?? 0;
     const bbM = bbResult.middle[bbResult.middle.length - 1] ?? 0;
     const cur = closes[closes.length - 1];
-    if (cur > bbU) { score -= 6; tags.push('분봉BB상단돌파'); }
-    else if (cur < bbL) { score += 6; tags.push('분봉BB하단지지'); }
-    else if (bbM > 0 && cur > bbM + (bbU - bbM) * 0.7) { score -= 3; }
-    else if (bbM > 0 && cur < bbM - (bbM - bbL) * 0.7) { score += 3; }
+    if (cur > bbU) {
+      score -= 6;
+      tags.push('분봉BB상단돌파');
+    } else if (cur < bbL) {
+      score += 6;
+      tags.push('분봉BB하단지지');
+    } else if (bbM > 0 && cur > bbM + (bbU - bbM) * 0.7) {
+      score -= 3;
+    } else if (bbM > 0 && cur < bbM - (bbM - bbL) * 0.7) {
+      score += 3;
+    }
   }
 
   // 7. 15분봉 추세 분석
   let trend15m: IntradaySignal['trend15m'] = 'NEUTRAL';
   const candles15m = aggregateToTimeframe(minuteCandles, 15);
   if (candles15m.length >= 4) {
-    const c15 = candles15m.map(c => c.close);
+    const c15 = candles15m.map((c) => c.close);
     const last4 = c15.slice(-4);
     const upCount = last4.filter((v, i) => i > 0 && v > last4[i - 1]).length;
     const downCount = last4.filter((v, i) => i > 0 && v < last4[i - 1]).length;
     if (upCount >= 2 && downCount === 0) {
-      trend15m = 'UP'; score += 8; tags.push('15m상승추세');
+      trend15m = 'UP';
+      score += 8;
+      tags.push('15m상승추세');
     } else if (downCount >= 2 && upCount === 0) {
-      trend15m = 'DOWN'; score -= 8; tags.push('15m하락추세');
+      trend15m = 'DOWN';
+      score -= 8;
+      tags.push('15m하락추세');
     }
     if (c15.length >= 8) {
       const rsi15 = rsi(c15, Math.min(7, c15.length - 1)).pop() ?? 50;
-      if (rsi15 > 72) { score -= 4; tags.push(`15mRSI과매수(${rsi15.toFixed(0)})`); }
-      else if (rsi15 < 28) { score += 4; tags.push(`15mRSI과매도(${rsi15.toFixed(0)})`); }
+      if (rsi15 > 72) {
+        score -= 4;
+        tags.push(`15mRSI과매수(${rsi15.toFixed(0)})`);
+      } else if (rsi15 < 28) {
+        score += 4;
+        tags.push(`15mRSI과매도(${rsi15.toFixed(0)})`);
+      }
     }
   }
 
@@ -493,8 +584,13 @@ export function analyzeIntraday(minuteCandles: OHLCV[]): IntradaySignal {
       closes[closes.length - 2] > closes[closes.length - 3],
       closes[closes.length - 3] > closes[closes.length - 4],
     ];
-    if (last3Dir.every(Boolean)) { score += 4; tags.push('3연속양봉'); }
-    else if (last3Dir.every(d => !d)) { score -= 4; tags.push('3연속음봉'); }
+    if (last3Dir.every(Boolean)) {
+      score += 4;
+      tags.push('3연속양봉');
+    } else if (last3Dir.every((d) => !d)) {
+      score -= 4;
+      tags.push('3연속음봉');
+    }
   }
 
   score = Math.max(-50, Math.min(50, score));

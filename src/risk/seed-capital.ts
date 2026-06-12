@@ -16,7 +16,6 @@
  *   Live 모드는 별도 캐시(cachedKrLive, cachedOverseasLive) 사용
  */
 
-import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { logger } from '../utils/logger.js';
 
@@ -36,7 +35,10 @@ export async function getSeedCapitalKr(): Promise<number> {
       const { getPaperBalance } = await import('./paper-balance.js');
       const bal = await getPaperBalance();
       const total = bal.totalDeposit + bal.totalEvalAmount;
-      if (total > 0) { cachedKrPaper = total; return cachedKrPaper; }
+      if (total > 0) {
+        cachedKrPaper = total;
+        return cachedKrPaper;
+      }
     } catch {}
     cachedKrPaper = DEFAULT_SEED_KR;
     return cachedKrPaper;
@@ -68,10 +70,7 @@ export async function getSeedCapitalOverseas(): Promise<number> {
   try {
     const { getPool } = await import('../db/client.js');
     const key = 'seed_capital_overseas';
-    const { rows } = await getPool().query(
-      'SELECT value FROM system_state WHERE key = $1',
-      [key],
-    );
+    const { rows } = await getPool().query('SELECT value FROM system_state WHERE key = $1', [key]);
     if (rows[0] && Number(rows[0].value) > 0) {
       cachedOverseasLive = Number(rows[0].value);
       return cachedOverseasLive;
@@ -98,10 +97,7 @@ export async function setSeedCapital(market: 'KR' | 'OVERSEAS', amount: number):
   const { getPool } = await import('../db/client.js');
 
   if (market === 'KR') {
-    await getPool().query(
-      'UPDATE portfolio_allocation_config SET seed_capital = $1 WHERE is_paper = false',
-      [amount],
-    );
+    await getPool().query('UPDATE portfolio_allocation_config SET seed_capital = $1 WHERE is_paper = false', [amount]);
     cachedKrLive = amount;
   } else {
     const key = 'seed_capital_overseas';
@@ -141,15 +137,15 @@ export const WEEKLY_LOSS_PCT_LIVE = 5.0;
 export const WEEKLY_LOSS_PCT_PAPER = 60;
 
 export interface DailyLossLimit {
-  basis: number;       // 총자산 (caller가 전달: 현금+투자 합계)
-  pct: number;         // Live 2.5% / Paper 30%
+  basis: number; // 총자산 (caller가 전달: 현금+투자 합계)
+  pct: number; // Live 2.5% / Paper 30%
   limitAmount: number; // basis × pct%
 }
 
 /** 총자산의 N% = 손실한도. caller가 총자산(현금+투자) 전달. */
 export function calcDailyLossLimit(totalPortfolio: number, isPaper?: boolean): DailyLossLimit {
   const pct = isPaper ? DAILY_LOSS_PCT_PAPER : DAILY_LOSS_PCT_LIVE;
-  const limitAmount = Math.round(totalPortfolio * pct / 100);
+  const limitAmount = Math.round((totalPortfolio * pct) / 100);
   return { basis: totalPortfolio, pct, limitAmount };
 }
 

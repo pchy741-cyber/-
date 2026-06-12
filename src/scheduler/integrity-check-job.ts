@@ -11,10 +11,10 @@
  * 7. 중복 체인 (같은 종목 OPEN 2개 이상)
  */
 
+import { logSystemEvent } from '../api/routes/health.js';
 import { getPool } from '../db/client.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
-import { logSystemEvent } from '../api/routes/health.js';
 
 const COMPONENT = 'INTEGRITY';
 
@@ -41,7 +41,10 @@ export async function runIntegrityCheck(): Promise<void> {
              - COALESCE(SUM(CASE WHEN o.side='SELL' THEN o.filled_quantity ELSE 0 END), 0)
     `);
     for (const r of chainQtyMismatch) {
-      issues.push({ severity: '🔴', message: `수량 불일치: ${r.stock_code} 체인=${r.chain_qty}주 vs 주문합산=${r.order_qty}주 (chain ${r.id.slice(0,8)})` });
+      issues.push({
+        severity: '🔴',
+        message: `수량 불일치: ${r.stock_code} 체인=${r.chain_qty}주 vs 주문합산=${r.order_qty}주 (chain ${r.id.slice(0, 8)})`,
+      });
     }
 
     // 2. 고아 체인 — OPEN인데 FILLED 주문이 0건 (5분 이상 경과한 체인만 — 신규 체인 오탐 방지)
@@ -53,7 +56,10 @@ export async function runIntegrityCheck(): Promise<void> {
         AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.chain_id = tc.id AND o.status = 'FILLED')
     `);
     for (const r of orphanChains) {
-      issues.push({ severity: '🔴', message: `고아 체인: ${r.stock_code} ${r.total_quantity}주 (주문 없음, chain ${r.id.slice(0,8)})` });
+      issues.push({
+        severity: '🔴',
+        message: `고아 체인: ${r.stock_code} ${r.total_quantity}주 (주문 없음, chain ${r.id.slice(0, 8)})`,
+      });
     }
 
     // 3. 고아 주문 — FILLED인데 chain_id 없음 (최근 24시간)
@@ -64,7 +70,13 @@ export async function runIntegrityCheck(): Promise<void> {
         AND created_at >= NOW() - INTERVAL '24 hours'
     `);
     if (orphanOrders.length > 0) {
-      issues.push({ severity: '🟡', message: `고아 주문 ${orphanOrders.length}건 (chain 미연결, 최근 24h): ${orphanOrders.slice(0,3).map(o => `${o.stock_code} ${o.side}`).join(', ')}` });
+      issues.push({
+        severity: '🟡',
+        message: `고아 주문 ${orphanOrders.length}건 (chain 미연결, 최근 24h): ${orphanOrders
+          .slice(0, 3)
+          .map((o) => `${o.stock_code} ${o.side}`)
+          .join(', ')}`,
+      });
     }
 
     // 4. is_paper vs trading_mode 교차 불일치 — 체인은 live인데 주문은 paper (또는 반대)
@@ -77,7 +89,10 @@ export async function runIntegrityCheck(): Promise<void> {
           OR (tc.is_paper = false AND o.trading_mode = 'paper'))
     `);
     for (const r of modeMismatch) {
-      issues.push({ severity: '🔴', message: `모드 불일치: ${r.stock_code} 체인=${r.chain_paper ? 'PAPER' : 'LIVE'} vs 주문=${r.trading_mode} (chain ${r.id.slice(0,8)})` });
+      issues.push({
+        severity: '🔴',
+        message: `모드 불일치: ${r.stock_code} 체인=${r.chain_paper ? 'PAPER' : 'LIVE'} vs 주문=${r.trading_mode} (chain ${r.id.slice(0, 8)})`,
+      });
     }
 
     // 5. 비정상 손익률 — CLOSED 체인 중 ±50% 이상 (최근 7일)
@@ -90,7 +105,10 @@ export async function runIntegrityCheck(): Promise<void> {
         AND ABS(realized_pnl / total_invested * 100) > 50
     `);
     for (const r of abnormalPnl) {
-      issues.push({ severity: '🟡', message: `비정상 손익: ${r.stock_code} ${Number(r.pnl_pct).toFixed(1)}% (투자 ${Number(r.total_invested).toLocaleString()}원)` });
+      issues.push({
+        severity: '🟡',
+        message: `비정상 손익: ${r.stock_code} ${Number(r.pnl_pct).toFixed(1)}% (투자 ${Number(r.total_invested).toLocaleString()}원)`,
+      });
     }
 
     // 6. PENDING 주문 장기 미체결 (2시간+)
@@ -101,7 +119,10 @@ export async function runIntegrityCheck(): Promise<void> {
         AND created_at < NOW() - INTERVAL '2 hours'
     `);
     if (stuckOrders.length > 0) {
-      issues.push({ severity: '🟡', message: `미체결 ${stuckOrders.length}건 (2h+): ${stuckOrders.map(o => `${o.stock_code} ${o.side} ${o.quantity}주`).join(', ')}` });
+      issues.push({
+        severity: '🟡',
+        message: `미체결 ${stuckOrders.length}건 (2h+): ${stuckOrders.map((o) => `${o.stock_code} ${o.side} ${o.quantity}주`).join(', ')}`,
+      });
     }
 
     // 7. 중복 체인 — 같은 종목 + 같은 모드에서 OPEN 2개 이상
@@ -113,7 +134,10 @@ export async function runIntegrityCheck(): Promise<void> {
       HAVING COUNT(*) > 1
     `);
     for (const r of dupChains) {
-      issues.push({ severity: '🔴', message: `중복 체인: ${r.stock_code} (${r.is_paper ? 'PAPER' : 'LIVE'}) ${r.cnt}개 동시 OPEN` });
+      issues.push({
+        severity: '🔴',
+        message: `중복 체인: ${r.stock_code} (${r.is_paper ? 'PAPER' : 'LIVE'}) ${r.cnt}개 동시 OPEN`,
+      });
     }
 
     // ── 결과 보고 ──
@@ -123,23 +147,26 @@ export async function runIntegrityCheck(): Promise<void> {
       return;
     }
 
-    const critical = issues.filter(i => i.severity === '🔴');
-    const warning = issues.filter(i => i.severity === '🟡');
+    const critical = issues.filter((i) => i.severity === '🔴');
+    const warning = issues.filter((i) => i.severity === '🟡');
 
     let msg = `🔍 *데이터 정합성 체크*\n`;
     if (critical.length > 0) {
       msg += `\n*치명적 (${critical.length}건):*\n`;
-      msg += critical.map(i => `${i.severity} ${i.message}`).join('\n');
+      msg += critical.map((i) => `${i.severity} ${i.message}`).join('\n');
     }
     if (warning.length > 0) {
       msg += `\n\n*경고 (${warning.length}건):*\n`;
-      msg += warning.map(i => `${i.severity} ${i.message}`).join('\n');
+      msg += warning.map((i) => `${i.severity} ${i.message}`).join('\n');
     }
 
-    logSystemEvent('정합성', critical.length > 0 ? 'error' : 'running', `${critical.length}건 치명, ${warning.length}건 경고`);
+    logSystemEvent(
+      '정합성',
+      critical.length > 0 ? 'error' : 'running',
+      `${critical.length}건 치명, ${warning.length}건 경고`,
+    );
     await sendTelegramMessage(msg);
     logger.warn(`정합성 체크: ${critical.length}건 치명, ${warning.length}건 경고`, { component: COMPONENT });
-
   } catch (err) {
     logger.error(`정합성 체크 실패: ${err}`, { component: COMPONENT });
   }

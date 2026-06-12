@@ -13,7 +13,7 @@ import { logger } from '../utils/logger.js';
 
 interface BuyIntent {
   stockCode: string;
-  source: string;       // 'TRACK_B' | 'SNIPER' | 'OPENING_BELL' | 'AFTER_HOURS' | 'CASH_PARKING' | 'EOD_BLUECHIP'
+  source: string; // 'TRACK_B' | 'SNIPER' | 'OPENING_BELL' | 'AFTER_HOURS' | 'CASH_PARKING' | 'EOD_BLUECHIP'
   registeredAt: number; // Date.now()
 }
 

@@ -1,4 +1,3 @@
-import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { getPool, logSystem } from '../db/client.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
@@ -14,8 +13,8 @@ import { logger } from '../utils/logger.js';
  * 실행: 평일 18:10
  */
 export async function checkDinnerMoneyWithdraw(): Promise<void> {
-  const MIN_PROFIT = 100_000;  // 10만원 이상일 때만 실행
-  const RATIO = 0.10;          // 10% 이관
+  const MIN_PROFIT = 100_000; // 10만원 이상일 때만 실행
+  const RATIO = 0.1; // 10% 이관
 
   try {
     const pool = getPool();
@@ -33,14 +32,17 @@ export async function checkDinnerMoneyWithdraw(): Promise<void> {
     }
 
     // 오늘 실현손익 (국내 KRW 기준)
-    const { rows: pnlRows } = await pool.query(`
+    const { rows: pnlRows } = await pool.query(
+      `
       SELECT COALESCE(SUM(realized_pnl), 0)::numeric AS today_pnl
       FROM transaction_chains
       WHERE status = 'CLOSED'
         AND stock_code ~ '^[0-9]{6}$'
         AND closed_at AT TIME ZONE 'Asia/Seoul' >= date_trunc('day', NOW() AT TIME ZONE 'Asia/Seoul')
         AND is_paper = $1
-    `, [getCtxIsPaper()]);
+    `,
+      [getCtxIsPaper()],
+    );
     const todayPnl = Number(pnlRows[0]?.today_pnl ?? 0);
 
     if (todayPnl < MIN_PROFIT) {
@@ -55,7 +57,11 @@ export async function checkDinnerMoneyWithdraw(): Promise<void> {
     await pool.query(
       `INSERT INTO profit_withdrawals (amount, profit_pct_at_trigger, total_value_at_trigger, status, memo)
        VALUES ($1, 0, $2, 'reserved', $3)`,
-      [amount, todayPnl, `dinner_money: 오늘수익 ${todayPnl.toLocaleString()}원 × 10% = ${amount.toLocaleString()}원 내계좌 이관`],
+      [
+        amount,
+        todayPnl,
+        `dinner_money: 오늘수익 ${todayPnl.toLocaleString()}원 × 10% = ${amount.toLocaleString()}원 내계좌 이관`,
+      ],
     );
 
     await logSystem(
@@ -66,9 +72,9 @@ export async function checkDinnerMoneyWithdraw(): Promise<void> {
 
     await sendTelegramMessage(
       `🍚 *용돈 이관 완료*\n\n` +
-      `오늘 수익: ${todayPnl.toLocaleString()}원\n` +
-      `이관 금액: *${amount.toLocaleString()}원* (10%)\n\n` +
-      `증권사 앱에서 출금 가능합니다 💰`,
+        `오늘 수익: ${todayPnl.toLocaleString()}원\n` +
+        `이관 금액: *${amount.toLocaleString()}원* (10%)\n\n` +
+        `증권사 앱에서 출금 가능합니다 💰`,
     ).catch(() => {});
 
     logger.info(`✅ 용돈 적립: ${amount.toLocaleString()}원 (오늘수익 ${todayPnl.toLocaleString()}원)`, {

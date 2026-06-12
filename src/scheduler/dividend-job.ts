@@ -6,10 +6,11 @@
  * 기능 플래그: dividend_investing (OFF by default)
  * 스케줄: 16:00 KST 매일 (장 마감 후)
  */
-import { getPool } from '../db/client.js';
+
 import { getCtxIsPaper } from '../config/context.js';
-import { logger } from '../utils/logger.js';
+import { getPool } from '../db/client.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
+import { logger } from '../utils/logger.js';
 import { setOverseasState } from './overseas/utils.js';
 
 const COMP = 'DIVIDEND';
@@ -17,11 +18,11 @@ const COMP = 'DIVIDEND';
 async function isDividendEnabled(): Promise<boolean> {
   if (getCtxIsPaper()) return true; // Paper: 항상 실행 (트랙레코드 축적)
   try {
-    const { rows } = await getPool().query(
-      "SELECT enabled FROM feature_flags WHERE key = 'dividend_investing'",
-    );
+    const { rows } = await getPool().query("SELECT enabled FROM feature_flags WHERE key = 'dividend_investing'");
     return rows[0]?.enabled === true;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 export async function runDividendJob(): Promise<void> {
@@ -89,7 +90,9 @@ async function monitorExDates(): Promise<void> {
             );
           }
         }
-      } catch { /* 개별 종목 실패 시 스킵 */ }
+      } catch {
+        /* 개별 종목 실패 시 스킵 */
+      }
     }
     if (alerts.length > 0) {
       await sendTelegramMessage(`💰 *배석일 경보*\n${alerts.join('\n')}`);
@@ -104,7 +107,8 @@ async function monitorExDates(): Promise<void> {
 async function updateHoldingDividendTotals(): Promise<void> {
   const isPaper = getCtxIsPaper();
   try {
-    await getPool().query(`
+    await getPool().query(
+      `
       UPDATE dividend_holdings dh
       SET total_dividends_received = sub.total
       FROM (
@@ -114,7 +118,9 @@ async function updateHoldingDividendTotals(): Promise<void> {
       WHERE dh.stock_code = sub.stock_code
         AND dh.exchange = sub.exchange
         AND dh.is_paper = $1
-    `, [isPaper]);
+    `,
+      [isPaper],
+    );
   } catch (e: any) {
     logger.warn(`배당 누적 업데이트 실패: ${e.message}`, { component: COMP });
   }
@@ -132,7 +138,7 @@ async function simulateDRIP(): Promise<void> {
        FROM dividend_holdings dh
        LEFT JOIN dividend_watchlist dw ON dh.stock_code = dw.stock_code AND dh.exchange = dw.exchange
        WHERE dh.is_paper = $1 AND dh.quantity > 0 AND COALESCE(dw.dividend_yield, 0) > 0`,
-      [isPaper]
+      [isPaper],
     );
     if (holdings.length === 0) return;
 
@@ -142,16 +148,23 @@ async function simulateDRIP(): Promise<void> {
       const price = Number(h.avg_price);
       const yieldPct = Number(h.dividend_yield) / 100;
       // 월 배당 (세후 15.4%)
-      const monthlyDiv = qty * price * yieldPct * 0.846 / 12;
+      const monthlyDiv = (qty * price * yieldPct * 0.846) / 12;
       if (monthlyDiv < 0.01) continue;
 
       // 배당금 지급 기록
       await getPool().query(
         `INSERT INTO dividend_history (stock_code, exchange, quantity, dividend_per_share, gross_amount_usd, tax_amount_usd, net_amount_usd, pay_date)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [h.stock_code, h.exchange, qty, +(yieldPct * price / 12).toFixed(4),
-         +(monthlyDiv / 0.846).toFixed(2), +(monthlyDiv / 0.846 * 0.154).toFixed(2), +monthlyDiv.toFixed(2),
-         today.toISOString().slice(0, 10)]
+        [
+          h.stock_code,
+          h.exchange,
+          qty,
+          +((yieldPct * price) / 12).toFixed(4),
+          +(monthlyDiv / 0.846).toFixed(2),
+          +((monthlyDiv / 0.846) * 0.154).toFixed(2),
+          +monthlyDiv.toFixed(2),
+          today.toISOString().slice(0, 10),
+        ],
       );
 
       // DRIP: 배당금으로 재매수 (live: 실제 KIS 주문)
@@ -160,7 +173,12 @@ async function simulateDRIP(): Promise<void> {
         if (!isPaper) {
           try {
             const { placeOverseasOrder } = await import('../kis/overseas.js');
-            await placeOverseasOrder({ stockCode: h.stock_code, exchange: h.exchange, side: 'BUY', quantity: newShares });
+            await placeOverseasOrder({
+              stockCode: h.stock_code,
+              exchange: h.exchange,
+              side: 'BUY',
+              quantity: newShares,
+            });
           } catch (e: any) {
             logger.warn(`[DRIP] ${h.stock_code} 실주문 실패: ${e.message}`, { component: COMP });
           }
@@ -168,14 +186,14 @@ async function simulateDRIP(): Promise<void> {
         await getPool().query(
           `UPDATE dividend_holdings SET quantity = quantity + $1, total_dividends_received = total_dividends_received + $2
            WHERE stock_code = $3 AND exchange = $4 AND is_paper = $5`,
-          [newShares, +monthlyDiv.toFixed(2), h.stock_code, h.exchange, isPaper]
+          [newShares, +monthlyDiv.toFixed(2), h.stock_code, h.exchange, isPaper],
         );
         totalDrip += newShares;
       } else {
         await getPool().query(
           `UPDATE dividend_holdings SET total_dividends_received = total_dividends_received + $1
            WHERE stock_code = $2 AND exchange = $3 AND is_paper = $4`,
-          [+monthlyDiv.toFixed(2), h.stock_code, h.exchange, isPaper]
+          [+monthlyDiv.toFixed(2), h.stock_code, h.exchange, isPaper],
         );
       }
     }
@@ -223,14 +241,14 @@ async function tuneDividendAllocation(): Promise<void> {
 
     // 종목별 성과 점수: 배당수익률 + 배당금 누적 기여도
     const scores: Record<string, number> = {};
-    let totalValue = 0;
+    let _totalValue = 0;
     for (const h of holdings) {
       const value = Number(h.quantity) * Number(h.avg_price);
       const divYield = Number(h.dividend_yield ?? 0);
       const divReceived = Number(h.total_dividends_received ?? 0);
       const divContribution = value > 0 ? (divReceived / value) * 100 : 0;
       scores[h.stock_code] = divYield + divContribution; // 배당수익률 + 배당금 기여율
-      totalValue += value;
+      _totalValue += value;
     }
 
     // 점수 → 비중 (정규화, 최소 5% 최대 40%)
@@ -240,7 +258,7 @@ async function tuneDividendAllocation(): Promise<void> {
     const weights: Record<string, number> = {};
     for (const [code, score] of Object.entries(scores)) {
       const raw = score / totalScore;
-      weights[code] = Math.min(0.40, Math.max(0.05, raw));
+      weights[code] = Math.min(0.4, Math.max(0.05, raw));
     }
     // 재정규화 (합계 = 1)
     const sum = Object.values(weights).reduce((s, v) => s + v, 0);
@@ -248,12 +266,20 @@ async function tuneDividendAllocation(): Promise<void> {
       weights[code] = +(weights[code] / sum).toFixed(3);
     }
 
-    await setOverseasState(key, JSON.stringify({
-      weights,
-      updatedAt: new Date().toISOString(),
-      holdingsCount: holdings.length,
-    }));
-    logger.info(`[배당 튜닝] 비중 조정: ${Object.entries(weights).map(([k, v]) => `${k}=${(v * 100).toFixed(0)}%`).join(' ')}`, { component: COMP });
+    await setOverseasState(
+      key,
+      JSON.stringify({
+        weights,
+        updatedAt: new Date().toISOString(),
+        holdingsCount: holdings.length,
+      }),
+    );
+    logger.info(
+      `[배당 튜닝] 비중 조정: ${Object.entries(weights)
+        .map(([k, v]) => `${k}=${(v * 100).toFixed(0)}%`)
+        .join(' ')}`,
+      { component: COMP },
+    );
   } catch (e: any) {
     logger.warn(`배당 배분 튜닝 실패: ${e.message}`, { component: COMP });
   }

@@ -26,7 +26,9 @@ export function initTelegram(): void {
   // /status 명령어 — 시스템 상태 확인 (🔒 인증 필수)
   bot.command('status', async (ctx) => {
     if (!isAuthorized(ctx)) {
-      logger.warn(`🚨 Telegram /status 미인증 시도: userId=${ctx.from?.id}, chatId=${ctx.chat?.id}`, { component: 'TELEGRAM' });
+      logger.warn(`🚨 Telegram /status 미인증 시도: userId=${ctx.from?.id}, chatId=${ctx.chat?.id}`, {
+        component: 'TELEGRAM',
+      });
       return; // 무응답 (봇 존재 자체를 숨김)
     }
     try {
@@ -74,14 +76,16 @@ export function initTelegram(): void {
       logger.warn(`Telegram /resume 미인증 시도: userId=${ctx.from?.id}`, { component: 'TELEGRAM' });
       return;
     }
-    await deactivateKillSwitchAll(true);  // CEO 수동 명령 → 강제 해제
+    await deactivateKillSwitchAll(true); // CEO 수동 명령 → 강제 해제
     await ctx.reply('✅ Kill Switch 강제 해제 — 국내+해외 매매 재개');
   });
 
   // /positions 명령어 — 보유 종목 상세 (🔒 인증 필수)
   bot.command('positions', async (ctx) => {
     if (!isAuthorized(ctx)) {
-      logger.warn(`🚨 Telegram /positions 미인증 시도: userId=${ctx.from?.id}, chatId=${ctx.chat?.id}`, { component: 'TELEGRAM' });
+      logger.warn(`🚨 Telegram /positions 미인증 시도: userId=${ctx.from?.id}, chatId=${ctx.chat?.id}`, {
+        component: 'TELEGRAM',
+      });
       return;
     }
     try {
@@ -102,12 +106,15 @@ export function initTelegram(): void {
     }
   });
 
-  bot.launch().then(() => {
-    logger.info('📱 Telegram 봇 시작', { component: 'TELEGRAM' });
-  }).catch((err) => {
-    logger.error(`Telegram 봇 시작 실패: ${err}`, { component: 'TELEGRAM' });
-    bot = null;
-  });
+  bot
+    .launch()
+    .then(() => {
+      logger.info('📱 Telegram 봇 시작', { component: 'TELEGRAM' });
+    })
+    .catch((err) => {
+      logger.error(`Telegram 봇 시작 실패: ${err}`, { component: 'TELEGRAM' });
+      bot = null;
+    });
 
   // Graceful shutdown
   process.once('SIGINT', () => bot?.stop('SIGINT'));

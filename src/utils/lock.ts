@@ -6,8 +6,8 @@
  * - 수동 매도 + AI 매도가 동시에 들어올 수 있음
  */
 
-import { logger } from './logger.js';
 import { getCtxIsPaper } from '../config/context.js';
+import { logger } from './logger.js';
 
 const locks = new Map<string, { lockedAt: Date; owner: string }>();
 const LOCK_TIMEOUT_MS = 120_000; // 2분 초과하면 자동 해제 (체결 확인 최대 60초 + 여유분)
@@ -28,7 +28,10 @@ export async function acquireLock(stockCode: string, owner: string): Promise<(()
 
     // 타임아웃 초과 → 강제 해제
     if (elapsed > LOCK_TIMEOUT_MS) {
-      logger.warn(`🔓 종목 락 타임아웃 강제 해제: ${lockKey} (owner: ${existing.owner}, ${Math.round(elapsed / 1000)}초)`, { component: 'LOCK' });
+      logger.warn(
+        `🔓 종목 락 타임아웃 강제 해제: ${lockKey} (owner: ${existing.owner}, ${Math.round(elapsed / 1000)}초)`,
+        { component: 'LOCK' },
+      );
       locks.delete(lockKey);
     } else {
       // 락 획득 실패
@@ -77,7 +80,9 @@ export function acquirePipelineLock(name: string): boolean {
       return false;
     }
     // 타임아웃 초과 → 강제 해제
-    logger.warn(`🔓 파이프라인 락 타임아웃 강제 해제: ${name} (${Math.round(elapsed / 60000)}분)`, { component: 'LOCK' });
+    logger.warn(`🔓 파이프라인 락 타임아웃 강제 해제: ${name} (${Math.round(elapsed / 60000)}분)`, {
+      component: 'LOCK',
+    });
     pipelineLocks.delete(name);
   }
   pipelineLocks.set(name, Date.now());

@@ -1,18 +1,18 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import { getLastAutoPilotResult } from '../../ai/auto-pilot.js';
+import { cacheGet, cachePriceMemory, getCachedPriceMemory } from '../../cache/memory.js';
 import { config } from '../../config/index.js';
-import { resolveRequestMode } from '../guards/live-pin.js';
 import { getActiveStrategy, getOpenChains, getPool } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { getCurrentPrice, isMarketOpen } from '../../kis/market.js';
-import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
 import { getPaperBalance } from '../../risk/engine.js';
+import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
 import { getLoopStatus } from '../../scheduler/loop-mode.js';
-import { cacheGet, getCachedPriceMemory, cachePriceMemory } from '../../cache/memory.js';
-import { getCopilotLiteScore } from './review/copilot-lite.js';
-import { getLastAutoPilotResult } from '../../ai/auto-pilot.js';
-import { getRecentEvents } from './health.js';
 import { logger } from '../../utils/logger.js';
+import { resolveRequestMode } from '../guards/live-pin.js';
+import { getRecentEvents } from './health.js';
+import { getCopilotLiteScore } from './review/copilot-lite.js';
 
 // ── 보유종목 가격 티커 (10초 간격, 추가 비용 $0) ──
 // 전역 dedup: 여러 SSE 연결이 동시에 있어도 10초에 1회만 호출
@@ -26,22 +26,21 @@ async function refreshHeldPrices(chains: Array<{ stock_code: string }>): Promise
   _lastPriceRefreshAt = now;
 
   // 국내 보유종목만 (6자리 숫자 코드)
-  const krCodes = chains
-    .map(ch => ch.stock_code)
-    .filter(code => /^\d{6}$/.test(code));
+  const krCodes = chains.map((ch) => ch.stock_code).filter((code) => /^\d{6}$/.test(code));
   if (krCodes.length === 0) return;
 
   // 캐시 stale인 종목만 갱신 (이미 fresh면 skip)
-  const staleCodes = krCodes.filter(code => getCachedPriceMemory(code) == null);
+  const staleCodes = krCodes.filter((code) => getCachedPriceMemory(code) == null);
   if (staleCodes.length === 0) return;
 
   const results = await Promise.allSettled(
-    staleCodes.map(code =>
-      getCurrentPrice(code)
-        .then(p => { if (p.currentPrice > 0) cachePriceMemory(code, p.currentPrice); })
+    staleCodes.map((code) =>
+      getCurrentPrice(code).then((p) => {
+        if (p.currentPrice > 0) cachePriceMemory(code, p.currentPrice);
+      }),
     ),
   );
-  const ok = results.filter(r => r.status === 'fulfilled').length;
+  const ok = results.filter((r) => r.status === 'fulfilled').length;
   if (ok > 0) {
     logger.info(`[PRICE_TICKER] 보유종목 시세 갱신: ${ok}/${staleCodes.length}종목`, { component: 'SSE' });
   }
@@ -67,11 +66,10 @@ export const sseRoutes = new Hono();
 
 // 오늘 매매 통계 (KST 기준 — 클라이언트 TZ 의존 제거)
 export async function getTodayTradeStats(isPaper?: boolean) {
-  const tradingMode = isPaper !== undefined
-    ? (isPaper ? 'paper' : 'live')
-    : config.tradingMode;
+  const tradingMode = isPaper !== undefined ? (isPaper ? 'paper' : 'live') : config.tradingMode;
   try {
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT
         COUNT(*) AS total,
         COUNT(*) FILTER (WHERE o.side = 'SELL' AND o.stock_code ~ '^[0-9]{6}$') AS kr_sells,
@@ -93,7 +91,9 @@ export async function getTodayTradeStats(isPaper?: boolean) {
       WHERE o.status = 'FILLED'
         AND o.trading_mode = $1
         AND (o.created_at AT TIME ZONE 'Asia/Seoul')::DATE = (NOW() AT TIME ZONE 'Asia/Seoul')::DATE
-    `, [tradingMode]);
+    `,
+      [tradingMode],
+    );
     const r = rows[0] ?? {};
     const result = {
       totalTrades: Number(r.total ?? 0),
@@ -103,7 +103,10 @@ export async function getTodayTradeStats(isPaper?: boolean) {
       usRealizedPnlUsd: Math.round(Number(r.us_realized_pnl_usd ?? 0) * 100) / 100,
     };
     if (result.totalTrades > 0) {
-      logger.info(`todayStats: mode=${tradingMode} total=${result.totalTrades} krPnl=${result.krRealizedPnl} usPnl=$${result.usRealizedPnlUsd}`, { component: 'SSE' });
+      logger.info(
+        `todayStats: mode=${tradingMode} total=${result.totalTrades} krPnl=${result.krRealizedPnl} usPnl=$${result.usRealizedPnlUsd}`,
+        { component: 'SSE' },
+      );
     }
     return result;
   } catch (err) {
@@ -114,9 +117,7 @@ export async function getTodayTradeStats(isPaper?: boolean) {
 
 // 최신 체결 거래 가져오기 (SSE 페이로드용 — 최근 10건)
 async function getRecentTrades(isPaper?: boolean) {
-  const tradingMode = isPaper !== undefined
-    ? (isPaper ? 'paper' : 'live')
-    : config.tradingMode;
+  const tradingMode = isPaper !== undefined ? (isPaper ? 'paper' : 'live') : config.tradingMode;
   try {
     const { rows } = await getPool().query(
       `SELECT o.id, o.stock_code, o.side, o.status,
@@ -165,8 +166,8 @@ sseRoutes.get('/stream', (c) => {
     let cachedChains: any[] = [];
     let cachedTotalPortfolio = 0;
 
-    const PRICE_INTERVAL = 3_000;   // 장중 가격 틱
-    const META_INTERVAL = 30_000;   // 장중 메타 틱
+    const PRICE_INTERVAL = 3_000; // 장중 가격 틱
+    const META_INTERVAL = 30_000; // 장중 메타 틱
     const CLOSED_INTERVAL = 120_000; // 장외
 
     while (true) {
@@ -186,7 +187,13 @@ sseRoutes.get('/stream', (c) => {
             getRecentTrades(viewIsPaper),
             getActiveStrategy().catch(() => null),
             getCopilotLiteScore(viewIsPaper).catch(() => ({ score: 0, issues: [] })),
-            getTodayTradeStats(viewIsPaper).catch(() => ({ totalTrades: 0, krSellCount: 0, krRealizedPnl: 0, usSellCount: 0, usRealizedPnlUsd: 0 })),
+            getTodayTradeStats(viewIsPaper).catch(() => ({
+              totalTrades: 0,
+              krSellCount: 0,
+              krRealizedPnl: 0,
+              usSellCount: 0,
+              usRealizedPnlUsd: 0,
+            })),
           ]);
 
           // 캐시 갱신 (가격 틱에서 재사용)
@@ -197,10 +204,20 @@ sseRoutes.get('/stream', (c) => {
           const holdingsLiveKey = `overseas:holdings:${viewIsPaper ? 'paper' : 'live'}`;
           const overseasHoldings = cacheGet<any[]>(holdingsLiveKey);
           const overseasHoldingCount = overseasHoldings?.length ?? 0;
-          let overseasSummary: { cashUsd: number; cashKrw: number; seedKrw: number; evalUsd: number; totalUsd: number; holdings: { code: string; qty: number; pnlPct: number }[] } | null = null;
+          let overseasSummary: {
+            cashUsd: number;
+            cashKrw: number;
+            seedKrw: number;
+            evalUsd: number;
+            totalUsd: number;
+            holdings: { code: string; qty: number; pnlPct: number }[];
+          } | null = null;
           try {
             const p = getPool();
-            const holdRes = await p.query("SELECT stock_code, quantity, avg_price, last_price FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1", [viewIsPaper]);
+            const holdRes = await p.query(
+              'SELECT stock_code, quantity, avg_price, last_price FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1',
+              [viewIsPaper],
+            );
             let cashUsd = 0;
             let cashKrw = 0;
             let seedKrw = 0;
@@ -225,10 +242,12 @@ sseRoutes.get('/stream', (c) => {
               const avg = Number(h.avg_price ?? 0);
               const last = Number(h.last_price ?? avg);
               evalUsd += last * qty;
-              return { code: h.stock_code, qty, pnlPct: avg > 0 ? ((last - avg) / avg * 100) : 0 };
+              return { code: h.stock_code, qty, pnlPct: avg > 0 ? ((last - avg) / avg) * 100 : 0 };
             });
             overseasSummary = { cashUsd, cashKrw, seedKrw, evalUsd, totalUsd: cashUsd + evalUsd, holdings };
-          } catch { /* 해외 데이터 조회 실패 시 null 유지 */ }
+          } catch {
+            /* 해외 데이터 조회 실패 시 null 유지 */
+          }
 
           // 보유종목 가격 갱신
           await refreshHeldPrices(chains).catch(() => {});
@@ -253,11 +272,54 @@ sseRoutes.get('/stream', (c) => {
             activeChains: chains.length,
             marketOpen: isMarketOpen(),
             recentTrades,
-            strategy: strategy ? { mode: strategy.mode, buy_threshold: strategy.buy_threshold, take_profit_pct: strategy.take_profit_pct, stop_loss_pct: strategy.stop_loss_pct } : null,
+            strategy: strategy
+              ? {
+                  mode: strategy.mode,
+                  buy_threshold: strategy.buy_threshold,
+                  take_profit_pct: strategy.take_profit_pct,
+                  stop_loss_pct: strategy.stop_loss_pct,
+                }
+              : null,
             healthScore: healthLite.score,
             healthIssues: healthLite.issues,
-            loopMode: (() => { try { const ls = getLoopStatus(); return { active: ls.active, phase: ls.phase, totalRuns: ls.totalRuns, lastRunAt: ls.lastRunAt, lastRunResult: ls.lastRunResult, startedAt: ls.startedAt, adaptiveIntervalMs: ls.adaptiveIntervalMs, consecutiveErrors: ls.consecutiveErrors, marketPhase: ls.marketPhase, openMarkets: ls.openMarkets, anyMarketOpen: ls.anyMarketOpen, brief: ls.sessionBrief ? { regime: ls.sessionBrief.marketRegime, risk: ls.sessionBrief.riskLevel, narrative: ls.sessionBrief.narrative } : null }; } catch { return null; } })(),
-            autoPilot: (() => { try { const ap = getLastAutoPilotResult(); const r = viewIsPaper ? ap.paper : ap.live; return r ? { overridesSet: r.overridesSet, decisions: r.decisions.slice(0, 5), lastRunAt: ap.lastRunAt } : null; } catch { return null; } })(),
+            loopMode: (() => {
+              try {
+                const ls = getLoopStatus();
+                return {
+                  active: ls.active,
+                  phase: ls.phase,
+                  totalRuns: ls.totalRuns,
+                  lastRunAt: ls.lastRunAt,
+                  lastRunResult: ls.lastRunResult,
+                  startedAt: ls.startedAt,
+                  adaptiveIntervalMs: ls.adaptiveIntervalMs,
+                  consecutiveErrors: ls.consecutiveErrors,
+                  marketPhase: ls.marketPhase,
+                  openMarkets: ls.openMarkets,
+                  anyMarketOpen: ls.anyMarketOpen,
+                  brief: ls.sessionBrief
+                    ? {
+                        regime: ls.sessionBrief.marketRegime,
+                        risk: ls.sessionBrief.riskLevel,
+                        narrative: ls.sessionBrief.narrative,
+                      }
+                    : null,
+                };
+              } catch {
+                return null;
+              }
+            })(),
+            autoPilot: (() => {
+              try {
+                const ap = getLastAutoPilotResult();
+                const r = viewIsPaper ? ap.paper : ap.live;
+                return r
+                  ? { overridesSet: r.overridesSet, decisions: r.decisions.slice(0, 5), lastRunAt: ap.lastRunAt }
+                  : null;
+              } catch {
+                return null;
+              }
+            })(),
             recentEvents: getRecentEvents(10),
             todayStats,
           };

@@ -1,5 +1,5 @@
-import { getBatchPrices, getChangeRankingStocks, getDailyChart, getVolumeRankingStocks } from '../kis/market.js';
 import { rsi } from '../analysis/indicators.js';
+import { getBatchPrices, getChangeRankingStocks, getDailyChart, getVolumeRankingStocks } from '../kis/market.js';
 import { logger } from '../utils/logger.js';
 
 export interface BottomFishingCandidate {
@@ -13,10 +13,10 @@ export interface BottomFishingCandidate {
 
 /** 하락장 공격성 옵션 — CRASH/PANIC 시 필터 완화 */
 export interface CrashAggressiveOptions {
-  minMarketCapEok?: number;   // 기본 500 → 하락장 300
-  minChangePct?: number;      // 기본 -1.5 → 하락장 -1.0
-  maxRsi?: number;            // 기본 45 → 하락장 50
-  maxResults?: number;        // 기본 4 → 하락장 6
+  minMarketCapEok?: number; // 기본 500 → 하락장 300
+  minChangePct?: number; // 기본 -1.5 → 하락장 -1.0
+  maxRsi?: number; // 기본 45 → 하락장 50
+  maxResults?: number; // 기본 4 → 하락장 6
 }
 
 /**
@@ -29,7 +29,9 @@ export interface CrashAggressiveOptions {
  *
  * crashOptions: CRASH/PANIC 시 필터 완화 (더 많은 후보, 더 넓은 RSI)
  */
-export async function runBottomFishingScanner(crashOptions?: CrashAggressiveOptions): Promise<BottomFishingCandidate[]> {
+export async function runBottomFishingScanner(
+  crashOptions?: CrashAggressiveOptions,
+): Promise<BottomFishingCandidate[]> {
   const minCap = crashOptions?.minMarketCapEok ?? 500;
   const minChange = crashOptions?.minChangePct ?? -1.5;
   const maxRsi = crashOptions?.maxRsi ?? 45;
@@ -49,7 +51,10 @@ export async function runBottomFishingScanner(crashOptions?: CrashAggressiveOpti
   }
 
   const allCodes = [...codeMap.keys()];
-  logger.info(`🎣 바닥낚시 스캐너: ${allCodes.length}종목 수집 (KOSPI ${volJ.length}+${chgJ.length}, KOSDAQ ${volQ.length}+${chgQ.length})`, { component: 'BOTTOM_FISHING' });
+  logger.info(
+    `🎣 바닥낚시 스캐너: ${allCodes.length}종목 수집 (KOSPI ${volJ.length}+${chgJ.length}, KOSDAQ ${volQ.length}+${chgQ.length})`,
+    { component: 'BOTTOM_FISHING' },
+  );
 
   if (allCodes.length === 0) return [];
 
@@ -60,7 +65,9 @@ export async function runBottomFishingScanner(crashOptions?: CrashAggressiveOpti
     return p && p.marketCapEok >= minCap && p.changePct <= minChange;
   });
 
-  logger.info(`🎣 바닥낚시 가격 필터: ${priceFiltered.length}종목 (시총 ${minCap}억↑, 당일 ${minChange}%↓)`, { component: 'BOTTOM_FISHING' });
+  logger.info(`🎣 바닥낚시 가격 필터: ${priceFiltered.length}종목 (시총 ${minCap}억↑, 당일 ${minChange}%↓)`, {
+    component: 'BOTTOM_FISHING',
+  });
 
   if (priceFiltered.length === 0) return [];
 
@@ -86,7 +93,7 @@ export async function runBottomFishingScanner(crashOptions?: CrashAggressiveOpti
         changePct: p.changePct,
         rsi14,
         marketCapEok: p.marketCapEok,
-        score: (40 - rsi14) + Math.abs(p.changePct),
+        score: 40 - rsi14 + Math.abs(p.changePct),
       });
     } catch {
       // 차트 조회 실패 → 스킵

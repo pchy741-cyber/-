@@ -2,13 +2,13 @@
  * 매매 기록, 승률 분석, 시장 소스, 용돈 이관 라우트
  */
 import { Hono } from 'hono';
+import { getDinnerMoneyStats } from '../../../automation/profit-withdraw.js';
 import { KR_FEE } from '../../../config/constants.js';
 import { getPool } from '../../../db/client.js';
-import { getBatchPrices, type CurrentPrice } from '../../../kis/market.js';
-import { getDinnerMoneyStats } from '../../../automation/profit-withdraw.js';
-import { isInvalidStockName, getKnownStockName } from './helpers.js';
-import { getTodayTradeStats } from '../sse.js';
+import { type CurrentPrice, getBatchPrices } from '../../../kis/market.js';
 import { resolveRequestMode } from '../../guards/live-pin.js';
+import { getTodayTradeStats } from '../sse.js';
+import { getKnownStockName, isInvalidStockName } from './helpers.js';
 
 export const tradeRoutes = new Hono();
 
@@ -85,7 +85,10 @@ tradeRoutes.get('/trades', async (c) => {
 
         h.qty -= matchedQty;
         h.totalCost -= costBasis;
-        if (h.qty <= 0) { h.qty = 0; h.totalCost = 0; }
+        if (h.qty <= 0) {
+          h.qty = 0;
+          h.totalCost = 0;
+        }
         holdings.set(code, h);
       }
     };
@@ -142,11 +145,13 @@ tradeRoutes.get('/trades', async (c) => {
       return { ...r, realized_pnl: null, realized_pnl_pct: null, realized_pnl_usd: null };
     });
 
-    const unresolvedDomestic = [...new Set(
-      rowsWithPnl
-        .filter((r: any) => /^[0-9]{6}$/.test(String(r.stock_code)) && isInvalidStockName(r.stock_name, r.stock_code))
-        .map((r: any) => String(r.stock_code))
-    )];
+    const unresolvedDomestic = [
+      ...new Set(
+        rowsWithPnl
+          .filter((r: any) => /^[0-9]{6}$/.test(String(r.stock_code)) && isInvalidStockName(r.stock_name, r.stock_code))
+          .map((r: any) => String(r.stock_code)),
+      ),
+    ];
     const nameMap = new Map<string, string>();
 
     for (const r of rowsWithPnl) {
@@ -161,7 +166,7 @@ tradeRoutes.get('/trades', async (c) => {
       const timeoutMap2 = new Map<string, CurrentPrice>();
       const quotes = await Promise.race([
         getBatchPrices(unresolvedDomestic.slice(0, 20)),
-        new Promise<Map<string, CurrentPrice>>(resolve => setTimeout(() => resolve(timeoutMap2), 3000)),
+        new Promise<Map<string, CurrentPrice>>((resolve) => setTimeout(() => resolve(timeoutMap2), 3000)),
       ]).catch(() => new Map<string, CurrentPrice>());
       for (const [code, q] of quotes) {
         if (!isInvalidStockName(q.stockName, code)) {
@@ -180,11 +185,8 @@ tradeRoutes.get('/trades', async (c) => {
 
     await Promise.allSettled(
       [...nameMap.entries()].map(([code, name]) =>
-        getPool().query(
-          `UPDATE watchlist SET stock_name = $1 WHERE stock_code = $2`,
-          [name, code],
-        )
-      )
+        getPool().query(`UPDATE watchlist SET stock_name = $1 WHERE stock_code = $2`, [name, code]),
+      ),
     );
 
     return c.json(patched);
@@ -203,7 +205,9 @@ tradeRoutes.get('/trades/today-stats', async (c) => {
 // ── 시장 참고 소스 ──
 tradeRoutes.get('/sources', async (c) => {
   try {
-    const { rows } = await getPool().query('SELECT * FROM market_sources ORDER BY is_pinned DESC, added_at DESC LIMIT 50');
+    const { rows } = await getPool().query(
+      'SELECT * FROM market_sources ORDER BY is_pinned DESC, added_at DESC LIMIT 50',
+    );
     return c.json(rows);
   } catch {
     return c.json([]);
@@ -211,7 +215,7 @@ tradeRoutes.get('/sources', async (c) => {
 });
 
 tradeRoutes.post('/sources', async (c) => {
-  const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
   const title = String(body.title ?? '').trim();
   const url = String(body.url ?? '').trim();
   const sourceType = String(body.source_type ?? 'article').trim();
@@ -292,7 +296,8 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
 
   try {
     // 일자별 매도 실현손익 집계 (FIFO 기반 — 체인 realized_pnl 사용)
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT
         (o.created_at AT TIME ZONE 'Asia/Seoul')::DATE AS trade_date,
         COUNT(*) FILTER (WHERE o.side = 'BUY') AS buy_count,
@@ -327,7 +332,9 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
         AND o.created_at >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Seoul') - ($2 * INTERVAL '1 day')) AT TIME ZONE 'Asia/Seoul'
       GROUP BY trade_date
       ORDER BY trade_date DESC
-    `, [tradeMode, days]);
+    `,
+      [tradeMode, days],
+    );
 
     const dailySummary = rows.map((r: any) => ({
       date: String(r.trade_date).slice(0, 10),
@@ -339,9 +346,10 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
       realizedPnl: Math.round(Number(r.realized_pnl) * 100) / 100,
       winCount: Number(r.win_count),
       lossCount: Number(r.loss_count),
-      winRate: (Number(r.win_count) + Number(r.loss_count)) > 0
-        ? Math.round((Number(r.win_count) / (Number(r.win_count) + Number(r.loss_count))) * 100)
-        : 0,
+      winRate:
+        Number(r.win_count) + Number(r.loss_count) > 0
+          ? Math.round((Number(r.win_count) / (Number(r.win_count) + Number(r.loss_count))) * 100)
+          : 0,
     }));
 
     const totalPnl = dailySummary.reduce((sum, d) => sum + d.realizedPnl, 0);
@@ -356,11 +364,9 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
         totalTrades: dailySummary.reduce((sum, d) => sum + d.totalTrades, 0),
         totalWins,
         totalLosses,
-        overallWinRate: (totalWins + totalLosses) > 0
-          ? Math.round((totalWins / (totalWins + totalLosses)) * 100)
-          : 0,
-        profitDays: dailySummary.filter(d => d.realizedPnl > 0).length,
-        lossDays: dailySummary.filter(d => d.realizedPnl < 0).length,
+        overallWinRate: totalWins + totalLosses > 0 ? Math.round((totalWins / (totalWins + totalLosses)) * 100) : 0,
+        profitDays: dailySummary.filter((d) => d.realizedPnl > 0).length,
+        lossDays: dailySummary.filter((d) => d.realizedPnl < 0).length,
       },
       mode: tradeMode,
       period: `${days}days`,
@@ -441,7 +447,8 @@ tradeRoutes.get('/stats/win-rate-bands', async (c) => {
       losses: string;
       break_evens: string;
       avg_pnl: string;
-    }>(`
+    }>(
+      `
       SELECT
         CASE
           WHEN entry_score >= 90 THEN '90+'
@@ -461,9 +468,11 @@ tradeRoutes.get('/stats/win-rate-bands', async (c) => {
         AND is_paper = $1
       GROUP BY band
       ORDER BY MIN(entry_score) DESC NULLS LAST
-    `, [viewIsPaper]);
+    `,
+      [viewIsPaper],
+    );
 
-    const bands = rows.map(r => ({
+    const bands = rows.map((r) => ({
       band: r.band,
       total: Number(r.total),
       wins: Number(r.wins),

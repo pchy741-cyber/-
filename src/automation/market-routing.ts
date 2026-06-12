@@ -8,31 +8,31 @@
  * Neutral:  직전 상태 유지 (매수 차단 여부 변경 없음)
  */
 
-import { getMacroSignal } from '../market/macro-signal.js';
-import { getFearGreedIndex } from '../market/external-signals.js';
 import { getMacroSnapshot } from '../automation/macro-data.js';
+import { getCtxIsPaper } from '../config/context.js';
+import { getOpenChains } from '../db/client.js';
+import type { TradeDecision } from '../db/models.js';
 import { getAccountBalance } from '../kis/account.js';
 import { getCurrentPrice } from '../kis/market.js';
-import { getOpenChains } from '../db/client.js';
-import { getCtxIsPaper } from '../config/context.js';
-import type { TradeDecision } from '../db/models.js';
-import { tradeExecutor } from '../trading/executor.js';
+import { getFearGreedIndex } from '../market/external-signals.js';
+import { getMacroSignal } from '../market/macro-signal.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
+import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
 
 const SOFR_ETF_CODE = '449170'; // KODEX 미국달러SOFR금리액티브
 
 // 모듈 레벨 상태 — 서버 재시작 시 안전 기본값 (차단 없음)
 let _riskOff = false;
-let _riskOffStreak  = 0;   // 연속 Risk-Off 감지 일수 (score ≥ 35)
-let _riskOnStreak   = 0;   // 연속 Risk-On  감지 일수 (score < 20)
-let _lastRoutingDate = '';  // 중복 카운트 방지 (YYYY-MM-DD KST)
+let _riskOffStreak = 0; // 연속 Risk-Off 감지 일수 (score ≥ 35)
+let _riskOnStreak = 0; // 연속 Risk-On  감지 일수 (score < 20)
+let _lastRoutingDate = ''; // 중복 카운트 방지 (YYYY-MM-DD KST)
 
 // SOFR ETF 배당소득세(15.4%) Whipsaw 마찰 방지 — 불감대(Dead Band) 임계값
 const DEAD_BAND = {
-  PARK_DAYS: 3,         // 3영업일 연속 Risk-Off → 파킹 실행
-  UNPARK_DAYS: 2,       // 2영업일 연속 Risk-On 회복 → 언파킹 실행
-  IMMEDIATE_SCORE: 50,  // 초극단 위기 점수 → 즉시 파킹 (불감대 우회)
+  PARK_DAYS: 3, // 3영업일 연속 Risk-Off → 파킹 실행
+  UNPARK_DAYS: 2, // 2영업일 연속 Risk-On 회복 → 언파킹 실행
+  IMMEDIATE_SCORE: 50, // 초극단 위기 점수 → 즉시 파킹 (불감대 우회)
 } as const;
 
 export function isRiskOffToday(): boolean {
@@ -132,20 +132,18 @@ async function parkCashInSofr(): Promise<boolean> {
     const openChains = await getOpenChains();
     const existing = openChains.find((c) => c.stock_code === SOFR_ETF_CODE && c.total_quantity > 0);
     if (existing) {
-      logger.info(
-        `💰 [${isPaper ? 'PAPER' : 'LIVE'}] SOFR 이미 ${existing.total_quantity}주 보유 — 추가 매수 스킵`,
-        { component: 'MARKET_ROUTING' },
-      );
+      logger.info(`💰 [${isPaper ? 'PAPER' : 'LIVE'}] SOFR 이미 ${existing.total_quantity}주 보유 — 추가 매수 스킵`, {
+        component: 'MARKET_ROUTING',
+      });
       return true;
     }
 
     const balance = await getAccountBalance();
     const cash = balance?.orderableCash ?? 0;
     if (cash < 10_000) {
-      logger.info(
-        `💰 [${isPaper ? 'PAPER' : 'LIVE'}] 예수금 부족 (${cash.toLocaleString()}원) — SOFR 파킹 스킵`,
-        { component: 'MARKET_ROUTING' },
-      );
+      logger.info(`💰 [${isPaper ? 'PAPER' : 'LIVE'}] 예수금 부족 (${cash.toLocaleString()}원) — SOFR 파킹 스킵`, {
+        component: 'MARKET_ROUTING',
+      });
       return false;
     }
 
@@ -166,10 +164,9 @@ async function parkCashInSofr(): Promise<boolean> {
     };
 
     await tradeExecutor.processDecisions([decision], 'DEFENSE', 'MARKET_ROUTING_PARK');
-    logger.info(
-      `🅿️ [${isPaper ? 'PAPER' : 'LIVE'}] SOFR 파킹 완료: ${qty}주 × ${price.toLocaleString()}원`,
-      { component: 'MARKET_ROUTING' },
-    );
+    logger.info(`🅿️ [${isPaper ? 'PAPER' : 'LIVE'}] SOFR 파킹 완료: ${qty}주 × ${price.toLocaleString()}원`, {
+      component: 'MARKET_ROUTING',
+    });
     return true;
   } catch (e) {
     logger.error(`SOFR 파킹 실패 [${isPaper ? 'PAPER' : 'LIVE'}]: ${e}`, { component: 'MARKET_ROUTING' });
@@ -200,10 +197,7 @@ async function unparkSofrEtf(): Promise<boolean> {
 
     await tradeExecutor.processDecisions(decisions, 'DEFENSE', 'MARKET_ROUTING_UNPARK');
     const totalQty = sofrChains.reduce((s, c) => s + c.total_quantity, 0);
-    logger.info(
-      `🚀 [${isPaper ? 'PAPER' : 'LIVE'}] SOFR 언파킹 완료: ${totalQty}주`,
-      { component: 'MARKET_ROUTING' },
-    );
+    logger.info(`🚀 [${isPaper ? 'PAPER' : 'LIVE'}] SOFR 언파킹 완료: ${totalQty}주`, { component: 'MARKET_ROUTING' });
     return true;
   } catch (e) {
     logger.error(`SOFR 언파킹 실패 [${isPaper ? 'PAPER' : 'LIVE'}]: ${e}`, { component: 'MARKET_ROUTING' });
@@ -244,8 +238,8 @@ export async function dailyMarketRouting(): Promise<void> {
 
   const infoLine = [
     `VIX=${inputs.vix != null ? inputs.vix.toFixed(1) : 'N/A'}`,
-    `SPX=${inputs.spxChangePct != null ? inputs.spxChangePct.toFixed(2) + '%' : 'N/A'}`,
-    `NDX=${inputs.nasdaqChangePct != null ? inputs.nasdaqChangePct.toFixed(2) + '%' : 'N/A'}`,
+    `SPX=${inputs.spxChangePct != null ? `${inputs.spxChangePct.toFixed(2)}%` : 'N/A'}`,
+    `NDX=${inputs.nasdaqChangePct != null ? `${inputs.nasdaqChangePct.toFixed(2)}%` : 'N/A'}`,
     `VKOSPI=${inputs.vkospi != null ? inputs.vkospi.toFixed(1) : 'N/A'}`,
     `F&G=${inputs.fearGreed ?? 'N/A'}`,
     `USD=${inputs.usdKrw != null ? inputs.usdKrw.toFixed(0) : 'N/A'}`,
@@ -257,20 +251,25 @@ export async function dailyMarketRouting(): Promise<void> {
   const todayKst = new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
   if (todayKst !== _lastRoutingDate) {
     _lastRoutingDate = todayKst;
-    if (level === 'RISK_OFF') { _riskOffStreak++; _riskOnStreak = 0; }
-    else if (level === 'RISK_ON') { _riskOnStreak++; _riskOffStreak = 0; }
+    if (level === 'RISK_OFF') {
+      _riskOffStreak++;
+      _riskOnStreak = 0;
+    } else if (level === 'RISK_ON') {
+      _riskOnStreak++;
+      _riskOffStreak = 0;
+    }
     // NEUTRAL: 양쪽 스트릭 모두 유지 (카운트 없음)
   }
 
   const streakLine = `RiskOff연속=${_riskOffStreak}d RiskOn연속=${_riskOnStreak}d`;
-  logger.info(`📡 시장라우팅 [${isPaper ? 'PAPER' : 'LIVE'}] ${infoLine} | ${streakLine}`, { component: 'MARKET_ROUTING' });
+  logger.info(`📡 시장라우팅 [${isPaper ? 'PAPER' : 'LIVE'}] ${infoLine} | ${streakLine}`, {
+    component: 'MARKET_ROUTING',
+  });
 
   // 4. 파킹/언파킹 결정 — 불감대 통과 여부 확인
   const immediateMode = score >= DEAD_BAND.IMMEDIATE_SCORE; // 초극단 위기: 즉시 행동
-  const shouldPark   = !_riskOff && level === 'RISK_OFF' &&
-                       (immediateMode || _riskOffStreak >= DEAD_BAND.PARK_DAYS);
-  const shouldUnpark = _riskOff && level === 'RISK_ON' &&
-                       _riskOnStreak >= DEAD_BAND.UNPARK_DAYS;
+  const shouldPark = !_riskOff && level === 'RISK_OFF' && (immediateMode || _riskOffStreak >= DEAD_BAND.PARK_DAYS);
+  const shouldUnpark = _riskOff && level === 'RISK_ON' && _riskOnStreak >= DEAD_BAND.UNPARK_DAYS;
 
   if (shouldPark) {
     _riskOff = true;

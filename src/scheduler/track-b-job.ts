@@ -1,20 +1,26 @@
 import { runTrackBPipeline } from '../ai/track-b/pipeline.js';
+import { logSystemEvent } from '../api/routes/health.js';
+import { INVERSE_ETF_CODES } from '../automation/crash-profit.js';
+import { isRiskOffToday } from '../automation/market-routing.js';
 import type { StrategyMode } from '../config/constants.js';
 import { getCtxIsPaper, runWithMode } from '../config/context.js';
 import { getActiveStrategy } from '../db/client.js';
 import { isMarketOpen } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { isKillSwitchActive, reportError, reportSuccess } from '../risk/kill-switch.js';
-import { reportNoBuyCandidates } from './loop-mode.js';
-import { INVERSE_ETF_CODES } from '../automation/crash-profit.js';
-import { isRiskOffToday } from '../automation/market-routing.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
-import { logSystemEvent } from '../api/routes/health.js';
+import { reportNoBuyCandidates } from './loop-mode.js';
 
-const isRunningMap = new Map<'paper' | 'live', boolean>([['paper', false], ['live', false]]);
-const runningStartedAtMap = new Map<'paper' | 'live', number>([['paper', 0], ['live', 0]]);
+const isRunningMap = new Map<'paper' | 'live', boolean>([
+  ['paper', false],
+  ['live', false],
+]);
+const runningStartedAtMap = new Map<'paper' | 'live', number>([
+  ['paper', 0],
+  ['live', 0],
+]);
 let runGeneration = 0; // 강제 리셋 시 세대 증가 → 이전 실행의 finally가 새 실행을 종료하지 않도록
 const MAX_RUNTIME_MS = 10 * 60 * 1000; // 10분 초과 시 강제 해제
 const pendingRescanTimers = new Map<'paper' | 'live', ReturnType<typeof setTimeout> | null>(); // 모드별 rescan 타이머
@@ -31,7 +37,10 @@ export async function runTrackBJob(): Promise<void> {
     }
     // 강제 리셋: 이전 실행의 finally가 새 실행을 건드리지 못하도록 세대 증가
     runGeneration++;
-    logger.warn(`⚠️ Track B 잠금 [${modeKey}] ${Math.round(elapsed / 60000)}분 초과 → 강제 해제 (generation=${runGeneration})`, { component: 'SCHEDULER' });
+    logger.warn(
+      `⚠️ Track B 잠금 [${modeKey}] ${Math.round(elapsed / 60000)}분 초과 → 강제 해제 (generation=${runGeneration})`,
+      { component: 'SCHEDULER' },
+    );
     isRunningMap.set(modeKey, false);
   }
 
@@ -50,42 +59,52 @@ export async function runTrackBJob(): Promise<void> {
   try {
     // 1. Track B 파이프라인 실행 → 매매 판단
     const decisions = await runTrackBPipeline();
-    reportNoBuyCandidates(!decisions.some(d => d.action === 'BUY' || d.action === 'AVERAGE_DOWN'));
+    reportNoBuyCandidates(!decisions.some((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN'));
 
     // Kill Switch 활성 시 매수 차단, 매도(탈출)만 실행
     // 예외: 인버스 ETF 매수는 허용 — 하락장 킬스위치 발동 시에도 수익화 가능해야 함
     const killActive = isKillSwitchActive('KR');
     let filtered = killActive
-      ? decisions.filter((d) =>
-          ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action) ||
-          (d.action === 'BUY' && INVERSE_ETF_CODES.has(d.stock_code))
+      ? decisions.filter(
+          (d) =>
+            ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action) ||
+            (d.action === 'BUY' && INVERSE_ETF_CODES.has(d.stock_code)),
         )
       : decisions;
 
     if (killActive && filtered.length < decisions.length) {
-      logger.warn(`🛑 Kill Switch 활성 — 매수 ${decisions.length - filtered.length}건 차단, 매도 ${filtered.length}건 실행`, { component: 'SCHEDULER' });
+      logger.warn(
+        `🛑 Kill Switch 활성 — 매수 ${decisions.length - filtered.length}건 차단, 매도 ${filtered.length}건 실행`,
+        { component: 'SCHEDULER' },
+      );
     }
 
     // Risk-Off: 신규 매수 전면 차단 (매도/청산은 허용, 인버스 ETF 매수는 예외)
     if (isRiskOffToday()) {
       const before = filtered.length;
-      filtered = filtered.filter((d) =>
-        ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action) ||
-        (d.action === 'BUY' && INVERSE_ETF_CODES.has(d.stock_code))
+      filtered = filtered.filter(
+        (d) =>
+          ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action) ||
+          (d.action === 'BUY' && INVERSE_ETF_CODES.has(d.stock_code)),
       );
       if (filtered.length < before) {
-        logger.info(`🚨 Risk-Off — Track B 매수 ${before - filtered.length}건 차단, 매도 ${filtered.length}건 실행`, { component: 'SCHEDULER' });
+        logger.info(`🚨 Risk-Off — Track B 매수 ${before - filtered.length}건 차단, 매도 ${filtered.length}건 실행`, {
+          component: 'SCHEDULER',
+        });
       }
     }
 
     // 개장벨 시간대(09:00~09:12) Track B 신규매수 양보 — 개장벨이 초단타 전문
     const kstNow = getKSTNow();
-    const kstH = kstNow.getUTCHours(), kstM = kstNow.getUTCMinutes();
+    const kstH = kstNow.getUTCHours(),
+      kstM = kstNow.getUTCMinutes();
     if (kstH === 9 && kstM <= 12) {
       const before = filtered.length;
       filtered = filtered.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
       if (filtered.length < before) {
-        logger.info(`⚡ 개장벨 양보: Track B 매수 ${before - filtered.length}건 스킵 (09:00~09:12 개장벨 우선)`, { component: 'SCHEDULER' });
+        logger.info(`⚡ 개장벨 양보: Track B 매수 ${before - filtered.length}건 스킵 (09:00~09:12 개장벨 우선)`, {
+          component: 'SCHEDULER',
+        });
       }
     }
 
@@ -109,7 +128,11 @@ export async function runTrackBJob(): Promise<void> {
     const actionable = decisions.filter((d) => d.action !== 'HOLD');
     if (actionable.length > 0) {
       const summary = actionable.map((d) => `${d.action} ${d.stock_code} x${d.quantity}`).join('\n');
-      logSystemEvent(`Track B[${mt}]`, 'success', actionable.map((d) => `${d.action} ${d.stock_code} ${d.quantity}주`).join(', '));
+      logSystemEvent(
+        `Track B[${mt}]`,
+        'success',
+        actionable.map((d) => `${d.action} ${d.stock_code} ${d.quantity}주`).join(', '),
+      );
       await sendTelegramMessage(`🤖 Track B[${mt}] 실행:\n${summary}`).catch(() => {});
     }
 
@@ -119,13 +142,16 @@ export async function runTrackBJob(): Promise<void> {
       const rescanMode: 'paper' | 'live' = getCtxIsPaper() ? 'paper' : 'live';
       const existingTimer = pendingRescanTimers.get(rescanMode);
       if (existingTimer) clearTimeout(existingTimer);
-      pendingRescanTimers.set(rescanMode, setTimeout(() => {
-        pendingRescanTimers.set(rescanMode, null);
-        logger.info(`🔄 매도 후 재스캔 (60초, ${rescanMode})`, { component: 'SCHEDULER' });
-        runWithMode(rescanMode === 'paper', () => runTrackBJob()).catch((e) => {
-          logger.warn(`🔄 매도 후 재스캔 실패: ${e}`, { component: 'SCHEDULER' });
-        });
-      }, 60_000));
+      pendingRescanTimers.set(
+        rescanMode,
+        setTimeout(() => {
+          pendingRescanTimers.set(rescanMode, null);
+          logger.info(`🔄 매도 후 재스캔 (60초, ${rescanMode})`, { component: 'SCHEDULER' });
+          runWithMode(rescanMode === 'paper', () => runTrackBJob()).catch((e) => {
+            logger.warn(`🔄 매도 후 재스캔 실패: ${e}`, { component: 'SCHEDULER' });
+          });
+        }, 60_000),
+      );
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);

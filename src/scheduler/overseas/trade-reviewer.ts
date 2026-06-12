@@ -2,8 +2,9 @@
  * AI 자기진화 — 매매 복기
  * Gemini를 활용해 완료된 매매를 복기하고, 교훈 축적 및 섹터별 confidence 조정
  */
-import { logger } from '../../utils/logger.js';
+
 import { getPool } from '../../db/client.js';
+import { logger } from '../../utils/logger.js';
 import { callVertexGemini } from '../../utils/vertex-gemini.js';
 
 // ── 타입 ──
@@ -13,10 +14,11 @@ interface TradeReview {
   pnlPct: number;
   entryReason: string;
   exitReason: string;
-  review: string;         // Gemini 복기
-  lesson: string;         // 핵심 교훈
-  parameterAdj?: {        // 파라미터 조정 제안
-    sectorConfAdj?: number;   // 섹터별 confidence 조정
+  review: string; // Gemini 복기
+  lesson: string; // 핵심 교훈
+  parameterAdj?: {
+    // 파라미터 조정 제안
+    sectorConfAdj?: number; // 섹터별 confidence 조정
     sector?: string;
   };
 }
@@ -79,14 +81,19 @@ export async function reviewCompletedTrade(params: {
 - 결과: ${pnlPct > 0 ? '수익' : '손실'}`;
 
       rawResponse = await callVertexGemini(systemPrompt, userMessage, {
-        temperature: 0.3, maxOutputTokens: 300, label: '해외-매매복기',
+        temperature: 0.3,
+        maxOutputTokens: 300,
+        label: '해외-매매복기',
       });
     } else {
       // 규칙기반 복기 — 통계적 교훈 자동 생성
       const adj = pnlPct < -5 ? 0.03 : pnlPct < 0 ? 0.01 : pnlPct > 10 ? -0.02 : 0;
-      const les = pnlPct < 0 && entryRsi > 65 ? '고RSI 진입 패턴 — confidence 상향 필요' :
-        pnlPct < 0 ? `손실 ${pnlPct.toFixed(1)}% — ${exitReason}` :
-        `수익 +${pnlPct.toFixed(1)}% (${holdingDays.toFixed(0)}일) — 정상`;
+      const les =
+        pnlPct < 0 && entryRsi > 65
+          ? '고RSI 진입 패턴 — confidence 상향 필요'
+          : pnlPct < 0
+            ? `손실 ${pnlPct.toFixed(1)}% — ${exitReason}`
+            : `수익 +${pnlPct.toFixed(1)}% (${holdingDays.toFixed(0)}일) — 정상`;
       rawResponse = JSON.stringify({ lesson: les, sectorConfAdj: adj });
     }
 
@@ -112,19 +119,19 @@ export async function reviewCompletedTrade(params: {
       exitReason,
       review: rawResponse.slice(0, 200),
       lesson,
-      parameterAdj: sectorConfAdj !== 0
-        ? { sectorConfAdj, sector }
-        : undefined,
+      parameterAdj: sectorConfAdj !== 0 ? { sectorConfAdj, sector } : undefined,
     };
 
     // DB 저장
     const timestamp = Date.now();
-    await getPool().query(
-      `INSERT INTO overseas_state (key, value)
+    await getPool()
+      .query(
+        `INSERT INTO overseas_state (key, value)
        VALUES ($1, $2)
        ON CONFLICT (key) DO UPDATE SET value = $2`,
-      [`trade_review_${code}_${timestamp}`, JSON.stringify(review)],
-    ).catch(() => {});
+        [`trade_review_${code}_${timestamp}`, JSON.stringify(review)],
+      )
+      .catch(() => {});
 
     // 쿨다운 설정
     _reviewCooldown.set(code, Date.now());
@@ -164,7 +171,9 @@ export async function getTradeReviewInsights(): Promise<string> {
         const review = JSON.parse(row.value) as TradeReview;
         const prefix = review.pnlPct > 0 ? '+' : '';
         lessons.push(`${review.code}(${prefix}${review.pnlPct.toFixed(1)}%): ${review.lesson}`);
-      } catch { /* skip malformed */ }
+      } catch {
+        /* skip malformed */
+      }
     }
 
     if (lessons.length === 0) return '';
@@ -205,7 +214,9 @@ export async function getSectorConfidenceAdj(sector: string): Promise<number> {
           sectorReviews.push(review);
           if (sectorReviews.length >= 5) break;
         }
-      } catch { /* skip */ }
+      } catch {
+        /* skip */
+      }
     }
 
     if (sectorReviews.length < 3) {
@@ -215,8 +226,8 @@ export async function getSectorConfidenceAdj(sector: string): Promise<number> {
 
     // 연속 손실/수익 판정
     const consecutive = sectorReviews.slice(0, 5);
-    const allLoss = consecutive.length >= 3 && consecutive.slice(0, 3).every(r => r.pnlPct < 0);
-    const allWin = consecutive.length >= 3 && consecutive.slice(0, 3).every(r => r.pnlPct > 0);
+    const allLoss = consecutive.length >= 3 && consecutive.slice(0, 3).every((r) => r.pnlPct < 0);
+    const allWin = consecutive.length >= 3 && consecutive.slice(0, 3).every((r) => r.pnlPct > 0);
 
     let adj = 0;
     if (allLoss) {

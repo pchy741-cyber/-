@@ -1,31 +1,36 @@
 /**
  * 대시보드 페이로드 빌더 — buildDashPayload + getOrBuildDashPayload
  */
-import { getCachedScores, getScoresWithFallback, cachePrice, getLastKnownPrices } from '../../../cache/redis.js';
-import { cachePriceMemory, getLastKnownPricesMemory, getCachedPriceMemory, cacheGet } from '../../../cache/memory.js';
-import { config, baseIsPaper } from '../../../config/index.js';
-import { runWithMode } from '../../../config/context.js';
-import { getActiveStrategy, getActiveWatchlist, getOpenChains, getTodayStartSnapshot, isMemoryMode, safeQuery } from '../../../db/client.js';
-import { getAccountBalance } from '../../../kis/account.js';
-import { getCurrentPrice, getBatchPrices, isMarketOpen } from '../../../kis/market.js';
+
 import { getDefenseParkState } from '../../../ai/track-b/defense-park.js';
+import { cacheGet, cachePriceMemory, getCachedPriceMemory, getLastKnownPricesMemory } from '../../../cache/memory.js';
+import { getOverseasScores } from '../../../cache/overseas-scores.js';
+import { cachePrice, getLastKnownPrices, getScoresWithFallback } from '../../../cache/redis.js';
+import { SECTOR_CLASS } from '../../../config/constants.js';
+import { runWithMode } from '../../../config/context.js';
+import { baseIsPaper, config } from '../../../config/index.js';
+import { getActiveStrategy, getActiveWatchlist, getOpenChains, isMemoryMode, safeQuery } from '../../../db/client.js';
+import { getAccountBalance } from '../../../kis/account.js';
+import { getBatchPrices, isMarketOpen } from '../../../kis/market.js';
+import { getOverseasPrice } from '../../../kis/overseas.js';
 import { getPaperBalance } from '../../../risk/engine.js';
-import { PAPER_INITIAL_CAPITAL } from '../../../risk/paper-balance.js';
 import { getKillSwitchStatusAll } from '../../../risk/kill-switch.js';
+import { PAPER_INITIAL_CAPITAL } from '../../../risk/paper-balance.js';
 import { calcDailyLossLimit } from '../../../risk/seed-capital.js';
 import { getCooldownStatus } from '../../../risk/trade-gate.js';
-import { getOverseasScores } from '../../../cache/overseas-scores.js';
-import { getOverseasPrice } from '../../../kis/overseas.js';
-import { SECTOR_CLASS } from '../../../config/constants.js';
-import { GLOBAL_WATCHLIST } from '../../../scheduler/overseas/watchlist.js';
-import { getDynamicTpSl, computePaperCash } from '../../../scheduler/overseas/state.js';
 import { getPartialTpStages } from '../../../scheduler/overseas/risk-intelligence.js';
+import { computePaperCash } from '../../../scheduler/overseas/state.js';
+import { GLOBAL_WATCHLIST } from '../../../scheduler/overseas/watchlist.js';
 import { logger } from '../../../utils/logger.js';
+import { buildFxImpact, buildMonthlyGoal, buildSuggestedActions } from './builder-helpers.js';
 import {
-  isInvalidStockName, getKnownStockName, getFxRate,
-  getDashCache, setDashCache, getDashBuildingByMode,
+  getDashBuildingByMode,
+  getDashCache,
+  getFxRate,
+  getKnownStockName,
+  isInvalidStockName,
+  setDashCache,
 } from './helpers.js';
-import { buildSuggestedActions, buildMonthlyGoal, buildFxImpact } from './builder-helpers.js';
 
 // 동시 빌드 dedup: 같은 모드의 buildDashPayload가 두 번 동시 실행되지 않게
 export async function getOrBuildDashPayload(viewIsPaper: boolean): Promise<unknown> {
@@ -33,7 +38,9 @@ export async function getOrBuildDashPayload(viewIsPaper: boolean): Promise<unkno
   const building = getDashBuildingByMode();
   const existing = building.get(key);
   if (existing) return existing;
-  const promise = buildDashPayload(viewIsPaper).finally(() => { building.delete(key); });
+  const promise = buildDashPayload(viewIsPaper).finally(() => {
+    building.delete(key);
+  });
   building.set(key, promise);
   return promise;
 }
@@ -55,17 +62,39 @@ export async function prewarmDashboard(): Promise<void> {
 async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   // KIS API 실패 시 기본값 — 실전모드는 0 (10M 가짜잔고 표시 방지), 연습모드만 1000만원
   const defaultBalance = viewIsPaper
-    ? { totalDeposit: 10000000, d2Deposit: 10000000, orderableCash: 10000000, cashSource: 'd2_deposit' as const, totalProfitLoss: 0, totalProfitLossPct: 0, netAsset: 10000000, totalEvalAmount: 0, purchaseCost: 0, positions: [] }
-    : { totalDeposit: 0, d2Deposit: 0, orderableCash: 0, cashSource: 'zero' as const, totalProfitLoss: 0, totalProfitLossPct: 0, netAsset: 0, totalEvalAmount: 0, purchaseCost: 0, positions: [] };
+    ? {
+        totalDeposit: 10000000,
+        d2Deposit: 10000000,
+        orderableCash: 10000000,
+        cashSource: 'd2_deposit' as const,
+        totalProfitLoss: 0,
+        totalProfitLossPct: 0,
+        netAsset: 10000000,
+        totalEvalAmount: 0,
+        purchaseCost: 0,
+        positions: [],
+      }
+    : {
+        totalDeposit: 0,
+        d2Deposit: 0,
+        orderableCash: 0,
+        cashSource: 'zero' as const,
+        totalProfitLoss: 0,
+        totalProfitLossPct: 0,
+        netAsset: 0,
+        totalEvalAmount: 0,
+        purchaseCost: 0,
+        positions: [],
+      };
 
   const withTimeout = <T>(p: Promise<T>, ms: number, fallback: T): Promise<T> =>
-    Promise.race([p, new Promise<T>(res => setTimeout(() => res(fallback), ms))]);
+    Promise.race([p, new Promise<T>((res) => setTimeout(() => res(fallback), ms))]);
 
   const balanceFn = viewIsPaper
     ? () => withTimeout(getPaperBalance(), 10000, defaultBalance as any)
     : () => withTimeout(getAccountBalance(true), 6000, defaultBalance as any);
 
-  const [balanceResult, chains, strategy, insightRows, defensePark, liveBalanceForCap] = await Promise.all([
+  const [balanceResult, chains, strategy, insightRows, defensePark, _liveBalanceForCap] = await Promise.all([
     balanceFn().catch(() => defaultBalance),
     getOpenChains(viewIsPaper).catch(() => []),
     getActiveStrategy().catch(() => null),
@@ -73,9 +102,15 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       `SELECT id, category, insight, confidence, sample_count, last_updated, is_manual,
               recommendation, param_change, is_applied, applied_at, is_paper
        FROM learned_insights WHERE is_paper = $1 ORDER BY is_manual DESC, confidence DESC LIMIT 30`,
-      [viewIsPaper]
+      [viewIsPaper],
     ).catch(() => ({ rows: [] as any[] })),
-    getDefenseParkState().catch(() => ({ isActive: false, parkStockCode: '069500', parkStockName: 'KODEX 200', entryReason: null, enteredAt: null })),
+    getDefenseParkState().catch(() => ({
+      isActive: false,
+      parkStockCode: '069500',
+      parkStockName: 'KODEX 200',
+      entryReason: null,
+      enteredAt: null,
+    })),
     // 연습모드 한도: 실전 API 독립 (실전 잔고 오염 제거 — paperCap = 자체 시드)
     Promise.resolve(null),
   ]);
@@ -89,9 +124,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   // 감시종목 268+개 전체 스코어 조회는 부하 과중 → 상위 50개만 표시
   // (Track B pipeline도 35개만 사용, 대시보드도 동일 수준으로 제한)
   const allScores = await getScoresWithFallback(stockCodes);
-  const scores = allScores
-    .sort((a: any, b: any) => (b.composite_score ?? 0) - (a.composite_score ?? 0))
-    .slice(0, 50);
+  const scores = allScores.sort((a: any, b: any) => (b.composite_score ?? 0) - (a.composite_score ?? 0)).slice(0, 50);
 
   // chains + scores에 현재가 매칭 — KIS API 우선 (신선한 가격), 실패 시 캐시 폴백
   const posMap = new Map<string, any>((balance.positions ?? []).map((p: any) => [p.stockCode, p]));
@@ -113,24 +146,26 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
 
   // 장중: score 코드 중 캐시(인메모리 30s) 없는 것만 추가 조회
   const scoreCodesNeedingPrice = isMarketOpen()
-    ? scoreCodes.filter(c => !priceMap.has(c) && !(getCachedPriceMemory(c) ?? 0))
+    ? scoreCodes.filter((c) => !priceMap.has(c) && !(getCachedPriceMemory(c) ?? 0))
     : [];
 
   // 이름 보정 필요 코드
-  const needNameCodes = allWatchCodes.filter(c => {
+  const needNameCodes = allWatchCodes.filter((c) => {
     const n = String(watchlistNameMap.get(c) ?? '') || String(chainNameMap.get(c) ?? '');
     return !n || n === c || /^\d{6}$/.test(n);
   });
 
   // 실제 API 호출 대상: 포지션 종목(chain) 우선, 이름 미확인 + score는 여유분만
   // KIS rate limit 방지: 총 5개 초과 금지 (marketDataRateLimiter 4/sec 기준 ~1.5초)
-  const chainNeedingPrice = chainCodes.filter(c => !priceMap.has(c));
+  const chainNeedingPrice = chainCodes.filter((c) => !priceMap.has(c));
   const remaining = Math.max(0, 5 - chainNeedingPrice.length);
-  const codesToFetch = [...new Set([
-    ...chainNeedingPrice,
-    ...needNameCodes.slice(0, Math.ceil(remaining / 2)),
-    ...scoreCodesNeedingPrice.slice(0, Math.floor(remaining / 2)),
-  ])].slice(0, 8);
+  const codesToFetch = [
+    ...new Set([
+      ...chainNeedingPrice,
+      ...needNameCodes.slice(0, Math.ceil(remaining / 2)),
+      ...scoreCodesNeedingPrice.slice(0, Math.floor(remaining / 2)),
+    ]),
+  ].slice(0, 8);
 
   // 병렬 배치 조회 (체인+이름보정 위주 — 대폭 축소)
   if (codesToFetch.length > 0) {
@@ -157,7 +192,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       if (isInvalidStockName(cName, code)) {
         safeQuery(
           "UPDATE transaction_chains SET stock_name = $1 WHERE stock_code = $2 AND (stock_name IS NULL OR stock_name = $2 OR stock_name ~ '^[0-9]{6}$' OR stock_name !~ '[A-Za-z가-힣]')",
-          [name, code]
+          [name, code],
         ).catch(() => {});
       }
     }
@@ -172,11 +207,13 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   }
 
   // 4차: 마지막 수단 — 2시간 장기 캐시 (장 마감 후 등)
-  const stillMissing = chainCodes.filter(code => !priceMap.has(code));
+  const stillMissing = chainCodes.filter((code) => !priceMap.has(code));
   if (stillMissing.length > 0) {
     const redisCached = await getLastKnownPrices(stillMissing).catch(() => new Map());
-    redisCached.forEach((price, code) => priceMap.set(code, price));
-    for (const code of stillMissing.filter(c => !priceMap.has(c))) {
+    redisCached.forEach((price, code) => {
+      priceMap.set(code, price);
+    });
+    for (const code of stillMissing.filter((c) => !priceMap.has(c))) {
       const last = getLastKnownPricesMemory([code]).get(code);
       if (last) priceMap.set(code, last);
     }
@@ -201,8 +238,10 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     totalChainPnl += unrealizedPnl;
     const isCode = (n: any) => !n || String(n) === ch.stock_code || /^\d{6}$/.test(String(n));
     const known = getKnownStockName(ch.stock_code);
-    const resolvedName = [nameMap.get(ch.stock_code), watchlistNameMap.get(ch.stock_code), ch.stock_name, known]
-      .find(n => !isCode(n) && !isInvalidStockName(n, ch.stock_code)) ?? ch.stock_code;
+    const resolvedName =
+      [nameMap.get(ch.stock_code), watchlistNameMap.get(ch.stock_code), ch.stock_name, known].find(
+        (n) => !isCode(n) && !isInvalidStockName(n, ch.stock_code),
+      ) ?? ch.stock_code;
     const isParking = defensePark?.isActive && ch.stock_code === defensePark?.parkStockCode;
     return { ...ch, stock_name: resolvedName, currentPrice, unrealizedPnl, unrealizedPnlPct, invested, isParking };
   });
@@ -266,9 +305,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     actualCash = paperCap < Infinity ? Math.min(rawCash, paperCap) : rawCash;
   } else {
     // Live: purchaseCost(원가) 사용, 없으면 체인 원가 합산
-    totalInvested = (balance as any).purchaseCost > 0
-      ? (balance as any).purchaseCost
-      : totalChainInvested;
+    totalInvested = (balance as any).purchaseCost > 0 ? (balance as any).purchaseCost : totalChainInvested;
     // KIS evlu_pfls_smtl_amt = 미실현손익만 → DB 누적 실현손익 합산
     const realizedRows = await safeQuery<{ total: string }>(
       `SELECT COALESCE(SUM(realized_pnl), 0)::text AS total
@@ -281,46 +318,65 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   }
 
   const totalPnlPct = viewIsPaper
-    ? (PAPER_INITIAL_CAPITAL > 0 ? (totalPnl / PAPER_INITIAL_CAPITAL) * 100 : 0)
+    ? PAPER_INITIAL_CAPITAL > 0
+      ? (totalPnl / PAPER_INITIAL_CAPITAL) * 100
+      : 0
     : (balance.totalProfitLossPct ?? 0);
 
   // ── 해외 보유종목 (별도 표시용, 국내 총자산에 합산하지 않음) ──
-  let overseasHoldings: Array<{
-    stock_code: string; quantity: number; avg_price: number; bought_at: string; last_price: number;
-    sector: string; tp_pct: number; sl_pct: number; trail_pct: number;
-    trail_active: boolean; trail_stop_pct: number; max_pnl_pct: number;
-    partial_tp_stage: number; next_partial_tp_pct: number | null;
-    is_scalp: boolean; scalp_tp: number | null; scalp_sl: number | null;
+  const overseasHoldings: Array<{
+    stock_code: string;
+    quantity: number;
+    avg_price: number;
+    bought_at: string;
+    last_price: number;
+    sector: string;
+    tp_pct: number;
+    sl_pct: number;
+    trail_pct: number;
+    trail_active: boolean;
+    trail_stop_pct: number;
+    max_pnl_pct: number;
+    partial_tp_stage: number;
+    next_partial_tp_pct: number | null;
+    is_scalp: boolean;
+    scalp_tp: number | null;
+    scalp_sl: number | null;
   }> = [];
   let overseasTotalInvested = 0;
   let overseasMarketValueUsd = 0;
   let overseasCash = 0;
-  let osCashAge = Infinity; // 스테일 가드용: overseas_state.cash 경과 초 (try 블록 밖 선언)
+  let _osCashAge = Infinity; // 스테일 가드용: overseas_state.cash 경과 초 (try 블록 밖 선언)
   try {
     const pfx = viewIsPaper ? 'p_' : 'l_';
 
     // Paper: orders 기반 실시간 계산 (USD), Live: DB에서 KRW 읽기
-    const { rows: osRows } = await safeQuery(
-      'SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1', [viewIsPaper]);
+    const { rows: osRows } = await safeQuery('SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1', [
+      viewIsPaper,
+    ]);
     if (viewIsPaper) {
       overseasCash = await computePaperCash(); // USD (결정론적 — orders 기반)
     } else {
       const { rows: osCashRows } = await safeQuery(
         `SELECT value, EXTRACT(EPOCH FROM (NOW() - COALESCE(updated_at, NOW() - INTERVAL '999 hours'))) AS age_sec
-         FROM overseas_state WHERE key = 'cash'`);
-      osCashAge = osCashRows.length > 0 ? Number(osCashRows[0].age_sec) : Infinity;
+         FROM overseas_state WHERE key = 'cash'`,
+      );
+      _osCashAge = osCashRows.length > 0 ? Number(osCashRows[0].age_sec) : Infinity;
       overseasCash = osCashRows.length > 0 ? Number(osCashRows[0].value) : 0; // KRW
     }
 
     // 종목별 고점/부분익절단계/동적TP·SL 일괄 조회
     const codes = osRows.map((r: any) => String(r.stock_code));
-    const stateKeys = codes.flatMap(c => [
-      `${pfx}maxprice_${c}`, `${pfx}partial_tp_stage_${c}`, `${pfx}dynamic_tpsl_${c}`,
+    const stateKeys = codes.flatMap((c) => [
+      `${pfx}maxprice_${c}`,
+      `${pfx}partial_tp_stage_${c}`,
+      `${pfx}dynamic_tpsl_${c}`,
     ]);
     const stateMap = new Map<string, string>();
     if (stateKeys.length > 0) {
-      const { rows: stRows } = await safeQuery(
-        'SELECT key, value FROM overseas_state WHERE key = ANY($1)', [stateKeys]);
+      const { rows: stRows } = await safeQuery('SELECT key, value FROM overseas_state WHERE key = ANY($1)', [
+        stateKeys,
+      ]);
       for (const sr of stRows) stateMap.set(sr.key, sr.value);
     }
 
@@ -329,7 +385,10 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     for (const r of needPrice) {
       // 인메모리 캐시 우선 조회 (Paper/Live 공통)
       const memP = cacheGet<{ price: number }>(`overseas:lastprice:${r.stock_code}`)?.price ?? 0;
-      if (memP > 0) { r.last_price = memP; continue; }
+      if (memP > 0) {
+        r.last_price = memP;
+        continue;
+      }
       // Live 모드: KIS API 폴백
       if (!viewIsPaper) {
         try {
@@ -341,12 +400,17 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
               [p.currentPrice, r.stock_code],
             ).catch(() => {});
           }
-        } catch { /* 시세 조회 실패 시 기존 폴백 사용 */ }
+        } catch {
+          /* 시세 조회 실패 시 기존 폴백 사용 */
+        }
       }
     }
 
     if (viewIsPaper && osRows.length > 0) {
-      logger.info(`[PAPER_OS_HOLDINGS] ${osRows.length}행: ${osRows.map((r: any) => `${r.stock_code} qty=${r.quantity} avg=${r.avg_price} last=${r.last_price}`).join(' | ')}`, { component: 'DASHBOARD' });
+      logger.info(
+        `[PAPER_OS_HOLDINGS] ${osRows.length}행: ${osRows.map((r: any) => `${r.stock_code} qty=${r.quantity} avg=${r.avg_price} last=${r.last_price}`).join(' | ')}`,
+        { component: 'DASHBOARD' },
+      );
     }
     for (const r of osRows) {
       const code = String(r.stock_code);
@@ -355,12 +419,12 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       // last_price 우선순위: DB last_price → 인메모리 가격 캐시 → avg_price 폴백
       const dbLastP = Number(r.last_price ?? 0);
       const memPrice = cacheGet<{ price: number }>(`overseas:lastprice:${code}`)?.price ?? 0;
-      const lastP = dbLastP > 0 ? dbLastP : (memPrice > 0 ? memPrice : avgP);
+      const lastP = dbLastP > 0 ? dbLastP : memPrice > 0 ? memPrice : avgP;
       const curP = lastP;
       overseasTotalInvested += avgP * qty;
       overseasMarketValueUsd += curP * qty;
 
-      const wItem = GLOBAL_WATCHLIST.find(w => w.code === code);
+      const wItem = GLOBAL_WATCHLIST.find((w) => w.code === code);
       const sector = wItem?.sector ?? '';
       const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
       const isMediumBeta = SECTOR_CLASS.MEDIUM_BETA.includes(sector);
@@ -379,22 +443,24 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
             const v = JSON.parse(dynRaw);
             if (dynTp == null) dynTp = Number(v.tp);
             if (dynSl == null) dynSl = Number(v.sl);
-          } catch { /* skip */ }
+          } catch {
+            /* skip */
+          }
         }
       }
       // 섹터 기반 폴백 SL (동적 값 없을 때만)
       const fallbackSl = isHighBeta ? -8.0 : isMediumBeta ? -5.0 : isDefense ? -4.0 : -5.0;
-      const baseSl = dynSl != null && isFinite(dynSl) ? dynSl : fallbackSl;
+      const baseSl = dynSl != null && Number.isFinite(dynSl) ? dynSl : fallbackSl;
 
       // ── 부분익절 단계: risk-intelligence.ts 함수 사용 (동기화) ──
       const partialStageNum = Number(stateMap.get(`${pfx}partial_tp_stage_${code}`) ?? 0);
       const tpStages = getPartialTpStages(sector);
       // 다음 부분익절 목표
-      const nextPartialStage = tpStages.find(s => s.stage > partialStageNum);
+      const nextPartialStage = tpStages.find((s) => s.stage > partialStageNum);
       const nextPartialTpPct = nextPartialStage?.triggerPct ?? null;
       // 동적 Hard TP (매매엔진 값 우선, 없으면 섹터 기반 폴백)
       const fallbackHardTp = isHighBeta ? 25.0 : isDefense ? 18.0 : 20.0;
-      const hardTp = dynTp != null && isFinite(dynTp) ? dynTp : fallbackHardTp;
+      const hardTp = dynTp != null && Number.isFinite(dynTp) ? dynTp : fallbackHardTp;
       // 실질 TP = 다음 부분익절 목표 or hard TP
       const effectiveTpPct = nextPartialTpPct ?? hardTp;
 
@@ -410,9 +476,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       const maxTrail = isHighBeta ? -5.0 : isDefense ? -3.0 : -4.0;
       const dynTrailDrop = Math.max(minTrail, Math.min(maxTrail, atrTrail));
       // 트레일링 활성 시: 고점 대비 dynTrailDrop% = 매도, 이를 평단 기준 %로 변환
-      const trailStopPct = trailActive && maxPrice > 0 && avgP > 0
-        ? ((maxPrice * (1 + dynTrailDrop / 100) - avgP) / avgP) * 100
-        : baseSl;
+      const trailStopPct =
+        trailActive && maxPrice > 0 && avgP > 0 ? ((maxPrice * (1 + dynTrailDrop / 100) - avgP) / avgP) * 100 : baseSl;
       // 실질 SL = 트레일링 활성이면 트레일스톱, 아니면 동적/고정 SL
       const effectiveSlPct = trailActive ? Math.max(trailStopPct, baseSl) : baseSl;
 
@@ -436,33 +501,31 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
         scalp_sl: r.scalp_sl != null ? Number(r.scalp_sl) : null,
       });
     }
-  } catch { /* overseas table may not exist */ }
+  } catch {
+    /* overseas table may not exist */
+  }
 
   // ── 국내 + 해외 합산 ──
   let FX_RATE = await getFxRate();
   if (FX_RATE <= 0) FX_RATE = 1420; // 비상 폴백 (환율 조회 실패 시)
-  const overseasInvestedKrw = (isNaN(overseasTotalInvested) ? 0 : overseasTotalInvested) * FX_RATE;
-  const overseasMarketValueKrw = (isNaN(overseasMarketValueUsd) ? 0 : overseasMarketValueUsd) * FX_RATE;
+  const overseasInvestedKrw = (Number.isNaN(overseasTotalInvested) ? 0 : overseasTotalInvested) * FX_RATE;
+  const overseasMarketValueKrw = (Number.isNaN(overseasMarketValueUsd) ? 0 : overseasMarketValueUsd) * FX_RATE;
 
   // overseas_state: Live=KRW 저장, Paper=USD 저장 → 통합증거금 KRW 변환
-  const rawOverseasCash = isNaN(overseasCash) ? 0 : overseasCash;
+  const rawOverseasCash = Number.isNaN(overseasCash) ? 0 : overseasCash;
   const overseasCashKrw = viewIsPaper ? rawOverseasCash * FX_RATE : rawOverseasCash;
 
   // ── KIS 권위 데이터 (실전모드: 체인 DB 대신 KIS 실계좌 수치 사용) ──
-  const kisDomEval = balance.totalEvalAmount ?? 0;       // 국내 증권 시가평가 (KIS)
+  const kisDomEval = balance.totalEvalAmount ?? 0; // 국내 증권 시가평가 (KIS)
   const kisPurchaseCost = (balance as any).purchaseCost ?? 0; // 국내 매입원가 (KIS)
 
   // 국내 투자원가: Live=KIS purchaseCost 우선
-  const domesticInvested = !viewIsPaper && kisPurchaseCost > 0
-    ? kisPurchaseCost : (totalInvested || 0);
+  const domesticInvested = !viewIsPaper && kisPurchaseCost > 0 ? kisPurchaseCost : totalInvested || 0;
   // 국내 시가평가:
   // - Live: KIS totalEvalAmount 우선 (DB 체인보다 KIS가 정확)
   // - Paper: balance.totalEvalAmount 사용 (cash와 같은 FIFO 원장 소스 — transaction_chains와 혼용 시 이중계산 방지)
-  const domesticMarketValue = kisDomEval > 0
-    ? kisDomEval
-    : viewIsPaper
-      ? (balance.totalEvalAmount ?? 0)
-      : (totalChainInvested + totalChainPnl);
+  const domesticMarketValue =
+    kisDomEval > 0 ? kisDomEval : viewIsPaper ? (balance.totalEvalAmount ?? 0) : totalChainInvested + totalChainPnl;
 
   // ══ 통합증거금: 현금 계산 ══
   let actualCashSource: string = balance.cashSource ?? 'unknown';
@@ -498,31 +561,32 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   // Live: KIS netAsset(nass_amt=순자산) 기반 — maxBuyAmt+totalEvalAmount 이중계산 방지
   // Paper: rawCash(미제한) 사용 — actualCash(paperCap 제한)는 주문가능 표시에만 사용
   const kisNetAsset = !viewIsPaper ? ((balance as any).netAsset ?? 0) : 0;
-  const rawCashSafe = isNaN(rawCash) || !rawCash ? 0 : rawCash;
-  const safeDomestic = isNaN(domesticMarketValue) ? 0 : domesticMarketValue;
-  const safeOverseasMV = isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw;
-  const safeOverseasCashKrw = isNaN(overseasCashKrw) ? 0 : Math.max(0, overseasCashKrw);
+  const rawCashSafe = Number.isNaN(rawCash) || !rawCash ? 0 : rawCash;
+  const safeDomestic = Number.isNaN(domesticMarketValue) ? 0 : domesticMarketValue;
+  const safeOverseasMV = Number.isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw;
+  const safeOverseasCashKrw = Number.isNaN(overseasCashKrw) ? 0 : Math.max(0, overseasCashKrw);
   // Live: domestic(T+2: kisNetAsset vs rawCash 중 큰 값) + 해외증권 + 해외현금
   // Paper: 미제한 현금 기준 — paperCap은 주문가능(actualCash)에만 적용
   const paperTotalRaw = rawCashSafe + safeDomestic + safeOverseasMV + safeOverseasCashKrw;
   if (viewIsPaper) {
-    logger.info(`[PAPER_TOTAL_DEBUG] krCash=${rawCashSafe} krMV=${safeDomestic} osMV_krw=${safeOverseasMV} osCash_krw=${safeOverseasCashKrw} osUSD=${overseasMarketValueUsd.toFixed(2)} osCashUSD=${overseasCash?.toFixed?.(2)??0} fx=${FX_RATE} total=${paperTotalRaw}`, { component: 'DASHBOARD' });
+    logger.info(
+      `[PAPER_TOTAL_DEBUG] krCash=${rawCashSafe} krMV=${safeDomestic} osMV_krw=${safeOverseasMV} osCash_krw=${safeOverseasCashKrw} osUSD=${overseasMarketValueUsd.toFixed(2)} osCashUSD=${overseasCash?.toFixed?.(2) ?? 0} fx=${FX_RATE} total=${paperTotalRaw}`,
+      { component: 'DASHBOARD' },
+    );
   }
   const grandTotalValue = !viewIsPaper
-    ? (kisNetAsset > 0
-        ? Math.max(kisNetAsset, rawCashSafe) + safeOverseasMV // 통합증거금: overseas_cash는 kisNetAsset(nass_amt)에 이미 포함 — 이중계산 방지
-        : rawCashSafe + safeDomestic + safeOverseasMV)
+    ? kisNetAsset > 0
+      ? Math.max(kisNetAsset, rawCashSafe) + safeOverseasMV // 통합증거금: overseas_cash는 kisNetAsset(nass_amt)에 이미 포함 — 이중계산 방지
+      : rawCashSafe + safeDomestic + safeOverseasMV
     : paperTotalRaw;
 
   // 비중(weight) 계산 — grandTotalValue 기준 시가 기반 통합 비중
   for (const ch of enrichedChains as any[]) {
-    const marketVal = ch.currentPrice > 0
-      ? ch.currentPrice * Number(ch.total_quantity || 0)
-      : ch.invested; // 시세 없으면 원가 폴백
+    const marketVal = ch.currentPrice > 0 ? ch.currentPrice * Number(ch.total_quantity || 0) : ch.invested; // 시세 없으면 원가 폴백
     ch.weight = grandTotalValue > 0 ? Math.round((marketVal / grandTotalValue) * 1000) / 10 : 0;
   }
   for (const h of overseasHoldings as any[]) {
-    const marketKrw = (h.last_price * h.quantity) * FX_RATE;
+    const marketKrw = h.last_price * h.quantity * FX_RATE;
     h.weight = grandTotalValue > 0 ? Math.round((marketKrw / grandTotalValue) * 1000) / 10 : 0;
   }
 
@@ -575,9 +639,14 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       domesticInvested: Math.round(domesticInvested),
       domesticEval: Math.round(domesticMarketValue), // 국내 증권 시가평가 (비중 계산용)
       domesticCash: unifiedCash, // 국내 주문가능 현금 (KR 매수 한도 기준)
-      unrealizedPnl: Math.round(viewIsPaper ? totalChainPnl : (balance.totalProfitLoss || totalChainPnl)), // 국내 전용 (해외는 overseas.unrealizedPnlKrw)
+      unrealizedPnl: Math.round(viewIsPaper ? totalChainPnl : balance.totalProfitLoss || totalChainPnl), // 국내 전용 (해외는 overseas.unrealizedPnlKrw)
       realizedPnl: viewIsPaper ? Math.round(balance.totalProfitLoss ?? 0) : Math.round(liveRealizedPnl),
-      pnl: Math.round(totalPnl + (isNaN(overseasMarketValueKrw - overseasInvestedKrw) ? 0 : (overseasMarketValueKrw - overseasInvestedKrw))),
+      pnl: Math.round(
+        totalPnl +
+          (Number.isNaN(overseasMarketValueKrw - overseasInvestedKrw)
+            ? 0
+            : overseasMarketValueKrw - overseasInvestedKrw),
+      ),
       pnlPct: Math.round(totalPnlPct * 100) / 100,
       positions: balance.positions ?? [],
     },
@@ -588,7 +657,10 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       totalMarketValueUsd: overseasMarketValueUsd,
       totalMarketValueKrw: overseasMarketValueKrw,
       unrealizedPnlKrw: Math.round(overseasMarketValueKrw - overseasInvestedKrw),
-      unrealizedPnlPct: overseasInvestedKrw > 0 ? Math.round((overseasMarketValueKrw - overseasInvestedKrw) / overseasInvestedKrw * 10000) / 100 : 0,
+      unrealizedPnlPct:
+        overseasInvestedKrw > 0
+          ? Math.round(((overseasMarketValueKrw - overseasInvestedKrw) / overseasInvestedKrw) * 10000) / 100
+          : 0,
       cashUsd: overseasCashUsdDisplay,
       cashKrw: overseasCashForDisplay, // Paper=해외 paper 현금(KRW), Live=통합증거금
       fxRate: FX_RATE,
@@ -604,7 +676,12 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     strategy: strategy ?? { mode: 'SWING' },
     killSwitch: getKillSwitchStatusAll(),
     cooldown: await runWithMode(viewIsPaper, async () => {
-      const status = await getCooldownStatus().catch(() => ({ active: false, consecutive: 0, remainingMinutes: 0, reason: '' }));
+      const status = await getCooldownStatus().catch(() => ({
+        active: false,
+        consecutive: 0,
+        remainingMinutes: 0,
+        reason: '',
+      }));
       const { isEodOnlyMode } = await import('../../../risk/trade-gate-stats.js');
       const eodOnly = await isEodOnlyMode().catch(() => false);
       return { ...status, eodOnly };
@@ -617,14 +694,16 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       const limit = calcDailyLossLimit(Math.round(grandTotalValue), viewIsPaper);
       // 해외 리스크 베이스: Paper=해외현금+시가, Live=시가만(현금은 통합증거금으로 kisNetAsset에 포함)
       const osPortfolioKrw = !viewIsPaper
-        ? (isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw)
-        : (overseasCashForDisplay || 0) + (isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw);
+        ? Number.isNaN(overseasMarketValueKrw)
+          ? 0
+          : overseasMarketValueKrw
+        : (overseasCashForDisplay || 0) + (Number.isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw);
       const osPortfolioUsd = FX_RATE > 0 ? osPortfolioKrw / FX_RATE : 0;
       return {
         maxDailyDrawdownKrw: limit.limitAmount,
         dailyDrawdownPct: limit.pct,
         basis: limit.basis,
-        overseasLimitUsd: Math.round(osPortfolioUsd * limit.pct / 100),
+        overseasLimitUsd: Math.round((osPortfolioUsd * limit.pct) / 100),
         overseasBasisUsd: Math.round(osPortfolioUsd),
       };
     })(),
@@ -634,11 +713,15 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     suggestedActions: (() => {
       const thisMode = viewIsPaper ? 'paper' : 'live';
       const otherMode = viewIsPaper ? 'live' : 'paper';
-      const current = buildSuggestedActions(overseasHoldings, displayChains, grandTotalValue, actualCash)
-        .map(a => ({ ...a, mode: thisMode as 'paper' | 'live' }));
+      const current = buildSuggestedActions(overseasHoldings, displayChains, grandTotalValue, actualCash).map((a) => ({
+        ...a,
+        mode: thisMode as 'paper' | 'live',
+      }));
       const otherCache = getDashCache(otherMode) as any;
-      const other = ((otherCache?.data as any)?.suggestedActions ?? [])
-        .map((a: any) => ({ ...a, mode: otherMode as 'paper' | 'live' }));
+      const other = ((otherCache?.data as any)?.suggestedActions ?? []).map((a: any) => ({
+        ...a,
+        mode: otherMode as 'paper' | 'live',
+      }));
       return [...current, ...other].slice(0, 10);
     })(),
     monthlyGoal: buildMonthlyGoal(grandTotalValue, totalPnl, overseasMarketValueKrw, overseasInvestedKrw),

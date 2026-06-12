@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
-import { getPool } from '../../db/client.js';
-import { logger } from '../../utils/logger.js';
-import { getAllStrategyPerformances } from '../../risk/strategy-performance.js';
 import { cacheGet, cacheSet } from '../../cache/memory.js';
+import { getPool } from '../../db/client.js';
+import { getAllStrategyPerformances } from '../../risk/strategy-performance.js';
+import { logger } from '../../utils/logger.js';
 
 export const strategyLabRoutes = new Hono();
 
@@ -16,18 +16,20 @@ strategyLabRoutes.get('/strategy-lab/overview', async (c) => {
     const [paperPerfs, livePerfs, graduations] = await Promise.all([
       getAllStrategyPerformances(30, true),
       getAllStrategyPerformances(30, false),
-      getPool().query(`
+      getPool()
+        .query(`
         SELECT * FROM strategy_graduations
         WHERE status IN ('PENDING', 'AUTO_APPLIED', 'APPROVED')
         ORDER BY created_at DESC LIMIT 50
-      `).catch(() => ({ rows: [] })),
+      `)
+        .catch(() => ({ rows: [] })),
     ]);
 
-    const modes = new Set([...paperPerfs.map(p => p.mode), ...livePerfs.map(p => p.mode)]);
-    const strategies = [...modes].map(mode => ({
+    const modes = new Set([...paperPerfs.map((p) => p.mode), ...livePerfs.map((p) => p.mode)]);
+    const strategies = [...modes].map((mode) => ({
       mode,
-      paper: paperPerfs.find(p => p.mode === mode) ?? null,
-      live: livePerfs.find(p => p.mode === mode) ?? null,
+      paper: paperPerfs.find((p) => p.mode === mode) ?? null,
+      live: livePerfs.find((p) => p.mode === mode) ?? null,
       graduation: graduations.rows.find((g: any) => g.strategy_mode === mode) ?? null,
     }));
 
@@ -42,14 +44,16 @@ strategyLabRoutes.get('/strategy-lab/overview', async (c) => {
 // ── GET /strategy-lab/insights ─────────────────────────────────
 strategyLabRoutes.get('/strategy-lab/insights', async (c) => {
   try {
-    const result = await getPool().query(`
+    const result = await getPool()
+      .query(`
       SELECT * FROM strategy_insights
       WHERE sample_count >= 5
       ORDER BY
         CASE WHEN is_actionable THEN 0 ELSE 1 END,
         win_rate DESC
       LIMIT 50
-    `).catch(() => ({ rows: [] }));
+    `)
+      .catch(() => ({ rows: [] }));
     return c.json({ insights: result.rows });
   } catch (e: any) {
     return c.json({ insights: [], error: e.message }, 500);
@@ -60,17 +64,21 @@ strategyLabRoutes.get('/strategy-lab/insights', async (c) => {
 strategyLabRoutes.get('/strategy-lab/approvals', async (c) => {
   try {
     const [pending, history] = await Promise.all([
-      getPool().query(`
+      getPool()
+        .query(`
         SELECT * FROM strategy_graduations
         WHERE status = 'PENDING' AND (expires_at IS NULL OR expires_at > NOW())
         ORDER BY created_at DESC
-      `).catch(() => ({ rows: [] })),
-      getPool().query(`
+      `)
+        .catch(() => ({ rows: [] })),
+      getPool()
+        .query(`
         SELECT * FROM strategy_graduations
         WHERE status != 'PENDING'
         ORDER BY decided_at DESC NULLS LAST, created_at DESC
         LIMIT 30
-      `).catch(() => ({ rows: [] })),
+      `)
+        .catch(() => ({ rows: [] })),
     ]);
     return c.json({ pending: pending.rows, history: history.rows });
   } catch (e: any) {
@@ -112,12 +120,15 @@ strategyLabRoutes.post('/strategy-lab/approvals/:id/approve', async (c) => {
     },
   };
 
-  const { rowCount } = await pool.query(`
+  const { rowCount } = await pool.query(
+    `
     UPDATE strategy_graduations
     SET status = 'APPROVED', decided_by = 'CEO', approval_reason = $1,
         decided_at = NOW(), applied_changes = $2
     WHERE id = $3
-  `, [reason, JSON.stringify(appliedChanges), id]);
+  `,
+    [reason, JSON.stringify(appliedChanges), id],
+  );
 
   if (!rowCount) return c.json({ ok: false, error: '업데이트 실패' }, 500);
 
@@ -136,11 +147,14 @@ strategyLabRoutes.post('/strategy-lab/approvals/:id/reject', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const reason = (body as any).reason ?? '';
 
-  const { rowCount } = await getPool().query(`
+  const { rowCount } = await getPool().query(
+    `
     UPDATE strategy_graduations
     SET status = 'REJECTED', decided_by = 'CEO', rejected_reason = $1, decided_at = NOW()
     WHERE id = $2 AND status = 'PENDING'
-  `, [reason, id]);
+  `,
+    [reason, id],
+  );
 
   if (!rowCount) return c.json({ ok: false, error: '유효한 대기 건이 없습니다' }, 404);
   logger.info(`❌ CEO 거부: 졸업 #${id}`, { component: 'STRATEGY_LAB' });
@@ -150,7 +164,7 @@ strategyLabRoutes.post('/strategy-lab/approvals/:id/reject', async (c) => {
 // ── POST /strategy-lab/refresh-insights ─────────────────────────
 strategyLabRoutes.post('/strategy-lab/refresh-insights', async (c) => {
   import('../../automation/strategy-lab/insight-engine.js')
-    .then(m => m.generateAndStoreInsights(60))
-    .catch(e => logger.error(`인사이트 갱신 실패: ${e}`, { component: 'STRATEGY_LAB' }));
+    .then((m) => m.generateAndStoreInsights(60))
+    .catch((e) => logger.error(`인사이트 갱신 실패: ${e}`, { component: 'STRATEGY_LAB' }));
   return c.json({ ok: true, message: '인사이트 분석 시작' });
 });

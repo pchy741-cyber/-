@@ -4,8 +4,9 @@
  * 구독형 AI(Opus급)가 API 토큰 비용 없이 매매 파라미터를 동적으로 조절.
  * 모든 오버라이드는 TTL 기반 자동 만료 + 모드(paper/live) 격리.
  */
-import { getPool } from '../db/client.js';
+
 import { getCtxIsPaper } from '../config/context.js';
+import { getPool } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 
 // ── 타입 ──────────────────────────────────────────────────────────────
@@ -29,17 +30,17 @@ export interface AiCommand {
   key: string;
   value?: unknown;
   reason?: string;
-  ttlMinutes?: number;  // 기본 120분 (2시간)
+  ttlMinutes?: number; // 기본 120분 (2시간)
 }
 
 // ── 밸리데이션 범위 (안전 가드) ─────────────────────────────────────
 const VALUE_BOUNDS: Record<string, { min: number; max: number }> = {
-  scoreAdj:       { min: -20, max: 20 },
-  minBuyScore:    { min: 55, max: 95 },
-  maxPositionPct: { min: 5,  max: 25 },
-  stopLossPct:    { min: -10, max: -1 },
-  takeProfitPct:  { min: 2,  max: 15 },
-  trailTighten:   { min: 0,  max: 3 },
+  scoreAdj: { min: -20, max: 20 },
+  minBuyScore: { min: 55, max: 95 },
+  maxPositionPct: { min: 5, max: 25 },
+  stopLossPct: { min: -10, max: -1 },
+  takeProfitPct: { min: 2, max: 15 },
+  trailTighten: { min: 0, max: 3 },
 };
 
 function validateBound(key: string, val: unknown): string | null {
@@ -65,7 +66,7 @@ function cacheKey(key: string, isPaper: boolean): string {
 export async function loadOverridesCache(): Promise<void> {
   try {
     const { rows } = await getPool().query<AiOverride>(
-      `SELECT * FROM ai_overrides WHERE expires_at IS NULL OR expires_at > NOW()`
+      `SELECT * FROM ai_overrides WHERE expires_at IS NULL OR expires_at > NOW()`,
     );
     _cache.clear();
     for (const r of rows) {
@@ -137,9 +138,7 @@ export async function setOverride(
     return { ok: false, error: 'Kill switch 오버라이드는 금지됨' };
   }
 
-  const expiresAt = ttlMinutes > 0
-    ? new Date(Date.now() + ttlMinutes * 60_000).toISOString()
-    : null;
+  const expiresAt = ttlMinutes > 0 ? new Date(Date.now() + ttlMinutes * 60_000).toISOString() : null;
 
   try {
     await getPool().query(
@@ -161,7 +160,10 @@ export async function setOverride(
 
     // 감사 로그
     await logCommand('setOverride', { category, key, value, reason, ttlMinutes }, 'OK', null, mode);
-    logger.info(`🤖 AI 오버라이드 설정: [${category}] ${key} = ${JSON.stringify(value)} (TTL=${ttlMinutes}분, reason=${reason})`, { component: 'AI_LOOP' });
+    logger.info(
+      `🤖 AI 오버라이드 설정: [${category}] ${key} = ${JSON.stringify(value)} (TTL=${ttlMinutes}분, reason=${reason})`,
+      { component: 'AI_LOOP' },
+    );
     return { ok: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -187,7 +189,7 @@ export async function removeOverride(key: string, isPaper?: boolean): Promise<{ 
 export async function cleanupExpired(): Promise<number> {
   try {
     const { rowCount } = await getPool().query(
-      `DELETE FROM ai_overrides WHERE expires_at IS NOT NULL AND expires_at < NOW()`
+      `DELETE FROM ai_overrides WHERE expires_at IS NOT NULL AND expires_at < NOW()`,
     );
     const count = rowCount ?? 0;
     if (count > 0) {
@@ -218,10 +220,7 @@ export async function getAllOverrides(isPaper?: boolean): Promise<AiOverride[]> 
 
 export async function getCommandHistory(limit: number = 50): Promise<unknown[]> {
   try {
-    const { rows } = await getPool().query(
-      `SELECT * FROM ai_command_log ORDER BY created_at DESC LIMIT $1`,
-      [limit],
-    );
+    const { rows } = await getPool().query(`SELECT * FROM ai_command_log ORDER BY created_at DESC LIMIT $1`, [limit]);
     return rows;
   } catch {
     return [];
@@ -242,5 +241,7 @@ async function logCommand(
        VALUES ($1, $2, $3, $4, $5)`,
       [type, JSON.stringify(payload), result, rejectReason, isPaper],
     );
-  } catch { /* 로그 실패는 무시 */ }
+  } catch {
+    /* 로그 실패는 무시 */
+  }
 }

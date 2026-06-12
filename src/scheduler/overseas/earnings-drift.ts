@@ -2,18 +2,19 @@
  * 어닝 드리프트 사냥 — 실적 발표 후 갭업/갭다운 + 고거래량 드리프트 감지
  * 어닝 서프라이즈 후 가격이 수일간 같은 방향으로 움직이는 PEAD 효과 활용
  */
-import { logger } from '../../utils/logger.js';
+
 import { getUpcomingEarnings } from '../../market/external-signals.js';
+import { logger } from '../../utils/logger.js';
 import type { TechResult } from './sell-logic.js';
 
 // ── 타입 ──
 
 export interface EarningsDriftSignal {
   code: string;
-  gapPct: number;        // 갭업/갭다운 %
-  volumeRatio: number;   // 평균 대비 거래량 배수
+  gapPct: number; // 갭업/갭다운 %
+  volumeRatio: number; // 평균 대비 거래량 배수
   direction: 'BULL' | 'BEAR';
-  strength: number;      // 0~1 신호 강도
+  strength: number; // 0~1 신호 강도
 }
 
 // ── 캐시 (같은 어닝 이벤트 중복 감지 방지) ──
@@ -26,19 +27,14 @@ const DRIFT_CACHE_TTL = 24 * 60 * 60_000; // 24시간
  * - getUpcomingEarnings로 최근 어닝 발표 종목 확인 (daysUntil이 0~-2인 종목)
  * - 갭업 + 고거래량 = BULL 드리프트 신호
  */
-export async function detectEarningsDrift(
-  codes: string[],
-  techResults: TechResult[],
-): Promise<EarningsDriftSignal[]> {
+export async function detectEarningsDrift(codes: string[], techResults: TechResult[]): Promise<EarningsDriftSignal[]> {
   const signals: EarningsDriftSignal[] = [];
 
   try {
     // 최근 어닝 발표 종목 조회 (daysUntil 0 ~ -2 = 방금 발표됨)
     const earnings = await getUpcomingEarnings(codes);
     const recentEarningsCodes = new Set(
-      earnings
-        .filter(e => e.daysUntil <= 0 && e.daysUntil >= -2)
-        .map(e => e.code),
+      earnings.filter((e) => e.daysUntil <= 0 && e.daysUntil >= -2).map((e) => e.code),
     );
 
     if (recentEarningsCodes.size === 0) return signals;
@@ -61,10 +57,7 @@ export async function detectEarningsDrift(
 
       // 거래량 배수 추정 (dayRangePct 기반 프록시 — 정확한 평균 거래량 없음)
       // 높은 dayRangePct + isBigMover = 고거래량 신호
-      const volumeRatio = tech.isBigMover ? 3.0
-        : tech.isMomentum ? 2.0
-        : tech.dayRangePct > 60 ? 1.5
-        : 1.0;
+      const volumeRatio = tech.isBigMover ? 3.0 : tech.isMomentum ? 2.0 : tech.dayRangePct > 60 ? 1.5 : 1.0;
 
       // 거래량 2배 미만이면 스킵
       if (volumeRatio < 2.0) continue;

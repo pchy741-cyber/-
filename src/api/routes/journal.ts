@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
+import { fetchExchangeRate } from '../../automation/macro-data.js';
 import { OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { getPool } from '../../db/client.js';
-import { fetchExchangeRate } from '../../automation/macro-data.js';
 import { logger } from '../../utils/logger.js';
 import { resolveRequestMode } from '../guards/live-pin.js';
 
@@ -11,11 +11,11 @@ interface JournalTrade {
   market: 'KR' | 'US';
   code: string;
   name: string;
-  pnlPct: number;        // 수수료 차감 후 실수익률
-  pnlPctGross: number;   // 수수료 미반영 (참고용)
-  pnlAmountKrw: number;  // 원화 환산 수익금
-  pnlAmount: number;     // 시장 기준 통화 (KR=원, US=달러)
-  feeKrw: number;        // 수수료 원화
+  pnlPct: number; // 수수료 차감 후 실수익률
+  pnlPctGross: number; // 수수료 미반영 (참고용)
+  pnlAmountKrw: number; // 원화 환산 수익금
+  pnlAmount: number; // 시장 기준 통화 (KR=원, US=달러)
+  feeKrw: number; // 수수료 원화
   entryPrice: number;
   exitPrice: number;
   quantity: number;
@@ -46,11 +46,16 @@ journalRoutes.get('/journal', async (c) => {
 
   // 환율 조회 (US→KRW 변환용)
   let fxRate = 1400; // 기본값
-  try { fxRate = await fetchExchangeRate(); } catch { /* 기본값 사용 */ }
+  try {
+    fxRate = await fetchExchangeRate();
+  } catch {
+    /* 기본값 사용 */
+  }
 
   try {
     // ── 국내 종결 체인 (transaction_chains) ──
-    const { rows: krRows } = await pool.query(`
+    const { rows: krRows } = await pool.query(
+      `
       SELECT
         tc.stock_code,
         w.stock_name,
@@ -80,7 +85,9 @@ journalRoutes.get('/journal', async (c) => {
         AND tc.is_paper = $2
       ORDER BY tc.closed_at DESC
       LIMIT 200
-    `, [days, viewIsPaper]);
+    `,
+      [days, viewIsPaper],
+    );
 
     for (const r of krRows) {
       const entryPrice = Number(r.avg_buy_price ?? 0);
@@ -88,12 +95,14 @@ journalRoutes.get('/journal', async (c) => {
       const qty = Number(r.total_quantity ?? 0);
       const invested = Number(r.total_invested ?? 0);
 
-      const pnlGross = (r.realized_pnl != null && Number(r.realized_pnl) !== 0)
-        ? Number(r.realized_pnl)
-        : exitPrice > 0 && entryPrice > 0
-          ? (exitPrice - entryPrice) * qty : 0;
-      const pnlPctGross = invested > 0 ? (pnlGross / invested) * 100
-        : entryPrice > 0 ? ((exitPrice - entryPrice) / entryPrice) * 100 : 0;
+      const pnlGross =
+        r.realized_pnl != null && Number(r.realized_pnl) !== 0
+          ? Number(r.realized_pnl)
+          : exitPrice > 0 && entryPrice > 0
+            ? (exitPrice - entryPrice) * qty
+            : 0;
+      const pnlPctGross =
+        invested > 0 ? (pnlGross / invested) * 100 : entryPrice > 0 ? ((exitPrice - entryPrice) / entryPrice) * 100 : 0;
 
       // 국내 수수료: 매수 0.015% + 매도 0.015% + 거래세 0.18% ≈ 0.21%
       const krFeeRate = 0.0021;
@@ -103,8 +112,8 @@ journalRoutes.get('/journal', async (c) => {
 
       const openedAt = r.opened_at ? new Date(r.opened_at).toISOString() : '';
       const closedAt = r.closed_at ? new Date(r.closed_at).toISOString() : '';
-      const holdingDays = openedAt && closedAt
-        ? (new Date(closedAt).getTime() - new Date(openedAt).getTime()) / 86_400_000 : 0;
+      const holdingDays =
+        openedAt && closedAt ? (new Date(closedAt).getTime() - new Date(openedAt).getTime()) / 86_400_000 : 0;
 
       trades.push({
         market: 'KR',
@@ -131,7 +140,8 @@ journalRoutes.get('/journal', async (c) => {
 
   try {
     // ── 해외 완결 매매 (SELL 기반) ──
-    const { rows: usRows } = await pool.query(`
+    const { rows: usRows } = await pool.query(
+      `
       SELECT
         s.stock_code   AS code,
         s.created_at   AS closed_at,
@@ -162,7 +172,9 @@ journalRoutes.get('/journal', async (c) => {
         AND s.trading_mode = $2
       ORDER BY s.created_at DESC
       LIMIT 200
-    `, [days, viewTradingMode]);
+    `,
+      [days, viewTradingMode],
+    );
 
     for (const r of usRows) {
       const entryPrice = Number(r.avg_buy_price ?? 0);
@@ -188,8 +200,8 @@ journalRoutes.get('/journal', async (c) => {
 
       const openedAt = r.opened_at ? new Date(r.opened_at).toISOString() : '';
       const closedAt = r.closed_at ? new Date(r.closed_at).toISOString() : '';
-      const holdingDays = openedAt && closedAt
-        ? (new Date(closedAt).getTime() - new Date(openedAt).getTime()) / 86_400_000 : 0;
+      const holdingDays =
+        openedAt && closedAt ? (new Date(closedAt).getTime() - new Date(openedAt).getTime()) / 86_400_000 : 0;
 
       const sellReasoning = String(r.sell_reasoning ?? '');
       const closeReason = sellReasoning.replace(/\[avgBuy:[^\]]+\]\s*/, '').trim();
@@ -221,7 +233,7 @@ journalRoutes.get('/journal', async (c) => {
 
   // ── 승률 분석 ──
   const total = trades.length;
-  const wins = trades.filter(t => t.pnlPct > 0).length;
+  const wins = trades.filter((t) => t.pnlPct > 0).length;
   const avgPnlPct = total > 0 ? trades.reduce((s, t) => s + t.pnlPct, 0) / total : 0;
   const totalFeeKrw = trades.reduce((s, t) => s + t.feeKrw, 0);
   const totalPnlKrw = trades.reduce((s, t) => s + t.pnlAmountKrw, 0);
@@ -246,16 +258,22 @@ journalRoutes.get('/journal', async (c) => {
     .sort((a, b) => b.count - a.count);
 
   // 승/패 평균 보유일 분석
-  const winTrades = trades.filter(t => t.pnlPct > 0);
-  const lossTrades = trades.filter(t => t.pnlPct <= 0);
-  const avgWinHoldDays = winTrades.length > 0
-    ? Math.round(winTrades.reduce((s, t) => s + t.holdingDays, 0) / winTrades.length * 10) / 10 : 0;
-  const avgLossHoldDays = lossTrades.length > 0
-    ? Math.round(lossTrades.reduce((s, t) => s + t.holdingDays, 0) / lossTrades.length * 10) / 10 : 0;
-  const avgWinPct = winTrades.length > 0
-    ? Math.round(winTrades.reduce((s, t) => s + t.pnlPct, 0) / winTrades.length * 100) / 100 : 0;
-  const avgLossPct = lossTrades.length > 0
-    ? Math.round(lossTrades.reduce((s, t) => s + t.pnlPct, 0) / lossTrades.length * 100) / 100 : 0;
+  const winTrades = trades.filter((t) => t.pnlPct > 0);
+  const lossTrades = trades.filter((t) => t.pnlPct <= 0);
+  const avgWinHoldDays =
+    winTrades.length > 0
+      ? Math.round((winTrades.reduce((s, t) => s + t.holdingDays, 0) / winTrades.length) * 10) / 10
+      : 0;
+  const avgLossHoldDays =
+    lossTrades.length > 0
+      ? Math.round((lossTrades.reduce((s, t) => s + t.holdingDays, 0) / lossTrades.length) * 10) / 10
+      : 0;
+  const avgWinPct =
+    winTrades.length > 0 ? Math.round((winTrades.reduce((s, t) => s + t.pnlPct, 0) / winTrades.length) * 100) / 100 : 0;
+  const avgLossPct =
+    lossTrades.length > 0
+      ? Math.round((lossTrades.reduce((s, t) => s + t.pnlPct, 0) / lossTrades.length) * 100) / 100
+      : 0;
 
   return c.json({
     trades,
@@ -273,9 +291,10 @@ journalRoutes.get('/journal', async (c) => {
       reasonStats,
       winAvg: { holdDays: avgWinHoldDays, pnlPct: avgWinPct },
       lossAvg: { holdDays: avgLossHoldDays, pnlPct: avgLossPct },
-      profitFactor: lossTrades.length > 0 && avgLossPct !== 0
-        ? Math.round(Math.abs(avgWinPct * winTrades.length / (avgLossPct * lossTrades.length)) * 100) / 100
-        : 0,
+      profitFactor:
+        lossTrades.length > 0 && avgLossPct !== 0
+          ? Math.round(Math.abs((avgWinPct * winTrades.length) / (avgLossPct * lossTrades.length)) * 100) / 100
+          : 0,
     },
     days,
   });

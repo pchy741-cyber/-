@@ -1,9 +1,9 @@
+import { hardInvalidateDashboardCache } from '../cache/dashboard-cache.js';
 import { KR_FEE } from '../config/constants.js';
 import { insertOrder } from '../db/client.js';
 import { getCurrentPrice } from '../kis/market.js';
 import type { OrderResult } from '../kis/order.js';
 import { logger } from '../utils/logger.js';
-import { hardInvalidateDashboardCache } from '../cache/dashboard-cache.js';
 
 // 순환 참조 방지: engine.ts에서 직접 import 하지 않고 lazy import
 let _addPaper: ((n: number) => void) | null = null;
@@ -39,7 +39,9 @@ export async function paperTradeOrder(params: {
     try {
       const currentPrice = await getCurrentPrice(stockCode);
       basePrice = currentPrice?.currentPrice ?? 0;
-    } catch { /* 시세 조회 실패 시 0 → 아래에서 에러 처리 */ }
+    } catch {
+      /* 시세 조회 실패 시 0 → 아래에서 에러 처리 */
+    }
   }
   if (basePrice <= 0) {
     return { success: false, orderNo: '', message: `[모의투자] 현재가 조회 실패: ${stockCode}` };
@@ -47,9 +49,15 @@ export async function paperTradeOrder(params: {
   // 슬리피지: 시가총액 기반 (연구 근거: 대형주 0.05-0.1%, 중소형주 0.3-0.5%)
   // 가격 50만원 이상 = 대형주 추정, 미만 = 중소형주
   const isLargeCap = basePrice >= 500000;
-  const slippagePct = price ? 0 : side === 'BUY'
-    ? (isLargeCap ? 0.001 : 0.003)   // 매수: 대형주 0.1%, 중소형주 0.3%
-    : (isLargeCap ? -0.001 : -0.003); // 매도: 역방향
+  const slippagePct = price
+    ? 0
+    : side === 'BUY'
+      ? isLargeCap
+        ? 0.001
+        : 0.003 // 매수: 대형주 0.1%, 중소형주 0.3%
+      : isLargeCap
+        ? -0.001
+        : -0.003; // 매도: 역방향
   const filledPrice = Math.round(basePrice * (1 + slippagePct));
   const fakeOrderNo = `P${Date.now().toString(36)}`;
 
@@ -93,12 +101,17 @@ export async function paperTradeOrder(params: {
       const costBasis = avgBuy * quantity;
       fns.remove(orderValue - fee, costBasis); // 매도 순수익, 매수원가
     }
-  } catch { /* paper cash tracking 실패해도 주문은 진행 */ }
+  } catch {
+    /* paper cash tracking 실패해도 주문은 진행 */
+  }
 
   hardInvalidateDashboardCache();
-  logger.info(`📝 [PAPER] ${side} ${stockCode} x${quantity} @${filledPrice.toLocaleString()} (${fakeOrderNo}) | 금액${orderValue.toLocaleString()} 수수료${fee.toLocaleString()}원`, {
-    component: 'PAPER_TRADE',
-  });
+  logger.info(
+    `📝 [PAPER] ${side} ${stockCode} x${quantity} @${filledPrice.toLocaleString()} (${fakeOrderNo}) | 금액${orderValue.toLocaleString()} 수수료${fee.toLocaleString()}원`,
+    {
+      component: 'PAPER_TRADE',
+    },
+  );
 
   return {
     success: true,

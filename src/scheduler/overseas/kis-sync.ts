@@ -1,18 +1,17 @@
 /**
  * KIS 실계좌 동기화 — 보유종목 & 현금 정합
  */
-import { config } from '../../config/index.js';
+
+import { fetchExchangeRate } from '../../automation/macro-data.js';
+import { hardInvalidateDashboardCache } from '../../cache/dashboard-cache.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, insertOrder } from '../../db/client.js';
-import { getOverseasBalance, getOverseasBuyableAmount, getOverseasPrice } from '../../kis/overseas.js';
 import { getAccountBalance } from '../../kis/account.js';
-import { fetchExchangeRate } from '../../automation/macro-data.js';
+import { getOverseasBalance, getOverseasBuyableAmount, getOverseasPrice } from '../../kis/overseas.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
+import { cleanupPositionState, getCashKrw, getTimeSinceLastTrade, setCash } from './state.js';
 import { GLOBAL_WATCHLIST } from './watchlist.js';
-import { getCash, getCashKrw, setCash, cleanupPositionState, getTimeSinceLastTrade } from './state.js';
-import { logSystem } from '../../db/client.js';
-import { hardInvalidateDashboardCache } from '../../cache/dashboard-cache.js';
 
 /**
  * KIS 실계좌 잔고와 DB 동기화 — 수동매매 간섭 방지 핵심 함수
@@ -22,17 +21,19 @@ export async function syncHoldingsFromKIS(): Promise<void> {
   try {
     // is_paper = NULL 오염 레코드 정리 (KIS 앱 직접매수 등으로 누락된 케이스)
     // NULL 레코드 중 이미 is_paper=false 행이 있으면 중복 제거, 없으면 live(false)로 전환
-    await getPool().query(`
+    await getPool()
+      .query(`
       DELETE FROM overseas_holdings oh1
       WHERE oh1.is_paper IS NULL
         AND EXISTS (
           SELECT 1 FROM overseas_holdings oh2
           WHERE oh2.stock_code = oh1.stock_code AND oh2.exchange = oh1.exchange AND oh2.is_paper = false
         )
-    `).catch(() => {});
-    await getPool().query(
-      'UPDATE overseas_holdings SET is_paper = false WHERE is_paper IS NULL AND quantity > 0'
-    ).catch(() => {});
+    `)
+      .catch(() => {});
+    await getPool()
+      .query('UPDATE overseas_holdings SET is_paper = false WHERE is_paper IS NULL AND quantity > 0')
+      .catch(() => {});
 
     const exchanges = ['NASDAQ', 'NYSE', 'AMEX', 'TSE', 'TWSE'];
     const allHoldings = new Map<string, { qty: number; avgPrice: number; exchange: string }>();
@@ -49,9 +50,13 @@ export async function syncHoldingsFromKIS(): Promise<void> {
             if (item.currentPrice > 0) kisPriceMap.set(item.stockCode, item.currentPrice);
             const existing = allHoldings.get(item.stockCode);
             if (existing) continue;
-            const wlEntry = GLOBAL_WATCHLIST.find(w => w.code === item.stockCode);
+            const wlEntry = GLOBAL_WATCHLIST.find((w) => w.code === item.stockCode);
             const resolvedExchange = wlEntry?.exchange ?? exch;
-            allHoldings.set(item.stockCode, { qty: item.quantity, avgPrice: item.avgBuyPrice, exchange: resolvedExchange });
+            allHoldings.set(item.stockCode, {
+              qty: item.quantity,
+              avgPrice: item.avgBuyPrice,
+              exchange: resolvedExchange,
+            });
           }
         }
       } catch {
@@ -61,9 +66,11 @@ export async function syncHoldingsFromKIS(): Promise<void> {
       }
     }
 
-    const { rows: dbRows } = await getPool().query(
-      'SELECT stock_code, exchange, quantity, avg_price FROM overseas_holdings WHERE is_paper = false',
-    ).catch(() => ({ rows: [] as Array<{ stock_code: string; exchange: string; quantity: string; avg_price: string }> }));
+    const { rows: dbRows } = await getPool()
+      .query('SELECT stock_code, exchange, quantity, avg_price FROM overseas_holdings WHERE is_paper = false')
+      .catch(() => ({
+        rows: [] as Array<{ stock_code: string; exchange: string; quantity: string; avg_price: string }>,
+      }));
 
     for (const row of dbRows) {
       // API 성공한 거래소만 처리 — 실패한 거래소(마감/오류)는 스킵 (ghost 방지)
@@ -86,32 +93,38 @@ export async function syncHoldingsFromKIS(): Promise<void> {
 
         // 디바운스: KIS API 플래핑 방지 — 2회 연속 감지 시에만 SELL 처리
         const debounceKey = `sync_sell_pending_${code}`;
-        const { rows: debounceRows } = await getPool().query(
-          'SELECT value FROM overseas_state WHERE key = $1',
-          [debounceKey],
-        ).catch(() => ({ rows: [] as Array<{ value: string }> }));
+        const { rows: debounceRows } = await getPool()
+          .query('SELECT value FROM overseas_state WHERE key = $1', [debounceKey])
+          .catch(() => ({ rows: [] as Array<{ value: string }> }));
 
         if (debounceRows.length === 0) {
           // 첫 감지: debounce 상태 저장 + 즉시 재매수 쿨다운 설정
           // (2회 확인 전이라도 이번 사이클에서 재매수 금지 — 예약매도 후 재매수 버그 방지)
-          await getPool().query(
-            `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
-            [debounceKey, String(sellPrice)],
-          ).catch(() => {});
-          getPool().query(
-            `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
-            [`manual_sell_cd_${code}`, JSON.stringify({ at: new Date().toISOString(), pnlPct: 0 })],
-          ).catch(() => {});
-          logger.info(`⏳ KIS동기화: ${code} 잔고 0 첫 감지($${sellPrice.toFixed(2)}) → 재매수 쿨다운 선제 설정`, { component: 'OVERSEAS' });
+          await getPool()
+            .query(
+              `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
+              [debounceKey, String(sellPrice)],
+            )
+            .catch(() => {});
+          getPool()
+            .query(
+              `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
+              [`manual_sell_cd_${code}`, JSON.stringify({ at: new Date().toISOString(), pnlPct: 0 })],
+            )
+            .catch(() => {});
+          logger.info(`⏳ KIS동기화: ${code} 잔고 0 첫 감지($${sellPrice.toFixed(2)}) → 재매수 쿨다운 선제 설정`, {
+            component: 'OVERSEAS',
+          });
           allHoldings.delete(code);
           continue;
         }
 
         // 2회 이상 감지: 진짜 수동매도 → 기록 생성 후 debounce 상태 제거
-        await getPool().query('DELETE FROM overseas_state WHERE key = $1', [debounceKey]).catch(() => {});
+        await getPool()
+          .query('DELETE FROM overseas_state WHERE key = $1', [debounceKey])
+          .catch(() => {});
 
-        const pnlPct = dbAvgPrice > 0
-          ? ((sellPrice - dbAvgPrice) / dbAvgPrice * 100) : 0;
+        const pnlPct = dbAvgPrice > 0 ? ((sellPrice - dbAvgPrice) / dbAvgPrice) * 100 : 0;
 
         const manualOrderId = await insertOrder({
           chain_id: null,
@@ -134,35 +147,44 @@ export async function syncHoldingsFromKIS(): Promise<void> {
         // score_accuracy 기록
         if (manualOrderId && dbAvgPrice > 0 && sellPrice > 0) {
           const outcome = pnlPct > 0.1 ? 'WIN' : pnlPct < -0.1 ? 'LOSS' : 'BREAK_EVEN';
-          getPool().query(
-            `INSERT INTO score_accuracy (stock_code, order_id, market, realized_pnl_pct, outcome, close_reason, is_paper)
+          getPool()
+            .query(
+              `INSERT INTO score_accuracy (stock_code, order_id, market, realized_pnl_pct, outcome, close_reason, is_paper)
              VALUES ($1, $2, 'US', $3, $4, $5, false)
              ON CONFLICT (order_id) WHERE order_id IS NOT NULL DO NOTHING`,
-            [code, manualOrderId, pnlPct, outcome, '수동매도'],
-          ).catch(() => {});
+              [code, manualOrderId, pnlPct, outcome, '수동매도'],
+            )
+            .catch(() => {});
         }
 
-        await getPool().query(
-          'DELETE FROM overseas_holdings WHERE exchange=$1 AND stock_code=$2 AND is_paper = false',
-          [row.exchange, code],
-        ).catch(() => {});
+        await getPool()
+          .query('DELETE FROM overseas_holdings WHERE exchange=$1 AND stock_code=$2 AND is_paper = false', [
+            row.exchange,
+            code,
+          ])
+          .catch(() => {});
         cleanupPositionState(code, false).catch(() => {}); // live 모드 명시
 
         // 수동매도 쿨다운: 2시간 재매수 금지 (사용자 의도 매도 보호)
-        getPool().query(
-          `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
-          [`manual_sell_cd_${code}`, JSON.stringify({ at: new Date().toISOString(), pnlPct })],
-        ).catch(() => {});
+        getPool()
+          .query(`INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`, [
+            `manual_sell_cd_${code}`,
+            JSON.stringify({ at: new Date().toISOString(), pnlPct }),
+          ])
+          .catch(() => {});
 
         const emoji = pnlPct >= 0 ? '💰' : '📉';
         const msg = `🚪 수동매도 감지: ${code}\n${dbQty}주 @$${sellPrice.toFixed(2)}\n${emoji} PnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%\norders 기록 완료`;
-        logger.info(`🔄 KIS동기화: ${code} 수동매도 → SELL 기록 (PnL ${pnlPct.toFixed(2)}%) → 2h 재매수 쿨다운 설정`, { component: 'OVERSEAS' });
+        logger.info(`🔄 KIS동기화: ${code} 수동매도 → SELL 기록 (PnL ${pnlPct.toFixed(2)}%) → 2h 재매수 쿨다운 설정`, {
+          component: 'OVERSEAS',
+        });
         sendTelegramMessage(msg).catch(() => {});
         syncChanged = true;
-
       } else if (Math.abs(kisItem.qty - dbQty) >= 1) {
         // 포지션 확인됨 → 잔여 debounce 상태 제거
-        getPool().query('DELETE FROM overseas_state WHERE key = $1', [`sync_sell_pending_${code}`]).catch(() => {});
+        getPool()
+          .query('DELETE FROM overseas_state WHERE key = $1', [`sync_sell_pending_${code}`])
+          .catch(() => {});
 
         const soldQty = dbQty - kisItem.qty;
 
@@ -174,8 +196,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
           if (sellPrice <= 0) {
             logger.warn(`⚠️ KIS동기화: ${code} 부분매도 가격조회 실패(0) → 스킵`, { component: 'OVERSEAS' });
           } else {
-            const pnlPct = dbAvgPrice > 0
-              ? ((sellPrice - dbAvgPrice) / dbAvgPrice * 100) : 0;
+            const pnlPct = dbAvgPrice > 0 ? ((sellPrice - dbAvgPrice) / dbAvgPrice) * 100 : 0;
 
             await insertOrder({
               chain_id: null,
@@ -196,8 +217,12 @@ export async function syncHoldingsFromKIS(): Promise<void> {
             }).catch(() => {});
 
             const emoji = pnlPct >= 0 ? '💰' : '📉';
-            logger.info(`🔄 KIS동기화: ${code} 부분매도 ${soldQty}주 (PnL ${pnlPct.toFixed(2)}%)`, { component: 'OVERSEAS' });
-            sendTelegramMessage(`🔄 수동부분매도: ${code} ${soldQty}주\n${emoji} PnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`).catch(() => {});
+            logger.info(`🔄 KIS동기화: ${code} 부분매도 ${soldQty}주 (PnL ${pnlPct.toFixed(2)}%)`, {
+              component: 'OVERSEAS',
+            });
+            sendTelegramMessage(
+              `🔄 수동부분매도: ${code} ${soldQty}주\n${emoji} PnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`,
+            ).catch(() => {});
             syncChanged = true;
           }
         } else {
@@ -221,34 +246,41 @@ export async function syncHoldingsFromKIS(): Promise<void> {
           }).catch(() => {});
 
           logger.info(`🔄 KIS동기화: ${code} 추가매수 ${addedQty}주`, { component: 'OVERSEAS' });
-          sendTelegramMessage(`🛒 수동추가매수: ${code} +${addedQty}주 @$${kisItem.avgPrice.toFixed(2)}`).catch(() => {});
+          sendTelegramMessage(`🛒 수동추가매수: ${code} +${addedQty}주 @$${kisItem.avgPrice.toFixed(2)}`).catch(
+            () => {},
+          );
           syncChanged = true;
         }
 
         // exchange는 DB 기존값 유지 (watchlist 기준, KIS 쿼리 거래소와 다를 수 있음)
-        await getPool().query(
-          'UPDATE overseas_holdings SET quantity=$1, avg_price=$2 WHERE exchange=$3 AND stock_code=$4 AND is_paper = false',
-          [kisItem.qty, kisItem.avgPrice, row.exchange, code],
-        ).catch(() => {});
+        await getPool()
+          .query(
+            'UPDATE overseas_holdings SET quantity=$1, avg_price=$2 WHERE exchange=$3 AND stock_code=$4 AND is_paper = false',
+            [kisItem.qty, kisItem.avgPrice, row.exchange, code],
+          )
+          .catch(() => {});
       } else {
         // 포지션 수량 일치 (안정) → 잔여 debounce 상태 제거
-        getPool().query('DELETE FROM overseas_state WHERE key = $1', [`sync_sell_pending_${code}`]).catch(() => {});
+        getPool()
+          .query('DELETE FROM overseas_state WHERE key = $1', [`sync_sell_pending_${code}`])
+          .catch(() => {});
       }
       allHoldings.delete(code);
     }
 
     // ── 워치리스트에 있는 신규 수동매수 ──
-    const watchCodes = new Set(GLOBAL_WATCHLIST.map(s => s.code));
+    const watchCodes = new Set(GLOBAL_WATCHLIST.map((s) => s.code));
     for (const [code, item] of allHoldings) {
       if (!watchCodes.has(code)) continue;
 
       // 수동매도 쿨다운 중이면 재삽입 스킵 (T+1 결제: KIS API가 매도 종목을 아직 반환)
-      const { rows: cdRows } = await getPool().query(
-        "SELECT value FROM overseas_state WHERE key = $1",
-        [`manual_sell_cd_${code}`],
-      ).catch(() => ({ rows: [] as any[] }));
+      const { rows: cdRows } = await getPool()
+        .query('SELECT value FROM overseas_state WHERE key = $1', [`manual_sell_cd_${code}`])
+        .catch(() => ({ rows: [] as any[] }));
       if (cdRows.length > 0) {
-        logger.info(`⏭️ KIS동기화: ${code} 수동매도 쿨다운 중 → 재매수 감지 스킵 (T+1 결제 대기)`, { component: 'OVERSEAS' });
+        logger.info(`⏭️ KIS동기화: ${code} 수동매도 쿨다운 중 → 재매수 감지 스킵 (T+1 결제 대기)`, {
+          component: 'OVERSEAS',
+        });
         continue;
       }
 
@@ -269,14 +301,20 @@ export async function syncHoldingsFromKIS(): Promise<void> {
         ai_reasoning: `[수동매수] KIS 앱에서 직접 매수 ${item.qty}주 @$${item.avgPrice.toFixed(2)}`,
       }).catch(() => {});
 
-      await getPool().query(
-        `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper)
+      await getPool()
+        .query(
+          `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper)
          VALUES ($1, $2, $3, $4, NOW(), false)
          ON CONFLICT (exchange, stock_code, is_paper) DO UPDATE SET quantity=$3, avg_price=$4`,
-        [code, item.exchange, item.qty, item.avgPrice],
+          [code, item.exchange, item.qty, item.avgPrice],
+        )
+        .catch(() => {});
+      logger.info(`🔄 KIS동기화: ${code} 수동매수 감지 → BUY 기록 (${item.qty}주 @$${item.avgPrice})`, {
+        component: 'OVERSEAS',
+      });
+      sendTelegramMessage(
+        `🛒 수동매수 감지: ${code} ${item.qty}주 @$${item.avgPrice.toFixed(2)}\norders 기록 완료`,
       ).catch(() => {});
-      logger.info(`🔄 KIS동기화: ${code} 수동매수 감지 → BUY 기록 (${item.qty}주 @$${item.avgPrice})`, { component: 'OVERSEAS' });
-      sendTelegramMessage(`🛒 수동매수 감지: ${code} ${item.qty}주 @$${item.avgPrice.toFixed(2)}\norders 기록 완료`).catch(() => {});
       syncChanged = true;
     }
 
@@ -287,10 +325,12 @@ export async function syncHoldingsFromKIS(): Promise<void> {
     // kisPriceMap은 초기 balance API 호출 시 수집한 현재가 (추가 API 호출 없음)
     for (const [code, price] of kisPriceMap) {
       if (price > 0) {
-        getPool().query(
-          'UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2 AND is_paper = false',
-          [price, code],
-        ).catch(() => {});
+        getPool()
+          .query(
+            'UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2 AND is_paper = false',
+            [price, code],
+          )
+          .catch(() => {});
       }
     }
     if (kisPriceMap.size > 0) {
@@ -306,7 +346,9 @@ async function estimateSellPrice(code: string, exchange: string): Promise<number
   try {
     const price = await getOverseasPrice(code, exchange);
     return price?.currentPrice ?? 0;
-  } catch { return 0; }
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -331,7 +373,10 @@ export async function reconcileCashWithKIS(): Promise<void> {
       const rate = buyable.exrt > 0 ? buyable.exrt : await fetchExchangeRate();
       if (rate > 0) {
         kisKrw = buyable.usd * rate;
-        logger.info(`💱 해외현금: ord_psbl_frcr_amt=$${buyable.usd.toFixed(2)} × ${rate.toFixed(0)} = ₩${kisKrw.toFixed(0)} (maxUsd=$${buyable.maxUsd.toFixed(2)})`, { component: 'OVERSEAS' });
+        logger.info(
+          `💱 해외현금: ord_psbl_frcr_amt=$${buyable.usd.toFixed(2)} × ${rate.toFixed(0)} = ₩${kisKrw.toFixed(0)} (maxUsd=$${buyable.maxUsd.toFixed(2)})`,
+          { component: 'OVERSEAS' },
+        );
       }
     }
 
@@ -345,9 +390,14 @@ export async function reconcileCashWithKIS(): Promise<void> {
         const domesticEval = balance.totalEvalAmount ?? 0;
         if (netAsset > 0) {
           kisKrw = Math.max(0, netAsset - domesticEval);
-          logger.info(`💱 통합증거금 폴백: netAsset=₩${netAsset.toLocaleString()} - domesticEval=₩${domesticEval.toLocaleString()} = ₩${kisKrw.toLocaleString()}`, { component: 'OVERSEAS' });
+          logger.info(
+            `💱 통합증거금 폴백: netAsset=₩${netAsset.toLocaleString()} - domesticEval=₩${domesticEval.toLocaleString()} = ₩${kisKrw.toLocaleString()}`,
+            { component: 'OVERSEAS' },
+          );
         }
-      } catch { /* 국내 잔고 조회 실패 시 무시 */ }
+      } catch {
+        /* 국내 잔고 조회 실패 시 무시 */
+      }
     }
     if (kisKrw === null) return;
 
@@ -355,19 +405,23 @@ export async function reconcileCashWithKIS(): Promise<void> {
 
     // 안전 가드: KIS ₩1,000 미만인데 DB ₩100,000 이상 → zeroing 차단
     if (kisKrw < 1000 && dbKrw > 100_000) {
-      logger.warn(`💰 Cash zeroing 차단: KIS=₩${kisKrw.toFixed(0)} (의심), DB=₩${dbKrw.toFixed(0)} 유지`, { component: 'OVERSEAS' });
+      logger.warn(`💰 Cash zeroing 차단: KIS=₩${kisKrw.toFixed(0)} (의심), DB=₩${dbKrw.toFixed(0)} 유지`, {
+        component: 'OVERSEAS',
+      });
       return;
     }
 
     // 실제 주문가능 USD 항상 저장 (대시보드 표시용)
     if (buyable != null) {
       const usdVal = buyable.usd >= 0 ? buyable.usd : 0;
-      await getPool().query(
-        // 외화 풀 USD (ord_psbl_frcr_amt) — SSE 대시보드 표시용
-        `INSERT INTO overseas_state (key, value, updated_at) VALUES ('cash_live_usd', $1, NOW())
+      await getPool()
+        .query(
+          // 외화 풀 USD (ord_psbl_frcr_amt) — SSE 대시보드 표시용
+          `INSERT INTO overseas_state (key, value, updated_at) VALUES ('cash_live_usd', $1, NOW())
          ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
-        [String(usdVal)],
-      ).catch(() => {});
+          [String(usdVal)],
+        )
+        .catch(() => {});
     }
 
     const diff = Math.abs(kisKrw - dbKrw);
@@ -377,11 +431,14 @@ export async function reconcileCashWithKIS(): Promise<void> {
     const fxRate = await fetchExchangeRate();
     const dbUsd = fxRate > 0 ? dbKrw / fxRate : 0;
     const kisUsdDisp = fxRate > 0 ? kisKrw / fxRate : 0;
-    logger.warn(`💰 Cash 정합: DB=₩${dbKrw.toFixed(0)}($${dbUsd.toFixed(0)}) → KIS=₩${kisKrw.toFixed(0)}($${kisUsdDisp.toFixed(0)})`, { component: 'OVERSEAS' });
+    logger.warn(
+      `💰 Cash 정합: DB=₩${dbKrw.toFixed(0)}($${dbUsd.toFixed(0)}) → KIS=₩${kisKrw.toFixed(0)}($${kisUsdDisp.toFixed(0)})`,
+      { component: 'OVERSEAS' },
+    );
     await setCash(kisKrw, false);
     if (diff >= 50_000) {
       sendTelegramMessage(
-        `💰 현금 정합성 보정\nDB: ₩${dbKrw.toLocaleString()} → KIS: ₩${kisKrw.toLocaleString()}\n차이: ₩${(kisKrw - dbKrw).toLocaleString()}`
+        `💰 현금 정합성 보정\nDB: ₩${dbKrw.toLocaleString()} → KIS: ₩${kisKrw.toLocaleString()}\n차이: ₩${(kisKrw - dbKrw).toLocaleString()}`,
       ).catch(() => {});
     }
   } catch (e) {

@@ -6,14 +6,15 @@
  *
  * 무료 Gemini 소모: 1~2 call (2.0-flash 1500 RPD 한도 대비 극소)
  */
-import { getPool, upsertAIScore } from '../db/client.js';
-import { getChangeRankingStocks, getVolumeRankingStocks, getBatchPrices, getKSTNow } from '../kis/market.js';
+
 import { cacheScores } from '../cache/redis.js';
-import { callVertexGemini } from '../utils/vertex-gemini.js';
+import { getPool, upsertAIScore } from '../db/client.js';
+import { getBatchPrices, getChangeRankingStocks, getKSTNow, getVolumeRankingStocks } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
+import { callVertexGemini } from '../utils/vertex-gemini.js';
 
-const MAX_QUICK_STOCKS = 15;  // 경량 스코어링 최대 종목 수
+const MAX_QUICK_STOCKS = 15; // 경량 스코어링 최대 종목 수
 
 // 장전 스코어 공유 캐시 — opening-bell-job이 재사용해서 Gemini 중복 호출 방지
 let _sharedScores: Map<string, number> | null = null;
@@ -27,7 +28,10 @@ export function getPreMarketSharedScores(): Map<string, number> | null {
 
 export async function runPreMarketQuickScore(): Promise<void> {
   const { config } = await import('../config/index.js');
-  if (!config.geminiEnabled) { logger.info('⚡ 장전 스코어링 스킵 (Gemini OFF — Track A RSS가 대체)', { component: 'PRE_MARKET_QS' }); return; }
+  if (!config.geminiEnabled) {
+    logger.info('⚡ 장전 스코어링 스킵 (Gemini OFF — Track A RSS가 대체)', { component: 'PRE_MARKET_QS' });
+    return;
+  }
   logger.info('⚡ 장전 빠른 스코어링 시작 (08:55)', { component: 'PRE_MARKET_QS' });
 
   try {
@@ -35,10 +39,7 @@ export async function runPreMarketQuickScore(): Promise<void> {
     const today = getKSTNow().toISOString().split('T')[0]; // KST 기준 — UTC 아님
 
     // 1. 오늘 이미 스코어가 있는 종목 확인
-    const { rows: scoredRows } = await pool.query(
-      `SELECT stock_code FROM ai_scores WHERE score_date = $1`,
-      [today],
-    );
+    const { rows: scoredRows } = await pool.query(`SELECT stock_code FROM ai_scores WHERE score_date = $1`, [today]);
     const alreadyScored = new Set(scoredRows.map((r: any) => String(r.stock_code)));
 
     // 2. 활성 워치리스트 중 오늘 스코어 없는 종목
@@ -68,22 +69,28 @@ export async function runPreMarketQuickScore(): Promise<void> {
     const targets = [...combinedMap.values()].slice(0, MAX_QUICK_STOCKS);
 
     if (targets.length === 0) {
-      logger.info('⚡ 빠른 스코어링: 스코어링 대상 없음 (오늘 이미 전체 스코어링 완료)', { component: 'PRE_MARKET_QS' });
+      logger.info('⚡ 빠른 스코어링: 스코어링 대상 없음 (오늘 이미 전체 스코어링 완료)', {
+        component: 'PRE_MARKET_QS',
+      });
       return;
     }
 
-    logger.info(`⚡ 빠른 스코어링 대상: ${targets.length}개 — ${targets.map(s => s.stock_code).join(', ')}`, { component: 'PRE_MARKET_QS' });
+    logger.info(`⚡ 빠른 스코어링 대상: ${targets.length}개 — ${targets.map((s) => s.stock_code).join(', ')}`, {
+      component: 'PRE_MARKET_QS',
+    });
 
     // 4. 현재가 일괄 조회
-    const priceMap = await getBatchPrices(targets.map(s => s.stock_code)).catch(() => new Map());
+    const priceMap = await getBatchPrices(targets.map((s) => s.stock_code)).catch(() => new Map());
 
     // 5. Gemini 경량 분석 요청
-    const stockLines = targets.map(s => {
-      const p = priceMap.get(s.stock_code);
-      if (!p) return `${s.stock_name}(${s.stock_code}): 가격정보없음`;
-      const chgSign = p.changeRate >= 0 ? '+' : '';
-      return `${s.stock_name}(${s.stock_code}): ${p.currentPrice.toLocaleString()}원 ${chgSign}${p.changeRate.toFixed(2)}% | 거래량${p.volume.toLocaleString()}주`;
-    }).join('\n');
+    const stockLines = targets
+      .map((s) => {
+        const p = priceMap.get(s.stock_code);
+        if (!p) return `${s.stock_name}(${s.stock_code}): 가격정보없음`;
+        const chgSign = p.changeRate >= 0 ? '+' : '';
+        return `${s.stock_name}(${s.stock_code}): ${p.currentPrice.toLocaleString()}원 ${chgSign}${p.changeRate.toFixed(2)}% | 거래량${p.volume.toLocaleString()}주`;
+      })
+      .join('\n');
 
     const userMsg = `오늘 개장 직전(08:55 KST) 한국 주식 장전 데이터입니다. 각 종목을 단타/스윙 관점에서 빠르게 평가해주세요.
 
@@ -100,21 +107,30 @@ ${stockLines}
 빠른 판단 — JSON만 출력:
 {"scores":[{"stock_code":"코드","stock_name":"종목명","composite_score":65,"fundamental_score":50,"technical_score":70,"sentiment_score":60,"confidence":0.65,"signal":"BUY","target_price":0,"stop_loss_price":0,"reasoning":"장전모멘텀 +3.2% 거래량급증"}]}`;
 
-    const raw = await callVertexGemini(
-      '당신은 한국 주식 단타 전문가입니다. JSON 형식으로만 응답합니다.',
-      userMsg,
-      { temperature: 0.1, maxOutputTokens: 2048, label: '장전퀵스코어' },
-    );
+    const raw = await callVertexGemini('당신은 한국 주식 단타 전문가입니다. JSON 형식으로만 응답합니다.', userMsg, {
+      temperature: 0.1,
+      maxOutputTokens: 2048,
+      label: '장전퀵스코어',
+    });
 
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('Gemini 응답에서 JSON 없음');
 
-    const parsed = JSON.parse(jsonMatch[0]) as { scores: Array<{
-      stock_code: string; stock_name: string; composite_score: number;
-      fundamental_score: number; technical_score: number; sentiment_score: number;
-      confidence: number; signal: string; target_price: number; stop_loss_price: number;
-      reasoning: string;
-    }> };
+    const parsed = JSON.parse(jsonMatch[0]) as {
+      scores: Array<{
+        stock_code: string;
+        stock_name: string;
+        composite_score: number;
+        fundamental_score: number;
+        technical_score: number;
+        sentiment_score: number;
+        confidence: number;
+        signal: string;
+        target_price: number;
+        stop_loss_price: number;
+        reasoning: string;
+      }>;
+    };
 
     const scores = parsed.scores ?? [];
     logger.info(`⚡ Gemini 빠른 스코어링 완료: ${scores.length}개`, { component: 'PRE_MARKET_QS' });
@@ -122,42 +138,44 @@ ${stockLines}
     // 점수 정규화 헬퍼 (|| 50 버그 수정: undefined/null만 50 기본값, 0은 그대로)
     const safeScore = (v: unknown, def = 50) => {
       const n = Number(v);
-      return isNaN(n) ? def : Math.max(0, Math.min(100, n));
+      return Number.isNaN(n) ? def : Math.max(0, Math.min(100, n));
     };
     const safeConf = (v: unknown) => {
       const n = Number(v);
-      return isNaN(n) ? 0.5 : Math.max(0, Math.min(1, n));
+      return Number.isNaN(n) ? 0.5 : Math.max(0, Math.min(1, n));
     };
 
     // 6. DB + Redis 캐싱
     const validSignals = new Set(['STRONG_BUY', 'BUY', 'HOLD', 'SELL', 'STRONG_SELL', 'NO_DATA']);
-    const upsertResults = await Promise.allSettled(scores.map(async s => {
-      const signal = validSignals.has(s.signal) ? s.signal as any : 'HOLD';
-      await upsertAIScore({
-        stock_code: s.stock_code,
-        score_date: today,
-        gemini_summary: null,
-        composite_score: safeScore(s.composite_score),
-        fundamental_score: safeScore(s.fundamental_score),
-        technical_score: safeScore(s.technical_score),
-        sentiment_score: safeScore(s.sentiment_score),
-        confidence: safeConf(s.confidence),
-        reasoning: `[장전빠른스코어] ${s.reasoning || ''}`,
-        signal,
-        target_price: s.target_price ? Number(s.target_price) : null,
-        stop_loss_price: s.stop_loss_price ? Number(s.stop_loss_price) : null,
-      });
-      return s;
-    }));
+    const upsertResults = await Promise.allSettled(
+      scores.map(async (s) => {
+        const signal = validSignals.has(s.signal) ? (s.signal as any) : 'HOLD';
+        await upsertAIScore({
+          stock_code: s.stock_code,
+          score_date: today,
+          gemini_summary: null,
+          composite_score: safeScore(s.composite_score),
+          fundamental_score: safeScore(s.fundamental_score),
+          technical_score: safeScore(s.technical_score),
+          sentiment_score: safeScore(s.sentiment_score),
+          confidence: safeConf(s.confidence),
+          reasoning: `[장전빠른스코어] ${s.reasoning || ''}`,
+          signal,
+          target_price: s.target_price ? Number(s.target_price) : null,
+          stop_loss_price: s.stop_loss_price ? Number(s.stop_loss_price) : null,
+        });
+        return s;
+      }),
+    );
 
-    const saved = upsertResults.filter(r => r.status === 'fulfilled').length;
+    const saved = upsertResults.filter((r) => r.status === 'fulfilled').length;
 
     // 공유 캐시 갱신 — opening-bell-job이 재사용 (Gemini 중복 호출 방지)
-    _sharedScores = new Map(scores.map(s => [s.stock_code, safeScore(s.composite_score)]));
+    _sharedScores = new Map(scores.map((s) => [s.stock_code, safeScore(s.composite_score)]));
     _sharedScoresAt = Date.now();
 
     // Redis 캐시 갱신
-    const cacheItems = scores.map(s => ({
+    const cacheItems = scores.map((s) => ({
       id: '',
       stock_code: s.stock_code,
       score_date: today,
@@ -168,19 +186,19 @@ ${stockLines}
       sentiment_score: safeScore(s.sentiment_score),
       confidence: safeConf(s.confidence),
       reasoning: `[장전빠른스코어] ${s.reasoning || ''}`,
-      signal: validSignals.has(s.signal) ? s.signal as any : 'HOLD',
+      signal: validSignals.has(s.signal) ? (s.signal as any) : 'HOLD',
       target_price: s.target_price ? Number(s.target_price) : null,
       stop_loss_price: s.stop_loss_price ? Number(s.stop_loss_price) : null,
       created_at: new Date().toISOString(),
     }));
-    await cacheScores(cacheItems).catch(e => logger.warn(`Redis 캐시 실패: ${e}`, { component: 'PRE_MARKET_QS' }));
+    await cacheScores(cacheItems).catch((e) => logger.warn(`Redis 캐시 실패: ${e}`, { component: 'PRE_MARKET_QS' }));
 
     // 7. 텔레그램 알림 (매수 후보만)
-    const buyCandidates = scores.filter(s => ['BUY', 'STRONG_BUY'].includes(s.signal) && (s.confidence ?? 0) >= 0.6);
+    const buyCandidates = scores.filter((s) => ['BUY', 'STRONG_BUY'].includes(s.signal) && (s.confidence ?? 0) >= 0.6);
     if (buyCandidates.length > 0) {
       const msg = [
         `⚡ 장전 빠른 스코어링 완료 (${saved}개)`,
-        `🟢 09:00 매수후보(${buyCandidates.length}): ${buyCandidates.map(s => `${s.stock_code}(${s.composite_score}점/${(s.confidence*100).toFixed(0)}%)`).join(', ')}`,
+        `🟢 09:00 매수후보(${buyCandidates.length}): ${buyCandidates.map((s) => `${s.stock_code}(${s.composite_score}점/${(s.confidence * 100).toFixed(0)}%)`).join(', ')}`,
       ].join('\n');
       await sendTelegramMessage(msg).catch(() => {});
     } else {

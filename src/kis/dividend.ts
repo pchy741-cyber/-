@@ -4,8 +4,8 @@
  * - 배당 수령 내역은 거래내역(CTOS4001R)에서 추출
  */
 import { config } from '../config/index.js';
-import { kisRequest, overseasRateLimiter } from './client.js';
 import { logger } from '../utils/logger.js';
+import { kisRequest, overseasRateLimiter } from './client.js';
 
 const COMP = 'DIVIDEND';
 
@@ -31,8 +31,10 @@ export async function getDividendSchedule(params?: {
 }): Promise<DividendEvent[]> {
   try {
     const now = new Date();
-    const start = params?.startDate || new Date(now.getTime() - 90 * 24 * 60 * 60_000).toISOString().slice(0, 10).replace(/-/g, '');
-    const end = params?.endDate || new Date(now.getTime() + 90 * 24 * 60 * 60_000).toISOString().slice(0, 10).replace(/-/g, '');
+    const start =
+      params?.startDate || new Date(now.getTime() - 90 * 24 * 60 * 60_000).toISOString().slice(0, 10).replace(/-/g, '');
+    const end =
+      params?.endDate || new Date(now.getTime() + 90 * 24 * 60 * 60_000).toISOString().slice(0, 10).replace(/-/g, '');
 
     const queryParams: Record<string, string> = {
       CANO: config.kis.accountNo,
@@ -56,14 +58,16 @@ export async function getDividendSchedule(params?: {
 
     const items = data.output1 || data.output || [];
     if (!Array.isArray(items)) return [];
-    return items.map((r: any) => ({
-      stockCode: r.pdno || r.stck_shrn_iscd || '',
-      exDate: r.ex_date || r.rcrd_dt || '',
-      payDate: r.pay_dt || '',
-      dividendPerShare: parseFloat(r.divi_amt || r.rght_amt || '0'),
-      currency: r.crcy_cd || 'USD',
-      eventType: r.rght_type_nm || '배당',
-    })).filter(d => d.stockCode && d.dividendPerShare > 0);
+    return items
+      .map((r: any) => ({
+        stockCode: r.pdno || r.stck_shrn_iscd || '',
+        exDate: r.ex_date || r.rcrd_dt || '',
+        payDate: r.pay_dt || '',
+        dividendPerShare: parseFloat(r.divi_amt || r.rght_amt || '0'),
+        currency: r.crcy_cd || 'USD',
+        eventType: r.rght_type_nm || '배당',
+      }))
+      .filter((d) => d.stockCode && d.dividendPerShare > 0);
   } catch (e: any) {
     logger.warn(`배당 일정 조회 실패: ${e.message}`, { component: COMP });
     return [];
@@ -74,14 +78,18 @@ export async function getDividendSchedule(params?: {
 export async function getDividendReceipts(params?: {
   startDate?: string;
   endDate?: string;
-}): Promise<Array<{ stockCode: string; amount: number; tax: number; netAmount: number; date: string; currency: string }>> {
+}): Promise<
+  Array<{ stockCode: string; amount: number; tax: number; netAmount: number; date: string; currency: string }>
+> {
   // CTOS4001R은 실전전용 TR — Paper 모드에서 호출 시 "모의투자 TR 이 아닙니다" 에러
   if (config.isPaper) {
     return [];
   }
   try {
     const now = new Date();
-    const start = params?.startDate || new Date(now.getTime() - 365 * 24 * 60 * 60_000).toISOString().slice(0, 10).replace(/-/g, '');
+    const start =
+      params?.startDate ||
+      new Date(now.getTime() - 365 * 24 * 60 * 60_000).toISOString().slice(0, 10).replace(/-/g, '');
     const end = params?.endDate || now.toISOString().slice(0, 10).replace(/-/g, '');
 
     const data = await divKisRequest<any>({

@@ -1,10 +1,17 @@
 import { KR_FEE, type StrategyMode } from '../config/constants.js';
-import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
-import { createChain, getOpenChains, getOrdersByChain, updateChain, getPool, withTransaction, isMemoryMode } from '../db/client.js';
+import {
+  createChain,
+  getOpenChains,
+  getOrdersByChain,
+  getPool,
+  isMemoryMode,
+  updateChain,
+  withTransaction,
+} from '../db/client.js';
 import type { TransactionChain } from '../db/models.js';
-import { logger } from '../utils/logger.js';
 import { recordTradeOutcome } from '../risk/loss-streak.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 트랜잭션 체인 매니저
@@ -67,7 +74,12 @@ export class ChainManager {
         return sum + cost + Math.round(cost * COMMISSION_RATE);
       }, 0);
       const totalQty = buyOrders.reduce((sum, o) => sum + o.filled_quantity, 0);
-      return { totalCost, totalQty, newAvgPrice: totalQty > 0 ? Math.round(totalCost / totalQty) : 0, averagingCount: buyOrders.length - 1 };
+      return {
+        totalCost,
+        totalQty,
+        newAvgPrice: totalQty > 0 ? Math.round(totalCost / totalQty) : 0,
+        averagingCount: buyOrders.length - 1,
+      };
     };
 
     if (isMemoryMode()) {
@@ -90,7 +102,9 @@ export class ChainManager {
           `SELECT side, status, filled_price, filled_quantity FROM orders WHERE chain_id = $1 ORDER BY created_at ASC`,
           [chainId],
         );
-        const buyOrders = rows.filter((o: { side: string; status: string }) => o.side === 'BUY' && o.status === 'FILLED');
+        const buyOrders = rows.filter(
+          (o: { side: string; status: string }) => o.side === 'BUY' && o.status === 'FILLED',
+        );
         const { totalCost, totalQty, newAvgPrice, averagingCount } = calcFromOrders(buyOrders);
         finalAvgPrice = newAvgPrice;
         await client.query(
@@ -113,7 +127,7 @@ export class ChainManager {
     const avgBuy = Number(chain.avg_buy_price);
     const sellValue = sellPrice * sellQty;
     const SELL_FEE_PCT = KR_FEE.SELL_FEE_PCT;
-    const profit = sellValue - Math.round(sellValue * SELL_FEE_PCT) - (avgBuy * sellQty);
+    const profit = sellValue - Math.round(sellValue * SELL_FEE_PCT) - avgBuy * sellQty;
     const remainingQty = chain.total_quantity - sellQty;
 
     await updateChain(chainId, {
@@ -141,7 +155,7 @@ export class ChainManager {
     const avgBuy = Number(chain.avg_buy_price);
     const sellValue = sellPrice * chain.total_quantity;
     const SELL_FEE_PCT = KR_FEE.SELL_FEE_PCT;
-    const profit = sellValue - Math.round(sellValue * SELL_FEE_PCT) - (avgBuy * chain.total_quantity);
+    const profit = sellValue - Math.round(sellValue * SELL_FEE_PCT) - avgBuy * chain.total_quantity;
 
     await updateChain(chainId, {
       status: 'CLOSED',
@@ -168,7 +182,12 @@ export class ChainManager {
   }
 
   /** 체인 종료 후 진입 당시 AI 스코어 vs 결과를 score_accuracy에 기록 */
-  private async recordScoreAccuracy(chainId: string, chain: TransactionChain, pnlPct: number, reason: string): Promise<void> {
+  private async recordScoreAccuracy(
+    chainId: string,
+    chain: TransactionChain,
+    pnlPct: number,
+    reason: string,
+  ): Promise<void> {
     try {
       const pool = getPool();
       // 진입 당시 가장 가까운 ai_scores 조회
@@ -207,15 +226,29 @@ export class ChainManager {
             const rsi = rsiMatch ? Number(rsiMatch[1]) : 50;
             const vol = volMatch ? Number(volMatch[1]) : 1.0;
             const smaMatch = r.match(/SMA=([a-z_]+)/);
-            const hasSMA = smaMatch ? smaMatch[1] : (r.includes('SMA5>SMA20') ? 'bull' : r.includes('SMA5<SMA20') ? 'bear' : 'neutral');
+            const hasSMA = smaMatch
+              ? smaMatch[1]
+              : r.includes('SMA5>SMA20')
+                ? 'bull'
+                : r.includes('SMA5<SMA20')
+                  ? 'bear'
+                  : 'neutral';
             const macdMatch = r.match(/MACD=([A-Z]+)/);
             const adxMatch = r.match(/ADX=\d+\(([A-Z]+)\)/);
             const { computeFingerprint, fingerprintKey } = await import('../analysis/entry-fingerprint.js');
-            const fp = computeFingerprint({ rsi, volumeRatio: vol, smaAlignment: hasSMA, macdState: macdMatch?.[1], adxStrength: adxMatch?.[1] });
+            const fp = computeFingerprint({
+              rsi,
+              volumeRatio: vol,
+              smaAlignment: hasSMA,
+              macdState: macdMatch?.[1],
+              adxStrength: adxMatch?.[1],
+            });
             entryFingerprint = fingerprintKey(fp);
           }
         }
-      } catch { /* 핑거프린트 추출 실패 시 null — 무시 */ }
+      } catch {
+        /* 핑거프린트 추출 실패 시 null — 무시 */
+      }
 
       // 2026-06: 보정된 점수(adjusted score)를 우선 사용 — raw composite_score는 피드백 왜곡 유발
       // 매수 주문의 ai_reasoning에서 blend=XX 추출 → 실제 진입 시 사용한 점수 기록
@@ -229,11 +262,16 @@ export class ChainManager {
           const blendMatch = String(buyOrders2[0].ai_reasoning).match(/blend=(\d+)/);
           if (blendMatch) adjustedScore = Number(blendMatch[1]);
         }
-      } catch { /* 추출 실패 → raw score 사용 */ }
+      } catch {
+        /* 추출 실패 → raw score 사용 */
+      }
 
-      const entryScore = adjustedScore != null ? Math.round(adjustedScore)
-        : score?.composite_score != null ? Math.round(Number(score.composite_score))
-        : null;
+      const entryScore =
+        adjustedScore != null
+          ? Math.round(adjustedScore)
+          : score?.composite_score != null
+            ? Math.round(Number(score.composite_score))
+            : null;
 
       const insertResult = await pool.query(
         `INSERT INTO score_accuracy
@@ -259,7 +297,10 @@ export class ChainManager {
       if ((insertResult as any).rowCount === 0) {
         logger.info(`📝 스코어 정확도: ${chain.stock_code} 이미 기록됨 (중복 체인 종료)`, { component: 'CHAIN' });
       } else {
-        logger.info(`📝 스코어 정확도 기록: ${chain.stock_code} ${outcome} (${pnlPct > 0 ? '+' : ''}${pnlPct}%)${entryFingerprint ? ` [${entryFingerprint}]` : ''}`, { component: 'CHAIN' });
+        logger.info(
+          `📝 스코어 정확도 기록: ${chain.stock_code} ${outcome} (${pnlPct > 0 ? '+' : ''}${pnlPct}%)${entryFingerprint ? ` [${entryFingerprint}]` : ''}`,
+          { component: 'CHAIN' },
+        );
       }
     } catch (err) {
       logger.warn(`스코어 정확도 기록 실패: ${err}`, { component: 'CHAIN' });

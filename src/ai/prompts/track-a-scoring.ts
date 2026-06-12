@@ -94,7 +94,14 @@ export const GPT_SCALPING_ADDON = `
 - 나머지 종목은 스코어링 스킵 (0점 NO_DATA)`;
 
 // ── 레짐별 스코어링 보정 (Phase 5) ──
-export type RegimeHint = 'TREND_BULL' | 'TREND_BEAR' | 'RANGE_LOW_VOL' | 'RANGE_HIGH_VOL' | 'BREAKOUT' | 'DISTRIBUTION' | null;
+export type RegimeHint =
+  | 'TREND_BULL'
+  | 'TREND_BEAR'
+  | 'RANGE_LOW_VOL'
+  | 'RANGE_HIGH_VOL'
+  | 'BREAKOUT'
+  | 'DISTRIBUTION'
+  | null;
 
 const REGIME_SCORING: Record<string, string> = {
   TREND_BULL: `

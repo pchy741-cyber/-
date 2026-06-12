@@ -87,8 +87,10 @@ export function buildMonthlyGoal(
 ): MonthlyGoalResult {
   const monthlyTargetPct = 50;
   const seedKr = grandTotalValue > 0 ? grandTotalValue : 10_000_000;
-  const targetAmount = Math.round(seedKr * monthlyTargetPct / 100);
-  const overseasUnrealizedForGoal = isNaN(overseasMarketValueKrw - overseasInvestedKrw) ? 0 : (overseasMarketValueKrw - overseasInvestedKrw);
+  const targetAmount = Math.round((seedKr * monthlyTargetPct) / 100);
+  const overseasUnrealizedForGoal = Number.isNaN(overseasMarketValueKrw - overseasInvestedKrw)
+    ? 0
+    : overseasMarketValueKrw - overseasInvestedKrw;
   const currentPnl = Math.round(totalPnl + overseasUnrealizedForGoal);
   const progressPct = targetAmount > 0 ? Math.min(200, Math.round((currentPnl / targetAmount) * 100)) : 0;
   return {

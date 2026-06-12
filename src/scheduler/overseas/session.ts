@@ -10,32 +10,63 @@ import { logger } from '../../utils/logger.js';
 export interface SessionCache {
   topCodes: string[];
   sessionDate: string;
-  techCache: Map<string, {
-    score: number; rsi: number; adx: number; signal: string;
-    trendStrength: string; isMomentum: boolean; dayRangePct: number;
-    aboveMA20: boolean; aboveMA60: boolean;
-    bollingerSqueeze: boolean; bollingerBreakout: 'UP' | 'DOWN' | 'NONE';
-    atrPct: number;
-    vwapPosition?: 'ABOVE' | 'BELOW' | 'AT';
-  }>;
+  techCache: Map<
+    string,
+    {
+      score: number;
+      rsi: number;
+      adx: number;
+      signal: string;
+      trendStrength: string;
+      isMomentum: boolean;
+      dayRangePct: number;
+      aboveMA20: boolean;
+      aboveMA60: boolean;
+      bollingerSqueeze: boolean;
+      bollingerBreakout: 'UP' | 'DOWN' | 'NONE';
+      atrPct: number;
+      vwapPosition?: 'ABOVE' | 'BELOW' | 'AT';
+    }
+  >;
 }
 
 type Mode = 'paper' | 'live';
 
 /** 모듈간 공유되는 런타임 상태 — paper/live 분리 필요한 필드는 Map 구조 */
 export const overseasState = {
-  isRunning: new Map<Mode, boolean>([['paper', false], ['live', false]]),
+  isRunning: new Map<Mode, boolean>([
+    ['paper', false],
+    ['live', false],
+  ]),
   _shuttingDown: false,
   // ── 세션캐시: paper/live 완전 격리 (techCache 크로스오염 방지) ──
-  usSessionCache: new Map<Mode, SessionCache | null>([['paper', null], ['live', null]]),
-  asiaSessionCache: new Map<Mode, SessionCache | null>([['paper', null], ['live', null]]),
+  usSessionCache: new Map<Mode, SessionCache | null>([
+    ['paper', null],
+    ['live', null],
+  ]),
+  asiaSessionCache: new Map<Mode, SessionCache | null>([
+    ['paper', null],
+    ['live', null],
+  ]),
   // ── paper/live 격리 필드 ──
-  extendedAlertSentAt: new Map<Mode, Map<string, number>>([['paper', new Map()], ['live', new Map()]]),
+  extendedAlertSentAt: new Map<Mode, Map<string, number>>([
+    ['paper', new Map()],
+    ['live', new Map()],
+  ]),
   lastUSAiCallAt: 0,
   lastPaperAiCallAt: 0,
-  sessionStartPortfolioValue: new Map<Mode, number | null>([['paper', null], ['live', null]]),
-  dailyLossAlertSent3: new Map<Mode, boolean>([['paper', false], ['live', false]]),
-  dailyLossAlertSent5: new Map<Mode, boolean>([['paper', false], ['live', false]]),
+  sessionStartPortfolioValue: new Map<Mode, number | null>([
+    ['paper', null],
+    ['live', null],
+  ]),
+  dailyLossAlertSent3: new Map<Mode, boolean>([
+    ['paper', false],
+    ['live', false],
+  ]),
+  dailyLossAlertSent5: new Map<Mode, boolean>([
+    ['paper', false],
+    ['live', false],
+  ]),
 };
 
 /** 현재 모드 키 반환 */
@@ -47,8 +78,8 @@ export function modeKey(isPaper?: boolean): Mode {
 export function getSessionCache(region: 'US' | 'ASIA', mode?: Mode): SessionCache | null {
   const m = mode ?? modeKey();
   return region === 'US'
-    ? overseasState.usSessionCache.get(m) ?? null
-    : overseasState.asiaSessionCache.get(m) ?? null;
+    ? (overseasState.usSessionCache.get(m) ?? null)
+    : (overseasState.asiaSessionCache.get(m) ?? null);
 }
 
 export function setSessionCache(region: 'US' | 'ASIA', cache: SessionCache | null, mode?: Mode): void {
@@ -57,7 +88,9 @@ export function setSessionCache(region: 'US' | 'ASIA', cache: SessionCache | nul
   else overseasState.asiaSessionCache.set(m, cache);
 }
 
-export const setShuttingDown = (v: boolean) => { overseasState._shuttingDown = v; };
+export const setShuttingDown = (v: boolean) => {
+  overseasState._shuttingDown = v;
+};
 export const isOverseasJobRunning = () =>
   overseasState.isRunning.get('paper') === true || overseasState.isRunning.get('live') === true;
 
@@ -66,7 +99,7 @@ async function persistSessionStartValue(value: number | null, mode?: Mode): Prom
   try {
     const key = `overseas_session_start_value${mode === 'paper' ? '_paper' : ''}`;
     if (value === null) {
-      await getPool().query("DELETE FROM overseas_state WHERE key = $1", [key]);
+      await getPool().query('DELETE FROM overseas_state WHERE key = $1', [key]);
     } else {
       await getPool().query(
         `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
@@ -74,7 +107,9 @@ async function persistSessionStartValue(value: number | null, mode?: Mode): Prom
         [key, JSON.stringify({ value, savedAt: new Date().toISOString() })],
       );
     }
-  } catch { /* DB 실패 시 무시 — 메모리 값은 유지 */ }
+  } catch {
+    /* DB 실패 시 무시 — 메모리 값은 유지 */
+  }
 }
 
 /** 서버 시작 시 세션 시작값 복원 (paper/live 모두) */
@@ -82,19 +117,22 @@ export async function restoreSessionStartValue(): Promise<void> {
   for (const mode of ['live', 'paper'] as Mode[]) {
     try {
       const key = mode === 'paper' ? 'overseas_session_start_value_paper' : 'overseas_session_start_value';
-      const { rows } = await getPool().query(
-        "SELECT value FROM overseas_state WHERE key = $1", [key],
-      );
+      const { rows } = await getPool().query('SELECT value FROM overseas_state WHERE key = $1', [key]);
       if (rows.length > 0) {
         const parsed = JSON.parse(rows[0].value);
         const savedAt = new Date(parsed.savedAt);
         const ageMs = Date.now() - savedAt.getTime();
         if (ageMs < 24 * 60 * 60_000) {
           overseasState.sessionStartPortfolioValue.set(mode, parsed.value);
-          logger.info(`📦 해외 세션 시작값 복원 [${mode}]: $${parsed.value.toFixed(0)} (${Math.round(ageMs / 60000)}분 전 저장)`, { component: 'OVERSEAS' });
+          logger.info(
+            `📦 해외 세션 시작값 복원 [${mode}]: $${parsed.value.toFixed(0)} (${Math.round(ageMs / 60000)}분 전 저장)`,
+            { component: 'OVERSEAS' },
+          );
         }
       }
-    } catch { /* 복원 실패 → null 유지 */ }
+    } catch {
+      /* 복원 실패 → null 유지 */
+    }
   }
 }
 
@@ -137,15 +175,16 @@ function isUSDST(): boolean {
   const month = now.getUTCMonth(); // 0-indexed
   const year = now.getUTCFullYear();
 
-  if (month > 2 && month < 10) return true;   // Apr~Oct: always DST
-  if (month < 2 || month > 10) return false;   // Jan~Feb, Dec: never DST
+  if (month > 2 && month < 10) return true; // Apr~Oct: always DST
+  if (month < 2 || month > 10) return false; // Jan~Feb, Dec: never DST
 
   const nthSunday = (m: number, n: number) => {
     const dow = new Date(Date.UTC(year, m, 1)).getUTCDay();
     return (dow === 0 ? 1 : 8 - dow) + (n - 1) * 7;
   };
 
-  if (month === 2) { // March: DST starts 2nd Sunday 2AM EST = 7AM UTC
+  if (month === 2) {
+    // March: DST starts 2nd Sunday 2AM EST = 7AM UTC
     return now >= new Date(Date.UTC(year, 2, nthSunday(2, 2), 7));
   }
   // November: DST ends 1st Sunday 2AM EDT = 6AM UTC
@@ -172,15 +211,13 @@ export function getOpenMarketRegions(): Set<string> {
   // 🇺🇸 프리마켓 + 포스트마켓 (서머: 17:00~22:30 / 겨울: 18:00~23:30)
   const preStart = 17 * 60 + shift;
   const postEnd = 9 * 60 + shift;
-  if ((mins >= preStart && mins < usOpen) ||
-      (mins > usClose && mins <= postEnd)) open.add('US_EXTENDED');
+  if ((mins >= preStart && mins < usOpen) || (mins > usClose && mins <= postEnd)) open.add('US_EXTENDED');
 
   // 🇰🇷 한국 KRX: 09:00~15:30 KST (평일만 — 요일체크는 overseas-job에서)
   if (mins >= 9 * 60 && mins <= 15 * 60 + 30) open.add('KR');
 
   // 🇯🇵 일본 TSE: 09:00~11:30, 12:30~15:30 KST
-  if ((mins >= 9 * 60 && mins <= 11 * 60 + 30) ||
-      (mins >= 12 * 60 + 30 && mins <= 15 * 60 + 30)) open.add('JP');
+  if ((mins >= 9 * 60 && mins <= 11 * 60 + 30) || (mins >= 12 * 60 + 30 && mins <= 15 * 60 + 30)) open.add('JP');
 
   // 🇹🇼 대만 TWSE: KST 10:00~14:30
   if (mins >= 10 * 60 && mins <= 14 * 60 + 30) open.add('TW');
@@ -211,7 +248,7 @@ export function getMinutesToUSClose(): number {
   const shift = isUSDST() ? 0 : 60;
   const usClose = 5 * 60 + shift;
   // 자정 전후 처리: 22:30~24:00 → close까지 남은 분 = (24*60 - mins) + close
-  if (mins >= 22 * 60) return (24 * 60 - mins) + usClose;
+  if (mins >= 22 * 60) return 24 * 60 - mins + usClose;
   return Math.max(0, usClose - mins);
 }
 

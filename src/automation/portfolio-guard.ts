@@ -1,9 +1,7 @@
-import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { getPool } from '../db/client.js';
 import type { TransactionChain } from '../db/models.js';
 import { getAccountBalance } from '../kis/account.js';
-import { getCurrentPrice } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
 
@@ -92,12 +90,14 @@ export async function getPerformanceMultiplier(): Promise<number> {
         [isPaper],
       );
       portfolioValue = snapRows[0]?.total_value ? Number(snapRows[0].total_value) : 0;
-    } catch { /* 스냅샷 없으면 기본 비율만 적용 */ }
+    } catch {
+      /* 스냅샷 없으면 기본 비율만 적용 */
+    }
     // 포트폴리오 값 폴백
     if (portfolioValue <= 0) portfolioValue = isPaper ? 10_000_000 : 8_700_000;
-    const profitThreshold = Math.max(portfolioValue * 0.03, 10_000);   // 3% 수익이면 공격
+    const profitThreshold = Math.max(portfolioValue * 0.03, 10_000); // 3% 수익이면 공격
     const lossThresholdHard = -Math.max(portfolioValue * 0.05, 10_000); // -5% 심각
-    const lossThresholdSoft = -Math.max(portfolioValue * 0.03, 5_000);  // -3% 방어
+    const lossThresholdSoft = -Math.max(portfolioValue * 0.03, 5_000); // -3% 방어
 
     let mult: number;
     let label: string;
@@ -107,13 +107,15 @@ export async function getPerformanceMultiplier(): Promise<number> {
     } else if (winRate >= 0.55 && totalPnl > 0) {
       mult = 1.1;
       label = '약공격';
-    } else if (winRate < 0.30 || totalPnl < lossThresholdHard) {
+    } else if (winRate < 0.3 || totalPnl < lossThresholdHard) {
       mult = isPaper ? 0.85 : 0.7;
-      label = isPaper ? '연습모드 보수' : `심각손실(WR${(winRate * 100).toFixed(0)}%/${(totalPnl / portfolioValue * 100).toFixed(1)}%)`;
-    } else if (winRate < 0.40 || totalPnl < lossThresholdSoft) {
-      mult = isPaper ? 0.90 : 0.80;
+      label = isPaper
+        ? '연습모드 보수'
+        : `심각손실(WR${(winRate * 100).toFixed(0)}%/${((totalPnl / portfolioValue) * 100).toFixed(1)}%)`;
+    } else if (winRate < 0.4 || totalPnl < lossThresholdSoft) {
+      mult = isPaper ? 0.9 : 0.8;
       label = isPaper ? '연습모드 약보수' : '방어';
-    } else if (winRate < 0.50) {
+    } else if (winRate < 0.5) {
       mult = 0.85;
       label = '보수';
     } else {
@@ -135,8 +137,8 @@ export async function getPerformanceMultiplier(): Promise<number> {
 
 // ── Paper→Live 크로스 모드 피드백 ────────────────────────────────────────
 export interface CrossModeBoost {
-  thresholdAdj: number;     // buyThreshold 조정 (-5 ~ +3)
-  sizingMult: number;       // 포지션 사이징 배율 (0.9 ~ 1.2)
+  thresholdAdj: number; // buyThreshold 조정 (-5 ~ +3)
+  sizingMult: number; // 포지션 사이징 배율 (0.9 ~ 1.2)
   reason: string;
 }
 
@@ -195,14 +197,30 @@ export async function getCrossModeBoost(): Promise<CrossModeBoost> {
 
     let result: CrossModeBoost;
 
-    if (winRate >= 0.60 && profitFactor >= 1.5) {
-      result = { thresholdAdj: -5, sizingMult: 1.15, reason: `Paper 실증: WR ${(winRate * 100).toFixed(0)}% PF ${profitFactor.toFixed(1)} (${total}건) → Live 공격 강화` };
-    } else if (winRate >= 0.60) {
-      result = { thresholdAdj: -3, sizingMult: 1.10, reason: `Paper 검증: WR ${(winRate * 100).toFixed(0)}% (${total}건) → Live 진입 완화` };
+    if (winRate >= 0.6 && profitFactor >= 1.5) {
+      result = {
+        thresholdAdj: -5,
+        sizingMult: 1.15,
+        reason: `Paper 실증: WR ${(winRate * 100).toFixed(0)}% PF ${profitFactor.toFixed(1)} (${total}건) → Live 공격 강화`,
+      };
+    } else if (winRate >= 0.6) {
+      result = {
+        thresholdAdj: -3,
+        sizingMult: 1.1,
+        reason: `Paper 검증: WR ${(winRate * 100).toFixed(0)}% (${total}건) → Live 진입 완화`,
+      };
     } else if (winRate >= 0.55 && totalPnl > 0) {
-      result = { thresholdAdj: -2, sizingMult: 1.05, reason: `Paper 양호: WR ${(winRate * 100).toFixed(0)}% 수익 ${totalPnl.toLocaleString()}원 → Live 소폭 완화` };
-    } else if (winRate < 0.40) {
-      result = { thresholdAdj: 3, sizingMult: 0.90, reason: `Paper 부진: WR ${(winRate * 100).toFixed(0)}% (${total}건) → Live 방어 강화` };
+      result = {
+        thresholdAdj: -2,
+        sizingMult: 1.05,
+        reason: `Paper 양호: WR ${(winRate * 100).toFixed(0)}% 수익 ${totalPnl.toLocaleString()}원 → Live 소폭 완화`,
+      };
+    } else if (winRate < 0.4) {
+      result = {
+        thresholdAdj: 3,
+        sizingMult: 0.9,
+        reason: `Paper 부진: WR ${(winRate * 100).toFixed(0)}% (${total}건) → Live 방어 강화`,
+      };
     } else {
       result = neutral;
     }
@@ -222,9 +240,9 @@ export async function getCrossModeBoost(): Promise<CrossModeBoost> {
 // ── 승률 피드백 루프 ──────────────────────────────────────────────────────
 export interface WinRateFeedback {
   recentWinRate: number;
-  thresholdBonus: number;   // buyThreshold에 더할 점수 (0/3/5/8)
+  thresholdBonus: number; // buyThreshold에 더할 점수 (0/3/5/8)
   requirePullback: boolean; // truePullbackPattern 없으면 스킵
-  minVolumeRatio: number;   // 최소 거래량 배율 (1.0/1.5/2.0)
+  minVolumeRatio: number; // 최소 거래량 배율 (1.0/1.5/2.0)
   sampleSize: number;
   summary: string;
 }
@@ -238,8 +256,12 @@ const FEEDBACK_CACHE_MS = 15 * 60 * 1000;
  */
 export async function getWinRateFeedback(isPaper: boolean): Promise<WinRateFeedback> {
   const neutral: WinRateFeedback = {
-    recentWinRate: 0.5, thresholdBonus: 0, requirePullback: false, minVolumeRatio: 1.0,
-    sampleSize: 0, summary: '샘플 부족 — 기본값',
+    recentWinRate: 0.5,
+    thresholdBonus: 0,
+    requirePullback: false,
+    minVolumeRatio: 1.0,
+    sampleSize: 0,
+    summary: '샘플 부족 — 기본값',
   };
 
   try {
@@ -269,7 +291,11 @@ export async function getWinRateFeedback(isPaper: boolean): Promise<WinRateFeedb
       return neutral;
     }
 
-    interface TradeSignal { win: boolean; hasPb: boolean; vol: number; }
+    interface TradeSignal {
+      win: boolean;
+      hasPb: boolean;
+      vol: number;
+    }
     const trades: TradeSignal[] = rows.map((r: { realized_pnl: string | number; ai_reasoning: string | null }) => {
       const reasoning = r.ai_reasoning ?? '';
       const win = Number(r.realized_pnl) > 0;
@@ -281,48 +307,56 @@ export async function getWinRateFeedback(isPaper: boolean): Promise<WinRateFeedb
     });
 
     const total = trades.length;
-    const winRate = trades.filter(t => t.win).length / total;
+    const winRate = trades.filter((t) => t.win).length / total;
 
-    const withPb = trades.filter(t => t.hasPb);
-    const withoutPb = trades.filter(t => !t.hasPb);
-    const pbWinRate = withPb.length >= 3 ? withPb.filter(t => t.win).length / withPb.length : null;
-    const noPbWinRate = withoutPb.length >= 3 ? withoutPb.filter(t => t.win).length / withoutPb.length : null;
+    const withPb = trades.filter((t) => t.hasPb);
+    const withoutPb = trades.filter((t) => !t.hasPb);
+    const pbWinRate = withPb.length >= 3 ? withPb.filter((t) => t.win).length / withPb.length : null;
+    const noPbWinRate = withoutPb.length >= 3 ? withoutPb.filter((t) => t.win).length / withoutPb.length : null;
 
-    const highVol = trades.filter(t => t.vol >= 1.5);
-    const lowVol = trades.filter(t => t.vol < 1.5);
-    const highVolWinRate = highVol.length >= 3 ? highVol.filter(t => t.win).length / highVol.length : null;
-    const lowVolWinRate = lowVol.length >= 3 ? lowVol.filter(t => t.win).length / lowVol.length : null;
+    const highVol = trades.filter((t) => t.vol >= 1.5);
+    const lowVol = trades.filter((t) => t.vol < 1.5);
+    const highVolWinRate = highVol.length >= 3 ? highVol.filter((t) => t.win).length / highVol.length : null;
+    const lowVolWinRate = lowVol.length >= 3 ? lowVol.filter((t) => t.win).length / lowVol.length : null;
 
     let thresholdBonus = 0;
-    if (winRate < 0.20) thresholdBonus = 10;      // Kelly 완전 음수 구간 → 매우 강한 제한
-    else if (winRate < 0.25) thresholdBonus = 7;  // Kelly 음수 가능성 높음 (was 5)
-    else if (winRate < 0.35) thresholdBonus = 4;  // 부진 구간 (was 3)
+    if (winRate < 0.2)
+      thresholdBonus = 10; // Kelly 완전 음수 구간 → 매우 강한 제한
+    else if (winRate < 0.25)
+      thresholdBonus = 7; // Kelly 음수 가능성 높음 (was 5)
+    else if (winRate < 0.35)
+      thresholdBonus = 4; // 부진 구간 (was 3)
     else if (winRate < 0.45) thresholdBonus = 2;
 
-    const requirePullback = pbWinRate !== null && noPbWinRate !== null
-      && noPbWinRate < 0.30 && pbWinRate > noPbWinRate + 0.15;
+    const requirePullback =
+      pbWinRate !== null && noPbWinRate !== null && noPbWinRate < 0.3 && pbWinRate > noPbWinRate + 0.15;
 
     let minVolumeRatio = 1.0;
-    if (lowVolWinRate !== null && highVolWinRate !== null && lowVolWinRate < 0.30) {
-      minVolumeRatio = highVolWinRate >= 0.50 ? 2.0 : 1.5;
+    if (lowVolWinRate !== null && highVolWinRate !== null && lowVolWinRate < 0.3) {
+      minVolumeRatio = highVolWinRate >= 0.5 ? 2.0 : 1.5;
     }
 
-    const pbStr = pbWinRate !== null
-      ? `pb유${(pbWinRate * 100).toFixed(0)}% vs 무${((noPbWinRate ?? 0) * 100).toFixed(0)}%`
-      : '';
+    const pbStr =
+      pbWinRate !== null ? `pb유${(pbWinRate * 100).toFixed(0)}% vs 무${((noPbWinRate ?? 0) * 100).toFixed(0)}%` : '';
     const summary = [
       `승률 ${(winRate * 100).toFixed(0)}%(${total}건)`,
       thresholdBonus > 0 ? `임계값+${thresholdBonus}` : '',
       requirePullback ? '눌림필수' : '',
       minVolumeRatio > 1.0 ? `거래량${minVolumeRatio}x+` : '',
       pbStr,
-    ].filter(Boolean).join(' | ');
+    ]
+      .filter(Boolean)
+      .join(' | ');
 
     logger.info(`🎯 승률피드백: ${summary}`, { component: COMPONENT });
 
     const result: WinRateFeedback = {
-      recentWinRate: winRate, thresholdBonus, requirePullback, minVolumeRatio,
-      sampleSize: total, summary,
+      recentWinRate: winRate,
+      thresholdBonus,
+      requirePullback,
+      minVolumeRatio,
+      sampleSize: total,
+      summary,
     };
     _feedbackCache = { data: result, ts: now };
     return result;
@@ -366,7 +400,9 @@ export async function runPortfolioHealthCheck(): Promise<void> {
         const fx = await getFxRate();
         overseasValueKrw = totalUsd * (fx > 0 ? fx : 1420);
       }
-    } catch { /* 해외 데이터 없으면 국내만 사용 */ }
+    } catch {
+      /* 해외 데이터 없으면 국내만 사용 */
+    }
 
     const totalPortfolio = domesticPortfolio + overseasValueKrw;
 
@@ -444,9 +480,7 @@ export function getConcentrationSellTargets(
     const pct = evalValue / totalPortfolio;
 
     // 25% 초과 + 수익 상태일 때만 자동 부분매도
-    const unrealizedPnlPct = chain.avg_buy_price > 0
-      ? ((price - chain.avg_buy_price) / chain.avg_buy_price) * 100
-      : 0;
+    const unrealizedPnlPct = chain.avg_buy_price > 0 ? ((price - chain.avg_buy_price) / chain.avg_buy_price) * 100 : 0;
 
     if (pct > MAX_SINGLE_STOCK_PCT && unrealizedPnlPct > 3) {
       targets.add(chain.stock_code);

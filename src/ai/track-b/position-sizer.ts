@@ -28,7 +28,7 @@ export function adjustPositionSizes(params: {
   const _params = STRATEGY_PARAMS[mode];
 
   // KOSPI 레짐 보정: 조정장이면 기준금액 60% 축소
-  const kospiSizingMult = kospiRegimePenalty >= 1 ? 0.6 : (kospiBoost ? 1.2 : 1.0);
+  const kospiSizingMult = kospiRegimePenalty >= 1 ? 0.6 : kospiBoost ? 1.2 : 1.0;
 
   // pipeline이 계산한 adjMaxPositionKrw를 기준으로 사용 (독자 재계산 안 함)
   const maxPerPosition = Math.round(adjMaxPositionKrw * kospiSizingMult);
@@ -37,15 +37,10 @@ export function adjustPositionSizes(params: {
   // 절대 상한: totalAssets × 25% (portfolio-guard 집중도와 일치)
   const absoluteCap = totalAssets > 0 ? Math.round(totalAssets * 0.25) : Infinity;
 
-  const scoreMap = new Map<string, number>(
-    scores.map((s) => [s.stock_code, Number(s.composite_score ?? 0)]),
-  );
+  const scoreMap = new Map<string, number>(scores.map((s) => [s.stock_code, Number(s.composite_score ?? 0)]));
 
   for (const d of result) {
-    if (
-      (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') &&
-      (d.limit_price ?? 0) > 0
-    ) {
+    if ((d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && (d.limit_price ?? 0) > 0) {
       const price = d.limit_price!;
       const rawAiScore = scoreMap.get(d.stock_code) ?? 0;
       const aiScore = Number.isFinite(rawAiScore) ? rawAiScore : 0;
@@ -61,9 +56,8 @@ export function adjustPositionSizes(params: {
       const rawBudgetCapped = Math.min(rawBudget, absoluteCap);
       // 1회 손실 ≤ 총자산 1.5% 하드캡 (리스크 절대 한도)
       const slPct = Math.abs(_params.stopLossPct) / 100;
-      const maxBudgetByLoss = totalAssets > 0 && slPct > 0
-        ? Math.floor(totalAssets * 0.015 / slPct)
-        : rawBudgetCapped;
+      const maxBudgetByLoss =
+        totalAssets > 0 && slPct > 0 ? Math.floor((totalAssets * 0.015) / slPct) : rawBudgetCapped;
       const budget = Math.min(rawBudgetCapped, maxBudgetByLoss);
       const targetQty = Math.max(1, Math.floor(budget / price));
       const currentQty = d.quantity ?? 0;

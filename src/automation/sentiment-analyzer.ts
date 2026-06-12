@@ -111,7 +111,11 @@ export async function analyzeSentiment(text: string): Promise<SentimentResult> {
     const errMsg = String(error);
 
     // 인증/권한 오류 → API 비활성 처리 (반복 호출 방지)
-    if (errMsg.includes('UNAUTHENTICATED') || errMsg.includes('PERMISSION_DENIED') || errMsg.includes('Could not load the default credentials')) {
+    if (
+      errMsg.includes('UNAUTHENTICATED') ||
+      errMsg.includes('PERMISSION_DENIED') ||
+      errMsg.includes('Could not load the default credentials')
+    ) {
       logger.warn(`Google NL API 인증 오류 → 감성 분석 비활성: ${error}`, { component: 'SENTIMENT' });
       nlApiAvailable = false;
     } else {
@@ -200,13 +204,16 @@ export async function getSentimentScoreAdjustment(stockCode: string, headlines: 
   const adjustment = adjustmentMap[label];
 
   if (adjustment !== 0) {
-    logger.info(`📊 [${stockCode}] 뉴스 감성: ${label} (score=${result.average.score}) → 점수 조정 ${adjustment > 0 ? '+' : ''}${adjustment}`, {
-      component: 'SENTIMENT',
-      stockCode,
-      label,
-      score: result.average.score,
-      adjustment,
-    });
+    logger.info(
+      `📊 [${stockCode}] 뉴스 감성: ${label} (score=${result.average.score}) → 점수 조정 ${adjustment > 0 ? '+' : ''}${adjustment}`,
+      {
+        component: 'SENTIMENT',
+        stockCode,
+        label,
+        score: result.average.score,
+        adjustment,
+      },
+    );
   }
 
   return adjustment;

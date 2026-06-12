@@ -3,7 +3,7 @@
  * 캔들스틱 패턴, 피보나치, 볼륨 프로파일, 구조적 패턴
  */
 
-import { sma, type OHLCV } from './moving-averages.js';
+import { type OHLCV, sma } from './moving-averages.js';
 
 // ── 캔들스틱 패턴 감지 ──
 
@@ -67,8 +67,8 @@ export function detectCandlePatterns(candles: OHLCV[]): CandlePatternResult[] {
   // 7. 모닝스타 / 이브닝스타 (Morning/Evening Star)
   if (candles.length >= 3) {
     const bull2 = c2.close > c2.open;
-    const body2 = Math.abs(c2.close - c2.open);
-    const range2 = c2.high - c2.low || 1;
+    const _body2 = Math.abs(c2.close - c2.open);
+    const _range2 = c2.high - c2.low || 1;
     if (!bull2 && body1 / range1 < 0.3 && bull0 && c0.close > (c2.open + c2.close) / 2) {
       patterns.push({ name: '모닝스타', bullish: true, strength: 'STRONG' });
     }
@@ -108,14 +108,14 @@ export function calcFibonacciLevels(candles: OHLCV[], currentPrice: number): Fib
 
   const lookback = Math.min(candles.length, 60);
   const recent = candles.slice(0, lookback);
-  const swingHigh = Math.max(...recent.map(c => c.high));
-  const swingLow = Math.min(...recent.map(c => c.low));
+  const swingHigh = Math.max(...recent.map((c) => c.high));
+  const swingLow = Math.min(...recent.map((c) => c.low));
 
   const range = swingHigh - swingLow;
   if (range <= 0 || swingLow <= 0) return null;
 
-  const fibRatios = [0.382, 0.500, 0.618];
-  const levels: FibonacciLevel[] = fibRatios.map(ratio => {
+  const fibRatios = [0.382, 0.5, 0.618];
+  const levels: FibonacciLevel[] = fibRatios.map((ratio) => {
     const price = swingHigh - range * ratio;
     const pctFromCurrent = ((currentPrice - price) / price) * 100;
     return {
@@ -126,18 +126,19 @@ export function calcFibonacciLevels(candles: OHLCV[], currentPrice: number): Fib
     };
   });
 
-  const supportLevels = levels.filter(l => l.pctFromCurrent >= -2.0 && l.pctFromCurrent <= 3.0);
-  const nearestBuyLevel = supportLevels.length > 0
-    ? supportLevels.reduce((best, l) => Math.abs(l.pctFromCurrent) < Math.abs(best.pctFromCurrent) ? l : best)
-    : null;
+  const supportLevels = levels.filter((l) => l.pctFromCurrent >= -2.0 && l.pctFromCurrent <= 3.0);
+  const nearestBuyLevel =
+    supportLevels.length > 0
+      ? supportLevels.reduce((best, l) => (Math.abs(l.pctFromCurrent) < Math.abs(best.pctFromCurrent) ? l : best))
+      : null;
 
-  const isAtFibSupport = levels.some(l => l.isNear && l.pctFromCurrent >= -2.0);
+  const isAtFibSupport = levels.some((l) => l.isNear && l.pctFromCurrent >= -2.0);
 
   let fibScore = 0;
   if (isAtFibSupport) {
-    const nearest = levels.find(l => l.isNear);
+    const nearest = levels.find((l) => l.isNear);
     if (nearest) {
-      fibScore = nearest.level === 0.382 ? 15 : nearest.level === 0.500 ? 12 : 10;
+      fibScore = nearest.level === 0.382 ? 15 : nearest.level === 0.5 ? 12 : 10;
       if (Math.abs(nearest.pctFromCurrent) <= 0.5) fibScore += 3;
     }
   }
@@ -156,8 +157,8 @@ export interface VolumeLevelResult {
 
 export function volumeProfile(candles: OHLCV[], bins = 24): VolumeLevelResult[] {
   if (candles.length < 10) return [];
-  const minP = Math.min(...candles.map(c => c.low));
-  const maxP = Math.max(...candles.map(c => c.high));
+  const minP = Math.min(...candles.map((c) => c.low));
+  const maxP = Math.max(...candles.map((c) => c.high));
   if (maxP <= minP) return [];
   const binSize = (maxP - minP) / bins;
   const volByBin = new Array(bins).fill(0);
@@ -180,7 +181,7 @@ export function volumeProfile(candles: OHLCV[], bins = 24): VolumeLevelResult[] 
         isResistance: vol >= threshold && priceLevel > cur,
       };
     })
-    .filter(v => v.isSupport || v.isResistance);
+    .filter((v) => v.isSupport || v.isResistance);
 }
 
 // ── 구조적 차트 패턴 (이중 바닥/천장, 삼각수렴) ──
@@ -198,9 +199,13 @@ function _linearSlope(arr: number[]): number {
   if (n < 2) return 0;
   const xm = (n - 1) / 2;
   const ym = arr.reduce((a, b) => a + b, 0) / n;
-  let num = 0, den = 0;
-  for (let i = 0; i < n; i++) { num += (i - xm) * (arr[i] - ym); den += (i - xm) ** 2; }
-  return den !== 0 ? (num / den) / (ym || 1) : 0;
+  let num = 0,
+    den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (i - xm) * (arr[i] - ym);
+    den += (i - xm) ** 2;
+  }
+  return den !== 0 ? num / den / (ym || 1) : 0;
 }
 
 function _localExtremes(arr: number[], type: 'min' | 'max', w = 3): number[] {
@@ -216,9 +221,9 @@ function _localExtremes(arr: number[], type: 'min' | 'max', w = 3): number[] {
 export function detectStructuralPatterns(candles: OHLCV[]): StructuralPattern[] {
   if (candles.length < 30) return [];
   const recent = candles.slice(0, 30).reverse();
-  const highs = recent.map(c => c.high);
-  const lows = recent.map(c => c.low);
-  const closes = recent.map(c => c.close);
+  const highs = recent.map((c) => c.high);
+  const lows = recent.map((c) => c.low);
+  const closes = recent.map((c) => c.close);
   const patterns: StructuralPattern[] = [];
 
   // 이중 바닥 (Double Bottom)
@@ -229,7 +234,13 @@ export function detectStructuralPatterns(candles: OHLCV[]): StructuralPattern[] 
       const diff = Math.abs(lows[i1] - lows[i2]) / (lows[i1] || 1);
       if (diff < 0.03) {
         const conf = 1 - diff / 0.03;
-        patterns.push({ name: 'DOUBLE_BOTTOM', bullish: true, confidence: conf, score: Math.round(15 * conf), label: `이중바닥(${lows[i1].toFixed(0)}/${lows[i2].toFixed(0)})` });
+        patterns.push({
+          name: 'DOUBLE_BOTTOM',
+          bullish: true,
+          confidence: conf,
+          score: Math.round(15 * conf),
+          label: `이중바닥(${lows[i1].toFixed(0)}/${lows[i2].toFixed(0)})`,
+        });
       }
     }
   }
@@ -242,7 +253,13 @@ export function detectStructuralPatterns(candles: OHLCV[]): StructuralPattern[] 
       const diff = Math.abs(highs[i1] - highs[i2]) / (highs[i1] || 1);
       if (diff < 0.03) {
         const conf = 1 - diff / 0.03;
-        patterns.push({ name: 'DOUBLE_TOP', bullish: false, confidence: conf, score: -Math.round(15 * conf), label: `이중천장(${highs[i1].toFixed(0)}/${highs[i2].toFixed(0)})` });
+        patterns.push({
+          name: 'DOUBLE_TOP',
+          bullish: false,
+          confidence: conf,
+          score: -Math.round(15 * conf),
+          label: `이중천장(${highs[i1].toFixed(0)}/${highs[i2].toFixed(0)})`,
+        });
       }
     }
   }
@@ -254,7 +271,13 @@ export function detectStructuralPatterns(candles: OHLCV[]): StructuralPattern[] 
   const sma20v = sma(closes, 20).pop() ?? curClose;
   if (hSlope < -0.001 && lSlope > 0.001) {
     const bull = curClose > sma20v;
-    patterns.push({ name: 'SYM_TRIANGLE', bullish: bull, confidence: 0.6, score: bull ? 8 : -8, label: '대칭삼각수렴' });
+    patterns.push({
+      name: 'SYM_TRIANGLE',
+      bullish: bull,
+      confidence: 0.6,
+      score: bull ? 8 : -8,
+      label: '대칭삼각수렴',
+    });
   } else if (hSlope < -0.001 && Math.abs(lSlope) < 0.0005) {
     patterns.push({ name: 'DESC_TRIANGLE', bullish: false, confidence: 0.65, score: -12, label: '하강삼각형' });
   } else if (Math.abs(hSlope) < 0.0005 && lSlope > 0.001) {

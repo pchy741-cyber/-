@@ -15,14 +15,14 @@ import { sleep } from '../utils/sleep.js';
 
 export interface AnalystConsensus {
   stockCode: string;
-  targetPrice: number;        // 평균 목표가
-  currentPrice: number;       // 현재가
-  upsidePct: number;          // 괴리율 (목표가 대비 상승여력 %)
-  analystCount: number;       // 리포트 수
-  buyCount: number;           // 매수 의견 수
-  holdCount: number;          // 중립
-  sellCount: number;          // 매도
-  recentChange: 'UP' | 'DOWN' | 'FLAT';  // 최근 목표가 변동 방향
+  targetPrice: number; // 평균 목표가
+  currentPrice: number; // 현재가
+  upsidePct: number; // 괴리율 (목표가 대비 상승여력 %)
+  analystCount: number; // 리포트 수
+  buyCount: number; // 매수 의견 수
+  holdCount: number; // 중립
+  sellCount: number; // 매도
+  recentChange: 'UP' | 'DOWN' | 'FLAT'; // 최근 목표가 변동 방향
   consensusRating: 'STRONG_BUY' | 'BUY' | 'HOLD' | 'SELL';
 }
 
@@ -62,10 +62,7 @@ function deriveConsensusRating(
   return 'HOLD';
 }
 
-function deriveRecentChange(
-  targetPrice: number,
-  prevTargetPrice: number | null,
-): AnalystConsensus['recentChange'] {
+function deriveRecentChange(targetPrice: number, prevTargetPrice: number | null): AnalystConsensus['recentChange'] {
   if (prevTargetPrice == null || prevTargetPrice === 0) return 'FLAT';
   const diff = (targetPrice - prevTargetPrice) / prevTargetPrice;
   if (diff > 0.01) return 'UP';
@@ -112,14 +109,14 @@ async function tryIntegrationApi(stockCode: string): Promise<AnalystConsensus | 
     const res = await fetch(url, {
       headers: {
         'User-Agent': 'AIBot/0.2.0',
-        'Accept': 'application/json',
+        Accept: 'application/json',
       },
       signal: AbortSignal.timeout(10000),
     });
 
     if (!res.ok) return null;
 
-    const json = await res.json() as Record<string, unknown>;
+    const json = (await res.json()) as Record<string, unknown>;
 
     // integration API 응답에서 컨센서스 관련 필드 추출
     const dealTrendInfo = json.dealTrendInfo as Record<string, unknown> | undefined;
@@ -128,9 +125,7 @@ async function tryIntegrationApi(stockCode: string): Promise<AnalystConsensus | 
 
     // 현재가 추출
     const currentPrice = Number(
-      (stockEndPrice as Record<string, unknown>)?.closePrice
-      ?? (json as Record<string, unknown>).closePrice
-      ?? 0,
+      (stockEndPrice as Record<string, unknown>)?.closePrice ?? (json as Record<string, unknown>).closePrice ?? 0,
     );
 
     if (!consensusInfo && !dealTrendInfo) return null;
@@ -173,19 +168,20 @@ async function tryAnalystApi(stockCode: string): Promise<AnalystConsensus | null
     const res = await fetch(url, {
       headers: {
         'User-Agent': 'AIBot/0.2.0',
-        'Accept': 'application/json',
+        Accept: 'application/json',
       },
       signal: AbortSignal.timeout(10000),
     });
 
     if (!res.ok) return null;
 
-    const json = await res.json() as Record<string, unknown>;
+    const json = (await res.json()) as Record<string, unknown>;
 
     // analyst API에서 리포트 목록 기반 집계
-    const reports = (json as Record<string, unknown>).reports as Array<Record<string, unknown>> | undefined
-      ?? (json as Record<string, unknown>).items as Array<Record<string, unknown>> | undefined
-      ?? [];
+    const reports =
+      ((json as Record<string, unknown>).reports as Array<Record<string, unknown>> | undefined) ??
+      ((json as Record<string, unknown>).items as Array<Record<string, unknown>> | undefined) ??
+      [];
 
     if (reports.length === 0) return null;
 
@@ -256,12 +252,8 @@ async function fetchCurrentPrice(stockCode: string): Promise<number> {
     });
     if (!res.ok) return 0;
 
-    const json = await res.json() as Record<string, unknown>;
-    return Number(
-      (json as Record<string, unknown>).closePrice
-      ?? (json as Record<string, unknown>).nowVal
-      ?? 0,
-    );
+    const json = (await res.json()) as Record<string, unknown>;
+    return Number((json as Record<string, unknown>).closePrice ?? (json as Record<string, unknown>).nowVal ?? 0);
   } catch {
     return 0;
   }
@@ -315,9 +307,7 @@ export async function analyzeWatchlistConsensus(): Promise<Map<string, AnalystCo
   for (let i = 0; i < watchlist.length; i += batchSize) {
     const batch = watchlist.slice(i, i + batchSize);
 
-    const settled = await Promise.allSettled(
-      batch.map((stock) => fetchAnalystConsensus(stock.stock_code)),
-    );
+    const settled = await Promise.allSettled(batch.map((stock) => fetchAnalystConsensus(stock.stock_code)));
 
     settled.forEach((result, idx) => {
       const stockCode = batch[idx].stock_code;
@@ -337,12 +327,12 @@ export async function analyzeWatchlistConsensus(): Promise<Map<string, AnalystCo
   const strongBuy = [...results.values()].filter((c) => c.consensusRating === 'STRONG_BUY').length;
   const avgUpside =
     results.size > 0
-      ? Math.round([...results.values()].reduce((sum, c) => sum + c.upsidePct, 0) / results.size * 100) / 100
+      ? Math.round(([...results.values()].reduce((sum, c) => sum + c.upsidePct, 0) / results.size) * 100) / 100
       : 0;
 
   logger.info(
     `📊 컨센서스 수집 완료: ${withData}/${watchlist.length}종목 | ` +
-    `평균 상승여력 ${avgUpside}% | STRONG_BUY ${strongBuy}종목`,
+      `평균 상승여력 ${avgUpside}% | STRONG_BUY ${strongBuy}종목`,
     { component: 'CONSENSUS' },
   );
 

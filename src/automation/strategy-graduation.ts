@@ -7,18 +7,18 @@
  */
 
 import { getPool } from '../db/client.js';
+import { getAllStrategyPerformances, getStrategyPerformance } from '../risk/strategy-performance.js';
 import { logger } from '../utils/logger.js';
-import { getStrategyPerformance, getAllStrategyPerformances, type StrategyPerformance } from '../risk/strategy-performance.js';
 import { classifyGraduationRisk } from './strategy-lab/risk-classifier.js';
 
 // ── 졸업 기준 ──────────────────────────────────────────────────────────
 
 export interface GraduationCriteria {
-  minTrades: number;          // 최소 CLOSED 거래수
-  minWinRate: number;         // 최소 승률 (0-1)
-  minProfitFactor: number;    // 최소 Profit Factor
-  maxMDD: number;             // 최대 연속 드로다운 % (음수)
-  evaluationDays: number;     // 평가 기간 (일)
+  minTrades: number; // 최소 CLOSED 거래수
+  minWinRate: number; // 최소 승률 (0-1)
+  minProfitFactor: number; // 최소 Profit Factor
+  maxMDD: number; // 최대 연속 드로다운 % (음수)
+  evaluationDays: number; // 평가 기간 (일)
 }
 
 const DEFAULT_CRITERIA: GraduationCriteria = {
@@ -31,10 +31,10 @@ const DEFAULT_CRITERIA: GraduationCriteria = {
 
 // BREAKOUT은 별도 기준 (돌파매매 특성 반영)
 const BREAKOUT_CRITERIA: GraduationCriteria = {
-  minTrades: 20,              // 돌파 시그널 빈도 낮음
-  minWinRate: 0.50,           // 손익비 1.6:1이므로 50%면 충분
+  minTrades: 20, // 돌파 시그널 빈도 낮음
+  minWinRate: 0.5, // 손익비 1.6:1이므로 50%면 충분
   minProfitFactor: 1.3,
-  maxMDD: -20,                // SL -5% 감안 완화
+  maxMDD: -20, // SL -5% 감안 완화
   evaluationDays: 30,
 };
 
@@ -72,10 +72,12 @@ export async function checkGraduation(mode: string): Promise<GraduationResult> {
   if (actual.trades >= criteria.minTrades) passed.push(`trades(${actual.trades}>=${criteria.minTrades})`);
   else failed.push(`trades(${actual.trades}<${criteria.minTrades})`);
 
-  if (actual.winRate >= criteria.minWinRate) passed.push(`winRate(${(actual.winRate*100).toFixed(0)}%>=${(criteria.minWinRate*100).toFixed(0)}%)`);
-  else failed.push(`winRate(${(actual.winRate*100).toFixed(0)}%<${(criteria.minWinRate*100).toFixed(0)}%)`);
+  if (actual.winRate >= criteria.minWinRate)
+    passed.push(`winRate(${(actual.winRate * 100).toFixed(0)}%>=${(criteria.minWinRate * 100).toFixed(0)}%)`);
+  else failed.push(`winRate(${(actual.winRate * 100).toFixed(0)}%<${(criteria.minWinRate * 100).toFixed(0)}%)`);
 
-  if (actual.profitFactor >= criteria.minProfitFactor) passed.push(`PF(${actual.profitFactor.toFixed(2)}>=${criteria.minProfitFactor})`);
+  if (actual.profitFactor >= criteria.minProfitFactor)
+    passed.push(`PF(${actual.profitFactor.toFixed(2)}>=${criteria.minProfitFactor})`);
   else failed.push(`PF(${actual.profitFactor.toFixed(2)}<${criteria.minProfitFactor})`);
 
   if (actual.mdd >= criteria.maxMDD) passed.push(`MDD(${actual.mdd.toFixed(1)}%>=${criteria.maxMDD}%)`);
@@ -97,10 +99,12 @@ export async function autoGraduate(): Promise<void> {
     const pool = getPool();
 
     // 만료된 PENDING 건 자동 처리
-    await pool.query(`
+    await pool
+      .query(`
       UPDATE strategy_graduations SET status = 'EXPIRED'
       WHERE status = 'PENDING' AND expires_at < NOW()
-    `).catch(() => {});
+    `)
+      .catch(() => {});
 
     const allPerfs = await getAllStrategyPerformances(30, true);
     if (allPerfs.length === 0) {
@@ -117,10 +121,9 @@ export async function autoGraduate(): Promise<void> {
         const risk = classifyGraduationRisk(result, result.criteria);
 
         // 이미 PENDING 건이 있으면 스킵
-        const existing = await pool.query(
-          `SELECT id FROM strategy_graduations WHERE strategy_mode = $1 AND status = 'PENDING'`,
-          [perf.mode],
-        ).catch(() => ({ rows: [] }));
+        const existing = await pool
+          .query(`SELECT id FROM strategy_graduations WHERE strategy_mode = $1 AND status = 'PENDING'`, [perf.mode])
+          .catch(() => ({ rows: [] }));
         if (existing.rows.length > 0) {
           logger.info(`  ⏳ ${perf.mode}: 이미 대기 중인 졸업 건 있음 — 스킵`, { component: 'GRADUATION' });
           continue;
@@ -136,39 +139,61 @@ export async function autoGraduate(): Promise<void> {
 
         logger.info(
           `  🎉 ${perf.mode}: 졸업 자격 충족! [${risk.level}] ${risk.autoApply ? '→ 자동적용' : '→ CEO 승인 대기'} ` +
-          `${perf.totalTrades}건 승률${(perf.winRate * 100).toFixed(0)}% PF=${perf.profitFactor.toFixed(2)} MDD=${perf.maxDrawdownPct.toFixed(1)}%`,
+            `${perf.totalTrades}건 승률${(perf.winRate * 100).toFixed(0)}% PF=${perf.profitFactor.toFixed(2)} MDD=${perf.maxDrawdownPct.toFixed(1)}%`,
           { component: 'GRADUATION' },
         );
 
         // strategy_graduations 테이블에 기록
-        await pool.query(`
+        await pool
+          .query(
+            `
           INSERT INTO strategy_graduations
             (strategy_mode, risk_level, status, trades, win_rate, profit_factor, mdd,
              total_pnl_krw, avg_holding_days, criteria_margin,
              auto_applied, decided_by, decided_at)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, ${risk.autoApply ? 'NOW()' : 'NULL'})
-        `, [
-          perf.mode, risk.level, status, perf.totalTrades,
-          perf.winRate, perf.profitFactor, perf.maxDrawdownPct,
-          perf.totalPnlKrw, perf.avgHoldingDays, JSON.stringify(margin),
-          risk.autoApply, risk.autoApply ? 'SYSTEM' : null,
-        ]).catch(e => logger.warn(`졸업 기록 실패: ${e}`, { component: 'GRADUATION' }));
+        `,
+            [
+              perf.mode,
+              risk.level,
+              status,
+              perf.totalTrades,
+              perf.winRate,
+              perf.profitFactor,
+              perf.maxDrawdownPct,
+              perf.totalPnlKrw,
+              perf.avgHoldingDays,
+              JSON.stringify(margin),
+              risk.autoApply,
+              risk.autoApply ? 'SYSTEM' : null,
+            ],
+          )
+          .catch((e) => logger.warn(`졸업 기록 실패: ${e}`, { component: 'GRADUATION' }));
 
         // system_state 기록 (레거시 호환)
-        await pool.query(`
+        await pool
+          .query(
+            `
           INSERT INTO system_state (key, value, updated_at)
           VALUES ($1, $2, NOW())
           ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()
-        `, [
-          `graduation_${perf.mode}_eligible`,
-          JSON.stringify({
-            eligible: true, riskLevel: risk.level, status,
-            checkedAt: new Date().toISOString(),
-            trades: perf.totalTrades, winRate: perf.winRate,
-            profitFactor: perf.profitFactor, mdd: perf.maxDrawdownPct,
-            totalPnlKrw: perf.totalPnlKrw,
-          }),
-        ]).catch(() => {});
+        `,
+            [
+              `graduation_${perf.mode}_eligible`,
+              JSON.stringify({
+                eligible: true,
+                riskLevel: risk.level,
+                status,
+                checkedAt: new Date().toISOString(),
+                trades: perf.totalTrades,
+                winRate: perf.winRate,
+                profitFactor: perf.profitFactor,
+                mdd: perf.maxDrawdownPct,
+                totalPnlKrw: perf.totalPnlKrw,
+              }),
+            ],
+          )
+          .catch(() => {});
 
         // 텔레그램 알림
         try {
@@ -176,20 +201,22 @@ export async function autoGraduate(): Promise<void> {
           const emoji = risk.level === 'HIGH' ? '🔴' : risk.level === 'MEDIUM' ? '🟡' : '🟢';
           await sendTelegramMessage(
             `🎓 전략 졸업 ${risk.autoApply ? '자동적용' : '승인 필요'}\n\n` +
-            `전략: ${perf.mode} ${emoji} ${risk.level}\n` +
-            `거래수: ${perf.totalTrades}건\n` +
-            `승률: ${(perf.winRate * 100).toFixed(0)}%\n` +
-            `PF: ${perf.profitFactor.toFixed(2)}\n` +
-            `MDD: ${perf.maxDrawdownPct.toFixed(1)}%\n` +
-            `PnL: ${(perf.totalPnlKrw / 10000).toFixed(0)}만원\n` +
-            `사유: ${risk.reasons.join(', ')}\n\n` +
-            (risk.autoApply ? '✅ 자동 적용 완료' : '→ 대시보드 전략 Lab에서 승인'),
+              `전략: ${perf.mode} ${emoji} ${risk.level}\n` +
+              `거래수: ${perf.totalTrades}건\n` +
+              `승률: ${(perf.winRate * 100).toFixed(0)}%\n` +
+              `PF: ${perf.profitFactor.toFixed(2)}\n` +
+              `MDD: ${perf.maxDrawdownPct.toFixed(1)}%\n` +
+              `PnL: ${(perf.totalPnlKrw / 10000).toFixed(0)}만원\n` +
+              `사유: ${risk.reasons.join(', ')}\n\n` +
+              (risk.autoApply ? '✅ 자동 적용 완료' : '→ 대시보드 전략 Lab에서 승인'),
           );
-        } catch { /* 텔레그램 미설정 시 무시 */ }
+        } catch {
+          /* 텔레그램 미설정 시 무시 */
+        }
       } else {
         logger.info(
           `  📝 ${perf.mode}: 미달 [${result.failedChecks.join(', ')}] ` +
-          `(${perf.totalTrades}건 승률${(perf.winRate * 100).toFixed(0)}%)`,
+            `(${perf.totalTrades}건 승률${(perf.winRate * 100).toFixed(0)}%)`,
           { component: 'GRADUATION' },
         );
       }
@@ -225,7 +252,10 @@ export async function getPaperOnlyModes(): Promise<Set<string>> {
     for (const row of rows) {
       paperOnly.delete(row.strategy_mode);
     }
-    logger.debug(`🎓 PAPER_ONLY: [${[...paperOnly].join(',')}] (졸업: [${rows.map((r: any) => r.strategy_mode).join(',')}])`, { component: 'GRADUATION' });
+    logger.debug(
+      `🎓 PAPER_ONLY: [${[...paperOnly].join(',')}] (졸업: [${rows.map((r: any) => r.strategy_mode).join(',')}])`,
+      { component: 'GRADUATION' },
+    );
   } catch {}
 
   _paperOnlyCache = { modes: paperOnly, ts: now };
@@ -258,7 +288,7 @@ export async function checkDemotion(): Promise<void> {
 
       if (livePerf.totalTrades < 10) continue; // 표본 부족 — 유보
 
-      const shouldDemote = livePerf.winRate < 0.40 || livePerf.profitFactor < 1.0;
+      const shouldDemote = livePerf.winRate < 0.4 || livePerf.profitFactor < 1.0;
       if (!shouldDemote) continue;
 
       // 강등 처리

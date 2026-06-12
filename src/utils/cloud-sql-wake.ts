@@ -28,7 +28,7 @@ async function getAccessToken(): Promise<string | null> {
       { headers: { 'Metadata-Flavor': 'Google' }, signal: AbortSignal.timeout(3000) },
     );
     if (!res.ok) return null;
-    const data = await res.json() as { access_token: string };
+    const data = (await res.json()) as { access_token: string };
     return data.access_token;
   } catch {
     // 로컬 개발 환경에선 메타데이터 서버 없음 → null
@@ -38,12 +38,12 @@ async function getAccessToken(): Promise<string | null> {
 
 /** Cloud SQL 인스턴스 활성화 정책 조회 — ALWAYS=실행중, NEVER=중지됨 */
 async function getActivationPolicy(token: string): Promise<string> {
-  const res = await fetch(
-    `https://sqladmin.googleapis.com/v1/projects/${PROJECT}/instances/${INSTANCE}`,
-    { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) },
-  );
+  const res = await fetch(`https://sqladmin.googleapis.com/v1/projects/${PROJECT}/instances/${INSTANCE}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(10000),
+  });
   if (!res.ok) throw new Error(`SQL Admin API ${res.status}: ${await res.text()}`);
-  const data = await res.json() as { state: string; settings?: { activationPolicy?: string } };
+  const data = (await res.json()) as { state: string; settings?: { activationPolicy?: string } };
   // state는 인프라 존재 여부 (RUNNABLE=존재). activationPolicy가 실제 실행 상태
   return data.settings?.activationPolicy ?? 'UNKNOWN';
 }
@@ -51,21 +51,18 @@ async function getActivationPolicy(token: string): Promise<string> {
 /** Cloud SQL 인스턴스 시작 (activationPolicy → ALWAYS), 409 시 재시도 */
 async function startInstance(token: string): Promise<void> {
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const res = await fetch(
-      `https://sqladmin.googleapis.com/v1/projects/${PROJECT}/instances/${INSTANCE}`,
-      {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ settings: { activationPolicy: 'ALWAYS' } }),
-        signal: AbortSignal.timeout(15000),
-      },
-    );
+    const res = await fetch(`https://sqladmin.googleapis.com/v1/projects/${PROJECT}/instances/${INSTANCE}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { activationPolicy: 'ALWAYS' } }),
+      signal: AbortSignal.timeout(15000),
+    });
     if (res.ok) return;
     const text = await res.text();
     // 409 = DB가 아직 전환 중 (STOP→START 또는 MAINTENANCE) — 대기 후 재시도
     if (res.status === 409 && attempt < 3) {
       logger.warn(`☁️ Cloud SQL 시작 409 (전환 중) — ${attempt}/3 재시도 (30초 대기)`, { component: 'SQL_WAKE' });
-      await new Promise(r => setTimeout(r, 30_000));
+      await new Promise((r) => setTimeout(r, 30_000));
       continue;
     }
     throw new Error(`시작 실패 ${res.status}: ${text}`);
@@ -74,15 +71,12 @@ async function startInstance(token: string): Promise<void> {
 
 /** Cloud SQL 인스턴스 중지 (activationPolicy → NEVER) */
 async function stopInstance(token: string): Promise<void> {
-  const res = await fetch(
-    `https://sqladmin.googleapis.com/v1/projects/${PROJECT}/instances/${INSTANCE}`,
-    {
-      method: 'PATCH',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ settings: { activationPolicy: 'NEVER' } }),
-      signal: AbortSignal.timeout(15000),
-    },
-  );
+  const res = await fetch(`https://sqladmin.googleapis.com/v1/projects/${PROJECT}/instances/${INSTANCE}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ settings: { activationPolicy: 'NEVER' } }),
+    signal: AbortSignal.timeout(15000),
+  });
   if (!res.ok) throw new Error(`중지 실패 ${res.status}: ${await res.text()}`);
 }
 
@@ -136,7 +130,9 @@ export async function tryWakeIfNeeded(): Promise<void> {
 }
 
 /** Cloud SQL 기상 중인지 확인 */
-export function isWaking(): boolean { return _waking; }
+export function isWaking(): boolean {
+  return _waking;
+}
 
 /** API 요청 시 호출 — 활동 시간 갱신 */
 export function touchActivity(): void {
@@ -165,8 +161,8 @@ export function startIdleWatcher(): void {
 
     // 평일: 장중 보호 시간대에는 자동 중지 안 함
     if (!isWeekend) {
-      if (h >= 7 && h < 20) return;  // 국내 장중+저녁 Job 07:00~20:00 KST 보호
-      if (h >= 22 || h < 7) return;  // 해외 장중 22:00~07:00 KST 보호
+      if (h >= 7 && h < 20) return; // 국내 장중+저녁 Job 07:00~20:00 KST 보호
+      if (h >= 22 || h < 7) return; // 해외 장중 22:00~07:00 KST 보호
       // → 평일 자동 중지 가능: 20:00~22:00 KST만 (2시간 창)
     }
     // 주말: 보호 시간대 없음 → 10분 유휴 시 바로 중지
@@ -178,7 +174,9 @@ export function startIdleWatcher(): void {
       const policy = await getActivationPolicy(token);
       if (policy !== 'ALWAYS') return; // 이미 꺼져있음
 
-      logger.info(`💤 ${Math.round(idleMs / 60000)}분 미사용${isWeekend ? ' (주말)' : ''} → Cloud SQL 자동 중지`, { component: 'SQL_WAKE' });
+      logger.info(`💤 ${Math.round(idleMs / 60000)}분 미사용${isWeekend ? ' (주말)' : ''} → Cloud SQL 자동 중지`, {
+        component: 'SQL_WAKE',
+      });
       await stopInstance(token);
       logger.info('💤 Cloud SQL 자동 중지 완료 (비용 절약)', { component: 'SQL_WAKE' });
     } catch (err) {
@@ -200,38 +198,51 @@ export function startDbHealthWatcher(checkDb: () => Promise<boolean>, onReconnec
   _healthTimer = setInterval(async () => {
     // 주말 가드: 의도적 Cloud SQL 중지 상태 → wake 시도 차단 (핑퐁 방지)
     const kstH = getKSTNow();
-    const d = kstH.getUTCDay(), hh = kstH.getUTCHours();
+    const d = kstH.getUTCDay(),
+      hh = kstH.getUTCHours();
     const isWeekendOff = d === 0 || (d === 6 && hh >= 9) || (d === 1 && hh < 6);
     if (isWeekendOff) return; // 주말 동면 중 — DB 복구 시도 안 함
 
     try {
       const ok = await checkDb();
       if (ok) return; // DB 정상
-    } catch { /* connection failed */ }
+    } catch {
+      /* connection failed */
+    }
 
     // DB 연결 실패 — 즉시 메모리 모드 전환 (대시보드 8초 타임아웃 방지)
     try {
       const { enableMemoryMode, isMemoryMode } = await import('../db/client.js');
       if (!isMemoryMode()) enableMemoryMode();
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
 
     // pool 리셋 + wake 시도 (쿨다운 적용)
     logger.warn('🔌 DB 연결 끊김 감지 → pool 리셋 + 자동 복구 시도', { component: 'SQL_WAKE' });
     try {
       const { resetPool } = await import('../db/client.js');
       await resetPool();
-    } catch { /* ignore */ }
-    try { await tryWakeIfNeeded(); } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
+    try {
+      await tryWakeIfNeeded();
+    } catch {
+      /* ignore */
+    }
 
     // wake 후 잠시 대기 → 재연결 시도
-    await new Promise(r => setTimeout(r, 5000));
+    await new Promise((r) => setTimeout(r, 5000));
     try {
       const ok2 = await checkDb();
       if (ok2) {
         logger.info('🔌 DB 자동 복구 성공', { component: 'SQL_WAKE' });
         await onReconnect();
       }
-    } catch { /* 다음 주기에 재시도 */ }
+    } catch {
+      /* 다음 주기에 재시도 */
+    }
   }, 2 * 60_000); // 2분마다 체크
 }
 
@@ -255,7 +266,7 @@ async function setCloudRunMinInstances(min: number): Promise<void> {
     signal: AbortSignal.timeout(10000),
   });
   if (!getRes.ok) throw new Error(`Cloud Run GET ${getRes.status}: ${await getRes.text()}`);
-  const svc = await getRes.json() as Record<string, unknown>;
+  const svc = (await getRes.json()) as Record<string, unknown>;
   const template = (svc.template ?? {}) as Record<string, unknown>;
   const scaling = (template.scaling ?? {}) as Record<string, unknown>;
   const current = scaling.minInstanceCount ?? 1;
@@ -287,7 +298,10 @@ export async function weekendHibernate(): Promise<void> {
 
   try {
     const token = await getAccessToken();
-    if (!token) { logger.info('🌙 로컬 환경 — 동면 스킵', { component: 'HIBERNATE' }); return; }
+    if (!token) {
+      logger.info('🌙 로컬 환경 — 동면 스킵', { component: 'HIBERNATE' });
+      return;
+    }
 
     // Cloud SQL 중지
     try {
@@ -296,12 +310,16 @@ export async function weekendHibernate(): Promise<void> {
         await stopInstance(token);
         logger.info('💤 Cloud SQL 중지 완료', { component: 'HIBERNATE' });
       }
-    } catch (e) { logger.warn(`💤 Cloud SQL 중지 실패: ${e}`, { component: 'HIBERNATE' }); }
+    } catch (e) {
+      logger.warn(`💤 Cloud SQL 중지 실패: ${e}`, { component: 'HIBERNATE' });
+    }
 
     // Cloud Run min=0
     try {
       await setCloudRunMinInstances(0);
-    } catch (e) { logger.warn(`🚀 Cloud Run min=0 실패: ${e}`, { component: 'HIBERNATE' }); }
+    } catch (e) {
+      logger.warn(`🚀 Cloud Run min=0 실패: ${e}`, { component: 'HIBERNATE' });
+    }
 
     logger.info('🌙 주말 동면 완료 — 월요일 06:00 자동 기상 예정', { component: 'HIBERNATE' });
   } catch (e) {
@@ -317,7 +335,9 @@ export async function weekdayWakeUp(): Promise<void> {
   logger.info('☀️ 평일 기상 — Cloud Run min=1 복원', { component: 'HIBERNATE' });
   try {
     await setCloudRunMinInstances(1);
-  } catch (e) { logger.warn(`☀️ Cloud Run min=1 복원 실패: ${e}`, { component: 'HIBERNATE' }); }
+  } catch (e) {
+    logger.warn(`☀️ Cloud Run min=1 복원 실패: ${e}`, { component: 'HIBERNATE' });
+  }
 }
 
 /** 정리 (shutdown 시) */

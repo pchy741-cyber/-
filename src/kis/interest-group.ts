@@ -1,6 +1,5 @@
 import { config } from '../config/index.js';
-import { getActiveWatchlist, upsertWatchlistItem } from '../db/client.js';
-import { getPool } from '../db/client.js';
+import { getActiveWatchlist, getPool, upsertWatchlistItem } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 import { kisRequest } from './client.js';
 import { getCurrentPrice } from './market.js';
@@ -50,7 +49,7 @@ async function fetchInterestGroup(groupNo: number): Promise<InterestStock[]> {
       .map((item) => ({
         stockCode: item.pdno,
         stockName: item.prdt_name ?? item.pdno,
-        market: item.mrkt_div_cls_code === '2' ? 'KOSDAQ' as const : 'KOSPI' as const,
+        market: item.mrkt_div_cls_code === '2' ? ('KOSDAQ' as const) : ('KOSPI' as const),
       }));
   } catch (e) {
     // 그룹이 비었거나 API 미지원 시 빈 배열
@@ -88,7 +87,9 @@ export async function syncInterestGroups(): Promise<{ added: string[]; total: nu
     } else {
       consecutiveFails = 0;
       for (const s of stocks) allStocks.set(s.stockCode, s);
-      logger.info(`  그룹 ${g}: ${stocks.length}종목 (${stocks.map((s) => s.stockName).join(', ')})`, { component: 'KIS_INTEREST' });
+      logger.info(`  그룹 ${g}: ${stocks.length}종목 (${stocks.map((s) => s.stockName).join(', ')})`, {
+        component: 'KIS_INTEREST',
+      });
     }
     await new Promise((r) => setTimeout(r, 200));
   }
@@ -113,14 +114,19 @@ export async function syncInterestGroups(): Promise<{ added: string[]; total: nu
       try {
         const quote = await getCurrentPrice(code);
         name = quote.stockName || code;
-      } catch { /* use code as fallback */ }
+      } catch {
+        /* use code as fallback */
+      }
     }
 
-    await upsertWatchlistItem({
-      stock_code: code,
-      stock_name: name,
-      market: stock.market,
-    }, 'KIS_SYNC');
+    await upsertWatchlistItem(
+      {
+        stock_code: code,
+        stock_name: name,
+        market: stock.market,
+      },
+      'KIS_SYNC',
+    );
 
     added.push(`${name}(${code})`);
     logger.info(`  ✅ 추가: ${name} (${code}) [${stock.market}]`, { component: 'KIS_INTEREST' });
@@ -128,7 +134,9 @@ export async function syncInterestGroups(): Promise<{ added: string[]; total: nu
   }
 
   const result = { added, total: allStocks.size };
-  logger.info(`🔄 KIS 관심종목 동기화 완료: 총 ${allStocks.size}종목, 신규 ${added.length}종목 추가`, { component: 'KIS_INTEREST' });
+  logger.info(`🔄 KIS 관심종목 동기화 완료: 총 ${allStocks.size}종목, 신규 ${added.length}종목 추가`, {
+    component: 'KIS_INTEREST',
+  });
 
   return result;
 }
@@ -163,14 +171,19 @@ export async function syncHoldingsToWatchlist(): Promise<{ added: string[] }> {
           market = 'KOSDAQ';
         }
         if (o?.hts_kor_isnm) pos.stockName = o.hts_kor_isnm;
-      } catch { /* fallback to KOSPI */ }
+      } catch {
+        /* fallback to KOSPI */
+      }
       await new Promise((r) => setTimeout(r, 300));
 
-      await upsertWatchlistItem({
-        stock_code: pos.stockCode,
-        stock_name: pos.stockName,
-        market,
-      }, 'KIS_SYNC');
+      await upsertWatchlistItem(
+        {
+          stock_code: pos.stockCode,
+          stock_name: pos.stockName,
+          market,
+        },
+        'KIS_SYNC',
+      );
 
       added.push(`${pos.stockName}(${pos.stockCode})`);
       logger.info(`  ✅ 보유종목 추가: ${pos.stockName} (${pos.stockCode})`, { component: 'KIS_INTEREST' });
@@ -224,9 +237,12 @@ export async function fixWatchlistNames(): Promise<{ fixed: number; total: numbe
     );
     let fixed = 0;
 
-    const needsFix = rows.filter(row =>
-      !row.stock_name || row.stock_name === row.stock_code ||
-      /^\d{6}$/.test(row.stock_name) || GARBLED_REGEX.test(row.stock_name),
+    const needsFix = rows.filter(
+      (row) =>
+        !row.stock_name ||
+        row.stock_name === row.stock_code ||
+        /^\d{6}$/.test(row.stock_name) ||
+        GARBLED_REGEX.test(row.stock_name),
     );
 
     if (needsFix.length === 0) {
@@ -237,16 +253,27 @@ export async function fixWatchlistNames(): Promise<{ fixed: number; total: numbe
     logger.info(`🔧 KRX API로 ${needsFix.length}종목 병렬 보정 중...`, { component: 'KIS_INTEREST' });
 
     // KRX 전종목 리스트를 한 번만 조회 (rate limit 없음)
-    let krxMap = new Map<string, string>();
+    const krxMap = new Map<string, string>();
     try {
       const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
       const resp = await fetch('https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'Referer': 'https://data.krx.co.kr/', 'User-Agent': 'Mozilla/5.0' },
-        body: new URLSearchParams({ bld: 'dbms/MDC/STAT/standard/MDCSTAT01901', mktId: 'ALL', trdDd: today, lang: 'ko', pageNo: '1', rowSize: '5000' }).toString(),
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          Referer: 'https://data.krx.co.kr/',
+          'User-Agent': 'Mozilla/5.0',
+        },
+        body: new URLSearchParams({
+          bld: 'dbms/MDC/STAT/standard/MDCSTAT01901',
+          mktId: 'ALL',
+          trdDd: today,
+          lang: 'ko',
+          pageNo: '1',
+          rowSize: '5000',
+        }).toString(),
         signal: AbortSignal.timeout(10000),
       });
-      const data = await resp.json() as any;
+      const data = (await resp.json()) as any;
       if (Array.isArray(data.output)) {
         for (const item of data.output) {
           const code = String(item.ISU_SRT_CD ?? '').trim();

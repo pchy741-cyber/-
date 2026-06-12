@@ -1,8 +1,8 @@
 import { KIS_TR_ID } from '../config/constants.js';
 import { config } from '../config/index.js';
-import { kisRequest } from './client.js';
 import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
+import { kisRequest } from './client.js';
 
 // ── 보유 종목 ──
 export interface Position {
@@ -38,7 +38,8 @@ const BALANCE_CACHE_TTL_MORNING = 30_000; // 30초 — 장 개시 09:00~09:30 KS
 /** 현재 KST 기준 캐시 TTL 반환 — 장중 전체 30초, 장외 2분 */
 function getBalanceCacheTTL(): number {
   const kst = getKSTNow();
-  const h = kst.getUTCHours(), m = kst.getUTCMinutes();
+  const h = kst.getUTCHours(),
+    m = kst.getUTCMinutes();
   // 장중 전체 (09:00~15:30 KST): 30초 — KIS 직접 매도 후 빠른 반영
   const totalMin = h * 60 + m;
   if (totalMin >= 9 * 60 && totalMin <= 15 * 60 + 30) return BALANCE_CACHE_TTL_MORNING;
@@ -46,7 +47,9 @@ function getBalanceCacheTTL(): number {
 }
 
 /** 캐시를 무효화 (매수/매도 후 호출) */
-export function invalidateBalanceCache(): void { _balanceCache.clear(); }
+export function invalidateBalanceCache(): void {
+  _balanceCache.clear();
+}
 
 /**
  * 계좌 잔고 + 보유 종목 조회 (30초 메모리 캐시)
@@ -55,25 +58,27 @@ export function invalidateBalanceCache(): void { _balanceCache.clear(); }
 export async function getAccountBalance(forceLive = false): Promise<AccountBalance> {
   // context-aware 캐시 키 — paper/live 절대 충돌 방지
   const isPaper = !forceLive && config.isPaper;
-  const cacheKey = forceLive ? 'live' : (isPaper ? 'paper' : 'live');
+  const cacheKey = forceLive ? 'live' : isPaper ? 'paper' : 'live';
   const cached = _balanceCache.get(cacheKey);
   if (cached && Date.now() - cached.ts < getBalanceCacheTTL()) return cached.data;
   const trIds = isPaper ? KIS_TR_ID.PAPER : KIS_TR_ID.LIVE;
 
   // forceLive=true && 서버가 paper → live credential/URL 강제 사용
   const needForceMode = forceLive && config.isPaper;
-  const forceMode = needForceMode ? 'live' as const : undefined;
+  const forceMode = needForceMode ? ('live' as const) : undefined;
 
   // 계좌번호: forceMode 시 live 전용 계좌 사용
   const acctRaw = needForceMode
-    ? (process.env.KIS_ACCOUNT_NO_LIVE || process.env.KIS_ACCOUNT_NO || config.kis.accountNo)
+    ? process.env.KIS_ACCOUNT_NO_LIVE || process.env.KIS_ACCOUNT_NO || config.kis.accountNo
     : undefined;
-  const acctNo = needForceMode && acctRaw?.includes('-')
-    ? acctRaw.split('-')[0]
-    : (needForceMode ? acctRaw : config.kis.accountNo);
-  const acctProd = needForceMode && acctRaw?.includes('-')
-    ? (acctRaw.split('-')[1] || '01')
-    : (needForceMode ? '01' : config.kis.accountProductCode);
+  const acctNo =
+    needForceMode && acctRaw?.includes('-') ? acctRaw.split('-')[0] : needForceMode ? acctRaw : config.kis.accountNo;
+  const acctProd =
+    needForceMode && acctRaw?.includes('-')
+      ? acctRaw.split('-')[1] || '01'
+      : needForceMode
+        ? '01'
+        : config.kis.accountProductCode;
 
   const effAcctNo = acctNo ?? config.kis.accountNo;
   const effAcctProd = acctProd ?? config.kis.accountProductCode;
@@ -97,37 +102,50 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
       CTX_AREA_NK100: '',
     },
   }).catch((e: unknown) => {
-    logger.warn(`⚠️ 잔고조회(TTTC8101R) 실패 — zero 폴백: ${e instanceof Error ? e.message : e}`, { component: 'BALANCE' });
+    logger.warn(`⚠️ 잔고조회(TTTC8101R) 실패 — zero 폴백: ${e instanceof Error ? e.message : e}`, {
+      component: 'BALANCE',
+    });
     return null;
   });
 
   // TTTC8908R 매수가능조회 — nrcvb_buy_amt = KIS 앱 "주문가능원화"
-  const buyablePromise = isPaper ? Promise.resolve(null) : kisRequest({
-    path: '/uapi/domestic-stock/v1/trading/inquire-psbl-order',
-    trId: trIds.BUYABLE,
-    forceMode,
-    params: {
-      CANO: effAcctNo,
-      ACNT_PRDT_CD: effAcctProd,
-      PDNO: '005930',        // 삼성전자 (기준 종목 — 주문가능원화 산출용)
-      ORD_UNPR: '0',         // 0 = 시장가 기준
-      ORD_DVSN: '01',        // 시장가
-      CMA_EVLU_AMT_ICLD_YN: 'Y',
-      OVRS_ICLD_YN: 'Y',
-    },
-  }).catch((e: unknown) => {
-    logger.warn(`⚠️ 매수가능조회(TTTC8908R) 실패 — 잔고 폴백 사용: ${e instanceof Error ? e.message : e}`, { component: 'BALANCE' });
-    return null;
-  });
+  const buyablePromise = isPaper
+    ? Promise.resolve(null)
+    : kisRequest({
+        path: '/uapi/domestic-stock/v1/trading/inquire-psbl-order',
+        trId: trIds.BUYABLE,
+        forceMode,
+        params: {
+          CANO: effAcctNo,
+          ACNT_PRDT_CD: effAcctProd,
+          PDNO: '005930', // 삼성전자 (기준 종목 — 주문가능원화 산출용)
+          ORD_UNPR: '0', // 0 = 시장가 기준
+          ORD_DVSN: '01', // 시장가
+          CMA_EVLU_AMT_ICLD_YN: 'Y',
+          OVRS_ICLD_YN: 'Y',
+        },
+      }).catch((e: unknown) => {
+        logger.warn(`⚠️ 매수가능조회(TTTC8908R) 실패 — 잔고 폴백 사용: ${e instanceof Error ? e.message : e}`, {
+          component: 'BALANCE',
+        });
+        return null;
+      });
 
   const [res, buyableRes] = await Promise.all([balancePromise, buyablePromise]);
 
   // TTTC8101R 실패 시 zero 결과 조기 반환 (짧은 TTL로 빠른 재시도 허용)
   if (!res) {
     const result: AccountBalance = {
-      totalDeposit: 0, d2Deposit: 0, orderableCash: 0, cashSource: 'zero',
-      totalEvalAmount: 0, totalProfitLoss: 0, totalProfitLossPct: 0,
-      netAsset: 0, purchaseCost: 0, positions: [],
+      totalDeposit: 0,
+      d2Deposit: 0,
+      orderableCash: 0,
+      cashSource: 'zero',
+      totalEvalAmount: 0,
+      totalProfitLoss: 0,
+      totalProfitLossPct: 0,
+      netAsset: 0,
+      purchaseCost: 0,
+      positions: [],
     };
     _balanceCache.set(cacheKey, { data: result, ts: Date.now() - (BALANCE_CACHE_TTL - 30_000) });
     return result;
@@ -156,24 +174,27 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
   const pchs = Number(summary?.pchs_amt_smtl_amt ?? 0);
 
   // KIS 잔고 필드 파싱
-  const ordPsblCash = Number(summary?.ord_psbl_cash ?? 0);       // CMA 주문가능현금
-  const totalDeposit = Number(summary?.dnca_tot_amt ?? 0);        // 예수금 총액 (KIS 앱 "예수금"과 일치)
-  const d2Deposit = Number(summary?.prvs_rcdl_excc_amt ?? 0);     // D+2 예수금
+  const ordPsblCash = Number(summary?.ord_psbl_cash ?? 0); // CMA 주문가능현금
+  const totalDeposit = Number(summary?.dnca_tot_amt ?? 0); // 예수금 총액 (KIS 앱 "예수금"과 일치)
+  const d2Deposit = Number(summary?.prvs_rcdl_excc_amt ?? 0); // D+2 예수금
   const computedCash = nass > 0 && scts_evlu >= 0 ? Math.max(0, nass - scts_evlu) : 0; // 순자산 - 증권
 
   // 매수가능조회 결과 파싱 (TTTC8908R) — output 또는 output1 (KIS API 불일치 대비)
   const buyableRaw = (buyableRes?.output ?? buyableRes?.output1) as Record<string, string> | undefined;
   if (buyableRes && !buyableRaw) {
     // 응답은 왔지만 output이 비어있는 경우 전체 구조 덤프
-    logger.warn(`⚠️ 매수가능조회(8908R) 응답 구조 이상 — output=${JSON.stringify(buyableRes.output)}, output1=${JSON.stringify(buyableRes.output1)}, msg=${buyableRes.msg1}`, { component: 'BALANCE' });
+    logger.warn(
+      `⚠️ 매수가능조회(8908R) 응답 구조 이상 — output=${JSON.stringify(buyableRes.output)}, output1=${JSON.stringify(buyableRes.output1)}, msg=${buyableRes.msg1}`,
+      { component: 'BALANCE' },
+    );
   }
-  const nrcvbBuyAmt = Number(buyableRaw?.nrcvb_buy_amt ?? 0);  // 미수없는매수금액 (마진 미사용)
-  const maxBuyAmt = Number(buyableRaw?.max_buy_amt ?? 0);       // 최대매수금액 (KIS 앱 "최대주문가능금액")
+  const nrcvbBuyAmt = Number(buyableRaw?.nrcvb_buy_amt ?? 0); // 미수없는매수금액 (마진 미사용)
+  const maxBuyAmt = Number(buyableRaw?.max_buy_amt ?? 0); // 최대매수금액 (KIS 앱 "최대주문가능금액")
   const buyableOrdCash = Number(buyableRaw?.ord_psbl_cash ?? 0); // 매수가능조회의 주문가능현금
   if (buyableRaw) {
     logger.info(
       `💰 매수가능조회(8908R): nrcvb=${nrcvbBuyAmt.toLocaleString()} max=${maxBuyAmt.toLocaleString()} ` +
-      `cash=${buyableOrdCash.toLocaleString()} sbst=${buyableRaw.ord_psbl_sbst ?? '0'} keys=[${Object.keys(buyableRaw).join(',')}]`,
+        `cash=${buyableOrdCash.toLocaleString()} sbst=${buyableRaw.ord_psbl_sbst ?? '0'} keys=[${Object.keys(buyableRaw).join(',')}]`,
       { component: 'BALANCE' },
     );
   }
@@ -206,9 +227,9 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
     source = 'zero';
   }
   logger.info(
-    `💰 잔고조회 [${forceLive ? 'forceLive' : (isPaper ? 'paper' : 'live')}]: ` +
-    `buyable=${nrcvbBuyAmt.toLocaleString()} ord_psbl=${ordPsblCash.toLocaleString()} deposit=${totalDeposit.toLocaleString()} d2=${d2Deposit.toLocaleString()} ` +
-    `nass=${nass.toLocaleString()} evlu=${scts_evlu.toLocaleString()} computed=${computedCash.toLocaleString()} → ${source}=${orderableCash.toLocaleString()}`,
+    `💰 잔고조회 [${forceLive ? 'forceLive' : isPaper ? 'paper' : 'live'}]: ` +
+      `buyable=${nrcvbBuyAmt.toLocaleString()} ord_psbl=${ordPsblCash.toLocaleString()} deposit=${totalDeposit.toLocaleString()} d2=${d2Deposit.toLocaleString()} ` +
+      `nass=${nass.toLocaleString()} evlu=${scts_evlu.toLocaleString()} computed=${computedCash.toLocaleString()} → ${source}=${orderableCash.toLocaleString()}`,
     { component: 'BALANCE' },
   );
 
@@ -226,7 +247,7 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
     totalProfitLoss: Number(summary?.evlu_pfls_smtl_amt ?? 0),
     totalProfitLossPct: Number(summary?.evlu_pfls_rt ?? 0),
     // 순자산: KIS nass_amt (T+2 미수 차감 완료) — paper는 예수금+증권평가로 계산
-    netAsset: isPaper ? (effectiveCash + scts_evlu) : (nass > 0 ? nass : (effectiveCash + scts_evlu)),
+    netAsset: isPaper ? effectiveCash + scts_evlu : nass > 0 ? nass : effectiveCash + scts_evlu,
     purchaseCost: pchs,
     positions,
   };

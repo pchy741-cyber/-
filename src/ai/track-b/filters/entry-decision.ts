@@ -5,11 +5,11 @@
  * 품질+리스크 게이트 통과 후 호출된다.
  */
 
-import { logger } from '../../../utils/logger.js';
 import { winRateSummary } from '../../../analysis/win-rate.js';
-import { getOverride } from '../../ai-overrides.js';
-import { config } from '../../../config/index.js';
 import { getCtxIsPaper } from '../../../config/context.js';
+import { config } from '../../../config/index.js';
+import { logger } from '../../../utils/logger.js';
+import { getOverride } from '../../ai-overrides.js';
 import type { EntryInput, EntryVerdict } from './types.js';
 
 /** 레짐 신뢰도 No-Trade 임계값 — 이 미만이면 레짐 불확실 → 진입 금지 */
@@ -20,7 +20,15 @@ function buildEntryReason(input: EntryInput): string {
   const { tech, scoring, regimeRoute } = input;
   const { truePullbackPattern, isFibSupport, effectiveTechScore } = scoring;
   const tags = [
-    tech.rsi14 < 30 ? '과매도반등' : tech.rsi14 < 45 ? '반등초기' : truePullbackPattern ? '🎯눌림목타점' : isFibSupport ? '📐피보나치지지' : `기술${effectiveTechScore}점`,
+    tech.rsi14 < 30
+      ? '과매도반등'
+      : tech.rsi14 < 45
+        ? '반등초기'
+        : truePullbackPattern
+          ? '🎯눌림목타점'
+          : isFibSupport
+            ? '📐피보나치지지'
+            : `기술${effectiveTechScore}점`,
     tech.bollingerBreakout === 'UP' ? '🎯BB스퀴즈돌파' : tech.bollingerSqueeze ? '🔃BB응축중' : '',
     tech.vwapCross === 'JUST_ABOVE' ? '⚡VWAP돌파' : tech.vwapPullback ? '🔁VWAP풀백' : '',
     tech.ttmSqueeze.fireSignal === 'LONG' ? `🚀TTM발사(${tech.ttmSqueeze.consecutiveSqueezeOn}봉)` : '',
@@ -60,7 +68,10 @@ export function tryRegimeRouterEntry(input: EntryInput): EntryVerdict {
   const routeEffectiveScore = tech.score + candleBonus + structBonus;
   const aiOk = hasAI ? aiScore >= buyThreshold : !config.geminiEnabled; // Gemini OFF → AI 조건 면제
   if (routeEffectiveScore >= routeMinScore && aiOk) {
-    logger.info(`  ✅ ${stockCode}: 레짐라우터 진입 [${regimeRoute.reason}] score=${routeEffectiveScore} AI=${aiScore}`, { component: 'TRACK_B' });
+    logger.info(
+      `  ✅ ${stockCode}: 레짐라우터 진입 [${regimeRoute.reason}] score=${routeEffectiveScore} AI=${aiScore}`,
+      { component: 'TRACK_B' },
+    );
     return { action: 'BUY', reason: `레짐라우터: ${regimeRoute.reason}` };
   }
 
@@ -116,24 +127,28 @@ export function tryFinalEntry(input: EntryInput): EntryVerdict {
     return { action: 'SKIP', reason: 'AI 없음' };
   }
   if (!hasAI && globalNoAi) {
-    logger.info(`  ⚡ ${stockCode}: AI 전량 탈락(confidence 필터) → 기술지표 단독 폴백 (tech=${effectiveTechScore})`, { component: 'TRACK_B' });
+    logger.info(`  ⚡ ${stockCode}: AI 전량 탈락(confidence 필터) → 기술지표 단독 폴백 (tech=${effectiveTechScore})`, {
+      component: 'TRACK_B',
+    });
   }
 
   // techOnlyMode: Gemini OFF 또는 전역 AI 탈락(globalNoAi) → 기술지표만으로 판단
   const techOnlyMode = !hasAI && (!config.geminiEnabled || globalNoAi);
   const v4MinTechScore = techOnlyMode
-    ? Math.max(minTechScore, getCtxIsPaper() ? 55 : 72)  // AI없이: Paper=55(연습활성화), Live=72(블라인드방지)
-    : Math.max(minTechScore, 55);                          // AI 병행 시: 55점 이상
+    ? Math.max(minTechScore, getCtxIsPaper() ? 55 : 72) // AI없이: Paper=55(연습활성화), Live=72(블라인드방지)
+    : Math.max(minTechScore, 55); // AI 병행 시: 55점 이상
 
   if (effectiveTechScore >= v4MinTechScore) {
     const entryReason = buildEntryReason(input);
     const wrInfo = winRateSummary(stockCode, winRates?.get(stockCode));
-    const bonusStr = [
-      priorityBonus > 0 ? `+${priorityBonus}테마` : '',
-      candleBonus > 0 ? `+${candleBonus}캔들` : '',
-    ].filter(Boolean).join('');
+    const bonusStr = [priorityBonus > 0 ? `+${priorityBonus}테마` : '', candleBonus > 0 ? `+${candleBonus}캔들` : '']
+      .filter(Boolean)
+      .join('');
     const aiStr = hasAI ? `AI=${aiScore}` : 'AI=OFF(기술단독)';
-    logger.info(`  ✅ ${stockCode}: 기술=${effectiveTechScore}점(>=${v4MinTechScore}) ${aiStr} [${entryReason}] RSI=${input.tech.rsi14.toFixed(0)} vol=${input.tech.volumeRatio.toFixed(2)}x → 매수 후보${bonusStr}${wrInfo}`, { component: 'TRACK_B' });
+    logger.info(
+      `  ✅ ${stockCode}: 기술=${effectiveTechScore}점(>=${v4MinTechScore}) ${aiStr} [${entryReason}] RSI=${input.tech.rsi14.toFixed(0)} vol=${input.tech.volumeRatio.toFixed(2)}x → 매수 후보${bonusStr}${wrInfo}`,
+      { component: 'TRACK_B' },
+    );
     return { action: 'BUY', reason: entryReason };
   }
 

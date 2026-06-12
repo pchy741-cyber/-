@@ -18,10 +18,7 @@ export interface RiskClassification {
 
 const HIGH_RISK_STRATEGIES = new Set(['SCALPING', 'EOD_BETTING', 'BREAKOUT']);
 
-export function classifyGraduationRisk(
-  result: GraduationResult,
-  criteria: GraduationCriteria,
-): RiskClassification {
+export function classifyGraduationRisk(result: GraduationResult, criteria: GraduationCriteria): RiskClassification {
   if (!result.eligible) {
     return { level: 'HIGH', reasons: ['기준 미충족'], autoApply: false };
   }
@@ -51,7 +48,7 @@ export function classifyGraduationRisk(
   }
 
   // LOW: 모든 기준 충분한 여유
-  if (wrMargin >= 0.10 && pfMargin >= 0.5 && mddMargin >= 5 && tradeRatio >= 1.5) {
+  if (wrMargin >= 0.1 && pfMargin >= 0.5 && mddMargin >= 5 && tradeRatio >= 1.5) {
     reasons.push('모든 기준 충분한 여유');
     return { level: 'LOW', reasons, autoApply: true };
   }

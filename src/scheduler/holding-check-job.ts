@@ -1,5 +1,5 @@
-import { STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
 import { INVERSE_ETF_CODES } from '../automation/crash-profit.js';
+import { STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
 import { getActiveStrategy, getOpenChains, getPool } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import { getCurrentPrice } from '../kis/market.js';
@@ -7,8 +7,8 @@ import { sendTelegramMessage } from '../notifications/telegram.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { reconcileExternalSells } from '../trading/fill-reconciler.js';
 import { logger } from '../utils/logger.js';
-import { sleep } from '../utils/sleep.js';
 import { calcPnlPct } from '../utils/money.js';
+import { sleep } from '../utils/sleep.js';
 
 /**
  * 트레일링 스탑 설정
@@ -22,15 +22,15 @@ import { calcPnlPct } from '../utils/money.js';
  *  매수 10,000원 → +3% → 50% 분할 익절
  *  → 남은 50% 고점 추적, 고점 대비 -1.5% 하락 시 청산
  */
-const TRAILING_ACTIVATE_PCT = 1.5;  // 트레일링 스탑 활성화 최소 수익률 (%)
+const TRAILING_ACTIVATE_PCT = 1.5; // 트레일링 스탑 활성화 최소 수익률 (%)
 
 /** 수익률 구간별 동적 트레일링 드롭 (고점 대비 하락 허용 %) — 수익 클수록 타이트 */
 function getDynamicTrailingDrop(peakPnlPct: number): number {
-  if (peakPnlPct >= 9) return 1.2;   // +9% 이상 고점: 1.2% 하락 시 즉시 청산 (수익 90% 보호)
-  if (peakPnlPct >= 6) return 1.8;   // +6~9%: 1.8% 하락 허용
-  if (peakPnlPct >= 4) return 2.2;   // +4~6%: 2.2% 하락 허용
-  if (peakPnlPct >= 2) return 2.6;   // +2~4%: 2.6% 하락 허용
-  return 3.0;                         // +1.5~2%: 기본 3.0% (초기 노이즈 흡수)
+  if (peakPnlPct >= 9) return 1.2; // +9% 이상 고점: 1.2% 하락 시 즉시 청산 (수익 90% 보호)
+  if (peakPnlPct >= 6) return 1.8; // +6~9%: 1.8% 하락 허용
+  if (peakPnlPct >= 4) return 2.2; // +4~6%: 2.2% 하락 허용
+  if (peakPnlPct >= 2) return 2.6; // +2~4%: 2.6% 하락 허용
+  return 3.0; // +1.5~2%: 기본 3.0% (초기 노이즈 흡수)
 }
 
 /**
@@ -42,7 +42,7 @@ function getDynamicTrailingDrop(peakPnlPct: number): number {
  */
 export async function runHoldingCheckJob(): Promise<void> {
   // 외부 매도 감지 (KIS 앱 직접 매도 등) — 유령 체인 정리
-  await reconcileExternalSells().catch(e =>
+  await reconcileExternalSells().catch((e) =>
     logger.warn(`외부 매도 감지 실패 (무시): ${e}`, { component: 'HOLDING_CHECK' }),
   );
 
@@ -55,7 +55,7 @@ export async function runHoldingCheckJob(): Promise<void> {
 
     const strategy = await getActiveStrategy();
     const mode = (strategy?.mode ?? 'SWING') as StrategyMode;
-    const globalParams = STRATEGY_PARAMS[mode];
+    const _globalParams = STRATEGY_PARAMS[mode];
 
     // 단타 모드는 별도 강제청산 로직(15:20)이 있으므로 스킵
     if (mode === 'SCALPING') return;
@@ -67,9 +67,10 @@ export async function runHoldingCheckJob(): Promise<void> {
       if (chain.total_quantity <= 0) continue;
 
       // 체인별 전략 파라미터 (체인 자체 모드 우선, 없으면 글로벌)
-      const chainMode = (chain.strategy_mode && chain.strategy_mode in STRATEGY_PARAMS)
-        ? chain.strategy_mode as keyof typeof STRATEGY_PARAMS
-        : mode;
+      const chainMode =
+        chain.strategy_mode && chain.strategy_mode in STRATEGY_PARAMS
+          ? (chain.strategy_mode as keyof typeof STRATEGY_PARAMS)
+          : mode;
       const params = STRATEGY_PARAMS[chainMode];
       const isInverseEtf = INVERSE_ETF_CODES.has(chain.stock_code);
       // 인버스 ETF: 일일 리밸런싱 손실 방지 — 전략 설정 무관하게 4영업일 하드 타임아웃
@@ -100,10 +101,9 @@ export async function runHoldingCheckJob(): Promise<void> {
       if (currentPrice === null) {
         if (businessDays >= maxDays) {
           // maxDays 초과 + 가격 조회 실패 → 강행
-          logger.warn(
-            `${chain.stock_code} 현재가 조회 2회 실패 → 평균가(${chain.avg_buy_price}) 기준 시간손절 강행`,
-            { component: 'HOLDING_CHECK' },
-          );
+          logger.warn(`${chain.stock_code} 현재가 조회 2회 실패 → 평균가(${chain.avg_buy_price}) 기준 시간손절 강행`, {
+            component: 'HOLDING_CHECK',
+          });
           forceCloseDecisions.push({
             action: 'FORCE_CLOSE',
             stock_code: chain.stock_code,
@@ -278,7 +278,7 @@ async function checkAndUpdateTrailingStop(
     !isFullSell &&
     chain.status !== 'PROFIT_TAKING' &&
     pnlPct >= earlyTpPct &&
-    pnlPct < chainTp &&      // 아직 메인 TP 미도달 (도달 시 아래 메인 TP 로직 처리)
+    pnlPct < chainTp && // 아직 메인 TP 미도달 (도달 시 아래 메인 TP 로직 처리)
     chain.total_quantity >= 2
   ) {
     const sellQty = Math.floor(chain.total_quantity / 2);
@@ -288,10 +288,10 @@ async function checkAndUpdateTrailingStop(
         { component: 'TRAILING' },
       );
       try {
-        await getPool().query(
-          'UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2',
-          [-currentPrice, chain.id],
-        );
+        await getPool().query('UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2', [
+          -currentPrice,
+          chain.id,
+        ]);
       } catch (err) {
         logger.error(`조기익절 플래그 저장 실패: ${err}`, { component: 'TRAILING' });
       }
@@ -316,15 +316,15 @@ async function checkAndUpdateTrailingStop(
         { component: 'TRAILING' },
       );
       try {
-        await getPool().query(
-          'UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2',
-          [-currentPrice, chain.id],
-        );
+        await getPool().query('UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2', [
+          -currentPrice,
+          chain.id,
+        ]);
       } catch (err) {
         logger.error(`트레일링 분할매도 플래그 저장 실패: ${err}`, { component: 'TRAILING' });
       }
       return {
-        action: isFullSell ? 'FORCE_CLOSE' as const : 'PARTIAL_SELL' as const,
+        action: isFullSell ? ('FORCE_CLOSE' as const) : ('PARTIAL_SELL' as const),
         stock_code: chain.stock_code,
         quantity: sellQty,
         price_type: 'MARKET' as const,
@@ -342,10 +342,10 @@ async function checkAndUpdateTrailingStop(
   if (newPeak > storedPeak) {
     const saveVal = partialSoldAlready ? -newPeak : newPeak;
     try {
-      await getPool().query(
-        'UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2',
-        [saveVal, chain.id],
-      );
+      await getPool().query('UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2', [
+        saveVal,
+        chain.id,
+      ]);
     } catch (err) {
       logger.error(`트레일링 고점 갱신 실패: ${err}`, { component: 'TRAILING' });
     }
@@ -385,15 +385,36 @@ async function checkAndUpdateTrailingStop(
 /** 한국 공휴일 목록 (KRX 휴장일 기준 2025~2026) */
 const KRX_HOLIDAYS = new Set([
   // 2025
-  '2025-01-01', '2025-01-28', '2025-01-29', '2025-01-30',
-  '2025-03-01', '2025-05-05', '2025-05-06', '2025-06-06',
-  '2025-08-15', '2025-10-03', '2025-10-06', '2025-10-07', '2025-10-08',
+  '2025-01-01',
+  '2025-01-28',
+  '2025-01-29',
+  '2025-01-30',
+  '2025-03-01',
+  '2025-05-05',
+  '2025-05-06',
+  '2025-06-06',
+  '2025-08-15',
+  '2025-10-03',
+  '2025-10-06',
+  '2025-10-07',
+  '2025-10-08',
   '2025-12-25',
   // 2026
-  '2026-01-01', '2026-02-17', '2026-02-18', '2026-02-19',
-  '2026-03-01', '2026-03-02', '2026-05-05', '2026-05-25',
-  '2026-06-06', '2026-08-17', '2026-09-24', '2026-09-25', '2026-09-28',
-  '2026-10-09', '2026-12-25',
+  '2026-01-01',
+  '2026-02-17',
+  '2026-02-18',
+  '2026-02-19',
+  '2026-03-01',
+  '2026-03-02',
+  '2026-05-05',
+  '2026-05-25',
+  '2026-06-06',
+  '2026-08-17',
+  '2026-09-24',
+  '2026-09-25',
+  '2026-09-28',
+  '2026-10-09',
+  '2026-12-25',
 ]);
 
 /** 두 날짜 사이의 영업일 수 (주말 + 한국 공휴일 제외) */
@@ -419,9 +440,7 @@ function countBusinessDays(start: Date, end: Date): number {
  * 현재가 >= 목표가 (+0.5%) 이면 즉시 전량 매도
  */
 async function checkEscapeTargets(chains: any[]): Promise<void> {
-  const escapeChains = chains.filter(
-    (ch) => ch.escape_target_price != null && Number(ch.escape_target_price) > 0,
-  );
+  const escapeChains = chains.filter((ch) => ch.escape_target_price != null && Number(ch.escape_target_price) > 0);
   if (escapeChains.length === 0) return;
 
   const decisions: TradeDecision[] = [];
@@ -465,17 +484,16 @@ async function checkEscapeTargets(chains: any[]): Promise<void> {
   if (decisions.length === 0) return;
 
   const strategy = await getActiveStrategy();
-  const mode = ((strategy?.mode ?? 'SWING') as StrategyMode);
+  const mode = (strategy?.mode ?? 'SWING') as StrategyMode;
   await tradeExecutor.processDecisions(decisions, mode, 'HOLDING_CHECK');
 
   // 매도 실행 성공 후 escape_target_price 초기화 (실행 전에 하면 실패 시 탈출 기회 상실)
   for (const chain of escapeChains) {
-    const d = decisions.find(dd => dd.stock_code === chain.stock_code);
+    const d = decisions.find((dd) => dd.stock_code === chain.stock_code);
     if (d) {
-      await getPool().query(
-        'UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1',
-        [chain.id],
-      ).catch(() => {});
+      await getPool()
+        .query('UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1', [chain.id])
+        .catch(() => {});
     }
   }
 

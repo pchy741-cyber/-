@@ -7,15 +7,26 @@
  * - live 모드 금액 입력 시 PIN 필수
  */
 import { Hono } from 'hono';
-import { getPool } from '../../db/client.js';
-import { logger } from '../../utils/logger.js';
 import { baseIsPaper } from '../../config/index.js';
-import { validateLivePin, resolveIsPaper, resolveRequestMode, budgetCol, getFuturesPnlByMode } from '../guards/live-pin.js';
+import { getPool } from '../../db/client.js';
 import {
-  MICRO_FUTURES, FUTURES_BY_PRODUCT, getActiveSymbol, getFuturesPrice,
-  getFuturesDailyChart, getFuturesPositions, getFuturesDeposit,
+  FUTURES_BY_PRODUCT,
+  getActiveSymbol,
+  getFuturesDailyChart,
+  getFuturesDeposit,
+  getFuturesPositions,
+  getFuturesPrice,
+  MICRO_FUTURES,
   placeFuturesOrder,
 } from '../../kis/futures.js';
+import { logger } from '../../utils/logger.js';
+import {
+  budgetCol,
+  getFuturesPnlByMode,
+  resolveIsPaper,
+  resolveRequestMode,
+  validateLivePin,
+} from '../guards/live-pin.js';
 
 export const futuresRoutes = new Hono();
 
@@ -34,7 +45,9 @@ async function checkFuturesEnabled(isPaper?: boolean): Promise<boolean> {
     const v = rows[0]?.enabled === true;
     _flagCache = { value: v, ts: now };
     return v;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 // ── 대시보드 (요약 정보) — 모드별 분리 ──
@@ -47,13 +60,18 @@ futuresRoutes.get('/futures/dashboard', async (c) => {
     const [enabled, { rows: budgetRows }, { rows: positions }, { rows: trades }, { rows: stats }] = await Promise.all([
       checkFuturesEnabled(isPaper),
       pool.query('SELECT * FROM futures_budget WHERE id = 1'),
-      pool.query('SELECT * FROM futures_positions WHERE status = $1 AND is_paper = $2 ORDER BY opened_at DESC', ['open', isPaper]),
+      pool.query('SELECT * FROM futures_positions WHERE status = $1 AND is_paper = $2 ORDER BY opened_at DESC', [
+        'open',
+        isPaper,
+      ]),
       pool.query('SELECT * FROM futures_trades WHERE is_paper = $1 ORDER BY executed_at DESC LIMIT 20', [isPaper]),
       pool.query(
         `SELECT COUNT(*) AS total_trades, COUNT(*) FILTER (WHERE pnl_usd > 0) AS wins,
            COUNT(*) FILTER (WHERE pnl_usd < 0) AS losses, COALESCE(SUM(pnl_usd), 0) AS total_pnl,
            COALESCE(AVG(pnl_usd), 0) AS avg_pnl
-         FROM futures_trades WHERE pnl_usd IS NOT NULL AND is_paper = $1`, [isPaper]),
+         FROM futures_trades WHERE pnl_usd IS NOT NULL AND is_paper = $1`,
+        [isPaper],
+      ),
     ]);
     const budget = budgetRows[0] || {};
 
@@ -79,7 +97,7 @@ futuresRoutes.get('/futures/dashboard', async (c) => {
 // ── 마이크로 선물 상품 목록 ──
 futuresRoutes.get('/futures/products', async (c) => {
   try {
-    const products = MICRO_FUTURES.map(p => ({
+    const products = MICRO_FUTURES.map((p) => ({
       ...p,
       activeSymbol: getActiveSymbol(p.product),
     }));
@@ -153,7 +171,7 @@ futuresRoutes.post('/futures/budget/allocate', async (c) => {
 
     await pool.query(
       `UPDATE futures_budget SET ${cols.allocated} = $1, approved_at = NOW(), updated_at = NOW() WHERE id = 1`,
-      [body.amount_krw]
+      [body.amount_krw],
     );
     const modeLabel = isPaper ? 'paper' : 'LIVE';
     logger.info(`선물 예산 할당 [${modeLabel}]: ${body.amount_krw.toLocaleString()}원`, { component: COMP });
@@ -212,16 +230,18 @@ futuresRoutes.post('/futures/order', async (c) => {
       await pool.query(
         `INSERT INTO futures_positions (symbol, product, exchange, side, quantity, entry_price, current_price, tp_price, sl_price, order_no, is_paper)
          VALUES ($1, $2, 'CME', $3, $4, $5, $5, $6, $7, $8, TRUE)`,
-        [body.symbol, product, dbSide, body.quantity, fillPrice, body.tp_price, body.sl_price, orderNo]
+        [body.symbol, product, dbSide, body.quantity, fillPrice, body.tp_price, body.sl_price, orderNo],
       );
 
       await pool.query(
         `INSERT INTO futures_trades (symbol, product, exchange, side, quantity, price, order_no, reason, is_paper)
          VALUES ($1, $2, 'CME', $3, $4, $5, $6, $7, TRUE)`,
-        [body.symbol, product, body.side, body.quantity, fillPrice, orderNo, '수동 주문']
+        [body.symbol, product, body.side, body.quantity, fillPrice, orderNo, '수동 주문'],
       );
 
-      logger.info(`[Paper] 선물 주문: ${body.symbol} ${body.side} ${body.quantity}계약 @${fillPrice}`, { component: COMP });
+      logger.info(`[Paper] 선물 주문: ${body.symbol} ${body.side} ${body.quantity}계약 @${fillPrice}`, {
+        component: COMP,
+      });
       return c.json({ ok: true, orderNo, price: fillPrice, qty: body.quantity, mode: 'paper' });
     } else {
       // Live: KIS 실주문
@@ -239,7 +259,7 @@ futuresRoutes.post('/futures/order', async (c) => {
       await pool.query(
         `INSERT INTO futures_trades (symbol, product, exchange, side, quantity, price, order_no, reason, is_paper)
          VALUES ($1, $2, 'CME', $3, $4, $5, $6, $7, FALSE)`,
-        [body.symbol, product, body.side, body.quantity, body.price || 0, result.orderNo, '수동 주문']
+        [body.symbol, product, body.side, body.quantity, body.price || 0, result.orderNo, '수동 주문'],
       );
 
       return c.json({ ok: true, orderNo: result.orderNo, mode: 'live' });
@@ -284,17 +304,22 @@ futuresRoutes.post('/futures/close/:id', async (c) => {
     const closeSide = pos.side === 'LONG' ? 'SELL' : 'BUY';
     const cols = budgetCol(isPaper);
     await Promise.all([
-      pool.query(`UPDATE futures_positions SET status = 'closed', current_price = $1, pnl_usd = $2, closed_at = NOW() WHERE id = $3`, [closePrice, pnl, id]),
+      pool.query(
+        `UPDATE futures_positions SET status = 'closed', current_price = $1, pnl_usd = $2, closed_at = NOW() WHERE id = $3`,
+        [closePrice, pnl, id],
+      ),
       pool.query(
         `INSERT INTO futures_trades (symbol, product, exchange, side, quantity, price, pnl_usd, reason, is_paper)
          VALUES ($1, $2, $3, $4, $5, $6, $7, '포지션 청산', $8)`,
-        [pos.symbol, pos.product, pos.exchange, closeSide, pos.quantity, closePrice, pnl, pos.is_paper]
+        [pos.symbol, pos.product, pos.exchange, closeSide, pos.quantity, closePrice, pnl, pos.is_paper],
       ),
       pool.query(`UPDATE futures_budget SET ${cols.pnl} = ${cols.pnl} + $1, updated_at = NOW() WHERE id = 1`, [pnl]),
     ]);
 
     const modeLabel = isPaper ? 'paper' : 'LIVE';
-    logger.info(`선물 청산 [${modeLabel}]: ${pos.symbol} ${pos.side} ${pos.quantity}계약 PnL=$${pnl.toFixed(2)}`, { component: COMP });
+    logger.info(`선물 청산 [${modeLabel}]: ${pos.symbol} ${pos.side} ${pos.quantity}계약 PnL=$${pnl.toFixed(2)}`, {
+      component: COMP,
+    });
     return c.json({ ok: true, pnl, closePrice, mode: modeLabel });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
@@ -321,13 +346,16 @@ futuresRoutes.post('/futures/auto-deposit', async (c) => {
       pool.query(`UPDATE feature_flags SET enabled = TRUE WHERE key = 'overseas_futures' AND enabled = FALSE`),
       pool.query(
         `UPDATE futures_budget SET ${cols.allocated} = ${cols.allocated} + $1, approved_at = COALESCE(approved_at, NOW()), updated_at = NOW() WHERE id = 1 RETURNING ${cols.allocated} AS total`,
-        [amount_krw]
+        [amount_krw],
       ),
     ]);
     const total = Number(rows[0]?.total ?? amount_krw);
     const modeLabel = isPaper ? 'paper' : 'LIVE';
 
-    logger.info(`[MoneyPrinter] 선물 입금 [${modeLabel}]: +₩${amount_krw.toLocaleString()} → 총 ₩${total.toLocaleString()}`, { component: COMP });
+    logger.info(
+      `[MoneyPrinter] 선물 입금 [${modeLabel}]: +₩${amount_krw.toLocaleString()} → 총 ₩${total.toLocaleString()}`,
+      { component: COMP },
+    );
     return c.json({ ok: true, addedKrw: amount_krw, totalAllocatedKrw: total, mode: modeLabel });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
@@ -356,12 +384,15 @@ futuresRoutes.post('/futures/budget/withdraw', async (c) => {
 
     const { rows } = await pool.query(
       `UPDATE futures_budget SET ${cols.allocated} = ${cols.allocated} - $1, updated_at = NOW() WHERE id = 1 RETURNING ${cols.allocated} AS remaining`,
-      [body.amount_krw]
+      [body.amount_krw],
     );
     const remaining = Number(rows[0]?.remaining ?? 0);
     const modeLabel = isPaper ? 'paper' : 'LIVE';
 
-    logger.info(`선물 예산 출금 [${modeLabel}]: -₩${body.amount_krw.toLocaleString()} → 잔액 ₩${remaining.toLocaleString()}`, { component: COMP });
+    logger.info(
+      `선물 예산 출금 [${modeLabel}]: -₩${body.amount_krw.toLocaleString()} → 잔액 ₩${remaining.toLocaleString()}`,
+      { component: COMP },
+    );
     return c.json({ ok: true, withdrawnKrw: body.amount_krw, remainingKrw: remaining, mode: modeLabel });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
@@ -380,11 +411,15 @@ futuresRoutes.get('/futures/integrity-check', async (c) => {
 
     // 병렬 조회: KIS + DB 포지션 + 예산 + PnL 합산
     const [
-      kisPositions, kisDeposit,
-      { rows: dbLivePositions }, { rows: dbPaperPositions },
-      { rows: budgetRows }, tradesPnl,
+      kisPositions,
+      kisDeposit,
+      { rows: dbLivePositions },
+      { rows: dbPaperPositions },
+      { rows: budgetRows },
+      tradesPnl,
     ] = await Promise.all([
-      getFuturesPositions(), getFuturesDeposit(),
+      getFuturesPositions(),
+      getFuturesDeposit(),
       pool.query(`SELECT * FROM futures_positions WHERE status = 'open' AND is_paper = FALSE`),
       pool.query(`SELECT * FROM futures_positions WHERE status = 'open' AND is_paper = TRUE`),
       pool.query('SELECT * FROM futures_budget WHERE id = 1'),
@@ -394,18 +429,30 @@ futuresRoutes.get('/futures/integrity-check', async (c) => {
 
     // 크로스 체크: KIS 포지션 vs DB live 포지션
     if (kisPositions.length > 0 && dbLivePositions.length === 0) {
-      issues.push({ severity: 'danger', msg: `KIS에 실포지션 ${kisPositions.length}개 있으나 DB live 기록 없음 → 크로스오염 또는 미동기화` });
+      issues.push({
+        severity: 'danger',
+        msg: `KIS에 실포지션 ${kisPositions.length}개 있으나 DB live 기록 없음 → 크로스오염 또는 미동기화`,
+      });
     }
     if (kisPositions.length === 0 && dbLivePositions.length > 0) {
-      issues.push({ severity: 'warn', msg: `DB에 live 오픈포지션 ${dbLivePositions.length}개 있으나 KIS 실포지션 0 → 이미 청산됨, DB 업데이트 필요` });
+      issues.push({
+        severity: 'warn',
+        msg: `DB에 live 오픈포지션 ${dbLivePositions.length}개 있으나 KIS 실포지션 0 → 이미 청산됨, DB 업데이트 필요`,
+      });
     }
 
     for (const kp of kisPositions) {
       const dbMatch = dbLivePositions.find((d: any) => d.symbol === kp.symbol);
       if (!dbMatch) {
-        issues.push({ severity: 'danger', msg: `KIS 포지션 ${kp.symbol} ${kp.side} ${kp.quantity}계약 — DB에 미기록!` });
+        issues.push({
+          severity: 'danger',
+          msg: `KIS 포지션 ${kp.symbol} ${kp.side} ${kp.quantity}계약 — DB에 미기록!`,
+        });
       } else if (Number(dbMatch.quantity) !== kp.quantity) {
-        issues.push({ severity: 'warn', msg: `${kp.symbol} 수량 불일치: KIS=${kp.quantity} vs DB=${dbMatch.quantity}` });
+        issues.push({
+          severity: 'warn',
+          msg: `${kp.symbol} 수량 불일치: KIS=${kp.quantity} vs DB=${dbMatch.quantity}`,
+        });
       }
     }
 
@@ -415,19 +462,31 @@ futuresRoutes.get('/futures/integrity-check', async (c) => {
     const legacyPnl = Number(fb.total_pnl_usd ?? 0);
 
     if (Math.abs(budgetPaperPnl - tradesPnl.paper) > 0.01) {
-      issues.push({ severity: 'warn', msg: `Paper PnL 불일치: budget=${budgetPaperPnl.toFixed(2)} trades합=${tradesPnl.paper.toFixed(2)}` });
+      issues.push({
+        severity: 'warn',
+        msg: `Paper PnL 불일치: budget=${budgetPaperPnl.toFixed(2)} trades합=${tradesPnl.paper.toFixed(2)}`,
+      });
     }
     if (Math.abs(budgetLivePnl - tradesPnl.live) > 0.01) {
-      issues.push({ severity: 'warn', msg: `Live PnL 불일치: budget=${budgetLivePnl.toFixed(2)} trades합=${tradesPnl.live.toFixed(2)}` });
+      issues.push({
+        severity: 'warn',
+        msg: `Live PnL 불일치: budget=${budgetLivePnl.toFixed(2)} trades합=${tradesPnl.live.toFixed(2)}`,
+      });
     }
     if (legacyPnl !== 0 && budgetPaperPnl === 0 && budgetLivePnl === 0) {
-      issues.push({ severity: 'danger', msg: `레거시 total_pnl_usd=$${legacyPnl.toFixed(2)} 잔존 — 마이그레이션 049 미적용` });
+      issues.push({
+        severity: 'danger',
+        msg: `레거시 total_pnl_usd=$${legacyPnl.toFixed(2)} 잔존 — 마이그레이션 049 미적용`,
+      });
     }
 
     // 6. KIS 예수금 vs DB 실전 예산
     const liveAllocatedKrw = Number(fb.allocated_krw_live ?? 0);
     if (kisDeposit.totalDeposit > 0) {
-      issues.push({ severity: 'info', msg: `KIS 선물예수금: $${kisDeposit.totalDeposit.toFixed(0)} (가용 $${kisDeposit.availableMargin.toFixed(0)}, 사용 $${kisDeposit.usedMargin.toFixed(0)})` });
+      issues.push({
+        severity: 'info',
+        msg: `KIS 선물예수금: $${kisDeposit.totalDeposit.toFixed(0)} (가용 $${kisDeposit.availableMargin.toFixed(0)}, 사용 $${kisDeposit.usedMargin.toFixed(0)})`,
+      });
     }
 
     // ── 배당 크로스오염 점검 ──
@@ -437,11 +496,15 @@ futuresRoutes.get('/futures/integrity-check', async (c) => {
       pool.query(`SELECT key, value FROM overseas_state WHERE key LIKE 'dividend_invested_krw%'`),
     ]);
     const divKeyMap = Object.fromEntries(divKeys.map((r: any) => [r.key, Number(r.value ?? 0)]));
-    if (divKeyMap['dividend_invested_krw'] && !divKeyMap['dividend_invested_krw_paper'] && !divKeyMap['dividend_invested_krw_live']) {
+    if (
+      divKeyMap.dividend_invested_krw &&
+      !divKeyMap.dividend_invested_krw_paper &&
+      !divKeyMap.dividend_invested_krw_live
+    ) {
       issues.push({ severity: 'warn', msg: `배당 invested_krw 레거시 키 잔존 → paper/live 분리 필요` });
     }
 
-    const allOk = issues.filter(i => i.severity === 'danger').length === 0;
+    const allOk = issues.filter((i) => i.severity === 'danger').length === 0;
     return c.json({
       ok: allOk,
       ts: new Date().toISOString(),
@@ -492,18 +555,15 @@ futuresRoutes.post('/futures/integrity-fix', async (c) => {
         total_pnl_usd_paper = $1, total_pnl_usd_live = $2,
         total_pnl_usd = 0, updated_at = NOW()
       WHERE id = 1`,
-      [tradesPnl.paper, tradesPnl.live]
+      [tradesPnl.paper, tradesPnl.live],
     );
     fixes.push(`PnL 재계산: paper=$${tradesPnl.paper.toFixed(2)}, live=$${tradesPnl.live.toFixed(2)}`);
 
     // 2. DB live open인데 KIS에 없는 것 → 이미 청산됨
-    const kisSymbols = new Set(kisPositions.map(p => p.symbol));
+    const kisSymbols = new Set(kisPositions.map((p) => p.symbol));
     for (const pos of dbLiveOpen) {
       if (!kisSymbols.has(pos.symbol)) {
-        await pool.query(
-          `UPDATE futures_positions SET status = 'closed', closed_at = NOW() WHERE id = $1`,
-          [pos.id]
-        );
+        await pool.query(`UPDATE futures_positions SET status = 'closed', closed_at = NOW() WHERE id = $1`, [pos.id]);
         fixes.push(`DB live 포지션 ${pos.symbol} → closed (KIS에 없음)`);
       }
     }
@@ -536,7 +596,7 @@ futuresRoutes.post('/feature-flags/:key/toggle', async (c) => {
     const body = await c.req.json<{ enabled: boolean }>();
     const { rowCount } = await getPool().query(
       'UPDATE feature_flags SET enabled = $1, updated_at = NOW() WHERE key = $2',
-      [body.enabled, key]
+      [body.enabled, key],
     );
     if (!rowCount || rowCount === 0) {
       return c.json({ error: `Feature flag '${key}' not found` }, 404);
@@ -545,7 +605,9 @@ futuresRoutes.post('/feature-flags/:key/toggle', async (c) => {
     try {
       const { invalidateDashboardCache } = await import('../../cache/dashboard-cache.js');
       invalidateDashboardCache();
-    } catch { /* 캐시 모듈 없으면 무시 */ }
+    } catch {
+      /* 캐시 모듈 없으면 무시 */
+    }
     logger.info(`✅ 기능 플래그 ${key} = ${body.enabled}`, { component: 'SETTINGS' });
     return c.json({ ok: true, key, enabled: body.enabled });
   } catch (e: any) {
@@ -567,10 +629,9 @@ futuresRoutes.get('/feature-flags', async (c) => {
 futuresRoutes.get('/futures/tuner-status', async (c) => {
   try {
     const mode = resolveRequestMode(c) ? 'paper' : 'live';
-    const { rows } = await getPool().query(
-      `SELECT value FROM overseas_state WHERE key = $1`,
-      [`futures_tuner_${mode}`],
-    );
+    const { rows } = await getPool().query(`SELECT value FROM overseas_state WHERE key = $1`, [
+      `futures_tuner_${mode}`,
+    ]);
     if (rows[0]?.value) return c.json(JSON.parse(rows[0].value));
     return c.json({ totalTrades: 0 });
   } catch (e: any) {

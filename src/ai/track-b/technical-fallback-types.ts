@@ -1,10 +1,10 @@
-import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
-import { getKSTNow } from '../../utils/time.js';
+import type { TechnicalSummary } from '../../analysis/indicators.js';
 import type { StockWinRate } from '../../analysis/win-rate.js';
+import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
 import type { TransactionChain } from '../../db/models.js';
 import type { CurrentPrice, DailyCandle } from '../../kis/market.js';
-import type { TechnicalSummary } from '../../analysis/indicators.js';
 import type { StockSignals } from '../../kis/market-signals.js';
+import { getKSTNow } from '../../utils/time.js';
 
 export interface TechnicalFallbackParams {
   mode: StrategyMode;

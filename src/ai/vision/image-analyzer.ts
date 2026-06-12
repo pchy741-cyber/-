@@ -34,7 +34,9 @@ function parseVisionResponse(text: string): VisionScalpSignal {
   const jsonMatch = text.match(/\{[\s\S]*?\}/);
   if (!jsonMatch) throw new Error('JSON 파싱 실패');
   const parsed = JSON.parse(jsonMatch[0]) as VisionScalpSignal;
-  parsed.exchange = (['NASDAQ', 'NYSE', 'AMEX'].includes(parsed.exchange) ? parsed.exchange : 'NASDAQ') as VisionScalpSignal['exchange'];
+  parsed.exchange = (
+    ['NASDAQ', 'NYSE', 'AMEX'].includes(parsed.exchange) ? parsed.exchange : 'NASDAQ'
+  ) as VisionScalpSignal['exchange'];
   parsed.direction = parsed.direction === 'BUY' ? 'BUY' : 'HOLD';
   parsed.confidence = Math.max(0, Math.min(100, Number(parsed.confidence) || 0));
   return parsed;
@@ -54,7 +56,7 @@ async function callAiStudioVision(apiKey: string, imageBase64: string, mimeType:
     const errText = await res.text();
     throw new Error(`AI Studio ${res.status}: ${errText.slice(0, 200)}`);
   }
-  const data = await res.json() as any;
+  const data = (await res.json()) as any;
   const text: string = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
   if (!text) throw new Error('AI Studio 응답 없음');
   return parseVisionResponse(text);

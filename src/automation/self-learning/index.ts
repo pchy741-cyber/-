@@ -1,21 +1,31 @@
-import { config } from '../../config/index.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, logSystem } from '../../db/client.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
 
 import {
-  analyzeAveraging, analyzeHoldingPeriod, analyzeModePerformance,
-  analyzeStockPerformance, analyzeStockWinRateAcceleration, analyzeWinRateTrend,
-  analyzeSniperPerformance, analyzeConfidenceCorrelation, analyzeHoldingPeriodByEntry,
-  analyzeSniperByMarketRegime, analyzeLossStreakRisk, analyzeProfitRatio, analyzeQuickProfitTaking,
+  analyzeAveraging,
+  analyzeConfidenceCorrelation,
+  analyzeHoldingPeriod,
+  analyzeHoldingPeriodByEntry,
+  analyzeLossStreakRisk,
+  analyzeModePerformance,
+  analyzeProfitRatio,
+  analyzeQuickProfitTaking,
+  analyzeSniperByMarketRegime,
+  analyzeSniperPerformance,
+  analyzeStockPerformance,
+  analyzeStockWinRateAcceleration,
+  analyzeWinRateTrend,
 } from './analyzers.js';
-import {
-  analyzeOptimalTrailingStop, analyzeTimeOfDayPerformance,
-  analyzeDayOfWeekPerformance, analyzeParkingDecisions,
-} from './time-analyzers.js';
 import { analyzeBuyThreshold, calibrateScoreTierParams, validatePromotedInsights } from './calibration.js';
-import { analyzeOverseasAll, getOverseasInsightsForPrompt } from './overseas-analyzers.js';
+import { analyzeOverseasAll } from './overseas-analyzers.js';
+import {
+  analyzeDayOfWeekPerformance,
+  analyzeOptimalTrailingStop,
+  analyzeParkingDecisions,
+  analyzeTimeOfDayPerformance,
+} from './time-analyzers.js';
 
 // ── Types ──
 
@@ -53,7 +63,7 @@ export interface LearnedParameters {
 
 // ── Orchestrator ──
 
-const now = new Date().toISOString();
+const _now = new Date().toISOString();
 
 export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
   logger.info('🧠 자기학습 분석 시작', { component: 'LEARN' });
@@ -127,14 +137,18 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
     ...analyzeQuickProfitTaking(wins),
     ...parkingInsights,
     // 시간대/요일 분석은 해외(OVERSEAS) 체인 제외 — 시장 시간대가 다름
-    ...analyzeTimeOfDayPerformance(enrichedChains.filter(c => {
-      const orders = c.chain.orders as any[];
-      return !orders?.some((o: any) => o.trigger_source === 'OVERSEAS');
-    })),
-    ...analyzeDayOfWeekPerformance(enrichedChains.filter(c => {
-      const orders = c.chain.orders as any[];
-      return !orders?.some((o: any) => o.trigger_source === 'OVERSEAS');
-    })),
+    ...analyzeTimeOfDayPerformance(
+      enrichedChains.filter((c) => {
+        const orders = c.chain.orders as any[];
+        return !orders?.some((o: any) => o.trigger_source === 'OVERSEAS');
+      }),
+    ),
+    ...analyzeDayOfWeekPerformance(
+      enrichedChains.filter((c) => {
+        const orders = c.chain.orders as any[];
+        return !orders?.some((o: any) => o.trigger_source === 'OVERSEAS');
+      }),
+    ),
     ...(await analyzeBuyThreshold()),
     // ── 해외주식 학습 (섹터/체결사유/종목/보유기간) ──
     ...(await analyzeOverseasAll(getCtxIsPaper())),
@@ -153,16 +167,18 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
 async function saveInsights(insights: LearnedInsight[]): Promise<void> {
   if (insights.length > 0) {
     const isPaper = getCtxIsPaper();
-    await getPool().query(
-      `DELETE FROM learned_insights
+    await getPool()
+      .query(
+        `DELETE FROM learned_insights
        WHERE is_manual IS NOT TRUE
          AND COALESCE(is_promoted, false) IS NOT TRUE
          AND COALESCE(source_mode, 'native') = 'native'
          AND is_paper = $1`,
-      [isPaper],
-    ).catch(() =>
-      getPool().query('DELETE FROM learned_insights WHERE is_manual IS NOT TRUE AND is_paper = $1', [isPaper]),
-    );
+        [isPaper],
+      )
+      .catch(() =>
+        getPool().query('DELETE FROM learned_insights WHERE is_manual IS NOT TRUE AND is_paper = $1', [isPaper]),
+      );
     for (const insight of insights) {
       const { rows: inserted } = await getPool().query(
         `INSERT INTO learned_insights (category, insight, confidence, sample_count, last_updated, details, recommendation, param_change, is_paper)
@@ -227,7 +243,9 @@ export async function getLearnedInsightsForPrompt(): Promise<string> {
     for (const insight of lossPatterns) {
       const confidence = (insight.confidence * 100).toFixed(0);
       const mandatory = insight.confidence >= 0.75 ? '【필수】' : '【권장】';
-      lines.push(`  ${validationTag(insight)}${mandatory} ${insight.insight} (신뢰도 ${confidence}%, 근거 ${insight.sample_count}건)`);
+      lines.push(
+        `  ${validationTag(insight)}${mandatory} ${insight.insight} (신뢰도 ${confidence}%, 근거 ${insight.sample_count}건)`,
+      );
     }
   }
 
@@ -235,27 +253,39 @@ export async function getLearnedInsightsForPrompt(): Promise<string> {
     lines.push('\n### ✅ 수익 패턴 — 다음 조건이 충족되면 BUY를 적극 검토하세요:');
     for (const insight of winPatterns) {
       const confidence = (insight.confidence * 100).toFixed(0);
-      const mandatory = insight.confidence >= 0.85 ? '【필수적용】' : insight.confidence >= 0.7 ? '【높은 신뢰도 — PRIORITIZE】' : '【참고】';
-      lines.push(`  ${validationTag(insight)}${mandatory} ${insight.insight} (신뢰도 ${confidence}%, 근거 ${insight.sample_count}건)`);
+      const mandatory =
+        insight.confidence >= 0.85
+          ? '【필수적용】'
+          : insight.confidence >= 0.7
+            ? '【높은 신뢰도 — PRIORITIZE】'
+            : '【참고】';
+      lines.push(
+        `  ${validationTag(insight)}${mandatory} ${insight.insight} (신뢰도 ${confidence}%, 근거 ${insight.sample_count}건)`,
+      );
     }
   }
 
   if (timingInsights.length > 0) {
     lines.push('\n### ⏱️ 타이밍 인사이트:');
     for (const insight of timingInsights) {
-      lines.push(`  ${validationTag(insight)}- ${insight.insight} (신뢰도 ${(insight.confidence * 100).toFixed(0)}%, 근거 ${insight.sample_count}건)`);
+      lines.push(
+        `  ${validationTag(insight)}- ${insight.insight} (신뢰도 ${(insight.confidence * 100).toFixed(0)}%, 근거 ${insight.sample_count}건)`,
+      );
     }
   }
 
   if (sizingInsights.length > 0) {
     lines.push('\n### 📊 투자 규모 인사이트:');
     for (const insight of sizingInsights) {
-      lines.push(`  ${validationTag(insight)}- ${insight.insight} (신뢰도 ${(insight.confidence * 100).toFixed(0)}%, 근거 ${insight.sample_count}건)`);
+      lines.push(
+        `  ${validationTag(insight)}- ${insight.insight} (신뢰도 ${(insight.confidence * 100).toFixed(0)}%, 근거 ${insight.sample_count}건)`,
+      );
     }
   }
 
-  const { rows: stockAccRows } = await getPool().query(
-    `SELECT stock_code,
+  const { rows: stockAccRows } = await getPool()
+    .query(
+      `SELECT stock_code,
             COUNT(*)::int AS total,
             SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END)::int AS wins,
             ROUND(AVG(realized_pnl_pct)::numeric,2) AS avg_pnl
@@ -266,17 +296,20 @@ export async function getLearnedInsightsForPrompt(): Promise<string> {
       HAVING COUNT(*) >= 3
       ORDER BY (SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END)::float / COUNT(*)) DESC
       LIMIT 10`,
-  ).catch(() => ({ rows: [] }));
+    )
+    .catch(() => ({ rows: [] }));
 
   if (stockAccRows.length > 0) {
-    const highWinStocks = stockAccRows.filter((r: any) => (r.wins / r.total) >= 0.65);
-    const lowWinStocks  = stockAccRows.filter((r: any) => (r.wins / r.total) <= 0.35);
+    const highWinStocks = stockAccRows.filter((r: any) => r.wins / r.total >= 0.65);
+    const lowWinStocks = stockAccRows.filter((r: any) => r.wins / r.total <= 0.35);
 
     if (highWinStocks.length > 0) {
       lines.push('\n### 🏆 실거래 검증 고승률 종목 — 매수 신호 시 즉시 우선 진입 (포지션 30% 이상 확대):');
       for (const r of highWinStocks) {
         const winPct = Math.round((r.wins / r.total) * 100);
-        lines.push(`  • ${r.stock_code}: 승률 ${winPct}% (${r.wins}/${r.total}건, 평균수익 ${r.avg_pnl > 0 ? '+' : ''}${r.avg_pnl}%) → 기준점수 15점 낮춰서 진입, 포지션 최대치`);
+        lines.push(
+          `  • ${r.stock_code}: 승률 ${winPct}% (${r.wins}/${r.total}건, 평균수익 ${r.avg_pnl > 0 ? '+' : ''}${r.avg_pnl}%) → 기준점수 15점 낮춰서 진입, 포지션 최대치`,
+        );
       }
     }
     if (lowWinStocks.length > 0) {
@@ -288,7 +321,9 @@ export async function getLearnedInsightsForPrompt(): Promise<string> {
     }
   }
 
-  lines.push('\n> 위 인사이트는 과거 실거래 결과로 도출된 통계적 패턴입니다. 단순 스코어보다 이 인사이트를 우선 적용하세요.');
+  lines.push(
+    '\n> 위 인사이트는 과거 실거래 결과로 도출된 통계적 패턴입니다. 단순 스코어보다 이 인사이트를 우선 적용하세요.',
+  );
 
   return lines.join('\n');
 }
@@ -300,11 +335,8 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
   const isPaper = getCtxIsPaper();
   const minConfidence = isPaper ? 0.7 : 0.85;
   const minSamples = isPaper ? 0 : 15;
-  const toApply = insights.filter((i) =>
-    i.confidence >= minConfidence
-    && i.paramChange
-    && !i.isApplied
-    && (i.sampleCount ?? 0) >= minSamples
+  const toApply = insights.filter(
+    (i) => i.confidence >= minConfidence && i.paramChange && !i.isApplied && (i.sampleCount ?? 0) >= minSamples,
   );
   if (toApply.length === 0) return;
 
@@ -333,21 +365,31 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
       const oldVal = current[field];
       if (oldVal === value) continue;
 
-      await getPool().query(`UPDATE strategy_config SET ${field} = $1 WHERE is_active = true AND is_paper = $2`, [value, isPaper]);
+      await getPool().query(`UPDATE strategy_config SET ${field} = $1 WHERE is_active = true AND is_paper = $2`, [
+        value,
+        isPaper,
+      ]);
       if (insight.id) {
-        await getPool().query(`UPDATE learned_insights SET is_applied = true, applied_at = NOW() WHERE id = $1`, [insight.id]);
+        await getPool().query(`UPDATE learned_insights SET is_applied = true, applied_at = NOW() WHERE id = $1`, [
+          insight.id,
+        ]);
       } else {
-        await getPool().query(`UPDATE learned_insights SET is_applied = true, applied_at = NOW() WHERE category = $1 AND insight = $2`, [insight.category, insight.insight]);
+        await getPool().query(
+          `UPDATE learned_insights SET is_applied = true, applied_at = NOW() WHERE category = $1 AND insight = $2`,
+          [insight.category, insight.insight],
+        );
       }
       applied.push(`${field}: ${oldVal} → ${value}`);
-      logger.info(`🤖 인사이트 자동 적용: ${field}=${value} (${insight.insight.slice(0, 40)}...)`, { component: 'LEARN' });
+      logger.info(`🤖 인사이트 자동 적용: ${field}=${value} (${insight.insight.slice(0, 40)}...)`, {
+        component: 'LEARN',
+      });
     }
 
     if (applied.length > 0) {
       await logSystem('INFO', 'LEARN', `인사이트 자동 전략 적용: ${applied.join(', ')}`).catch(() => {});
-      await sendTelegramMessage(
-        `🤖 *자기학습 자동 전략 적용*\n${applied.map((a) => `• ${a}`).join('\n')}`,
-      ).catch(() => {});
+      await sendTelegramMessage(`🤖 *자기학습 자동 전략 적용*\n${applied.map((a) => `• ${a}`).join('\n')}`).catch(
+        () => {},
+      );
     }
   } catch (err) {
     logger.warn(`인사이트 자동 적용 실패: ${err}`, { component: 'LEARN' });
@@ -374,8 +416,13 @@ export async function applyInsightById(insightId: string): Promise<{ ok: boolean
     const current = stratRows[0];
     if (!current) return { ok: false, message: '활성 전략 없음' };
 
-    await getPool().query(`UPDATE strategy_config SET ${field} = $1 WHERE is_active = true AND is_paper = $2`, [value, targetIsPaper]);
-    await getPool().query(`UPDATE learned_insights SET is_applied = true, applied_at = NOW() WHERE id = $1`, [insightId]);
+    await getPool().query(`UPDATE strategy_config SET ${field} = $1 WHERE is_active = true AND is_paper = $2`, [
+      value,
+      targetIsPaper,
+    ]);
+    await getPool().query(`UPDATE learned_insights SET is_applied = true, applied_at = NOW() WHERE id = $1`, [
+      insightId,
+    ]);
 
     const message = `${field}: ${current[field]} → ${value}`;
     await logSystem('INFO', 'LEARN', `인사이트 수동 적용: ${message}`).catch(() => {});
@@ -452,11 +499,12 @@ export async function getStockAccuracyContext(stockCodes: string[]): Promise<str
     const lines = ['\n## 📊 종목별 실거래 정확도 (최근 90일)'];
     for (const r of rows) {
       const winRate = Math.round((r.wins / r.total) * 100);
-      const bias = winRate >= 60
-        ? `✅ 승률 높음 — 신호 강하면 적극 매수`
-        : winRate <= 35
-          ? `⚠️ 승률 낮음 — 더 높은 스코어(+10) 요구`
-          : `→ 보통`;
+      const bias =
+        winRate >= 60
+          ? `✅ 승률 높음 — 신호 강하면 적극 매수`
+          : winRate <= 35
+            ? `⚠️ 승률 낮음 — 더 높은 스코어(+10) 요구`
+            : `→ 보통`;
       lines.push(
         `  ${r.stock_code}: 승률 ${winRate}%(${r.wins}/${r.total}건) | 평균손익 ${r.avg_pnl_pct > 0 ? '+' : ''}${r.avg_pnl_pct}% | 진입스코어평균 ${r.avg_entry_score}점 ${bias}`,
       );
@@ -477,19 +525,24 @@ export async function runDailyLearning(): Promise<void> {
     }
     const isPaper = getCtxIsPaper();
     for (const ins of insights) {
-      await getPool().query(
-        `INSERT INTO learned_insights (category, insight, confidence, sample_count, details, recommendation, param_change, is_paper, last_updated)
+      await getPool()
+        .query(
+          `INSERT INTO learned_insights (category, insight, confidence, sample_count, details, recommendation, param_change, is_paper, last_updated)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
          ON CONFLICT (category, insight, is_paper)
          DO UPDATE SET confidence=$3, sample_count=$4, details=$5, recommendation=$6, param_change=$7, last_updated=NOW()`,
-        [
-          ins.category, ins.insight, ins.confidence, ins.sampleCount,
-          ins.details ? JSON.stringify(ins.details) : null,
-          ins.recommendation ?? null,
-          ins.paramChange ? JSON.stringify(ins.paramChange) : null,
-          isPaper,
-        ],
-      ).catch(() => {});
+          [
+            ins.category,
+            ins.insight,
+            ins.confidence,
+            ins.sampleCount,
+            ins.details ? JSON.stringify(ins.details) : null,
+            ins.recommendation ?? null,
+            ins.paramChange ? JSON.stringify(ins.paramChange) : null,
+            isPaper,
+          ],
+        )
+        .catch(() => {});
     }
     logger.info(`🧠 자기학습 인사이트 ${insights.length}건 저장`, { component: 'LEARN' });
     await autoApplyInsights(insights);

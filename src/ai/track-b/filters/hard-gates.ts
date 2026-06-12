@@ -6,8 +6,8 @@
  */
 
 import { logger } from '../../../utils/logger.js';
-import { BUY_BLOCKED_CODES } from '../trading-rules.js';
 import { getOverride } from '../../ai-overrides.js';
+import { BUY_BLOCKED_CODES } from '../trading-rules.js';
 import type { HardGateInput } from './types.js';
 
 /**
@@ -15,9 +15,18 @@ import type { HardGateInput } from './types.js';
  * @returns true = 차단(skip), false = 통과(pass)
  */
 export function isHardBlocked(input: HardGateInput): boolean {
-  const { stock, openStockCodes, lossBlockedCodes, bigLossBlockedCodes,
-    manuallySoldCodes, recentlySoldCodes, junkStockCodes, winRates,
-    livePrices, aiScoreMap } = input;
+  const {
+    stock,
+    openStockCodes,
+    lossBlockedCodes,
+    bigLossBlockedCodes,
+    manuallySoldCodes,
+    recentlySoldCodes,
+    junkStockCodes,
+    winRates,
+    livePrices,
+    aiScoreMap,
+  } = input;
   const code = stock.stock_code;
   const name = stock.stock_name;
 
@@ -67,10 +76,12 @@ export function isHardBlocked(input: HardGateInput): boolean {
 
   // 1) 저가주: 2,000원 미만 (ETF 제외 — KODEX 인버스 등 저가 ETF는 정상 종목)
   const ETF_BRANDS = ['KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'KOSEF'];
-  const isETF = ETF_BRANDS.some(b => name.toUpperCase().includes(b));
+  const isETF = ETF_BRANDS.some((b) => name.toUpperCase().includes(b));
   const earlyPrice = livePrices.get(code);
   if (earlyPrice && earlyPrice.currentPrice > 0 && earlyPrice.currentPrice < 2000 && !isETF) {
-    logger.info(`  🗑️ ${code}(${name}): 저가주(${earlyPrice.currentPrice}원 < 2000) — 잡주 필터`, { component: 'TRACK_B' });
+    logger.info(`  🗑️ ${code}(${name}): 저가주(${earlyPrice.currentPrice}원 < 2000) — 잡주 필터`, {
+      component: 'TRACK_B',
+    });
     return true;
   }
 
@@ -83,7 +94,10 @@ export function isHardBlocked(input: HardGateInput): boolean {
   // 3) 구조적 패배 종목: 90일 내 승률 < 25%, 5건 이상
   const stockWr = winRates?.get(code);
   if (stockWr && stockWr.sampleCount >= 5 && stockWr.winRate < 0.25) {
-    logger.info(`  🗑️ ${code}(${name}): 패배 이력 승률=${(stockWr.winRate * 100).toFixed(0)}%(${stockWr.sampleCount}건) — 잡주 필터`, { component: 'TRACK_B' });
+    logger.info(
+      `  🗑️ ${code}(${name}): 패배 이력 승률=${(stockWr.winRate * 100).toFixed(0)}%(${stockWr.sampleCount}건) — 잡주 필터`,
+      { component: 'TRACK_B' },
+    );
     return true;
   }
 

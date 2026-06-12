@@ -6,9 +6,10 @@
  *   - 최소 포지션도 고정 $ 대신 포트폴리오 대비 %
  *   - 황금비율: 38.2%, 23.6%, 15.0%(CASH), 14.6%, 61.8%
  */
-import type { RegimeAdjustment } from './vix-regime.js';
-import type { KellyResult, GradualCooldown } from './types.js';
+
 import type { BuyTarget } from './buy-filter.js';
+import type { GradualCooldown, KellyResult } from './types.js';
+import type { RegimeAdjustment } from './vix-regime.js';
 
 export interface SizingParams {
   target: BuyTarget;
@@ -21,9 +22,9 @@ export interface SizingParams {
   evMultiplier: number;
   mtfBonus: number;
   sessionSizingMult?: number;
-  winRate?: number;        // 종목별 과거 승률 (0~1)
+  winRate?: number; // 종목별 과거 승률 (0~1)
   winRateSamples?: number; // 승률 샘플 수
-  marketBreadth?: number;  // 시장 breadth (0~1)
+  marketBreadth?: number; // 시장 breadth (0~1)
 }
 
 export interface SizingResult {
@@ -34,15 +35,15 @@ export interface SizingResult {
 
 // ── 황금비율 상수 (피보나치) ──
 const PHI = {
-  MAJOR:  0.382,  // 38.2% — 주력 포지션 비율
-  MEDIUM: 0.236,  // 23.6% — 중간 포지션
-  MINOR:  0.146,  // 14.6% — 소형 포지션
-  CASH:   0.150,  // 15.0% — 최소 현금 보유 (폭락장 방어)
-  MAX:    0.618,  // 61.8% — 단일 포지션 최대 (소액 집중)
+  MAJOR: 0.382, // 38.2% — 주력 포지션 비율
+  MEDIUM: 0.236, // 23.6% — 중간 포지션
+  MINOR: 0.146, // 14.6% — 소형 포지션
+  CASH: 0.15, // 15.0% — 최소 현금 보유 (폭락장 방어)
+  MAX: 0.618, // 61.8% — 단일 포지션 최대 (소액 집중)
 } as const;
 
 // 최소 포지션: 포트폴리오의 % (고정 $ 폐지)
-const MIN_POSITION_PCT = 0.10;  // 포트폴리오의 10% (절대 최소)
+const MIN_POSITION_PCT = 0.1; // 포트폴리오의 10% (절대 최소)
 
 export function calcSizingMultiplier(params: {
   confidence: number;
@@ -57,35 +58,41 @@ export function calcSizingMultiplier(params: {
   const { confidence, score, evMult, vixSizingMult, cooldownPenalty, isPaper, mtfBonus, winRateBonus } = params;
   const confFactor = Math.min(1, Math.max(0, confidence + mtfBonus));
   const scoreFactor = Math.min(1, Math.max(0, (score + 30) / 110));
-  const combined = confFactor * 0.50 + scoreFactor * 0.50;
+  const combined = confFactor * 0.5 + scoreFactor * 0.5;
   const wrMult = 1.0 + winRateBonus;
   // 배율 스택 캡: evMult × wrMult 합산이 1.5x 초과 방지 (과집중 사고 방지)
-  const combinedBoostMult = Math.min(evMult * wrMult, 1.50);
+  const combinedBoostMult = Math.min(evMult * wrMult, 1.5);
   const rawMult = Math.round((0.6 + combined * 1.4) * combinedBoostMult * vixSizingMult * cooldownPenalty * 100) / 100;
-  return isPaper ? Math.max(rawMult, 0.50) : rawMult;
+  return isPaper ? Math.max(rawMult, 0.5) : rawMult;
 }
 
 export function calcPositionSize(params: SizingParams): SizingResult {
-  const { target, portfolioValue, kellyResult, vixRegime, gradualCooldown, cash, isPaper, evMultiplier, mtfBonus, sessionSizingMult } = params;
+  const {
+    target,
+    portfolioValue,
+    kellyResult,
+    vixRegime,
+    gradualCooldown,
+    cash,
+    isPaper,
+    evMultiplier,
+    mtfBonus,
+    sessionSizingMult,
+  } = params;
 
   // ── 기술 점수 → confidence ──
   const techConf = Math.min(1, Math.max(0.35, (target.score + 30) / 110));
-  const momentumBoost = target.isMomentum ? 0.08 : target.isBigMover ? 0.10 : 0;
+  const momentumBoost = target.isMomentum ? 0.08 : target.isBigMover ? 0.1 : 0;
   const effectiveConf = Math.min(1, techConf + momentumBoost);
 
   // ── 고승률 보너스 ──
   const wr = params.winRate ?? 0;
   const wrSamples = params.winRateSamples ?? 0;
-  const winRateBonus = wrSamples >= 5
-    ? wr >= 0.70 ? 0.30 : wr >= 0.60 ? 0.20 : wr >= 0.55 ? 0.10 : 0
-    : 0;
+  const winRateBonus = wrSamples >= 5 ? (wr >= 0.7 ? 0.3 : wr >= 0.6 ? 0.2 : wr >= 0.55 ? 0.1 : 0) : 0;
 
   // ── 시장 breadth 레짐 배율 ──
   const breadth = params.marketBreadth ?? 0.5;
-  const regimeMult = breadth >= 0.65 ? 1.15
-    : breadth >= 0.45 ? 1.0
-    : breadth >= 0.35 ? 0.90
-    : 0.80;
+  const regimeMult = breadth >= 0.65 ? 1.15 : breadth >= 0.45 ? 1.0 : breadth >= 0.35 ? 0.9 : 0.8;
 
   // ── 세이버메트릭스 배율: Kelly EV/PF 기반 사이징 조정 ──
   const kellyEV = kellyResult.evPerTrade ?? 0;
@@ -93,12 +100,18 @@ export function calcPositionSize(params: SizingParams): SizingResult {
   const kellyBEP = kellyResult.breakevenWinRate ?? 0.5;
   const wR = kellyResult.winRate ?? 0.5;
   // EV 음수→0.7x 축소, EV 양수(3%+)→1.2x 확대, PF<1.0→0.8x
-  const saberMult = kellyEV < -0.5 ? 0.70
-    : kellyPF < 1.0 ? 0.80
-    : (wR < kellyBEP) ? 0.85 // 손익분기 미달
-    : kellyEV >= 3.0 ? 1.20
-    : kellyEV >= 1.5 ? 1.10
-    : 1.0;
+  const saberMult =
+    kellyEV < -0.5
+      ? 0.7
+      : kellyPF < 1.0
+        ? 0.8
+        : wR < kellyBEP
+          ? 0.85 // 손익분기 미달
+          : kellyEV >= 3.0
+            ? 1.2
+            : kellyEV >= 1.5
+              ? 1.1
+              : 1.0;
 
   const sizingMult = calcSizingMultiplier({
     confidence: effectiveConf,
@@ -120,11 +133,15 @@ export function calcPositionSize(params: SizingParams): SizingResult {
   const isSmallAccount = portfolioValue < 500;
   const isMicroAccount = portfolioValue < 250;
 
-  const kellyPct = isMicroAccount ? PHI.MAX                             // 61.8% 극집중
-    : isSmallAccount ? (PHI.MAJOR + PHI.MEDIUM)                         // 61.8% (38.2+23.6)
-    : kellyResult.sampleCount >= 10
-      ? Math.max(kellyResult.halfKelly, PHI.MINOR)                      // Kelly 롤링, 바닥 14.6%
-      : (target.isMomentum && target.score >= 40 ? PHI.MAJOR : PHI.MAJOR); // 38.2% 기본
+  const kellyPct = isMicroAccount
+    ? PHI.MAX // 61.8% 극집중
+    : isSmallAccount
+      ? PHI.MAJOR + PHI.MEDIUM // 61.8% (38.2+23.6)
+      : kellyResult.sampleCount >= 10
+        ? Math.max(kellyResult.halfKelly, PHI.MINOR) // Kelly 롤링, 바닥 14.6%
+        : target.isMomentum && target.score >= 40
+          ? PHI.MAJOR
+          : PHI.MAJOR; // 38.2% 기본
 
   // Kelly 캡: 소액은 61.8%, 일반은 38.2%
   const kellyCap = isSmallAccount ? PHI.MAX : PHI.MAJOR;
@@ -138,7 +155,7 @@ export function calcPositionSize(params: SizingParams): SizingResult {
   const cashUsageCap = 1.0 - dynamicCashReserve;
 
   // 복합 감소기 바닥 0.40 (여러 팩터 곱셈 붕괴 방지)
-  const flooredSizingMult = Math.max(sizingMult, 0.40);
+  const flooredSizingMult = Math.max(sizingMult, 0.4);
   let positionSize = Math.min(baseSize * flooredSizingMult, cash * cashUsageCap);
 
   // 최소 포지션: 포트폴리오의 10% (고정 $ 대신 비율)

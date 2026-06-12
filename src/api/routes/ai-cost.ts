@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
+import { getMarketSentiment, refreshConsensusSignals } from '../../market/consensus.js';
 import { getAiCostSummary } from '../../utils/vertex-gemini.js';
-import { refreshConsensusSignals, getMarketSentiment } from '../../market/consensus.js';
 
 export const aiCostRoutes = new Hono();
 
@@ -17,8 +17,8 @@ aiCostRoutes.get('/consensus', async (c) => {
   return c.json({
     total: list.length,
     sentiment,
-    bullish: list.filter(s => s.trend === 'BULLISH'),
-    bearish: list.filter(s => s.trend === 'BEARISH'),
-    neutral: list.filter(s => s.trend === 'NEUTRAL').length,
+    bullish: list.filter((s) => s.trend === 'BULLISH'),
+    bearish: list.filter((s) => s.trend === 'BEARISH'),
+    neutral: list.filter((s) => s.trend === 'NEUTRAL').length,
   });
 });

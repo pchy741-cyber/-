@@ -10,8 +10,8 @@ interface CacheEntry<T> {
 
 class MemoryCache {
   private store = new Map<string, CacheEntry<unknown>>();
-  private cleanupInterval: ReturnType<typeof setInterval>;
   private static readonly MAX_ENTRIES = 10_000; // 장기운영 메모리 비대화 방지
+  private cleanupInterval: ReturnType<typeof setInterval>;
 
   constructor() {
     // 10분마다 만료된 항목 정리 (30m→10m, 장기운영 메모리 축적 방지)
@@ -25,7 +25,9 @@ class MemoryCache {
       this.cleanup();
       if (this.store.size > MemoryCache.MAX_ENTRIES) {
         const entries = [...this.store.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt);
-        entries.slice(0, Math.floor(entries.length * 0.2)).forEach(([k]) => this.store.delete(k));
+        entries.slice(0, Math.floor(entries.length * 0.2)).forEach(([k]) => {
+          this.store.delete(k);
+        });
       }
     }
   }

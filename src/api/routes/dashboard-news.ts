@@ -7,14 +7,22 @@ export const dashboardNewsRoutes = new Hono();
 let _newsSummaryCache = { summary: '', fetchedAt: 0 };
 const NEWS_SUMMARY_TTL = 120 * 60 * 1000;
 
-interface NewsTheme { theme: string; reason: string; stocks: Array<{ code: string; name: string; market: string }> }
+interface NewsTheme {
+  theme: string;
+  reason: string;
+  stocks: Array<{ code: string; name: string; market: string }>;
+}
 let _newsThemeCache: { data: NewsTheme | null; fetchedAt: number } = { data: null, fetchedAt: 0 };
 const NEWS_THEME_TTL = 120 * 60 * 1000;
 
 // ── 유튜브 캐시 ──
 interface YouTubeVideo {
-  title: string; link: string; channel: string;
-  publishedAt: string; sentiment: 'bullish' | 'bearish' | 'neutral'; sentimentScore: number;
+  title: string;
+  link: string;
+  channel: string;
+  publishedAt: string;
+  sentiment: 'bullish' | 'bearish' | 'neutral';
+  sentimentScore: number;
 }
 let _ytCache: { videos: YouTubeVideo[]; fetchedAt: number } = { videos: [], fetchedAt: 0 };
 const YT_TTL = 30 * 60 * 1000;
@@ -24,17 +32,32 @@ const YT_CHANNELS = [
   { id: 'UCWskYkV4c4S9D__rsfOl2JA', name: '한경글로벌마켓' },
   { id: 'UCvil4OAt-zShzkKHsg9EQAw', name: '김작가TV' },
 ];
-const BULL_KW = ['상승장', '불장', '랠리', '반등', '매수', '저점', '신고가', '급등', '기회', '회복', '돌파', '호재', '최고'];
+const BULL_KW = [
+  '상승장',
+  '불장',
+  '랠리',
+  '반등',
+  '매수',
+  '저점',
+  '신고가',
+  '급등',
+  '기회',
+  '회복',
+  '돌파',
+  '호재',
+  '최고',
+];
 const BEAR_KW = ['폭락', '하락장', '공포', '위기', '매도', '급락', '붕괴', '추락', '침체', '위험', '악재', '하락'];
 
 // ── 한글 뉴스 요약 (Gemini OFF 폴백) ──
 function generateFreeKoreanSummary(headlineLines: string[]): string {
-  const koreanLines = headlineLines.filter(l => /[\u3131-\uD7A3]/.test(l));
-  const englishLines = headlineLines.filter(l => !/[\u3131-\uD7A3]/.test(l));
+  const koreanLines = headlineLines.filter((l) => /[\u3131-\uD7A3]/.test(l));
+  const englishLines = headlineLines.filter((l) => !/[\u3131-\uD7A3]/.test(l));
   const all = [...koreanLines, ...englishLines];
   const allText = all.join(' ').toLowerCase();
 
-  let bull = 0, bear = 0;
+  let bull = 0,
+    bear = 0;
   for (const kw of BULL_KW) if (allText.includes(kw)) bull++;
   for (const kw of BEAR_KW) if (allText.includes(kw)) bear++;
   for (const kw of ['rally', 'rise', 'surge', 'gain', 'record', 'bull']) if (allText.includes(kw)) bull++;
@@ -43,7 +66,13 @@ function generateFreeKoreanSummary(headlineLines: string[]): string {
   const mood = bull > bear + 1 ? '긍정적' : bear > bull + 1 ? '부정적' : '혼조';
 
   const extract = (lines: string[], n: number) =>
-    lines.slice(0, n).map(l => { const m = l.match(/^\- \[(.+?)\]/); return m?.[1] || ''; }).filter(Boolean);
+    lines
+      .slice(0, n)
+      .map((l) => {
+        const m = l.match(/^- \[(.+?)\]/);
+        return m?.[1] || '';
+      })
+      .filter(Boolean);
 
   const topKr = extract(koreanLines, 2);
   const topEn = extract(englishLines, 2);
@@ -62,15 +91,21 @@ async function fetchYouTubeVideos(): Promise<YouTubeVideo[]> {
   const cutoff = Date.now() - 72 * 3600_000;
   const videos: YouTubeVideo[] = [];
   const feeds = await Promise.allSettled(
-    YT_CHANNELS.map(async ch => {
-      const res = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${ch.id}`, { signal: AbortSignal.timeout(5000) });
+    YT_CHANNELS.map(async (ch) => {
+      const res = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${ch.id}`, {
+        signal: AbortSignal.timeout(5000),
+      });
       if (!res.ok) return [];
       const xml = await res.text();
-      const entries = [...xml.matchAll(/<entry>[\s\S]*?<link[^>]*href="([^"]*)"[^>]*\/>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<published>([\s\S]*?)<\/published>[\s\S]*?<\/entry>/g)];
+      const entries = [
+        ...xml.matchAll(
+          /<entry>[\s\S]*?<link[^>]*href="([^"]*)"[^>]*\/>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<published>([\s\S]*?)<\/published>[\s\S]*?<\/entry>/g,
+        ),
+      ];
       return entries
-        .filter(e => new Date(e[3]).getTime() > cutoff)
+        .filter((e) => new Date(e[3]).getTime() > cutoff)
         .slice(0, 5)
-        .map(e => ({ title: e[2].trim(), link: e[1], channel: ch.name, publishedAt: e[3].trim() }));
+        .map((e) => ({ title: e[2].trim(), link: e[1], channel: ch.name, publishedAt: e[3].trim() }));
     }),
   );
   for (const r of feeds) {
@@ -79,7 +114,11 @@ async function fetchYouTubeVideos(): Promise<YouTubeVideo[]> {
       let score = 0;
       for (const kw of BULL_KW) if (v.title.includes(kw)) score++;
       for (const kw of BEAR_KW) if (v.title.includes(kw)) score--;
-      videos.push({ ...v, sentimentScore: score, sentiment: score > 0 ? 'bullish' : score < 0 ? 'bearish' : 'neutral' });
+      videos.push({
+        ...v,
+        sentimentScore: score,
+        sentiment: score > 0 ? 'bullish' : score < 0 ? 'bearish' : 'neutral',
+      });
     }
   }
   videos.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
@@ -102,7 +141,11 @@ dashboardNewsRoutes.get('/news', async (c) => {
   try {
     const { getTodayNews } = await import('../../automation/news-collector.js');
     const newsMap = getTodayNews();
-    const result: Array<{ stockCode: string; stockName?: string; items: Array<{ title: string; link: string; publishedAt?: string }> }> = [];
+    const result: Array<{
+      stockCode: string;
+      stockName?: string;
+      items: Array<{ title: string; link: string; publishedAt?: string }>;
+    }> = [];
     for (const [stockCode, items] of newsMap.entries()) {
       if (items.length > 0) {
         result.push({ stockCode, items: items.slice(0, 10) });
@@ -123,7 +166,10 @@ dashboardNewsRoutes.get('/news/macro', async (c) => {
       collectMacroNews(),
       new Promise<string>((resolve) => setTimeout(() => resolve(''), 8000)),
     ]);
-    const lines = raw.split('\n').filter(l => l.startsWith('- [')).map(l => l.replace(/^- /, ''));
+    const lines = raw
+      .split('\n')
+      .filter((l) => l.startsWith('- ['))
+      .map((l) => l.replace(/^- /, ''));
     return c.json({ headlines: lines });
   } catch {
     return c.json({ headlines: [] });
@@ -162,7 +208,13 @@ dashboardNewsRoutes.get('/news/summary', async (c) => {
   const forceRefresh = c.req.query('refresh') === '1';
   try {
     if (!forceRefresh && _newsSummaryCache.summary && Date.now() - _newsSummaryCache.fetchedAt < NEWS_SUMMARY_TTL) {
-      return c.json({ summary: _newsSummaryCache.summary, geminiOk: true, error: null, headlineCount: 0, cached: true });
+      return c.json({
+        summary: _newsSummaryCache.summary,
+        geminiOk: true,
+        error: null,
+        headlineCount: 0,
+        cached: true,
+      });
     }
 
     const { collectMacroNews } = await import('../../automation/news-collector.js');
@@ -175,17 +227,19 @@ dashboardNewsRoutes.get('/news/summary', async (c) => {
       return c.json({ summary: '', geminiOk: false, error: 'rss_failed', headlineCount: 0, cached: false });
     }
 
-    const headlineLines = raw.split('\n').filter(l => l.startsWith('- ['));
+    const headlineLines = raw.split('\n').filter((l) => l.startsWith('- ['));
     const headlineCount = headlineLines.length;
 
     if (headlineCount === 0) {
       return c.json({ summary: '', geminiOk: false, error: 'rss_failed', headlineCount: 0, cached: false });
     }
 
-    const headlines = headlineLines.map(l => {
-      const m = l.match(/^\- \[(.+?)\]\(.+?\)\s*—\s*(.+)$/);
-      return m ? `${m[1]} (${m[2]})` : l.replace(/^- /, '');
-    }).join('\n');
+    const headlines = headlineLines
+      .map((l) => {
+        const m = l.match(/^- \[(.+?)\]\(.+?\)\s*—\s*(.+)$/);
+        return m ? `${m[1]} (${m[2]})` : l.replace(/^- /, '');
+      })
+      .join('\n');
 
     // Gemini OFF → 한글 키워드 기반 자연스러운 요약
     const { config } = await import('../../config/index.js');
@@ -207,16 +261,30 @@ dashboardNewsRoutes.get('/news/summary', async (c) => {
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout_15s')), 15000)),
     ]);
     if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now() };
-    return c.json({ summary, geminiOk: !!summary, error: summary ? null : 'gemini_empty', headlineCount, cached: false });
+    return c.json({
+      summary,
+      geminiOk: !!summary,
+      error: summary ? null : 'gemini_empty',
+      headlineCount,
+      cached: false,
+    });
   } catch (err) {
     const errStr = String(err);
     logger.error('뉴스 요약 생성 실패', { error: errStr.slice(0, 300), component: 'NEWS_SUMMARY' });
-    const error = errStr.includes('quota') || errStr.includes('429') || errStr.includes('RESOURCE_EXHAUSTED')
-      ? 'gemini_quota'
-      : errStr.includes('timeout')
-        ? 'gemini_timeout'
-        : 'gemini_failed';
-    return c.json({ summary: '', geminiOk: false, error, errorDetail: errStr.slice(0, 200), headlineCount: 0, cached: false });
+    const error =
+      errStr.includes('quota') || errStr.includes('429') || errStr.includes('RESOURCE_EXHAUSTED')
+        ? 'gemini_quota'
+        : errStr.includes('timeout')
+          ? 'gemini_timeout'
+          : 'gemini_failed';
+    return c.json({
+      summary: '',
+      geminiOk: false,
+      error,
+      errorDetail: errStr.slice(0, 200),
+      headlineCount: 0,
+      cached: false,
+    });
   }
 });
 
@@ -234,12 +302,15 @@ dashboardNewsRoutes.get('/news/theme', async (c) => {
     ]);
     if (!raw) return c.json({ theme: '', reason: '', stocks: [] });
 
-    const headlines = raw.split('\n')
-      .filter(l => l.startsWith('- [') || (l.startsWith('- ') && l.length > 10))
-      .map(l => {
-        const m = l.match(/^\- \[(.+?)\]\(.+?\)\s*[—-]\s*(.+)$/);
+    const headlines = raw
+      .split('\n')
+      .filter((l) => l.startsWith('- [') || (l.startsWith('- ') && l.length > 10))
+      .map((l) => {
+        const m = l.match(/^- \[(.+?)\]\(.+?\)\s*[—-]\s*(.+)$/);
         return m ? `${m[1]} (${m[2]})` : l.replace(/^- /, '');
-      }).slice(0, 20).join('\n');
+      })
+      .slice(0, 20)
+      .join('\n');
 
     if (!headlines) return c.json({ theme: '', reason: '', stocks: [] });
 
@@ -269,7 +340,11 @@ ${headlines}
 주의: code는 반드시 실제 한국거래소 6자리 종목코드, market은 KOSPI 또는 KOSDAQ`;
 
     const text = await Promise.race([
-      callVertexTheme('당신은 한국 주식시장 전문가입니다. 뉴스 헤드라인을 분석하여 테마와 종목을 추천합니다.', themeUserMsg, { temperature: 0.2 }),
+      callVertexTheme(
+        '당신은 한국 주식시장 전문가입니다. 뉴스 헤드라인을 분석하여 테마와 종목을 추천합니다.',
+        themeUserMsg,
+        { temperature: 0.2 },
+      ),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('theme_timeout_20s')), 20000)),
     ]);
 
@@ -305,7 +380,7 @@ export async function prefetchAllNews(): Promise<void> {
 
     // 2. 뉴스 요약 캐시 워밍
     if (raw) {
-      const headlineLines = raw.split('\n').filter(l => l.startsWith('- ['));
+      const headlineLines = raw.split('\n').filter((l) => l.startsWith('- ['));
       if (headlineLines.length > 0) {
         const { config } = await import('../../config/index.js');
         if (!config.geminiEnabled) {
@@ -313,10 +388,12 @@ export async function prefetchAllNews(): Promise<void> {
           if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now() };
         } else {
           try {
-            const headlines = headlineLines.map(l => {
-              const m = l.match(/^\- \[(.+?)\]\(.+?\)\s*—\s*(.+)$/);
-              return m ? `${m[1]} (${m[2]})` : l.replace(/^- /, '');
-            }).join('\n');
+            const headlines = headlineLines
+              .map((l) => {
+                const m = l.match(/^- \[(.+?)\]\(.+?\)\s*—\s*(.+)$/);
+                return m ? `${m[1]} (${m[2]})` : l.replace(/^- /, '');
+              })
+              .join('\n');
             const { callVertexGemini } = await import('../../utils/vertex-gemini.js');
             const summary = await Promise.race([
               callVertexGemini(
@@ -327,7 +404,9 @@ export async function prefetchAllNews(): Promise<void> {
               new Promise<string>((resolve) => setTimeout(() => resolve(''), 12000)),
             ]);
             if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now() };
-          } catch { /* Gemini 실패 시 무시 */ }
+          } catch {
+            /* Gemini 실패 시 무시 */
+          }
         }
       }
     }
@@ -335,7 +414,10 @@ export async function prefetchAllNews(): Promise<void> {
     // 3. 유튜브 캐시 워밍
     await fetchYouTubeVideos();
 
-    logger.info(`📰 뉴스 프리페치 완료: 요약=${_newsSummaryCache.summary ? 'OK' : 'SKIP'} 유튜브=${_ytCache.videos.length}건`, { component: 'NEWS_PREFETCH' });
+    logger.info(
+      `📰 뉴스 프리페치 완료: 요약=${_newsSummaryCache.summary ? 'OK' : 'SKIP'} 유튜브=${_ytCache.videos.length}건`,
+      { component: 'NEWS_PREFETCH' },
+    );
   } catch (e) {
     logger.warn(`뉴스 프리페치 실패: ${e}`, { component: 'NEWS_PREFETCH' });
   }

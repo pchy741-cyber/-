@@ -3,9 +3,9 @@
  */
 import { Hono } from 'hono';
 import captureRoutes from './capture.js';
-import diagnosticsRoutes from './diagnostics.js';
 import copilotRoutes from './copilot.js';
 import copilotLiteRoutes from './copilot-lite.js';
+import diagnosticsRoutes from './diagnostics.js';
 import xrayRoutes from './xray.js';
 
 const app = new Hono();

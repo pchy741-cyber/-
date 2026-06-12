@@ -1,5 +1,5 @@
-import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
+import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 
 interface KISToken {
@@ -24,10 +24,7 @@ async function loadTokenFromDb(isPaper: boolean): Promise<KISToken | null> {
     const { getPool, isMemoryMode } = await import('../db/client.js');
     if (isMemoryMode()) return null;
     const key = isPaper ? 'kis_token_paper' : 'kis_token_live';
-    const { rows } = await getPool().query<{ value: string }>(
-      'SELECT value FROM system_state WHERE key = $1',
-      [key]
-    );
+    const { rows } = await getPool().query<{ value: string }>('SELECT value FROM system_state WHERE key = $1', [key]);
     if (!rows[0]) return null;
     const saved = JSON.parse(rows[0].value) as { accessToken: string; tokenType: string; expiresAt: string };
     const token: KISToken = { ...saved, expiresAt: new Date(saved.expiresAt) };
@@ -44,11 +41,15 @@ async function saveTokenToDb(token: KISToken, isPaper: boolean): Promise<void> {
     const { getPool, isMemoryMode } = await import('../db/client.js');
     if (isMemoryMode()) return;
     const key = isPaper ? 'kis_token_paper' : 'kis_token_live';
-    const value = JSON.stringify({ accessToken: token.accessToken, tokenType: token.tokenType, expiresAt: token.expiresAt.toISOString() });
+    const value = JSON.stringify({
+      accessToken: token.accessToken,
+      tokenType: token.tokenType,
+      expiresAt: token.expiresAt.toISOString(),
+    });
     await getPool().query(
       `INSERT INTO system_state(key, value) VALUES($1, $2)
        ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-      [key, value]
+      [key, value],
     );
   } catch (err) {
     logger.warn(`KIS 토큰 DB 저장 실패 (무시): ${err}`, { component: 'KIS_AUTH' });
@@ -99,11 +100,11 @@ export async function getAccessTokenForMode(mode: 'paper' | 'live'): Promise<str
       logger.info(`KIS 토큰 [${mode}] 신규 발급 요청`, { component: 'KIS_AUTH' });
       const isLive = mode === 'live';
       const appKey = isLive
-        ? (process.env.KIS_APP_KEY_LIVE || process.env.KIS_APP_KEY || '')
-        : (process.env.KIS_APP_KEY || '');
+        ? process.env.KIS_APP_KEY_LIVE || process.env.KIS_APP_KEY || ''
+        : process.env.KIS_APP_KEY || '';
       const appSecret = isLive
-        ? (process.env.KIS_APP_SECRET_LIVE || process.env.KIS_APP_SECRET || '')
-        : (process.env.KIS_APP_SECRET || '');
+        ? process.env.KIS_APP_SECRET_LIVE || process.env.KIS_APP_SECRET || ''
+        : process.env.KIS_APP_SECRET || '';
       const baseUrl = isLive
         ? 'https://openapi.koreainvestment.com:9443'
         : 'https://openapivts.koreainvestment.com:29443';
@@ -115,7 +116,11 @@ export async function getAccessTokenForMode(mode: 'paper' | 'live'): Promise<str
       });
       const rawBody = await res.text();
       if (!res.ok) throw new Error(`KIS 토큰 발급 실패 [${mode}] (${res.status}): ${rawBody}`);
-      const data = JSON.parse(rawBody) as { access_token?: string; token_type?: string; access_token_token_expired?: string };
+      const data = JSON.parse(rawBody) as {
+        access_token?: string;
+        token_type?: string;
+        access_token_token_expired?: string;
+      };
       if (!data.access_token) throw new Error(`KIS 토큰 발급 실패 [${mode}]`);
 
       const token: KISToken = {
@@ -165,7 +170,10 @@ export async function getAccessToken(): Promise<string> {
           cachedToken = dbToken;
           cachedTokenIsPaper = isPaper;
           modeTokenCache.set(mode, dbToken); // 모드별 캐시에도 저장
-          logger.info(`KIS 토큰 DB 복원 성공, 만료: ${dbToken.expiresAt.toISOString()}`, { component: 'KIS_AUTH', isPaper });
+          logger.info(`KIS 토큰 DB 복원 성공, 만료: ${dbToken.expiresAt.toISOString()}`, {
+            component: 'KIS_AUTH',
+            isPaper,
+          });
           return dbToken.accessToken;
         }
       }
@@ -191,7 +199,13 @@ export async function getAccessToken(): Promise<string> {
         throw new Error(`KIS 토큰 발급 실패 (${res.status}): ${rawBody}`);
       }
 
-      const data = JSON.parse(rawBody) as { access_token?: string; token_type?: string; access_token_token_expired?: string; error_code?: string; error_description?: string };
+      const data = JSON.parse(rawBody) as {
+        access_token?: string;
+        token_type?: string;
+        access_token_token_expired?: string;
+        error_code?: string;
+        error_description?: string;
+      };
 
       if (!data.access_token) {
         throw new Error(`KIS 토큰 발급 실패: ${data.error_code ?? 'unknown'} - ${data.error_description ?? rawBody}`);

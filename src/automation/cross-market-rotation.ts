@@ -5,14 +5,15 @@
  * 입력: KOSPI 레짐, VIX 레짐, F&G, FX 추세
  * 출력: 조정된 kr_pct / us_pct + 로테이션 사유
  */
-import { detectMarketRegime, type MarketRegime } from './market-regime.js';
-import { getVixRegime } from '../scheduler/overseas/risk-intelligence.js';
-import { getFearGreedIndex } from '../market/external-signals.js';
-import { fetchExchangeRate } from './macro-data.js';
-import { getPool } from '../db/client.js';
+
 import { getCtxIsPaper } from '../config/context.js';
+import { getPool } from '../db/client.js';
+import { getFearGreedIndex } from '../market/external-signals.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
+import { getVixRegime } from '../scheduler/overseas/risk-intelligence.js';
 import { logger } from '../utils/logger.js';
+import { fetchExchangeRate } from './macro-data.js';
+import { detectMarketRegime, type MarketRegime } from './market-regime.js';
 
 const COMP = 'ROTATION';
 
@@ -22,7 +23,7 @@ export interface RotationSignal {
   baseKrPct: number;
   baseUsPct: number;
   rotationReason: string;
-  rotationScore: number;   // -10(국내 극부정)~+10(국내 극긍정)
+  rotationScore: number; // -10(국내 극부정)~+10(국내 극긍정)
   shouldRebalance: boolean;
   safeHavenEtf: string | null;
   krRegime: string;
@@ -49,13 +50,18 @@ export async function calcRotationSignal(): Promise<RotationSignal> {
 
   // 2. 시장 레짐 수집
   let krRegime: MarketRegime | null = null;
-  try { krRegime = await detectMarketRegime(); } catch {}
+  try {
+    krRegime = await detectMarketRegime();
+  } catch {}
 
   let vix = 0;
   let fearGreed = 50;
   try {
     const fg = await getFearGreedIndex();
-    if (fg) { fearGreed = fg.fearGreedScore; vix = fg.vix; }
+    if (fg) {
+      fearGreed = fg.fearGreedScore;
+      vix = fg.vix;
+    }
   } catch {}
 
   const vixRegime = getVixRegime(vix);
@@ -144,8 +150,11 @@ export async function calcRotationSignal(): Promise<RotationSignal> {
   }
 
   // 양쪽 다 나쁨: KR PANIC/BEARISH + US CRISIS/STRESS → 세이프헤이븐
-  if (krRegime && (krRegime.regime === 'PANIC' || krRegime.regime === 'BEARISH')
-      && (vixRegime.regime === 'CRISIS' || vixRegime.regime === 'STRESS')) {
+  if (
+    krRegime &&
+    (krRegime.regime === 'PANIC' || krRegime.regime === 'BEARISH') &&
+    (vixRegime.regime === 'CRISIS' || vixRegime.regime === 'STRESS')
+  ) {
     safeHavenEtf = vixRegime.regime === 'CRISIS' ? 'GLD' : 'KODEX200';
     reasons.push(`양쪽악화→${safeHavenEtf}파킹`);
   }
@@ -154,8 +163,14 @@ export async function calcRotationSignal(): Promise<RotationSignal> {
   const rotationReason = reasons.length > 0 ? reasons.join(' + ') : '중립';
 
   return {
-    adjustedKrPct, adjustedUsPct, baseKrPct, baseUsPct,
-    rotationReason, rotationScore, shouldRebalance, safeHavenEtf,
+    adjustedKrPct,
+    adjustedUsPct,
+    baseKrPct,
+    baseUsPct,
+    rotationReason,
+    rotationScore,
+    shouldRebalance,
+    safeHavenEtf,
     krRegime: krRegime?.regime ?? 'UNKNOWN',
     usRegime: vixRegime.regime,
   };
@@ -179,13 +194,15 @@ export async function runRotationCheck(): Promise<void> {
     await getPool().query(
       `INSERT INTO system_state (key, value) VALUES (${getCtxIsPaper() ? "'p_rotation_signal'" : "'l_rotation_signal'"}, $1)
        ON CONFLICT (key) DO UPDATE SET value = $1`,
-      [JSON.stringify({
-        adjustedKrPct: signal.adjustedKrPct,
-        adjustedUsPct: signal.adjustedUsPct,
-        rotationScore: signal.rotationScore,
-        safeHavenEtf: signal.safeHavenEtf,
-        updatedAt: new Date().toISOString(),
-      })],
+      [
+        JSON.stringify({
+          adjustedKrPct: signal.adjustedKrPct,
+          adjustedUsPct: signal.adjustedUsPct,
+          rotationScore: signal.rotationScore,
+          safeHavenEtf: signal.safeHavenEtf,
+          updatedAt: new Date().toISOString(),
+        }),
+      ],
     );
 
     // 점수 변화가 의미 있을 때만 알림 (±2 이상 변동, 1시간 쿨다운)
@@ -197,10 +214,10 @@ export async function runRotationCheck(): Promise<void> {
       const emoji = signal.rotationScore < 0 ? '🔴' : signal.rotationScore > 0 ? '🟢' : '⚪';
       await sendTelegramMessage(
         `${emoji} *크로스마켓 로테이션*\n` +
-        `KR: ${signal.krRegime} | US: ${signal.usRegime}\n` +
-        `비중 조정: KR ${signal.baseKrPct}%→${signal.adjustedKrPct}% / US ${signal.baseUsPct}%→${signal.adjustedUsPct}%\n` +
-        `사유: ${signal.rotationReason}` +
-        (signal.safeHavenEtf ? `\n파킹: ${signal.safeHavenEtf}` : ''),
+          `KR: ${signal.krRegime} | US: ${signal.usRegime}\n` +
+          `비중 조정: KR ${signal.baseKrPct}%→${signal.adjustedKrPct}% / US ${signal.baseUsPct}%→${signal.adjustedUsPct}%\n` +
+          `사유: ${signal.rotationReason}` +
+          (signal.safeHavenEtf ? `\n파킹: ${signal.safeHavenEtf}` : ''),
       );
     }
   } catch (e) {
@@ -232,7 +249,8 @@ export async function proposeAllocationRebalance(): Promise<void> {
 
   try {
     // 1. 최근 30일 국내/해외 성과 분석
-    const { rows: krRows } = await pool.query(`
+    const { rows: krRows } = await pool.query(
+      `
       SELECT
         COUNT(*) FILTER (WHERE side = 'SELL' AND filled_price > avg_buy_price) AS win_count,
         COUNT(*) FILTER (WHERE side = 'SELL' AND filled_price <= avg_buy_price) AS loss_count,
@@ -249,9 +267,12 @@ export async function proposeAllocationRebalance(): Promise<void> {
       WHERE trading_mode = $1 AND created_at >= NOW() - INTERVAL '30 days'
         AND stock_code ~ '^[0-9]{6}$'
         AND status IN ('FILLED', 'PARTIAL')
-    `, [isPaper ? 'paper' : 'live']);
+    `,
+      [isPaper ? 'paper' : 'live'],
+    );
 
-    const { rows: usRows } = await pool.query(`
+    const { rows: usRows } = await pool.query(
+      `
       SELECT
         COUNT(*) FILTER (WHERE side = 'SELL' AND filled_price > avg_buy_price) AS win_count,
         COUNT(*) FILTER (WHERE side = 'SELL' AND filled_price <= avg_buy_price) AS loss_count,
@@ -268,12 +289,14 @@ export async function proposeAllocationRebalance(): Promise<void> {
       WHERE trading_mode = $1 AND created_at >= NOW() - INTERVAL '30 days'
         AND stock_code !~ '^[0-9]{6}$'
         AND status IN ('FILLED', 'PARTIAL')
-    `, [isPaper ? 'paper' : 'live']);
+    `,
+      [isPaper ? 'paper' : 'live'],
+    );
 
     const parsePerf = (rows: any[], market: 'KR' | 'US'): MarketPerformance => {
       const r = rows[0] ?? {};
       const winCount = Number(r.win_count ?? 0);
-      const lossCount = Number(r.loss_count ?? 0);
+      const _lossCount = Number(r.loss_count ?? 0);
       const totalSells = Number(r.total_sells ?? 0);
       const totalProfit = Number(r.total_profit ?? 0);
       const totalLoss = Number(r.total_loss ?? 0);
@@ -293,7 +316,9 @@ export async function proposeAllocationRebalance(): Promise<void> {
 
     // 2. 최소 거래 수 체크 (양쪽 합산 5건 미만이면 제안 보류)
     if (krPerf.tradeCount + usPerf.tradeCount < 5) {
-      logger.info(`📊 비중 제안 보류: 거래 수 부족 (KR=${krPerf.tradeCount} US=${usPerf.tradeCount})`, { component: COMP });
+      logger.info(`📊 비중 제안 보류: 거래 수 부족 (KR=${krPerf.tradeCount} US=${usPerf.tradeCount})`, {
+        component: COMP,
+      });
       return;
     }
 
@@ -322,7 +347,9 @@ export async function proposeAllocationRebalance(): Promise<void> {
     const MAX_STEP = 5;
     const diff = targetKrPct - currentKrPct;
     if (Math.abs(diff) < 2) {
-      logger.info(`📊 비중 제안 보류: 현재(KR${currentKrPct}/US${currentUsPct})와 목표(KR${targetKrPct}) 차이 미미`, { component: COMP });
+      logger.info(`📊 비중 제안 보류: 현재(KR${currentKrPct}/US${currentUsPct})와 목표(KR${targetKrPct}) 차이 미미`, {
+        component: COMP,
+      });
       return;
     }
     const step = Math.sign(diff) * Math.min(MAX_STEP, Math.abs(diff));
@@ -330,7 +357,10 @@ export async function proposeAllocationRebalance(): Promise<void> {
     const proposedUsPct = 100 - proposedKrPct;
 
     const context = {
-      krPerf, usPerf, krScore: Math.round(krScore * 10) / 10, usScore: Math.round(usScore * 10) / 10,
+      krPerf,
+      usPerf,
+      krScore: Math.round(krScore * 10) / 10,
+      usScore: Math.round(usScore * 10) / 10,
       current: { kr_pct: currentKrPct, us_pct: currentUsPct },
       proposed: { kr_pct: proposedKrPct, us_pct: proposedUsPct },
       target: { kr_pct: targetKrPct, us_pct: 100 - targetKrPct },
@@ -341,7 +371,7 @@ export async function proposeAllocationRebalance(): Promise<void> {
 
     // 7. 소폭 변경(≤5%p) + 강한 시그널 → 자동 적용 (승인 불필요)
     const isSmallStep = Math.abs(step) <= MAX_STEP;
-    const strongSignal = totalScore > 0 && Math.max(krScore, usScore) / totalScore >= 0.60; // 60%+ 우위
+    const strongSignal = totalScore > 0 && Math.max(krScore, usScore) / totalScore >= 0.6; // 60%+ 우위
     const autoApply = isSmallStep && strongSignal;
 
     if (autoApply) {
@@ -351,23 +381,24 @@ export async function proposeAllocationRebalance(): Promise<void> {
         [isPaper],
       );
       if (existing.length > 0) {
-        await pool.query(
-          'UPDATE portfolio_allocation_config SET kr_pct=$1, us_pct=$2, updated_at=NOW() WHERE id=$3',
-          [proposedKrPct, proposedUsPct, existing[0].id],
-        );
+        await pool.query('UPDATE portfolio_allocation_config SET kr_pct=$1, us_pct=$2, updated_at=NOW() WHERE id=$3', [
+          proposedKrPct,
+          proposedUsPct,
+          existing[0].id,
+        ]);
       }
 
       logger.info(
         `📊 비중 자동조정: KR ${currentKrPct}→${proposedKrPct}% / US ${currentUsPct}→${proposedUsPct}% ` +
-        `(목표 KR${targetKrPct}% | KR승률${krWrStr} PF=${krPerf.profitFactor.toFixed(2)} / US승률${usWrStr} PF=${usPerf.profitFactor.toFixed(2)})`,
+          `(목표 KR${targetKrPct}% | KR승률${krWrStr} PF=${krPerf.profitFactor.toFixed(2)} / US승률${usWrStr} PF=${usPerf.profitFactor.toFixed(2)})`,
         { component: COMP },
       );
 
       await sendTelegramMessage(
         `📊 *비중 자동조정 완료* (${Math.abs(step)}%p 이동)\n\n` +
-        `KR ${currentKrPct}%→*${proposedKrPct}%* / US ${currentUsPct}%→*${proposedUsPct}%*\n` +
-        `목표: KR ${targetKrPct}% / US ${100 - targetKrPct}%\n` +
-        `국내 PF=${krPerf.profitFactor.toFixed(2)} / 해외 PF=${usPerf.profitFactor.toFixed(2)}`,
+          `KR ${currentKrPct}%→*${proposedKrPct}%* / US ${currentUsPct}%→*${proposedUsPct}%*\n` +
+          `목표: KR ${targetKrPct}% / US ${100 - targetKrPct}%\n` +
+          `국내 PF=${krPerf.profitFactor.toFixed(2)} / 해외 PF=${usPerf.profitFactor.toFixed(2)}`,
       ).catch(() => {});
     } else {
       // 큰 변경 또는 약한 시그널 → 제안 저장 + 승인 대기
@@ -402,7 +433,7 @@ export async function proposeAllocationRebalance(): Promise<void> {
 
       logger.info(
         `📊 비중 조정 제안: KR ${currentKrPct}→${proposedKrPct}% / US ${currentUsPct}→${proposedUsPct}% ` +
-        `(목표 KR${targetKrPct}% | KR승률${krWrStr} PF=${krPerf.profitFactor.toFixed(2)} / US승률${usWrStr} PF=${usPerf.profitFactor.toFixed(2)})`,
+          `(목표 KR${targetKrPct}% | KR승률${krWrStr} PF=${krPerf.profitFactor.toFixed(2)} / US승률${usWrStr} PF=${usPerf.profitFactor.toFixed(2)})`,
         { component: COMP },
       );
     }
@@ -433,17 +464,18 @@ export async function approveAllocationProposal(decisionId: number): Promise<{ o
       [rows[0].is_paper],
     );
     if (existing.length > 0) {
-      await pool.query(
-        'UPDATE portfolio_allocation_config SET kr_pct=$1, us_pct=$2, updated_at=NOW() WHERE id=$3',
-        [proposed.kr_pct, proposed.us_pct, existing[0].id],
-      );
+      await pool.query('UPDATE portfolio_allocation_config SET kr_pct=$1, us_pct=$2, updated_at=NOW() WHERE id=$3', [
+        proposed.kr_pct,
+        proposed.us_pct,
+        existing[0].id,
+      ]);
     }
 
     // 제안 상태 업데이트
-    await pool.query(
-      `UPDATE pending_decisions SET status='DECIDED', decision=$1, decided_at=NOW() WHERE id=$2`,
-      [JSON.stringify({ action: 'APPROVED', appliedAt: new Date().toISOString() }), decisionId],
-    );
+    await pool.query(`UPDATE pending_decisions SET status='DECIDED', decision=$1, decided_at=NOW() WHERE id=$2`, [
+      JSON.stringify({ action: 'APPROVED', appliedAt: new Date().toISOString() }),
+      decisionId,
+    ]);
 
     await sendTelegramMessage(
       `✅ *비중 조정 승인 완료*\nKR ${proposed.kr_pct}% / US ${proposed.us_pct}%\n즉시 적용됨`,

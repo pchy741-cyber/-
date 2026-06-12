@@ -4,12 +4,14 @@
  * - 완전 격리: 별도 예산, 명시적 승인 필요
  */
 import { config } from '../config/index.js';
-import { kisRequest, overseasRateLimiter } from './client.js';
 import { logger } from '../utils/logger.js';
+import { kisRequest, overseasRateLimiter } from './client.js';
 
 const COMP = 'FUTURES';
 
-async function futuresKisRequest<T = unknown>(opts: Parameters<typeof kisRequest<T>>[0]): ReturnType<typeof kisRequest<T>> {
+async function futuresKisRequest<T = unknown>(
+  opts: Parameters<typeof kisRequest<T>>[0],
+): ReturnType<typeof kisRequest<T>> {
   await overseasRateLimiter.acquire();
   return kisRequest<T>({ ...opts, skipRateLimiter: true });
 }
@@ -20,33 +22,61 @@ const MONTH_CODES = ['F', 'G', 'H', 'J', 'K', 'M', 'N', 'Q', 'U', 'V', 'X', 'Z']
 /** 현재 활성 계약 심볼 생성 (예: MESU25) */
 export function getActiveSymbol(product: string): string {
   const now = new Date();
-  let m = now.getUTCMonth();
+  const m = now.getUTCMonth();
   let y = now.getUTCFullYear() % 100;
   // CME 분기 만기: 3,6,9,12 (H,M,U,Z)
   const quarterMonths = [2, 5, 8, 11]; // 0-indexed
   // 다음 분기월 찾기
-  let nextQ = quarterMonths.find(q => q >= m);
-  if (nextQ === undefined) { nextQ = 2; y += 1; } // 다음해 3월
+  let nextQ = quarterMonths.find((q) => q >= m);
+  if (nextQ === undefined) {
+    nextQ = 2;
+    y += 1;
+  } // 다음해 3월
   // 만기일 전 2주면 다음 분기로 롤
   if (nextQ === m && now.getUTCDate() > 14) {
     const idx = quarterMonths.indexOf(nextQ);
-    if (idx < 3) { nextQ = quarterMonths[idx + 1]; }
-    else { nextQ = 2; y += 1; }
+    if (idx < 3) {
+      nextQ = quarterMonths[idx + 1];
+    } else {
+      nextQ = 2;
+      y += 1;
+    }
   }
   return `${product}${MONTH_CODES[nextQ]}${y}`;
 }
 
 // ── 대표 마이크로 선물 상품 ──
 export const MICRO_FUTURES = [
-  { product: 'MES', name: 'Micro E-mini S&P 500', exchange: 'CME', tickSize: 0.25, tickValue: 1.25, marginApprox: 1500 },
-  { product: 'MNQ', name: 'Micro E-mini Nasdaq 100', exchange: 'CME', tickSize: 0.25, tickValue: 0.50, marginApprox: 2000 },
-  { product: 'M2K', name: 'Micro E-mini Russell 2000', exchange: 'CME', tickSize: 0.10, tickValue: 0.50, marginApprox: 800 },
-  { product: 'MGC', name: 'E-Micro Gold', exchange: 'CME', tickSize: 0.10, tickValue: 1.00, marginApprox: 1000 },
-  { product: 'MCL', name: 'Micro WTI Crude Oil', exchange: 'CME', tickSize: 0.01, tickValue: 1.00, marginApprox: 700 },
+  {
+    product: 'MES',
+    name: 'Micro E-mini S&P 500',
+    exchange: 'CME',
+    tickSize: 0.25,
+    tickValue: 1.25,
+    marginApprox: 1500,
+  },
+  {
+    product: 'MNQ',
+    name: 'Micro E-mini Nasdaq 100',
+    exchange: 'CME',
+    tickSize: 0.25,
+    tickValue: 0.5,
+    marginApprox: 2000,
+  },
+  {
+    product: 'M2K',
+    name: 'Micro E-mini Russell 2000',
+    exchange: 'CME',
+    tickSize: 0.1,
+    tickValue: 0.5,
+    marginApprox: 800,
+  },
+  { product: 'MGC', name: 'E-Micro Gold', exchange: 'CME', tickSize: 0.1, tickValue: 1.0, marginApprox: 1000 },
+  { product: 'MCL', name: 'Micro WTI Crude Oil', exchange: 'CME', tickSize: 0.01, tickValue: 1.0, marginApprox: 700 },
 ];
 
 /** O(1) product lookup Map */
-export const FUTURES_BY_PRODUCT = new Map(MICRO_FUTURES.map(m => [m.product, m]));
+export const FUTURES_BY_PRODUCT = new Map(MICRO_FUTURES.map((m) => [m.product, m]));
 
 export interface FuturesPrice {
   symbol: string;
@@ -116,16 +146,18 @@ export async function getFuturesPositions(): Promise<FuturesPosition[]> {
     });
     const items = data.output1 || data.output || [];
     if (!Array.isArray(items)) return [];
-    return items.filter((r: any) => parseInt(r.cblc_qty || '0', 10) > 0).map((r: any) => ({
-      symbol: r.pdno || r.ovrs_futr_fx_pdno || '',
-      product: (r.pdno || '').replace(/[A-Z]\d{2}$/, ''),
-      side: (r.sll_buy_dvsn_cd === '02' ? 'LONG' : 'SHORT') as 'LONG' | 'SHORT',
-      quantity: parseInt(r.cblc_qty || '0', 10),
-      avgPrice: parseFloat(r.pchs_avg_pric || '0'),
-      currentPrice: parseFloat(r.now_pric || '0'),
-      pnl: parseFloat(r.frcr_evlu_pfls_amt || '0'),
-      marginUsed: parseFloat(r.use_mgn_amt || '0'),
-    }));
+    return items
+      .filter((r: any) => parseInt(r.cblc_qty || '0', 10) > 0)
+      .map((r: any) => ({
+        symbol: r.pdno || r.ovrs_futr_fx_pdno || '',
+        product: (r.pdno || '').replace(/[A-Z]\d{2}$/, ''),
+        side: (r.sll_buy_dvsn_cd === '02' ? 'LONG' : 'SHORT') as 'LONG' | 'SHORT',
+        quantity: parseInt(r.cblc_qty || '0', 10),
+        avgPrice: parseFloat(r.pchs_avg_pric || '0'),
+        currentPrice: parseFloat(r.now_pric || '0'),
+        pnl: parseFloat(r.frcr_evlu_pfls_amt || '0'),
+        marginUsed: parseFloat(r.use_mgn_amt || '0'),
+      }));
   } catch (e: any) {
     logger.warn(`선물 포지션 조회 실패: ${e.message}`, { component: COMP });
     return [];
@@ -133,7 +165,11 @@ export async function getFuturesPositions(): Promise<FuturesPosition[]> {
 }
 
 /** 해외선물 예수금 조회 */
-export async function getFuturesDeposit(): Promise<{ totalDeposit: number; availableMargin: number; usedMargin: number }> {
+export async function getFuturesDeposit(): Promise<{
+  totalDeposit: number;
+  availableMargin: number;
+  usedMargin: number;
+}> {
   try {
     const data = await futuresKisRequest<any>({
       path: '/uapi/overseas-futureoption/v1/trading/inquire-deposit',
@@ -191,7 +227,9 @@ export async function placeFuturesOrder(params: {
     });
     if (data.rtCd === '0') {
       const orderNo = (data.output as any)?.odno || '';
-      logger.info(`선물 주문 성공: ${params.symbol} ${params.side} ${params.quantity}계약 (${orderNo})`, { component: COMP });
+      logger.info(`선물 주문 성공: ${params.symbol} ${params.side} ${params.quantity}계약 (${orderNo})`, {
+        component: COMP,
+      });
       return { success: true, orderNo };
     }
     return { success: false, message: data.msg1 || '주문 실패' };
@@ -202,7 +240,10 @@ export async function placeFuturesOrder(params: {
 }
 
 /** 해외선물 주문 취소 */
-export async function cancelFuturesOrder(orderNo: string, orderDate: string): Promise<{ success: boolean; message?: string }> {
+export async function cancelFuturesOrder(
+  orderNo: string,
+  orderDate: string,
+): Promise<{ success: boolean; message?: string }> {
   try {
     const data = await futuresKisRequest<any>({
       path: '/uapi/overseas-futureoption/v1/trading/order-rvsecncl',
@@ -216,16 +257,17 @@ export async function cancelFuturesOrder(orderNo: string, orderDate: string): Pr
         FM_MKPR_CVSN_YN: 'N',
       },
     });
-    return data.rtCd === '0'
-      ? { success: true }
-      : { success: false, message: data.msg1 };
+    return data.rtCd === '0' ? { success: true } : { success: false, message: data.msg1 };
   } catch (e: any) {
     return { success: false, message: e.message };
   }
 }
 
 /** 선물 일봉 차트 데이터 */
-export async function getFuturesDailyChart(symbol: string, days = 30): Promise<Array<{ date: string; open: number; high: number; low: number; close: number; volume: number }>> {
+export async function getFuturesDailyChart(
+  symbol: string,
+  days = 30,
+): Promise<Array<{ date: string; open: number; high: number; low: number; close: number; volume: number }>> {
   try {
     const data = await futuresKisRequest<any>({
       path: '/uapi/overseas-futureoption/v1/quotations/daily-ccnl',

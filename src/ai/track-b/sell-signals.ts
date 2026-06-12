@@ -2,8 +2,13 @@ import { analyzeTechnicals } from '../../analysis/indicators.js';
 import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
 import type { TradeDecision } from '../../db/models.js';
 import { logger } from '../../utils/logger.js';
-import { type TechnicalFallbackParams, resolveStrategyParams, getKstScalpTime, buildAiScoreMap } from './technical-fallback-types.js';
 import { getOverride } from '../ai-overrides.js';
+import {
+  buildAiScoreMap,
+  getKstScalpTime,
+  resolveStrategyParams,
+  type TechnicalFallbackParams,
+} from './technical-fallback-types.js';
 
 // TP 도달 전 수익권 포지션 최고 수익률 추적 (서버 재시작 시 리셋 — 허용)
 const _preTpPeakMap = new Map<string, number>(); // stock_code → peak pnlPct
@@ -22,7 +27,9 @@ async function _getLearnedTpSl(): Promise<{ tp?: number; sl?: number } | null> {
     const r = rows[0];
     _learnedCache = { tp: r?.take_profit_pct, sl: r?.stop_loss_pct, expiresAt: Date.now() + 180_000 };
     return _learnedCache;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -44,9 +51,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     _portfolioCost += Number(c.avg_buy_price) * c.total_quantity;
     _portfolioValue += p.currentPrice * c.total_quantity;
   }
-  const portfolioPnlPct = _portfolioCost > 0
-    ? ((_portfolioValue - _portfolioCost) / _portfolioCost) * 100
-    : 0;
+  const portfolioPnlPct = _portfolioCost > 0 ? ((_portfolioValue - _portfolioCost) / _portfolioCost) * 100 : 0;
 
   // 하락장 레짐: 분할매도 금지 → 전량 즉시 청산 (단계별 추가 손실 방지)
   const isDowntrendMode = (params.macroSizingMult ?? 1.0) < 0.8;
@@ -67,12 +72,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // ── 포트폴리오 수익 보호: 하락장 감지 시 수익권 종목 선제 청산 ──
     // 포트폴리오 전체 수익 +2% 이상 + RISK_OFF/하락장(macroSizingMult<0.8) + 이 종목 수익권
     // → 개별 TP 미도달이라도 즉시 청산 (수익 반납 방지)
-    if (
-      portfolioPnlPct >= 2.0 &&
-      (params.macroSizingMult ?? 1.0) < 0.8 &&
-      pnlPct >= 0.5 &&
-      chain.total_quantity > 0
-    ) {
+    if (portfolioPnlPct >= 2.0 && (params.macroSizingMult ?? 1.0) < 0.8 && pnlPct >= 0.5 && chain.total_quantity > 0) {
       decisions.push({
         action: 'SELL',
         stock_code: chain.stock_code,
@@ -125,8 +125,11 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
 
     // AI Loop forceHold: Claude Code가 매도 보류 지시 (실적 발표 대기 등)
     const aiForceHold = getOverride<boolean>(`${chain.stock_code}_forceHold`);
-    if (aiForceHold && pnlPct > -5) {  // 손절 한도(-5%) 이상이면 AI 홀드 존중
-      logger.info(`🤖 AI Loop forceHold: ${chain.stock_code} 매도 보류 (pnl=${pnlPct.toFixed(1)}%)`, { component: 'AI_LOOP' });
+    if (aiForceHold && pnlPct > -5) {
+      // 손절 한도(-5%) 이상이면 AI 홀드 존중
+      logger.info(`🤖 AI Loop forceHold: ${chain.stock_code} 매도 보류 (pnl=${pnlPct.toFixed(1)}%)`, {
+        component: 'AI_LOOP',
+      });
       processedSellCodes.add(chain.stock_code);
       continue;
     }
@@ -212,7 +215,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
           quantity: chain.total_quantity,
           price_type: 'MARKET',
           reasoning: `외국인+기관 동반이탈(하락장): 전량 즉시 청산 → 추가 손실 방지`,
-          confidence: 0.90,
+          confidence: 0.9,
         });
         processedSellCodes.add(chain.stock_code);
         continue;
@@ -278,8 +281,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
 
     if (!isScalpChain) {
       const holdingChart = chartData.get(chain.stock_code);
-      const holdTech = holdingChart && holdingChart.length >= 20
-        ? analyzeTechnicals(holdingChart) : null;
+      const holdTech = holdingChart && holdingChart.length >= 20 ? analyzeTechnicals(holdingChart) : null;
 
       const { getDynamicDomesticTpSl } = await import('../../config/constants.js');
       // 자기학습 TP/SL 로드 (캐시 3분 — 매 사이클 DB 조회 방지)
@@ -287,11 +289,11 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       // 종목별 수급 데이터 (외국인/기관 순매수 여부)
       const sig = marketSignals?.get(chain.stock_code);
       const dyn = getDynamicDomesticTpSl({
-        score: realtimeAiScore > 0 ? realtimeAiScore : (Number(chain.target_profit_pct) >= 8 ? 88 : 80),
+        score: realtimeAiScore > 0 ? realtimeAiScore : Number(chain.target_profit_pct) >= 8 ? 88 : 80,
         rsi: holdTech?.rsi14,
         adx: holdTech?.adx14,
         atrPct: holdTech?.atrPct,
-        isMomentum: holdTech ? (holdTech.sma5 > holdTech.sma20 && holdTech.adx14 > 22) : false,
+        isMomentum: holdTech ? holdTech.sma5 > holdTech.sma20 && holdTech.adx14 > 22 : false,
         foreignNetBuy: sig ? (sig as any).foreignNetBuy === true : undefined,
         institutionNetBuy: sig ? (sig as any).institutionNetBuy === true : undefined,
         learnedTp: learned?.tp,
@@ -300,10 +302,11 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
 
       // chain TP = CEO 설정 상한선 (dynTp가 더 높아도 chain TP 초과 금지)
       // SL = 더 타이트한 쪽 (손실 최소화)
-      const chainTp = chain.target_profit_pct ?? STRATEGY_PARAMS[chain.strategy_mode as StrategyMode]?.takeProfitPct ?? 7;
+      const chainTp =
+        chain.target_profit_pct ?? STRATEGY_PARAMS[chain.strategy_mode as StrategyMode]?.takeProfitPct ?? 7;
       const chainSl = chain.stop_loss_pct ?? STRATEGY_PARAMS[chain.strategy_mode as StrategyMode]?.stopLossPct ?? -3;
       effectiveTp = Math.min(Number(chainTp), dyn.takeProfitPct); // chain TP 상한 — 설정값 초과 방지
-      effectiveSl = Math.min(Number(chainSl), dyn.stopLossPct);   // 더 타이트한 SL
+      effectiveSl = Math.min(Number(chainSl), dyn.stopLossPct); // 더 타이트한 SL
 
       // AI 약세 전환 + 수익 구간 → 빠른 수익 확정
       if (realtimeAiScore > 0 && realtimeAiScore < 55 && pnlPct > 1.0) {
@@ -419,7 +422,9 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       }
 
       // 3단계: 트레일링 스톱 또는 최종 목표(+8%) → 잔여 전량 청산
-      const peakPrice = (chain as any).peak_price ? Number((chain as any).peak_price) : Number(chain.avg_buy_price) * (1 + strategyParams.takeProfitPct / 100);
+      const peakPrice = (chain as any).peak_price
+        ? Number((chain as any).peak_price)
+        : Number(chain.avg_buy_price) * (1 + strategyParams.takeProfitPct / 100);
       const trailDropPct = ((price.currentPrice - peakPrice) / peakPrice) * 100;
       const trailAtrPct = sellTech?.atrPct ?? 1.5;
       const baseTrailPct = Math.max(-5.0, Math.min(-1.5, -(trailAtrPct * 2.0)));
@@ -480,7 +485,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
           quantity: chain.total_quantity,
           price_type: 'MARKET',
           reasoning: `데드머니탈출(${holdingDays}일 보유 +${pnlPct.toFixed(1)}%<1.5%): 모멘텀 부족 → 현금 재배치`,
-          confidence: 0.80,
+          confidence: 0.8,
         });
         processedSellCodes.add(chain.stock_code);
         continue;
@@ -504,7 +509,8 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       if (holdingDays >= 3 && pnlPct < -1.0) {
         const tightenedSl = pnlPct - 0.5;
         // 체인 SL이 타이트닝보다 넓으면 → 좁힌 SL로 교체 (즉시 청산은 아니고, 기존 SL 대신 적용)
-        const chainSlRef = chain.stop_loss_pct ?? STRATEGY_PARAMS[chain.strategy_mode as StrategyMode]?.stopLossPct ?? -3;
+        const chainSlRef =
+          chain.stop_loss_pct ?? STRATEGY_PARAMS[chain.strategy_mode as StrategyMode]?.stopLossPct ?? -3;
         if (Number(chainSlRef) < tightenedSl) {
           // 타이트닝된 SL이 현재 손실보다 이미 넓으면 즉시 청산
           logger.info(
@@ -524,9 +530,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     const stopWidenMultiplier = realtimeAiScore >= 80 ? 1.2 : 1.0;
     // 시그널 보정: 체결강도 < 80(매도세 압도) → 손절 타이트닝 (0.85x), 체결강도 > 120(매수세) → 1.1x 완화
     const sigIntensity = marketSignals?.get(chain.stock_code)?.tradingIntensity?.intensity ?? 0;
-    const signalStopMult = sigIntensity > 0
-      ? (sigIntensity < 80 ? 0.85 : sigIntensity >= 120 ? 1.10 : 1.0)
-      : 1.0;
+    const signalStopMult = sigIntensity > 0 ? (sigIntensity < 80 ? 0.85 : sigIntensity >= 120 ? 1.1 : 1.0) : 1.0;
     const effectiveStop = Math.min(effectiveSl, dynamicStop) * stopWidenMultiplier * signalStopMult;
     if (pnlPct <= effectiveStop) {
       // v4: 패닉매도 억제 & 대형포지션 부분손절 폐지

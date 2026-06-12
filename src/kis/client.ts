@@ -1,5 +1,5 @@
-import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
+import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { clearTokenCache, getAccessToken, getAccessTokenForMode } from './auth.js';
 
@@ -93,20 +93,32 @@ class RateLimiter {
 // _paperServerLimiter: 모의투자 도메인 호출 시 적용
 // 외부 limiter(kisRateLimiter 등)는 카테고리별 burst 방지용 (내부와 이중 적용)
 const _globalLiveLimiter = new RateLimiter(10); // 20/sec 한도, 버스트 방지 10/sec
-const _paperServerLimiter = new RateLimiter(1);  // 모의투자 서버 1/sec
+const _paperServerLimiter = new RateLimiter(1); // 모의투자 서버 1/sec
 
 // 외부 limiter — burst 방지용 (kisRequest 내부 global limiter와 이중 적용)
 export const kisRateLimiter = {
-  acquire: async () => { /* 내부 global limiter가 조율하므로 noop */ },
-  get pendingCount() { return _globalLiveLimiter.pendingCount; },
+  acquire: async () => {
+    /* 내부 global limiter가 조율하므로 noop */
+  },
+  get pendingCount() {
+    return _globalLiveLimiter.pendingCount;
+  },
 };
 export const overseasRateLimiter = {
-  acquire: async () => { /* 내부 global limiter가 조율하므로 noop */ },
-  get pendingCount() { return _globalLiveLimiter.pendingCount; },
+  acquire: async () => {
+    /* 내부 global limiter가 조율하므로 noop */
+  },
+  get pendingCount() {
+    return _globalLiveLimiter.pendingCount;
+  },
 };
 export const marketDataRateLimiter = {
-  acquire: async () => { /* 내부 global limiter가 조율하므로 noop */ },
-  get pendingCount() { return _globalLiveLimiter.pendingCount; },
+  acquire: async () => {
+    /* 내부 global limiter가 조율하므로 noop */
+  },
+  get pendingCount() {
+    return _globalLiveLimiter.pendingCount;
+  },
 };
 
 /**
@@ -120,26 +132,27 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
 
   // useRealUrl=true → 시세 조회는 항상 실서버 도메인+credential 필요
   // forceMode 미지정 시 useRealUrl이면 live credential 강제 적용
-  const effectiveForceMode = forceMode ?? (useRealUrl ? 'live' as const : undefined);
+  const effectiveForceMode = forceMode ?? (useRealUrl ? ('live' as const) : undefined);
 
   // forceMode: 서버 모드와 무관하게 특정 모드의 URL/credential 사용
-  const resolvedLive = effectiveForceMode ? effectiveForceMode === 'live' : !getCtxIsPaper();
-  const resolvedBaseUrl = (useRealUrl || (effectiveForceMode === 'live'))
-    ? 'https://openapi.koreainvestment.com:9443'
-    : effectiveForceMode === 'paper'
-      ? 'https://openapivts.koreainvestment.com:29443'
-      : config.kis.baseUrl;
+  const _resolvedLive = effectiveForceMode ? effectiveForceMode === 'live' : !getCtxIsPaper();
+  const resolvedBaseUrl =
+    useRealUrl || effectiveForceMode === 'live'
+      ? 'https://openapi.koreainvestment.com:9443'
+      : effectiveForceMode === 'paper'
+        ? 'https://openapivts.koreainvestment.com:29443'
+        : config.kis.baseUrl;
 
   // effectiveForceMode 시 해당 모드의 credential 사용 (live_key → paper_key 폴백)
   const resolvedAppKey = effectiveForceMode
-    ? (effectiveForceMode === 'live'
-        ? (process.env.KIS_APP_KEY_LIVE || process.env.KIS_APP_KEY || config.kis.appKey)
-        : (process.env.KIS_APP_KEY || config.kis.appKey))
+    ? effectiveForceMode === 'live'
+      ? process.env.KIS_APP_KEY_LIVE || process.env.KIS_APP_KEY || config.kis.appKey
+      : process.env.KIS_APP_KEY || config.kis.appKey
     : config.kis.appKey;
   const resolvedAppSecret = effectiveForceMode
-    ? (effectiveForceMode === 'live'
-        ? (process.env.KIS_APP_SECRET_LIVE || process.env.KIS_APP_SECRET || config.kis.appSecret)
-        : (process.env.KIS_APP_SECRET || config.kis.appSecret))
+    ? effectiveForceMode === 'live'
+      ? process.env.KIS_APP_SECRET_LIVE || process.env.KIS_APP_SECRET || config.kis.appSecret
+      : process.env.KIS_APP_SECRET || config.kis.appSecret
     : config.kis.appSecret;
 
   const baseUrl = resolvedBaseUrl;
@@ -193,7 +206,9 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
           throw new Error(`KIS 빈 응답 [${trId}] HTTP${res.status} — 데이터 없음`);
         }
         if (attempt < MAX_RETRIES) {
-          logger.warn(`KIS 빈 응답 [${trId}] HTTP${res.status}, 재시도 ${attempt}/${MAX_RETRIES}`, { component: 'KIS' });
+          logger.warn(`KIS 빈 응답 [${trId}] HTTP${res.status}, 재시도 ${attempt}/${MAX_RETRIES}`, {
+            component: 'KIS',
+          });
           await sleep(1000 * attempt);
           continue;
         }
@@ -218,7 +233,9 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
         if (msg.includes('만료된 token') || String(data.msg_cd ?? '') === 'EGW00123') {
           clearTokenCache();
           if (attempt < MAX_RETRIES) {
-            logger.warn(`KIS 토큰 만료 (EGW00123), 캐시 클리어 후 재시도 ${attempt}/${MAX_RETRIES}`, { component: 'KIS' });
+            logger.warn(`KIS 토큰 만료 (EGW00123), 캐시 클리어 후 재시도 ${attempt}/${MAX_RETRIES}`, {
+              component: 'KIS',
+            });
             await sleep(1000);
             continue;
           }
@@ -229,7 +246,9 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
         if (String(data.msg_cd ?? '') === 'EGW00201' || msg.includes('초당') || msg.includes('거래건수')) {
           const MAX_RATE_RETRIES = 2;
           if (attempt <= MAX_RATE_RETRIES) {
-            logger.warn(`KIS rate limit 초과, ${attempt * 2}초 대기 후 재시도 ${attempt}/${MAX_RATE_RETRIES}`, { component: 'KIS' });
+            logger.warn(`KIS rate limit 초과, ${attempt * 2}초 대기 후 재시도 ${attempt}/${MAX_RATE_RETRIES}`, {
+              component: 'KIS',
+            });
             await sleep(2000 * attempt); // 2초, 4초 대기
             continue;
           }

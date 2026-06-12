@@ -22,16 +22,16 @@ export interface EntryFingerprint {
   rsiZone: 'oversold' | 'low' | 'neutral' | 'high' | 'overbought';
   volZone: 'surge' | 'high' | 'normal' | 'low';
   trendState: 'bull' | 'partial_bull' | 'neutral' | 'partial_bear' | 'bear';
-  regime: string;           // TREND_BULL, RANGE_LOW_VOL, etc.
+  regime: string; // TREND_BULL, RANGE_LOW_VOL, etc.
   adx: 'strong' | 'moderate' | 'weak';
   macd: 'bullish' | 'bearish' | 'neutral';
 }
 
 export interface PatternFeedback {
-  winRate: number;        // 0~1
-  sampleCount: number;    // 과거 건수
-  avgPnlPct: number;      // 평균 수익률
-  scoreAdj: number;       // 점수 보정 (-15 ~ +10)
+  winRate: number; // 0~1
+  sampleCount: number; // 과거 건수
+  avgPnlPct: number; // 평균 수익률
+  scoreAdj: number; // 점수 보정 (-15 ~ +10)
   reason: string;
 }
 
@@ -40,10 +40,10 @@ export interface PatternFeedback {
 export function computeFingerprint(params: {
   rsi: number;
   volumeRatio: number;
-  smaAlignment: string;    // 'full_bull' | 'partial_bull' | 'neutral' | etc.
+  smaAlignment: string; // 'full_bull' | 'partial_bull' | 'neutral' | etc.
   regime?: string;
-  adxStrength?: string;    // 'STRONG' | 'MODERATE' | 'WEAK'
-  macdState?: string;      // 'BULLISH' | 'BEARISH' | etc.
+  adxStrength?: string; // 'STRONG' | 'MODERATE' | 'WEAK'
+  macdState?: string; // 'BULLISH' | 'BEARISH' | etc.
 }): EntryFingerprint {
   const { rsi, volumeRatio, smaAlignment, regime, adxStrength, macdState } = params;
 
@@ -110,29 +110,41 @@ export function fingerprintKey(fp: EntryFingerprint): string {
  *  2차: volZone + macd 추가 매칭 시 신뢰도 상승
  */
 export async function getPatternFeedback(fp: EntryFingerprint): Promise<PatternFeedback> {
-  const defaultResult: PatternFeedback = { winRate: 0.5, sampleCount: 0, avgPnlPct: 0, scoreAdj: 0, reason: '패턴 데이터 부족' };
+  const defaultResult: PatternFeedback = {
+    winRate: 0.5,
+    sampleCount: 0,
+    avgPnlPct: 0,
+    scoreAdj: 0,
+    reason: '패턴 데이터 부족',
+  };
 
   try {
     const isPaper = getCtxIsPaper();
     const fpKey = fingerprintKey(fp);
 
     // 1차: 정확히 일치하는 핑거프린트 조회
-    const { rows: exact } = await getPool().query(`
+    const { rows: exact } = await getPool().query(
+      `
       SELECT outcome, realized_pnl_pct
       FROM score_accuracy
       WHERE entry_fingerprint = $1
         AND is_paper = $2
         AND recorded_at >= NOW() - INTERVAL '120 days'
-    `, [fpKey, isPaper]);
+    `,
+      [fpKey, isPaper],
+    );
 
     // 2차: RSI구간 + 추세 일치 (더 넓은 매칭)
-    const { rows: similar } = await getPool().query(`
+    const { rows: similar } = await getPool().query(
+      `
       SELECT outcome, realized_pnl_pct
       FROM score_accuracy
       WHERE entry_fingerprint LIKE $1
         AND is_paper = $2
         AND recorded_at >= NOW() - INTERVAL '120 days'
-    `, [`${fp.rsiZone}|%|${fp.trendState}|%`, isPaper]);
+    `,
+      [`${fp.rsiZone}|%|${fp.trendState}|%`, isPaper],
+    );
 
     // 정확 일치 5건 이상 → 정확 일치 사용, 아니면 유사 매칭
     const data = exact.length >= 5 ? exact : similar;

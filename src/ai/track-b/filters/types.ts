@@ -7,11 +7,11 @@
  */
 
 import type { TechnicalSummary } from '../../../analysis/indicators.js';
+import type { StockWinRate } from '../../../analysis/win-rate.js';
+import type { StrategyMode } from '../../../config/constants.js';
 import type { CurrentPrice, DailyCandle } from '../../../kis/market.js';
 import type { StockSignals } from '../../../kis/market-signals.js';
-import type { StockWinRate } from '../../../analysis/win-rate.js';
 import type { RouteResult } from '../strategy-router.js';
-import type { StrategyMode } from '../../../config/constants.js';
 
 // ── 기본 종목 정보 ──
 export interface StockItem {
@@ -138,4 +138,4 @@ export interface EntryInput {
 export type EntryVerdict =
   | { action: 'BUY'; reason: string; isScalpOverride?: boolean }
   | { action: 'SKIP'; reason: string }
-  | { action: 'CONTINUE' };  // 다음 단계로 진행 (fallthrough)
+  | { action: 'CONTINUE' }; // 다음 단계로 진행 (fallthrough)

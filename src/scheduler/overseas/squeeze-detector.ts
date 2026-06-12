@@ -9,10 +9,10 @@ import type { TechResult } from './sell-logic.js';
 
 export interface SqueezeSignal {
   code: string;
-  squeezeLength: number;    // 스퀴즈 지속 일수 (감지 시점 기준 1)
+  squeezeLength: number; // 스퀴즈 지속 일수 (감지 시점 기준 1)
   breakoutDirection: 'UP' | 'DOWN' | 'NONE';
-  volumeSurge: boolean;     // 거래량 급증 여부
-  strength: number;         // 0~1 신호 강도
+  volumeSurge: boolean; // 거래량 급증 여부
+  strength: number; // 0~1 신호 강도
 }
 
 // ── 메인 ──
@@ -43,7 +43,7 @@ export function detectSqueezeBreakouts(techResults: TechResult[]): SqueezeSignal
 
     signals.push({
       code: tr.code,
-      squeezeLength: 1,  // 실시간 감지 시점 기준
+      squeezeLength: 1, // 실시간 감지 시점 기준
       breakoutDirection: 'UP',
       volumeSurge,
       strength: Math.min(strength, 1),
@@ -51,7 +51,9 @@ export function detectSqueezeBreakouts(techResults: TechResult[]): SqueezeSignal
   }
 
   if (signals.length > 0) {
-    logger.info(`[Squeeze] ${signals.length}개 스퀴즈 돌파 감지: ${signals.map(s => `${s.code}(${s.strength.toFixed(2)})`).join(', ')}`);
+    logger.info(
+      `[Squeeze] ${signals.length}개 스퀴즈 돌파 감지: ${signals.map((s) => `${s.code}(${s.strength.toFixed(2)})`).join(', ')}`,
+    );
   }
 
   return signals;

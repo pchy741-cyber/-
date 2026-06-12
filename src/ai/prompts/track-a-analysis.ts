@@ -41,7 +41,14 @@ export const GEMINI_SCALPING_ADDON = `
 타겟 종목은 source_confidence를 "HIGH"로 설정하세요.`;
 
 // ── 레짐별 포커싱 질문 (Phase 5: Gemini 프롬프트 레짐 연동) ──
-export type RegimeHint = 'TREND_BULL' | 'TREND_BEAR' | 'RANGE_LOW_VOL' | 'RANGE_HIGH_VOL' | 'BREAKOUT' | 'DISTRIBUTION' | null;
+export type RegimeHint =
+  | 'TREND_BULL'
+  | 'TREND_BEAR'
+  | 'RANGE_LOW_VOL'
+  | 'RANGE_HIGH_VOL'
+  | 'BREAKOUT'
+  | 'DISTRIBUTION'
+  | null;
 
 const REGIME_FOCUS: Record<string, string> = {
   TREND_BULL: `

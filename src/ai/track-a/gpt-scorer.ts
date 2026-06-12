@@ -4,8 +4,8 @@
  * OPENAI_API_KEY 미설정 시 자동 스킵 (에러 아님)
  */
 import OpenAI from 'openai';
-import type { DailyCandle } from '../../kis/market.js';
 import type { ScoringResult } from '../../db/models.js';
+import type { DailyCandle } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { buildScoringPrompt, type RegimeHint } from '../prompts/track-a-scoring.js';
 
@@ -13,23 +13,31 @@ const COMP = 'TRACK_A_GPT';
 const MODEL = 'gpt-4o';
 const BATCH_SIZE = 30;
 
-interface WatchlistItem { stock_code: string; stock_name: string; }
+interface WatchlistItem {
+  stock_code: string;
+  stock_name: string;
+}
 
 /** 차트 데이터를 토큰 절약형 텍스트로 변환 */
 function buildChartSummary(batch: WatchlistItem[], chartData: Map<string, DailyCandle[]>): string {
-  return batch.map(w => {
-    const candles = chartData.get(w.stock_code) ?? [];
-    if (candles.length < 5) return `${w.stock_code}(${w.stock_name}): 데이터부족`;
-    const recent = candles.slice(0, 10); // 최근 10일 (candles[0] = 최신)
-    const latest = recent[0];
-    const prev5 = recent[Math.min(4, recent.length - 1)];
-    const change5d = prev5.close > 0 ? ((latest.close - prev5.close) / prev5.close * 100).toFixed(1) : '?';
-    const avgVol = recent.slice(1).reduce((a, c) => a + c.volume, 0) / Math.max(1, recent.length - 1);
-    const volRatio = avgVol > 0 ? (latest.volume / avgVol).toFixed(1) : '?';
-    const high = Math.max(...candles.slice(0, 30).map(c => c.high));
-    const dropPct = high > 0 ? ((latest.close - high) / high * 100).toFixed(1) : '?';
-    return `${w.stock_code}(${w.stock_name}): 현재가${latest.close.toLocaleString()} 5일${change5d}% 고점대비${dropPct}% 거래량${volRatio}x 5일종가:${recent.slice(0, 5).map(c => c.close).join(',')}`;
-  }).join('\n');
+  return batch
+    .map((w) => {
+      const candles = chartData.get(w.stock_code) ?? [];
+      if (candles.length < 5) return `${w.stock_code}(${w.stock_name}): 데이터부족`;
+      const recent = candles.slice(0, 10); // 최근 10일 (candles[0] = 최신)
+      const latest = recent[0];
+      const prev5 = recent[Math.min(4, recent.length - 1)];
+      const change5d = prev5.close > 0 ? (((latest.close - prev5.close) / prev5.close) * 100).toFixed(1) : '?';
+      const avgVol = recent.slice(1).reduce((a, c) => a + c.volume, 0) / Math.max(1, recent.length - 1);
+      const volRatio = avgVol > 0 ? (latest.volume / avgVol).toFixed(1) : '?';
+      const high = Math.max(...candles.slice(0, 30).map((c) => c.high));
+      const dropPct = high > 0 ? (((latest.close - high) / high) * 100).toFixed(1) : '?';
+      return `${w.stock_code}(${w.stock_name}): 현재가${latest.close.toLocaleString()} 5일${change5d}% 고점대비${dropPct}% 거래량${volRatio}x 5일종가:${recent
+        .slice(0, 5)
+        .map((c) => c.close)
+        .join(',')}`;
+    })
+    .join('\n');
 }
 
 export async function runGPTScoring(
@@ -79,7 +87,7 @@ ${chartSummary}
       const parsed = JSON.parse(jsonMatch[0]) as { scores: Array<Record<string, unknown>> };
       for (const item of parsed.scores) {
         const code = String(item.stock_code ?? '');
-        if (!batch.some(w => w.stock_code === code)) continue;
+        if (!batch.some((w) => w.stock_code === code)) continue;
         const signal = String(item.signal ?? 'HOLD');
         const validSignals = ['BUY', 'SELL', 'HOLD', 'STRONG_BUY', 'STRONG_SELL', 'NO_DATA'];
         if (signal === 'NO_DATA') continue;

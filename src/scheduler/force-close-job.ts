@@ -1,9 +1,9 @@
 import { getOpenChains } from '../db/client.js';
-import { getCurrentPrice } from '../kis/market.js';
 import type { TradeDecision } from '../db/models.js';
+import { getCurrentPrice } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
-import { tradeExecutor } from '../trading/executor.js';
 import { isKillSwitchActive } from '../risk/kill-switch.js';
+import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
 import { calcPnlPct } from '../utils/money.js';
 
@@ -65,7 +65,9 @@ export async function runForceCloseJob(): Promise<void> {
   }
 
   const lines = [
-    toClose.length > 0 ? `🔥 마감 손절 (${FORCE_CLOSE_LOSS_THRESHOLD}% 초과): ${toClose.map((d) => d.stock_code).join(', ')}` : null,
+    toClose.length > 0
+      ? `🔥 마감 손절 (${FORCE_CLOSE_LOSS_THRESHOLD}% 초과): ${toClose.map((d) => d.stock_code).join(', ')}`
+      : null,
     held.length > 0 ? `🌙 오버나잇 유지: ${held.join(', ')}` : null,
     toClose.length === 0 && held.length > 0 ? '→ 억지 청산 없음. 수수료 절약.' : null,
   ].filter(Boolean);
@@ -86,7 +88,7 @@ export async function runOpeningBellForceClose(): Promise<void> {
   }
 
   const chains = await getOpenChains();
-  const bellChains = chains.filter(c => {
+  const bellChains = chains.filter((c) => {
     if (c.strategy_mode !== 'SCALPING' || c.total_quantity <= 0 || !c.opened_at) return false;
     const openedAt = new Date(String(c.opened_at));
     // KST 09:00~09:13 = UTC 00:00~00:13
@@ -130,7 +132,7 @@ export async function runOpeningBellForceClose(): Promise<void> {
 
   if (toClose.length > 0) {
     await tradeExecutor.processDecisions(toClose, 'SCALPING', 'FORCE_CLOSE');
-    const codes = toClose.map(d => d.stock_code).join(', ');
+    const codes = toClose.map((d) => d.stock_code).join(', ');
     await sendTelegramMessage(`🔔 10:00 개장벨 청산 완료 (${toClose.length}건): ${codes}`);
   }
 }

@@ -12,52 +12,57 @@
  * - 보수적 기본값 (안 하느니만 못한 조작 금지)
  * - paper/live 양쪽 독립 실행
  */
-import { getPool, getOpenChains, getLatestScores } from '../db/client.js';
-import { getCtxIsPaper, runWithMode } from '../config/context.js';
-import { fetchKospiRegime } from './track-b/market-regime.js';
-import { getWinRateFeedback, getPerformanceMultiplier } from '../automation/portfolio-guard.js';
+
 import { getStockWinRates } from '../analysis/win-rate.js';
-import { getMarketSentiment, getConsensusTrend } from '../market/consensus.js';
+import { getPerformanceMultiplier, getWinRateFeedback } from '../automation/portfolio-guard.js';
+import { runWithMode } from '../config/context.js';
+import { getOpenChains, getPool } from '../db/client.js';
+import { getConsensusTrend, getMarketSentiment } from '../market/consensus.js';
 import { isKillSwitchActive } from '../risk/kill-switch.js';
-import { setOverride, getOverride, removeOverride, loadOverridesCache } from './ai-overrides.js';
 import { logger } from '../utils/logger.js';
+import { getOverride, loadOverridesCache, removeOverride, setOverride } from './ai-overrides.js';
+import { fetchKospiRegime } from './track-b/market-regime.js';
 
 // ── 마지막 실행 결과 (SSE/대시보드에서 조회) ────────────────────────
-let _lastResult: { paper: AutoPilotResult | null; live: AutoPilotResult | null; lastRunAt: string | null } = {
-  paper: null, live: null, lastRunAt: null,
+const _lastResult: { paper: AutoPilotResult | null; live: AutoPilotResult | null; lastRunAt: string | null } = {
+  paper: null,
+  live: null,
+  lastRunAt: null,
 };
-export function getLastAutoPilotResult() { return _lastResult; }
+export function getLastAutoPilotResult() {
+  return _lastResult;
+}
 
 // ── 자동 조절 규칙 상수 ─────────────────────────────────────────────
 const RULES = {
   // 시장 레짐 기반 minBuyScore (하락장 95+ 아니면 다 잃음 → 상향)
-  REGIME_NORMAL_THRESHOLD: 75,      // 정상장
-  REGIME_ADJUST_THRESHOLD: 83,      // 조정장 (penalty=1)
-  REGIME_DOWN_THRESHOLD: 90,        // 하락장 (penalty=2)
-  REGIME_CRASH_THRESHOLD: 95,       // 급락장 (flashCrash)
-  REGIME_BOOST_THRESHOLD: 65,       // 강세장 (boost)
+  REGIME_NORMAL_THRESHOLD: 75, // 정상장
+  REGIME_ADJUST_THRESHOLD: 83, // 조정장 (penalty=1)
+  REGIME_DOWN_THRESHOLD: 90, // 하락장 (penalty=2)
+  REGIME_CRASH_THRESHOLD: 95, // 급락장 (flashCrash)
+  REGIME_BOOST_THRESHOLD: 65, // 강세장 (boost)
 
   // 승률 기반
-  WINRATE_BAD_THRESHOLD: 0.35,      // 35% 미만 → 방어 모드
-  WINRATE_GOOD_THRESHOLD: 0.55,     // 55% 이상 → 공격적
-  STOCK_WINRATE_BLACKLIST: 0.20,    // 개별 종목 20% 미만 → 블랙리스트
-  STOCK_MIN_SAMPLES: 5,             // 최소 5건 거래 필요
+  WINRATE_BAD_THRESHOLD: 0.35, // 35% 미만 → 방어 모드
+  WINRATE_GOOD_THRESHOLD: 0.55, // 55% 이상 → 공격적
+  STOCK_WINRATE_BLACKLIST: 0.2, // 개별 종목 20% 미만 → 블랙리스트
+  STOCK_MIN_SAMPLES: 5, // 최소 5건 거래 필요
 
   // 포지션 건강성
-  PROFIT_TRAIL_TIGHTEN_1: 8,        // +8% → trail +0.5
-  PROFIT_TRAIL_TIGHTEN_2: 12,       // +12% → trail +1.0
-  PROFIT_TRAIL_TIGHTEN_3: 18,       // +18% → trail +1.5
+  PROFIT_TRAIL_TIGHTEN_1: 8, // +8% → trail +0.5
+  PROFIT_TRAIL_TIGHTEN_2: 12, // +12% → trail +1.0
+  PROFIT_TRAIL_TIGHTEN_3: 18, // +18% → trail +1.5
 
   // 컨센서스
-  SENTIMENT_BEARISH_RATIO: 0.20,    // bullish 20% 미만 → 방어
-  SENTIMENT_BULLISH_RATIO: 0.50,    // bullish 50% 이상 → 공격
+  SENTIMENT_BEARISH_RATIO: 0.2, // bullish 20% 미만 → 방어
+  SENTIMENT_BULLISH_RATIO: 0.5, // bullish 50% 이상 → 공격
 
   // TTL (분) — 10분 간격 루프 기준
-  TTL_REGIME: 15,           // 레짐 오버라이드 (10분 루프 + 5분 여유)
-  TTL_WINRATE: 120,         // 승률 기반 (2시간)
-  TTL_POSITION: 15,         // 포지션 기반 (다음 루프 갱신)
-  TTL_BLACKLIST: 240,       // 블랙리스트 (4시간)
-  TTL_CONSENSUS: 60,        // 컨센서스 기반 (1시간)
+  TTL_REGIME: 15, // 레짐 오버라이드 (10분 루프 + 5분 여유)
+  TTL_WINRATE: 120, // 승률 기반 (2시간)
+  TTL_POSITION: 15, // 포지션 기반 (다음 루프 갱신)
+  TTL_BLACKLIST: 240, // 블랙리스트 (4시간)
+  TTL_CONSENSUS: 60, // 컨센서스 기반 (1시간)
 } as const;
 
 export interface AutoPilotResult {
@@ -84,13 +89,7 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
 
   try {
     // ── 데이터 수집 (병렬) ──────────────────────────────────
-    const [
-      regime,
-      winRateFeedback,
-      perfMultiplier,
-      chains,
-      sentiment,
-    ] = await Promise.all([
+    const [regime, winRateFeedback, perfMultiplier, chains, sentiment] = await Promise.all([
       fetchKospiRegime().catch(() => null),
       getWinRateFeedback(isPaper).catch(() => null),
       getPerformanceMultiplier().catch(() => 1.0),
@@ -99,10 +98,9 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
     ]);
 
     // 보유종목 승률 맵
-    const stockCodes = chains.map(c => c.stock_code);
-    const stockWinRates = stockCodes.length > 0
-      ? await getStockWinRates(stockCodes, 'KR').catch(() => new Map())
-      : new Map();
+    const stockCodes = chains.map((c) => c.stock_code);
+    const stockWinRates =
+      stockCodes.length > 0 ? await getStockWinRates(stockCodes, 'KR').catch(() => new Map()) : new Map();
 
     // 최근 연패 데이터
     const lossStreaks = await getConsecutiveLosses(isPaper).catch(() => new Map());
@@ -145,13 +143,13 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
       if (skipPerfPenalty) {
         reason += ` + 강세장 paper → 성과 패널티 면제`;
       } else if (perfMultiplier <= 0.5) {
-        targetThreshold = Math.min(95, targetThreshold + 5);   // A: 10→5
+        targetThreshold = Math.min(95, targetThreshold + 5); // A: 10→5
         reason += ` + 성과 심각(×${perfMultiplier.toFixed(2)})`;
       } else if (perfMultiplier < 0.7) {
-        targetThreshold = Math.min(95, targetThreshold + 3);   // A: 7→3
+        targetThreshold = Math.min(95, targetThreshold + 3); // A: 7→3
         reason += ` + 성과 부진(×${perfMultiplier.toFixed(2)})`;
       } else if (perfMultiplier < 0.85) {
-        targetThreshold = Math.min(95, targetThreshold + 2);   // A: 3→2
+        targetThreshold = Math.min(95, targetThreshold + 2); // A: 3→2
         reason += ` + 성과 방어(×${perfMultiplier.toFixed(2)})`;
       } else if (perfMultiplier > 1.1) {
         targetThreshold = Math.max(55, targetThreshold - 2);
@@ -168,7 +166,14 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
       if (!isPaper) {
         const currentOverride = getOverride<number>('minBuyScore', isPaper);
         if (currentOverride !== targetThreshold) {
-          const res = await setOverride('threshold', 'minBuyScore', targetThreshold, `[AutoPilot] ${reason}`, RULES.TTL_REGIME, isPaper);
+          const res = await setOverride(
+            'threshold',
+            'minBuyScore',
+            targetThreshold,
+            `[AutoPilot] ${reason}`,
+            RULES.TTL_REGIME,
+            isPaper,
+          );
           if (res.ok) {
             overridesSet++;
             decisions.push(`minBuyScore=${targetThreshold} (${reason})`);
@@ -185,9 +190,14 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
       if (wr.winRate < RULES.STOCK_WINRATE_BLACKLIST && wr.sampleCount >= RULES.STOCK_MIN_SAMPLES) {
         const existing = getOverride<boolean>(`${code}_blacklist`, isPaper);
         if (!existing) {
-          const res = await setOverride('stock', `${code}_blacklist`, true,
+          const res = await setOverride(
+            'stock',
+            `${code}_blacklist`,
+            true,
             `[AutoPilot] 승률 ${(wr.winRate * 100).toFixed(0)}%(${wr.sampleCount}건) → 매수 차단`,
-            RULES.TTL_BLACKLIST, isPaper);
+            RULES.TTL_BLACKLIST,
+            isPaper,
+          );
           if (res.ok) {
             overridesSet++;
             decisions.push(`${code} 블랙리스트 (WR=${(wr.winRate * 100).toFixed(0)}%)`);
@@ -201,9 +211,14 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
       if (streak >= 3) {
         const existing = getOverride<boolean>(`${code}_blacklist`, isPaper);
         if (!existing) {
-          const res = await setOverride('stock', `${code}_blacklist`, true,
+          const res = await setOverride(
+            'stock',
+            `${code}_blacklist`,
+            true,
             `[AutoPilot] ${streak}연패 → 매수 차단 (냉각기)`,
-            RULES.TTL_BLACKLIST, isPaper);
+            RULES.TTL_BLACKLIST,
+            isPaper,
+          );
           if (res.ok) {
             overridesSet++;
             decisions.push(`${code} 블랙리스트 (${streak}연패)`);
@@ -228,9 +243,14 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
       const current = getOverride<number>(key, isPaper) ?? 0;
 
       if (tighten > 0 && tighten !== current) {
-        const res = await setOverride('stock', key, tighten,
+        const res = await setOverride(
+          'stock',
+          key,
+          tighten,
           `[AutoPilot] peak수익 ${estimatedMaxPnl.toFixed(1)}% → trail +${tighten}%`,
-          RULES.TTL_POSITION, isPaper);
+          RULES.TTL_POSITION,
+          isPaper,
+        );
         if (res.ok) {
           overridesSet++;
           decisions.push(`${chain.stock_code} trail+${tighten} (peak ${estimatedMaxPnl.toFixed(1)}%)`);
@@ -253,17 +273,33 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
       // BEARISH → -8 (이미 pipeline.ts에서 -12 하지만 AutoPilot도 추가 감산)
       // 목적: AI Loop 블랙리스트까지는 아니지만 점수 추가 감산으로 자연스럽게 필터링
       if (signal.trend === 'BEARISH' && signal.netScore <= -3 && currentAdj > -8) {
-        const res = await setOverride('stock', key, -8,
+        const res = await setOverride(
+          'stock',
+          key,
+          -8,
           `[AutoPilot] 컨센서스 강 하향(net=${signal.netScore}) → 점수 -8`,
-          RULES.TTL_CONSENSUS, isPaper);
-        if (res.ok) { overridesSet++; decisions.push(`${code} scoreAdj=-8 (consensus BEARISH)`); }
+          RULES.TTL_CONSENSUS,
+          isPaper,
+        );
+        if (res.ok) {
+          overridesSet++;
+          decisions.push(`${code} scoreAdj=-8 (consensus BEARISH)`);
+        }
       }
       // BULLISH + 강한 상향 → +5
       else if (signal.trend === 'BULLISH' && signal.netScore >= 3 && currentAdj < 5) {
-        const res = await setOverride('stock', key, 5,
+        const res = await setOverride(
+          'stock',
+          key,
+          5,
           `[AutoPilot] 컨센서스 강 상향(net=${signal.netScore}) → 점수 +5`,
-          RULES.TTL_CONSENSUS, isPaper);
-        if (res.ok) { overridesSet++; decisions.push(`${code} scoreAdj=+5 (consensus BULLISH)`); }
+          RULES.TTL_CONSENSUS,
+          isPaper,
+        );
+        if (res.ok) {
+          overridesSet++;
+          decisions.push(`${code} scoreAdj=+5 (consensus BULLISH)`);
+        }
       }
     }
 
@@ -276,11 +312,13 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
         [isPaper],
       );
       for (const row of overseas) {
-        const code = row.stock_code as string;
+        const _code = row.stock_code as string;
         // 해외 종목은 블랙리스트/forceHold 보수적 — 기존 로직에 맡김
         // AutoPilot은 국내 중심으로 운영 (해외는 VisionScalp + overseas-job이 관리)
       }
-    } catch { /* 해외 데이터 없으면 무시 */ }
+    } catch {
+      /* 해외 데이터 없으면 무시 */
+    }
 
     // ── Rule 6: ScalpingRadar — 비활성화 (2026-06 성과 검토: SCALPING WR 25.7%, -227K) ───
     // ScalpRadar 모멘텀 감지가 Track B에서 스캘핑 진입 유발 → 25.7% 승률로 손실 확대
@@ -343,7 +381,8 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
  * 종목별 최근 연속 손실 횟수 조회
  */
 async function getConsecutiveLosses(isPaper: boolean): Promise<Map<string, number>> {
-  const { rows } = await getPool().query(`
+  const { rows } = await getPool().query(
+    `
     WITH recent AS (
       SELECT stock_code, pnl_pct, closed_at,
              ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY closed_at DESC) AS rn
@@ -366,7 +405,9 @@ async function getConsecutiveLosses(isPaper: boolean): Promise<Map<string, numbe
     WHERE is_loss = 1
     GROUP BY stock_code, grp
     HAVING MIN(rn) = 1
-  `, [isPaper]);
+  `,
+    [isPaper],
+  );
 
   const map = new Map<string, number>();
   for (const r of rows) {
@@ -390,12 +431,13 @@ export async function runAutoPilotDual(): Promise<void> {
   const totalSet = paperResult.overridesSet + liveResult.overridesSet;
   const totalRemoved = paperResult.overridesRemoved + liveResult.overridesRemoved;
   if (totalSet > 0 || totalRemoved > 0) {
-    logger.info(`🤖 AutoPilot 완료: paper(${paperResult.overridesSet}↑${paperResult.overridesRemoved}↓) live(${liveResult.overridesSet}↑${liveResult.overridesRemoved}↓)`, { component: 'AUTO_PILOT' });
+    logger.info(
+      `🤖 AutoPilot 완료: paper(${paperResult.overridesSet}↑${paperResult.overridesRemoved}↓) live(${liveResult.overridesSet}↑${liveResult.overridesRemoved}↓)`,
+      { component: 'AUTO_PILOT' },
+    );
   }
 
   // 상황 감지: 규칙으로 못 푸는 판단 큐 적재
   const { detectSituationsDual } = await import('./situation-detector.js');
-  await detectSituationsDual().catch(err =>
-    logger.error(`상황 감지 실패: ${err}`, { component: 'SITUATION' })
-  );
+  await detectSituationsDual().catch((err) => logger.error(`상황 감지 실패: ${err}`, { component: 'SITUATION' }));
 }

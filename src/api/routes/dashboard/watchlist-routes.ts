@@ -2,16 +2,23 @@
  * 워치리스트 관련 라우트 — /search/stock, /watchlist/*, /flow, /kis-balance
  */
 import { Hono } from 'hono';
-import { config, baseIsPaper } from '../../../config/index.js';
+import { getPortfolioFlowStatus } from '../../../automation/ceo-workflow.js';
+import { cachePriceMemory, getLastKnownPricesMemory } from '../../../cache/memory.js';
+import { getLastKnownPrices } from '../../../cache/redis.js';
+import { baseIsPaper } from '../../../config/index.js';
 import { getActiveWatchlist, getPool } from '../../../db/client.js';
 import { getAccountBalance } from '../../../kis/account.js';
-import { getCurrentPrice, getBatchPrices, isMarketOpen, getVolumeRankingStocks, getChangeRankingStocks, type CurrentPrice } from '../../../kis/market.js';
-import { getLastKnownPrices } from '../../../cache/redis.js';
-import { cachePriceMemory, getLastKnownPricesMemory } from '../../../cache/memory.js';
-import { getPortfolioFlowStatus } from '../../../automation/ceo-workflow.js';
+import {
+  type CurrentPrice,
+  getBatchPrices,
+  getChangeRankingStocks,
+  getCurrentPrice,
+  getVolumeRankingStocks,
+  isMarketOpen,
+} from '../../../kis/market.js';
 import { logger } from '../../../utils/logger.js';
-import { isInvalidStockName, getKnownStockName } from './helpers.js';
 import { resolveRequestMode } from '../../guards/live-pin.js';
+import { getKnownStockName, isInvalidStockName } from './helpers.js';
 
 export const watchlistRoutes = new Hono();
 
@@ -28,7 +35,9 @@ watchlistRoutes.get('/search/stock', async (c) => {
         const market = price.stockName ? 'KOSPI' : 'KOSPI';
         return c.json([{ code: q, name: price.stockName, market }]);
       }
-    } catch { /* fallback */ }
+    } catch {
+      /* fallback */
+    }
     return c.json([{ code: q, name: q, market: 'KOSPI' }]);
   }
 
@@ -41,30 +50,31 @@ watchlistRoutes.get('/search/stock', async (c) => {
       [`%${q}%`],
     );
     for (const r of rows) results.push({ code: r.stock_code, name: r.stock_name, market: 'KOSPI' });
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   // 2차: NAVER 자동완성 API (이름 → 코드 매핑 — 검색어 필터 정확)
   if (results.length < 5) {
     try {
-      const resp = await fetch(
-        `https://ac.stock.naver.com/ac?q=${encodeURIComponent(q)}&target=stock,etf&lang=ko`,
-        {
-          headers: { 'User-Agent': 'Mozilla/5.0' },
-          signal: AbortSignal.timeout(4000),
-        },
-      );
-      const data = await resp.json() as any;
+      const resp = await fetch(`https://ac.stock.naver.com/ac?q=${encodeURIComponent(q)}&target=stock,etf&lang=ko`, {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(4000),
+      });
+      const data = (await resp.json()) as any;
       const items: any[] = data?.items?.[0] ?? [];
       for (const item of items) {
         const code = String(item[0] ?? '');
         const name = String(item[1] ?? '');
         const typeInfo = String(item[2] ?? '');
-        if (code.length === 6 && name && !results.find(r => r.code === code)) {
+        if (code.length === 6 && name && !results.find((r) => r.code === code)) {
           const market = typeInfo.includes('KOSDAQ') ? 'KOSDAQ' : 'KOSPI';
           results.push({ code, name, market });
         }
       }
-    } catch { /* NAVER API 실패 시 DB 결과만 반환 */ }
+    } catch {
+      /* NAVER API 실패 시 DB 결과만 반환 */
+    }
   }
 
   // 3차: KRX 전체 종목 리스트에서 이름 필터 (NAVER 실패 폴백)
@@ -80,7 +90,7 @@ watchlistRoutes.get('/search/stock', async (c) => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-          'Referer': 'https://data.krx.co.kr/',
+          Referer: 'https://data.krx.co.kr/',
           'User-Agent': 'Mozilla/5.0',
         },
         body: new URLSearchParams({
@@ -93,20 +103,22 @@ watchlistRoutes.get('/search/stock', async (c) => {
         }).toString(),
         signal: AbortSignal.timeout(6000),
       });
-      const data = await resp.json() as any;
+      const data = (await resp.json()) as any;
       const qLower = q.toLowerCase();
       if (Array.isArray(data.output)) {
         for (const item of data.output) {
           const code = String(item.ISU_SRT_CD ?? '');
           const name = String(item.ISU_ABBRV ?? item.ISU_KOR_ABBRV ?? '');
           const mkt = String(item.MKT_NM ?? 'KOSPI');
-          if (code.length === 6 && name.toLowerCase().includes(qLower) && !results.find(r => r.code === code)) {
+          if (code.length === 6 && name.toLowerCase().includes(qLower) && !results.find((r) => r.code === code)) {
             results.push({ code, name, market: mkt.includes('KOSDAQ') ? 'KOSDAQ' : 'KOSPI' });
             if (results.length >= 10) break;
           }
         }
       }
-    } catch { /* KRX API 실패 */ }
+    } catch {
+      /* KRX API 실패 */
+    }
   }
 
   return c.json(results.slice(0, 10));
@@ -117,11 +129,13 @@ watchlistRoutes.get('/watchlist', async (c) => {
   try {
     const viewIsPaper = resolveRequestMode(c);
     const data = await getActiveWatchlist();
-    const unresolvedDomestic = [...new Set(
-      data
-        .filter((w: any) => /^[0-9]{6}$/.test(String(w.stock_code)) && isInvalidStockName(w.stock_name, w.stock_code))
-        .map((w: any) => String(w.stock_code))
-    )];
+    const unresolvedDomestic = [
+      ...new Set(
+        data
+          .filter((w: any) => /^[0-9]{6}$/.test(String(w.stock_code)) && isInvalidStockName(w.stock_name, w.stock_code))
+          .map((w: any) => String(w.stock_code)),
+      ),
+    ];
 
     const nameMap = new Map<string, string>();
     for (const w of data) {
@@ -136,7 +150,7 @@ watchlistRoutes.get('/watchlist', async (c) => {
       const timeoutMap = new Map<string, CurrentPrice>();
       const quotes = await Promise.race([
         getBatchPrices(unresolvedDomestic.slice(0, 20)),
-        new Promise<Map<string, CurrentPrice>>(resolve => setTimeout(() => resolve(timeoutMap), 3000)),
+        new Promise<Map<string, CurrentPrice>>((resolve) => setTimeout(() => resolve(timeoutMap), 3000)),
       ]).catch(() => new Map<string, CurrentPrice>());
       for (const [code, q] of quotes) {
         if (!isInvalidStockName(q.stockName, code)) {
@@ -150,7 +164,8 @@ watchlistRoutes.get('/watchlist', async (c) => {
     try {
       const codes = data.map((w: any) => String(w.stock_code));
       if (codes.length > 0) {
-        const { rows: sellRows } = await getPool().query(`
+        const { rows: sellRows } = await getPool().query(
+          `
           SELECT DISTINCT ON (tc.stock_code)
             tc.stock_code,
             tc.avg_buy_price,
@@ -163,7 +178,9 @@ watchlistRoutes.get('/watchlist', async (c) => {
             AND tc.stock_code = ANY($1)
             AND tc.is_paper = $2
           ORDER BY tc.stock_code, tc.closed_at DESC
-        `, [codes, viewIsPaper]);
+        `,
+          [codes, viewIsPaper],
+        );
         for (const r of sellRows) {
           const buy = Number(r.avg_buy_price ?? 0);
           const sell = Number(r.last_sell_price ?? 0);
@@ -176,7 +193,9 @@ watchlistRoutes.get('/watchlist', async (c) => {
           }
         }
       }
-    } catch { /* skip — non-critical */ }
+    } catch {
+      /* skip — non-critical */
+    }
 
     const base = data.map((w: any) => {
       const code = String(w.stock_code ?? '');
@@ -184,18 +203,20 @@ watchlistRoutes.get('/watchlist', async (c) => {
       const sellInfo = sellPctMap.get(code);
       return {
         ...(resolved ? { ...w, stock_name: resolved } : w),
-        ...(sellInfo ? { last_sell_pct: sellInfo.pct, last_sell_at: sellInfo.closedAt, last_sell_price: sellInfo.sellPrice } : {}),
+        ...(sellInfo
+          ? { last_sell_pct: sellInfo.pct, last_sell_at: sellInfo.closedAt, last_sell_price: sellInfo.sellPrice }
+          : {}),
       };
     });
 
     if (nameMap.size > 0) {
       await Promise.allSettled(
         [...nameMap.entries()].map(([code, name]) =>
-          getPool().query(
-            `UPDATE watchlist SET stock_name = $1 WHERE stock_code = $2 AND is_active = true`,
-            [name, code],
-          )
-        )
+          getPool().query(`UPDATE watchlist SET stock_name = $1 WHERE stock_code = $2 AND is_active = true`, [
+            name,
+            code,
+          ]),
+        ),
       );
     }
 
@@ -206,10 +227,14 @@ watchlistRoutes.get('/watchlist', async (c) => {
 });
 
 watchlistRoutes.post('/watchlist', async (c) => {
-  const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
-  const stockCode = String(body.stock_code ?? '').trim().replace(/\D/g, '');
+  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  const stockCode = String(body.stock_code ?? '')
+    .trim()
+    .replace(/\D/g, '');
   let stockName = String(body.stock_name ?? '').trim();
-  const marketRaw = String(body.market ?? 'KOSPI').trim().toUpperCase();
+  const marketRaw = String(body.market ?? 'KOSPI')
+    .trim()
+    .toUpperCase();
   const market = marketRaw === 'KOSDAQ' ? 'KOSDAQ' : 'KOSPI';
 
   if (stockCode.length !== 6) {
@@ -220,7 +245,9 @@ watchlistRoutes.post('/watchlist', async (c) => {
     try {
       const quote = await getCurrentPrice(stockCode);
       stockName = quote.stockName?.trim() || '';
-    } catch { /* no-op */ }
+    } catch {
+      /* no-op */
+    }
   }
   if (!stockName) stockName = stockCode;
 
@@ -250,10 +277,17 @@ watchlistRoutes.get('/flow', async (c) => {
     return c.json(status);
   } catch {
     return c.json({
-      totalPortfolio: baseIsPaper ? 10000000 : 0, cash: baseIsPaper ? 10000000 : 0, cashRatio: 100,
-      investedRatio: 0, flowStatus: 'FLOWING', flowMessage: '대기 중',
-      mode: 'SWING', activePositions: 0, pendingStocks: 0,
-      allocation: [], pendingStockCodes: [],
+      totalPortfolio: baseIsPaper ? 10000000 : 0,
+      cash: baseIsPaper ? 10000000 : 0,
+      cashRatio: 100,
+      investedRatio: 0,
+      flowStatus: 'FLOWING',
+      flowMessage: '대기 중',
+      mode: 'SWING',
+      activePositions: 0,
+      pendingStocks: 0,
+      allocation: [],
+      pendingStockCodes: [],
     });
   }
 });
@@ -292,7 +326,13 @@ watchlistRoutes.post('/watchlist/sync', async (c) => {
     const interest = await syncInterestGroups().catch(() => ({ added: [] as string[], total: 0 }));
     const holdings = await syncHoldingsToWatchlist().catch(() => ({ added: [] as string[] }));
     const allAdded = [...interest.added, ...holdings.added];
-    return c.json({ ok: true, added: allAdded, kisTotal: interest.total, message: allAdded.length > 0 ? `${allAdded.length}종목 동기화 완료` : '이미 최신 상태 (모의투자는 관심종목 API 미지원)' });
+    return c.json({
+      ok: true,
+      added: allAdded,
+      kisTotal: interest.total,
+      message:
+        allAdded.length > 0 ? `${allAdded.length}종목 동기화 완료` : '이미 최신 상태 (모의투자는 관심종목 API 미지원)',
+    });
   } catch (err: any) {
     return c.json({ error: err?.message ?? 'KIS 동기화 실패' }, 500);
   }
@@ -302,7 +342,8 @@ watchlistRoutes.post('/watchlist/sync', async (c) => {
 watchlistRoutes.get('/watchlist/sold-tracking', async (c) => {
   try {
     const viewIsPaper = resolveRequestMode(c);
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT DISTINCT ON (tc.stock_code)
         tc.stock_code,
         COALESCE(w.stock_name, tc.stock_code) AS stock_name,
@@ -319,7 +360,9 @@ watchlistRoutes.get('/watchlist/sold-tracking', async (c) => {
         AND tc.is_paper = $1
         AND tc.closed_at > NOW() - INTERVAL '30 days'
       ORDER BY tc.stock_code, tc.closed_at DESC
-    `, [viewIsPaper]);
+    `,
+      [viewIsPaper],
+    );
 
     if (rows.length === 0) return c.json([]);
 
@@ -330,7 +373,7 @@ watchlistRoutes.get('/watchlist/sold-tracking', async (c) => {
 
     const codes = sorted.map((r: any) => String(r.stock_code));
 
-    let priceMap = getLastKnownPricesMemory(codes);
+    const priceMap = getLastKnownPricesMemory(codes);
     if (priceMap.size < codes.length) {
       const redisPrices = await getLastKnownPrices(codes).catch(() => new Map<string, number>());
       for (const [code, price] of redisPrices) {
@@ -354,8 +397,7 @@ watchlistRoutes.get('/watchlist/sold-tracking', async (c) => {
       const currentPrice = priceMap.get(r.stock_code) ?? 0;
       const sellPnlPct = buyPrice > 0 ? ((sellPrice - buyPrice) / buyPrice) * 100 : 0;
       const realizedPnl = Number(r.realized_pnl ?? 0);
-      const postSellPct = sellPrice > 0 && currentPrice > 0
-        ? ((currentPrice - sellPrice) / sellPrice) * 100 : null;
+      const postSellPct = sellPrice > 0 && currentPrice > 0 ? ((currentPrice - sellPrice) / sellPrice) * 100 : null;
       return {
         stock_code: r.stock_code,
         stock_name: r.stock_name,
@@ -413,12 +455,13 @@ watchlistRoutes.post('/watchlist/scan', async (c) => {
         [stock.stock_code, stockName],
       );
       added.push(`${stock.stock_code}(${stockName},${stock.source})`);
-      logger.info(`🔍 시장스캔 신규 발굴: ${stock.stock_code}(${stockName}) [${stock.source}]`, { component: 'WATCHLIST_SCAN' });
+      logger.info(`🔍 시장스캔 신규 발굴: ${stock.stock_code}(${stockName}) [${stock.source}]`, {
+        component: 'WATCHLIST_SCAN',
+      });
     }
 
-    const msg = added.length > 0
-      ? `${added.length}개 신규 종목 발굴 추가 완료`
-      : '신규 발굴 종목 없음 (이미 모두 감시 중)';
+    const msg =
+      added.length > 0 ? `${added.length}개 신규 종목 발굴 추가 완료` : '신규 발굴 종목 없음 (이미 모두 감시 중)';
     return c.json({ ok: true, added, scanned: candidates.length, message: msg });
   } catch (err: any) {
     return c.json({ error: err?.message ?? '시장 스캔 실패' }, 500);
@@ -434,11 +477,14 @@ watchlistRoutes.post('/watchlist/cleanup', async (c) => {
 
     // 현재 보유 중인 종목은 제외 (현재 모드만)
     const { rows: openChains } = await pool.query(
-      `SELECT DISTINCT stock_code FROM transaction_chains WHERE status != 'CLOSED' AND is_paper = $1`, [isPaper]);
-    const heldCodes = new Set(openChains.map((r: any) => String(r.stock_code)));
+      `SELECT DISTINCT stock_code FROM transaction_chains WHERE status != 'CLOSED' AND is_paper = $1`,
+      [isPaper],
+    );
+    const _heldCodes = new Set(openChains.map((r: any) => String(r.stock_code)));
 
     // AUTO/KIS_SYNC 소스 중 30일 이상 된 항목 비활성화 (MANUAL 제외, 보유종목 제외)
-    const { rowCount } = await pool.query(`
+    const { rowCount } = await pool.query(
+      `
       UPDATE watchlist SET is_active = false
       WHERE is_active = true
         AND source IN ('AUTO', 'KIS_SYNC')
@@ -448,9 +494,13 @@ watchlistRoutes.post('/watchlist/cleanup', async (c) => {
           SELECT DISTINCT stock_code FROM orders
           WHERE status = 'FILLED' AND trading_mode = $2 AND created_at > NOW() - INTERVAL '14 days'
         )
-    `, [isPaper, tradingMode]);
+    `,
+      [isPaper, tradingMode],
+    );
 
-    logger.info(`🧹 감시종목 정리: ${rowCount ?? 0}개 비활성화 (30일+ AUTO/KIS_SYNC, 미보유, 14일내 미거래)`, { component: 'WATCHLIST' });
+    logger.info(`🧹 감시종목 정리: ${rowCount ?? 0}개 비활성화 (30일+ AUTO/KIS_SYNC, 미보유, 14일내 미거래)`, {
+      component: 'WATCHLIST',
+    });
     return c.json({ ok: true, deactivated: rowCount ?? 0 });
   } catch (err: any) {
     return c.json({ error: err?.message }, 500);

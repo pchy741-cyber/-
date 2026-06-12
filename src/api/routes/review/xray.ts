@@ -47,19 +47,38 @@ app.get('/review/xray', async (c) => {
               OR (tc.is_paper = false AND o.trading_mode = 'paper'))
           LIMIT 3
         `);
-        checks.push({ id: 'chain_mode_boundary', status: 'danger', label: '체인↔주문 모드 불일치', detail: detail.map((r: any) => `${r.stock_code}: chain=${r.chain_paper ? 'PAPER' : 'LIVE'} order=${r.trading_mode}`).join(', ') });
+        checks.push({
+          id: 'chain_mode_boundary',
+          status: 'danger',
+          label: '체인↔주문 모드 불일치',
+          detail: detail
+            .map((r: any) => `${r.stock_code}: chain=${r.chain_paper ? 'PAPER' : 'LIVE'} order=${r.trading_mode}`)
+            .join(', '),
+        });
       } else {
-        checks.push({ id: 'chain_mode_boundary', status: 'ok', label: '체인↔주문 모드 경계', detail: '정상 — 모든 체인의 주문 모드 일치' });
+        checks.push({
+          id: 'chain_mode_boundary',
+          status: 'ok',
+          label: '체인↔주문 모드 경계',
+          detail: '정상 — 모든 체인의 주문 모드 일치',
+        });
       }
     } catch (e: any) {
-      checks.push({ id: 'chain_mode_boundary', status: 'warn', label: '체인↔주문 모드 경계', detail: `조회 실패: ${e.message?.slice(0, 60)}` });
+      checks.push({
+        id: 'chain_mode_boundary',
+        status: 'warn',
+        label: '체인↔주문 모드 경계',
+        detail: `조회 실패: ${e.message?.slice(0, 60)}`,
+      });
     }
 
     // ── 2. 매수 게이트 상태 — pipeline.ts와 동일한 로직으로 진단 ──────────────
     try {
       // pipeline.ts와 동일: getWinRateFeedback (portfolio-guard.ts) 직접 호출
       const { getWinRateFeedback } = await import('../../../automation/portfolio-guard.js');
-      const { rows: stratRows } = await pool.query(`SELECT buy_threshold FROM strategy_config WHERE is_active = true ORDER BY updated_at DESC LIMIT 1`);
+      const { rows: stratRows } = await pool.query(
+        `SELECT buy_threshold FROM strategy_config WHERE is_active = true ORDER BY updated_at DESC LIMIT 1`,
+      );
       const baseThreshold: number = Number(stratRows[0]?.buy_threshold ?? 83);
 
       const winFeedback = await getWinRateFeedback(viewIsPaper);
@@ -75,7 +94,10 @@ app.get('/review/xray', async (c) => {
       const scoreCnt = Number(scoreRows[0]?.cnt ?? 0);
 
       const canBuy = maxScore >= effectiveThreshold;
-      const adjStr = winFeedback.thresholdBonus !== 0 ? `${winFeedback.thresholdBonus > 0 ? '+' : ''}${winFeedback.thresholdBonus}` : '±0';
+      const adjStr =
+        winFeedback.thresholdBonus !== 0
+          ? `${winFeedback.thresholdBonus > 0 ? '+' : ''}${winFeedback.thresholdBonus}`
+          : '±0';
       const detail = `기준 ${baseThreshold}pt + 승률보정 ${adjStr} = 실효 ${effectiveThreshold}pt | 최고점수 ${maxScore}pt (${scoreCnt}종목) | ${winFeedback.summary}`;
 
       if (!canBuy && winFeedback.thresholdBonus > 0) {
@@ -94,7 +116,12 @@ app.get('/review/xray', async (c) => {
         checks.push({ id: 'buy_gate_extra', status: 'warn', label: '추가 진입 조건 활성', detail: extras.join(' | ') });
       }
     } catch (e: any) {
-      checks.push({ id: 'buy_gate', status: 'warn', label: '매수 게이트 확인 실패', detail: e.message?.slice(0, 60) ?? '' });
+      checks.push({
+        id: 'buy_gate',
+        status: 'warn',
+        label: '매수 게이트 확인 실패',
+        detail: e.message?.slice(0, 60) ?? '',
+      });
     }
 
     // ── 3. 해외 현금 Paper/Live 분리 ─────────────────────────────
@@ -118,11 +145,26 @@ app.get('/review/xray', async (c) => {
       const hasPaper = paperCash > 0;
 
       if (!hasLive && !hasPaper) {
-        checks.push({ id: 'overseas_cash_sep', status: 'warn', label: '해외 현금 키 없음', detail: 'overseas_state에 cash/cash_paper 키 없음' });
+        checks.push({
+          id: 'overseas_cash_sep',
+          status: 'warn',
+          label: '해외 현금 키 없음',
+          detail: 'overseas_state에 cash/cash_paper 키 없음',
+        });
       } else if (liveCashUsd > 0 && paperCash > 0 && Math.abs(liveCashUsd - paperCash) < 1) {
-        checks.push({ id: 'overseas_cash_sep', status: 'danger', label: '해외 현금 오염 의심', detail: `cash=$${liveCashUsd.toFixed(0)} vs cash_paper=$${paperCash.toFixed(0)} — 동일값, 공유 가능성` });
+        checks.push({
+          id: 'overseas_cash_sep',
+          status: 'danger',
+          label: '해외 현금 오염 의심',
+          detail: `cash=$${liveCashUsd.toFixed(0)} vs cash_paper=$${paperCash.toFixed(0)} — 동일값, 공유 가능성`,
+        });
       } else {
-        checks.push({ id: 'overseas_cash_sep', status: 'ok', label: '해외 현금 분리', detail: `Live $${liveCashUsd.toFixed(0)} / Paper $${paperCash.toFixed(0)}` });
+        checks.push({
+          id: 'overseas_cash_sep',
+          status: 'ok',
+          label: '해외 현금 분리',
+          detail: `Live $${liveCashUsd.toFixed(0)} / Paper $${paperCash.toFixed(0)}`,
+        });
       }
     } catch {
       checks.push({ id: 'overseas_cash_sep', status: 'warn', label: '해외 현금 분리', detail: '조회 실패' });
@@ -139,12 +181,27 @@ app.get('/review/xray', async (c) => {
       const liveSnap = rows.find((r: any) => !r.is_paper);
       const paperSnap = rows.find((r: any) => r.is_paper);
       if (liveSnap && paperSnap) {
-        checks.push({ id: 'snapshot_sep', status: 'ok', label: '스냅샷 모드 분리', detail: `Live ${Number(liveSnap.cnt)}건 / Paper ${Number(paperSnap.cnt)}건 (7일내)` });
+        checks.push({
+          id: 'snapshot_sep',
+          status: 'ok',
+          label: '스냅샷 모드 분리',
+          detail: `Live ${Number(liveSnap.cnt)}건 / Paper ${Number(paperSnap.cnt)}건 (7일내)`,
+        });
       } else if (!liveSnap && !paperSnap) {
-        checks.push({ id: 'snapshot_sep', status: 'warn', label: '스냅샷 없음 (7일)', detail: 'portfolio_snapshots 7일 내 데이터 없음' });
+        checks.push({
+          id: 'snapshot_sep',
+          status: 'warn',
+          label: '스냅샷 없음 (7일)',
+          detail: 'portfolio_snapshots 7일 내 데이터 없음',
+        });
       } else {
         const missing = !liveSnap ? 'Live' : 'Paper';
-        checks.push({ id: 'snapshot_sep', status: 'warn', label: `스냅샷 ${missing} 누락`, detail: `${missing} 스냅샷 7일내 없음 — 저장 중단 가능성` });
+        checks.push({
+          id: 'snapshot_sep',
+          status: 'warn',
+          label: `스냅샷 ${missing} 누락`,
+          detail: `${missing} 스냅샷 7일내 없음 — 저장 중단 가능성`,
+        });
       }
     } catch {
       checks.push({ id: 'snapshot_sep', status: 'warn', label: '스냅샷 분리', detail: '조회 실패' });
@@ -171,11 +228,26 @@ app.get('/review/xray', async (c) => {
       const paperChainCnt = Number(chainRows.rows[0]?.cnt ?? 0);
       // DANGER: paper trades closed but no paper score_accuracy → tagging bug
       if (paperChainCnt > 0 && paperCnt === 0 && liveCnt > 0) {
-        checks.push({ id: 'score_accuracy_mode', status: 'danger', label: '승률 데이터 모드 불일치', detail: `Paper 청산 ${paperChainCnt}건 있으나 paper score_accuracy 없음 — 승률 피드백 누락` });
+        checks.push({
+          id: 'score_accuracy_mode',
+          status: 'danger',
+          label: '승률 데이터 모드 불일치',
+          detail: `Paper 청산 ${paperChainCnt}건 있으나 paper score_accuracy 없음 — 승률 피드백 누락`,
+        });
       } else if (liveCnt > 0 || paperCnt > 0) {
-        checks.push({ id: 'score_accuracy_mode', status: 'ok', label: '승률 데이터 모드 태깅', detail: `Live ${liveCnt}건 / Paper ${paperCnt}건 (30일)` });
+        checks.push({
+          id: 'score_accuracy_mode',
+          status: 'ok',
+          label: '승률 데이터 모드 태깅',
+          detail: `Live ${liveCnt}건 / Paper ${paperCnt}건 (30일)`,
+        });
       } else {
-        checks.push({ id: 'score_accuracy_mode', status: 'warn', label: '승률 데이터 없음', detail: '30일 내 score_accuracy 레코드 없음' });
+        checks.push({
+          id: 'score_accuracy_mode',
+          status: 'warn',
+          label: '승률 데이터 없음',
+          detail: '30일 내 score_accuracy 레코드 없음',
+        });
       }
     } catch {
       checks.push({ id: 'score_accuracy_mode', status: 'warn', label: '승률 데이터 확인', detail: '조회 실패' });
@@ -191,7 +263,7 @@ app.get('/review/xray', async (c) => {
       const legacyAllocated = Number(fb.allocated_krw ?? 0);
       const paperAllocated = Number(fb.allocated_krw_paper ?? 0);
       const liveAllocated = Number(fb.allocated_krw_live ?? 0);
-      const legacyPnl = Number(fb.total_pnl_usd ?? 0);
+      const _legacyPnl = Number(fb.total_pnl_usd ?? 0);
       const paperPnl = Number(fb.total_pnl_usd_paper ?? 0);
       const livePnl = Number(fb.total_pnl_usd_live ?? 0);
 
@@ -212,12 +284,27 @@ app.get('/review/xray', async (c) => {
       }
 
       if (issues.length > 0) {
-        checks.push({ id: 'futures_budget_sep', status: 'danger', label: '선물 예산 크로스오염', detail: issues.join(' | ') });
+        checks.push({
+          id: 'futures_budget_sep',
+          status: 'danger',
+          label: '선물 예산 크로스오염',
+          detail: issues.join(' | '),
+        });
       } else {
-        checks.push({ id: 'futures_budget_sep', status: 'ok', label: '선물 예산 분리', detail: `Paper ₩${paperAllocated.toLocaleString()} (PnL $${paperPnl.toFixed(2)}) / Live ₩${liveAllocated.toLocaleString()} (PnL $${livePnl.toFixed(2)})` });
+        checks.push({
+          id: 'futures_budget_sep',
+          status: 'ok',
+          label: '선물 예산 분리',
+          detail: `Paper ₩${paperAllocated.toLocaleString()} (PnL $${paperPnl.toFixed(2)}) / Live ₩${liveAllocated.toLocaleString()} (PnL $${livePnl.toFixed(2)})`,
+        });
       }
     } catch (e: any) {
-      checks.push({ id: 'futures_budget_sep', status: 'warn', label: '선물 예산 분리', detail: `조회 실패: ${e.message?.slice(0, 60)}` });
+      checks.push({
+        id: 'futures_budget_sep',
+        status: 'warn',
+        label: '선물 예산 분리',
+        detail: `조회 실패: ${e.message?.slice(0, 60)}`,
+      });
     }
 
     // ── 7. 중복 OPEN 체인 (같은 종목 paper/live 경계 무관) ──────────────
@@ -230,18 +317,26 @@ app.get('/review/xray', async (c) => {
         HAVING COUNT(*) > 1
       `);
       if (rows.length > 0) {
-        const detail = rows.slice(0, 4).map((r: any) => `${r.stock_code}(${r.is_paper ? 'paper' : 'live'}) ${r.cnt}개`).join(', ');
+        const detail = rows
+          .slice(0, 4)
+          .map((r: any) => `${r.stock_code}(${r.is_paper ? 'paper' : 'live'}) ${r.cnt}개`)
+          .join(', ');
         checks.push({ id: 'duplicate_chains', status: 'danger', label: '중복 OPEN 체인', detail });
       } else {
-        checks.push({ id: 'duplicate_chains', status: 'ok', label: '중복 체인 없음', detail: '모든 종목 단일 OPEN 체인' });
+        checks.push({
+          id: 'duplicate_chains',
+          status: 'ok',
+          label: '중복 체인 없음',
+          detail: '모든 종목 단일 OPEN 체인',
+        });
       }
     } catch {
       checks.push({ id: 'duplicate_chains', status: 'warn', label: '중복 체인 확인', detail: '조회 실패' });
     }
 
-    const danger = checks.filter(c => c.status === 'danger').length;
-    const warn = checks.filter(c => c.status === 'warn').length;
-    const ok = checks.filter(c => c.status === 'ok').length;
+    const danger = checks.filter((c) => c.status === 'danger').length;
+    const warn = checks.filter((c) => c.status === 'warn').length;
+    const ok = checks.filter((c) => c.status === 'ok').length;
 
     return c.json({
       ts: new Date().toISOString(),
@@ -249,7 +344,6 @@ app.get('/review/xray', async (c) => {
       summary: { danger, warn, ok, total: checks.length },
       checks,
     });
-
   } catch (err: any) {
     return c.json({ error: err.message, checks }, 500);
   }

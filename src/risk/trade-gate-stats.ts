@@ -3,12 +3,12 @@
  */
 
 import { GATE } from '../config/constants.js';
-import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
+import { config } from '../config/index.js';
 import { getPool } from '../db/client.js';
-import { logger } from '../utils/logger.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
-import type { GateResult, CooldownStatus, WinRateStats } from './trade-gate-types.js';
+import { logger } from '../utils/logger.js';
+import type { CooldownStatus, GateResult, WinRateStats } from './trade-gate-types.js';
 
 let lastCooldownNotifyAt = 0;
 let cooldownResetAt: Date | null = null;
@@ -18,18 +18,18 @@ const SELL_PRICE_SUB = `(SELECT filled_price FROM orders WHERE chain_id = tc.id 
 export function resetCooldown(): void {
   cooldownResetAt = new Date();
   logger.info('🔓 연속손실 쿨다운 수동 초기화', { component: 'TRADE_GATE' });
-  getPool().query(
-    `INSERT INTO system_state (key, value) VALUES ('cooldown_reset_at', $1)
+  getPool()
+    .query(
+      `INSERT INTO system_state (key, value) VALUES ('cooldown_reset_at', $1)
      ON CONFLICT (key) DO UPDATE SET value = $1`,
-    [cooldownResetAt.toISOString()],
-  ).catch(() => {});
+      [cooldownResetAt.toISOString()],
+    )
+    .catch(() => {});
 }
 
 export async function restoreCooldownResetAt(): Promise<void> {
   try {
-    const { rows } = await getPool().query(
-      "SELECT value FROM system_state WHERE key = 'cooldown_reset_at'",
-    );
+    const { rows } = await getPool().query("SELECT value FROM system_state WHERE key = 'cooldown_reset_at'");
     if (rows.length > 0) {
       const saved = new Date(rows[0].value);
       if (Date.now() - saved.getTime() < 24 * 60 * 60_000) {
@@ -37,34 +37,49 @@ export async function restoreCooldownResetAt(): Promise<void> {
         logger.info(`📦 쿨다운 리셋 복원: ${saved.toISOString()}`, { component: 'TRADE_GATE' });
       }
     }
-  } catch { /* 복원 실패 시 null 유지 */ }
+  } catch {
+    /* 복원 실패 시 null 유지 */
+  }
 }
 
 export async function getWinRateStats(days: number = 30): Promise<WinRateStats> {
   const defaultStats: WinRateStats = { totalTrades: 0, wins: 0, losses: 0, avgWinPct: 3.0, avgLossPct: -3.0 };
   try {
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT close_reason, avg_buy_price, ${SELL_PRICE_SUB}
       FROM transaction_chains tc
       WHERE status = 'CLOSED'
         AND closed_at >= NOW() - ($1 * INTERVAL '1 day')
         AND avg_buy_price > 0
         AND is_paper = $2
-    `, [days, getCtxIsPaper()]);
+    `,
+      [days, getCtxIsPaper()],
+    );
 
     if (rows.length < 5) return defaultStats;
 
-    let wins = 0, losses = 0, totalWinPct = 0, totalLossPct = 0;
+    let wins = 0,
+      losses = 0,
+      totalWinPct = 0,
+      totalLossPct = 0;
     for (const r of rows) {
       const buyPrice = Number(r.avg_buy_price);
       const sellPrice = Number(r.sell_price ?? buyPrice);
       const pnlPct = buyPrice > 0 ? ((sellPrice - buyPrice) / buyPrice) * 100 : 0;
-      if (pnlPct > 0) { wins++; totalWinPct += pnlPct; }
-      else { losses++; totalLossPct += pnlPct; }
+      if (pnlPct > 0) {
+        wins++;
+        totalWinPct += pnlPct;
+      } else {
+        losses++;
+        totalLossPct += pnlPct;
+      }
     }
 
     return {
-      totalTrades: rows.length, wins, losses,
+      totalTrades: rows.length,
+      wins,
+      losses,
       avgWinPct: wins > 0 ? totalWinPct / wins : 3.0,
       avgLossPct: losses > 0 ? totalLossPct / losses : -3.0,
     };
@@ -81,7 +96,8 @@ async function getConsecutiveLosses(): Promise<number> {
       params.push(cooldownResetAt.toISOString());
       resetFilter = `AND closed_at > $${params.length}`;
     }
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT close_reason, avg_buy_price, ${SELL_PRICE_SUB}
       FROM transaction_chains tc
       WHERE status = 'CLOSED'
@@ -89,7 +105,9 @@ async function getConsecutiveLosses(): Promise<number> {
         AND is_paper = $1
         ${resetFilter}
       ORDER BY closed_at DESC LIMIT 10
-    `, params);
+    `,
+      params,
+    );
 
     let consecutive = 0;
     for (const r of rows) {
@@ -107,11 +125,12 @@ export async function cooldownGate(): Promise<GateResult> {
   // Paper 모드: 쿨다운 대폭 완화 (config.paperRisk.cooldownMultiplier 적용)
   const isPaper = getCtxIsPaper();
   const mult = isPaper ? config.paperRisk.cooldownMultiplier : 1;
-  const cooldownMs = consecutive >= 5
-    ? Math.round(GATE.CONSECUTIVE_LOSS_HALT_MS * mult)
-    : consecutive >= 3
-      ? Math.round(GATE.CONSECUTIVE_LOSS_WARN_MS * mult)
-      : 0;
+  const cooldownMs =
+    consecutive >= 5
+      ? Math.round(GATE.CONSECUTIVE_LOSS_HALT_MS * mult)
+      : consecutive >= 3
+        ? Math.round(GATE.CONSECUTIVE_LOSS_WARN_MS * mult)
+        : 0;
 
   if (cooldownMs > 0) {
     try {
@@ -121,13 +140,16 @@ export async function cooldownGate(): Promise<GateResult> {
         params.push(cooldownResetAt.toISOString());
         resetFilter = `AND closed_at > $${params.length}`;
       }
-      const { rows } = await getPool().query(`
+      const { rows } = await getPool().query(
+        `
         SELECT closed_at FROM transaction_chains
         WHERE status = 'CLOSED'
           AND (close_reason IS NULL OR close_reason NOT LIKE '%SCALPING 강제청산%')
           AND is_paper = $1 ${resetFilter}
         ORDER BY closed_at DESC LIMIT 1
-      `, params);
+      `,
+        params,
+      );
 
       if (rows.length > 0) {
         const elapsed = Date.now() - new Date(rows[0].closed_at).getTime();
@@ -141,7 +163,9 @@ export async function cooldownGate(): Promise<GateResult> {
           return { passed: false, reason: `연속손실 쿨다운: ${consecutive}연패 → ${remaining}분 대기 중` };
         }
       }
-    } catch { /* pass through */ }
+    } catch {
+      /* pass through */
+    }
   }
   return { passed: true, reason: consecutive > 0 ? `최근 ${consecutive}연패 (쿨다운 미해당)` : '연속손실 없음' };
 }
@@ -182,11 +206,12 @@ export async function getCooldownStatus(): Promise<CooldownStatus> {
     const consecutive = await getConsecutiveLosses();
     const isPaper = getCtxIsPaper();
     const mult = isPaper ? config.paperRisk.cooldownMultiplier : 1;
-    const cooldownMs = consecutive >= 5
-      ? Math.round(GATE.CONSECUTIVE_LOSS_HALT_MS * mult)
-      : consecutive >= 3
-        ? Math.round(GATE.CONSECUTIVE_LOSS_WARN_MS * mult)
-        : 0;
+    const cooldownMs =
+      consecutive >= 5
+        ? Math.round(GATE.CONSECUTIVE_LOSS_HALT_MS * mult)
+        : consecutive >= 3
+          ? Math.round(GATE.CONSECUTIVE_LOSS_WARN_MS * mult)
+          : 0;
 
     if (cooldownMs > 0) {
       const params: any[] = [isPaper];
@@ -195,22 +220,35 @@ export async function getCooldownStatus(): Promise<CooldownStatus> {
         params.push(cooldownResetAt.toISOString());
         resetFilter = `AND closed_at > $${params.length}`;
       }
-      const { rows } = await getPool().query(`
+      const { rows } = await getPool().query(
+        `
         SELECT closed_at FROM transaction_chains
         WHERE status = 'CLOSED'
           AND (close_reason IS NULL OR close_reason NOT LIKE '%SCALPING 강제청산%')
           AND is_paper = $1 ${resetFilter}
         ORDER BY closed_at DESC LIMIT 1
-      `, params);
+      `,
+        params,
+      );
       if (rows.length > 0) {
         const elapsed = Date.now() - new Date(rows[0].closed_at).getTime();
         if (elapsed < cooldownMs) {
           const remaining = Math.ceil((cooldownMs - elapsed) / 60_000);
-          return { active: true, consecutive, remainingMinutes: remaining, reason: `${consecutive}연패 → ${remaining}분 후 해제` };
+          return {
+            active: true,
+            consecutive,
+            remainingMinutes: remaining,
+            reason: `${consecutive}연패 → ${remaining}분 후 해제`,
+          };
         }
       }
     }
-    return { active: false, consecutive, remainingMinutes: 0, reason: consecutive > 0 ? `최근 ${consecutive}연패 (쿨다운 미해당)` : '' };
+    return {
+      active: false,
+      consecutive,
+      remainingMinutes: 0,
+      reason: consecutive > 0 ? `최근 ${consecutive}연패 (쿨다운 미해당)` : '',
+    };
   } catch {
     return { active: false, consecutive: 0, remainingMinutes: 0, reason: '' };
   }

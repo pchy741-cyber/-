@@ -2,14 +2,15 @@
  * 선물 자동 실행 — 진입/청산/TP-SL 모니터링
  * 완전 격리: 별도 budget 테이블, feature flag 필수
  */
-import { getPool } from '../../db/client.js';
+
+import { budgetCol } from '../../api/guards/live-pin.js';
 import { getCtxIsPaper } from '../../config/context.js';
-import { getFuturesPrice, placeFuturesOrder, FUTURES_BY_PRODUCT } from '../../kis/futures.js';
+import { getPool } from '../../db/client.js';
+import { FUTURES_BY_PRODUCT, getFuturesPrice, placeFuturesOrder } from '../../kis/futures.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
-import { budgetCol } from '../../api/guards/live-pin.js';
-import { scanFuturesSignals, calcFuturesTPSL, calcFuturesQty } from './signal-generator.js';
 import { loadTunerParams } from './futures-tuner.js';
+import { calcFuturesQty, calcFuturesTPSL, scanFuturesSignals } from './signal-generator.js';
 import type { FuturesAutoConfig } from './types.js';
 
 const COMP = 'FUTURES';
@@ -54,22 +55,27 @@ export async function monitorFuturesTPSL(): Promise<void> {
       const sl = pos.sl_price ? Number(pos.sl_price) : null;
 
       if (tp && pos.side === 'LONG' && current >= tp) {
-        shouldClose = true; closeReason = `TP($${current}>=$${tp})`;
+        shouldClose = true;
+        closeReason = `TP($${current}>=$${tp})`;
       } else if (tp && pos.side === 'SHORT' && current <= tp) {
-        shouldClose = true; closeReason = `TP($${current}<=$${tp})`;
+        shouldClose = true;
+        closeReason = `TP($${current}<=$${tp})`;
       } else if (sl && pos.side === 'LONG' && current <= sl) {
-        shouldClose = true; closeReason = `SL($${current}<=$${sl})`;
+        shouldClose = true;
+        closeReason = `SL($${current}<=$${sl})`;
       } else if (sl && pos.side === 'SHORT' && current >= sl) {
-        shouldClose = true; closeReason = `SL($${current}>=$${sl})`;
+        shouldClose = true;
+        closeReason = `SL($${current}>=$${sl})`;
       }
 
       if (shouldClose) {
         await closeFuturesPosition(pos, current, pnl, closeReason, isPaper);
       } else {
-        await getPool().query(
-          'UPDATE futures_positions SET current_price = $1, pnl_usd = $2 WHERE id = $3',
-          [current, pnl, pos.id],
-        );
+        await getPool().query('UPDATE futures_positions SET current_price = $1, pnl_usd = $2 WHERE id = $3', [
+          current,
+          pnl,
+          pos.id,
+        ]);
       }
     } catch (e: any) {
       logger.warn(`선물 모니터 실패 ${pos.symbol}: ${e.message}`, { component: COMP });
@@ -79,15 +85,21 @@ export async function monitorFuturesTPSL(): Promise<void> {
 
 /** 포지션 청산 실행 */
 async function closeFuturesPosition(
-  pos: any, closePrice: number, pnl: number, reason: string, isPaper: boolean,
+  pos: any,
+  closePrice: number,
+  pnl: number,
+  reason: string,
+  isPaper: boolean,
 ): Promise<void> {
   logger.info(`선물 자동청산: ${pos.symbol} ${pos.side} PnL=$${pnl.toFixed(2)} — ${reason}`, { component: COMP });
 
   if (!isPaper) {
     const closeSide = pos.side === 'LONG' ? 'SELL' : 'BUY';
     await placeFuturesOrder({
-      symbol: pos.symbol, side: closeSide as 'BUY' | 'SELL',
-      quantity: Number(pos.quantity), orderType: 'MARKET',
+      symbol: pos.symbol,
+      side: closeSide as 'BUY' | 'SELL',
+      quantity: Number(pos.quantity),
+      orderType: 'MARKET',
     });
   }
 
@@ -104,10 +116,7 @@ async function closeFuturesPosition(
   );
 
   const pnlCol = budgetCol(isPaper).pnl;
-  await getPool().query(
-    `UPDATE futures_budget SET ${pnlCol} = ${pnlCol} + $1 WHERE id = 1`,
-    [pnl],
-  );
+  await getPool().query(`UPDATE futures_budget SET ${pnlCol} = ${pnlCol} + $1 WHERE id = 1`, [pnl]);
 
   const emoji = pnl >= 0 ? '🟢' : '🔴';
   await sendTelegramMessage(
@@ -156,8 +165,10 @@ export async function executeFuturesEntry(config: FuturesAutoConfig): Promise<vo
 
   if (!isPaper) {
     const result = await placeFuturesOrder({
-      symbol: best.symbol, side: side as 'BUY' | 'SELL',
-      quantity: qty, orderType: 'MARKET',
+      symbol: best.symbol,
+      side: side as 'BUY' | 'SELL',
+      quantity: qty,
+      orderType: 'MARKET',
     });
     if (!result.success) {
       logger.warn(`선물 자동진입 실패: ${result.message}`, { component: COMP });
@@ -174,7 +185,7 @@ export async function executeFuturesEntry(config: FuturesAutoConfig): Promise<vo
 
   await sendTelegramMessage(
     `📈 *선물 자동진입*\n${best.symbol} ${best.direction} ${qty}계약 @$${price.price}\n` +
-    `TP: $${tpsl.tpPrice}(+${tpsl.tpPct.toFixed(1)}%) | SL: $${tpsl.slPrice}(-${tpsl.slPct.toFixed(1)}%)\n` +
-    `사유: ${best.reason} (conf=${best.confidence}%)`,
+      `TP: $${tpsl.tpPrice}(+${tpsl.tpPct.toFixed(1)}%) | SL: $${tpsl.slPrice}(-${tpsl.slPct.toFixed(1)}%)\n` +
+      `사유: ${best.reason} (conf=${best.confidence}%)`,
   );
 }

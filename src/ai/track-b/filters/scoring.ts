@@ -46,7 +46,7 @@ function calcSignalBonus(s: SignalData): number {
 /** 거래량 시간대 보정 */
 function calcAdjustedVolRatio(rawVolRatio: number): number {
   const kstNow = getKSTNow();
-  const marketMinutes = (kstNow.getUTCHours() * 60 + kstNow.getUTCMinutes()) - 540;
+  const marketMinutes = kstNow.getUTCHours() * 60 + kstNow.getUTCMinutes() - 540;
   const timeElapsedRatio = Math.max(0.15, Math.min(1.0, marketMinutes / 390));
   return rawVolRatio / timeElapsedRatio;
 }
@@ -60,44 +60,55 @@ export function computeScoring(input: ScoringInput): ScoringResult {
   const curPrice = price.currentPrice;
 
   // ── 캔들 패턴 ──
-  const hasBullishCandle = tech.candlePatterns.some(p => p.bullish && p.strength === 'STRONG');
-  const candleBonus = hasBullishCandle ? 12 : tech.candlePatterns.some(p => p.bullish && p.strength === 'MODERATE') ? 6 : 0;
+  const hasBullishCandle = tech.candlePatterns.some((p) => p.bullish && p.strength === 'STRONG');
+  const candleBonus = hasBullishCandle
+    ? 12
+    : tech.candlePatterns.some((p) => p.bullish && p.strength === 'MODERATE')
+      ? 6
+      : 0;
 
   // ── 시그널 ──
   const signalData = extractSignals(signals);
   const signalBonus = calcSignalBonus(signalData);
   if (signals && signalBonus !== 0) {
-    logger.info(`  📡 ${code}: 시그널 체결강도=${signalData.intensity.toFixed(0)} 공매도=${signalData.shortRatio.toFixed(1)}% 호가비=${signalData.bidAskRatio.toFixed(2)} 외인추정=${signalData.foreignNetEst}M → ${signalBonus > 0 ? '+' : ''}${signalBonus}점`, { component: 'TRACK_B' });
+    logger.info(
+      `  📡 ${code}: 시그널 체결강도=${signalData.intensity.toFixed(0)} 공매도=${signalData.shortRatio.toFixed(1)}% 호가비=${signalData.bidAskRatio.toFixed(2)} 외인추정=${signalData.foreignNetEst}M → ${signalBonus > 0 ? '+' : ''}${signalBonus}점`,
+      { component: 'TRACK_B' },
+    );
   }
 
   // ── 거래량 시간대 보정 ──
   const adjustedVolRatio = calcAdjustedVolRatio(tech.volumeRatio);
 
   // ── 우선주/테마 보너스 ──
-  const priorityBonus = megaCap
-    ? 10 + megaCap.bonus
-    : PRIORITY_SECTOR_CODES.has(code) ? 10 : 0;
+  const priorityBonus = megaCap ? 10 + megaCap.bonus : PRIORITY_SECTOR_CODES.has(code) ? 10 : 0;
 
   // ── 구조 패턴 ──
   const structPatterns = detectStructuralPatterns(candles);
   const structBonus = structPatterns.reduce((sum, p) => sum + p.score, 0);
   if (structPatterns.length > 0) {
-    logger.info(`  🔷 ${code}: 구조패턴 [${structPatterns.map(p => p.label).join(', ')}] → ${structBonus > 0 ? '+' : ''}${structBonus}점`, { component: 'TRACK_B' });
+    logger.info(
+      `  🔷 ${code}: 구조패턴 [${structPatterns.map((p) => p.label).join(', ')}] → ${structBonus > 0 ? '+' : ''}${structBonus}점`,
+      { component: 'TRACK_B' },
+    );
   }
 
   // ── 볼륨 프로파일 ──
   const vpLevels = volumeProfile(candles);
-  const nearSupport = vpLevels.some(l => l.isSupport && Math.abs(l.priceLevel - curPrice) / curPrice < 0.02);
-  const nearResistance = vpLevels.some(l => l.isResistance && Math.abs(l.priceLevel - curPrice) / curPrice < 0.015);
+  const nearSupport = vpLevels.some((l) => l.isSupport && Math.abs(l.priceLevel - curPrice) / curPrice < 0.02);
+  const nearResistance = vpLevels.some((l) => l.isResistance && Math.abs(l.priceLevel - curPrice) / curPrice < 0.015);
   const vpBonus = nearSupport ? 8 : nearResistance ? -6 : 0;
   if (vpBonus !== 0) {
-    logger.info(`  📊 ${code}: 볼륨프로파일 ${nearSupport ? '지지선 근처' : '저항선 근처'} → ${vpBonus > 0 ? '+' : ''}${vpBonus}점`, { component: 'TRACK_B' });
+    logger.info(
+      `  📊 ${code}: 볼륨프로파일 ${nearSupport ? '지지선 근처' : '저항선 근처'} → ${vpBonus > 0 ? '+' : ''}${vpBonus}점`,
+      { component: 'TRACK_B' },
+    );
   }
 
   // ── 눌림목 ──
-  const recentHigh5 = candles.length >= 6 ? Math.max(...candles.slice(1, 6).map(c => c.high)) : 0;
-  const truePullbackPattern = tech.sma20 > 0 && recentHigh5 > tech.sma20 * 1.04 &&
-    curPrice >= tech.sma20 * 0.98 && curPrice <= tech.sma20 * 1.02;
+  const recentHigh5 = candles.length >= 6 ? Math.max(...candles.slice(1, 6).map((c) => c.high)) : 0;
+  const truePullbackPattern =
+    tech.sma20 > 0 && recentHigh5 > tech.sma20 * 1.04 && curPrice >= tech.sma20 * 0.98 && curPrice <= tech.sma20 * 1.02;
   const pullbackBonus = truePullbackPattern ? 12 : 0;
   if (truePullbackPattern) {
     logger.info(`  🎯 ${code}: 눌림목 타점 +12점`, { component: 'TRACK_B' });
@@ -106,17 +117,21 @@ export function computeScoring(input: ScoringInput): ScoringResult {
   // ── 피보나치 ──
   const fibBonus = tech.fibResult?.fibScore ?? 0;
   if (fibBonus > 0 && tech.fibResult) {
-    const nearLevel = tech.fibResult.levels.find(l => l.isNear);
+    const nearLevel = tech.fibResult.levels.find((l) => l.isNear);
     if (nearLevel) {
-      logger.info(`  📐 ${code}: 피보나치 ${(nearLevel.level * 100).toFixed(1)}% → +${fibBonus}점`, { component: 'TRACK_B' });
+      logger.info(`  📐 ${code}: 피보나치 ${(nearLevel.level * 100).toFixed(1)}% → +${fibBonus}점`, {
+        component: 'TRACK_B',
+      });
     }
   }
 
   // ── RSI 다이버전스 ──
-  const rsiDivBonus = tech.rsiDivergence?.type === 'BULLISH'
-    ? Math.round(8 * (tech.rsiDivergence.strength || 0.5)) : 0;
+  const rsiDivBonus = tech.rsiDivergence?.type === 'BULLISH' ? Math.round(8 * (tech.rsiDivergence.strength || 0.5)) : 0;
   if (rsiDivBonus > 0) {
-    logger.info(`  🔄 ${code}: RSI 불리쉬 다이버전스 → +${rsiDivBonus}점 (strength=${tech.rsiDivergence?.strength?.toFixed(2)})`, { component: 'TRACK_B' });
+    logger.info(
+      `  🔄 ${code}: RSI 불리쉬 다이버전스 → +${rsiDivBonus}점 (strength=${tech.rsiDivergence?.strength?.toFixed(2)})`,
+      { component: 'TRACK_B' },
+    );
   }
 
   // ── 볼린저 스퀴즈 돌파 ──
@@ -126,12 +141,21 @@ export function computeScoring(input: ScoringInput): ScoringResult {
   }
 
   // ── 합산 ──
-  const effectiveTechScore = tech.score + priorityBonus + candleBonus + structBonus +
-    vpBonus + pullbackBonus + fibBonus + signalBonus + rsiDivBonus + bbSqueezeBonus;
+  const effectiveTechScore =
+    tech.score +
+    priorityBonus +
+    candleBonus +
+    structBonus +
+    vpBonus +
+    pullbackBonus +
+    fibBonus +
+    signalBonus +
+    rsiDivBonus +
+    bbSqueezeBonus;
   const isFibSupport = fibBonus >= 10 && tech.macdCrossover !== 'BEARISH';
 
   // ── 5일 고점/금일 변화율 ──
-  const high5d = candles.length >= 6 ? Math.max(...candles.slice(1, 6).map(c => c.high)) : 0;
+  const high5d = candles.length >= 6 ? Math.max(...candles.slice(1, 6).map((c) => c.high)) : 0;
   const atMultiDayHigh = high5d > 0 && curPrice >= high5d * 0.995;
   const prevClose5 = candles.length >= 2 ? Number(candles[1].close) : curPrice;
   const todayChangePct = prevClose5 > 0 ? ((curPrice - prevClose5) / prevClose5) * 100 : 0;
@@ -140,10 +164,25 @@ export function computeScoring(input: ScoringInput): ScoringResult {
   const minTechScore = megaCap ? 45 : mode === 'SCALPING' ? 50 : 55;
 
   return {
-    candleBonus, hasBullishCandle, structBonus, vpBonus, pullbackBonus,
-    fibBonus, signalBonus, rsiDivBonus, bbSqueezeBonus, priorityBonus,
-    effectiveTechScore, isFibSupport, nearSupport, nearResistance,
-    atMultiDayHigh, todayChangePct, adjustedVolRatio, minTechScore,
-    truePullbackPattern, signalData,
+    candleBonus,
+    hasBullishCandle,
+    structBonus,
+    vpBonus,
+    pullbackBonus,
+    fibBonus,
+    signalBonus,
+    rsiDivBonus,
+    bbSqueezeBonus,
+    priorityBonus,
+    effectiveTechScore,
+    isFibSupport,
+    nearSupport,
+    nearResistance,
+    atMultiDayHigh,
+    todayChangePct,
+    adjustedVolRatio,
+    minTechScore,
+    truePullbackPattern,
+    signalData,
   };
 }

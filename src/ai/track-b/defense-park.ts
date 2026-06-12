@@ -7,26 +7,25 @@
  * 파킹 자산: KODEX 200 (069500) — 대한민국이 망하지 않는 한 0이 되지 않는 가장 안전한 자산
  */
 
-import { config } from '../../config/index.js';
+import { type CrashSignal, INVERSE_ETF, INVERSE_ETF_CODES, INVERSE_ETFS } from '../../automation/crash-profit.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, isMemoryMode } from '../../db/client.js';
 import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { getCashReserveRatio } from './cash-manager.js';
-import { INVERSE_ETF, INVERSE_ETF_CODES, INVERSE_ETFS, type CrashSignal } from '../../automation/crash-profit.js';
 
 export const PARK_STOCK_CODE = '069500'; // KODEX 200
 export const PARK_STOCK_NAME = 'KODEX 200';
 
 // 하락세 진입 기준 (보수적으로 설정)
-const DOWNTREND_DRAWDOWN_PCT = 7;   // 7일 최고점 대비 7% 이상 낙폭
-const DOWNTREND_CONFIRM_DAYS = 4;   // 최근 5일 중 음수 daily_pnl 일수
-const DOWNTREND_MIN_DAYS = 3;       // 판단에 필요한 최소 스냅샷 수
+const DOWNTREND_DRAWDOWN_PCT = 7; // 7일 최고점 대비 7% 이상 낙폭
+const DOWNTREND_CONFIRM_DAYS = 4; // 최근 5일 중 음수 daily_pnl 일수
+const DOWNTREND_MIN_DAYS = 3; // 판단에 필요한 최소 스냅샷 수
 
 // 상승세 복귀 기준
-const RECOVERY_PARK_PROFIT_PCT = 1.5;  // 파킹 자산 수익률 1.5% 이상 (= 시장 회복 신호)
-const RECOVERY_POSITIVE_DAYS = 2;      // 연속 n일 양수 daily_pnl
+const RECOVERY_PARK_PROFIT_PCT = 1.5; // 파킹 자산 수익률 1.5% 이상 (= 시장 회복 신호)
+const RECOVERY_POSITIVE_DAYS = 2; // 연속 n일 양수 daily_pnl
 
 export interface DefenseParkState {
   isActive: boolean;
@@ -39,14 +38,24 @@ export interface DefenseParkState {
 /** DB에서 현재 방어 파킹 상태 조회 */
 export async function getDefenseParkState(): Promise<DefenseParkState> {
   if (isMemoryMode()) {
-    return { isActive: false, parkStockCode: PARK_STOCK_CODE, parkStockName: PARK_STOCK_NAME, entryReason: null, enteredAt: null };
+    return {
+      isActive: false,
+      parkStockCode: PARK_STOCK_CODE,
+      parkStockName: PARK_STOCK_NAME,
+      entryReason: null,
+      enteredAt: null,
+    };
   }
   try {
-    const { rows } = await getPool().query(
-      `SELECT * FROM defense_park_state WHERE is_active = TRUE LIMIT 1`
-    );
+    const { rows } = await getPool().query(`SELECT * FROM defense_park_state WHERE is_active = TRUE LIMIT 1`);
     if (rows.length === 0) {
-      return { isActive: false, parkStockCode: PARK_STOCK_CODE, parkStockName: PARK_STOCK_NAME, entryReason: null, enteredAt: null };
+      return {
+        isActive: false,
+        parkStockCode: PARK_STOCK_CODE,
+        parkStockName: PARK_STOCK_NAME,
+        entryReason: null,
+        enteredAt: null,
+      };
     }
     return {
       isActive: true,
@@ -56,7 +65,13 @@ export async function getDefenseParkState(): Promise<DefenseParkState> {
       enteredAt: rows[0].entered_at,
     };
   } catch {
-    return { isActive: false, parkStockCode: PARK_STOCK_CODE, parkStockName: PARK_STOCK_NAME, entryReason: null, enteredAt: null };
+    return {
+      isActive: false,
+      parkStockCode: PARK_STOCK_CODE,
+      parkStockName: PARK_STOCK_NAME,
+      entryReason: null,
+      enteredAt: null,
+    };
   }
 }
 
@@ -67,7 +82,7 @@ async function activateDefensePark(reason: string): Promise<void> {
     `INSERT INTO defense_park_state (is_active, park_stock_code, park_stock_name, entry_reason, entered_at)
      VALUES (TRUE, $1, $2, $3, NOW())
      ON CONFLICT DO NOTHING`,
-    [PARK_STOCK_CODE, PARK_STOCK_NAME, reason]
+    [PARK_STOCK_CODE, PARK_STOCK_NAME, reason],
   );
 }
 
@@ -77,7 +92,7 @@ export async function deactivateDefensePark(reason: string): Promise<void> {
   await getPool().query(
     `UPDATE defense_park_state SET is_active = FALSE, exit_reason = $1, exited_at = NOW()
      WHERE is_active = TRUE`,
-    [reason]
+    [reason],
   );
 }
 
@@ -89,14 +104,17 @@ export async function isPortfolioInDowntrend(): Promise<{ downtrend: boolean; re
   if (isMemoryMode()) return { downtrend: false, reason: '' };
 
   try {
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT total_value, daily_pnl, snapshot_at
       FROM portfolio_snapshots
       WHERE snapshot_at >= NOW() - INTERVAL '8 days'
         AND is_paper = $1
       ORDER BY snapshot_at DESC
       LIMIT 10
-    `, [getCtxIsPaper()]);
+    `,
+      [getCtxIsPaper()],
+    );
 
     if (rows.length < DOWNTREND_MIN_DAYS) {
       return { downtrend: false, reason: `스냅샷 부족 (${rows.length}개)` };
@@ -111,7 +129,7 @@ export async function isPortfolioInDowntrend(): Promise<{ downtrend: boolean; re
 
     // 최근 5일 중 음수 일수 계산
     const recentPnls = pnls.slice(0, 5);
-    const negativeDays = recentPnls.filter(p => p < 0).length;
+    const negativeDays = recentPnls.filter((p) => p < 0).length;
 
     const drawdownTriggered = drawdownPct >= DOWNTREND_DRAWDOWN_PCT;
     const consecutiveLossTriggered = negativeDays >= DOWNTREND_CONFIRM_DAYS;
@@ -137,14 +155,14 @@ export async function isMarketRecovering(
   livePrices: Map<string, CurrentPrice>,
 ): Promise<{ recovering: boolean; reason: string }> {
   // 1. KODEX 200 또는 인버스 포지션 수익률 확인
-  const parkChain = openChains.find(c => c.stock_code === PARK_STOCK_CODE || INVERSE_ETF_CODES.has(c.stock_code));
-  if (parkChain && parkChain.avg_buy_price) {
+  const parkChain = openChains.find((c) => c.stock_code === PARK_STOCK_CODE || INVERSE_ETF_CODES.has(c.stock_code));
+  if (parkChain?.avg_buy_price) {
     const price = livePrices.get(parkChain.stock_code);
     if (price && price.currentPrice > 0) {
       const avgBuy = Number(parkChain.avg_buy_price);
       const pnlPct = ((price.currentPrice - avgBuy) / avgBuy) * 100;
       if (pnlPct >= RECOVERY_PARK_PROFIT_PCT) {
-        const assetName = INVERSE_ETFS.find(e => e.code === parkChain.stock_code)?.name ?? PARK_STOCK_NAME;
+        const assetName = INVERSE_ETFS.find((e) => e.code === parkChain.stock_code)?.name ?? PARK_STOCK_NAME;
         return {
           recovering: true,
           reason: `${assetName} 수익률 +${pnlPct.toFixed(1)}% (기준 +${RECOVERY_PARK_PROFIT_PCT}%)`,
@@ -156,20 +174,25 @@ export async function isMarketRecovering(
   // 2. 스냅샷 연속 양수 확인
   if (!isMemoryMode()) {
     try {
-      const { rows } = await getPool().query(`
+      const { rows } = await getPool().query(
+        `
         SELECT daily_pnl FROM portfolio_snapshots
         WHERE is_paper = $1
         ORDER BY snapshot_at DESC LIMIT 3
-      `, [getCtxIsPaper()]);
+      `,
+        [getCtxIsPaper()],
+      );
       const recentPnls = rows.map((r: any) => Number(r.daily_pnl));
-      const consecutivePositive = recentPnls.slice(0, RECOVERY_POSITIVE_DAYS).every(p => p > 0);
+      const consecutivePositive = recentPnls.slice(0, RECOVERY_POSITIVE_DAYS).every((p) => p > 0);
       if (consecutivePositive && recentPnls.length >= RECOVERY_POSITIVE_DAYS) {
         return {
           recovering: true,
           reason: `연속 ${RECOVERY_POSITIVE_DAYS}일 수익 흑자 전환`,
         };
       }
-    } catch { /* 스냅샷 없으면 스킵 */ }
+    } catch {
+      /* 스냅샷 없으면 스킵 */
+    }
   }
 
   // 3. 파킹 48시간 이상 경과 + KODEX 200이 수익일 때만 해제
@@ -178,7 +201,7 @@ export async function isMarketRecovering(
   if (!isMemoryMode() && parkChain) {
     try {
       const { rows } = await getPool().query(
-        `SELECT entered_at FROM defense_park_state WHERE is_active = TRUE ORDER BY entered_at DESC LIMIT 1`
+        `SELECT entered_at FROM defense_park_state WHERE is_active = TRUE ORDER BY entered_at DESC LIMIT 1`,
       );
       if (rows.length > 0) {
         const enteredAt = new Date(rows[0].entered_at);
@@ -196,7 +219,9 @@ export async function isMarketRecovering(
           }
         }
       }
-    } catch { /* 스킵 */ }
+    } catch {
+      /* 스킵 */
+    }
   }
 
   return { recovering: false, reason: '' };
@@ -208,7 +233,7 @@ export async function isMarketRecovering(
  * 2) CRASH/PANIC → KODEX 인버스 매수 (하락 수익화)
  *    그 외 → KODEX 200 매수 (안전 파킹)
  */
-async function buildDefenseParkEntryDecisions(
+async function _buildDefenseParkEntryDecisions(
   openChains: TransactionChain[],
   livePrices: Map<string, CurrentPrice>,
   orderableCash: number,
@@ -220,12 +245,19 @@ async function buildDefenseParkEntryDecisions(
   const parkCode = useInverse ? INVERSE_ETF.code : PARK_STOCK_CODE;
   const parkName = useInverse ? INVERSE_ETF.name : PARK_STOCK_NAME;
 
-  logger.warn(`🛡️ 방어 파킹 진입: ${reason} → ${parkName}${useInverse ? ` (score=${crashSignal!.score})` : ''}`, { component: 'DEFENSE_PARK' });
+  logger.warn(`🛡️ 방어 파킹 진입: ${reason} → ${parkName}${useInverse ? ` (score=${crashSignal!.score})` : ''}`, {
+    component: 'DEFENSE_PARK',
+  });
   await activateDefensePark(reason);
 
-  import('../../notifications/web-push.js').then(m =>
-    m.notifyAlert(`🛡️ DEFENSE 모드 진입`, `사유: ${reason.slice(0, 80)}\n${parkName}으로 자산 이동${useInverse ? ' (인버스 공격)' : ''}`)
-  ).catch(() => {});
+  import('../../notifications/web-push.js')
+    .then((m) =>
+      m.notifyAlert(
+        `🛡️ DEFENSE 모드 진입`,
+        `사유: ${reason.slice(0, 80)}\n${parkName}으로 자산 이동${useInverse ? ' (인버스 공격)' : ''}`,
+      ),
+    )
+    .catch(() => {});
 
   const decisions: TradeDecision[] = [];
 
@@ -253,15 +285,14 @@ async function buildDefenseParkEntryDecisions(
   }
 
   // 2. 파킹 자산 매수 (이미 보유 중이면 스킵)
-  const alreadyHasPark = openChains.some(c => c.stock_code === parkCode);
+  const alreadyHasPark = openChains.some((c) => c.stock_code === parkCode);
   if (!alreadyHasPark) {
     const parkPrice = livePrices.get(parkCode);
     if (parkPrice && parkPrice.currentPrice > 0) {
       const minCashReserve = Math.floor(totalAssets * getCashReserveRatio(getCtxIsPaper()));
       const parkable = Math.max(0, orderableCash - minCashReserve);
       // PANIC: 95% 투입, CRASH: 85%, 일반: 95%
-      const investRatio = useInverse && crashSignal!.level === 'PANIC' ? 0.95
-        : useInverse ? 0.85 : 0.95;
+      const investRatio = useInverse && crashSignal!.level === 'PANIC' ? 0.95 : useInverse ? 0.85 : 0.95;
       const investAmount = Math.floor(parkable * investRatio);
       const qty = Math.floor(investAmount / parkPrice.currentPrice);
       if (qty > 0) {
@@ -294,16 +325,16 @@ export async function buildDefenseParkExitDecisions(
   logger.info(`✅ 방어 파킹 해제: ${reason}`, { component: 'DEFENSE_PARK' });
   await deactivateDefensePark(reason);
 
-  import('../../notifications/web-push.js').then(m =>
-    m.notifyAlert('✅ DEFENSE 모드 해제', `사유: ${reason.slice(0, 80)}\n정상 SWING 매매 복귀`)
-  ).catch(() => {});
+  import('../../notifications/web-push.js')
+    .then((m) => m.notifyAlert('✅ DEFENSE 모드 해제', `사유: ${reason.slice(0, 80)}\n정상 SWING 매매 복귀`))
+    .catch(() => {});
 
   // KODEX 200 또는 인버스 둘 다 확인
-  const parkChains = openChains.filter(c => c.stock_code === PARK_STOCK_CODE || INVERSE_ETF_CODES.has(c.stock_code));
+  const parkChains = openChains.filter((c) => c.stock_code === PARK_STOCK_CODE || INVERSE_ETF_CODES.has(c.stock_code));
   if (parkChains.length === 0) return [];
 
-  return parkChains.map(chain => {
-    const name = INVERSE_ETFS.find(e => e.code === chain.stock_code)?.name ?? PARK_STOCK_NAME;
+  return parkChains.map((chain) => {
+    const name = INVERSE_ETFS.find((e) => e.code === chain.stock_code)?.name ?? PARK_STOCK_NAME;
     return {
       action: 'SELL' as const,
       stock_code: chain.stock_code,

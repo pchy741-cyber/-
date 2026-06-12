@@ -5,21 +5,21 @@
  * 각 레짐별 최적 전략/SL/포지션 배율 제공
  */
 
-import { adx, atr, bollingerBands, sma } from '../../analysis/indicators.js';
 import type { TechnicalSummary } from '../../analysis/indicators.js';
+import { atr } from '../../analysis/indicators.js';
 
 // ── 레짐 타입 ──
 export type RegimeV2 =
-  | 'TREND_BULL'     // 강한 상승추세
-  | 'TREND_BEAR'     // 강한 하락추세
-  | 'RANGE_LOW_VOL'  // 저변동 횡보 (평균회귀)
+  | 'TREND_BULL' // 강한 상승추세
+  | 'TREND_BEAR' // 강한 하락추세
+  | 'RANGE_LOW_VOL' // 저변동 횡보 (평균회귀)
   | 'RANGE_HIGH_VOL' // 고변동 횡보
-  | 'BREAKOUT'       // BB스퀴즈 → 돌파 임박
-  | 'DISTRIBUTION';  // 분배구간 (자기상관 음수 + 고점권)
+  | 'BREAKOUT' // BB스퀴즈 → 돌파 임박
+  | 'DISTRIBUTION'; // 분배구간 (자기상관 음수 + 고점권)
 
 export interface RegimeV2Result {
   regime: RegimeV2;
-  confidence: number;  // 0~1
+  confidence: number; // 0~1
   adx: number;
   atrMedian: number;
   currentAtr: number;
@@ -28,10 +28,10 @@ export interface RegimeV2Result {
 }
 
 export interface RegimeEntryConfig {
-  slMultiplier: number;    // ATR 배수
-  tpMultiplier: number;    // ATR 배수 (TP)
-  positionScale: number;   // 기본 포지션 대비 배율
-  strategy: string;        // 최적 전략 라벨
+  slMultiplier: number; // ATR 배수
+  tpMultiplier: number; // ATR 배수 (TP)
+  positionScale: number; // 기본 포지션 대비 배율
+  strategy: string; // 최적 전략 라벨
 }
 
 // ── Lag-1 수익률 자기상관 ──
@@ -46,7 +46,8 @@ export function calcLag1Autocorrelation(closes: number[], period: number = 20): 
   }
 
   const mean = returns.reduce((s, v) => s + v, 0) / returns.length;
-  let num = 0, den = 0;
+  let num = 0,
+    den = 0;
   for (let i = 0; i < returns.length - 1; i++) {
     num += (returns[i] - mean) * (returns[i + 1] - mean);
     den += (returns[i] - mean) ** 2;
@@ -60,12 +61,19 @@ export function detectRegimeV2(tech: TechnicalSummary, closes: number[]): Regime
   const closesAsc = [...closes].reverse();
 
   // ATR 중간값 (20일)
-  const atrPctArr: number[] = [];
+  const _atrPctArr: number[] = [];
   if (closesAsc.length >= 30) {
-    const atrVals = atr(closesAsc.map((c, i) => ({
-      date: '', open: c, high: c * 1.01, low: c * 0.99, close: c,
-      volume: 0,
-    })), 14);
+    const _atrVals = atr(
+      closesAsc.map((c, _i) => ({
+        date: '',
+        open: c,
+        high: c * 1.01,
+        low: c * 0.99,
+        close: c,
+        volume: 0,
+      })),
+      14,
+    );
     // 실제 atrPct은 tech에서 가져옴
   }
   const currentAtr = tech.atrPct;

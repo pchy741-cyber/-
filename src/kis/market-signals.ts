@@ -34,8 +34,8 @@ export async function getTradingIntensity(stockCode: string): Promise<TradingInt
     if (!o) return null;
     return {
       stockCode,
-      intensity: Number(o.tday_rltv || 0),       // 당일 체결강도
-      prevIntensity: Number(o.d1_rltv || 0),      // 전일 체결강도
+      intensity: Number(o.tday_rltv || 0), // 당일 체결강도
+      prevIntensity: Number(o.d1_rltv || 0), // 전일 체결강도
       netBuyVolume: Number(o.seln_cnqn_smtn || 0) - Number(o.shnu_cnqn_smtn || 0),
     };
   } catch {
@@ -176,7 +176,7 @@ export async function getSectorIndices(): Promise<SectorIndex[]> {
       skipRateLimiter: true,
       params: {
         FID_COND_MRKT_DIV_CODE: 'U', // 업종
-        FID_INPUT_ISCD: '0001',       // KOSPI 전체 업종
+        FID_INPUT_ISCD: '0001', // KOSPI 전체 업종
         FID_INPUT_DATE_1: formatKstDate(0),
         FID_INPUT_DATE_2: formatKstDate(0),
         FID_PERIOD_DIV_CODE: 'D',
@@ -289,7 +289,10 @@ export interface ExpectedFillRanking {
   expectedVolume: number;
 }
 
-export async function getExpectedFillRanking(direction: 'up' | 'down' = 'up', limit = 20): Promise<ExpectedFillRanking[]> {
+export async function getExpectedFillRanking(
+  direction: 'up' | 'down' = 'up',
+  limit = 20,
+): Promise<ExpectedFillRanking[]> {
   try {
     await marketDataRateLimiter.acquire();
     const res = await kisRequest({

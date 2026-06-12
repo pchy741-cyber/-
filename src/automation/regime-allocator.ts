@@ -7,7 +7,7 @@
  * 30일 실적 기반 자동 조정 (월 1회, 자기학습 연동).
  */
 
-import { type StrategyMode } from '../config/constants.js';
+import type { StrategyMode } from '../config/constants.js';
 import { getPool } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 
@@ -15,10 +15,10 @@ type RegimeType = 'BULLISH' | 'NEUTRAL' | 'BEARISH' | 'CRASH';
 
 // 기본 배분 (합계 100 아닐 수 있음 — 비율로 사용)
 const DEFAULT_WEIGHTS: Record<RegimeType, Partial<Record<StrategyMode, number>>> = {
-  BULLISH:  { SWING: 35, SNIPER: 25, BREAKOUT: 20, SCALPING: 15, BOTTOM_FISHING: 5 },
-  NEUTRAL:  { SWING: 40, DEFENSE: 20, SNIPER: 15, BOTTOM_FISHING: 15, SCALPING: 10 },
-  BEARISH:  { DEFENSE: 40, BOTTOM_FISHING: 25, SWING: 20, SCALPING: 15 },
-  CRASH:    { DEFENSE: 50, BOTTOM_FISHING: 30, SWING: 20 },
+  BULLISH: { SWING: 35, SNIPER: 25, BREAKOUT: 20, SCALPING: 15, BOTTOM_FISHING: 5 },
+  NEUTRAL: { SWING: 40, DEFENSE: 20, SNIPER: 15, BOTTOM_FISHING: 15, SCALPING: 10 },
+  BEARISH: { DEFENSE: 40, BOTTOM_FISHING: 25, SWING: 20, SCALPING: 15 },
+  CRASH: { DEFENSE: 50, BOTTOM_FISHING: 30, SWING: 20 },
 };
 
 // 캐시 (5분 TTL)
@@ -35,9 +35,7 @@ const CACHE_TTL = 5 * 60_000;
  */
 async function detectRegime(): Promise<RegimeType> {
   try {
-    const { rows } = await getPool().query(
-      `SELECT value FROM system_state WHERE key = 'last_kospi_regime'`,
-    );
+    const { rows } = await getPool().query(`SELECT value FROM system_state WHERE key = 'last_kospi_regime'`);
     if (rows[0]?.value) {
       const parsed = JSON.parse(rows[0].value);
       if (parsed.penalty >= 2) return 'CRASH';
@@ -64,9 +62,7 @@ export async function getRegimeAllocation(): Promise<Record<string, number>> {
 
   // 학습된 오버라이드 조회 (strategy_optimizer가 기록)
   try {
-    const { rows } = await getPool().query(
-      `SELECT value FROM system_state WHERE key = 'regime_allocation_override'`,
-    );
+    const { rows } = await getPool().query(`SELECT value FROM system_state WHERE key = 'regime_allocation_override'`);
     if (rows[0]?.value) {
       const overrides = JSON.parse(rows[0].value);
       if (overrides[regime]) {
@@ -76,7 +72,12 @@ export async function getRegimeAllocation(): Promise<Record<string, number>> {
   } catch {}
 
   _cache = { regime, allocation, ts: now };
-  logger.info(`📈 체제 배분: ${regime} → ${Object.entries(allocation).map(([k, v]) => `${k}:${v}%`).join(' ')}`, { component: 'REGIME_ALLOC' });
+  logger.info(
+    `📈 체제 배분: ${regime} → ${Object.entries(allocation)
+      .map(([k, v]) => `${k}:${v}%`)
+      .join(' ')}`,
+    { component: 'REGIME_ALLOC' },
+  );
   return allocation;
 }
 

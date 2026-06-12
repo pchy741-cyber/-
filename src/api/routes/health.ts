@@ -3,8 +3,8 @@ import { config } from '../../config/index.js';
 import { checkDb, isMemoryMode } from '../../db/client.js';
 import { isMarketOpen } from '../../kis/market.js';
 import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
-import { getActiveLocks } from '../../utils/lock.js';
 import { isWaking } from '../../utils/cloud-sql-wake.js';
+import { getActiveLocks } from '../../utils/lock.js';
 
 export const healthRoutes = new Hono();
 
@@ -17,11 +17,11 @@ interface SystemEvent {
 }
 
 const recentEvents: SystemEvent[] = [];
-const MAX_EVENTS = 50;
+const MAX_EVENTS = 100;
 
 export function logSystemEvent(component: string, status: 'success' | 'error' | 'running', message: string) {
   recentEvents.unshift({ component, status, message, timestamp: new Date().toISOString() });
-  if (recentEvents.length > MAX_EVENTS) recentEvents.length = MAX_EVENTS;
+  if (recentEvents.length > MAX_EVENTS) recentEvents.splice(MAX_EVENTS);
 }
 
 export function getRecentEvents(limit = 10): SystemEvent[] {

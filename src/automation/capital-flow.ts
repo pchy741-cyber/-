@@ -1,6 +1,4 @@
 import type { StrategyMode } from '../config/constants.js';
-import { sleep } from '../utils/sleep.js';
-import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { getActiveStrategy, getActiveWatchlist, getLatestScores, getPool, logSystem } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
@@ -10,6 +8,7 @@ import { sendTelegramMessage } from '../notifications/telegram.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
 import { calcPnlPct, roundKrw } from '../utils/money.js';
+import { sleep } from '../utils/sleep.js';
 import { getLearnedParameters } from './self-learning.js';
 
 /**

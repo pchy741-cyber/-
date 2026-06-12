@@ -13,34 +13,32 @@
  *   trade-gate.ts   — 거래 품질 게이트 (기술적 검수 + 쿨다운)
  */
 
-// 리스크 엔진
-export { RiskEngine, riskEngine } from './risk-engine.js';
-export type { PreTradeCheckResult } from './risk-engine.js';
+export type { KillSwitchScope } from './kill-switch.js';
+// 킬스위치
+export {
+  activateKillSwitch,
+  activateKillSwitchAll,
+  deactivateKillSwitch,
+  deactivateKillSwitchAll,
+  getKillSwitchStatus,
+  getKillSwitchStatusAll,
+  isKillSwitchActive,
+} from './kill-switch.js';
 
 // Paper 잔고
 export {
-  getPaperBalance,
   addPaperInvestment,
+  getPaperBalance,
+  PAPER_INITIAL_CAPITAL,
   removePaperInvestment,
   restorePaperState,
-  PAPER_INITIAL_CAPITAL,
 } from './paper-balance.js';
-
-// 킬스위치
-export {
-  isKillSwitchActive,
-  activateKillSwitch,
-  deactivateKillSwitch,
-  getKillSwitchStatus,
-  getKillSwitchStatusAll,
-  activateKillSwitchAll,
-  deactivateKillSwitchAll,
-} from './kill-switch.js';
-export type { KillSwitchScope } from './kill-switch.js';
+export type { PreTradeCheckResult } from './risk-engine.js';
+// 리스크 엔진
+export { RiskEngine, riskEngine } from './risk-engine.js';
 
 // 시드 자본
 export { getSeedCapitalStatus, setSeedCapital } from './seed-capital.js';
-
-// 트레이드 게이트
-export { runTradeGates, resetCooldown, getCooldownStatus } from './trade-gate.js';
 export type { GateInput, GateResult } from './trade-gate.js';
+// 트레이드 게이트
+export { getCooldownStatus, resetCooldown, runTradeGates } from './trade-gate.js';

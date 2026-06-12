@@ -2,8 +2,9 @@
  * 숏 시그널 / 선제적 방어 — F&G + VIX 기반 포지션 축소 및 매수 차단
  * 시장 과열/공포 감지 후 자동으로 방어 모드 전환
  */
-import { logger } from '../../utils/logger.js';
+
 import { getFearGreedIndex } from '../../market/external-signals.js';
+import { logger } from '../../utils/logger.js';
 
 // ── 타입 ──
 
@@ -11,9 +12,9 @@ export type DefenseLevel = 'NONE' | 'CAUTION' | 'REDUCE' | 'EMERGENCY';
 
 export interface DefenseSignal {
   level: DefenseLevel;
-  positionReduction: number;  // 0~0.5 (포지션 축소 비율)
+  positionReduction: number; // 0~0.5 (포지션 축소 비율)
   blockNewBuys: boolean;
-  trailTighten: number;       // 추가 트레일링 타이트닝 (%p)
+  trailTighten: number; // 추가 트레일링 타이트닝 (%p)
   reasons: string[];
 }
 
@@ -23,8 +24,8 @@ const DEFENSE_CACHE_TTL = 10 * 60_000; // 10분
 
 // ── 임계값 상수 ──
 const THRESHOLDS = {
-  CAUTION:   { fg: 70, vix: 22 },
-  REDUCE:    { fg: 78, vix: 28 },
+  CAUTION: { fg: 70, vix: 22 },
+  REDUCE: { fg: 78, vix: 28 },
   EMERGENCY: { fg: 85, vix: 35 },
   NORMAL_FG_MIN: 30,
   NORMAL_FG_MAX: 65,

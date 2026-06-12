@@ -41,8 +41,8 @@ interface SimPosition {
   totalInvested: number;
   averagingCount: number;
   openedAt: string;
-  peakPrice: number;        // 최고가 추적 (트레일링 스톱용)
-  profitTaking: boolean;    // 1단계 익절 완료 → 트레일링 대기 중
+  peakPrice: number; // 최고가 추적 (트레일링 스톱용)
+  profitTaking: boolean; // 1단계 익절 완료 → 트레일링 대기 중
 }
 
 interface SimTrade {
@@ -84,12 +84,19 @@ export interface BacktestResult {
  * 단일 종목 백테스트 실행
  */
 export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig: BacktestConfig): BacktestResult {
-  const { mode, initialCapital, buyThreshold, commissionPct = 0.015, taxPct = 0.18, slippagePct = 0.1 } = backtestConfig;
+  const {
+    mode,
+    initialCapital,
+    buyThreshold,
+    commissionPct = 0.015,
+    taxPct = 0.18,
+    slippagePct = 0.1,
+  } = backtestConfig;
   // 슬리피지 적용 헬퍼: 매수는 불리하게(높게), 매도는 불리하게(낮게)
   const buyPrice = (close: number) => Math.round(close * (1 + slippagePct / 100));
   const sellPrice = (close: number) => Math.round(close * (1 - slippagePct / 100));
   const params = STRATEGY_PARAMS[mode];
-  let totalCommissions = 0; // 총 거래비용 추적
+  let _totalCommissions = 0; // 총 거래비용 추적
   // 백테스트 기술 점수 임계치
   // 실전 minTechScore(SWING=55, DEFENSE=65) 기준이나, 합성 데이터는 지표 분산이 적으므로
   // SWING은 45로 완화해 충분한 거래 횟수 확보 (과매매 방지 vs 표본 부족 균형)
@@ -144,7 +151,7 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
       if (stopTriggered) {
         const saStop = stopExitPrice * position.totalQty;
         const scStop = calcSellCost(saStop, commissionPct, taxPct);
-        totalCommissions += scStop;
+        _totalCommissions += scStop;
         const pnl = roundKrw((stopExitPrice - position.avgPrice) * position.totalQty - scStop);
         capital += saStop - scStop;
         trades.push({
@@ -172,7 +179,7 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
         const exitP = sellPrice(today.close);
         const sellAmount = exitP * position.totalQty;
         const sellCost = calcSellCost(sellAmount, commissionPct, taxPct);
-        totalCommissions += sellCost;
+        _totalCommissions += sellCost;
         const realPnlPct = calcPnlPct(position.avgPrice, exitP);
         const pnl = roundKrw((exitP - position.avgPrice) * position.totalQty - sellCost);
         capital += sellAmount - sellCost;
@@ -201,7 +208,7 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
         const exitP2 = sellPrice(today.close);
         const sellAmount2 = exitP2 * position.totalQty;
         const sellCost2 = calcSellCost(sellAmount2, commissionPct, taxPct);
-        totalCommissions += sellCost2;
+        _totalCommissions += sellCost2;
         const realPnlPct2 = calcPnlPct(position.avgPrice, exitP2);
         const pnl = roundKrw((exitP2 - position.avgPrice) * position.totalQty - sellCost2);
         capital += sellAmount2 - sellCost2;
@@ -226,7 +233,7 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
         const ep1 = sellPrice(today.close);
         const sa1 = ep1 * sellQty;
         const sc1 = calcSellCost(sa1, commissionPct, taxPct);
-        totalCommissions += sc1;
+        _totalCommissions += sc1;
         const real1Pct = calcPnlPct(position.avgPrice, ep1);
         const pnl = roundKrw((ep1 - position.avgPrice) * sellQty - sc1);
         capital += sa1 - sc1;
@@ -242,13 +249,16 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
         });
         position.totalQty -= sellQty;
         position.profitTaking = true;
-        if (position.totalQty <= 0) { position = null; continue; }
+        if (position.totalQty <= 0) {
+          position = null;
+          continue;
+        }
       } else if (!position.profitTaking && pnlPct >= params.takeProfitPct) {
         // 1주 등 분할 불가 → 전량 익절
         const ep1f = sellPrice(today.close);
         const sa1 = ep1f * position.totalQty;
         const sc1 = calcSellCost(sa1, commissionPct, taxPct);
-        totalCommissions += sc1;
+        _totalCommissions += sc1;
         const real1fPct = calcPnlPct(position.avgPrice, ep1f);
         const pnl = roundKrw((ep1f - position.avgPrice) * position.totalQty - sc1);
         capital += sa1 - sc1;
@@ -269,7 +279,8 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
       // 2단계: PROFIT_TAKING 상태에서 트레일링 또는 +4.0% 목표
       // 일봉 백테스트는 -2.0% 트레일 (일 노이즈 1.5% 감안, 실전 -0.8%는 5분봉 기준)
       if (position?.profitTaking) {
-        const trailDropPct = position.peakPrice > 0 ? ((today.close - position.peakPrice) / position.peakPrice) * 100 : 0;
+        const trailDropPct =
+          position.peakPrice > 0 ? ((today.close - position.peakPrice) / position.peakPrice) * 100 : 0;
         const isBreakevenStop = pnlPct <= 0.2; // 1단계 익절 후 원금 하회 방지
         const isTrailTriggered = trailDropPct <= -2.0;
         const isTargetReached = pnlPct >= 4.0;
@@ -277,7 +288,7 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
           const ep2 = sellPrice(today.close);
           const sa2 = ep2 * position.totalQty;
           const sc2 = calcSellCost(sa2, commissionPct, taxPct);
-          totalCommissions += sc2;
+          _totalCommissions += sc2;
           const real2Pct = calcPnlPct(position.avgPrice, ep2);
           const pnl = roundKrw((ep2 - position.avgPrice) * position.totalQty - sc2);
           capital += sa2 - sc2;
@@ -287,7 +298,11 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
             price: ep2,
             quantity: position.totalQty,
             date: today.date,
-            reason: isTargetReached ? `2단계 익절(+4%) +${real2Pct.toFixed(1)}%` : isBreakevenStop ? `브레이크이븐스톱 ${real2Pct.toFixed(1)}%` : `트레일링스톱 peak대비${trailDropPct.toFixed(1)}%`,
+            reason: isTargetReached
+              ? `2단계 익절(+4%) +${real2Pct.toFixed(1)}%`
+              : isBreakevenStop
+                ? `브레이크이븐스톱 ${real2Pct.toFixed(1)}%`
+                : `트레일링스톱 peak대비${trailDropPct.toFixed(1)}%`,
             pnl,
             pnlPct: real2Pct,
           });
@@ -301,7 +316,7 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
         const epTime = sellPrice(today.close);
         const saTime = epTime * position.totalQty;
         const scTime = calcSellCost(saTime, commissionPct, taxPct);
-        totalCommissions += scTime;
+        _totalCommissions += scTime;
         const realTimePct = calcPnlPct(position.avgPrice, epTime);
         const pnl = roundKrw((epTime - position.avgPrice) * position.totalQty - scTime);
         capital += saTime - scTime;
@@ -331,7 +346,7 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
         const qty = Math.floor(budget / avgBp);
         if (qty > 0 && budget > 0) {
           const buyCostAvg = calcBuyCost(avgBp * qty, commissionPct);
-          totalCommissions += buyCostAvg;
+          _totalCommissions += buyCostAvg;
           capital -= avgBp * qty + buyCostAvg;
           position.avgPrice = calcAvgPrice(position.totalQty, position.avgPrice, qty, avgBp);
           position.totalQty += qty;
@@ -389,20 +404,14 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
       }
 
       const riskScale =
-        mode === 'SWING'
-          ? technicals.trendStrength === 'WEAK'
-            ? 0.6
-            : 1.0
-          : mode === 'DEFENSE'
-            ? 0.7
-            : 1.0;
+        mode === 'SWING' ? (technicals.trendStrength === 'WEAK' ? 0.6 : 1.0) : mode === 'DEFENSE' ? 0.7 : 1.0;
       const entryBp = buyPrice(today.close);
       const budget = Math.min(capital, (initialCapital / params.splitCount) * riskScale);
       const qty = Math.floor(budget / entryBp);
 
       if (qty > 0 && budget > 0) {
         const buyCostEntry = calcBuyCost(entryBp * qty, commissionPct);
-        totalCommissions += buyCostEntry;
+        _totalCommissions += buyCostEntry;
         capital -= entryBp * qty + buyCostEntry;
         position = {
           stockCode,
@@ -437,7 +446,7 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
     const pnlPct = calcPnlPct(position.avgPrice, lastPrice);
     const saFinal = lastPrice * position.totalQty;
     const scFinal = calcSellCost(saFinal, commissionPct, taxPct);
-    totalCommissions += scFinal;
+    _totalCommissions += scFinal;
     const pnl = roundKrw((lastPrice - position.avgPrice) * position.totalQty - scFinal);
     capital += saFinal - scFinal;
 
@@ -489,20 +498,21 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
     avgLossPct:
       losses.length > 0 ? Math.round((losses.reduce((s, t) => s + t.pnlPct, 0) / losses.length) * 100) / 100 : 0,
     profitFactor: totalLoss > 0 ? Math.round((totalProfit / totalLoss) * 100) / 100 : 999,
-    avgHoldingDays: sellTrades.length > 0
-      ? Math.round(
-          trades
-            .filter((t) => t.side === 'BUY' && t.reason.startsWith('진입'))
-            .reduce((sum, buyTrade) => {
-              const matchingSell = trades.find(
-                (t) => t.side === 'SELL' && t.stockCode === buyTrade.stockCode && t.date >= buyTrade.date,
-              );
-              return sum + (matchingSell ? countDaysBetween(buyTrade.date, matchingSell.date) : 0);
-            }, 0) /
-            Math.max(1, trades.filter((t) => t.side === 'BUY' && t.reason.startsWith('진입')).length) *
-            10,
-        ) / 10
-      : 0,
+    avgHoldingDays:
+      sellTrades.length > 0
+        ? Math.round(
+            (trades
+              .filter((t) => t.side === 'BUY' && t.reason.startsWith('진입'))
+              .reduce((sum, buyTrade) => {
+                const matchingSell = trades.find(
+                  (t) => t.side === 'SELL' && t.stockCode === buyTrade.stockCode && t.date >= buyTrade.date,
+                );
+                return sum + (matchingSell ? countDaysBetween(buyTrade.date, matchingSell.date) : 0);
+              }, 0) /
+              Math.max(1, trades.filter((t) => t.side === 'BUY' && t.reason.startsWith('진입')).length)) *
+              10,
+          ) / 10
+        : 0,
     trades,
     dailyPnl,
     finalCapital: roundKrw(finalCapital),

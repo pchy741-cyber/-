@@ -1,11 +1,10 @@
-import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { getOpenChains, getPool } from '../db/client.js';
 import { getAccountBalance } from '../kis/account.js';
-import { getDinnerMoneyStats } from './profit-withdraw.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
+import { getDinnerMoneyStats } from './profit-withdraw.js';
 
 /**
  * 일일 자동 리포트 (장 마감 후 15:40 KST 자동 발송)
@@ -113,7 +112,9 @@ export async function generateDailyReport(): Promise<void> {
       `  이번 주: ${weekPnl >= 0 ? '+' : ''}${weekPnl.toLocaleString()}원 (${weekWins}승 ${weekLosses}패)`,
       `  이번 달: ${monthPnl >= 0 ? '+' : ''}${monthPnl.toLocaleString()}원 (승률 ${monthWinRate}%, ${monthWins}승 ${monthLosses}패)`,
       `  열린 체인: ${chains.length}개`,
-    ].filter(Boolean).join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
 
     await sendTelegramMessage(report);
     logger.info('📊 일일 리포트 발송 완료', { component: 'REPORT' });

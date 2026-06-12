@@ -11,10 +11,7 @@ export function initSlack(webhookUrl: string): void {
  * Slack Incoming Webhook 메시지 전송
  * level: 'info'=회색, 'warn'=노랑, 'error'=빨강
  */
-export async function sendSlackMessage(
-  text: string,
-  level: 'info' | 'warn' | 'error' = 'info',
-): Promise<void> {
+export async function sendSlackMessage(text: string, level: 'info' | 'warn' | 'error' = 'info'): Promise<void> {
   if (!_webhookUrl) return;
   const colorMap = { info: '#36a64f', warn: '#ffc107', error: '#e53935' };
   const payload = {

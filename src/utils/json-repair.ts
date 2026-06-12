@@ -60,7 +60,11 @@ export function safeParseJson<T = unknown>(raw: string, context?: string): T | n
   const aggressive = repairAndParse<T>(raw.trim(), tag);
   if (aggressive !== null) return aggressive;
 
-  logger.warn(`[${tag}] 모든 JSON 파싱 전략 실패`, { component: 'JSON_REPAIR', rawLength: raw.length, rawPreview: raw.slice(0, 500) });
+  logger.warn(`[${tag}] 모든 JSON 파싱 전략 실패`, {
+    component: 'JSON_REPAIR',
+    rawLength: raw.length,
+    rawPreview: raw.slice(0, 500),
+  });
   return null;
 }
 
@@ -130,19 +134,19 @@ function findOutermostJson(raw: string, open: '{' | '[', close: '}' | ']'): stri
 
   let depth = 0;
   let inString = false;
-  let escape = false;
+  let escaping = false;
   let lastValidEnd = -1;
 
   for (let i = startIdx; i < raw.length; i++) {
     const ch = raw[i];
 
-    if (escape) {
-      escape = false;
+    if (escaping) {
+      escaping = false;
       continue;
     }
 
     if (ch === '\\') {
-      escape = true;
+      escaping = true;
       continue;
     }
 
@@ -217,9 +221,18 @@ function closeOpenBrackets(text: string, _open: string, _close: string): string 
   const stack: string[] = [];
   for (let i = 0; i < cleaned.length; i++) {
     const ch = cleaned[i];
-    if (esc) { esc = false; continue; }
-    if (ch === '\\') { esc = true; continue; }
-    if (ch === '"') { inStr = !inStr; continue; }
+    if (esc) {
+      esc = false;
+      continue;
+    }
+    if (ch === '\\') {
+      esc = true;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = !inStr;
+      continue;
+    }
     if (inStr) continue;
     if (ch === '{') stack.push('}');
     else if (ch === '[') stack.push(']');
@@ -271,7 +284,7 @@ function repairAndParse<T>(text: string, tag: string): T | null {
   }
 
   // 6. More aggressive: strip everything before the first { or [
-  const firstBrace = repaired.search(/[\[{]/);
+  const firstBrace = repaired.search(/[[{]/);
   if (firstBrace > 0) {
     const stripped = repaired.slice(firstBrace);
     const result2 = tryParse<T>(stripped);
@@ -291,7 +304,7 @@ function repairAndParse<T>(text: string, tag: string): T | null {
  */
 function extractIndividualObjects(raw: string, tag: string): unknown[] {
   const results: unknown[] = [];
-  let searchFrom = 0;
+  const _searchFrom = 0;
 
   // First, try to get the text inside a "scores" array or any top-level array
   let searchText = raw;
@@ -309,14 +322,23 @@ function extractIndividualObjects(raw: string, tag: string): unknown[] {
   let depth = 0;
   let objStart = -1;
   let inString = false;
-  let escape = false;
+  let escaping = false;
 
   for (let i = 0; i < searchText.length; i++) {
     const ch = searchText[i];
 
-    if (escape) { escape = false; continue; }
-    if (ch === '\\') { escape = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
+    if (escaping) {
+      escaping = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaping = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
     if (inString) continue;
 
     if (ch === '{') {

@@ -69,7 +69,9 @@ export async function fetchVKOSPI(): Promise<number> {
     if (!Number.isFinite(value) || value <= 0) {
       // Naver 응답 구조가 변경됐을 수 있음 — deep search
       const raw = JSON.stringify(data);
-      const match = raw.match(/"(?:closePrice|now|risefall|compareToPreviousClosePrice|currentValue)"\s*:\s*"?([\d.]+)"?/);
+      const match = raw.match(
+        /"(?:closePrice|now|risefall|compareToPreviousClosePrice|currentValue)"\s*:\s*"?([\d.]+)"?/,
+      );
       if (match) {
         const parsed = Number(match[1]);
         if (Number.isFinite(parsed) && parsed > 5 && parsed < 100) return parsed;
@@ -105,7 +107,9 @@ export async function fetchExchangeRate(): Promise<number> {
         return cachedFxRate;
       }
     }
-  } catch { /* fallback to next source */ }
+  } catch {
+    /* fallback to next source */
+  }
 
   // 2차: Naver 증권 (기존 — 현재 404일 수 있음)
   try {
@@ -123,7 +127,9 @@ export async function fetchExchangeRate(): Promise<number> {
         }
       }
     }
-  } catch { /* fallback */ }
+  } catch {
+    /* fallback */
+  }
 
   logger.warn('USD/KRW 모든 소스 실패, 캐시/기본값 사용', { component: 'MACRO' });
   return cachedFxRate ?? DEFAULTS.usdKrw;

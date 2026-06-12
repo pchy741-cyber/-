@@ -1,3 +1,4 @@
+import type { CrashSignal } from '../../automation/crash-profit.js';
 import { getConcentrationSellTargets } from '../../automation/portfolio-guard.js';
 import type { StrategyMode } from '../../config/constants.js';
 import type { TradeDecision, TransactionChain } from '../../db/models.js';
@@ -5,8 +6,13 @@ import type { CurrentPrice } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { applyEodBluechipStrategy } from './eod-bluechip.js';
 import { adjustPositionSizes } from './position-sizer.js';
-import { applyHardRules, deduplicateSells, filterEarlySells, filterManualCooldown, filterSectorConcentration } from './risk-guard.js';
-import { INVERSE_ETF_CODES, type CrashSignal } from '../../automation/crash-profit.js';
+import {
+  applyHardRules,
+  deduplicateSells,
+  filterEarlySells,
+  filterManualCooldown,
+  filterSectorConcentration,
+} from './risk-guard.js';
 
 /**
  * 매매 결정 필터 체인 — 우선순위 순서 절대 고정
@@ -53,9 +59,24 @@ export interface DecisionFlowParams {
 
 export async function applyDecisionFlow(params: DecisionFlowParams): Promise<TradeDecision[]> {
   const {
-    rawDecisions, openChains, livePrices, mode, manuallySoldCodes, scores,
-    totalAssets, kospiRegime, resolvedSl, resolvedTp, orderableCash,
-    hasBuyCandidates, blockNewBuys, blockEodBuys, adjMaxPositionKrw, chartData, kstH, kstM,
+    rawDecisions,
+    openChains,
+    livePrices,
+    mode,
+    manuallySoldCodes,
+    scores,
+    totalAssets,
+    kospiRegime,
+    resolvedSl,
+    resolvedTp,
+    orderableCash,
+    hasBuyCandidates,
+    blockNewBuys,
+    blockEodBuys,
+    adjMaxPositionKrw,
+    chartData,
+    kstH,
+    kstM,
   } = params;
 
   let decisions = [...rawDecisions];
@@ -66,19 +87,23 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   const { getPaperOnlyModes } = await import('../../automation/strategy-graduation.js');
   const PAPER_ONLY_MODES = await getPaperOnlyModes();
   if (!params.isPaper && PAPER_ONLY_MODES.has(mode)) {
-    const buys = decisions.filter(d => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
+    const buys = decisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
     if (buys.length > 0) {
-      logger.info(`🧪 ${mode} 실험모드: 실전 신규매수 ${buys.length}건 차단 (Paper에서 승률 검증 중)`, { component: 'DECISION_FLOW' });
+      logger.info(`🧪 ${mode} 실험모드: 실전 신규매수 ${buys.length}건 차단 (Paper에서 승률 검증 중)`, {
+        component: 'DECISION_FLOW',
+      });
     }
     // 매도/손절은 허용 (기존 보유분 정리)
-    decisions = decisions.filter(d => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
+    decisions = decisions.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
   }
 
   // ── 0. DIVIDEND 모드: 신규 매수 완전 차단 (배당주/ETF 파킹 모드) ────
   if (mode === 'DIVIDEND') {
     const buys = decisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
     if (buys.length > 0) {
-      logger.info(`🏦 DIVIDEND 모드: 신규 매수 ${buys.length}건 차단 (배당 자산 파킹 중)`, { component: 'DECISION_FLOW' });
+      logger.info(`🏦 DIVIDEND 모드: 신규 매수 ${buys.length}건 차단 (배당 자산 파킹 중)`, {
+        component: 'DECISION_FLOW',
+      });
     }
     decisions = decisions.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
   }
@@ -96,7 +121,9 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
         (d) => d.stock_code === chain.stock_code && ['SELL', 'FORCE_CLOSE', 'PARTIAL_SELL'].includes(d.action),
       );
       if (alreadyExiting) continue;
-      logger.warn(`🚫 매수금지 종목 보유분 강제청산: ${chain.stock_code} ×${chain.total_quantity}`, { component: 'DECISION_FLOW' });
+      logger.warn(`🚫 매수금지 종목 보유분 강제청산: ${chain.stock_code} ×${chain.total_quantity}`, {
+        component: 'DECISION_FLOW',
+      });
       decisions.push({
         action: 'FORCE_CLOSE',
         stock_code: chain.stock_code,
@@ -110,24 +137,29 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
 
   // ── 0b. 인버스 ETF 결정 보호 (crash-profit 결정은 필터 우회) ────
   const { INVERSE_ETF_CODES } = await import('../../automation/crash-profit.js');
-  const inverseDecisions = decisions.filter(d => INVERSE_ETF_CODES.has(d.stock_code));
-  decisions = decisions.filter(d => !INVERSE_ETF_CODES.has(d.stock_code));
+  const inverseDecisions = decisions.filter((d) => INVERSE_ETF_CODES.has(d.stock_code));
+  decisions = decisions.filter((d) => !INVERSE_ETF_CODES.has(d.stock_code));
 
   // ── 0c. BREAKOUT 모드: 비돌파 매수 차단 (BREAKOUT 전용 매수만 허용) ────
   if (mode === 'BREAKOUT') {
-    const nonBreakoutBuys = decisions.filter((d) =>
-      (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && d.strategy_mode !== 'BREAKOUT',
+    const nonBreakoutBuys = decisions.filter(
+      (d) => (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && d.strategy_mode !== 'BREAKOUT',
     );
     if (nonBreakoutBuys.length > 0) {
       logger.info(`📈 BREAKOUT 모드: 비돌파 매수 ${nonBreakoutBuys.length}건 차단`, { component: 'DECISION_FLOW' });
-      decisions = decisions.filter((d) =>
-        !((d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && d.strategy_mode !== 'BREAKOUT'),
+      decisions = decisions.filter(
+        (d) => !((d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && d.strategy_mode !== 'BREAKOUT'),
       );
     }
   }
 
   // ── 1. 집중도 부분매도 주입 ─────────────────────────────────────────
-  const concentrationTargets = getConcentrationSellTargets(openChains, livePrices, totalAssets, params.overseasValueKrw);
+  const concentrationTargets = getConcentrationSellTargets(
+    openChains,
+    livePrices,
+    totalAssets,
+    params.overseasValueKrw,
+  );
   for (const code of concentrationTargets) {
     const chain = openChains.find((c) => c.stock_code === code);
     if (!chain || chain.total_quantity < 3) continue;
@@ -150,7 +182,10 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
 
   // ── 2. 조기 매도 방지 필터 ──────────────────────────────────────────
   decisions = filterEarlySells({
-    decisions, openChains, livePrices, mode,
+    decisions,
+    openChains,
+    livePrices,
+    mode,
     stopLossPct: resolvedSl ?? null,
     takeProfitPct: resolvedTp ?? null,
   });
@@ -160,27 +195,38 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
 
   // ── 4. 유휴 현금 파킹 해제 (SELL만 먼저 — BUY는 포지션사이저 이후 step 7.5에서 추가) ──
   // confirmedBuyCount: confidence 0.6+ 인 확정 매수만 카운트 (저품질 매수로 파킹 깨지 않게)
-  const confirmedBuyCount = decisions.filter(d =>
-    (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && (d.confidence ?? 0) >= 0.6,
+  const confirmedBuyCount = decisions.filter(
+    (d) => (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && (d.confidence ?? 0) >= 0.6,
   ).length;
-  let _parkingBuyDecisions: import('../../db/models.js').TradeDecision[] = [];
+  const _parkingBuyDecisions: import('../../db/models.js').TradeDecision[] = [];
   {
     const { manageCashParking } = await import('./cash-manager.js');
     const cashDecisions = manageCashParking({
-      orderableCash, totalAssets, hasBuyCandidates, confirmedBuyCount,
-      openChains, livePrices, chartData, mode, blockNewBuys,
+      orderableCash,
+      totalAssets,
+      hasBuyCandidates,
+      confirmedBuyCount,
+      openChains,
+      livePrices,
+      chartData,
+      mode,
+      blockNewBuys,
       macroRiskOff: params.macroRiskOff,
       isPaper: params.isPaper,
     });
     for (const d of cashDecisions) {
-      if (d.action === 'SELL') decisions.unshift(d);  // 파킹 해제 즉시
-      else _parkingBuyDecisions.push(d);               // 파킹 매수는 보류
+      if (d.action === 'SELL')
+        decisions.unshift(d); // 파킹 해제 즉시
+      else _parkingBuyDecisions.push(d); // 파킹 매수는 보류
     }
   }
 
   // ── 5. 하드룰: 트레일링 스탑 + 고정 손절 (AI 결정 무관 강제 실행) ──
   decisions = await applyHardRules({
-    decisions, openChains, livePrices, mode,
+    decisions,
+    openChains,
+    livePrices,
+    mode,
     stopLossPct: resolvedSl ?? null,
   });
 
@@ -204,7 +250,7 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
     mode,
     totalAssets,
     adjMaxPositionKrw,
-    kospiRegimePenalty: (Math.min(2, Math.max(0, Math.round(kospiRegime.penalty))) as 0 | 1 | 2),
+    kospiRegimePenalty: Math.min(2, Math.max(0, Math.round(kospiRegime.penalty))) as 0 | 1 | 2,
     kospiBoost: kospiRegime.boost,
   });
 
@@ -217,19 +263,22 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
 
   // ── 9. EOD 블루칩 줍줍 + 익일 장시작 청산 ────────────────────────────
   decisions = applyEodBluechipStrategy(decisions, {
-    kstH, kstM, openChains, livePrices,
+    kstH,
+    kstM,
+    openChains,
+    livePrices,
     todayDown: kospiRegime.todayDown,
     kospiPenalty: kospiRegime.penalty,
     adjMaxPositionKrw,
     totalAssets,
-    blockNewBuys: blockEodBuys,   // EOD 전략은 isPastClose/eodOnlyActive 제외한 하드블록만
+    blockNewBuys: blockEodBuys, // EOD 전략은 isPastClose/eodOnlyActive 제외한 하드블록만
     watchlistCodes: scores.map((s) => s.stock_code),
   });
 
   // ── 9a. 실험 전략 개별 매수 실전 차단 (eod-bluechip에서 주입된 BOTTOM_FISHING 등) ──
   if (!params.isPaper) {
     const before = decisions.length;
-    decisions = decisions.filter(d => {
+    decisions = decisions.filter((d) => {
       if ((d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && PAPER_ONLY_MODES.has(d.strategy_mode ?? '')) {
         logger.info(`🧪 ${d.stock_code}: ${d.strategy_mode} 실험전략 실전매수 차단`, { component: 'DECISION_FLOW' });
         return false;
@@ -248,7 +297,10 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
       if (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') {
         const signal = getConsensusTrend(d.stock_code);
         if (signal?.trend === 'BEARISH') {
-          logger.info(`🐻 컨센서스 하락세 매수 차단: ${d.stock_code} ${signal.name} (하향${signal.downgradeCount} 상향${signal.upgradeCount})`, { component: 'CONSENSUS' });
+          logger.info(
+            `🐻 컨센서스 하락세 매수 차단: ${d.stock_code} ${signal.name} (하향${signal.downgradeCount} 상향${signal.upgradeCount})`,
+            { component: 'CONSENSUS' },
+          );
           d.action = 'HOLD';
           d.reasoning = `[컨센서스 하락세] ${d.reasoning}`;
         } else if (signal?.trend === 'BULLISH' && d.confidence) {
@@ -280,8 +332,11 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
     // 인버스 ETF / CRASH_PROFIT 결정은 최우선
     if (INVERSE_ETF_CODES.has(d.stock_code)) return -2;
     if (d.trigger_source?.startsWith('CRASH_PROFIT')) return -1;
-    return d.action === 'SELL' || d.action === 'FORCE_CLOSE' || d.action === 'PARTIAL_SELL' ? 0
-      : d.action === 'AVERAGE_DOWN' ? 1 : 2;
+    return d.action === 'SELL' || d.action === 'FORCE_CLOSE' || d.action === 'PARTIAL_SELL'
+      ? 0
+      : d.action === 'AVERAGE_DOWN'
+        ? 1
+        : 2;
   };
   filtered.sort((a, b) => {
     const orderDiff = actionOrder(a) - actionOrder(b);

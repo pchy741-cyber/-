@@ -7,8 +7,9 @@
  * 2. 매수 후보 뉴스 체크 → 어닝스 미스, 소송, FDA 리젝트 등 위험 회피
  * 3. 매크로 이벤트 감지 → Fed 발표, CPI, 고용지표 등 시장 방향성
  */
-import { callVertexGemini } from '../utils/vertex-gemini.js';
+
 import { logger } from '../utils/logger.js';
+import { callVertexGemini } from '../utils/vertex-gemini.js';
 
 // 쿨다운: 같은 종목 30분 내 중복 조회 방지 (크레딧 절약)
 const _lastCheck = new Map<string, number>();
@@ -38,13 +39,13 @@ export async function checkHoldingsNews(
 
   // 쿨다운 필터
   const now = Date.now();
-  const toCheck = targets.filter(t => {
+  const toCheck = targets.filter((t) => {
     const last = _lastCheck.get(t.code) ?? 0;
     return now - last > COOLDOWN_MS;
   });
   if (toCheck.length === 0) return [];
 
-  const codeList = toCheck.map(t => `${t.code}(${t.name})`).join(', ');
+  const codeList = toCheck.map((t) => `${t.code}(${t.name})`).join(', ');
 
   try {
     const result = await callVertexGemini(
@@ -72,20 +73,25 @@ Respond as JSON array: [...]`,
     for (const t of toCheck) _lastCheck.set(t.code, now);
 
     // JSON 파싱
-    const cleaned = result.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+    const cleaned = result
+      .replace(/```json?\n?/g, '')
+      .replace(/```/g, '')
+      .trim();
     const signals: GroundedSignal[] = JSON.parse(cleaned);
-    const actionable = signals.filter(s => s.action !== 'NEUTRAL' && s.confidence >= 0.70);
+    const actionable = signals.filter((s) => s.action !== 'NEUTRAL' && s.confidence >= 0.7);
 
     if (actionable.length > 0) {
       logger.info(
-        `🔍 그라운딩 뉴스: ${actionable.map(s => `${s.code}=${s.action}(${(s.confidence * 100).toFixed(0)}%) "${s.headline}"`).join(' | ')}`,
+        `🔍 그라운딩 뉴스: ${actionable.map((s) => `${s.code}=${s.action}(${(s.confidence * 100).toFixed(0)}%) "${s.headline}"`).join(' | ')}`,
         { component: 'GROUNDED_INTEL' },
       );
     }
 
     return actionable;
   } catch (err) {
-    logger.warn(`그라운딩 뉴스 체크 실패: ${err instanceof Error ? err.message : err}`, { component: 'GROUNDED_INTEL' });
+    logger.warn(`그라운딩 뉴스 체크 실패: ${err instanceof Error ? err.message : err}`, {
+      component: 'GROUNDED_INTEL',
+    });
     return [];
   }
 }
@@ -125,20 +131,25 @@ If nothing significant, respond: []`,
       { temperature: 0.1, maxOutputTokens: 400, label: '그라운딩-매크로이벤트', grounded: true },
     );
 
-    const cleaned = result.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+    const cleaned = result
+      .replace(/```json?\n?/g, '')
+      .replace(/```/g, '')
+      .trim();
     const events: MacroSignal[] = JSON.parse(cleaned);
-    const significant = events.filter(e => e.severity >= 2);
+    const significant = events.filter((e) => e.severity >= 2);
 
     if (significant.length > 0) {
       logger.info(
-        `🌍 매크로 이벤트: ${significant.map(e => `[Lv${e.severity}] ${e.impact} "${e.event}"`).join(' | ')}`,
+        `🌍 매크로 이벤트: ${significant.map((e) => `[Lv${e.severity}] ${e.impact} "${e.event}"`).join(' | ')}`,
         { component: 'GROUNDED_INTEL' },
       );
     }
 
     return significant;
   } catch (err) {
-    logger.warn(`매크로 이벤트 체크 실패: ${err instanceof Error ? err.message : err}`, { component: 'GROUNDED_INTEL' });
+    logger.warn(`매크로 이벤트 체크 실패: ${err instanceof Error ? err.message : err}`, {
+      component: 'GROUNDED_INTEL',
+    });
     return [];
   }
 }

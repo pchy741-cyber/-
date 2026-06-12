@@ -1,9 +1,8 @@
-import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { getActiveStrategy, getActiveWatchlist, getOpenChains, logSystem } from '../db/client.js';
 import { getAccountBalance } from '../kis/account.js';
-import { getPaperBalance } from '../risk/engine.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
+import { getPaperBalance } from '../risk/engine.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -99,10 +98,7 @@ export async function getPortfolioFlowStatus() {
 export async function onStockAdded(stockCode: string, stockName: string): Promise<void> {
   logger.info(`CEO 종목 추가: ${stockName} (${stockCode})`, { component: 'CEO_FLOW' });
 
-  await sendTelegramMessage(
-    `📌 *종목 추가됨*: ${stockName} (${stockCode})\n` +
-      `즉시 AI 분석 시작합니다 (2~5분 소요)`,
-  );
+  await sendTelegramMessage(`📌 *종목 추가됨*: ${stockName} (${stockCode})\n즉시 AI 분석 시작합니다 (2~5분 소요)`);
 
   // Track A 즉시 트리거 (fire-and-forget — isRunning 가드가 중복 실행 방지)
   try {

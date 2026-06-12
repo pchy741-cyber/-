@@ -5,13 +5,14 @@
  *
  * v4: Paper 무한루프 — 10만원 자동 리셋 (잔액 소진 시 초기화)
  */
+
+import { fetchExchangeRate } from '../automation/macro-data.js';
 import { runWithMode } from '../config/context.js';
 import { getPool } from '../db/client.js';
-import { logger } from '../utils/logger.js';
-import { loadFuturesConfig, monitorFuturesTPSL, executeFuturesEntry } from './futures/auto-executor.js';
-import { runFuturesTuner } from './futures/futures-tuner.js';
-import { fetchExchangeRate } from '../automation/macro-data.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
+import { logger } from '../utils/logger.js';
+import { executeFuturesEntry, loadFuturesConfig, monitorFuturesTPSL } from './futures/auto-executor.js';
+import { runFuturesTuner } from './futures/futures-tuner.js';
 
 const COMP = 'FUTURES';
 const PAPER_RESET_KRW = 100_000; // 10만원 무한루프 예산
@@ -72,12 +73,12 @@ async function checkAndResetFuturesPaper(): Promise<void> {
     [PAPER_RESET_KRW],
   );
 
-  const { rows: cntRows } = await pool.query(
-    `SELECT value FROM overseas_state WHERE key = $1`, [resetCountKey],
-  );
+  const { rows: cntRows } = await pool.query(`SELECT value FROM overseas_state WHERE key = $1`, [resetCountKey]);
   const resetCount = Number(cntRows[0]?.value ?? 1);
 
-  logger.info(`[선물 Paper 리셋] ${resetCount}회째 10만원 재투입 (이전잔액: ₩${Math.floor(effectiveKrw)})`, { component: COMP });
+  logger.info(`[선물 Paper 리셋] ${resetCount}회째 10만원 재투입 (이전잔액: ₩${Math.floor(effectiveKrw)})`, {
+    component: COMP,
+  });
   await sendTelegramMessage(
     `🔄 *선물 Paper 자동 리셋* (${resetCount}회)\n잔액 ₩${Math.floor(effectiveKrw)} → ₩${PAPER_RESET_KRW.toLocaleString()} 재시작\n청산 포지션: ${openPos.length}건`,
   );
@@ -89,17 +90,19 @@ export async function runFuturesJob(): Promise<void> {
   if (isWeekendClosed()) return;
 
   // Feature flag 체크: OFF면 Paper만 실행, Live 스킵
-  const { rows: flagRows } = await getPool().query(
-    "SELECT enabled FROM feature_flags WHERE key = 'overseas_futures'",
-  );
+  const { rows: flagRows } = await getPool().query("SELECT enabled FROM feature_flags WHERE key = 'overseas_futures'");
   const futuresLiveEnabled = flagRows[0]?.enabled === true;
 
   logger.info('📈 선물 자동매매 시작', { component: COMP });
 
   // 매 실행마다 튜너 갱신 (30일 승률 기반 TP/SL/confidence 조정)
-  await runWithMode(true, async () => { await runFuturesTuner(); });
+  await runWithMode(true, async () => {
+    await runFuturesTuner();
+  });
   if (futuresLiveEnabled) {
-    await runWithMode(false, async () => { await runFuturesTuner(); });
+    await runWithMode(false, async () => {
+      await runFuturesTuner();
+    });
   }
 
   // v4: Paper 10만원 무한루프 — 잔액 소진 시 자동 리셋

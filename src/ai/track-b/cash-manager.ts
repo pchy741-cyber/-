@@ -19,15 +19,15 @@
  * DEFENSE 모드는 defense-park.ts가 담당
  */
 
+import { analyzeTechnicals } from '../../analysis/indicators.js';
+import type { StrategyMode } from '../../config/constants.js';
+import { config } from '../../config/index.js';
 import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice, DailyCandle } from '../../kis/market.js';
-import type { StrategyMode } from '../../config/constants.js';
-import { analyzeTechnicals } from '../../analysis/indicators.js';
-import { config } from '../../config/index.js';
 import { logger } from '../../utils/logger.js';
 
 // ── 총자산 대비 최소 현금 보유 비율 (defense-park.ts도 임포트) ──
-export const CASH_RESERVE_RATIO = 0.20;
+export const CASH_RESERVE_RATIO = 0.2;
 
 /** 모드별 현금 보유 비율: Paper 3% / Live 20% */
 export function getCashReserveRatio(isPaper?: boolean): number {
@@ -37,14 +37,14 @@ export function getCashReserveRatio(isPaper?: boolean): number {
 // ── v2 핵심 상수: 전부 비율(%) 기반, 고정 금액 없음 ──
 
 /** 파킹 검토 시작 현금 비율 — 이 이상이면 파킹 시작 */
-const PARK_TRIGGER_RATIO = 0.30;
+const PARK_TRIGGER_RATIO = 0.3;
 
 /** 파킹 최소 금액: 총자산의 2% (절대 최소 1만원은 소자산 폴백) */
 const MIN_PARK_RATIO = 0.02;
 
 /** 파킹 최대 비중: 총자산의 30% live / 40% paper (positionCapRatio와 정렬) */
-const MAX_PARK_RATIO_LIVE = 0.30;
-const MAX_PARK_RATIO_PAPER = 0.40;
+const MAX_PARK_RATIO_LIVE = 0.3;
+const MAX_PARK_RATIO_PAPER = 0.4;
 
 /** 최소 보유 시간 (ms) — 2시간 (v1: 30분 → 삼성 3회 회전 재발 방지) */
 const MIN_PARK_HOLD_MS = 2 * 60 * 60_000;
@@ -111,28 +111,30 @@ function getDynamicParkPct(cashRatio: number, timingScore: number, isPaper = fal
   let basePct: number;
   if (isPaper) {
     // Paper 황금비율: 현금 많을수록 공격적으로 배치
-    if (cashRatio >= 0.80) basePct = 0.35;       // 80%+ → 35%
-    else if (cashRatio >= 0.65) basePct = 0.28;   // 65-80% → 28%
-    else if (cashRatio >= 0.50) basePct = 0.20;   // 50-65% → 20%
-    else if (cashRatio >= 0.40) basePct = 0.13;   // 40-50% → 13%
-    else if (cashRatio >= PARK_TRIGGER_RATIO) basePct = 0.08; // 30-40% → 8%
+    if (cashRatio >= 0.8)
+      basePct = 0.35; // 80%+ → 35%
+    else if (cashRatio >= 0.65)
+      basePct = 0.28; // 65-80% → 28%
+    else if (cashRatio >= 0.5)
+      basePct = 0.2; // 50-65% → 20%
+    else if (cashRatio >= 0.4)
+      basePct = 0.13; // 40-50% → 13%
+    else if (cashRatio >= PARK_TRIGGER_RATIO)
+      basePct = 0.08; // 30-40% → 8%
     else return 0;
   } else {
     // Live 보수적 유지
-    if (cashRatio >= 0.80) basePct = 0.22;
+    if (cashRatio >= 0.8) basePct = 0.22;
     else if (cashRatio >= 0.65) basePct = 0.16;
-    else if (cashRatio >= 0.50) basePct = 0.12;
-    else if (cashRatio >= 0.40) basePct = 0.08;
+    else if (cashRatio >= 0.5) basePct = 0.12;
+    else if (cashRatio >= 0.4) basePct = 0.08;
     else if (cashRatio >= PARK_TRIGGER_RATIO) basePct = 0.05;
     else return 0;
   }
 
   // 타이밍 품질 승수 (0.6x ~ 1.4x)
-  const timingMult = timingScore >= 35 ? 1.4
-    : timingScore >= 20 ? 1.2
-    : timingScore >= 10 ? 1.0
-    : timingScore >= 0 ? 0.8
-    : 0.6;
+  const timingMult =
+    timingScore >= 35 ? 1.4 : timingScore >= 20 ? 1.2 : timingScore >= 10 ? 1.0 : timingScore >= 0 ? 0.8 : 0.6;
 
   const maxRatio = isPaper ? MAX_PARK_RATIO_PAPER : MAX_PARK_RATIO_LIVE;
   const rawPct = basePct * timingMult;
@@ -145,8 +147,17 @@ function getDynamicParkPct(cashRatio: number, timingScore: number, isPaper = fal
  */
 export function manageCashParking(params: CashManagerParams): TradeDecision[] {
   const {
-    orderableCash, totalAssets, hasBuyCandidates, confirmedBuyCount,
-    openChains, livePrices, chartData, mode, blockNewBuys, macroRiskOff, isPaper,
+    orderableCash,
+    totalAssets,
+    hasBuyCandidates,
+    confirmedBuyCount,
+    openChains,
+    livePrices,
+    chartData,
+    mode,
+    blockNewBuys,
+    macroRiskOff,
+    isPaper,
   } = params;
 
   if (mode === 'DEFENSE') return [];
@@ -155,8 +166,8 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
   const minHoldMs = isPaper ? MIN_PARK_HOLD_MS_PAPER : MIN_PARK_HOLD_MS;
 
   // 현재 파킹 중인 대형주 체인 확인
-  const parkingCodes = new Set(MEGA_CAP_PARK_CANDIDATES.map(c => c.code));
-  const parkChains = openChains.filter(c => parkingCodes.has(c.stock_code));
+  const parkingCodes = new Set(MEGA_CAP_PARK_CANDIDATES.map((c) => c.code));
+  const parkChains = openChains.filter((c) => parkingCodes.has(c.stock_code));
 
   // ── 파킹 해제 로직 v2 ──
   if (parkChains.length > 0) {
@@ -164,22 +175,17 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
       const qty = Number(parkChain.total_quantity ?? 0);
       if (qty <= 0) continue;
 
-      const holdMs = parkChain.opened_at
-        ? Date.now() - new Date(parkChain.opened_at).getTime()
-        : 0;
+      const holdMs = parkChain.opened_at ? Date.now() - new Date(parkChain.opened_at).getTime() : 0;
       const avgPrice = Number(parkChain.avg_buy_price ?? 0);
       const currentPrice = livePrices.get(parkChain.stock_code)?.currentPrice ?? 0;
-      const pnlPct = avgPrice > 0 && currentPrice > 0
-        ? ((currentPrice - avgPrice) / avgPrice) * 100
-        : 0;
-      const name = MEGA_CAP_PARK_CANDIDATES.find(c => c.code === parkChain.stock_code)?.name ?? parkChain.stock_code;
+      const pnlPct = avgPrice > 0 && currentPrice > 0 ? ((currentPrice - avgPrice) / avgPrice) * 100 : 0;
+      const name = MEGA_CAP_PARK_CANDIDATES.find((c) => c.code === parkChain.stock_code)?.name ?? parkChain.stock_code;
 
       // ── 수익 자동실현: +2% 이상이면 매수신호 없어도 익절 ──
       if (pnlPct >= PARK_PROFIT_TAKE_PCT && holdMs >= minHoldMs) {
-        logger.info(
-          `🎉 파킹 익절: ${name} +${pnlPct.toFixed(1)}% (${qty}주) — 수익 자동실현`,
-          { component: 'CASH_MANAGER' },
-        );
+        logger.info(`🎉 파킹 익절: ${name} +${pnlPct.toFixed(1)}% (${qty}주) — 수익 자동실현`, {
+          component: 'CASH_MANAGER',
+        });
         decisions.push({
           action: 'SELL',
           stock_code: parkChain.stock_code,
@@ -214,9 +220,10 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
         }
 
         // 해제 승인
-        const reason = forceTimeout && pnlPct < 0
-          ? `⏰ 파킹 타임아웃 해제: ${name} ${pnlPct.toFixed(1)}% (${Math.round(holdMs / 3600_000)}h 초과) — 묶임 방지`
-          : `🔄 파킹 해제: ${name} +${pnlPct.toFixed(1)}% — 확정 매수 ${confirmedBuyCount}건 (본전↑ 확인)`;
+        const reason =
+          forceTimeout && pnlPct < 0
+            ? `⏰ 파킹 타임아웃 해제: ${name} ${pnlPct.toFixed(1)}% (${Math.round(holdMs / 3600_000)}h 초과) — 묶임 방지`
+            : `🔄 파킹 해제: ${name} +${pnlPct.toFixed(1)}% — 확정 매수 ${confirmedBuyCount}건 (본전↑ 확인)`;
         logger.info(reason, { component: 'CASH_MANAGER' });
         decisions.push({
           action: 'SELL',
@@ -224,7 +231,7 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
           quantity: qty,
           price_type: 'MARKET',
           reasoning: reason,
-          confidence: 0.90,
+          confidence: 0.9,
         });
       }
     }
@@ -245,19 +252,18 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
   if (cashRatio < PARK_TRIGGER_RATIO) return decisions;
 
   // 매수 후보 있으면 현금 확보 (단, 현금 60% 이상이면 일부 파킹)
-  if (hasBuyCandidates && cashRatio < 0.60) return decisions;
+  if (hasBuyCandidates && cashRatio < 0.6) return decisions;
 
   // 최소 파킹 금액: 총자산의 2%
   const minParkAmount = Math.max(totalAssets * MIN_PARK_RATIO, 10_000);
   if (orderableCash < minParkAmount) return decisions;
 
   // 이미 파킹 중인 종목 + 보유 중인 종목 제외
-  const alreadyHeld = new Set(openChains.map(c => c.stock_code));
+  const alreadyHeld = new Set(openChains.map((c) => c.stock_code));
 
   // ── 대형주 선택: 기술분석 타이밍 기반 ──
-  const scored = MEGA_CAP_PARK_CANDIDATES
-    .filter(c => !alreadyHeld.has(c.code))
-    .map(c => {
+  const scored = MEGA_CAP_PARK_CANDIDATES.filter((c) => !alreadyHeld.has(c.code))
+    .map((c) => {
       const price = livePrices.get(c.code);
       const candles = chartData?.get(c.code);
       const tech = candles && candles.length >= 30 ? analyzeTechnicals(candles) : null;
@@ -279,14 +285,14 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
         if (tech.vwapPullback) timingScore += 8;
         if (tech.vwapCross === 'JUST_ABOVE') timingScore += 6;
         // 캔들 패턴
-        if (tech.candlePatterns.some(p => p.bullish && p.strength === 'STRONG')) timingScore += 10;
-        else if (tech.candlePatterns.some(p => p.bullish)) timingScore += 4;
+        if (tech.candlePatterns.some((p) => p.bullish && p.strength === 'STRONG')) timingScore += 10;
+        else if (tech.candlePatterns.some((p) => p.bullish)) timingScore += 4;
       }
       return { ...c, price, tech, timingScore };
     })
     // 당일 급락 종목 제외 (칼잡이 방지), 과열 종목도 제외
     // paper는 -3% 허용 (대형주 일시 조정도 파킹 학습 기회)
-    .filter(c => c.price && c.price.changePct >= (isPaper ? -3.0 : -2.0) && c.price.changePct <= 5.0);
+    .filter((c) => c.price && c.price.changePct >= (isPaper ? -3.0 : -2.0) && c.price.changePct <= 5.0);
 
   // 타이밍 점수 정렬
   const candidates = scored.sort((a, b) => b.timingScore - a.timingScore);
@@ -301,7 +307,9 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
   // 타이밍 점수 하한: live=0, paper=-5 (대형주 소폭 눌림도 파킹 허용)
   const timingFloor = isPaper ? -5 : 0;
   if (best.timingScore < timingFloor) {
-    logger.info(`💤 파킹 보류 — 타이밍 부적합 (최고=${best.timingScore}점, 기준=${timingFloor})`, { component: 'CASH_MANAGER' });
+    logger.info(`💤 파킹 보류 — 타이밍 부적합 (최고=${best.timingScore}점, 기준=${timingFloor})`, {
+      component: 'CASH_MANAGER',
+    });
     return decisions;
   }
 
@@ -311,7 +319,7 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
 
   const targetBudget = totalAssets * parkPct;
   // 현금 사용 한도: paper=60% (유휴현금 적극 배치), live=40% (나머지 자동매매용)
-  const cashCeilRatio = isPaper ? 0.60 : 0.40;
+  const cashCeilRatio = isPaper ? 0.6 : 0.4;
   const parkBudget = Math.min(targetBudget, orderableCash * cashCeilRatio);
   if (parkBudget < minParkAmount) return decisions;
 
@@ -323,9 +331,9 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
   const actualPctOfAssets = totalAssets > 0 ? ((actualAmount / totalAssets) * 100).toFixed(1) : '?';
 
   logger.info(
-    `💰 파킹 v2: ${best.name}(${best.code}) ${quantity}주 @${targetPrice.toLocaleString()} `
-    + `(총자산 ${actualPctOfAssets}%, 현금비중 ${(cashRatio * 100).toFixed(0)}%, `
-    + `타이밍 ${best.timingScore}점, 당일 ${best.price!.changePct >= 0 ? '+' : ''}${best.price!.changePct.toFixed(2)}%)`,
+    `💰 파킹 v2: ${best.name}(${best.code}) ${quantity}주 @${targetPrice.toLocaleString()} ` +
+      `(총자산 ${actualPctOfAssets}%, 현금비중 ${(cashRatio * 100).toFixed(0)}%, ` +
+      `타이밍 ${best.timingScore}점, 당일 ${best.price!.changePct >= 0 ? '+' : ''}${best.price!.changePct.toFixed(2)}%)`,
     { component: 'CASH_MANAGER' },
   );
 
@@ -336,7 +344,7 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
     limit_price: targetPrice,
     price_type: 'MARKET',
     reasoning: `💰 파킹 v2: ${best.name} — 총자산 ${actualPctOfAssets}% | 현금 ${(cashRatio * 100).toFixed(0)}% | 타이밍 ${best.timingScore}점`,
-    confidence: 0.70,
+    confidence: 0.7,
     ai_score: 75,
     trigger_source: 'CASH_PARKING',
   });

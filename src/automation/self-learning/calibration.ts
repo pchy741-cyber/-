@@ -1,7 +1,7 @@
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, logSystem } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
-import type { InsightParamChange, LearnedInsight } from './index.js';
+import type { LearnedInsight } from './index.js';
 
 const now = new Date().toISOString();
 
@@ -37,21 +37,28 @@ export async function analyzeBuyThreshold(): Promise<LearnedInsight[]> {
     const confidence = Math.min(0.85, 0.55 + totalSamples * 0.015);
     const insights: LearnedInsight[] = [];
 
-    if (belowWinRate < 0.38 && belowAvgPnl < 0 && aboveWinRate > belowWinRate + 0.10) {
+    if (belowWinRate < 0.38 && belowAvgPnl < 0 && aboveWinRate > belowWinRate + 0.1) {
       let bestThreshold = currentThreshold + 5;
       let bestAboveWinRate = 0;
       for (let t = currentThreshold + 3; t <= Math.min(80, currentThreshold + 12); t += 3) {
         const atOrAbove = rows.filter((r: any) => Number(r.entry_score) >= t);
         if (atOrAbove.length < 5) break;
         const wr = atOrAbove.filter((r: any) => r.outcome === 'WIN').length / atOrAbove.length;
-        if (wr > bestAboveWinRate) { bestAboveWinRate = wr; bestThreshold = t; }
+        if (wr > bestAboveWinRate) {
+          bestAboveWinRate = wr;
+          bestThreshold = t;
+        }
       }
 
       insights.push({
         category: 'WIN_PATTERN',
         insight: `매수 임계값 자동최적화: ${currentThreshold}점 미만 실거래 승률 ${(belowWinRate * 100).toFixed(0)}% (${below.length}건, 평균손익 ${belowAvgPnl.toFixed(1)}%). 임계값 ${bestThreshold}점으로 상향하면 진입 품질 개선.`,
         recommendation: `buy_threshold: ${currentThreshold} → ${bestThreshold} (실거래 ${totalSamples}건 분석)`,
-        paramChange: { field: 'buy_threshold', value: bestThreshold, reason: `임계값 이하 승률 ${(belowWinRate * 100).toFixed(0)}% 개선 목적` },
+        paramChange: {
+          field: 'buy_threshold',
+          value: bestThreshold,
+          reason: `임계값 이하 승률 ${(belowWinRate * 100).toFixed(0)}% 개선 목적`,
+        },
         confidence,
         sampleCount: totalSamples,
         lastUpdated: now,
@@ -64,7 +71,11 @@ export async function analyzeBuyThreshold(): Promise<LearnedInsight[]> {
         category: 'WIN_PATTERN',
         insight: `매수 임계값 자동최적화: ${currentThreshold}점 미만에서도 승률 ${(belowWinRate * 100).toFixed(0)}% (${below.length}건, 평균손익 ${belowAvgPnl.toFixed(1)}%). 임계값 ${suggestedThreshold}점 하향으로 기회 확대 가능.`,
         recommendation: `buy_threshold: ${currentThreshold} → ${suggestedThreshold}`,
-        paramChange: { field: 'buy_threshold', value: suggestedThreshold, reason: `임계값 이하도 수익 확인 → 기회 확대` },
+        paramChange: {
+          field: 'buy_threshold',
+          value: suggestedThreshold,
+          reason: `임계값 이하도 수익 확인 → 기회 확대`,
+        },
         confidence: confidence * 0.85,
         sampleCount: totalSamples,
         lastUpdated: now,
@@ -122,9 +133,7 @@ export async function calibrateScoreTierParams(): Promise<void> {
 
     for (const tier of tiers) {
       const tierKey = `${tier.min}-${tier.max}`;
-      const tierData = accuracyData.filter(
-        (d) => d.entry_score >= tier.min && d.entry_score <= tier.max,
-      );
+      const tierData = accuracyData.filter((d) => d.entry_score >= tier.min && d.entry_score <= tier.max);
 
       if (tierData.length < 5) {
         tierStats[tierKey] = { data: [], winRate: 0, avgPnl: 0, avgWin: 0, avgLoss: 0, stdev: 0 };
@@ -136,20 +145,23 @@ export async function calibrateScoreTierParams(): Promise<void> {
 
       const winRate = wins.length / tierData.length;
       const avgPnl = tierData.reduce((s, d) => s + d.realized_pnl_pct, 0) / tierData.length;
-      const avgWin = wins.length > 0
-        ? wins.reduce((s, d) => s + d.realized_pnl_pct, 0) / wins.length
-        : 0;
-      const avgLoss = losses.length > 0
-        ? losses.reduce((s, d) => s + d.realized_pnl_pct, 0) / losses.length
-        : 0;
+      const avgWin = wins.length > 0 ? wins.reduce((s, d) => s + d.realized_pnl_pct, 0) / wins.length : 0;
+      const avgLoss = losses.length > 0 ? losses.reduce((s, d) => s + d.realized_pnl_pct, 0) / losses.length : 0;
 
-      const variance = tierData.reduce((s, d) => s + Math.pow(d.realized_pnl_pct - avgPnl, 2), 0) / tierData.length;
+      const variance = tierData.reduce((s, d) => s + (d.realized_pnl_pct - avgPnl) ** 2, 0) / tierData.length;
       const stdev = Math.sqrt(variance);
 
       tierStats[tierKey] = { data: tierData, winRate, avgPnl, avgWin, avgLoss, stdev };
     }
 
-    const updates: Array<{ tier_min: number; tier_max: number; alloc_pct: number; win_rate: number; avg_pnl_pct: number; sample_count: number }> = [];
+    const updates: Array<{
+      tier_min: number;
+      tier_max: number;
+      alloc_pct: number;
+      win_rate: number;
+      avg_pnl_pct: number;
+      sample_count: number;
+    }> = [];
 
     for (const tier of tiers) {
       const tierKey = `${tier.min}-${tier.max}`;
@@ -167,20 +179,16 @@ export async function calibrateScoreTierParams(): Promise<void> {
 
       // Kelly 음수 시 tier별 차별화 유지 (기존: 전 티어 0.04 → 점수 구분 무의미)
       if (kelly < 0) {
-        kelly = tier.min >= 90 ? 0.10
-          : tier.min >= 80 ? 0.08
-          : tier.min >= 70 ? 0.06
-          : 0.04;
+        kelly = tier.min >= 90 ? 0.1 : tier.min >= 80 ? 0.08 : tier.min >= 70 ? 0.06 : 0.04;
       } else {
         kelly = Math.min(kelly * 0.3, 0.22);
       }
 
       let allocPct = kelly;
       if (stats.data.length < 10) {
-        const { rows: currentRows } = await getPool().query(
-          `SELECT alloc_pct FROM score_tier_params WHERE tier_min = $1 AND tier_max = $2`,
-          [tier.min, tier.max],
-        ).catch(() => ({ rows: [] }));
+        const { rows: currentRows } = await getPool()
+          .query(`SELECT alloc_pct FROM score_tier_params WHERE tier_min = $1 AND tier_max = $2`, [tier.min, tier.max])
+          .catch(() => ({ rows: [] }));
 
         if (currentRows.length > 0) {
           const currentAlloc = Number(currentRows[0].alloc_pct);
@@ -208,7 +216,12 @@ export async function calibrateScoreTierParams(): Promise<void> {
       );
     }
 
-    const summary = updates.map((u) => `[${u.tier_min}-${u.tier_max}: ${(u.alloc_pct * 100).toFixed(1)}%, 승률 ${(u.win_rate * 100).toFixed(0)}%, n=${u.sample_count}]`).join(' ');
+    const summary = updates
+      .map(
+        (u) =>
+          `[${u.tier_min}-${u.tier_max}: ${(u.alloc_pct * 100).toFixed(1)}%, 승률 ${(u.win_rate * 100).toFixed(0)}%, n=${u.sample_count}]`,
+      )
+      .join(' ');
     logger.info(`점수 티어 파라미터 갱신: ${summary}`, { component: 'LEARN' });
     await logSystem('INFO', 'LEARN', `점수 티어 보정: ${summary}`).catch(() => {});
   } catch (err) {
@@ -257,7 +270,10 @@ export async function validatePromotedInsights(): Promise<void> {
          WHERE id = $3`,
         [wins, losses, insight.id],
       );
-      logger.info(`프로모션 검증 완료: ${String(insight.insight).slice(0, 50)}... → validated (승률 ${(winRate * 100).toFixed(0)}%)`, { component: 'LEARN' });
+      logger.info(
+        `프로모션 검증 완료: ${String(insight.insight).slice(0, 50)}... → validated (승률 ${(winRate * 100).toFixed(0)}%)`,
+        { component: 'LEARN' },
+      );
     } else if (daysSincePromotion >= 30 && winRate < 0.4) {
       await getPool().query(
         `UPDATE learned_insights
@@ -268,7 +284,10 @@ export async function validatePromotedInsights(): Promise<void> {
          WHERE id = $3`,
         [wins, losses, insight.id],
       );
-      logger.info(`프로모션 무효화: ${String(insight.insight).slice(0, 50)}... → invalidated (승률 ${(winRate * 100).toFixed(0)}%)`, { component: 'LEARN' });
+      logger.info(
+        `프로모션 무효화: ${String(insight.insight).slice(0, 50)}... → invalidated (승률 ${(winRate * 100).toFixed(0)}%)`,
+        { component: 'LEARN' },
+      );
     }
   }
 }

@@ -1,11 +1,21 @@
 import pg from 'pg';
-const pool = new pg.Pool({
-  host: '127.0.0.1',
-  port: 5434,
-  database: 'quantops',
-  user: 'postgres',
-  password: process.env.DB_PASSWORD || 'postgres'
-});
+
+// CLI args: --host --port --db --user
+const argv = process.argv.slice(2);
+const arg = (flag) => { const i = argv.indexOf(flag); return i >= 0 ? argv[i + 1] : undefined; };
+
+let pool;
+if (process.env.DATABASE_URL) {
+  pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+} else {
+  pool = new pg.Pool({
+    host:     arg('--host') ?? process.env.DB_HOST     ?? '127.0.0.1',
+    port:     Number(arg('--port') ?? process.env.DB_PORT ?? 5434),
+    database: arg('--db')   ?? process.env.DB_NAME     ?? 'quantops',
+    user:     arg('--user') ?? process.env.DB_USER     ?? 'postgres',
+    password: process.env.DB_PASSWORD ?? 'postgres',
+  });
+}
 
 try {
   // 1. Orders by trading_mode

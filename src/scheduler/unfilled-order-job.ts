@@ -1,8 +1,7 @@
 import { getPool, logSystem, updateOrderByKisOrderNo } from '../db/client.js';
 import { cancelOrder } from '../kis/order.js';
-import { logger } from '../utils/logger.js';
-import { config } from '../config/index.js';
 import { notifyAlert } from '../notifications/web-push.js';
+import { logger } from '../utils/logger.js';
 
 // 미체결 주문 자동 관리
 // - 지정가 주문 후 5분 미체결 → 자동 취소
@@ -82,17 +81,10 @@ export async function runUnfilledOrderCheck(): Promise<void> {
       }
     }
 
-    await logSystem(
-      'INFO',
-      'UNFILLED',
-      `미체결 주문 ${rows.length}건 자동 취소 처리`,
-    );
+    await logSystem('INFO', 'UNFILLED', `미체결 주문 ${rows.length}건 자동 취소 처리`);
 
     if (cancelled.length > 0) {
-      notifyAlert(
-        `⏱️ 미체결 주문 ${cancelled.length}건 자동 취소`,
-        cancelled.join('\n'),
-      ).catch(() => {});
+      notifyAlert(`⏱️ 미체결 주문 ${cancelled.length}건 자동 취소`, cancelled.join('\n')).catch(() => {});
     }
   } catch (err) {
     logger.error(`미체결 주문 체크 실패: ${err}`, { component: 'UNFILLED' });

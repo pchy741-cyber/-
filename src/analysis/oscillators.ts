@@ -3,7 +3,7 @@
  * RSI, MACD, Bollinger, Stochastic, Williams %R, ROC, ATR, ADX, TTM Squeeze
  */
 
-import { sma, ema, type OHLCV } from './moving-averages.js';
+import { ema, type OHLCV, sma } from './moving-averages.js';
 
 // ── RSI (Relative Strength Index) ──
 
@@ -50,22 +50,28 @@ export interface RsiDivergence {
 }
 
 export function detectRsiDivergence(
-  prices: number[],  // 최신→과거 (desc)
+  prices: number[], // 최신→과거 (desc)
   rsiValues: number[], // 최신→과거 (desc) — rsi() 결과를 reverse한 것
   lookback: number = 14,
 ): RsiDivergence {
   if (prices.length < lookback || rsiValues.length < lookback) return { type: 'NONE', strength: 0 };
 
   // 최근 lookback 기간 내 가격 저점 2개, 고점 2개 찾기
-  let priceMinIdx1 = 0, priceMinIdx2 = -1;
-  let priceMaxIdx1 = 0, priceMaxIdx2 = -1;
+  let priceMinIdx1 = 0,
+    priceMinIdx2 = -1;
+  let priceMaxIdx1 = 0,
+    priceMaxIdx2 = -1;
 
   // 가장 최근 저점/고점
   for (let i = 1; i < lookback; i++) {
-    if (prices[i] < prices[priceMinIdx1]) { priceMinIdx2 = priceMinIdx1; priceMinIdx1 = i; }
-    else if (priceMinIdx2 < 0 || prices[i] < prices[priceMinIdx2]) priceMinIdx2 = i;
-    if (prices[i] > prices[priceMaxIdx1]) { priceMaxIdx2 = priceMaxIdx1; priceMaxIdx1 = i; }
-    else if (priceMaxIdx2 < 0 || prices[i] > prices[priceMaxIdx2]) priceMaxIdx2 = i;
+    if (prices[i] < prices[priceMinIdx1]) {
+      priceMinIdx2 = priceMinIdx1;
+      priceMinIdx1 = i;
+    } else if (priceMinIdx2 < 0 || prices[i] < prices[priceMinIdx2]) priceMinIdx2 = i;
+    if (prices[i] > prices[priceMaxIdx1]) {
+      priceMaxIdx2 = priceMaxIdx1;
+      priceMaxIdx1 = i;
+    } else if (priceMaxIdx2 < 0 || prices[i] > prices[priceMaxIdx2]) priceMaxIdx2 = i;
   }
 
   // Bullish: 현재 가격이 이전 저점보다 낮지만, RSI는 이전보다 높음
@@ -266,7 +272,13 @@ export interface TTMSqueezeResult {
   consecutiveSqueezeOn: number;
 }
 
-export function ttmSqueeze(candles: OHLCV[], bbPeriod = 20, bbMult = 2.0, kcPeriod = 20, kcMult = 1.5): TTMSqueezeResult {
+export function ttmSqueeze(
+  candles: OHLCV[],
+  bbPeriod = 20,
+  bbMult = 2.0,
+  kcPeriod = 20,
+  kcMult = 1.5,
+): TTMSqueezeResult {
   if (candles.length < bbPeriod + 5) {
     return { squeezeState: 'OFF', momentum: 0, momentumPrev: 0, fireSignal: 'NONE', consecutiveSqueezeOn: 0 };
   }
@@ -292,7 +304,8 @@ export function ttmSqueeze(candles: OHLCV[], bbPeriod = 20, bbMult = 2.0, kcPeri
   const lastIdx = minLen - 1;
   const prevIdx = minLen - 2;
   const currSqueezeOn = (bbU[lastIdx] ?? 0) < (kcU[lastIdx] ?? 0) && (bbL[lastIdx] ?? 0) > (kcL[lastIdx] ?? 0);
-  const prevSqueezeOn = prevIdx >= 0 && (bbU[prevIdx] ?? 0) < (kcU[prevIdx] ?? 0) && (bbL[prevIdx] ?? 0) > (kcL[prevIdx] ?? 0);
+  const prevSqueezeOn =
+    prevIdx >= 0 && (bbU[prevIdx] ?? 0) < (kcU[prevIdx] ?? 0) && (bbL[prevIdx] ?? 0) > (kcL[prevIdx] ?? 0);
 
   let consecutiveSqueezeOn = 0;
   for (let i = minLen - 1; i >= 0; i--) {

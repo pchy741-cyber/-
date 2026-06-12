@@ -6,8 +6,9 @@
  * - 최소 minModels 개 이상 응답해야 유효 (기본 2)
  * - 모델간 점수 편차가 작을수록 confidence 상승
  */
-import type { DailyCandle } from '../../kis/market.js';
+
 import type { ScoringResult } from '../../db/models.js';
+import type { DailyCandle } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import type { RegimeHint } from '../prompts/track-a-scoring.js';
 import type { GeminiAnalysis } from './gemini.js';
@@ -28,12 +29,15 @@ export interface EnsembleConfig {
 }
 
 export const DEFAULT_ENSEMBLE_CONFIG: EnsembleConfig = {
-  weights: { gemini: 0.30, gpt: 0.35, claude: 0.20, rss: 0.15 },
+  weights: { gemini: 0.3, gpt: 0.35, claude: 0.2, rss: 0.15 },
   strategy: 'weighted_avg',
   minModels: 2,
 };
 
-interface WatchlistItem { stock_code: string; stock_name: string; }
+interface WatchlistItem {
+  stock_code: string;
+  stock_name: string;
+}
 
 interface EnsembleParams {
   mode: string;
@@ -56,10 +60,7 @@ interface ModelResult {
 }
 
 /** 개별 모델 실행 (실패 시 빈 배열) */
-async function runModel(
-  model: keyof EnsembleWeights,
-  params: EnsembleParams,
-): Promise<ModelResult> {
+async function runModel(model: keyof EnsembleWeights, params: EnsembleParams): Promise<ModelResult> {
   const start = Date.now();
   let scores: ScoringResult[] = [];
 
@@ -79,17 +80,13 @@ async function runModel(
       case 'gpt': {
         if (!process.env.OPENAI_API_KEY) break;
         const { runGPTScoring } = await import('./gpt-scorer.js');
-        scores = await runGPTScoring(
-          params.mode, params.watchlist, params.chartData, params.regimeHint,
-        );
+        scores = await runGPTScoring(params.mode, params.watchlist, params.chartData, params.regimeHint);
         break;
       }
       case 'claude': {
         if (!process.env.ANTHROPIC_API_KEY) break;
         const { runClaudeScoring } = await import('./claude-scorer.js');
-        scores = await runClaudeScoring(
-          params.mode, params.watchlist, params.chartData,
-        );
+        scores = await runClaudeScoring(params.mode, params.watchlist, params.chartData);
         break;
       }
       case 'rss': {
@@ -123,10 +120,7 @@ function resolveSignal(score: number): ScoringResult['signal'] {
 }
 
 /** 앙상블 점수 합산 */
-function mergeScores(
-  modelResults: ModelResult[],
-  config: EnsembleConfig,
-): ScoringResult[] {
+function mergeScores(modelResults: ModelResult[], config: EnsembleConfig): ScoringResult[] {
   // 종목별로 각 모델의 점수를 수집
   const byStock = new Map<string, Array<{ model: keyof EnsembleWeights; score: ScoringResult }>>();
 
@@ -139,7 +133,7 @@ function mergeScores(
   }
 
   const merged: ScoringResult[] = [];
-  const activeModels = modelResults.filter(r => r.scores.length > 0).map(r => r.model);
+  const activeModels = modelResults.filter((r) => r.scores.length > 0).map((r) => r.model);
 
   // 활성 모델의 가중치만 추출하고 합이 1이 되도록 정규화
   let totalWeight = 0;
@@ -165,9 +159,8 @@ function mergeScores(
 
     if (config.strategy === 'conservative') {
       // 최저 점수 채택 (가장 보수적)
-      composite = Math.min(...entries.map(e => e.score.composite_score));
-      const lowest = entries.reduce((a, b) =>
-        a.score.composite_score <= b.score.composite_score ? a : b);
+      composite = Math.min(...entries.map((e) => e.score.composite_score));
+      const lowest = entries.reduce((a, b) => (a.score.composite_score <= b.score.composite_score ? a : b));
       fundamentalScore = lowest.score.fundamental_score;
       technicalScore = lowest.score.technical_score;
       sentimentScore = lowest.score.sentiment_score;
@@ -201,7 +194,9 @@ function mergeScores(
       // weighted_avg (기본): 가중 평균
       let weightedSum = 0;
       let wSum = 0;
-      let fSum = 0, tSum = 0, sSum = 0;
+      let fSum = 0,
+        tSum = 0,
+        sSum = 0;
       for (const e of entries) {
         const w = normalizedWeights.get(e.model) ?? 0;
         weightedSum += e.score.composite_score * w;
@@ -219,7 +214,7 @@ function mergeScores(
     composite = Math.max(0, Math.min(100, composite));
 
     // confidence: 모델간 편차 반영 (편차 작을수록 높음)
-    const scores = entries.map(e => e.score.composite_score);
+    const scores = entries.map((e) => e.score.composite_score);
     const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
     const variance = scores.reduce((a, s) => a + (s - mean) ** 2, 0) / scores.length;
     const stdDev = Math.sqrt(variance);
@@ -229,7 +224,7 @@ function mergeScores(
     const confidence = Math.min(0.95, baseConfidence + agreementBonus);
 
     // reasoning: 각 모델 점수 투명 표시
-    const parts = entries.map(e => {
+    const parts = entries.map((e) => {
       const label = e.model === 'gemini' ? 'G' : e.model === 'gpt' ? 'GPT' : e.model === 'claude' ? 'C' : 'RSS';
       return `${label}:${e.score.composite_score}`;
     });
@@ -296,18 +291,15 @@ export async function runEnsembleScoring(params: EnsembleParams): Promise<Scorin
   );
 
   // 병렬 실행
-  const results = await Promise.allSettled(
-    available.map(m => runModel(m, params)),
-  );
+  const results = await Promise.allSettled(available.map((m) => runModel(m, params)));
 
   const modelResults: ModelResult[] = [];
   for (const r of results) {
     if (r.status === 'fulfilled' && r.value.scores.length > 0) {
       modelResults.push(r.value);
-      logger.info(
-        `  ✅ ${r.value.model}: ${r.value.scores.length}개 (${(r.value.elapsed / 1000).toFixed(1)}초)`,
-        { component: COMP },
-      );
+      logger.info(`  ✅ ${r.value.model}: ${r.value.scores.length}개 (${(r.value.elapsed / 1000).toFixed(1)}초)`, {
+        component: COMP,
+      });
     } else if (r.status === 'fulfilled') {
       logger.info(`  ⬚ ${r.value.model}: 0개 (스킵됨, ${(r.value.elapsed / 1000).toFixed(1)}초)`, { component: COMP });
     } else {
@@ -317,21 +309,19 @@ export async function runEnsembleScoring(params: EnsembleParams): Promise<Scorin
 
   // 응답 모델 수 확인
   if (modelResults.length < config.minModels) {
-    logger.warn(
-      `앙상블 응답 모델 부족: ${modelResults.length}/${config.minModels} → 폴백 체인으로 전환`,
-      { component: COMP },
-    );
+    logger.warn(`앙상블 응답 모델 부족: ${modelResults.length}/${config.minModels} → 폴백 체인으로 전환`, {
+      component: COMP,
+    });
     return [];
   }
 
   // 점수 합산
   const merged = mergeScores(modelResults, config);
-  const buyCount = merged.filter(s => s.composite_score >= 68).length;
+  const buyCount = merged.filter((s) => s.composite_score >= 68).length;
 
-  logger.info(
-    `🎼 앙상블 완료: ${modelResults.length}모델 → ${merged.length}개 스코어, 매수후보 ${buyCount}개`,
-    { component: COMP },
-  );
+  logger.info(`🎼 앙상블 완료: ${modelResults.length}모델 → ${merged.length}개 스코어, 매수후보 ${buyCount}개`, {
+    component: COMP,
+  });
 
   return merged;
 }

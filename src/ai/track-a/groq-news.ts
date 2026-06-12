@@ -15,7 +15,7 @@ import { logger } from '../../utils/logger.js';
 export interface GroqNewsSentiment {
   stockCode: string;
   companyName: string;
-  score: number;        // -100(극부정) ~ 100(극긍정)
+  score: number; // -100(극부정) ~ 100(극긍정)
   summary: string;
   articleCount: number;
   newsSource: 'serpapi' | 'rss';
@@ -59,18 +59,17 @@ async function fetchNewsViaRss(companyName: string): Promise<string[]> {
   const xml = await res.text();
   const titles: string[] = [];
   const re = /<title><!\[CDATA\[([^\]]+)\]\]><\/title>/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(xml)) !== null) {
+  let m: RegExpExecArray | null = re.exec(xml);
+  while (m !== null) {
     const t = m[1].trim();
     if (!t.includes('Google 뉴스') && !t.includes('Google News')) titles.push(t);
     if (titles.length >= 5) break;
+    m = re.exec(xml);
   }
   return titles;
 }
 
-async function fetchHeadlines(
-  companyName: string,
-): Promise<{ headlines: string[]; source: 'serpapi' | 'rss' }> {
+async function fetchHeadlines(companyName: string): Promise<{ headlines: string[]; source: 'serpapi' | 'rss' }> {
   if (process.env.SERPAPI_KEY) {
     try {
       const headlines = await fetchNewsViaSerpApi(companyName);
@@ -154,22 +153,15 @@ export async function analyzeNewsWithGroq(
 
     // 최대 10종목 (rate limit 보호)
     const targets = stale.slice(0, 10);
-    const headlineResults = await Promise.allSettled(
-      targets.map((s) => fetchHeadlines(s.companyName)),
-    );
+    const headlineResults = await Promise.allSettled(targets.map((s) => fetchHeadlines(s.companyName)));
 
     const items = targets.map((s, i) => ({
       stockCode: s.stockCode,
       companyName: s.companyName,
-      headlines:
-        headlineResults[i].status === 'fulfilled'
-          ? headlineResults[i].value.headlines
-          : [],
+      headlines: headlineResults[i].status === 'fulfilled' ? headlineResults[i].value.headlines : [],
     }));
     const sources = targets.map((_, i) =>
-      headlineResults[i].status === 'fulfilled'
-        ? headlineResults[i].value.source
-        : ('rss' as const),
+      headlineResults[i].status === 'fulfilled' ? headlineResults[i].value.source : ('rss' as const),
     );
 
     const groqResult = await analyzeWithGroq(items);

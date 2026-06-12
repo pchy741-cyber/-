@@ -35,7 +35,10 @@ interface DailyInvestorData {
  */
 async function fetchInvestorRawData(stockCode: string, days: number): Promise<DailyInvestorData[]> {
   const endDate = getKSTNow().toISOString().split('T')[0].replace(/-/g, '');
-  const startDate = new Date(Date.now() + 9*3600_000 - days * 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0].replace(/-/g, '');
+  const startDate = new Date(Date.now() + 9 * 3600_000 - days * 2 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .split('T')[0]
+    .replace(/-/g, '');
 
   await marketDataRateLimiter.acquire();
   const res = await kisRequest<Record<string, string>[]>({
@@ -191,7 +194,13 @@ export async function getInvestorFlow(stockCode: string, days: number = 5): Prom
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logger.error(`투자자 매매동향 조회 실패 (${stockCode}): ${message}`, { component: COMPONENT });
-    const fallback: InvestorFlowResult = { foreignNet: 0, institutionNet: 0, retailNet: 0, foreignStreak: 0, trend: 'NEUTRAL' };
+    const fallback: InvestorFlowResult = {
+      foreignNet: 0,
+      institutionNet: 0,
+      retailNet: 0,
+      foreignStreak: 0,
+      trend: 'NEUTRAL',
+    };
     _flowCache.set(stockCode, { data: fallback, fetchedAt: Date.now() });
     return fallback;
   }

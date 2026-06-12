@@ -6,7 +6,7 @@ export interface FuturesSignal {
   symbol: string;
   product: string;
   direction: 'LONG' | 'SHORT';
-  confidence: number;     // 0-100
+  confidence: number; // 0-100
   rsi: number;
   macdHist: number;
   atrPct: number;
@@ -15,7 +15,7 @@ export interface FuturesSignal {
 
 export interface FuturesAutoConfig {
   enabled: boolean;
-  maxContracts: number;     // 1-5
+  maxContracts: number; // 1-5
   maxBudgetKrw: number;
   allocatedKrw: number;
   totalPnlUsd: number;

@@ -1,10 +1,12 @@
-import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
-import { kisRequest, overseasRateLimiter } from './client.js';
+import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
+import { kisRequest, overseasRateLimiter } from './client.js';
 
 /** 해외 전용 KIS API 호출 — 국내와 별도 rate limiter 사용 */
-async function overseasKisRequest<T = unknown>(opts: Parameters<typeof kisRequest<T>>[0]): ReturnType<typeof kisRequest<T>> {
+async function overseasKisRequest<T = unknown>(
+  opts: Parameters<typeof kisRequest<T>>[0],
+): ReturnType<typeof kisRequest<T>> {
   await overseasRateLimiter.acquire();
   return kisRequest<T>({ ...opts, skipRateLimiter: true });
 }
@@ -41,36 +43,56 @@ const EXCHANGE_MAP: Record<string, string> = {
   NASDAQ: 'NAS',
   AMEX: 'AMS',
   // 아시아
-  TSE: 'TSE',     // 일본 (도쿄증권거래소) — KIS코드: TKSE
-  TKSE: 'TSE',    // 일본 alias
-  TPE: 'TPE',     // 대만 (타이베이증권거래소)
-  TWSE: 'TPE',    // 대만 alias (Taiwan Stock Exchange)
-  SEHK: 'HKS',    // 홍콩 (홍콩증권거래소) — KIS코드: SEHK
-  HKS: 'HKS',     // 홍콩 alias
-  SSE: 'SHA',     // 중국 상해 — KIS코드: SHAA
-  SHAA: 'SHA',    // 상해 alias
-  SZSE: 'SZA',    // 중국 심천 — KIS코드: SZAA
-  SZAA: 'SZA',    // 심천 alias
-  HASE: 'HNX',    // 베트남 하노이
-  VNSE: 'HSX',    // 베트남 호치민
+  TSE: 'TSE', // 일본 (도쿄증권거래소) — KIS코드: TKSE
+  TKSE: 'TSE', // 일본 alias
+  TPE: 'TPE', // 대만 (타이베이증권거래소)
+  TWSE: 'TPE', // 대만 alias (Taiwan Stock Exchange)
+  SEHK: 'HKS', // 홍콩 (홍콩증권거래소) — KIS코드: SEHK
+  HKS: 'HKS', // 홍콩 alias
+  SSE: 'SHA', // 중국 상해 — KIS코드: SHAA
+  SHAA: 'SHA', // 상해 alias
+  SZSE: 'SZA', // 중국 심천 — KIS코드: SZAA
+  SZAA: 'SZA', // 심천 alias
+  HASE: 'HNX', // 베트남 하노이
+  VNSE: 'HSX', // 베트남 호치민
 };
 
 // 시세 조회용 거래소 코드 (EXCD 파라미터 — 주문용과 다를 수 있음)
 const QUOTE_EXCD_MAP: Record<string, string> = {
-  NYSE: 'NYS', NASDAQ: 'NAS', AMEX: 'AMS',
-  TSE: 'TSE', TKSE: 'TSE', TPE: 'TPE', TWSE: 'TPE',
-  SEHK: 'HKS', HKS: 'HKS',
-  SSE: 'SHS', SHAA: 'SHS', SZSE: 'SZS', SZAA: 'SZS',
-  HASE: 'HNX', VNSE: 'HSX',
+  NYSE: 'NYS',
+  NASDAQ: 'NAS',
+  AMEX: 'AMS',
+  TSE: 'TSE',
+  TKSE: 'TSE',
+  TPE: 'TPE',
+  TWSE: 'TPE',
+  SEHK: 'HKS',
+  HKS: 'HKS',
+  SSE: 'SHS',
+  SHAA: 'SHS',
+  SZSE: 'SZS',
+  SZAA: 'SZS',
+  HASE: 'HNX',
+  VNSE: 'HSX',
 };
 
 // 주문용 거래소 코드 (OVRS_EXCG_CD)
 const ORDER_EXCD_MAP: Record<string, string> = {
-  NYSE: 'NYSE', NASDAQ: 'NASD', AMEX: 'AMEX',
-  TSE: 'TKSE', TKSE: 'TKSE', TPE: 'TPEX', TWSE: 'TPEX',
-  SEHK: 'SEHK', HKS: 'SEHK',
-  SSE: 'SHAA', SHAA: 'SHAA', SZSE: 'SZAA', SZAA: 'SZAA',
-  HASE: 'HASE', VNSE: 'VNSE',
+  NYSE: 'NYSE',
+  NASDAQ: 'NASD',
+  AMEX: 'AMEX',
+  TSE: 'TKSE',
+  TKSE: 'TKSE',
+  TPE: 'TPEX',
+  TWSE: 'TPEX',
+  SEHK: 'SEHK',
+  HKS: 'SEHK',
+  SSE: 'SHAA',
+  SHAA: 'SHAA',
+  SZSE: 'SZAA',
+  SZAA: 'SZAA',
+  HASE: 'HASE',
+  VNSE: 'VNSE',
 };
 
 const BALANCE_CURRENCY_MAP: Record<string, string> = {
@@ -99,9 +121,9 @@ export interface OverseasPrice {
   changePct: number;
   volume: number;
   exchange: string;
-  dayHigh: number;   // 당일 고가
-  dayLow: number;    // 당일 저가
-  dayOpen: number;   // 당일 시가
+  dayHigh: number; // 당일 고가
+  dayLow: number; // 당일 저가
+  dayOpen: number; // 당일 시가
 }
 
 /**
@@ -231,10 +253,10 @@ export async function placeFractionalOverseasBuy(params: {
     ACNT_PRDT_CD: config.kis.accountProductCode,
     OVRS_EXCG_CD: excd,
     PDNO: stockCode,
-    ORD_QTY: '0',                          // 소수점 매수: 수량 0 = 금액 기준
-    OVRS_ORD_UNPR: '0',                    // 시장가
+    ORD_QTY: '0', // 소수점 매수: 수량 0 = 금액 기준
+    OVRS_ORD_UNPR: '0', // 시장가
     ORD_SVR_DVSN_CD: '0',
-    ORD_DVSN: '01',                        // 시장가
+    ORD_DVSN: '01', // 시장가
     OVRS_STCK_AMT: String(Math.floor(amountUsd)), // 주문 금액 (달러)
   };
 
@@ -279,7 +301,12 @@ export async function cancelOverseasOrder(params: {
     ORD_DVSN: '00',
   };
 
-  const res = await overseasKisRequest({ path: '/uapi/overseas-stock/v1/trading/order-rvsecncl', method: 'POST', trId, body });
+  const res = await overseasKisRequest({
+    path: '/uapi/overseas-stock/v1/trading/order-rvsecncl',
+    method: 'POST',
+    trId,
+    body,
+  });
   return { success: res.rtCd === '0', message: res.msg1 };
 }
 
@@ -323,10 +350,10 @@ export async function getOverseasBalance(exchange: string = 'NASDAQ') {
  * USD + KRW(원화) 모두 반환. 통합증거금 계좌는 원화 필드가 정확.
  */
 export interface OverseasBuyableResult {
-  usd: number;        // ord_psbl_frcr_amt: 실제 주문가능 외화(USD)
-  maxUsd: number;     // frcr_ord_psbl_amt1: 원화 포함 통합증거금 환산 최대 USD
+  usd: number; // ord_psbl_frcr_amt: 실제 주문가능 외화(USD)
+  maxUsd: number; // frcr_ord_psbl_amt1: 원화 포함 통합증거금 환산 최대 USD
   krw: number | null; // 주문가능원화 (통합증거금 기준 KRW)
-  exrt: number;       // KIS 적용 환율
+  exrt: number; // KIS 적용 환율
 }
 
 export async function getOverseasBuyableAmount(exchange: string = 'NASDAQ'): Promise<OverseasBuyableResult | null> {

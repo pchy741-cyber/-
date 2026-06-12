@@ -7,10 +7,10 @@
  * 토큰 비용: $0 (DB + 결정론적 백테스트만 사용)
  */
 
+import { type BacktestConfig, runBacktest } from '../backtest/engine.js';
 import { STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
 import { getPool } from '../db/client.js';
 import { getDailyChart } from '../kis/market.js';
-import { runBacktest, type BacktestConfig, type BacktestResult } from '../backtest/engine.js';
 import { getStrategyPerformance } from '../risk/strategy-performance.js';
 import { logger } from '../utils/logger.js';
 
@@ -150,11 +150,13 @@ export async function runStrategyOptimizer(): Promise<OptimizerResult[]> {
 
       // Paper strategy_config에 최적 값 기록
       if (applied) {
-        await pool.query(
-          `UPDATE strategy_config SET take_profit_pct = $1, stop_loss_pct = $2, updated_at = NOW()
+        await pool
+          .query(
+            `UPDATE strategy_config SET take_profit_pct = $1, stop_loss_pct = $2, updated_at = NOW()
            WHERE is_active = true AND is_paper = true AND mode = $3`,
-          [bestTp, bestSl, mode],
-        ).catch(() => {});
+            [bestTp, bestSl, mode],
+          )
+          .catch(() => {});
 
         logger.info(
           `  🎯 ${mode}: TP ${currentTp}→${bestTp.toFixed(1)}% SL ${currentSl}→${bestSl.toFixed(1)}% (Sharpe ${currentSharpe.toFixed(2)}→${bestSharpe.toFixed(2)})`,
@@ -168,24 +170,42 @@ export async function runStrategyOptimizer(): Promise<OptimizerResult[]> {
       }
 
       // 결과 DB 기록
-      await pool.query(
-        `INSERT INTO system_state (key, value, updated_at) VALUES ($1, $2, NOW())
+      await pool
+        .query(
+          `INSERT INTO system_state (key, value, updated_at) VALUES ($1, $2, NOW())
          ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
-        [
-          `optimizer_${mode}`,
-          JSON.stringify({
-            currentTp, currentSl, bestTp, bestSl,
-            currentSharpe, bestSharpe, bestPF, bestWinRate,
-            improved, applied, paperTrades: paperPerf.totalTrades,
-            runAt: new Date().toISOString(),
-          }),
-        ],
-      ).catch(() => {});
+          [
+            `optimizer_${mode}`,
+            JSON.stringify({
+              currentTp,
+              currentSl,
+              bestTp,
+              bestSl,
+              currentSharpe,
+              bestSharpe,
+              bestPF,
+              bestWinRate,
+              improved,
+              applied,
+              paperTrades: paperPerf.totalTrades,
+              runAt: new Date().toISOString(),
+            }),
+          ],
+        )
+        .catch(() => {});
 
       results.push({
-        mode, currentTp, currentSl, bestTp, bestSl,
-        bestSharpe, bestPF, bestWinRate, currentSharpe,
-        improved, applied,
+        mode,
+        currentTp,
+        currentSl,
+        bestTp,
+        bestSl,
+        bestSharpe,
+        bestPF,
+        bestWinRate,
+        currentSharpe,
+        improved,
+        applied,
       });
     } catch (e) {
       logger.warn(`📈 ${mode} 최적화 실패: ${e}`, { component: COMP });
@@ -193,21 +213,22 @@ export async function runStrategyOptimizer(): Promise<OptimizerResult[]> {
   }
 
   // 요약 텔레그램 알림 (적용된 건만)
-  const appliedResults = results.filter(r => r.applied);
+  const appliedResults = results.filter((r) => r.applied);
   if (appliedResults.length > 0) {
     try {
       const { sendTelegramMessage } = await import('../notifications/telegram.js');
-      const lines = appliedResults.map(r =>
-        `• ${r.mode}: TP ${r.currentTp}→${r.bestTp.toFixed(1)}% SL ${r.currentSl}→${r.bestSl.toFixed(1)}% (Sharpe +${((r.bestSharpe - r.currentSharpe) / Math.abs(r.currentSharpe || 1) * 100).toFixed(0)}%)`,
+      const lines = appliedResults.map(
+        (r) =>
+          `• ${r.mode}: TP ${r.currentTp}→${r.bestTp.toFixed(1)}% SL ${r.currentSl}→${r.bestSl.toFixed(1)}% (Sharpe +${(((r.bestSharpe - r.currentSharpe) / Math.abs(r.currentSharpe || 1)) * 100).toFixed(0)}%)`,
       );
-      await sendTelegramMessage(
-        `📈 *전략 최적화 완료*\n\n${lines.join('\n')}\n\n적용: Paper only`,
-      );
+      await sendTelegramMessage(`📈 *전략 최적화 완료*\n\n${lines.join('\n')}\n\n적용: Paper only`);
     } catch (e) {
       logger.warn(`📈 텔레그램 알림 실패: ${e}`, { component: COMP });
     }
   }
 
-  logger.info(`📈 ═══ 전략 최적화 완료: ${results.length}전략, ${appliedResults.length}건 적용 ═══`, { component: COMP });
+  logger.info(`📈 ═══ 전략 최적화 완료: ${results.length}전략, ${appliedResults.length}건 적용 ═══`, {
+    component: COMP,
+  });
   return results;
 }

@@ -6,9 +6,10 @@
  *
  * 매도: sell-logic.ts(SL/TP/ATR/트레일링)이 주력 → 여기선 추세붕괴/선제손절만 보조.
  */
-import type { OverseasStockInput, OverseasAIDecision } from './analyzer.js';
+
 import type { CrossMarketSignal } from '../../scheduler/overseas/cross-market.js';
 import { logger } from '../../utils/logger.js';
+import type { OverseasAIDecision, OverseasStockInput } from './analyzer.js';
 
 const COMP = 'RULE_OVERSEAS';
 
@@ -63,7 +64,9 @@ export function analyzeOverseasRuleBased(
     // 크로스마켓 신호 확인
     const crossSig = crossMap.get(s.code);
     const crossBonus = crossSig
-      ? (crossSig.signalType === 'BULLISH' ? crossSig.confidence * 0.08 : -crossSig.confidence * 0.06)
+      ? crossSig.signalType === 'BULLISH'
+        ? crossSig.confidence * 0.08
+        : -crossSig.confidence * 0.06
       : 0;
 
     // BEARISH 크로스마켓 → 매수 스킵
@@ -84,65 +87,107 @@ export function analyzeOverseasRuleBased(
     // Pattern 0: 🔥 빅무버 우선진입
     if (!matched && s.isBigMover && s.rsi >= 50 && s.rsi <= 75 && s.adx >= 15) {
       if ((s.dayRangePct ?? 0) < maxDayRange) {
-        decisions.push({ code: s.code, action: 'BUY', confidence: cap(0.70 + bonus),
-          reasoning: `빅무버 +${s.changePct.toFixed(1)}% RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)} 일중${(s.dayRangePct ?? 0).toFixed(0)}%` });
+        decisions.push({
+          code: s.code,
+          action: 'BUY',
+          confidence: cap(0.7 + bonus),
+          reasoning: `빅무버 +${s.changePct.toFixed(1)}% RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)} 일중${(s.dayRangePct ?? 0).toFixed(0)}%`,
+        });
         matched = true;
       }
     }
 
     // Pattern 1: 🚀 모멘텀 브레이크아웃
     if (!matched && s.isMomentum && s.rsi >= 50 && s.rsi <= 72 && s.adx >= 20) {
-      decisions.push({ code: s.code, action: 'BUY', confidence: cap(0.72 + bonus),
-        reasoning: `모멘텀돌파 +${s.changePct.toFixed(1)}% RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)}` });
+      decisions.push({
+        code: s.code,
+        action: 'BUY',
+        confidence: cap(0.72 + bonus),
+        reasoning: `모멘텀돌파 +${s.changePct.toFixed(1)}% RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)}`,
+      });
       matched = true;
     }
 
     // Pattern 2: 📉 과매도 반등
     if (!matched && s.rsi <= 35 && s.adx >= 20 && s.score > 0 && s.trendStrength !== 'WEAK') {
-      decisions.push({ code: s.code, action: 'BUY', confidence: cap(0.67 + bonus),
-        reasoning: `과매도반등 RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)} score=${s.score}` });
+      decisions.push({
+        code: s.code,
+        action: 'BUY',
+        confidence: cap(0.67 + bonus),
+        reasoning: `과매도반등 RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)} score=${s.score}`,
+      });
       matched = true;
     }
 
     // Pattern 3: 📊 눌림목 재진입
     if (!matched && s.rsi >= 50 && s.rsi <= 65 && s.adx >= 20 && s.score >= 25 && (s.dayRangePct ?? 100) < 40) {
-      decisions.push({ code: s.code, action: 'BUY', confidence: cap(0.68 + bonus),
-        reasoning: `눌림목재진입 RSI=${s.rsi.toFixed(0)} score=${s.score} 일중${(s.dayRangePct ?? 0).toFixed(0)}%` });
+      decisions.push({
+        code: s.code,
+        action: 'BUY',
+        confidence: cap(0.68 + bonus),
+        reasoning: `눌림목재진입 RSI=${s.rsi.toFixed(0)} score=${s.score} 일중${(s.dayRangePct ?? 0).toFixed(0)}%`,
+      });
       matched = true;
     }
 
     // Pattern 4: 💥 고베타 신호
     if (!matched && s.signal === 'STRONG_BUY' && s.rsi >= 50 && s.rsi <= 68 && s.trendStrength !== 'WEAK') {
-      decisions.push({ code: s.code, action: 'BUY', confidence: cap(0.65 + bonus),
-        reasoning: `강신호 signal=${s.signal} RSI=${s.rsi.toFixed(0)} score=${s.score}` });
+      decisions.push({
+        code: s.code,
+        action: 'BUY',
+        confidence: cap(0.65 + bonus),
+        reasoning: `강신호 signal=${s.signal} RSI=${s.rsi.toFixed(0)} score=${s.score}`,
+      });
       matched = true;
     }
 
     // Pattern 5: 💪 강한 기술 신호
     if (!matched && s.signal === 'STRONG_BUY' && s.score >= 35 && s.rsi >= 50 && s.rsi <= 65) {
-      decisions.push({ code: s.code, action: 'BUY', confidence: cap(0.68 + bonus),
-        reasoning: `기술강신호 score=${s.score} RSI=${s.rsi.toFixed(0)} signal=${s.signal}` });
+      decisions.push({
+        code: s.code,
+        action: 'BUY',
+        confidence: cap(0.68 + bonus),
+        reasoning: `기술강신호 score=${s.score} RSI=${s.rsi.toFixed(0)} signal=${s.signal}`,
+      });
       matched = true;
     }
 
     // Pattern 6: BB 스퀴즈 돌파
     if (!matched && s.bollingerSqueeze && s.bollingerBreakout === 'UP' && s.rsi >= 50 && s.rsi <= 70 && s.adx >= 18) {
-      decisions.push({ code: s.code, action: 'BUY', confidence: cap(0.68 + bonus),
-        reasoning: `BB스퀴즈돌파 RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)}` });
+      decisions.push({
+        code: s.code,
+        action: 'BUY',
+        confidence: cap(0.68 + bonus),
+        reasoning: `BB스퀴즈돌파 RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)}`,
+      });
       matched = true;
     }
 
     // Pattern 7: 🌏 크로스마켓 선행 신호 (아시아장 연동)
-    if (!matched && crossSig?.signalType === 'BULLISH' && crossSig.confidence >= 0.5 && s.rsi >= 45 && s.rsi <= 72 && s.score >= 0) {
-      decisions.push({ code: s.code, action: 'BUY', confidence: cap(0.65 + bonus),
-        reasoning: `크로스마켓 아시아${crossSig.asiaCode}${crossSig.asiaChangePct >= 0 ? '+' : ''}${crossSig.asiaChangePct.toFixed(1)}% RSI=${s.rsi.toFixed(0)} conf=${(crossSig.confidence * 100).toFixed(0)}%` });
+    if (
+      !matched &&
+      crossSig?.signalType === 'BULLISH' &&
+      crossSig.confidence >= 0.5 &&
+      s.rsi >= 45 &&
+      s.rsi <= 72 &&
+      s.score >= 0
+    ) {
+      decisions.push({
+        code: s.code,
+        action: 'BUY',
+        confidence: cap(0.65 + bonus),
+        reasoning: `크로스마켓 아시아${crossSig.asiaCode}${crossSig.asiaChangePct >= 0 ? '+' : ''}${crossSig.asiaChangePct.toFixed(1)}% RSI=${s.rsi.toFixed(0)} conf=${(crossSig.confidence * 100).toFixed(0)}%`,
+      });
       matched = true;
     }
   }
 
-  const buys = decisions.filter(d => d.action === 'BUY');
-  const sells = decisions.filter(d => d.action === 'SELL');
-  logger.info(`📊 규칙기반 해외분석: ${buys.length}BUY ${sells.length}SELL / ${stocks.length}종목 (VIX=${vix} F&G=${fg} breadth=${(breadth * 100).toFixed(0)}%)`, { component: COMP });
+  const buys = decisions.filter((d) => d.action === 'BUY');
+  const sells = decisions.filter((d) => d.action === 'SELL');
+  logger.info(
+    `📊 규칙기반 해외분석: ${buys.length}BUY ${sells.length}SELL / ${stocks.length}종목 (VIX=${vix} F&G=${fg} breadth=${(breadth * 100).toFixed(0)}%)`,
+    { component: COMP },
+  );
 
   return decisions;
 }
@@ -152,20 +197,32 @@ function evaluateSell(s: OverseasStockInput): OverseasAIDecision | null {
 
   // 추세 붕괴: score < -25 + STRONG_SELL + WEAK
   if (s.score < -25 && s.signal === 'STRONG_SELL' && s.trendStrength === 'WEAK') {
-    return { code: s.code, action: 'SELL', confidence: 0.78,
-      reasoning: `추세붕괴 score=${s.score} signal=${s.signal} trend=WEAK` };
+    return {
+      code: s.code,
+      action: 'SELL',
+      confidence: 0.78,
+      reasoning: `추세붕괴 score=${s.score} signal=${s.signal} trend=WEAK`,
+    };
   }
 
   // 선제 손절: PnL < -3% + SELL signal + 강한 추세 반전
   if (pnl <= -3 && (s.signal === 'SELL' || s.signal === 'STRONG_SELL') && s.adx >= 25) {
-    return { code: s.code, action: 'SELL', confidence: 0.72,
-      reasoning: `선제손절 PnL=${pnl.toFixed(1)}% signal=${s.signal} ADX=${s.adx.toFixed(0)}` };
+    return {
+      code: s.code,
+      action: 'SELL',
+      confidence: 0.72,
+      reasoning: `선제손절 PnL=${pnl.toFixed(1)}% signal=${s.signal} ADX=${s.adx.toFixed(0)}`,
+    };
   }
 
   // 수익 실현: PnL ≥ 10% + RSI/score 하락 (스윙 목표 15~20% 전에 조기 청산 방지)
   if (pnl >= 10 && s.rsi >= 70 && s.score < -20) {
-    return { code: s.code, action: 'SELL', confidence: 0.70,
-      reasoning: `수익실현 PnL=${pnl.toFixed(1)}% RSI=${s.rsi.toFixed(0)} score=${s.score}` };
+    return {
+      code: s.code,
+      action: 'SELL',
+      confidence: 0.7,
+      reasoning: `수익실현 PnL=${pnl.toFixed(1)}% RSI=${s.rsi.toFixed(0)} score=${s.score}`,
+    };
   }
 
   return null; // HOLD — sell-logic.ts가 SL/TP/ATR 처리

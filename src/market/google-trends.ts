@@ -11,8 +11,8 @@ import { logger } from '../utils/logger.js';
 export interface TrendSignal {
   stockCode: string;
   companyName: string;
-  rank: number;    // 1-based 순위
-  isHot: boolean;  // rank < 20
+  rank: number; // 1-based 순위
+  isHot: boolean; // rank < 20
   traffic?: string; // 예: "500K+"
 }
 
@@ -24,8 +24,7 @@ async function fetchViaSerpApi(): Promise<Array<{ title: string; traffic?: strin
   const apiKey = process.env.SERPAPI_KEY;
   if (!apiKey) throw new Error('SERPAPI_KEY 미설정');
 
-  const url =
-    `https://serpapi.com/search.json?engine=google_trends_trending_now&geo=KR&hl=ko&api_key=${apiKey}`;
+  const url = `https://serpapi.com/search.json?engine=google_trends_trending_now&geo=KR&hl=ko&api_key=${apiKey}`;
 
   const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
   if (!res.ok) throw new Error(`SerpApi HTTP ${res.status}`);
@@ -45,9 +44,7 @@ async function fetchViaSerpApi(): Promise<Array<{ title: string; traffic?: strin
 
   // daily 형식 (fallback)
   if (Array.isArray(data.daily_searches)) {
-    return data.daily_searches
-      .flat()
-      .map((t) => ({ title: t.title?.query ?? '', traffic: t.traffic }));
+    return data.daily_searches.flat().map((t) => ({ title: t.title?.query ?? '', traffic: t.traffic }));
   }
 
   return [];
@@ -55,26 +52,27 @@ async function fetchViaSerpApi(): Promise<Array<{ title: string; traffic?: strin
 
 // ── 비공식 RSS 폴백 ───────────────────────────────────────────────
 async function fetchViaRss(): Promise<Array<{ title: string }>> {
-  const res = await fetch(
-    'https://trends.google.com/trends/trendingsearches/daily/rss?geo=KR',
-    {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
-      signal: AbortSignal.timeout(8_000),
-    },
-  );
+  const res = await fetch('https://trends.google.com/trends/trendingsearches/daily/rss?geo=KR', {
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+    signal: AbortSignal.timeout(8_000),
+  });
   if (!res.ok) throw new Error(`RSS HTTP ${res.status}`);
 
   const xml = await res.text();
   const titles: string[] = [];
   const cdataRe = /<title><!\[CDATA\[([^\]]+)\]\]><\/title>/g;
   const plainRe = /<title>([^<]+)<\/title>/g;
-  let m: RegExpExecArray | null;
-
-  while ((m = cdataRe.exec(xml)) !== null) titles.push(m[1].trim());
+  let m: RegExpExecArray | null = cdataRe.exec(xml);
+  while (m !== null) {
+    titles.push(m[1].trim());
+    m = cdataRe.exec(xml);
+  }
   if (titles.length === 0) {
-    while ((m = plainRe.exec(xml)) !== null) {
+    m = plainRe.exec(xml);
+    while (m !== null) {
       const t = m[1].trim();
       if (t !== 'Daily Search Trends') titles.push(t);
+      m = plainRe.exec(xml);
     }
   }
   return titles.map((t) => ({ title: t }));
@@ -117,9 +115,7 @@ export async function getKrTrendSignals(
 
     for (const { stockCode, companyName } of stocks) {
       const key = companyName.slice(0, 4);
-      const idx = trends.findIndex(
-        (t) => t.title.includes(key) || key.includes(t.title.slice(0, 2)),
-      );
+      const idx = trends.findIndex((t) => t.title.includes(key) || key.includes(t.title.slice(0, 2)));
       if (idx >= 0) {
         signals.push({
           stockCode,

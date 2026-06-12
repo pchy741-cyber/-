@@ -9,25 +9,35 @@
  */
 
 import { GATE } from '../config/constants.js';
-import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { logger } from '../utils/logger.js';
-import { getWinRateStats } from './trade-gate-stats.js';
 import {
   chartVerificationGate,
   entryTimingGate,
-  volatilitySizing,
-  regimeGate,
   newsGate,
   reEntryCooldownGate,
+  regimeGate,
+  volatilitySizing,
 } from './trade-gate-checks.js';
-import { cooldownGate } from './trade-gate-stats.js';
+import { cooldownGate, getWinRateStats } from './trade-gate-stats.js';
 
-// ── Re-exports (기존 import 호환) ──
-export type { GateResult, GateInput, CooldownStatus } from './trade-gate-types.js';
 export type { MarketRegime } from './trade-gate-checks.js';
-export { chartVerificationGate, entryTimingGate, volatilitySizing, regimeGate, detectRegime } from './trade-gate-checks.js';
-export { resetCooldown, restoreCooldownResetAt, cooldownGate, getCooldownStatus, getWinRateStats } from './trade-gate-stats.js';
+export {
+  chartVerificationGate,
+  detectRegime,
+  entryTimingGate,
+  regimeGate,
+  volatilitySizing,
+} from './trade-gate-checks.js';
+export {
+  cooldownGate,
+  getCooldownStatus,
+  getWinRateStats,
+  resetCooldown,
+  restoreCooldownResetAt,
+} from './trade-gate-stats.js';
+// ── Re-exports (기존 import 호환) ──
+export type { CooldownStatus, GateInput, GateResult } from './trade-gate-types.js';
 
 import type { GateInput, GateResult } from './trade-gate-types.js';
 
@@ -53,14 +63,26 @@ export async function expectedValueGate(_input: GateInput): Promise<GateResult> 
   const isLearningPhase = stats.totalTrades < 30;
   const evFloor = isLearningPhase ? -1.5 : -0.5;
   if (ev <= evFloor) {
-    return { passed: false, reason: `기대값 음수: EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%, 바닥=${evFloor})`, expectedValue: ev };
+    return {
+      passed: false,
+      reason: `기대값 음수: EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%, 바닥=${evFloor})`,
+      expectedValue: ev,
+    };
   }
-  const wrFloor = isLearningPhase ? 0.15 : 0.20;
+  const wrFloor = isLearningPhase ? 0.15 : 0.2;
   if (winRate < wrFloor) {
-    return { passed: false, reason: `승률 과소: ${(winRate * 100).toFixed(0)}% < ${(wrFloor * 100).toFixed(0)}%`, expectedValue: ev };
+    return {
+      passed: false,
+      reason: `승률 과소: ${(winRate * 100).toFixed(0)}% < ${(wrFloor * 100).toFixed(0)}%`,
+      expectedValue: ev,
+    };
   }
 
-  return { passed: true, reason: `EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%, ${stats.totalTrades}건)`, expectedValue: ev };
+  return {
+    passed: true,
+    reason: `EV=${ev.toFixed(2)}% (승률${(winRate * 100).toFixed(0)}%, ${stats.totalTrades}건)`,
+    expectedValue: ev,
+  };
 }
 
 // ══════════════════════════════════════
@@ -142,7 +164,7 @@ export async function runTradeGates(input: GateInput): Promise<GateResult> {
   }
 
   const finalQty = Math.min(input.quantity, sizing.adjustedQuantity ?? input.quantity);
-  const summary = results.map(r => r.reason).join(' | ');
+  const summary = results.map((r) => r.reason).join(' | ');
   logger.info(`✅ [게이트통과] ${input.stockCode}: ${finalQty}주 (${summary})`, { component: 'TRADE_GATE' });
 
   return {

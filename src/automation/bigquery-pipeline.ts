@@ -82,7 +82,7 @@ const AI_SIGNALS_SCHEMA = [
 // ── Singleton ──
 
 let bq: BigQuery | null = null;
-let initialized = false;
+let _initialized = false;
 
 function getClient(): BigQuery | null {
   if (!bq) {
@@ -98,9 +98,9 @@ function getClient(): BigQuery | null {
 
 // ── Init ──
 
-export async function initBigQuery(): Promise<void> {
+export async function initBigQuery(): Promise<boolean> {
   const client = getClient();
-  if (!client) return;
+  if (!client) return false;
 
   try {
     const dataset = client.dataset(DATASET_ID);
@@ -131,10 +131,12 @@ export async function initBigQuery(): Promise<void> {
       }),
     );
 
-    initialized = true;
+    _initialized = true;
     logger.info('BigQuery 파이프라인 초기화 완료', { component: COMPONENT });
+    return true;
   } catch (err) {
     logger.warn(`BigQuery 초기화 실패 — 파이프라인 비활성: ${err}`, { component: COMPONENT });
+    return false;
   }
 }
 

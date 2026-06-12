@@ -12,12 +12,12 @@
 import { logger } from '../utils/logger.js';
 
 export interface MacroSignal {
-  usdKrw: number | null;          // 현재 환율
-  usdKrwChange1d: number | null;  // 1일 변동 (원)
-  nasdaqChange1d: number | null;  // Nasdaq 등락률 %
-  fedRate: number | null;         // 미국 기준금리 %
+  usdKrw: number | null; // 현재 환율
+  usdKrwChange1d: number | null; // 1일 변동 (원)
+  nasdaqChange1d: number | null; // Nasdaq 등락률 %
+  fedRate: number | null; // 미국 기준금리 %
   direction: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
-  scoreAdj: number;               // Gemini 점수 보정 (-20~+20)
+  scoreAdj: number; // Gemini 점수 보정 (-20~+20)
   summary: string;
 }
 
@@ -60,11 +60,14 @@ async function fetchFedRate(): Promise<number | null> {
   });
   if (!res.ok) return null;
   const text = await res.text();
-  const lines = text.trim().split('\n').filter((l) => !l.startsWith('DATE'));
+  const lines = text
+    .trim()
+    .split('\n')
+    .filter((l) => !l.startsWith('DATE'));
   const last = lines[lines.length - 1];
   if (!last) return null;
   const val = parseFloat(last.split(',')[1] ?? '');
-  return isFinite(val) ? val : null;
+  return Number.isFinite(val) ? val : null;
 }
 
 // ── 종합 신호 계산 ─────────────────────────────────────────────────
@@ -78,26 +81,50 @@ function computeSignal(
 
   // USD/KRW: 원화 약세(환율 상승) → KOSPI 외국인 이탈 → 악재
   if (usdKrw) {
-    if (usdKrw > 1420) { adj -= 8; notes.push(`환율 ${usdKrw.toFixed(0)}원(고위험)`); }
-    else if (usdKrw > 1380) { adj -= 4; notes.push(`환율 ${usdKrw.toFixed(0)}원(주의)`); }
-    else if (usdKrw < 1320) { adj += 5; notes.push(`환율 ${usdKrw.toFixed(0)}원(호재)`); }
-    else { notes.push(`환율 ${usdKrw.toFixed(0)}원(중립)`); }
+    if (usdKrw > 1420) {
+      adj -= 8;
+      notes.push(`환율 ${usdKrw.toFixed(0)}원(고위험)`);
+    } else if (usdKrw > 1380) {
+      adj -= 4;
+      notes.push(`환율 ${usdKrw.toFixed(0)}원(주의)`);
+    } else if (usdKrw < 1320) {
+      adj += 5;
+      notes.push(`환율 ${usdKrw.toFixed(0)}원(호재)`);
+    } else {
+      notes.push(`환율 ${usdKrw.toFixed(0)}원(중립)`);
+    }
   }
 
   // Nasdaq: 미국 증시 등락 → KOSPI 연동
   if (nasdaqChange !== null) {
-    if (nasdaqChange >= 1.5) { adj += 10; notes.push(`Nasdaq +${nasdaqChange.toFixed(1)}%(강세)`); }
-    else if (nasdaqChange >= 0.5) { adj += 5; notes.push(`Nasdaq +${nasdaqChange.toFixed(1)}%(호재)`); }
-    else if (nasdaqChange <= -1.5) { adj -= 12; notes.push(`Nasdaq ${nasdaqChange.toFixed(1)}%(급락)`); }
-    else if (nasdaqChange <= -0.5) { adj -= 6; notes.push(`Nasdaq ${nasdaqChange.toFixed(1)}%(약세)`); }
-    else { notes.push(`Nasdaq ${nasdaqChange.toFixed(1)}%(중립)`); }
+    if (nasdaqChange >= 1.5) {
+      adj += 10;
+      notes.push(`Nasdaq +${nasdaqChange.toFixed(1)}%(강세)`);
+    } else if (nasdaqChange >= 0.5) {
+      adj += 5;
+      notes.push(`Nasdaq +${nasdaqChange.toFixed(1)}%(호재)`);
+    } else if (nasdaqChange <= -1.5) {
+      adj -= 12;
+      notes.push(`Nasdaq ${nasdaqChange.toFixed(1)}%(급락)`);
+    } else if (nasdaqChange <= -0.5) {
+      adj -= 6;
+      notes.push(`Nasdaq ${nasdaqChange.toFixed(1)}%(약세)`);
+    } else {
+      notes.push(`Nasdaq ${nasdaqChange.toFixed(1)}%(중립)`);
+    }
   }
 
   // Fed Rate: 고금리 지속 = 성장주 밸류에이션 압박
   if (fedRate !== null) {
-    if (fedRate >= 5.0) { adj -= 3; notes.push(`Fed ${fedRate}%(고금리)`); }
-    else if (fedRate <= 2.0) { adj += 3; notes.push(`Fed ${fedRate}%(저금리)`); }
-    else { notes.push(`Fed ${fedRate}%`); }
+    if (fedRate >= 5.0) {
+      adj -= 3;
+      notes.push(`Fed ${fedRate}%(고금리)`);
+    } else if (fedRate <= 2.0) {
+      adj += 3;
+      notes.push(`Fed ${fedRate}%(저금리)`);
+    } else {
+      notes.push(`Fed ${fedRate}%`);
+    }
   }
 
   const clamped = Math.max(-20, Math.min(20, adj));
@@ -120,8 +147,18 @@ export async function getMacroSignal(): Promise<MacroSignal> {
 
   const { direction, scoreAdj, summary } = computeSignal(usdKrw, nasdaqChange, fedRate);
 
-  const signal: MacroSignal = { usdKrw, usdKrwChange1d: null, nasdaqChange1d: nasdaqChange, fedRate, direction, scoreAdj, summary };
+  const signal: MacroSignal = {
+    usdKrw,
+    usdKrwChange1d: null,
+    nasdaqChange1d: nasdaqChange,
+    fedRate,
+    direction,
+    scoreAdj,
+    summary,
+  };
   _cache = { data: signal, fetchedAt: Date.now() };
-  logger.info(`📊 매크로 신호: ${direction} (보정${scoreAdj > 0 ? '+' : ''}${scoreAdj}점) — ${summary}`, { component: 'MACRO' });
+  logger.info(`📊 매크로 신호: ${direction} (보정${scoreAdj > 0 ? '+' : ''}${scoreAdj}점) — ${summary}`, {
+    component: 'MACRO',
+  });
   return signal;
 }

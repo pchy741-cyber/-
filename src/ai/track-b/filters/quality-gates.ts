@@ -5,12 +5,19 @@
  */
 
 import { getCtxIsPaper } from '../../../config/context.js';
-import type { QualityGateInput, GateResult } from './types.js';
+import type { GateResult, QualityGateInput } from './types.js';
 
 export function checkQualityGates(input: QualityGateInput): GateResult {
   const { tech, scoring, mode, aiScore, buyThreshold, megaCap, noAiForStock, feedbackMinVolRatio, curPrice } = input;
-  const { adjustedVolRatio, hasBullishCandle, effectiveTechScore, minTechScore,
-    isFibSupport, truePullbackPattern, signalData } = scoring;
+  const {
+    adjustedVolRatio,
+    hasBullishCandle,
+    effectiveTechScore,
+    minTechScore,
+    isFibSupport,
+    truePullbackPattern,
+    signalData,
+  } = scoring;
   const isPaper = getCtxIsPaper();
 
   // ─ qVolume ─
@@ -36,28 +43,49 @@ export function checkQualityGates(input: QualityGateInput): GateResult {
     const rsiCap = megaCap ? 80 : 75;
     const aiBypassRsi = aiScore >= buyThreshold && tech.rsi14 <= 80;
     if (tech.rsi14 > rsiCap && !aiBypassRsi) return false;
-    const oversoldReversalOk = tech.macdHistogram >= 0 || tech.macdCrossover === 'BULLISH' || tech.rsi2 < 15 || hasBullishCandle || tech.stochasticSignal === 'OVERSOLD';
+    const oversoldReversalOk =
+      tech.macdHistogram >= 0 ||
+      tech.macdCrossover === 'BULLISH' ||
+      tech.rsi2 < 15 ||
+      hasBullishCandle ||
+      tech.stochasticSignal === 'OVERSOLD';
     const isOversold = tech.rsi14 < 30 && oversoldReversalOk;
-    const isEarlyBounce = tech.rsi14 >= 30 && tech.rsi14 < 45 && (tech.macdCrossover !== 'BEARISH' || tech.volumeRatio >= 1.3 || hasBullishCandle);
-    const isPullback = tech.rsi14 >= 45 && tech.rsi14 <= 65 && tech.macdCrossover !== 'BEARISH' && (
-      truePullbackPattern || isFibSupport || tech.macdCrossover === 'BULLISH' || aiScore >= buyThreshold || effectiveTechScore >= minTechScore
-    );
-    const isMomentum = tech.rsi14 > 65 && tech.rsi14 <= 75 && (aiScore >= buyThreshold || effectiveTechScore >= minTechScore + 5);
-    const isHighConviction = (aiScore >= 80 || effectiveTechScore >= minTechScore + 15) && (effectiveTechScore >= minTechScore || aiScore >= buyThreshold);
+    const isEarlyBounce =
+      tech.rsi14 >= 30 &&
+      tech.rsi14 < 45 &&
+      (tech.macdCrossover !== 'BEARISH' || tech.volumeRatio >= 1.3 || hasBullishCandle);
+    const isPullback =
+      tech.rsi14 >= 45 &&
+      tech.rsi14 <= 65 &&
+      tech.macdCrossover !== 'BEARISH' &&
+      (truePullbackPattern ||
+        isFibSupport ||
+        tech.macdCrossover === 'BULLISH' ||
+        aiScore >= buyThreshold ||
+        effectiveTechScore >= minTechScore);
+    const isMomentum =
+      tech.rsi14 > 65 && tech.rsi14 <= 75 && (aiScore >= buyThreshold || effectiveTechScore >= minTechScore + 5);
+    const isHighConviction =
+      (aiScore >= 80 || effectiveTechScore >= minTechScore + 15) &&
+      (effectiveTechScore >= minTechScore || aiScore >= buyThreshold);
     return isOversold || isEarlyBounce || isPullback || isMomentum || isHighConviction || isFibSupport;
   })();
 
   // ─ qConfluence ─
   const qConfluence = (() => {
     if (mode === 'SCALPING') return true;
-    const hasStrongCatalyst = tech.bollingerBreakout === 'UP' || tech.ttmSqueeze.fireSignal === 'LONG' || tech.vwapCross === 'JUST_ABOVE' || tech.rsi2 < 10;
+    const hasStrongCatalyst =
+      tech.bollingerBreakout === 'UP' ||
+      tech.ttmSqueeze.fireSignal === 'LONG' ||
+      tech.vwapCross === 'JUST_ABOVE' ||
+      tech.rsi2 < 10;
     if (hasStrongCatalyst) return true;
     const cf = {
       momentum: tech.macdCrossover !== 'BEARISH' || tech.macdHistogram > 0,
       rsi: tech.rsi14 <= 60 || tech.rsi14 < 30,
       volume: adjustedVolRatio >= 1.2,
       vwap: tech.vwapPosition === 'ABOVE' || tech.vwapPullback,
-      pattern: hasBullishCandle || tech.candlePatterns.some(p => p.bullish && p.strength !== 'WEAK'),
+      pattern: hasBullishCandle || tech.candlePatterns.some((p) => p.bullish && p.strength !== 'WEAK'),
       trend: tech.trendStrength !== 'WEAK',
     };
     const cfCount = Object.values(cf).filter(Boolean).length;
@@ -68,15 +96,31 @@ export function checkQualityGates(input: QualityGateInput): GateResult {
 
   // ─ qSignalFlow ─ v6: 외국인+기관 동반 매도 시 하드 차단 (AI 90+ 제외)
   // paper: 실시간 KIS 시그널 불필요 → 항상 통과 (연습매매 활성화)
-  const qSignalFlow = isPaper ? true : (!signalData.raw ? true : (() => {
-    // 외국인+기관 동시 매도 = 기관 컨센서스 매도 → 개인만 매수 중 → 위험
-    if (signalData.foreignNetEst < 0 && signalData.instNetEst < 0 && aiScore < 90) return false;
-    // 체결강도 < 85 (매도 압도) + 호가 매도벽 → 하방 압력
-    if (signalData.intensity > 0 && signalData.intensity < 85 && signalData.bidAskRatio < 0.7) return false;
-    return signalData.intensity >= 90 || signalData.foreignNetEst > 0 || signalData.instNetEst > 0 || signalData.foreignBrokerBuy;
-  })());
+  const qSignalFlow = isPaper
+    ? true
+    : !signalData.raw
+      ? true
+      : (() => {
+          // 외국인+기관 동시 매도 = 기관 컨센서스 매도 → 개인만 매수 중 → 위험
+          if (signalData.foreignNetEst < 0 && signalData.instNetEst < 0 && aiScore < 90) return false;
+          // 체결강도 < 85 (매도 압도) + 호가 매도벽 → 하방 압력
+          if (signalData.intensity > 0 && signalData.intensity < 85 && signalData.bidAskRatio < 0.7) return false;
+          return (
+            signalData.intensity >= 90 ||
+            signalData.foreignNetEst > 0 ||
+            signalData.instNetEst > 0 ||
+            signalData.foreignBrokerBuy
+          );
+        })();
 
-  const details = { vol: qVolume, trend: qTrendStrength, dir: qTrendDirection, rsi: qRsiTiming, cf: qConfluence, sig: qSignalFlow };
+  const details = {
+    vol: qVolume,
+    trend: qTrendStrength,
+    dir: qTrendDirection,
+    rsi: qRsiTiming,
+    cf: qConfluence,
+    sig: qSignalFlow,
+  };
   const count = Object.values(details).filter(Boolean).length;
   // 2026-06 성과 검토: WR 30.8% → 품질 게이트 최소 2개로 상향 (AI 85+도 1개는 불충분)
   // 기존: AI≥85 → min=1 → 사실상 무필터 → 잘못된 진입 70% → 승률 30.8%

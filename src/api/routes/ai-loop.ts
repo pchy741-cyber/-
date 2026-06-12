@@ -12,23 +12,23 @@
  * - Kill switch 오버라이드 차단
  */
 import { Hono } from 'hono';
-import { getPool, getOpenChains, getLatestScores, getActiveWatchlist } from '../../db/client.js';
-import { getCtxIsPaper } from '../../config/context.js';
-import { isKillSwitchActive } from '../../risk/kill-switch.js';
-import { getMarketSentiment } from '../../market/consensus.js';
-import { getAccountBalance } from '../../kis/account.js';
-import { getPaperBalance } from '../../risk/paper-balance.js';
 import {
+  type AiCommand,
   getAllOverrides,
   getCommandHistory,
-  setOverride,
-  removeOverride,
-  type AiCommand,
   type OverrideCategory,
+  removeOverride,
+  setOverride,
 } from '../../ai/ai-overrides.js';
+import { getCtxIsPaper } from '../../config/context.js';
+import { getActiveWatchlist, getLatestScores, getOpenChains, getPool } from '../../db/client.js';
+import { getAccountBalance } from '../../kis/account.js';
+import { getMarketSentiment } from '../../market/consensus.js';
+import { isKillSwitchActive } from '../../risk/kill-switch.js';
+import { getPaperBalance } from '../../risk/paper-balance.js';
 import { computePaperCash } from '../../scheduler/overseas/state.js';
-import { getFxRate } from './dashboard/helpers.js';
 import { logger } from '../../utils/logger.js';
+import { getFxRate } from './dashboard/helpers.js';
 
 export const aiLoopRoutes = new Hono();
 
@@ -54,11 +54,15 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
       getActiveWatchlist(),
       getAllOverrides(isPaper),
       isPaper ? getPaperBalance() : getAccountBalance(true).catch(() => null),
-      getPool().query(
-        'SELECT stock_code, exchange, quantity, avg_price FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1',
-        [isPaper],
-      ).catch(() => ({ rows: [] })),
-      getPool().query(`
+      getPool()
+        .query(
+          'SELECT stock_code, exchange, quantity, avg_price FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1',
+          [isPaper],
+        )
+        .catch(() => ({ rows: [] })),
+      getPool()
+        .query(
+          `
         SELECT stock_code,
                COUNT(*) FILTER (WHERE pnl_pct > 0) AS wins,
                COUNT(*) FILTER (WHERE pnl_pct <= 0) AS losses,
@@ -69,30 +73,40 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
           AND closed_at > NOW() - INTERVAL '90 days'
         GROUP BY stock_code
         ORDER BY total DESC LIMIT 30
-      `, [isPaper]).catch(() => ({ rows: [] })),
-      getPool().query(`
+      `,
+          [isPaper],
+        )
+        .catch(() => ({ rows: [] })),
+      getPool()
+        .query(
+          `
         SELECT stock_code, stock_name, strategy_mode, pnl_pct, trigger_source,
                opened_at, closed_at
         FROM transaction_chains
         WHERE status = 'CLOSED' AND is_paper = $1
           AND closed_at > NOW() - INTERVAL '7 days'
         ORDER BY closed_at DESC LIMIT 20
-      `, [isPaper]).catch(() => ({ rows: [] })),
+      `,
+          [isPaper],
+        )
+        .catch(() => ({ rows: [] })),
       Promise.resolve(getMarketSentiment()),
     ]);
 
     // AI 점수 로드 (감시목록 종목)
-    const codes = watchlist.map(w => w.stock_code);
+    const codes = watchlist.map((w) => w.stock_code);
     const scores = codes.length > 0 ? await getLatestScores(codes) : [];
 
     // KOSPI 레짐 (DB)
-    const regimeResult = await getPool().query(
-      `SELECT kospi_level, kospi_change_pct, memo FROM system_log
-       WHERE component = 'MARKET_REGIME' ORDER BY created_at DESC LIMIT 1`
-    ).catch(() => ({ rows: [] }));
+    const regimeResult = await getPool()
+      .query(
+        `SELECT kospi_level, kospi_change_pct, memo FROM system_log
+       WHERE component = 'MARKET_REGIME' ORDER BY created_at DESC LIMIT 1`,
+      )
+      .catch(() => ({ rows: [] }));
 
     // 국내 포지션 요약
-    const positions = chains.map(ch => {
+    const positions = chains.map((ch) => {
       const c = ch as Record<string, unknown>;
       return {
         stockCode: ch.stock_code,
@@ -123,9 +137,9 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
       const usdCash = await computePaperCash().catch(() => 0);
       overseasCashKrw = usdCash * FX_RATE;
     } else {
-      const { rows: osCashRows } = await getPool().query(
-        `SELECT value FROM overseas_state WHERE key = 'cash'`
-      ).catch(() => ({ rows: [] }));
+      const { rows: osCashRows } = await getPool()
+        .query(`SELECT value FROM overseas_state WHERE key = 'cash'`)
+        .catch(() => ({ rows: [] }));
       overseasCashKrw = osCashRows.length > 0 ? Number(osCashRows[0].value) : 0;
     }
     const overseasInvestedKrw = overseasInvestedUsd * FX_RATE;
@@ -137,7 +151,7 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
       losses: Number(r.losses),
       avgPnl: Number(r.avg_pnl),
       total: Number(r.total),
-      winRate: Number(r.total) > 0 ? Math.round(Number(r.wins) / Number(r.total) * 100) : 0,
+      winRate: Number(r.total) > 0 ? Math.round((Number(r.wins) / Number(r.total)) * 100) : 0,
     }));
 
     // 최근 거래
@@ -151,7 +165,9 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
     }));
 
     // 전체 수익률 요약
-    const overallStats = await getPool().query(`
+    const overallStats = await getPool()
+      .query(
+        `
       SELECT
         COUNT(*) AS total_trades,
         COUNT(*) FILTER (WHERE pnl_pct > 0) AS total_wins,
@@ -161,9 +177,12 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
       FROM transaction_chains
       WHERE status = 'CLOSED' AND is_paper = $1
         AND closed_at > NOW() - INTERVAL '30 days'
-    `, [isPaper]).catch(() => ({ rows: [{}] }));
+    `,
+        [isPaper],
+      )
+      .catch(() => ({ rows: [{}] }));
 
-    const stats = overallStats.rows[0] as Record<string, unknown> ?? {};
+    const stats = (overallStats.rows[0] as Record<string, unknown>) ?? {};
 
     const snapshot = {
       mode,
@@ -176,28 +195,36 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
         try {
           const { isEodOnlyMode } = await import('../../risk/trade-gate-stats.js');
           return await isEodOnlyMode();
-        } catch { return false; }
+        } catch {
+          return false;
+        }
       })(),
-      balance: balance ? (() => {
-        const domCash = balance.orderableCash || 0;
-        const domInvested = balance.purchaseCost || balance.totalEvalAmount || 0;
-        const unifiedCash = Math.round(domCash + overseasCashKrw);
-        const totalInvested = Math.round(domInvested + overseasInvestedKrw);
-        return {
-          totalAsset: Math.round(unifiedCash + domInvested + overseasInvestedKrw),
-          cash: unifiedCash,
-          invested: totalInvested,
-          profitLoss: balance.totalProfitLoss || 0,
-          // 디버그: 내역 분리
-          _domestic: { cash: Math.round(domCash), invested: Math.round(domInvested) },
-          _overseas: { cashKrw: Math.round(overseasCashKrw), investedKrw: Math.round(overseasInvestedKrw), fxRate: FX_RATE },
-        };
-      })() : null,
+      balance: balance
+        ? (() => {
+            const domCash = balance.orderableCash || 0;
+            const domInvested = balance.purchaseCost || balance.totalEvalAmount || 0;
+            const unifiedCash = Math.round(domCash + overseasCashKrw);
+            const totalInvested = Math.round(domInvested + overseasInvestedKrw);
+            return {
+              totalAsset: Math.round(unifiedCash + domInvested + overseasInvestedKrw),
+              cash: unifiedCash,
+              invested: totalInvested,
+              profitLoss: balance.totalProfitLoss || 0,
+              // 디버그: 내역 분리
+              _domestic: { cash: Math.round(domCash), invested: Math.round(domInvested) },
+              _overseas: {
+                cashKrw: Math.round(overseasCashKrw),
+                investedKrw: Math.round(overseasInvestedKrw),
+                fxRate: FX_RATE,
+              },
+            };
+          })()
+        : null,
       regime: regimeResult.rows[0] ?? null,
       consensus: consensusSentiment,
       positions,
       overseasPositions,
-      scores: scores.slice(0, 30).map(s => ({
+      scores: scores.slice(0, 30).map((s) => ({
         stockCode: s.stock_code,
         score: s.composite_score,
         confidence: s.confidence,
@@ -208,9 +235,10 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
         last30d: {
           totalTrades: Number(stats.total_trades ?? 0),
           wins: Number(stats.total_wins ?? 0),
-          winRate: Number(stats.total_trades) > 0
-            ? Math.round(Number(stats.total_wins) / Number(stats.total_trades) * 100)
-            : 0,
+          winRate:
+            Number(stats.total_trades) > 0
+              ? Math.round((Number(stats.total_wins) / Number(stats.total_trades)) * 100)
+              : 0,
           avgPnl: Number(stats.avg_pnl ?? 0),
           totalProfitPct: Number(stats.total_profit_pct ?? 0),
           totalLossPct: Number(stats.total_loss_pct ?? 0),
@@ -225,9 +253,21 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
           categories: ['stock', 'risk', 'threshold', 'signal'],
           examples: [
             { key: '005930_scoreAdj', value: 5, category: 'stock', reason: 'Samsung 실적 호조 예상', ttlMinutes: 120 },
-            { key: 'minBuyScore', value: 75, category: 'threshold', reason: '시장 변동성 증가, 기준 상향', ttlMinutes: 60 },
+            {
+              key: 'minBuyScore',
+              value: 75,
+              category: 'threshold',
+              reason: '시장 변동성 증가, 기준 상향',
+              ttlMinutes: 60,
+            },
             { key: '005930_blacklist', value: true, category: 'stock', reason: '단기 과매수, RSI 78', ttlMinutes: 180 },
-            { key: 'NVDA_forceHold', value: true, category: 'signal', reason: 'NVIDIA 실적 발표 대기', ttlMinutes: 240 },
+            {
+              key: 'NVDA_forceHold',
+              value: true,
+              category: 'signal',
+              reason: 'NVIDIA 실적 발표 대기',
+              ttlMinutes: 240,
+            },
             { key: 'maxPositionPct', value: 15, category: 'risk', reason: '보수적 포지션 축소', ttlMinutes: 120 },
             { key: '005930_trailTighten', value: 1.0, category: 'stock', reason: '수익 보호 강화', ttlMinutes: 60 },
           ],
@@ -310,8 +350,8 @@ aiLoopRoutes.post('/ai-loop/command', async (c) => {
     }
   }
 
-  const ok = results.filter(r => r.ok).length;
-  const fail = results.filter(r => !r.ok).length;
+  const ok = results.filter((r) => r.ok).length;
+  const fail = results.filter((r) => !r.ok).length;
   logger.info(`🤖 AI Loop 명령 처리: ${ok}건 성공, ${fail}건 실패`, { component: 'AI_LOOP' });
 
   return c.json({ processed: results.length, ok, fail, results });
@@ -343,11 +383,10 @@ aiLoopRoutes.get('/ai-loop/history', async (c) => {
 aiLoopRoutes.post('/ai-loop/clear', async (c) => {
   const isPaper = getCtxIsPaper();
   try {
-    const { rowCount } = await getPool().query(
-      'DELETE FROM ai_overrides WHERE is_paper = $1',
-      [isPaper],
-    );
-    logger.info(`🤖 AI 오버라이드 전체 초기화: ${rowCount}건 삭제 (${isPaper ? 'paper' : 'live'})`, { component: 'AI_LOOP' });
+    const { rowCount } = await getPool().query('DELETE FROM ai_overrides WHERE is_paper = $1', [isPaper]);
+    logger.info(`🤖 AI 오버라이드 전체 초기화: ${rowCount}건 삭제 (${isPaper ? 'paper' : 'live'})`, {
+      component: 'AI_LOOP',
+    });
     return c.json({ ok: true, deleted: rowCount });
   } catch (err) {
     return c.json({ ok: false, error: String(err) }, 500);
@@ -395,7 +434,14 @@ aiLoopRoutes.get('/ai-loop/pending', async (c) => {
 // Claude Code가 pending을 분석한 후 결정을 제출
 aiLoopRoutes.post('/ai-loop/decide', async (c) => {
   const isPaper = getCtxIsPaper();
-  let body: { decisions: Array<{ id: number; action: string; reason: string; commands?: Array<{ type: string; category?: string; key: string; value?: unknown; ttlMinutes?: number }> }> };
+  let body: {
+    decisions: Array<{
+      id: number;
+      action: string;
+      reason: string;
+      commands?: Array<{ type: string; category?: string; key: string; value?: unknown; ttlMinutes?: number }>;
+    }>;
+  };
 
   try {
     body = await c.req.json();
@@ -445,7 +491,9 @@ aiLoopRoutes.post('/ai-loop/decide', async (c) => {
     }
 
     results.push({ id: dec.id, ok: true, commandsApplied: applied });
-    logger.info(`🧠 판단 완료 #${dec.id}: ${dec.action} — ${dec.reason} (${applied}건 명령 적용)`, { component: 'AI_LOOP' });
+    logger.info(`🧠 판단 완료 #${dec.id}: ${dec.action} — ${dec.reason} (${applied}건 명령 적용)`, {
+      component: 'AI_LOOP',
+    });
   }
 
   return c.json({ processed: results.length, results });
@@ -466,6 +514,33 @@ aiLoopRoutes.get('/ai-loop/queue-stats', async (c) => {
       stats[r.status as string] = { count: Number(r.cnt), urgent: Number(r.urgent) };
     }
     return c.json(stats);
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── GET /api/loop/sessions — 루프 세션 히스토리 + 메트릭 ──
+// 강화 #1: 세션별 매수/매도/PnL/에러/킬스위치 정지 횟수 등 노출
+aiLoopRoutes.get('/loop/sessions', async (c) => {
+  try {
+    const limit = Math.min(100, Math.max(1, Number(c.req.query('limit') ?? 20)));
+    const { getLoopSessionsHistory, getLoopStatus } = await import('../../scheduler/loop-mode.js');
+    const [history, current] = await Promise.all([getLoopSessionsHistory(limit), Promise.resolve(getLoopStatus())]);
+    return c.json({
+      current: {
+        active: (current as any).active,
+        phase: (current as any).phase,
+        totalRuns: (current as any).totalRuns,
+        buyCount: (current as any).buyCount,
+        sellCount: (current as any).sellCount,
+        realizedPnlKrw: Math.round((current as any).realizedPnlKrw ?? 0),
+        recoveryAttempts: (current as any).recoveryAttempts,
+        killSwitchPauses: (current as any).killSwitchPauses,
+        pausedReason: (current as any).pausedReason,
+        adaptiveIntervalMs: (current as any).adaptiveIntervalMs,
+      },
+      history,
+    });
   } catch (err) {
     return c.json({ error: String(err) }, 500);
   }

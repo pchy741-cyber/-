@@ -1,9 +1,9 @@
 import { analyzeTechnicals } from '../../analysis/indicators.js';
+import { INVERSE_ETF_CODES } from '../../automation/crash-profit.js';
 import { getPool } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { logger } from '../../utils/logger.js';
-import { type TechnicalFallbackParams, resolveStrategyParams } from './technical-fallback-types.js';
-import { INVERSE_ETF_CODES } from '../../automation/crash-profit.js';
+import { resolveStrategyParams, type TechnicalFallbackParams } from './technical-fallback-types.js';
 
 /**
  * 보유 종목 물타기 판단 (지지선+반등신호 게이트)
@@ -46,18 +46,45 @@ export async function generateAveragingDecisions(
       ? chainTech.candlePatterns.some((p) => p.bullish && (p.strength === 'STRONG' || p.strength === 'MODERATE'))
       : false;
     const avgDownSupportOk = chainTech
-      ? (chainTech.bollingerPosition === 'BELOW_LOWER' || chainTech.bollingerPosition === 'NEAR_LOWER' || chainTech.rsi14 < 38)
+      ? chainTech.bollingerPosition === 'BELOW_LOWER' ||
+        chainTech.bollingerPosition === 'NEAR_LOWER' ||
+        chainTech.rsi14 < 38
       : true;
     // 반등신호: 불리쉬 캔들(망치형 등) OR MACD 전환 OR RSI 과매도+MACD 비하락
     const avgDownReversalOk = chainTech
-      ? (hasBullishReversalCandle || chainTech.macdCrossover === 'BULLISH' || (chainTech.rsi14 < 35 && chainTech.macdCrossover !== 'BEARISH'))
+      ? hasBullishReversalCandle ||
+        chainTech.macdCrossover === 'BULLISH' ||
+        (chainTech.rsi14 < 35 && chainTech.macdCrossover !== 'BEARISH')
       : true;
-    if (chain.status === 'PROFIT_TAKING' || isBelowSma20Deep || isTooDeepUnderwater || !avgDownSupportOk || !avgDownReversalOk || isTooConcentrated) {
-      if (isBelowSma20Deep) logger.info(`  🚫 ${chain.stock_code}: SMA20 -3% 이탈 → 물타기 차단 (손실확대 방지)`, { component: 'TRACK_B' });
-      if (isTooDeepUnderwater) logger.info(`  🚫 ${chain.stock_code}: ${pnlPct.toFixed(1)}% ≤ -8% → 물타기 하드 차단 (나락 방지)`, { component: 'TRACK_B' });
-      if (isTooConcentrated) logger.info(`  🚫 ${chain.stock_code}: 비중 ${(concentrationPct*100).toFixed(1)}% ≥ 10% → 물타기 차단 (집중 방지)`, { component: 'TRACK_B' });
-      if (!avgDownSupportOk && !isBelowSma20Deep && !isTooDeepUnderwater && !isTooConcentrated) logger.info(`  🚫 ${chain.stock_code}: 지지선 미확인(BB=${chainTech?.bollingerPosition} RSI=${chainTech?.rsi14.toFixed(0)}) → 물타기 차단`, { component: 'TRACK_B' });
-      if (avgDownSupportOk && !avgDownReversalOk && !isBelowSma20Deep && !isTooDeepUnderwater && !isTooConcentrated) logger.info(`  🔄 ${chain.stock_code}: 지지선 OK지만 반등신호 없음(MACD=${chainTech?.macdCrossover} 캔들없음) → 물타기 대기`, { component: 'TRACK_B' });
+    if (
+      chain.status === 'PROFIT_TAKING' ||
+      isBelowSma20Deep ||
+      isTooDeepUnderwater ||
+      !avgDownSupportOk ||
+      !avgDownReversalOk ||
+      isTooConcentrated
+    ) {
+      if (isBelowSma20Deep)
+        logger.info(`  🚫 ${chain.stock_code}: SMA20 -3% 이탈 → 물타기 차단 (손실확대 방지)`, { component: 'TRACK_B' });
+      if (isTooDeepUnderwater)
+        logger.info(`  🚫 ${chain.stock_code}: ${pnlPct.toFixed(1)}% ≤ -8% → 물타기 하드 차단 (나락 방지)`, {
+          component: 'TRACK_B',
+        });
+      if (isTooConcentrated)
+        logger.info(
+          `  🚫 ${chain.stock_code}: 비중 ${(concentrationPct * 100).toFixed(1)}% ≥ 10% → 물타기 차단 (집중 방지)`,
+          { component: 'TRACK_B' },
+        );
+      if (!avgDownSupportOk && !isBelowSma20Deep && !isTooDeepUnderwater && !isTooConcentrated)
+        logger.info(
+          `  🚫 ${chain.stock_code}: 지지선 미확인(BB=${chainTech?.bollingerPosition} RSI=${chainTech?.rsi14.toFixed(0)}) → 물타기 차단`,
+          { component: 'TRACK_B' },
+        );
+      if (avgDownSupportOk && !avgDownReversalOk && !isBelowSma20Deep && !isTooDeepUnderwater && !isTooConcentrated)
+        logger.info(
+          `  🔄 ${chain.stock_code}: 지지선 OK지만 반등신호 없음(MACD=${chainTech?.macdCrossover} 캔들없음) → 물타기 대기`,
+          { component: 'TRACK_B' },
+        );
       continue;
     }
 
@@ -71,7 +98,9 @@ export async function generateAveragingDecisions(
           [chain.id],
         );
         hasPendingBuy = pendingRows.length > 0;
-      } catch { /* DB 오류 시 안전하게 허용 */ }
+      } catch {
+        /* DB 오류 시 안전하게 허용 */
+      }
       if (hasPendingBuy) {
         logger.info(`  ⏳ ${chain.stock_code}: 미체결 BUY 주문 존재 → 물타기 중복 차단`, { component: 'TRACK_B' });
         continue;

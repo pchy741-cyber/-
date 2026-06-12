@@ -6,8 +6,9 @@
  *
  * 등록 시 1회만 호출 → 루프마다 재분석 X → 비용 $0/loop.
  */
-import { callVertexGemini } from '../utils/vertex-gemini.js';
+
 import { logger } from '../utils/logger.js';
+import { callVertexGemini } from '../utils/vertex-gemini.js';
 
 const AI_STUDIO_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
 
@@ -59,12 +60,14 @@ function parseAnalysis(text: string): ReferenceAnalysis {
   // 안전 검증
   const sentiment = ['BULLISH', 'BEARISH', 'NEUTRAL'].includes(parsed.sentiment) ? parsed.sentiment : 'NEUTRAL';
   const confidence = Math.max(0, Math.min(100, Number(parsed.confidence) || 0));
-  const actions: RefAction[] = (parsed.actions ?? []).map((a: any) => ({
-    code: String(a.code ?? ''),
-    action: ['scoreAdj', 'forceHold', 'blacklist'].includes(a.action) ? a.action : 'scoreAdj',
-    value: a.action === 'scoreAdj' ? Math.max(-8, Math.min(8, Number(a.value) || 0)) : !!a.value,
-    reason: String(a.reason ?? '').slice(0, 200),
-  })).filter((a: RefAction) => a.code);
+  const actions: RefAction[] = (parsed.actions ?? [])
+    .map((a: any) => ({
+      code: String(a.code ?? ''),
+      action: ['scoreAdj', 'forceHold', 'blacklist'].includes(a.action) ? a.action : 'scoreAdj',
+      value: a.action === 'scoreAdj' ? Math.max(-8, Math.min(8, Number(a.value) || 0)) : !!a.value,
+      reason: String(a.reason ?? '').slice(0, 200),
+    }))
+    .filter((a: RefAction) => a.code);
 
   return {
     stockCodes: (parsed.stockCodes ?? []).map(String).filter(Boolean),
@@ -85,7 +88,11 @@ export async function analyzeTextReference(content: string): Promise<ReferenceAn
 }
 
 /** 이미지 레퍼런스 분석 (텍스트 + 이미지) */
-export async function analyzeImageReference(content: string, imageBase64: string, mimeType: string): Promise<ReferenceAnalysis> {
+export async function analyzeImageReference(
+  content: string,
+  imageBase64: string,
+  mimeType: string,
+): Promise<ReferenceAnalysis> {
   const { config } = await import('../config/index.js');
   if (!config.geminiEnabled) throw new Error('Gemini OFF — 이미지 분석 불가');
   logger.info(`[Reference] 이미지 분석 시작`, { component: 'REFERENCE' });
@@ -94,13 +101,15 @@ export async function analyzeImageReference(content: string, imageBase64: string
   if (!geminiKey) throw new Error('GEMINI_API_KEY 미설정');
 
   const body = {
-    contents: [{
-      role: 'user',
-      parts: [
-        { text: `${SYSTEM_PROMPT}\n\n사용자 메모: ${content || '(없음)'}` },
-        { inlineData: { mimeType, data: imageBase64 } },
-      ],
-    }],
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { text: `${SYSTEM_PROMPT}\n\n사용자 메모: ${content || '(없음)'}` },
+          { inlineData: { mimeType, data: imageBase64 } },
+        ],
+      },
+    ],
     generationConfig: { temperature: 0.05, maxOutputTokens: 1024 },
   };
 
@@ -115,7 +124,7 @@ export async function analyzeImageReference(content: string, imageBase64: string
     throw new Error(`AI Studio ${res.status}: ${errText.slice(0, 200)}`);
   }
 
-  const data = await res.json() as any;
+  const data = (await res.json()) as any;
   const text: string = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
   if (!text) throw new Error('AI 응답 없음');
 

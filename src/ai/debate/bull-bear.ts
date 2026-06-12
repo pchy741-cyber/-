@@ -53,10 +53,15 @@ export async function runBullBearDebate(ctx: DebateContext): Promise<DebateResul
     const verdict = score >= 85 ? 'BUY' : score >= 60 ? 'HOLD' : score <= 30 ? 'SELL' : 'HOLD';
     logger.info(`🐂🐻 토론 스킵 (Gemini OFF): ${stockName} → ${verdict} (score=${score})`, { component: 'DEBATE' });
     return {
-      stockCode, finalVerdict: verdict as DebateResult['finalVerdict'],
-      confidence: Math.min(1, score / 100), bullScore: score, bearScore: 100 - score,
-      bullArguments: [`AI score ${score} / signal ${signal}`], bearArguments: ['Gemini OFF — 규칙기반'],
-      judgeReasoning: `Gemini OFF: AI score=${score}, signal=${signal}`, rounds: 0,
+      stockCode,
+      finalVerdict: verdict as DebateResult['finalVerdict'],
+      confidence: Math.min(1, score / 100),
+      bullScore: score,
+      bearScore: 100 - score,
+      bullArguments: [`AI score ${score} / signal ${signal}`],
+      bearArguments: ['Gemini OFF — 규칙기반'],
+      judgeReasoning: `Gemini OFF: AI score=${score}, signal=${signal}`,
+      rounds: 0,
     };
   }
 
@@ -142,14 +147,20 @@ JSON 형식으로 응답: {"final_arguments": ["최종논거1", "최종논거2"]
 
 // ── AI 에이전트 호출 ──
 
-async function callAgent(role: 'BULL' | 'BEAR', prompt: string): Promise<{ arguments: string[]; conviction: number; failed?: boolean }> {
+async function callAgent(
+  role: 'BULL' | 'BEAR',
+  prompt: string,
+): Promise<{ arguments: string[]; conviction: number; failed?: boolean }> {
   try {
     const systemInstruction =
       role === 'BULL'
         ? '당신은 월가의 낙관적 애널리스트입니다. 매수 기회를 적극적으로 찾되, 근거 없는 낙관은 금지합니다. 반드시 JSON으로만 응답하세요.'
         : '당신은 월가의 비관적 리스크 매니저입니다. 모든 리스크를 날카롭게 지적하되, 근거 없는 비관은 금지합니다. 반드시 JSON으로만 응답하세요.';
 
-    const text = await callVertexGemini(systemInstruction, prompt, { temperature: role === 'BULL' ? 0.3 : 0.4, label: `토론-${role}` });
+    const text = await callVertexGemini(systemInstruction, prompt, {
+      temperature: role === 'BULL' ? 0.3 : 0.4,
+      label: `토론-${role}`,
+    });
 
     // 마크다운 코드블록 제거 후 JSON 추출
     const cleaned = text.replace(/```json?\s*/gi, '').replace(/```/g, '');
@@ -177,7 +188,8 @@ async function callJudge(
   context: string,
 ): Promise<{ verdict: DebateResult['finalVerdict']; confidence: number; reasoning: string }> {
   try {
-    const judgeSystem = '당신은 공정한 투자 심판입니다. Bull과 Bear 양측의 논거를 객관적으로 평가하여 최종 판결을 내리세요. 감정이 아닌 데이터와 논리만으로 판단합니다. 반드시 JSON으로만 응답하세요.';
+    const judgeSystem =
+      '당신은 공정한 투자 심판입니다. Bull과 Bear 양측의 논거를 객관적으로 평가하여 최종 판결을 내리세요. 감정이 아닌 데이터와 논리만으로 판단합니다. 반드시 JSON으로만 응답하세요.';
 
     const judgePrompt = `## ${stockName} 투자 토론 판결
 

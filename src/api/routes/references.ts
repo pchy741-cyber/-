@@ -2,10 +2,10 @@
  * Trading References API — 커뮤니티/인플루언서 인사이트 → 단기 매매 반영
  */
 import { Hono } from 'hono';
-import { getPool } from '../../db/client.js';
+import { removeOverride, setOverride } from '../../ai/ai-overrides.js';
+import { analyzeImageReference, analyzeTextReference } from '../../ai/reference-analyzer.js';
 import { getCtxIsPaper } from '../../config/context.js';
-import { setOverride, removeOverride } from '../../ai/ai-overrides.js';
-import { analyzeTextReference, analyzeImageReference } from '../../ai/reference-analyzer.js';
+import { getPool } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
 
 export const referenceRoutes = new Hono();
@@ -84,7 +84,9 @@ referenceRoutes.post('/references', async (c) => {
         const res = await setOverride('stock', key, value, `[Ref] ${action.reason}`, ttlMinutes, isPaper);
         if (res.ok) {
           overridesApplied.push(key);
-          logger.info(`[Reference] Override 설정: ${key}=${JSON.stringify(value)} (${ttlHours}h)`, { component: 'REFERENCE' });
+          logger.info(`[Reference] Override 설정: ${key}=${JSON.stringify(value)} (${ttlHours}h)`, {
+            component: 'REFERENCE',
+          });
         }
       }
     }

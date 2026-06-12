@@ -2,16 +2,17 @@
  * 세션 전략 리뷰 시스템
  * 루프 시작 시 종합 리뷰 → 세션 전략 수립 → 매 사이클 유효성 체크 → 종료 시 요약
  */
-import { getPool } from '../../db/client.js';
-import { callVertexGemini } from '../../utils/vertex-gemini.js';
-import { logger } from '../../utils/logger.js';
-import { sendTelegramMessage } from '../../notifications/telegram.js';
-import { getFearGreedIndex } from '../../market/external-signals.js';
-import { getHoldings, getCash } from './state.js';
-import { calcRollingKelly, extractTradingPatterns, getVixRegime } from './risk-intelligence.js';
-import { getOverseasWinRates, getRecentPerfSummary } from './analytics.js';
+
 import { getAIGeneratedInsights } from '../../ai/overseas/insights-generator.js';
 import { getOverseasInsightsForPrompt } from '../../automation/self-learning/overseas-analyzers.js';
+import { getPool } from '../../db/client.js';
+import { getFearGreedIndex } from '../../market/external-signals.js';
+import { sendTelegramMessage } from '../../notifications/telegram.js';
+import { logger } from '../../utils/logger.js';
+import { callVertexGemini } from '../../utils/vertex-gemini.js';
+import { getOverseasWinRates, getRecentPerfSummary } from './analytics.js';
+import { calcRollingKelly, extractTradingPatterns, getVixRegime } from './risk-intelligence.js';
+import { getCash, getHoldings } from './state.js';
 
 // ── Types ──
 
@@ -84,20 +85,27 @@ const SESSION_STRATEGY_PROMPT = `당신은 알고리즘 트레이딩 세션 전�
 
 export async function generateSessionBrief(): Promise<SessionStrategyBrief | null> {
   const { config } = await import('../../config/index.js');
-  if (!config.geminiEnabled) { logger.info('📋 세션전략 스킵 (Gemini OFF)', { component: 'SESSION' }); return null; }
+  if (!config.geminiEnabled) {
+    logger.info('📋 세션전략 스킵 (Gemini OFF)', { component: 'SESSION' });
+    return null;
+  }
   try {
     _sessionId = `sess_${Date.now()}`;
 
     // 병렬 데이터 수집
-    const [
-      sentiment, holdings, cashPaper, cashLive,
-      kelly, patterns, perfSummary, aiInsights,
-    ] = await Promise.all([
+    const [sentiment, holdings, cashPaper, cashLive, kelly, patterns, perfSummary, aiInsights] = await Promise.all([
       getFearGreedIndex().catch(() => null),
       getHoldings().catch(() => new Map()),
       getCash(true).catch(() => 0),
       getCash(false).catch(() => 0),
-      calcRollingKelly().catch(() => ({ fullKelly: 0.20, halfKelly: 0.10, winRate: 0.5, avgWin: 5.0, avgLoss: 3.0, sampleCount: 0 })),
+      calcRollingKelly().catch(() => ({
+        fullKelly: 0.2,
+        halfKelly: 0.1,
+        winRate: 0.5,
+        avgWin: 5.0,
+        avgLoss: 3.0,
+        sampleCount: 0,
+      })),
       extractTradingPatterns().catch(() => []),
       getRecentPerfSummary().catch(() => ''),
       getAIGeneratedInsights().catch(() => ''),
@@ -105,9 +113,8 @@ export async function generateSessionBrief(): Promise<SessionStrategyBrief | nul
 
     // 보유 종목 코드 추출
     const holdingCodes = [...holdings.keys()];
-    const winRates = holdingCodes.length > 0
-      ? await getOverseasWinRates(holdingCodes).catch(() => new Map())
-      : new Map();
+    const winRates =
+      holdingCodes.length > 0 ? await getOverseasWinRates(holdingCodes).catch(() => new Map()) : new Map();
 
     // 스냅샷 저장
     const vixValue = sentiment?.vix ?? 0;
@@ -122,13 +129,16 @@ export async function generateSessionBrief(): Promise<SessionStrategyBrief | nul
     };
 
     // 데이터 조합
-    const holdingsSummary = holdingCodes.map(code => {
-      const h = holdings.get(code)!;
-      const wr = winRates.get(code);
-      return `${code}: ${h.qty}주 @$${h.avgPrice.toFixed(2)} (${h.exchange})${wr ? ` 승률${(wr.winRate * 100).toFixed(0)}%` : ''}`;
-    }).join('\n') || '보유 없음';
+    const holdingsSummary =
+      holdingCodes
+        .map((code) => {
+          const h = holdings.get(code)!;
+          const wr = winRates.get(code);
+          return `${code}: ${h.qty}주 @$${h.avgPrice.toFixed(2)} (${h.exchange})${wr ? ` 승률${(wr.winRate * 100).toFixed(0)}%` : ''}`;
+        })
+        .join('\n') || '보유 없음';
 
-    const patternsSummary = patterns.map(p => `- ${p.pattern}: ${p.evidence}`).join('\n') || '패턴 없음';
+    const patternsSummary = patterns.map((p) => `- ${p.pattern}: ${p.evidence}`).join('\n') || '패턴 없음';
 
     const userMessage = [
       `【시장 상황】`,
@@ -150,11 +160,13 @@ export async function generateSessionBrief(): Promise<SessionStrategyBrief | nul
       patternsSummary,
       '',
       aiInsights ? `【AI 인사이트】\n${aiInsights}` : '',
-    ].filter(Boolean).join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
 
     // 해외 매매일지 학습 인사이트 추가 (데이터가 쌓일수록 정밀해짐)
     const overseasLearned = await getOverseasInsightsForPrompt().catch(() => '');
-    const fullMessage = overseasLearned ? userMessage + '\n' + overseasLearned : userMessage;
+    const fullMessage = overseasLearned ? `${userMessage}\n${overseasLearned}` : userMessage;
 
     const response = await callVertexGemini(SESSION_STRATEGY_PROMPT, fullMessage, {
       temperature: 0.2,
@@ -169,7 +181,7 @@ export async function generateSessionBrief(): Promise<SessionStrategyBrief | nul
 
     // 유효성 보정
     parsed.sizingMultiplier = Math.max(0.5, Math.min(1.5, parsed.sizingMultiplier ?? 1.0));
-    parsed.confidenceFloor = Math.max(0.60, Math.min(0.85, parsed.confidenceFloor ?? 0.70));
+    parsed.confidenceFloor = Math.max(0.6, Math.min(0.85, parsed.confidenceFloor ?? 0.7));
     parsed.focusSectors = (parsed.focusSectors ?? []).slice(0, 5);
     parsed.avoidStocks = (parsed.avoidStocks ?? []).slice(0, 10);
     parsed.priorityStocks = (parsed.priorityStocks ?? []).slice(0, 5);
@@ -178,17 +190,23 @@ export async function generateSessionBrief(): Promise<SessionStrategyBrief | nul
     _activeBrief = parsed;
 
     // DB 저장
-    await getPool().query(
-      `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
+    await getPool()
+      .query(
+        `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
        ON CONFLICT (key) DO UPDATE SET value = $2`,
-      [`session_brief_${_sessionId}`, JSON.stringify(parsed)],
-    ).catch(() => {});
+        [`session_brief_${_sessionId}`, JSON.stringify(parsed)],
+      )
+      .catch(() => {});
 
-    logger.info(`📋 세션 전략 수립 완료: ${parsed.marketRegime}/${parsed.riskLevel} — ${parsed.narrative}`, { component: 'SESSION_STRATEGY' });
+    logger.info(`📋 세션 전략 수립 완료: ${parsed.marketRegime}/${parsed.riskLevel} — ${parsed.narrative}`, {
+      component: 'SESSION_STRATEGY',
+    });
 
     return parsed;
   } catch (err) {
-    logger.warn(`세션 전략 생성 실패 (기존 로직으로 진행): ${(err as Error).message}`, { component: 'SESSION_STRATEGY' });
+    logger.warn(`세션 전략 생성 실패 (기존 로직으로 진행): ${(err as Error).message}`, {
+      component: 'SESSION_STRATEGY',
+    });
     _activeBrief = null;
     return null;
   }
@@ -216,7 +234,9 @@ export async function checkStrategyValidity(): Promise<StrategyAdjustment> {
 
   // VIX 레짐 변경 → 전략 재생성 필요
   if (currentRegime !== _sessionSnapshot.vixRegime) {
-    logger.info(`⚠️ VIX 레짐 변경: ${_sessionSnapshot.vixRegime} → ${currentRegime} — 전략 재생성`, { component: 'SESSION_STRATEGY' });
+    logger.info(`⚠️ VIX 레짐 변경: ${_sessionSnapshot.vixRegime} → ${currentRegime} — 전략 재생성`, {
+      component: 'SESSION_STRATEGY',
+    });
     _sessionSnapshot.vixRegime = currentRegime;
     return { adjusted: false, regenerate: true, reason: `VIX 레짐 ${_sessionSnapshot.vixRegime} → ${currentRegime}` };
   }
@@ -226,22 +246,32 @@ export async function checkStrategyValidity(): Promise<StrategyAdjustment> {
   // VIX 5pt+ 변동 → 로컬 조정
   if (vixDelta >= 5) {
     if (current.vix > _sessionSnapshot.vix) {
-      _activeBrief.riskLevel = _activeBrief.riskLevel === 'AGGRESSIVE' ? 'NORMAL'
-        : _activeBrief.riskLevel === 'NORMAL' ? 'CAUTIOUS' : 'DEFENSIVE';
+      _activeBrief.riskLevel =
+        _activeBrief.riskLevel === 'AGGRESSIVE'
+          ? 'NORMAL'
+          : _activeBrief.riskLevel === 'NORMAL'
+            ? 'CAUTIOUS'
+            : 'DEFENSIVE';
       _activeBrief.sizingMultiplier = Math.max(0.5, _activeBrief.sizingMultiplier * 0.8);
     } else {
       _activeBrief.sizingMultiplier = Math.min(1.5, _activeBrief.sizingMultiplier * 1.1);
     }
     _sessionSnapshot.vix = current.vix;
     adjusted = true;
-    logger.info(`📊 VIX ${vixDelta.toFixed(1)}pt 변동 → 사이징 ${_activeBrief.sizingMultiplier.toFixed(2)}x`, { component: 'SESSION_STRATEGY' });
+    logger.info(`📊 VIX ${vixDelta.toFixed(1)}pt 변동 → 사이징 ${_activeBrief.sizingMultiplier.toFixed(2)}x`, {
+      component: 'SESSION_STRATEGY',
+    });
   }
 
   // F&G 15pt+ 변동 → 로컬 조정
   if (fgDelta >= 15) {
     if (current.fearGreedScore < _sessionSnapshot.fearGreed) {
-      _activeBrief.riskLevel = _activeBrief.riskLevel === 'AGGRESSIVE' ? 'NORMAL'
-        : _activeBrief.riskLevel === 'NORMAL' ? 'CAUTIOUS' : 'DEFENSIVE';
+      _activeBrief.riskLevel =
+        _activeBrief.riskLevel === 'AGGRESSIVE'
+          ? 'NORMAL'
+          : _activeBrief.riskLevel === 'NORMAL'
+            ? 'CAUTIOUS'
+            : 'DEFENSIVE';
     }
     _sessionSnapshot.fearGreed = current.fearGreedScore;
     adjusted = true;
@@ -283,10 +313,10 @@ export async function generateSessionSummary(log: SessionLog): Promise<void> {
       `총 실행: ${log.totalRuns}회`,
       perfSummary ? `실적: ${perfSummary}` : '',
       '',
-      _activeBrief.warnings.length > 0
-        ? `【경고사항】\n${_activeBrief.warnings.join('\n')}`
-        : '',
-    ].filter(Boolean).join('\n');
+      _activeBrief.warnings.length > 0 ? `【경고사항】\n${_activeBrief.warnings.join('\n')}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
 
     const summary = await callVertexGemini(SESSION_SUMMARY_PROMPT, userMessage, {
       temperature: 0.3,
@@ -296,11 +326,13 @@ export async function generateSessionSummary(log: SessionLog): Promise<void> {
 
     // DB 저장
     if (_sessionId) {
-      await getPool().query(
-        `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
+      await getPool()
+        .query(
+          `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
          ON CONFLICT (key) DO UPDATE SET value = $2`,
-        [`session_summary_${_sessionId}`, summary],
-      ).catch(() => {});
+          [`session_summary_${_sessionId}`, summary],
+        )
+        .catch(() => {});
     }
 
     // Telegram 전송

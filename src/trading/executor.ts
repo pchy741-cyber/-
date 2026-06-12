@@ -1,24 +1,31 @@
-import { OrderType, STRATEGY_PARAMS, getScoreBasedParams, type StrategyMode } from '../config/constants.js';
-import { config } from '../config/index.js';
+import { hardInvalidateDashboardCache } from '../cache/dashboard-cache.js';
+import { invalidateStockCache } from '../cache/redis.js';
+import { OrderType, STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
 import { getCtxIsPaper } from '../config/context.js';
-import { getActiveStrategy, getOpenChains, insertOrder, logSystem, updateOrderByKisOrderNo, upsertWatchlistItem } from '../db/client.js';
+import { config } from '../config/index.js';
+import {
+  getActiveStrategy,
+  getOpenChains,
+  insertOrder,
+  logSystem,
+  updateOrderByKisOrderNo,
+  upsertWatchlistItem,
+} from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
+import { invalidateBalanceCache } from '../kis/account.js';
 import { getCurrentPrice, getDailyChart } from '../kis/market.js';
 import { cancelOrder, getOrderFills, type OrderResult, placeOrder } from '../kis/order.js';
+import { notifyBuy, notifySell } from '../notifications/web-push.js';
 import { riskEngine } from '../risk/engine.js';
 import { reportError, reportSuccess } from '../risk/kill-switch.js';
-import { notifyBuy, notifySell } from '../notifications/web-push.js';
-import { runTradeGates, type GateInput } from '../risk/trade-gate.js';
 import { paperTradeOrder } from '../risk/paper.js';
+import { type GateInput, runTradeGates } from '../risk/trade-gate.js';
 import { acquireLock } from '../utils/lock.js';
 import { logger } from '../utils/logger.js';
-import { getKSTNow } from '../utils/time.js';
 import { roundKrw } from '../utils/money.js';
-import { invalidateStockCache } from '../cache/redis.js';
-import { invalidateDashboardCache, hardInvalidateDashboardCache } from '../cache/dashboard-cache.js';
-import { invalidateBalanceCache } from '../kis/account.js';
-import { chainManager } from './chain.js';
+import { getKSTNow } from '../utils/time.js';
 import { registerBuyIntent, releaseBuyIntent } from './buy-intent.js';
+import { chainManager } from './chain.js';
 
 /**
  * 매매 실행기 (Trade Executor)
@@ -87,7 +94,9 @@ export class TradeExecutor {
     const minuteKey = this._minuteKey(stock_code, action);
     if (this._recentOrderKeys.has(minuteKey)) {
       const dupModeTag = getCtxIsPaper() ? '🧪PAPER' : '💰LIVE';
-      logger.warn(`⏳ [${dupModeTag}] 분당 중복 주문 차단: ${action} ${stock_code} (이미 이 분에 처리됨)`, { component: 'EXECUTOR' });
+      logger.warn(`⏳ [${dupModeTag}] 분당 중복 주문 차단: ${action} ${stock_code} (이미 이 분에 처리됨)`, {
+        component: 'EXECUTOR',
+      });
       return;
     }
     this._recentOrderKeys.add(minuteKey);
@@ -104,23 +113,35 @@ export class TradeExecutor {
       logger.info(`▶ [${modeTag}] 실행: ${action} ${stock_code} x${quantity}`, { component: 'EXECUTOR' });
 
       // per-decision 모드 오버라이드 (BOTTOM_FISHING 등)
-      const effectiveMode = (decision.strategy_mode && decision.strategy_mode in STRATEGY_PARAMS)
-        ? decision.strategy_mode as StrategyMode
-        : mode;
+      const effectiveMode =
+        decision.strategy_mode && decision.strategy_mode in STRATEGY_PARAMS
+          ? (decision.strategy_mode as StrategyMode)
+          : mode;
 
-      const tpSlHints: import('../config/constants.js').DomesticTpSlHints | undefined =
-        decision.ai_score ? {
-          score: decision.ai_score,
-          confidence: decision.confidence,
-          rsi: decision.rsi,
-          volumeRatio: decision.volume_ratio,
-          pullbackSignal: decision.pullback_signal,
-          envelopePos: decision.envelope_pos,
-        } : undefined;
+      const tpSlHints: import('../config/constants.js').DomesticTpSlHints | undefined = decision.ai_score
+        ? {
+            score: decision.ai_score,
+            confidence: decision.confidence,
+            rsi: decision.rsi,
+            volumeRatio: decision.volume_ratio,
+            pullbackSignal: decision.pullback_signal,
+            envelopePos: decision.envelope_pos,
+          }
+        : undefined;
 
       switch (action) {
         case 'BUY':
-          await this.executeBuy(stock_code, quantity, price_type, limit_price, effectiveMode, reasoning, decision.ai_score, tpSlHints, trigger_source);
+          await this.executeBuy(
+            stock_code,
+            quantity,
+            price_type,
+            limit_price,
+            effectiveMode,
+            reasoning,
+            decision.ai_score,
+            tpSlHints,
+            trigger_source,
+          );
           break;
         case 'AVERAGE_DOWN':
           await this.executeAverageDown(stock_code, quantity, price_type, limit_price, reasoning);
@@ -172,7 +193,11 @@ export class TradeExecutor {
         `⛔ 동시 포지션 한도 초과 (${allOpenChains.length}/${config.risk.maxConcurrentPositions}) → 신규 매수 차단: ${stockCode}`,
         { component: 'EXECUTOR' },
       );
-      await logSystem('WARN', 'EXECUTOR', `포지션 한도 초과: ${allOpenChains.length}/${config.risk.maxConcurrentPositions} — ${stockCode} 신규 매수 차단`);
+      await logSystem(
+        'WARN',
+        'EXECUTOR',
+        `포지션 한도 초과: ${allOpenChains.length}/${config.risk.maxConcurrentPositions} — ${stockCode} 신규 매수 차단`,
+      );
       return;
     }
 
@@ -186,7 +211,7 @@ export class TradeExecutor {
       if (!estimatedPrice || estimatedPrice <= 0) {
         const { getCachedPriceMemory } = await import('../cache/memory.js');
         const { getLastKnownPrice } = await import('../cache/redis.js');
-        estimatedPrice = getCachedPriceMemory(stockCode) ?? await getLastKnownPrice(stockCode) ?? 0;
+        estimatedPrice = getCachedPriceMemory(stockCode) ?? (await getLastKnownPrice(stockCode)) ?? 0;
         if (estimatedPrice > 0) {
           logger.info(`💰 캐시 가격 사용: ${stockCode} = ${estimatedPrice}원`, { component: 'EXECUTOR' });
         }
@@ -204,42 +229,53 @@ export class TradeExecutor {
     // ETF 파킹 / 바닥낚시 종목은 게이트 생략 (스캐너가 이미 검증 or 차트 분석 불필요)
     const ETF_PARK_CODES = ['333940', '069500', '161510', '114800', '252670', '251340']; // 파킹ETF: KODEX인버스,KODEX200,TIGER고배당,KODEX200인버스,KODEX200선물인버스2X,TIGER인버스
     // CASH_PARKING: 현금파킹 대형주는 cash-manager가 이미 종목·타이밍 검증 완료 — 인트라데이 게이트 불필요
-    const skipGates = ETF_PARK_CODES.includes(stockCode) || mode === 'BOTTOM_FISHING' || triggerSource === 'CASH_PARKING';
+    const skipGates =
+      ETF_PARK_CODES.includes(stockCode) || mode === 'BOTTOM_FISHING' || triggerSource === 'CASH_PARKING';
     const params = STRATEGY_PARAMS[mode];
     let gatedQuantity = quantity;
     if (skipGates) {
       const skipModeTag = getCtxIsPaper() ? '🧪PAPER' : '💰LIVE';
-      logger.info(`⏭️ [${skipModeTag}] 게이트 생략 (${mode === 'BOTTOM_FISHING' ? '바닥낚시' : 'ETF파킹'}): ${stockCode} → 직접 주문`, { component: 'EXECUTOR' });
+      logger.info(
+        `⏭️ [${skipModeTag}] 게이트 생략 (${mode === 'BOTTOM_FISHING' ? '바닥낚시' : 'ETF파킹'}): ${stockCode} → 직접 주문`,
+        { component: 'EXECUTOR' },
+      );
     } else
-    try {
-      const candles = await getDailyChart(stockCode, 65).catch(() => []);
-      const gateInput: GateInput = {
-        stockCode,
-        action: 'BUY',
-        quantity,
-        estimatedPrice,
-        candles: candles.map(c => ({ date: c.date, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume })),
-        strategyMode: mode,
-        stopLossPct: params.stopLossPct,
-        takeProfitPct: params.takeProfitPct,
-        budgetKrw: estimatedPrice * quantity,
-      };
-      const gateResult = await runTradeGates(gateInput);
-      if (!gateResult.passed) {
+      try {
+        const candles = await getDailyChart(stockCode, 65).catch(() => []);
+        const gateInput: GateInput = {
+          stockCode,
+          action: 'BUY',
+          quantity,
+          estimatedPrice,
+          candles: candles.map((c) => ({
+            date: c.date,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+            volume: c.volume,
+          })),
+          strategyMode: mode,
+          stopLossPct: params.stopLossPct,
+          takeProfitPct: params.takeProfitPct,
+          budgetKrw: estimatedPrice * quantity,
+        };
+        const gateResult = await runTradeGates(gateInput);
+        if (!gateResult.passed) {
+          releaseBuyIntent(stockCode);
+          logger.warn(`🚦 게이트 차단 [${stockCode}]: ${gateResult.reason}`, { component: 'EXECUTOR' });
+          await logSystem('WARN', 'TRADE_GATE', `매수 차단: ${stockCode} - ${gateResult.reason}`);
+          return;
+        }
+        gatedQuantity = gateResult.adjustedQuantity ?? quantity;
+      } catch (e) {
+        const errMsg = (e as Error).message;
+        // fail-closed: 게이트 장애 시 매수 허용하면 리스크 통제 우회 — 차단이 안전
         releaseBuyIntent(stockCode);
-        logger.warn(`🚦 게이트 차단 [${stockCode}]: ${gateResult.reason}`, { component: 'EXECUTOR' });
-        await logSystem('WARN', 'TRADE_GATE', `매수 차단: ${stockCode} - ${gateResult.reason}`);
+        logger.warn(`게이트 에러 (매수 차단): ${errMsg}`, { component: 'EXECUTOR' });
+        await logSystem('WARN', 'EXECUTOR', `게이트 오류 (차단): ${stockCode} - ${errMsg}`);
         return;
       }
-      gatedQuantity = gateResult.adjustedQuantity ?? quantity;
-    } catch (e) {
-      const errMsg = (e as Error).message;
-      // fail-closed: 게이트 장애 시 매수 허용하면 리스크 통제 우회 — 차단이 안전
-      releaseBuyIntent(stockCode);
-      logger.warn(`게이트 에러 (매수 차단): ${errMsg}`, { component: 'EXECUTOR' });
-      await logSystem('WARN', 'EXECUTOR', `게이트 오류 (차단): ${stockCode} - ${errMsg}`);
-      return;
-    }
 
     // 리스크 체크 (ETF 파킹/바닥낚시는 Kill Switch만 확인 — 포지션/한도 체크 제외)
     if (skipGates) {
@@ -272,14 +308,29 @@ export class TradeExecutor {
       try {
         const { checkLargeOrderEntryTiming } = await import('../ai/entry-timing.js');
         const entryCandles = await getDailyChart(stockCode, 20).catch(() => []);
-        const entryCheck = await checkLargeOrderEntryTiming(stockCode, estimatedPrice, orderAmountKrw, entryCandles, reasoning);
+        const entryCheck = await checkLargeOrderEntryTiming(
+          stockCode,
+          estimatedPrice,
+          orderAmountKrw,
+          entryCandles,
+          reasoning,
+        );
         if (!entryCheck.approved) {
           releaseBuyIntent(stockCode);
-          logger.warn(`🎯 진입타이밍 AI 거부 [${stockCode} ${Math.round(orderAmountKrw / 10000)}만원]: ${entryCheck.reason}`, { component: 'EXECUTOR' });
-          await logSystem('WARN', 'ENTRY_TIMING', `대형주문 진입거부: ${stockCode} ${Math.round(orderAmountKrw / 10000)}만원 — ${entryCheck.reason}`);
+          logger.warn(
+            `🎯 진입타이밍 AI 거부 [${stockCode} ${Math.round(orderAmountKrw / 10000)}만원]: ${entryCheck.reason}`,
+            { component: 'EXECUTOR' },
+          );
+          await logSystem(
+            'WARN',
+            'ENTRY_TIMING',
+            `대형주문 진입거부: ${stockCode} ${Math.round(orderAmountKrw / 10000)}만원 — ${entryCheck.reason}`,
+          );
           return;
         }
-      } catch { /* fail-open: AI 오류 시 기존 게이트 결과 존중 */ }
+      } catch {
+        /* fail-open: AI 오류 시 기존 게이트 결과 존중 */
+      }
     }
 
     // 호가 진입 타이밍 — ask2 이하일 때만 매수 (ETF 파킹/바닥낚시 제외 — 시간외 단일가는 호가 무의미)
@@ -293,16 +344,22 @@ export class TradeExecutor {
         const ask2 = book[1]?.askPrice ?? 0;
         if (ask1 > 0 && ask2 > 0 && estimatedPrice > ask2) {
           releaseBuyIntent(stockCode);
-          logger.warn(`⏸️ 호가 진입 보류: ${stockCode} 현재가 ${estimatedPrice} > ask2 ${ask2} — 스킵`, { component: 'EXECUTOR' });
+          logger.warn(`⏸️ 호가 진입 보류: ${stockCode} 현재가 ${estimatedPrice} > ask2 ${ask2} — 스킵`, {
+            component: 'EXECUTOR',
+          });
           await logSystem('WARN', 'EXECUTOR', `호가 진입 보류: ${stockCode} 현재가=${estimatedPrice} ask2=${ask2}`);
           return;
         }
         // 스마트 매수: ask1(매도1호가) 지정가 → 시장가 대비 슬리피지 차단
         if (ask1 > 0) {
           smartBuyPrice = ask1;
-          logger.info(`💰 스마트 매수: ${stockCode} ask1=${ask1.toLocaleString()} → 지정가 주문`, { component: 'EXECUTOR' });
+          logger.info(`💰 스마트 매수: ${stockCode} ask1=${ask1.toLocaleString()} → 지정가 주문`, {
+            component: 'EXECUTOR',
+          });
         }
-      } catch { /* 호가 조회 실패 시 시장가 폴백 (fail-open) */ }
+      } catch {
+        /* 호가 조회 실패 시 시장가 폴백 (fail-open) */
+      }
     }
 
     // 주문 실행 (지정가 우선 → 호가 없으면 시장가 폴백)
@@ -330,12 +387,16 @@ export class TradeExecutor {
       }
       if (fill.filledQty <= 0) {
         releaseBuyIntent(stockCode);
-        logger.error(`매수 체결 수량 0 → 체인 생성 보류 (주문 거부 또는 미체결): ${stockCode}`, { component: 'EXECUTOR' });
+        logger.error(`매수 체결 수량 0 → 체인 생성 보류 (주문 거부 또는 미체결): ${stockCode}`, {
+          component: 'EXECUTOR',
+        });
         return;
       }
       const filledQty = Math.min(gatedQuantity, fill.filledQty);
       if (filledQty < gatedQuantity) {
-        logger.warn(`⚠️ 매수 부분체결 반영: ${stockCode} 요청 ${gatedQuantity}주 → 체결 ${filledQty}주`, { component: 'EXECUTOR' });
+        logger.warn(`⚠️ 매수 부분체결 반영: ${stockCode} 요청 ${gatedQuantity}주 → 체결 ${filledQty}주`, {
+          component: 'EXECUTOR',
+        });
       }
 
       // 동적 TP/SL: 항상 다팩터 엔진 사용 (v4: 플래그 폐지 → 해외와 동등)
@@ -349,9 +410,13 @@ export class TradeExecutor {
         const learnedSl = (dbStrategy as any)?.stop_loss_pct as number | undefined;
         const dyn = getDynamicDomesticTpSl({ ...tpSlHints, score: aiScore, learnedTp, learnedSl });
         scoreParams = { takeProfitPct: dyn.takeProfitPct, stopLossPct: dyn.stopLossPct };
-        logger.info(`🎯 동적 TP/SL [${dyn.label}]: score=${aiScore} → TP ${dyn.takeProfitPct}% / SL ${dyn.stopLossPct}%`, { component: 'EXECUTOR' });
+        logger.info(
+          `🎯 동적 TP/SL [${dyn.label}]: score=${aiScore} → TP ${dyn.takeProfitPct}% / SL ${dyn.stopLossPct}%`,
+          { component: 'EXECUTOR' },
+        );
       }
-      const targetProfitPct = scoreParams?.takeProfitPct ?? (dbStrategy as any)?.take_profit_pct ?? params.takeProfitPct;
+      const targetProfitPct =
+        scoreParams?.takeProfitPct ?? (dbStrategy as any)?.take_profit_pct ?? params.takeProfitPct;
       let stopLossPct = scoreParams?.stopLossPct ?? (dbStrategy as any)?.stop_loss_pct ?? params.stopLossPct;
 
       // ATR 기반 동적 손절 — 전략 손절폭보다 넓어지지 않도록 캡 적용
@@ -362,9 +427,13 @@ export class TradeExecutor {
           const atrStopPct = -((atr * 2.0) / fill.filledPrice) * 100;
           // 전략 설정(stopLossPct)보다 넓어지는 것 방지: -2% ~ stopLossPct 범위
           stopLossPct = Math.max(stopLossPct, Math.min(-2, atrStopPct));
-          logger.info(`ATR 동적 손절: ${stockCode} ATR=${atr.toFixed(0)} → 손절 ${stopLossPct.toFixed(1)}%`, { component: 'EXECUTOR' });
+          logger.info(`ATR 동적 손절: ${stockCode} ATR=${atr.toFixed(0)} → 손절 ${stopLossPct.toFixed(1)}%`, {
+            component: 'EXECUTOR',
+          });
         }
-      } catch { /* ATR 실패 시 기본값 유지 */ }
+      } catch {
+        /* ATR 실패 시 기본값 유지 */
+      }
 
       try {
         await chainManager.openChain({
@@ -379,8 +448,15 @@ export class TradeExecutor {
         });
       } catch (chainErr) {
         // 체인 생성 실패 = 포지션 추적 불가 → 즉시 경고 (체결은 이미 완료됨)
-        logger.error(`🚨 체인 생성 실패 (체결은 완료됨): ${stockCode} ${filledQty}주 @${fill.filledPrice} err=${chainErr}`, { component: 'EXECUTOR' });
-        await logSystem('ERROR', 'EXECUTOR', `체인 생성 실패: ${stockCode} ${filledQty}주 @${fill.filledPrice} — fill-reconciler가 복구 필요`);
+        logger.error(
+          `🚨 체인 생성 실패 (체결은 완료됨): ${stockCode} ${filledQty}주 @${fill.filledPrice} err=${chainErr}`,
+          { component: 'EXECUTOR' },
+        );
+        await logSystem(
+          'ERROR',
+          'EXECUTOR',
+          `체인 생성 실패: ${stockCode} ${filledQty}주 @${fill.filledPrice} — fill-reconciler가 복구 필요`,
+        );
       }
 
       // 감시목록 자동 등록 + 종목명 즉시 보정 (코드 저장 후 KRX API로 이름 조회)
@@ -391,7 +467,7 @@ export class TradeExecutor {
       // 캐시 무효화 + 푸시 알림
       invalidateStockCache(stockCode).catch(() => {});
       notifyBuy(stockCode, filledQty, fill.filledPrice, reasoning, triggerSource).catch((err) =>
-        logger.warn(`알림 발송 오류 (BUY): ${err}`, { component: 'EXECUTOR' })
+        logger.warn(`알림 발송 오류 (BUY): ${err}`, { component: 'EXECUTOR' }),
       );
     }
   }
@@ -429,7 +505,9 @@ export class TradeExecutor {
     if (avgBuyPrice > 0 && estimatedPrice > 0) {
       const pnlPct = ((estimatedPrice - avgBuyPrice) / avgBuyPrice) * 100;
       if (pnlPct < -0.5) {
-        logger.warn(`⚠️ 손실 물타기 감지: ${stockCode} PnL=${pnlPct.toFixed(1)}% avg=${avgBuyPrice}원 → AI 검토`, { component: 'EXECUTOR' });
+        logger.warn(`⚠️ 손실 물타기 감지: ${stockCode} PnL=${pnlPct.toFixed(1)}% avg=${avgBuyPrice}원 → AI 검토`, {
+          component: 'EXECUTOR',
+        });
         try {
           const { checkLargeOrderEntryTiming } = await import('../ai/entry-timing.js');
           const entryCandles = await getDailyChart(stockCode, 20).catch(() => []);
@@ -442,13 +520,21 @@ export class TradeExecutor {
           );
           if (!entryCheck.approved) {
             logger.warn(`🚫 손실 물타기 AI 거부 [${stockCode}]: ${entryCheck.reason}`, { component: 'EXECUTOR' });
-            await logSystem('WARN', 'EXECUTOR', `손실 물타기 거부: ${stockCode} PnL=${pnlPct.toFixed(1)}% — ${entryCheck.reason}`);
+            await logSystem(
+              'WARN',
+              'EXECUTOR',
+              `손실 물타기 거부: ${stockCode} PnL=${pnlPct.toFixed(1)}% — ${entryCheck.reason}`,
+            );
             return;
           }
-          logger.info(`✅ 손실 물타기 AI 승인 [${stockCode} PnL=${pnlPct.toFixed(1)}%]: ${entryCheck.reason}`, { component: 'EXECUTOR' });
+          logger.info(`✅ 손실 물타기 AI 승인 [${stockCode} PnL=${pnlPct.toFixed(1)}%]: ${entryCheck.reason}`, {
+            component: 'EXECUTOR',
+          });
         } catch (e) {
           // fail-closed: AI 오류 시 손실 물타기 허용하면 자유낙하 종목에 계속 추가 매수할 위험
-          logger.warn(`🚫 손실 물타기 AI 검토 오류 → 차단 (fail-closed): ${stockCode} — ${(e as Error).message}`, { component: 'EXECUTOR' });
+          logger.warn(`🚫 손실 물타기 AI 검토 오류 → 차단 (fail-closed): ${stockCode} — ${(e as Error).message}`, {
+            component: 'EXECUTOR',
+          });
           await logSystem('WARN', 'EXECUTOR', `손실 물타기 AI 오류 차단: ${stockCode} PnL=${pnlPct.toFixed(1)}%`);
           return;
         }
@@ -477,9 +563,13 @@ export class TradeExecutor {
         const ask1 = book[0]?.askPrice ?? 0;
         if (ask1 > 0) {
           smartBuyPrice = ask1;
-          logger.info(`💰 스마트 물타기: ${stockCode} ask1=${ask1.toLocaleString()} → 지정가`, { component: 'EXECUTOR' });
+          logger.info(`💰 스마트 물타기: ${stockCode} ask1=${ask1.toLocaleString()} → 지정가`, {
+            component: 'EXECUTOR',
+          });
         }
-      } catch { /* 호가 조회 실패 → 시장가 폴백 */ }
+      } catch {
+        /* 호가 조회 실패 → 시장가 폴백 */
+      }
     }
 
     const result = await this.executeOrder({
@@ -500,12 +590,16 @@ export class TradeExecutor {
         return;
       }
       if (fill.filledQty <= 0) {
-        logger.error(`물타기 체결 수량 0 → 업데이트 보류 (주문 거부 또는 미체결): ${stockCode}`, { component: 'EXECUTOR' });
+        logger.error(`물타기 체결 수량 0 → 업데이트 보류 (주문 거부 또는 미체결): ${stockCode}`, {
+          component: 'EXECUTOR',
+        });
         return;
       }
       const filledQty = Math.min(quantity, fill.filledQty);
       if (filledQty < quantity) {
-        logger.warn(`⚠️ 물타기 부분체결 반영: ${stockCode} 요청 ${quantity}주 → 체결 ${filledQty}주`, { component: 'EXECUTOR' });
+        logger.warn(`⚠️ 물타기 부분체결 반영: ${stockCode} 요청 ${quantity}주 → 체결 ${filledQty}주`, {
+          component: 'EXECUTOR',
+        });
       }
       await chainManager.addAveraging(chain.id, fill.filledPrice, filledQty);
     }
@@ -536,7 +630,9 @@ export class TradeExecutor {
         smartSellPrice = bid1;
         logger.info(`💰 스마트 익절: ${stockCode} bid1=${bid1.toLocaleString()} → 지정가`, { component: 'EXECUTOR' });
       }
-    } catch { /* 호가 조회 실패 → 시장가 폴백 */ }
+    } catch {
+      /* 호가 조회 실패 → 시장가 폴백 */
+    }
 
     const result = await this.executeOrder({
       stockCode,
@@ -559,12 +655,16 @@ export class TradeExecutor {
       }
 
       if (fill.filledQty <= 0) {
-        logger.error(`부분익절 체결 수량 0 → 체인 업데이트 보류 (주문 거부 또는 미체결): ${stockCode}`, { component: 'EXECUTOR' });
+        logger.error(`부분익절 체결 수량 0 → 체인 업데이트 보류 (주문 거부 또는 미체결): ${stockCode}`, {
+          component: 'EXECUTOR',
+        });
         return;
       }
       const soldQty = Math.min(safeQty, fill.filledQty);
       if (soldQty < safeQty) {
-        logger.warn(`⚠️ 부분익절 부분체결 반영: ${stockCode} 요청 ${safeQty}주 → 체결 ${soldQty}주`, { component: 'EXECUTOR' });
+        logger.warn(`⚠️ 부분익절 부분체결 반영: ${stockCode} 요청 ${safeQty}주 → 체결 ${soldQty}주`, {
+          component: 'EXECUTOR',
+        });
       }
 
       const avgBuy = Number(chain.avg_buy_price) || 0;
@@ -574,7 +674,7 @@ export class TradeExecutor {
       invalidateBalanceCache();
       hardInvalidateDashboardCache();
       notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, reasoning, chain.strategy_mode).catch((err) =>
-        logger.warn(`알림 발송 오류 (SELL): ${err}`, { component: 'EXECUTOR' })
+        logger.warn(`알림 발송 오류 (SELL): ${err}`, { component: 'EXECUTOR' }),
       );
     }
   }
@@ -596,9 +696,13 @@ export class TradeExecutor {
       const bid1 = book[0]?.bidPrice ?? 0;
       if (bid1 > 0) {
         smartSellPrice = bid1;
-        logger.info(`💰 스마트 매도: ${stockCode} bid1=${bid1.toLocaleString()} → 지정가 (${action})`, { component: 'EXECUTOR' });
+        logger.info(`💰 스마트 매도: ${stockCode} bid1=${bid1.toLocaleString()} → 지정가 (${action})`, {
+          component: 'EXECUTOR',
+        });
       }
-    } catch { /* 호가 조회 실패 → 시장가 폴백 */ }
+    } catch {
+      /* 호가 조회 실패 → 시장가 폴백 */
+    }
 
     const result = await this.executeOrder({
       stockCode,
@@ -621,12 +725,16 @@ export class TradeExecutor {
       }
 
       if (fill.filledQty <= 0) {
-        logger.error(`청산 체결 수량 0 → 체인 업데이트 보류 (주문 거부 또는 미체결): ${stockCode}`, { component: 'EXECUTOR' });
+        logger.error(`청산 체결 수량 0 → 체인 업데이트 보류 (주문 거부 또는 미체결): ${stockCode}`, {
+          component: 'EXECUTOR',
+        });
         return;
       }
       const soldQty = Math.min(chain.total_quantity, fill.filledQty);
       if (soldQty < chain.total_quantity) {
-        logger.warn(`⚠️ 전량청산 부분체결 반영: ${stockCode} 요청 ${chain.total_quantity}주 → 체결 ${soldQty}주`, { component: 'EXECUTOR' });
+        logger.warn(`⚠️ 전량청산 부분체결 반영: ${stockCode} 요청 ${chain.total_quantity}주 → 체결 ${soldQty}주`, {
+          component: 'EXECUTOR',
+        });
       }
 
       const closeReason = action === 'FORCE_CLOSE' ? `강제 청산: ${reasoning}` : `매도: ${reasoning}`;
@@ -642,7 +750,7 @@ export class TradeExecutor {
       invalidateBalanceCache();
       hardInvalidateDashboardCache();
       notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, closeReason, chain.strategy_mode).catch((err) =>
-        logger.warn(`알림 발송 오류 (CLOSE): ${err}`, { component: 'EXECUTOR' })
+        logger.warn(`알림 발송 오류 (CLOSE): ${err}`, { component: 'EXECUTOR' }),
       );
 
       // 체결 감사 로그: 매도 실체결 내역 (why + 실제 수익)
@@ -654,14 +762,16 @@ export class TradeExecutor {
 
       // 🍽️ 개장 초단타 용돈 알림: 수익 5만원 이상 시 텔레그램 알림
       if (pnlKrw >= 50000 && reasoning.includes('초단타')) {
-        import('../notifications/telegram.js').then(({ sendTelegramMessage }) => {
-          sendTelegramMessage(
-            `🍽️ *개장 초단타 용돈 벌었습니다!*\n\n` +
-            `종목: ${stockCode}\n` +
-            `수익: +${pnlKrw.toLocaleString()}원 (+${pnlPct.toFixed(2)}%)\n` +
-            `저녁 식사비로 입금 확인해 주세요 😄`,
-          );
-        }).catch(() => {});
+        import('../notifications/telegram.js')
+          .then(({ sendTelegramMessage }) => {
+            sendTelegramMessage(
+              `🍽️ *개장 초단타 용돈 벌었습니다!*\n\n` +
+                `종목: ${stockCode}\n` +
+                `수익: +${pnlKrw.toLocaleString()}원 (+${pnlPct.toFixed(2)}%)\n` +
+                `저녁 식사비로 입금 확인해 주세요 😄`,
+            );
+          })
+          .catch(() => {});
       }
     }
   }
@@ -684,11 +794,10 @@ export class TradeExecutor {
 
     // 장후 시간외 자동 감지 (15:40~16:00 KST → ORD_DVSN '06')
     const kstNow = getKSTNow();
-    const kH = kstNow.getUTCHours(), kM = kstNow.getUTCMinutes();
+    const kH = kstNow.getUTCHours(),
+      kM = kstNow.getUTCMinutes();
     const isAfterHours = (kH === 15 && kM >= 40) || (kH === 16 && kM === 0);
-    const orderType = isAfterHours
-      ? OrderType.AFTER_HOURS
-      : (params.price ? OrderType.LIMIT : OrderType.MARKET);
+    const orderType = isAfterHours ? OrderType.AFTER_HOURS : params.price ? OrderType.LIMIT : OrderType.MARKET;
 
     // 실거래 주문
     const result = await placeOrder({
@@ -719,7 +828,10 @@ export class TradeExecutor {
       });
     } catch (dbErr) {
       // DB 기록 실패 시에도 KIS 주문은 이미 전송됨 — 로그로 추적 가능하게 기록
-      logger.error(`🚨 주문 DB 기록 실패 (KIS 주문은 전송됨): ${params.side} ${params.stockCode} x${params.quantity} orderNo=${result.orderNo} err=${dbErr}`, { component: 'EXECUTOR' });
+      logger.error(
+        `🚨 주문 DB 기록 실패 (KIS 주문은 전송됨): ${params.side} ${params.stockCode} x${params.quantity} orderNo=${result.orderNo} err=${dbErr}`,
+        { component: 'EXECUTOR' },
+      );
     }
 
     await logSystem(
@@ -755,7 +867,8 @@ export class TradeExecutor {
     for (const key of this._recentOrderKeys) {
       if (!key.includes(todayPrefix)) this._recentOrderKeys.delete(key);
     }
-    if (before > 0) logger.info(`🧹 recentOrderKeys 정리: ${before}→${this._recentOrderKeys.size}건`, { component: 'EXECUTOR' });
+    if (before > 0)
+      logger.info(`🧹 recentOrderKeys 정리: ${before}→${this._recentOrderKeys.size}건`, { component: 'EXECUTOR' });
   }
 
   private async confirmFill(
@@ -775,9 +888,7 @@ export class TradeExecutor {
     }
 
     // 지수 백오프 + jitter(±20%) — 동시 다발 재시도 충돌 방지
-    const retryDelays = [3000, 5000, 8000, 15000].map(
-      (ms) => ms + Math.floor(Math.random() * ms * 0.2),
-    );
+    const retryDelays = [3000, 5000, 8000, 15000].map((ms) => ms + Math.floor(Math.random() * ms * 0.2));
 
     for (let i = 0; i < retryDelays.length; i++) {
       await new Promise((r) => setTimeout(r, retryDelays[i]));
@@ -829,7 +940,9 @@ export class TradeExecutor {
     await logSystem('ERROR', 'EXECUTOR', `체결 미확인: ${orderNo}. 주문 취소 시도 완료. 수동 확인 필요.`);
 
     const { sendTelegramMessage } = await import('../notifications/telegram.js');
-    await sendTelegramMessage(`🛑 체결 미확인 경고!\n주문번호: ${orderNo}\n종목: ${stockCode}\n주문 취소 시도 완료. 수동 확인 필요`);
+    await sendTelegramMessage(
+      `🛑 체결 미확인 경고!\n주문번호: ${orderNo}\n종목: ${stockCode}\n주문 취소 시도 완료. 수동 확인 필요`,
+    );
 
     return null; // 체결 실패 시그널
   }

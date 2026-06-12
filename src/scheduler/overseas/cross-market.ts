@@ -2,15 +2,16 @@
  * 크로스마켓 선행 신호 — 아시아장 종목 변동 → 미국 종목 방향 예측
  * 반도체 공급망 등 글로벌 상관관계 기반 선행 지표 활용
  */
-import { logger } from '../../utils/logger.js';
+
 import { getOverseasPrice } from '../../kis/overseas.js';
+import { logger } from '../../utils/logger.js';
 
 // ── 타입 ──
 
 interface CrossMarketPair {
-  asiaCode: string;    // 아시아 종목 (e.g., '6857' 도쿄일렉트론)
+  asiaCode: string; // 아시아 종목 (e.g., '6857' 도쿄일렉트론)
   asiaExchange: string;
-  usCode: string;      // 연관 미국 종목 (e.g., 'NVDA')
+  usCode: string; // 연관 미국 종목 (e.g., 'NVDA')
   correlation: number; // 상관 강도
 }
 
@@ -19,7 +20,7 @@ export interface CrossMarketSignal {
   asiaCode: string;
   asiaChangePct: number;
   signalType: 'BULLISH' | 'BEARISH';
-  confidence: number;  // 0~1
+  confidence: number; // 0~1
 }
 
 // ── 하드코딩 크로스마켓 페어 ──
@@ -28,11 +29,11 @@ const CROSS_PAIRS: CrossMarketPair[] = [
   // 일본 반도체 → 미국 반도체
   { asiaCode: '6857', asiaExchange: 'TSE', usCode: 'NVDA', correlation: 0.75 },
   { asiaCode: '6857', asiaExchange: 'TSE', usCode: 'AMD', correlation: 0.65 },
-  { asiaCode: '8035', asiaExchange: 'TSE', usCode: 'AMAT', correlation: 0.70 },
+  { asiaCode: '8035', asiaExchange: 'TSE', usCode: 'AMAT', correlation: 0.7 },
   { asiaCode: '6861', asiaExchange: 'TSE', usCode: 'KLAC', correlation: 0.65 },
   // 대만 TSMC → 미국 반도체
-  { asiaCode: '2330', asiaExchange: 'TPE', usCode: 'TSM', correlation: 0.90 },
-  { asiaCode: '2330', asiaExchange: 'TPE', usCode: 'NVDA', correlation: 0.60 },
+  { asiaCode: '2330', asiaExchange: 'TPE', usCode: 'TSM', correlation: 0.9 },
+  { asiaCode: '2330', asiaExchange: 'TPE', usCode: 'NVDA', correlation: 0.6 },
 ];
 
 // ── 캐시 (1시간 — 아시아장 종료 후 변하지 않으므로) ──

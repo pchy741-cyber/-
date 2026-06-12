@@ -5,7 +5,7 @@
  * - DASHBOARD_PASSWORD 미설정 시 개발 환경에서만 무조건 통과
  * - 모바일폰 단일 세션: 새 로그인 시 이전 폰 세션 자동 무효화
  */
-import { createHmac, timingSafeEqual } from 'crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Context, Next } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 
@@ -71,7 +71,7 @@ export function verifySessionToken(token: string): boolean {
     // 토큰 만료 확인 — payload 형식: "timestamp.random"
     const tsStr = payload.split('.')[0];
     const issuedAt = Number(tsStr);
-    if (!isNaN(issuedAt) && Date.now() - issuedAt > SESSION_MAX_AGE * 1000) return false;
+    if (!Number.isNaN(issuedAt) && Date.now() - issuedAt > SESSION_MAX_AGE * 1000) return false;
 
     return true;
   } catch {
@@ -97,7 +97,7 @@ export function clearSessionCookie(c: Context): void {
  * 인증 미들웨어 — /api/* 전체에 적용
  * 예외: /api/health, /api/auth/login (패스워드 불필요)
  */
-export async function requireAuth(c: Context, next: Next): Promise<Response | void> {
+export async function requireAuth(c: Context, next: Next): Promise<Response | undefined> {
   const secret = getSecret();
 
   // 패스워드 미설정 시: 모든 환경에서 차단 (보안)
@@ -107,9 +107,9 @@ export async function requireAuth(c: Context, next: Next): Promise<Response | vo
 
   // X-Api-Key 헤더 지원 (Claude Code /loop 등 서버 간 호출용) — timing-safe 비교
   const apiKey = c.req.header('x-api-key');
-  if (apiKey && apiKey.length === secret.length &&
-      timingSafeEqual(Buffer.from(apiKey), Buffer.from(secret))) {
-    return next();
+  if (apiKey && apiKey.length === secret.length && timingSafeEqual(Buffer.from(apiKey), Buffer.from(secret))) {
+    await next();
+    return;
   }
 
   const token = getCookie(c, SESSION_COOKIE);
@@ -126,7 +126,8 @@ export async function requireAuth(c: Context, next: Next): Promise<Response | vo
     // 세션 갱신: 동일 nonce로 만료 시간 연장 (태블릿 장기 운영 지원)
     const newToken = createSessionToken(nonce ?? undefined);
     setSessionCookie(c, newToken);
-    return next();
+    await next();
+    return;
   }
 
   // XHR/fetch 요청이면 401 JSON, 브라우저 직접 접근이면 로그인 페이지로

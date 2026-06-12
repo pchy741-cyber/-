@@ -8,9 +8,9 @@
  * 4. 최적 SL/TP 역산 + overseas_state에 저장 → 다음 매수부터 적용
  */
 import { getPool } from '../../db/client.js';
-import { logger } from '../../utils/logger.js';
-import { setOverseasState, getOverseasState } from './utils.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
+import { logger } from '../../utils/logger.js';
+import { getOverseasState, setOverseasState } from './utils.js';
 
 // ── Types ──
 
@@ -81,25 +81,23 @@ export async function runTradeTuner(isPaper = true): Promise<TuneResult | null> 
     }
 
     // 2. 전체 통계
-    const wins = trades.filter(t => t.pnl_pct >= 0);
-    const losses = trades.filter(t => t.pnl_pct < 0);
+    const wins = trades.filter((t) => t.pnl_pct >= 0);
+    const losses = trades.filter((t) => t.pnl_pct < 0);
     const globalWinRate = wins.length / trades.length;
     const avgPnlPct = trades.reduce((s, t) => s + t.pnl_pct, 0) / trades.length;
 
     // 3. 수익 누출 분석 (최고 수익 - 실현 수익)
-    const tradesWithMax = trades.filter(t => t.max_price > 0);
-    const leaks = tradesWithMax.map(t => {
+    const tradesWithMax = trades.filter((t) => t.max_price > 0);
+    const leaks = tradesWithMax.map((t) => {
       const maxPnlPct = ((t.max_price - t.avg_buy) / t.avg_buy) * 100;
       return Math.max(0, maxPnlPct - t.pnl_pct);
     });
     const avgLeakPct = leaks.length > 0 ? leaks.reduce((s, l) => s + l, 0) / leaks.length : 0;
 
     // 4. 손절 분석
-    const slTrades = losses.filter(t =>
-      t.ai_reasoning.includes('손절') || t.ai_reasoning.includes('stopLoss')
-    );
-    const holdExpiredTrades = losses.filter(t =>
-      t.ai_reasoning.includes('보유기한') || t.ai_reasoning.includes('약세종목')
+    const slTrades = losses.filter((t) => t.ai_reasoning.includes('손절') || t.ai_reasoning.includes('stopLoss'));
+    const holdExpiredTrades = losses.filter(
+      (t) => t.ai_reasoning.includes('보유기한') || t.ai_reasoning.includes('약세종목'),
     );
 
     // 5. 섹터별 분석
@@ -107,8 +105,15 @@ export async function runTradeTuner(isPaper = true): Promise<TuneResult | null> 
 
     // 6. 최적 파라미터 역산
     const recommendations = generateRecommendations({
-      trades, wins, losses, slTrades, holdExpiredTrades,
-      globalWinRate, avgPnlPct, avgLeakPct, sectorStats,
+      trades,
+      wins,
+      losses,
+      slTrades,
+      holdExpiredTrades,
+      globalWinRate,
+      avgPnlPct,
+      avgLeakPct,
+      sectorStats,
     });
 
     // 7. 튜닝 결과 저장
@@ -121,18 +126,12 @@ export async function runTradeTuner(isPaper = true): Promise<TuneResult | null> 
       recommendations,
       appliedAt: new Date().toISOString(),
     };
-    await setOverseasState(
-      isPaper ? STATE_KEY : `${STATE_KEY}_live`,
-      JSON.stringify(result),
-    );
+    await setOverseasState(isPaper ? STATE_KEY : `${STATE_KEY}_live`, JSON.stringify(result));
 
     // 8. 파라미터 오버라이드 적용
     const overrides = buildOverrides(recommendations);
     if (Object.keys(overrides).length > 0) {
-      await setOverseasState(
-        isPaper ? STATE_KEY_OVERRIDES : `${STATE_KEY_OVERRIDES}_live`,
-        JSON.stringify(overrides),
-      );
+      await setOverseasState(isPaper ? STATE_KEY_OVERRIDES : `${STATE_KEY_OVERRIDES}_live`, JSON.stringify(overrides));
     }
 
     // 9. 텔레그램 알림
@@ -150,7 +149,8 @@ export async function runTradeTuner(isPaper = true): Promise<TuneResult | null> 
 // ── 데이터 수집 ──
 
 async function fetchRecentTrades(mode: string): Promise<TradeRecord[]> {
-  const { rows } = await getPool().query(`
+  const { rows } = await getPool().query(
+    `
     SELECT
       o.stock_code,
       o.side,
@@ -168,7 +168,9 @@ async function fetchRecentTrades(mode: string): Promise<TradeRecord[]> {
       AND o.ai_reasoning ~ '\\[avgBuy:[0-9]'
       AND o.created_at >= NOW() - INTERVAL '90 days'
     ORDER BY o.created_at DESC
-  `, [mode]);
+  `,
+    [mode],
+  );
 
   const results: TradeRecord[] = [];
   for (const r of rows) {
@@ -182,23 +184,31 @@ async function fetchRecentTrades(mode: string): Promise<TradeRecord[]> {
     try {
       const val = await getOverseasState(maxKey);
       maxPrice = val ? Number(val) : 0;
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     if (maxPrice <= 0) maxPrice = Math.max(avgBuy, filledPrice);
 
     // holding_days: 매수시점 추정 (같은 종목 직전 BUY 주문)
     let holdingDays = 7; // 기본값
     try {
-      const { rows: buyRows } = await getPool().query(`
+      const { rows: buyRows } = await getPool().query(
+        `
         SELECT created_at FROM orders
         WHERE stock_code = $1 AND side = 'BUY' AND trigger_source = 'OVERSEAS'
           AND trading_mode = $2 AND status = 'FILLED'
           AND created_at < $3
         ORDER BY created_at DESC LIMIT 1
-      `, [r.stock_code, mode, r.created_at]);
+      `,
+        [r.stock_code, mode, r.created_at],
+      );
       if (buyRows.length > 0) {
-        holdingDays = (new Date(r.created_at).getTime() - new Date(buyRows[0].created_at).getTime()) / (1000 * 60 * 60 * 24);
+        holdingDays =
+          (new Date(r.created_at).getTime() - new Date(buyRows[0].created_at).getTime()) / (1000 * 60 * 60 * 24);
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
 
     results.push({
       stock_code: r.stock_code,
@@ -238,26 +248,25 @@ function analyzeBySector(trades: TradeRecord[]): SectorStats[] {
   const stats: SectorStats[] = [];
   for (const [sector, group] of groups) {
     if (group.length < 3) continue;
-    const wins = group.filter(t => t.pnl_pct >= 0);
-    const slHits = group.filter(t =>
-      t.ai_reasoning.includes('손절') || t.ai_reasoning.includes('stopLoss')
-    );
-    const maxPnls = group.filter(t => t.max_price > 0).map(t =>
-      ((t.max_price - t.avg_buy) / t.avg_buy) * 100
-    );
-    const leaks = group.filter(t => t.max_price > 0).map(t => {
-      const maxPnl = ((t.max_price - t.avg_buy) / t.avg_buy) * 100;
-      return Math.max(0, maxPnl - t.pnl_pct);
-    });
+    const wins = group.filter((t) => t.pnl_pct >= 0);
+    const slHits = group.filter((t) => t.ai_reasoning.includes('손절') || t.ai_reasoning.includes('stopLoss'));
+    const maxPnls = group.filter((t) => t.max_price > 0).map((t) => ((t.max_price - t.avg_buy) / t.avg_buy) * 100);
+    const leaks = group
+      .filter((t) => t.max_price > 0)
+      .map((t) => {
+        const maxPnl = ((t.max_price - t.avg_buy) / t.avg_buy) * 100;
+        return Math.max(0, maxPnl - t.pnl_pct);
+      });
 
     // 최적 TP: 실현된 수익 상위 75백분위수
-    const winPnls = wins.map(t => t.pnl_pct).sort((a, b) => a - b);
-    const optimalTp = winPnls.length > 0
-      ? winPnls[Math.floor(winPnls.length * 0.75)]
-      : 20;
+    const winPnls = wins.map((t) => t.pnl_pct).sort((a, b) => a - b);
+    const optimalTp = winPnls.length > 0 ? winPnls[Math.floor(winPnls.length * 0.75)] : 20;
 
     // 최적 SL: 손실 trades의 중앙값 × 1.2 (여유)
-    const lossPnls = group.filter(t => t.pnl_pct < 0).map(t => Math.abs(t.pnl_pct)).sort((a, b) => a - b);
+    const lossPnls = group
+      .filter((t) => t.pnl_pct < 0)
+      .map((t) => Math.abs(t.pnl_pct))
+      .sort((a, b) => a - b);
     const medianLoss = lossPnls.length > 0 ? lossPnls[Math.floor(lossPnls.length * 0.5)] : 5;
     const optimalSl = Math.min(15, Math.max(3, medianLoss * 1.2));
 
@@ -296,7 +305,7 @@ function generateRecommendations(ctx: {
 
   // 1. 손절 너무 타이트? (손절 후 반등 많으면 SL 넓히기)
   if (ctx.slTrades.length >= 3) {
-    const slPnls = ctx.slTrades.map(t => Math.abs(t.pnl_pct));
+    const slPnls = ctx.slTrades.map((t) => Math.abs(t.pnl_pct));
     const avgSlPct = slPnls.reduce((s, v) => s + v, 0) / slPnls.length;
     const slRatio = ctx.slTrades.length / ctx.trades.length;
 
@@ -317,7 +326,7 @@ function generateRecommendations(ctx: {
     recs.push({
       param: 'trail_activate_pct',
       current: 8, // 현재 기본값 (medium beta)
-      recommended: Math.max(3, Math.round((ctx.avgLeakPct * 0.5) * 10) / 10),
+      recommended: Math.max(3, Math.round(ctx.avgLeakPct * 0.5 * 10) / 10),
       reason: `평균 ${ctx.avgLeakPct.toFixed(1)}% 수익 누출 — 트레일링 조기 활성화 필요`,
     });
   }
@@ -349,9 +358,7 @@ function generateRecommendations(ctx: {
   }
 
   // 4. TP 너무 높아서 안 걸리면 낮추기
-  const tpHits = ctx.wins.filter(t =>
-    t.ai_reasoning.includes('익절') || t.ai_reasoning.includes('TP')
-  );
+  const tpHits = ctx.wins.filter((t) => t.ai_reasoning.includes('익절') || t.ai_reasoning.includes('TP'));
   if (ctx.wins.length >= 5 && tpHits.length / ctx.wins.length < 0.1) {
     // TP 익절이 전체 승리의 10% 미만 → TP 너무 높음
     const avgWinPnl = ctx.wins.reduce((s, t) => s + t.pnl_pct, 0) / ctx.wins.length;
@@ -390,14 +397,11 @@ function generateRecommendations(ctx: {
  * 세이버메트릭스 파라미터 감도 분석
  * 과거 거래의 max_price를 활용해 "만약 TP/SL을 X%로 했다면?" 시뮬레이션
  */
-function runParameterSensitivity(
-  trades: TradeRecord[],
-  currentWinRate: number,
-): TuneRecommendation[] {
+function runParameterSensitivity(trades: TradeRecord[], _currentWinRate: number): TuneRecommendation[] {
   if (trades.length < 15) return [];
 
   const recs: TuneRecommendation[] = [];
-  const tradesWithMax = trades.filter(t => t.max_price > t.avg_buy * 1.001);
+  const tradesWithMax = trades.filter((t) => t.max_price > t.avg_buy * 1.001);
   if (tradesWithMax.length < 10) return recs;
 
   // SL 후보: 3~12%, TP 후보: 5~25% — 각 조합의 가상 PF 계산
@@ -457,21 +461,21 @@ function runParameterSensitivity(
   }
 
   // 현재 대비 의미있는 개선이 있으면 추천
-  const currentAvgWin = trades.filter(t => t.pnl_pct > 0).reduce((s, t) => s + t.pnl_pct, 0);
-  const currentAvgLoss = Math.abs(trades.filter(t => t.pnl_pct <= 0).reduce((s, t) => s + t.pnl_pct, 0));
+  const currentAvgWin = trades.filter((t) => t.pnl_pct > 0).reduce((s, t) => s + t.pnl_pct, 0);
+  const currentAvgLoss = Math.abs(trades.filter((t) => t.pnl_pct <= 0).reduce((s, t) => s + t.pnl_pct, 0));
   const currentPF = currentAvgLoss > 0 ? currentAvgWin / currentAvgLoss : 1;
 
   if (bestPF > currentPF * 1.15 && bestEV > 0.5) {
     // 15% 이상 PF 개선 + EV 0.5% 이상
     recs.push({
       param: 'sensitivity_optimal_sl',
-      current: Math.round(currentAvgLoss / trades.filter(t => t.pnl_pct <= 0).length * 10) / 10,
+      current: Math.round((currentAvgLoss / trades.filter((t) => t.pnl_pct <= 0).length) * 10) / 10,
       recommended: bestSL,
       reason: `⚾ 감도분석: SL ${bestSL}% + TP ${bestTP}% → PF ${bestPF.toFixed(2)} (현재 ${currentPF.toFixed(2)}) EV +${bestEV.toFixed(2)}%/건`,
     });
     recs.push({
       param: 'sensitivity_optimal_tp',
-      current: Math.round(currentAvgWin / Math.max(1, trades.filter(t => t.pnl_pct > 0).length) * 10) / 10,
+      current: Math.round((currentAvgWin / Math.max(1, trades.filter((t) => t.pnl_pct > 0).length)) * 10) / 10,
       recommended: bestTP,
       reason: `⚾ 감도분석: R:R ${(bestTP / bestSL).toFixed(1)} 최적 (${tradesWithMax.length}건 시뮬)`,
     });
@@ -487,9 +491,9 @@ function buildOverrides(recs: TuneRecommendation[]): Record<string, number> {
   for (const r of recs) {
     // 감도분석 결과는 실제 파라미터명으로 매핑
     if (r.param === 'sensitivity_optimal_sl') {
-      overrides['sl_base_pct'] = r.recommended;
+      overrides.sl_base_pct = r.recommended;
     } else if (r.param === 'sensitivity_optimal_tp') {
-      overrides['tp_base_pct'] = r.recommended;
+      overrides.tp_base_pct = r.recommended;
     } else {
       overrides[r.param] = r.recommended;
     }
@@ -531,7 +535,9 @@ function formatReport(r: TuneResult): string {
   if (r.sectorStats.length > 0) {
     lines.push('', '📈 종목별:');
     for (const s of r.sectorStats.slice(0, 8)) {
-      lines.push(`  ${s.sector}: ${s.trades}건 승률${(s.winRate * 100).toFixed(0)}% avg${s.avgPnlPct >= 0 ? '+' : ''}${s.avgPnlPct.toFixed(1)}% leak${s.avgLeakPct.toFixed(1)}%`);
+      lines.push(
+        `  ${s.sector}: ${s.trades}건 승률${(s.winRate * 100).toFixed(0)}% avg${s.avgPnlPct >= 0 ? '+' : ''}${s.avgPnlPct.toFixed(1)}% leak${s.avgLeakPct.toFixed(1)}%`,
+      );
     }
   }
 

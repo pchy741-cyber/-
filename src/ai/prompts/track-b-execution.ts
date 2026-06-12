@@ -164,15 +164,17 @@ export function buildExecutionPrompt(
       break;
     default:
       // SWING: params 주입 필수 — 없으면 안전한 기본값 사용
-      prompt += buildSwingRules(params ?? {
-        buyThreshold: 60,
-        splitCount: 2,
-        averageDownPct: -4,
-        maxAveragingCount: 1,
-        takeProfitPct: 8,
-        stopLossPct: -4,
-        maxHoldingDays: 5,
-      });
+      prompt += buildSwingRules(
+        params ?? {
+          buyThreshold: 60,
+          splitCount: 2,
+          averageDownPct: -4,
+          maxAveragingCount: 1,
+          takeProfitPct: 8,
+          stopLossPct: -4,
+          maxHoldingDays: 5,
+        },
+      );
   }
 
   return prompt;

@@ -14,42 +14,68 @@
 
 import { analyzeTechnicals } from '../../analysis/indicators.js';
 import { logger } from '../../utils/logger.js';
-import { MEGA_CAP_PRIORITY_CODES } from './trading-rules.js';
-import { type TechnicalFallbackParams, type BuyCandidate, resolveStrategyParams, buildAiScoreMap, hasNoAiScores } from './technical-fallback-types.js';
-import { routeByRegime } from './strategy-router.js';
-
+import { tryFinalEntry, tryRegimeRouterEntry, tryScalpEntry } from './filters/entry-decision.js';
 // ── 필터 모듈 (각각 독립, 크로스 import 없음) ──
 import { isHardBlocked } from './filters/hard-gates.js';
-import { computeScoring } from './filters/scoring.js';
 import { checkQualityGates } from './filters/quality-gates.js';
-import { isBreakoutBlocked, checkRiskGates } from './filters/risk-gates.js';
-import { tryRegimeRouterEntry, tryScalpEntry, tryFinalEntry } from './filters/entry-decision.js';
+import { checkRiskGates, isBreakoutBlocked } from './filters/risk-gates.js';
+import { computeScoring } from './filters/scoring.js';
+import { routeByRegime } from './strategy-router.js';
+import {
+  type BuyCandidate,
+  buildAiScoreMap,
+  hasNoAiScores,
+  resolveStrategyParams,
+  type TechnicalFallbackParams,
+} from './technical-fallback-types.js';
+import { MEGA_CAP_PRIORITY_CODES } from './trading-rules.js';
 
 /**
  * 매수 후보 필터링 (퍼블릭 API — 호출부 변경 불필요)
  */
 export async function filterBuyCandidates(params: TechnicalFallbackParams): Promise<BuyCandidate[]> {
-  const { mode, watchlist, livePrices, chartData, openChains,
-    junkStockCodes, lossBlockedCodes, bigLossBlockedCodes,
-    manuallySoldCodes, recentlySoldCodes, winRates, marketSignals } = params;
+  const {
+    mode,
+    watchlist,
+    livePrices,
+    chartData,
+    openChains,
+    junkStockCodes,
+    lossBlockedCodes,
+    bigLossBlockedCodes,
+    manuallySoldCodes,
+    recentlySoldCodes,
+    winRates,
+    marketSignals,
+  } = params;
 
   const strategyParams = resolveStrategyParams(mode, params);
   const aiScoreMap = buildAiScoreMap(params.aiScores);
   const noAiScores = hasNoAiScores(params.aiScores);
   const feedbackRequirePullback = params.requirePullback ?? false;
   const feedbackMinVolRatio = params.minVolumeRatio ?? 1.0;
-  const openStockCodes = new Set(openChains.map(c => c.stock_code));
+  const openStockCodes = new Set(openChains.map((c) => c.stock_code));
 
   const candidates: BuyCandidate[] = [];
 
   for (const stock of watchlist) {
     // ━━━ BREAKOUT 모드 전용 경로 (기존 5단계 파이프라인 완전 우회) ━━━
     if (mode === 'BREAKOUT') {
-      if (isHardBlocked({
-        stock, openStockCodes, lossBlockedCodes, bigLossBlockedCodes,
-        manuallySoldCodes, recentlySoldCodes, junkStockCodes, winRates,
-        livePrices, aiScoreMap,
-      })) continue;
+      if (
+        isHardBlocked({
+          stock,
+          openStockCodes,
+          lossBlockedCodes,
+          bigLossBlockedCodes,
+          manuallySoldCodes,
+          recentlySoldCodes,
+          junkStockCodes,
+          winRates,
+          livePrices,
+          aiScoreMap,
+        })
+      )
+        continue;
 
       const candles = chartData.get(stock.stock_code);
       const price = livePrices.get(stock.stock_code);
@@ -63,7 +89,10 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
       const tech = analyzeTechnicals(candles);
       if (!tech) continue;
 
-      logger.info(`  📈 ${stock.stock_code}: BREAKOUT [${breakout.subStrategy}] conf=${breakout.confidence.toFixed(2)} vol=${breakout.details.volumeRatio.toFixed(1)}x | ${breakout.reason}`, { component: 'TRACK_B' });
+      logger.info(
+        `  📈 ${stock.stock_code}: BREAKOUT [${breakout.subStrategy}] conf=${breakout.confidence.toFixed(2)} vol=${breakout.details.volumeRatio.toFixed(1)}x | ${breakout.reason}`,
+        { component: 'TRACK_B' },
+      );
 
       candidates.push({
         stock_code: stock.stock_code,
@@ -78,11 +107,21 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
     const megaCap = MEGA_CAP_PRIORITY_CODES.get(stock.stock_code);
 
     // ━━━ 1단계: 하드 게이트 ━━━
-    if (isHardBlocked({
-      stock, openStockCodes, lossBlockedCodes, bigLossBlockedCodes,
-      manuallySoldCodes, recentlySoldCodes, junkStockCodes, winRates,
-      livePrices, aiScoreMap,
-    })) continue;
+    if (
+      isHardBlocked({
+        stock,
+        openStockCodes,
+        lossBlockedCodes,
+        bigLossBlockedCodes,
+        manuallySoldCodes,
+        recentlySoldCodes,
+        junkStockCodes,
+        winRates,
+        livePrices,
+        aiScoreMap,
+      })
+    )
+      continue;
 
     // ━━━ 데이터 준비 ━━━
     const candles = chartData.get(stock.stock_code);
@@ -93,24 +132,33 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
     if (!tech) continue;
 
     // 레짐 라우터
-    const closes = candles.map(c => c.close);
+    const closes = candles.map((c) => c.close);
     const aiScore = aiScoreMap.get(stock.stock_code) ?? 0;
     const regimeRoute = routeByRegime(tech, closes, aiScore);
 
     // buyThreshold (대형주 보정 + 레짐 보정)
-    const buyThreshold = (megaCap
-      ? strategyParams.buyThreshold - megaCap.thresholdReduction
-      : strategyParams.buyThreshold) + regimeRoute.buyThresholdAdj;
+    const buyThreshold =
+      (megaCap ? strategyParams.buyThreshold - megaCap.thresholdReduction : strategyParams.buyThreshold) +
+      regimeRoute.buyThresholdAdj;
 
     // ━━━ 2단계: 스코어링 ━━━
     const scoring = computeScoring({
-      stock, tech, candles, price,
+      stock,
+      tech,
+      candles,
+      price,
       signals: marketSignals?.get(stock.stock_code),
-      mode, megaCap, aiScore, feedbackMinVolRatio,
+      mode,
+      megaCap,
+      aiScore,
+      feedbackMinVolRatio,
     });
 
     // 스코어 로깅
-    logger.info(`  📊 ${stock.stock_code}: score=${tech.score}${scoring.candleBonus > 0 ? `+${scoring.candleBonus}캔들` : ''} RSI=${tech.rsi14.toFixed(0)} ADX=${tech.adx14.toFixed(0)}(${tech.trendStrength}) MACD=${tech.macdCrossover} vol=${tech.volumeRatio.toFixed(2)}x 레짐=${regimeRoute.regime}${regimeRoute.routed ? '✓' : ''}`, { component: 'TRACK_B' });
+    logger.info(
+      `  📊 ${stock.stock_code}: score=${tech.score}${scoring.candleBonus > 0 ? `+${scoring.candleBonus}캔들` : ''} RSI=${tech.rsi14.toFixed(0)} ADX=${tech.adx14.toFixed(0)}(${tech.trendStrength}) MACD=${tech.macdCrossover} vol=${tech.volumeRatio.toFixed(2)}x 레짐=${regimeRoute.regime}${regimeRoute.routed ? '✓' : ''}`,
+      { component: 'TRACK_B' },
+    );
 
     // 승률피드백: 눌림목 필수 구간
     if (feedbackRequirePullback && !scoring.truePullbackPattern && scoring.fibBonus === 0 && aiScore < 92) {
@@ -122,21 +170,35 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
 
     // ━━━ 3단계: 품질 게이트 ━━━
     const quality = checkQualityGates({
-      tech, scoring, mode, aiScore, buyThreshold,
-      megaCap, noAiForStock, feedbackMinVolRatio,
+      tech,
+      scoring,
+      mode,
+      aiScore,
+      buyThreshold,
+      megaCap,
+      noAiForStock,
+      feedbackMinVolRatio,
       curPrice: price.currentPrice,
     });
     if (!quality.passed) {
       const d = quality.details;
-      logger.info(`  🔍 ${stock.stock_code}: 품질게이트 ${quality.count}/${quality.min} 미달 [vol=${d.vol} trend=${d.trend} dir=${d.dir} rsi=${d.rsi} cf=${d.cf} sig=${d.sig}] → 스킵`, { component: 'TRACK_B' });
+      logger.info(
+        `  🔍 ${stock.stock_code}: 품질게이트 ${quality.count}/${quality.min} 미달 [vol=${d.vol} trend=${d.trend} dir=${d.dir} rsi=${d.rsi} cf=${d.cf} sig=${d.sig}] → 스킵`,
+        { component: 'TRACK_B' },
+      );
       continue;
     }
 
     // ━━━ 4단계: 리스크 게이트 ━━━
     const riskInput = {
-      stockCode: stock.stock_code, tech, candles, scoring, aiScore,
+      stockCode: stock.stock_code,
+      tech,
+      candles,
+      scoring,
+      aiScore,
       signals: marketSignals?.get(stock.stock_code),
-      regimeRoute, curPrice: price.currentPrice,
+      regimeRoute,
+      curPrice: price.currentPrice,
     };
 
     // 가짜돌파 하드블록
@@ -145,16 +207,26 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
     const risk = checkRiskGates(riskInput);
     if (!risk.passed) {
       const d = risk.details;
-      logger.info(`  ⚠️ ${stock.stock_code}: 리스크게이트 ${risk.count}/${risk.min} 미달 [chase=${d.chase} tech=${d.tech} vp=${d.vp} short=${d.short} breakout=${d.breakout}] → 스킵`, { component: 'TRACK_B' });
+      logger.info(
+        `  ⚠️ ${stock.stock_code}: 리스크게이트 ${risk.count}/${risk.min} 미달 [chase=${d.chase} tech=${d.tech} vp=${d.vp} short=${d.short} breakout=${d.breakout}] → 스킵`,
+        { component: 'TRACK_B' },
+      );
       continue;
     }
 
     // ━━━ 5단계: 진입 판정 ━━━
     const entryInput = {
-      stockCode: stock.stock_code, tech, price, scoring,
-      regimeRoute, aiScore, buyThreshold, mode,
-      allowScalpingBuys: params.allowScalpingBuys, winRates,
-      noAiScores,  // 전역 AI 탈락 여부 → entry-decision 폴백 판단용
+      stockCode: stock.stock_code,
+      tech,
+      price,
+      scoring,
+      regimeRoute,
+      aiScore,
+      buyThreshold,
+      mode,
+      allowScalpingBuys: params.allowScalpingBuys,
+      winRates,
+      noAiScores, // 전역 AI 탈락 여부 → entry-decision 폴백 판단용
     };
 
     // 5a. 레짐 라우터 빠른 진입
@@ -167,7 +239,14 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
     // 5b. 스캘핑/ScalpRadar
     const scalpVerdict = tryScalpEntry(entryInput);
     if (scalpVerdict.action === 'BUY') {
-      candidates.push({ stock_code: stock.stock_code, tech, price, candleBonus: scoring.candleBonus, regimeRoute, isScalpOverride: scalpVerdict.isScalpOverride });
+      candidates.push({
+        stock_code: stock.stock_code,
+        tech,
+        price,
+        candleBonus: scoring.candleBonus,
+        regimeRoute,
+        isScalpOverride: scalpVerdict.isScalpOverride,
+      });
       continue;
     }
     if (scalpVerdict.action === 'SKIP') continue;

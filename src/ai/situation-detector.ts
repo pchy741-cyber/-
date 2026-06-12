@@ -11,8 +11,8 @@
  * 4. 보유일 임박: maxHoldingDays 80%+ 도달 + 손익 애매 → 정리? 연장?
  * 5. 승률 반전: 최근 높은 승률 종목이 갑자기 연패 → 전략 재점검?
  */
-import { getPool, getOpenChains } from '../db/client.js';
-import { getCtxIsPaper } from '../config/context.js';
+
+import { getOpenChains, getPool } from '../db/client.js';
 import { getConsensusTrend } from '../market/consensus.js';
 import { logger } from '../utils/logger.js';
 
@@ -38,10 +38,15 @@ export async function detectSituations(isPaper: boolean): Promise<number> {
     if (chains.length === 0) return 0;
 
     // 현재가 조회 (DB 캐시된 스냅샷에서)
-    const latestSnapshot = await getPool().query(`
+    const latestSnapshot = await getPool()
+      .query(
+        `
       SELECT data FROM portfolio_snapshots
       WHERE is_paper = $1 ORDER BY created_at DESC LIMIT 1
-    `, [isPaper]).catch(() => ({ rows: [] }));
+    `,
+        [isPaper],
+      )
+      .catch(() => ({ rows: [] }));
 
     const snapshotData = latestSnapshot.rows[0]?.data as Record<string, unknown> | undefined;
     const priceMap = new Map<string, number>();
@@ -54,10 +59,9 @@ export async function detectSituations(isPaper: boolean): Promise<number> {
     }
 
     // 이미 PENDING인 종목은 중복 감지 스킵
-    const existingPending = await getPool().query(
-      `SELECT stock_code FROM pending_decisions WHERE status = 'PENDING' AND is_paper = $1`,
-      [isPaper],
-    ).catch(() => ({ rows: [] }));
+    const existingPending = await getPool()
+      .query(`SELECT stock_code FROM pending_decisions WHERE status = 'PENDING' AND is_paper = $1`, [isPaper])
+      .catch(() => ({ rows: [] }));
     const pendingCodes = new Set(existingPending.rows.map((r: Record<string, unknown>) => r.stock_code));
 
     // ── Situation 1: 수익 잠금 딜레마 ──────────────────────
@@ -118,7 +122,7 @@ export async function detectSituations(isPaper: boolean): Promise<number> {
     }
 
     // ── Situation 2: 동시 하락 패턴 ──────────────────────────
-    const losingPositions = chains.filter(ch => {
+    const losingPositions = chains.filter((ch) => {
       if (!ch.avg_buy_price) return false;
       const price = priceMap.get(ch.stock_code);
       if (!price) return false;
@@ -126,10 +130,14 @@ export async function detectSituations(isPaper: boolean): Promise<number> {
     });
 
     if (losingPositions.length >= 3 && !pendingCodes.has('MARKET_WIDE_DROP')) {
-      const details = losingPositions.map(ch => {
+      const details = losingPositions.map((ch) => {
         const price = priceMap.get(ch.stock_code)!;
         const pnl = ((price - ch.avg_buy_price!) / ch.avg_buy_price!) * 100;
-        return { code: ch.stock_code, name: (ch as Record<string, unknown>).stock_name, pnlPct: Math.round(pnl * 10) / 10 };
+        return {
+          code: ch.stock_code,
+          name: (ch as Record<string, unknown>).stock_name,
+          pnlPct: Math.round(pnl * 10) / 10,
+        };
       });
       detected.push({
         situation: `${losingPositions.length}개 보유종목 동시 하락 — 시장 전체 이슈? 개별?`,
@@ -138,7 +146,8 @@ export async function detectSituations(isPaper: boolean): Promise<number> {
         context: {
           droppingStocks: details,
           totalPositions: chains.length,
-          question: '시장 전체 하락인지, 개별 종목 이슈인지 판단해주세요. 전체 하락이면 방어 모드 전환, 개별이면 종목별 대응.',
+          question:
+            '시장 전체 하락인지, 개별 종목 이슈인지 판단해주세요. 전체 하락이면 방어 모드 전환, 개별이면 종목별 대응.',
         },
         urgency: losingPositions.length >= 5 ? 1 : 2,
         is_paper: isPaper,
@@ -149,17 +158,20 @@ export async function detectSituations(isPaper: boolean): Promise<number> {
     for (const chain of chains) {
       if (pendingCodes.has(chain.stock_code)) continue;
       const holdingDays = Math.floor((Date.now() - new Date(chain.opened_at).getTime()) / 86400000);
-      const maxDays = chain.strategy_mode === 'SCALPING' ? 0
-        : chain.strategy_mode === 'DEFENSE' ? 3
-        : chain.strategy_mode === 'SNIPER' ? 7
-        : chain.strategy_mode === 'EOD_BETTING' ? 1
-        : 12; // SWING default
+      const maxDays =
+        chain.strategy_mode === 'SCALPING'
+          ? 0
+          : chain.strategy_mode === 'DEFENSE'
+            ? 3
+            : chain.strategy_mode === 'SNIPER'
+              ? 7
+              : chain.strategy_mode === 'EOD_BETTING'
+                ? 1
+                : 12; // SWING default
 
       if (maxDays > 0 && holdingDays >= maxDays * 0.8) {
         const price = priceMap.get(chain.stock_code);
-        const pnlPct = price && chain.avg_buy_price
-          ? ((price - chain.avg_buy_price) / chain.avg_buy_price) * 100
-          : 0;
+        const pnlPct = price && chain.avg_buy_price ? ((price - chain.avg_buy_price) / chain.avg_buy_price) * 100 : 0;
 
         // 손익이 애매한 경우만 (확실한 수익/손실은 규칙이 처리)
         if (pnlPct > -3 && pnlPct < 5) {
@@ -183,7 +195,9 @@ export async function detectSituations(isPaper: boolean): Promise<number> {
     }
 
     // ── Situation 4: 승률 역전 감지 ─────────────────────────
-    const recentReversals = await getPool().query(`
+    const recentReversals = await getPool()
+      .query(
+        `
       WITH recent AS (
         SELECT stock_code,
                SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END)::float /
@@ -210,7 +224,10 @@ export async function detectSituations(isPaper: boolean): Promise<number> {
       SELECT r.stock_code, r.recent_wr, r.recent_cnt, h.hist_wr, h.hist_cnt
       FROM recent r JOIN historical h ON r.stock_code = h.stock_code
       WHERE h.hist_wr >= 0.55 AND r.recent_wr <= 0.30
-    `, [isPaper]).catch(() => ({ rows: [] }));
+    `,
+        [isPaper],
+      )
+      .catch(() => ({ rows: [] }));
 
     for (const row of recentReversals.rows) {
       const r = row as Record<string, unknown>;
@@ -237,29 +254,36 @@ export async function detectSituations(isPaper: boolean): Promise<number> {
     // ── 큐에 적재 ────────────────────────────────────────────
     if (detected.length > 0) {
       for (const d of detected) {
-        await getPool().query(
-          `INSERT INTO pending_decisions (situation, category, stock_code, context, urgency, is_paper)
+        await getPool()
+          .query(
+            `INSERT INTO pending_decisions (situation, category, stock_code, context, urgency, is_paper)
            VALUES ($1, $2, $3, $4, $5, $6)`,
-          [d.situation, d.category, d.stock_code, JSON.stringify(d.context), d.urgency, d.is_paper],
-        ).catch(err => logger.error(`판단 큐 적재 실패: ${err}`, { component: 'SITUATION' }));
+            [d.situation, d.category, d.stock_code, JSON.stringify(d.context), d.urgency, d.is_paper],
+          )
+          .catch((err) => logger.error(`판단 큐 적재 실패: ${err}`, { component: 'SITUATION' }));
       }
-      logger.info(`🧠 상황 감지 [${mode}]: ${detected.length}건 발견 → 큐 적재 (${detected.map(d => d.category).join(',')})`, { component: 'SITUATION' });
+      logger.info(
+        `🧠 상황 감지 [${mode}]: ${detected.length}건 발견 → 큐 적재 (${detected.map((d) => d.category).join(',')})`,
+        { component: 'SITUATION' },
+      );
     }
 
     // ── 만료된 판단 자동 정리 ────────────────────────────────
-    await getPool().query(
-      `UPDATE pending_decisions SET status = 'EXPIRED' WHERE status = 'PENDING' AND expires_at < NOW()`
-    ).catch(() => {});
+    await getPool()
+      .query(`UPDATE pending_decisions SET status = 'EXPIRED' WHERE status = 'PENDING' AND expires_at < NOW()`)
+      .catch(() => {});
 
     // ── 포지션 정리된 종목의 판단 자동 해결 ──────────────────
-    const openCodes = new Set(chains.map(c => c.stock_code));
-    await getPool().query(
-      `UPDATE pending_decisions SET status = 'AUTO_RESOLVED'
+    const openCodes = new Set(chains.map((c) => c.stock_code));
+    await getPool()
+      .query(
+        `UPDATE pending_decisions SET status = 'AUTO_RESOLVED'
        WHERE status = 'PENDING' AND stock_code IS NOT NULL
          AND is_paper = $1
          AND stock_code NOT IN (SELECT unnest($2::text[]))`,
-      [isPaper, [...openCodes]],
-    ).catch(() => {});
+        [isPaper, [...openCodes]],
+      )
+      .catch(() => {});
 
     return detected.length;
   } catch (err) {
@@ -272,8 +296,5 @@ export async function detectSituations(isPaper: boolean): Promise<number> {
  * Dual-mode 실행
  */
 export async function detectSituationsDual(): Promise<void> {
-  await Promise.all([
-    detectSituations(true),
-    detectSituations(false),
-  ]);
+  await Promise.all([detectSituations(true), detectSituations(false)]);
 }

@@ -62,8 +62,8 @@ function classify(title: string): { sentiment: DisclosureSentiment; urgency: 'HI
 function parseKindHtml(html: string): Array<{ companyName: string; title: string; time: string }> {
   const results: Array<{ companyName: string; title: string; time: string }> = [];
   const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
-  let m: RegExpExecArray | null;
-  while ((m = rowRe.exec(html)) !== null) {
+  let m: RegExpExecArray | null = rowRe.exec(html);
+  while (m !== null) {
     const row = m[1];
     const timeM = row.match(/<td[^>]*class="[^"]*txc[^"]*"[^>]*>\s*(\d{2}:\d{2})\s*<\/td>/);
     const compM = row.match(/companysummary_open\('\d+'\)[^>]*title='([^']+)'/);
@@ -71,6 +71,7 @@ function parseKindHtml(html: string): Array<{ companyName: string; title: string
     if (timeM && compM && titleM) {
       results.push({ time: timeM[1], companyName: compM[1].trim(), title: titleM[1].trim() });
     }
+    m = rowRe.exec(html);
   }
   return results;
 }
@@ -117,9 +118,7 @@ export async function fetchStockDisclosures(
 
     for (const { stockCode, companyName } of stocks) {
       const key = companyName.slice(0, 4); // 4자 부분 매칭
-      const matched = all.filter(
-        (d) => d.companyName.includes(key) || key.includes(d.companyName.slice(0, 4)),
-      );
+      const matched = all.filter((d) => d.companyName.includes(key) || key.includes(d.companyName.slice(0, 4)));
       if (matched.length === 0) continue;
 
       const disclosures: KrxDisclosure[] = matched.map((d) => ({ ...d, ...classify(d.title) }));

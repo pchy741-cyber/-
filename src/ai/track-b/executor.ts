@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { setClaudeStatus } from '../../cache/ai-status.js';
-import { config } from '../../config/index.js';
 import { STRATEGY_PARAMS } from '../../config/constants.js';
+import { config } from '../../config/index.js';
 import { type TradeDecision, TradeDecisionSchema } from '../../db/models.js';
 import { logger } from '../../utils/logger.js';
 import { buildExecutionPrompt } from '../prompts/track-b-execution.js';

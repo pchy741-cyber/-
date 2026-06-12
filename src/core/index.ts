@@ -10,4 +10,4 @@
  *   - config.isPaper 직접 참조는 main.ts, runner.ts 외 금지
  *   - overseas_state 키는 반드시 p_ / l_ 접두사 사용
  */
-export { isPaperCtx, runWithMode, baseIsPaper } from './mode.js';
+export { baseIsPaper, isPaperCtx, runWithMode } from './mode.js';

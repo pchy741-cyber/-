@@ -6,19 +6,19 @@ export interface OverseasStockInput {
   name: string;
   exchange: string;
   currentPrice: number;
-  changePct: number;     // 당일 등락률
+  changePct: number; // 당일 등락률
   rsi: number;
   adx: number;
-  score: number;         // analyzeTechnicals score (-100~100)
-  signal: string;        // STRONG_BUY / BUY / HOLD / SELL / STRONG_SELL
+  score: number; // analyzeTechnicals score (-100~100)
+  signal: string; // STRONG_BUY / BUY / HOLD / SELL / STRONG_SELL
   trendStrength: string;
   isHolding: boolean;
   holdingPnlPct?: number;
-  dayRangePct?: number;  // 0=저가, 100=고가 위치 (일중 어디에 있는지)
-  isMomentum?: boolean;  // 당일 +3% 이상 + 일중 상위 → 강한 상승 모멘텀
-  isBigMover?: boolean;  // 당일 +5% 이상 → 뉴스/촉매 기반 강한 상승 (우선 진입 대상)
-  aboveMA20?: boolean;   // 현재가 > 21일 이평선 여부 (캔들 안착 확인)
-  bollingerSqueeze?: boolean;              // BB 밴드 수축 중 (에너지 응축, 돌파 방향 미확정)
+  dayRangePct?: number; // 0=저가, 100=고가 위치 (일중 어디에 있는지)
+  isMomentum?: boolean; // 당일 +3% 이상 + 일중 상위 → 강한 상승 모멘텀
+  isBigMover?: boolean; // 당일 +5% 이상 → 뉴스/촉매 기반 강한 상승 (우선 진입 대상)
+  aboveMA20?: boolean; // 현재가 > 21일 이평선 여부 (캔들 안착 확인)
+  bollingerSqueeze?: boolean; // BB 밴드 수축 중 (에너지 응축, 돌파 방향 미확정)
   bollingerBreakout?: 'UP' | 'DOWN' | 'NONE'; // 스퀴즈 후 돌파 방향
 }
 
@@ -116,7 +116,14 @@ export async function analyzeOverseasWithAI(
   holdingCount: number,
   perfSummary?: string,
   userInsights?: string,
-  marketContext?: { fearGreed?: number; fearGreedLabel?: string; vix?: number; earningsRisk?: string[]; breadthPct?: number; sectorMomentum?: string },
+  marketContext?: {
+    fearGreed?: number;
+    fearGreedLabel?: string;
+    vix?: number;
+    earningsRisk?: string[];
+    breadthPct?: number;
+    sectorMomentum?: string;
+  },
 ): Promise<OverseasAIDecision[]> {
   const context = buildContext(stocks, availableCash, holdingCount, perfSummary, userInsights, marketContext);
 
@@ -131,15 +138,21 @@ export async function analyzeOverseasWithAI(
       const raw = JSON.parse(jsonMatch[0]) as unknown[];
       const decisions: OverseasAIDecision[] = raw
         .filter((d): d is Record<string, unknown> => typeof d === 'object' && d !== null)
-        .map(d => ({
+        .map((d) => ({
           code: String(d.code ?? ''),
-          action: (['BUY', 'SELL', 'HOLD'].includes(String(d.action)) ? String(d.action) : 'HOLD') as 'BUY' | 'SELL' | 'HOLD',
+          action: (['BUY', 'SELL', 'HOLD'].includes(String(d.action)) ? String(d.action) : 'HOLD') as
+            | 'BUY'
+            | 'SELL'
+            | 'HOLD',
           confidence: Math.min(1, Math.max(0, Number(d.confidence ?? 0.5))),
           reasoning: String(d.reasoning ?? ''),
         }))
-        .filter(d => d.code);
+        .filter((d) => d.code);
 
-      logger.info(`🤖 AI 미국주식 판단: ${decisions.map(d => `${d.code}=${d.action}(${(d.confidence * 100).toFixed(0)}%)`).join(', ')}`, { component: 'OVERSEAS_AI' });
+      logger.info(
+        `🤖 AI 미국주식 판단: ${decisions.map((d) => `${d.code}=${d.action}(${(d.confidence * 100).toFixed(0)}%)`).join(', ')}`,
+        { component: 'OVERSEAS_AI' },
+      );
       return decisions;
     } catch (e) {
       logger.warn(`AI 분석 실패 (${attempt}/${MAX_RETRIES}): ${(e as Error).message}`, { component: 'OVERSEAS_AI' });
@@ -149,12 +162,26 @@ export async function analyzeOverseasWithAI(
   return [];
 }
 
-function buildContext(stocks: OverseasStockInput[], cash: number, holdingCount: number, perfSummary?: string, userInsights?: string, marketContext?: { fearGreed?: number; fearGreedLabel?: string; vix?: number; earningsRisk?: string[]; breadthPct?: number; sectorMomentum?: string }): string {
+function buildContext(
+  stocks: OverseasStockInput[],
+  cash: number,
+  holdingCount: number,
+  perfSummary?: string,
+  userInsights?: string,
+  marketContext?: {
+    fearGreed?: number;
+    fearGreedLabel?: string;
+    vix?: number;
+    earningsRisk?: string[];
+    breadthPct?: number;
+    sectorMomentum?: string;
+  },
+): string {
   const now = new Date();
   const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
   const timeStr = `${kst.getUTCHours()}:${String(kst.getUTCMinutes()).padStart(2, '0')} KST`;
 
-  const lines = stocks.map(s => {
+  const lines = stocks.map((s) => {
     const pnl = s.isHolding ? s.holdingPnlPct?.toFixed(1) : null;
     const softZone = s.isHolding && (s.holdingPnlPct ?? 0) >= 5 ? ' ⚠️소프트익절구간' : '';
     const holding = s.isHolding ? ` [보유 PnL=${pnl}%${softZone}]` : '';
@@ -163,7 +190,11 @@ function buildContext(stocks: OverseasStockInput[], cash: number, holdingCount: 
     const range = s.dayRangePct != null ? ` 일중${s.dayRangePct.toFixed(0)}%` : '';
     const maPos = s.aboveMA20 != null ? (s.aboveMA20 ? ' ↑MA' : ' ↓MA') : '';
     const bbTag = s.bollingerSqueeze
-      ? (s.bollingerBreakout === 'UP' ? ' 💥BB↑' : s.bollingerBreakout === 'DOWN' ? ' 💥BB↓' : ' 🔧BBsq')
+      ? s.bollingerBreakout === 'UP'
+        ? ' 💥BB↑'
+        : s.bollingerBreakout === 'DOWN'
+          ? ' 💥BB↓'
+          : ' 🔧BBsq'
       : '';
     return `${s.code}: $${s.currentPrice} ${s.changePct >= 0 ? '+' : ''}${s.changePct.toFixed(2)}%${range} | RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)} score=${s.score} signal=${s.signal}${maPos}${bbTag}${bigMover}${momentum}${holding}`;
   });
@@ -184,9 +215,10 @@ function buildContext(stocks: OverseasStockInput[], cash: number, holdingCount: 
     const fgStr = fg != null ? `Fear&Greed=${fg}(${marketContext.fearGreedLabel ?? ''})` : '';
     const vixStr = vix != null ? ` VIX=${vix.toFixed(1)}` : '';
     const erStr = er && er.length > 0 ? ` | ⚠️어닝리스크: ${er.join(',')}` : '';
-    const breadthStr = marketContext.breadthPct != null
-      ? ` | 양봉비율=${(marketContext.breadthPct * 100).toFixed(0)}%${marketContext.breadthPct < 0.35 ? '(⚠️시장약세—확신도+0.05)' : ''}`
-      : '';
+    const breadthStr =
+      marketContext.breadthPct != null
+        ? ` | 양봉비율=${(marketContext.breadthPct * 100).toFixed(0)}%${marketContext.breadthPct < 0.35 ? '(⚠️시장약세—확신도+0.05)' : ''}`
+        : '';
     const sectorStr = marketContext.sectorMomentum ? ` | 섹터모멘텀: ${marketContext.sectorMomentum}` : '';
     parts.push(`🌍 시장 환경: ${fgStr}${vixStr}${erStr}${breadthStr}${sectorStr}`);
   }

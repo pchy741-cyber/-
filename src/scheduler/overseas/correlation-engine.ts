@@ -34,10 +34,7 @@ export interface CorrelationBlock {
  * @param currentHoldings  현재 보유 종목 Map (code → holding)
  * @returns 차단 시 CorrelationBlock, 통과 시 null
  */
-export function checkCorrelationLimit(
-  buyCode: string,
-  currentHoldings: Map<string, any>,
-): CorrelationBlock | null {
+export function checkCorrelationLimit(buyCode: string, currentHoldings: Map<string, any>): CorrelationBlock | null {
   // buyCode가 속한 그룹 모두 검사
   for (const { group, codes, maxHold } of HIGH_CORR_GROUPS) {
     if (!codes.includes(buyCode)) continue;
@@ -73,7 +70,5 @@ export function checkCorrelationLimit(
  * 특정 종목이 속한 그룹 목록 반환 (디버그/로깅용)
  */
 export function getGroupsForCode(code: string): string[] {
-  return HIGH_CORR_GROUPS
-    .filter(g => g.codes.includes(code))
-    .map(g => g.group);
+  return HIGH_CORR_GROUPS.filter((g) => g.codes.includes(code)).map((g) => g.group);
 }

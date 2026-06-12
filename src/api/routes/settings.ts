@@ -1,16 +1,22 @@
 import { Hono } from 'hono';
+import { invalidateDashboardCache } from '../../cache/dashboard-cache.js';
 import { STRATEGY_PARAMS } from '../../config/constants.js';
-import { config, baseIsPaper, setTradingModeOverride, getEffectiveTradingMode } from '../../config/index.js';
+import { baseIsPaper, getEffectiveTradingMode, setTradingModeOverride } from '../../config/index.js';
+import { invalidateAllocCache } from '../../db/alloc-risk-cache.js';
 import { getActiveStrategy, getPool, isMemoryMode, logSystem } from '../../db/client.js';
 import { memSetActiveStrategy } from '../../db/memory-store.js';
-import { activateKillSwitchAll, deactivateKillSwitchAll, getKillSwitchStatusAll, activateKillSwitch, deactivateKillSwitch, deactivateKillSwitchForMode, getKillSwitchStatus } from '../../risk/kill-switch.js';
 import type { KillSwitchScope } from '../../risk/kill-switch.js';
-import { resetCooldown, getCooldownStatus } from '../../risk/trade-gate.js';
+import {
+  activateKillSwitch,
+  activateKillSwitchAll,
+  deactivateKillSwitchForMode,
+  getKillSwitchStatus,
+  getKillSwitchStatusAll,
+} from '../../risk/kill-switch.js';
 import { getSeedCapitalStatus, setSeedCapital } from '../../risk/seed-capital.js';
+import { getCooldownStatus, resetCooldown } from '../../risk/trade-gate.js';
 import { runTrackAJob } from '../../scheduler/track-a-job.js';
 import { logger } from '../../utils/logger.js';
-import { invalidateDashboardCache } from '../../cache/dashboard-cache.js';
-import { invalidateAllocCache } from '../../db/alloc-risk-cache.js';
 
 export const settingsRoutes = new Hono();
 
@@ -25,7 +31,7 @@ settingsRoutes.get('/kill-switch', (c) => {
 });
 
 settingsRoutes.post('/kill-switch/activate', async (c) => {
-  const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
   const reason = String(body.reason ?? '').trim() || 'CEO 수동 발동 (대시보드)';
   const scope = body.scope as KillSwitchScope | undefined;
 
@@ -44,14 +50,14 @@ settingsRoutes.post('/kill-switch/activate', async (c) => {
 
 settingsRoutes.post('/kill-switch/deactivate', async (c) => {
   try {
-    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
     const force = body.force === true;
     const scope = body.scope as KillSwitchScope | undefined;
 
     // paper + live 양쪽 모두 해제 — ALS 컨텍스트 의존 제거
-    const scopes: KillSwitchScope[] = (scope === 'KR' || scope === 'OVERSEAS') ? [scope] : ['KR', 'OVERSEAS'];
+    const scopes: KillSwitchScope[] = scope === 'KR' || scope === 'OVERSEAS' ? [scope] : ['KR', 'OVERSEAS'];
     await Promise.all(
-      [true, false].flatMap(isPaper => scopes.map(sc => deactivateKillSwitchForMode(force, isPaper, sc))),
+      [true, false].flatMap((isPaper) => scopes.map((sc) => deactivateKillSwitchForMode(force, isPaper, sc))),
     );
 
     // Kill Switch 해제 시 스냅샷도 현재 잔고로 리셋 → 재활성화 방지 (paper + live 모두)
@@ -132,8 +138,10 @@ settingsRoutes.put('/strategy', async (c) => {
     claude_prompt: body.claude_prompt ?? '',
     // UI 입력값 허용 (최소 50, 최대 99)
     buy_threshold: body.buy_threshold != null ? Math.max(Math.min(body.buy_threshold, 99), 50) : modeBase.buyThreshold,
-    stop_loss_pct: body.stop_loss_pct != null ? Math.min(body.stop_loss_pct, modeBase.stopLossPct) : modeBase.stopLossPct,
-    take_profit_pct: body.take_profit_pct != null ? Math.max(body.take_profit_pct, modeBase.takeProfitPct) : modeBase.takeProfitPct,
+    stop_loss_pct:
+      body.stop_loss_pct != null ? Math.min(body.stop_loss_pct, modeBase.stopLossPct) : modeBase.stopLossPct,
+    take_profit_pct:
+      body.take_profit_pct != null ? Math.max(body.take_profit_pct, modeBase.takeProfitPct) : modeBase.takeProfitPct,
     strategy_document: body.strategy_document ?? '',
     risk_prompt: body.risk_prompt ?? '',
     use_dynamic_tpsl: useDynamic,
@@ -148,7 +156,9 @@ settingsRoutes.put('/strategy', async (c) => {
   if (isMemoryMode()) {
     const updated = memSetActiveStrategy(strategyData);
     const diff = buildStrategyDiff(prevStrategy, strategyData);
-    await logSystem('INFO', 'STRATEGY_AUDIT', `전략 변경: ${diff}`, { prev: prevStrategy, next: strategyData }).catch(() => {});
+    await logSystem('INFO', 'STRATEGY_AUDIT', `전략 변경: ${diff}`, { prev: prevStrategy, next: strategyData }).catch(
+      () => {},
+    );
     logger.info(`📋 전략 변경 감사: ${diff}`, { component: 'SETTINGS' });
     invalidateDashboardCache();
     return c.json(updated);
@@ -157,12 +167,21 @@ settingsRoutes.put('/strategy', async (c) => {
   try {
     // ── 통합 설정: CEO 대시보드에서 변경 시 paper/live 모두 동일하게 적용 ──
     const isPaper = baseIsPaper;
-    const setParams = [strategyData.mode, strategyData.notebooklm_prompt, strategyData.gemini_prompt,
-       strategyData.gpt_prompt, strategyData.claude_prompt, strategyData.buy_threshold,
-       strategyData.stop_loss_pct, strategyData.take_profit_pct,
-       strategyData.strategy_document, strategyData.risk_prompt, strategyData.use_dynamic_tpsl,
-       strategyData.ai_scoring_mode,
-       strategyData.ensemble_config ? JSON.stringify(strategyData.ensemble_config) : null];
+    const setParams = [
+      strategyData.mode,
+      strategyData.notebooklm_prompt,
+      strategyData.gemini_prompt,
+      strategyData.gpt_prompt,
+      strategyData.claude_prompt,
+      strategyData.buy_threshold,
+      strategyData.stop_loss_pct,
+      strategyData.take_profit_pct,
+      strategyData.strategy_document,
+      strategyData.risk_prompt,
+      strategyData.use_dynamic_tpsl,
+      strategyData.ai_scoring_mode,
+      strategyData.ensemble_config ? JSON.stringify(strategyData.ensemble_config) : null,
+    ];
     const { rowCount } = await getPool().query(
       `UPDATE strategy_config
        SET mode=$1, notebooklm_prompt=$2, gemini_prompt=$3, gpt_prompt=$4, claude_prompt=$5,
@@ -188,7 +207,10 @@ settingsRoutes.put('/strategy', async (c) => {
       [isPaper],
     );
     const diff = buildStrategyDiff(prevStrategy, strategyData);
-    await logSystem('INFO', 'STRATEGY_AUDIT', `전략 변경 (통합): ${diff}`, { prev: prevStrategy, next: strategyData }).catch(() => {});
+    await logSystem('INFO', 'STRATEGY_AUDIT', `전략 변경 (통합): ${diff}`, {
+      prev: prevStrategy,
+      next: strategyData,
+    }).catch(() => {});
     logger.info(`📋 전략 변경 감사 (통합): ${diff}`, { component: 'SETTINGS' });
     invalidateDashboardCache();
     return c.json(rows[0]);
@@ -218,10 +240,7 @@ settingsRoutes.get('/strategy/audit', async (c) => {
 });
 
 /** 변경된 필드만 요약 문자열 반환 */
-function buildStrategyDiff(
-  prev: Record<string, unknown> | null,
-  next: Record<string, unknown>,
-): string {
+function buildStrategyDiff(prev: Record<string, unknown> | null, next: Record<string, unknown>): string {
   if (!prev) return `신규 설정 (mode=${next.mode})`;
   const KEYS = ['mode', 'buy_threshold', 'stop_loss_pct', 'take_profit_pct', 'ai_scoring_mode'] as const;
   const changed = KEYS.filter((k) => String(prev[k] ?? '') !== String(next[k] ?? ''));
@@ -260,7 +279,7 @@ settingsRoutes.post('/push/test', async (c) => {
   await sendPushNotification({
     title: '🔔 알림 테스트',
     body: '매수·매도·긴급상황 알림이 이렇게 옵니다. 실제 거래 시 즉시 알림됩니다.',
-    tag: 'test-' + Date.now(),
+    tag: `test-${Date.now()}`,
     url: '/',
   });
   return c.json({ ok: true });
@@ -344,16 +363,11 @@ settingsRoutes.post('/overseas-holdings-fix', async (c) => {
     const cleared: string[] = [];
 
     if (body.clearOthers) {
-      const keepCodes = body.holdings.map(h => h.code);
-      const { rows: existing } = await pool.query(
-        'SELECT stock_code FROM overseas_holdings WHERE is_paper = false'
-      );
+      const keepCodes = body.holdings.map((h) => h.code);
+      const { rows: existing } = await pool.query('SELECT stock_code FROM overseas_holdings WHERE is_paper = false');
       for (const row of existing) {
         if (!keepCodes.includes(row.stock_code)) {
-          await pool.query(
-            'DELETE FROM overseas_holdings WHERE stock_code=$1 AND is_paper=false',
-            [row.stock_code]
-          );
+          await pool.query('DELETE FROM overseas_holdings WHERE stock_code=$1 AND is_paper=false', [row.stock_code]);
           cleared.push(row.stock_code);
         }
       }
@@ -368,13 +382,15 @@ settingsRoutes.post('/overseas-holdings-fix', async (c) => {
           `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper)
            VALUES ($1,$2,$3,$4,NOW(),false)
            ON CONFLICT (exchange,stock_code,is_paper) DO UPDATE SET quantity=$3, avg_price=$4`,
-          [h.code, h.exchange, h.qty, h.avg_price]
+          [h.code, h.exchange, h.qty, h.avg_price],
         );
         updated.push(`${h.code}(${h.qty}@$${h.avg_price})`);
       }
     }
 
-    logger.info(`🔧 해외 포지션 수동 정정: 업데이트[${updated.join(',')}] 삭제[${cleared.join(',')}]`, { component: 'SETTINGS' });
+    logger.info(`🔧 해외 포지션 수동 정정: 업데이트[${updated.join(',')}] 삭제[${cleared.join(',')}]`, {
+      component: 'SETTINGS',
+    });
     return c.json({ ok: true, updated, cleared });
   } catch (e) {
     return c.json({ ok: false, error: String(e) }, 500);
@@ -422,10 +438,11 @@ settingsRoutes.post('/fix-chain-tpsl', async (c) => {
       const score = scoreMap.get(chain.stock_code);
       if (!score || score < 60) continue;
       const { takeProfitPct, stopLossPct } = getScoreBasedParams(score);
-      await pool.query(
-        `UPDATE transaction_chains SET target_profit_pct=$1, stop_loss_pct=$2 WHERE id=$3`,
-        [takeProfitPct, stopLossPct, chain.id],
-      );
+      await pool.query(`UPDATE transaction_chains SET target_profit_pct=$1, stop_loss_pct=$2 WHERE id=$3`, [
+        takeProfitPct,
+        stopLossPct,
+        chain.id,
+      ]);
       updated++;
     }
     logger.info(`🔧 체인 TP/SL 복원: ${updated}/${chains.length}개`, { component: 'SETTINGS' });
@@ -511,7 +528,7 @@ settingsRoutes.get('/insights/promotable', async (c) => {
        LIMIT 10`,
     );
     return c.json(rows);
-  } catch (err: any) {
+  } catch (_err: any) {
     // 마이그레이션 전 — 프로모션 컬럼 없으면 빈 배열
     return c.json([]);
   }
@@ -537,10 +554,9 @@ settingsRoutes.post('/insights/:id/promote', async (c) => {
     }
 
     // 3. 이미 프로모션 됐는지 확인
-    const { rows: existing } = await getPool().query(
-      `SELECT id FROM learned_insights WHERE promoted_from_id = $1`,
-      [id],
-    );
+    const { rows: existing } = await getPool().query(`SELECT id FROM learned_insights WHERE promoted_from_id = $1`, [
+      id,
+    ]);
     if (existing.length > 0) return c.json({ error: '이미 프로모션된 인사이트입니다' }, 409);
 
     // 4. live로 복사 (confidence 0.7배, is_manual=true로 자기학습 삭제 방지)
@@ -568,22 +584,23 @@ settingsRoutes.post('/insights/:id/promote', async (c) => {
     );
 
     // 5. 원본에 promoted 마킹 (자기학습 재생성 시 삭제 방지)
-    await getPool().query(
-      `UPDATE learned_insights SET is_promoted = true WHERE id = $1`,
-      [id],
-    );
+    await getPool().query(`UPDATE learned_insights SET is_promoted = true WHERE id = $1`, [id]);
 
     // 6. 텔레그램 알림
     const { sendTelegramMessage } = await import('../../notifications/telegram.js');
     await sendTelegramMessage(
       `🔄 *연습→실전 인사이트 프로모션*\n` +
-      `카테고리: ${source.category}\n` +
-      `내용: ${String(source.insight).slice(0, 80)}...\n` +
-      `신뢰도: ${source.confidence} → ${reducedConfidence} (0.7x 적용)\n` +
-      `실전 검증 대기 중`,
+        `카테고리: ${source.category}\n` +
+        `내용: ${String(source.insight).slice(0, 80)}...\n` +
+        `신뢰도: ${source.confidence} → ${reducedConfidence} (0.7x 적용)\n` +
+        `실전 검증 대기 중`,
     ).catch(() => {});
 
-    await logSystem('INFO', 'PROMOTE', `연습→실전 프로모션: [${source.category}] ${String(source.insight).slice(0, 60)}`).catch(() => {});
+    await logSystem(
+      'INFO',
+      'PROMOTE',
+      `연습→실전 프로모션: [${source.category}] ${String(source.insight).slice(0, 60)}`,
+    ).catch(() => {});
 
     return c.json({ ok: true, promoted: promoted[0] });
   } catch (err: any) {
@@ -610,10 +627,7 @@ settingsRoutes.post('/insights/:id/revoke', async (c) => {
 
     // 원본 paper 인사이트 is_promoted 복원
     if (originalId) {
-      await getPool().query(
-        'UPDATE learned_insights SET is_promoted = false WHERE id = $1',
-        [originalId],
-      );
+      await getPool().query('UPDATE learned_insights SET is_promoted = false WHERE id = $1', [originalId]);
     }
 
     await logSystem('INFO', 'PROMOTE', `프로모션 취소: ${String(rows[0].insight).slice(0, 60)}`).catch(() => {});
@@ -646,7 +660,9 @@ settingsRoutes.post('/run-self-learning', async (c) => {
 settingsRoutes.get('/trading-mode', async (c) => {
   try {
     const { isLiveEnabled } = await import('../guards/live-pin.js');
-    const { rows } = await getPool().query('SELECT trading_mode_override FROM portfolio_allocation_config WHERE is_paper = false ORDER BY id DESC LIMIT 1');
+    const { rows } = await getPool().query(
+      'SELECT trading_mode_override FROM portfolio_allocation_config WHERE is_paper = false ORDER BY id DESC LIMIT 1',
+    );
     const dbMode = rows[0]?.trading_mode_override ?? null;
     return c.json({ mode: dbMode ?? getEffectiveTradingMode(), dbOverride: dbMode, liveEnabled: isLiveEnabled() });
   } catch {
@@ -731,8 +747,13 @@ settingsRoutes.post('/trading-mode', async (c) => {
 
 // ── 투자비율 설정 (국내/미국 비율 + 섹터 한도) ──
 const ALLOC_DEFAULTS = {
-  kr_pct: 30, us_pct: 70,
-  sector_semiconductor: 30, sector_bio: 20, sector_defense: 25, sector_finance: 20, sector_etc: 30,
+  kr_pct: 30,
+  us_pct: 70,
+  sector_semiconductor: 30,
+  sector_bio: 20,
+  sector_defense: 25,
+  sector_finance: 20,
+  sector_etc: 30,
   trailing_stop_pct: 5,
 };
 
@@ -741,7 +762,10 @@ const SETTINGS_META = {
   kr_pct: { connected: true, desc: '국내 비중 — risk-engine, overseas-job, cross-market-rotation에서 사용' },
   us_pct: { connected: true, desc: '미국 비중 — overseas-job, cross-market-rotation에서 사용' },
   trailing_stop_pct: { connected: true, desc: '트레일링 스탑 — risk-guard에서 사용' },
-  sector_semiconductor: { connected: false, desc: '반도체 섹터 한도 — 미연결 (risk-guard는 종목수 기반 하드코딩 사용)' },
+  sector_semiconductor: {
+    connected: false,
+    desc: '반도체 섹터 한도 — 미연결 (risk-guard는 종목수 기반 하드코딩 사용)',
+  },
   sector_bio: { connected: false, desc: '바이오 섹터 한도 — 미연결' },
   sector_defense: { connected: false, desc: '방산 섹터 한도 — 미연결' },
   sector_finance: { connected: false, desc: '금융 섹터 한도 — 미연결' },
@@ -753,21 +777,22 @@ settingsRoutes.get('/portfolio/allocation', async (c) => {
     // ?isPaper=true/false 쿼리 파라미터로 모드 명시 가능, 없으면 현재 모드
     const qp = c.req.query('isPaper');
     const isPaper = qp !== undefined ? qp === 'true' : baseIsPaper;
-    const { rows } = await getPool().query('SELECT * FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1', [isPaper]);
+    const { rows } = await getPool().query(
+      'SELECT * FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1',
+      [isPaper],
+    );
     if (rows.length === 0) {
       const { rows: ins } = await getPool().query(
         `INSERT INTO portfolio_allocation_config
          (kr_pct, us_pct, sector_semiconductor, sector_bio, sector_defense, sector_finance, sector_etc,
           trailing_stop_pct, is_paper, position_cap_pct, max_invested_pct, cash_reserve_pct, max_positions, max_daily_trades)
          VALUES (30, 70, 30, 20, 25, 20, 30, 5, $1, $2, $3, $4, $5, $6) RETURNING *`,
-        [isPaper,
-          isPaper ? 40 : 25, isPaper ? 97 : 88, isPaper ? 3 : 20,
-          isPaper ? 20 : 8,  isPaper ? 20 : 3],
+        [isPaper, isPaper ? 40 : 25, isPaper ? 97 : 88, isPaper ? 3 : 20, isPaper ? 20 : 8, isPaper ? 20 : 3],
       );
       return c.json({ ...ins[0], _settingsMeta: SETTINGS_META });
     }
     return c.json({ ...rows[0], _settingsMeta: SETTINGS_META });
-  } catch (err: any) {
+  } catch (_err: any) {
     return c.json({ ...ALLOC_DEFAULTS, _settingsMeta: SETTINGS_META });
   }
 });
@@ -780,8 +805,24 @@ settingsRoutes.get('/portfolio/allocation/both', async (c) => {
       pool.query('SELECT * FROM portfolio_allocation_config WHERE is_paper = false ORDER BY id DESC LIMIT 1'),
       pool.query('SELECT * FROM portfolio_allocation_config WHERE is_paper = true ORDER BY id DESC LIMIT 1'),
     ]);
-    const live  = liveRes.rows[0]  ?? { kr_pct: 30, us_pct: 70, position_cap_pct: 25, max_invested_pct: 88, cash_reserve_pct: 20, max_positions: 8,  max_daily_trades: 3  };
-    const paper = paperRes.rows[0] ?? { kr_pct: 70, us_pct: 30, position_cap_pct: 40, max_invested_pct: 97, cash_reserve_pct: 3,  max_positions: 20, max_daily_trades: 20 };
+    const live = liveRes.rows[0] ?? {
+      kr_pct: 30,
+      us_pct: 70,
+      position_cap_pct: 25,
+      max_invested_pct: 88,
+      cash_reserve_pct: 20,
+      max_positions: 8,
+      max_daily_trades: 3,
+    };
+    const paper = paperRes.rows[0] ?? {
+      kr_pct: 70,
+      us_pct: 30,
+      position_cap_pct: 40,
+      max_invested_pct: 97,
+      cash_reserve_pct: 3,
+      max_positions: 20,
+      max_daily_trades: 20,
+    };
     return c.json({ live, paper });
   } catch (err: any) {
     return c.json({ error: err?.message }, 500);
@@ -801,11 +842,15 @@ settingsRoutes.put('/portfolio/allocation', async (c) => {
   const etc = Math.max(0, Math.min(100, Number(body.sector_etc ?? 30)));
   const trailStop = Math.max(1, Math.min(20, Number(body.trailing_stop_pct ?? 5)));
   // 리스크 파라미터 — body에 있으면 사용, 없으면 현재 DB 값 유지
-  const posCapPct    = body.position_cap_pct  !== undefined ? Math.max(5, Math.min(60,  Number(body.position_cap_pct)))  : null;
-  const maxInvPct    = body.max_invested_pct  !== undefined ? Math.max(50, Math.min(100, Number(body.max_invested_pct))) : null;
-  const cashResPct   = body.cash_reserve_pct  !== undefined ? Math.max(0, Math.min(50,  Number(body.cash_reserve_pct)))  : null;
-  const maxPos       = body.max_positions     !== undefined ? Math.max(1, Math.min(30,  Number(body.max_positions)))     : null;
-  const maxDailyTr   = body.max_daily_trades  !== undefined ? Math.max(1, Math.min(50,  Number(body.max_daily_trades)))  : null;
+  const posCapPct =
+    body.position_cap_pct !== undefined ? Math.max(5, Math.min(60, Number(body.position_cap_pct))) : null;
+  const maxInvPct =
+    body.max_invested_pct !== undefined ? Math.max(50, Math.min(100, Number(body.max_invested_pct))) : null;
+  const cashResPct =
+    body.cash_reserve_pct !== undefined ? Math.max(0, Math.min(50, Number(body.cash_reserve_pct))) : null;
+  const maxPos = body.max_positions !== undefined ? Math.max(1, Math.min(30, Number(body.max_positions))) : null;
+  const maxDailyTr =
+    body.max_daily_trades !== undefined ? Math.max(1, Math.min(50, Number(body.max_daily_trades))) : null;
 
   try {
     // body.isPaper 명시 우선, 없으면 현재 서버 모드 — 실전/연습 교차 오염 방지
@@ -814,7 +859,7 @@ settingsRoutes.put('/portfolio/allocation', async (c) => {
       'SELECT * FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1',
       [isPaperAlloc],
     );
-    let result;
+    let result: { rows: any[] };
     if (existing.length > 0) {
       const ex = existing[0];
       const { rows } = await getPool().query(
@@ -824,13 +869,22 @@ settingsRoutes.put('/portfolio/allocation', async (c) => {
              position_cap_pct=$9, max_invested_pct=$10, cash_reserve_pct=$11,
              max_positions=$12, max_daily_trades=$13, updated_at=NOW()
          WHERE id=$14 RETURNING *`,
-        [kr, us, semi, bio, defense, finance, etc, trailStop,
-          posCapPct  ?? ex.position_cap_pct,
-          maxInvPct  ?? ex.max_invested_pct,
+        [
+          kr,
+          us,
+          semi,
+          bio,
+          defense,
+          finance,
+          etc,
+          trailStop,
+          posCapPct ?? ex.position_cap_pct,
+          maxInvPct ?? ex.max_invested_pct,
           cashResPct ?? ex.cash_reserve_pct,
-          maxPos     ?? ex.max_positions,
+          maxPos ?? ex.max_positions,
           maxDailyTr ?? ex.max_daily_trades,
-          ex.id],
+          ex.id,
+        ],
       );
       result = rows[0];
     } else {
@@ -842,12 +896,22 @@ settingsRoutes.put('/portfolio/allocation', async (c) => {
          (kr_pct, us_pct, sector_semiconductor, sector_bio, sector_defense, sector_finance, sector_etc,
           trailing_stop_pct, is_paper, position_cap_pct, max_invested_pct, cash_reserve_pct, max_positions, max_daily_trades)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
-        [kr, us, semi, bio, defense, finance, etc, trailStop, isPaperAlloc,
-          posCapPct  ?? def.cap,
-          maxInvPct  ?? def.inv,
+        [
+          kr,
+          us,
+          semi,
+          bio,
+          defense,
+          finance,
+          etc,
+          trailStop,
+          isPaperAlloc,
+          posCapPct ?? def.cap,
+          maxInvPct ?? def.inv,
           cashResPct ?? def.cash,
-          maxPos     ?? def.pos,
-          maxDailyTr ?? def.tr],
+          maxPos ?? def.pos,
+          maxDailyTr ?? def.tr,
+        ],
       );
       result = rows[0];
     }
@@ -865,15 +929,23 @@ settingsRoutes.post('/defense-mode/deactivate', async (c) => {
 
     // 1. strategy_config → SWING + constants 값으로 복원 (하드코딩 70 금지)
     const swingP = STRATEGY_PARAMS.SWING;
-    await pool.query(
-      `UPDATE strategy_config SET mode='SWING', buy_threshold=$1, stop_loss_pct=$2, take_profit_pct=$3, updated_at=NOW() WHERE is_active=true AND is_paper=$4`,
-      [swingP.buyThreshold, swingP.stopLossPct, swingP.takeProfitPct, baseIsPaper],
-    ).catch(() => {});
+    await pool
+      .query(
+        `UPDATE strategy_config SET mode='SWING', buy_threshold=$1, stop_loss_pct=$2, take_profit_pct=$3, updated_at=NOW() WHERE is_active=true AND is_paper=$4`,
+        [swingP.buyThreshold, swingP.stopLossPct, swingP.takeProfitPct, baseIsPaper],
+      )
+      .catch(() => {});
 
     // 인메모리 전략도 동기화
     if (isMemoryMode()) {
       const cur = await getActiveStrategy();
-      memSetActiveStrategy({ ...(cur ?? {}), mode: 'SWING', buy_threshold: swingP.buyThreshold, stop_loss_pct: swingP.stopLossPct, take_profit_pct: swingP.takeProfitPct });
+      memSetActiveStrategy({
+        ...(cur ?? {}),
+        mode: 'SWING',
+        buy_threshold: swingP.buyThreshold,
+        stop_loss_pct: swingP.stopLossPct,
+        take_profit_pct: swingP.takeProfitPct,
+      });
     }
 
     // 2. defense_park_state 해제
@@ -952,7 +1024,7 @@ settingsRoutes.post('/portfolio/propose-rebalance', async (c) => {
   const { proposeAllocationRebalance } = await import('../../automation/cross-market-rotation.js');
   proposeAllocationRebalance()
     .then(() => logger.info('📊 비중 제안 수동 트리거 완료', { component: 'SETTINGS' }))
-    .catch(e => logger.error(`비중 제안 수동 트리거 실패: ${e}`, { component: 'SETTINGS' }));
+    .catch((e) => logger.error(`비중 제안 수동 트리거 실패: ${e}`, { component: 'SETTINGS' }));
   return c.json({ ok: true, message: '30일 성과 분석 중... 제안이 생성되면 알림이 발송됩니다' });
 });
 

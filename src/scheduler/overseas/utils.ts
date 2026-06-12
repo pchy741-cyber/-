@@ -24,7 +24,7 @@ export function calcPnlPct(currentPrice: number, avgPrice: number): number {
 
 /** 종목 코드로 섹터 조회 */
 export function getSector(code: string): string {
-  return GLOBAL_WATCHLIST.find(w => w.code === code)?.sector ?? '';
+  return GLOBAL_WATCHLIST.find((w) => w.code === code)?.sector ?? '';
 }
 
 /** overseas_state KV 저장 (upsert) */
@@ -38,9 +38,7 @@ export async function setOverseasState(key: string, value: string): Promise<void
 
 /** overseas_state KV 조회 */
 export async function getOverseasState(key: string): Promise<string | null> {
-  const { rows } = await getPool().query(
-    'SELECT value FROM overseas_state WHERE key = $1', [key],
-  );
+  const { rows } = await getPool().query('SELECT value FROM overseas_state WHERE key = $1', [key]);
   return rows.length > 0 ? String(rows[0].value) : null;
 }
 
@@ -48,8 +46,12 @@ export async function getOverseasState(key: string): Promise<string | null> {
 export function positionStateKeys(code: string, isPaper?: boolean): string[] {
   const pfx = modePrefix(isPaper);
   return [
-    `${pfx}maxprice_${code}`, `${pfx}partial_tp_stage_${code}`, `${pfx}dynamic_tpsl_${code}`,
-    `${pfx}scale_in_${code}`, `${pfx}turtle_trail_${code}`, `sync_sell_pending_${code}`,
+    `${pfx}maxprice_${code}`,
+    `${pfx}partial_tp_stage_${code}`,
+    `${pfx}dynamic_tpsl_${code}`,
+    `${pfx}scale_in_${code}`,
+    `${pfx}turtle_trail_${code}`,
+    `sync_sell_pending_${code}`,
   ];
 }
 
@@ -63,7 +65,7 @@ export async function deleteOverseasState(key: string): Promise<void> {
 /** 사용자 즐겨찾기 종목 목록 (mode-independent — 통합 관리) */
 export async function getUserFavorites(): Promise<Set<string>> {
   const raw = await getOverseasState('user_favorites');
-  return new Set(raw ? JSON.parse(raw) as string[] : []);
+  return new Set(raw ? (JSON.parse(raw) as string[]) : []);
 }
 
 // CEO 기본 블랙리스트 (코드에서 관리 — 왠만하면 매수 금지 종목)
@@ -72,7 +74,7 @@ const CEO_DEFAULT_BLACKLIST = new Set(['META']);
 /** 사용자 블랙리스트 종목 목록 (CEO 기본 + DB 저장분 합산) */
 export async function getUserBlacklist(): Promise<Set<string>> {
   const raw = await getOverseasState('user_blacklist');
-  const dbList = raw ? JSON.parse(raw) as string[] : [];
+  const dbList = raw ? (JSON.parse(raw) as string[]) : [];
   return new Set([...CEO_DEFAULT_BLACKLIST, ...dbList]);
 }
 
@@ -80,7 +82,8 @@ export async function getUserBlacklist(): Promise<Set<string>> {
 export async function toggleFavorite(code: string): Promise<boolean> {
   const favs = await getUserFavorites();
   const wasActive = favs.has(code);
-  if (wasActive) favs.delete(code); else favs.add(code);
+  if (wasActive) favs.delete(code);
+  else favs.add(code);
   await setOverseasState('user_favorites', JSON.stringify([...favs]));
   return !wasActive; // returns new state
 }
@@ -89,7 +92,8 @@ export async function toggleFavorite(code: string): Promise<boolean> {
 export async function toggleBlacklist(code: string): Promise<boolean> {
   const list = await getUserBlacklist();
   const wasActive = list.has(code);
-  if (wasActive) list.delete(code); else list.add(code);
+  if (wasActive) list.delete(code);
+  else list.add(code);
   await setOverseasState('user_blacklist', JSON.stringify([...list]));
   return !wasActive;
 }

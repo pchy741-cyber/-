@@ -1,6 +1,6 @@
 import pg from 'pg';
-import { config } from '../config/index.js';
 import { getCtxIsPaper } from '../config/context.js';
+import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import {
   memCreateChain,
@@ -35,8 +35,13 @@ let _poolErrorCount = 0;
 
 // 재시도 대상 에러 코드 (일시적 연결 문제)
 const RETRIABLE_CODES = new Set([
-  'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN',
-  'CONNECTION_LOST', 'PROTOCOL_CONNECTION_LOST',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EPIPE',
+  'ETIMEDOUT',
+  'EAI_AGAIN',
+  'CONNECTION_LOST',
+  'PROTOCOL_CONNECTION_LOST',
   '57P01', // admin_shutdown
   '57P03', // cannot_connect_now (DB restarting)
   '08003', // connection_does_not_exist
@@ -50,12 +55,14 @@ function isRetriableError(err: unknown): boolean {
   const code = String(e.code ?? '');
   if (RETRIABLE_CODES.has(code)) return true;
   const msg = String(e.message ?? '').toLowerCase();
-  return msg.includes('connection terminated') ||
+  return (
+    msg.includes('connection terminated') ||
     msg.includes('connection refused') ||
     msg.includes('timeout') ||
     msg.includes('econnreset') ||
     msg.includes('cannot connect') ||
-    msg.includes('server closed the connection');
+    msg.includes('server closed the connection')
+  );
 }
 
 /** DB 사용 불가 시 인메모리 모드 전환 */
@@ -168,7 +175,7 @@ export async function checkDbWithRetry(retries = 4, delayMs = 5_000): Promise<bo
       logger.warn(`DB 연결 시도 ${i}/${retries} 실패: ${err}`, { component: 'DB' });
       if (i < retries) {
         await resetPool();
-        await new Promise(r => setTimeout(r, delayMs));
+        await new Promise((r) => setTimeout(r, delayMs));
       }
     }
   }
@@ -201,11 +208,10 @@ export async function queryWithRetry<T extends pg.QueryResultRow = any>(
       return result;
     } catch (err) {
       if (attempt < maxRetries && isRetriableError(err)) {
-        logger.warn(
-          `DB 쿼리 재시도 ${attempt + 1}/${maxRetries}: ${String((err as Error).message).slice(0, 80)}`,
-          { component: 'DB' },
-        );
-        await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+        logger.warn(`DB 쿼리 재시도 ${attempt + 1}/${maxRetries}: ${String((err as Error).message).slice(0, 80)}`, {
+          component: 'DB',
+        });
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
         if (_poolErrorCount >= 3) {
           await resetPool();
         }
@@ -240,7 +246,10 @@ export async function upsertWatchlistItem(
   item: Pick<WatchlistItem, 'stock_code' | 'stock_name' | 'market'>,
   source: 'MANUAL' | 'KIS_SYNC' | 'AUTO' = 'MANUAL',
 ) {
-  if (useMemory) { memUpsertWatchlistItem(item); return; }
+  if (useMemory) {
+    memUpsertWatchlistItem(item);
+    return;
+  }
   // 깨진 종목명으로 기존 정상 이름을 덮어쓰지 않음
   const nameIsGarbled = isGarbledStockName(item.stock_name);
   if (nameIsGarbled) {
@@ -260,13 +269,16 @@ export async function upsertWatchlistItem(
     );
   }
   // 워치리스트 캐시 무효화
-  import('../cache/memory.js').then(m => m.cacheSet('db:watchlist:active', null, 0));
+  import('../cache/memory.js').then((m) => m.cacheSet('db:watchlist:active', null, 0));
 }
 
 // ── AI Scores ──
 
 export async function upsertAIScore(score: Omit<AIScore, 'id' | 'created_at'>) {
-  if (useMemory) { memUpsertAIScore(score); return; }
+  if (useMemory) {
+    memUpsertAIScore(score);
+    return;
+  }
   await queryWithRetry(
     `INSERT INTO ai_scores (stock_code, score_date, gemini_summary, composite_score,
        fundamental_score, technical_score, sentiment_score, confidence, reasoning,
@@ -345,7 +357,9 @@ export async function getAllRecentScores(): Promise<AIScore[]> {
 
 // ── Market Sources (CEO 참고 소스) ──
 
-export async function getRecentSources(limit = 20): Promise<Array<{ title: string; url: string; source_type: string; memo: string | null }>> {
+export async function getRecentSources(
+  limit = 20,
+): Promise<Array<{ title: string; url: string; source_type: string; memo: string | null }>> {
   if (useMemory) return [];
   try {
     const { rows } = await queryWithRetry(
@@ -424,26 +438,46 @@ export async function createChain(
     ],
   );
   // 체인 캐시 무효화 — 새 포지션 진입 시 즉시 반영
-  import('../cache/memory.js').then(m => { m.cacheSet('db:chains:open:true', null, 0); m.cacheSet('db:chains:open:false', null, 0); });
+  import('../cache/memory.js').then((m) => {
+    m.cacheSet('db:chains:open:true', null, 0);
+    m.cacheSet('db:chains:open:false', null, 0);
+  });
   return rows[0].id;
 }
 
 const CHAIN_ALLOWED_COLS = new Set([
-  'status', 'strategy_mode', 'avg_buy_price', 'total_quantity', 'total_invested',
-  'realized_pnl', 'target_profit_pct', 'stop_loss_pct', 'max_averaging_count',
-  'current_averaging_count', 'peak_price', 'peak_price_since_open',
-  'opened_at', 'closed_at', 'close_reason',
+  'status',
+  'strategy_mode',
+  'avg_buy_price',
+  'total_quantity',
+  'total_invested',
+  'realized_pnl',
+  'target_profit_pct',
+  'stop_loss_pct',
+  'max_averaging_count',
+  'current_averaging_count',
+  'peak_price',
+  'peak_price_since_open',
+  'opened_at',
+  'closed_at',
+  'close_reason',
 ]);
 
 export async function updateChain(id: string, updates: Partial<TransactionChain>) {
-  if (useMemory) { memUpdateChain(id, updates); return; }
+  if (useMemory) {
+    memUpdateChain(id, updates);
+    return;
+  }
   const keys = Object.keys(updates).filter((k) => CHAIN_ALLOWED_COLS.has(k));
   if (keys.length === 0) return;
   const setClauses = keys.map((k, i) => `${k} = $${i + 2}`);
   const values = keys.map((k) => (updates as Record<string, unknown>)[k]);
   await queryWithRetry(`UPDATE transaction_chains SET ${setClauses.join(', ')} WHERE id = $1`, [id, ...values]);
   // 체인 캐시 무효화 — 상태 변경 즉시 반영
-  import('../cache/memory.js').then(m => { m.cacheSet('db:chains:open:true', null, 0); m.cacheSet('db:chains:open:false', null, 0); });
+  import('../cache/memory.js').then((m) => {
+    m.cacheSet('db:chains:open:true', null, 0);
+    m.cacheSet('db:chains:open:false', null, 0);
+  });
 }
 
 // ── Orders ──
@@ -477,13 +511,28 @@ export async function insertOrder(order: Omit<Order, 'id' | 'created_at' | 'upda
 }
 
 const ORDER_ALLOWED_COLS = new Set([
-  'chain_id', 'stock_code', 'side', 'order_type', 'quantity', 'price',
-  'kis_order_no', 'kis_status', 'filled_quantity', 'filled_price', 'status',
-  'trading_mode', 'trigger_source', 'ai_reasoning', 'avg_buy_price',
+  'chain_id',
+  'stock_code',
+  'side',
+  'order_type',
+  'quantity',
+  'price',
+  'kis_order_no',
+  'kis_status',
+  'filled_quantity',
+  'filled_price',
+  'status',
+  'trading_mode',
+  'trigger_source',
+  'ai_reasoning',
+  'avg_buy_price',
 ]);
 
 export async function updateOrder(id: string, updates: Partial<Order>) {
-  if (useMemory) { memUpdateOrder(id, updates); return; }
+  if (useMemory) {
+    memUpdateOrder(id, updates);
+    return;
+  }
   const keys = Object.keys(updates).filter((k) => ORDER_ALLOWED_COLS.has(k));
   if (keys.length === 0) return;
   const setClauses = keys.map((k, i) => `${k} = $${i + 2}`);
@@ -493,7 +542,10 @@ export async function updateOrder(id: string, updates: Partial<Order>) {
 }
 
 export async function updateOrderByKisOrderNo(kisOrderNo: string, updates: Partial<Order>) {
-  if (useMemory) { memUpdateOrderByKisOrderNo(kisOrderNo, updates); return; }
+  if (useMemory) {
+    memUpdateOrderByKisOrderNo(kisOrderNo, updates);
+    return;
+  }
   const keys = Object.keys(updates).filter((k) => ORDER_ALLOWED_COLS.has(k));
   if (keys.length === 0) return;
   const setClauses = keys.map((k, i) => `${k} = $${i + 2}`);
@@ -545,7 +597,10 @@ export async function insertSnapshot(snapshot: {
   positions: unknown;
   is_paper?: boolean;
 }) {
-  if (useMemory) { memInsertSnapshot(snapshot); return; }
+  if (useMemory) {
+    memInsertSnapshot(snapshot);
+    return;
+  }
   await queryWithRetry(
     `INSERT INTO portfolio_snapshots (total_value, cash_balance, invested_value,
        unrealized_pnl, daily_pnl, daily_pnl_pct, positions, is_paper)
@@ -595,7 +650,10 @@ export async function logSystem(
   message: string,
   details?: unknown,
 ) {
-  if (useMemory) { memLogSystem(level, component, message, details); return; }
+  if (useMemory) {
+    memLogSystem(level, component, message, details);
+    return;
+  }
   try {
     await getPool().query('INSERT INTO system_log (level, component, message, details) VALUES ($1,$2,$3,$4)', [
       level,
@@ -657,7 +715,7 @@ export async function getRecentlySoldStocks(hoursBack = 2): Promise<Set<string>>
  *  - 대손실(>50000원): 14일 차단
  *  - ATR/손절 사유 매도: 7일 차단 (같은 패턴 반복 방지)
  */
-export async function getRecentLossStocks(daysBack = 14): Promise<Set<string>> {
+export async function getRecentLossStocks(_daysBack = 14): Promise<Set<string>> {
   if (useMemory) return new Set();
   try {
     // 1) 일반 손실 7일 + 대손실 14일 졸업식 차단
@@ -744,12 +802,17 @@ export async function insertRiskEvent(event: {
   details?: unknown;
   action_taken: string;
 }) {
-  if (useMemory) { memInsertRiskEvent(event); return; }
+  if (useMemory) {
+    memInsertRiskEvent(event);
+    return;
+  }
   try {
-    await queryWithRetry(
-      'INSERT INTO risk_events (event_type, severity, details, action_taken) VALUES ($1,$2,$3,$4)',
-      [event.event_type, event.severity, event.details ? JSON.stringify(event.details) : null, event.action_taken],
-    );
+    await queryWithRetry('INSERT INTO risk_events (event_type, severity, details, action_taken) VALUES ($1,$2,$3,$4)', [
+      event.event_type,
+      event.severity,
+      event.details ? JSON.stringify(event.details) : null,
+      event.action_taken,
+    ]);
   } catch (err) {
     logger.error(`리스크 이벤트 기록 실패: ${err}`);
   }

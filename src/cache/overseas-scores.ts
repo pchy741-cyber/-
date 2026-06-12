@@ -9,15 +9,18 @@ export interface OverseasScoreEntry {
   name: string;
   exchange: string;
   region: 'US' | 'JP' | 'TW';
-  score: number;        // analyzeTechnicals score (-100~100)
-  signal: string;       // STRONG_BUY / BUY / HOLD / SELL / STRONG_SELL
-  price: number;        // 현재가 (USD/JPY/TWD)
-  changePct: number;    // 당일 등락률
+  score: number; // analyzeTechnicals score (-100~100)
+  signal: string; // STRONG_BUY / BUY / HOLD / SELL / STRONG_SELL
+  price: number; // 현재가 (USD/JPY/TWD)
+  changePct: number; // 당일 등락률
   rsi: number;
-  cachedAt: number;     // Date.now()
+  cachedAt: number; // Date.now()
 }
 
-const _cache = new Map<'paper' | 'live', OverseasScoreEntry[]>([['paper', []], ['live', []]]);
+const _cache = new Map<'paper' | 'live', OverseasScoreEntry[]>([
+  ['paper', []],
+  ['live', []],
+]);
 const TTL_MS = 30 * 60 * 1000; // 30분 TTL
 
 export function setOverseasScores(scores: OverseasScoreEntry[], isPaper?: boolean): void {
@@ -28,7 +31,10 @@ export function setOverseasScores(scores: OverseasScoreEntry[], isPaper?: boolea
 /** 특정 종목의 캐시된 점수 제거 (매매 체결 후 호출) */
 export function invalidateOverseasScoreForStock(stockCode: string): void {
   for (const [key, entries] of _cache) {
-    _cache.set(key, entries.filter((s) => s.code !== stockCode));
+    _cache.set(
+      key,
+      entries.filter((s) => s.code !== stockCode),
+    );
   }
 }
 

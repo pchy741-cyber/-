@@ -10,9 +10,9 @@
  * 실행: 10:00 (장 초반 30분 흐름 반영)
  */
 
+import { getPool } from '../db/client.js';
 import { kisRequest } from '../kis/client.js';
 import { getCurrentPrice } from '../kis/market.js';
-import { getPool } from '../db/client.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
 import { sleep } from '../utils/sleep.js';
@@ -165,7 +165,9 @@ async function getRecentAiScores(stockCodes: string[]): Promise<Map<string, numb
     for (const r of rows) {
       map.set(String(r.stock_code), Number(r.avg_score));
     }
-  } catch { /* DB 없으면 빈 맵 */ }
+  } catch {
+    /* DB 없으면 빈 맵 */
+  }
   return map;
 }
 
@@ -174,9 +176,7 @@ async function getRecentAiScores(stockCodes: string[]): Promise<Map<string, numb
  */
 async function getActiveWatchlistCodes(): Promise<Set<string>> {
   try {
-    const { rows } = await getPool().query(
-      `SELECT stock_code FROM watchlist WHERE is_active = true`,
-    );
+    const { rows } = await getPool().query(`SELECT stock_code FROM watchlist WHERE is_active = true`);
     return new Set(rows.map((r: any) => String(r.stock_code)));
   } catch {
     return new Set();
@@ -186,11 +186,7 @@ async function getActiveWatchlistCodes(): Promise<Set<string>> {
 /**
  * 워치리스트에 종목 추가 (없으면 INSERT, 비활성이면 활성화)
  */
-async function addToWatchlist(
-  stockCode: string,
-  stockName: string,
-  sectorName: string,
-): Promise<boolean> {
+async function addToWatchlist(stockCode: string, stockName: string, sectorName: string): Promise<boolean> {
   try {
     const pool = getPool();
     const { rowCount } = await pool.query(
@@ -236,10 +232,9 @@ export async function runHotSectorWatchlist(): Promise<void> {
       return;
     }
 
-    logger.info(
-      `🔥 핫 업종 감지: ${hotSectors.map((s) => `${s.name}(${s.changePct.toFixed(1)}%)`).join(', ')}`,
-      { component: COMPONENT },
-    );
+    logger.info(`🔥 핫 업종 감지: ${hotSectors.map((s) => `${s.name}(${s.changePct.toFixed(1)}%)`).join(', ')}`, {
+      component: COMPONENT,
+    });
 
     // 3. 기존 워치리스트 조회
     const activeCodes = await getActiveWatchlistCodes();
@@ -277,11 +272,7 @@ export async function runHotSectorWatchlist(): Promise<void> {
       for (const r of settled) {
         if (r.status === 'fulfilled') {
           const { cand, price } = r.value;
-          if (
-            price.currentPrice >= MIN_PRICE &&
-            price.currentPrice <= MAX_PRICE &&
-            price.volume >= MIN_VOLUME
-          ) {
+          if (price.currentPrice >= MIN_PRICE && price.currentPrice <= MAX_PRICE && price.volume >= MIN_VOLUME) {
             validCandidates.push(cand);
           }
         }
@@ -312,10 +303,9 @@ export async function runHotSectorWatchlist(): Promise<void> {
     const finalList = [...scoredCandidates, ...unscored].slice(0, MAX_ADD_PER_RUN);
 
     if (finalList.length === 0) {
-      logger.info(
-        `AI 스코어 ${MIN_AI_SCORE}점 미달 — 편입 종목 없음 (후보 ${validCandidates.length}개)`,
-        { component: COMPONENT },
-      );
+      logger.info(`AI 스코어 ${MIN_AI_SCORE}점 미달 — 편입 종목 없음 (후보 ${validCandidates.length}개)`, {
+        component: COMPONENT,
+      });
       return;
     }
 
@@ -324,9 +314,7 @@ export async function runHotSectorWatchlist(): Promise<void> {
     for (const cand of finalList) {
       const ok = await addToWatchlist(cand.stock_code, cand.stock_name, cand.sectorName);
       if (ok) {
-        added.push(
-          `${cand.stock_name}(${cand.stock_code})${cand.score > 0 ? ` ${cand.score.toFixed(0)}점` : ' 신규'}`,
-        );
+        added.push(`${cand.stock_name}(${cand.stock_code})${cand.score > 0 ? ` ${cand.score.toFixed(0)}점` : ' 신규'}`);
         logger.info(
           `✅ 워치리스트 편입: ${cand.stock_name}(${cand.stock_code}) — ${cand.sectorName} 업종, AI ${cand.score.toFixed(0)}점`,
           { component: COMPONENT },
@@ -340,16 +328,13 @@ export async function runHotSectorWatchlist(): Promise<void> {
     }
 
     // 8. Telegram 알림
-    const sectorSummary = hotSectors
-      .map((s) => `${s.name} +${s.changePct.toFixed(1)}%`)
-      .join(' | ');
+    const sectorSummary = hotSectors.map((s) => `${s.name} +${s.changePct.toFixed(1)}%`).join(' | ');
     const msg =
       `🔥 *핫 업종 자동 편입*\n` +
       `업종: ${sectorSummary}\n\n` +
       `편입 종목:\n${added.map((s) => `• ${s}`).join('\n')}`;
 
     await sendTelegramMessage(msg).catch(() => {});
-
   } catch (err) {
     logger.error(`핫 업종 자동 편입 실패: ${err instanceof Error ? err.message : String(err)}`, {
       component: COMPONENT,

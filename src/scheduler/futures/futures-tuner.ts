@@ -7,10 +7,11 @@
  * 3. confidence 임계값 조정
  * 4. overseas_state에 저장 → signal-generator가 읽어서 적용
  */
-import { getPool } from '../../db/client.js';
+
 import { getCtxIsPaper } from '../../config/context.js';
-import { setOverseasState, getOverseasState } from '../overseas/utils.js';
+import { getPool } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
+import { getOverseasState, setOverseasState } from '../overseas/utils.js';
 
 const COMP = 'FUTURES_TUNER';
 
@@ -19,17 +20,23 @@ export interface FuturesTunerResult {
   totalTrades: number;
   avgWinUsd: number;
   avgLossUsd: number;
-  tpMultiplier: number;    // default 2.0
-  slMultiplier: number;    // default 1.5
-  minConfidence: number;   // default 60
-  kellyWinRate: number;    // calcFuturesQty에 전달할 실제 승률
+  tpMultiplier: number; // default 2.0
+  slMultiplier: number; // default 1.5
+  minConfidence: number; // default 60
+  kellyWinRate: number; // calcFuturesQty에 전달할 실제 승률
   updatedAt: string;
 }
 
 // 기본값 (데이터 부족 시)
 const DEFAULTS: FuturesTunerResult = {
-  winRate: 50, totalTrades: 0, avgWinUsd: 0, avgLossUsd: 0,
-  tpMultiplier: 2.0, slMultiplier: 1.5, minConfidence: 60, kellyWinRate: 0.5,
+  winRate: 50,
+  totalTrades: 0,
+  avgWinUsd: 0,
+  avgLossUsd: 0,
+  tpMultiplier: 2.0,
+  slMultiplier: 1.5,
+  minConfidence: 60,
+  kellyWinRate: 0.5,
   updatedAt: new Date().toISOString(),
 };
 
@@ -40,7 +47,8 @@ export async function runFuturesTuner(): Promise<FuturesTunerResult> {
 
   try {
     // 30일 매매 통계
-    const { rows } = await getPool().query(`
+    const { rows } = await getPool().query(
+      `
       SELECT
         COUNT(*) FILTER (WHERE pnl_usd IS NOT NULL) AS total,
         COUNT(*) FILTER (WHERE pnl_usd > 0) AS wins,
@@ -51,7 +59,9 @@ export async function runFuturesTuner(): Promise<FuturesTunerResult> {
       WHERE is_paper = $1
         AND executed_at > NOW() - INTERVAL '30 days'
         AND pnl_usd IS NOT NULL
-    `, [isPaper]);
+    `,
+      [isPaper],
+    );
 
     const total = Number(rows[0]?.total ?? 0);
     const wins = Number(rows[0]?.wins ?? 0);
@@ -96,8 +106,10 @@ export async function runFuturesTuner(): Promise<FuturesTunerResult> {
 
     // confidence 임계값 조정
     let minConfidence = 60;
-    if (winRate > 60) minConfidence = 55;      // 잘 되고 있음 → 더 공격적
-    else if (winRate < 35) minConfidence = 70;  // 잘 안 됨 → 까다롭게
+    if (winRate > 60)
+      minConfidence = 55; // 잘 되고 있음 → 더 공격적
+    else if (winRate < 35)
+      minConfidence = 70; // 잘 안 됨 → 까다롭게
     else if (winRate < 40) minConfidence = 65;
 
     const result: FuturesTunerResult = {
@@ -130,6 +142,8 @@ export async function loadTunerParams(isPaper: boolean): Promise<FuturesTunerRes
   try {
     const raw = await getOverseasState(key);
     if (raw) return JSON.parse(raw) as FuturesTunerResult;
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return DEFAULTS;
 }

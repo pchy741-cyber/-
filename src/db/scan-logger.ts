@@ -1,5 +1,5 @@
-import { getPool } from './client.js';
 import { logger } from '../utils/logger.js';
+import { getPool } from './client.js';
 import type { TradeDecision } from './models.js';
 
 export interface ScanSessionInput {
@@ -41,8 +41,10 @@ export async function logScanSession(
 ): Promise<void> {
   try {
     const pool = getPool();
-    const buysCount = decisions.filter(d => d.action === 'BUY' || d.action === 'AVERAGE_DOWN').length;
-    const sellsCount = decisions.filter(d => d.action === 'SELL' || d.action === 'PARTIAL_SELL' || d.action === 'FORCE_CLOSE').length;
+    const buysCount = decisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN').length;
+    const sellsCount = decisions.filter(
+      (d) => d.action === 'SELL' || d.action === 'PARTIAL_SELL' || d.action === 'FORCE_CLOSE',
+    ).length;
 
     const { rows } = await pool.query<{ id: number }>(
       `INSERT INTO scan_sessions
@@ -52,11 +54,22 @@ export async function logScanSession(
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
        RETURNING id`,
       [
-        session.isPaper, session.effectiveMode, session.kospiPenalty, session.kospiBoost,
-        session.blockNewBuys, session.flashCrash,
-        session.dailyPnlPct, session.totalAssets, session.orderableCash, session.scoresCount,
-        decisions.length, buysCount, sellsCount, session.elapsedMs,
-        session.macroRegime ?? null, session.crashSignalLevel ?? 'NONE',
+        session.isPaper,
+        session.effectiveMode,
+        session.kospiPenalty,
+        session.kospiBoost,
+        session.blockNewBuys,
+        session.flashCrash,
+        session.dailyPnlPct,
+        session.totalAssets,
+        session.orderableCash,
+        session.scoresCount,
+        decisions.length,
+        buysCount,
+        sellsCount,
+        session.elapsedMs,
+        session.macroRegime ?? null,
+        session.crashSignalLevel ?? 'NONE',
       ],
     );
 
@@ -68,14 +81,23 @@ export async function logScanSession(
     let idx = 1;
     for (const s of stocks) {
       placeholders.push(
-        `($${idx},$${idx+1},$${idx+2},$${idx+3},$${idx+4},$${idx+5},$${idx+6},$${idx+7},$${idx+8},$${idx+9},$${idx+10},$${idx+11},$${idx+12},$${idx+13})`,
+        `($${idx},$${idx + 1},$${idx + 2},$${idx + 3},$${idx + 4},$${idx + 5},$${idx + 6},$${idx + 7},$${idx + 8},$${idx + 9},$${idx + 10},$${idx + 11},$${idx + 12},$${idx + 13})`,
       );
       values.push(
-        sessionId, s.stockCode,
-        s.aiScoreRaw ?? null, s.aiScoreAdjusted ?? null, s.confidence ?? null,
-        s.regime ?? null, s.regimeConfidence ?? null, s.adx ?? null, s.autocorrelation ?? null,
+        sessionId,
+        s.stockCode,
+        s.aiScoreRaw ?? null,
+        s.aiScoreAdjusted ?? null,
+        s.confidence ?? null,
+        s.regime ?? null,
+        s.regimeConfidence ?? null,
+        s.adx ?? null,
+        s.autocorrelation ?? null,
         s.buyThresholdAdj ?? 0,
-        s.action, s.skipReason ?? null, s.quantity ?? null, s.isPaper,
+        s.action,
+        s.skipReason ?? null,
+        s.quantity ?? null,
+        s.isPaper,
       );
       idx += 14;
     }

@@ -10,28 +10,28 @@
  * 순수 수학 함수(sma, atr)만 사용.
  */
 
-import { sma } from './moving-averages.js';
 import type { DailyCandle } from '../kis/market.js';
+import { sma } from './moving-averages.js';
 
 // ── 타입 정의 ──────────────────────────────────────────────────────────
 
 export type BreakoutSubStrategy =
-  | 'CHART_DOCTOR_5MA'     // 차트박사 5일선 돌파
-  | 'WILLIAMS_VOLATILITY'  // 래리 윌리엄스 변동성 돌파
-  | 'MINERVINI_SEPA'       // 마크 미너비니 SEPA
-  | 'DARVAS_BOX';          // 다바스 박스 돌파
+  | 'CHART_DOCTOR_5MA' // 차트박사 5일선 돌파
+  | 'WILLIAMS_VOLATILITY' // 래리 윌리엄스 변동성 돌파
+  | 'MINERVINI_SEPA' // 마크 미너비니 SEPA
+  | 'DARVAS_BOX'; // 다바스 박스 돌파
 
 export interface BreakoutSignal {
   detected: boolean;
   subStrategy: BreakoutSubStrategy | null;
-  confidence: number;          // 0-1
-  volumeConfirmed: boolean;    // 거래량 1.5x+ 확인
+  confidence: number; // 0-1
+  volumeConfirmed: boolean; // 거래량 1.5x+ 확인
   details: BreakoutDetails;
   reason: string;
 }
 
 export interface BreakoutDetails {
-  breakoutPrice: number;     // 돌파 기준가
+  breakoutPrice: number; // 돌파 기준가
   currentPrice: number;
   volumeRatio: number;
 
@@ -43,15 +43,15 @@ export interface BreakoutDetails {
   // Williams
   kFactor?: number;
   prevDayRange?: number;
-  entryPrice?: number;       // open + range * K
+  entryPrice?: number; // open + range * K
 
   // Minervini SEPA
   above150MA?: boolean;
   above200MA?: boolean;
   ma150Above200?: boolean;
   ma200Uptrend?: boolean;
-  from52WeekLow?: number;    // % above 52-week low
-  from52WeekHigh?: number;   // % below 52-week high
+  from52WeekLow?: number; // % above 52-week low
+  from52WeekHigh?: number; // % below 52-week high
 
   // Darvas Box
   boxHigh?: number;
@@ -92,8 +92,8 @@ function emptySignal(): BreakoutSignal {
 export function detect5MABreakout(candles: DailyCandle[]): BreakoutSignal {
   if (candles.length < 62) return emptySignal();
 
-  const closes = candles.map(c => c.close);
-  const highs = candles.map(c => c.high);
+  const closes = candles.map((c) => c.close);
+  const highs = candles.map((c) => c.high);
   const currentPrice = closes[closes.length - 1];
   const currentVolume = candles[candles.length - 1].volume;
 
@@ -102,17 +102,18 @@ export function detect5MABreakout(candles: DailyCandle[]): BreakoutSignal {
   const sma20Arr = sma(closes, 20);
   const sma5Now = sma5Arr[sma5Arr.length - 1];
   const sma20Now = sma20Arr[sma20Arr.length - 1];
-  const sma20Prev = sma20Arr[sma20Arr.length - 6] ?? sma20Now;  // 5일 전
+  const sma20Prev = sma20Arr[sma20Arr.length - 6] ?? sma20Now; // 5일 전
 
   // 1. 60일 신고가 — 최근 10일 내 달성
-  const lookback60 = highs.slice(-62, -2);  // 2일 전까지의 60일
+  const lookback60 = highs.slice(-62, -2); // 2일 전까지의 60일
   const high60 = Math.max(...lookback60);
   const recentHighs = highs.slice(-10);
-  const isNew60DayHigh = recentHighs.some(h => h >= high60 * 0.99);
+  const isNew60DayHigh = recentHighs.some((h) => h >= high60 * 0.99);
 
   // 2. 20MA 눌림 (현재가가 20MA ±3% 이내 OR 최근 5일 내 20MA 터치)
-  const pullbackTo20MA = Math.abs(currentPrice - sma20Now) / sma20Now <= 0.03 ||
-    closes.slice(-5).some(c => Math.abs(c - sma20Now) / sma20Now <= 0.02);
+  const pullbackTo20MA =
+    Math.abs(currentPrice - sma20Now) / sma20Now <= 0.03 ||
+    closes.slice(-5).some((c) => Math.abs(c - sma20Now) / sma20Now <= 0.02);
 
   // 20MA 우상향 확인
   const ma20Rising = sma20Now > sma20Prev;
@@ -121,7 +122,7 @@ export function detect5MABreakout(candles: DailyCandle[]): BreakoutSignal {
   const above5MA = currentPrice > sma5Now;
   const prevClose = closes[closes.length - 2];
   const prevSma5 = sma5Arr[sma5Arr.length - 2];
-  const crossedAbove5MA = above5MA && (prevClose <= prevSma5 * 1.002);
+  const crossedAbove5MA = above5MA && prevClose <= prevSma5 * 1.002;
 
   // 4. 거래량 확인
   const avg20Vol = avgVolume(candles.slice(-21, -1), 20);
@@ -129,16 +130,15 @@ export function detect5MABreakout(candles: DailyCandle[]): BreakoutSignal {
   const volumeConfirmed = volumeRatio >= VOLUME_CONFIRM_RATIO;
 
   // 종합 판정
-  const detected = isNew60DayHigh && pullbackTo20MA && ma20Rising &&
-    (above5MA || crossedAbove5MA) && volumeConfirmed;
+  const detected = isNew60DayHigh && pullbackTo20MA && ma20Rising && (above5MA || crossedAbove5MA) && volumeConfirmed;
 
   // 신뢰도 계산
   let confidence = 0;
   if (detected) {
     confidence = 0.5;
-    if (crossedAbove5MA) confidence += 0.1;        // 크로스 시점 가산
-    if (volumeRatio >= 2.0) confidence += 0.1;     // 거래량 폭증
-    if (ma20Rising) confidence += 0.1;             // 추세 확인
+    if (crossedAbove5MA) confidence += 0.1; // 크로스 시점 가산
+    if (volumeRatio >= 2.0) confidence += 0.1; // 거래량 폭증
+    if (ma20Rising) confidence += 0.1; // 추세 확인
     if (currentPrice > sma20Now * 1.01) confidence += 0.1; // 눌림 반등
     confidence = Math.min(1.0, confidence);
   }
@@ -252,7 +252,7 @@ function computeAdaptiveK(candles: DailyCandle[]): number {
         // 익일 시가 매도 기준 수익 확인
         if (i + 1 < candles.length) {
           const sellPrice = candles[i + 1].open;
-          if (sellPrice > entry * 1.002) wins++;  // 수수료 감안 0.2%+
+          if (sellPrice > entry * 1.002) wins++; // 수수료 감안 0.2%+
         }
       }
     }
@@ -282,9 +282,9 @@ function computeAdaptiveK(candles: DailyCandle[]): number {
 export function detectMinerviniSEPA(candles: DailyCandle[]): BreakoutSignal {
   if (candles.length < 200) return emptySignal();
 
-  const closes = candles.map(c => c.close);
-  const highs = candles.map(c => c.high);
-  const lows = candles.map(c => c.low);
+  const closes = candles.map((c) => c.close);
+  const highs = candles.map((c) => c.high);
+  const lows = candles.map((c) => c.low);
   const currentPrice = closes[closes.length - 1];
   const currentVolume = candles[candles.length - 1].volume;
 
@@ -308,21 +308,15 @@ export function detectMinerviniSEPA(candles: DailyCandle[]): BreakoutSignal {
   const low52Week = Math.min(...lows.slice(-lookback));
   const high52Week = Math.max(...highs.slice(-lookback));
 
-  const from52WeekLow = low52Week > 0
-    ? ((currentPrice - low52Week) / low52Week) * 100
-    : 0;
-  const from52WeekHigh = high52Week > 0
-    ? ((currentPrice - high52Week) / high52Week) * 100
-    : 0;
+  const from52WeekLow = low52Week > 0 ? ((currentPrice - low52Week) / low52Week) * 100 : 0;
+  const from52WeekHigh = high52Week > 0 ? ((currentPrice - high52Week) / high52Week) * 100 : 0;
 
   const above25FromLow = from52WeekLow >= 25;
   const within25FromHigh = from52WeekHigh >= -25;
 
   // 기준 7: 상대강도 (모멘텀으로 대체 — 60일 수익률 상위)
   const price60DaysAgo = closes[closes.length - 61] ?? closes[0];
-  const momentum60d = price60DaysAgo > 0
-    ? ((currentPrice - price60DaysAgo) / price60DaysAgo) * 100
-    : 0;
+  const momentum60d = price60DaysAgo > 0 ? ((currentPrice - price60DaysAgo) / price60DaysAgo) * 100 : 0;
   const strongMomentum = momentum60d > 10; // 60일간 +10% 이상
 
   // 기준 8: 최근 20일 고점 돌파 (횡보 후 돌파)
@@ -337,8 +331,14 @@ export function detectMinerviniSEPA(candles: DailyCandle[]): BreakoutSignal {
 
   // 통과 기준 수 계산 (8개 중 6개 이상)
   const criteria = [
-    above150MA, above200MA, ma150Above200, ma200Uptrend,
-    above25FromLow, within25FromHigh, strongMomentum, breakingOut,
+    above150MA,
+    above200MA,
+    ma150Above200,
+    ma200Uptrend,
+    above25FromLow,
+    within25FromHigh,
+    strongMomentum,
+    breakingOut,
   ];
   const passedCount = criteria.filter(Boolean).length;
 
@@ -414,7 +414,7 @@ export function detectDarvasBox(candles: DailyCandle[]): BreakoutSignal {
   if (boxHighIdx < 0 || boxHigh <= 0) return emptySignal();
 
   // 박스 하단: 박스 고점 확립 후 ~ 오늘 전날까지의 최저점
-  const boxLows = candles.slice(boxHighIdx, -1).map(c => c.low);
+  const boxLows = candles.slice(boxHighIdx, -1).map((c) => c.low);
   const boxLow = boxLows.length > 0 ? Math.min(...boxLows) : 0;
 
   // 박스 기간 (최소 5일)

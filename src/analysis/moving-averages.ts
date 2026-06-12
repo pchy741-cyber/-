@@ -54,8 +54,8 @@ export interface EnvelopeResult {
 
 export function envelope(prices: number[], period = 20, deviation = 0.05): EnvelopeResult {
   const mid = sma(prices, period);
-  const upper = mid.map(m => m * (1 + deviation));
-  const lower = mid.map(m => m * (1 - deviation));
+  const upper = mid.map((m) => m * (1 + deviation));
+  const lower = mid.map((m) => m * (1 - deviation));
   const cur = prices[prices.length - 1] ?? 0;
   const middleNow = mid[mid.length - 1] ?? cur;
   const upperNow = upper[upper.length - 1] ?? cur;

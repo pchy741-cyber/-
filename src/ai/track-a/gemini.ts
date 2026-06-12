@@ -1,9 +1,8 @@
-import { config } from '../../config/index.js';
+import { analyzeTechnicals } from '../../analysis/indicators.js';
 import type { DailyCandle } from '../../kis/market.js';
 import { safeParseJson } from '../../utils/json-repair.js';
 import { logger } from '../../utils/logger.js';
 import { buildGeminiPrompt, type RegimeHint } from '../prompts/track-a-analysis.js';
-import { analyzeTechnicals } from '../../analysis/indicators.js';
 
 export interface GeminiAnalysis {
   market_sentiment: 'bullish' | 'neutral' | 'bearish' | 'panic';
@@ -89,10 +88,9 @@ ${additionalSources ?? '추가 소스 없음'}
 
 위 데이터를 분석하여 종목별 팩트를 추출해주세요.`;
 
-  logger.info(
-    `Gemini 분석 시작 (${watchlist.length}개 종목, 모드: ${mode}, 라우팅: Vertex우선)`,
-    { component: 'TRACK_A' },
-  );
+  logger.info(`Gemini 분석 시작 (${watchlist.length}개 종목, 모드: ${mode}, 라우팅: Vertex우선)`, {
+    component: 'TRACK_A',
+  });
 
   const { callVertexGemini } = await import('../../utils/vertex-gemini.js');
   const responseText = await callVertexGemini(systemPrompt, userMessage, { temperature: 0.1, label: 'TrackA-분석' });
@@ -100,7 +98,7 @@ ${additionalSources ?? '추가 소스 없음'}
   // Resilient JSON parsing — Gemini 응답이 깨져도 최대한 복구
   const parsed = safeParseJson<GeminiAnalysis>(responseText, 'GeminiAnalysis');
 
-  if (parsed && parsed.market_sentiment && Array.isArray(parsed.stocks)) {
+  if (parsed?.market_sentiment && Array.isArray(parsed.stocks)) {
     logger.info(`Gemini 분석 완료: market_sentiment=${parsed.market_sentiment}, stocks=${parsed.stocks.length}개`, {
       component: 'TRACK_A',
     });
@@ -114,9 +112,12 @@ ${additionalSources ?? '추가 소스 없음'}
       stocks: Array.isArray((parsed as any).stocks) ? (parsed as any).stocks : [],
     };
     if (recovered.stocks.length > 0) {
-      logger.warn(`Gemini 분석 부분 복구: market_sentiment=${recovered.market_sentiment}, stocks=${recovered.stocks.length}개`, {
-        component: 'TRACK_A',
-      });
+      logger.warn(
+        `Gemini 분석 부분 복구: market_sentiment=${recovered.market_sentiment}, stocks=${recovered.stocks.length}개`,
+        {
+          component: 'TRACK_A',
+        },
+      );
       return recovered;
     }
   }
@@ -137,4 +138,3 @@ ${additionalSources ?? '추가 소스 없음'}
     })),
   };
 }
-
