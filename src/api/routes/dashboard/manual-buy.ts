@@ -131,6 +131,27 @@ export function registerManualBuyRoutes(app: Hono) {
       stopLossPct = STRATEGY_PARAMS.SWING.stopLossPct;
     }
 
+    // 🏆 수익 가드 3종 (R:R + 종목 승률 + 일일 손실)
+    const { checkBuyGate } = await import('../../../risk/profit-guards.js');
+    const buyGate = await checkBuyGate({
+      stockCode: stock_code,
+      takeProfitPct,
+      stopLossPct,
+      isPaper,
+      minRr: 1.5,
+    });
+    if (!buyGate.allowed) {
+      logger.warn(`🚫 수익가드 차단: ${stock_code} — ${buyGate.reason}`, { component: 'CLAUDE_BUY' });
+      return c.json(
+        {
+          error: `수익가드 차단: ${buyGate.reason}`,
+          details: buyGate.details,
+        },
+        422,
+      );
+    }
+    const sizingMultiplier = buyGate.amountMultiplier;
+
     try {
       let amount_krw = body.amount_krw ?? 0;
       if (amount_krw < 10000) {
@@ -153,9 +174,11 @@ export function registerManualBuyRoutes(app: Hono) {
               pullbackSignal: body.pullback_signal,
             }) / 100;
           const capByAlloc = Math.round(totalCapital * dynPct);
-          amount_krw = Math.max(Math.min(computed, capByAlloc, Math.round(cashCap2)), 10000);
+          const rawAmount = Math.max(Math.min(computed, capByAlloc, Math.round(cashCap2)), 10000);
+          // 🏆 종목 승률 multiplier 적용 (40%↓ → 0.5x, 70%↑ → 1.2x)
+          amount_krw = Math.max(10000, Math.round(rawAmount * sizingMultiplier));
           logger.info(
-            `💰 동적 사이징: score=${aiScore} megacap=${MEGA_CAP_PRIORITY_CODES.has(stock_code)} → 비중${(dynPct * 100).toFixed(0)}% | 총자본 ${(totalCapital / 10000).toFixed(0)}만원 → ${(amount_krw / 10000).toFixed(1)}만원`,
+            `💰 동적 사이징: score=${aiScore} megacap=${MEGA_CAP_PRIORITY_CODES.has(stock_code)} 승률mult=${sizingMultiplier.toFixed(2)} → 비중${(dynPct * 100).toFixed(0)}% | 총자본 ${(totalCapital / 10000).toFixed(0)}만원 → ${(amount_krw / 10000).toFixed(1)}만원`,
             { component: 'CLAUDE_BUY' },
           );
         } catch (e) {

@@ -33,6 +33,23 @@ export function getLastAutoPilotResult() {
   return _lastResult;
 }
 
+/** 장기 보완 #2: MDD 가드가 현재 active한지 확인 (reason prefix로 판별) */
+async function checkMddGuardActive(isPaper: boolean): Promise<boolean> {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT reason FROM ai_overrides
+       WHERE key = 'minBuyScore' AND is_paper = $1
+         AND (expires_at IS NULL OR expires_at > NOW())
+       ORDER BY id DESC LIMIT 1`,
+      [isPaper],
+    );
+    const reason = String(rows[0]?.reason ?? '');
+    return reason.startsWith('mdd_guard:');
+  } catch {
+    return false;
+  }
+}
+
 // ── 자동 조절 규칙 상수 ─────────────────────────────────────────────
 const RULES = {
   // 시장 레짐 기반 minBuyScore (하락장 95+ 아니면 다 잃음 → 상향)
@@ -164,19 +181,27 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
 
       // Paper 모드: 임계값 오버라이드 비활성 (적극적 매매 학습 목적)
       if (!isPaper) {
-        const currentOverride = getOverride<number>('minBuyScore', isPaper);
-        if (currentOverride !== targetThreshold) {
-          const res = await setOverride(
-            'threshold',
-            'minBuyScore',
-            targetThreshold,
-            `[AutoPilot] ${reason}`,
-            RULES.TTL_REGIME,
-            isPaper,
-          );
-          if (res.ok) {
-            overridesSet++;
-            decisions.push(`minBuyScore=${targetThreshold} (${reason})`);
+        // 🛡️ 장기 운영 보완 #2: MDD 가드가 활성이면 AutoPilot 덮어쓰기 금지
+        //   둘 다 같은 key (minBuyScore) 쓰는데 reason으로 구분.
+        //   MDD 가드(reason='mdd_guard:...')가 95로 설정한 직후 AutoPilot이 77로 낮추면 위험.
+        const mddGuardActive = await checkMddGuardActive(isPaper);
+        if (mddGuardActive) {
+          decisions.push(`minBuyScore 스킵: MDD 가드 활성 (우선)`);
+        } else {
+          const currentOverride = getOverride<number>('minBuyScore', isPaper);
+          if (currentOverride !== targetThreshold) {
+            const res = await setOverride(
+              'threshold',
+              'minBuyScore',
+              targetThreshold,
+              `[AutoPilot] ${reason}`,
+              RULES.TTL_REGIME,
+              isPaper,
+            );
+            if (res.ok) {
+              overridesSet++;
+              decisions.push(`minBuyScore=${targetThreshold} (${reason})`);
+            }
           }
         }
       } else {

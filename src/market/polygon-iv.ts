@@ -36,9 +36,29 @@ export interface OptionsIvSnapshot {
 const _cache = new Map<string, { data: OptionsIvSnapshot; fetchedAt: number }>();
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30분 (free tier 5 calls/min 보호)
 
+// 장기 보완 #4: rate limit 안전 가드 — 분당 5콜 free tier 보호
+const _callTimestamps: number[] = [];
+const MAX_CALLS_PER_MIN = 4; // 5의 80% 안전 마진
+function canCall(): boolean {
+  const now = Date.now();
+  // 1분 윈도우 초과 항목 제거
+  while (_callTimestamps.length > 0 && now - _callTimestamps[0] > 60_000) {
+    _callTimestamps.shift();
+  }
+  return _callTimestamps.length < MAX_CALLS_PER_MIN;
+}
+function recordCall(): void {
+  _callTimestamps.push(Date.now());
+}
+
 async function fetchAtmOptionIv(ticker: string): Promise<number> {
   const apiKey = process.env.POLYGON_API_KEY ?? '';
   if (!apiKey) return 0;
+  if (!canCall()) {
+    logger.debug(`Polygon rate limit 보호 — ${ticker} 스킵 (분당 ${MAX_CALLS_PER_MIN} 초과)`, { component: COMP });
+    return 0;
+  }
+  recordCall();
   try {
     // 30일 후 만기 ATM 콜 옵션 — 단순화: snapshot으로 첫 ATM 콜의 IV
     const url = `${POLYGON_BASE}/v3/snapshot/options/${ticker}?apiKey=${apiKey}&limit=20`;

@@ -61,9 +61,24 @@ async function fetchFredSeries(seriesId: string, limit = 2): Promise<number[]> {
 }
 
 export async function getFredMacro(): Promise<FredMacroSnapshot | null> {
-  // 캐시 우선
+  // 메모리 캐시 우선
   if (_cache && Date.now() - _cache.fetchedAt < CACHE_TTL_MS) {
     return _cache.data;
+  }
+  // 장기 보완 #5: DB 캐시 폴백 (서버 재시작 견딤)
+  try {
+    const { getPool } = await import('../db/client.js');
+    const { rows } = await getPool().query(
+      `SELECT value FROM system_state WHERE key = 'fred_macro_snapshot' AND updated_at > NOW() - INTERVAL '24 hours' LIMIT 1`,
+    );
+    if (rows[0]?.value) {
+      const data = typeof rows[0].value === 'string' ? JSON.parse(rows[0].value) : rows[0].value;
+      _cache = { data, fetchedAt: new Date(data.fetchedAt).getTime() };
+      logger.info(`FRED DB 캐시 복원 (24h 이내)`, { component: COMP });
+      return data;
+    }
+  } catch {
+    /* DB 캐시 실패 시 신규 fetch */
   }
   if (!process.env.FRED_API_KEY) {
     logger.debug('FRED_API_KEY 미설정 — FRED 매크로 스킵', { component: COMP });
@@ -160,6 +175,17 @@ export async function getFredMacro(): Promise<FredMacroSnapshot | null> {
     };
 
     _cache = { data: snapshot, fetchedAt: Date.now() };
+    // 장기 보완 #5: DB 영속화 (재시작 견딤)
+    try {
+      const { getPool } = await import('../db/client.js');
+      await getPool().query(
+        `INSERT INTO system_state (key, value, updated_at) VALUES ('fred_macro_snapshot', $1::jsonb, NOW())
+         ON CONFLICT (key) DO UPDATE SET value = $1::jsonb, updated_at = NOW()`,
+        [JSON.stringify(snapshot)],
+      );
+    } catch (e) {
+      logger.debug(`FRED DB 캐시 저장 실패: ${(e as Error).message}`, { component: COMP });
+    }
     logger.info(
       `📊 FRED 매크로: Fed ${fedFundsRate.toFixed(2)}% (Δ${fedFundsChange1m >= 0 ? '+' : ''}${fedFundsChange1m.toFixed(2)}) | CPI ${cpiYoY.toFixed(1)}% | 실업 ${unemploymentRate.toFixed(1)}% | 10Y ${treasuryYield10Y.toFixed(2)}% | 곡선 ${yieldCurveSpread.toFixed(2)} → risk ${macroRiskScore >= 0 ? '+' : ''}${macroRiskScore}`,
       { component: COMP },

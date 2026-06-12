@@ -57,6 +57,11 @@ function computeTarget(now: Date): { krwPctTarget: number; reason: string } {
   return { krwPctTarget: 50, reason: '장외시간 → 50/50 균형' };
 }
 
+// 장기 보완 #3: 텔레그램 알림 쿨다운 4시간 (이전 15분 → 폭주 방지)
+const TG_COOLDOWN_MS = 4 * 60 * 60_000;
+let _lastTgAt = 0;
+let _lastImbalanceDirection: 'KRW_short' | 'KRW_excess' | 'balanced' = 'balanced';
+
 export async function runFxRebalance(): Promise<void> {
   try {
     const state = await readCashState();
@@ -78,8 +83,20 @@ export async function runFxRebalance(): Promise<void> {
       { component: COMP },
     );
 
-    // 5%p 이상 불균형 시만 알림
-    if (imbalancePct < 5) return;
+    // 5%p 이상 불균형 시만 알림 (강화: + 4h 쿨다운 + 방향 변경 시만)
+    if (imbalancePct < 5) {
+      _lastImbalanceDirection = 'balanced';
+      return;
+    }
+    const currentDirection: typeof _lastImbalanceDirection = krwImbalance > 0 ? 'KRW_short' : 'KRW_excess';
+    const sinceLast = Date.now() - _lastTgAt;
+    const directionChanged = currentDirection !== _lastImbalanceDirection;
+    if (sinceLast < TG_COOLDOWN_MS && !directionChanged) {
+      logger.debug(`FX 알림 스킵: 쿨다운 ${Math.round(sinceLast / 60_000)}분 < 240분 (방향 동일)`, { component: COMP });
+      return;
+    }
+    _lastTgAt = Date.now();
+    _lastImbalanceDirection = currentDirection;
 
     const direction = krwImbalance > 0 ? 'USD→KRW' : 'KRW→USD';
     const usdEquiv = Math.abs(krwImbalance) / state.fxRate;

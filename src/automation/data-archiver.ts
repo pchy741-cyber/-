@@ -75,6 +75,46 @@ export async function archiveOldData(): Promise<void> {
     logger.warn(`  risk_events 정리 실패: ${e}`, { component: 'ARCHIVE' });
   }
 
+  // ── 장기 운영 보완 (2026-06-12): 빠르게 누적되는 운영 데이터 단기 보존 ──
+
+  // loop_ticks (7일+) — 매 5분 1 row * 24h * 7일 = 2016/주 → 빠르게 큰
+  const tickCutoff = new Date();
+  tickCutoff.setDate(tickCutoff.getDate() - 7);
+  try {
+    const { rowCount } = await getPool().query('DELETE FROM loop_ticks WHERE executed_at < $1', [
+      tickCutoff.toISOString(),
+    ]);
+    totalDeleted += rowCount ?? 0;
+    logger.info(`  loop_ticks: ${rowCount ?? 0}건 삭제 (7일+)`, { component: 'ARCHIVE' });
+  } catch (e) {
+    logger.warn(`  loop_ticks 정리 실패: ${e}`, { component: 'ARCHIVE' });
+  }
+
+  // loop_sessions (30일+) — 일 1세션 정도
+  const sessionCutoff = new Date();
+  sessionCutoff.setDate(sessionCutoff.getDate() - 30);
+  try {
+    const { rowCount } = await getPool().query(
+      'DELETE FROM loop_sessions WHERE ended_at IS NOT NULL AND started_at < $1',
+      [sessionCutoff.toISOString()],
+    );
+    totalDeleted += rowCount ?? 0;
+    logger.info(`  loop_sessions: ${rowCount ?? 0}건 삭제 (30일+ 종결)`, { component: 'ARCHIVE' });
+  } catch (e) {
+    logger.warn(`  loop_sessions 정리 실패: ${e}`, { component: 'ARCHIVE' });
+  }
+
+  // capture_snapshots (30일+) — 시간별 2건 * 24h * 30일 = 1440/월
+  try {
+    const { rowCount } = await getPool().query('DELETE FROM capture_snapshots WHERE captured_at < $1', [
+      sessionCutoff.toISOString(),
+    ]);
+    totalDeleted += rowCount ?? 0;
+    logger.info(`  capture_snapshots: ${rowCount ?? 0}건 삭제 (30일+)`, { component: 'ARCHIVE' });
+  } catch (e) {
+    logger.warn(`  capture_snapshots 정리 실패: ${e}`, { component: 'ARCHIVE' });
+  }
+
   await logSystem('INFO', 'ARCHIVE', `데이터 아카이빙 완료: ${totalDeleted}건 삭제`);
   logger.info(`🗄️ 아카이빙 완료: 총 ${totalDeleted}건 삭제`, { component: 'ARCHIVE' });
 }

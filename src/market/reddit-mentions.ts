@@ -123,7 +123,12 @@ export interface RedditMentionData {
 let _cache: { ts: number; data: Map<string, RedditMentionData> } | null = null;
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1시간
 
+// 장기 보완 #4: rate limit 백오프 (Reddit 429 시 1시간 차단)
+let _backoffUntil = 0;
+
 async function fetchSubredditPosts(subreddit: string): Promise<string[]> {
+  // 장기 보완 #4: 백오프 중이면 즉시 스킵
+  if (Date.now() < _backoffUntil) return [];
   // 공개 JSON (인증 불필요, rate limit 더 낮음)
   const url = `https://www.reddit.com/r/${subreddit}/new.json?limit=100`;
   try {
@@ -131,6 +136,11 @@ async function fetchSubredditPosts(subreddit: string): Promise<string[]> {
       headers: { 'User-Agent': 'QuantOpsBot/1.0 (research)' },
       signal: AbortSignal.timeout(8000),
     });
+    if (res.status === 429) {
+      _backoffUntil = Date.now() + 60 * 60_000; // 1시간 차단
+      logger.warn(`Reddit 429 — 1시간 백오프 진입`, { component: COMP });
+      return [];
+    }
     if (!res.ok) {
       logger.debug(`Reddit r/${subreddit} HTTP ${res.status}`, { component: COMP });
       return [];
