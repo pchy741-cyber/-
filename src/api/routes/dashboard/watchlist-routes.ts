@@ -5,7 +5,7 @@ import { Hono } from 'hono';
 import { getPortfolioFlowStatus } from '../../../automation/ceo-workflow.js';
 import { cachePriceMemory, getLastKnownPricesMemory } from '../../../cache/memory.js';
 import { getLastKnownPrices } from '../../../cache/redis.js';
-import { baseIsPaper } from '../../../config/index.js';
+import { resolveRequestMode } from '../../guards/live-pin.js';
 import { getActiveWatchlist, getPool } from '../../../db/client.js';
 import { getAccountBalance } from '../../../kis/account.js';
 import {
@@ -281,8 +281,8 @@ watchlistRoutes.get('/flow', async (c) => {
     return c.json(status);
   } catch {
     return c.json({
-      totalPortfolio: baseIsPaper ? 10000000 : 0,
-      cash: baseIsPaper ? 10000000 : 0,
+      totalPortfolio: resolveRequestMode(c) ? 10000000 : 0,
+      cash: resolveRequestMode(c) ? 10000000 : 0,
       cashRatio: 100,
       investedRatio: 0,
       flowStatus: 'FLOWING',
@@ -476,7 +476,7 @@ watchlistRoutes.post('/watchlist/scan', async (c) => {
 watchlistRoutes.post('/watchlist/cleanup', async (c) => {
   try {
     const pool = getPool();
-    const isPaper = baseIsPaper;
+    const isPaper = resolveRequestMode(c);
     const tradingMode = isPaper ? 'paper' : 'live';
 
     // 현재 보유 중인 종목은 제외 (현재 모드만)

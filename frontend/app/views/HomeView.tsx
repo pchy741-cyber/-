@@ -291,7 +291,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       <div className="grid grid-cols-1 xl:grid-cols-2 items-start gap-4 sm:gap-5">
         {holdingsTab === 'KR'
           ? <KrAiScorePanel dash={dash} showAllKRScores={showAllKRScores} setShowAllKRScores={setShowAllKRScores} buyingStock={buyingStock} setBuyingStock={setBuyingStock} busyAction={busyAction} guard={guard} getStockName={getStockName} toast={toast} confirm={confirm} viewMode={viewMode} />
-          : <MemoOverseasScore usDash={usDash} toast={toast} />}
+          : <MemoOverseasScore usDash={usDash} toast={toast} viewMode={viewMode} />}
         <RecentTradesPanel filled={filled} holdingsTab={holdingsTab} expandedTradeIdx={expandedTradeIdx} setExpandedTradeIdx={setExpandedTradeIdx} getStockName={getStockName} />
       </div>
 

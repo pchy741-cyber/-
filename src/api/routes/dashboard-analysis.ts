@@ -7,7 +7,7 @@ import { getDinnerMoneyStats } from '../../automation/profit-withdraw.js';
 import { fetchShortSellingData } from '../../automation/short-selling.js';
 import { getAiStatus } from '../../cache/ai-status.js';
 import { getScoresWithFallback } from '../../cache/redis.js';
-import { baseIsPaper, config } from '../../config/index.js';
+import { config } from '../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getOpenChains, getPool } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { getDailyChart, isMarketOpen } from '../../kis/market.js';
@@ -603,7 +603,7 @@ dashboardAnalysisRoutes.post('/release-defense-park', async (c) => {
 
     let syncMsg = '';
     try {
-      const balanceFn = baseIsPaper ? getPaperBalance : getAccountBalance;
+      const balanceFn = resolveRequestMode(c) ? getPaperBalance : getAccountBalance;
       const [balance, openChains] = await Promise.all([balanceFn(), getOpenChains()]);
       const chainedCodes = new Set(openChains.map((ch: any) => ch.stock_code));
       const orphans = (balance.positions ?? [])

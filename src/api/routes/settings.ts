@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { invalidateDashboardCache } from '../../cache/dashboard-cache.js';
 import { STRATEGY_PARAMS } from '../../config/constants.js';
-import { baseIsPaper, getEffectiveTradingMode, setTradingModeOverride } from '../../config/index.js';
+import { getEffectiveTradingMode, setTradingModeOverride } from '../../config/index.js';
 import { invalidateAllocCache } from '../../db/alloc-risk-cache.js';
 import { getActiveStrategy, getPool, isMemoryMode, logSystem } from '../../db/client.js';
 import { memSetActiveStrategy } from '../../db/memory-store.js';
@@ -17,6 +17,7 @@ import { getSeedCapitalStatus, setSeedCapital } from '../../risk/seed-capital.js
 import { getCooldownStatus, resetCooldown } from '../../risk/trade-gate.js';
 import { runTrackAJob } from '../../scheduler/track-a-job.js';
 import { logger } from '../../utils/logger.js';
+import { resolveRequestMode } from '../guards/live-pin.js';
 
 export const settingsRoutes = new Hono();
 
@@ -179,7 +180,7 @@ settingsRoutes.put('/strategy', async (c) => {
 
   try {
     // ── 통합 설정: CEO 대시보드에서 변경 시 paper/live 모두 동일하게 적용 ──
-    const isPaper = baseIsPaper;
+    const isPaper = resolveRequestMode(c);
     const setParams = [
       strategyData.mode,
       strategyData.notebooklm_prompt,
@@ -439,7 +440,7 @@ settingsRoutes.post('/fix-chain-tpsl', async (c) => {
     // 열린 체인 목록
     const { rows: chains } = await pool.query(
       `SELECT id, stock_code FROM transaction_chains WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND is_paper = $1`,
-      [baseIsPaper],
+      [resolveRequestMode(c)],
     );
     // 최신 AI 점수 조회
     const { rows: scores } = await pool.query(
@@ -491,7 +492,7 @@ settingsRoutes.post('/insights', async (c) => {
     const { rows } = await getPool().query(
       `INSERT INTO learned_insights (category, insight, confidence, sample_count, last_updated, is_manual, is_paper)
        VALUES ($1, $2, $3, 1, NOW(), TRUE, $4) RETURNING *`,
-      [category, insight, body.confidence ?? 0.8, baseIsPaper],
+      [category, insight, body.confidence ?? 0.8, resolveRequestMode(c)],
     );
     return c.json(rows[0]);
   } catch (err: any) {
@@ -789,7 +790,7 @@ settingsRoutes.get('/portfolio/allocation', async (c) => {
   try {
     // ?isPaper=true/false 쿼리 파라미터로 모드 명시 가능, 없으면 현재 모드
     const qp = c.req.query('isPaper');
-    const isPaper = qp !== undefined ? qp === 'true' : baseIsPaper;
+    const isPaper = qp !== undefined ? qp === 'true' : resolveRequestMode(c);
     const { rows } = await getPool().query(
       'SELECT * FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1',
       [isPaper],
@@ -867,7 +868,7 @@ settingsRoutes.put('/portfolio/allocation', async (c) => {
 
   try {
     // body.isPaper 명시 우선, 없으면 현재 서버 모드 — 실전/연습 교차 오염 방지
-    const isPaperAlloc = body.isPaper !== undefined ? Boolean(body.isPaper) : baseIsPaper;
+    const isPaperAlloc = body.isPaper !== undefined ? Boolean(body.isPaper) : resolveRequestMode(c);
     const { rows: existing } = await getPool().query(
       'SELECT * FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1',
       [isPaperAlloc],
@@ -945,7 +946,7 @@ settingsRoutes.post('/defense-mode/deactivate', async (c) => {
     await pool
       .query(
         `UPDATE strategy_config SET mode='SWING', buy_threshold=$1, stop_loss_pct=$2, take_profit_pct=$3, updated_at=NOW() WHERE is_active=true AND is_paper=$4`,
-        [swingP.buyThreshold, swingP.stopLossPct, swingP.takeProfitPct, baseIsPaper],
+        [swingP.buyThreshold, swingP.stopLossPct, swingP.takeProfitPct, resolveRequestMode(c)],
       )
       .catch(() => {});
 

@@ -5,7 +5,6 @@ import { cacheGet, cacheSet } from '../../cache/memory.js';
 import { getOverseasScores, type OverseasScoreEntry, setOverseasScores } from '../../cache/overseas-scores.js';
 import { OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { runWithMode } from '../../config/context.js';
-import { baseIsPaper } from '../../config/index.js';
 import { getPool } from '../../db/client.js';
 import { getOverseasBalance, getOverseasDailyChart, getOverseasPrice, placeOverseasOrder } from '../../kis/overseas.js';
 import { getFearGreedIndex } from '../../market/external-signals.js';

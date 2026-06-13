@@ -30,7 +30,7 @@ export const US_SECTOR_MAP: Record<string, string> = {
 };
 export const US_SECTORS = ['전체', 'AI반도체', '빅테크', '방산', '클라우드', '산업인프라', '대만반도체', '일본'];
 
-export default function OverseasScorePanel({ usDash, toast }: { usDash?: UsDashboard | null; toast?: ToastFn }) {
+export default function OverseasScorePanel({ usDash, toast, viewMode = 'live' }: { usDash?: UsDashboard | null; toast?: ToastFn; viewMode?: string }) {
   const allScored = (usDash?.watchlist ?? []).filter(s => typeof s.score === 'number') as ScoredStock[];
   const [sector, setSector] = React.useState('전체');
   const [buyingCode, setBuyingCode] = React.useState<string | null>(null);
@@ -52,7 +52,7 @@ export default function OverseasScorePanel({ usDash, toast }: { usDash?: UsDashb
       const ex = sc.exchange ?? (sc.code?.length <= 4 ? 'NASDAQ' : 'NYSE');
       const body: Record<string, unknown> = { ticker: sc.code, exchange: ex, reasoning: `수동진입 점수${sc.score?.toFixed(0)} RSI${sc.rsi?.toFixed(0)} ${sc.signal}` };
       if (manualAmount > 0) body.amountUsd = manualAmount;
-      const res = await api('/overseas/vision-scalp/execute', { method: 'POST', body: JSON.stringify(body) });
+      const res = await api(`/overseas/vision-scalp/execute?viewMode=${viewMode}`, { method: 'POST', body: JSON.stringify(body) });
       toast?.(`${sc.code} ${res.qty}주 @$${res.price?.toFixed(2)} ($${res.amountUsed}) TP+${res.tpPct}%/SL-${res.slPct}%`, 'ok');
     } catch (e: unknown) { toast?.((e as Error).message, 'err'); }
     setBuyingCode(null);
