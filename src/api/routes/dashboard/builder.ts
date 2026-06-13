@@ -557,19 +557,22 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     }
   }
 
-  // 총자산 = 예수금 + 증권평가(국내+해외) + 해외현금  — 직접 합산, nass_amt 미사용
-  // ⚠️ nass_amt(순자산) 사용 금지 — 꼬이는 원인. 개별 항목 합산으로 계산
-  const deposit = !viewIsPaper ? ((balance as any).totalDeposit ?? 0) : 0; // KIS 예수금 (대용 미포함, 실제 현금)
+  // 총자산 = 가용현금 + 증권평가(국내+해외) + 해외현금  — KIS nass_amt 미사용
+  // ⚠️ 예수금(dnca_tot_amt)은 미정산 매수대금 포함 → 증권평가와 이중계산 위험!
+  // → 가용현금 = 예수금 - 투자원금(DB) 으로 이중계산 방지
+  const deposit = !viewIsPaper ? ((balance as any).totalDeposit ?? 0) : 0;
   const rawCashSafe = Number.isNaN(rawCash) || !rawCash ? 0 : rawCash;
   const safeDomestic = Number.isNaN(domesticMarketValue) ? 0 : domesticMarketValue;
   const safeOverseasMV = Number.isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw;
   const safeOverseasCashKrw = Number.isNaN(overseasCashKrw) ? 0 : Math.max(0, overseasCashKrw);
 
-  // 총자산 = 예수금(현금) + 국내증권평가 + 해외증권평가 + 해외현금
-  // Live: 예수금(dnca_tot_amt) + 증권시가 + 해외MV + 해외현금
-  // Paper: rawCash + 증권시가 + 해외MV + 해외현금
-  const depositSafe = !viewIsPaper && deposit > 0 ? deposit : rawCashSafe;
-  const grandTotalValue = depositSafe + safeDomestic + safeOverseasMV + safeOverseasCashKrw;
+  // Live 가용현금 = 예수금 - 투자원금(DB chains 기준) — 미정산 매수대금 제거
+  // Paper: rawCash 그대로 (paper 예수금 = 주문가능현금)
+  const freeDomesticCash = !viewIsPaper && deposit > 0
+    ? Math.max(0, deposit - domesticInvested)
+    : rawCashSafe;
+  // 총자산 = 가용현금 + 국내증권평가 + 해외증권평가 + 해외현금
+  const grandTotalValue = freeDomesticCash + safeDomestic + safeOverseasMV + safeOverseasCashKrw;
 
   // 비중(weight) 계산 — grandTotalValue 기준 시가 기반 통합 비중
   for (const ch of enrichedChains as any[]) {
@@ -616,8 +619,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
 
   // 국내 주문가능 현금: actualCash = rawCash(TTTC8908R max_buy_amt) — 대용 포함, KR 매수 한도용
   const unifiedCash = Math.round(actualCash);
-  // 총현금: 예수금(실제 현금) + 해외현금 — KIS nass_amt 미사용
-  const totalCash = Math.round(depositSafe + safeOverseasCashKrw);
+  // 총현금: 가용현금(예수금-투자원금) + 해외현금
+  const totalCash = Math.round(freeDomesticCash + safeOverseasCashKrw);
   // 해외 현금 표시
   const overseasCashForDisplay = Math.round(safeOverseasCashKrw);
   const overseasCashUsdDisplay = FX_RATE > 0 ? Math.round((overseasCashForDisplay / FX_RATE) * 100) / 100 : 0;
