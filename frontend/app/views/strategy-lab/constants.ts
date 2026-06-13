@@ -11,6 +11,14 @@ export const STRATEGY_LABELS: Record<string, string> = {
   PULLBACK: '눌림', PARKING: '파킹',
 };
 
+/** trigger_source 한글 라벨 */
+export const TRIGGER_LABELS: Record<string, string> = {
+  TRACK_B: 'AI 추적', CLAUDE: 'Claude', GEMINI: 'Gemini',
+  OVERSEAS: '해외', MANUAL: '수동', EXTERNAL: '외부신호',
+  SNIPER: '스나이퍼', OPENING_BELL: '장시작', AFTER_HOURS: '시간외',
+  CASH_PARKING: '파킹', EOD_BLUECHIP: '장마감',
+};
+
 export const STRATEGY_ICONS: Record<string, string> = {
   SWING: '〰', BREAKOUT: '⚡', SCALPING: '⏱', SNIPER: '◎',
   EOD_BETTING: '🌅', BOTTOM_FISHING: '⬇', DEFENSE: '🛡', DIVIDEND: '💰',

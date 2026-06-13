@@ -4,7 +4,7 @@ import React from 'react';
 import { Panel, SideBadge, StatusBadge } from '@/components/ui';
 import { fmt, fmtWon, fmtUsd, fmtTime } from '../../lib/utils';
 import { simplifyReason } from '../../lib/helpers';
-import { STRATEGY_LABELS } from '../strategy-lab/constants';
+import { STRATEGY_LABELS, TRIGGER_LABELS } from '../strategy-lab/constants';
 import type { Trade } from '../../types';
 
 const STRATEGY_COLORS: Record<string, string> = {
@@ -115,11 +115,9 @@ export function TradeListPanel({
                           </span>
                         );
                       })()
-                    : t.trigger_source === 'OVERSEAS'
-                      ? <span className="px-1.5 py-0.5 rounded text-[11px] bg-purple-900/30 text-purple-300">미국</span>
-                      : t.trigger_source === 'MANUAL'
-                        ? <span className="px-1.5 py-0.5 rounded text-[11px] bg-slate-700/50 text-slate-400">수동</span>
-                        : <span className="px-1.5 py-0.5 rounded text-[11px] bg-slate-700/50 text-slate-500">{t.trigger_source ?? '-'}</span>
+                    : <span className={`px-1.5 py-0.5 rounded text-[11px] ${t.trigger_source === 'OVERSEAS' ? 'bg-purple-900/30 text-purple-300' : 'bg-slate-700/50 text-slate-400'}`}>
+                        {TRIGGER_LABELS[t.trigger_source ?? ''] ?? t.trigger_source ?? '-'}
+                      </span>
                   }
                 </td>
                 <td className="px-4 py-3 text-slate-400 max-w-[200px]">

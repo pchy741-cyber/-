@@ -4,6 +4,7 @@ import React from 'react';
 import { Panel, SideBadge, EmptyMsg } from '@/components/ui';
 import { fmt, fmtWon, fmtUsd, fmtTime, pc } from '../../lib/utils';
 import { toDisplayName, isUnresolvedStockName } from '../../lib/helpers';
+import { TRIGGER_LABELS } from '../strategy-lab/constants';
 import type { Trade } from '../../types';
 
 /** AI 사유를 초보자 친화적 한글로 요약 */
@@ -69,7 +70,7 @@ export default function RecentTradesPanel({
                         return isUnresolvedStockName(resolved, t.stock_code) ? getStockName(t.stock_code) : resolved;
                       })()}
                     </span>
-                    {isOverseasTrade && <span className="text-[9px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded-md">🇺🇸</span>}
+                    <span className="text-[9px] bg-white/[0.06] text-slate-400 px-1.5 py-0.5 rounded-md">{TRIGGER_LABELS[t.trigger_source ?? ''] ?? t.trigger_source ?? '-'}</span>
                     {t.status === 'PENDING' && <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded-md animate-pulse font-bold">{t.side === 'BUY' ? '구매중' : '매도중'}</span>}
                     <span className="text-[10px] text-slate-600">{fmtTime(t.created_at)}</span>
                   </div>
