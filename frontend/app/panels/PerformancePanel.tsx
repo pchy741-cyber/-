@@ -2,13 +2,14 @@
 
 import React from 'react';
 import { api, fmtWon } from '../lib/utils';
+import { isOverseasTrade as isOvTrade } from '../lib/helpers';
 import type { Trade, Strategy, ToastFn } from '../types';
 
 export default function PerformancePanel({ trades, strategy, setStrategy, toast, fxRate = 1420 }: { trades: Trade[]; strategy: Strategy | null; setStrategy?: (s: Strategy) => void; toast?: ToastFn; fxRate?: number }) {
   const [quickPrompt, setQuickPrompt] = React.useState('');
   const [savingPrompt, setSavingPrompt] = React.useState(false);
 
-  const isOverseasTrade = (t: Trade) => !/^[0-9]{6}$/.test(String(t.stock_code ?? ''));
+  const isOverseasTrade = (t: Trade) => isOvTrade(t);
 
   // 일별 실현 손익 계산 (SELL 체결 기준) — 해외 USD → KRW 변환
   const sellTrades = trades.filter(t => t.status === 'FILLED' && t.side === 'SELL');

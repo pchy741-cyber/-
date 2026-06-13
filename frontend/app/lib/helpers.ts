@@ -33,6 +33,16 @@ export function toDisplayName(name: unknown, code?: string): string {
   return n;
 }
 
+/** 6자리 숫자 = 국내 종목코드 */
+export function isKrCode(code: string): boolean {
+  return /^[0-9]{6}$/.test(code);
+}
+
+/** 해외종목 판별 (코드 + trigger_source 이중 체크) */
+export function isOverseasTrade(t: { stock_code: string; trigger_source?: string | null }): boolean {
+  return t.trigger_source === 'OVERSEAS' && !isKrCode(t.stock_code);
+}
+
 /** confirm 다이얼로그 제목 접두사 — 실전/연습 모드 구분 */
 export function livePrefix(viewMode: 'live' | 'paper'): string {
   return viewMode === 'live' ? '⚠️ [실전모드] ' : '[연습모드] ';

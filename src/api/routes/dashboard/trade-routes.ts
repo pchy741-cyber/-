@@ -313,28 +313,33 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
         COUNT(*) FILTER (WHERE o.side = 'BUY') AS buy_count,
         COUNT(*) FILTER (WHERE o.side = 'SELL') AS sell_count,
         COUNT(*) AS total_count,
-        -- 체인 기반 실현손익 (매도만, 국내 수수료 0.195% 차감)
+        -- 국내 실현손익 KRW (체인 또는 주문 avg_buy_price 폴백)
         COALESCE(SUM(
-          CASE WHEN o.side = 'SELL' AND tc.avg_buy_price > 0 THEN
-            CASE WHEN o.stock_code ~ '^[0-9]{6}$' THEN
-              -- 국내: 매도수수료 차감
-              (COALESCE(o.filled_price, 0) * COALESCE(o.filled_quantity, o.quantity, 0)
-               - ROUND(COALESCE(o.filled_price, 0) * COALESCE(o.filled_quantity, o.quantity, 0) * ${KR_FEE.SELL_FEE_PCT}))
-              - (tc.avg_buy_price * COALESCE(o.filled_quantity, o.quantity, 0))
-            ELSE
-              -- 해외: 수수료 없음
-              (COALESCE(o.filled_price, 0) - tc.avg_buy_price) * COALESCE(o.filled_quantity, o.quantity, 0)
-            END
+          CASE WHEN o.side = 'SELL' AND o.stock_code ~ '^[0-9]{6}$'
+               AND COALESCE(tc.avg_buy_price, o.avg_buy_price) > 0 THEN
+            (COALESCE(o.filled_price, 0) * COALESCE(o.filled_quantity, o.quantity, 0)
+             - ROUND(COALESCE(o.filled_price, 0) * COALESCE(o.filled_quantity, o.quantity, 0) * ${KR_FEE.SELL_FEE_PCT}))
+            - (COALESCE(tc.avg_buy_price, o.avg_buy_price) * COALESCE(o.filled_quantity, o.quantity, 0))
           END
         ), 0) AS realized_pnl,
+        -- 해외 실현손익 USD (체인 없으므로 o.avg_buy_price 사용)
+        COALESCE(SUM(
+          CASE WHEN o.side = 'SELL' AND o.stock_code !~ '^[0-9]{6}$'
+               AND COALESCE(tc.avg_buy_price, o.avg_buy_price) > 0 THEN
+            (COALESCE(o.filled_price, 0) - COALESCE(tc.avg_buy_price, o.avg_buy_price))
+            * COALESCE(o.filled_quantity, o.quantity, 0)
+          END
+        ), 0) AS realized_pnl_usd,
         -- 해외/국내 구분
         COUNT(*) FILTER (WHERE o.stock_code ~ '^[0-9]{6}$') AS domestic_count,
         COUNT(*) FILTER (WHERE o.stock_code !~ '^[0-9]{6}$') AS overseas_count,
-        -- 승패
-        COUNT(*) FILTER (WHERE o.side = 'SELL' AND tc.avg_buy_price > 0
-          AND COALESCE(o.filled_price, 0) > tc.avg_buy_price) AS win_count,
-        COUNT(*) FILTER (WHERE o.side = 'SELL' AND tc.avg_buy_price > 0
-          AND COALESCE(o.filled_price, 0) <= tc.avg_buy_price) AS loss_count
+        -- 승패 (체인 또는 주문 avg_buy_price 폴백)
+        COUNT(*) FILTER (WHERE o.side = 'SELL'
+          AND COALESCE(tc.avg_buy_price, o.avg_buy_price) > 0
+          AND COALESCE(o.filled_price, 0) > COALESCE(tc.avg_buy_price, o.avg_buy_price)) AS win_count,
+        COUNT(*) FILTER (WHERE o.side = 'SELL'
+          AND COALESCE(tc.avg_buy_price, o.avg_buy_price) > 0
+          AND COALESCE(o.filled_price, 0) <= COALESCE(tc.avg_buy_price, o.avg_buy_price)) AS loss_count
       FROM orders o
       LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
       WHERE o.trading_mode = $1
@@ -354,6 +359,7 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
       domesticCount: Number(r.domestic_count),
       overseasCount: Number(r.overseas_count),
       realizedPnl: Math.round(Number(r.realized_pnl) * 100) / 100,
+      realizedPnlUsd: Math.round(Number(r.realized_pnl_usd || 0) * 100) / 100,
       winCount: Number(r.win_count),
       lossCount: Number(r.loss_count),
       winRate:
@@ -363,6 +369,7 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
     }));
 
     const totalPnl = dailySummary.reduce((sum, d) => sum + d.realizedPnl, 0);
+    const totalPnlUsd = dailySummary.reduce((sum, d) => sum + d.realizedPnlUsd, 0);
     const totalWins = dailySummary.reduce((sum, d) => sum + d.winCount, 0);
     const totalLosses = dailySummary.reduce((sum, d) => sum + d.lossCount, 0);
 
@@ -371,6 +378,7 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
       summary: {
         totalDays: dailySummary.length,
         totalPnl: Math.round(totalPnl * 100) / 100,
+        totalPnlUsd: Math.round(totalPnlUsd * 100) / 100,
         totalTrades: dailySummary.reduce((sum, d) => sum + d.totalTrades, 0),
         totalWins,
         totalLosses,

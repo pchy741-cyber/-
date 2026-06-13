@@ -4,15 +4,15 @@
 import { Hono } from 'hono';
 import { removeOverride, setOverride } from '../../ai/ai-overrides.js';
 import { analyzeImageReference, analyzeTextReference } from '../../ai/reference-analyzer.js';
-import { getCtxIsPaper } from '../../config/context.js';
 import { getPool } from '../../db/client.js';
+import { resolveRequestMode } from '../guards/live-pin.js';
 import { logger } from '../../utils/logger.js';
 
 export const referenceRoutes = new Hono();
 
 // ── GET /api/references — 활성 레퍼런스 목록 ─────────────────────────
 referenceRoutes.get('/references', async (c) => {
-  const isPaper = getCtxIsPaper();
+  const isPaper = resolveRequestMode(c);
   try {
     const { rows } = await getPool().query(
       `SELECT id, content, analysis, stock_codes, sentiment, confidence,
@@ -31,7 +31,7 @@ referenceRoutes.get('/references', async (c) => {
 
 // ── POST /api/references — 레퍼런스 등록 + AI 분석 + 오버라이드 생성 ──
 referenceRoutes.post('/references', async (c) => {
-  const isPaper = getCtxIsPaper();
+  const isPaper = resolveRequestMode(c);
   let body: { content: string; imageBase64?: string; mimeType?: string; ttlHours?: number };
 
   try {
@@ -128,7 +128,7 @@ referenceRoutes.post('/references', async (c) => {
 // ── DELETE /api/references/:id — 삭제 + 연관 오버라이드 제거 ────────
 referenceRoutes.delete('/references/:id', async (c) => {
   const id = Number(c.req.param('id'));
-  const isPaper = getCtxIsPaper();
+  const isPaper = resolveRequestMode(c);
 
   try {
     // 오버라이드 키 조회

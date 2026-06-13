@@ -3,6 +3,7 @@
  */
 
 import { hardInvalidateDashboardCache } from '../../cache/dashboard-cache.js';
+import { invalidateBalanceCache } from '../../kis/account.js';
 import { OVERSEAS } from '../../config/constants.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getAllocRisk } from '../../db/alloc-risk-cache.js';
@@ -106,6 +107,7 @@ export async function executeOverseasOrder(
       component: 'OVERSEAS',
     });
     hardInvalidateDashboardCache();
+    invalidateBalanceCache();
 
     const { notifyOverseasBuy: nb, notifyOverseasSell: ns } = await import('../../notifications/web-push.js');
     if (side === 'BUY') {
@@ -182,6 +184,7 @@ export async function executeOverseasOrder(
             kis_status: confirmed.filledQty >= qty ? 'FILLED' : 'PARTIAL',
           });
           hardInvalidateDashboardCache();
+    invalidateBalanceCache();
           const { notifyOverseasBuy: nb, notifyOverseasSell: ns } = await import('../../notifications/web-push.js');
           if (side === 'BUY') {
             nb(code, stockName, confirmed.filledQty, confirmed.filledPrice, reasoning).catch(() => {});
