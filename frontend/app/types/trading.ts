@@ -54,6 +54,7 @@ export interface Portfolio {
   domesticInvested?: number;
   domesticEval?: number;
   cash?: number;
+  domesticCash?: number;
   totalValue?: number;
 }
 
