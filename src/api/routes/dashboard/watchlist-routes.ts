@@ -17,7 +17,6 @@ import {
   isMarketOpen,
 } from '../../../kis/market.js';
 import { logger } from '../../../utils/logger.js';
-import { resolveRequestMode } from '../../guards/live-pin.js';
 import { getKnownStockName, isInvalidStockName } from './helpers.js';
 
 export const watchlistRoutes = new Hono();
