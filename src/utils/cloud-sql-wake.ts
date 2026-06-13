@@ -12,7 +12,7 @@ import { getKSTNow } from './time.js';
 const PROJECT = process.env.GCP_PROJECT ?? 'quantops-trading';
 const INSTANCE = process.env.CLOUD_SQL_INSTANCE ?? 'quantops-db';
 const IDLE_SHUTDOWN_MS = 30 * 60_000; // 평일: 30분 미사용 시 자동 중지
-const IDLE_SHUTDOWN_WEEKEND_MS = 10 * 60_000; // 주말: 10분 미사용 시 공격적 중지
+const IDLE_SHUTDOWN_WEEKEND_MS = 30 * 60_000; // 주말: 30분 미사용 시 자동 중지 (10분→30분, 사용자 접속 중 재절전 방지)
 
 let _lastActivityAt = Date.now();
 let _idleTimer: ReturnType<typeof setInterval> | null = null;
@@ -196,12 +196,13 @@ export function startDbHealthWatcher(checkDb: () => Promise<boolean>, onReconnec
   if (_healthTimer) return;
 
   _healthTimer = setInterval(async () => {
-    // 주말 가드: 의도적 Cloud SQL 중지 상태 → wake 시도 차단 (핑퐁 방지)
+    // 주말 가드: 최근 15분 이내 활동 있으면 주말에도 DB 복구 시도 (사용자 접속 중)
     const kstH = getKSTNow();
     const d = kstH.getUTCDay(),
       hh = kstH.getUTCHours();
     const isWeekendOff = d === 0 || (d === 6 && hh >= 9) || (d === 1 && hh < 6);
-    if (isWeekendOff) return; // 주말 동면 중 — DB 복구 시도 안 함
+    const recentActivity = Date.now() - _lastActivityAt < 15 * 60_000; // 15분 이내 활동
+    if (isWeekendOff && !recentActivity) return; // 주말 동면 중 + 사용자 비활성 → 복구 스킵
 
     try {
       const ok = await checkDb();

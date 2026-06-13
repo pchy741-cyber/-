@@ -1,6 +1,7 @@
 import { analyzeTechnicals } from '../../analysis/indicators.js';
 import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
 import type { TradeDecision } from '../../db/models.js';
+import { getTimeWeightedStop } from '../../risk/entry-timing-guard.js';
 import { logger } from '../../utils/logger.js';
 import { getOverride } from '../ai-overrides.js';
 import {
@@ -10,8 +11,28 @@ import {
   type TechnicalFallbackParams,
 } from './technical-fallback-types.js';
 
-// TP 도달 전 수익권 포지션 최고 수익률 추적 (서버 재시작 시 리셋 — 허용)
+// TP 도달 전 수익권 포지션 최고 수익률 추적
+// 서버 재시작 시 DB peak_price_since_open에서 복원 (restorePreTpPeakMap 호출)
 const _preTpPeakMap = new Map<string, number>(); // stock_code → peak pnlPct
+
+/** 서버 부팅 시 DB 오픈 체인의 peak_price_since_open → _preTpPeakMap 복원 */
+export function restorePreTpPeakMap(
+  chains: Array<{ stock_code: string; avg_buy_price: number | string | null; peak_price_since_open?: number | null }>,
+): void {
+  for (const c of chains) {
+    const avg = Number(c.avg_buy_price ?? 0);
+    const peak = Number(c.peak_price_since_open ?? 0);
+    if (avg > 0 && peak > 0) {
+      const peakPnlPct = ((peak - avg) / avg) * 100;
+      if (peakPnlPct > 0) {
+        _preTpPeakMap.set(c.stock_code, peakPnlPct);
+      }
+    }
+  }
+  if (_preTpPeakMap.size > 0) {
+    logger.info(`📈 Pre-TP peak 복원: ${_preTpPeakMap.size}종목 (${[..._preTpPeakMap.entries()].map(([k, v]) => `${k}:+${v.toFixed(1)}%`).join(', ')})`, { component: 'TRACK_B' });
+  }
+}
 
 // CEO 지시 (2026-06-12): STRONG_SELL 분할매도 쿨다운
 //   Why: 한화비전 사례 — 같은 종목 14건 분할매도, 회당 수수료 0.195% 누적
@@ -45,7 +66,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
   const { mode, livePrices, chartData, openChains, junkStockCodes, totalAssets, marketSignals } = params;
   const strategyParams = resolveStrategyParams(mode, params);
   const aiScoreMap = buildAiScoreMap(params.aiScores);
-  const { h: _scalpH, m: _scalpM, isPastScalpDeadline } = getKstScalpTime();
+  const { h: _scalpH, m: _scalpM } = getKstScalpTime();
   const decisions: TradeDecision[] = [];
 
   // 포트폴리오 전체 PnL 계산 (급락 보호용 — 매 사이클 1회)
@@ -63,8 +84,8 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
   const isDowntrendMode = (params.macroSizingMult ?? 1.0) < 0.8;
 
   // 1. 보유 종목 매도 판단 (손절/익절)
-  // 동일 종목에 다중 체인(분할 매수)이 있을 경우 중복 매도 신호 방지
-  const processedSellCodes = new Set<string>();
+  // 각 체인은 독립 평가 — 같은 종목이라도 avg_buy_price/strategy가 다를 수 있음
+  const processedSellChains = new Set<string>(); // chain.id 기반 중복 방지
   for (const chain of openChains) {
     const price = livePrices.get(chain.stock_code);
     if (!price || !chain.avg_buy_price) continue;
@@ -72,8 +93,8 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     const avgBuy = Number(chain.avg_buy_price);
     const pnlPct = ((price.currentPrice - avgBuy) / avgBuy) * 100;
 
-    // 동일 종목 중복 매도 신호 방지 (다중 체인 시 첫 번째 체인만 처리)
-    if (processedSellCodes.has(chain.stock_code)) continue;
+    // 이미 이 체인에 대해 결정이 내려졌으면 스킵
+    if (processedSellChains.has(chain.id)) continue;
 
     // ── 포트폴리오 수익 보호: 하락장 감지 시 수익권 종목 선제 청산 ──
     // 포트폴리오 전체 수익 +2% 이상 + RISK_OFF/하락장(macroSizingMult<0.8) + 이 종목 수익권
@@ -87,7 +108,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         reasoning: `포트폴리오 수익보호(포트폴리오 +${portfolioPnlPct.toFixed(1)}%/하락장레짐): 수익 +${pnlPct.toFixed(1)}% → 급락전 선제청산`,
         confidence: 0.88,
       });
-      processedSellCodes.add(chain.stock_code);
+      processedSellChains.add(chain.id);
       _preTpPeakMap.delete(chain.stock_code);
       continue;
     }
@@ -129,7 +150,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
             reasoning: `수익보호 트레일링(TP전): 고점 +${curPeak.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}% (고점대비 ${dropFromPeak.toFixed(1)}%)`,
             confidence: 0.88,
           });
-          processedSellCodes.add(chain.stock_code);
+          processedSellChains.add(chain.id);
           _preTpPeakMap.delete(chain.stock_code);
           continue;
         }
@@ -144,7 +165,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       logger.info(`🤖 AI Loop forceHold: ${chain.stock_code} 매도 보류 (pnl=${pnlPct.toFixed(1)}%)`, {
         component: 'AI_LOOP',
       });
-      processedSellCodes.add(chain.stock_code);
+      processedSellChains.add(chain.id);
       continue;
     }
     // AI Loop forceSell: Claude Code가 즉시 매도 지시
@@ -158,37 +179,12 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         reasoning: `🤖 AI Loop 강제매도 (pnl=${pnlPct.toFixed(1)}%)`,
         confidence: 0.95,
       });
-      processedSellCodes.add(chain.stock_code);
+      processedSellChains.add(chain.id);
       continue;
     }
 
-    // SCALPING 강제청산: 진입 후 60분 또는 고정 10:00 중 이른 시각 (ScalpRadar 장중 진입 대응)
-    if (chain.strategy_mode === 'SCALPING' && chain.total_quantity > 0) {
-      const nowMs = Date.now();
-      const openedMs = chain.opened_at ? new Date(chain.opened_at).getTime() : 0;
-      const dynamicDeadlineMs = openedMs > 0 ? openedMs + 60 * 60_000 : 0; // 진입+60분
-      // 장 마감 15:15 하드 데드라인
-      const kstNow = new Date(nowMs + 9 * 60 * 60_000);
-      const todayDate = kstNow.toISOString().split('T')[0];
-      const hardDeadlineMs = new Date(`${todayDate}T15:15:00+09:00`).getTime();
-      // 기존 10:00 고정 데드라인 (개장벨 진입 호환)
-      const fixedDeadlineMs = isPastScalpDeadline ? nowMs - 1 : Infinity;
-      const effectiveDeadlineMs = Math.min(dynamicDeadlineMs || Infinity, hardDeadlineMs, fixedDeadlineMs);
-
-      if (nowMs >= effectiveDeadlineMs) {
-        const elapsedMin = openedMs > 0 ? Math.round((nowMs - openedMs) / 60_000) : 0;
-        decisions.push({
-          action: 'FORCE_CLOSE',
-          stock_code: chain.stock_code,
-          quantity: chain.total_quantity,
-          price_type: 'MARKET',
-          reasoning: `SCALPING 강제청산(${elapsedMin}분 경과): 윈도우 종료, 전량 청산 (${pnlPct.toFixed(1)}%)`,
-          confidence: 1.0,
-        });
-        processedSellCodes.add(chain.stock_code);
-        continue;
-      }
-    }
+    // SCALPING 강제청산 제거: SCALPING 전략 자체가 영구 비활성화됨 (Step 2)
+    // 기존 SCALPING 체인이 남아있는 경우 일반 TP/SL 로직에서 처리
 
     // BREAKOUT 전용 매도: Williams 변동성 돌파 → 익일 시가 매도 (09:00~09:10)
     if (chain.strategy_mode === 'BREAKOUT' && chain.total_quantity > 0) {
@@ -211,7 +207,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
             reasoning: `BREAKOUT/Williams next-day sell: ${holdingDays}d held, pnl=${pnlPct.toFixed(1)}%`,
             confidence: 1.0,
           });
-          processedSellCodes.add(chain.stock_code);
+          processedSellChains.add(chain.id);
           continue;
         }
       }
@@ -238,7 +234,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
           reasoning: `외국인+기관 동반이탈(하락장): 전량 즉시 청산 → 추가 손실 방지`,
           confidence: 0.9,
         });
-        processedSellCodes.add(chain.stock_code);
+        processedSellChains.add(chain.id);
         continue;
       }
       const partialQty = Math.ceil(chain.total_quantity * 0.5);
@@ -251,7 +247,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
           reasoning: `외국인+기관 동반이탈(STRONG_SELL): 보유 50% 부분매도 → 수급 리스크 축소`,
           confidence: 0.85,
         });
-        processedSellCodes.add(chain.stock_code);
+        processedSellChains.add(chain.id);
         continue;
       }
       decisions.push({
@@ -262,7 +258,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         reasoning: `외국인+기관 동반이탈(STRONG_SELL): 분할불가 전량매도 → 수급 리스크 차단`,
         confidence: 0.85,
       });
-      processedSellCodes.add(chain.stock_code);
+      processedSellChains.add(chain.id);
       continue;
     }
 
@@ -286,7 +282,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
           reasoning: `마감전 수익확정(${closeLabel}): +${pnlPct.toFixed(1)}% → 장마감 손실 방지`,
           confidence: 0.92,
         });
-        processedSellCodes.add(chain.stock_code);
+        processedSellChains.add(chain.id);
         continue;
       }
     }
@@ -355,7 +351,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
           reasoning: `SCALPING 익절(전량): +${pnlPct.toFixed(1)}% (목표 ${effectiveTp}%)`,
           confidence: 0.95,
         });
-        processedSellCodes.add(chain.stock_code);
+        processedSellChains.add(chain.id);
         continue;
       }
       // 1단계: 첫 익절 — 하락장이면 전량, 정상장이면 35% 부분 매도
@@ -368,7 +364,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
           reasoning: `하락장 익절(전량): +${pnlPct.toFixed(1)}% 도달 (목표 ${effectiveTp.toFixed(1)}%) → 분할 없이 즉시 청산`,
           confidence: 0.92,
         });
-        processedSellCodes.add(chain.stock_code);
+        processedSellChains.add(chain.id);
         _preTpPeakMap.delete(chain.stock_code);
         continue;
       }
@@ -382,7 +378,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
           reasoning: `1단계 익절(35%): +${pnlPct.toFixed(1)}% 도달 (목표 ${effectiveTp.toFixed(1)}% AI${realtimeAiScore}점) → 나머지 65% 트레일링 대기`,
           confidence: 0.9,
         });
-        processedSellCodes.add(chain.stock_code);
+        processedSellChains.add(chain.id);
         continue;
       }
       // 수량 1주 등 분할 불가 → 전량 익절
@@ -395,7 +391,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
           reasoning: `기술적 익절(전량): +${pnlPct.toFixed(1)}% (목표 ${effectiveTp}%)`,
           confidence: 0.9,
         });
-        processedSellCodes.add(chain.stock_code);
+        processedSellChains.add(chain.id);
         continue;
       }
     }
@@ -417,7 +413,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
             reasoning: `브레이크이븐스톱(peak없음): ${pnlPct.toFixed(1)}%`,
             confidence: 0.9,
           });
-          processedSellCodes.add(chain.stock_code);
+          processedSellChains.add(chain.id);
         }
         continue;
       }
@@ -437,7 +433,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
             reasoning: `2단계 익절(35%): +${pnlPct.toFixed(1)}% (TP+3% 달성) → 잔여 ${chain.total_quantity - sellQty2}주 트레일링`,
             confidence: 0.9,
           });
-          processedSellCodes.add(chain.stock_code);
+          processedSellChains.add(chain.id);
           continue;
         }
       }
@@ -466,87 +462,71 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
             : `트레일링 스톱: peak 대비 ${trailDropPct.toFixed(2)}% 하락 (ATR ${dynamicTrailPct.toFixed(1)}%, peak=${peakPrice.toFixed(0)}원)`,
           confidence: 0.9,
         });
-        processedSellCodes.add(chain.stock_code);
+        processedSellChains.add(chain.id);
         continue;
       }
     }
     // ──────────────────────────────────────────────────────────────────────
 
-    // ── 모멘텀 가드: 진입 직후 기술지표 반전 → SL 타이트닝 ────────────
-    // 진입 후 10분 이내 MACD/RSI 꺾이면 모멘텀 소진 가능성 높음 → SL -2%로 축소
-    if (chain.opened_at && sellTech && !isScalpChain && chain.status !== 'PROFIT_TAKING') {
-      const holdingMin = (Date.now() - new Date(chain.opened_at).getTime()) / 60_000;
-      if (holdingMin <= 10) {
-        const macdBearish = sellTech.macdCrossover === 'BEARISH';
-        const rsiFading = sellTech.rsi14 < 45; // 진입 시 50+ 기대, 45 미만으로 급락
-        if (macdBearish || rsiFading) {
-          const guardSl = -2.0;
-          if (effectiveSl < guardSl) {
-            logger.info(
-              `⚡ 모멘텀가드: ${chain.stock_code} ${holdingMin.toFixed(0)}분 보유 — ${macdBearish ? 'MACD↓' : ''}${rsiFading ? `RSI${sellTech.rsi14.toFixed(0)}` : ''} → SL ${effectiveSl.toFixed(1)}%→${guardSl}%`,
-              { component: 'TRACK_B' },
-            );
-            effectiveSl = guardSl;
-          }
-        }
+    // ── 시간 가중치 트레일링 스탑 (getTimeWeightedStop 통합) ──────────
+    // 기존 모멘텀 가드 + 데드머니 3/4/6일 exit 5개를 Phase 1~3으로 통합
+    // Phase 1 (0-48h): 구조적 SL만 (초기 휩소 방어) — ATR dynamicStop도 비활성화
+    // Phase 2 (48-72h): 수익 시 본절 이동
+    // Phase 3 (72h+): ATR 기반 trailing, 손실 시 강제 손절
+    let twStopIsPhase1Hold = false; // Phase 1 HOLD 시 ATR dynamicStop 우회 플래그
+    if (chain.opened_at && !isScalpChain && chain.status !== 'PROFIT_TAKING') {
+      const holdingHours = (Date.now() - new Date(chain.opened_at).getTime()) / (60 * 60_000);
+      // MA20 이탈 판정: 현재가 vs SMA20 (sellTech에 close 없으므로 livePrices 사용)
+      const belowMa20 = sellTech ? price.currentPrice < sellTech.sma20 : false;
+
+      const twStop = getTimeWeightedStop({
+        holdingHours,
+        pnlPct,
+        baseSlPct: effectiveSl,
+        belowMa20,
+      });
+
+      logger.debug(
+        `⏱️ TWStop ${chain.stock_code}: ${twStop.action} (${twStop.reason})`,
+        { component: 'TRACK_B' },
+      );
+
+      if (twStop.action === 'EXECUTE_SL') {
+        decisions.push({
+          action: 'FORCE_CLOSE',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `시간가중SL: ${twStop.reason}`,
+          confidence: 0.9,
+        });
+        processedSellChains.add(chain.id);
+        continue;
+      }
+
+      if (twStop.action === 'HOLD') {
+        // Phase 1 버퍼: 구조적 SL만 허용, 일반 SL + ATR dynamicStop 비활성화
+        effectiveSl = twStop.effectiveSlPct;
+        twStopIsPhase1Hold = true; // ATR 우회 플래그
+      }
+
+      if (twStop.action === 'BREAK_EVEN') {
+        // 본절 이동: SL을 twStop이 지정한 값(0%)으로 올림
+        effectiveSl = Math.max(effectiveSl, twStop.effectiveSlPct);
+      }
+
+      if (twStop.action === 'TRAIL_TIGHTEN') {
+        // 트레일링 강화: 고점 대비 -2% trail
+        effectiveSl = Math.max(effectiveSl, twStop.effectiveSlPct);
       }
     }
     // ──────────────────────────────────────────────────────────────────────
-
-    // ── 데드머니 탈출: 장기 보유 저성과 종목 현금 재배치 ──────────────
-    // SCALPING/PROFIT_TAKING 예외 — 이미 별도 청산 로직 존재
-    if (chain.strategy_mode !== 'SCALPING' && chain.status !== 'PROFIT_TAKING' && chain.opened_at) {
-      const holdingDays = Math.floor((Date.now() - new Date(chain.opened_at).getTime()) / (24 * 60 * 60_000));
-
-      // 6일+ 보유 + 수익 < 1.5% → 모멘텀 부족, 현금 재배치 (8일→6일, 2%→1.5% 강화)
-      if (holdingDays >= 6 && pnlPct < 1.5 && pnlPct >= 0) {
-        decisions.push({
-          action: 'SELL',
-          stock_code: chain.stock_code,
-          quantity: chain.total_quantity,
-          price_type: 'MARKET',
-          reasoning: `데드머니탈출(${holdingDays}일 보유 +${pnlPct.toFixed(1)}%<1.5%): 모멘텀 부족 → 현금 재배치`,
-          confidence: 0.8,
-        });
-        processedSellCodes.add(chain.stock_code);
-        continue;
-      }
-
-      // 4일+ 보유 + PnL ±0.8% 이내 → 기회비용 청산 (5일→4일, ±1%→±0.8% 강화)
-      if (holdingDays >= 4 && Math.abs(pnlPct) <= 0.8) {
-        decisions.push({
-          action: 'SELL',
-          stock_code: chain.stock_code,
-          quantity: chain.total_quantity,
-          price_type: 'MARKET',
-          reasoning: `데드머니탈출(${holdingDays}일 보유 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%): 기회비용 청산`,
-          confidence: 0.75,
-        });
-        processedSellCodes.add(chain.stock_code);
-        continue;
-      }
-
-      // 3일+ 보유 + 손실 > 1% → 손절선 타이트닝 (pnlPct - 0.5%)
-      if (holdingDays >= 3 && pnlPct < -1.0) {
-        const tightenedSl = pnlPct - 0.5;
-        // 체인 SL이 타이트닝보다 넓으면 → 좁힌 SL로 교체 (즉시 청산은 아니고, 기존 SL 대신 적용)
-        const chainSlRef =
-          chain.stop_loss_pct ?? STRATEGY_PARAMS[chain.strategy_mode as StrategyMode]?.stopLossPct ?? -3;
-        if (Number(chainSlRef) < tightenedSl) {
-          // 타이트닝된 SL이 현재 손실보다 이미 넓으면 즉시 청산
-          logger.info(
-            `⏰ 데드머니 타이트닝: ${chain.stock_code} ${holdingDays}일 보유 ${pnlPct.toFixed(1)}% → SL ${tightenedSl.toFixed(1)}% (기존 ${Number(chainSlRef).toFixed(1)}%)`,
-            { component: 'TRACK_B' },
-          );
-          // effectiveSl을 타이트닝 값으로 교체 — 아래 손절 로직에서 사용됨
-          effectiveSl = tightenedSl;
-        }
-      }
-    }
-    // ────────────────────────────────────────────────────────────────────
 
     // 손절 (ATR 동적 손절 vs 전략 고정 손절 — 더 보수적인 쪽 적용)
-    const dynamicStop = sellTech ? sellTech.dynamicStopLossPct : effectiveSl;
+    // Phase 1 HOLD 중에는 ATR dynamicStop 비활성화 (구조적 SL만 허용 — 초기 휩소 방어)
+    const dynamicStop = twStopIsPhase1Hold
+      ? effectiveSl // Phase 1: ATR 무시, effectiveSl(=baseSlPct×1.5)만 사용
+      : (sellTech ? sellTech.dynamicStopLossPct : effectiveSl);
     // AI 80점+ 고확신 종목은 손절 기준 1.2배 넓히기 (일시적 노이즈로 조기손절 방지)
     const stopWidenMultiplier = realtimeAiScore >= 80 ? 1.2 : 1.0;
     // 시그널 보정: 체결강도 < 80(매도세 압도) → 손절 타이트닝 (0.85x), 체결강도 > 120(매수세) → 1.1x 완화
@@ -566,7 +546,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         reasoning: `손절: ${pnlPct.toFixed(1)}% (ATR동적=${dynamicStop.toFixed(1)}% 기준=${effectiveSl.toFixed(1)}% AI${realtimeAiScore}점)`,
         confidence: 0.95,
       });
-      processedSellCodes.add(chain.stock_code);
+      processedSellChains.add(chain.id);
       continue;
     }
 
@@ -589,7 +569,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
               reasoning: `대형포지션 기술적 부분매도(30%): STRONG_SELL | RSI=${tech.rsi14.toFixed(0)} MACD=${tech.macdCrossover} | 나머지 70% 추가 확인 후 판단`,
               confidence: 0.65,
             });
-            processedSellCodes.add(chain.stock_code);
+            processedSellChains.add(chain.id);
           }
         } else {
           decisions.push({
@@ -600,7 +580,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
             reasoning: `기술적 매도: RSI=${tech.rsi14.toFixed(0)} MACD=${tech.macdCrossover} score=${tech.score}`,
             confidence: 0.7,
           });
-          processedSellCodes.add(chain.stock_code);
+          processedSellChains.add(chain.id);
         }
       }
     }

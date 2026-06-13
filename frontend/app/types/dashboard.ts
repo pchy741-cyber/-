@@ -222,17 +222,8 @@ export interface MpDividend {
   [key: string]: unknown;
 }
 
-export interface MpFutures {
-  currentValueKrw?: number;
-  investedKrw?: number;
-  trades?: number;
-  winRate?: number;
-  [key: string]: unknown;
-}
-
 export interface MpData {
   dividend?: MpDividend;
-  futures?: MpFutures;
   fx?: number;
   [key: string]: unknown;
 }

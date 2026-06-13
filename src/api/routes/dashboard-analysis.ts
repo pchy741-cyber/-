@@ -7,6 +7,7 @@ import { getDinnerMoneyStats } from '../../automation/profit-withdraw.js';
 import { fetchShortSellingData } from '../../automation/short-selling.js';
 import { getAiStatus } from '../../cache/ai-status.js';
 import { getScoresWithFallback } from '../../cache/redis.js';
+import { KR_FEE } from '../../config/constants.js';
 import { config } from '../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getOpenChains, getPool } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
@@ -569,10 +570,10 @@ dashboardAnalysisRoutes.post('/run-track-a', async (c) => {
   }
 });
 
-// ── 방어 파킹 수동 강제 해제 + KODEX 200 즉시 시장가 매도 ──
+// ── 방어 파킹 수동 강제 해제 + SOFR ETF 즉시 시장가 매도 ──
 dashboardAnalysisRoutes.post('/release-defense-park', async (c) => {
   try {
-    const { deactivateDefensePark } = await import('../../ai/track-b/defense-park.js');
+    const { deactivateDefensePark, PARK_STOCK_CODE: parkCode, PARK_STOCK_NAME: parkName } = await import('../../ai/track-b/defense-park.js');
     const { getPositionForStock } = await import('../../kis/account.js');
     const { placeOrder } = await import('../../kis/order.js');
 
@@ -590,15 +591,15 @@ dashboardAnalysisRoutes.post('/release-defense-park', async (c) => {
       /* 실패해도 계속 */
     }
 
-    const position = await getPositionForStock('069500');
+    const position = await getPositionForStock(parkCode);
     let sellMsg = '';
     if (position && position.quantity > 0) {
-      const result = await placeOrder({ stockCode: '069500', side: 'SELL', quantity: position.quantity });
+      const result = await placeOrder({ stockCode: parkCode, side: 'SELL', quantity: position.quantity });
       logger.info(
-        `🛡️ KODEX 200 즉시 매도: ${position.quantity}주 → ${result.success ? '성공' : '실패'} (${result.message})`,
+        `🛡️ ${parkName} 즉시 매도: ${position.quantity}주 → ${result.success ? '성공' : '실패'} (${result.message})`,
         { component: 'MANUAL' },
       );
-      sellMsg = `KODEX 200 ${position.quantity}주 매도 완료. `;
+      sellMsg = `${parkName} ${position.quantity}주 매도 완료. `;
     }
 
     let syncMsg = '';
@@ -1111,7 +1112,7 @@ dashboardAnalysisRoutes.get('/market/tax-estimate', async (c) => {
       SELECT
         SUM(GREATEST(0, (o.filled_price - tc.avg_buy_price) * o.filled_quantity)) AS gross_gain,
         SUM(GREATEST(0, (tc.avg_buy_price - o.filled_price) * o.filled_quantity)) AS gross_loss,
-        SUM(o.filled_price * o.filled_quantity * 0.0023) AS transaction_tax,
+        SUM(o.filled_price * o.filled_quantity * $3) AS transaction_tax,
         SUM(o.filled_price * o.filled_quantity) AS total_sell_amount
       FROM orders o
       JOIN transaction_chains tc ON tc.id = o.chain_id
@@ -1121,7 +1122,7 @@ dashboardAnalysisRoutes.get('/market/tax-estimate', async (c) => {
         AND EXTRACT(YEAR FROM o.created_at) = $1
         AND o.filled_price IS NOT NULL AND tc.avg_buy_price IS NOT NULL
     `,
-      [year, isPaper],
+      [year, isPaper, KR_FEE.TRANSACTION_TAX_PCT]
     );
     const r = rows[0] ?? {};
     const grossGain = Number(r.gross_gain ?? 0);

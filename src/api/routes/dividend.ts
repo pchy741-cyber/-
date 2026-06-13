@@ -7,6 +7,7 @@
  */
 import { Hono } from 'hono';
 import { fetchExchangeRate } from '../../automation/macro-data.js';
+import { FALLBACK_FX_RATE } from '../../config/constants.js';
 import { getPool } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
 import { resolveIsPaper, resolveRequestMode, validateLivePin } from '../guards/live-pin.js';
@@ -391,9 +392,9 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
     const investKey = isPaper ? 'dividend_invested_krw_paper' : 'dividend_invested_krw_live';
 
     // 모든 독립 쿼리 병렬 실행
-    const [fx, { rows: divHoldings }, { rows: divInvestedRow }, { rows: fBudget }, { rows: fStats }, { rows: fOpen }] =
+    const [fx, { rows: divHoldings }, { rows: divInvestedRow }] =
       await Promise.all([
-        fetchExchangeRate().catch(() => 1350),
+        fetchExchangeRate().catch(() => FALLBACK_FX_RATE),
         pool.query(
           `SELECT dh.stock_code, dh.quantity, dh.avg_price, dh.total_dividends_received,
                 dw.dividend_yield, dw.name
@@ -403,12 +404,6 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
           [isPaper],
         ),
         pool.query(`SELECT COALESCE(value::numeric, 0) AS v FROM overseas_state WHERE key = $1`, [investKey]),
-        pool.query('SELECT * FROM futures_budget WHERE id = 1'),
-        pool.query(
-          `SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE pnl_usd > 0) AS wins FROM futures_trades WHERE pnl_usd IS NOT NULL AND is_paper = $1`,
-          [isPaper],
-        ),
-        pool.query(`SELECT COUNT(*) AS cnt FROM futures_positions WHERE status = 'open' AND is_paper = $1`, [isPaper]),
       ]);
 
     // 배당 현황
@@ -438,19 +433,8 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
     const divReturnPct =
       divInvestedKrw > 0 ? ((divCurrentUsd * fx + divDividendsUsd * fx) / divInvestedKrw - 1) * 100 : 0;
 
-    // 🛡️ 크로스오염 수정 (2026-06-12): viewMode에 맞는 컬럼만 사용
-    // 이전 버그: paper(40,000) + live(0) 합산 → live 화면에 paper 데이터 흘러옴
-    const fb = fBudget[0] || {};
-    const fInvestedKrw = Number(isPaper ? fb.allocated_krw_paper ?? 0 : fb.allocated_krw_live ?? 0);
-    const fPnlUsd = Number(isPaper ? fb.total_pnl_usd_paper ?? 0 : fb.total_pnl_usd_live ?? 0);
-    const fTotal = Number(fStats[0]?.total ?? 0);
-    const fWins = Number(fStats[0]?.wins ?? 0);
-    const fCurrentKrw = fInvestedKrw + fPnlUsd * fx;
-
-    // 통합
-    const totalInvested = divInvestedKrw + fInvestedKrw;
-    const totalCurrent = divCurrentUsd * fx + divDividendsUsd * fx + fCurrentKrw;
-    const totalReturn = totalInvested > 0 ? (totalCurrent / totalInvested - 1) * 100 : 0;
+    const totalCurrent = divCurrentUsd * fx + divDividendsUsd * fx;
+    const totalReturn = divInvestedKrw > 0 ? (totalCurrent / divInvestedKrw - 1) * 100 : 0;
 
     return c.json({
       dividend: {
@@ -461,16 +445,8 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
         returnPct: +divReturnPct.toFixed(1),
         holdings: divList,
       },
-      futures: {
-        investedKrw: fInvestedKrw,
-        totalPnlUsd: +fPnlUsd.toFixed(2),
-        trades: fTotal,
-        winRate: fTotal > 0 ? +((fWins / fTotal) * 100).toFixed(0) : 0,
-        openPositions: Number(fOpen[0]?.cnt ?? 0),
-        currentValueKrw: +fCurrentKrw.toFixed(0),
-      },
       total: {
-        investedKrw: totalInvested,
+        investedKrw: divInvestedKrw,
         currentValueKrw: +totalCurrent.toFixed(0),
         returnPct: +totalReturn.toFixed(1),
       },
@@ -559,7 +535,7 @@ dividendRoutes.post('/dividend/auto-setup-paper', async (c) => {
     const targetMonthly = body.target_monthly_krw ?? 1_000_000; // 기본: 월100만원
     if (targetMonthly < 10000) return c.json({ error: '최소 월 1만원 이상' }, 400);
 
-    const fx = await fetchExchangeRate().catch(() => 1400);
+    const fx = await fetchExchangeRate().catch(() => FALLBACK_FX_RATE);
     const pool = getPool();
 
     // DB에서 실제 배당수익률 가져오기 (없으면 기본값)

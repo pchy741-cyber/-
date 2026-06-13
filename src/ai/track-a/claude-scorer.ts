@@ -8,7 +8,7 @@ import type { DailyCandle } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 
 const COMP = 'TRACK_A_CLAUDE';
-const MODEL = 'claude-haiku-4-5-20251001'; // 저렴 + 빠름 (스코어링 전용)
+const MODEL = 'claude-haiku-4-5-20251001'; // 저렴 + 빠름 (2차 검증 + 폴백)
 const BATCH_SIZE = 30; // 한 번에 30종목 분석
 
 interface WatchlistItem {

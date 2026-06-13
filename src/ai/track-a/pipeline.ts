@@ -1,3 +1,4 @@
+import { PARK_STOCK_CODE } from '../track-b/defense-park.js';
 import { getStockAccuracyContext } from '../../automation/self-learning.js';
 import { cacheScores } from '../../cache/redis.js';
 import {
@@ -184,8 +185,8 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       logger.info(`발굴 종목 ${discoveryList.length}개 watchlist 임시 등록 (inactive)`, { component: 'TRACK_A' });
     }
 
-    // 파킹 ETF는 스코어링 제외 (KODEX 200 / TIGER 머니마켓 등 — 일반 매매 종목 아님)
-    const PARK_EXCLUDE = new Set(['069500', '333940', '441680', '481770']);
+    // 파킹 ETF는 스코어링 제외 (SOFR ETF / TIGER 머니마켓 등 — 일반 매매 종목 아님)
+    const PARK_EXCLUDE = new Set([PARK_STOCK_CODE, '333940', '441680', '481770']);
     // allStocks: normalizeStockCode 적용 후 Map으로 최종 중복 제거 (watchlist 우선)
     const allStocksMap = new Map<string, { stock_code: string; stock_name: string }>();
     for (const s of [
@@ -541,6 +542,78 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
           if (scores.length > 0) scoringSource = 'gemini';
         } catch (geminiScoreErr) {
           logger.warn(`⚠️ Gemini 스코어링 실패: ${geminiScoreErr}`, { component: 'TRACK_A' });
+        }
+      }
+
+      // Step 5-2b: 🎯 송곳 진입 2차 검증 — Gemini 85+ 종목만 Claude+GPT 앙상블
+      // Gemini 스코어링 성공 + API 키 존재 시에만 실행
+      if (scores.length > 0 && scoringSource === 'gemini') {
+        const highScoreStocks = scores.filter((s) => s.composite_score >= 85);
+        if (highScoreStocks.length > 0 && (process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY)) {
+          logger.info(
+            `🎯 송곳 2차 검증 시작: ${highScoreStocks.length}개 종목 (Gemini 85+) → Claude+GPT 앙상블`,
+            { component: 'TRACK_A' },
+          );
+
+          const verifyStocks = highScoreStocks.map((s) => {
+            const wItem = allStocks.find((w) => w.stock_code === s.stock_code);
+            return { stock_code: s.stock_code, stock_name: wItem?.stock_name ?? s.stock_code };
+          });
+
+          // Claude + GPT 병렬 호출 (둘 다 실패해도 Gemini 점수 유지)
+          const [claudeResult, gptResult] = await Promise.allSettled([
+            process.env.ANTHROPIC_API_KEY
+              ? import('./claude-scorer.js').then((m) => m.runClaudeScoring(mode, verifyStocks, chartData))
+              : Promise.resolve([]),
+            process.env.OPENAI_API_KEY
+              ? import('./gpt-scorer.js').then((m) => m.runGPTScoring(mode, verifyStocks, chartData, regimeHint))
+              : Promise.resolve([]),
+          ]);
+
+          const claudeScores = claudeResult.status === 'fulfilled' ? claudeResult.value : [];
+          const gptScores = gptResult.status === 'fulfilled' ? gptResult.value : [];
+
+          // 앙상블 평균 계산 → 80+ 유지, 미만 시 하향 조정
+          let verifiedCount = 0;
+          let downgradedCount = 0;
+          for (const geminiScore of highScoreStocks) {
+            const claude = claudeScores.find((s) => s.stock_code === geminiScore.stock_code);
+            const gpt = gptScores.find((s) => s.stock_code === geminiScore.stock_code);
+
+            const allScores = [geminiScore.composite_score];
+            if (claude) allScores.push(claude.composite_score);
+            if (gpt) allScores.push(gpt.composite_score);
+
+            // 검증 AI가 하나도 없으면 Gemini 점수 유지
+            if (allScores.length === 1) continue;
+
+            const avgScore = Math.round(allScores.reduce((a, b) => a + b, 0) / allScores.length);
+
+            if (avgScore >= 80) {
+              // 2차 검증 통과 → 앙상블 평균으로 업데이트
+              const idx = scores.findIndex((s) => s.stock_code === geminiScore.stock_code);
+              if (idx !== -1) {
+                scores[idx].composite_score = avgScore;
+                scores[idx].reasoning = `[앙상블 검증] Gemini=${geminiScore.composite_score}${claude ? ` Claude=${claude.composite_score}` : ''}${gpt ? ` GPT=${gpt.composite_score}` : ''} → 평균${avgScore} | ${scores[idx].reasoning}`;
+                verifiedCount++;
+              }
+            } else {
+              // 2차 검증 미통과 → 점수 하향 (78점으로 캡)
+              const idx = scores.findIndex((s) => s.stock_code === geminiScore.stock_code);
+              if (idx !== -1) {
+                scores[idx].composite_score = Math.min(78, avgScore);
+                scores[idx].signal = 'BUY'; // STRONG_BUY → BUY 하향
+                scores[idx].confidence = Math.min(scores[idx].confidence, 0.65);
+                scores[idx].reasoning = `[앙상블 하향] Gemini=${geminiScore.composite_score}${claude ? ` Claude=${claude.composite_score}` : ''}${gpt ? ` GPT=${gpt.composite_score}` : ''} → 평균${avgScore}<80 | ${scores[idx].reasoning}`;
+                downgradedCount++;
+              }
+            }
+          }
+
+          logger.info(
+            `🎯 송곳 2차 검증 완료: ${verifiedCount}개 통과, ${downgradedCount}개 하향 (Claude=${claudeScores.length}, GPT=${gptScores.length})`,
+            { component: 'TRACK_A' },
+          );
         }
       }
 

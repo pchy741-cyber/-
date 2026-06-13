@@ -53,6 +53,8 @@ export interface TechnicalFallbackParams {
   marketSignals?: Map<string, StockSignals>;
   /** 매크로/레짐 기반 포지션 축소 배율 (RISK_OFF=0.5, 하락장=0.5, 조정=0.7, 정상=1.0) */
   macroSizingMult?: number;
+  /** 손실 이력 (스마트 재진입용) — pipeline에서 getLossHistory() 로딩 */
+  lossHistory?: Map<string, import('../../db/client.js').LossRecord>;
 }
 
 export interface BuyCandidate {
@@ -65,6 +67,8 @@ export interface BuyCandidate {
   isScalpOverride?: boolean;
   /** BREAKOUT 전략 감지 결과 — breakout-detection.ts에서 생성 */
   breakoutSignal?: import('../../analysis/breakout-detection.js').BreakoutSignal;
+  /** 스마트 재진입 시 제안 SL 가격 — hard-gates에서 설정 */
+  smartReentrySl?: number;
 }
 
 /** STRATEGY_PARAMS[mode] + DB 오버라이드 병합 */

@@ -46,8 +46,8 @@ const MIN_PARK_RATIO = 0.02;
 const MAX_PARK_RATIO_LIVE = 0.3;
 const MAX_PARK_RATIO_PAPER = 0.4;
 
-/** 최소 보유 시간 (ms) — 2시간 (v1: 30분 → 삼성 3회 회전 재발 방지) */
-const MIN_PARK_HOLD_MS = 2 * 60 * 60_000;
+/** 최소 보유 시간 (ms) — 1시간 (v1: 30분→v2: 2시간→v3: 1시간, 시장 반전 대응력 개선) */
+const MIN_PARK_HOLD_MS = 1 * 60 * 60_000;
 
 /** Paper 모드 최소 보유 — 1시간 (실전과 유사하게 테스트) */
 const MIN_PARK_HOLD_MS_PAPER = 60 * 60_000;

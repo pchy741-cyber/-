@@ -45,7 +45,7 @@ export function getTimeSinceLastTrade(): number {
 export async function computePaperCash(fxRate?: number): Promise<number> {
   try {
     const rate = fxRate ?? (await fetchExchangeRate());
-    const seedUsd = rate > 0 ? PAPER_OVERSEAS_SEED_KRW / rate : 36500; // 폴백 ~$36.5K
+    const seedUsd = PAPER_OVERSEAS_SEED_KRW / (rate > 0 ? rate : 1500); // 폴백: DEFAULTS.usdKrw 기준
     const { rows } = await getPool().query(`
       SELECT
         COALESCE(SUM(CASE WHEN side = 'BUY'
@@ -66,7 +66,7 @@ export async function computePaperCash(fxRate?: number): Promise<number> {
     // DB 실패 시: 마지막 정상값 반환 (없으면 시드 폴백)
     // 이전에는 항상 full seed를 반환 → 매수 후 현금 증가 버그 유발
     if (_lastPaperCash !== null) return _lastPaperCash;
-    const rate = fxRate ?? 1370;
+    const rate = fxRate ?? 1500;
     return PAPER_OVERSEAS_SEED_KRW / rate;
   }
 }
@@ -450,7 +450,7 @@ export async function checkAndRefillOverseasPaper(): Promise<boolean> {
 
   try {
     const fxRate = await fetchExchangeRate();
-    const seedUsd = fxRate > 0 ? PAPER_OVERSEAS_SEED_KRW / fxRate : 36500;
+    const seedUsd = PAPER_OVERSEAS_SEED_KRW / (fxRate > 0 ? fxRate : 1500);
     const cash = await computePaperCash(fxRate);
     const cashRatio = cash / seedUsd;
     const holdings = await getHoldings(true);

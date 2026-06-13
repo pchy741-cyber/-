@@ -41,7 +41,6 @@ const CORE_TABS: { id: Tab; label: string }[] = [
   { id: 'news', label: '뉴스' },
   { id: 'settings', label: '설정' },
   { id: 'dividend', label: '배당' },
-  { id: 'futures', label: '선물' },
 ];
 const OPTIONAL_TABS: { id: Tab; label: string }[] = [];
 const DUAL_MODE_TABS: Tab[] = ['home', 'trades', 'journal', 'watchlist'];

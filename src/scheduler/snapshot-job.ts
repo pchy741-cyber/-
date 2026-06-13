@@ -16,8 +16,13 @@ export async function runSnapshotJob(): Promise<void> {
   try {
     const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
 
+    // netAsset(순자산) 우선 → 대시보드 builder.ts와 일관된 총자산 산출
+    const totalValue = (balance as any).netAsset > 0
+      ? (balance as any).netAsset
+      : balance.totalDeposit + balance.totalEvalAmount;
+
     await insertSnapshot({
-      total_value: balance.totalDeposit + balance.totalEvalAmount,
+      total_value: totalValue,
       cash_balance: balance.orderableCash,
       invested_value: balance.totalEvalAmount,
       unrealized_pnl: balance.totalProfitLoss,
@@ -28,7 +33,7 @@ export async function runSnapshotJob(): Promise<void> {
     });
 
     logger.info(
-      `📸 스냅샷 저장 [${modeLabel}]: 총 ${(balance.totalDeposit + balance.totalEvalAmount).toLocaleString()}원, 투자 ${balance.totalEvalAmount.toLocaleString()}원, 포지션 ${balance.positions.length}개`,
+      `📸 스냅샷 저장 [${modeLabel}]: 총 ${totalValue.toLocaleString()}원, 투자 ${balance.totalEvalAmount.toLocaleString()}원, 포지션 ${balance.positions.length}개`,
       {
         component: 'SNAPSHOT',
       },
@@ -44,8 +49,11 @@ export async function runSnapshotJob(): Promise<void> {
       const liveBalance = await getAccountBalance(true);
       // 실계좌 잔고가 0이면 live 자격증명 미설정 → 스킵
       if (liveBalance.totalDeposit > 0 || liveBalance.totalEvalAmount > 0) {
+        const liveTotalValue = (liveBalance as any).netAsset > 0
+          ? (liveBalance as any).netAsset
+          : liveBalance.totalDeposit + liveBalance.totalEvalAmount;
         await insertSnapshot({
-          total_value: liveBalance.totalDeposit + liveBalance.totalEvalAmount,
+          total_value: liveTotalValue,
           cash_balance: liveBalance.orderableCash,
           invested_value: liveBalance.totalEvalAmount,
           unrealized_pnl: liveBalance.totalProfitLoss,
@@ -55,7 +63,7 @@ export async function runSnapshotJob(): Promise<void> {
           is_paper: false,
         });
         logger.info(
-          `📸 스냅샷 저장 [live 보조]: 총 ${(liveBalance.totalDeposit + liveBalance.totalEvalAmount).toLocaleString()}원`,
+          `📸 스냅샷 저장 [live 보조]: 총 ${liveTotalValue.toLocaleString()}원`,
           { component: 'SNAPSHOT' },
         );
       }

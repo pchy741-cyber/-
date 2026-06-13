@@ -585,7 +585,7 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
     const amountUsd = body.amountUsd && body.amountUsd > 0 ? body.amountUsd : defaultAmount;
     // 현금 상한 (소액 60%, 일반 50%)
     const cashSafePct = portfolio < 500 ? 0.6 : 0.5;
-    const safeAmount = Math.min(cashUsd * cashSafePct || 5000, Number(amountUsd));
+    const safeAmount = Math.min(cashUsd * cashSafePct, Number(amountUsd));
 
     // 주수 계산 (수수료 0.25% 보정)
     let qty = Math.floor(safeAmount / (price.currentPrice * 1.0025));

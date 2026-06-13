@@ -20,8 +20,9 @@ const COMP = 'ENTRY_TIMING';
 // ── 허용 전략 (CEO 지시 #B) ─
 // SWING = 6~10일 보유, 75% 승률 실증
 // SNIPER = 고확신 집중 매수 (SWING과 비슷)
-// 나머지 (SCALPING/EOD_BETTING/BREAKOUT) = 단기 = 23% 승률 = 차단
-const ALLOWED_STRATEGIES = new Set(['SWING', 'SNIPER', 'BOTTOM_FISHING', 'DEFENSE']);
+// BREAKOUT = 10일 보유 전략 (돌파 후 보유, 단타 아님)
+// 나머지 (SCALPING/EOD_BETTING) = 단기 = 23% 승률 = 차단
+const ALLOWED_STRATEGIES = new Set(['SWING', 'SNIPER', 'BOTTOM_FISHING', 'DEFENSE', 'BREAKOUT']);
 
 export interface EntryTimingCheck {
   allowed: boolean;

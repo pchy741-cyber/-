@@ -417,12 +417,14 @@ export async function reconcileCashWithKIS(): Promise<void> {
     // 실제 주문가능 USD 항상 저장 (대시보드 표시용)
     if (buyable != null) {
       const usdVal = buyable.usd >= 0 ? buyable.usd : 0;
+      const maxUsdVal = buyable.maxUsd >= 0 ? buyable.maxUsd : 0;
       await getPool()
         .query(
-          // 외화 풀 USD (ord_psbl_frcr_amt) — SSE 대시보드 표시용
-          `INSERT INTO overseas_state (key, value, updated_at) VALUES ('cash_live_usd', $1, NOW())
-         ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
-          [String(usdVal)],
+          // 외화 풀 USD (ord_psbl_frcr_amt) + 통합증거금 전체 USD (frcr_ord_psbl_amt1) 저장
+          `INSERT INTO overseas_state (key, value, updated_at)
+           VALUES ('cash_live_usd', $1, NOW()), ('cash_max_usd', $2, NOW())
+           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+          [String(usdVal), String(maxUsdVal)],
         )
         .catch(() => {});
     }

@@ -11,7 +11,7 @@ import { getPool, logSystem } from '../db/client.js';
 import { getOverseasDailyChart, getOverseasPrice } from '../kis/overseas.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { activateKillSwitch, isKillSwitchActive, reportError, reportSuccess } from '../risk/kill-switch.js';
-import { OVERSEAS_LOSS_TIERS } from '../risk/seed-capital.js';
+import { getOverseasLossTiers } from '../risk/seed-capital.js';
 
 const SCOPE = 'OVERSEAS' as const;
 
@@ -130,6 +130,10 @@ import { GLOBAL_WATCHLIST } from './overseas/watchlist.js';
  * AI(Claude) + 기술적 지표 복합 판단
  * 최대 5종목 동시 보유, 종목당 $1,500 / 20% 중 작은 값
  */
+// ⚡ LUNCH 시간 throttle — 12:00~14:00 ET 구간 30분 간격으로 확대
+let _lastLunchRunAt = 0;
+const LUNCH_THROTTLE_MS = 30 * 60 * 1000; // 30분
+
 export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<void> {
   // isPaper는 runWithMode(ctx)로 주입 — getCtxIsPaper()로 읽음
   const s = overseasState; // shorthand
@@ -139,6 +143,20 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
   if (s._shuttingDown) {
     logger.info('Shutdown 진행 중 — 해외 Job 스킵', { component: 'OVERSEAS' });
     return;
+  }
+
+  // ⚡ US LUNCH 시간(12:00~14:00 ET) throttle — 30분 간격으로 확대 (AI 리소스 절감)
+  {
+    const { getUSMarketPhase } = await import('./loop-mode.js');
+    const usPhase = getUSMarketPhase();
+    if (usPhase === 'LUNCH') {
+      const now = Date.now();
+      if (now - _lastLunchRunAt < LUNCH_THROTTLE_MS) {
+        logger.debug('⏭️ 해외 Job 스킵 — US LUNCH 시간 throttle (30분 간격)', { component: 'OVERSEAS' });
+        return;
+      }
+      _lastLunchRunAt = now;
+    }
   }
 
   // Kill Switch: 매도(탈출)는 항상 허용, 매수만 차단 (아래에서 분기)
@@ -763,8 +781,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
       await setSessionStartValue(portfolioValue, isPaper());
     const _sessionStart = s.sessionStartPortfolioValue.get(mk) ?? portfolioValue;
 
-    // 손실 한도 — 해외 포트폴리오(USD) 기준 warn 3% / block 5% / kill 8%
-    const osLimit = OVERSEAS_LOSS_TIERS;
+    // 손실 한도 — 해외 포트폴리오(USD) 기준, Paper/Live 분리
+    const osLimit = getOverseasLossTiers(isPaper());
     const holdingCostUsd = Array.from(holdings.entries()).reduce((sum, [, h]) => sum + h.qty * h.avgPrice, 0);
     const unrealizedLossUsd = holdingCostUsd - holdingEvalUsd; // 양수 = 손실
     const lossPctOfPortfolio = portfolioValue > 0 ? (unrealizedLossUsd / portfolioValue) * 100 : 0;
@@ -828,20 +846,17 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
     if (mktSignal) logger.info(`📊 시장 신호: ${mktSignal.reason}`, { component: 'OVERSEAS' });
 
     const quality = mktSignal?.marketQuality ?? 'OK';
-    // Paper: 학습용이므로 리스크 차단 관대 (15%) / Live: 보수적 (3-5%)
-    const riskBlockPct = isPaper() ? 15 : quality === 'GREAT' || quality === 'OK' ? 5 : 3;
-    const riskBlocked = lossPctOfPortfolio >= riskBlockPct;
-    const recoveryMode = isPaper()
-      ? lossPctOfPortfolio >= 8 && !riskBlocked // Paper: 8%부터 회복모드
-      : lossPctOfPortfolio >= 3 && !riskBlocked;
+    // 손실한도: OVERSEAS_LOSS_TIERS 통일 (warnPct → 회복모드, blockPct → 매수차단, killPct → 킬스위치)
+    const riskBlocked = lossPctOfPortfolio >= osLimit.blockPct;
+    const recoveryMode = lossPctOfPortfolio >= osLimit.warnPct && !riskBlocked;
     if (riskBlocked) {
-      logger.warn(`⛔ 총자산 대비 -${lossPctOfPortfolio.toFixed(1)}% → 신규 매수 차단 (한도 ${riskBlockPct}%)`, {
+      logger.warn(`⛔ 총자산 대비 -${lossPctOfPortfolio.toFixed(1)}% → 신규 매수 차단 (한도 ${osLimit.blockPct}%)`, {
         component: 'OVERSEAS',
       });
-      await logSystem('WARN', 'OVERSEAS', `총자산 손실 -${lossPctOfPortfolio.toFixed(1)}% → 신규 매수 차단`);
+      await logSystem('WARN', 'OVERSEAS', `총자산 손실 -${lossPctOfPortfolio.toFixed(1)}% → 신규 매수 차단 (blockPct ${osLimit.blockPct}%)`);
     } else if (recoveryMode) {
       logger.warn(
-        `⚠️ 손실 회복 모드(-${lossPctOfPortfolio.toFixed(1)}%): ${quality} 장세 → AI 85%+ 고확신 종목만 매수`,
+        `⚠️ 손실 회복 모드(-${lossPctOfPortfolio.toFixed(1)}%): warnPct ${osLimit.warnPct}% 도달 → 고확신 종목만 매수`,
         { component: 'OVERSEAS' },
       );
     }

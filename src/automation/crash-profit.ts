@@ -304,7 +304,7 @@ export function generatePanicSellDecisions(
   for (const chain of openChains) {
     if (chain.total_quantity <= 0) continue;
     if (INVERSE_ETF_CODES.has(chain.stock_code)) continue; // 인버스는 유지
-    if (chain.stock_code === '069500') continue; // KODEX200 파킹 유지
+    if (chain.stock_code === '449170') continue; // SOFR ETF 파킹 유지 (defense-park.ts PARK_STOCK_CODE와 동일, 순환참조 방지)
 
     const price = livePrices.get(chain.stock_code);
     const avgBuy = Number(chain.avg_buy_price ?? 0);

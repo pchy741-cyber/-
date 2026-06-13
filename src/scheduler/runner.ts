@@ -427,9 +427,17 @@ export function startScheduler(): void {
   );
 
   // Track B — 장중 3분 간격 (핵심: Claude 매매 판단)
+  // ⚡ 마의시간대(10:20~13:00) 완전 스킵 — 이미 NO_BUY 구간이고 매도는 보유체크(10분)가 커버
   cron.schedule(
     `*/${SCHEDULE.TRACK_B_INTERVAL_MINUTES} 9-15 * * 1-5`,
     () => {
+      const now = new Date();
+      const kstH = (now.getUTCHours() + 9) % 24;
+      const kstM = now.getUTCMinutes();
+      const t = kstH * 100 + kstM;
+      if (t >= 1020 && t < 1300) {
+        return; // 마의시간대 Track B 완전 스킵 (AI 리소스 0)
+      }
       runTrackBSafe();
     },
     { timezone: MARKET.TIMEZONE },
@@ -1004,26 +1012,6 @@ export function startScheduler(): void {
       } catch (e) {
         logger.error(`딥바이 실패: ${e}`, { component: 'SCHEDULER' });
       }
-    },
-    { timezone: MARKET.TIMEZONE },
-  );
-
-  // 📈 선물 자동매매 — 미국 장중 10분 간격 (+5분 오프셋, overseas-job 충돌 방지)
-  cron.schedule(
-    '5,15,25,35,45,55 22-23 * * 1-5',
-    () => {
-      import('./futures-job.js')
-        .then((m) => m.runFuturesJob())
-        .catch((e) => logger.error(`선물 자동매매 실패: ${e}`, { component: 'SCHEDULER' }));
-    },
-    { timezone: MARKET.TIMEZONE },
-  );
-  cron.schedule(
-    '5,15,25,35,45,55 0-6 * * 2-6',
-    () => {
-      import('./futures-job.js')
-        .then((m) => m.runFuturesJob())
-        .catch((e) => logger.error(`선물 자동매매 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

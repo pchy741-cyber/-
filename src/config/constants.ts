@@ -14,8 +14,13 @@ export const MARKET = {
 export const KR_FEE = {
   BUY_FEE_PCT: 0.00015, // 매수 수수료 0.015%
   SELL_FEE_PCT: 0.00195, // 매도 수수료 0.015% + 거래세 0.18% = 0.195%
+  TRANSACTION_TAX_PCT: 0.0018, // 거래세 0.18% (2025 기준 — KOSPI: 증거세 0.03%+농특세 0.15%, KOSDAQ: 증거세 0.18%)
   ROUND_TRIP_PCT: 0.0021, // 왕복 합계 0.21%
 } as const;
+
+// ── 환율 비상 폴백 (실시간 API 전체 실패 시만 사용) ──
+// fetchExchangeRate()가 내부 폴백으로 이 값을 사용 — 하드코딩 1380/1370 대신 이 상수 참조
+export const FALLBACK_FX_RATE = 1_500; // USD/KRW 근사치 (2026 기준)
 
 // ── 스케줄러 ──
 export const SCHEDULE = {
@@ -81,21 +86,21 @@ export type StrategyMode = (typeof StrategyMode)[keyof typeof StrategyMode];
 export const STRATEGY_PARAMS = {
   SWING: {
     // ┌─ 전략 최적화 v4 (2026-06: 카테고리Cap + 철저손절) ────────────────┐
-    // │ buyThreshold 80: 유지 (조정값 상한 -5 제한으로 실질 75+)          │
-    // │ stopLossPct -3.5%: v5 -2.5%→-3.5% (KOSPI 1-2% 일노이즈 감안, 스윙 홀딩)│
+    // │ buyThreshold 70: v7 65→70 (과잉매매 방지, 승률 개선)             │
+    // │ stopLossPct -3.0%: v7 -3.5%→-3.0% (일노이즈 손절↓, R:R 개선)    │
     // │ takeProfitPct 5.0%: v3 7.0%→5.0% (달성 확률↑, 실현 수익↑)      │
-    // │ 기대수익: p×(5.0-0.21)-(1-p)×(3.5+0.21) > 0 → 손익분기 43.7%  │
-    // │ R:R = 4.79:3.71 = 1.29:1 → getDynamicDomesticTpSl이 실질 조정  │
+    // │ 기대수익: p×(5.0-0.21)-(1-p)×(3.0+0.21) > 0 → 손익분기 40.2%  │
+    // │ R:R = 4.79:3.21 = 1.49:1 → getDynamicDomesticTpSl이 실질 조정  │
     // │ maxDailyTrades 3: 일일 최대 3건 (과잉거래 방지, 수수료 절감)     │
     // └────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 65, // v5: 80→65 (매매 빈도 증가, paper -10 → 실질 55)
+    buyThreshold: 70, // v7: 65→70 (과잉매매 방지, 승률 개선)
     splitCount: 2,
     averageDownPct: 0, // v6: 물타기 비활성화 (21% WR에서 추가매수 = 손실확대)
     maxAveragingCount: 0,
     earlyTpPct: 0,
     takeProfitPct: 5.0, // v4: 7.0%→5.0% (달성률 높여 실현 수익 증가)
     takeProfitRatio: 0.5,
-    stopLossPct: -3.5, // v5: -2.5%→-3.5% (KOSPI 일노이즈 1-2% 감안, 스윙 조기손절 방지)
+    stopLossPct: -3.0, // v7: -3.5%→-3.0% (일노이즈 손절 줄이고 R:R 개선)
     maxHoldingDays: 8, // v4: 12일→8일 (데드머니 조기 탈출)
     maxDailyTrades: 3, // v4 신규: 일일 최대 신규 매수 3건
   },
@@ -158,7 +163,7 @@ export const STRATEGY_PARAMS = {
     maxAveragingCount: 1,
     takeProfitPct: 8.0, // +8% 익절 (엘리트 4:1 R:R)
     takeProfitRatio: 0.5, // 50% 부분 매도 → 잔여 트레일링
-    stopLossPct: -4.0, // -4% 손절 (노이즈 제거 후 진짜 반전 확인)
+    stopLossPct: -3.0, // v7: -4%→-3% (고확신 종목은 타이트 SL로 손실 제한)
     maxHoldingDays: 7, // 1주일 내 청산
   },
 

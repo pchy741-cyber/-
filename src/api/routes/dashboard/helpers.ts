@@ -2,8 +2,10 @@
  * 대시보드 공통 헬퍼 — 종목명, 환율, 캐시 관리
  */
 
-// ── 환율 캐시 (1시간 TTL, 실패 시 1420 폴백) ──
-let _fxCache = { rate: 1420, fetchedAt: 0 };
+// ── 환율 캐시 (1시간 TTL, 실패 시 최근 조회값 유지) ──
+// 초기값: FALLBACK_FX_RATE (getFxRate 첫 호출 시 실시간 갱신)
+import { FALLBACK_FX_RATE } from '../../../config/constants.js';
+let _fxCache = { rate: FALLBACK_FX_RATE, fetchedAt: 0 };
 
 const GARBLED_NAME_REGEX = /[^\w\s\uAC00-\uD7A3\u3131-\u318E\u1100-\u11FF().,·\-+%$]/;
 const PENDING_STOCK_NAME_REGEX = /^(?:종목(?:명)?확인중|확인중)$/;

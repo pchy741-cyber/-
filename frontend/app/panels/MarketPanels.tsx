@@ -156,7 +156,7 @@ export function TaxEstimatePanel({ viewMode = 'live' }: { viewMode?: string }) {
     <Panel title={`${data.year}년 세금 추정`}>
       <div className="px-4 pb-3 grid grid-cols-2 gap-2">
         <div className="bg-slate-800/40 rounded-xl p-3">
-          <p className="text-[10px] text-slate-500 mb-1">거래세 (0.23%)</p>
+          <p className="text-[10px] text-slate-500 mb-1">거래세 (0.18%)</p>
           <p className="text-sm font-bold text-amber-400">{Math.round(data.transactionTax).toLocaleString()}원</p>
         </div>
         <div className="bg-slate-800/40 rounded-xl p-3">

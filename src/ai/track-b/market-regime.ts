@@ -142,7 +142,7 @@ export async function fetchKospiRegime(): Promise<KospiRegime> {
       const now = Date.now();
       if (livePrice > 0 && _prevKospiPrice > 0) {
         const cycleDrop = ((livePrice - _prevKospiPrice) / _prevKospiPrice) * 100;
-        if (cycleDrop <= -1.0) {
+        if (cycleDrop <= -2.0) {
           flashCrash = true;
           logger.warn(
             `🚨 KOSPI 급락 서킷브레이커: 5분 내 ${cycleDrop.toFixed(2)}% 하락 (${_prevKospiPrice.toFixed(0)}→${livePrice.toFixed(0)}) → 신규 매수 전면 차단`,

@@ -238,8 +238,9 @@ export async function getDynamicPositionSize(
   finalMultiplier = Math.max(0.3, Math.min(1.5, finalMultiplier));
 
   let amount = Math.round(baseAmount * finalMultiplier);
-  // 최소 주문금액 보장 (baseAmount의 20% 또는 1만원 중 큰 값)
-  const MIN_ORDER_KRW = Math.max(10_000, Math.round(baseAmount * 0.2));
+  // 최소 주문금액 보장 — Paper: 1,000원 (소액 실험 허용), Live: 1만원 or baseAmount×20%
+  const isPaper = getCtxIsPaper();
+  const MIN_ORDER_KRW = isPaper ? 1_000 : Math.max(10_000, Math.round(baseAmount * 0.2));
   if (amount < MIN_ORDER_KRW && baseAmount >= MIN_ORDER_KRW) {
     amount = MIN_ORDER_KRW;
     reasons.push(`최소 주문금액 ${MIN_ORDER_KRW.toLocaleString()}원 적용`);

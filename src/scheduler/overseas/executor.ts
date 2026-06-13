@@ -10,6 +10,7 @@ import { getAllocRisk } from '../../db/alloc-risk-cache.js';
 import { getPool, insertOrder, updateOrder } from '../../db/client.js';
 import { placeOverseasOrder } from '../../kis/overseas.js';
 import { logger } from '../../utils/logger.js';
+import { sleep } from '../../utils/sleep.js';
 import type { OverseasExecutionResult } from './analytics.js';
 import { confirmOverseasFillFromBalance } from './order-sync.js';
 import { updateTradeState } from './state.js';
@@ -141,101 +142,121 @@ export async function executeOverseasOrder(
       orderNo: fakeOrderNo,
     };
   } else {
-    try {
-      const result = await placeOverseasOrder({ stockCode: code, exchange, side, quantity: qty, price });
-      const liveReasoning =
-        side === 'SELL' && previousAvgPrice > 0 ? `[avgBuy:${previousAvgPrice.toFixed(4)}] ${reasoning}` : reasoning;
-      const orderId = await insertOrder({
-        chain_id: null,
-        stock_code: code,
-        side,
-        order_type: '01',
-        quantity: qty,
-        price,
-        kis_order_no: result.orderNo,
-        kis_status: result.success ? 'SUBMITTED' : 'FAILED',
-        filled_quantity: 0,
-        filled_price: null,
-        status: result.success ? 'PENDING' : 'FAILED',
-        trading_mode: paperMode ? 'paper' : 'live',
-        trigger_source: 'OVERSEAS',
-        ai_reasoning: liveReasoning,
-        avg_buy_price: side === 'SELL' ? previousAvgPrice : null,
-      });
-      if (result.success) {
-        logger.info(`🌍 [LIVE] 주문 접수: ${side} ${code} x${qty} @$${price.toFixed(2)} (${result.orderNo})`, {
-          component: 'OVERSEAS',
-        });
-        const confirmed = await confirmOverseasFillFromBalance({
-          code,
-          exchange,
+    // SELL 주문 실패 시 재시도 (손절/익절 실패는 위험 → 최대 2회 재시도)
+    const MAX_SELL_RETRIES = side === 'SELL' ? 2 : 0;
+    const RETRY_DELAYS = [1000, 2000]; // 1초, 2초 백오프
+
+    for (let attempt = 0; attempt <= MAX_SELL_RETRIES; attempt++) {
+      try {
+        const result = await placeOverseasOrder({ stockCode: code, exchange, side, quantity: qty, price });
+        const liveReasoning =
+          side === 'SELL' && previousAvgPrice > 0 ? `[avgBuy:${previousAvgPrice.toFixed(4)}] ${reasoning}` : reasoning;
+        const orderId = await insertOrder({
+          chain_id: null,
+          stock_code: code,
           side,
-          requestedQty: qty,
-          previousQty,
-          previousAvgPrice,
-          fallbackPrice: price,
+          order_type: '01',
+          quantity: qty,
+          price,
+          kis_order_no: result.orderNo,
+          kis_status: result.success ? 'SUBMITTED' : 'FAILED',
+          filled_quantity: 0,
+          filled_price: null,
+          status: result.success ? 'PENDING' : 'FAILED',
+          trading_mode: paperMode ? 'paper' : 'live',
+          trigger_source: 'OVERSEAS',
+          ai_reasoning: attempt > 0 ? `[재시도${attempt}] ${liveReasoning}` : liveReasoning,
+          avg_buy_price: side === 'SELL' ? previousAvgPrice : null,
         });
-
-        if (confirmed.filledQty > 0) {
-          await updateOrder(orderId, {
-            filled_quantity: confirmed.filledQty,
-            filled_price: confirmed.filledPrice,
-            status: confirmed.filledQty >= qty ? 'FILLED' : 'PARTIAL',
-            kis_status: confirmed.filledQty >= qty ? 'FILLED' : 'PARTIAL',
+        if (result.success) {
+          logger.info(`🌍 [LIVE] 주문 접수: ${side} ${code} x${qty} @$${price.toFixed(2)} (${result.orderNo})${attempt > 0 ? ` [재시도${attempt}]` : ''}`, {
+            component: 'OVERSEAS',
           });
-          hardInvalidateDashboardCache();
-    invalidateBalanceCache();
-          const { notifyOverseasBuy: nb, notifyOverseasSell: ns } = await import('../../notifications/web-push.js');
-          if (side === 'BUY') {
-            nb(code, stockName, confirmed.filledQty, confirmed.filledPrice, reasoning).catch(() => {});
-          } else {
-            const pnlPct =
-              previousAvgPrice > 0 ? ((confirmed.filledPrice - previousAvgPrice) / previousAvgPrice) * 100 : 0;
-            ns(code, stockName, confirmed.filledQty, confirmed.filledPrice, pnlPct, reasoning).catch(() => {});
-            // 해외 SELL score_accuracy 기록
-            recordOverseasScoreAccuracy({
-              stockCode: code,
-              orderId,
-              avgBuyPrice: previousAvgPrice,
-              fillPrice: confirmed.filledPrice,
-              isPaper: false,
-              reasoning,
-            }).catch(() => {});
-          }
-        } else {
-          logger.warn(`⏳ 체결 미확인: ${code} (${result.orderNo}) → PENDING 유지`, { component: 'OVERSEAS' });
-        }
+          const confirmed = await confirmOverseasFillFromBalance({
+            code,
+            exchange,
+            side,
+            requestedQty: qty,
+            previousQty,
+            previousAvgPrice,
+            fallbackPrice: price,
+          });
 
-        return {
-          submitted: true,
-          filledQty: confirmed.filledQty,
-          filledPrice: confirmed.filledPrice,
-          finalQty: confirmed.finalQty,
-          finalAvgPrice: confirmed.finalAvgPrice,
-          orderNo: result.orderNo,
-        };
-      } else {
-        logger.error(`🌍 주문 실패: ${code} - ${result.message}`, { component: 'OVERSEAS' });
+          if (confirmed.filledQty > 0) {
+            await updateOrder(orderId, {
+              filled_quantity: confirmed.filledQty,
+              filled_price: confirmed.filledPrice,
+              status: confirmed.filledQty >= qty ? 'FILLED' : 'PARTIAL',
+              kis_status: confirmed.filledQty >= qty ? 'FILLED' : 'PARTIAL',
+            });
+            hardInvalidateDashboardCache();
+            invalidateBalanceCache();
+            const { notifyOverseasBuy: nb, notifyOverseasSell: ns } = await import('../../notifications/web-push.js');
+            if (side === 'BUY') {
+              nb(code, stockName, confirmed.filledQty, confirmed.filledPrice, reasoning).catch(() => {});
+            } else {
+              const pnlPct =
+                previousAvgPrice > 0 ? ((confirmed.filledPrice - previousAvgPrice) / previousAvgPrice) * 100 : 0;
+              ns(code, stockName, confirmed.filledQty, confirmed.filledPrice, pnlPct, reasoning).catch(() => {});
+              // 해외 SELL score_accuracy 기록
+              recordOverseasScoreAccuracy({
+                stockCode: code,
+                orderId,
+                avgBuyPrice: previousAvgPrice,
+                fillPrice: confirmed.filledPrice,
+                isPaper: false,
+                reasoning,
+              }).catch(() => {});
+            }
+          } else {
+            logger.warn(`⏳ 체결 미확인: ${code} (${result.orderNo}) → PENDING 유지`, { component: 'OVERSEAS' });
+          }
+
+          return {
+            submitted: true,
+            filledQty: confirmed.filledQty,
+            filledPrice: confirmed.filledPrice,
+            finalQty: confirmed.finalQty,
+            finalAvgPrice: confirmed.finalAvgPrice,
+            orderNo: result.orderNo,
+          };
+        } else {
+          // SELL 실패 시 재시도 (BUY는 재시도 없음)
+          if (attempt < MAX_SELL_RETRIES) {
+            logger.warn(`🔄 SELL 재시도 ${attempt + 1}/${MAX_SELL_RETRIES}: ${code} - ${result.message} (${RETRY_DELAYS[attempt]}ms 후)`, { component: 'OVERSEAS' });
+            await sleep(RETRY_DELAYS[attempt]);
+            continue;
+          }
+          logger.error(`🌍 주문 실패: ${code} - ${result.message}${attempt > 0 ? ` [${attempt}회 재시도 후]` : ''}`, { component: 'OVERSEAS' });
+          return {
+            submitted: false,
+            filledQty: 0,
+            filledPrice: price,
+            finalQty: previousQty,
+            finalAvgPrice: previousAvgPrice,
+            orderNo: result.orderNo,
+          };
+        }
+      } catch (e) {
+        // SELL 에러 시 재시도
+        if (attempt < MAX_SELL_RETRIES) {
+          logger.warn(`🔄 SELL 재시도 ${attempt + 1}/${MAX_SELL_RETRIES}: ${code} - ${(e as Error).message} (${RETRY_DELAYS[attempt]}ms 후)`, { component: 'OVERSEAS' });
+          await sleep(RETRY_DELAYS[attempt]);
+          continue;
+        }
+        logger.error(`🌍 주문 에러: ${code} - ${(e as Error).message}${attempt > 0 ? ` [${attempt}회 재시도 후]` : ''}`, { component: 'OVERSEAS' });
         return {
           submitted: false,
           filledQty: 0,
           filledPrice: price,
           finalQty: previousQty,
           finalAvgPrice: previousAvgPrice,
-          orderNo: result.orderNo,
+          orderNo: '',
         };
       }
-    } catch (e) {
-      logger.error(`🌍 주문 에러: ${code} - ${(e as Error).message}`, { component: 'OVERSEAS' });
-      return {
-        submitted: false,
-        filledQty: 0,
-        filledPrice: price,
-        finalQty: previousQty,
-        finalAvgPrice: previousAvgPrice,
-        orderNo: '',
-      };
     }
+    // 도달 불가 (루프 내에서 항상 return)
+    return { submitted: false, filledQty: 0, filledPrice: price, finalQty: previousQty, finalAvgPrice: previousAvgPrice, orderNo: '' };
   }
 }
 

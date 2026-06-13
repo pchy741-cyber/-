@@ -1,21 +1,26 @@
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, logSystem } from '../../db/client.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
+import { sendPushNotification } from '../../notifications/web-push.js';
 import { logger } from '../../utils/logger.js';
 
 import {
   analyzeAveraging,
   analyzeConfidenceCorrelation,
+  analyzeEarlyExitMissedProfit,
   analyzeHoldingPeriod,
   analyzeHoldingPeriodByEntry,
+  analyzeHotStocks,
   analyzeLossStreakRisk,
   analyzeModePerformance,
+  analyzeOptimalEntryWindows,
   analyzeProfitRatio,
   analyzeQuickProfitTaking,
   analyzeSniperByMarketRegime,
   analyzeSniperPerformance,
   analyzeStockPerformance,
   analyzeStockWinRateAcceleration,
+  analyzeStrategyStrengths,
   analyzeWinRateTrend,
 } from './analyzers.js';
 import { analyzeBuyThreshold, calibrateScoreTierParams, validatePromotedInsights } from './calibration.js';
@@ -135,6 +140,11 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
     ...analyzeLossStreakRisk(enrichedChains),
     ...analyzeProfitRatio(wins, losses),
     ...analyzeQuickProfitTaking(wins),
+    // ── 🔥 기회 발견 (긍정적 인사이트) ──
+    ...analyzeOptimalEntryWindows(wins),
+    ...analyzeHotStocks(enrichedChains),
+    ...analyzeStrategyStrengths(enrichedChains),
+    ...analyzeEarlyExitMissedProfit(wins, losses),
     ...parkingInsights,
     // 시간대/요일 분석은 해외(OVERSEAS) 체인 제외 — 시장 시간대가 다름
     ...analyzeTimeOfDayPerformance(
@@ -234,31 +244,32 @@ export async function getLearnedInsightsForPrompt(): Promise<string> {
   const sizingInsights = data.filter((d) => d.category === 'SIZING');
 
   const lines = [
-    '\n## ⚠️ 실거래 학습 인사이트 — 반드시 매매 판단에 반영하세요',
-    '아래는 실제 수익/손실 매매 데이터를 분석한 결과입니다. 단순 참고가 아닌 강제 적용 사항입니다.',
+    '\n## 📈 실거래 학습 인사이트 — 수익 극대화 + 손실 최소화',
+    '실제 매매 데이터 분석 결과입니다. 수익 패턴을 우선 적용하고, 손실 패턴을 회피하세요.',
   ];
 
-  if (lossPatterns.length > 0) {
-    lines.push('\n### 🚫 손실 패턴 — 다음 상황에서는 매수를 AVOID하거나 즉시 SELL하세요:');
-    for (const insight of lossPatterns) {
+  // 🔥 수익 패턴 먼저 (긍정적 기회를 최우선 표시)
+  if (winPatterns.length > 0) {
+    lines.push('\n### 🔥 수익 기회 — 이 조건이 충족되면 적극 매수! 포지션 확대!');
+    for (const insight of winPatterns) {
       const confidence = (insight.confidence * 100).toFixed(0);
-      const mandatory = insight.confidence >= 0.75 ? '【필수】' : '【권장】';
+      const mandatory =
+        insight.confidence >= 0.85
+          ? '【반드시 매수】'
+          : insight.confidence >= 0.7
+            ? '【적극 매수 — 비중 확대】'
+            : '【기회 포착】';
       lines.push(
         `  ${validationTag(insight)}${mandatory} ${insight.insight} (신뢰도 ${confidence}%, 근거 ${insight.sample_count}건)`,
       );
     }
   }
 
-  if (winPatterns.length > 0) {
-    lines.push('\n### ✅ 수익 패턴 — 다음 조건이 충족되면 BUY를 적극 검토하세요:');
-    for (const insight of winPatterns) {
+  if (lossPatterns.length > 0) {
+    lines.push('\n### ⚠️ 손실 회피 — 다음 상황에서는 매수를 자제하세요:');
+    for (const insight of lossPatterns) {
       const confidence = (insight.confidence * 100).toFixed(0);
-      const mandatory =
-        insight.confidence >= 0.85
-          ? '【필수적용】'
-          : insight.confidence >= 0.7
-            ? '【높은 신뢰도 — PRIORITIZE】'
-            : '【참고】';
+      const mandatory = insight.confidence >= 0.75 ? '【주의】' : '【참고】';
       lines.push(
         `  ${validationTag(insight)}${mandatory} ${insight.insight} (신뢰도 ${confidence}%, 근거 ${insight.sample_count}건)`,
       );
@@ -546,10 +557,31 @@ export async function runDailyLearning(): Promise<void> {
     }
     logger.info(`🧠 자기학습 인사이트 ${insights.length}건 저장`, { component: 'LEARN' });
     await autoApplyInsights(insights);
+    // 황금비율 자동 조정: 30일 전략별 성과 → 가중치 자동 튜닝
+    try {
+      const { autoTuneRegimeWeights } = await import('../regime-allocator.js');
+      await autoTuneRegimeWeights();
+    } catch (e) {
+      logger.warn(`황금비율 자동조정 실패: ${e}`, { component: 'LEARN' });
+    }
     await calibrateScoreTierParams().catch((e) => logger.warn(`티어 파라미터 보정 실패: ${e}`, { component: 'LEARN' }));
     if (!getCtxIsPaper()) {
       await validatePromotedInsights().catch((e) => logger.warn(`프로모션 검증 실패: ${e}`, { component: 'LEARN' }));
     }
+
+    // 웹 푸시 알림 — 학습 완료 요약
+    const appliedCount = insights.filter((i) => i.isApplied).length;
+    const paramChangeable = insights.filter((i) => i.paramChange && !i.isApplied).length;
+    const bodyParts: string[] = [];
+    if (appliedCount > 0) bodyParts.push(`${appliedCount}개 자동 적용`);
+    if (paramChangeable > 0) bodyParts.push(`${paramChangeable}개 적용 대기`);
+    bodyParts.push('설정에서 확인하세요');
+    await sendPushNotification({
+      title: `🧠 자기학습 완료 — ${insights.length}개 인사이트`,
+      body: bodyParts.join(' · '),
+      tag: 'learning-complete',
+      url: '/?tab=settings',
+    }).catch(() => {});
   } catch (err) {
     logger.warn(`자기학습 실패: ${err}`, { component: 'LEARN' });
   }

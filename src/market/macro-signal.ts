@@ -81,13 +81,13 @@ function computeSignal(
 
   // USD/KRW: 원화 약세(환율 상승) → KOSPI 외국인 이탈 → 악재
   if (usdKrw) {
-    if (usdKrw > 1420) {
+    if (usdKrw > 1550) {
       adj -= 8;
       notes.push(`환율 ${usdKrw.toFixed(0)}원(고위험)`);
-    } else if (usdKrw > 1380) {
+    } else if (usdKrw > 1500) {
       adj -= 4;
       notes.push(`환율 ${usdKrw.toFixed(0)}원(주의)`);
-    } else if (usdKrw < 1320) {
+    } else if (usdKrw < 1420) {
       adj += 5;
       notes.push(`환율 ${usdKrw.toFixed(0)}원(호재)`);
     } else {

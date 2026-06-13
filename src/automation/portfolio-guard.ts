@@ -93,8 +93,11 @@ export async function getPerformanceMultiplier(): Promise<number> {
     } catch {
       /* 스냅샷 없으면 기본 비율만 적용 */
     }
-    // 포트폴리오 값 폴백
-    if (portfolioValue <= 0) portfolioValue = isPaper ? 10_000_000 : 8_700_000;
+    // 포트폴리오 값 폴백 — 상수 기반
+    if (portfolioValue <= 0) {
+      const { PAPER_INITIAL_CAPITAL: PIC } = await import('../risk/paper-balance.js');
+      portfolioValue = isPaper ? PIC : PIC; // 실전/연습 동일 시드 기반
+    }
     const profitThreshold = Math.max(portfolioValue * 0.03, 10_000); // 3% 수익이면 공격
     const lossThresholdHard = -Math.max(portfolioValue * 0.05, 10_000); // -5% 심각
     const lossThresholdSoft = -Math.max(portfolioValue * 0.03, 5_000); // -3% 방어
@@ -398,7 +401,8 @@ export async function runPortfolioHealthCheck(): Promise<void> {
       if (totalUsd > 0) {
         const { getFxRate } = await import('../api/routes/dashboard/helpers.js');
         const fx = await getFxRate();
-        overseasValueKrw = totalUsd * (fx > 0 ? fx : 1420);
+        const { FALLBACK_FX_RATE: FB } = await import('../config/constants.js');
+        overseasValueKrw = totalUsd * (fx > 0 ? fx : FB);
       }
     } catch {
       /* 해외 데이터 없으면 국내만 사용 */

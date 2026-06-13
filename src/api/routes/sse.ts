@@ -322,6 +322,14 @@ sseRoutes.get('/stream', (c) => {
             })(),
             recentEvents: getRecentEvents(10),
             todayStats,
+            newInsightCount: await getPool()
+              .query(
+                `SELECT COUNT(*)::int AS cnt FROM learned_insights
+                 WHERE last_updated >= NOW() - INTERVAL '24 hours' AND is_paper = $1`,
+                [viewIsPaper],
+              )
+              .then((r) => Number(r.rows[0]?.cnt ?? 0))
+              .catch(() => 0),
           };
 
           await stream.writeSSE({

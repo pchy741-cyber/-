@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { fetchExchangeRate } from '../../automation/macro-data.js';
-import { OVERSEAS_FEE_PCT } from '../../config/constants.js';
+import { FALLBACK_FX_RATE, OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { getPool } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
 import { resolveRequestMode } from '../guards/live-pin.js';
@@ -47,11 +47,11 @@ journalRoutes.get('/journal', async (c) => {
   const trades: JournalTrade[] = [];
 
   // 환율 조회 (US→KRW 변환용)
-  let fxRate = 1400; // 기본값
+  let fxRate = FALLBACK_FX_RATE;
   try {
     fxRate = await fetchExchangeRate();
   } catch {
-    /* 기본값 사용 */
+    /* 폴백 사용 */
   }
 
   try {
@@ -97,25 +97,29 @@ journalRoutes.get('/journal', async (c) => {
       const qty = Number(r.total_quantity ?? 0);
       const invested = Number(r.total_invested ?? 0);
 
-      // realized_pnl=0은 손익분기(외부 매도 등 실제 0원 수익) — null일 때만 가격 기반 폴백
-      const pnlGross =
-        r.realized_pnl != null
-          ? Number(r.realized_pnl)
-          : exitPrice > 0 && entryPrice > 0
-            ? (exitPrice - entryPrice) * qty
-            : 0;
-      // exitPrice=0(외부 매도 → SELL 주문 없음 → NULL) 시 -100% 오표시 방지
-      const pnlPctGross =
-        invested > 0
-          ? (pnlGross / invested) * 100
-          : entryPrice > 0 && exitPrice > 0
-            ? ((exitPrice - entryPrice) / entryPrice) * 100
-            : 0;
+      // 수수료 추정 (표시용) — 매수 0.015% + 매도 0.195%
+      const buyFeeKrw = entryPrice * qty * 0.00015;  // KR_FEE.BUY_FEE_PCT
+      const sellFeeKrw = exitPrice > 0 ? exitPrice * qty * 0.00195 : 0;  // KR_FEE.SELL_FEE_PCT
+      const feeKrw = buyFeeKrw + sellFeeKrw;
 
-      // 국내 수수료: 매수 0.015% + 매도 0.015% + 거래세 0.18% ≈ 0.21%
-      const krFeeRate = 0.0021;
-      const feeKrw = entryPrice * qty * krFeeRate + exitPrice * qty * krFeeRate;
-      const pnlNet = pnlGross - feeKrw;
+      // realized_pnl: DB 값은 이미 수수료 포함 (avg_buy_price에 매수수수료 포함, 매도가에 SELL_FEE 차감)
+      // → pnlNet으로 직접 사용, 추가 수수료 차감 금지 (이중차감 방지)
+      let pnlNet: number;
+      let pnlPctGross: number;
+      if (r.realized_pnl != null) {
+        pnlNet = Number(r.realized_pnl);
+        // Gross = 수수료 차감 전 추정 (역산)
+        const estGross = pnlNet + feeKrw;
+        pnlPctGross = invested > 0 ? (estGross / invested) * 100
+          : entryPrice > 0 && exitPrice > 0 ? ((exitPrice - entryPrice) / entryPrice) * 100 : 0;
+      } else {
+        // realized_pnl NULL: 가격 기반 폴백 (외부 매도 등)
+        // exitPrice=0(외부 매도 → SELL 주문 없음 → NULL) 시 -100% 오표시 방지
+        const pnlGross = exitPrice > 0 && entryPrice > 0 ? (exitPrice - entryPrice) * qty : 0;
+        pnlPctGross = invested > 0 ? (pnlGross / invested) * 100
+          : entryPrice > 0 && exitPrice > 0 ? ((exitPrice - entryPrice) / entryPrice) * 100 : 0;
+        pnlNet = pnlGross - feeKrw;
+      }
       const pnlPctNet = invested > 0 ? (pnlNet / invested) * 100 : pnlPctGross;
 
       const openedAt = r.opened_at ? new Date(r.opened_at).toISOString() : '';

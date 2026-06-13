@@ -3,7 +3,7 @@ import { config } from '../../config/index.js';
 import { checkDb, isMemoryMode } from '../../db/client.js';
 import { isMarketOpen } from '../../kis/market.js';
 import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
-import { isWaking } from '../../utils/cloud-sql-wake.js';
+import { isWaking, tryWakeIfNeeded } from '../../utils/cloud-sql-wake.js';
 import { getActiveLocks } from '../../utils/lock.js';
 
 export const healthRoutes = new Hono();
@@ -30,8 +30,13 @@ export function getRecentEvents(limit = 10): SystemEvent[] {
 
 // 공개: 최소 정보만 (운영 정보 노출 차단)
 // db 필드: PWA가 DB 기상 상태를 알 수 있도록 추가
-healthRoutes.get('/health', (c) => {
+// 주말에도 사용자 접속 시 DB wake 트리거
+healthRoutes.get('/health', async (c) => {
   const mem = isMemoryMode();
+  // 메모리 모드(=DB 오프라인)인데 사용자가 접속 → wake 트리거 (비동기, 응답 차단 안 함)
+  if (mem && !isWaking()) {
+    tryWakeIfNeeded().catch(() => {});
+  }
   return c.json({ status: 'ok', db: mem ? (isWaking() ? 'waking' : 'offline') : 'ok' }, 200);
 });
 

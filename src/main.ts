@@ -169,11 +169,9 @@ app.route('/', referenceRoutes); // GET/POST/DELETE /api/references (트레이�
 
 // 확장 기능 (OFF by default, 설정에서 켜야 사용)
 import { dividendRoutes } from './api/routes/dividend.js';
-import { futuresRoutes } from './api/routes/futures.js';
 import { strategyLabRoutes } from './api/routes/strategy-lab.js';
 
 app.route('/', dividendRoutes); // GET  /api/dividend/*, 월배당 투자
-app.route('/', futuresRoutes); // GET  /api/futures/*, 해외선물 마이크로 트레이딩
 app.route('/', strategyLabRoutes); // GET/POST /api/strategy-lab/*, 전략 Lab
 
 // ── 전역 에러 핸들러: 내부 에러 메시지를 클라이언트에 노출하지 않음 ──
@@ -244,10 +242,11 @@ async function bootstrap() {
 
   logger.info('========================================');
 
-  // 1. PostgreSQL 연결 확인 (최대 4회 재시도, 5초 간격)
+  // 1. PostgreSQL 연결 확인 (최대 12회 재시도, 15초 간격 = 최대 3분 대기)
+  //    Cloud SQL 기상 소요시간 2~3분 — 기존 20초(4×5s)로는 부족
   try {
-    const ok = await checkDbWithRetry(4, 5_000);
-    if (!ok) throw new Error('DB health check failed after 4 retries');
+    const ok = await checkDbWithRetry(12, 15_000);
+    if (!ok) throw new Error('DB health check failed after 12 retries');
     logger.info('✅ PostgreSQL 연결 성공', { component: 'BOOT' });
     injectDbLogger(logSystem);
     // 1-1. SQL 마이그레이션 파일 순차 실행 (src/db/migrations/*.sql)
@@ -566,7 +565,7 @@ async function bootstrap() {
     logger.warn(`자기학습 초기화 체크 실패: ${e.message}`, { component: 'BOOT' });
   }
 
-  // 6. 상태 복원 병렬 실행 (Kill Switch, 해외 세션, 기준자본, 쿨다운)
+  // 6. 상태 복원 병렬 실행 (Kill Switch, 해외 세션, 기준자본, 쿨다운, Pre-TP peak)
   await Promise.allSettled([
     import('./risk/kill-switch.js')
       .then(({ initKillSwitchFromDB }) => initKillSwitchFromDB())
@@ -580,6 +579,18 @@ async function bootstrap() {
     import('./risk/trade-gate.js')
       .then(({ restoreCooldownResetAt }) => restoreCooldownResetAt())
       .catch((e: any) => logger.warn(`쿨다운 리셋 복원 실패 (무시): ${e.message}`, { component: 'BOOT' })),
+    // Pre-TP peak 복원: 재시작 시 _preTpPeakMap 손실 방지
+    (async () => {
+      const { getPool: gp } = await import('./db/client.js');
+      const { rows } = await gp().query(
+        `SELECT stock_code, avg_buy_price, peak_price_since_open FROM transaction_chains
+         WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND peak_price_since_open IS NOT NULL`,
+      );
+      if (rows.length > 0) {
+        const { restorePreTpPeakMap } = await import('./ai/track-b/sell-signals.js');
+        restorePreTpPeakMap(rows);
+      }
+    })().catch((e: any) => logger.warn(`Pre-TP peak 복원 실패 (무시): ${e.message}`, { component: 'BOOT' })),
   ]);
 
   // 6-2. 필수 시크릿 검증 — 없으면 킬스위치 자동 활성화 (사고 방지)

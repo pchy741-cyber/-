@@ -248,8 +248,8 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
     { component: 'BALANCE' },
   );
 
-  // 모의투자 계좌 예수금이 0원이면 가상 자금 1,000만원 부여
-  const PAPER_DEFAULT_CASH = 10_000_000;
+  // 모의투자 계좌 예수금이 0원이면 가상 자금 부여 (PAPER_INITIAL_CAPITAL)
+  const { PAPER_INITIAL_CAPITAL: PAPER_DEFAULT_CASH } = await import('../risk/paper-balance.js');
   const effectiveCash = isPaper && orderableCash === 0 ? PAPER_DEFAULT_CASH : orderableCash;
   const effectiveDeposit = isPaper && totalDeposit === 0 ? PAPER_DEFAULT_CASH : totalDeposit;
 

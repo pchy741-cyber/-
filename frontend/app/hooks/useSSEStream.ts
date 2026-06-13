@@ -13,10 +13,11 @@ interface SSESetters {
   setSseHealthScore: React.Dispatch<React.SetStateAction<number>>;
   setHealth: React.Dispatch<React.SetStateAction<Health | null>>;
   setTodayStats: React.Dispatch<React.SetStateAction<TodayStats | null>>;
+  setNewInsightCount: React.Dispatch<React.SetStateAction<number>>;
 }
 
 export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
-  const { setTrades, setStrategy, setDash, setUsDash, setLoopStatus, setSseHealthScore, setHealth, setTodayStats } = setters;
+  const { setTrades, setStrategy, setDash, setUsDash, setLoopStatus, setSseHealthScore, setHealth, setTodayStats, setNewInsightCount } = setters;
 
   useEffect(() => {
     const vm = viewMode;
@@ -100,6 +101,7 @@ export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
             setHealth(prev => prev ? { ...prev, recentEvents: data.recentEvents } : prev);
           }
           if (data.todayStats) setTodayStats(data.todayStats);
+          if (data.newInsightCount != null) setNewInsightCount(data.newInsightCount);
         } catch { /* ignore */ }
       });
 
@@ -132,5 +134,5 @@ export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
       es?.close();
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [viewMode, setTrades, setStrategy, setDash, setUsDash, setLoopStatus, setSseHealthScore, setHealth, setTodayStats]);
+  }, [viewMode, setTrades, setStrategy, setDash, setUsDash, setLoopStatus, setSseHealthScore, setHealth, setTodayStats, setNewInsightCount]);
 }

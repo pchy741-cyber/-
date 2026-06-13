@@ -9,6 +9,7 @@
 import type { TechnicalSummary } from '../../../analysis/indicators.js';
 import type { StockWinRate } from '../../../analysis/win-rate.js';
 import type { StrategyMode } from '../../../config/constants.js';
+import type { LossRecord } from '../../../db/client.js';
 import type { CurrentPrice, DailyCandle } from '../../../kis/market.js';
 import type { StockSignals } from '../../../kis/market-signals.js';
 import type { RouteResult } from '../strategy-router.js';
@@ -37,6 +38,16 @@ export interface HardGateInput {
   winRates?: Map<string, StockWinRate>;
   livePrices: Map<string, CurrentPrice>;
   aiScoreMap: Map<string, number>;
+  /** Paper 모드: 제한적 게이트만 적용 (적극적 매매 학습) */
+  isPaper?: boolean;
+  /** 손실 이력 (스마트 재진입 판단용) */
+  lossHistory?: Map<string, LossRecord>;
+  /** 차트 데이터 (스마트 재진입 기술 분석용) */
+  chartData?: Map<string, DailyCandle[]>;
+  /** 실시간 거래대금 = volume × currentPrice (주도주 필터용) */
+  tradingValues?: Map<string, number>;
+  /** [출력] 스마트 재진입 시 제안 SL 가격 — hard-gates에서 설정, buy-execution에서 참조 */
+  _smartReentrySl?: number;
 }
 
 // ── KIS 시그널 추출 결과 ──

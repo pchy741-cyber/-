@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { api, fmt, fmtWon, fmtUsd } from '../../lib/utils';
+import { api, fmt, fmtWon, fmtUsd, FALLBACK_FX_RATE } from '../../lib/utils';
 import { toDisplayName, isUnresolvedStockName } from '../../lib/helpers';
 import { SegmentedBar, WeightBar } from '@/components/SegmentedBar';
 import { CumulativePnlChart } from '@/components/CumulativePnlChart';
@@ -90,7 +90,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
         {/* 14일 누적 실현손익 미니 차트 (CEO 지시 2026-06-12) */}
         <CumulativePnlChart viewMode={viewMode ?? 'live'} days={14} />
         {/* 자금 흐름 시각화 — 3칸 */}
-        <div className="grid grid-cols-3 lg:grid-cols-5 gap-1.5 sm:gap-2">
+        <div className="grid grid-cols-3 lg:grid-cols-4 gap-1.5 sm:gap-2">
           <div className={`rounded-xl px-2 sm:px-3 py-2.5 ${krActualPct >= 0 ? 'bg-blue-950/40 border border-blue-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>
             <div className="text-[9px] text-slate-500 mb-0.5">🇰🇷 한국주식</div>
             <div className="text-sm font-bold tabular-nums text-blue-300 truncate">{fmtWon(domesticEval)}</div>
@@ -120,7 +120,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
           {/* 배당 ETF */}
           {(() => {
             const d = mpData?.dividend;
-            const divValueKrw = d ? Math.round((d.currentValueUsd ?? 0) * (mpData?.fx ?? 1350)) : 0;
+            const divValueKrw = d ? Math.round((d.currentValueUsd ?? 0) * (mpData?.fx ?? FALLBACK_FX_RATE)) : 0;
             const divReturnPct = d?.returnPct ?? 0;
             return (
               <div className={`rounded-xl px-2 sm:px-3 py-2.5 ${divReturnPct >= 0 ? 'bg-emerald-950/30 border border-emerald-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>
@@ -131,23 +131,6 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
                   {d?.investedKrw ? <span className={`text-[9px] font-medium ${divReturnPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{divReturnPct > 0 ? '+' : ''}{divReturnPct.toFixed(1)}%</span> : null}
                 </div>
                 <div className="text-[10px] text-slate-600 mt-0.5">{d?.holdings?.length ?? 0}종목 · 월${(d?.monthlyDivUsd ?? 0).toFixed(0)}</div>
-              </div>
-            );
-          })()}
-          {/* 선물 */}
-          {(() => {
-            const f = mpData?.futures;
-            const fValueKrw = f?.currentValueKrw ?? (f?.investedKrw ?? 0);
-            const fReturnPct = (f?.investedKrw ?? 0) > 0 ? ((fValueKrw - f!.investedKrw!) / f!.investedKrw!) * 100 : 0;
-            return (
-              <div className={`rounded-xl px-2 sm:px-3 py-2.5 ${fReturnPct >= 0 ? 'bg-violet-950/30 border border-violet-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>
-                <div className="text-[9px] text-slate-500 mb-0.5">⚡ 선물</div>
-                <div className="text-sm font-bold tabular-nums text-violet-300 truncate">{f?.investedKrw ? fmtWon(fValueKrw) : '—'}</div>
-                <div className="flex items-center justify-between mt-1">
-                  <span className="text-[9px] text-slate-600">{f?.investedKrw ? `₩${Math.round(f.investedKrw / 10000)}만` : '미투자'}</span>
-                  {f?.investedKrw ? <span className={`text-[9px] font-medium ${fReturnPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{fReturnPct > 0 ? '+' : ''}{fReturnPct.toFixed(1)}%</span> : null}
-                </div>
-                <div className="text-[10px] text-slate-600 mt-0.5">{f?.trades ?? 0}건 · 승률{f?.winRate ?? 0}%</div>
               </div>
             );
           })()}

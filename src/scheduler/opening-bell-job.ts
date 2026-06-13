@@ -407,8 +407,9 @@ JSON만: {"scores":[{"code":"코드","score":점수},...]}`;
           })
         : gapFilteredWatchlist;
 
+    // SCALPING 영구 비활성화 (구조적 비용 > 에지) → 개장벨도 SWING 모드로 실행
     const decisions = await technicalFallbackDecisions({
-      mode: 'SCALPING',
+      mode: 'SWING',
       watchlist: judeojuFiltered.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
       livePrices,
       chartData,
@@ -418,12 +419,11 @@ JSON만: {"scores":[{"code":"코드","score":점수},...]}`;
       totalAssets,
       aiScores,
       blockNewBuys: false,
-      allowScalpingBuys: true, // 개장벨 전용: SCALPING 신규 매수 허용
     });
 
     if (decisions.length > 0) {
       logger.info(`⚡ [OPENING] 개장 결정 ${decisions.length}건 실행`, { component: 'OPENING_BELL' });
-      await tradeExecutor.processDecisions(decisions, 'SCALPING', 'OPENING_BELL');
+      await tradeExecutor.processDecisions(decisions, 'SWING', 'OPENING_BELL');
     } else {
       logger.info(`[OPENING] 09:0${m} — 매매 신호 없음`, { component: 'OPENING_BELL' });
     }

@@ -13,10 +13,12 @@
  */
 
 import { analyzeTechnicals } from '../../analysis/indicators.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import { logger } from '../../utils/logger.js';
 import { tryFinalEntry, tryRegimeRouterEntry, tryScalpEntry } from './filters/entry-decision.js';
 // ── 필터 모듈 (각각 독립, 크로스 import 없음) ──
 import { isHardBlocked } from './filters/hard-gates.js';
+import type { HardGateInput } from './filters/types.js';
 import { checkQualityGates } from './filters/quality-gates.js';
 import { checkRiskGates, isBreakoutBlocked } from './filters/risk-gates.js';
 import { computeScoring } from './filters/scoring.js';
@@ -47,6 +49,7 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
     recentlySoldCodes,
     winRates,
     marketSignals,
+    lossHistory,
   } = params;
 
   const strategyParams = resolveStrategyParams(mode, params);
@@ -55,27 +58,38 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
   const feedbackRequirePullback = params.requirePullback ?? false;
   const feedbackMinVolRatio = params.minVolumeRatio ?? 1.0;
   const openStockCodes = new Set(openChains.map((c) => c.stock_code));
+  const isPaper = getCtxIsPaper();
+
+  // 거래대금 맵 생성 (스마트 재진입 주도주 필터용)
+  const tradingValues = new Map<string, number>();
+  for (const [stockCode, price] of livePrices) {
+    if (price.currentPrice > 0 && price.volume > 0) {
+      tradingValues.set(stockCode, price.currentPrice * price.volume);
+    }
+  }
 
   const candidates: BuyCandidate[] = [];
 
   for (const stock of watchlist) {
     // ━━━ BREAKOUT 모드 전용 경로 (기존 5단계 파이프라인 완전 우회) ━━━
     if (mode === 'BREAKOUT') {
-      if (
-        isHardBlocked({
-          stock,
-          openStockCodes,
-          lossBlockedCodes,
-          bigLossBlockedCodes,
-          manuallySoldCodes,
-          recentlySoldCodes,
-          junkStockCodes,
-          winRates,
-          livePrices,
-          aiScoreMap,
-        })
-      )
-        continue;
+      const hardGateInput: HardGateInput = {
+        stock,
+        openStockCodes,
+        lossBlockedCodes,
+        bigLossBlockedCodes,
+        manuallySoldCodes,
+        recentlySoldCodes,
+        junkStockCodes,
+        winRates,
+        livePrices,
+        aiScoreMap,
+        isPaper,
+        lossHistory,
+        chartData,
+        tradingValues,
+      };
+      if (isHardBlocked(hardGateInput)) continue;
 
       const candles = chartData.get(stock.stock_code);
       const price = livePrices.get(stock.stock_code);
@@ -100,6 +114,7 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
         price,
         candleBonus: 0,
         breakoutSignal: breakout,
+        smartReentrySl: hardGateInput._smartReentrySl,
       });
       continue;
     }
@@ -107,21 +122,23 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
     const megaCap = MEGA_CAP_PRIORITY_CODES.get(stock.stock_code);
 
     // ━━━ 1단계: 하드 게이트 ━━━
-    if (
-      isHardBlocked({
-        stock,
-        openStockCodes,
-        lossBlockedCodes,
-        bigLossBlockedCodes,
-        manuallySoldCodes,
-        recentlySoldCodes,
-        junkStockCodes,
-        winRates,
-        livePrices,
-        aiScoreMap,
-      })
-    )
-      continue;
+    const hardGateInput: HardGateInput = {
+      stock,
+      openStockCodes,
+      lossBlockedCodes,
+      bigLossBlockedCodes,
+      manuallySoldCodes,
+      recentlySoldCodes,
+      junkStockCodes,
+      winRates,
+      livePrices,
+      aiScoreMap,
+      isPaper,
+      lossHistory,
+      chartData,
+      tradingValues,
+    };
+    if (isHardBlocked(hardGateInput)) continue;
 
     // ━━━ 데이터 준비 ━━━
     const candles = chartData.get(stock.stock_code);
@@ -230,9 +247,11 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
     };
 
     // 5a. 레짐 라우터 빠른 진입
+    const smartSl = hardGateInput._smartReentrySl;
+
     const regimeVerdict = tryRegimeRouterEntry(entryInput);
     if (regimeVerdict.action === 'BUY') {
-      candidates.push({ stock_code: stock.stock_code, tech, price, candleBonus: scoring.candleBonus, regimeRoute });
+      candidates.push({ stock_code: stock.stock_code, tech, price, candleBonus: scoring.candleBonus, regimeRoute, smartReentrySl: smartSl });
       continue;
     }
 
@@ -246,6 +265,7 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
         candleBonus: scoring.candleBonus,
         regimeRoute,
         isScalpOverride: scalpVerdict.isScalpOverride,
+        smartReentrySl: smartSl,
       });
       continue;
     }
@@ -254,7 +274,7 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
     // 5c. AI 필수 + 꽁돈 + 기술점수
     const finalVerdict = tryFinalEntry(entryInput);
     if (finalVerdict.action === 'BUY') {
-      candidates.push({ stock_code: stock.stock_code, tech, price, candleBonus: scoring.candleBonus, regimeRoute });
+      candidates.push({ stock_code: stock.stock_code, tech, price, candleBonus: scoring.candleBonus, regimeRoute, smartReentrySl: smartSl });
     }
   }
 

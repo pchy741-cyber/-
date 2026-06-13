@@ -18,12 +18,11 @@ import WatchlistView from './views/WatchlistView';
 import NewsView from './views/NewsView';
 import SettingsView from './views/SettingsView';
 import DividendView from './views/DividendView';
-import FuturesView from './views/FuturesView';
 import StrategyLabView from './views/StrategyLabView';
 import ScreenshotReview from './components/ScreenshotReview';
 import DbWarmingOverlay from './components/DbWarmingOverlay';
 
-type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'settings' | 'dividend' | 'futures' | 'strategy-lab';
+type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'settings' | 'dividend' | 'strategy-lab';
 
 export default function Dashboard() {
   const { show: toast, ToastContainer } = useToast();
@@ -47,6 +46,7 @@ export default function Dashboard() {
     withdrawConfig, allocConfig, setAllocConfig,
     loading, lastUpdate, loopStatus, sseHealthScore, featureFlags, setFeatureFlags,
     viewMode, switchView, load, todayStats, isStale,
+    newInsightCount,
   } = data;
 
   const [mpData, setMpData] = useState<MpData | null>(null);
@@ -184,6 +184,7 @@ export default function Dashboard() {
         featureFlags={featureFlags}
         isPaper={isPaper} isUS={isUS} theme={theme}
         loopStatus={loopStatus}
+        newInsightCount={newInsightCount}
       />
 
       <div className="flex-1 flex flex-col min-w-0">
@@ -219,9 +220,6 @@ export default function Dashboard() {
               </ErrorBoundary>
               <ErrorBoundary fallbackTitle="배당 로딩 오류">
                 {tab === 'dividend' && <DividendView toast={toast} viewMode={viewMode} confirm={confirm} mpData={mpData} onRefreshMp={refreshMp} />}
-              </ErrorBoundary>
-              <ErrorBoundary fallbackTitle="선물 로딩 오류">
-                {tab === 'futures' && <FuturesView toast={toast} viewMode={viewMode} confirm={confirm} mpData={mpData} onRefreshMp={refreshMp} />}
               </ErrorBoundary>
               <ErrorBoundary fallbackTitle="전략 Lab 로딩 오류">
                 {tab === 'strategy-lab' && <StrategyLabView toast={toast} viewMode={viewMode} confirm={confirm} />}

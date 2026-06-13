@@ -6,7 +6,6 @@
  *     설정에서 LIVE_ENABLED=true로 전환 시 PIN 검증 후 실전 가능
  */
 import { baseIsPaper } from '../../config/index.js';
-import { getPool } from '../../db/client.js';
 
 const LIVE_PIN = '7012';
 
@@ -54,27 +53,3 @@ export function resolveRequestMode(c: { req: { query: (k: string) => string | un
   return resolveIsPaper(vm);
 }
 
-// ── 선물 예산 모드별 컬럼 ──
-
-export const BUDGET_COLS = {
-  paper: { allocated: 'allocated_krw_paper', pnl: 'total_pnl_usd_paper', margin: 'used_margin_usd_paper' },
-  live: { allocated: 'allocated_krw_live', pnl: 'total_pnl_usd_live', margin: 'used_margin_usd_live' },
-} as const;
-
-export function budgetCol(isPaper: boolean) {
-  return isPaper ? BUDGET_COLS.paper : BUDGET_COLS.live;
-}
-
-// ── 선물 trades PnL 합산 (모드별) ──
-
-export async function getFuturesPnlByMode(): Promise<{ paper: number; live: number }> {
-  const { rows } = await getPool().query(`
-    SELECT is_paper, COALESCE(SUM(pnl_usd), 0) AS total_pnl
-    FROM futures_trades WHERE pnl_usd IS NOT NULL
-    GROUP BY is_paper
-  `);
-  return {
-    paper: Number(rows.find((r: any) => r.is_paper)?.total_pnl ?? 0),
-    live: Number(rows.find((r: any) => !r.is_paper)?.total_pnl ?? 0),
-  };
-}

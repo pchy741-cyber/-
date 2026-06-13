@@ -1,11 +1,11 @@
 'use client';
 
 import React from 'react';
-import { api, fmtWon } from '../lib/utils';
+import { api, fmtWon, FALLBACK_FX_RATE } from '../lib/utils';
 import { isOverseasTrade as isOvTrade } from '../lib/helpers';
 import type { Trade, Strategy, ToastFn } from '../types';
 
-export default function PerformancePanel({ trades, strategy, setStrategy, toast, fxRate = 1420 }: { trades: Trade[]; strategy: Strategy | null; setStrategy?: (s: Strategy) => void; toast?: ToastFn; fxRate?: number }) {
+export default function PerformancePanel({ trades, strategy, setStrategy, toast, fxRate = FALLBACK_FX_RATE }: { trades: Trade[]; strategy: Strategy | null; setStrategy?: (s: Strategy) => void; toast?: ToastFn; fxRate?: number }) {
   const [quickPrompt, setQuickPrompt] = React.useState('');
   const [savingPrompt, setSavingPrompt] = React.useState(false);
 
@@ -24,7 +24,7 @@ export default function PerformancePanel({ trades, strategy, setStrategy, toast,
       const filledPx = Number(t.filled_price) || 0;
       const qty = Number(t.filled_quantity ?? t.quantity) || 0;
       const isUs = isOverseasTrade(t);
-      const BUY_FEE = isUs ? 0 : 0.00015; const SELL_FEE = isUs ? 0 : 0.00245;
+      const BUY_FEE = isUs ? 0 : 0.00015; const SELL_FEE = isUs ? 0 : 0.00195; // 수수료0.015%+거래세0.18%
       if (avgBuy > 0 && filledPx > 0 && qty > 0) {
         const gross = (filledPx - avgBuy) * qty;
         const fees = Math.round(avgBuy * qty * BUY_FEE) + Math.round(filledPx * qty * SELL_FEE);

@@ -47,10 +47,10 @@ export function StrategySettingsPanel({ strategy, setField }: {
   };
 
   return (
-    <Panel title="전략 설정" badge={strategy.mode === 'SWING' ? '스윙' : strategy.mode === 'DEFENSE' ? '방어' : strategy.mode === 'SNIPER' ? '저격수' : '단타'} badgeColor={strategy.mode === 'SWING' ? 'blue' : strategy.mode === 'DEFENSE' ? 'rose' : strategy.mode === 'SNIPER' ? 'amber' : 'amber'}>
+    <Panel title="전략 설정" badge={strategy.mode === 'SWING' ? '스윙' : strategy.mode === 'DEFENSE' ? '방어' : strategy.mode === 'SNIPER' ? '저격수' : '스윙'} badgeColor={strategy.mode === 'SWING' ? 'blue' : strategy.mode === 'DEFENSE' ? 'rose' : strategy.mode === 'SNIPER' ? 'amber' : 'blue'}>
       <div className="px-6 py-5 space-y-4">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <Sel label="매매 방식" value={String(strategy.mode ?? 'SWING')} opts={[['SWING','스윙 (중단기)'],['DEFENSE','방어 (하락장)'],['SCALPING','단타 (당일)'],['SNIPER','저격수 (AI 88점+ 2종목 집중)']]} onChange={v => setField('mode', v)} />
+          <Sel label="매매 방식" value={String(strategy.mode ?? 'SWING')} opts={[['SWING','스윙 (중단기)'],['DEFENSE','방어 (하락장)'],['SNIPER','저격수 (AI 88점+ 2종목 집중)']]} onChange={v => setField('mode', v)} />
           <Sel label="AI 확신도 (높을수록 신중)" value={Number(strategy.buy_threshold ?? 83)} opts={[[70,'70점'],[75,'75점'],[78,'78점'],[80,'80점'],[83,'83점 (현재)'],[85,'85점'],[88,'88점'],[90,'90점']]} onChange={v => setField('buy_threshold', Number(v))} />
           {!strategy.use_dynamic_tpsl && (
             <Sel label="손실 한계 (이 이상 빠지면 매도)" value={Number(strategy.stop_loss_pct ?? -3)} opts={[[-1.5,'-1.5% (타이트)'],[-2,'-2%'],[-2.5,'-2.5%'],[-3,'-3% (현재)'],[-4,'-4%'],[-5,'-5% (여유)']]} onChange={v => setField('stop_loss_pct', Number(v))} />

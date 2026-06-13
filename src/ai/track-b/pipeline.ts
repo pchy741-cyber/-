@@ -27,6 +27,7 @@ import {
   getActiveWatchlist,
   getBigLossBlockedStocks,
   getLatestScores,
+  getLossHistory,
   getOpenChains,
   getPool,
   getRecentLossStocks,
@@ -51,13 +52,14 @@ import { getConsensusTrend } from '../../market/consensus.js';
 import { fetchStockDisclosures } from '../../market/krx-disclosure.js';
 import { getMacroSignal } from '../../market/macro-signal.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
+import { checkEntryTiming } from '../../risk/entry-timing-guard.js';
 import { getPaperBalance } from '../../risk/paper-balance.js';
 import { reconcilePendingOrders } from '../../trading/fill-reconciler.js';
 import { logger } from '../../utils/logger.js';
 import { getOverride } from '../ai-overrides.js';
 import { IDLE_PARK_STOCK_CODE } from './cash-manager.js';
 import { applyDecisionFlow } from './decision-flow.js';
-import { buildDefenseParkExitDecisions, getDefenseParkState, PARK_STOCK_CODE } from './defense-park.js';
+import { buildDefenseParkExitDecisions, getDefenseParkState, PARK_STOCK_CODE, PARK_STOCK_NAME } from './defense-park.js';
 import { checkDailyLoss, fetchKospiRegime } from './market-regime.js';
 import { technicalFallbackDecisions } from './technical-fallback.js';
 import { MEGA_CAP_PRIORITY_CODES } from './trading-rules.js';
@@ -109,7 +111,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           getActiveWatchlist(),
           getOpenChains(),
           getActiveStrategy(),
-          getRecentLossStocks(getCtxIsPaper() ? 1 : 7), // Paper: 1일 쿨다운 (7일 → 적극적 데이터 수집)
+          getRecentLossStocks(getCtxIsPaper() ? 1 : 5), // Paper: 1일 쿨다운 (7일 → 적극적 데이터 수집)
           getRecentManuallySoldStocks(24),
         ]);
       } catch (dbErr: any) {
@@ -129,7 +131,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
             getActiveWatchlist(),
             getOpenChains(),
             getActiveStrategy(),
-            getRecentLossStocks(getCtxIsPaper() ? 1 : 7), // Paper: 1일 쿨다운
+            getRecentLossStocks(getCtxIsPaper() ? 1 : 5), // Paper: 1일 쿨다운
             getRecentManuallySoldStocks(24),
           ]);
         }
@@ -139,11 +141,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const [watchlist, openChains, strategy, recentLossCodes, manuallySoldCodes] = await dbLoadWithFallback();
     const ctxIsPaper = getCtxIsPaper(); // runWithMode 컨텍스트 우선, 없으면 서버 기본값
     // 2차 쿼리 병렬 실행 (순차 3개 + 잔고 → Promise.all로 단축)
-    const [todayRepeatStopCodes, bigLossBlocked, recentlySoldCodes, balanceRaw] = await Promise.all([
+    const [todayRepeatStopCodes, bigLossBlocked, recentlySoldCodes, balanceRaw, lossHistory] = await Promise.all([
       getTodayRepeatStopCodes(1),      // 당일 1회 이상 손절 → 당일 재진입 차단
-      getBigLossBlockedStocks(),        // -5% 초과 손실 → 30일 절대 차단
+      getBigLossBlockedStocks(),        // -5% 초과 손실 → 30일 절대 차단 (레거시 폴백)
       getRecentlySoldStocks(0.5),       // 최근 30분 매도 → 재진입 쿨다운
       ctxIsPaper ? getPaperBalance() : getAccountBalance(true),
+      getLossHistory(),                 // 90일 손실 이력 → 스마트 재진입
     ]);
     const balance = balanceRaw as any;
     // 인버스 ETF는 쿨다운 예외 — 하락장 지속 시 즉시 재진입 가능해야 함
@@ -187,7 +190,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       ? {
           isActive: false,
           parkStockCode: PARK_STOCK_CODE,
-          parkStockName: 'KODEX 200',
+          parkStockName: PARK_STOCK_NAME,
           entryReason: null,
           enteredAt: null,
         }
@@ -207,8 +210,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
     const orphanedKodex = openChains.find((c) => c.stock_code === PARK_STOCK_CODE);
     if (orphanedKodex) {
-      logger.warn(`🧹 잔여 KODEX 200 즉시 청산`, { component: 'TRACK_B' });
-      return buildDefenseParkExitDecisions([orphanedKodex], 'KODEX 200 잔여 포지션 청산');
+      logger.warn(`🧹 잔여 파킹 ETF 즉시 청산`, { component: 'TRACK_B' });
+      return buildDefenseParkExitDecisions([orphanedKodex], '파킹 ETF 잔여 포지션 청산');
     }
     // 인버스 ETF 잔여 — 아래 generateInverseDecisions(NONE 레벨)에서 처리
     const orphanedInverses = openChains.filter((c) => INVERSE_ETF_CODES.has(c.stock_code) && c.total_quantity > 0);
@@ -396,7 +399,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         if (usd <= 0) return 0;
         const { getFxRate } = await import('../../api/routes/dashboard/helpers.js');
         const fx = await getFxRate();
-        return usd * (fx > 0 ? fx : 1420);
+        const { FALLBACK_FX_RATE: FB } = await import('../../config/constants.js');
+        return usd * (fx > 0 ? fx : FB);
       })
       .catch(() => 0);
 
@@ -554,7 +558,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 개선: 메가캡 종목은 threshold-8, 일반도 threshold-5 여유 (buy-filters에서 정밀 판단)
     const preFilterThreshold = STRATEGY_PARAMS[effectiveMode].buyThreshold - 5;
     // BREAKOUT 모드: AI 점수 불필요 — 기술적 돌파 신호 기반이므로 preFilter 무조건 통과
-    const confFloor = ctxIsPaper ? 0.45 : 0.6;
+    const confFloor = ctxIsPaper ? 0.3 : 0.6; // Paper: 0.45→0.3 (더 많은 종목 탐색)
     let hasBuyCandidates =
       effectiveMode === 'BREAKOUT' ||
       scores.some((s) => {
@@ -784,10 +788,20 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 예외: AI 95+ 극고확신 종목 (시장 컨센서스가 매우 강해 즉시 진입이 유리)
     const isSwingEodRestricted =
       !ctxIsPaper && effectiveMode === 'SWING' && (kstH < 14 || (kstH === 14 && kstM < 30)) && topScore < 95;
+    // 최대 동시 포지션 수 제한 (alloc-risk-cache에서 조회)
+    const { getAllocRisk } = await import('../../db/alloc-risk-cache.js');
+    const allocRisk = await getAllocRisk(ctxIsPaper);
+    const activePositionCount = openChains.filter((c) => c.total_quantity > 0 && c.stock_code !== PARK_STOCK_CODE).length;
+    const isMaxPositionsReached = !ctxIsPaper && activePositionCount >= allocRisk.maxPositions;
+    if (isMaxPositionsReached) {
+      logger.info(`🚫 최대 포지션 수 도달: ${activePositionCount}/${allocRisk.maxPositions} → 신규 매수 차단`, { component: 'TRACK_B' });
+    }
     const blockNewBuys =
-      isPastClose || // Paper 이미 면제 (line 510)
-      isLunchBan || // Paper 이미 면제 (line 517)
-      isSwingEodRestricted || // SWING 14:30 이전: 종가 구간 대기 (BREAKOUT 제외, 95+ 예외)
+      (!ctxIsPaper && isPastClose) || // Paper: 마감시간 면제 (적극적 매매)
+      (!ctxIsPaper && isLunchBan) || // Paper: 마의시간 면제
+      isSwingEodRestricted || // SWING 14:30 이전: 종가 구간 대기 (BREAKOUT 제외, 95+ 예외, 이미 !ctxIsPaper)
+      isOpeningVolatility || // 09:00-09:30 장초반 변동성 구간: 신규 매수 사전 차단 (스캔 낭비 방지)
+      isMaxPositionsReached || // 최대 동시 포지션 수 초과: 신규 매수 차단
       (!ctxIsPaper && dailyLoss.blocked) || // Paper: 일일손실 차단 면제 (데이터 수집 우선)
       (!ctxIsPaper && kospiRegime.flashCrash) || // 급락 서킷브레이커: Live만 차단 (Paper 면제 — 모의자금)
       (!ctxIsPaper && !isKospiOverrideActive() && kospiRegime.todayDown && !hasHighConvictionStock) || // 코스피 당일 -0.3%+ 하락: 고확신 없으면 신규매수 전면 차단
@@ -799,6 +813,16 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       (!ctxIsPaper && portfolioStress >= 2 && !hasHighConvictionStock) || // Paper: 포트스트레스 면제
       eodOnlyActive; // 🎰 연패 EOD-only 모드 (Paper는 이미 false 반환)
 
+    // ── entry-timing-guard 연결: 이브닝 블록 + 전략 필터 + 기술지표 다중 확증 ──
+    // 기존 blockNewBuys 조건에 구조적 가드 추가 (Live만 적용)
+    const entryTimingCheck = !ctxIsPaper && !blockNewBuys
+      ? checkEntryTiming({ aiScore: topScore, marketCode: 'KR', strategyMode: effectiveMode })
+      : null;
+    if (entryTimingCheck && !entryTimingCheck.allowed) {
+      logger.info(`🛡️ 진입타이밍가드 차단: ${entryTimingCheck.reason}`, { component: 'TRACK_B' });
+    }
+    const blockNewBuysFinal = blockNewBuys || (entryTimingCheck != null && !entryTimingCheck.allowed);
+
     // EOD 전용 차단: isPastClose/eodOnlyActive 제외 (14:50+ 종가베팅은 허용)
     // Paper: dailyLoss 면제 (급락 서킷만 유지)
     const blockEodBuys = (!ctxIsPaper && dailyLoss.blocked) || (!ctxIsPaper && kospiRegime.flashCrash);
@@ -806,13 +830,13 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // RISK_OFF/하락장: 축소하되 기회 유지 (극공포=역발상 매수 기회)
     const macroSizingMult = macroRiskOff ? 0.7 : kospiRegime.penalty >= 2 ? 0.6 : kospiRegime.penalty >= 1 ? 0.8 : 1.0;
 
-    if (!blockNewBuys && hasHighConvictionStock && kospiRegime.penalty >= 2) {
+    if (!blockNewBuysFinal && hasHighConvictionStock && kospiRegime.penalty >= 2) {
       logger.info(
         `🔥 하락장이지만 90+점 고확신 종목(top=${topScore}) 발견 → 매수 허용 (포지션 축소 ×${macroSizingMult})`,
         { component: 'TRACK_B' },
       );
     }
-    if (blockNewBuys) {
+    if (blockNewBuysFinal) {
       const blockReason = isPastClose
         ? '마감시간(14:50+)'
         : isLunchBan
@@ -825,9 +849,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
                 ? 'KOSPI급락서킷브레이커'
                 : kospiRegime.penalty >= 2 && kospiRegime.todayDown
                   ? `하락장매수차단(penalty${kospiRegime.penalty}+당일하락) [top=${topScore}점]`
-                  : eodOnlyActive
-                    ? '🎰 EOD-only모드(연패→종가베팅만허용)'
-                    : `포트폴리오위험(미실현손실-3.5%↑)`;
+                  : entryTimingCheck && !entryTimingCheck.allowed
+                    ? `진입타이밍가드(${entryTimingCheck.details.phase})`
+                    : eodOnlyActive
+                      ? '🎰 EOD-only모드(연패→종가베팅만허용)'
+                      : `포트폴리오위험(미실현손실-3.5%↑)`;
       logger.warn(`🚫 신규매수 차단: ${blockReason}`, { component: 'TRACK_B' });
     }
     if (macroSizingMult < 1.0) {
@@ -849,7 +875,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       );
     }
     // confidence 임계값: live=0.60 (v3: 0.45→0.60), paper=0.45 (연습매매 활성화)
-    const confMin = getCtxIsPaper() ? 0.45 : 0.6;
+    const confMin = getCtxIsPaper() ? 0.3 : 0.6; // Paper: 0.45→0.3 (적극적 매매)
     const adjustedScores = scores
       .filter((s: any) => {
         const conf = s.confidence ?? 0;
@@ -968,7 +994,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // bid/ask 비율 ≤ 0.5 → 매도벽 2배+ → 진입 완전 차단 (hard gate)
     const orderbookAdjMap = new Map<string, number>();
     const orderbookBlockedCodes = new Set<string>();
-    if (!blockNewBuys) {
+    if (!blockNewBuysFinal) {
       try {
         const topCandidates = adjustedScores
           .filter((s) => s.score >= resolvedThreshold - 10)
@@ -1027,7 +1053,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // ── KIS 시장 시그널: 상위 5종목 (v6: 3→5 확대, 수급·호가·공매도 정확도 강화) ──
     let marketSignals: Map<string, import('../../kis/market-signals.js').StockSignals> | undefined;
-    if (!blockNewBuys) {
+    if (!blockNewBuysFinal) {
       try {
         const topCodes = [...finalScores]
           .sort((a, b) => b.score - a.score)
@@ -1064,8 +1090,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       minVolumeRatio: Math.max(winFeedback.minVolumeRatio, 1.2), // 거래량 최소 1.2x 보장
       // penalty=1(조정장) 단독으로는 차단 안함 → adaptive threshold +2 로 대응
       // penalty=2(하락장, KOSPI<MA60)만 차단. SCALPING 모드면 macro/regime 면제
-      blockNewBuys,
+      blockNewBuys: blockNewBuysFinal,
       macroSizingMult,
+      lossHistory,
       kospiBoost: kospiRegime.boost,
       allocationTarget: allocCfg
         ? {
@@ -1082,7 +1109,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // ── Paper 모드: BREAKOUT 전략 병행 실행 (다전략 수익 극대화) ──────────────
     // SWING 메인 패스 후 BREAKOUT 패스를 추가 실행 → 돌파 신호 종목 보완 진입
-    if (ctxIsPaper && effectiveMode !== 'BREAKOUT' && !blockNewBuys) {
+    if (ctxIsPaper && effectiveMode !== 'BREAKOUT' && !blockNewBuysFinal) {
       try {
         const breakoutDecisions = await technicalFallbackDecisions({
           mode: 'BREAKOUT',
@@ -1104,8 +1131,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           winRates,
           requirePullback: false,
           minVolumeRatio: 1.0,
-          blockNewBuys,
+          blockNewBuys: blockNewBuysFinal,
           macroSizingMult,
+          lossHistory,
           kospiBoost: kospiRegime.boost,
           allocationTarget: null,
           currentStockValue,
@@ -1264,7 +1292,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         if (now - lastAlert < 30 * 60 * 1000) continue;
         getAlertMap().set(candidate.stock_code, now);
         const stockName = nameMap.get(candidate.stock_code) ?? candidate.stock_code;
-        const status = blockNewBuys ? `⚠️ 자동매수 차단 중 — 수동 확인` : `✅ 자동매수 대기 중`;
+        const status = blockNewBuysFinal ? `⚠️ 자동매수 차단 중 — 수동 확인` : `✅ 자동매수 대기 중`;
         const msg = [
           `🔥 고확신 눌림목: *${stockName}* (${candidate.stock_code})`,
           `📊 AI점수=${candidate.score} pb=True vol=${tech.volumeRatio.toFixed(1)}x RSI=${tech.rsi14.toFixed(0)}`,
@@ -1305,7 +1333,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       resolvedTp,
       orderableCash,
       hasBuyCandidates,
-      blockNewBuys,
+      blockNewBuys: blockNewBuysFinal,
       blockEodBuys,
       adjMaxPositionKrw,
       chartData,
@@ -1317,7 +1345,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       overseasValueKrw,
     });
 
-    // ── 장초반 09:00-09:30 신규 매수 필터링 (매도는 유지) ──
+    // ── 장초반 09:00-09:30 신규 매수 필터링 (매도는 유지, blockNewBuys에도 포함되지만 2차 안전망) ──
     if (isOpeningVolatility) {
       const beforeCount = actionable.length;
       const filtered = actionable.filter((d) => !['BUY', 'AVERAGE_DOWN'].includes(d.action));
@@ -1356,7 +1384,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         effectiveMode,
         kospiPenalty: kospiRegime.penalty,
         kospiBoost: kospiRegime.boost ?? false,
-        blockNewBuys,
+        blockNewBuys: blockNewBuysFinal,
         flashCrash: kospiRegime.flashCrash ?? false,
         dailyPnlPct: dailyLoss.dailyPnlPct,
         totalAssets,
@@ -1381,6 +1409,18 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         };
       }),
     ).catch(() => {});
+
+    // ── 매 루프 자기 최적화 (비동기, 파이프라인 블로킹 안 함) ──
+    // Paper: 자금 리필 체크 (10분 rate limit 내장)
+    if (ctxIsPaper) {
+      import('../../risk/paper-balance.js')
+        .then((m) => m.checkAndRefillPaper())
+        .catch(() => {});
+    }
+    // 황금비율 자동 조정 (1시간 rate limit)
+    import('../../automation/regime-allocator.js')
+      .then((m) => m.autoTuneRegimeWeights())
+      .catch(() => {});
 
     return actionable;
   } catch (error) {

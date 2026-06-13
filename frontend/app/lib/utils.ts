@@ -2,6 +2,9 @@
 // 공유 유틸리티 — 포맷팅, 색상, API
 // ═══════════════════════════════════════
 
+/** 환율 비상 폴백 — 백엔드 FALLBACK_FX_RATE와 동일 (서버 환율 조회 실패 시 사용) */
+export const FALLBACK_FX_RATE = 1_500;
+
 export const BACKEND_URL =
   typeof window !== 'undefined'
     ? (process.env.NEXT_PUBLIC_API_BASE_URL || (window.location.port === '3000' ? 'http://localhost:8080' : window.location.origin))

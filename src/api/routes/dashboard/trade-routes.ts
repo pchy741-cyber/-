@@ -145,8 +145,8 @@ tradeRoutes.get('/trades', async (c) => {
         if (qty > 0 && sellPx > 0) {
           const costBasis = avgBuy * qty;
           const sellValue = sellPx * qty;
-          const sellFee = isUsd ? 0 : Math.round(sellValue * 0.00245);
-          const buyFee = isUsd ? 0 : Math.round(costBasis * 0.00015);
+          const sellFee = isUsd ? 0 : Math.round(sellValue * 0.00195); // KR_FEE.SELL_FEE_PCT (수수료0.015%+거래세0.18%)
+          const buyFee = isUsd ? 0 : Math.round(costBasis * 0.00015); // KR_FEE.BUY_FEE_PCT
           const pnl = sellValue - sellFee - costBasis - buyFee;
           const pct = (pnl / costBasis) * 100;
           return { ...r, realized_pnl: pnl, realized_pnl_pct: pct, realized_pnl_usd: isUsd ? pnl : null };

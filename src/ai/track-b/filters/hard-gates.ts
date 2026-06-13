@@ -8,6 +8,7 @@
 import { logger } from '../../../utils/logger.js';
 import { getOverride } from '../../ai-overrides.js';
 import { BUY_BLOCKED_CODES } from '../trading-rules.js';
+import { checkSmartReentry } from './smart-reentry.js';
 import type { HardGateInput } from './types.js';
 
 /**
@@ -26,6 +27,10 @@ export function isHardBlocked(input: HardGateInput): boolean {
     winRates,
     livePrices,
     aiScoreMap,
+    isPaper,
+    lossHistory,
+    chartData,
+    tradingValues,
   } = input;
   const code = stock.stock_code;
   const name = stock.stock_name;
@@ -33,73 +38,94 @@ export function isHardBlocked(input: HardGateInput): boolean {
   // 이미 포지션 있으면 스킵
   if (openStockCodes.has(code)) return true;
 
-  // CEO 지시: 바이오/손실 종목 매수 차단
+  // CEO 지시: 바이오/손실 종목 매수 차단 (Paper: CEO 블랙리스트만 유지)
   if (BUY_BLOCKED_CODES.has(code)) {
     logger.info(`  🚫 ${code}(${name}): 매수 차단 목록 — 스킵`, { component: 'TRACK_B' });
     return true;
   }
 
-  // -5% 초과 손실 종목 → 30일 절대 차단 (AI 90+ 시 재진입 허용)
-  if (bigLossBlockedCodes?.has(code)) {
+  // ── 스마트 재진입: 손실 이력이 있는 종목에 대해 조건 기반 재진입 판단 ──
+  // Paper 모드: 손실 블로킹 완전 bypass (적극적 데이터 수집)
+  const lossRecord = lossHistory?.get(code);
+  if (lossRecord && !isPaper) {
     const allowRebuy = getOverride<boolean>(`${code}_allowRebuy`);
-    const aiForBigLoss = aiScoreMap.get(code) ?? 0;
-    const highConviction = Number.isFinite(aiForBigLoss) && aiForBigLoss >= 90;
-    if (!allowRebuy && !highConviction) {
-      logger.info(`  🚫 ${code}(${name}): -5%초과 손실 30일 차단 (AI ${aiForBigLoss}점 < 90, allowRebuy 필요)`, { component: 'TRACK_B' });
-      return true;
-    }
-    if (highConviction) {
-      logger.info(`  🔓 ${code}(${name}): -5% 30일 차단 무시 (AI ${aiForBigLoss}점 ≥ 90 고확신 재진입)`, { component: 'TRACK_B' });
+    if (allowRebuy) {
+      logger.info(`  🔓 ${code}(${name}): allowRebuy override로 손실 차단 해제`, { component: 'TRACK_B' });
     } else {
-      logger.info(`  🔓 ${code}: allowRebuy override로 -5% 차단 해제`, { component: 'TRACK_B' });
+      const candles = chartData?.get(code);
+      const tv = tradingValues?.get(code) ?? 0;
+      const reentry = checkSmartReentry(lossRecord, candles, tv);
+      if (!reentry.allowed) {
+        logger.info(
+          `  🚫 ${code}(${name}): 손실${lossRecord.lossPct.toFixed(1)}% 재진입 차단 — ${reentry.reason}`,
+          { component: 'TRACK_B' },
+        );
+        return true;
+      }
+      // 스마트 재진입 허용 — suggestedSl은 input에 기록 (buy-execution에서 참조)
+      logger.info(`  🔓 ${code}(${name}): ${reentry.reason}`, { component: 'TRACK_B' });
+      if (reentry.suggestedSl) {
+        input._smartReentrySl = reentry.suggestedSl;
+      }
     }
   }
 
-  // 14일 이내 손절 쿨다운 (AI 80+ 시 쿨다운 무시 — 매수 기본 기준선과 일치)
-  if (lossBlockedCodes?.has(code)) {
-    const aiForCooldown = aiScoreMap.get(code) ?? 0;
-    // NaN 방어: Number.isFinite 체크 (NaN < 80 = false → 쿨다운 우회 버그 방지)
-    if (!Number.isFinite(aiForCooldown) || aiForCooldown < 80) {
-      logger.info(`  🚫 ${code}(${name}): 손절 쿨다운 (14일) — 재진입 금지`, { component: 'TRACK_B' });
-      return true;
+  // 레거시 lossBlockedCodes/bigLossBlockedCodes 체크 (lossHistory 미전달 시 폴백)
+  if (!lossHistory) {
+    if (bigLossBlockedCodes?.has(code) && !isPaper) {
+      const aiForBigLoss = aiScoreMap.get(code) ?? 0;
+      const highConviction = Number.isFinite(aiForBigLoss) && aiForBigLoss >= 90;
+      if (!highConviction) {
+        logger.info(`  🚫 ${code}(${name}): -5%초과 손실 차단 (폴백)`, { component: 'TRACK_B' });
+        return true;
+      }
     }
-    logger.info(`  🔓 ${code}(${name}): 손절 쿨다운 무시 (AI ${aiForCooldown}점 ≥ 80)`, { component: 'TRACK_B' });
+    if (lossBlockedCodes?.has(code)) {
+      const aiForCooldown = aiScoreMap.get(code) ?? 0;
+      const threshold = isPaper ? 60 : 80;
+      if (!Number.isFinite(aiForCooldown) || aiForCooldown < threshold) {
+        logger.info(`  🚫 ${code}(${name}): 손절 쿨다운 (폴백)`, { component: 'TRACK_B' });
+        return true;
+      }
+    }
   }
 
-  // 24시간 이내 CEO 수동 매도 재진입 금지
-  if (manuallySoldCodes?.has(code)) {
+  // 24시간 이내 CEO 수동 매도 재진입 금지 (Paper: 면제)
+  if (manuallySoldCodes?.has(code) && !isPaper) {
     logger.info(`  🚫 ${code}(${name}): CEO 수동 매도 쿨다운 (24h) — 재진입 금지`, { component: 'TRACK_B' });
     return true;
   }
 
-  // 2시간 이내 매도 재진입 쿨다운
-  if (recentlySoldCodes?.has(code)) {
+  // 2시간 이내 매도 재진입 쿨다운 (Paper: 30분으로 단축)
+  if (recentlySoldCodes?.has(code) && !isPaper) {
     logger.info(`  🕐 ${code}(${name}): 매도 후 2h 쿨다운 — 재진입 대기`, { component: 'TRACK_B' });
     return true;
   }
 
   // ── 잡주/저품질 종목 필터 (3중 게이트) ──
 
-  // 1) 저가주: 2,000원 미만 (ETF 제외 — KODEX 인버스 등 저가 ETF는 정상 종목)
+  // 1) 저가주: Live 2,000원 미만, Paper 500원 미만 (ETF 제외)
   const ETF_BRANDS = ['KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'KOSEF'];
   const isETF = ETF_BRANDS.some((b) => name.toUpperCase().includes(b));
   const earlyPrice = livePrices.get(code);
-  if (earlyPrice && earlyPrice.currentPrice > 0 && earlyPrice.currentPrice < 2000 && !isETF) {
-    logger.info(`  🗑️ ${code}(${name}): 저가주(${earlyPrice.currentPrice}원 < 2000) — 잡주 필터`, {
+  const junkPriceThreshold = isPaper ? 500 : 2000;
+  if (earlyPrice && earlyPrice.currentPrice > 0 && earlyPrice.currentPrice < junkPriceThreshold && !isETF) {
+    logger.info(`  🗑️ ${code}(${name}): 저가주(${earlyPrice.currentPrice}원 < ${junkPriceThreshold}) — 잡주 필터`, {
       component: 'TRACK_B',
     });
     return true;
   }
 
-  // 2) 외국인/기관 동반 이탈(STRONG_SELL)
+  // 2) 외국인/기관 동반 이탈(STRONG_SELL) — Paper도 적용 (구조적 위험)
   if (junkStockCodes?.has(code)) {
     logger.info(`  🗑️ ${code}(${name}): 외국인+기관 동반 이탈(STRONG_SELL) — 잡주 필터`, { component: 'TRACK_B' });
     return true;
   }
 
-  // 3) 구조적 패배 종목: 90일 내 승률 < 25%, 5건 이상
+  // 3) 구조적 패배 종목: 90일 내 승률 < 25%, 5건 이상 (Paper: 15%로 완화)
   const stockWr = winRates?.get(code);
-  if (stockWr && stockWr.sampleCount >= 5 && stockWr.winRate < 0.25) {
+  const minWinRate = isPaper ? 0.15 : 0.25;
+  if (stockWr && stockWr.sampleCount >= 5 && stockWr.winRate < minWinRate) {
     logger.info(
       `  🗑️ ${code}(${name}): 패배 이력 승률=${(stockWr.winRate * 100).toFixed(0)}%(${stockWr.sampleCount}건) — 잡주 필터`,
       { component: 'TRACK_B' },

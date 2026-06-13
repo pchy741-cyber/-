@@ -17,10 +17,12 @@ import { getCurrentPrice } from '../kis/market.js';
 import { getFearGreedIndex } from '../market/external-signals.js';
 import { getMacroSignal } from '../market/macro-signal.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
+import { PARK_STOCK_CODE } from '../ai/track-b/defense-park.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
 
-const SOFR_ETF_CODE = '449170'; // KODEX 미국달러SOFR금리액티브
+// defense-park.ts의 PARK_STOCK_CODE와 동일 — 단일 소스로 통일
+const SOFR_ETF_CODE = PARK_STOCK_CODE;
 
 // 모듈 레벨 상태 — 서버 재시작 시 안전 기본값 (차단 없음)
 let _riskOff = false;

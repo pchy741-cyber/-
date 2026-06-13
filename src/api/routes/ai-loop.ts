@@ -131,8 +131,9 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
 
     // 해외 현금 + 환율 → 통합증거금 계산
     let overseasCashKrw = 0;
-    let FX_RATE = await getFxRate().catch(() => 1420);
-    if (FX_RATE <= 0) FX_RATE = 1420;
+    const { FALLBACK_FX_RATE } = await import('../../config/constants.js');
+    let FX_RATE = await getFxRate().catch(() => FALLBACK_FX_RATE);
+    if (FX_RATE <= 0) FX_RATE = FALLBACK_FX_RATE;
     if (isPaper) {
       const usdCash = await computePaperCash().catch(() => 0);
       overseasCashKrw = usdCash * FX_RATE;

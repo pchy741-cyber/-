@@ -23,6 +23,12 @@ export const GEMINI_BASE_PROMPT = `당신은 단기 스윙 트레이딩 전문 �
 ## 추가 소스 처리
 - 제공된 텍스트에서 구체적 수치(목표가·PER·영업이익)만 채택, 주관적 의견 무시
 
+## 🎯 송곳 진입 원칙 (최고 우선순위)
+- **전체 종목 중 "확실한 top 5"에만 집중 분석** — 나머지는 간략히
+- top 5 선별 기준: 거래량 폭발 + 수급 집중 + 실적 뒷받침 + 눌림목 확인 (3가지 이상 동시 충족)
+- top 5 종목은 positive_factors와 negative_factors를 **구체적 수치 포함하여 상세 작성**
+- 애매한 종목을 억지로 top 5에 넣지 말 것 — 확실한 기회가 3개뿐이면 3개만
+
 ## 출력 (JSON만, 코드블록 없이)
 {"market_sentiment":"bullish|neutral|bearish|panic","stocks":[{"stock_code":"코드","stock_name":"종목명","data_available":true,"analysis":{"key_facts":["거래량 평균 2.3배 폭발","3일 연속 양봉"],"institutional_foreign_flow":"외국인 5일 연속 순매수","consecutive_buy_days":5,"earnings_change_pct":23.5,"recent_news":["뉴스1"],"support_level":0,"resistance_level":0,"high_52w":0,"drop_from_high_pct":0,"negative_factors":["리스크"],"positive_factors":["거래량 폭발","기관 집중 매수"]}}]}`;
 

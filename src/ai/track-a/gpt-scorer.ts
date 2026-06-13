@@ -10,7 +10,7 @@ import { logger } from '../../utils/logger.js';
 import { buildScoringPrompt, type RegimeHint } from '../prompts/track-a-scoring.js';
 
 const COMP = 'TRACK_A_GPT';
-const MODEL = 'gpt-4o';
+const MODEL = 'gpt-4o-mini'; // 2차 검증용 저비용 모델
 const BATCH_SIZE = 30;
 
 interface WatchlistItem {

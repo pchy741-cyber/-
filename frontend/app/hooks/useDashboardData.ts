@@ -77,6 +77,7 @@ export function useDashboardData() {
   const [featureFlags, setFeatureFlags] = useState<Record<string, boolean>>({});
   const [todayStats, setTodayStats] = useState<TodayStats | null>(cached?.todayStats ?? null);
   const [isStale, setIsStale] = useState(!!cached?.dash); // 캐시 데이터면 stale
+  const [newInsightCount, setNewInsightCount] = useState(0);
 
   const [viewMode, setViewMode] = useState<'live'|'paper'>(initVm);
 
@@ -200,7 +201,7 @@ export function useDashboardData() {
   }, [dash, trades, killSwitch, watchlist, usDash, todayStats, viewMode, isStale]);
 
   // SSE 실시간 스트림
-  useSSEStream(viewMode, { setTrades, setStrategy, setDash, setUsDash, setLoopStatus, setSseHealthScore, setHealth, setTodayStats });
+  useSSEStream(viewMode, { setTrades, setStrategy, setDash, setUsDash, setLoopStatus, setSseHealthScore, setHealth, setTodayStats, setNewInsightCount });
 
   const switchView = useCallback((mode: 'live' | 'paper') => {
     if (viewModeRef.current === mode) return;
@@ -222,5 +223,6 @@ export function useDashboardData() {
     withdrawConfig, setWithdrawConfig, withdrawHistory, setWithdrawHistory,
     allocConfig, setAllocConfig, loading, lastUpdate, loopStatus, sseHealthScore,
     featureFlags, setFeatureFlags, viewMode, switchView, load, todayStats, isStale,
+    newInsightCount,
   };
 }

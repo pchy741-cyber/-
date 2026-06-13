@@ -1,10 +1,13 @@
 /**
  * 하락장 방어 파킹 시스템
  *
- * 포트폴리오 하락세 감지 → 전종목 청산 → KODEX 200 파킹
- * 상승세 회복 감지 → KODEX 200 매도 → 정상 매매 복귀
+ * 포트폴리오 하락세 감지 → 전종목 청산 → SOFR ETF 파킹
+ * 상승세 회복 감지 → SOFR ETF 매도 → 정상 매매 복귀
  *
- * 파킹 자산: KODEX 200 (069500) — 대한민국이 망하지 않는 한 0이 되지 않는 가장 안전한 자산
+ * 파킹 자산: KODEX 미국달러SOFR금리액티브 (449170)
+ *   — 달러 + 단기금리 수익, 주식시장 하락과 무상관
+ *   — 기존 KODEX 200 (069500)은 주식시장 연동 → 하락장 파킹에 부적합
+ *   — market-routing의 SOFR 로직과 통일 (2중 시스템 제거)
  */
 
 import { type CrashSignal, INVERSE_ETF, INVERSE_ETF_CODES, INVERSE_ETFS } from '../../automation/crash-profit.js';
@@ -15,12 +18,12 @@ import type { CurrentPrice } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { getCashReserveRatio } from './cash-manager.js';
 
-export const PARK_STOCK_CODE = '069500'; // KODEX 200
-export const PARK_STOCK_NAME = 'KODEX 200';
+export const PARK_STOCK_CODE = '449170'; // KODEX 미국달러SOFR금리액티브
+export const PARK_STOCK_NAME = 'KODEX 미국달러SOFR금리액티브';
 
-// 하락세 진입 기준 (보수적으로 설정)
-const DOWNTREND_DRAWDOWN_PCT = 7; // 7일 최고점 대비 7% 이상 낙폭
-const DOWNTREND_CONFIRM_DAYS = 4; // 최근 5일 중 음수 daily_pnl 일수
+// 하락세 진입 기준 (반응속도 개선 — 7%/4일 → 5%/3일)
+const DOWNTREND_DRAWDOWN_PCT = 5; // 7일 최고점 대비 5% 이상 낙폭
+const DOWNTREND_CONFIRM_DAYS = 3; // 최근 5일 중 음수 daily_pnl 일수
 const DOWNTREND_MIN_DAYS = 3; // 판단에 필요한 최소 스냅샷 수
 
 // 상승세 복귀 기준
@@ -148,13 +151,13 @@ export async function isPortfolioInDowntrend(): Promise<{ downtrend: boolean; re
 
 /**
  * 파킹 포지션의 시장 회복 여부 감지
- * KODEX 200 수익률 > 1.5% OR 연속 2일 양수 스냅샷
+ * SOFR ETF 수익률 > 1.5% OR 연속 2일 양수 스냅샷
  */
 export async function isMarketRecovering(
   openChains: TransactionChain[],
   livePrices: Map<string, CurrentPrice>,
 ): Promise<{ recovering: boolean; reason: string }> {
-  // 1. KODEX 200 또는 인버스 포지션 수익률 확인
+  // 1. SOFR ETF 또는 인버스 포지션 수익률 확인
   const parkChain = openChains.find((c) => c.stock_code === PARK_STOCK_CODE || INVERSE_ETF_CODES.has(c.stock_code));
   if (parkChain?.avg_buy_price) {
     const price = livePrices.get(parkChain.stock_code);
@@ -195,7 +198,7 @@ export async function isMarketRecovering(
     }
   }
 
-  // 3. 파킹 48시간 이상 경과 + KODEX 200이 수익일 때만 해제
+  // 3. 파킹 48시간 이상 경과 + SOFR ETF가 수익일 때만 해제
   // 2026-06 성과 검토: 24h + PnL≥-1.0% 기준이 하락장 지속 중 조기 해제 → 재진입 손실
   // v3: 최소 48시간 + 수익 전환(≥0.0%) 조건으로 강화
   if (!isMemoryMode() && parkChain) {
@@ -214,7 +217,7 @@ export async function isMarketRecovering(
           if (pnlPct >= 0.0) {
             return {
               recovering: true,
-              reason: `파킹 ${hoursParked.toFixed(0)}시간 경과 — 기간 만료 해제 (KODEX200 +${pnlPct.toFixed(1)}%)`,
+              reason: `파킹 ${hoursParked.toFixed(0)}시간 경과 — 기간 만료 해제 (SOFR +${pnlPct.toFixed(1)}%)`,
             };
           }
         }
@@ -231,7 +234,7 @@ export async function isMarketRecovering(
  * 방어 파킹 진입 결정 생성
  * 1) 보유 전종목 FORCE_CLOSE
  * 2) CRASH/PANIC → KODEX 인버스 매수 (하락 수익화)
- *    그 외 → KODEX 200 매수 (안전 파킹)
+ *    그 외 → SOFR ETF 매수 (안전 파킹)
  */
 async function _buildDefenseParkEntryDecisions(
   openChains: TransactionChain[],
@@ -316,7 +319,7 @@ async function _buildDefenseParkEntryDecisions(
 
 /**
  * 방어 파킹 해제 결정 생성
- * KODEX 200 전량 매도 후 정상 매매 복귀
+ * SOFR ETF 전량 매도 후 정상 매매 복귀
  */
 export async function buildDefenseParkExitDecisions(
   openChains: TransactionChain[],
@@ -329,7 +332,7 @@ export async function buildDefenseParkExitDecisions(
     .then((m) => m.notifyAlert('✅ DEFENSE 모드 해제', `사유: ${reason.slice(0, 80)}\n정상 SWING 매매 복귀`))
     .catch(() => {});
 
-  // KODEX 200 또는 인버스 둘 다 확인
+  // SOFR ETF 또는 인버스 둘 다 확인
   const parkChains = openChains.filter((c) => c.stock_code === PARK_STOCK_CODE || INVERSE_ETF_CODES.has(c.stock_code));
   if (parkChains.length === 0) return [];
 

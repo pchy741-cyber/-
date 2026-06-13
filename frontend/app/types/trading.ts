@@ -56,6 +56,8 @@ export interface Portfolio {
   cash?: number;
   domesticCash?: number;
   totalValue?: number;
+  seedCapital?: number;
+  totalReturnPct?: number;
 }
 
 export interface Strategy {

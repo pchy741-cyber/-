@@ -253,61 +253,7 @@ app.get('/review/xray', async (c) => {
       checks.push({ id: 'score_accuracy_mode', status: 'warn', label: '승률 데이터 확인', detail: '조회 실패' });
     }
 
-    // ── 6. 선물 예산 크로스오염 검사 ────────────────────────────────
-    try {
-      const { rows } = await pool.query('SELECT * FROM futures_budget WHERE id = 1');
-      const fb = rows[0] || {};
-      const issues: string[] = [];
-
-      // 레거시 allocated_krw와 신규 컬럼 비교
-      const legacyAllocated = Number(fb.allocated_krw ?? 0);
-      const paperAllocated = Number(fb.allocated_krw_paper ?? 0);
-      const liveAllocated = Number(fb.allocated_krw_live ?? 0);
-      const _legacyPnl = Number(fb.total_pnl_usd ?? 0);
-      const paperPnl = Number(fb.total_pnl_usd_paper ?? 0);
-      const livePnl = Number(fb.total_pnl_usd_live ?? 0);
-
-      // 레거시 컬럼에 값이 있는데 분리 컬럼이 0이면 마이그레이션 미적용
-      if (legacyAllocated > 0 && paperAllocated === 0 && liveAllocated === 0) {
-        issues.push(`마이그레이션 미적용: allocated_krw=${legacyAllocated} 분리 필요`);
-      }
-
-      // paper 포지션이 live PnL에 기록된 경우 (trades 크로스체크)
-      const { getFuturesPnlByMode } = await import('../../guards/live-pin.js');
-      const tradesPnl = await getFuturesPnlByMode();
-
-      if (Math.abs(paperPnl - tradesPnl.paper) > 0.01) {
-        issues.push(`paper PnL 불일치: budget=${paperPnl.toFixed(2)} vs trades합=${tradesPnl.paper.toFixed(2)}`);
-      }
-      if (Math.abs(livePnl - tradesPnl.live) > 0.01) {
-        issues.push(`live PnL 불일치: budget=${livePnl.toFixed(2)} vs trades합=${tradesPnl.live.toFixed(2)}`);
-      }
-
-      if (issues.length > 0) {
-        checks.push({
-          id: 'futures_budget_sep',
-          status: 'danger',
-          label: '선물 예산 크로스오염',
-          detail: issues.join(' | '),
-        });
-      } else {
-        checks.push({
-          id: 'futures_budget_sep',
-          status: 'ok',
-          label: '선물 예산 분리',
-          detail: `Paper ₩${paperAllocated.toLocaleString()} (PnL $${paperPnl.toFixed(2)}) / Live ₩${liveAllocated.toLocaleString()} (PnL $${livePnl.toFixed(2)})`,
-        });
-      }
-    } catch (e: any) {
-      checks.push({
-        id: 'futures_budget_sep',
-        status: 'warn',
-        label: '선물 예산 분리',
-        detail: `조회 실패: ${e.message?.slice(0, 60)}`,
-      });
-    }
-
-    // ── 7. 중복 OPEN 체인 (같은 종목 paper/live 경계 무관) ──────────────
+    // ── 6. 중복 OPEN 체인 (같은 종목 paper/live 경계 무관) ──────────────
     try {
       const { rows } = await pool.query(`
         SELECT stock_code, is_paper, COUNT(*) AS cnt

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui';
-import { api, pc } from '../lib/utils';
+import { api, pc, FALLBACK_FX_RATE } from '../lib/utils';
 
 interface DividendViewProps {
   toast: (msg: string, type?: 'ok' | 'err' | 'info') => void;
@@ -19,7 +19,7 @@ const BUDGET_PRESETS = [
   { krw: 1000000, label: '100만' },
 ];
 
-const DEFAULT_FX = 1350;
+const DEFAULT_FX = FALLBACK_FX_RATE;
 const TAX_RATE = 0.154;
 
 const DIVIDEND_ETFS = [

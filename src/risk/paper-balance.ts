@@ -218,30 +218,30 @@ export function resetPaperBalance() {
 }
 
 // ── Paper 자금 자동 리필 (자율학습 모드) ──────────────────────────────
-// 현금이 시드의 20% 미만이고 보유종목 없으면 → 기존 주문 아카이브 + 시드 리셋
-const PAPER_REFILL_THRESHOLD = 0.2; // 시드 대비 20% 미만이면 리필
+// 현금이 최소 주문금액 미만이면 리필 (자유롭게 거래 지속)
 let lastRefillCheck = 0;
 
 /**
  * Paper 자금 고갈 시 자동 리필
- * - 남은 현금 < 시드 20% + 보유종목 0건 → 리필 트리거
+ * - 남은 현금 < 50,000원 (1종목 매수 불가) + 보유종목 2건 이하 → 리필 트리거
  * - 기존 paper 주문을 archived로 표시 (학습 데이터 보존)
  * - 순수 현금 시드로 리셋
  * @returns true if refill happened
  */
 export async function checkAndRefillPaper(): Promise<boolean> {
   const now = Date.now();
-  // 30분에 1번만 체크
-  if (now - lastRefillCheck < 30 * 60 * 1000) return false;
+  // 10분에 1번만 체크 (30분→10분 단축)
+  if (now - lastRefillCheck < 10 * 60 * 1000) return false;
   lastRefillCheck = now;
 
   try {
     const balance = await getPaperBalance();
-    const cashRatio = balance.orderableCash / PAPER_INITIAL_CAPITAL;
     const hasPositions = balance.positions.length > 0;
 
-    // 아직 여유 있거나 보유종목 있으면 스킵
-    if (cashRatio >= PAPER_REFILL_THRESHOLD || hasPositions) return false;
+    // 리필 조건: 현금 5만원 미만 + 보유종목 2건 이하 (거의 거래 불가 상태)
+    const isCashDepleted = balance.orderableCash < 50_000;
+    const fewPositions = balance.positions.length <= 2;
+    if (!isCashDepleted || (hasPositions && !fewPositions)) return false;
 
     const pool = getPool();
     // 세대 번호 부여 (몇 번째 리필인지 추적)

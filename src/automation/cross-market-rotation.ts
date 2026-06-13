@@ -70,9 +70,9 @@ export async function calcRotationSignal(): Promise<RotationSignal> {
   let fxTrend = 0; // 0=중립, +1=원화강세(국내유리), -1=원화약세(해외유리)
   try {
     const rate = await fetchExchangeRate();
-    // 1350 기준: 낮으면 원화강세 → 국내 유리
-    if (rate < 1300) fxTrend = 1;
-    else if (rate > 1400) fxTrend = -1;
+    // 1500 기준: 낮으면 원화강세 → 국내 유리
+    if (rate < 1450) fxTrend = 1;
+    else if (rate > 1550) fxTrend = -1;
   } catch {}
 
   // 4. 로테이션 점수 계산

@@ -139,7 +139,10 @@ settingsRoutes.get('/strategy', async (c) => {
 settingsRoutes.put('/strategy', async (c) => {
   const body = await c.req.json();
 
-  const requestedMode = (body.mode ?? 'SWING') as keyof typeof STRATEGY_PARAMS;
+  const rawMode = (body.mode ?? 'SWING') as keyof typeof STRATEGY_PARAMS;
+  // SCALPING/EOD_BETTING 영구 비활성화 — API 레벨 차단 (UI 우회 방지)
+  const BLOCKED_MODES = new Set(['SCALPING', 'EOD_BETTING']);
+  const requestedMode = BLOCKED_MODES.has(rawMode) ? 'SWING' : rawMode;
   const modeBase = STRATEGY_PARAMS[requestedMode] ?? STRATEGY_PARAMS.SWING;
   const useDynamic: boolean = body.use_dynamic_tpsl === true;
   const aiScoringMode: 'fallback' | 'ensemble' = body.ai_scoring_mode === 'ensemble' ? 'ensemble' : 'fallback';

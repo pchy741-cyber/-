@@ -29,7 +29,7 @@ interface CashState {
 }
 
 async function readCashState(): Promise<CashState> {
-  const fxRate = await fetchExchangeRate().catch(() => 1370);
+  const fxRate = await fetchExchangeRate();
   const balance = await getAccountBalance(true).catch(() => ({ orderableCash: 0 }) as any);
   const krwTotal = Number(balance.orderableCash ?? 0);
 

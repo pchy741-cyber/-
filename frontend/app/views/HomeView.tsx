@@ -2,7 +2,7 @@
 
 import React from 'react';
 import type { Dashboard, Health, KillSwitch, Trade, UsDashboard, WithdrawConfig, WatchlistItem, Strategy, AllocConfig, ViewMode, ToastFn, ConfirmFn, UsHolding, UsWatchlistItem, Chain, MpData, SystemEvent, TradingStatus, AiStatus, LoopStatus, TodayStats } from '../types';
-import { api, fmtWon, pc } from '../lib/utils';
+import { api, fmtWon, pc, FALLBACK_FX_RATE } from '../lib/utils';
 import { useCountUp } from '../lib/hooks';
 import { toDisplayName } from '../lib/helpers';
 import MoneyStatsPanel from '../panels/MoneyStatsPanel';
@@ -158,8 +158,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const overseasInvestedKrw = os?.totalInvestedKrw ?? 0;
   const overseasMarketKrw = os?.totalMarketValueKrw ?? overseasInvestedKrw;
   const overseasCashUsd = os?.cashUsd ?? 0;
-  const overseasCashKrw = os?.cashKrw ?? (overseasCashUsd * (os?.fxRate ?? 1420));
-  const fxRate = os?.fxRate ?? 1420;
+  const overseasCashKrw = os?.cashKrw ?? (overseasCashUsd * (os?.fxRate ?? FALLBACK_FX_RATE));
+  const fxRate = os?.fxRate ?? FALLBACK_FX_RATE;
   const dailyLossLimit = dash?.riskLimits?.maxDailyDrawdownKrw ?? 200000;
   const overseasLimitUsd = dash?.riskLimits?.overseasLimitUsd ?? 0;
   const totalValue = Number(p?.totalValue ?? 0);
@@ -202,7 +202,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
     const qty = Number(t.filled_quantity ?? t.quantity) || 0;
     if (avgBuy <= 0 || filledPx <= 0 || qty <= 0) return sum;
     const grossPnl = (filledPx - avgBuy) * qty;
-    return sum + grossPnl - Math.round(avgBuy * qty * 0.00015) - Math.round(filledPx * qty * 0.00245);
+    return sum + grossPnl - Math.round(avgBuy * qty * 0.00015) - Math.round(filledPx * qty * 0.00195); // 수수료0.015%+거래세0.18%
   }, 0);
   const krTabPnl = todayStats ? todayStats.krRealizedPnl : _krRealizedPnl;
   const krTabHasData = todayStats ? todayStats.krSellCount > 0 : _krTodaySells.length > 0;
@@ -255,7 +255,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
 
       <MarketProgressBar health={health} holdingsTab={holdingsTab} currentTimeStr={currentTimeStr} marketProgress={marketProgress} usMarketProgress={usMarketProgress} unrealizedPnl={unrealizedPnl} overseasPnlUsd={overseasPnlUsd} dailyLossLimit={dailyLossLimit} overseasLimitUsd={overseasLimitUsd} />
 
-      <HeroPnlCard holdingsTab={holdingsTab} combinedPnl={combinedPnl} animCombined={animCombined} combinedPnlPct={combinedPnlPct} overseasPnlUsd={overseasPnlUsd} overseasInvestedUsd={overseasInvestedUsd} showOnlyKr={showOnlyKr} showOnlyUs={showOnlyUs} hasOverseasHoldings={hasOverseasHoldings} privacyMode={privacyMode} setPrivacyMode={setPrivacyMode} krTabHasData={krTabHasData} usTodaySells={usTodaySells} krTabPnl={krTabPnl} krTabPct={krTabPct} usTabPnlUsd={usTabPnlUsd} todayRealizedPnl={todayRealizedPnl} animToday={animToday} domesticCash={domesticCash} domesticOrderable={domesticOrderable} overseasCashUsd={overseasCashUsd} domesticInvested={domesticInvested} domesticEval={domesticEval} overseasMarketKrw={overseasMarketKrw} chainsLength={chains.length} usHoldingsLength={usHoldings.length} withdrawConfig={withdrawConfig} todayTradesLength={todayTradesCount} totalValue={totalValue} totalInvested={totalInvested} fxRate={fxRate} cashSource={(dash as any)?.cashSource} />
+      <HeroPnlCard holdingsTab={holdingsTab} combinedPnl={combinedPnl} animCombined={animCombined} combinedPnlPct={combinedPnlPct} overseasPnlUsd={overseasPnlUsd} overseasInvestedUsd={overseasInvestedUsd} showOnlyKr={showOnlyKr} showOnlyUs={showOnlyUs} hasOverseasHoldings={hasOverseasHoldings} privacyMode={privacyMode} setPrivacyMode={setPrivacyMode} krTabHasData={krTabHasData} usTodaySells={usTodaySells} krTabPnl={krTabPnl} krTabPct={krTabPct} usTabPnlUsd={usTabPnlUsd} todayRealizedPnl={todayRealizedPnl} animToday={animToday} domesticCash={domesticCash} domesticOrderable={domesticOrderable} overseasCashUsd={overseasCashUsd} domesticInvested={domesticInvested} domesticEval={domesticEval} overseasMarketKrw={overseasMarketKrw} chainsLength={chains.length} usHoldingsLength={usHoldings.length} withdrawConfig={withdrawConfig} todayTradesLength={todayTradesCount} totalValue={totalValue} totalInvested={totalInvested} fxRate={fxRate} cashSource={(dash as any)?.cashSource} seedCapital={p?.seedCapital} totalReturnPct={p?.totalReturnPct} />
 
       {/* 보유종목 (국내/해외 탭) */}
       <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden">

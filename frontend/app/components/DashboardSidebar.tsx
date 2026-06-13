@@ -3,9 +3,9 @@
 import React from 'react';
 import { Button } from '@/components/ui';
 
-type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'settings' | 'dividend' | 'futures' | 'strategy-lab';
+type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'settings' | 'dividend' | 'strategy-lab';
 
-export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, health, dash, viewMode, switchView, killSwitch, toggleKill, lastUpdate, load, featureFlags, isPaper, isUS, theme, loopStatus }: {
+export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, health, dash, viewMode, switchView, killSwitch, toggleKill, lastUpdate, load, featureFlags, isPaper, isUS, theme, loopStatus, newInsightCount }: {
   tab: Tab; setTab: (t: Tab) => void;
   mobileMenu: boolean; setMobileMenu: (v: boolean) => void;
   health: any; dash: any;
@@ -15,6 +15,7 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
   featureFlags: Record<string, boolean>;
   isPaper: boolean; isUS: boolean; theme: any;
   loopStatus?: any;
+  newInsightCount?: number;
 }) {
   const isKillActive = killSwitch?.kr?.active || killSwitch?.overseas?.active;
 
@@ -25,7 +26,6 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
     { id: 'watchlist', label: '감시목록', icon: '👁' },
     { id: 'news', label: '뉴스', icon: '📰' },
     { id: 'dividend', label: '배당', icon: '💰' },
-    { id: 'futures', label: '선물', icon: '📈' },
     { id: 'strategy-lab', label: '전략 Lab', icon: '🧪' },
     { id: 'settings', label: '설정', icon: '⚙️' },
   ];
@@ -104,6 +104,11 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
               className={`w-full text-left px-4 py-2.5 rounded-xl text-[13px] flex items-center gap-3 transition-all duration-150 ${tab === item.id ? 'bg-blue-500/10 text-blue-400 font-semibold ring-1 ring-blue-500/20' : 'text-slate-500 hover:bg-white/[0.03] hover:text-slate-300'}`}>
               <span className="text-sm">{item.icon}</span>
               <span>{item.label}</span>
+              {item.id === 'settings' && (newInsightCount ?? 0) > 0 && tab !== 'settings' && (
+                <span className="ml-auto bg-blue-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center animate-pulse">
+                  {newInsightCount}
+                </span>
+              )}
             </button>
           ))}
         </nav>

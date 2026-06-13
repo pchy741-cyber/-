@@ -1,6 +1,12 @@
 export interface RiskLimits {
   maxDailyDrawdownKrw?: number;
+  dailyDrawdownPct?: number;
+  basis?: number;
   overseasLimitUsd?: number;
+  overseasWarnUsd?: number;
+  overseasBlockUsd?: number;
+  overseasKillPct?: number;
+  overseasBasisUsd?: number;
   targetCashRatio?: number;
 }
 

@@ -82,13 +82,11 @@ export function tryRegimeRouterEntry(input: EntryInput): EntryVerdict {
  * 스캘핑/ScalpRadar 판정
  */
 export function tryScalpEntry(input: EntryInput): EntryVerdict {
-  const { stockCode, mode } = input;
-  const scalpTarget = getOverride<boolean>(`${stockCode}_scalpTarget`);
-
-  // 2026-06 재활성화: 전략 다양성 확보 (데이터 스누핑 방지)
-  // Live SCALPING 허용 — 포지션 크기/일일 횟수는 alloc-risk에서 제한
-
-  return { action: 'CONTINUE' };
+  // SCALPING 영구 비활성화 (구조적 판단):
+  // 290건 실전 분석 — 당일 매매 23% 승률, -0.76% 평균
+  // 트랜잭션 비용(0.20% 거래세 + 0.04% 수수료) + 슬리피지가 에지를 잡아먹음
+  // 이는 파라미터 튜닝이 아닌 구조적 진실 → 영구 제거
+  return { action: 'SKIP', reason: 'SCALPING 영구 비활성화 (구조적 비용 > 에지)' };
 }
 
 /**

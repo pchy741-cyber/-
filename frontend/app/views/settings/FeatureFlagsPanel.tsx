@@ -13,10 +13,8 @@ export function FeatureFlagsPanel({ toast, confirm, onFlagChange }: { toast: Toa
   }, []);
 
   const toggle = async (key: string, enabled: boolean) => {
-    const label = key === 'dividend_investing' ? '월배당 투자' : '해외선물';
-    const warn = enabled && key === 'overseas_futures'
-      ? '레버리지 상품입니다. 원금 전액 손실 가능합니다.\n별도 예산 할당 후 사용 가능합니다.'
-      : undefined;
+    const label = key === 'dividend_investing' ? '월배당 투자' : key;
+    const warn: string | undefined = undefined;
     if (!await confirm({ title: `${label} 기능을 ${enabled ? '활성화' : '비활성화'}하시겠습니까?`, description: warn, confirmLabel: enabled ? '활성화' : '비활성화', confirmVariant: enabled ? 'primary' : 'danger' })) return;
     try {
       await api(`/feature-flags/${key}/toggle`, {
@@ -31,7 +29,6 @@ export function FeatureFlagsPanel({ toast, confirm, onFlagChange }: { toast: Toa
 
   const flagMeta: Record<string, { icon: string; label: string; desc: string }> = {
     dividend_investing: { icon: '💰', label: '월배당 투자', desc: '월배당 ETF/주식으로 안정적 현금흐름 (장기)' },
-    overseas_futures: { icon: '📈', label: '해외선물', desc: '마이크로 선물 극소액 레버리지 (격리 예산)' },
   };
 
   if (flags.length === 0) return (

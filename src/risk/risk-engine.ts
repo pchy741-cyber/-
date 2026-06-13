@@ -413,8 +413,9 @@ export class RiskEngine {
   }
 
   private async checkMonthlyMDD(isPaper: boolean): Promise<PreTradeCheckResult> {
-    // 연습모드는 MDD 락 없음 — 돈 다 잃어도 자유 매매
-    if (isPaper) return { approved: true, reason: '연습모드 MDD 제한 없음' };
+    // 연습모드: 킬스위치(hard block) 없음 — MDD Guard(soft block, mdd-guard.ts)가 대신 관리
+    // MDD Guard가 config.paperRisk.mddLimit(60%)에서 minBuyScore 올려서 소프트 차단
+    if (isPaper) return { approved: true, reason: '연습모드 MDD 킬스위치 면제 (MDD Guard가 소프트 관리)' };
     try {
       // 소자산 포트폴리오(20만 미만)는 월간 MDD 체크 면제
       // 외부 매도/입출금으로 잔고 급감 시 MDD가 -90%+ 되어 영구 차단되는 문제 방지
@@ -437,8 +438,9 @@ export class RiskEngine {
         return { approved: true, reason: '외부 매도/입출금 감지 — 월간 MDD 체크 면제' };
       }
 
-      const mddLimit = isPaper ? config.paperRisk.mddLimit : 8;
-      const mddWarn = isPaper ? config.paperRisk.mddLimit * 0.75 : 6;
+      // Paper는 위에서 이미 return → 여기는 Live 전용
+      const mddLimit = 8;
+      const mddWarn = 6;
       if (mddPct >= mddLimit) {
         await activateKillSwitch(
           `월간 MDD 한도 초과: 고점 대비 -${mddPct.toFixed(1)}% (한도 -${mddLimit}%)`,

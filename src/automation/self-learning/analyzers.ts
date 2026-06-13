@@ -608,3 +608,172 @@ export function analyzeQuickProfitTaking(wins: EnrichedChain[]): LearnedInsight[
 
   return [];
 }
+
+// ── 🔥 기회 발견 분석기: 긍정적 인사이트 + 자동 전략 확대 ──
+
+/**
+ * 최적 진입점 학습: 수익 매매의 진입 시점(시간대+요일) 패턴
+ * → 해당 시간에 더 적극적으로 진입하라는 긍정적 지침
+ */
+export function analyzeOptimalEntryWindows(wins: EnrichedChain[]): LearnedInsight[] {
+  if (wins.length < 5) return [];
+  const insights: LearnedInsight[] = [];
+
+  // 시간대별 승률 분석 (진입 시각 기준)
+  const hourBuckets = new Map<string, { wins: number; total: number; totalPnl: number }>();
+  for (const w of wins) {
+    const openedAt = new Date(w.chain.opened_at);
+    const hour = openedAt.getHours();
+    let bucket: string;
+    if (hour < 10) bucket = '09:00-10:00';
+    else if (hour < 11) bucket = '10:00-11:00';
+    else if (hour < 13) bucket = '11:00-13:00';
+    else if (hour < 15) bucket = '13:00-15:00';
+    else bucket = '15:00+';
+
+    const stats = hourBuckets.get(bucket) ?? { wins: 0, total: 0, totalPnl: 0 };
+    stats.wins++;
+    stats.total++;
+    stats.totalPnl += w.pnlPct;
+    hourBuckets.set(bucket, stats);
+  }
+
+  // 평균 수익률이 가장 높은 시간대 찾기
+  let bestBucket = '';
+  let bestAvgPnl = 0;
+  for (const [bucket, stats] of hourBuckets) {
+    if (stats.total >= 3) {
+      const avgPnl = stats.totalPnl / stats.total;
+      if (avgPnl > bestAvgPnl) {
+        bestAvgPnl = avgPnl;
+        bestBucket = bucket;
+      }
+    }
+  }
+
+  if (bestBucket && bestAvgPnl > 1.0) {
+    const stats = hourBuckets.get(bestBucket)!;
+    insights.push({
+      category: 'WIN_PATTERN',
+      insight: `🕐 골든 진입 타임: ${bestBucket} 시간대 진입 시 평균 수익률 +${bestAvgPnl.toFixed(1)}% (${stats.total}건). 이 시간에 매수 신호가 오면 적극 진입!`,
+      recommendation: `${bestBucket} 시간대 진입 시 포지션 사이즈 20% 확대 권장. 매수 임계점 -5점 완화.`,
+      confidence: Math.min(0.85, 0.6 + stats.total * 0.03),
+      sampleCount: stats.total,
+      lastUpdated: now,
+    });
+  }
+
+  return insights;
+}
+
+/**
+ * 수익 가속 종목 발견: 최근 3건 연속 수익인 종목 → "지금 잘 맞는 종목" 강조
+ */
+export function analyzeHotStocks(enrichedChains: EnrichedChain[]): LearnedInsight[] {
+  const stockTrades = new Map<string, EnrichedChain[]>();
+  for (const ec of enrichedChains) {
+    const code = ec.chain.stock_code;
+    const list = stockTrades.get(code) ?? [];
+    list.push(ec);
+    stockTrades.set(code, list);
+  }
+
+  const insights: LearnedInsight[] = [];
+
+  for (const [code, trades] of stockTrades) {
+    if (trades.length < 3) continue;
+
+    // 최근 3건 확인
+    const sorted = [...trades].sort((a, b) =>
+      (b.chain.closed_at ?? b.chain.opened_at).localeCompare(a.chain.closed_at ?? a.chain.opened_at),
+    );
+    const recent3 = sorted.slice(0, 3);
+    const allWins = recent3.every((t) => Number(t.chain.realized_pnl) > 0);
+
+    if (allWins) {
+      const avgPnl = recent3.reduce((s, t) => s + t.pnlPct, 0) / 3;
+      const totalWinRate = trades.filter((t) => Number(t.chain.realized_pnl) > 0).length / trades.length;
+
+      insights.push({
+        category: 'WIN_PATTERN',
+        insight: `🔥 핫 종목 '${code}': 최근 3건 연속 수익 (평균 +${avgPnl.toFixed(1)}%), 전체 승률 ${(totalWinRate * 100).toFixed(0)}%. 매수 신호 시 최우선 진입 + 포지션 확대!`,
+        recommendation: `${code} 매수 임계점 -10점 낮춰서 적극 진입. 포지션 사이즈 1.3배 확대.`,
+        confidence: Math.min(0.9, 0.7 + trades.length * 0.02),
+        sampleCount: trades.length,
+        lastUpdated: now,
+      });
+    }
+  }
+
+  return insights;
+}
+
+/**
+ * 전략 강점 발견: 특정 전략이 최근 10건에서 승률 70%+ → 전략 확대 권장
+ */
+export function analyzeStrategyStrengths(enrichedChains: EnrichedChain[]): LearnedInsight[] {
+  if (enrichedChains.length < 10) return [];
+  const insights: LearnedInsight[] = [];
+
+  const modeRecent = new Map<string, { wins: number; total: number; avgPnl: number }>();
+  const recent20 = enrichedChains.slice(0, 20);
+
+  for (const ec of recent20) {
+    const mode = ec.chain.strategy_mode ?? 'SWING';
+    const stats = modeRecent.get(mode) ?? { wins: 0, total: 0, avgPnl: 0 };
+    stats.total++;
+    if (Number(ec.chain.realized_pnl) > 0) stats.wins++;
+    stats.avgPnl += ec.pnlPct;
+    modeRecent.set(mode, stats);
+  }
+
+  for (const [mode, stats] of modeRecent) {
+    if (stats.total < 3) continue;
+    stats.avgPnl /= stats.total;
+    const winRate = stats.wins / stats.total;
+
+    if (winRate >= 0.7 && stats.avgPnl > 0) {
+      insights.push({
+        category: 'WIN_PATTERN',
+        insight: `💪 ${mode} 전략 최근 호조: 승률 ${(winRate * 100).toFixed(0)}% (${stats.wins}/${stats.total}건), 평균 +${stats.avgPnl.toFixed(1)}%. 이 전략의 비중을 확대하세요!`,
+        recommendation: `${mode} 전략 황금비율 가중치 +10% 확대 권장. 현재 시장에 잘 맞는 전략.`,
+        confidence: Math.min(0.85, 0.65 + stats.total * 0.02),
+        sampleCount: stats.total,
+        lastUpdated: now,
+      });
+    }
+  }
+
+  return insights;
+}
+
+/**
+ * 수익 극대화 지침: TP에 도달하기 전에 매도한 케이스 분석
+ * → "너무 일찍 팔지 마라" 지침 생성
+ */
+export function analyzeEarlyExitMissedProfit(wins: EnrichedChain[], losses: EnrichedChain[]): LearnedInsight[] {
+  // 수익 매매 중 +1% 미만에서 매도한 비율
+  const smallWins = wins.filter((c) => c.pnlPct > 0 && c.pnlPct < 1.0);
+  const bigWins = wins.filter((c) => c.pnlPct >= 3.0);
+
+  if (wins.length < 5) return [];
+
+  const insights: LearnedInsight[] = [];
+
+  if (smallWins.length >= 3 && smallWins.length / wins.length >= 0.3) {
+    const avgSmallPnl = smallWins.reduce((s, c) => s + c.pnlPct, 0) / smallWins.length;
+    const avgBigPnl = bigWins.length > 0 ? bigWins.reduce((s, c) => s + c.pnlPct, 0) / bigWins.length : 0;
+
+    insights.push({
+      category: 'SIZING',
+      insight: `💡 조기 익절 경향: 수익 매매의 ${((smallWins.length / wins.length) * 100).toFixed(0)}%가 +1% 미만에서 매도 (평균 +${avgSmallPnl.toFixed(1)}%). 큰 수익(${bigWins.length}건) 평균 +${avgBigPnl.toFixed(1)}%. 수익 시 더 홀딩하면 수익률 향상 가능.`,
+      recommendation: `TP 하한을 +2.0% 이상으로 설정. 수익 진입 후 최소 1일은 홀딩 유지.`,
+      paramChange: avgSmallPnl < 0.8 ? { field: 'take_profit_pct', value: 4.0, reason: '조기 익절 방지 — TP 상향' } : undefined,
+      confidence: 0.75,
+      sampleCount: smallWins.length,
+      lastUpdated: now,
+    });
+  }
+
+  return insights;
+}

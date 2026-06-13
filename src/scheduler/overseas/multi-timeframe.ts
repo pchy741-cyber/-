@@ -24,7 +24,7 @@ export interface MultiTFResult {
 // ── 캐시 (30분 TTL) ──
 
 const cache = new Map<string, { result: MultiTFResult; expires: number }>();
-const CACHE_TTL = 30 * 60 * 1000; // 30분
+const CACHE_TTL = 45 * 60 * 1000; // 45분 (송곳 최적화: 30→45분)
 
 function getCached(code: string): MultiTFResult | null {
   const entry = cache.get(code);
