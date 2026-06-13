@@ -25,6 +25,7 @@ interface PortfolioSectionProps {
   domesticInvested: number;
   domesticEval: number;
   domesticCash: number;
+  domesticOrderable: number;
   overseasInvestedUsd: number;
   overseasInvestedKrw: number;
   overseasMarketKrw: number;
@@ -44,7 +45,7 @@ interface PortfolioSectionProps {
 export default function PortfolioSection(props: PortfolioSectionProps) {
   const {
     allocConfig, setAllocConfig, onGoToSettings, dash, chains, usHoldings, usW,
-    totalValue, totalInvested, domesticInvested, domesticEval, domesticCash,
+    totalValue, totalInvested, domesticInvested, domesticEval, domesticCash, domesticOrderable,
     overseasInvestedUsd, overseasInvestedKrw, overseasMarketKrw,
     overseasCashUsd, overseasCashKrw, overseasPnlUsd, fxRate,
     investedPctExact, cashPctExact, overseasCashPctExact,
@@ -101,11 +102,11 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
           </div>
           <div className="rounded-xl px-2 sm:px-3 py-2.5 bg-slate-800/40 border border-white/[0.06]">
             <div className="text-[9px] text-slate-500 mb-0.5">주문가능</div>
-            <div className="text-sm font-bold tabular-nums text-slate-200 truncate">{fmtWon(domesticCash)}</div>
+            <div className="text-sm font-bold tabular-nums text-slate-200 truncate">{fmtWon(domesticOrderable)}</div>
             <div className="flex items-center justify-between mt-1">
               <span className="text-[9px] text-slate-600">{totalValue > 0 ? Math.max(0, 100 - Math.round((domesticEval / totalValue) * 100) - Math.round((overseasMarketKrw / totalValue) * 100)) : 0}%</span>
             </div>
-            <div className="text-[10px] text-slate-600 mt-0.5">통합증거금</div>
+            {overseasCashUsd > 0 && <div className="text-[10px] text-slate-600 mt-0.5">해외 ${Math.round(overseasCashUsd)}</div>}
           </div>
           <div className={`rounded-xl px-2 sm:px-3 py-2.5 ${usActualPct >= 0 ? 'bg-indigo-950/40 border border-indigo-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>
             <div className="text-[9px] text-slate-500 mb-0.5">🇺🇸 미국주식</div>

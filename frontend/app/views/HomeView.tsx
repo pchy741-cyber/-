@@ -163,8 +163,10 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const dailyLossLimit = dash?.riskLimits?.maxDailyDrawdownKrw ?? 200000;
   const overseasLimitUsd = dash?.riskLimits?.overseasLimitUsd ?? 0;
   const totalValue = Number(p?.totalValue ?? 0);
-  // 통합증거금: portfolio.cash = 통합 주문가능원화 (국내/해외 공용)
+  // 총현금 (비중 계산용): 국내실현금 + 해외현금
   const domesticCash = Number(p?.cash ?? 0);
+  // KIS 국내 주문가능금액 (대용 포함, KIS max_buy_amt)
+  const domesticOrderable = Number(p?.domesticCash ?? p?.cash ?? 0);
   // 실제 보유 증권 시가 기준 (HeroPnlCard와 동일 산식, T+1 미결제는 현금으로 분류)
   const investedPctExact = totalValue > 0
     ? Math.min(100, ((domesticEval + overseasMarketKrw) / totalValue) * 100)
@@ -253,7 +255,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
 
       <MarketProgressBar health={health} holdingsTab={holdingsTab} currentTimeStr={currentTimeStr} marketProgress={marketProgress} usMarketProgress={usMarketProgress} unrealizedPnl={unrealizedPnl} overseasPnlUsd={overseasPnlUsd} dailyLossLimit={dailyLossLimit} overseasLimitUsd={overseasLimitUsd} />
 
-      <HeroPnlCard holdingsTab={holdingsTab} combinedPnl={combinedPnl} animCombined={animCombined} combinedPnlPct={combinedPnlPct} overseasPnlUsd={overseasPnlUsd} overseasInvestedUsd={overseasInvestedUsd} showOnlyKr={showOnlyKr} showOnlyUs={showOnlyUs} hasOverseasHoldings={hasOverseasHoldings} privacyMode={privacyMode} setPrivacyMode={setPrivacyMode} krTabHasData={krTabHasData} usTodaySells={usTodaySells} krTabPnl={krTabPnl} krTabPct={krTabPct} usTabPnlUsd={usTabPnlUsd} todayRealizedPnl={todayRealizedPnl} animToday={animToday} domesticCash={domesticCash} overseasCashUsd={overseasCashUsd} domesticInvested={domesticInvested} domesticEval={domesticEval} overseasMarketKrw={overseasMarketKrw} chainsLength={chains.length} usHoldingsLength={usHoldings.length} withdrawConfig={withdrawConfig} todayTradesLength={todayTradesCount} totalValue={totalValue} totalInvested={totalInvested} fxRate={fxRate} cashSource={(dash as any)?.cashSource} />
+      <HeroPnlCard holdingsTab={holdingsTab} combinedPnl={combinedPnl} animCombined={animCombined} combinedPnlPct={combinedPnlPct} overseasPnlUsd={overseasPnlUsd} overseasInvestedUsd={overseasInvestedUsd} showOnlyKr={showOnlyKr} showOnlyUs={showOnlyUs} hasOverseasHoldings={hasOverseasHoldings} privacyMode={privacyMode} setPrivacyMode={setPrivacyMode} krTabHasData={krTabHasData} usTodaySells={usTodaySells} krTabPnl={krTabPnl} krTabPct={krTabPct} usTabPnlUsd={usTabPnlUsd} todayRealizedPnl={todayRealizedPnl} animToday={animToday} domesticCash={domesticCash} domesticOrderable={domesticOrderable} overseasCashUsd={overseasCashUsd} domesticInvested={domesticInvested} domesticEval={domesticEval} overseasMarketKrw={overseasMarketKrw} chainsLength={chains.length} usHoldingsLength={usHoldings.length} withdrawConfig={withdrawConfig} todayTradesLength={todayTradesCount} totalValue={totalValue} totalInvested={totalInvested} fxRate={fxRate} cashSource={(dash as any)?.cashSource} />
 
       {/* 보유종목 (국내/해외 탭) */}
       <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden">
@@ -322,7 +324,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
         </Panel>
       )}
 
-      <PortfolioSection allocConfig={allocConfig} setAllocConfig={setAllocConfig} onGoToSettings={onGoToSettings} dash={dash} chains={chains} usHoldings={usHoldings} usW={usW} totalValue={totalValue} totalInvested={totalInvested} domesticInvested={domesticInvested} domesticEval={domesticEval} domesticCash={domesticCash} overseasInvestedUsd={overseasInvestedUsd} overseasInvestedKrw={overseasInvestedKrw} overseasMarketKrw={overseasMarketKrw} overseasCashUsd={overseasCashUsd} overseasCashKrw={overseasCashKrw} overseasPnlUsd={overseasPnlUsd} fxRate={fxRate} investedPctExact={investedPctExact} cashPctExact={cashPctExact} overseasCashPctExact={overseasCashPctExact} strategy={strategy} getStockName={getStockName} mpData={mpData} viewMode={viewMode} />
+      <PortfolioSection allocConfig={allocConfig} setAllocConfig={setAllocConfig} onGoToSettings={onGoToSettings} dash={dash} chains={chains} usHoldings={usHoldings} usW={usW} totalValue={totalValue} totalInvested={totalInvested} domesticInvested={domesticInvested} domesticEval={domesticEval} domesticCash={domesticCash} domesticOrderable={domesticOrderable} overseasInvestedUsd={overseasInvestedUsd} overseasInvestedKrw={overseasInvestedKrw} overseasMarketKrw={overseasMarketKrw} overseasCashUsd={overseasCashUsd} overseasCashKrw={overseasCashKrw} overseasPnlUsd={overseasPnlUsd} fxRate={fxRate} investedPctExact={investedPctExact} cashPctExact={cashPctExact} overseasCashPctExact={overseasCashPctExact} strategy={strategy} getStockName={getStockName} mpData={mpData} viewMode={viewMode} />
     </div>
   );
 }

@@ -24,6 +24,7 @@ interface HeroPnlCardProps {
   todayRealizedPnl: number;
   animToday: number;
   domesticCash: number;
+  domesticOrderable: number;
   overseasCashUsd: number;
   domesticInvested: number;
   domesticEval: number;
@@ -43,7 +44,7 @@ export default function HeroPnlCard({
   overseasPnlUsd, overseasInvestedUsd, showOnlyKr, showOnlyUs,
   hasOverseasHoldings, privacyMode, setPrivacyMode,
   krTabHasData, usTodaySells, krTabPnl, krTabPct, usTabPnlUsd,
-  todayRealizedPnl, animToday, domesticCash, overseasCashUsd,
+  todayRealizedPnl, animToday, domesticCash, domesticOrderable, overseasCashUsd,
   domesticInvested, domesticEval, overseasMarketKrw, chainsLength, usHoldingsLength, withdrawConfig, todayTradesLength,
   totalValue, totalInvested, fxRate, cashSource,
 }: HeroPnlCardProps) {
@@ -101,7 +102,7 @@ export default function HeroPnlCard({
           </div>
         )}
       </div>
-      {/* 미니 스탯 3개 — 통합증거금: 탭 무관 통합 표시 */}
+      {/* 미니 스탯 3개 */}
       <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
         <div className="bg-white/[0.04] rounded-xl px-2 sm:px-3 py-2">
           <div className="text-[9px] text-slate-500 mb-0.5">
@@ -112,8 +113,8 @@ export default function HeroPnlCard({
               </span>
             )}
           </div>
-          <div className="text-sm font-bold text-slate-200 tabular-nums truncate">{mask(fmtWon(domesticCash))}</div>
-          {fxRate > 0 && domesticCash != null && <div className="text-[10px] text-slate-600 mt-0.5">${mask(String(Math.round(domesticCash / fxRate)))}</div>}
+          <div className="text-sm font-bold text-slate-200 tabular-nums truncate">{mask(fmtWon(domesticOrderable))}</div>
+          {overseasCashUsd > 0 && <div className="text-[10px] text-slate-600 mt-0.5">해외 {mask(`$${Math.round(overseasCashUsd).toLocaleString('en-US')}`)}</div>}
         </div>
         <div className="bg-white/[0.04] rounded-xl px-2 sm:px-3 py-2">
           <div className="text-[9px] text-slate-500 mb-0.5">투자비중 <span className="text-slate-600">({totalHoldings}종목)</span></div>
