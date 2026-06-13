@@ -452,6 +452,8 @@ const CHAIN_ALLOWED_COLS = new Set([
   'total_quantity',
   'total_invested',
   'realized_pnl',
+  'pnl_pct',
+  'sell_reason',
   'target_profit_pct',
   'stop_loss_pct',
   'max_averaging_count',
@@ -807,6 +809,52 @@ export async function getBigLossBlockedStocks(): Promise<Set<string>> {
     return new Set(rows.map((r: { stock_code: string }) => r.stock_code));
   } catch {
     return new Set();
+  }
+}
+
+/** 손실 이력 레코드 (smart re-entry 판단용) */
+export interface LossRecord {
+  lossAmt: number;
+  lossPct: number;
+  closedAt: string;
+  slReason: string;
+  lastPrice: number;
+}
+
+/**
+ * 90일 이내 -3% 이상 손실 체인 통합 조회 (스마트 재진입용)
+ * getBigLossBlockedStocks + getRecentLossStocks 대체하는 통합 함수
+ */
+export async function getLossHistory(): Promise<Map<string, LossRecord>> {
+  if (useMemory) return new Map();
+  try {
+    const { rows } = await queryWithRetry(
+      `SELECT stock_code, realized_pnl, pnl_pct, closed_at,
+              COALESCE(sell_reason, '') AS sl_reason,
+              COALESCE(avg_buy_price, 0) AS last_price
+         FROM transaction_chains
+        WHERE status = 'CLOSED'
+          AND is_paper = $1
+          AND pnl_pct < -3.0
+          AND closed_at > NOW() - INTERVAL '90 days'
+        ORDER BY closed_at DESC`,
+      [getCtxIsPaper()],
+    );
+    const map = new Map<string, LossRecord>();
+    for (const r of rows) {
+      // 종목당 가장 최근 손실만 유지 (ORDER BY DESC → 첫 row가 최신)
+      if (map.has(r.stock_code)) continue;
+      map.set(r.stock_code, {
+        lossAmt: Number(r.realized_pnl),
+        lossPct: Number(r.pnl_pct),
+        closedAt: String(r.closed_at),
+        slReason: String(r.sl_reason),
+        lastPrice: Number(r.last_price),
+      });
+    }
+    return map;
+  } catch {
+    return new Map();
   }
 }
 

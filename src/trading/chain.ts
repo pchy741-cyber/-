@@ -157,15 +157,18 @@ export class ChainManager {
     const SELL_FEE_PCT = KR_FEE.SELL_FEE_PCT;
     const profit = sellValue - Math.round(sellValue * SELL_FEE_PCT) - avgBuy * chain.total_quantity;
 
+    const pnlPctNum = avgBuy > 0 ? (sellPrice / avgBuy - 1) * 100 : 0;
+
     await updateChain(chainId, {
       status: 'CLOSED',
       total_quantity: 0,
       realized_pnl: Number(chain.realized_pnl) + profit,
+      pnl_pct: Math.round(pnlPctNum * 100) / 100,
       closed_at: new Date().toISOString(),
       close_reason: reason,
     });
 
-    const pnlPct = ((sellPrice / avgBuy - 1) * 100).toFixed(1);
+    const pnlPct = pnlPctNum.toFixed(1);
     const emoji = profit >= 0 ? '💰' : '💸';
 
     logger.info(

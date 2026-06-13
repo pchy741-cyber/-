@@ -2,11 +2,11 @@
  * 대시보드 페이로드 빌더 — buildDashPayload + getOrBuildDashPayload
  */
 
-import { getDefenseParkState } from '../../../ai/track-b/defense-park.js';
+import { getDefenseParkState, PARK_STOCK_CODE, PARK_STOCK_NAME } from '../../../ai/track-b/defense-park.js';
 import { cacheGet, cachePriceMemory, getCachedPriceMemory, getLastKnownPricesMemory } from '../../../cache/memory.js';
 import { getOverseasScores } from '../../../cache/overseas-scores.js';
 import { cachePrice, getLastKnownPrices, getScoresWithFallback } from '../../../cache/redis.js';
-import { SECTOR_CLASS } from '../../../config/constants.js';
+import { FALLBACK_FX_RATE, SECTOR_CLASS } from '../../../config/constants.js';
 import { runWithMode } from '../../../config/context.js';
 import { baseIsPaper, config } from '../../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getOpenChains, isMemoryMode, safeQuery } from '../../../db/client.js';
@@ -16,13 +16,14 @@ import { getOverseasPrice } from '../../../kis/overseas.js';
 import { getPaperBalance } from '../../../risk/engine.js';
 import { getKillSwitchStatusAll } from '../../../risk/kill-switch.js';
 import { PAPER_INITIAL_CAPITAL } from '../../../risk/paper-balance.js';
-import { calcDailyLossLimit } from '../../../risk/seed-capital.js';
+import { calcDailyLossLimit, getOverseasLossTiers, getSeedCapitalKr, getSeedCapitalOverseas } from '../../../risk/seed-capital.js';
 import { getCooldownStatus } from '../../../risk/trade-gate.js';
 import { getPartialTpStages } from '../../../scheduler/overseas/risk-intelligence.js';
 import { computePaperCash } from '../../../scheduler/overseas/state.js';
 import { GLOBAL_WATCHLIST } from '../../../scheduler/overseas/watchlist.js';
 import { logger } from '../../../utils/logger.js';
 import { buildFxImpact, buildMonthlyGoal, buildSuggestedActions } from './builder-helpers.js';
+import { calcTotalAssets } from './calc.js';
 import {
   getDashBuildingByMode,
   getDashCache,
@@ -60,16 +61,16 @@ export async function prewarmDashboard(): Promise<void> {
 }
 
 async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
-  // KIS API 실패 시 기본값 — 실전모드는 0 (10M 가짜잔고 표시 방지), 연습모드만 1000만원
+  // KIS API 실패 시 기본값 — 실전모드는 0 (가짜잔고 표시 방지), 연습모드만 시드자본
   const defaultBalance = viewIsPaper
     ? {
-        totalDeposit: 10000000,
-        d2Deposit: 10000000,
-        orderableCash: 10000000,
+        totalDeposit: PAPER_INITIAL_CAPITAL,
+        d2Deposit: PAPER_INITIAL_CAPITAL,
+        orderableCash: PAPER_INITIAL_CAPITAL,
         cashSource: 'd2_deposit' as const,
         totalProfitLoss: 0,
         totalProfitLossPct: 0,
-        netAsset: 10000000,
+        netAsset: PAPER_INITIAL_CAPITAL,
         totalEvalAmount: 0,
         purchaseCost: 0,
         positions: [],
@@ -106,8 +107,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     ).catch(() => ({ rows: [] as any[] })),
     getDefenseParkState().catch(() => ({
       isActive: false,
-      parkStockCode: '069500',
-      parkStockName: 'KODEX 200',
+      parkStockCode: PARK_STOCK_CODE,
+      parkStockName: PARK_STOCK_NAME,
       entryReason: null,
       enteredAt: null,
     })),
@@ -115,8 +116,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     Promise.resolve(null),
   ]);
   const balance = balanceResult ?? defaultBalance;
-  // 연습모드 한도: 자체 시드 고정 (실전 순자산에 의존하면 실전 API 실패/900K 잔고가 연습 현금을 오염)
-  const paperCap = PAPER_INITIAL_CAPITAL;
+  // 연습모드 한도: 자체 시드 고정 (calcTotalAssets에서 paperInitialCapital로 cap)
 
   const watchlist = await getActiveWatchlist().catch(() => []);
   const stockCodes = watchlist.map((w) => w.stock_code);
@@ -289,39 +289,17 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     }
   }
 
-  // 투자금/손익 계산 — 모드별 분기
-  const rawCash = balance.orderableCash ?? 10000000;
-
-  let totalInvested: number;
-  let totalPnl: number;
-  let actualCash: number;
-
+  // calcTotalAssets 입력값 준비
+  const rawCash = balance.orderableCash ?? PAPER_INITIAL_CAPITAL;
   let liveRealizedPnl = 0;
-  if (viewIsPaper) {
-    // 체인이 없어도 getPaperBalance()의 totalEvalAmount(보유원가)를 폴백으로 사용
-    totalInvested = totalChainInvested > 0 ? totalChainInvested : (balance.totalEvalAmount ?? 0);
-    totalPnl = totalChainPnl + (balance.totalProfitLoss ?? 0);
-    // 연습모드 한도 = min(paper 잔고, 실전 순자산 50%)
-    actualCash = paperCap < Infinity ? Math.min(rawCash, paperCap) : rawCash;
-  } else {
-    // Live: purchaseCost(원가) 사용, 없으면 체인 원가 합산
-    totalInvested = (balance as any).purchaseCost > 0 ? (balance as any).purchaseCost : totalChainInvested;
-    // KIS evlu_pfls_smtl_amt = 미실현손익만 → DB 누적 실현손익 합산
+  if (!viewIsPaper) {
     const realizedRows = await safeQuery<{ total: string }>(
       `SELECT COALESCE(SUM(realized_pnl), 0)::text AS total
        FROM transaction_chains WHERE status='CLOSED' AND is_paper=false`,
       [],
     );
     liveRealizedPnl = Number(realizedRows.rows[0]?.total ?? 0);
-    totalPnl = (balance.totalProfitLoss ?? 0) + liveRealizedPnl;
-    actualCash = rawCash;
   }
-
-  const totalPnlPct = viewIsPaper
-    ? PAPER_INITIAL_CAPITAL > 0
-      ? (totalPnl / PAPER_INITIAL_CAPITAL) * 100
-      : 0
-    : (balance.totalProfitLossPct ?? 0);
 
   // ── 해외 보유종목 (별도 표시용, 국내 총자산에 합산하지 않음) ──
   const overseasHoldings: Array<{
@@ -347,6 +325,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   let overseasMarketValueUsd = 0;
   let overseasCash = 0;
   let _osCashAge = Infinity; // 스테일 가드용: overseas_state.cash 경과 초 (try 블록 밖 선언)
+  let _overseasMaxUsd = 0; // KIS maxUsd(통합증거금 전체 주문가능 USD) — 환율 역변환 오차 방지
   try {
     const pfx = viewIsPaper ? 'p_' : 'l_';
 
@@ -363,6 +342,11 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       );
       _osCashAge = osCashRows.length > 0 ? Number(osCashRows[0].age_sec) : Infinity;
       overseasCash = osCashRows.length > 0 ? Number(osCashRows[0].value) : 0; // KRW
+      // KIS maxUsd(통합증거금 전체 주문가능 USD) — 환율 역변환 오차 방지
+      const { rows: maxUsdRows } = await safeQuery(
+        `SELECT value FROM overseas_state WHERE key = 'cash_max_usd'`,
+      );
+      _overseasMaxUsd = maxUsdRows.length > 0 ? Number(maxUsdRows[0].value) : 0;
     }
 
     // 종목별 고점/부분익절단계/동적TP·SL 일괄 조회
@@ -505,74 +489,67 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     /* overseas table may not exist */
   }
 
-  // ── 국내 + 해외 합산 ──
+  // ── 총자산 계산: calcTotalAssets 순수 함수로 위임 ──
   let FX_RATE = await getFxRate();
-  if (FX_RATE <= 0) FX_RATE = 1420; // 비상 폴백 (환율 조회 실패 시)
-  const overseasInvestedKrw = (Number.isNaN(overseasTotalInvested) ? 0 : overseasTotalInvested) * FX_RATE;
-  const overseasMarketValueKrw = (Number.isNaN(overseasMarketValueUsd) ? 0 : overseasMarketValueUsd) * FX_RATE;
+  if (FX_RATE <= 0) FX_RATE = FALLBACK_FX_RATE;
 
-  // overseas_state: Live=KRW 저장, Paper=USD 저장 → 통합증거금 KRW 변환
-  const rawOverseasCash = Number.isNaN(overseasCash) ? 0 : overseasCash;
-  const overseasCashKrw = viewIsPaper ? rawOverseasCash * FX_RATE : rawOverseasCash;
-
-  // ── KIS 권위 데이터 (실전모드: 체인 DB 대신 KIS 실계좌 수치 사용) ──
-  const kisDomEval = balance.totalEvalAmount ?? 0; // 국내 증권 시가평가 (KIS)
-  const kisPurchaseCost = (balance as any).purchaseCost ?? 0; // 국내 매입원가 (KIS)
-
-  // 국내 투자원가: Live=KIS purchaseCost 우선
-  const domesticInvested = !viewIsPaper && kisPurchaseCost > 0 ? kisPurchaseCost : totalInvested || 0;
-  // 국내 시가평가:
-  // - Live: KIS totalEvalAmount 우선 (DB 체인보다 KIS가 정확)
-  // - Paper: balance.totalEvalAmount 사용 (cash와 같은 FIFO 원장 소스 — transaction_chains와 혼용 시 이중계산 방지)
-  const domesticMarketValue =
-    kisDomEval > 0 ? kisDomEval : viewIsPaper ? (balance.totalEvalAmount ?? 0) : totalChainInvested + totalChainPnl;
-
-  // ══ 통합증거금: 현금 계산 ══
-  let actualCashSource: string = balance.cashSource ?? 'unknown';
-  if (viewIsPaper) {
-    // Paper: actualCash = rawCash = 국내 paper 현금 (getPaperBalance().orderableCash, executor가 KR 매수에 사용)
-    // 해외 paper 현금은 overseasCashKrw 별도 (computePaperCash() * FX_RATE)
-    // actualCash는 line 250에서 이미 rawCash로 설정 → 오버라이드하지 않음
-    actualCashSource = 'paper_computed';
-  } else {
-    // Live: KIS 국내 잔고 API(rawCash) 우선 — KIS 앱 "주문가능원화"와 일치
-    // overseas_state.cash(psamount KRW)는 결제주기/미수금 차이로 실제 주문가능과 불일치 가능
-    if (rawCash > 0) {
-      actualCash = rawCash;
-      // actualCashSource = balance.cashSource (이미 설정됨)
-    } else if (overseasCashKrw > 0) {
-      // 국내 잔고 API 실패 시 overseas_state.cash 폴백
-      actualCash = overseasCashKrw;
-      actualCashSource = 'overseas_state';
-    } else {
-      // 전부 실패 → netAsset 기반 추정
-      const netAsset = (balance as any).netAsset ?? 0;
-      if (netAsset > 0) {
-        actualCash = Math.max(0, netAsset - domesticMarketValue);
-        if (overseasInvestedKrw > 0) {
-          actualCash = Math.max(0, actualCash - overseasInvestedKrw);
-        }
-        actualCashSource = 'nass-evlu';
-      }
+  // 시드 캐피탈 + 스냅샷 폴백 (DB 조회)
+  const [seedKr, seedOverseas] = await Promise.all([
+    getSeedCapitalKr().catch(() => 10_000_000),
+    getSeedCapitalOverseas().catch(() => 10_000),
+  ]);
+  let seedSnapshotFallback: number | undefined;
+  {
+    const snapResult = await safeQuery<{ total_value: string }>(
+      `SELECT total_value FROM portfolio_snapshots
+       WHERE is_paper = $1 AND total_value > 0
+       ORDER BY snapshot_at ASC LIMIT 1`,
+      [viewIsPaper],
+    );
+    if (snapResult.rows[0]) {
+      seedSnapshotFallback = Number(snapResult.rows[0].total_value);
     }
   }
 
-  // 총자산 = 가용현금 + 증권평가(국내+해외) + 해외현금  — KIS nass_amt 미사용
-  // ⚠️ 예수금(dnca_tot_amt)은 미정산 매수대금 포함 → 증권평가와 이중계산 위험!
-  // → 가용현금 = 예수금 - 투자원금(DB) 으로 이중계산 방지
-  const deposit = !viewIsPaper ? ((balance as any).totalDeposit ?? 0) : 0;
-  const rawCashSafe = Number.isNaN(rawCash) || !rawCash ? 0 : rawCash;
-  const safeDomestic = Number.isNaN(domesticMarketValue) ? 0 : domesticMarketValue;
-  const safeOverseasMV = Number.isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw;
-  const safeOverseasCashKrw = Number.isNaN(overseasCashKrw) ? 0 : Math.max(0, overseasCashKrw);
+  const assets = calcTotalAssets({
+    viewIsPaper,
+    rawCash,
+    netAsset: balance.netAsset ?? 0,
+    kisDomEval: balance.totalEvalAmount ?? 0,
+    kisPurchaseCost: (balance as any).purchaseCost ?? 0,
+    kisTotalProfitLoss: balance.totalProfitLoss ?? 0,
+    kisTotalProfitLossPct: balance.totalProfitLossPct ?? 0,
+    cashSource: balance.cashSource ?? 'unknown',
+    totalChainInvested,
+    totalChainPnl,
+    overseasTotalInvestedUsd: overseasTotalInvested,
+    overseasMarketValueUsd,
+    overseasCashRaw: overseasCash,
+    overseasMaxUsd: _overseasMaxUsd,
+    fxRate: FX_RATE,
+    paperInitialCapital: PAPER_INITIAL_CAPITAL,
+    liveRealizedPnl,
+    seedKr,
+    seedOverseasUsd: seedOverseas,
+    seedSnapshotFallback,
+  });
 
-  // Live 가용현금 = 예수금 - 투자원금(DB chains 기준) — 미정산 매수대금 제거
-  // Paper: rawCash 그대로 (paper 예수금 = 주문가능현금)
-  const freeDomesticCash = !viewIsPaper && deposit > 0
-    ? Math.max(0, deposit - domesticInvested)
-    : rawCashSafe;
-  // 총자산 = 가용현금 + 국내증권평가 + 해외증권평가 + 해외현금
-  const grandTotalValue = freeDomesticCash + safeDomestic + safeOverseasMV + safeOverseasCashKrw;
+  // 디버깅 로그 — 계산 결과 확인
+  logger.info(
+    `💰 총자산 계산 [${viewIsPaper ? 'Paper' : 'Live'}] (${assets.calcMethod}): ` +
+    `freeCash=${assets.freeDomesticCash.toLocaleString()} | nass=${(balance.netAsset ?? 0).toLocaleString()} | ` +
+    `domMV=${assets.domesticMarketValue.toLocaleString()} | ` +
+    `ovrsMV=${assets.overseasMarketValueKrw.toLocaleString()} ovrsCash=${assets.overseasCashKrw.toLocaleString()} | ` +
+    `TOTAL=${assets.grandTotalValue.toLocaleString()} cashSrc=${assets.actualCashSource}`,
+    { component: 'DASHBOARD' },
+  );
+
+  // 별칭 — 하위 코드에서 사용
+  const grandTotalValue = assets.grandTotalValue;
+  const overseasInvestedKrw = assets.overseasInvestedKrw;
+  const overseasMarketValueKrw = assets.overseasMarketValueKrw;
+  const overseasCashForDisplay = assets.overseasCashForDisplay;
+  const actualCashSource = assets.actualCashSource;
 
   // 비중(weight) 계산 — grandTotalValue 기준 시가 기반 통합 비중
   for (const ch of enrichedChains as any[]) {
@@ -615,33 +592,20 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     };
   });
 
-  const grandTotalInvested = domesticInvested + overseasInvestedKrw;
-
-  // 국내 주문가능 현금: actualCash = rawCash(TTTC8908R max_buy_amt) — 대용 포함, KR 매수 한도용
-  const unifiedCash = Math.round(actualCash);
-  // 총현금: 가용현금(예수금-투자원금) + 해외현금
-  const totalCash = Math.round(freeDomesticCash + safeOverseasCashKrw);
-  // 해외 현금 표시
-  const overseasCashForDisplay = Math.round(safeOverseasCashKrw);
-  const overseasCashUsdDisplay = FX_RATE > 0 ? Math.round((overseasCashForDisplay / FX_RATE) * 100) / 100 : 0;
-
   const dashPayload = {
     portfolio: {
-      totalValue: Math.round(grandTotalValue),
-      cash: Math.round(totalCash), // 총현금: 예수금(또는 paper현금) + 해외현금
-      invested: Math.round(grandTotalInvested),
-      domesticInvested: Math.round(domesticInvested),
-      domesticEval: Math.round(domesticMarketValue), // 국내 증권 시가평가 (비중 계산용)
-      domesticCash: unifiedCash, // 국내 주문가능 현금 (KR 매수 한도 기준)
-      unrealizedPnl: Math.round(viewIsPaper ? totalChainPnl : balance.totalProfitLoss || totalChainPnl), // 국내 전용 (해외는 overseas.unrealizedPnlKrw)
+      totalValue: assets.grandTotalValue,
+      cash: assets.totalCash,
+      invested: assets.totalInvested,
+      domesticInvested: assets.domesticInvested,
+      domesticEval: assets.domesticMarketValue,
+      domesticCash: assets.unifiedCash,
+      unrealizedPnl: Math.round(viewIsPaper ? totalChainPnl : balance.totalProfitLoss || totalChainPnl),
       realizedPnl: viewIsPaper ? Math.round(balance.totalProfitLoss ?? 0) : Math.round(liveRealizedPnl),
-      pnl: Math.round(
-        totalPnl +
-          (Number.isNaN(overseasMarketValueKrw - overseasInvestedKrw)
-            ? 0
-            : overseasMarketValueKrw - overseasInvestedKrw),
-      ),
-      pnlPct: Math.round(totalPnlPct * 100) / 100,
+      pnl: Math.round(assets.totalPnl + assets.overseasUnrealizedPnlKrw),
+      pnlPct: assets.totalPnlPct,
+      seedCapital: assets.totalSeedCapital,
+      totalReturnPct: assets.totalReturnPct,
       positions: balance.positions ?? [],
     },
     overseas: {
@@ -650,13 +614,14 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       totalInvestedKrw: overseasInvestedKrw,
       totalMarketValueUsd: overseasMarketValueUsd,
       totalMarketValueKrw: overseasMarketValueKrw,
-      unrealizedPnlKrw: Math.round(overseasMarketValueKrw - overseasInvestedKrw),
+      unrealizedPnlKrw: assets.overseasUnrealizedPnlKrw,
+      unrealizedPnlUsd: Math.round((overseasMarketValueUsd - overseasTotalInvested) * 100) / 100,
       unrealizedPnlPct:
         overseasInvestedKrw > 0
           ? Math.round(((overseasMarketValueKrw - overseasInvestedKrw) / overseasInvestedKrw) * 10000) / 100
           : 0,
-      cashUsd: overseasCashUsdDisplay,
-      cashKrw: overseasCashForDisplay, // Paper=해외 paper 현금(KRW), Live=통합증거금
+      cashUsd: assets.overseasCashUsdDisplay,
+      cashKrw: overseasCashForDisplay,
       fxRate: FX_RATE,
       scores: getOverseasScores(),
     },
@@ -684,20 +649,22 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     viewMode: viewIsPaper ? 'paper' : 'live',
     cashSource: actualCashSource,
     riskLimits: (() => {
-      // 통합증거금: 전체 포트폴리오 기준 일일손실한도
-      const limit = calcDailyLossLimit(Math.round(grandTotalValue), viewIsPaper);
-      // 해외 리스크 베이스: Paper=해외현금+시가, Live=시가만(현금은 통합증거금으로 예수금에 포함)
+      const limit = calcDailyLossLimit(grandTotalValue, viewIsPaper);
+      // 해외 리스크 베이스: Paper=해외현금+시가, Live=시가만(통합증거금)
       const osPortfolioKrw = !viewIsPaper
-        ? Number.isNaN(overseasMarketValueKrw)
-          ? 0
-          : overseasMarketValueKrw
-        : (overseasCashForDisplay || 0) + (Number.isNaN(overseasMarketValueKrw) ? 0 : overseasMarketValueKrw);
+        ? overseasMarketValueKrw
+        : overseasCashForDisplay + overseasMarketValueKrw;
       const osPortfolioUsd = FX_RATE > 0 ? osPortfolioKrw / FX_RATE : 0;
+      // 해외 손실한도: 해외 전용 단계(OVERSEAS_LOSS_TIERS) 사용 — 국내 pct 사용 금지
+      const osTiers = getOverseasLossTiers(viewIsPaper);
       return {
         maxDailyDrawdownKrw: limit.limitAmount,
         dailyDrawdownPct: limit.pct,
         basis: limit.basis,
-        overseasLimitUsd: Math.round((osPortfolioUsd * limit.pct) / 100),
+        overseasLimitUsd: Math.round((osPortfolioUsd * osTiers.blockPct) / 100),
+        overseasWarnUsd: Math.round((osPortfolioUsd * osTiers.warnPct) / 100),
+        overseasBlockUsd: Math.round((osPortfolioUsd * osTiers.blockPct) / 100),
+        overseasKillPct: osTiers.killPct,
         overseasBasisUsd: Math.round(osPortfolioUsd),
       };
     })(),
@@ -707,7 +674,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     suggestedActions: (() => {
       const thisMode = viewIsPaper ? 'paper' : 'live';
       const otherMode = viewIsPaper ? 'live' : 'paper';
-      const current = buildSuggestedActions(overseasHoldings, displayChains, grandTotalValue, actualCash).map((a) => ({
+      const current = buildSuggestedActions(overseasHoldings, displayChains, grandTotalValue, assets.unifiedCash).map((a) => ({
         ...a,
         mode: thisMode as 'paper' | 'live',
       }));
@@ -718,7 +685,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       }));
       return [...current, ...other].slice(0, 10);
     })(),
-    monthlyGoal: buildMonthlyGoal(grandTotalValue, totalPnl, overseasMarketValueKrw, overseasInvestedKrw),
+    monthlyGoal: buildMonthlyGoal(grandTotalValue, assets.totalPnl, overseasMarketValueKrw, overseasInvestedKrw),
     fxImpact: buildFxImpact(overseasTotalInvested, overseasMarketValueUsd, FX_RATE),
   };
   return dashPayload;

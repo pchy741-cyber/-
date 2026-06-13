@@ -57,6 +57,8 @@ export const TransactionChainSchema = z.object({
   current_averaging_count: z.number(),
   peak_price: z.number().nullable().optional(),
   peak_price_since_open: z.number().nullable().optional(),
+  pnl_pct: z.number().nullable().optional(),
+  sell_reason: z.string().nullable().optional(),
   is_paper: z.boolean().optional(),
   opened_at: z.string(),
   closed_at: z.string().nullable(),

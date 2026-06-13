@@ -42,6 +42,7 @@ export interface OverseasSummary {
   totalInvestedUsd?: number;
   totalInvestedKrw?: number;
   totalMarketValueKrw?: number;
+  unrealizedPnlUsd?: number;
   cashUsd?: number;
   cashKrw?: number;
   fxRate?: number;
