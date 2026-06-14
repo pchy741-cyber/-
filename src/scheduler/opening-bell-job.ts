@@ -377,7 +377,10 @@ JSON만: {"scores":[{"code":"코드","score":점수},...]}`;
     // Track B 기술 판단 (캐시 차트 + 실시간 시세 + Gemini 점수 주입)
     const chartData = cache?.chartData ?? new Map();
     const orderableCash = Math.max(0, balanceRaw.orderableCash);
-    const totalAssets = balanceRaw.totalEvalAmount + orderableCash;
+    // nass_amt(순자산) 우선: max_buy_amt(대용 포함)로 인한 이중계산 방지
+    const totalAssets = balanceRaw.netAsset > 0
+      ? balanceRaw.netAsset
+      : balanceRaw.totalEvalAmount + orderableCash;
 
     // 갭다운 필터 — 전날 종가 대비 -0.3% 이하 종목은 개장 진입 금지
     const gapFilteredWatchlist = watchlist.filter((w) => {

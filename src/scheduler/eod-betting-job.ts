@@ -131,7 +131,7 @@ export async function runEodBettingJob(): Promise<void> {
     if (!isPaper) {
       const { getAccountBalance: getAccBal } = await import('../kis/account.js');
       const bal = await getAccBal(false);
-      const totalAssets = bal.netAsset || bal.orderableCash + bal.totalEvalAmount;
+      const totalAssets = bal.netAsset > 0 ? bal.netAsset : bal.orderableCash + bal.totalEvalAmount;
       const openChains = await getOpenChains();
       const { getBatchPrices } = await import('../kis/market.js');
       const holdCodes = openChains.filter((c) => Number(c.total_quantity) > 0).map((c) => c.stock_code);
@@ -245,7 +245,7 @@ export async function runEodBettingJob(): Promise<void> {
     // ── STEP 5: 황금비율 동적 포지션 사이징 ── (캐시 무효화 → 최신 잔고로 정확한 사이징)
     if (!isPaper) invalidateBalanceCache();
     const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
-    const totalAssets = balance.netAsset || balance.orderableCash + balance.totalEvalAmount;
+    const totalAssets = balance.netAsset > 0 ? balance.netAsset : balance.orderableCash + balance.totalEvalAmount;
 
     // 황금비율: 총 EOD 배팅 한도 (레짐 연동)
     const phiTotal =

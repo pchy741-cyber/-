@@ -109,7 +109,9 @@ export async function runSnapshotJob(): Promise<void> {
     } else {
       // 서버 live → paper 스냅샷 추가
       const paperBalance = await getPaperBalance();
-      const paperDomestic = paperBalance.totalDeposit + paperBalance.totalEvalAmount;
+      const paperDomestic = (paperBalance as any).netAsset > 0
+        ? (paperBalance as any).netAsset
+        : paperBalance.totalDeposit + paperBalance.totalEvalAmount;
       const paperOverseasKrw = await getOverseasValueKrw(true);
       const paperTotalValue = paperDomestic + paperOverseasKrw;
       await insertSnapshot({

@@ -23,6 +23,18 @@ async function getBalance(isPaper: boolean): Promise<AccountBalance> {
   return getAccountBalance(true); // forceRefresh — stale cache can cause false 414% rejections
 }
 
+/**
+ * 국내 총자산 계산 — 모든 리스크 체크에서 동일한 공식 사용
+ * nass_amt(순자산) 최우선: 현금 + 증권 시가 - 미수금 (KIS T+2 정산 완료, 가장 정확)
+ * max_buy_amt(주문가능)는 대용(담보) 포함이므로 총자산으로 사용하면 안 됨
+ */
+function getDomesticTotalAssets(balance: AccountBalance): number {
+  if (balance.netAsset > 0) return balance.netAsset;
+  // nass_amt 실패 시 폴백: 예수금 + 증권평가
+  const fallback = (balance.totalDeposit ?? 0) + (balance.totalEvalAmount ?? 0);
+  return fallback > 0 ? fallback : 0;
+}
+
 export interface PreTradeCheckResult {
   approved: boolean;
   reason: string;
@@ -212,7 +224,7 @@ export class RiskEngine {
       try {
         const balance = await getBalance(isPaper);
         await insertSnapshot({
-          total_value: balance.totalDeposit + balance.totalEvalAmount,
+          total_value: getDomesticTotalAssets(balance),
           cash_balance: balance.orderableCash,
           invested_value: balance.totalEvalAmount,
           unrealized_pnl: balance.totalProfitLoss,
@@ -229,7 +241,7 @@ export class RiskEngine {
 
     const currentBalance = await getBalance(isPaper);
     const startValue = Number(startSnapshot.total_value);
-    const currentValue = currentBalance.totalDeposit + currentBalance.totalEvalAmount;
+    const currentValue = getDomesticTotalAssets(currentBalance);
     const dailyLoss = startValue - currentValue;
 
     // ── 외부 매도/입출금 감지 ──────────────────────────────────────────
@@ -250,7 +262,7 @@ export class RiskEngine {
       // 스냅샷을 현재 잔고로 재설정 (외부 매도 후 기준점 리셋)
       try {
         await insertSnapshot({
-          total_value: currentValue,
+          total_value: getDomesticTotalAssets(currentBalance),
           cash_balance: currentBalance.orderableCash,
           invested_value: currentBalance.totalEvalAmount,
           unrealized_pnl: currentBalance.totalProfitLoss,
@@ -303,7 +315,7 @@ export class RiskEngine {
 
   private async checkTotalExposure(orderValue: number, isPaper: boolean): Promise<PreTradeCheckResult> {
     const balance = await getBalance(isPaper);
-    const totalPortfolio = balance.totalDeposit + balance.totalEvalAmount;
+    const totalPortfolio = getDomesticTotalAssets(balance);
     // 소자산(100만 미만)은 비율 체크 의미 없음 — cashCheck가 유일한 실질 관문
     if (totalPortfolio === 0 || totalPortfolio < 1_000_000) return { approved: true, reason: 'OK' };
 
@@ -430,7 +442,7 @@ export class RiskEngine {
       // 소자산 포트폴리오(20만 미만)는 월간 MDD 체크 면제
       // 외부 매도/입출금으로 잔고 급감 시 MDD가 -90%+ 되어 영구 차단되는 문제 방지
       const currentBalance = await getBalance(isPaper);
-      const currentTotal = currentBalance.totalDeposit + currentBalance.totalEvalAmount;
+      const currentTotal = getDomesticTotalAssets(currentBalance);
       if (currentTotal < 200000) {
         return { approved: true, reason: '소자산 포트폴리오 — 월간 MDD 면제' };
       }
