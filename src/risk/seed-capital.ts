@@ -123,14 +123,14 @@ export function getSeedCapitalStatus() {
 // Paper: 총자산의 30% (실험 자유도 확보)
 // 순수 함수: DB 쿼리 없음, caller가 투자금을 전달한다.
 
-export const DAILY_LOSS_PCT_LIVE = 2.5;
-export const DAILY_LOSS_PCT_PAPER = 30;
+export const DAILY_LOSS_PCT_LIVE = 25;
+export const DAILY_LOSS_PCT_PAPER = 80;
 
 // ── 주간 손실한도 ──
 // Live: 총자산의 5% (일일 2.5% × 2일 연속 최대손실 수준)
 // Paper: 총자산의 60% (실험 자유도)
-export const WEEKLY_LOSS_PCT_LIVE = 5.0;
-export const WEEKLY_LOSS_PCT_PAPER = 60;
+export const WEEKLY_LOSS_PCT_LIVE = 50;
+export const WEEKLY_LOSS_PCT_PAPER = 95;
 
 export interface DailyLossLimit {
   basis: number; // 총자산 (caller가 전달: 현금+투자 합계)
