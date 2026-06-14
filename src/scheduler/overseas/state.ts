@@ -16,7 +16,7 @@ import { logger } from '../../utils/logger.js';
 import { modePrefix } from './utils.js';
 
 /** 통합증거금: Paper 시드 (KRW) — 환율 환산 후 USD로 거래 */
-const PAPER_OVERSEAS_SEED_KRW = Number(process.env.PAPER_OVERSEAS_SEED_KRW) || 60_000_000;
+const PAPER_OVERSEAS_SEED_KRW = Number(process.env.PAPER_OVERSEAS_SEED_KRW) || 30_000_000;
 
 /** paper/live 별 현금 키 */
 export function cashKey(isPaper?: boolean): string {
