@@ -135,6 +135,12 @@ strategyLabRoutes.post('/strategy-lab/approvals/:id/approve', async (c) => {
   // 캐시 무효화 — 다음 조회 시 최신 상태 반영
   cacheSet('api:strategy-lab:overview', null as any, 0);
 
+  // Paper-only 전략 캐시 무효화 — 졸업 승인 후 즉시 Live 적용
+  try {
+    const { invalidatePaperOnlyCache } = await import('../../automation/strategy-graduation.js');
+    invalidatePaperOnlyCache();
+  } catch { /* 모듈 로드 실패 시 무시 — 30분 후 자동 만료 */ }
+
   logger.info(`🎓 CEO 승인: 졸업 #${id} (${grad.strategy_mode}) → LIVE 전략 반영`, { component: 'STRATEGY_LAB' });
   return c.json({ ok: true, strategyMode: grad.strategy_mode, appliedChanges });
 });

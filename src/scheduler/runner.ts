@@ -596,11 +596,15 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 점심 장세 재확인 — 12:00 (장 중간 모드 재판단)
+  // 점심 장세 재확인 — 12:00 (장 중간 모드 재판단 + 뉴스 갱신)
   cron.schedule(
     '0 12 * * 1-5',
     () => {
       autoSwitchStrategy().catch((e) => logger.error(`장세 재판단 실패: ${e}`, { component: 'SCHEDULER' }));
+      // 점심 뉴스 갱신 — 오전 장세 반영 + 오후 전략 판단 데이터 최신화
+      import('../api/routes/dashboard-news.js')
+        .then((m) => m.prefetchAllNews())
+        .catch((e) => logger.error(`점심 뉴스 갱신 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

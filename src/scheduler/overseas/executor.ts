@@ -109,6 +109,10 @@ export async function executeOverseasOrder(
     });
     hardInvalidateDashboardCache();
     invalidateBalanceCache();
+    // 해외 스코어 캐시 무효화 — 체결된 종목의 중복 매수 신호 방지
+    import('../../cache/overseas-scores.js')
+      .then((m) => m.invalidateOverseasScoreForStock(code))
+      .catch(() => {});
 
     const { notifyOverseasBuy: nb, notifyOverseasSell: ns } = await import('../../notifications/web-push.js');
     if (side === 'BUY') {
@@ -191,6 +195,10 @@ export async function executeOverseasOrder(
             });
             hardInvalidateDashboardCache();
             invalidateBalanceCache();
+            // 해외 스코어 캐시 무효화 — 체결된 종목의 중복 매수 신호 방지
+            import('../../cache/overseas-scores.js')
+              .then((m) => m.invalidateOverseasScoreForStock(code))
+              .catch(() => {});
             const { notifyOverseasBuy: nb, notifyOverseasSell: ns } = await import('../../notifications/web-push.js');
             if (side === 'BUY') {
               nb(code, stockName, confirmed.filledQty, confirmed.filledPrice, reasoning).catch(() => {});

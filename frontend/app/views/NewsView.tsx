@@ -105,6 +105,18 @@ function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist:
       .then((d: any) => setYtVideos(Array.isArray(d?.videos) ? d.videos : []))
       .catch(() => setYtVideos([]))
       .finally(() => setYtLoading(false));
+
+    // 30분 자동 갱신 — 뉴스 페이지 열어둔 채로도 최신 정보 유지
+    const refreshInterval = setInterval(() => {
+      api('/news').then((d: any) => setStockNews(Array.isArray(d) ? d : [])).catch(() => {});
+      api('/news/macro').then((d: any) => setMacroNews(Array.isArray(d?.headlines) ? d.headlines : [])).catch(() => {});
+      fetchSummary(false);
+      api('/news/theme', { timeout: 35000 }).then((d: any) => setTheme(d?.theme ? d : null)).catch(() => {});
+      api('/news/regime-summary').then((d: any) => setRegime(d?.summary ? d : null)).catch(() => {});
+      api('/news/youtube').then((d: any) => setYtVideos(Array.isArray(d?.videos) ? d.videos : [])).catch(() => {});
+    }, 30 * 60 * 1000);
+
+    return () => clearInterval(refreshInterval);
   }, []);
 
   const regimeIcon = regime ? (
