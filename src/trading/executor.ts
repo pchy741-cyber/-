@@ -809,30 +809,50 @@ export class TradeExecutor {
       orderType,
     });
 
-    // DB 기록 — 실패 시에도 주문은 KIS에 전송됨, 반드시 기록 시도
-    try {
-      await insertOrder({
-        chain_id: params.chainId ?? null,
-        stock_code: params.stockCode,
-        side: params.side,
-        order_type: orderType,
-        quantity: params.quantity,
-        price: params.price ?? null,
-        kis_order_no: result.orderNo,
-        kis_status: result.success ? 'SUBMITTED' : 'FAILED',
-        filled_quantity: 0,
-        filled_price: null,
-        status: result.success ? 'PENDING' : 'FAILED',
-        trading_mode: isPaper ? 'paper' : 'live',
-        trigger_source: params.triggerSource ?? null,
-        ai_reasoning: params.aiReasoning ?? null,
-      });
-    } catch (dbErr) {
-      // DB 기록 실패 시에도 KIS 주문은 이미 전송됨 — 로그로 추적 가능하게 기록
-      logger.error(
-        `🚨 주문 DB 기록 실패 (KIS 주문은 전송됨): ${params.side} ${params.stockCode} x${params.quantity} orderNo=${result.orderNo} err=${dbErr}`,
-        { component: 'EXECUTOR' },
-      );
+    // DB 기록 — 실패 시에도 주문은 KIS에 전송됨, 반드시 기록 시도 (재시도 포함)
+    const orderRecord = {
+      chain_id: params.chainId ?? null,
+      stock_code: params.stockCode,
+      side: params.side,
+      order_type: orderType,
+      quantity: params.quantity,
+      price: params.price ?? null,
+      kis_order_no: result.orderNo,
+      kis_status: result.success ? 'SUBMITTED' : 'FAILED',
+      filled_quantity: 0,
+      filled_price: null,
+      status: result.success ? ('PENDING' as const) : ('FAILED' as const),
+      trading_mode: isPaper ? ('paper' as const) : ('live' as const),
+      trigger_source: params.triggerSource ?? null,
+      ai_reasoning: params.aiReasoning ?? null,
+    };
+    let dbInserted = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await insertOrder(orderRecord);
+        dbInserted = true;
+        break;
+      } catch (dbErr) {
+        logger.error(
+          `🚨 주문 DB 기록 실패 (시도 ${attempt + 1}/3): ${params.side} ${params.stockCode} x${params.quantity} orderNo=${result.orderNo} err=${dbErr}`,
+          { component: 'EXECUTOR' },
+        );
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      }
+    }
+    if (!dbInserted) {
+      // 3회 재시도 실패 → 고아 포지션 위험: 텔레그램 긴급 알림 + system_log
+      const orphanMsg =
+        `🚨 *고아 포지션 경고*\n` +
+        `KIS 주문은 전송되었으나 DB 기록 3회 실패!\n` +
+        `주문번호: ${result.orderNo}\n` +
+        `${params.side} ${params.stockCode} x${params.quantity}\n` +
+        `모드: ${isPaper ? 'Paper' : 'LIVE'}\n` +
+        `즉시 수동 확인 필요`;
+      import('../notifications/telegram.js')
+        .then(({ sendTelegramMessage }) => sendTelegramMessage(orphanMsg))
+        .catch(() => {});
+      await logSystem('ERROR', 'EXECUTOR', `고아포지션: ${params.side} ${params.stockCode} x${params.quantity} orderNo=${result.orderNo} — DB 기록 3회 실패`);
     }
 
     await logSystem(

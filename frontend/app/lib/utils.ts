@@ -58,10 +58,10 @@ export async function api(path: string, opts?: RequestInit & { timeout?: number 
   }
 }
 
-export const fmt = (n: number | null | undefined) => n == null ? '-' : n.toLocaleString('ko-KR');
-export const fmtPct = (n: number | null | undefined) => n == null ? '-' : (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
-export const fmtWon = (n: number | null | undefined) => n == null ? '-' : Math.round(n).toLocaleString('ko-KR') + '원';
-export const fmtUsd = (n: number | null | undefined) => n == null ? '-' : '$' + (n ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+export const fmt = (n: number | null | undefined) => n == null || !Number.isFinite(n) ? '-' : n.toLocaleString('ko-KR');
+export const fmtPct = (n: number | null | undefined) => n == null || !Number.isFinite(n) ? '-' : (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+export const fmtWon = (n: number | null | undefined) => n == null || !Number.isFinite(n) ? '-' : Math.round(n).toLocaleString('ko-KR') + '원';
+export const fmtUsd = (n: number | null | undefined) => n == null || !Number.isFinite(n) ? '-' : '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 export const fmtTime = (t: string | null | undefined) => { if (!t) return '-'; const d = new Date(t); return `${(d.getMonth()+1).toString().padStart(2,'0')}/${d.getDate().toString().padStart(2,'0')} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`; };
 export const pc = (n: number | null | undefined) => n == null || n === 0 ? 'text-slate-400' : n > 0 ? 'text-emerald-400' : 'text-rose-400';
 export const pbg = (n: number | null | undefined) => n == null || n === 0 ? '' : n > 0 ? 'bg-emerald-950/30 border-emerald-900/30' : 'bg-rose-950/30 border-rose-900/30';

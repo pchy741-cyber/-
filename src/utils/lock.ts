@@ -10,7 +10,7 @@ import { getCtxIsPaper } from '../config/context.js';
 import { logger } from './logger.js';
 
 const locks = new Map<string, { lockedAt: Date; owner: string }>();
-const LOCK_TIMEOUT_MS = 120_000; // 2분 초과하면 자동 해제 (체결 확인 최대 60초 + 여유분)
+const LOCK_TIMEOUT_MS = 45_000; // 45초 초과하면 자동 해제 (체결확인 31초 + 여유 14초)
 
 /**
  * 종목별 락 획득

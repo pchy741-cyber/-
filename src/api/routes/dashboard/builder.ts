@@ -301,6 +301,34 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     liveRealizedPnl = Number(realizedRows.rows[0]?.total ?? 0);
   }
 
+  // ── 해외 실현손익 계산 (BUY/SELL 순흐름 + 현재 보유 원가 복원) ──
+  let overseasRealizedPnlUsd = 0;
+  try {
+    const tradingMode = viewIsPaper ? 'paper' : 'live';
+    // 해외 전체 매매 순흐름: SELL 매출 - BUY 비용
+    const { rows: flowRows } = await safeQuery<{ net_flow: string }>(
+      `SELECT COALESCE(SUM(CASE
+         WHEN side = 'SELL' THEN filled_price * filled_quantity
+         WHEN side = 'BUY'  THEN -(filled_price * filled_quantity)
+       END), 0)::text AS net_flow
+       FROM orders
+       WHERE trigger_source = 'OVERSEAS' AND status = 'FILLED' AND trading_mode = $1`,
+      [tradingMode],
+    );
+    const netFlowUsd = Number(flowRows[0]?.net_flow ?? 0);
+    // 현재 보유종목 원가 합산 (아직 보유 중인 포지션의 투입금 복원)
+    const { rows: holdCostRows } = await safeQuery<{ invested: string }>(
+      `SELECT COALESCE(SUM(avg_price * quantity), 0)::text AS invested
+       FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1`,
+      [viewIsPaper],
+    );
+    const currentInvestedUsd = Number(holdCostRows[0]?.invested ?? 0);
+    // 실현손익 = 순흐름 + 현재보유원가 (미실현 부분 상쇄)
+    overseasRealizedPnlUsd = Math.round((netFlowUsd + currentInvestedUsd) * 100) / 100;
+  } catch {
+    /* overseas realized PnL 계산 실패 시 0 유지 */
+  }
+
   // ── 해외 보유종목 (별도 표시용, 국내 총자산에 합산하지 않음) ──
   const overseasHoldings: Array<{
     stock_code: string;
@@ -615,6 +643,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
         overseasInvestedKrw > 0
           ? Math.round(((overseasMarketValueKrw - overseasInvestedKrw) / overseasInvestedKrw) * 10000) / 100
           : 0,
+      realizedPnlUsd: overseasRealizedPnlUsd,
+      realizedPnlKrw: Math.round(overseasRealizedPnlUsd * FX_RATE),
       cashUsd: assets.overseasCashUsdDisplay,
       cashKrw: overseasCashForDisplay,
       fxRate: FX_RATE,

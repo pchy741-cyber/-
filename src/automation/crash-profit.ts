@@ -175,16 +175,17 @@ interface InverseDecisionParams {
  * 인버스 ETF 매수/매도 결정 생성 (다중 ETF 지원)
  *
  * - NONE:           보유 인버스 전량 청산 (시장 회복)
- * - CAUTION:        보유분 +3% 익절; 114800·251340 소규모 헤지 진입
- * - CRASH:          3종 진입; 현금 89% 배분 (252670 52% + 114800 32% + 251340 5%)
- * - PANIC:          3종 최대 진입; 현금 ~98% (252670 62% + 114800 38% + 251340 8%)
- * - 배분 기준: totalAssets 아닌 orderableCash (도달 가능한 실제 현금 기준)
+ * - CAUTION:        보유분 +3% 익절; 252670 소규모 헤지 진입
+ * - CRASH:          3종 진입; 목표 = 총자산의 배분비율 (현금 한도 내)
+ * - PANIC:          3종 최대 진입; panicSell로 확보한 현금 + 기존 현금 활용
+ * - 배분 기준: totalAssets (포트폴리오 대비 충분한 헤지 확보), 실행은 orderableCash 한도 내
  */
 export function generateInverseDecisions(params: InverseDecisionParams): TradeDecision[] {
   const { signal, openChains, livePrices, orderableCash, totalAssets } = params;
   const decisions: TradeDecision[] = [];
   let remainingCash = orderableCash;
-  const cashBase = orderableCash; // 주문 전 현금 스냅샷 — 배분 기준점 (totalAssets 아님)
+  // 배분 기준: 총자산 기반 (포트폴리오 대비 충분한 헤지), 실행은 가용현금 한도 내
+  const allocationBase = totalAssets > 0 ? totalAssets : orderableCash;
 
   for (const etf of INVERSE_ETFS) {
     const holding = openChains.find((c) => c.stock_code === etf.code && c.total_quantity > 0);
@@ -205,13 +206,31 @@ export function generateInverseDecisions(params: InverseDecisionParams): TradeDe
       continue;
     }
 
-    // ── 익절/손절: CAUTION 전환 시 보유분 정리 ──
-    if (holding && signal.level === 'CAUTION') {
+    // ── 익절/손절: 보유분 정리 (모든 레벨 공통 손절 + CAUTION 익절) ──
+    if (holding) {
       const avgBuy = Number(holding.avg_buy_price ?? 0);
       const currentPx = price?.currentPrice ?? 0;
       if (avgBuy > 0 && currentPx > 0) {
         const pnlPct = ((currentPx - avgBuy) / avgBuy) * 100;
-        if (pnlPct >= 3.0) {
+
+        // 🛡️ V반등 방어: CRASH/PANIC 인버스도 -8% 손절 (시장 급반등 시 손실 무한확대 방지)
+        const slPct = signal.level === 'PANIC' ? -10.0 : signal.level === 'CRASH' ? -8.0 : -5.0;
+        if (pnlPct <= slPct) {
+          decisions.push({
+            action: 'SELL',
+            stock_code: etf.code,
+            quantity: holding.total_quantity,
+            price_type: 'MARKET',
+            reasoning: `🔴 ${etf.name} 손절: ${pnlPct.toFixed(1)}% (${signal.level} SL=${slPct}% — V반등 방어)`,
+            confidence: 0.95,
+            strategy_mode: 'DEFENSE',
+            trigger_source: 'CRASH_PROFIT_SL',
+          });
+          continue;
+        }
+
+        // CAUTION 전환 시 익절
+        if (signal.level === 'CAUTION' && pnlPct >= 3.0) {
           decisions.push({
             action: 'SELL',
             stock_code: etf.code,
@@ -221,20 +240,6 @@ export function generateInverseDecisions(params: InverseDecisionParams): TradeDe
             confidence: 0.85,
             strategy_mode: 'DEFENSE',
             trigger_source: 'CRASH_PROFIT_TP',
-          });
-          continue;
-        }
-        // CAUTION인데 손실 -5% 초과 → 하락장 재진입 실패 손절
-        if (pnlPct <= -5.0) {
-          decisions.push({
-            action: 'SELL',
-            stock_code: etf.code,
-            quantity: holding.total_quantity,
-            price_type: 'MARKET',
-            reasoning: `🔴 ${etf.name} 손절: ${pnlPct.toFixed(1)}% (CAUTION 구간 손실 초과)`,
-            confidence: 0.9,
-            strategy_mode: 'DEFENSE',
-            trigger_source: 'CRASH_PROFIT_SL',
           });
           continue;
         }
@@ -254,7 +259,7 @@ export function generateInverseDecisions(params: InverseDecisionParams): TradeDe
 
     // 목표 금액 대비 현재 보유 평가액 → 부족분만 추가매수 (top-up 지원)
     const currentValue = holding ? price.currentPrice * Number(holding.total_quantity ?? 0) : 0;
-    const targetKrw = Math.round(cashBase * allocPct); // 주문가능현금 기준 (실제 도달 가능)
+    const targetKrw = Math.round(allocationBase * allocPct); // 총자산 기준 목표 (포트폴리오 대비 헤지)
     // 목표의 80% 이상 이미 보유 → 추가 불필요
     if (currentValue >= targetKrw * 0.8) continue;
 

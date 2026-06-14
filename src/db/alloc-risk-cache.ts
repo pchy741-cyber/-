@@ -14,6 +14,18 @@ const DEFAULTS: Record<'live' | 'paper', AllocRisk> = {
   paper: { positionCapPct: 40, maxInvestedPct: 97, cashReservePct: 3, maxPositions: 20, maxDailyTrades: 20 },
 };
 
+// ── 레짐 기반 동적 오버라이드 (장 좋으면 적극, 나쁘면 보수) ──
+// penalty=0 + boost=true (강세장): 한도 대폭 확대
+// penalty=0 (중립): DB 설정값 그대로
+// penalty=1 (조정): 축소
+// penalty=2 (약세): 대폭 축소
+const REGIME_OVERRIDES: Record<string, Partial<AllocRisk>> = {
+  bull:    { maxPositions: 12, maxDailyTrades: 12, maxInvestedPct: 95, cashReservePct: 5, positionCapPct: 30 },
+  neutral: {}, // DB 설정값 유지
+  correction: { maxPositions: 6, maxDailyTrades: 4, maxInvestedPct: 75, cashReservePct: 25, positionCapPct: 20 },
+  bear:    { maxPositions: 4, maxDailyTrades: 3, maxInvestedPct: 60, cashReservePct: 35, positionCapPct: 15 },
+};
+
 const cache: Record<'live' | 'paper', AllocRisk> = {
   live: { ...DEFAULTS.live },
   paper: { ...DEFAULTS.paper },
@@ -46,7 +58,33 @@ async function refresh(): Promise<void> {
 
 export async function getAllocRisk(isPaper: boolean): Promise<AllocRisk> {
   if (Date.now() - lastRefresh > TTL_MS) await refresh();
-  return cache[isPaper ? 'paper' : 'live'];
+  const base = cache[isPaper ? 'paper' : 'live'];
+
+  // Paper 모드: 항상 최대한 적극적 (데이터 수집 우선)
+  if (isPaper) return base;
+
+  // Live 모드: KOSPI 레짐 기반 동적 조정
+  try {
+    const { getLastKnownRegime } = await import('../ai/track-b/market-regime.js');
+    const regime = getLastKnownRegime();
+    const key = regime.penalty >= 2 ? 'bear' : regime.penalty >= 1 ? 'correction' : regime.boost ? 'bull' : 'neutral';
+    const override = REGIME_OVERRIDES[key];
+    if (!override || Object.keys(override).length === 0) return base;
+
+    const adjusted = { ...base, ...override };
+    // DB 설정이 레짐 오버라이드보다 더 공격적이면 DB 값 존중 (사용자 의도 우선)
+    adjusted.maxPositions = Math.max(adjusted.maxPositions, base.maxPositions);
+    adjusted.maxDailyTrades = Math.max(adjusted.maxDailyTrades, base.maxDailyTrades);
+    // 약세장에서는 DB보다 보수적으로 (방어 우선)
+    if (regime.penalty >= 1) {
+      adjusted.maxPositions = Math.min(adjusted.maxPositions, base.maxPositions);
+      adjusted.maxDailyTrades = Math.min(adjusted.maxDailyTrades, base.maxDailyTrades);
+      adjusted.maxInvestedPct = Math.min(adjusted.maxInvestedPct, base.maxInvestedPct);
+    }
+    return adjusted;
+  } catch {
+    return base; // 레짐 조회 실패 시 기본값 유지
+  }
 }
 
 export function invalidateAllocCache(): void {

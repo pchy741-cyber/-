@@ -10,8 +10,8 @@ interface KISToken {
 
 let cachedToken: KISToken | null = null;
 let cachedTokenIsPaper: boolean | null = null;
-// 동시 발급 방지 뮤텍스 — 서버 시작 직후 burst 요청에서 토큰이 중복 발급되는 경쟁 조건 차단
-let inflightRequest: Promise<string> | null = null;
+// 동시 발급 방지 뮤텍스 — 모드별 분리 (Paper/Live 교차오염 방지)
+const inflightByMode = new Map<string, Promise<string>>();
 
 // 모드별 별도 캐시 + 뮤텍스 (getAccessTokenForMode용)
 // getAccessTokenForMode는 paper서버에서 live잔고 조회 등 cross-mode 호출에 사용
@@ -158,10 +158,11 @@ export async function getAccessToken(): Promise<string> {
     return modeCached.accessToken;
   }
 
-  // 동시 발급 방지: 이미 진행 중인 발급 요청이 있으면 그 결과를 공유
-  if (inflightRequest) return inflightRequest;
+  // 동시 발급 방지: 동일 모드의 진행 중인 발급 요청만 공유 (Paper↔Live 오염 방지)
+  const existingMain = inflightByMode.get(mode);
+  if (existingMain) return existingMain;
 
-  inflightRequest = (async () => {
+  const mainPromise = (async () => {
     try {
       // 재시작 후 첫 호출: DB에서 유효한 토큰 복원 시도
       if (!cachedToken || cachedTokenIsPaper !== isPaper) {
@@ -228,11 +229,12 @@ export async function getAccessToken(): Promise<string> {
 
       return cachedToken.accessToken;
     } finally {
-      inflightRequest = null;
+      inflightByMode.delete(mode);
     }
   })();
 
-  return inflightRequest;
+  inflightByMode.set(mode, mainPromise);
+  return mainPromise;
 }
 
 /**

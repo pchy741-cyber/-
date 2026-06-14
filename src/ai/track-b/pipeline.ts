@@ -804,13 +804,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       isMaxPositionsReached || // 최대 동시 포지션 수 초과: 신규 매수 차단
       (!ctxIsPaper && dailyLoss.blocked) || // Paper: 일일손실 차단 면제 (데이터 수집 우선)
       (!ctxIsPaper && kospiRegime.flashCrash) || // 급락 서킷브레이커: Live만 차단 (Paper 면제 — 모의자금)
-      (!ctxIsPaper && !isKospiOverrideActive() && kospiRegime.todayDown && !hasHighConvictionStock) || // 코스피 당일 -0.3%+ 하락: 고확신 없으면 신규매수 전면 차단
+      (!ctxIsPaper && !isKospiOverrideActive() && kospiRegime.todayDown) || // 코스피 당일 -0.3%+ 하락: 신규매수 전면 차단 (고확신 종목은 decision-flow에서 개별 허용)
       (!ctxIsPaper &&
         !isKospiOverrideActive() &&
         kospiRegime.penalty >= 2 &&
-        kospiRegime.todayDown &&
-        !hasHighConvictionStock) || // 하락장+당일하락: Live만 차단 (Paper 면제, CEO 우회 시 면제)
-      (!ctxIsPaper && portfolioStress >= 2 && !hasHighConvictionStock) || // Paper: 포트스트레스 면제
+        kospiRegime.todayDown) || // 하락장+당일하락: Live만 차단 (고확신 개별 허용은 downstream)
+      (!ctxIsPaper && portfolioStress >= 2) || // Paper: 포트스트레스 면제
+      (!ctxIsPaper && crashSignal.level === 'CRASH') || // 크래시 시그널 CRASH: 인버스 외 일반 매수 차단
+      (!ctxIsPaper && crashSignal.level === 'PANIC') || // 크래시 시그널 PANIC: 전면 매수 차단
       eodOnlyActive; // 🎰 연패 EOD-only 모드 (Paper는 이미 false 반환)
 
     // ── entry-timing-guard 연결: 이브닝 블록 + 전략 필터 + 기술지표 다중 확증 ──
@@ -825,14 +826,18 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // EOD 전용 차단: isPastClose/eodOnlyActive 제외 (14:50+ 종가베팅은 허용)
     // Paper: dailyLoss 면제 (급락 서킷만 유지)
-    const blockEodBuys = (!ctxIsPaper && dailyLoss.blocked) || (!ctxIsPaper && kospiRegime.flashCrash);
+    const blockEodBuys =
+      (!ctxIsPaper && dailyLoss.blocked) ||
+      (!ctxIsPaper && kospiRegime.flashCrash) ||
+      (!ctxIsPaper && kospiRegime.penalty >= 2) || // 약세장(KOSPI<MA60): EOD 대형주 매수도 차단
+      (!ctxIsPaper && (crashSignal.level === 'CRASH' || crashSignal.level === 'PANIC')); // 크래시 시그널: EOD 차단
 
     // RISK_OFF/하락장: 축소하되 기회 유지 (극공포=역발상 매수 기회)
     const macroSizingMult = macroRiskOff ? 0.7 : kospiRegime.penalty >= 2 ? 0.6 : kospiRegime.penalty >= 1 ? 0.8 : 1.0;
 
-    if (!blockNewBuysFinal && hasHighConvictionStock && kospiRegime.penalty >= 2) {
+    if (blockNewBuysFinal && hasHighConvictionStock && kospiRegime.penalty >= 2) {
       logger.info(
-        `🔥 하락장이지만 90+점 고확신 종목(top=${topScore}) 발견 → 매수 허용 (포지션 축소 ×${macroSizingMult})`,
+        `🔥 하락장 매수차단 중이나 90+점 고확신 종목(top=${topScore}) 존재 — decision-flow에서 개별 허용 예정 (포지션 축소 ×${macroSizingMult})`,
         { component: 'TRACK_B' },
       );
     }
@@ -848,7 +853,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
               : kospiRegime.flashCrash
                 ? 'KOSPI급락서킷브레이커'
                 : kospiRegime.penalty >= 2 && kospiRegime.todayDown
-                  ? `하락장매수차단(penalty${kospiRegime.penalty}+당일하락) [top=${topScore}점]`
+                  ? `하락장매수차단(penalty${kospiRegime.penalty}+당일하락)`
+                  : crashSignal.level === 'CRASH' || crashSignal.level === 'PANIC'
+                    ? `🔻 크래시시그널(${crashSignal.level} score=${crashSignal.score})`
                   : entryTimingCheck && !entryTimingCheck.allowed
                     ? `진입타이밍가드(${entryTimingCheck.details.phase})`
                     : eodOnlyActive
