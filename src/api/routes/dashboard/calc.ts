@@ -157,9 +157,9 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
   let actualCashSource: string;
 
   if (i.viewIsPaper) {
-    // Paper: 총자산에서 매매중 금액(증권시가)을 빼면 = 주문가능
-    actualCash = Math.max(0, grandTotalValue - totalInvestedMV);
-    actualCashSource = 'paper_reverse';
+    // Paper: 국내 주문가능 = 국내 현금 그대로 (해외 현금은 별도 표시)
+    actualCash = freeDomesticCash;
+    actualCashSource = 'paper_domestic';
   } else if (rawCashSafe > 0) {
     actualCash = rawCashSafe;
     actualCashSource = i.cashSource ?? 'buyable_api';
