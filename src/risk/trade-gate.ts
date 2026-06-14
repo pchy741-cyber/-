@@ -97,6 +97,11 @@ export async function runTradeGates(input: GateInput): Promise<GateResult> {
     return { passed: true, reason: '매도 — 게이트 생략' };
   }
 
+  // 연습모드: 모든 게이트 스킵 (백테스팅 데이터 최대 수집)
+  if (getCtxIsPaper()) {
+    return { passed: true, reason: '연습모드 — 게이트 전체 스킵', adjustedQuantity: input.quantity };
+  }
+
   // 0. 진입 타이밍
   const timing = entryTimingGate(input);
   if (!timing.passed) {

@@ -1,23 +1,23 @@
-# GCP Cloud Build ??Artifact Registry ??Cloud Run 배포
+# GCP Cloud Build → Artifact Registry → Cloud Run 배포
 steps:
   # 1. Docker 빌드
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'
       - '-t'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${_TAG}'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}'
       - '-t'
       - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest'
       - '.'
 
-  # 2. Artifact Registry??Push
+  # 2. Artifact Registry에 Push
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'push'
       - '--all-tags'
       - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}'
 
-  # 3. Cloud Run 배포
+  # 3. Cloud Run 배포 (latest 이미지 사용 — 트래픽 자동 전환 보장)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
@@ -25,7 +25,7 @@ steps:
       - 'deploy'
       - '${_SERVICE}'
       - '--image'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${_TAG}'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest'
       - '--region'
       - '${_REGION}'
       - '--platform'
@@ -49,11 +49,22 @@ steps:
       - '--set-secrets'
       - 'KIS_APP_KEY=kis-app-key:latest,KIS_APP_SECRET=kis-app-secret:latest,KIS_ACCOUNT_NO=kis-account-no:latest,KIS_APP_KEY_LIVE=kis-app-key-live:latest,KIS_APP_SECRET_LIVE=kis-app-secret-live:latest,KIS_ACCOUNT_NO_LIVE=kis-account-no-live:latest,DB_PASSWORD=db-password:latest,DASHBOARD_PASSWORD=dashboard-password:latest,VAPID_PUBLIC_KEY=vapid-public-key:latest,VAPID_PRIVATE_KEY=vapid-private-key:latest,GEMINI_API_KEY=gemini-api-key:latest'
 
+  # 4. 트래픽을 최신 리비전으로 강제 전환 (트래픽 고정 방지)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'services'
+      - 'update-traffic'
+      - '${_SERVICE}'
+      - '--region'
+      - '${_REGION}'
+      - '--to-latest'
+
 substitutions:
   _REGION: asia-northeast3
   _REPO: quantops
   _SERVICE: ai-auto-bot
-  _TAG: v0-72-64m
 
 options:
   logging: CLOUD_LOGGING_ONLY
