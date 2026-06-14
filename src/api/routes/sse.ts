@@ -10,7 +10,10 @@ import { getPaperBalance } from '../../risk/engine.js';
 import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
 import { getLoopStatus } from '../../scheduler/loop-mode.js';
 import { logger } from '../../utils/logger.js';
+import { PAPER_INITIAL_CAPITAL } from '../../risk/paper-balance.js';
 import { resolveRequestMode } from '../guards/live-pin.js';
+import { calcTotalAssets } from './dashboard/calc.js';
+import { getFxRate } from './dashboard/helpers.js';
 import { getRecentEvents } from './health.js';
 import { getCopilotLiteScore } from './review/copilot-lite.js';
 
@@ -198,7 +201,6 @@ sseRoutes.get('/stream', (c) => {
 
           // 캐시 갱신 (가격 틱에서 재사용)
           cachedChains = chains;
-          cachedTotalPortfolio = (balance.orderableCash ?? 0) + (balance.totalEvalAmount ?? 0);
 
           // 해외 포트폴리오 요약 (DB 기반)
           const holdingsLiveKey = `overseas:holdings:${viewIsPaper ? 'paper' : 'live'}`;
@@ -209,6 +211,7 @@ sseRoutes.get('/stream', (c) => {
             cashKrw: number;
             seedKrw: number;
             evalUsd: number;
+            investedUsd: number;
             totalUsd: number;
             holdings: { code: string; qty: number; pnlPct: number }[];
           } | null = null;
@@ -237,14 +240,16 @@ sseRoutes.get('/stream', (c) => {
               cashKrw = Number(krwR.rows[0]?.value ?? 0);
             }
             let evalUsd = 0;
+            let investedUsd = 0;
             const holdings = holdRes.rows.map((h: any) => {
               const qty = Number(h.quantity);
               const avg = Number(h.avg_price ?? 0);
               const last = Number(h.last_price ?? avg);
               evalUsd += last * qty;
+              investedUsd += avg * qty;
               return { code: h.stock_code, qty, pnlPct: avg > 0 ? ((last - avg) / avg) * 100 : 0 };
             });
-            overseasSummary = { cashUsd, cashKrw, seedKrw, evalUsd, totalUsd: cashUsd + evalUsd, holdings };
+            overseasSummary = { cashUsd, cashKrw, seedKrw, evalUsd, investedUsd, totalUsd: cashUsd + evalUsd, holdings };
           } catch {
             /* 해외 데이터 조회 실패 시 null 유지 */
           }
@@ -252,18 +257,66 @@ sseRoutes.get('/stream', (c) => {
           // 보유종목 가격 갱신
           await refreshHeldPrices(chains).catch(() => {});
 
+          // ── calcTotalAssets 순수 함수로 위임 (Dashboard API와 100% 동일) ──
+          const fxRate = await getFxRate().catch(() => 0) || 1350;
+
+          // 체인 집계: 국내 투자원가 + 미실현PnL
+          let totalChainInvested = 0;
+          let totalChainPnl = 0;
+          for (const ch of chains as any[]) {
+            const avg = Number(ch.avg_buy_price ?? 0);
+            const qty = Number(ch.total_quantity ?? 0);
+            totalChainInvested += avg * qty;
+            // PnL은 캐시가격 기반 (실시간)
+            const cached = getCachedPriceMemory(ch.stock_code);
+            if (cached && cached > 0 && avg > 0) {
+              totalChainPnl += (cached - avg) * qty;
+            }
+          }
+
+          const assets = calcTotalAssets({
+            viewIsPaper,
+            rawCash: balance.orderableCash ?? 0,
+            netAsset: balance.netAsset ?? 0,
+            kisDomEval: balance.totalEvalAmount ?? 0,
+            kisPurchaseCost: (balance as any).purchaseCost ?? 0,
+            kisTotalProfitLoss: balance.totalProfitLoss ?? 0,
+            kisTotalProfitLossPct: balance.totalProfitLossPct ?? 0,
+            cashSource: (balance as any).cashSource ?? 'unknown',
+            totalChainInvested,
+            totalChainPnl,
+            overseasTotalInvestedUsd: overseasSummary?.investedUsd ?? 0,
+            overseasMarketValueUsd: overseasSummary?.evalUsd ?? 0,
+            overseasCashRaw: viewIsPaper ? (overseasSummary?.cashUsd ?? 0) : (overseasSummary?.cashKrw ?? 0),
+            overseasMaxUsd: 0, // SSE 경량화: maxUsd 쿼리 생략
+            fxRate,
+            paperInitialCapital: PAPER_INITIAL_CAPITAL,
+            liveRealizedPnl: 0, // SSE 경량화: lifetime realized 쿼리 생략
+            prevDayTotalValue: 0, // SSE 경량화: snapshot 쿼리 생략
+          });
+
+          cachedTotalPortfolio = assets.grandTotalValue;
+
           const chainPrices = buildChainPrices(chains, cachedTotalPortfolio);
+
+          // unrealizedPnl: Dashboard와 동일 (Paper=체인PnL / Live=KIS잔고PnL)
+          const sseUnrealizedPnl = Math.round(
+            viewIsPaper ? totalChainPnl : (balance.totalProfitLoss || totalChainPnl),
+          );
 
           const payload = {
             timestamp: new Date().toISOString(),
             portfolio: {
-              totalValue: balance.totalDeposit + balance.totalEvalAmount,
-              cash: balance.orderableCash,
-              invested: balance.totalEvalAmount,
-              pnl: balance.totalProfitLoss,
-              pnlPct: balance.totalProfitLossPct,
+              totalValue: assets.grandTotalValue,
+              cash: assets.totalCash,
+              invested: assets.totalInvested,
+              domesticInvested: assets.domesticInvested,
+              domesticEval: assets.domesticMarketValue,
+              domesticCash: assets.unifiedCash,
+              unrealizedPnl: sseUnrealizedPnl,
+              pnl: Math.round(assets.totalPnl + assets.overseasUnrealizedPnlKrw),
+              pnlPct: assets.totalPnlPct,
               positionCount: balance.positions.length,
-              unrealizedPnl: chainPrices.reduce((s: number, c: any) => s + c.unrealizedPnl, 0),
             },
             chainPrices,
             overseasHoldingCount,

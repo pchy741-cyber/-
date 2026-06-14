@@ -28,6 +28,27 @@ const GUARD_REASON_PREFIX = 'mdd_guard:';
 
 async function runForMode(isPaper: boolean): Promise<void> {
   const mode = isPaper ? 'paper' : 'live';
+
+  // 연습모드: MDD 가드 완전 비활성 — 킬스위치(80% 일일손실)만 유일한 안전장치
+  // 백테스팅 데이터 최대 수집 목적, 모든 제한 제거
+  if (isPaper) {
+    // 기존 가드가 남아 있으면 해제
+    const { rows: metaRows2 } = await getPool()
+      .query(
+        `SELECT reason FROM ai_overrides
+         WHERE key = $1 AND is_paper = $2 AND (expires_at IS NULL OR expires_at > NOW())
+         ORDER BY id DESC LIMIT 1`,
+        ['minBuyScore', true],
+      )
+      .catch(() => ({ rows: [] as Array<{ reason: string }> }));
+    if ((metaRows2[0]?.reason ?? '').startsWith(GUARD_REASON_PREFIX)) {
+      const { removeOverride: rmOvr } = await import('../ai/ai-overrides.js');
+      await rmOvr('minBuyScore', true);
+      logger.info('🔓 MDD 가드 [paper] 잔존 오버라이드 해제 — 연습모드 제한 제거', { component: COMP });
+    }
+    return;
+  }
+
   // Paper MDD 임계: config.paperRisk.mddLimit과 통일 (기존 하드코딩 40 → config 60)
   const limit = isPaper ? config.paperRisk.mddLimit : 8;
   // 회복 임계 완화 (DEADLOCK 방지): 75% → 150% 즉 limit의 1.5배

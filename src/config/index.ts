@@ -194,7 +194,7 @@ export const config = {
     buyThresholdOffset: -30, // 65→35점으로 실질 하향 (적극적 매매 — 좋은 점수 종목 대부분 매수)
     sectorMaxPerSector: 5, // 2 → 5종목 (섹터 제한 완화)
     cooldownMultiplier: 0.2, // 쿨다운 80% 단축 (5연패 60분→12분)
-    mddLimit: 60, // 40% → 60% (거의 안 터짐)
+    mddLimit: 80, // 60% → 80% (킬스위치 임계값과 통일 — MDD Guard는 paper에서 비활성)
   },
 
   /** Gemini API 자동 호출 ON/OFF — false면 규칙기반만 사용 (AI 비용 $0) */

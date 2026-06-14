@@ -1155,7 +1155,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
         vixRegime.regime === 'STRESS' ||
         vixRegime.regime === 'CRISIS' ||
         defenseSignal.blockNewBuys;
-      const eodBlockBuys = openRegions.has('US') && !isEodWindow && isBadMarket;
+      const eodBlockBuys = !isPaper() && openRegions.has('US') && !isEodWindow && isBadMarket;
       if (eodBlockBuys && buyTargets.length > 0) {
         logger.info(
           `⏰ 종가베팅: 약세장(breadth=${(freshBreadth * 100).toFixed(0)}% VIX=${vixRegime.regime}) 마감 ${getMinutesToUSClose()}분 전 — 후보 ${buyTargets.length}종목 대기`,
@@ -1178,9 +1178,9 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
         { component: 'OVERSEAS' },
       );
       for (const target of buyTargets.slice(0, slotsAvailable)) {
-        // 상관관계 차단: 같은 그룹 내 보유 초과
+        // 상관관계 차단: 같은 그룹 내 보유 초과 (Paper: 학습용 바이패스)
         const corrBlock = checkCorrelationLimit(target.code, updatedHoldings);
-        if (corrBlock) {
+        if (corrBlock && !isPaper()) {
           logger.info(
             `🔗 상관관계 차단: ${target.code} (${corrBlock.group} ${corrBlock.currentCount}/${corrBlock.maxAllowed} — ${corrBlock.reason})`,
             { component: 'OVERSEAS' },

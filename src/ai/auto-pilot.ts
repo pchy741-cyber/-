@@ -235,6 +235,10 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
     }
 
     // ── Rule 2: 개별 종목 블랙리스트 (저승률 + 연패) ────────
+    // Paper 모드: 블랙리스트 비활성 — 모든 종목 매매 가능 (백테스팅 데이터 최대 수집)
+    if (isPaper) {
+      decisions.push('종목 블랙리스트 스킵 (paper 적극매매 모드)');
+    } else {
     for (const [code, wr] of stockWinRates) {
       // 승률 20% 미만 + 5건 이상 → 블랙리스트
       if (wr.winRate < RULES.STOCK_WINRATE_BLACKLIST && wr.sampleCount >= RULES.STOCK_MIN_SAMPLES) {
@@ -276,6 +280,7 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
         }
       }
     }
+    } // end of !isPaper block for stock blacklist
 
     // ── Rule 3: 보유 포지션 트레일 타이트닝 ─────────────────
     for (const chain of chains) {

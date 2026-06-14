@@ -98,6 +98,9 @@ export interface Dashboard {
   overseas?: OverseasSummary;
   scores?: StockScore[];
   tradingMode?: string;
+  viewMode?: string;
+  cashSource?: string;
+  activeChains?: number;
   riskLimits?: RiskLimits;
   insights?: Insight[];
   suggestedActions?: SuggestedAction[];
