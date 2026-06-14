@@ -16,7 +16,7 @@ import { getOverseasPrice } from '../../../kis/overseas.js';
 import { getPaperBalance } from '../../../risk/engine.js';
 import { getKillSwitchStatusAll } from '../../../risk/kill-switch.js';
 import { PAPER_INITIAL_CAPITAL } from '../../../risk/paper-balance.js';
-import { calcDailyLossLimit, getOverseasLossTiers, getSeedCapitalKr, getSeedCapitalOverseas } from '../../../risk/seed-capital.js';
+import { calcDailyLossLimit, getOverseasLossTiers } from '../../../risk/seed-capital.js';
 import { getCooldownStatus } from '../../../risk/trade-gate.js';
 import { getPartialTpStages } from '../../../scheduler/overseas/risk-intelligence.js';
 import { computePaperCash } from '../../../scheduler/overseas/state.js';
@@ -493,21 +493,18 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   let FX_RATE = await getFxRate();
   if (FX_RATE <= 0) FX_RATE = FALLBACK_FX_RATE;
 
-  // 시드 캐피탈 + 스냅샷 폴백 (DB 조회)
-  const [seedKr, seedOverseas] = await Promise.all([
-    getSeedCapitalKr().catch(() => 10_000_000),
-    getSeedCapitalOverseas().catch(() => 10_000),
-  ]);
-  let seedSnapshotFallback: number | undefined;
+  // 전일 총자산 스냅샷 (수익률 계산용)
+  let prevDayTotalValue = 0;
   {
     const snapResult = await safeQuery<{ total_value: string }>(
       `SELECT total_value FROM portfolio_snapshots
        WHERE is_paper = $1 AND total_value > 0
-       ORDER BY snapshot_at ASC LIMIT 1`,
+         AND snapshot_at < CURRENT_DATE
+       ORDER BY snapshot_at DESC LIMIT 1`,
       [viewIsPaper],
     );
     if (snapResult.rows[0]) {
-      seedSnapshotFallback = Number(snapResult.rows[0].total_value);
+      prevDayTotalValue = Number(snapResult.rows[0].total_value);
     }
   }
 
@@ -529,9 +526,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     fxRate: FX_RATE,
     paperInitialCapital: PAPER_INITIAL_CAPITAL,
     liveRealizedPnl,
-    seedKr,
-    seedOverseasUsd: seedOverseas,
-    seedSnapshotFallback,
+    prevDayTotalValue,
   });
 
   // 디버깅 로그 — 계산 결과 확인
@@ -604,8 +599,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       realizedPnl: viewIsPaper ? Math.round(balance.totalProfitLoss ?? 0) : Math.round(liveRealizedPnl),
       pnl: Math.round(assets.totalPnl + assets.overseasUnrealizedPnlKrw),
       pnlPct: assets.totalPnlPct,
-      seedCapital: assets.totalSeedCapital,
-      totalReturnPct: assets.totalReturnPct,
+      prevDayTotalValue: assets.prevDayTotalValue,
+      dailyChangePct: assets.dailyChangePct,
       positions: balance.positions ?? [],
     },
     overseas: {

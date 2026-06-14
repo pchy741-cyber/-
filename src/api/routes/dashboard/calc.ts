@@ -42,10 +42,8 @@ export interface TotalAssetInputs {
   paperInitialCapital: number;      // Paper 시드 (KRW)
   liveRealizedPnl: number;         // Live DB 실현손익 합계
 
-  // 시드 (수익률 계산)
-  seedKr: number;
-  seedOverseasUsd: number;
-  seedSnapshotFallback?: number;    // portfolio_snapshots 최초값 (10배 초과 시 폴백)
+  // 수익률 계산 (전일 대비)
+  prevDayTotalValue: number;        // 전일 총자산 스냅샷 (portfolio_snapshots)
 }
 
 export interface TotalAssetOutputs {
@@ -77,9 +75,9 @@ export interface TotalAssetOutputs {
   totalPnlPct: number;
   overseasUnrealizedPnlKrw: number; // 해외 미실현 손익 (KRW)
 
-  // 수익률
-  totalSeedCapital: number;
-  totalReturnPct: number;
+  // 전일 대비 수익률
+  prevDayTotalValue: number;
+  dailyChangePct: number;
 }
 
 // ────────────────────────────────────────────────────────────
@@ -200,20 +198,10 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
     ? i.paperInitialCapital > 0 ? (totalPnl / i.paperInitialCapital) * 100 : 0
     : safe(i.kisTotalProfitLossPct);
 
-  // ─── 7. 시드 & 수익률 ───
-  const hasOverseasInvestment = overseasInvestedKrw > 0 || overseasMarketValueKrw > 0;
-  const seedOverseasKrw = hasOverseasInvestment ? i.seedOverseasUsd * fxRate : 0;
-  let totalSeedCapital = Math.round(i.seedKr + seedOverseasKrw);
-
-  // 시드가 비현실적 (총자산 10배 초과) → 스냅샷 또는 현재값으로 폴백
-  if (grandTotalValue > 0 && totalSeedCapital > grandTotalValue * 10) {
-    totalSeedCapital = i.seedSnapshotFallback != null && i.seedSnapshotFallback > 0
-      ? Math.round(i.seedSnapshotFallback)
-      : Math.round(grandTotalValue);
-  }
-
-  const totalReturnPct = totalSeedCapital > 0 && grandTotalValue > 0
-    ? Math.round(((grandTotalValue - totalSeedCapital) / totalSeedCapital) * 10000) / 100
+  // ─── 7. 전일 대비 수익률 ───
+  const prevDay = safe(i.prevDayTotalValue);
+  const dailyChangePct = prevDay > 0 && grandTotalValue > 0
+    ? Math.round(((grandTotalValue - prevDay) / prevDay) * 10000) / 100
     : 0;
 
   logger.info(`📊 calcTotalAssets [${i.viewIsPaper ? 'PAPER' : 'LIVE'}] method=${calcMethod} | netAsset=${safe(i.netAsset)} rawCash=${safe(i.rawCash)} kisDomEval=${safe(i.kisDomEval)} kisPurchaseCost=${safe(i.kisPurchaseCost)} | overseasMV_usd=${safe(i.overseasMarketValueUsd)} overseasCash=${rawOverseasCash} | grandTotal=${Math.round(grandTotalValue)} freeCash=${Math.round(freeDomesticCash)} domMV=${Math.round(domesticMarketValue)} overseasMV_krw=${Math.round(overseasMarketValueKrw)}`, { component: 'CALC' });
@@ -237,7 +225,7 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
     totalInvested: Math.round(totalInvested),
     totalPnl: Math.round(totalPnl),
     totalPnlPct: Math.round(totalPnlPct * 100) / 100,
-    totalSeedCapital,
-    totalReturnPct,
+    prevDayTotalValue: Math.round(prevDay),
+    dailyChangePct,
   };
 }

@@ -37,8 +37,8 @@ interface HeroPnlCardProps {
   totalInvested: number;
   fxRate: number;
   cashSource?: string;
-  seedCapital?: number;
-  totalReturnPct?: number;
+  prevDayTotalValue?: number;
+  dailyChangePct?: number;
 }
 
 export default function HeroPnlCard({
@@ -48,7 +48,7 @@ export default function HeroPnlCard({
   krTabHasData, usTodaySells, krTabPnl, krTabPct, usTabPnlUsd,
   todayRealizedPnl, animToday, domesticCash, domesticOrderable, overseasCashUsd,
   domesticInvested, domesticEval, overseasMarketKrw, chainsLength, usHoldingsLength, withdrawConfig, todayTradesLength,
-  totalValue, totalInvested, fxRate, cashSource, seedCapital, totalReturnPct,
+  totalValue, totalInvested, fxRate, cashSource, prevDayTotalValue, dailyChangePct,
 }: HeroPnlCardProps) {
   const totalHoldings = chainsLength + usHoldingsLength;
   // 국내/해외 시가평가 기준 비중 (totalValue = 현금 + 국내시가 + 해외시가)
@@ -138,10 +138,10 @@ export default function HeroPnlCard({
           ) : (
             <>
               <div className="text-sm font-bold text-slate-200 truncate">{mask(fmtWon(totalValue))}</div>
-              {totalReturnPct != null && seedCapital && seedCapital > 0 ? (
-                <div className={`text-[10px] font-bold mt-0.5 ${totalReturnPct > 0 ? 'text-emerald-400' : totalReturnPct < 0 ? 'text-rose-400' : 'text-slate-500'}`}>
-                  {mask(`${totalReturnPct > 0 ? '+' : ''}${totalReturnPct.toFixed(2)}%`)}
-                  <span className="text-slate-600 font-normal ml-1">원금{mask(fmtWon(seedCapital))}</span>
+              {dailyChangePct != null && prevDayTotalValue && prevDayTotalValue > 0 ? (
+                <div className={`text-[10px] font-bold mt-0.5 ${dailyChangePct > 0 ? 'text-emerald-400' : dailyChangePct < 0 ? 'text-rose-400' : 'text-slate-500'}`}>
+                  {mask(`${dailyChangePct > 0 ? '+' : ''}${dailyChangePct.toFixed(2)}%`)}
+                  <span className="text-slate-600 font-normal ml-1">전일비</span>
                 </div>
               ) : (
                 <div className="text-[9px] text-slate-600 mt-0.5">{todayTradesLength}건 매매</div>

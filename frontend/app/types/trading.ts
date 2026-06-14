@@ -56,8 +56,8 @@ export interface Portfolio {
   cash?: number;
   domesticCash?: number;
   totalValue?: number;
-  seedCapital?: number;
-  totalReturnPct?: number;
+  prevDayTotalValue?: number;
+  dailyChangePct?: number;
 }
 
 export interface Strategy {
