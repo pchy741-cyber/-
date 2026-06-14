@@ -119,22 +119,22 @@ export function getSeedCapitalStatus() {
 }
 
 // ── 일일 손실한도 ──
-// Live: 총자산의 2.5% (월간 MDD 8%의 1/3 — 3연속 최대손실 시 MDD 도달)
-// Paper: 총자산의 30% (실험 자유도 확보)
+// Live: 총자산의 25% (CEO 지시 2026-06-12)
+// Paper: 총자산의 80% (킬스위치와 통일 — 사실상 무제한 실험)
 // 순수 함수: DB 쿼리 없음, caller가 투자금을 전달한다.
 
 export const DAILY_LOSS_PCT_LIVE = 25;
 export const DAILY_LOSS_PCT_PAPER = 80;
 
 // ── 주간 손실한도 ──
-// Live: 총자산의 5% (일일 2.5% × 2일 연속 최대손실 수준)
-// Paper: 총자산의 60% (실험 자유도)
+// Live: 총자산의 50%
+// Paper: 총자산의 95% (사실상 무제한)
 export const WEEKLY_LOSS_PCT_LIVE = 50;
 export const WEEKLY_LOSS_PCT_PAPER = 95;
 
 export interface DailyLossLimit {
   basis: number; // 총자산 (caller가 전달: 현금+투자 합계)
-  pct: number; // Live 2.5% / Paper 30%
+  pct: number; // Live 25% / Paper 80%
   limitAmount: number; // basis × pct%
 }
 
@@ -147,7 +147,7 @@ export function calcDailyLossLimit(totalPortfolio: number, isPaper?: boolean): D
 
 /** 해외 손실 단계 (%) — Paper/Live 분리 (국내 일일 손실한도와 정합성 유지) */
 export const OVERSEAS_LOSS_TIERS_LIVE = { warnPct: 3, blockPct: 5, killPct: 8 } as const;
-export const OVERSEAS_LOSS_TIERS_PAPER = { warnPct: 15, blockPct: 25, killPct: 40 } as const;
+export const OVERSEAS_LOSS_TIERS_PAPER = { warnPct: 60, blockPct: 75, killPct: 80 } as const;
 
 /** Paper/Live 자동 분기 접근자 */
 export function getOverseasLossTiers(isPaper?: boolean) {

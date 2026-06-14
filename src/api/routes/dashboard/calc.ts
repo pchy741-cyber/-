@@ -144,6 +144,15 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
     grandTotalValue = safeNetAsset + safeOverseasMV;
     freeDomesticCash = Math.max(0, safeNetAsset - safeDomestic);
     calcMethod = 'nass_amt';
+  } else if (!i.viewIsPaper) {
+    // Live: KIS API 실패 (rawCash=0, netAsset=0) — 증권시가만으로 추정
+    // ⚠️ 이전 버그: else로 빠져 paper_cash 경로 진입 → 해외현금 이중계산
+    freeDomesticCash = 0;
+    grandTotalValue = safeDomestic + safeOverseasMV;
+    calcMethod = 'rawCash_fallback';
+    if (grandTotalValue === 0) {
+      logger.warn('⚠️ Live 총자산 0원 — KIS API 실패 또는 미연결', { component: 'CALC' });
+    }
   } else {
     // Paper: 국내현금 + 국내증권 + 해외현금 + 해외증권
     freeDomesticCash = rawCashSafe;

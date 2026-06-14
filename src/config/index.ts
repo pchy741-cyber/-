@@ -53,11 +53,11 @@ const envSchema = z.object({
   FINNHUB_API_KEY: z.string().default(''),
 
   // 리스크 한도
-  // • 일일 최대 손실: Live 2.5% / Paper 30% (seed-capital.ts, 킬스위치 기준)
+  // • 일일 최대 손실: Live 25% / Paper 80% (seed-capital.ts, calcDailyLossLimit 사용)
   // • 종목당 한도: 총자산 8~25% 동적 (position-sizer/pipeline에서 자동 스케일, Hard Cap 25%)
   // • 최대 동시 포지션: 8종목
   // • 총 투자 비중: 최대 88% (적극 모드)
-  RISK_MAX_DAILY_DRAWDOWN_KRW: z.coerce.number().default(200000), // 레거시 절대값 (실제 한도는 seed-capital.ts 30% 사용)
+  RISK_MAX_DAILY_DRAWDOWN_KRW: z.coerce.number().default(200000), // 레거시 (미사용 — 실제 한도는 seed-capital.ts 25% 사용)
   RISK_MAX_POSITION_KRW: z.coerce.number().default(50000000), // 종목당 절대 안전 상한 (실제 사이징은 totalAssets×20~25% 동적 계산)
   RISK_MAX_TOTAL_INVESTED_PCT: z.coerce.number().default(88), // 최대 88% 투자 (적극 모드)
   RISK_MAX_CONCURRENT_POSITIONS: z.coerce.number().default(8), // 동시 8종목

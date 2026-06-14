@@ -52,6 +52,18 @@ export class RiskEngine {
       return { approved: false, reason: '🛑 Kill Switch 활성화 상태 — 국내 매수 차단 (매도는 허용)' };
     }
 
+    // 연습모드: 킬스위치(80% 일일 손실)와 현금 체크만 → 나머지 전부 스킵
+    // 백테스팅 데이터를 최대한 쌓아 실전 튜닝에 활용
+    if (isPaper) {
+      const drawdownCheck = await this.checkDailyDrawdown(isPaper);
+      if (!drawdownCheck.approved) return drawdownCheck;
+      const cashCheck = await this.checkCash(orderValue, isPaper);
+      if (!cashCheck.approved) return cashCheck;
+      return { approved: true, reason: '✅ 연습모드 — 손실한도+현금만 체크' };
+    }
+
+    // ── 실전모드 전체 체크 ──
+
     // 2. 동시 보유 종목 수 체크 (신규 매수만)
     const concurrentCheck = await this.checkConcurrentPositions(stockCode, isPaper);
     if (!concurrentCheck.approved) return concurrentCheck;
@@ -68,13 +80,11 @@ export class RiskEngine {
     const drawdownCheck = await this.checkDailyDrawdown(isPaper);
     if (!drawdownCheck.approved) return drawdownCheck;
 
-    // 5-A. 주간 손실 한도 체크 (Live 5% / Paper 60%)
+    // 5-A. 주간 손실 한도 체크
     const weeklyCheck = await this.checkWeeklyDrawdown(isPaper);
     if (!weeklyCheck.approved) return weeklyCheck;
 
     // 5-B. 월간 MDD -8% 체크
-    // CEO 수동매수(ceoManual=true)는 스킵 — 킬스위치 해제 후 MDD가 재발동하는 악순환 방지
-    // 포지션 생성 후 stop_loss/take_profit은 transaction_chains로 자동 관리됨
     if (!params.ceoManual) {
       const monthlyMddCheck = await this.checkMonthlyMDD(isPaper);
       if (!monthlyMddCheck.approved) return monthlyMddCheck;
@@ -255,7 +265,7 @@ export class RiskEngine {
       return { approved: true, reason: '외부 매도 감지 — 스냅샷 재설정, 매매 허용' };
     }
 
-    // 일일 손실한도: Live 2.5% / Paper 30% — startValue 기준 (현재가 아닌 시작가 기준)
+    // 일일 손실한도: Live 25% / Paper 80% — max(시작, 현재) 기준
     const basisValue = Math.max(startValue, currentValue); // 더 큰 쪽 기준 (외부 입출금 고려)
     const { basis, pct, limitAmount } = calcDailyLossLimit(basisValue, isPaper);
     const lossPct = basis > 0 ? ((dailyLoss / basis) * 100).toFixed(1) : '0';
@@ -272,8 +282,8 @@ export class RiskEngine {
       };
     }
 
-    // 소프트 리밋: Live에서 한도의 80%(=2.0%) 도달 시 신규 진입 차단
-    // (슬리피지로 -2.5% 초과 체결 방지 — 킬스위치 발동 전 선제 방어)
+    // 소프트 리밋: Live에서 한도의 80%(=20%) 도달 시 신규 진입 차단
+    // (슬리피지로 한도 초과 체결 방지 — 킬스위치 발동 전 선제 방어)
     if (!isPaper && dailyLoss > limitAmount * 0.8) {
       return {
         approved: false,
