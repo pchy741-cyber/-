@@ -161,16 +161,17 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
   let freeDomesticCash: number;
   let calcMethod: TotalAssetOutputs['calcMethod'];
 
-  if (!i.viewIsPaper && safeNetAsset > 0) {
-    // Live (nass_amt): 순자산 + 해외 증권 시가만 (해외 현금 = 국내와 동일 풀, 이미 포함)
-    grandTotalValue = safeNetAsset + safeOverseasMV;
-    freeDomesticCash = Math.max(0, safeNetAsset - safeDomestic);
-    calcMethod = 'nass_amt';
-  } else if (!i.viewIsPaper) {
-    // Live 폴백: rawCash + 국내 증권 + 해외 증권 (해외 현금 별도 합산 금지)
+  if (!i.viewIsPaper && rawCashSafe > 0) {
+    // Live: 주문가능(buyable) + 국내 증권 시가 + 해외 증권 시가
+    // rawCash=buyable은 통합증거금 전체 현금이므로 해외현금 별도 합산 금지
     freeDomesticCash = rawCashSafe;
     grandTotalValue = freeDomesticCash + safeDomestic + safeOverseasMV;
     calcMethod = 'rawCash_fallback';
+  } else if (!i.viewIsPaper && safeNetAsset > 0) {
+    // Live 폴백 (buyable=0): 순자산(nass_amt) + 해외 증권 시가
+    grandTotalValue = safeNetAsset + safeOverseasMV;
+    freeDomesticCash = Math.max(0, safeNetAsset - safeDomestic);
+    calcMethod = 'nass_amt';
   } else {
     // Paper: 국내 현금 + 국내 증권 + 해외 현금 + 해외 증권 (별도 풀)
     freeDomesticCash = rawCashSafe;
