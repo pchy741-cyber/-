@@ -31,8 +31,14 @@ export interface EvCheck {
 // 거래 비용 (왕복) — KR 0.21%, US 0.7%
 const KR_FEE_ROUNDTRIP_PCT = 0.21;
 const US_FEE_ROUNDTRIP_PCT = 0.7;
-// EV 최소 안전 마진 (수수료의 1.5배 = "어쨌든 수수료 + α 남는다" 보장)
-const EV_SAFETY_MULTIPLIER = 1.5;
+// EV 최소 안전 마진 — 승률 기반 차등 적용
+// 고승률(≥70%): 1.3 엄격 유지 / 중간(40-70%): 1.0 표준 / 저승률(<40%): 1.5 보수적
+function getEvSafetyMultiplier(winRate?: number): number {
+  if (winRate == null) return 1.5; // 데이터 없으면 보수적
+  if (winRate >= 0.70) return 1.3;
+  if (winRate >= 0.40) return 1.0;
+  return 1.5;
+}
 
 /**
  * EV 검증 — TP/SL과 종목 승률로 기대값 계산.
@@ -46,11 +52,15 @@ export function checkExpectedValue(params: {
   isUs?: boolean;
 }): EvCheck {
   const absSL = Math.abs(params.stopLossPct);
-  if (absSL === 0) return { passed: false, ev: 0, rrRatio: 0, effectiveWinRate: 0, reason: 'SL=0 (위험 무방어)' };
+  // SL 미설정 또는 너무 작으면 하드블록 (최소 0.3% SL 필요)
+  if (absSL < 0.3) {
+    logger.warn(`🚫 SL 하드블록: SL=${params.stopLossPct}% (최소 -0.3% 필요)`, { component: COMP });
+    return { passed: false, ev: 0, rrRatio: 0, effectiveWinRate: 0, reason: `SL=${params.stopLossPct}% (최소 -0.3% 미달, 위험 무방어)` };
+  }
 
   const wr = params.winRate ?? 0.5;
   const fee = params.isUs ? US_FEE_ROUNDTRIP_PCT : KR_FEE_ROUNDTRIP_PCT;
-  const minEv = fee * EV_SAFETY_MULTIPLIER;
+  const minEv = fee * getEvSafetyMultiplier(params.winRate);
 
   // EV = (승률 × 익) - ((1-승률) × 손) - 수수료
   const ev = wr * params.takeProfitPct - (1 - wr) * absSL - fee;

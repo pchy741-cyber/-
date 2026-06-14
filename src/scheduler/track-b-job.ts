@@ -12,6 +12,7 @@ import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
 import { reportNoBuyCandidates } from './loop-mode.js';
+import { isOpeningBellCompleted } from './opening-bell-job.js';
 
 const isRunningMap = new Map<'paper' | 'live', boolean>([
   ['paper', false],
@@ -94,15 +95,17 @@ export async function runTrackBJob(): Promise<void> {
       }
     }
 
-    // 개장벨 시간대(09:00~09:12) Track B 신규매수 양보 — 개장벨이 초단타 전문
+    // 개장벨 시간대 Track B 신규매수 양보 — Opening Bell 완료 시 09:05부터 허용
     const kstNow = getKSTNow();
     const kstH = kstNow.getUTCHours(),
       kstM = kstNow.getUTCMinutes();
-    if (kstH === 9 && kstM <= 12) {
+    const openingBellDone = isOpeningBellCompleted();
+    const blockBuyUntil = openingBellDone ? 5 : 12; // 워밍업 완료 시 09:05부터, 아니면 09:12까지 차단
+    if (kstH === 9 && kstM < blockBuyUntil) {
       const before = filtered.length;
       filtered = filtered.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
       if (filtered.length < before) {
-        logger.info(`⚡ 개장벨 양보: Track B 매수 ${before - filtered.length}건 스킵 (09:00~09:12 개장벨 우선)`, {
+        logger.info(`⚡ 개장벨 양보: Track B 매수 ${before - filtered.length}건 스킵 (09:00~09:${String(blockBuyUntil).padStart(2, '0')} 개장벨 우선${openingBellDone ? ', 워밍업완료' : ''})`, {
           component: 'SCHEDULER',
         });
       }
@@ -119,6 +122,19 @@ export async function runTrackBJob(): Promise<void> {
     // 2. 전략 모드 확인
     const strategy = await getActiveStrategy();
     const mode = (strategy?.mode ?? 'SWING') as StrategyMode;
+
+    // 2.5. 실행 직전 Kill Switch 재확인 (파이프라인 실행 중 발동 가능)
+    if (!killActive && isKillSwitchActive('KR')) {
+      const before2 = filtered.length;
+      filtered = filtered.filter(
+        (d) =>
+          ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action) ||
+          (d.action === 'BUY' && INVERSE_ETF_CODES.has(d.stock_code)),
+      );
+      if (filtered.length < before2) {
+        logger.warn(`🛑 Kill Switch 실행직전 재감지 — 추가 매수 ${before2 - filtered.length}건 긴급 차단`, { component: 'SCHEDULER' });
+      }
+    }
 
     // 3. 매매 실행
     await tradeExecutor.processDecisions(filtered, mode, 'TRACK_B');

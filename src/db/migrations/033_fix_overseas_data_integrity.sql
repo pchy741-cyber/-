@@ -45,7 +45,7 @@ WHERE os.key = 'cash'
 ON CONFLICT (key) DO NOTHING;
 
 -- 2b. cash_paper 키가 이미 있으면 cash 값과 비교하여 더 합리적인 값 사용
--- (orders 기반 계산: $10000 - BUY + SELL)
+-- (orders 기반 계산: seed - BUY + SELL)
 -- 이 경우 cash_paper가 이미 정확하므로 cash만 0으로 리셋
 
 -- 2c. live 해외매수 이력 없으면 cash를 0으로 리셋 (실전에 해외투자 안 했으므로)
@@ -117,8 +117,8 @@ WHERE trigger_source = 'OVERSEAS'
   AND (kis_order_no LIKE 'VSP%' OR kis_order_no LIKE 'CLN%' OR kis_order_no LIKE 'POS%' OR kis_order_no LIKE 'PAPER%');
 
 -- ══════════════════════════════════════════
--- STEP 5: cash_paper 값 재계산 (orders 기반)
--- 초기 $10,000에서 BUY 차감, SELL 가산, 현재 보유종목 반영
+-- STEP 5: cash_paper 값 재계산 (orders 기반, 레거시)
+-- 현재는 computePaperCash()가 PAPER_OVERSEAS_SEED_KRW 환산으로 동적 계산
 -- ══════════════════════════════════════════
 
 DO $$
@@ -139,7 +139,7 @@ BEGIN
   INTO v_sell_total
   FROM orders WHERE trigger_source = 'OVERSEAS' AND trading_mode = 'paper' AND side = 'SELL' AND status = 'FILLED';
 
-  -- 기대 현금: $10,000 - 매수총액 + 매도총액
+  -- 기대 현금: 레거시 시드 - 매수총액 + 매도총액 (이 마이그레이션은 1회 실행됨)
   v_expected_cash := 10000 - v_buy_total + v_sell_total;
 
   -- 현재 cash_paper 값

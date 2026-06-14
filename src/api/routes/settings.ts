@@ -476,7 +476,7 @@ settingsRoutes.get('/insights', async (c) => {
     // paper/live 공유: 모든 인사이트 통합 조회
     const { rows } = await getPool().query(
       `SELECT *
-       FROM learned_insights ORDER BY is_manual DESC, confidence DESC LIMIT 50`,
+       FROM learned_insights ORDER BY is_manual DESC, confidence DESC LIMIT 30`,
     );
     return c.json(rows);
   } catch (err: any) {

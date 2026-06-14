@@ -82,8 +82,9 @@ async function calcDomesticKelly(days: number = 30): Promise<DomesticKellyResult
       return null; // 하드코딩 allocPct로 폴백
     }
 
-    // 적응형 Kelly: 승률+샘플 기반으로 Quarter↔Half 자동 전환
-    const kellyFraction = winRate >= 0.55 && total >= 20 ? 0.5 : 0.25;
+    // 적응형 Kelly: 연속 스케일링 — 샘플 보정 + 승률 50%부터 Half-Kelly 적용
+    const confidenceAdj = 1.0 - Math.max(0, (30 - total) / 30) * 0.3; // 샘플 보정 0.7~1.0
+    const kellyFraction = winRate >= 0.50 ? 0.5 * confidenceAdj : 0.25;
     const quarterKelly = Math.max(0.03, Math.min(0.18, fullKelly * kellyFraction));
 
     logger.info(
@@ -145,7 +146,9 @@ export async function executeBuyDecisions(
   }
 
   // Kelly 사이징: 30일 롤링 (10건 미만이면 null → 기존 하드코딩 폴백)
+  // null 반환 시 저승률(<22%) 가능성 → 하드코딩 배분에 0.6x 페널티 적용
   const kellyResult = await calcDomesticKelly(30);
+  const kellyNullPenalty = kellyResult ? 1.0 : 0.6; // Kelly 불가 시 보수적 축소
 
   // AI 스코어 + 기술적 점수 합산으로 정렬
   candidates.sort((a, b) => {
@@ -412,11 +415,11 @@ export async function executeBuyDecisions(
               ? 0.15
               : // 80-84: 15%
                 blendedScore >= 75
-                ? 0.08
-                : // 75-79: 소액 탐색
+                ? 0.12
+                : // 75-79: 12%
                   blendedScore >= 70
-                  ? 0.14
-                  : 0.1
+                  ? 0.10
+                  : 0.08
       : noAiScores || aiScore === 0
         ? // AI 부재(전체 미실행 또는 개별종목 AI=0) → 기술지표만으로 판단, 배분 상향
           blendedScore >= 80
@@ -432,12 +435,12 @@ export async function executeBuyDecisions(
           : blendedScore >= 70
             ? 0.1
             : 0.06;
-    // Kelly 사이징 우선: 10건+ 데이터 있으면 Kelly 기반, 없으면 기존 하드코딩
+    // Kelly 사이징 우선: 10건+ 데이터 있으면 Kelly 기반, 없으면 기존 하드코딩 × 페널티
     const kellyAllocPct = kellyResult
-      ? kellyResult.kellyPct * (blendedScore >= 85 ? 1.5 : blendedScore >= 70 ? 1.2 : 1.0) // 점수 비례 스케일
+      ? Math.min(0.25, kellyResult.kellyPct * (blendedScore >= 85 ? 1.5 : blendedScore >= 70 ? 1.2 : 1.0)) // 점수 비례 스케일 (25% hard cap)
       : null;
     const dbAllocPct = getDbAllocPct(blendedScore);
-    let baseAllocPct = kellyAllocPct ?? dbAllocPct ?? hardcodedAllocPct;
+    let baseAllocPct = kellyAllocPct ?? dbAllocPct ?? (hardcodedAllocPct * kellyNullPenalty);
     // Kelly/DB 데이터 존재 시: 하드코딩의 50%까지 축소 허용 (리스크 관리 우선)
     // 데이터 없으면(폴백): 하드코딩 그대로
     if (kellyAllocPct != null || dbAllocPct != null) {

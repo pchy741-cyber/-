@@ -6,7 +6,7 @@ import { getPool } from '../db/client.js';
 import type { AccountBalance, Position } from '../kis/account.js';
 import { logger } from '../utils/logger.js';
 
-export const PAPER_INITIAL_CAPITAL = Number(process.env.PAPER_INITIAL_CAPITAL_KRW) || 30_000_000;
+export const PAPER_INITIAL_CAPITAL = Number(process.env.PAPER_INITIAL_CAPITAL_KRW) || 60_000_000;
 const PAPER_BUY_FEE_PCT = KR_FEE.BUY_FEE_PCT;
 const PAPER_SELL_FEE_PCT = KR_FEE.SELL_FEE_PCT;
 let paperCashUsed = 0; // 현재 투자 중인 매수 원가 합

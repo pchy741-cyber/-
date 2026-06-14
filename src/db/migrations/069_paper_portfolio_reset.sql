@@ -1,6 +1,6 @@
--- Paper 포트폴리오 초기화: 시드를 50M+50M(1억) → 30M+30M(6천만원)으로 조정
--- 목적: PAPER_INITIAL_CAPITAL(국내) + PAPER_OVERSEAS_SEED_KRW(해외) 각 30M 기준으로 클린 스타트
---       기존 paper 주문 내역이 50M 기준으로 누적돼 있어 현금 계산 음수/초과 발생 방지
+-- Paper 포트폴리오 초기화 (레거시 — 이미 실행 완료)
+-- 현재 시드: PAPER_INITIAL_CAPITAL(국내) + PAPER_OVERSEAS_SEED_KRW(해외) 각 env 또는 기본값 사용
+-- 기존 paper 주문 내역이 이전 시드 기준으로 누적돼 있어 현금 계산 정합성 확보 목적
 
 -- 1. Paper 해외 포지션 초기화
 DELETE FROM overseas_holdings WHERE is_paper = true;
@@ -19,4 +19,4 @@ WHERE trading_mode = 'paper';
 DELETE FROM positions
 WHERE trading_mode = 'paper';
 
--- 결과: 다음 실행 시 paper 시드 = KR 30M + 해외 30M/환율(USD) = 총 6천만원 기준
+-- 결과: 다음 실행 시 paper 시드 = env 기반 동적 값 사용

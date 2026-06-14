@@ -275,7 +275,7 @@ dividendRoutes.post('/dividend/auto-invest', async (c) => {
     const body = await c.req.json<{ amount_krw: number; mode?: 'paper' | 'live'; pin?: string }>();
     const { amount_krw } = body;
     if (!amount_krw || amount_krw < 10000) return c.json({ error: '최소 1만원 이상' }, 400);
-    if (amount_krw > 10000000) return c.json({ error: '최대 1000만원' }, 400);
+    if (amount_krw > 500_000_000) return c.json({ error: '1회 최대 5억원' }, 400); // 비상 안전 상한 (실제 한도는 계좌 잔고)
 
     const isPaper = resolveIsPaper(body.mode);
     const pinCheck = validateLivePin(isPaper, body.pin);

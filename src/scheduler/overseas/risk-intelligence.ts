@@ -2,6 +2,7 @@
  * 리스크 인텔리전스 — ATR 트레일링, 쿨다운, 섹터 한도, AI 보정, 부분 익절, 동적 TP/SL
  * 분할: vix-regime.ts, kelly.ts, patterns.ts
  */
+import { cacheGet, cacheSet } from '../../cache/memory.js';
 import { SECTOR_CLASS } from '../../config/constants.js';
 import { getPool } from '../../db/client.js';
 import type { GradualCooldown } from './types.js';
@@ -215,7 +216,7 @@ export async function calcUncertaintyPenalty(params: {
     reasons.push('섹터하락');
   }
 
-  return { penalty: Math.min(0.2, penalty), reasons };
+  return { penalty: Math.min(0.35, penalty), reasons };
 }
 
 /** 불확실성 보정 적용 — effective confidence 반환 */
@@ -261,13 +262,18 @@ export function getPartialTpStages(sector: string): PartialTpStage[] {
   ];
 }
 
-/** DB에서 현재 부분익절 단계 조회 (paper/live 분리) */
+/** DB에서 현재 부분익절 단계 조회 (paper/live 분리, 메모리 캐시 적용) */
 export async function getPartialTpStageNum(code: string, isPaper?: boolean): Promise<number> {
+  const cacheKey = `ov_tp_stage:${modePrefix(isPaper)}${code}`;
+  const cached = cacheGet<number>(cacheKey);
+  if (cached != null) return cached;
   try {
     const { rows } = await getPool().query('SELECT value FROM overseas_state WHERE key = $1', [
       `${modePrefix(isPaper)}partial_tp_stage_${code}`,
     ]);
-    return rows.length > 0 ? Number(rows[0].value) : 0;
+    const val = rows.length > 0 ? Number(rows[0].value) : 0;
+    cacheSet(cacheKey, val, 300); // 5분 TTL
+    return val;
   } catch {
     return 0;
   }
@@ -275,6 +281,8 @@ export async function getPartialTpStageNum(code: string, isPaper?: boolean): Pro
 
 /** 부분익절 단계 저장 (paper/live 분리) */
 export async function setPartialTpStageNum(code: string, stage: number, isPaper?: boolean): Promise<void> {
+  const cacheKey = `ov_tp_stage:${modePrefix(isPaper)}${code}`;
+  cacheSet(cacheKey, stage, 300); // 캐시 즉시 갱신
   await getPool()
     .query(
       `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
@@ -286,6 +294,8 @@ export async function setPartialTpStageNum(code: string, stage: number, isPaper?
 
 /** 부분익절 단계 초기화 (포지션 청산 시, paper/live 분리) */
 export async function clearPartialTpStageNum(code: string, isPaper?: boolean): Promise<void> {
+  const cacheKey = `ov_tp_stage:${modePrefix(isPaper)}${code}`;
+  cacheSet(cacheKey, 0, 300); // 캐시 초기화
   await getPool()
     .query('DELETE FROM overseas_state WHERE key = $1', [`${modePrefix(isPaper)}partial_tp_stage_${code}`])
     .catch(() => {});
@@ -366,12 +376,17 @@ export function calcDynamicTpSl(params: {
   );
   let slPct = Math.max(isHighBeta ? 5.0 : 2.5, baseSl + aiSlAdj + scoreSlAdj);
 
-  // ATR 기반 SL 바닥: 최소 2×ATR% (일간 변동성의 2배 — 노이즈 손절 방지)
-  // 예: NVDA ATR 3.5% → SL 최소 7%, 기존 5% SL에 걸리던 허위손절 제거
+  // ATR 기반 SL: 항상 적용 — 고변동성은 SL 확대(노이즈 방지), 저변동성은 SL 타이트닝
   if (atrPct && atrPct > 0) {
-    const atrFloor = Math.round(atrPct * 2.0 * 10) / 10;
-    if (atrFloor > slPct) {
-      slPct = Math.min(atrFloor, isHighBeta ? 12.0 : 8.0); // 안전 상한: HIGH_BETA 12%, 기타 8%
+    if (atrPct < 1.5) {
+      // 저변동성(ATR<1.5%): SL 타이트닝 — 최대 2.5% (불필요한 자본 노출 축소)
+      slPct = Math.min(slPct, 2.5);
+    } else {
+      // 고변동성: 최소 2×ATR% (일간 변동성의 2배 — 노이즈 손절 방지)
+      const atrFloor = Math.round(atrPct * 2.0 * 10) / 10;
+      if (atrFloor > slPct) {
+        slPct = Math.min(atrFloor, isHighBeta ? 12.0 : 8.0); // 안전 상한: HIGH_BETA 12%, 기타 8%
+      }
     }
   }
 

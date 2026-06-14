@@ -98,7 +98,7 @@ export async function runStrategyOptimizer(): Promise<OptimizerResult[]> {
           for (const [code, candles] of chartMap) {
             const config: BacktestConfig = {
               mode,
-              initialCapital: 10_000_000,
+              initialCapital: 100_000_000, // 백테스트 시뮬레이션 기준 (비교용, 실계좌 무관)
               maxPositionPct: 25,
             };
 

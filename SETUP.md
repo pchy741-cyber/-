@@ -3,7 +3,7 @@
 ## 내일 할 것 (순서대로, 총 30분)
 
 ### 1. KIS API Key 발급 (10분)
-1. 한국투자증권 앱 → 모의투자 신청 (가상 1억)
+1. 한국투자증권 앱 → 모의투자 신청
 2. https://apiportal.koreainvestment.com/ 접속
 3. 인증서 로그인 → 모의투자 계좌로 API 신청
 4. `App Key`, `App Secret`, `계좌번호(8-2)` 메모

@@ -40,62 +40,73 @@ export async function reconcilePendingOrders(): Promise<void> {
 
   logger.info(`🔍 미체결 주문 ${pendingOrders.length}건 조회`, { component: 'RECONCILER' });
 
-  for (const order of pendingOrders) {
-    const kisOrderNo = order.kis_order_no!;
-    try {
-      const fill = await getOrderFills(kisOrderNo);
+  // 1단계: 체결 상태 병렬 조회 (N+1 → 배치)
+  const BATCH = 5;
+  for (let i = 0; i < pendingOrders.length; i += BATCH) {
+    const batch = pendingOrders.slice(i, i + BATCH);
+    const fills = await Promise.allSettled(
+      batch.map((order) => getOrderFills(order.kis_order_no!)),
+    );
 
-      if (fill && fill.filledQty > 0) {
-        const isFullFill = fill.filledQty >= fill.orderQty;
-        await updateOrderByKisOrderNo(kisOrderNo, {
-          status: isFullFill ? 'FILLED' : 'PARTIAL',
-          filled_quantity: fill.filledQty,
-          filled_price: fill.filledPrice,
-        });
-        logger.info(
-          `✅ 체결 확인: ${order.stock_code} ${order.side} ${fill.filledQty}주 @${fill.filledPrice}원 (${isFullFill ? 'FILLED' : 'PARTIAL'})`,
-          { component: 'RECONCILER' },
-        );
-        continue;
-      }
+    // 2단계: 결과 처리
+    for (let j = 0; j < batch.length; j++) {
+      const order = batch[j];
+      const kisOrderNo = order.kis_order_no!;
+      const fillResult = fills[j];
 
-      // 10분 초과 미체결/부분체결 지정가 → 잔여 수량 취소
-      const ageMs = Date.now() - new Date(order.created_at).getTime();
-      if (ageMs > PENDING_TIMEOUT_MS && order.order_type !== '01') {
-        const filledQty = order.filled_quantity ?? 0;
-        const totalQty = order.quantity ?? 0;
-        const remainQty = totalQty - filledQty;
-        if (remainQty <= 0) {
-          // 이미 전량 체결 — 상태만 FILLED로 보정
-          await updateOrderByKisOrderNo(kisOrderNo, { status: 'FILLED' });
-          continue;
-        }
-        const cancelResult = await cancelOrder({
-          orderNo: kisOrderNo,
-          stockCode: order.stock_code,
-          quantity: remainQty,
-        });
-        if (cancelResult.success) {
-          // 부분체결 + 취소: filledQty > 0이면 FILLED(부분체결분 기록), 아니면 CANCELLED
-          const finalStatus = filledQty > 0 ? 'FILLED' : 'CANCELLED';
-          await updateOrderByKisOrderNo(kisOrderNo, { status: finalStatus });
-          logger.warn(
-            `⏰ 미체결 취소: ${order.stock_code} ${order.side} 잔여${remainQty}주 (체결${filledQty}주, ${Math.round(ageMs / 60000)}분 경과)`,
+      try {
+        const fill = fillResult.status === 'fulfilled' ? fillResult.value : null;
+
+        if (fill && fill.filledQty > 0) {
+          const isFullFill = fill.filledQty >= fill.orderQty;
+          await updateOrderByKisOrderNo(kisOrderNo, {
+            status: isFullFill ? 'FILLED' : 'PARTIAL',
+            filled_quantity: fill.filledQty,
+            filled_price: fill.filledPrice,
+          });
+          logger.info(
+            `✅ 체결 확인: ${order.stock_code} ${order.side} ${fill.filledQty}주 @${fill.filledPrice}원 (${isFullFill ? 'FILLED' : 'PARTIAL'})`,
             { component: 'RECONCILER' },
           );
-          await logSystem(
-            'WARN',
-            'RECONCILER',
-            `미체결 취소: ${order.stock_code} ${order.side} 잔여${remainQty}주 (체결${filledQty}주, ${Math.round(ageMs / 60000)}분 경과)`,
-          );
-        } else {
-          logger.warn(`취소 실패: ${order.stock_code} ${kisOrderNo} — ${cancelResult.message}`, {
-            component: 'RECONCILER',
-          });
+          continue;
         }
+
+        // 10분 초과 미체결/부분체결 지정가 → 잔여 수량 취소
+        const ageMs = Date.now() - new Date(order.created_at).getTime();
+        if (ageMs > PENDING_TIMEOUT_MS && order.order_type !== '01') {
+          const filledQty = order.filled_quantity ?? 0;
+          const totalQty = order.quantity ?? 0;
+          const remainQty = totalQty - filledQty;
+          if (remainQty <= 0) {
+            await updateOrderByKisOrderNo(kisOrderNo, { status: 'FILLED' });
+            continue;
+          }
+          const cancelResult = await cancelOrder({
+            orderNo: kisOrderNo,
+            stockCode: order.stock_code,
+            quantity: remainQty,
+          });
+          if (cancelResult.success) {
+            const finalStatus = filledQty > 0 ? 'FILLED' : 'CANCELLED';
+            await updateOrderByKisOrderNo(kisOrderNo, { status: finalStatus });
+            logger.warn(
+              `⏰ 미체결 취소: ${order.stock_code} ${order.side} 잔여${remainQty}주 (체결${filledQty}주, ${Math.round(ageMs / 60000)}분 경과)`,
+              { component: 'RECONCILER' },
+            );
+            await logSystem(
+              'WARN',
+              'RECONCILER',
+              `미체결 취소: ${order.stock_code} ${order.side} 잔여${remainQty}주 (체결${filledQty}주, ${Math.round(ageMs / 60000)}분 경과)`,
+            );
+          } else {
+            logger.warn(`취소 실패: ${order.stock_code} ${kisOrderNo} — ${cancelResult.message}`, {
+              component: 'RECONCILER',
+            });
+          }
+        }
+      } catch (e) {
+        logger.warn(`주문 정리 오류 [${order.stock_code} ${kisOrderNo}]: ${e}`, { component: 'RECONCILER' });
       }
-    } catch (e) {
-      logger.warn(`주문 정리 오류 [${order.stock_code} ${kisOrderNo}]: ${e}`, { component: 'RECONCILER' });
     }
   }
 }

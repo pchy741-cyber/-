@@ -45,24 +45,37 @@ export function getMarketRoutingState(): { riskOff: boolean } {
   return { riskOff: _riskOff };
 }
 
-// ── S&P 500 등락률 조회 ──────────────────────────────────────────────────────
+// ── S&P 500 등락률 조회 (5분 캐시 — 외부 API 타임아웃 시 stale 결과 사용) ──
+
+let _spxCache: { value: number | null; fetchedAt: number } | null = null;
+const SPX_CACHE_TTL_MS = 5 * 60 * 1000; // 5분
 
 async function fetchSpxChangePct(): Promise<number | null> {
+  // 캐시 히트: 5분 이내 결과 재사용 (외부 API 지연 방지)
+  if (_spxCache && Date.now() - _spxCache.fetchedAt < SPX_CACHE_TTL_MS) {
+    return _spxCache.value;
+  }
   try {
     const url = 'https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=2d';
     const res = await fetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; QuantOps/1.0)' },
-      signal: AbortSignal.timeout(8_000),
+      signal: AbortSignal.timeout(5_000), // 8s→5s 타임아웃 단축
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // 실패 시 stale 캐시 반환 (null보다 낫다)
+      return _spxCache?.value ?? null;
+    }
     const data = (await res.json()) as {
       chart?: { result?: Array<{ meta?: { regularMarketPrice?: number; chartPreviousClose?: number } }> };
     };
     const meta = data.chart?.result?.[0]?.meta;
-    if (!meta?.regularMarketPrice || !meta?.chartPreviousClose) return null;
-    return ((meta.regularMarketPrice - meta.chartPreviousClose) / meta.chartPreviousClose) * 100;
+    if (!meta?.regularMarketPrice || !meta?.chartPreviousClose) return _spxCache?.value ?? null;
+    const pct = ((meta.regularMarketPrice - meta.chartPreviousClose) / meta.chartPreviousClose) * 100;
+    _spxCache = { value: pct, fetchedAt: Date.now() };
+    return pct;
   } catch {
-    return null;
+    // 타임아웃/네트워크 에러 시 stale 캐시 반환
+    return _spxCache?.value ?? null;
   }
 }
 

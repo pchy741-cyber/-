@@ -174,7 +174,8 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   const trendStrength: TechnicalSummary['trendStrength'] = adx14 >= 30 ? 'STRONG' : adx14 >= 20 ? 'MODERATE' : 'WEAK';
 
   const volumes = candles.map((c) => c.volume);
-  const avgVol20 = volumes.slice(0, 20).reduce((s, v) => s + v, 0) / 20;
+  // 당일 거래량을 평균에서 제외 (자기 포함 바이어스 방지)
+  const avgVol20 = volumes.slice(1, 21).reduce((s, v) => s + v, 0) / Math.min(20, volumes.length - 1 || 1);
   const volumeRatio = avgVol20 > 0 ? volumes[0] / avgVol20 : 1;
 
   // ══════════════════════════════════════════════════════════════════

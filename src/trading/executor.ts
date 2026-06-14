@@ -202,20 +202,21 @@ export class TradeExecutor {
       return;
     }
 
-    // 가격 우선순위: limit_price(파이프라인) → KIS API → 메모리캐시 → Redis캐시
+    // 가격 우선순위: limit_price(파이프라인) → 메모리캐시 → Redis캐시 → KIS API
     let estimatedPrice = limitPrice ?? 0;
     if (!estimatedPrice) {
-      const priceData = await getCurrentPrice(stockCode).catch(() => null);
-      estimatedPrice = priceData?.currentPrice ?? 0;
+      const { getCachedPriceMemory } = await import('../cache/memory.js');
+      const { getLastKnownPrice } = await import('../cache/redis.js');
+      // 캐시 우선: 메모리 → Redis (대부분 50ms 이내 응답)
+      estimatedPrice = getCachedPriceMemory(stockCode) ?? (await getLastKnownPrice(stockCode)) ?? 0;
+      if (estimatedPrice > 0) {
+        logger.info(`💰 캐시 가격 사용: ${stockCode} = ${estimatedPrice}원`, { component: 'EXECUTOR' });
+      }
 
-      // KIS 실패 → 캐시 fallback
+      // 캐시 miss → KIS API fallback
       if (!estimatedPrice || estimatedPrice <= 0) {
-        const { getCachedPriceMemory } = await import('../cache/memory.js');
-        const { getLastKnownPrice } = await import('../cache/redis.js');
-        estimatedPrice = getCachedPriceMemory(stockCode) ?? (await getLastKnownPrice(stockCode)) ?? 0;
-        if (estimatedPrice > 0) {
-          logger.info(`💰 캐시 가격 사용: ${stockCode} = ${estimatedPrice}원`, { component: 'EXECUTOR' });
-        }
+        const priceData = await getCurrentPrice(stockCode).catch(() => null);
+        estimatedPrice = priceData?.currentPrice ?? 0;
       }
     }
 
@@ -436,28 +437,41 @@ export class TradeExecutor {
         /* ATR 실패 시 기본값 유지 */
       }
 
-      try {
-        await chainManager.openChain({
-          stockCode,
-          mode,
-          buyPrice: fill.filledPrice,
-          quantity: filledQty,
-          targetProfitPct,
-          stopLossPct,
-          maxAveragingCount: params.maxAveragingCount,
-          isPaper: isPaperSnapshot,
-        });
-      } catch (chainErr) {
-        // 체인 생성 실패 = 포지션 추적 불가 → 즉시 경고 (체결은 이미 완료됨)
-        logger.error(
-          `🚨 체인 생성 실패 (체결은 완료됨): ${stockCode} ${filledQty}주 @${fill.filledPrice} err=${chainErr}`,
-          { component: 'EXECUTOR' },
-        );
-        await logSystem(
-          'ERROR',
-          'EXECUTOR',
-          `체인 생성 실패: ${stockCode} ${filledQty}주 @${fill.filledPrice} — fill-reconciler가 복구 필요`,
-        );
+      // 체인 생성 (3회 재시도 — 고아 포지션 방지)
+      let chainCreated = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await chainManager.openChain({
+            stockCode,
+            mode,
+            buyPrice: fill.filledPrice,
+            quantity: filledQty,
+            targetProfitPct,
+            stopLossPct,
+            maxAveragingCount: params.maxAveragingCount,
+            isPaper: isPaperSnapshot,
+          });
+          chainCreated = true;
+          break;
+        } catch (chainErr) {
+          if (attempt < 2) {
+            logger.warn(`⚠️ 체인 생성 재시도 ${attempt + 1}/3: ${stockCode} err=${chainErr}`, { component: 'EXECUTOR' });
+            await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+          } else {
+            // 3회 실패 = 포지션 추적 불가 → 긴급 경고 + 텔레그램
+            logger.error(
+              `🚨 체인 생성 최종 실패 (체결 완료됨): ${stockCode} ${filledQty}주 @${fill.filledPrice} err=${chainErr}`,
+              { component: 'EXECUTOR' },
+            );
+            await logSystem(
+              'ERROR',
+              'EXECUTOR',
+              `🚨 고아 포지션 발생: ${stockCode} ${filledQty}주 @${fill.filledPrice} — 수동 복구 필요`,
+            );
+            const { sendTelegramMessage } = await import('../notifications/telegram.js');
+            sendTelegramMessage(`🚨 고아 포지션: ${stockCode} ${filledQty}주 @${fill.filledPrice.toLocaleString()}원 — 체인 생성 실패, 수동 확인 필요`).catch(() => {});
+          }
+        }
       }
 
       // 감시목록 자동 등록 + 종목명 즉시 보정 (코드 저장 후 KRX API로 이름 조회)

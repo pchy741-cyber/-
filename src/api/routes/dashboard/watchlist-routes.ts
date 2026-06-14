@@ -280,8 +280,8 @@ watchlistRoutes.get('/flow', async (c) => {
     return c.json(status);
   } catch {
     return c.json({
-      totalPortfolio: resolveRequestMode(c) ? 10000000 : 0,
-      cash: resolveRequestMode(c) ? 10000000 : 0,
+      totalPortfolio: 0,
+      cash: 0,
       cashRatio: 100,
       investedRatio: 0,
       flowStatus: 'FLOWING',

@@ -49,7 +49,7 @@ export interface TotalAssetInputs {
 export interface TotalAssetOutputs {
   // 핵심 총자산
   grandTotalValue: number;
-  calcMethod: 'nass_amt' | 'rawCash_fallback' | 'paper_cash';
+  calcMethod: 'rawCash+eval' | 'rawCash_fallback' | 'paper_cash';
 
   // 현금
   freeDomesticCash: number;         // 국내 가용 현금 (KRW)
@@ -128,26 +128,19 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
   const rawCashSafe = safe(i.rawCash);
   const safeDomestic = safe(domesticMarketValue);
   const safeOverseasMV = safe(overseasMarketValueKrw);
-  const safeNetAsset = Number.isFinite(i.netAsset) && i.netAsset > 0 ? i.netAsset : 0;
 
   let grandTotalValue: number;
   let freeDomesticCash: number;
   let calcMethod: TotalAssetOutputs['calcMethod'];
 
-  if (!i.viewIsPaper && safeNetAsset > 0) {
-    // Live 최우선: nass_amt(순자산) = 현금 + 국내 증권 시가 — 이중계산 없음, 가장 정확
-    // ※ rawCash(max_buy_amt)는 대용(보유증권 담보가치)을 포함하므로 증권시가와 이중계산됨
-    grandTotalValue = safeNetAsset + safeOverseasMV;
-    freeDomesticCash = Math.max(0, safeNetAsset - safeDomestic);
-    calcMethod = 'nass_amt';
-  } else if (!i.viewIsPaper && rawCashSafe > 0) {
-    // nass_amt 없을 때만 rawCash 폴백 — 이중계산 방어
+  if (!i.viewIsPaper && rawCashSafe > 0) {
+    // Live: 총자산 = 주문가능(rawCash/maxBuyAmt) + 국내증권시가(kisDomEval) + 해외시가(overseasMV)
+    // nass_amt(순자산) 사용 금지 — KIS 앱 표시와 불일치 (사용자: "82가 주문가능하고 매매중이 15만원이니 97만원이 총자산이어야지")
     freeDomesticCash = rawCashSafe;
-    grandTotalValue = freeDomesticCash + safeDomestic + safeOverseasMV;
-    calcMethod = 'rawCash_fallback';
+    grandTotalValue = rawCashSafe + safeDomestic + safeOverseasMV;
+    calcMethod = 'rawCash+eval';
   } else if (!i.viewIsPaper) {
-    // Live: KIS API 실패 (rawCash=0, netAsset=0) — 증권시가만으로 추정
-    // ⚠️ 이전 버그: else로 빠져 paper_cash 경로 진입 → 해외현금 이중계산
+    // Live: KIS API 실패 (rawCash=0) — 증권시가만으로 추정
     freeDomesticCash = 0;
     grandTotalValue = safeDomestic + safeOverseasMV;
     calcMethod = 'rawCash_fallback';
@@ -171,10 +164,9 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
     actualCash = freeDomesticCash;
     actualCashSource = 'paper_domestic';
   } else {
-    // Live: 실제 보유 현금 기준 (nass_amt - 증권시가)
-    // ※ rawCash(max_buy_amt)는 대용(담보)+CMA 포함 → 총자산 초과 가능하므로 표시용 부적합
+    // Live: rawCash(주문가능) 기준 — KIS 앱과 동일
     actualCash = freeDomesticCash;
-    actualCashSource = calcMethod === 'nass_amt' ? 'nass-evlu' : (i.cashSource ?? 'buyable_api');
+    actualCashSource = i.cashSource ?? 'buyable_api';
   }
 
   // ─── 5. 현금 표시용 ───

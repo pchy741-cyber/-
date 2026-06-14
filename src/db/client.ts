@@ -700,46 +700,45 @@ export async function getRecentManuallySoldStocks(hoursBack = 24): Promise<Set<s
 export async function getRecentlySoldStocks(hoursBack = 2): Promise<Set<string>> {
   if (useMemory) return new Set();
   try {
-    // 모든 최근 매도 종목
-    const { rows: allRows } = await queryWithRetry(
-      `SELECT DISTINCT stock_code, closed_at FROM transaction_chains
-       WHERE status = 'CLOSED'
-         AND is_paper = $1
-         AND closed_at > NOW() - ($2 || ' hours')::interval
-         AND (pnl_pct IS NULL OR pnl_pct < 3.0)`,
+    // 단일 CTE 쿼리: 최근 매도 + 30일 승률 동시 계산
+    const { rows } = await queryWithRetry(
+      `WITH recent_sold AS (
+         SELECT DISTINCT stock_code, closed_at
+         FROM transaction_chains
+         WHERE status = 'CLOSED'
+           AND is_paper = $1
+           AND closed_at > NOW() - ($2 || ' hours')::interval
+           AND (pnl_pct IS NULL OR pnl_pct < 3.0)
+       ),
+       win_rates AS (
+         SELECT tc.stock_code,
+                COUNT(*) FILTER (WHERE tc.pnl_pct > 0) AS wins,
+                COUNT(*) AS total
+         FROM transaction_chains tc
+         INNER JOIN (SELECT DISTINCT stock_code FROM recent_sold) rs ON tc.stock_code = rs.stock_code
+         WHERE tc.is_paper = $1 AND tc.status = 'CLOSED'
+           AND tc.closed_at > NOW() - INTERVAL '30 days'
+         GROUP BY tc.stock_code
+       )
+       SELECT rs.stock_code, rs.closed_at,
+              COALESCE(wr.wins, 0) AS wins, COALESCE(wr.total, 0) AS total
+       FROM recent_sold rs
+       LEFT JOIN win_rates wr ON rs.stock_code = wr.stock_code`,
       [getCtxIsPaper(), hoursBack],
     );
-    if (allRows.length === 0) return new Set();
-
-    // 종목별 30일 승률 동시 조회
-    const codes = [...new Set(allRows.map((r: any) => r.stock_code as string))];
-    const { rows: wrRows } = await queryWithRetry(
-      `SELECT stock_code,
-              COUNT(*) FILTER (WHERE pnl_pct > 0) AS wins,
-              COUNT(*) AS total
-       FROM transaction_chains
-       WHERE stock_code = ANY($1) AND is_paper = $2 AND status = 'CLOSED'
-         AND closed_at > NOW() - INTERVAL '30 days'
-       GROUP BY stock_code`,
-      [codes, getCtxIsPaper()],
-    );
-    const winRates = new Map<string, number>();
-    for (const r of wrRows) {
-      const wins = Number(r.wins ?? 0);
-      const total = Number(r.total ?? 0);
-      if (total >= 5) winRates.set(r.stock_code, wins / total);
-    }
+    if (rows.length === 0) return new Set();
 
     // 쿨다운 적용: 승률 70%+ 종목은 5분 쿨다운만 (즉시 재진입에 가까움)
     const result = new Set<string>();
     const nowMs = Date.now();
-    for (const row of allRows) {
+    for (const row of rows) {
       const code = row.stock_code as string;
       const closedMs = new Date(row.closed_at).getTime();
       const minutesSince = (nowMs - closedMs) / 60_000;
-      const wr = winRates.get(code) ?? 0;
+      const total = Number(row.total ?? 0);
+      const wins = Number(row.wins ?? 0);
+      const wr = total >= 5 ? wins / total : 0;
       const shortCooldown = wr >= 0.7;
-      // 검증된 종목은 5분 쿨다운, 일반은 hoursBack * 60분
       const cooldownMin = shortCooldown ? 5 : hoursBack * 60;
       if (minutesSince < cooldownMin) {
         result.add(code);

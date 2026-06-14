@@ -79,6 +79,12 @@ export async function executeOverseasOrder(
   const paperMode = opts?.isPaper ?? getCtxIsPaper();
   const stockName = resolveOverseasStockName(code, exchange);
 
+  // Zero price 방어 — 잘못된 가격으로 주문 시 avg_price 오염 방지
+  if (!price || price <= 0 || !Number.isFinite(price)) {
+    logger.error(`🚫 Zero/Invalid price 차단: ${side} ${code} @$${price} — 주문 거부`, { component: 'OVERSEAS' });
+    return { submitted: false, filledQty: 0, filledPrice: 0, finalQty: previousQty, finalAvgPrice: previousAvgPrice, orderNo: '' };
+  }
+
   if (paperMode) {
     const slippage = side === 'BUY' ? 0.001 : -0.001;
     const fillPrice = price * (1 + slippage);
@@ -217,7 +223,12 @@ export async function executeOverseasOrder(
               }).catch(() => {});
             }
           } else {
-            logger.warn(`⏳ 체결 미확인: ${code} (${result.orderNo}) → PENDING 유지`, { component: 'OVERSEAS' });
+            // PENDING 주문 stuck 방지: 체결 미확인 시 UNCONFIRMED로 전환 (fill-reconciler가 추후 처리)
+            await updateOrder(orderId, {
+              status: 'FAILED',
+              kis_status: 'UNCONFIRMED',
+            });
+            logger.warn(`⏳ 체결 미확인 → FAILED(UNCONFIRMED) 전환: ${code} (${result.orderNo})`, { component: 'OVERSEAS' });
           }
 
           return {

@@ -123,7 +123,22 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
   const wins = enrichedChains.filter((c) => Number(c.chain.realized_pnl) > 0);
   const losses = enrichedChains.filter((c) => Number(c.chain.realized_pnl) <= 0);
 
-  const parkingInsights = await analyzeParkingDecisions();
+  /** 개별 async analyzer 30초 타임아웃 래퍼 */
+  const safeAsync = async (fn: () => Promise<LearnedInsight[]>, label: string): Promise<LearnedInsight[]> => {
+    try {
+      return await withTimeout(fn(), 30_000, label);
+    } catch (e) {
+      logger.warn(`⚠️ ${label} 실패/타임아웃 — 스킵: ${e}`, { component: 'LEARN' });
+      return [];
+    }
+  };
+
+  const parkingInsights = await safeAsync(() => analyzeParkingDecisions(), 'parkingDecisions');
+
+  const domesticOnly = enrichedChains.filter((c) => {
+    const orders = c.chain.orders as any[];
+    return !orders?.some((o: any) => o.trigger_source === 'OVERSEAS');
+  });
 
   const insights: LearnedInsight[] = [
     ...analyzeAveraging(wins, losses),
@@ -135,7 +150,7 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
     ...analyzeSniperPerformance(wins, losses),
     ...analyzeConfidenceCorrelation(enrichedChains),
     ...analyzeHoldingPeriodByEntry(wins),
-    ...(await analyzeOptimalTrailingStop(enrichedChains)),
+    ...(await safeAsync(() => analyzeOptimalTrailingStop(enrichedChains), 'optimalTrailingStop')),
     ...analyzeSniperByMarketRegime(enrichedChains),
     ...analyzeLossStreakRisk(enrichedChains),
     ...analyzeProfitRatio(wins, losses),
@@ -147,21 +162,11 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
     ...analyzeEarlyExitMissedProfit(wins, losses),
     ...parkingInsights,
     // 시간대/요일 분석은 해외(OVERSEAS) 체인 제외 — 시장 시간대가 다름
-    ...analyzeTimeOfDayPerformance(
-      enrichedChains.filter((c) => {
-        const orders = c.chain.orders as any[];
-        return !orders?.some((o: any) => o.trigger_source === 'OVERSEAS');
-      }),
-    ),
-    ...analyzeDayOfWeekPerformance(
-      enrichedChains.filter((c) => {
-        const orders = c.chain.orders as any[];
-        return !orders?.some((o: any) => o.trigger_source === 'OVERSEAS');
-      }),
-    ),
-    ...(await analyzeBuyThreshold()),
+    ...analyzeTimeOfDayPerformance(domesticOnly),
+    ...analyzeDayOfWeekPerformance(domesticOnly),
+    ...(await safeAsync(() => analyzeBuyThreshold(), 'buyThreshold')),
     // ── 해외주식 학습 (섹터/체결사유/종목/보유기간) ──
-    ...(await analyzeOverseasAll(getCtxIsPaper())),
+    ...(await safeAsync(() => analyzeOverseasAll(getCtxIsPaper()), 'overseasAll')),
   ];
 
   if (insights.length > 0) {
@@ -224,10 +229,19 @@ async function saveInsights(insights: LearnedInsight[]): Promise<void> {
   }
 }
 
+// ── 캐시: getLearnedInsightsForPrompt 결과 (TTL 1시간) ──
+let _insightsPromptCache: { key: string; value: string; expiresAt: number } | null = null;
+
 export async function getLearnedInsightsForPrompt(): Promise<string> {
+  const isPaper = getCtxIsPaper();
+  const cacheKey = `insights-prompt:${isPaper}`;
+  if (_insightsPromptCache && _insightsPromptCache.key === cacheKey && Date.now() < _insightsPromptCache.expiresAt) {
+    return _insightsPromptCache.value;
+  }
+
   const { rows: data } = await getPool().query(
     'SELECT * FROM learned_insights WHERE is_paper = $1 ORDER BY confidence DESC, sample_count DESC LIMIT 15',
-    [getCtxIsPaper()],
+    [isPaper],
   );
 
   if (!data || data.length === 0) return '';
@@ -336,7 +350,9 @@ export async function getLearnedInsightsForPrompt(): Promise<string> {
     '\n> 위 인사이트는 과거 실거래 결과로 도출된 통계적 패턴입니다. 단순 스코어보다 이 인사이트를 우선 적용하세요.',
   );
 
-  return lines.join('\n');
+  const result = lines.join('\n');
+  _insightsPromptCache = { key: cacheKey, value: result, expiresAt: Date.now() + 3600_000 }; // 1시간 TTL
+  return result;
 }
 
 export async function autoApplyInsights(insights: LearnedInsight[]): Promise<void> {
@@ -527,9 +543,18 @@ export async function getStockAccuracyContext(stockCodes: string[]): Promise<str
   }
 }
 
+/** Promise에 타임아웃을 걸어 하나가 느려도 전체 차단 방지 */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} 타임아웃 (${ms}ms)`)), ms)),
+  ]);
+}
+
 export async function runDailyLearning(): Promise<void> {
   try {
-    const insights = await analyzeTradeHistory();
+    // 전체 5분 타임아웃 — 개별 analyzer는 analyzeTradeHistory 내부에서 30초 제한
+    const insights = await withTimeout(analyzeTradeHistory(), 5 * 60_000, 'runDailyLearning');
     if (insights.length === 0) {
       logger.info('자기학습: 분석 결과 없음', { component: 'LEARN' });
       return;

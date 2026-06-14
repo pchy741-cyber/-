@@ -549,7 +549,7 @@ export function getKrMarketPhase(date?: Date): KrMarketPhase {
   const kstH = (now.getUTCHours() + 9) % 24;
   const kstM = now.getUTCMinutes();
   const t = kstH * 100 + kstM;
-  if (t < 900 || t >= 1530) return 'CLOSED';
+  if (t < 900 || t > 1530) return 'CLOSED';
   if (t < 930) return 'OPENING_BELL';
   if (t < 1020) return 'GOLDEN_AM';
   if (t < 1300) return 'CURSED';

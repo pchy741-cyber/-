@@ -17,6 +17,7 @@ import {
   type RegimeAdjustment,
   setPartialTpStageNum,
 } from './risk-intelligence.js';
+import { checkHoldingPriceShock } from './session-strategy.js';
 import { isUSMarketLastNMinutes } from './session.js';
 import { cleanupPositionState, getMaxPrice, setMaxPrice, updateTradeState } from './state.js';
 import { getTunerOverrides } from './trade-tuner.js';
@@ -92,6 +93,13 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
   // Trade Tuner 오버라이드 로드 (1회)
   const tunerOverrides: Record<string, number> = await getTunerOverrides(paperMode).catch(() => ({}));
   const maxHoldDays = tunerOverrides.max_hold_days ?? dynP.maxHoldDays;
+
+  // 이벤트 기반 AI 리프레시: 보유 종목 ±3% 급변 감지
+  const priceMap = new Map<string, number>();
+  for (const tech of techResults) {
+    if (tech.price?.currentPrice > 0) priceMap.set(tech.code, tech.price.currentPrice);
+  }
+  checkHoldingPriceShock(priceMap);
 
   for (const [code, holding] of holdings) {
     if (pendingOrderStocks.has(code)) {
@@ -185,7 +193,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     // 수익 크기 비례 트레일 타이트닝: 수익 클수록 보호 강화 (2×ATR 연구 — 드로다운 32% 감소 검증)
     // maxPnl 10%+: 추가 0.5% 타이트, 15%+: 1.0% 타이트, 20%+: 1.5% 타이트
     const profitTighten = maxPnlPct >= 20 ? 1.5 : maxPnlPct >= 15 ? 1.0 : maxPnlPct >= 10 ? 0.5 : 0;
-    const effectiveTrailDropPct = dynamicTrailDrop - vixRegime.trailTighten - profitTighten;
+    const effectiveTrailDropPct = dynamicTrailDrop + vixRegime.trailTighten + profitTighten;
     const baseTrailActivate = isHighBeta ? 10.0 : isMediumBeta ? 8.0 : 5.0;
     const trailActivatePct = tunerOverrides.trail_activate_pct ?? baseTrailActivate;
     const minAiSellConf = isHighBeta ? 0.82 : 0.78;
@@ -368,7 +376,9 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     if (!sellReason && holding.qty >= 2 && !atrExpanding) {
       const tpStages = getPartialTpStages(sector);
       const currentStage = await getPartialTpStageNum(code);
-      const nextStage = tpStages.find((st) => st.stage > currentStage && pnlPct >= st.triggerPct);
+      // 수수료 반영: 왕복 수수료(0.7%) 를 트리거에 가산하여 실질 수익 보장
+      const roundTripFee = OVERSEAS_FEE_PCT * 2 * 100; // 0.7%
+      const nextStage = tpStages.find((st) => st.stage > currentStage && pnlPct >= st.triggerPct + roundTripFee);
       if (nextStage) {
         const partialQty = Math.max(1, Math.floor(holding.qty * nextStage.sellRatio));
         const partialReason = `부분익절${nextStage.stage}단계(+${nextStage.triggerPct}%) +${pnlPct.toFixed(1)}% → ${(nextStage.sellRatio * 100).toFixed(0)}% 실현`;

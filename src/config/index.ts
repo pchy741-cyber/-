@@ -57,8 +57,8 @@ const envSchema = z.object({
   // • 종목당 한도: 총자산 8~25% 동적 (position-sizer/pipeline에서 자동 스케일, Hard Cap 25%)
   // • 최대 동시 포지션: 8종목
   // • 총 투자 비중: 최대 88% (적극 모드)
-  RISK_MAX_DAILY_DRAWDOWN_KRW: z.coerce.number().default(200000), // 레거시 (미사용 — 실제 한도는 seed-capital.ts 25% 사용)
-  RISK_MAX_POSITION_KRW: z.coerce.number().default(50000000), // 종목당 절대 안전 상한 (실제 사이징은 totalAssets×20~25% 동적 계산)
+  RISK_MAX_DAILY_DRAWDOWN_KRW: z.coerce.number().default(999_999_999), // 미사용 (실제 한도는 seed-capital.ts 총자산% 기반)
+  RISK_MAX_POSITION_KRW: z.coerce.number().default(999_999_999), // 사실상 무제한 (실제 사이징은 totalAssets×25% 동적 계산이 먼저 적용됨, env로 절대 상한 설정 가능)
   RISK_MAX_TOTAL_INVESTED_PCT: z.coerce.number().default(88), // 최대 88% 투자 (적극 모드)
   RISK_MAX_CONCURRENT_POSITIONS: z.coerce.number().default(8), // 동시 8종목
   RISK_MAX_DAILY_TRADES: z.coerce.number().default(3), // v4: 15→3건 (과잉거래 방지, 고품질 신호만)

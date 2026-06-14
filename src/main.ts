@@ -787,6 +787,24 @@ async function bootstrap() {
   process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 }
 
+// ── 미처리 Promise rejection 핸들러 — 프로세스 크래시 방지 ──
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error(`🚨 unhandledRejection: ${reason}`, {
+    component: 'PROCESS',
+    stack: reason instanceof Error ? reason.stack?.split('\n').slice(0, 5).join(' | ') : String(reason),
+  });
+  // 크래시 대신 로깅만 — Cloud Run 인스턴스 유지
+});
+
+process.on('uncaughtException', (err) => {
+  logger.error(`🚨 uncaughtException: ${err.message}`, {
+    component: 'PROCESS',
+    stack: err.stack?.split('\n').slice(0, 5).join(' | '),
+  });
+  // 심각한 상태 오염 가능 → 30초 후 graceful exit (진행 중 매매 보호)
+  setTimeout(() => process.exit(1), 30_000);
+});
+
 bootstrap().catch((err) => {
   logger.error(`치명적 오류: ${err}`);
   process.exit(1);

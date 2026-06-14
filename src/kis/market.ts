@@ -80,7 +80,28 @@ export interface DailyCandle {
   volume: number;
 }
 
+// ── getDailyChart 인메모리 캐시 (일봉은 장중 변하지 않음) ──
+const _dailyChartCache = new Map<string, { data: DailyCandle[]; expiresAt: number }>();
+
+function getDailyChartCacheTtlMs(): number {
+  const kst = getKSTNow();
+  const h = kst.getUTCHours();
+  const m = kst.getUTCMinutes();
+  const timeNum = h * 100 + m;
+  // 장중(09:00~15:30): 5분 캐시 (당일 봉 미확정)
+  if (timeNum >= 900 && timeNum <= 1530) return 5 * 60 * 1000;
+  // 장후: 24시간 캐시 (일봉 확정)
+  return 24 * 60 * 60 * 1000;
+}
+
 export async function getDailyChart(stockCode: string, days: number = 60): Promise<DailyCandle[]> {
+  // 캐시 체크
+  const cacheKey = `${stockCode}:${days}`;
+  const cached = _dailyChartCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.data;
+  }
+
   const endDate = new Date().toISOString().split('T')[0].replace(/-/g, '');
   const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0].replace(/-/g, '');
 
@@ -104,7 +125,7 @@ export async function getDailyChart(stockCode: string, days: number = 60): Promi
   const items = (res.output2 ?? res.output ?? []) as unknown as Record<string, string>[];
   if (!Array.isArray(items)) return [];
 
-  return items.map((c) => ({
+  const result = items.map((c) => ({
     date: c.stck_bsop_date,
     open: Number(c.stck_oprc),
     high: Number(c.stck_hgpr),
@@ -112,6 +133,13 @@ export async function getDailyChart(stockCode: string, days: number = 60): Promi
     close: Number(c.stck_clpr),
     volume: Number(c.acml_vol),
   }));
+
+  // 캐시 저장
+  if (result.length > 0) {
+    _dailyChartCache.set(cacheKey, { data: result, expiresAt: Date.now() + getDailyChartCacheTtlMs() });
+  }
+
+  return result;
 }
 
 // ── 분봉 차트 ──

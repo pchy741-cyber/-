@@ -41,9 +41,12 @@ export function chartVerificationGate(input: GateInput): GateResult {
     }
   }
 
-  // 거래량 이상치 제거
+  // 거래량 이상치: 10배 이상 하드블록, 5~10배는 소프트 게이트 (기관매집 신호 가능)
+  if (tech.volumeRatio > 10.0) {
+    return { passed: false, reason: `거래량 이상치: ${tech.volumeRatio.toFixed(1)}배 (10x+ 하드블록)` };
+  }
   if (tech.volumeRatio > 5.0) {
-    return { passed: false, reason: `거래량 이상치: ${tech.volumeRatio.toFixed(1)}배 (허수/작전 의심)` };
+    logger.info(`🟡 [거래량 소프트] ${input.stockCode}: ${tech.volumeRatio.toFixed(1)}배 — 5~10x 경고 (기관매집 가능)`, { component: 'TRADE_GATE' });
   }
   if (tech.volumeRatio < 0.15) {
     return { passed: false, reason: `거래량 과소: ${tech.volumeRatio.toFixed(1)}배 (유동성 부족)` };

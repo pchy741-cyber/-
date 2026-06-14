@@ -1,9 +1,8 @@
--- 038: live seed_capital 리셋
--- 기존 037 마이그레이션 이전 코드에서 is_paper 필터 없이 setSeedCapital을 호출해
--- live 행의 seed_capital이 실제 계좌잔고(~120,000원)로 덮어써졌음.
--- 정상값(1천만원)으로 복원.
+-- 038: live seed_capital 리셋 (레거시)
+-- 이 마이그레이션은 1회 실행됨. 이후 seed_capital은 KIS API 순자산에서 자동 동기화.
+-- 이전: 코드에서 setSeedCapital 잘못 호출 → 실잔고로 덮어쓰기 버그 수정용이었음.
 
 UPDATE portfolio_allocation_config
-SET seed_capital = 10000000
+SET seed_capital = GREATEST(seed_capital, 1000000)
 WHERE is_paper = false
   AND (seed_capital IS NULL OR seed_capital < 1000000);

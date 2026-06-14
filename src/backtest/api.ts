@@ -21,7 +21,7 @@ backtestRoutes.post('/backtest/single', async (c) => {
 
   const config: BacktestConfig = {
     mode: (mode ?? 'SWING') as StrategyMode,
-    initialCapital: capital ?? 1000000,
+    initialCapital: capital ?? 100_000_000, // 백테스트 시뮬레이션 전용 (실계좌 무관)
     buyThreshold,
   };
 
@@ -66,7 +66,7 @@ backtestRoutes.post('/backtest/all', async (c) => {
 
       const result = runBacktest(candles, stock.stock_code, {
         mode: (mode ?? 'SWING') as StrategyMode,
-        initialCapital: capital ?? 1000000,
+        initialCapital: capital ?? 100_000_000, // 백테스트 시뮬레이션 전용 (실계좌 무관)
       });
 
       results.push({

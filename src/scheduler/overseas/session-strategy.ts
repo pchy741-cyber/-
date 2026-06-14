@@ -46,6 +46,7 @@ interface SessionLog {
 let _activeBrief: SessionStrategyBrief | null = null;
 let _sessionSnapshot: SessionSnapshot | null = null;
 let _sessionId: string | null = null;
+let _priceShockTriggered = false;
 
 export function getActiveSessionBrief(): SessionStrategyBrief | null {
   return _activeBrief;
@@ -278,7 +279,42 @@ export async function checkStrategyValidity(): Promise<StrategyAdjustment> {
     logger.info(`📊 F&G ${fgDelta}pt 변동 → 리스크 ${_activeBrief.riskLevel}`, { component: 'SESSION_STRATEGY' });
   }
 
+  // 이벤트 기반: 보유 종목 ±3% 급변 감지 (sell-logic에서 플래그 설정)
+  if (_priceShockTriggered) {
+    _priceShockTriggered = false;
+    return { adjusted: false, regenerate: true, reason: '보유종목 ±3% 급변 이벤트' };
+  }
+
   return { adjusted, regenerate: false };
+}
+
+// ── 이벤트 기반 AI 리프레시 트리거 (보유 종목 ±3% 급변 감지) ──
+
+const _lastPriceSnapshot = new Map<string, number>();
+
+/**
+ * 보유 종목 가격 변동 체크 — ±3% 이상 변동 시 true 반환 (즉시 AI 재분석 트리거용)
+ * sell-logic에서 매 사이클 호출 — 실시간 가격 이미 조회된 상태에서 비교
+ */
+export function checkHoldingPriceShock(currentPrices: Map<string, number>): boolean {
+  let shockDetected = false;
+
+  for (const [code, curPrice] of currentPrices) {
+    if (!curPrice || curPrice <= 0) continue;
+
+    const prevPrice = _lastPriceSnapshot.get(code);
+    if (prevPrice && prevPrice > 0) {
+      const changePct = Math.abs((curPrice - prevPrice) / prevPrice) * 100;
+      if (changePct >= 3.0) {
+        logger.info(`⚡ [EVENT-TRIGGER] ${code}: ${changePct.toFixed(1)}% 급변 → AI 즉시 재분석`, { component: 'SESSION_STRATEGY' });
+        shockDetected = true;
+      }
+    }
+    _lastPriceSnapshot.set(code, curPrice);
+  }
+
+  if (shockDetected) _priceShockTriggered = true;
+  return shockDetected;
 }
 
 // ── Session Summary ──

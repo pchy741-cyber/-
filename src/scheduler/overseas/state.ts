@@ -8,15 +8,15 @@
  */
 
 import { fetchExchangeRate } from '../../automation/macro-data.js';
-import { cacheSet } from '../../cache/memory.js';
-import { OVERSEAS_FEE_PCT } from '../../config/constants.js';
+import { cacheGet, cacheSet } from '../../cache/memory.js';
+import { FALLBACK_FX_RATE, OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, withTransaction } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
 import { modePrefix } from './utils.js';
 
 /** 통합증거금: Paper 시드 (KRW) — 환율 환산 후 USD로 거래 */
-const PAPER_OVERSEAS_SEED_KRW = Number(process.env.PAPER_OVERSEAS_SEED_KRW) || 30_000_000;
+const PAPER_OVERSEAS_SEED_KRW = Number(process.env.PAPER_OVERSEAS_SEED_KRW) || 60_000_000;
 
 /** paper/live 별 현금 키 */
 export function cashKey(isPaper?: boolean): string {
@@ -25,7 +25,7 @@ export function cashKey(isPaper?: boolean): string {
 
 /**
  * Paper 현금을 orders 테이블에서 결정론적 계산 (통합증거금)
- * seedUsd = ₩50,000,000 / 환율
+ * seedUsd = PAPER_OVERSEAS_SEED_KRW / 환율
  * cash = seedUsd - Σ(매수비용+수수료) + Σ(매도수익-수수료)
  * → overseas_state 오염/리셋과 무관하게 항상 정확
  * → 환율 변동에 따라 USD 시드가 자연 조정 (실제 통합증거금과 동일)
@@ -44,8 +44,13 @@ export function getTimeSinceLastTrade(): number {
 
 export async function computePaperCash(fxRate?: number): Promise<number> {
   try {
-    const rate = fxRate ?? (await fetchExchangeRate());
-    const seedUsd = PAPER_OVERSEAS_SEED_KRW / (rate > 0 ? rate : 1500); // 폴백: DEFAULTS.usdKrw 기준
+    let rate = fxRate ?? (await fetchExchangeRate());
+    // FX rate 범위 체크 — 비정상 값(API 오류/파싱 실패) 방어
+    if (!Number.isFinite(rate) || rate < 1000 || rate > 2500) {
+      logger.warn(`⚠️ FX rate 이상치 감지: ${rate} → ${FALLBACK_FX_RATE} 폴백`, { component: 'OVERSEAS' });
+      rate = FALLBACK_FX_RATE;
+    }
+    const seedUsd = PAPER_OVERSEAS_SEED_KRW / rate;
     const { rows } = await getPool().query(`
       SELECT
         COALESCE(SUM(CASE WHEN side = 'BUY'
@@ -66,7 +71,7 @@ export async function computePaperCash(fxRate?: number): Promise<number> {
     // DB 실패 시: 마지막 정상값 반환 (없으면 시드 폴백)
     // 이전에는 항상 full seed를 반환 → 매수 후 현금 증가 버그 유발
     if (_lastPaperCash !== null) return _lastPaperCash;
-    const rate = fxRate ?? 1500;
+    const rate = fxRate ?? FALLBACK_FX_RATE;
     return PAPER_OVERSEAS_SEED_KRW / rate;
   }
 }
@@ -159,9 +164,9 @@ export async function ensureOverseasTable(): Promise<void> {
       });
     }
 
-    // ── 1회성: ₩50M 통합증거금 전환 — 기존 paper 주문 아카이브 ──
+    // ── 1회성: 통합증거금 전환 — 기존 paper 주문 아카이브 ──
     try {
-      const { rows: seedMig } = await getPool().query("SELECT value FROM overseas_state WHERE key = '_seed_50m_v1'");
+      const { rows: seedMig } = await getPool().query("SELECT value FROM overseas_state WHERE key LIKE '_seed_%m_v1'");
       if (seedMig.length === 0) {
         const { rowCount } = await getPool().query(
           `UPDATE orders SET trading_mode = 'p_arch'
@@ -169,7 +174,7 @@ export async function ensureOverseasTable(): Promise<void> {
         );
         await getPool().query(`DELETE FROM overseas_holdings WHERE is_paper = true`);
         await getPool().query(
-          `INSERT INTO overseas_state (key, value) VALUES ('_seed_50m_v1', $1) ON CONFLICT (key) DO UPDATE SET value = $1`,
+          `INSERT INTO overseas_state (key, value) VALUES ('_seed_unified_v1', $1) ON CONFLICT (key) DO UPDATE SET value = $1`,
           [
             JSON.stringify({
               migratedAt: new Date().toISOString(),
@@ -199,10 +204,15 @@ export async function ensureOverseasTable(): Promise<void> {
     // ══════════════════════════════════════════════════
     // Paper 해외 현금: computed 방식 (orders 테이블 기반 결정론적 계산)
     // overseas_state['cash_paper']는 캐시 역할만 — 실제 값은 항상 computePaperCash()
-    // 통합증거금: ₩50M KRW → 환율 환산 USD
+    // 통합증거금: KRW → 환율 환산 USD
     // ══════════════════════════════════════════════════
     const paperKey = cashKey(true);
-    const fxRate = await fetchExchangeRate();
+    let fxRate = await fetchExchangeRate();
+    // FX rate 범위 체크 (ensureOverseasTable 내부)
+    if (!Number.isFinite(fxRate) || fxRate < 1000 || fxRate > 2500) {
+      logger.warn(`⚠️ ensureOverseasTable: FX rate 이상치 ${fxRate} → ${FALLBACK_FX_RATE} 폴백`, { component: 'OVERSEAS' });
+      fxRate = FALLBACK_FX_RATE;
+    }
     const computed = await computePaperCash(fxRate);
     const { rows: pkRows } = await getPool().query('SELECT value FROM overseas_state WHERE key = $1', [paperKey]);
     if (pkRows.length === 0) {
@@ -405,19 +415,26 @@ export async function updateTradeState(p: {
   cacheSet(`overseas:balance:${mode}`, null as any, 0);
 }
 
-// ── 트레일링 스탑용 최고가 추적 (paper/live 분리) ──
+// ── 트레일링 스탑용 최고가 추적 (paper/live 분리, 메모리 캐시 적용) ──
 export async function getMaxPrice(code: string, isPaper?: boolean): Promise<number> {
+  const cacheKey = `ov_maxprice:${modePrefix(isPaper)}${code}`;
+  const cached = cacheGet<number>(cacheKey);
+  if (cached != null) return cached;
   try {
     const { rows } = await getPool().query('SELECT value FROM overseas_state WHERE key = $1', [
       `${modePrefix(isPaper)}maxprice_${code}`,
     ]);
-    return rows.length > 0 ? Number(rows[0].value) : 0;
+    const val = rows.length > 0 ? Number(rows[0].value) : 0;
+    if (val > 0) cacheSet(cacheKey, val, 300); // 5분 TTL
+    return val;
   } catch {
     return 0;
   }
 }
 
 export async function setMaxPrice(code: string, price: number, isPaper?: boolean): Promise<void> {
+  const cacheKey = `ov_maxprice:${modePrefix(isPaper)}${code}`;
+  cacheSet(cacheKey, price, 300); // 캐시 즉시 갱신
   await getPool()
     .query(
       `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
@@ -438,7 +455,7 @@ const OVERSEAS_REFILL_THRESHOLD = 0.15; // 시드 대비 15% 미만이면 리필
 let lastOverseasRefillCheck = 0;
 
 /**
- * Paper 해외 자금 고갈 시 자동 리필 (통합증거금 ₩50M 기준)
+ * Paper 해외 자금 고갈 시 자동 리필 (통합증거금 기준)
  * - 남은 현금 < 시드 15% + 보유종목 0건 → 리필 트리거
  * - 기존 overseas paper 주문을 아카이브
  * @returns true if refill happened
@@ -450,7 +467,7 @@ export async function checkAndRefillOverseasPaper(): Promise<boolean> {
 
   try {
     const fxRate = await fetchExchangeRate();
-    const seedUsd = PAPER_OVERSEAS_SEED_KRW / (fxRate > 0 ? fxRate : 1500);
+    const seedUsd = PAPER_OVERSEAS_SEED_KRW / (fxRate > 0 ? fxRate : FALLBACK_FX_RATE);
     const cash = await computePaperCash(fxRate);
     const cashRatio = cash / seedUsd;
     const holdings = await getHoldings(true);

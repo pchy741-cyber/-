@@ -1,27 +1,21 @@
 /**
- * 기준자본(Seed Capital) — 손실한도 계산의 고정 기준점
+ * 기준자본(Seed Capital) — 손실한도 계산의 기준점
  *
- * 왜 필요한가:
- *   "당일 시작 포트폴리오" 기준으로 손실한도를 계산하면,
- *   잃을수록 기준이 줄어들어 한도도 줄어든다.
- *   CEO가 투입한 원금(1천만원, $10K 등)을 기준으로 고정해야
- *   "내 돈 X원 중 Y% 이상 잃지 않는다"가 직관적으로 성립한다.
+ * Live: KIS API 실계좌 순자산에서 자동 동기화 → DB 저장
+ *   KR      → portfolio_allocation_config.seed_capital
+ *   OVERSEAS → system_state key 'seed_capital_overseas'
+ *   고정 상수 없음 — KIS+DB 모두 실패 시 0원 (매수 차단)
  *
- * DB 저장:
- *   KR      → portfolio_allocation_config.seed_capital (기본 10,000,000원, live 행만)
- *   OVERSEAS → system_state key 'seed_capital_overseas' / 'seed_capital_overseas_paper'
- *
- * Paper/Live 분리:
- *   Paper 모드는 항상 상수 반환 (DB 읽기/쓰기 없음, 캐시 오염 없음)
- *   Live 모드는 별도 캐시(cachedKrLive, cachedOverseasLive) 사용
+ * Paper: 환경변수 기반 고정 시드 (PAPER_INITIAL_CAPITAL_KRW, PAPER_OVERSEAS_SEED_KRW)
  */
 
 import { getCtxIsPaper } from '../config/context.js';
 import { PAPER_INITIAL_CAPITAL } from './paper-balance.js';
 import { logger } from '../utils/logger.js';
 
-const DEFAULT_SEED_KR = 10_000_000;
-const DEFAULT_SEED_OVERSEAS = 10_000;
+// 폴백: KIS API + DB 둘 다 실패 시에만 사용 (정상 운용 시 사용되지 않음)
+const FALLBACK_SEED_KR = 0; // 0 = KIS 동기화 실패 시 매수 차단 (임의 금액 사용 안 함)
+const FALLBACK_SEED_OVERSEAS = 0;
 
 // 캐시 (live 전용 — paper는 고정 상수 반환)
 let cachedKrLive: number | null = null;
@@ -29,13 +23,12 @@ let cachedOverseasLive: number | null = null;
 
 export async function getSeedCapitalKr(): Promise<number> {
   if (getCtxIsPaper()) {
-    // Paper 시드자본 = 고정 초기자본 (투입원금 — 수익률 분모)
-    // ⚠️ 이전 버그: 동적 잔고(cash+eval) 반환 → seed가 현재가와 같아서 수익률 ≈ 0%
     return PAPER_INITIAL_CAPITAL;
   }
 
   if (cachedKrLive !== null) return cachedKrLive;
 
+  // 1순위: DB에 저장된 seed_capital
   try {
     const { getPool } = await import('../db/client.js');
     const { rows } = await getPool().query(
@@ -47,26 +40,44 @@ export async function getSeedCapitalKr(): Promise<number> {
     }
   } catch {}
 
-  cachedKrLive = DEFAULT_SEED_KR;
+  // 2순위: KIS API에서 실제 순자산 동기화 (임의 상수 사용 안 함)
+  try {
+    const { getAccountBalance } = await import('../kis/account.js');
+    const balance = await getAccountBalance(true); // forceLive
+    const netAsset = balance.netAsset;
+    if (netAsset > 0) {
+      cachedKrLive = netAsset;
+      logger.info(`💰 시드자본 KIS 동기화: ₩${netAsset.toLocaleString()} (DB 미설정 → 실계좌 순자산)`, { component: 'RISK' });
+      // DB에도 저장 (다음 부팅 시 즉시 사용)
+      try {
+        const { getPool } = await import('../db/client.js');
+        await getPool().query('UPDATE portfolio_allocation_config SET seed_capital = $1 WHERE is_paper = false', [netAsset]);
+      } catch {}
+      return cachedKrLive;
+    }
+  } catch {}
+
+  // 3순위: 폴백 (0 = 매수 차단 — 임의 금액 절대 사용 안 함)
+  cachedKrLive = FALLBACK_SEED_KR;
+  logger.warn('⚠️ 시드자본 조회 실패: KIS+DB 모두 실패 → 0원 (매수 차단)', { component: 'RISK' });
   return cachedKrLive;
 }
 
 export async function getSeedCapitalOverseas(): Promise<number> {
   if (getCtxIsPaper()) {
-    // Paper 해외 시드: PAPER_OVERSEAS_SEED_KRW(₩30M)를 환율 환산 → USD
-    // ⚠️ 이전 버그: DEFAULT_SEED_OVERSEAS($10K) 반환 → 실제 시드(₩30M ≈ $21.7K)와 불일치
     try {
       const { getPaperSeedKrw } = await import('../scheduler/overseas/state.js');
       const { fetchExchangeRate } = await import('../automation/macro-data.js');
       const rate = await fetchExchangeRate();
-      return rate > 0 ? getPaperSeedKrw() / rate : DEFAULT_SEED_OVERSEAS;
+      return rate > 0 ? getPaperSeedKrw() / rate : FALLBACK_SEED_OVERSEAS;
     } catch {
-      return DEFAULT_SEED_OVERSEAS;
+      return FALLBACK_SEED_OVERSEAS;
     }
   }
 
   if (cachedOverseasLive !== null) return cachedOverseasLive;
 
+  // 1순위: DB system_state
   try {
     const { getPool } = await import('../db/client.js');
     const key = 'seed_capital_overseas';
@@ -77,7 +88,24 @@ export async function getSeedCapitalOverseas(): Promise<number> {
     }
   } catch {}
 
-  cachedOverseasLive = DEFAULT_SEED_OVERSEAS;
+  // 2순위: KIS 해외 잔고에서 동기화 (cash + holdings value)
+  try {
+    const { getCash, getHoldings } = await import('../scheduler/overseas/state.js');
+    const { fetchExchangeRate } = await import('../automation/macro-data.js');
+    const rate = await fetchExchangeRate();
+    const cash = await getCash(false, rate);
+    const holdings = await getHoldings(false);
+    let holdingsValue = 0;
+    for (const [, h] of holdings) holdingsValue += h.qty * h.avgPrice;
+    const totalUsd = cash + holdingsValue;
+    if (totalUsd > 0) {
+      cachedOverseasLive = totalUsd;
+      logger.info(`💰 해외 시드자본 동기화: $${totalUsd.toFixed(0)} (DB 미설정 → 실계좌)`, { component: 'RISK' });
+      return cachedOverseasLive;
+    }
+  } catch {}
+
+  cachedOverseasLive = FALLBACK_SEED_OVERSEAS;
   return cachedOverseasLive;
 }
 
@@ -113,8 +141,8 @@ export async function setSeedCapital(market: 'KR' | 'OVERSEAS', amount: number):
 export function getSeedCapitalStatus() {
   const paper = getCtxIsPaper();
   return {
-    kr: paper ? PAPER_INITIAL_CAPITAL : (cachedKrLive ?? DEFAULT_SEED_KR),
-    overseas: cachedOverseasLive ?? DEFAULT_SEED_OVERSEAS, // Paper 해외는 async에서만 정확 (환율 필요)
+    kr: paper ? PAPER_INITIAL_CAPITAL : (cachedKrLive ?? 0),
+    overseas: cachedOverseasLive ?? 0, // Paper 해외는 async에서만 정확 (환율 필요)
   };
 }
 

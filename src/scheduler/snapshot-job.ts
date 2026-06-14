@@ -52,10 +52,8 @@ export async function runSnapshotJob(): Promise<void> {
   try {
     const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
 
-    // 국내 총자산: netAsset 우선
-    const domesticValue = (balance as any).netAsset > 0
-      ? (balance as any).netAsset
-      : balance.totalDeposit + balance.totalEvalAmount;
+    // 국내 총자산: 주문가능 + 증권시가 (nass_amt 사용 금지 — KIS 앱 불일치)
+    const domesticValue = balance.orderableCash + balance.totalEvalAmount;
 
     // 해외 포함 총자산 (Paper: 국내+해외, Live: 국내만 — 통합증거금)
     const overseasKrw = await getOverseasValueKrw(isPaper);
@@ -86,9 +84,7 @@ export async function runSnapshotJob(): Promise<void> {
       // 서버 paper → live 스냅샷 추가 (실계좌 잔고)
       const liveBalance = await getAccountBalance(true);
       if (liveBalance.totalDeposit > 0 || liveBalance.totalEvalAmount > 0) {
-        const liveDomestic = (liveBalance as any).netAsset > 0
-          ? (liveBalance as any).netAsset
-          : liveBalance.totalDeposit + liveBalance.totalEvalAmount;
+        const liveDomestic = liveBalance.orderableCash + liveBalance.totalEvalAmount;
         const liveOverseasKrw = await getOverseasValueKrw(false);
         const liveTotalValue = liveDomestic + liveOverseasKrw;
         await insertSnapshot({
@@ -109,9 +105,7 @@ export async function runSnapshotJob(): Promise<void> {
     } else {
       // 서버 live → paper 스냅샷 추가
       const paperBalance = await getPaperBalance();
-      const paperDomestic = (paperBalance as any).netAsset > 0
-        ? (paperBalance as any).netAsset
-        : paperBalance.totalDeposit + paperBalance.totalEvalAmount;
+      const paperDomestic = paperBalance.orderableCash + paperBalance.totalEvalAmount;
       const paperOverseasKrw = await getOverseasValueKrw(true);
       const paperTotalValue = paperDomestic + paperOverseasKrw;
       await insertSnapshot({

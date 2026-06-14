@@ -25,14 +25,11 @@ async function getBalance(isPaper: boolean): Promise<AccountBalance> {
 
 /**
  * 국내 총자산 계산 — 모든 리스크 체크에서 동일한 공식 사용
- * nass_amt(순자산) 최우선: 현금 + 증권 시가 - 미수금 (KIS T+2 정산 완료, 가장 정확)
- * max_buy_amt(주문가능)는 대용(담보) 포함이므로 총자산으로 사용하면 안 됨
+ * 총자산 = 주문가능(orderableCash) + 국내증권시가(totalEvalAmount)
+ * nass_amt(순자산) 사용 금지 — KIS 앱 표시와 불일치
  */
 function getDomesticTotalAssets(balance: AccountBalance): number {
-  if (balance.netAsset > 0) return balance.netAsset;
-  // nass_amt 실패 시 폴백: 예수금 + 증권평가
-  const fallback = (balance.totalDeposit ?? 0) + (balance.totalEvalAmount ?? 0);
-  return fallback > 0 ? fallback : 0;
+  return (balance.orderableCash ?? 0) + (balance.totalEvalAmount ?? 0);
 }
 
 export interface PreTradeCheckResult {
@@ -182,8 +179,8 @@ export class RiskEngine {
     const currentInvested = existing ? existing.quantity * existing.avgBuyPrice : 0;
     const totalAfter = currentInvested + orderValue;
 
-    // 총자산 = 순자산(주식평가 + 현금 - 미수금) — totalEvalAmount만 쓰면 현금 미포함 버그
-    const totalAssets = balance.netAsset ?? (balance.totalEvalAmount ?? 0) + Math.max(0, balance.orderableCash ?? 0);
+    // 총자산 = 주문가능 + 증권시가 (nass_amt 사용 금지 — KIS 앱 불일치)
+    const totalAssets = (balance.orderableCash ?? 0) + (balance.totalEvalAmount ?? 0);
     // 연습모드 — 종목당 한도 없음
     if (isPaper) return { approved: true, reason: '연습모드 종목당 한도 없음' };
     // fail-closed: 총자산 0 이하면 잔고 조회 실패 → 매수 차단 (글로벌 한도 폴백 제거)
@@ -403,9 +400,7 @@ export class RiskEngine {
       if (weekStartValue <= 0) return { approved: true, reason: 'OK' };
 
       const currentBalance = await getBalance(isPaper);
-      const currentValue =
-        currentBalance.netAsset ??
-        (currentBalance.totalEvalAmount ?? 0) + Math.max(0, currentBalance.orderableCash ?? 0);
+      const currentValue = (currentBalance.orderableCash ?? 0) + (currentBalance.totalEvalAmount ?? 0);
 
       // 소자산 면제 (20만 미만)
       if (currentValue < 200_000) return { approved: true, reason: '소자산 — 주간 Drawdown 면제' };

@@ -34,6 +34,12 @@ interface WarmCache {
 }
 let _warmCache: WarmCache | null = null;
 
+// Opening Bell 워밍업 완료 플래그 — Track B 09:05 조기 허용에 사용
+let _openingBellCompleted = false;
+export function isOpeningBellCompleted(): boolean {
+  return _openingBellCompleted;
+}
+
 // ── 08:55 워밍업 ─────────────────────────────────────────────────────────
 export async function warmupOpeningBell(): Promise<void> {
   logger.info('🌅 [OPENING] 개장 워밍업 시작 (08:55)', { component: 'OPENING_BELL' });
@@ -49,7 +55,7 @@ export async function warmupOpeningBell(): Promise<void> {
 
     // 1. 차트 선행 로드 (65일치) — 개장 중 재조회 없음
     const chartData = new Map<string, import('../kis/market.js').DailyCandle[]>();
-    const BATCH = 5;
+    const BATCH = 10;
     for (let i = 0; i < stockCodes.length; i += BATCH) {
       const batch = stockCodes.slice(i, i + BATCH);
       const results = await Promise.allSettled(batch.map((c) => getDailyChart(c, 65)));
@@ -83,7 +89,7 @@ export async function warmupOpeningBell(): Promise<void> {
             if (!candles || candles.length < 5 || !price) return null;
             const tech = analyzeTechnicals(candles);
             if (!tech) return null;
-            const prev = candles[candles.length - 1];
+            const prev = candles[0]; // 최신순 정렬: [0]=전일, [n-1]=가장 오래된 것
             const gapPct = prev ? ((price.currentPrice - Number(prev.close)) / Number(prev.close)) * 100 : 0;
             const watchItem = watchlist.find((w) => w.stock_code === code);
             return {
@@ -194,7 +200,7 @@ JSON만 반환 (다른 텍스트 없이):
     const judeojuCodes = new Set<string>();
     for (const [code, candles] of chartData) {
       if (candles.length === 0) continue;
-      const last = candles[candles.length - 1];
+      const last = candles[0]; // 전일(최신) 기준 거래대금 판정
       if (Number(last.close) * Number(last.volume) >= JUDO_MIN_TRADED) judeojuCodes.add(code);
     }
     if (judeojuCodes.size < 3) {
@@ -203,8 +209,8 @@ JSON만 반환 (다른 텍스트 없이):
         .filter(([, c]) => c.length > 0)
         .sort(
           ([, a], [, b]) =>
-            Number(b[b.length - 1].close) * Number(b[b.length - 1].volume) -
-            Number(a[a.length - 1].close) * Number(a[a.length - 1].volume),
+            Number(b[0].close) * Number(b[0].volume) -
+            Number(a[0].close) * Number(a[0].volume),
         )
         .slice(0, 5)
         .map(([code]) => code);
@@ -219,6 +225,7 @@ JSON만 반환 (다른 텍스트 없이):
     }
 
     _warmCache = { chartData, geminiScores, judeojuCodes, warmAt: Date.now() };
+    _openingBellCompleted = true;
     logger.info(`✅ [OPENING] 워밍업 완료 (${((Date.now() - t0) / 1000).toFixed(1)}초, 차트 ${chartData.size}종목)`, {
       component: 'OPENING_BELL',
     });
@@ -252,10 +259,16 @@ export async function runOpeningBellCycle(): Promise<void> {
   logger.info(`⚡ [OPENING] 개장 사이클 ${h}:${String(m).padStart(2, '0')}`, { component: 'OPENING_BELL' });
 
   try {
+    // Null cache 안전장치: 워밍업 미실행/실패 시 즉시 워밍업 트리거
+    if (!_warmCache) {
+      logger.warn(`[OPENING] 워밍업 캐시 NULL — 긴급 워밍업 실행`, { component: 'OPENING_BELL' });
+      await warmupOpeningBell();
+    }
+
     const cache = _warmCache;
     const cacheAge = cache ? (Date.now() - cache.warmAt) / 60000 : 999;
 
-    // 캐시가 20분 이상 오래됐으면 경고만 (차트 재조회는 하지 않음 — 속도 우선)
+    // 워밍업 재시도 후에도 캐시 없으면 기술지표 fallback으로 진행
     if (cacheAge > 20) {
       logger.warn(`[OPENING] 워밍업 캐시 오래됨 (${cacheAge.toFixed(0)}분) — 기술지표 fallback`, {
         component: 'OPENING_BELL',
@@ -314,7 +327,7 @@ export async function runOpeningBellCycle(): Promise<void> {
         const price = livePrices.get(s.stock_code);
         const candles = cache?.chartData.get(s.stock_code);
         const tech = candles ? analyzeTechnicals(candles) : null;
-        const prev = candles ? candles[candles.length - 1] : null;
+        const prev = candles ? candles[0] : null; // 전일(최신)
         const gapPct = prev && price ? ((price.currentPrice - Number(prev.close)) / Number(prev.close)) * 100 : 0;
         return {
           code: s.stock_code,
@@ -377,17 +390,15 @@ JSON만: {"scores":[{"code":"코드","score":점수},...]}`;
     // Track B 기술 판단 (캐시 차트 + 실시간 시세 + Gemini 점수 주입)
     const chartData = cache?.chartData ?? new Map();
     const orderableCash = Math.max(0, balanceRaw.orderableCash);
-    // nass_amt(순자산) 우선: max_buy_amt(대용 포함)로 인한 이중계산 방지
-    const totalAssets = balanceRaw.netAsset > 0
-      ? balanceRaw.netAsset
-      : balanceRaw.totalEvalAmount + orderableCash;
+    // 총자산 = 주문가능 + 증권시가 (nass_amt 사용 금지 — KIS 앱 불일치)
+    const totalAssets = orderableCash + balanceRaw.totalEvalAmount;
 
     // 갭다운 필터 — 전날 종가 대비 -0.3% 이하 종목은 개장 진입 금지
     const gapFilteredWatchlist = watchlist.filter((w) => {
       const price = livePrices.get(w.stock_code);
       const candles = cache?.chartData.get(w.stock_code);
       if (!price || !candles || candles.length === 0) return true;
-      const prevClose = Number(candles[candles.length - 1].close);
+      const prevClose = Number(candles[0].close); // 전일 종가 (최신순)
       if (!prevClose || prevClose <= 0) return true;
       const gapPct = ((price.currentPrice - prevClose) / prevClose) * 100;
       if (gapPct < -0.3) {

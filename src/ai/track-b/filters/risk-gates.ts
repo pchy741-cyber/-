@@ -64,7 +64,7 @@ export function checkRiskGates(input: RiskGateInput): GateResult {
     ? true
     : signalData.shortRatio < 8 && signalData.lendingRatio < 15 && signalData.bidAskRatio > 0.5;
 
-  // ─ rBreakoutConfirm ─ v6: 호가 비대칭 검증 추가 (매수잔량 부족 돌파 = 가짜)
+  // ─ rBreakoutConfirm ─ v6+: 소프트 게이트 전환 — 1-2% 등락 + 다일고가 구간에서 거래량 1.5배 이상이면 허용
   const rBreakoutConfirm = (() => {
     if (!atMultiDayHigh) return true;
     // 돌파 + 거래량 확인 = OK
@@ -77,6 +77,14 @@ export function checkRiskGates(input: RiskGateInput): GateResult {
         { component: 'TRACK_B' },
       );
       return false;
+    }
+    // 소프트 게이트: 1-2% + 다일고가 + 거래량 1.5배 이상 → 허용 (confidence 페널티 적용됨)
+    if (todayChangePct >= 1 && todayChangePct < 2 && adjustedVolRatio >= 1.5) {
+      logger.info(
+        `  🟡 ${input.stockCode}: 돌파 소프트허용 (등락 ${todayChangePct.toFixed(1)}%, 거래량 ${adjustedVolRatio.toFixed(1)}x)`,
+        { component: 'TRACK_B' },
+      );
+      return true;
     }
     return false;
   })();

@@ -25,20 +25,32 @@ export async function generateDailyReport(): Promise<void> {
     const today = getKSTNow().toISOString().split('T')[0];
     const { todayAmount: reserved } = await getDinnerMoneyStats();
 
-    // 오늘 체결된 주문
-    const { rows: todayOrders } = await getPool().query(
-      'SELECT * FROM orders WHERE created_at >= $1 AND status = $2 AND trading_mode = $3 ORDER BY created_at ASC',
-      [`${today}T00:00:00`, 'FILLED', getCtxIsPaper() ? 'paper' : 'live'],
-    );
+    // 4개 쿼리 병렬 실행 (순차 → Promise.all)
+    const isPaper = getCtxIsPaper();
+    const weekStart = getWeekStart(today);
+    const monthStart = `${today.slice(0, 7)}-01`;
+
+    const [{ rows: todayOrders }, { rows: closedToday }, { rows: weekData }, { rows: monthData }] = await Promise.all([
+      getPool().query(
+        'SELECT * FROM orders WHERE created_at >= $1 AND status = $2 AND trading_mode = $3 ORDER BY created_at ASC',
+        [`${today}T00:00:00`, 'FILLED', isPaper ? 'paper' : 'live'],
+      ),
+      getPool().query(
+        'SELECT * FROM transaction_chains WHERE status = $1 AND closed_at >= $2 AND is_paper = $3',
+        ['CLOSED', `${today}T00:00:00`, isPaper],
+      ),
+      getPool().query(
+        'SELECT realized_pnl FROM transaction_chains WHERE status = $1 AND closed_at >= $2 AND is_paper = $3',
+        ['CLOSED', `${weekStart}T00:00:00`, isPaper],
+      ),
+      getPool().query(
+        'SELECT realized_pnl FROM transaction_chains WHERE status = $1 AND closed_at >= $2 AND is_paper = $3',
+        ['CLOSED', `${monthStart}T00:00:00`, isPaper],
+      ),
+    ]);
 
     const buyOrders = todayOrders.filter((o: any) => o.side === 'BUY');
     const sellOrders = todayOrders.filter((o: any) => o.side === 'SELL');
-
-    // 오늘 닫힌 체인 (실현 손익)
-    const { rows: closedToday } = await getPool().query(
-      'SELECT * FROM transaction_chains WHERE status = $1 AND closed_at >= $2 AND is_paper = $3',
-      ['CLOSED', `${today}T00:00:00`, getCtxIsPaper()],
-    );
     const realizedPnl = closedToday.reduce((sum: number, c: any) => sum + Number(c.realized_pnl ?? 0), 0);
 
     // 보유 종목별 수익률
@@ -55,21 +67,11 @@ export async function generateDailyReport(): Promise<void> {
     });
 
     // 이번 주 성과
-    const weekStart = getWeekStart(today);
-    const { rows: weekData } = await getPool().query(
-      'SELECT realized_pnl FROM transaction_chains WHERE status = $1 AND closed_at >= $2 AND is_paper = $3',
-      ['CLOSED', `${weekStart}T00:00:00`, getCtxIsPaper()],
-    );
     const weekPnl = weekData.reduce((s: number, c: any) => s + Number(c.realized_pnl ?? 0), 0);
     const weekWins = weekData.filter((c: any) => Number(c.realized_pnl) > 0).length;
     const weekLosses = weekData.filter((c: any) => Number(c.realized_pnl) <= 0).length;
 
     // 이번 달 성과
-    const monthStart = `${today.slice(0, 7)}-01`;
-    const { rows: monthData } = await getPool().query(
-      'SELECT realized_pnl FROM transaction_chains WHERE status = $1 AND closed_at >= $2 AND is_paper = $3',
-      ['CLOSED', `${monthStart}T00:00:00`, getCtxIsPaper()],
-    );
     const monthPnl = monthData.reduce((s: number, c: any) => s + Number(c.realized_pnl ?? 0), 0);
     const monthWins = monthData.filter((c: any) => Number(c.realized_pnl) > 0).length;
     const monthLosses = monthData.filter((c: any) => Number(c.realized_pnl) <= 0).length;
