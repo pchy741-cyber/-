@@ -237,16 +237,16 @@ export async function reEntryCooldownGate(input: GateInput): Promise<GateResult>
   if (input.strategyMode !== 'SCALPING') return { passed: true, reason: 'SCALPING 외 — 생략' };
   const isPaper = getCtxIsPaper();
   const reEntryCooldownMs = isPaper ? 5 * 60_000 : GATE.REENTRY_COOLDOWN_MS;
-  const reEntryIntervalSql = isPaper ? '5 minutes' : '30 minutes';
+  const reEntryMinutes = isPaper ? 5 : 30;
   try {
     const { rows } = await getPool().query(
       `SELECT created_at FROM orders
        WHERE stock_code = $1 AND side = 'BUY'
          AND status IN ('FILLED', 'PENDING', 'PARTIAL')
-         AND created_at >= NOW() - INTERVAL '${reEntryIntervalSql}'
+         AND created_at >= NOW() - ($3 * INTERVAL '1 minute')
          AND trading_mode = $2
        ORDER BY created_at DESC LIMIT 1`,
-      [input.stockCode, isPaper ? 'paper' : 'live'],
+      [input.stockCode, isPaper ? 'paper' : 'live', reEntryMinutes],
     );
     if (rows.length > 0) {
       const elapsed = Date.now() - new Date(rows[0].created_at).getTime();

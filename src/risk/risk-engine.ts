@@ -94,9 +94,19 @@ export class RiskEngine {
     if (!weeklyCheck.approved) return weeklyCheck;
 
     // 5-B. 월간 MDD -8% 체크
+    // ceoManual: 수동매수 시 -8% 재발동 방지. 단, -15% 하드캡은 절대 우회 불가
     if (!params.ceoManual) {
       const monthlyMddCheck = await this.checkMonthlyMDD(isPaper);
       if (!monthlyMddCheck.approved) return monthlyMddCheck;
+    } else {
+      // 하드캡: ceoManual이라도 월간 MDD -15% 초과 시 절대 차단
+      const snap = await getMonthlyMddSnapshot(isPaper);
+      if (snap.samples >= 2 && !snap.externalActivity && snap.mddPct >= 15) {
+        return {
+          approved: false,
+          reason: `🛑 월간 MDD 하드캡 초과: -${snap.mddPct.toFixed(1)}% (한도 -15%) — ceoManual도 차단`,
+        };
+      }
     }
 
     // 6. 총 투자 비율 체크

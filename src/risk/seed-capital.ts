@@ -18,15 +18,19 @@ const FALLBACK_SEED_KR = 0; // 0 = KIS 동기화 실패 시 매수 차단 (임�
 const FALLBACK_SEED_OVERSEAS = 0;
 
 // 캐시 (live 전용 — paper는 고정 상수 반환)
+// TTL 1시간: 외부 입출금/DB 변경 반영 (이전: 서버 재시작까지 영구 캐시)
 let cachedKrLive: number | null = null;
 let cachedOverseasLive: number | null = null;
+let cachedKrLiveAt = 0;
+let cachedOverseasLiveAt = 0;
+const SEED_CACHE_TTL_MS = 60 * 60_000; // 1시간
 
 export async function getSeedCapitalKr(): Promise<number> {
   if (getCtxIsPaper()) {
     return PAPER_INITIAL_CAPITAL;
   }
 
-  if (cachedKrLive !== null) return cachedKrLive;
+  if (cachedKrLive !== null && Date.now() - cachedKrLiveAt < SEED_CACHE_TTL_MS) return cachedKrLive;
 
   // 1순위: DB에 저장된 seed_capital
   try {
@@ -36,6 +40,7 @@ export async function getSeedCapitalKr(): Promise<number> {
     );
     if (rows[0] && Number(rows[0].seed_capital) > 0) {
       cachedKrLive = Number(rows[0].seed_capital);
+      cachedKrLiveAt = Date.now();
       return cachedKrLive;
     }
   } catch {}
@@ -47,6 +52,7 @@ export async function getSeedCapitalKr(): Promise<number> {
     const netAsset = balance.netAsset;
     if (netAsset > 0) {
       cachedKrLive = netAsset;
+      cachedKrLiveAt = Date.now();
       logger.info(`💰 시드자본 KIS 동기화: ₩${netAsset.toLocaleString()} (DB 미설정 → 실계좌 순자산)`, { component: 'RISK' });
       // DB에도 저장 (다음 부팅 시 즉시 사용)
       try {
@@ -75,7 +81,7 @@ export async function getSeedCapitalOverseas(): Promise<number> {
     }
   }
 
-  if (cachedOverseasLive !== null) return cachedOverseasLive;
+  if (cachedOverseasLive !== null && Date.now() - cachedOverseasLiveAt < SEED_CACHE_TTL_MS) return cachedOverseasLive;
 
   // 1순위: DB system_state
   try {
@@ -123,6 +129,7 @@ export async function setSeedCapital(market: 'KR' | 'OVERSEAS', amount: number):
   if (market === 'KR') {
     await getPool().query('UPDATE portfolio_allocation_config SET seed_capital = $1 WHERE is_paper = false', [amount]);
     cachedKrLive = amount;
+    cachedKrLiveAt = Date.now();
   } else {
     const key = 'seed_capital_overseas';
     await getPool().query(
@@ -131,6 +138,7 @@ export async function setSeedCapital(market: 'KR' | 'OVERSEAS', amount: number):
       [key, String(amount)],
     );
     cachedOverseasLive = amount;
+    cachedOverseasLiveAt = Date.now();
   }
 
   const label = market === 'KR' ? '국내' : '해외';

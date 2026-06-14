@@ -417,18 +417,24 @@ const KRX_HOLIDAYS = new Set([
   '2026-12-25',
 ]);
 
-/** 두 날짜 사이의 영업일 수 (주말 + 한국 공휴일 제외) */
+/** 두 날짜 사이의 영업일 수 (주말 + 한국 공휴일 제외) — KST 기준 */
 function countBusinessDays(start: Date, end: Date): number {
   let count = 0;
-  const current = new Date(start);
-  current.setHours(0, 0, 0, 0);
-  const endDate = new Date(end);
-  endDate.setHours(0, 0, 0, 0);
+  // KST 기준으로 날짜 경계 정렬 (UTC+9 → UTC epoch에서 +9h 후 자정 절삭)
+  const KST_OFFSET_MS = 9 * 60 * 60_000;
+  const startKstMs = start.getTime() + KST_OFFSET_MS;
+  const endKstMs = end.getTime() + KST_OFFSET_MS;
+  const MS_PER_DAY = 24 * 60 * 60_000;
+  let currentMs = startKstMs - (startKstMs % MS_PER_DAY); // KST 자정 절삭
+  const endMs = endKstMs - (endKstMs % MS_PER_DAY);
 
-  while (current < endDate) {
-    current.setDate(current.getDate() + 1);
-    const day = current.getDay();
-    const ymd = current.toISOString().split('T')[0];
+  while (currentMs < endMs) {
+    currentMs += MS_PER_DAY;
+    const d = new Date(currentMs - KST_OFFSET_MS); // UTC로 변환
+    const day = d.getUTCDay();
+    // KST 날짜 문자열 생성
+    const kstDate = new Date(currentMs);
+    const ymd = kstDate.toISOString().split('T')[0];
     if (day !== 0 && day !== 6 && !KRX_HOLIDAYS.has(ymd)) count++;
   }
 

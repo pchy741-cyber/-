@@ -11,30 +11,48 @@ import { logger } from '../utils/logger.js';
 import type { CooldownStatus, GateResult, WinRateStats } from './trade-gate-types.js';
 
 let lastCooldownNotifyAt = 0;
-let cooldownResetAt: Date | null = null;
+// Paper/Live 분리: 모드별 독립 쿨다운 리셋 (크로스오염 방지)
+const cooldownResetAtMap = new Map<string, Date | null>([['paper', null], ['live', null]]);
+function _getCooldownResetAt(): Date | null {
+  return cooldownResetAtMap.get(getCtxIsPaper() ? 'paper' : 'live') ?? null;
+}
+function _setCooldownResetAt(val: Date | null): void {
+  cooldownResetAtMap.set(getCtxIsPaper() ? 'paper' : 'live', val);
+}
 
 const SELL_PRICE_SUB = `(SELECT filled_price FROM orders WHERE chain_id = tc.id AND side = 'SELL' ORDER BY created_at DESC LIMIT 1) as sell_price`;
 
 export function resetCooldown(): void {
-  cooldownResetAt = new Date();
-  logger.info('🔓 연속손실 쿨다운 수동 초기화', { component: 'TRADE_GATE' });
+  const now = new Date();
+  _setCooldownResetAt(now);
+  const mode = getCtxIsPaper() ? 'paper' : 'live';
+  logger.info(`🔓 연속손실 쿨다운 수동 초기화 [${mode}]`, { component: 'TRADE_GATE' });
   getPool()
     .query(
-      `INSERT INTO system_state (key, value) VALUES ('cooldown_reset_at', $1)
-     ON CONFLICT (key) DO UPDATE SET value = $1`,
-      [cooldownResetAt.toISOString()],
+      `INSERT INTO system_state (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = $2`,
+      [`cooldown_reset_at_${mode}`, now.toISOString()],
     )
     .catch(() => {});
 }
 
 export async function restoreCooldownResetAt(): Promise<void> {
   try {
-    const { rows } = await getPool().query("SELECT value FROM system_state WHERE key = 'cooldown_reset_at'");
-    if (rows.length > 0) {
-      const saved = new Date(rows[0].value);
+    // Paper/Live 양쪽 + 레거시 키 복원
+    const { rows } = await getPool().query(
+      "SELECT key, value FROM system_state WHERE key IN ('cooldown_reset_at', 'cooldown_reset_at_paper', 'cooldown_reset_at_live')",
+    );
+    for (const r of rows) {
+      const saved = new Date(r.value);
       if (Date.now() - saved.getTime() < 24 * 60 * 60_000) {
-        cooldownResetAt = saved;
-        logger.info(`📦 쿨다운 리셋 복원: ${saved.toISOString()}`, { component: 'TRADE_GATE' });
+        if (r.key === 'cooldown_reset_at_paper') cooldownResetAtMap.set('paper', saved);
+        else if (r.key === 'cooldown_reset_at_live') cooldownResetAtMap.set('live', saved);
+        else {
+          // 레거시 키: 양쪽 모두 설정
+          if (!cooldownResetAtMap.get('paper')) cooldownResetAtMap.set('paper', saved);
+          if (!cooldownResetAtMap.get('live')) cooldownResetAtMap.set('live', saved);
+        }
+        logger.info(`📦 쿨다운 리셋 복원 [${r.key}]: ${saved.toISOString()}`, { component: 'TRADE_GATE' });
       }
     }
   } catch {
@@ -92,6 +110,7 @@ async function getConsecutiveLosses(): Promise<number> {
   try {
     const params: any[] = [getCtxIsPaper()];
     let resetFilter = '';
+    const cooldownResetAt = _getCooldownResetAt();
     if (cooldownResetAt) {
       params.push(cooldownResetAt.toISOString());
       resetFilter = `AND closed_at > $${params.length}`;
@@ -136,8 +155,9 @@ export async function cooldownGate(): Promise<GateResult> {
     try {
       const params: any[] = [isPaper];
       let resetFilter = '';
-      if (cooldownResetAt) {
-        params.push(cooldownResetAt.toISOString());
+      const cooldownResetAt2 = _getCooldownResetAt();
+      if (cooldownResetAt2) {
+        params.push(cooldownResetAt2.toISOString());
         resetFilter = `AND closed_at > $${params.length}`;
       }
       const { rows } = await getPool().query(
@@ -216,8 +236,9 @@ export async function getCooldownStatus(): Promise<CooldownStatus> {
     if (cooldownMs > 0) {
       const params: any[] = [isPaper];
       let resetFilter = '';
-      if (cooldownResetAt) {
-        params.push(cooldownResetAt.toISOString());
+      const cooldownResetAt2 = _getCooldownResetAt();
+      if (cooldownResetAt2) {
+        params.push(cooldownResetAt2.toISOString());
         resetFilter = `AND closed_at > $${params.length}`;
       }
       const { rows } = await getPool().query(
