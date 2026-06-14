@@ -56,6 +56,7 @@ export function clearSessionBrief(): void {
   _activeBrief = null;
   _sessionSnapshot = null;
   _sessionId = null;
+  _lastPriceSnapshot.clear(); // 세션 초기화 시 가격 스냅샷도 리셋 (메모리 누수 방지)
 }
 
 // ── Session Brief Generation ──

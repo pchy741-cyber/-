@@ -36,8 +36,18 @@ let _warmCache: WarmCache | null = null;
 
 // Opening Bell 워밍업 완료 플래그 — Track B 09:05 조기 허용에 사용
 let _openingBellCompleted = false;
+let _warmCacheDate = ''; // 캐시가 생성된 날짜 (YYYY-MM-DD) — 일간 리셋용
 export function isOpeningBellCompleted(): boolean {
   return _openingBellCompleted;
+}
+/** 일간 캐시 리셋 — 스케줄러에서 장 시작 전 호출 (전일 차트 데이터 무효화) */
+export function resetOpeningBellDaily(): void {
+  const today = new Date().toISOString().split('T')[0];
+  if (_warmCacheDate && _warmCacheDate !== today) {
+    _warmCache = null;
+    _openingBellCompleted = false;
+    _warmCacheDate = '';
+  }
 }
 
 // ── 08:55 워밍업 ─────────────────────────────────────────────────────────
@@ -225,6 +235,7 @@ JSON만 반환 (다른 텍스트 없이):
     }
 
     _warmCache = { chartData, geminiScores, judeojuCodes, warmAt: Date.now() };
+    _warmCacheDate = new Date().toISOString().split('T')[0];
     _openingBellCompleted = true;
     logger.info(`✅ [OPENING] 워밍업 완료 (${((Date.now() - t0) / 1000).toFixed(1)}초, 차트 ${chartData.size}종목)`, {
       component: 'OPENING_BELL',

@@ -1,6 +1,6 @@
 import { getCtxIsPaper } from '../config/context.js';
 import { FALLBACK_FX_RATE } from '../config/constants.js';
-import { getPool, insertSnapshot } from '../db/client.js';
+import { getPool, getTodayStartSnapshot, insertSnapshot } from '../db/client.js';
 import { getAccountBalance } from '../kis/account.js';
 import { getPaperBalance } from '../risk/engine.js';
 import { logger } from '../utils/logger.js';
@@ -59,13 +59,24 @@ export async function runSnapshotJob(): Promise<void> {
     const overseasKrw = await getOverseasValueKrw(isPaper);
     const totalValue = domesticValue + overseasKrw;
 
+    // 일일 손익 = 현재 총자산 - 오늘 첫 스냅샷 총자산 (미평가 포함)
+    let dailyPnl = balance.totalProfitLoss; // 폴백: 미실현 손익
+    let dailyPnlPct = balance.totalProfitLossPct;
+    try {
+      const todayStart = await getTodayStartSnapshot(isPaper);
+      if (todayStart && todayStart.total_value > 0) {
+        dailyPnl = totalValue - Number(todayStart.total_value);
+        dailyPnlPct = (dailyPnl / Number(todayStart.total_value)) * 100;
+      }
+    } catch { /* 첫 스냅샷 조회 실패 시 폴백 유지 */ }
+
     await insertSnapshot({
       total_value: totalValue,
       cash_balance: balance.orderableCash,
       invested_value: balance.totalEvalAmount,
       unrealized_pnl: balance.totalProfitLoss,
-      daily_pnl: balance.totalProfitLoss,
-      daily_pnl_pct: balance.totalProfitLossPct,
+      daily_pnl: dailyPnl,
+      daily_pnl_pct: dailyPnlPct,
       positions: balance.positions,
       is_paper: isPaper,
     });
@@ -87,13 +98,22 @@ export async function runSnapshotJob(): Promise<void> {
         const liveDomestic = liveBalance.orderableCash + liveBalance.totalEvalAmount;
         const liveOverseasKrw = await getOverseasValueKrw(false);
         const liveTotalValue = liveDomestic + liveOverseasKrw;
+        let liveDailyPnl = liveBalance.totalProfitLoss;
+        let liveDailyPnlPct = liveBalance.totalProfitLossPct;
+        try {
+          const liveStart = await getTodayStartSnapshot(false);
+          if (liveStart && liveStart.total_value > 0) {
+            liveDailyPnl = liveTotalValue - Number(liveStart.total_value);
+            liveDailyPnlPct = (liveDailyPnl / Number(liveStart.total_value)) * 100;
+          }
+        } catch { /* ignore */ }
         await insertSnapshot({
           total_value: liveTotalValue,
           cash_balance: liveBalance.orderableCash,
           invested_value: liveBalance.totalEvalAmount,
           unrealized_pnl: liveBalance.totalProfitLoss,
-          daily_pnl: liveBalance.totalProfitLoss,
-          daily_pnl_pct: liveBalance.totalProfitLossPct,
+          daily_pnl: liveDailyPnl,
+          daily_pnl_pct: liveDailyPnlPct,
           positions: liveBalance.positions,
           is_paper: false,
         });
@@ -108,13 +128,22 @@ export async function runSnapshotJob(): Promise<void> {
       const paperDomestic = paperBalance.orderableCash + paperBalance.totalEvalAmount;
       const paperOverseasKrw = await getOverseasValueKrw(true);
       const paperTotalValue = paperDomestic + paperOverseasKrw;
+      let paperDailyPnl = paperBalance.totalProfitLoss;
+      let paperDailyPnlPct = paperBalance.totalProfitLossPct;
+      try {
+        const paperStart = await getTodayStartSnapshot(true);
+        if (paperStart && paperStart.total_value > 0) {
+          paperDailyPnl = paperTotalValue - Number(paperStart.total_value);
+          paperDailyPnlPct = (paperDailyPnl / Number(paperStart.total_value)) * 100;
+        }
+      } catch { /* ignore */ }
       await insertSnapshot({
         total_value: paperTotalValue,
         cash_balance: paperBalance.orderableCash,
         invested_value: paperBalance.totalEvalAmount,
         unrealized_pnl: paperBalance.totalProfitLoss,
-        daily_pnl: paperBalance.totalProfitLoss,
-        daily_pnl_pct: paperBalance.totalProfitLossPct,
+        daily_pnl: paperDailyPnl,
+        daily_pnl_pct: paperDailyPnlPct,
         positions: paperBalance.positions,
         is_paper: true,
       });

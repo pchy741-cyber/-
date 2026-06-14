@@ -576,6 +576,7 @@ export function getUSMarketPhase(date?: Date): USMarketPhase {
 
 function scheduleNext(): void {
   if (!state.active) return;
+  if (timer) clearTimeout(timer);
   timer = setTimeout(tick, state.adaptiveIntervalMs);
 }
 

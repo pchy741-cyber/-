@@ -28,7 +28,7 @@ import { logger } from '../utils/logger.js';
 import { runClosingBellJob } from './closing-bell-job.js';
 import { runHoldingCheckJob } from './holding-check-job.js';
 import { runIntegrityCheck } from './integrity-check-job.js';
-import { runOpeningBellCycle, warmupOpeningBell } from './opening-bell-job.js';
+import { resetOpeningBellDaily, runOpeningBellCycle, warmupOpeningBell } from './opening-bell-job.js';
 import { runOverseasDual } from './overseas-job.js';
 import { runSnapshotJob } from './snapshot-job.js';
 import { runTrackAJob } from './track-a-job.js';
@@ -387,6 +387,7 @@ export function startScheduler(): void {
   cron.schedule(
     '55 8 * * 1-5',
     () => {
+      resetOpeningBellDaily(); // 전일 캐시 무효화 (일간 차트 데이터 리셋)
       logger.info('🌅 개장 워밍업 시작 (08:55)', { component: 'SCHEDULER' });
       warmupOpeningBell().catch((e) => logger.error(`워밍업 실패: ${e}`, { component: 'SCHEDULER' }));
     },
