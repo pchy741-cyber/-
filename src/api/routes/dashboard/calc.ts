@@ -170,12 +170,11 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
     // Paper: 국내 주문가능 = 국내 현금 그대로 (해외 현금은 별도 표시)
     actualCash = freeDomesticCash;
     actualCashSource = 'paper_domestic';
-  } else if (rawCashSafe > 0) {
-    actualCash = rawCashSafe;
-    actualCashSource = i.cashSource ?? 'buyable_api';
   } else {
+    // Live: 실제 보유 현금 기준 (nass_amt - 증권시가)
+    // ※ rawCash(max_buy_amt)는 대용(담보)+CMA 포함 → 총자산 초과 가능하므로 표시용 부적합
     actualCash = freeDomesticCash;
-    actualCashSource = 'nass-evlu';
+    actualCashSource = calcMethod === 'nass_amt' ? 'nass-evlu' : (i.cashSource ?? 'buyable_api');
   }
 
   // ─── 5. 현금 표시용 ───

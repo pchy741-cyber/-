@@ -262,7 +262,10 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
     totalProfitLoss: Number(summary?.evlu_pfls_smtl_amt ?? 0),
     totalProfitLossPct: Number(summary?.evlu_pfls_rt ?? 0),
     // 순자산: KIS nass_amt (T+2 미수 차감 완료) — paper는 예수금+증권평가로 계산
-    netAsset: isPaper ? effectiveCash + scts_evlu : nass > 0 ? nass : effectiveCash + scts_evlu,
+    // ※ effectiveCash(=maxBuyAmt)는 대용+CMA 포함 → nass 폴백에 부적합 (d2Deposit/totalDeposit 사용)
+    netAsset: isPaper ? effectiveCash + scts_evlu
+      : nass > 0 ? nass
+      : (d2Deposit > 0 ? d2Deposit : totalDeposit > 0 ? totalDeposit : effectiveCash) + scts_evlu,
     purchaseCost: pchs,
     positions,
   };
