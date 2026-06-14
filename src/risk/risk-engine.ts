@@ -424,8 +424,8 @@ export class RiskEngine {
       }
       return { approved: true, reason: 'OK' };
     } catch (err) {
-      logger.warn(`⚠️ 주간 Drawdown 조회 실패 — 일시 장애로 간주, 매매 허용 (fail-open): ${err}`, { component: 'RISK' });
-      return { approved: true, reason: 'OK (주간 Drawdown DB 조회 실패 — 일시 허용)' };
+      logger.warn(`⚠️ 주간 Drawdown 조회 실패 — 안전을 위해 매매 차단 (fail-closed): ${err}`, { component: 'RISK' });
+      return { approved: false, reason: 'DB 조회 실패 — 주간 Drawdown 확인 불가, 매매 차단 (fail-closed)' };
     }
   }
 

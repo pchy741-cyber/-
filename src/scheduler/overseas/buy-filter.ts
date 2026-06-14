@@ -90,12 +90,15 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
     overseasWinRates,
     isUSExtended,
     recoveryMode,
-    isPaper,
+    isPaper: _isPaperRaw,
     sessionBrief,
     userBlacklist,
     userFavorites,
     kospiPenalty,
   } = ctx;
+
+  // 🔒 isPaper undefined → false 기본값 (undefined가 live로 취급되는 크로스오염 방지)
+  const isPaper = _isPaperRaw ?? false;
 
   // 세션전략에서 avoidStocks/priorityStocks/confidenceFloor 추출
   const avoidSet = new Set(sessionBrief?.avoidStocks ?? []);

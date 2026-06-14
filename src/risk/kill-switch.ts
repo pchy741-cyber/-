@@ -103,6 +103,17 @@ export async function activateKillSwitch(reason: string, manual = false, scope: 
       return;
     }
   }
+  // 🔒 active=true를 즉시 설정 — 비동기 작업 전에 isKillSwitchActive()가 true 반환하도록
+  // 이전: updatingKeys.add() 후 async 작업 중 race window 존재
+  const now = new Date();
+  setState(scope, {
+    active: true,
+    reason,
+    activatedAt: now,
+    consecutiveErrors: s.consecutiveErrors,
+    manuallyTriggered: manual,
+    forcedDeactivatedAt: null,
+  });
   updatingKeys.add(key);
 
   const isPaper = getCtxIsPaper();
@@ -110,15 +121,6 @@ export async function activateKillSwitch(reason: string, manual = false, scope: 
   const scopeLabel = scope === 'OVERSEAS' ? '해외' : '국내';
 
   try {
-    const now = new Date();
-    setState(scope, {
-      active: true,
-      reason,
-      activatedAt: now,
-      consecutiveErrors: s.consecutiveErrors,
-      manuallyTriggered: manual,
-      forcedDeactivatedAt: null,
-    });
 
     logger.error(`🛑 KILL SWITCH 발동 [${scopeLabel}]${manual ? ' [수동]' : ''} [${mode}]: ${reason}`, {
       component: 'KILL_SWITCH',

@@ -208,6 +208,11 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
     const isUSExtended = openRegions.has('US_EXTENDED') && !openRegions.has('US');
     if (openRegions.size === 0) {
       logger.info('🌏 모든 해외 시장 마감 — 스킵', { component: 'OVERSEAS' });
+      // 🔒 early return 시 advisory lock + isRunning 정리 (누수 방지)
+      clearTimeout(jobTimeout);
+      s.isRunning.set(modeK, false);
+      try { await lockClient.query('SELECT pg_advisory_unlock($1)', [LOCK_ID]); } catch {}
+      lockClient?.release();
       return;
     }
 
@@ -1168,13 +1173,18 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
       }
 
       // ── 매수 실행 (Rolling Kelly + EV배율 + VIX 레짐 + 점진적 쿨다운 + 상관관계 + MTF 반영) ──
-      if (killSwitchBuyBlock) {
+      // 🔒 Kill Switch 재확인: 매도 중 손실 한도 초과로 발동될 수 있음
+      const killSwitchBuyBlockFresh = isKillSwitchActive(SCOPE);
+      if (killSwitchBuyBlockFresh && !killSwitchBuyBlock) {
+        logger.warn(`🛑 Kill Switch 매도 중 발동 감지 — 해외 매수 전면 차단`, { component: 'OVERSEAS' });
+      }
+      if (killSwitchBuyBlockFresh) {
         logger.warn(`🛑 Kill Switch 활성 — 해외 매수 ${buyTargets.length}건 건너뜀`, { component: 'OVERSEAS' });
       }
       const slotsAvailable =
-        killSwitchBuyBlock || defenseBlockBuys || eodBlockBuys ? 0 : MAX_POSITIONS - currentHoldingCount;
+        killSwitchBuyBlockFresh || defenseBlockBuys || eodBlockBuys ? 0 : MAX_POSITIONS - currentHoldingCount;
       logger.info(
-        `🔧 매수 루프: slots=${slotsAvailable} (max=${MAX_POSITIONS} held=${currentHoldingCount} kill=${killSwitchBuyBlock} defense=${defenseBlockBuys}) cash=$${cash.toFixed(0)} targets=${buyTargets.length}`,
+        `🔧 매수 루프: slots=${slotsAvailable} (max=${MAX_POSITIONS} held=${currentHoldingCount} kill=${killSwitchBuyBlockFresh} defense=${defenseBlockBuys}) cash=$${cash.toFixed(0)} targets=${buyTargets.length}`,
         { component: 'OVERSEAS' },
       );
       for (const target of buyTargets.slice(0, slotsAvailable)) {

@@ -140,6 +140,14 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       if (exec.submitted && exec.filledQty > 0) {
         cash += exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
         sellOrders.push(`${code} AI강제매도 ${exec.filledQty}주`);
+        // 🔒 Force-sell 후 상태 업데이트 (이전: continue로 스킵 → 유령 포지션 + 현금 미반영)
+        if (exec.filledQty >= holding.qty) {
+          await updateTradeState({ code, exchange: holding.exchange, qty: 0, avgPrice: 0, newCash: cash, isPaper: paperMode });
+          await cleanupPositionState(code, paperMode);
+        } else {
+          const remainQty = holding.qty - exec.filledQty;
+          await updateTradeState({ code, exchange: holding.exchange, qty: remainQty, avgPrice: holding.avgPrice, newCash: cash, isPaper: paperMode });
+        }
       }
       continue;
     }

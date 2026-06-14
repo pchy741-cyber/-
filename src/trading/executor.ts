@@ -474,6 +474,9 @@ export class TradeExecutor {
         }
       }
 
+      // 🔒 성공 시 Buy Intent 해제 (다른 전략의 AVERAGE_DOWN 허용)
+      releaseBuyIntent(stockCode);
+
       // 감시목록 자동 등록 + 종목명 즉시 보정 (코드 저장 후 KRX API로 이름 조회)
       upsertWatchlistItem({ stock_code: stockCode, stock_name: stockCode, market: 'KOSPI' }, 'AUTO')
         .then(() => import('../kis/interest-group.js').then((m) => m.fixWatchlistNames()))

@@ -1,5 +1,6 @@
 import { analyzeTechnicals } from '../../analysis/indicators.js';
 import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import type { TradeDecision } from '../../db/models.js';
 import { getTimeWeightedStop } from '../../risk/entry-timing-guard.js';
 import { logger } from '../../utils/logger.js';
@@ -13,47 +14,66 @@ import {
 
 // TP 도달 전 수익권 포지션 최고 수익률 추적
 // 서버 재시작 시 DB peak_price_since_open에서 복원 (restorePreTpPeakMap 호출)
-const _preTpPeakMap = new Map<string, number>(); // stock_code → peak pnlPct
+// Paper/Live 분리: 모드별 독립 맵 (크로스오염 방지)
+const _preTpPeakMap = new Map<string, Map<string, number>>(); // 'paper'|'live' → stock_code → peak pnlPct
+function _getPeakMap(): Map<string, number> {
+  const key = getCtxIsPaper() ? 'paper' : 'live';
+  if (!_preTpPeakMap.has(key)) _preTpPeakMap.set(key, new Map());
+  return _preTpPeakMap.get(key)!;
+}
 
 /** 서버 부팅 시 DB 오픈 체인의 peak_price_since_open → _preTpPeakMap 복원 */
 export function restorePreTpPeakMap(
   chains: Array<{ stock_code: string; avg_buy_price: number | string | null; peak_price_since_open?: number | null }>,
 ): void {
+  // 부팅 시에는 ALS 컨텍스트 없으므로 live 맵에 직접 복원
+  if (!_preTpPeakMap.has('live')) _preTpPeakMap.set('live', new Map());
+  const liveMap = _preTpPeakMap.get('live')!;
   for (const c of chains) {
     const avg = Number(c.avg_buy_price ?? 0);
     const peak = Number(c.peak_price_since_open ?? 0);
     if (avg > 0 && peak > 0) {
       const peakPnlPct = ((peak - avg) / avg) * 100;
       if (peakPnlPct > 0) {
-        _preTpPeakMap.set(c.stock_code, peakPnlPct);
+        liveMap.set(c.stock_code, peakPnlPct);
       }
     }
   }
-  if (_preTpPeakMap.size > 0) {
-    logger.info(`📈 Pre-TP peak 복원: ${_preTpPeakMap.size}종목 (${[..._preTpPeakMap.entries()].map(([k, v]) => `${k}:+${v.toFixed(1)}%`).join(', ')})`, { component: 'TRACK_B' });
+  if (liveMap.size > 0) {
+    logger.info(`📈 Pre-TP peak 복원: ${liveMap.size}종목 (${[...liveMap.entries()].map(([k, v]) => `${k}:+${v.toFixed(1)}%`).join(', ')})`, { component: 'TRACK_B' });
   }
 }
 
 // CEO 지시 (2026-06-12): STRONG_SELL 분할매도 쿨다운
 //   Why: 한화비전 사례 — 같은 종목 14건 분할매도, 회당 수수료 0.195% 누적
 //   How: 종목별 마지막 STRONG_SELL 시각 기록, 15분 내 중복 매도 신호 차단
-const _strongSellCooldown = new Map<string, number>(); // stock_code → lastFireMs
+// Paper/Live 분리: 모드별 독립 쿨다운 (크로스오염 방지)
+const _strongSellCooldownMap = new Map<string, Map<string, number>>(); // 'paper'|'live' → stock_code → lastFireMs
+function _getStrongSellCooldown(): Map<string, number> {
+  const key = getCtxIsPaper() ? 'paper' : 'live';
+  if (!_strongSellCooldownMap.has(key)) _strongSellCooldownMap.set(key, new Map());
+  return _strongSellCooldownMap.get(key)!;
+}
 const STRONG_SELL_COOLDOWN_MS = 15 * 60_000;
 
 // 자기학습 TP/SL 캐시 (3분 TTL — 매 사이클 DB 조회 방지)
-let _learnedCache: { tp?: number; sl?: number; expiresAt: number } | null = null;
+// Paper/Live 분리: 모드별 독립 캐시 (크로스오염 방지)
+const _learnedCacheMap = new Map<string, { tp?: number; sl?: number; expiresAt: number }>();
 async function _getLearnedTpSl(): Promise<{ tp?: number; sl?: number } | null> {
-  if (_learnedCache && Date.now() < _learnedCache.expiresAt) return _learnedCache;
+  const isPaper = getCtxIsPaper();
+  const cacheKey = isPaper ? 'paper' : 'live';
+  const cached = _learnedCacheMap.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) return cached;
   try {
     const { getPool } = await import('../../db/client.js');
-    const { getCtxIsPaper } = await import('../../config/context.js');
     const { rows } = await getPool().query(
       `SELECT take_profit_pct::float, stop_loss_pct::float FROM strategy_config WHERE is_active = true AND is_paper = $1 LIMIT 1`,
-      [getCtxIsPaper()],
+      [isPaper],
     );
     const r = rows[0];
-    _learnedCache = { tp: r?.take_profit_pct, sl: r?.stop_loss_pct, expiresAt: Date.now() + 180_000 };
-    return _learnedCache;
+    const entry = { tp: r?.take_profit_pct, sl: r?.stop_loss_pct, expiresAt: Date.now() + 180_000 };
+    _learnedCacheMap.set(cacheKey, entry);
+    return entry;
   } catch {
     return null;
   }
@@ -109,7 +129,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         confidence: 0.88,
       });
       processedSellChains.add(chain.id);
-      _preTpPeakMap.delete(chain.stock_code);
+      _getPeakMap().delete(chain.stock_code);
       continue;
     }
     // ────────────────────────────────────────────────────────────────────
@@ -122,9 +142,10 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     //   Why: 수산세보틱스 사례 — 고점 +2.1% 후 -3.2% 풀백에 -1.1% 손실로 stop out
     //   How: 활성화 임계를 1.5% 고정값 → max(target_profit_pct * 0.5, 2.5%)
     if (chain.status !== 'PROFIT_TAKING' && chain.strategy_mode !== 'SCALPING') {
-      const prevPeak = _preTpPeakMap.get(chain.stock_code) ?? pnlPct;
+      const peakMap = _getPeakMap();
+      const prevPeak = peakMap.get(chain.stock_code) ?? pnlPct;
       const curPeak = Math.max(prevPeak, pnlPct);
-      _preTpPeakMap.set(chain.stock_code, curPeak);
+      peakMap.set(chain.stock_code, curPeak);
 
       const chainTp = chain.target_profit_pct != null
         ? Number(chain.target_profit_pct)
@@ -151,7 +172,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
             confidence: 0.88,
           });
           processedSellChains.add(chain.id);
-          _preTpPeakMap.delete(chain.stock_code);
+          _getPeakMap().delete(chain.stock_code);
           continue;
         }
       }
@@ -219,12 +240,13 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // 하락장: 전량 즉시 청산 / 정상장: 50% 부분 매도
     // 쿨다운 적용: 같은 종목 15분 내 중복 STRONG_SELL 차단 (수수료 누적 방지)
     if (junkStockCodes?.has(chain.stock_code) && chain.total_quantity > 0) {
-      const lastFire = _strongSellCooldown.get(chain.stock_code) ?? 0;
+      const ssCooldown = _getStrongSellCooldown();
+      const lastFire = ssCooldown.get(chain.stock_code) ?? 0;
       if (Date.now() - lastFire < STRONG_SELL_COOLDOWN_MS) {
         // 쿨다운 중 — 스킵 (다음 사이클에서 재평가)
         continue;
       }
-      _strongSellCooldown.set(chain.stock_code, Date.now());
+      ssCooldown.set(chain.stock_code, Date.now());
       if (isDowntrendMode) {
         decisions.push({
           action: 'SELL',
@@ -365,7 +387,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
           confidence: 0.92,
         });
         processedSellChains.add(chain.id);
-        _preTpPeakMap.delete(chain.stock_code);
+        _getPeakMap().delete(chain.stock_code);
         continue;
       }
       const sellQty = Math.ceil(chain.total_quantity * 0.35);

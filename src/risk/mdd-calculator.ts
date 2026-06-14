@@ -14,6 +14,7 @@
  */
 
 import { getPool } from '../db/client.js';
+import { getKSTNow } from '../utils/time.js';
 
 export interface MonthlyMddSnapshot {
   /** 월간 고점 (KRW) */
@@ -37,9 +38,11 @@ export interface MonthlyMddSnapshot {
  *   - mddPct: 고점 대비 낙폭 %
  */
 export async function getMonthlyMddSnapshot(isPaper: boolean): Promise<MonthlyMddSnapshot> {
-  const monthStart = new Date();
-  monthStart.setDate(1);
-  monthStart.setHours(0, 0, 0, 0);
+  // KST 기준 월초 계산 (UTC 서버에서도 정확한 한국시간 사용)
+  const kstNow = getKSTNow();
+  const monthStart = new Date(Date.UTC(kstNow.getUTCFullYear(), kstNow.getUTCMonth(), 1, 0, 0, 0, 0));
+  // KST 00:00 = UTC 전날 15:00
+  monthStart.setTime(monthStart.getTime() - 9 * 60 * 60 * 1000);
 
   let rows: { total_value: string }[] = [];
   try {
