@@ -124,34 +124,7 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
       ? safe(i.kisDomEval)
       : i.totalChainInvested + i.totalChainPnl;
 
-  // ─── 3. 현금 결정 (통합증거금) ───
-  let actualCash = safe(i.rawCash);
-  let actualCashSource = i.cashSource ?? 'unknown';
-
-  if (i.viewIsPaper) {
-    // Paper: 주문가능 현금을 시드 한도로 cap
-    actualCash = Math.min(actualCash, i.paperInitialCapital);
-    actualCashSource = 'paper_computed';
-  } else {
-    if (actualCash > 0) {
-      // KIS 국내 주문가능 현금 (최우선)
-    } else if (safeOverseasCashKrw > 0) {
-      actualCash = safeOverseasCashKrw;
-      actualCashSource = 'overseas_state';
-    } else {
-      // netAsset 기반 역산
-      const netAsset = safe(i.netAsset);
-      if (netAsset > 0) {
-        actualCash = Math.max(0, netAsset - domesticMarketValue);
-        if (overseasInvestedKrw > 0) {
-          actualCash = Math.max(0, actualCash - overseasInvestedKrw);
-        }
-        actualCashSource = 'nass-evlu';
-      }
-    }
-  }
-
-  // ─── 4. 총자산 (3개 경로) ───
+  // ─── 3. 총자산 ───
   const rawCashSafe = safe(i.rawCash);
   const safeDomestic = safe(domesticMarketValue);
   const safeOverseasMV = safe(overseasMarketValueKrw);
@@ -163,7 +136,6 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
 
   if (!i.viewIsPaper && rawCashSafe > 0) {
     // Live: 주문가능(buyable) + 국내 증권 시가 + 해외 증권 시가
-    // rawCash=buyable은 통합증거금 전체 현금이므로 해외현금 별도 합산 금지
     freeDomesticCash = rawCashSafe;
     grandTotalValue = freeDomesticCash + safeDomestic + safeOverseasMV;
     calcMethod = 'rawCash_fallback';
@@ -173,10 +145,27 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
     freeDomesticCash = Math.max(0, safeNetAsset - safeDomestic);
     calcMethod = 'nass_amt';
   } else {
-    // Paper: 국내 현금 + 국내 증권 + 해외 현금 + 해외 증권 (별도 풀)
+    // Paper: 국내현금 + 국내증권 + 해외현금 + 해외증권
     freeDomesticCash = rawCashSafe;
     grandTotalValue = freeDomesticCash + safeDomestic + safeOverseasMV + safeOverseasCashKrw;
     calcMethod = 'paper_cash';
+  }
+
+  // ─── 4. 주문가능 = 총자산 - 매매중금액 (역산) ───
+  const totalInvestedMV = safeDomestic + safeOverseasMV; // 국내+해외 증권 시가
+  let actualCash: number;
+  let actualCashSource: string;
+
+  if (i.viewIsPaper) {
+    // Paper: 총자산에서 매매중 금액(증권시가)을 빼면 = 주문가능
+    actualCash = Math.max(0, grandTotalValue - totalInvestedMV);
+    actualCashSource = 'paper_reverse';
+  } else if (rawCashSafe > 0) {
+    actualCash = rawCashSafe;
+    actualCashSource = i.cashSource ?? 'buyable_api';
+  } else {
+    actualCash = freeDomesticCash;
+    actualCashSource = 'nass-evlu';
   }
 
   // ─── 5. 현금 표시용 ───
