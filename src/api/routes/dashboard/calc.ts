@@ -134,16 +134,17 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
   let freeDomesticCash: number;
   let calcMethod: TotalAssetOutputs['calcMethod'];
 
-  if (!i.viewIsPaper && rawCashSafe > 0) {
-    // Live: 주문가능(buyable) + 국내 증권 시가 + 해외 증권 시가
-    freeDomesticCash = rawCashSafe;
-    grandTotalValue = freeDomesticCash + safeDomestic + safeOverseasMV;
-    calcMethod = 'rawCash_fallback';
-  } else if (!i.viewIsPaper && safeNetAsset > 0) {
-    // Live 폴백 (buyable=0): 순자산(nass_amt) + 해외 증권 시가
+  if (!i.viewIsPaper && safeNetAsset > 0) {
+    // Live 최우선: nass_amt(순자산) = 현금 + 국내 증권 시가 — 이중계산 없음, 가장 정확
+    // ※ rawCash(max_buy_amt)는 대용(보유증권 담보가치)을 포함하므로 증권시가와 이중계산됨
     grandTotalValue = safeNetAsset + safeOverseasMV;
     freeDomesticCash = Math.max(0, safeNetAsset - safeDomestic);
     calcMethod = 'nass_amt';
+  } else if (!i.viewIsPaper && rawCashSafe > 0) {
+    // nass_amt 없을 때만 rawCash 폴백 — 이중계산 방어
+    freeDomesticCash = rawCashSafe;
+    grandTotalValue = freeDomesticCash + safeDomestic + safeOverseasMV;
+    calcMethod = 'rawCash_fallback';
   } else if (!i.viewIsPaper) {
     // Live: KIS API 실패 (rawCash=0, netAsset=0) — 증권시가만으로 추정
     // ⚠️ 이전 버그: else로 빠져 paper_cash 경로 진입 → 해외현금 이중계산
@@ -188,9 +189,11 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
 
   let totalPnl: number;
   if (i.viewIsPaper) {
-    totalPnl = i.totalChainPnl + safe(i.kisTotalProfitLoss);
+    // Paper: 현재 보유 중인 포지션의 미실현 손익만 (누적 실현PnL은 realizedPnl 필드에 별도 표시)
+    totalPnl = i.totalChainPnl;
   } else {
-    totalPnl = safe(i.kisTotalProfitLoss) + i.liveRealizedPnl;
+    // Live: KIS 미실현 손익 (실현PnL은 realizedPnl 필드에 별도 표시)
+    totalPnl = safe(i.kisTotalProfitLoss);
   }
 
   const totalPnlPct = i.viewIsPaper

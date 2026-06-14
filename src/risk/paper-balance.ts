@@ -143,7 +143,21 @@ async function getPaperPositions(): Promise<Position[]> {
         if (quote.currentPrice > 0) priceMap.set(code, quote.currentPrice);
       }
     } catch {
-      /* 시세 실패 시 매수가 폴백 */
+      /* 시세 실패 시 캐시 폴백 */
+    }
+
+    // KIS 시세 실패 시 인메모리 캐시 폴백 (dashboard builder와 동일 가격 소스)
+    if (priceMap.size < entries.length) {
+      try {
+        const { getCachedPriceMemory, getLastKnownPricesMemory } = await import('../cache/memory.js');
+        for (const [code] of entries) {
+          if (priceMap.has(code)) continue;
+          const cached = getCachedPriceMemory(code);
+          if (cached && cached > 0) { priceMap.set(code, cached); continue; }
+          const last = getLastKnownPricesMemory([code]).get(code);
+          if (last && last > 0) priceMap.set(code, last);
+        }
+      } catch { /* 캐시 모듈 로드 실패 시 무시 */ }
     }
 
     return entries.map(([stockCode, h]) => {
