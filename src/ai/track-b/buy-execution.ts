@@ -123,11 +123,11 @@ export async function executeBuyDecisions(
   const decisions: TradeDecision[] = [];
 
   // 종목당 최대 비중: 확신도 기반 동적 캡 — 장 좋고 확신 높으면 적극 집중
-  // 소자산: 3종목 분산 불가 시 80%까지 집중 허용
+  // 소자산: 3종목 분산 불가 시 50%까지 집중 허용 (80%는 2종목 = 100% 초과 위험)
   // 기준: effectiveMaxPos(=totalAssets×25%)로 1주 최소가(1만원) 3개 이상 살 수 없으면 소자산
   const canDiversify3 = (totalAssets ?? 0) > 0 && (totalAssets ?? 0) * 0.25 >= 30_000;
-  // Hard Cap 25% — 일일손실 2.5% 방어 (소자산은 80% 집중 허용)
-  const maxPosFraction = !canDiversify3 ? 0.8 : 0.25;
+  // Hard Cap 25% — 일일손실 2.5% 방어 (소자산은 50% 집중 허용)
+  const maxPosFraction = !canDiversify3 ? 0.5 : 0.25;
   const effectiveMaxPos = totalAssets
     ? Math.min(maxPositionKrw, Math.round(totalAssets * maxPosFraction))
     : maxPositionKrw;

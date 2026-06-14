@@ -3,7 +3,7 @@
  * 연구 근거: Kelly criterion (QuantifiedStrategies)
  */
 
-import { GATE } from '../../config/constants.js';
+import { GATE, OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { getPool } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
 import type { KellyResult } from './types.js';
@@ -60,7 +60,8 @@ export async function calcRollingKelly(days: number = 30, isPaper?: boolean): Pr
     for (const r of rows) {
       const sellPrice = Number(r.filled_price);
       const buyPrice = Number(r.avg_buy_price);
-      const pnlPct = ((sellPrice - buyPrice) / buyPrice) * 100;
+      // 왕복 수수료 차감 (실질 손익 기준 Kelly 계산)
+      const pnlPct = ((sellPrice - buyPrice) / buyPrice) * 100 - OVERSEAS_FEE_PCT * 2 * 100;
 
       if (pnlPct > 0) {
         wins++;

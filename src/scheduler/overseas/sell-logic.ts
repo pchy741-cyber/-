@@ -470,7 +470,7 @@ function calcDynamicHoldDays(baseMaxHold: number, tech: TechResult, _holdingDays
   else mult = 0.6;
   // 모멘텀/빅무버 → 최소 1.2배 보유
   if (tech.isMomentum || tech.isBigMover) mult = Math.max(mult, 1.2);
-  return Math.round(baseMaxHold * mult);
+  return Math.max(1, Math.round(baseMaxHold * mult)); // 최소 1일 보장 (음수/0 방어)
 }
 
 /** 약세 종목 조기 정리 — ADX < 15 + 5일 이상 횡보 + 수익 미미 */

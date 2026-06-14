@@ -3,7 +3,7 @@
  * 분할: vix-regime.ts, kelly.ts, patterns.ts
  */
 import { cacheGet, cacheSet } from '../../cache/memory.js';
-import { SECTOR_CLASS } from '../../config/constants.js';
+import { OVERSEAS_FEE_PCT, SECTOR_CLASS } from '../../config/constants.js';
 import { getPool } from '../../db/client.js';
 import type { GradualCooldown } from './types.js';
 import { ctxMode, modePrefix } from './utils.js';
@@ -367,12 +367,13 @@ export function calcDynamicTpSl(params: {
   const aiSlAdj = aiAction === 'SELL' && aiConfidence >= 0.8 ? -1.0 : 0;
   const scoreSlAdj = aiScore != null && aiScore >= 85 ? 0.5 : 0;
 
-  // TP 바닥: base와 동일 (보너스만 올릴 수 있게)
-  const tpFloor = isHighBeta ? 6.0 : isMediumBeta ? 4.0 : isDefense ? 4.0 : 4.0;
+  // TP 바닥: base + 왕복 수수료(0.7%) — 실질 수익 보장 (보너스만 올릴 수 있게)
+  const roundTripFeePct = OVERSEAS_FEE_PCT * 2 * 100; // 0.7%
+  const tpFloor = (isHighBeta ? 6.0 : isMediumBeta ? 4.0 : isDefense ? 4.0 : 4.0) + roundTripFeePct;
   const tpCeil = isHighBeta ? 40.0 : isMediumBeta ? 35.0 : isDefense ? 25.0 : 35.0;
   const tpPct = Math.min(
     tpCeil,
-    Math.max(tpFloor, baseTp + momentumExt + overboughtCut + aiTpBonus + scoreTpBonus + vixTpAdj),
+    Math.max(tpFloor, baseTp + roundTripFeePct + momentumExt + overboughtCut + aiTpBonus + scoreTpBonus + vixTpAdj),
   );
   let slPct = Math.max(isHighBeta ? 5.0 : 2.5, baseSl + aiSlAdj + scoreSlAdj);
 

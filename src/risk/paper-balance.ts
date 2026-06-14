@@ -252,9 +252,9 @@ export async function checkAndRefillPaper(): Promise<boolean> {
     const balance = await getPaperBalance();
     const hasPositions = balance.positions.length > 0;
 
-    // 리필 조건: 현금 5만원 미만 + 보유종목 2건 이하 (거의 거래 불가 상태)
+    // 리필 조건: 현금 5만원 미만 + 보유종목 3건 이하 (거의 신규매수 불가 상태)
     const isCashDepleted = balance.orderableCash < 50_000;
-    const fewPositions = balance.positions.length <= 2;
+    const fewPositions = balance.positions.length <= 3;
     if (!isCashDepleted || (hasPositions && !fewPositions)) return false;
 
     const pool = getPool();
