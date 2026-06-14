@@ -20,7 +20,7 @@ export const KR_FEE = {
 
 // ── 환율 비상 폴백 (실시간 API 전체 실패 시만 사용) ──
 // fetchExchangeRate()가 내부 폴백으로 이 값을 사용 — 하드코딩 1380/1370 대신 이 상수 참조
-export const FALLBACK_FX_RATE = 1_380; // USD/KRW 보수적 근사치 (2026-06 기준, 실제 ~1350)
+export const FALLBACK_FX_RATE = 1_520; // USD/KRW 근사치 (2026-06 기준)
 
 // ── 스케줄러 ──
 export const SCHEDULE = {
