@@ -155,13 +155,13 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       const rawAiForPreTp = aiScoreMap.get(chain.stock_code) ?? 0;
       const hasAiForPreTp = rawAiForPreTp > 0;
       const activateAt = hasAiForPreTp
-        ? Math.max(chainTp * 0.75, 5.0)
-        : Math.max(chainTp * 0.90, 6.0); // AI없이: TP 90% 이상에서만 트레일링
+        ? Math.max(chainTp * 0.80, 3.5) // v10.7: 75%→80% (조기익절 방지), 3.5% floor (TP=5%에 맞춤)
+        : Math.max(chainTp * 0.90, 4.5); // AI없이: TP 90% 이상에서만 트레일링
       if (curPeak >= activateAt) {
         const earlyChart = chartData.get(chain.stock_code);
         const earlyTech = earlyChart && earlyChart.length >= 20 ? analyzeTechnicals(earlyChart) : null;
         const atrPct = earlyTech?.atrPct ?? 1.5;
-        const trailThreshold = Math.max(-(atrPct * 2.0), -3.5); // v8: ATR×2.0, -3.5% (수익 여유 확보)
+        const trailThreshold = Math.max(-(atrPct * 1.5), -2.0); // v10.7: ATR×1.5, -2.0% floor (수익 보호 강화, 3.5%→2.0%)
         const dropFromPeak = pnlPct - curPeak;
 
         if (dropFromPeak <= trailThreshold && chain.total_quantity > 0) {

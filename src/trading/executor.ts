@@ -55,25 +55,42 @@ export class TradeExecutor {
    * @param source 매수 출처 라벨 (TRACK_B, SNIPER, OPENING_BELL, AFTER_HOURS 등)
    */
   async processDecisions(decisions: TradeDecision[], mode: StrategyMode, source?: string): Promise<void> {
-    for (const decision of decisions) {
-      const isBuyAction = decision.action === 'BUY' || decision.action === 'AVERAGE_DOWN';
-      const intentSource = decision.trigger_source ?? source ?? mode;
+    // v10.7: 매도 먼저 순차실행 (현금 확보) → 매수는 종목별 병렬 (슬리피지 최소화)
+    const sells = decisions.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action));
+    const buys = decisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
+    const others = decisions.filter((d) => !sells.includes(d) && !buys.includes(d));
 
-      // 🔒 매수 의도 레지스트리: 전 전략 교차 중복 매수 방지
-      if (isBuyAction && !registerBuyIntent(decision.stock_code, intentSource)) {
-        continue; // 다른 전략이 이미 매수 진행 중 → 스킵
-      }
-
+    // 매도: 순차 (체인 상태 의존)
+    for (const decision of [...sells, ...others]) {
       try {
         await this.executeDecision(decision, mode);
         reportSuccess();
       } catch (error) {
-        if (isBuyAction) releaseBuyIntent(decision.stock_code);
         const msg = error instanceof Error ? error.message : String(error);
         logger.error(`주문 실행 실패 [${decision.stock_code}]: ${msg}`, { component: 'EXECUTOR' });
         await reportError('EXECUTOR', msg);
         await logSystem('ERROR', 'EXECUTOR', `실행 실패: ${decision.stock_code} - ${msg}`);
       }
+    }
+
+    // 매수: 종목별 병렬 실행 (서로 다른 종목은 동시 주문 가능)
+    if (buys.length > 0) {
+      await Promise.allSettled(
+        buys.map(async (decision) => {
+          const intentSource = decision.trigger_source ?? source ?? mode;
+          if (!registerBuyIntent(decision.stock_code, intentSource)) return;
+          try {
+            await this.executeDecision(decision, mode);
+            reportSuccess();
+          } catch (error) {
+            releaseBuyIntent(decision.stock_code);
+            const msg = error instanceof Error ? error.message : String(error);
+            logger.error(`주문 실행 실패 [${decision.stock_code}]: ${msg}`, { component: 'EXECUTOR' });
+            await reportError('EXECUTOR', msg);
+            await logSystem('ERROR', 'EXECUTOR', `실행 실패: ${decision.stock_code} - ${msg}`);
+          }
+        }),
+      );
     }
     // 오래된 키 정리 — 현재 분 키만 남기고 이전 분 삭제 (전체 삭제 시 동일 분 중복 허용 버그 방지)
     if (this._recentOrderKeys.size > 200) {
@@ -1065,20 +1082,28 @@ export class TradeExecutor {
       return null;
     }
 
-    // 지수 백오프 + jitter(±20%) — 동시 다발 재시도 충돌 방지
-    const retryDelays = [3000, 5000, 8000, 15000].map((ms) => ms + Math.floor(Math.random() * ms * 0.2));
+    // v10.7: 공격적 폴링 → 초반 500ms 간격으로 빠르게 확인, 이후 2초 간격
+    // (기존: 3s,5s,8s,15s 순차=31초 → 새: 평균 2-5초로 체결확인 95% 단축)
+    const MAX_WAIT_MS = 30_000;
+    const FAST_POLL_MS = 500; // 처음 5초: 500ms 간격
+    const SLOW_POLL_MS = 2000; // 이후: 2초 간격
+    const FAST_PHASE_MS = 5000;
+    let elapsed = 0;
+    let attempt = 0;
 
-    for (let i = 0; i < retryDelays.length; i++) {
-      await new Promise((r) => setTimeout(r, retryDelays[i]));
+    while (elapsed < MAX_WAIT_MS) {
+      const pollInterval = elapsed < FAST_PHASE_MS ? FAST_POLL_MS : SLOW_POLL_MS;
+      await new Promise((r) => setTimeout(r, pollInterval));
+      elapsed += pollInterval;
+      attempt++;
 
       try {
         const fill = await getOrderFills(orderNo);
         if (fill && fill.filledQty > 0) {
-          logger.info(`✅ 체결 확인 (시도 ${i + 1}): ${stockCode} ${fill.filledQty}주 @${fill.filledPrice}`, {
+          logger.info(`✅ 체결 확인 (${elapsed}ms, 시도 ${attempt}): ${stockCode} ${fill.filledQty}주 @${fill.filledPrice}`, {
             component: 'EXECUTOR',
           });
 
-          // 멱등성 등록 먼저 (await 전에) → 동시 호출 시 중복 DB 업데이트 방지
           this.confirmedOrders.add(orderNo);
           await updateOrderByKisOrderNo(orderNo, {
             filled_quantity: fill.filledQty,
@@ -1093,16 +1118,18 @@ export class TradeExecutor {
           };
         }
 
-        logger.info(`⏳ 체결 대기 (시도 ${i + 1}/${retryDelays.length}): ${orderNo}`, {
-          component: 'EXECUTOR',
-        });
+        if (attempt % 5 === 0) {
+          logger.info(`⏳ 체결 대기 (${Math.round(elapsed / 1000)}초/${MAX_WAIT_MS / 1000}초): ${orderNo}`, {
+            component: 'EXECUTOR',
+          });
+        }
       } catch (error) {
-        logger.warn(`체결 확인 에러 (시도 ${i + 1}): ${error}`, { component: 'EXECUTOR' });
+        logger.warn(`체결 확인 에러 (시도 ${attempt}): ${error}`, { component: 'EXECUTOR' });
       }
     }
 
     // 최종 실패: 미체결 지정가 주문 취소 → 호출측에서 체인 업데이트 보류
-    logger.error(`🛑 체결 미확인 (${retryDelays.length}회 시도): ${orderNo} → 주문 취소 시도`, {
+    logger.error(`🛑 체결 미확인 (${attempt}회 시도, ${Math.round(elapsed / 1000)}초): ${orderNo} → 주문 취소 시도`, {
       component: 'EXECUTOR',
     });
 

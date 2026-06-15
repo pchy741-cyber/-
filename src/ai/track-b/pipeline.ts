@@ -393,7 +393,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // ── 차트 데이터 수집 (동일 상위 35 + 보유종목 기준) ─────────────────
     const chartData = new Map<string, import('../../kis/market.js').DailyCandle[]>();
     const allCodesForChart = [...new Set([...sortedWatchlistCodes, ...openChains.map((c) => c.stock_code)])];
-    const CHART_BATCH = 5;
+    const CHART_BATCH = 12; // v10.7: 5→12 (차트수집 10초→3초, rate limiter 15/sec에 맞춤)
     for (let i = 0; i < allCodesForChart.length; i += CHART_BATCH) {
       const batch = allCodesForChart.slice(i, i + CHART_BATCH);
       // BREAKOUT 모드: 252일 (200일 SMA + 52주 고저)

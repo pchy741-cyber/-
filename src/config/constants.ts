@@ -98,9 +98,9 @@ export const STRATEGY_PARAMS = {
     averageDownPct: 0, // v6: 물타기 비활성화 (21% WR에서 추가매수 = 손실확대)
     maxAveragingCount: 0,
     earlyTpPct: 0,
-    takeProfitPct: 7.0,
+    takeProfitPct: 5.0, // v10.7: 7.0%→5.0% (달성확률↑, WR 30.8%→35%+ 목표, R:R=2:1 유지)
     takeProfitRatio: 0.5,
-    stopLossPct: -3.5, // v10.3: -4.5%→-3.5% (손실 빨리 자르기, R:R=2:1 목표)
+    stopLossPct: -2.5, // v10.7: -3.5%→-2.5% (손실 빨리 차단, 소액계좌 드로다운 축소)
     maxHoldingDays: 10,
     maxDailyTrades: 3, // v10.3: 5→3 (과잉거래=구조적 적자의 주범, 수수료 절감)
   },
@@ -391,9 +391,9 @@ export function getDynamicDomesticTpSl(h: DomesticTpSlHints): {
   // ── 2. ADX 추세 강도 (해외 calcDynamicTpSl 대응) ──
   const adx = h.adx ?? 25;
   if (adx >= 35) {
-    // 강한 추세 → TP 확장 (승자를 더 오래 보유), SL 약간 여유
-    tp *= 1.4; // +40% TP (해외: +10% base + sector)
-    sl -= 0.3;
+    // 강한 추세 → 소폭 TP 확장 (v10.7: 1.4→1.15, 역전 위험 감소)
+    tp *= 1.15; // +15% TP (40%→15% 축소: 강추세=피크 임박, 욕심 자제)
+    sl -= 0.2;
     parts.push('ADX35+');
   } else if (adx >= 25) {
     // 중간 추세 → 약간 확장

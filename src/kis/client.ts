@@ -104,7 +104,7 @@ class RateLimiter {
 // _globalLiveLimiter: kisRequest 내부에서 live 도메인 호출 시 자동 적용 (최종 게이트)
 // _paperServerLimiter: 모의투자 도메인 호출 시 적용
 // 외부 limiter(kisRateLimiter 등)는 카테고리별 burst 방지용 (내부와 이중 적용)
-const _globalLiveLimiter = new RateLimiter(10); // 20/sec 한도, 버스트 방지 10/sec
+const _globalLiveLimiter = new RateLimiter(15); // v10.7: 10→15/sec (20/sec 한도 75% 활용, 파이프라인 28% 가속)
 const _paperServerLimiter = new RateLimiter(1); // 모의투자 서버 1/sec
 
 // 외부 limiter — burst 방지용 (kisRequest 내부 global limiter와 이중 적용)

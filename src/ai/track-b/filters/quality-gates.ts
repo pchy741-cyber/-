@@ -129,7 +129,7 @@ export function checkQualityGates(input: QualityGateInput): GateResult {
   // v9: 랠리일(KOSPI +1.5%+) → 모멘텀 기회 포착 위해 3/6으로 완화
   const isRally = input.isRallyDay ?? false;
   // v10: AI 없으면 5/6 게이트 통과 필수 (기술적 정밀 정렬 요구)
-  const liveMin = isPaper ? 0 : isRally ? 3 : aiScore >= 80 ? 3 : noAiForStock ? 5 : 4;
+  const liveMin = isPaper ? 0 : isRally ? 4 : aiScore >= 80 ? 4 : noAiForStock ? 5 : 5; // v10.7: 3/4→4/5 강화 (WR 30.8% 원인: 관대한 게이트)
   const min = isPaper ? 0 : liveMin;
 
   return { passed: count >= min, count, min, details };
