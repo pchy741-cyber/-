@@ -60,7 +60,7 @@ export async function computePaperCash(fxRate?: number): Promise<number> {
           THEN filled_price::numeric * filled_quantity::numeric * ${1 - OVERSEAS_FEE_PCT}
           ELSE 0 END), 0) AS total_sell
       FROM orders
-      WHERE trading_mode = 'paper' AND status = 'FILLED' AND trigger_source = 'OVERSEAS'
+      WHERE trading_mode IN ('paper', 'p_arch') AND status = 'FILLED' AND trigger_source = 'OVERSEAS'
     `);
     const totalBuy = Number(rows[0]?.total_buy ?? 0);
     const totalSell = Number(rows[0]?.total_sell ?? 0);

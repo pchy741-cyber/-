@@ -292,11 +292,11 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   // calcTotalAssets 입력값 준비
   const rawCash = balance.orderableCash ?? PAPER_INITIAL_CAPITAL;
   let liveRealizedPnl = 0;
-  if (!viewIsPaper) {
+  {
     const realizedRows = await safeQuery<{ total: string }>(
       `SELECT COALESCE(SUM(realized_pnl), 0)::text AS total
-       FROM transaction_chains WHERE status='CLOSED' AND is_paper=false`,
-      [],
+       FROM transaction_chains WHERE status='CLOSED' AND is_paper=$1`,
+      [viewIsPaper],
     );
     liveRealizedPnl = Number(realizedRows.rows[0]?.total ?? 0);
   }
@@ -312,7 +312,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
          WHEN side = 'BUY'  THEN -(filled_price * filled_quantity)
        END), 0)::text AS net_flow
        FROM orders
-       WHERE trigger_source = 'OVERSEAS' AND status = 'FILLED' AND trading_mode = $1`,
+       WHERE trigger_source = 'OVERSEAS' AND status = 'FILLED' AND trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)`,
       [tradingMode],
     );
     const netFlowUsd = Number(flowRows[0]?.net_flow ?? 0);
@@ -624,7 +624,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       domesticEval: assets.domesticMarketValue,
       domesticCash: assets.unifiedCash,
       unrealizedPnl: Math.round(viewIsPaper ? totalChainPnl : balance.totalProfitLoss || totalChainPnl),
-      realizedPnl: viewIsPaper ? Math.round(balance.totalProfitLoss ?? 0) : Math.round(liveRealizedPnl),
+      realizedPnl: Math.round(liveRealizedPnl),
       pnl: Math.round(assets.totalPnl + assets.overseasUnrealizedPnlKrw),
       pnlPct: assets.totalPnlPct,
       prevDayTotalValue: assets.prevDayTotalValue,

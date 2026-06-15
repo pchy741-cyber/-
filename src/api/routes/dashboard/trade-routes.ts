@@ -48,7 +48,7 @@ tradeRoutes.get('/trades', async (c) => {
        FROM orders o
        LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
        LEFT JOIN watchlist w ON o.stock_code = w.stock_code
-       WHERE o.trading_mode = $2
+       WHERE o.trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
        ${marketClause}
        ORDER BY o.created_at DESC
        LIMIT $1`,
@@ -109,7 +109,7 @@ tradeRoutes.get('/trades', async (c) => {
            FROM orders
           WHERE status = 'FILLED'
             AND stock_code = ANY($1::text[])
-            AND trading_mode = $2
+            AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
           ORDER BY created_at ASC, id ASC`,
         [domesticCodes, tradeMode],
       );
@@ -122,7 +122,7 @@ tradeRoutes.get('/trades', async (c) => {
            FROM orders
           WHERE status = 'FILLED'
             AND stock_code = ANY($1::text[])
-            AND trading_mode = $2
+            AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
           ORDER BY created_at ASC, id ASC`,
         [overseasCodes, tradeMode],
       );
@@ -342,7 +342,7 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
           AND (COALESCE(o.filled_price, 0) * (1 - ${KR_FEE.SELL_FEE_PCT})) <= COALESCE(tc.avg_buy_price, o.avg_buy_price)) AS loss_count
       FROM orders o
       LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
-      WHERE o.trading_mode = $1
+      WHERE o.trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
         AND o.status = 'FILLED'
         AND o.created_at >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Seoul') - ($2 * INTERVAL '1 day')) AT TIME ZONE 'Asia/Seoul'
       GROUP BY trade_date
@@ -414,7 +414,7 @@ tradeRoutes.get('/trades/by-date/:date', async (c) => {
        FROM orders o
        LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
        LEFT JOIN watchlist w ON o.stock_code = w.stock_code
-       WHERE o.trading_mode = $1
+       WHERE o.trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
          AND o.status = 'FILLED'
          AND (o.created_at AT TIME ZONE 'Asia/Seoul')::DATE = $2::DATE
        ORDER BY o.created_at ASC`,

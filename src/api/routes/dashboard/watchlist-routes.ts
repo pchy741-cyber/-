@@ -495,7 +495,7 @@ watchlistRoutes.post('/watchlist/cleanup', async (c) => {
         AND added_at < NOW() - INTERVAL '30 days'
         AND stock_code NOT IN (
           SELECT DISTINCT stock_code FROM orders
-          WHERE status = 'FILLED' AND trading_mode = $2 AND created_at > NOW() - INTERVAL '14 days'
+          WHERE status = 'FILLED' AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END) AND created_at > NOW() - INTERVAL '14 days'
         )
     `,
       [isPaper, tradingMode],
