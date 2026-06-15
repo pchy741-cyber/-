@@ -363,8 +363,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const CHART_BATCH = 5;
     for (let i = 0; i < allCodesForChart.length; i += CHART_BATCH) {
       const batch = allCodesForChart.slice(i, i + CHART_BATCH);
-      // BREAKOUT 모드: 252일 (200일 SMA + 52주 고저), 나머지: 40일
-      const chartDays = mode === 'BREAKOUT' ? 252 : 40;
+      // BREAKOUT 모드: 252일 (200일 SMA + 52주 고저)
+      // v9-fix: 40→65 역일 (≈45 거래일, MACD 34+ 충족 보장)
+      const chartDays = mode === 'BREAKOUT' ? 252 : 65;
       const results = await Promise.allSettled(batch.map((code) => getDailyChart(code, chartDays)));
       for (let j = 0; j < batch.length; j++) {
         const r = results[j];
