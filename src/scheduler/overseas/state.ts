@@ -60,7 +60,7 @@ export async function computePaperCash(fxRate?: number): Promise<number> {
           THEN filled_price::numeric * filled_quantity::numeric * ${1 - OVERSEAS_FEE_PCT}
           ELSE 0 END), 0) AS total_sell
       FROM orders
-      WHERE trading_mode IN ('paper', 'p_arch') AND status = 'FILLED' AND trigger_source = 'OVERSEAS'
+      WHERE trading_mode = 'paper' AND status = 'FILLED' AND trigger_source = 'OVERSEAS'
     `);
     const totalBuy = Number(rows[0]?.total_buy ?? 0);
     const totalSell = Number(rows[0]?.total_sell ?? 0);
@@ -474,6 +474,17 @@ export async function checkAndRefillOverseasPaper(): Promise<boolean> {
     const hasPositions = [...holdings.values()].some((h) => h.qty > 0);
 
     if (cashRatio >= OVERSEAS_REFILL_THRESHOLD || hasPositions) return false;
+
+    // v10.8.4 안전장치: 최근 1시간 내 매매가 있었으면 리필 차단 (현금 계산 일시 오류 방지)
+    const { rows: recentTrades } = await getPool().query(
+      `SELECT COUNT(*) AS cnt FROM orders
+       WHERE trading_mode = 'paper' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'
+       AND created_at > NOW() - INTERVAL '1 hour'`,
+    );
+    if (Number(recentTrades[0]?.cnt ?? 0) > 0) {
+      logger.info('🔒 Paper 리필 차단: 최근 1시간 내 매매 존재 → 현금 재계산 대기', { component: 'OVERSEAS' });
+      return false;
+    }
 
     const pool = getPool();
     // 세대 번호
