@@ -202,7 +202,8 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     const profitTighten = maxPnlPct >= 20 ? 1.5 : maxPnlPct >= 15 ? 1.0 : maxPnlPct >= 10 ? 0.5 : 0;
     // v10.8: trailTighten/profitTighten은 양수값 — 음수 trail에서 빼야 더 타이트해짐
     const effectiveTrailDropPct = dynamicTrailDrop - vixRegime.trailTighten - profitTighten;
-    const baseTrailActivate = isHighBeta ? 10.0 : isMediumBeta ? 8.0 : 5.0;
+    // v10.9: 트레일 활성화 대폭 하향 (기존 5~10% → 2~4%) — 소액 계좌 수익 보호
+    const baseTrailActivate = isHighBeta ? 4.0 : isMediumBeta ? 3.0 : 2.0;
     const trailActivatePct = tunerOverrides.trail_activate_pct ?? baseTrailActivate;
     const minAiSellConf = isHighBeta ? 0.82 : 0.78;
     const holdingDays = (Date.now() - new Date(holding.boughtAt).getTime()) / (1000 * 60 * 60 * 24);
@@ -335,12 +336,13 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     } else if (pnlPct >= hardTpPct) {
       sellReason = `익절(${hardTpPct}%): +${pnlPct.toFixed(1)}%`;
 
-      // ── 4. 시간 기반 익절 — 3일+ 보유 & +2% 이상인데 모멘텀 없음 → 수익 확정 ──
+      // ── 4. 시간 기반 익절 — 5일+ 보유 & +1.5% 이상인데 모멘텀 없음 → 수익 확정 ──
+      // v10.9: 3일→5일, 2%→1.5% (승자에게 더 많은 시간, 수수료 이상 수익만 확보)
     } else if (
-      holdingDays >= 3 &&
-      pnlPct >= 2.0 &&
+      holdingDays >= 5 &&
+      pnlPct >= 1.5 &&
       !tech.isMomentum &&
-      !(tech.aboveMA20 && tech.adx >= 30) &&
+      !(tech.aboveMA20 && tech.adx >= 25) &&
       tech.rsi < 70
     ) {
       sellReason = `시간익절(${holdingDays.toFixed(0)}일/+${pnlPct.toFixed(1)}%): 모멘텀 없음 → 수익확정`;

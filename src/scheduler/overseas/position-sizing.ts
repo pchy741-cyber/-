@@ -132,18 +132,21 @@ export function calcPositionSize(params: SizingParams): SizingResult {
   const isSmallAccount = portfolioValue < 2000;
   const isMicroAccount = portfolioValue < 500;
 
+  // v10.9: 포지션 사이징 현실화 — Kelly 위반 해소
+  // 기존 61.8% 극집중 → 한 종목 5% 하락이면 -30% 계좌 손실 (gambler's ruin)
+  // 38.2% → 한 종목 5% 하락이면 -19% 계좌 손실 (생존 가능)
   const kellyPct = isMicroAccount
-    ? PHI.MAX // 61.8% 극집중
+    ? PHI.MAJOR // 38.2% (기존 61.8%)
     : isSmallAccount
-      ? PHI.MAJOR + PHI.MEDIUM // 61.8% (38.2+23.6)
+      ? PHI.MAJOR // 38.2% (기존 61.8%)
       : kellyResult.sampleCount >= 10
         ? Math.max(kellyResult.halfKelly, PHI.MINOR) // Kelly 롤링, 바닥 14.6%
         : target.isMomentum && target.score >= 40
           ? PHI.MAJOR // 38.2% 모멘텀 강세
-          : PHI.MEDIUM; // v10.8: 23.6% 기본 (기존 dead code — 모멘텀 비차별 수정)
+          : PHI.MEDIUM; // 23.6% 기본
 
-  // Kelly 캡: 소액은 61.8%, 일반은 38.2%
-  const kellyCap = isSmallAccount ? PHI.MAX : PHI.MAJOR;
+  // v10.9: Kelly 캡 통일 — 소액도 38.2% (기존 61.8%)
+  const kellyCap = PHI.MAJOR;
   const baseSize = portfolioValue * Math.min(kellyPct, kellyCap);
 
   // 현금 활용: 레짐 기반 동적 현금유보 — 장 좋으면 적극, 나쁘면 보수적

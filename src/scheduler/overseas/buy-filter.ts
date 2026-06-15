@@ -53,9 +53,10 @@ function getUSTimeBonus(): number {
   const kstH = kst.getUTCHours() + 9; // UTC → KST
   const kstM = kst.getUTCMinutes();
   const kstTotal = (kstH % 24) * 60 + kstM;
+  // v10.9: 개장 30분 페널티 제거 — 가격 발견 구간에서 모멘텀 포착
   // 서머타임 기준: 미국 개장 22:30 KST, 마감 05:00 KST
-  // 22:30~23:00 (개장 30분): 변동성 최대 → -15점 (거짓 신호 다수)
-  if (kstTotal >= 22 * 60 + 30 && kstTotal < 23 * 60) return -15;
+  // 22:30~23:00 (개장 30분): 모멘텀 포착 구간 → +5점 (기존 -15점에서 전환)
+  if (kstTotal >= 22 * 60 + 30 && kstTotal < 23 * 60) return 5;
   // 23:00~00:00 (개장 1시간 후): 트렌드 확정 구간 → +10점
   if (kstTotal >= 23 * 60 && kstTotal < 24 * 60) return 10;
   // 00:00~01:00 (미국 10~11am): 최적 진입 → +8점
@@ -254,7 +255,8 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const isAbove50 = t.rsi >= 50;
         // RSI "developing zone" (38-49): 추세 발전 중, ADX가 확인해주면 진입 허용
         const isDeveloping = t.rsi >= 38 && t.rsi < 50 && t.adx >= 20 && t.aboveMA20;
-        const adxThreshold = isPaper ? 12 : 13;
+        // v10.9: ADX 진입 최소 기준 강화 (13→18 Live) — 횡보장 진입 차단
+        const adxThreshold = isPaper ? 15 : 18;
         const trendFilterOk =
           t.isMomentum || t.isBigMover || isOversold || isDeveloping || (isAbove50 && t.adx > adxThreshold);
         if (!trendFilterOk) {

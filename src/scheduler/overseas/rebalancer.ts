@@ -68,11 +68,11 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
     const actualCashPct = rbTotal > 0 ? (cash / rbTotal) * 100 : 100;
     const usdKrw = await fetchExchangeRate();
 
-    // 소액 포트폴리오($5000 미만): 1주=큰 비중이므로 리밸런싱 문턱 완화
-    const isSmallPortfolio = rbTotal < 5000;
-    const overweightThreshold = isSmallPortfolio ? 15.0 : 5.0;
-    // $3000 미만: 리밸런싱 자체가 무의미 (수수료 대비 효과 없음)
-    if (rbTotal < 3000) return { rebalanceAlerts, cash };
+    // v10.9: 소액 리밸런싱 차단 범위 확대 — 승자 라이딩 보장
+    // $5000 미만: 수수료 대비 리밸런싱 효과 없음, 승자 매도가 수익 갉아먹음
+    if (rbTotal < 5000) return { rebalanceAlerts, cash };
+    const isSmallPortfolio = rbTotal < 10000;
+    const overweightThreshold = isSmallPortfolio ? 20.0 : 5.0;
     const overweight = positionWeights.filter((p) => p.weight > targetWeightPer + overweightThreshold);
 
     if (overweight.length > 0 || (actualCashPct < 5 && holdingCount >= 3)) {
@@ -163,6 +163,7 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
     }
 
     // ── 패자→승자 로테이션 (Paper 자동 / Live 추천) ──
+    // v10.9: 소액(<$5000)은 이미 위에서 return했으므로 여기는 $5000+만 도달
     // -3% 이하 패자 → 기술적 강세인 승자로 자금 이동
     const LOSER_THRESHOLD = -3.0; // 패자 기준: -3% 이하
     const WINNER_MIN_PNL = 1.0; // 승자 기준: +1% 이상

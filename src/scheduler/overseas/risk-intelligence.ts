@@ -234,31 +234,31 @@ export function getPartialTpStages(sector: string): PartialTpStage[] {
   const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
   const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
 
-  // 부분익절: 노이즈 스킵 — 1단계 트리거 상향 (일간 변동 범위 밖에서만 확정)
+  // v10.9: 부분익절 현실화 — 1단계 빠른 수익 확정 (25~30%), 트리거 하향
   if (isHighBeta) {
     return [
-      { stage: 1, triggerPct: 3.5, sellRatio: 0.15 }, // +3.5% → 15% (기존 2.0%, 고베타 일간 변동 2-3%)
-      { stage: 2, triggerPct: 6.0, sellRatio: 0.15 },
-      { stage: 3, triggerPct: 10.0, sellRatio: 0.2 },
-      { stage: 4, triggerPct: 15.0, sellRatio: 0.2 },
-      { stage: 5, triggerPct: 22.0, sellRatio: 0.25 },
+      { stage: 1, triggerPct: 2.0, sellRatio: 0.25 }, // v10.9: +2%→25% (기존 3.5%→15%)
+      { stage: 2, triggerPct: 4.0, sellRatio: 0.20 },
+      { stage: 3, triggerPct: 7.0, sellRatio: 0.20 },
+      { stage: 4, triggerPct: 12.0, sellRatio: 0.20 },
+      { stage: 5, triggerPct: 18.0, sellRatio: 0.15 },
     ];
   }
   if (isDefense) {
     return [
-      { stage: 1, triggerPct: 2.5, sellRatio: 0.2 }, // +2.5% (기존 1.5%, 방어주 일간 변동 0.5-1.5%)
-      { stage: 2, triggerPct: 4.0, sellRatio: 0.2 },
-      { stage: 3, triggerPct: 6.0, sellRatio: 0.25 },
-      { stage: 4, triggerPct: 9.0, sellRatio: 0.25 },
+      { stage: 1, triggerPct: 1.5, sellRatio: 0.30 }, // v10.9: +1.5%→30% (방어주 빠른 확정)
+      { stage: 2, triggerPct: 3.0, sellRatio: 0.25 },
+      { stage: 3, triggerPct: 5.0, sellRatio: 0.25 },
+      { stage: 4, triggerPct: 8.0, sellRatio: 0.20 },
     ];
   }
   // 일반 종목
   return [
-    { stage: 1, triggerPct: 3.0, sellRatio: 0.15 }, // +3.0% (기존 1.5%, 일간 노이즈 1-2% 스킵)
-    { stage: 2, triggerPct: 5.0, sellRatio: 0.15 }, // +5.0% → 추가 15%
-    { stage: 3, triggerPct: 8.0, sellRatio: 0.2 }, // +8.0% → 추가 20% (누적 50%)
-    { stage: 4, triggerPct: 12.0, sellRatio: 0.2 },
-    { stage: 5, triggerPct: 18.0, sellRatio: 0.25 },
+    { stage: 1, triggerPct: 1.5, sellRatio: 0.25 }, // v10.9: +1.5%→25% (기존 3.0%→15%)
+    { stage: 2, triggerPct: 3.0, sellRatio: 0.20 },
+    { stage: 3, triggerPct: 5.0, sellRatio: 0.20 },
+    { stage: 4, triggerPct: 8.0, sellRatio: 0.20 },
+    { stage: 5, triggerPct: 13.0, sellRatio: 0.15 },
   ];
 }
 
@@ -336,12 +336,13 @@ export function calcDynamicTpSl(params: {
   const isMediumBeta = SECTOR_CLASS.MEDIUM_BETA.includes(sector);
   const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
 
-  // Trade Tuner 오버라이드가 있으면 base 값 조정
-  // TP 현실화: 소규모 포트폴리오 빠른 자본 회전 → 4~6% (모멘텀 추가시 6~8%)
+  // v10.9: TP/SL 현실화 — 소액 자본 회전 최적화
+  // 기존 4~6% TP는 소액 계좌에서 대부분 미달 → 시간손절로 전환
+  // 3.5/2.5/2.0% 기본 → 승자 빈도 ↑, 자본 회전 ↑
   const tunerTpAdj = tunerOverrides?.tp_base_pct;
   const tunerSlAdj = tunerOverrides?.sl_base_pct;
-  const baseTp = tunerTpAdj != null ? tunerTpAdj : isHighBeta ? 6.0 : isMediumBeta ? 4.0 : isDefense ? 4.0 : 4.0;
-  const baseSl = tunerSlAdj != null ? tunerSlAdj : isHighBeta ? 6.0 : isMediumBeta ? 4.0 : isDefense ? 3.0 : 4.0;
+  const baseTp = tunerTpAdj != null ? tunerTpAdj : isHighBeta ? 3.5 : isMediumBeta ? 2.5 : isDefense ? 2.0 : 2.5;
+  const baseSl = tunerSlAdj != null ? tunerSlAdj : isHighBeta ? 4.0 : isMediumBeta ? 2.5 : isDefense ? 2.0 : 2.5;
 
   const momentumExt =
     adx >= 35 && rsi >= 45 && rsi <= 68 ? 5.0 : adx >= 28 && rsi >= 45 && rsi <= 70 ? 2.0 : isMomentum ? 1.0 : 0;
@@ -367,15 +368,16 @@ export function calcDynamicTpSl(params: {
   const aiSlAdj = aiAction === 'SELL' && aiConfidence >= 0.8 ? -1.0 : 0;
   const scoreSlAdj = aiScore != null && aiScore >= 85 ? 0.5 : 0;
 
-  // TP 바닥: base + 왕복 수수료(0.7%) — 실질 수익 보장 (보너스만 올릴 수 있게)
+  // v10.9: TP 바닥 = base + 수수료 (기존 6/4/4% → 3.5/2.5/2.0%)
   const roundTripFeePct = OVERSEAS_FEE_PCT * 2 * 100; // 0.7%
-  const tpFloor = (isHighBeta ? 6.0 : isMediumBeta ? 4.0 : isDefense ? 4.0 : 4.0) + roundTripFeePct;
+  const tpFloor = baseTp + roundTripFeePct;
   const tpCeil = isHighBeta ? 40.0 : isMediumBeta ? 35.0 : isDefense ? 25.0 : 35.0;
   const tpPct = Math.min(
     tpCeil,
     Math.max(tpFloor, baseTp + roundTripFeePct + momentumExt + overboughtCut + aiTpBonus + scoreTpBonus + vixTpAdj),
   );
-  let slPct = Math.max(isHighBeta ? 5.0 : 2.5, baseSl + aiSlAdj + scoreSlAdj);
+  // v10.9: SL 하한 조정 (기존 HIGH_BETA 5% → 3%, 기타 2.5% → 2%)
+  let slPct = Math.max(isHighBeta ? 3.0 : 2.0, baseSl + aiSlAdj + scoreSlAdj);
 
   // ATR 기반 SL: 항상 적용 — 고변동성은 SL 확대(노이즈 방지), 저변동성은 SL 타이트닝
   if (atrPct && atrPct > 0) {
