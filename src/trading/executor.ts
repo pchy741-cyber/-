@@ -36,6 +36,8 @@ import { chainManager } from './chain.js';
 export class TradeExecutor {
   // (종목코드)-(YYYYMMDDHHMM) 키로 분당 1회 중복 주문 방지
   private readonly _recentOrderKeys = new Set<string>();
+  // 🔒 청산 실패 카운터: 연속 실패 시 무한 루프 방지 (key: "mode-stockCode")
+  private readonly _closeFailCount = new Map<string, number>();
 
   private _minuteKey(stockCode: string, action: string): string {
     const now = new Date();
@@ -705,6 +707,21 @@ export class TradeExecutor {
     const chain = await chainManager.findOpenChain(stockCode);
     if (!chain || chain.total_quantity === 0) return;
 
+    // 🔒 연속 실패 시 무한 루프 방지: 5회 이상 실패하면 KIS 실보유 동기화 시도 후 중단
+    const failKey = `${isPaperSnapshot ? 'paper' : 'live'}-${stockCode}`;
+    const failCount = this._closeFailCount.get(failKey) ?? 0;
+    if (failCount >= 5) {
+      // 10회 넘으면 더 이상 로그도 안 찍음 (로그 스팸 방지)
+      if (failCount < 10) {
+        logger.warn(
+          `⏸️ ${stockCode} 청산 ${failCount}회 연속 실패 → 재시도 중단 (수동 확인 필요)`,
+          { component: 'EXECUTOR' },
+        );
+      }
+      this._closeFailCount.set(failKey, failCount + 1);
+      return;
+    }
+
     // 스마트 매도: SELL/FORCE_CLOSE 모두 bid1 지정가 시도 → 실패 시 시장가 폴백
     // FORCE_CLOSE도 bid1이면 즉시 체결 가능 (이미 매수자 존재), 시장가 대비 ~0.05% 슬리피지 절감
     let smartSellPrice: number | undefined;
@@ -733,7 +750,51 @@ export class TradeExecutor {
       isPaper: isPaperSnapshot,
     });
 
-    if (result.success) {
+    if (!result.success) {
+      this._closeFailCount.set(failKey, failCount + 1);
+
+      // "주문 가능한 수량을 초과" → DB-KIS 보유수량 불일치 — 실보유 동기화 시도
+      if (!isPaperSnapshot && result.message?.includes('수량을 초과')) {
+        try {
+          const { getPositionForStock } = await import('../kis/account.js');
+          invalidateBalanceCache(); // 캐시 무효화 후 실잔고 조회
+          const kisPosition = await getPositionForStock(stockCode);
+          const actualQty = kisPosition?.quantity ?? 0;
+
+          if (actualQty === 0) {
+            // KIS에 보유 0주 → 이미 매도됐거나 미보유 상태 → 체인 강제 종료
+            logger.warn(
+              `🔄 DB-KIS 불일치 해소: ${stockCode} DB=${chain.total_quantity}주 KIS=0주 → 체인 강제 종료`,
+              { component: 'EXECUTOR' },
+            );
+            const avgBuy = Number(chain.avg_buy_price) || 0;
+            await chainManager.closeChain(
+              chain.id, avgBuy, chain,
+              `KIS 동기화: DB ${chain.total_quantity}주 → 실보유 0주 (이미 매도 완료 추정)`,
+            );
+            this._closeFailCount.delete(failKey);
+            invalidateStockCache(stockCode).catch(() => {});
+            hardInvalidateDashboardCache();
+            await logSystem('WARN', 'EXECUTOR',
+              `🔄 DB-KIS 동기화: ${stockCode} 체인 강제 종료 (DB ${chain.total_quantity}주, KIS 0주)`);
+          } else if (actualQty < chain.total_quantity) {
+            // KIS 보유 < DB 기록 → 부분 불일치
+            logger.warn(
+              `🔄 DB-KIS 부분 불일치: ${stockCode} DB=${chain.total_quantity}주 KIS=${actualQty}주`,
+              { component: 'EXECUTOR' },
+            );
+          }
+        } catch (syncErr) {
+          logger.warn(`KIS 동기화 조회 실패: ${stockCode} — ${syncErr}`, { component: 'EXECUTOR' });
+        }
+      }
+      return;
+    }
+
+    // 성공 시 실패 카운터 초기화
+    this._closeFailCount.delete(failKey);
+
+    {
       const now = await getCurrentPrice(stockCode).catch(() => null);
       const fallbackPrice = now?.currentPrice ?? (Number(chain.avg_buy_price) || 0);
       const fill = await this.confirmFill(result.orderNo, stockCode, chain.total_quantity, fallbackPrice);

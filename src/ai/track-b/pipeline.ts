@@ -785,9 +785,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const hasHighConvictionStock = topScore >= 90;
     // SWING 종가 우선: 14:30 이전 신규매수 제한 (스윙=며칠 홀딩 → 당일 노이즈 회피, 종가 확인 후 진입)
     // BREAKOUT 모드는 돌파 순간 포착 필요 → 시간 제한 없음
-    // 예외: AI 95+ 극고확신 종목 (시장 컨센서스가 매우 강해 즉시 진입이 유리)
+    // 예외1: AI 70+ 고확신 종목 (95→70 완화: 시장 컨센서스가 강해 즉시 진입 유리)
+    // 예외2: KOSPI +1.5%+ 랠리일 → 종가우선 해제 (갭업 랠리 놓치면 안 됨)
     const isSwingEodRestricted =
-      !ctxIsPaper && effectiveMode === 'SWING' && (kstH < 14 || (kstH === 14 && kstM < 30)) && topScore < 95;
+      !ctxIsPaper && effectiveMode === 'SWING' && (kstH < 14 || (kstH === 14 && kstM < 30)) && topScore < 70 && !kospiRegime.todayUp;
     // 최대 동시 포지션 수 제한 (alloc-risk-cache에서 조회)
     const { getAllocRisk } = await import('../../db/alloc-risk-cache.js');
     const allocRisk = await getAllocRisk(ctxIsPaper);
@@ -796,11 +797,19 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     if (isMaxPositionsReached) {
       logger.info(`🚫 최대 포지션 수 도달: ${activePositionCount}/${allocRisk.maxPositions} → 신규 매수 차단`, { component: 'TRACK_B' });
     }
+    // 🚀 랠리일 감지: KOSPI +1.5%+ 갭업 시 보수적 시간 차단 해제 (갭업 랠리 놓치지 않기)
+    const isRallyDay = kospiRegime.todayUp;
+    // 랠리일: 개장블록 09:00-09:10으로 단축, 점심블록 해제
+    const isOpeningBlock = isRallyDay ? (kstH === 9 && kstM < 10 && !getCtxIsPaper() && effectiveMode !== 'SCALPING') : isOpeningVolatility;
+    const isLunchBlock = isRallyDay ? false : isLunchBan;
+    if (isRallyDay && (isOpeningVolatility || isLunchBan || isSwingEodRestricted)) {
+      logger.info(`🚀 랠리일(KOSPI+1.5%+): 개장블록/점심블록/종가우선 해제 → 적극 매수 허용`, { component: 'TRACK_B' });
+    }
     const blockNewBuys =
       (!ctxIsPaper && isPastClose) || // Paper: 마감시간 면제 (적극적 매매)
-      (!ctxIsPaper && isLunchBan) || // Paper: 마의시간 면제
-      isSwingEodRestricted || // SWING 14:30 이전: 종가 구간 대기 (BREAKOUT 제외, 95+ 예외, 이미 !ctxIsPaper)
-      isOpeningVolatility || // 09:00-09:30 장초반 변동성 구간: 신규 매수 사전 차단 (스캔 낭비 방지)
+      (!ctxIsPaper && isLunchBlock) || // 점심블록: 랠리일 해제
+      isSwingEodRestricted || // SWING 14:30 이전: 종가우선 (랠리일/70+점 예외)
+      isOpeningBlock || // 개장블록: 랠리일 09:10으로 단축
       isMaxPositionsReached || // 최대 동시 포지션 수 초과: 신규 매수 차단
       (!ctxIsPaper && dailyLoss.blocked) || // Paper: 일일손실 차단 면제 (데이터 수집 우선)
       (!ctxIsPaper && kospiRegime.flashCrash) || // 급락 서킷브레이커: Live만 차단 (Paper 면제 — 모의자금)
@@ -847,7 +856,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         : isLunchBan
           ? `마의시간대(10:30~12:30) 신규매수금지`
           : isSwingEodRestricted
-            ? `SWING 종가우선(14:30 이전, AI 95 미만 [top=${topScore}점] → 14:30+ 대기)`
+            ? `SWING 종가우선(14:30 이전, AI 70 미만 [top=${topScore}점], 비랠리일 → 14:30+ 대기)`
             : dailyLoss.blocked
               ? `일일손실초과(${dailyLoss.dailyPnlPct.toFixed(1)}%)`
               : kospiRegime.flashCrash

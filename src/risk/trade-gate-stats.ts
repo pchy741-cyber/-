@@ -141,9 +141,12 @@ async function getConsecutiveLosses(): Promise<number> {
 
 export async function cooldownGate(): Promise<GateResult> {
   const consecutive = await getConsecutiveLosses();
-  // Paper 모드: 쿨다운 대폭 완화 (config.paperRisk.cooldownMultiplier 적용)
+  // Paper 모드: 쿨다운 완전 비활성 (데이터 축적이 우선 — CEO 지시 2026-06-15)
   const isPaper = getCtxIsPaper();
-  const mult = isPaper ? config.paperRisk.cooldownMultiplier : 1;
+  if (isPaper) {
+    return { passed: true, reason: consecutive > 0 ? `[모의] ${consecutive}연패 (쿨다운 면제)` : '연속손실 없음' };
+  }
+  const mult = 1;
   const cooldownMs =
     consecutive >= 5
       ? Math.round(GATE.CONSECUTIVE_LOSS_HALT_MS * mult)

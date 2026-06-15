@@ -22,6 +22,8 @@ export interface KospiRegime {
   boost: boolean;
   /** 당일 -0.3%+ 하락 → 신규 매수 억제 (하락장 진입 차단) */
   todayDown: boolean;
+  /** 당일 +1.5%+ 상승 → 랠리일 감지 (보수적 시간 차단 해제) */
+  todayUp: boolean;
   /** 5분 이내 KOSPI -1%+ 급락 → 해당 사이클 신규 매수 전면 차단 */
   flashCrash: boolean;
   /** ATR 기반 시장 변동성 적응형 전략 파라미터 (모드별) */
@@ -121,6 +123,7 @@ export async function fetchKospiRegime(): Promise<KospiRegime> {
     penalty: 0,
     boost: false,
     todayDown: false,
+    todayUp: false,
     flashCrash: false,
     adaptive: {},
     atrPct: 1.0,
@@ -135,9 +138,16 @@ export async function fetchKospiRegime(): Promise<KospiRegime> {
     const kospiPrev = kospiCandles[1]?.close ?? 0;
     const todayChangePct = kospiPrev > 0 ? ((kospiNow - kospiPrev) / kospiPrev) * 100 : 0;
     const todayDown = kospiNow > 0 && todayChangePct <= -0.3;
+    const todayUp = kospiNow > 0 && todayChangePct >= 1.5;
     if (todayDown) {
       logger.info(
         `📉 KOSPI 당일 ${todayChangePct.toFixed(2)}% 하락 (${kospiNow.toFixed(0)} / 전일${kospiPrev.toFixed(0)}) → 신규 매수 억제`,
+        { component: 'REGIME' },
+      );
+    }
+    if (todayUp) {
+      logger.info(
+        `🚀 KOSPI 당일 +${todayChangePct.toFixed(2)}% 랠리 감지 (${kospiNow.toFixed(0)} / 전일${kospiPrev.toFixed(0)}) → 보수적 차단 해제`,
         { component: 'REGIME' },
       );
     }
@@ -177,7 +187,7 @@ export async function fetchKospiRegime(): Promise<KospiRegime> {
       });
       const { adaptive, atrPct } = buildAdaptive(kospiCandles, { penalty: 2, boost: false });
       _lastKnownPenalty = 2; _lastKnownBoost = false;
-      return { penalty: 2, boost: false, todayDown, flashCrash, adaptive, atrPct };
+      return { penalty: 2, boost: false, todayDown, todayUp, flashCrash, adaptive, atrPct };
     }
     if (kospiNow > 0 && kospiNow < kospiTech.sma20) {
       logger.info(`⚠️ KOSPI ${kospiNow.toFixed(0)} < MA20 ${kospiTech.sma20.toFixed(0)} → 조정장 포지션 60%`, {
@@ -185,7 +195,7 @@ export async function fetchKospiRegime(): Promise<KospiRegime> {
       });
       const { adaptive, atrPct } = buildAdaptive(kospiCandles, { penalty: 1, boost: false });
       _lastKnownPenalty = 1; _lastKnownBoost = false;
-      return { penalty: 1, boost: false, todayDown, flashCrash, adaptive, atrPct };
+      return { penalty: 1, boost: false, todayDown, todayUp, flashCrash, adaptive, atrPct };
     }
     // 강세장: 가격 > MA20 > MA60 = 골든크로스 구간 → 포지션 확대 + TP 상향
     const isBull = kospiNow > 0 && kospiTech.sma20 > kospiTech.sma60;
@@ -201,9 +211,9 @@ export async function fetchKospiRegime(): Promise<KospiRegime> {
       `⚙️ 현재 ATR ${atrPct.toFixed(2)}% | SWING: threshold=${adaptive.SWING?.buyThreshold} TP=${adaptive.SWING?.takeProfitPct}% SL=${adaptive.SWING?.stopLossPct}%`,
       { component: 'REGIME' },
     );
-    return { penalty: 0, boost: isBull, todayDown, flashCrash, adaptive, atrPct };
+    return { penalty: 0, boost: isBull, todayDown, todayUp, flashCrash, adaptive, atrPct };
   } catch {
-    return { penalty: 0, boost: false, todayDown: false, flashCrash: false, adaptive: {}, atrPct: 1.0 };
+    return { penalty: 0, boost: false, todayDown: false, todayUp: false, flashCrash: false, adaptive: {}, atrPct: 1.0 };
   }
 }
 
