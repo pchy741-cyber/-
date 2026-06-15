@@ -150,12 +150,12 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       const chainTp = chain.target_profit_pct != null
         ? Number(chain.target_profit_pct)
         : (STRATEGY_PARAMS[chain.strategy_mode as StrategyMode]?.takeProfitPct ?? 5.5);
-      const activateAt = Math.max(chainTp * 0.5, 2.5);
+      const activateAt = Math.max(chainTp * 0.65, 4.0); // v8: 0.5/2.5%→0.65/4.0% (수익 조기 차단 방지)
       if (curPeak >= activateAt) {
         const earlyChart = chartData.get(chain.stock_code);
         const earlyTech = earlyChart && earlyChart.length >= 20 ? analyzeTechnicals(earlyChart) : null;
         const atrPct = earlyTech?.atrPct ?? 1.5;
-        const trailThreshold = Math.max(-(atrPct * 1.5), -3.0); // ATR×1.5, 최대 -3%
+        const trailThreshold = Math.max(-(atrPct * 2.0), -3.5); // v8: ATR×2.0, -3.5% (수익 여유 확보)
         const dropFromPeak = pnlPct - curPeak;
 
         if (dropFromPeak <= trailThreshold && chain.total_quantity > 0) {

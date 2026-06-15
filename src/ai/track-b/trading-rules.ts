@@ -71,19 +71,24 @@ export const PRIORITY_SECTOR_CODES = new Set([
  */
 export const MEGA_CAP_PRIORITY_CODES = new Map<string, { name: string; bonus: number; thresholdReduction: number }>([
   // ── 시가총액 Top 10 대형주 ──
-  // thresholdReduction=0: 대형주도 동일 기준 적용 (v3: 낮은 기준으로 반복매수 방지)
-  ['005930', { name: '삼성전자', bonus: 8, thresholdReduction: 0 }],
-  ['005935', { name: '삼성전자(우)', bonus: 8, thresholdReduction: 0 }],
-  ['000660', { name: 'SK하이닉스', bonus: 8, thresholdReduction: 0 }],
-  ['005380', { name: '현대차', bonus: 6, thresholdReduction: 0 }],
-  ['000270', { name: '기아', bonus: 6, thresholdReduction: 0 }],
-  ['012330', { name: '현대모비스', bonus: 5, thresholdReduction: 0 }],
-  ['035420', { name: 'NAVER', bonus: 6, thresholdReduction: 0 }],
+  // v8: thresholdReduction 10 적용 (삼성/SK하이닉스 등 대형주 AI점수 구조적 저평가 보정)
+  // 대형주는 변동성 낮아 AI 점수 낮게 나옴 → buyThreshold -10으로 보정
+  ['005930', { name: '삼성전자', bonus: 10, thresholdReduction: 10 }],
+  ['005935', { name: '삼성전자(우)', bonus: 10, thresholdReduction: 10 }],
+  ['000660', { name: 'SK하이닉스', bonus: 10, thresholdReduction: 10 }],
+  ['005380', { name: '현대차', bonus: 8, thresholdReduction: 8 }],
+  ['000270', { name: '기아', bonus: 8, thresholdReduction: 8 }],
+  ['012330', { name: '현대모비스', bonus: 6, thresholdReduction: 5 }],
+  ['035420', { name: 'NAVER', bonus: 8, thresholdReduction: 8 }],
   // ── 방산/한화 대형주 ──
-  ['012450', { name: '한화에어로스페이스', bonus: 8, thresholdReduction: 0 }],
-  ['272210', { name: '한화시스템', bonus: 6, thresholdReduction: 0 }],
-  ['042660', { name: '한화오션', bonus: 6, thresholdReduction: 0 }],
-  ['064350', { name: '현대로템', bonus: 6, thresholdReduction: 0 }],
+  ['012450', { name: '한화에어로스페이스', bonus: 10, thresholdReduction: 8 }],
+  ['272210', { name: '한화시스템', bonus: 8, thresholdReduction: 5 }],
+  ['042660', { name: '한화오션', bonus: 8, thresholdReduction: 5 }],
+  ['064350', { name: '현대로템', bonus: 8, thresholdReduction: 5 }],
   // ── 반도체 소재/장비 ──
-  ['042700', { name: '한미반도체', bonus: 5, thresholdReduction: 0 }],
+  ['042700', { name: '한미반도체', bonus: 8, thresholdReduction: 5 }],
+  // ── 추가 대형 반도체/전기전자 ──
+  ['066570', { name: 'LG전자', bonus: 8, thresholdReduction: 8 }],
+  ['006400', { name: '삼성SDI', bonus: 8, thresholdReduction: 5 }],
+  ['373220', { name: 'LG에너지솔루션', bonus: 8, thresholdReduction: 5 }],
 ]);

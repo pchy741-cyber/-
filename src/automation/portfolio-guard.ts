@@ -111,15 +111,16 @@ export async function getPerformanceMultiplier(): Promise<number> {
       mult = 1.1;
       label = '약공격';
     } else if (winRate < 0.3 || totalPnl < lossThresholdHard) {
-      mult = isPaper ? 0.85 : 0.7;
+      // v8: 0.7→0.85 완화 (소액계좌 방어모드 고착 방지 — 968K에서 50K 손실로 영구 0.7x 문제)
+      mult = isPaper ? 1.0 : 0.85;
       label = isPaper
         ? '연습모드 보수'
-        : `심각손실(WR${(winRate * 100).toFixed(0)}%/${((totalPnl / portfolioValue) * 100).toFixed(1)}%)`;
+        : `손실주의(WR${(winRate * 100).toFixed(0)}%/${((totalPnl / portfolioValue) * 100).toFixed(1)}%)`;
     } else if (winRate < 0.4 || totalPnl < lossThresholdSoft) {
-      mult = isPaper ? 0.9 : 0.8;
+      mult = isPaper ? 1.0 : 0.9;
       label = isPaper ? '연습모드 약보수' : '방어';
     } else if (winRate < 0.5) {
-      mult = 0.85;
+      mult = 0.9;
       label = '보수';
     } else {
       mult = 1.0;
