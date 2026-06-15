@@ -196,6 +196,7 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
       noAiForStock,
       feedbackMinVolRatio,
       curPrice: price.currentPrice,
+      isRallyDay: params.kospiBoost,
     });
     if (!quality.passed) {
       const d = quality.details;

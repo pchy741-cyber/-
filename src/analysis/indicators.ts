@@ -218,11 +218,12 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   // ── 카테고리 2: 모멘텀 (Momentum) — cap ±25 ──
   // RSI, MACD, Stochastic, ROC, RSI2, 캔들 패턴 (모두 "가격 변화율/진동" 계열)
   let momentumScore = 0;
+  // v9: RSI 과매수 페널티 완화 — 모멘텀 상승 종목 과도한 감점이 랠리 기회 차단
   if (rsi14 < 30) momentumScore += 10;
   else if (rsi14 < 40) momentumScore += 5;
   else if (rsi14 >= 45 && rsi14 <= 62) momentumScore += 8;
-  else if (rsi14 > 70) momentumScore -= 15;
-  else if (rsi14 > 65) momentumScore -= 8;
+  else if (rsi14 > 70) momentumScore -= 8; // v9: -15→-8
+  else if (rsi14 > 65) momentumScore -= 3; // v9: -8→-3
 
   if (macdCross === 'BULLISH') momentumScore += 12;
   else if (macdCross === 'BEARISH') momentumScore -= 12;

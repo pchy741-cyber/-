@@ -109,6 +109,8 @@ export interface QualityGateInput {
   noAiForStock: boolean;
   feedbackMinVolRatio: number;
   curPrice: number;
+  /** v9: KOSPI +1.5%+ 랠리일 → 품질 게이트 완화 */
+  isRallyDay?: boolean;
 }
 
 export interface GateResult {

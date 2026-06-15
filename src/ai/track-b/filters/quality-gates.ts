@@ -125,7 +125,9 @@ export function checkQualityGates(input: QualityGateInput): GateResult {
   // 2026-06 성과 검토: WR 30.8% → 품질 게이트 최소 3개로 상향
   // min=2는 너무 관대 → 잘못된 진입 70% → 승률 30.8% 원인
   // paper: min=0 (연습모드 전면 개방 — 데이터 수집 최대화, is_paper 플래그로 live 오염 차단)
-  const liveMin = aiScore >= 92 ? 3 : aiScore >= 80 ? 3 : aiScore >= 70 ? 4 : 4;
+  // v9: 랠리일(KOSPI +1.5%+) → 모멘텀 기회 포착 위해 3/6으로 완화
+  const isRally = input.isRallyDay ?? false;
+  const liveMin = isPaper ? 0 : isRally ? 3 : aiScore >= 80 ? 3 : 4;
   const min = isPaper ? 0 : liveMin;
 
   return { passed: count >= min, count, min, details };
