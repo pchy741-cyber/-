@@ -117,20 +117,26 @@ export function checkEntryTiming(params: {
   let scoreBonus = 0;
   if (market === 'KR') {
     phase = getKrMarketPhase();
+    // v9-fix: CURSED 하드블럭 제거 — pipeline.ts의 isLunchBan이 이미 시간 차단 처리
+    // entry-timing-guard까지 이중 차단하면 10:20~13:00 완전 매수 금지 → 기회 상실
+    // 대신 score bonus +5 요구로 완화 (낮은 점수 진입만 차단)
     if (phase === 'CURSED') {
-      return {
-        allowed: false,
-        scoreBonus: 99,
-        reason: `☠️ 마의시간 (10:20~13:00): 신규 매수 절대 금지`,
-        details: {
-          phase,
-          rsi: tech.rsi ?? null,
-          volumeRatio: tech.volumeRatio ?? null,
-          aboveMa20: tech.aboveMa20 ?? null,
-          strategyMode: params.strategyMode,
-          kstHour: kstH,
-        },
-      };
+      scoreBonus = 5;
+      if (params.aiScore < 70 + scoreBonus) {
+        return {
+          allowed: false,
+          scoreBonus,
+          reason: `⚠️ 마의시간 (10:20~13:00): 점수 ${params.aiScore} < 필요 ${70 + scoreBonus} (저확신 차단)`,
+          details: {
+            phase,
+            rsi: tech.rsi ?? null,
+            volumeRatio: tech.volumeRatio ?? null,
+            aboveMa20: tech.aboveMa20 ?? null,
+            strategyMode: params.strategyMode,
+            kstHour: kstH,
+          },
+        };
+      }
     }
     if (phase === 'CLOSED') {
       // 저녁이 아닌 장외 (06:30~09:00, 15:30~18:00): 점수 +5 보너스 요구

@@ -762,10 +762,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     //   (7건 중 5건이 12:37, 15:01, 15:22, 15:23 진입 — 전부 금지/제한 시간대)
     //   How: paper도 live와 동일한 시간 가드 적용 — 학습 환경에서도 일관된 운영
     const isPastClose = kstH > 14 || (kstH === 14 && kstM >= 50);
-    // 마의 시간대: 10:30~12:30 (축소: 기존 10:20~13:00 → 핵심 저유동성 구간만)
-    // AI 스코어 90+ 고확신은 10:30~12:30에도 진입 허용
+    // v9-fix: 점심 시간대 10:30~12:30 — 고확신 기준 90→70 완화
+    // 90+ 기준은 너무 엄격 → 70+ 종목도 점심 진입 허용 (30% 승률 개선 목표)
     const isLunchHours = !isScalpingMode && ((kstH === 10 && kstM >= 30) || kstH === 11 || (kstH === 12 && kstM < 30));
-    const hasHighConviction = hasScores && scores.some((s: any) => (s.composite_score ?? 0) >= 90);
+    const hasHighConviction = hasScores && scores.some((s: any) => (s.composite_score ?? 0) >= 70);
     const isLunchBan = isLunchHours && !hasHighConviction;
     const portfolioStress = calcPortfolioStressLevel(openChains, livePrices, totalAssets);
     if (portfolioStress >= 1) {

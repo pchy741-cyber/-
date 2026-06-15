@@ -27,6 +27,10 @@ function extractSignals(signals: ScoringInput['signals']): SignalData {
 
 /** 시그널 보너스 계산 (기술점수에 가산) — v6: 수급 가중치 대폭 강화 */
 function calcSignalBonus(s: SignalData): number {
+  // v9-fix: 시그널 데이터 미수신(전부 0) → 페널티 없이 0 반환
+  // KIS API 장애/미지원 종목일 때 일괄 -5점 방지
+  const hasAnyData = s.intensity > 0 || s.shortRatio > 0 || s.bidAskRatio !== 1 || s.foreignNetEst !== 0 || s.instNetEst !== 0;
+  if (!hasAnyData) return 0;
   return (
     // 체결강도: 매수>매도 비율 (120↑ = 강한 매수세)
     (s.intensity >= 130 ? 10 : s.intensity >= 120 ? 7 : s.intensity >= 105 ? 3 : s.intensity < 85 ? -5 : 0) +

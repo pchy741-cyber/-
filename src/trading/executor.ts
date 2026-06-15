@@ -748,22 +748,31 @@ export class TradeExecutor {
       /* 호가 조회 실패 → 시장가 폴백 */
     }
 
-    const result = await this.executeOrder({
-      stockCode,
-      side: 'SELL',
-      quantity: chain.total_quantity,
-      price: smartSellPrice,
-      chainId: chain.id,
-      triggerSource: 'TRACK_B',
-      aiReasoning: reasoning,
-      isPaper: isPaperSnapshot,
-    });
+    // v9-fix: executeOrder가 throw하면 동기화 로직에 도달 못하는 버그 수정
+    // try/catch로 감싸서 throw·return 모두 동일한 동기화 경로 통과
+    let result: OrderResult;
+    try {
+      result = await this.executeOrder({
+        stockCode,
+        side: 'SELL',
+        quantity: chain.total_quantity,
+        price: smartSellPrice,
+        chainId: chain.id,
+        triggerSource: 'TRACK_B',
+        aiReasoning: reasoning,
+        isPaper: isPaperSnapshot,
+      });
+    } catch (orderErr) {
+      const errMsg = orderErr instanceof Error ? orderErr.message : String(orderErr);
+      result = { success: false, orderNo: '', message: errMsg };
+    }
 
     if (!result.success) {
       this._closeFailCount.set(failKey, failCount + 1);
 
       // "주문 가능한 수량을 초과" → DB-KIS 보유수량 불일치 — 실보유 동기화 시도
-      if (!isPaperSnapshot && result.message?.includes('수량을 초과')) {
+      const errText = result.message ?? '';
+      if (!isPaperSnapshot && errText.includes('수량을 초과')) {
         try {
           const { getPositionForStock } = await import('../kis/account.js');
           invalidateBalanceCache(); // 캐시 무효화 후 실잔고 조회
