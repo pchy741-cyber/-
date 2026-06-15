@@ -110,7 +110,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
           </div>
           <div className={`rounded-xl px-2 sm:px-3 py-2.5 ${usActualPct >= 0 ? 'bg-indigo-950/40 border border-indigo-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>
             <div className="text-[9px] text-slate-500 mb-0.5">🇺🇸 미국주식</div>
-            <div className="text-sm font-bold tabular-nums text-indigo-300 truncate">{fmtUsd(overseasInvestedUsd)}</div>
+            <div className="text-sm font-bold tabular-nums text-indigo-300 truncate">{fmtWon(overseasMarketKrw)}</div>
             <div className="flex items-center justify-between mt-1">
               <span className="text-[9px] text-slate-600">{totalValue > 0 ? ((overseasMarketKrw / totalValue) * 100).toFixed(0) : 0}%</span>
               <span className={`text-[9px] font-medium ${usActualPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{usActualPct > 0 ? '+' : ''}{usActualPct.toFixed(1)}%</span>

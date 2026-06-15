@@ -218,6 +218,9 @@ sseRoutes.get('/stream', (c) => {
             investedUsd: number;
             totalUsd: number;
             holdings: { code: string; qty: number; pnlPct: number }[];
+            investedKrw: number;
+            evalKrw: number;
+            fxRate: number;
           } | null = null;
           try {
             const p = getPool();
@@ -228,12 +231,13 @@ sseRoutes.get('/stream', (c) => {
             let cashUsd = 0;
             let cashKrw = 0;
             let seedKrw = 0;
+            let osFxRate = 0;
             if (viewIsPaper) {
               const { computePaperCash, getPaperSeedKrw } = await import('../../scheduler/overseas/state.js');
               const { fetchExchangeRate } = await import('../../automation/macro-data.js');
-              const fxRate = await fetchExchangeRate();
-              cashUsd = await computePaperCash(fxRate);
-              cashKrw = cashUsd * fxRate;
+              osFxRate = await fetchExchangeRate();
+              cashUsd = await computePaperCash(osFxRate);
+              cashKrw = cashUsd * osFxRate;
               seedKrw = getPaperSeedKrw();
             } else {
               const [usdR, krwR] = await Promise.all([
@@ -242,6 +246,7 @@ sseRoutes.get('/stream', (c) => {
               ]);
               cashUsd = Number(usdR.rows[0]?.value ?? 0);
               cashKrw = Number(krwR.rows[0]?.value ?? 0);
+              osFxRate = cashUsd > 0 ? cashKrw / cashUsd : 1350;
             }
             let evalUsd = 0;
             let investedUsd = 0;
@@ -253,7 +258,7 @@ sseRoutes.get('/stream', (c) => {
               investedUsd += avg * qty;
               return { code: h.stock_code, qty, pnlPct: avg > 0 ? ((last - avg) / avg) * 100 : 0 };
             });
-            overseasSummary = { cashUsd, cashKrw, seedKrw, evalUsd, investedUsd, totalUsd: cashUsd + evalUsd, holdings };
+            overseasSummary = { cashUsd, cashKrw, seedKrw, evalUsd, investedUsd, totalUsd: cashUsd + evalUsd, holdings, investedKrw: Math.round(investedUsd * osFxRate), evalKrw: Math.round(evalUsd * osFxRate), fxRate: osFxRate };
           } catch {
             /* 해외 데이터 조회 실패 시 null 유지 */
           }

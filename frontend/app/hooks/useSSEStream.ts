@@ -29,21 +29,57 @@ export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let disposed = false;
 
-    // 공통: chainPrices 머지 로직
-    const mergeChainPrices = (data: { chainPrices?: any[]; portfolio?: { unrealizedPnl?: number } }) => {
-      if (!Array.isArray(data.chainPrices) || data.chainPrices.length === 0) return;
+    // 공통: chainPrices + portfolio 머지 로직
+    const mergeChainPrices = (data: { chainPrices?: any[]; portfolio?: any; overseasSummary?: any }, isMeta = false) => {
+      if (!isMeta && (!Array.isArray(data.chainPrices) || data.chainPrices.length === 0)) return;
       setDash(prev => {
         if (!prev?.chains) return prev;
-        const priceMap = new Map<string, {stock_code:string;currentPrice:number;unrealizedPnl:number;unrealizedPnlPct:number;weight?:number}>(data.chainPrices!.map((cp: any) => [cp.stock_code, cp]));
-        const updatedChains = prev.chains.map(ch => {
-          const cp = priceMap.get(ch.stock_code);
-          if (!cp || cp.currentPrice <= 0) return ch;
-          return { ...ch, currentPrice: cp.currentPrice, unrealizedPnl: cp.unrealizedPnl, unrealizedPnlPct: cp.unrealizedPnlPct, ...(cp.weight != null ? { weight: cp.weight } : {}) };
-        });
-        const updatedPortfolio = data.portfolio?.unrealizedPnl != null
-          ? { ...prev.portfolio, unrealizedPnl: data.portfolio.unrealizedPnl }
-          : prev.portfolio;
-        return { ...prev, chains: updatedChains, portfolio: updatedPortfolio };
+        // 체인 가격 갱신
+        let updatedChains = prev.chains;
+        if (Array.isArray(data.chainPrices) && data.chainPrices.length > 0) {
+          const priceMap = new Map<string, {stock_code:string;currentPrice:number;unrealizedPnl:number;unrealizedPnlPct:number;weight?:number}>(data.chainPrices.map((cp: any) => [cp.stock_code, cp]));
+          updatedChains = prev.chains.map(ch => {
+            const cp = priceMap.get(ch.stock_code);
+            if (!cp || cp.currentPrice <= 0) return ch;
+            return { ...ch, currentPrice: cp.currentPrice, unrealizedPnl: cp.unrealizedPnl, unrealizedPnlPct: cp.unrealizedPnlPct, ...(cp.weight != null ? { weight: cp.weight } : {}) };
+          });
+        }
+        // portfolio 전체 필드 머지 (meta 이벤트에서만 — totalValue, cash, invested 등)
+        let updatedPortfolio = prev.portfolio;
+        if (isMeta && data.portfolio) {
+          const p = data.portfolio;
+          updatedPortfolio = {
+            ...prev.portfolio,
+            ...(p.totalValue != null ? { totalValue: p.totalValue } : {}),
+            ...(p.cash != null ? { cash: p.cash } : {}),
+            ...(p.invested != null ? { invested: p.invested } : {}),
+            ...(p.domesticInvested != null ? { domesticInvested: p.domesticInvested } : {}),
+            ...(p.domesticEval != null ? { domesticEval: p.domesticEval } : {}),
+            ...(p.domesticCash != null ? { domesticCash: p.domesticCash } : {}),
+            ...(p.unrealizedPnl != null ? { unrealizedPnl: p.unrealizedPnl } : {}),
+            ...(p.pnl != null ? { pnl: p.pnl } : {}),
+            ...(p.pnlPct != null ? { pnlPct: p.pnlPct } : {}),
+            ...(p.positionCount != null ? { positionCount: p.positionCount } : {}),
+          };
+        } else if (data.portfolio?.unrealizedPnl != null) {
+          updatedPortfolio = { ...prev.portfolio, unrealizedPnl: data.portfolio.unrealizedPnl };
+        }
+        // overseas 머지 (meta 이벤트 — overseasSummary → overseas 형식 변환)
+        let updatedOverseas = prev.overseas;
+        if (isMeta && data.overseasSummary) {
+          const os = data.overseasSummary;
+          updatedOverseas = {
+            ...prev.overseas,
+            ...(os.cashUsd != null ? { cashUsd: os.cashUsd } : {}),
+            ...(os.cashKrw != null ? { cashKrw: os.cashKrw } : {}),
+            ...(os.investedUsd != null ? { totalInvestedUsd: os.investedUsd } : {}),
+            ...(os.evalUsd != null ? { totalMarketValueUsd: os.evalUsd } : {}),
+            ...(os.investedKrw != null ? { totalInvestedKrw: os.investedKrw } : {}),
+            ...(os.evalKrw != null ? { totalMarketValueKrw: os.evalKrw } : {}),
+            ...(os.fxRate != null ? { fxRate: os.fxRate } : {}),
+          };
+        }
+        return { ...prev, chains: updatedChains, portfolio: updatedPortfolio, overseas: updatedOverseas };
       });
     };
 
@@ -82,7 +118,7 @@ export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
           if (data.strategy) {
             setStrategy(prev => prev ? { ...prev, ...data.strategy } : data.strategy);
           }
-          mergeChainPrices(data);
+          mergeChainPrices(data, true);
           const chainsChanged = prevChainCount !== -1 && data.activeChains !== prevChainCount;
           const overseasChanged = prevOverseasCount !== -1 && data.overseasHoldingCount !== undefined && data.overseasHoldingCount !== prevOverseasCount;
           if (chainsChanged || overseasChanged) {
