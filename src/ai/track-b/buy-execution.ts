@@ -147,8 +147,9 @@ export async function executeBuyDecisions(
 
   // Kelly 사이징: 30일 롤링 (10건 미만이면 null → 기존 하드코딩 폴백)
   // null 반환 시 저승률(<22%) 가능성 → 하드코딩 배분에 0.6x 페널티 적용
+  // v9-fix: Paper는 학습용 → Kelly 페널티 면제 (데이터 수집 극대화)
   const kellyResult = await calcDomesticKelly(30);
-  const kellyNullPenalty = kellyResult ? 1.0 : 0.6; // Kelly 불가 시 보수적 축소
+  const kellyNullPenalty = getCtxIsPaper() ? 1.0 : kellyResult ? 1.0 : 0.6;
 
   // AI 스코어 + 기술적 점수 합산으로 정렬
   candidates.sort((a, b) => {
@@ -529,7 +530,8 @@ export async function executeBuyDecisions(
     // 이전: 0.5×0.6×0.65×0.5 = 0.098 → 25%→2.4% (거의 매수 불가)
     // 수정: 합산 배수 최소 0.25 보장 → 25%→6.25% 이상 유지
     const rawCompoundMult = modeScale * macroSizingMult * winRateMultiplier * lossStreakMult;
-    const compoundMultFloor = Math.max(0.25, rawCompoundMult);
+    // v9-fix: Paper는 학습용 → 곱연산 하한 0.5 (Live: 0.25) — 데이터 수집 위해 적극적 매수
+    const compoundMultFloor = Math.max(ctxPaper ? 0.5 : 0.25, rawCompoundMult);
     if (rawCompoundMult < compoundMultFloor) {
       logger.info(
         `  🔒 ${cand.stock_code}: 곱연산 하한 적용 (${rawCompoundMult.toFixed(3)}→${compoundMultFloor.toFixed(3)}): mode=${modeScale} macro=${macroSizingMult} wr=${winRateMultiplier.toFixed(2)} streak=${lossStreakMult}`,
@@ -604,8 +606,10 @@ export async function executeBuyDecisions(
       ? Math.round(Math.min(positionSize, remainingCash * 0.8))
       : positionSize;
     // 최소 매수금액: 총자산 비례 동적 계산 (절대 최소 1만원)
+    // v9-fix: Paper는 학습용 → 최소금액 1% (Live: 2.5~4%) — 소액 포지션도 데이터 수집 허용
+    const minPosRate = ctxPaper ? 0.01 : aiApproved ? 0.04 : 0.025;
     const minPositionKrw = totalAssets
-      ? Math.max(10_000, Math.round(totalAssets * (aiApproved ? 0.04 : 0.025)))
+      ? Math.max(10_000, Math.round(totalAssets * minPosRate))
       : Math.max(10_000, Math.round(orderableCash * (aiApproved ? 0.08 : 0.05)));
     if (effectivePositionSize < minPositionKrw) {
       logger.info(
