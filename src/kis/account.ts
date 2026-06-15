@@ -1,5 +1,6 @@
 import { KIS_TR_ID } from '../config/constants.js';
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
 import { kisRequest } from './client.js';
@@ -49,9 +50,10 @@ function getBalanceCacheTTL(): number {
   return BALANCE_CACHE_TTL;
 }
 
-/** 캐시를 무효화 (매수/매도 후 호출) */
+/** 캐시를 무효화 (매수/매도 후 호출) — v10.5: 현재 모드만 무효화 (크로스오염 방지) */
 export function invalidateBalanceCache(): void {
-  _balanceCache.clear();
+  const key = getCtxIsPaper() ? 'paper' : 'live';
+  _balanceCache.delete(key);
 }
 
 /**

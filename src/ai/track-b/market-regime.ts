@@ -137,7 +137,8 @@ export async function fetchKospiRegime(): Promise<KospiRegime> {
     const kospiNow = kospiCandles[0]?.close ?? 0;
     const kospiPrev = kospiCandles[1]?.close ?? 0;
     const todayChangePct = kospiPrev > 0 ? ((kospiNow - kospiPrev) / kospiPrev) * 100 : 0;
-    const todayDown = kospiNow > 0 && todayChangePct <= -0.3;
+    // v10.5: -0.3% → -1.0% 완화 (대부분 거래일 -0.3%는 넘기므로 Live 매매 사실상 불가능했음)
+    const todayDown = kospiNow > 0 && todayChangePct <= -1.0;
     const todayUp = kospiNow > 0 && todayChangePct >= 1.5;
     if (todayDown) {
       logger.info(

@@ -70,23 +70,31 @@ const _lastDartRefreshAt = new Map<string, number>();
 const _alertedHighConviction = new Map<string, Map<string, number>>();
 
 // v10.4: 인메모리 매도 쿨다운 — DB 반영 전에도 재매수 차단 (churning 방지)
-const _recentSellTimestamps = new Map<string, number>(); // stock_code → epoch ms
+// v10.5: paper/live 모드별 분리 (크로스오염 방지 — Paper 매도가 Live 차단하던 버그 수정)
+const _recentSellTimestamps = new Map<string, Map<string, number>>(); // mode → (stock_code → epoch ms)
 const MEMORY_COOLDOWN_MS = 4 * 60 * 60 * 1000; // 4시간
+
+function _getSellMap(): Map<string, number> {
+  const mode = getCtxIsPaper() ? 'paper' : 'live';
+  if (!_recentSellTimestamps.has(mode)) _recentSellTimestamps.set(mode, new Map());
+  return _recentSellTimestamps.get(mode)!;
+}
 
 /** 매도 실행 시 호출 — 인메모리 쿨다운 기록 */
 export function recordSellForCooldown(stockCode: string): void {
-  _recentSellTimestamps.set(stockCode, Date.now());
+  _getSellMap().set(stockCode, Date.now());
 }
 
-/** 인메모리 쿨다운 중인 종목 Set 반환 */
+/** 인메모리 쿨다운 중인 종목 Set 반환 (현재 모드 전용) */
 function getMemoryCooldownCodes(): Set<string> {
   const now = Date.now();
+  const map = _getSellMap();
   const result = new Set<string>();
-  for (const [code, ts] of _recentSellTimestamps) {
+  for (const [code, ts] of map) {
     if (now - ts < MEMORY_COOLDOWN_MS) {
       result.add(code);
     } else {
-      _recentSellTimestamps.delete(code); // 만료 정리
+      map.delete(code); // 만료 정리
     }
   }
   return result;
@@ -199,7 +207,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const dbMode = (strategy?.mode ?? 'SWING') as StrategyMode;
     // ── 장초반 09:00-09:30 신규 매수 차단 (매도는 허용) ──
     // SCALPING 모드 + 연습모드는 예외 (CEO가 명시적으로 스캘핑 지시한 경우)
-    const isOpeningVolatility = kstH === 9 && kstM < 40 && !getCtxIsPaper() && dbMode !== 'SCALPING'; // v10.4: 09:30→09:40 (장초반 노이즈 확대)
+    const isOpeningVolatility = kstH === 9 && kstM < 20 && !getCtxIsPaper() && dbMode !== 'SCALPING'; // v10.5: 09:40→09:20 (과도한 차단 → Live 매매 기회 확보)
     // SNIPER/DEFENSE는 개장벨에도 모드 유지 (SNIPER는 CEO가 명시적으로 설정한 집중 전략)
     // SCALPING 자동 활성화 비활성화 (2026-06 성과 검토: 승률 25.7%, profit factor 0.98 → 실질 손실)
     const mode: StrategyMode = dbMode;
@@ -814,8 +822,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // BREAKOUT 모드는 돌파 순간 포착 필요 → 시간 제한 없음
     // 예외1: AI 70+ 고확신 종목 (95→70 완화: 시장 컨센서스가 강해 즉시 진입 유리)
     // 예외2: KOSPI +1.5%+ 랠리일 → 종가우선 해제 (갭업 랠리 놓치면 안 됨)
-    const isSwingEodRestricted =
-      !ctxIsPaper && effectiveMode === 'SWING' && (kstH < 14 || (kstH === 14 && kstM < 30)) && topScore < 70 && !kospiRegime.todayUp;
+    // v10.5: SWING 종가우선 제거 — SWING이 실질적으로 14:30~14:50 20분만 매매 가능했던 버그
+    // 기존: 14:30 이전 + 70점 미만 → 차단 → 대부분의 종목이 70 미달 → 전일 매매 불가
+    const isSwingEodRestricted = false;
     // 최대 동시 포지션 수 제한 (alloc-risk-cache에서 조회)
     const { getAllocRisk } = await import('../../db/alloc-risk-cache.js');
     const allocRisk = await getAllocRisk(ctxIsPaper);

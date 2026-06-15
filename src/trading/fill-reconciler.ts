@@ -1,4 +1,5 @@
 import { KR_FEE } from '../config/constants.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { getOpenChains, getPendingDomesticOrders, getPool, logSystem, updateOrderByKisOrderNo } from '../db/client.js';
 import { getAccountBalance, type Position as KisPosition } from '../kis/account.js';
 import { getCurrentPrice } from '../kis/market.js';
@@ -10,7 +11,7 @@ const PENDING_TIMEOUT_MS = 10 * 60 * 1000; // 10분 초과 미체결 → 취소
 const EXTERNAL_SELL_COOLDOWN_MS = 5 * 60 * 1000; // 체인 오픈 5분 이내는 체크 스킵 (체결 지연 여유)
 
 // ── KIS_SYNC 포지션 스냅샷 (수동매수, DB 체인 없음) ──
-// 프로세스 메모리에 유지 — 리콘실러 주기(3분)마다 갱신
+// v10.5: paper/live 모드별 분리 (크로스오염 방지)
 interface KisSyncSnap {
   stockCode: string;
   stockName: string;
@@ -18,7 +19,13 @@ interface KisSyncSnap {
   quantity: number;
   seenAt: number;
 }
-const _kisSyncSnapshot = new Map<string, KisSyncSnap>();
+const _kisSyncSnapshots = new Map<string, Map<string, KisSyncSnap>>(); // mode → (stock_code → snap)
+
+function _getKisSyncSnapshot(): Map<string, KisSyncSnap> {
+  const mode = getCtxIsPaper() ? 'paper' : 'live';
+  if (!_kisSyncSnapshots.has(mode)) _kisSyncSnapshots.set(mode, new Map());
+  return _kisSyncSnapshots.get(mode)!;
+}
 
 /**
  * 미체결 국내 주문 정리
@@ -226,7 +233,7 @@ async function _reconcileKisSyncExternalSells(
   // 현재 KIS 잔고로 스냅샷 갱신 (DB 체인 없는 수동매수만)
   for (const pos of currentPositions) {
     if (pos.quantity > 0 && !dbChainCodes.has(pos.stockCode)) {
-      _kisSyncSnapshot.set(pos.stockCode, {
+      _getKisSyncSnapshot().set(pos.stockCode, {
         stockCode: pos.stockCode,
         stockName: pos.stockName || pos.stockCode,
         avgBuyPrice: pos.avgBuyPrice,
@@ -237,14 +244,14 @@ async function _reconcileKisSyncExternalSells(
   }
 
   // 스냅샷에 있었지만 현재 KIS 잔고에서 사라진 종목 탐지
-  for (const [stockCode, snap] of _kisSyncSnapshot) {
+  for (const [stockCode, snap] of _getKisSyncSnapshot()) {
     const kisQty = kisQtyMap.get(stockCode) ?? 0;
     if (kisQty > 0) continue; // 아직 보유 중
     if (dbChainCodes.has(stockCode)) continue; // DB 체인 존재 → 기존 reconciler가 처리
 
     // 24시간 이상 지난 스냅샷은 만료
     if (now - snap.seenAt > 24 * 60 * 60 * 1000) {
-      _kisSyncSnapshot.delete(stockCode);
+      _getKisSyncSnapshot().delete(stockCode);
       continue;
     }
 
@@ -317,7 +324,7 @@ async function _reconcileKisSyncExternalSells(
         `📋 KIS 외부매도 자동 기록\n종목: ${wlName}(${stockCode})\n수량: ${snap.quantity}주\n평단: ${snap.avgBuyPrice.toLocaleString()}원\n매도가: ${sellPrice.toLocaleString()}원\n수익률: ${pnlPct}%\n손익: ${Math.round(pnl).toLocaleString()}원`,
       );
 
-      _kisSyncSnapshot.delete(stockCode);
+      _getKisSyncSnapshot().delete(stockCode);
     } catch (e) {
       logger.error(`KIS_SYNC 외부매도 기록 실패 [${stockCode}]: ${e}`, { component: 'RECONCILER' });
     }
