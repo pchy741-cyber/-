@@ -93,16 +93,16 @@ export const STRATEGY_PARAMS = {
     // │ R:R = 4.79:3.21 = 1.49:1 → getDynamicDomesticTpSl이 실질 조정  │
     // │ maxDailyTrades 3: 일일 최대 3건 (과잉거래 방지, 수수료 절감)     │
     // └────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 65, // v8: 70→65 (모멘텀 기회 포착 확대, 랠리일 놓침 방지)
+    buyThreshold: 70, // v10.3: 65→70 (과잉매매 방지, 고확신 진입만)
     splitCount: 2,
     averageDownPct: 0, // v6: 물타기 비활성화 (21% WR에서 추가매수 = 손실확대)
     maxAveragingCount: 0,
     earlyTpPct: 0,
-    takeProfitPct: 7.0, // v8: 5.0%→7.0% (수익 잘림 방지, 트레일링이 조기에 자르므로 여유)
+    takeProfitPct: 7.0,
     takeProfitRatio: 0.5,
-    stopLossPct: -4.5, // v9: -3.5%→-4.5% (30%→40%+ 승률 개선 목표, 노이즈 손절 방지)
-    maxHoldingDays: 10, // v8: 8→10일 (수익 종목 보유기간 확대)
-    maxDailyTrades: 5, // v8: 3→5 (기회 많은 날 적극 매매)
+    stopLossPct: -3.5, // v10.3: -4.5%→-3.5% (손실 빨리 자르기, R:R=2:1 목표)
+    maxHoldingDays: 10,
+    maxDailyTrades: 3, // v10.3: 5→3 (과잉거래=구조적 적자의 주범, 수수료 절감)
   },
 
   DEFENSE: {

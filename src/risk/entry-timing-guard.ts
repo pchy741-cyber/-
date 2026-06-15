@@ -249,8 +249,8 @@ export function getTimeWeightedStop(params: {
   const { holdingHours, pnlPct, baseSlPct, belowMa20, belowPrevLow } = params;
   const absBase = Math.abs(baseSlPct);
 
-  // Phase 1: 0~48h 초기 휩소 방어
-  if (holdingHours < 48) {
+  // Phase 1: 0~12h 초기 휩소 방어 (v10.3: 48h→12h — 손실 종목 빨리 자르기)
+  if (holdingHours < 12) {
     // 구조적 위반: MA20 이탈 또는 전저점 이탈 → 무조건 매도
     if (belowMa20 || belowPrevLow) {
       return {
@@ -278,9 +278,8 @@ export function getTimeWeightedStop(params: {
     };
   }
 
-  // Phase 2: 48~72h (2~3일) 본절 이동
-  // v9-fix: 본절 기준 +1%→+3% (상승 여력 보존), 본절 SL 0%→-1% (노이즈 여유)
-  if (holdingHours < 72) {
+  // Phase 2: 12~24h 본절 이동 (v10.3: 48~72h→12~24h — 손실 종목 빨리 판단)
+  if (holdingHours < 24) {
     // 수익권 충분 진입 시 본절
     if (pnlPct >= 3.0) {
       return {
@@ -307,7 +306,7 @@ export function getTimeWeightedStop(params: {
     };
   }
 
-  // Phase 3: 72h+ 트레일링 강화
+  // Phase 3: 24h+ 트레일링 강화 (v10.3: 72h→24h)
   // 수익권: 본절 + 트레일링
   if (pnlPct >= 2.0) {
     return {

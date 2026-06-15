@@ -144,7 +144,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const [todayRepeatStopCodes, bigLossBlocked, recentlySoldCodes, balanceRaw, lossHistory] = await Promise.all([
       getTodayRepeatStopCodes(1),      // 당일 1회 이상 손절 → 당일 재진입 차단
       getBigLossBlockedStocks(),        // -5% 초과 손실 → 30일 절대 차단 (레거시 폴백)
-      getRecentlySoldStocks(0.5),       // 최근 30분 매도 → 재진입 쿨다운
+      getRecentlySoldStocks(4),          // v10.3: 최근 4시간 매도 → 재진입 쿨다운 (반복매매=적자 주범)
       ctxIsPaper ? getPaperBalance() : getAccountBalance(true),
       getLossHistory(),                 // 90일 손실 이력 → 스마트 재진입
     ]);

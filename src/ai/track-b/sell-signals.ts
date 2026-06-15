@@ -119,7 +119,8 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // ── 포트폴리오 수익 보호: 하락장 감지 시 수익권 종목 선제 청산 ──
     // 포트폴리오 전체 수익 +2% 이상 + RISK_OFF/하락장(macroSizingMult<0.8) + 이 종목 수익권
     // → 개별 TP 미도달이라도 즉시 청산 (수익 반납 방지)
-    if (portfolioPnlPct >= 2.0 && (params.macroSizingMult ?? 1.0) < 0.8 && pnlPct >= 0.5 && chain.total_quantity > 0) {
+    // v10.3: 개별 종목 최소 +2.0% 이상만 선제 청산 (기존 +0.5%는 수수료 차감 후 실질 손실)
+    if (portfolioPnlPct >= 2.0 && (params.macroSizingMult ?? 1.0) < 0.8 && pnlPct >= 2.0 && chain.total_quantity > 0) {
       decisions.push({
         action: 'SELL',
         stock_code: chain.stock_code,
@@ -289,16 +290,15 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       continue;
     }
 
-    // 마감 근접 수익 확정 — 3단계: 충분한 수익만, 그다음 소폭, 마지막에 세금+수수료 최소 커버
-    // 국내 거래세 0.20% + 수수료 ~0.04% + 마감 슬리피지 버퍼 → 최소 0.25% 이상 수익 필요
-    // 15:00~15:10: 1.0%+ | 15:10~15:20: 0.5%+ (슬리피지 포함 순수익 양수 보장) | 15:20~15:25: 0.25%+
-    // v10: 마감전 수익확정은 당일 진입(6h 이내)만 — SWING 멀티데이 포지션 보호
+    // v10.3: 마감전 수익확정 — 최소 +1.0% (수수료+세금 0.21% 차감 후 실질 수익 보장)
+    // 기존 +0.25%, +0.5%는 수수료 차감 시 실질 손실 → 매도 자체가 손해
+    // 당일 진입(6h 이내) + 수익 +1.0% 이상만 마감 전 청산
     const holdHrsForClose = chain.opened_at
       ? (Date.now() - new Date(chain.opened_at).getTime()) / (60 * 60_000)
       : 999;
     const isNearClose = _scalpH === 15 && _scalpM < 25;
     if (isNearClose && chain.strategy_mode !== 'SCALPING' && holdHrsForClose < 6 && chain.total_quantity > 0) {
-      const closeThreshold = _scalpM >= 20 ? 0.25 : _scalpM >= 10 ? 0.5 : 1.0;
+      const closeThreshold = 1.0; // v10.3: 모든 시간대 최소 1.0% (수수료 커버 후 순수익 확보)
       const closeLabel = _scalpM >= 20 ? '15:20+' : _scalpM >= 10 ? '15:10+' : '15:00+';
       if (pnlPct >= closeThreshold) {
         logger.info(
