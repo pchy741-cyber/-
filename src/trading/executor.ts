@@ -791,9 +791,10 @@ export class TradeExecutor {
     if (!result.success) {
       this._closeFailCount.set(failKey, failCount + 1);
 
-      // "주문 가능한 수량을 초과" → DB-KIS 보유수량 불일치 — 실보유 동기화 시도
-      const errText = result.message ?? '';
-      if (!isPaperSnapshot && errText.includes('수량을 초과')) {
+      // v10.2: 매도 실패 시 KIS 동기화 — 에러 종류 불문 (영문/한글 매칭 누락 방지)
+      const errText = (result.message ?? '').toLowerCase();
+      const isQtyError = errText.includes('수량을 초과') || errText.includes('quantity') || errText.includes('apbk0');
+      if (!isPaperSnapshot && (isQtyError || failCount >= 2)) {
         try {
           const { getPositionForStock } = await import('../kis/account.js');
           invalidateBalanceCache(); // 캐시 무효화 후 실잔고 조회

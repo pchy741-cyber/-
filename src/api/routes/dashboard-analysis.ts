@@ -1030,7 +1030,10 @@ dashboardAnalysisRoutes.get('/market/performance-vs-kospi', async (c) => {
     const { rows: pnlRows } = await pool.query(
       `
       SELECT DATE(o.created_at AT TIME ZONE 'Asia/Seoul') AS day,
-             SUM((o.filled_price - tc.avg_buy_price) * o.filled_quantity) AS daily_pnl,
+             -- v10.2: 매도수수료+세금 차감 (대시보드 통일)
+             SUM(o.filled_price * o.filled_quantity
+               - ROUND(o.filled_price * o.filled_quantity * ${KR_FEE.SELL_FEE_PCT})
+               - tc.avg_buy_price * o.filled_quantity) AS daily_pnl,
              SUM(tc.avg_buy_price * o.filled_quantity) AS cost_basis
       FROM orders o
       JOIN transaction_chains tc ON tc.id = o.chain_id

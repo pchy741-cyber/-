@@ -333,13 +333,13 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
         -- 해외/국내 구분
         COUNT(*) FILTER (WHERE o.stock_code ~ '^[0-9]{6}$') AS domestic_count,
         COUNT(*) FILTER (WHERE o.stock_code !~ '^[0-9]{6}$') AS overseas_count,
-        -- 승패 (체인 또는 주문 avg_buy_price 폴백)
+        -- v10.2: 승패 판정도 수수료 차감 후 (수수료 빼면 패인 거래를 승으로 세지 않도록)
         COUNT(*) FILTER (WHERE o.side = 'SELL'
           AND COALESCE(tc.avg_buy_price, o.avg_buy_price) > 0
-          AND COALESCE(o.filled_price, 0) > COALESCE(tc.avg_buy_price, o.avg_buy_price)) AS win_count,
+          AND (COALESCE(o.filled_price, 0) * (1 - ${KR_FEE.SELL_FEE_PCT})) > COALESCE(tc.avg_buy_price, o.avg_buy_price)) AS win_count,
         COUNT(*) FILTER (WHERE o.side = 'SELL'
           AND COALESCE(tc.avg_buy_price, o.avg_buy_price) > 0
-          AND COALESCE(o.filled_price, 0) <= COALESCE(tc.avg_buy_price, o.avg_buy_price)) AS loss_count
+          AND (COALESCE(o.filled_price, 0) * (1 - ${KR_FEE.SELL_FEE_PCT})) <= COALESCE(tc.avg_buy_price, o.avg_buy_price)) AS loss_count
       FROM orders o
       LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
       WHERE o.trading_mode = $1
@@ -421,14 +421,17 @@ tradeRoutes.get('/trades/by-date/:date', async (c) => {
       [tradeMode, dateParam],
     );
 
-    // 간단 PnL 계산
+    // v10.2: 수수료 포함 PnL 계산 (대시보드/매매내역 통일)
     const trades = rows.map((r: any) => {
       const avgBuy = Number(r.avg_buy_price ?? 0);
       const fillPrice = Number(r.filled_price ?? 0);
       const qty = Number(r.filled_quantity ?? r.quantity ?? 0);
       const isSell = r.side === 'SELL';
-      const pnl = isSell && avgBuy > 0 ? (fillPrice - avgBuy) * qty : null;
-      const pnlPct = isSell && avgBuy > 0 ? ((fillPrice - avgBuy) / avgBuy) * 100 : null;
+      const isKr = /^[0-9]{6}$/.test(r.stock_code ?? '');
+      const sellValue = fillPrice * qty;
+      const sellFee = isSell && isKr ? Math.round(sellValue * KR_FEE.SELL_FEE_PCT) : 0;
+      const pnl = isSell && avgBuy > 0 ? sellValue - sellFee - avgBuy * qty : null;
+      const pnlPct = isSell && avgBuy > 0 ? ((sellValue - sellFee - avgBuy * qty) / (avgBuy * qty)) * 100 : null;
       return {
         ...r,
         realized_pnl: pnl != null ? Math.round(pnl * 100) / 100 : null,

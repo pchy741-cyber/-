@@ -9,6 +9,7 @@ import { getCurrentPrice, isMarketOpen } from '../../kis/market.js';
 import { getPaperBalance } from '../../risk/engine.js';
 import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
 import { getLoopStatus } from '../../scheduler/loop-mode.js';
+import { KR_FEE } from '../../config/constants.js';
 import { logger } from '../../utils/logger.js';
 import { PAPER_INITIAL_CAPITAL } from '../../risk/paper-balance.js';
 import { resolveRequestMode } from '../guards/live-pin.js';
@@ -76,10 +77,13 @@ export async function getTodayTradeStats(isPaper?: boolean) {
       SELECT
         COUNT(*) AS total,
         COUNT(*) FILTER (WHERE o.side = 'SELL' AND o.stock_code ~ '^[0-9]{6}$') AS kr_sells,
+        -- v10.2: 매도 수수료+세금(0.195%) 차감하여 매매내역과 일치
         COALESCE(SUM(
           CASE WHEN o.side = 'SELL' AND o.stock_code ~ '^[0-9]{6}$'
             AND COALESCE(tc.avg_buy_price, o.avg_buy_price, 0) > 0 AND o.filled_price > 0 THEN
-            (o.filled_price - COALESCE(tc.avg_buy_price, o.avg_buy_price)) * COALESCE(o.filled_quantity, o.quantity, 0)
+            (o.filled_price * COALESCE(o.filled_quantity, o.quantity, 0)
+             - ROUND(o.filled_price * COALESCE(o.filled_quantity, o.quantity, 0) * ${KR_FEE.SELL_FEE_PCT}))
+            - (COALESCE(tc.avg_buy_price, o.avg_buy_price) * COALESCE(o.filled_quantity, o.quantity, 0))
           END
         ), 0) AS kr_realized_pnl,
         COUNT(*) FILTER (WHERE o.stock_code !~ '^[0-9]{6}$' AND o.side = 'SELL') AS us_sells,

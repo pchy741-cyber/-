@@ -233,8 +233,8 @@ export async function detectMarketRegime(): Promise<MarketRegime> {
 
   if (score >= 6) {
     regime = 'BULLISH';
-    recommendedMode = 'SCALPING'; // 강세장 → 공격적 스캘핑
-    reasons.push(`강세장 스코어 ${score} → SCALPING 모드`);
+    recommendedMode = 'SWING'; // v10.2: SCALPING 영구 비활성화 → 강세장도 SWING (적극 매매)
+    reasons.push(`강세장 스코어 ${score} → SWING 모드 (적극 매매)`);
   } else if (score >= 2) {
     regime = 'BULLISH';
     recommendedMode = 'SWING';
@@ -342,9 +342,9 @@ export async function autoSwitchStrategy(): Promise<void> {
         regime.reasons.push(`데드락 안전망: DIVIDEND ${(hoursSinceSwitch / 24).toFixed(0)}일 초과 → 강제 SWING 복귀`);
       }
     }
-    // SCALPING은 강세장 스코어 6이상 + 현재 SWING일 때만 전환 (과도한 전환 방지)
-    if (targetMode === 'SCALPING' && currentMode !== 'SWING') {
-      targetMode = currentMode; // DEFENSE/DIVIDEND 중엔 SCALPING 전환 안 함
+    // v10.2: SCALPING 영구 비활성화 — 혹시 다른 경로에서 SCALPING이 들어와도 SWING으로 강제
+    if (targetMode === 'SCALPING') {
+      targetMode = 'SWING';
     }
 
     // ── 히스테리시스: 진입/탈출 기준 이중화 (모드 경계 근처 과도한 전환 방지) ──
