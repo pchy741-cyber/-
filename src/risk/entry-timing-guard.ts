@@ -279,13 +279,14 @@ export function getTimeWeightedStop(params: {
   }
 
   // Phase 2: 48~72h (2~3일) 본절 이동
+  // v9-fix: 본절 기준 +1%→+3% (상승 여력 보존), 본절 SL 0%→-1% (노이즈 여유)
   if (holdingHours < 72) {
-    // 수익권 진입 시 본절
-    if (pnlPct >= 1.0) {
+    // 수익권 충분 진입 시 본절
+    if (pnlPct >= 3.0) {
       return {
         action: 'BREAK_EVEN',
-        effectiveSlPct: 0, // 매수가 = 본절
-        reason: `💼 본절 이동 (${holdingHours.toFixed(0)}h, PnL +${pnlPct.toFixed(1)}%) — 손실 0 보장`,
+        effectiveSlPct: -1.0, // v9: 0%→-1% (약간의 여유)
+        reason: `💼 본절 이동 (${holdingHours.toFixed(0)}h, PnL +${pnlPct.toFixed(1)}%) — 최소 -1% 보장`,
         holdingHours,
       };
     }
@@ -320,16 +321,25 @@ export function getTimeWeightedStop(params: {
   if (pnlPct >= 0) {
     return {
       action: 'BREAK_EVEN',
-      effectiveSlPct: 0,
+      effectiveSlPct: -1.0, // v9: 0%→-1% (노이즈 여유)
       reason: `Phase3 본절 유지 (${(holdingHours / 24).toFixed(1)}일)`,
       holdingHours,
     };
   }
-  // 손실 중 + 3일+: 손절 강제
+  // v9-fix: 손실 중 강제 청산 72h→120h (5일, 회복 기회 부여)
+  if (holdingHours >= 120) {
+    return {
+      action: 'EXECUTE_SL',
+      effectiveSlPct: baseSlPct,
+      reason: `Phase3 손절 (5일+ 손실): PnL ${pnlPct.toFixed(1)}%`,
+      holdingHours,
+    };
+  }
+  // 3~5일 손실 중: 기본 SL로 보유 유지 (회복 대기)
   return {
-    action: 'EXECUTE_SL',
+    action: 'HOLD',
     effectiveSlPct: baseSlPct,
-    reason: `Phase3 손절 (3일+ 손실): PnL ${pnlPct.toFixed(1)}%`,
+    reason: `Phase3 유지 (${(holdingHours / 24).toFixed(1)}일 손실 중): PnL ${pnlPct.toFixed(1)}% — 5일까지 회복 대기`,
     holdingHours,
   };
 }

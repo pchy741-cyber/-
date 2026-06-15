@@ -100,7 +100,7 @@ export const STRATEGY_PARAMS = {
     earlyTpPct: 0,
     takeProfitPct: 7.0, // v8: 5.0%→7.0% (수익 잘림 방지, 트레일링이 조기에 자르므로 여유)
     takeProfitRatio: 0.5,
-    stopLossPct: -3.5, // v8: -3.0%→-3.5% (일노이즈 -3% 손절 빈발 → 여유 확보)
+    stopLossPct: -4.5, // v9: -3.5%→-4.5% (30%→40%+ 승률 개선 목표, 노이즈 손절 방지)
     maxHoldingDays: 10, // v8: 8→10일 (수익 종목 보유기간 확대)
     maxDailyTrades: 5, // v8: 3→5 (기회 많은 날 적극 매매)
   },
