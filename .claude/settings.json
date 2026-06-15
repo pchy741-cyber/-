@@ -23,8 +23,8 @@
       "WebFetch(domain:docs.cloud.google.com)",
       "Bash(gcloud artifacts:*)",
       "Bash(grep -v \"^$\")",
-      "Bash(curl -s -X POST https://quantops-807105550136.asia-northeast3.run.app/api/run-track-a -H 'Content-Type: application/json' -d '{}')",
-      "Bash(curl -s -X POST \"https://quantops-807105550136.asia-northeast3.run.app/api/run-track-a\" -H \"Content-Type: application/json\" -d '{}')",
+      "Bash(curl -s -X POST https://ai-auto-bot-807105550136.asia-northeast3.run.app/api/run-track-a -H 'Content-Type: application/json' -d '{}')",
+      "Bash(curl -s -X POST \"https://ai-auto-bot-807105550136.asia-northeast3.run.app/api/run-track-a\" -H \"Content-Type: application/json\" -d '{}')",
       "Bash(curl -s \"https://generativelanguage.googleapis.com/v1beta/models?key=AIzaSyBQjLTjreb2XIXJW29dGO9zfFeT22GKbio\")",
       "Bash(node -e \"const d=require\\('fs'\\).readFileSync\\('/dev/stdin','utf8'\\);const m=JSON.parse\\(d\\).models||[];m.filter\\(x=>x.name.includes\\('gemini'\\)\\).forEach\\(x=>console.log\\(x.name\\)\\)\")"
     ]

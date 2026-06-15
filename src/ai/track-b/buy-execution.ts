@@ -525,6 +525,18 @@ export async function executeBuyDecisions(
       logger.info(`  ⚠️ ${cand.stock_code}: 연속손실 배율 ×${lossStreakMult} → 포지션 축소`, { component: 'TRACK_B' });
     }
 
+    // v9: 곱연산 배수 합산 하한 — 과도한 축소 방지
+    // 이전: 0.5×0.6×0.65×0.5 = 0.098 → 25%→2.4% (거의 매수 불가)
+    // 수정: 합산 배수 최소 0.25 보장 → 25%→6.25% 이상 유지
+    const rawCompoundMult = modeScale * macroSizingMult * winRateMultiplier * lossStreakMult;
+    const compoundMultFloor = Math.max(0.25, rawCompoundMult);
+    if (rawCompoundMult < compoundMultFloor) {
+      logger.info(
+        `  🔒 ${cand.stock_code}: 곱연산 하한 적용 (${rawCompoundMult.toFixed(3)}→${compoundMultFloor.toFixed(3)}): mode=${modeScale} macro=${macroSizingMult} wr=${winRateMultiplier.toFixed(2)} streak=${lossStreakMult}`,
+        { component: 'TRACK_B' },
+      );
+    }
+
     // ── TP/SL 리스크 기반 사이징 (해외 스타일) ──────────────────────────────
     // position = riskBudget / |stopLossPct| — SL이 작으면 큰 포지션, SL이 크면 작은 포지션
     // 기존 비율 기반(targetKrwAlloc)과 리스크 기반(targetKrwRisk) 중 큰 값 사용
@@ -542,27 +554,25 @@ export async function executeBuyDecisions(
     });
     const riskPct = blendedScore >= 85 ? 0.025 : blendedScore >= 70 ? 0.02 : 0.015; // 총자산 대비 리스크 예산
     const absSl = Math.abs(tpSlHints.stopLossPct) / 100;
+    // v9: compoundMultFloor 사용하여 개별 배수 곱연산 대신 합산 배수 적용
     const targetKrwRisk =
       totalAssets && absSl > 0
         ? Math.round(
-            ((totalAssets * riskPct) / absSl) * modeScale * macroSizingMult * signalMultiplier * lossStreakMult,
+            ((totalAssets * riskPct) / absSl) * compoundMultFloor * signalMultiplier,
           )
         : 0;
     const targetKrwAlloc = totalAssets
       ? Math.round(
           totalAssets *
             baseAllocPct *
-            modeScale *
-            macroSizingMult *
-            winRateMultiplier *
+            compoundMultFloor *
             priorityBonus *
             firstEntryRatio *
             aiPosMultiplier *
-            signalMultiplier *
-            lossStreakMult,
+            signalMultiplier,
         )
       : Math.round(
-          effectiveMaxPos * firstEntryRatio * macroSizingMult * aiPosMultiplier * signalMultiplier * lossStreakMult,
+          effectiveMaxPos * firstEntryRatio * compoundMultFloor * aiPosMultiplier * signalMultiplier,
         );
     // 두 방식 중 큰 값 사용 — 소액일수록 리스크 기반이 더 큰 포지션 산출
     const targetKrw = Math.max(targetKrwAlloc, targetKrwRisk);
