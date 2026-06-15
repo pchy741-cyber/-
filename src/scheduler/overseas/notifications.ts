@@ -4,7 +4,7 @@
  */
 
 import { fetchExchangeRate } from '../../automation/macro-data.js';
-import { getOverseasDynamic } from '../../config/constants.js';
+import { getOverseasDynamic, OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import type { BuyTarget } from './buy-filter.js';
 import type { Holding, TechResult } from './sell-logic.js';
@@ -66,7 +66,7 @@ export async function sendBuyRecommendations(ctx: ExtendedAlertContext): Promise
       const reason = t.isBigMover ? '갭업 모멘텀' : t.price.changePct <= -3 ? '급락 줍줍' : '기술적 매수';
       const kPct = kellyResult.sampleCount >= 10 ? kellyResult.halfKelly : 0.2;
       const recSize = Math.min(portfolioValue * Math.min(kPct, 0.25), cash * 0.7);
-      const recQty = Math.max(1, Math.floor(recSize / (t.price.currentPrice * 1.0025)));
+      const recQty = Math.max(1, Math.floor(recSize / (t.price.currentPrice * (1 + OVERSEAS_FEE_PCT))));
       const recCost = recQty * t.price.currentPrice;
       const limitPrice = (t.price.currentPrice * (t.price.changePct <= -3 ? 1.005 : 0.995)).toFixed(2);
       return [

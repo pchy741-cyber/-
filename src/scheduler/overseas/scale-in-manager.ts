@@ -1,12 +1,13 @@
 /**
  * Scale-In 관리 — 기존 보유 종목 +2% 이상 상승 시 나머지 40% 추가매수
  */
+import { OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { getPool, logSystem } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
 import type { BuyTarget } from './buy-filter.js';
 import { executeOverseasOrder } from './executor.js';
 import type { TechResult } from './sell-logic.js';
-import { updateTradeState } from './state.js';
+import { getHoldings, updateTradeState } from './state.js';
 import { modePrefix } from './utils.js';
 
 export async function processScaleIns(params: {
@@ -45,7 +46,12 @@ export async function processScaleIns(params: {
     const tech = techResults.find((t) => t.code === code);
     if (!tech) continue;
     const pnlFromEntry = ((tech.price.currentPrice - info.entryPrice) / info.entryPrice) * 100;
-    if (pnlFromEntry >= 1.2 && cash >= info.remainingQty * tech.price.currentPrice * 1.0025) {
+    if (pnlFromEntry >= 1.2 && cash >= info.remainingQty * tech.price.currentPrice * (1 + OVERSEAS_FEE_PCT)) {
+      // v10.8: 기존 보유 수량/평균단가 조회 — 올바른 finalAvgPrice 계산을 위해
+      const currentHoldings = await getHoldings(isPaper);
+      const existingHolding = currentHoldings.get(code);
+      const prevQty = existingHolding?.qty ?? 0;
+      const prevAvgPrice = existingHolding?.avgPrice ?? info.entryPrice;
       const exec = await executeOverseasOrder(
         code,
         'BUY',
@@ -53,12 +59,12 @@ export async function processScaleIns(params: {
         tech.price.currentPrice,
         info.exchange,
         `📈 Scale-In 추가매수 (+${pnlFromEntry.toFixed(1)}% 확인) — 나머지 ${info.remainingQty}주`,
-        0,
-        0,
+        prevQty,
+        prevAvgPrice,
         { isPaper },
       );
       if (exec.submitted && exec.filledQty > 0) {
-        const cost = exec.filledQty * exec.filledPrice * 1.0025;
+        const cost = exec.filledQty * exec.filledPrice * (1 + OVERSEAS_FEE_PCT);
         cash -= cost;
         await updateTradeState({
           code,

@@ -4,7 +4,7 @@
 
 import { hardInvalidateDashboardCache } from '../../cache/dashboard-cache.js';
 import { invalidateBalanceCache } from '../../kis/account.js';
-import { OVERSEAS } from '../../config/constants.js';
+import { OVERSEAS, OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getAllocRisk } from '../../db/alloc-risk-cache.js';
 import { getPool, insertOrder, updateOrder } from '../../db/client.js';
@@ -330,7 +330,7 @@ export async function deployIdleCash(params: {
       )
       .catch(() => {});
 
-    const qty = Math.floor(investable / (bestPrice * 1.0025));
+    const qty = Math.floor(investable / (bestPrice * (1 + OVERSEAS_FEE_PCT)));
     if (qty >= 1) {
       const exec = await executeOverseasOrder(
         bestCode,
@@ -344,7 +344,7 @@ export async function deployIdleCash(params: {
         { isPaper: params.isPaper },
       );
       if (exec.submitted && exec.filledQty > 0) {
-        const cost = exec.filledQty * exec.filledPrice * 1.0025;
+        const cost = exec.filledQty * exec.filledPrice * (1 + OVERSEAS_FEE_PCT);
         await updateTradeState({
           code: bestCode,
           exchange: bestExchange,

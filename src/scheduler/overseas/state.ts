@@ -598,17 +598,22 @@ export async function cleanupPositionState(code: string, isPaper?: boolean): Pro
 
 /**
  * 황금비율 버킷별 투자 비중 계산
- * holdings 맵에서 해당 bucket의 invested 합산 / 포트폴리오 총액
+ * v10.8: 시장가 기준 (원가 기준 → 포트폴리오 비중 왜곡 방지)
+ * currentPrices 맵이 있으면 시장가 사용, 없으면 avgPrice 폴백
  */
 export function getBucketWeight(
   holdings: Map<string, { qty: number; avgPrice: number; bucket: string }>,
   portfolioValue: number,
   bucket: string,
+  currentPrices?: Map<string, number>,
 ): number {
   if (portfolioValue <= 0) return 0;
   let bucketValue = 0;
-  for (const [, h] of holdings) {
-    if (h.bucket === bucket) bucketValue += h.qty * h.avgPrice;
+  for (const [code, h] of holdings) {
+    if (h.bucket === bucket) {
+      const price = currentPrices?.get(code) ?? h.avgPrice;
+      bucketValue += h.qty * price;
+    }
   }
   return bucketValue / portfolioValue;
 }

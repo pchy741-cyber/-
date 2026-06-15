@@ -1,3 +1,4 @@
+import { OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { getOverseasPrice } from '../../kis/overseas.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
@@ -176,7 +177,7 @@ export async function runPremarketDipBuy(isPaper = true): Promise<DipBuyResult> 
     }> = [];
 
     for (const c of selected) {
-      const qty = Math.max(1, Math.floor(budgetPerPosition / (c.dipTarget * 1.0025)));
+      const qty = Math.max(1, Math.floor(budgetPerPosition / (c.dipTarget * (1 + OVERSEAS_FEE_PCT))));
       if (qty <= 0) continue;
 
       dipOrders.push({
@@ -255,7 +256,7 @@ export async function checkDipBuyFills(isPaper = true): Promise<string[]> {
         // 목표가 터치 확인: 현재가 ≤ 딥 목표가
         if (price.currentPrice <= order.targetPrice) {
           const fillPrice = price.currentPrice;
-          const totalCost = order.qty * fillPrice * 1.0025;
+          const totalCost = order.qty * fillPrice * (1 + OVERSEAS_FEE_PCT);
 
           // 현금 확인
           const cash = await getCash(isPaper);

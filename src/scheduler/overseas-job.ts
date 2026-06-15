@@ -208,11 +208,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
     const isUSExtended = openRegions.has('US_EXTENDED') && !openRegions.has('US');
     if (openRegions.size === 0) {
       logger.info('🌏 모든 해외 시장 마감 — 스킵', { component: 'OVERSEAS' });
-      // 🔒 early return 시 advisory lock + isRunning 정리 (누수 방지)
-      clearTimeout(jobTimeout);
-      s.isRunning.set(modeK, false);
-      try { await lockClient.query('SELECT pg_advisory_unlock($1)', [LOCK_ID]); } catch {}
-      lockClient?.release();
+      // 🔒 early return — finally 블록이 정리하므로 즉시 return (v10.8: 이중 해제 방지)
       return;
     }
 
@@ -613,12 +609,16 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
         component: 'OVERSEAS',
       });
 
+    // v10.8: FearGreed/Earnings 1회 호출 후 재사용 (기존 3회/2회 중복 제거)
+    const [_fgShared, _earningsShared] = await Promise.all([
+      getFearGreedIndex().catch(() => null),
+      getUpcomingEarnings(usCodes).catch(() => [] as import('../market/external-signals.js').EarningsEvent[]),
+    ]);
+
     let aiDecisions: Awaited<ReturnType<typeof analyzeOverseasWithAI>> = [];
     if (shouldCallAI) {
-      const [fgEarly, earningsEarly] = await Promise.all([
-        getFearGreedIndex().catch(() => null),
-        getUpcomingEarnings(usCodes).catch(() => [] as import('../market/external-signals.js').EarningsEvent[]),
-      ]);
+      const fgEarly = _fgShared;
+      const earningsEarly = _earningsShared;
       const earningsRiskCodes = earningsEarly.filter((e) => e.daysUntil >= 0 && e.daysUntil <= 5).map((e) => e.code);
       const positiveCount = techResults.filter((t) => t.price.changePct > 0).length;
       const breadthPct = techResults.length > 0 ? positiveCount / techResults.length : 0.5;
@@ -709,7 +709,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
 
     // ── VIX 레짐 감지 + 나스닥 전일 등락 (매도·매수 공통) ──
     const [earlyVixData, macroSigForSell] = await Promise.all([
-      getFearGreedIndex().catch(() => null),
+      Promise.resolve(_fgShared), // v10.8: 위에서 이미 조회한 결과 재사용
       getMacroSignal().catch(() => null),
     ]);
     const vixValue = earlyVixData?.vix ?? 0;
@@ -829,10 +829,9 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
     const updatedHoldings = await getHoldings(isPaper());
     const currentHoldingCount = updatedHoldings.size;
 
-    const [marketSentiment, upcomingEarnings] = await Promise.all([
-      getFearGreedIndex().catch(() => null),
-      getUpcomingEarnings(usCodes).catch(() => []),
-    ]);
+    // v10.8: 위에서 이미 조회한 결과 재사용 (중복 API 호출 제거)
+    const marketSentiment = _fgShared;
+    const upcomingEarnings = _earningsShared;
 
     const sentinelBlockedCodes = new Set<string>();
     if (!process.env.FINNHUB_API_KEY) {
@@ -1255,7 +1254,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
         const qtyBy1PctRule =
           maxRiskUSD > 0 ? Math.floor(maxRiskUSD / (target.price.currentPrice * slDecimal)) : Infinity;
         // 수수료 0.25% 보정: positionSize가 1주 가격과 비슷하면 수수료 무시하고 1주 허용
-        const priceWithFee = target.price.currentPrice * 1.0025;
+        const priceWithFee = target.price.currentPrice * (1 + OVERSEAS_FEE_PCT);
         let qtyBySizing = Math.floor(positionSize / priceWithFee);
         if (qtyBySizing === 0 && positionSize >= target.price.currentPrice * 0.99) {
           qtyBySizing = 1; // 1주 가격 ±1% 내면 수수료 무시하고 매수
@@ -1307,7 +1306,9 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
         );
         const targetBucket = classifyBucket(entrySource, isBlueChipEntry);
         const bucketLimit = ALLOCATION_GOLDEN[`${targetBucket}_PCT` as keyof typeof ALLOCATION_GOLDEN];
-        const currentBucketWeight = getBucketWeight(updatedHoldings as any, portfolioValue, targetBucket);
+        // v10.8: 시장가 기준 버킷 비중 (원가 기준 왜곡 방지)
+        const livePriceMap = new Map(techResults.map((t) => [t.code, t.price.currentPrice]));
+        const currentBucketWeight = getBucketWeight(updatedHoldings as any, portfolioValue, targetBucket, livePriceMap);
         if (currentBucketWeight >= bucketLimit) {
           logger.info(
             `📊 버킷 한도 초과: ${target.code} [${targetBucket}] ${(currentBucketWeight * 100).toFixed(1)}% >= ${(bucketLimit * 100).toFixed(1)}%`,
@@ -1342,7 +1343,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
           continue;
         }
 
-        const cost = exec.filledQty * exec.filledPrice * 1.0025;
+        const cost = exec.filledQty * exec.filledPrice * (1 + OVERSEAS_FEE_PCT);
         cash -= cost;
 
         const entryP = exec.filledPrice;

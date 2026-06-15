@@ -201,7 +201,8 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     // 수익 크기 비례 트레일 타이트닝: 수익 클수록 보호 강화 (2×ATR 연구 — 드로다운 32% 감소 검증)
     // maxPnl 10%+: 추가 0.5% 타이트, 15%+: 1.0% 타이트, 20%+: 1.5% 타이트
     const profitTighten = maxPnlPct >= 20 ? 1.5 : maxPnlPct >= 15 ? 1.0 : maxPnlPct >= 10 ? 0.5 : 0;
-    const effectiveTrailDropPct = dynamicTrailDrop + vixRegime.trailTighten + profitTighten;
+    // v10.8: trailTighten/profitTighten은 양수값 — 음수 trail에서 빼야 더 타이트해짐
+    const effectiveTrailDropPct = dynamicTrailDrop - vixRegime.trailTighten - profitTighten;
     const baseTrailActivate = isHighBeta ? 10.0 : isMediumBeta ? 8.0 : 5.0;
     const trailActivatePct = tunerOverrides.trail_activate_pct ?? baseTrailActivate;
     const minAiSellConf = isHighBeta ? 0.82 : 0.78;
@@ -255,10 +256,15 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
         // 트레일링 SL 발동
         sellReason = `트레일링 SL (Phase3): PnL ${pnlPct.toFixed(1)}% < 트레일 ${tws.effectiveSlPct.toFixed(1)}%`;
       } else if (tws.action === 'HOLD') {
-        // Phase 1 휩소 방어 중 — 다른 매도 조건 평가 건너뛰기
-        // (sellReason 비워두면 매도 안 함)
+        // Phase 1 휩소 방어 중 — 구조적 SL만 허용, 일반 손절은 차단
+        // v10.8: 단, 하드 TP/ATR 트레일링/수익 확정은 HOLD에서도 허용 (수익 실현 차단 방지)
+        if (pnlPct >= hardTpPct) {
+          sellReason = `익절(${hardTpPct}%): +${pnlPct.toFixed(1)}% (HOLD 중 TP 도달)`;
+        } else if (maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {
+          sellReason = `ATR트레일(HOLD중): 고점 +${maxPnlPct.toFixed(1)}% → 현재 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
+        }
       }
-      // sellReason 비어있으면 아래 조건 계속 평가 (TP 등)
+      // sellReason 비어있으면: HOLD가 아닌 경우에만 손절 평가
       if (!sellReason && pnlPct <= stopLossPct && tws.action !== 'HOLD') {
         sellReason = `손절(${stopLossPct}%): ${pnlPct.toFixed(1)}%`;
       }

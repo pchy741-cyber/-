@@ -193,9 +193,10 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
       .sort((a, b) => b.pnl - a.pnl); // 가장 좋은 순
 
     if (losers.length > 0 && winners.length > 0) {
-      for (const loser of losers.slice(0, 2)) {
-        // 최대 2종목 로테이션/사이클
-        const winner = winners[0]; // 최고 승자에 집중
+      for (let li = 0; li < Math.min(2, losers.length); li++) {
+        const loser = losers[li];
+        // v10.8: 각 loser를 다른 winner에 분산 로테이션 (집중 방지)
+        const winner = winners[li % winners.length];
         const tech = techResults.find((t) => t.code === winner.code);
         if (!tech) continue;
 

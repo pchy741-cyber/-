@@ -11,6 +11,7 @@ import { getPool } from '../../db/client.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
 import { getOverseasState, setOverseasState } from './utils.js';
+import { GLOBAL_WATCHLIST } from './watchlist.js';
 
 // ── Types ──
 
@@ -63,8 +64,10 @@ interface TuneRecommendation {
 const STATE_KEY = 'trade_tuner_result';
 const STATE_KEY_OVERRIDES = 'trade_tuner_overrides';
 
-// 섹터 분류 (sell-logic.ts와 동일)
-const SECTOR_MAP: Record<string, string> = {};
+// v10.8: GLOBAL_WATCHLIST에서 섹터 매핑 자동 구축 (기존 빈 객체 → 섹터 분석 무력화 수정)
+const SECTOR_MAP: Record<string, string> = Object.fromEntries(
+  GLOBAL_WATCHLIST.map((w) => [w.code, w.sector]),
+);
 
 // ── Main ──
 
@@ -178,8 +181,8 @@ async function fetchRecentTrades(mode: string): Promise<TradeRecord[]> {
     const filledPrice = Number(r.filled_price);
     if (avgBuy <= 0 || filledPrice <= 0) continue;
 
-    // max_price: overseas_state에 저장된 고점 데이터 조회
-    const maxKey = `max_${mode === 'paper' ? 'p_' : ''}${r.stock_code}`;
+    // v10.8: state.ts의 키 형식에 맞춤 (기존 max_p_ → p_maxprice_, l_maxprice_)
+    const maxKey = `${mode === 'paper' ? 'p_' : 'l_'}maxprice_${r.stock_code}`;
     let maxPrice = 0;
     try {
       const val = await getOverseasState(maxKey);
