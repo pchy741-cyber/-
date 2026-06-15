@@ -182,22 +182,51 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
 async function saveInsights(insights: LearnedInsight[]): Promise<void> {
   if (insights.length > 0) {
     const isPaper = getCtxIsPaper();
+
+    // v10: dismissed 인사이트 키 조회 (삭제된 인사이트 재생성 방지)
+    let dismissedKeys = new Set<string>();
+    try {
+      const { rows: dismissed } = await getPool().query(
+        `SELECT category, insight FROM learned_insights
+         WHERE is_dismissed = true AND is_paper = $1`,
+        [isPaper],
+      );
+      dismissedKeys = new Set(dismissed.map((r: any) => `${r.category}::${r.insight}`));
+    } catch { /* dismissed 컬럼 미존재 시 무시 */ }
+
+    // v10: dismissed 행 보존 — is_dismissed IS NOT TRUE 조건 추가
     await getPool()
       .query(
         `DELETE FROM learned_insights
        WHERE is_manual IS NOT TRUE
          AND COALESCE(is_promoted, false) IS NOT TRUE
          AND COALESCE(source_mode, 'native') = 'native'
+         AND COALESCE(is_dismissed, false) IS NOT TRUE
          AND is_paper = $1`,
         [isPaper],
       )
       .catch(() =>
-        getPool().query('DELETE FROM learned_insights WHERE is_manual IS NOT TRUE AND is_paper = $1', [isPaper]),
+        getPool().query(
+          'DELETE FROM learned_insights WHERE is_manual IS NOT TRUE AND COALESCE(is_dismissed, false) IS NOT TRUE AND is_paper = $1',
+          [isPaper],
+        ),
       );
+
     for (const insight of insights) {
+      // v10: 이전에 사용자가 dismiss한 인사이트는 재생성하지 않음
+      const key = `${insight.category}::${insight.insight}`;
+      if (dismissedKeys.has(key)) continue;
+
       const { rows: inserted } = await getPool().query(
         `INSERT INTO learned_insights (category, insight, confidence, sample_count, last_updated, details, recommendation, param_change, is_paper)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (category, insight, is_paper) DO UPDATE
+           SET confidence = EXCLUDED.confidence,
+               sample_count = EXCLUDED.sample_count,
+               last_updated = EXCLUDED.last_updated,
+               details = EXCLUDED.details,
+               recommendation = EXCLUDED.recommendation,
+               param_change = EXCLUDED.param_change
          RETURNING id`,
         [
           insight.category,

@@ -476,7 +476,9 @@ settingsRoutes.get('/insights', async (c) => {
     // paper/live 공유: 모든 인사이트 통합 조회
     const { rows } = await getPool().query(
       `SELECT *
-       FROM learned_insights ORDER BY is_manual DESC, confidence DESC LIMIT 30`,
+       FROM learned_insights
+       WHERE COALESCE(is_dismissed, false) IS NOT TRUE
+       ORDER BY is_manual DESC, confidence DESC LIMIT 30`,
     );
     return c.json(rows);
   } catch (err: any) {
@@ -516,12 +518,19 @@ settingsRoutes.post('/insights/:id/apply', async (c) => {
   }
 });
 
-// DELETE: 인사이트 삭제 (수동/자동 모두 삭제 가능)
+// DELETE: 인사이트 삭제 → v10: soft-delete (is_dismissed) — 재생성 방지
 settingsRoutes.delete('/insights/:id', async (c) => {
   const id = c.req.param('id');
   if (!id) return c.json({ error: 'id 필요' }, 400);
   try {
-    await getPool().query('DELETE FROM learned_insights WHERE id = $1', [id]);
+    // v10: hard delete 대신 soft delete — saveInsights가 dismissed 키를 재생성하지 않음
+    await getPool().query(
+      `UPDATE learned_insights SET is_dismissed = true, dismissed_at = NOW() WHERE id = $1`,
+      [id],
+    ).catch(() =>
+      // fallback: is_dismissed 컬럼 없으면 기존 hard delete
+      getPool().query('DELETE FROM learned_insights WHERE id = $1', [id]),
+    );
     return c.json({ ok: true });
   } catch (err: any) {
     return c.json({ error: err?.message }, 500);

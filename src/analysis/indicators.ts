@@ -100,6 +100,10 @@ export interface TechnicalSummary {
   catVolatility: number; // 변동성 카테고리 (-25~+25)
   catVolume: number; // 거래량 카테고리 (-25~+25)
   catPositive: number; // 양수 카테고리 수 (0~4)
+  // v10: 이격도 + Z-score 지표
+  disparity20: number; // SMA20 이격도 (%)
+  disparity60: number; // SMA60 이격도 (%)
+  volZScore: number; // 거래량 Z-score (자기 60일 대비)
 }
 
 export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
@@ -187,12 +191,29 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   // ══════════════════════════════════════════════════════════════════
 
   // ── 카테고리 1: 추세 (Trend) — cap ±25 ──
-  // SMA 정배열, 골든/데드크로스, VWAP 위치 (모두 "가격 vs 이동평균" 계열)
+  // v10: 이격도(Disparity Index) 기반 차등 점수 — 이동평균과의 거리로 과열/침체 판단
   let trendScore = 0;
-  if (current > sma5Now && sma5Now > sma20Now && sma20Now > sma60Now) trendScore += 20;
-  else if (current > sma20Now && sma20Now > sma60Now) trendScore += 10;
-  if (current < sma5Now && sma5Now < sma20Now && sma20Now < sma60Now) trendScore -= 20;
-  else if (current < sma20Now && sma20Now < sma60Now) trendScore -= 10;
+  const disparity20 = sma20Now > 0 ? ((current - sma20Now) / sma20Now) * 100 : 0;
+  const disparity60 = sma60Now > 0 ? ((current - sma60Now) / sma60Now) * 100 : 0;
+  const aligned = sma5Now > sma20Now && sma20Now > sma60Now; // 정배열
+  const reverseAligned = sma5Now < sma20Now && sma20Now < sma60Now; // 역배열
+
+  if (aligned) {
+    // 정배열: 이격도에 따른 차등 점수 (과열 구간 감점)
+    if (disparity20 >= 0 && disparity20 <= 3) trendScore += 20;      // 적정 이격 — 최적 타점
+    else if (disparity20 > 3 && disparity20 <= 6) trendScore += 12;  // 약간 과열 — 추격 주의
+    else if (disparity20 > 6) trendScore += 5;                        // 과열 — 고점 추격 위험
+    else trendScore += 10;                                             // 이격 음수지만 정배열
+  } else if (current > sma20Now && sma20Now > sma60Now) {
+    trendScore += 8;
+  }
+  if (reverseAligned) {
+    if (disparity20 < -6) trendScore -= 20;     // 급락 — 바닥 확인 전 매수 위험
+    else if (disparity20 < -3) trendScore -= 15; // 하락 추세
+    else trendScore -= 10;                        // 약한 역배열
+  } else if (current < sma20Now && sma20Now < sma60Now) {
+    trendScore -= 8;
+  }
   if (goldenCross) trendScore += 5;
   if (deathCross) trendScore -= 5;
 
@@ -279,14 +300,20 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   volatilityScore = Math.max(-25, Math.min(25, volatilityScore));
 
   // ── 카테고리 4: 거래량 (Volume) — cap ±25 ──
-  const vol2dAvg = (volumes[1] + volumes[2]) / 2;
-  const todayVolSurge = vol2dAvg > 0 ? volumes[0] / vol2dAvg : 1;
+  // v10: Z-score 정규화 — 고정 임계값 대신 자기 역사 대비 상대적 위치로 판단
+  const volWindow = volumes.slice(1, Math.min(61, volumes.length));
+  const volMean = volWindow.reduce((s, v) => s + v, 0) / (volWindow.length || 1);
+  const volVariance = volWindow.reduce((s, v) => s + (v - volMean) ** 2, 0) / (volWindow.length || 1);
+  const volStd = Math.sqrt(volVariance);
+  const volZScore = volStd > 0 ? (volumes[0] - volMean) / volStd : 0;
+
   let volumeScore = 0;
   if (current > sma5Now) {
+    // Z-score 기반: 자기 거래량 분포 대비 오늘의 위치
     volumeScore +=
-      todayVolSurge >= 2.5 ? 12 : todayVolSurge >= 2.0 ? 9 : todayVolSurge >= 1.5 ? 6 : todayVolSurge >= 1.3 ? 3 : 0;
+      volZScore >= 3.0 ? 12 : volZScore >= 2.0 ? 9 : volZScore >= 1.0 ? 6 : volZScore >= 0.5 ? 3 : 0;
   }
-  if (volumeRatio < 0.5) volumeScore -= 10; // 극저거래량 경고
+  if (volZScore < -1.5) volumeScore -= 10; // Z-score 기반 극저거래량
 
   // VWAP 풀백 (거래량 기반 확인)
   const vwapHistory = vwapValues.slice(-4);
@@ -406,6 +433,10 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
     catVolatility: volatilityScore,
     catVolume: volumeScore,
     catPositive: positiveCats,
+    // v10: 이격도 + Z-score
+    disparity20,
+    disparity60,
+    volZScore,
   };
 }
 

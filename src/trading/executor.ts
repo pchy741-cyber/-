@@ -345,7 +345,7 @@ export class TradeExecutor {
     }
 
     // 호가 진입 타이밍 — ask2 이하일 때만 매수 (ETF 파킹/바닥낚시 제외 — 시간외 단일가는 호가 무의미)
-    // + 스마트 매수: ask1 지정가 주문으로 시장가 슬리피지 방지
+    // v10: 예약매수 — bid1~ask1 중간가 지정가 주문 (기존 ask1 → mid 가격으로 개선)
     let smartBuyPrice: number | undefined;
     if (!skipGates) {
       try {
@@ -353,6 +353,7 @@ export class TradeExecutor {
         const book = await getOrderbook(stockCode);
         const ask1 = book[0]?.askPrice ?? 0;
         const ask2 = book[1]?.askPrice ?? 0;
+        const bid1 = book[0]?.bidPrice ?? 0;
         if (ask1 > 0 && ask2 > 0 && estimatedPrice > ask2) {
           releaseBuyIntent(stockCode);
           logger.warn(`⏸️ 호가 진입 보류: ${stockCode} 현재가 ${estimatedPrice} > ask2 ${ask2} — 스킵`, {
@@ -361,10 +362,18 @@ export class TradeExecutor {
           await logSystem('WARN', 'EXECUTOR', `호가 진입 보류: ${stockCode} 현재가=${estimatedPrice} ask2=${ask2}`);
           return;
         }
-        // 스마트 매수: ask1(매도1호가) 지정가 → 시장가 대비 슬리피지 차단
-        if (ask1 > 0) {
+        // v10: 예약매수 — bid1~ask1 중간가로 지정가 주문 (ask1 대비 스프레드 절반 절감)
+        // 체결 안 되면 confirmFill 타임아웃(~30s)에서 자동 취소 → 다음 사이클에서 재시도
+        if (bid1 > 0 && ask1 > 0) {
+          smartBuyPrice = Math.floor((bid1 + ask1) / 2);
+          if (smartBuyPrice <= bid1) smartBuyPrice = bid1;
+          logger.info(
+            `💰 예약매수: ${stockCode} bid1=${bid1.toLocaleString()} mid=${smartBuyPrice.toLocaleString()} ask1=${ask1.toLocaleString()} → 지정가`,
+            { component: 'EXECUTOR' },
+          );
+        } else if (ask1 > 0) {
           smartBuyPrice = ask1;
-          logger.info(`💰 스마트 매수: ${stockCode} ask1=${ask1.toLocaleString()} → 지정가 주문`, {
+          logger.info(`💰 스마트 매수: ${stockCode} ask1=${ask1.toLocaleString()} → 지정가 폴백`, {
             component: 'EXECUTOR',
           });
         }
@@ -716,18 +725,30 @@ export class TradeExecutor {
     const chain = await chainManager.findOpenChain(stockCode);
     if (!chain || chain.total_quantity === 0) return;
 
-    // 🔒 연속 실패 시 무한 루프 방지: 5회 이상 실패하면 KIS 실보유 동기화 시도 후 중단
+    // 🔒 연속 실패 시 무한 루프 방지
     const failKey = `${isPaperSnapshot ? 'paper' : 'live'}-${stockCode}`;
     const failCount = this._closeFailCount.get(failKey) ?? 0;
     if (failCount >= 5) {
-      // 10회 넘으면 더 이상 로그도 안 찍음 (로그 스팸 방지)
-      if (failCount < 10) {
-        logger.warn(
-          `⏸️ ${stockCode} 청산 ${failCount}회 연속 실패 → 재시도 중단 (수동 확인 필요)`,
-          { component: 'EXECUTOR' },
+      // v10: 5회 이상 실패 → 체인 자동 강제 종료 (무한 루프 완전 차단)
+      logger.warn(
+        `🔄 ${stockCode} 청산 ${failCount}회 연속 실패 → 체인 자동 강제 종료`,
+        { component: 'EXECUTOR' },
+      );
+      try {
+        const avgBuy = Number(chain.avg_buy_price) || 0;
+        await chainManager.closeChain(
+          chain.id, avgBuy, chain,
+          `${failCount}회 연속 청산 실패 → 자동 강제 종료 (수동 KIS 확인 필요)`,
         );
+        this._closeFailCount.delete(failKey);
+        invalidateStockCache(stockCode).catch(() => {});
+        hardInvalidateDashboardCache();
+        await logSystem('WARN', 'EXECUTOR',
+          `🔄 ${stockCode} 체인 강제 종료: ${failCount}회 연속 실패 (DB ${chain.total_quantity}주)`);
+      } catch (closeErr) {
+        logger.error(`체인 강제 종료 실패: ${stockCode} — ${closeErr}`, { component: 'EXECUTOR' });
+        this._closeFailCount.set(failKey, failCount + 1);
       }
-      this._closeFailCount.set(failKey, failCount + 1);
       return;
     }
 
