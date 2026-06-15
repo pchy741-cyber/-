@@ -128,7 +128,7 @@ export function tryFinalEntry(input: EntryInput): EntryVerdict {
   const v4MinTechScore = getCtxIsPaper()
     ? 1
     : techOnlyMode
-      ? Math.max(minTechScore, 72) // Live AI없이: 72점 이상
+      ? Math.max(minTechScore, 78) // v10: Live AI없이: 78점 이상 (엄격 선별)
       : Math.max(minTechScore, 55); // Live AI 병행: 55점 이상
 
   if (effectiveTechScore >= v4MinTechScore) {

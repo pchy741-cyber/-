@@ -260,19 +260,19 @@ export function getTimeWeightedStop(params: {
         holdingHours,
       };
     }
-    // 큰 손실: 기본 SL의 1.5배 이상 → 손절 (한계는 있음)
-    if (pnlPct <= -absBase * 1.5) {
+    // v10: Phase1 SL 한계 1.5x→1.2x (AI 없이 과도한 손실 방지: -4.5%×1.2=-5.4%)
+    if (pnlPct <= -absBase * 1.2) {
       return {
         action: 'EXECUTE_SL',
-        effectiveSlPct: -absBase * 1.5,
-        reason: `대손절: PnL ${pnlPct.toFixed(1)}% <= ${(-absBase * 1.5).toFixed(1)}% (Phase1 한계)`,
+        effectiveSlPct: -absBase * 1.2,
+        reason: `대손절: PnL ${pnlPct.toFixed(1)}% <= ${(-absBase * 1.2).toFixed(1)}% (Phase1 한계)`,
         holdingHours,
       };
     }
     // 작은 손실 보류: 초기 휩소로 판단
     return {
       action: 'HOLD',
-      effectiveSlPct: -absBase * 1.5, // 실제 작동 SL은 -1.5x
+      effectiveSlPct: -absBase * 1.2, // v10: 실제 작동 SL은 -1.2x
       reason: `🛡️ 초기 48h 버퍼: PnL ${pnlPct.toFixed(1)}% — 구조적 SL만 허용 (휩소 방어)`,
       holdingHours,
     };

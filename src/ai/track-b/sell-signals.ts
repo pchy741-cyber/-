@@ -150,7 +150,12 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       const chainTp = chain.target_profit_pct != null
         ? Number(chain.target_profit_pct)
         : (STRATEGY_PARAMS[chain.strategy_mode as StrategyMode]?.takeProfitPct ?? 5.5);
-      const activateAt = Math.max(chainTp * 0.75, 5.0); // v9: 0.65/4.0%→0.75/5.0% (수익 조기 차단 방지 강화)
+      // v10: AI 없으면 TP 90% 도달 전까지 트레일링 비활성화 (수익 조기 차단 방지)
+      const rawAiForPreTp = aiScoreMap.get(chain.stock_code) ?? 0;
+      const hasAiForPreTp = rawAiForPreTp > 0;
+      const activateAt = hasAiForPreTp
+        ? Math.max(chainTp * 0.75, 5.0)
+        : Math.max(chainTp * 0.90, 6.0); // AI없이: TP 90% 이상에서만 트레일링
       if (curPeak >= activateAt) {
         const earlyChart = chartData.get(chain.stock_code);
         const earlyTech = earlyChart && earlyChart.length >= 20 ? analyzeTechnicals(earlyChart) : null;
@@ -287,8 +292,12 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // 마감 근접 수익 확정 — 3단계: 충분한 수익만, 그다음 소폭, 마지막에 세금+수수료 최소 커버
     // 국내 거래세 0.20% + 수수료 ~0.04% + 마감 슬리피지 버퍼 → 최소 0.25% 이상 수익 필요
     // 15:00~15:10: 1.0%+ | 15:10~15:20: 0.5%+ (슬리피지 포함 순수익 양수 보장) | 15:20~15:25: 0.25%+
+    // v10: 마감전 수익확정은 당일 진입(6h 이내)만 — SWING 멀티데이 포지션 보호
+    const holdHrsForClose = chain.opened_at
+      ? (Date.now() - new Date(chain.opened_at).getTime()) / (60 * 60_000)
+      : 999;
     const isNearClose = _scalpH === 15 && _scalpM < 25;
-    if (isNearClose && chain.strategy_mode !== 'SCALPING' && chain.total_quantity > 0) {
+    if (isNearClose && chain.strategy_mode !== 'SCALPING' && holdHrsForClose < 6 && chain.total_quantity > 0) {
       const closeThreshold = _scalpM >= 20 ? 0.25 : _scalpM >= 10 ? 0.5 : 1.0;
       const closeLabel = _scalpM >= 20 ? '15:20+' : _scalpM >= 10 ? '15:10+' : '15:00+';
       if (pnlPct >= closeThreshold) {

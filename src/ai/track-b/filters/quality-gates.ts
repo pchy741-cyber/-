@@ -96,10 +96,11 @@ export function checkQualityGates(input: QualityGateInput): GateResult {
 
   // ─ qSignalFlow ─ v6: 외국인+기관 동반 매도 시 하드 차단 (AI 90+ 제외)
   // paper: 실시간 KIS 시그널 불필요 → 항상 통과 (연습매매 활성화)
+  // v10: AI 없고 시그널 데이터도 없으면 진입 거부 (순수 랜덤 진입 방지)
   const qSignalFlow = isPaper
     ? true
     : !signalData.raw
-      ? true
+      ? (noAiForStock ? false : true)
       : (() => {
           // 외국인+기관 동시 매도 = 기관 컨센서스 매도 → 개인만 매수 중 → 위험
           if (signalData.foreignNetEst < 0 && signalData.instNetEst < 0 && aiScore < 90) return false;
@@ -127,7 +128,8 @@ export function checkQualityGates(input: QualityGateInput): GateResult {
   // paper: min=0 (연습모드 전면 개방 — 데이터 수집 최대화, is_paper 플래그로 live 오염 차단)
   // v9: 랠리일(KOSPI +1.5%+) → 모멘텀 기회 포착 위해 3/6으로 완화
   const isRally = input.isRallyDay ?? false;
-  const liveMin = isPaper ? 0 : isRally ? 3 : aiScore >= 80 ? 3 : 4;
+  // v10: AI 없으면 5/6 게이트 통과 필수 (기술적 정밀 정렬 요구)
+  const liveMin = isPaper ? 0 : isRally ? 3 : aiScore >= 80 ? 3 : noAiForStock ? 5 : 4;
   const min = isPaper ? 0 : liveMin;
 
   return { passed: count >= min, count, min, details };

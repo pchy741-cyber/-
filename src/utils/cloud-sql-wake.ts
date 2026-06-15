@@ -159,13 +159,12 @@ export function startIdleWatcher(): void {
     const threshold = isWeekend ? IDLE_SHUTDOWN_WEEKEND_MS : IDLE_SHUTDOWN_MS;
     if (idleMs < threshold) return;
 
-    // 평일: 장중 보호 시간대에는 자동 중지 안 함
+    // v10: 평일 절전은 새벽 1시~8시만 — 그 외 시간 항상 깨어있음
     if (!isWeekend) {
-      if (h >= 7 && h < 20) return; // 국내 장중+저녁 Job 07:00~20:00 KST 보호
-      if (h >= 22 || h < 7) return; // 해외 장중 22:00~07:00 KST 보호
-      // → 평일 자동 중지 가능: 20:00~22:00 KST만 (2시간 창)
+      if (h >= 8 || h < 1) return; // 08:00~01:00 KST 보호 (절전 금지)
+      // → 평일 자동 중지 가능: 01:00~08:00 KST만 (7시간 창)
     }
-    // 주말: 보호 시간대 없음 → 10분 유휴 시 바로 중지
+    // 주말/공휴일: 30분 유휴 시 자동 중지 (깨우기 API로 접속 가능)
 
     try {
       const token = await getAccessToken();
