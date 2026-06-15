@@ -796,14 +796,37 @@ export class TradeExecutor {
             await logSystem('WARN', 'EXECUTOR',
               `🔄 DB-KIS 동기화: ${stockCode} 체인 강제 종료 (DB ${chain.total_quantity}주, KIS 0주)`);
           } else if (actualQty < chain.total_quantity) {
-            // KIS 보유 < DB 기록 → 부분 불일치
+            // KIS 보유 < DB 기록 → 부분 불일치 → 3회 이상 반복 시 강제 종료
             logger.warn(
               `🔄 DB-KIS 부분 불일치: ${stockCode} DB=${chain.total_quantity}주 KIS=${actualQty}주`,
               { component: 'EXECUTOR' },
             );
+            if (failCount >= 2) {
+              logger.warn(`🔄 부분 불일치 ${failCount + 1}회 → 체인 강제 종료`, { component: 'EXECUTOR' });
+              const avgBuy = Number(chain.avg_buy_price) || 0;
+              await chainManager.closeChain(
+                chain.id, avgBuy, chain,
+                `KIS 동기화: DB ${chain.total_quantity}주 → 실보유 ${actualQty}주 (반복 실패 강제 종료)`,
+              );
+              this._closeFailCount.delete(failKey);
+              invalidateStockCache(stockCode).catch(() => {});
+              hardInvalidateDashboardCache();
+            }
           }
         } catch (syncErr) {
           logger.warn(`KIS 동기화 조회 실패: ${stockCode} — ${syncErr}`, { component: 'EXECUTOR' });
+          // v9-fix: sync 조회 자체가 실패해도 3회 이상 반복 시 체인 강제 종료
+          if (failCount >= 2) {
+            logger.warn(`🔄 동기화 조회 실패 + ${failCount + 1}회 반복 → 체인 강제 종료`, { component: 'EXECUTOR' });
+            const avgBuy = Number(chain.avg_buy_price) || 0;
+            await chainManager.closeChain(
+              chain.id, avgBuy, chain,
+              `KIS 동기화 실패: ${stockCode} ${failCount + 1}회 반복 오류 → 강제 종료`,
+            );
+            this._closeFailCount.delete(failKey);
+            invalidateStockCache(stockCode).catch(() => {});
+            hardInvalidateDashboardCache();
+          }
         }
       }
       return;

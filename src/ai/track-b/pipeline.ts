@@ -368,7 +368,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       const results = await Promise.allSettled(batch.map((code) => getDailyChart(code, chartDays)));
       for (let j = 0; j < batch.length; j++) {
         const r = results[j];
-        if (r.status === 'fulfilled' && r.value.length >= 20) {
+        // v9-fix: MACD slow EMA(26) + signal(9) = 35 최소 필요. 20→40 상향
+        if (r.status === 'fulfilled' && r.value.length >= 40) {
           chartData.set(batch[j], r.value);
         } else if (r.status === 'rejected') {
           logger.warn(`차트 조회 실패: ${batch[j]} - ${r.reason}`, { component: 'TRACK_B' });
@@ -762,10 +763,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     //   (7건 중 5건이 12:37, 15:01, 15:22, 15:23 진입 — 전부 금지/제한 시간대)
     //   How: paper도 live와 동일한 시간 가드 적용 — 학습 환경에서도 일관된 운영
     const isPastClose = kstH > 14 || (kstH === 14 && kstM >= 50);
-    // v9-fix: 점심 시간대 10:30~12:30 — 고확신 기준 90→70 완화
-    // 90+ 기준은 너무 엄격 → 70+ 종목도 점심 진입 허용 (30% 승률 개선 목표)
+    // v9-fix: 점심 시간대 10:30~12:30 — 고확신 기준 70→60 완화
+    // MACD 수정 후 점수 분포 정상화 예상, 60+ 진입 허용
     const isLunchHours = !isScalpingMode && ((kstH === 10 && kstM >= 30) || kstH === 11 || (kstH === 12 && kstM < 30));
-    const hasHighConviction = hasScores && scores.some((s: any) => (s.composite_score ?? 0) >= 70);
+    const hasHighConviction = hasScores && scores.some((s: any) => (s.composite_score ?? 0) >= 60);
     const isLunchBan = isLunchHours && !hasHighConviction;
     const portfolioStress = calcPortfolioStressLevel(openChains, livePrices, totalAssets);
     if (portfolioStress >= 1) {

@@ -228,7 +228,8 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   if (macdCross === 'BULLISH') momentumScore += 12;
   else if (macdCross === 'BEARISH') momentumScore -= 12;
   else if (macdHist > 0) momentumScore += 4;
-  else momentumScore -= 4;
+  else if (macdHist < 0) momentumScore -= 4;
+  // v9-fix: macdHist === 0 (데이터 부족/정확히 0) → 페널티 없음
 
   if (stochSignal === 'OVERSOLD' && rsi14 >= 28 && rsi14 <= 35) momentumScore += 3;
   if (stochSignal === 'OVERBOUGHT' && rsi14 >= 65 && rsi14 <= 72) momentumScore -= 3;
