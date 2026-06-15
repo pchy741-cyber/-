@@ -13,16 +13,18 @@ export async function analyzeBuyThreshold(): Promise<LearnedInsight[]> {
     );
     const currentThreshold: number = cfgRows[0]?.buy_threshold ?? 58;
 
+    // v9-fix: 데이터 스누핑 방지 — 최근 14일 데이터 제외 (holdout gap)
+    // 학습 데이터(14~90일 전)와 적용 기간(최근 14일)을 분리하여 오버피팅 방지
     const { rows } = await getPool().query(
       `SELECT entry_score, outcome, realized_pnl_pct
          FROM score_accuracy
-        WHERE recorded_at >= NOW() - INTERVAL '90 days'
+        WHERE recorded_at BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '14 days'
           AND entry_score IS NOT NULL
           AND is_paper = false
         ORDER BY entry_score`,
     );
 
-    if (rows.length < 15) return [];
+    if (rows.length < 30) return []; // v9: 15→30 최소 샘플 강화
 
     const below = rows.filter((r: any) => Number(r.entry_score) < currentThreshold);
     const above = rows.filter((r: any) => Number(r.entry_score) >= currentThreshold);
@@ -98,10 +100,11 @@ export async function analyzeBuyThreshold(): Promise<LearnedInsight[]> {
 
 export async function calibrateScoreTierParams(): Promise<void> {
   try {
+    // v9-fix: 데이터 스누핑 방지 — 최근 14일 제외 (holdout gap)
     const { rows: accuracyData } = await getPool().query(
       `SELECT entry_score, outcome, realized_pnl_pct
        FROM score_accuracy
-       WHERE recorded_at >= NOW() - INTERVAL '120 days'
+       WHERE recorded_at BETWEEN NOW() - INTERVAL '120 days' AND NOW() - INTERVAL '14 days'
          AND entry_score IS NOT NULL
          AND is_paper = false
          AND (market IS NULL OR market = 'KR')
@@ -135,7 +138,8 @@ export async function calibrateScoreTierParams(): Promise<void> {
       const tierKey = `${tier.min}-${tier.max}`;
       const tierData = accuracyData.filter((d) => d.entry_score >= tier.min && d.entry_score <= tier.max);
 
-      if (tierData.length < 5) {
+      // v9-fix: 티어별 최소 샘플 5→10 강화 (소수 데이터 오버피팅 방지)
+      if (tierData.length < 10) {
         tierStats[tierKey] = { data: [], winRate: 0, avgPnl: 0, avgWin: 0, avgLoss: 0, stdev: 0 };
         continue;
       }
@@ -167,7 +171,7 @@ export async function calibrateScoreTierParams(): Promise<void> {
       const tierKey = `${tier.min}-${tier.max}`;
       const stats = tierStats[tierKey];
 
-      if (stats.data.length < 5) continue;
+      if (stats.data.length < 10) continue; // v9: 5→10 (위 필터와 일치)
 
       const { winRate, avgWin, avgLoss } = stats;
 

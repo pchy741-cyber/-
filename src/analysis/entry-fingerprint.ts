@@ -122,6 +122,8 @@ export async function getPatternFeedback(fp: EntryFingerprint): Promise<PatternF
     const isPaper = getCtxIsPaper();
     const fpKey = fingerprintKey(fp);
 
+    // v9-fix: 데이터 스누핑 방지 — 최근 7일 제외 (holdout gap)
+    // 학습 데이터와 적용 기간 분리하여 오버피팅 방지
     // 1차: 정확히 일치하는 핑거프린트 조회
     const { rows: exact } = await getPool().query(
       `
@@ -129,7 +131,7 @@ export async function getPatternFeedback(fp: EntryFingerprint): Promise<PatternF
       FROM score_accuracy
       WHERE entry_fingerprint = $1
         AND is_paper = $2
-        AND recorded_at >= NOW() - INTERVAL '120 days'
+        AND recorded_at BETWEEN NOW() - INTERVAL '120 days' AND NOW() - INTERVAL '7 days'
     `,
       [fpKey, isPaper],
     );
@@ -141,7 +143,7 @@ export async function getPatternFeedback(fp: EntryFingerprint): Promise<PatternF
       FROM score_accuracy
       WHERE entry_fingerprint LIKE $1
         AND is_paper = $2
-        AND recorded_at >= NOW() - INTERVAL '120 days'
+        AND recorded_at BETWEEN NOW() - INTERVAL '120 days' AND NOW() - INTERVAL '7 days'
     `,
       [`${fp.rsiZone}|%|${fp.trendState}|%`, isPaper],
     );

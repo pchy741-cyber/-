@@ -388,7 +388,8 @@ export async function executeBuyDecisions(
     // DB 실거래 역산 비율 사용 (샘플 10건 이상인 티어만), 부족하면 하드코딩 fallback
     const getDbAllocPct = (score: number): number | null => {
       const tier = scoreTierParams.find((t) => score >= t.tier_min && score <= t.tier_max);
-      if (!tier || tier.sample_count < 10) return null;
+      // v9-fix: 최소 샘플 10→20 강화 — 소수 데이터 오버피팅 방지
+      if (!tier || tier.sample_count < 20) return null;
       return tier.alloc_pct;
     };
 
