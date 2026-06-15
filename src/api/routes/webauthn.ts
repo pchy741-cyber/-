@@ -30,7 +30,7 @@ import { createSessionToken, setSessionCookie } from '../middleware/auth.js';
 
 // RP (Relying Party) 설정 — 요청 Host 헤더에서 동적으로 유도 (staging/live URL 공용 대응)
 const rpName = 'AI Auto Bot';
-const FALLBACK_RP_ID = process.env.WEBAUTHN_RP_ID || 'ai-auto-bot-ang2aozjiq-du.a.run.app';
+const FALLBACK_RP_ID = process.env.WEBAUTHN_RP_ID || 'ai-auto-bot-807105550136.asia-northeast3.run.app';
 
 /** 요청 컨텍스트에서 RP ID 추출 (Host > X-Forwarded-Host > 환경변수 순) */
 function getRpId(c: { req: { header: (name: string) => string | undefined } }): string {

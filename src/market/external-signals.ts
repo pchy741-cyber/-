@@ -37,6 +37,14 @@ let _earningsCache: { data: EarningsEvent[]; fetchedAt: number } | null = null;
 const _newsCache = new Map<string, { data: NewsSentiment; fetchedAt: number }>();
 const CACHE_TTL = 60 * 60 * 1000; // 1시간
 
+// 만료 엔트리 자동 정리 (30분 주기)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of _newsCache) {
+    if (now - entry.fetchedAt >= CACHE_TTL) _newsCache.delete(key);
+  }
+}, 30 * 60 * 1000).unref();
+
 // ──────────────────────────────────────────────────────────────
 // 1. CNN Fear & Greed Index
 // ──────────────────────────────────────────────────────────────

@@ -18,6 +18,16 @@ export interface CommunitySentiment {
 
 const CACHE_TTL_MS = 2 * 60 * 60 * 1000;
 const _cache = new Map<string, { data: CommunitySentiment; fetchedAt: number }>();
+const CACHE_MAX_ENTRIES = 500;
+
+// 만료 엔트리 자동 정리 (30분 주기)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of _cache) {
+    if (now - entry.fetchedAt >= CACHE_TTL_MS) _cache.delete(key);
+  }
+  if (_cache.size > CACHE_MAX_ENTRIES) _cache.clear();
+}, 30 * 60 * 1000).unref();
 
 const POSITIVE_WORDS = [
   '상승',

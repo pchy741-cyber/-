@@ -82,6 +82,16 @@ export interface DailyCandle {
 
 // ── getDailyChart 인메모리 캐시 (일봉은 장중 변하지 않음) ──
 const _dailyChartCache = new Map<string, { data: DailyCandle[]; expiresAt: number }>();
+const DAILY_CHART_CACHE_MAX = 300;
+
+// 만료 엔트리 자동 정리 (10분 주기) — 무제한 성장 방지
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of _dailyChartCache) {
+    if (now >= entry.expiresAt) _dailyChartCache.delete(key);
+  }
+  if (_dailyChartCache.size > DAILY_CHART_CACHE_MAX) _dailyChartCache.clear();
+}, 10 * 60 * 1000).unref();
 
 function getDailyChartCacheTtlMs(): number {
   const kst = getKSTNow();

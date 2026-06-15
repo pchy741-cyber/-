@@ -4,7 +4,7 @@ import { INVERSE_ETF_CODES } from '../automation/crash-profit.js';
 import { isRiskOffToday } from '../automation/market-routing.js';
 import type { StrategyMode } from '../config/constants.js';
 import { getCtxIsPaper, runWithMode } from '../config/context.js';
-import { getActiveStrategy } from '../db/client.js';
+import { getActiveStrategy, getPool } from '../db/client.js';
 import { isMarketOpen } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { isKillSwitchActive, reportError, reportSuccess } from '../risk/kill-switch.js';
@@ -26,10 +26,13 @@ let runGeneration = 0; // 강제 리셋 시 세대 증가 → 이전 실행의 f
 const MAX_RUNTIME_MS = 10 * 60 * 1000; // 10분 초과 시 강제 해제
 const pendingRescanTimers = new Map<'paper' | 'live', ReturnType<typeof setTimeout> | null>(); // 모드별 rescan 타이머
 
+// DB Advisory Lock ID: 'TRB_' 해시 + paper/live 분리
+const TRACK_B_LOCK_BASE = 0x54524230; // 'TRB0'
+
 export async function runTrackBJob(): Promise<void> {
   const modeKey: 'paper' | 'live' = getCtxIsPaper() ? 'paper' : 'live';
 
-  // 동시 실행 방지 — 단, 10분 초과 시 강제 리셋 (API hang 방지)
+  // ── 1차 방어: 인메모리 락 (같은 인스턴스 내 동시실행 방지) ──
   if (isRunningMap.get(modeKey)) {
     const elapsed = Date.now() - (runningStartedAtMap.get(modeKey) ?? 0);
     if (elapsed < MAX_RUNTIME_MS) {
@@ -49,6 +52,26 @@ export async function runTrackBJob(): Promise<void> {
   if (!isMarketOpen()) {
     logger.debug('📉 장 닫힘 — Track B 스킵', { component: 'SCHEDULER' });
     return;
+  }
+
+  // ── 2차 방어: DB Advisory Lock (Cloud Run 다중 인스턴스 동시실행 방지) ──
+  const LOCK_ID = TRACK_B_LOCK_BASE + (modeKey === 'paper' ? 1 : 0);
+  let lockClient: any = null;
+  try {
+    lockClient = await getPool().connect();
+    const { rows } = await lockClient.query('SELECT pg_try_advisory_lock($1) AS locked', [LOCK_ID]);
+    if (!rows[0]?.locked) {
+      lockClient.release();
+      logger.info(`🔒 다른 인스턴스가 Track B[${modeKey}] 실행 중 — 스킵`, { component: 'SCHEDULER' });
+      return;
+    }
+  } catch (lockErr) {
+    // DB 연결 실패 시 인메모리 락만으로 진행 (기존 동작 유지)
+    lockClient?.release();
+    lockClient = null;
+    logger.warn(`Advisory lock 획득 실패 [Track B ${modeKey}] — 인메모리 락으로 진행: ${(lockErr as Error).message}`, {
+      component: 'SCHEDULER',
+    });
   }
 
   logger.info('🟢 Track B 실행 시작 (장 열림 확인)', { component: 'SCHEDULER' });
@@ -179,6 +202,15 @@ export async function runTrackBJob(): Promise<void> {
     // 내 세대가 현재 세대와 같을 때만 플래그 해제 (강제 리셋 후엔 새 실행이 이미 true)
     if (myGeneration === runGeneration) {
       isRunningMap.set(modeKey, false);
+    }
+    // DB Advisory Lock 해제
+    if (lockClient) {
+      try {
+        await lockClient.query('SELECT pg_advisory_unlock($1)', [LOCK_ID]);
+      } catch {
+        /* DB 연결 끊김 시 세션 종료로 자동 해제됨 */
+      }
+      lockClient.release();
     }
   }
 }

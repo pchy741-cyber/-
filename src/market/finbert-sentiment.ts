@@ -26,6 +26,16 @@ export interface FinBertResult {
 
 const _cache = new Map<string, { data: FinBertResult; ts: number }>();
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24시간
+const CACHE_MAX_ENTRIES = 1000;
+
+// 만료 엔트리 자동 정리 (1시간 주기)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of _cache) {
+    if (now - entry.ts >= CACHE_TTL_MS) _cache.delete(key);
+  }
+  if (_cache.size > CACHE_MAX_ENTRIES) _cache.clear();
+}, 60 * 60 * 1000).unref();
 
 export async function analyzeSentiment(text: string): Promise<FinBertResult | null> {
   if (!process.env.HF_API_KEY) {

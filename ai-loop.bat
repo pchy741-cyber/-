@@ -2,7 +2,7 @@
 chcp 65001 >nul 2>&1
 setlocal enabledelayedexpansion
 
-set "URL=https://ai-auto-bot-ang2aozjiq-du.a.run.app"
+set "URL=https://ai-auto-bot-807105550136.asia-northeast3.run.app"
 set "MODE=%~1"
 set "CMD=%~2"
 if "%MODE%"=="" set "MODE=paper"

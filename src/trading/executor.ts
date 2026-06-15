@@ -243,7 +243,10 @@ export class TradeExecutor {
     // CASH_PARKING: 현금파킹 대형주는 cash-manager가 이미 종목·타이밍 검증 완료 — 인트라데이 게이트 불필요
     const skipGates =
       ETF_PARK_CODES.includes(stockCode) || mode === 'BOTTOM_FISHING' || triggerSource === 'CASH_PARKING';
-    const params = STRATEGY_PARAMS[mode];
+    const params = STRATEGY_PARAMS[mode] ?? STRATEGY_PARAMS.SWING;
+    if (!STRATEGY_PARAMS[mode]) {
+      logger.warn(`⚠️ 알 수 없는 전략 모드 "${mode}" → SWING 폴백 적용`, { component: 'EXECUTOR' });
+    }
     let gatedQuantity = quantity;
     if (skipGates) {
       const skipModeTag = getCtxIsPaper() ? '🧪PAPER' : '💰LIVE';
@@ -792,7 +795,7 @@ export class TradeExecutor {
     if (!result.success) {
       this._closeFailCount.set(failKey, failCount + 1);
 
-      // v10.2: 매도 실패 시 KIS 동기화 — 에러 종류 불문 (영문/한글 매칭 누락 방지)
+      // v10.5: 매도 실패 시 KIS 동기화 — qty 에러는 즉시, 그 외는 2회 이상 반복 시
       const errText = (result.message ?? '').toLowerCase();
       const isQtyError = errText.includes('수량을 초과') || errText.includes('quantity') || errText.includes('apbk0');
       if (!isPaperSnapshot && (isQtyError || failCount >= 2)) {
@@ -819,17 +822,17 @@ export class TradeExecutor {
             await logSystem('WARN', 'EXECUTOR',
               `🔄 DB-KIS 동기화: ${stockCode} 체인 강제 종료 (DB ${chain.total_quantity}주, KIS 0주)`);
           } else if (actualQty < chain.total_quantity) {
-            // KIS 보유 < DB 기록 → 부분 불일치 → 3회 이상 반복 시 강제 종료
+            // KIS 보유 < DB 기록 → 부분 불일치 → qty 에러면 즉시 강제 종료
             logger.warn(
               `🔄 DB-KIS 부분 불일치: ${stockCode} DB=${chain.total_quantity}주 KIS=${actualQty}주`,
               { component: 'EXECUTOR' },
             );
-            if (failCount >= 2) {
-              logger.warn(`🔄 부분 불일치 ${failCount + 1}회 → 체인 강제 종료`, { component: 'EXECUTOR' });
+            if (isQtyError || failCount >= 2) {
+              logger.warn(`🔄 부분 불일치 → 체인 강제 종료 (qty에러=${isQtyError}, 실패${failCount + 1}회)`, { component: 'EXECUTOR' });
               const avgBuy = Number(chain.avg_buy_price) || 0;
               await chainManager.closeChain(
                 chain.id, avgBuy, chain,
-                `KIS 동기화: DB ${chain.total_quantity}주 → 실보유 ${actualQty}주 (반복 실패 강제 종료)`,
+                `KIS 동기화: DB ${chain.total_quantity}주 → 실보유 ${actualQty}주 (불일치 강제 종료)`,
               );
               this._closeFailCount.delete(failKey);
               invalidateStockCache(stockCode).catch(() => {});
@@ -838,8 +841,19 @@ export class TradeExecutor {
           }
         } catch (syncErr) {
           logger.warn(`KIS 동기화 조회 실패: ${stockCode} — ${syncErr}`, { component: 'EXECUTOR' });
-          // v9-fix: sync 조회 자체가 실패해도 3회 이상 반복 시 체인 강제 종료
-          if (failCount >= 2) {
+          // v10.5: qty 에러인데 KIS 조회도 실패 → 즉시 체인 강제 종료 (무한루프 차단)
+          // KIS에서 "수량 초과" = 실보유 0주 확실 → 조회 실패해도 안전하게 종료 가능
+          if (isQtyError) {
+            logger.warn(`🔄 qty 에러 + KIS 조회 실패 → 체인 강제 종료 (실보유 0주 추정): ${stockCode}`, { component: 'EXECUTOR' });
+            const avgBuy = Number(chain.avg_buy_price) || 0;
+            await chainManager.closeChain(
+              chain.id, avgBuy, chain,
+              `KIS 동기화 실패: ${stockCode} 주문수량초과 에러 → 실보유 0주 추정, 강제 종료`,
+            );
+            this._closeFailCount.delete(failKey);
+            invalidateStockCache(stockCode).catch(() => {});
+            hardInvalidateDashboardCache();
+          } else if (failCount >= 2) {
             logger.warn(`🔄 동기화 조회 실패 + ${failCount + 1}회 반복 → 체인 강제 종료`, { component: 'EXECUTOR' });
             const avgBuy = Number(chain.avg_buy_price) || 0;
             await chainManager.closeChain(

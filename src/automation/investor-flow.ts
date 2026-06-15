@@ -12,6 +12,16 @@ const COMPONENT = 'INVESTOR_FLOW';
 // ── 30분 캐시 (Track B 5분 사이클마다 KIS 호출 방지) ──
 const _flowCache = new Map<string, { data: InvestorFlowResult; fetchedAt: number }>();
 const FLOW_CACHE_TTL_MS = 30 * 60 * 1000;
+const FLOW_CACHE_MAX_ENTRIES = 500;
+
+// 만료 엔트리 자동 정리 (30분 주기)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of _flowCache) {
+    if (now - entry.fetchedAt >= FLOW_CACHE_TTL_MS) _flowCache.delete(key);
+  }
+  if (_flowCache.size > FLOW_CACHE_MAX_ENTRIES) _flowCache.clear();
+}, 30 * 60 * 1000).unref();
 
 export type InvestorTrend = 'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL';
 

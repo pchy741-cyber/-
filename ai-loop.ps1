@@ -10,7 +10,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Url = "https://ai-auto-bot-ang2aozjiq-du.a.run.app"
+$Url = "https://ai-auto-bot-807105550136.asia-northeast3.run.app"
 
 # API 키 로드
 $keyFile = Join-Path $ScriptDir ".api-key"

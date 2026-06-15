@@ -12,7 +12,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-URL="https://ai-auto-bot-ang2aozjiq-du.a.run.app"
+URL="https://ai-auto-bot-807105550136.asia-northeast3.run.app"
 MODE="${1:-paper}"
 CMD="${2:-}"
 

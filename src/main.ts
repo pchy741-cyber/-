@@ -59,7 +59,6 @@ app.use(
   '*',
   cors({
     origin: [
-      'https://ai-auto-bot-ang2aozjiq-du.a.run.app',
       'https://ai-auto-bot-807105550136.asia-northeast3.run.app',
       'http://localhost:8080',
       'http://localhost:3000',

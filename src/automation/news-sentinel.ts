@@ -64,7 +64,17 @@ const SAFE: NewsSentinelResult = { hasBadNews: false, isEarningsRisk: false, hea
 
 const _cache = new Map<string, { result: NewsSentinelResult; expires: number }>();
 const CACHE_TTL = 5 * 60_000;
+const CACHE_MAX_ENTRIES = 500;
 const FETCH_TIMEOUT = 4_000;
+
+// 만료 엔트리 자동 정리 (5분 주기)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of _cache) {
+    if (now >= entry.expires) _cache.delete(key);
+  }
+  if (_cache.size > CACHE_MAX_ENTRIES) _cache.clear();
+}, 5 * 60 * 1000).unref();
 
 export async function checkNewsForStock(code: string): Promise<NewsSentinelResult> {
   const hit = _cache.get(code);

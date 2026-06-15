@@ -30,6 +30,18 @@ interface KISResponse<T = unknown> {
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1000;
 
+// KIS 비즈니스 에러: HTTP 200이지만 rt_cd≠0, 재시도해도 결과 동일 → 즉시 실패
+// 주문 수량 초과, 잔액 부족, 종목 미보유 등
+const NON_RETRYABLE_MSG_CODES = new Set([
+  'APBK0400', // 주문 가능한 수량을 초과
+  'APBK0500', // 주문 가능 금액 초과
+  'APBK0900', // 매도 가능 수량 초과
+  'APBK0013', // 종목코드 오류
+  'APBK0014', // 주문수량 오류
+  'APBK0019', // 매매구분 오류
+  'OPSQ0002', // 없는 서비스 코드
+]);
+
 // ── KIS API Rate Limiter (초당 20건 제한 대응) ──
 // 토큰 버킷 알고리즘: 초당 최대 18건 (안전 마진 2건)
 class RateLimiter {
@@ -260,9 +272,16 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
           throw new Error(errMsg);
         }
 
-        // 5xx → 재시도
+        // KIS 비즈니스 에러 (HTTP 200 + rt_cd≠0): 재시도 무의미 → 즉시 실패
+        const msgCode = String(data.msg_cd ?? '');
+        if (NON_RETRYABLE_MSG_CODES.has(msgCode)) {
+          logger.warn(`KIS 비즈니스 에러 (재시도 불가): ${errMsg}`, { component: 'KIS' });
+          throw new Error(errMsg);
+        }
+
+        // 5xx 또는 알 수 없는 서버 에러 → 재시도
         if (attempt < MAX_RETRIES) {
-          logger.warn(`KIS 5xx 에러, 재시도 ${attempt}/${MAX_RETRIES}: ${errMsg}`, { component: 'KIS' });
+          logger.warn(`KIS 서버 에러, 재시도 ${attempt}/${MAX_RETRIES}: ${errMsg}`, { component: 'KIS' });
           await sleep(RETRY_DELAY_MS * attempt);
           continue;
         }

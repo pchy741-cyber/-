@@ -35,6 +35,16 @@ export interface OptionsIvSnapshot {
 
 const _cache = new Map<string, { data: OptionsIvSnapshot; fetchedAt: number }>();
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30분 (free tier 5 calls/min 보호)
+const CACHE_MAX_ENTRIES = 500;
+
+// 만료 엔트리 자동 정리 (30분 주기) — 무제한 성장 방지
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of _cache) {
+    if (now - entry.fetchedAt >= CACHE_TTL_MS) _cache.delete(key);
+  }
+  if (_cache.size > CACHE_MAX_ENTRIES) _cache.clear();
+}, 30 * 60 * 1000).unref();
 
 // 장기 보완 #4: rate limit 안전 가드 — 분당 5콜 free tier 보호
 const _callTimestamps: number[] = [];
