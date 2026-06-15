@@ -29,6 +29,8 @@ export async function syncPendingOverseasOrders(): Promise<void> {
     if (rows.length === 0) return;
     logger.info(`🔄 PENDING 해외주문 재동기화: ${rows.length}건`, { component: 'OVERSEAS' });
 
+    // v10.8: 동일 종목 복수 BUY PENDING 중복 체결 방지
+    const reconciledBuyQty = new Map<string, number>(); // code → 이미 체결 처리된 수량 합계
     for (const order of rows) {
       const ageMin = Number(order.age_minutes);
 
@@ -49,13 +51,22 @@ export async function syncPendingOverseasOrders(): Promise<void> {
           const currentQty = position?.quantity ?? 0;
 
           if (order.side === 'BUY' && currentQty > 0) {
+            // 이미 체결 처리된 수량 차감 후 남은 잔고로 판단
+            const alreadyReconciled = reconciledBuyQty.get(order.stock_code) ?? 0;
+            const remainingQty = currentQty - alreadyReconciled;
+            if (remainingQty <= 0) {
+              logger.info(`⚠️ ${order.stock_code} BUY PENDING 스킵 (잔고 이미 다른 주문에 할당됨)`, { component: 'OVERSEAS' });
+              continue;
+            }
+            const filledQty = Math.min(Number(order.quantity), remainingQty);
+            reconciledBuyQty.set(order.stock_code, alreadyReconciled + filledQty);
             await updateOrder(order.id, {
-              filled_quantity: Math.min(Number(order.quantity), currentQty),
+              filled_quantity: filledQty,
               filled_price: position?.avgBuyPrice ?? Number(order.price),
               status: 'FILLED',
               kis_status: 'FILLED',
             });
-            logger.info(`✅ ${order.stock_code} BUY PENDING→FILLED (잔고 확인: ${currentQty}주)`, {
+            logger.info(`✅ ${order.stock_code} BUY PENDING→FILLED (잔고: ${currentQty}주, 할당: ${filledQty}주)`, {
               component: 'OVERSEAS',
             });
           } else if (order.side === 'SELL' && currentQty === 0) {

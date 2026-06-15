@@ -609,13 +609,18 @@ export const OVERSEAS = {
  *  — alloc-risk-cache.getAllocRisk(isPaper).positionCapPct / 100 을 caller에서 주입
  */
 let _lastTier: 'micro' | 'small' | 'large' = 'small';
+let _tierInitialized = false; // v10.8: 첫 호출 시 포트폴리오에서 직접 결정 (restart 후 stale 방지)
 export function getOverseasDynamic(portfolioUsd: number, isPaper = false, posCapPct = 0.25) {
   const p = Math.max(100, portfolioUsd);
 
   // 히스테리시스 tier 결정 — 경계값 왕복 whipsaw 방지
   // 상승 시 높은 경계, 하락 시 낮은 경계 (deadband ±15%)
+  // v10.8: 첫 live 호출 시 포트폴리오에서 직접 결정 (서버 재시작 후 잘못된 'small' 기본값 방지)
   if (!isPaper) {
-    if (_lastTier === 'micro') {
+    if (!_tierInitialized) {
+      _lastTier = p < 2000 ? 'micro' : p < 10000 ? 'small' : 'large';
+      _tierInitialized = true;
+    } else if (_lastTier === 'micro') {
       if (p >= 2300) _lastTier = 'small'; // 2000 * 1.15
       if (p >= 11500) _lastTier = 'large'; // 10000 * 1.15
     } else if (_lastTier === 'small') {

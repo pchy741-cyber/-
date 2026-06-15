@@ -25,6 +25,7 @@ export interface MultiTFResult {
 
 const cache = new Map<string, { result: MultiTFResult; expires: number }>();
 const CACHE_TTL = 45 * 60 * 1000; // 45분 (송곳 최적화: 30→45분)
+const MTF_CACHE_MAX = 100;
 
 function getCached(code: string): MultiTFResult | null {
   const entry = cache.get(code);
@@ -38,6 +39,18 @@ function getCached(code: string): MultiTFResult | null {
 function setCache(code: string, result: MultiTFResult): void {
   cache.set(code, { result, expires: Date.now() + CACHE_TTL });
 }
+
+// v10.8: 만료 엔트리 주기적 정리 (메모리 누수 방지)
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of cache) {
+    if (now > v.expires) cache.delete(k);
+  }
+  if (cache.size > MTF_CACHE_MAX) {
+    const sorted = [...cache.entries()].sort((a, b) => a[1].expires - b[1].expires);
+    for (let i = 0; i < sorted.length - MTF_CACHE_MAX; i++) cache.delete(sorted[i][0]);
+  }
+}, 30 * 60 * 1000).unref();
 
 // ── 방향 판단 헬퍼 ──
 

@@ -57,6 +57,12 @@ export function clearSessionBrief(): void {
   _sessionSnapshot = null;
   _sessionId = null;
   _lastPriceSnapshot.clear(); // 세션 초기화 시 가격 스냅샷도 리셋 (메모리 누수 방지)
+
+  // v10.8: 7일 이전 session_brief/session_summary DB 정리 (무한 팽창 방지)
+  getPool()
+    .query(`DELETE FROM overseas_state WHERE (key LIKE 'session_brief_%' OR key LIKE 'session_summary_%')
+      AND key NOT IN (SELECT key FROM overseas_state WHERE key LIKE 'session_brief_%' OR key LIKE 'session_summary_%' ORDER BY key DESC LIMIT 20)`)
+    .catch(() => {});
 }
 
 // ── Session Brief Generation ──

@@ -99,7 +99,7 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
         rbLines.push('', '📌 *조정 추천* (1% 단위)');
         for (const p of overweight) {
           const excessPct = p.weight - targetWeightPer;
-          const adjustPct = Math.min(excessPct, Math.ceil(excessPct));
+          const adjustPct = Math.max(1, Math.ceil(excessPct)); // v10.8: 1% 단위 절상 (기존 Math.min no-op 수정)
           const trimValue = rbTotal * (adjustPct / 100);
           const trimQty = Math.max(1, Math.floor(trimValue / p.price));
           const trimAmt = trimQty * p.price;

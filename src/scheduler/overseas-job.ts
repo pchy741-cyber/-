@@ -134,7 +134,7 @@ import { GLOBAL_WATCHLIST } from './overseas/watchlist.js';
 let _lastLunchRunAt = 0;
 const LUNCH_THROTTLE_MS = 30 * 60 * 1000; // 30분
 
-export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<void> {
+export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boolean }): Promise<void> {
   // isPaper는 runWithMode(ctx)로 주입 — getCtxIsPaper()로 읽음
   const s = overseasState; // shorthand
   const modeK = modeKey(isPaper()); // paper/live 모드 키
@@ -727,7 +727,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
       const tech = techResults.find((t) => t.code === code);
       return sum + (tech ? tech.price.currentPrice * h.qty : h.avgPrice * h.qty);
     }, 0);
-    const portfolioValue = cash + holdingEvalUsd;
+    let portfolioValue = cash + holdingEvalUsd;
     const dynParams = getOverseasDynamic(portfolioValue, isPaper(), allocRisk.positionCapPct / 100);
     const MAX_POSITIONS = dynParams.maxPositions;
 
@@ -777,6 +777,15 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
     });
     const sellOrders = sellResult.sellOrders;
     cash = sellResult.cash;
+
+    // v10.8: 매도 후 portfolioValue 재계산 (후속 로직에 stale 값 방지)
+    {
+      const postSellHoldingEval = Array.from(holdings.entries()).reduce((sum, [code, h]) => {
+        const tech = techResults.find((t) => t.code === code);
+        return sum + (tech ? tech.price.currentPrice * h.qty : h.avgPrice * h.qty);
+      }, 0);
+      portfolioValue = cash + postSellHoldingEval;
+    }
 
     // ── 4-c. 터틀 전략 비활성화 — sell-logic이 기존 터틀 포지션도 관리 ──
 
@@ -1237,10 +1246,10 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
         const minPositionSize = portfolioValue * 0.1;
         if (positionSize < minPositionSize) {
           logger.info(
-            `🔧 ${target.code}: positionSize=$${positionSize.toFixed(2)} < $${minPositionSize.toFixed(0)}(10%) → BREAK (sizing=${sizingMult} cash=$${cash.toFixed(0)})`,
+            `🔧 ${target.code}: positionSize=$${positionSize.toFixed(2)} < $${minPositionSize.toFixed(0)}(10%) → SKIP (sizing=${sizingMult} cash=$${cash.toFixed(0)})`,
             { component: 'OVERSEAS' },
           );
-          break;
+          continue; // v10.8: break→continue (고가 종목 스킵 후 저가 종목 평가 계속)
         }
 
         const targetWatchItem = GLOBAL_WATCHLIST.find((w) => w.code === target.code);
@@ -1486,15 +1495,23 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean }): Promise<voi
     extractTradingPatterns().catch(() => {});
 
     // ── 매도 후 빠른 재투자: 현금 해방 시 30초 후 재스캔 ──
-    if (sellOrders.length > 0 && finalHoldings.size < MAX_POSITIONS && cash >= portfolioValue * 0.15) {
+    // v10.8: shutdown 체크 + 재귀 방지 (rescan에서 또 매도→또 rescan 무한루프 차단)
+    if (
+      sellOrders.length > 0 &&
+      finalHoldings.size < MAX_POSITIONS &&
+      cash >= portfolioValue * 0.15 &&
+      !s._shuttingDown &&
+      !_opts?.isRescan
+    ) {
       const rescanMode = isPaper();
       logger.info(
         `🔄 매도 ${sellOrders.length}건 완료 → 30초 후 재스캔 (현금 $${cash.toFixed(0)} 재투자, ${rescanMode ? 'PAPER' : 'LIVE'})`,
         { component: 'OVERSEAS' },
       );
       setTimeout(() => {
+        if (s._shuttingDown) return;
         runWithMode(rescanMode, () =>
-          runOverseasJob({ isPaper: rescanMode }).catch((e) =>
+          runOverseasJob({ isPaper: rescanMode, isRescan: true }).catch((e) =>
             logger.error(`재스캔 실패: ${e}`, { component: 'OVERSEAS' }),
           ),
         );

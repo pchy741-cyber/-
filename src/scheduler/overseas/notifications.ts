@@ -78,7 +78,11 @@ export async function sendBuyRecommendations(ctx: ExtendedAlertContext): Promise
     }),
   ];
   if (holdingSells.length > 0) alertLines.push('', '📋 *보유종목 현황*', ...holdingSells);
-  const holdVal = Array.from(updatedHoldings.values()).reduce((s, h) => s + h.qty * h.avgPrice, 0);
+  // v10.8: 시장가 기준 (원가 기준 → dynMaxPos 왜곡 방지)
+  const holdVal = Array.from(updatedHoldings.entries()).reduce((s, [code, h]) => {
+    const tech = techResults.find((t: any) => t.code === code);
+    return s + h.qty * (tech?.price?.currentPrice ?? h.avgPrice);
+  }, 0);
   const dynMaxPos = getOverseasDynamic(cash + holdVal).maxPositions;
   alertLines.push(
     '',

@@ -333,9 +333,10 @@ export async function checkDipBuyFills(isPaper = true): Promise<string[]> {
     }
 
     // 장 종료 시(06:00 KST) 미체결 자동 취소
+    // v10.8: UTC+9 KST 기준으로 수정 (서버 타임존 의존 제거)
     const now = new Date();
-    const hour = now.getHours();
-    if (hour >= 6 && hour < 22) {
+    const kstHour = (now.getUTCHours() + 9) % 24;
+    if (kstHour >= 6 && kstHour < 22) {
       // 미장 종료 후 → 미체결 딥바이 전부 취소
       if (remaining.length > 0) {
         await setOverseasState(key, '');

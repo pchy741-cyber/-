@@ -139,8 +139,8 @@ export function calcPositionSize(params: SizingParams): SizingResult {
       : kellyResult.sampleCount >= 10
         ? Math.max(kellyResult.halfKelly, PHI.MINOR) // Kelly 롤링, 바닥 14.6%
         : target.isMomentum && target.score >= 40
-          ? PHI.MAJOR
-          : PHI.MAJOR; // 38.2% 기본
+          ? PHI.MAJOR // 38.2% 모멘텀 강세
+          : PHI.MEDIUM; // v10.8: 23.6% 기본 (기존 dead code — 모멘텀 비차별 수정)
 
   // Kelly 캡: 소액은 61.8%, 일반은 38.2%
   const kellyCap = isSmallAccount ? PHI.MAX : PHI.MAJOR;

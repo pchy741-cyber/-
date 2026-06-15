@@ -141,6 +141,14 @@ export async function reviewCompletedTrade(params: {
       if (Date.now() - v > REVIEW_COOLDOWN_MS) _reviewCooldown.delete(k);
     }
 
+    // v10.8: 최근 50건만 유지, 나머지 정리 (DB 무한 팽창 방지)
+    getPool()
+      .query(
+        `DELETE FROM overseas_state WHERE key LIKE 'trade_review_%'
+         AND key NOT IN (SELECT key FROM overseas_state WHERE key LIKE 'trade_review_%' ORDER BY key DESC LIMIT 50)`,
+      )
+      .catch(() => {});
+
     logger.info(
       `[TradeReview] ${code} ${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(1)}% → "${lesson}" (confAdj=${sectorConfAdj > 0 ? '+' : ''}${sectorConfAdj.toFixed(2)})`,
       { component: 'OVERSEAS' },

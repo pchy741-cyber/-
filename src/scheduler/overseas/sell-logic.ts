@@ -19,7 +19,7 @@ import {
 } from './risk-intelligence.js';
 import { checkHoldingPriceShock } from './session-strategy.js';
 import { isUSMarketLastNMinutes } from './session.js';
-import { cleanupPositionState, getMaxPrice, setMaxPrice, updateTradeState } from './state.js';
+import { cleanupPositionState, getMaxPrice, setMaxPrice, updateHoldingTpSl, updateTradeState } from './state.js';
 import { getTunerOverrides } from './trade-tuner.js';
 import { GLOBAL_WATCHLIST } from './watchlist.js';
 
@@ -188,8 +188,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     } else {
       stopLossPct = -dyn.slPct; // slPct는 절댓값(양수) → 비교용 음수로 변환
     }
-    // DB 동기화 (대시보드 표시용)
-    const { updateHoldingTpSl } = await import('./state.js');
+    // DB 동기화 (대시보드 표시용) — v10.8: 루프 밖 static import 사용
     updateHoldingTpSl(code, hardTpPct, stopLossPct, paperMode).catch(() => {});
     const dynamicTrailDrop = calcDynamicTrailDrop({
       sector,
