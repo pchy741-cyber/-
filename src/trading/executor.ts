@@ -38,6 +38,9 @@ export class TradeExecutor {
   private readonly _recentOrderKeys = new Set<string>();
   // 🔒 청산 실패 카운터: 연속 실패 시 무한 루프 방지 (key: "mode-stockCode")
   private readonly _closeFailCount = new Map<string, number>();
+  // v9: 진행 중 매수 카운터 — 포지션 한도 경쟁조건 방지
+  // 체크 시 DB 포지션 + 진행 중 매수 수를 합산하여 한도 검사
+  private _pendingBuyCount = 0;
 
   private _minuteKey(stockCode: string, action: string): string {
     const now = new Date();
@@ -188,21 +191,25 @@ export class TradeExecutor {
       return;
     }
 
-    // 동시 포지션 한도 확인 (신규 매수만 해당 — 물타기/청산은 제외)
+    // v9: 동시 포지션 한도 확인 — _pendingBuyCount 포함하여 race condition 방지
+    // 이전: DB 체인만 세면 동시 매수 시 8/8→9/8 초과 발생
     const allOpenChains = await getOpenChains();
-    if (allOpenChains.length >= config.risk.maxConcurrentPositions) {
+    const effectiveCount = allOpenChains.length + this._pendingBuyCount;
+    if (effectiveCount >= config.risk.maxConcurrentPositions) {
       releaseBuyIntent(stockCode);
       logger.warn(
-        `⛔ 동시 포지션 한도 초과 (${allOpenChains.length}/${config.risk.maxConcurrentPositions}) → 신규 매수 차단: ${stockCode}`,
+        `⛔ 동시 포지션 한도 초과 (${effectiveCount}/${config.risk.maxConcurrentPositions}, pending=${this._pendingBuyCount}) → 신규 매수 차단: ${stockCode}`,
         { component: 'EXECUTOR' },
       );
       await logSystem(
         'WARN',
         'EXECUTOR',
-        `포지션 한도 초과: ${allOpenChains.length}/${config.risk.maxConcurrentPositions} — ${stockCode} 신규 매수 차단`,
+        `포지션 한도 초과: ${effectiveCount}/${config.risk.maxConcurrentPositions} — ${stockCode} 신규 매수 차단`,
       );
       return;
     }
+    this._pendingBuyCount++; // 예약 슬롯 확보
+    try { // v9: 모든 exit path에서 _pendingBuyCount 감소 보장
 
     // 가격 우선순위: limit_price(파이프라인) → 메모리캐시 → Redis캐시 → KIS API
     let estimatedPrice = limitPrice ?? 0;
@@ -490,6 +497,8 @@ export class TradeExecutor {
         logger.warn(`알림 발송 오류 (BUY): ${err}`, { component: 'EXECUTOR' }),
       );
     }
+
+    } finally { this._pendingBuyCount = Math.max(0, this._pendingBuyCount - 1); } // v9: 슬롯 해제
   }
 
   /**
