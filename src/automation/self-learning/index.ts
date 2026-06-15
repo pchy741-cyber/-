@@ -269,7 +269,7 @@ export async function getLearnedInsightsForPrompt(): Promise<string> {
   }
 
   const { rows: data } = await getPool().query(
-    'SELECT * FROM learned_insights WHERE is_paper = $1 ORDER BY confidence DESC, sample_count DESC LIMIT 15',
+    'SELECT * FROM learned_insights WHERE is_paper = $1 AND COALESCE(is_dismissed, false) IS NOT TRUE ORDER BY confidence DESC, sample_count DESC LIMIT 15',
     [isPaper],
   );
 
@@ -490,7 +490,7 @@ export async function applyInsightById(insightId: string): Promise<{ ok: boolean
 
 export async function getInsightsForDashboard(): Promise<LearnedInsight[]> {
   const { rows } = await getPool().query(
-    `SELECT * FROM learned_insights ORDER BY confidence DESC, sample_count DESC LIMIT 20`,
+    `SELECT * FROM learned_insights WHERE COALESCE(is_dismissed, false) IS NOT TRUE ORDER BY confidence DESC, sample_count DESC LIMIT 20`,
   );
   return rows.map((r) => ({
     id: r.id,
@@ -589,13 +589,26 @@ export async function runDailyLearning(): Promise<void> {
       return;
     }
     const isPaper = getCtxIsPaper();
+    // v10.8.2: dismissed 인사이트 재생성 방지 — category 기반 안정적 키
+    let dismissedCategories = new Set<string>();
+    try {
+      const { rows: dRows } = await getPool().query(
+        `SELECT category FROM learned_insights WHERE is_dismissed = true AND is_paper = $1`,
+        [isPaper],
+      );
+      dismissedCategories = new Set(dRows.map((r: any) => r.category));
+    } catch { /* is_dismissed 컬럼 미존재 시 무시 */ }
+
     for (const ins of insights) {
+      // dismissed 카테고리 인사이트 재삽입 차단
+      if (dismissedCategories.has(ins.category)) continue;
       await getPool()
         .query(
           `INSERT INTO learned_insights (category, insight, confidence, sample_count, details, recommendation, param_change, is_paper, last_updated)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
          ON CONFLICT (category, insight, is_paper)
-         DO UPDATE SET confidence=$3, sample_count=$4, details=$5, recommendation=$6, param_change=$7, last_updated=NOW()`,
+         DO UPDATE SET confidence=$3, sample_count=$4, details=$5, recommendation=$6, param_change=$7, last_updated=NOW()
+         WHERE learned_insights.is_dismissed IS NOT TRUE`,
           [
             ins.category,
             ins.insight,

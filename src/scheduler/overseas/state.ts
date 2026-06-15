@@ -166,7 +166,7 @@ export async function ensureOverseasTable(): Promise<void> {
 
     // ── 1회성: 통합증거금 전환 — 기존 paper 주문 아카이브 ──
     try {
-      const { rows: seedMig } = await getPool().query("SELECT value FROM overseas_state WHERE key LIKE '_seed_%m_v1'");
+      const { rows: seedMig } = await getPool().query("SELECT value FROM overseas_state WHERE key = '_seed_unified_v1'");
       if (seedMig.length === 0) {
         const { rowCount } = await getPool().query(
           `UPDATE orders SET trading_mode = 'p_arch'

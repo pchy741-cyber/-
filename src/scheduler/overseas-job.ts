@@ -1256,9 +1256,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         const isHighBetaEntry = SECTOR_CLASS.HIGH_BETA.includes(targetWatchItem?.sector ?? '');
         const isDefenseEntry = SECTOR_CLASS.DEFENSE.includes(targetWatchItem?.sector ?? '');
         const slDecimal = isHighBetaEntry ? 0.08 : isDefenseEntry ? 0.04 : 0.05;
-        // 리스크캡: 소액(<$2000)은 5%, 일반은 Paper 2.5% / Live 2%
-        // $521 × 2% = $10.42 → RTX $184 × 5% SL = $9.22 → 1주만 허용
-        const riskPct = portfolioValue < 2000 ? 0.05 : isPaper() ? 0.025 : 0.02;
+        // v10.8.2: 마이크로(<$500) 10%, 소액(<$2000) 5%, 일반 Paper 2.5% / Live 2%
+        const riskPct = portfolioValue < 500 ? 0.10 : portfolioValue < 2000 ? 0.05 : isPaper() ? 0.025 : 0.02;
         const maxRiskUSD = portfolioValue * riskPct;
         const qtyBy1PctRule =
           maxRiskUSD > 0 ? Math.floor(maxRiskUSD / (target.price.currentPrice * slDecimal)) : Infinity;
@@ -1268,14 +1267,22 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         if (qtyBySizing === 0 && positionSize >= target.price.currentPrice * 0.99) {
           qtyBySizing = 1; // 1주 가격 ±1% 내면 수수료 무시하고 매수
         }
+        // v10.8.2: 마이크로 계좌 — 현금으로 1주 살 수 있으면 최소 1주 보장
+        if (qtyBySizing === 0 && portfolioValue < 500 && target.price.currentPrice <= cash * 0.95) {
+          qtyBySizing = 1;
+        }
         // 집중캡 사전 체크: 소액은 50%, 일반은 25% (매수→즉시매도 루프 방어)
         const existingHolding = updatedHoldings.get(target.code);
         const existingQty = existingHolding?.qty ?? 0;
         const CONC_CAP_PCT = portfolioValue < 2000 ? 0.50 : 0.25;
-        const maxQtyByConc =
+        let maxQtyByConc =
           portfolioValue > 0
             ? Math.max(0, Math.floor((portfolioValue * CONC_CAP_PCT) / priceWithFee) - existingQty)
             : Infinity;
+        // v10.8.2: 마이크로 계좌 — 집중캡 계산상 0이지만 현금으로 1주 가능하면 허용
+        if (maxQtyByConc === 0 && portfolioValue < 500 && existingQty === 0 && target.price.currentPrice <= cash * 0.95) {
+          maxQtyByConc = 1;
+        }
         const fullQty = Math.min(qtyBySizing, qtyBy1PctRule > 0 ? qtyBy1PctRule : qtyBySizing, maxQtyByConc);
 
         if (fullQty <= 0) {
