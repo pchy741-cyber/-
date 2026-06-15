@@ -411,12 +411,26 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
     });
 
     const ALLOWED_PARAM_FIELDS = ['stop_loss_pct', 'take_profit_pct', 'buy_threshold', 'mode'] as const;
+    // 안전 범위: 비정상 값 자동적용 방지 (gambler's ruin 방어)
+    const PARAM_RANGES: Record<string, { min: number; max: number }> = {
+      stop_loss_pct: { min: -30, max: -1 }, // -30% ~ -1%
+      take_profit_pct: { min: 0.5, max: 50 }, // +0.5% ~ +50%
+      buy_threshold: { min: 0, max: 100 },
+    };
     const applied: string[] = [];
     for (const insight of sorted.slice(0, 5)) {
       const { field, value } = insight.paramChange!;
       if (!(ALLOWED_PARAM_FIELDS as readonly string[]).includes(field)) {
         logger.warn(`🚫 허용되지 않은 필드 업데이트 차단: ${field}`, { component: 'LEARN' });
         continue;
+      }
+      // 값 범위 검증
+      const range = PARAM_RANGES[field];
+      if (range && typeof value === 'number') {
+        if (value < range.min || value > range.max) {
+          logger.warn(`🚫 값 범위 초과 차단: ${field}=${value} (허용: ${range.min}~${range.max})`, { component: 'LEARN' });
+          continue;
+        }
       }
       const oldVal = current[field];
       if (oldVal === value) continue;
@@ -463,6 +477,17 @@ export async function applyInsightById(insightId: string): Promise<{ ok: boolean
     const { field, value } = insight.param_change as InsightParamChange;
     const ALLOWED_PARAM_FIELDS = ['stop_loss_pct', 'take_profit_pct', 'buy_threshold', 'mode'];
     if (!ALLOWED_PARAM_FIELDS.includes(field)) return { ok: false, message: `허용되지 않은 필드: ${field}` };
+
+    // 값 범위 검증
+    const PARAM_RANGES: Record<string, { min: number; max: number }> = {
+      stop_loss_pct: { min: -30, max: -1 },
+      take_profit_pct: { min: 0.5, max: 50 },
+      buy_threshold: { min: 0, max: 100 },
+    };
+    const range = PARAM_RANGES[field];
+    if (range && typeof value === 'number' && (value < range.min || value > range.max)) {
+      return { ok: false, message: `값 범위 초과: ${field}=${value} (허용: ${range.min}~${range.max})` };
+    }
 
     const targetIsPaper = insight.is_paper;
     const { rows: stratRows } = await getPool().query(

@@ -429,6 +429,25 @@ export async function reconcileCashWithKIS(): Promise<void> {
         .catch(() => {});
     }
 
+    // 통합증거금 전체 계좌 가치 저장 (해외/국내 비중 동적 할당용)
+    try {
+      const bal = await getAccountBalance(true);
+      // netAsset = 순자산 (예수금+보유주식-대출 등), totalEvalAmount = 국내 보유주식 평가
+      const nass = bal.netAsset ?? 0;
+      const domEval = bal.totalEvalAmount ?? 0;
+      // 총 계좌 가치 = 주문가능(cash) + 국내 보유주식(이미 netAsset에 포함된 경우도 있으나 보수적 max 사용)
+      const totalAccountKrw = Math.max(nass, (bal.orderableCash ?? 0) + domEval);
+      if (totalAccountKrw > 0) {
+        await getPool()
+          .query(
+            `INSERT INTO overseas_state (key, value, updated_at) VALUES ('total_account_krw', $1, NOW())
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+            [String(totalAccountKrw)],
+          )
+          .catch(() => {});
+      }
+    } catch { /* 국내 잔고 조회 실패 시 무시 */ }
+
     const diff = Math.abs(kisKrw - dbKrw);
     // ₩5,000 이상 또는 1% 이상 차이 시 보정
     if (diff < 5000 || (dbKrw > 0 && diff / dbKrw < 0.01)) return;

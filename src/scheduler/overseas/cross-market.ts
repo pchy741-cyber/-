@@ -31,9 +31,7 @@ const CROSS_PAIRS: CrossMarketPair[] = [
   { asiaCode: '6857', asiaExchange: 'TSE', usCode: 'AMD', correlation: 0.65 },
   { asiaCode: '8035', asiaExchange: 'TSE', usCode: 'AMAT', correlation: 0.7 },
   { asiaCode: '6861', asiaExchange: 'TSE', usCode: 'KLAC', correlation: 0.65 },
-  // 대만 TSMC → 미국 반도체
-  { asiaCode: '2330', asiaExchange: 'TPE', usCode: 'TSM', correlation: 0.9 },
-  { asiaCode: '2330', asiaExchange: 'TPE', usCode: 'NVDA', correlation: 0.6 },
+  // 대만 TSMC — KIS API 미지원 (TPE 거래소 코드 없음), TSE 도쿄일렉트론으로 대체
 ];
 
 // ── 캐시 (1시간 — 아시아장 종료 후 변하지 않으므로) ──
