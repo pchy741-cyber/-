@@ -17,6 +17,7 @@ import { getCurrentPrice, getDailyChart } from '../kis/market.js';
 import { cancelOrder, getOrderFills, type OrderResult, placeOrder } from '../kis/order.js';
 import { notifyBuy, notifySell } from '../notifications/web-push.js';
 import { PARK_STOCK_CODE } from '../ai/track-b/defense-park.js';
+import { recordSellForCooldown } from '../ai/track-b/pipeline.js';
 import { riskEngine } from '../risk/engine.js';
 import { reportError, reportSuccess } from '../risk/kill-switch.js';
 import { paperTradeOrder } from '../risk/paper.js';
@@ -885,6 +886,7 @@ export class TradeExecutor {
       const pnlPct = avgBuy > 0 ? ((fill.filledPrice - avgBuy) / avgBuy) * 100 : 0;
       if (soldQty >= chain.total_quantity) {
         await chainManager.closeChain(chain.id, fill.filledPrice, chain, closeReason);
+        recordSellForCooldown(stockCode); // v10.4: 인메모리 재진입 쿨다운
       } else {
         await chainManager.partialProfit(chain.id, soldQty, fill.filledPrice, chain);
       }

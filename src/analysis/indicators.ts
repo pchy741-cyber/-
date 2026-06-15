@@ -171,7 +171,7 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   const atrValues = atr(candlesAsc, 14);
   const atr14 = atrValues[atrValues.length - 1] ?? 0;
   const atrPct = current > 0 ? (atr14 / current) * 100 : 0;
-  const dynamicStopLossPct = Math.max(-8, Math.min(-1, -(atrPct * 2)));
+  const dynamicStopLossPct = Math.max(-8, Math.min(-1.5, -(atrPct * 1.5))); // v10.4: ATR×2→1.5 (노이즈 SL 방지)
 
   const adxValues = adx(candlesAsc, 14);
   const adx14 = adxValues.length > 0 ? adxValues[adxValues.length - 1] : 25;

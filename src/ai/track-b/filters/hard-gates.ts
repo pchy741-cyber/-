@@ -104,11 +104,12 @@ export function isHardBlocked(input: HardGateInput): boolean {
 
   // ── 잡주/저품질 종목 필터 (3중 게이트) ──
 
-  // 1) 저가주: Live 2,000원 미만, Paper 500원 미만 (ETF 제외)
+  // 1) 저가주: Live 5,000원 미만, Paper 1,000원 미만 (ETF 제외)
+  // v10.4: Live 2000→5000, Paper 500→1000 (저가 잡주 거래 방지)
   const ETF_BRANDS = ['KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'KOSEF'];
   const isETF = ETF_BRANDS.some((b) => name.toUpperCase().includes(b));
   const earlyPrice = livePrices.get(code);
-  const junkPriceThreshold = isPaper ? 500 : 2000;
+  const junkPriceThreshold = isPaper ? 1000 : 5000;
   if (earlyPrice && earlyPrice.currentPrice > 0 && earlyPrice.currentPrice < junkPriceThreshold && !isETF) {
     logger.info(`  🗑️ ${code}(${name}): 저가주(${earlyPrice.currentPrice}원 < ${junkPriceThreshold}) — 잡주 필터`, {
       component: 'TRACK_B',

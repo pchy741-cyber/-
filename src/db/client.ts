@@ -694,57 +694,21 @@ export async function getRecentManuallySoldStocks(hoursBack = 24): Promise<Set<s
   }
 }
 
-/** 최근 매도(CLOSED) 종목 쿨다운 — 손절/수동매도만 차단, TP 익절(+3%↑)은 즉시 재진입 허용
- *  강화 (2026-06-12 #11): 종목 30일 승률 70%+ → 쿨다운 5분으로 자동 단축 (모멘텀 놓치지 않음)
+/** 최근 매도(CLOSED) 종목 쿨다운 — v10.4: 모든 매도에 동일 쿨다운 적용 (churning 방지)
+ *  기존 익절(+3%↑) 면제, 승률 70%+ 5분 단축 제거 → 반복 매매 = 적자 주범
  */
-export async function getRecentlySoldStocks(hoursBack = 2): Promise<Set<string>> {
+export async function getRecentlySoldStocks(hoursBack = 4): Promise<Set<string>> {
   if (useMemory) return new Set();
   try {
-    // 단일 CTE 쿼리: 최근 매도 + 30일 승률 동시 계산
     const { rows } = await queryWithRetry(
-      `WITH recent_sold AS (
-         SELECT DISTINCT stock_code, closed_at
-         FROM transaction_chains
-         WHERE status = 'CLOSED'
-           AND is_paper = $1
-           AND closed_at > NOW() - ($2 || ' hours')::interval
-           AND (pnl_pct IS NULL OR pnl_pct < 3.0)
-       ),
-       win_rates AS (
-         SELECT tc.stock_code,
-                COUNT(*) FILTER (WHERE tc.pnl_pct > 0) AS wins,
-                COUNT(*) AS total
-         FROM transaction_chains tc
-         INNER JOIN (SELECT DISTINCT stock_code FROM recent_sold) rs ON tc.stock_code = rs.stock_code
-         WHERE tc.is_paper = $1 AND tc.status = 'CLOSED'
-           AND tc.closed_at > NOW() - INTERVAL '30 days'
-         GROUP BY tc.stock_code
-       )
-       SELECT rs.stock_code, rs.closed_at,
-              COALESCE(wr.wins, 0) AS wins, COALESCE(wr.total, 0) AS total
-       FROM recent_sold rs
-       LEFT JOIN win_rates wr ON rs.stock_code = wr.stock_code`,
+      `SELECT DISTINCT stock_code
+       FROM transaction_chains
+       WHERE status = 'CLOSED'
+         AND is_paper = $1
+         AND closed_at > NOW() - ($2 || ' hours')::interval`,
       [getCtxIsPaper(), hoursBack],
     );
-    if (rows.length === 0) return new Set();
-
-    // 쿨다운 적용: 승률 70%+ 종목은 5분 쿨다운만 (즉시 재진입에 가까움)
-    const result = new Set<string>();
-    const nowMs = Date.now();
-    for (const row of rows) {
-      const code = row.stock_code as string;
-      const closedMs = new Date(row.closed_at).getTime();
-      const minutesSince = (nowMs - closedMs) / 60_000;
-      const total = Number(row.total ?? 0);
-      const wins = Number(row.wins ?? 0);
-      const wr = total >= 5 ? wins / total : 0;
-      const shortCooldown = wr >= 0.7;
-      const cooldownMin = shortCooldown ? 5 : hoursBack * 60;
-      if (minutesSince < cooldownMin) {
-        result.add(code);
-      }
-    }
-    return result;
+    return new Set(rows.map((r: { stock_code: string }) => r.stock_code));
   } catch {
     return new Set();
   }

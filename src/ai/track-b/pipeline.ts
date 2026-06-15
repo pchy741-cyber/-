@@ -69,6 +69,29 @@ const _lastDartRefreshAt = new Map<string, number>();
 // 고확신 눌림목 텔레그램 알림 쿨다운 (30분/종목) — paper/live 모드별 분리
 const _alertedHighConviction = new Map<string, Map<string, number>>();
 
+// v10.4: 인메모리 매도 쿨다운 — DB 반영 전에도 재매수 차단 (churning 방지)
+const _recentSellTimestamps = new Map<string, number>(); // stock_code → epoch ms
+const MEMORY_COOLDOWN_MS = 4 * 60 * 60 * 1000; // 4시간
+
+/** 매도 실행 시 호출 — 인메모리 쿨다운 기록 */
+export function recordSellForCooldown(stockCode: string): void {
+  _recentSellTimestamps.set(stockCode, Date.now());
+}
+
+/** 인메모리 쿨다운 중인 종목 Set 반환 */
+function getMemoryCooldownCodes(): Set<string> {
+  const now = Date.now();
+  const result = new Set<string>();
+  for (const [code, ts] of _recentSellTimestamps) {
+    if (now - ts < MEMORY_COOLDOWN_MS) {
+      result.add(code);
+    } else {
+      _recentSellTimestamps.delete(code); // 만료 정리
+    }
+  }
+  return result;
+}
+
 function getAlertMap(): Map<string, number> {
   const mode = getCtxIsPaper() ? 'paper' : 'live';
   if (!_alertedHighConviction.has(mode)) _alertedHighConviction.set(mode, new Map());
@@ -149,6 +172,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       getLossHistory(),                 // 90일 손실 이력 → 스마트 재진입
     ]);
     const balance = balanceRaw as any;
+    // v10.4: 인메모리 쿨다운 병합 (DB 반영 전 매도도 차단)
+    for (const code of getMemoryCooldownCodes()) recentlySoldCodes.add(code);
     // 인버스 ETF는 쿨다운 예외 — 하락장 지속 시 즉시 재진입 가능해야 함
     for (const code of INVERSE_ETF_CODES) recentlySoldCodes.delete(code);
     if (todayRepeatStopCodes.size > 0) {
@@ -174,7 +199,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const dbMode = (strategy?.mode ?? 'SWING') as StrategyMode;
     // ── 장초반 09:00-09:30 신규 매수 차단 (매도는 허용) ──
     // SCALPING 모드 + 연습모드는 예외 (CEO가 명시적으로 스캘핑 지시한 경우)
-    const isOpeningVolatility = kstH === 9 && kstM < 30 && !getCtxIsPaper() && dbMode !== 'SCALPING';
+    const isOpeningVolatility = kstH === 9 && kstM < 40 && !getCtxIsPaper() && dbMode !== 'SCALPING'; // v10.4: 09:30→09:40 (장초반 노이즈 확대)
     // SNIPER/DEFENSE는 개장벨에도 모드 유지 (SNIPER는 CEO가 명시적으로 설정한 집중 전략)
     // SCALPING 자동 활성화 비활성화 (2026-06 성과 검토: 승률 25.7%, profit factor 0.98 → 실질 손실)
     const mode: StrategyMode = dbMode;
@@ -1181,9 +1206,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       }
     }
 
-    // ── Paper 모드: AI 상위픽 무조건 자동매수 (데이터 수집 + 점수 정확도 검증) ────
-    // 매 사이클 AI 1위 종목을 모의 매수 → score vs 실제 수익률 상관관계 일지/전략랩 데이터 축적
-    // 데이터스누핑 방지: is_paper=true + trigger_source='PAPER_AUTO_TOP' 태깅 → live 전략 분리
+    // ── Paper 모드: AI 상위픽 자동매수 (데이터 수집 + 점수 정확도 검증) ────
+    // v10.4: recentlySoldCodes 쿨다운 체크 추가 (Paper도 churning 방지)
     if (ctxIsPaper && finalScores.length > 0 && orderableCash > 10000) {
       try {
         const openCodes = new Set(openChains.map((c) => c.stock_code));
@@ -1194,7 +1218,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         );
         const topPick = [...finalScores]
           .sort((a, b) => b.score - a.score)
-          .find((s) => !openCodes.has(s.stock_code) && !decidedBuyCodes.has(s.stock_code));
+          .find((s) =>
+            !openCodes.has(s.stock_code) &&
+            !decidedBuyCodes.has(s.stock_code) &&
+            !recentlySoldCodes.has(s.stock_code),
+          );
         if (topPick) {
           const priceInfo = livePrices.get(topPick.stock_code);
           const curPrice = priceInfo?.currentPrice ?? 0;
