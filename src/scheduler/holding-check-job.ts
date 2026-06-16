@@ -1,5 +1,6 @@
 import { INVERSE_ETF_CODES } from '../automation/crash-profit.js';
 import { STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { getActiveStrategy, getOpenChains, getPool } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import { getCurrentPrice } from '../kis/market.js';
@@ -41,9 +42,10 @@ function getDynamicTrailingDrop(peakPnlPct: number): number {
  * 실행 시점: 장중 매 3분마다 Track B와 함께
  */
 export async function runHoldingCheckJob(): Promise<void> {
+  const modeTag = getCtxIsPaper() ? '[PAPER]' : '[LIVE]';
   // 외부 매도 감지 (KIS 앱 직접 매도 등) — 유령 체인 정리
   await reconcileExternalSells().catch((e) =>
-    logger.warn(`외부 매도 감지 실패 (무시): ${e}`, { component: 'HOLDING_CHECK' }),
+    logger.warn(`${modeTag} 외부 매도 감지 실패 (무시): ${e}`, { component: 'HOLDING_CHECK' }),
   );
 
   try {
@@ -128,7 +130,7 @@ export async function runHoldingCheckJob(): Promise<void> {
       // ── 3영업일 하드 리밋: -1.5% 이상 손실 중이면 강제 청산 (단순 횡보는 더 기다림) ──
       if (businessDays >= 3 && pnlPct <= -1.5) {
         logger.warn(
-          `⏰ ${chain.stock_code}: ${businessDays}영업일 보유 + 손실 ${pnlPct.toFixed(2)}% → 3일 하드 리밋 강제 청산`,
+          `${modeTag} ⏰ ${chain.stock_code}: ${businessDays}영업일 보유 + 손실 ${pnlPct.toFixed(2)}% → 3일 하드 리밋 강제 청산`,
           { component: 'HOLDING_CHECK' },
         );
         forceCloseDecisions.push({
@@ -147,7 +149,7 @@ export async function runHoldingCheckJob(): Promise<void> {
       const stagnantReason = checkStagnation(businessDays, pnlPct, maxDays, params.stopLossPct);
       if (stagnantReason) {
         logger.warn(
-          `🥱 정체 청산: ${chain.stock_code} ${businessDays}일 보유, ${pnlPct.toFixed(2)}% — ${stagnantReason}`,
+          `${modeTag} 🥱 정체 청산: ${chain.stock_code} ${businessDays}일 보유, ${pnlPct.toFixed(2)}% — ${stagnantReason}`,
           { component: 'HOLDING_CHECK' },
         );
         forceCloseDecisions.push({
@@ -172,7 +174,7 @@ export async function runHoldingCheckJob(): Promise<void> {
         continue;
       }
 
-      logger.warn(`⏰ ${chain.stock_code}: ${businessDays}일 보유, 수익 ${pnlPct.toFixed(2)}% → 시간 손절`, {
+      logger.warn(`${modeTag} ⏰ ${chain.stock_code}: ${businessDays}일 보유, 수익 ${pnlPct.toFixed(2)}% → 시간 손절`, {
         component: 'HOLDING_CHECK',
       });
       forceCloseDecisions.push({

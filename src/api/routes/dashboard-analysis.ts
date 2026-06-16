@@ -604,8 +604,11 @@ dashboardAnalysisRoutes.post('/release-defense-park', async (c) => {
 
     let syncMsg = '';
     try {
-      const balanceFn = resolveRequestMode(c) ? getPaperBalance : getAccountBalance;
-      const [balance, openChains] = await Promise.all([balanceFn(), getOpenChains()]);
+      const isPaper = resolveRequestMode(c);
+      const [balance, openChains] = await Promise.all([
+        isPaper ? getPaperBalance() : getAccountBalance(true),
+        getOpenChains(isPaper),
+      ]);
       const chainedCodes = new Set(openChains.map((ch: any) => ch.stock_code));
       const orphans = (balance.positions ?? [])
         .map((p: any) => ({

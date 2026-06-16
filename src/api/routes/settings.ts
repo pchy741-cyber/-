@@ -79,7 +79,7 @@ settingsRoutes.post('/kill-switch/deactivate', async (c) => {
             `DELETE FROM portfolio_snapshots WHERE snapshot_at >= $1 AND is_paper = $2`,
             [kstMonth.toISOString(), isPaper],
           );
-          const balance = isPaper ? await getPaperBalance() : await getAccountBalance();
+          const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
           const totalValue = balance.totalDeposit + balance.totalEvalAmount;
           await insertSnapshot({
             total_value: totalValue,

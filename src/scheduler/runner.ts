@@ -135,17 +135,8 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 12:30 — Track A 점심 재분석 (장중 흐름 반영, 유일한 장중 AI 분석)
-  // ⚡ 비용 최적화: 10:00/14:00 제거 → 07:30 + 12:30 + 18:00 = 3회/일
-  //    Track B가 캐시된 점수로 3분 간격 실시간 대응하므로 장중 재분석 1회면 충분
-  cron.schedule(
-    SCHEDULE.TRACK_A_CRON[2],
-    () => {
-      logger.info('⏰ Track A (점심 재분석)', { component: 'SCHEDULER' });
-      withTimeout('Track A 점심', () => runTrackAJob(), 300_000);
-    },
-    { timezone: MARKET.TIMEZONE },
-  );
+  // 장중 Track A 재분석 제거 — 장오픈 직전(07:30 + 08:55 워밍업)에만 AI 분석,
+  // 나머지 장중에는 캐시된 점수로 Track B 루프만 실행 (o3 비용 절감)
 
   // 📊 크로스마켓 로테이션 — 하루 3회 (08:00 장전, 12:00 장중, 22:00 미국장 전)
   cron.schedule(
@@ -672,11 +663,13 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 15:40 — 일일 자동 리포트 (Telegram) + 체결 캐시 정리
+  // 15:40 — 일일 자동 리포트 (Telegram) + 체결 캐시 정리 (paper + live 양쪽)
   cron.schedule(
     '40 15 * * 1-5',
     () => {
-      generateDailyReport().catch((e) => logger.error(`리포트 실패: ${e}`, { component: 'SCHEDULER' }));
+      runDomesticDual('일일리포트', generateDailyReport).catch((e) =>
+        logger.error(`리포트 실패: ${e}`, { component: 'SCHEDULER' }),
+      );
       import('../trading/executor.js')
         .then((m) => m.tradeExecutor.clearConfirmedOrders())
         .catch((e) => logger.warn(`체결캐시 클리어 실패: ${e}`, { component: 'SCHEDULER' }));

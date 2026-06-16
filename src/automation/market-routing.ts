@@ -153,7 +153,9 @@ async function parkCashInSofr(): Promise<boolean> {
       return true;
     }
 
-    const balance = await getAccountBalance();
+    const balance = isPaper
+      ? await (await import('../risk/paper-balance.js')).getPaperBalance()
+      : await getAccountBalance(true);
     const cash = balance?.orderableCash ?? 0;
     if (cash < 10_000) {
       logger.info(`💰 [${isPaper ? 'PAPER' : 'LIVE'}] 예수금 부족 (${cash.toLocaleString()}원) — SOFR 파킹 스킵`, {

@@ -10,8 +10,8 @@ import { logger } from '../../utils/logger.js';
 import { buildScoringPrompt, type RegimeHint } from '../prompts/track-a-scoring.js';
 
 const COMP = 'TRACK_A_GPT';
-const MODEL = 'gpt-4o-mini'; // 2차 검증용 저비용 모델
-const BATCH_SIZE = 30;
+const MODEL = 'o3'; // Track A 2차 검증 — 고품질 추론
+const BATCH_SIZE = 15; // o3 토큰 절약: 배치 크기 절반
 
 interface WatchlistItem {
   stock_code: string;
@@ -68,8 +68,7 @@ ${chartSummary}
     try {
       const res = await client.chat.completions.create({
         model: MODEL,
-        temperature: 0.2,
-        max_tokens: 4096,
+        max_completion_tokens: 4096, // o3: max_completion_tokens 사용 (temperature 미지원)
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage },

@@ -281,7 +281,12 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
  * 주문 가능 금액 조회
  */
 export async function getOrderableCash(): Promise<number> {
-  const balance = await getAccountBalance();
+  const isPaper = getCtxIsPaper();
+  if (isPaper) {
+    const { getPaperBalance } = await import('../risk/paper-balance.js');
+    return (await getPaperBalance()).orderableCash;
+  }
+  const balance = await getAccountBalance(true);
   return balance.orderableCash;
 }
 
@@ -289,6 +294,12 @@ export async function getOrderableCash(): Promise<number> {
  * 특정 종목 보유 여부 및 수량 확인
  */
 export async function getPositionForStock(stockCode: string): Promise<Position | null> {
-  const balance = await getAccountBalance();
+  const isPaper = getCtxIsPaper();
+  if (isPaper) {
+    const { getPaperBalance } = await import('../risk/paper-balance.js');
+    const balance = await getPaperBalance();
+    return balance.positions.find((p) => p.stockCode === stockCode) ?? null;
+  }
+  const balance = await getAccountBalance(true);
   return balance.positions.find((p) => p.stockCode === stockCode) ?? null;
 }

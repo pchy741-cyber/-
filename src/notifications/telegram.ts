@@ -32,7 +32,10 @@ export function initTelegram(): void {
       return; // 무응답 (봇 존재 자체를 숨김)
     }
     try {
-      const balance = await getAccountBalance();
+      const isPaperMode = config.tradingMode === 'paper';
+      const balance = isPaperMode
+        ? await (await import('../risk/paper-balance.js')).getPaperBalance()
+        : await getAccountBalance(true);
       const ks = getKillSwitchStatusAll();
 
       const msg = [
@@ -89,7 +92,10 @@ export function initTelegram(): void {
       return;
     }
     try {
-      const balance = await getAccountBalance();
+      const isPaperMode = config.tradingMode === 'paper';
+      const balance = isPaperMode
+        ? await (await import('../risk/paper-balance.js')).getPaperBalance()
+        : await getAccountBalance(true);
       if (balance.positions.length === 0) {
         await ctx.reply('📭 보유 종목 없음');
         return;
