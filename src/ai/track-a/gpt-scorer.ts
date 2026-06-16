@@ -10,8 +10,8 @@ import { logger } from '../../utils/logger.js';
 import { buildScoringPrompt, type RegimeHint } from '../prompts/track-a-scoring.js';
 
 const COMP = 'TRACK_A_GPT';
-const MODEL = 'o3'; // Track A 2차 검증 — 고품질 추론
-const BATCH_SIZE = 15; // o3 토큰 절약: 배치 크기 절반
+const MODEL = 'gpt-4o-mini'; // 비용 최적화: o3 대비 10배 저렴, 스코어링 충분
+const BATCH_SIZE = 30; // gpt-4o-mini는 저렴하므로 배치 크기 확대 (API 호출 횟수 절감)
 
 interface WatchlistItem {
   stock_code: string;
@@ -68,7 +68,8 @@ ${chartSummary}
     try {
       const res = await client.chat.completions.create({
         model: MODEL,
-        max_completion_tokens: 4096, // o3: max_completion_tokens 사용 (temperature 미지원)
+        max_tokens: 4096,
+        temperature: 0.3, // 일관된 스코어링 위해 낮은 temperature
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage },
