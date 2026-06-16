@@ -130,9 +130,10 @@ interface SettingsViewProps {
   toast: ToastFn;
   confirm: ConfirmFn;
   onFeatureFlagChange: (key: string, enabled: boolean) => void;
+  viewMode?: 'live' | 'paper';
 }
 
-function SettingsView({ strategy, setStrategy, secrets, killSwitch, toggleKill, toast, confirm, onFeatureFlagChange }: SettingsViewProps) {
+function SettingsView({ strategy, setStrategy, secrets, killSwitch, toggleKill, toast, confirm, onFeatureFlagChange, viewMode = 'live' }: SettingsViewProps) {
   const [nbSources, setNbSources] = useState<NbSource[]>(() => parseNbSources(strategy?.notebooklm_prompt));
 
   // 프롬프트 로컬 상태 — strategy 최초 로드 시 한 번만 초기화
@@ -169,15 +170,15 @@ function SettingsView({ strategy, setStrategy, secrets, killSwitch, toggleKill, 
 
   const setField = async (field: string, val: string | number | boolean) => {
     const body = { ...buildBody(), [field]: val };
-    try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify(body) }); setStrategy(u); toast?.('설정 저장됨', 'ok'); } catch (err: unknown) { toast?.((err instanceof Error && err.message) ? err.message : '설정 저장 실패', 'err'); }
+    try { const u = await api(`/strategy?viewMode=${viewMode}`, { method: 'PUT', body: JSON.stringify(body) }); setStrategy(u); toast?.('설정 저장됨', 'ok'); } catch (err: unknown) { toast?.((err instanceof Error && err.message) ? err.message : '설정 저장 실패', 'err'); }
   };
 
   const saveStrategy = async () => {
-    try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify(buildBody()) }); setStrategy(u); toast?.('프롬프트 저장 완료', 'ok'); } catch (err: unknown) { toast?.((err as Error).message, 'err'); }
+    try { const u = await api(`/strategy?viewMode=${viewMode}`, { method: 'PUT', body: JSON.stringify(buildBody()) }); setStrategy(u); toast?.('프롬프트 저장 완료', 'ok'); } catch (err: unknown) { toast?.((err as Error).message, 'err'); }
   };
 
   const saveStrategyDoc = async () => {
-    try { const u = await api('/strategy', { method: 'PUT', body: JSON.stringify(buildBody()) }); setStrategy(u); toast?.('전략서 저장 완료', 'ok'); } catch (err: unknown) { toast?.((err as Error).message, 'err'); }
+    try { const u = await api(`/strategy?viewMode=${viewMode}`, { method: 'PUT', body: JSON.stringify(buildBody()) }); setStrategy(u); toast?.('전략서 저장 완료', 'ok'); } catch (err: unknown) { toast?.((err as Error).message, 'err'); }
   };
 
   const saveSecrets = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -204,7 +205,7 @@ function SettingsView({ strategy, setStrategy, secrets, killSwitch, toggleKill, 
       <RiskParamsPanel toast={toast} />
 
       {/* 전략 설정 */}
-      <StrategySettingsPanel strategy={strategy} setField={setField} />
+      <StrategySettingsPanel strategy={strategy} setField={setField} viewMode={viewMode} />
 
       {/* 전략서 + 리스크 */}
       {strategy && (

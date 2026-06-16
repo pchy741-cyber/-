@@ -80,6 +80,7 @@ dashboardAnalysisRoutes.get('/stock/:code/analysis', async (c) => {
 // ── 매매 상태 진단 (왜 매수 안 하는지) ──
 dashboardAnalysisRoutes.get('/trading-status', async (c) => {
   try {
+    const viewIsPaper = resolveViewIsPaper(c);
     const [
       killSwitch,
       defensePark,

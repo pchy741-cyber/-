@@ -98,7 +98,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
     api('/overseas/insights').then((r: Record<string, unknown>) => {
       if (r?.insights != null) { setUsInsights(r.insights as string); setInsightsDraft(r.insights as string); }
     }).catch(() => {});
-    api('/trading-status').then((r: Record<string, unknown>) => setTradingStatus(r)).catch(() => {});
+    api(`/trading-status?viewMode=${viewMode}`).then((r: Record<string, unknown>) => setTradingStatus(r)).catch(() => {});
     api('/ai-status').then((r: Record<string, unknown>) => setAiStatus(r)).catch(() => {});
     api('/overseas/favorites').then((r: any) => {
       if (r?.favorites) setFavorites(new Set(r.favorites));
@@ -300,7 +300,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       <MemoPnlBreakdown chains={chains} trades={trades} />
       {holdingsTab === 'KR' && <MemoPerformanceVsKospi viewMode={viewMode} />}
       {holdingsTab === 'KR' && <MemoInvestorFlow />}
-      {holdingsTab === 'KR' && <MemoShortSelling />}
+      {holdingsTab === 'KR' && <MemoShortSelling viewMode={viewMode} />}
       {holdingsTab === 'KR' && <MemoCorrelation viewMode={viewMode} />}
       {holdingsTab === 'KR' && <MemoHighScanner />}
       {holdingsTab === 'KR' && <MemoSectorHeatmap />}

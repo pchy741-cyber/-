@@ -24,9 +24,10 @@ const DEFAULT_ENSEMBLE: EnsembleConfig = {
   minModels: 2,
 };
 
-export function StrategySettingsPanel({ strategy, setField }: {
+export function StrategySettingsPanel({ strategy, setField, viewMode = 'live' }: {
   strategy: StrategyConfig | null;
   setField: (field: string, val: string | number | boolean) => Promise<void>;
+  viewMode?: 'live' | 'paper';
 }) {
   if (!strategy) return null;
 
@@ -37,7 +38,7 @@ export function StrategySettingsPanel({ strategy, setField }: {
     const next = { ...ec, ...patch };
     try {
       const body = { ...strategy, ai_scoring_mode: strategy.ai_scoring_mode, ensemble_config: next };
-      await api('/strategy', { method: 'PUT', body: JSON.stringify(body) });
+      await api(`/strategy?viewMode=${viewMode}`, { method: 'PUT', body: JSON.stringify(body) });
     } catch { /* setField will show error */ }
   };
 

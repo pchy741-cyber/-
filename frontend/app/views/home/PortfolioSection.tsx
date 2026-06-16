@@ -66,7 +66,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
 
   const applyPreset = async (kr: number, us: number) => {
     try {
-      const upd = await api('/portfolio/allocation', { method: 'PUT', body: JSON.stringify({ ...allocConfig, kr_pct: kr, us_pct: us }) });
+      const upd = await api(`/portfolio/allocation?viewMode=${viewMode ?? 'live'}`, { method: 'PUT', body: JSON.stringify({ ...allocConfig, kr_pct: kr, us_pct: us }) });
       setAllocConfig(upd);
     } catch {}
   };

@@ -109,11 +109,11 @@ const SHORT_RISK: Record<string, { color: string; label: string }> = {
   LOW:    { color: 'text-emerald-400',label: '안전' },
 };
 
-export function ShortSellingPanel() {
+export function ShortSellingPanel({ viewMode = 'live' }: { viewMode?: string }) {
   const [items, setItems] = React.useState<ShortSellingItem[]>([]);
   React.useEffect(() => {
-    api('/market/short-selling', { timeout: 20000 }).then((d: Record<string, unknown>) => setItems((d.items as ShortSellingItem[]) ?? [])).catch(() => {});
-  }, []);
+    api(`/market/short-selling?viewMode=${viewMode}`, { timeout: 20000 }).then((d: Record<string, unknown>) => setItems((d.items as ShortSellingItem[]) ?? [])).catch(() => {});
+  }, [viewMode]);
   if (items.length === 0) return null;
   return (
     <Panel title="보유종목 공매도 현황">

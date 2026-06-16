@@ -225,7 +225,7 @@ export default function Dashboard() {
                 {tab === 'strategy-lab' && <StrategyLabView toast={toast} viewMode={viewMode} confirm={confirm} />}
               </ErrorBoundary>
               <ErrorBoundary fallbackTitle="설정 로딩 오류">
-                {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} killSwitch={killSwitch} toggleKill={toggleKill} toast={toast} confirm={confirm} onFeatureFlagChange={(key: string, enabled: boolean) => setFeatureFlags(prev => ({ ...prev, [key]: enabled }))} />}
+                {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} killSwitch={killSwitch} toggleKill={toggleKill} toast={toast} confirm={confirm} onFeatureFlagChange={(key: string, enabled: boolean) => setFeatureFlags(prev => ({ ...prev, [key]: enabled }))} viewMode={viewMode} />}
               </ErrorBoundary>
             </div>
           )}
