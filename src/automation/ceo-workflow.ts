@@ -35,9 +35,10 @@ import { logger } from '../utils/logger.js';
 /**
  * 포트폴리오 상태 요약 (CEO가 한눈에 파악)
  */
-export async function getPortfolioFlowStatus() {
-  const balance = getCtxIsPaper() ? await getPaperBalance() : await getAccountBalance(true);
-  const chains = await getOpenChains();
+export async function getPortfolioFlowStatus(isPaperOverride?: boolean) {
+  const isPaper = isPaperOverride ?? getCtxIsPaper();
+  const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
+  const chains = await getOpenChains(isPaper);
   const watchlist = await getActiveWatchlist();
   const strategy = await getActiveStrategy();
 
@@ -117,8 +118,9 @@ export async function onStockAdded(stockCode: string, stockName: string): Promis
 /**
  * CEO가 종목을 제거했을 때 → 포지션 자동 정리
  */
-export async function onStockRemoved(stockCode: string): Promise<void> {
-  const chains = await getOpenChains();
+export async function onStockRemoved(stockCode: string, isPaperOverride?: boolean): Promise<void> {
+  const isPaper = isPaperOverride ?? getCtxIsPaper();
+  const chains = await getOpenChains(isPaper);
   const activeChain = chains.find((c) => c.stock_code === stockCode && c.total_quantity > 0);
 
   if (activeChain) {
@@ -154,11 +156,12 @@ export async function onStockRemoved(stockCode: string): Promise<void> {
 /**
  * 시장 모드 전환 시 자금 재배치 가이드
  */
-export async function onModeSwitch(fromMode: string, toMode: string): Promise<void> {
+export async function onModeSwitch(fromMode: string, toMode: string, isPaperOverride?: boolean): Promise<void> {
   if (fromMode === toMode) return;
 
-  const chains = await getOpenChains();
-  const balance = getCtxIsPaper() ? await getPaperBalance() : await getAccountBalance(true);
+  const isPaper = isPaperOverride ?? getCtxIsPaper();
+  const chains = await getOpenChains(isPaper);
+  const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
 
   if (toMode === 'DEFENSE') {
     // 시장 나빠짐 → 기존 포지션 중 손실 종목 빠르게 정리

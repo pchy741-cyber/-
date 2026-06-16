@@ -56,19 +56,34 @@ async function getSecretValue(secretId: string): Promise<string | null> {
   }
 }
 
-/** 부팅 시 Secret Manager에서 키 로드 → 환경변수 반영 (배포 후 키 유실 방지) */
+/** 부팅 시 Secret Manager → DB 폴백 순서로 키 로드 → 환경변수 반영 */
 export async function loadSecretsToEnv(): Promise<void> {
+  // 1차: GCP Secret Manager
   for (const [key, { secret, envVar }] of Object.entries(KEY_MAP)) {
     try {
       const value = await getSecretValue(secret);
       if (value && value.length > 3) {
         process.env[envVar] = value;
-        logger.info(`Secret 로드: ${key} (${envVar})`, { component: 'SECRETS' });
+        logger.info(`Secret 로드 (GCP): ${key}`, { component: 'SECRETS' });
       }
-    } catch {
-      /* skip */
-    }
+    } catch { /* skip */ }
   }
+  // 2차: DB 폴백 (GCP 없는 환경 or 로컬 개발)
+  try {
+    const { getPool } = await import('../../db/client.js');
+    const keys = Object.values(KEY_MAP).map((m) => `secret:${m.envVar}`);
+    const { rows } = await getPool().query(
+      `SELECT key, value FROM system_state WHERE key = ANY($1)`,
+      [keys],
+    );
+    for (const row of rows) {
+      const envVar = (row.key as string).replace('secret:', '');
+      if (!process.env[envVar] && row.value && String(row.value).length > 3) {
+        process.env[envVar] = String(row.value);
+        logger.info(`Secret 로드 (DB 폴백): ${envVar}`, { component: 'SECRETS' });
+      }
+    }
+  } catch { /* DB 폴백 실패 무시 */ }
 }
 
 // GET /api/secrets — 키 존재 여부 확인 (값은 마스킹, 30초 캐시)
@@ -122,15 +137,25 @@ secretsRoutes.put('/secrets', async (c) => {
       errors.push(`${key}: 보안상 API로 변경 불가 — GCP Secret Manager Console에서 직접 변경하세요`);
       continue;
     }
+    // env 먼저 세팅 (GCP 실패해도 이 세션에서 즉시 동작)
+    process.env[KEY_MAP[key].envVar] = value;
+    // DB 폴백 저장 (재시작 견딤, GCP 없어도)
+    try {
+      const { getPool } = await import('../../db/client.js');
+      await getPool().query(
+        `INSERT INTO system_state (key, value, updated_at) VALUES ($1, $2, NOW())
+         ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
+        [`secret:${KEY_MAP[key].envVar}`, value],
+      );
+    } catch { /* DB 폴백 실패 무시 */ }
+    // GCP Secret Manager (베스트 에포트)
     try {
       await setSecretValue(KEY_MAP[key].secret, value);
-      process.env[KEY_MAP[key].envVar] = value;
-      saved.push(key);
-      logger.info(`Secret 업데이트: ${key}`, { component: 'SECRETS' });
+      logger.info(`Secret 업데이트: ${key} (GCP+DB)`, { component: 'SECRETS' });
     } catch (err) {
-      errors.push(`${key}: ${err}`);
-      logger.error(`Secret 저장 실패: ${key} - ${err}`, { component: 'SECRETS' });
+      logger.warn(`GCP Secret 저장 실패 (DB 폴백 사용): ${key} - ${err}`, { component: 'SECRETS' });
     }
+    saved.push(key);
   }
 
   // 캐시 무효화

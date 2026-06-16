@@ -144,7 +144,7 @@ function scoreToLevel(score: number): RiskLevel {
 async function parkCashInSofr(): Promise<boolean> {
   const isPaper = getCtxIsPaper();
   try {
-    const openChains = await getOpenChains();
+    const openChains = await getOpenChains(isPaper);
     const existing = openChains.find((c) => c.stock_code === SOFR_ETF_CODE && c.total_quantity > 0);
     if (existing) {
       logger.info(`💰 [${isPaper ? 'PAPER' : 'LIVE'}] SOFR 이미 ${existing.total_quantity}주 보유 — 추가 매수 스킵`, {
@@ -194,7 +194,7 @@ async function parkCashInSofr(): Promise<boolean> {
 async function unparkSofrEtf(): Promise<boolean> {
   const isPaper = getCtxIsPaper();
   try {
-    const openChains = await getOpenChains();
+    const openChains = await getOpenChains(isPaper);
     const sofrChains = openChains.filter((c) => c.stock_code === SOFR_ETF_CODE && c.total_quantity > 0);
     if (sofrChains.length === 0) {
       logger.info(`[${isPaper ? 'PAPER' : 'LIVE'}] SOFR 보유 없음 — 언파킹 스킵`, { component: 'MARKET_ROUTING' });

@@ -276,7 +276,8 @@ watchlistRoutes.post('/watchlist', async (c) => {
 // 자금 흐름 상태 조회
 watchlistRoutes.get('/flow', async (c) => {
   try {
-    const status = await getPortfolioFlowStatus();
+    const isPaper = resolveRequestMode(c);
+    const status = await getPortfolioFlowStatus(isPaper);
     return c.json(status);
   } catch {
     return c.json({
@@ -304,7 +305,8 @@ watchlistRoutes.delete('/watchlist/:stockCode', async (c) => {
   }
 
   const { onStockRemoved } = await import('../../../automation/ceo-workflow.js');
-  onStockRemoved(stockCode).catch(() => {});
+  const isPaper = resolveRequestMode(c);
+  onStockRemoved(stockCode, isPaper).catch(() => {});
 
   return c.json({ ok: true });
 });

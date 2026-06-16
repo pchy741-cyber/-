@@ -1199,11 +1199,14 @@ dashboardAnalysisRoutes.get('/market/52w-highs', async (c) => {
   }
 });
 
-// ── 공매도 비율 (보유종목) ──
-let _shortCache: { data: any[]; fetchedAt: number } = { data: [], fetchedAt: 0 };
-let _shortRefreshing = false;
-async function _refreshShorts() {
-  const openChains = await getOpenChains();
+// ── 공매도 비율 (보유종목) — paper/live 분리 캐시 ──
+const _shortCache: Record<'paper' | 'live', { data: any[]; fetchedAt: number }> = {
+  paper: { data: [], fetchedAt: 0 },
+  live: { data: [], fetchedAt: 0 },
+};
+const _shortRefreshing: Record<'paper' | 'live', boolean> = { paper: false, live: false };
+async function _refreshShorts(isPaper: boolean) {
+  const openChains = await getOpenChains(isPaper);
   const targets = openChains.filter((ch: any) => Number(ch.total_quantity) > 0);
   const results = await Promise.allSettled(
     targets.map(async (ch: any) => {
@@ -1226,27 +1229,29 @@ async function _refreshShorts() {
 }
 dashboardAnalysisRoutes.get('/market/short-selling', async (c) => {
   try {
-    const stale = Date.now() - _shortCache.fetchedAt >= 10 * 60 * 1000;
-    if (_shortCache.data.length > 0) {
-      if (stale && !_shortRefreshing) {
-        _shortRefreshing = true;
-        _refreshShorts()
+    const isPaper = resolveViewIsPaper(c);
+    const key = isPaper ? 'paper' : 'live';
+    const stale = Date.now() - _shortCache[key].fetchedAt >= 10 * 60 * 1000;
+    if (_shortCache[key].data.length > 0) {
+      if (stale && !_shortRefreshing[key]) {
+        _shortRefreshing[key] = true;
+        _refreshShorts(isPaper)
           .then((items) => {
-            _shortCache = { data: items, fetchedAt: Date.now() };
+            _shortCache[key] = { data: items, fetchedAt: Date.now() };
           })
           .catch(() => {})
           .finally(() => {
-            _shortRefreshing = false;
+            _shortRefreshing[key] = false;
           });
       }
-      return c.json({ items: _shortCache.data });
+      return c.json({ items: _shortCache[key].data });
     }
-    if (_shortRefreshing) return c.json({ items: [] });
-    _shortRefreshing = true;
-    const items = await _refreshShorts().finally(() => {
-      _shortRefreshing = false;
+    if (_shortRefreshing[key]) return c.json({ items: [] });
+    _shortRefreshing[key] = true;
+    const items = await _refreshShorts(isPaper).finally(() => {
+      _shortRefreshing[key] = false;
     });
-    _shortCache = { data: items, fetchedAt: Date.now() };
+    _shortCache[key] = { data: items, fetchedAt: Date.now() };
     return c.json({ items });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);

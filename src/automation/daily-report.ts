@@ -20,13 +20,11 @@ import { getDinnerMoneyStats } from './profit-withdraw.js';
 export async function generateDailyReport(): Promise<void> {
   try {
     const { getPaperBalance } = await import('../risk/engine.js');
-    const balance = getCtxIsPaper() ? await getPaperBalance() : await getAccountBalance(true);
-    const chains = await getOpenChains();
+    const isPaper = getCtxIsPaper();
+    const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
+    const chains = await getOpenChains(isPaper);
     const today = getKSTNow().toISOString().split('T')[0];
     const { todayAmount: reserved } = await getDinnerMoneyStats();
-
-    // 4개 쿼리 병렬 실행 (순차 → Promise.all)
-    const isPaper = getCtxIsPaper();
     const weekStart = getWeekStart(today);
     const monthStart = `${today.slice(0, 7)}-01`;
 

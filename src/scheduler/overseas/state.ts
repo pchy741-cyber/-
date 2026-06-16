@@ -123,7 +123,7 @@ export async function ensureOverseasTable(): Promise<void> {
               `INSERT INTO overseas_state (key, value) VALUES ('cash', '0') ON CONFLICT (key) DO UPDATE SET value = '0'`,
             );
 
-            await tx.query('DELETE FROM overseas_holdings WHERE quantity <= 0');
+            await tx.query('DELETE FROM overseas_holdings WHERE quantity <= 0 AND is_paper = false');
             await tx.query(`
               UPDATE overseas_holdings op SET
                 quantity = op.quantity + ol.quantity,

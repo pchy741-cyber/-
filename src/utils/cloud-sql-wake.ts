@@ -11,8 +11,6 @@ import { getKSTNow } from './time.js';
 
 const PROJECT = process.env.GCP_PROJECT ?? 'quantops-trading';
 const INSTANCE = process.env.CLOUD_SQL_INSTANCE ?? 'quantops-db';
-const IDLE_SHUTDOWN_MS = 30 * 60_000; // 평일: 30분 미사용 시 자동 중지
-const IDLE_SHUTDOWN_WEEKEND_MS = 30 * 60_000; // 주말: 30분 미사용 시 자동 중지 (10분→30분, 사용자 접속 중 재절전 방지)
 
 let _lastActivityAt = Date.now();
 let _idleTimer: ReturnType<typeof setInterval> | null = null;
@@ -140,45 +138,13 @@ export function touchActivity(): void {
 }
 
 /**
- * 유휴 감시 시작 — 30분 미사용 시 DB 자동 중지
- * - Cloud Run 환경에서만 동작
- * - 장중(09:00~16:00 KST)에는 중지하지 않음
+ * 유휴 감시 — DB 절전 제거됨, 활동 시간만 추적 (DB 헬스워처용)
+ * Cloud SQL은 항상 ALWAYS 상태 유지 (절전 없음 — 즉시 접속 보장)
  */
 export function startIdleWatcher(): void {
   if (_idleTimer) return;
-
-  _idleTimer = setInterval(async () => {
-    const idleMs = Date.now() - _lastActivityAt;
-
-    // 주말 판별: 토 09:00 ~ 월 06:00 KST = 전 세계 시장 휴장
-    const kst = getKSTNow();
-    const day = kst.getUTCDay();
-    const h = kst.getUTCHours();
-    const isWeekend = day === 0 || (day === 6 && h >= 9) || (day === 1 && h < 6);
-
-    const threshold = isWeekend ? IDLE_SHUTDOWN_WEEKEND_MS : IDLE_SHUTDOWN_MS;
-    if (idleMs < threshold) return;
-
-    // v10.9.3: 평일은 절전 완전 금지 — DB 절전으로 인한 데이터 유실 방지
-    if (!isWeekend) return;
-    // 주말/공휴일: 30분 유휴 시 자동 중지 (깨우기 API로 접속 가능)
-
-    try {
-      const token = await getAccessToken();
-      if (!token) return;
-
-      const policy = await getActivationPolicy(token);
-      if (policy !== 'ALWAYS') return; // 이미 꺼져있음
-
-      logger.info(`💤 ${Math.round(idleMs / 60000)}분 미사용${isWeekend ? ' (주말)' : ''} → Cloud SQL 자동 중지`, {
-        component: 'SQL_WAKE',
-      });
-      await stopInstance(token);
-      logger.info('💤 Cloud SQL 자동 중지 완료 (비용 절약)', { component: 'SQL_WAKE' });
-    } catch (err) {
-      logger.warn(`💤 Cloud SQL 자동 중지 실패: ${err}`, { component: 'SQL_WAKE' });
-    }
-  }, 5 * 60_000); // 5분마다 체크
+  // 절전 없음: DB는 24/7 ALWAYS 유지. 이 타이머는 활동 추적만 함.
+  _idleTimer = setInterval(() => { /* no-op */ }, 60 * 60_000);
 }
 
 // ── DB 헬스 워처 — 부팅 후에도 DB 끊기면 자동 기상 + 재연결 ──
@@ -287,40 +253,17 @@ async function setCloudRunMinInstances(min: number): Promise<void> {
 }
 
 /**
- * 주말 동면 — Cloud SQL 중지 + Cloud Run min=0
+ * 주말 절약 — Cloud Run min=0만 (Cloud SQL은 항상 ALWAYS 유지)
  * 토요일 09:00 KST cron에서 호출
  */
 export async function weekendHibernate(): Promise<void> {
-  logger.info('🌙 주말 동면 시작 — Cloud SQL 중지 + Cloud Run min=0', { component: 'HIBERNATE' });
+  logger.info('🌙 주말 Cloud Run min=0 (DB는 항상 켜둠 — 절전 없음)', { component: 'HIBERNATE' });
 
   try {
-    const token = await getAccessToken();
-    if (!token) {
-      logger.info('🌙 로컬 환경 — 동면 스킵', { component: 'HIBERNATE' });
-      return;
-    }
-
-    // Cloud SQL 중지
-    try {
-      const policy = await getActivationPolicy(token);
-      if (policy === 'ALWAYS') {
-        await stopInstance(token);
-        logger.info('💤 Cloud SQL 중지 완료', { component: 'HIBERNATE' });
-      }
-    } catch (e) {
-      logger.warn(`💤 Cloud SQL 중지 실패: ${e}`, { component: 'HIBERNATE' });
-    }
-
-    // Cloud Run min=0
-    try {
-      await setCloudRunMinInstances(0);
-    } catch (e) {
-      logger.warn(`🚀 Cloud Run min=0 실패: ${e}`, { component: 'HIBERNATE' });
-    }
-
-    logger.info('🌙 주말 동면 완료 — 월요일 06:00 자동 기상 예정', { component: 'HIBERNATE' });
+    await setCloudRunMinInstances(0);
+    logger.info('🌙 Cloud Run min=0 완료 — DB는 ALWAYS 유지', { component: 'HIBERNATE' });
   } catch (e) {
-    logger.error(`🌙 주말 동면 실패: ${e}`, { component: 'HIBERNATE' });
+    logger.warn(`🚀 Cloud Run min=0 실패: ${e}`, { component: 'HIBERNATE' });
   }
 }
 

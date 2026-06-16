@@ -830,8 +830,8 @@ overseasRoutes.post('/overseas/sell', async (c) => {
            VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','paper','OVERSEAS',$5,$6)`,
           [stock_code, qty, fillPrice, orderNo, reason, avgPrice],
         );
-        // 부분매도 후 quantity ≤ 0 된 zombie 행 정리
-        await client.query('DELETE FROM overseas_holdings WHERE quantity <= 0');
+        // 부분매도 후 quantity ≤ 0 된 zombie 행 정리 (paper 전용)
+        await client.query('DELETE FROM overseas_holdings WHERE quantity <= 0 AND is_paper = true');
       });
       logger.info(`[OverseasSell] ${stock_code} ${qty}주 @$${fillPrice} (야간감시 모의)`, { component: 'OVERSEAS' });
       cacheSet('overseas:dashboard:paper', null as any, 0);
@@ -873,8 +873,8 @@ overseasRoutes.post('/overseas/sell', async (c) => {
          VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','live','OVERSEAS',$5,$6)`,
         [stock_code, qty, fillPrice, result.orderNo ?? '', reason, avgPrice],
       );
-      // 부분매도 후 quantity ≤ 0 된 zombie 행 정리
-      await client.query('DELETE FROM overseas_holdings WHERE quantity <= 0');
+      // 부분매도 후 quantity ≤ 0 된 zombie 행 정리 (live 전용)
+      await client.query('DELETE FROM overseas_holdings WHERE quantity <= 0 AND is_paper = false');
     });
     // KIS 동기화: 실제 주문가능금액으로 현금 갱신
     const { reconcileCashWithKIS } = await import('../../scheduler/overseas/kis-sync.js');

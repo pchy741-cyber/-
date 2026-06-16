@@ -177,19 +177,23 @@ export function useDashboardData() {
   useEffect(() => {
     load(true);
     // SSE가 실시간 데이터를 3초/30초 주기로 보내므로
-    // 폴링은 풀 대시보드 갱신 용도로만 (네트워크 70% 절감)
+    // 폴링: 절전모드 없음 — 항상 일정 주기 (탭 복귀 시 즉시 갱신)
     const getInterval = () => {
       const h = new Date().getHours(), m = new Date().getMinutes();
       const mins = h * 60 + m;
       const isMarket = mins >= 9 * 60 && mins < 15 * 60 + 30;
-      const visible = document.visibilityState === 'visible';
-      if (!visible) return 600000;       // 백그라운드: 10분 (SSE가 처리)
       return isMarket ? 120000 : 300000; // 장중: 2분, 장외: 5분
     };
     let iv: ReturnType<typeof setInterval>;
     const schedule = () => { iv = setInterval(() => { load(); clearInterval(iv); schedule(); }, getInterval()); };
     schedule();
-    const onVisibility = () => { clearInterval(iv); schedule(); };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        load(); // 탭 복귀 즉시 갱신
+        clearInterval(iv);
+        schedule();
+      }
+    };
     document.addEventListener('visibilitychange', onVisibility);
     return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVisibility); };
   }, [load]);
