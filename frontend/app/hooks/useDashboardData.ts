@@ -211,10 +211,12 @@ export function useDashboardData() {
     if (viewModeRef.current === mode) return;
     viewModeRef.current = mode;
     setViewMode(mode);
-    // localStorage 저장 제거 — 새로고침 시 항상 live로 시작
+    // 모드 전환 시 모든 모드 종속 상태 즉시 초기화 (크로스오염 방지)
     setDash(null);
+    setTrades([]);
     setUsDash(null);
     setTodayStats(null);
+    setNewInsightCount(0);
     loadingRef.current = false;
     tradesLoadedRef.current = false;
     staticLoadedRef.current = false;
