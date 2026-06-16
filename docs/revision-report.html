@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>QUANTOPS 구조적결함 수정 리비전 리포트</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', 'Apple SD Gothic Neo', sans-serif;
+    background: #0d1117;
+    color: #e6edf3;
+    padding: 28px 32px;
+  }
+
+  /* ── 헤더 ── */
+  .header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 28px;
+    padding-bottom: 18px;
+    border-bottom: 1px solid #21262d;
+  }
+  .header h1 { font-size: 20px; font-weight: 700; color: #58a6ff; }
+  .header p  { font-size: 12px; color: #8b949e; margin-top: 4px; }
+  .badges { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .badge { font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 10px; }
+  .b-green  { background: #1f4730; color: #3fb950; }
+  .b-blue   { background: #1a2d47; color: #58a6ff; }
+  .b-purple { background: #2d1f47; color: #bc8cff; }
+  .b-orange { background: #3d2b1a; color: #f0883e; }
+
+  /* ── 섹션 제목 ── */
+  .sec-title {
+    font-size: 11px; font-weight: 700; color: #8b949e;
+    text-transform: uppercase; letter-spacing: 1px;
+    margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
+  }
+  .sec-title::after { content: ''; flex: 1; height: 1px; background: #21262d; }
+
+  /* ── 결함 그리드 ── */
+  .flaw-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 28px; }
+  .flaw-card {
+    background: #161b22; border: 1px solid #21262d; border-radius: 8px;
+    padding: 12px 14px; position: relative; overflow: hidden;
+  }
+  .flaw-card::before { content: ''; position: absolute; left:0;top:0;bottom:0;width:3px; }
+  .flaw-card.c1::before { background: #3fb950; }
+  .flaw-card.c2::before { background: #58a6ff; }
+  .flaw-card.c3::before { background: #f0883e; }
+  .flaw-card.c4::before { background: #bc8cff; }
+  .flaw-card.c5::before { background: #f85149; }
+  .flaw-card.c6::before { background: #39d353; }
+  .flaw-card.c7::before { background: #ffa657; }
+
+  .flaw-num  { font-size: 10px; color: #8b949e; margin-bottom: 5px; }
+  .flaw-done { color: #3fb950; font-weight: 700; }
+  .flaw-title{ font-size: 12px; font-weight: 700; color: #e6edf3; margin-bottom: 4px; }
+  .flaw-desc { font-size: 11px; color: #8b949e; line-height: 1.5; margin-bottom: 6px; }
+  .flaw-fix  {
+    font-size: 10px; font-family: 'Consolas', monospace;
+    padding: 4px 7px; border-radius: 4px; line-height: 1.4;
+  }
+  .fix-g { background:#1f4730; color:#3fb950; }
+  .fix-b { background:#1a2d47; color:#79c0ff; }
+  .fix-o { background:#3d2b1a; color:#f0883e; }
+  .fix-p { background:#2d1f47; color:#bc8cff; }
+  .fix-r { background:#3a1a1a; color:#f85149; }
+
+  /* ── 실제 동작 캡쳐 ── */
+  .cap-section { margin-bottom: 28px; }
+  .cap-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .cap-box {
+    background: #161b22; border: 1px solid #21262d; border-radius: 8px;
+    overflow: hidden;
+  }
+  .cap-label {
+    padding: 10px 14px; border-bottom: 1px solid #21262d;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .cap-label-title { font-size: 12px; font-weight: 700; color: #e6edf3; }
+  .cap-label-time  { font-size: 11px; color: #8b949e; }
+  .cap-img { width: 100%; display: block; background: #0d1117; }
+  .cap-note {
+    padding: 8px 14px; font-size: 11px; color: #8b949e;
+    background: #0d1117; border-top: 1px solid #21262d; line-height: 1.5;
+  }
+  .cap-note strong { color: #3fb950; }
+  .cap-note .warn  { color: #f0883e; }
+
+  /* ── 테마 클러스터 ── */
+  .cluster-section { margin-bottom: 28px; }
+  .flow {
+    display: flex; align-items: center; gap: 6px;
+    background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+    padding: 10px 14px; margin-bottom: 12px; flex-wrap: wrap;
+  }
+  .flow-step {
+    font-size: 11px; background: #21262d; color: #e6edf3;
+    padding: 4px 10px; border-radius: 4px; text-align: center; line-height: 1.4;
+  }
+  .flow-step.hl { background: #2d1f47; color: #bc8cff; font-weight: 700; }
+  .flow-arr { color: #bc8cff; font-size: 14px; }
+  .params { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; margin-bottom: 12px; }
+  .param {
+    background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+    padding: 8px; text-align: center;
+  }
+  .param-lbl { font-size: 10px; color: #8b949e; margin-bottom: 3px; }
+  .param-val { font-size: 14px; font-weight: 700; color: #f0883e; font-family:'Consolas',monospace; }
+  .param-unit{ font-size: 10px; color: #8b949e; margin-top: 2px; }
+
+  .theme-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; }
+  .theme-item {
+    background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px 10px;
+  }
+  .th-id   { font-size: 9px; font-family:'Consolas',monospace; color:#8b949e; margin-bottom:3px; }
+  .th-name { font-size: 11px; font-weight:700; color:#e6edf3; margin-bottom:3px; }
+  .th-cnt  { font-size: 10px; color:#3fb950; }
+
+  /* ── 파일 목록 ── */
+  .file-list { display: flex; flex-direction: column; gap: 7px; margin-bottom: 28px; }
+  .file-row {
+    display: flex; align-items: center; gap: 10px;
+    background: #161b22; border: 1px solid #21262d; border-radius: 6px; padding: 8px 12px;
+  }
+  .ftag { font-size: 10px; font-weight:700; padding:2px 7px; border-radius:8px; white-space:nowrap; }
+  .ftag-new { background:#1f4730; color:#3fb950; }
+  .ftag-mod { background:#3d2b1a; color:#f0883e; }
+  .fname { font-family:'Consolas',monospace; font-size:11px; color:#79c0ff; flex:1; }
+  .fdesc { font-size:11px; color:#8b949e; }
+
+  /* ── 풋터 ── */
+  .footer {
+    margin-top: 20px; padding-top: 14px; border-top: 1px solid #21262d;
+    display: flex; justify-content: space-between; font-size: 11px; color: #8b949e;
+  }
+</style>
+</head>
+<body>
+
+<!-- 헤더 -->
+<div class="header">
+  <div>
+    <h1>⚡ QUANTOPS 구조적결함 수정 리비전 리포트</h1>
+    <p>자동매매 시스템 전수 검수 + 테마 클러스터 2차 가치주 신규 기능 · 2026-06-12</p>
+  </div>
+  <div class="badges">
+    <span class="badge b-green">✓ 빌드 통과</span>
+    <span class="badge b-blue">TypeScript 클린</span>
+    <span class="badge b-purple">신규기능 THEME_CLUSTER</span>
+    <span class="badge b-orange">7결함 수정</span>
+  </div>
+</div>
+
+<!-- ① 구조적 결함 7건 -->
+<div class="sec-title">구조적 결함 수정 (7건)</div>
+<div class="flaw-grid">
+
+  <div class="flaw-card c1">
+    <div class="flaw-num">#1 &nbsp;<span class="flaw-done">✓ 완료</span></div>
+    <div class="flaw-title">runDailyMarketScan 미스케줄</div>
+    <div class="flaw-desc">일일 시장 스캔 크론 미등록 — 단 한 번도 실행 안 됨</div>
+    <div class="flaw-fix fix-g">runner.ts: 15 14 * * 1-5 추가</div>
+  </div>
+
+  <div class="flaw-card c2">
+    <div class="flaw-num">#2 &nbsp;<span class="flaw-done">✓ 완료</span></div>
+    <div class="flaw-title">hot-sector 10:00 단 1회</div>
+    <div class="flaw-desc">오전 1회 → 장중 테마 변화 미포착 (HPSP +30% 미감지 원인)</div>
+    <div class="flaw-fix fix-b">11:30, 13:30 추가 실행</div>
+  </div>
+
+  <div class="flaw-card c3">
+    <div class="flaw-num">#3 &nbsp;<span class="flaw-done">✓ 완료</span></div>
+    <div class="flaw-title">실시간 급등 감지기 부재</div>
+    <div class="flaw-desc">기관/외국인 5일 수급 기반 → 당일 급등 (후성 +19%) 전혀 포착 불가</div>
+    <div class="flaw-fix fix-o">surge-detector.ts 신규 (매 30분)</div>
+  </div>
+
+  <div class="flaw-card c4">
+    <div class="flaw-num">#4 &nbsp;<span class="flaw-done">✓ 완료</span></div>
+    <div class="flaw-title">파이프라인 AI점수 순환참조</div>
+    <div class="flaw-desc">워치리스트 없으면 점수 없음 → SURGE/ANCHOR 신규편입 전부 필터 탈락</div>
+    <div class="flaw-fix fix-p">provisional score 62 주입 (4 source)</div>
+  </div>
+
+  <div class="flaw-card c5">
+    <div class="flaw-num">#5 &nbsp;<span class="flaw-done">✓ 완료</span></div>
+    <div class="flaw-title">KOSPI 하락일 신규매수 미차단</div>
+    <div class="flaw-desc">todayDown 소프트 페널티(-10점)만 → 지수 급락일 계속 매수</div>
+    <div class="flaw-fix fix-r">blockNewBuys 하드 차단 조건 추가</div>
+  </div>
+
+  <div class="flaw-card c6">
+    <div class="flaw-num">#6 &nbsp;<span class="flaw-done">✓ 완료</span></div>
+    <div class="flaw-title">5분 반등 확인 게이트 부재</div>
+    <div class="flaw-desc">급등 직후 바로 매수 → 꼭지 매수 빈발</div>
+    <div class="flaw-fix fix-g">bounceAdj = -15 페널티 게이트</div>
+  </div>
+
+  <div class="flaw-card c7" style="grid-column: span 3;">
+    <div class="flaw-num">#7 &nbsp;<span class="flaw-done">✓ 완료</span></div>
+    <div class="flaw-title">KIS 즐겨찾기 동기화 하루 2회 → CEO 수동 추가 최대 12시간 지연</div>
+    <div class="flaw-desc">CEO가 KIS 앱에 종목 추가해도 반영까지 최대 12시간 지연 — 타이밍 매매 불가</div>
+    <div class="flaw-fix fix-b">syncInterestGroups() → surge-detector 30분 크론에 통합 → 자동 30분 동기화</div>
+  </div>
+
+</div>
+
+<!-- ② 실제 동작 캡쳐 -->
+<div class="sec-title">실제 동작 확인 (2026-06-12 13:18)</div>
+<div class="cap-section">
+  <div class="cap-grid">
+
+    <div class="cap-box">
+      <div class="cap-label">
+        <span class="cap-label-title">Track B[P] 매수 신호 발생</span>
+        <span class="cap-label-time">13:18 캡쳐</span>
+      </div>
+      <img class="cap-img" src="cap_dashboard.png" alt="대시보드 캡쳐">
+      <div class="cap-note">
+        <strong>✓ 042700(한미반도체) 5주 매수 신호 발생</strong> — SURGE/THEME_CLUSTER 편입 후 파이프라인 통과 확인<br>
+        <span class="warn">⚠ KR 한국주식 0원 (0종목)</span> — 현재 포지션 없음, 주문가능 162,410원 대기 중<br>
+        SWING 모드 운용 중 · 선물 잔고 40,000원
+      </div>
+    </div>
+
+    <div class="cap-box">
+      <div class="cap-label">
+        <span class="cap-label-title">오늘 실현손익 +1,861원</span>
+        <span class="cap-label-time">13:19 캡쳐</span>
+      </div>
+      <img class="cap-img" src="cap_portfolio.png" alt="포트폴리오 캡쳐">
+      <div class="cap-note">
+        <strong>✓ 오늘 실현 +1,861원</strong> — 1건 매매 체결 수익 확인<br>
+        미실현 손익 0원 (현재 포지션 없음) · 주문가능(DB) 162,410원 / $106<br>
+        투자비중 0% — 전량 현금 보유, 다음 진입 대기
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ③ 신규 기능: 테마 클러스터 -->
+<div class="sec-title">신규 기능: 테마 클러스터 2차 가치주 자동 편입</div>
+<div class="cluster-section">
+
+  <div class="flow">
+    <div class="flow-step">주도주 급등 감지<br><small style="color:#8b949e">+5% & 거래대금 500억+</small></div>
+    <span class="flow-arr">→</span>
+    <div class="flow-step hl">getClusterFollowers()<br><small>같은 테마 후행종목</small></div>
+    <span class="flow-arr">→</span>
+    <div class="flow-step">현재가 필터<br><small style="color:#8b949e">미급등 & 거래대금 100억+</small></div>
+    <span class="flow-arr">→</span>
+    <div class="flow-step hl">THEME_CLUSTER 편입<br><small>최대 3개/주도주</small></div>
+    <span class="flow-arr">→</span>
+    <div class="flow-step">provisional score 62<br><small style="color:#8b949e">파이프라인 통과</small></div>
+    <span class="flow-arr">→</span>
+    <div class="flow-step hl">SWING 매매<br><small>TP+5.5% / SL-3%</small></div>
+  </div>
+
+  <div class="params">
+    <div class="param">
+      <div class="param-lbl">MIN 등락률</div>
+      <div class="param-val">-2.0%</div>
+      <div class="param-unit">하락도 테마 기대 편입</div>
+    </div>
+    <div class="param">
+      <div class="param-lbl">MAX 등락률</div>
+      <div class="param-val">&lt;4.5%</div>
+      <div class="param-unit">미급등 조건</div>
+    </div>
+    <div class="param">
+      <div class="param-lbl">최소 거래대금</div>
+      <div class="param-val">100억</div>
+      <div class="param-unit">유동성 보장</div>
+    </div>
+    <div class="param">
+      <div class="param-lbl">최대 편입</div>
+      <div class="param-val">3개</div>
+      <div class="param-unit">주도주 1개당</div>
+    </div>
+  </div>
+
+  <div class="theme-grid">
+    <div class="theme-item">
+      <div class="th-id">SEMICON_EQUIP</div>
+      <div class="th-name">반도체 장비/소재</div>
+      <div class="th-cnt">12종목 — HPSP·한미반도체·피에스케이·솔브레인 등</div>
+    </div>
+    <div class="theme-item">
+      <div class="th-id">DEFENSE</div>
+      <div class="th-name">방산</div>
+      <div class="th-cnt">8종목 — 한화에어로·현대로템·LIG넥스원 등</div>
+    </div>
+    <div class="theme-item">
+      <div class="th-id">BATTERY_MATERIAL</div>
+      <div class="th-name">2차전지 소재</div>
+      <div class="th-cnt">8종목 — 에코프로·포스코퓨처엠·엘앤에프 등</div>
+    </div>
+    <div class="theme-item">
+      <div class="th-id">POWER_NUCLEAR</div>
+      <div class="th-name">전력/원전</div>
+      <div class="th-cnt">7종목 — 두산에너빌리티·LS일렉트릭 등</div>
+    </div>
+    <div class="theme-item">
+      <div class="th-id">SHIPBUILDING</div>
+      <div class="th-name">조선/해운</div>
+      <div class="th-cnt">6종목 — HD현대중공업·삼성중공업 등</div>
+    </div>
+    <div class="theme-item">
+      <div class="th-id">BIO_PHARMA</div>
+      <div class="th-name">바이오/제약</div>
+      <div class="th-cnt">5종목 — 삼성바이오·셀트리온·알테오젠 등</div>
+    </div>
+    <div class="theme-item">
+      <div class="th-id">AUTO</div>
+      <div class="th-name">자동차/부품</div>
+      <div class="th-cnt">5종목 — 현대차·기아·현대모비스 등</div>
+    </div>
+    <div class="theme-item">
+      <div class="th-id">CHEMICAL_HWASUNG</div>
+      <div class="th-name">화학/후성</div>
+      <div class="th-cnt">6종목 — 후성·LG화학·롯데케미칼 등</div>
+    </div>
+  </div>
+</div>
+
+<!-- ④ 파일 목록 -->
+<div class="sec-title">수정/신규 파일</div>
+<div class="file-list">
+  <div class="file-row">
+    <span class="ftag ftag-new">NEW</span>
+    <span class="fname">src/automation/surge-detector.ts</span>
+    <span class="fdesc">급등/거래대금 30분 감지 + KIS 즐겨찾기 동기화 + 테마클러스터 확장 호출</span>
+  </div>
+  <div class="file-row">
+    <span class="ftag ftag-new">NEW</span>
+    <span class="fname">src/automation/sector-themes.ts</span>
+    <span class="fdesc">11개 테마 클러스터 정의 · getClusterFollowers() 후행 종목 조회</span>
+  </div>
+  <div class="file-row">
+    <span class="ftag ftag-mod">MOD</span>
+    <span class="fname">src/ai/track-b/pipeline.ts</span>
+    <span class="fdesc">provisional score 62 주입 (SURGE/KIS_SYNC/ANCHOR/THEME_CLUSTER) + KOSPI 하락일 하드 차단</span>
+  </div>
+  <div class="file-row">
+    <span class="ftag ftag-mod">MOD</span>
+    <span class="fname">src/ai/track-b/buy-execution.ts</span>
+    <span class="fdesc">5분 반등 확인 게이트 (bounceAdj = -15)</span>
+  </div>
+  <div class="file-row">
+    <span class="ftag ftag-mod">MOD</span>
+    <span class="fname">src/scheduler/runner.ts</span>
+    <span class="fdesc">hot-sector 11:30/13:30 추가 · surge-detector 매 30분 · runDailyMarketScan 14:15</span>
+  </div>
+</div>
+
+<div class="footer">
+  <span>QUANTOPS Auto Trading System · Branch: master · TypeScript 빌드 클린</span>
+  <span>2026-06-12 · 구조적결함 전수검수 리비전</span>
+</div>
+
+</body>
+</html>

@@ -1,3 +1,4 @@
+import { getCtxIsPaper } from '../config/context.js';
 import { getOpenChains } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import { getCurrentPrice } from '../kis/market.js';
@@ -21,7 +22,7 @@ export async function runForceCloseJob(): Promise<void> {
     logger.info('🛑 Kill Switch 활성 중이나 강제청산(매도)은 실행', { component: 'FORCE_CLOSE' });
   }
 
-  const chains = await getOpenChains();
+  const chains = await getOpenChains(getCtxIsPaper());
   const scalpingChains = chains.filter((c) => c.strategy_mode === 'SCALPING' && c.total_quantity > 0);
 
   if (scalpingChains.length === 0) return;
@@ -87,7 +88,7 @@ export async function runOpeningBellForceClose(): Promise<void> {
     logger.info('🛑 Kill Switch 활성 중이나 개장벨 청산은 실행', { component: 'FORCE_CLOSE' });
   }
 
-  const chains = await getOpenChains();
+  const chains = await getOpenChains(getCtxIsPaper());
   const bellChains = chains.filter((c) => {
     if (c.strategy_mode !== 'SCALPING' || c.total_quantity <= 0 || !c.opened_at) return false;
     const openedAt = new Date(String(c.opened_at));

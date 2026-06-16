@@ -1,6 +1,7 @@
 import { runBullBearDebate } from '../../ai/debate/bull-bear.js';
 import { analyzeTechnicals } from '../../analysis/indicators.js';
 import type { StrategyMode } from '../../config/constants.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import { config } from '../../config/index.js';
 import {
   getActiveStrategy,
@@ -53,7 +54,7 @@ export async function runSniperScan(): Promise<void> {
     const [todayStopCodes, recentLossCodes, openChains] = await Promise.all([
       getTodayRepeatStopCodes(1), // 당일 1회 이상 손절이면 스나이퍼도 차단
       getRecentLossStocks(7),
-      getOpenChains(),
+      getOpenChains(getCtxIsPaper()),
     ]);
     const lossBlocked = new Set([...todayStopCodes, ...recentLossCodes]);
     if (lossBlocked.size > 0) {

@@ -81,7 +81,7 @@ export async function runClosingBellJob(): Promise<void> {
 
   try {
     // ── STEP 1: 감시목록 + 실시간 시세 ──
-    const [watchlist, openChains] = await Promise.all([getActiveWatchlist(), getOpenChains()]);
+    const [watchlist, openChains] = await Promise.all([getActiveWatchlist(), getOpenChains(getCtxIsPaper())]);
 
     if (watchlist.length === 0) {
       logger.warn('[CLOSING_BELL] 감시목록 비어있음', { component: 'CLOSING_BELL' });

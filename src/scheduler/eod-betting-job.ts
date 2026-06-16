@@ -132,7 +132,7 @@ export async function runEodBettingJob(): Promise<void> {
       const { getAccountBalance: getAccBal } = await import('../kis/account.js');
       const bal = await getAccBal(false);
       const totalAssets = bal.orderableCash + bal.totalEvalAmount;
-      const openChains = await getOpenChains();
+      const openChains = await getOpenChains(getCtxIsPaper());
       const { getBatchPrices } = await import('../kis/market.js');
       const holdCodes = openChains.filter((c) => Number(c.total_quantity) > 0).map((c) => c.stock_code);
       const livePrices = holdCodes.length > 0 ? await getBatchPrices(holdCodes) : new Map();
@@ -186,7 +186,7 @@ export async function runEodBettingJob(): Promise<void> {
     const prices = await getBatchPrices(codes);
 
     // 이미 보유 중인 종목 제외
-    const openChains = await getOpenChains();
+    const openChains = await getOpenChains(getCtxIsPaper());
     const heldCodes = new Set(openChains.filter((c) => Number(c.total_quantity) > 0).map((c) => c.stock_code));
 
     interface EodCandidate {
@@ -349,7 +349,7 @@ export async function runEodMorningSell(): Promise<void> {
   logger.info(`🌅 종가베팅 익일매도 시작 (${isPaper ? 'paper' : 'live'})`, { component: 'EOD_BETTING' });
 
   try {
-    const openChains = await getOpenChains();
+    const openChains = await getOpenChains(getCtxIsPaper());
     const todayKst = getKSTNow();
     const todayStr = todayKst.toISOString().split('T')[0];
 

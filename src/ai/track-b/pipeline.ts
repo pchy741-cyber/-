@@ -140,7 +140,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       try {
         return await Promise.all([
           getActiveWatchlist(),
-          getOpenChains(),
+          getOpenChains(getCtxIsPaper()),
           getActiveStrategy(),
           getRecentLossStocks(getCtxIsPaper() ? 1 : 5), // Paper: 1일 쿨다운 (7일 → 적극적 데이터 수집)
           getRecentManuallySoldStocks(24),
@@ -160,7 +160,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           enableMemoryMode();
           return await Promise.all([
             getActiveWatchlist(),
-            getOpenChains(),
+            getOpenChains(getCtxIsPaper()),
             getActiveStrategy(),
             getRecentLossStocks(getCtxIsPaper() ? 1 : 5), // Paper: 1일 쿨다운
             getRecentManuallySoldStocks(24),

@@ -355,7 +355,7 @@ export class ChainManager {
    * 특정 종목의 열린 체인 찾기
    */
   async findOpenChain(stockCode: string): Promise<TransactionChain | null> {
-    const chains = await getOpenChains();
+    const chains = await getOpenChains(getCtxIsPaper());
     return chains.find((c) => c.stock_code === stockCode) ?? null;
   }
 }

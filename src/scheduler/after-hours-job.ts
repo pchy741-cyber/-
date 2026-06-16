@@ -215,7 +215,7 @@ export async function runAfterHoursJob(): Promise<void> {
     // ═══════════════════════════════════════════════════════════
     //  STEP 0: 보유종목 수익확정 매도 (매도=탈출, Kill Switch 무관)
     // ═══════════════════════════════════════════════════════════
-    const openChains = await getOpenChains();
+    const openChains = await getOpenChains(getCtxIsPaper());
 
     if (openChains.length > 0) {
       const holdingCodes = openChains.map((c) => c.stock_code);
@@ -286,7 +286,7 @@ export async function runAfterHoursJob(): Promise<void> {
     }
 
     // 1-B. 후보 종목 수집 + 시세 조회
-    const [watchlist, latestChains] = await Promise.all([getActiveWatchlist(), getOpenChains()]);
+    const [watchlist, latestChains] = await Promise.all([getActiveWatchlist(), getOpenChains(getCtxIsPaper())]);
     const watchlistCodes = watchlist.map((w) => w.stock_code);
     const scannedCodes = scannedStocks.map((s) => s.stock_code);
     const allCodes = [...new Set([...EOD_BLUECHIP_CODES, ...watchlistCodes, ...scannedCodes])];

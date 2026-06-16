@@ -53,7 +53,7 @@ researchRoutes.post('/research/crawl', async (c) => {
 
     const { title, content } = await crawlUrl(url);
 
-    const rows = await query<{ id: number }>(
+    const result = await query<{ id: number }>(
       `INSERT INTO broker_research_notes (url, title, content, memo)
        VALUES ($1, $2, $3, $4)
        RETURNING id`,
@@ -61,7 +61,7 @@ researchRoutes.post('/research/crawl', async (c) => {
     );
 
     logger.info(`리서치 크롤링 저장: ${title || url} (${content.length}자)`, { component: 'RESEARCH' });
-    return c.json({ ok: true, id: rows[0].id, title, length: content.length });
+    return c.json({ ok: true, id: result.rows[0].id, title, length: content.length });
   } catch (err: any) {
     logger.warn(`리서치 크롤링 실패: ${err.message}`, { component: 'RESEARCH' });
     return c.json({ error: err.message ?? '크롤링 실패' }, 500);
@@ -71,13 +71,13 @@ researchRoutes.post('/research/crawl', async (c) => {
 // GET /api/research/notes — 저장된 노트 목록
 researchRoutes.get('/research/notes', async (c) => {
   try {
-    const rows = await query<{ id: number; url: string; title: string; memo: string; fetched_at: string; length: number }>(
+    const result = await query<{ id: number; url: string; title: string; memo: string; fetched_at: string; length: number }>(
       `SELECT id, url, title, memo, fetched_at, LENGTH(content) AS length
        FROM broker_research_notes
        ORDER BY fetched_at DESC
        LIMIT 50`,
     );
-    return c.json({ notes: rows });
+    return c.json({ notes: result.rows });
   } catch (err: any) {
     return c.json({ notes: [] });
   }

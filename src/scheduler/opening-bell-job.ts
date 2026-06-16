@@ -288,7 +288,7 @@ export async function runOpeningBellCycle(): Promise<void> {
 
     const [watchlist, openChains, _strategy, balanceRaw] = await Promise.all([
       getActiveWatchlist(),
-      getOpenChains(),
+      getOpenChains(getCtxIsPaper()),
       getActiveStrategy(),
       getCtxIsPaper() ? import('../risk/engine.js').then((m) => m.getPaperBalance()) : getAccountBalance(true),
     ]);

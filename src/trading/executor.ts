@@ -211,7 +211,7 @@ export class TradeExecutor {
 
     // v9: 동시 포지션 한도 확인 — _pendingBuyCount 포함하여 race condition 방지
     // 이전: DB 체인만 세면 동시 매수 시 8/8→9/8 초과 발생
-    const allOpenChains = await getOpenChains();
+    const allOpenChains = await getOpenChains(getCtxIsPaper());
     const effectiveCount = allOpenChains.length + this._pendingBuyCount;
     if (effectiveCount >= config.risk.maxConcurrentPositions) {
       releaseBuyIntent(stockCode);

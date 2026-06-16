@@ -133,7 +133,7 @@ export async function reconcileExternalSells(): Promise<void> {
   if (getCtxIsPaper()) return;
 
   try {
-    const chains = await getOpenChains();
+    const chains = await getOpenChains(getCtxIsPaper());
 
     // KIS 잔고 조회 (실패 시 유령 체인 오닫기 방지 — 스킵)
     // live 컨텍스트에서만 실행됨 (line 96에서 paper 리턴). forceLive=true로 캐시 우회.

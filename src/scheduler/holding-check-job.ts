@@ -49,7 +49,7 @@ export async function runHoldingCheckJob(): Promise<void> {
   );
 
   try {
-    const chains = await getOpenChains();
+    const chains = await getOpenChains(getCtxIsPaper());
     if (chains.length === 0) return;
 
     // ── 탈출 모드 체크 (+0.5% 돌파 시 즉시 매도) ──
@@ -290,9 +290,10 @@ async function checkAndUpdateTrailingStop(
         { component: 'TRAILING' },
       );
       try {
-        await getPool().query('UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2', [
+        await getPool().query('UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2 AND is_paper = $3', [
           -currentPrice,
           chain.id,
+          chain.is_paper ?? getCtxIsPaper(),
         ]);
       } catch (err) {
         logger.error(`조기익절 플래그 저장 실패: ${err}`, { component: 'TRAILING' });
@@ -318,9 +319,10 @@ async function checkAndUpdateTrailingStop(
         { component: 'TRAILING' },
       );
       try {
-        await getPool().query('UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2', [
+        await getPool().query('UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2 AND is_paper = $3', [
           -currentPrice,
           chain.id,
+          chain.is_paper ?? getCtxIsPaper(),
         ]);
       } catch (err) {
         logger.error(`트레일링 분할매도 플래그 저장 실패: ${err}`, { component: 'TRAILING' });
@@ -344,9 +346,10 @@ async function checkAndUpdateTrailingStop(
   if (newPeak > storedPeak) {
     const saveVal = partialSoldAlready ? -newPeak : newPeak;
     try {
-      await getPool().query('UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2', [
+      await getPool().query('UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2 AND is_paper = $3', [
         saveVal,
         chain.id,
+        chain.is_paper ?? getCtxIsPaper(),
       ]);
     } catch (err) {
       logger.error(`트레일링 고점 갱신 실패: ${err}`, { component: 'TRAILING' });

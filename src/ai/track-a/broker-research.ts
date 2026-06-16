@@ -74,11 +74,11 @@ function getPastDate(days: number): string {
 }
 
 async function isAlreadyCrawled(url: string): Promise<boolean> {
-  const rows = await query<{ id: number }>(
+  const result = await query<{ id: number }>(
     `SELECT id FROM broker_research_notes WHERE url = $1 AND fetched_at >= NOW() - INTERVAL '7 days' LIMIT 1`,
     [url],
   );
-  return rows.length > 0;
+  return result.rows.length > 0;
 }
 
 // Track A 실행 전 자동 수집 — DART 공시를 감시 종목별로 조회 → DB 저장
@@ -124,7 +124,7 @@ export async function autoCrawlBrokerResearch(
 // Track A Gemini 주입용 — DB에서 최근 공시 텍스트 섹션 생성
 export async function getBrokerResearchSection(maxAgeDays = 14): Promise<string | null> {
   try {
-    const rows = await query<ResearchNote>(
+    const result = await query<ResearchNote>(
       `SELECT id, url, title, content, memo, fetched_at
        FROM broker_research_notes
        WHERE fetched_at >= NOW() - ($1 || ' days')::INTERVAL
@@ -133,9 +133,9 @@ export async function getBrokerResearchSection(maxAgeDays = 14): Promise<string 
       [maxAgeDays],
     );
 
-    if (!rows.length) return null;
+    if (!result.rows.length) return null;
 
-    const parts = rows.map((r: ResearchNote) => {
+    const parts = result.rows.map((r: ResearchNote) => {
       const header = r.title ?? r.url ?? '[공시]';
       const extra = r.memo ? ` (${r.memo})` : '';
       return `${header}${extra}\n${r.content.slice(0, 500)}`;
