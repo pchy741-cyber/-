@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { config } from '../../config/index.js';
+import { hasCtx, getCtxIsPaper } from '../../config/context.js';
 import { checkDb, isMemoryMode } from '../../db/client.js';
 import { isMarketOpen } from '../../kis/market.js';
 import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
@@ -8,24 +9,28 @@ import { getActiveLocks } from '../../utils/lock.js';
 
 export const healthRoutes = new Hono();
 
-// 시스템 이벤트 로그 (최근 실행 결과 추적)
+// 시스템 이벤트 로그 (최근 실행 결과 추적, paper/live 분리)
 interface SystemEvent {
   component: string;
   status: 'success' | 'error' | 'running';
   message: string;
   timestamp: string;
+  mode?: 'paper' | 'live';
 }
 
 const recentEvents: SystemEvent[] = [];
 const MAX_EVENTS = 100;
 
 export function logSystemEvent(component: string, status: 'success' | 'error' | 'running', message: string) {
-  recentEvents.unshift({ component, status, message, timestamp: new Date().toISOString() });
+  let mode: 'paper' | 'live' | undefined;
+  try { if (hasCtx()) mode = getCtxIsPaper() ? 'paper' : 'live'; } catch { /* 컨텍스트 없으면 undefined */ }
+  recentEvents.unshift({ component, status, message, timestamp: new Date().toISOString(), mode });
   if (recentEvents.length > MAX_EVENTS) recentEvents.splice(MAX_EVENTS);
 }
 
-export function getRecentEvents(limit = 10): SystemEvent[] {
-  return recentEvents.slice(0, limit);
+export function getRecentEvents(limit = 10, filterMode?: 'paper' | 'live'): SystemEvent[] {
+  if (!filterMode) return recentEvents.slice(0, limit);
+  return recentEvents.filter(e => !e.mode || e.mode === filterMode).slice(0, limit);
 }
 
 // 공개: 최소 정보만 (운영 정보 노출 차단)

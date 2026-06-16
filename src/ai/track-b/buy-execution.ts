@@ -147,9 +147,9 @@ export async function executeBuyDecisions(
 
   // Kelly 사이징: 30일 롤링 (10건 미만이면 null → 기존 하드코딩 폴백)
   // null 반환 시 저승률(<22%) 가능성 → 하드코딩 배분에 0.6x 페널티 적용
-  // v9-fix: Paper는 학습용 → Kelly 페널티 면제 (데이터 수집 극대화)
+  // v11: Paper도 Kelly 페널티 동일 적용 (실전과 같은 조건으로 학습)
   const kellyResult = await calcDomesticKelly(30);
-  const kellyNullPenalty = getCtxIsPaper() ? 1.0 : kellyResult ? 1.0 : 0.6;
+  const kellyNullPenalty = kellyResult ? 1.0 : 0.6;
 
   // AI 스코어 + 기술적 점수 합산으로 정렬
   candidates.sort((a, b) => {
@@ -315,10 +315,9 @@ export async function executeBuyDecisions(
     // 15분봉 하락 추세 패널티: 15분 단위로 하락 중이면 -10 추가 감산
     const id15mPenalty = intraday15mDown.has(cand.stock_code) ? -10 : 0;
     const effectiveIdBonus = idBonus + id15mPenalty;
-    // AI 확신도별 통과 기준 (높을수록 인트라데이 약세 허용)
-    // AI 점수 없거나 낮아도 분봉 약세 소폭 허용 (일봉 강세 시 1분봉 노이즈 무시)
+    // v11: 인트라데이 게이트 강화 — AI 확신 없으면 분봉 양수 필수
     const idPassThreshold =
-      _idAiScore >= 85 ? -20 : _idAiScore >= 80 ? -10 : _idAiScore >= (strategyParams.buyThreshold ?? 72) ? -3 : -5;
+      _idAiScore >= 85 ? -10 : _idAiScore >= 80 ? -5 : _idAiScore >= (strategyParams.buyThreshold ?? 72) ? 0 : -2;
     if (effectiveIdBonus < idPassThreshold) {
       logger.info(
         `  ⏸️ ${cand.stock_code}: 분봉게이트 미달(${idBonus}${id15mPenalty < 0 ? `+15m${id15mPenalty}` : ''}=${effectiveIdBonus} < ${idPassThreshold}, AI=${_idAiScore}) → 진입 보류`,
@@ -423,20 +422,16 @@ export async function executeBuyDecisions(
                   ? 0.10
                   : 0.08
       : noAiScores || aiScore === 0
-        ? // AI 부재(전체 미실행 또는 개별종목 AI=0) → 기술지표만으로 판단, 배분 상향
+        ? // v11: AI 부재 → 기술지표만으로 판단, 배분 축소 (미검증 과대배분 방지)
+          blendedScore >= 85
+          ? 0.10
+          : blendedScore >= 75
+            ? 0.07
+            : 0.04
+        : // AI 있지만 이 종목은 미허락 → 최소 탐색만
           blendedScore >= 80
-          ? 0.18
-          : blendedScore >= 70
-            ? 0.14
-            : blendedScore >= 62
-              ? 0.1
-              : 0.06
-        : // AI 있지만 이 종목은 미허락 → 소액 탐색
-          blendedScore >= 80
-          ? 0.14
-          : blendedScore >= 70
-            ? 0.1
-            : 0.06;
+          ? 0.06
+          : 0.04;
     // Kelly 사이징 우선: 10건+ 데이터 있으면 Kelly 기반, 없으면 기존 하드코딩 × 페널티
     const kellyAllocPct = kellyResult
       ? Math.min(0.25, kellyResult.kellyPct * (blendedScore >= 85 ? 1.5 : blendedScore >= 70 ? 1.2 : 1.0)) // 점수 비례 스케일 (25% hard cap)
@@ -532,7 +527,8 @@ export async function executeBuyDecisions(
     // 수정: 합산 배수 최소 0.25 보장 → 25%→6.25% 이상 유지
     const rawCompoundMult = modeScale * macroSizingMult * winRateMultiplier * lossStreakMult;
     // v9-fix: Paper는 학습용 → 곱연산 하한 0.5 (Live: 0.25) — 데이터 수집 위해 적극적 매수
-    const compoundMultFloor = Math.max(ctxPaper ? 0.5 : 0.25, rawCompoundMult);
+    // v11: paper도 live와 동일 바닥 (실전 동일 조건 학습)
+    const compoundMultFloor = Math.max(0.25, rawCompoundMult);
     if (rawCompoundMult < compoundMultFloor) {
       logger.info(
         `  🔒 ${cand.stock_code}: 곱연산 하한 적용 (${rawCompoundMult.toFixed(3)}→${compoundMultFloor.toFixed(3)}): mode=${modeScale} macro=${macroSizingMult} wr=${winRateMultiplier.toFixed(2)} streak=${lossStreakMult}`,

@@ -382,7 +382,7 @@ sseRoutes.get('/stream', (c) => {
                 return null;
               }
             })(),
-            recentEvents: getRecentEvents(10),
+            recentEvents: getRecentEvents(10, viewIsPaper ? 'paper' : 'live'),
             todayStats,
             newInsightCount: await getPool()
               .query(

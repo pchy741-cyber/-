@@ -64,7 +64,7 @@ export function tryRegimeRouterEntry(input: EntryInput): EntryVerdict {
     return { action: 'CONTINUE' };
   }
 
-  const routeMinScore = 60;
+  const routeMinScore = 75; // v11: 60→75 강화 (추격매수 방지, 충분한 기술적 신호 요구)
   const routeEffectiveScore = tech.score + candleBonus + structBonus;
   const aiOk = hasAI ? aiScore >= buyThreshold : !config.geminiEnabled; // Gemini OFF → AI 조건 면제
   if (routeEffectiveScore >= routeMinScore && aiOk) {

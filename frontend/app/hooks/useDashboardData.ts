@@ -91,8 +91,8 @@ export function useDashboardData() {
   const loadStatic = async (gen: number, vmOverride?: string) => {
     const vm = vmOverride ?? viewModeRef.current;
     const [w, s, t, sec, wc, wh, ts] = await Promise.allSettled([
-      api(`/watchlist?viewMode=${vm}`), api('/strategy'),
-      api(`/trades?limit=100&viewMode=${vm}`), api('/secrets'),
+      api(`/watchlist?viewMode=${vm}`), api(`/strategy?viewMode=${vm}`),
+      api(`/trades?limit=100&viewMode=${vm}`), api(`/secrets?viewMode=${vm}`),
       api('/withdraw/config').catch(() => null),
       api('/withdraw/history').catch(() => []),
       api(`/trades/today-stats?viewMode=${vm}`),
@@ -158,7 +158,7 @@ export function useDashboardData() {
         setUsDash(us);
       })).catch(() => {});
       if (!staticLoadedRef.current) {
-        api('/portfolio/allocation').then(ifCurrent((ac: AllocConfig) => { if (ac) setAllocConfig(ac); })).catch(() => {});
+        api(`/portfolio/allocation?viewMode=${vm}`).then(ifCurrent((ac: AllocConfig) => { if (ac) setAllocConfig(ac); })).catch(() => {});
       }
     } catch (err) { setLoading(false); console.error('[AAB] 데이터 로드 실패:', err); }
     finally { loadingRef.current = false; }

@@ -123,14 +123,10 @@ export function checkQualityGates(input: QualityGateInput): GateResult {
     sig: qSignalFlow,
   };
   const count = Object.values(details).filter(Boolean).length;
-  // 2026-06 성과 검토: WR 30.8% → 품질 게이트 최소 3개로 상향
-  // min=2는 너무 관대 → 잘못된 진입 70% → 승률 30.8% 원인
-  // paper: min=0 (연습모드 전면 개방 — 데이터 수집 최대화, is_paper 플래그로 live 오염 차단)
-  // v9: 랠리일(KOSPI +1.5%+) → 모멘텀 기회 포착 위해 3/6으로 완화
   const isRally = input.isRallyDay ?? false;
-  // v10: AI 없으면 5/6 게이트 통과 필수 (기술적 정밀 정렬 요구)
-  const liveMin = isPaper ? 0 : isRally ? 4 : aiScore >= 80 ? 4 : noAiForStock ? 5 : 5; // v10.7: 3/4→4/5 강화 (WR 30.8% 원인: 관대한 게이트)
-  const min = isPaper ? 0 : liveMin;
+  // v11: paper 3/6, live 4-5/6 (paper도 최소한의 품질 검증 필수)
+  const liveMin = isRally ? 4 : aiScore >= 80 ? 4 : 5;
+  const min = isPaper ? 3 : liveMin;
 
   return { passed: count >= min, count, min, details };
 }

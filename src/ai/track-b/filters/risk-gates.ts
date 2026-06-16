@@ -97,9 +97,9 @@ export function checkRiskGates(input: RiskGateInput): GateResult {
     breakout: rBreakoutConfirm,
   };
   const count = Object.values(details).filter(Boolean).length;
-  // v10: AI 없으면 리스크 게이트 강화 (2/5 → 3/5) — 무분별 진입 방지
+  // v11: AI 있어도 3/5 필수 (2/5는 너무 관대 → 위험한 진입 허용)
   const noAiMode = !input.aiScore || input.aiScore <= 0;
-  const min = noAiMode ? 3 : 2;
+  const min = noAiMode ? 4 : 3;
 
   return { passed: count >= min, count, min, details };
 }
