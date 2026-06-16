@@ -69,7 +69,8 @@ export async function generateAndStoreInsights(days: number = 60, isPaper?: bool
 export async function generateStrategyInsights(days: number = 60, isPaper?: boolean): Promise<StrategyInsight[]> {
   const insights: StrategyInsight[] = [];
   // isPaper 미지정 시 컨텍스트에서 추론 (하위 호환성)
-  const resolvedIsPaper = isPaper ?? (await import('../../config/context.js').then(m => m.getCtxIsPaper()));
+  const { getCtxIsPaper } = await import('../../config/context.js');
+  const resolvedIsPaper: boolean = isPaper ?? getCtxIsPaper();
 
   try {
     const [byMode, byHour, byDow, byHolding, bySource] = await Promise.all([
