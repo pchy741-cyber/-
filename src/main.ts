@@ -163,8 +163,10 @@ app.route('/', aiCostRoutes); // GET  /api/ai-cost (AI 비용 현황)
 app.route('/', aiLoopRoutes); // GET  /api/ai-loop/* (AI Loop 매매 조절)
 
 import { referenceRoutes } from './api/routes/references.js';
+import { researchRoutes } from './api/routes/research.js';
 
 app.route('/', referenceRoutes); // GET/POST/DELETE /api/references (트레이딩 레퍼런스)
+app.route('/', researchRoutes); // GET /api/research/files, POST /api/research/upload, POST /api/research/query
 
 // 확장 기능 (OFF by default, 설정에서 켜야 사용)
 import { dividendRoutes } from './api/routes/dividend.js';

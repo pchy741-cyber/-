@@ -351,6 +351,19 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       combinedSources = combinedSources ? `${combinedSources}\n\n${investorFlowSection}` : investorFlowSection;
     }
 
+    // 4-j. 증권사 리서치 리포트 (네이버 리서치 자동 크롤링 → DB → Gemini 주입, 비용 0원)
+    try {
+      const { autoCrawlBrokerResearch, getBrokerResearchSection } = await import('./broker-research.js');
+      await autoCrawlBrokerResearch(allStocks); // 새 리포트 자동 수집
+      const brokerSection = await getBrokerResearchSection();
+      if (brokerSection) {
+        combinedSources = combinedSources ? `${combinedSources}\n\n${brokerSection}` : brokerSection;
+        logger.info('증권사 리서치 Gemini에 주입', { component: 'TRACK_A' });
+      }
+    } catch (err) {
+      logger.warn(`증권사 리서치 로드 실패 (스킵): ${err}`, { component: 'TRACK_A' });
+    }
+
     // 4-d / 4-e / 4-f. 시장 인텔리전스 병렬 수집 (실패해도 파이프라인 계속)
     try {
       const stockMeta = allStocks.map((s) => ({ stockCode: s.stock_code, companyName: s.stock_name }));

@@ -6,6 +6,7 @@ import { api } from '../lib/utils';
 import { toDisplayName } from '../lib/helpers';
 import { TodayThemePanel } from './news/TodayThemePanel';
 import { NewsSummaryPanel } from './news/NewsSummaryPanel';
+import { ResearchBotPanel } from './news/ResearchBotPanel';
 
 interface RegimeSummary { summary: string; regime: string; score: number; recommended: string; reasons: string[] }
 interface YTVideo { title: string; link: string; channel: string; publishedAt: string; sentiment: 'bullish' | 'bearish' | 'neutral'; sentimentScore: number }
@@ -145,6 +146,8 @@ function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: a
           }`}>{regime.recommended}</span>
         </div>
       )}
+
+      <ResearchBotPanel />
 
       <TodayThemePanel theme={theme} themeLoading={themeLoading} isInWatchlist={isInWatchlist} addingCode={addingCode} addThemeStock={addThemeStock} />
 
