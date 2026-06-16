@@ -216,7 +216,7 @@ export default function Dashboard() {
                 {tab === 'watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} dash={dash} usDash={usDash} toast={toast} confirm={confirm} onRefresh={load} viewMode={viewMode} />}
               </ErrorBoundary>
               <ErrorBoundary fallbackTitle="뉴스 로딩 오류">
-                {tab === 'news' && <NewsView watchlist={watchlist} setWatchlist={setWatchlist} />}
+                {tab === 'news' && <NewsView watchlist={watchlist} setWatchlist={setWatchlist} viewMode={viewMode} />}
               </ErrorBoundary>
               <ErrorBoundary fallbackTitle="배당 로딩 오류">
                 {tab === 'dividend' && <DividendView toast={toast} viewMode={viewMode} confirm={confirm} mpData={mpData} onRefreshMp={refreshMp} />}

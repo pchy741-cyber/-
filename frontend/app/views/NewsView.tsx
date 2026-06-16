@@ -10,7 +10,7 @@ import { NewsSummaryPanel } from './news/NewsSummaryPanel';
 interface RegimeSummary { summary: string; regime: string; score: number; recommended: string; reasons: string[] }
 interface YTVideo { title: string; link: string; channel: string; publishedAt: string; sentiment: 'bullish' | 'bearish' | 'neutral'; sentimentScore: number }
 
-function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist: (v: any) => void }) {
+function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: any[]; setWatchlist: (v: any) => void; viewMode?: string }) {
   const [stockNews, setStockNews] = useState<any[]>([]);
   const [macroNews, setMacroNews] = useState<string[]>([]);
   const [summary, setSummary] = useState<string>('');
@@ -45,7 +45,7 @@ function NewsView({ watchlist, setWatchlist }: { watchlist: any[]; setWatchlist:
     setAddingCode(stock.code);
     try {
       await api('/watchlist', { method: 'POST', body: JSON.stringify({ stock_code: stock.code, stock_name: stock.name, market: stock.market }) });
-      const w = await api('/watchlist');
+      const w = await api(`/watchlist?viewMode=${viewMode}`);
       setWatchlist(Array.isArray(w) ? w : []);
     } catch { /* 이미 있거나 실패 */ }
     finally { setAddingCode(null); }

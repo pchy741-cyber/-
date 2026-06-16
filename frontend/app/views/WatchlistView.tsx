@@ -43,7 +43,7 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, confirm, 
     setSelectedStock(code);
     setAnalysisLoading(true);
     try {
-      const data = await api(`/stock/${code}/analysis`);
+      const data = await api(`/stock/${code}/analysis?viewMode=${viewMode}`);
       if (!controller.signal.aborted) setAnalysis(data);
     } catch { if (!controller.signal.aborted) setAnalysis(null); }
     finally { clearTimeout(timeout); if (!controller.signal.aborted) setAnalysisLoading(false); }
@@ -100,7 +100,7 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, confirm, 
         setFastAnalyzing((prev) => new Set(prev).add(target.code));
         setTimeout(() => setFastAnalyzing((prev) => { const next = new Set(prev); next.delete(target.code); return next; }), 180_000);
       }
-      const w = await api('/watchlist'); setWatchlist(Array.isArray(w) ? w : []);
+      const w = await api(`/watchlist?viewMode=${viewMode}`); setWatchlist(Array.isArray(w) ? w : []);
     } catch (err: unknown) { toast(err instanceof Error ? err.message : String(err), 'err'); }
   };
 
@@ -110,16 +110,19 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, confirm, 
     setWatchlist((prev: WatchlistItem[]) => prev.filter(s => s.stock_code !== code));
   };
 
-  // 스코어 스파크라인 캐시
+  // 스코어 스파크라인 캐시 — 이미 로드된 종목은 재요청 없음
   const [sparklines, setSparklines] = useState<Map<string, number[]>>(new Map());
+  const sparklineFetchedRef = React.useRef<Set<string>>(new Set());
   React.useEffect(() => {
     const codes = watchlist.map((s: WatchlistItem) => s.stock_code).filter((c: string) => /^[0-9]{6}$/.test(c));
-    codes.forEach((code: string) => {
+    const unfetched = codes.filter((c: string) => !sparklineFetchedRef.current.has(c));
+    unfetched.forEach((code: string) => {
+      sparklineFetchedRef.current.add(code);
       api(`/stock/${code}/score-history`).then((rows: Array<{ score: number }>) => {
         if (Array.isArray(rows) && rows.length >= 2) {
           setSparklines((prev) => new Map(prev).set(code, rows.map((r: { score: number }) => Number(r.score))));
         }
-      }).catch(() => {});
+      }).catch(() => { sparklineFetchedRef.current.delete(code); });
     });
   }, [watchlist]);
 
