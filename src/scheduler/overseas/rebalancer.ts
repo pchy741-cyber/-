@@ -17,6 +17,8 @@ export interface RebalanceContext {
   sellOrders: string[];
   extendedAlertSentAt: Map<string, number>;
   cash: number; // caller의 추적 중인 현금 (이중 재조회 방지)
+  defenseBlockBuys?: boolean; // market defense EMERGENCY 시 rotation 매수 차단
+  positionReduction?: number; // market defense 포지션 축소 비율 (0~0.5)
 }
 
 export interface RebalanceResult {
@@ -64,7 +66,16 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
 
     const targetCashPct = 15;
     const holdingCount = positionWeights.length;
-    const targetWeightPer = holdingCount > 0 ? (100 - targetCashPct) / holdingCount : 0;
+    const baseTargetWeight = holdingCount > 0 ? (100 - targetCashPct) / holdingCount : 0;
+    // Market Defense: positionReduction이 설정되면 목표 비중 축소 → 과다비중 감지 강화
+    const defenseReduction = ctx.positionReduction ?? 0;
+    const targetWeightPer = defenseReduction > 0 ? baseTargetWeight * (1 - defenseReduction) : baseTargetWeight;
+    if (defenseReduction > 0) {
+      logger.info(
+        `🛡️ 방어 리밸런싱: 목표비중 ${baseTargetWeight.toFixed(1)}% → ${targetWeightPer.toFixed(1)}% (축소 ${(defenseReduction * 100).toFixed(0)}%)`,
+        { component: 'REBALANCE' },
+      );
+    }
     const actualCashPct = rbTotal > 0 ? (cash / rbTotal) * 100 : 100;
     const usdKrw = await fetchExchangeRate();
 
@@ -98,6 +109,11 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
       if (overweight.length > 0) {
         rbLines.push('', '📌 *조정 추천* (1% 단위)');
         for (const p of overweight) {
+          // sell-logic에서 이미 매도(부분익절 등) 처리된 종목은 리밸런싱 매도 스킵 (double-sell 방지)
+          if (sellOrders.some((o) => o.includes(p.code))) {
+            logger.info(`📊 리밸런싱 스킵 ${p.code}: 이번 사이클 매도 주문 이미 존재`, { component: 'REBALANCE' });
+            continue;
+          }
           const excessPct = p.weight - targetWeightPer;
           const adjustPct = Math.max(1, Math.ceil(excessPct)); // v10.8: 1% 단위 절상 (기존 Math.min no-op 수정)
           const trimValue = rbTotal * (adjustPct / 100);
@@ -153,7 +169,7 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
         const rbAlertKey = 'rebalance_alert';
         const lastRb = extendedAlertSentAt.get(rbAlertKey) ?? 0;
         if (Date.now() - lastRb > 30 * 60_000) {
-          await sendTelegramMessage(rbLines.join('\n'));
+          await sendTelegramMessage(rbLines.join('\n')).catch(() => {});
           extendedAlertSentAt.set(rbAlertKey, Date.now());
         }
       }
@@ -186,6 +202,8 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
     const winners = positionWeights
       .filter((p) => {
         if (p.pnl < WINNER_MIN_PNL) return false;
+        // sell-logic에서 매도된 종목은 승자로 선택하지 않음 (매도 후 재매수 방지)
+        if (sellOrders.some((o) => o.includes(p.code))) return false;
         const tech = techResults.find((t) => t.code === p.code);
         if (!tech) return false;
         // 기술적 강세: score > 0 또는 MA20 위 또는 모멘텀
@@ -193,7 +211,11 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
       })
       .sort((a, b) => b.pnl - a.pnl); // 가장 좋은 순
 
-    if (losers.length > 0 && winners.length > 0) {
+    // EMERGENCY 방어 시 rotation 매수 차단 (매도만 허용)
+    if (ctx.defenseBlockBuys && losers.length > 0 && winners.length > 0) {
+      logger.info(`🛡️ Market Defense EMERGENCY — 패자→승자 로테이션 매수 차단`, { component: 'REBALANCE' });
+    }
+    if (losers.length > 0 && winners.length > 0 && !ctx.defenseBlockBuys) {
       for (let li = 0; li < Math.min(2, losers.length); li++) {
         const loser = losers[li];
         // v10.8: 각 loser를 다른 winner에 분산 로테이션 (집중 방지)
@@ -233,7 +255,11 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
               `🔄 로테이션 ${loser.code}(${loser.pnl.toFixed(1)}%) x${sellExec.filledQty} → ${winner.code} 매수 대기`,
             );
 
-            // 승자 추가 매수
+            // 승자 추가 매수 — fresh 데이터로 가격/수량 참조
+            const freshHoldings = await getHoldings(isPaper);
+            const freshWinner = freshHoldings.get(winner.code);
+            const freshQty = freshWinner?.qty ?? winner.qty;
+            const freshAvg = freshWinner?.avgPrice ?? winner.avgPrice;
             const buyQty = Math.max(1, Math.floor((proceeds * 0.95) / winner.price)); // 5% 여유
             if (buyQty > 0) {
               const buyExec = await executeOverseasOrder(
@@ -243,8 +269,8 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
                 winner.price,
                 winner.exchange,
                 `🔄 로테이션매수: ${loser.code}→${winner.code} (승자 집중)`,
-                winner.qty,
-                winner.avgPrice,
+                freshQty,
+                freshAvg,
                 { isPaper },
               );
               if (buyExec.submitted && buyExec.filledQty > 0) {

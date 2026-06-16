@@ -419,7 +419,7 @@ export async function autoSwitchStrategy(): Promise<void> {
         `외국인: ${regime.foreignNetBuy > 0 ? '+' : ''}${regime.foreignNetBuy}\n\n` +
         `사유: ${regime.reasons.slice(-3).join(' / ')}\n` +
         `수동 변경: 대시보드 > 설정`,
-    );
+    ).catch(() => {});
 
     const { onModeSwitch } = await import('./ceo-workflow.js');
     await onModeSwitch(currentMode, targetMode);

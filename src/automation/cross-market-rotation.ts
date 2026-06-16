@@ -218,7 +218,7 @@ export async function runRotationCheck(): Promise<void> {
           `비중 조정: KR ${signal.baseKrPct}%→${signal.adjustedKrPct}% / US ${signal.baseUsPct}%→${signal.adjustedUsPct}%\n` +
           `사유: ${signal.rotationReason}` +
           (signal.safeHavenEtf ? `\n파킹: ${signal.safeHavenEtf}` : ''),
-      );
+      ).catch(() => {});
     }
   } catch (e) {
     logger.error(`로테이션 체크 실패: ${e}`, { component: COMP });
@@ -264,7 +264,7 @@ export async function proposeAllocationRebalance(): Promise<void> {
         COALESCE(SUM(CASE WHEN side='SELL' AND filled_price <= avg_buy_price
           THEN ABS(filled_price - avg_buy_price) * filled_quantity END), 0) AS total_loss
       FROM orders
-      WHERE trading_mode = $1 AND created_at >= NOW() - INTERVAL '30 days'
+      WHERE trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END) AND created_at >= NOW() - INTERVAL '30 days'
         AND stock_code ~ '^[0-9]{6}$'
         AND status IN ('FILLED', 'PARTIAL')
     `,
@@ -286,7 +286,7 @@ export async function proposeAllocationRebalance(): Promise<void> {
         COALESCE(SUM(CASE WHEN side='SELL' AND filled_price <= avg_buy_price
           THEN ABS(filled_price - avg_buy_price) * filled_quantity END), 0) AS total_loss
       FROM orders
-      WHERE trading_mode = $1 AND created_at >= NOW() - INTERVAL '30 days'
+      WHERE trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END) AND created_at >= NOW() - INTERVAL '30 days'
         AND stock_code !~ '^[0-9]{6}$'
         AND status IN ('FILLED', 'PARTIAL')
     `,

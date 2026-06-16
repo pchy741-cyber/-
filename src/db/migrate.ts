@@ -27,18 +27,49 @@ function isIgnorable(msg: string): boolean {
 
 /**
  * ';' 구분자로 SQL 파일을 개별 구문으로 분리한다.
+ * $$ 달러쿼팅 블록(PL/pgSQL DO/CREATE FUNCTION)은 내부 세미콜론을 보호한다.
  * 빈 구문 및 주석만 있는 청크는 제외한다.
  */
 function splitSqlStatements(sql: string): string[] {
-  return sql
-    .split(';')
-    .map((s) => s.trim())
-    .filter((s) => {
-      if (!s) return false;
-      // 주석 제거 후 실제 SQL이 있는지 확인
-      const withoutComments = s.replace(/--[^\n]*/g, '').trim();
-      return withoutComments.length > 0;
-    });
+  const stmts: string[] = [];
+  let current = '';
+  let inDollarQuote = false;
+
+  // $$ 블록 안의 세미콜론을 무시하며 분리
+  const parts = sql.split('$$');
+  for (let i = 0; i < parts.length; i++) {
+    if (inDollarQuote) {
+      // $$ 블록 내부: 세미콜론 포함 그대로 유지
+      current += '$$' + parts[i];
+      inDollarQuote = false;
+    } else {
+      // 일반 SQL: 세미콜론으로 분리
+      const subParts = parts[i].split(';');
+      for (let j = 0; j < subParts.length; j++) {
+        current += subParts[j];
+        if (j < subParts.length - 1) {
+          // 세미콜론에서 구문 완료
+          const trimmed = current.trim();
+          if (trimmed) {
+            const withoutComments = trimmed.replace(/--[^\n]*/g, '').trim();
+            if (withoutComments.length > 0) stmts.push(trimmed);
+          }
+          current = '';
+        }
+      }
+      if (i < parts.length - 1) {
+        current += '$$';
+        inDollarQuote = true;
+      }
+    }
+  }
+  // 마지막 잔여 구문
+  const trimmed = current.trim();
+  if (trimmed) {
+    const withoutComments = trimmed.replace(/--[^\n]*/g, '').trim();
+    if (withoutComments.length > 0) stmts.push(trimmed);
+  }
+  return stmts;
 }
 
 /**

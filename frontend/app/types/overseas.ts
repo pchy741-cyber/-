@@ -41,11 +41,17 @@ export interface UsDashboard {
 export interface OverseasSummary {
   totalInvestedUsd?: number;
   totalInvestedKrw?: number;
+  totalMarketValueUsd?: number;
   totalMarketValueKrw?: number;
   unrealizedPnlUsd?: number;
+  unrealizedPnlKrw?: number;
+  unrealizedPnlPct?: number;
+  realizedPnlUsd?: number;
+  realizedPnlKrw?: number;
   cashUsd?: number;
   cashKrw?: number;
   fxRate?: number;
+  scores?: { code: string; name?: string; score: number; signal?: string }[];
   holdings?: UsHolding[];
 }
 

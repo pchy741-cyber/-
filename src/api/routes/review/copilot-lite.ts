@@ -3,6 +3,7 @@
  * GET /review/copilot-lite?viewMode=paper|live
  */
 import { Hono } from 'hono';
+import { getKSTNow } from '../../../utils/time.js';
 
 const app = new Hono();
 
@@ -78,9 +79,9 @@ app.get('/review/copilot-lite', async (c) => {
 
     // 1. 월간 MDD
     try {
-      const monthStart = new Date();
-      monthStart.setDate(1);
-      monthStart.setHours(0, 0, 0, 0);
+      const monthStart = getKSTNow();
+      monthStart.setUTCDate(1);
+      monthStart.setUTCHours(0, 0, 0, 0);
       const { rows } = await pool.query(
         `SELECT total_value FROM portfolio_snapshots WHERE snapshot_at >= $1 AND is_paper = $2 ORDER BY snapshot_at ASC`,
         [monthStart.toISOString(), viewIsPaper],

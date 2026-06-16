@@ -596,7 +596,7 @@ export async function cleanupPositionState(code: string, isPaper?: boolean): Pro
     `${pfx}dynamic_tpsl_${code}`,
     `${pfx}scale_in_${code}`,
     `${pfx}turtle_trail_${code}`,
-    `sync_sell_pending_${code}`,
+    `${pfx}sync_sell_pending_${code}`,
   ];
   await getPool()
     .query(`DELETE FROM overseas_state WHERE key = ANY($1)`, [keys])

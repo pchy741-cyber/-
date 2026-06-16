@@ -184,7 +184,7 @@ export async function reconcileExternalSells(): Promise<void> {
         const ghostOrderNo = `EXT_${Date.now().toString(36)}`;
         await getPool().query(
           `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2,
-            realized_pnl = CASE WHEN $3 > 0 THEN ($3 * (1 - ${KR_FEE.SELL_FEE_PCT}) - avg_buy_price) * total_quantity ELSE realized_pnl END
+            realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + ($3 * (1 - ${KR_FEE.SELL_FEE_PCT}) - avg_buy_price) * total_quantity ELSE realized_pnl END
            WHERE id = $1`,
           [chain.id, '외부매도 (KIS 앱 직접 매도)', fillPrice],
         );
@@ -207,7 +207,7 @@ export async function reconcileExternalSells(): Promise<void> {
         );
         await sendTelegramMessage(
           `🚪 외부 매도 감지\n종목: ${chain.stock_code}\n수량: ${chain.total_quantity}주\n수익률: ${pnlPct}%\n→ KIS 잔고 없음, DB 체인 정리 완료`,
-        );
+        ).catch(() => {});
       } catch (e) {
         logger.error(`외부 매도 처리 오류 [${chain.stock_code} #${chain.id}]: ${e}`, { component: 'RECONCILER' });
       }
@@ -322,7 +322,7 @@ async function _reconcileKisSyncExternalSells(
       );
       await sendTelegramMessage(
         `📋 KIS 외부매도 자동 기록\n종목: ${wlName}(${stockCode})\n수량: ${snap.quantity}주\n평단: ${snap.avgBuyPrice.toLocaleString()}원\n매도가: ${sellPrice.toLocaleString()}원\n수익률: ${pnlPct}%\n손익: ${Math.round(pnl).toLocaleString()}원`,
-      );
+      ).catch(() => {});
 
       _getKisSyncSnapshot().delete(stockCode);
     } catch (e) {

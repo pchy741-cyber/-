@@ -90,7 +90,7 @@ export async function sendBuyRecommendations(ctx: ExtendedAlertContext): Promise
   );
   alertLines.push('', '⏰ 정규장 KST 22:30 — 그 전에 한투앱 지정가 예약 가능');
   if (alertTargets.length > 0 || holdingSells.length > 0) {
-    await sendTelegramMessage(alertLines.join('\n'));
+    await sendTelegramMessage(alertLines.join('\n')).catch(() => {});
     alertTargets.forEach((t) => {
       extendedAlertSentAt.set(t.code, Date.now());
     });
@@ -135,7 +135,7 @@ export async function sendHoldingAlerts(ctx: {
           ``,
           `한투앱 → 해외주식 → ${code} → 매도`,
         ].join('\n'),
-      );
+      ).catch(() => {});
       extendedAlertSentAt.set(`sell_${code}`, now);
     }
     if (pnl <= -8.0) {
@@ -151,7 +151,7 @@ export async function sendHoldingAlerts(ctx: {
           ``,
           `한투앱 → 해외주식 → ${code} → 매도`,
         ].join('\n'),
-      );
+      ).catch(() => {});
       extendedAlertSentAt.set(`sell_${code}`, now);
     }
   }

@@ -819,14 +819,19 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     const sellOrders = sellResult.sellOrders;
     cash = sellResult.cash;
 
-    // v10.8: 매도 후 portfolioValue 재계산 (후속 로직에 stale 값 방지)
-    {
-      const postSellHoldingEval = Array.from(holdings.entries()).reduce((sum, [code, h]) => {
-        const tech = techResults.find((t) => t.code === code);
-        return sum + (tech ? tech.price.currentPrice * h.qty : h.avgPrice * h.qty);
-      }, 0);
-      portfolioValue = cash + postSellHoldingEval;
+    // v10.8: 매도 후 holdings Map에서 매도 종목 제거 + portfolioValue/holdingEvalUsd 재계산
+    for (const so of sellOrders) {
+      const code = typeof so === 'string' ? so : (so as any).code;
+      if (code && holdings.has(code)) {
+        const h = holdings.get(code)!;
+        if (h.qty <= 0) holdings.delete(code);
+      }
     }
+    let holdingEvalUsdPost = Array.from(holdings.entries()).reduce((sum, [code, h]) => {
+      const tech = techResults.find((t) => t.code === code);
+      return sum + (tech ? tech.price.currentPrice * h.qty : h.avgPrice * h.qty);
+    }, 0);
+    portfolioValue = cash + holdingEvalUsdPost;
 
     // ── 4-c. 터틀 전략 비활성화 — sell-logic이 기존 터틀 포지션도 관리 ──
 
@@ -839,7 +844,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     // 손실 한도 — 해외 포트폴리오(USD) 기준, Paper/Live 분리
     const osLimit = getOverseasLossTiers(isPaper());
     const holdingCostUsd = Array.from(holdings.entries()).reduce((sum, [, h]) => sum + h.qty * h.avgPrice, 0);
-    const unrealizedLossUsd = holdingCostUsd - holdingEvalUsd; // 양수 = 손실
+    const unrealizedLossUsd = holdingCostUsd - holdingEvalUsdPost; // 양수 = 손실
     const lossPctOfPortfolio = portfolioValue > 0 ? (unrealizedLossUsd / portfolioValue) * 100 : 0;
 
     if (lossPctOfPortfolio >= osLimit.killPct) {
@@ -930,7 +935,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         const domesticInvestedUsd = fxNow > 0 ? domesticInvestedKrw / fxNow : 0;
         // 국내 투자중 금액이 $100 이상일 때만 비중 체크 (통합증거금 현금만 있으면 스킵)
         if (domesticInvestedUsd >= 100) {
-          const grandInvestedUsd = (holdingEvalUsd || 0) + domesticInvestedUsd;
+          const grandInvestedUsd = (holdingEvalUsdPost || 0) + domesticInvestedUsd;
           const { rows: allocRows } = await getPool().query(
             'SELECT us_pct FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1',
             [isPaper()],
@@ -955,7 +960,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           } catch {
             /* 로테이션 미설정 시 원래값 유지 */
           }
-          const currentUsPct = grandInvestedUsd > 0 ? ((holdingEvalUsd || 0) / grandInvestedUsd) * 100 : 0;
+          const currentUsPct = grandInvestedUsd > 0 ? ((holdingEvalUsdPost || 0) / grandInvestedUsd) * 100 : 0;
           if (currentUsPct > targetUsPct * 1.15) {
             allocBlocked = true;
             logger.warn(
@@ -1089,7 +1094,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         lossCooldownSet,
         recentLossSet,
         memoryBlockedStocks,
-        vixRegime,
+        vixRegime: effectiveVixRegime,
         vixValue,
         gradualCooldown,
         upcomingEarnings,
@@ -1312,10 +1317,11 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         if (qtyBySizing === 0 && portfolioValue < 500 && target.price.currentPrice <= cash * 0.95) {
           qtyBySizing = 1;
         }
-        // 집중캡 사전 체크: 소액은 50%, 일반은 25% (매수→즉시매도 루프 방어)
+        // 집중캡 사전 체크: concentration-cap.ts의 CONC_CAP(25%)와 정렬
+        // $500 미만: cap 무제한 (concentration-cap도 skip), $500+: 25% (cap 발동 기준과 동일)
         const existingHolding = updatedHoldings.get(target.code);
         const existingQty = existingHolding?.qty ?? 0;
-        const CONC_CAP_PCT = portfolioValue < 2000 ? 0.50 : 0.25;
+        const CONC_CAP_PCT = portfolioValue < 500 ? 1.0 : 0.25;
         let maxQtyByConc =
           portfolioValue > 0
             ? Math.max(0, Math.floor((portfolioValue * CONC_CAP_PCT) / priceWithFee) - existingQty)
@@ -1497,6 +1503,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       sellOrders,
       extendedAlertSentAt: s.extendedAlertSentAt.get(mk) ?? new Map(),
       cash,
+      defenseBlockBuys: !isPaper() && defenseSignal.blockNewBuys,
+      positionReduction: !isPaper() ? defenseSignal.positionReduction : 0,
     });
     const rebalanceAlerts = rbResult.rebalanceAlerts;
     cash = rbResult.cash;
@@ -1537,7 +1545,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         ? [...buyOrders.map((o) => `BUY ${o}`), ...sellOrders.map((o) => `SELL ${o}`)].join(', ').slice(0, 120)
         : `스캔 ${techResults.length}종목 — 매매 없음`;
     logSystemEvent(`해외주식[${modeTag}]`, 'success', shortSummary);
-    if (totalActions > 0) await sendTelegramMessage(summary);
+    if (totalActions > 0) await sendTelegramMessage(summary).catch(() => {});
 
     // ── Memory Agent: 거래 패턴 자동 추출 (세션당 1회) ──
     extractTradingPatterns().catch(() => {});

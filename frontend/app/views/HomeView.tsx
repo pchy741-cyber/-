@@ -145,7 +145,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const usHoldings = usDash?.holdings || (dash?.overseas?.holdings ?? []);
   const filled = trades.filter((t: Trade) => t.status === 'FILLED' || t.status === 'PENDING')
     .sort((a: Trade, b: Trade) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  const todayTrades = filled.filter((t: Trade) => new Date(t.created_at).toDateString() === new Date().toDateString());
+  const kstToday = new Date(Date.now() + 9 * 3600_000).toISOString().split('T')[0];
+  const todayTrades = filled.filter((t: Trade) => new Date(new Date(t.created_at).getTime() + 9 * 3600_000).toISOString().split('T')[0] === kstToday);
 
   const unrealizedPnl = p?.unrealizedPnl ?? 0;
   const realizedPnl   = p?.realizedPnl ?? 0;
@@ -193,7 +194,6 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const hasOverseasHoldings = usHoldings.length > 0;
 
   // 서버 KST 기준 todayStats 우선 사용 (클라이언트 TZ 의존 제거)
-  const todayStr = new Date().toDateString();
   const _krTodaySells = todayTrades.filter((t: Trade) => t.side === 'SELL' && t.trigger_source !== 'OVERSEAS');
   const _krRealizedPnl = _krTodaySells.reduce((sum: number, t: Trade) => {
     if (t.realized_pnl != null) return sum + Number(t.realized_pnl);
@@ -215,7 +215,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const _usTodaySells = trades.filter((t: Trade) =>
     t.status === 'FILLED' && t.side === 'SELL' && t.trigger_source === 'OVERSEAS' &&
     !/^[0-9]{6}$/.test(t.stock_code) &&
-    new Date(t.created_at).toDateString() === todayStr
+    new Date(new Date(t.created_at).getTime() + 9 * 3600_000).toISOString().split('T')[0] === kstToday
   );
   const usTodaySells = _usTodaySells;
   const _usTabPnlUsd = _usTodaySells.reduce((sum: number, t: Trade) => {

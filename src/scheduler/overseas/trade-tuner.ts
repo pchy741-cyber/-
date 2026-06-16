@@ -164,7 +164,7 @@ async function fetchRecentTrades(mode: string): Promise<TradeRecord[]> {
       (regexp_match(o.ai_reasoning, '\\[avgBuy:([0-9]+\\.?[0-9]*)\\]'))[1]::numeric AS avg_buy
     FROM orders o
     WHERE o.trigger_source = 'OVERSEAS'
-      AND o.trading_mode = $1
+      AND o.trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
       AND o.side = 'SELL'
       AND o.status = 'FILLED'
       AND o.filled_price IS NOT NULL
@@ -199,7 +199,7 @@ async function fetchRecentTrades(mode: string): Promise<TradeRecord[]> {
         `
         SELECT created_at FROM orders
         WHERE stock_code = $1 AND side = 'BUY' AND trigger_source = 'OVERSEAS'
-          AND trading_mode = $2 AND status = 'FILLED'
+          AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END) AND status = 'FILLED'
           AND created_at < $3
         ORDER BY created_at DESC LIMIT 1
       `,

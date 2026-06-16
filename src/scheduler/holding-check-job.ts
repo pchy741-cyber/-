@@ -59,9 +59,6 @@ export async function runHoldingCheckJob(): Promise<void> {
     const mode = (strategy?.mode ?? 'SWING') as StrategyMode;
     const _globalParams = STRATEGY_PARAMS[mode];
 
-    // 단타 모드는 별도 강제청산 로직(15:20)이 있으므로 스킵
-    if (mode === 'SCALPING') return;
-
     const now = new Date();
     const forceCloseDecisions: TradeDecision[] = [];
 
@@ -73,6 +70,8 @@ export async function runHoldingCheckJob(): Promise<void> {
         chain.strategy_mode && chain.strategy_mode in STRATEGY_PARAMS
           ? (chain.strategy_mode as keyof typeof STRATEGY_PARAMS)
           : mode;
+      // 글로벌 SCALPING이고 체인도 SCALPING이면 별도 강제청산(15:20)이 있으므로 스킵
+      if (chainMode === 'SCALPING') continue;
       const params = STRATEGY_PARAMS[chainMode];
       const isInverseEtf = INVERSE_ETF_CODES.has(chain.stock_code);
       // 인버스 ETF: 일일 리밸런싱 손실 방지 — 전략 설정 무관하게 4영업일 하드 타임아웃
@@ -191,7 +190,7 @@ export async function runHoldingCheckJob(): Promise<void> {
       await tradeExecutor.processDecisions(forceCloseDecisions, mode, 'HOLDING_CHECK');
 
       const summary = forceCloseDecisions.map((d) => `${d.stock_code} x${d.quantity} (${d.reasoning})`).join('\n');
-      await sendTelegramMessage(`⏰ 시간 손절 실행:\n${summary}`);
+      await sendTelegramMessage(`⏰ 시간 손절 실행:\n${summary}`).catch(() => {});
     }
   } catch (error) {
     logger.error(`보유일 체크 실패: ${error}`, { component: 'HOLDING_CHECK' });
@@ -509,5 +508,5 @@ async function checkEscapeTargets(chains: any[]): Promise<void> {
   }
 
   const summary = decisions.map((d) => `${d.stock_code} x${d.quantity} — ${d.reasoning}`).join('\n');
-  await sendTelegramMessage(`🚪 탈출 매도 실행:\n${summary}`);
+  await sendTelegramMessage(`🚪 탈출 매도 실행:\n${summary}`).catch(() => {});
 }

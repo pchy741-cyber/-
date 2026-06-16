@@ -23,8 +23,7 @@ const DEFAULT_INTERVAL_MS = 5 * 60_000; // 5분
 const FAST_INTERVAL_MS = 3 * 60_000; // 3분 (VIX STRESS/CRISIS, 황금구간)
 const TURBO_INTERVAL_MS = 2 * 60_000; // 2분 (개장벨 09:00~09:30, 마감벨 15:00~15:20)
 const SLOW_INTERVAL_MS = 8 * 60_000; // 8분 (유휴 상태)
-const CURSED_INTERVAL_MS = 15 * 60_000; // 15분 (10:20~13:00 마의시간대 — 신규매수 금지, AI 리소스 절감)
-const PAUSE_CHECK_MS = 30 * 60_000; // 30분 (장외 PAUSED 상태 체크 간격)
+const PAUSE_CHECK_MS = 15 * 60_000; // 15분 (장외 PAUSED 상태 체크 — 시장 오픈 빠른 감지)
 const MAX_CONSECUTIVE_ERRORS = 3;
 const RECOVERY_COOLDOWN_MS = 5 * 60_000; // 5분 — 에러 정지 후 자동 재시도까지 대기
 const MAX_RECOVERY_ATTEMPTS = 3; // 자동 재시도 최대 횟수 (이후 진짜 정지)
@@ -483,8 +482,9 @@ function adaptiveInterval(cachedRegions?: Set<string>, cachedPhase?: USMarketPha
       case 'GOLDEN_PM': // 13:00~15:00 ★ 황금 오후
         state.adaptiveIntervalMs = FAST_INTERVAL_MS;
         return;
-      case 'CURSED': // 10:20~13:00 ☠️ 마의 시간대 — 신규매수 금지
-        state.adaptiveIntervalMs = CURSED_INTERVAL_MS;
+      case 'CURSED': // 10:20~13:00 ☠️ 마의 시간대 — 신규매수 금지, 매도감시는 유지
+        // 15분→8분: 보유종목 손절/익절 감시는 계속 필요 (신규매수만 차단)
+        state.adaptiveIntervalMs = SLOW_INTERVAL_MS;
         return;
       default:
         state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
@@ -500,6 +500,12 @@ function adaptiveInterval(cachedRegions?: Set<string>, cachedPhase?: USMarketPha
   }
   if (usPhase === 'LUNCH' || usPhase === 'MIDDAY') {
     state.adaptiveIntervalMs = SLOW_INTERVAL_MS;
+    return;
+  }
+  // 미국 프리/포스트마켓 (US_EXTENDED) — 정규장보다 느리지만 매도감시 유지
+  const isUSExtended = openRegions.has('US_EXTENDED') && !openRegions.has('US');
+  if (isUSExtended) {
+    state.adaptiveIntervalMs = SLOW_INTERVAL_MS; // 8분 (보유종목 손절/익절 감시)
     return;
   }
 

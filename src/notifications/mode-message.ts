@@ -32,10 +32,10 @@ export async function sendModeMessage(mode: AlertMode, message: string): Promise
   const prefix = MODE_PREFIX[mode];
   // 이미 prefix가 있으면 중복 방지
   if (message.includes('[실전]') || message.includes('[연습]') || message.includes('[시스템]')) {
-    return sendTelegramMessage(message);
+    return sendTelegramMessage(message).catch(() => {});
   }
   const formatted = `${prefix}\n${message}`;
-  return sendTelegramMessage(formatted);
+  return sendTelegramMessage(formatted).catch(() => {});
 }
 
 /** isPaper boolean → 모드 변환 */

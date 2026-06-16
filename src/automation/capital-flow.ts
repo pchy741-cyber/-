@@ -389,7 +389,7 @@ export async function analyzeCapitalFlow(): Promise<void> {
         `해방 자금: ~${freedAmount.toLocaleString()}원\n\n` +
         `${summary}\n\n` +
         `해방된 자금은 다음 Track B에서 자동 재투자됩니다.`,
-    );
+    ).catch(() => {});
   }
 }
 

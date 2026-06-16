@@ -90,6 +90,7 @@ export async function getSeedCapitalOverseas(): Promise<number> {
     const { rows } = await getPool().query('SELECT value FROM system_state WHERE key = $1', [key]);
     if (rows[0] && Number(rows[0].value) > 0) {
       cachedOverseasLive = Number(rows[0].value);
+      cachedOverseasLiveAt = Date.now();
       return cachedOverseasLive;
     }
   } catch {}

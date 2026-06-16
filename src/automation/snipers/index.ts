@@ -79,7 +79,7 @@ export async function emitSniperSignal(signal: SniperSignal): Promise<void> {
       `투자 배수: x${signal.budgetMultiplier.toFixed(1)}\n\n` +
       `근거: ${signal.reasoning}\n\n` +
       `자동 매수 진행 예정 (10분 내)`,
-  );
+  ).catch(() => {});
 }
 
 function getTypeEmoji(type: SniperType): string {

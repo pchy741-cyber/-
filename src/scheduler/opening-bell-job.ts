@@ -447,6 +447,11 @@ JSON만: {"scores":[{"code":"코드","score":점수},...]}`;
     });
 
     if (decisions.length > 0) {
+      // 킬스위치 재확인: 분석 도중 킬스위치 발동 시 매수 차단
+      if (isKillSwitchActive('KR')) {
+        logger.warn('🛑 Kill Switch 발동 (분석 중) — 개장벨 매매 취소', { component: 'OPENING_BELL' });
+        return;
+      }
       logger.info(`⚡ [OPENING] 개장 결정 ${decisions.length}건 실행`, { component: 'OPENING_BELL' });
       await tradeExecutor.processDecisions(decisions, 'SWING', 'OPENING_BELL');
     } else {

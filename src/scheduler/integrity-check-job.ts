@@ -165,7 +165,7 @@ export async function runIntegrityCheck(): Promise<void> {
       critical.length > 0 ? 'error' : 'running',
       `${critical.length}건 치명, ${warning.length}건 경고`,
     );
-    await sendTelegramMessage(msg);
+    await sendTelegramMessage(msg).catch(() => {});
     logger.warn(`정합성 체크: ${critical.length}건 치명, ${warning.length}건 경고`, { component: COMPONENT });
   } catch (err) {
     logger.error(`정합성 체크 실패: ${err}`, { component: COMPONENT });

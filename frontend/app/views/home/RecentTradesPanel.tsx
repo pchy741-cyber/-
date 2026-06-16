@@ -23,7 +23,8 @@ export default function RecentTradesPanel({
     const isOv = isOvTrade(t);
     return isUsTab ? isOv : !isOv;
   });
-  const todayTabTrades = tabFiltered.filter((t: Trade) => new Date(t.created_at).toDateString() === new Date().toDateString());
+  const kstToday = new Date(Date.now() + 9 * 3600_000).toISOString().split('T')[0];
+  const todayTabTrades = tabFiltered.filter((t: Trade) => new Date(new Date(t.created_at).getTime() + 9 * 3600_000).toISOString().split('T')[0] === kstToday);
 
   return (
     <Panel title={isUsTab ? '최근 매매 (미국)' : '최근 매매'} badge={`오늘 ${todayTabTrades.length}건`} badgeColor={todayTabTrades.length > 0 ? 'emerald' : undefined}>

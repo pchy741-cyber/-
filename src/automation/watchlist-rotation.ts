@@ -162,7 +162,7 @@ export async function runWatchlistRotation(): Promise<void> {
       ]
         .filter(Boolean)
         .join('\n');
-      await sendTelegramMessage(msg);
+      await sendTelegramMessage(msg).catch(() => {});
     } else {
       logger.info('워치리스트 순환: 변경 없음', { component: 'WATCHLIST_ROTATION' });
     }
@@ -262,7 +262,7 @@ export async function runDailyMarketScan(): Promise<void> {
     if (allRankingStocks.length === 0) {
       logger.warn('시장 발굴: KIS 순위 데이터 없음', { component: 'DAILY_MARKET_SCAN' });
       if (dailyRemoved.length > 0) {
-        await sendTelegramMessage(`🗑️ 일일정리(${dailyRemoved.length}): ${dailyRemoved.join(' | ')}`);
+        await sendTelegramMessage(`🗑️ 일일정리(${dailyRemoved.length}): ${dailyRemoved.join(' | ')}`).catch(() => {});
       }
       return;
     }
@@ -403,7 +403,7 @@ export async function runDailyMarketScan(): Promise<void> {
       ]
         .filter(Boolean)
         .join('\n');
-      await sendTelegramMessage(msg);
+      await sendTelegramMessage(msg).catch(() => {});
     } else {
       logger.info('일일 정비: 변경 없음', { component: 'DAILY_MARKET_SCAN' });
     }

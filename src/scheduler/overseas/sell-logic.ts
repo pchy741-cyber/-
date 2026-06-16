@@ -182,12 +182,10 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       atrPct: atrPctValue,
     });
     const hardTpPct = dyn.tpPct;
-    let stopLossPct: number;
-    if (holding.slPct != null) {
-      stopLossPct = holding.slPct; // SL은 매수 시점 기준 유지 (안정성)
-    } else {
-      stopLossPct = -dyn.slPct; // slPct는 절댓값(양수) → 비교용 음수로 변환
-    }
+    // SL: 매 사이클마다 현재 조건으로 재계산 (tuner 반영, 시장 변화 적응)
+    // 단, 기존 DB값이 더 타이트(덜 음수)하면 보수적으로 유지
+    const dynamicSl = -dyn.slPct;
+    const stopLossPct = holding.slPct != null ? Math.max(holding.slPct, dynamicSl) : dynamicSl;
     // DB 동기화 (대시보드 표시용) — v10.8: 루프 밖 static import 사용
     updateHoldingTpSl(code, hardTpPct, stopLossPct, paperMode).catch(() => {});
     const dynamicTrailDrop = calcDynamicTrailDrop({
@@ -302,7 +300,9 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     } else if (
       (vixRegime.regime === 'STRESS' || vixRegime.regime === 'CRISIS') &&
       pnlPct >= 1.0 &&
-      holdingDays >= 0.25
+      holdingDays >= 0.25 &&
+      // CRISIS 진입 포지션(과매도반등/BigMover)은 조기 청산하지 않음 — 평균 +5~10% 목표
+      !(vixRegime.regime === 'CRISIS' && pnlPct < 3.0 && holdingDays < 2)
     ) {
       sellReason = `VIX급락 수익선제확정(${vixRegime.regime}): +${pnlPct.toFixed(1)}% → 급락전 청산`;
 
@@ -352,6 +352,14 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       sellReason = `AI 급매도(${(ai.confidence * 100).toFixed(0)}%): ${ai.reasoning}`;
     } else if (ai?.action === 'SELL' && ai.confidence >= minAiSellConf && holdingDays >= minHoldForSell) {
       sellReason = `AI 매도(${(ai.confidence * 100).toFixed(0)}%): ${ai.reasoning}`;
+    } else if (
+      (!ai || (ai.action === 'SELL' && ai.confidence < minAiSellConf)) &&
+      tech.rsi > 82 &&
+      pnlPct >= 1.5 &&
+      holdingDays >= 0.25
+    ) {
+      // BigMover RSI 82-88 진입의 대칭 exit — 고 RSI 모멘텀 반전 빠른 청산
+      sellReason = `BigMover 과매수 익절: RSI=${tech.rsi.toFixed(0)} +${pnlPct.toFixed(1)}% (모멘텀 반전 위험)`;
     } else if (
       (!ai || (ai.action === 'SELL' && ai.confidence < minAiSellConf)) &&
       tech.rsi > 78 &&

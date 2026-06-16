@@ -79,7 +79,7 @@ export default function Dashboard() {
     try {
       await api('/trading-mode', { method: 'POST', body: JSON.stringify({ mode }) });
       toast(mode === 'live' ? '실전모드로 전환됐습니다' : '연습모드로 전환됐습니다', 'ok');
-      load(false);
+      load(true); // 모드 전환 후 전체 데이터 새로고침
     } catch (e: unknown) {
       toast('모드 전환 실패: ' + ((e as Error)?.message ?? ''), 'err');
     } finally {

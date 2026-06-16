@@ -99,7 +99,7 @@ export async function getPortfolioFlowStatus(isPaperOverride?: boolean) {
 export async function onStockAdded(stockCode: string, stockName: string): Promise<void> {
   logger.info(`CEO 종목 추가: ${stockName} (${stockCode})`, { component: 'CEO_FLOW' });
 
-  await sendTelegramMessage(`📌 *종목 추가됨*: ${stockName} (${stockCode})\n즉시 AI 분석 시작합니다 (2~5분 소요)`);
+  await sendTelegramMessage(`📌 *종목 추가됨*: ${stockName} (${stockCode})\n즉시 AI 분석 시작합니다 (2~5분 소요)`).catch(() => {});
 
   // Track A 즉시 트리거 (fire-and-forget — isRunning 가드가 중복 실행 방지)
   try {
@@ -147,9 +147,9 @@ export async function onStockRemoved(stockCode: string, isPaperOverride?: boolea
 
     await sendTelegramMessage(
       `🔓 *종목 제거 + 자동 청산*: ${stockCode}\n` + `보유 ${activeChain.total_quantity}주 시장가 매도 실행`,
-    );
+    ).catch(() => {});
   } else {
-    await sendTelegramMessage(`📤 종목 제거: ${stockCode} (보유 없음, 분석만 중단)`);
+    await sendTelegramMessage(`📤 종목 제거: ${stockCode} (보유 없음, 분석만 중단)`).catch(() => {});
   }
 }
 
@@ -187,7 +187,7 @@ export async function onModeSwitch(fromMode: string, toMode: string, isPaperOver
           `손실 포지션 ${losingPositions.length}개 감지:\n` +
           losingPositions.map((p) => `  ${p.stockCode}: ${p.pnlPct.toFixed(1)}%`).join('\n') +
           `\n\n자동 자금흐름 최적화가 다음 주기에 정리합니다.`,
-      );
+      ).catch(() => {});
     }
   } else if (toMode === 'SWING' && fromMode === 'DEFENSE') {
     // 시장 풀림 → 현금 비율 확인, 재투자 준비
@@ -198,7 +198,7 @@ export async function onModeSwitch(fromMode: string, toMode: string, isPaperOver
       `🟢 *스윙 모드 복귀!*\n\n` +
         `현금 ${cashRatio.toFixed(0)}% (${balance.orderableCash.toLocaleString()}원) 투자 대기 중\n` +
         `다음 Track B에서 매수 후보 자동 진입 시작`,
-    );
+    ).catch(() => {});
   }
 }
 

@@ -2,6 +2,7 @@ import pg from 'pg';
 import { getCtxIsPaper } from '../config/context.js';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
 import {
   memCreateChain,
   memGetActiveStrategy,
@@ -374,10 +375,13 @@ export async function getRecentSources(
 
 // ── DB 트랜잭션 헬퍼 ──
 
-export async function withTransaction<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+export async function withTransaction<T>(
+  fn: (client: pg.PoolClient) => Promise<T>,
+  isolation: 'READ COMMITTED' | 'REPEATABLE READ' | 'SERIALIZABLE' = 'REPEATABLE READ',
+): Promise<T> {
   const client = await getPool().connect();
   try {
-    await client.query('BEGIN');
+    await client.query(`BEGIN ISOLATION LEVEL ${isolation}`);
     const result = await fn(client);
     await client.query('COMMIT');
     return result;
@@ -623,7 +627,7 @@ export async function insertSnapshot(snapshot: {
 export async function getTodayStartSnapshot(isPaperOverride?: boolean) {
   if (useMemory) return memGetTodayStartSnapshot();
   const isPaper = isPaperOverride ?? getCtxIsPaper();
-  const today = new Date().toISOString().split('T')[0];
+  const today = getKSTNow().toISOString().split('T')[0];
   const { rows } = await queryWithRetry(
     `SELECT * FROM portfolio_snapshots WHERE snapshot_at >= $1 AND is_paper = $2
      ORDER BY snapshot_at ASC LIMIT 1`,

@@ -209,7 +209,7 @@ export async function autoGraduate(): Promise<void> {
               `PnL: ${(perf.totalPnlKrw / 10000).toFixed(0)}만원\n` +
               `사유: ${risk.reasons.join(', ')}\n\n` +
               (risk.autoApply ? '✅ 자동 적용 완료' : '→ 대시보드 전략 Lab에서 승인'),
-          );
+          ).catch(() => {});
         } catch {
           /* 텔레그램 미설정 시 무시 */
         }
@@ -309,7 +309,7 @@ export async function checkDemotion(): Promise<void> {
         const { sendTelegramMessage } = await import('../notifications/telegram.js');
         await sendTelegramMessage(
           `⚠️ *전략 강등*\n\n${mode}: Live 14일 성과 미달\n승률: ${(livePerf.winRate * 100).toFixed(0)}%\nPF: ${livePerf.profitFactor.toFixed(2)}\n→ Paper 모드로 복귀`,
-        );
+        ).catch(() => {});
       } catch {}
     }
   } catch (e) {

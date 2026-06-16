@@ -46,8 +46,8 @@ function StockAnalysisPanel({ stockName, analysis, isLoading }: StockAnalysisPan
               <h4 className="text-xs font-semibold text-slate-400 mb-2">큰손(외국인/기관) 동향</h4>
               {f ? (
                 <div className="space-y-2 text-xs">
-                  <div className="flex justify-between"><span className="text-slate-500">외국인</span><span className={f.foreignNet > 0 ? 'text-emerald-400' : 'text-rose-400'}>{f.foreignNet > 0 ? '사는 중 +' : '파는 중 '}{f.foreignNet?.toLocaleString()}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-500">기관</span><span className={f.institutionNet > 0 ? 'text-emerald-400' : 'text-rose-400'}>{f.institutionNet > 0 ? '사는 중 +' : '파는 중 '}{f.institutionNet?.toLocaleString()}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">외국인</span><span className={(f.foreignNet ?? 0) > 0 ? 'text-emerald-400' : 'text-rose-400'}>{(f.foreignNet ?? 0) > 0 ? '사는 중 +' : '파는 중 '}{(f.foreignNet ?? 0).toLocaleString()}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">기관</span><span className={(f.institutionNet ?? 0) > 0 ? 'text-emerald-400' : 'text-rose-400'}>{(f.institutionNet ?? 0) > 0 ? '사는 중 +' : '파는 중 '}{(f.institutionNet ?? 0).toLocaleString()}</span></div>
                   <div className="flex justify-between"><span className="text-slate-500">연속 매수</span><span className="font-bold">{f.foreignStreak ?? 0}일째</span></div>
                   <div className="flex justify-between"><span className="text-slate-500">흐름</span><span className={f.trend === 'STRONG_BUY' || f.trend === 'BUY' ? 'text-emerald-400' : f.trend === 'SELL' || f.trend === 'STRONG_SELL' ? 'text-rose-400' : 'text-slate-400'}>{f.trend === 'STRONG_BUY' ? '강하게 사는 중' : f.trend === 'BUY' ? '사는 중' : f.trend === 'SELL' ? '파는 중' : f.trend === 'STRONG_SELL' ? '강하게 파는 중' : '관망'}</span></div>
                 </div>
@@ -69,7 +69,7 @@ function StockAnalysisPanel({ stockName, analysis, isLoading }: StockAnalysisPan
               <h4 className="text-xs font-semibold text-slate-400 mb-2">증권사 전문가 의견</h4>
               {con ? (
                 <div className="space-y-2 text-xs">
-                  <div className="flex justify-between"><span className="text-slate-500">예상 목표가</span><span className="font-bold">{con.targetPrice?.toLocaleString()}원</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">예상 목표가</span><span className="font-bold">{con.targetPrice != null ? con.targetPrice.toLocaleString() + '원' : '-'}</span></div>
                   <div className="flex justify-between"><span className="text-slate-500">얼마나 오를 수 있나</span><span className={(con.upsidePct ?? 0) > 0 ? 'text-emerald-400' : 'text-rose-400'}>{Number(con.upsidePct ?? 0) > 0 ? '+' : ''}{Number(con.upsidePct ?? 0).toFixed(1)}%</span></div>
                   <div className="flex justify-between"><span className="text-slate-500">전문가 의견</span><span>사라 {con.buyCount}명 · 보유 {con.holdCount}명 · 팔아라 {con.sellCount}명</span></div>
                   <div className="flex justify-between"><span className="text-slate-500">종합</span><span className={con.consensusRating === 'STRONG_BUY' || con.consensusRating === 'BUY' ? 'text-emerald-400' : 'text-slate-400'}>{con.consensusRating === 'STRONG_BUY' ? '적극 매수' : con.consensusRating === 'BUY' ? '매수' : con.consensusRating === 'HOLD' ? '보유' : con.consensusRating === 'SELL' ? '매도' : '의견 없음'}</span></div>

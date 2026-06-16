@@ -60,7 +60,7 @@ async function syncDividendReceipts(): Promise<void> {
     }
     if (synced > 0) {
       logger.info(`배당 동기화: ${synced}건 신규 수령`, { component: COMP });
-      await sendTelegramMessage(`💰 배당금 ${synced}건 자동 동기화 완료`);
+      await sendTelegramMessage(`💰 배당금 ${synced}건 자동 동기화 완료`).catch(() => {});
     }
   } catch (e: any) {
     logger.warn(`배당 동기화 실패: ${e.message}`, { component: COMP });
@@ -95,7 +95,7 @@ async function monitorExDates(): Promise<void> {
       }
     }
     if (alerts.length > 0) {
-      await sendTelegramMessage(`💰 *배석일 경보*\n${alerts.join('\n')}`);
+      await sendTelegramMessage(`💰 *배석일 경보*\n${alerts.join('\n')}`).catch(() => {});
       logger.info(`배석일 경보: ${alerts.length}건`, { component: COMP });
     }
   } catch (e: any) {
@@ -200,7 +200,7 @@ async function simulateDRIP(): Promise<void> {
 
     if (totalDrip > 0) {
       logger.info(`[DRIP] ${totalDrip}주 자동 재투자 완료`, { component: COMP });
-      await sendTelegramMessage(`💰 [DRIP] 배당금 자동 재투자: ${totalDrip}주 추가 매수`);
+      await sendTelegramMessage(`💰 [DRIP] 배당금 자동 재투자: ${totalDrip}주 추가 매수`).catch(() => {});
     }
   } catch (e: any) {
     logger.warn(`DRIP 시뮬레이션 실패: ${e.message}`, { component: COMP });

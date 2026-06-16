@@ -254,7 +254,7 @@ export async function checkDailyLoss(params: {
         AND o.filled_price IS NOT NULL
         AND tc.avg_buy_price IS NOT NULL
         AND tc.is_paper = $2
-        AND o.trading_mode = $3
+        AND o.trading_mode IN ($3, CASE WHEN $3 = 'paper' THEN 'p_arch' ELSE $3 END)
     `,
       [today.toISOString(), getCtxIsPaper(), getCtxIsPaper() ? 'paper' : 'live'],
     );

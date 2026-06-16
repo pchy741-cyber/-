@@ -68,7 +68,7 @@ export async function getGradualCooldown(isPaper?: boolean): Promise<GradualCool
       FROM orders
       WHERE side = 'SELL'
         AND trigger_source = 'OVERSEAS'
-        AND trading_mode = $1
+        AND trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
         AND status = 'FILLED'
         AND created_at >= NOW() - INTERVAL '24 hours'
         AND (
@@ -114,7 +114,7 @@ export async function getGradualCooldownStocks(cooldown: GradualCooldown, isPape
       FROM orders
       WHERE side = 'SELL'
         AND trigger_source = 'OVERSEAS'
-        AND trading_mode = $2
+        AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
         AND status = 'FILLED'
         AND created_at >= NOW() - make_interval(hours => $1)
         AND (
@@ -183,7 +183,7 @@ export async function calcUncertaintyPenalty(params: {
       `
       SELECT ai_reasoning FROM orders
       WHERE stock_code = $1
-        AND trading_mode = $2
+        AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
         AND trigger_source = 'OVERSEAS'
         AND status = 'FILLED'
         AND created_at >= NOW() - INTERVAL '5 days'

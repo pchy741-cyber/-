@@ -1,4 +1,5 @@
 import { v4 as uuid } from 'uuid';
+import { getCtxIsPaper } from '../config/context.js';
 import { logger } from '../utils/logger.js';
 import type { AIScore, Order, StrategyConfig, TransactionChain, WatchlistItem } from './models.js';
 
@@ -235,7 +236,10 @@ export function memGetLatestScores(stockCodes: string[]): AIScore[] {
 
 // ── Transaction Chains ──
 export function memGetOpenChains(): TransactionChain[] {
-  return store.chains.filter((c) => ['OPEN', 'AVERAGING', 'PROFIT_TAKING'].includes(c.status));
+  const isPaper = getCtxIsPaper();
+  return store.chains.filter(
+    (c) => ['OPEN', 'AVERAGING', 'PROFIT_TAKING'].includes(c.status) && c.is_paper === isPaper,
+  );
 }
 
 export function memCreateChain(

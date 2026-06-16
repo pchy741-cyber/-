@@ -164,7 +164,7 @@ export async function autoTuneRegimeWeights(): Promise<void> {
         const { sendTelegramMessage } = await import('../notifications/telegram.js');
         await sendTelegramMessage(
           `📈 *황금비율 자동 조정* (${regime})\n${changes.map((c) => `• ${c}`).join('\n')}`,
-        );
+        ).catch(() => {});
       } catch {}
     }
   } catch (err) {

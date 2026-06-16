@@ -23,11 +23,11 @@ export async function runTrackAJob(additionalSources?: string): Promise<void> {
     reportSuccess();
 
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-    await sendTelegramMessage(`✅ Track A 분석 완료 (${elapsed}초)`);
+    await sendTelegramMessage(`✅ Track A 분석 완료 (${elapsed}초)`).catch(() => {});
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     await reportError('TRACK_A', msg);
-    await sendTelegramMessage(`❌ Track A 실패: ${msg}`);
+    await sendTelegramMessage(`❌ Track A 실패: ${msg}`).catch(() => {});
   } finally {
     isRunning = false;
   }

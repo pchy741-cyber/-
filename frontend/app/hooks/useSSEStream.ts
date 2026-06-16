@@ -105,6 +105,14 @@ export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
           const data = JSON.parse(e.data);
           if (Array.isArray(data.recentTrades) && data.recentTrades.length > 0) {
             setTrades(prev => {
+              // 모드 전환 직후: prev가 비어있으면(switchView에서 초기화됨) SSE 데이터로 교체
+              if (prev.length === 0) return data.recentTrades.slice(0, 200);
+              // trading_mode 교차오염 방지: SSE 데이터의 모드와 prev 모드가 다르면 SSE 데이터로 교체
+              const prevMode = String(prev[0]?.trading_mode ?? '');
+              const sseMode = String(data.recentTrades[0]?.trading_mode ?? '');
+              if (prevMode && sseMode && prevMode !== sseMode && sseMode !== 'p_arch') {
+                return data.recentTrades.slice(0, 200);
+              }
               const incomingMap = new Map<string, Trade>(data.recentTrades.map((t: Trade) => [String(t.id), t]));
               const existingIds = new Set(prev.map(t => String(t.id)));
               const updated = prev.map(t => {

@@ -221,7 +221,7 @@ export async function runStrategyOptimizer(): Promise<OptimizerResult[]> {
         (r) =>
           `• ${r.mode}: TP ${r.currentTp}→${r.bestTp.toFixed(1)}% SL ${r.currentSl}→${r.bestSl.toFixed(1)}% (Sharpe +${(((r.bestSharpe - r.currentSharpe) / Math.abs(r.currentSharpe || 1)) * 100).toFixed(0)}%)`,
       );
-      await sendTelegramMessage(`📈 *전략 최적화 완료*\n\n${lines.join('\n')}\n\n적용: Paper only`);
+      await sendTelegramMessage(`📈 *전략 최적화 완료*\n\n${lines.join('\n')}\n\n적용: Paper only`).catch(() => {});
     } catch (e) {
       logger.warn(`📈 텔레그램 알림 실패: ${e}`, { component: COMP });
     }

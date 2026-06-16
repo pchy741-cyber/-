@@ -99,7 +99,7 @@ function TradesView({ trades, watchlist, viewMode: dashViewMode }: { trades: Tra
         <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
           <div className="text-[10px] text-slate-500">실현 손익(원)</div>
           <div className={`text-lg font-black mt-1 ${totalPnlKrw >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-            {totalPnlKrw >= 0 ? '+' : ''}{totalPnlKrw.toLocaleString()}
+            {totalPnlKrw >= 0 ? '+' : ''}{Math.round(totalPnlKrw).toLocaleString()}
           </div>
         </div>
         <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">

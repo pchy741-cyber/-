@@ -998,9 +998,11 @@ export function isKospiOverrideActive(): boolean {
 
 settingsRoutes.post('/kospi-regime/override', async (c) => {
   // 오늘 자정까지 유효한 우회 플래그 설정
-  const now = new Date();
-  const midnight = new Date(now);
-  midnight.setHours(23, 59, 59, 999);
+  // KST 23:59:59.999 = UTC 14:59:59.999
+  const midnight = new Date();
+  midnight.setUTCHours(14, 59, 59, 999);
+  // 이미 KST 다음 날이면 (UTC 15:00~24:00) 다음 날 자정
+  if (Date.now() > midnight.getTime()) midnight.setUTCDate(midnight.getUTCDate() + 1);
   _kospiOverrideExpiry = midnight.getTime();
   logger.warn('⚠️ KOSPI 레짐 차단 수동 우회 활성화 (당일만)', { component: 'SETTINGS' });
   const { notifyAlert } = await import('../../notifications/web-push.js');

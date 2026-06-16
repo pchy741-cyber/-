@@ -9,10 +9,10 @@
  *   2. 전역 기본값 (baseIsPaper, 서버 기동 시 결정)
  */
 
-export {
-  getCtxIsPaper,
-  runWithMode,
-} from '../config/context.js';
+import { getCtxIsPaper as _getCtxIsPaper, runWithMode as _runWithMode } from '../config/context.js';
+
+export const getCtxIsPaper = _getCtxIsPaper;
+export const runWithMode = _runWithMode;
 
 export { baseIsPaper } from '../config/index.js';
 
@@ -21,6 +21,5 @@ export { baseIsPaper } from '../config/index.js';
  * runWithMode 바깥에서 호출하면 baseIsPaper 폴백.
  */
 export function isPaperCtx(): boolean {
-  const { getCtxIsPaper } = require('../config/context.js');
-  return getCtxIsPaper();
+  return _getCtxIsPaper();
 }

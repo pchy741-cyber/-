@@ -43,7 +43,7 @@ async function getOverseasTrades(days: number, isPaper: boolean): Promise<Overse
         AND status = 'FILLED'
         AND side = 'SELL'
         AND created_at >= $1
-        AND trading_mode = $2
+        AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
       ORDER BY created_at DESC`,
     [cutoff.toISOString(), isPaper ? 'paper' : 'live'],
   );
@@ -365,14 +365,14 @@ export async function analyzeOverseasHoldingPeriod(isPaper: boolean): Promise<Le
   const { rows: buys } = await getPool().query(
     `SELECT stock_code, created_at, filled_price FROM orders
      WHERE trigger_source = 'OVERSEAS' AND status = 'FILLED' AND side = 'BUY'
-       AND created_at >= $1 AND trading_mode = $2
+       AND created_at >= $1 AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
      ORDER BY created_at`,
     [cutoff.toISOString(), isPaper ? 'paper' : 'live'],
   );
   const { rows: sells } = await getPool().query(
     `SELECT stock_code, created_at, filled_price, avg_buy_price FROM orders
      WHERE trigger_source = 'OVERSEAS' AND status = 'FILLED' AND side = 'SELL'
-       AND created_at >= $1 AND trading_mode = $2
+       AND created_at >= $1 AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
      ORDER BY created_at`,
     [cutoff.toISOString(), isPaper ? 'paper' : 'live'],
   );

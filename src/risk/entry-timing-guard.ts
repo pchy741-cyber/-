@@ -325,6 +325,15 @@ export function getTimeWeightedStop(params: {
       holdingHours,
     };
   }
+  // Phase3 SL: 기본 SL 이하 급락 시 즉시 손절 (갭다운 방어)
+  if (pnlPct <= baseSlPct) {
+    return {
+      action: 'EXECUTE_SL',
+      effectiveSlPct: baseSlPct,
+      reason: `Phase3 SL: PnL ${pnlPct.toFixed(1)}% <= SL ${baseSlPct}% (${(holdingHours / 24).toFixed(1)}일)`,
+      holdingHours,
+    };
+  }
   // v9-fix: 손실 중 강제 청산 72h→120h (5일, 회복 기회 부여)
   if (holdingHours >= 120) {
     return {
@@ -334,7 +343,7 @@ export function getTimeWeightedStop(params: {
       holdingHours,
     };
   }
-  // 3~5일 손실 중: 기본 SL로 보유 유지 (회복 대기)
+  // 3~5일 손실 중: SL 위 범위에서 회복 대기
   return {
     action: 'HOLD',
     effectiveSlPct: baseSlPct,

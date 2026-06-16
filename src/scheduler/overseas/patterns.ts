@@ -31,7 +31,7 @@ export async function extractTradingPatterns(isPaper?: boolean): Promise<Trading
                ELSE NULL END)::numeric, 1) AS avg_loss_pct
       FROM orders
       WHERE side = 'SELL' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'
-        AND trading_mode = $1
+        AND trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
         AND avg_buy_price > 0 AND filled_price > 0
         AND created_at >= NOW() - INTERVAL '60 days'
       GROUP BY stock_code
@@ -70,7 +70,7 @@ export async function extractTradingPatterns(isPaper?: boolean): Promise<Trading
         COUNT(*) FILTER (WHERE filled_price > avg_buy_price) AS wins
       FROM orders
       WHERE side = 'SELL' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'
-        AND trading_mode = $1
+        AND trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
         AND avg_buy_price > 0 AND filled_price > 0
         AND created_at >= NOW() - INTERVAL '90 days'
       GROUP BY dow
@@ -123,7 +123,7 @@ export async function getMemoryBlockedStocks(isPaper?: boolean): Promise<Set<str
       SELECT stock_code
       FROM orders
       WHERE side = 'SELL' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'
-        AND trading_mode = $1
+        AND trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
         AND avg_buy_price > 0 AND filled_price > 0
         AND created_at >= NOW() - INTERVAL '60 days'
       GROUP BY stock_code

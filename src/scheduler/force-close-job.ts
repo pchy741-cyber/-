@@ -74,7 +74,7 @@ export async function runForceCloseJob(): Promise<void> {
   ].filter(Boolean);
 
   if (lines.length > 0) {
-    await sendTelegramMessage(`📊 15:20 마감 점검:\n${lines.join('\n')}`);
+    await sendTelegramMessage(`📊 15:20 마감 점검:\n${lines.join('\n')}`).catch(() => {});
   }
 }
 
@@ -134,6 +134,6 @@ export async function runOpeningBellForceClose(): Promise<void> {
   if (toClose.length > 0) {
     await tradeExecutor.processDecisions(toClose, 'SCALPING', 'FORCE_CLOSE');
     const codes = toClose.map((d) => d.stock_code).join(', ');
-    await sendTelegramMessage(`🔔 10:00 개장벨 청산 완료 (${toClose.length}건): ${codes}`);
+    await sendTelegramMessage(`🔔 10:00 개장벨 청산 완료 (${toClose.length}건): ${codes}`).catch(() => {});
   }
 }

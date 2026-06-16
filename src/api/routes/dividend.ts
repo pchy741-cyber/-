@@ -476,8 +476,9 @@ dividendRoutes.get('/trade-tuner/result', async (c) => {
 dividendRoutes.post('/trade-tuner/run', async (c) => {
   try {
     const { runTradeTuner } = await import('../../scheduler/overseas/trade-tuner.js');
-    const result = await runTradeTuner(true);
-    return c.json({ ok: true, result });
+    const paperResult = await runTradeTuner(true);
+    const liveResult = await runTradeTuner(false);
+    return c.json({ ok: true, paper: paperResult, live: liveResult });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }

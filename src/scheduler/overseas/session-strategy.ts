@@ -242,11 +242,12 @@ export async function checkStrategyValidity(): Promise<StrategyAdjustment> {
 
   // VIX 레짐 변경 → 전략 재생성 필요
   if (currentRegime !== _sessionSnapshot.vixRegime) {
-    logger.info(`⚠️ VIX 레짐 변경: ${_sessionSnapshot.vixRegime} → ${currentRegime} — 전략 재생성`, {
+    const prevRegime = _sessionSnapshot.vixRegime;
+    logger.info(`⚠️ VIX 레짐 변경: ${prevRegime} → ${currentRegime} — 전략 재생성`, {
       component: 'SESSION_STRATEGY',
     });
     _sessionSnapshot.vixRegime = currentRegime;
-    return { adjusted: false, regenerate: true, reason: `VIX 레짐 ${_sessionSnapshot.vixRegime} → ${currentRegime}` };
+    return { adjusted: false, regenerate: true, reason: `VIX 레짐 ${prevRegime} → ${currentRegime}` };
   }
 
   let adjusted = false;

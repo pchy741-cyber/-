@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { getKSTNow } from '../../utils/time.js';
 import { getDefenseParkState } from '../../ai/track-b/defense-park.js';
 import { analyzeTechnicals } from '../../analysis/indicators.js';
 import { fetchAnalystConsensus } from '../../automation/analyst-consensus.js';
@@ -519,7 +520,7 @@ dashboardAnalysisRoutes.get('/ai-transparency', async (c) => {
        FROM orders o
        LEFT JOIN watchlist w ON o.stock_code = w.stock_code
        WHERE o.status = 'FILLED'
-         AND o.trading_mode = $1
+         AND o.trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
          AND o.ai_reasoning IS NOT NULL
          AND o.ai_reasoning != ''
        ORDER BY o.created_at DESC
@@ -773,7 +774,7 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
           COUNT(*) AS trades
         FROM orders
         WHERE ${osFilter}
-          AND trading_mode = $1
+          AND trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
           AND created_at >= NOW() - INTERVAL '12 months'
         GROUP BY 1
         ORDER BY 1 ASC
@@ -786,7 +787,7 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
         SELECT COALESCE(SUM((filled_price - avg_buy_price) * filled_quantity), 0) AS total_pnl
         FROM orders
         WHERE ${osFilter}
-          AND trading_mode = $1
+          AND trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
       `,
         [tradingMode],
       );
@@ -796,7 +797,7 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
         SELECT COALESCE(SUM((filled_price - avg_buy_price) * filled_quantity), 0) AS pnl
         FROM orders
         WHERE ${osFilter}
-          AND trading_mode = $1
+          AND trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
           AND created_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')
       `,
         [tradingMode],
@@ -1133,7 +1134,7 @@ dashboardAnalysisRoutes.get('/market/tax-estimate', async (c) => {
   try {
     const pool = getPool();
     const isPaper = resolveViewIsPaper(c);
-    const year = new Date().getFullYear();
+    const year = getKSTNow().getUTCFullYear();
     const { rows } = await pool.query(
       `
       SELECT

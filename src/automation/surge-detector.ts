@@ -68,7 +68,7 @@ export async function ensureAnchorStocks(): Promise<void> {
       );
       if (rowCount && rowCount > 0) {
         logger.info(`⚓ 앵커 종목 워치리스트 재편입: ${anchor.name}(${anchor.code})`, { component: COMPONENT });
-        await sendTelegramMessage(`⚓ 앵커 종목 재편입: ${anchor.name}(${anchor.code})`);
+        await sendTelegramMessage(`⚓ 앵커 종목 재편입: ${anchor.name}(${anchor.code})`).catch(() => {});
       }
     }
   } catch (err) {
@@ -94,7 +94,7 @@ export async function runSurgeDetector(): Promise<void> {
       const kisSync = await syncInterestGroups();
       if (kisSync.added.length > 0) {
         logger.info(`📲 KIS 즐겨찾기 신규 동기화: ${kisSync.added.join(', ')}`, { component: COMPONENT });
-        await sendTelegramMessage(`📲 KIS 즐겨찾기 자동 편입: ${kisSync.added.join(', ')}`);
+        await sendTelegramMessage(`📲 KIS 즐겨찾기 자동 편입: ${kisSync.added.join(', ')}`).catch(() => {});
       }
     } catch (kisErr) {
       logger.debug(`KIS 즐겨찾기 동기화 스킵: ${kisErr}`, { component: COMPONENT });
@@ -227,13 +227,13 @@ export async function runSurgeDetector(): Promise<void> {
     if (added.length > 0) {
       await sendTelegramMessage(
         `⚡ 급등 워치리스트 편입 (${added.length}개)\n` + added.map((s) => `• ${s}`).join('\n'),
-      );
+      ).catch(() => {});
     }
     if (clusterAdded.length > 0) {
       await sendTelegramMessage(
         `🔗 테마 클러스터 2차 편입 (${clusterAdded.length}개)\n` +
           clusterAdded.map((s) => `• ${s}`).join('\n'),
-      );
+      ).catch(() => {});
     }
 
     logger.info(

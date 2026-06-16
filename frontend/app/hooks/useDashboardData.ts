@@ -196,7 +196,8 @@ export function useDashboardData() {
     // SSE가 실시간 데이터를 3초/30초 주기로 보내므로
     // 폴링: 절전모드 없음 — 항상 일정 주기 (탭 복귀 시 즉시 갱신)
     const getInterval = () => {
-      const h = new Date().getHours(), m = new Date().getMinutes();
+      const kst = new Date(Date.now() + 9 * 3600_000);
+      const h = kst.getUTCHours(), m = kst.getUTCMinutes();
       const mins = h * 60 + m;
       const isMarket = mins >= 9 * 60 && mins < 15 * 60 + 30;
       return isMarket ? 120000 : 300000; // 장중: 2분, 장외: 5분
@@ -233,6 +234,7 @@ export function useDashboardData() {
     setTrades([]);
     setUsDash(null);
     setTodayStats(null);
+    setKillSwitch(null);
     setNewInsightCount(0);
     loadingRef.current = false;
     tradesLoadedRef.current = false;

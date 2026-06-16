@@ -37,6 +37,9 @@ export interface PreTradeCheckResult {
   reason: string;
 }
 
+// per-mode mutex: 동시 주문의 TOCTOU 방지
+const _validateLock = { paper: Promise.resolve(), live: Promise.resolve() };
+
 export class RiskEngine {
   async validateOrder(params: {
     stockCode: string;
@@ -54,6 +57,21 @@ export class RiskEngine {
     if (side === 'SELL') {
       return { approved: true, reason: '매도 주문 — 리스크 체크 통과' };
     }
+
+    // per-mode mutex: 동시 매수 주문의 일일손실/포지션한도 TOCTOU 방지
+    const lockKey = isPaper ? 'paper' : 'live';
+    let releaseLock: () => void;
+    const prev = _validateLock[lockKey];
+    _validateLock[lockKey] = new Promise<void>((r) => { releaseLock = r; });
+    await prev;
+    try {
+      return await this._doValidate(stockCode, orderValue, isPaper, params.ceoManual);
+    } finally { releaseLock!(); }
+  }
+
+  private async _doValidate(
+    stockCode: string, orderValue: number, isPaper: boolean, ceoManual?: boolean,
+  ): Promise<PreTradeCheckResult> {
 
     // Kill Switch 확인 (국내 매수만 차단)
     // CEO 수동매수는 킬스위치 해제 후 진입 허용 — MDD 체크에서 재발동하지 않음
@@ -95,7 +113,7 @@ export class RiskEngine {
 
     // 5-B. 월간 MDD -8% 체크
     // ceoManual: 수동매수 시 -8% 재발동 방지. 단, -15% 하드캡은 절대 우회 불가
-    if (!params.ceoManual) {
+    if (!ceoManual) {
       const monthlyMddCheck = await this.checkMonthlyMDD(isPaper);
       if (!monthlyMddCheck.approved) return monthlyMddCheck;
     } else {
@@ -368,7 +386,7 @@ export class RiskEngine {
           // 해외 투자 없으면 비율 체크 불필요
           const { rows: allocRows } = await getPool().query(
             'SELECT kr_pct FROM portfolio_allocation_config WHERE is_paper = $1 LIMIT 1',
-            [getCtxIsPaper()],
+            [isPaper],
           );
           const targetKrPct = Number(allocRows[0]?.kr_pct ?? 0);
           const currentKrPct = (domesticInvested / totalInvested) * 100;

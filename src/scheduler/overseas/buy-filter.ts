@@ -240,8 +240,8 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         }
         const sectorValue = sectorValues.get(t.sector) ?? 0;
         const sectorWeight = portfolioValue > 0 ? sectorValue / portfolioValue : 0;
-        if (sectorWeight >= 0.4) {
-          logger.info(`📊 섹터 집중도 초과: ${t.code}(${t.sector}) ${(sectorWeight * 100).toFixed(0)}% ≥ 40%`, {
+        if (sectorWeight >= 0.3) {
+          logger.info(`📊 섹터 집중도 초과: ${t.code}(${t.sector}) ${(sectorWeight * 100).toFixed(0)}% ≥ 30%`, {
             component: 'OVERSEAS',
           });
           return false;
@@ -292,8 +292,8 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
           });
           return false;
         }
-        // 중베타 RSI 과열 70 (Paper/Live 동일 — paper 75는 과열 진입 유발)
-        if (!t.isMomentum && !isOversold) {
+        // 중베타 RSI 과열 70 (Paper/Live 동일 — paper 75는 과열 진입 유발, BigMover 예외)
+        if (!t.isMomentum && !t.isBigMover && !isOversold) {
           const entryWatchSector = GLOBAL_WATCHLIST.find((w) => w.code === t.code)?.sector ?? '';
           const isMedBetaEntry = SECTOR_CLASS.MEDIUM_BETA.includes(entryWatchSector);
           const rsiOverheatLimit = 70;
@@ -307,18 +307,16 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const breadthBonus = freshBreadth >= 0.65 ? 0.02 : 0;
         const breadthAdj = breadthPenalty - breadthBonus;
         const isBigMoverTarget = t.isBigMover;
-        // Paper/Live 동일 기준 (Paper 할인 제거 — 낮은 확신 진입이 56% 손실의 원인)
-        const paperDiscount = 0;
-        // 신뢰도 바닥: Gemini 출력 0.68-0.72 현실 반영 (CAUTIOUS 0.76→0.68, DANGER 0.82→0.78, Recovery 0.85→0.78)
+        // 신뢰도 바닥: Gemini 출력 0.68-0.72 현실 반영
         const baseMinConf = recoveryMode
-          ? 0.78 - paperDiscount
+          ? 0.78
           : mq === 'GREAT'
-            ? 0.63 - paperDiscount
+            ? 0.63
             : mq === 'CAUTIOUS'
-              ? 0.68 - paperDiscount
+              ? 0.68
               : mq === 'DANGER'
-                ? 0.78 - paperDiscount
-                : 0.65 - paperDiscount;
+                ? 0.78
+                : 0.65;
         const minConf =
           (isBigMoverTarget
             ? Math.max(isPaper ? 0.5 : 0.6, baseMinConf - 0.05 + breadthAdj)
@@ -327,27 +325,11 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
           (isBigMoverTarget
             ? Math.max(
                 isPaper ? 0.45 : 0.55,
-                (recoveryMode
-                  ? 0.75 - paperDiscount
-                  : mq === 'GREAT'
-                    ? 0.6 - paperDiscount
-                    : mq === 'CAUTIOUS'
-                      ? 0.65 - paperDiscount
-                      : mq === 'DANGER'
-                        ? 0.75 - paperDiscount
-                        : 0.62 - paperDiscount) -
+                (recoveryMode ? 0.75 : mq === 'GREAT' ? 0.6 : mq === 'CAUTIOUS' ? 0.65 : mq === 'DANGER' ? 0.75 : 0.62) -
                   0.05 +
                   breadthAdj,
               )
-            : (recoveryMode
-                ? 0.75 - paperDiscount
-                : mq === 'GREAT'
-                  ? 0.6 - paperDiscount
-                  : mq === 'CAUTIOUS'
-                    ? 0.65 - paperDiscount
-                    : mq === 'DANGER'
-                      ? 0.75 - paperDiscount
-                      : 0.62 - paperDiscount) + breadthAdj) + vixRegime.confBoost;
+            : (recoveryMode ? 0.75 : mq === 'GREAT' ? 0.6 : mq === 'CAUTIOUS' ? 0.65 : mq === 'DANGER' ? 0.75 : 0.62) + breadthAdj) + vixRegime.confBoost;
         // 불확실성 보정
         const uncPenalty = uncertaintyMap.get(t.code);
         const effectiveConf = uncPenalty
@@ -371,16 +353,9 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // 유료 AI(Claude/GPT) 충전 시 해제 가능
         // ════════════════════════════════════════════════════════
 
-        // VIX CRISIS → 기술적 진입은 오버솔드 반등만 허용
-        if (vixRegime.regime === 'CRISIS') {
-          const oversold = t.rsi !== undefined && t.rsi <= 30;
-          if (!oversold && !t.isBigMover) {
-            logger.info(`  ⛔ VIX CRISIS 기술적 매수 제한: ${t.code} (RSI=${t.rsi?.toFixed(0) ?? '?'} — 과매도 아님)`, {
-              component: 'OVERSEAS',
-            });
-            return false;
-          }
-        }
+        // VIX CRISIS → Step 5에서 이미 통과한 종목은 여기서 다시 차단하지 않음
+        // Step 5 override: isPaper, oversoldBounce, AI고확신+STRONG_BUY, BigMover
+        // 여기서는 기술적 진입 경로 자체의 RSI/score 기준이 보호
 
         // ════════════════════════════════════════════════════════
         // 기술적 진입 — AI 없이 기술 지표 + 승률 피드백으로 매수
@@ -405,28 +380,22 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
           return false;
         }
 
-        // 개선#3: 개장 30분 차단 (BigMover/모멘텀 예외 — 급등은 개장 직후가 중요)
-        const usTimeScore = getUSTimeBonus();
-        if (usTimeScore <= -15 && !t.isBigMover && !t.isMomentum) {
-          logger.info(`  ⏰ 개장30분 차단: ${t.code} (변동성 구간 → 거짓 신호 위험)`, { component: 'OVERSEAS' });
-          return false;
-        }
-
         // ── 기술적 진입 경로 (강→약 순서) ──
-        // Paper/Live 동일 기준 (Paper score 할인 제거 — 약한 셋업 진입이 손실 원인)
-        const sAdj = 0;
-        // 1. BigMover (급등주) — 승률 피드백 강화: 우량주만 + 과열 제외
-        if (t.isBigMover && t.score >= 18 - sAdj && t.rsi >= 35 && t.rsi <= 72 && t.aboveMA20 && !effectiveBadWR)
+        // 1. BigMover (급등주) — 초급등(+8%)은 RSI 88, 일반급등(+5%)은 RSI 82까지 허용
+        // 근거: 10% 급등 종목 RSI는 75~85 범위 → 기존 72 상한으로 핫 종목 전부 차단됨
+        // 안전장치: dayRangePct≥40(일중저점 아님) + aboveMA20 + 승률 피드백 유지
+        const bigMoverRsiCap = t.price.changePct >= 8 ? 88 : 82;
+        if (t.isBigMover && t.score >= 18 && t.rsi >= 35 && t.rsi <= bigMoverRsiCap && t.dayRangePct >= 40 && t.aboveMA20 && !effectiveBadWR)
           return true;
-        // 2. Momentum (모멘텀 확인: 볼륨+추세)
-        if (t.isMomentum && t.score >= 20 - sAdj && t.aboveMA20 && t.rsi >= 38 && t.rsi <= 74) return true;
+        // 2. Momentum (모멘텀 확인: 볼륨+추세) — RSI 상한 79로 확장
+        if (t.isMomentum && t.score >= 20 && t.aboveMA20 && t.rsi >= 38 && t.rsi <= 79) return true;
         // 3. STRONG_BUY 기술 시그널 (복합 지표 합산 최상위)
-        if (t.signal === 'STRONG_BUY' && t.score >= 25 - sAdj && t.adx >= 18 && t.rsi >= 38 && t.rsi <= 74) return true;
+        if (t.signal === 'STRONG_BUY' && t.score >= 25 && t.adx >= 18 && t.rsi >= 38 && t.rsi <= 74) return true;
         // 4. Bollinger 돌파 + 모멘텀
-        if (t.bollingerBreakout === 'UP' && t.score >= 20 - sAdj && t.aboveMA20 && t.rsi >= 38 && t.rsi <= 75)
+        if (t.bollingerBreakout === 'UP' && t.score >= 20 && t.aboveMA20 && t.rsi >= 38 && t.rsi <= 75)
           return true;
         // 5. BUY 시그널 + 트렌드 확인 (ADX 확인, RSI 적정 범위)
-        if (t.signal === 'BUY' && t.score >= 30 - sAdj && t.adx >= 20 && t.rsi >= 42 && t.rsi <= 70 && t.aboveMA20)
+        if (t.signal === 'BUY' && t.score >= 30 && t.adx >= 20 && t.rsi >= 42 && t.rsi <= 70 && t.aboveMA20)
           return true;
         // 5b. Paper BUY 완화 — positiveCats<3 점수 반감(score≥15 → <30)으로 path-5 탈락하는 케이스 구제
         if (
@@ -446,9 +415,9 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
           return true;
         }
         // 6. 과매도 반등 (RSI ≤ 35 + 트렌드 약하지 않음)
-        if (isOversold && t.aboveMA60 && t.score >= 20 - sAdj) return true;
+        if (isOversold && t.aboveMA60 && t.score >= 20) return true;
         // 7. 고승률 종목 완화 진입 (5거래 이상, 승률 55%+)
-        if (hasGoodWinRate && t.signal !== 'SELL' && t.score >= 15 - sAdj && t.rsi >= 35 && t.rsi <= 72 && t.aboveMA20)
+        if (hasGoodWinRate && t.signal !== 'SELL' && t.score >= 15 && t.rsi >= 35 && t.rsi <= 72 && t.aboveMA20)
           return true;
         // 8. Paper 전용 추가 진입 경로 제거 (낮은 기준이 손실 원인)
 

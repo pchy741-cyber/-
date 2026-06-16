@@ -319,7 +319,7 @@ export async function monitorDisclosures(): Promise<DartDisclosure[]> {
       `총 ${highImportance.length}건의 주요 공시가 감지되었습니다.`,
     ].join('\n');
 
-    await sendTelegramMessage(message);
+    await sendTelegramMessage(message).catch(() => {});
   } else {
     logger.info(`DART 공시 ${disclosures.length}건 수집 (주요 공시 없음)`, { component: 'DART' });
   }

@@ -88,7 +88,7 @@ export async function runSelfHealing(): Promise<void> {
 
   // 연속 3회 이상 문제 시만 텔레그램 알림 (노이즈 방지)
   if (consecutiveHealthFailures >= 3 || fixed.length > 0) {
-    await sendTelegramMessage(msg);
+    await sendTelegramMessage(msg).catch(() => {});
   }
 
   _lastHealthCheck = new Date();

@@ -310,7 +310,7 @@ export async function notifyBuy(
         `수량: ${qty}주 × ${price.toLocaleString()}원\n` +
         `총액: ${totalKrw.toLocaleString()}원\n` +
         `사유: ${shortReason}`,
-    );
+    ).catch(() => {});
   } catch {
     /* telegram optional */
   }
@@ -370,7 +370,7 @@ export async function notifySell(
         `수량: ${qty}주 × ${price.toLocaleString()}원\n` +
         `손익: ${pnlKrwStr}\n` +
         `사유: ${shortReason}`,
-    );
+    ).catch(() => {});
   } catch {
     /* telegram optional */
   }
@@ -402,7 +402,7 @@ export async function notifyOverseasBuy(
         `수량: ${qty}주 × $${priceUsd.toFixed(2)}\n` +
         `총액: $${totalUsd.toFixed(2)}\n` +
         `사유: ${shortReason}`,
-    );
+    ).catch(() => {});
   } catch {
     /* telegram optional */
   }
@@ -440,7 +440,7 @@ export async function notifyOverseasSell(
         `수량: ${qty}주 × $${priceUsd.toFixed(2)}\n` +
         `손익: ${pnlUsdStr}\n` +
         `사유: ${shortReason}`,
-    );
+    ).catch(() => {});
   } catch {
     /* telegram optional */
   }
@@ -451,7 +451,7 @@ export async function notifyAlert(title: string, body: string) {
 
   try {
     const { sendTelegramMessage } = await import('./telegram.js');
-    await sendTelegramMessage(`⚠️ *${title}*\n${body}`);
+    await sendTelegramMessage(`⚠️ *${title}*\n${body}`).catch(() => {});
   } catch {
     /* telegram optional */
   }

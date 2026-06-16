@@ -35,16 +35,23 @@ import { chainManager } from './chain.js';
  * - AI 판단 → 리스크 검증 → 주문 → 체결 확인 → 체인 업데이트
  */
 export class TradeExecutor {
-  // (종목코드)-(YYYYMMDDHHMM) 키로 분당 1회 중복 주문 방지
+  // (종목코드)-(YYYYMMDDHHMM) 키로 분당 1회 중복 주문 방지 (5분 후 자동 정리)
   private readonly _recentOrderKeys = new Set<string>();
+  private _lastKeyCleanup = Date.now();
   // 🔒 청산 실패 카운터: 연속 실패 시 무한 루프 방지 (key: "mode-stockCode")
   private readonly _closeFailCount = new Map<string, number>();
-  // v9: 진행 중 매수 카운터 — 포지션 한도 경쟁조건 방지
+  // v9: 진행 중 매수 카운터 — 포지션 한도 경쟁조건 방지 (paper/live 분리)
   // 체크 시 DB 포지션 + 진행 중 매수 수를 합산하여 한도 검사
-  private _pendingBuyCount = 0;
+  private _pendingBuyCount = { paper: 0, live: 0 };
+  private _getPendingKey(): 'paper' | 'live' { return getCtxIsPaper() ? 'paper' : 'live'; }
 
   private _minuteKey(stockCode: string, action: string): string {
     const now = new Date();
+    // 5분마다 오래된 키 정리 (메모리 누수 방지)
+    if (now.getTime() - this._lastKeyCleanup > 5 * 60_000) {
+      this._recentOrderKeys.clear();
+      this._lastKeyCleanup = now.getTime();
+    }
     const ymd = now.toISOString().slice(0, 16).replace(/[-:T]/g, ''); // YYYYMMDDHHmm
     const mode = getCtxIsPaper() ? 'paper' : 'live';
     return `${mode}-${stockCode}-${action}-${ymd}`;
@@ -201,9 +208,10 @@ export class TradeExecutor {
   ): Promise<void> {
     const isPaperSnapshot = getCtxIsPaper();
 
-    // 이미 열린 체인이 있으면 물타기로 전환 (intent는 유지 — 물타기도 매수)
+    // 이미 열린 체인이 있으면 물타기로 전환
     const existingChain = await chainManager.findOpenChain(stockCode);
     if (existingChain) {
+      releaseBuyIntent(stockCode); // 물타기는 별도 intent 관리 — 여기서 해제
       logger.info(`이미 열린 체인 존재 → 물타기로 전환`, { component: 'EXECUTOR' });
       await this.executeAverageDown(stockCode, quantity, priceType, limitPrice, reasoning);
       return;
@@ -212,11 +220,12 @@ export class TradeExecutor {
     // v9: 동시 포지션 한도 확인 — _pendingBuyCount 포함하여 race condition 방지
     // 이전: DB 체인만 세면 동시 매수 시 8/8→9/8 초과 발생
     const allOpenChains = await getOpenChains(getCtxIsPaper());
-    const effectiveCount = allOpenChains.length + this._pendingBuyCount;
+    const pk = this._getPendingKey();
+    const effectiveCount = allOpenChains.length + this._pendingBuyCount[pk];
     if (effectiveCount >= config.risk.maxConcurrentPositions) {
       releaseBuyIntent(stockCode);
       logger.warn(
-        `⛔ 동시 포지션 한도 초과 (${effectiveCount}/${config.risk.maxConcurrentPositions}, pending=${this._pendingBuyCount}) → 신규 매수 차단: ${stockCode}`,
+        `⛔ 동시 포지션 한도 초과 (${effectiveCount}/${config.risk.maxConcurrentPositions}, pending=${this._pendingBuyCount[pk]}) → 신규 매수 차단: ${stockCode}`,
         { component: 'EXECUTOR' },
       );
       await logSystem(
@@ -226,7 +235,7 @@ export class TradeExecutor {
       );
       return;
     }
-    this._pendingBuyCount++; // 예약 슬롯 확보
+    this._pendingBuyCount[pk]++; // 예약 슬롯 확보
     try { // v9: 모든 exit path에서 _pendingBuyCount 감소 보장
 
     // 가격 우선순위: limit_price(파이프라인) → 메모리캐시 → Redis캐시 → KIS API
@@ -528,7 +537,7 @@ export class TradeExecutor {
       );
     }
 
-    } finally { this._pendingBuyCount = Math.max(0, this._pendingBuyCount - 1); } // v9: 슬롯 해제
+    } finally { this._pendingBuyCount[pk] = Math.max(0, this._pendingBuyCount[pk] - 1); } // v9: 슬롯 해제
   }
 
   /**
@@ -944,7 +953,7 @@ export class TradeExecutor {
                 `종목: ${stockCode}\n` +
                 `수익: +${pnlKrw.toLocaleString()}원 (+${pnlPct.toFixed(2)}%)\n` +
                 `저녁 식사비로 입금 확인해 주세요 😄`,
-            );
+            ).catch(() => {});
           })
           .catch(() => {});
       }
@@ -1024,7 +1033,7 @@ export class TradeExecutor {
         `모드: ${isPaper ? 'Paper' : 'LIVE'}\n` +
         `즉시 수동 확인 필요`;
       import('../notifications/telegram.js')
-        .then(({ sendTelegramMessage }) => sendTelegramMessage(orphanMsg))
+        .then(({ sendTelegramMessage }) => sendTelegramMessage(orphanMsg).catch(() => {}))
         .catch(() => {});
       await logSystem('ERROR', 'EXECUTOR', `고아포지션: ${params.side} ${params.stockCode} x${params.quantity} orderNo=${result.orderNo} — DB 기록 3회 실패`);
     }
@@ -1147,7 +1156,7 @@ export class TradeExecutor {
     const { sendTelegramMessage } = await import('../notifications/telegram.js');
     await sendTelegramMessage(
       `🛑 체결 미확인 경고!\n주문번호: ${orderNo}\n종목: ${stockCode}\n주문 취소 시도 완료. 수동 확인 필요`,
-    );
+    ).catch(() => {});
 
     return null; // 체결 실패 시그널
   }

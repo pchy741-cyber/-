@@ -496,9 +496,9 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 🌍 매크로 — 하루 2회 (08:30, 12:30)
+  // 🌍 매크로 — 하루 2회 (08:25, 12:25) — 08:30 수급분석과 KIS rate limit 충돌 방지
   cron.schedule(
-    '30 8,12 * * 1-5',
+    '25 8,12 * * 1-5',
     () => {
       getMacroSnapshot().catch((e) => logger.error(`매크로 실패: ${e}`, { component: 'SCHEDULER' }));
     },
@@ -773,7 +773,10 @@ export function startScheduler(): void {
     '0 19 * * 1-5',
     () => {
       import('./overseas/trade-tuner.js')
-        .then((m) => m.runTradeTuner(true))
+        .then(async (m) => {
+          await m.runTradeTuner(true);
+          await m.runTradeTuner(false);
+        })
         .catch((e) => logger.error(`Trade Tuner 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
@@ -976,17 +979,19 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 🌙 장외시간 황금시간 — 프리마켓(18:00~22:30) + 포스트마켓(06:30~10:00) 30분 간격
-  // 급락 줍줍(-3%↓) + 빅무버(+5%↑) 선점 + 보유종목 익절/손절 감시
+  // 🌙 장외시간 — 프리마켓(17:00~22:30) + 포스트마켓(05:30~10:00) 15분 간격
+  // 서머타임 US_EXTENDED는 KST 17:00 시작 → 18:00 아닌 17:00부터 감시
+  // 30분→15분: 보유종목 손절/익절 감시 간격 단축 (수익 보호)
   cron.schedule(
-    '*/30 18-21 * * 1-5',
+    '*/15 17-21 * * 1-5',
     () => {
       runOverseasDual().catch((e) => logger.error(`프리마켓 감시 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
+  // 포스트마켓: 06:00까지 정규장 cron이 커버, 06:00부터 포스트마켓 시작
   cron.schedule(
-    '*/30 7-9 * * 2-6',
+    '*/15 6-9 * * 2-6',
     () => {
       runOverseasDual().catch((e) => logger.error(`포스트마켓 감시 실패: ${e}`, { component: 'SCHEDULER' }));
     },

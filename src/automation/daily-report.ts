@@ -30,7 +30,7 @@ export async function generateDailyReport(): Promise<void> {
 
     const [{ rows: todayOrders }, { rows: closedToday }, { rows: weekData }, { rows: monthData }] = await Promise.all([
       getPool().query(
-        'SELECT * FROM orders WHERE created_at >= $1 AND status = $2 AND trading_mode = $3 ORDER BY created_at ASC',
+        `SELECT * FROM orders WHERE created_at >= $1 AND status = $2 AND trading_mode IN ($3, CASE WHEN $3 = 'paper' THEN 'p_arch' ELSE $3 END) ORDER BY created_at ASC`,
         [`${today}T00:00:00`, 'FILLED', isPaper ? 'paper' : 'live'],
       ),
       getPool().query(
@@ -116,7 +116,7 @@ export async function generateDailyReport(): Promise<void> {
       .filter(Boolean)
       .join('\n');
 
-    await sendTelegramMessage(report);
+    await sendTelegramMessage(report).catch(() => {});
     logger.info('📊 일일 리포트 발송 완료', { component: 'REPORT' });
   } catch (error) {
     logger.error(`일일 리포트 생성 실패: ${error}`, { component: 'REPORT' });

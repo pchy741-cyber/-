@@ -80,7 +80,7 @@ export const OrderSchema = z.object({
   filled_quantity: z.number(),
   filled_price: z.number().nullable(),
   status: z.enum(['PENDING', 'FILLED', 'PARTIAL', 'CANCELLED', 'FAILED']),
-  trading_mode: z.enum(['paper', 'live']),
+  trading_mode: z.enum(['paper', 'live', 'p_arch']),
   trigger_source: z.string().nullable(),
   ai_reasoning: z.string().nullable(),
   avg_buy_price: z.number().nullable().optional(),
@@ -100,6 +100,7 @@ export const PortfolioSnapshotSchema = z.object({
   daily_pnl: z.number().nullable(),
   daily_pnl_pct: z.number().nullable(),
   positions: z.any().nullable(),
+  is_paper: z.boolean().optional(),
 });
 export type PortfolioSnapshot = z.infer<typeof PortfolioSnapshotSchema>;
 

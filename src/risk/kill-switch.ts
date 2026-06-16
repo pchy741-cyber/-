@@ -46,22 +46,23 @@ const states: Record<string, KillSwitchState> = {
 const MAX_CONSECUTIVE_ERRORS = 5;
 const updatingKeys = new Set<string>(); // 스코프별 동시 발동 방지
 
-function stateKey(scope: KillSwitchScope): string {
-  return `${getCtxIsPaper() ? 'paper' : 'live'}_${scope.toLowerCase()}`;
+function stateKey(scope: KillSwitchScope, isPaperOverride?: boolean): string {
+  const mode = isPaperOverride !== undefined ? isPaperOverride : getCtxIsPaper();
+  return `${mode ? 'paper' : 'live'}_${scope.toLowerCase()}`;
 }
 
-function getState(scope: KillSwitchScope): KillSwitchState {
-  return states[stateKey(scope)];
+function getState(scope: KillSwitchScope, isPaper?: boolean): KillSwitchState {
+  return states[stateKey(scope, isPaper)];
 }
 
-function setState(scope: KillSwitchScope, s: KillSwitchState): void {
-  states[stateKey(scope)] = s;
+function setState(scope: KillSwitchScope, s: KillSwitchState, isPaper?: boolean): void {
+  states[stateKey(scope, isPaper)] = s;
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
-export function isKillSwitchActive(scope: KillSwitchScope = 'KR'): boolean {
-  return getState(scope).active;
+export function isKillSwitchActive(scope: KillSwitchScope = 'KR', isPaper?: boolean): boolean {
+  return getState(scope, isPaper).active;
 }
 
 export function getKillSwitchStatus(scope: KillSwitchScope = 'KR') {
