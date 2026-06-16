@@ -41,9 +41,10 @@ sellRoutes.post('/escape/:chainId', async (c) => {
     if (!curPrice || curPrice <= 0) return c.json({ error: '현재가를 조회할 수 없습니다' }, 500);
 
     const escapeTarget = Math.ceil(curPrice * 1.005);
-    await getPool().query('UPDATE transaction_chains SET escape_target_price = $1 WHERE id = $2', [
+    await getPool().query('UPDATE transaction_chains SET escape_target_price = $1 WHERE id = $2 AND is_paper = $3', [
       escapeTarget,
       chainId,
+      getCtxIsPaper(),
     ]);
 
     logger.info(
@@ -103,8 +104,8 @@ sellRoutes.post('/sell/:chainId', async (c) => {
       await getPool().query(
         `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2, total_quantity = 0,
           realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + ($3 * (1 - ${KR_FEE.SELL_FEE_PCT}) - avg_buy_price) * total_quantity ELSE realized_pnl END
-         WHERE id = $1`,
-        [chainId, sellReason, fillPrice],
+         WHERE id = $1 AND is_paper = $4`,
+        [chainId, sellReason, fillPrice, true],
       );
       await getPool().query(
         `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
@@ -196,8 +197,8 @@ sellRoutes.post('/sell/:chainId', async (c) => {
       await getPool().query(
         `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2, total_quantity = 0,
           realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + ($3 * (1 - ${KR_FEE.SELL_FEE_PCT}) - avg_buy_price) * total_quantity ELSE realized_pnl END
-         WHERE id = $1`,
-        [chainId, sellReason, fillPrice],
+         WHERE id = $1 AND is_paper = $4`,
+        [chainId, sellReason, fillPrice, false],
       );
     }
 

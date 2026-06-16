@@ -503,7 +503,7 @@ async function checkEscapeTargets(chains: any[]): Promise<void> {
     const d = decisions.find((dd) => dd.stock_code === chain.stock_code);
     if (d) {
       await getPool()
-        .query('UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1', [chain.id])
+        .query('UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1 AND is_paper = $2', [chain.id, getCtxIsPaper()])
         .catch(() => {});
     }
   }

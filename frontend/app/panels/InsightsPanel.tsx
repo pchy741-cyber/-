@@ -7,7 +7,7 @@ import { categoryColor, categoryLabel } from './insight-types';
 import { InsightsAddForm } from './InsightsAddForm';
 import { InsightsPromotables } from './InsightsPromotables';
 import { useInsightsData } from './useInsightsData';
-import type { Trade, Insight, ToastFn } from '../types';
+import type { Trade, Insight, ToastFn, ViewMode } from '../types';
 
 function validationBadge(i: Insight) {
   if (i.source_mode !== 'promoted_from_paper') return null;
@@ -17,8 +17,8 @@ function validationBadge(i: Insight) {
   return <span className="text-[10px] bg-cyan-900/40 text-cyan-300 px-1.5 py-0.5 rounded-full font-medium">연습검증</span>;
 }
 
-export default function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast }: { insights: Insight[]; trades?: Trade[]; onRefresh: () => void; toast?: ToastFn }) {
-  const d = useInsightsData(insightsProp, trades, onRefresh, toast);
+export default function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast, viewMode = 'live' }: { insights: Insight[]; trades?: Trade[]; onRefresh: () => void; toast?: ToastFn; viewMode?: ViewMode }) {
+  const d = useInsightsData(insightsProp, trades, onRefresh, toast, viewMode);
   const harmful = d.insights.filter(i => (i.category ?? '') === 'LOSS_PATTERN');
   const normal = d.insights.filter(i => (i.category ?? '') !== 'LOSS_PATTERN');
 

@@ -298,9 +298,10 @@ export async function analyzeCapitalFlow(): Promise<void> {
   if (chainUpdates.length > 0) {
     try {
       for (const upd of chainUpdates) {
-        await getPool().query('UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2', [
+        await getPool().query('UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2 AND is_paper = $3', [
           upd.peak_price_since_open,
           upd.id,
+          getCtxIsPaper(),
         ]);
       }
     } catch (err: any) {

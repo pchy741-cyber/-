@@ -22,8 +22,8 @@ export interface StrategyInsight {
 const MIN_SAMPLES = 5;
 
 /** 전략 인사이트 생성 + DB 저장 */
-export async function generateAndStoreInsights(days: number = 60): Promise<void> {
-  const insights = await generateStrategyInsights(days);
+export async function generateAndStoreInsights(days: number = 60, isPaper?: boolean): Promise<void> {
+  const insights = await generateStrategyInsights(days, isPaper);
   if (insights.length === 0) {
     logger.info('🧪 인사이트: 충분한 데이터 없음', { component: 'STRATEGY_LAB' });
     return;
@@ -66,16 +66,18 @@ export async function generateAndStoreInsights(days: number = 60): Promise<void>
 }
 
 /** 전략 인사이트 분석 (DB 조회 → 집계) */
-export async function generateStrategyInsights(days: number = 60): Promise<StrategyInsight[]> {
+export async function generateStrategyInsights(days: number = 60, isPaper?: boolean): Promise<StrategyInsight[]> {
   const insights: StrategyInsight[] = [];
+  // isPaper 미지정 시 컨텍스트에서 추론 (하위 호환성)
+  const resolvedIsPaper = isPaper ?? (await import('../../config/context.js').then(m => m.getCtxIsPaper()));
 
   try {
     const [byMode, byHour, byDow, byHolding, bySource] = await Promise.all([
-      analyzeByStrategyMode(days),
-      analyzeByHour(days),
-      analyzeByDayOfWeek(days),
-      analyzeByHoldingBucket(days),
-      analyzeByEntrySource(days),
+      analyzeByStrategyMode(days, resolvedIsPaper),
+      analyzeByHour(days, resolvedIsPaper),
+      analyzeByDayOfWeek(days, resolvedIsPaper),
+      analyzeByHoldingBucket(days, resolvedIsPaper),
+      analyzeByEntrySource(days, resolvedIsPaper),
     ]);
     insights.push(...byMode, ...byHour, ...byDow, ...byHolding, ...bySource);
   } catch (e) {
@@ -86,7 +88,7 @@ export async function generateStrategyInsights(days: number = 60): Promise<Strat
 }
 
 // ── 전략별 전체 비교 ──────────────────────────────────────────────────
-async function analyzeByStrategyMode(days: number): Promise<StrategyInsight[]> {
+async function analyzeByStrategyMode(days: number, isPaper: boolean): Promise<StrategyInsight[]> {
   const { rows } = await getPool().query(
     `
     SELECT strategy_mode,
@@ -99,19 +101,19 @@ async function analyzeByStrategyMode(days: number): Promise<StrategyInsight[]> {
         ((COALESCE((SELECT filled_price FROM orders WHERE chain_id = tc.id AND side='SELL' AND status='FILLED' ORDER BY created_at DESC LIMIT 1), avg_buy_price) - avg_buy_price) / avg_buy_price * 100)
       END) as avg_pnl_pct
     FROM transaction_chains tc
-    WHERE status = 'CLOSED' AND is_paper = true
+    WHERE status = 'CLOSED' AND is_paper = $3
       AND closed_at >= NOW() - ($1 * INTERVAL '1 day')
     GROUP BY strategy_mode
     HAVING COUNT(*) >= $2
   `,
-    [days, MIN_SAMPLES],
+    [days, MIN_SAMPLES, isPaper],
   );
 
   return rows.map((r: any) => buildInsight(r.strategy_mode, 'mode:overall', '전체', r, `${r.strategy_mode} 전체 성과`));
 }
 
 // ── 시간대별 분석 ──────────────────────────────────────────────────────
-async function analyzeByHour(days: number): Promise<StrategyInsight[]> {
+async function analyzeByHour(days: number, isPaper: boolean): Promise<StrategyInsight[]> {
   const { rows } = await getPool().query(
     `
     SELECT strategy_mode,
@@ -125,12 +127,12 @@ async function analyzeByHour(days: number): Promise<StrategyInsight[]> {
         ((COALESCE((SELECT filled_price FROM orders WHERE chain_id = tc.id AND side='SELL' AND status='FILLED' ORDER BY created_at DESC LIMIT 1), avg_buy_price) - avg_buy_price) / avg_buy_price * 100)
       END) as avg_pnl_pct
     FROM transaction_chains tc
-    WHERE status = 'CLOSED' AND is_paper = true
+    WHERE status = 'CLOSED' AND is_paper = $3
       AND closed_at >= NOW() - ($1 * INTERVAL '1 day')
     GROUP BY strategy_mode, entry_hour
     HAVING COUNT(*) >= $2
   `,
-    [days, MIN_SAMPLES],
+    [days, MIN_SAMPLES, isPaper],
   );
 
   return rows.map((r: any) =>
@@ -145,7 +147,7 @@ async function analyzeByHour(days: number): Promise<StrategyInsight[]> {
 }
 
 // ── 요일별 분석 ──────────────────────────────────────────────────────
-async function analyzeByDayOfWeek(days: number): Promise<StrategyInsight[]> {
+async function analyzeByDayOfWeek(days: number, isPaper: boolean): Promise<StrategyInsight[]> {
   const dowNames = ['일', '월', '화', '수', '목', '금', '토'];
   const { rows } = await getPool().query(
     `
@@ -160,12 +162,12 @@ async function analyzeByDayOfWeek(days: number): Promise<StrategyInsight[]> {
         ((COALESCE((SELECT filled_price FROM orders WHERE chain_id = tc.id AND side='SELL' AND status='FILLED' ORDER BY created_at DESC LIMIT 1), avg_buy_price) - avg_buy_price) / avg_buy_price * 100)
       END) as avg_pnl_pct
     FROM transaction_chains tc
-    WHERE status = 'CLOSED' AND is_paper = true
+    WHERE status = 'CLOSED' AND is_paper = $3
       AND closed_at >= NOW() - ($1 * INTERVAL '1 day')
     GROUP BY strategy_mode, entry_dow
     HAVING COUNT(*) >= $2
   `,
-    [days, MIN_SAMPLES],
+    [days, MIN_SAMPLES, isPaper],
   );
 
   return rows.map((r: any) =>
@@ -180,7 +182,7 @@ async function analyzeByDayOfWeek(days: number): Promise<StrategyInsight[]> {
 }
 
 // ── 보유기간별 분석 ──────────────────────────────────────────────────
-async function analyzeByHoldingBucket(days: number): Promise<StrategyInsight[]> {
+async function analyzeByHoldingBucket(days: number, isPaper: boolean): Promise<StrategyInsight[]> {
   const { rows } = await getPool().query(
     `
     SELECT strategy_mode,
@@ -199,12 +201,12 @@ async function analyzeByHoldingBucket(days: number): Promise<StrategyInsight[]> 
         ((COALESCE((SELECT filled_price FROM orders WHERE chain_id = tc.id AND side='SELL' AND status='FILLED' ORDER BY created_at DESC LIMIT 1), avg_buy_price) - avg_buy_price) / avg_buy_price * 100)
       END) as avg_pnl_pct
     FROM transaction_chains tc
-    WHERE status = 'CLOSED' AND is_paper = true
+    WHERE status = 'CLOSED' AND is_paper = $3
       AND closed_at >= NOW() - ($1 * INTERVAL '1 day')
     GROUP BY strategy_mode, hold_bucket
     HAVING COUNT(*) >= $2
   `,
-    [days, MIN_SAMPLES],
+    [days, MIN_SAMPLES, isPaper],
   );
 
   const bucketLabels: Record<string, string> = {
@@ -225,7 +227,7 @@ async function analyzeByHoldingBucket(days: number): Promise<StrategyInsight[]> 
 }
 
 // ── 진입소스별 분석 ──────────────────────────────────────────────────
-async function analyzeByEntrySource(days: number): Promise<StrategyInsight[]> {
+async function analyzeByEntrySource(days: number, isPaper: boolean): Promise<StrategyInsight[]> {
   const { rows } = await getPool().query(
     `
     SELECT tc.strategy_mode,
@@ -242,12 +244,12 @@ async function analyzeByEntrySource(days: number): Promise<StrategyInsight[]> {
         ((COALESCE((SELECT filled_price FROM orders WHERE chain_id = tc.id AND side='SELL' AND status='FILLED' ORDER BY created_at DESC LIMIT 1), tc.avg_buy_price) - tc.avg_buy_price) / tc.avg_buy_price * 100)
       END) as avg_pnl_pct
     FROM transaction_chains tc
-    WHERE tc.status = 'CLOSED' AND tc.is_paper = true
+    WHERE tc.status = 'CLOSED' AND tc.is_paper = $3
       AND tc.closed_at >= NOW() - ($1 * INTERVAL '1 day')
     GROUP BY tc.strategy_mode, entry_source
     HAVING COUNT(*) >= $2
   `,
-    [days, MIN_SAMPLES],
+    [days, MIN_SAMPLES, isPaper],
   );
 
   return rows.map((r: any) =>

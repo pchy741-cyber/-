@@ -171,7 +171,7 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
               <div className="ml-auto flex items-center gap-1">
                 {ch.escape_target_price ? (
                   <button disabled={!!busyAction} onClick={guard(`esc-del-${ch.id}`, async () => {
-                    try { await api(`/escape/${ch.id}`, { method: 'DELETE' }); onRefresh(); }
+                    try { await api(`/escape/${ch.id}?viewMode=${viewMode}`, { method: 'DELETE' }); onRefresh(); }
                     catch (err: unknown) { toast('취소 실패: ' + (err as Error).message, 'err'); }
                   })} className="text-xs px-2.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 font-bold border border-amber-500/30 animate-pulse whitespace-nowrap disabled:opacity-40">
                     탈출대기
@@ -180,7 +180,7 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
                   <button disabled={!!busyAction} onClick={guard(`esc-${ch.id}`, async () => {
                     if (!await confirm({ title: displayName, description: '현재가 기준 +0.5% 돌파 시 자동 전량 매도합니다.' })) return;
                     try {
-                      const r = await api(`/escape/${ch.id}`, { method: 'POST' });
+                      const r = await api(`/escape/${ch.id}?viewMode=${viewMode}`, { method: 'POST' });
                       toast(`탈출가 설정: ${fmtWon(r.escape_target_price)}`, 'ok');
                       onRefresh();
                     } catch (err: unknown) { toast('탈출 설정 실패: ' + (err as Error).message, 'err'); }

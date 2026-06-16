@@ -1,8 +1,8 @@
 import React from 'react';
 import { api } from '../lib/utils';
-import type { Trade, Insight, ToastFn } from '../types';
+import type { Trade, Insight, ToastFn, ViewMode } from '../types';
 
-export function useInsightsData(insightsProp: Insight[], trades: Trade[] | undefined, onRefresh: () => void, toast?: ToastFn) {
+export function useInsightsData(insightsProp: Insight[], trades: Trade[] | undefined, onRefresh: () => void, toast?: ToastFn, viewMode: ViewMode = 'live') {
   const [deleting, setDeleting] = React.useState<string | number | null>(null);
   const [applying, setApplying] = React.useState<string | number | null>(null);
   const [newInsight, setNewInsight] = React.useState('');
@@ -16,14 +16,14 @@ export function useInsightsData(insightsProp: Insight[], trades: Trade[] | undef
   const [triggering, setTriggering] = React.useState(false);
 
   React.useEffect(() => {
-    const load = () => api('/insights').then((d: Insight[]) => setLiveInsights(Array.isArray(d) ? d : [])).catch(() => {});
+    const load = () => api(`/insights?viewMode=${viewMode}`).then((d: Insight[]) => setLiveInsights(Array.isArray(d) ? d : [])).catch(() => {});
     load();
     const id = setInterval(load, 60000);
     return () => clearInterval(id);
   }, []);
 
   React.useEffect(() => {
-    api('/insights/promotable')
+    api(`/insights/promotable?viewMode=${viewMode}`)
       .then((d: Insight[]) => setPromotables(Array.isArray(d) ? d : []))
       .catch(() => {});
   }, [liveInsights]);
@@ -33,9 +33,9 @@ export function useInsightsData(insightsProp: Insight[], trades: Trade[] | undef
   const triggerLearning = async () => {
     setTriggering(true);
     try {
-      await api('/run-self-learning', { method: 'POST' });
+      await api(`/run-self-learning?viewMode=${viewMode}`, { method: 'POST' });
       toast?.('자기학습 시작 — 잠시 후 인사이트가 업데이트됩니다', 'ok');
-      setTimeout(() => api('/insights').then((d: Insight[]) => setLiveInsights(Array.isArray(d) ? d : [])).catch(() => {}), 8000);
+      setTimeout(() => api(`/insights?viewMode=${viewMode}`).then((d: Insight[]) => setLiveInsights(Array.isArray(d) ? d : [])).catch(() => {}), 8000);
     } catch { toast?.('자기학습 실행 실패', 'err'); }
     finally { setTriggering(false); }
   };
@@ -60,7 +60,7 @@ export function useInsightsData(insightsProp: Insight[], trades: Trade[] | undef
     setDeleteModal(null);
     setDeleting(id);
     try {
-      await api(`/insights/${id}`, { method: 'DELETE', headers: {} });
+      await api(`/insights/${id}?viewMode=${viewMode}`, { method: 'DELETE', headers: {} });
       setLiveInsights((prev) => (prev ?? []).filter((i) => i.id !== id));
       onRefresh();
     } catch (err: unknown) {
@@ -71,7 +71,7 @@ export function useInsightsData(insightsProp: Insight[], trades: Trade[] | undef
   const handleApply = async (id: string | number) => {
     setApplying(id);
     try {
-      const data = await api(`/insights/${id}/apply`, { method: 'POST' });
+      const data = await api(`/insights/${id}/apply?viewMode=${viewMode}`, { method: 'POST' });
       if (data.ok) { toast?.(data.message ?? '전략 파라미터 적용 완료', 'ok'); onRefresh(); }
       else toast?.(data.error ?? '적용 실패', 'err');
     } catch { toast?.('적용 요청 실패', 'err'); }
@@ -83,7 +83,7 @@ export function useInsightsData(insightsProp: Insight[], trades: Trade[] | undef
     if (!text) return;
     setAdding(true);
     try {
-      await api('/insights', { method: 'POST', body: JSON.stringify({ category: 'MANUAL', insight: text, confidence: 0.9 }) });
+      await api(`/insights?viewMode=${viewMode}`, { method: 'POST', body: JSON.stringify({ category: 'MANUAL', insight: text, confidence: 0.9 }) });
       setNewInsight('');
       setShowAdd(false);
       onRefresh();
@@ -93,11 +93,11 @@ export function useInsightsData(insightsProp: Insight[], trades: Trade[] | undef
   const handlePromote = async (id: string | number) => {
     setPromoting(String(id));
     try {
-      const data = await api(`/insights/${id}/promote`, { method: 'POST' });
+      const data = await api(`/insights/${id}/promote?viewMode=${viewMode}`, { method: 'POST' });
       if (data.ok) {
         toast?.('연습 인사이트를 실전에 적용했습니다 (신뢰도 0.7x)', 'ok');
         setPromotables((prev) => prev.filter((p) => p.id !== id));
-        api('/insights').then((d: Insight[]) => setLiveInsights(Array.isArray(d) ? d : [])).catch(() => {});
+        api(`/insights?viewMode=${viewMode}`).then((d: Insight[]) => setLiveInsights(Array.isArray(d) ? d : [])).catch(() => {});
         onRefresh();
       } else {
         toast?.(data.error ?? '프로모션 실패', 'err');
@@ -109,7 +109,7 @@ export function useInsightsData(insightsProp: Insight[], trades: Trade[] | undef
   const handleRevoke = async (id: string) => {
     setRevoking(id);
     try {
-      const data = await api(`/insights/${id}/revoke`, { method: 'POST' });
+      const data = await api(`/insights/${id}/revoke?viewMode=${viewMode}`, { method: 'POST' });
       if (data.ok) {
         toast?.('프로모션 취소 완료', 'ok');
         setLiveInsights((prev) => (prev ?? []).filter((i) => i.id !== id));

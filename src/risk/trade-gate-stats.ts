@@ -10,7 +10,8 @@ import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
 import type { CooldownStatus, GateResult, WinRateStats } from './trade-gate-types.js';
 
-let lastCooldownNotifyAt = 0;
+// Paper/Live 분리: 모드별 독립 알림 쿨다운 (크로스오염 방지)
+const lastCooldownNotifyAtMap = new Map<string, number>([['paper', 0], ['live', 0]]);
 // Paper/Live 분리: 모드별 독립 쿨다운 리셋 (크로스오염 방지)
 const cooldownResetAtMap = new Map<string, Date | null>([['paper', null], ['live', null]]);
 function _getCooldownResetAt(): Date | null {
@@ -179,8 +180,9 @@ export async function cooldownGate(): Promise<GateResult> {
         if (elapsed < cooldownMs) {
           const remaining = Math.ceil((cooldownMs - elapsed) / 60_000);
           const now = Date.now();
-          if (now - lastCooldownNotifyAt > GATE.COOLDOWN_NOTIFY_MS) {
-            lastCooldownNotifyAt = now;
+          const notifyKey = isPaper ? 'paper' : 'live';
+          if (now - (lastCooldownNotifyAtMap.get(notifyKey) ?? 0) > GATE.COOLDOWN_NOTIFY_MS) {
+            lastCooldownNotifyAtMap.set(notifyKey, now);
             sendTelegramMessage(`🚦 연속손실 쿨다운: ${consecutive}연패 → ${remaining}분 후 재진입`).catch(() => {});
           }
           return { passed: false, reason: `연속손실 쿨다운: ${consecutive}연패 → ${remaining}분 대기 중` };

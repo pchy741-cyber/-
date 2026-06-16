@@ -3,7 +3,7 @@
 import React from 'react';
 import { Button } from '@/components/ui';
 import { api } from '../../lib/utils';
-import type { Dashboard, DefensePark, TradingStatus, TradingStatusBlock, AiStatus, ToastFn, ConfirmFn } from '../../types';
+import type { Dashboard, DefensePark, TradingStatus, TradingStatusBlock, AiStatus, ToastFn, ConfirmFn, ViewMode } from '../../types';
 
 interface StatusBannersProps {
   dash: Dashboard | null;
@@ -15,9 +15,10 @@ interface StatusBannersProps {
   aiStatus: AiStatus | null;
   defensePark: DefensePark | undefined;
   confirm: ConfirmFn;
+  viewMode?: ViewMode;
 }
 
-export default function StatusBanners({ dash, busyAction, guard, toast, onRefresh, tradingStatus, aiStatus, defensePark, confirm }: StatusBannersProps) {
+export default function StatusBanners({ dash, busyAction, guard, toast, onRefresh, tradingStatus, aiStatus, defensePark, confirm, viewMode = 'live' }: StatusBannersProps) {
   return (
     <>
       {/* ── 연속손실 쿨다운 배너 ── */}
@@ -35,7 +36,7 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
               onClick={guard('cooldown', async () => {
                 if (!await confirm({ title: `${dash!.cooldown!.consecutive}연패 쿨다운을 수동으로 해제할까요?`, description: '나는 이 결정에 책임집니다', confirmLabel: '쿨다운 해제', confirmVariant: 'danger' })) return;
                 try {
-                  await api('/cooldown/reset', { method: 'POST' });
+                  await api(`/cooldown/reset?viewMode=${viewMode}`, { method: 'POST' });
                   toast?.('쿨다운 해제 완료 — 다음 루프에서 매수 재개', 'ok');
                   onRefresh();
                 } catch (e: unknown) { toast?.('실패: ' + (e as Error).message, 'err'); }
@@ -85,7 +86,7 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
                 onClick={guard('defense', async () => {
                   if (!await confirm({ title: 'DEFENSE 모드를 해제하고 SWING 매매(기준 70점)로 복귀할까요?', confirmLabel: 'DEFENSE 해제', confirmVariant: 'danger' })) return;
                   try {
-                    const r = await api('/defense-mode/deactivate', { method: 'POST' });
+                    const r = await api(`/defense-mode/deactivate?viewMode=${viewMode}`, { method: 'POST' });
                     toast?.(r?.message ?? 'DEFENSE 모드 해제 완료', 'ok');
                     onRefresh();
                   } catch (e: unknown) { toast?.('실패: ' + (e as Error).message, 'err'); }
@@ -124,7 +125,7 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
               onClick={guard('kospi-override', async () => {
                 if (!await confirm({ title: 'KOSPI 하락장 차단을 이번 세션만 우회할까요?', description: '오늘 하루 동안만 Live 매수를 허용합니다. 리스크는 본인 책임입니다.', confirmLabel: '하락장 우회 (오늘만)', confirmVariant: 'danger' })) return;
                 try {
-                  await api('/kospi-regime/override', { method: 'POST' });
+                  await api(`/kospi-regime/override?viewMode=${viewMode}`, { method: 'POST' });
                   toast?.('KOSPI 레짐 차단 우회 완료 — 다음 루프에서 매수 재개', 'ok');
                   onRefresh();
                 } catch (e: unknown) { toast?.('실패: ' + (e as Error).message, 'err'); }
@@ -151,7 +152,7 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
             onClick={guard('park', async () => {
               if (!await confirm({ title: '파킹 강제 해제 + 보유 ETF 즉시 매도를 실행할까요?', confirmLabel: '강제 해제', confirmVariant: 'danger' })) return;
               try {
-                const r = await api('/release-defense-park', { method: 'POST' });
+                const r = await api(`/release-defense-park?viewMode=${viewMode}`, { method: 'POST' });
                 toast?.(r?.message ?? '파킹 해제 완료', 'ok');
                 onRefresh();
               } catch (e: unknown) { toast?.('실패: ' + (e as Error).message, 'err'); }

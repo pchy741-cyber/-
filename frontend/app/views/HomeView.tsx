@@ -107,7 +107,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   }, []);
   const handleToggleFavorite = React.useCallback(async (code: string) => {
     try {
-      const r = await api('/overseas/favorites/toggle', { method: 'POST', body: JSON.stringify({ code }) });
+      const r = await api(`/overseas/favorites/toggle?viewMode=${viewMode}`, { method: 'POST', body: JSON.stringify({ code }) });
       setFavorites(prev => {
         const next = new Set(prev);
         if (r.favorite) next.add(code); else next.delete(code);
@@ -117,7 +117,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   }, [toast]);
   const handleToggleBlacklist = React.useCallback(async (code: string) => {
     try {
-      const r = await api('/overseas/blacklist/toggle', { method: 'POST', body: JSON.stringify({ code }) });
+      const r = await api(`/overseas/blacklist/toggle?viewMode=${viewMode}`, { method: 'POST', body: JSON.stringify({ code }) });
       setBlacklist(prev => {
         const next = new Set(prev);
         if (r.blacklisted) next.add(code); else next.delete(code);
@@ -249,7 +249,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
 
   return (
     <div className="space-y-4 sm:space-y-5">
-      <StatusBanners dash={dash} busyAction={busyAction} guard={guard} toast={toast} confirm={confirm} onRefresh={onRefresh} tradingStatus={tradingStatus} aiStatus={aiStatus} defensePark={defensePark} />
+      <StatusBanners dash={dash} busyAction={busyAction} guard={guard} toast={toast} confirm={confirm} onRefresh={onRefresh} tradingStatus={tradingStatus} aiStatus={aiStatus} defensePark={defensePark} viewMode={viewMode} />
 
       <SuggestedActionsPanel suggestedActions={dash?.suggestedActions} monthlyGoal={dash?.monthlyGoal} fxImpact={dash?.fxImpact} />
 
@@ -307,7 +307,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       {holdingsTab === 'KR' && <MemoTaxEstimate viewMode={viewMode} />}
       <MemoAiTransparency watchlist={watchlist} tab={holdingsTab} usDash={usDash} viewMode={viewMode} />
       <MemoPerformance trades={trades} strategy={strategy} setStrategy={setStrategy} toast={toast} fxRate={fxRate} />
-      <MemoInsights insights={dash?.insights ?? []} trades={trades} onRefresh={onRefresh} toast={toast} />
+      <MemoInsights insights={dash?.insights ?? []} trades={trades} onRefresh={onRefresh} toast={toast} viewMode={viewMode} />
 
       {(health?.recentEvents?.length ?? 0) > 0 && (
         <Panel title="시스템 로그" badge={`${health!.recentEvents!.length}건`}>
