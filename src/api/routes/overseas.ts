@@ -141,8 +141,9 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
 
   const [prices, holdings, positions] = await Promise.all([pricePromise, holdingsPromise, positionsPromise]);
 
-  // AI 기술점수 병합 (overseas-job에서 계산된 최신 점수)
-  let scores = getOverseasScores();
+  // AI 기술점수 병합 (overseas-job에서 계산된 최신 점수) — viewMode별 분리 + 폴백
+  let scores = getOverseasScores(viewIsPaper);
+  if (scores.length === 0) scores = getOverseasScores(!viewIsPaper); // 반대 모드 폴백
 
   // 점수 캐시가 비어있으면 백그라운드 on-demand 계산 트리거 (비동기, 응답은 블로킹 안 함)
   if (scores.length === 0 && !_scoringInProgress) {
@@ -193,7 +194,9 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
           if (i + BATCH < usStocks.length) await sleep(100);
         }
         if (results.length > 0) {
-          setOverseasScores(results);
+          // 기술점수는 모드 무관 → 양쪽 캐시 모두 갱신
+          setOverseasScores(results, false);
+          setOverseasScores(results, true);
           cacheSet('overseas:dashboard:paper', null as any, 0);
           cacheSet('overseas:dashboard:live', null as any, 0);
           logger.info(`대시보드 트리거 해외점수 계산: ${results.length}종목`, { component: 'OVERSEAS' });
@@ -273,7 +276,9 @@ overseasRoutes.post('/overseas/favorites/seed', async (c) => {
 let _scoringInProgress = false;
 
 overseasRoutes.get('/overseas/scores', async (c) => {
-  const fresh = getOverseasScores();
+  const viewIsPaper = resolveRequestMode(c);
+  let fresh = getOverseasScores(viewIsPaper);
+  if (fresh.length === 0) fresh = getOverseasScores(!viewIsPaper);
   if (fresh.length > 0) return c.json(fresh);
 
   // 크론이 아직 돌지 않은 경우 — 온디맨드 계산 (US만)
@@ -327,7 +332,11 @@ overseasRoutes.get('/overseas/scores', async (c) => {
       if (i + BATCH < usStocks.length) await sleep(100);
     }
 
-    if (results.length > 0) setOverseasScores(results);
+    if (results.length > 0) {
+      // 기술점수는 모드 무관 → 양쪽 캐시 모두 갱신
+      setOverseasScores(results, false);
+      setOverseasScores(results, true);
+    }
     // 대시보드 캐시 무효화 (paper/live 키 모두 — 다음 요청 시 점수 포함해서 내려감)
     cacheSet('overseas:dashboard:paper', null as any, 0);
     cacheSet('overseas:dashboard:live', null as any, 0);

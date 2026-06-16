@@ -100,7 +100,7 @@ export function useDashboardData() {
     if (loadGenRef.current !== gen) return;
     if (w.status === 'fulfilled') setWatchlist(Array.isArray(w.value) ? w.value : []);
     if (s.status === 'fulfilled') setStrategy(s.value);
-    if (t.status === 'fulfilled' && Array.isArray(t.value)) {
+    if (t.status === 'fulfilled' && Array.isArray(t.value) && t.value.length > 0) {
       setTrades(t.value);
       tradesLoadedRef.current = true;
       tradesLastFetchRef.current = Date.now();
