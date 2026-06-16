@@ -164,6 +164,15 @@ export function useDashboardData() {
       api(`/overseas/dashboard?viewMode=${vm}`).then(ifCurrent((us: UsDashboard) => {
         if (!us) return;
         setUsDash(us);
+        // 스코어 없으면 on-demand 계산 대기 후 자동 재시도 (배포 직후 캐시 빈 상태 대응)
+        const hasScores = (us.watchlist ?? []).some((s: any) => typeof s.score === 'number');
+        if (!hasScores) {
+          setTimeout(() => {
+            api(`/overseas/dashboard?viewMode=${vm}`).then(ifCurrent((us2: UsDashboard) => {
+              if (us2) setUsDash(us2);
+            })).catch(() => {});
+          }, 15000);
+        }
       })).catch(() => {});
       if (!staticLoadedRef.current) {
         api(`/portfolio/allocation?viewMode=${vm}`).then(ifCurrent((ac: AllocConfig) => { if (ac) setAllocConfig(ac); })).catch(() => {});
