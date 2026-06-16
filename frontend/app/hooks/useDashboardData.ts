@@ -116,7 +116,7 @@ export function useDashboardData() {
     const vm = vmOverride ?? viewModeRef.current;
     api(`/trades?limit=100&viewMode=${vm}`).then((t: Trade[]) => {
       if (loadGenRef.current !== gen) return;
-      if (Array.isArray(t)) {
+      if (Array.isArray(t) && t.length > 0) {
         setTrades(t);
         tradesLoadedRef.current = true;
         tradesLastFetchRef.current = Date.now();
@@ -134,13 +134,21 @@ export function useDashboardData() {
     };
     try {
       setLoading(true);
-      const [h, d, k] = await Promise.allSettled([
+      // 핵심 데이터 + trades 동시 로딩 (초기 표시 속도 개선)
+      const fetchTrades = !tradesLoadedRef.current || forceStatic;
+      const [h, d, k, t] = await Promise.allSettled([
         api('/health'), api(`/dashboard?viewMode=${vm}`), api('/kill-switch'),
+        fetchTrades ? api(`/trades?limit=100&viewMode=${vm}`) : Promise.resolve(null),
       ]);
       if (gen !== loadGenRef.current) return;
       if (h.status === 'fulfilled') setHealth(h.value);
       if (d.status === 'fulfilled' && d.value) { setDash(d.value); setIsStale(false); }
       if (k.status === 'fulfilled') setKillSwitch(k.value);
+      if (t.status === 'fulfilled' && Array.isArray(t.value) && t.value.length > 0) {
+        setTrades(t.value);
+        tradesLoadedRef.current = true;
+        tradesLastFetchRef.current = Date.now();
+      }
       setLastUpdate(new Date());
       setLoading(false);
 
