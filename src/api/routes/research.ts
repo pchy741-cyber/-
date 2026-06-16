@@ -1,6 +1,6 @@
 // 증권사 리서치 노트 — URL 크롤링으로 수집, DB 저장, Track A Gemini 주입
 import { Hono } from 'hono';
-import { query } from '../../db/client.js';
+import { safeQuery as query } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
 
 export const researchRoutes = new Hono();
