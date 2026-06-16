@@ -236,7 +236,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     let cash = !isPaper() && rawCash > 0 ? rawCash * (1 - GATE.FX_SAFETY_MARGIN) : rawCash;
     const usCodes = GLOBAL_WATCHLIST.filter((stock) => stock.region === 'US').map((stock) => stock.code);
 
-    // ── 통합증거금: 해외/국내 비중 동적 할당 (국내 매수여력 보존) ──
+    // ── 통합증거금: 해외/국내 비중 동적 할당 (시간대별 자동 조절) ──
     const holdingCost = Array.from(holdings.values()).reduce((s, h) => s + h.qty * h.avgPrice, 0);
     if (!isPaper() && cycleFxRate > 0) {
       try {
@@ -245,8 +245,23 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         );
         const totalAccountKrw = Number(totalRows[0]?.value ?? 0);
         if (totalAccountKrw > 0) {
-          // 해외 비중 상한: 총 계좌의 60% (나머지 40%는 국내 매수여력 보존)
-          const OVERSEAS_ALLOC_PCT = 0.60;
+          // 시간대별 해외 비중 동적 조절:
+          //   US장 오픈 → 80% (국내장 닫힘, 해외 최대 활용)
+          //   US 프리/애프터 → 70%
+          //   국내장만 열림 (KR) → 35% (국내 우선)
+          //   아시아 (JP/TW) → 55%
+          //   무장 → 60%
+          const isKROpen = openRegions.has('KR');
+          const OVERSEAS_ALLOC_PCT = isUSSession
+            ? 0.80
+            : isUSExtended
+            ? 0.70
+            : isKROpen
+            ? 0.35
+            : openRegions.has('JP') || openRegions.has('TW')
+            ? 0.55
+            : 0.60;
+
           const maxOverseasKrw = totalAccountKrw * OVERSEAS_ALLOC_PCT;
           // 이미 해외에 투자된 금액도 비중에 포함
           const currentOverseasKrw = holdingCost * cycleFxRate;
@@ -254,7 +269,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           const remainingAllocUsd = remainingAllocKrw / cycleFxRate;
           if (cash > remainingAllocUsd) {
             logger.info(
-              `💱 해외비중 상한: $${cash.toFixed(0)}→$${remainingAllocUsd.toFixed(0)} (총₩${(totalAccountKrw / 10000).toFixed(0)}만×${(OVERSEAS_ALLOC_PCT * 100).toFixed(0)}% - 보유$${holdingCost.toFixed(0)})`,
+              `💱 해외비중 상한: $${cash.toFixed(0)}→$${remainingAllocUsd.toFixed(0)} (총₩${(totalAccountKrw / 10000).toFixed(0)}만×${(OVERSEAS_ALLOC_PCT * 100).toFixed(0)}% - 보유$${holdingCost.toFixed(0)}) [${isUSSession ? 'US장' : isUSExtended ? 'US프리/애프터' : isKROpen ? '국내장' : 'JP/TW/무장'}]`,
               { component: 'OVERSEAS' },
             );
             cash = remainingAllocUsd;
