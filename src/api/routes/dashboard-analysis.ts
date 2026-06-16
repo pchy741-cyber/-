@@ -736,12 +736,22 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
 
       const dinnerMoney = await getDinnerMoneyStats();
 
+      const { rows: firstTrade } = await pool.query(
+        `SELECT MIN(closed_at) AS first_date FROM transaction_chains WHERE status = 'CLOSED' AND is_paper = $1 ${codeFilter}`,
+        [isPaper],
+      );
+      const firstDate = firstTrade[0]?.first_date ? new Date(firstTrade[0].first_date) : new Date();
+      const operatingDays = Math.max(1, Math.floor((Date.now() - firstDate.getTime()) / 86400000));
+      const totalCumulative = Number(total[0]?.total_pnl ?? 0);
+
       return c.json({
         market,
-        totalCumulative: Number(total[0]?.total_pnl ?? 0),
+        totalCumulative,
         thisMonthPnl: Number(thisMonth[0]?.pnl ?? 0),
         monthly: monthly.map((r: any) => ({ month: r.month, pnl: Number(r.pnl ?? 0), trades: Number(r.trades ?? 0) })),
         dinnerMoney,
+        operatingDays,
+        dailyAvgPnl: totalCumulative / operatingDays,
       });
     } else {
       // 해외: orders 테이블 SELL 기록 기반 (transaction_chains 없음)
@@ -791,12 +801,22 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
         [tradingMode],
       );
 
+      const { rows: firstTradeUs } = await pool.query(
+        `SELECT MIN(created_at) AS first_date FROM orders WHERE ${osFilter} AND trading_mode = $1`,
+        [tradingMode],
+      );
+      const firstDateUs = firstTradeUs[0]?.first_date ? new Date(firstTradeUs[0].first_date) : new Date();
+      const operatingDaysUs = Math.max(1, Math.floor((Date.now() - firstDateUs.getTime()) / 86400000));
+      const totalCumulativeUs = Number(total[0]?.total_pnl ?? 0);
+
       return c.json({
         market,
-        totalCumulative: Number(total[0]?.total_pnl ?? 0),
+        totalCumulative: totalCumulativeUs,
         thisMonthPnl: Number(thisMonth[0]?.pnl ?? 0),
         monthly: monthly.map((r: any) => ({ month: r.month, pnl: Number(r.pnl ?? 0), trades: Number(r.trades ?? 0) })),
         dinnerMoney: null,
+        operatingDays: operatingDaysUs,
+        dailyAvgPnl: totalCumulativeUs / operatingDaysUs,
       });
     }
   } catch (err: any) {

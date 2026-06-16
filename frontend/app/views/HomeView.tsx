@@ -281,7 +281,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
         {holdingsTab === 'US' && <UsHoldingsTab usHoldings={usHoldings} usW={usW} dash={dash} busyAction={busyAction} guard={guard} onRefresh={onRefresh} toast={toast} confirm={confirm} insightsDraft={insightsDraft} setInsightsDraft={setInsightsDraft} insightsSaving={insightsSaving} setInsightsSaving={setInsightsSaving} usInsights={usInsights} setUsInsights={setUsInsights} viewMode={viewMode} loopStatus={loopStatus} favorites={favorites} blacklist={blacklist} onToggleFavorite={handleToggleFavorite} onToggleBlacklist={handleToggleBlacklist} />}
       </div>
 
-      <MemoMoneyStats key={`${viewMode}-${holdingsTab}`} market={holdingsTab} viewMode={viewMode} />
+      <MemoMoneyStats key={`${viewMode}-${holdingsTab}`} market={holdingsTab} viewMode={viewMode} totalValue={holdingsTab === 'KR' ? totalValue : undefined} />
 
       {(() => {
         const dailyLossPct = unrealizedPnl < 0 ? Math.min(100, Math.round((Math.abs(unrealizedPnl) / dailyLossLimit) * 100)) : 0;

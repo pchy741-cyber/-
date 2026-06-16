@@ -3,12 +3,14 @@
 import React from 'react';
 import { api } from '../lib/utils';
 
-export default function MoneyStatsPanel({ market, monthlyGoal, viewMode = 'live' }: { market: 'KR' | 'US'; monthlyGoal?: number; viewMode?: 'live' | 'paper' }) {
+export default function MoneyStatsPanel({ market, monthlyGoal, viewMode = 'live', totalValue }: { market: 'KR' | 'US'; monthlyGoal?: number; viewMode?: 'live' | 'paper'; totalValue?: number }) {
   const [data, setData] = React.useState<{
     totalCumulative: number;
     thisMonthPnl: number;
     monthly: Array<{ month: string; pnl: number; trades: number }>;
     dinnerMoney?: { monthlyTotal: number; monthlyCap: number; todayReserved: boolean } | null;
+    operatingDays?: number;
+    dailyAvgPnl?: number;
   } | null>(null);
   const [loading, setLoading] = React.useState(true);
 
@@ -56,11 +58,24 @@ export default function MoneyStatsPanel({ market, monthlyGoal, viewMode = 'live'
 
       <div className="flex items-center gap-4">
         <div className="flex-1">
-          <div className="text-[10px] text-slate-500 mb-0.5">봇 시작부터 누적</div>
+          <div className="text-[10px] text-slate-500 mb-0.5">봇 시작부터 누적 {data.operatingDays ? <span className="text-slate-600">({data.operatingDays}일)</span> : ''}</div>
           <div className={`text-2xl font-black tabular-nums ${data.totalCumulative >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
             {fmt2(data.totalCumulative)}
           </div>
           <div className="text-[10px] text-slate-500 mt-1">이번달 <span className={`font-bold ${data.thisMonthPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{fmt2(data.thisMonthPnl)}</span></div>
+          {data.dailyAvgPnl !== undefined && (
+            <div className="flex items-center gap-2 mt-1.5">
+              <span className="text-[10px] text-slate-500">일평균</span>
+              <span className={`text-[11px] font-bold tabular-nums ${data.dailyAvgPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {fmt2(data.dailyAvgPnl)}
+              </span>
+              {totalValue && totalValue > 0 && (
+                <span className={`text-[10px] font-semibold ${data.dailyAvgPnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                  ({data.dailyAvgPnl >= 0 ? '+' : ''}{((data.dailyAvgPnl / totalValue) * 100).toFixed(3)}%/일)
+                </span>
+              )}
+            </div>
+          )}
         </div>
         <div className="flex flex-col items-center shrink-0">
           <svg width="72" height="72" viewBox="0 0 72 72">
