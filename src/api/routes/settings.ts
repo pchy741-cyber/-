@@ -773,8 +773,8 @@ settingsRoutes.post('/trading-mode', async (c) => {
 
 // ── 투자비율 설정 (국내/미국 비율 + 섹터 한도) ──
 const ALLOC_DEFAULTS = {
-  kr_pct: 30,
-  us_pct: 70,
+  kr_pct: 0,
+  us_pct: 100,
   sector_semiconductor: 30,
   sector_bio: 20,
   sector_defense: 25,
@@ -812,7 +812,7 @@ settingsRoutes.get('/portfolio/allocation', async (c) => {
         `INSERT INTO portfolio_allocation_config
          (kr_pct, us_pct, sector_semiconductor, sector_bio, sector_defense, sector_finance, sector_etc,
           trailing_stop_pct, is_paper, position_cap_pct, max_invested_pct, cash_reserve_pct, max_positions, max_daily_trades)
-         VALUES (30, 70, 30, 20, 25, 20, 30, 5, $1, $2, $3, $4, $5, $6) RETURNING *`,
+         VALUES (0, 100, 30, 20, 25, 20, 30, 5, $1, $2, $3, $4, $5, $6) RETURNING *`,
         [isPaper, isPaper ? 40 : 25, isPaper ? 97 : 88, isPaper ? 3 : 20, isPaper ? 20 : 8, isPaper ? 20 : 3],
       );
       return c.json({ ...ins[0], _settingsMeta: SETTINGS_META });
@@ -832,8 +832,8 @@ settingsRoutes.get('/portfolio/allocation/both', async (c) => {
       pool.query('SELECT * FROM portfolio_allocation_config WHERE is_paper = true ORDER BY id DESC LIMIT 1'),
     ]);
     const live = liveRes.rows[0] ?? {
-      kr_pct: 30,
-      us_pct: 70,
+      kr_pct: 0,
+      us_pct: 100,
       position_cap_pct: 25,
       max_invested_pct: 88,
       cash_reserve_pct: 20,
@@ -857,8 +857,8 @@ settingsRoutes.get('/portfolio/allocation/both', async (c) => {
 
 settingsRoutes.put('/portfolio/allocation', async (c) => {
   const body = await c.req.json();
-  const kr = Math.max(0, Math.min(100, Number(body.kr_pct ?? 30)));
-  const us = Math.max(0, Math.min(100, Number(body.us_pct ?? 70)));
+  const kr = Math.max(0, Math.min(100, Number(body.kr_pct ?? 0)));
+  const us = Math.max(0, Math.min(100, Number(body.us_pct ?? 100)));
   if (Math.abs(kr + us - 100) > 1) return c.json({ error: `국내+미국 합계가 100%여야 합니다 (현재 ${kr + us}%)` }, 400);
 
   const semi = Math.max(0, Math.min(100, Number(body.sector_semiconductor ?? 30)));

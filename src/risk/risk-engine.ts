@@ -370,7 +370,7 @@ export class RiskEngine {
             'SELECT kr_pct FROM portfolio_allocation_config WHERE is_paper = $1 LIMIT 1',
             [getCtxIsPaper()],
           );
-          const targetKrPct = Number(allocRows[0]?.kr_pct ?? 30);
+          const targetKrPct = Number(allocRows[0]?.kr_pct ?? 0);
           const currentKrPct = (domesticInvested / totalInvested) * 100;
           if (currentKrPct > targetKrPct * 1.15) {
             return {
