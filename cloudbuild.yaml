@@ -1,11 +1,9 @@
 # GCP Cloud Build → Artifact Registry → Cloud Run 배포
 steps:
-  # 1. Docker 빌드
+  # 1. Docker 빌드 (latest 태그만 사용 — SHORT_SHA PowerShell 파싱 오류 방지)
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'
-      - '-t'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}'
       - '-t'
       - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest'
       - '.'
