@@ -521,7 +521,7 @@ dashboardAnalysisRoutes.get('/ai-transparency', async (c) => {
        LEFT JOIN watchlist w ON o.stock_code = w.stock_code
        WHERE o.status = 'FILLED'
          AND o.is_paper = $1
-         AND o.trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
+         AND (o.trading_mode = $2::text OR ($2::text = 'paper' AND o.trading_mode = 'p_arch'))
          AND o.ai_reasoning IS NOT NULL
          AND o.ai_reasoning != ''
        ORDER BY o.created_at DESC

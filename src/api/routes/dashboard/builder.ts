@@ -312,7 +312,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
          WHEN side = 'BUY'  THEN -(filled_price * filled_quantity)
        END), 0)::text AS net_flow
        FROM orders
-       WHERE trigger_source = 'OVERSEAS' AND status = 'FILLED' AND trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)`,
+       WHERE trigger_source = 'OVERSEAS' AND status = 'FILLED' AND (trading_mode = $1::text OR ($1::text = 'paper' AND trading_mode = 'p_arch'))`,
       [tradingMode],
     );
     const netFlowUsd = Number(flowRows[0]?.net_flow ?? 0);

@@ -235,7 +235,7 @@ app.get('/review/copilot', async (c) => {
         SELECT COUNT(*) as cnt FROM orders
         WHERE chain_id IS NULL AND status = 'FILLED' AND side = 'BUY' AND trigger_source != 'OVERSEAS'
           AND is_paper = $1
-          AND created_at >= NOW() - INTERVAL '7 days' AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)`,
+          AND created_at >= NOW() - INTERVAL '7 days' AND (trading_mode = $2::text OR ($2::text = 'paper' AND trading_mode = 'p_arch'))`,
         [viewIsPaper, viewIsPaper ? 'paper' : 'live'],
       );
       const orphans = Number(orphanOrders[0]?.cnt ?? 0);

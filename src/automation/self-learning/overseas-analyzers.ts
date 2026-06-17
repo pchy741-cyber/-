@@ -43,7 +43,7 @@ async function getOverseasTrades(days: number, isPaper: boolean): Promise<Overse
         AND status = 'FILLED'
         AND side = 'SELL'
         AND created_at >= $1
-        AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
+        AND (trading_mode = $2::text OR ($2::text = 'paper' AND trading_mode = 'p_arch'))
       ORDER BY created_at DESC`,
     [cutoff.toISOString(), isPaper ? 'paper' : 'live'],
   );
@@ -366,7 +366,7 @@ export async function analyzeOverseasHoldingPeriod(isPaper: boolean): Promise<Le
     `SELECT stock_code, created_at, filled_price FROM orders
      WHERE trigger_source = 'OVERSEAS' AND status = 'FILLED' AND side = 'BUY'
        AND is_paper = $1
-       AND created_at >= $2 AND trading_mode IN ($3, CASE WHEN $3 = 'paper' THEN 'p_arch' ELSE $3 END)
+       AND created_at >= $2 AND (trading_mode = $3::text OR ($3::text = 'paper' AND trading_mode = 'p_arch'))
      ORDER BY created_at`,
     [isPaper, cutoff.toISOString(), isPaper ? 'paper' : 'live'],
   );
@@ -374,7 +374,7 @@ export async function analyzeOverseasHoldingPeriod(isPaper: boolean): Promise<Le
     `SELECT stock_code, created_at, filled_price, avg_buy_price FROM orders
      WHERE trigger_source = 'OVERSEAS' AND status = 'FILLED' AND side = 'SELL'
        AND is_paper = $1
-       AND created_at >= $2 AND trading_mode IN ($3, CASE WHEN $3 = 'paper' THEN 'p_arch' ELSE $3 END)
+       AND created_at >= $2 AND (trading_mode = $3::text OR ($3::text = 'paper' AND trading_mode = 'p_arch'))
      ORDER BY created_at`,
     [isPaper, cutoff.toISOString(), isPaper ? 'paper' : 'live'],
   );

@@ -54,7 +54,7 @@ tradeRoutes.get('/trades', async (c) => {
        LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
        LEFT JOIN watchlist w ON o.stock_code = w.stock_code
        WHERE o.is_paper = $2
-         AND o.trading_mode IN ($3, CASE WHEN $3 = 'paper' THEN 'p_arch' ELSE $3 END)
+         AND (o.trading_mode = $3::text OR ($3::text = 'paper' AND o.trading_mode = 'p_arch'))
        ${marketClause}
        ORDER BY o.created_at DESC
        LIMIT $1`,
@@ -116,7 +116,7 @@ tradeRoutes.get('/trades', async (c) => {
           WHERE status = 'FILLED'
             AND is_paper = $3
             AND stock_code = ANY($1::text[])
-            AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
+            AND (trading_mode = $2::text OR ($2::text = 'paper' AND trading_mode = 'p_arch'))
           ORDER BY created_at ASC, id ASC`,
         [domesticCodes, tradeMode, viewIsPaper],
       );
@@ -130,7 +130,7 @@ tradeRoutes.get('/trades', async (c) => {
           WHERE status = 'FILLED'
             AND is_paper = $3
             AND stock_code = ANY($1::text[])
-            AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
+            AND (trading_mode = $2::text OR ($2::text = 'paper' AND trading_mode = 'p_arch'))
           ORDER BY created_at ASC, id ASC`,
         [overseasCodes, tradeMode, viewIsPaper],
       );

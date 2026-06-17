@@ -182,7 +182,7 @@ journalRoutes.get('/journal', async (c) => {
         AND s.filled_price IS NOT NULL
         AND s.filled_price > 0
         AND (s.avg_buy_price IS NOT NULL OR s.ai_reasoning ~ '\\[avgBuy:[0-9]')
-        AND s.trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
+        AND (s.trading_mode = $2::text OR ($2::text = 'paper' AND s.trading_mode = 'p_arch'))
       ORDER BY s.created_at DESC
       LIMIT 2000
     `,

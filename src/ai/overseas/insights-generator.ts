@@ -44,7 +44,7 @@ async function fetchCompletedTrades(): Promise<TradeRecord[]> {
         AND side = 'SELL'
         AND status = 'FILLED'
         AND trigger_source = 'OVERSEAS'
-        AND trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
+        AND (trading_mode = $1::text OR ($1::text = 'paper' AND trading_mode = 'p_arch'))
         AND created_at > b.created_at
         AND filled_price IS NOT NULL
       ORDER BY created_at ASC
@@ -53,7 +53,7 @@ async function fetchCompletedTrades(): Promise<TradeRecord[]> {
     WHERE b.side = 'BUY'
       AND b.status = 'FILLED'
       AND b.trigger_source = 'OVERSEAS'
-      AND b.trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
+      AND (b.trading_mode = $1::text OR ($1::text = 'paper' AND b.trading_mode = 'p_arch'))
       AND b.created_at >= NOW() - INTERVAL '30 days'
       AND b.filled_price IS NOT NULL
       AND b.filled_price > 0

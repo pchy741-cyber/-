@@ -40,7 +40,7 @@ export async function calcRollingKelly(days: number = 30, isPaper?: boolean): Pr
       FROM orders
       WHERE side = 'SELL'
         AND trigger_source = 'OVERSEAS'
-        AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
+        AND (trading_mode = $2::text OR ($2::text = 'paper' AND trading_mode = 'p_arch'))
         AND status = 'FILLED'
         AND avg_buy_price > 0
         AND filled_price > 0
@@ -139,7 +139,7 @@ export async function calcStockEVMultipliers(codes: string[], isPaper?: boolean)
                THEN ABS((filled_price - avg_buy_price) / avg_buy_price * 100) END), 3.0) AS avg_loss_pct
       FROM orders
       WHERE side = 'SELL' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'
-        AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
+        AND (trading_mode = $2::text OR ($2::text = 'paper' AND trading_mode = 'p_arch'))
         AND avg_buy_price > 0 AND filled_price > 0
         AND stock_code = ANY($1)
         AND created_at >= NOW() - INTERVAL '90 days'

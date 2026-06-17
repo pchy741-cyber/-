@@ -96,7 +96,7 @@ export async function getTodayTradeStats(isPaper?: boolean) {
       FROM orders o
       LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
       WHERE o.status = 'FILLED'
-        AND o.trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
+        AND (o.trading_mode = $1::text OR ($1::text = 'paper' AND o.trading_mode = 'p_arch'))
         AND (o.created_at AT TIME ZONE 'Asia/Seoul')::DATE = (NOW() AT TIME ZONE 'Asia/Seoul')::DATE
     `,
       [tradingMode],
@@ -142,7 +142,7 @@ async function getRecentTrades(isPaper?: boolean) {
        LEFT JOIN watchlist w ON o.stock_code = w.stock_code
        LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
        WHERE o.status IN ('FILLED', 'PENDING')
-         AND o.trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
+         AND (o.trading_mode = $1::text OR ($1::text = 'paper' AND o.trading_mode = 'p_arch'))
        ORDER BY o.created_at DESC
        LIMIT 30`,
       [tradingMode],

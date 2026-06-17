@@ -32,7 +32,7 @@ export async function getRecentPerfSummary(isPaper?: boolean): Promise<string> {
       SELECT ai_reasoning, filled_price, quantity
       FROM orders
       WHERE trigger_source = 'OVERSEAS'
-        AND trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
+        AND (trading_mode = $1::text OR ($1::text = 'paper' AND trading_mode = 'p_arch'))
         AND side = 'SELL'
         AND status = 'FILLED'
         AND filled_price IS NOT NULL
@@ -90,7 +90,7 @@ export async function getOverseasWinRates(codes: string[], isPaper?: boolean): P
           ) AS realized_pnl_pct
         FROM orders
         WHERE stock_code = ANY($1)
-          AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
+          AND (trading_mode = $2::text OR ($2::text = 'paper' AND trading_mode = 'p_arch'))
           AND side = 'SELL' AND status = 'FILLED'
           AND trigger_source = 'OVERSEAS'
           AND created_at >= NOW() - INTERVAL '90 days'
