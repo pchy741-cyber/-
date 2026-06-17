@@ -135,6 +135,63 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     }
     // ────────────────────────────────────────────────────────────────────
 
+    // ── v12: 비-초대형주 BREAKOUT/눌림 반전매도 ────────────────────────────
+    // CEO 지시 (2026-06-17): 국내 비초대형주 돌파/눌림매매에서 수익권→반전 시 즉시 탈출
+    //   Why: 수익권이었다가 다같이 마이너스 — 물려서 손해보는 구조가 많음
+    //   How: peak +1.5% 이상 도달 후 RSI+MA20 기반으로 반전 강도 판단, 전량 또는 60% 매도
+    //        초대형주(삼성전자 등)는 제외 — 며칠 만에 회복하는 경우 있음
+    //        수익률 0.5% 미만 or RSI<45+MA20 이탈 = 강한 반전 → 전량, 아니면 60%
+    {
+      const REVERSAL_MEGA_CAPS = new Set(['005930','000660','005380','000270','035420','068270','005490','051910','207940','000720']);
+      const _isMegaCap = REVERSAL_MEGA_CAPS.has(chain.stock_code);
+      const _isReversalEligible = !_isMegaCap
+        && chain.status !== 'PROFIT_TAKING'
+        && chain.strategy_mode !== 'SCALPING'
+        && ['BREAKOUT','DARVAS','SWING','BOTTOM_FISHING'].includes(chain.strategy_mode ?? '');
+
+      if (_isReversalEligible) {
+        const _revPeakMap = _getPeakMap();
+        const _revPrevPeak = _revPeakMap.get(chain.stock_code) ?? pnlPct;
+        const _revCurPeak = Math.max(_revPrevPeak, pnlPct);
+        _revPeakMap.set(chain.stock_code, _revCurPeak);
+
+        const REVERSAL_ACTIVATE_PCT = 1.5; // 이 수익률 이상 도달 후에만 발동
+        if (_revCurPeak >= REVERSAL_ACTIVATE_PCT) {
+          const _revDropFromPeak = pnlPct - _revCurPeak;
+          const _revChart = chartData.get(chain.stock_code);
+          const _revTech = _revChart && _revChart.length >= 20 ? analyzeTechnicals(_revChart) : null;
+          const _revRsi = _revTech?.rsi14 ?? 50;
+          const _revAboveSma20 = _revTech ? price.currentPrice > _revTech.sma20 : true;
+
+          // RSI < 45 + MA20 이탈: 강한 하락 반전 → 민감하게
+          // 그 외: 느슨하게 (잠깐 눌림일 수 있음)
+          const _isStrongReversal = _revRsi < 45 && !_revAboveSma20;
+          const _revDropThreshold = _isStrongReversal ? -1.0 : -1.8;
+
+          if (_revDropFromPeak <= _revDropThreshold && chain.total_quantity > 0) {
+            const _sellAll = pnlPct < 0.5 || _isStrongReversal;
+            const _revQty = _sellAll ? chain.total_quantity : Math.ceil(chain.total_quantity * 0.6);
+            logger.info(
+              `🔄 반전매도(v12/${chain.strategy_mode}): ${chain.stock_code} 고점+${_revCurPeak.toFixed(1)}%→현재${pnlPct.toFixed(1)}% (${_revDropFromPeak.toFixed(1)}%) RSI${_revRsi.toFixed(0)} MA20${_revAboveSma20?'↑':'↓'} ${_sellAll?'전량':'60%'}`,
+              { component: 'TRACK_B' },
+            );
+            decisions.push({
+              action: _sellAll ? 'SELL' : 'PARTIAL_SELL',
+              stock_code: chain.stock_code,
+              quantity: _revQty,
+              price_type: 'MARKET',
+              reasoning: `반전매도(${chain.strategy_mode}): 고점+${_revCurPeak.toFixed(1)}%→현재${pnlPct.toFixed(1)}% (${_revDropFromPeak.toFixed(1)}%) RSI${_revRsi.toFixed(0)} ${_sellAll?'전량청산':'60%매도+재매수대기'}`,
+              confidence: _isStrongReversal ? 0.90 : 0.82,
+            });
+            processedSellChains.add(chain.id);
+            if (_sellAll) _revPeakMap.delete(chain.stock_code);
+            continue;
+          }
+        }
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────
+
     // ── TP 도달 전 수익 구간 트레일링 스탑 ──────────────────────────────
     // 기존 트레일링은 PROFIT_TAKING 진입 후에만 작동 → +2~4% 수익권은 보호 없음
     // 이 로직: TP 미도달이라도 고점 대비 ATR×1.5 하락 시 익절

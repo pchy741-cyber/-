@@ -18,7 +18,7 @@ export const KNOWN_STOCK_NAMES: Record<string, string> = {
   '012450': '한화에어로스페이스', '267260': 'HD현대일렉트릭',
   '042700': '한미반도체', '009150': '삼성전기', '028300': 'HLB',
   '352820': '하이브', '214150': '클래시스', '328130': '루닛',
-  '403870': 'HPSP', '454910': '두산로보틱스',
+  '403870': 'HPSP', '454910': '두산로보틱스', '475150': '에코프로머티리얼즈',
 };
 
 export function getKnownStockName(code?: unknown): string | undefined {

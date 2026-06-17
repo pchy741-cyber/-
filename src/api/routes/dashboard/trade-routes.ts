@@ -43,7 +43,12 @@ tradeRoutes.get('/trades', async (c) => {
            'stock_code', tc.stock_code,
            'status', tc.status,
            'strategy_mode', tc.strategy_mode,
-           'avg_buy_price', tc.avg_buy_price
+           'avg_buy_price', tc.avg_buy_price,
+           'realized_pnl', tc.realized_pnl,
+           'closed_at', tc.closed_at,
+           'pnl_pct', tc.pnl_pct,
+           'close_reason', tc.close_reason,
+           'is_paper', tc.is_paper
          ) END AS transaction_chains
        FROM orders o
        LEFT JOIN transaction_chains tc ON o.chain_id = tc.id

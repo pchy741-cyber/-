@@ -111,9 +111,12 @@ cash = rbResult.cash
 
 | 루프 | 명령어 | 운영 시간 |
 |------|--------|-----------|
-| **한국 눌림매매** | `/loop 장중 눌림매매: 고확신 진입 → 스윙 보유 → 직접 실행` | KST 09:30~10:20 / 13:00~15:00 |
+| **실전 리스크 관리** | `/loop 실전 리스크 관리: 포지션 보호 → 손절/익절 → 신규 매수 금지` | KST 09:30~15:20 |
+| **연습 스캘핑** | `/loop 연습 스캘핑: 최적 진입 포인트 → is_paper:true → 데이터 축적` | KST 09:00~15:20 |
 | **미국 야간 감시** | `/loop 미국주식 야간 감시: 포지션 보호 → 손절/익절 판단 → 직접 실행` | KST 23:30~06:00 |
 
+> **실전 루프**: Claude는 리스크 관리 전담 — 신규 매수 없음, GPT(Track A) 분석 기반 백엔드 자동 실행에 맡김
+> **연습 스캘핑**: 데이터 축적 목적, is_paper:true, 그 순간 최고 점수 종목에 스캘핑 개념으로 진입
 > 09:00~09:30 개장 스캘핑은 백엔드 자동 실행 (opening-bell-job) — Claude Code 개입 불필요
 > 미국 야간 루프는 스케줄러(overseas-job)가 10분 간격 자동 처리 중 — Claude Code 직접 실행 시에만 사용
 
@@ -126,6 +129,18 @@ $env:AAB_PW  = "<DASHBOARD_PASSWORD>"
 ---
 
 ## 루프 매 반복 행동 지침
+
+> **⚠️ 실전 vs 연습 모드 분리 원칙 (2026-06-17 CEO 지시)**
+> - **실전 루프** (`/loop 실전 리스크 관리`): **신규 매수 절대 금지** — 포지션 보호·손절·긴급 청산만
+> - **연습 스캘핑** (`/loop 연습 스캘핑`): `is_paper:true` 로만 매수, GPT 스코어 기반 최적 포인트 진입
+> - 실전 신규 매수는 GPT(Track A) 분석 기반 백엔드 Track B 파이프라인이 자동 처리
+>
+> **연습 스캘핑 전략 (CEO 지시, 1% 복리 누적 모델)**:
+> - 목표 수익: +1.0% (수수료·세금 ~0.26% 후 순수익 +0.74% 확보)
+> - 손절선: -0.5% (타이트한 손익비, 한 번 손절로 수익 2회 상쇄)
+> - 거래대금 최상위 종목만 진입 (일 거래대금 1,000억+ — 슬리피지 방지)
+> - 시간 제한: 진입 후 3~5분 내 상승 모멘텀 없으면 즉시 본절/소손절 탈출
+> - `score >= 80` + `volumeRatio >= 2.0` + `pullbackSignal == true` 조합 우선
 
 ### 0. 시장 시간 체크
 KST = UTC+9. PowerShell: `(Get-Date).ToUniversalTime().AddHours(9).ToString("HH:mm")`
@@ -205,34 +220,32 @@ curl -s -X POST "https://ai-auto-bot-807105550136.asia-northeast3.run.app/api/se
 
 ---
 
-### 3. 신규 매수 — 눌림매매 + 스윙 전략
+### 3. 신규 매수 — 연습 스캘핑 전용 (실전 루프에서 이 단계 완전 스킵)
 
-#### 전략 원칙
-- **타이밍 우선**: 황금 구간에만 진입
-- 눌림매매: 상승 추세 중 일시 눌림 구간에 진입 → 반등 후 +5% 목표
-- **거래량 급증 단타**: volumeRatio >= 3.0 + 당일 상승 → 황금구간 내 즉시 단타 진입 허용
-- 진입 후 백엔드에 맡기고 조기 청산하지 않는다
+> **⛔ 실전 루프는 Step 3 실행 금지.** 실전 신규 매수는 GPT(Track A)+Track B 파이프라인이 자동 처리.
+
+#### 연습 스캘핑 전략 (1% 복리 누적)
+- TP: +1.0%, SL: -0.5% (손익비 1:2, 타이트한 커트)
+- 대장주 + 거래대금 1,000억+ 종목만 (슬리피지 방지)
+- 진입 후 3~5분 내 모멘텀 없으면 본절/소손절 탈출
+- **is_paper: true 필수** — 연습 잔금 기준 사이징
 
 #### Step 1 — 1차 필터 (대시보드 scores[])
 
 ```python
-bull_market = (len([s for s in scores if s['composite_score'] >= 75]) >= 8)
-             or (수익중 포지션 비율 >= 0.5)
-
-min_score = 80 if bull_market else 85
-min_conf  = 0.60 if bull_market else 0.65
-max_buys  = 3 if bull_market else 2
+# 연습 스캘핑: 최고점 종목 1~2개에 집중
+min_score   = 82
+min_conf    = 0.65
+min_vol_ratio = 2.0
+max_buys    = 2
 ```
 
 필수 조건:
-1. `composite_score >= min_score`
-2. `confidence >= min_conf`
-3. 이미 OPEN 포지션 없는 종목
-4. `d['killSwitch']['active'] == False`
-5. `d['portfolio']['domesticCash'] > 50000`
-6. **장 강도 게이트**: 상위 5종목 평균 점수 < 78 → 신규 매수 전면 중단
-
-꽁돈 게이트: `composite_score >= 90` → 2차 필터 무관, 즉시 Step 3으로
+1. `composite_score >= 82`
+2. `confidence >= 0.65`
+3. `pullbackSignal == True`
+4. 이미 OPEN 연습 포지션 없는 종목
+5. `d['portfolio']['domesticCash'] > 50000` (연습 현금 기준)
 
 #### Step 2 — 2차 필터 (기술 분석 API)
 ```bash
@@ -242,58 +255,49 @@ curl -s -H "x-api-key: <DASHBOARD_PASSWORD>" \
 
 | 조건 | 기준 | 실패 시 |
 |------|------|---------|
-| **당일 방향** | `currentPrice > openPrice * 1.005` | **스킵** |
-| **SMA20 추세** | `currentPrice > sma20` | **스킵** |
-| **거래량** | `volumeRatio >= 1.0` | **스킵** |
-| RSI14 | 30 ≤ RSI ≤ 68 | 스킵 |
+| **거래량** | `volumeRatio >= 2.0` | **스킵** (슬리피지 방지) |
+| **당일 방향** | `currentPrice > openPrice * 1.003` | **스킵** |
+| RSI14 | 35 ≤ RSI ≤ 65 | 스킵 |
+| **눌림 신호** | `pullbackSignal == True` | 스킵 |
 
-**눌림매매 가산점**:
-```python
-if t.get('pullbackSignal'):         score_bonus += 12
-if envelope_pos in ('BELOW_LOWER', 'NEAR_LOWER'): score_bonus += 7
-if vol_consistency >= 4:            score_bonus += 5
-elif vol_consistency <= 1:          score_bonus -= 8
+**reasoning 필드** (ASCII): `"scalp1pct AI{score} conf{conf} RSI{rsi} vol{volRatio}x pb=True tp=1.0 sl=-0.5"`
 
-# 눌림 신호 없으면 score 85 미만 스킵
-if not pullbackSignal and envelope_pos not in ('BELOW_LOWER', 'NEAR_LOWER'):
-    if score < 85: → 스킵
-```
-
-**reasoning 필드** (ASCII 전용 — 한글 깨짐 방지): `"pullback AI{score} conf{conf} RSI{rsi} vol{volRatio}x pb={pullback} env={env_pos} volC={vol_cons}d"`
-
-#### Step 3 — 포지션 사이징 후 실행
+#### Step 3 — 연습 매수 실행
 ```bash
-# 실전 매수 (is_paper: false — 실잔금 기준 복리 사이징)
+# 연습 매수만 (is_paper: true 필수)
 curl -s -X POST "https://ai-auto-bot-807105550136.asia-northeast3.run.app/api/manual-buy" \
   -H "Content-Type: application/json" \
   -H "x-api-key: <DASHBOARD_PASSWORD>" \
-  -d "{\"stock_code\":\"XXXXXX\",\"ai_score\":SCORE,\"is_paper\":false,\"reasoning\":\"pullback AI82 conf0.70 RSI48 vol1.5x pb=True env=NEAR_LOWER volC=3d\"}"
+  -d "{\"stock_code\":\"XXXXXX\",\"ai_score\":SCORE,\"is_paper\":true,\"reasoning\":\"scalp1pct AI82 conf0.70 RSI48 vol2.3x pb=True tp=1.0 sl=-0.5\"}"
 ```
 
-> `amount_krw` 생략 시 백엔드가 실잔금(is_paper:false) 기준 복리 사이징 자동 계산.
-> 연습 매수 시: `\"is_paper\":true` 로 변경 → 연습 잔금 기준 사이징.
+> `amount_krw` 생략 시 백엔드가 연습 잔금(is_paper:true) 기준 복리 사이징 자동 계산.
 
 ### 4. 루프 간격
 - 긴급 손절 실행 후: `ScheduleWakeup(120)`
-- 매수 실행 후: `ScheduleWakeup(180)`
+- 연습 매수 실행 후: `ScheduleWakeup(180)`
 - 신호 없음: `ScheduleWakeup(180)`
 - 09:00~09:30 개장 구간: `ScheduleWakeup(120)`
 - 13:30 이후: `ScheduleWakeup(300)`
 
-### 5. 제한 규칙
-- 1회 루프당 신규 매수 최대 3종목 (강세장), 일반 2종목
-- 동일 종목 중복 매수 금지 (단, 퀵플립 익절 후 재진입은 허용)
+### 5. 제한 규칙 (실전 리스크 관리 루프)
+- **신규 매수 절대 금지** (is_paper:false 매수 API 호출 금지)
+- 긴급 손절 / 퀵플립 익절만 실행
+- `blockNewBuys == true` 이면 매도도 수동 개입 최소화
+
+### 5b. 제한 규칙 (연습 스캘핑 루프)
+- 1회 루프당 연습 매수 최대 2종목
+- is_paper:true 검증 필수 — is_paper:false 절대 금지
 - `blockNewBuys == true` 이면 매수 완전 중단
-- 총 현금 50,000원 미만이면 매수 중단
 
 ---
 
 ## 판단 예시
 
-**눌림매매 진입**: "058430 AI85 conf0.73 RSI44 vol1.8x pb=True env=NEAR_LOWER → ai_score=85 BUY"
-**눌림 신호 없어서 스킵**: "012345 AI83 pb=False env=MIDDLE → skip"
-**점수 미달 스킵**: "031820 AI76 conf0.61 → score<80, skip"
-**긴급 손절**: "체인 #45 PnL -2.6% → 긴급 손절"
+**[실전] 긴급 손절**: "체인 #45 PnL -2.6% → 긴급 손절 (실전)"
+**[실전] 포지션 없음**: "포지션 없음, 신규 매수 금지 (실전 리스크 관리) → ScheduleWakeup(300)"
+**[연습] 스캘핑 진입**: "005930 AI85 conf0.73 vol2.5x pb=True → 연습 매수 (is_paper:true)"
+**[연습] 조건 미달**: "012345 vol1.3x (< 2.0x) → 거래대금 부족, 스킵"
 **백엔드 관리 중**: "체인 #42 PnL +2.1% → 백엔드 트레일링 중, Claude 개입 없음"
 **개장 구간 대기**: "09:15 KST → 개장 스캘핑 백엔드 실행 중, 120s 대기"
 

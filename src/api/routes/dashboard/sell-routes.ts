@@ -104,11 +104,12 @@ sellRoutes.post('/sell/:chainId', async (c) => {
       const _qty1 = Number(chain.total_quantity);
       const _avg1 = Number(chain.avg_buy_price ?? 0);
       const _profit1 = fillPrice > 0 ? Math.round(fillPrice * _qty1 * (1 - KR_FEE.SELL_FEE_PCT)) - Math.round(_avg1 * _qty1) : 0;
+      const _pnlPct1 = _avg1 > 0 && fillPrice > 0 ? Math.round(((fillPrice - _avg1) / _avg1) * 10000) / 100 : null;
       await getPool().query(
         `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2, total_quantity = 0,
-          realized_pnl = realized_pnl + $3
+          realized_pnl = realized_pnl + $3, pnl_pct = COALESCE($5, pnl_pct)
          WHERE id = $1 AND is_paper = $4`,
-        [chainId, sellReason, _profit1, true],
+        [chainId, sellReason, _profit1, true, _pnlPct1],
       );
       await getPool().query(
         `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
@@ -200,11 +201,12 @@ sellRoutes.post('/sell/:chainId', async (c) => {
       const _qty2 = Number(chain.total_quantity);
       const _avg2 = Number(chain.avg_buy_price ?? 0);
       const _profit2 = fillPrice > 0 ? Math.round(fillPrice * _qty2 * (1 - KR_FEE.SELL_FEE_PCT)) - Math.round(_avg2 * _qty2) : 0;
+      const _pnlPct2 = _avg2 > 0 && fillPrice > 0 ? Math.round(((fillPrice - _avg2) / _avg2) * 10000) / 100 : null;
       await getPool().query(
         `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2, total_quantity = 0,
-          realized_pnl = realized_pnl + $3
+          realized_pnl = realized_pnl + $3, pnl_pct = COALESCE($5, pnl_pct)
          WHERE id = $1 AND is_paper = $4`,
-        [chainId, sellReason, _profit2, false],
+        [chainId, sellReason, _profit2, false, _pnlPct2],
       );
     }
 

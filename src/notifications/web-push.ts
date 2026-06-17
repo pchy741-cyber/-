@@ -1,4 +1,5 @@
 import webpush from 'web-push';
+import { getCtxIsPaper } from '../config/context.js';
 import { getPool } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 
@@ -292,10 +293,11 @@ export async function notifyBuy(
         : `${totalKrw.toLocaleString()}원`;
 
   const isEod = triggerSource === 'EOD_BETTING';
+  const modeTag = getCtxIsPaper() ? '[연습]' : '[실전]';
   const titlePrefix = isEod ? '🎰 종가베팅 매수' : '🟢 매수';
 
   await sendPushNotification({
-    title: `${titlePrefix} — ${name}`,
+    title: `${modeTag} ${titlePrefix} — ${name}`,
     body: `${qty}주 × ${price.toLocaleString()}원 = ${totalStr}\n${shortReason}`,
     tag: `buy-${stockCode}`,
     url: '/',
@@ -305,7 +307,7 @@ export async function notifyBuy(
   try {
     const { sendTelegramMessage } = await import('./telegram.js');
     await sendTelegramMessage(
-      `${isEod ? '🎰' : '🟢'} *${isEod ? '종가베팅 매수' : '매수 체결'}*\n` +
+      `${modeTag} ${isEod ? '🎰' : '🟢'} *${isEod ? '종가베팅 매수' : '매수 체결'}*\n` +
         `종목: *${name}* (\`${stockCode}\`)\n` +
         `수량: ${qty}주 × ${price.toLocaleString()}원\n` +
         `총액: ${totalKrw.toLocaleString()}원\n` +
@@ -352,10 +354,11 @@ export async function notifySell(
       ? `${pnlSign}${Math.round(pnlKrw / 1000) / 10}만원`
       : `${pnlSign}${pnlKrw.toLocaleString()}원`;
 
+  const modeTag = getCtxIsPaper() ? '[연습]' : '[실전]';
   const sellLabel = isEod ? '종가베팅 매도' : '매도';
 
   await sendPushNotification({
-    title: `${emoji} ${sellLabel} — ${name} ${pnlStr}`,
+    title: `${modeTag} ${emoji} ${sellLabel} — ${name} ${pnlStr}`,
     body: `${qty}주 × ${price.toLocaleString()}원 (${pnlKrwStr})\n${shortReason}`,
     tag: `sell-${stockCode}`,
     url: '/?tab=trades',
@@ -365,7 +368,7 @@ export async function notifySell(
   try {
     const { sendTelegramMessage } = await import('./telegram.js');
     await sendTelegramMessage(
-      `${emoji} *${sellLabel} 체결* (${pnlStr})\n` +
+      `${modeTag} ${emoji} *${sellLabel} 체결* (${pnlStr})\n` +
         `종목: *${name}* (\`${stockCode}\`)\n` +
         `수량: ${qty}주 × ${price.toLocaleString()}원\n` +
         `손익: ${pnlKrwStr}\n` +

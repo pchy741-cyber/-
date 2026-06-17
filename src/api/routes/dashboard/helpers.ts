@@ -85,6 +85,7 @@ export const KNOWN_KR_STOCK_NAMES: Record<string, string> = {
   '383220': 'F&F',
   '403870': 'HPSP',
   '454910': '두산로보틱스',
+  '475150': '에코프로머티리얼즈',
 };
 
 export function isInvalidStockName(name: unknown, stockCode?: string): boolean {
