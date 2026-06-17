@@ -347,6 +347,43 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       continue;
     }
 
+    // ── 장중 1% 스캘핑 익절 (CEO 지시 2026-06-17: SCALP_TARGET 1% 무한루프) ──
+    // SCALP_TARGET 성격 체인(비추세, SWING/WILLIAMS/BOTTOM_FISHING): 장중(10:30~14:30)에
+    // +1.0% 달성 즉시 청산 → 꺾인포인트 재진입 대기. 트레일링 홀딩 포지션(CHART_DOCTOR/MINERVINI)은 제외.
+    {
+      const _isIntradayScalpWindow =
+        (_scalpH === 10 && _scalpM >= 30) || (_scalpH >= 11 && _scalpH <= 13) ||
+        (_scalpH === 14 && _scalpM < 30);
+      const _isTrendLeaderChain =
+        (chain.trigger_source ?? '').includes('CHART_DOCTOR') ||
+        (chain.trigger_source ?? '').includes('MINERVINI') ||
+        (chain.trigger_source ?? '').includes('SNIPER');
+      if (
+        _isIntradayScalpWindow &&
+        !_isTrendLeaderChain &&
+        chain.strategy_mode !== 'SCALPING' &&
+        pnlPct >= 1.0 &&
+        chain.total_quantity > 0 &&
+        !processedSellChains.has(chain.id)
+      ) {
+        logger.info(
+          `💰 장중1%스캘핑익절: ${chain.stock_code} +${pnlPct.toFixed(2)}% (10:30~14:30 비추세체인)`,
+          { component: 'TRACK_B' },
+        );
+        decisions.push({
+          action: 'SELL',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `장중1%익절(Scalp): +${pnlPct.toFixed(2)}% → 꺾인포인트 재진입 대기`,
+          confidence: 0.90,
+        });
+        processedSellChains.add(chain.id);
+        continue;
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
     // v10.3: 마감전 수익확정 — 최소 +1.0% (수수료+세금 0.21% 차감 후 실질 수익 보장)
     // 기존 +0.25%, +0.5%는 수수료 차감 시 실질 손실 → 매도 자체가 손해
     // 당일 진입(6h 이내) + 수익 +1.0% 이상만 마감 전 청산
