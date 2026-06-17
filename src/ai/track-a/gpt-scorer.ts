@@ -115,6 +115,7 @@ ${chartSummary}${sourcesBlock}
         model: MODEL,
         max_tokens: 4096,
         temperature: 0.3, // 일관된 스코어링 위해 낮은 temperature
+        response_format: { type: 'json_object' }, // GPT에게 pure JSON 강제 (코드블록/전문 텍스트 방지)
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage },
@@ -122,14 +123,27 @@ ${chartSummary}${sourcesBlock}
       });
 
       const text = res.choices[0]?.message?.content ?? '';
-      // JSON 추출 (코드블록 or 직접 JSON)
-      const jsonMatch = text.match(/\{[\s\S]*"scores"\s*:\s*\[[\s\S]*\]\s*\}/);
-      if (!jsonMatch) {
-        logger.warn(`GPT 배치 ${i + 1} JSON 파싱 실패`, { component: COMP, rawPreview: text.slice(0, 200) });
+      if (!text) {
+        logger.warn(`GPT 배치 ${i + 1} 빈 응답`, { component: COMP });
         continue;
       }
 
-      const parsed = JSON.parse(jsonMatch[0]) as { scores: Array<Record<string, unknown>> };
+      let parsed: { scores: Array<Record<string, unknown>> };
+      try {
+        parsed = JSON.parse(text) as { scores: Array<Record<string, unknown>> };
+      } catch {
+        // response_format 강제에도 파싱 실패 시 정규식 폴백
+        const jsonMatch = text.match(/\{[\s\S]*"scores"\s*:\s*\[[\s\S]*\]\s*\}/);
+        if (!jsonMatch) {
+          logger.warn(`GPT 배치 ${i + 1} JSON 파싱 실패`, { component: COMP, rawPreview: text.slice(0, 200) });
+          continue;
+        }
+        parsed = JSON.parse(jsonMatch[0]) as { scores: Array<Record<string, unknown>> };
+      }
+      if (!Array.isArray(parsed.scores)) {
+        logger.warn(`GPT 배치 ${i + 1} scores 배열 없음`, { component: COMP });
+        continue;
+      }
       for (const item of parsed.scores) {
         const code = String(item.stock_code ?? '');
         if (!batch.some((w) => w.stock_code === code)) continue;
