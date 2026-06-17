@@ -45,6 +45,7 @@ export async function runGPTScoring(
   watchlist: WatchlistItem[],
   chartData: Map<string, DailyCandle[]>,
   regimeHint?: RegimeHint,
+  additionalSources?: string,
 ): Promise<ScoringResult[]> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -60,10 +61,14 @@ export async function runGPTScoring(
     const batch = watchlist.slice(i, i + BATCH_SIZE);
     const chartSummary = buildChartSummary(batch, chartData);
 
-    const userMessage = `## 차트 데이터 (${batch.length}개 종목, 모드: ${mode})
-${chartSummary}
+    const sourcesBlock = additionalSources
+      ? `\n\n## 시장 인텔리전스 (뉴스·공시·매크로·감성)\n${additionalSources.slice(0, 4000)}`
+      : '';
 
-위 데이터를 바탕으로 각 종목의 점수를 산출해주세요.`;
+    const userMessage = `## 차트 데이터 (${batch.length}개 종목, 모드: ${mode})
+${chartSummary}${sourcesBlock}
+
+위 데이터와 시장 인텔리전스를 종합해 각 종목의 점수를 산출해주세요. 뉴스 감성(Groq), 공시(KRX), 거시경제 방향, 커뮤니티 신호를 sentiment_score에 반영하세요.`;
 
     try {
       const res = await client.chat.completions.create({

@@ -20,6 +20,7 @@ export async function runClaudeScoring(
   mode: string,
   watchlist: WatchlistItem[],
   chartData: Map<string, DailyCandle[]>,
+  additionalSources?: string,
 ): Promise<ScoringResult[]> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY 미설정');
@@ -49,14 +50,18 @@ export async function runClaudeScoring(
       })
       .join('\n');
 
+    const sourcesBlock = additionalSources
+      ? `\n\n## 시장 인텔리전스 (뉴스·공시·매크로·감성)\n${additionalSources.slice(0, 3000)}`
+      : '';
+
     const systemPrompt = `당신은 한국 주식 퀀트 분석가입니다. ${mode} 전략으로 종목별 매수 점수(0-100)와 신호를 JSON으로 반환하세요.`;
     const userPrompt = `다음 ${batch.length}개 종목을 분석해 JSON 배열로 반환하세요. 각 항목: {"stock_code":"코드","composite_score":숫자,"signal":"BUY|HOLD|SELL","confidence":0.0-1.0,"reasoning":"간단한 이유"}
 
 점수 기준: 80+ 강매수, 70-79 매수, 50-69 보유, 50미만 매도
-기술적 지표(차트 추세, 거래량), ${mode} 전략 적합성 고려
+기술적 지표(차트 추세, 거래량), ${mode} 전략 적합성 고려. 시장 인텔리전스가 있으면 sentiment_score에 반영하세요.
 
 종목 데이터:
-${stockSummaries}
+${stockSummaries}${sourcesBlock}
 
 JSON 배열만 반환 (설명 없이):`;
 

@@ -1,3 +1,4 @@
+import OpenAI from 'openai';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
@@ -192,5 +193,137 @@ export async function generateAndSaveInsights(): Promise<void> {
     logger.info(`💡 AI 인사이트 생성 완료 (${insights.length}건): ${insights[0]}`, { component: 'OVERSEAS_INSIGHTS' });
   } catch (e) {
     logger.warn(`AI 인사이트 생성 실패: ${(e as Error).message}`, { component: 'OVERSEAS_INSIGHTS' });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 국내(KR) 인사이트 — Track B 완결 거래 기반, GPT-4o-mini로 생성
+// ─────────────────────────────────────────────────────────────────────────────
+
+const KR_INSIGHTS_KEY = 'kr_ai_insights';
+const KR_INSIGHTS_TS_KEY = 'kr_insights_updated_at';
+
+async function fetchCompletedTradesKR(): Promise<TradeRecord[]> {
+  const tradingMode = getCtxIsPaper() ? 'paper' : 'live';
+  const { rows } = await getPool().query(
+    `
+    SELECT
+      b.stock_code AS code,
+      b.filled_price AS buy_price,
+      b.created_at  AS bought_at,
+      b.ai_reasoning AS buy_reasoning,
+      s.filled_price AS sell_price,
+      s.created_at  AS sold_at
+    FROM orders b
+    JOIN LATERAL (
+      SELECT filled_price, created_at
+      FROM orders
+      WHERE stock_code = b.stock_code
+        AND side = 'SELL'
+        AND status = 'FILLED'
+        AND trigger_source != 'OVERSEAS'
+        AND trading_mode = $1
+        AND created_at > b.created_at
+        AND filled_price IS NOT NULL
+      ORDER BY created_at ASC
+      LIMIT 1
+    ) s ON TRUE
+    WHERE b.side = 'BUY'
+      AND b.status = 'FILLED'
+      AND b.trigger_source != 'OVERSEAS'
+      AND b.trading_mode = $1
+      AND b.created_at >= NOW() - INTERVAL '30 days'
+      AND b.filled_price IS NOT NULL
+      AND b.filled_price > 0
+    ORDER BY b.created_at DESC
+    LIMIT 60
+  `,
+    [tradingMode],
+  );
+
+  return rows.map((r: Record<string, unknown>) => {
+    const buyPrice = Number(r.buy_price);
+    const sellPrice = Number(r.sell_price);
+    const pnlPct = buyPrice > 0 ? ((sellPrice - buyPrice) / buyPrice) * 100 : 0;
+    const reasoning = String(r.buy_reasoning ?? '');
+    const rsiMatch = reasoning.match(/RSI[=\s]?(\d+)/i);
+    const entryRsi = rsiMatch ? Number(rsiMatch[1]) : null;
+    const holdingHours =
+      (new Date(r.sold_at as string).getTime() - new Date(r.bought_at as string).getTime()) / 3_600_000;
+    return { code: String(r.code), pnlPct, entryRsi, holdingHours };
+  });
+}
+
+/** 국내 인사이트 조회 (캐시된 것) — Track A GPT scoring 프롬프트에 주입용 */
+export async function getKRInsights(): Promise<string> {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT value FROM overseas_state WHERE key = $1`,
+      [KR_INSIGHTS_KEY],
+    );
+    return rows.length > 0 ? String(rows[0].value) : '';
+  } catch {
+    return '';
+  }
+}
+
+/** 국내 인사이트 생성 (4시간 간격, GPT-4o-mini 사용) */
+export async function generateKRInsights(): Promise<void> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return;
+
+  try {
+    // 4시간 이내 재생성 방지
+    const { rows: tsRows } = await getPool().query(
+      `SELECT value FROM overseas_state WHERE key = $1`,
+      [KR_INSIGHTS_TS_KEY],
+    );
+    if (tsRows.length > 0) {
+      const age = Date.now() - new Date(tsRows[0].value as string).getTime();
+      if (age < 4 * 60 * 60 * 1000) return;
+    }
+
+    const trades = await fetchCompletedTradesKR();
+    if (trades.length < 3) {
+      logger.info('💡 국내 인사이트 스킵 — 데이터 부족 (3건 미만)', { component: 'KR_INSIGHTS' });
+      return;
+    }
+
+    const summary = buildSummary(trades);
+    const client = new OpenAI({ apiKey, timeout: 30_000 });
+    const res = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      max_tokens: 400,
+      temperature: 0.2,
+      messages: [
+        {
+          role: 'system',
+          content:
+            '당신은 알고리즘 트레이딩 퍼포먼스 분석 전문가입니다. 최근 30일 국내주식 자동매매 실적을 분석하여 다음 매매 사이클을 개선할 3~5가지 실행 가능한 인사이트를 생성하세요. 각 인사이트는 구체적 숫자 근거 포함. JSON만 응답: {"insights":["인사이트1","인사이트2",...]}',
+        },
+        { role: 'user', content: summary },
+      ],
+    });
+
+    const text = res.choices[0]?.message?.content ?? '';
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('JSON 없음');
+
+    const parsed = JSON.parse(jsonMatch[0]) as { insights?: unknown[] };
+    const insights = Array.isArray(parsed.insights) ? parsed.insights.map(String).slice(0, 5) : [];
+    if (insights.length === 0) return;
+
+    const value = insights.map((s, i) => `${i + 1}. ${s}`).join('\n');
+    await getPool().query(
+      `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
+      [KR_INSIGHTS_KEY, value],
+    );
+    await getPool().query(
+      `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
+      [KR_INSIGHTS_TS_KEY, new Date().toISOString()],
+    );
+    logger.info(`💡 국내 인사이트 생성 완료 (${insights.length}건): ${insights[0]}`, { component: 'KR_INSIGHTS' });
+  } catch (e) {
+    logger.warn(`국내 인사이트 생성 실패: ${(e as Error).message}`, { component: 'KR_INSIGHTS' });
   }
 }

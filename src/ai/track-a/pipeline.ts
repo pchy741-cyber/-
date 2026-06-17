@@ -332,7 +332,21 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       combinedSources = combinedSources
         ? `${combinedSources}\n\n## CEO 등록 참고소스\n${sourcesText}`
         : `## CEO 등록 참고소스\n${sourcesText}`;
-      logger.info(`참고소스 ${dbSources.length}건 Gemini에 주입`, { component: 'TRACK_A' });
+      logger.info(`참고소스 ${dbSources.length}건 스코어러에 주입`, { component: 'TRACK_A' });
+    }
+
+    // 4-a-2. 국내 AI 인사이트 갱신 + 주입 (최근 30일 실거래 패턴 분석 — GPT-4o-mini)
+    try {
+      const { generateKRInsights, getKRInsights } = await import('../overseas/insights-generator.js');
+      await generateKRInsights(); // 4시간 간격 자동 스킵
+      const krInsights = await getKRInsights();
+      if (krInsights) {
+        const section = `## 국내 실거래 AI 인사이트 (최근 30일 패턴)\n${krInsights}`;
+        combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
+        logger.info('국내 AI 인사이트 GPT 스코어러에 주입', { component: 'TRACK_A' });
+      }
+    } catch (err) {
+      logger.warn(`국내 인사이트 로드 실패 (스킵): ${err}`, { component: 'TRACK_A' });
     }
 
     // 4-b. 종목별 실거래 정확도 컨텍스트 주입 (score_accuracy 기반)
@@ -358,7 +372,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       const brokerSection = await getBrokerResearchSection();
       if (brokerSection) {
         combinedSources = combinedSources ? `${combinedSources}\n\n${brokerSection}` : brokerSection;
-        logger.info('증권사 리서치 Gemini에 주입', { component: 'TRACK_A' });
+        logger.info('증권사 리서치 스코어러에 주입', { component: 'TRACK_A' });
       }
     } catch (err) {
       logger.warn(`증권사 리서치 로드 실패 (스킵): ${err}`, { component: 'TRACK_A' });
@@ -383,7 +397,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         const lines = disclosures.value.map((d) => `[${d.companyName}(${d.stockCode})] ${d.summary}`);
         const section = `## KRX KIND 당일 공시 (호재/악재 분류)\n${lines.join('\n')}`;
         combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
-        logger.info(`KIND 공시 ${disclosures.value.length}종목 Gemini에 주입`, { component: 'TRACK_A' });
+        logger.info(`KIND 공시 ${disclosures.value.length}종목 스코어러에 주입`, { component: 'TRACK_A' });
       }
 
       // 4-e. Groq 뉴스 감성 섹션
@@ -394,7 +408,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         if (lines.length > 0) {
           const section = `## Groq AI 뉴스 감성 분석 (Google News 기반)\n${lines.join('\n')}`;
           combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
-          logger.info(`Groq 뉴스 감성 ${lines.length}건 Gemini에 주입`, { component: 'TRACK_A' });
+          logger.info(`Groq 뉴스 감성 ${lines.length}건 스코어러에 주입`, { component: 'TRACK_A' });
         }
       }
 
@@ -405,7 +419,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         );
         const section = `## Google Trends 한국 검색량 급등 종목\n${lines.join('\n')}`;
         combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
-        logger.info(`Google Trends ${trendSignals.value.length}종목 Gemini에 주입`, { component: 'TRACK_A' });
+        logger.info(`Google Trends ${trendSignals.value.length}종목 스코어러에 주입`, { component: 'TRACK_A' });
       }
 
       // 4-g. 거시경제 신호 섹션
@@ -413,7 +427,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         const macro = macroResult.value;
         const section = `## 거시경제 신호 (${macro.direction})\n${macro.summary}\n점수 보정: ${macro.scoreAdj > 0 ? '+' : ''}${macro.scoreAdj}점 (전종목 반영)`;
         combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
-        logger.info(`거시경제 신호 Gemini에 주입: ${macro.direction} (${macro.summary})`, { component: 'TRACK_A' });
+        logger.info(`거시경제 신호 스코어러에 주입: ${macro.direction} (${macro.summary})`, { component: 'TRACK_A' });
       }
 
       // 4-h. 커뮤니티 감성 섹션
@@ -426,7 +440,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
           );
           const section = `## 네이버 금융 토론방 커뮤니티 감성\n${lines.join('\n')}`;
           combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
-          logger.info(`커뮤니티 감성 ${meaningful.length}종목 Gemini에 주입`, { component: 'TRACK_A' });
+          logger.info(`커뮤니티 감성 ${meaningful.length}종목 스코어러에 주입`, { component: 'TRACK_A' });
         }
       }
 
@@ -435,7 +449,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         const opt = optionsResult.value;
         const section = `## KRX 옵션 플로우 (기관 선행 지표)\n${opt.summary}\n공포지수(VKOSPI): ${opt.fearLevel} | P/C 비율: ${opt.pcRatio?.toFixed(2) ?? 'N/A'} | 시장 방향: ${opt.direction}`;
         combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
-        logger.info(`KRX 옵션 신호 Gemini에 주입: ${opt.direction} fearLevel=${opt.fearLevel}`, {
+        logger.info(`KRX 옵션 신호 스코어러에 주입: ${opt.direction} fearLevel=${opt.fearLevel}`, {
           component: 'TRACK_A',
         });
       }
@@ -531,7 +545,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     if (scores.length === 0 && !ensembleEnabled && process.env.OPENAI_API_KEY) {
       try {
         const { runGPTScoring } = await import('./gpt-scorer.js');
-        const gptPrimary = await runGPTScoring(mode, allStocks, chartData, regimeHint);
+        const gptPrimary = await runGPTScoring(mode, allStocks, chartData, regimeHint, combinedSources || undefined);
         if (gptPrimary.length > 0) {
           scores = gptPrimary;
           scoringSource = 'gemini'; // Track B 호환성 유지
@@ -547,7 +561,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
             });
             try {
               const { runClaudeScoring } = await import('./claude-scorer.js');
-              const claudeScores = await runClaudeScoring(mode, verifyStocks, chartData);
+              const claudeScores = await runClaudeScoring(mode, verifyStocks, chartData, combinedSources || undefined);
               let verifiedCount = 0;
               let downgradedCount = 0;
               for (const gptScore of highScoreStocks) {
@@ -615,10 +629,10 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     if (scores.length === 0 && process.env.ANTHROPIC_API_KEY) {
       try {
         const { runClaudeScoring } = await import('./claude-scorer.js');
-        scores = await runClaudeScoring(mode, allStocks, chartData);
+        scores = await runClaudeScoring(mode, allStocks, chartData, combinedSources || undefined);
         if (scores.length > 0) {
-          scoringSource = 'flash'; // flash로 분류 (Claude 별도 source 없음)
-          logger.info(`✅ Claude Haiku 폴백 성공: ${scores.length}개 스코어 (Gemini 할당량 초과 대체)`, {
+          scoringSource = 'flash';
+          logger.info(`✅ Claude Haiku 폴백 성공: ${scores.length}개 스코어 (뉴스/매크로 포함)`, {
             component: 'TRACK_A',
           });
         }
