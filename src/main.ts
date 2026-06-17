@@ -585,7 +585,9 @@ async function bootstrap() {
       const { getPool: gp } = await import('./db/client.js');
       const { rows } = await gp().query(
         `SELECT stock_code, avg_buy_price, peak_price_since_open FROM transaction_chains
-         WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND peak_price_since_open IS NOT NULL`,
+         WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND peak_price_since_open IS NOT NULL
+           AND is_paper = $1`,
+        [config.isPaper],
       );
       if (rows.length > 0) {
         const { restorePreTpPeakMap } = await import('./ai/track-b/sell-signals.js');

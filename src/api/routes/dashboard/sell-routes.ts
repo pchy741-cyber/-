@@ -322,9 +322,10 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
           const _bprofit = fillPrice > 0 ? Math.round(fillPrice * _bqty * (1 - KR_FEE.SELL_FEE_PCT)) - Math.round(_bavg * _bqty) : 0;
           await tx.query(
             `UPDATE transaction_chains SET status='CLOSED', closed_at=NOW(), close_reason=$2, total_quantity=0,
-              realized_pnl = realized_pnl + $3
+              realized_pnl = realized_pnl + $3,
+              pnl_pct = CASE WHEN $4 > 0 AND avg_buy_price > 0 THEN ROUND(((($4 - avg_buy_price) / avg_buy_price) * 100)::numeric, 2) ELSE pnl_pct END
              WHERE id=$1`,
-            [chain.id, sellReason, _bprofit],
+            [chain.id, sellReason, _bprofit, fillPrice],
           );
           await tx.query(
             `INSERT INTO orders (chain_id,stock_code,side,order_type,quantity,price,filled_quantity,filled_price,kis_order_no,status,trading_mode,trigger_source,ai_reasoning)
@@ -412,9 +413,10 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
           const _lprofit = fillPrice > 0 ? Math.round(fillPrice * _lqty * (1 - KR_FEE.SELL_FEE_PCT)) - Math.round(_lavg * _lqty) : 0;
           await tx.query(
             `UPDATE transaction_chains SET status='CLOSED', closed_at=NOW(), close_reason=$2, total_quantity=0,
-              realized_pnl = realized_pnl + $3
+              realized_pnl = realized_pnl + $3,
+              pnl_pct = CASE WHEN $4 > 0 AND avg_buy_price > 0 THEN ROUND(((($4 - avg_buy_price) / avg_buy_price) * 100)::numeric, 2) ELSE pnl_pct END
              WHERE id=$1`,
-            [chain.id, sellReason, _lprofit],
+            [chain.id, sellReason, _lprofit, fillPrice],
           );
         }
         await tx.query(

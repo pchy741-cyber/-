@@ -180,13 +180,15 @@ export async function reconcileExternalSells(): Promise<void> {
         // 가격 조회 실패 시 평균매수가로 폴백 (fillPrice=0 → P&L 오염 방지)
         if (fillPrice <= 0 && avgBuy > 0) fillPrice = avgBuy;
         const pnlPct = avgBuy > 0 && fillPrice > 0 ? (((fillPrice - avgBuy) / avgBuy) * 100).toFixed(2) : '?';
+        const pnlPctNum = avgBuy > 0 && fillPrice > 0 ? ((fillPrice - avgBuy) / avgBuy) * 100 : null;
 
         const ghostOrderNo = `EXT_${Date.now().toString(36)}`;
         await getPool().query(
           `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2,
-            realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + ($3 * (1 - ${KR_FEE.SELL_FEE_PCT}) - avg_buy_price) * total_quantity ELSE realized_pnl END
+            realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + ($3 * (1 - ${KR_FEE.SELL_FEE_PCT}) - avg_buy_price) * total_quantity ELSE realized_pnl END,
+            pnl_pct = CASE WHEN $4 IS NOT NULL THEN ROUND($4::numeric, 2) ELSE pnl_pct END
            WHERE id = $1`,
-          [chain.id, '외부매도 (KIS 앱 직접 매도)', fillPrice],
+          [chain.id, '외부매도 (KIS 앱 직접 매도)', fillPrice, pnlPctNum],
         );
         // 체인의 is_paper에서 trading_mode 결정 (config.tradingMode은 글로벌 값이라 불일치 위험)
         const chainMode = chain.is_paper ? 'paper' : 'live';
@@ -285,6 +287,7 @@ async function _reconcileKisSyncExternalSells(
 
     const pnl = (sellPrice - snap.avgBuyPrice) * snap.quantity;
     const pnlPct = snap.avgBuyPrice > 0 ? (((sellPrice - snap.avgBuyPrice) / snap.avgBuyPrice) * 100).toFixed(2) : '?';
+    const pnlPctNum = snap.avgBuyPrice > 0 && sellPrice > 0 ? ((sellPrice - snap.avgBuyPrice) / snap.avgBuyPrice) * 100 : null;
     const invested = snap.avgBuyPrice * snap.quantity;
 
     try {
@@ -294,11 +297,11 @@ async function _reconcileKisSyncExternalSells(
       } = await getPool().query(
         `INSERT INTO transaction_chains
            (stock_code, status, strategy_mode, avg_buy_price, total_quantity, total_invested,
-            realized_pnl, is_paper, opened_at, closed_at, close_reason)
-         VALUES ($1, 'CLOSED', 'SWING', $2, $3, $4, $5, false, NOW() - INTERVAL '1 day', NOW(),
+            realized_pnl, pnl_pct, is_paper, opened_at, closed_at, close_reason)
+         VALUES ($1, 'CLOSED', 'SWING', $2, $3, $4, $5, $6, false, NOW() - INTERVAL '1 day', NOW(),
                  '외부매도 (KIS 직접 매도/예약매도)')
          RETURNING id`,
-        [stockCode, snap.avgBuyPrice, snap.quantity, invested, pnl],
+        [stockCode, snap.avgBuyPrice, snap.quantity, invested, pnl, pnlPctNum],
       );
 
       const ghostOrderNo = `EXT_KS_${Date.now().toString(36)}`;

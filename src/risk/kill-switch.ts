@@ -382,7 +382,7 @@ async function cleanupLegacyKeys(): Promise<void> {
  * — 다른 모드의 상태는 다른 서버가 관리하므로 로드하지 않음
  */
 export async function initKillSwitchFromDB(): Promise<void> {
-  const isPaper = config.isPaper;
+  const isPaper = getCtxIsPaper();
   const modeLabel = isPaper ? 'PAPER' : 'LIVE';
   logger.info(`🔄 Kill Switch 복원 시작 [${modeLabel} 모드만]`, { component: 'KILL_SWITCH' });
 

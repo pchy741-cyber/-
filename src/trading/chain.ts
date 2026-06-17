@@ -160,8 +160,10 @@ export class ChainManager {
           );
         } else {
           await client.query(
-            `UPDATE transaction_chains SET status='CLOSED', total_quantity=0, realized_pnl=$1, closed_at=$2, close_reason=$3 WHERE id=$4`,
-            [freshPnl + profit, new Date().toISOString(), `익절: +${((sellPrice / avgBuy - 1) * 100).toFixed(1)}%`, chainId],
+            `UPDATE transaction_chains SET status='CLOSED', total_quantity=0, realized_pnl=$1, closed_at=$2, close_reason=$3,
+             pnl_pct = CASE WHEN $5 > 0 AND $6 > 0 THEN ROUND(((($5 - $6) / $6) * 100)::numeric, 2) ELSE pnl_pct END
+             WHERE id=$4`,
+            [freshPnl + profit, new Date().toISOString(), `익절: +${((sellPrice / avgBuy - 1) * 100).toFixed(1)}%`, chainId, sellPrice, avgBuy],
           );
         }
       });

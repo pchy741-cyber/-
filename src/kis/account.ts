@@ -62,14 +62,14 @@ export function invalidateBalanceCache(): void {
  */
 export async function getAccountBalance(forceLive = false): Promise<AccountBalance> {
   // context-aware 캐시 키 — paper/live 절대 충돌 방지
-  const isPaper = !forceLive && config.isPaper;
+  const isPaper = !forceLive && getCtxIsPaper();
   const cacheKey = forceLive ? 'live' : isPaper ? 'paper' : 'live';
   const cached = _balanceCache.get(cacheKey);
   if (cached && Date.now() - cached.ts < getBalanceCacheTTL()) return cached.data;
   const trIds = isPaper ? KIS_TR_ID.PAPER : KIS_TR_ID.LIVE;
 
   // forceLive=true && 서버가 paper → live credential/URL 강제 사용
-  const needForceMode = forceLive && config.isPaper;
+  const needForceMode = forceLive && getCtxIsPaper();
   const forceMode = needForceMode ? ('live' as const) : undefined;
 
   // 계좌번호: forceMode 시 live 전용 계좌 사용
