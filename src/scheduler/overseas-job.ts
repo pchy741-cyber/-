@@ -215,8 +215,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     // ── 현금 동기화 (해외 시장 열린 시간에만 — 한국장 통합증거금 오염 방지) ──
     // KIS psamount API는 통합증거금 전체를 반환. 한국장 개장 중에는 국내 매매용 현금까지
     // 해외 가용금액에 포함되어 overseas_state['cash']가 과도하게 설정됨.
-    // 해외 시장이 열려 있을 때(미국장 = KST 23:30~06:00)는 한국장이 닫혀 있어 오염 없음.
-    if (!isPaper()) {
+    // 한국장 개장(09:00~15:30 KST) 중에는 reconcile 스킵 — 오염 방지
+    if (!isPaper() && !openRegions.has('KR')) {
       await reconcileCashWithKIS();
     }
     // ── 환율 1회 조회 — 사이클 전체에서 동일 환율 사용 (환율 drift 방지) ──
