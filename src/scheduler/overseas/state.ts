@@ -168,16 +168,22 @@ export async function ensureOverseasTable(): Promise<void> {
     try {
       const { rows: seedMig } = await getPool().query("SELECT value FROM overseas_state WHERE key = '_seed_unified_v1'");
       if (seedMig.length === 0) {
+        // marker를 먼저 INSERT해야 원자성 보장 (서버 재시작 시 중복 삭제 방지)
+        const migratedAt = new Date().toISOString();
+        await getPool().query(
+          `INSERT INTO overseas_state (key, value) VALUES ('_seed_unified_v1', $1) ON CONFLICT (key) DO NOTHING`,
+          [JSON.stringify({ migratedAt, ordersArchived: 0, seedKrw: PAPER_OVERSEAS_SEED_KRW })],
+        );
         const { rowCount } = await getPool().query(
           `UPDATE orders SET trading_mode = 'p_arch'
            WHERE trading_mode = 'paper' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'`,
         );
         await getPool().query(`DELETE FROM overseas_holdings WHERE is_paper = true`);
         await getPool().query(
-          `INSERT INTO overseas_state (key, value) VALUES ('_seed_unified_v1', $1) ON CONFLICT (key) DO UPDATE SET value = $1`,
+          `UPDATE overseas_state SET value = $1 WHERE key = '_seed_unified_v1'`,
           [
             JSON.stringify({
-              migratedAt: new Date().toISOString(),
+              migratedAt,
               ordersArchived: rowCount,
               seedKrw: PAPER_OVERSEAS_SEED_KRW,
             }),

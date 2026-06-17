@@ -367,9 +367,12 @@ export function registerManualBuyRoutes(app: Hono) {
         );
         addPaperInvestment(quantity * curPrice); // 연습 원장 캐시 즉시 무효화 + 현금 차감 반영
         try {
-          await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑');
-        } catch {
-          /* 알림 실패 무시 */
+          await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑', 'MANUAL_BUY');
+        } catch (notifyErr) {
+          logger.warn(
+            `notifyBuy() 실패: ${stock_code} — ${notifyErr instanceof Error ? notifyErr.message : String(notifyErr)}`,
+            { component: 'CLAUDE_BUY' },
+          );
         }
         invalidateBalanceCache();
         hardInvalidateMode(isPaper);
@@ -453,6 +456,15 @@ export function registerManualBuyRoutes(app: Hono) {
                     { component: 'CLAUDE_BUY' },
                   );
                   invalidateBalanceCache();
+                  await notifyBuy(
+                    stock_code,
+                    liveQty,
+                    curPrice,
+                    `AUTO_PROMOTE AI${aiScore}점 연습→실전`,
+                    'ELITE_AUTO_PROMOTION',
+                  ).catch((err) =>
+                    logger.warn(`notifyBuy() 실패 (엘리트 자동 실전): ${err}`, { component: 'CLAUDE_BUY' }),
+                  );
                 }
               }
             }
@@ -521,9 +533,12 @@ export function registerManualBuyRoutes(app: Hono) {
         { component: 'CLAUDE_BUY' },
       );
       try {
-        await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑');
-      } catch {
-        /* 알림 실패 무시 */
+        await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑', 'MANUAL_BUY');
+      } catch (notifyErr) {
+        logger.warn(
+          `notifyBuy() 실패: ${stock_code} — ${notifyErr instanceof Error ? notifyErr.message : String(notifyErr)}`,
+          { component: 'CLAUDE_BUY' },
+        );
       }
       invalidateBalanceCache();
       hardInvalidateMode(isPaper);

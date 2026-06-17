@@ -530,11 +530,18 @@ export class TradeExecutor {
         .then(() => import('../kis/interest-group.js').then((m) => m.fixWatchlistNames()))
         .catch(() => {});
 
-      // 캐시 무효화 + 푸시 알림
+      // 캐시 무효화
       invalidateStockCache(stockCode).catch(() => {});
-      notifyBuy(stockCode, filledQty, fill.filledPrice, reasoning, triggerSource).catch((err) =>
-        logger.warn(`알림 발송 오류 (BUY): ${err}`, { component: 'EXECUTOR' }),
-      );
+      if (chainCreated) {
+        notifyBuy(stockCode, filledQty, fill.filledPrice, reasoning, triggerSource).catch((err) =>
+          logger.warn(`알림 발송 오류 (BUY): ${err}`, { component: 'EXECUTOR' }),
+        );
+      } else {
+        logger.error(
+          `🚨 ORPHAN: 체결 완료됐으나 체인 생성 3회 실패 — notifyBuy 미발송: ${stockCode}`,
+          { component: 'EXECUTOR' },
+        );
+      }
     }
 
     } finally { this._pendingBuyCount[pk] = Math.max(0, this._pendingBuyCount[pk] - 1); } // v9: 슬롯 해제
@@ -766,6 +773,11 @@ export class TradeExecutor {
       );
       try {
         const avgBuy = Number(chain.avg_buy_price) || 0;
+        const pnlPctForceClose = avgBuy > 0 ? ((0 - avgBuy) / avgBuy) * 100 : 0;
+        await getPool().query(
+          `UPDATE transaction_chains SET realized_pnl = $1, pnl_pct = $2 WHERE id = $3`,
+          [0, pnlPctForceClose, chain.id],
+        );
         await chainManager.closeChain(
           chain.id, avgBuy, chain,
           `${failCount}회 연속 청산 실패 → 자동 강제 종료 (수동 KIS 확인 필요)`,
@@ -838,6 +850,7 @@ export class TradeExecutor {
               { component: 'EXECUTOR' },
             );
             const avgBuy = Number(chain.avg_buy_price) || 0;
+            const pnlPctKisSync = avgBuy > 0 ? ((0 - avgBuy) / avgBuy) * 100 : 0;
             await chainManager.closeChain(
               chain.id, avgBuy, chain,
               `KIS 동기화: DB ${chain.total_quantity}주 → 실보유 0주 (이미 매도 완료 추정)`,
@@ -845,6 +858,16 @@ export class TradeExecutor {
             this._closeFailCount.delete(failKey);
             invalidateStockCache(stockCode).catch(() => {});
             hardInvalidateDashboardCache();
+            notifySell(
+              stockCode,
+              chain.total_quantity,
+              0,
+              pnlPctKisSync,
+              `DB-KIS 동기화 강제 청산: 실보유 0주`,
+              chain.strategy_mode,
+            ).catch((err) =>
+              logger.warn(`notifySell() 실패 (DB-KIS 동기화): ${err}`, { component: 'EXECUTOR' }),
+            );
             await logSystem('WARN', 'EXECUTOR',
               `🔄 DB-KIS 동기화: ${stockCode} 체인 강제 종료 (DB ${chain.total_quantity}주, KIS 0주)`);
           } else if (actualQty < chain.total_quantity) {
