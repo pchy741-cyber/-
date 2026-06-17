@@ -60,6 +60,8 @@ export const TransactionChainSchema = z.object({
   pnl_pct: z.number().nullable().optional(),
   sell_reason: z.string().nullable().optional(),
   trigger_source: z.string().nullable().optional(),
+  // Computed via LEFT JOIN watchlist — SELECT에서만 존재, DDL 컬럼 아님
+  stock_name: z.string().nullable().optional(),
   is_paper: z.boolean().optional(),
   opened_at: z.string(),
   closed_at: z.string().nullable(),
@@ -85,6 +87,8 @@ export const OrderSchema = z.object({
   trigger_source: z.string().nullable(),
   ai_reasoning: z.string().nullable(),
   avg_buy_price: z.number().nullable().optional(),
+  // DDL 088: GENERATED ALWAYS AS (trading_mode IN ('paper','p_arch')) STORED
+  is_paper: z.boolean().optional(),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -110,6 +114,8 @@ export const StrategyConfigSchema = z.object({
   id: z.string().uuid(),
   mode: z.enum(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER', 'BOTTOM_FISHING', 'EOD_BETTING', 'BREAKOUT']),
   is_active: z.boolean(),
+  // DDL 037: NOT NULL DEFAULT false — paper/live 구분 필터 핵심 컬럼
+  is_paper: z.boolean().default(false),
   notebooklm_prompt: z.string().optional().default(''),
   gemini_prompt: z.string(),
   gpt_prompt: z.string(),
