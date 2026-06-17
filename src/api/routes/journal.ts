@@ -178,7 +178,7 @@ journalRoutes.get('/journal', async (c) => {
       WHERE s.side = 'SELL'
         AND s.status = 'FILLED'
         AND s.trigger_source = 'OVERSEAS'
-        AND s.created_at >= NOW() - ($1 || ' days')::interval
+        AND s.created_at >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Seoul') - ($1 * INTERVAL '1 day')) AT TIME ZONE 'Asia/Seoul'
         AND s.filled_price IS NOT NULL
         AND s.filled_price > 0
         AND (s.avg_buy_price IS NOT NULL OR s.ai_reasoning ~ '\\[avgBuy:[0-9]')
