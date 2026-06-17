@@ -18,7 +18,25 @@ interface WatchlistItem {
   stock_name: string;
 }
 
-/** 차트 데이터를 토큰 절약형 텍스트로 변환 */
+/** RSI-14 근사 계산 (Wilder 평활 — 캔들 배열은 최신순 [0]=오늘) */
+function calcRSI14(candles: DailyCandle[]): number | null {
+  if (candles.length < 15) return null;
+  const closes = candles.slice(0, 15).map((c) => c.close).reverse(); // 오래된 순으로
+  let avgGain = 0;
+  let avgLoss = 0;
+  for (let i = 1; i < 15; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff > 0) avgGain += diff;
+    else avgLoss += Math.abs(diff);
+  }
+  avgGain /= 14;
+  avgLoss /= 14;
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return Math.round(100 - 100 / (1 + rs));
+}
+
+/** 차트 데이터를 토큰 절약형 텍스트로 변환 — SMA20·눌림목·RSI14 포함 */
 function buildChartSummary(batch: WatchlistItem[], chartData: Map<string, DailyCandle[]>): string {
   return batch
     .map((w) => {
@@ -32,7 +50,29 @@ function buildChartSummary(batch: WatchlistItem[], chartData: Map<string, DailyC
       const volRatio = avgVol > 0 ? (latest.volume / avgVol).toFixed(1) : '?';
       const high = Math.max(...candles.slice(0, 30).map((c) => c.high));
       const dropPct = high > 0 ? (((latest.close - high) / high) * 100).toFixed(1) : '?';
-      return `${w.stock_code}(${w.stock_name}): 현재가${latest.close.toLocaleString()} 5일${change5d}% 고점대비${dropPct}% 거래량${volRatio}x 5일종가:${recent
+
+      // SMA20 + 눌림목 (Track B와 동일 로직)
+      const sma20Candles = candles.slice(0, 20);
+      const sma20 = sma20Candles.length >= 20
+        ? Math.round(sma20Candles.reduce((a, c) => a + c.close, 0) / 20)
+        : 0;
+      const recentHigh5 = candles.length >= 6 ? Math.max(...candles.slice(1, 6).map((c) => c.high)) : 0;
+      const pullback =
+        sma20 > 0 &&
+        recentHigh5 > sma20 * 1.04 &&
+        latest.close >= sma20 * 0.98 &&
+        latest.close <= sma20 * 1.02;
+
+      // RSI-14
+      const rsi = calcRSI14(candles);
+
+      const techStr = [
+        sma20 > 0 ? `SMA20=${sma20.toLocaleString()}` : '',
+        pullback ? '눌림목=true' : sma20 > 0 ? '눌림목=false' : '',
+        rsi !== null ? `RSI=${rsi}` : '',
+      ].filter(Boolean).join(' ');
+
+      return `${w.stock_code}(${w.stock_name}): 현재가${latest.close.toLocaleString()} 5일${change5d}% 고점대비${dropPct}% 거래량${volRatio}x${techStr ? ' ' + techStr : ''} 5일종가:${recent
         .slice(0, 5)
         .map((c) => c.close)
         .join(',')}`;
