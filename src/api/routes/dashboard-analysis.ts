@@ -778,7 +778,7 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
         FROM orders
         WHERE ${osFilter}
           AND is_paper = $1
-          AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
+          AND (trading_mode = $2::text OR ($2::text = 'paper' AND trading_mode = 'p_arch'))
           AND created_at >= NOW() - INTERVAL '12 months'
         GROUP BY 1
         ORDER BY 1 ASC
@@ -792,7 +792,7 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
         FROM orders
         WHERE ${osFilter}
           AND is_paper = $1
-          AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
+          AND (trading_mode = $2::text OR ($2::text = 'paper' AND trading_mode = 'p_arch'))
       `,
         [isPaper, tradingMode],
       );
@@ -803,7 +803,7 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
         FROM orders
         WHERE ${osFilter}
           AND is_paper = $1
-          AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
+          AND (trading_mode = $2::text OR ($2::text = 'paper' AND trading_mode = 'p_arch'))
           AND created_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')
       `,
         [isPaper, tradingMode],
