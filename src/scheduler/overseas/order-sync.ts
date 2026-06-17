@@ -60,12 +60,22 @@ export async function syncPendingOverseasOrders(): Promise<void> {
             }
             const filledQty = Math.min(Number(order.quantity), remainingQty);
             reconciledBuyQty.set(order.stock_code, alreadyReconciled + filledQty);
+            const fillPrice = position?.avgBuyPrice ?? Number(order.price);
             await updateOrder(order.id, {
               filled_quantity: filledQty,
-              filled_price: position?.avgBuyPrice ?? Number(order.price),
+              filled_price: fillPrice,
               status: 'FILLED',
               kis_status: 'FILLED',
             });
+            // overseas_holdings 동기화 — order만 FILLED 처리하면 holdings 불일치 (P1 #3)
+            await getPool().query(
+              `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper)
+               VALUES ($1, $2, $3, $4, NOW(), false)
+               ON CONFLICT (exchange, stock_code, is_paper) DO UPDATE SET quantity=$3, avg_price=$4`,
+              [order.stock_code, exchange, currentQty, fillPrice],
+            ).catch((e: unknown) =>
+              logger.warn(`PENDING BUY 홀딩 동기화 실패 (${order.stock_code}): ${(e as Error).message}`, { component: 'OVERSEAS' })
+            );
             logger.info(`✅ ${order.stock_code} BUY PENDING→FILLED (잔고: ${currentQty}주, 할당: ${filledQty}주)`, {
               component: 'OVERSEAS',
             });
@@ -76,6 +86,13 @@ export async function syncPendingOverseasOrders(): Promise<void> {
               status: 'FILLED',
               kis_status: 'FILLED',
             });
+            // overseas_holdings 동기화 — qty=0 → 행 삭제 (P1 #3)
+            await getPool().query(
+              `DELETE FROM overseas_holdings WHERE stock_code=$1 AND exchange=$2 AND is_paper=false`,
+              [order.stock_code, exchange],
+            ).catch((e: unknown) =>
+              logger.warn(`PENDING SELL 홀딩 동기화 실패 (${order.stock_code}): ${(e as Error).message}`, { component: 'OVERSEAS' })
+            );
             logger.info(`✅ ${order.stock_code} SELL PENDING→FILLED (잔고 0 확인)`, { component: 'OVERSEAS' });
           }
         } catch (e) {

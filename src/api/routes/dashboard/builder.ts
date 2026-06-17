@@ -133,10 +133,12 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   const allWatchCodes = [...new Set([...chainCodes, ...scoreCodes])];
   const priceMap = new Map<string, number>();
 
-  // 1차: KIS 잔고 positions (실계좌 모드에서 정확)
-  for (const code of chainCodes) {
-    const pos = posMap.get(code);
-    if (pos?.currentPrice > 0) priceMap.set(code, pos.currentPrice);
+  // 1차: KIS 잔고 positions (실계좌 모드에서만 신뢰 — paper는 내부 avgPrice 폴백으로 오염 가능)
+  if (!viewIsPaper) {
+    for (const code of chainCodes) {
+      const pos = posMap.get(code);
+      if (pos?.currentPrice > 0) priceMap.set(code, pos.currentPrice);
+    }
   }
 
   // 2차: KIS 시세 API 조회 — 최소 호출 원칙
@@ -216,6 +218,18 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     for (const code of stillMissing.filter((c) => !priceMap.has(c))) {
       const last = getLastKnownPricesMemory([code]).get(code);
       if (last) priceMap.set(code, last);
+    }
+  }
+
+  // 5차: paper 전용 — getPaperPositions()가 이미 조회한 가격 재활용
+  // getBatchPrices는 cachePriceMemory를 쓰지 않아 3차에서 누락됨 → posMap으로 보완
+  // currentPrice가 avgPrice 폴백인 경우에도 unrealizedPnl=0 (현재 동작과 동일) — 최악 동등
+  if (viewIsPaper) {
+    for (const code of chainCodes) {
+      if (!priceMap.has(code)) {
+        const pos = posMap.get(code);
+        if (pos?.currentPrice > 0) priceMap.set(code, pos.currentPrice);
+      }
     }
   }
 

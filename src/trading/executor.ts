@@ -8,6 +8,7 @@ import {
   getOpenChains,
   getPool,
   insertOrder,
+  isMemoryMode,
   logSystem,
   updateOrderByKisOrderNo,
   upsertWatchlistItem,
@@ -267,9 +268,10 @@ export class TradeExecutor {
     // 🚦 매매 게이트 (차트검수 + 확률교정 + 변동성사이징 + 레짐필터 + 쿨다운)
     // ETF 파킹 / 바닥낚시 종목은 게이트 생략 (스캐너가 이미 검증 or 차트 분석 불필요)
     const ETF_PARK_CODES = ['333940', PARK_STOCK_CODE, '161510', '114800', '252670', '251340']; // 파킹ETF: KODEX인버스,SOFR금리액티브,TIGER고배당,KODEX200인버스,KODEX200선물인버스2X,TIGER인버스
-    // CASH_PARKING: 현금파킹 대형주는 cash-manager가 이미 종목·타이밍 검증 완료 — 인트라데이 게이트 불필요
+    // CASH_PARKING/ETF: cash-manager·포트폴리오 검증 완료 — 인트라데이 게이트 불필요
+    // BOTTOM_FISHING은 리스크 검증 필요 (포지션 한도·손실 한도 우회 방지)
     const skipGates =
-      ETF_PARK_CODES.includes(stockCode) || mode === 'BOTTOM_FISHING' || triggerSource === 'CASH_PARKING';
+      ETF_PARK_CODES.includes(stockCode) || triggerSource === 'CASH_PARKING';
     const params = STRATEGY_PARAMS[mode] ?? STRATEGY_PARAMS.SWING;
     if (!STRATEGY_PARAMS[mode]) {
       logger.warn(`⚠️ 알 수 없는 전략 모드 "${mode}" → SWING 폴백 적용`, { component: 'EXECUTOR' });
@@ -278,7 +280,7 @@ export class TradeExecutor {
     if (skipGates) {
       const skipModeTag = getCtxIsPaper() ? '🧪PAPER' : '💰LIVE';
       logger.info(
-        `⏭️ [${skipModeTag}] 게이트 생략 (${mode === 'BOTTOM_FISHING' ? '바닥낚시' : 'ETF파킹'}): ${stockCode} → 직접 주문`,
+        `⏭️ [${skipModeTag}] 게이트 생략 (ETF파킹/현금파킹): ${stockCode} → 직접 주문`,
         { component: 'EXECUTOR' },
       );
     } else
@@ -490,7 +492,7 @@ export class TradeExecutor {
       let chainCreated = false;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          await chainManager.openChain({
+          const chainId = await chainManager.openChain({
             stockCode,
             mode,
             buyPrice: fill.filledPrice,
@@ -500,6 +502,8 @@ export class TradeExecutor {
             maxAveragingCount: params.maxAveragingCount,
             isPaper: isPaperSnapshot,
           });
+          // orders.chain_id 연결 — 고아 포지션 방지 (audit P0)
+          await updateOrderByKisOrderNo(result.orderNo, { chain_id: chainId });
           chainCreated = true;
           break;
         } catch (chainErr) {
@@ -784,6 +788,12 @@ export class TradeExecutor {
         hardInvalidateDashboardCache();
         await logSystem('WARN', 'EXECUTOR',
           `🔄 ${stockCode} 체인 강제 종료: ${failCount}회 연속 실패 (DB ${chain.total_quantity}주)`);
+        // DB 강제 종료 → KIS 실계좌 불일치 가능 → 반드시 수동 확인 요청
+        import('../notifications/telegram.js').then(({ sendTelegramMessage }) =>
+          sendTelegramMessage(
+            `🚨 체인 강제 종료 (${isPaperSnapshot ? '연습' : '실전'})\n종목: ${stockCode}\n사유: ${failCount}회 연속 청산 실패\n⚠️ KIS 앱에서 실제 잔고 수동 확인 필요`,
+          ).catch(() => {})
+        ).catch(() => {});
       } catch (closeErr) {
         logger.error(`체인 강제 종료 실패: ${stockCode} — ${closeErr}`, { component: 'EXECUTOR' });
         this._closeFailCount.set(failKey, failCount + 1);
@@ -994,6 +1004,20 @@ export class TradeExecutor {
     const isPaper = params.isPaper ?? getCtxIsPaper();
     if (isPaper) {
       return paperTradeOrder(params);
+    }
+
+    // LIVE 매매 중 인메모리 DB 모드 감지 → 주문 차단 (DB 복구 전 주문은 휘발됨)
+    if (isMemoryMode()) {
+      logger.error(
+        `🚫 LIVE 주문 차단: 인메모리 DB 모드 활성 — ${params.stockCode} (DB 복구 후 자동 재개)`,
+        { component: 'EXECUTOR' },
+      );
+      await logSystem(
+        'ERROR',
+        'EXECUTOR',
+        `LIVE 주문 차단 (인메모리 모드): ${params.side} ${params.stockCode} x${params.quantity}`,
+      );
+      return { success: false, orderNo: '', message: '인메모리 DB 모드 — LIVE 주문 차단' };
     }
 
     // 장후 시간외 자동 감지 (15:40~16:00 KST → ORD_DVSN '06')

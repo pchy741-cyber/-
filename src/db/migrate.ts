@@ -154,21 +154,31 @@ export async function runMigrations(): Promise<void> {
         }
       }
 
-      // 모든 구문 시도 후 항상 적용 완료로 표시 (서버 시작 블로킹 방지)
-      try {
-        await client.query('INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING', [
-          file,
-        ]);
-      } catch {
-        /* ignore */
-      }
-
       if (errorCount === 0) {
+        // 모든 구문 성공 시에만 적용 완료로 표시
+        try {
+          await client.query(
+            'INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
+            [file],
+          );
+        } catch {
+          /* ignore */
+        }
         logger.info(`✅ 마이그레이션 적용: ${file} (${stmts.length}개 구문)`, { component: 'MIGRATE' });
       } else {
-        logger.warn(`⚠️ 마이그레이션 부분 적용: ${file} (${errorCount}개 오류, ${stmts.length}개 구문)`, {
-          component: 'MIGRATE',
-        });
+        // 오류 발생 시 미기록 → 다음 배포에서 재시도 (부분 적용 상태를 완료로 오인 방지)
+        logger.error(
+          `❌ 마이그레이션 부분 실패: ${file} (${errorCount}개 오류/${stmts.length}개 구문) — schema_migrations 미기록, 다음 배포에서 재시도됨`,
+          { component: 'MIGRATE' },
+        );
+        try {
+          const { sendTelegramMessage } = await import('../notifications/telegram.js');
+          sendTelegramMessage(
+            `⚠️ 마이그레이션 부분 실패\n파일: ${file}\n오류: ${errorCount}개/${stmts.length}개 구문\n→ 다음 배포에서 재시도됩니다`,
+          ).catch(() => {});
+        } catch {
+          /* ignore */
+        }
       }
     }
 

@@ -76,6 +76,29 @@ export async function reconcilePendingOrders(): Promise<void> {
             { component: 'RECONCILER' },
           );
 
+          // BUY 전량 체결 + chain_id 없음 → 체인 신규 생성 (지정가 지연 체결 복구, audit P1)
+          if (order.side === 'BUY' && isFullFill && !order.chain_id) {
+            try {
+              const totalInvested = fill.filledPrice * fill.filledQty;
+              const {
+                rows: [newChain],
+              } = await getPool().query<{ id: string }>(
+                `INSERT INTO transaction_chains
+                   (stock_code, status, strategy_mode, avg_buy_price, total_quantity, total_invested, is_paper, opened_at)
+                 VALUES ($1, 'OPEN', 'SWING', $2, $3, $4, $5, NOW())
+                 RETURNING id`,
+                [order.stock_code, fill.filledPrice, fill.filledQty, totalInvested, getCtxIsPaper()],
+              );
+              await updateOrderByKisOrderNo(kisOrderNo, { chain_id: newChain.id });
+              logger.info(
+                `🔗 BUY 체결 지연 복구: ${order.stock_code} ${fill.filledQty}주 @${fill.filledPrice}원 → 체인 #${newChain.id.slice(0, 8)} OPEN`,
+                { component: 'RECONCILER' },
+              );
+            } catch (chainErr) {
+              logger.warn(`BUY 체인 자동 생성 실패 [${order.stock_code}]: ${chainErr}`, { component: 'RECONCILER' });
+            }
+          }
+
           // SELL 전량 체결 시 chain 정산 — sell-routes.ts에서 fillConfirmed=false로 OPEN 방치된 케이스 복구
           if (order.side === 'SELL' && isFullFill && order.chain_id) {
             try {
@@ -141,7 +164,41 @@ export async function reconcilePendingOrders(): Promise<void> {
           }
         }
       } catch (e) {
-        logger.warn(`주문 정리 오류 [${order.stock_code} ${kisOrderNo}]: ${e}`, { component: 'RECONCILER' });
+        const eMsg = String(e);
+        // cancelOrder throws APBK0344 (원주문 없음) — BUY면 체결 여부 재확인 후 체인 복구
+        if (order.side === 'BUY' && (eMsg.includes('APBK0344') || eMsg.includes('원주문정보'))) {
+          try {
+            const latestFill = await getOrderFills(kisOrderNo);
+            if (latestFill && latestFill.filledQty > 0) {
+              const totalInvested = latestFill.filledPrice * latestFill.filledQty;
+              const {
+                rows: [chain],
+              } = await getPool().query<{ id: string }>(
+                `INSERT INTO transaction_chains
+                   (stock_code, status, strategy_mode, avg_buy_price, total_quantity, total_invested, is_paper, opened_at)
+                 VALUES ($1, 'OPEN', 'SWING', $2, $3, $4, false, NOW())
+                 RETURNING id`,
+                [order.stock_code, latestFill.filledPrice, latestFill.filledQty, totalInvested],
+              );
+              await getPool().query(
+                `UPDATE orders SET status = 'FILLED', filled_quantity = $2, filled_price = $3, chain_id = $4, kis_status = 'FILLED_RECOVERED'
+                 WHERE kis_order_no = $1`,
+                [kisOrderNo, latestFill.filledQty, latestFill.filledPrice, chain.id],
+              );
+              logger.warn(
+                `🔧 10분 취소 중 BUY 체결 복구: ${order.stock_code} ${latestFill.filledQty}주 @${latestFill.filledPrice}원 → 체인 OPEN`,
+                { component: 'RECONCILER' },
+              );
+            } else {
+              await updateOrderByKisOrderNo(kisOrderNo, { status: 'CANCELLED', kis_status: 'GHOST_CLEANED' });
+              logger.warn(`🧹 10분 미체결 유령: ${kisOrderNo} → CANCELLED`, { component: 'RECONCILER' });
+            }
+          } catch {
+            await updateOrderByKisOrderNo(kisOrderNo, { status: 'CANCELLED', kis_status: 'GHOST_CLEANED' });
+          }
+        } else {
+          logger.warn(`주문 정리 오류 [${order.stock_code} ${kisOrderNo}]: ${e}`, { component: 'RECONCILER' });
+        }
       }
     }
   }

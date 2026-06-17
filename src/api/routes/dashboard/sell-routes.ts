@@ -194,7 +194,9 @@ sellRoutes.post('/sell/:chainId', async (c) => {
         const pos = bal.positions?.find((p: any) => p.stockCode === chain.stock_code);
         fillConfirmed = !pos || pos.quantity === 0;
       } catch {
-        fillConfirmed = true;
+        // KIS 잔고 조회 실패 시 fail-closed: 체인을 OPEN으로 유지 (reconcileExternalSells가 다음 사이클에 정리)
+        // fillConfirmed = true이면 실제 미체결임에도 DB에서 포지션 강제 종료 → 실계좌 불일치 위험
+        fillConfirmed = false;
       }
     }
 

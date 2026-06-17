@@ -271,6 +271,7 @@ export function isKillSwitchActiveForMode(scope: KillSwitchScope, isPaper: boole
  */
 export async function reportError(component: string, error: string, scope: KillSwitchScope = 'KR'): Promise<void> {
   const s = getState(scope);
+  if (s.active) return; // kill switch already active — 중복 카운트 방지
   setState(scope, { ...s, consecutiveErrors: s.consecutiveErrors + 1 });
 
   if (getState(scope).consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {

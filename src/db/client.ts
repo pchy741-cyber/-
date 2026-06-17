@@ -718,6 +718,10 @@ export async function getRecentlySoldStocks(hoursBack = 4): Promise<Set<string>>
   }
 }
 
+// 리스크 쿨다운 마지막 성공값 캐시 — DB 오류 시 fail-closed (빈 Set 반환 방지)
+const _lossStocksCache = new Map<string, Set<string>>();
+const _bigLossStocksCache = new Map<string, Set<string>>();
+
 /** 최근 손절 종목 코드 반환 (졸업식 재진입 방지)
  *  - 일반 손실(>5000원): 7일 차단
  *  - 대손실(>50000원): 14일 차단
@@ -725,6 +729,7 @@ export async function getRecentlySoldStocks(hoursBack = 4): Promise<Set<string>>
  */
 export async function getRecentLossStocks(_daysBack = 14): Promise<Set<string>> {
   if (useMemory) return new Set();
+  const cacheKey = String(getCtxIsPaper());
   try {
     // 1) 일반 손실 7일 + 대손실 14일 졸업식 차단
     const { rows } = await queryWithRetry(
@@ -752,9 +757,16 @@ export async function getRecentLossStocks(_daysBack = 14): Promise<Set<string>> 
     );
     for (const r of slRows) blocked.add(r.stock_code);
 
+    _lossStocksCache.set(cacheKey, blocked);
     return blocked;
-  } catch {
-    return new Set();
+  } catch (e) {
+    const cached = _lossStocksCache.get(cacheKey);
+    if (cached) {
+      logger.warn(`getRecentLossStocks DB 오류 — 캐시된 쿨다운 ${cached.size}개 반환 (fail-closed)`, { component: 'DB' });
+      return cached;
+    }
+    logger.error(`getRecentLossStocks DB 오류 — 캐시 없음, 예외 전파: ${e}`, { component: 'DB' });
+    throw e;
   }
 }
 
@@ -764,6 +776,7 @@ export async function getRecentLossStocks(_daysBack = 14): Promise<Set<string>> 
  */
 export async function getBigLossBlockedStocks(): Promise<Set<string>> {
   if (useMemory) return new Set();
+  const cacheKey = String(getCtxIsPaper());
   try {
     const { rows } = await queryWithRetry(
       `SELECT DISTINCT stock_code FROM transaction_chains
@@ -773,9 +786,17 @@ export async function getBigLossBlockedStocks(): Promise<Set<string>> {
          AND closed_at > NOW() - INTERVAL '30 days'`,
       [getCtxIsPaper()],
     );
-    return new Set(rows.map((r: { stock_code: string }) => r.stock_code));
-  } catch {
-    return new Set();
+    const blocked = new Set(rows.map((r: { stock_code: string }) => r.stock_code));
+    _bigLossStocksCache.set(cacheKey, blocked);
+    return blocked;
+  } catch (e) {
+    const cached = _bigLossStocksCache.get(cacheKey);
+    if (cached) {
+      logger.warn(`getBigLossBlockedStocks DB 오류 — 캐시된 차단 ${cached.size}개 반환 (fail-closed)`, { component: 'DB' });
+      return cached;
+    }
+    logger.error(`getBigLossBlockedStocks DB 오류 — 캐시 없음, 예외 전파: ${e}`, { component: 'DB' });
+    throw e;
   }
 }
 
