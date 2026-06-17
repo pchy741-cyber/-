@@ -16,6 +16,7 @@ import {
   resolveStrategyParams,
   type TechnicalFallbackParams,
 } from './technical-fallback-types.js';
+import { classifyStock } from './signal-router.js';
 import { PRIORITY_SECTOR_CODES } from './trading-rules.js';
 
 // ── 국내 주식 Kelly 사이징 (해외 kelly.ts 패턴 재사용) ──
@@ -635,15 +636,37 @@ export async function executeBuyDecisions(
       }
     }
 
+    // ── Signal Router: 종목 성격 분류 (Dual-Track) ─────────────────────────
+    const srCandles = chartData.get(cand.stock_code);
+    const liveDataSR = livePrices.get(cand.stock_code);
+    const dailyTradingValue = (liveDataSR?.volume ?? 0) * (liveDataSR?.currentPrice ?? cand.price.currentPrice);
+    const srResult = srCandles ? classifyStock(srCandles, dailyTradingValue) : null;
+    const srClass = srResult?.class ?? 'STANDARD';
+    if (srResult && srClass !== 'STANDARD') {
+      logger.info(
+        `  🎯 ${cand.stock_code}: [${srClass}] ${srResult.reason} (거래대금 ${Math.round(dailyTradingValue / 100_000_000)}억)`,
+        { component: 'TRACK_B' },
+      );
+    }
+
     const allocStr = ` [비율${(baseAllocPct * modeScale * firstEntryRatio * 100).toFixed(0)}%→${Math.round(effectivePositionSize / 10000)}만원]`;
+    const srTag = srClass === 'TREND_LEADER' ? ' [📈TREND_LEADER]' : srClass === 'SCALP_TARGET' ? ' [⚡SCALP_TARGET]' : '';
     const scalpTag = cand.isScalpOverride ? ' [🎯ScalpRadar]' : '';
+    // SCALP_TARGET: signal-router가 박스권 순환 감지 → SCALPING 모드 강제 (1% TP + 타이트 SL)
+    // TREND_LEADER: 트레일링 스탑 홀딩 — 1% 조기청산 금지
+    const srStrategyOverride =
+      !cand.isScalpOverride && srClass === 'SCALP_TARGET'
+        ? { strategy_mode: 'SCALPING' as const, trigger_source: 'SCALP_TARGET' }
+        : srClass === 'TREND_LEADER'
+          ? { trigger_source: 'TREND_LEADER' }
+          : {};
     decisions.push({
       action: 'BUY',
       stock_code: cand.stock_code,
       quantity,
       price_type: 'MARKET',
       limit_price: cand.price.currentPrice,
-      reasoning: `${cand.isScalpOverride ? '🎯 ScalpRadar 스캘핑' : '기술적'} 매수: score=${cand.tech.score}(blend=${blendedScore.toFixed(0)}) cat=${cand.tech.catTrend}/${cand.tech.catMomentum}/${cand.tech.catVolatility}/${cand.tech.catVolume}(${cand.tech.catPositive}/4)${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''}${idBonus !== 0 ? `${idBonus > 0 ? '+' : ''}${idBonus}분봉` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x SMA=${smaAlign}${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${allocStr}${patternFb.scoreAdj !== 0 ? ` [패턴${patternFb.scoreAdj > 0 ? '+' : ''}${patternFb.scoreAdj}]` : ''}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))} fp=${fpKey}${scalpTag}`,
+      reasoning: `${cand.isScalpOverride ? '🎯 ScalpRadar 스캘핑' : '기술적'} 매수: score=${cand.tech.score}(blend=${blendedScore.toFixed(0)}) cat=${cand.tech.catTrend}/${cand.tech.catMomentum}/${cand.tech.catVolatility}/${cand.tech.catVolume}(${cand.tech.catPositive}/4)${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''}${idBonus !== 0 ? `${idBonus > 0 ? '+' : ''}${idBonus}분봉` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x SMA=${smaAlign}${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${allocStr}${patternFb.scoreAdj !== 0 ? ` [패턴${patternFb.scoreAdj > 0 ? '+' : ''}${patternFb.scoreAdj}]` : ''}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))} fp=${fpKey}${srTag}${scalpTag}`,
       confidence: Math.min(
         0.95,
         Math.max(
@@ -656,7 +679,7 @@ export async function executeBuyDecisions(
       ai_score: aiScore > 0 ? aiScore : cand.tech.score,
       regime_position_scale: cand.regimeRoute?.entryConfig?.positionScale,
       // ScalpRadar 감지 종목: SCALPING 모드로 체인 생성 → TP/SL + forceClose 자동 적용
-      ...(cand.isScalpOverride ? { strategy_mode: 'SCALPING', trigger_source: 'SCALP_RADAR' } : {}),
+      ...(cand.isScalpOverride ? { strategy_mode: 'SCALPING', trigger_source: 'SCALP_RADAR' } : srStrategyOverride),
     });
 
     remainingCash -= quantity * cand.price.currentPrice;
