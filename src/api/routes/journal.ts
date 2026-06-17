@@ -172,6 +172,7 @@ journalRoutes.get('/journal', async (c) => {
             AND b.trigger_source = 'OVERSEAS'
             AND b.created_at < s.created_at
             AND b.filled_price IS NOT NULL
+            AND b.is_paper = s.is_paper
         ) AS opened_at
       FROM orders s
       WHERE s.side = 'SELL'
@@ -182,10 +183,11 @@ journalRoutes.get('/journal', async (c) => {
         AND s.filled_price > 0
         AND (s.avg_buy_price IS NOT NULL OR s.ai_reasoning ~ '\\[avgBuy:[0-9]')
         AND s.trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
+        AND s.is_paper = $3
       ORDER BY s.created_at DESC
       LIMIT 2000
     `,
-      [days, viewTradingMode],
+      [days, viewTradingMode, viewIsPaper],
     );
 
     for (const r of usRows) {

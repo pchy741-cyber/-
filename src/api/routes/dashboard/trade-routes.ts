@@ -114,10 +114,11 @@ tradeRoutes.get('/trades', async (c) => {
         `SELECT id, stock_code, side, quantity, filled_quantity, filled_price
            FROM orders
           WHERE status = 'FILLED'
+            AND is_paper = $3
             AND stock_code = ANY($1::text[])
             AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
           ORDER BY created_at ASC, id ASC`,
-        [domesticCodes, tradeMode],
+        [domesticCodes, tradeMode, viewIsPaper],
       );
       calcFifoPnl(pnlRows, false);
     }
@@ -127,10 +128,11 @@ tradeRoutes.get('/trades', async (c) => {
         `SELECT id, stock_code, side, quantity, filled_quantity, filled_price
            FROM orders
           WHERE status = 'FILLED'
+            AND is_paper = $3
             AND stock_code = ANY($1::text[])
             AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
           ORDER BY created_at ASC, id ASC`,
-        [overseasCodes, tradeMode],
+        [overseasCodes, tradeMode, viewIsPaper],
       );
       calcFifoPnl(osPnlRows, true);
     }

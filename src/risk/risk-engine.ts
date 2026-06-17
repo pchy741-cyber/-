@@ -193,8 +193,8 @@ export class RiskEngine {
 
       return { approved: true, reason: 'OK' };
     } catch (err) {
-      logger.warn(`⚠️ 일일 거래 수 조회 실패 — 신규 매수 차단: ${err}`, { component: 'RISK' });
-      return { approved: false, reason: 'DB 조회 실패 — 일일 거래 수 확인 불가, 신규 매수 차단' };
+      logger.warn(`⚠️ 일일 거래 수 조회 실패 — fail-open 허용 (소프트가드, 킬스위치/MDD가 하드가드): ${err}`, { component: 'RISK' });
+      return { approved: true, reason: '일일 거래 수 조회 실패 — fail-open 허용' };
     }
   }
 

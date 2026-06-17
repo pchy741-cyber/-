@@ -60,7 +60,7 @@ export async function computePaperCash(fxRate?: number): Promise<number> {
           THEN filled_price::numeric * filled_quantity::numeric * ${1 - OVERSEAS_FEE_PCT}
           ELSE 0 END), 0) AS total_sell
       FROM orders
-      WHERE trading_mode = 'paper' AND status = 'FILLED' AND trigger_source = 'OVERSEAS'
+      WHERE trading_mode = 'paper' AND is_paper = true AND status = 'FILLED' AND trigger_source = 'OVERSEAS'
     `);
     const totalBuy = Number(rows[0]?.total_buy ?? 0);
     const totalSell = Number(rows[0]?.total_sell ?? 0);
@@ -484,7 +484,7 @@ export async function checkAndRefillOverseasPaper(): Promise<boolean> {
     // v10.8.4 안전장치: 최근 1시간 내 매매가 있었으면 리필 차단 (현금 계산 일시 오류 방지)
     const { rows: recentTrades } = await getPool().query(
       `SELECT COUNT(*) AS cnt FROM orders
-       WHERE trading_mode = 'paper' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'
+       WHERE trading_mode = 'paper' AND is_paper = true AND trigger_source = 'OVERSEAS' AND status = 'FILLED'
        AND created_at > NOW() - INTERVAL '1 hour'`,
     );
     if (Number(recentTrades[0]?.cnt ?? 0) > 0) {
