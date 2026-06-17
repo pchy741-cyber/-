@@ -191,8 +191,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       const cName = String(chainNameMap.get(code) ?? '');
       if (isInvalidStockName(cName, code)) {
         safeQuery(
-          "UPDATE transaction_chains SET stock_name = $1 WHERE stock_code = $2 AND (stock_name IS NULL OR stock_name = $2 OR stock_name ~ '^[0-9]{6}$' OR stock_name !~ '[A-Za-z가-힣]')",
-          [name, code],
+          "UPDATE transaction_chains SET stock_name = $1 WHERE stock_code = $2 AND is_paper = $3 AND (stock_name IS NULL OR stock_name = $2 OR stock_name ~ '^[0-9]{6}$' OR stock_name !~ '[A-Za-z가-힣]')",
+          [name, code, viewIsPaper],
         ).catch(() => {});
       }
     }
