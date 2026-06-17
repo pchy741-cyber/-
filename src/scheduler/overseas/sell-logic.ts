@@ -308,8 +308,9 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
 
       // ── 1e. 나스닥 급락 선제 청산 ──
       // 전일 나스닥 -2% 이하 + 수익 구간 → 당일 미국장 약세 선반영, 수익 잠금
-    } else if (ctx.nasdaqChange1d != null && ctx.nasdaqChange1d <= -2.0 && pnlPct >= 0.5 && holdingDays >= 0.1) {
-      sellReason = `나스닥급락 선제청산(${ctx.nasdaqChange1d.toFixed(1)}%): +${pnlPct.toFixed(1)}% → 미국장 하락 선반영 즉시 수익확정`;
+      // 왕복 수수료 0.7% 커버 + 실질 수익 최소 1.3% 보장 → 2.0% 기준
+    } else if (ctx.nasdaqChange1d != null && ctx.nasdaqChange1d <= -2.0 && pnlPct >= 2.0 && holdingDays >= 0.1) {
+      sellReason = `나스닥급락 선제청산(${ctx.nasdaqChange1d.toFixed(1)}%): +${pnlPct.toFixed(1)}% → 미국장 하락 선반영 수익확정`;
 
       // ── 2. ATR 트레일링 스톱 ──
     } else if (maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {
