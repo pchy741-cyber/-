@@ -230,7 +230,7 @@ export async function getCooldownStatus(): Promise<CooldownStatus> {
   try {
     const consecutive = await getConsecutiveLosses();
     const isPaper = getCtxIsPaper();
-    const mult = isPaper ? config.paperRisk.cooldownMultiplier : 1;
+    const mult = isPaper ? config.paperRisk.cooldownMultiplier : (config.liveRisk?.cooldownMultiplier ?? 0.5);
     const cooldownMs =
       consecutive >= 5
         ? Math.round(GATE.CONSECUTIVE_LOSS_HALT_MS * mult)

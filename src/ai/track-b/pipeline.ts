@@ -610,7 +610,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 개선: 메가캡 종목은 threshold-8, 일반도 threshold-5 여유 (buy-filters에서 정밀 판단)
     const preFilterThreshold = STRATEGY_PARAMS[effectiveMode].buyThreshold - 5;
     // BREAKOUT 모드: AI 점수 불필요 — 기술적 돌파 신호 기반이므로 preFilter 무조건 통과
-    const confFloor = ctxIsPaper ? 0.3 : 0.6; // Paper: 0.45→0.3 (더 많은 종목 탐색)
+    const confFloor = ctxIsPaper ? 0.3 : (config.liveRisk?.confFloor ?? 0.45); // Paper: 0.3 / Live: 0.6→0.45 (v11)
     let hasBuyCandidates =
       effectiveMode === 'BREAKOUT' ||
       scores.some((s) => {
@@ -1034,12 +1034,15 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 승률 피드백: 최근 30일 실거래 신호별 승률 → 임계값/눌림/거래량 동적 강화
     const winFeedback = await getWinRateFeedback(getCtxIsPaper());
     // Paper 모드: buyThresholdOffset 적용 (80→70 등 하향 → 진입 기회 확대)
-    // Live 모드: Paper 실적 기반 크로스 피드백 (승률 높으면 공격적)
+    // Live 모드: liveRisk offset(-10) + Paper 실적 기반 크로스 피드백 합산
     const crossBoost = await getCrossModeBoost();
-    const paperOffset = getCtxIsPaper() ? (config.paperRisk.buyThresholdOffset ?? 0) : crossBoost.thresholdAdj;
+    const liveOffset = !getCtxIsPaper() ? (config.liveRisk?.buyThresholdOffset ?? -10) : 0;
+    const paperOffset = getCtxIsPaper() ? (config.paperRisk.buyThresholdOffset ?? 0) : crossBoost.thresholdAdj + liveOffset;
     // Paper 모드: 패배 피드백이 임계값 올리는 것 차단 (학습 목적 — 진입 기회 보존)
     const thresholdBonus = ctxIsPaper ? Math.min(0, winFeedback.thresholdBonus) : winFeedback.thresholdBonus;
-    const feedbackThreshold = Math.max(50, resolvedThreshold + thresholdBonus + paperOffset);
+    // Live v11: 하한선 50→42 (더 많은 고품질 신호 통과)
+    const thresholdFloor = ctxIsPaper ? 50 : 42;
+    const feedbackThreshold = Math.max(thresholdFloor, resolvedThreshold + thresholdBonus + paperOffset);
     if (winFeedback.thresholdBonus > 0 || winFeedback.requirePullback || winFeedback.minVolumeRatio > 1.0) {
       logger.info(`🎯 승률피드백 적용: ${winFeedback.summary}`, { component: 'TRACK_B' });
     }

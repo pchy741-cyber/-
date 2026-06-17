@@ -60,8 +60,8 @@ const envSchema = z.object({
   RISK_MAX_DAILY_DRAWDOWN_KRW: z.coerce.number().default(3_000_000), // 일일 최대 손실 300만원 (실제 한도는 seed-capital.ts 총자산% 기반, 이건 절대 상한)
   RISK_MAX_POSITION_KRW: z.coerce.number().default(10_000_000), // 종목당 최대 1천만원 (실제 사이징은 totalAssets×25% 동적 계산이 먼저 적용됨, 이건 절대 상한)
   RISK_MAX_TOTAL_INVESTED_PCT: z.coerce.number().default(88), // 최대 88% 투자 (적극 모드)
-  RISK_MAX_CONCURRENT_POSITIONS: z.coerce.number().default(8), // 동시 8종목
-  RISK_MAX_DAILY_TRADES: z.coerce.number().default(3), // v4: 15→3건 (과잉거래 방지, 고품질 신호만)
+  RISK_MAX_CONCURRENT_POSITIONS: z.coerce.number().default(12), // 동시 12종목 (v11: 8→12)
+  RISK_MAX_DAILY_TRADES: z.coerce.number().default(8), // v11: 3→8건 (실전 수익 기회 확대)
 });
 
 // ── 파싱 & Export ──
@@ -178,6 +178,17 @@ export const config = {
     maxTotalInvestedPct: env.RISK_MAX_TOTAL_INVESTED_PCT,
     maxConcurrentPositions: env.RISK_MAX_CONCURRENT_POSITIONS,
     maxDailyTrades: env.RISK_MAX_DAILY_TRADES,
+  },
+
+  /**
+   * Live 모드 공격성 오버라이드 — 실전 수익 구조 최적화 (v11)
+   * 연습모드 데이터 학습 기반으로 실전도 적극적 진입 허용
+   */
+  liveRisk: {
+    confFloor: 0.45,        // 0.6 → 0.45: 더 많은 후보 탐색 (paper 0.3 사이 중간값)
+    buyThresholdOffset: -10, // 임계값 10점 하향 (paper -30의 1/3 수준, 안전 마진 유지)
+    maxConcurrentPositions: 12, // 8 → 12종목
+    cooldownMultiplier: 0.5,    // 쿨다운 50% 단축 (paper 0.2 대비 보수적)
   },
 
   /**
