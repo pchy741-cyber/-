@@ -351,7 +351,7 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
       FROM orders o
       LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
       WHERE o.is_paper = $1
-        AND o.trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
+        AND (o.trading_mode = $2 OR ($2 = 'paper' AND o.trading_mode = 'p_arch'))
         AND o.status = 'FILLED'
         AND o.created_at >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Seoul') - ($3 * INTERVAL '1 day')) AT TIME ZONE 'Asia/Seoul'
       GROUP BY trade_date
@@ -424,7 +424,7 @@ tradeRoutes.get('/trades/by-date/:date', async (c) => {
        LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
        LEFT JOIN watchlist w ON o.stock_code = w.stock_code
        WHERE o.is_paper = $1
-         AND o.trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
+         AND (o.trading_mode = $2 OR ($2 = 'paper' AND o.trading_mode = 'p_arch'))
          AND o.status = 'FILLED'
          AND (o.created_at AT TIME ZONE 'Asia/Seoul')::DATE = $3::DATE
        ORDER BY o.created_at ASC`,

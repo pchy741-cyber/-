@@ -23,7 +23,8 @@ export interface GeminiCallOptions {
   temperature?: number;
   maxOutputTokens?: number;
   label?: string;
-  grounded?: boolean; // true → Vertex AI + Google Search Grounding (GCP 크레딧)
+  grounded?: boolean;   // true → Vertex AI + Google Search Grounding (GCP 크레딧)
+  useVertex?: boolean;  // true → Vertex AI 직접 사용 (GCP 크레딧, grounding 없음) — DART 분석 등 장문 처리용
 }
 
 // ── 레이트 리미터: AI Studio 무료 티어 한도 ──
@@ -151,6 +152,57 @@ function getVertexAuth(): GoogleAuth {
 }
 
 /**
+ * Vertex AI REST API — 비용 절약형 (Google Search Grounding 없음)
+ * AI Studio 일 250콜 한도 소진 시 자동 폴백으로 사용
+ * 비용: gemini-2.0-flash $0.1/1M input + $0.4/1M output (grounding 없음 → $0.035 절약)
+ */
+async function callVertexUngrounded(
+  systemPrompt: string,
+  userMessage: string,
+  opts: GeminiCallOptions,
+): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
+  const auth = getVertexAuth();
+  const projectId = process.env.GOOGLE_CLOUD_PROJECT ?? (await auth.getProjectId());
+
+  const client = await auth.getClient();
+  const tokenRes = await client.getAccessToken();
+  const token = tokenRes.token;
+  if (!token) throw new Error('Vertex AI 인증 토큰 취득 실패');
+
+  const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${VERTEX_LOCATION}/publishers/google/models/${GROUNDED_MODEL}:generateContent`;
+
+  const body = {
+    contents: [{ role: 'user', parts: [{ text: userMessage }] }],
+    system_instruction: { parts: [{ text: systemPrompt }] },
+    generationConfig: {
+      temperature: opts.temperature ?? 0.2,
+      maxOutputTokens: opts.maxOutputTokens ?? 8192,
+    },
+  };
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Vertex AI (ungrounded) ${res.status}: ${errText.slice(0, 300)}`);
+  }
+
+  const data = (await res.json()) as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+  };
+
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  const inputTokens = data.usageMetadata?.promptTokenCount ?? 0;
+  const outputTokens = data.usageMetadata?.candidatesTokenCount ?? 0;
+  return { text, inputTokens, outputTokens };
+}
+
+/**
  * Vertex AI REST API + Google Search Grounding 호출
  * Cloud Run: ADC(서비스 계정) + 메타데이터 서버 자동 인증 — 별도 설정 불필요
  * GOOGLE_CLOUD_PROJECT 환경변수 없어도 Cloud Run에서 자동 감지
@@ -216,6 +268,28 @@ export async function callVertexGemini(
   const label = opts.label ?? 'unknown';
   const startMs = Date.now();
 
+  // ── useVertex: true → Vertex AI 직접 경로 (GCP 크레딧, grounding 없음) ──
+  if (opts.useVertex && !opts.grounded) {
+    try {
+      const { text, inputTokens, outputTokens } = await callVertexUngrounded(systemPrompt, userMessage, opts);
+      const costUsd = (inputTokens / 1_000_000) * 0.1 + (outputTokens / 1_000_000) * 0.4;
+      _dailyTotals.vertexCalls++;
+      _dailyTotals.calls++;
+      _dailyTotals.inputTokens += inputTokens;
+      _dailyTotals.outputTokens += outputTokens;
+      _dailyTotals.totalTokens += inputTokens + outputTokens;
+      _dailyTotals.vertexCostUsd += costUsd;
+      const durationMs = Date.now() - startMs;
+      _recentCalls.push({ label, inputTokens, outputTokens, at: new Date().toISOString(), durationMs, isGrounded: false, costUsd });
+      if (_recentCalls.length > 20) _recentCalls.shift();
+      logger.info(`⚡ Vertex Direct [${label}]: ${inputTokens}+${outputTokens}tok $${costUsd.toFixed(5)}`, { component: 'AI_COST' });
+      return text;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`⚠️ Vertex Direct 실패 [${label}], AI Studio fallback: ${msg}`, { component: 'AI_COST' });
+    }
+  }
+
   // ── grounded: true → Vertex AI 경로 ──
   if (opts.grounded) {
     try {
@@ -254,6 +328,31 @@ export async function callVertexGemini(
     await new Promise((r) => setTimeout(r, rateCheck.waitMs));
     rateCheck = checkRateLimit();
   }
+
+  // AI Studio 일 한도 초과 → Vertex AI (GCP 크레딧) 자동 폴백
+  if (!rateCheck.ok && rateCheck.reason.includes('일 한도')) {
+    logger.info(`⚡ AI Studio RPD 소진 [${label}] → Vertex AI 폴백 (GCP 크레딧)`, { component: 'AI_COST' });
+    try {
+      const { text, inputTokens, outputTokens } = await callVertexUngrounded(systemPrompt, userMessage, opts);
+      const costUsd = (inputTokens / 1_000_000) * 0.1 + (outputTokens / 1_000_000) * 0.4;
+      _dailyTotals.vertexCalls++;
+      _dailyTotals.calls++;
+      _dailyTotals.inputTokens += inputTokens;
+      _dailyTotals.outputTokens += outputTokens;
+      _dailyTotals.totalTokens += inputTokens + outputTokens;
+      _dailyTotals.vertexCostUsd += costUsd;
+      const durationMs = Date.now() - startMs;
+      _recentCalls.push({ label, inputTokens, outputTokens, at: new Date().toISOString(), durationMs, isGrounded: false, costUsd });
+      if (_recentCalls.length > 20) _recentCalls.shift();
+      logger.info(`⚡ Vertex Fallback [${label}]: ${inputTokens}+${outputTokens}tok $${costUsd.toFixed(5)}`, { component: 'AI_COST' });
+      return text;
+    } catch (vErr) {
+      const vMsg = vErr instanceof Error ? vErr.message : String(vErr);
+      logger.warn(`⚠️ Vertex 폴백도 실패 [${label}]: ${vMsg}`, { component: 'AI_COST' });
+      throw new Error(`AI Studio 일 한도 초과 + Vertex 폴백 실패 — ${rateCheck.reason}`);
+    }
+  }
+
   if (!rateCheck.ok) {
     logger.warn(`🚫 AI Studio 한도 초과 [${label}]: ${rateCheck.reason}`, { component: 'AI_COST' });
     throw new Error(`AI Studio 한도 초과 — ${rateCheck.reason}`);

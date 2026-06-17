@@ -2,6 +2,7 @@
 import { Hono } from 'hono';
 import { safeQuery as query } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
+import { runDartResearch, runDartResearchBatch } from '../../automation/dart-research.js';
 
 export const researchRoutes = new Hono();
 
@@ -92,5 +93,48 @@ researchRoutes.delete('/research/notes/:id', async (c) => {
     return c.json({ ok: true });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
+  }
+});
+
+// GET /api/research/dart/:stockCode — DART 재무제표 + Gemini AI 분석 (GCP Vertex AI)
+// query: year(선택), quarter(선택: annual|h1|q1|q3)
+researchRoutes.get('/research/dart/:stockCode', async (c) => {
+  try {
+    const stockCode = c.req.param('stockCode');
+    if (!/^\d{6}$/.test(stockCode)) return c.json({ error: '종목코드 형식 오류 (6자리 숫자)' }, 400);
+
+    const year = c.req.query('year') ?? undefined;
+    const rawQ = c.req.query('quarter') ?? 'annual';
+    const quarter = ['annual', 'h1', 'q1', 'q3'].includes(rawQ)
+      ? (rawQ as 'annual' | 'h1' | 'q1' | 'q3')
+      : 'annual';
+
+    logger.info(`DART 리서치 요청: ${stockCode} ${year ?? 'auto'}년 ${quarter}`, { component: 'RESEARCH' });
+    const result = await runDartResearch(stockCode, { year, quarter });
+
+    return c.json({ ok: true, result });
+  } catch (err: any) {
+    logger.warn(`DART 리서치 실패: ${err.message}`, { component: 'RESEARCH' });
+    return c.json({ error: err.message ?? 'DART 분석 실패' }, 500);
+  }
+});
+
+// POST /api/research/dart/batch — 다수 종목 일괄 DART 분석
+researchRoutes.post('/research/dart/batch', async (c) => {
+  try {
+    const body = await c.req.json<{ stockCodes: string[]; year?: string; quarter?: string }>();
+    if (!Array.isArray(body.stockCodes) || body.stockCodes.length === 0) {
+      return c.json({ error: 'stockCodes 배열이 필요합니다' }, 400);
+    }
+    const codes = body.stockCodes.filter((c) => /^\d{6}$/.test(c)).slice(0, 20); // 최대 20종목
+    const quarter = ['annual', 'h1', 'q1', 'q3'].includes(body.quarter ?? '')
+      ? (body.quarter as 'annual' | 'h1' | 'q1' | 'q3')
+      : 'annual';
+
+    logger.info(`DART 배치 리서치 시작: ${codes.length}종목`, { component: 'RESEARCH' });
+    const results = await runDartResearchBatch(codes, { year: body.year, quarter });
+    return c.json({ ok: true, count: results.length, results });
+  } catch (err: any) {
+    return c.json({ error: err.message ?? '배치 분석 실패' }, 500);
   }
 });
