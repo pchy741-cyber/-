@@ -30,8 +30,8 @@ export async function generateDailyReport(): Promise<void> {
 
     const [{ rows: todayOrders }, { rows: closedToday }, { rows: weekData }, { rows: monthData }] = await Promise.all([
       getPool().query(
-        `SELECT * FROM orders WHERE created_at >= $1 AND status = $2 AND trading_mode IN ($3, CASE WHEN $3 = 'paper' THEN 'p_arch' ELSE $3 END) ORDER BY created_at ASC`,
-        [`${today}T00:00:00`, 'FILLED', isPaper ? 'paper' : 'live'],
+        `SELECT * FROM orders WHERE created_at >= $1 AND status = $2 AND is_paper = $3 AND trading_mode IN ($4, CASE WHEN $4 = 'paper' THEN 'p_arch' ELSE $4 END) ORDER BY created_at ASC`,
+        [`${today}T00:00:00`, 'FILLED', isPaper, isPaper ? 'paper' : 'live'],
       ),
       getPool().query(
         'SELECT * FROM transaction_chains WHERE status = $1 AND closed_at >= $2 AND is_paper = $3',

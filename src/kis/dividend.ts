@@ -4,6 +4,7 @@
  * - 배당 수령 내역은 거래내역(CTOS4001R)에서 추출
  */
 import { config } from '../config/index.js';
+import { getCtxIsPaper } from '../config/context.js';
 import { logger } from '../utils/logger.js';
 import { kisRequest, overseasRateLimiter } from './client.js';
 
@@ -82,7 +83,7 @@ export async function getDividendReceipts(params?: {
   Array<{ stockCode: string; amount: number; tax: number; netAmount: number; date: string; currency: string }>
 > {
   // CTOS4001R은 실전전용 TR — Paper 모드에서 호출 시 "모의투자 TR 이 아닙니다" 에러
-  if (config.isPaper) {
+  if (getCtxIsPaper()) {
     return [];
   }
   try {

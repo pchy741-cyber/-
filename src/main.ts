@@ -740,12 +740,12 @@ async function bootstrap() {
           UPDATE watchlist SET is_active = false
           WHERE is_active = true
             AND source IN ('AUTO', 'KIS_SYNC')
-            AND stock_code NOT IN (SELECT DISTINCT stock_code FROM transaction_chains WHERE status != 'CLOSED')
+            AND stock_code NOT IN (SELECT DISTINCT stock_code FROM transaction_chains WHERE status != 'CLOSED' AND is_paper = $1)
             AND added_at < NOW() - INTERVAL '30 days'
             AND stock_code NOT IN (
-              SELECT DISTINCT stock_code FROM orders WHERE status = 'FILLED' AND created_at > NOW() - INTERVAL '14 days'
+              SELECT DISTINCT stock_code FROM orders WHERE status = 'FILLED' AND is_paper = $1 AND created_at > NOW() - INTERVAL '14 days'
             )
-        `)
+        `, [config.isPaper])
             .then((r) => {
               if ((r.rowCount ?? 0) > 0)
                 logger.info(`🧹 감시종목 부팅 정리: ${r.rowCount}개 비활성화`, { component: 'BOOT' });

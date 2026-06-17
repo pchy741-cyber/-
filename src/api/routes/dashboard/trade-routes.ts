@@ -53,11 +53,12 @@ tradeRoutes.get('/trades', async (c) => {
        FROM orders o
        LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
        LEFT JOIN watchlist w ON o.stock_code = w.stock_code
-       WHERE o.trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
+       WHERE o.is_paper = $2
+         AND o.trading_mode IN ($3, CASE WHEN $3 = 'paper' THEN 'p_arch' ELSE $3 END)
        ${marketClause}
        ORDER BY o.created_at DESC
        LIMIT $1`,
-      [limit, tradeMode],
+      [limit, viewIsPaper, tradeMode],
     );
     const tradePnlMap = new Map<string, { pnl: number; pct: number | null; isUsd?: boolean }>();
     const allCodes = [...new Set(rows.map((r: any) => String(r.stock_code ?? '')).filter(Boolean))];
@@ -347,13 +348,14 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
           AND (COALESCE(o.filled_price, 0) * (1 - ${KR_FEE.SELL_FEE_PCT})) <= COALESCE(tc.avg_buy_price, o.avg_buy_price)) AS loss_count
       FROM orders o
       LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
-      WHERE o.trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
+      WHERE o.is_paper = $1
+        AND o.trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
         AND o.status = 'FILLED'
-        AND o.created_at >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Seoul') - ($2 * INTERVAL '1 day')) AT TIME ZONE 'Asia/Seoul'
+        AND o.created_at >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Seoul') - ($3 * INTERVAL '1 day')) AT TIME ZONE 'Asia/Seoul'
       GROUP BY trade_date
       ORDER BY trade_date DESC
     `,
-      [tradeMode, days],
+      [viewIsPaper, tradeMode, days],
     );
 
     const dailySummary = rows.map((r: any) => ({
@@ -419,11 +421,12 @@ tradeRoutes.get('/trades/by-date/:date', async (c) => {
        FROM orders o
        LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
        LEFT JOIN watchlist w ON o.stock_code = w.stock_code
-       WHERE o.trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
+       WHERE o.is_paper = $1
+         AND o.trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
          AND o.status = 'FILLED'
-         AND (o.created_at AT TIME ZONE 'Asia/Seoul')::DATE = $2::DATE
+         AND (o.created_at AT TIME ZONE 'Asia/Seoul')::DATE = $3::DATE
        ORDER BY o.created_at ASC`,
-      [tradeMode, dateParam],
+      [viewIsPaper, tradeMode, dateParam],
     );
 
     // v10.2: 수수료 포함 PnL 계산 (대시보드/매매내역 통일)

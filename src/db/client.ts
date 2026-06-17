@@ -744,11 +744,11 @@ export async function getRecentLossStocks(_daysBack = 14): Promise<Set<string>> 
     const { rows: slRows } = await queryWithRetry(
       `SELECT DISTINCT o.stock_code FROM orders o
        WHERE o.side = 'SELL' AND o.status = 'FILLED'
-         AND o.trading_mode = $1
+         AND o.is_paper = $1
          AND o.created_at > NOW() - INTERVAL '7 days'
          AND (o.ai_reasoning LIKE '%손절%' OR o.ai_reasoning LIKE '%ATR트레일%'
               OR o.ai_reasoning LIKE '%FORCE_CLOSE%' OR o.ai_reasoning LIKE '%시간 손절%')`,
-      [getCtxIsPaper() ? 'paper' : 'live'],
+      [getCtxIsPaper()],
     );
     for (const r of slRows) blocked.add(r.stock_code);
 

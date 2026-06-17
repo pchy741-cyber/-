@@ -41,7 +41,7 @@ async function fetchYesterdayTrades(): Promise<JournalRow[]> {
       COALESCE(w.stock_name, tc.stock_code) AS stock_name,
       tc.avg_buy_price,
       (SELECT AVG(o.filled_price) FROM orders o
-        WHERE o.chain_id = tc.id AND o.side = 'SELL' AND o.status = 'FILLED') AS exit_price,
+        WHERE o.chain_id = tc.id AND o.side = 'SELL' AND o.status = 'FILLED' AND o.is_paper = tc.is_paper) AS exit_price,
       tc.total_quantity,
       (tc.realized_pnl / NULLIF(tc.total_invested, 0)) * 100 AS pnl_pct,
       tc.realized_pnl,

@@ -171,13 +171,17 @@ KST = UTC+9. PowerShell: `(Get-Date).ToUniversalTime().AddHours(9).ToString("HH:
 
 ### 1. 데이터 수집
 ```bash
-# 실전 잔금 기준 (기본값 — 루프는 항상 이 URL 사용)
+# 실전 포지션/scores (포지션 보호·매도 판단 기준)
 curl -s -H "x-api-key: <DASHBOARD_PASSWORD>" "https://ai-auto-bot-807105550136.asia-northeast3.run.app/api/dashboard?viewMode=live" -o "C:/Temp/qops_dash.json"
+
+# 연습 현금 (연습 스캘핑 루프에서만 — 연습 잔금은 반드시 viewMode=paper로 읽어야 함)
+curl -s -H "x-api-key: <DASHBOARD_PASSWORD>" "https://ai-auto-bot-807105550136.asia-northeast3.run.app/api/dashboard?viewMode=paper" -o "C:/Temp/qops_paper.json"
 ```
 
 **실제 JSON 필드명**:
 - 포지션: `d['chains']` (status != 'CLOSED')
-- 현금: `d['portfolio']['domesticCash']`
+- 현금(실전): `d['portfolio']['domesticCash']` — qops_dash.json 기준
+- 현금(연습): `p['portfolio']['domesticCash']` — qops_paper.json 기준 ← **연습 스캘핑 현금 체크 시 반드시 이 값 사용**
 - killSwitch: `d['killSwitch']` (dict, `.active` 키)
 - PnL: `c['unrealizedPnlPct']`
 - 체인 ID: `c['id']`
@@ -245,7 +249,7 @@ max_buys    = 2
 2. `confidence >= 0.65`
 3. `pullbackSignal == True`
 4. 이미 OPEN 연습 포지션 없는 종목
-5. `d['portfolio']['domesticCash'] > 50000` (연습 현금 기준)
+5. `p['portfolio']['domesticCash'] > 50000` ← **qops_paper.json** 기준 (실전 현금 0원이어도 무관)
 
 #### Step 2 — 2차 필터 (기술 분석 API)
 ```bash

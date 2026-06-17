@@ -20,8 +20,9 @@ export async function analyzeBuyThreshold(): Promise<LearnedInsight[]> {
          FROM score_accuracy
         WHERE recorded_at BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '14 days'
           AND entry_score IS NOT NULL
-          AND is_paper = false
+          AND is_paper = $1
         ORDER BY entry_score`,
+      [getCtxIsPaper()],
     );
 
     if (rows.length < 30) return []; // v9: 15→30 최소 샘플 강화
@@ -106,9 +107,10 @@ export async function calibrateScoreTierParams(): Promise<void> {
        FROM score_accuracy
        WHERE recorded_at BETWEEN NOW() - INTERVAL '120 days' AND NOW() - INTERVAL '14 days'
          AND entry_score IS NOT NULL
-         AND is_paper = false
+         AND is_paper = $1
          AND (market IS NULL OR market = 'KR')
        ORDER BY recorded_at DESC`,
+      [getCtxIsPaper()],
     );
 
     if (accuracyData.length < 30) {

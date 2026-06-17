@@ -249,6 +249,7 @@ export async function checkDailyLoss(params: {
       JOIN transaction_chains tc ON tc.id = o.chain_id
       WHERE o.side = 'SELL'
         AND o.status = 'FILLED'
+        AND o.is_paper = $2
         AND o.trigger_source != 'OVERSEAS'
         AND o.created_at >= $1
         AND o.filled_price IS NOT NULL

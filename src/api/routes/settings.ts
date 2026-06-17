@@ -732,9 +732,10 @@ settingsRoutes.post('/trading-mode', async (c) => {
   // 안전 가드: PENDING 주문 존재 시 모드 전환 차단 (체결 대기 중 모드 변경 → 데이터 불일치)
   try {
     const currentMode = getEffectiveTradingMode();
+    const isPaperMode = currentMode === 'paper' || currentMode === 'p_arch';
     const { rows: pendingRows } = await getPool().query(
-      `SELECT COUNT(*) as cnt FROM orders WHERE status = 'PENDING' AND trading_mode = $1`,
-      [currentMode],
+      `SELECT COUNT(*) as cnt FROM orders WHERE status = 'PENDING' AND is_paper = $1 AND trading_mode = $2`,
+      [isPaperMode, currentMode],
     );
     const pendingCount = Number(pendingRows[0]?.cnt ?? 0);
     if (pendingCount > 0) {

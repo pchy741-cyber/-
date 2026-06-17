@@ -1,3 +1,4 @@
+import { getCtxIsPaper } from '../config/context.js';
 import { config } from '../config/index.js';
 import { getActiveWatchlist, getPool, upsertWatchlistItem } from '../db/client.js';
 import { logger } from '../utils/logger.js';
@@ -214,13 +215,16 @@ export async function fixWatchlistNames(): Promise<{ fixed: number; total: numbe
     const { rows: chainRows } = await getPool().query(
       `SELECT DISTINCT tc.stock_code FROM transaction_chains tc
        WHERE tc.stock_code NOT IN (SELECT stock_code FROM watchlist)
-         AND tc.is_paper = false`,
+         AND tc.is_paper = $1`,
+      [getCtxIsPaper()],
     );
     // 2. orders에 있지만 watchlist에 없는 종목 추가
     const { rows: orderRows } = await getPool().query(
       `SELECT DISTINCT o.stock_code FROM orders o
        WHERE o.stock_code NOT IN (SELECT stock_code FROM watchlist)
-       AND o.stock_code ~ '^[0-9]{6}$'`,
+         AND o.is_paper = $1
+         AND o.stock_code ~ '^[0-9]{6}$'`,
+      [getCtxIsPaper()],
     );
 
     const missingCodes = [...new Set([...chainRows, ...orderRows].map((r) => r.stock_code))];

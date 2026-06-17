@@ -176,8 +176,8 @@ export class RiskEngine {
       const today = kstNow.toISOString().split('T')[0];
       const tradingMode = isPaper ? 'paper' : 'live';
       const { rows } = await pool.query<{ count: string }>(
-        `SELECT COUNT(*)::text AS count FROM orders WHERE created_at >= $1::date AND created_at < ($1::date + INTERVAL '1 day') AND trading_mode = $2 AND side = 'BUY' AND (trigger_source IS NULL OR trigger_source != 'OVERSEAS')`,
-        [today, tradingMode],
+        `SELECT COUNT(*)::text AS count FROM orders WHERE created_at >= $1::date AND created_at < ($1::date + INTERVAL '1 day') AND is_paper = $2 AND trading_mode = $3 AND side = 'BUY' AND (trigger_source IS NULL OR trigger_source != 'OVERSEAS')`,
+        [today, isPaper, tradingMode],
       );
       const todayCount = Number(rows[0]?.count ?? 0);
 

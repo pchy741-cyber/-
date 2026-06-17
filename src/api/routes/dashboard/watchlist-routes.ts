@@ -174,7 +174,7 @@ watchlistRoutes.get('/watchlist', async (c) => {
             tc.avg_buy_price,
             tc.closed_at,
             (SELECT o.filled_price FROM orders o
-             WHERE o.chain_id = tc.id AND o.side = 'SELL'
+             WHERE o.chain_id = tc.id AND o.side = 'SELL' AND o.is_paper = tc.is_paper
              ORDER BY o.created_at DESC LIMIT 1) AS last_sell_price
           FROM transaction_chains tc
           WHERE tc.status = 'CLOSED'
@@ -357,7 +357,7 @@ watchlistRoutes.get('/watchlist/sold-tracking', async (c) => {
         tc.closed_at,
         tc.close_reason,
         (SELECT o.filled_price FROM orders o
-         WHERE o.chain_id = tc.id AND o.side = 'SELL'
+         WHERE o.chain_id = tc.id AND o.side = 'SELL' AND o.is_paper = tc.is_paper
          ORDER BY o.created_at DESC LIMIT 1) AS sell_price
       FROM transaction_chains tc
       LEFT JOIN watchlist w ON tc.stock_code = w.stock_code

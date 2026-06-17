@@ -488,7 +488,7 @@ dashboardAnalysisRoutes.get('/ai-transparency', async (c) => {
               COALESCE(w.stock_name, tc.stock_name, tc.stock_code) AS stock_name,
               -- 매수 시 AI reasoning (가장 최초 매수 주문)
               (SELECT o.ai_reasoning FROM orders o
-               WHERE o.chain_id = tc.id AND o.side = 'BUY'
+               WHERE o.chain_id = tc.id AND o.side = 'BUY' AND o.is_paper = tc.is_paper
                ORDER BY o.created_at ASC LIMIT 1) AS buy_reason,
               -- 매수 당시 AI 점수
               (SELECT s.composite_score FROM ai_scores s
@@ -520,12 +520,13 @@ dashboardAnalysisRoutes.get('/ai-transparency', async (c) => {
        FROM orders o
        LEFT JOIN watchlist w ON o.stock_code = w.stock_code
        WHERE o.status = 'FILLED'
-         AND o.trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
+         AND o.is_paper = $1
+         AND o.trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
          AND o.ai_reasoning IS NOT NULL
          AND o.ai_reasoning != ''
        ORDER BY o.created_at DESC
        LIMIT 5`,
-      [viewIsPaper ? 'paper' : 'live'],
+      [viewIsPaper, viewIsPaper ? 'paper' : 'live'],
     );
 
     // 3) AI 적중률 (최근 30일)
@@ -766,6 +767,8 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
           AND (filled_price / avg_buy_price) <= 2.0
           AND (avg_buy_price / filled_price) <= 2.0`;
 
+      const tradingMode = isPaper ? 'paper' : 'live';
+
       const { rows: monthly } = await pool.query(
         `
         SELECT
@@ -774,12 +777,13 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
           COUNT(*) AS trades
         FROM orders
         WHERE ${osFilter}
-          AND trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
+          AND is_paper = $1
+          AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
           AND created_at >= NOW() - INTERVAL '12 months'
         GROUP BY 1
         ORDER BY 1 ASC
       `,
-        [tradingMode],
+        [isPaper, tradingMode],
       );
 
       const { rows: total } = await pool.query(
@@ -787,9 +791,10 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
         SELECT COALESCE(SUM((filled_price - avg_buy_price) * filled_quantity), 0) AS total_pnl
         FROM orders
         WHERE ${osFilter}
-          AND trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
+          AND is_paper = $1
+          AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
       `,
-        [tradingMode],
+        [isPaper, tradingMode],
       );
 
       const { rows: thisMonth } = await pool.query(
@@ -797,15 +802,16 @@ dashboardAnalysisRoutes.get('/profit-stats', async (c) => {
         SELECT COALESCE(SUM((filled_price - avg_buy_price) * filled_quantity), 0) AS pnl
         FROM orders
         WHERE ${osFilter}
-          AND trading_mode IN ($1, CASE WHEN $1 = 'paper' THEN 'p_arch' ELSE $1 END)
+          AND is_paper = $1
+          AND trading_mode IN ($2, CASE WHEN $2 = 'paper' THEN 'p_arch' ELSE $2 END)
           AND created_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')
       `,
-        [tradingMode],
+        [isPaper, tradingMode],
       );
 
       const { rows: firstTradeUs } = await pool.query(
-        `SELECT MIN(created_at) AS first_date FROM orders WHERE ${osFilter} AND trading_mode = $1`,
-        [tradingMode],
+        `SELECT MIN(created_at) AS first_date FROM orders WHERE ${osFilter} AND is_paper = $1 AND trading_mode = $2`,
+        [isPaper, tradingMode],
       );
       const firstDateUs = firstTradeUs[0]?.first_date ? new Date(firstTradeUs[0].first_date) : new Date();
       const operatingDaysUs = Math.max(1, Math.floor((Date.now() - firstDateUs.getTime()) / 86400000));

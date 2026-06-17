@@ -101,7 +101,7 @@ export async function ensureOverseasTable(): Promise<void> {
       if (migCheck.length === 0) {
         await withTransaction(async (tx) => {
           const { rows: liveBuys } = await tx.query(
-            "SELECT COUNT(*) as cnt FROM orders WHERE trigger_source = 'OVERSEAS' AND trading_mode = 'live' AND side = 'BUY' AND status = 'FILLED'",
+            "SELECT COUNT(*) as cnt FROM orders WHERE trigger_source = 'OVERSEAS' AND is_paper = false AND trading_mode = 'live' AND side = 'BUY' AND status = 'FILLED'",
           );
           const hasLiveBuys = Number(liveBuys[0]?.cnt ?? 0) > 0;
 

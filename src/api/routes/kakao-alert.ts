@@ -13,6 +13,7 @@
 import { Hono } from 'hono';
 import { getScoreBasedParams, STRATEGY_PARAMS } from '../../config/constants.js';
 import { config } from '../../config/index.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import { createChain, getOpenChains, getPool, logSystem } from '../../db/client.js';
 import { invalidateBalanceCache } from '../../kis/account.js';
 import { getCurrentPrice } from '../../kis/market.js';
@@ -124,7 +125,7 @@ kakaoAlertRoutes.post('/kakao-alert', async (c) => {
       ])
       .then((r) => r.rows[0] ?? null)
       .catch(() => null),
-    getOpenChains(config.isPaper).catch(() => [] as import('../../db/models.js').TransactionChain[]),
+    getOpenChains(getCtxIsPaper()).catch(() => [] as import('../../db/models.js').TransactionChain[]),
   ]);
 
   const aiEntry = scoreRows;
@@ -140,7 +141,7 @@ kakaoAlertRoutes.post('/kakao-alert', async (c) => {
     emoji = '🚀';
 
     // 연습모드: 3분 파이프라인 대기 없이 즉시 매수 실행
-    if (config.isPaper) {
+    if (getCtxIsPaper()) {
       try {
         const priceData = await getCurrentPrice(stock.code);
         const curPrice = priceData.currentPrice;
