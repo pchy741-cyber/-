@@ -101,11 +101,14 @@ sellRoutes.post('/sell/:chainId', async (c) => {
     const chainTradingMode = chain.is_paper ? 'paper' : 'live';
     if (chain.is_paper) {
       const fakeOrderNo = `P${Date.now().toString(36)}`;
+      const _qty1 = Number(chain.total_quantity);
+      const _avg1 = Number(chain.avg_buy_price ?? 0);
+      const _profit1 = fillPrice > 0 ? Math.round(fillPrice * _qty1 * (1 - KR_FEE.SELL_FEE_PCT)) - Math.round(_avg1 * _qty1) : 0;
       await getPool().query(
         `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2, total_quantity = 0,
-          realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + ($3 * (1 - ${KR_FEE.SELL_FEE_PCT}) - avg_buy_price) * total_quantity ELSE realized_pnl END
+          realized_pnl = realized_pnl + $3
          WHERE id = $1 AND is_paper = $4`,
-        [chainId, sellReason, fillPrice, true],
+        [chainId, sellReason, _profit1, true],
       );
       await getPool().query(
         `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
@@ -194,11 +197,14 @@ sellRoutes.post('/sell/:chainId', async (c) => {
     }
 
     if (fillConfirmed) {
+      const _qty2 = Number(chain.total_quantity);
+      const _avg2 = Number(chain.avg_buy_price ?? 0);
+      const _profit2 = fillPrice > 0 ? Math.round(fillPrice * _qty2 * (1 - KR_FEE.SELL_FEE_PCT)) - Math.round(_avg2 * _qty2) : 0;
       await getPool().query(
         `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2, total_quantity = 0,
-          realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + ($3 * (1 - ${KR_FEE.SELL_FEE_PCT}) - avg_buy_price) * total_quantity ELSE realized_pnl END
+          realized_pnl = realized_pnl + $3
          WHERE id = $1 AND is_paper = $4`,
-        [chainId, sellReason, fillPrice, false],
+        [chainId, sellReason, _profit2, false],
       );
     }
 
@@ -309,11 +315,14 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
       const fakeOrderNo = `P${Date.now().toString(36)}`;
       await withTransaction(async (tx) => {
         for (const chain of openChains) {
+          const _bqty = Number(chain.total_quantity);
+          const _bavg = Number(chain.avg_buy_price ?? 0);
+          const _bprofit = fillPrice > 0 ? Math.round(fillPrice * _bqty * (1 - KR_FEE.SELL_FEE_PCT)) - Math.round(_bavg * _bqty) : 0;
           await tx.query(
             `UPDATE transaction_chains SET status='CLOSED', closed_at=NOW(), close_reason=$2, total_quantity=0,
-              realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + ($3 * (1 - ${KR_FEE.SELL_FEE_PCT}) - avg_buy_price) * total_quantity ELSE realized_pnl END
+              realized_pnl = realized_pnl + $3
              WHERE id=$1`,
-            [chain.id, sellReason, fillPrice],
+            [chain.id, sellReason, _bprofit],
           );
           await tx.query(
             `INSERT INTO orders (chain_id,stock_code,side,order_type,quantity,price,filled_quantity,filled_price,kis_order_no,status,trading_mode,trigger_source,ai_reasoning)
@@ -396,11 +405,14 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
     await withTransaction(async (tx) => {
       for (const chain of openChains) {
         if (fillConfirmed) {
+          const _lqty = Number(chain.total_quantity);
+          const _lavg = Number(chain.avg_buy_price ?? 0);
+          const _lprofit = fillPrice > 0 ? Math.round(fillPrice * _lqty * (1 - KR_FEE.SELL_FEE_PCT)) - Math.round(_lavg * _lqty) : 0;
           await tx.query(
             `UPDATE transaction_chains SET status='CLOSED', closed_at=NOW(), close_reason=$2, total_quantity=0,
-              realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + ($3 * (1 - ${KR_FEE.SELL_FEE_PCT}) - avg_buy_price) * total_quantity ELSE realized_pnl END
+              realized_pnl = realized_pnl + $3
              WHERE id=$1`,
-            [chain.id, sellReason, fillPrice],
+            [chain.id, sellReason, _lprofit],
           );
         }
         await tx.query(

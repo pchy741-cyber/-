@@ -1,4 +1,4 @@
-const CACHE_NAME = 'aab-v7';
+const CACHE_NAME = 'aab-v8';
 const STATIC_ASSETS = [
   '/manifest.json',
   '/icon-192.png',
@@ -92,8 +92,8 @@ self.addEventListener('push', (event) => {
     badge: '/icon-192.png',
     tag,
     renotify: true,
-    // 매매/긴급 알림은 사용자가 직접 닫을 때까지 유지
-    requireInteraction: isTrade || isAlert,
+    // 손실/긴급만 수동 닫기, 매수/매도익 알림은 자동감추기
+    requireInteraction: isLoss || isAlert,
     silent: false,
     timestamp: data.timestamp || Date.now(),
     data: {

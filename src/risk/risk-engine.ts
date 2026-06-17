@@ -8,7 +8,7 @@ import { config } from '../config/index.js';
 import { getAllocRisk } from '../db/alloc-risk-cache.js';
 import { getOpenChains, getPool, getTodayStartSnapshot, insertRiskEvent, insertSnapshot } from '../db/client.js';
 import { type AccountBalance, getAccountBalance } from '../kis/account.js';
-import { getCash as getOverseasCash, getHoldings as getOverseasHoldings } from '../scheduler/overseas/state.js';
+import { computePaperCash, getCash as getOverseasCash, getHoldings as getOverseasHoldings } from '../scheduler/overseas/state.js';
 import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
 import { activateKillSwitch, isKillSwitchActive } from './kill-switch.js';
@@ -428,7 +428,28 @@ export class RiskEngine {
       if (weekStartValue <= 0) return { approved: true, reason: 'OK' };
 
       const currentBalance = await getBalance(isPaper);
-      const currentValue = (currentBalance.orderableCash ?? 0) + (currentBalance.totalEvalAmount ?? 0);
+      const domesticValue = (currentBalance.orderableCash ?? 0) + (currentBalance.totalEvalAmount ?? 0);
+
+      // 해외 포함 총자산 — 스냅샷 저장 산식과 동일 (국내만 쓰면 해외 포함 스냅샷과 불일치 → false -58% 오류)
+      let overseasKrwNow = 0;
+      try {
+        const fxRate = await getFxRate();
+        if (fxRate > 0) {
+          const { rows: osRows } = await getPool().query<{ quantity: string; last_price: string }>(
+            'SELECT quantity, last_price FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1',
+            [isPaper],
+          );
+          const osMarketUsd = osRows.reduce(
+            (s: number, h: any) => s + Number(h.quantity) * Number(h.last_price || 0),
+            0,
+          );
+          const paperCashUsd = isPaper ? await computePaperCash(fxRate) : 0;
+          overseasKrwNow = Math.round((osMarketUsd + paperCashUsd) * fxRate);
+        }
+      } catch {
+        /* 해외 조회 실패 시 국내만으로 계산 (보수적) */
+      }
+      const currentValue = domesticValue + overseasKrwNow;
 
       // 소자산 면제 (20만 미만)
       if (currentValue < 200_000) return { approved: true, reason: '소자산 — 주간 Drawdown 면제' };
@@ -436,6 +457,34 @@ export class RiskEngine {
       const weeklyLossPct = ((weekStartValue - currentValue) / weekStartValue) * 100;
       const limit = isPaper ? WEEKLY_LOSS_PCT_PAPER : WEEKLY_LOSS_PCT_LIVE;
       const warn = limit * 0.7;
+
+      // 오염 감지: 주초 스냅샷이 현재 총자산의 1.5배 초과 → paper/live 스냅샷 혼합 오염
+      // (paper 해외 포함 58M이 live 주초로 오염 → 현재 live 31M과 비교 시 false -47%)
+      if (weeklyLossPct >= limit * 0.8 && weekStartValue > currentValue * 1.5) {
+        logger.warn(
+          `⚠️ 주간 Drawdown 오염 감지: 주초 ${Math.round(weekStartValue / 10000)}만 vs 현재 ${Math.round(currentValue / 10000)}만 (${weeklyLossPct.toFixed(1)}%) — paper/live 스냅샷 불일치로 판단, 주초 스냅샷 재설정`,
+          { component: 'RISK' },
+        );
+        try {
+          await getPool().query(
+            `DELETE FROM portfolio_snapshots WHERE snapshot_at >= $1 AND snapshot_at < $2 AND is_paper = $3`,
+            [weekStart.toISOString(), new Date(weekStart.getTime() + 2 * 60 * 60 * 1000).toISOString(), isPaper],
+          );
+          await insertSnapshot({
+            total_value: currentValue,
+            cash_balance: currentBalance.orderableCash,
+            invested_value: currentBalance.totalEvalAmount,
+            unrealized_pnl: currentBalance.totalProfitLoss,
+            daily_pnl: 0,
+            daily_pnl_pct: 0,
+            positions: currentBalance.positions,
+            is_paper: isPaper,
+          });
+        } catch {
+          /* 스냅샷 교체 실패해도 이번 차단은 해제 */
+        }
+        return { approved: true, reason: '주간 Drawdown 스냅샷 오염 감지 — 리셋 후 매수 허용' };
+      }
 
       if (weeklyLossPct >= limit) {
         logger.warn(
