@@ -774,11 +774,7 @@ export class TradeExecutor {
       );
       try {
         const avgBuy = Number(chain.avg_buy_price) || 0;
-        const pnlPctForceClose = avgBuy > 0 ? ((0 - avgBuy) / avgBuy) * 100 : 0;
-        await getPool().query(
-          `UPDATE transaction_chains SET realized_pnl = $1, pnl_pct = $2 WHERE id = $3`,
-          [0, pnlPctForceClose, chain.id],
-        );
+        // realized_pnl 리셋 제거 — 기존 partial PnL 보존, closeChain이 avgBuy 기준 잔여분 정산
         await chainManager.closeChain(
           chain.id, avgBuy, chain,
           `${failCount}회 연속 청산 실패 → 자동 강제 종료 (수동 KIS 확인 필요)`,

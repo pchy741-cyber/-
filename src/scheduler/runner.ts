@@ -24,6 +24,7 @@ import { runWithMode } from '../config/context.js';
 import { paperOnly } from '../config/index.js';
 import { invalidateBalanceCache } from '../kis/account.js';
 import { fixWatchlistNames, syncHoldingsToWatchlist, syncInterestGroups } from '../kis/interest-group.js';
+import { getPool } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 import { runClosingBellJob } from './closing-bell-job.js';
 import { runHoldingCheckJob } from './holding-check-job.js';
@@ -1081,6 +1082,16 @@ export function startScheduler(): void {
       const { weekdayWakeUp, wakeCloudSqlIfNeeded } = await import('../utils/cloud-sql-wake.js');
       await wakeCloudSqlIfNeeded().catch((e) => logger.error(`Cloud SQL 기상 실패: ${e}`, { component: 'SCHEDULER' }));
       await weekdayWakeUp().catch((e) => logger.error(`Cloud Run 기상 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🔌 DB 커넥션 keepalive — 평일 15분 간격 (Cloud SQL auto-pause 방지)
+  // 주말은 절전 허용 (Cloud SQL NEVER) — 대시보드 접속 시 touchActivity → 헬스워처 자동 기상
+  cron.schedule(
+    '*/15 * * * 1-5',
+    () => {
+      getPool().query('SELECT 1').catch(() => {});
     },
     { timezone: MARKET.TIMEZONE },
   );

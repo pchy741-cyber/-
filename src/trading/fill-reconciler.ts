@@ -75,6 +75,35 @@ export async function reconcilePendingOrders(): Promise<void> {
             `✅ 체결 확인: ${order.stock_code} ${order.side} ${fill.filledQty}주 @${fill.filledPrice}원 (${isFullFill ? 'FILLED' : 'PARTIAL'})`,
             { component: 'RECONCILER' },
           );
+
+          // SELL 전량 체결 시 chain 정산 — sell-routes.ts에서 fillConfirmed=false로 OPEN 방치된 케이스 복구
+          if (order.side === 'SELL' && isFullFill && order.chain_id) {
+            try {
+              const { rows: chainRows } = await getPool().query(
+                `SELECT * FROM transaction_chains WHERE id = $1 AND status != 'CLOSED'`,
+                [order.chain_id],
+              );
+              const ch = chainRows[0];
+              if (ch) {
+                const fp = fill.filledPrice;
+                const avgBuy = Number(ch.avg_buy_price ?? 0);
+                const pnlPctNum = avgBuy > 0 && fp > 0 ? ((fp - avgBuy) / avgBuy) * 100 : null;
+                await getPool().query(
+                  `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2, total_quantity = 0,
+                    realized_pnl = realized_pnl + CASE WHEN $3 > 0 THEN ($3 * (1 - ${KR_FEE.SELL_FEE_PCT}) - avg_buy_price) * total_quantity ELSE 0 END,
+                    pnl_pct = CASE WHEN $4 IS NOT NULL THEN ROUND($4::numeric, 2) ELSE pnl_pct END
+                   WHERE id = $1`,
+                  [ch.id, `체결 확인 자동 정산 (KIS주문: ${kisOrderNo})`, fp, pnlPctNum],
+                );
+                logger.info(
+                  `💰 SELL 체결 → 체인 정산: ${order.stock_code} #${ch.id.slice(0, 8)} @${fp}원 (${pnlPctNum?.toFixed(2) ?? '?'}%)`,
+                  { component: 'RECONCILER' },
+                );
+              }
+            } catch (chainErr) {
+              logger.warn(`체인 정산 실패 [${order.stock_code} #${order.chain_id}]: ${chainErr}`, { component: 'RECONCILER' });
+            }
+          }
           continue;
         }
 

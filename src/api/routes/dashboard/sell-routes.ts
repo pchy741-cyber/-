@@ -94,8 +94,9 @@ sellRoutes.post('/sell/:chainId', async (c) => {
       const px = await getCurrentPrice(chain.stock_code);
       fillPrice = px.currentPrice;
     } catch {
-      /* 시세 조회 실패 시 0으로 기록 */
+      /* 시세 조회 실패 — 평단가 폴백 (PnL ≈ -수수료로 기록, 0보다 정확) */
     }
+    if (fillPrice <= 0) fillPrice = Number(chain.avg_buy_price ?? 0);
 
     // 모의투자 모드
     const chainTradingMode = chain.is_paper ? 'paper' : 'live';
@@ -308,7 +309,11 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
       const px = await getCurrentPrice(stockCode);
       fillPrice = px.currentPrice;
     } catch {
-      /* skip */
+      /* 시세 조회 실패 — 평단 폴백 */
+    }
+    if (fillPrice <= 0) {
+      const firstAvg = openChains[0] ? Number(openChains[0].avg_buy_price ?? 0) : 0;
+      if (firstAvg > 0) fillPrice = firstAvg;
     }
 
     const { withTransaction } = await import('../../../db/client.js');

@@ -4,6 +4,7 @@
 import { Hono } from 'hono';
 import { getDashBuildingByMode, getDashCache, getDashCacheTTL, setDashCache } from '../../../cache/dashboard-cache.js';
 import { runWithMode } from '../../../config/context.js';
+import { touchActivity, wakeCloudSqlIfNeeded } from '../../../utils/cloud-sql-wake.js';
 import { resolveRequestMode } from '../../guards/live-pin.js';
 import { getOrBuildDashPayload } from './builder.js';
 import { sellRoutes } from './sell-routes.js';
@@ -14,6 +15,10 @@ export const dashboardRoutes = new Hono();
 
 // ── 대시보드 요약 ──
 dashboardRoutes.get('/dashboard', async (c) => {
+  // 대시보드 접속 = 사용자 활동 → 주말 DB 절전 중이면 자동 기상 트리거
+  touchActivity();
+  wakeCloudSqlIfNeeded().catch(() => {});
+
   const viewIsPaper = resolveRequestMode(c);
   const cacheKey = viewIsPaper ? 'paper' : 'live';
 
