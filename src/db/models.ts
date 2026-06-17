@@ -59,6 +59,7 @@ export const TransactionChainSchema = z.object({
   peak_price_since_open: z.number().nullable().optional(),
   pnl_pct: z.number().nullable().optional(),
   sell_reason: z.string().nullable().optional(),
+  trigger_source: z.string().nullable().optional(),
   is_paper: z.boolean().optional(),
   opened_at: z.string(),
   closed_at: z.string().nullable(),
