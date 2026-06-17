@@ -3,6 +3,7 @@
  * GET /review/copilot-lite?viewMode=paper|live
  */
 import { Hono } from 'hono';
+import { MDD_LIMIT } from '../../../config/constants.js';
 import { getKSTNow } from '../../../utils/time.js';
 
 const app = new Hono();
@@ -62,6 +63,29 @@ export function deriveActions(
         apiHint: `GET /api/overseas/dashboard 로 보유종목 확인 후 수동 매도`,
       });
     }
+    if (it.id === 'concentration') {
+      actions.push({
+        id: `concentration_reduce`,
+        level: it.level as 'warn' | 'danger',
+        action: `단일 포지션 쏠림 — 해당 체인 비중 축소 또는 일부 청산 검토`,
+        apiHint: `GET /api/chains?is_paper=${viewIsPaper ? 'true' : 'false'} 로 비중 확인`,
+      });
+    }
+    if (it.id === 'no_trades') {
+      actions.push({
+        id: `no_trades_diagnose`,
+        level: 'warn',
+        action: `7일간 신규 매수 없음 — 자동화 파이프라인 동작 여부 점검`,
+        apiHint: `GET /api/ai-loop/status 로 루프 상태 확인`,
+      });
+    }
+    if (it.id === 'high_volatility') {
+      actions.push({
+        id: `high_volatility_reduce`,
+        level: 'warn',
+        action: `일손익 변동성 과다 — 포지션 크기 축소 또는 분산 매매 고려`,
+      });
+    }
   }
   return actions;
 }
@@ -91,7 +115,7 @@ app.get('/review/copilot-lite', async (c) => {
         const peak = Math.max(...values);
         const latest = values[values.length - 1];
         const mddPct = peak > 0 ? ((peak - latest) / peak) * 100 : 0;
-        const limit = viewIsPaper ? 40 : 8;
+        const limit = viewIsPaper ? MDD_LIMIT.PAPER : MDD_LIMIT.LIVE;
         if (mddPct >= limit) {
           score -= 25;
           issues.push({ id: 'mdd', level: 'danger', label: `MDD ${mddPct.toFixed(1)}%` });
@@ -145,6 +169,58 @@ app.get('/review/copilot-lite', async (c) => {
       }
     } catch {}
 
+    // 5. 포지션 쏠림 — 국내 단일 체인이 전체 투자금의 40%+ 차지
+    try {
+      const { rows: chainRows } = await pool.query(
+        `SELECT stock_code, total_invested FROM transaction_chains WHERE status = 'OPEN' AND is_paper = $1`,
+        [viewIsPaper],
+      );
+      if (chainRows.length > 0) {
+        const total = chainRows.reduce((s: number, r: any) => s + Number(r.total_invested), 0);
+        const maxInvested = Math.max(...chainRows.map((r: any) => Number(r.total_invested)));
+        const maxPct = total > 0 ? (maxInvested / total) * 100 : 0;
+        if (maxPct >= 50) {
+          score -= 15;
+          issues.push({ id: 'concentration', level: 'danger', label: `단일 포지션 ${maxPct.toFixed(0)}% 쏠림` });
+        } else if (maxPct >= 40) {
+          score -= 8;
+          issues.push({ id: 'concentration', level: 'warn', label: `단일 포지션 ${maxPct.toFixed(0)}% 쏠림` });
+        }
+      }
+    } catch {}
+
+    // 6. 7일 내 신규 매수 없음 — 자동화 멈춤 신호
+    try {
+      const { rows: buyRows } = await pool.query(
+        `SELECT COUNT(*) as cnt FROM orders WHERE side = 'BUY' AND is_paper = $1 AND created_at > NOW() - INTERVAL '7 days'`,
+        [viewIsPaper],
+      );
+      if (Number(buyRows[0]?.cnt ?? 0) === 0) {
+        score -= 10;
+        issues.push({ id: 'no_trades', level: 'warn', label: '7일간 신규 매수 없음' });
+      }
+    } catch {}
+
+    // 7. 고변동성 — 최근 7일 일손익 표준편차 > 총자산의 2%
+    try {
+      const { rows: pnlRows } = await pool.query(
+        `SELECT daily_pnl, total_value FROM portfolio_snapshots WHERE is_paper = $1 AND snapshot_at > NOW() - INTERVAL '7 days' ORDER BY snapshot_at ASC`,
+        [viewIsPaper],
+      );
+      if (pnlRows.length >= 5) {
+        const pnls = pnlRows.map((r: any) => Number(r.daily_pnl));
+        const avgTotal = pnlRows.reduce((s: number, r: any) => s + Number(r.total_value), 0) / pnlRows.length;
+        const mean = pnls.reduce((s, v) => s + v, 0) / pnls.length;
+        const variance = pnls.reduce((s, v) => s + (v - mean) ** 2, 0) / pnls.length;
+        const stdDev = Math.sqrt(variance);
+        const volatilityPct = avgTotal > 0 ? (stdDev / avgTotal) * 100 : 0;
+        if (volatilityPct >= 2) {
+          score -= 8;
+          issues.push({ id: 'high_volatility', level: 'warn', label: `일손익 변동성 ${volatilityPct.toFixed(1)}%` });
+        }
+      }
+    } catch {}
+
     const finalScore = Math.max(0, Math.min(100, score));
     const actions = deriveActions(issues, viewIsPaper);
     return c.json({
@@ -184,7 +260,7 @@ export async function getCopilotLiteScore(
       const peak = Math.max(...values);
       const latest = values[values.length - 1];
       const mddPct = peak > 0 ? ((peak - latest) / peak) * 100 : 0;
-      const limit = viewIsPaper ? 40 : 8;
+      const limit = viewIsPaper ? MDD_LIMIT.PAPER : MDD_LIMIT.LIVE;
       if (mddPct >= limit) {
         score -= 25;
         issues.push({ id: 'mdd', level: 'danger', label: `MDD ${mddPct.toFixed(1)}%` });
@@ -201,6 +277,33 @@ export async function getCopilotLiteScore(
       score -= 20;
       issues.push({ id: 'kill_switch', level: 'danger', label: 'Kill Switch 활성' });
     }
+
+    // 포지션 쏠림
+    try {
+      const { rows: chainRows } = await pool.query(
+        `SELECT total_invested FROM transaction_chains WHERE status = 'OPEN' AND is_paper = $1`,
+        [viewIsPaper],
+      );
+      if (chainRows.length > 0) {
+        const total = chainRows.reduce((s: number, r: any) => s + Number(r.total_invested), 0);
+        const maxInvested = Math.max(...chainRows.map((r: any) => Number(r.total_invested)));
+        const maxPct = total > 0 ? (maxInvested / total) * 100 : 0;
+        if (maxPct >= 50) { score -= 15; issues.push({ id: 'concentration', level: 'danger', label: `단일 포지션 ${maxPct.toFixed(0)}% 쏠림` }); }
+        else if (maxPct >= 40) { score -= 8; issues.push({ id: 'concentration', level: 'warn', label: `단일 포지션 ${maxPct.toFixed(0)}% 쏠림` }); }
+      }
+    } catch {}
+
+    // 7일 내 매수 없음
+    try {
+      const { rows: buyRows } = await pool.query(
+        `SELECT COUNT(*) as cnt FROM orders WHERE side = 'BUY' AND is_paper = $1 AND created_at > NOW() - INTERVAL '7 days'`,
+        [viewIsPaper],
+      );
+      if (Number(buyRows[0]?.cnt ?? 0) === 0) {
+        score -= 10;
+        issues.push({ id: 'no_trades', level: 'warn', label: '7일간 신규 매수 없음' });
+      }
+    } catch {}
 
     const finalScore = Math.max(0, Math.min(100, score));
     return { score: finalScore, issues, actions: deriveActions(issues, viewIsPaper) };

@@ -74,11 +74,38 @@ app.get('/review/compare', async (c) => {
     triggerCapture('manual', 'paper', null).catch(() => null),
     triggerCapture('manual', 'live', null).catch(() => null),
   ]);
+
+  const paperIssueIds = new Set((paper?.issues ?? []).map((i: any) => i.id));
+  const liveIssueIds = new Set((live?.issues ?? []).map((i: any) => i.id));
+
+  const liveOnly = (live?.issues ?? []).filter((i: any) => !paperIssueIds.has(i.id));
+  const paperOnly = (paper?.issues ?? []).filter((i: any) => !liveIssueIds.has(i.id));
+  const shared = (live?.issues ?? []).filter((i: any) => paperIssueIds.has(i.id));
+
+  const scoreDelta = paper && live ? paper.score - live.score : null;
+
+  const recommendations: string[] = [];
+  if (liveOnly.length > 0) {
+    recommendations.push(`실전 전용 문제 ${liveOnly.length}건: ${liveOnly.map((i: any) => i.label).join(', ')} — 즉시 점검 필요`);
+  }
+  if (scoreDelta !== null && scoreDelta > 20) {
+    recommendations.push(`연습 점수가 실전보다 ${scoreDelta}점 높음 — 실전 포지션 리스크 관리 강화 권장`);
+  } else if (scoreDelta !== null && scoreDelta < -20) {
+    recommendations.push(`실전 점수가 연습보다 ${Math.abs(scoreDelta)}점 높음 — 연습 전략 조정 검토`);
+  }
+  if (shared.length > 0) {
+    recommendations.push(`공통 문제 ${shared.length}건: ${shared.map((i: any) => i.label).join(', ')} — 전체 전략 점검`);
+  }
+  if (recommendations.length === 0) {
+    recommendations.push('paper/live 모두 정상 범위 — 현재 전략 유지');
+  }
+
   return c.json({
     timestamp: new Date().toISOString(),
     paper: paper ? { score: paper.score, issues: paper.issues, actions: paper.actions } : null,
     live: live ? { score: live.score, issues: live.issues, actions: live.actions } : null,
-    scoreDelta: paper && live ? paper.score - live.score : null,
+    scoreDelta,
+    analysis: { liveOnly, paperOnly, shared, recommendations },
   });
 });
 

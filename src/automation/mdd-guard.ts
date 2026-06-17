@@ -13,6 +13,7 @@
 
 import { getOverride, removeOverride, setOverride } from '../ai/ai-overrides.js';
 import { runWithMode } from '../config/context.js';
+import { MDD_LIMIT } from '../config/constants.js';
 import { config } from '../config/index.js';
 import { getPool } from '../db/client.js';
 import { sendByPaperFlag } from '../notifications/mode-message.js';
@@ -49,8 +50,8 @@ async function runForMode(isPaper: boolean): Promise<void> {
     return;
   }
 
-  // Paper MDD 임계: config.paperRisk.mddLimit과 통일 (기존 하드코딩 40 → config 60)
-  const limit = isPaper ? config.paperRisk.mddLimit : 8;
+  // Paper MDD 임계: config.paperRisk.mddLimit과 통일 / Live: constants.ts SSoT
+  const limit = isPaper ? config.paperRisk.mddLimit : MDD_LIMIT.LIVE;
   // 회복 임계 완화 (DEADLOCK 방지): 75% → 150% 즉 limit의 1.5배
   // Live: MDD < 12% 면 해제 (이전 6%), Paper: MDD < 60% 면 해제 (이전 30%)
   // 의미: "악화하지만 않으면 매매 재개" — 매매가 일어나야 회복도 가능

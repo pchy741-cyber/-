@@ -662,3 +662,9 @@ export const Signal = {
   NO_DATA: 'NO_DATA', // 소스 부족 → 분석 불가
 } as const;
 export type Signal = (typeof Signal)[keyof typeof Signal];
+
+// ── 월간 MDD 한도 (Single Source of Truth) ──
+export const MDD_LIMIT = {
+  LIVE: 8,   // 실전: 월간 최대 낙폭 8%
+  PAPER: 40, // 연습: 월간 최대 낙폭 40%
+} as const;

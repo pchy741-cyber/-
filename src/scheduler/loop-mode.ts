@@ -416,6 +416,10 @@ async function tick(): Promise<void> {
         scheduleNext();
         return;
       }
+      // 복구 소진 → 루프 정지 직전 loop_paused 캡처 (최후 상태 기록)
+      import('../api/routes/review/capture-trigger.js')
+        .then((m) => m.triggerCapture('loop_paused', 'live', state.dbSessionId).catch(() => {}))
+        .catch(() => {});
       stopLoop(`연속 ${MAX_CONSECUTIVE_ERRORS}회 에러 × ${MAX_RECOVERY_ATTEMPTS}회 복구 시도 모두 실패 — 진짜 정지`);
       return;
     }

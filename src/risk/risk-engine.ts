@@ -14,6 +14,7 @@ import { getKSTNow } from '../utils/time.js';
 import { activateKillSwitch, isKillSwitchActive } from './kill-switch.js';
 import { getMonthlyMddSnapshot } from './mdd-calculator.js';
 import { getPaperBalance } from './paper-balance.js';
+import { MDD_LIMIT } from '../config/constants.js';
 import { calcDailyLossLimit, WEEKLY_LOSS_PCT_LIVE, WEEKLY_LOSS_PCT_PAPER } from './seed-capital.js';
 
 async function getBalance(isPaper: boolean): Promise<AccountBalance> {
@@ -533,8 +534,8 @@ export class RiskEngine {
       }
 
       // Paper는 위에서 이미 return → 여기는 Live 전용
-      const mddLimit = 8;
-      const mddWarn = 6;
+      const mddLimit = MDD_LIMIT.LIVE;
+      const mddWarn = MDD_LIMIT.LIVE * 0.75;
       if (mddPct >= mddLimit) {
         await activateKillSwitch(
           `월간 MDD 한도 초과: 고점 대비 -${mddPct.toFixed(1)}% (한도 -${mddLimit}%)`,
