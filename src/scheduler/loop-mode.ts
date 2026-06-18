@@ -84,6 +84,8 @@ const state: LoopState = {
 };
 
 let timer: ReturnType<typeof setTimeout> | null = null;
+let _autoStopTimer: ReturnType<typeof setTimeout> | null = null;
+const LOOP_MAX_DURATION_MS = 6 * 60 * 60_000; // 6시간 자동 정지 — advisory lock 무한 점유 방지
 
 // ── DB 헬퍼 (실패해도 루프 진행) ──
 
@@ -662,6 +664,12 @@ export async function startLoop(): Promise<{ ok: boolean; error?: string; warnin
   state.lastRunResult = null;
   state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
 
+  // 6시간 자동 정지 — advisory lock 무한 점유 방지
+  _autoStopTimer = setTimeout(() => {
+    logger.warn('Loop 6시간 자동 정지 — 최대 세션 시간 초과', { component: 'LOOP' });
+    stopLoop('6시간 자동 정지').catch(() => {});
+  }, LOOP_MAX_DURATION_MS);
+
   // ── 1단계: 세션 전략 리뷰 ──
   state.phase = 'REVIEWING';
   logger.info(`🤖 Auto Pilot 시작 — 세션 전략 수립 중...`, { component: 'LOOP' });
@@ -700,6 +708,10 @@ export async function stopLoop(reason?: string): Promise<{ ok: boolean }> {
   if (timer) {
     clearTimeout(timer);
     timer = null;
+  }
+  if (_autoStopTimer) {
+    clearTimeout(_autoStopTimer);
+    _autoStopTimer = null;
   }
   const wasActive = state.active;
   state.active = false;

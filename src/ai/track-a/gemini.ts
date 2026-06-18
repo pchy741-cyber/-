@@ -93,7 +93,11 @@ ${additionalSources ?? '추가 소스 없음'}
   });
 
   const { callVertexGemini } = await import('../../utils/vertex-gemini.js');
-  const responseText = await callVertexGemini(systemPrompt, userMessage, { temperature: 0.1, label: 'TrackA-분석' });
+  const responseText = await callVertexGemini(systemPrompt, userMessage, {
+    temperature: 0.1,
+    label: 'TrackA-분석',
+    grounded: true, // GenAI App Builder 크레딧 활용 — 실시간 시장 뉴스 grounding
+  });
 
   // Resilient JSON parsing — Gemini 응답이 깨져도 최대한 복구
   const parsed = safeParseJson<GeminiAnalysis>(responseText, 'GeminiAnalysis');

@@ -473,12 +473,14 @@ settingsRoutes.post('/fix-chain-tpsl', async (c) => {
 // GET: 전체 인사이트 조회
 settingsRoutes.get('/insights', async (c) => {
   try {
-    // paper/live 공유: 모든 인사이트 통합 조회
+    const isPaper = resolveRequestMode(c);
     const { rows } = await getPool().query(
       `SELECT *
        FROM learned_insights
        WHERE COALESCE(is_dismissed, false) IS NOT TRUE
+         AND is_paper = $1
        ORDER BY is_manual DESC, confidence DESC LIMIT 30`,
+      [isPaper],
     );
     return c.json(rows);
   } catch (err: any) {
@@ -676,10 +678,12 @@ settingsRoutes.post('/fix-names', async (c) => {
 // 자기학습 즉시 실행 (평일 18:30 자동 외 수동 트리거)
 settingsRoutes.post('/run-self-learning', async (c) => {
   const { analyzeTradeHistory } = await import('../../automation/self-learning.js');
-  analyzeTradeHistory()
-    .then((insights) => logger.info(`자기학습 완료: ${insights.length}개 인사이트`, { component: 'SETTINGS' }))
+  const { runWithMode } = await import('../../config/context.js');
+  const isPaper = resolveRequestMode(c);
+  runWithMode(isPaper, () => analyzeTradeHistory())
+    .then((insights) => logger.info(`자기학습 완료 (${isPaper ? '연습' : '실전'}): ${insights.length}개 인사이트`, { component: 'SETTINGS' }))
     .catch((e) => logger.error(`자기학습 실패: ${e}`, { component: 'SETTINGS' }));
-  return c.json({ ok: true, message: '자기학습 시작 (백그라운드 실행, 완료 시 텔레그램 알림)' });
+  return c.json({ ok: true, message: `자기학습 시작 (${isPaper ? '연습' : '실전'}, 백그라운드 실행, 완료 시 텔레그램 알림)` });
 });
 
 // ── 거래 모드 전환 (모의/실전) ──

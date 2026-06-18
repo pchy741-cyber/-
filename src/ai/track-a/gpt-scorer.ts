@@ -85,6 +85,7 @@ export async function runGPTScoring(
   watchlist: WatchlistItem[],
   chartData: Map<string, DailyCandle[]>,
   regimeHint?: RegimeHint,
+  customPrompt?: string,
   additionalSources?: string,
 ): Promise<ScoringResult[]> {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -94,7 +95,8 @@ export async function runGPTScoring(
   }
 
   const client = new OpenAI({ apiKey, timeout: 60_000 });
-  const systemPrompt = buildScoringPrompt(mode, regimeHint);
+  const basePrompt = buildScoringPrompt(mode, regimeHint);
+  const systemPrompt = customPrompt ? `${basePrompt}\n\n## CEO 추가 지시사항\n${customPrompt}` : basePrompt;
   const results: ScoringResult[] = [];
 
   for (let i = 0; i < watchlist.length; i += BATCH_SIZE) {

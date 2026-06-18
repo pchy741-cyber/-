@@ -72,7 +72,7 @@ async function runModel(model: keyof EnsembleWeights, params: EnsembleParams): P
         scores = await runGeminiScoring({
           mode: params.mode,
           geminiAnalysis: params.geminiAnalysis,
-          customPrompt: params.strategy?.gpt_prompt ?? undefined,
+          customPrompt: params.strategy?.gemini_prompt ?? undefined,
           regimeHint: params.regimeHint,
         });
         break;
@@ -80,7 +80,7 @@ async function runModel(model: keyof EnsembleWeights, params: EnsembleParams): P
       case 'gpt': {
         if (!process.env.OPENAI_API_KEY) break;
         const { runGPTScoring } = await import('./gpt-scorer.js');
-        scores = await runGPTScoring(params.mode, params.watchlist, params.chartData, params.regimeHint);
+        scores = await runGPTScoring(params.mode, params.watchlist, params.chartData, params.regimeHint, params.strategy?.gpt_prompt ?? undefined);
         break;
       }
       case 'claude': {

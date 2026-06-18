@@ -278,6 +278,7 @@ export async function notifyBuy(
   price: number,
   reasoning: string,
   triggerSource?: string,
+  isPaper?: boolean,
 ) {
   logger.info(`📣 notifyBuy 호출: ${stockCode} x${qty} @${price} src=${triggerSource ?? '-'}`, {
     component: 'WEB_PUSH',
@@ -293,7 +294,7 @@ export async function notifyBuy(
         : `${totalKrw.toLocaleString()}원`;
 
   const isEod = triggerSource === 'EOD_BETTING';
-  const modeTag = getCtxIsPaper() ? '[연습]' : '[실전]';
+  const modeTag = (isPaper !== undefined ? isPaper : getCtxIsPaper()) ? '[연습]' : '[실전]';
   const titlePrefix = isEod ? '🎰 종가베팅 매수' : '🟢 매수';
 
   await sendPushNotification({
@@ -325,6 +326,7 @@ export async function notifySell(
   pnlPct: number,
   reasoning: string,
   triggerSource?: string,
+  isPaper?: boolean,
 ) {
   logger.info(
     `📣 notifySell 호출: ${stockCode} x${qty} @${price} pnl=${pnlPct.toFixed(2)}% src=${triggerSource ?? '-'}`,
@@ -354,7 +356,7 @@ export async function notifySell(
       ? `${pnlSign}${Math.round(pnlKrw / 1000) / 10}만원`
       : `${pnlSign}${pnlKrw.toLocaleString()}원`;
 
-  const modeTag = getCtxIsPaper() ? '[연습]' : '[실전]';
+  const modeTag = (isPaper !== undefined ? isPaper : getCtxIsPaper()) ? '[연습]' : '[실전]';
   const sellLabel = isEod ? '종가베팅 매도' : '매도';
 
   await sendPushNotification({

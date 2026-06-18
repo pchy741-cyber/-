@@ -605,49 +605,18 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   ]);
 }
 
-export async function runDailyLearning(): Promise<void> {
-  try {
-    // 전체 5분 타임아웃 — 개별 analyzer는 analyzeTradeHistory 내부에서 30초 제한
-    const insights = await withTimeout(analyzeTradeHistory(), 5 * 60_000, 'runDailyLearning');
+async function _runLearningForMode(isPaper: boolean): Promise<void> {
+  const { runWithMode } = await import('../../config/context.js');
+  const modeLabel = isPaper ? '연습' : '실전';
+
+  await runWithMode(isPaper, async () => {
+    const insights = await withTimeout(analyzeTradeHistory(), 5 * 60_000, `runDailyLearning:${modeLabel}`);
     if (insights.length === 0) {
-      logger.info('자기학습: 분석 결과 없음', { component: 'LEARN' });
+      logger.info(`자기학습: 분석 결과 없음 (${modeLabel})`, { component: 'LEARN' });
       return;
     }
-    const isPaper = getCtxIsPaper();
-    // v10.8.2: dismissed 인사이트 재생성 방지 — category 기반 안정적 키
-    let dismissedCategories = new Set<string>();
-    try {
-      const { rows: dRows } = await getPool().query(
-        `SELECT category FROM learned_insights WHERE is_dismissed = true AND is_paper = $1`,
-        [isPaper],
-      );
-      dismissedCategories = new Set(dRows.map((r: any) => r.category));
-    } catch { /* is_dismissed 컬럼 미존재 시 무시 */ }
-
-    for (const ins of insights) {
-      // dismissed 카테고리 인사이트 재삽입 차단
-      if (dismissedCategories.has(ins.category)) continue;
-      await getPool()
-        .query(
-          `INSERT INTO learned_insights (category, insight, confidence, sample_count, details, recommendation, param_change, is_paper, last_updated)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
-         ON CONFLICT (category, insight, is_paper)
-         DO UPDATE SET confidence=$3, sample_count=$4, details=$5, recommendation=$6, param_change=$7, last_updated=NOW()
-         WHERE learned_insights.is_dismissed IS NOT TRUE`,
-          [
-            ins.category,
-            ins.insight,
-            ins.confidence,
-            ins.sampleCount,
-            ins.details ? JSON.stringify(ins.details) : null,
-            ins.recommendation ?? null,
-            ins.paramChange ? JSON.stringify(ins.paramChange) : null,
-            isPaper,
-          ],
-        )
-        .catch(() => {});
-    }
-    logger.info(`🧠 자기학습 인사이트 ${insights.length}건 저장`, { component: 'LEARN' });
+    // analyzeTradeHistory() 내부에서 saveInsights() 이미 호출됨 — 중복 insert 불필요
+    logger.info(`🧠 자기학습 인사이트 ${insights.length}건 저장 (${modeLabel})`, { component: 'LEARN' });
     await autoApplyInsights(insights);
     // 황금비율 자동 조정: 30일 전략별 성과 → 가중치 자동 튜닝
     try {
@@ -657,11 +626,10 @@ export async function runDailyLearning(): Promise<void> {
       logger.warn(`황금비율 자동조정 실패: ${e}`, { component: 'LEARN' });
     }
     await calibrateScoreTierParams().catch((e) => logger.warn(`티어 파라미터 보정 실패: ${e}`, { component: 'LEARN' }));
-    if (!getCtxIsPaper()) {
+    if (!isPaper) {
       await validatePromotedInsights().catch((e) => logger.warn(`프로모션 검증 실패: ${e}`, { component: 'LEARN' }));
     }
 
-    // 웹 푸시 알림 — 학습 완료 요약
     const appliedCount = insights.filter((i) => i.isApplied).length;
     const paramChangeable = insights.filter((i) => i.paramChange && !i.isApplied).length;
     const bodyParts: string[] = [];
@@ -669,13 +637,22 @@ export async function runDailyLearning(): Promise<void> {
     if (paramChangeable > 0) bodyParts.push(`${paramChangeable}개 적용 대기`);
     bodyParts.push('설정에서 확인하세요');
     await sendPushNotification({
-      title: `🧠 자기학습 완료 — ${insights.length}개 인사이트`,
+      title: `🧠 자기학습 완료 (${modeLabel}) — ${insights.length}개 인사이트`,
       body: bodyParts.join(' · '),
-      tag: 'learning-complete',
-      url: '/?tab=settings',
+      tag: `learning-complete-${modeLabel}`,
+      url: `/?tab=settings&viewMode=${isPaper ? 'paper' : 'live'}`,
     }).catch(() => {});
-  } catch (err) {
-    logger.warn(`자기학습 실패: ${err}`, { component: 'LEARN' });
+  });
+}
+
+export async function runDailyLearning(): Promise<void> {
+  // paper + live 양쪽 모두 실행 — runWithMode로 각 모드 컨텍스트 주입
+  for (const isPaper of [true, false]) {
+    try {
+      await _runLearningForMode(isPaper);
+    } catch (err) {
+      logger.warn(`자기학습 실패 (${isPaper ? '연습' : '실전'}): ${err}`, { component: 'LEARN' });
+    }
   }
 }
 

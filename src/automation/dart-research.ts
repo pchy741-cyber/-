@@ -13,6 +13,10 @@ import { sleep } from '../utils/sleep.js';
 const COMP = 'DART_RESEARCH';
 const DART_BASE = 'https://opendart.fss.or.kr/api';
 
+// 24시간 결과 캐시 — Track A 반복 호출 + DART API rate limit 보호
+const _resultCache = new Map<string, { result: DartResearchResult; fetchedAt: number }>();
+const RESULT_CACHE_TTL_MS = 24 * 60 * 60_000;
+
 // ── Types ──
 
 export interface FinancialStatement {
@@ -259,6 +263,14 @@ export async function runDartResearch(
   const apiKey = process.env.DART_API_KEY;
   const year = options?.year ?? String(new Date().getFullYear() - (new Date().getMonth() < 3 ? 1 : 0));
   const quarter = options?.quarter ?? 'annual';
+  const cacheKey = `${stockCode}-${year}-${quarter}`;
+
+  // 24시간 캐시 — 재무제표는 매일 변하지 않음
+  const cached = _resultCache.get(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < RESULT_CACHE_TTL_MS) {
+    logger.debug(`DART 캐시 히트: ${cacheKey}`, { component: COMP });
+    return cached.result;
+  }
 
   const base: DartResearchResult = {
     stockCode,
@@ -298,6 +310,7 @@ export async function runDartResearch(
     }
   }
 
+  _resultCache.set(cacheKey, { result: base, fetchedAt: Date.now() });
   return base;
 }
 

@@ -378,6 +378,35 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       logger.warn(`증권사 리서치 로드 실패 (스킵): ${err}`, { component: 'TRACK_A' });
     }
 
+    // 4-k. DART 재무제표 AI 분석 (Vertex Gemini — GCP 크레딧 활용, 24시간 캐시)
+    try {
+      const { runDartResearchBatch } = await import('../../automation/dart-research.js');
+      const topStockCodes = allStocks.slice(0, 5).map((s) => s.stock_code);
+      const dartResults = await runDartResearchBatch(topStockCodes);
+      const dartLines = dartResults
+        .filter((r) => r.fundamentalScore !== undefined)
+        .map((r) => {
+          const fin = r.financial;
+          const finLine = fin
+            ? `매출YoY:${fin.revenueYoy > 0 ? '+' : ''}${fin.revenueYoy}% 영업이익YoY:${fin.operatingIncomeYoy > 0 ? '+' : ''}${fin.operatingIncomeYoy}% 마진:${fin.operatingMargin}% 부채비율:${fin.debtRatio}%`
+            : '';
+          return [
+            `[${r.corpName}(${r.stockCode})] 펀더멘털:${r.fundamentalScore}점`,
+            finLine,
+            r.aiAnalysis ?? '',
+            r.keyStrengths.length ? `강점:${r.keyStrengths.slice(0, 2).join(', ')}` : '',
+            r.keyRisks.length ? `리스크:${r.keyRisks.slice(0, 2).join(', ')}` : '',
+          ].filter(Boolean).join(' | ');
+        });
+      if (dartLines.length > 0) {
+        const section = `## DART 재무제표 AI 분석 (Vertex Gemini GCP 크레딧)\n${dartLines.join('\n')}`;
+        combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
+        logger.info(`DART 재무 분석 ${dartLines.length}종목 스코어러에 주입 (Vertex AI)`, { component: 'TRACK_A' });
+      }
+    } catch (err) {
+      logger.warn(`DART 재무 분석 실패 (스킵): ${err}`, { component: 'TRACK_A' });
+    }
+
     // 4-d / 4-e / 4-f. 시장 인텔리전스 병렬 수집 (실패해도 파이프라인 계속)
     try {
       const stockMeta = allStocks.map((s) => ({ stockCode: s.stock_code, companyName: s.stock_name }));
@@ -545,7 +574,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     if (scores.length === 0 && !ensembleEnabled && process.env.OPENAI_API_KEY) {
       try {
         const { runGPTScoring } = await import('./gpt-scorer.js');
-        const gptPrimary = await runGPTScoring(mode, allStocks, chartData, regimeHint, combinedSources || undefined);
+        const gptPrimary = await runGPTScoring(mode, allStocks, chartData, regimeHint, strategy?.gpt_prompt ?? undefined, combinedSources || undefined);
         if (gptPrimary.length > 0) {
           scores = gptPrimary;
           scoringSource = 'gemini'; // Track B 호환성 유지

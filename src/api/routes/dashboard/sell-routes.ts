@@ -132,7 +132,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
       try {
         const pnlPct =
           chain.avg_buy_price > 0 ? ((fillPrice - Number(chain.avg_buy_price)) / Number(chain.avg_buy_price)) * 100 : 0;
-        await notifySell(chain.stock_code, chain.total_quantity, fillPrice, pnlPct, sellReason);
+        await notifySell(chain.stock_code, chain.total_quantity, fillPrice, pnlPct, sellReason, undefined, true);
       } catch {
         /* 알림 실패 무시 */
       }
@@ -238,7 +238,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
     try {
       const pnlPct =
         chain.avg_buy_price > 0 ? ((fillPrice - Number(chain.avg_buy_price)) / Number(chain.avg_buy_price)) * 100 : 0;
-      await notifySell(chain.stock_code, chain.total_quantity, fillPrice, pnlPct, sellReason);
+      await notifySell(chain.stock_code, chain.total_quantity, fillPrice, pnlPct, sellReason, undefined, chain.is_paper);
     } catch {
       /* 알림 실패 무시 */
     }
@@ -455,7 +455,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
         openChains.reduce((s: number, c: any) => s + Number(c.avg_buy_price || 0) * Number(c.total_quantity || 0), 0) /
         totalQty;
       const pnlPct = avgBuy > 0 ? ((fillPrice - avgBuy) / avgBuy) * 100 : 0;
-      await notifySell(stockCode, totalQty, fillPrice, pnlPct, sellReason);
+      await notifySell(stockCode, totalQty, fillPrice, pnlPct, sellReason, undefined, isPaper);
     } catch {
       /* 알림 실패 무시 */
     }

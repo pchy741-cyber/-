@@ -386,7 +386,7 @@ export function registerManualBuyRoutes(app: Hono) {
         );
         addPaperInvestment(quantity * curPrice); // 연습 원장 캐시 즉시 무효화 + 현금 차감 반영
         try {
-          await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑', 'MANUAL_BUY');
+          await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑', 'MANUAL_BUY', true);
         } catch (notifyErr) {
           logger.warn(
             `notifyBuy() 실패: ${stock_code} — ${notifyErr instanceof Error ? notifyErr.message : String(notifyErr)}`,
@@ -552,7 +552,7 @@ export function registerManualBuyRoutes(app: Hono) {
         { component: 'CLAUDE_BUY' },
       );
       try {
-        await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑', 'MANUAL_BUY');
+        await notifyBuy(stock_code, quantity, curPrice, reasoning ?? 'Claude Code 스캘핑', 'MANUAL_BUY', false);
       } catch (notifyErr) {
         logger.warn(
           `notifyBuy() 실패: ${stock_code} — ${notifyErr instanceof Error ? notifyErr.message : String(notifyErr)}`,
