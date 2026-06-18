@@ -499,10 +499,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 자동 SWING 복귀: DB=DEFENSE이지만 시장 정상화 (MA60 위 + 당일 하락 없음 + 손실 0.5% 미만)
     const autoShouldRevertSwing =
       dbMode === 'DEFENSE' && kospiRegime.penalty === 0 && !kospiRegime.todayDown && dailyLoss.dailyPnlPct > -0.5;
-    // 자동 SNIPER 전환: 90점+ 고확신 종목이 3개+ → 집중 포착 모드
+    // 자동 SNIPER 전환: 90점+ 고확신 종목이 2개+ → 집중 포착 모드 (v10.8: 3→2, WR57% 활성화 빈도↑)
     const highScoreCount = scores.filter((s) => (s.composite_score ?? 0) >= 90).length;
     const autoShouldSniper =
-      dbMode === 'SWING' && highScoreCount >= 3 && !autoShouldDefense && dailyLoss.dailyPnlPct > -1.0;
+      dbMode === 'SWING' && highScoreCount >= 2 && !autoShouldDefense && dailyLoss.dailyPnlPct > -1.0;
 
     const effectiveModeRaw: StrategyMode = isPastScalpDeadline
       ? 'SWING'

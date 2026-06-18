@@ -85,15 +85,15 @@ export type StrategyMode = (typeof StrategyMode)[keyof typeof StrategyMode];
 //
 export const STRATEGY_PARAMS = {
   SWING: {
-    // ┌─ 전략 최적화 v4 (2026-06: 카테고리Cap + 철저손절) ────────────────┐
-    // │ buyThreshold 70: v7 65→70 (과잉매매 방지, 승률 개선)             │
-    // │ stopLossPct -3.0%: v7 -3.5%→-3.0% (일노이즈 손절↓, R:R 개선)    │
-    // │ takeProfitPct 5.0%: v3 7.0%→5.0% (달성 확률↑, 실현 수익↑)      │
-    // │ 기대수익: p×(5.0-0.21)-(1-p)×(3.0+0.21) > 0 → 손익분기 40.2%  │
-    // │ R:R = 4.79:3.21 = 1.49:1 → getDynamicDomesticTpSl이 실질 조정  │
-    // │ maxDailyTrades 3: 일일 최대 3건 (과잉거래 방지, 수수료 절감)     │
+    // ┌─ 전략 최적화 v5 (2026-06: WR10%→고확신 필터 강화) ───────────────┐
+    // │ buyThreshold 78: v10.3 70→78 (WR10% 개선 목표, 진입건수 절반↓)  │
+    // │ stopLossPct -2.5%: 현행 유지                                      │
+    // │ takeProfitPct 5.0%: 현행 유지                                     │
+    // │ 기대수익: p×(5.0-0.21)-(1-p)×(2.5+0.21) > 0 → 손익분기 36.1%  │
+    // │ R:R = 4.79:2.71 = 1.77:1                                          │
+    // │ maxDailyTrades 3: 현행 유지                                       │
     // └────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 70, // v10.3: 65→70 (과잉매매 방지, 고확신 진입만)
+    buyThreshold: 78, // v10.8: 70→78 (WR10%→고확신만, 진입 절반 감소)
     splitCount: 2,
     averageDownPct: 0, // v6: 물타기 비활성화 (21% WR에서 추가매수 = 손실확대)
     maxAveragingCount: 0,
@@ -173,7 +173,7 @@ export const STRATEGY_PARAMS = {
     // │ R:R = 6:2.5 = 2.4:1 / 손익분기 승률 29.4% (보수적)                   │
     // │ 익일 강제청산 없음 — 최대 5영업일 보유 후 시간손절                    │
     // └────────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 0, // 스캐너 자체 필터 (AI 점수 불필요)
+    buyThreshold: 99, // v10.8: 0→99 (WR17%, 에지 없음 → 사실상 비활성화)
     splitCount: 1, // 분할 없음 — 시간외 단일가 1회
     averageDownPct: 0,
     maxAveragingCount: 0,
@@ -218,7 +218,7 @@ export const STRATEGY_PARAMS = {
     earlyTpPct: 0,
     takeProfitPct: 8.0, // 돌파 모멘텀 타겟
     takeProfitRatio: 0.5, // 50% 부분익절 → 잔여 트레일링
-    stopLossPct: -5.0, // 차트박사 기준 5% 기계적 손절
+    stopLossPct: -3.5, // v10.8: -5.0%→-3.5% (WR35% 구조적 손실 축소, R:R 2.29:1→손익분기 30.4%)
     maxHoldingDays: 10, // 최대 10일 (Williams는 1일 — sell-signals에서 별도 처리)
   },
 } as const;
