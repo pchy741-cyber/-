@@ -487,8 +487,8 @@ function adaptiveInterval(cachedRegions?: Set<string>, cachedPhase?: USMarketPha
         state.adaptiveIntervalMs = FAST_INTERVAL_MS;
         return;
       case 'CURSED': // 10:20~13:00 ☠️ 마의 시간대 — 신규매수 금지, 매도감시는 유지
-        // 15분→8분: 보유종목 손절/익절 감시는 계속 필요 (신규매수만 차단)
-        state.adaptiveIntervalMs = SLOW_INTERVAL_MS;
+        // 신규매수는 pipeline이 차단하므로 루프 주기는 DEFAULT(5분) 유지 — 손절/익절 감시 공백 방지
+        state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
         return;
       default:
         state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
