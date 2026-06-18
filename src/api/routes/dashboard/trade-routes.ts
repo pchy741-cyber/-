@@ -369,8 +369,8 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
       overseasCount: Number(r.overseas_count),
       realizedPnl: Math.round(Number(r.realized_pnl) * 100) / 100,
       realizedPnlUsd: Math.round(Number(r.realized_pnl_usd || 0) * 100) / 100,
-      winCount: Number(r.win_count),
-      lossCount: Number(r.loss_count),
+      wins: Number(r.win_count),
+      losses: Number(r.loss_count),
       winRate:
         Number(r.win_count) + Number(r.loss_count) > 0
           ? Math.round((Number(r.win_count) / (Number(r.win_count) + Number(r.loss_count))) * 100)
@@ -379,8 +379,8 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
 
     const totalPnl = dailySummary.reduce((sum, d) => sum + d.realizedPnl, 0);
     const totalPnlUsd = dailySummary.reduce((sum, d) => sum + d.realizedPnlUsd, 0);
-    const totalWins = dailySummary.reduce((sum, d) => sum + d.winCount, 0);
-    const totalLosses = dailySummary.reduce((sum, d) => sum + d.lossCount, 0);
+    const totalWins = dailySummary.reduce((sum, d) => sum + d.wins, 0);
+    const totalLosses = dailySummary.reduce((sum, d) => sum + d.losses, 0);
 
     return c.json({
       days: dailySummary,
