@@ -1052,7 +1052,22 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const thresholdBonus = ctxIsPaper ? Math.min(0, winFeedback.thresholdBonus) : winFeedback.thresholdBonus;
     // Live v11: 하한선 50→42 (더 많은 고품질 신호 통과)
     const thresholdFloor = ctxIsPaper ? 50 : 42;
-    const feedbackThreshold = Math.max(thresholdFloor, resolvedThreshold + thresholdBonus + paperOffset);
+    // 자기학습 인사이트 신호: Track A가 4시간 간격으로 생성한 실거래 패턴 분석 → thresholdAdj 반영
+    let insightThresholdAdj = 0;
+    try {
+      const { getKRInsightSignals } = await import('../overseas/insights-generator.js');
+      const signals = await getKRInsightSignals();
+      if (signals) {
+        insightThresholdAdj = signals.thresholdAdj;
+        if (insightThresholdAdj !== 0) {
+          logger.info(
+            `🧠 자기학습 인사이트 적용: thresholdAdj=${insightThresholdAdj > 0 ? '+' : ''}${insightThresholdAdj} (${signals.updatedAt.slice(0, 16)})`,
+            { component: 'TRACK_B' },
+          );
+        }
+      }
+    } catch { /* 인사이트 로드 실패 시 무시 */ }
+    const feedbackThreshold = Math.max(thresholdFloor, resolvedThreshold + thresholdBonus + paperOffset + insightThresholdAdj);
     if (winFeedback.thresholdBonus > 0 || winFeedback.requirePullback || winFeedback.minVolumeRatio > 1.0) {
       logger.info(`🎯 승률피드백 적용: ${winFeedback.summary}`, { component: 'TRACK_B' });
     }

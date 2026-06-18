@@ -202,6 +202,12 @@ export async function generateAndSaveInsights(): Promise<void> {
 
 const KR_INSIGHTS_KEY = 'kr_ai_insights';
 const KR_INSIGHTS_TS_KEY = 'kr_insights_updated_at';
+const KR_SIGNALS_KEY = 'kr_insight_signals';
+
+export interface KRInsightSignals {
+  thresholdAdj: number;   // 매수 임계값 보정 (-5 ~ +5, 양수=엄격, 음수=완화)
+  updatedAt: string;
+}
 
 async function fetchCompletedTradesKR(): Promise<TradeRecord[]> {
   const tradingMode = getCtxIsPaper() ? 'paper' : 'live';
@@ -254,6 +260,17 @@ async function fetchCompletedTradesKR(): Promise<TradeRecord[]> {
   });
 }
 
+/** 국내 인사이트 신호 조회 — Track B 매수 임계값 보정용 */
+export async function getKRInsightSignals(): Promise<KRInsightSignals | null> {
+  try {
+    const { rows } = await getPool().query(`SELECT value FROM overseas_state WHERE key = $1`, [KR_SIGNALS_KEY]);
+    if (rows.length === 0) return null;
+    return JSON.parse(String(rows[0].value)) as KRInsightSignals;
+  } catch {
+    return null;
+  }
+}
+
 /** 국내 인사이트 조회 (캐시된 것) — Track A GPT scoring 프롬프트에 주입용 */
 export async function getKRInsights(): Promise<string> {
   try {
@@ -299,7 +316,7 @@ export async function generateKRInsights(): Promise<void> {
         {
           role: 'system',
           content:
-            '당신은 알고리즘 트레이딩 퍼포먼스 분석 전문가입니다. 최근 30일 국내주식 자동매매 실적을 분석하여 다음 매매 사이클을 개선할 3~5가지 실행 가능한 인사이트를 생성하세요. 각 인사이트는 구체적 숫자 근거 포함. JSON만 응답: {"insights":["인사이트1","인사이트2",...]}',
+            '당신은 알고리즘 트레이딩 퍼포먼스 분석 전문가입니다. 최근 30일 국내주식 자동매매 실적을 분석하여 다음 매매 사이클을 개선할 3~5가지 실행 가능한 인사이트를 생성하고, 매수 임계값 조정 신호를 추출하세요.\n\nthresholdAdj 규칙: 정수 -5~+5. 승률>65%이면 -2(진입 완화), 승률<40%이면 +4(더 엄격), 그 외 0. 데이터 부족(10건 미만)이면 0.\n\nJSON만 응답: {"insights":["인사이트1","인사이트2",...],"thresholdAdj":0}',
         },
         { role: 'user', content: summary },
       ],
@@ -309,20 +326,31 @@ export async function generateKRInsights(): Promise<void> {
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('JSON 없음');
 
-    const parsed = JSON.parse(jsonMatch[0]) as { insights?: unknown[] };
+    const parsed = JSON.parse(jsonMatch[0]) as { insights?: unknown[]; thresholdAdj?: unknown };
     const insights = Array.isArray(parsed.insights) ? parsed.insights.map(String).slice(0, 5) : [];
     if (insights.length === 0) return;
 
+    const rawAdj = typeof parsed.thresholdAdj === 'number' ? parsed.thresholdAdj : 0;
+    const thresholdAdj = Math.max(-5, Math.min(5, Math.round(rawAdj)));
+
     const value = insights.map((s, i) => `${i + 1}. ${s}`).join('\n');
+    const signals: KRInsightSignals = { thresholdAdj, updatedAt: new Date().toISOString() };
     await getPool().query(
       `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
       [KR_INSIGHTS_KEY, value],
     );
     await getPool().query(
       `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
+      [KR_SIGNALS_KEY, JSON.stringify(signals)],
+    );
+    await getPool().query(
+      `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
       [KR_INSIGHTS_TS_KEY, new Date().toISOString()],
     );
-    logger.info(`💡 국내 인사이트 생성 완료 (${insights.length}건): ${insights[0]}`, { component: 'KR_INSIGHTS' });
+    logger.info(
+      `💡 국내 인사이트 생성 완료 (${insights.length}건, thresholdAdj=${thresholdAdj > 0 ? '+' : ''}${thresholdAdj}): ${insights[0]}`,
+      { component: 'KR_INSIGHTS' },
+    );
   } catch (e) {
     logger.warn(`국내 인사이트 생성 실패: ${(e as Error).message}`, { component: 'KR_INSIGHTS' });
   }
