@@ -386,6 +386,11 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           vwapPosition = tech.vwapPosition;
         }
 
+        // 최근 5일 저점 — 캐시 미사용 시 chart 데이터에서 직접 계산
+        const prevLow5d = !cached && chart && chart.length >= 5
+          ? Math.min(...chart.slice(-5).map((c) => c.low))
+          : undefined;
+
         if (isNewSession) {
           const cacheTarget = getSessionCache(region);
           if (cacheTarget) {
@@ -427,6 +432,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           bollingerBreakout,
           atrPct,
           vwapPosition,
+          prevLow5d,
         });
         logger.info(
           `  ${stock.code}: $${price.currentPrice} ${price.changePct >= 0 ? '+' : ''}${price.changePct}% | ${signal}(${score}) RSI=${rsi.toFixed(0)} ADX=${adx.toFixed(0)} 일중${dayRangePct.toFixed(0)}%${isBigMover ? ' 🔥빅무버' : isMomentum ? ' 🚀모멘텀' : ''}${bollingerSqueeze ? (bollingerBreakout === 'UP' ? ' 💥BB↑' : bollingerBreakout === 'DOWN' ? ' 💥BB↓' : ' 🔧BBsq') : ''}${cached ? ' [캐시]' : ''}`,
