@@ -58,8 +58,8 @@ const UNPARK_MAX_LOSS_PCT = 0;
 /** 해제 강제 타임아웃: 6시간 넘으면 손실이어도 해제 (묶이지 않게) */
 const UNPARK_FORCE_TIMEOUT_MS = 6 * 60 * 60_000;
 
-/** 수익 자동실현: +2% 이상 수익이면 매수신호 없어도 익절 */
-const PARK_PROFIT_TAKE_PCT = 2.0;
+/** 수익 자동실현: +5% 이상 수익이면 매수신호 없어도 익절 (v3: 2%→5%, 주도주 상승 더 태우기) */
+const PARK_PROFIT_TAKE_PCT = 5.0;
 
 /** 최대 파킹 종목 수 — v2는 1종목 집중 (회전 방지) */
 const MAX_PARK_POSITIONS = 1;
@@ -274,7 +274,7 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
         if (tech.rsi14 < 30) timingScore += 10;
         else if (tech.rsi14 < 50) timingScore += 15;
         else if (tech.rsi14 < 60) timingScore += 5;
-        else if (tech.rsi14 > 70) timingScore -= 10;
+        else if (tech.rsi14 > 70) timingScore -= 5; // v3: -10→-5 (주도주 모멘텀 구간 과도한 페널티 완화)
         // MACD
         if (tech.macdCrossover === 'BULLISH') timingScore += 12;
         else if (tech.macdHistogram > 0) timingScore += 5;
@@ -291,9 +291,9 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
       }
       return { ...c, price, tech, timingScore };
     })
-    // 당일 급락 종목 제외 (칼잡이 방지), 과열 종목도 제외
+    // 당일 급락 종목 제외 (칼잡이 방지), 상한 9% (v3: 5%→9%, 주도주 급등일 탈락 방지)
     // paper는 -3% 허용 (대형주 일시 조정도 파킹 학습 기회)
-    .filter((c) => c.price && c.price.changePct >= (isPaper ? -3.0 : -2.0) && c.price.changePct <= 5.0);
+    .filter((c) => c.price && c.price.changePct >= (isPaper ? -3.0 : -2.0) && c.price.changePct <= 9.0);
 
   // 타이밍 점수 정렬
   const candidates = scored.sort((a, b) => b.timingScore - a.timingScore);
