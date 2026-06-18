@@ -79,20 +79,23 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
   };
 
   const activeStrategies = useMemo(() =>
-    strategies.filter(s => s.paper && s.paper.totalTrades > 0),
-    [strategies]
+    strategies.filter(s => {
+      const perf = (viewMode === 'live' && s.live) ? s.live : s.paper;
+      return perf && perf.totalTrades > 0;
+    }),
+    [strategies, viewMode]
   );
 
   const agg = useMemo(() =>
     activeStrategies.reduce((a, s) => {
-      const p = s.paper!;
+      const p = (viewMode === 'live' && s.live && s.live.totalTrades > 0) ? s.live : s.paper!;
       a.trades += p.totalTrades;
       a.wins += p.wins;
       a.pnlKrw += p.totalPnlKrw;
       a.pnlPctSum += p.totalPnlPct * p.totalTrades;
       return a;
     }, { trades: 0, wins: 0, pnlKrw: 0, pnlPctSum: 0 }),
-    [activeStrategies]
+    [activeStrategies, viewMode]
   );
 
   const aggWinRate = agg.trades > 0 ? agg.wins / agg.trades : 0;
@@ -102,10 +105,12 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
 
   const bestStrategy = useMemo(() => {
     if (!activeStrategies.length) return null;
-    return activeStrategies.reduce((best, s) =>
-      (s.paper!.totalPnlKrw > (best.paper?.totalPnlKrw ?? -Infinity)) ? s : best
-    , activeStrategies[0]);
-  }, [activeStrategies]);
+    return activeStrategies.reduce((best, s) => {
+      const sPnl = ((viewMode === 'live' && s.live) ? s.live : s.paper)?.totalPnlKrw ?? -Infinity;
+      const bestPnl = ((viewMode === 'live' && best.live) ? best.live : best.paper)?.totalPnlKrw ?? -Infinity;
+      return sPnl > bestPnl ? s : best;
+    }, activeStrategies[0]);
+  }, [activeStrategies, viewMode]);
 
   const actionableInsights = useMemo(() =>
     insights.filter(i => i.is_actionable).slice(0, 3),
@@ -252,6 +257,7 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
                 s={s}
                 expanded={expandedCard === s.mode}
                 onToggle={() => setExpandedCard(expandedCard === s.mode ? null : s.mode)}
+                viewMode={viewMode}
               />
             ))}
           </div>

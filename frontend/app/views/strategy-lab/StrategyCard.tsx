@@ -4,8 +4,9 @@ import { pc, fmtWon, fmtPct } from '../../lib/utils';
 import { CRITERIA, STRATEGY_LABELS, STRATEGY_ICONS } from './constants';
 import type { StrategyLabOverview } from '../../types';
 
-export function StrategyCard({ s, expanded, onToggle }: { s: StrategyLabOverview; expanded: boolean; onToggle: () => void }) {
-  const p = s.paper!;
+export function StrategyCard({ s, expanded, onToggle, viewMode = 'paper' }: { s: StrategyLabOverview; expanded: boolean; onToggle: () => void; viewMode?: 'paper' | 'live' }) {
+  const p = (viewMode === 'live' && s.live && s.live.totalTrades > 0) ? s.live : s.paper!;
+  const ref = s.paper!; // 졸업 기준은 항상 paper
   const c = CRITERIA[s.mode] ?? CRITERIA.DEFAULT;
   const isProfitable = p.totalPnlKrw >= 0;
   const label = STRATEGY_LABELS[s.mode] || s.mode;
@@ -108,14 +109,19 @@ export function StrategyCard({ s, expanded, onToggle }: { s: StrategyLabOverview
         {expanded && (
           <div className="pt-2 border-t border-white/[0.04] space-y-2">
             <div className="grid grid-cols-2 gap-2 text-[10px]">
-              <MetricRow label="거래수" value={`${p.totalTrades}`} target={`/${c.trades}`} met={p.totalTrades >= c.trades} />
-              <MetricRow label="승률" value={`${(p.winRate * 100).toFixed(0)}%`} target={`/${(c.wr * 100).toFixed(0)}%`} met={p.winRate >= c.wr} />
-              <MetricRow label="PF" value={p.profitFactor.toFixed(2)} target={`/${c.pf}`} met={p.profitFactor >= c.pf} />
-              <MetricRow label="MDD" value={`${p.maxDrawdownPct.toFixed(1)}%`} target={`/${c.mdd}%`} met={p.maxDrawdownPct >= c.mdd} />
+              <MetricRow label="거래수" value={`${ref.totalTrades}`} target={`/${c.trades}`} met={ref.totalTrades >= c.trades} />
+              <MetricRow label="승률" value={`${(ref.winRate * 100).toFixed(0)}%`} target={`/${(c.wr * 100).toFixed(0)}%`} met={ref.winRate >= c.wr} />
+              <MetricRow label="PF" value={ref.profitFactor.toFixed(2)} target={`/${c.pf}`} met={ref.profitFactor >= c.pf} />
+              <MetricRow label="MDD" value={`${ref.maxDrawdownPct.toFixed(1)}%`} target={`/${c.mdd}%`} met={ref.maxDrawdownPct >= c.mdd} />
             </div>
-            {s.live && s.live.totalTrades > 0 && (
+            {viewMode === 'live' && s.live && s.live.totalTrades > 0 && (
+              <div className="text-[10px] text-emerald-400/70 pt-1 border-t border-white/[0.04]">
+                실전: {s.live.totalTrades}건 WR {(s.live.winRate * 100).toFixed(0)}% <span className={pc(s.live.totalPnlKrw)}>{fmtWon(s.live.totalPnlKrw)}</span>
+              </div>
+            )}
+            {viewMode === 'paper' && s.live && s.live.totalTrades > 0 && (
               <div className="text-[10px] text-slate-500 pt-1 border-t border-white/[0.04]">
-                Live: {s.live.totalTrades}건 WR {(s.live.winRate * 100).toFixed(0)}% <span className={pc(s.live.totalPnlKrw)}>{fmtWon(s.live.totalPnlKrw)}</span>
+                연습(참고): {ref.totalTrades}건 / 실전: {s.live.totalTrades}건 WR {(s.live.winRate * 100).toFixed(0)}% <span className={pc(s.live.totalPnlKrw)}>{fmtWon(s.live.totalPnlKrw)}</span>
               </div>
             )}
           </div>
