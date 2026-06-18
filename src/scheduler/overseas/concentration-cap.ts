@@ -31,13 +31,12 @@ export async function enforceConcentrationCap(params: {
     const posValue = capTech.price.currentPrice * capHolding.qty;
     const posWeight = posValue / portfolioValue;
     if (posWeight <= CONC_CAP) continue;
-    // 🛡️ 강화 (2026-06-12): 매도 시점이 손실 중이면 -1% 이상 손실에서는 보류
-    //   (단기 변동성으로 발동 → 불필요 손실확정 → 시간을 두고 가격 회복 대기)
-    //   SONY 케이스: -0.74% 손실에서 집중도캡 발동해 첫 손실 확정한 사례
+    // 🛡️ 강화: 손실 중이면 집중도 캡 보류 (손실 확정 방지 — VRT -0.22% 강제매도 사례)
+    //   손실 규모 무관하게 회복 대기 → 수익 구간 진입 후 정상 분산
     const pnlPctAtSell = ((capTech.price.currentPrice - capHolding.avgPrice) / capHolding.avgPrice) * 100;
-    if (pnlPctAtSell <= -1.0) {
+    if (pnlPctAtSell < 0) {
       logger.info(
-        `⏸️ 집중도 캡 보류: ${capCode} 비중 ${(posWeight * 100).toFixed(0)}% > 25%이나 PnL ${pnlPctAtSell.toFixed(1)}% < -1% → 가격 회복 후 재평가`,
+        `⏸️ 집중도 캡 보류: ${capCode} 비중 ${(posWeight * 100).toFixed(0)}% > 25%이나 PnL ${pnlPctAtSell.toFixed(1)}% (손실 중) → 수익 전환 후 재평가`,
         { component: 'OVERSEAS' },
       );
       continue;
