@@ -1093,6 +1093,14 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         getUserFavorites(),
         fetchKospiRegime().catch(() => ({ penalty: 0 as const })),
       ]);
+      // 섹터별 평균 등락률 맵 (buy-filter 섹터 모멘텀 가산용)
+      const sectorMomentumMap = new Map<string, number>();
+      for (const t of techResults) {
+        const arr: number[] = [];
+        techResults.forEach((r) => { if (r.sector === t.sector) arr.push(r.price.changePct); });
+        if (arr.length > 0) sectorMomentumMap.set(t.sector, arr.reduce((a, b) => a + b, 0) / arr.length);
+      }
+
       const buyTargets = filterAndRankBuyTargets({
         techResults,
         updatedHoldings,
@@ -1120,6 +1128,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         userBlacklist,
         userFavorites,
         kospiPenalty: kospiRegime.penalty,
+        sectorMomentumMap,
       });
 
       // ── 터틀 돌파 전략 비활성화 — buy-filter 12단계로 통합 ──
@@ -1374,13 +1383,20 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           target.code,
         );
         const targetBucket = classifyBucket(entrySource, isBlueChipEntry);
-        const bucketLimit = ALLOCATION_GOLDEN[`${targetBucket}_PCT` as keyof typeof ALLOCATION_GOLDEN];
+        // SNIPER 오버라이드: AI 고확신(≥0.85) + 고점수(≥85) → 집중 단기 익절 전략 [4%@30%, 8%@100%]
+        const effectiveBucket =
+          target.ai?.action === 'BUY' &&
+          (target.ai?.confidence ?? 0) >= 0.85 &&
+          target.score >= 85
+            ? 'SNIPER'
+            : targetBucket;
+        const bucketLimit = ALLOCATION_GOLDEN[`${effectiveBucket}_PCT` as keyof typeof ALLOCATION_GOLDEN];
         // v10.8: 시장가 기준 버킷 비중 (원가 기준 왜곡 방지)
         const livePriceMap = new Map(techResults.map((t) => [t.code, t.price.currentPrice]));
-        const currentBucketWeight = getBucketWeight(updatedHoldings as any, portfolioValue, targetBucket, livePriceMap);
-        if (currentBucketWeight >= bucketLimit) {
+        const currentBucketWeight = getBucketWeight(updatedHoldings as any, portfolioValue, effectiveBucket, livePriceMap);
+        if (bucketLimit != null && currentBucketWeight >= bucketLimit) {
           logger.info(
-            `📊 버킷 한도 초과: ${target.code} [${targetBucket}] ${(currentBucketWeight * 100).toFixed(1)}% >= ${(bucketLimit * 100).toFixed(1)}%`,
+            `📊 버킷 한도 초과: ${target.code} [${effectiveBucket}] ${(currentBucketWeight * 100).toFixed(1)}% >= ${(bucketLimit * 100).toFixed(1)}%`,
             { component: 'OVERSEAS' },
           );
           continue;
@@ -1438,8 +1454,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           isMomentum: target.isMomentum,
           atrPct: entryAtrPct,
         });
-        // TACTICAL(스캘핑/딥바이) SL 강화: -1.5% (오버나이트 갭 리스크 최소화)
-        const effectiveSlPct = targetBucket === 'TACTICAL' ? 1.5 : dynSlPct;
+        // TACTICAL: -1.5% SL (오버나이트 갭 최소화), SNIPER: -2.0% SL (고확신이므로 타이트하게)
+        const effectiveSlPct = targetBucket === 'TACTICAL' ? 1.5 : effectiveBucket === 'SNIPER' ? 2.0 : dynSlPct;
         // 매수 시점 동적 TP/SL + 버킷을 overseas_holdings에 영속 저장
         await updateTradeState({
           code: target.code,
@@ -1452,10 +1468,10 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           tpPct,
           slPct: -effectiveSlPct,
         });
-        // 황금비율 버킷 태깅
+        // 황금비율/SNIPER 버킷 태깅
         getPool()
           .query('UPDATE overseas_holdings SET strategy_bucket = $1 WHERE stock_code = $2 AND is_paper = $3', [
-            targetBucket,
+            effectiveBucket,
             target.code,
             isPaper(),
           ])

@@ -230,7 +230,15 @@ export interface PartialTpStage {
   sellRatio: number;
 }
 
-export function getPartialTpStages(sector: string): PartialTpStage[] {
+export function getPartialTpStages(sector: string, bucket?: string): PartialTpStage[] {
+  // SNIPER: 고확신 집중 포지션 — 4%@30% 선확정 후 8%+ 잔여 전량
+  if (bucket === 'SNIPER') {
+    return [
+      { stage: 1, triggerPct: 4.0, sellRatio: 0.30 },
+      { stage: 2, triggerPct: 8.0, sellRatio: 0.70 },
+    ];
+  }
+
   const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
   const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
 
@@ -341,7 +349,7 @@ export function calcDynamicTpSl(params: {
   // 3.5/2.5/2.0% 기본 → 승자 빈도 ↑, 자본 회전 ↑
   const tunerTpAdj = tunerOverrides?.tp_base_pct;
   const tunerSlAdj = tunerOverrides?.sl_base_pct;
-  const baseTp = tunerTpAdj != null ? tunerTpAdj : isHighBeta ? 3.5 : isMediumBeta ? 2.5 : isDefense ? 2.0 : 2.5;
+  const baseTp = tunerTpAdj != null ? tunerTpAdj : isHighBeta ? 4.5 : isMediumBeta ? 2.5 : isDefense ? 2.0 : 2.5;
   const baseSl = tunerSlAdj != null ? tunerSlAdj : isHighBeta ? 4.0 : isMediumBeta ? 2.5 : isDefense ? 2.0 : 2.5;
 
   const momentumExt =

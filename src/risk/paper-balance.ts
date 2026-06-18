@@ -14,6 +14,28 @@ let paperRealizedPnl = 0; // 확정 수익/손실 누적
 let paperRestored = false; // 서버 시작 후 DB에서 복원했는지
 let paperLedgerCache: { fetchedAt: number; state: PaperLedgerState } | null = null;
 
+// ── 실계좌 총자산 기반 동적 시드 (5분 캐시) ─────────────────────────────────
+// paper 모드 자본 = 실전 계좌 총자산으로 동기화 → 연습이 실전과 동일한 규모로 작동
+let _capitalCache: { value: number; ts: number } | null = null;
+const CAPITAL_CACHE_MS = 5 * 60_000;
+
+async function getPaperCapital(): Promise<number> {
+  if (_capitalCache && Date.now() - _capitalCache.ts < CAPITAL_CACHE_MS) {
+    return _capitalCache.value;
+  }
+  try {
+    // forceLive=true: paper 컨텍스트에서도 실계좌 조회 (순환참조 없음)
+    const { getAccountBalance } = await import('../kis/account.js');
+    const live = await getAccountBalance(true);
+    const total = (live.d2Deposit > 0 ? live.d2Deposit : live.orderableCash) + live.totalEvalAmount;
+    if (total >= 10_000_000) {
+      _capitalCache = { value: total, ts: Date.now() };
+      return total;
+    }
+  } catch { /* 폴백 */ }
+  return PAPER_INITIAL_CAPITAL;
+}
+
 interface PaperHoldingState {
   qty: number;
   totalCost: number;
@@ -192,7 +214,9 @@ export async function getPaperBalance(): Promise<AccountBalance> {
     .reduce((s, h) => s + h.totalCost, 0);
   paperCashUsed = holdingsCost;
 
-  const cash = Math.max(0, Math.round(PAPER_INITIAL_CAPITAL + paperRealizedPnl - holdingsCost));
+  // 연습 자본 = 실계좌 총자산 (동적 동기화) — paper 모드가 실전과 동일 규모로 작동
+  const capital = await getPaperCapital();
+  const cash = Math.max(0, Math.round(capital + paperRealizedPnl - holdingsCost));
 
   // 시가평가액은 UI 표시 전용 (현금 계산과 분리)
   const positions = await getPaperPositions();

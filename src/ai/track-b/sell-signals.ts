@@ -742,3 +742,88 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
 
   return decisions;
 }
+
+/**
+ * KR Track B 단계 익절 — SWING/SNIPER 전략 전용 부분익절
+ *   SWING:  3.5%@25%, 6.5%@35%, 10%@100%
+ *   SNIPER: 4.0%@30%, 8.0%@100%
+ * generateSellDecisions 이후 별도 실행 — applyDecisionFlow에서 최종 중복 제거
+ */
+export function generatePartialTpDecisions(
+  openChains: TechnicalFallbackParams['openChains'],
+  livePrices: TechnicalFallbackParams['livePrices'],
+): TradeDecision[] {
+  const decisions: TradeDecision[] = [];
+
+  for (const chain of openChains) {
+    const price = livePrices.get(chain.stock_code);
+    if (!price || !chain.avg_buy_price || chain.total_quantity <= 0) continue;
+    if (chain.status === 'PROFIT_TAKING') continue;
+
+    const avgBuy = Number(chain.avg_buy_price);
+    if (avgBuy <= 0) continue;
+    const pnlPct = ((price.currentPrice - avgBuy) / avgBuy) * 100;
+
+    if (chain.strategy_mode === 'SWING') {
+      if (pnlPct >= 10.0) {
+        decisions.push({
+          action: 'SELL',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `SWING 단계익절3(전량): +${pnlPct.toFixed(1)}% — 10% 최종목표 달성`,
+          confidence: 0.92,
+        });
+      } else if (pnlPct >= 6.5) {
+        const qty = Math.ceil(chain.total_quantity * 0.35);
+        if (qty > 0 && qty < chain.total_quantity) {
+          decisions.push({
+            action: 'PARTIAL_SELL',
+            stock_code: chain.stock_code,
+            quantity: qty,
+            price_type: 'MARKET',
+            reasoning: `SWING 단계익절2(35%): +${pnlPct.toFixed(1)}% — 나머지 65% 10% 목표`,
+            confidence: 0.88,
+          });
+        }
+      } else if (pnlPct >= 3.5) {
+        const qty = Math.ceil(chain.total_quantity * 0.25);
+        if (qty > 0 && qty < chain.total_quantity) {
+          decisions.push({
+            action: 'PARTIAL_SELL',
+            stock_code: chain.stock_code,
+            quantity: qty,
+            price_type: 'MARKET',
+            reasoning: `SWING 단계익절1(25%): +${pnlPct.toFixed(1)}% — 나머지 75% 6.5% 목표`,
+            confidence: 0.85,
+          });
+        }
+      }
+    } else if (chain.strategy_mode === 'SNIPER') {
+      if (pnlPct >= 8.0) {
+        decisions.push({
+          action: 'SELL',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `SNIPER 단계익절2(전량): +${pnlPct.toFixed(1)}% — 8% 최종목표 달성`,
+          confidence: 0.92,
+        });
+      } else if (pnlPct >= 4.0) {
+        const qty = Math.ceil(chain.total_quantity * 0.30);
+        if (qty > 0 && qty < chain.total_quantity) {
+          decisions.push({
+            action: 'PARTIAL_SELL',
+            stock_code: chain.stock_code,
+            quantity: qty,
+            price_type: 'MARKET',
+            reasoning: `SNIPER 단계익절1(30%): +${pnlPct.toFixed(1)}% — 나머지 70% 8% 목표`,
+            confidence: 0.88,
+          });
+        }
+      }
+    }
+  }
+
+  return decisions;
+}

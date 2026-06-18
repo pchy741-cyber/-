@@ -400,7 +400,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     // ATR 급확장(ADX 35+ & ATR 3%+)일 때만 보류
     const atrExpanding = atrPctValue > 3.0 && tech.adx >= 35;
     if (!sellReason && holding.qty >= 2 && !atrExpanding) {
-      const tpStages = getPartialTpStages(sector);
+      const tpStages = getPartialTpStages(sector, holding.bucket);
       const currentStage = await getPartialTpStageNum(code);
       // 수수료 반영: 왕복 수수료(0.7%) 를 트리거에 가산하여 실질 수익 보장
       const roundTripFee = OVERSEAS_FEE_PCT * 2 * 100; // 0.7%

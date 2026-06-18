@@ -61,9 +61,16 @@ export function invalidateBalanceCache(): void {
  * forceLive=true: 서버가 paper 모드여도 live KIS 서버에 live credential로 조회
  */
 export async function getAccountBalance(forceLive = false): Promise<AccountBalance> {
-  // context-aware 캐시 키 — paper/live 절대 충돌 방지
   const isPaper = !forceLive && getCtxIsPaper();
-  const cacheKey = forceLive ? 'live' : isPaper ? 'paper' : 'live';
+
+  // ── PAPER 모드: KIS API 완전 우회 → QUANTOPS 가상 잔고만 사용 (실전↔연습 크로스오염 방지) ──
+  if (isPaper) {
+    const { getPaperBalance } = await import('../risk/paper-balance.js');
+    return getPaperBalance();
+  }
+
+  // context-aware 캐시 키 — paper/live 절대 충돌 방지
+  const cacheKey = forceLive ? 'live' : 'live';
   const cached = _balanceCache.get(cacheKey);
   if (cached && Date.now() - cached.ts < getBalanceCacheTTL()) return cached.data;
   const trIds = isPaper ? KIS_TR_ID.PAPER : KIS_TR_ID.LIVE;

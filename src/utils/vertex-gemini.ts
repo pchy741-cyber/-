@@ -229,7 +229,7 @@ async function callVertexGrounded(
     system_instruction: { parts: [{ text: systemPrompt }] },
     generationConfig: {
       temperature: opts.temperature ?? 0.2,
-      maxOutputTokens: opts.maxOutputTokens ?? 2048,
+      maxOutputTokens: opts.maxOutputTokens ?? 8192,
     },
   };
 
@@ -245,11 +245,15 @@ async function callVertexGrounded(
   }
 
   const data = (await res.json()) as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
     usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
   };
 
+  const finishReason = data.candidates?.[0]?.finishReason;
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  if (!text) {
+    throw new Error(`Vertex Grounded: 빈 응답 (finishReason=${finishReason ?? 'unknown'}) — AI Studio fallback`);
+  }
   const inputTokens = data.usageMetadata?.promptTokenCount ?? 0;
   const outputTokens = data.usageMetadata?.candidatesTokenCount ?? 0;
   return { text, inputTokens, outputTokens };

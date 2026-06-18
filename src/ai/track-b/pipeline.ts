@@ -61,6 +61,7 @@ import { IDLE_PARK_STOCK_CODE } from './cash-manager.js';
 import { applyDecisionFlow } from './decision-flow.js';
 import { buildDefenseParkExitDecisions, getDefenseParkState, PARK_STOCK_CODE, PARK_STOCK_NAME } from './defense-park.js';
 import { checkDailyLoss, fetchKospiRegime } from './market-regime.js';
+import { generatePartialTpDecisions } from './sell-signals.js';
 import { technicalFallbackDecisions } from './technical-fallback.js';
 import { MEGA_CAP_PRIORITY_CODES } from './trading-rules.js';
 
@@ -1289,6 +1290,20 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       } catch (err) {
         logger.warn(`Paper AI상위픽 자동매수 실패 (스킵): ${err}`, { component: 'TRACK_B' });
       }
+    }
+
+    // ── SWING/SNIPER 단계 익절 (3.5%@25%, 6.5%@35%, 10%@100% / 4%@30%, 8%@100%) ──
+    try {
+      const partialTpDecisions = generatePartialTpDecisions(openChains, livePrices);
+      if (partialTpDecisions.length > 0) {
+        logger.info(
+          `💰 Track B 단계익절 ${partialTpDecisions.length}건: ${partialTpDecisions.map((d) => `${d.stock_code}(${d.action})`).join(', ')}`,
+          { component: 'TRACK_B' },
+        );
+        decisions.push(...partialTpDecisions);
+      }
+    } catch (err) {
+      logger.warn(`단계익절 생성 실패 (스킵): ${err}`, { component: 'TRACK_B' });
     }
 
     // ── 하락장 수익화 결정 주입 ─────────────────────────────────────────

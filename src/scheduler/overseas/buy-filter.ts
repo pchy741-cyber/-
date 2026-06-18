@@ -43,6 +43,7 @@ export interface BuyFilterContext {
   userBlacklist?: Set<string>; // CEO 블랙리스트 (절대 매수 금지)
   userFavorites?: Set<string>; // CEO 즐겨찾기 (매수 우선순위 +20)
   kospiPenalty?: number; // 0=정상, 1=조정, 2=하락장 — penalty≥2시 비모멘텀 해외 매수 차단
+  sectorMomentumMap?: Map<string, number>; // 섹터별 평균 등락률 (%) — 상위 섹터 매수 점수 가산
 }
 
 export type BuyTarget = TechResult & { ai?: AIDecision; _effectiveConf?: number };
@@ -96,6 +97,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
     userBlacklist,
     userFavorites,
     kospiPenalty,
+    sectorMomentumMap,
   } = ctx;
 
   // 🔒 isPaper undefined → false 기본값 (undefined가 live로 취급되는 크로스오염 방지)
@@ -397,11 +399,11 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // 5. BUY 시그널 + 트렌드 확인 (ADX 확인, RSI 적정 범위)
         if (t.signal === 'BUY' && t.score >= 30 && t.adx >= 20 && t.rsi >= 42 && t.rsi <= 70 && t.aboveMA20)
           return true;
-        // 5b. Paper BUY 완화 — positiveCats<3 점수 반감(score≥15 → <30)으로 path-5 탈락하는 케이스 구제
+        // 5b. Paper BUY 완화 — positiveCats<3 점수 반감(score≥20 → <30)으로 path-5 탈락하는 케이스 구제
         if (
           isPaper &&
           t.signal === 'BUY' &&
-          t.score >= 15 &&
+          t.score >= 20 &&
           t.adx >= 20 &&
           t.rsi >= 45 &&
           t.rsi <= 68 &&
@@ -417,13 +419,13 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // 6. 과매도 반등 (RSI ≤ 35 + 트렌드 약하지 않음)
         if (isOversold && t.aboveMA60 && t.score >= 20) return true;
         // 7. 고승률 종목 완화 진입 (5거래 이상, 승률 55%+)
-        if (hasGoodWinRate && t.signal !== 'SELL' && t.score >= 15 && t.rsi >= 35 && t.rsi <= 72 && t.aboveMA20)
+        if (hasGoodWinRate && t.signal !== 'SELL' && t.score >= 18 && t.rsi >= 35 && t.rsi <= 72 && t.aboveMA20)
           return true;
         // 8. Paper 전용 추가 진입 경로 제거 (낮은 기준이 손실 원인)
 
         // 개선#7: 어닝 드리프트 진입 — 실적 서프라이즈 후 갭업 +5%+ 고거래량 = 추격 매수
         const drift = ctx.earningsDrift?.find((d) => d.code === t.code && d.direction === 'BULL' && d.strength >= 0.5);
-        if (drift && t.score >= 15 && t.rsi <= 75 && !hasBadWinRate) return true;
+        if (drift && t.score >= 22 && t.rsi <= 75 && !hasBadWinRate) return true;
 
         // Live 추가: 시장 상황이 좋을 때만 일반 BUY 완화
         if (!isPaper && (mq === 'GREAT' || mq === 'OK')) {
@@ -442,7 +444,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // 조건: AI 결과 없음 + score>0 + MA20↑ + RSI 적정 + ADX 추세 확인 + 과열 아님
         if (
           aiMap.size === 0 &&
-          t.score >= 5 &&
+          t.score >= 10 &&
           t.aboveMA20 &&
           t.rsi >= 42 &&
           t.rsi <= 68 &&
@@ -527,10 +529,15 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const driftB = ctx.earningsDrift?.find((d) => d.code === b.code && d.direction === 'BULL');
         const driftScoreA = driftA ? Math.min(20, driftA.strength * 25) : 0;
         const driftScoreB = driftB ? Math.min(20, driftB.strength * 25) : 0;
+        // 섹터 모멘텀 보너스: 섹터 평균 등락 +2%↑ → +12점, +1%↑ → +7점, -1%↓ → -5점, -2%↓ → -10점
+        const sectorMomA = sectorMomentumMap?.get(a.sector ?? '') ?? 0;
+        const sectorMomB = sectorMomentumMap?.get(b.sector ?? '') ?? 0;
+        const sectorMomScoreA = sectorMomA >= 2 ? 12 : sectorMomA >= 1 ? 7 : sectorMomA <= -2 ? -10 : sectorMomA <= -1 ? -5 : 0;
+        const sectorMomScoreB = sectorMomB >= 2 ? 12 : sectorMomB >= 1 ? 7 : sectorMomB <= -2 ? -10 : sectorMomB <= -1 ? -5 : 0;
         const sa =
-          techA + wrScoreA + losspenA + priorityA + favA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA;
+          techA + wrScoreA + losspenA + priorityA + favA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA + sectorMomScoreA;
         const sb =
-          techB + wrScoreB + losspenB + priorityB + favB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB;
+          techB + wrScoreB + losspenB + priorityB + favB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB + sectorMomScoreB;
         return sb - sa;
       })
   );
