@@ -85,24 +85,23 @@ export type StrategyMode = (typeof StrategyMode)[keyof typeof StrategyMode];
 //
 export const STRATEGY_PARAMS = {
   SWING: {
-    // ┌─ 전략 최적화 v5 (2026-06: WR10%→고확신 필터 강화) ───────────────┐
-    // │ buyThreshold 78: v10.3 70→78 (WR10% 개선 목표, 진입건수 절반↓)  │
-    // │ stopLossPct -2.5%: 현행 유지                                      │
-    // │ takeProfitPct 5.0%: 현행 유지                                     │
-    // │ 기대수익: p×(5.0-0.21)-(1-p)×(2.5+0.21) > 0 → 손익분기 36.1%  │
-    // │ R:R = 4.79:2.71 = 1.77:1                                          │
-    // │ maxDailyTrades 3: 현행 유지                                       │
-    // └────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 78, // v10.8: 70→78 (WR10%→고확신만, 진입 절반 감소)
-    splitCount: 2,
-    averageDownPct: 0, // v6: 물타기 비활성화 (21% WR에서 추가매수 = 손실확대)
+    // ┌─ 전략 최적화 v11 (2026-06: 손익분기 WR 인하 — 구조적 흑자 전환) ────┐
+    // │ buyThreshold 83: 78→83 (진입 추가 축소, SNIPER급 확신만 진입)        │
+    // │ takeProfitPct 7.0%: 5.0%→7.0% (핵심 — 손익분기 WR 36.8%→29.1%)    │
+    // │   p×(7.0-0.26)=(1-p)×(2.5+0.26) → p=29.1% — 실전WR30% 흑자구간    │
+    // │ splitCount 1: 분할매수 제거 (고확신 일괄진입)                         │
+    // │ maxDailyTrades 2: 3→2 (양보다 질)                                    │
+    // └─────────────────────────────────────────────────────────────────────┘
+    buyThreshold: 83, // v11: 78→83 (고확신 필터 강화)
+    splitCount: 1, // v11: 2→1 (분할 제거, 일괄 진입)
+    averageDownPct: 0,
     maxAveragingCount: 0,
     earlyTpPct: 0,
-    takeProfitPct: 5.0, // v10.7: 7.0%→5.0% (달성확률↑, WR 30.8%→35%+ 목표, R:R=2:1 유지)
+    takeProfitPct: 7.0, // v11: 5.0%→7.0% (손익분기 WR 29.1% — 실전WR30% 초과 → 흑자)
     takeProfitRatio: 0.5,
-    stopLossPct: -2.5, // v10.7: -3.5%→-2.5% (손실 빨리 차단, 소액계좌 드로다운 축소)
+    stopLossPct: -2.5,
     maxHoldingDays: 10,
-    maxDailyTrades: 3, // v10.3: 5→3 (과잉거래=구조적 적자의 주범, 수수료 절감)
+    maxDailyTrades: 2, // v11: 3→2 (과잉거래 차단)
   },
 
   DEFENSE: {
@@ -156,8 +155,8 @@ export const STRATEGY_PARAMS = {
     // │ 잡주 분산 대신 최고 점수 종목에 대형 포지션 (저격수 전략)          │
     // │ 익절 +8% (엘리트 4:1 R:R) / 손절 -2% (확신 높으니 타이트)         │
     // └────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 88,
-    // 88점+: AI 최상위 확신 구간만 진입 (상위 ~5% 신호)
+    buyThreshold: 85, // v11: 88→85 (진입 소폭 확장, 실전 유지)
+    // 85점+: AI 최상위 확신 구간만 진입
     splitCount: 1, // 분할 없음 — 단번에 풀 포지션
     averageDownPct: -3.0, // -3% 물타기 1회 허용 (단가 낮추기)
     maxAveragingCount: 1,
@@ -211,10 +210,10 @@ export const STRATEGY_PARAMS = {
     // │ R:R = 8:5 = 1.6:1 / 손익분기 승률 38.5%                           │
     // │ 1등 주도주 + 강한 거래대금 쏠림 종목만 진입 (미모사 원칙)          │
     // └────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 0, // AI 점수 불필요 — 기술적 돌파 신호 기반
-    splitCount: 2, // 돌파확인 + 눌림추가매수
-    averageDownPct: -3.0, // -3% 눌림 추가매수 허용
-    maxAveragingCount: 1,
+    buyThreshold: 70, // v11: 0→70 (AI 품질 필터 추가 — 기술적 신호+AI 최저선)
+    splitCount: 2, // 돌파확인 + 2차 진입
+    averageDownPct: 0, // v11: -3.0→0 (물타기 제거 — 돌파 실패 시 손실 확대 방지)
+    maxAveragingCount: 0, // v11: 1→0
     earlyTpPct: 0,
     takeProfitPct: 8.0, // 돌파 모멘텀 타겟
     takeProfitRatio: 0.5, // 50% 부분익절 → 잔여 트레일링
