@@ -104,6 +104,7 @@ cash = rbResult.cash
 3. 수동매도 쿨다운: `manual_sell_cd_{code}` — 2시간 재매수 금지
 4. 손절 쿨다운: `getLossCooldownStocks()` — 24시간 재매수 금지
 5. 개장벨 SCALPING: `allowScalpingBuys: true` 없으면 Track B가 모든 후보 skip
+6. **⛔ GCP 리소스 신규 생성/삭제 금지** — Cloud Run 서비스, Cloud SQL, Artifact Registry, IAM, Secrets 등 모든 인프라 변경은 반드시 사용자 승인 후 실행 (코드 배포는 기존 `ai-auto-bot` 서비스만 사용)
 
 ---
 
