@@ -812,13 +812,16 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     //   Why: paper에서 마의시간/장마감 직전 진입이 오늘 -193k 실현손실의 핵심 원인
     //   (7건 중 5건이 12:37, 15:01, 15:22, 15:23 진입 — 전부 금지/제한 시간대)
     //   How: paper도 live와 동일한 시간 가드 적용 — 학습 환경에서도 일관된 운영
-    const isPastClose = kstH >= 14; // v11: 14:50→14:00 (14시 이후 전면 차단 — 오후 노이즈 제거)
+    // v12: SWING 종가베팅 창구 15:00~15:20 허용 (AI 검증 — 실전 고수 EOD 진입 구간)
+    const isSwingEodBetting = effectiveModeRaw === 'SWING' && kstH === 15 && kstM < 20;
+    const isPastClose = kstH >= 14 && !isSwingEodBetting; // v11: 14:50→14:00 / v12: SWING 15:00~15:20 예외
     // v11 시간대별 매수 필터 (손익 최우선):
     // 09:00~10:00 → 전략 무제한 (황금 윈도우, 변동성 피크)
     // 10:00~11:30 → SNIPER 전용 (변동성 축소, 고확신만)
     // 11:30~13:00 → 전면 차단 (점심 유동성 소멸)
     // 13:00~14:00 → SNIPER 전용 (오후 세션 1시간)
-    // 14:00+      → isPastClose 전면 차단
+    // 14:00~15:00 → 전면 차단
+    // 15:00~15:20 → SWING 전용 종가베팅 창구 (v12 신규)
     const isAfterGoldenHour = !isScalpingMode && kstH >= 10;
     const isSniperWindow =
       (kstH === 10 || (kstH === 11 && kstM < 30)) || // 10:00~11:30
@@ -911,9 +914,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
     if (blockNewBuysFinal) {
       const blockReason = isPastClose
-        ? '마감시간(14:00+)'
+        ? '마감시간(14:00+ / SWING 15:00~15:20 예외)'
         : isLunchBan
-          ? `시간대차단(SNIPER외 10:00+ / 전면차단 11:30~13:00 / 14:00+)`
+          ? `시간대차단(SNIPER외 10:00+ / 전면차단 11:30~13:00 / 14:00~15:00 / SWING 15:00~15:20 예외)`
           : isSwingEodRestricted
             ? `SWING 종가우선(14:30 이전, AI 70 미만 [top=${topScore}점], 비랠리일 → 14:30+ 대기)`
             : dailyLoss.blocked
