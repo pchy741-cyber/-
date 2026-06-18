@@ -142,7 +142,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const getStockName = (code: string): string => toDisplayName(stockNameMap.get(code), code);
   const chains = dash?.chains || [];
   const usW = usDash?.watchlist || [];
-  const usHoldings = usDash?.holdings || (dash?.overseas?.holdings ?? []);
+  const usHoldings = (dash?.overseas?.holdings?.length ? dash.overseas.holdings : usDash?.holdings) ?? [];
   const filled = trades.filter((t: Trade) => t.status === 'FILLED' || t.status === 'PENDING')
     .sort((a: Trade, b: Trade) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   const kstToday = new Date(Date.now() + 9 * 3600_000).toISOString().split('T')[0];

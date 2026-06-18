@@ -140,7 +140,7 @@ export function TradeListPanel({
                         {chain?.strategy_mode ? (
                           <div className="space-y-1 text-slate-400">
                             <p>전략: <span className="text-slate-200 font-medium">{STRATEGY_LABELS[chain.strategy_mode] ?? chain.strategy_mode}</span></p>
-                            <p>평단가: <span className="text-slate-200">{Number(chain.avg_buy_price).toLocaleString()}원</span></p>
+                            <p>평단가: <span className="text-slate-200">{overseas ? `$${Number(chain.avg_buy_price).toFixed(2)}` : `${Number(chain.avg_buy_price).toLocaleString()}원`}</span></p>
                             <p>상태: <span className="text-slate-200">{chain.status}</span></p>
                           </div>
                         ) : overseas ? (
