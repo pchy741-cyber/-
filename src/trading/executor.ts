@@ -272,11 +272,19 @@ export class TradeExecutor {
     // BOTTOM_FISHING은 리스크 검증 필요 (포지션 한도·손실 한도 우회 방지)
     const skipGates =
       ETF_PARK_CODES.includes(stockCode) || triggerSource === 'CASH_PARKING';
+
+    // ScaleIn 3분할: 비스캘핑·비ETF·수량 3 이상일 때 1/3 즉시 진입 + 2/3 지연 분할
+    // (계획된 분할진입 → 물타기 횟수 제한·손실 AI 검토 우회)
+    const useScaleIn = !skipGates && mode !== 'SCALPING' && quantity >= 3;
+    const firstTranche = useScaleIn ? Math.ceil(quantity / 3) : quantity;
+    const secondTranche = useScaleIn ? Math.floor(quantity / 3) : 0;
+    const thirdTranche = useScaleIn ? quantity - firstTranche - secondTranche : 0;
+
     const params = STRATEGY_PARAMS[mode] ?? STRATEGY_PARAMS.SWING;
     if (!STRATEGY_PARAMS[mode]) {
       logger.warn(`⚠️ 알 수 없는 전략 모드 "${mode}" → SWING 폴백 적용`, { component: 'EXECUTOR' });
     }
-    let gatedQuantity = quantity;
+    let gatedQuantity = firstTranche;
     if (skipGates) {
       const skipModeTag = getCtxIsPaper() ? '🧪PAPER' : '💰LIVE';
       logger.info(
@@ -311,7 +319,7 @@ export class TradeExecutor {
           await logSystem('WARN', 'TRADE_GATE', `매수 차단: ${stockCode} - ${gateResult.reason}`);
           return;
         }
-        gatedQuantity = gateResult.adjustedQuantity ?? quantity;
+        gatedQuantity = gateResult.adjustedQuantity ?? firstTranche;
       } catch (e) {
         const errMsg = (e as Error).message;
         // fail-closed: 게이트 장애 시 매수 허용하면 리스크 통제 우회 — 차단이 안전
@@ -505,6 +513,24 @@ export class TradeExecutor {
           // orders.chain_id 연결 — 고아 포지션 방지 (audit P0)
           await updateOrderByKisOrderNo(result.orderNo, { chain_id: chainId });
           chainCreated = true;
+
+          // ScaleIn 3분할: 체인 생성 성공 후 2차(60s)/3차(120s) 분할 진입 스케줄
+          if (useScaleIn && secondTranche > 0) {
+            logger.info(
+              `📊 ScaleIn 스케줄: ${stockCode} 1차 ${filledQty}주 완료 → 2차 ${secondTranche}주(60s), 3차 ${thirdTranche}주(120s)`,
+              { component: 'EXECUTOR' },
+            );
+            setTimeout(() => {
+              this.executeAverageDown(stockCode, secondTranche, 'MARKET', undefined, `ScaleIn 2차/3: ${reasoning}`, true)
+                .catch((e) => logger.warn(`ScaleIn 2차 실패 ${stockCode}: ${(e as Error).message}`, { component: 'EXECUTOR' }));
+            }, 60_000);
+            if (thirdTranche > 0) {
+              setTimeout(() => {
+                this.executeAverageDown(stockCode, thirdTranche, 'MARKET', undefined, `ScaleIn 3차/3: ${reasoning}`, true)
+                  .catch((e) => logger.warn(`ScaleIn 3차 실패 ${stockCode}: ${(e as Error).message}`, { component: 'EXECUTOR' }));
+              }, 120_000);
+            }
+          }
           break;
         } catch (chainErr) {
           if (attempt < 2) {
@@ -554,6 +580,7 @@ export class TradeExecutor {
 
   /**
    * 물타기 (기존 체인에 추가 매수)
+   * @param isScaleIn true이면 ScaleIn 2차/3차 분할 진입 — 물타기 횟수 제한·손실 AI 검토 우회
    */
   private async executeAverageDown(
     stockCode: string,
@@ -561,6 +588,7 @@ export class TradeExecutor {
     priceType: string,
     limitPrice: number | undefined,
     reasoning: string,
+    isScaleIn = false,
   ): Promise<void> {
     const isPaperSnapshot = getCtxIsPaper();
     const chain = await chainManager.findOpenChain(stockCode);
@@ -569,8 +597,8 @@ export class TradeExecutor {
       return;
     }
 
-    // 물타기 횟수 확인
-    if (chain.current_averaging_count >= chain.max_averaging_count) {
+    // ScaleIn 분할 진입은 물타기 횟수 한도 적용 안 함 (계획된 분할이므로)
+    if (!isScaleIn && chain.current_averaging_count >= chain.max_averaging_count) {
       logger.warn(`물타기 한도 도달: ${stockCode} (${chain.current_averaging_count}/${chain.max_averaging_count})`, {
         component: 'EXECUTOR',
       });
@@ -580,9 +608,9 @@ export class TradeExecutor {
     const price = await getCurrentPrice(stockCode);
     const estimatedPrice = limitPrice ?? price.currentPrice;
 
-    // 🚫 손실 중 물타기 AI 검토 — 마이너스 포지션에 추가 매수 시 AI 허락 필요
+    // 🚫 손실 중 물타기 AI 검토 — ScaleIn 분할 진입은 계획된 진입이므로 우회
     const avgBuyPrice = Number(chain.avg_buy_price ?? 0);
-    if (avgBuyPrice > 0 && estimatedPrice > 0) {
+    if (!isScaleIn && avgBuyPrice > 0 && estimatedPrice > 0) {
       const pnlPct = ((estimatedPrice - avgBuyPrice) / avgBuyPrice) * 100;
       if (pnlPct < -0.5) {
         logger.warn(`⚠️ 손실 물타기 감지: ${stockCode} PnL=${pnlPct.toFixed(1)}% avg=${avgBuyPrice}원 → AI 검토`, {
