@@ -590,21 +590,18 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       logger.info('⚡ AI 스코어 없음 + DEFENSE 모드 → SWING으로 완화', { component: 'TRACK_B' });
     }
 
-    // DIVIDEND 데드엔드 방지: 보유 포지션 0이면 파킹 목적 없음 → SWING 자동 복귀
+    // DIVIDEND 실전 완전 차단: paper mode와 동일하게 실전에서 DIVIDEND 진입 금지 (실전 stats 오염 방지)
     if (mode === 'DIVIDEND' && !ctxIsPaper) {
-      const dividendChains = openChains.filter((c) => c.strategy_mode === 'DIVIDEND' || c.status === 'OPEN');
-      if (dividendChains.length === 0) {
-        logger.warn('🏦 DIVIDEND 모드: 보유 포지션 0 → SWING 자동 복귀 (파킹 대상 없음)', { component: 'TRACK_B' });
-        getPool()
-          .query(
-            `UPDATE strategy_config SET mode='SWING', updated_at=NOW() WHERE is_active=true AND mode='DIVIDEND' AND is_paper=false`,
-          )
-          .then(({ rowCount }) => {
-            if (rowCount && rowCount > 0)
-              logger.info('✅ DB 모드 자동전환: DIVIDEND → SWING (보유 포지션 없음)', { component: 'TRACK_B' });
-          })
-          .catch((e: Error) => logger.warn(`DIVIDEND→SWING 자동전환 실패: ${e.message}`, { component: 'TRACK_B' }));
-      }
+      logger.warn('🏦 DIVIDEND 모드: 실전 진입 차단 → SWING 자동 복귀 (실전 오염 방지)', { component: 'TRACK_B' });
+      getPool()
+        .query(
+          `UPDATE strategy_config SET mode='SWING', updated_at=NOW() WHERE is_active=true AND mode='DIVIDEND' AND is_paper=false`,
+        )
+        .then(({ rowCount }) => {
+          if (rowCount && rowCount > 0)
+            logger.info('✅ DB 모드 자동전환: DIVIDEND → SWING (실전 DIVIDEND 차단)', { component: 'TRACK_B' });
+        })
+        .catch((e: Error) => logger.warn(`DIVIDEND→SWING 자동전환 실패: ${e.message}`, { component: 'TRACK_B' }));
     }
 
     // 메가캡 보너스/레짐 보정을 반영한 유연한 사전 체크

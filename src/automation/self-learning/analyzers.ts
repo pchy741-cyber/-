@@ -161,7 +161,8 @@ export function analyzeStockWinRateAcceleration(enrichedChains: EnrichedChain[])
   for (const { chain, pnlPct } of enrichedChains) {
     const code = chain.stock_code;
     const list = stockTrades.get(code) ?? [];
-    list.push({ pnlPct, date: chain.closed_at ?? chain.opened_at });
+    const rawDate = chain.closed_at ?? chain.opened_at;
+    list.push({ pnlPct, date: rawDate instanceof Date ? rawDate.toISOString() : String(rawDate ?? '') });
     stockTrades.set(code, list);
   }
 
