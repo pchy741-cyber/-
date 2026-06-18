@@ -396,8 +396,29 @@ export async function callVertexGemini(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
-      logger.warn(`⚠️ AI Studio 429 [${label}] — 무료 티어 한도 도달`, { component: 'AI_COST' });
-      throw new Error(`AI Studio 429 — ${label} (무료 한도)`);
+      // 컨테이너 재시작 후 인메모리 카운터가 0으로 리셋되어 사전 차단 못 한 경우 →
+      // 실제 429 수신 시 카운터를 한도로 강제 설정 후 Vertex 폴백
+      _rate.dailyCalls = RATE_LIMIT.RPD;
+      logger.warn(`⚠️ AI Studio 429 [${label}] — Vertex AI 폴백 진행`, { component: 'AI_COST' });
+      try {
+        const { text, inputTokens, outputTokens } = await callVertexUngrounded(systemPrompt, userMessage, opts);
+        const costUsd = (inputTokens / 1_000_000) * 0.1 + (outputTokens / 1_000_000) * 0.4;
+        _dailyTotals.vertexCalls++;
+        _dailyTotals.calls++;
+        _dailyTotals.inputTokens += inputTokens;
+        _dailyTotals.outputTokens += outputTokens;
+        _dailyTotals.totalTokens += inputTokens + outputTokens;
+        _dailyTotals.vertexCostUsd += costUsd;
+        const durationMs = Date.now() - startMs;
+        _recentCalls.push({ label, inputTokens, outputTokens, at: new Date().toISOString(), durationMs, isGrounded: false, costUsd });
+        if (_recentCalls.length > 20) _recentCalls.shift();
+        logger.info(`⚡ Vertex 429-Fallback [${label}]: ${inputTokens}+${outputTokens}tok $${costUsd.toFixed(5)}`, { component: 'AI_COST' });
+        return text;
+      } catch (vErr) {
+        const vMsg = vErr instanceof Error ? vErr.message : String(vErr);
+        logger.warn(`⚠️ Vertex 429-폴백도 실패 [${label}]: ${vMsg}`, { component: 'AI_COST' });
+        throw new Error(`AI Studio 429 + Vertex 폴백 실패 — ${label}`);
+      }
     }
     logger.warn(`⚠️ AI Studio 오류 [${label}]: ${msg}`, { component: 'AI_COST' });
     throw err;
