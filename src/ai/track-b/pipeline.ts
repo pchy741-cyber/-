@@ -1453,6 +1453,20 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       return filtered;
     }
 
+    // ── 당일 수익 자율 퇴장: 목표 수익 도달 시 신규 BUY/AVERAGE_DOWN 차단 (Live만) ──
+    const DAILY_PROFIT_STOP_PCT = 2.0;
+    if (!ctxIsPaper && dailyLoss.dailyPnlPct >= DAILY_PROFIT_STOP_PCT) {
+      const beforeCount = actionable.length;
+      const filtered = actionable.filter((d) => !['BUY', 'AVERAGE_DOWN'].includes(d.action));
+      if (filtered.length < beforeCount) {
+        logger.info(
+          `🏁 당일 수익 목표 달성(+${dailyLoss.dailyPnlPct.toFixed(2)}% ≥ +${DAILY_PROFIT_STOP_PCT}%) → 신규 매수 ${beforeCount - filtered.length}건 차단 (매도 유지)`,
+          { component: 'TRACK_B' },
+        );
+      }
+      return filtered;
+    }
+
     if (hasBuyCandidates && !actionable.some((d) => ['BUY', 'AVERAGE_DOWN'].includes(d.action))) {
       logger.info('⏭️ 매수 후보 있으나 BUY 결정 없음 → KIS 관심종목 재동기화', { component: 'TRACK_B' });
       import('../../kis/interest-group.js').then((m) => m.syncInterestGroups()).catch(() => {});

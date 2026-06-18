@@ -476,7 +476,7 @@ export class TradeExecutor {
           { component: 'EXECUTOR' },
         );
       }
-      const targetProfitPct =
+      let targetProfitPct =
         scoreParams?.takeProfitPct ?? (dbStrategy as any)?.take_profit_pct ?? params.takeProfitPct;
       let stopLossPct = scoreParams?.stopLossPct ?? (dbStrategy as any)?.stop_loss_pct ?? params.stopLossPct;
 
@@ -494,6 +494,16 @@ export class TradeExecutor {
         }
       } catch {
         /* ATR 실패 시 기본값 유지 */
+      }
+
+      // 1:2 손익비 보장: TP < 2 × |SL| 시 TP 상향 조정
+      const minTp = 2 * Math.abs(stopLossPct);
+      if (targetProfitPct < minTp) {
+        logger.warn(
+          `⚠️ 손익비 미달: ${stockCode} TP=${targetProfitPct.toFixed(1)}% SL=${stopLossPct.toFixed(1)}% → TP ${minTp.toFixed(1)}%로 상향`,
+          { component: 'EXECUTOR' },
+        );
+        targetProfitPct = minTp;
       }
 
       // 체인 생성 (3회 재시도 — 고아 포지션 방지)
@@ -646,6 +656,31 @@ export class TradeExecutor {
           await logSystem('WARN', 'EXECUTOR', `손실 물타기 AI 오류 차단: ${stockCode} PnL=${pnlPct.toFixed(1)}%`);
           return;
         }
+      }
+    }
+
+    // 🚫 No Average Down: 하락 추세(현재가 < MA5) 시 물타기 차단 — ScaleIn 분할 진입은 계획된 진입이므로 면제
+    if (!isScaleIn) {
+      try {
+        const ma5Candles = await getDailyChart(stockCode, 5).catch(() => [] as import('../kis/market.js').DailyCandle[]);
+        if (ma5Candles.length >= 5) {
+          const ma5 = ma5Candles.slice(-5).reduce((sum, c) => sum + c.close, 0) / 5;
+          const currentPx = price.currentPrice;
+          if (currentPx < ma5) {
+            logger.warn(
+              `⛔ 하락추세 물타기 차단: ${stockCode} 현재가 ${currentPx.toLocaleString()} < MA5 ${ma5.toFixed(0)} → 스킵`,
+              { component: 'EXECUTOR' },
+            );
+            await logSystem(
+              'WARN',
+              'EXECUTOR',
+              `하락추세 물타기 차단: ${stockCode} 현재가 ${currentPx} < MA5 ${ma5.toFixed(0)}`,
+            );
+            return;
+          }
+        }
+      } catch {
+        /* MA5 조회 실패 시 물타기 허용 (fail-open) */
       }
     }
 
