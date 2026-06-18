@@ -29,7 +29,7 @@ export interface EnsembleConfig {
 }
 
 export const DEFAULT_ENSEMBLE_CONFIG: EnsembleConfig = {
-  weights: { gemini: 0.3, gpt: 0.35, claude: 0.2, rss: 0.15 },
+  weights: { gemini: 0.25, gpt: 0.45, claude: 0.15, rss: 0.15 },
   strategy: 'weighted_avg',
   minModels: 2,
 };
