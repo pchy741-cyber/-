@@ -3,7 +3,7 @@
  */
 
 import { getCtxIsPaper } from '../../config/context.js';
-import { getPool, updateOrder } from '../../db/client.js';
+import { getPool, updateOrder, withTransaction } from '../../db/client.js';
 import { cancelOverseasOrder, getOverseasBalance } from '../../kis/overseas.js';
 import { logger } from '../../utils/logger.js';
 import { sleep } from '../../utils/sleep.js';
@@ -61,38 +61,34 @@ export async function syncPendingOverseasOrders(): Promise<void> {
             const filledQty = Math.min(Number(order.quantity), remainingQty);
             reconciledBuyQty.set(order.stock_code, alreadyReconciled + filledQty);
             const fillPrice = position?.avgBuyPrice ?? Number(order.price);
-            await updateOrder(order.id, {
-              filled_quantity: filledQty,
-              filled_price: fillPrice,
-              status: 'FILLED',
-              kis_status: 'FILLED',
-            });
-            // overseas_holdings 동기화 — order만 FILLED 처리하면 holdings 불일치 (P1 #3)
-            await getPool().query(
-              `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper)
-               VALUES ($1, $2, $3, $4, NOW(), false)
-               ON CONFLICT (exchange, stock_code, is_paper) DO UPDATE SET quantity=$3, avg_price=$4`,
-              [order.stock_code, exchange, currentQty, fillPrice],
-            ).catch((e: unknown) =>
-              logger.warn(`PENDING BUY 홀딩 동기화 실패 (${order.stock_code}): ${(e as Error).message}`, { component: 'OVERSEAS' })
-            );
+            // orders + overseas_holdings 원자적 업데이트 — 중간 실패 시 롤백
+            await withTransaction(async (client) => {
+              await client.query(
+                `UPDATE orders SET filled_quantity=$1, filled_price=$2, status='FILLED', kis_status='FILLED', updated_at=NOW() WHERE id=$3`,
+                [filledQty, fillPrice, order.id],
+              );
+              await client.query(
+                `INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper)
+                 VALUES ($1, $2, $3, $4, NOW(), false)
+                 ON CONFLICT (exchange, stock_code, is_paper) DO UPDATE SET quantity=$3, avg_price=$4`,
+                [order.stock_code, exchange, currentQty, fillPrice],
+              );
+            }, 'READ COMMITTED');
             logger.info(`✅ ${order.stock_code} BUY PENDING→FILLED (잔고: ${currentQty}주, 할당: ${filledQty}주)`, {
               component: 'OVERSEAS',
             });
           } else if (order.side === 'SELL' && currentQty === 0) {
-            await updateOrder(order.id, {
-              filled_quantity: Number(order.quantity),
-              filled_price: Number(order.price),
-              status: 'FILLED',
-              kis_status: 'FILLED',
-            });
-            // overseas_holdings 동기화 — qty=0 → 행 삭제 (P1 #3)
-            await getPool().query(
-              `DELETE FROM overseas_holdings WHERE stock_code=$1 AND exchange=$2 AND is_paper=false`,
-              [order.stock_code, exchange],
-            ).catch((e: unknown) =>
-              logger.warn(`PENDING SELL 홀딩 동기화 실패 (${order.stock_code}): ${(e as Error).message}`, { component: 'OVERSEAS' })
-            );
+            // orders + overseas_holdings 원자적 업데이트
+            await withTransaction(async (client) => {
+              await client.query(
+                `UPDATE orders SET filled_quantity=$1, filled_price=$2, status='FILLED', kis_status='FILLED', updated_at=NOW() WHERE id=$3`,
+                [Number(order.quantity), Number(order.price), order.id],
+              );
+              await client.query(
+                `DELETE FROM overseas_holdings WHERE stock_code=$1 AND exchange=$2 AND is_paper=false`,
+                [order.stock_code, exchange],
+              );
+            }, 'READ COMMITTED');
             logger.info(`✅ ${order.stock_code} SELL PENDING→FILLED (잔고 0 확인)`, { component: 'OVERSEAS' });
           }
         } catch (e) {

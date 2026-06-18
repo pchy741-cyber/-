@@ -64,24 +64,13 @@ const PARK_PROFIT_TAKE_PCT = 2.0;
 /** 최대 파킹 종목 수 — v2는 1종목 집중 (회전 방지) */
 const MAX_PARK_POSITIONS = 1;
 
-// KOSPI 시가총액 Top — 파킹 후보 (2026 기준)
+// KOSPI 시가총액 Top 5 — 파킹 후보 (2026년 6월 기준)
 export const MEGA_CAP_PARK_CANDIDATES: Array<{ code: string; name: string }> = [
-  // ── 반도체 ──
-  { code: '005930', name: '삼성전자' },
-  { code: '000660', name: 'SK하이닉스' },
-  { code: '042700', name: '한미반도체' },
-  // ── 자동차/현대 ──
-  { code: '005380', name: '현대차' },
-  { code: '000270', name: '기아' },
-  { code: '012330', name: '현대모비스' },
-  // ── 방산/한화 ──
-  { code: '012450', name: '한화에어로스페이스' },
-  { code: '272210', name: '한화시스템' },
-  { code: '042660', name: '한화오션' },
-  // ── 방산/기타 ──
-  { code: '064350', name: '현대로템' },
-  // ── 플랫폼 ──
-  { code: '035420', name: 'NAVER' },
+  { code: '005930', name: '삼성전자' },        // 1위
+  { code: '000660', name: 'SK하이닉스' },      // 2위
+  { code: '012450', name: '한화에어로스페이스' }, // 방산 랠리
+  { code: '005380', name: '현대차' },           // 자동차
+  { code: '005490', name: 'POSCO홀딩스' },      // 철강/소재
 ];
 
 // 레거시 호환 (pipeline.ts에서 참조)
@@ -197,6 +186,22 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
         continue;
       }
 
+      // ── 타임아웃 강제 해제: confirmedBuyCount 관계없이 묶임 방지 ──
+      const forceTimeout = holdMs >= UNPARK_FORCE_TIMEOUT_MS;
+      if (forceTimeout) {
+        const reason = `⏰ 파킹 타임아웃 해제: ${name} ${pnlPct.toFixed(1)}% (${Math.round(holdMs / 3600_000)}h 초과) — 묶임 방지`;
+        logger.info(reason, { component: 'CASH_MANAGER' });
+        decisions.push({
+          action: 'SELL',
+          stock_code: parkChain.stock_code,
+          quantity: qty,
+          price_type: 'MARKET',
+          reasoning: reason,
+          confidence: 0.9,
+        });
+        continue;
+      }
+
       // ── 확정 매수 신호에 의한 해제 ──
       if ((confirmedBuyCount ?? 0) > 0) {
         // 최소 보유 시간 체크
@@ -210,8 +215,7 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
         }
 
         // ── 손실 보호: 큰 손실이면 해제 금지 (회복 대기) ──
-        const forceTimeout = holdMs >= UNPARK_FORCE_TIMEOUT_MS;
-        if (pnlPct < UNPARK_MAX_LOSS_PCT && !forceTimeout) {
+        if (pnlPct < UNPARK_MAX_LOSS_PCT) {
           logger.info(
             `🛡️ 파킹 손실보호: ${name} ${pnlPct.toFixed(1)}% — 손실 중 해제 금지, 본전 이상 대기 (${Math.round(holdMs / 60_000)}분 보유)`,
             { component: 'CASH_MANAGER' },
@@ -220,10 +224,7 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
         }
 
         // 해제 승인
-        const reason =
-          forceTimeout && pnlPct < 0
-            ? `⏰ 파킹 타임아웃 해제: ${name} ${pnlPct.toFixed(1)}% (${Math.round(holdMs / 3600_000)}h 초과) — 묶임 방지`
-            : `🔄 파킹 해제: ${name} +${pnlPct.toFixed(1)}% — 확정 매수 ${confirmedBuyCount}건 (본전↑ 확인)`;
+        const reason = `🔄 파킹 해제: ${name} +${pnlPct.toFixed(1)}% — 확정 매수 ${confirmedBuyCount}건 (본전↑ 확인)`;
         logger.info(reason, { component: 'CASH_MANAGER' });
         decisions.push({
           action: 'SELL',

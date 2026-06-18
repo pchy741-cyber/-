@@ -416,7 +416,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 총자산: netAsset(순자산) = 전체 현금 + 국내주식평가 (KIS T+2 정산 기준, 가장 정확)
     // 통합증거금 계좌에서 해외 투자 시 KRW 풀 감소 → orderableCash+evalAmount 과소평가
     // netAsset 사용으로 올바른 포지션 사이징 보장 (해외 투자금 차감 반영된 실제 국내 가용자산)
-    const totalAssets =
+    let totalAssets =
       balance.netAsset > 0
         ? balance.netAsset
         : balance.totalDeposit > 0
@@ -446,6 +446,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       overseasValueKrwPromise,
       getMacroSignal().catch(() => null),
     ]);
+    // Paper 모드: getPaperBalance는 국내 자산만 반환 → 해외 포지션 시가 합산
+    if (ctxIsPaper && overseasValueKrw > 0) totalAssets += overseasValueKrw;
 
     // DART 공시 캐시 갱신 (1시간 간격 — API 키 없으면 no-op, 모드별 독립)
     const dartMode = getCtxIsPaper() ? 'paper' : 'live';
@@ -1299,6 +1301,23 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         { component: 'CRASH_PROFIT' },
       );
       decisions.unshift(...inverseDecisions);
+    }
+
+    // 자기헤지 방지: CRASH/PANIC 레벨에서 인버스 매수가 있으면 CASH_PARKING 매수 취소
+    // (인버스 보유 중 대형주 매수 = 부의상관 포지션 동시 보유 → 수수료만 낭비)
+    if (
+      (crashSignal.level === 'CRASH' || crashSignal.level === 'PANIC') &&
+      inverseDecisions.some((d) => d.action === 'BUY')
+    ) {
+      const before = decisions.length;
+      const filtered = decisions.filter((d) => !(d.action === 'BUY' && d.trigger_source === 'CASH_PARKING'));
+      decisions.splice(0, decisions.length, ...filtered);
+      const removed = before - decisions.length;
+      if (removed > 0) {
+        logger.info(`🛡️ 자기헤지 방지: CASH_PARKING 매수 ${removed}건 취소 (인버스 ${crashSignal.level} 레벨)`, {
+          component: 'CASH_MANAGER',
+        });
+      }
     }
 
     const panicDecisions = generatePanicSellDecisions(crashSignal, openChains, livePrices);

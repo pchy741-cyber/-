@@ -33,9 +33,9 @@ export function toDisplayName(name: unknown, code?: string): string {
   return n;
 }
 
-/** 6자리 숫자 = 국내 종목코드 */
+/** 숫자로 시작 = 국내 종목코드 (K-suffix ETF 포함: 00680K 등) */
 export function isKrCode(code: string): boolean {
-  return /^[0-9]{6}$/.test(code);
+  return /^[0-9]/.test(code);
 }
 
 /** 해외종목 판별 (코드 + trigger_source 이중 체크) */

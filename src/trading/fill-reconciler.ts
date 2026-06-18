@@ -1,6 +1,7 @@
 import { KR_FEE } from '../config/constants.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { getOpenChains, getPendingDomesticOrders, getPool, logSystem, updateOrderByKisOrderNo } from '../db/client.js';
+import { hardInvalidateDashboardCache } from '../cache/dashboard-cache.js';
 import { getAccountBalance, type Position as KisPosition } from '../kis/account.js';
 import { getCurrentPrice } from '../kis/market.js';
 import { cancelOrder, getOrderFills } from '../kis/order.js';
@@ -293,6 +294,7 @@ export async function reconcileExternalSells(): Promise<void> {
           'RECONCILER',
           `외부매도 감지: ${chain.stock_code} ${chain.total_quantity}주 체인 #${chain.id} CLOSED`,
         );
+        hardInvalidateDashboardCache(); // ghost 체인 정리 후 대시보드 즉시 캐시 무효화
         await sendTelegramMessage(
           `🚪 외부 매도 감지\n종목: ${chain.stock_code}\n수량: ${chain.total_quantity}주\n수익률: ${pnlPct}%\n→ KIS 잔고 없음, DB 체인 정리 완료`,
         ).catch(() => {});

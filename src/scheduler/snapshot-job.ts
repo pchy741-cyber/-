@@ -19,11 +19,19 @@ async function getOverseasValueKrw(isPaper: boolean): Promise<number> {
     const fxRate = await fetchExchangeRate().catch(() => FALLBACK_FX_RATE);
     const rate = fxRate > 0 ? fxRate : FALLBACK_FX_RATE;
 
-    // 해외 보유종목 시가
+    // 해외 보유종목 시가 (last_price: KIS sync 시 업데이트, 장외 시간에는 stale 가능)
     const { rows: holdings } = await getPool().query(
-      'SELECT quantity, last_price FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1',
+      'SELECT quantity, last_price, last_price_at FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1',
       [isPaper],
     );
+    // stale 가격 감지: last_price_at이 8시간 이상 된 종목 경고
+    const staleCount = holdings.filter((h: any) => {
+      if (!h.last_price_at) return true;
+      return Date.now() - new Date(h.last_price_at).getTime() > 8 * 3600_000;
+    }).length;
+    if (staleCount > 0) {
+      logger.warn(`⚠️ 해외 스냅샷: ${staleCount}종목 시세 8h 이상 미갱신 (장외시간 정상, 장중 지속 시 KIS sync 확인)`, { component: 'SNAPSHOT' });
+    }
     const marketValueUsd = holdings.reduce(
       (sum: number, h: any) => sum + (Number(h.quantity) * Number(h.last_price || 0)),
       0,

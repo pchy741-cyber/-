@@ -267,7 +267,7 @@ export class TradeExecutor {
 
     // 🚦 매매 게이트 (차트검수 + 확률교정 + 변동성사이징 + 레짐필터 + 쿨다운)
     // ETF 파킹 / 바닥낚시 종목은 게이트 생략 (스캐너가 이미 검증 or 차트 분석 불필요)
-    const ETF_PARK_CODES = ['333940', PARK_STOCK_CODE, '161510', '114800', '252670', '251340']; // 파킹ETF: KODEX인버스,SOFR금리액티브,TIGER고배당,KODEX200인버스,KODEX200선물인버스2X,TIGER인버스
+    const ETF_PARK_CODES = [PARK_STOCK_CODE, '114800', '252670', '251340']; // 파킹ETF: SOFR금리액티브,KODEX200인버스,KODEX200선물인버스2X,TIGER인버스
     // CASH_PARKING/ETF: cash-manager·포트폴리오 검증 완료 — 인트라데이 게이트 불필요
     // BOTTOM_FISHING은 리스크 검증 필요 (포지션 한도·손실 한도 우회 방지)
     const skipGates =

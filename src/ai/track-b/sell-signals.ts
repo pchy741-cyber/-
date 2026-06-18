@@ -1,6 +1,7 @@
 import { analyzeTechnicals } from '../../analysis/indicators.js';
 import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
 import { getCtxIsPaper } from '../../config/context.js';
+import { getPool } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { getTimeWeightedStop } from '../../risk/entry-timing-guard.js';
 import { logger } from '../../utils/logger.js';
@@ -116,6 +117,31 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // 이미 이 체인에 대해 결정이 내려졌으면 스킵
     if (processedSellChains.has(chain.id)) continue;
 
+    // ── BreakEvenGuard: +1.5% 도달 시 SL → 본절(0%)로 자동 상향 ────────────
+    // pnl +1.5% 도달 순간 기존 SL(예: -3%)을 0%로 이동 → 원금 손실 방지
+    if (
+      chain.strategy_mode !== 'SCALPING' &&
+      chain.status !== 'PROFIT_TAKING' &&
+      pnlPct >= 1.5 &&
+      chain.stop_loss_pct != null &&
+      Number(chain.stop_loss_pct) < 0
+    ) {
+      try {
+        await getPool().query(
+          `UPDATE transaction_chains SET stop_loss_pct = 0 WHERE id = $1 AND stop_loss_pct < 0`,
+          [chain.id],
+        );
+        (chain as any).stop_loss_pct = 0;
+        logger.info(
+          `🛡️ BreakEvenGuard: ${chain.stock_code} SL → 0%(본절) [pnl +${pnlPct.toFixed(1)}%]`,
+          { component: 'TRACK_B' },
+        );
+      } catch (e) {
+        logger.warn(`BreakEvenGuard DB 실패 (${chain.stock_code}): ${(e as Error).message}`, { component: 'TRACK_B' });
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────
+
     // ── 포트폴리오 수익 보호: 하락장 감지 시 수익권 종목 선제 청산 ──
     // 포트폴리오 전체 수익 +2% 이상 + RISK_OFF/하락장(macroSizingMult<0.8) + 이 종목 수익권
     // → 개별 TP 미도달이라도 즉시 청산 (수익 반납 방지)
@@ -192,38 +218,22 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     }
     // ────────────────────────────────────────────────────────────────────
 
-    // ── TP 도달 전 수익 구간 트레일링 스탑 ──────────────────────────────
-    // 기존 트레일링은 PROFIT_TAKING 진입 후에만 작동 → +2~4% 수익권은 보호 없음
-    // 이 로직: TP 미도달이라도 고점 대비 ATR×1.5 하락 시 익절
-    //
-    // CEO 지시 (2026-06-12): TP 50% 도달 전 트레일링 발동 차단
-    //   Why: 수산세보틱스 사례 — 고점 +2.1% 후 -3.2% 풀백에 -1.1% 손실로 stop out
-    //   How: 활성화 임계를 1.5% 고정값 → max(target_profit_pct * 0.5, 2.5%)
-    if (chain.status !== 'PROFIT_TAKING' && chain.strategy_mode !== 'SCALPING') {
+    // ── TrailingStop 1%: +1.5% 이후 최고점 대비 -1.0% 하락 시 전량 매도 ──────
+    // BreakEvenGuard(SL=0%)와 연동 2중 수익 보호 체계
+    //   · +1.5% 도달 → SL=0%로 상향(BreakEvenGuard) + peak 추적 시작(TrailingStop)
+    //   · peak 대비 -1.0% 하락 → 전량 시장가 매도 (이익 보존)
+    // PROFIT_TAKING 체인도 포함: ScaleOut 후 나머지 50%에도 동일 규칙 적용
+    if (chain.strategy_mode !== 'SCALPING') {
       const peakMap = _getPeakMap();
       const prevPeak = peakMap.get(chain.stock_code) ?? pnlPct;
       const curPeak = Math.max(prevPeak, pnlPct);
       peakMap.set(chain.stock_code, curPeak);
 
-      const chainTp = chain.target_profit_pct != null
-        ? Number(chain.target_profit_pct)
-        : (STRATEGY_PARAMS[chain.strategy_mode as StrategyMode]?.takeProfitPct ?? 5.5);
-      // v10: AI 없으면 TP 90% 도달 전까지 트레일링 비활성화 (수익 조기 차단 방지)
-      const rawAiForPreTp = aiScoreMap.get(chain.stock_code) ?? 0;
-      const hasAiForPreTp = rawAiForPreTp > 0;
-      const activateAt = hasAiForPreTp
-        ? Math.max(chainTp * 0.80, 3.5) // v10.7: 75%→80% (조기익절 방지), 3.5% floor (TP=5%에 맞춤)
-        : Math.max(chainTp * 0.90, 4.5); // AI없이: TP 90% 이상에서만 트레일링
-      if (curPeak >= activateAt) {
-        const earlyChart = chartData.get(chain.stock_code);
-        const earlyTech = earlyChart && earlyChart.length >= 20 ? analyzeTechnicals(earlyChart) : null;
-        const atrPct = earlyTech?.atrPct ?? 1.5;
-        const trailThreshold = Math.max(-(atrPct * 1.5), -2.0); // v10.7: ATR×1.5, -2.0% floor (수익 보호 강화, 3.5%→2.0%)
+      if (curPeak >= 1.5 && chain.total_quantity > 0) {
         const dropFromPeak = pnlPct - curPeak;
-
-        if (dropFromPeak <= trailThreshold && chain.total_quantity > 0) {
+        if (dropFromPeak <= -1.0) {
           logger.info(
-            `📉 Pre-TP 트레일링: ${chain.stock_code} 고점 +${curPeak.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}% (${dropFromPeak.toFixed(1)}%, 임계 ${trailThreshold.toFixed(1)}%)`,
+            `📉 TrailingStop: ${chain.stock_code} 고점 +${curPeak.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}% (${dropFromPeak.toFixed(1)}%)`,
             { component: 'TRACK_B' },
           );
           decisions.push({
@@ -231,8 +241,8 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
             stock_code: chain.stock_code,
             quantity: chain.total_quantity,
             price_type: 'MARKET',
-            reasoning: `수익보호 트레일링(TP전): 고점 +${curPeak.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}% (고점대비 ${dropFromPeak.toFixed(1)}%)`,
-            confidence: 0.88,
+            reasoning: `TrailingStop: 고점 +${curPeak.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}% (고점대비 ${dropFromPeak.toFixed(1)}%)`,
+            confidence: 0.90,
           });
           processedSellChains.add(chain.id);
           _getPeakMap().delete(chain.stock_code);
@@ -460,11 +470,42 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       effectiveSl = STRATEGY_PARAMS.SCALPING.stopLossPct;
     }
 
+    // ── ScaleOut 1차 익절: +3.0% 도달 시 50% 시장가 익절 ────────────────────
+    // BreakEvenGuard + TrailingStop과 연동 3중 수익 보호:
+    //   +1.5%: SL → 본절(BEG) + peak 추적 시작(Trailing)
+    //   +3.0%: 50% 익절(ScaleOut) → 나머지 50%에 BEG+Trailing 계속 적용
+    if (
+      !isScalpChain &&
+      chain.status !== 'PROFIT_TAKING' &&
+      !isDowntrendMode &&
+      pnlPct >= 3.0 &&
+      chain.total_quantity > 0 &&
+      !processedSellChains.has(chain.id)
+    ) {
+      const scaleQty = Math.ceil(chain.total_quantity * 0.5);
+      if (scaleQty > 0 && scaleQty < chain.total_quantity) {
+        logger.info(
+          `💰 ScaleOut 1차(50%): ${chain.stock_code} +${pnlPct.toFixed(1)}% → ${scaleQty}주 익절`,
+          { component: 'TRACK_B' },
+        );
+        decisions.push({
+          action: 'PARTIAL_SELL',
+          stock_code: chain.stock_code,
+          quantity: scaleQty,
+          price_type: 'MARKET',
+          reasoning: `ScaleOut 1차(50%): +${pnlPct.toFixed(1)}% 도달 → 나머지 50% BreakEven+Trailing 대기`,
+          confidence: 0.90,
+        });
+        processedSellChains.add(chain.id);
+        continue;
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────
+
     // ─── 3단계 익절 전략 ────────────────────────────────────────────────
-    // 1단계: TP 도달 → 25% 부분 매도 (수익 확정, 상태→PROFIT_TAKING)
-    // 2단계: TP+3% 도달 → 추가 35% 매도 (잔여 ~40%)
-    // 3단계: 트레일링 스톱 또는 TP+8% → 잔여 전량 청산
-    // 효과: 수익 꼬리 길게 잡기 + 반납 최소화
+    // 1단계: TP 도달 → 35% 부분 매도 (상태→PROFIT_TAKING)
+    // 2단계: TP+3% 도달 → 추가 35% 매도 (잔여 ~30%)
+    // 3단계: TP+8% 최종 목표 → 잔여 전량 청산 (trailing은 위 TrailingStop이 담당)
     if (chain.status !== 'PROFIT_TAKING' && pnlPct >= effectiveTp) {
       // SCALPING: 전량 즉시 익절 (takeProfitRatio=1.0, 분할 없음)
       if (isScalpChain && chain.total_quantity > 0) {
@@ -563,28 +604,16 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         }
       }
 
-      // 3단계: 트레일링 스톱 또는 최종 목표(+8%) → 잔여 전량 청산
-      const peakPrice = (chain as any).peak_price
-        ? Number((chain as any).peak_price)
-        : Number(chain.avg_buy_price) * (1 + strategyParams.takeProfitPct / 100);
-      const trailDropPct = ((price.currentPrice - peakPrice) / peakPrice) * 100;
-      const trailAtrPct = sellTech?.atrPct ?? 1.5;
-      const baseTrailPct = Math.max(-5.0, Math.min(-1.5, -(trailAtrPct * 2.0)));
-      const profitTightenDom = pnlPct >= 8 ? 0.5 : pnlPct >= 5 ? 0.3 : 0;
-      const aiTrailTighten = getOverride<number>(`${chain.stock_code}_trailTighten`) ?? 0;
-      const dynamicTrailPct = baseTrailPct + profitTightenDom + aiTrailTighten;
-      const isTrailTriggered = trailDropPct <= dynamicTrailPct;
-      const isTargetReached = pnlPct >= 8.0; // 3단계: +8% 최종 목표 (기존 5% → 8%로 상향)
-
-      if (isTargetReached || isTrailTriggered) {
+      // 3단계: TP+8% 최종 목표 → 잔여 전량 청산
+      // (trailing은 위 TrailingStop 1%가 담당 — 여기서 중복 처리 없음)
+      const isTargetReached = pnlPct >= 8.0;
+      if (isTargetReached) {
         decisions.push({
-          action: isTargetReached ? 'SELL' : 'FORCE_CLOSE',
+          action: 'SELL',
           stock_code: chain.stock_code,
           quantity: chain.total_quantity,
           price_type: 'MARKET',
-          reasoning: isTargetReached
-            ? `3단계 익절(잔여전량): +${pnlPct.toFixed(1)}% 최종목표 달성`
-            : `트레일링 스톱: peak 대비 ${trailDropPct.toFixed(2)}% 하락 (ATR ${dynamicTrailPct.toFixed(1)}%, peak=${peakPrice.toFixed(0)}원)`,
+          reasoning: `3단계 익절(잔여전량): +${pnlPct.toFixed(1)}% 최종목표(+8%) 달성`,
           confidence: 0.9,
         });
         processedSellChains.add(chain.id);

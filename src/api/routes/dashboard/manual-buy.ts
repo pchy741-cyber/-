@@ -14,7 +14,23 @@ import { placeOrder } from '../../../kis/order.js';
 import { notifyBuy } from '../../../notifications/web-push.js';
 import { addPaperInvestment, getPaperBalance, riskEngine } from '../../../risk/engine.js';
 import { logger } from '../../../utils/logger.js';
-import { hardInvalidateMode } from './helpers.js';
+import { getFxRate, hardInvalidateMode } from './helpers.js';
+
+async function getOverseasValueKrw(isPaper: boolean): Promise<number> {
+  try {
+    const { rows } = await getPool().query(
+      'SELECT SUM(last_price * quantity) AS total_usd FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1',
+      [isPaper],
+    );
+    const usd = Number(rows[0]?.total_usd ?? 0);
+    if (usd <= 0) return 0;
+    const { FALLBACK_FX_RATE } = await import('../../../config/constants.js');
+    const fx = await getFxRate();
+    return usd * (fx > 0 ? fx : FALLBACK_FX_RATE);
+  } catch {
+    return 0;
+  }
+}
 
 export function registerManualBuyRoutes(app: Hono) {
   // GET /manual-buy/estimate — 매수 전 예상 금액 조회 (confirm 다이얼로그에 표시용)
@@ -46,7 +62,8 @@ export function registerManualBuyRoutes(app: Hono) {
 
     async function calcAmt(paper: boolean) {
       const balance = paper ? await getPaperBalance() : await getAccountBalance(true);
-      const totalCapital = balance.totalEvalAmount + balance.orderableCash;
+      const overseasKrw = paper ? await getOverseasValueKrw(true) : 0;
+      const totalCapital = balance.totalEvalAmount + balance.orderableCash + overseasKrw;
       // Paper: 현금 집계 지연 대응 → 총자산 기준 캡 적용 (availCash 고갈 시 소액매수 방지)
       const cashCap = paper ? totalCapital * 0.95 : balance.orderableCash * 0.95;
       const dynPct = getDynamicPositionSizePct({ score: aiScore, confidence, isMegaCap, pullbackSignal }) / 100;
@@ -173,7 +190,8 @@ export function registerManualBuyRoutes(app: Hono) {
       if (amount_krw < 10000) {
         try {
           const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
-          const totalCapital = balance.totalEvalAmount + balance.orderableCash;
+          const overseasKrw2 = isPaper ? await getOverseasValueKrw(true) : 0;
+          const totalCapital = balance.totalEvalAmount + balance.orderableCash + overseasKrw2;
           // Paper: 현금 집계 지연 대응 → 총자산 기준 캡 적용
           const cashCap2 = isPaper ? totalCapital * 0.95 : balance.orderableCash * 0.95;
           const slFraction = Math.abs(stopLossPct) / 100;
@@ -279,7 +297,8 @@ export function registerManualBuyRoutes(app: Hono) {
       // CEO 책임 모드 (ceo_override=true): cap 무시 — 사용자가 더 살 수 있음
       try {
         const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
-        const totalCapital = balance.totalEvalAmount + balance.orderableCash;
+        const overseasKrw3 = isPaper ? await getOverseasValueKrw(true) : 0;
+        const totalCapital = balance.totalEvalAmount + balance.orderableCash + overseasKrw3;
         const CAP_PCT = 35; // getDynamicPositionSizePct 상한(35%)에 맞춤
         const positionPct = ((quantity * curPrice) / totalCapital) * 100;
         if (positionPct > CAP_PCT) {

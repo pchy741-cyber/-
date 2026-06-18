@@ -214,7 +214,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const krTabPct = krSellsCostBasis > 0 ? (krTabPnl / krSellsCostBasis) * 100 : null;
   const _usTodaySells = trades.filter((t: Trade) =>
     t.status === 'FILLED' && t.side === 'SELL' && t.trigger_source === 'OVERSEAS' &&
-    !/^[0-9]{6}$/.test(t.stock_code) &&
+    !/^[0-9]/.test(t.stock_code) &&
     new Date(new Date(t.created_at).getTime() + 9 * 3600_000).toISOString().split('T')[0] === kstToday
   );
   const usTodaySells = _usTodaySells;
