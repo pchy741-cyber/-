@@ -975,13 +975,13 @@ dashboardAnalysisRoutes.get('/strategy/performance', async (c) => {
             ELSE NULL END)::numeric, 2
         ) AS avg_pnl_pct,
         ROUND(AVG(
-          EXTRACT(EPOCH FROM (tc.closed_at - tc.created_at)) / 3600
+          EXTRACT(EPOCH FROM (tc.closed_at - tc.opened_at)) / 3600
         )::numeric, 1) AS avg_hold_hours
       FROM transaction_chains tc
       WHERE tc.status = 'CLOSED'
         AND tc.is_paper = $1
         AND tc.stock_code ~ '^[0-9]{6}$'
-        AND tc.created_at >= NOW() - INTERVAL '90 days'
+        AND tc.opened_at >= NOW() - INTERVAL '90 days'
       GROUP BY tc.strategy_mode
       ORDER BY total_pnl DESC
     `,
@@ -1451,7 +1451,7 @@ dashboardAnalysisRoutes.get('/performance/attribution', async (c) => {
           WHERE (o.filled_price - tc.avg_buy_price) > 0
         )                                                           AS wins,
         ROUND(AVG(
-          EXTRACT(EPOCH FROM (o.created_at - tc.created_at)) / 3600
+          EXTRACT(EPOCH FROM (o.created_at - tc.opened_at)) / 3600
         )::numeric, 1)                                             AS avg_hold_hours
       FROM orders o
       JOIN transaction_chains tc ON tc.id = o.chain_id
