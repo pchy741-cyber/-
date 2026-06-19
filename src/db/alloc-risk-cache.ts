@@ -43,11 +43,11 @@ async function refresh(): Promise<void> {
       const key = r.is_paper ? 'paper' : 'live';
       const def = DEFAULTS[key];
       cache[key] = {
-        positionCapPct: Number(r.position_cap_pct) || def.positionCapPct,
-        maxInvestedPct: Number(r.max_invested_pct) || def.maxInvestedPct,
-        cashReservePct: Number(r.cash_reserve_pct) ?? def.cashReservePct,
-        maxPositions: Number(r.max_positions) || def.maxPositions,
-        maxDailyTrades: Number(r.max_daily_trades) || def.maxDailyTrades,
+        positionCapPct: r.position_cap_pct != null ? Number(r.position_cap_pct) : def.positionCapPct,
+        maxInvestedPct: r.max_invested_pct != null ? Number(r.max_invested_pct) : def.maxInvestedPct,
+        cashReservePct: r.cash_reserve_pct != null ? Number(r.cash_reserve_pct) : def.cashReservePct,
+        maxPositions: r.max_positions != null ? Number(r.max_positions) : def.maxPositions,
+        maxDailyTrades: r.max_daily_trades != null ? Number(r.max_daily_trades) : def.maxDailyTrades,
       };
     }
     lastRefresh = Date.now();

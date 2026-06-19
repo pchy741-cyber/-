@@ -7,7 +7,7 @@
  */
 import { baseIsPaper } from '../../config/index.js';
 
-const LIVE_PIN = '7012';
+const LIVE_PIN = process.env.LIVE_PIN ?? '7012';
 
 /** v4: 실전 거래 마스터 스위치 — false면 모든 live 요청 차단 */
 let _liveEnabled = (process.env.LIVE_ENABLED ?? 'false') === 'true';

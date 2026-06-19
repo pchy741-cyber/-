@@ -1,5 +1,5 @@
 import { analyzeTechnicals } from '../../analysis/indicators.js';
-import { isKospiOverrideActive } from '../../api/routes/settings.js';
+import { isKospiOverrideActive } from '../../risk/kospi-override.js';
 import {
   assessCrashLevel,
   type CrashSignal,
@@ -22,23 +22,12 @@ import { REFRESH, STRATEGY_PARAMS, type StrategyMode } from '../../config/consta
 import { getCtxIsPaper } from '../../config/context.js';
 import { config } from '../../config/index.js';
 import {
-  enableMemoryMode,
-  getActiveStrategy,
-  getActiveWatchlist,
-  getBigLossBlockedStocks,
   getLatestScores,
-  getLossHistory,
-  getOpenChains,
   getPool,
-  getRecentLossStocks,
-  getRecentlySoldStocks,
-  getRecentManuallySoldStocks,
-  getTodayRepeatStopCodes,
   logSystem,
 } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { logScanSession } from '../../db/scan-logger.js';
-import { getAccountBalance } from '../../kis/account.js';
 import {
   getBatchPrices,
   getChangeRankingStocks,
@@ -53,7 +42,6 @@ import { fetchStockDisclosures } from '../../market/krx-disclosure.js';
 import { getMacroSignal } from '../../market/macro-signal.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { checkEntryTiming } from '../../risk/entry-timing-guard.js';
-import { getPaperBalance } from '../../risk/paper-balance.js';
 import { reconcilePendingOrders } from '../../trading/fill-reconciler.js';
 import { logger } from '../../utils/logger.js';
 import { getOverride } from '../ai-overrides.js';
@@ -65,41 +53,14 @@ import { generatePartialTpDecisions } from './sell-signals.js';
 import { technicalFallbackDecisions } from './technical-fallback.js';
 import { MEGA_CAP_PRIORITY_CODES } from './trading-rules.js';
 
+import { loadPipelineData } from './data-loader.js';
+// 역호환: executor.ts가 pipeline.ts에서 import
+export { recordSellForCooldown } from './sell-cooldown.js';
+
 // DART 캐시 갱신 추적 — paper/live 모드별 분리 (크로스오염 방지)
 const _lastDartRefreshAt = new Map<string, number>();
 // 고확신 눌림목 텔레그램 알림 쿨다운 (30분/종목) — paper/live 모드별 분리
 const _alertedHighConviction = new Map<string, Map<string, number>>();
-
-// v10.4: 인메모리 매도 쿨다운 — DB 반영 전에도 재매수 차단 (churning 방지)
-// v10.5: paper/live 모드별 분리 (크로스오염 방지 — Paper 매도가 Live 차단하던 버그 수정)
-const _recentSellTimestamps = new Map<string, Map<string, number>>(); // mode → (stock_code → epoch ms)
-const MEMORY_COOLDOWN_MS = 4 * 60 * 60 * 1000; // 4시간
-
-function _getSellMap(): Map<string, number> {
-  const mode = getCtxIsPaper() ? 'paper' : 'live';
-  if (!_recentSellTimestamps.has(mode)) _recentSellTimestamps.set(mode, new Map());
-  return _recentSellTimestamps.get(mode)!;
-}
-
-/** 매도 실행 시 호출 — 인메모리 쿨다운 기록 */
-export function recordSellForCooldown(stockCode: string): void {
-  _getSellMap().set(stockCode, Date.now());
-}
-
-/** 인메모리 쿨다운 중인 종목 Set 반환 (현재 모드 전용) */
-function getMemoryCooldownCodes(): Set<string> {
-  const now = Date.now();
-  const map = _getSellMap();
-  const result = new Set<string>();
-  for (const [code, ts] of map) {
-    if (now - ts < MEMORY_COOLDOWN_MS) {
-      result.add(code);
-    } else {
-      map.delete(code); // 만료 정리
-    }
-  }
-  return result;
-}
 
 function getAlertMap(): Map<string, number> {
   const mode = getCtxIsPaper() ? 'paper' : 'live';
@@ -137,57 +98,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     // ── 2. 데이터 로드 (병렬) ────────────────────────────────────────
-    const dbLoadWithFallback = async () => {
-      try {
-        return await Promise.all([
-          getActiveWatchlist(),
-          getOpenChains(getCtxIsPaper()),
-          getActiveStrategy(),
-          getRecentLossStocks(getCtxIsPaper() ? 1 : 5), // Paper: 1일 쿨다운 (7일 → 적극적 데이터 수집)
-          getRecentManuallySoldStocks(24),
-        ]);
-      } catch (dbErr: any) {
-        const msg = String(dbErr?.message ?? dbErr).toLowerCase();
-        const code = String(dbErr?.code ?? '');
-        const isNetworkErr =
-          ['ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', 'ECONNRESET', 'EPIPE'].includes(code) ||
-          msg.includes('timeout') ||
-          msg.includes('terminated') ||
-          msg.includes('econnrefused') ||
-          msg.includes('connection') ||
-          msg.includes('enotfound');
-        if (isNetworkErr) {
-          logger.warn(`⚡ DB 연결 실패 → 인메모리 모드로 전환: [${code}] ${msg}`, { component: 'TRACK_B' });
-          enableMemoryMode();
-          return await Promise.all([
-            getActiveWatchlist(),
-            getOpenChains(getCtxIsPaper()),
-            getActiveStrategy(),
-            getRecentLossStocks(getCtxIsPaper() ? 1 : 5), // Paper: 1일 쿨다운
-            getRecentManuallySoldStocks(24),
-          ]);
-        }
-        throw dbErr;
-      }
-    };
-    const [watchlist, openChains, strategy, recentLossCodes, manuallySoldCodes] = await dbLoadWithFallback();
-    const ctxIsPaper = getCtxIsPaper(); // runWithMode 컨텍스트 우선, 없으면 서버 기본값
-    // 2차 쿼리 병렬 실행 (순차 3개 + 잔고 → Promise.all로 단축)
-    const [todayRepeatStopCodes, bigLossBlocked, recentlySoldCodes, balanceRaw, lossHistory] = await Promise.all([
-      getTodayRepeatStopCodes(1),      // 당일 1회 이상 손절 → 당일 재진입 차단
-      getBigLossBlockedStocks(),        // -5% 초과 손실 → 30일 절대 차단 (레거시 폴백)
-      getRecentlySoldStocks(4),          // v10.3: 최근 4시간 매도 → 재진입 쿨다운 (반복매매=적자 주범)
-      ctxIsPaper ? getPaperBalance() : getAccountBalance(true),
-      getLossHistory(),                 // 90일 손실 이력 → 스마트 재진입
-    ]);
-    const balance = balanceRaw as any;
-    // v10.4: 인메모리 쿨다운 병합 (DB 반영 전 매도도 차단)
-    for (const code of getMemoryCooldownCodes()) recentlySoldCodes.add(code);
-    // 인버스 ETF는 쿨다운 예외 — 하락장 지속 시 즉시 재진입 가능해야 함
-    for (const code of INVERSE_ETF_CODES) recentlySoldCodes.delete(code);
-    if (todayRepeatStopCodes.size > 0) {
-      logger.warn(`🚫 당일 반복손절 재진입 차단: ${[...todayRepeatStopCodes].join(', ')}`, { component: 'TRACK_B' });
-    }
+    const {
+      watchlist, openChains, strategy, recentLossCodes, manuallySoldCodes,
+      todayRepeatStopCodes, bigLossBlocked, recentlySoldCodes, balance,
+      lossHistory, ctxIsPaper,
+    } = await loadPipelineData();
 
     if (watchlist.length === 0) {
       logger.warn('감시 목록이 비어있습니다', { component: 'TRACK_B' });

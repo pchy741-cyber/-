@@ -1,5 +1,5 @@
 import { runTrackBPipeline } from '../ai/track-b/pipeline.js';
-import { logSystemEvent } from '../api/routes/health.js';
+import { logSystemEvent } from '../utils/system-events.js';
 import { INVERSE_ETF_CODES } from '../automation/crash-profit.js';
 import { isRiskOffToday } from '../automation/market-routing.js';
 import type { StrategyMode } from '../config/constants.js';

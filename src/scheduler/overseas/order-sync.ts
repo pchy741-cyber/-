@@ -61,8 +61,14 @@ export async function syncPendingOverseasOrders(): Promise<void> {
             const filledQty = Math.min(Number(order.quantity), remainingQty);
             reconciledBuyQty.set(order.stock_code, alreadyReconciled + filledQty);
             const fillPrice = position?.avgBuyPrice ?? Number(order.price);
-            // orders + overseas_holdings 원자적 업데이트 — 중간 실패 시 롤백
+            // orders + overseas_holdings 원자적 업데이트 + idempotency (status 재확인)
             await withTransaction(async (client) => {
+              // Idempotency: 트랜잭션 내에서 status 재확인 (동시 실행 방지)
+              const { rows: fresh } = await client.query(
+                `SELECT status FROM orders WHERE id = $1 FOR UPDATE`,
+                [order.id],
+              );
+              if (!fresh[0] || fresh[0].status !== 'PENDING') return; // 이미 처리됨
               await client.query(
                 `UPDATE orders SET filled_quantity=$1, filled_price=$2, status='FILLED', kis_status='FILLED', updated_at=NOW() WHERE id=$3`,
                 [filledQty, fillPrice, order.id],
@@ -78,8 +84,13 @@ export async function syncPendingOverseasOrders(): Promise<void> {
               component: 'OVERSEAS',
             });
           } else if (order.side === 'SELL' && currentQty === 0) {
-            // orders + overseas_holdings 원자적 업데이트
+            // orders + overseas_holdings 원자적 업데이트 + idempotency
             await withTransaction(async (client) => {
+              const { rows: fresh } = await client.query(
+                `SELECT status FROM orders WHERE id = $1 FOR UPDATE`,
+                [order.id],
+              );
+              if (!fresh[0] || fresh[0].status !== 'PENDING') return;
               await client.query(
                 `UPDATE orders SET filled_quantity=$1, filled_price=$2, status='FILLED', kis_status='FILLED', updated_at=NOW() WHERE id=$3`,
                 [Number(order.quantity), Number(order.price), order.id],

@@ -34,9 +34,10 @@ export interface NewsSentiment {
 
 // ── 캐시 (60분 유효) ──────────────────────────────────────────
 let _fgCache: { data: MarketSentiment; fetchedAt: number } | null = null;
-// v11.0: FGI≥80 연속 거래일 추적 (날짜별 1회만 증가)
+// v11.0: FGI≥80 연속 거래일 추적 (날짜별 1회만 증가, 1일 하락 허용)
 let _greedyStreak = 0;
 let _greedyStreakLastDate = '';
+let _greedyMissedDays = 0; // 80 미만 연속일 (1일까지 유예)
 let _earningsCache: { data: EarningsEvent[]; fetchedAt: number } | null = null;
 const _newsCache = new Map<string, { data: NewsSentiment; fetchedAt: number }>();
 const CACHE_TTL = 60 * 60 * 1000; // 1시간
@@ -81,16 +82,23 @@ export async function getFearGreedIndex(): Promise<MarketSentiment | null> {
 
     const label = rating.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) || scorToLabel(score);
 
-    // FGI≥80 연속일 카운터 (날짜 바뀔 때마다 1회 증가)
+    // FGI≥80 연속일 카운터 (날짜 바뀔 때마다 1회 증가, 1일 하락 허용)
     const todayStr = new Date().toISOString().slice(0, 10);
     if (score >= 80) {
       if (_greedyStreakLastDate !== todayStr) {
         _greedyStreak++;
         _greedyStreakLastDate = todayStr;
+        _greedyMissedDays = 0; // 탐욕 복귀 → 유예 리셋
       }
-    } else {
-      _greedyStreak = 0;
-      _greedyStreakLastDate = '';
+    } else if (_greedyStreakLastDate !== todayStr && _greedyStreak > 0) {
+      _greedyMissedDays++;
+      _greedyStreakLastDate = todayStr;
+      if (_greedyMissedDays > 1) {
+        // 2일 연속 80 미만 → 스트릭 리셋
+        _greedyStreak = 0;
+        _greedyMissedDays = 0;
+        _greedyStreakLastDate = '';
+      }
     }
 
     const data: MarketSentiment = { fearGreedScore: score, fearGreedLabel: label, vix, greedyStreak: _greedyStreak, updatedAt: new Date() };

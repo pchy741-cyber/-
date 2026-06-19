@@ -53,12 +53,11 @@ export function adjustPositionSizes(params: {
       // 예산 = baseBudget × convMult × regimeScale, 절대 상한으로 클램프
       const regimeScale = d.regime_position_scale ?? 1.0;
       const rawBudget = Math.floor(baseBudget * convMult * regimeScale);
-      const rawBudgetCapped = Math.min(rawBudget, absoluteCap);
-      // 1회 손실 ≤ 총자산 1.5% 하드캡 (리스크 절대 한도)
+      // 단일 캡 포인트: 절대상한(25%), 1회손실한도(1.5%÷SL), 원본예산 중 최소값
       const slPct = Math.abs(_params.stopLossPct) / 100;
       const maxBudgetByLoss =
-        totalAssets > 0 && slPct > 0 ? Math.floor((totalAssets * 0.015) / slPct) : rawBudgetCapped;
-      const budget = Math.min(rawBudgetCapped, maxBudgetByLoss);
+        totalAssets > 0 && slPct > 0 ? Math.floor((totalAssets * 0.015) / slPct) : Infinity;
+      const budget = Math.min(rawBudget, absoluteCap, maxBudgetByLoss);
       const targetQty = Math.max(1, Math.floor(budget / price));
       const currentQty = d.quantity ?? 0;
 

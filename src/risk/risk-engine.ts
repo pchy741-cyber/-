@@ -118,12 +118,13 @@ export class RiskEngine {
       const monthlyMddCheck = await this.checkMonthlyMDD(isPaper);
       if (!monthlyMddCheck.approved) return monthlyMddCheck;
     } else {
-      // 하드캡: ceoManual이라도 월간 MDD -15% 초과 시 절대 차단
+      // 하드캡: ceoManual이라도 MDD 한도의 150% 초과 시 절대 차단
+      const ceoHardCap = MDD_LIMIT.LIVE * 1.5; // e.g. 8% × 1.5 = 12%
       const snap = await getMonthlyMddSnapshot(isPaper);
-      if (snap.samples >= 2 && !snap.externalActivity && snap.mddPct >= 15) {
+      if (snap.samples >= 2 && !snap.externalActivity && snap.mddPct >= ceoHardCap) {
         return {
           approved: false,
-          reason: `🛑 월간 MDD 하드캡 초과: -${snap.mddPct.toFixed(1)}% (한도 -15%) — ceoManual도 차단`,
+          reason: `🛑 월간 MDD 하드캡 초과: -${snap.mddPct.toFixed(1)}% (한도 -${ceoHardCap}%) — ceoManual도 차단`,
         };
       }
     }

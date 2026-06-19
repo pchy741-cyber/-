@@ -511,12 +511,12 @@ export function getDynamicDomesticTpSl(h: DomesticTpSlHints): {
   sl = Math.round(Math.max(Math.min(sl, -1.5), -8.0) * 10) / 10;
 
   // ── R:R 비율 검증 — 확률싸움에서 비현실적 비율 방지 ──
-  // R:R = TP / |SL|, 1.5:1 ~ 4:1 범위 강제 (10:1 같은 비현실적 비율 차단)
+  // R:R = TP / |SL|, 1.5:1 ~ 4:1 범위 강제
   const rr = tp / Math.abs(sl);
   if (rr > 4.0) {
-    // R:R 너무 높음 → SL을 TP/4로 넓힘 (TP 유지, SL 조정)
-    sl = -Math.round((tp / 4.0) * 10) / 10;
-    parts.push('RR>4→조정');
+    // R:R 너무 높음 → TP를 |SL|×4로 줄임 (SL 유지, TP 축소 — 손실 확대 방지)
+    tp = Math.round(Math.abs(sl) * 4.0 * 10) / 10;
+    parts.push('RR>4→TP축소');
   } else if (rr < 1.5) {
     // R:R 너무 낮음 → TP를 |SL|×1.5로 올림
     tp = Math.round(Math.abs(sl) * 1.5 * 10) / 10;

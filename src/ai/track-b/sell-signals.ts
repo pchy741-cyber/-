@@ -458,7 +458,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         chain.target_profit_pct ?? STRATEGY_PARAMS[chain.strategy_mode as StrategyMode]?.takeProfitPct ?? 7;
       const chainSl = chain.stop_loss_pct ?? STRATEGY_PARAMS[chain.strategy_mode as StrategyMode]?.stopLossPct ?? -3;
       effectiveTp = Math.min(Number(chainTp), dyn.takeProfitPct); // chain TP 상한 — 설정값 초과 방지
-      effectiveSl = Math.min(Number(chainSl), dyn.stopLossPct); // 더 타이트한 SL
+      effectiveSl = Math.max(Number(chainSl), dyn.stopLossPct); // 더 타이트한 SL (음수이므로 max = 덜 부정적 = 타이트)
 
       // AI 약세 전환 + 수익 구간 → 빠른 수익 확정
       if (realtimeAiScore > 0 && realtimeAiScore < 55 && pnlPct > 1.0) {
@@ -586,7 +586,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
 
       // 2단계: TP+3% 도달 → 추가 35% 매도 (아직 잔여량 많으면)
       // 원래 수량 대비 현재 보유가 60%+ 남아있으면 아직 2단계 미실행
-      const origQty = (chain as any).original_quantity ?? chain.total_quantity;
+      const origQty = chain.total_quantity;
       const remainRatio = origQty > 0 ? chain.total_quantity / origQty : 1;
       if (remainRatio > 0.6 && pnlPct >= effectiveTp + 3.0) {
         const sellQty2 = Math.ceil(chain.total_quantity * 0.47); // 잔여의 ~47% (전체의 ~35%)
@@ -686,7 +686,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // 시그널 보정: 체결강도 < 80(매도세 압도) → 손절 타이트닝 (0.85x), 체결강도 > 120(매수세) → 1.1x 완화
     const sigIntensity = marketSignals?.get(chain.stock_code)?.tradingIntensity?.intensity ?? 0;
     const signalStopMult = sigIntensity > 0 ? (sigIntensity < 80 ? 0.85 : sigIntensity >= 120 ? 1.1 : 1.0) : 1.0;
-    const effectiveStop = Math.min(effectiveSl, dynamicStop) * stopWidenMultiplier * signalStopMult;
+    const effectiveStop = Math.max(effectiveSl, dynamicStop) * stopWidenMultiplier * signalStopMult;
     if (pnlPct <= effectiveStop) {
       // v4: 패닉매도 억제 & 대형포지션 부분손절 폐지
       // 이전: RSI<35+거래량급증 시 손절 스킵, 대형포지션 50% 부분손절 → 나머지 50% 추가 하락 → 손실 확대

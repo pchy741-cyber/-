@@ -16,6 +16,9 @@
 import { getPool } from '../db/client.js';
 import { getKSTNow } from '../utils/time.js';
 
+/** 외부 활동(매도/입출금) 감지 임계값: 고점 대비 이 비율 이하로 급감 시 외부 활동으로 판단 */
+const EXTERNAL_ACTIVITY_THRESHOLD = 0.5; // 50% (설정 가능)
+
 export interface MonthlyMddSnapshot {
   /** 월간 고점 (KRW) */
   peak: number;
@@ -64,7 +67,7 @@ export async function getMonthlyMddSnapshot(isPaper: boolean): Promise<MonthlyMd
 
   const peak = Math.max(...values);
   const latest = values[values.length - 1];
-  const externalActivity = peak > 0 && latest < peak * 0.5;
+  const externalActivity = peak > 0 && latest < peak * EXTERNAL_ACTIVITY_THRESHOLD;
   const mddPct = peak > 0 ? ((peak - latest) / peak) * 100 : 0;
 
   return { peak, latest, mddPct, externalActivity, samples: values.length };

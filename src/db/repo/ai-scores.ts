@@ -1,0 +1,84 @@
+import { isMemoryMode, queryWithRetry } from '../pool.js';
+import { memGetLatestScores, memUpsertAIScore } from '../memory-store.js';
+import type { AIScore } from '../models.js';
+
+export async function upsertAIScore(score: Omit<AIScore, 'id' | 'created_at'>) {
+  if (isMemoryMode()) {
+    memUpsertAIScore(score);
+    return;
+  }
+  await queryWithRetry(
+    `INSERT INTO ai_scores (stock_code, score_date, gemini_summary, composite_score,
+       fundamental_score, technical_score, sentiment_score, confidence, reasoning,
+       signal, target_price, stop_loss_price)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+     ON CONFLICT (stock_code, score_date) DO UPDATE SET
+       gemini_summary=$3, composite_score=$4, fundamental_score=$5,
+       technical_score=$6, sentiment_score=$7, confidence=$8, reasoning=$9,
+       signal=$10, target_price=$11, stop_loss_price=$12`,
+    [
+      score.stock_code,
+      score.score_date,
+      JSON.stringify(score.gemini_summary),
+      score.composite_score,
+      score.fundamental_score,
+      score.technical_score,
+      score.sentiment_score,
+      score.confidence,
+      score.reasoning,
+      score.signal,
+      score.target_price,
+      score.stop_loss_price,
+    ],
+  );
+}
+
+export async function getLatestScores(stockCodes: string[]): Promise<AIScore[]> {
+  if (!stockCodes || stockCodes.length === 0) return [];
+  const validCodes = stockCodes.filter((c) => c != null && c.length > 0);
+  if (validCodes.length === 0) return [];
+  if (isMemoryMode()) return memGetLatestScores(validCodes);
+
+  const today = new Date().toISOString().split('T')[0];
+  const placeholders = validCodes.map((_, i) => `$${i + 1}`).join(',');
+
+  // 오늘 스코어 먼저 조회
+  const { rows } = await queryWithRetry(
+    `SELECT * FROM ai_scores WHERE stock_code IN (${placeholders}) AND score_date = $${validCodes.length + 1}
+     AND composite_score > 0
+     ORDER BY composite_score DESC`,
+    [...validCodes, today],
+  );
+
+  if (rows.length > 0) return rows;
+
+  // 오늘 없으면 최근 7일 이내 스코어 fallback (주말/공휴일 대비)
+  const twoDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const { rows: fallbackRows } = await queryWithRetry(
+    `SELECT DISTINCT ON (stock_code) * FROM ai_scores
+     WHERE stock_code IN (${placeholders}) AND score_date >= $${validCodes.length + 1}
+     AND composite_score > 0
+     ORDER BY stock_code, score_date DESC, composite_score DESC`,
+    [...validCodes, twoDaysAgo],
+  );
+
+  return fallbackRows;
+}
+
+/** 오늘(또는 최근 7일) 채점된 전체 종목 점수 조회 — 워치리스트 범위 불일치 해결 */
+export async function getAllRecentScores(): Promise<AIScore[]> {
+  if (isMemoryMode()) return [];
+  const today = new Date().toISOString().split('T')[0];
+  const { rows } = await queryWithRetry(
+    `SELECT * FROM ai_scores WHERE score_date = $1 AND composite_score > 0 ORDER BY composite_score DESC`,
+    [today],
+  );
+  if (rows.length > 0) return rows;
+  // 오늘 없으면 최근 2일 fallback
+  const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const { rows: fallback } = await queryWithRetry(
+    `SELECT DISTINCT ON (stock_code) * FROM ai_scores WHERE score_date >= $1 AND composite_score > 0 ORDER BY stock_code, score_date DESC`,
+    [twoDaysAgo],
+  );
+  return fallback;
+}

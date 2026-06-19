@@ -125,6 +125,7 @@ export const StrategyConfigSchema = z.object({
   take_profit_pct: z.number(),
   strategy_document: z.string().optional().default(''),
   risk_prompt: z.string().optional().default(''),
+  use_dynamic_tpsl: z.boolean().default(false),
   ai_scoring_mode: z.enum(['fallback', 'ensemble']).default('fallback'),
   ensemble_config: z
     .object({

@@ -224,6 +224,8 @@ export function memUpsertAIScore(score: Omit<AIScore, 'id' | 'created_at'>) {
     Object.assign(existing, score);
   } else {
     store.aiScores.push({ ...score, id: uuid(), created_at: new Date().toISOString() } as AIScore);
+    // TTL: 48시간(200건) 초과 시 오래된 항목 제거
+    if (store.aiScores.length > 200) store.aiScores.splice(0, store.aiScores.length - 200);
   }
 }
 
@@ -266,6 +268,14 @@ export function memInsertOrder(order: Omit<Order, 'id' | 'created_at' | 'updated
   const id = uuid();
   const now = new Date().toISOString();
   store.orders.push({ ...order, id, created_at: now, updated_at: now } as Order);
+  // 주문 500건 초과 시 CLOSED/CANCELLED 된 오래된 항목 정리
+  if (store.orders.length > 500) {
+    const keepStatuses = new Set(['PENDING', 'PARTIAL']);
+    const active = store.orders.filter((o) => keepStatuses.has(o.status));
+    const inactive = store.orders.filter((o) => !keepStatuses.has(o.status));
+    store.orders.length = 0;
+    store.orders.push(...active, ...inactive.slice(-300));
+  }
   return id;
 }
 
@@ -294,6 +304,8 @@ export function memInsertSnapshot(snapshot: {
   positions: unknown;
 }) {
   store.snapshots.push({ ...snapshot, id: uuid(), snapshot_at: new Date().toISOString() });
+  // 스냅샷 100건 초과 시 오래된 항목 제거 (약 3일분 유지)
+  if (store.snapshots.length > 100) store.snapshots.splice(0, store.snapshots.length - 100);
 }
 
 export function memGetTodayStartSnapshot() {
@@ -314,8 +326,8 @@ export function memSetActiveStrategy(updates: Partial<StrategyConfig>): Strategy
 // ── System Log ──
 export function memLogSystem(level: string, component: string, message: string, details?: unknown) {
   store.systemLogs.push({ level, component, message, details: details ?? null });
-  // 최대 1000개만 보관
-  if (store.systemLogs.length > 1000) store.systemLogs.splice(0, store.systemLogs.length - 500);
+  // 최대 200개만 보관 (메모리 절약)
+  if (store.systemLogs.length > 200) store.systemLogs.splice(0, store.systemLogs.length - 100);
 }
 
 // ── Risk Events ──

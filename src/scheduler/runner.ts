@@ -364,7 +364,7 @@ export function startScheduler(): void {
   // Track B 중복 실행 방지 mutex (paper → live 순차 실행)
   let _trackBRunning = false;
   let _trackBStartedAt = 0;
-  const TRACK_B_MAX_MS = 960_000; // 16분
+  const TRACK_B_MAX_MS = 720_000; // 12분 (3분 간격 × 4 = 여유 포함)
   const runTrackBSafe = () => {
     // 안전장치: 이전 실행이 TRACK_B_MAX_MS 초과 시 stuck으로 간주, 강제 리셋
     if (_trackBRunning && Date.now() - _trackBStartedAt > TRACK_B_MAX_MS + 30_000) {
@@ -381,6 +381,28 @@ export function startScheduler(): void {
       .catch((e) => logger.error(`Track B 실행 오류: ${e}`, { component: 'SCHEDULER' }))
       .finally(() => {
         _trackBRunning = false;
+      });
+  };
+
+  // 해외 스케줄러 중복 실행 방지 mutex
+  let _overseasRunning = false;
+  let _overseasStartedAt = 0;
+  const OVERSEAS_MAX_MS = 600_000; // 10분
+  const runOverseasSafe = () => {
+    if (_overseasRunning && Date.now() - _overseasStartedAt > OVERSEAS_MAX_MS + 30_000) {
+      logger.error('🔧 Overseas stuck 감지 — 강제 리셋', { component: 'SCHEDULER' });
+      _overseasRunning = false;
+    }
+    if (_overseasRunning) {
+      logger.warn('⏭️ Overseas 이미 실행 중 — 스킵 (중복 방지)', { component: 'SCHEDULER' });
+      return;
+    }
+    _overseasRunning = true;
+    _overseasStartedAt = Date.now();
+    withTimeout('Overseas dual', () => runOverseasDual(), OVERSEAS_MAX_MS)
+      .catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }))
+      .finally(() => {
+        _overseasRunning = false;
       });
   };
 
@@ -946,7 +968,7 @@ export function startScheduler(): void {
       const { isUSDST } = await import('./overseas/session.js');
       if (isUSDST()) {
         logger.info('🇺🇸 서머타임 개장 22:30 즉시 트리거', { component: 'SCHEDULER' });
-        runOverseasDual().catch((e) => logger.error(`개장 트리거 실패: ${e}`, { component: 'SCHEDULER' }));
+        runOverseasSafe();
       }
     },
     { timezone: MARKET.TIMEZONE },
@@ -957,7 +979,7 @@ export function startScheduler(): void {
       const { isUSDST } = await import('./overseas/session.js');
       if (!isUSDST()) {
         logger.info('🇺🇸 겨울시간 개장 23:30 즉시 트리거', { component: 'SCHEDULER' });
-        runOverseasDual().catch((e) => logger.error(`개장 트리거 실패: ${e}`, { component: 'SCHEDULER' }));
+        runOverseasSafe();
       }
     },
     { timezone: MARKET.TIMEZONE },
@@ -968,28 +990,28 @@ export function startScheduler(): void {
   cron.schedule(
     '*/10 22 * * 1-5',
     () => {
-      runOverseasDual().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
+      runOverseasSafe();
     },
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
     '*/10 23 * * 1-5',
     () => {
-      runOverseasDual().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
+      runOverseasSafe();
     },
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
     '*/10 0-5 * * 2-6',
     () => {
-      runOverseasDual().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
+      runOverseasSafe();
     },
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
     '*/10 6 * * 2-6',
     () => {
-      runOverseasDual().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
+      runOverseasSafe();
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -1000,7 +1022,7 @@ export function startScheduler(): void {
   cron.schedule(
     '*/15 17-21 * * 1-5',
     () => {
-      runOverseasDual().catch((e) => logger.error(`프리마켓 감시 실패: ${e}`, { component: 'SCHEDULER' }));
+      runOverseasSafe();
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -1008,7 +1030,7 @@ export function startScheduler(): void {
   cron.schedule(
     '*/15 6-9 * * 2-6',
     () => {
-      runOverseasDual().catch((e) => logger.error(`포스트마켓 감시 실패: ${e}`, { component: 'SCHEDULER' }));
+      runOverseasSafe();
     },
     { timezone: MARKET.TIMEZONE },
   );

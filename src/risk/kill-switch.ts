@@ -334,10 +334,15 @@ async function loadKillSwitchState(isPaper: boolean, scope: KillSwitchScope): Pr
     const saved = JSON.parse(rows[0].value) as { active?: boolean; reason?: string; manual?: boolean };
     if (!saved.active) return;
 
-    // 연습모드 자동 킬스위치는 재시작 시 자동 해제
+    // 연습모드 자동 킬스위치는 재시작 시 자동 해제 + DB 기록 삭제
     if (isPaper && !saved.manual) {
       const scopeLabel = scope === 'OVERSEAS' ? '해외' : '국내';
       logger.info(`🔓 [모의][${scopeLabel}] 자동 Kill Switch 재시작 해제`, { component: 'KILL_SWITCH' });
+      // DB에서도 삭제하여 다음 재시작 시 불필요한 로드 방지
+      try {
+        const { getPool: getDbPool } = await import('../db/client.js');
+        await getDbPool().query(`DELETE FROM system_state WHERE key = $1`, [key]);
+      } catch { /* 삭제 실패 시 무시 — 인메모리 상태는 이미 리셋됨 */ }
       return;
     }
 

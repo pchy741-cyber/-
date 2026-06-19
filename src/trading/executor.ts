@@ -1,7 +1,7 @@
 import { hardInvalidateDashboardCache } from '../cache/dashboard-cache.js';
 import { invalidateStockCache } from '../cache/redis.js';
 import { OrderType, STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
-import { getCtxIsPaper } from '../config/context.js';
+import { getCtxIsPaper, runWithMode } from '../config/context.js';
 import { config } from '../config/index.js';
 import {
   getActiveStrategy,
@@ -19,7 +19,7 @@ import { getCurrentPrice, getDailyChart } from '../kis/market.js';
 import { cancelOrder, getOrderFills, type OrderResult, placeOrder } from '../kis/order.js';
 import { notifyBuy, notifySell } from '../notifications/web-push.js';
 import { PARK_STOCK_CODE } from '../ai/track-b/defense-park.js';
-import { recordSellForCooldown } from '../ai/track-b/pipeline.js';
+import { recordSellForCooldown } from '../ai/track-b/sell-cooldown.js';
 import { riskEngine } from '../risk/engine.js';
 import { reportError, reportSuccess } from '../risk/kill-switch.js';
 import { paperTradeOrder } from '../risk/paper.js';
@@ -467,8 +467,8 @@ export class TradeExecutor {
       if (mode !== 'SCALPING' && aiScore && aiScore >= 60) {
         const { getDynamicDomesticTpSl } = await import('../config/constants.js');
         // 자기학습 피드백: strategy_config에 학습된 TP/SL → 30% 블렌딩
-        const learnedTp = (dbStrategy as any)?.take_profit_pct as number | undefined;
-        const learnedSl = (dbStrategy as any)?.stop_loss_pct as number | undefined;
+        const learnedTp = dbStrategy?.take_profit_pct;
+        const learnedSl = dbStrategy?.stop_loss_pct;
         const dyn = getDynamicDomesticTpSl({ ...tpSlHints, score: aiScore, learnedTp, learnedSl });
         scoreParams = { takeProfitPct: dyn.takeProfitPct, stopLossPct: dyn.stopLossPct };
         logger.info(
@@ -477,8 +477,8 @@ export class TradeExecutor {
         );
       }
       let targetProfitPct =
-        scoreParams?.takeProfitPct ?? (dbStrategy as any)?.take_profit_pct ?? params.takeProfitPct;
-      let stopLossPct = scoreParams?.stopLossPct ?? (dbStrategy as any)?.stop_loss_pct ?? params.stopLossPct;
+        scoreParams?.takeProfitPct ?? dbStrategy?.take_profit_pct ?? params.takeProfitPct;
+      let stopLossPct = scoreParams?.stopLossPct ?? dbStrategy?.stop_loss_pct ?? params.stopLossPct;
 
       // ATR 기반 동적 손절 — 전략 손절폭보다 넓어지지 않도록 캡 적용
       try {
@@ -531,13 +531,15 @@ export class TradeExecutor {
               { component: 'EXECUTOR' },
             );
             setTimeout(() => {
-              this.executeAverageDown(stockCode, secondTranche, 'MARKET', undefined, `ScaleIn 2차/3: ${reasoning}`, true)
-                .catch((e) => logger.warn(`ScaleIn 2차 실패 ${stockCode}: ${(e as Error).message}`, { component: 'EXECUTOR' }));
+              runWithMode(isPaperSnapshot, () =>
+                this.executeAverageDown(stockCode, secondTranche, 'MARKET', undefined, `ScaleIn 2차/3: ${reasoning}`, true),
+              ).catch((e) => logger.warn(`ScaleIn 2차 실패 ${stockCode}: ${(e as Error).message}`, { component: 'EXECUTOR' }));
             }, 60_000);
             if (thirdTranche > 0) {
               setTimeout(() => {
-                this.executeAverageDown(stockCode, thirdTranche, 'MARKET', undefined, `ScaleIn 3차/3: ${reasoning}`, true)
-                  .catch((e) => logger.warn(`ScaleIn 3차 실패 ${stockCode}: ${(e as Error).message}`, { component: 'EXECUTOR' }));
+                runWithMode(isPaperSnapshot, () =>
+                  this.executeAverageDown(stockCode, thirdTranche, 'MARKET', undefined, `ScaleIn 3차/3: ${reasoning}`, true),
+                ).catch((e) => logger.warn(`ScaleIn 3차 실패 ${stockCode}: ${(e as Error).message}`, { component: 'EXECUTOR' }));
               }, 120_000);
             }
           }

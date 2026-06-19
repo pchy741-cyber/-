@@ -19,6 +19,16 @@ import { hardInvalidateMode } from './helpers.js';
 import { registerManualBuyRoutes } from './manual-buy.js';
 import { registerOverseasSellRoutes } from './overseas-sell.js';
 
+// trigger_source 화이트리스트 — 허용되지 않은 값은 MANUAL로 강제 전환
+const VALID_TRIGGER_SOURCES = new Set([
+  'MANUAL', 'AI', 'FORCE_CLOSE', 'TRAILING_STOP', 'HOLDING_CHECK', 'ESCAPE',
+  'CLAUDE', 'EXTERNAL', 'OVERSEAS', 'SCALPING', 'KILL_SWITCH', 'CEO',
+]);
+function sanitizeTriggerSource(raw: unknown): string {
+  const s = typeof raw === 'string' ? raw.trim().toUpperCase() : '';
+  return VALID_TRIGGER_SOURCES.has(s) ? s : 'MANUAL';
+}
+
 export const sellRoutes = new Hono();
 registerManualBuyRoutes(sellRoutes);
 registerOverseasSellRoutes(sellRoutes);
@@ -77,7 +87,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
   const chainId = c.req.param('chainId');
   try {
     const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
-    const triggerSource: string = (body.source as string) || 'MANUAL';
+    const triggerSource: string = sanitizeTriggerSource(body.source);
     const sellReason: string = (body.reason as string) || 'CEO 수동 매도';
 
     const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1 AND is_paper = $2', [
@@ -262,10 +272,10 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
   const stockCode = c.req.param('stockCode');
   try {
     const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
-    const triggerSource: string = (body.source as string) || 'MANUAL';
+    const triggerSource: string = sanitizeTriggerSource(body.source);
     const sellReason: string = (body.reason as string) || 'CEO 수동 매도';
-    // 대시보드 viewMode에서 is_paper를 전달받거나, 없으면 서버 모드로 폴백
-    const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : resolveRequestMode(c);
+    // 서버 세션에서 모드 결정 (클라이언트 is_paper는 신뢰하지 않음)
+    const isPaper: boolean = resolveRequestMode(c);
     const stockTradingMode = isPaper ? 'paper' : 'live';
 
     const { rows: openChains } = await getPool().query(

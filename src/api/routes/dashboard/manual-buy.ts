@@ -49,7 +49,7 @@ export function registerManualBuyRoutes(app: Hono) {
     const { MEGA_CAP_PRIORITY_CODES } = await import('../.././../ai/track-b/trading-rules.js');
 
     const dbStrategy = await getActiveStrategy().catch(() => null);
-    const useDynamic = (dbStrategy as any)?.use_dynamic_tpsl === true;
+    const useDynamic = dbStrategy?.use_dynamic_tpsl === true;
     let stopLossPct: number;
     if (aiScore >= 70 && useDynamic) {
       const { getDynamicDomesticTpSl } = await import('../../../config/constants.js');
@@ -116,7 +116,8 @@ export function registerManualBuyRoutes(app: Hono) {
       .replace(/\D/g, '');
     const { reasoning } = body;
     const aiScore = body.ai_score ?? 0;
-    const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : resolveRequestMode(c);
+    // 서버 세션에서 모드 결정 (클라이언트 is_paper는 힌트, resolveRequestMode가 최종 권한)
+    const isPaper: boolean = resolveRequestMode(c);
     const tradingMode = isPaper ? 'paper' : 'live';
     if (!stock_code || stock_code.length !== 6) {
       return c.json({ error: 'stock_code는 숫자 6자리여야 합니다' }, 400);
@@ -124,7 +125,7 @@ export function registerManualBuyRoutes(app: Hono) {
 
     // 동적 TP/SL
     const dbStrategy = await getActiveStrategy().catch(() => null);
-    const useDynamic = (dbStrategy as any)?.use_dynamic_tpsl === true;
+    const useDynamic = dbStrategy?.use_dynamic_tpsl === true;
     let takeProfitPct: number;
     let stopLossPct: number;
     let tpSlLabel = '';

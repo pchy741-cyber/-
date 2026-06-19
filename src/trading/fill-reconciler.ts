@@ -80,7 +80,9 @@ export async function reconcilePendingOrders(): Promise<void> {
           // BUY 전량 체결 + chain_id 없음 → 체인 신규 생성 (지정가 지연 체결 복구, audit P1)
           if (order.side === 'BUY' && isFullFill && !order.chain_id) {
             try {
-              const totalInvested = fill.filledPrice * fill.filledQty;
+              const rawInvested = fill.filledPrice * fill.filledQty;
+              const totalInvested = rawInvested + Math.round(rawInvested * KR_FEE.BUY_FEE_PCT);
+              const avgBuyWithFee = Math.round(totalInvested / fill.filledQty);
               const {
                 rows: [newChain],
               } = await getPool().query<{ id: string }>(
@@ -88,7 +90,7 @@ export async function reconcilePendingOrders(): Promise<void> {
                    (stock_code, status, strategy_mode, avg_buy_price, total_quantity, total_invested, is_paper, opened_at)
                  VALUES ($1, 'OPEN', 'SWING', $2, $3, $4, $5, NOW())
                  RETURNING id`,
-                [order.stock_code, fill.filledPrice, fill.filledQty, totalInvested, getCtxIsPaper()],
+                [order.stock_code, avgBuyWithFee, fill.filledQty, totalInvested, getCtxIsPaper()],
               );
               await updateOrderByKisOrderNo(kisOrderNo, { chain_id: newChain.id });
               logger.info(
@@ -171,7 +173,9 @@ export async function reconcilePendingOrders(): Promise<void> {
           try {
             const latestFill = await getOrderFills(kisOrderNo);
             if (latestFill && latestFill.filledQty > 0) {
-              const totalInvested = latestFill.filledPrice * latestFill.filledQty;
+              const rawInvested = latestFill.filledPrice * latestFill.filledQty;
+              const totalInvested = rawInvested + Math.round(rawInvested * KR_FEE.BUY_FEE_PCT);
+              const avgBuyWithFee = Math.round(totalInvested / latestFill.filledQty);
               const {
                 rows: [chain],
               } = await getPool().query<{ id: string }>(
@@ -179,7 +183,7 @@ export async function reconcilePendingOrders(): Promise<void> {
                    (stock_code, status, strategy_mode, avg_buy_price, total_quantity, total_invested, is_paper, opened_at)
                  VALUES ($1, 'OPEN', 'SWING', $2, $3, $4, false, NOW())
                  RETURNING id`,
-                [order.stock_code, latestFill.filledPrice, latestFill.filledQty, totalInvested],
+                [order.stock_code, avgBuyWithFee, latestFill.filledQty, totalInvested],
               );
               await getPool().query(
                 `UPDATE orders SET status = 'FILLED', filled_quantity = $2, filled_price = $3, chain_id = $4, kis_status = 'FILLED_RECOVERED'
@@ -373,7 +377,7 @@ async function _reconcileKisSyncExternalSells(
     }
     if (sellPrice <= 0) sellPrice = snap.avgBuyPrice;
 
-    const pnl = sellPrice * (1 - KR_FEE.SELL_FEE_PCT) * snap.quantity - snap.avgBuyPrice * snap.quantity;
+    const pnl = sellPrice * (1 - KR_FEE.SELL_FEE_PCT) * snap.quantity - snap.avgBuyPrice * (1 + KR_FEE.BUY_FEE_PCT) * snap.quantity;
     const pnlPct = snap.avgBuyPrice > 0 ? (((sellPrice - snap.avgBuyPrice) / snap.avgBuyPrice) * 100).toFixed(2) : '?';
     const pnlPctNum = snap.avgBuyPrice > 0 && sellPrice > 0 ? ((sellPrice - snap.avgBuyPrice) / snap.avgBuyPrice) * 100 : null;
     const invested = snap.avgBuyPrice * snap.quantity;

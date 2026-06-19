@@ -50,7 +50,7 @@ export {
 } from './overseas/session.js';
 
 import { fetchKospiRegime } from '../ai/track-b/market-regime.js';
-import { logSystemEvent } from '../api/routes/health.js';
+import { logSystemEvent } from '../utils/system-events.js';
 import { getOverseasDynamic } from '../config/constants.js';
 import { getAllocRisk } from '../db/alloc-risk-cache.js';
 import { isLoopActive, reportNoBuyCandidates } from './loop-mode.js';

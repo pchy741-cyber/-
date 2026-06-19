@@ -11,7 +11,7 @@
  * 7. 중복 체인 (같은 종목 OPEN 2개 이상)
  */
 
-import { logSystemEvent } from '../api/routes/health.js';
+import { logSystemEvent } from '../utils/system-events.js';
 import { getPool } from '../db/client.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';

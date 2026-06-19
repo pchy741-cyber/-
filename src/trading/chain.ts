@@ -95,9 +95,19 @@ export class ChainManager {
         current_averaging_count: averagingCount,
       });
     } else {
-      // SELECT FOR UPDATE — 동시 물타기 방지 (동일 체인 동시 접근 시 후발 요청은 대기)
+      // SELECT FOR UPDATE + SERIALIZABLE — 동시 물타기 방지 (동일 체인 동시 접근 시 후발 요청은 대기)
       await withTransaction(async (client) => {
-        await client.query('SELECT id FROM transaction_chains WHERE id = $1 FOR UPDATE', [chainId]);
+        const { rows: chainRows } = await client.query(
+          'SELECT id, current_averaging_count, max_averaging_count FROM transaction_chains WHERE id = $1 FOR UPDATE',
+          [chainId],
+        );
+        const chainRow = chainRows[0];
+        if (!chainRow) return;
+        // CAS: 물타기 횟수 초과 방지
+        if (chainRow.max_averaging_count != null && Number(chainRow.current_averaging_count) >= Number(chainRow.max_averaging_count)) {
+          logger.warn(`⚠️ 물타기 횟수 초과: 체인 ${chainId.slice(0, 8)} ${chainRow.current_averaging_count}/${chainRow.max_averaging_count} — 스킵`, { component: 'CHAIN' });
+          return;
+        }
         const { rows } = await client.query(
           `SELECT side, status, filled_price, filled_quantity FROM orders WHERE chain_id = $1 ORDER BY created_at ASC`,
           [chainId],
@@ -111,7 +121,7 @@ export class ChainManager {
           `UPDATE transaction_chains SET status='AVERAGING', avg_buy_price=$1, total_quantity=$2, total_invested=$3, current_averaging_count=$4 WHERE id=$5`,
           [newAvgPrice, totalQty, totalCost, averagingCount, chainId],
         );
-      });
+      }, 'SERIALIZABLE');
     }
 
     logger.info(
@@ -151,6 +161,10 @@ export class ChainManager {
         const freshChain = rows[0];
         if (!freshChain) return;
         const freshQty = Number(freshChain.total_quantity);
+        if (freshQty <= 0 || freshQty < sellQty) {
+          logger.warn(`⚠️ 부분익절 수량 부족: 체인 ${chainId.slice(0, 8)} 보유 ${freshQty}주 < 요청 ${sellQty}주 — 스킵`, { component: 'CHAIN' });
+          return;
+        }
         const freshPnl = Number(freshChain.realized_pnl);
         const remQty = freshQty - sellQty;
         if (remQty > 0) {
@@ -166,7 +180,7 @@ export class ChainManager {
             [freshPnl + profit, new Date().toISOString(), `익절: +${((sellPrice / avgBuy - 1) * 100).toFixed(1)}%`, chainId, sellPrice, avgBuy],
           );
         }
-      });
+      }, 'SERIALIZABLE');
     }
 
     const remainingQty = chain.total_quantity - sellQty;
@@ -200,16 +214,20 @@ export class ChainManager {
     } else {
       await withTransaction(async (client) => {
         const { rows } = await client.query(
-          'SELECT realized_pnl FROM transaction_chains WHERE id = $1 FOR UPDATE',
+          'SELECT realized_pnl, total_quantity FROM transaction_chains WHERE id = $1 FOR UPDATE',
           [chainId],
         );
         if (!rows[0]) return;
+        if (Number(rows[0].total_quantity) <= 0) {
+          logger.warn(`⚠️ 체인 이미 청산됨: ${chainId.slice(0, 8)} — 중복 청산 스킵`, { component: 'CHAIN' });
+          return;
+        }
         const freshPnl = Number(rows[0].realized_pnl);
         await client.query(
           `UPDATE transaction_chains SET status='CLOSED', total_quantity=0, realized_pnl=$1, pnl_pct=$2, closed_at=$3, close_reason=$4 WHERE id=$5`,
           [freshPnl + profit, Math.round(pnlPctNum * 100) / 100, new Date().toISOString(), reason, chainId],
         );
-      });
+      }, 'SERIALIZABLE');
     }
 
     const pnlPct = pnlPctNum.toFixed(1);
@@ -245,11 +263,11 @@ export class ChainManager {
             AND created_at <= COALESCE($2::timestamptz, NOW())
           ORDER BY created_at DESC
           LIMIT 1`,
-        [chain.stock_code, (chain as any).opened_at ?? null],
+        [chain.stock_code, chain.opened_at ?? null],
       );
       const score = scoreRows[0];
-      const holdingDays = (chain as any).opened_at
-        ? Math.round((Date.now() - new Date((chain as any).opened_at).getTime()) / 86400000)
+      const holdingDays = chain.opened_at
+        ? Math.round((Date.now() - new Date(chain.opened_at).getTime()) / 86400000)
         : null;
       const outcome = pnlPct > 0.1 ? 'WIN' : pnlPct < -0.1 ? 'LOSS' : 'BREAK_EVEN';
 
@@ -335,8 +353,8 @@ export class ChainManager {
           outcome,
           holdingDays,
           reason,
-          (chain as any).strategy_mode ?? null,
-          (chain as any).is_paper ?? getCtxIsPaper(),
+          chain.strategy_mode ?? null,
+          chain.is_paper ?? getCtxIsPaper(),
           entryFingerprint,
         ],
       );

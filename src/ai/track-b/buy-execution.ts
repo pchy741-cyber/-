@@ -73,20 +73,21 @@ async function calcDomesticKelly(days: number = 30): Promise<DomesticKellyResult
     const q = 1 - winRate;
     const fullKelly = (b * winRate - q) / b;
 
-    // Kelly 음수 = "배팅하지 마라" → 하드코딩 비율로 폴백 (null 반환)
-    // 승률 22% 미만에서만 폴백 (21% WR에서도 Kelly 활성 → 자동 소형 포지션)
-    if (fullKelly <= 0 || winRate < 0.22) {
+    // Kelly 음수 = "배팅하지 마라" → 0으로 클램프 후 하드코딩 비율로 폴백 (null 반환)
+    if (fullKelly <= 0) {
       logger.info(
-        `📊 국내 Kelly (${days}d, ${total}건): 승률 ${(winRate * 100).toFixed(0)}%, fullKelly=${(fullKelly * 100).toFixed(1)}% → 음수/저승률 → 하드코딩 비율 사용`,
+        `📊 국내 Kelly (${days}d, ${total}건): 승률 ${(winRate * 100).toFixed(0)}%, fullKelly=${(fullKelly * 100).toFixed(1)}% → 음수 → 하드코딩 비율 사용`,
         { component: 'TRACK_B' },
       );
       return null; // 하드코딩 allocPct로 폴백
     }
 
-    // 적응형 Kelly: 연속 스케일링 — 샘플 보정 + 승률 50%부터 Half-Kelly 적용
+    // 적응형 Kelly: 연속 스케일링 — 샘플 보정 + 승률별 분수 적용
     const confidenceAdj = 1.0 - Math.max(0, (30 - total) / 30) * 0.3; // 샘플 보정 0.7~1.0
-    const kellyFraction = winRate >= 0.50 ? 0.5 * confidenceAdj : 0.25;
-    const quarterKelly = Math.max(0.03, Math.min(0.18, fullKelly * kellyFraction));
+    const kellyFraction = winRate >= 0.70 ? 0.5 * confidenceAdj  // 고승률: Half-Kelly
+                        : winRate >= 0.50 ? 0.4 * confidenceAdj  // 중승률: 40% Kelly
+                        : 0.25;                                   // 저승률: Quarter-Kelly
+    const quarterKelly = Math.max(0.03, Math.min(0.25, fullKelly * kellyFraction));
 
     logger.info(
       `📊 국내 Kelly (${days}d, ${total}건): 승률 ${(winRate * 100).toFixed(0)}%, 평균수익 +${avgWin.toFixed(1)}%, 평균손실 -${avgLoss.toFixed(1)}% → ${kellyFraction === 0.5 ? 'Half' : 'Quarter'}-Kelly ${(quarterKelly * 100).toFixed(1)}%`,
