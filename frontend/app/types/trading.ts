@@ -80,6 +80,7 @@ export interface StrategyConfig {
   buy_threshold?: number;
   stop_loss_pct?: number;
   take_profit_pct?: number;
+  use_dynamic_tpsl?: boolean;
   notebooklm_prompt?: string;
   gemini_prompt?: string;
   gpt_prompt?: string;
