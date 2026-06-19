@@ -64,9 +64,13 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
   const krUnderperform = chains.length > 0 && usHoldings.length > 0 && krActualPct < usActualPct - 2;
   const p = dash?.portfolio;
 
+  const isPaper = viewMode === 'paper';
   const applyPreset = async (kr: number, us: number) => {
     try {
-      const upd = await api(`/portfolio/allocation?viewMode=${viewMode ?? 'live'}`, { method: 'PUT', body: JSON.stringify({ ...allocConfig, kr_pct: kr, us_pct: us }) });
+      const upd = await api(`/portfolio/allocation?viewMode=${viewMode ?? 'live'}`, {
+        method: 'PUT',
+        body: JSON.stringify({ ...allocConfig, kr_pct: kr, us_pct: us, isPaper }),
+      });
       setAllocConfig(upd);
     } catch {}
   };
@@ -169,9 +173,9 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
         {/* 프리셋 버튼 */}
         <div className="flex gap-1.5 flex-wrap">
           {[
-            { label: '국내 70%', kr: 70, us: 30 },
             { label: '반반 50%', kr: 50, us: 50 },
             { label: '해외 70%', kr: 30, us: 70 },
+            { label: '해외 100%', kr: 0, us: 100 },
           ].map(({ label, kr, us }) => (
             <button key={label} onClick={() => applyPreset(kr, us)}
               className={`flex-1 text-[10px] py-1.5 rounded-lg font-semibold transition-all ${krTarget === kr ? 'bg-blue-500/30 text-blue-300 border border-blue-500/40' : 'bg-white/[0.04] text-slate-400 hover:bg-white/[0.08] hover:text-slate-300'}`}>

@@ -846,8 +846,8 @@ settingsRoutes.get('/portfolio/allocation/both', async (c) => {
       max_daily_trades: 3,
     };
     const paper = paperRes.rows[0] ?? {
-      kr_pct: 70,
-      us_pct: 30,
+      kr_pct: 50,
+      us_pct: 50,
       position_cap_pct: 40,
       max_invested_pct: 97,
       cash_reserve_pct: 3,
