@@ -91,6 +91,16 @@ function classifySignal(text: string): 'BUY_TARGET' | 'LOSS_ALERT' | 'PRICE_ALER
 }
 
 kakaoAlertRoutes.post('/kakao-alert', async (c) => {
+  // ── 인증: X-Webhook-Secret 헤더 검증 (Tasker에서 동일 시크릿 설정 필요) ──
+  const webhookSecret = process.env.KAKAO_WEBHOOK_SECRET;
+  if (webhookSecret) {
+    const provided = c.req.header('X-Webhook-Secret') ?? '';
+    if (provided !== webhookSecret) {
+      logger.warn(`[KAKAO_ALERT] 인증 실패 — 잘못된 시크릿`, { component: 'KAKAO' });
+      return c.json({ error: 'unauthorized' }, 401);
+    }
+  }
+
   let body: { app?: string; title?: string; text?: string; package?: string };
   try {
     body = await c.req.json();
@@ -233,6 +243,12 @@ kakaoAlertRoutes.post('/kakao-alert', async (c) => {
 
 /** 테스트용: 알림 파싱만 확인 (실제 실행 없음) */
 kakaoAlertRoutes.post('/kakao-alert/test', async (c) => {
+  const webhookSecret = process.env.KAKAO_WEBHOOK_SECRET;
+  if (webhookSecret) {
+    const provided = c.req.header('X-Webhook-Secret') ?? '';
+    if (provided !== webhookSecret) return c.json({ error: 'unauthorized' }, 401);
+  }
+
   let body: { text?: string };
   try {
     body = await c.req.json();

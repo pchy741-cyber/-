@@ -123,6 +123,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
 
     // ── BreakEvenGuard: +1.5% 도달 시 SL → 본절(0%)로 자동 상향 ────────────
     // pnl +1.5% 도달 순간 기존 SL(예: -3%)을 0%로 이동 → 원금 손실 방지
+    // WHERE stop_loss_pct < 0: 낙관적 잠금 — 동시 사이클 중복 업데이트 방지 (이미 0이면 rowCount=0)
     if (
       chain.strategy_mode !== 'SCALPING' &&
       chain.status !== 'PROFIT_TAKING' &&
@@ -131,15 +132,18 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       Number(chain.stop_loss_pct) < 0
     ) {
       try {
-        await getPool().query(
-          `UPDATE transaction_chains SET stop_loss_pct = 0 WHERE id = $1 AND stop_loss_pct < 0`,
+        const { rowCount } = await getPool().query(
+          `UPDATE transaction_chains SET stop_loss_pct = 0, updated_at = NOW() WHERE id = $1 AND stop_loss_pct < 0`,
           [chain.id],
         );
-        (chain as any).stop_loss_pct = 0;
-        logger.info(
-          `🛡️ BreakEvenGuard: ${chain.stock_code} SL → 0%(본절) [pnl +${pnlPct.toFixed(1)}%]`,
-          { component: 'TRACK_B' },
-        );
+        if (rowCount && rowCount > 0) {
+          (chain as any).stop_loss_pct = 0;
+          logger.info(
+            `🛡️ BreakEvenGuard: ${chain.stock_code} SL → 0%(본절) [pnl +${pnlPct.toFixed(1)}%]`,
+            { component: 'TRACK_B' },
+          );
+        }
+        // rowCount=0: 다른 사이클이 이미 업데이트 → 무시 (정상)
       } catch (e) {
         logger.warn(`BreakEvenGuard DB 실패 (${chain.stock_code}): ${(e as Error).message}`, { component: 'TRACK_B' });
       }

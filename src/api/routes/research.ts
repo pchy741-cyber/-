@@ -6,15 +6,48 @@ import { runDartResearch, runDartResearchBatch } from '../../automation/dart-res
 
 export const researchRoutes = new Hono();
 
+// ── SSRF 방어: 허용 도메인 화이트리스트 ──
+const ALLOWED_DOMAINS = [
+  'naver.com', 'finance.naver.com', 'n.news.naver.com', 'm.stock.naver.com',
+  'hankyung.com', 'mk.co.kr', 'sedaily.com', 'edaily.co.kr',
+  'etnews.com', 'zdnet.co.kr', 'bloter.net',
+  'dart.fss.or.kr', 'kind.krx.co.kr',
+  'investing.com', 'seekingalpha.com', 'bloomberg.com', 'reuters.com',
+  'finance.yahoo.com',
+];
+
+function isAllowedDomain(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return ALLOWED_DOMAINS.some((d) => hostname === d || hostname.endsWith('.' + d));
+  } catch {
+    return false;
+  }
+}
+
 // URL에서 텍스트 추출 (메타태그 + 본문 텍스트)
 async function crawlUrl(url: string): Promise<{ title: string; content: string }> {
+  if (!isAllowedDomain(url)) {
+    throw new Error(`허용되지 않은 도메인입니다. 허용 목록: ${ALLOWED_DOMAINS.slice(0, 5).join(', ')} 등`);
+  }
+
   const res = await fetch(url, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36',
       Accept: 'text/html,application/xhtml+xml,*/*',
     },
     signal: AbortSignal.timeout(15000),
+    redirect: 'manual', // 리다이렉트 자동 추적 차단 (SSRF 방지)
   });
+
+  // 리다이렉트 응답: 대상 도메인도 화이트리스트 검증
+  if (res.status >= 300 && res.status < 400) {
+    const location = res.headers.get('location');
+    if (!location || !isAllowedDomain(location)) {
+      throw new Error('리다이렉트 대상이 허용 도메인이 아닙니다');
+    }
+    throw new Error(`리다이렉트 감지 (${res.status}→${location}) — 직접 URL을 입력하세요`);
+  }
 
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
