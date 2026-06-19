@@ -109,14 +109,24 @@ async function loadPaperLedger(force = false): Promise<PaperLedgerState> {
 export async function restorePaperState(): Promise<void> {
   if (paperRestored) return;
   try {
+    const pool = getPool();
     const state = await loadPaperLedger(true);
     paperRealizedPnl = state.realizedPnl;
-    paperCashUsed = Object.values(state.holdings).reduce((sum, h) => sum + h.totalCost, 0);
+
+    // paperCashUsed도 transaction_chains OPEN 기반으로 초기화 (FIFO 유령 비용 방지)
+    const { rows: chainCostRows } = await pool.query(
+      `SELECT COALESCE(SUM(total_invested), 0)::numeric AS cost
+       FROM transaction_chains
+       WHERE is_paper = true
+         AND status IN ('OPEN','AVERAGING','PROFIT_TAKING')
+         AND stock_code ~ '^[0-9]{6}$'`,
+    );
+    paperCashUsed = Number(chainCostRows[0]?.cost ?? 0);
     paperRestored = true;
 
     const posCount = Object.values(state.holdings).filter((h) => h.qty > 0).length;
     logger.info(
-      `📦 Paper 상태 복원: 총매수 ${state.totalBought.toLocaleString()}원, 총매도 ${state.totalSold.toLocaleString()}원, 보유 ${posCount}종목, 투자중 ${Math.round(paperCashUsed).toLocaleString()}원, 실현PnL ${Math.round(paperRealizedPnl).toLocaleString()}원`,
+      `📦 Paper 상태 복원: 총매수 ${state.totalBought.toLocaleString()}원, 총매도 ${state.totalSold.toLocaleString()}원, 보유 ${posCount}종목, 투자중(chains) ${Math.round(paperCashUsed).toLocaleString()}원, 실현PnL ${Math.round(paperRealizedPnl).toLocaleString()}원`,
       { component: 'PAPER' },
     );
   } catch (err) {
@@ -183,14 +193,23 @@ async function getPaperPositions(): Promise<Position[]> {
 }
 
 export async function getPaperBalance(): Promise<AccountBalance> {
+  const pool = getPool();
   const state = await loadPaperLedger();
   paperRealizedPnl = state.realizedPnl;
 
-  // 매수원가 기준 (시가평가액이 아님) — 현금은 체결시에만 변동, 주가 변동과 무관
-  const holdingsCost = Object.values(state.holdings)
-    .filter((h) => h.qty > 0)
-    .reduce((s, h) => s + h.totalCost, 0);
+  // holdingsCost: FIFO 원장 대신 transaction_chains OPEN 기반 계산
+  // FIFO는 SELL 주문 없이 청산된 포지션(p_arch 아카이브 등)의 BUY 비용이 유령으로 잔류하는 버그가 있음
+  const { rows: chainCostRows } = await pool.query(
+    `SELECT COALESCE(SUM(total_invested), 0)::numeric AS cost
+     FROM transaction_chains
+     WHERE is_paper = true
+       AND status IN ('OPEN','AVERAGING','PROFIT_TAKING')
+       AND stock_code ~ '^[0-9]{6}$'`,
+  );
+  const holdingsCost = Number(chainCostRows[0]?.cost ?? 0);
   paperCashUsed = holdingsCost;
+
+  logger.debug(`📊 Paper holdingsCost: chains=${Math.round(holdingsCost).toLocaleString()}원 (FIFO=${Math.round(Object.values(state.holdings).filter(h => h.qty > 0).reduce((s, h) => s + h.totalCost, 0)).toLocaleString()}원)`, { component: 'PAPER' });
 
   const cash = Math.max(0, Math.round(PAPER_INITIAL_CAPITAL + paperRealizedPnl - holdingsCost));
 

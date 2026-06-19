@@ -248,8 +248,11 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     const invested = avgPrice * qty;
     const unrealizedPnl = currentPrice > 0 ? (currentPrice - avgPrice) * qty : 0;
     const unrealizedPnlPct = currentPrice > 0 && avgPrice > 0 ? ((currentPrice - avgPrice) / avgPrice) * 100 : 0;
-    totalChainInvested += invested;
-    totalChainPnl += unrealizedPnl;
+    // 국내 종목(6자리 숫자)만 KRW totalChainInvested에 합산 — 해외 종목(알파벳)은 overseasTotalInvestedUsd로 별도 처리
+    if (/^\d{6}$/.test(ch.stock_code)) {
+      totalChainInvested += invested;
+      totalChainPnl += unrealizedPnl;
+    }
     const isCode = (n: any) => !n || String(n) === ch.stock_code || /^\d{6}$/.test(String(n));
     const known = getKnownStockName(ch.stock_code);
     const resolvedName =
