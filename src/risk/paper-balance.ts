@@ -122,6 +122,39 @@ export async function restorePaperState(): Promise<void> {
          AND stock_code ~ '^[0-9]{6}$'`,
     );
     paperCashUsed = Number(chainCostRows[0]?.cost ?? 0);
+
+    // Ghost chains 자동 정리: holdingsCost > 시드 110% → paper_archived된 orders와 연결된 chains 잔류
+    if (paperCashUsed > PAPER_INITIAL_CAPITAL * 1.1) {
+      const { rowCount: ghostClosed } = await pool.query(
+        `UPDATE transaction_chains
+         SET status = 'CLOSED', close_reason = 'ghost_cleanup', closed_at = NOW()
+         WHERE is_paper = true
+           AND status IN ('OPEN','AVERAGING','PROFIT_TAKING')
+           AND stock_code ~ '^[0-9]{6}$'
+           AND NOT EXISTS (
+             SELECT 1 FROM orders o
+             WHERE o.chain_id = transaction_chains.id
+               AND o.status = 'FILLED'
+               AND o.trading_mode = 'paper'
+           )`,
+      );
+      if ((ghostClosed ?? 0) > 0) {
+        const { rows: recalc } = await pool.query(
+          `SELECT COALESCE(SUM(total_invested), 0)::numeric AS cost
+           FROM transaction_chains
+           WHERE is_paper = true
+             AND status IN ('OPEN','AVERAGING','PROFIT_TAKING')
+             AND stock_code ~ '^[0-9]{6}$'`,
+        );
+        paperCashUsed = Number(recalc[0]?.cost ?? 0);
+        paperLedgerCache = null;
+        logger.info(
+          `🔧 Ghost chains ${ghostClosed}건 자동 정리 → holdingsCost: ${Math.round(paperCashUsed).toLocaleString()}원`,
+          { component: 'PAPER' },
+        );
+      }
+    }
+
     paperRestored = true;
 
     const posCount = Object.values(state.holdings).filter((h) => h.qty > 0).length;

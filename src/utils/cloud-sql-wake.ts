@@ -269,34 +269,21 @@ async function setCloudRunMinInstances(min: number): Promise<void> {
 }
 
 /**
- * 주말 절전 — Cloud Run min=0 + Cloud SQL NEVER
- * 토요일 09:00 KST cron에서 호출
- * 평일: DB keepalive ping(15분)으로 항상 활성 유지 (runner.ts)
- * 주말: Cloud SQL 중지 — 사용자 대시보드 접속 시 touchActivity → 헬스워처가 자동 기상
+ * 주말 절전 — Cloud Run min=0만 수행 (Cloud SQL은 항상 ALWAYS 유지)
+ * DB 중지 시 재기동 2~3분 delay + 상태 꼬임 문제로 비활성화
  */
 export async function weekendHibernate(): Promise<void> {
-  // 장중(평일 09:00~15:30) 보호 — 실수로 호출돼도 절전 진입 차단
   if (isInMarketHours()) {
     logger.warn('🌙 주말 절전 거부 — 장중 보호 중 (09:00~15:30 평일)', { component: 'HIBERNATE' });
     return;
   }
-  logger.info('🌙 주말 절전 — Cloud Run min=0 + Cloud SQL NEVER', { component: 'HIBERNATE' });
+  logger.info('🌙 주말 절전 — Cloud Run min=0 (Cloud SQL은 ALWAYS 유지)', { component: 'HIBERNATE' });
 
   try {
     await setCloudRunMinInstances(0);
     logger.info('🌙 Cloud Run min=0 완료', { component: 'HIBERNATE' });
   } catch (e) {
     logger.warn(`🚀 Cloud Run min=0 실패: ${e}`, { component: 'HIBERNATE' });
-  }
-
-  try {
-    const token = await getAccessToken();
-    if (token) {
-      await stopInstance(token);
-      logger.info('🌙 Cloud SQL NEVER 전환 완료 (대시보드 접속 시 자동 기상)', { component: 'HIBERNATE' });
-    }
-  } catch (e) {
-    logger.warn(`🌙 Cloud SQL 중지 실패 (비치명): ${e}`, { component: 'HIBERNATE' });
   }
 }
 
