@@ -245,12 +245,12 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     const currentPrice = priceMap.get(ch.stock_code) ?? 0;
     const avgPrice = Number(ch.avg_buy_price) || 0;
     const qty = Number(ch.total_quantity) || 0;
-    const invested = avgPrice * qty;
+    const total_invested = avgPrice * qty;
     const unrealizedPnl = currentPrice > 0 ? (currentPrice - avgPrice) * qty : 0;
     const unrealizedPnlPct = currentPrice > 0 && avgPrice > 0 ? ((currentPrice - avgPrice) / avgPrice) * 100 : 0;
     // 국내 종목(6자리 숫자)만 KRW totalChainInvested에 합산 — 해외 종목(알파벳)은 overseasTotalInvestedUsd로 별도 처리
     if (/^\d{6}$/.test(ch.stock_code)) {
-      totalChainInvested += invested;
+      totalChainInvested += total_invested;
       totalChainPnl += unrealizedPnl;
     }
     const isCode = (n: any) => !n || String(n) === ch.stock_code || /^\d{6}$/.test(String(n));
@@ -260,7 +260,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
         (n) => !isCode(n) && !isInvalidStockName(n, ch.stock_code),
       ) ?? ch.stock_code;
     const isParking = defensePark?.isActive && ch.stock_code === defensePark?.parkStockCode;
-    return { ...ch, stock_name: resolvedName, currentPrice, unrealizedPnl, unrealizedPnlPct, invested, isParking };
+    return { ...ch, stock_name: resolvedName, currentPrice, unrealizedPnl, unrealizedPnlPct, total_invested, isParking };
   });
 
   // 🔄 LIVE 뷰: KIS 실계좌 포지션 중 체인이 없는 종목을 가상 체인으로 표시
@@ -593,7 +593,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
 
   // 비중(weight) 계산 — grandTotalValue 기준 시가 기반 통합 비중
   for (const ch of enrichedChains as any[]) {
-    const marketVal = ch.currentPrice > 0 ? ch.currentPrice * Number(ch.total_quantity || 0) : ch.invested; // 시세 없으면 원가 폴백
+    const marketVal = ch.currentPrice > 0 ? ch.currentPrice * Number(ch.total_quantity || 0) : ch.total_invested; // 시세 없으면 원가 폴백
     ch.weight = grandTotalValue > 0 ? Math.round((marketVal / grandTotalValue) * 1000) / 10 : 0;
   }
   for (const h of overseasHoldings as any[]) {
@@ -612,7 +612,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     if (group.length === 1) return { ...group[0], chainIds: [group[0].id] };
     const primary = group[0];
     const totalQty = group.reduce((s: number, c: any) => s + Number(c.total_quantity || 0), 0);
-    const totalInv = group.reduce((s: number, c: any) => s + (c.invested || 0), 0);
+    const totalInv = group.reduce((s: number, c: any) => s + (c.total_invested || 0), 0);
     const weightedAvg = totalQty > 0 ? totalInv / totalQty : 0;
     const cp = primary.currentPrice;
     const mergedPnl = cp > 0 ? (cp - weightedAvg) * totalQty : 0;
@@ -622,7 +622,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       ...primary,
       avg_buy_price: weightedAvg,
       total_quantity: totalQty,
-      invested: totalInv,
+      total_invested: totalInv,
       unrealizedPnl: mergedPnl,
       unrealizedPnlPct: mergedPnlPct,
       weight: totalWeight,
