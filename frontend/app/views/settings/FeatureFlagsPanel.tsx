@@ -28,7 +28,7 @@ export function FeatureFlagsPanel({ toast, confirm, onFlagChange }: { toast: Toa
   };
 
   const flagMeta: Record<string, { icon: string; label: string; desc: string }> = {
-    dividend_investing: { icon: '💰', label: '월배당 투자', desc: '월배당 ETF/주식으로 안정적 현금흐름 (장기)' },
+    dividend_investing: { icon: '💰', label: '월배당 투자', desc: '월배당 ETF 자동투자 — QYLD/JEPQ/XYLD 등 고배당 ETF에 분산투자, 매월 배당금 자동 재투자(DRIP)' },
   };
 
   if (flags.length === 0) return (

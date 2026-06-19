@@ -105,7 +105,7 @@ portfolioAnalysisRoutes.post('/sync-positions', async (c) => {
           filled_quantity: pos.quantity,
           filled_price: pos.avgBuyPrice,
           status: 'FILLED',
-          trading_mode: config.tradingMode,
+          trading_mode: viewIsPaper ? 'paper' : 'live',
           trigger_source: 'SYNC',
           ai_reasoning: 'KIS 잔고 동기화 — 기존 보유 포지션 복구',
         });

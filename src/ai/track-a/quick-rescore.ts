@@ -49,7 +49,7 @@ async function getCurrentRegime(): Promise<string> {
     // mode → regime 매핑
     if (mode === 'SCALPING') return 'BULLISH';
     if (mode === 'DEFENSE') return 'BEARISH';
-    if (mode === 'DIVIDEND') return 'PANIC';
+    if (mode === 'DIVIDEND') return 'BEARISH';
     return 'NEUTRAL';
   } catch {
     return _lastRegime;

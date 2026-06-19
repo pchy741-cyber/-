@@ -90,6 +90,10 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
   const { h: _scalpH, m: _scalpM } = getKstScalpTime();
   const decisions: TradeDecision[] = [];
 
+  // 학습된 TrailingStop 배수 로드 (sniperType별 최적 drop 비율)
+  const { getLearnedParameters } = await import('../../automation/self-learning/index.js');
+  const learnedParams = await getLearnedParameters().catch((): { trailingStopMultipliers: Record<string, number> } => ({ trailingStopMultipliers: {} }));
+
   // 포트폴리오 전체 PnL 계산 (급락 보호용 — 매 사이클 1회)
   let _portfolioCost = 0;
   let _portfolioValue = 0;
@@ -218,10 +222,10 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     }
     // ────────────────────────────────────────────────────────────────────
 
-    // ── TrailingStop 1%: +1.5% 이후 최고점 대비 -1.0% 하락 시 전량 매도 ──────
+    // ── TrailingStop: +1.5% 이후 최고점 대비 동적 하락폭 시 전량 매도 ──────
     // BreakEvenGuard(SL=0%)와 연동 2중 수익 보호 체계
     //   · +1.5% 도달 → SL=0%로 상향(BreakEvenGuard) + peak 추적 시작(TrailingStop)
-    //   · peak 대비 -1.0% 하락 → 전량 시장가 매도 (이익 보존)
+    //   · peak 대비 학습된 drop% 하락 → 전량 시장가 매도 (이익 보존)
     // PROFIT_TAKING 체인도 포함: ScaleOut 후 나머지 50%에도 동일 규칙 적용
     if (chain.strategy_mode !== 'SCALPING') {
       const peakMap = _getPeakMap();
@@ -230,10 +234,25 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       peakMap.set(chain.stock_code, curPeak);
 
       if (curPeak >= 1.5 && chain.total_quantity > 0) {
+        // 학습된 ATR 배수로 sniperType별 drop 비율 동적 조정
+        // 기본 -1.0%, 학습 데이터 있으면 해당 sniperType의 최적 배수 적용
+        const triggerSrcForTrail = (chain as Record<string, unknown>).trigger_source as string | undefined;
+        const sniperTypeMatch = triggerSrcForTrail?.match(/SNIPER[_\s]?(\w+)/);
+        const chainSniperType = sniperTypeMatch?.[1] ?? null;
+        const learnedMult = chainSniperType
+          ? learnedParams.trailingStopMultipliers[chainSniperType]
+          : undefined;
+        // 학습 배수: ATR 기반 비율 (예: 0.8 → -0.8%, 1.5 → -1.5%)
+        // 안전 범위: -0.5% ~ -2.5% (너무 타이트하면 잦은 매도, 너무 넓으면 수익 반납)
+        const trailingDrop = learnedMult != null
+          ? -Math.max(0.5, Math.min(2.5, learnedMult))
+          : -1.0;
+
         const dropFromPeak = pnlPct - curPeak;
-        if (dropFromPeak <= -1.0) {
+        if (dropFromPeak <= trailingDrop) {
+          const dropLabel = trailingDrop !== -1.0 ? ` (학습배수 ${(-trailingDrop).toFixed(1)}%)` : '';
           logger.info(
-            `📉 TrailingStop: ${chain.stock_code} 고점 +${curPeak.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}% (${dropFromPeak.toFixed(1)}%)`,
+            `📉 TrailingStop: ${chain.stock_code} 고점 +${curPeak.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}% (${dropFromPeak.toFixed(1)}%)${dropLabel}`,
             { component: 'TRACK_B' },
           );
           decisions.push({
@@ -241,7 +260,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
             stock_code: chain.stock_code,
             quantity: chain.total_quantity,
             price_type: 'MARKET',
-            reasoning: `TrailingStop: 고점 +${curPeak.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}% (고점대비 ${dropFromPeak.toFixed(1)}%)`,
+            reasoning: `TrailingStop: 고점 +${curPeak.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}% (고점대비 ${dropFromPeak.toFixed(1)}%${dropLabel})`,
             confidence: 0.90,
           });
           processedSellChains.add(chain.id);

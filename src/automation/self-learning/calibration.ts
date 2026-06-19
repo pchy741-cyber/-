@@ -1,7 +1,8 @@
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, logSystem } from '../../db/client.js';
+import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
-import type { LearnedInsight } from './index.js';
+import type { InsightParamChange, LearnedInsight } from './index.js';
 
 const now = new Date().toISOString();
 
@@ -235,6 +236,110 @@ export async function calibrateScoreTierParams(): Promise<void> {
   }
 }
 
+/**
+ * 앙상블 가중치 자동 튜닝 — 최근 30일 모델별 실거래 성과 기반
+ *
+ * 1. score_accuracy + ai_scores에서 모델별 참여 거래의 승률/PnL 분석
+ * 2. 가중치 = normalize(win_rate × avg_positive_pnl)
+ * 3. 안전범위: 각 모델 최소 0.10, 최대 0.50
+ * 4. paper + live 동시 업데이트
+ */
+export async function autoTuneEnsembleWeights(): Promise<void> {
+  const isPaper = getCtxIsPaper();
+  try {
+    // 모델별 참여 거래 성과 분석 (최근 30일)
+    const { rows: modelStats } = await getPool().query(
+      `SELECT
+         ai.model,
+         COUNT(*)::int AS total,
+         SUM(CASE WHEN sa.outcome = 'WIN' THEN 1 ELSE 0 END)::int AS wins,
+         ROUND(AVG(CASE WHEN sa.realized_pnl_pct > 0 THEN sa.realized_pnl_pct ELSE 0 END)::numeric, 3) AS avg_positive_pnl
+       FROM ai_scores ai
+       JOIN score_accuracy sa ON ai.stock_code = sa.stock_code
+         AND sa.recorded_at >= ai.scored_at - INTERVAL '1 day'
+         AND sa.recorded_at <= ai.scored_at + INTERVAL '7 days'
+       WHERE ai.scored_at >= NOW() - INTERVAL '30 days'
+         AND sa.is_paper = $1
+       GROUP BY ai.model
+       HAVING COUNT(*) >= 5`,
+      [isPaper],
+    );
+
+    if (modelStats.length < 2) {
+      logger.info('앙상블 튜닝: 모델 성과 데이터 부족 (최소 2개 모델, 각 5건 이상 필요)', { component: 'LEARN' });
+      return;
+    }
+
+    // 모델별 성과 점수 = win_rate × avg_positive_pnl
+    const MODEL_KEYS = ['gemini', 'gpt', 'claude', 'rss'] as const;
+    const scores: Record<string, number> = {};
+    for (const row of modelStats) {
+      const model = String(row.model).toLowerCase();
+      if (!MODEL_KEYS.includes(model as any)) continue;
+      const winRate = row.total > 0 ? row.wins / row.total : 0;
+      const avgPnl = Math.max(Number(row.avg_positive_pnl), 0.01);
+      scores[model] = winRate * avgPnl;
+    }
+
+    if (Object.keys(scores).length < 2) return;
+
+    // 데이터 없는 모델은 최소 점수 부여
+    for (const key of MODEL_KEYS) {
+      if (!(key in scores)) scores[key] = 0.01;
+    }
+
+    // 정규화 → 가중치 (최소 0.10, 최대 0.50)
+    const totalScore = Object.values(scores).reduce((s, v) => s + v, 0);
+    const weights: Record<string, number> = {};
+    for (const [model, score] of Object.entries(scores)) {
+      const raw = score / totalScore;
+      weights[model] = Math.min(0.50, Math.max(0.10, raw));
+    }
+
+    // 재정규화 (합계 = 1.0)
+    const sum = Object.values(weights).reduce((s, v) => s + v, 0);
+    for (const key of Object.keys(weights)) {
+      weights[key] = Math.round((weights[key] / sum) * 100) / 100;
+    }
+
+    // 기존 가중치 조회 (변경 로깅용)
+    const { rows: stratRows } = await getPool().query(
+      `SELECT ensemble_config FROM strategy_config WHERE is_active = true AND is_paper = $1 LIMIT 1`,
+      [isPaper],
+    );
+    const oldConfig = stratRows[0]?.ensemble_config as { weights?: Record<string, number> } | null;
+    const oldWeights = oldConfig?.weights ?? {};
+
+    // paper + live 동시 업데이트
+    const ensembleUpdate = JSON.stringify({
+      weights,
+      strategy: 'weighted_avg',
+      minModels: 2,
+    });
+
+    await getPool().query(
+      `UPDATE strategy_config SET ensemble_config = $1::jsonb, updated_at = NOW() WHERE is_active = true AND is_paper = $2`,
+      [ensembleUpdate, isPaper],
+    );
+
+    // 변경 로그
+    const changes = Object.entries(weights)
+      .map(([m, w]) => {
+        const old = oldWeights[m] ?? 0;
+        return `${m.charAt(0).toUpperCase() + m.slice(1)} ${(old * 100).toFixed(0)}%→${(w * 100).toFixed(0)}%`;
+      })
+      .join(', ');
+
+    logger.info(`🎯 앙상블 가중치 자동조정 (${isPaper ? '연습' : '실전'}): ${changes}`, { component: 'LEARN' });
+    await logSystem('INFO', 'LEARN', `앙상블 가중치 자동조정: ${changes}`).catch(() => {});
+    await sendTelegramMessage(
+      `🎯 *앙상블 가중치 자동조정* (${isPaper ? '연습' : '실전'})\n${changes}`,
+    ).catch(() => {});
+  } catch (err) {
+    logger.warn(`앙상블 가중치 튜닝 실패: ${err}`, { component: 'LEARN' });
+  }
+}
+
 export async function validatePromotedInsights(): Promise<void> {
   const { rows: promoted } = await getPool().query(
     `SELECT * FROM learned_insights
@@ -295,5 +400,254 @@ export async function validatePromotedInsights(): Promise<void> {
         { component: 'LEARN' },
       );
     }
+  }
+}
+
+/**
+ * 적용된 인사이트의 효과를 추적하고 악화 시 자동 롤백
+ *
+ * 적용 후 14일 경과한 인사이트만 평가:
+ * - score_accuracy 테이블에서 적용 전후 승률/PnL 비교
+ * - 성과 악화 판정: 승률 10%p 이상 하락 OR 평균 PnL 부호 반전
+ * - 악화 시: strategy_config 롤백 + is_applied=false + is_dismissed=true
+ */
+export async function evaluateAppliedInsights(): Promise<void> {
+  const isPaper = getCtxIsPaper();
+  try {
+    const { rows: applied } = await getPool().query(
+      `SELECT * FROM learned_insights
+       WHERE is_applied = true
+         AND applied_at IS NOT NULL
+         AND applied_at <= NOW() - INTERVAL '14 days'
+         AND COALESCE(is_dismissed, false) IS NOT TRUE
+         AND is_paper = $1`,
+      [isPaper],
+    );
+
+    if (applied.length === 0) return;
+
+    for (const insight of applied) {
+      const appliedAt = insight.applied_at;
+      if (!appliedAt) continue;
+
+      // 적용 전 14일간의 성과
+      const { rows: beforeRows } = await getPool().query(
+        `SELECT
+           COUNT(*)::int AS total,
+           SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END)::int AS wins,
+           ROUND(AVG(realized_pnl_pct)::numeric, 2) AS avg_pnl
+         FROM score_accuracy
+         WHERE recorded_at BETWEEN ($1::timestamptz - INTERVAL '14 days') AND $1::timestamptz
+           AND is_paper = $2`,
+        [appliedAt, isPaper],
+      );
+
+      // 적용 후 14일간의 성과
+      const { rows: afterRows } = await getPool().query(
+        `SELECT
+           COUNT(*)::int AS total,
+           SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END)::int AS wins,
+           ROUND(AVG(realized_pnl_pct)::numeric, 2) AS avg_pnl
+         FROM score_accuracy
+         WHERE recorded_at BETWEEN $1::timestamptz AND ($1::timestamptz + INTERVAL '14 days')
+           AND is_paper = $2`,
+        [appliedAt, isPaper],
+      );
+
+      const before = beforeRows[0];
+      const after = afterRows[0];
+
+      // 최소 5건 이상 데이터 필요
+      if (!before || !after || before.total < 5 || after.total < 5) continue;
+
+      const beforeWinRate = before.wins / before.total;
+      const afterWinRate = after.wins / after.total;
+      const beforeAvgPnl = Number(before.avg_pnl);
+      const afterAvgPnl = Number(after.avg_pnl);
+
+      // 악화 판정: 승률 10%p 이상 하락 OR 평균 PnL 부호 반전 (양→음)
+      const winRateDropped = afterWinRate < beforeWinRate - 0.10;
+      const pnlFlipped = beforeAvgPnl > 0 && afterAvgPnl < 0;
+      const isWorsened = winRateDropped || pnlFlipped;
+
+      if (!isWorsened) {
+        logger.info(
+          `✅ 인사이트 효과 양호: ${String(insight.insight).slice(0, 40)}... (승률 ${(beforeWinRate * 100).toFixed(0)}%→${(afterWinRate * 100).toFixed(0)}%, PnL ${beforeAvgPnl}→${afterAvgPnl})`,
+          { component: 'LEARN' },
+        );
+        continue;
+      }
+
+      // 롤백: details에서 이전값 복원
+      const details = insight.details as Record<string, any> | null;
+      const previousValue = details?.previous_value;
+      const appliedField = details?.applied_field;
+
+      if (previousValue != null && appliedField) {
+        const ALLOWED_FIELDS = ['stop_loss_pct', 'take_profit_pct', 'buy_threshold', 'mode'];
+        if (ALLOWED_FIELDS.includes(appliedField)) {
+          await getPool().query(
+            `UPDATE strategy_config SET ${appliedField} = $1 WHERE is_active = true AND is_paper = $2`,
+            [previousValue, isPaper],
+          );
+          logger.info(
+            `🔄 인사이트 롤백: ${appliedField} → ${previousValue} (이전값 복원)`,
+            { component: 'LEARN' },
+          );
+        }
+      }
+
+      // 인사이트 비활성화
+      await getPool().query(
+        `UPDATE learned_insights SET is_applied = false, is_dismissed = true WHERE id = $1`,
+        [insight.id],
+      );
+
+      const reason = winRateDropped
+        ? `승률 ${(beforeWinRate * 100).toFixed(0)}%→${(afterWinRate * 100).toFixed(0)}% (${((afterWinRate - beforeWinRate) * 100).toFixed(1)}%p 하락)`
+        : `평균PnL ${beforeAvgPnl}%→${afterAvgPnl}% (부호 반전)`;
+
+      await logSystem('WARN', 'LEARN', `인사이트 자동 롤백: ${reason} — ${String(insight.insight).slice(0, 50)}`).catch(() => {});
+      await sendTelegramMessage(
+        `🚫 *인사이트 자동 롤백*\n${reason}\n• ${String(insight.insight).slice(0, 80)}`,
+      ).catch(() => {});
+
+      logger.warn(
+        `🚫 인사이트 롤백: ${String(insight.insight).slice(0, 50)}... — ${reason}`,
+        { component: 'LEARN' },
+      );
+    }
+  } catch (err) {
+    logger.warn(`인사이트 효과 평가 실패: ${err}`, { component: 'LEARN' });
+  }
+}
+
+/**
+ * Paper 인사이트 → Live 자동 프로모션
+ *
+ * 조건: confidence >= 0.75, sample_count >= 10, paramChange 있음
+ * 이미 같은 field가 live에 promote된 인사이트 있으면 스킵
+ * promote 시 live strategy_config에 paramChange 즉시 반영
+ */
+export async function autoPromotePaperInsights(): Promise<void> {
+  try {
+    // Paper 인사이트 중 프로모션 대상 조회
+    const { rows: candidates } = await getPool().query(
+      `SELECT * FROM learned_insights
+       WHERE is_paper = true
+         AND confidence >= 0.75
+         AND sample_count >= 10
+         AND param_change IS NOT NULL
+         AND COALESCE(is_dismissed, false) IS NOT TRUE
+         AND COALESCE(is_promoted, false) IS NOT TRUE`,
+    );
+
+    if (candidates.length === 0) return;
+
+    // 이미 promote된 live 인사이트의 field 목록
+    const { rows: existingPromoted } = await getPool().query(
+      `SELECT param_change->>'field' AS field FROM learned_insights
+       WHERE is_paper = false
+         AND source_mode = 'promoted_from_paper'
+         AND COALESCE(is_dismissed, false) IS NOT TRUE`,
+    );
+    const promotedFields = new Set(existingPromoted.map((r: any) => r.field));
+
+    // Live strategy_config 조회
+    const { rows: liveStratRows } = await getPool().query(
+      `SELECT * FROM strategy_config WHERE is_active = true AND is_paper = false LIMIT 1`,
+    );
+    const liveStrategy = liveStratRows[0];
+    if (!liveStrategy) {
+      logger.warn('자동 프로모션: live strategy_config 없음 — 스킵', { component: 'LEARN' });
+      return;
+    }
+
+    const ALLOWED_FIELDS = ['stop_loss_pct', 'take_profit_pct', 'buy_threshold', 'mode'];
+    const PARAM_RANGES: Record<string, { min: number; max: number }> = {
+      stop_loss_pct: { min: -30, max: -1 },
+      take_profit_pct: { min: 0.5, max: 50 },
+      buy_threshold: { min: 0, max: 100 },
+    };
+
+    const promoted: string[] = [];
+
+    for (const candidate of candidates) {
+      const paramChange = candidate.param_change as InsightParamChange;
+      if (!paramChange?.field) continue;
+
+      // 이미 같은 field가 promote 되어 있으면 스킵
+      if (promotedFields.has(paramChange.field)) continue;
+
+      // 허용 필드 검증
+      if (!ALLOWED_FIELDS.includes(paramChange.field)) continue;
+
+      // 값 범위 검증
+      const range = PARAM_RANGES[paramChange.field];
+      if (range && typeof paramChange.value === 'number') {
+        if (paramChange.value < range.min || paramChange.value > range.max) continue;
+      }
+
+      const oldVal = liveStrategy[paramChange.field];
+      if (oldVal === paramChange.value) continue;
+
+      // Live learned_insights에 promote된 행 생성
+      const promotedConfidence = Math.round(candidate.confidence * 0.8 * 100) / 100;
+      await getPool().query(
+        `INSERT INTO learned_insights
+         (category, insight, confidence, sample_count, last_updated, details, recommendation,
+          param_change, is_paper, is_manual, source_mode, promoted_at, live_validation_status)
+         VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, false, true, 'promoted_from_paper', NOW(), 'pending')
+         ON CONFLICT (category, insight, is_paper) DO UPDATE
+           SET confidence = EXCLUDED.confidence,
+               sample_count = EXCLUDED.sample_count,
+               last_updated = EXCLUDED.last_updated,
+               source_mode = EXCLUDED.source_mode,
+               promoted_at = EXCLUDED.promoted_at,
+               live_validation_status = EXCLUDED.live_validation_status`,
+        [
+          candidate.category,
+          candidate.insight,
+          promotedConfidence,
+          candidate.sample_count,
+          JSON.stringify({
+            ...((candidate.details as Record<string, unknown>) ?? {}),
+            previous_value: oldVal,
+            applied_field: paramChange.field,
+            promoted_from_paper_id: candidate.id,
+          }),
+          candidate.recommendation,
+          JSON.stringify(paramChange),
+        ],
+      );
+
+      // Live strategy_config에 paramChange 즉시 반영
+      await getPool().query(
+        `UPDATE strategy_config SET ${paramChange.field} = $1 WHERE is_active = true AND is_paper = false`,
+        [paramChange.value],
+      );
+
+      // Paper 원본에 promoted 마크
+      await getPool().query(
+        `UPDATE learned_insights SET is_promoted = true WHERE id = $1`,
+        [candidate.id],
+      );
+
+      promotedFields.add(paramChange.field);
+      promoted.push(`${paramChange.field}: ${oldVal} → ${paramChange.value}`);
+      logger.info(
+        `🔄 연습→실전 프로모션: ${paramChange.field}=${paramChange.value} (confidence=${promotedConfidence})`,
+        { component: 'LEARN' },
+      );
+    }
+
+    if (promoted.length > 0) {
+      await logSystem('INFO', 'LEARN', `연습→실전 자동 튜닝: ${promoted.join(', ')}`).catch(() => {});
+      await sendTelegramMessage(
+        `🔄 *연습→실전 자동 튜닝*\n${promoted.map((p) => `• ${p}`).join('\n')}`,
+      ).catch(() => {});
+    }
+  } catch (err) {
+    logger.warn(`자동 프로모션 실패: ${err}`, { component: 'LEARN' });
   }
 }

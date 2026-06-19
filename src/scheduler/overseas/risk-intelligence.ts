@@ -380,7 +380,7 @@ export function calcDynamicTpSl(params: {
   const roundTripFeePct = OVERSEAS_FEE_PCT * 2 * 100; // 0.7%
   const tpFloor = baseTp + roundTripFeePct;
   const tpCeil = isHighBeta ? 40.0 : isMediumBeta ? 35.0 : isDefense ? 25.0 : 35.0;
-  const tpPct = Math.min(
+  let tpPct = Math.min(
     tpCeil,
     Math.max(tpFloor, baseTp + roundTripFeePct + momentumExt + overboughtCut + aiTpBonus + scoreTpBonus + vixTpAdj),
   );
@@ -401,6 +401,14 @@ export function calcDynamicTpSl(params: {
     }
   }
 
+  // ── R:R 비율 검증 — 국내 getDynamicDomesticTpSl과 동일 1.5:1~4:1 범위 강제 ──
+  const rr = tpPct / slPct;
+  if (rr > 4.0) {
+    tpPct = Math.round(slPct * 4.0 * 10) / 10;
+  } else if (rr < 1.5) {
+    tpPct = Math.round(slPct * 1.5 * 10) / 10;
+  }
+
   const parts: string[] = [`base${baseTp}`];
   if (momentumExt) parts.push(`mom${momentumExt > 0 ? '+' : ''}${momentumExt}`);
   if (overboughtCut) parts.push(`rsi${overboughtCut}`);
@@ -408,6 +416,8 @@ export function calcDynamicTpSl(params: {
   if (scoreTpBonus) parts.push(`s${aiScore}+${scoreTpBonus}`);
   if (vixTpAdj) parts.push(`VIX${vixTpAdj > 0 ? '+' : ''}${vixTpAdj}`);
   if (atrPct && atrPct > 0) parts.push(`ATR${atrPct.toFixed(1)}`);
+  if (rr > 4.0) parts.push('RR>4→TP축소');
+  else if (rr < 1.5) parts.push('RR<1.5→조정');
 
   return { tpPct, slPct, tpLabel: parts.join('/') };
 }

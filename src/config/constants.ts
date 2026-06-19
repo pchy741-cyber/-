@@ -171,7 +171,7 @@ export const STRATEGY_PARAMS = {
     // │ R:R = 6:2.5 = 2.4:1 / 손익분기 승률 29.4% (보수적)                   │
     // │ 익일 강제청산 없음 — 최대 5영업일 보유 후 시간손절                    │
     // └────────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 99, // v10.8: 0→99 (WR17%, 에지 없음 → 사실상 비활성화)
+    buyThreshold: 99, // v10.8: 0→99 — 메인 파이프라인 차단 (사이드채널 주입 전용: closing-bell-job, eod-bluechip)
     splitCount: 1, // 분할 없음 — 시간외 단일가 1회
     averageDownPct: 0,
     maxAveragingCount: 0,
@@ -266,19 +266,29 @@ export const KIS_TR_ID = {
   },
 } as const;
 
-// ── 점수 기반 동적 익절/손절 파라미터 (2026-06-12 강화) ──
-// 매수 당시 AI 점수 → 확신 티어별 최적 TP/SL 계산
-// CEO 철학: "점수 낮으면 1%라도 빨리 익절, 점수 높으면 5%까지 기다림"
-//   • 60-69 (마진컬): 1.5% 익절 + 1.0% 손절 → 1.5:1 R:R, 빨리 빠짐
-//   • 70-79 (보통): 3.0% 익절 + 1.5% 손절 → 2.0:1 R:R
-//   • 80-89 (고확신): 5.0% 익절 + 2.0% 손절 → 2.5:1 R:R
-//   • 90+  (엘리트): 8.0% 익절 + 3.0% 손절 → 2.67:1 R:R
-// 핵심: 낮은 점수일수록 TP를 작게 → 5%까지 기다리다 -4%로 손실확정 패턴 차단
+// ── 점수 기반 동적 익절/손절 파라미터 (v13: 5단계 + R:R guard) ──
+// getDynamicDomesticTpSl 5단계 베이스 + R:R 1.5:1~4:1 검증 통합
+//   • <80  (저확신):  5.0% TP / -4.0% SL → R:R 1.25→1.5 조정
+//   • 80-82 (중확신): 6.0% TP / -3.8% SL → R:R 1.58:1
+//   • 83-87 (고확신): 7.0% TP / -3.5% SL → R:R 2.0:1
+//   • 88-92 (초고확신): 8.0% TP / -3.3% SL → R:R 2.42:1
+//   • 93+  (최고확신): 9.0% TP / -3.0% SL → R:R 3.0:1
+// 핵심: 저점수도 SL 넓혀 노이즈 손절 방지 + R:R guard로 비현실적 비율 차단
 export function getScoreBasedParams(score: number): { takeProfitPct: number; stopLossPct: number } {
-  if (score >= 90) return { takeProfitPct: 8.0, stopLossPct: -3.0 }; // 엘리트: 2.67:1
-  if (score >= 80) return { takeProfitPct: 5.0, stopLossPct: -2.0 }; // 고확신: 2.5:1
-  if (score >= 70) return { takeProfitPct: 3.0, stopLossPct: -1.5 }; // 보통: 2.0:1
-  return { takeProfitPct: 1.5, stopLossPct: -1.0 }; // 마진컬(60-69): 1.5:1 빠른 회전
+  let tp: number;
+  let sl: number;
+  if (score >= 93) { tp = 9.0; sl = -3.0; }
+  else if (score >= 88) { tp = 8.0; sl = -3.3; }
+  else if (score >= 83) { tp = 7.0; sl = -3.5; }
+  else if (score >= 80) { tp = 6.0; sl = -3.8; }
+  else { tp = 5.0; sl = -4.0; }
+
+  // R:R guard (1.5:1 ~ 4:1)
+  const rr = tp / Math.abs(sl);
+  if (rr > 4.0) tp = Math.round(Math.abs(sl) * 4.0 * 10) / 10;
+  else if (rr < 1.5) tp = Math.round(Math.abs(sl) * 1.5 * 10) / 10;
+
+  return { takeProfitPct: tp, stopLossPct: sl };
 }
 
 // ── 동적 포지션 사이징 — 황금비율: 장이 나쁘면 매수 없고, 매수하면 그만큼 확실한 것 ──
@@ -638,10 +648,12 @@ export function getOverseasDynamic(portfolioUsd: number, isPaper = false, posCap
   const posPct = tier === 'large' ? Math.min(0.18, posCapPct) : posCapPct;
   const holdDays = tier === 'micro' ? 14 : tier === 'small' ? 21 : 30;
 
-  const maxPos = Math.max(2, Math.min(8, Math.floor(1 / posPct)));
+  const maxPos = isPaper
+    ? 15                                                    // Paper: 15종목 고정 (전수조사)
+    : Math.max(2, Math.min(8, Math.floor(1 / posPct)));
   return {
     maxPositions: maxPos,
-    positionSizeUsd: Math.round(Math.min(p * posCapPct, 5000)), // DB position_cap_pct 기반
+    positionSizeUsd: Math.round(Math.min(p * posCapPct, isPaper ? 8000 : 5000)), // Paper: 상한 완화
     positionPct: posPct,
     parkingCashBuffer: Math.round(p * 0.05), // 포트폴리오 5%
     maxHoldDays: holdDays,

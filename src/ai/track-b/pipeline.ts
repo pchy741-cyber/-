@@ -419,6 +419,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const highScoreCount = scores.filter((s) => (s.composite_score ?? 0) >= 90).length;
     const autoShouldSniper =
       dbMode === 'SWING' && highScoreCount >= 1 && !autoShouldDefense && dailyLoss.dailyPnlPct > -1.0;
+    // SNIPER→SWING 자동 복귀: DB=SNIPER이지만 90점+ 종목 소멸 시
+    const autoShouldRevertFromSniper =
+      dbMode === 'SNIPER' && highScoreCount === 0 && !autoShouldDefense;
 
     const effectiveModeRaw: StrategyMode = isPastScalpDeadline
       ? 'SWING'
@@ -426,11 +429,13 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         ? 'DEFENSE'
         : autoShouldSniper
           ? 'SNIPER'
-          : autoShouldRevertSwing
+          : autoShouldRevertFromSniper
             ? 'SWING'
-            : scores.length === 0 && mode === 'DEFENSE'
+            : autoShouldRevertSwing
               ? 'SWING'
-              : mode;
+              : scores.length === 0 && mode === 'DEFENSE'
+                ? 'SWING'
+                : mode;
     // Paper는 Live의 DEFENSE 전파 차단 — 연습은 항상 SWING 이상으로 실행
     const effectiveMode: StrategyMode = ctxIsPaper && effectiveModeRaw === 'DEFENSE' ? 'SWING' : effectiveModeRaw;
     // Paper DB행 자가 복구: Paper 행이 DEFENSE로 오염된 경우 자동으로 SWING 복귀 (멱등 조건)
@@ -483,9 +488,33 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           })
           .catch((e: Error) => logger.warn(`모드 전환 DB 실패: ${e.message}`, { component: 'TRACK_B' }));
     } else if (autoShouldSniper) {
-      logger.info(`🎯 자동 SNIPER 모드: 90점+ ${highScoreCount}종목 감지 → 고확신 집중 포착 (TP +8%, SL -4%)`, {
+      logger.info(`🎯 자동 SNIPER 모드: 90점+ ${highScoreCount}종목 감지 → 고확신 집중 포착 (TP +8%, SL -3%)`, {
         component: 'TRACK_B',
       });
+      // DB 모드 전환 (SWING → SNIPER) — Live 행만
+      if (!ctxIsPaper)
+        getPool()
+          .query(
+            `UPDATE strategy_config SET mode='SNIPER', updated_at=NOW() WHERE is_active=true AND mode='SWING' AND is_paper=false`,
+          )
+          .then(({ rowCount }) => {
+            if (rowCount && rowCount > 0)
+              logger.info('✅ DB 모드 자동전환: SWING → SNIPER (90점+ 감지)', { component: 'TRACK_B' });
+          })
+          .catch((e: Error) => logger.warn(`SNIPER 전환 DB 실패: ${e.message}`, { component: 'TRACK_B' }));
+    } else if (autoShouldRevertFromSniper) {
+      logger.info('🟢 자동 SWING 복귀: 90점+ 종목 소멸 → SNIPER 해제', { component: 'TRACK_B' });
+      // DB 모드 복귀 (SNIPER → SWING) — Live 행만
+      if (!ctxIsPaper)
+        getPool()
+          .query(
+            `UPDATE strategy_config SET mode='SWING', updated_at=NOW() WHERE is_active=true AND mode='SNIPER' AND is_paper=false`,
+          )
+          .then(({ rowCount }) => {
+            if (rowCount && rowCount > 0)
+              logger.info('✅ DB 모드 자동전환: SNIPER → SWING (90점+ 소멸)', { component: 'TRACK_B' });
+          })
+          .catch((e: Error) => logger.warn(`SNIPER→SWING 복귀 DB 실패: ${e.message}`, { component: 'TRACK_B' }));
     } else if (autoShouldRevertSwing) {
       logger.info(
         `🟢 자동 SWING 복귀: KOSPI 정상(penalty=0) + 당일 무하락 + 손실${dailyLoss.dailyPnlPct.toFixed(1)}% → DEFENSE 해제${ctxIsPaper ? ' (Paper: DB쓰기 차단)' : ''}`,
@@ -504,20 +533,6 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           .catch((e: Error) => logger.warn(`모드 자동복귀 DB 업데이트 실패: ${e.message}`, { component: 'TRACK_B' }));
     } else if (scores.length === 0 && mode === 'DEFENSE') {
       logger.info('⚡ AI 스코어 없음 + DEFENSE 모드 → SWING으로 완화', { component: 'TRACK_B' });
-    }
-
-    // DIVIDEND 실전 완전 차단: paper mode와 동일하게 실전에서 DIVIDEND 진입 금지 (실전 stats 오염 방지)
-    if (mode === 'DIVIDEND' && !ctxIsPaper) {
-      logger.warn('🏦 DIVIDEND 모드: 실전 진입 차단 → SWING 자동 복귀 (실전 오염 방지)', { component: 'TRACK_B' });
-      getPool()
-        .query(
-          `UPDATE strategy_config SET mode='SWING', updated_at=NOW() WHERE is_active=true AND mode='DIVIDEND' AND is_paper=false`,
-        )
-        .then(({ rowCount }) => {
-          if (rowCount && rowCount > 0)
-            logger.info('✅ DB 모드 자동전환: DIVIDEND → SWING (실전 DIVIDEND 차단)', { component: 'TRACK_B' });
-        })
-        .catch((e: Error) => logger.warn(`DIVIDEND→SWING 자동전환 실패: ${e.message}`, { component: 'TRACK_B' }));
     }
 
     // 메가캡 보너스/레짐 보정을 반영한 유연한 사전 체크
@@ -572,6 +587,35 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 승률 데이터 + 황금비율 배분 설정
     const { getStockWinRates } = await import('../../analysis/win-rate.js');
     const winRates = await getStockWinRates(stockCodes).catch(() => new Map());
+
+    // ── 종목별 실거래 승률 → 스코어 보정 (자기학습 연동) ─────────────
+    // 승률 65%+(5건+): +5점 보너스, 승률 35%-(5건+): -8점 페널티
+    const stockAccAdjMap = new Map<string, number>();
+    try {
+      const { rows: accRows } = await getPool().query(
+        `SELECT stock_code,
+                COUNT(*)::int AS total,
+                SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END)::int AS wins
+           FROM score_accuracy
+          WHERE recorded_at >= NOW() - INTERVAL '90 days'
+            AND is_paper = $1
+            AND stock_code = ANY($2)
+          GROUP BY stock_code
+          HAVING COUNT(*) >= 5`,
+        [ctxIsPaper, stockCodes],
+      );
+      for (const r of accRows) {
+        const wr = r.wins / r.total;
+        if (wr >= 0.65) stockAccAdjMap.set(r.stock_code, 5);
+        else if (wr <= 0.35) stockAccAdjMap.set(r.stock_code, -8);
+      }
+      if (stockAccAdjMap.size > 0) {
+        logger.info(
+          `📊 종목승률 보정: ${[...stockAccAdjMap.entries()].map(([k, v]) => `${k}${v > 0 ? '+' : ''}${v}`).join(', ')}`,
+          { component: 'TRACK_B' },
+        );
+      }
+    } catch { /* score_accuracy 조회 실패 시 무시 */ }
 
     // ── 외국인/기관 수급 → AI 스코어 보정 ────────────────────────────
     // 상위 5종목만 조회 (10→5, timeout 3s→1.5s로 속도 최적화)
@@ -915,11 +959,13 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           logger.info(`🤖 AI Loop 점수 보정: ${s.stock_code} → ${aiScoreAdj > 0 ? '+' : ''}${aiScoreAdj}`, {
             component: 'AI_LOOP',
           });
+        // 종목별 실거래 승률 보정: 65%+→+5, 35%-→-8 (자기학습 연동)
+        const stockAccAdj = stockAccAdjMap.get(s.stock_code) ?? 0;
         const totalAdj =
-          adj + capAdj + stale + kospiPenaltyAdj + macroAdj + dartAdj + megaCapAdj + consensusAdj + aiScoreAdj;
+          adj + capAdj + stale + kospiPenaltyAdj + macroAdj + dartAdj + megaCapAdj + consensusAdj + aiScoreAdj + stockAccAdj;
         if (!Number.isFinite(totalAdj)) {
           logger.warn(
-            `⚠️ 스코어 보정 NaN 감지: ${s.stock_code} adj=${adj} cap=${capAdj} macro=${macroAdj} dart=${dartAdj} cns=${consensusAdj} ai=${aiScoreAdj}`,
+            `⚠️ 스코어 보정 NaN 감지: ${s.stock_code} adj=${adj} cap=${capAdj} macro=${macroAdj} dart=${dartAdj} cns=${consensusAdj} ai=${aiScoreAdj} acc=${stockAccAdj}`,
             { component: 'TRACK_B' },
           );
           return { stock_code: s.stock_code, score: Math.max(0, Math.round(base)) || 0 };

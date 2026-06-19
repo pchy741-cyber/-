@@ -8,7 +8,7 @@ import { getOverseasScores } from '../../../cache/overseas-scores.js';
 import { cachePrice, getLastKnownPrices, getScoresWithFallback } from '../../../cache/redis.js';
 import { FALLBACK_FX_RATE, SECTOR_CLASS } from '../../../config/constants.js';
 import { runWithMode } from '../../../config/context.js';
-import { baseIsPaper, config } from '../../../config/index.js';
+import { baseIsPaper } from '../../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getOpenChains, isMemoryMode, safeQuery } from '../../../db/client.js';
 import { getAccountBalance } from '../../../kis/account.js';
 import { getBatchPrices, isMarketOpen } from '../../../kis/market.js';
@@ -684,7 +684,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       const eodOnly = await isEodOnlyMode().catch(() => false);
       return { ...status, eodOnly };
     }),
-    tradingMode: config.tradingMode,
+    tradingMode: viewIsPaper ? 'paper' : 'live',
     viewMode: viewIsPaper ? 'paper' : 'live',
     cashSource: actualCashSource,
     riskLimits: (() => {

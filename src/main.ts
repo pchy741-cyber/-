@@ -261,8 +261,7 @@ async function bootstrap() {
     try {
       const { getPool: gp } = await import('./db/client.js');
       const { rows: tmRows } = await gp().query(
-        'SELECT trading_mode_override FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1',
-        [config.isPaper],
+        'SELECT trading_mode_override FROM portfolio_allocation_config WHERE is_paper = false ORDER BY id DESC LIMIT 1',
       );
       const dbMode = tmRows[0]?.trading_mode_override;
       if (dbMode === 'paper' || dbMode === 'live') {
@@ -370,8 +369,7 @@ async function bootstrap() {
           try {
             const { getPool: gp } = await import('./db/client.js');
             const { rows: tmRows } = await gp().query(
-              'SELECT trading_mode_override FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1',
-              [config.isPaper],
+              'SELECT trading_mode_override FROM portfolio_allocation_config WHERE is_paper = false ORDER BY id DESC LIMIT 1',
             );
             const dbMode = tmRows[0]?.trading_mode_override;
             if (dbMode === 'paper' || dbMode === 'live') {
@@ -587,7 +585,7 @@ async function bootstrap() {
         `SELECT stock_code, avg_buy_price, peak_price_since_open FROM transaction_chains
          WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND peak_price_since_open IS NOT NULL
            AND is_paper = $1`,
-        [config.isPaper],
+        [baseIsPaper],
       );
       if (rows.length > 0) {
         const { restorePreTpPeakMap } = await import('./ai/track-b/sell-signals.js');
@@ -639,8 +637,7 @@ async function bootstrap() {
     try {
       const { getPool: gp } = await import('./db/client.js');
       const { rows: tmRows } = await gp().query(
-        'SELECT trading_mode_override FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1',
-        [config.isPaper],
+        'SELECT trading_mode_override FROM portfolio_allocation_config WHERE is_paper = false ORDER BY id DESC LIMIT 1',
       );
       const dbMode = tmRows[0]?.trading_mode_override;
       if (dbMode === 'paper' || dbMode === 'live') {
@@ -745,7 +742,7 @@ async function bootstrap() {
             AND stock_code NOT IN (
               SELECT DISTINCT stock_code FROM orders WHERE status = 'FILLED' AND is_paper = $1 AND created_at > NOW() - INTERVAL '14 days'
             )
-        `, [config.isPaper])
+        `, [baseIsPaper])
             .then((r) => {
               if ((r.rowCount ?? 0) > 0)
                 logger.info(`🧹 감시종목 부팅 정리: ${r.rowCount}개 비활성화`, { component: 'BOOT' });

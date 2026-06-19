@@ -239,7 +239,7 @@ async function tuneDividendAllocation(): Promise<void> {
     );
     if (holdings.length < 2) return; // 2종목 미만 시 튜닝 불필요
 
-    // 종목별 성과 점수: 배당수익률 + 배당금 누적 기여도
+    // 종목별 성과 점수: 배당수익률(2배 가중) + 배당금 누적 기여도
     const scores: Record<string, number> = {};
     let _totalValue = 0;
     for (const h of holdings) {
@@ -247,18 +247,18 @@ async function tuneDividendAllocation(): Promise<void> {
       const divYield = Number(h.dividend_yield ?? 0);
       const divReceived = Number(h.total_dividends_received ?? 0);
       const divContribution = value > 0 ? (divReceived / value) * 100 : 0;
-      scores[h.stock_code] = divYield + divContribution; // 배당수익률 + 배당금 기여율
+      scores[h.stock_code] = divYield * 2 + divContribution; // 수익률 2배 가중 → 고배당 집중
       _totalValue += value;
     }
 
-    // 점수 → 비중 (정규화, 최소 5% 최대 40%)
+    // 점수 → 비중 (정규화, 최소 5% 최대 35%)
     const totalScore = Object.values(scores).reduce((s, v) => s + v, 0);
     if (totalScore <= 0) return;
 
     const weights: Record<string, number> = {};
     for (const [code, score] of Object.entries(scores)) {
       const raw = score / totalScore;
-      weights[code] = Math.min(0.4, Math.max(0.05, raw));
+      weights[code] = Math.min(0.35, Math.max(0.05, raw));
     }
     // 재정규화 (합계 = 1)
     const sum = Object.values(weights).reduce((s, v) => s + v, 0);

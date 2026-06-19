@@ -22,8 +22,9 @@ strategyRoutes.put('/strategy', async (c) => {
   const BLOCKED_MODES = new Set(['SCALPING', 'EOD_BETTING']);
   const requestedMode = BLOCKED_MODES.has(rawMode) ? 'SWING' : rawMode;
   const modeBase = STRATEGY_PARAMS[requestedMode] ?? STRATEGY_PARAMS.SWING;
-  const useDynamic: boolean = body.use_dynamic_tpsl === true;
-  const aiScoringMode: 'fallback' | 'ensemble' = body.ai_scoring_mode === 'ensemble' ? 'ensemble' : 'fallback';
+  // 강제 ON: AI 자동 관리 — UI에서 변경 불가
+  const useDynamic: boolean = true;
+  const aiScoringMode: 'fallback' | 'ensemble' = 'ensemble';
   const ensembleConfig = body.ensemble_config ?? null; // JSONB — null이면 DB 기본값 유지
   const strategyData = {
     mode: requestedMode,
@@ -77,6 +78,7 @@ strategyRoutes.put('/strategy', async (c) => {
       strategyData.ai_scoring_mode,
       strategyData.ensemble_config ? JSON.stringify(strategyData.ensemble_config) : null,
     ];
+    // ── 현재 모드: 전략 파라미터 + 프롬프트 모두 업데이트 ──
     const { rowCount } = await getPool().query(
       `UPDATE strategy_config
        SET mode=$1, notebooklm_prompt=$2, gemini_prompt=$3, gpt_prompt=$4, claude_prompt=$5,
@@ -84,9 +86,26 @@ strategyRoutes.put('/strategy', async (c) => {
            use_dynamic_tpsl=$11, ai_scoring_mode=$12,
            ensemble_config=COALESCE($13::jsonb, ensemble_config),
            updated_at=NOW()
-       WHERE is_active = true`,
-      setParams,
+       WHERE is_active = true AND is_paper = $14`,
+      [...setParams, isPaper],
     );
+
+    // ── 반대 모드: 프롬프트/참고소스만 동기화 (전략 파라미터는 모드별 독립) ──
+    await getPool().query(
+      `UPDATE strategy_config
+       SET notebooklm_prompt=$1, gemini_prompt=$2, gpt_prompt=$3, claude_prompt=$4,
+           strategy_document=$5, risk_prompt=$6, updated_at=NOW()
+       WHERE is_active = true AND is_paper = $7`,
+      [
+        strategyData.notebooklm_prompt,
+        strategyData.gemini_prompt,
+        strategyData.gpt_prompt,
+        strategyData.claude_prompt,
+        strategyData.strategy_document,
+        strategyData.risk_prompt,
+        !isPaper,
+      ],
+    ).catch((e: any) => logger.warn(`반대 모드 프롬프트 동기화 실패: ${e.message}`, { component: 'SETTINGS' }));
 
     if ((rowCount ?? 0) === 0) {
       // 활성 전략이 없으면 현재 모드로 INSERT

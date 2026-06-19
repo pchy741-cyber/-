@@ -242,14 +242,14 @@ dividendRoutes.post('/dividend/sync-receipts', async (c) => {
 // Money Printer: 배당 자동투자 + 통합 요약
 // ═══════════════════════════════════════════════════════
 
-/** ETF 최적 배분 비중 */
+/** ETF 최적 배분 비중 (고배당 집중 — 가중수익률 9.73%, 세후 8.23%) */
 const ETF_WEIGHTS: Record<string, number> = {
-  JEPQ: 0.25,
-  JEPI: 0.25,
-  SCHD: 0.2,
-  QYLD: 0.15,
-  XYLD: 0.1,
-  O: 0.05,
+  QYLD: 0.30,  // 12.0% yield → 3.60%
+  JEPQ: 0.25,  // 10.0% yield → 2.50%
+  XYLD: 0.20,  // 10.0% yield → 2.00%
+  JEPI: 0.15,  //  8.0% yield → 1.20%
+  SCHD: 0.05,  //  3.5% yield → 0.18%
+  O: 0.05,     //  5.0% yield → 0.25%
 };
 
 /** ETF 거래소 매핑 — watchlist JOIN 정합성 보장 */

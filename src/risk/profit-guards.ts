@@ -12,6 +12,7 @@
  *  3. 일일 손실 정지 — -3% 도달 시 24h 매수 정지
  */
 
+import { GATE } from '../config/constants.js';
 import { getPool } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 
@@ -114,9 +115,9 @@ export interface StockWinRateSizing {
 }
 
 /**
- * Half-Kelly 공식 계산
+ * Half-Kelly 공식 계산 (순손익 기준 — 왕복 마찰비용 차감)
  * f* = (bp - q) / b
- *   b = TP / |SL|  (보상/위험)
+ *   b = TP_net / |SL_net|  (순보상/순위험)
  *   p = winRate
  *   q = 1 - p
  * 반환: Half-Kelly fraction (0~1, 음수면 0)
@@ -129,7 +130,11 @@ export function computeHalfKelly(params: {
   const { winRate, takeProfitPct, stopLossPct } = params;
   const absSL = Math.abs(stopLossPct);
   if (absSL === 0 || winRate <= 0 || winRate >= 1) return 0;
-  const b = takeProfitPct / absSL;
+  // 순손익 기준: 왕복 마찰비용 0.26% (수수료 0.21% + 슬리피지 0.05%) 차감
+  const friction = GATE.SLIPPAGE_PCT; // 0.26%
+  const tpNet = Math.max(0.01, takeProfitPct - friction);
+  const slNet = absSL + friction;
+  const b = tpNet / slNet;
   const fullKelly = (b * winRate - (1 - winRate)) / b;
   // 음수(EV-) 면 0
   if (fullKelly <= 0) return 0;
@@ -167,7 +172,7 @@ export async function getStockSizing(stockCode: string, isPaper = false): Promis
       };
     }
     const wr = wins / total;
-    // Half-Kelly 계산 (TP +5/SL -2 가정, 동적이 아닌 추정값 사용)
+    // Half-Kelly 계산 (TP +5/SL -2 가정 — 순손익 보정은 computeHalfKelly 내부에서 처리)
     const halfKelly = computeHalfKelly({ winRate: wr, takeProfitPct: 5, stopLossPct: -2 });
     // 50건 미만 시 추가 0.5× 보정 (총 0.25× Kelly = 보수적)
     const adjustedKelly = total < 50 ? halfKelly * 0.5 : halfKelly;

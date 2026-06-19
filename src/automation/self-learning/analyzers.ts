@@ -47,7 +47,23 @@ export function analyzeHoldingPeriod(wins: EnrichedChain[], losses: EnrichedChai
       lastUpdated: now,
     });
   }
-  if (avgLossHold > avgWinHold * 1.5 && avgLossHold > 0) {
+  if (avgLossHold > avgWinHold * 1.5 && avgLossHold > 3) {
+    const avgLossPct = Math.abs(losses.reduce((s, c) => s + c.pnlPct, 0) / losses.length);
+    const suggestedSl = -(avgLossPct * 0.7);
+    insights.push({
+      category: 'LOSS_PATTERN',
+      insight: `손실 매매는 평균 ${avgLossHold.toFixed(1)}일로 수익(${avgWinHold.toFixed(1)}일) 대비 오래 보유. 손절을 더 빨리 할 것.`,
+      recommendation: `손절 기준을 ${suggestedSl.toFixed(1)}%로 타이트하게 조정 (평균 손실 -${avgLossPct.toFixed(1)}%의 70% 수준).`,
+      paramChange: {
+        field: 'stop_loss_pct',
+        value: Math.round(suggestedSl * 10) / 10,
+        reason: `손실 보유기간 ${avgLossHold.toFixed(1)}일 > 수익 ${avgWinHold.toFixed(1)}일×1.5 — SL 타이트닝`,
+      },
+      confidence: 0.8,
+      sampleCount: losses.length,
+      lastUpdated: now,
+    });
+  } else if (avgLossHold > avgWinHold * 1.5 && avgLossHold > 0) {
     insights.push({
       category: 'LOSS_PATTERN',
       insight: `손실 매매는 평균 ${avgLossHold.toFixed(1)}일로 수익(${avgWinHold.toFixed(1)}일) 대비 오래 보유. 손절을 더 빨리 할 것.`,
@@ -225,10 +241,20 @@ export function analyzeWinRateTrend(chains: any[]): LearnedInsight[] {
         },
       ];
     } else if (recentWinRate < olderWinRate - 0.15) {
+      // 승률 하락 시 buy_threshold 상향하여 진입 품질 개선
+      const currentThreshold = typeof (chains[0] as any)?.buy_threshold === 'number'
+        ? (chains[0] as any).buy_threshold
+        : 60;
       return [
         {
           category: 'LOSS_PATTERN',
           insight: `최근 승률이 하락 중 (${(recentWinRate * 100).toFixed(0)}% vs 이전 ${(olderWinRate * 100).toFixed(0)}%). 포지션 축소 또는 전략 조정 필요.`,
+          recommendation: `buy_threshold를 ${currentThreshold + 5}점으로 상향하여 진입 기준 강화.`,
+          paramChange: {
+            field: 'buy_threshold',
+            value: currentThreshold + 5,
+            reason: `승률 하락 ${(olderWinRate * 100).toFixed(0)}%→${(recentWinRate * 100).toFixed(0)}% — 진입 기준 강화`,
+          },
           confidence: 0.8,
           sampleCount: 20,
           lastUpdated: now,
@@ -390,6 +416,12 @@ export function analyzeLossStreakRisk(enrichedChains: EnrichedChain[]): LearnedI
       {
         category: 'LOSS_PATTERN',
         insight: `최근 5건 중 ${lossCount}건 손실 — 연속 손실 구간. 현재 시장 환경이 전략과 맞지 않음. 신규 매수를 최소화하고 기존 포지션 리스크 관리를 강화하세요.`,
+        recommendation: `buy_threshold를 +5점 상향하여 연속 손실 구간 방어.`,
+        paramChange: {
+          field: 'buy_threshold',
+          value: 70, // 연속 손실 시 보수적 기본값
+          reason: `최근 5건 중 ${lossCount}건 손실 — 진입 기준 강화`,
+        },
         confidence: 0.85,
         sampleCount: 5,
         lastUpdated: now,

@@ -15,6 +15,7 @@ import { getCurrentPrice, getDailyChart } from '../../kis/market.js';
 import { isKillSwitchActive } from '../../risk/kill-switch.js';
 import { tradeExecutor } from '../../trading/executor.js';
 import { logger } from '../../utils/logger.js';
+import { getAccountBalance } from '../../kis/account.js';
 import { calcSplitQuantity } from '../../utils/money.js';
 import { calcPositionSize } from '../position-sizer.js';
 import { scanDisclosures } from './disclosure-scanner.js';
@@ -92,6 +93,20 @@ export async function runSniperScan(): Promise<void> {
     const strategy = await getActiveStrategy();
     const mode = (strategy?.mode ?? 'SWING') as StrategyMode;
 
+    // 총자산 기반 동적 포지션 사이징 (paper/live 자동 분리)
+    let sniperMaxPositionKrw = config.risk.maxPositionKrw;
+    try {
+      const balance = await getAccountBalance();
+      const totalAssets = balance.netAsset > 0 ? balance.netAsset : balance.orderableCash + balance.totalEvalAmount;
+      if (totalAssets > 0) {
+        // Track B와 동일 기준: 총자산 20% (paper/live 총자산이 다르므로 자동 분리)
+        sniperMaxPositionKrw = Math.min(Math.round(totalAssets * 0.2), config.risk.maxPositionKrw);
+      }
+    } catch {
+      // 잔고 조회 실패 시 기존 config.risk.maxPositionKrw 사용
+    }
+    logger.info(`🎯 스나이퍼 포지션 한도: ${sniperMaxPositionKrw.toLocaleString()}원 (${getCtxIsPaper() ? '연습' : '실전'})`, { component: 'SNIPER' });
+
     // 시그널 → 매매 결정 변환
     const decisions: TradeDecision[] = [];
 
@@ -157,11 +172,11 @@ export async function runSniperScan(): Promise<void> {
           continue;
         }
 
-        // 승률 기반 포지션 사이징 × 스나이퍼 배수
-        const sizing = await calcPositionSize(config.risk.maxPositionKrw);
+        // 승률 기반 포지션 사이징 × 스나이퍼 배수 (총자산 비례 — paper/live 자동 분리)
+        const sizing = await calcPositionSize(sniperMaxPositionKrw);
         const sniperBudget = Math.min(
           Math.round(sizing.adjustedBudget * signal.budgetMultiplier),
-          config.risk.maxPositionKrw,
+          sniperMaxPositionKrw,
         );
 
         const quantity = calcSplitQuantity(sniperBudget, price.currentPrice, 3, 0);

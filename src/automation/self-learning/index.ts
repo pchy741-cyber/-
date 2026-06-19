@@ -23,7 +23,7 @@ import {
   analyzeStrategyStrengths,
   analyzeWinRateTrend,
 } from './analyzers.js';
-import { analyzeBuyThreshold, calibrateScoreTierParams, validatePromotedInsights } from './calibration.js';
+import { analyzeBuyThreshold, autoPromotePaperInsights, autoTuneEnsembleWeights, calibrateScoreTierParams, evaluateAppliedInsights, validatePromotedInsights } from './calibration.js';
 import { analyzeOverseasAll } from './overseas-analyzers.js';
 import {
   analyzeDayOfWeekPerformance,
@@ -439,14 +439,17 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
         value,
         isPaper,
       ]);
+      // 이전값 기록: 롤백 시 복원 + 효과 추적용
+      const prevDetails = { previous_value: oldVal, applied_field: field };
       if (insight.id) {
-        await getPool().query(`UPDATE learned_insights SET is_applied = true, applied_at = NOW() WHERE id = $1`, [
-          insight.id,
-        ]);
+        await getPool().query(
+          `UPDATE learned_insights SET is_applied = true, applied_at = NOW(), details = COALESCE(details, '{}'::jsonb) || $2::jsonb WHERE id = $1`,
+          [insight.id, JSON.stringify(prevDetails)],
+        );
       } else {
         await getPool().query(
-          `UPDATE learned_insights SET is_applied = true, applied_at = NOW() WHERE category = $1 AND insight = $2`,
-          [insight.category, insight.insight],
+          `UPDATE learned_insights SET is_applied = true, applied_at = NOW(), details = COALESCE(details, '{}'::jsonb) || $3::jsonb WHERE category = $1 AND insight = $2`,
+          [insight.category, insight.insight, JSON.stringify(prevDetails)],
         );
       }
       applied.push(`${field}: ${oldVal} → ${value}`);
@@ -515,7 +518,8 @@ export async function applyInsightById(insightId: string): Promise<{ ok: boolean
 
 export async function getInsightsForDashboard(): Promise<LearnedInsight[]> {
   const { rows } = await getPool().query(
-    `SELECT * FROM learned_insights WHERE COALESCE(is_dismissed, false) IS NOT TRUE ORDER BY confidence DESC, sample_count DESC LIMIT 20`,
+    `SELECT * FROM learned_insights WHERE COALESCE(is_dismissed, false) IS NOT TRUE AND is_paper = $1 ORDER BY confidence DESC, sample_count DESC LIMIT 20`,
+    [getCtxIsPaper()],
   );
   return rows.map((r) => ({
     id: r.id,
@@ -626,7 +630,15 @@ async function _runLearningForMode(isPaper: boolean): Promise<void> {
       logger.warn(`황금비율 자동조정 실패: ${e}`, { component: 'LEARN' });
     }
     await calibrateScoreTierParams().catch((e) => logger.warn(`티어 파라미터 보정 실패: ${e}`, { component: 'LEARN' }));
-    if (!isPaper) {
+    // 앙상블 가중치 자동 튜닝 — 모델별 실거래 성과 기반
+    await autoTuneEnsembleWeights().catch((e) => logger.warn(`앙상블 가중치 튜닝 실패: ${e}`, { component: 'LEARN' }));
+    // 적용된 인사이트 효과 평가 → 악화 시 자동 롤백
+    await evaluateAppliedInsights().catch((e) => logger.warn(`인사이트 효과 평가 실패: ${e}`, { component: 'LEARN' }));
+    if (isPaper) {
+      // Paper 학습 완료 후 → 고신뢰 인사이트를 live로 자동 프로모션
+      await autoPromotePaperInsights().catch((e) => logger.warn(`자동 프로모션 실패: ${e}`, { component: 'LEARN' }));
+    } else {
+      // Live 학습 완료 후 → promote된 인사이트 실전 검증
       await validatePromotedInsights().catch((e) => logger.warn(`프로모션 검증 실패: ${e}`, { component: 'LEARN' }));
     }
 
@@ -657,5 +669,5 @@ export async function runDailyLearning(): Promise<void> {
 }
 
 // Re-export calibration for direct access
-export { validatePromotedInsights } from './calibration.js';
+export { autoPromotePaperInsights, autoTuneEnsembleWeights, validatePromotedInsights } from './calibration.js';
 export { getOverseasInsightsForPrompt } from './overseas-analyzers.js';

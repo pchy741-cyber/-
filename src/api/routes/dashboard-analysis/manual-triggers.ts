@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { config } from '../../../config/index.js';
 import { getOpenChains, getPool } from '../../../db/client.js';
 import { getAccountBalance } from '../../../kis/account.js';
 import { getPaperBalance } from '../../../risk/engine.js';
@@ -122,7 +121,7 @@ manualTriggersRoutes.post('/release-defense-park', async (c) => {
               filled_quantity: pos.quantity,
               filled_price: pos.avgBuyPrice,
               status: 'FILLED',
-              trading_mode: config.tradingMode,
+              trading_mode: isPaper ? 'paper' : 'live',
               trigger_source: 'SYNC',
               ai_reasoning: 'KIS 잔고 동기화 — 파킹 해제 시 자동 복구',
             });

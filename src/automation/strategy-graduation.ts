@@ -228,7 +228,7 @@ export async function autoGraduate(): Promise<void> {
 
 // ── 동적 PAPER_ONLY_MODES ──────────────────────────────────────────
 
-const DEFAULT_PAPER_ONLY = ['BREAKOUT', 'SNIPER', 'BOTTOM_FISHING'];
+const DEFAULT_PAPER_ONLY = ['BREAKOUT', 'BOTTOM_FISHING'];
 let _paperOnlyCache: { modes: Set<string>; ts: number } | null = null;
 const PAPER_ONLY_CACHE_TTL = 30 * 60_000; // 30분
 

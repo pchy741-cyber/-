@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { getLastAutoPilotResult } from '../../ai/auto-pilot.js';
 import { cacheGet, cachePriceMemory, getCachedPriceMemory } from '../../cache/memory.js';
-import { config } from '../../config/index.js';
+import { baseIsPaper } from '../../config/index.js';
 import { getActiveStrategy, getOpenChains, getPool } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
 import { getCurrentPrice, isMarketOpen } from '../../kis/market.js';
@@ -76,7 +76,7 @@ export const sseRoutes = new Hono();
 
 // 오늘 매매 통계 (KST 기준 — 클라이언트 TZ 의존 제거)
 export async function getTodayTradeStats(isPaper?: boolean) {
-  const tradingMode = isPaper !== undefined ? (isPaper ? 'paper' : 'live') : config.tradingMode;
+  const tradingMode = isPaper !== undefined ? (isPaper ? 'paper' : 'live') : (baseIsPaper ? 'paper' : 'live');
   try {
     const { rows } = await getPool().query(
       `
@@ -130,7 +130,7 @@ export async function getTodayTradeStats(isPaper?: boolean) {
 
 // 최신 체결 거래 가져오기 (SSE 페이로드용 — 최근 10건)
 async function getRecentTrades(isPaper?: boolean) {
-  const tradingMode = isPaper !== undefined ? (isPaper ? 'paper' : 'live') : config.tradingMode;
+  const tradingMode = isPaper !== undefined ? (isPaper ? 'paper' : 'live') : (baseIsPaper ? 'paper' : 'live');
   try {
     const { rows } = await getPool().query(
       `SELECT o.id, o.stock_code, o.side, o.status,

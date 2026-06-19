@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { config } from '../../config/index.js';
+import { baseTradingMode } from '../../config/index.js';
 import { checkDb, isMemoryMode } from '../../db/client.js';
 import { isMarketOpen } from '../../kis/market.js';
 import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
@@ -40,7 +40,7 @@ healthDetailRoutes.get('/health/detail', async (c) => {
     framework: 'hono',
     timestamp: now.toISOString(),
     serverTimeKst: kstStr,
-    tradingMode: config.tradingMode,
+    tradingMode: baseTradingMode,
     marketOpen: isMarketOpen(),
     usMarketOpen,
     killSwitch: getKillSwitchStatusAll(),
