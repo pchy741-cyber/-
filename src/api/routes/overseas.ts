@@ -110,6 +110,8 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
         scalp_sl: r.scalp_sl != null ? Number(r.scalp_sl) : null,
         bought_at: r.bought_at,
         exchange: r.exchange,
+        bucket: r.strategy_bucket ?? null,
+        max_price: r.max_price != null ? Number(r.max_price) : null,
       }));
       // DB 성공 시 holdings 백업 캐시 저장 (5분 TTL — DB 장애 시 폴백용)
       if (holdings.length > 0) cacheSet(holdingsCacheKey, holdings, 300);

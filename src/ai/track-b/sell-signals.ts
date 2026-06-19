@@ -401,7 +401,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       ? (Date.now() - new Date(chain.opened_at).getTime()) / (60 * 60_000)
       : 999;
     const isNearClose = _scalpH === 15 && _scalpM < 25;
-    if (isNearClose && chain.strategy_mode !== 'SCALPING' && holdHrsForClose < 6 && chain.total_quantity > 0) {
+    if (isNearClose && chain.strategy_mode !== 'SCALPING' && chain.strategy_mode !== 'BREAKOUT' && holdHrsForClose < 6 && chain.total_quantity > 0) {
       const closeThreshold = 1.0; // v10.3: 모든 시간대 최소 1.0% (수수료 커버 후 순수익 확보)
       const closeLabel = _scalpM >= 20 ? '15:20+' : _scalpM >= 10 ? '15:10+' : '15:00+';
       if (pnlPct >= closeThreshold) {

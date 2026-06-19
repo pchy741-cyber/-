@@ -260,7 +260,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
         // v10.8: 단, 하드 TP/ATR 트레일링/수익 확정은 HOLD에서도 허용 (수익 실현 차단 방지)
         if (pnlPct >= hardTpPct) {
           sellReason = `익절(${hardTpPct}%): +${pnlPct.toFixed(1)}% (HOLD 중 TP 도달)`;
-        } else if (maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {
+        } else if (holdingDays >= 0.5 && maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {
           sellReason = `ATR트레일(HOLD중): 고점 +${maxPnlPct.toFixed(1)}% → 현재 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
         }
       }
@@ -302,7 +302,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     } else if (
       (vixRegime.regime === 'STRESS' || vixRegime.regime === 'CRISIS') &&
       pnlPct >= 1.0 &&
-      holdingDays >= 0.25 &&
+      holdingDays >= 0.5 && // v11.1: 매수 직후 즉시청산 방지 (12h 가드)
       // CRISIS 진입 포지션(과매도반등/BigMover)은 조기 청산하지 않음 — 평균 +5~10% 목표
       !(vixRegime.regime === 'CRISIS' && pnlPct < 3.0 && holdingDays < 2)
     ) {
@@ -311,8 +311,9 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       // ── 1e. 나스닥 급락 선제 청산 ──
       // 전일 나스닥 -2% 이하 + 수익 구간 → 당일 미국장 약세 선반영, 수익 잠금
       // 왕복 수수료 0.7% 커버 + 실질 수익 최소 1.3% 보장 → 2.0% 기준
-    } else if (ctx.nasdaqChange1d != null && ctx.nasdaqChange1d <= -2.0 && pnlPct >= 2.0 && holdingDays >= 0.1) {
-      sellReason = `나스닥급락 선제청산(${ctx.nasdaqChange1d.toFixed(1)}%): +${pnlPct.toFixed(1)}% → 미국장 하락 선반영 수익확정`;
+    } else if (ctx.nasdaqChange1d != null && ctx.nasdaqChange1d <= -2.0 && pnlPct >= 0.5 && holdingDays >= 0.25) {
+      // v11.1: 0.1→0.25일(6h) — 당일 매수 후 2~3h내 즉시청산 방지
+      sellReason = `나스닥급락 선제청산(${ctx.nasdaqChange1d.toFixed(1)}%): +${pnlPct.toFixed(1)}% → 미국장 하락 선반영 즉시 수익확정`;
 
       // ── 2. ATR 트레일링 스톱 ──
     } else if (maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {
