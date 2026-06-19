@@ -1,5 +1,5 @@
 export interface Trade {
-  id: number | string;
+  id: string;
   stock_code: string;
   stock_name?: string;
   side: 'BUY' | 'SELL';
@@ -24,7 +24,7 @@ export interface Trade {
 }
 
 export interface Chain {
-  id: number | string;
+  id: string;
   stock_code: string;
   stock_name?: string;
   strategy_mode?: string;
@@ -80,7 +80,10 @@ export interface StrategyConfig {
   buy_threshold?: number;
   stop_loss_pct?: number;
   take_profit_pct?: number;
-  use_dynamic_tpsl?: boolean;
+  notebooklm_prompt?: string;
+  gemini_prompt?: string;
+  gpt_prompt?: string;
+  claude_prompt?: string;
   ai_scoring_mode?: 'fallback' | 'ensemble';
   ensemble_config?: EnsembleConfig;
   [key: string]: unknown;
