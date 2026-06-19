@@ -232,6 +232,7 @@ export function startScheduler(): void {
 
   // ⚡ 이벤트 기반 재스코어 — node-cron 최소 1분이므로 setInterval로 30초
   // 거래량 spike / 갭업·다운 즉시 감지 → 해당 종목만 재스코어 (paid AI 0)
+  // _trackBRunning 참조: 클로저로 캡처 (이 setInterval 콜백은 30초 후 최초 실행되므로 선언 시점 이후)
   setInterval(() => {
     const now = new Date();
     const kstH = (now.getUTCHours() + 9) % 24;
@@ -239,6 +240,7 @@ export function startScheduler(): void {
     const isWeekday = now.getUTCDay() >= 1 && now.getUTCDay() <= 5;
     const inKrMarket = kstH >= 9 && (kstH < 15 || (kstH === 15 && kstM <= 30));
     if (!isWeekday || !inKrMarket) return;
+    if (_trackBRunning) return; // Track B KIS 호출과 충돌 방지 — rate limit EGW00201 억제
     runWithMode(false, async () => {
       const { runEventRescore } = await import('../ai/track-a/event-rescore.js');
       await runEventRescore().catch((e) => logger.error(`이벤트 재스코어 실패: ${e}`, { component: 'SCHEDULER' }));

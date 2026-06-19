@@ -41,21 +41,30 @@ async function fetchVkospi(): Promise<number | null> {
     csvxls_isNo: 'false',
   });
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-      Referer: 'https://data.krx.co.kr/',
-    },
-    body: body.toString(),
-    signal: AbortSignal.timeout(8_000),
-  });
-  if (!res.ok) throw new Error(`KRX VKOSPI HTTP ${res.status}`);
+  const MAX_ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        Referer: 'https://data.krx.co.kr/',
+      },
+      body: body.toString(),
+      signal: AbortSignal.timeout(8_000),
+    });
+    // 409 Conflict: KRX 서버가 이전 요청을 아직 처리 중 — 잠시 대기 후 재시도
+    if (res.status === 409 && attempt < MAX_ATTEMPTS) {
+      await new Promise((r) => setTimeout(r, 1500 * attempt));
+      continue;
+    }
+    if (!res.ok) throw new Error(`KRX VKOSPI HTTP ${res.status}`);
 
-  const data = (await res.json()) as { output?: Array<{ CLSPRC_IDX?: string }> };
-  const val = parseFloat(data.output?.[0]?.CLSPRC_IDX ?? '');
-  return Number.isFinite(val) ? val : null;
+    const data = (await res.json()) as { output?: Array<{ CLSPRC_IDX?: string }> };
+    const val = parseFloat(data.output?.[0]?.CLSPRC_IDX ?? '');
+    return Number.isFinite(val) ? val : null;
+  }
+  throw new Error('KRX VKOSPI 최대 재시도 초과');
 }
 
 // ── P/C Ratio 수집 ─────────────────────────────────────────────────
