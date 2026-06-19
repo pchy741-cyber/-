@@ -45,7 +45,7 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
       {chains.map((ch: Chain, i: number) => {
         const avgPrice = Number(ch.avg_buy_price) || 0;
         const qty = Number(ch.total_quantity) || 0;
-        const invested = Number(ch.invested) || avgPrice * qty;
+        const invested = Number(ch.total_invested) || avgPrice * qty;
         const curAvg = Number(ch.current_averaging_count) || 0;
         const maxAvg = Number(ch.max_averaging_count) || 1;
         const [fallbackTp, fallbackSl] = STRATEGY_TP_SL[ch.strategy_mode as string] ?? [5.5, -3.0];

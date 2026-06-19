@@ -9,7 +9,7 @@ import { detectStructuralPatterns, volumeProfile } from '../../../analysis/indic
 import { logger } from '../../../utils/logger.js';
 import { getKSTNow } from '../../../utils/time.js';
 import { PRIORITY_SECTOR_CODES } from '../trading-rules.js';
-import type { ScoringInput, ScoringResult, SignalData } from './types.js';
+import type { ScoringInput, TechScoring, SignalData } from './types.js';
 
 /** KIS 시그널에서 필요한 값만 추출 */
 function extractSignals(signals: ScoringInput['signals']): SignalData {
@@ -58,7 +58,7 @@ function calcAdjustedVolRatio(rawVolRatio: number): number {
 /**
  * 전체 스코어링 계산
  */
-export function computeScoring(input: ScoringInput): ScoringResult {
+export function computeScoring(input: ScoringInput): TechScoring {
   const { stock, tech, candles, price, signals, mode, megaCap } = input;
   const code = stock.stock_code;
   const curPrice = price.currentPrice;

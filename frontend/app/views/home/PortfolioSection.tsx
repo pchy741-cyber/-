@@ -208,7 +208,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
                 <div className="text-[10px] text-slate-500 font-medium">국내 ({fmtWon(domesticInvested)})</div>
               )}
               {chains.map((ch: Chain, i: number) => {
-                const inv = Number(ch.invested) || 0;
+                const inv = Number(ch.total_invested) || 0;
                 const pct = totalValue > 0 ? (inv / totalValue) * 100 : 0;
                 return (
                   <div key={`kr-${i}`}>

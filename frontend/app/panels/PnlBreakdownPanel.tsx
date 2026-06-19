@@ -31,7 +31,7 @@ export function PnlBreakdownPanel({ chains, trades }: { chains: PnlChain[]; trad
   const dividendAccrual = chains.filter((c) => c.strategy_mode === 'DIVIDEND').reduce((sum, c) => {
     const dvd = Number(c.dividendYield ?? 0);
     const holdDays = Number(c.holdingDays ?? 0);
-    const invested = Number(c.invested ?? 0) || (Number(c.avg_buy_price) * Number(c.total_quantity));
+    const invested = Number(c.total_invested ?? 0) || (Number(c.avg_buy_price) * Number(c.total_quantity));
     return sum + (invested * (dvd / 365 / 100) * holdDays);
   }, 0);
 

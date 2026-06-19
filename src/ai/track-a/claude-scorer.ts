@@ -3,7 +3,7 @@
  * Gemini 할당량 초과 시 Anthropic Claude로 종목 분석 + 스코어 생성
  */
 import Anthropic from '@anthropic-ai/sdk';
-import type { ScoringResult } from '../../db/models.js';
+import type { ScoringResult, WatchlistItem } from '../../db/models.js';
 import type { DailyCandle } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 
@@ -11,14 +11,9 @@ const COMP = 'TRACK_A_CLAUDE';
 const MODEL = 'claude-haiku-4-5-20251001'; // 저렴 + 빠름 (2차 검증 + 폴백)
 const BATCH_SIZE = 30; // 한 번에 30종목 분석
 
-interface WatchlistItem {
-  stock_code: string;
-  stock_name: string;
-}
-
 export async function runClaudeScoring(
   mode: string,
-  watchlist: WatchlistItem[],
+  watchlist: Pick<WatchlistItem, 'stock_code' | 'stock_name'>[],
   chartData: Map<string, DailyCandle[]>,
   additionalSources?: string,
 ): Promise<ScoringResult[]> {

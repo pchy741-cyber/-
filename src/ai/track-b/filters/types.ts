@@ -62,8 +62,8 @@ export interface SignalData {
   lendingRatio: number;
 }
 
-// ── 스코어링 결과 ──
-export interface ScoringResult {
+// ── 스코어링 결과 (Track-B 기술 전용 — 마스터 스키마의 ScoringResult/AIScore와 무관) ──
+export interface TechScoring {
   candleBonus: number;
   hasBullishCandle: boolean;
   structBonus: number;
@@ -101,7 +101,7 @@ export interface ScoringInput {
 // ── 품질 게이트 입력/결과 ──
 export interface QualityGateInput {
   tech: TechnicalSummary;
-  scoring: ScoringResult;
+  scoring: TechScoring;
   mode: StrategyMode;
   aiScore: number;
   buyThreshold: number;
@@ -125,7 +125,7 @@ export interface RiskGateInput {
   stockCode: string;
   tech: TechnicalSummary;
   candles: DailyCandle[];
-  scoring: ScoringResult;
+  scoring: TechScoring;
   aiScore: number;
   signals: StockSignals | undefined;
   regimeRoute: RouteResult;
@@ -137,7 +137,7 @@ export interface EntryInput {
   stockCode: string;
   tech: TechnicalSummary;
   price: CurrentPrice;
-  scoring: ScoringResult;
+  scoring: TechScoring;
   regimeRoute: RouteResult;
   aiScore: number;
   buyThreshold: number;

@@ -4,7 +4,7 @@
  * OPENAI_API_KEY 미설정 시 자동 스킵 (에러 아님)
  */
 import OpenAI from 'openai';
-import type { ScoringResult } from '../../db/models.js';
+import type { ScoringResult, WatchlistItem } from '../../db/models.js';
 import type { DailyCandle } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { buildScoringPrompt, type RegimeHint } from '../prompts/track-a-scoring.js';
@@ -12,11 +12,6 @@ import { buildScoringPrompt, type RegimeHint } from '../prompts/track-a-scoring.
 const COMP = 'TRACK_A_GPT';
 const MODEL = 'gpt-4o-mini'; // 비용 최적화: o3 대비 10배 저렴, 스코어링 충분
 const BATCH_SIZE = 30; // gpt-4o-mini는 저렴하므로 배치 크기 확대 (API 호출 횟수 절감)
-
-interface WatchlistItem {
-  stock_code: string;
-  stock_name: string;
-}
 
 /** RSI-14 근사 계산 (Wilder 평활 — 캔들 배열은 최신순 [0]=오늘) */
 function calcRSI14(candles: DailyCandle[]): number | null {
@@ -37,7 +32,7 @@ function calcRSI14(candles: DailyCandle[]): number | null {
 }
 
 /** 차트 데이터를 토큰 절약형 텍스트로 변환 — SMA20·눌림목·RSI14 포함 */
-function buildChartSummary(batch: WatchlistItem[], chartData: Map<string, DailyCandle[]>): string {
+function buildChartSummary(batch: Pick<WatchlistItem, 'stock_code' | 'stock_name'>[], chartData: Map<string, DailyCandle[]>): string {
   return batch
     .map((w) => {
       const candles = chartData.get(w.stock_code) ?? [];
@@ -82,7 +77,7 @@ function buildChartSummary(batch: WatchlistItem[], chartData: Map<string, DailyC
 
 export async function runGPTScoring(
   mode: string,
-  watchlist: WatchlistItem[],
+  watchlist: Pick<WatchlistItem, 'stock_code' | 'stock_name'>[],
   chartData: Map<string, DailyCandle[]>,
   regimeHint?: RegimeHint,
   customPrompt?: string,

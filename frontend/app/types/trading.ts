@@ -31,7 +31,7 @@ export interface Chain {
   status?: string;
   avg_buy_price: number;
   total_quantity: number;
-  invested?: number;
+  total_invested?: number;
   current_averaging_count?: number;
   max_averaging_count?: number;
   target_profit_pct?: number;

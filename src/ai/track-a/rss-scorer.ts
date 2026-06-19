@@ -15,7 +15,7 @@
  */
 
 import { analyzeTechnicals } from '../../analysis/indicators.js';
-import type { ScoringResult } from '../../db/models.js';
+import type { ScoringResult, WatchlistItem } from '../../db/models.js';
 import type { DailyCandle } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 
@@ -122,10 +122,6 @@ const NEGATIVE: [string, number][] = [
   ['무역분쟁', 2],
 ];
 
-interface WatchlistItem {
-  stock_code: string;
-  stock_name: string;
-}
 
 /** Google News RSS로 종목 뉴스 감성 점수 계산 (-15 ~ +15) */
 async function getNewsScore(_stockCode: string, stockName: string): Promise<{ score: number; headlines: string[] }> {
@@ -347,7 +343,7 @@ function getFlowBonus(flowAdj: number): number {
 /** RSS + 기술지표 기반 종목 스코어링 (Gemini/GPT 없음) */
 export async function runRSSScoring(
   _mode: string,
-  watchlist: WatchlistItem[],
+  watchlist: Pick<WatchlistItem, 'stock_code' | 'stock_name'>[],
   chartData: Map<string, DailyCandle[]>,
   topGainerCodes: Set<string>,
   topVolumeCodes: Set<string>,

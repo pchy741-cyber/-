@@ -285,7 +285,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
 
       {(() => {
         const dailyLossPct = unrealizedPnl < 0 ? Math.min(100, Math.round((Math.abs(unrealizedPnl) / dailyLossLimit) * 100)) : 0;
-        const maxInvested = chains.reduce((mx: number, ch: Chain) => Math.max(mx, Number(ch.invested) || 0), 0);
+        const maxInvested = chains.reduce((mx: number, ch: Chain) => Math.max(mx, Number(ch.total_invested) || 0), 0);
         const concPct = totalInvested > 0 ? Math.round((maxInvested / totalInvested) * 100) : 0;
         return <MemoRiskGauge investedPct={investedPct} dailyLossPct={dailyLossPct} concentrationPct={concPct} />;
       })()}

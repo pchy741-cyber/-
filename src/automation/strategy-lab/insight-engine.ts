@@ -346,8 +346,8 @@ async function analyzeByAiScore(days: number, isPaper: boolean): Promise<Strateg
     `
     SELECT tc.strategy_mode,
       CASE
-        WHEN COALESCE((SELECT ai_score FROM orders WHERE chain_id = tc.id AND side='BUY' AND ai_score IS NOT NULL ORDER BY created_at LIMIT 1), 0) < 70 THEN 'score_low'
-        WHEN COALESCE((SELECT ai_score FROM orders WHERE chain_id = tc.id AND side='BUY' AND ai_score IS NOT NULL ORDER BY created_at LIMIT 1), 0) < 85 THEN 'score_mid'
+        WHEN COALESCE((SELECT composite_score FROM ai_scores WHERE stock_code = tc.stock_code AND score_date <= tc.opened_at::date ORDER BY score_date DESC LIMIT 1), 0) < 70 THEN 'score_low'
+        WHEN COALESCE((SELECT composite_score FROM ai_scores WHERE stock_code = tc.stock_code AND score_date <= tc.opened_at::date ORDER BY score_date DESC LIMIT 1), 0) < 85 THEN 'score_mid'
         ELSE 'score_high'
       END as score_bucket,
       COUNT(*) as total,
@@ -358,7 +358,7 @@ async function analyzeByAiScore(days: number, isPaper: boolean): Promise<Strateg
       AVG(CASE WHEN tc.avg_buy_price > 0 THEN
         ((COALESCE((SELECT filled_price FROM orders WHERE chain_id = tc.id AND side='SELL' AND status='FILLED' ORDER BY created_at DESC LIMIT 1), tc.avg_buy_price) - tc.avg_buy_price) / tc.avg_buy_price * 100)
       END) as avg_pnl_pct,
-      ROUND(AVG(COALESCE((SELECT ai_score FROM orders WHERE chain_id = tc.id AND side='BUY' AND ai_score IS NOT NULL ORDER BY created_at LIMIT 1), 0))::numeric, 0) as avg_score
+      ROUND(AVG(COALESCE((SELECT composite_score FROM ai_scores WHERE stock_code = tc.stock_code AND score_date <= tc.opened_at::date ORDER BY score_date DESC LIMIT 1), 0))::numeric, 0) as avg_score
     FROM transaction_chains tc
     WHERE tc.status = 'CLOSED' AND tc.is_paper = $3
       AND tc.closed_at >= NOW() - ($1 * INTERVAL '1 day')
