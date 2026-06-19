@@ -7,7 +7,7 @@
  * - 모델간 점수 편차가 작을수록 confidence 상승
  */
 
-import type { ScoringResult } from '../../db/models.js';
+import type { ScoringResult, WatchlistItem } from '../../db/models.js';
 import type { DailyCandle } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import type { RegimeHint } from '../prompts/track-a-scoring.js';
@@ -34,14 +34,9 @@ export const DEFAULT_ENSEMBLE_CONFIG: EnsembleConfig = {
   minModels: 2,
 };
 
-interface WatchlistItem {
-  stock_code: string;
-  stock_name: string;
-}
-
 interface EnsembleParams {
   mode: string;
-  watchlist: WatchlistItem[];
+  watchlist: Pick<WatchlistItem, 'stock_code' | 'stock_name'>[];
   chartData: Map<string, DailyCandle[]>;
   geminiAnalysis: GeminiAnalysis | null;
   strategy: any;

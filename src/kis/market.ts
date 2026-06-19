@@ -135,14 +135,17 @@ export async function getDailyChart(stockCode: string, days: number = 60): Promi
   const items = (res.output2 ?? res.output ?? []) as unknown as Record<string, string>[];
   if (!Array.isArray(items)) return [];
 
-  const result = items.map((c) => ({
-    date: c.stck_bsop_date,
-    open: Number(c.stck_oprc),
-    high: Number(c.stck_hgpr),
-    low: Number(c.stck_lwpr),
-    close: Number(c.stck_clpr),
-    volume: Number(c.acml_vol),
-  }));
+  // DESC 정렬 보장 (최신 [0]) — analyzeTechnicals() 계약: closes[0] = 현재가
+  const result = items
+    .map((c) => ({
+      date: c.stck_bsop_date,
+      open: Number(c.stck_oprc),
+      high: Number(c.stck_hgpr),
+      low: Number(c.stck_lwpr),
+      close: Number(c.stck_clpr),
+      volume: Number(c.acml_vol),
+    }))
+    .sort((a, b) => b.date.localeCompare(a.date));
 
   // 캐시 저장
   if (result.length > 0) {

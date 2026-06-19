@@ -106,11 +106,12 @@ export interface TechnicalSummary {
   volZScore: number; // 거래량 Z-score (자기 60일 대비)
 }
 
+// 입력 계약: candles는 DESC(최신 [0]) 순서여야 함 — getDailyChart() 반환값 그대로 사용
 export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   if (candles.length < 30) return null;
 
   const closes = candles.map((c) => c.close);
-  const current = closes[0];
+  const current = closes[0]; // 최신 종가 (DESC [0])
 
   const closesAsc = [...closes].reverse();
   const candlesAsc = [...candles].reverse();
