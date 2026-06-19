@@ -651,6 +651,25 @@ export async function executeBuyDecisions(
       );
     }
 
+    // ── 눌림목 거래량 급감 체크: 전일 급감 + 오늘도 반등 없음 → 관망 ──────────
+    if (srCandles && srCandles.length >= 22) {
+      const avg20Vol = srCandles.slice(-22, -2).reduce((s, c) => s + c.volume, 0) / 20;
+      if (avg20Vol > 0) {
+        const prevDayVol = srCandles[srCandles.length - 2].volume;
+        const todayVol = srCandles[srCandles.length - 1].volume;
+        const prevRatio = prevDayVol / avg20Vol;
+        const todayRatio = todayVol / avg20Vol;
+        // 전일 거래량 50% 미만 급감 + 오늘도 80% 미만 → 매도세 소진 미확인
+        if (prevRatio < 0.5 && todayRatio < 0.8) {
+          logger.info(
+            `  ⏸️ ${cand.stock_code}: 거래량 급감 관망 (전일 ${(prevRatio * 100).toFixed(0)}% / 오늘 ${(todayRatio * 100).toFixed(0)}%) — 반등 확인 후 진입`,
+            { component: 'TRACK_B' },
+          );
+          continue;
+        }
+      }
+    }
+
     const allocStr = ` [비율${(baseAllocPct * modeScale * firstEntryRatio * 100).toFixed(0)}%→${Math.round(effectivePositionSize / 10000)}만원]`;
     const srTag = srClass === 'TREND_LEADER' ? ' [📈TREND_LEADER]' : srClass === 'SCALP_TARGET' ? ' [⚡SCALP_TARGET]' : '';
     const scalpTag = cand.isScalpOverride ? ' [🎯ScalpRadar]' : '';
