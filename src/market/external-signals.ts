@@ -11,6 +11,7 @@ export interface MarketSentiment {
   fearGreedScore: number; // 0(극공포)~100(극탐욕)
   fearGreedLabel: string; // 'Extreme Fear' | 'Fear' | 'Neutral' | 'Greed' | 'Extreme Greed'
   vix: number; // VIX 수치 (18 미만=안정, 25+ 위험, 35+ 공황)
+  greedyStreak: number; // FGI≥80 연속 거래일 수 (5일+ → 익절 고려 신호)
   updatedAt: Date;
 }
 
@@ -33,6 +34,9 @@ export interface NewsSentiment {
 
 // ── 캐시 (60분 유효) ──────────────────────────────────────────
 let _fgCache: { data: MarketSentiment; fetchedAt: number } | null = null;
+// v11.0: FGI≥80 연속 거래일 추적 (날짜별 1회만 증가)
+let _greedyStreak = 0;
+let _greedyStreakLastDate = '';
 let _earningsCache: { data: EarningsEvent[]; fetchedAt: number } | null = null;
 const _newsCache = new Map<string, { data: NewsSentiment; fetchedAt: number }>();
 const CACHE_TTL = 60 * 60 * 1000; // 1시간
@@ -76,13 +80,28 @@ export async function getFearGreedIndex(): Promise<MarketSentiment | null> {
     }
 
     const label = rating.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) || scorToLabel(score);
-    const data: MarketSentiment = { fearGreedScore: score, fearGreedLabel: label, vix, updatedAt: new Date() };
+
+    // FGI≥80 연속일 카운터 (날짜 바뀔 때마다 1회 증가)
+    const todayStr = new Date().toISOString().slice(0, 10);
+    if (score >= 80) {
+      if (_greedyStreakLastDate !== todayStr) {
+        _greedyStreak++;
+        _greedyStreakLastDate = todayStr;
+      }
+    } else {
+      _greedyStreak = 0;
+      _greedyStreakLastDate = '';
+    }
+
+    const data: MarketSentiment = { fearGreedScore: score, fearGreedLabel: label, vix, greedyStreak: _greedyStreak, updatedAt: new Date() };
     _fgCache = { data, fetchedAt: Date.now() };
     logger.info(`📊 Fear&Greed: ${score}(${label}) VIX: ${vix.toFixed(1)}`, { component: 'EXT_SIGNAL' });
     return data;
   } catch (err: any) {
     logger.warn(`Fear&Greed 조회 실패: ${err.message}`, { component: 'EXT_SIGNAL' });
-    return _fgCache?.data ?? null;
+    const cached = _fgCache?.data;
+    if (cached && !('greedyStreak' in cached)) (cached as any).greedyStreak = _greedyStreak;
+    return cached ?? null;
   }
 }
 
@@ -222,11 +241,12 @@ export function interpretMarketSentiment(s: MarketSentiment): {
   }
   // 극탐욕(≥80) = 과열, 신규 매수 자제
   if (fg >= 80) {
+    const streakWarn = s.greedyStreak >= 5 ? ` ⚠️ ${s.greedyStreak}일 연속 — 익절 고려` : '';
     return {
       allowBuy: false,
       aggressive: false,
       marketQuality: 'DANGER',
-      reason: `극탐욕(${fg}) 과열 — 신규 매수 자제`,
+      reason: `극탐욕(${fg}) 과열 — 신규 매수 자제${streakWarn}`,
     };
   }
   // 최고 진입 환경 (F&G 중립 + VIX 안정)

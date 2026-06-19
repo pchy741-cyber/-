@@ -84,7 +84,15 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
     if (rbTotal < 5000) return { rebalanceAlerts, cash };
     const isSmallPortfolio = rbTotal < 10000;
     const overweightThreshold = isSmallPortfolio ? 20.0 : 5.0;
-    const overweight = positionWeights.filter((p) => p.weight > targetWeightPer + overweightThreshold);
+    // v11.1: 5/25 룰 — 5% 절대 OR 25% 상대 중 먼저 도달한 기준
+    // 단, 상대조건은 최소 3% 절대이탈 요구 (소액 포트/다종목에서 과발동 방지)
+    const overweight = positionWeights.filter(
+      (p) =>
+        p.weight > targetWeightPer + overweightThreshold ||
+        (!isSmallPortfolio &&
+          p.weight > targetWeightPer * 1.25 &&
+          p.weight - targetWeightPer >= 3.0),
+    );
 
     if (overweight.length > 0 || (actualCashPct < 5 && holdingCount >= 3)) {
       const rbLines: string[] = [`📊 *포트폴리오 비중 리밸런싱 추천*`, ''];
@@ -95,12 +103,16 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
       rbLines.push('');
 
       for (const p of positionWeights.sort((a, b) => b.weight - a.weight)) {
-        const tag =
-          p.weight > targetWeightPer + overweightThreshold
-            ? '⚠️과다'
-            : p.weight < targetWeightPer - overweightThreshold
-              ? '⬇️부족'
-              : '✅적정';
+        const isOver =
+          p.weight > targetWeightPer + overweightThreshold ||
+          (!isSmallPortfolio &&
+            p.weight > targetWeightPer * 1.25 &&
+            p.weight - targetWeightPer >= 3.0);
+        const tag = isOver
+          ? '⚠️과다'
+          : p.weight < targetWeightPer - overweightThreshold
+            ? '⬇️부족'
+            : '✅적정';
         rbLines.push(
           `  ${tag} *${p.code}* ${p.weight.toFixed(1)}% ($${p.value.toFixed(0)}) ${p.pnl >= 0 ? '+' : ''}${p.pnl.toFixed(1)}%`,
         );

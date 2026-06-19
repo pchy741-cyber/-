@@ -99,9 +99,9 @@ export const STRATEGY_PARAMS = {
     earlyTpPct: 0,
     takeProfitPct: 7.0, // v11: 5.0%→7.0% (손익분기 WR 29.1% — 실전WR30% 초과 → 흑자)
     takeProfitRatio: 0.5,
-    stopLossPct: -2.5,
-    maxHoldingDays: 10,
-    maxDailyTrades: 2, // v11: 3→2 (과잉거래 차단)
+    stopLossPct: -2.5, // v10.7: -3.5%→-2.5% (손실 빨리 차단, 소액계좌 드로다운 축소)
+    maxHoldingDays: 15, // v11.0: 10→15 (실증: 21봉 71.79% WR, 2.64× PF — 보수적 15일 채택)
+    maxDailyTrades: 3, // v10.3: 5→3 (과잉거래=구조적 적자의 주범, 수수료 절감)
   },
 
   DEFENSE: {
@@ -162,7 +162,7 @@ export const STRATEGY_PARAMS = {
     takeProfitPct: 8.0, // +8% 익절
     takeProfitRatio: 0.5, // 50% 부분 매도 → 잔여 트레일링
     stopLossPct: -3.0, // v7: -4%→-3% (고확신 종목은 타이트 SL로 손실 제한)
-    maxHoldingDays: 7, // 1주일 내 청산
+    maxHoldingDays: 14, // v11.0: 7→14 (고확신 종목 TP까지 충분한 시간 확보)
   },
 
   BOTTOM_FISHING: {
