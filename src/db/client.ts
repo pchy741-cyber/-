@@ -718,7 +718,7 @@ export async function getRecentlySoldStocks(hoursBack = 4): Promise<Set<string>>
   }
 }
 
-// 리스크 쿨다운 마지막 성공값 캐시 — DB 오류 시 fail-closed (빈 Set 반환 방지)
+// 리스크 쿨다운 마지막 성공값 캐시 — DB 오류/메모리 모드 시 fail-closed
 const _lossStocksCache = new Map<string, Set<string>>();
 const _bigLossStocksCache = new Map<string, Set<string>>();
 
@@ -728,8 +728,11 @@ const _bigLossStocksCache = new Map<string, Set<string>>();
  *  - ATR/손절 사유 매도: 7일 차단 (같은 패턴 반복 방지)
  */
 export async function getRecentLossStocks(_daysBack = 14): Promise<Set<string>> {
-  if (useMemory) return new Set();
   const cacheKey = String(getCtxIsPaper());
+  if (useMemory) {
+    // 메모리 모드: 마지막 DB 조회 캐시 사용 (fail-closed). 캐시 없으면 빈 Set.
+    return _lossStocksCache.get(cacheKey) ?? new Set();
+  }
   try {
     // 1) 일반 손실 7일 + 대손실 14일 졸업식 차단
     const { rows } = await queryWithRetry(
@@ -775,8 +778,10 @@ export async function getRecentLossStocks(_daysBack = 14): Promise<Set<string>> 
  * AI 점수와 무관하게 차단. 손해보고 판 걸 또 사는 건 금지.
  */
 export async function getBigLossBlockedStocks(): Promise<Set<string>> {
-  if (useMemory) return new Set();
   const cacheKey = String(getCtxIsPaper());
+  if (useMemory) {
+    return _bigLossStocksCache.get(cacheKey) ?? new Set();
+  }
   try {
     const { rows } = await queryWithRetry(
       `SELECT DISTINCT stock_code FROM transaction_chains
@@ -809,12 +814,17 @@ export interface LossRecord {
   lastPrice: number;
 }
 
+const _lossHistoryCache = new Map<string, Map<string, LossRecord>>();
+
 /**
  * 90일 이내 -3% 이상 손실 체인 통합 조회 (스마트 재진입용)
  * getBigLossBlockedStocks + getRecentLossStocks 대체하는 통합 함수
  */
 export async function getLossHistory(): Promise<Map<string, LossRecord>> {
-  if (useMemory) return new Map();
+  const cacheKey = String(getCtxIsPaper());
+  if (useMemory) {
+    return _lossHistoryCache.get(cacheKey) ?? new Map();
+  }
   try {
     const { rows } = await queryWithRetry(
       `SELECT stock_code, realized_pnl, pnl_pct, closed_at,
@@ -840,9 +850,11 @@ export async function getLossHistory(): Promise<Map<string, LossRecord>> {
         lastPrice: Number(r.last_price),
       });
     }
+    _lossHistoryCache.set(cacheKey, map);
     return map;
   } catch {
-    return new Map();
+    const cached = _lossHistoryCache.get(cacheKey);
+    return cached ?? new Map();
   }
 }
 

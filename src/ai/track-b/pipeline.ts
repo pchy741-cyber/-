@@ -1521,6 +1521,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       `✅ [${tbModeTag}] Track B 완료 (${elapsed}초): 총 ${decisions.length}개 판단, ${actionable.length}개 액션 | 유휴현금 ${idleCashPct}% (${orderableCash.toLocaleString()}원)`,
       { component: 'TRACK_B' },
     );
+    if (actionable.length === 0 && decisions.length > 0) {
+      logger.info(`⏸️ [${tbModeTag}] Track B: 실행 액션 없음 — 판단 ${decisions.length}건 전부 HOLD/SKIP`, { component: 'TRACK_B' });
+    }
 
     // 데이터 마스터 로그 (비동기, 파이프라인 블로킹 없음)
     logScanSession(

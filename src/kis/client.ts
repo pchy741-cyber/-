@@ -125,9 +125,7 @@ export const overseasRateLimiter = {
   },
 };
 export const marketDataRateLimiter = {
-  acquire: async () => {
-    /* 내부 global limiter가 조율하므로 noop */
-  },
+  acquire: async () => _globalLiveLimiter.acquire(),
   get pendingCount() {
     return _globalLiveLimiter.pendingCount;
   },

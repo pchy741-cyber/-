@@ -211,6 +211,12 @@ export function startDbHealthWatcher(checkDb: () => Promise<boolean>, onReconnec
       const ok2 = await checkDb();
       if (ok2) {
         logger.info('🔌 DB 자동 복구 성공', { component: 'SQL_WAKE' });
+        try {
+          const { disableMemoryMode } = await import('../db/client.js');
+          disableMemoryMode();
+        } catch {
+          /* ignore */
+        }
         await onReconnect();
       }
     } catch {

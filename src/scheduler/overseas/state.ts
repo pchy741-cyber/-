@@ -168,29 +168,26 @@ export async function ensureOverseasTable(): Promise<void> {
     try {
       const { rows: seedMig } = await getPool().query("SELECT value FROM overseas_state WHERE key = '_seed_unified_v1'");
       if (seedMig.length === 0) {
-        // marker를 먼저 INSERT해야 원자성 보장 (서버 재시작 시 중복 삭제 방지)
         const migratedAt = new Date().toISOString();
-        await getPool().query(
-          `INSERT INTO overseas_state (key, value) VALUES ('_seed_unified_v1', $1) ON CONFLICT (key) DO NOTHING`,
-          [JSON.stringify({ migratedAt, ordersArchived: 0, seedKrw: PAPER_OVERSEAS_SEED_KRW })],
-        );
-        const { rowCount } = await getPool().query(
-          `UPDATE orders SET trading_mode = 'p_arch'
-           WHERE trading_mode = 'paper' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'`,
-        );
-        await getPool().query(`DELETE FROM overseas_holdings WHERE is_paper = true`);
-        await getPool().query(
-          `UPDATE overseas_state SET value = $1 WHERE key = '_seed_unified_v1'`,
-          [
-            JSON.stringify({
-              migratedAt,
-              ordersArchived: rowCount,
-              seedKrw: PAPER_OVERSEAS_SEED_KRW,
-            }),
-          ],
-        );
+        let archivedCount = 0;
+        await withTransaction(async (tx) => {
+          await tx.query(
+            `INSERT INTO overseas_state (key, value) VALUES ('_seed_unified_v1', $1) ON CONFLICT (key) DO NOTHING`,
+            [JSON.stringify({ migratedAt, ordersArchived: 0, seedKrw: PAPER_OVERSEAS_SEED_KRW })],
+          );
+          const result = await tx.query(
+            `UPDATE orders SET trading_mode = 'p_arch'
+             WHERE trading_mode = 'paper' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'`,
+          );
+          archivedCount = result.rowCount ?? 0;
+          await tx.query(`DELETE FROM overseas_holdings WHERE is_paper = true`);
+          await tx.query(
+            `UPDATE overseas_state SET value = $1 WHERE key = '_seed_unified_v1'`,
+            [JSON.stringify({ migratedAt, ordersArchived: archivedCount, seedKrw: PAPER_OVERSEAS_SEED_KRW })],
+          );
+        });
         logger.info(
-          `🔄 통합증거금 전환: ${rowCount}건 paper 주문 아카이브 → ₩${(PAPER_OVERSEAS_SEED_KRW / 10000).toFixed(0)}만 클린스타트`,
+          `🔄 통합증거금 전환: ${archivedCount}건 paper 주문 아카이브 → ₩${(PAPER_OVERSEAS_SEED_KRW / 10000).toFixed(0)}만 클린스타트`,
           { component: 'OVERSEAS' },
         );
       }

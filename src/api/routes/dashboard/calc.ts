@@ -193,9 +193,11 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
 
   // ─── 7. 전일 대비 수익률 ───
   const prevDay = safe(i.prevDayTotalValue);
-  const dailyChangePct = prevDay > 0 && grandTotalValue > 0
+  const rawDailyChangePct = prevDay > 0 && grandTotalValue > 0
     ? Math.round(((grandTotalValue - prevDay) / prevDay) * 10000) / 100
     : 0;
+  // 마이그레이션(해외자산 신규 편입 등)으로 전일 스냅샷이 현재와 큰 차이를 보이면 0 처리
+  const dailyChangePct = Math.abs(rawDailyChangePct) > 100 ? 0 : rawDailyChangePct;
 
   logger.info(`📊 calcTotalAssets [${i.viewIsPaper ? 'PAPER' : 'LIVE'}] method=${calcMethod} | netAsset=${safe(i.netAsset)} rawCash=${safe(i.rawCash)} kisDomEval=${safe(i.kisDomEval)} kisPurchaseCost=${safe(i.kisPurchaseCost)} | overseasMV_usd=${safe(i.overseasMarketValueUsd)} overseasCash=${rawOverseasCash} | grandTotal=${Math.round(grandTotalValue)} freeCash=${Math.round(freeDomesticCash)} domMV=${Math.round(domesticMarketValue)} overseasMV_krw=${Math.round(overseasMarketValueKrw)}`, { component: 'CALC' });
 
