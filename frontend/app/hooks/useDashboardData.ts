@@ -92,7 +92,7 @@ export function useDashboardData() {
     const vm = vmOverride ?? viewModeRef.current;
     const [w, s, t, sec, wc, wh, ts] = await Promise.allSettled([
       api(`/watchlist?viewMode=${vm}`), api(`/strategy?viewMode=${vm}`),
-      api(`/trades?limit=100&viewMode=${vm}`), api(`/secrets?viewMode=${vm}`),
+      api(`/trades?limit=500&viewMode=${vm}`), api(`/secrets?viewMode=${vm}`),
       api('/withdraw/config').catch(() => null),
       api('/withdraw/history').catch(() => []),
       api(`/trades/today-stats?viewMode=${vm}`),
@@ -114,7 +114,7 @@ export function useDashboardData() {
 
   const refreshTrades = (gen: number, vmOverride?: string) => {
     const vm = vmOverride ?? viewModeRef.current;
-    api(`/trades?limit=100&viewMode=${vm}`).then((t: Trade[]) => {
+    api(`/trades?limit=500&viewMode=${vm}`).then((t: Trade[]) => {
       if (loadGenRef.current !== gen) return;
       if (Array.isArray(t) && t.length > 0) {
         setTrades(t);
@@ -138,7 +138,7 @@ export function useDashboardData() {
       const fetchTrades = !tradesLoadedRef.current || forceStatic;
       const [h, d, k, t] = await Promise.allSettled([
         api('/health'), api(`/dashboard?viewMode=${vm}`), api('/kill-switch'),
-        fetchTrades ? api(`/trades?limit=100&viewMode=${vm}`) : Promise.resolve(null),
+        fetchTrades ? api(`/trades?limit=500&viewMode=${vm}`) : Promise.resolve(null),
       ]);
       if (gen !== loadGenRef.current) return;
       if (h.status === 'fulfilled') setHealth(h.value);

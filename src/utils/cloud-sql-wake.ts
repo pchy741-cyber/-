@@ -132,19 +132,29 @@ export function isWaking(): boolean {
   return _waking;
 }
 
+/** 한국 장중 여부 확인 — 평일 KST 09:00~15:30 */
+export function isInMarketHours(): boolean {
+  const kst = getKSTNow();
+  const day = kst.getUTCDay(); // 0=Sun,6=Sat
+  if (day === 0 || day === 6) return false;
+  const t = kst.getUTCHours() * 100 + kst.getUTCMinutes();
+  return t >= 900 && t <= 1530;
+}
+
 /** API 요청 시 호출 — 활동 시간 갱신 */
 export function touchActivity(): void {
   _lastActivityAt = Date.now();
 }
 
 /**
- * 유휴 감시 — DB 절전 제거됨, 활동 시간만 추적 (DB 헬스워처용)
- * Cloud SQL은 항상 ALWAYS 상태 유지 (절전 없음 — 즉시 접속 보장)
+ * 유휴 감시 — 장중(09:00~15:30) 30초마다 활동 갱신 → DB 헬스워처 활성 유지
+ * 장외시간은 no-op (DB 헬스워처 절전 존중)
  */
 export function startIdleWatcher(): void {
   if (_idleTimer) return;
-  // 절전 없음: DB는 24/7 ALWAYS 유지. 이 타이머는 활동 추적만 함.
-  _idleTimer = setInterval(() => { /* no-op */ }, 60 * 60_000);
+  _idleTimer = setInterval(() => {
+    if (isInMarketHours()) touchActivity(); // 장중에만 활동 갱신 (DB 연결 keepalive)
+  }, 30_000);
 }
 
 // ── DB 헬스 워처 — 부팅 후에도 DB 끊기면 자동 기상 + 재연결 ──
@@ -259,6 +269,11 @@ async function setCloudRunMinInstances(min: number): Promise<void> {
  * 주말: Cloud SQL 중지 — 사용자 대시보드 접속 시 touchActivity → 헬스워처가 자동 기상
  */
 export async function weekendHibernate(): Promise<void> {
+  // 장중(평일 09:00~15:30) 보호 — 실수로 호출돼도 절전 진입 차단
+  if (isInMarketHours()) {
+    logger.warn('🌙 주말 절전 거부 — 장중 보호 중 (09:00~15:30 평일)', { component: 'HIBERNATE' });
+    return;
+  }
   logger.info('🌙 주말 절전 — Cloud Run min=0 + Cloud SQL NEVER', { component: 'HIBERNATE' });
 
   try {

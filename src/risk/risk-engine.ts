@@ -341,11 +341,29 @@ export class RiskEngine {
 
   private async checkTotalExposure(orderValue: number, isPaper: boolean): Promise<PreTradeCheckResult> {
     const balance = await getBalance(isPaper);
-    const totalPortfolio = getDomesticTotalAssets(balance);
+    let totalPortfolio = getDomesticTotalAssets(balance);
+    let currentInvested = balance.totalEvalAmount;
+
+    // Paper 모드: 해외 자산 합산 — KR만 기준 시 투자비중 과다 계산(~100%)으로 매수 차단
+    if (isPaper) {
+      try {
+        const fx = await getFxRate();
+        if (fx > 0) {
+          const [osHoldings, osCashUsd] = await Promise.all([getOverseasHoldings(true), getOverseasCash(true)]);
+          const osInvestedKrw = Math.round(
+            Array.from(osHoldings.values()).reduce((s, h) => s + h.qty * h.avgPrice, 0) * fx,
+          );
+          const osCashKrw = Math.round(osCashUsd * fx);
+          totalPortfolio += osInvestedKrw + osCashKrw;
+          currentInvested += osInvestedKrw;
+        }
+      } catch { /* fallback: KR-only */ }
+    }
+
     // 소자산(100만 미만)은 비율 체크 의미 없음 — cashCheck가 유일한 실질 관문
     if (totalPortfolio === 0 || totalPortfolio < 1_000_000) return { approved: true, reason: 'OK' };
 
-    const afterExposurePct = ((balance.totalEvalAmount + orderValue) / totalPortfolio) * 100;
+    const afterExposurePct = ((currentInvested + orderValue) / totalPortfolio) * 100;
 
     // 레짐 기반 동적 투자비율 캡 — 장 좋으면 적극 집행, 나쁘면 보수적
     // Paper 모드: 97% 고정 (거의 전액 집행, 로그 축적 극대화)
@@ -564,11 +582,23 @@ export class RiskEngine {
 
   private async checkCash(orderValue: number, isPaper: boolean): Promise<PreTradeCheckResult> {
     const balance = await getBalance(isPaper);
+    let availableCash = balance.orderableCash;
 
-    if (orderValue > balance.orderableCash) {
+    // Paper 모드: 해외 현금(USD→KRW) 합산 — 통합증거금 방식으로 KR 단독 고갈 시에도 차단 방지
+    if (isPaper) {
+      try {
+        const fx = await getFxRate();
+        if (fx > 0) {
+          const osCashUsd = await getOverseasCash(true);
+          availableCash += Math.round(osCashUsd * fx);
+        }
+      } catch { /* fallback: KR-only */ }
+    }
+
+    if (orderValue > availableCash) {
       return {
         approved: false,
-        reason: `현금 부족: 주문금액 ${orderValue.toLocaleString()}원 > 가용 ${balance.orderableCash.toLocaleString()}원`,
+        reason: `현금 부족: 주문금액 ${orderValue.toLocaleString()}원 > 가용 ${availableCash.toLocaleString()}원`,
       };
     }
 

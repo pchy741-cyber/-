@@ -126,10 +126,15 @@ export function startScheduler(): void {
   //  장 시작 전 준비
   // ═══════════════════════════════════════════
 
-  // 07:30 — Track A 장전 분석
+  // 07:30 — Track A 장전 분석 (비거래일 스킵 — AI 토큰 절약)
   cron.schedule(
     SCHEDULE.TRACK_A_CRON[0],
-    () => {
+    async () => {
+      const { isTradingDay } = await import('../utils/holidays.js');
+      if (!isTradingDay()) {
+        logger.debug('⏰ Track A (장전) 스킵 — 비거래일', { component: 'SCHEDULER' });
+        return;
+      }
       logger.info('⏰ Track A (장전)', { component: 'SCHEDULER' });
       withTimeout('Track A 장전', () => runTrackAJob(), 300_000);
     },
@@ -304,10 +309,12 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 08:40 — 장전 모닝브리프: 뉴스+매크로 → Gemini 합산 → opening-bell 프롬프트 컨텍스트 생성
+  // 08:40 — 장전 모닝브리프: 뉴스+매크로 → Gemini 합산 (비거래일 스킵 — AI 토큰 절약)
   cron.schedule(
     '40 8 * * 1-5',
-    () => {
+    async () => {
+      const { isTradingDay } = await import('../utils/holidays.js');
+      if (!isTradingDay()) return;
       runMorningBrief().catch((e) => logger.error(`모닝브리프 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
@@ -690,10 +697,15 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 18:00 — Track A 장후 분석
+  // 18:00 — Track A 장후 분석 (비거래일 스킵 — AI 토큰 절약)
   cron.schedule(
     SCHEDULE.TRACK_A_CRON[3],
-    () => {
+    async () => {
+      const { isTradingDay } = await import('../utils/holidays.js');
+      if (!isTradingDay()) {
+        logger.debug('⏰ Track A (장후) 스킵 — 비거래일', { component: 'SCHEDULER' });
+        return;
+      }
       logger.info('⏰ Track A (장후)', { component: 'SCHEDULER' });
       runTrackAJob().catch((e) => logger.error(`Track A 실패: ${e}`, { component: 'SCHEDULER' }));
     },

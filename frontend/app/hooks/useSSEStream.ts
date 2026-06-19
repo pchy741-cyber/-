@@ -132,7 +132,7 @@ export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
           if (chainsChanged || overseasChanged) {
             // disposed 체크: 모드 전환 시 stale API 응답이 새 모드 데이터 덮어쓰기 방지
             api(`/dashboard?viewMode=${vm}`).then((d: Dashboard) => { if (!disposed && d) setDash(d); }).catch(() => {});
-            api(`/trades?limit=200&viewMode=${vm}`).then((t: Trade[]) => { if (!disposed && Array.isArray(t) && t.length > 0) setTrades(t); }).catch(() => {});
+            api(`/trades?limit=500&viewMode=${vm}`).then((t: Trade[]) => { if (!disposed && Array.isArray(t) && t.length > 0) setTrades(t); }).catch(() => {});
             api(`/overseas/dashboard?viewMode=${vm}`).then((us: UsDashboard) => {
               if (!disposed && us) setUsDash(us);
             }).catch(() => {});

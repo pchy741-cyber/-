@@ -252,9 +252,9 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       } else if (tws.action === 'BREAK_EVEN' && pnlPct < 0) {
         // 본절 이동 후 손실 진입 → 손절 (본절 = 0%)
         sellReason = `본절 SL (Phase2): PnL ${pnlPct.toFixed(1)}% < 본절 0%`;
-      } else if (tws.action === 'TRAIL_TIGHTEN' && pnlPct < tws.effectiveSlPct) {
-        // 트레일링 SL 발동
-        sellReason = `트레일링 SL (Phase3): PnL ${pnlPct.toFixed(1)}% < 트레일 ${tws.effectiveSlPct.toFixed(1)}%`;
+      } else if (tws.action === 'TRAIL_TIGHTEN' && pnlPct < Math.max(0, maxPnlPct - 2.0)) {
+        // 트레일링 SL 발동 — 고점(maxPnlPct) 기준 -2% 슬리피지 (현재가 기준이면 항상 false됨)
+        sellReason = `트레일링 SL (Phase3): PnL ${pnlPct.toFixed(1)}% < 트레일 +${Math.max(0, maxPnlPct - 2.0).toFixed(1)}%`;
       } else if (tws.action === 'HOLD') {
         // Phase 1 휩소 방어 중 — 구조적 SL만 허용, 일반 손절은 차단
         // v10.8: 단, 하드 TP/ATR 트레일링/수익 확정은 HOLD에서도 허용 (수익 실현 차단 방지)

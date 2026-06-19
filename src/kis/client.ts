@@ -190,11 +190,14 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
   let lastError: Error | null = null;
 
   // ── Global Rate Limiter: resolved URL 기반 최종 게이트 ──
-  const isLiveServer = resolvedBaseUrl.includes('openapi.koreainvestment.com');
-  if (isLiveServer) {
-    await _globalLiveLimiter.acquire();
-  } else {
-    await _paperServerLimiter.acquire();
+  // skipRateLimiter=true (주문 API): 큐 건너뜀 — 매도/매수가 데이터 조회 뒤 40초 대기 방지
+  if (!skipRateLimiter) {
+    const isLiveServer = resolvedBaseUrl.includes('openapi.koreainvestment.com');
+    if (isLiveServer) {
+      await _globalLiveLimiter.acquire();
+    } else {
+      await _paperServerLimiter.acquire();
+    }
   }
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -254,14 +257,14 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
           throw new Error('KIS 토큰 만료 — 재발급 후에도 실패');
         }
 
-        // rate limit 초과 → 최대 2회 재시도, 짧게 대기 (쌓이면 Cloud Run 포화)
+        // rate limit 초과 → 최대 4회 재시도 (2s/4s/6s/8s)
         if (String(data.msg_cd ?? '') === 'EGW00201' || msg.includes('초당') || msg.includes('거래건수')) {
-          const MAX_RATE_RETRIES = 2;
+          const MAX_RATE_RETRIES = 4;
           if (attempt <= MAX_RATE_RETRIES) {
             logger.warn(`KIS rate limit 초과, ${attempt * 2}초 대기 후 재시도 ${attempt}/${MAX_RATE_RETRIES}`, {
               component: 'KIS',
             });
-            await sleep(2000 * attempt); // 2초, 4초 대기
+            await sleep(2000 * attempt);
             continue;
           }
           throw new Error(errMsg);

@@ -18,6 +18,12 @@ import { getFxRate } from './dashboard/helpers.js';
 import { getRecentEvents } from './health.js';
 import { getCopilotLiteScore } from './review/copilot-lite.js';
 
+// ── 전역 메타 페이로드 캐시 (연결 수 무관, DB 쿼리 30초에 2회 — paper/live 각 1회) ──
+// Promise coalescing: N개 연결이 동시에 깨어나도 DB 쿼리는 1번만 실행
+const _metaCache = new Map<boolean, { payload: string; ts: number }>();
+const _metaInFlight = new Map<boolean, Promise<string>>();
+const META_CACHE_TTL = 28_000; // 28s — 30s 메타 인터벌보다 짧게 설정
+
 // ── 보유종목 가격 티커 (10초 간격, 추가 비용 $0) ──
 // 전역 dedup: 여러 SSE 연결이 동시에 있어도 10초에 1회만 호출
 let _lastPriceRefreshAt = 0;
