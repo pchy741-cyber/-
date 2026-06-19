@@ -498,23 +498,25 @@ export async function executeBuyDecisions(
     const firstEntryRatio =
       mode === 'SNIPER'
         ? 1.0 // 저격수: 한 번에 풀 포지션
-        : !aiApproved
-          ? 1.0
-          : blendedScore >= 90
-            ? 0.9 // 최고확신: 90% 진입 (물타기 10% 여지)
-            : blendedScore >= 85
-              ? allocationBoostFirstEntry
-                ? 0.85
-                : 0.82
-              : splitCount <= 1
-                ? 1.0
-                : splitCount <= 2
-                  ? allocationBoostFirstEntry
-                    ? 0.78
-                    : 0.7
-                  : allocationBoostFirstEntry
-                    ? 0.75
-                    : 0.65;
+        : mode === 'DEFENSE'
+          ? 0.3 // DEFENSE: 30% 선진입, RSI50 돌파·5일선 안착 확인 후 scale-in
+          : !aiApproved
+            ? 1.0
+            : blendedScore >= 90
+              ? 0.9 // 최고확신: 90% 진입 (물타기 10% 여지)
+              : blendedScore >= 85
+                ? allocationBoostFirstEntry
+                  ? 0.85
+                  : 0.82
+                : splitCount <= 1
+                  ? 1.0
+                  : splitCount <= 2
+                    ? allocationBoostFirstEntry
+                      ? 0.78
+                      : 0.7
+                    : allocationBoostFirstEntry
+                      ? 0.75
+                      : 0.65;
     const aiPosMultiplier = 1.0;
 
     // 연속손실 배율 — 2연속 손실 시 0.7x, 3+연속 시 0.5x

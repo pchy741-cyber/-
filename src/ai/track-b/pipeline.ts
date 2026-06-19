@@ -1148,17 +1148,33 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       .filter((w) => w.stock_code !== PARK_STOCK_CODE)
       .map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name }));
 
-    // ── KIS 시장 시그널: 상위 5종목 (v6: 3→5 확대, 수급·호가·공매도 정확도 강화) ──
+    // DEFENSE 모드: AI 점수 상위 2개 종목에만 집중 (분산 대신 확신 종목 집중)
+    const defenseFocusCodes: Set<string> | null =
+      effectiveMode === 'DEFENSE' && finalScores.length > 0
+        ? new Set([...finalScores].sort((a, b) => b.score - a.score).slice(0, 2).map((s) => s.stock_code))
+        : null;
+    if (defenseFocusCodes) {
+      logger.info(
+        `🛡️ DEFENSE 집중: ${[...defenseFocusCodes].join(', ')} 2종목에만 신규 매수 허용`,
+        { component: 'TRACK_B' },
+      );
+    }
+    const activeWatchlist = defenseFocusCodes
+      ? filteredWatchlist.filter((w) => defenseFocusCodes!.has(w.stock_code))
+      : filteredWatchlist;
+
+    // ── KIS 시장 시그널: DEFENSE=상위2, 일반=상위5 ──
+    const signalTopN = effectiveMode === 'DEFENSE' ? 2 : 5;
     let marketSignals: Map<string, import('../../kis/market-signals.js').StockSignals> | undefined;
     if (!blockNewBuysFinal) {
       try {
         const topCodes = [...finalScores]
           .sort((a, b) => b.score - a.score)
-          .slice(0, 5)
+          .slice(0, signalTopN)
           .map((s) => s.stock_code);
         if (topCodes.length > 0) {
           marketSignals = await getBatchStockSignals(topCodes);
-          logger.info(`📡 시그널 수집: ${marketSignals.size}/${topCodes.length}개 (상위5)`, { component: 'TRACK_B' });
+          logger.info(`📡 시그널 수집: ${marketSignals.size}/${topCodes.length}개 (상위${signalTopN})`, { component: 'TRACK_B' });
         }
       } catch (err) {
         logger.warn(`📡 시그널 수집 실패 (계속): ${err}`, { component: 'TRACK_B' });
@@ -1167,7 +1183,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     const decisions = await technicalFallbackDecisions({
       mode: effectiveMode,
-      watchlist: filteredWatchlist,
+      watchlist: activeWatchlist,
       livePrices,
       chartData,
       openChains,
