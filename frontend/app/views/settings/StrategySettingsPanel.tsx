@@ -39,7 +39,7 @@ export function StrategySettingsPanel({ strategy }: {
   const ec: EnsembleConfig = strategy.ensemble_config ?? DEFAULT_ENSEMBLE;
 
   return (
-    <Panel title="전략 설정" badge="AI 자동 관리" badgeColor="violet">
+    <Panel title="전략 설정" badge="AI 자동 관리" badgeColor="blue">
       <div className="px-6 py-5 space-y-4">
         {/* AI 자동 관리 배지 */}
         <div className="flex items-center gap-2 px-4 py-2.5 bg-violet-500/10 border border-violet-500/30 rounded-xl">
