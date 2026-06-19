@@ -11,7 +11,7 @@
  *   - 비용: ~$0.035/query (GenAI App Builder Trial credit 적용)
  */
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { GoogleAuth } from 'google-auth-library';
+import { VertexAI } from '@google-cloud/vertexai';
 import { logger } from './logger.js';
 
 // ── 모델 설정 ──
@@ -142,120 +142,72 @@ function getStudioClient(): GoogleGenerativeAI {
   return _genAI;
 }
 
-// ── Vertex AI 인증 (google-auth-library ADC) ──
-let _vertexAuth: GoogleAuth | null = null;
+// ── Vertex AI SDK 싱글톤 ──
+let _vertexAI: VertexAI | null = null;
 
-function getVertexAuth(): GoogleAuth {
-  if (_vertexAuth) return _vertexAuth;
-  _vertexAuth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
-  return _vertexAuth;
+function getVertexAI(): VertexAI {
+  if (_vertexAI) return _vertexAI;
+  const projectId = process.env.GOOGLE_CLOUD_PROJECT ?? 'quantops-trading';
+  _vertexAI = new VertexAI({ project: projectId, location: VERTEX_LOCATION });
+  return _vertexAI;
 }
 
 /**
- * Vertex AI REST API — 비용 절약형 (Google Search Grounding 없음)
+ * Vertex AI SDK — 비용 절약형 (Google Search Grounding 없음)
  * AI Studio 일 250콜 한도 소진 시 자동 폴백으로 사용
- * 비용: gemini-2.0-flash $0.1/1M input + $0.4/1M output (grounding 없음 → $0.035 절약)
  */
 async function callVertexUngrounded(
   systemPrompt: string,
   userMessage: string,
   opts: GeminiCallOptions,
 ): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
-  const auth = getVertexAuth();
-  const projectId = process.env.GOOGLE_CLOUD_PROJECT ?? (await auth.getProjectId());
-
-  const client = await auth.getClient();
-  const tokenRes = await client.getAccessToken();
-  const token = tokenRes.token;
-  if (!token) throw new Error('Vertex AI 인증 토큰 취득 실패');
-
-  const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${VERTEX_LOCATION}/publishers/google/models/${GROUNDED_MODEL}:generateContent`;
-
-  const body = {
-    contents: [{ role: 'user', parts: [{ text: userMessage }] }],
-    system_instruction: { parts: [{ text: systemPrompt }] },
+  const vertexAI = getVertexAI();
+  const model = vertexAI.getGenerativeModel({
+    model: GROUNDED_MODEL,
     generationConfig: {
       temperature: opts.temperature ?? 0.2,
       maxOutputTokens: opts.maxOutputTokens ?? 8192,
     },
-  };
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    systemInstruction: systemPrompt,
   });
 
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Vertex AI (ungrounded) ${res.status}: ${errText.slice(0, 300)}`);
-  }
-
-  const data = (await res.json()) as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-    usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
-  };
-
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-  const inputTokens = data.usageMetadata?.promptTokenCount ?? 0;
-  const outputTokens = data.usageMetadata?.candidatesTokenCount ?? 0;
+  const result = await model.generateContent({ contents: [{ role: 'user', parts: [{ text: userMessage }] }] });
+  const response = result.response;
+  const text = response.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  const inputTokens = response.usageMetadata?.promptTokenCount ?? 0;
+  const outputTokens = response.usageMetadata?.candidatesTokenCount ?? 0;
   return { text, inputTokens, outputTokens };
 }
 
 /**
- * Vertex AI REST API + Google Search Grounding 호출
- * Cloud Run: ADC(서비스 계정) + 메타데이터 서버 자동 인증 — 별도 설정 불필요
- * GOOGLE_CLOUD_PROJECT 환경변수 없어도 Cloud Run에서 자동 감지
+ * Vertex AI SDK + Google Search Grounding 호출
+ * Cloud Run: ADC(서비스 계정) 자동 인증
  */
 async function callVertexGrounded(
   systemPrompt: string,
   userMessage: string,
   opts: GeminiCallOptions,
 ): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
-  const auth = getVertexAuth();
-  // Cloud Run: 메타데이터 서버에서 프로젝트 ID 자동 감지 (env 불필요)
-  const projectId = process.env.GOOGLE_CLOUD_PROJECT ?? (await auth.getProjectId());
-
-  const client = await auth.getClient();
-  const tokenRes = await client.getAccessToken();
-  const token = tokenRes.token;
-  if (!token) throw new Error('Vertex AI 인증 토큰 취득 실패');
-
-  const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${VERTEX_LOCATION}/publishers/google/models/${GROUNDED_MODEL}:generateContent`;
-
-  const body = {
-    tools: [{ googleSearch: {} }],
-    contents: [{ role: 'user', parts: [{ text: userMessage }] }],
-    system_instruction: { parts: [{ text: systemPrompt }] },
+  const vertexAI = getVertexAI();
+  const model = vertexAI.preview.getGenerativeModel({
+    model: GROUNDED_MODEL,
     generationConfig: {
       temperature: opts.temperature ?? 0.2,
       maxOutputTokens: opts.maxOutputTokens ?? 8192,
     },
-  };
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    systemInstruction: systemPrompt,
+    tools: [{ googleSearchRetrieval: {} }],
   });
 
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Vertex AI ${res.status}: ${errText.slice(0, 300)}`);
-  }
-
-  const data = (await res.json()) as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
-    usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
-  };
-
-  const finishReason = data.candidates?.[0]?.finishReason;
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  const result = await model.generateContent({ contents: [{ role: 'user', parts: [{ text: userMessage }] }] });
+  const response = result.response;
+  const finishReason = response.candidates?.[0]?.finishReason;
+  const text = response.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
   if (!text) {
     throw new Error(`Vertex Grounded: 빈 응답 (finishReason=${finishReason ?? 'unknown'}) — AI Studio fallback`);
   }
-  const inputTokens = data.usageMetadata?.promptTokenCount ?? 0;
-  const outputTokens = data.usageMetadata?.candidatesTokenCount ?? 0;
+  const inputTokens = response.usageMetadata?.promptTokenCount ?? 0;
+  const outputTokens = response.usageMetadata?.candidatesTokenCount ?? 0;
   return { text, inputTokens, outputTokens };
 }
 
