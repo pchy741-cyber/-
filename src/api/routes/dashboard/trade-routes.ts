@@ -52,7 +52,7 @@ tradeRoutes.get('/trades', async (c) => {
          ) END AS transaction_chains
        FROM orders o
        LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
-       LEFT JOIN watchlist w ON o.stock_code = w.stock_code
+       LEFT JOIN (SELECT DISTINCT ON (stock_code) stock_code, stock_name FROM watchlist ORDER BY stock_code, id DESC) w ON o.stock_code = w.stock_code
        WHERE o.is_paper = $2
          AND (o.trading_mode = $3::text OR ($3::text = 'paper' AND o.trading_mode = 'p_arch'))
        ${marketClause}

@@ -81,10 +81,11 @@ journalRoutes.get('/journal', async (c) => {
             AND o.filled_quantity > 0
         ) AS exit_price
       FROM transaction_chains tc
-      LEFT JOIN watchlist w ON w.stock_code = tc.stock_code
+      LEFT JOIN (SELECT DISTINCT ON (stock_code) stock_code, stock_name FROM watchlist ORDER BY stock_code, id DESC) w ON w.stock_code = tc.stock_code
       WHERE tc.status = 'CLOSED'
         AND tc.closed_at >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Seoul') - ($1 * INTERVAL '1 day')) AT TIME ZONE 'Asia/Seoul'
         AND tc.is_paper = $2
+        AND tc.stock_code ~ '^[0-9]{6}$'
       ORDER BY tc.closed_at DESC
       LIMIT 2000
     `,
