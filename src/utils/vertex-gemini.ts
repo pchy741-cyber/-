@@ -16,7 +16,7 @@ import { logger } from './logger.js';
 
 // ── 모델 설정 ──
 const FREE_MODEL = 'gemini-2.5-flash';
-const GROUNDED_MODEL = 'gemini-2.0-flash'; // Vertex AI grounding 지원 모델
+const GROUNDED_MODEL = 'gemini-2.0-flash-001'; // Vertex AI grounding 지원 모델 (버전 명시 필수)
 const VERTEX_LOCATION = 'us-central1';
 
 export interface GeminiCallOptions {
