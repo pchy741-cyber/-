@@ -135,16 +135,23 @@ export async function restorePaperState(): Promise<void> {
 }
 
 async function getPaperPositions(): Promise<Position[]> {
+  // FIFO 원장 대신 transaction_chains OPEN 기반 — ghost 포지션 시가 합산 방지
+  const pool = getPool();
   try {
-    const state = await loadPaperLedger();
-    const entries = Object.entries(state.holdings).filter(([, h]) => h.qty > 0);
-    if (entries.length === 0) return [];
+    const { rows: chainRows } = await pool.query(
+      `SELECT stock_code, total_quantity AS qty, avg_buy_price AS avg_price, total_invested
+       FROM transaction_chains
+       WHERE is_paper = true
+         AND status IN ('OPEN','AVERAGING','PROFIT_TAKING')
+         AND stock_code ~ '^[0-9]{6}$'
+         AND total_quantity > 0`,
+    );
+    if (chainRows.length === 0) return [];
 
-    // 실시간 시세 조회 (useRealUrl=true → live 서버에서 가격 가져옴)
     const priceMap = new Map<string, number>();
     try {
       const { getBatchPrices } = await import('../kis/market.js');
-      const codes = entries.map(([code]) => code);
+      const codes = chainRows.map((r: any) => r.stock_code);
       const batchResult = await Promise.race([
         getBatchPrices(codes),
         new Promise<Map<string, any>>((res) => setTimeout(() => res(new Map()), 5000)),
@@ -152,34 +159,33 @@ async function getPaperPositions(): Promise<Position[]> {
       for (const [code, quote] of batchResult) {
         if (quote.currentPrice > 0) priceMap.set(code, quote.currentPrice);
       }
-    } catch {
-      /* 시세 실패 시 캐시 폴백 */
-    }
+    } catch { /* 시세 실패 시 캐시 폴백 */ }
 
-    // KIS 시세 실패 시 인메모리 캐시 폴백 (dashboard builder와 동일 가격 소스)
-    if (priceMap.size < entries.length) {
+    if (priceMap.size < chainRows.length) {
       try {
         const { getCachedPriceMemory, getLastKnownPricesMemory } = await import('../cache/memory.js');
-        for (const [code] of entries) {
-          if (priceMap.has(code)) continue;
-          const cached = getCachedPriceMemory(code);
-          if (cached && cached > 0) { priceMap.set(code, cached); continue; }
-          const last = getLastKnownPricesMemory([code]).get(code);
-          if (last && last > 0) priceMap.set(code, last);
+        for (const row of chainRows as any[]) {
+          if (priceMap.has(row.stock_code)) continue;
+          const cached = getCachedPriceMemory(row.stock_code);
+          if (cached && cached > 0) { priceMap.set(row.stock_code, cached); continue; }
+          const last = getLastKnownPricesMemory([row.stock_code]).get(row.stock_code);
+          if (last && last > 0) priceMap.set(row.stock_code, last);
         }
       } catch { /* 캐시 모듈 로드 실패 시 무시 */ }
     }
 
-    return entries.map(([stockCode, h]) => {
-      const avgPrice = h.qty > 0 ? h.totalCost / h.qty : 0;
-      const livePrice = priceMap.get(stockCode) ?? Math.round(avgPrice);
-      const evalAmount = livePrice * h.qty;
-      const profitLoss = evalAmount - Math.round(h.totalCost);
+    return (chainRows as any[]).map((row) => {
+      const avgPrice = Number(row.avg_price) || 0;
+      const qty = Number(row.qty) || 0;
+      const totalInvested = Number(row.total_invested) || avgPrice * qty;
+      const livePrice = priceMap.get(row.stock_code) ?? Math.round(avgPrice);
+      const evalAmount = livePrice * qty;
+      const profitLoss = evalAmount - Math.round(totalInvested);
       const profitLossPct = avgPrice > 0 ? ((livePrice - avgPrice) / avgPrice) * 100 : 0;
       return {
-        stockCode,
-        stockName: stockCode,
-        quantity: h.qty,
+        stockCode: row.stock_code,
+        stockName: row.stock_code,
+        quantity: qty,
         avgBuyPrice: Math.round(avgPrice),
         currentPrice: livePrice,
         evalAmount,
@@ -289,6 +295,15 @@ export async function checkAndRefillPaper(): Promise<boolean> {
       `UPDATE orders SET trading_mode = $1
        WHERE trading_mode = 'paper' AND stock_code ~ '^[0-9]{6}$' AND status = 'FILLED'`,
       [`paper_archived_${gen}`],
+    );
+
+    // transaction_chains도 CLOSED 처리 — 미처리 시 holdingsCost에 유령으로 누적됨
+    await pool.query(
+      `UPDATE transaction_chains
+       SET status = 'CLOSED', close_reason = 'paper_refill', closed_at = NOW()
+       WHERE is_paper = true
+         AND status IN ('OPEN','AVERAGING','PROFIT_TAKING')
+         AND stock_code ~ '^[0-9]{6}$'`,
     );
 
     // 리셋
