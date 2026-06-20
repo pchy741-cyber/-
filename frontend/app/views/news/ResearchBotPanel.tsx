@@ -53,6 +53,32 @@ const SEC_TARGET_STOCKS = [
   { ticker: 'META', name: 'Meta' },
 ];
 
+// 종목코드 → 종목명 매핑 (DART API corpName 미반환 시 fallback)
+const KR_NAME_MAP: Record<string, string> = Object.fromEntries(
+  DART_TARGET_STOCKS.map((s) => [s.code, s.name]),
+);
+const US_NAME_MAP: Record<string, string> = Object.fromEntries(
+  SEC_TARGET_STOCKS.map((s) => [s.ticker, s.name]),
+);
+
+// 추천 금융 사이트 (공신력 + 매매 확률 향상에 유용)
+const RECOMMENDED_SITES = [
+  // ── 국내 (공신력·이용자 순) ──
+  { name: 'DART 전자공시', url: 'https://dart.fss.or.kr', icon: '📋', desc: '금감원 공식 — 실적공시/대량보유/내부거래 (1순위 필수)' },
+  { name: '네이버 증권', url: 'https://finance.naver.com', icon: '🟢', desc: '국내 최대 — 실시간시세/차트/뉴스/증권사리포트/종목토론' },
+  { name: 'KRX 정보데이터', url: 'https://data.krx.co.kr/contents/MDC/MAIN/main/index.cmd', icon: '📊', desc: '거래소 공식 — 수급/공매도/프로그램매매/시장통계' },
+  { name: 'FnGuide', url: 'https://comp.fnguide.com', icon: '📈', desc: '기관급 분석 — 재무비율/컨센서스/밸류에이션 (증권사 동일DB)' },
+  { name: '한경 컨센서스', url: 'https://consensus.hankyung.com', icon: '📰', desc: '증권사 리포트 집계 — 목표가/투자의견/실적추정치 비교' },
+  // ── 해외/글로벌 (공신력·이용자 순) ──
+  { name: 'SEC EDGAR', url: 'https://efts.sec.gov/LATEST/search-index?q=', icon: '🇺🇸', desc: '미국 공식 — 10-K/10-Q/Form4/13F (미국주식 1순위)' },
+  { name: 'Yahoo Finance', url: 'https://finance.yahoo.com', icon: '💰', desc: '세계 최대 금융포털 — 실시간시세/실적/배당/뉴스 (MAU 1억+)' },
+  { name: 'TradingView', url: 'https://www.tradingview.com', icon: '📉', desc: '세계 최대 차트 — 기술적분석/글로벌시세/5000만 트레이더' },
+  { name: 'Finviz', url: 'https://finviz.com/screener.ashx', icon: '🔍', desc: '미국 스크리너 1위 — 히트맵/펀더멘털/기술적필터/실적캘린더' },
+  { name: 'Investing.com', url: 'https://kr.investing.com/economic-calendar', icon: '🌍', desc: '글로벌 경제캘린더 — FOMC/고용/CPI/GDP (4600만 MAU)' },
+  { name: 'CNN Fear & Greed', url: 'https://edition.cnn.com/markets/fear-and-greed', icon: '😱', desc: '시장심리 대표지표 — VIX/풋콜비율/정크본드스프레드 종합' },
+  { name: 'FRED', url: 'https://fred.stlouisfed.org', icon: '🏛️', desc: '미연준 공식 경제DB — 금리/인플레/실업률/M2 (81만개 시계열)' },
+];
+
 // 숫자 포맷 (억 단위)
 function fmtBillion(v: number): string {
   const eok = v / 100_000_000;
@@ -290,7 +316,7 @@ export function ResearchBotPanel() {
               activeTab === 'reports' ? 'bg-violet-600/30 text-violet-300' : 'text-slate-500 hover:text-slate-300'
             }`}
           >
-            리포트
+            추천 사이트
           </button>
           <button
             onClick={() => setActiveTab('url')}
@@ -361,8 +387,8 @@ export function ResearchBotPanel() {
                         onClick={() => setExpandedDart(isExpanded ? null : r.stockCode)}
                       >
                         <div className="flex-1 min-w-0 flex items-center gap-2">
-                          <span className="text-xs font-bold text-slate-100">{r.corpName || r.stockCode}</span>
-                          <span className="text-[9px] text-slate-600 bg-slate-800/80 rounded px-1.5 py-0.5">{r.stockCode}</span>
+                          <span className="text-xs font-bold text-slate-100">{KR_NAME_MAP[r.stockCode] || r.corpName || r.stockCode}</span>
+                          <span className="text-[9px] text-slate-600 bg-slate-800/80 rounded px-1.5 py-0.5">{KR_NAME_MAP[r.stockCode] ? r.stockCode : ''}</span>
                         </div>
                         {/* 점수 배지 */}
                         <div className="flex items-center gap-2 shrink-0">
@@ -535,7 +561,7 @@ export function ResearchBotPanel() {
                         onClick={() => setExpandedSec(isExpanded ? null : r.stockCode)}
                       >
                         <div className="flex-1 min-w-0 flex items-center gap-2">
-                          <span className="text-xs font-bold text-slate-100">{r.corpName}</span>
+                          <span className="text-xs font-bold text-slate-100">{US_NAME_MAP[r.stockCode] || r.corpName}</span>
                           <span className="text-[9px] text-blue-400 bg-blue-900/30 rounded px-1.5 py-0.5">{r.stockCode}</span>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
@@ -637,50 +663,28 @@ export function ResearchBotPanel() {
           </div>
         )}
 
-        {/* ═══ 리포트 목록 탭 ═══ */}
+        {/* ═══ 추천 금융 사이트 탭 ═══ */}
         {activeTab === 'reports' && (
-          <>
-            {notesLoading ? (
-              <div className="flex justify-center py-6">
-                <span className="w-5 h-5 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />
-              </div>
-            ) : notes.length === 0 ? (
-              <div className="text-center py-6">
-                <span className="text-3xl opacity-30">📭</span>
-                <p className="text-xs text-slate-600 mt-2">다음 Track A 실행 시 자동 수집됩니다</p>
-                <p className="text-[10px] text-slate-700 mt-1">07:30 / 10:00 / 12:30 / 18:00 KST</p>
-              </div>
-            ) : (
-              <div className="space-y-1.5 max-h-64 overflow-y-auto scrollbar-thin">
-                {notes.map((n) => (
-                  <div key={n.id} className="flex items-center gap-2.5 bg-white/[0.02] hover:bg-white/[0.04] rounded-xl px-3 py-2 group transition-colors">
-                    <div className="w-7 h-7 rounded-lg bg-violet-500/10 flex items-center justify-center shrink-0">
-                      <span className="text-[11px]">📄</span>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs text-slate-200 truncate font-medium">{n.title || n.url || '(제목 없음)'}</p>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        {n.fetched_at && <span className="text-[9px] text-slate-600">{fmtTime(n.fetched_at)}</span>}
-                        {n.length > 0 && <span className="text-[9px] text-violet-500/60">{fmtSize(n.length)}자</span>}
-                        {n.memo && <span className="text-[9px] text-slate-500 truncate">{n.memo}</span>}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => deleteNote(n.id)}
-                      disabled={deletingId === n.id}
-                      className="shrink-0 text-slate-700 hover:text-rose-400 transition-colors disabled:opacity-40 opacity-0 group-hover:opacity-100 text-xs"
-                      title="삭제"
-                    >
-                      {deletingId === n.id ? '...' : '✕'}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div className="flex justify-end">
-              <button onClick={loadNotes} className="text-[10px] text-slate-600 hover:text-slate-400 transition-colors">새로고침</button>
-            </div>
-          </>
+          <div className="space-y-1.5 max-h-72 overflow-y-auto scrollbar-thin">
+            {RECOMMENDED_SITES.map((site, i) => (
+              <a
+                key={i}
+                href={site.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2.5 bg-white/[0.02] hover:bg-white/[0.05] rounded-xl px-3 py-2.5 group transition-colors"
+              >
+                <div className="w-7 h-7 rounded-lg bg-violet-500/10 flex items-center justify-center shrink-0">
+                  <span className="text-[12px]">{site.icon}</span>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs text-slate-200 font-medium group-hover:text-violet-300 transition-colors">{site.name}</p>
+                  <p className="text-[10px] text-slate-500 mt-0.5 truncate">{site.desc}</p>
+                </div>
+                <span className="text-[10px] text-slate-700 group-hover:text-slate-400 shrink-0 transition-colors">→</span>
+              </a>
+            ))}
+          </div>
         )}
 
         {/* ═══ 수동 URL 추가 탭 ═══ */}
