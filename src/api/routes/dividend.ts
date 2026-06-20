@@ -143,15 +143,16 @@ dividendRoutes.get('/dividend/history', async (c) => {
   try {
     const rawLimit = parseInt(c.req.query('limit') || '50', 10);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 50;
+    const isPaper = resolveRequestMode(c);
     const pool = getPool();
     const [{ rows }, { rows: stats }] = await Promise.all([
-      pool.query(`SELECT * FROM dividend_history ORDER BY pay_date DESC NULLS LAST, recorded_at DESC LIMIT $1`, [
-        limit,
+      pool.query(`SELECT * FROM dividend_history WHERE is_paper = $2 ORDER BY pay_date DESC NULLS LAST, recorded_at DESC LIMIT $1`, [
+        limit, isPaper,
       ]),
       pool.query(
         `SELECT COUNT(*) AS total_payments, COALESCE(SUM(net_amount_usd), 0) AS total_received_usd,
            COALESCE(SUM(tax_amount_usd), 0) AS total_tax_usd, COALESCE(AVG(net_amount_usd), 0) AS avg_per_payment
-         FROM dividend_history`,
+         FROM dividend_history WHERE is_paper = $1`, [isPaper],
       ),
     ]);
     return c.json({ history: rows, stats: stats[0] });

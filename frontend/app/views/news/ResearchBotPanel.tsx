@@ -665,7 +665,7 @@ export function ResearchBotPanel() {
 
         {/* ═══ 추천 금융 사이트 탭 ═══ */}
         {activeTab === 'reports' && (
-          <div className="space-y-1.5 max-h-72 overflow-y-auto scrollbar-thin">
+          <div className="space-y-1.5 max-h-[50vh] overflow-y-auto" style={{ scrollbarWidth: 'thin', scrollbarColor: '#4c1d95 transparent' }}>
             {RECOMMENDED_SITES.map((site, i) => (
               <a
                 key={i}
@@ -689,7 +689,7 @@ export function ResearchBotPanel() {
 
         {/* ═══ 수동 URL 추가 탭 ═══ */}
         {activeTab === 'url' && (
-          <div className="space-y-3">
+          <div className="space-y-3 max-h-[50vh] overflow-y-auto" style={{ scrollbarWidth: 'thin', scrollbarColor: '#4c1d95 transparent' }}>
             <div className="bg-cyan-950/20 border border-cyan-800/20 rounded-xl p-3">
               <p className="text-[11px] text-cyan-300 font-medium">증권사 리포트 URL 직접 추가</p>
               <p className="text-[10px] text-slate-500 mt-0.5">네이버 금융, 한경, 매경, 전자신문, Seeking Alpha 등의 URL을 크롤링해 Track A에 주입합니다.</p>

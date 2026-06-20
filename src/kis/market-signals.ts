@@ -50,7 +50,7 @@ export async function getTradingIntensity(stockCode: string): Promise<TradingInt
       stockCode,
       intensity: safeNum(o.tday_rltv), // 당일 체결강도
       prevIntensity: safeNum(o.d1_rltv), // 전일 체결강도
-      netBuyVolume: safeNum(o.seln_cnqn_smtn) - safeNum(o.shnu_cnqn_smtn),
+      netBuyVolume: safeNum(o.shnu_cnqn_smtn) - safeNum(o.seln_cnqn_smtn), // 매수총량 - 매도총량
     };
   } catch {
     return null;
@@ -277,10 +277,10 @@ export async function getBrokerInfo(stockCode: string): Promise<BrokerInfo | nul
     let foreignBrokerNetBuy = false;
 
     for (const row of items.slice(0, 5)) {
-      const buyName = row.seln_mbcr_nm || '';
-      const sellName = row.shnu_mbcr_nm || '';
-      const buyVol = safeNum(row.seln_vol);
-      const sellVol = safeNum(row.shnu_vol);
+      const buyName = row.shnu_mbcr_nm || '';   // 매수 회원사 (shnu=매수)
+      const sellName = row.seln_mbcr_nm || ''; // 매도 회원사 (seln=매도)
+      const buyVol = safeNum(row.shnu_vol);
+      const sellVol = safeNum(row.seln_vol);
       if (buyName) topBuyers.push({ name: buyName, volume: buyVol });
       if (sellName) topSellers.push({ name: sellName, volume: sellVol });
       // 외국계 증권사 패턴 (모건스탠리, CS, 골드만, UBS, 메릴린치 등)

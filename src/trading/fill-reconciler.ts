@@ -222,6 +222,10 @@ export async function reconcilePendingOrders(): Promise<void> {
  *
  * holding-check-job에서 10분마다 호출
  */
+// 디바운스 맵: KIS API 일시적 잔고 0 반환 시 즉시 체인 종료 방지 (해외 syncHoldingsFromKIS와 동일 패턴)
+// 2회 연속 감지 후에만 외부매도로 확정 (API flap 방지)
+const _ghostDebounceMap = new Map<string, number>(); // chainId → 연속 감지 횟수
+
 export async function reconcileExternalSells(): Promise<void> {
   // Paper 모드: 체인이 KIS에 없는 게 정상 → 외부매도 감지 불필요
   // getCtxIsPaper(): AsyncLocalStorage 컨텍스트 기반 (runWithMode 호환)
@@ -249,7 +253,7 @@ export async function reconcileExternalSells(): Promise<void> {
     if (chains.length === 0) return;
 
     const now = Date.now();
-    const ghostChains = chains.filter((chain) => {
+    const candidateGhosts = chains.filter((chain) => {
       // 오픈 직후는 체결 지연 여유 제공
       const ageMs = now - new Date(chain.opened_at).getTime();
       if (ageMs < EXTERNAL_SELL_COOLDOWN_MS) return false;
@@ -258,9 +262,28 @@ export async function reconcileExternalSells(): Promise<void> {
       return kisQty === 0; // getOpenChains() 결과는 이미 status='OPEN' 보장
     });
 
+    if (candidateGhosts.length === 0) {
+      _ghostDebounceMap.clear(); // 정상 상태 → 디바운스 리셋
+      return;
+    }
+
+    // 2회 연속 감지 디바운스: API flap 방지 (해외 syncHoldingsFromKIS와 동일 패턴)
+    const ghostChains = candidateGhosts.filter((chain) => {
+      const count = (_ghostDebounceMap.get(chain.id) ?? 0) + 1;
+      _ghostDebounceMap.set(chain.id, count);
+      if (count < 2) {
+        logger.info(`⏳ ${chain.stock_code} 외부매도 후보 (${count}/2회 감지) — 다음 사이클 재확인`, { component: 'RECONCILER' });
+        return false;
+      }
+      return true;
+    });
+
+    // 확정되지 않은 체인은 디바운스 맵에서 유지, 확정된 체인은 제거
+    for (const chain of ghostChains) _ghostDebounceMap.delete(chain.id);
+
     if (ghostChains.length === 0) return;
 
-    logger.warn(`🔍 외부 매도 감지: ${ghostChains.length}건 유령 체인 발견`, { component: 'RECONCILER' });
+    logger.warn(`🔍 외부 매도 확정: ${ghostChains.length}건 유령 체인 (2회 연속 감지)`, { component: 'RECONCILER' });
 
     for (const chain of ghostChains) {
       try {

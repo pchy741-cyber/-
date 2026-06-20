@@ -44,6 +44,7 @@ export interface TotalAssetInputs {
 
   // 수익률 계산 (전일 대비)
   prevDayTotalValue: number;        // 전일 총자산 스냅샷 (portfolio_snapshots)
+  prevDayUnrealizedPnl: number;     // 전일 미실현 손익 (입금/출금 영향 제거용)
 }
 
 export interface TotalAssetOutputs {
@@ -191,11 +192,23 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
     ? i.paperInitialCapital > 0 ? (totalPnl / i.paperInitialCapital) * 100 : 0
     : safe(i.kisTotalProfitLossPct);
 
-  // ─── 7. 전일 대비 수익률 ───
+  // ─── 7. 전일 대비 수익률 (입금/출금 영향 제거) ───
   const prevDay = safe(i.prevDayTotalValue);
-  const rawDailyChangePct = prevDay > 0 && grandTotalValue > 0
-    ? Math.round(((grandTotalValue - prevDay) / prevDay) * 10000) / 100
-    : 0;
+  let rawDailyChangePct: number;
+  if (!i.viewIsPaper && prevDay > 0 && safe(i.prevDayUnrealizedPnl) !== 0) {
+    // Live: P&L 기반 일일 수익률 — 입금/출금이 수익으로 잡히는 버그 방지
+    // dailyPnL = (현재 미실현PnL - 전일 미실현PnL)
+    // 실현PnL은 스냅샷에서 이미 반영되므로 여기선 미실현 변화만 비교
+    const currentPnlKrw = safe(i.kisTotalProfitLoss) + overseasUnrealizedPnlKrw;
+    const prevPnlKrw = safe(i.prevDayUnrealizedPnl);
+    const pnlChange = currentPnlKrw - prevPnlKrw;
+    rawDailyChangePct = Math.round((pnlChange / prevDay) * 10000) / 100;
+  } else {
+    // Paper 또는 첫 스냅샷: 기존 총자산 비교 방식 (입금 없으므로 안전)
+    rawDailyChangePct = prevDay > 0 && grandTotalValue > 0
+      ? Math.round(((grandTotalValue - prevDay) / prevDay) * 10000) / 100
+      : 0;
+  }
   // 마이그레이션(해외자산 신규 편입 등)으로 전일 스냅샷이 현재와 큰 차이를 보이면 0 처리
   const dailyChangePct = Math.abs(rawDailyChangePct) > 100 ? 0 : rawDailyChangePct;
 

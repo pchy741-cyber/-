@@ -6,6 +6,7 @@
  */
 import { safeQuery } from '../db/pool.js';
 import { logger } from './logger.js';
+import { getKSTNow } from './time.js';
 
 const COMP = 'AI_TOKEN';
 
@@ -48,7 +49,7 @@ let _cliCallsToday = 0;
 let _cliDayKey = '';
 
 export function calcClaudeCliCost(): number {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getKSTNow().toISOString().slice(0, 10);
   if (_cliDayKey !== today) {
     _cliCallsToday = 0;
     _cliDayKey = today;

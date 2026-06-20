@@ -248,9 +248,9 @@ export async function getCopilotLiteScore(
     const issues: { id: string; level: string; label: string }[] = [];
 
     // MDD
-    const monthStart = new Date();
-    monthStart.setDate(1);
-    monthStart.setHours(0, 0, 0, 0);
+    const monthStart = getKSTNow();
+    monthStart.setUTCDate(1);
+    monthStart.setUTCHours(0, 0, 0, 0);
     const { rows: snapRows } = await pool.query(
       `SELECT total_value FROM portfolio_snapshots WHERE snapshot_at >= $1 AND is_paper = $2 ORDER BY snapshot_at ASC`,
       [monthStart.toISOString(), viewIsPaper],

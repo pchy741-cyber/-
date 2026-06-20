@@ -6,6 +6,7 @@
  */
 
 import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
 
 export interface MarketSentiment {
   fearGreedScore: number; // 0(극공포)~100(극탐욕)
@@ -83,7 +84,7 @@ export async function getFearGreedIndex(): Promise<MarketSentiment | null> {
     const label = rating.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) || scorToLabel(score);
 
     // FGI≥80 연속일 카운터 (날짜 바뀔 때마다 1회 증가, 1일 하락 허용)
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = getKSTNow().toISOString().slice(0, 10);
     if (score >= 80) {
       if (_greedyStreakLastDate !== todayStr) {
         _greedyStreak++;

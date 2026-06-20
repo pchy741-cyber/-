@@ -67,13 +67,29 @@ export async function runSnapshotJob(): Promise<void> {
     const overseasKrw = await getOverseasValueKrw(isPaper);
     const totalValue = domesticValue + overseasKrw;
 
-    // 일일 손익 = 현재 총자산 - 오늘 첫 스냅샷 총자산 (미평가 포함)
+    // 일일 손익: P&L 기반 계산 (입금/출금 영향 제거)
+    // 기존: totalValue - todayStart.total_value → 입금 시 이익으로 잡히는 버그
+    // 수정: (현재 미실현PnL - 당일시작 미실현PnL) + 당일 실현손익
     let dailyPnl = balance.totalProfitLoss; // 폴백: 미실현 손익
     let dailyPnlPct = balance.totalProfitLossPct;
     try {
       const todayStart = await getTodayStartSnapshot(isPaper);
       if (todayStart && todayStart.total_value > 0) {
-        dailyPnl = totalValue - Number(todayStart.total_value);
+        const prevUnrealized = Number(todayStart.unrealized_pnl ?? 0);
+        const unrealizedChange = balance.totalProfitLoss - prevUnrealized;
+        // 당일 실현손익 (국내 트랜잭션 체인에서 조회)
+        let todayRealizedPnl = 0;
+        try {
+          const { rows: realizedRows } = await getPool().query(
+            `SELECT COALESCE(SUM(realized_pnl), 0)::numeric AS total
+             FROM transaction_chains
+             WHERE status = 'CLOSED' AND is_paper = $1
+               AND closed_at >= CURRENT_DATE`,
+            [isPaper],
+          );
+          todayRealizedPnl = Number(realizedRows[0]?.total ?? 0);
+        } catch { /* realized PnL 조회 실패 시 0 유지 */ }
+        dailyPnl = unrealizedChange + todayRealizedPnl;
         dailyPnlPct = (dailyPnl / Number(todayStart.total_value)) * 100;
       }
     } catch { /* 첫 스냅샷 조회 실패 시 폴백 유지 */ }
@@ -111,7 +127,18 @@ export async function runSnapshotJob(): Promise<void> {
         try {
           const liveStart = await getTodayStartSnapshot(false);
           if (liveStart && liveStart.total_value > 0) {
-            liveDailyPnl = liveTotalValue - Number(liveStart.total_value);
+            const prevUnrealized = Number(liveStart.unrealized_pnl ?? 0);
+            const unrealizedChange = liveBalance.totalProfitLoss - prevUnrealized;
+            let todayRealizedPnl = 0;
+            try {
+              const { rows: realizedRows } = await getPool().query(
+                `SELECT COALESCE(SUM(realized_pnl), 0)::numeric AS total
+                 FROM transaction_chains
+                 WHERE status = 'CLOSED' AND is_paper = false AND closed_at >= CURRENT_DATE`,
+              );
+              todayRealizedPnl = Number(realizedRows[0]?.total ?? 0);
+            } catch { /* ignore */ }
+            liveDailyPnl = unrealizedChange + todayRealizedPnl;
             liveDailyPnlPct = (liveDailyPnl / Number(liveStart.total_value)) * 100;
           }
         } catch { /* ignore */ }
@@ -141,7 +168,18 @@ export async function runSnapshotJob(): Promise<void> {
       try {
         const paperStart = await getTodayStartSnapshot(true);
         if (paperStart && paperStart.total_value > 0) {
-          paperDailyPnl = paperTotalValue - Number(paperStart.total_value);
+          const prevUnrealized = Number(paperStart.unrealized_pnl ?? 0);
+          const unrealizedChange = paperBalance.totalProfitLoss - prevUnrealized;
+          let todayRealizedPnl = 0;
+          try {
+            const { rows: realizedRows } = await getPool().query(
+              `SELECT COALESCE(SUM(realized_pnl), 0)::numeric AS total
+               FROM transaction_chains
+               WHERE status = 'CLOSED' AND is_paper = true AND closed_at >= CURRENT_DATE`,
+            );
+            todayRealizedPnl = Number(realizedRows[0]?.total ?? 0);
+          } catch { /* ignore */ }
+          paperDailyPnl = unrealizedChange + todayRealizedPnl;
           paperDailyPnlPct = (paperDailyPnl / Number(paperStart.total_value)) * 100;
         }
       } catch { /* ignore */ }

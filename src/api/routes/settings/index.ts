@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { allocationRoutes } from './allocation.js';
+import { featureFlagsRoutes } from './feature-flags.js';
 import { insightsRoutes } from './insights.js';
 import { killSwitchRoutes } from './kill-switch.js';
 import { manualTriggersRoutes } from './manual-triggers.js';
@@ -18,6 +19,7 @@ settingsRoutes.route('/', allocationRoutes);
 settingsRoutes.route('/', insightsRoutes);
 settingsRoutes.route('/', manualTriggersRoutes);
 settingsRoutes.route('/', pushNotificationsRoutes);
+settingsRoutes.route('/', featureFlagsRoutes);
 
 // 역호환: isKospiOverrideActive re-export
 export { isKospiOverrideActive } from '../../../risk/kospi-override.js';

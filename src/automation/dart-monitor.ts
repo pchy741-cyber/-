@@ -205,7 +205,7 @@ export async function fetchRecentDisclosures(stockCodes: string[]): Promise<Dart
     return [];
   }
 
-  const now = new Date();
+  const now = getKSTNow();
   const threeDaysAgo = new Date(now);
   threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
 

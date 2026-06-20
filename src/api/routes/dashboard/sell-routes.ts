@@ -418,7 +418,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
         const pos2 = bal2.positions?.find((p: any) => p.stockCode === stockCode);
         fillConfirmed = !pos2 || pos2.quantity === 0;
       } catch {
-        fillConfirmed = true;
+        fillConfirmed = false;
       }
     }
 

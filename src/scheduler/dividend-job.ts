@@ -11,6 +11,7 @@ import { getCtxIsPaper } from '../config/context.js';
 import { getPool } from '../db/client.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
 import { setOverseasState } from './overseas/utils.js';
 
 const COMP = 'DIVIDEND';
@@ -51,9 +52,9 @@ async function syncDividendReceipts(): Promise<void> {
     let synced = 0;
     for (const r of receipts) {
       const { rowCount } = await getPool().query(
-        `INSERT INTO dividend_history (stock_code, gross_amount_usd, tax_amount_usd, net_amount_usd, currency, pay_date)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT DO NOTHING`,
+        `INSERT INTO dividend_history (stock_code, gross_amount_usd, tax_amount_usd, net_amount_usd, currency, pay_date, is_paper)
+         VALUES ($1, $2, $3, $4, $5, $6, false)
+         ON CONFLICT (stock_code, pay_date, is_paper) WHERE pay_date IS NOT NULL DO NOTHING`,
         [r.stockCode, r.amount, r.tax, r.netAmount, r.currency, r.date || null],
       );
       if ((rowCount ?? 0) > 0) synced++;
@@ -83,7 +84,7 @@ async function monitorExDates(): Promise<void> {
       try {
         const events = await getDividendSchedule({ stockCode: h.stock_code });
         for (const ev of events) {
-          const daysUntilEx = daysBetween(new Date(), parseDate(ev.exDate));
+          const daysUntilEx = daysBetween(getKSTNow(), parseDate(ev.exDate));
           if (daysUntilEx >= 0 && daysUntilEx <= 3) {
             alerts.push(
               `📅 ${h.stock_code}: 배석일 ${ev.exDate} (${daysUntilEx}일 후) — $${ev.dividendPerShare}/주 × ${h.quantity}주`,
@@ -128,7 +129,7 @@ async function updateHoldingDividendTotals(): Promise<void> {
 
 /** 매월 1일: 배당 DRIP — 누적 배당금으로 자동 재매수 (paper/live 모드별 실행) */
 async function simulateDRIP(): Promise<void> {
-  const today = new Date();
+  const today = getKSTNow();
   if (today.getDate() !== 1) return; // 매월 1일만 실행
   const isPaper = getCtxIsPaper();
 

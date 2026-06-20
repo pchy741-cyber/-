@@ -535,11 +535,12 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   let FX_RATE = await getFxRate();
   if (FX_RATE <= 0) FX_RATE = FALLBACK_FX_RATE;
 
-  // 전일 총자산 스냅샷 (수익률 계산용)
+  // 전일 총자산 스냅샷 (수익률 계산용) + 미실현PnL (입금 영향 제거용)
   let prevDayTotalValue = 0;
+  let prevDayUnrealizedPnl = 0;
   {
-    const snapResult = await safeQuery<{ total_value: string }>(
-      `SELECT total_value FROM portfolio_snapshots
+    const snapResult = await safeQuery<{ total_value: string; unrealized_pnl: string }>(
+      `SELECT total_value, unrealized_pnl FROM portfolio_snapshots
        WHERE is_paper = $1 AND total_value > 0
          AND snapshot_at < CURRENT_DATE
        ORDER BY snapshot_at DESC LIMIT 1`,
@@ -547,6 +548,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     );
     if (snapResult.rows[0]) {
       prevDayTotalValue = Number(snapResult.rows[0].total_value);
+      prevDayUnrealizedPnl = Number(snapResult.rows[0].unrealized_pnl ?? 0);
     }
   }
 
@@ -569,6 +571,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     paperInitialCapital: PAPER_INITIAL_CAPITAL,
     liveRealizedPnl,
     prevDayTotalValue,
+    prevDayUnrealizedPnl,
   });
 
   // 디버깅 로그 — 계산 결과 확인

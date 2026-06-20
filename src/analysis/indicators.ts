@@ -69,6 +69,7 @@ export interface TechnicalSummary {
   macdHistogram: number;
   macdCrossover: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
   bollingerPosition: 'ABOVE_UPPER' | 'NEAR_UPPER' | 'MIDDLE' | 'NEAR_LOWER' | 'BELOW_LOWER';
+  bollingerPositionPct: number; // 0~100: BB내 가격 위치 (%)
   bollingerWidth: number;
   bollingerSqueeze: boolean;
   bollingerBreakout: 'UP' | 'DOWN' | 'NONE';
@@ -158,6 +159,8 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   else if (current > bbMiddle + (bbUpper - bbMiddle) * 0.7) bbPos = 'NEAR_UPPER';
   else if (current < bbLower) bbPos = 'BELOW_LOWER';
   else if (current < bbMiddle - (bbMiddle - bbLower) * 0.7) bbPos = 'NEAR_LOWER';
+  const bbRange = bbUpper - bbLower;
+  const bollingerPositionPct = bbRange > 0 ? Math.round(((current - bbLower) / bbRange) * 100) : 50;
 
   const sma5Val = sma(closesAsc, 5);
   const sma20Val = sma(closesAsc, 20);
@@ -426,6 +429,7 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
     macdHistogram: macdHist,
     macdCrossover: macdCross,
     bollingerPosition: bbPos,
+    bollingerPositionPct,
     bollingerWidth: bbWidth,
     bollingerSqueeze,
     bollingerBreakout,

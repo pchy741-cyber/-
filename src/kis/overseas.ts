@@ -1,7 +1,8 @@
 import { getCtxIsPaper } from '../config/context.js';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
-import { kisRequest, overseasRateLimiter } from './client.js';
+import { getKSTNow } from '../utils/time.js';
+import { kisRequest } from './client.js';
 
 /** NaN 방지: Number(undefined) → NaN 대신 fallback 반환 */
 const safeNum = (v: string | undefined | null, fallback = 0): number => {
@@ -10,12 +11,12 @@ const safeNum = (v: string | undefined | null, fallback = 0): number => {
   return Number.isFinite(n) ? n : fallback;
 };
 
-/** 해외 전용 KIS API 호출 — 국내와 별도 rate limiter 사용 */
+/** 해외 전용 KIS API 호출 — 내부 global limiter 적용 (20/sec 공유) */
 async function overseasKisRequest<T = unknown>(
   opts: Parameters<typeof kisRequest<T>>[0],
 ): ReturnType<typeof kisRequest<T>> {
-  await overseasRateLimiter.acquire();
-  return kisRequest<T>({ ...opts, skipRateLimiter: true });
+  // skipRateLimiter 제거 → kisRequest 내부 global limiter가 해외+국내 통합 조율
+  return kisRequest<T>(opts);
 }
 
 /**
@@ -177,7 +178,7 @@ export async function getOverseasPrice(stockCode: string, exchange: string = 'NA
  */
 export async function getOverseasDailyChart(stockCode: string, exchange: string = 'NASDAQ', days: number = 60) {
   const excd = QUOTE_EXCD_MAP[exchange] ?? EXCHANGE_MAP[exchange] ?? 'NAS';
-  const endDate = new Date().toISOString().split('T')[0].replace(/-/g, '');
+  const endDate = getKSTNow().toISOString().split('T')[0].replace(/-/g, '');
 
   const res = await overseasKisRequest({
     path: '/uapi/overseas-price/v1/quotations/dailyprice',

@@ -5,6 +5,7 @@ import type { TransactionChain } from '../../db/models.js';
 import type { CurrentPrice, DailyCandle } from '../../kis/market.js';
 import { getCurrentPrice, getDailyChart } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
+import { getKSTNow } from '../../utils/time.js';
 import { PARK_STOCK_CODE } from './defense-park.js';
 
 /** 전략 모드별 시장 상황 최적화 파라미터 */
@@ -320,7 +321,7 @@ export async function checkDailyLoss(params: {
 }): Promise<DailyLossResult> {
   try {
     const { getPool } = await import('../../db/client.js');
-    const today = new Date();
+    const today = getKSTNow();
     today.setHours(0, 0, 0, 0);
     const { rows } = await getPool().query(
       `

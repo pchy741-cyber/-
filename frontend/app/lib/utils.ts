@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════
 
 /** 환율 비상 폴백 — 백엔드 FALLBACK_FX_RATE와 동일 (서버 환율 조회 실패 시 사용) */
-export const FALLBACK_FX_RATE = 1_500;
+export const FALLBACK_FX_RATE = 1_520;
 
 export const BACKEND_URL =
   typeof window !== 'undefined'

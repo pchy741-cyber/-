@@ -48,13 +48,13 @@ export class TradeExecutor {
   private _getPendingKey(): 'paper' | 'live' { return getCtxIsPaper() ? 'paper' : 'live'; }
 
   private _minuteKey(stockCode: string, action: string): string {
-    const now = new Date();
+    const now = getKSTNow();
     // 5분마다 오래된 키 정리 (메모리 누수 방지)
     if (now.getTime() - this._lastKeyCleanup > 5 * 60_000) {
       this._recentOrderKeys.clear();
       this._lastKeyCleanup = now.getTime();
     }
-    const ymd = now.toISOString().slice(0, 16).replace(/[-:T]/g, ''); // YYYYMMDDHHmm
+    const ymd = now.toISOString().slice(0, 16).replace(/[-:T]/g, ''); // YYYYMMDDHHmm (KST)
     const mode = getCtxIsPaper() ? 'paper' : 'live';
     return `${mode}-${stockCode}-${action}-${ymd}`;
   }
@@ -103,7 +103,7 @@ export class TradeExecutor {
     }
     // 오래된 키 정리 — 현재 분 키만 남기고 이전 분 삭제 (전체 삭제 시 동일 분 중복 허용 버그 방지)
     if (this._recentOrderKeys.size > 200) {
-      const currentMinute = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
+      const currentMinute = getKSTNow().toISOString().slice(0, 16).replace(/[-:T]/g, '');
       for (const key of this._recentOrderKeys) {
         if (!key.endsWith(currentMinute)) this._recentOrderKeys.delete(key);
       }
@@ -1218,7 +1218,7 @@ export class TradeExecutor {
       logger.info(`🧹 confirmedOrders 캐시 정리: ${size}건`, { component: 'EXECUTOR' });
     }
     // 전날 분 키 잔재 제거 (오늘 날짜 없는 항목)
-    const todayPrefix = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const todayPrefix = getKSTNow().toISOString().slice(0, 10).replace(/-/g, '');
     const before = this._recentOrderKeys.size;
     for (const key of this._recentOrderKeys) {
       if (!key.includes(todayPrefix)) this._recentOrderKeys.delete(key);

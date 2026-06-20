@@ -124,8 +124,9 @@ export async function getDailyChart(stockCode: string, days: number = 60): Promi
     return cached.data;
   }
 
-  const endDate = new Date().toISOString().split('T')[0].replace(/-/g, '');
-  const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0].replace(/-/g, '');
+  const kstNow = getKSTNow();
+  const endDate = kstNow.toISOString().split('T')[0].replace(/-/g, '');
+  const startDate = new Date(kstNow.getTime() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0].replace(/-/g, '');
 
   await marketDataRateLimiter.acquire();
   const res = await kisRequest({

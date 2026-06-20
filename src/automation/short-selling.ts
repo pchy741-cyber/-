@@ -2,6 +2,7 @@ import { getActiveWatchlist } from '../db/client.js';
 import { kisRequest, marketDataRateLimiter } from '../kis/client.js';
 import { logger } from '../utils/logger.js';
 import { sleep } from '../utils/sleep.js';
+import { getKSTNow } from '../utils/time.js';
 
 // ── 공매도 현황 분석 ──
 
@@ -51,8 +52,9 @@ interface DailyShortData {
  * KIS API에서 일별 공매도 원시 데이터 조회
  */
 async function fetchShortSellingRawData(stockCode: string, days: number): Promise<DailyShortData[]> {
-  const endDate = new Date().toISOString().split('T')[0].replace(/-/g, '');
-  const startDate = new Date(Date.now() - days * 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0].replace(/-/g, '');
+  const kstNow = getKSTNow();
+  const endDate = kstNow.toISOString().split('T')[0].replace(/-/g, '');
+  const startDate = new Date(kstNow.getTime() - days * 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0].replace(/-/g, '');
 
   await marketDataRateLimiter.acquire();
   const res = await kisRequest<Record<string, string>[]>({

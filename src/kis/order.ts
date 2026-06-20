@@ -3,6 +3,7 @@ import { getCtxIsPaper } from '../config/context.js';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { adjustToTickSize } from '../utils/money.js';
+import { getKSTNow } from '../utils/time.js';
 import { getHashkey } from './auth.js';
 import { kisRequest } from './client.js';
 
@@ -88,7 +89,7 @@ export async function placeOrder(params: {
  */
 export async function getOrderFills(orderNo: string): Promise<FillInfo | null> {
   const trIds = getCtxIsPaper() ? KIS_TR_ID.PAPER : KIS_TR_ID.LIVE;
-  const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+  const today = getKSTNow().toISOString().split('T')[0].replace(/-/g, '');
 
   const res = await kisRequest({
     path: '/uapi/domestic-stock/v1/trading/inquire-daily-ccld',

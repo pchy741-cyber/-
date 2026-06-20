@@ -10,6 +10,7 @@
 
 import { REFRESH } from '../config/constants.js';
 import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
 
 export interface EarningsCheckResult {
   hasUpcomingEarnings: boolean;
@@ -42,7 +43,7 @@ export async function checkKrEarnings(code: string): Promise<EarningsCheckResult
   if (hit && Date.now() < hit.expires) return hit.result;
 
   try {
-    const today = new Date();
+    const today = getKSTNow();
     const future = new Date(today.getTime() + 30 * 86400000);
     const url = `https://m.stock.naver.com/api/stock/${code}/scheduleList?startDate=${toYYYYMMDD(today)}&endDate=${toYYYYMMDD(future)}`;
 

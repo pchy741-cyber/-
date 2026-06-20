@@ -14,21 +14,26 @@ export interface RegimeAdjustment {
 }
 
 // 히스테리시스: VIX 경계에서 떨림 방지 (2포인트 데드밴드)
-let _prevRegime: VixRegime = 'CALM';
+// Paper/Live 별도 추적 (runOverseasDual에서 paper→live 순서 실행 시 상태 오염 방지)
+const _prevRegimeByMode: Record<string, VixRegime> = { paper: 'CALM', live: 'CALM' };
+let _prevRegime: VixRegime = 'CALM'; // 폴백 (isPaper 미전달 시)
 
-export function getVixRegime(vix: number): RegimeAdjustment {
+export function getVixRegime(vix: number, isPaper?: boolean): RegimeAdjustment {
+  const modeKey = isPaper != null ? (isPaper ? 'paper' : 'live') : null;
+  const prevRegime = modeKey ? (_prevRegimeByMode[modeKey] ?? 'CALM') : _prevRegime;
   // 히스테리시스: 현재 레짐에서 벗어나려면 경계값 + 데드밴드를 넘어야 함
   const crisisEntry = 30, crisisExit = 27;
   const stressEntry = 20, stressExit = 18;
 
   let regime: VixRegime;
-  if (_prevRegime === 'CRISIS') {
+  if (prevRegime === 'CRISIS') {
     regime = vix >= crisisExit ? 'CRISIS' : vix >= stressEntry ? 'STRESS' : 'CALM';
-  } else if (_prevRegime === 'STRESS') {
+  } else if (prevRegime === 'STRESS') {
     regime = vix >= crisisEntry ? 'CRISIS' : vix >= stressExit ? 'STRESS' : 'CALM';
   } else {
     regime = vix >= crisisEntry ? 'CRISIS' : vix >= stressEntry ? 'STRESS' : 'CALM';
   }
+  if (modeKey) _prevRegimeByMode[modeKey] = regime;
   _prevRegime = regime;
 
   if (regime === 'CRISIS') {

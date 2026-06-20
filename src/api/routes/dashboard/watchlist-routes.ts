@@ -17,6 +17,7 @@ import {
   isMarketOpen,
 } from '../../../kis/market.js';
 import { logger } from '../../../utils/logger.js';
+import { getKSTNow } from '../../../utils/time.js';
 import { getKnownStockName, isInvalidStockName } from './helpers.js';
 
 export const watchlistRoutes = new Hono();
@@ -79,7 +80,7 @@ watchlistRoutes.get('/search/stock', async (c) => {
   // 3차: KRX 전체 종목 리스트에서 이름 필터 (NAVER 실패 폴백)
   if (results.length === 0) {
     try {
-      const d = new Date();
+      const d = getKSTNow();
       const day = d.getUTCDay();
       if (day === 0) d.setUTCDate(d.getUTCDate() - 2);
       else if (day === 6) d.setUTCDate(d.getUTCDate() - 1);

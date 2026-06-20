@@ -5,6 +5,7 @@
  *     사용자가 "실전 해보자" 할 때까지 paper 전용
  *     설정에서 LIVE_ENABLED=true로 전환 시 PIN 검증 후 실전 가능
  */
+import { timingSafeEqual } from 'node:crypto';
 import { baseIsPaper } from '../../config/index.js';
 import { logger } from '../../utils/logger.js';
 
@@ -37,7 +38,9 @@ export function validateLivePin(isPaper: boolean, pin?: string): PinValidation {
   if (!_liveEnabled) return { ok: false, error: '실전모드 비활성화 상태입니다. 설정에서 Live를 켜주세요.' };
   if (!pin) return { ok: false, error: '실전모드: PIN 4자리를 입력하세요' };
   if (!LIVE_PIN) return { ok: false, error: '실전모드: 서버 LIVE_PIN 환경변수 미설정' };
-  if (pin !== LIVE_PIN) return { ok: false, error: '실전모드: PIN이 틀렸습니다' };
+  const pinBuf = Buffer.from(pin.padEnd(16, '\0'));
+  const expectedBuf = Buffer.from(LIVE_PIN.padEnd(16, '\0'));
+  if (!timingSafeEqual(pinBuf, expectedBuf)) return { ok: false, error: '실전모드: PIN이 틀렸습니다' };
   return { ok: true };
 }
 

@@ -1,6 +1,7 @@
 // 증권사 리서치 — DART 전자공시 OpenAPI 기반 (무료, 공식 데이터)
 import { safeQuery as query } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
+import { getKSTNow } from '../../utils/time.js';
 
 interface ResearchNote {
   id: number;
@@ -64,11 +65,11 @@ async function getDartCorpCode(stockCode: string): Promise<string | null> {
 }
 
 function getToday(): string {
-  return new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  return getKSTNow().toISOString().slice(0, 10).replace(/-/g, '');
 }
 
 function getPastDate(days: number): string {
-  const d = new Date();
+  const d = getKSTNow();
   d.setDate(d.getDate() - days);
   return d.toISOString().slice(0, 10).replace(/-/g, '');
 }

@@ -308,6 +308,7 @@ sseRoutes.get('/stream', (c) => {
             paperInitialCapital: PAPER_INITIAL_CAPITAL,
             liveRealizedPnl: 0, // SSE 경량화: lifetime realized 쿼리 생략
             prevDayTotalValue: 0, // SSE 경량화: snapshot 쿼리 생략
+            prevDayUnrealizedPnl: 0, // SSE 경량화: snapshot 쿼리 생략
           });
 
           cachedTotalPortfolio = assets.grandTotalValue;

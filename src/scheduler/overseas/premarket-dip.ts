@@ -2,6 +2,7 @@ import { OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { getOverseasPrice } from '../../kis/overseas.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
+import { getKSTNow } from '../../utils/time.js';
 import { getOverseasWinRates } from './analytics.js';
 import { getCash, getHoldings } from './state.js';
 import { getOverseasState, setOverseasState } from './utils.js';
@@ -79,7 +80,7 @@ export async function runPremarketDipBuy(isPaper = true): Promise<DipBuyResult> 
     }
 
     // 3. 오늘 이미 딥바이 실행했는지 체크
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getKSTNow().toISOString().slice(0, 10);
     const lastRun = await getOverseasState(isPaper ? 'dip_buy_last_run' : 'dip_buy_last_run_live');
     if (lastRun === today) {
       result.reason = '오늘 이미 실행됨';

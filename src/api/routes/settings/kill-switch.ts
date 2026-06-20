@@ -9,6 +9,7 @@ import {
   getKillSwitchStatusAll,
 } from '../../../risk/kill-switch.js';
 import { logger } from '../../../utils/logger.js';
+import { getKSTNow } from '../../../utils/time.js';
 
 export const killSwitchRoutes = new Hono();
 
@@ -62,7 +63,7 @@ killSwitchRoutes.post('/kill-switch/deactivate', async (c) => {
         const { insertSnapshot } = await import('../../../db/client.js');
         const pool = getPool();
         // KST 월 시작일 계산
-        const kstMonth = new Date();
+        const kstMonth = getKSTNow();
         kstMonth.setUTCDate(1);
         kstMonth.setUTCHours(0, 0, 0, 0);
         for (const isPaper of [true, false]) {

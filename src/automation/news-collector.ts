@@ -2,6 +2,7 @@ import { XMLParser } from 'fast-xml-parser';
 import { getActiveWatchlist } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 import { sleep } from '../utils/sleep.js';
+import { getKSTNow } from '../utils/time.js';
 
 /**
  * 뉴스 RSS 자동 수집기
@@ -192,7 +193,7 @@ function cleanTitle(title: string): string {
  * 감시 종목별 뉴스 일괄 수집
  */
 export async function collectWatchlistNews(): Promise<string> {
-  const today = new Date().toISOString().split('T')[0];
+  const today = getKSTNow().toISOString().split('T')[0];
 
   if (lastCollectDate !== today) {
     todayNews = new Map();

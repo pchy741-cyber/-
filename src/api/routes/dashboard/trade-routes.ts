@@ -3,7 +3,7 @@
  */
 import { Hono } from 'hono';
 import { getDinnerMoneyStats } from '../../../automation/profit-withdraw.js';
-import { KR_FEE } from '../../../config/constants.js';
+import { KR_FEE, OVERSEAS_FEE_PCT } from '../../../config/constants.js';
 import { getPool } from '../../../db/client.js';
 import { type CurrentPrice, getBatchPrices } from '../../../kis/market.js';
 import { logger } from '../../../utils/logger.js';
@@ -334,24 +334,30 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
             - (COALESCE(tc.avg_buy_price, o.avg_buy_price) * COALESCE(o.filled_quantity, o.quantity, 0))
           END
         ), 0) AS realized_pnl,
-        -- 해외 실현손익 USD (체인 없으므로 o.avg_buy_price 사용)
+        -- 해외 실현손익 USD (수수료 차감: 매도가*(1-fee) - 매수가*(1+fee))
         COALESCE(SUM(
           CASE WHEN o.side = 'SELL' AND o.stock_code !~ '^[0-9]{6}$'
                AND COALESCE(tc.avg_buy_price, o.avg_buy_price) > 0 THEN
-            (COALESCE(o.filled_price, 0) - COALESCE(tc.avg_buy_price, o.avg_buy_price))
+            (COALESCE(o.filled_price, 0) * (1 - ${OVERSEAS_FEE_PCT}) - COALESCE(tc.avg_buy_price, o.avg_buy_price) * (1 + ${OVERSEAS_FEE_PCT}))
             * COALESCE(o.filled_quantity, o.quantity, 0)
           END
         ), 0) AS realized_pnl_usd,
         -- 해외/국내 구분
         COUNT(*) FILTER (WHERE o.stock_code ~ '^[0-9]{6}$') AS domestic_count,
         COUNT(*) FILTER (WHERE o.stock_code !~ '^[0-9]{6}$') AS overseas_count,
-        -- v10.2: 승패 판정도 수수료 차감 후 (수수료 빼면 패인 거래를 승으로 세지 않도록)
+        -- v10.2: 승패 판정도 수수료 차감 후 (국내: SELL_FEE, 해외: OVERSEAS_FEE 양방향)
         COUNT(*) FILTER (WHERE o.side = 'SELL'
           AND COALESCE(tc.avg_buy_price, o.avg_buy_price) > 0
-          AND (COALESCE(o.filled_price, 0) * (1 - ${KR_FEE.SELL_FEE_PCT})) > COALESCE(tc.avg_buy_price, o.avg_buy_price)) AS win_count,
+          AND CASE
+            WHEN o.stock_code ~ '^[0-9]{6}$' THEN (COALESCE(o.filled_price, 0) * (1 - ${KR_FEE.SELL_FEE_PCT})) > COALESCE(tc.avg_buy_price, o.avg_buy_price)
+            ELSE (COALESCE(o.filled_price, 0) * (1 - ${OVERSEAS_FEE_PCT})) > (COALESCE(tc.avg_buy_price, o.avg_buy_price) * (1 + ${OVERSEAS_FEE_PCT}))
+          END) AS win_count,
         COUNT(*) FILTER (WHERE o.side = 'SELL'
           AND COALESCE(tc.avg_buy_price, o.avg_buy_price) > 0
-          AND (COALESCE(o.filled_price, 0) * (1 - ${KR_FEE.SELL_FEE_PCT})) <= COALESCE(tc.avg_buy_price, o.avg_buy_price)) AS loss_count
+          AND CASE
+            WHEN o.stock_code ~ '^[0-9]{6}$' THEN (COALESCE(o.filled_price, 0) * (1 - ${KR_FEE.SELL_FEE_PCT})) <= COALESCE(tc.avg_buy_price, o.avg_buy_price)
+            ELSE (COALESCE(o.filled_price, 0) * (1 - ${OVERSEAS_FEE_PCT})) <= (COALESCE(tc.avg_buy_price, o.avg_buy_price) * (1 + ${OVERSEAS_FEE_PCT}))
+          END) AS loss_count
       FROM orders o
       LEFT JOIN transaction_chains tc ON o.chain_id = tc.id
       WHERE o.is_paper = $1

@@ -621,6 +621,11 @@ async function acquireLoopLock(): Promise<boolean> {
     }
     return acquired;
   } catch (e) {
+    // pool.connect() 성공 후 query 실패 시 client 반환
+    if (_lockClient) {
+      try { _lockClient.release(); } catch { /* ignore */ }
+      _lockClient = null;
+    }
     logger.warn(`Loop advisory lock 획득 실패: ${(e as Error).message}`, { component: 'LOOP' });
     return true; // DB 실패 시 락 없이 진행 (가용성 우선)
   }

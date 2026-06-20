@@ -2,6 +2,7 @@ import { getCtxIsPaper } from '../config/context.js';
 import { config } from '../config/index.js';
 import { getActiveWatchlist, getPool, upsertWatchlistItem } from '../db/client.js';
 import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
 import { kisRequest } from './client.js';
 import { getCurrentPrice } from './market.js';
 
@@ -266,7 +267,7 @@ export async function fixWatchlistNames(): Promise<{ fixed: number; total: numbe
     // KRX 전종목 리스트를 한 번만 조회 (rate limit 없음)
     const krxMap = new Map<string, string>();
     try {
-      const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+      const today = getKSTNow().toISOString().split('T')[0].replace(/-/g, '');
       const resp = await fetch('https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd', {
         method: 'POST',
         headers: {

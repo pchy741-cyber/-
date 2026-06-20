@@ -231,12 +231,13 @@ export async function executeOverseasOrder(
               }).catch(() => {});
             }
           } else {
-            // PENDING 주문 stuck 방지: 체결 미확인 시 UNCONFIRMED로 전환 (fill-reconciler가 추후 처리)
+            // 체결 미확인: PENDING 유지 + UNCONFIRMED 마킹 → syncPendingOverseasOrders가 15분 후 재조회
+            // 기존: FAILED로 전환 → sync가 PENDING만 쿼리하므로 복구 불가 (고아 포지션 발생)
             await updateOrder(orderId, {
-              status: 'FAILED',
+              status: 'PENDING',
               kis_status: 'UNCONFIRMED',
             });
-            logger.warn(`⏳ 체결 미확인 → FAILED(UNCONFIRMED) 전환: ${code} (${result.orderNo})`, { component: 'OVERSEAS' });
+            logger.warn(`⏳ 체결 미확인 → PENDING(UNCONFIRMED) 유지: ${code} (${result.orderNo}) — 15분 후 sync 재조회`, { component: 'OVERSEAS' });
           }
 
           return {

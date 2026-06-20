@@ -188,10 +188,16 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
   }
 
   s.isRunning.set(modeK, true);
-  const jobTimeout = setTimeout(() => {
+  const jobTimeout = setTimeout(async () => {
     if (s.isRunning.get(modeK)) {
-      logger.error('해외 Job 3분 타임아웃 — isRunning 강제 해제', { component: 'OVERSEAS' });
+      logger.error('해외 Job 3분 타임아웃 — isRunning 강제 해제 + advisory lock 반환', { component: 'OVERSEAS' });
       s.isRunning.set(modeK, false);
+      // advisory lock 해제 — 다음 사이클 deadlock 방지
+      if (lockClient) {
+        try { await lockClient.query('SELECT pg_advisory_unlock($1)', [LOCK_ID]); } catch { /* ignore */ }
+        try { lockClient.release(); } catch { /* ignore */ }
+        lockClient = null;
+      }
     }
   }, 180_000);
 
@@ -786,7 +792,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       getMacroSignal().catch(() => null),
     ]);
     const vixValue = earlyVixData?.vix ?? 0;
-    const vixRegime = getVixRegime(vixValue);
+    const vixRegime = getVixRegime(vixValue, isPaper());
     const nasdaqChange1d = macroSigForSell?.nasdaqChange1d ?? null;
     if (vixRegime.regime !== 'CALM') {
       logger.info(
