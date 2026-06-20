@@ -107,13 +107,13 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
           <div key={ch.id ?? `c${i}`} className={`p-4 hover:bg-white/[0.01] transition-colors ${isClaudeBought ? 'bg-violet-950/40 border-l-2 border-violet-500/70' : 'bg-[#0f1320]'}`}>
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1 flex-wrap">
                   <span className="text-sm font-bold truncate">{displayName}</span>
-                  {isClaudeBought && <span className="text-[10px] bg-violet-500/20 text-violet-300 border border-violet-500/40 px-1.5 py-0.5 rounded font-bold shrink-0">AI픽</span>}
+                  {isClaudeBought && <span className="text-[8px] bg-violet-500/20 text-violet-300 border border-violet-500/40 px-1 py-px rounded font-bold shrink-0">AI픽</span>}
                   {ch.strategy_mode === 'EOD_BETTING'
-                    ? <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1.5 py-0.5 rounded font-bold shrink-0">🎰 종가베팅</span>
-                    : <span className="text-[10px] bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded font-medium shrink-0">{ch.strategy_mode}</span>}
-                  {ch.status === 'PROFIT_TAKING' && <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.5 rounded font-bold shrink-0">2단계↑</span>}
+                    ? <span className="text-[8px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1 py-px rounded font-bold shrink-0">🎰종가</span>
+                    : <span className="text-[8px] bg-blue-500/10 text-blue-400 px-1 py-px rounded font-medium shrink-0">{ch.strategy_mode}</span>}
+                  {ch.status === 'PROFIT_TAKING' && <span className="text-[8px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-1 py-px rounded font-bold shrink-0">2단계↑</span>}
                 </div>
                 <div className="text-[11px] text-slate-500 mt-0.5">평단 {fmtWon(avgPrice)} · {fmt(qty)}주{weight !== null ? ` · 비중 ${weight}%` : ''}</div>
               </div>

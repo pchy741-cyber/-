@@ -90,7 +90,7 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
         {/* 14일 누적 실현손익 미니 차트 (CEO 지시 2026-06-12) */}
         <CumulativePnlChart viewMode={viewMode ?? 'live'} days={14} />
         {/* 자금 흐름 시각화 — 3칸 */}
-        <div className="grid grid-cols-3 lg:grid-cols-4 gap-1.5 sm:gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5 sm:gap-2">
           <div className={`rounded-xl px-2 sm:px-3 py-2.5 ${krActualPct >= 0 ? 'bg-blue-950/40 border border-blue-500/10' : 'bg-rose-950/30 border border-rose-500/10'}`}>
             <div className="text-[9px] text-slate-500 mb-0.5">🇰🇷 한국주식</div>
             <div className="text-sm font-bold tabular-nums text-blue-300 truncate">{fmtWon(domesticEval)}</div>

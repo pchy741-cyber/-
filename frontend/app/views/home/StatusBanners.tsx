@@ -26,8 +26,10 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
         <div className="rounded-2xl border border-orange-500/50 bg-orange-500/10 px-4 py-3">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span className="text-base shrink-0">{dash.cooldown.eodOnly ? '🎰' : '🔒'}</span>
-            <span className="text-sm font-bold text-orange-300">{dash.cooldown.eodOnly ? 'EOD-only 모드' : '매수 쿨다운 중'}</span>
-            <span className="text-[11px] text-orange-200/70 ml-1">{dash.cooldown.eodOnly ? `${dash.cooldown.consecutive}연패 → 장중매수 차단, 종가베팅만 허용` : dash.cooldown.reason}</span>
+            <div className="flex flex-col gap-0.5 min-w-0">
+              <span className="text-sm font-bold text-orange-300">{dash.cooldown.eodOnly ? 'EOD-only 모드' : '매수 쿨다운 중'}</span>
+              <span className="text-[10px] text-orange-200/70">{dash.cooldown.eodOnly ? `${dash.cooldown.consecutive}연패 → 장중매수 차단` : dash.cooldown.reason}</span>
+            </div>
             <Button
               variant="ghost"
               size="sm"

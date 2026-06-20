@@ -37,6 +37,7 @@ strategyLabRoutes.get('/strategy-lab/overview', async (c) => {
     cacheSet('api:strategy-lab:overview', result, 300); // 5분 TTL
     return c.json(result);
   } catch (e: any) {
+    logger.error(`Strategy Lab 조회 실패: ${e}`, { component: 'STRATEGY_LAB' });
     return c.json({ strategies: [], error: 'Internal server error' }, 500);
   }
 });
@@ -56,6 +57,7 @@ strategyLabRoutes.get('/strategy-lab/insights', async (c) => {
       .catch(() => ({ rows: [] }));
     return c.json({ insights: result.rows });
   } catch (e: any) {
+    logger.error(`Strategy Lab 인사이트 조회 실패: ${e}`, { component: 'STRATEGY_LAB' });
     return c.json({ insights: [], error: 'Internal server error' }, 500);
   }
 });
@@ -82,6 +84,7 @@ strategyLabRoutes.get('/strategy-lab/approvals', async (c) => {
     ]);
     return c.json({ pending: pending.rows, history: history.rows });
   } catch (e: any) {
+    logger.error(`Strategy Lab 승인 조회 실패: ${e}`, { component: 'STRATEGY_LAB' });
     return c.json({ pending: [], history: [], error: 'Internal server error' }, 500);
   }
 });
@@ -197,7 +200,14 @@ strategyLabRoutes.post('/strategy-lab/insights/:id/approve', async (c) => {
   if (!rows.length) return c.json({ ok: false, error: '유효한 대기 인사이트가 없습니다' }, 404);
 
   const insight = rows[0];
-  const suggestedAction = insight.suggested_action ? JSON.parse(insight.suggested_action) : null;
+  let suggestedAction = null;
+  if (insight.suggested_action) {
+    try {
+      suggestedAction = typeof insight.suggested_action === 'string'
+        ? JSON.parse(insight.suggested_action)
+        : insight.suggested_action;
+    } catch { /* 파싱 실패 무시 */ }
+  }
 
   // 인사이트 상태 업데이트
   await pool.query(
@@ -287,6 +297,7 @@ strategyLabRoutes.get('/strategy-lab/splits', async (c) => {
       .catch(() => ({ rows: [] }));
     return c.json({ splits: result.rows });
   } catch (e: any) {
+    logger.error(`Strategy Lab 스플릿 조회 실패: ${e}`, { component: 'STRATEGY_LAB' });
     return c.json({ splits: [], error: 'Internal server error' }, 500);
   }
 });
@@ -315,6 +326,7 @@ strategyLabRoutes.post('/strategy-lab/splits', async (c) => {
     logger.info(`📊 스플릿 생성: #${rows[0].id} (${strategy_mode})`, { component: 'STRATEGY_LAB' });
     return c.json({ ok: true, split: rows[0] });
   } catch (e: any) {
+    logger.error(`Strategy Lab 작업 실패: ${e}`, { component: 'STRATEGY_LAB' });
     return c.json({ ok: false, error: 'Internal server error' }, 500);
   }
 });

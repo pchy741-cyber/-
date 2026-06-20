@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { getLatestQAReport, getQAReports, runQAWatchdog } from '../../automation/qa-watchdog.js';
+import { logger } from '../../utils/logger.js';
 
 export const qaRoutes = new Hono();
 
@@ -15,6 +16,6 @@ qaRoutes.get('/qa/latest', (c) => {
 
 /** 수동 QA 실행 */
 qaRoutes.post('/qa/run', async (c) => {
-  runQAWatchdog().catch(() => {}); // 비동기 실행
+  runQAWatchdog().catch((e) => logger.error(`QA Watchdog 실행 실패: ${e}`, { component: 'QA' }));
   return c.json({ ok: true, message: 'QA Watchdog 실행 시작' });
 });

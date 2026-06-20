@@ -33,9 +33,16 @@ export function NewsSummaryPanel({
     }>
       <div className="p-4 space-y-3">
         {summaryLoading ? (
-          <div className="flex items-center gap-2 py-2">
-            <div className="w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full animate-spin shrink-0" />
-            <span className="text-xs text-slate-500">Gemini가 뉴스를 분석 중입니다... (최대 45초)</span>
+          <div className="space-y-3 animate-pulse">
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full animate-spin shrink-0" />
+              <span className="text-[10px] text-slate-500">Gemini 분석 중... (최대 45초)</span>
+            </div>
+            <div className="space-y-2">
+              <div className="h-2.5 bg-white/[0.04] rounded w-full" />
+              <div className="h-2.5 bg-white/[0.04] rounded w-4/5" />
+              <div className="h-2.5 bg-white/[0.04] rounded w-3/5" />
+            </div>
           </div>
         ) : summary ? (
           <p className="text-sm text-slate-200 leading-relaxed">{summary}</p>
