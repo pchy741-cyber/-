@@ -186,7 +186,7 @@ export async function fetchKospiRegime(): Promise<KospiRegime> {
     atrPct: 1.0,
   };
   try {
-    const kospiCandles = await getDailyChart('0001', 300);
+    const kospiCandles = await getDailyChart('0001', 420); // MA200 계산용 (300→420: 공휴일 감안 205+ 거래일 확보)
     if (kospiCandles.length < 60) return _fallback;
     const { analyzeTechnicals } = await import('../../analysis/indicators.js');
     const kospiTech = analyzeTechnicals(kospiCandles);

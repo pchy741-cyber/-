@@ -9,7 +9,7 @@ import {
 } from '../../automation/crash-profit.js';
 import { getCommunityScoreAdjustment } from '../../automation/community-sentinel.js';
 import { getDisclosureScoreAdjustment, monitorDisclosures } from '../../automation/dart-monitor.js';
-import { getCachedPiotroskiScore } from '../../automation/dart-research.js';
+import { getCachedPiotroskiScore, getCachedFundamentalScore } from '../../automation/dart-research.js';
 import { getInvestorFlow } from '../../automation/investor-flow.js';
 import { getMacroScoreAdjustment, getMacroSnapshot } from '../../automation/macro-data.js';
 import { checkNewsForStock } from '../../automation/news-sentinel.js';
@@ -978,18 +978,23 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         const piotroskiAdj = piotroskiFs != null
           ? piotroskiFs >= 8 ? 5 : piotroskiFs <= 2 ? -8 : 0
           : 0;
+        // Gemini fundamentalScore 보정: 75+→+4, 60+→+2, 30-→-5 (DART 리서치 연동)
+        const fundScore = getCachedFundamentalScore(s.stock_code);
+        const fundScoreAdj = fundScore != null
+          ? fundScore >= 75 ? 4 : fundScore >= 60 ? 2 : fundScore <= 30 ? -5 : 0
+          : 0;
         // Community Sentinel: 언급 Z-score + 센티먼트 + FOMO/펌프 감지 (-20 ~ +5)
         const communityAdj = getCommunityScoreAdjustment(s.stock_code);
         const totalAdj =
-          adj + capAdj + stale + kospiPenaltyAdj + adamKhooAdj + macroAdj + dartAdj + megaCapAdj + consensusAdj + aiScoreAdj + stockAccAdj + piotroskiAdj + communityAdj;
+          adj + capAdj + stale + kospiPenaltyAdj + adamKhooAdj + macroAdj + dartAdj + megaCapAdj + consensusAdj + aiScoreAdj + stockAccAdj + piotroskiAdj + fundScoreAdj + communityAdj;
         if (!Number.isFinite(totalAdj)) {
           logger.warn(
-            `⚠️ 스코어 보정 NaN 감지: ${s.stock_code} adj=${adj} cap=${capAdj} macro=${macroAdj} dart=${dartAdj} cns=${consensusAdj} ai=${aiScoreAdj} acc=${stockAccAdj} pio=${piotroskiAdj} cmty=${communityAdj}`,
+            `⚠️ 스코어 보정 NaN 감지: ${s.stock_code} adj=${adj} cap=${capAdj} macro=${macroAdj} dart=${dartAdj} cns=${consensusAdj} ai=${aiScoreAdj} acc=${stockAccAdj} pio=${piotroskiAdj} fund=${fundScoreAdj} cmty=${communityAdj}`,
             { component: 'TRACK_B' },
           );
           return { stock_code: s.stock_code, score: Math.max(0, Math.round(base)) || 0 };
         }
-        const boundedAdj = totalAdj < 0 ? Math.max(totalAdj, -20) : totalAdj;
+        const boundedAdj = Math.max(-20, Math.min(25, totalAdj));
         const rawScore = Math.min(100, Math.max(0, base + boundedAdj));
         return { stock_code: s.stock_code, score: Math.round(rawScore) };
       });

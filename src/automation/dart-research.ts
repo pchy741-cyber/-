@@ -432,3 +432,17 @@ export function getCachedPiotroskiScore(stockCode: string): number | undefined {
   }
   return undefined;
 }
+
+/**
+ * 캐시된 Gemini fundamentalScore 반환 (Track B pipeline용)
+ * 0~100 점수 → 매매 점수 보정에 사용
+ * 캐시 미스 시 undefined (리서치 미실행 종목)
+ */
+export function getCachedFundamentalScore(stockCode: string): number | undefined {
+  for (const [key, entry] of _resultCache) {
+    if (key.startsWith(`${stockCode}-`) && Date.now() - entry.fetchedAt < RESULT_CACHE_TTL_MS) {
+      return entry.result.fundamentalScore;
+    }
+  }
+  return undefined;
+}

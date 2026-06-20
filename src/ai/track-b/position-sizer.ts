@@ -30,8 +30,8 @@ export function adjustPositionSizes(params: {
   const _params = STRATEGY_PARAMS[mode];
 
   // KOSPI 레짐 보정: 조정장이면 기준금액 25% 축소 (기존 40% → 완화)
-  // Adam Khoo bullish: 추가 ×1.1 (정배열+우상향 시장에서 포지션 확대)
-  const kospiSizingMult = kospiRegimePenalty >= 1 ? 0.75 : (kospiBoost ? 1.2 : 1.0) * (adamKhooBullish ? 1.1 : 1.0);
+  // ※ adamKhoo 승수는 pipeline.ts에서 adjMaxPositionKrw에 이미 반영 (이중 적용 방지)
+  const kospiSizingMult = kospiRegimePenalty >= 1 ? 0.75 : (kospiBoost ? 1.2 : 1.0);
 
   // pipeline이 계산한 adjMaxPositionKrw를 기준으로 사용 (독자 재계산 안 함)
   const maxPerPosition = Math.round(adjMaxPositionKrw * kospiSizingMult);
@@ -50,9 +50,9 @@ export function adjustPositionSizes(params: {
       const confFactor = Math.min(1, Math.max(0, d.confidence ?? 0.6));
       const scoreFactor = Math.min(1, aiScore / 100);
       const combined = confFactor * 0.55 + scoreFactor * 0.45;
-      // 강세장: 상한 2.0x / 정상: 1.6x / AK강세+boost: 1.8x
+      // 강세장: 상한 2.0x / 정상: 1.6x / AK강세: 1.8x
       const multCeiling = kospiBoost ? 2.0 : adamKhooBullish ? 1.8 : 1.6;
-      const convMult = Math.round((0.6 + combined * multCeiling) * 100) / 100;
+      const convMult = Math.min(multCeiling, Math.round((0.6 + combined * (multCeiling - 0.6)) * 100) / 100);
       // 예산 = baseBudget × convMult × regimeScale, 절대 상한으로 클램프
       const regimeScale = d.regime_position_scale ?? 1.0;
       const rawBudget = Math.floor(baseBudget * convMult * regimeScale);
