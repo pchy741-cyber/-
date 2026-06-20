@@ -485,7 +485,7 @@ let lastOverseasRefillCheck = 0;
  */
 export async function checkAndRefillOverseasPaper(): Promise<boolean> {
   const now = Date.now();
-  if (now - lastOverseasRefillCheck < 30 * 60 * 1000) return false;
+  if (now - lastOverseasRefillCheck < 5 * 60 * 1000) return false; // 30분→5분 (교착 감지 가속)
   lastOverseasRefillCheck = now;
 
   try {

@@ -261,28 +261,50 @@ export function resetPaperBalance() {
 // ── Paper 자금 자동 리필 (자율학습 모드) ──────────────────────────────
 // 현금이 최소 주문금액 미만이면 리필 (자유롭게 거래 지속)
 let lastRefillCheck = 0;
+let _cashDepletedSince = 0; // 현금 고갈 시작 시점 (stagnation 감지용)
 
 /**
  * Paper 자금 고갈 시 자동 리필
- * - 남은 현금 < 50,000원 (1종목 매수 불가) + 보유종목 2건 이하 → 리필 트리거
+ * - 남은 현금 < 50,000원 + 보유종목 3건 이하 → 즉시 리필
+ * - 남은 현금 < 50,000원 + 2시간 이상 고갈 지속 → 보유종목 무관 강제 리필 (교착 방지)
+ * - 실현손익 누적 손실로 현금 영구 0 → 감지 후 리필 (gambler's ruin 탈출)
  * - 기존 paper 주문을 archived로 표시 (학습 데이터 보존)
  * - 순수 현금 시드로 리셋
  * @returns true if refill happened
  */
 export async function checkAndRefillPaper(): Promise<boolean> {
   const now = Date.now();
-  // 10분에 1번만 체크 (30분→10분 단축)
-  if (now - lastRefillCheck < 10 * 60 * 1000) return false;
+  // 3분에 1번 체크 (10분→3분 단축 — 현금 고갈 시 빠른 복구)
+  if (now - lastRefillCheck < 3 * 60 * 1000) return false;
   lastRefillCheck = now;
 
   try {
     const balance = await getPaperBalance();
     const hasPositions = balance.positions.length > 0;
-
-    // 리필 조건: 현금 5만원 미만 + 보유종목 3건 이하 (거의 신규매수 불가 상태)
     const isCashDepleted = balance.orderableCash < 50_000;
     const fewPositions = balance.positions.length <= 3;
-    if (!isCashDepleted || (hasPositions && !fewPositions)) return false;
+
+    // 현금 고갈 시작 시점 추적 (stagnation 감지)
+    if (isCashDepleted) {
+      if (_cashDepletedSince === 0) _cashDepletedSince = now;
+    } else {
+      _cashDepletedSince = 0; // 현금 복구 시 리셋
+    }
+
+    // 영구 고갈 감지: 실현손익 누적 손실이 시드를 초과 → 포지션 0이어도 현금 0
+    const isPermanentlyDepleted = !hasPositions && balance.orderableCash === 0
+      && (PAPER_INITIAL_CAPITAL + paperRealizedPnl) <= 0;
+
+    // 교착 감지: 2시간 이상 현금 고갈 지속 (보유종목이 많아 리필 안 되는 케이스)
+    const stagnationMs = 2 * 60 * 60 * 1000; // 2시간
+    const isStagnant = _cashDepletedSince > 0 && (now - _cashDepletedSince) >= stagnationMs;
+
+    // 리필 조건:
+    //   1) 현금 부족 + 보유종목 적음 (기존)
+    //   2) 현금 부족 + 2시간 이상 교착 (신규 — deadlock 방지)
+    //   3) 영구 고갈 (신규 — 누적 손실로 현금 불가능)
+    if (!isCashDepleted && !isPermanentlyDepleted) return false;
+    if (isCashDepleted && hasPositions && !fewPositions && !isStagnant && !isPermanentlyDepleted) return false;
 
     const pool = getPool();
     // 세대 번호 부여 (몇 번째 리필인지 추적)
@@ -317,8 +339,10 @@ export async function checkAndRefillPaper(): Promise<boolean> {
       ],
     );
 
+    const refillReason = isPermanentlyDepleted ? '누적손실 영구고갈' : isStagnant ? `${Math.round((now - _cashDepletedSince) / 60_000)}분 교착` : '현금부족';
+    _cashDepletedSince = 0; // 리필 후 stagnation 리셋
     logger.info(
-      `🔄 [PAPER-REFILL] 국내 모의자금 리필 (세대 #${gen}): ${balance.orderableCash.toLocaleString()}원 → ${PAPER_INITIAL_CAPITAL.toLocaleString()}원 (${rowCount}건 아카이브, 누적PnL ${Math.round(balance.totalProfitLoss).toLocaleString()}원)`,
+      `🔄 [PAPER-REFILL] 국내 모의자금 리필 (세대 #${gen}): ${balance.orderableCash.toLocaleString()}원 → ${PAPER_INITIAL_CAPITAL.toLocaleString()}원 (사유: ${refillReason}, ${rowCount}건 아카이브, 누적PnL ${Math.round(balance.totalProfitLoss).toLocaleString()}원)`,
       { component: 'PAPER' },
     );
     return true;

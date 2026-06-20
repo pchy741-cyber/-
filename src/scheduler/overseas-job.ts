@@ -117,6 +117,7 @@ import {
   ensureOverseasTable,
   getBucketWeight,
   getCash,
+  getCashKrw,
   getHoldings,
   updateTradeState,
 } from './overseas/state.js';
@@ -212,12 +213,22 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       return;
     }
 
-    // ── 현금 동기화 (해외 시장 열린 시간에만 — 한국장 통합증거금 오염 방지) ──
+    // ── 현금 동기화 (통합증거금) ──
     // KIS psamount API는 통합증거금 전체를 반환. 한국장 개장 중에는 국내 매매용 현금까지
-    // 해외 가용금액에 포함되어 overseas_state['cash']가 과도하게 설정됨.
-    // 한국장 개장(09:00~15:30 KST) 중에는 reconcile 스킵 — 오염 방지
-    if (!isPaper() && !openRegions.has('KR')) {
-      await reconcileCashWithKIS();
+    // 해외 가용금액에 포함되어 overseas_state['cash']가 과도하게 설정될 수 있음.
+    // 기본: 한국장 마감 시에만 reconcile. 단, overseas cash=0이면 KR장 중에도 1회 복구
+    if (!isPaper()) {
+      const isKROpen = openRegions.has('KR');
+      if (!isKROpen) {
+        await reconcileCashWithKIS();
+      } else {
+        // KR장 중이지만 overseas cash가 0이면 1회 복구 (서버 재시작 시 cash=0 교착 방지)
+        const currentOsCashKrw = await getCashKrw();
+        if (currentOsCashKrw <= 0) {
+          logger.info('💱 KR장 중이지만 overseas cash=0 → 1회 복구 reconcile 실행', { component: 'OVERSEAS' });
+          await reconcileCashWithKIS();
+        }
+      }
     }
     // ── 환율 1회 조회 — 사이클 전체에서 동일 환율 사용 (환율 drift 방지) ──
     const cycleFxRate = await fetchExchangeRate();

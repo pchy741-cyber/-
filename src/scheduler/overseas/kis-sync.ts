@@ -449,13 +449,15 @@ export async function reconcileCashWithKIS(): Promise<void> {
     }
 
     // 통합증거금 전체 계좌 가치 저장 (해외/국내 비중 동적 할당용)
+    // 3차 폴백에서 이미 getAccountBalance(true) 호출했으면 재사용 (API 중복 방지)
     try {
-      const bal = await getAccountBalance(true);
-      // netAsset = 순자산 (예수금+보유주식-대출 등), totalEvalAmount = 국내 보유주식 평가
-      const nass = bal.netAsset ?? 0;
-      const domEval = bal.totalEvalAmount ?? 0;
-      // 총 계좌 가치 = 주문가능(cash) + 국내 보유주식(이미 netAsset에 포함된 경우도 있으나 보수적 max 사용)
-      const totalAccountKrw = Math.max(nass, (bal.orderableCash ?? 0) + domEval);
+      const bal = kisKrw !== null && (buyable != null)
+        ? await getAccountBalance(true) // 캐시 히트 확률 높음 (30초 이내)
+        : null; // psamount 성공 시 별도 조회 불필요할 수 있으나, total_account_krw는 항상 필요
+      const balForTotal = bal ?? await getAccountBalance(true);
+      const nass = balForTotal.netAsset ?? 0;
+      const domEval = balForTotal.totalEvalAmount ?? 0;
+      const totalAccountKrw = Math.max(nass, (balForTotal.orderableCash ?? 0) + domEval);
       if (totalAccountKrw > 0) {
         await getPool()
           .query(

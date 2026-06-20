@@ -159,7 +159,8 @@ export function calcPositionSize(params: SizingParams): SizingResult {
   const cashUsageCap = 1.0 - dynamicCashReserve;
 
   // 복합 감소기 바닥: 소액 0.60 / 일반 0.40 (여러 팩터 곱셈 붕괴 방지)
-  const sizingFloor = isSmallAccount ? 0.6 : 0.4;
+  // 단, VIX CRISIS(0.3x) 시에는 바닥 적용 안 함 — 위기 보호 우선
+  const sizingFloor = vixRegime.regime === 'CRISIS' ? 0 : isSmallAccount ? 0.6 : 0.4;
   const flooredSizingMult = Math.max(sizingMult, sizingFloor);
   let positionSize = Math.min(baseSize * flooredSizingMult, cash * cashUsageCap);
 
