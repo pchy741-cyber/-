@@ -7,11 +7,11 @@ import { toDisplayName } from '../lib/helpers';
 import { TodayThemePanel } from './news/TodayThemePanel';
 import { NewsSummaryPanel } from './news/NewsSummaryPanel';
 import { ResearchBotPanel } from './news/ResearchBotPanel';
+import type { WatchlistItem } from '../types';
 
 interface RegimeSummary { summary: string; regime: string; score: number; recommended: string; reasons: string[] }
 interface YTVideo { title: string; link: string; channel: string; publishedAt: string; sentiment: 'bullish' | 'bearish' | 'neutral'; sentimentScore: number }
 interface StockNewsEntry { stockCode: string; items: Array<{ title: string; link?: string; publishedAt?: string }> }
-interface WatchlistItem { stock_code: string; stock_name?: string }
 
 /** 상대 시간 (KST) */
 function relativeTime(t: string): string {
@@ -24,7 +24,7 @@ function relativeTime(t: string): string {
   return `${Math.floor(hrs / 24)}일 전`;
 }
 
-function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: WatchlistItem[]; setWatchlist: (v: WatchlistItem[]) => void; viewMode?: string }) {
+function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: WatchlistItem[]; setWatchlist: React.Dispatch<React.SetStateAction<WatchlistItem[]>>; viewMode?: string }) {
   const [stockNews, setStockNews] = useState<StockNewsEntry[]>([]);
   const [macroNews, setMacroNews] = useState<string[]>([]);
   const [summary, setSummary] = useState<string>('');
