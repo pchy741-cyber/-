@@ -37,7 +37,7 @@ strategyLabRoutes.get('/strategy-lab/overview', async (c) => {
     cacheSet('api:strategy-lab:overview', result, 300); // 5분 TTL
     return c.json(result);
   } catch (e: any) {
-    return c.json({ strategies: [], error: e.message }, 500);
+    return c.json({ strategies: [], error: 'Internal server error' }, 500);
   }
 });
 
@@ -56,7 +56,7 @@ strategyLabRoutes.get('/strategy-lab/insights', async (c) => {
       .catch(() => ({ rows: [] }));
     return c.json({ insights: result.rows });
   } catch (e: any) {
-    return c.json({ insights: [], error: e.message }, 500);
+    return c.json({ insights: [], error: 'Internal server error' }, 500);
   }
 });
 
@@ -82,7 +82,7 @@ strategyLabRoutes.get('/strategy-lab/approvals', async (c) => {
     ]);
     return c.json({ pending: pending.rows, history: history.rows });
   } catch (e: any) {
-    return c.json({ pending: [], history: [], error: e.message }, 500);
+    return c.json({ pending: [], history: [], error: 'Internal server error' }, 500);
   }
 });
 
@@ -287,7 +287,7 @@ strategyLabRoutes.get('/strategy-lab/splits', async (c) => {
       .catch(() => ({ rows: [] }));
     return c.json({ splits: result.rows });
   } catch (e: any) {
-    return c.json({ splits: [], error: e.message }, 500);
+    return c.json({ splits: [], error: 'Internal server error' }, 500);
   }
 });
 
@@ -315,7 +315,7 @@ strategyLabRoutes.post('/strategy-lab/splits', async (c) => {
     logger.info(`📊 스플릿 생성: #${rows[0].id} (${strategy_mode})`, { component: 'STRATEGY_LAB' });
     return c.json({ ok: true, split: rows[0] });
   } catch (e: any) {
-    return c.json({ ok: false, error: e.message }, 500);
+    return c.json({ ok: false, error: 'Internal server error' }, 500);
   }
 });
 
@@ -385,7 +385,7 @@ strategyLabRoutes.get('/strategy-lab/ceo-overrides', async (c) => {
 
     return c.json({ active, history });
   } catch (e: any) {
-    return c.json({ active: [], history: [], error: e.message }, 500);
+    return c.json({ active: [], history: [], error: 'Internal server error' }, 500);
   }
 });
 

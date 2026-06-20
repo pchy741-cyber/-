@@ -81,7 +81,7 @@ stockAnalysisRoutes.get('/stock/:code/score-history', async (c) => {
     );
     return c.json(rows.map((r: any) => ({ score: Number(r.composite_score), ts: r.created_at })));
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -124,6 +124,6 @@ stockAnalysisRoutes.get('/stock/:code/score-detail', async (c) => {
       updatedAt: r.created_at,
     });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });

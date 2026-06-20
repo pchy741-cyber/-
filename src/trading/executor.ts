@@ -380,8 +380,19 @@ export class TradeExecutor {
           );
           return;
         }
-      } catch {
-        /* fail-open: AI 오류 시 기존 게이트 결과 존중 */
+      } catch (aiTimingErr) {
+        /* fail-closed: AI 타이밍 서비스 장애 시 대형주문 차단 (안전 우선) */
+        releaseBuyIntent(stockCode);
+        logger.error(
+          `🛑 진입타이밍 AI 장애로 대형주문 차단 [${stockCode} ${Math.round(orderAmountKrw / 10000)}만원]: ${(aiTimingErr as Error).message ?? aiTimingErr}`,
+          { component: 'EXECUTOR' },
+        );
+        await logSystem(
+          'ERROR',
+          'ENTRY_TIMING',
+          `AI 타이밍 서비스 장애 — 대형주문 차단 (fail-closed): ${stockCode} ${Math.round(orderAmountKrw / 10000)}만원`,
+        );
+        return;
       }
     }
 
@@ -525,21 +536,53 @@ export class TradeExecutor {
           chainCreated = true;
 
           // ScaleIn 3분할: 체인 생성 성공 후 2차(60s)/3차(120s) 분할 진입 스케줄
+          // ⚠️ setTimeout 기반 — 프로세스 재시작 시 2차/3차 트랜치 유실됨
+          // DB에 pending tranche 마커를 기록하여 재시작 후 감지 가능하도록 함
           if (useScaleIn && secondTranche > 0) {
             logger.info(
               `📊 ScaleIn 스케줄: ${stockCode} 1차 ${filledQty}주 완료 → 2차 ${secondTranche}주(60s), 3차 ${thirdTranche}주(120s)`,
               { component: 'EXECUTOR' },
             );
+            // DB 마커 기록 — 프로세스 재시작 시 미실행 트랜치 감지용
+            const trancheMarker = {
+              stockCode,
+              chainId,
+              secondTranche,
+              thirdTranche,
+              scheduledAt: new Date().toISOString(),
+              reasoning,
+              isPaper: isPaperSnapshot,
+            };
+            getPool().query(
+              `INSERT INTO system_state (key, value) VALUES ($1, $2)
+               ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+              [`pending_scalein_${chainId}`, JSON.stringify(trancheMarker)],
+            ).catch((e) => logger.warn(`ScaleIn DB 마커 저장 실패: ${e}`, { component: 'EXECUTOR' }));
+
+            logger.warn(
+              `⚠️ ScaleIn 2차/3차 트랜치가 setTimeout으로 스케줄됨 — 프로세스 재시작 시 유실 위험: ${stockCode} chain=${chainId} 2차=${secondTranche}주(60s) 3차=${thirdTranche}주(120s)`,
+              { component: 'EXECUTOR' },
+            );
             setTimeout(() => {
               runWithMode(isPaperSnapshot, () =>
                 this.executeAverageDown(stockCode, secondTranche, 'MARKET', undefined, `ScaleIn 2차/3: ${reasoning}`, true),
-              ).catch((e) => logger.warn(`ScaleIn 2차 실패 ${stockCode}: ${(e as Error).message}`, { component: 'EXECUTOR' }));
+              ).then(() => {
+                logger.info(`✅ ScaleIn 2차 실행 완료: ${stockCode} ${secondTranche}주`, { component: 'EXECUTOR' });
+                // 3차도 완료되었거나 없으면 DB 마커 삭제
+                if (thirdTranche <= 0) {
+                  getPool().query(`DELETE FROM system_state WHERE key = $1`, [`pending_scalein_${chainId}`]).catch(() => {});
+                }
+              }).catch((e) => logger.warn(`ScaleIn 2차 실패 ${stockCode}: ${(e as Error).message}`, { component: 'EXECUTOR' }));
             }, 60_000);
             if (thirdTranche > 0) {
               setTimeout(() => {
                 runWithMode(isPaperSnapshot, () =>
                   this.executeAverageDown(stockCode, thirdTranche, 'MARKET', undefined, `ScaleIn 3차/3: ${reasoning}`, true),
-                ).catch((e) => logger.warn(`ScaleIn 3차 실패 ${stockCode}: ${(e as Error).message}`, { component: 'EXECUTOR' }));
+                ).then(() => {
+                  logger.info(`✅ ScaleIn 3차 실행 완료: ${stockCode} ${thirdTranche}주`, { component: 'EXECUTOR' });
+                  // 모든 트랜치 완료 → DB 마커 삭제
+                  getPool().query(`DELETE FROM system_state WHERE key = $1`, [`pending_scalein_${chainId}`]).catch(() => {});
+                }).catch((e) => logger.warn(`ScaleIn 3차 실패 ${stockCode}: ${(e as Error).message}`, { component: 'EXECUTOR' }));
               }, 120_000);
             }
           }

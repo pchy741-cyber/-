@@ -3,6 +3,13 @@ import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { kisRequest, overseasRateLimiter } from './client.js';
 
+/** NaN 방지: Number(undefined) → NaN 대신 fallback 반환 */
+const safeNum = (v: string | undefined | null, fallback = 0): number => {
+  if (v === undefined || v === null) return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+
 /** 해외 전용 KIS API 호출 — 국내와 별도 rate limiter 사용 */
 async function overseasKisRequest<T = unknown>(
   opts: Parameters<typeof kisRequest<T>>[0],
@@ -143,19 +150,25 @@ export async function getOverseasPrice(stockCode: string, exchange: string = 'NA
     },
   });
 
-  const o = res.output as Record<string, string>;
+  const o = res.output as Record<string, string> | undefined;
+  if (!o) {
+    return {
+      stockCode, stockName: stockCode, currentPrice: 0, changePrice: 0,
+      changePct: 0, volume: 0, exchange, dayHigh: 0, dayLow: 0, dayOpen: 0,
+    };
+  }
 
   return {
     stockCode,
     stockName: o.rsym ?? stockCode,
-    currentPrice: Number(o.last ?? 0),
-    changePrice: Number(o.diff ?? 0),
-    changePct: Number(o.rate ?? 0),
-    volume: Number(o.tvol ?? 0),
+    currentPrice: safeNum(o.last),
+    changePrice: safeNum(o.diff),
+    changePct: safeNum(o.rate),
+    volume: safeNum(o.tvol),
     exchange,
-    dayHigh: Number(o.high ?? o.last ?? 0),
-    dayLow: Number(o.low ?? o.last ?? 0),
-    dayOpen: Number(o.open ?? o.last ?? 0),
+    dayHigh: safeNum(o.high ?? o.last),
+    dayLow: safeNum(o.low ?? o.last),
+    dayOpen: safeNum(o.open ?? o.last),
   };
 }
 
@@ -185,11 +198,11 @@ export async function getOverseasDailyChart(stockCode: string, exchange: string 
 
   return items.slice(0, days).map((c) => ({
     date: c.xymd ?? '',
-    open: Number(c.open ?? 0),
-    high: Number(c.high ?? 0),
-    low: Number(c.low ?? 0),
-    close: Number(c.clos ?? 0),
-    volume: Number(c.tvol ?? 0),
+    open: safeNum(c.open),
+    high: safeNum(c.high),
+    low: safeNum(c.low),
+    close: safeNum(c.clos),
+    volume: safeNum(c.tvol),
   }));
 }
 
@@ -335,12 +348,12 @@ export async function getOverseasBalance(exchange: string = 'NASDAQ') {
   return items.map((item) => ({
     stockCode: item.ovrs_pdno ?? '',
     stockName: item.ovrs_item_name ?? '',
-    quantity: Number(item.ovrs_cblc_qty ?? 0),
-    avgBuyPrice: Number(item.pchs_avg_pric ?? 0),
-    currentPrice: Number(item.now_pric2 ?? 0),
-    evalAmount: Number(item.ovrs_stck_evlu_amt ?? 0),
-    profitLoss: Number(item.frcr_evlu_pfls_amt ?? 0),
-    profitLossPct: Number(item.evlu_pfls_rt ?? 0),
+    quantity: safeNum(item.ovrs_cblc_qty),
+    avgBuyPrice: safeNum(item.pchs_avg_pric),
+    currentPrice: safeNum(item.now_pric2),
+    evalAmount: safeNum(item.ovrs_stck_evlu_amt),
+    profitLoss: safeNum(item.frcr_evlu_pfls_amt),
+    profitLossPct: safeNum(item.evlu_pfls_rt),
     currency,
   }));
 }
@@ -383,14 +396,14 @@ export async function getOverseasBuyableAmount(exchange: string = 'NASDAQ'): Pro
       logger.info(`💱 psamount 응답: ${fields}`, { component: 'OVERSEAS' });
     }
 
-    const exrt = Number(output?.exrt ?? 0);
+    const exrt = safeNum(output?.exrt);
 
     // 통합증거금 psamount 필드 매핑 (tr_crcy_cd=USD 기준):
     // ord_psbl_frcr_amt: 실제 주문가능 외화금액 (KIS 앱 "달러화" 표시값) ← 외화 풀만
     // frcr_ord_psbl_amt1: 원화 포함 이론적 최대 외화주문가능금액 (KRW→USD 환산 포함) ← 통합증거금 전체
     // ovrs_ord_psbl_amt: 해외주문가능금액 (USD, ord_psbl_frcr_amt과 유사)
-    const usd = Number(output?.ord_psbl_frcr_amt ?? output?.ovrs_ord_psbl_amt ?? 0);
-    const maxUsd = Number(output?.frcr_ord_psbl_amt1 ?? 0);
+    const usd = safeNum(output?.ord_psbl_frcr_amt ?? output?.ovrs_ord_psbl_amt);
+    const maxUsd = safeNum(output?.frcr_ord_psbl_amt1);
 
     // KRW: 통합증거금 기준 주문가능원화 = maxUsd × 환율
     // maxUsd는 원화 풀까지 포함한 최대 주문가능액 (KIS 앱 "주문가능원화" / 환율)

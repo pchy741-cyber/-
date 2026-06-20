@@ -128,7 +128,7 @@ export async function onStockRemoved(stockCode: string, isPaperOverride?: boolea
 
     const { tradeExecutor } = await import('../trading/executor.js');
     const strategy = await getActiveStrategy();
-    const mode = (strategy?.mode ?? 'SWING') as any;
+    const mode = (strategy?.mode ?? 'SWING') as import('../config/constants.js').StrategyMode;
 
     await tradeExecutor.processDecisions(
       [
@@ -176,8 +176,8 @@ export async function onModeSwitch(fromMode: string, toMode: string, isPaperOver
             losingPositions.push({ stockCode: chain.stock_code, pnlPct });
           }
         }
-      } catch {
-        /* skip */
+      } catch (err) {
+        logger.debug(`시세 조회 실패 (${chain.stock_code}): ${err}`, { component: 'CEO_FLOW' });
       }
     }
 
@@ -207,7 +207,8 @@ async function getCurrentPriceSafe(stockCode: string): Promise<number | null> {
     const { getCurrentPrice } = await import('../kis/market.js');
     const price = await getCurrentPrice(stockCode);
     return price.currentPrice;
-  } catch {
+  } catch (err) {
+    logger.debug(`현재가 조회 실패 (${stockCode}): ${err}`, { component: 'CEO_FLOW' });
     return null;
   }
 }

@@ -22,6 +22,21 @@ pushNotificationsRoutes.get('/push/status', async (c) => {
 
 pushNotificationsRoutes.post('/push/subscribe', async (c) => {
   const subscription = await c.req.json();
+
+  // Input validation: endpoint must be a valid URL string, keys must exist
+  if (
+    !subscription ||
+    typeof subscription.endpoint !== 'string' ||
+    !subscription.endpoint.startsWith('https://') ||
+    !subscription.keys ||
+    typeof subscription.keys.p256dh !== 'string' ||
+    !subscription.keys.p256dh ||
+    typeof subscription.keys.auth !== 'string' ||
+    !subscription.keys.auth
+  ) {
+    return c.json({ ok: false, error: 'Invalid subscription: endpoint (https URL), keys.p256dh, and keys.auth are required' }, 400);
+  }
+
   const { saveSubscription } = await import('../../../notifications/web-push.js');
   await saveSubscription(subscription);
   return c.json({ ok: true });

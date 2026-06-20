@@ -50,7 +50,10 @@ export async function getDefenseParkState(): Promise<DefenseParkState> {
     };
   }
   try {
-    const { rows } = await getPool().query(`SELECT * FROM defense_park_state WHERE is_active = TRUE LIMIT 1`);
+    const { rows } = await getPool().query(
+      `SELECT park_stock_code, park_stock_name, entry_reason, entered_at
+       FROM defense_park_state WHERE is_active = TRUE ORDER BY entered_at DESC LIMIT 1`,
+    );
     if (rows.length === 0) {
       return {
         isActive: false,
@@ -123,8 +126,8 @@ export async function isPortfolioInDowntrend(): Promise<{ downtrend: boolean; re
       return { downtrend: false, reason: `스냅샷 부족 (${rows.length}개)` };
     }
 
-    const values = rows.map((r: any) => Number(r.total_value));
-    const pnls = rows.map((r: any) => Number(r.daily_pnl));
+    const values = rows.map((r: Record<string, unknown>) => Number(r.total_value));
+    const pnls = rows.map((r: Record<string, unknown>) => Number(r.daily_pnl));
 
     const currentValue = values[0];
     const peakValue = Math.max(...values);
@@ -185,7 +188,7 @@ export async function isMarketRecovering(
       `,
         [getCtxIsPaper()],
       );
-      const recentPnls = rows.map((r: any) => Number(r.daily_pnl));
+      const recentPnls = rows.map((r: Record<string, unknown>) => Number(r.daily_pnl));
       const consecutivePositive = recentPnls.slice(0, RECOVERY_POSITIVE_DAYS).every((p) => p > 0);
       if (consecutivePositive && recentPnls.length >= RECOVERY_POSITIVE_DAYS) {
         return {
@@ -208,7 +211,7 @@ export async function isMarketRecovering(
       );
       if (rows.length > 0) {
         const enteredAt = new Date(rows[0].entered_at);
-        const hoursParked = (Date.now() - enteredAt.getTime()) / (1000 * 60 * 60);
+        const hoursParked = (Date.now() - enteredAt.getTime()) / 3_600_000; // 1 hour in ms
         if (hoursParked >= 48) {
           const price = livePrices.get(PARK_STOCK_CODE);
           const avgBuy = Number(parkChain.avg_buy_price ?? 0);

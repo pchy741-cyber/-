@@ -137,7 +137,8 @@ async function fetchNewlyLearned(): Promise<Array<{ stockCode: string; recommend
       recommendation: String(r.recommendation),
       reason: String(r.reason ?? ''),
     }));
-  } catch {
+  } catch (err) {
+    logger.debug(`자동화 추천 조회 실패: ${err}`, { component: 'LEARNING_REPORT' });
     return [];
   }
 }

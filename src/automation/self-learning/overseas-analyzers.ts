@@ -78,9 +78,9 @@ function parseCloseReason(reasoning: string): string {
   const lower = reasoning.toLowerCase();
   if (lower.includes('trailing') || lower.includes('트레일링') || lower.includes('trail')) return 'TRAILING_STOP';
   if (lower.includes('partial') || lower.includes('부분익절') || lower.includes('partial_tp')) return 'PARTIAL_TP';
-  if ((lower.includes('stop') && lower.includes('loss')) || lower.includes('손절') || lower.includes('SL'))
+  if ((lower.includes('stop') && lower.includes('loss')) || lower.includes('손절') || lower.includes('sl'))
     return 'STOP_LOSS';
-  if ((lower.includes('take') && lower.includes('profit')) || lower.includes('익절') || lower.includes('TP'))
+  if ((lower.includes('take') && lower.includes('profit')) || lower.includes('익절') || lower.includes('tp'))
     return 'TAKE_PROFIT';
   if (lower.includes('수동') || lower.includes('ceo') || lower.includes('manual')) return 'MANUAL';
   if (lower.includes('turtle') || lower.includes('터틀')) return 'TURTLE_EXIT';

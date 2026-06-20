@@ -10,6 +10,19 @@ const COMPONENT = 'SHORT_SELLING';
 const _shortCache = new Map<string, { data: ShortSellingData; fetchedAt: number; isError?: boolean }>();
 const SHORT_CACHE_TTL_MS = 60 * 60 * 1000; // 60분 — 성공 응답
 const SHORT_ERROR_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6시간 — 404/오류 (재시작 후 재폭발 방지)
+const SHORT_CACHE_MAX_SIZE = 500; // 메모리 누수 방지 — 최대 캐시 엔트리 수
+
+// 주기적 캐시 정리 (30분마다 만료된 엔트리 제거)
+const _shortCacheCleanupTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of _shortCache) {
+    const ttl = entry.isError ? SHORT_ERROR_CACHE_TTL_MS : SHORT_CACHE_TTL_MS;
+    if (now - entry.fetchedAt >= ttl) {
+      _shortCache.delete(key);
+    }
+  }
+}, 30 * 60 * 1000);
+_shortCacheCleanupTimer.unref(); // 프로세스 종료를 차단하지 않음
 
 /** 공매도 TR ID (일별 공매도 현황) */
 const TR_SHORT_SELLING = 'FHKST03010400';
@@ -146,6 +159,11 @@ export async function fetchShortSellingData(stockCode: string, days: number = 5)
       isIncreasing: increasing,
       riskLevel,
     };
+    // 최대 크기 초과 시 가장 오래된 엔트리 제거
+    if (_shortCache.size >= SHORT_CACHE_MAX_SIZE) {
+      const oldestKey = _shortCache.keys().next().value;
+      if (oldestKey !== undefined) _shortCache.delete(oldestKey);
+    }
     _shortCache.set(stockCode, { data: result, fetchedAt: Date.now() });
     return result;
   } catch (err) {
@@ -165,6 +183,11 @@ export async function fetchShortSellingData(stockCode: string, days: number = 5)
       isIncreasing: false,
       riskLevel: 'LOW',
     };
+    // 최대 크기 초과 시 가장 오래된 엔트리 제거
+    if (_shortCache.size >= SHORT_CACHE_MAX_SIZE) {
+      const oldestKey = _shortCache.keys().next().value;
+      if (oldestKey !== undefined) _shortCache.delete(oldestKey);
+    }
     _shortCache.set(stockCode, { data: fallback, fetchedAt: Date.now(), isError: true });
     return fallback;
   }

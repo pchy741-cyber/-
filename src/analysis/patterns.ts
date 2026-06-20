@@ -34,8 +34,8 @@ export function detectCandlePatterns(candles: OHLCV[]): CandlePatternResult[] {
     patterns.push({ name: '망치형', bullish: true, strength: 'STRONG' });
   }
 
-  // 2. 역망치형 (Inverted Hammer)
-  if (upper0 / range0 >= 0.5 && lower0 / range0 < 0.15 && body0 / range0 < 0.4 && !bull0) {
+  // 2. 역망치형 (Inverted Hammer) — bullish/bearish 모두 감지 (하락 추세 후 반등 신호)
+  if (upper0 / range0 >= 0.5 && lower0 / range0 < 0.15 && body0 / range0 < 0.4) {
     patterns.push({ name: '역망치형', bullish: true, strength: 'MODERATE' });
   }
 
@@ -44,13 +44,17 @@ export function detectCandlePatterns(candles: OHLCV[]): CandlePatternResult[] {
     patterns.push({ name: '슈팅스타', bullish: false, strength: 'STRONG' });
   }
 
-  // 4. 도지 (Doji)
+  // 4. 도지 (Doji) — 선행 캔들 방향으로 편향 결정 (중립 시 약세 기본)
   if (body0 / range0 < 0.1) {
-    const isDoji = true;
-    if (isDoji && !bull1 && c0.close > c1.close) {
+    if (!bull1 && c0.close > c1.close) {
+      // 이전 음봉 + 도지가 이전보다 높게 마감 → 반전 강세 신호
       patterns.push({ name: '도지(강세)', bullish: true, strength: 'MODERATE' });
+    } else if (bull1 && c0.close < c1.close) {
+      // 이전 양봉 + 도지가 이전보다 낮게 마감 → 반전 약세 신호
+      patterns.push({ name: '도지(약세)', bullish: false, strength: 'MODERATE' });
     } else {
-      patterns.push({ name: '도지(중립)', bullish: true, strength: 'WEAK' });
+      // 방향 불명확 → 이전 캔들 방향 반대 (잠재 반전), 약한 신호
+      patterns.push({ name: '도지(중립)', bullish: !bull1, strength: 'WEAK' });
     }
   }
 
@@ -67,8 +71,6 @@ export function detectCandlePatterns(candles: OHLCV[]): CandlePatternResult[] {
   // 7. 모닝스타 / 이브닝스타 (Morning/Evening Star)
   if (candles.length >= 3) {
     const bull2 = c2.close > c2.open;
-    const _body2 = Math.abs(c2.close - c2.open);
-    const _range2 = c2.high - c2.low || 1;
     if (!bull2 && body1 / range1 < 0.3 && bull0 && c0.close > (c2.open + c2.close) / 2) {
       patterns.push({ name: '모닝스타', bullish: true, strength: 'STRONG' });
     }
@@ -104,7 +106,7 @@ export interface FibonacciResult {
 }
 
 export function calcFibonacciLevels(candles: OHLCV[], currentPrice: number): FibonacciResult | null {
-  if (candles.length < 20) return null;
+  if (candles.length < 20 || currentPrice <= 0) return null;
 
   const lookback = Math.min(candles.length, 60);
   const recent = candles.slice(0, lookback);
@@ -138,7 +140,8 @@ export function calcFibonacciLevels(candles: OHLCV[], currentPrice: number): Fib
   if (isAtFibSupport) {
     const nearest = levels.find((l) => l.isNear);
     if (nearest) {
-      fibScore = nearest.level === 0.382 ? 15 : nearest.level === 0.5 ? 12 : 10;
+      // Fibonacci ratios are constants defined in fibRatios, safe to compare directly
+      fibScore = Math.abs(nearest.level - 0.382) < 1e-9 ? 15 : Math.abs(nearest.level - 0.5) < 1e-9 ? 12 : 10;
       if (Math.abs(nearest.pctFromCurrent) <= 0.5) fibScore += 3;
     }
   }
@@ -156,7 +159,7 @@ export interface VolumeLevelResult {
 }
 
 export function volumeProfile(candles: OHLCV[], bins = 24): VolumeLevelResult[] {
-  if (candles.length < 10) return [];
+  if (candles.length < 10 || bins <= 0) return [];
   const minP = Math.min(...candles.map((c) => c.low));
   const maxP = Math.max(...candles.map((c) => c.high));
   if (maxP <= minP) return [];
@@ -209,6 +212,7 @@ function _linearSlope(arr: number[]): number {
 }
 
 function _localExtremes(arr: number[], type: 'min' | 'max', w = 3): number[] {
+  if (arr.length < w * 2 + 1) return [];
   const result: number[] = [];
   for (let i = w; i < arr.length - w; i++) {
     const s = arr.slice(i - w, i + w + 1);

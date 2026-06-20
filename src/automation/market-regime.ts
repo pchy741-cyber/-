@@ -47,9 +47,10 @@ async function fetchKospiHistory(): Promise<number[]> {
     // 최신순 → 최근 5거래일 종가 반환
     return data
       .slice(0, 5)
-      .map((d: any) => Number(d.closePrice ?? d.endPrice ?? 0))
+      .map((d: Record<string, unknown>) => Number(d.closePrice ?? d.endPrice ?? 0))
       .filter((v) => v > 0);
-  } catch {
+  } catch (err) {
+    logger.debug(`KOSPI 일봉 조회 실패: ${err}`, { component: 'REGIME' });
     return [];
   }
 }
@@ -93,7 +94,8 @@ async function fetchMarketForeignNet(): Promise<number> {
       return sum + Number(item.frgn_ntby_tr_pbmn ?? item.frgn_ntby_qty ?? 0);
     }, 0);
     return total;
-  } catch {
+  } catch (err) {
+    logger.debug(`시장 외국인 수급 조회 실패: ${err}`, { component: 'REGIME' });
     return 0;
   }
 }
@@ -108,7 +110,8 @@ async function fetchKospi200Change(): Promise<number> {
     });
     const o = res.output as Record<string, string>;
     return Number(o?.prdy_ctrt ?? 0);
-  } catch {
+  } catch (err) {
+    logger.debug(`KOSPI200 등락률 조회 실패: ${err}`, { component: 'REGIME' });
     return 0;
   }
 }

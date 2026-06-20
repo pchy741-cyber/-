@@ -16,6 +16,14 @@ import { confirmOverseasFillFromBalance } from './order-sync.js';
 import { updateTradeState } from './state.js';
 import { resolveOverseasStockName } from './watchlist.js';
 
+// ── Named constants (magic number extraction) ──
+/** Paper order slippage simulation (0.1% per side) */
+const PAPER_SLIPPAGE_PCT = 0.001;
+/** Milliseconds per day — used for holding day calculation */
+const MS_PER_DAY = 86_400_000;
+/** PnL threshold for WIN/LOSS/BREAK_EVEN classification */
+const PNL_BREAKEVEN_THRESHOLD = 0.1;
+
 /** 해외 SELL 체결 후 score_accuracy 기록 */
 async function recordOverseasScoreAccuracy(params: {
   stockCode: string;
@@ -29,7 +37,7 @@ async function recordOverseasScoreAccuracy(params: {
     const { stockCode, orderId, avgBuyPrice, fillPrice, isPaper } = params;
     if (avgBuyPrice <= 0 || fillPrice <= 0) return;
     const pnlPct = ((fillPrice - avgBuyPrice) / avgBuyPrice) * 100;
-    const outcome = pnlPct > 0.1 ? 'WIN' : pnlPct < -0.1 ? 'LOSS' : 'BREAK_EVEN';
+    const outcome = pnlPct > PNL_BREAKEVEN_THRESHOLD ? 'WIN' : pnlPct < -PNL_BREAKEVEN_THRESHOLD ? 'LOSS' : 'BREAK_EVEN';
 
     // 보유일수 추정: 가장 최근 BUY 주문 시점 기준
     const pool = getPool();
@@ -41,7 +49,7 @@ async function recordOverseasScoreAccuracy(params: {
       [stockCode, isPaper ? 'paper' : 'live'],
     );
     const holdingDays = buyRows[0]?.created_at
-      ? Math.round((Date.now() - new Date(buyRows[0].created_at).getTime()) / 86400000)
+      ? Math.round((Date.now() - new Date(buyRows[0].created_at).getTime()) / MS_PER_DAY)
       : null;
 
     await pool.query(
@@ -86,7 +94,7 @@ export async function executeOverseasOrder(
   }
 
   if (paperMode) {
-    const slippage = side === 'BUY' ? 0.001 : -0.001;
+    const slippage = side === 'BUY' ? PAPER_SLIPPAGE_PCT : -PAPER_SLIPPAGE_PCT;
     const fillPrice = price * (1 + slippage);
     const fakeOrderNo = `USP${Date.now().toString(36)}`;
 

@@ -165,7 +165,7 @@ export function registerOverseasSellRoutes(app: Hono) {
       });
     } catch (err: any) {
       logger.error(`해외 수동 매도 예외: ${err.message}`, { component: 'DASHBOARD' });
-      return c.json({ error: err.message }, 500);
+      return c.json({ error: 'Internal server error' }, 500);
     }
   });
 
@@ -231,7 +231,7 @@ export function registerOverseasSellRoutes(app: Hono) {
       return c.json({ ok: true, message: `${stockCode} ${qty}주 강제 청산 완료 ($${proceeds.toFixed(2)} 반환)` });
     } catch (err: any) {
       logger.error(`강제 DB 청산 예외: ${err.message}`, { component: 'DASHBOARD' });
-      return c.json({ error: err.message }, 500);
+      return c.json({ error: 'Internal server error' }, 500);
     }
   });
 
@@ -340,7 +340,7 @@ export function registerOverseasSellRoutes(app: Hono) {
       });
     } catch (err: any) {
       logger.error(`전종목 긴급 청산 예외: ${err.message}`, { component: 'DASHBOARD' });
-      return c.json({ error: err.message }, 500);
+      return c.json({ error: 'Internal server error' }, 500);
     }
   });
 }

@@ -28,6 +28,74 @@ interface DomesticKellyResult {
   sampleCount: number;
 }
 
+// ── 국내 종목별 EV (해외 calcStockEVMultipliers 패턴) ──
+interface DomesticStockEVResult {
+  evPct: number;        // 기대값 % (winRate×avgWin - lossRate×avgLoss - 수수료)
+  evMultiplier: number; // 포지션 사이즈 배율 (0.5~1.5)
+  winRate: number;
+  sampleCount: number;
+}
+
+const DOMESTIC_FEE_PCT = 0.26; // 국내 왕복 수수료+세금 ~0.26%
+
+async function calcDomesticStockEV(
+  codes: string[],
+  days: number = 90,
+): Promise<Map<string, DomesticStockEVResult>> {
+  const result = new Map<string, DomesticStockEVResult>();
+  if (codes.length === 0) return result;
+
+  try {
+    const { rows } = await getPool().query(
+      `
+      SELECT stock_code,
+             COUNT(*) AS total,
+             COUNT(*) FILTER (WHERE realized_pnl > 0) AS wins,
+             COALESCE(AVG(CASE WHEN realized_pnl > 0
+               THEN (realized_pnl / total_invested * 100) END), 3.0) AS avg_win_pct,
+             COALESCE(AVG(CASE WHEN realized_pnl <= 0
+               THEN ABS(realized_pnl / total_invested * 100) END), 3.0) AS avg_loss_pct
+      FROM transaction_chains
+      WHERE status = 'CLOSED'
+        AND closed_at >= NOW() - ($1 * INTERVAL '1 day')
+        AND total_invested > 0
+        AND is_paper = $2
+      GROUP BY stock_code
+      `,
+      [days, getCtxIsPaper()],
+    );
+
+    for (const r of rows) {
+      const code = String(r.stock_code);
+      const total = Number(r.total);
+      const wins = Number(r.wins);
+      const avgWin = Number(r.avg_win_pct);
+      const avgLoss = Number(r.avg_loss_pct);
+      const winRate = total > 0 ? wins / total : 0.5;
+      const evPct = winRate * avgWin - (1 - winRate) * avgLoss - DOMESTIC_FEE_PCT;
+
+      let evMultiplier: number;
+      if (total < 5) {
+        evMultiplier = 1.0; // 표본 부족 → 기본
+      } else if (evPct >= 3.0) {
+        evMultiplier = Math.min(1.5, 1.3 + (evPct - 3.0) * 0.05);
+      } else if (evPct >= 1.0) {
+        evMultiplier = 1.0 + (evPct - 1.0) * 0.15;
+      } else if (evPct >= 0) {
+        evMultiplier = 0.8 + evPct * 0.2;
+      } else {
+        evMultiplier = Math.max(0.5, 0.8 + evPct * 0.1);
+      }
+
+      result.set(code, { evPct, evMultiplier, winRate, sampleCount: total });
+    }
+  } catch {
+    // DB 실패 시 빈 맵 반환 (기본 배율 1.0 사용)
+  }
+
+  return result;
+}
+
 async function calcDomesticKelly(days: number = 30): Promise<DomesticKellyResult | null> {
   try {
     // realized_pnl / total_invested 기반 — paper 매도는 filled_price=NULL이라 orders 조인 불가
@@ -152,6 +220,17 @@ export async function executeBuyDecisions(
   // v11: Paper도 Kelly 페널티 동일 적용 (실전과 같은 조건으로 학습)
   const kellyResult = await calcDomesticKelly(30);
   const kellyNullPenalty = kellyResult ? 1.0 : 0.6;
+
+  // 종목별 EV 계산 (90일 롤링, 해외 calcStockEVMultipliers 패턴)
+  const candidateCodes = candidates.map((c) => c.stock_code);
+  const domesticStockEV = await calcDomesticStockEV(candidateCodes, 90);
+  const evEntries = [...domesticStockEV.entries()].filter(([, v]) => v.sampleCount >= 5);
+  if (evEntries.length > 0) {
+    logger.info(
+      `📊 국내 종목별 EV: ${evEntries.map(([c, v]) => `${c}:EV${v.evPct >= 0 ? '+' : ''}${v.evPct.toFixed(1)}%×${v.evMultiplier.toFixed(2)}(${v.sampleCount}건)`).join(' ')}`,
+      { component: 'TRACK_B' },
+    );
+  }
 
   // AI 스코어 + 기술적 점수 합산으로 정렬
   candidates.sort((a, b) => {
@@ -307,6 +386,16 @@ export async function executeBuyDecisions(
         trigger_source: `BREAKOUT_${brkSig.subStrategy}`,
       });
       remainingCash -= brkQty * cand.price.currentPrice;
+      continue;
+    }
+
+    // ── Per-Stock EV 하드게이트: 음의 기대값 종목 매수 차단 ──────────────
+    const stockEv = domesticStockEV.get(cand.stock_code);
+    if (stockEv && stockEv.sampleCount >= 5 && stockEv.evPct <= 0 && !getCtxIsPaper()) {
+      logger.info(
+        `  ❌ ${cand.stock_code}: 음수 EV ${stockEv.evPct.toFixed(1)}% (${stockEv.sampleCount}건, 승률${(stockEv.winRate * 100).toFixed(0)}%) → Live 진입 차단`,
+        { component: 'TRACK_B' },
+      );
       continue;
     }
 
@@ -475,6 +564,15 @@ export async function executeBuyDecisions(
       );
     }
 
+    // Per-Stock EV 사이징 배율 (Paper에서는 데이터 수집용으로 EV 배율도 적용)
+    const evSizingMult = stockEv?.evMultiplier ?? 1.0;
+    if (evSizingMult !== 1.0 && stockEv && stockEv.sampleCount >= 5) {
+      logger.info(
+        `  📊 ${cand.stock_code}: EV사이징 ×${evSizingMult.toFixed(2)} (EV${stockEv.evPct >= 0 ? '+' : ''}${stockEv.evPct.toFixed(1)}%)`,
+        { component: 'TRACK_B' },
+      );
+    }
+
     // 우선 테마 보정
     const priorityBonus = PRIORITY_SECTOR_CODES.has(cand.stock_code) ? 1.1 : 1.0;
 
@@ -516,7 +614,8 @@ export async function executeBuyDecisions(
                   : allocationBoostFirstEntry
                     ? 0.75
                     : 0.65;
-    const aiPosMultiplier = 1.0;
+    // AI 확신도 기반 포지션 배율: 고득점 → 집중도 상한 확대
+    const aiPosMultiplier = aiScore >= 85 ? 1.5 : aiScore >= 70 ? 1.2 : 1.0;
 
     // 연속손실 배율 — 2연속 손실 시 0.7x, 3+연속 시 0.5x
     const lossStreakMult = await getLossStreakMultiplier(getCtxIsPaper());
@@ -527,7 +626,7 @@ export async function executeBuyDecisions(
     // v9: 곱연산 배수 합산 하한 — 과도한 축소 방지
     // 이전: 0.5×0.6×0.65×0.5 = 0.098 → 25%→2.4% (거의 매수 불가)
     // 수정: 합산 배수 최소 0.25 보장 → 25%→6.25% 이상 유지
-    const rawCompoundMult = modeScale * macroSizingMult * winRateMultiplier * lossStreakMult;
+    const rawCompoundMult = modeScale * macroSizingMult * winRateMultiplier * lossStreakMult * evSizingMult;
     // v9-fix: Paper는 학습용 → 곱연산 하한 0.5 (Live: 0.25) — 데이터 수집 위해 적극적 매수
     // v11: paper도 live와 동일 바닥 (실전 동일 조건 학습)
     const compoundMultFloor = Math.max(0.25, rawCompoundMult);

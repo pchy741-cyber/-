@@ -38,6 +38,7 @@ const envSchema = z.object({
   GEMINI_API_KEY: z.string().default(''),
   OPENAI_API_KEY: z.string().default(''),
   ANTHROPIC_API_KEY: z.string().default(''),
+  USE_CLAUDE_CLI: z.string().default('false'), // true → claude -p CLI 사용 (Max 구독 토큰)
 
   // Telegram
   TELEGRAM_BOT_TOKEN: z.string().default(''),

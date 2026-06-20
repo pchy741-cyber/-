@@ -347,7 +347,7 @@ overseasRoutes.get('/overseas/price/:code', async (c) => {
     const price = await getOverseasPrice(code, exchange);
     return c.json(price);
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -358,7 +358,7 @@ overseasRoutes.get('/overseas/insights', async (c) => {
     const text = await getUserInsights();
     return c.json({ insights: text });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -370,7 +370,7 @@ overseasRoutes.put('/overseas/insights', async (c) => {
     await setUserInsights(text);
     return c.json({ ok: true });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -385,7 +385,7 @@ overseasRoutes.post('/overseas/vision-scalp/analyze', async (c) => {
     return c.json(signal);
   } catch (e: any) {
     logger.error(`[VisionScalp] 분석 실패: ${e.message}`, { component: 'OVERSEAS' });
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -502,7 +502,7 @@ overseasRoutes.get('/overseas/buy-recommend/:code', async (c) => {
       stockName: watchItem?.name ?? code,
     });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -733,7 +733,7 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
     });
   } catch (e: any) {
     logger.error(`[VisionScalp] 실행 실패: ${e.message}`, { component: 'OVERSEAS' });
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -765,7 +765,7 @@ overseasRoutes.patch('/overseas/holdings/:code/tpsl', async (c) => {
     logger.info(`📝 TP/SL 수동 조절: ${code} TP=${finalTp} SL=${finalSl} [${mode}]`, { component: 'OVERSEAS' });
     return c.json({ ok: true, tp_pct: finalTp, sl_pct: finalSl });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -894,7 +894,7 @@ overseasRoutes.post('/overseas/sell', async (c) => {
     return c.json({ ok: true, orderNo: result.orderNo, filledQty: qty, filledPrice: fillPrice });
   } catch (err: any) {
     logger.error(`[OverseasSell] 예외: ${err.message}`, { component: 'OVERSEAS' });
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -906,6 +906,6 @@ overseasRoutes.get('/overseas/chart/:code', async (c) => {
     const chart = await getOverseasDailyChart(code, exchange, 60);
     return c.json(chart);
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });

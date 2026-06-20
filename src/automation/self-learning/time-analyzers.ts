@@ -4,7 +4,8 @@ import { logger } from '../../utils/logger.js';
 import { sleep } from '../../utils/sleep.js';
 import type { EnrichedChain, LearnedInsight } from './index.js';
 
-const now = new Date().toISOString();
+// 모듈 레벨 stale timestamp 제거 — 아래 함수 내부에서 생성
+const _now = () => new Date().toISOString();
 
 function calculateATR(candles: { high: number; low: number; close: number }[], period: number): number {
   if (candles.length < period + 1) return 0;
@@ -106,7 +107,7 @@ export async function analyzeOptimalTrailingStop(enrichedChains: EnrichedChain[]
         insight: `스나이퍼 '${type}' 타입은 ATR 트레일링 스탑 계수를 ${bestMultiplier}배로 설정 시 수익성이 가장 높았습니다 (기본 2.5배 대비 +${((maxPnl / defaultPnl - 1) * 100).toFixed(0)}%).`,
         confidence: 0.7,
         sampleCount: trades.length,
-        lastUpdated: now,
+        lastUpdated: _now(),
         details: {
           param: 'ATR_MULTIPLIER',
           sniperType: type,
@@ -161,7 +162,7 @@ export function analyzeTimeOfDayPerformance(
       insight: `${best.hour}시 진입 매매 평균 ${best.avgPnl.toFixed(1)}% 수익 (승률 ${Math.round(best.winRate * 100)}%, ${best.total}건). 이 시간대 진입 선호.`,
       confidence: Math.min(0.9, 0.5 + best.total * 0.05),
       sampleCount: best.total,
-      lastUpdated: now,
+      lastUpdated: _now(),
     });
   }
 
@@ -172,7 +173,7 @@ export function analyzeTimeOfDayPerformance(
       recommendation: `${worst.hour}시 대 진입 시 매수 임계치를 5점 높이거나 진입 보류.`,
       confidence: Math.min(0.85, 0.5 + worst.total * 0.05),
       sampleCount: worst.total,
-      lastUpdated: now,
+      lastUpdated: _now(),
     });
   }
 
@@ -222,7 +223,7 @@ export function analyzeDayOfWeekPerformance(
       insight: `${dayNames[best.day]}요일 진입이 평균 ${best.avgPnl.toFixed(1)}% 수익으로 가장 우수 (승률 ${Math.round(best.winRate * 100)}%, ${best.total}건).`,
       confidence: Math.min(0.85, 0.5 + best.total * 0.04),
       sampleCount: best.total,
-      lastUpdated: now,
+      lastUpdated: _now(),
     });
   }
 
@@ -233,7 +234,7 @@ export function analyzeDayOfWeekPerformance(
       recommendation: `${dayNames[worst.day]}요일 매수 임계치 +5점 상향 검토.`,
       confidence: Math.min(0.8, 0.45 + worst.total * 0.04),
       sampleCount: worst.total,
-      lastUpdated: now,
+      lastUpdated: _now(),
     });
   }
 
@@ -284,7 +285,7 @@ export async function analyzeParkingDecisions(): Promise<LearnedInsight[]> {
           insight: `머니마켓 파킹 ${parkChains.length}회 분석: 평균 보유 ${avgHoldDays.toFixed(1)}일, 연환산 ${annualizedParkReturn.toFixed(1)}% 수익. 유휴 현금 파킹이 원금 보전에 효과적.`,
           confidence: 0.7,
           sampleCount: parkChains.length,
-          lastUpdated: now,
+          lastUpdated: _now(),
         });
       }
 
@@ -295,7 +296,7 @@ export async function analyzeParkingDecisions(): Promise<LearnedInsight[]> {
           recommendation: `buy_threshold를 낮춰 매수 기회를 늘리거나, 기술 폴백 임계값 재검토.`,
           confidence: 0.65,
           sampleCount: parkChains.length,
-          lastUpdated: now,
+          lastUpdated: _now(),
         });
       }
     }

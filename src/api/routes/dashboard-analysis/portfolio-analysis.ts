@@ -130,7 +130,7 @@ portfolioAnalysisRoutes.post('/sync-positions', async (c) => {
       message: `${synced.length}종목 신규 복구, ${fixedCodes.length}종목 0주 체인 수정 완료`,
     });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -178,7 +178,7 @@ portfolioAnalysisRoutes.get('/strategy/performance', async (c) => {
       })),
     );
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -226,7 +226,7 @@ portfolioAnalysisRoutes.get('/trades/by-hour', async (c) => {
       })),
     );
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -309,6 +309,6 @@ portfolioAnalysisRoutes.get('/market/performance-vs-kospi', async (c) => {
     });
     return c.json({ bot: botPoints, kospi: kospiPoints });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });

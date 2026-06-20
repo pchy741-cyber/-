@@ -231,7 +231,7 @@ app.get('/review/copilot-lite', async (c) => {
       mode: viewIsPaper ? 'paper' : 'live',
     });
   } catch (err: any) {
-    return c.json({ score: 0, issues: [], actions: [], error: err.message }, 500);
+    return c.json({ score: 0, issues: [], actions: [], error: 'Internal server error' }, 500);
   }
 });
 

@@ -291,7 +291,7 @@ app.get('/review/xray', async (c) => {
       checks,
     });
   } catch (err: any) {
-    return c.json({ error: err.message, checks }, 500);
+    return c.json({ error: 'Internal server error', checks }, 500);
   }
 });
 

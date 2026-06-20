@@ -45,7 +45,6 @@ export async function runBqBacktest(opts: {
     const bq = new BigQuery({ projectId: 'quantops-trading' });
     const daysBack = opts.daysBack ?? 365;
     const isPaper = opts.isPaper ?? false;
-    const tradingMode = isPaper ? 'paper' : 'live';
     const modeFilter = opts.strategyMode ? `AND strategy_mode = '${opts.strategyMode}'` : '';
 
     const query = `
@@ -100,7 +99,7 @@ export async function runBqBacktest(opts: {
       sharpeRatio: sharpe,
     };
   } catch (e) {
-    logger.warn(`BQ 백테스트 실패: ${(e as Error).message}`, { component: COMP });
+    logger.warn(`BQ 백테스트 실패: ${e instanceof Error ? e.message : String(e)}`, { component: COMP });
     return null;
   }
 }

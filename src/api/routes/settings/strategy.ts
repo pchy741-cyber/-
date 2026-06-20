@@ -149,7 +149,7 @@ strategyRoutes.get('/strategy/audit', async (c) => {
     );
     return c.json(rows);
   } catch (err: any) {
-    return c.json({ error: err?.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 

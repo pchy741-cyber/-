@@ -54,18 +54,18 @@ async function fetchYesterdayTrades(): Promise<JournalRow[]> {
       AND tc.closed_at <  DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Seoul')
     ORDER BY tc.closed_at ASC
   `);
-  return rows.map((r: any) => ({
-    closedAt: new Date(r.closed_at).toISOString(),
-    market: r.market,
-    stockCode: r.stock_code,
-    stockName: r.stock_name,
+  return rows.map((r: Record<string, unknown>) => ({
+    closedAt: new Date(r.closed_at as string).toISOString(),
+    market: String(r.market ?? 'KR'),
+    stockCode: String(r.stock_code ?? ''),
+    stockName: String(r.stock_name ?? ''),
     entryPrice: Number(r.avg_buy_price ?? 0),
     exitPrice: Number(r.exit_price ?? 0),
     quantity: Number(r.total_quantity ?? 0),
     pnlPct: Math.round(Number(r.pnl_pct ?? 0) * 100) / 100,
     pnlKrw: Math.round(Number(r.realized_pnl ?? 0)),
     closeReason: String(r.close_reason ?? ''),
-    tradingMode: String(r.trading_mode),
+    tradingMode: String(r.trading_mode ?? ''),
   }));
 }
 
@@ -90,8 +90,8 @@ export async function backupJournalToSheets(): Promise<void> {
       const gMod = await import('googleapis');
       google = gMod.google ?? gMod.default?.google;
       if (!google) throw new Error('googleapis 로드 실패');
-    } catch {
-      logger.info('googleapis 패키지 미설치 — Sheets 백업 스킵 (npm i googleapis로 활성화)', { component: COMP });
+    } catch (importErr) {
+      logger.info(`googleapis 패키지 미설치 — Sheets 백업 스킵 (npm i googleapis로 활성화): ${importErr}`, { component: COMP });
       return;
     }
     const auth = new google.auth.GoogleAuth({
@@ -142,6 +142,6 @@ export async function backupJournalToSheets(): Promise<void> {
 
     logger.info(`📋 Sheets 일지 백업: ${trades.length}건 추가`, { component: COMP });
   } catch (e) {
-    logger.warn(`Sheets 백업 실패: ${(e as Error).message}`, { component: COMP });
+    logger.warn(`Sheets 백업 실패: ${e instanceof Error ? e.message : String(e)}`, { component: COMP });
   }
 }

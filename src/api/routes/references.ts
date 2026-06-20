@@ -25,7 +25,7 @@ referenceRoutes.get('/references', async (c) => {
     );
     return c.json({ count: rows.length, references: rows });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -121,7 +121,7 @@ referenceRoutes.post('/references', async (c) => {
     });
   } catch (err) {
     logger.error(`[Reference] 등록 실패: ${err}`, { component: 'REFERENCE' });
-    return c.json({ error: String(err) }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -151,6 +151,6 @@ referenceRoutes.delete('/references/:id', async (c) => {
     logger.info(`[Reference] #${id} 삭제, ${keys.length}건 오버라이드 해제`, { component: 'REFERENCE' });
     return c.json({ ok: true, overridesRemoved: keys.length });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });

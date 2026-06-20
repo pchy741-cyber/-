@@ -65,7 +65,8 @@ export async function getRecentPerfSummary(isPaper?: boolean): Promise<string> {
     const winRate = ((wins / counted) * 100).toFixed(0);
     const avgPnl = (totalPnlPct / counted).toFixed(2);
     return `최근 ${counted}건 실적: 승률 ${winRate}% (${wins}승 ${losses}패) | 평균 PnL ${Number(avgPnl) >= 0 ? '+' : ''}${avgPnl}%`;
-  } catch {
+  } catch (e) {
+    logger.warn(`실적 요약 조회 실패: ${(e as Error).message}`, { component: 'OVERSEAS' });
     return '';
   }
 }
@@ -104,14 +105,19 @@ export async function getOverseasWinRates(codes: string[], isPaper?: boolean): P
       [codes, mode],
     );
     for (const r of rows) {
+      const total = Number(r.total);
+      const wins = Number(r.wins);
+      const avgPnl = Number(r.avg_pnl ?? 0);
+      // Guard against NaN from DB parsing
+      if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(wins)) continue;
       map.set(String(r.stock_code), {
-        winRate: Number(r.wins) / Number(r.total),
-        avgPnlPct: Number(r.avg_pnl ?? 0),
-        sampleCount: Number(r.total),
+        winRate: wins / total,
+        avgPnlPct: Number.isFinite(avgPnl) ? avgPnl : 0,
+        sampleCount: total,
       });
     }
-  } catch {
-    /* DB 없으면 빈 맵 */
+  } catch (e) {
+    logger.warn(`해외 승률 조회 실패: ${(e as Error).message}`, { component: 'OVERSEAS' });
   }
   return map;
 }

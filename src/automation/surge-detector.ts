@@ -125,7 +125,7 @@ export async function runSurgeDetector(): Promise<void> {
     // 현재 워치리스트 활성 종목
     const pool = getPool();
     const { rows: wlRows } = await pool.query(`SELECT stock_code FROM watchlist WHERE is_active = true`);
-    const activeSet = new Set(wlRows.map((r: any) => String(r.stock_code)));
+    const activeSet = new Set(wlRows.map((r: Record<string, unknown>) => String(r.stock_code)));
 
     // 이미 활성인 종목 제외
     const newCandidates = candidates.filter((s) => !activeSet.has(s.stock_code));
@@ -176,8 +176,8 @@ export async function runSurgeDetector(): Promise<void> {
               reason,
             });
           }
-        } catch {
-          // 개별 오류 무시
+        } catch (err) {
+          logger.debug(`급등감지 개별 시세 조회 실패: ${err}`, { component: COMPONENT });
         }
       }),
     );
@@ -266,11 +266,19 @@ async function expandThemeCluster(
   const followers = getClusterFollowers(surgedCode, activeSet);
   if (followers.length === 0) return;
 
-  let addedCount = 0;
+  // Collect validated candidates first, then process sequentially to avoid race condition
+  // on shared addedCount across Promise.allSettled callbacks
+  type ClusterCandidate = {
+    code: string;
+    name: string;
+    clusterName: string;
+    changePct: number;
+    tradingValue: number;
+  };
+  const validatedCandidates: ClusterCandidate[] = [];
 
   await Promise.allSettled(
     followers.map(async (f) => {
-      if (addedCount >= MAX_CLUSTER_ADD_PER_SURGE) return;
       try {
         const p = await getCurrentPrice(f.code);
 
@@ -282,30 +290,47 @@ async function expandThemeCluster(
 
         if (p.changePct < CLUSTER_MIN_CHANGE || p.changePct >= CLUSTER_MAX_CHANGE) return;
 
-        // 이미 다른 goroutine이 추가했을 수 있음 — activeSet 재확인
         if (activeSet.has(f.code)) return;
-        if (addedCount >= MAX_CLUSTER_ADD_PER_SURGE) return;
 
-        const tVal = Math.round(tradingValue / 100_000_000);
-        const { rowCount } = await pool.query(
-          `INSERT INTO watchlist (stock_code, stock_name, market, is_active, source)
-           VALUES ($1, $2, 'KOSPI', true, 'THEME_CLUSTER')
-           ON CONFLICT (stock_code) DO UPDATE
-             SET is_active = true, stock_name = EXCLUDED.stock_name, source = 'THEME_CLUSTER'
-             WHERE watchlist.is_active = false`,
-          [f.code, p.stockName || f.name],
-        );
-
-        if (rowCount && rowCount > 0) {
-          addedCount++;
-          activeSet.add(f.code);
-          const label = `${p.stockName || f.name}(${f.code}) [${f.clusterName}] ${p.changePct.toFixed(1)}% 거래대금${tVal}억 ← ${surgedName} 파급`;
-          clusterAdded.push(label);
-          logger.info(`🔗 테마클러스터 편입: ${label}`, { component: COMPONENT });
-        }
-      } catch {
-        // 개별 오류 무시
+        validatedCandidates.push({
+          code: f.code,
+          name: p.stockName || f.name,
+          clusterName: f.clusterName,
+          changePct: p.changePct,
+          tradingValue,
+        });
+      } catch (err) {
+        logger.debug(`클러스터 후보 시세 조회 실패: ${err}`, { component: COMPONENT });
       }
     }),
   );
+
+  // Process sequentially — no race condition on addedCount
+  let addedCount = 0;
+  for (const candidate of validatedCandidates) {
+    if (addedCount >= MAX_CLUSTER_ADD_PER_SURGE) break;
+    if (activeSet.has(candidate.code)) continue;
+
+    const tVal = Math.round(candidate.tradingValue / 100_000_000);
+    try {
+      const { rowCount } = await pool.query(
+        `INSERT INTO watchlist (stock_code, stock_name, market, is_active, source)
+         VALUES ($1, $2, 'KOSPI', true, 'THEME_CLUSTER')
+         ON CONFLICT (stock_code) DO UPDATE
+           SET is_active = true, stock_name = EXCLUDED.stock_name, source = 'THEME_CLUSTER'
+           WHERE watchlist.is_active = false`,
+        [candidate.code, candidate.name],
+      );
+
+      if (rowCount && rowCount > 0) {
+        addedCount++;
+        activeSet.add(candidate.code);
+        const label = `${candidate.name}(${candidate.code}) [${candidate.clusterName}] ${candidate.changePct.toFixed(1)}% 거래대금${tVal}억 ← ${surgedName} 파급`;
+        clusterAdded.push(label);
+        logger.info(`🔗 테마클러스터 편입: ${label}`, { component: COMPONENT });
+      }
+    } catch (err) {
+      logger.debug(`클러스터 워치리스트 추가 실패: ${err}`, { component: COMPONENT });
+    }
+  }
 }

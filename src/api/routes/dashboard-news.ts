@@ -281,7 +281,6 @@ dashboardNewsRoutes.get('/news/summary', async (c) => {
       summary: '',
       geminiOk: false,
       error,
-      errorDetail: errStr.slice(0, 200),
       headlineCount: 0,
       cached: false,
     });

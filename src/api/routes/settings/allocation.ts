@@ -89,7 +89,8 @@ allocationRoutes.get('/portfolio/allocation/both', async (c) => {
     };
     return c.json({ live, paper });
   } catch (err: any) {
-    return c.json({ error: err?.message }, 500);
+    logger.warn(`포트폴리오 양쪽 조회 실패: ${err?.message}`, { component: 'SETTINGS' });
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -182,7 +183,8 @@ allocationRoutes.put('/portfolio/allocation', async (c) => {
     invalidateAllocCache();
     return c.json(result);
   } catch (err: any) {
-    return c.json({ error: err?.message }, 500);
+    logger.warn(`포트폴리오 배분 저장 실패: ${err?.message}`, { component: 'SETTINGS' });
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -223,7 +225,8 @@ allocationRoutes.post('/defense-mode/deactivate', async (c) => {
     logger.info('✅ DEFENSE 모드 수동 해제 완료', { component: 'SETTINGS' });
     return c.json({ ok: true, message: `DEFENSE 모드 해제 — SWING 복귀 (매수 기준 ${swingP.buyThreshold}점)` });
   } catch (err: any) {
-    return c.json({ ok: false, error: err?.message ?? 'defense deactivate failed' }, 500);
+    logger.error(`DEFENSE 모드 해제 실패: ${err?.message}`, { component: 'SETTINGS' });
+    return c.json({ ok: false, error: 'Internal server error' }, 500);
   }
 });
 

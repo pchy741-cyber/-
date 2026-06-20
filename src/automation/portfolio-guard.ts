@@ -90,8 +90,8 @@ export async function getPerformanceMultiplier(): Promise<number> {
         [isPaper],
       );
       portfolioValue = snapRows[0]?.total_value ? Number(snapRows[0].total_value) : 0;
-    } catch {
-      /* 스냅샷 없으면 기본 비율만 적용 */
+    } catch (err) {
+      logger.debug(`일일 스냅샷 조회 실패 (기본 비율 적용): ${err}`, { component: 'PORTFOLIO_GUARD' });
     }
     // 포트폴리오 값 폴백 — 상수 기반
     if (portfolioValue <= 0) {
@@ -405,8 +405,8 @@ export async function runPortfolioHealthCheck(): Promise<void> {
         const { FALLBACK_FX_RATE: FB } = await import('../config/constants.js');
         overseasValueKrw = totalUsd * (fx > 0 ? fx : FB);
       }
-    } catch {
-      /* 해외 데이터 없으면 국내만 사용 */
+    } catch (err) {
+      logger.debug(`해외 포트폴리오 데이터 조회 실패 (국내만 사용): ${err}`, { component: 'PORTFOLIO_GUARD' });
     }
 
     const totalPortfolio = domesticPortfolio + overseasValueKrw;

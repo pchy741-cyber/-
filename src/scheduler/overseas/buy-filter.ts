@@ -48,6 +48,16 @@ export interface BuyFilterContext {
 
 export type BuyTarget = TechResult & { ai?: AIDecision; _effectiveConf?: number };
 
+// ── Named constants ──
+/** Small account threshold (USD) for relaxed filter bypass */
+const SMALL_ACCOUNT_USD = 500;
+/** AI re-entry threshold for recent loss stocks */
+const REENTRY_CONF_THRESHOLD = 0.8;
+/** RSI threshold for oversold bounce detection */
+const RSI_OVERSOLD = 38;
+/** Sector concentration weight limit */
+const SECTOR_WEIGHT_LIMIT = 0.3;
+
 // ── 개선#3: 미국 시간대별 진입 가중치 ──
 function getUSTimeBonus(): number {
   const kst = new Date();
@@ -144,7 +154,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       .filter((t) => {
         if (!recentLossSet.has(t.code)) return true;
         const ai = aiMap.get(t.code);
-        const reentryThreshold = 0.8;
+        const reentryThreshold = REENTRY_CONF_THRESHOLD;
         if (ai?.action === 'BUY' && ai.confidence >= reentryThreshold) return true;
         logger.info(
           `⚠️ 최근 손실 종목 재진입 차단: ${t.code} AI 확신 부족 (${ai ? `${(ai.confidence * 100).toFixed(0)}%` : 'AI 없음'} < ${(reentryThreshold * 100).toFixed(0)}%)`,
@@ -155,7 +165,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       // 4. Memory Agent 차단 (Live 소액 계좌: STRONG_BUY만 바이패스 — 매수 기회 확보)
       .filter((t) => {
         if (memoryBlockedStocks.has(t.code)) {
-          if (!isPaper && portfolioValue < 500 && t.signal === 'STRONG_BUY' && t.score >= 40) {
+          if (!isPaper && portfolioValue < SMALL_ACCOUNT_USD && t.signal === 'STRONG_BUY' && t.score >= 40) {
             logger.info(`🧠 Memory 경고(소액 바이패스): ${t.code} (60일 승률≤25%, STRONG_BUY score=${t.score})`, {
               component: 'OVERSEAS',
             });
@@ -242,7 +252,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         }
         const sectorValue = sectorValues.get(t.sector) ?? 0;
         const sectorWeight = portfolioValue > 0 ? sectorValue / portfolioValue : 0;
-        if (sectorWeight >= 0.3) {
+        if (sectorWeight >= SECTOR_WEIGHT_LIMIT) {
           logger.info(`📊 섹터 집중도 초과: ${t.code}(${t.sector}) ${(sectorWeight * 100).toFixed(0)}% ≥ 30%`, {
             component: 'OVERSEAS',
           });
@@ -253,7 +263,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       // 9. 기술적 진입 필터 (RSI/ADX/MA/BB/dayRange) + AI 확신도
       .filter((t) => {
         const ai = aiMap.get(t.code);
-        const isOversold = t.rsi <= 38 && t.trendStrength !== 'WEAK';
+        const isOversold = t.rsi <= RSI_OVERSOLD && t.trendStrength !== 'WEAK';
         const isAbove50 = t.rsi >= 50;
         // RSI "developing zone" (38-49): 추세 발전 중, ADX가 확인해주면 진입 허용
         const isDeveloping = t.rsi >= 38 && t.rsi < 50 && t.adx >= 20 && t.aboveMA20;
@@ -471,7 +481,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const isBigUp = t.isBigMover;
         if (isBargin || isBigUp) return true;
         // 소액 계좌: 장외에서도 STRONG_BUY 매수 기회 확보
-        if (!isPaper && portfolioValue < 500 && t.signal === 'STRONG_BUY' && t.score >= 40) return true;
+        if (!isPaper && portfolioValue < SMALL_ACCOUNT_USD && t.signal === 'STRONG_BUY' && t.score >= 40) return true;
         return false;
       })
       // 11. AI 정보 + 보정 confidence 병합

@@ -8,7 +8,7 @@ import { checkUsEarnings } from '../../automation/earnings-sentinel.js';
 import { ALLOCATION_GOLDEN, OVERSEAS, OVERSEAS_FEE_PCT, SECTOR_CLASS } from '../../config/constants.js';
 import { getOverseasDynamic } from '../../config/constants.js';
 import { getPool, logSystem } from '../../db/client.js';
-import type { EarningsEvent } from '../../market/external-signals.js';
+import type { EarningsEvent, MarketSentiment } from '../../market/external-signals.js';
 import { interpretMarketSentiment } from '../../market/external-signals.js';
 import { getOverseasLossTiers } from '../../risk/seed-capital.js';
 import { logger } from '../../utils/logger.js';
@@ -42,6 +42,12 @@ import { GLOBAL_WATCHLIST } from './watchlist.js';
 
 type OverseasHolding = Awaited<ReturnType<typeof getHoldings>> extends Map<string, infer V> ? V : never;
 
+// ── Named constants ──
+/** Portfolio value below which the account is considered "small" (USD) */
+const SMALL_ACCOUNT_USD = 500;
+/** Portfolio value below which the account is considered "mid-size" (USD) */
+const MID_ACCOUNT_USD = 2000;
+
 export interface BuyLoopParams {
   techResults: TechResult[];
   aiMap: Map<string, Awaited<ReturnType<typeof analyzeOverseasWithAI>>[number]>;
@@ -59,7 +65,7 @@ export interface BuyLoopParams {
   openRegions: Set<string>;
   isUSExtended: boolean;
   isUSSession: boolean;
-  marketSentiment: any;
+  marketSentiment: MarketSentiment | null;
   upcomingEarnings: EarningsEvent[];
   defenseSignal: { level: string; blockNewBuys: boolean; positionReduction: number; trailTighten: number; reasons: string[] };
   usCodes: string[];
@@ -159,9 +165,12 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
               targetUsPct = rot.adjustedUsPct;
             }
           }
-        } catch { /* 로테이션 미설정 시 원래값 유지 */ }
+        } catch (e) {
+          logger.warn(`로테이션 시그널 조회 실패 (기본값 유지): ${(e as Error).message}`, { component: 'OVERSEAS' });
+        }
         const currentUsPct = grandInvestedUsd > 0 ? ((holdingEvalUsdPost || 0) / grandInvestedUsd) * 100 : 0;
-        if (currentUsPct > targetUsPct * 1.15) {
+        const ALLOC_BUFFER = 1.15; // 15% buffer above target allocation
+        if (currentUsPct > targetUsPct * ALLOC_BUFFER) {
           allocBlocked = true;
           logger.warn(
             `📊 해외 배분 비중 초과: ${currentUsPct.toFixed(0)}% > 목표 ${targetUsPct}% (+15% 여유) → 신규 매수 차단`,
@@ -169,10 +178,14 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
           );
         }
       }
-    } catch { /* alloc config 미존재 시 무시 */ }
+    } catch (e) {
+      logger.warn(`배분 비중 체크 실패 (무시): ${(e as Error).message}`, { component: 'OVERSEAS' });
+    }
   }
 
-  const minCashForBuy = portfolioValue * (isPaperMode ? 0.15 : 0.05);
+  /** Minimum cash ratio to allow new buys (Paper: 15% buffer, Live: 5% buffer) */
+  const MIN_CASH_RATIO = isPaperMode ? 0.15 : 0.05;
+  const minCashForBuy = portfolioValue * MIN_CASH_RATIO;
   if (riskBlocked || allocBlocked || currentHoldingCount >= MAX_POSITIONS || cash < minCashForBuy) {
     const reasons: string[] = [];
     if (riskBlocked) reasons.push(`리스크차단(-${lossPctOfPortfolio.toFixed(1)}%)`);
@@ -351,7 +364,9 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
     await recordShadowEntries('US', shadowPicks);
     const usPriceMap = new Map(techResults.map((t) => [t.code, t.price.currentPrice]));
     await updateShadowPositions('US', usPriceMap);
-  } catch { /* shadow is non-critical */ }
+  } catch (e) {
+    logger.warn(`Shadow tracker 실패 (비필수): ${(e as Error).message}`, { component: 'OVERSEAS' });
+  }
 
   // Auto Pilot
   if (isLoopActive() && !isPaperMode) {
@@ -450,7 +465,7 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
     }
     const mtf = mtfResults.get(target.code);
     if (mtf?.blocked) {
-      if (isPaperMode || portfolioValue < 500) {
+      if (isPaperMode || portfolioValue < SMALL_ACCOUNT_USD) {
         logger.info(
           `📊 MTF 경고(바이패스): ${target.code} (W:${mtf.weekly} D:${mtf.daily} H4:${mtf.h4} 합류${mtf.confluence}/3)`,
           { component: 'OVERSEAS' },
@@ -483,7 +498,8 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
       winRateSamples: wrData?.sampleCount,
       marketBreadth: freshBreadth,
     });
-    const minPositionSize = portfolioValue * 0.1;
+    const MIN_POSITION_RATIO = 0.10; // 10% of portfolio
+    const minPositionSize = portfolioValue * MIN_POSITION_RATIO;
     if (positionSize < minPositionSize) {
       logger.info(
         `🔧 ${target.code}: positionSize=$${positionSize.toFixed(2)} < $${minPositionSize.toFixed(0)}(10%) → SKIP (sizing=${sizingMult} cash=$${cash.toFixed(0)})`,
@@ -496,7 +512,7 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
     const isHighBetaEntry = SECTOR_CLASS.HIGH_BETA.includes(targetWatchItem?.sector ?? '');
     const isDefenseEntry = SECTOR_CLASS.DEFENSE.includes(targetWatchItem?.sector ?? '');
     const slDecimal = isHighBetaEntry ? 0.08 : isDefenseEntry ? 0.04 : 0.05;
-    const riskPct = portfolioValue < 500 ? 0.10 : portfolioValue < 2000 ? 0.05 : isPaperMode ? 0.025 : 0.02;
+    const riskPct = portfolioValue < SMALL_ACCOUNT_USD ? 0.10 : portfolioValue < MID_ACCOUNT_USD ? 0.05 : isPaperMode ? 0.025 : 0.02;
     const maxRiskUSD = portfolioValue * riskPct;
     const qtyBy1PctRule =
       maxRiskUSD > 0 ? Math.floor(maxRiskUSD / (target.price.currentPrice * slDecimal)) : Infinity;
@@ -505,12 +521,14 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
     if (qtyBySizing === 0 && positionSize >= target.price.currentPrice * 0.99) {
       qtyBySizing = 1;
     }
-    if (qtyBySizing === 0 && portfolioValue < 500 && target.price.currentPrice <= cash * 0.95) {
+    if (qtyBySizing === 0 && portfolioValue < SMALL_ACCOUNT_USD && target.price.currentPrice <= cash * 0.95) {
       qtyBySizing = 1;
     }
     const existingHolding = updatedHoldings.get(target.code);
     const existingQty = existingHolding?.qty ?? 0;
-    const CONC_CAP_PCT = portfolioValue < 500 ? 1.0 : 0.25;
+    /** Small account threshold (USD) — below this, relax concentration limits */
+    /** Concentration cap: % of portfolio allowed per single position */
+    const CONC_CAP_PCT = portfolioValue < SMALL_ACCOUNT_USD ? 1.0 : 0.25;
     let maxQtyByConc =
       portfolioValue > 0
         ? Math.max(0, Math.floor((portfolioValue * CONC_CAP_PCT) / priceWithFee) - existingQty)
@@ -560,7 +578,10 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
         : targetBucket;
     const bucketLimit = ALLOCATION_GOLDEN[`${effectiveBucket}_PCT` as keyof typeof ALLOCATION_GOLDEN];
     const livePriceMap = new Map(techResults.map((t) => [t.code, t.price.currentPrice]));
-    const currentBucketWeight = getBucketWeight(updatedHoldings as any, portfolioValue, effectiveBucket, livePriceMap);
+    const currentBucketWeight = getBucketWeight(
+      updatedHoldings as Map<string, { qty: number; avgPrice: number; bucket: string }>,
+      portfolioValue, effectiveBucket, livePriceMap,
+    );
     if (bucketLimit != null && currentBucketWeight >= bucketLimit) {
       logger.info(
         `📊 버킷 한도 초과: ${target.code} [${effectiveBucket}] ${(currentBucketWeight * 100).toFixed(1)}% >= ${(bucketLimit * 100).toFixed(1)}%`,

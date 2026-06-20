@@ -64,7 +64,7 @@ sellRoutes.post('/escape/:chainId', async (c) => {
 
     return c.json({ ok: true, escape_target_price: escapeTarget, current_price: curPrice });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -78,7 +78,7 @@ sellRoutes.delete('/escape/:chainId', async (c) => {
     ]);
     return c.json({ ok: true });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -263,7 +263,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
     });
   } catch (err: any) {
     logger.error(`수동 매도 예외: ${err.message}`, { component: 'DASHBOARD' });
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -480,7 +480,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
     });
   } catch (err: any) {
     logger.error(`전량 매도 예외 (${stockCode}): ${err.message}`, { component: 'DASHBOARD' });
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 

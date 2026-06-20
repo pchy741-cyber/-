@@ -4,7 +4,19 @@ import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
 import type { InsightParamChange, LearnedInsight } from './index.js';
 
-const now = new Date().toISOString();
+// 모듈 레벨 stale timestamp 제거 — 사용 시점에서 생성
+// (이전: const now = new Date().toISOString() 모듈 로드 시 1회 평가 → 장기 운영 시 고정)
+
+// SQL injection 방지: 동적 컬럼명을 화이트리스트 매핑으로 안전하게 치환
+const SAFE_COLUMN_MAP: Record<string, string> = {
+  stop_loss_pct: 'stop_loss_pct',
+  take_profit_pct: 'take_profit_pct',
+  buy_threshold: 'buy_threshold',
+  mode: 'mode',
+};
+function safeColumnName(field: string): string | null {
+  return SAFE_COLUMN_MAP[field] ?? null;
+}
 
 export async function analyzeBuyThreshold(): Promise<LearnedInsight[]> {
   try {
@@ -65,7 +77,7 @@ export async function analyzeBuyThreshold(): Promise<LearnedInsight[]> {
         },
         confidence,
         sampleCount: totalSamples,
-        lastUpdated: now,
+        lastUpdated: new Date().toISOString(),
       });
     }
 
@@ -82,7 +94,7 @@ export async function analyzeBuyThreshold(): Promise<LearnedInsight[]> {
         },
         confidence: confidence * 0.85,
         sampleCount: totalSamples,
-        lastUpdated: now,
+        lastUpdated: new Date().toISOString(),
       });
     }
 
@@ -484,10 +496,10 @@ export async function evaluateAppliedInsights(): Promise<void> {
       const appliedField = details?.applied_field;
 
       if (previousValue != null && appliedField) {
-        const ALLOWED_FIELDS = ['stop_loss_pct', 'take_profit_pct', 'buy_threshold', 'mode'];
-        if (ALLOWED_FIELDS.includes(appliedField)) {
+        const safeCol = safeColumnName(appliedField);
+        if (safeCol) {
           await getPool().query(
-            `UPDATE strategy_config SET ${appliedField} = $1 WHERE is_active = true AND is_paper = $2`,
+            `UPDATE strategy_config SET ${safeCol} = $1 WHERE is_active = true AND is_paper = $2`,
             [previousValue, isPaper],
           );
           logger.info(
@@ -563,7 +575,6 @@ export async function autoPromotePaperInsights(): Promise<void> {
       return;
     }
 
-    const ALLOWED_FIELDS = ['stop_loss_pct', 'take_profit_pct', 'buy_threshold', 'mode'];
     const PARAM_RANGES: Record<string, { min: number; max: number }> = {
       stop_loss_pct: { min: -30, max: -1 },
       take_profit_pct: { min: 0.5, max: 50 },
@@ -579,8 +590,9 @@ export async function autoPromotePaperInsights(): Promise<void> {
       // 이미 같은 field가 promote 되어 있으면 스킵
       if (promotedFields.has(paramChange.field)) continue;
 
-      // 허용 필드 검증
-      if (!ALLOWED_FIELDS.includes(paramChange.field)) continue;
+      // 허용 필드 검증 (SQL injection 방지 — 화이트리스트 매핑)
+      const safeField = safeColumnName(paramChange.field);
+      if (!safeField) continue;
 
       // 값 범위 검증
       const range = PARAM_RANGES[paramChange.field];
@@ -621,9 +633,9 @@ export async function autoPromotePaperInsights(): Promise<void> {
         ],
       );
 
-      // Live strategy_config에 paramChange 즉시 반영
+      // Live strategy_config에 paramChange 즉시 반영 (safeField는 위에서 검증됨)
       await getPool().query(
-        `UPDATE strategy_config SET ${paramChange.field} = $1 WHERE is_active = true AND is_paper = false`,
+        `UPDATE strategy_config SET ${safeField} = $1 WHERE is_active = true AND is_paper = false`,
         [paramChange.value],
       );
 

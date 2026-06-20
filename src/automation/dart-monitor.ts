@@ -17,6 +17,8 @@ import { getKSTNow } from '../utils/time.js';
 
 // ── Types ──
 
+export type DisclosurePolarity = 'VERY_POSITIVE' | 'POSITIVE' | 'NEUTRAL' | 'NEGATIVE' | 'VERY_NEGATIVE';
+
 export interface DartDisclosure {
   corp_name: string;
   report_nm: string;
@@ -24,6 +26,7 @@ export interface DartDisclosure {
   rcept_no: string;
   flr_nm: string;
   importance: 'HIGH' | 'MEDIUM' | 'LOW';
+  polarity: DisclosurePolarity;
 }
 
 interface DartApiResponse {
@@ -83,18 +86,24 @@ const HIGH_KEYWORDS = [
 
 const MEDIUM_KEYWORDS = ['공급계약', '수주', '투자', '결산', '단일판매', '매출액', '타법인주식'];
 
-// ── Positive / Negative keywords for score adjustment ──
+// ── Polarity keywords for score adjustment (세분화) ──
 
-const POSITIVE_KEYWORDS = [
-  '실적 호전',
-  '실적 개선',
-  '자사주 매입',
-  '자기주식 취득',
-  '대규모 수주',
-  '공급계약 체결',
-  '무상증자',
+const VERY_POSITIVE_KEYWORDS = [
+  '자사주 취득 결정', '자기주식 취득 결정', '자사주 매입',
+  '대규모 수주', '특별배당', '실적 호전', '실적 개선',
 ];
-const NEGATIVE_KEYWORDS = ['유상증자', '실적 악화', '실적 부진', '임원 퇴임', '대표이사 사임', '감사의견 거절'];
+const POSITIVE_KEYWORDS = [
+  '전환사채 상환', '신규 사업', '기술 이전', '기술 수출',
+  '공급계약 체결', '무상증자', '자기주식 취득',
+];
+const NEGATIVE_KEYWORDS = [
+  'CB 발행', 'BW 발행', '전환사채 발행', '신주인수권부사채',
+  '대표이사 변경', '소송 제기', '실적 부진',
+];
+const VERY_NEGATIVE_KEYWORDS = [
+  '유상증자 결정', '유상증자', '감사의견 거절', '감사의견 부적정',
+  '상장폐지', '횡령', '배임', '실적 악화', '임원 퇴임', '대표이사 사임',
+];
 
 // ── Core Functions ──
 
@@ -109,6 +118,25 @@ export function classifyDisclosure(reportName: string): 'HIGH' | 'MEDIUM' | 'LOW
     if (reportName.includes(keyword)) return 'MEDIUM';
   }
   return 'LOW';
+}
+
+/**
+ * 공시 방향성(polarity) 분류 — 호재/악재 세분화
+ */
+export function classifyPolarity(reportName: string): DisclosurePolarity {
+  for (const kw of VERY_NEGATIVE_KEYWORDS) {
+    if (reportName.includes(kw)) return 'VERY_NEGATIVE';
+  }
+  for (const kw of VERY_POSITIVE_KEYWORDS) {
+    if (reportName.includes(kw)) return 'VERY_POSITIVE';
+  }
+  for (const kw of NEGATIVE_KEYWORDS) {
+    if (reportName.includes(kw)) return 'NEGATIVE';
+  }
+  for (const kw of POSITIVE_KEYWORDS) {
+    if (reportName.includes(kw)) return 'POSITIVE';
+  }
+  return 'NEUTRAL';
 }
 
 /**
@@ -159,6 +187,7 @@ async function fetchCorpDisclosures(
       rcept_no: item.rcept_no,
       flr_nm: item.flr_nm,
       importance: classifyDisclosure(item.report_nm),
+      polarity: classifyPolarity(item.report_nm),
     }));
   } catch (error) {
     logger.warn(`DART 공시 조회 실패 (${corpCode}): ${error}`, { component: 'DART' });
@@ -217,37 +246,27 @@ export async function fetchRecentDisclosures(stockCodes: string[]): Promise<Dart
 }
 
 /**
- * 공시 기반 점수 조정값 반환
+ * 공시 기반 점수 조정값 반환 (polarity 기반 단일 매핑)
  *
- * - 긍정 공시 (실적 호전, 자사주 매입, 대규모 수주): +10 ~ +20
- * - 부정 공시 (유상증자, 실적 악화, 임원 퇴임): -10 ~ -20
- * - 공시 없음: 0
+ * - VERY_POSITIVE: +20, POSITIVE: +10
+ * - VERY_NEGATIVE: -20, NEGATIVE: -10
+ * - NEUTRAL: 0
  */
+const POLARITY_SCORE: Record<DisclosurePolarity, number> = {
+  VERY_POSITIVE: 20,
+  POSITIVE: 10,
+  NEUTRAL: 0,
+  NEGATIVE: -10,
+  VERY_NEGATIVE: -20,
+};
+
 export function getDisclosureScoreAdjustment(stockCode: string): number {
   const disclosures = disclosureCache.get(stockCode);
   if (!disclosures || disclosures.length === 0) return 0;
 
   let totalAdjustment = 0;
-
   for (const disc of disclosures) {
-    const reportName = disc.report_nm;
-
-    // 긍정 공시 체크
-    for (const keyword of POSITIVE_KEYWORDS) {
-      if (reportName.includes(keyword)) {
-        // HIGH importance: +20, 기타: +10
-        totalAdjustment += disc.importance === 'HIGH' ? 20 : 10;
-        break;
-      }
-    }
-
-    // 부정 공시 체크
-    for (const keyword of NEGATIVE_KEYWORDS) {
-      if (reportName.includes(keyword)) {
-        totalAdjustment += disc.importance === 'HIGH' ? -20 : -10;
-        break;
-      }
-    }
+    totalAdjustment += POLARITY_SCORE[disc.polarity];
   }
 
   // 범위 제한: -20 ~ +20

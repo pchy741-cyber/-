@@ -19,7 +19,7 @@ manualTriggersRoutes.post('/run-track-b', async (c) => {
     logger.info('수동 Track B 실행 요청됨', { component: 'MANUAL' });
     return c.json({ ok: true, message: 'Track B 실행 시작됨 (10~30초 소요)' });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -31,7 +31,7 @@ manualTriggersRoutes.post('/run-track-a', async (c) => {
     logger.info('수동 Track A 실행 요청됨', { component: 'MANUAL' });
     return c.json({ ok: true, message: 'Track A 실행 시작됨 (2~5분 소요)' });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -141,6 +141,6 @@ manualTriggersRoutes.post('/release-defense-park', async (c) => {
     invalidateCurrentModeCache();
     return c.json({ ok: true, message: `파킹 해제 완료. ${sellMsg}${syncMsg}자동매매 재개`.trim() });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });

@@ -32,9 +32,8 @@ export class ChainManager {
     maxAveragingCount: number;
     isPaper?: boolean;
   }): Promise<string> {
-    const COMMISSION_RATE = 0.00015;
     const rawInvested = params.buyPrice * params.quantity;
-    const invested = rawInvested + Math.round(rawInvested * COMMISSION_RATE);
+    const invested = rawInvested + Math.round(rawInvested * KR_FEE.BUY_FEE_PCT);
     const avgBuyPrice = Math.round(invested / params.quantity);
 
     const chainId = await createChain({
@@ -63,7 +62,6 @@ export class ChainManager {
    * 물타기 추가 매수
    */
   async addAveraging(chainId: string, buyPrice: number, quantity: number): Promise<void> {
-    const COMMISSION_RATE = 0.00015;
     let finalAvgPrice = 0;
 
     // 주의: 이 함수 호출 시점에 새 매수 주문은 이미 DB에 INSERT된 상태 (executor.ts → confirmFill 후 호출)
@@ -71,7 +69,7 @@ export class ChainManager {
     const calcFromOrders = (buyOrders: Array<{ filled_price: string | number | null; filled_quantity: number }>) => {
       const totalCost = buyOrders.reduce((sum, o) => {
         const cost = Number(o.filled_price ?? 0) * o.filled_quantity;
-        return sum + cost + Math.round(cost * COMMISSION_RATE);
+        return sum + cost + Math.round(cost * KR_FEE.BUY_FEE_PCT);
       }, 0);
       const totalQty = buyOrders.reduce((sum, o) => sum + o.filled_quantity, 0);
       return {

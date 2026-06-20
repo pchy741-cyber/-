@@ -1,6 +1,12 @@
 import { isMemoryMode, queryWithRetry } from '../pool.js';
 import { memGetLatestScores, memUpsertAIScore } from '../memory-store.js';
 import type { AIScore } from '../models.js';
+import { getKSTNow } from '../../utils/time.js';
+
+/** KST 기준 YYYY-MM-DD 문자열 (UTC 사용 시 새벽 시간대 날짜 불일치 방지) */
+function kstDateStr(d: Date): string {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
 
 export async function upsertAIScore(score: Omit<AIScore, 'id' | 'created_at'>) {
   if (isMemoryMode()) {
@@ -39,7 +45,7 @@ export async function getLatestScores(stockCodes: string[]): Promise<AIScore[]> 
   if (validCodes.length === 0) return [];
   if (isMemoryMode()) return memGetLatestScores(validCodes);
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = kstDateStr(getKSTNow());
   const placeholders = validCodes.map((_, i) => `$${i + 1}`).join(',');
 
   // 오늘 스코어 먼저 조회
@@ -53,13 +59,13 @@ export async function getLatestScores(stockCodes: string[]): Promise<AIScore[]> 
   if (rows.length > 0) return rows;
 
   // 오늘 없으면 최근 7일 이내 스코어 fallback (주말/공휴일 대비)
-  const twoDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const sevenDaysAgo = kstDateStr(new Date(getKSTNow().getTime() - 7 * 24 * 60 * 60 * 1000));
   const { rows: fallbackRows } = await queryWithRetry(
     `SELECT DISTINCT ON (stock_code) * FROM ai_scores
      WHERE stock_code IN (${placeholders}) AND score_date >= $${validCodes.length + 1}
      AND composite_score > 0
      ORDER BY stock_code, score_date DESC, composite_score DESC`,
-    [...validCodes, twoDaysAgo],
+    [...validCodes, sevenDaysAgo],
   );
 
   return fallbackRows;
@@ -68,14 +74,14 @@ export async function getLatestScores(stockCodes: string[]): Promise<AIScore[]> 
 /** 오늘(또는 최근 7일) 채점된 전체 종목 점수 조회 — 워치리스트 범위 불일치 해결 */
 export async function getAllRecentScores(): Promise<AIScore[]> {
   if (isMemoryMode()) return [];
-  const today = new Date().toISOString().split('T')[0];
+  const today = kstDateStr(getKSTNow());
   const { rows } = await queryWithRetry(
     `SELECT * FROM ai_scores WHERE score_date = $1 AND composite_score > 0 ORDER BY composite_score DESC`,
     [today],
   );
   if (rows.length > 0) return rows;
   // 오늘 없으면 최근 2일 fallback
-  const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const twoDaysAgo = kstDateStr(new Date(getKSTNow().getTime() - 2 * 24 * 60 * 60 * 1000));
   const { rows: fallback } = await queryWithRetry(
     `SELECT DISTINCT ON (stock_code) * FROM ai_scores WHERE score_date >= $1 AND composite_score > 0 ORDER BY stock_code, score_date DESC`,
     [twoDaysAgo],

@@ -17,10 +17,8 @@ export const healthRoutes = new Hono();
 // 주말에도 사용자 접속 시 DB wake 트리거
 healthRoutes.get('/health', async (c) => {
   const mem = isMemoryMode();
-  // 메모리 모드(=DB 오프라인)인데 사용자가 접속 → wake 트리거 (비동기, 응답 차단 안 함)
-  if (mem && !isWaking()) {
-    tryWakeIfNeeded().catch(() => {});
-  }
+  // Health endpoint should NOT trigger DB wake — only report status.
+  // DB wake is triggered by actual data requests, not health checks.
   return c.json({ status: 'ok', db: mem ? (isWaking() ? 'waking' : 'offline') : 'ok' }, 200);
 });
 

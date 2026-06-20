@@ -12,6 +12,7 @@
 
 import type { DailyCandle } from '../kis/market.js';
 import { sma } from './moving-averages.js';
+import { cmf, obv } from './oscillators.js';
 
 // ── 타입 정의 ──────────────────────────────────────────────────────────
 
@@ -64,6 +65,7 @@ export interface BreakoutDetails {
 const VOLUME_CONFIRM_RATIO = 1.5;
 
 function avgVolume(candles: DailyCandle[], days: number): number {
+  if (days <= 0) return 0;
   const slice = candles.slice(-days);
   if (slice.length === 0) return 0;
   return slice.reduce((s, c) => s + c.volume, 0) / slice.length;
@@ -100,6 +102,7 @@ export function detect5MABreakout(candles: DailyCandle[]): BreakoutSignal {
   // 5일/20일 SMA
   const sma5Arr = sma(closes, 5);
   const sma20Arr = sma(closes, 20);
+  if (sma5Arr.length === 0 || sma20Arr.length === 0) return emptySignal();
   const sma5Now = sma5Arr[sma5Arr.length - 1];
   const sma20Now = sma20Arr[sma20Arr.length - 1];
   const sma20Prev = sma20Arr[sma20Arr.length - 6] ?? sma20Now; // 5일 전
@@ -111,17 +114,17 @@ export function detect5MABreakout(candles: DailyCandle[]): BreakoutSignal {
   const isNew60DayHigh = recentHighs.some((h) => h >= high60 * 0.99);
 
   // 2. 20MA 눌림 (현재가가 20MA ±3% 이내 OR 최근 5일 내 20MA 터치)
-  const pullbackTo20MA =
+  const pullbackTo20MA = sma20Now > 0 && (
     Math.abs(currentPrice - sma20Now) / sma20Now <= 0.03 ||
-    closes.slice(-5).some((c) => Math.abs(c - sma20Now) / sma20Now <= 0.02);
+    closes.slice(-5).some((c) => Math.abs(c - sma20Now) / sma20Now <= 0.02));
 
   // 20MA 우상향 확인
   const ma20Rising = sma20Now > sma20Prev;
 
   // 3. 5MA 상향 돌파
   const above5MA = currentPrice > sma5Now;
-  const prevClose = closes[closes.length - 2];
-  const prevSma5 = sma5Arr[sma5Arr.length - 2];
+  const prevClose = closes[closes.length - 2] ?? currentPrice;
+  const prevSma5 = sma5Arr[sma5Arr.length - 2] ?? sma5Now;
   const crossedAbove5MA = above5MA && prevClose <= prevSma5 * 1.002;
 
   // 4. 거래량 확인
@@ -191,7 +194,7 @@ export function detectWilliamsBreakout(candles: DailyCandle[]): BreakoutSignal {
   const breakoutDetected = currentPrice >= entryPrice && currentPrice > today.open;
 
   // 추가 안전장치: 당일 하락 캔들이면 제외 (시가 대비 너무 낮으면)
-  const dayReturn = (currentPrice - today.open) / today.open;
+  const dayReturn = today.open > 0 ? (currentPrice - today.open) / today.open : 0;
   if (dayReturn < 0) return emptySignal();
 
   // 거래량 (선택적이지만 확인)
@@ -291,6 +294,7 @@ export function detectMinerviniSEPA(candles: DailyCandle[]): BreakoutSignal {
   // SMA 계산
   const sma150Arr = sma(closes, 150);
   const sma200Arr = sma(closes, 200);
+  if (sma150Arr.length === 0 || sma200Arr.length === 0) return emptySignal();
   const sma150Now = sma150Arr[sma150Arr.length - 1];
   const sma200Now = sma200Arr[sma200Arr.length - 1];
 
@@ -479,29 +483,69 @@ export function detectDarvasBox(candles: DailyCandle[]): BreakoutSignal {
 // - Williams: 당일 변동성 — 빠르지만 노이즈 많음
 
 export function analyzeBreakoutSignals(candles: DailyCandle[]): BreakoutSignal {
+  let result: BreakoutSignal | null = null;
+
   // 1. 미너비니 SEPA (200일+ 필요)
-  if (candles.length >= 200) {
+  if (!result && candles.length >= 200) {
     const sepa = detectMinerviniSEPA(candles);
-    if (sepa.detected) return sepa;
+    if (sepa.detected) result = sepa;
   }
 
   // 2. 다바스 박스 (30일+ 필요)
-  if (candles.length >= 30) {
+  if (!result && candles.length >= 30) {
     const darvas = detectDarvasBox(candles);
-    if (darvas.detected) return darvas;
+    if (darvas.detected) result = darvas;
   }
 
   // 3. 차트박사 5일선 (62일+ 필요)
-  if (candles.length >= 62) {
+  if (!result && candles.length >= 62) {
     const chart5ma = detect5MABreakout(candles);
-    if (chart5ma.detected) return chart5ma;
+    if (chart5ma.detected) result = chart5ma;
   }
 
   // 4. 래리 윌리엄스 (20일+ 필요)
-  if (candles.length >= 20) {
+  if (!result && candles.length >= 20) {
     const williams = detectWilliamsBreakout(candles);
-    if (williams.detected) return williams;
+    if (williams.detected) result = williams;
   }
 
-  return emptySignal();
+  if (!result) return emptySignal();
+
+  // v11: OBV + CMF 가짜 돌파 필터
+  // 돌파 감지 후 OBV/CMF로 매집/분산 검증 — 불일치 시 신뢰도 감점
+  if (candles.length >= 20) {
+    const ohlcvAsc = [...candles].reverse().map(c => ({
+      date: c.date, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
+    }));
+    const obvRes = obv(ohlcvAsc);
+    const cmfRes = cmf(ohlcvAsc, 20);
+
+    // OBV 하락 + CMF 유출 = 가짜 돌파 가능성 높음 → 신뢰도 대폭 감점
+    if (obvRes.trend === 'FALLING' && cmfRes.signal === 'OUTFLOW') {
+      result.confidence = Math.max(0, result.confidence - 0.25);
+      result.reason += ` [⚠️ OBV↓+CMF유출: 가짜돌파 위험, 신뢰도 -25%p]`;
+    }
+    // OBV 하락만 = 약한 경고
+    else if (obvRes.trend === 'FALLING') {
+      result.confidence = Math.max(0, result.confidence - 0.10);
+      result.reason += ` [OBV↓: 매집 약화 -10%p]`;
+    }
+    // CMF 유출만 = 약한 경고
+    else if (cmfRes.signal === 'OUTFLOW' && cmfRes.strength >= 0.5) {
+      result.confidence = Math.max(0, result.confidence - 0.10);
+      result.reason += ` [CMF유출: 자금이탈 -10%p]`;
+    }
+    // OBV 상승 + CMF 유입 = 진짜 돌파 확인 → 신뢰도 소폭 가점
+    else if (obvRes.trend === 'RISING' && cmfRes.signal === 'INFLOW') {
+      result.confidence = Math.min(1.0, result.confidence + 0.05);
+      result.reason += ` [OBV↑+CMF유입: 매집 확인 +5%p]`;
+    }
+
+    // 신뢰도가 감점으로 0.5 미만이면 돌파 무효화
+    if (result.confidence < 0.5) {
+      return emptySignal();
+    }
+  }
+
+  return result;
 }

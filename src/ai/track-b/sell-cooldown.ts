@@ -9,7 +9,7 @@ import { getCtxIsPaper } from '../../config/context.js';
 
 // paper/live 모드별 분리 (크로스오염 방지 — Paper 매도가 Live 차단하던 버그 수정)
 const _recentSellTimestamps = new Map<string, Map<string, number>>(); // mode → (stock_code → epoch ms)
-const MEMORY_COOLDOWN_MS = 4 * 60 * 60 * 1000; // 4시간
+const MEMORY_COOLDOWN_MS = 4 * 60 * 60 * 1000; // 4 hours
 
 function _getSellMap(): Map<string, number> {
   const mode = getCtxIsPaper() ? 'paper' : 'live';

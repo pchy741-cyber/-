@@ -34,15 +34,16 @@ export async function runWatchlistRotation(): Promise<void> {
     addCutoff.setDate(addCutoff.getDate() - ADD_EVAL_DAYS);
 
     // 현재 보유 중인 종목 코드 목록 (절대 제거 금지)
+    // Both paper AND live holdings must be checked to prevent deactivating
+    // a stock held in the other mode
     const { rows: holdingRows } = await pool.query(
-      `SELECT DISTINCT stock_code FROM transaction_chains WHERE status = 'OPEN' AND total_quantity > 0 AND is_paper = $1`,
-      [getCtxIsPaper()],
+      `SELECT DISTINCT stock_code FROM transaction_chains WHERE status = 'OPEN' AND total_quantity > 0`,
     );
-    const holdingCodes = new Set(holdingRows.map((r: any) => String(r.stock_code)));
+    const holdingCodes = new Set(holdingRows.map((r: Record<string, unknown>) => String(r.stock_code)));
 
     // 현재 워치리스트 전체 (활성/비활성 모두)
     const { rows: watchlistRows } = await pool.query(`SELECT stock_code FROM watchlist`);
-    const existingCodes = new Set(watchlistRows.map((r: any) => String(r.stock_code)));
+    const existingCodes = new Set(watchlistRows.map((r: Record<string, unknown>) => String(r.stock_code)));
 
     // ── 1. 저성과 종목 제거 ──────────────────────────────────────────────
     const { rows: scoreRows } = await pool.query(
@@ -197,7 +198,7 @@ export async function runDailyMarketScan(): Promise<void> {
       `SELECT DISTINCT stock_code FROM transaction_chains WHERE status = 'OPEN' AND total_quantity > 0 AND is_paper = $1`,
       [getCtxIsPaper()],
     );
-    const holdingCodes = new Set(holdingRows.map((r: any) => String(r.stock_code)));
+    const holdingCodes = new Set(holdingRows.map((r: Record<string, unknown>) => String(r.stock_code)));
 
     // ── 1. 일일 정리 — 상태 나쁜 종목 즉시 비활성화 ─────────────────────
     //   조건 A: 최근 3일 AI 평균 점수 < 35 (심각 저조)
@@ -274,8 +275,8 @@ export async function runDailyMarketScan(): Promise<void> {
 
     // 현재 워치리스트 전체 (활성/비활성 구분) — 정리 후 재조회
     const { rows: watchlistRows } = await pool.query(`SELECT stock_code, is_active FROM watchlist`);
-    const activeSet = new Set(watchlistRows.filter((r: any) => r.is_active).map((r: any) => String(r.stock_code)));
-    const inactiveSet = new Set(watchlistRows.filter((r: any) => !r.is_active).map((r: any) => String(r.stock_code)));
+    const activeSet = new Set(watchlistRows.filter((r: Record<string, unknown>) => r.is_active).map((r: Record<string, unknown>) => String(r.stock_code)));
+    const inactiveSet = new Set(watchlistRows.filter((r: Record<string, unknown>) => !r.is_active).map((r: Record<string, unknown>) => String(r.stock_code)));
 
     // 중복 제거된 후보 목록 (활성 종목 제외)
     const seen = new Set<string>();
@@ -346,8 +347,8 @@ export async function runDailyMarketScan(): Promise<void> {
             reason: reasons.join(', '),
             isInactive: inactiveSet.has(s.stock_code),
           });
-        } catch {
-          // 개별 오류는 조용히 스킵
+        } catch (err) {
+          logger.debug(`시장 발굴 개별 후보 조회 실패: ${err}`, { component: 'DAILY_MARKET_SCAN' });
         }
       }),
     );

@@ -7,7 +7,9 @@ import {
   generatePanicSellDecisions,
   INVERSE_ETF_CODES,
 } from '../../automation/crash-profit.js';
+import { getCommunityScoreAdjustment } from '../../automation/community-sentinel.js';
 import { getDisclosureScoreAdjustment, monitorDisclosures } from '../../automation/dart-monitor.js';
+import { getCachedPiotroskiScore } from '../../automation/dart-research.js';
 import { getInvestorFlow } from '../../automation/investor-flow.js';
 import { getMacroScoreAdjustment, getMacroSnapshot } from '../../automation/macro-data.js';
 import { checkNewsForStock } from '../../automation/news-sentinel.js';
@@ -177,7 +179,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       const { getAllRecentScores } = await import('../../db/client.js');
       const allScores = await getAllRecentScores();
       // 기존 Redis 점수 + DB 전체 점수 병합 (Redis 우선)
-      const existing = new Set(scores.map((s: any) => s.stock_code));
+      const existing = new Set(scores.map((s) => s.stock_code));
       for (const s of allScores) {
         if (!existing.has(s.stock_code)) scores.push(s);
       }
@@ -961,11 +963,18 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           });
         // 종목별 실거래 승률 보정: 65%+→+5, 35%-→-8 (자기학습 연동)
         const stockAccAdj = stockAccAdjMap.get(s.stock_code) ?? 0;
+        // Piotroski F-Score 보정: 8-9 우량 +5, 0-2 취약 -8
+        const piotroskiFs = getCachedPiotroskiScore(s.stock_code);
+        const piotroskiAdj = piotroskiFs != null
+          ? piotroskiFs >= 8 ? 5 : piotroskiFs <= 2 ? -8 : 0
+          : 0;
+        // Community Sentinel: 언급 Z-score + 센티먼트 + FOMO/펌프 감지 (-20 ~ +5)
+        const communityAdj = getCommunityScoreAdjustment(s.stock_code);
         const totalAdj =
-          adj + capAdj + stale + kospiPenaltyAdj + macroAdj + dartAdj + megaCapAdj + consensusAdj + aiScoreAdj + stockAccAdj;
+          adj + capAdj + stale + kospiPenaltyAdj + macroAdj + dartAdj + megaCapAdj + consensusAdj + aiScoreAdj + stockAccAdj + piotroskiAdj + communityAdj;
         if (!Number.isFinite(totalAdj)) {
           logger.warn(
-            `⚠️ 스코어 보정 NaN 감지: ${s.stock_code} adj=${adj} cap=${capAdj} macro=${macroAdj} dart=${dartAdj} cns=${consensusAdj} ai=${aiScoreAdj} acc=${stockAccAdj}`,
+            `⚠️ 스코어 보정 NaN 감지: ${s.stock_code} adj=${adj} cap=${capAdj} macro=${macroAdj} dart=${dartAdj} cns=${consensusAdj} ai=${aiScoreAdj} acc=${stockAccAdj} pio=${piotroskiAdj} cmty=${communityAdj}`,
             { component: 'TRACK_B' },
           );
           return { stock_code: s.stock_code, score: Math.max(0, Math.round(base)) || 0 };
@@ -1369,7 +1378,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         const candles = chartData.get(candidate.stock_code);
         const liveP = livePrices.get(candidate.stock_code);
         if (!candles || candles.length < 30 || !liveP) continue;
-        const tech = analyzeTechnicals(candles as any);
+        const tech = analyzeTechnicals(candles);
         if (!tech) continue;
         const curPrice = liveP.currentPrice;
         const recentHigh5 = candles.length >= 6 ? Math.max(...candles.slice(1, 6).map((c) => c.high)) : 0;
@@ -1381,7 +1390,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         if (!truePullbackPattern) continue;
         const now = Date.now();
         const lastAlert = getAlertMap().get(candidate.stock_code) ?? 0;
-        if (now - lastAlert < 30 * 60 * 1000) continue;
+        if (now - lastAlert < 30 * 60_000) continue; // 30 min cooldown
         getAlertMap().set(candidate.stock_code, now);
         const stockName = nameMap.get(candidate.stock_code) ?? candidate.stock_code;
         const status = blockNewBuysFinal ? `⚠️ 자동매수 차단 중 — 수동 확인` : `✅ 자동매수 대기 중`;
@@ -1506,14 +1515,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       actionable,
       actionable.map((d) => {
         const adj = adjustedScores.find((a) => a.stock_code === d.stock_code);
-        const raw = (scores as any[]).find((s) => s.stock_code === d.stock_code);
+        const raw = scores.find((s) => s.stock_code === d.stock_code);
         return {
           stockCode: d.stock_code,
           aiScoreRaw: raw?.composite_score ?? undefined,
           aiScoreAdjusted: adj?.score ?? undefined,
           confidence: raw?.confidence ?? undefined,
           action: d.action,
-          quantity: (d as any).quantity ?? undefined,
+          quantity: d.quantity ?? undefined,
           isPaper: ctxIsPaper,
         };
       }),

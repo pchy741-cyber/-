@@ -109,7 +109,7 @@ export async function getWinRateStats(days: number = 30): Promise<WinRateStats> 
 
 async function getConsecutiveLosses(): Promise<number> {
   try {
-    const params: any[] = [getCtxIsPaper()];
+    const params: (boolean | string)[] = [getCtxIsPaper()];
     let resetFilter = '';
     const cooldownResetAt = _getCooldownResetAt();
     if (cooldownResetAt) {
@@ -157,7 +157,7 @@ export async function cooldownGate(): Promise<GateResult> {
 
   if (cooldownMs > 0) {
     try {
-      const params: any[] = [isPaper];
+      const params: (boolean | string)[] = [isPaper];
       let resetFilter = '';
       const cooldownResetAt2 = _getCooldownResetAt();
       if (cooldownResetAt2) {
@@ -239,7 +239,7 @@ export async function getCooldownStatus(): Promise<CooldownStatus> {
           : 0;
 
     if (cooldownMs > 0) {
-      const params: any[] = [isPaper];
+      const params: (boolean | string)[] = [isPaper];
       let resetFilter = '';
       const cooldownResetAt2 = _getCooldownResetAt();
       if (cooldownResetAt2) {

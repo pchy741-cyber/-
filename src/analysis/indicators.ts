@@ -11,13 +11,15 @@
 export type { EnvelopeResult, OHLCV } from './moving-averages.js';
 // ── Re-exports (기존 import 호환) ──
 export { ema, envelope, sma, vwap } from './moving-averages.js';
-export type { BollingerResult, MACDResult, RsiDivergence, StochasticResult, TTMSqueezeResult } from './oscillators.js';
+export type { BollingerResult, CMFResult, MACDResult, OBVResult, RsiDivergence, StochasticResult, TTMSqueezeResult } from './oscillators.js';
 export {
   adx,
   atr,
   bollingerBands,
+  cmf,
   detectRsiDivergence,
   macd,
+  obv,
   roc,
   rsi,
   stochastic,
@@ -40,8 +42,12 @@ import {
   adx,
   atr,
   bollingerBands,
+  cmf,
+  type CMFResult,
   detectRsiDivergence,
   macd,
+  obv,
+  type OBVResult,
   type RsiDivergence,
   roc,
   rsi,
@@ -104,6 +110,9 @@ export interface TechnicalSummary {
   disparity20: number; // SMA20 이격도 (%)
   disparity60: number; // SMA60 이격도 (%)
   volZScore: number; // 거래량 Z-score (자기 60일 대비)
+  // v11: OBV + CMF (매집/분산 판별)
+  obvResult: OBVResult;
+  cmfResult: CMFResult;
 }
 
 export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
@@ -221,7 +230,7 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   const vwapNow = vwapValues[vwapValues.length - 1] ?? current;
   const vwapPrev = vwapValues[vwapValues.length - 2] ?? vwapNow;
   const prevClose = closesAsc[closesAsc.length - 2] ?? current;
-  const vwapDiff = ((current - vwapNow) / vwapNow) * 100;
+  const vwapDiff = vwapNow > 0 ? ((current - vwapNow) / vwapNow) * 100 : 0;
   const vwapPosition: TechnicalSummary['vwapPosition'] = vwapDiff > 1 ? 'ABOVE' : vwapDiff < -1 ? 'BELOW' : 'AT';
   const vwapCross: TechnicalSummary['vwapCross'] =
     prevClose < vwapPrev && current > vwapNow
@@ -307,6 +316,10 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
   const volStd = Math.sqrt(volVariance);
   const volZScore = volStd > 0 ? (volumes[0] - volMean) / volStd : 0;
 
+  // v11: OBV + CMF — 매집/분산 판별 (가짜 돌파 차단)
+  const obvResult = obv(candlesAsc);
+  const cmfResult = cmf(candlesAsc, 20);
+
   let volumeScore = 0;
   if (current > sma5Now) {
     // Z-score 기반: 자기 거래량 분포 대비 오늘의 위치
@@ -314,6 +327,23 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
       volZScore >= 3.0 ? 12 : volZScore >= 2.0 ? 9 : volZScore >= 1.0 ? 6 : volZScore >= 0.5 ? 3 : 0;
   }
   if (volZScore < -1.5) volumeScore -= 10; // Z-score 기반 극저거래량
+
+  // OBV: 매집 추세 확인 — 거래량 급증 + OBV 상승 = 진짜 매집
+  if (obvResult.trend === 'RISING' && volZScore >= 0.5) volumeScore += 4;  // 매집 확인
+  else if (obvResult.trend === 'FALLING' && current > sma5Now) volumeScore -= 4; // 가격↑ + OBV↓ = 분산 의심
+  // OBV 다이버전스: 가격-거래량 괴리 = 추세 반전 조기 경보
+  if (obvResult.divergence === 'BEARISH') volumeScore -= 5; // 가격 신고가 but OBV 하락 → 위험
+  else if (obvResult.divergence === 'BULLISH') volumeScore += 3; // 가격 신저가 but OBV 상승 → 바닥
+
+  // CMF: 자금 유입/유출 압력 — 종가 위치 × 거래량
+  if (cmfResult.signal === 'INFLOW') volumeScore += cmfResult.strength >= 0.5 ? 4 : 2; // 강한/약한 유입
+  else if (cmfResult.signal === 'OUTFLOW') volumeScore -= cmfResult.strength >= 0.5 ? 4 : 2; // 강한/약한 유출
+
+  // 핵심 필터: 돌파 시그널 + OBV/CMF 불일치 → 가짜 돌파 경고
+  // 기술적 돌파(score>0) + OBV↓ + CMF 유출 = 가짜 돌파 가능성 높음 → 감점
+  if (trendScore > 5 && obvResult.trend === 'FALLING' && cmfResult.signal === 'OUTFLOW') {
+    volumeScore -= 6; // 가짜 돌파 강한 경고
+  }
 
   // VWAP 풀백 (거래량 기반 확인)
   const vwapHistory = vwapValues.slice(-4);
@@ -437,6 +467,9 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
     disparity20,
     disparity60,
     volZScore,
+    // v11: OBV + CMF
+    obvResult,
+    cmfResult,
   };
 }
 
@@ -550,7 +583,7 @@ export function analyzeIntraday(minuteCandles: OHLCV[]): IntradaySignal {
     }
     const vwapVal = cumVol > 0 ? cumPV / cumVol : closes[closes.length - 1];
     const curPrice = closes[closes.length - 1];
-    const vwapPct = ((curPrice - vwapVal) / vwapVal) * 100;
+    const vwapPct = vwapVal > 0 ? ((curPrice - vwapVal) / vwapVal) * 100 : 0;
     if (vwapPct > 0.15) {
       vwapPosition = 'ABOVE';
       score += 5;

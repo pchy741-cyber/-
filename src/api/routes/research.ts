@@ -98,7 +98,7 @@ researchRoutes.post('/research/crawl', async (c) => {
     return c.json({ ok: true, id: result.rows[0].id, title, length: content.length });
   } catch (err: any) {
     logger.warn(`리서치 크롤링 실패: ${err.message}`, { component: 'RESEARCH' });
-    return c.json({ error: err.message ?? '크롤링 실패' }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -125,7 +125,8 @@ researchRoutes.delete('/research/notes/:id', async (c) => {
     await query('DELETE FROM broker_research_notes WHERE id = $1', [id]);
     return c.json({ ok: true });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    logger.warn(`리서치 노트 삭제 실패: ${err.message}`, { component: 'RESEARCH' });
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -148,7 +149,7 @@ researchRoutes.get('/research/dart/:stockCode', async (c) => {
     return c.json({ ok: true, result });
   } catch (err: any) {
     logger.warn(`DART 리서치 실패: ${err.message}`, { component: 'RESEARCH' });
-    return c.json({ error: err.message ?? 'DART 분석 실패' }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -168,6 +169,7 @@ researchRoutes.post('/research/dart/batch', async (c) => {
     const results = await runDartResearchBatch(codes, { year: body.year, quarter });
     return c.json({ ok: true, count: results.length, results });
   } catch (err: any) {
-    return c.json({ error: err.message ?? '배치 분석 실패' }, 500);
+    logger.warn(`DART 배치 리서치 실패: ${err.message}`, { component: 'RESEARCH' });
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });

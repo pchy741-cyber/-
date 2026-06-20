@@ -93,6 +93,12 @@ export async function getInsiderSignal(ticker: string): Promise<InsiderSignal | 
     const recentBuyers = new Set<string>();
 
     // Form 4 만 추출 (최대 100개 검사 — 큰 회사도 30일 내에 100개 넘기 어려움)
+    // NOTE: Form 4 includes BOTH buys and sells (+ option exercises, gifts, etc.).
+    // Without parsing the XML content of each filing, we cannot distinguish buy vs sell.
+    // We count all Form 4 filings as "insider activity" (not "buys") and use a conservative
+    // score adjustment. The buys30d field is a misnomer — it tracks total Form 4 filings.
+    // TODO: Parse individual Form 4 XML to extract transactionCode:
+    //   'P' = open-market purchase, 'S' = open-market sale, 'A' = grant/award, etc.
     const maxCheck = Math.min(100, recent.form.length);
     for (let i = 0; i < maxCheck; i++) {
       if (recent.form[i] !== '4') continue;
@@ -100,24 +106,24 @@ export async function getInsiderSignal(ticker: string): Promise<InsiderSignal | 
       if (!fDate) continue;
       const fMs = new Date(fDate).getTime();
       if (fMs < cutoffMs) break; // 정렬되어 있어서 break OK
-      // 본격 파싱은 비싸므로 카운트만 (대략적 신호)
-      buys30d++; // 보수적: 모든 Form 4를 매수로 가정 (실제로는 매수+매도+옵션 등)
+      // Count as generic insider activity (Form 4 includes both buys AND sells)
+      buys30d++;
     }
 
-    // 실제 분석은 추후 정밀화 (SBE 인사이더 trading volume API 사용)
-    // 현재는 단순 카운트 기반 가산점
+    // Score adjustment is conservative since we cannot distinguish buys from sells
+    // without parsing filing XML. High activity is still a useful signal (insiders are active).
     let scoreAdjustment = 0;
     let reason = '';
 
     if (buys30d >= 5) {
-      scoreAdjustment = 15;
-      reason = `인사이더 활동 활발 (Form 4 ${buys30d}건/30일)`;
+      scoreAdjustment = 10; // Reduced from 15 — may include sells
+      reason = `인사이더 활동 활발 (Form 4 ${buys30d}건/30일, 매수+매도 혼합)`;
     } else if (buys30d >= 3) {
-      scoreAdjustment = 10;
-      reason = `인사이더 매매 ${buys30d}건/30일`;
+      scoreAdjustment = 5; // Reduced from 10 — may include sells
+      reason = `인사이더 매매 ${buys30d}건/30일 (매수+매도 미분류)`;
     } else if (buys30d >= 1) {
-      scoreAdjustment = 5;
-      reason = `인사이더 매매 ${buys30d}건/30일`;
+      scoreAdjustment = 3; // Reduced from 5 — may include sells
+      reason = `인사이더 매매 ${buys30d}건/30일 (매수+매도 미분류)`;
     } else {
       scoreAdjustment = 0;
       reason = `인사이더 매매 없음`;

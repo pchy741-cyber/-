@@ -153,7 +153,7 @@ profitStatsRoutes.get('/profit-stats', async (c) => {
       });
     }
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -197,6 +197,6 @@ profitStatsRoutes.get('/market/tax-estimate', async (c) => {
       totalSellAmount: Number(r.total_sell_amount ?? 0),
     });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });

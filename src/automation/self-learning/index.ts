@@ -68,7 +68,10 @@ export interface LearnedParameters {
 
 // ── Orchestrator ──
 
-const _now = new Date().toISOString();
+/** Fresh timestamp — avoid stale module-level constant */
+function _now(): string {
+  return new Date().toISOString();
+}
 
 export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
   logger.info('🧠 자기학습 분석 시작', { component: 'LEARN' });
@@ -191,8 +194,10 @@ async function saveInsights(insights: LearnedInsight[]): Promise<void> {
          WHERE is_dismissed = true AND is_paper = $1`,
         [isPaper],
       );
-      dismissedKeys = new Set(dismissed.map((r: any) => `${r.category}::${r.insight}`));
-    } catch { /* dismissed 컬럼 미존재 시 무시 */ }
+      dismissedKeys = new Set(dismissed.map((r: Record<string, unknown>) => `${r.category}::${r.insight}`));
+    } catch (err) {
+      logger.debug(`dismissed 인사이트 조회 실패 (is_dismissed 컬럼 미존재 가능): ${err}`, { component: 'SELF_LEARN' });
+    }
 
     // v10: dismissed 행 보존 — is_dismissed IS NOT TRUE 조건 추가
     await getPool()
@@ -396,13 +401,16 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
   );
   if (toApply.length === 0) return;
 
+  const client = await getPool().connect();
   try {
-    const { rows } = await getPool().query(
+    await client.query('BEGIN');
+
+    const { rows } = await client.query(
       `SELECT * FROM strategy_config WHERE is_active = true AND is_paper = $1 ORDER BY updated_at DESC LIMIT 1`,
       [isPaper],
     );
     const current = rows[0];
-    if (!current) return;
+    if (!current) { await client.query('ROLLBACK'); return; }
 
     const sorted = toApply.sort((a, b) => {
       if (a.paramChange?.field === 'mode') return -1;
@@ -410,7 +418,13 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
       return b.confidence - a.confidence;
     });
 
-    const ALLOWED_PARAM_FIELDS = ['stop_loss_pct', 'take_profit_pct', 'buy_threshold', 'mode'] as const;
+    // SQL injection 방지: 동적 컬럼명을 화이트리스트 매핑으로 안전하게 치환
+    const SAFE_COL: Record<string, string> = {
+      stop_loss_pct: 'stop_loss_pct',
+      take_profit_pct: 'take_profit_pct',
+      buy_threshold: 'buy_threshold',
+      mode: 'mode',
+    };
     // 안전 범위: 비정상 값 자동적용 방지 (gambler's ruin 방어)
     const PARAM_RANGES: Record<string, { min: number; max: number }> = {
       stop_loss_pct: { min: -30, max: -1 }, // -30% ~ -1%
@@ -420,7 +434,8 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
     const applied: string[] = [];
     for (const insight of sorted.slice(0, 5)) {
       const { field, value } = insight.paramChange!;
-      if (!(ALLOWED_PARAM_FIELDS as readonly string[]).includes(field)) {
+      const safeCol = SAFE_COL[field];
+      if (!safeCol) {
         logger.warn(`🚫 허용되지 않은 필드 업데이트 차단: ${field}`, { component: 'LEARN' });
         continue;
       }
@@ -435,19 +450,19 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
       const oldVal = current[field];
       if (oldVal === value) continue;
 
-      await getPool().query(`UPDATE strategy_config SET ${field} = $1 WHERE is_active = true AND is_paper = $2`, [
+      await client.query(`UPDATE strategy_config SET ${safeCol} = $1 WHERE is_active = true AND is_paper = $2`, [
         value,
         isPaper,
       ]);
       // 이전값 기록: 롤백 시 복원 + 효과 추적용
       const prevDetails = { previous_value: oldVal, applied_field: field };
       if (insight.id) {
-        await getPool().query(
+        await client.query(
           `UPDATE learned_insights SET is_applied = true, applied_at = NOW(), details = COALESCE(details, '{}'::jsonb) || $2::jsonb WHERE id = $1`,
           [insight.id, JSON.stringify(prevDetails)],
         );
       } else {
-        await getPool().query(
+        await client.query(
           `UPDATE learned_insights SET is_applied = true, applied_at = NOW(), details = COALESCE(details, '{}'::jsonb) || $3::jsonb WHERE category = $1 AND insight = $2`,
           [insight.category, insight.insight, JSON.stringify(prevDetails)],
         );
@@ -458,6 +473,8 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
       });
     }
 
+    await client.query('COMMIT');
+
     if (applied.length > 0) {
       await logSystem('INFO', 'LEARN', `인사이트 자동 전략 적용: ${applied.join(', ')}`).catch(() => {});
       await sendTelegramMessage(`🤖 *자기학습 자동 전략 적용*\n${applied.map((a) => `• ${a}`).join('\n')}`).catch(
@@ -465,7 +482,10 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
       );
     }
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     logger.warn(`인사이트 자동 적용 실패: ${err}`, { component: 'LEARN' });
+  } finally {
+    client.release();
   }
 }
 
@@ -478,8 +498,12 @@ export async function applyInsightById(insightId: string): Promise<{ ok: boolean
     if (insight.is_applied) return { ok: false, message: '이미 적용됨' };
 
     const { field, value } = insight.param_change as InsightParamChange;
-    const ALLOWED_PARAM_FIELDS = ['stop_loss_pct', 'take_profit_pct', 'buy_threshold', 'mode'];
-    if (!ALLOWED_PARAM_FIELDS.includes(field)) return { ok: false, message: `허용되지 않은 필드: ${field}` };
+    const SAFE_COL_MAP: Record<string, string> = {
+      stop_loss_pct: 'stop_loss_pct', take_profit_pct: 'take_profit_pct',
+      buy_threshold: 'buy_threshold', mode: 'mode',
+    };
+    const safeCol = SAFE_COL_MAP[field];
+    if (!safeCol) return { ok: false, message: `허용되지 않은 필드: ${field}` };
 
     // 값 범위 검증
     const PARAM_RANGES: Record<string, { min: number; max: number }> = {
@@ -500,7 +524,7 @@ export async function applyInsightById(insightId: string): Promise<{ ok: boolean
     const current = stratRows[0];
     if (!current) return { ok: false, message: '활성 전략 없음' };
 
-    await getPool().query(`UPDATE strategy_config SET ${field} = $1 WHERE is_active = true AND is_paper = $2`, [
+    await getPool().query(`UPDATE strategy_config SET ${safeCol} = $1 WHERE is_active = true AND is_paper = $2`, [
       value,
       targetIsPaper,
     ]);
@@ -596,7 +620,8 @@ export async function getStockAccuracyContext(stockCodes: string[]): Promise<str
     }
     lines.push('> 위 승률이 낮은 종목은 composite_score를 10점 더 엄격하게 적용하세요.');
     return lines.join('\n');
-  } catch {
+  } catch (err) {
+    logger.debug(`종목별 학습 요약 생성 실패: ${err}`, { component: 'SELF_LEARN' });
     return '';
   }
 }
@@ -619,9 +644,8 @@ async function _runLearningForMode(isPaper: boolean): Promise<void> {
       logger.info(`자기학습: 분석 결과 없음 (${modeLabel})`, { component: 'LEARN' });
       return;
     }
-    // analyzeTradeHistory() 내부에서 saveInsights() 이미 호출됨 — 중복 insert 불필요
+    // analyzeTradeHistory() 내부에서 saveInsights() + autoApplyInsights() 이미 호출됨 — 중복 불필요
     logger.info(`🧠 자기학습 인사이트 ${insights.length}건 저장 (${modeLabel})`, { component: 'LEARN' });
-    await autoApplyInsights(insights);
     // 황금비율 자동 조정: 30일 전략별 성과 → 가중치 자동 튜닝
     try {
       const { autoTuneRegimeWeights } = await import('../regime-allocator.js');

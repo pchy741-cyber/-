@@ -3,12 +3,14 @@ import { setClaudeStatus } from '../../cache/ai-status.js';
 import { STRATEGY_PARAMS } from '../../config/constants.js';
 import { config } from '../../config/index.js';
 import { type TradeDecision, TradeDecisionSchema } from '../../db/models.js';
+import { callClaudeCli, isClaudeCliEnabled } from '../../utils/claude-cli.js';
 import { logger } from '../../utils/logger.js';
 import { buildExecutionPrompt } from '../prompts/track-b-execution.js';
 import { BUY_BLOCKED_CODES } from './trading-rules.js';
 
 // Lazy init — 키 변경 시 자동 반영
 function getAnthropic(): Anthropic | null {
+  if (isClaudeCliEnabled()) return null; // CLI 모드에서는 SDK 불필요
   const key = config.ai.anthropicKey || process.env.ANTHROPIC_API_KEY;
   if (!key || key.startsWith('your_')) return null;
   return new Anthropic({ apiKey: key });
@@ -31,9 +33,10 @@ export async function runClaudeExecution(params: {
 }): Promise<TradeDecision[]> {
   const { mode, context, customPrompt } = params;
 
+  const useCli = isClaudeCliEnabled();
   const anthropic = getAnthropic();
-  if (!anthropic) {
-    logger.warn('Anthropic API 키 미설정 — Claude 매매 판단 스킵 (HOLD 반환)', { component: 'TRACK_B' });
+  if (!useCli && !anthropic) {
+    logger.warn('Anthropic API 키 미설정 & CLI 비활성 — Claude 매매 판단 스킵 (HOLD 반환)', { component: 'TRACK_B' });
     return [];
   }
 
@@ -45,25 +48,31 @@ export async function runClaudeExecution(params: {
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      logger.info(`Claude 실행 판단 시작 (시도 ${attempt}/${MAX_RETRIES}, 모드: ${mode})`, {
+      logger.info(`Claude 실행 판단 시작 (시도 ${attempt}/${MAX_RETRIES}, 모드: ${mode}, ${useCli ? 'CLI' : 'API'})`, {
         component: 'TRACK_B',
       });
 
-      const response = await anthropic.messages.create({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 4096,
-        temperature: 0.1,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: context }],
-      });
+      let rawText: string;
 
-      // 텍스트 블록에서 JSON 추출
-      const textBlock = response.content.find((block) => block.type === 'text');
-      if (!textBlock || textBlock.type !== 'text') {
-        throw new Error('Claude 응답에 텍스트가 없습니다');
+      if (useCli) {
+        // Max 구독 CLI 모드
+        rawText = await callClaudeCli({ systemPrompt, userPrompt: context });
+      } else {
+        // API 키 모드
+        const response = await anthropic!.messages.create({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 4096,
+          temperature: 0.1,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: context }],
+        });
+
+        const textBlock = response.content.find((block) => block.type === 'text');
+        if (!textBlock || textBlock.type !== 'text') {
+          throw new Error('Claude 응답에 텍스트가 없습니다');
+        }
+        rawText = textBlock.text;
       }
-
-      const rawText = textBlock.text;
 
       // JSON 블록 추출 (```json ... ``` 또는 순수 JSON)
       const jsonMatch = rawText.match(/```json\s*([\s\S]*?)```/) || rawText.match(/(\{[\s\S]*\})/);

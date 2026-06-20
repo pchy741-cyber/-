@@ -11,6 +11,20 @@ import type { Holding, TechResult } from './sell-logic.js';
 
 import type { AIDecision, KellyResult } from './types.js';
 
+// ── Alert threshold constants ──
+/** PnL% above which a holding is highlighted as profit (green) */
+const PROFIT_ALERT_PCT = 3.0;
+/** PnL% below which a holding is highlighted as loss (red) */
+const LOSS_ALERT_PCT = -5.0;
+/** PnL% above which a take-profit recommendation is sent */
+const TP_RECOMMEND_PCT = 5.0;
+/** PnL% above which full sell is recommended */
+const TP_FULL_SELL_PCT = 20.0;
+/** PnL% below which a stop-loss warning is sent */
+const SL_WARN_PCT = -8.0;
+/** Minimum interval between alerts for the same stock (ms) */
+const ALERT_COOLDOWN_MS = 60 * 60_000; // 1 hour
+
 export interface ExtendedAlertContext {
   buyTargets: BuyTarget[];
   aiMap: Map<string, AIDecision>;
@@ -35,7 +49,7 @@ export async function sendBuyRecommendations(ctx: ExtendedAlertContext): Promise
   const now = Date.now();
   const usdKrw = ctx.usdKrw ?? (await fetchExchangeRate());
   const alertTargets = buyTargets
-    .filter((t) => !extendedAlertSentAt.has(t.code) || now - (extendedAlertSentAt.get(t.code) ?? 0) > 60 * 60_000)
+    .filter((t) => !extendedAlertSentAt.has(t.code) || now - (extendedAlertSentAt.get(t.code) ?? 0) > ALERT_COOLDOWN_MS)
     .slice(0, 3);
 
   const holdingSells: string[] = [];
@@ -45,11 +59,11 @@ export async function sendBuyRecommendations(ctx: ExtendedAlertContext): Promise
     const pnl = ((tech.price.currentPrice - h.avgPrice) / h.avgPrice) * 100;
     const posVal = tech.price.currentPrice * h.qty;
     const weightPct = portfolioValue > 0 ? ((posVal / portfolioValue) * 100).toFixed(1) : '0';
-    if (pnl >= 3.0)
+    if (pnl >= PROFIT_ALERT_PCT)
       holdingSells.push(
         `  🟢 *${code}* +${pnl.toFixed(1)}% @$${tech.price.currentPrice.toFixed(2)} | ${h.qty}주 $${posVal.toFixed(0)}(₩${((posVal * usdKrw) / 10000).toFixed(1)}만) 비중${weightPct}%`,
       );
-    else if (pnl <= -5.0)
+    else if (pnl <= LOSS_ALERT_PCT)
       holdingSells.push(
         `  🔴 *${code}* ${pnl.toFixed(1)}% @$${tech.price.currentPrice.toFixed(2)} | ${h.qty}주 손실$${(Math.abs(tech.price.currentPrice - h.avgPrice) * h.qty).toFixed(0)} → 손절검토`,
       );
@@ -80,7 +94,7 @@ export async function sendBuyRecommendations(ctx: ExtendedAlertContext): Promise
   if (holdingSells.length > 0) alertLines.push('', '📋 *보유종목 현황*', ...holdingSells);
   // v10.8: 시장가 기준 (원가 기준 → dynMaxPos 왜곡 방지)
   const holdVal = Array.from(updatedHoldings.entries()).reduce((s, [code, h]) => {
-    const tech = techResults.find((t: any) => t.code === code);
+    const tech = techResults.find((t) => t.code === code);
     return s + h.qty * (tech?.price?.currentPrice ?? h.avgPrice);
   }, 0);
   const dynMaxPos = getOverseasDynamic(cash + holdVal).maxPositions;
@@ -111,7 +125,7 @@ export async function sendHoldingAlerts(ctx: {
   const usdKrwSell = ctx.usdKrw ?? (await fetchExchangeRate());
 
   for (const [code, h] of updatedHoldings) {
-    if (extendedAlertSentAt.has(`sell_${code}`) && now - (extendedAlertSentAt.get(`sell_${code}`) ?? 0) < 60 * 60_000)
+    if (extendedAlertSentAt.has(`sell_${code}`) && now - (extendedAlertSentAt.get(`sell_${code}`) ?? 0) < ALERT_COOLDOWN_MS)
       continue;
     const tech = techResults.find((t) => t.code === code);
     if (!tech || tech.price.currentPrice <= 0) continue;
@@ -119,8 +133,8 @@ export async function sendHoldingAlerts(ctx: {
     const profitUsd = (tech.price.currentPrice - h.avgPrice) * h.qty;
     const profitKrw = profitUsd * usdKrwSell;
 
-    if (pnl >= 5.0) {
-      const sellQty = pnl >= 20 ? h.qty : Math.max(1, Math.ceil(h.qty * 0.5));
+    if (pnl >= TP_RECOMMEND_PCT) {
+      const sellQty = pnl >= TP_FULL_SELL_PCT ? h.qty : Math.max(1, Math.ceil(h.qty * 0.5));
       const sellAmt = sellQty * tech.price.currentPrice;
       await sendTelegramMessage(
         [
@@ -138,7 +152,7 @@ export async function sendHoldingAlerts(ctx: {
       ).catch(() => {});
       extendedAlertSentAt.set(`sell_${code}`, now);
     }
-    if (pnl <= -8.0) {
+    if (pnl <= SL_WARN_PCT) {
       await sendTelegramMessage(
         [
           `🌙🚨 *장외 손절 경고!*`,

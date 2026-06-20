@@ -8,7 +8,7 @@ import { ema, type OHLCV, sma } from './moving-averages.js';
 // ── RSI (Relative Strength Index) ──
 
 export function rsi(prices: number[], period: number = 14): number[] {
-  if (prices.length < period + 1) return [];
+  if (prices.length < period + 1 || period <= 0) return [];
 
   const changes: number[] = [];
   for (let i = 1; i < prices.length; i++) {
@@ -54,16 +54,21 @@ export function detectRsiDivergence(
   rsiValues: number[], // 최신→과거 (desc) — rsi() 결과를 reverse한 것
   lookback: number = 14,
 ): RsiDivergence {
-  if (prices.length < lookback || rsiValues.length < lookback) return { type: 'NONE', strength: 0 };
+  // RSI array may be shorter than price array by `period` elements (e.g., N vs N-14).
+  // Both arrays are descending (index 0 = newest). The first min(prices.length, rsiValues.length)
+  // elements are aligned: prices[i] and rsiValues[i] correspond to the same candle.
+  // Clamp lookback to the available aligned range.
+  const safeLen = Math.min(prices.length, rsiValues.length, lookback);
+  if (safeLen < 4) return { type: 'NONE', strength: 0 };
 
-  // 최근 lookback 기간 내 가격 저점 2개, 고점 2개 찾기
+  // 최근 safeLen 기간 내 가격 저점 2개, 고점 2개 찾기
   let priceMinIdx1 = 0,
     priceMinIdx2 = -1;
   let priceMaxIdx1 = 0,
     priceMaxIdx2 = -1;
 
   // 가장 최근 저점/고점
-  for (let i = 1; i < lookback; i++) {
+  for (let i = 1; i < safeLen; i++) {
     if (prices[i] < prices[priceMinIdx1]) {
       priceMinIdx2 = priceMinIdx1;
       priceMinIdx1 = i;
@@ -80,7 +85,7 @@ export function detectRsiDivergence(
     const rsiRise = rsiValues[priceMinIdx1] > rsiValues[priceMinIdx2]; // RSI higher low
     if (priceDrop && rsiRise) {
       const rsiDiff = rsiValues[priceMinIdx1] - rsiValues[priceMinIdx2];
-      return { type: 'BULLISH', strength: Math.min(1, rsiDiff / 15) };
+      return { type: 'BULLISH', strength: Math.max(0, Math.min(1, rsiDiff / 15)) };
     }
   }
 
@@ -90,7 +95,7 @@ export function detectRsiDivergence(
     const rsiFall = rsiValues[priceMaxIdx1] < rsiValues[priceMaxIdx2]; // RSI lower high
     if (priceRise && rsiFall) {
       const rsiDiff = rsiValues[priceMaxIdx2] - rsiValues[priceMaxIdx1];
-      return { type: 'BEARISH', strength: Math.min(1, rsiDiff / 15) };
+      return { type: 'BEARISH', strength: Math.max(0, Math.min(1, rsiDiff / 15)) };
     }
   }
 
@@ -106,6 +111,9 @@ export interface MACDResult {
 }
 
 export function macd(prices: number[], fast = 12, slow = 26, signal = 9): MACDResult {
+  if (prices.length === 0 || fast <= 0 || slow <= 0 || signal <= 0) {
+    return { macd: [], signal: [], histogram: [] };
+  }
   const emaFast = ema(prices, fast);
   const emaSlow = ema(prices, slow);
 
@@ -135,6 +143,9 @@ export interface BollingerResult {
 }
 
 export function bollingerBands(prices: number[], period = 20, stdDev = 2): BollingerResult {
+  if (prices.length < period || period <= 0) {
+    return { upper: [], middle: [], lower: [], width: [] };
+  }
   const middle = sma(prices, period);
   const upper: number[] = [];
   const lower: number[] = [];
@@ -162,6 +173,9 @@ export interface StochasticResult {
 }
 
 export function stochastic(candles: OHLCV[], kPeriod = 14, dPeriod = 3): StochasticResult {
+  if (candles.length < kPeriod || kPeriod <= 0) {
+    return { k: [], d: [] };
+  }
   const k: number[] = [];
 
   for (let i = kPeriod - 1; i < candles.length; i++) {
@@ -180,6 +194,7 @@ export function stochastic(candles: OHLCV[], kPeriod = 14, dPeriod = 3): Stochas
 // ── Williams %R ──
 
 export function williamsR(candles: OHLCV[], period = 14): number[] {
+  if (candles.length < period || period <= 0) return [];
   const result: number[] = [];
   for (let i = period - 1; i < candles.length; i++) {
     const slice = candles.slice(i - period + 1, i + 1);
@@ -194,6 +209,7 @@ export function williamsR(candles: OHLCV[], period = 14): number[] {
 // ── ROC (Rate of Change) ──
 
 export function roc(prices: number[], period = 12): number[] {
+  if (prices.length <= period || period <= 0) return [];
   const result: number[] = [];
   for (let i = period; i < prices.length; i++) {
     const prev = prices[i - period];
@@ -223,7 +239,7 @@ export function atr(candles: OHLCV[], period = 14): number[] {
 // ── ADX (Average Directional Index) ──
 
 export function adx(candles: OHLCV[], period: number = 14): number[] {
-  if (candles.length < period * 2) return [];
+  if (candles.length < period * 2 || period <= 0) return [];
 
   const plusDM: number[] = [];
   const minusDM: number[] = [];
@@ -284,11 +300,10 @@ export function ttmSqueeze(
   }
 
   const closes = candles.map((c) => c.close);
-  const bbResult = bollingerBands(closes.reverse(), bbPeriod, bbMult);
-  closes.reverse();
-
   const closesAsc = [...closes].reverse();
   const candlesAsc = [...candles].reverse();
+
+  const bbResult = bollingerBands(closesAsc, bbPeriod, bbMult);
 
   const emaValues = ema(closesAsc, kcPeriod);
   const atrValues = atr(candlesAsc, kcPeriod);
@@ -334,4 +349,99 @@ export function ttmSqueeze(
     fireSignal,
     consecutiveSqueezeOn,
   };
+}
+
+// ── OBV (On-Balance Volume) ──
+// 상승일 거래량 누적, 하락일 차감 → 매집/분산 추세 판별
+// 입력: 오름차순 (oldest → newest)
+
+export interface OBVResult {
+  values: number[];       // OBV 시계열
+  trend: 'RISING' | 'FALLING' | 'FLAT'; // 최근 5일 추세
+  divergence: 'BULLISH' | 'BEARISH' | 'NONE'; // 가격 vs OBV 괴리
+}
+
+export function obv(candles: OHLCV[]): OBVResult {
+  const EMPTY_OBV: OBVResult = { values: [], trend: 'FLAT', divergence: 'NONE' };
+  if (candles.length < 5) return EMPTY_OBV;
+
+  const values: number[] = [0];
+  for (let i = 1; i < candles.length; i++) {
+    const prev = values[i - 1];
+    if (candles[i].close > candles[i - 1].close) values.push(prev + candles[i].volume);
+    else if (candles[i].close < candles[i - 1].close) values.push(prev - candles[i].volume);
+    else values.push(prev);
+  }
+
+  // 최근 5일 OBV 추세 (선형 회귀 기울기 부호)
+  const recent = values.slice(-5);
+  let sumXY = 0, sumX = 0, sumY = 0, sumX2 = 0;
+  for (let i = 0; i < recent.length; i++) {
+    sumX += i; sumY += recent[i]; sumXY += i * recent[i]; sumX2 += i * i;
+  }
+  const n = recent.length;
+  const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX || 1);
+  const obvRange = Math.max(...recent) - Math.min(...recent);
+  const normalizedSlope = obvRange > 0 ? slope / obvRange : 0;
+  const trend: OBVResult['trend'] = normalizedSlope > 0.1 ? 'RISING' : normalizedSlope < -0.1 ? 'FALLING' : 'FLAT';
+
+  // 다이버전스: 가격 신고/신저 vs OBV 역행
+  let divergence: OBVResult['divergence'] = 'NONE';
+  if (candles.length >= 10) {
+    const priceRecent = candles.slice(-5);
+    const pricePrior = candles.slice(-10, -5);
+    const obvRecent = values.slice(-5);
+    const obvPrior = values.slice(-10, -5);
+
+    const priceRecentHigh = Math.max(...priceRecent.map(c => c.close));
+    const pricePriorHigh = Math.max(...pricePrior.map(c => c.close));
+    const obvRecentMax = Math.max(...obvRecent);
+    const obvPriorMax = Math.max(...obvPrior);
+
+    const priceRecentLow = Math.min(...priceRecent.map(c => c.close));
+    const pricePriorLow = Math.min(...pricePrior.map(c => c.close));
+    const obvRecentMin = Math.min(...obvRecent);
+    const obvPriorMin = Math.min(...obvPrior);
+
+    // 가격 신고가 + OBV 하락 → 베어리시 (매집 약화)
+    if (priceRecentHigh > pricePriorHigh && obvRecentMax < obvPriorMax) divergence = 'BEARISH';
+    // 가격 신저가 + OBV 상승 → 불리시 (숨은 매집)
+    else if (priceRecentLow < pricePriorLow && obvRecentMin > obvPriorMin) divergence = 'BULLISH';
+  }
+
+  return { values, trend, divergence };
+}
+
+// ── CMF (Chaikin Money Flow) ──
+// 종가 위치(고저 범위 내) × 거래량 누적 → 자금 유입/유출 압력
+// 입력: 오름차순 (oldest → newest)
+
+export interface CMFResult {
+  value: number;          // -1.0 ~ +1.0 (현재 CMF)
+  signal: 'INFLOW' | 'OUTFLOW' | 'NEUTRAL';
+  strength: number;       // 0.0 ~ 1.0 (절대값)
+}
+
+export function cmf(candles: OHLCV[], period: number = 20): CMFResult {
+  if (candles.length < period || period <= 0) return { value: 0, signal: 'NEUTRAL', strength: 0 };
+
+  const recent = candles.slice(-period);
+  let mfvSum = 0;
+  let volSum = 0;
+
+  for (const c of recent) {
+    const range = c.high - c.low;
+    // Money Flow Multiplier: 종가가 당일 고저 범위에서 어디 위치했는지
+    // +1: 고가 마감 (강한 매수), -1: 저가 마감 (강한 매도), 0: 정중앙
+    const mfMultiplier = range > 0 ? ((c.close - c.low) - (c.high - c.close)) / range : 0;
+    const mfVolume = mfMultiplier * c.volume;
+    mfvSum += mfVolume;
+    volSum += c.volume;
+  }
+
+  const value = volSum > 0 ? mfvSum / volSum : 0;
+  const strength = Math.min(1.0, Math.abs(value) * 2.5); // 0.4 이상이면 강한 신호
+  const signal: CMFResult['signal'] = value > 0.05 ? 'INFLOW' : value < -0.05 ? 'OUTFLOW' : 'NEUTRAL';
+
+  return { value, signal, strength };
 }

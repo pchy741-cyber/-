@@ -29,8 +29,9 @@ async function load(): Promise<void> {
     ]);
     for (const r of rows) {
       const v = parseInt(r.value, 10);
-      if (r.key === KEY_LIVE) streakLive = Number.isNaN(v) ? 0 : v;
-      if (r.key === KEY_PAPER) streakPaper = Number.isNaN(v) ? 0 : v;
+      const safeV = Number.isFinite(v) ? v : 0;
+      if (r.key === KEY_LIVE) streakLive = safeV;
+      if (r.key === KEY_PAPER) streakPaper = safeV;
     }
   } catch {
     /* DB 없으면 0으로 시작 */
@@ -52,10 +53,17 @@ async function persist(isPaper: boolean): Promise<void> {
   }
 }
 
+/** Streak thresholds and corresponding position size multipliers */
+const STREAK_SEVERE = 3; // 3+ consecutive losses → 50% position
+const STREAK_MODERATE = 2; // 2 consecutive losses → 70% position
+const MULTIPLIER_SEVERE = 0.5;
+const MULTIPLIER_MODERATE = 0.7;
+const MULTIPLIER_NORMAL = 1.0;
+
 function calcMultiplier(streak: number): number {
-  if (streak >= 3) return 0.5;
-  if (streak >= 2) return 0.7;
-  return 1.0;
+  if (streak >= STREAK_SEVERE) return MULTIPLIER_SEVERE;
+  if (streak >= STREAK_MODERATE) return MULTIPLIER_MODERATE;
+  return MULTIPLIER_NORMAL;
 }
 
 /** 거래 결과 기록 — SELL 체결 후 호출 */

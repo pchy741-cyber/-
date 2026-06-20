@@ -15,7 +15,6 @@ import { logger } from '../utils/logger.js';
  * 3. Kill Switch 장기 활성 → CEO 알림
  */
 
-let _lastHealthCheck = new Date();
 let consecutiveHealthFailures = 0;
 
 export async function runSelfHealing(): Promise<void> {
@@ -25,7 +24,8 @@ export async function runSelfHealing(): Promise<void> {
   // 1. KIS 토큰 상태 확인 + 재발급
   try {
     await getAccessToken();
-  } catch {
+  } catch (tokenErr) {
+    logger.debug(`KIS 토큰 확인 실패: ${tokenErr}`, { component: 'HEAL' });
     issues.push('KIS 토큰 만료/에러');
     try {
       clearTokenCache();
@@ -40,7 +40,8 @@ export async function runSelfHealing(): Promise<void> {
   try {
     const ok = await checkDb();
     if (!ok) throw new Error('DB health check failed');
-  } catch {
+  } catch (dbErr) {
+    logger.debug(`DB health check 실패: ${dbErr}`, { component: 'HEAL' });
     issues.push('PostgreSQL 연결 끊김');
     // pg Pool은 자동 재연결하므로 별도 조치 불필요
     // 다만 연속 실패 시 알림
@@ -90,6 +91,4 @@ export async function runSelfHealing(): Promise<void> {
   if (consecutiveHealthFailures >= 3 || fixed.length > 0) {
     await sendTelegramMessage(msg).catch(() => {});
   }
-
-  _lastHealthCheck = new Date();
 }

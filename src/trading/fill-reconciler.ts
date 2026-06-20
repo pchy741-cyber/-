@@ -8,8 +8,12 @@ import { cancelOrder, getOrderFills } from '../kis/order.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
 
-const PENDING_TIMEOUT_MS = 10 * 60 * 1000; // 10분 초과 미체결 → 취소
-const EXTERNAL_SELL_COOLDOWN_MS = 5 * 60 * 1000; // 체인 오픈 5분 이내는 체크 스킵 (체결 지연 여유)
+/** 미체결 주문 타임아웃 (10분) — 초과 시 자동 취소 */
+const PENDING_TIMEOUT_MS = 10 * 60 * 1000;
+/** 외부매도 감지 쿨다운 (5분) — 체인 오픈 직후 체결 지연 여유 */
+const EXTERNAL_SELL_COOLDOWN_MS = 5 * 60 * 1000;
+/** KIS_SYNC 스냅샷 만료 (24시간) */
+const KIS_SYNC_SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000;
 
 // ── KIS_SYNC 포지션 스냅샷 (수동매수, DB 체인 없음) ──
 // v10.5: paper/live 모드별 분리 (크로스오염 방지)
@@ -106,7 +110,8 @@ export async function reconcilePendingOrders(): Promise<void> {
           if (order.side === 'SELL' && isFullFill && order.chain_id) {
             try {
               const { rows: chainRows } = await getPool().query(
-                `SELECT * FROM transaction_chains WHERE id = $1 AND status != 'CLOSED'`,
+                `SELECT id, stock_code, avg_buy_price, total_quantity, realized_pnl, pnl_pct
+                 FROM transaction_chains WHERE id = $1 AND status != 'CLOSED'`,
                 [order.chain_id],
               );
               const ch = chainRows[0];
@@ -116,10 +121,10 @@ export async function reconcilePendingOrders(): Promise<void> {
                 const pnlPctNum = avgBuy > 0 && fp > 0 ? ((fp - avgBuy) / avgBuy) * 100 : null;
                 await getPool().query(
                   `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2, total_quantity = 0,
-                    realized_pnl = realized_pnl + CASE WHEN $3 > 0 THEN $3 * (1 - ${KR_FEE.SELL_FEE_PCT}) * total_quantity - avg_buy_price * total_quantity ELSE 0 END,
+                    realized_pnl = realized_pnl + CASE WHEN $3 > 0 THEN $3 * (1 - $5) * total_quantity - avg_buy_price * total_quantity ELSE 0 END,
                     pnl_pct = CASE WHEN $4 IS NOT NULL THEN ROUND($4::numeric, 2) ELSE pnl_pct END
                    WHERE id = $1`,
-                  [ch.id, `체결 확인 자동 정산 (KIS주문: ${kisOrderNo})`, fp, pnlPctNum],
+                  [ch.id, `체결 확인 자동 정산 (KIS주문: ${kisOrderNo})`, fp, pnlPctNum, KR_FEE.SELL_FEE_PCT],
                 );
                 logger.info(
                   `💰 SELL 체결 → 체인 정산: ${order.stock_code} #${ch.id.slice(0, 8)} @${fp}원 (${pnlPctNum?.toFixed(2) ?? '?'}%)`,
@@ -274,20 +279,30 @@ export async function reconcileExternalSells(): Promise<void> {
         const pnlPctNum = avgBuy > 0 && fillPrice > 0 ? ((fillPrice - avgBuy) / avgBuy) * 100 : null;
 
         const ghostOrderNo = `EXT_${Date.now().toString(36)}`;
-        await getPool().query(
-          `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2,
-            realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + $3 * (1 - ${KR_FEE.SELL_FEE_PCT}) * total_quantity - avg_buy_price * total_quantity ELSE realized_pnl END,
-            pnl_pct = CASE WHEN $4 IS NOT NULL THEN ROUND($4::numeric, 2) ELSE pnl_pct END
-           WHERE id = $1`,
-          [chain.id, '외부매도 (KIS 앱 직접 매도)', fillPrice, pnlPctNum],
-        );
-        // 체인의 is_paper에서 trading_mode 결정 (config.tradingMode은 글로벌 값이라 불일치 위험)
-        const chainMode = chain.is_paper ? 'paper' : 'live';
-        await getPool().query(
-          `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
-           VALUES ($1, $2, 'SELL', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, 'EXTERNAL', '외부 매도 감지')`,
-          [chain.id, chain.stock_code, chain.total_quantity, fillPrice, ghostOrderNo, chainMode],
-        );
+        const txClient = await getPool().connect();
+        try {
+          await txClient.query('BEGIN');
+          await txClient.query(
+            `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2,
+              realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + $3 * (1 - $5) * total_quantity - avg_buy_price * total_quantity ELSE realized_pnl END,
+              pnl_pct = CASE WHEN $4 IS NOT NULL THEN ROUND($4::numeric, 2) ELSE pnl_pct END
+             WHERE id = $1`,
+            [chain.id, '외부매도 (KIS 앱 직접 매도)', fillPrice, pnlPctNum, KR_FEE.SELL_FEE_PCT],
+          );
+          // 체인의 is_paper에서 trading_mode 결정 (config.tradingMode은 글로벌 값이라 불일치 위험)
+          const chainMode = chain.is_paper ? 'paper' : 'live';
+          await txClient.query(
+            `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
+             VALUES ($1, $2, 'SELL', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', $6, 'EXTERNAL', '외부 매도 감지')`,
+            [chain.id, chain.stock_code, chain.total_quantity, fillPrice, ghostOrderNo, chainMode],
+          );
+          await txClient.query('COMMIT');
+        } catch (txErr) {
+          await txClient.query('ROLLBACK').catch(() => {});
+          throw txErr;
+        } finally {
+          txClient.release();
+        }
 
         logger.warn(
           `🚪 유령 체인 정리: ${chain.stock_code} ${chain.total_quantity}주 → CLOSED (외부매도, ${pnlPct}%)`,
@@ -343,8 +358,8 @@ async function _reconcileKisSyncExternalSells(
     if (kisQty > 0) continue; // 아직 보유 중
     if (dbChainCodes.has(stockCode)) continue; // DB 체인 존재 → 기존 reconciler가 처리
 
-    // 24시간 이상 지난 스냅샷은 만료
-    if (now - snap.seenAt > 24 * 60 * 60 * 1000) {
+    // TTL 이상 지난 스냅샷은 만료
+    if (now - snap.seenAt > KIS_SYNC_SNAPSHOT_TTL_MS) {
       _getKisSyncSnapshot().delete(stockCode);
       continue;
     }
@@ -382,11 +397,13 @@ async function _reconcileKisSyncExternalSells(
     const pnlPctNum = snap.avgBuyPrice > 0 && sellPrice > 0 ? ((sellPrice - snap.avgBuyPrice) / snap.avgBuyPrice) * 100 : null;
     const invested = snap.avgBuyPrice * snap.quantity;
 
+    const txClient = await getPool().connect();
     try {
+      await txClient.query('BEGIN');
       // transaction_chain 생성 (CLOSED, realized_pnl 포함)
       const {
         rows: [chain],
-      } = await getPool().query(
+      } = await txClient.query(
         `INSERT INTO transaction_chains
            (stock_code, status, strategy_mode, avg_buy_price, total_quantity, total_invested,
             realized_pnl, pnl_pct, is_paper, opened_at, closed_at, close_reason)
@@ -397,7 +414,7 @@ async function _reconcileKisSyncExternalSells(
       );
 
       const ghostOrderNo = `EXT_KS_${Date.now().toString(36)}`;
-      await getPool().query(
+      await txClient.query(
         `INSERT INTO orders
            (chain_id, stock_code, side, order_type, quantity, price,
             filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
@@ -405,6 +422,7 @@ async function _reconcileKisSyncExternalSells(
                  'KIS 외부 매도 자동 기록 (직접 매도/예약매도 체결)')`,
         [chain.id, stockCode, snap.quantity, sellPrice, ghostOrderNo],
       );
+      await txClient.query('COMMIT');
 
       logger.info(
         `✅ KIS_SYNC 외부매도 기록: ${wlName}(${stockCode}) ${snap.quantity}주 @${sellPrice}원 수익률 ${pnlPct}%`,
@@ -421,7 +439,10 @@ async function _reconcileKisSyncExternalSells(
 
       _getKisSyncSnapshot().delete(stockCode);
     } catch (e) {
+      await txClient.query('ROLLBACK').catch(() => {});
       logger.error(`KIS_SYNC 외부매도 기록 실패 [${stockCode}]: ${e}`, { component: 'RECONCILER' });
+    } finally {
+      txClient.release();
     }
   }
 }

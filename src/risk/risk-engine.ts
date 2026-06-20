@@ -194,8 +194,8 @@ export class RiskEngine {
 
       return { approved: true, reason: 'OK' };
     } catch (err) {
-      logger.warn(`⚠️ 일일 거래 수 조회 실패 — fail-open 허용 (소프트가드, 킬스위치/MDD가 하드가드): ${err}`, { component: 'RISK' });
-      return { approved: true, reason: '일일 거래 수 조회 실패 — fail-open 허용' };
+      logger.warn(`⚠️ 일일 거래 수 조회 실패 — fail-closed 차단: ${err}`, { component: 'RISK' });
+      return { approved: false, reason: '일일 거래 수 조회 실패 — fail-closed 차단' };
     }
   }
 
@@ -283,25 +283,12 @@ export class RiskEngine {
     }
     if (startValue > 0 && dailyLoss > startValue * 0.2) {
       logger.warn(
-        `⚠️ 외부 매도/입출금 감지: 스냅샷 ${startValue.toLocaleString()}원 → 현재 ${currentValue.toLocaleString()}원 (${((dailyLoss / startValue) * 100).toFixed(0)}% 감소) → Kill Switch 스킵, 스냅샷 재설정`,
+        `⚠️ 외부 매도/입출금 감지: 스냅샷 ${startValue.toLocaleString()}원 → 현재 ${currentValue.toLocaleString()}원 (${((dailyLoss / startValue) * 100).toFixed(0)}% 감소) → Kill Switch 스킵 (스냅샷 유지 — trading P&L만 기준점 변경 가능)`,
         { component: 'RISK' },
       );
-      // 스냅샷을 현재 잔고로 재설정 (외부 매도 후 기준점 리셋)
-      try {
-        await insertSnapshot({
-          total_value: getDomesticTotalAssets(currentBalance),
-          cash_balance: currentBalance.orderableCash,
-          invested_value: currentBalance.totalEvalAmount,
-          unrealized_pnl: currentBalance.totalProfitLoss,
-          daily_pnl: 0,
-          daily_pnl_pct: 0,
-          positions: currentBalance.positions,
-          is_paper: isPaper,
-        });
-      } catch {
-        /* 스냅샷 실패해도 무시 */
-      }
-      return { approved: true, reason: '외부 매도 감지 — 스냅샷 재설정, 매매 허용' };
+      // ⚠️ 스냅샷을 재설정하지 않음 — 외부 입출금/매도로 기준점이 리셋되면
+      // 실제 trading 손실이 은폐될 수 있음. 기준점은 trading P&L에 의해서만 변경되어야 함.
+      return { approved: true, reason: '외부 매도/입출금 감지 — Kill Switch 스킵, 스냅샷 유지' };
     }
 
     // 일일 손실한도: Live 25% / Paper 80% — max(시작, 현재) 기준
@@ -331,8 +318,9 @@ export class RiskEngine {
     }
 
     if (dailyLoss > limitAmount * 0.7) {
+      const limitUsedPct = limitAmount > 0 ? ((dailyLoss / limitAmount) * 100).toFixed(0) : '?';
       logger.warn(
-        `⚠️ 일일 손실 경고: ${dailyLoss.toLocaleString()}원(${lossPct}%) — 한도의 ${((dailyLoss / limitAmount) * 100).toFixed(0)}%`,
+        `⚠️ 일일 손실 경고: ${dailyLoss.toLocaleString()}원(${lossPct}%) — 한도의 ${limitUsedPct}%`,
         { component: 'RISK' },
       );
     }
@@ -460,7 +448,7 @@ export class RiskEngine {
             [isPaper],
           );
           const osMarketUsd = osRows.reduce(
-            (s: number, h: any) => s + Number(h.quantity) * Number(h.last_price || 0),
+            (s: number, h: { quantity: string; last_price: string }) => s + Number(h.quantity) * Number(h.last_price || 0),
             0,
           );
           const paperCashUsd = isPaper ? await computePaperCash(fxRate) : 0;

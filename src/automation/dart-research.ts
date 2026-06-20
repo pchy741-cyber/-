@@ -1,14 +1,15 @@
 /**
- * DART 재무제표 조회 + Gemini AI 분석 (GCP Vertex AI 크레딧 활용)
+ * DART 재무제표 조회 + Gemini AI 분석 (무료 AI Studio 활용)
  *
  * - DART Open API: 재무제표(fnlttSinglAcnt), 기업정보(company), 공시목록(list)
- * - Vertex AI Gemini: 재무 데이터 자연어 분석 → 투자 인사이트 생성
+ * - Gemini AI Studio (무료): 재무 데이터 자연어 분석 → 투자 인사이트 생성
  * - 결과: Track A fundamental_score 강화 + 퀀트 리서치 봇 표시
  */
 
 import { callVertexGemini } from '../utils/vertex-gemini.js';
 import { logger } from '../utils/logger.js';
 import { sleep } from '../utils/sleep.js';
+import { calcPiotroskiFScore } from './piotroski.js';
 
 const COMP = 'DART_RESEARCH';
 const DART_BASE = 'https://opendart.fss.or.kr/api';
@@ -33,6 +34,12 @@ export interface FinancialStatement {
   totalAssets: number;         // 자산총계 (원)
   totalDebt: number;           // 부채총계 (원)
   debtRatio: number;           // 부채비율 (%)
+  // Piotroski F-Score 추가 필드 (DART API에서 파싱, 없으면 undefined)
+  operatingCashFlow?: number;  // 영업활동현금흐름 (원) — CF
+  currentAssets?: number;      // 유동자산 (원) — BS
+  currentLiabilities?: number; // 유동부채 (원) — BS
+  equity?: number;             // 자본총계 (원) — BS
+  grossProfit?: number;        // 매출총이익 (원) — IS
   fetchedAt: string;
 }
 
@@ -42,6 +49,7 @@ export interface DartResearchResult {
   financial?: FinancialStatement;
   aiAnalysis?: string;         // Gemini 분석 텍스트
   fundamentalScore?: number;   // AI 판단 기본적 점수 (0~100)
+  piotroskiScore?: number;     // Piotroski F-Score (0~9)
   keyRisks: string[];
   keyStrengths: string[];
   analyzedAt: string;
@@ -55,7 +63,7 @@ interface DartCompanyInfo {
 }
 
 interface DartFinancialRow {
-  sj_div: string;     // IS=손익, BS=재무상태
+  sj_div: string;     // IS=손익, BS=재무상태, CF=현금흐름
   account_nm: string; // 계정명
   thstrm_amount: string; // 당기
   frmtrm_amount: string; // 전기
@@ -93,7 +101,8 @@ async function getCorpCode(apiKey: string, stockCode: string): Promise<string | 
       return data.corp_code;
     }
     return null;
-  } catch {
+  } catch (err) {
+    logger.debug(`DART 기업코드 조회 실패 (${stockCode}): ${err}`, { component: 'DART_RESEARCH' });
     return null;
   }
 }
@@ -127,11 +136,18 @@ async function fetchFinancialStatement(
 ): Promise<FinancialStatement | null> {
   try {
     const url = `${DART_BASE}/fnlttSinglAcnt.json?crtfc_key=${apiKey}&corp_code=${corpCode}&bsns_year=${year}&reprt_code=${REPRT_CODE[quarter]}`;
+    logger.info(`DART 재무제표 요청: ${stockCode}/${year}/${quarter} corp=${corpCode}`, { component: COMP });
     const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      logger.warn(`DART 재무제표 HTTP ${res.status}: ${stockCode}/${year}`, { component: COMP });
+      return null;
+    }
 
     const data = (await res.json()) as { status: string; list?: DartFinancialRow[] };
-    if (data.status !== '000' || !data.list?.length) return null;
+    if (data.status !== '000' || !data.list?.length) {
+      logger.warn(`DART 재무제표 응답 status=${data.status} rows=${data.list?.length ?? 0}: ${stockCode}/${year}`, { component: COMP });
+      return null;
+    }
 
     const rows = data.list;
 
@@ -146,6 +162,17 @@ async function fetchFinancialStatement(
     // 재무상태표 (BS)
     const assetRow = find('BS', '자산총계');
     const debtRow = find('BS', '부채총계');
+    const currentAssetsRow = find('BS', '유동자산');
+    const currentLiabRow = find('BS', '유동부채');
+    const equityRow = find('BS', '자본총계');
+
+    // 손익계산서 추가 (IS)
+    const grossProfitRow = find('IS', '매출총이익');
+
+    // 현금흐름표 (CF)
+    const cfRow = rows.find(
+      (r) => r.sj_div === 'CF' && r.account_nm.includes('영업활동'),
+    );
 
     const revenue = parseAmount(revRow?.thstrm_amount);
     const revenuePrev = parseAmount(revRow?.frmtrm_amount);
@@ -154,8 +181,14 @@ async function fetchFinancialStatement(
     const netIncome = parseAmount(netRow?.thstrm_amount);
     const totalAssets = parseAmount(assetRow?.thstrm_amount);
     const totalDebt = parseAmount(debtRow?.thstrm_amount);
-    const equity = totalAssets - totalDebt;
-    const debtRatio = equity > 0 ? Math.round((totalDebt / equity) * 100) : 0;
+    const equityVal = equityRow ? parseAmount(equityRow.thstrm_amount) : totalAssets - totalDebt;
+    const debtRatio = equityVal > 0 ? Math.round((totalDebt / equityVal) * 100) : 0;
+
+    // Piotroski 추가 필드 (있으면 파싱, 없으면 undefined)
+    const operatingCashFlow = cfRow ? parseAmount(cfRow.thstrm_amount) : undefined;
+    const currentAssets = currentAssetsRow ? parseAmount(currentAssetsRow.thstrm_amount) : undefined;
+    const currentLiabilities = currentLiabRow ? parseAmount(currentLiabRow.thstrm_amount) : undefined;
+    const grossProfit = grossProfitRow ? parseAmount(grossProfitRow.thstrm_amount) : undefined;
 
     return {
       stockCode,
@@ -171,6 +204,11 @@ async function fetchFinancialStatement(
       totalAssets,
       totalDebt,
       debtRatio,
+      operatingCashFlow,
+      currentAssets,
+      currentLiabilities,
+      equity: equityVal,
+      grossProfit,
       fetchedAt: new Date().toISOString(),
     };
   } catch (err) {
@@ -220,34 +258,47 @@ ${additionalContext ? `\n## 추가 컨텍스트\n${additionalContext.slice(0, 15
 
 위 재무 데이터를 분석하여 JSON으로 응답하세요.`;
 
-  try {
-    const text = await callVertexGemini(ANALYSIS_SYSTEM, userMsg, {
-      label: `dart-research:${financial.stockCode}`,
-      useVertex: true, // GCP 크레딧 직접 사용
-      temperature: 0.2,
-      maxOutputTokens: 1024,
-    });
+  // 최대 2회 시도 (모델 truncation 대응)
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const text = await callVertexGemini(ANALYSIS_SYSTEM, userMsg, {
+        label: `dart-research:${financial.stockCode}`,
+        grounded: true, // GenAI App Builder 크레딧 소모 (Google Search Grounding)
+        temperature: attempt === 0 ? 0.2 : 0.5,
+        maxOutputTokens: 8192,
+      });
 
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return null;
+      // 코드블록 마커 제거 후 JSON 추출
+      const cleaned = text.replace(/```(?:json)?\s*/g, '').replace(/```/g, '');
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        logger.warn(`Gemini JSON 추출 실패 (${financial.stockCode}) attempt=${attempt}: ${text.slice(0, 300)}`, { component: COMP });
+        if (attempt === 0) { await sleep(1000); continue; }
+        return null;
+      }
 
-    const parsed = JSON.parse(jsonMatch[0]) as {
-      fundamentalScore?: number;
-      summary?: string;
-      strengths?: string[];
-      risks?: string[];
-    };
+      const parsed = JSON.parse(jsonMatch[0]) as {
+        fundamentalScore?: number;
+        summary?: string;
+        strengths?: string[];
+        risks?: string[];
+      };
 
-    return {
-      score: Math.max(0, Math.min(100, Number(parsed.fundamentalScore ?? 50))),
-      analysis: parsed.summary ?? '',
-      strengths: parsed.strengths ?? [],
-      risks: parsed.risks ?? [],
-    };
-  } catch (err) {
-    logger.warn(`Gemini 분석 실패 (${financial.stockCode}): ${err}`, { component: COMP });
-    return null;
+      logger.info(`Gemini 분석 완료 (${financial.stockCode}): score=${parsed.fundamentalScore}`, { component: COMP });
+
+      return {
+        score: Math.max(0, Math.min(100, Number(parsed.fundamentalScore ?? 50))),
+        analysis: parsed.summary ?? '',
+        strengths: parsed.strengths ?? [],
+        risks: parsed.risks ?? [],
+      };
+    } catch (err) {
+      logger.warn(`Gemini 분석 실패 (${financial.stockCode}) attempt=${attempt}: ${err}`, { component: COMP });
+      if (attempt === 0) { await sleep(1000); continue; }
+      return null;
+    }
   }
+  return null;
 }
 
 // ── 메인: 종목 리서치 실행 ──
@@ -260,8 +311,20 @@ export async function runDartResearch(
     additionalContext?: string;
   },
 ): Promise<DartResearchResult> {
-  const apiKey = process.env.DART_API_KEY;
-  const year = options?.year ?? String(new Date().getFullYear() - (new Date().getMonth() < 3 ? 1 : 0));
+  const apiKey = process.env.DART_API_KEY?.replace(/^\uFEFF/, '').trim();
+  // 연간보고서: 3월 공시 → 6월에도 전년도 데이터가 최신. 항상 전년도 기본값
+  // 1분기(q1): 5월 공시, 반기(h1): 8월 공시, 3분기(q3): 11월 공시
+  const now = new Date();
+  const defaultYear = (() => {
+    const q = options?.quarter ?? 'annual';
+    const m = now.getMonth(); // 0-indexed
+    if (q === 'annual') return now.getFullYear() - 1; // 연간보고서는 항상 전년도
+    if (q === 'q1') return m < 5 ? now.getFullYear() - 1 : now.getFullYear(); // 5월 이후 당해
+    if (q === 'h1') return m < 8 ? now.getFullYear() - 1 : now.getFullYear(); // 8월 이후 당해
+    if (q === 'q3') return m < 11 ? now.getFullYear() - 1 : now.getFullYear(); // 11월 이후 당해
+    return now.getFullYear() - 1;
+  })();
+  const year = options?.year ?? String(defaultYear);
   const quarter = options?.quarter ?? 'annual';
   const cacheKey = `${stockCode}-${year}-${quarter}`;
 
@@ -299,6 +362,34 @@ export async function runDartResearch(
     logger.info(`DART 재무 조회 완료: ${financial.corpName} ${year}년 영업이익 ${financial.operatingIncomeYoy > 0 ? '+' : ''}${financial.operatingIncomeYoy}%`, { component: COMP });
   }
 
+  // Piotroski F-Score: 전년도 재무제표 추가 조회 → 당기 vs 전기 비교
+  if (financial) {
+    try {
+      const priorYear = String(Number(year) - 1);
+      const priorCacheKey = `${stockCode}-${priorYear}-${quarter}`;
+      const priorCached = _resultCache.get(priorCacheKey);
+      let priorFinancial: FinancialStatement | null = null;
+
+      if (priorCached && Date.now() - priorCached.fetchedAt < RESULT_CACHE_TTL_MS) {
+        priorFinancial = priorCached.result.financial ?? null;
+      } else {
+        await sleep(300); // DART API rate limit
+        priorFinancial = await fetchFinancialStatement(apiKey, corpCode, stockCode, base.corpName, priorYear, quarter);
+      }
+
+      if (priorFinancial) {
+        const piotroski = calcPiotroskiFScore(financial, priorFinancial);
+        base.piotroskiScore = piotroski.fScore;
+        logger.info(
+          `📊 Piotroski F-Score: ${stockCode} = ${piotroski.fScore}/9 (${piotroski.signals.map((s, i) => `F${i + 1}:${s ? '✓' : '✗'}`).join(' ')})`,
+          { component: COMP },
+        );
+      }
+    } catch (err) {
+      logger.warn(`Piotroski 계산 실패 (${stockCode}): ${err}`, { component: COMP });
+    }
+  }
+
   // Gemini 분석 (재무 데이터 있을 때만)
   if (financial) {
     const geminiResult = await analyzeWithGemini(financial, options?.additionalContext);
@@ -327,4 +418,17 @@ export async function runDartResearchBatch(
     await sleep(800); // DART API rate limit 대응
   }
   return results;
+}
+
+/**
+ * 캐시된 Piotroski F-Score 반환 (Track B pipeline용)
+ * 캐시 미스 시 undefined (리서치 미실행 종목)
+ */
+export function getCachedPiotroskiScore(stockCode: string): number | undefined {
+  for (const [key, entry] of _resultCache) {
+    if (key.startsWith(`${stockCode}-`) && Date.now() - entry.fetchedAt < RESULT_CACHE_TTL_MS) {
+      return entry.result.piotroskiScore;
+    }
+  }
+  return undefined;
 }

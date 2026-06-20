@@ -15,7 +15,8 @@ import { logger } from '../utils/logger.js';
 
 export type KillSwitchScope = 'KR' | 'OVERSEAS';
 
-const MDD_GRACE_PERIOD_MS = 10 * 60 * 1000; // 수동 해제 후 10분간 자동 재발동 차단
+/** 수동 해제 후 자동 재발동 차단 기간 (10분) */
+const MDD_GRACE_PERIOD_MS = 10 * 60 * 1000;
 
 interface KillSwitchState {
   active: boolean;
@@ -163,9 +164,11 @@ export async function activateKillSwitchAll(reason: string, manual = false): Pro
  * Kill Switch 해제
  * @param force true = 수동 발동이어도 강제 해제 (대시보드 명시적 해제)
  * @param scope 'KR' | 'OVERSEAS'
+ * @param isPaperOverride 명시적 paper/live 모드 지정 — ALS 컨텍스트 대신 사용
  */
-export async function deactivateKillSwitch(force = false, scope: KillSwitchScope = 'KR'): Promise<void> {
-  const s = getState(scope);
+export async function deactivateKillSwitch(force = false, scope: KillSwitchScope = 'KR', isPaperOverride?: boolean): Promise<void> {
+  const isPaper = isPaperOverride !== undefined ? isPaperOverride : getCtxIsPaper();
+  const s = getState(scope, isPaper);
   if (!s.active) return;
 
   const scopeLabel = scope === 'OVERSEAS' ? '해외' : '국내';
@@ -178,13 +181,12 @@ export async function deactivateKillSwitch(force = false, scope: KillSwitchScope
     return;
   }
 
-  const isPaper = getCtxIsPaper();
   const mode = isPaper ? 'paper' : 'live';
   const prevReason = s.reason;
 
   const newState = DEFAULT_STATE();
   if (force) newState.forcedDeactivatedAt = new Date();
-  setState(scope, newState);
+  setState(scope, newState, isPaper);
 
   logger.info(`✅ Kill Switch 해제 [${scopeLabel}]${force ? ' [강제]' : ''} [${mode}]`, { component: 'KILL_SWITCH' });
   await logSystem(
@@ -208,8 +210,8 @@ export async function deactivateKillSwitch(force = false, scope: KillSwitchScope
 }
 
 /** KR+OVERSEAS 동시 해제 (대시보드/텔레그램) */
-export async function deactivateKillSwitchAll(force = false): Promise<void> {
-  await Promise.all([deactivateKillSwitch(force, 'KR'), deactivateKillSwitch(force, 'OVERSEAS')]);
+export async function deactivateKillSwitchAll(force = false, isPaperOverride?: boolean): Promise<void> {
+  await Promise.all([deactivateKillSwitch(force, 'KR', isPaperOverride), deactivateKillSwitch(force, 'OVERSEAS', isPaperOverride)]);
 }
 
 /**

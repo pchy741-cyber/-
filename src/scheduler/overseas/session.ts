@@ -122,7 +122,8 @@ export async function restoreSessionStartValue(): Promise<void> {
         const parsed = JSON.parse(rows[0].value);
         const savedAt = new Date(parsed.savedAt);
         const ageMs = Date.now() - savedAt.getTime();
-        if (ageMs < 24 * 60 * 60_000) {
+        const MAX_SESSION_AGE_MS = 24 * 60 * 60_000; // 24 hours
+        if (ageMs < MAX_SESSION_AGE_MS && Number.isFinite(parsed.value)) {
           overseasState.sessionStartPortfolioValue.set(mode, parsed.value);
           logger.info(
             `📦 해외 세션 시작값 복원 [${mode}]: $${parsed.value.toFixed(0)} (${Math.round(ageMs / 60000)}분 전 저장)`,
@@ -194,10 +195,13 @@ function isUSDST(): boolean {
 /** DST 여부 외부 노출 (cron 스케줄 등에서 사용) */
 export { isUSDST };
 
+// ── KST 오프셋 (UTC → KST 변환용, 밀리초) ──
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000; // +9 hours
+
 // ── 현재 열려 있는 시장 판별 (KST 기준, DST 자동) ──
 export function getOpenMarketRegions(): Set<string> {
   const now = new Date();
-  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const kst = new Date(now.getTime() + KST_OFFSET_MS);
   const mins = kst.getUTCHours() * 60 + kst.getUTCMinutes();
   const open = new Set<string>();
 
@@ -232,7 +236,7 @@ export function getOpenMarketRegions(): Set<string> {
  */
 export function isUSMarketLastNMinutes(minutes: number = 30): boolean {
   const now = new Date();
-  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const kst = new Date(now.getTime() + KST_OFFSET_MS);
   const mins = kst.getUTCHours() * 60 + kst.getUTCMinutes();
   const shift = isUSDST() ? 0 : 60;
   const usClose = 5 * 60 + shift; // 05:00 KST (summer) / 06:00 KST (winter)
@@ -243,7 +247,7 @@ export function isUSMarketLastNMinutes(minutes: number = 30): boolean {
 /** US 마감까지 남은 분 수 */
 export function getMinutesToUSClose(): number {
   const now = new Date();
-  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const kst = new Date(now.getTime() + KST_OFFSET_MS);
   const mins = kst.getUTCHours() * 60 + kst.getUTCMinutes();
   const shift = isUSDST() ? 0 : 60;
   const usClose = 5 * 60 + shift;
@@ -255,14 +259,14 @@ export function getMinutesToUSClose(): number {
 /** KST 날짜 문자열 반환 */
 export function getKSTDateString(): string {
   const now = new Date();
-  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const kst = new Date(now.getTime() + KST_OFFSET_MS);
   return `${kst.getUTCFullYear()}-${String(kst.getUTCMonth() + 1).padStart(2, '0')}-${String(kst.getUTCDate()).padStart(2, '0')}`;
 }
 
 /** 미국 세션 ID — KST 기준 날짜+야간세션(0~6시는 전날로 묶음) */
 export function getUSSessionId(): string {
   const now = new Date();
-  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const kst = new Date(now.getTime() + KST_OFFSET_MS);
   const h = kst.getUTCHours();
   if (h < 7) kst.setUTCDate(kst.getUTCDate() - 1);
   return `${kst.getUTCFullYear()}-${String(kst.getUTCMonth() + 1).padStart(2, '0')}-${String(kst.getUTCDate()).padStart(2, '0')}`;

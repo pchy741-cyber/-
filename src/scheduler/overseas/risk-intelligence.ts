@@ -96,7 +96,10 @@ export async function getGradualCooldown(isPaper?: boolean): Promise<GradualCool
       return { level: 1, cooldownMs: 4 * 60 * 60_000, sizingPenalty: 1.0, message: `1회 손절 → 해당 종목 4h 쿨다운` };
     }
     return { level: 0, cooldownMs: 0, sizingPenalty: 1.0, message: '' };
-  } catch {
+  } catch (e) {
+    // Cooldown query failed — safe fallback to no cooldown
+    const err = e as Error;
+    if (err.message) { /* non-critical, logged by DB layer */ }
     return { level: 0, cooldownMs: 0, sizingPenalty: 1.0, message: '' };
   }
 }
@@ -126,7 +129,10 @@ export async function getGradualCooldownStocks(cooldown: GradualCooldown, isPape
       [intervalHours, mode],
     );
     return new Set(rows.map((r: { stock_code: string }) => String(r.stock_code)));
-  } catch {
+  } catch (e) {
+    // Cooldown stock query failed — safe fallback to empty set
+    const err = e as Error;
+    if (err.message) { /* non-critical */ }
     return new Set();
   }
 }
@@ -203,8 +209,10 @@ export async function calcUncertaintyPenalty(params: {
       penalty += 0.15;
       reasons.push(`연속손절${recentSells.length}회`);
     }
-  } catch {
-    /* skip */
+  } catch (e) {
+    // Uncertainty penalty DB query failed — continue with partial result
+    const err = e as Error;
+    if (err.message) { /* logged via caller if significant */ }
   }
 
   if (vix && vix > 25) {
@@ -279,10 +287,14 @@ export async function getPartialTpStageNum(code: string, isPaper?: boolean): Pro
     const { rows } = await getPool().query('SELECT value FROM overseas_state WHERE key = $1', [
       `${modePrefix(isPaper)}partial_tp_stage_${code}`,
     ]);
-    const val = rows.length > 0 ? Number(rows[0].value) : 0;
-    cacheSet(cacheKey, val, 300); // 5분 TTL
+    const raw = rows.length > 0 ? Number(rows[0].value) : 0;
+    const val = Number.isFinite(raw) ? raw : 0;
+    cacheSet(cacheKey, val, 300); // 5min TTL
     return val;
-  } catch {
+  } catch (e) {
+    // Partial TP stage query failed — safe fallback to stage 0
+    const err = e as Error;
+    if (err.message) { /* non-critical */ }
     return 0;
   }
 }

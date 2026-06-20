@@ -26,6 +26,15 @@ import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
 
 const COMP = 'EVENT_RESCORE';
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000; // KST = UTC+9 in ms
+const SNAPSHOT_STALE_MS = 5 * 60_000; // 5분 이상 이전 스냅샷은 무시
+const VOLUME_SPIKE_THRESHOLD = 2.0; // 거래량 변화 배율 기준
+const MIN_VOLUME_FOR_SPIKE = 100_000; // 거래량 spike 최소 절대량
+const PRICE_CHANGE_THRESHOLD_PCT = 1.0; // 30초 내 가격 변동 기준 (%)
+const VOLUME_SPIKE_ALERT_THRESHOLD = 3.0; // 텔레그램 알림 기준 배율
+const MAX_WATCHLIST_POLL = 30; // 이벤트 감지 시 최대 종목 수
+const MIN_CHART_CANDLES = 20; // 재스코어링 최소 캔들 수
+const RESCORE_CHUNK_SIZE = 5; // 동시 재스코어 최대 병렬 수
 
 // 직전 가격/거래량 캐시 (변화 감지용)
 const _lastSnapshot = new Map<string, { price: number; volume: number; ts: number }>();
@@ -44,7 +53,7 @@ interface DetectedEvent {
 async function detectEvents(): Promise<DetectedEvent[]> {
   const watchlist = await getActiveWatchlist();
   if (watchlist.length === 0) return [];
-  const codes = watchlist.slice(0, 30).map((w) => w.stock_code);
+  const codes = watchlist.slice(0, MAX_WATCHLIST_POLL).map((w) => w.stock_code);
 
   try {
     const batchPrices = await getBatchPrices(codes);
@@ -52,14 +61,14 @@ async function detectEvents(): Promise<DetectedEvent[]> {
     const now = Date.now();
 
     for (const [code, quote] of batchPrices) {
-      const price = (quote as any).currentPrice ?? 0;
-      const volume = (quote as any).acmlVol ?? (quote as any).volume ?? 0;
-      if (price <= 0) continue;
+      const price = quote.currentPrice ?? 0;
+      const volume = quote.volume ?? 0;
+      if (!Number.isFinite(price) || price <= 0) continue;
 
       const prev = _lastSnapshot.get(code);
       _lastSnapshot.set(code, { price, volume, ts: now });
 
-      if (!prev || now - prev.ts > 5 * 60_000) continue; // 5분+ 갭은 신선치 X
+      if (!prev || now - prev.ts > SNAPSHOT_STALE_MS) continue; // 5분+ 갭은 신선치 X
 
       // 트리거 쿨다운 체크
       const lastTrig = _lastTrigger.get(code) ?? 0;
@@ -67,7 +76,7 @@ async function detectEvents(): Promise<DetectedEvent[]> {
 
       // 1) 거래량 spike — 30초 사이에 평균 2회 이상 거래량 증가
       const volIncrease = prev.volume > 0 ? volume / prev.volume : 1;
-      if (volIncrease >= 2.0 && volume > 100_000) {
+      if (volIncrease >= VOLUME_SPIKE_THRESHOLD && volume > MIN_VOLUME_FOR_SPIKE) {
         events.push({
           stockCode: code,
           type: 'VOLUME_SPIKE',
@@ -79,8 +88,8 @@ async function detectEvents(): Promise<DetectedEvent[]> {
       }
 
       // 2) 갭업/갭다운 — 30초 사이 ±1% 이상 변동
-      const priceChangePct = ((price - prev.price) / prev.price) * 100;
-      if (Math.abs(priceChangePct) >= 1.0) {
+      const priceChangePct = prev.price > 0 ? ((price - prev.price) / prev.price) * 100 : 0; // division-by-zero guard
+      if (Math.abs(priceChangePct) >= PRICE_CHANGE_THRESHOLD_PCT) {
         events.push({
           stockCode: code,
           type: priceChangePct > 0 ? 'GAP_UP' : 'GAP_DOWN',
@@ -92,7 +101,7 @@ async function detectEvents(): Promise<DetectedEvent[]> {
     }
     return events;
   } catch (e) {
-    logger.debug(`이벤트 감지 실패: ${(e as Error).message}`, { component: COMP });
+    logger.debug(`이벤트 감지 실패: ${e instanceof Error ? e.message : String(e)}`, { component: COMP });
     return [];
   }
 }
@@ -105,7 +114,7 @@ async function rescoreEventStock(event: DetectedEvent): Promise<void> {
     if (!w) return;
 
     const chart = await getDailyChart(event.stockCode, 60);
-    if (!chart || chart.length < 20) return;
+    if (!chart || chart.length < MIN_CHART_CANDLES) return;
 
     const chartData = new Map<string, typeof chart>();
     chartData.set(event.stockCode, chart);
@@ -129,11 +138,11 @@ async function rescoreEventStock(event: DetectedEvent): Promise<void> {
       changePct: event.type === 'GAP_UP' ? event.magnitude : event.type === 'GAP_DOWN' ? -event.magnitude : undefined,
     });
 
-    const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const today = new Date(Date.now() + KST_OFFSET_MS).toISOString().slice(0, 10);
     await upsertAIScore({
       stock_code: r.stock_code,
       score_date: today,
-      gemini_summary: null as any,
+      gemini_summary: null,
       composite_score: enhanced.finalScore,
       fundamental_score: r.fundamental_score ?? 0,
       technical_score: r.technical_score ?? 0,
@@ -167,7 +176,7 @@ async function rescoreEventStock(event: DetectedEvent): Promise<void> {
     });
 
     // 거래량 3x+ 큰 이벤트만 텔레그램 알림
-    if (event.type === 'VOLUME_SPIKE' && event.magnitude >= 3.0) {
+    if (event.type === 'VOLUME_SPIKE' && event.magnitude >= VOLUME_SPIKE_ALERT_THRESHOLD) {
       sendTelegramMessage(
         `⚡ *거래량 폭발 감지* ${event.stockCode}\n${event.reason}\n점수: ${enhanced.finalScore.toFixed(0)}점${
           enhanced.delta !== 0 ? ` (Δ${enhanced.delta >= 0 ? '+' : ''}${enhanced.delta})` : ''
@@ -175,7 +184,7 @@ async function rescoreEventStock(event: DetectedEvent): Promise<void> {
       ).catch(() => {});
     }
   } catch (e) {
-    logger.debug(`${event.stockCode} 이벤트 재스코어 실패: ${(e as Error).message}`, { component: COMP });
+    logger.debug(`${event.stockCode} 이벤트 재스코어 실패: ${e instanceof Error ? e.message : String(e)}`, { component: COMP });
   }
 }
 
@@ -187,13 +196,12 @@ export async function runEventRescore(): Promise<void> {
     logger.info(`⚡ 이벤트 ${events.length}건 감지`, { component: COMP });
 
     // 동시 호출 제한 — 5개씩 순차 (KIS rate limit 보호)
-    const CHUNK = 5;
-    for (let i = 0; i < events.length; i += CHUNK) {
-      const chunk = events.slice(i, i + CHUNK);
+    for (let i = 0; i < events.length; i += RESCORE_CHUNK_SIZE) {
+      const chunk = events.slice(i, i + RESCORE_CHUNK_SIZE);
       await Promise.allSettled(chunk.map((e) => rescoreEventStock(e)));
-      if (i + CHUNK < events.length) await new Promise((r) => setTimeout(r, 500));
+      if (i + RESCORE_CHUNK_SIZE < events.length) await new Promise((r) => setTimeout(r, 500));
     }
   } catch (e) {
-    logger.warn(`이벤트 재스코어 사이클 실패: ${(e as Error).message}`, { component: COMP });
+    logger.warn(`이벤트 재스코어 사이클 실패: ${e instanceof Error ? e.message : String(e)}`, { component: COMP });
   }
 }

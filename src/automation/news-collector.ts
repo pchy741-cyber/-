@@ -25,6 +25,7 @@ const xmlParser = new XMLParser({
 // 수집된 뉴스 메모리 캐시 (당일만 유지)
 let todayNews: Map<string, NewsItem[]> = new Map();
 let lastCollectDate = '';
+const NEWS_MAX_ENTRIES = 500; // 하루 최대 뉴스 엔트리 수 (메모리 누수 방지)
 
 interface NewsItem {
   title: string;
@@ -117,7 +118,8 @@ async function fetchRSSFeed(url: string, source: string, maxItems = 5): Promise<
         return { title, link, source, publishedAt: pubDate, relevance: 'HIGH' as const };
       })
       .filter((item) => item.title.length > 8);
-  } catch {
+  } catch (err) {
+    logger.debug(`RSS 피드 조회 실패 (${source}): ${err}`, { component: 'NEWS' });
     return [];
   }
 }
@@ -167,7 +169,8 @@ async function fetchStockNews(stockName: string): Promise<NewsItem[]> {
     }
 
     return results;
-  } catch {
+  } catch (err) {
+    logger.debug(`종목 뉴스 조회 실패 (${stockName}): ${err}`, { component: 'NEWS' });
     return [];
   }
 }
@@ -215,6 +218,19 @@ export async function collectWatchlistNews(): Promise<string> {
       if (result.status === 'fulfilled' && result.value.length > 0) {
         const filtered = result.value.filter((item) => !existing.some((e) => e.title === item.title));
         if (filtered.length > 0) {
+          // 전체 뉴스 수 체크 — 최대 한도 초과 시 가장 오래된 종목 뉴스부터 제거
+          const totalCount = getTotalNewsCount();
+          if (totalCount + filtered.length > NEWS_MAX_ENTRIES) {
+            // 가장 오래된 종목 키부터 제거 (Map 순서 = 삽입 순서)
+            const keysToEvict = [...todayNews.keys()];
+            let evicted = 0;
+            for (const evictKey of keysToEvict) {
+              if (totalCount - evicted + filtered.length <= NEWS_MAX_ENTRIES) break;
+              const items = todayNews.get(evictKey);
+              evicted += items?.length ?? 0;
+              todayNews.delete(evictKey);
+            }
+          }
           todayNews.set(stockCode, [...existing, ...filtered]);
           newCount += filtered.length;
         }

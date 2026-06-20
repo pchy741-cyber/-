@@ -21,6 +21,8 @@ export interface BacktestConfig {
   commissionPct?: number; // 증권사 수수료 (매수+매도 각각, 기본 0.015%)
   taxPct?: number; // 증권거래세 (매도 시에만, 기본 0.18% — 2025~)
   slippagePct?: number; // 슬리피지 (매수 +, 매도 -, 기본 0.1%)
+  overrideTp?: number; // 전역 파라미터 변이 없이 TP 오버라이드 (optimizer용)
+  overrideSl?: number; // 전역 파라미터 변이 없이 SL 오버라이드 (optimizer용)
 }
 
 // ── 거래 비용 계산 ──
@@ -95,7 +97,10 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
   // 슬리피지 적용 헬퍼: 매수는 불리하게(높게), 매도는 불리하게(낮게)
   const buyPrice = (close: number) => Math.round(close * (1 + slippagePct / 100));
   const sellPrice = (close: number) => Math.round(close * (1 - slippagePct / 100));
-  const params = STRATEGY_PARAMS[mode];
+  const baseParams = STRATEGY_PARAMS[mode];
+  const params = backtestConfig.overrideTp != null || backtestConfig.overrideSl != null
+    ? { ...baseParams, takeProfitPct: backtestConfig.overrideTp ?? baseParams.takeProfitPct, stopLossPct: backtestConfig.overrideSl ?? baseParams.stopLossPct }
+    : baseParams;
   let _totalCommissions = 0; // 총 거래비용 추적
   // 백테스트 기술 점수 임계치
   // 실전 minTechScore(SWING=55, DEFENSE=65) 기준이나, 합성 데이터는 지표 분산이 적으므로

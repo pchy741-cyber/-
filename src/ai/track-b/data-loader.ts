@@ -55,9 +55,10 @@ export async function loadPipelineData(): Promise<PipelineData> {
         getRecentLossStocks(getCtxIsPaper() ? 1 : 5), // Paper: 1일 쿨다운 (7일 → 적극적 데이터 수집)
         getRecentManuallySoldStocks(24),
       ]);
-    } catch (dbErr: any) {
-      const msg = String(dbErr?.message ?? dbErr).toLowerCase();
-      const code = String(dbErr?.code ?? '');
+    } catch (dbErr: unknown) {
+      const errObj = dbErr as { message?: string; code?: string };
+      const msg = String(errObj?.message ?? dbErr).toLowerCase();
+      const code = String(errObj?.code ?? '');
       const isNetworkErr =
         ['ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', 'ECONNRESET', 'EPIPE'].includes(code) ||
         msg.includes('timeout') ||

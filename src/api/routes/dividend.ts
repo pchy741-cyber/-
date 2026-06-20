@@ -42,7 +42,7 @@ dividendRoutes.get('/dividend/watchlist', async (c) => {
     const enabled = await checkDividendEnabled(isPaper);
     return c.json({ enabled, watchlist: rows });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -68,7 +68,7 @@ dividendRoutes.post('/dividend/watchlist', async (c) => {
     );
     return c.json({ ok: true });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -79,7 +79,7 @@ dividendRoutes.delete('/dividend/watchlist/:id', async (c) => {
     await getPool().query('DELETE FROM dividend_watchlist WHERE id = $1', [id]);
     return c.json({ ok: true });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -116,7 +116,7 @@ dividendRoutes.patch('/dividend/watchlist/:id', async (c) => {
     await getPool().query(`UPDATE dividend_watchlist SET ${sets.join(', ')} WHERE id = $${idx}`, vals);
     return c.json({ ok: true });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -134,14 +134,15 @@ dividendRoutes.get('/dividend/holdings', async (c) => {
     );
     return c.json({ holdings: rows });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
 // ── 배당금 수령 내역 조회 ──
 dividendRoutes.get('/dividend/history', async (c) => {
   try {
-    const limit = parseInt(c.req.query('limit') || '50', 10);
+    const rawLimit = parseInt(c.req.query('limit') || '50', 10);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 50;
     const pool = getPool();
     const [{ rows }, { rows: stats }] = await Promise.all([
       pool.query(`SELECT * FROM dividend_history ORDER BY pay_date DESC NULLS LAST, recorded_at DESC LIMIT $1`, [
@@ -155,7 +156,7 @@ dividendRoutes.get('/dividend/history', async (c) => {
     ]);
     return c.json({ history: rows, stats: stats[0] });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -197,7 +198,7 @@ dividendRoutes.post('/dividend/history', async (c) => {
       .catch(() => {});
     return c.json({ ok: true });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -209,7 +210,7 @@ dividendRoutes.get('/dividend/schedule', async (c) => {
     const events = await getDividendSchedule({ stockCode: code });
     return c.json({ events });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -234,7 +235,7 @@ dividendRoutes.post('/dividend/sync-receipts', async (c) => {
     }
     return c.json({ ok: true, synced, total: receipts.length });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -380,7 +381,7 @@ dividendRoutes.post('/dividend/auto-invest', async (c) => {
       etfs: results,
     });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -453,7 +454,7 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
       fx,
     });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -469,7 +470,7 @@ dividendRoutes.get('/trade-tuner/result', async (c) => {
     const overrides = byKey.trade_tuner_overrides ? JSON.parse(byKey.trade_tuner_overrides) : {};
     return c.json({ result, overrides });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -480,7 +481,7 @@ dividendRoutes.post('/trade-tuner/run', async (c) => {
     const liveResult = await runTradeTuner(false);
     return c.json({ ok: true, paper: paperResult, live: liveResult });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -494,7 +495,7 @@ dividendRoutes.get('/dividend/allocation-tuned', async (c) => {
     if (rows[0]?.value) return c.json(JSON.parse(rows[0].value));
     return c.json({ weights: null });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -512,7 +513,7 @@ dividendRoutes.post('/dividend/fix-exchange', async (c) => {
     }
     return c.json({ ok: true, fixed });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -666,6 +667,6 @@ dividendRoutes.post('/dividend/auto-setup-paper', async (c) => {
       etfs: results,
     });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });

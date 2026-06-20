@@ -60,12 +60,16 @@ export async function getMonthlyMddSnapshot(isPaper: boolean): Promise<MonthlyMd
     return { peak: 0, latest: 0, mddPct: 0, externalActivity: false, samples: 0 };
   }
 
-  const values = rows.map((r) => Number(r.total_value)).filter((v) => v > 0);
+  const values = rows.map((r) => Number(r.total_value)).filter((v) => Number.isFinite(v) && v > 0);
   if (values.length < 2) {
     return { peak: 0, latest: 0, mddPct: 0, externalActivity: false, samples: values.length };
   }
 
-  const peak = Math.max(...values);
+  // Iterative max to avoid call stack overflow on large arrays (Math.max(...arr) has arg limit)
+  let peak = values[0];
+  for (let i = 1; i < values.length; i++) {
+    if (values[i] > peak) peak = values[i];
+  }
   const latest = values[values.length - 1];
   const externalActivity = peak > 0 && latest < peak * EXTERNAL_ACTIVITY_THRESHOLD;
   const mddPct = peak > 0 ? ((peak - latest) / peak) * 100 : 0;

@@ -102,8 +102,8 @@ export async function runSniperScan(): Promise<void> {
         // Track B와 동일 기준: 총자산 20% (paper/live 총자산이 다르므로 자동 분리)
         sniperMaxPositionKrw = Math.min(Math.round(totalAssets * 0.2), config.risk.maxPositionKrw);
       }
-    } catch {
-      // 잔고 조회 실패 시 기존 config.risk.maxPositionKrw 사용
+    } catch (err) {
+      logger.debug(`스나이퍼 잔고 조회 실패 (기존 한도 사용): ${err}`, { component: 'SNIPER' });
     }
     logger.info(`🎯 스나이퍼 포지션 한도: ${sniperMaxPositionKrw.toLocaleString()}원 (${getCtxIsPaper() ? '연습' : '실전'})`, { component: 'SNIPER' });
 
@@ -142,7 +142,7 @@ export async function runSniperScan(): Promise<void> {
           const debateFailed = debate.bullArguments[0] === '분析 실패' && debate.bearArguments[0] === '분析 실패';
           if (debateFailed && scores[0]) {
             const score = scores[0].composite_score ?? 0;
-            debateVerdict = score >= 75 ? 'BUY' : score >= 85 ? 'STRONG_BUY' : 'HOLD';
+            debateVerdict = score >= 85 ? 'STRONG_BUY' : score >= 75 ? 'BUY' : 'HOLD';
             debateSource = `TRACK_A_FALLBACK(${score}점)`;
             logger.warn(`🏛️ DEBATE AI 실패 → Track A 폴백: ${stockCode} 스코어 ${score}점 → ${debateVerdict}`, {
               component: 'SNIPER',
@@ -194,8 +194,8 @@ export async function runSniperScan(): Promise<void> {
         logger.info(`🎯 스나이퍼 매수 결정: ${signal.stockName} x${quantity} @${price.currentPrice} (${signal.type})`, {
           component: 'SNIPER',
         });
-      } catch {
-        logger.warn(`스나이퍼 가격 조회 실패: ${stockCode}`, { component: 'SNIPER' });
+      } catch (err) {
+        logger.warn(`스나이퍼 가격 조회 실패 (${stockCode}): ${err}`, { component: 'SNIPER' });
       }
     }
 

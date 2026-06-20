@@ -36,7 +36,8 @@ killSwitchRoutes.post('/kill-switch/activate', async (c) => {
     }
     return c.json({ ok: true, status: getKillSwitchStatusAll() });
   } catch (err: any) {
-    return c.json({ ok: false, error: err?.message ?? 'kill switch activate failed' }, 500);
+    logger.error(`Kill switch activate 실패: ${err?.message}`, { component: 'SETTINGS' });
+    return c.json({ ok: false, error: 'Internal server error' }, 500);
   }
 });
 
@@ -91,6 +92,7 @@ killSwitchRoutes.post('/kill-switch/deactivate', async (c) => {
 
     return c.json({ ok: true, status: getKillSwitchStatusAll() });
   } catch (err: any) {
-    return c.json({ ok: false, error: err?.message ?? 'kill switch deactivate failed' }, 500);
+    logger.error(`Kill switch deactivate 실패: ${err?.message}`, { component: 'SETTINGS' });
+    return c.json({ ok: false, error: 'Internal server error' }, 500);
   }
 });

@@ -10,6 +10,26 @@ import type { TechResult } from './sell-logic.js';
 import { getSessionCache, type SessionCache, setSessionCache } from './session.js';
 import { GLOBAL_WATCHLIST } from './watchlist.js';
 
+// ── Named constants ──
+/** Parallel API batch size for price/chart requests */
+const API_BATCH_SIZE = 8;
+/** Minimum chart candles required for technical analysis */
+const MIN_CHART_LENGTH = 30;
+/** Default dayRangePct when day range is zero (no high/low data) */
+const DEFAULT_DAY_RANGE_PCT = 50;
+/** Momentum detection: minimum changePct threshold */
+const MOMENTUM_CHANGE_PCT = 3;
+/** BigMover detection: minimum changePct threshold */
+const BIG_MOVER_CHANGE_PCT = 5;
+/** Momentum detection: minimum dayRangePct threshold */
+const MOMENTUM_DAY_RANGE_PCT = 60;
+/** Inter-batch delay (ms) to avoid API rate limiting */
+const BATCH_DELAY_MS = 100;
+/** Default ATR% fallback when cached value is missing */
+const DEFAULT_ATR_PCT = 2.0;
+/** Momentum bonus added to score for session cache ranking */
+const MOMENTUM_SCORE_BONUS = 30;
+
 export interface CollectTechDataParams {
   activeStocks: typeof GLOBAL_WATCHLIST;
   region: 'US' | 'ASIA';
@@ -20,9 +40,8 @@ export async function collectTechData(params: CollectTechDataParams): Promise<Te
   const { activeStocks, region, isNewSession } = params;
   const techResults: TechResult[] = [];
 
-  const BATCH = 8;
-  for (let i = 0; i < activeStocks.length; i += BATCH) {
-    const batch = activeStocks.slice(i, i + BATCH);
+  for (let i = 0; i < activeStocks.length; i += API_BATCH_SIZE) {
+    const batch = activeStocks.slice(i, i + API_BATCH_SIZE);
     const latestCache = getSessionCache(region);
     const settled = await Promise.allSettled(
       batch.map(async (stock) => {
@@ -39,9 +58,9 @@ export async function collectTechData(params: CollectTechDataParams): Promise<Te
       if (price.currentPrice <= 0) continue;
 
       const dayRange = price.dayHigh - price.dayLow;
-      const dayRangePct = dayRange > 0 ? ((price.currentPrice - price.dayLow) / dayRange) * 100 : 50;
-      const isMomentum = price.changePct >= 3 && dayRangePct >= 60;
-      const isBigMover = price.changePct >= 5;
+      const dayRangePct = dayRange > 0 ? ((price.currentPrice - price.dayLow) / dayRange) * 100 : DEFAULT_DAY_RANGE_PCT;
+      const isMomentum = price.changePct >= MOMENTUM_CHANGE_PCT && dayRangePct >= MOMENTUM_DAY_RANGE_PCT;
+      const isBigMover = price.changePct >= BIG_MOVER_CHANGE_PCT;
 
       let signal: string,
         score: number,
@@ -57,10 +76,10 @@ export async function collectTechData(params: CollectTechDataParams): Promise<Te
       if (cached) {
         ({ signal, score, rsi, adx, trendStrength, aboveMA20, aboveMA60, bollingerSqueeze, bollingerBreakout } =
           cached);
-        atrPct = cached.atrPct ?? 2.0;
+        atrPct = cached.atrPct ?? DEFAULT_ATR_PCT;
         vwapPosition = cached.vwapPosition ?? 'AT';
       } else {
-        if (!chart || chart.length < 30) continue;
+        if (!chart || chart.length < MIN_CHART_LENGTH) continue;
         const candles: OHLCV[] = chart.map((c) => ({
           date: c.date,
           open: c.open,
@@ -138,8 +157,8 @@ export async function collectTechData(params: CollectTechDataParams): Promise<Te
       );
     }
 
-    if (i + BATCH < activeStocks.length) {
-      await sleep(100);
+    if (i + API_BATCH_SIZE < activeStocks.length) {
+      await sleep(BATCH_DELAY_MS);
     }
   }
 
@@ -156,8 +175,8 @@ export function buildSessionCache(
   regionFlags: string,
 ): void {
   const sorted = [...techResults].sort((a, b) => {
-    const sa = a.score + (a.isMomentum ? 30 : 0);
-    const sb = b.score + (b.isMomentum ? 30 : 0);
+    const sa = a.score + (a.isMomentum ? MOMENTUM_SCORE_BONUS : 0);
+    const sb = b.score + (b.isMomentum ? MOMENTUM_SCORE_BONUS : 0);
     return sb - sa;
   });
   const topCodes = sorted.slice(0, topCount).map((t) => t.code);

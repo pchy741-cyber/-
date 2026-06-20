@@ -16,7 +16,7 @@ import { logger } from './logger.js';
 
 // ── 모델 설정 ──
 const FREE_MODEL = 'gemini-2.5-flash';
-const GROUNDED_MODEL = 'gemini-2.0-flash'; // Vertex AI grounding 지원 모델
+const GROUNDED_MODEL = 'gemini-2.5-flash'; // Vertex AI grounding + 직접 호출 모델
 const VERTEX_LOCATION = 'us-central1';
 
 export interface GeminiCallOptions {
@@ -192,11 +192,15 @@ async function callVertexUngrounded(
   }
 
   const data = (await res.json()) as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
     usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
   };
 
+  const finishReason = data.candidates?.[0]?.finishReason;
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  if (finishReason && finishReason !== 'STOP') {
+    logger.warn(`Vertex Direct finishReason=${finishReason} [${opts.label}]`, { component: 'AI_COST' });
+  }
   const inputTokens = data.usageMetadata?.promptTokenCount ?? 0;
   const outputTokens = data.usageMetadata?.candidatesTokenCount ?? 0;
   return { text, inputTokens, outputTokens };

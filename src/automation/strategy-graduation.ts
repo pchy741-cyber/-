@@ -210,8 +210,8 @@ export async function autoGraduate(): Promise<void> {
               `사유: ${risk.reasons.join(', ')}\n\n` +
               (risk.autoApply ? '✅ 자동 적용 완료' : '→ 대시보드 전략 Lab에서 승인'),
           ).catch(() => {});
-        } catch {
-          /* 텔레그램 미설정 시 무시 */
+        } catch (tgErr) {
+          logger.debug(`졸업 텔레그램 알림 실패: ${tgErr}`, { component: 'GRADUATION' });
         }
       } else {
         logger.info(
@@ -253,10 +253,12 @@ export async function getPaperOnlyModes(): Promise<Set<string>> {
       paperOnly.delete(row.strategy_mode);
     }
     logger.debug(
-      `🎓 PAPER_ONLY: [${[...paperOnly].join(',')}] (졸업: [${rows.map((r: any) => r.strategy_mode).join(',')}])`,
+      `🎓 PAPER_ONLY: [${[...paperOnly].join(',')}] (졸업: [${rows.map((r: Record<string, unknown>) => r.strategy_mode).join(',')}])`,
       { component: 'GRADUATION' },
     );
-  } catch {}
+  } catch (err) {
+    logger.debug(`PAPER_ONLY 모드 조회 실패: ${err}`, { component: 'GRADUATION' });
+  }
 
   _paperOnlyCache = { modes: paperOnly, ts: now };
   return paperOnly;
@@ -310,7 +312,9 @@ export async function checkDemotion(): Promise<void> {
         await sendTelegramMessage(
           `⚠️ *전략 강등*\n\n${mode}: Live 14일 성과 미달\n승률: ${(livePerf.winRate * 100).toFixed(0)}%\nPF: ${livePerf.profitFactor.toFixed(2)}\n→ Paper 모드로 복귀`,
         ).catch(() => {});
-      } catch {}
+      } catch (tgErr) {
+        logger.debug(`강등 텔레그램 알림 실패: ${tgErr}`, { component: 'GRADUATION' });
+      }
     }
   } catch (e) {
     logger.error(`강등 검사 실패: ${e}`, { component: 'GRADUATION' });

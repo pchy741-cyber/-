@@ -60,6 +60,21 @@ export interface Holding {
 
 import type { AIDecision } from './types.js';
 
+// ── Sell logic named constants ──
+/** Default ATR% when tech data is missing */
+const DEFAULT_ATR_PCT = 2.0;
+/** Minimum AI confidence for sell signal (high-beta sectors) */
+const MIN_AI_SELL_CONF_HIGH_BETA = 0.82;
+/** Minimum AI confidence for sell signal (other sectors) */
+const MIN_AI_SELL_CONF_DEFAULT = 0.78;
+/** RSI threshold for BigMover overbought exit */
+const RSI_BIGMOVER_OVERBOUGHT = 82;
+/** Profit tightening thresholds (% from peak) */
+const PROFIT_TIGHTEN_THRESHOLDS = { HIGH: 20, MEDIUM: 15, LOW: 10 } as const;
+const PROFIT_TIGHTEN_VALUES = { HIGH: 1.5, MEDIUM: 1.0, LOW: 0.5 } as const;
+/** Milliseconds per day */
+const MS_PER_DAY = 1000 * 60 * 60 * 24;
+
 export interface SellContext {
   holdings: Map<string, Holding>;
   pendingOrderStocks: Set<string>;
@@ -169,7 +184,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     const _isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
 
     // ATR 동적 트레일링 스톱 + VIX 레짐 타이트닝
-    const atrPctValue = tech.atrPct ?? 2.0;
+    const atrPctValue = tech.atrPct ?? DEFAULT_ATR_PCT;
     // TP/SL: 매 사이클마다 현재 조건으로 재계산 (DB 저장값은 참고용)
     // 기존 문제: DB에 20~25% TP가 박혀서 사실상 익절 불가 → 항상 현재 조건 반영
     const dyn = calcDynamicTpSl({
@@ -199,14 +214,16 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     });
     // 수익 크기 비례 트레일 타이트닝: 수익 클수록 보호 강화 (2×ATR 연구 — 드로다운 32% 감소 검증)
     // maxPnl 10%+: 추가 0.5% 타이트, 15%+: 1.0% 타이트, 20%+: 1.5% 타이트
-    const profitTighten = maxPnlPct >= 20 ? 1.5 : maxPnlPct >= 15 ? 1.0 : maxPnlPct >= 10 ? 0.5 : 0;
+    const profitTighten = maxPnlPct >= PROFIT_TIGHTEN_THRESHOLDS.HIGH ? PROFIT_TIGHTEN_VALUES.HIGH
+      : maxPnlPct >= PROFIT_TIGHTEN_THRESHOLDS.MEDIUM ? PROFIT_TIGHTEN_VALUES.MEDIUM
+      : maxPnlPct >= PROFIT_TIGHTEN_THRESHOLDS.LOW ? PROFIT_TIGHTEN_VALUES.LOW : 0;
     // v10.8: trailTighten/profitTighten은 양수값 — 음수 trail에서 빼야 더 타이트해짐
     const effectiveTrailDropPct = dynamicTrailDrop - vixRegime.trailTighten - profitTighten;
     // v10.9: 트레일 활성화 대폭 하향 (기존 5~10% → 2~4%) — 소액 계좌 수익 보호
     const baseTrailActivate = isHighBeta ? 4.0 : isMediumBeta ? 3.0 : 2.0;
     const trailActivatePct = tunerOverrides.trail_activate_pct ?? baseTrailActivate;
-    const minAiSellConf = isHighBeta ? 0.82 : 0.78;
-    const holdingDays = (Date.now() - new Date(holding.boughtAt).getTime()) / (1000 * 60 * 60 * 24);
+    const minAiSellConf = isHighBeta ? MIN_AI_SELL_CONF_HIGH_BETA : MIN_AI_SELL_CONF_DEFAULT;
+    const holdingDays = (Date.now() - new Date(holding.boughtAt).getTime()) / MS_PER_DAY;
     // 🔧 강한 매도 신호(score≤-30 + 과매수) → minHold 완화 (HIGH_BETA 3→1일)
     const strongSellSignal = tech.score <= -30 && (tech.signal === 'SELL' || tech.signal === 'STRONG_SELL');
     const minHoldForSell = strongSellSignal ? 1 : isHighBeta ? 3 : 2;
@@ -358,7 +375,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       sellReason = `AI 매도(${(ai.confidence * 100).toFixed(0)}%): ${ai.reasoning}`;
     } else if (
       (!ai || (ai.action === 'SELL' && ai.confidence < minAiSellConf)) &&
-      tech.rsi > 82 &&
+      tech.rsi > RSI_BIGMOVER_OVERBOUGHT &&
       pnlPct >= 1.5 &&
       holdingDays >= 0.25
     ) {

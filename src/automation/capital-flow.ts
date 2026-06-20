@@ -154,8 +154,8 @@ export async function analyzeCapitalFlow(): Promise<void> {
 
       positionData.push({ chain, price, volatilityPct, chartData });
       await sleep(100); // rate limit
-    } catch {
-      // 개별 종목 실패 무시
+    } catch (err) {
+      logger.debug(`자금흐름 개별 종목 데이터 조회 실패: ${err}`, { component: 'FLOW' });
     }
   }
 
@@ -195,7 +195,7 @@ export async function analyzeCapitalFlow(): Promise<void> {
     const holdingDays = Math.floor((Date.now() - openedAt.getTime()) / (1000 * 60 * 60 * 24));
     const score = scores.find((s) => s.stock_code === chain.stock_code);
     const aiScore = score ? Number(score.composite_score) : null;
-    const firstOrder = (chain.orders as any[])?.find((o) => o.side === 'BUY');
+    const firstOrder = (chain.orders as Array<{ side?: string; ai_reasoning?: string }>)?.find((o) => o.side === 'BUY');
     let entryType: 'SNIPER' | 'SWING' = 'SWING';
     let sniperType: string | undefined;
     if (firstOrder?.ai_reasoning?.includes('[SNIPER')) {
@@ -304,8 +304,9 @@ export async function analyzeCapitalFlow(): Promise<void> {
           getCtxIsPaper(),
         ]);
       }
-    } catch (err: any) {
-      logger.error(`최고가 업데이트 실패: ${err.message}`, { component: 'FLOW' });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error(`최고가 업데이트 실패: ${msg}`, { component: 'FLOW' });
     }
   }
 

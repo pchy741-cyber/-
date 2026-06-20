@@ -27,6 +27,18 @@ export interface StrategyInsight {
 
 const MIN_SAMPLES = 5;
 
+/** DB 집계 쿼리 결과 행 타입 */
+interface AggregateRow {
+  strategy_mode: string;
+  total: string | number;
+  wins: string | number;
+  total_pnl: string | number | null;
+  avg_win: string | number | null;
+  avg_loss: string | number | null;
+  avg_pnl_pct: string | number | null;
+  [key: string]: unknown; // 분석별 추가 필드 허용
+}
+
 /** 전략 인사이트 생성 + DB 저장 */
 export async function generateAndStoreInsights(days: number = 60, isPaper?: boolean): Promise<void> {
   const insights = await generateStrategyInsights(days, isPaper);
@@ -64,8 +76,8 @@ export async function generateAndStoreInsights(days: number = 60, isPaper?: bool
         ],
       );
       upserted++;
-    } catch {
-      /* individual insert fail → skip */
+    } catch (err) {
+      logger.debug(`인사이트 개별 저장 실패 (${i.conditionKey}): ${err}`, { component: 'STRATEGY_LAB' });
     }
   }
 
@@ -129,7 +141,7 @@ async function analyzeByStrategyMode(days: number, isPaper: boolean): Promise<St
     [days, MIN_SAMPLES, isPaper],
   );
 
-  return rows.map((r: any) => buildInsight(r.strategy_mode, 'mode:overall', '전체', r, `${r.strategy_mode} 전체 성과`));
+  return rows.map((r: AggregateRow) => buildInsight(r.strategy_mode, 'mode:overall', '전체', r, `${r.strategy_mode} 전체 성과`));
 }
 
 // ── 시간대별 분석 ──────────────────────────────────────────────────────
@@ -155,7 +167,7 @@ async function analyzeByHour(days: number, isPaper: boolean): Promise<StrategyIn
     [days, MIN_SAMPLES, isPaper],
   );
 
-  return rows.map((r: any) =>
+  return rows.map((r: AggregateRow) =>
     buildInsight(
       r.strategy_mode,
       `hour:${r.entry_hour}`,
@@ -190,13 +202,13 @@ async function analyzeByDayOfWeek(days: number, isPaper: boolean): Promise<Strat
     [days, MIN_SAMPLES, isPaper],
   );
 
-  return rows.map((r: any) =>
+  return rows.map((r: AggregateRow) =>
     buildInsight(
       r.strategy_mode,
-      `dow:${r.entry_dow}`,
-      `${dowNames[r.entry_dow]}요일 진입`,
+      `dow:${r.entry_dow as number}`,
+      `${dowNames[r.entry_dow as number]}요일 진입`,
       r,
-      `${r.strategy_mode} ${dowNames[r.entry_dow]}요일 진입`,
+      `${r.strategy_mode} ${dowNames[r.entry_dow as number]}요일 진입`,
     ),
   );
 }
@@ -235,13 +247,13 @@ async function analyzeByHoldingBucket(days: number, isPaper: boolean): Promise<S
     '3-7d': '3~7일 보유',
     '7d+': '7일+ 보유',
   };
-  return rows.map((r: any) =>
+  return rows.map((r: AggregateRow) =>
     buildInsight(
       r.strategy_mode,
       `hold:${r.hold_bucket}`,
-      bucketLabels[r.hold_bucket] ?? r.hold_bucket,
+      bucketLabels[r.hold_bucket as string] ?? String(r.hold_bucket),
       r,
-      `${r.strategy_mode} ${bucketLabels[r.hold_bucket] ?? r.hold_bucket}`,
+      `${r.strategy_mode} ${bucketLabels[r.hold_bucket as string] ?? String(r.hold_bucket)}`,
     ),
   );
 }
@@ -272,7 +284,7 @@ async function analyzeByEntrySource(days: number, isPaper: boolean): Promise<Str
     [days, MIN_SAMPLES, isPaper],
   );
 
-  return rows.map((r: any) =>
+  return rows.map((r: AggregateRow) =>
     buildInsight(
       r.strategy_mode,
       `source:${r.entry_source}`,
@@ -317,13 +329,13 @@ async function analyzeByTpSlBucket(days: number, isPaper: boolean): Promise<Stra
     tp_high: 'TP 6%+',
   };
 
-  return rows.map((r: any) => {
+  return rows.map((r: AggregateRow) => {
     const insight = buildInsight(
       r.strategy_mode,
       `tp_sl:${r.tp_bucket}`,
-      tpLabels[r.tp_bucket] ?? r.tp_bucket,
+      tpLabels[r.tp_bucket as string] ?? String(r.tp_bucket),
       r,
-      `${r.strategy_mode} ${tpLabels[r.tp_bucket] ?? r.tp_bucket} 성과`,
+      `${r.strategy_mode} ${tpLabels[r.tp_bucket as string] ?? String(r.tp_bucket)} 성과`,
     );
 
     // 최고 PF 구간 감지 후 suggested_action 생성
@@ -374,13 +386,13 @@ async function analyzeByAiScore(days: number, isPaper: boolean): Promise<Strateg
     score_high: 'AI 85점+',
   };
 
-  return rows.map((r: any) => {
+  return rows.map((r: AggregateRow) => {
     const insight = buildInsight(
       r.strategy_mode,
       `ai_score:${r.score_bucket}`,
-      scoreLabels[r.score_bucket] ?? r.score_bucket,
+      scoreLabels[r.score_bucket as string] ?? String(r.score_bucket),
       r,
-      `${r.strategy_mode} ${scoreLabels[r.score_bucket] ?? r.score_bucket}`,
+      `${r.strategy_mode} ${scoreLabels[r.score_bucket as string] ?? String(r.score_bucket)}`,
     );
 
     // 저점수 구간 승률이 낮으면 threshold 상향 제안
@@ -421,12 +433,12 @@ async function analyzeByAveragingDown(days: number, isPaper: boolean): Promise<S
   );
 
   // 그룹화: 전략별로 비교 (with_avg vs no_avg)
-  const grouped = new Map<string, Map<string, any>>();
-  for (const r of rows) {
+  const grouped = new Map<string, Map<string, AggregateRow>>();
+  for (const r of rows as AggregateRow[]) {
     if (!grouped.has(r.strategy_mode)) {
       grouped.set(r.strategy_mode, new Map());
     }
-    grouped.get(r.strategy_mode)!.set(r.avg_bucket, r);
+    grouped.get(r.strategy_mode)!.set(r.avg_bucket as string, r);
   }
 
   const insights: StrategyInsight[] = [];
@@ -484,7 +496,7 @@ function buildInsight(
   mode: string,
   key: string,
   label: string,
-  row: { total: number; wins: number; avg_win: number | null; avg_loss: number | null; avg_pnl_pct: number | null },
+  row: { total: string | number; wins: string | number; avg_win: string | number | null; avg_loss: string | number | null; avg_pnl_pct: string | number | null },
   prefix: string,
   suggestedAction?: {
     type: string;

@@ -57,7 +57,7 @@ marketDataRoutes.get('/market/52w-highs', async (c) => {
     _highCache = { data: items, fetchedAt: Date.now() };
     return c.json({ items });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -116,7 +116,7 @@ marketDataRoutes.get('/market/short-selling', async (c) => {
     _shortCache[key] = { data: items, fetchedAt: Date.now() };
     return c.json({ items });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -153,7 +153,7 @@ marketDataRoutes.get('/market/sector-heatmap', async (c) => {
     if (items.length > 0) _sectorCache = { data: items, fetchedAt: Date.now() };
     return c.json({ items });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -205,7 +205,7 @@ marketDataRoutes.get('/market/correlation', async (c) => {
       .map(([sector, names]) => ({ sector, count: names.length, stocks: names }));
     return c.json({ warnings, sectorGroups });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -259,7 +259,7 @@ marketDataRoutes.get('/market/investor-flow', async (c) => {
     _flowCache = { data: items, fetchedAt: Date.now() };
     return c.json({ items, cached: false });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -316,7 +316,7 @@ marketDataRoutes.get('/performance/attribution', async (c) => {
 
     return c.json(result);
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -324,7 +324,8 @@ marketDataRoutes.get('/performance/attribution', async (c) => {
 // 쿼리파라미터: days=90 (기본값), mode= (필터)
 marketDataRoutes.get('/performance/export-csv', async (c) => {
   try {
-    const days = Math.min(365, Math.max(1, Number(c.req.query('days') ?? 90)));
+    const rawDays = Number(c.req.query('days') ?? 90);
+    const days = Math.min(365, Math.max(1, Number.isFinite(rawDays) ? rawDays : 90));
     const modeFilter = c.req.query('mode') ?? '';
 
     const isPaper = resolveViewIsPaper(c);
@@ -386,6 +387,6 @@ marketDataRoutes.get('/performance/export-csv', async (c) => {
     c.header('Content-Disposition', `attachment; filename="${filename}"`);
     return c.body(csvLines.join('\n'));
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });

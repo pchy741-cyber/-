@@ -143,10 +143,10 @@ function computePerformance(mode: string, rows: ClosedChainRow[]): StrategyPerfo
   const pnlSequence: number[] = [];
 
   for (const row of rows) {
-    const buyPrice = Number(row.avg_buy_price);
-    const sellPrice = Number(row.sell_price ?? buyPrice);
-    const invested = Number(row.total_invested);
-    const realizedPnl = Number(row.realized_pnl);
+    const buyPrice = Number(row.avg_buy_price) || 0;
+    const sellPrice = Number(row.sell_price ?? buyPrice) || 0;
+    const invested = Number(row.total_invested) || 0;
+    const realizedPnl = Number(row.realized_pnl) || 0;
 
     const pnlPct = buyPrice > 0 ? ((sellPrice - buyPrice) / buyPrice) * 100 : 0;
     const pnlKrw = realizedPnl || (invested > 0 ? invested * (pnlPct / 100) : 0);

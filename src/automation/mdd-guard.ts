@@ -97,7 +97,7 @@ async function runForMode(isPaper: boolean): Promise<void> {
       isPaper,
     );
     logger.warn(
-      `🚫 MDD 가드 발동 [${mode}]: MDD ${mdd.toFixed(1)}% >= ${limit}% — minBuyScore=99 (TTL ${BLOCK_TTL_MINUTES / 60}h)`,
+      `🚫 MDD 가드 발동 [${mode}]: MDD ${mdd.toFixed(1)}% >= ${limit}% — minBuyScore=${guardScore} (TTL ${BLOCK_TTL_MINUTES / 60}h)`,
       { component: COMP },
     );
     sendByPaperFlag(

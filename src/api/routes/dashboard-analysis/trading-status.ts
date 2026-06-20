@@ -232,6 +232,6 @@ tradingStatusRoutes.get('/trading-status', async (c) => {
       blocks,
     });
   } catch (err) {
-    return c.json({ overallStatus: 'UNKNOWN', blocks: [], error: String(err) });
+    return c.json({ overallStatus: 'UNKNOWN', blocks: [], error: 'Internal server error' });
   }
 });

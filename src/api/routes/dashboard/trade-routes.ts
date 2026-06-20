@@ -6,6 +6,7 @@ import { getDinnerMoneyStats } from '../../../automation/profit-withdraw.js';
 import { KR_FEE } from '../../../config/constants.js';
 import { getPool } from '../../../db/client.js';
 import { type CurrentPrice, getBatchPrices } from '../../../kis/market.js';
+import { logger } from '../../../utils/logger.js';
 import { resolveRequestMode } from '../../guards/live-pin.js';
 import { getTodayTradeStats } from '../sse.js';
 import { getKnownStockName, isInvalidStockName } from './helpers.js';
@@ -18,7 +19,8 @@ tradeRoutes.get('/trades', async (c) => {
   const isOverseasFilter = market === 'OVERSEAS';
   const defaultLimit = isOverseasFilter ? 2000 : 100;
   const maxLimit = isOverseasFilter ? 5000 : 500;
-  const limit = Math.min(Math.max(1, Number(c.req.query('limit') ?? defaultLimit)), maxLimit);
+  const rawLimit = Number(c.req.query('limit') ?? defaultLimit);
+  const limit = Math.min(Math.max(1, Number.isFinite(rawLimit) ? rawLimit : defaultLimit), maxLimit);
   const viewIsPaper = resolveRequestMode(c);
   const tradeMode = viewIsPaper ? 'paper' : 'live';
   const marketClause = isOverseasFilter
@@ -209,7 +211,8 @@ tradeRoutes.get('/trades', async (c) => {
 
     return c.json(patched);
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    logger.error(`매매 기록 조회 실패: ${err.message}`, { component: 'TRADES' });
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -248,7 +251,7 @@ tradeRoutes.post('/sources', async (c) => {
     );
     return c.json(rows[0]);
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -258,7 +261,7 @@ tradeRoutes.patch('/sources/:id/pin', async (c) => {
     await getPool().query('UPDATE market_sources SET is_pinned = NOT is_pinned WHERE id = $1', [id]);
     return c.json({ ok: true });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -268,7 +271,7 @@ tradeRoutes.delete('/sources/:id', async (c) => {
     await getPool().query('DELETE FROM market_sources WHERE id = $1', [id]);
     return c.json({ ok: true });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -302,7 +305,7 @@ tradeRoutes.patch('/withdraw/:id/status', async (c) => {
     await getPool().query('UPDATE profit_withdrawals SET status = $1 WHERE id = $2', [status, id]);
     return c.json({ ok: true });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -310,7 +313,8 @@ tradeRoutes.patch('/withdraw/:id/status', async (c) => {
 tradeRoutes.get('/trades/daily-summary', async (c) => {
   const viewIsPaper = resolveRequestMode(c);
   const tradeMode = viewIsPaper ? 'paper' : 'live';
-  const days = Math.min(Math.max(1, Number(c.req.query('days') ?? 30)), 365);
+  const rawDays = Number(c.req.query('days') ?? 30);
+  const days = Math.min(Math.max(1, Number.isFinite(rawDays) ? rawDays : 30), 365);
 
   try {
     // 일자별 매도 실현손익 집계 (FIFO 기반 — 체인 realized_pnl 사용)
@@ -399,7 +403,7 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
       period: `${days}days`,
     });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -463,7 +467,7 @@ tradeRoutes.get('/trades/by-date/:date', async (c) => {
       mode: tradeMode,
     });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -515,6 +519,6 @@ tradeRoutes.get('/stats/win-rate-bands', async (c) => {
 
     return c.json({ ok: true, bands, period: '30days' });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });

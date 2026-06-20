@@ -47,9 +47,9 @@ export async function generateDailyReport(): Promise<void> {
       ),
     ]);
 
-    const buyOrders = todayOrders.filter((o: any) => o.side === 'BUY');
-    const sellOrders = todayOrders.filter((o: any) => o.side === 'SELL');
-    const realizedPnl = closedToday.reduce((sum: number, c: any) => sum + Number(c.realized_pnl ?? 0), 0);
+    const buyOrders = todayOrders.filter((o: Record<string, unknown>) => o.side === 'BUY');
+    const sellOrders = todayOrders.filter((o: Record<string, unknown>) => o.side === 'SELL');
+    const realizedPnl = closedToday.reduce((sum: number, c: Record<string, unknown>) => sum + Number(c.realized_pnl ?? 0), 0);
 
     // 보유 종목별 수익률
     const positionLines = balance.positions.map((p) => {
@@ -58,27 +58,27 @@ export async function generateDailyReport(): Promise<void> {
     });
 
     // 체인 보유 종목
-    const chainLines = chains.map((ch: any) => {
+    const chainLines = chains.map((ch: Record<string, unknown>) => {
       const pnl = Number(ch.realized_pnl ?? 0);
       const emoji = pnl >= 0 ? '🟡' : '🔴';
       return `  ${emoji} ${ch.stock_code} (${ch.strategy_mode}): ${ch.total_quantity}주 · 평단 ${Number(ch.avg_buy_price).toLocaleString()}원`;
     });
 
     // 이번 주 성과
-    const weekPnl = weekData.reduce((s: number, c: any) => s + Number(c.realized_pnl ?? 0), 0);
-    const weekWins = weekData.filter((c: any) => Number(c.realized_pnl) > 0).length;
-    const weekLosses = weekData.filter((c: any) => Number(c.realized_pnl) <= 0).length;
+    const weekPnl = weekData.reduce((s: number, c: Record<string, unknown>) => s + Number(c.realized_pnl ?? 0), 0);
+    const weekWins = weekData.filter((c: Record<string, unknown>) => Number(c.realized_pnl) > 0).length;
+    const weekLosses = weekData.filter((c: Record<string, unknown>) => Number(c.realized_pnl) <= 0).length;
 
     // 이번 달 성과
-    const monthPnl = monthData.reduce((s: number, c: any) => s + Number(c.realized_pnl ?? 0), 0);
-    const monthWins = monthData.filter((c: any) => Number(c.realized_pnl) > 0).length;
-    const monthLosses = monthData.filter((c: any) => Number(c.realized_pnl) <= 0).length;
+    const monthPnl = monthData.reduce((s: number, c: Record<string, unknown>) => s + Number(c.realized_pnl ?? 0), 0);
+    const monthWins = monthData.filter((c: Record<string, unknown>) => Number(c.realized_pnl) > 0).length;
+    const monthLosses = monthData.filter((c: Record<string, unknown>) => Number(c.realized_pnl) <= 0).length;
     const monthWinRate = monthData.length > 0 ? ((monthWins / monthData.length) * 100).toFixed(0) : '-';
 
     // 오늘 매매 근거 요약 (최근 3건)
-    const reasonLines = todayOrders.slice(-3).map((o: any) => {
+    const reasonLines = todayOrders.slice(-3).map((o: Record<string, unknown>) => {
       const side = o.side === 'BUY' ? '매수' : '매도';
-      const reason = o.ai_reasoning ? o.ai_reasoning.slice(0, 50) : '근거 없음';
+      const reason = o.ai_reasoning ? String(o.ai_reasoning).slice(0, 50) : '근거 없음';
       return `  ${side} ${o.stock_code}: ${reason}`;
     });
 

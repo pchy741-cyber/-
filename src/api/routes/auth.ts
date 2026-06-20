@@ -20,7 +20,36 @@ import {
 
 export const authRoutes = new Hono();
 
+// ── In-memory rate limiter: IP-based, max 5 login attempts per 60 seconds ──
+const _loginAttempts = new Map<string, { count: number; resetAt: number }>();
+const LOGIN_RATE_LIMIT = 5;
+const LOGIN_RATE_WINDOW_MS = 60_000;
+
+// Periodic cleanup to prevent unbounded growth (every 5 minutes)
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of _loginAttempts) {
+    if (now >= entry.resetAt) _loginAttempts.delete(ip);
+  }
+}, 5 * 60_000).unref();
+
 authRoutes.post('/auth/login', async (c) => {
+  // Rate limiting: max 5 attempts per minute per IP
+  const clientIp = c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
+    ?? c.req.header('x-real-ip')
+    ?? 'unknown';
+  const now = Date.now();
+  const attempt = _loginAttempts.get(clientIp);
+  if (attempt && now < attempt.resetAt) {
+    if (attempt.count >= LOGIN_RATE_LIMIT) {
+      const retryAfterSec = Math.ceil((attempt.resetAt - now) / 1000);
+      return c.json({ error: `로그인 시도 횟수 초과. ${retryAfterSec}초 후 재시도하세요.` }, 429);
+    }
+    attempt.count++;
+  } else {
+    _loginAttempts.set(clientIp, { count: 1, resetAt: now + LOGIN_RATE_WINDOW_MS });
+  }
+
   const secret = process.env.DASHBOARD_PASSWORD ?? '';
   if (!secret) {
     return c.json({ error: '서버 패스워드 미설정' }, 503);

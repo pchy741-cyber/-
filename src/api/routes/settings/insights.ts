@@ -20,7 +20,7 @@ insightsRoutes.get('/insights', async (c) => {
     );
     return c.json(rows);
   } catch (err: any) {
-    return c.json({ error: err?.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -39,7 +39,7 @@ insightsRoutes.post('/insights', async (c) => {
     );
     return c.json(rows[0]);
   } catch (err: any) {
-    return c.json({ error: err?.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -52,7 +52,7 @@ insightsRoutes.post('/insights/:id/apply', async (c) => {
     const result = await applyInsightById(id);
     return c.json(result);
   } catch (err: any) {
-    return c.json({ error: err?.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -71,7 +71,7 @@ insightsRoutes.delete('/insights/:id', async (c) => {
     );
     return c.json({ ok: true });
   } catch (err: any) {
-    return c.json({ error: err?.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -168,7 +168,7 @@ insightsRoutes.post('/insights/:id/promote', async (c) => {
 
     return c.json({ ok: true, promoted: promoted[0] });
   } catch (err: any) {
-    return c.json({ error: err?.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -198,6 +198,6 @@ insightsRoutes.post('/insights/:id/revoke', async (c) => {
 
     return c.json({ ok: true });
   } catch (err: any) {
-    return c.json({ error: err?.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });

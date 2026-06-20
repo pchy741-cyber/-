@@ -165,8 +165,8 @@ async function getRecentAiScores(stockCodes: string[]): Promise<Map<string, numb
     for (const r of rows) {
       map.set(String(r.stock_code), Number(r.avg_score));
     }
-  } catch {
-    /* DB 없으면 빈 맵 */
+  } catch (err) {
+    logger.debug(`기존 AI 스코어 조회 실패: ${err}`, { component: 'HOT_SECTOR' });
   }
   return map;
 }
@@ -177,8 +177,9 @@ async function getRecentAiScores(stockCodes: string[]): Promise<Map<string, numb
 async function getActiveWatchlistCodes(): Promise<Set<string>> {
   try {
     const { rows } = await getPool().query(`SELECT stock_code FROM watchlist WHERE is_active = true`);
-    return new Set(rows.map((r: any) => String(r.stock_code)));
-  } catch {
+    return new Set(rows.map((r: Record<string, unknown>) => String(r.stock_code)));
+  } catch (err) {
+    logger.debug(`워치리스트 조회 실패: ${err}`, { component: 'HOT_SECTOR' });
     return new Set();
   }
 }

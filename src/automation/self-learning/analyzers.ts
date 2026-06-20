@@ -1,6 +1,7 @@
 import type { EnrichedChain, LearnedInsight } from './index.js';
 
-const now = new Date().toISOString();
+// stale timestamp 방지: 함수 호출 시점에서 생성 (모듈 로드 시 고정 방지)
+const now = () => new Date().toISOString();
 
 export function analyzeAveraging(wins: EnrichedChain[], losses: EnrichedChain[]): LearnedInsight[] {
   if (wins.length < 3) return [];
@@ -15,7 +16,7 @@ export function analyzeAveraging(wins: EnrichedChain[], losses: EnrichedChain[])
         insight: `물타기를 적극 활용한 매매가 수익률이 높음 (수익 평균 ${avgAvgCountWin.toFixed(1)}회 vs 손실 ${avgAvgCountLoss.toFixed(1)}회). 물타기 기회를 놓치지 말 것.`,
         confidence: 0.7,
         sampleCount: wins.length,
-        lastUpdated: now,
+        lastUpdated: now(),
       },
     ];
   } else if (avgAvgCountWin < avgAvgCountLoss - 0.3) {
@@ -25,7 +26,7 @@ export function analyzeAveraging(wins: EnrichedChain[], losses: EnrichedChain[])
         insight: `물타기 없이 1차 매수만으로 수익낸 경우가 많음. 물타기보다 진입 타이밍이 중요.`,
         confidence: 0.65,
         sampleCount: wins.length,
-        lastUpdated: now,
+        lastUpdated: now(),
       },
     ];
   }
@@ -44,7 +45,7 @@ export function analyzeHoldingPeriod(wins: EnrichedChain[], losses: EnrichedChai
       insight: `수익 매매는 평균 ${avgWinHold.toFixed(1)}일 보유. 빠른 단기 매매의 성과가 좋음.`,
       confidence: 0.75,
       sampleCount: wins.length,
-      lastUpdated: now,
+      lastUpdated: now(),
     });
   }
   if (avgLossHold > avgWinHold * 1.5 && avgLossHold > 3) {
@@ -61,7 +62,7 @@ export function analyzeHoldingPeriod(wins: EnrichedChain[], losses: EnrichedChai
       },
       confidence: 0.8,
       sampleCount: losses.length,
-      lastUpdated: now,
+      lastUpdated: now(),
     });
   } else if (avgLossHold > avgWinHold * 1.5 && avgLossHold > 0) {
     insights.push({
@@ -69,7 +70,7 @@ export function analyzeHoldingPeriod(wins: EnrichedChain[], losses: EnrichedChai
       insight: `손실 매매는 평균 ${avgLossHold.toFixed(1)}일로 수익(${avgWinHold.toFixed(1)}일) 대비 오래 보유. 손절을 더 빨리 할 것.`,
       confidence: 0.8,
       sampleCount: losses.length,
-      lastUpdated: now,
+      lastUpdated: now(),
     });
   }
   return insights;
@@ -114,7 +115,7 @@ export function analyzeModePerformance(enrichedChains: EnrichedChain[]): Learned
         insight: `${mode} 모드 성과: 승률 ${winRatePct}% (${stats.wins}승 ${stats.losses}패), 총 수익 ${stats.totalPnl.toLocaleString()}원`,
         confidence: total >= 10 ? 0.85 : 0.6,
         sampleCount: total,
-        lastUpdated: now,
+        lastUpdated: now(),
       };
 
       if (isBad && bestMode && bestMode !== mode) {
@@ -157,7 +158,7 @@ export function analyzeStockPerformance(enrichedChains: EnrichedChain[]): Learne
         insight: `종목 '${code}'는 승률 ${(winRate * 100).toFixed(0)}% (${total}건) — 이 전략과 잘 맞는 종목. 매수 시그널 시 적극 진입하세요.`,
         confidence: 0.75 + (total >= 5 ? 0.05 : 0),
         sampleCount: total,
-        lastUpdated: now,
+        lastUpdated: now(),
       });
     } else if (winRate <= 0.33 && total >= 3) {
       insights.push({
@@ -165,7 +166,7 @@ export function analyzeStockPerformance(enrichedChains: EnrichedChain[]): Learne
         insight: `종목 '${code}'는 승률 ${(winRate * 100).toFixed(0)}% (${total}건) — 이 전략과 맞지 않음. 스코어가 높아도 BUY를 HOLD로 전환하거나 수량 절반으로 줄이세요.`,
         confidence: 0.7 + (total >= 5 ? 0.1 : 0),
         sampleCount: total,
-        lastUpdated: now,
+        lastUpdated: now(),
       });
     }
   }
@@ -203,7 +204,7 @@ export function analyzeStockWinRateAcceleration(enrichedChains: EnrichedChain[])
         insight: `종목 '${code}' 최근 승률 가속: 이전 ${(olderWinRate * 100).toFixed(0)}% → 최근 ${(newerWinRate * 100).toFixed(0)}% (${trades.length}건). 전략 적합성 향상 중 — 신호 시 우선 진입.`,
         confidence: Math.min(0.9, 0.65 + trades.length * 0.03),
         sampleCount: trades.length,
-        lastUpdated: now,
+        lastUpdated: now(),
         details: { code, olderWinRate, newerWinRate, olderAvgPnl, newerAvgPnl },
       });
     }
@@ -214,7 +215,7 @@ export function analyzeStockWinRateAcceleration(enrichedChains: EnrichedChain[])
         insight: `종목 '${code}' 최근 성과 악화: 이전 승률 ${(olderWinRate * 100).toFixed(0)}% → 최근 ${(newerWinRate * 100).toFixed(0)}% (${trades.length}건). 진입 기준 강화 또는 워치리스트 제거 검토.`,
         confidence: Math.min(0.85, 0.6 + trades.length * 0.03),
         sampleCount: trades.length,
-        lastUpdated: now,
+        lastUpdated: now(),
         recommendation: `${code} 매수 기준 +10점 상향, 지속 부진 시 워치리스트 제거.`,
       });
     }
@@ -237,7 +238,7 @@ export function analyzeWinRateTrend(chains: any[]): LearnedInsight[] {
           insight: `최근 승률이 개선 중 (${(recentWinRate * 100).toFixed(0)}% vs 이전 ${(olderWinRate * 100).toFixed(0)}%). 현재 전략이 시장에 잘 맞는 시기.`,
           confidence: 0.7,
           sampleCount: 20,
-          lastUpdated: now,
+          lastUpdated: now(),
         },
       ];
     } else if (recentWinRate < olderWinRate - 0.15) {
@@ -257,7 +258,7 @@ export function analyzeWinRateTrend(chains: any[]): LearnedInsight[] {
           },
           confidence: 0.8,
           sampleCount: 20,
-          lastUpdated: now,
+          lastUpdated: now(),
         },
       ];
     }
@@ -288,7 +289,7 @@ export function analyzeSniperPerformance(wins: EnrichedChain[], losses: Enriched
         insight: `스나이퍼 '${type}' 타입의 승률이 ${(winRate * 100).toFixed(0)}%로 매우 높음. 해당 시그널을 우선적으로 고려할 것.`,
         confidence: 0.8,
         sampleCount: total,
-        lastUpdated: now,
+        lastUpdated: now(),
       });
     }
   }
@@ -314,7 +315,7 @@ export function analyzeConfidenceCorrelation(enrichedChains: EnrichedChain[]): L
         insight: `초기 신뢰도 85% 이상 스나이퍼 시그널의 승률(${(highConfWinRate * 100).toFixed(0)}%)이 그 이하(${(midConfWinRate * 100).toFixed(0)}%)보다 월등히 높음. 고신뢰도 시그널에 대한 투자 비중 확대는 유효한 전략.`,
         confidence: 0.8,
         sampleCount: sniperTrades.length,
-        lastUpdated: now,
+        lastUpdated: now(),
       },
     ];
   }
@@ -338,7 +339,7 @@ export function analyzeHoldingPeriodByEntry(wins: EnrichedChain[]): LearnedInsig
         insight: `'눌림목 반등' 시그널은 평균 ${avgPullbackHold.toFixed(1)}일 보유로, 다른 수익 매매(${avgOtherHold.toFixed(1)}일)보다 단기 수익 실현에 더 적합함.`,
         confidence: 0.7,
         sampleCount: pullbackWins.length,
-        lastUpdated: now,
+        lastUpdated: now(),
       },
     ];
   }
@@ -392,7 +393,7 @@ export function analyzeSniperByMarketRegime(enrichedChains: EnrichedChain[]): Le
         insight: `'${mode}' 장세에서는 '${bestPerformer.type}' 스나이퍼의 승률이 ${(bestPerformer.winRate * 100).toFixed(0)}%로 가장 높았습니다. 이 장세에서는 해당 타입의 시그널을 우선적으로 고려해야 합니다.`,
         confidence: 0.75,
         sampleCount: bestPerformer.total,
-        lastUpdated: now,
+        lastUpdated: now(),
         details: {
           param: 'BEST_SNIPER_FOR_MODE',
           mode: mode,
@@ -424,7 +425,7 @@ export function analyzeLossStreakRisk(enrichedChains: EnrichedChain[]): LearnedI
         },
         confidence: 0.85,
         sampleCount: 5,
-        lastUpdated: now,
+        lastUpdated: now(),
       },
     ];
   }
@@ -454,7 +455,7 @@ export function analyzeProfitRatio(wins: EnrichedChain[], losses: EnrichedChain[
       },
       confidence: 0.8,
       sampleCount: wins.length + losses.length,
-      lastUpdated: now,
+      lastUpdated: now(),
     });
   } else if (ratio >= 2.0) {
     insights.push({
@@ -463,7 +464,7 @@ export function analyzeProfitRatio(wins: EnrichedChain[], losses: EnrichedChain[
       recommendation: `현재 손절/익절 기준이 최적화되어 있음. 변경 불필요.`,
       confidence: 0.8,
       sampleCount: wins.length + losses.length,
-      lastUpdated: now,
+      lastUpdated: now(),
     });
   }
 
@@ -536,7 +537,7 @@ function analyzeSabermetrics(
         : `음의 기대값 ${evPerTrade.toFixed(2)}% — SL 타이트닝 또는 TP 확대로 R배수 개선 필요`,
     confidence: Math.min(0.9, 0.6 + total * 0.01),
     sampleCount: total,
-    lastUpdated: now,
+    lastUpdated: now(),
     details: {
       winRate,
       avgWinPct,
@@ -571,7 +572,7 @@ function analyzeSabermetrics(
           : undefined,
       confidence: 0.82,
       sampleCount: total,
-      lastUpdated: now,
+      lastUpdated: now(),
     });
   } else if (winRateMargin >= 0.15) {
     // 승률 마진 15%p 이상 → 여유 있음, 포지션 확대 가능
@@ -581,7 +582,7 @@ function analyzeSabermetrics(
       recommendation: `포지션 비중을 현재 대비 ${kellyHalf > 0.15 ? '확대' : '유지'}. Half Kelly ${(kellyHalf * 100).toFixed(1)}% 기준.`,
       confidence: 0.78,
       sampleCount: total,
-      lastUpdated: now,
+      lastUpdated: now(),
     });
   }
 
@@ -600,7 +601,7 @@ function analyzeSabermetrics(
       },
       confidence: 0.75,
       sampleCount: total,
-      lastUpdated: now,
+      lastUpdated: now(),
     });
   }
 
@@ -613,7 +614,7 @@ function analyzeSabermetrics(
       recommendation: `2R+ 도달 시 부분익절만 하고 나머지는 ATR 트레일링으로 극대화. 조기 전량 매도 자제.`,
       confidence: 0.72,
       sampleCount: bigWins.length,
-      lastUpdated: now,
+      lastUpdated: now(),
     });
   }
 
@@ -634,7 +635,7 @@ export function analyzeQuickProfitTaking(wins: EnrichedChain[]): LearnedInsight[
         insight: `단기 수익(1~2일, +1.5% 이상) 패턴이 전체 수익 거래의 ${(ratio * 100).toFixed(0)}%를 차지. 단기 모멘텀 시 과도한 홀딩보다 빠른 익절이 효과적. 관련 종목: ${stockCodes.slice(0, 3).join(', ')}`,
         confidence: 0.75,
         sampleCount: quickWins.length,
-        lastUpdated: now,
+        lastUpdated: now(),
       },
     ];
   }
@@ -692,7 +693,7 @@ export function analyzeOptimalEntryWindows(wins: EnrichedChain[]): LearnedInsigh
       recommendation: `${bestBucket} 시간대 진입 시 포지션 사이즈 20% 확대 권장. 매수 임계점 -5점 완화.`,
       confidence: Math.min(0.85, 0.6 + stats.total * 0.03),
       sampleCount: stats.total,
-      lastUpdated: now,
+      lastUpdated: now(),
     });
   }
 
@@ -733,7 +734,7 @@ export function analyzeHotStocks(enrichedChains: EnrichedChain[]): LearnedInsigh
         recommendation: `${code} 매수 임계점 -10점 낮춰서 적극 진입. 포지션 사이즈 1.3배 확대.`,
         confidence: Math.min(0.9, 0.7 + trades.length * 0.02),
         sampleCount: trades.length,
-        lastUpdated: now,
+        lastUpdated: now(),
       });
     }
   }
@@ -772,7 +773,7 @@ export function analyzeStrategyStrengths(enrichedChains: EnrichedChain[]): Learn
         recommendation: `${mode} 전략 황금비율 가중치 +10% 확대 권장. 현재 시장에 잘 맞는 전략.`,
         confidence: Math.min(0.85, 0.65 + stats.total * 0.02),
         sampleCount: stats.total,
-        lastUpdated: now,
+        lastUpdated: now(),
       });
     }
   }
@@ -804,7 +805,7 @@ export function analyzeEarlyExitMissedProfit(wins: EnrichedChain[], losses: Enri
       paramChange: avgSmallPnl < 0.8 ? { field: 'take_profit_pct', value: 4.0, reason: '조기 익절 방지 — TP 상향' } : undefined,
       confidence: 0.75,
       sampleCount: smallWins.length,
-      lastUpdated: now,
+      lastUpdated: now(),
     });
   }
 

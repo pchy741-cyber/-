@@ -120,7 +120,7 @@ ${chartSummary}
     } else if (!result.success) {
       const code =
         typeof score === 'object' && score !== null && 'stock_code' in score
-          ? String((score as any).stock_code)
+          ? String((score as Record<string, unknown>).stock_code)
           : 'UNKNOWN';
       logger.warn(`Flash 폴백 스코어 검증 실패 (${code}): ${result.error.message}`, { component: 'TRACK_A' });
     }
@@ -505,10 +505,11 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       }
       // 최다 레짐을 시장 레짐으로 설정
       let maxCount = 0;
+      const validRegimes = new Set(['TREND_BULL', 'TREND_BEAR', 'RANGE_LOW_VOL', 'RANGE_HIGH_VOL', 'BREAKOUT', 'DISTRIBUTION']);
       for (const [regime, count] of regimeCounts) {
-        if (count > maxCount) {
+        if (count > maxCount && validRegimes.has(regime)) {
           maxCount = count;
-          regimeHint = regime as any;
+          regimeHint = regime as NonNullable<typeof regimeHint>;
         }
       }
       if (regimeHint) {
@@ -740,7 +741,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     if (scoringSource !== 'gemini' && !isMemoryMode()) {
       try {
         const { rows } = await getPool().query(`SELECT stock_code FROM ai_scores WHERE score_date = $1`, [today]);
-        existingTodayCodes = new Set(rows.map((r: any) => String(r.stock_code)));
+        existingTodayCodes = new Set(rows.map((r: Record<string, unknown>) => String(r.stock_code)));
         if (existingTodayCodes.size > 0) {
           logger.info(
             `⚙️ ${scoringSource === 'technical' ? '기술적' : 'Flash'} 폴백: 오늘 기존 점수 ${existingTodayCodes.size}개 보존 (덮어쓰기 생략)`,
@@ -789,7 +790,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
             getPool().query(
               `UPDATE watchlist SET is_active = true, stock_name = COALESCE(NULLIF(stock_name, stock_code), $2), source = 'AUTO'
              WHERE stock_code = $1`,
-              [s.stock_code, (s as any).stock_name ?? s.stock_code],
+              [s.stock_code, allStocksMap.get(s.stock_code)?.stock_name ?? s.stock_code],
             ),
           ),
         );

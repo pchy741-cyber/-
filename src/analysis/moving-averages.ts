@@ -15,6 +15,7 @@ export interface OHLCV {
 // ── 이동평균 (SMA / EMA) ──
 
 export function sma(prices: number[], period: number): number[] {
+  if (prices.length === 0 || period <= 0 || prices.length < period) return [];
   const result: number[] = [];
   for (let i = 0; i <= prices.length - period; i++) {
     const sum = prices.slice(i, i + period).reduce((a, b) => a + b, 0);
@@ -24,7 +25,7 @@ export function sma(prices: number[], period: number): number[] {
 }
 
 export function ema(prices: number[], period: number): number[] {
-  if (prices.length < period) return [];
+  if (prices.length < period || period <= 0) return [];
   const k = 2 / (period + 1);
   const result: number[] = [];
 
@@ -53,6 +54,13 @@ export interface EnvelopeResult {
 }
 
 export function envelope(prices: number[], period = 20, deviation = 0.05): EnvelopeResult {
+  if (prices.length === 0) {
+    return {
+      upper: [], middle: [], lower: [],
+      upperNow: 0, middleNow: 0, lowerNow: 0,
+      position: 'MIDDLE', touchingLower: false,
+    };
+  }
   const mid = sma(prices, period);
   const upper = mid.map((m) => m * (1 + deviation));
   const lower = mid.map((m) => m * (1 - deviation));
@@ -73,6 +81,7 @@ export function envelope(prices: number[], period = 20, deviation = 0.05): Envel
 // ── VWAP (Volume Weighted Average Price) ──
 
 export function vwap(candles: OHLCV[]): number[] {
+  if (candles.length === 0) return [];
   const result: number[] = [];
   let cumVolume = 0;
   let cumVP = 0;

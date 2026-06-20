@@ -86,7 +86,7 @@ export function registerManualBuyRoutes(app: Hono) {
         liveTotalCapital: live?.totalCapital ?? null,
       });
     } catch (e) {
-      return c.json({ error: `잔고 조회 실패: ${e instanceof Error ? e.message : e}` }, 503);
+      return c.json({ error: '잔고 조회 실패' }, 503);
     }
   });
 
@@ -218,7 +218,7 @@ export function registerManualBuyRoutes(app: Hono) {
           );
         } catch (e) {
           logger.error(`잔고 조회 실패 — 주문 중단: ${e}`, { component: 'CLAUDE_BUY' });
-          return c.json({ error: `잔고 조회 실패로 주문 중단: ${e instanceof Error ? e.message : e}` }, 503);
+          return c.json({ error: '잔고 조회 실패로 주문 중단' }, 503);
         }
       }
 
@@ -576,7 +576,7 @@ export function registerManualBuyRoutes(app: Hono) {
       });
     } catch (err: any) {
       logger.error(`Claude 매수 예외: ${err.message}`, { component: 'CLAUDE_BUY' });
-      return c.json({ error: err.message }, 500);
+      return c.json({ error: 'Internal server error' }, 500);
     }
   });
 }

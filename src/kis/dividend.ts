@@ -50,7 +50,7 @@ export async function getDividendSchedule(params?: {
       CTX_AREA_NK200: '',
     };
 
-    const data = await divKisRequest<any>({
+    const data = await divKisRequest<Record<string, string>[]>({
       path: '/uapi/overseas-price/v1/quotations/period-rights',
       trId: 'CTRGT011R',
       useRealUrl: true,
@@ -60,17 +60,20 @@ export async function getDividendSchedule(params?: {
     const items = data.output1 || data.output || [];
     if (!Array.isArray(items)) return [];
     return items
-      .map((r: any) => ({
-        stockCode: r.pdno || r.stck_shrn_iscd || '',
-        exDate: r.ex_date || r.rcrd_dt || '',
-        payDate: r.pay_dt || '',
-        dividendPerShare: parseFloat(r.divi_amt || r.rght_amt || '0'),
-        currency: r.crcy_cd || 'USD',
-        eventType: r.rght_type_nm || '배당',
-      }))
+      .map((r: Record<string, string>) => {
+        const dps = parseFloat(r.divi_amt || r.rght_amt || '0');
+        return {
+          stockCode: r.pdno || r.stck_shrn_iscd || '',
+          exDate: r.ex_date || r.rcrd_dt || '',
+          payDate: r.pay_dt || '',
+          dividendPerShare: Number.isFinite(dps) ? dps : 0,
+          currency: r.crcy_cd || 'USD',
+          eventType: r.rght_type_nm || '배당',
+        };
+      })
       .filter((d) => d.stockCode && d.dividendPerShare > 0);
-  } catch (e: any) {
-    logger.warn(`배당 일정 조회 실패: ${e.message}`, { component: COMP });
+  } catch (e: unknown) {
+    logger.warn(`배당 일정 조회 실패: ${e instanceof Error ? e.message : String(e)}`, { component: COMP });
     return [];
   }
 }
@@ -93,7 +96,7 @@ export async function getDividendReceipts(params?: {
       new Date(now.getTime() - 365 * 24 * 60 * 60_000).toISOString().slice(0, 10).replace(/-/g, '');
     const end = params?.endDate || now.toISOString().slice(0, 10).replace(/-/g, '');
 
-    const data = await divKisRequest<any>({
+    const data = await divKisRequest<Record<string, string>[]>({
       path: '/uapi/overseas-stock/v1/trading/inquire-period-trans',
       trId: 'CTOS4001R',
       params: {
@@ -115,20 +118,25 @@ export async function getDividendReceipts(params?: {
 
     // 배당 관련 거래만 필터
     return items
-      .filter((r: any) => {
+      .filter((r: Record<string, string>) => {
         const type = (r.tr_type_nm || r.tr_dvsn_nm || '').toLowerCase();
         return type.includes('배당') || type.includes('dividend') || type.includes('div');
       })
-      .map((r: any) => ({
-        stockCode: r.pdno || r.stck_shrn_iscd || '',
-        amount: Math.abs(parseFloat(r.tr_amt || r.ccld_amt || '0')),
-        tax: Math.abs(parseFloat(r.tax_amt || '0')),
-        netAmount: Math.abs(parseFloat(r.sttl_amt || r.tr_amt || '0')),
-        date: r.trd_dt || r.tr_dt || '',
-        currency: r.crcy_cd || 'USD',
-      }));
-  } catch (e: any) {
-    logger.warn(`배당금 수령내역 조회 실패: ${e.message}`, { component: COMP });
+      .map((r: Record<string, string>) => {
+        const amount = parseFloat(r.tr_amt || r.ccld_amt || '0');
+        const tax = parseFloat(r.tax_amt || '0');
+        const netAmount = parseFloat(r.sttl_amt || r.tr_amt || '0');
+        return {
+          stockCode: r.pdno || r.stck_shrn_iscd || '',
+          amount: Number.isFinite(amount) ? Math.abs(amount) : 0,
+          tax: Number.isFinite(tax) ? Math.abs(tax) : 0,
+          netAmount: Number.isFinite(netAmount) ? Math.abs(netAmount) : 0,
+          date: r.trd_dt || r.tr_dt || '',
+          currency: r.crcy_cd || 'USD',
+        };
+      });
+  } catch (e: unknown) {
+    logger.warn(`배당금 수령내역 조회 실패: ${e instanceof Error ? e.message : String(e)}`, { component: COMP });
     return [];
   }
 }

@@ -3,6 +3,7 @@
  * Gemini 할당량 초과 시 Anthropic Claude로 종목 분석 + 스코어 생성
  */
 import Anthropic from '@anthropic-ai/sdk';
+import { callClaudeCli, isClaudeCliEnabled } from '../../utils/claude-cli.js';
 import type { ScoringResult } from '../../db/models.js';
 import type { DailyCandle } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
@@ -10,6 +11,16 @@ import { logger } from '../../utils/logger.js';
 const COMP = 'TRACK_A_CLAUDE';
 const MODEL = 'claude-haiku-4-5-20251001'; // 저렴 + 빠름 (2차 검증 + 폴백)
 const BATCH_SIZE = 30; // 한 번에 30종목 분석
+const MAX_SOURCES_CHARS = 3000; // additionalSources 최대 문자 수 (토큰 절약)
+const MAX_TOKENS = 2000;
+const SCORE_MIN = 0;
+const SCORE_MAX = 100;
+const CONFIDENCE_MIN = 0;
+const CONFIDENCE_MAX = 1;
+const DEFAULT_CONFIDENCE = 0.6;
+const MIN_CANDLES_FOR_ANALYSIS = 5;
+const VALID_SIGNALS = ['BUY', 'SELL', 'HOLD', 'STRONG_BUY', 'STRONG_SELL', 'NO_DATA'] as const;
+type ValidSignal = (typeof VALID_SIGNALS)[number];
 
 interface WatchlistItem {
   stock_code: string;
@@ -22,10 +33,11 @@ export async function runClaudeScoring(
   chartData: Map<string, DailyCandle[]>,
   additionalSources?: string,
 ): Promise<ScoringResult[]> {
+  const useCli = isClaudeCliEnabled();
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY 미설정');
+  if (!useCli && !apiKey) throw new Error('ANTHROPIC_API_KEY 미설정 & CLI 비활성');
 
-  const client = new Anthropic({ apiKey });
+  const client = useCli ? null : new Anthropic({ apiKey: apiKey! });
 
   const results: ScoringResult[] = [];
 
@@ -37,21 +49,20 @@ export async function runClaudeScoring(
     const stockSummaries = batch
       .map((w) => {
         const candles = chartData.get(w.stock_code) ?? [];
-        if (candles.length < 5) return `${w.stock_code}(${w.stock_name}): 데이터부족`;
-        const recent = candles.slice(-10);
-        const prices = recent.map((c) => c.close);
-        const latest = prices[prices.length - 1];
-        const prev5 = prices[0];
-        const change5d = (((latest - prev5) / prev5) * 100).toFixed(1);
+        if (candles.length < MIN_CANDLES_FOR_ANALYSIS) return `${w.stock_code}(${w.stock_name}): 데이터부족`;
+        const recent = candles.slice(0, 10); // descending: index 0 = newest
+        const latest = recent[0].close;
+        const prev5 = recent[Math.min(4, recent.length - 1)].close;
+        const change5d = prev5 > 0 ? (((latest - prev5) / prev5) * 100).toFixed(1) : '?';
         const volumes = recent.map((c) => c.volume);
-        const avgVol = volumes.slice(0, -1).reduce((a, b) => a + b, 0) / (volumes.length - 1);
-        const volRatio = avgVol > 0 ? (volumes[volumes.length - 1] / avgVol).toFixed(1) : '?';
+        const avgVol = volumes.slice(1).reduce((a, b) => a + b, 0) / Math.max(1, volumes.length - 1);
+        const volRatio = avgVol > 0 ? (volumes[0] / avgVol).toFixed(1) : '?';
         return `${w.stock_code}(${w.stock_name}): 현재가${latest.toLocaleString()} 5일변동${change5d}% 거래량비율${volRatio}x`;
       })
       .join('\n');
 
     const sourcesBlock = additionalSources
-      ? `\n\n## 시장 인텔리전스 (뉴스·공시·매크로·감성)\n${additionalSources.slice(0, 3000)}`
+      ? `\n\n## 시장 인텔리전스 (뉴스·공시·매크로·감성)\n${additionalSources.slice(0, MAX_SOURCES_CHARS)}`
       : '';
 
     const systemPrompt = `당신은 한국 주식 퀀트 분석가입니다. ${mode} 전략으로 종목별 매수 점수(0-100)와 신호를 JSON으로 반환하세요.`;
@@ -66,14 +77,19 @@ ${stockSummaries}${sourcesBlock}
 JSON 배열만 반환 (설명 없이):`;
 
     try {
-      const msg = await client.messages.create({
-        model: MODEL,
-        max_tokens: 2000,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }],
-      });
+      let text: string;
 
-      const text = msg.content[0].type === 'text' ? msg.content[0].text : '';
+      if (useCli) {
+        text = await callClaudeCli({ systemPrompt, userPrompt });
+      } else {
+        const msg = await client!.messages.create({
+          model: MODEL,
+          max_tokens: MAX_TOKENS,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userPrompt }],
+        });
+        text = msg.content[0].type === 'text' ? msg.content[0].text : '';
+      }
       const jsonMatch = text.match(/\[[\s\S]*\]/);
       if (!jsonMatch) continue;
 
@@ -88,17 +104,20 @@ JSON 배열만 반환 (설명 없이):`;
       for (const item of parsed) {
         const wItem = batch.find((w) => w.stock_code === item.stock_code);
         if (!wItem) continue;
-        const score = Math.max(0, Math.min(100, Math.round(item.composite_score)));
+        const rawScore = Number(item.composite_score);
+        if (!Number.isFinite(rawScore)) continue; // NaN/Infinity guard
+        const score = Math.max(SCORE_MIN, Math.min(SCORE_MAX, Math.round(rawScore)));
+        const rawConfidence = Number(item.confidence ?? DEFAULT_CONFIDENCE);
         results.push({
           stock_code: item.stock_code,
           composite_score: score,
           fundamental_score: score,
           technical_score: score,
           sentiment_score: score,
-          signal: (['BUY', 'SELL', 'HOLD', 'STRONG_BUY', 'STRONG_SELL', 'NO_DATA'].includes(item.signal)
-            ? item.signal
-            : 'HOLD') as any,
-          confidence: Math.max(0, Math.min(1, item.confidence ?? 0.6)),
+          signal: (VALID_SIGNALS as readonly string[]).includes(item.signal)
+            ? (item.signal as ValidSignal)
+            : 'HOLD',
+          confidence: Math.max(CONFIDENCE_MIN, Math.min(CONFIDENCE_MAX, Number.isFinite(rawConfidence) ? rawConfidence : DEFAULT_CONFIDENCE)),
           reasoning: `[Claude] ${item.reasoning || ''}`,
         });
       }

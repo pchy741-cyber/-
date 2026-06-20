@@ -38,7 +38,7 @@ manualTriggersRoutes.post('/sync-overseas-holdings', async (c) => {
     return c.json({ ok: true, message: 'KIS 잔고 + 현금 동기화 완료 (live)' });
   } catch (e) {
     logger.error(`KIS 강제 동기화 실패: ${e}`, { component: 'SETTINGS' });
-    return c.json({ ok: false, error: String(e) }, 500);
+    return c.json({ ok: false, error: 'Internal server error' }, 500);
   }
 });
 
@@ -57,7 +57,8 @@ manualTriggersRoutes.post('/cash-fix', async (c) => {
     await runWithMode(false, () => setCash(body.amount_krw, false));
     return c.json({ ok: true, cashKrw: body.amount_krw });
   } catch (e) {
-    return c.json({ error: String(e) }, 500);
+    logger.error(`현금 수동 보정 실패: ${e}`, { component: 'SETTINGS' });
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -113,7 +114,8 @@ manualTriggersRoutes.post('/overseas-holdings-fix', async (c) => {
     });
     return c.json({ ok: true, updated, cleared });
   } catch (e) {
-    return c.json({ ok: false, error: String(e) }, 500);
+    logger.error(`해외 포지션 수동 정정 실패: ${e}`, { component: 'SETTINGS' });
+    return c.json({ ok: false, error: 'Internal server error' }, 500);
   }
 });
 
@@ -168,7 +170,8 @@ manualTriggersRoutes.post('/fix-chain-tpsl', async (c) => {
     logger.info(`🔧 체인 TP/SL 복원: ${updated}/${chains.length}개`, { component: 'SETTINGS' });
     return c.json({ ok: true, updated, total: chains.length });
   } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
+    logger.error(`체인 TP/SL 복원 실패: ${err.message}`, { component: 'SETTINGS' });
+    return c.json({ ok: false, error: 'Internal server error' }, 500);
   }
 });
 

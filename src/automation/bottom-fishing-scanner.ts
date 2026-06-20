@@ -82,9 +82,9 @@ export async function runBottomFishingScanner(
       // getDailyChart는 최신→과거 순서 → RSI 계산은 과거→최신 필요
       const closes = candles.map((c) => c.close).reverse();
       const rsiValues = rsi(closes, 14);
-      const rsi14 = rsiValues[rsiValues.length - 1] ?? 50;
+      const rsi14 = rsiValues[rsiValues.length - 1] ?? 50; // 50 = RSI 계산 실패 시 기본값 (중립)
 
-      if (rsi14 >= maxRsi) continue;
+      if (!Number.isFinite(rsi14) || rsi14 >= maxRsi) continue;
 
       const p = prices.get(code)!;
       candidates.push({
@@ -95,8 +95,8 @@ export async function runBottomFishingScanner(
         marketCapEok: p.marketCapEok,
         score: 40 - rsi14 + Math.abs(p.changePct),
       });
-    } catch {
-      // 차트 조회 실패 → 스킵
+    } catch (err) {
+      logger.debug(`바닥낚시 차트 조회 실패 (${code}): ${err}`, { component: 'BOTTOM_FISHING' });
     }
   }
 

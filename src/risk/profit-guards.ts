@@ -30,8 +30,10 @@ export interface EvCheck {
 }
 
 // 거래 비용 (왕복) — KR 0.21%, US 0.7%
-const KR_FEE_ROUNDTRIP_PCT = 0.21;
-const US_FEE_ROUNDTRIP_PCT = 0.7;
+const KR_FEE_ROUNDTRIP_PCT = 0.21; // %
+const US_FEE_ROUNDTRIP_PCT = 0.7; // %
+/** 최소 SL % — 이 미만은 위험 무방어로 간주하여 하드블록 */
+const MIN_SL_PCT = 0.3;
 // EV 최소 안전 마진 — 승률 기반 차등 적용
 // 고승률(≥70%): 1.3 엄격 유지 / 중간(40-70%): 1.0 표준 / 저승률(<40%): 1.5 보수적
 function getEvSafetyMultiplier(winRate?: number): number {
@@ -53,10 +55,10 @@ export function checkExpectedValue(params: {
   isUs?: boolean;
 }): EvCheck {
   const absSL = Math.abs(params.stopLossPct);
-  // SL 미설정 또는 너무 작으면 하드블록 (최소 0.3% SL 필요)
-  if (absSL < 0.3) {
-    logger.warn(`🚫 SL 하드블록: SL=${params.stopLossPct}% (최소 -0.3% 필요)`, { component: COMP });
-    return { passed: false, ev: 0, rrRatio: 0, effectiveWinRate: 0, reason: `SL=${params.stopLossPct}% (최소 -0.3% 미달, 위험 무방어)` };
+  // SL 미설정 또는 너무 작으면 하드블록 (최소 MIN_SL_PCT SL 필요)
+  if (absSL < MIN_SL_PCT) {
+    logger.warn(`🚫 SL 하드블록: SL=${params.stopLossPct}% (최소 -${MIN_SL_PCT}% 필요)`, { component: COMP });
+    return { passed: false, ev: 0, rrRatio: 0, effectiveWinRate: 0, reason: `SL=${params.stopLossPct}% (최소 -${MIN_SL_PCT}% 미달, 위험 무방어)` };
   }
 
   const wr = params.winRate ?? 0.5;
@@ -65,7 +67,7 @@ export function checkExpectedValue(params: {
 
   // EV = (승률 × 익) - ((1-승률) × 손) - 수수료
   const ev = wr * params.takeProfitPct - (1 - wr) * absSL - fee;
-  const rrRatio = params.takeProfitPct / absSL;
+  const rrRatio = absSL > 0 ? params.takeProfitPct / absSL : 0;
 
   if (ev < minEv) {
     return {
@@ -178,38 +180,38 @@ export async function getStockSizing(stockCode: string, isPaper = false): Promis
     const adjustedKelly = total < 50 ? halfKelly * 0.5 : halfKelly;
     const kellyFractionPct = adjustedKelly * 100;
 
-    if (wr < 0.25) {
+    if (wr < WIN_RATE_BLOCK_THRESHOLD) {
       return {
-        multiplier: 0,
+        multiplier: SIZING_BLOCKED,
         recentWinRate: wr,
         sampleCount: total,
         kellyFractionPct: 0,
         confidenceLabel,
-        reason: `🚫 승률 ${(wr * 100).toFixed(0)}% < 25% (${total}건) — 매수 차단`,
+        reason: `🚫 승률 ${(wr * 100).toFixed(0)}% < ${WIN_RATE_BLOCK_THRESHOLD * 100}% (${total}건) — 매수 차단`,
       };
     }
-    if (wr < 0.4) {
+    if (wr < WIN_RATE_REDUCE_THRESHOLD) {
       return {
-        multiplier: 0.5,
+        multiplier: SIZING_REDUCED,
         recentWinRate: wr,
         sampleCount: total,
         kellyFractionPct,
         confidenceLabel,
-        reason: `⚠️ 승률 ${(wr * 100).toFixed(0)}% < 40% (${total}건, ${confidenceLabel}) — Half-Kelly ${kellyFractionPct.toFixed(1)}%`,
+        reason: `⚠️ 승률 ${(wr * 100).toFixed(0)}% < ${WIN_RATE_REDUCE_THRESHOLD * 100}% (${total}건, ${confidenceLabel}) — Half-Kelly ${kellyFractionPct.toFixed(1)}%`,
       };
     }
-    if (wr >= 0.7) {
+    if (wr >= WIN_RATE_BOOST_THRESHOLD) {
       return {
-        multiplier: 1.2,
+        multiplier: SIZING_BOOSTED,
         recentWinRate: wr,
         sampleCount: total,
         kellyFractionPct,
         confidenceLabel,
-        reason: `⭐ 승률 ${(wr * 100).toFixed(0)}% >= 70% (${total}건, ${confidenceLabel}) — Half-Kelly ${kellyFractionPct.toFixed(1)}%`,
+        reason: `⭐ 승률 ${(wr * 100).toFixed(0)}% >= ${WIN_RATE_BOOST_THRESHOLD * 100}% (${total}건, ${confidenceLabel}) — Half-Kelly ${kellyFractionPct.toFixed(1)}%`,
       };
     }
     return {
-      multiplier: 1.0,
+      multiplier: SIZING_NORMAL,
       recentWinRate: wr,
       sampleCount: total,
       kellyFractionPct,
@@ -227,6 +229,19 @@ export async function getStockSizing(stockCode: string, isPaper = false): Promis
     };
   }
 }
+
+// ── 가드 #2 constants ──
+/** 종목 승률 25% 미만 → 매수 차단 */
+const WIN_RATE_BLOCK_THRESHOLD = 0.25;
+/** 종목 승률 40% 미만 → 사이즈 50% 축소 */
+const WIN_RATE_REDUCE_THRESHOLD = 0.40;
+/** 종목 승률 70% 이상 → 사이즈 120% 확대 */
+const WIN_RATE_BOOST_THRESHOLD = 0.70;
+/** 승률 사이징 배율 */
+const SIZING_BLOCKED = 0;
+const SIZING_REDUCED = 0.5;
+const SIZING_NORMAL = 1.0;
+const SIZING_BOOSTED = 1.2;
 
 // ── 가드 #3: 일일 손실 정지 ─────────────────────────
 const DAILY_LOSS_LIMIT_PCT = 3.0; // 당일 시드 대비 -3% 도달 시 정지

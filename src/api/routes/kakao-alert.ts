@@ -10,6 +10,7 @@
  *   2. AI 점수 조회 (80점+ 시에만 매수 후보 등록)
  *   3. 텔레그램 알림 발송 + 선택적 자동매수 트리거
  */
+import { timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { getScoreBasedParams, STRATEGY_PARAMS } from '../../config/constants.js';
 import { config } from '../../config/index.js';
@@ -93,12 +94,25 @@ function classifySignal(text: string): 'BUY_TARGET' | 'LOSS_ALERT' | 'PRICE_ALER
 kakaoAlertRoutes.post('/kakao-alert', async (c) => {
   // ── 인증: X-Webhook-Secret 헤더 검증 (Tasker에서 동일 시크릿 설정 필요) ──
   const webhookSecret = process.env.KAKAO_WEBHOOK_SECRET;
-  if (webhookSecret) {
-    const provided = c.req.header('X-Webhook-Secret') ?? '';
-    if (provided !== webhookSecret) {
-      logger.warn(`[KAKAO_ALERT] 인증 실패 — 잘못된 시크릿`, { component: 'KAKAO' });
-      return c.json({ error: 'unauthorized' }, 401);
-    }
+  if (!webhookSecret) {
+    // Webhook secret not configured — reject all requests for security
+    logger.warn(`[KAKAO_ALERT] KAKAO_WEBHOOK_SECRET 미설정 — 요청 거부`, { component: 'KAKAO' });
+    return c.json({ error: 'webhook secret not configured' }, 503);
+  }
+  const provided = c.req.header('X-Webhook-Secret') ?? '';
+  // Timing-safe comparison to prevent timing attacks
+  const secretBuf = Buffer.from(webhookSecret, 'utf8');
+  const providedBuf = Buffer.from(provided, 'utf8');
+  const lenMatch = secretBuf.length === providedBuf.length;
+  // Use fixed-length buffers to avoid length-based timing leaks
+  const FIXED_LEN = 256;
+  const sBuf = Buffer.alloc(FIXED_LEN);
+  const pBuf = Buffer.alloc(FIXED_LEN);
+  secretBuf.copy(sBuf, 0, 0, Math.min(secretBuf.length, FIXED_LEN));
+  providedBuf.copy(pBuf, 0, 0, Math.min(providedBuf.length, FIXED_LEN));
+  if (!lenMatch || !timingSafeEqual(sBuf, pBuf)) {
+    logger.warn(`[KAKAO_ALERT] 인증 실패 — 잘못된 시크릿`, { component: 'KAKAO' });
+    return c.json({ error: 'unauthorized' }, 401);
   }
 
   let body: { app?: string; title?: string; text?: string; package?: string };
@@ -243,10 +257,20 @@ kakaoAlertRoutes.post('/kakao-alert', async (c) => {
 
 /** 테스트용: 알림 파싱만 확인 (실제 실행 없음) */
 kakaoAlertRoutes.post('/kakao-alert/test', async (c) => {
-  const webhookSecret = process.env.KAKAO_WEBHOOK_SECRET;
-  if (webhookSecret) {
-    const provided = c.req.header('X-Webhook-Secret') ?? '';
-    if (provided !== webhookSecret) return c.json({ error: 'unauthorized' }, 401);
+  const webhookSecret2 = process.env.KAKAO_WEBHOOK_SECRET;
+  if (!webhookSecret2) {
+    return c.json({ error: 'webhook secret not configured' }, 503);
+  }
+  const provided2 = c.req.header('X-Webhook-Secret') ?? '';
+  const sBuf2 = Buffer.from(webhookSecret2, 'utf8');
+  const pBuf2 = Buffer.from(provided2, 'utf8');
+  const FIXED2 = 256;
+  const s2 = Buffer.alloc(FIXED2);
+  const p2 = Buffer.alloc(FIXED2);
+  sBuf2.copy(s2, 0, 0, Math.min(sBuf2.length, FIXED2));
+  pBuf2.copy(p2, 0, 0, Math.min(pBuf2.length, FIXED2));
+  if (sBuf2.length !== pBuf2.length || !timingSafeEqual(s2, p2)) {
+    return c.json({ error: 'unauthorized' }, 401);
   }
 
   let body: { text?: string };

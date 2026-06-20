@@ -32,7 +32,8 @@ export async function syncPendingOverseasOrders(): Promise<void> {
     // v10.8: 동일 종목 복수 BUY PENDING 중복 체결 방지
     const reconciledBuyQty = new Map<string, number>(); // code → 이미 체결 처리된 수량 합계
     for (const order of rows) {
-      const ageMin = Number(order.age_minutes);
+      const ageMinRaw = Number(order.age_minutes);
+      const ageMin = Number.isFinite(ageMinRaw) ? ageMinRaw : 0;
 
       if (ageMin >= 240) {
         await updateOrder(order.id, { status: 'CANCELLED', kis_status: 'TIMEOUT' });
@@ -58,7 +59,8 @@ export async function syncPendingOverseasOrders(): Promise<void> {
               logger.info(`⚠️ ${order.stock_code} BUY PENDING 스킵 (잔고 이미 다른 주문에 할당됨)`, { component: 'OVERSEAS' });
               continue;
             }
-            const filledQty = Math.min(Number(order.quantity), remainingQty);
+            const orderQty = Number(order.quantity);
+            const filledQty = Math.min(Number.isFinite(orderQty) ? orderQty : 0, remainingQty);
             reconciledBuyQty.set(order.stock_code, alreadyReconciled + filledQty);
             const fillPrice = position?.avgBuyPrice ?? Number(order.price);
             // orders + overseas_holdings 원자적 업데이트 + idempotency (status 재확인)
@@ -222,7 +224,8 @@ export async function getUserInsights(): Promise<string> {
   try {
     const { rows } = await getPool().query("SELECT value FROM overseas_state WHERE key = 'user_insights'");
     return rows.length > 0 ? String(rows[0].value) : '';
-  } catch {
+  } catch (e) {
+    logger.warn(`사용자 인사이트 조회 실패: ${(e as Error).message}`, { component: 'OVERSEAS' });
     return '';
   }
 }
@@ -266,7 +269,8 @@ export async function getLossCooldownStocks(isPaper?: boolean): Promise<Set<stri
       [mode],
     );
     return new Set(rows.map((r: { stock_code: string }) => String(r.stock_code)));
-  } catch {
+  } catch (e) {
+    logger.warn(`손절 쿨다운 종목 조회 실패: ${(e as Error).message}`, { component: 'OVERSEAS' });
     return new Set();
   }
 }
@@ -303,7 +307,8 @@ export async function getRecentLossStocks(isPaper?: boolean): Promise<Set<string
       [mode],
     );
     return new Set(rows.map((r: { stock_code: string }) => String(r.stock_code)));
-  } catch {
+  } catch (e) {
+    logger.warn(`최근 손실 종목 조회 실패: ${(e as Error).message}`, { component: 'OVERSEAS' });
     return new Set();
   }
 }
@@ -332,7 +337,8 @@ export async function getBigLossBlockedOverseas(isPaperMode?: boolean): Promise<
       [mode],
     );
     return new Set(rows.map((r: { stock_code: string }) => String(r.stock_code)));
-  } catch {
+  } catch (e) {
+    logger.warn(`대형손실 차단 종목 조회 실패: ${(e as Error).message}`, { component: 'OVERSEAS' });
     return new Set();
   }
 }
@@ -356,7 +362,8 @@ export async function getManualSellCooldownStocks(): Promise<Set<string>> {
       [cutoff],
     );
     return new Set(rows.map((r: { key: string }) => String(r.key).replace('manual_sell_cd_', '')));
-  } catch {
+  } catch (e) {
+    logger.warn(`수동매도 쿨다운 조회 실패: ${(e as Error).message}`, { component: 'OVERSEAS' });
     return new Set();
   }
 }

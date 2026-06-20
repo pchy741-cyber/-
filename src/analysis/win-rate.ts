@@ -40,9 +40,10 @@ export async function getStockWinRates(
       [stockCodes, getCtxIsPaper(), market],
     );
     for (const r of rows) {
+      const total = Number(r.total) || 1; // HAVING COUNT(*) >= 3 ensures total > 0, guard for safety
       map.set(String(r.stock_code), {
-        winRate: Number(r.wins) / Number(r.total),
-        avgPnlPct: Number(r.avg_pnl ?? 0),
+        winRate: Number(r.wins) / total,
+        avgPnlPct: Number(r.avg_pnl) || 0,
         sampleCount: Number(r.total),
       });
     }
