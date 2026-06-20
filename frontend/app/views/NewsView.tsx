@@ -72,7 +72,7 @@ function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: W
       .finally(() => setGeminiTesting(false));
   };
 
-  const fetchSummaryRef = useRef<(force: boolean) => void>();
+  const fetchSummaryRef = useRef<((force: boolean) => void) | undefined>(undefined);
   fetchSummaryRef.current = (force = false) => {
     setSummaryRefreshing(force);
     if (!force) setSummaryLoading(true);
