@@ -70,7 +70,7 @@ export interface OptimizerResult {
   updatedAt: string;
 }
 
-export interface StrategyConfig {
+export interface OptimizerConfig {
   mode: string;
   tp: number;
   sl: number;
@@ -90,7 +90,7 @@ export interface AppliedInsight {
 
 export interface TuningStatus {
   optimizers: OptimizerResult[];
-  configs: StrategyConfig[];
+  configs: OptimizerConfig[];
   insightStats: { approved?: number; pending_actionable?: number; total_actionable?: number; total?: number };
   appliedInsights: AppliedInsight[];
 }
