@@ -14,6 +14,24 @@ export interface AdaptiveStrategyParams {
   stopLossPct: number;
 }
 
+/** Adam Khoo MA20/MA50/MA200 시장 필터 결과 */
+export interface AdamKhooFilter {
+  /** MA20 > MA50 > MA200 정배열 */
+  aligned: boolean;
+  /** 3개 MA 모두 5일 전 대비 상승 */
+  rising: boolean;
+  /** 정배열 + 우상향 = 강세 */
+  bullish: boolean;
+  /** 현재가 < MA200 (장기 하락 구간) */
+  belowMa200: boolean;
+  /** MA20 값 */
+  ma20: number;
+  /** MA50 값 */
+  ma50: number;
+  /** MA200 값 */
+  ma200: number;
+}
+
 /** KOSPI 시장 국면 판별 결과 (Faber 2007 MA 기반) */
 export interface KospiRegime {
   /** 0=정상, 1=조정장(포지션60%), 2=하락장(매수차단) */
@@ -30,6 +48,8 @@ export interface KospiRegime {
   adaptive: Partial<Record<StrategyMode, AdaptiveStrategyParams>>;
   /** KOSPI 14일 평균 ATR % */
   atrPct: number;
+  /** Adam Khoo MA20/MA50/MA200 필터 (데이터 부족 시 undefined → 기존 로직 유지) */
+  adamKhoo?: AdamKhooFilter;
 }
 
 // ── KOSPI ATR 계산 (True Range 기반 변동성) ──
@@ -47,10 +67,39 @@ function calcAtrPct(candles: DailyCandle[], period = 14): number {
   return period > 0 ? sum / period : 1.0;
 }
 
+// ── Adam Khoo MA20/MA50/MA200 시장 필터 ──
+function calcAdamKhooFilter(candles: DailyCandle[]): AdamKhooFilter | undefined {
+  // MA200 계산에 최소 201개 캔들 필요 (200일 + 5일 전 비교용)
+  if (candles.length < 205) return undefined;
+
+  const sma = (period: number, offset = 0): number => {
+    let sum = 0;
+    for (let i = offset; i < offset + period; i++) sum += candles[i].close;
+    return sum / period;
+  };
+
+  const ma20 = sma(20);
+  const ma50 = sma(50);
+  const ma200 = sma(200);
+
+  // 5일 전 MA 값 (우상향 판단용)
+  const ma20_5d = sma(20, 5);
+  const ma50_5d = sma(50, 5);
+  const ma200_5d = sma(200, 5);
+
+  const aligned = ma20 > ma50 && ma50 > ma200;
+  const rising = ma20 > ma20_5d && ma50 > ma50_5d && ma200 > ma200_5d;
+  const bullish = aligned && rising;
+  const belowMa200 = candles[0].close < ma200;
+
+  return { aligned, rising, bullish, belowMa200, ma20, ma50, ma200 };
+}
+
 // ── 변동성 + 레짐 기반 전략 파라미터 동적 최적화 ──
 function buildAdaptive(
   candles: DailyCandle[],
   regime: { penalty: 0 | 1 | 2; boost: boolean },
+  adamKhoo?: AdamKhooFilter,
 ): { adaptive: Partial<Record<StrategyMode, AdaptiveStrategyParams>>; atrPct: number } {
   const atrPct = calcAtrPct(candles);
   const adaptiveModes: StrategyMode[] = ['SWING', 'SCALPING', 'DEFENSE', 'SNIPER'];
@@ -90,6 +139,13 @@ function buildAdaptive(
       buyThreshold = Math.min(93, buyThreshold + 2);
     }
 
+    // Adam Khoo MA20/MA50/MA200 필터 적응
+    if (adamKhoo?.bullish) {
+      buyThreshold = Math.max(70, buyThreshold - 1);
+      takeProfitPct = Math.min(12, takeProfitPct + 0.5);
+      if (m === 'SWING') notes.push(`AK강세(MA정배열+우상향) → threshold-1, TP+0.5`);
+    }
+
     adaptive[m] = {
       buyThreshold: Math.round(buyThreshold),
       takeProfitPct: Math.round(takeProfitPct * 10) / 10,
@@ -112,9 +168,10 @@ let _prevKospiTime = 0;
 // ── 레짐 캐시 (risk-engine, alloc-risk 등 외부 모듈에서 조회) ──
 let _lastKnownPenalty: 0 | 1 | 2 = 0;
 let _lastKnownBoost = false;
+let _lastKnownAdamKhoo: AdamKhooFilter | undefined;
 /** 마지막으로 감지된 KOSPI 레짐 반환 (Track B 파이프라인이 3분마다 갱신) */
-export function getLastKnownRegime(): { penalty: 0 | 1 | 2; boost: boolean } {
-  return { penalty: _lastKnownPenalty, boost: _lastKnownBoost };
+export function getLastKnownRegime(): { penalty: 0 | 1 | 2; boost: boolean; adamKhoo?: AdamKhooFilter } {
+  return { penalty: _lastKnownPenalty, boost: _lastKnownBoost, adamKhoo: _lastKnownAdamKhoo };
 }
 
 /** KOSPI MA20/MA60 기반 시장 국면 판별 + 5분 서킷브레이커 */
@@ -129,7 +186,7 @@ export async function fetchKospiRegime(): Promise<KospiRegime> {
     atrPct: 1.0,
   };
   try {
-    const kospiCandles = await getDailyChart('0001', 65);
+    const kospiCandles = await getDailyChart('0001', 300);
     if (kospiCandles.length < 60) return _fallback;
     const { analyzeTechnicals } = await import('../../analysis/indicators.js');
     const kospiTech = analyzeTechnicals(kospiCandles);
@@ -182,21 +239,42 @@ export async function fetchKospiRegime(): Promise<KospiRegime> {
       /* 실시간 시세 실패 시 무시 */
     }
 
+    // Adam Khoo MA20/MA50/MA200 필터 (데이터 부족 시 undefined → 기존 로직 유지)
+    const adamKhoo = calcAdamKhooFilter(kospiCandles);
+    if (adamKhoo) {
+      if (adamKhoo.bullish) {
+        logger.info(
+          `📈 Adam Khoo 강세: MA20 ${adamKhoo.ma20.toFixed(0)} > MA50 ${adamKhoo.ma50.toFixed(0)} > MA200 ${adamKhoo.ma200.toFixed(0)} (정배열+우상향)`,
+          { component: 'REGIME' },
+        );
+      } else if (adamKhoo.belowMa200) {
+        logger.info(
+          `📉 Adam Khoo 약세: KOSPI ${kospiNow.toFixed(0)} < MA200 ${adamKhoo.ma200.toFixed(0)} (장기하락)`,
+          { component: 'REGIME' },
+        );
+      } else {
+        logger.info(
+          `📊 Adam Khoo 중립: aligned=${adamKhoo.aligned} rising=${adamKhoo.rising} (MA20=${adamKhoo.ma20.toFixed(0)} MA50=${adamKhoo.ma50.toFixed(0)} MA200=${adamKhoo.ma200.toFixed(0)})`,
+          { component: 'REGIME' },
+        );
+      }
+    }
+
     if (kospiNow > 0 && kospiNow < kospiTech.sma60) {
       logger.warn(`⛔ KOSPI ${kospiNow.toFixed(0)} < MA60 ${kospiTech.sma60.toFixed(0)} → 하락장 신규 매수 차단`, {
         component: 'REGIME',
       });
-      const { adaptive, atrPct } = buildAdaptive(kospiCandles, { penalty: 2, boost: false });
-      _lastKnownPenalty = 2; _lastKnownBoost = false;
-      return { penalty: 2, boost: false, todayDown, todayUp, flashCrash, adaptive, atrPct };
+      const { adaptive, atrPct } = buildAdaptive(kospiCandles, { penalty: 2, boost: false }, adamKhoo);
+      _lastKnownPenalty = 2; _lastKnownBoost = false; _lastKnownAdamKhoo = adamKhoo;
+      return { penalty: 2, boost: false, todayDown, todayUp, flashCrash, adaptive, atrPct, adamKhoo };
     }
     if (kospiNow > 0 && kospiNow < kospiTech.sma20) {
       logger.info(`⚠️ KOSPI ${kospiNow.toFixed(0)} < MA20 ${kospiTech.sma20.toFixed(0)} → 조정장 포지션 60%`, {
         component: 'REGIME',
       });
-      const { adaptive, atrPct } = buildAdaptive(kospiCandles, { penalty: 1, boost: false });
-      _lastKnownPenalty = 1; _lastKnownBoost = false;
-      return { penalty: 1, boost: false, todayDown, todayUp, flashCrash, adaptive, atrPct };
+      const { adaptive, atrPct } = buildAdaptive(kospiCandles, { penalty: 1, boost: false }, adamKhoo);
+      _lastKnownPenalty = 1; _lastKnownBoost = false; _lastKnownAdamKhoo = adamKhoo;
+      return { penalty: 1, boost: false, todayDown, todayUp, flashCrash, adaptive, atrPct, adamKhoo };
     }
     // 강세장: 가격 > MA20 > MA60 = 골든크로스 구간 → 포지션 확대 + TP 상향
     const isBull = kospiNow > 0 && kospiTech.sma20 > kospiTech.sma60;
@@ -206,13 +284,13 @@ export async function fetchKospiRegime(): Promise<KospiRegime> {
         { component: 'REGIME' },
       );
     }
-    const { adaptive, atrPct } = buildAdaptive(kospiCandles, { penalty: 0, boost: isBull });
-    _lastKnownPenalty = 0; _lastKnownBoost = isBull;
+    const { adaptive, atrPct } = buildAdaptive(kospiCandles, { penalty: 0, boost: isBull }, adamKhoo);
+    _lastKnownPenalty = 0; _lastKnownBoost = isBull; _lastKnownAdamKhoo = adamKhoo;
     logger.info(
       `⚙️ 현재 ATR ${atrPct.toFixed(2)}% | SWING: threshold=${adaptive.SWING?.buyThreshold} TP=${adaptive.SWING?.takeProfitPct}% SL=${adaptive.SWING?.stopLossPct}%`,
       { component: 'REGIME' },
     );
-    return { penalty: 0, boost: isBull, todayDown, todayUp, flashCrash, adaptive, atrPct };
+    return { penalty: 0, boost: isBull, todayDown, todayUp, flashCrash, adaptive, atrPct, adamKhoo };
   } catch {
     return { penalty: 0, boost: false, todayDown: false, todayUp: false, flashCrash: false, adaptive: {}, atrPct: 1.0 };
   }

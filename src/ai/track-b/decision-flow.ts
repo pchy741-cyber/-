@@ -40,7 +40,7 @@ export interface DecisionFlowParams {
   manuallySoldCodes: Set<string>;
   scores: Array<{ stock_code: string; composite_score?: number }>;
   totalAssets: number;
-  kospiRegime: { penalty: number; boost: boolean; todayDown: boolean };
+  kospiRegime: { penalty: number; boost: boolean; todayDown: boolean; adamKhooBullish?: boolean };
   resolvedSl: number | undefined | null;
   resolvedTp: number | undefined | null;
   orderableCash: number;
@@ -242,6 +242,7 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
     adjMaxPositionKrw,
     kospiRegimePenalty: Math.min(2, Math.max(0, Math.round(kospiRegime.penalty))) as 0 | 1 | 2,
     kospiBoost: kospiRegime.boost,
+    adamKhooBullish: kospiRegime.adamKhooBullish,
   });
 
   // ── 7.5. 파킹 매수 추가 (포지션사이저 이후 — 사이저가 파킹 수량 줄이지 않게) ──

@@ -15,6 +15,8 @@ export interface ScanSessionInput {
   scoresCount: number;
   macroRegime?: string;
   crashSignalLevel?: string;
+  adamKhooBullish?: boolean | null;
+  adamKhooBelowMa200?: boolean | null;
   elapsedMs: number;
 }
 

@@ -12,14 +12,65 @@ interface Note {
   length: number;
 }
 
-interface DartAnalysis {
+interface DartFinancial {
+  revenue: number;
+  revenueYoy: number;
+  operatingIncome: number;
+  operatingIncomeYoy: number;
+  operatingMargin: number;
+  netIncome: number;
+  totalAssets: number;
+  totalDebt: number;
+  debtRatio: number;
+  year: string;
+  quarter: string;
+}
+
+interface DartResult {
   stockCode: string;
-  stockName: string;
-  fundamentalScore: number;
-  fScore: number;
-  keyStrengths: string[];
+  corpName: string;
+  financial?: DartFinancial;
+  aiAnalysis?: string;
+  fundamentalScore?: number;
+  piotroskiScore?: number;
   keyRisks: string[];
+  keyStrengths: string[];
   analyzedAt: string;
+}
+
+// 핵심 종목 (실전/연습 공통)
+const DART_TARGET_STOCKS = [
+  { code: '005930', name: '삼성전자' },
+  { code: '000660', name: 'SK하이닉스' },
+  { code: '012450', name: '한화에어로스페이스' },
+];
+
+// 숫자 포맷 (억 단위)
+function fmtBillion(v: number): string {
+  const eok = v / 100_000_000;
+  if (Math.abs(eok) >= 10000) return `${(eok / 10000).toFixed(1)}조`;
+  if (Math.abs(eok) >= 1) return `${eok.toFixed(0)}억`;
+  return `${(v / 10000).toFixed(0)}만`;
+}
+
+// F-Score 색상
+function fScoreColor(f: number): string {
+  if (f >= 7) return 'text-emerald-400';
+  if (f >= 5) return 'text-amber-400';
+  return 'text-rose-400';
+}
+
+// 펀더멘털 점수 색상
+function fundColor(s: number): string {
+  if (s >= 70) return 'text-emerald-400';
+  if (s >= 50) return 'text-amber-400';
+  return 'text-rose-400';
+}
+
+function fundBg(s: number): string {
+  if (s >= 70) return 'bg-emerald-500/15 border-emerald-500/30';
+  if (s >= 50) return 'bg-amber-500/15 border-amber-500/30';
+  return 'bg-rose-500/15 border-rose-500/30';
 }
 
 export function ResearchBotPanel() {
@@ -30,8 +81,13 @@ export function ResearchBotPanel() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [notesLoading, setNotesLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<number | null>(null);
-  const [showManual, setShowManual] = useState(false);
-  const [activeTab, setActiveTab] = useState<'reports' | 'dart'>('reports');
+  const [activeTab, setActiveTab] = useState<'reports' | 'dart' | 'url'>('dart');
+
+  // DART 재무분석 상태
+  const [dartResults, setDartResults] = useState<DartResult[]>([]);
+  const [dartLoading, setDartLoading] = useState(false);
+  const [dartError, setDartError] = useState<string | null>(null);
+  const [expandedDart, setExpandedDart] = useState<string | null>(null);
 
   const loadNotes = async () => {
     try {
@@ -41,6 +97,27 @@ export function ResearchBotPanel() {
       setNotes([]);
     } finally {
       setNotesLoading(false);
+    }
+  };
+
+  const loadDartReports = async () => {
+    setDartLoading(true);
+    setDartError(null);
+    try {
+      const data = await api('/research/dart/batch', {
+        method: 'POST',
+        body: JSON.stringify({ stockCodes: DART_TARGET_STOCKS.map((s) => s.code) }),
+        timeout: 60000,
+      });
+      if (data.ok && Array.isArray(data.results)) {
+        setDartResults(data.results);
+      } else {
+        setDartError(data.error ?? '분석 실패');
+      }
+    } catch (err: unknown) {
+      setDartError(err instanceof Error ? err.message : 'DART 분석 실패');
+    } finally {
+      setDartLoading(false);
     }
   };
 
@@ -81,7 +158,6 @@ export function ResearchBotPanel() {
     }
   };
 
-  // 파일 크기 포맷
   const fmtSize = (len: number) => {
     if (len >= 10000) return `${(len / 1000).toFixed(0)}K`;
     if (len >= 1000) return `${(len / 1000).toFixed(1)}K`;
@@ -100,7 +176,7 @@ export function ResearchBotPanel() {
         </div>
         <div className="flex-1 min-w-0">
           <h3 className="text-sm font-bold text-slate-100">퀀트 리서치 봇</h3>
-          <p className="text-[9px] text-slate-500">Track A 자동 주입 · 증권사 리포트 + DART 공시</p>
+          <p className="text-[9px] text-slate-500">DART 재무분석 · Gemini AI · Track A 주입</p>
         </div>
         <div className="flex items-center gap-3 text-[10px]">
           <div className="text-center">
@@ -108,8 +184,8 @@ export function ResearchBotPanel() {
             <div className="text-slate-600">리포트</div>
           </div>
           <div className="text-center">
-            <div className="text-cyan-400 font-bold">{fmtSize(totalChars)}자</div>
-            <div className="text-slate-600">데이터</div>
+            <div className="text-cyan-400 font-bold">{dartResults.length}</div>
+            <div className="text-slate-600">DART</div>
           </div>
         </div>
       </div>
@@ -117,9 +193,9 @@ export function ResearchBotPanel() {
       {/* 상태 바 — 파이프라인 표시 */}
       <div className="px-4 py-2 bg-white/[0.01] border-b border-white/[0.03] flex items-center gap-4 overflow-x-auto">
         {[
-          { label: '뉴스 수집', icon: '📰', active: true },
-          { label: 'DART 공시', icon: '📋', active: true },
+          { label: 'DART API', icon: '📋', active: true },
           { label: 'Gemini 분석', icon: '🧠', active: true },
+          { label: 'F-Score', icon: '📊', active: true },
           { label: 'Track A 주입', icon: '💉', active: true },
         ].map((step, i) => (
           <div key={i} className="flex items-center gap-1.5 shrink-0">
@@ -132,27 +208,211 @@ export function ResearchBotPanel() {
       </div>
 
       <div className="p-4 space-y-3">
-        {/* 탭 전환 */}
+        {/* 3탭 전환 */}
         <div className="flex gap-1 bg-slate-900/50 rounded-lg p-0.5">
-          <button
-            onClick={() => setActiveTab('reports')}
-            className={`flex-1 text-[11px] py-1.5 rounded-md font-medium transition-all ${
-              activeTab === 'reports' ? 'bg-violet-600/30 text-violet-300' : 'text-slate-500 hover:text-slate-300'
-            }`}
-          >
-            수집 리포트 ({notes.length})
-          </button>
           <button
             onClick={() => setActiveTab('dart')}
             className={`flex-1 text-[11px] py-1.5 rounded-md font-medium transition-all ${
               activeTab === 'dart' ? 'bg-cyan-600/30 text-cyan-300' : 'text-slate-500 hover:text-slate-300'
             }`}
           >
-            + URL 수동추가
+            DART 재무분석
+          </button>
+          <button
+            onClick={() => setActiveTab('reports')}
+            className={`flex-1 text-[11px] py-1.5 rounded-md font-medium transition-all ${
+              activeTab === 'reports' ? 'bg-violet-600/30 text-violet-300' : 'text-slate-500 hover:text-slate-300'
+            }`}
+          >
+            리포트 ({notes.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('url')}
+            className={`flex-1 text-[11px] py-1.5 rounded-md font-medium transition-all ${
+              activeTab === 'url' ? 'bg-violet-600/30 text-violet-300' : 'text-slate-500 hover:text-slate-300'
+            }`}
+          >
+            + URL
           </button>
         </div>
 
-        {/* 리포트 목록 */}
+        {/* ═══ DART 재무분석 탭 ═══ */}
+        {activeTab === 'dart' && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-slate-500">
+                  대상: {DART_TARGET_STOCKS.map((s) => s.name).join(', ')}
+                </span>
+              </div>
+              <button
+                onClick={loadDartReports}
+                disabled={dartLoading}
+                className="px-3 py-1.5 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 disabled:opacity-30 disabled:cursor-not-allowed rounded-lg text-[11px] font-bold transition-all shadow-lg shadow-cyan-500/10"
+              >
+                {dartLoading ? (
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-3 h-3 border-[1.5px] border-white border-t-transparent rounded-full animate-spin" />
+                    분석 중...
+                  </span>
+                ) : dartResults.length > 0 ? '새로고침' : 'Gemini 분석 실행'}
+              </button>
+            </div>
+
+            {dartError && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs bg-rose-950/40 text-rose-400 border border-rose-800/30">
+                <span>✗</span>
+                <span>{dartError}</span>
+              </div>
+            )}
+
+            {dartLoading && dartResults.length === 0 && (
+              <div className="text-center py-8">
+                <div className="w-6 h-6 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin mx-auto" />
+                <p className="text-xs text-slate-500 mt-3">DART API + Gemini AI 분석 중...</p>
+                <p className="text-[10px] text-slate-600 mt-1">최초 실행 시 1~2분 소요 (이후 24h 캐시)</p>
+              </div>
+            )}
+
+            {!dartLoading && dartResults.length === 0 && !dartError && (
+              <div className="text-center py-6">
+                <span className="text-3xl opacity-30">📊</span>
+                <p className="text-xs text-slate-500 mt-2">버튼을 눌러 DART 재무분석을 실행하세요</p>
+                <p className="text-[10px] text-slate-600 mt-1">Gemini GCP 크레딧 사용 · 실전/연습 공통</p>
+              </div>
+            )}
+
+            {dartResults.length > 0 && (
+              <div className="space-y-2">
+                {dartResults.map((r) => {
+                  const isExpanded = expandedDart === r.stockCode;
+                  const f = r.financial;
+                  return (
+                    <div key={r.stockCode} className="rounded-xl border border-white/[0.06] bg-white/[0.02] overflow-hidden">
+                      {/* 종목 헤더 */}
+                      <button
+                        className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/[0.02] transition-colors text-left"
+                        onClick={() => setExpandedDart(isExpanded ? null : r.stockCode)}
+                      >
+                        <div className="flex-1 min-w-0 flex items-center gap-2">
+                          <span className="text-xs font-bold text-slate-100">{r.corpName || r.stockCode}</span>
+                          <span className="text-[9px] text-slate-600 bg-slate-800/80 rounded px-1.5 py-0.5">{r.stockCode}</span>
+                        </div>
+                        {/* 점수 배지 */}
+                        <div className="flex items-center gap-2 shrink-0">
+                          {r.fundamentalScore != null && (
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${fundBg(r.fundamentalScore)}`}>
+                              펀더멘털 {r.fundamentalScore}
+                            </span>
+                          )}
+                          {r.piotroskiScore != null && (
+                            <span className={`text-[10px] font-bold ${fScoreColor(r.piotroskiScore)}`}>
+                              F{r.piotroskiScore}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-slate-600 shrink-0">{isExpanded ? '▲' : '▼'}</span>
+                      </button>
+
+                      {/* 확장: 재무 + AI 분석 */}
+                      {isExpanded && (
+                        <div className="px-3 pb-3 space-y-2.5 border-t border-white/[0.04]">
+                          {/* 재무 지표 그리드 */}
+                          {f && (
+                            <div className="mt-2">
+                              <div className="text-[9px] text-slate-600 mb-1.5">{f.year}년 {f.quarter === 'annual' ? '연간' : f.quarter.toUpperCase()} 실적</div>
+                              <div className="grid grid-cols-3 gap-1.5">
+                                <div className="bg-white/[0.03] rounded-lg px-2 py-1.5 text-center">
+                                  <div className="text-[9px] text-slate-500">매출</div>
+                                  <div className="text-[11px] font-bold text-slate-200">{fmtBillion(f.revenue)}</div>
+                                  <div className={`text-[9px] font-bold ${f.revenueYoy >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {f.revenueYoy >= 0 ? '+' : ''}{f.revenueYoy.toFixed(1)}%
+                                  </div>
+                                </div>
+                                <div className="bg-white/[0.03] rounded-lg px-2 py-1.5 text-center">
+                                  <div className="text-[9px] text-slate-500">영업이익</div>
+                                  <div className="text-[11px] font-bold text-slate-200">{fmtBillion(f.operatingIncome)}</div>
+                                  <div className={`text-[9px] font-bold ${f.operatingIncomeYoy >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {f.operatingIncomeYoy >= 0 ? '+' : ''}{f.operatingIncomeYoy.toFixed(1)}%
+                                  </div>
+                                </div>
+                                <div className="bg-white/[0.03] rounded-lg px-2 py-1.5 text-center">
+                                  <div className="text-[9px] text-slate-500">영업이익률</div>
+                                  <div className={`text-[11px] font-bold ${f.operatingMargin >= 15 ? 'text-emerald-400' : f.operatingMargin >= 8 ? 'text-amber-400' : 'text-rose-400'}`}>
+                                    {f.operatingMargin.toFixed(1)}%
+                                  </div>
+                                </div>
+                                <div className="bg-white/[0.03] rounded-lg px-2 py-1.5 text-center">
+                                  <div className="text-[9px] text-slate-500">순이익</div>
+                                  <div className="text-[11px] font-bold text-slate-200">{fmtBillion(f.netIncome)}</div>
+                                </div>
+                                <div className="bg-white/[0.03] rounded-lg px-2 py-1.5 text-center">
+                                  <div className="text-[9px] text-slate-500">부채비율</div>
+                                  <div className={`text-[11px] font-bold ${f.debtRatio <= 100 ? 'text-emerald-400' : f.debtRatio <= 200 ? 'text-amber-400' : 'text-rose-400'}`}>
+                                    {f.debtRatio.toFixed(0)}%
+                                  </div>
+                                </div>
+                                <div className="bg-white/[0.03] rounded-lg px-2 py-1.5 text-center">
+                                  <div className="text-[9px] text-slate-500">총자산</div>
+                                  <div className="text-[11px] font-bold text-slate-200">{fmtBillion(f.totalAssets)}</div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* 강점/리스크 */}
+                          {(r.keyStrengths.length > 0 || r.keyRisks.length > 0) && (
+                            <div className="grid grid-cols-2 gap-2">
+                              {r.keyStrengths.length > 0 && (
+                                <div>
+                                  <div className="text-[9px] text-emerald-500 font-bold mb-1">강점</div>
+                                  {r.keyStrengths.map((s, i) => (
+                                    <div key={i} className="flex items-start gap-1 text-[10px] text-slate-300 leading-relaxed">
+                                      <span className="text-emerald-500 shrink-0 mt-0.5">+</span>
+                                      <span>{s}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              {r.keyRisks.length > 0 && (
+                                <div>
+                                  <div className="text-[9px] text-rose-500 font-bold mb-1">리스크</div>
+                                  {r.keyRisks.map((s, i) => (
+                                    <div key={i} className="flex items-start gap-1 text-[10px] text-slate-300 leading-relaxed">
+                                      <span className="text-rose-500 shrink-0 mt-0.5">-</span>
+                                      <span>{s}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* AI 분석 */}
+                          {r.aiAnalysis && (
+                            <div className="bg-cyan-950/20 border border-cyan-800/15 rounded-lg px-3 py-2">
+                              <div className="text-[9px] text-cyan-500 font-bold mb-1">Gemini AI 분석</div>
+                              <p className="text-[10px] text-slate-300 leading-relaxed whitespace-pre-wrap">{r.aiAnalysis}</p>
+                            </div>
+                          )}
+
+                          {/* 분석 시각 */}
+                          {r.analyzedAt && (
+                            <div className="text-[9px] text-slate-600 text-right">
+                              분석: {fmtTime(r.analyzedAt)}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ═══ 리포트 목록 탭 ═══ */}
         {activeTab === 'reports' && (
           <>
             {notesLoading ? (
@@ -198,8 +458,8 @@ export function ResearchBotPanel() {
           </>
         )}
 
-        {/* 수동 URL 추가 */}
-        {activeTab === 'dart' && (
+        {/* ═══ 수동 URL 추가 탭 ═══ */}
+        {activeTab === 'url' && (
           <div className="space-y-3">
             <div className="bg-cyan-950/20 border border-cyan-800/20 rounded-xl p-3">
               <p className="text-[11px] text-cyan-300 font-medium">증권사 리포트 URL 직접 추가</p>

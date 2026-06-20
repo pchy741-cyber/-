@@ -867,6 +867,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // RISK_OFF/하락장: 축소하되 기회 유지 (극공포=역발상 매수 기회)
     const macroSizingMult = macroRiskOff ? 0.7 : kospiRegime.penalty >= 2 ? 0.6 : kospiRegime.penalty >= 1 ? 0.8 : 1.0;
+    // Adam Khoo 포지션 사이징: bullish → ×1.15, MA200 아래 → ×0.85
+    const adamKhooSizingMult = kospiRegime.adamKhoo?.bullish ? 1.15 : kospiRegime.adamKhoo?.belowMa200 ? 0.85 : 1.0;
 
     if (blockNewBuysFinal && hasHighConvictionStock && kospiRegime.penalty >= 2) {
       logger.info(
@@ -911,6 +913,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     if (kospiPenaltyAdj !== 0) {
       logger.info(
         `📉 KOSPI 레짐 점수 보정: penalty=${kospiRegime.penalty} todayDown=${kospiRegime.todayDown} → 전종목 ${kospiPenaltyAdj}점 감산`,
+        { component: 'TRACK_B' },
+      );
+    }
+    // Adam Khoo MA20/MA50/MA200 점수 보정: bullish → +5, MA200 아래 → -8
+    const adamKhooAdj = kospiRegime.adamKhoo?.bullish ? 5 : kospiRegime.adamKhoo?.belowMa200 ? -8 : 0;
+    if (adamKhooAdj !== 0) {
+      logger.info(
+        `${adamKhooAdj > 0 ? '📈' : '📉'} Adam Khoo 점수 보정: ${adamKhooAdj > 0 ? '+' : ''}${adamKhooAdj}점 (${adamKhooAdj > 0 ? '정배열+우상향' : 'KOSPI < MA200'})`,
         { component: 'TRACK_B' },
       );
     }
@@ -971,7 +981,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         // Community Sentinel: 언급 Z-score + 센티먼트 + FOMO/펌프 감지 (-20 ~ +5)
         const communityAdj = getCommunityScoreAdjustment(s.stock_code);
         const totalAdj =
-          adj + capAdj + stale + kospiPenaltyAdj + macroAdj + dartAdj + megaCapAdj + consensusAdj + aiScoreAdj + stockAccAdj + piotroskiAdj + communityAdj;
+          adj + capAdj + stale + kospiPenaltyAdj + adamKhooAdj + macroAdj + dartAdj + megaCapAdj + consensusAdj + aiScoreAdj + stockAccAdj + piotroskiAdj + communityAdj;
         if (!Number.isFinite(totalAdj)) {
           logger.warn(
             `⚠️ 스코어 보정 NaN 감지: ${s.stock_code} adj=${adj} cap=${capAdj} macro=${macroAdj} dart=${dartAdj} cns=${consensusAdj} ai=${aiScoreAdj} acc=${stockAccAdj} pio=${piotroskiAdj} cmty=${communityAdj}`,
@@ -1047,10 +1057,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 스트레스 레벨 1 → 포지션 추가 10% 축소
     const stressMult = portfolioStress >= 1 ? 0.9 : 1.0;
     const crossSizingMult = crossBoost.sizingMult;
-    const adjMaxPositionKrw = Math.round(baseMaxPos * perfMult * stressMult * crossSizingMult);
-    if (perfMult !== 1.0 || stressMult !== 1.0 || crossSizingMult !== 1.0) {
+    const adjMaxPositionKrw = Math.round(baseMaxPos * perfMult * stressMult * crossSizingMult * adamKhooSizingMult);
+    if (perfMult !== 1.0 || stressMult !== 1.0 || crossSizingMult !== 1.0 || adamKhooSizingMult !== 1.0) {
       logger.info(
-        `📐 maxPositionKrw 조정: ${baseMaxPos.toLocaleString()} × 성과${perfMult}x × 스트레스${stressMult}x${crossSizingMult !== 1.0 ? ` × Paper피드백${crossSizingMult}x` : ''} = ${adjMaxPositionKrw.toLocaleString()}원`,
+        `📐 maxPositionKrw 조정: ${baseMaxPos.toLocaleString()} × 성과${perfMult}x × 스트레스${stressMult}x${crossSizingMult !== 1.0 ? ` × Paper피드백${crossSizingMult}x` : ''}${adamKhooSizingMult !== 1.0 ? ` × AK${adamKhooSizingMult}x` : ''} = ${adjMaxPositionKrw.toLocaleString()}원`,
         { component: 'TRACK_B' },
       );
     }
@@ -1429,7 +1439,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       manuallySoldCodes,
       scores: scores.map((s: any) => ({ stock_code: s.stock_code, composite_score: s.composite_score ?? undefined })),
       totalAssets,
-      kospiRegime: { penalty: kospiRegime.penalty, boost: kospiRegime.boost, todayDown: kospiRegime.todayDown },
+      kospiRegime: { penalty: kospiRegime.penalty, boost: kospiRegime.boost, todayDown: kospiRegime.todayDown, adamKhooBullish: kospiRegime.adamKhoo?.bullish },
       resolvedSl,
       resolvedTp,
       orderableCash,
@@ -1510,6 +1520,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         scoresCount: scores.length,
         macroRegime: macroSnapshot?.regime,
         crashSignalLevel: crashSignal?.level,
+        adamKhooBullish: kospiRegime.adamKhoo?.bullish ?? null,
+        adamKhooBelowMa200: kospiRegime.adamKhoo?.belowMa200 ?? null,
         elapsedMs: Date.now() - startTime,
       },
       actionable,
