@@ -1,6 +1,7 @@
 /**
- * Claude Track A 폴백 스코러
- * Gemini 할당량 초과 시 Anthropic Claude로 종목 분석 + 스코어 생성
+ * Claude Track A 스코러 (v2 — Max 구독 풀파워)
+ * USE_CLAUDE_CLI=true → claude -p (Sonnet) 모델로 정밀 스코어링
+ * API 키 모드 → Haiku (비용 최적화)
  */
 import Anthropic from '@anthropic-ai/sdk';
 import { callClaudeCli, isClaudeCliEnabled } from '../../utils/claude-cli.js';
@@ -9,10 +10,10 @@ import type { DailyCandle } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 
 const COMP = 'TRACK_A_CLAUDE';
-const MODEL = 'claude-haiku-4-5-20251001'; // 저렴 + 빠름 (2차 검증 + 폴백)
-const BATCH_SIZE = 30; // 한 번에 30종목 분석
-const MAX_SOURCES_CHARS = 3000; // additionalSources 최대 문자 수 (토큰 절약)
-const MAX_TOKENS = 2000;
+const MODEL_API = 'claude-haiku-4-5-20251001'; // API 키 모드: 비용 최적화
+const BATCH_SIZE = 30;
+const MAX_SOURCES_CHARS = 6000; // CLI 모드: 토큰 여유 → 더 많은 컨텍스트
+const MAX_TOKENS = 4000;
 const SCORE_MIN = 0;
 const SCORE_MAX = 100;
 const CONFIDENCE_MIN = 0;
@@ -65,11 +66,32 @@ export async function runClaudeScoring(
       ? `\n\n## 시장 인텔리전스 (뉴스·공시·매크로·감성)\n${additionalSources.slice(0, MAX_SOURCES_CHARS)}`
       : '';
 
-    const systemPrompt = `당신은 한국 주식 퀀트 분석가입니다. ${mode} 전략으로 종목별 매수 점수(0-100)와 신호를 JSON으로 반환하세요.`;
-    const userPrompt = `다음 ${batch.length}개 종목을 분석해 JSON 배열로 반환하세요. 각 항목: {"stock_code":"코드","composite_score":숫자,"signal":"BUY|HOLD|SELL","confidence":0.0-1.0,"reasoning":"간단한 이유"}
+    const isCliMode = useCli;
+    const systemPrompt = isCliMode
+      ? `당신은 한국 주식 전문 퀀트 분석가입니다. ${mode} 전략 기반으로 종합 점수를 산출합니다.
 
-점수 기준: 80+ 강매수, 70-79 매수, 50-69 보유, 50미만 매도
-기술적 지표(차트 추세, 거래량), ${mode} 전략 적합성 고려. 시장 인텔리전스가 있으면 sentiment_score에 반영하세요.
+분석 프레임워크:
+1. 기술적 분석 (40%): 이동평균 배열, 거래량 추세, 가격 모멘텀, 지지/저항
+2. 펀더멘털 (20%): 업종 전망, 실적 시즌, 밸류에이션 적정성
+3. 시장 센티먼트 (25%): 뉴스 감성, 수급 흐름, 외국인/기관 동향
+4. 리스크 조정 (15%): 변동성, 하방 리스크, 유동성
+
+점수 기준:
+- 85+: STRONG_BUY (확실한 매수 기회, 즉시 진입)
+- 70-84: BUY (양호한 매수 조건)
+- 50-69: HOLD (관망)
+- 30-49: SELL (매도 고려)
+- <30: STRONG_SELL (즉시 매도)
+
+중요: 과도한 낙관 금지. 80+ 점수는 명확한 근거 있을 때만. 평범한 종목은 45-65점 범위.`
+      : `당신은 한국 주식 퀀트 분석가입니다. ${mode} 전략으로 종목별 매수 점수(0-100)와 신호를 JSON으로 반환하세요.`;
+
+    const userPrompt = `다음 ${batch.length}개 종목을 분석해 JSON 배열로 반환하세요.
+
+각 항목 형식:
+{"stock_code":"코드","composite_score":숫자,"fundamental_score":숫자,"technical_score":숫자,"sentiment_score":숫자,"signal":"BUY|HOLD|SELL|STRONG_BUY|STRONG_SELL","confidence":0.0-1.0,"reasoning":"핵심 근거 1-2문장"}
+
+${isCliMode ? '각 세부 점수(fundamental/technical/sentiment)를 개별 평가하세요. composite_score는 가중 평균입니다.' : '점수 기준: 80+ 강매수, 70-79 매수, 50-69 보유, 50미만 매도'}
 
 종목 데이터:
 ${stockSummaries}${sourcesBlock}
@@ -80,10 +102,10 @@ JSON 배열만 반환 (설명 없이):`;
       let text: string;
 
       if (useCli) {
-        text = await callClaudeCli({ systemPrompt, userPrompt });
+        text = await callClaudeCli({ systemPrompt, userPrompt, model: 'sonnet' });
       } else {
         const msg = await client!.messages.create({
-          model: MODEL,
+          model: MODEL_API,
           max_tokens: MAX_TOKENS,
           system: systemPrompt,
           messages: [{ role: 'user', content: userPrompt }],
@@ -96,6 +118,9 @@ JSON 배열만 반환 (설명 없이):`;
       const parsed = JSON.parse(jsonMatch[0]) as Array<{
         stock_code: string;
         composite_score: number;
+        fundamental_score?: number;
+        technical_score?: number;
+        sentiment_score?: number;
         signal: string;
         confidence: number;
         reasoning: string;
@@ -106,19 +131,23 @@ JSON 배열만 반환 (설명 없이):`;
         if (!wItem) continue;
         const rawScore = Number(item.composite_score);
         if (!Number.isFinite(rawScore)) continue; // NaN/Infinity guard
-        const score = Math.max(SCORE_MIN, Math.min(SCORE_MAX, Math.round(rawScore)));
+        const clamp = (v: number | undefined, fallback: number) => {
+          const n = Number(v);
+          return Number.isFinite(n) ? Math.max(SCORE_MIN, Math.min(SCORE_MAX, Math.round(n))) : fallback;
+        };
+        const score = clamp(rawScore, 50);
         const rawConfidence = Number(item.confidence ?? DEFAULT_CONFIDENCE);
         results.push({
           stock_code: item.stock_code,
           composite_score: score,
-          fundamental_score: score,
-          technical_score: score,
-          sentiment_score: score,
+          fundamental_score: clamp(item.fundamental_score, score),
+          technical_score: clamp(item.technical_score, score),
+          sentiment_score: clamp(item.sentiment_score, score),
           signal: (VALID_SIGNALS as readonly string[]).includes(item.signal)
             ? (item.signal as ValidSignal)
             : 'HOLD',
           confidence: Math.max(CONFIDENCE_MIN, Math.min(CONFIDENCE_MAX, Number.isFinite(rawConfidence) ? rawConfidence : DEFAULT_CONFIDENCE)),
-          reasoning: `[Claude] ${item.reasoning || ''}`,
+          reasoning: `[Claude/Sonnet] ${item.reasoning || ''}`,
         });
       }
 

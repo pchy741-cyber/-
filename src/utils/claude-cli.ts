@@ -1,15 +1,17 @@
 /**
- * Claude CLI (`claude -p`) 어댑터
+ * Claude CLI (`claude -p`) 어댑터 v2
  * Max 구독 토큰을 활용하여 ANTHROPIC_API_KEY 없이 Claude 호출
- * 로컬 paper 모드 전용 — Cloud Run에서는 기존 API 키 사용
+ * 모델 선택: sonnet (정밀 분석) / haiku (빠른 응답)
  *
  * 환경변수: USE_CLAUDE_CLI=true 로 활성화
  */
 import { spawn } from 'child_process';
 import { logger } from './logger.js';
 
-const CLI_TIMEOUT_MS = 90_000; // 90초
+const CLI_TIMEOUT_MS = 120_000; // 120초 (Sonnet은 응답이 길 수 있음)
 const COMP = 'CLAUDE_CLI';
+
+export type CliModel = 'sonnet' | 'haiku';
 
 /** Claude CLI 사용 여부 */
 export function isClaudeCliEnabled(): boolean {
@@ -19,19 +21,23 @@ export function isClaudeCliEnabled(): boolean {
 /**
  * claude -p (비대화형 모드)로 Claude 호출
  * Max 구독 사용량에서 차감됨
+ *
+ * @param opts.model - 'sonnet' (정밀 분석, 기본값) | 'haiku' (빠른 응답)
  */
 export async function callClaudeCli(opts: {
   systemPrompt: string;
   userPrompt: string;
+  model?: CliModel;
+  timeoutMs?: number;
 }): Promise<string> {
-  const { systemPrompt, userPrompt } = opts;
+  const { systemPrompt, userPrompt, model = 'sonnet', timeoutMs = CLI_TIMEOUT_MS } = opts;
 
   return new Promise((resolve, reject) => {
     const args = [
       '-p',                        // 비대화형 모드
       '--output-format', 'text',   // 순수 텍스트 출력
-      '--model', 'haiku',          // Haiku = 빠르고 할당량 적게 소모
-      '--max-turns', '1',          // 단일 응답
+      '--model', model,            // sonnet (기본) or haiku
+      '--max-turns', '2',          // max-turns 1이면 에러 가능 → 2로 여유
     ];
 
     // CLAUDECODE 환경변수 제거 — 중첩 세션 방지 우회 (봇은 별도 프로세스)
@@ -58,16 +64,16 @@ export async function callClaudeCli(opts: {
 
     const timer = setTimeout(() => {
       proc.kill('SIGTERM');
-      reject(new Error(`Claude CLI 타임아웃 (${CLI_TIMEOUT_MS / 1000}초)`));
-    }, CLI_TIMEOUT_MS);
+      reject(new Error(`Claude CLI 타임아웃 (${timeoutMs / 1000}초, model=${model})`));
+    }, timeoutMs);
 
     proc.on('close', (code) => {
       clearTimeout(timer);
       if (code === 0 && stdout.trim()) {
-        logger.debug(`Claude CLI 응답 수신 (${stdout.length}자)`, { component: COMP });
+        logger.debug(`Claude CLI [${model}] 응답 수신 (${stdout.length}자)`, { component: COMP });
         resolve(stdout.trim());
       } else {
-        reject(new Error(`Claude CLI 종료코드=${code}: ${stderr.slice(0, 300)}`));
+        reject(new Error(`Claude CLI [${model}] 종료코드=${code}: ${stderr.slice(0, 300)}`));
       }
     });
 

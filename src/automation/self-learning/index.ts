@@ -2,6 +2,7 @@ import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, logSystem } from '../../db/client.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { sendPushNotification } from '../../notifications/web-push.js';
+import { callClaudeCli, isClaudeCliEnabled } from '../../utils/claude-cli.js';
 import { logger } from '../../utils/logger.js';
 
 import {
@@ -172,12 +173,130 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
     ...(await safeAsync(() => analyzeOverseasAll(getCtxIsPaper()), 'overseasAll')),
   ];
 
+  // ── Claude 심층 메타 분석 (USE_CLAUDE_CLI=true 시) ──
+  if (isClaudeCliEnabled() && insights.length >= 3) {
+    try {
+      const claudeInsights = await analyzeWithClaude(enrichedChains, insights);
+      insights.push(...claudeInsights);
+      logger.info(`🧠 Claude 심층 분석: ${claudeInsights.length}개 메타 인사이트 생성`, { component: 'LEARN' });
+    } catch (e) {
+      logger.warn(`Claude 심층 분석 실패 (통계적 인사이트만 사용): ${e}`, { component: 'LEARN' });
+    }
+  }
+
   if (insights.length > 0) {
     await saveInsights(insights);
     await autoApplyInsights(insights).catch((e) => logger.warn(`자동 적용 실패: ${e}`, { component: 'LEARN' }));
   }
 
   return insights;
+}
+
+/** Claude CLI 심층 메타 분석 — 통계적 인사이트를 종합하여 전략적 제안 생성 */
+async function analyzeWithClaude(
+  chains: EnrichedChain[],
+  existingInsights: LearnedInsight[],
+): Promise<LearnedInsight[]> {
+  const isPaper = getCtxIsPaper();
+  const modeLabel = isPaper ? '연습(Paper)' : '실전(Live)';
+
+  // 매매 통계 요약
+  const totalTrades = chains.length;
+  const wins = chains.filter((c) => c.pnlPct > 0);
+  const losses = chains.filter((c) => c.pnlPct <= 0);
+  const winRate = totalTrades > 0 ? ((wins.length / totalTrades) * 100).toFixed(1) : '0';
+  const avgWinPct = wins.length > 0 ? (wins.reduce((s, c) => s + c.pnlPct, 0) / wins.length).toFixed(2) : '0';
+  const avgLossPct = losses.length > 0 ? (losses.reduce((s, c) => s + c.pnlPct, 0) / losses.length).toFixed(2) : '0';
+  const avgHoldDays = totalTrades > 0 ? (chains.reduce((s, c) => s + c.holdingDays, 0) / totalTrades).toFixed(1) : '0';
+
+  // 전략별 성과
+  const byStrategy = new Map<string, { count: number; winRate: number; avgPnl: number }>();
+  for (const c of chains) {
+    const mode = c.chain.strategy_mode ?? 'UNKNOWN';
+    const entry = byStrategy.get(mode) ?? { count: 0, winRate: 0, avgPnl: 0 };
+    entry.count++;
+    entry.avgPnl = (entry.avgPnl * (entry.count - 1) + c.pnlPct) / entry.count;
+    if (c.pnlPct > 0) entry.winRate = ((entry.winRate * (entry.count - 1) + 100) / entry.count);
+    else entry.winRate = (entry.winRate * (entry.count - 1)) / entry.count;
+    byStrategy.set(mode, entry);
+  }
+  const strategyLines = [...byStrategy.entries()]
+    .map(([mode, s]) => `  ${mode}: ${s.count}건, 승률 ${s.winRate.toFixed(0)}%, 평균 ${s.avgPnl > 0 ? '+' : ''}${s.avgPnl.toFixed(2)}%`)
+    .join('\n');
+
+  // 기존 인사이트 요약
+  const insightSummary = existingInsights
+    .slice(0, 15)
+    .map((i) => `[${i.category}] ${i.insight} (신뢰도 ${(i.confidence * 100).toFixed(0)}%, ${i.sampleCount}건)`)
+    .join('\n');
+
+  const systemPrompt = `당신은 퀀트 트레이딩 전략 분석가입니다. 매매 데이터와 기존 인사이트를 종합 분석하여, 기존 분석에서 놓친 메타 패턴과 전략적 개선안을 JSON으로 제시하세요.
+
+반환 형식 (JSON 배열):
+[
+  {
+    "category": "WIN_PATTERN" | "LOSS_PATTERN" | "TIMING" | "SIZING",
+    "insight": "패턴 설명 (한국어, 1줄)",
+    "confidence": 0.0-1.0,
+    "sampleCount": 숫자,
+    "recommendation": "구체적 행동 지침",
+    "paramChange": { "field": "stop_loss_pct|take_profit_pct|buy_threshold", "value": 숫자, "reason": "근거" } | null
+  }
+]
+
+규칙:
+- 기존 인사이트와 중복되지 않는 새로운 발견만
+- 최대 5개, 각각 구체적이고 실행 가능한 제안
+- paramChange는 확신 있을 때만 (confidence 0.75+)
+- stop_loss_pct 범위: -30 ~ -1, take_profit_pct: 0.5 ~ 50, buy_threshold: 0 ~ 100`;
+
+  const userPrompt = `## ${modeLabel} 매매 분석 (최근 90일)
+
+### 전체 통계
+- 총 ${totalTrades}건: 승률 ${winRate}%
+- 평균 수익: +${avgWinPct}% / 평균 손실: ${avgLossPct}%
+- 평균 보유일: ${avgHoldDays}일
+
+### 전략별 성과
+${strategyLines}
+
+### 기존 인사이트 (통계 기반)
+${insightSummary}
+
+위 데이터를 종합 분석하여, 기존에 빠진 메타 패턴과 전략 개선안을 JSON 배열로 반환하세요.`;
+
+  const text = await callClaudeCli({ systemPrompt, userPrompt, model: 'sonnet', timeoutMs: 90_000 });
+  const jsonMatch = text.match(/\[[\s\S]*\]/);
+  if (!jsonMatch) return [];
+
+  const parsed = JSON.parse(jsonMatch[0]) as Array<{
+    category: string;
+    insight: string;
+    confidence: number;
+    sampleCount: number;
+    recommendation?: string;
+    paramChange?: { field: string; value: number; reason: string } | null;
+  }>;
+
+  const validCategories = ['WIN_PATTERN', 'LOSS_PATTERN', 'TIMING', 'SIZING'];
+  return parsed
+    .filter((item) => validCategories.includes(item.category) && item.insight && item.confidence > 0)
+    .slice(0, 5)
+    .map((item) => ({
+      category: item.category as LearnedInsight['category'],
+      insight: `[Claude 분석] ${item.insight}`,
+      confidence: Math.max(0, Math.min(1, item.confidence)),
+      sampleCount: item.sampleCount ?? totalTrades,
+      lastUpdated: _now(),
+      recommendation: item.recommendation,
+      paramChange: item.paramChange
+        ? {
+            field: item.paramChange.field as InsightParamChange['field'],
+            value: item.paramChange.value,
+            reason: `[Claude] ${item.paramChange.reason}`,
+          }
+        : undefined,
+    }));
 }
 
 // ── DB Functions ──

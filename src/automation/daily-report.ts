@@ -2,6 +2,7 @@ import { getCtxIsPaper } from '../config/context.js';
 import { getOpenChains, getPool } from '../db/client.js';
 import { getAccountBalance } from '../kis/account.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
+import { callClaudeCli, isClaudeCliEnabled } from '../utils/claude-cli.js';
 import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
 import { getDinnerMoneyStats } from './profit-withdraw.js';
@@ -116,11 +117,79 @@ export async function generateDailyReport(): Promise<void> {
       .filter(Boolean)
       .join('\n');
 
-    await sendTelegramMessage(report).catch(() => {});
-    logger.info('📊 일일 리포트 발송 완료', { component: 'REPORT' });
+    // Claude 자연어 분석 추가 (CLI 활성 시)
+    let claudeAnalysis = '';
+    if (isClaudeCliEnabled() && (buyOrders.length > 0 || sellOrders.length > 0 || closedToday.length > 0)) {
+      try {
+        claudeAnalysis = await generateClaudeAnalysis({
+          totalValue,
+          cash: balance.orderableCash,
+          realizedPnl,
+          unrealizedPnl: balance.totalProfitLoss,
+          buyCount: buyOrders.length,
+          sellCount: sellOrders.length,
+          closedCount: closedToday.length,
+          weekPnl,
+          weekWinRate: weekData.length > 0 ? ((weekWins / weekData.length) * 100) : 0,
+          monthPnl,
+          monthWinRate: monthData.length > 0 ? ((monthWins / monthData.length) * 100) : 0,
+          positions: balance.positions.map((p) => `${p.stockName} ${p.profitLossPct > 0 ? '+' : ''}${p.profitLossPct.toFixed(1)}%`),
+          reasons: todayOrders.slice(-5).map((o: Record<string, unknown>) =>
+            `${o.side === 'BUY' ? '매수' : '매도'} ${o.stock_code}: ${String(o.ai_reasoning ?? '').slice(0, 80)}`
+          ),
+        });
+      } catch (e) {
+        logger.warn(`Claude 리포트 분석 실패: ${e}`, { component: 'REPORT' });
+      }
+    }
+
+    const finalReport = claudeAnalysis
+      ? `${report}\n\n🤖 *Claude AI 분석*\n${claudeAnalysis}`
+      : report;
+
+    await sendTelegramMessage(finalReport).catch(() => {});
+    logger.info('📊 일일 리포트 발송 완료' + (claudeAnalysis ? ' (Claude 분석 포함)' : ''), { component: 'REPORT' });
   } catch (error) {
     logger.error(`일일 리포트 생성 실패: ${error}`, { component: 'REPORT' });
   }
+}
+
+/** Claude CLI 기반 일일 매매 분석 — 자연어 해석 + 내일 액션 아이템 */
+async function generateClaudeAnalysis(data: {
+  totalValue: number;
+  cash: number;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  buyCount: number;
+  sellCount: number;
+  closedCount: number;
+  weekPnl: number;
+  weekWinRate: number;
+  monthPnl: number;
+  monthWinRate: number;
+  positions: string[];
+  reasons: string[];
+}): Promise<string> {
+  const systemPrompt = `당신은 주식 포트폴리오 매니저입니다. 오늘 매매 결과를 간결하게 분석하고, 내일 전략을 제안하세요.
+- 3~5줄 이내로 핵심만
+- 감정 없이 객관적으로
+- 구체적 액션 아이템 1~2개`;
+
+  const userPrompt = `오늘 매매 결과:
+- 총자산: ${data.totalValue.toLocaleString()}원 (현금: ${data.cash.toLocaleString()}원)
+- 실현손익: ${data.realizedPnl >= 0 ? '+' : ''}${data.realizedPnl.toLocaleString()}원
+- 미실현: ${data.unrealizedPnl >= 0 ? '+' : ''}${data.unrealizedPnl.toLocaleString()}원
+- 활동: 매수 ${data.buyCount}건, 매도 ${data.sellCount}건, 청산 ${data.closedCount}건
+- 주간: ${data.weekPnl >= 0 ? '+' : ''}${data.weekPnl.toLocaleString()}원 (승률 ${data.weekWinRate.toFixed(0)}%)
+- 월간: ${data.monthPnl >= 0 ? '+' : ''}${data.monthPnl.toLocaleString()}원 (승률 ${data.monthWinRate.toFixed(0)}%)
+${data.positions.length > 0 ? `- 보유: ${data.positions.join(', ')}` : '- 보유 종목 없음'}
+${data.reasons.length > 0 ? `- 최근 판단: ${data.reasons.join(' | ')}` : ''}
+
+간결한 분석 + 내일 액션 아이템:`;
+
+  const text = await callClaudeCli({ systemPrompt, userPrompt, model: 'haiku', timeoutMs: 30_000 });
+  // 텔레그램 메시지 길이 제한
+  return text.slice(0, 500);
 }
 
 /** 이번 주 월요일 날짜 */
