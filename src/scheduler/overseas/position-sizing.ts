@@ -63,7 +63,9 @@ export function calcSizingMultiplier(params: {
   // 배율 스택 캡: evMult × wrMult 합산이 1.5x 초과 방지 (과집중 사고 방지)
   const combinedBoostMult = Math.min(evMult * wrMult, 1.5);
   const rawMult = Math.round((0.6 + combined * 1.4) * combinedBoostMult * vixSizingMult * cooldownPenalty * 100) / 100;
-  return isPaper ? Math.max(rawMult, 0.5) : rawMult;
+  // 상한 캡: 2.0x 초과 방지 (과집중 사고 방지)
+  const cappedMult = Math.min(2.0, rawMult);
+  return isPaper ? Math.max(cappedMult, 0.5) : cappedMult;
 }
 
 export function calcPositionSize(params: SizingParams): SizingResult {

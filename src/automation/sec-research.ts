@@ -353,6 +353,21 @@ export async function runSecResearch(ticker: string): Promise<SecResearchResult>
 
 // ── 배치: 다수 종목 순차 분석 ──
 
+/**
+ * 캐시된 SEC fundamentalScore 반환 (해외 매매 파이프라인용)
+ * 0~100 점수 → 매수 정렬 및 필터에 사용
+ * 캐시 미스 시 undefined (리서치 미실행 종목)
+ */
+export function getCachedSecFundamentalScore(ticker: string): number | undefined {
+  const upperTicker = ticker.toUpperCase();
+  for (const [key, entry] of _resultCache) {
+    if (key.startsWith(`${upperTicker}-`) && Date.now() - entry.fetchedAt < CACHE_TTL_MS) {
+      return entry.result.fundamentalScore;
+    }
+  }
+  return undefined;
+}
+
 export async function runSecResearchBatch(tickers: string[]): Promise<SecResearchResult[]> {
   const results: SecResearchResult[] = [];
   for (const ticker of tickers) {

@@ -750,6 +750,21 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     const aiMap = new Map(aiDecisions.map((d) => [d.code, d]));
     const overseasCodes = techResults.map((t) => t.code);
     const overseasWinRates = await getOverseasWinRates(overseasCodes).catch(() => new Map<string, OverseasWinRate>());
+
+    // SEC EDGAR fundamentalScore 자동 캐시 (보유종목 + 상위 후보, 24시간 캐시)
+    try {
+      const { runSecResearchBatch, getCachedSecFundamentalScore } = await import('../automation/sec-research.js');
+      const holdingTickers = [...holdings.keys()];
+      const uncachedTickers = [...new Set([...holdingTickers, ...overseasCodes.slice(0, 5)])]
+        .filter((t) => getCachedSecFundamentalScore(t) == null)
+        .slice(0, 10);
+      if (uncachedTickers.length > 0) {
+        logger.info(`SEC 리서치 자동 실행: ${uncachedTickers.join(', ')}`, { component: 'OVERSEAS' });
+        await runSecResearchBatch(uncachedTickers).catch((e: any) =>
+          logger.warn(`SEC 리서치 실패 (스킵): ${e.message}`, { component: 'OVERSEAS' }),
+        );
+      }
+    } catch { /* SEC 모듈 로드 실패 무시 */ }
     if (overseasWinRates.size > 0) {
       logger.info(`📈 해외 승률 데이터: ${overseasWinRates.size}종목`, { component: 'OVERSEAS' });
     }

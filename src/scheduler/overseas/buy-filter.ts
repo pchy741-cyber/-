@@ -8,6 +8,7 @@ import { logger } from '../../utils/logger.js';
 import type { RegimeAdjustment } from './risk-intelligence.js';
 import { applyUncertaintyPenalty, checkSectorGroupLimit } from './risk-intelligence.js';
 import { GLOBAL_WATCHLIST } from './watchlist.js';
+import { getCachedSecFundamentalScore } from '../../automation/sec-research.js';
 
 type MarketSignalResult = ReturnType<typeof interpretMarketSentiment>;
 
@@ -396,7 +397,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // 1. BigMover (급등주) — 초급등(+8%)은 RSI 88, 일반급등(+5%)은 RSI 82까지 허용
         // 근거: 10% 급등 종목 RSI는 75~85 범위 → 기존 72 상한으로 핫 종목 전부 차단됨
         // 안전장치: dayRangePct≥40(일중저점 아님) + aboveMA20 + 승률 피드백 유지
-        const bigMoverRsiCap = t.price.changePct >= 8 ? 88 : 82;
+        const bigMoverRsiCap = t.price.changePct >= 8 ? 78 : 75; // RSI 88→78 하향 (과매수 고점 진입 방지)
         if (t.isBigMover && t.score >= 18 && t.rsi >= 35 && t.rsi <= bigMoverRsiCap && t.dayRangePct >= 40 && t.aboveMA20 && !effectiveBadWR)
           return true;
         // 2. Momentum (모멘텀 확인: 볼륨+추세) — RSI 상한 79로 확장
@@ -544,10 +545,15 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const sectorMomB = sectorMomentumMap?.get(b.sector ?? '') ?? 0;
         const sectorMomScoreA = sectorMomA >= 2 ? 12 : sectorMomA >= 1 ? 7 : sectorMomA <= -2 ? -10 : sectorMomA <= -1 ? -5 : 0;
         const sectorMomScoreB = sectorMomB >= 2 ? 12 : sectorMomB >= 1 ? 7 : sectorMomB <= -2 ? -10 : sectorMomB <= -1 ? -5 : 0;
+        // SEC fundamentalScore: 재무건전성 우량 → 매수 우선, 취약 → 차감
+        const secScoreA = getCachedSecFundamentalScore(a.code);
+        const secScoreB = getCachedSecFundamentalScore(b.code);
+        const fundAdjA = secScoreA != null ? (secScoreA >= 75 ? 8 : secScoreA >= 60 ? 4 : secScoreA <= 30 ? -10 : 0) : 0;
+        const fundAdjB = secScoreB != null ? (secScoreB >= 75 ? 8 : secScoreB >= 60 ? 4 : secScoreB <= 30 ? -10 : 0) : 0;
         const sa =
-          techA + wrScoreA + losspenA + priorityA + favA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA + sectorMomScoreA;
+          techA + wrScoreA + losspenA + priorityA + favA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA + sectorMomScoreA + fundAdjA;
         const sb =
-          techB + wrScoreB + losspenB + priorityB + favB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB + sectorMomScoreB;
+          techB + wrScoreB + losspenB + priorityB + favB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB + sectorMomScoreB + fundAdjB;
         return sb - sa;
       })
   );

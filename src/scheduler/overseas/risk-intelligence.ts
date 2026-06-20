@@ -47,13 +47,13 @@ export function calcDynamicTrailDrop(params: {
     }
   }
 
-  // 수익 단계별 타이트닝 (수익을 지킨다)
+  // 기본 범위 클램프 (trend/rsi 조정 후)
+  trail = Math.max(minTrail, Math.min(maxTrail, trail));
+
+  // 수익 단계별 타이트닝 — 클램프 이후 적용 (수익 보호가 범위 제한보다 우선)
   if (maxPnlPct >= 25.0) trail = Math.max(trail, -4.0);
   else if (maxPnlPct >= 20.0) trail = Math.max(trail, -5.0);
   else if (maxPnlPct >= 15.0) trail = Math.max(trail, -6.0);
-
-  // 모든 조정 후 최종 클램프
-  trail = Math.max(minTrail, Math.min(maxTrail, trail));
 
   return trail;
 }
