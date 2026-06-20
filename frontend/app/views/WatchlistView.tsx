@@ -106,8 +106,10 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, confirm, 
 
   const del = async (code: string) => {
     if (!await confirm({ title: `${code} 삭제`, description: '감시목록에서 삭제합니다', confirmLabel: '삭제', confirmVariant: 'danger' })) return;
-    await api(`/watchlist/${code}`, { method: 'DELETE' });
-    setWatchlist((prev: WatchlistItem[]) => prev.filter(s => s.stock_code !== code));
+    try {
+      await api(`/watchlist/${code}`, { method: 'DELETE' });
+      setWatchlist((prev: WatchlistItem[]) => prev.filter(s => s.stock_code !== code));
+    } catch (err: unknown) { toast(err instanceof Error ? err.message : '삭제 실패', 'err'); }
   };
 
   // 스코어 스파크라인 캐시 — 이미 로드된 종목은 재요청 없음

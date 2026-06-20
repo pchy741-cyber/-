@@ -1,9 +1,25 @@
 'use client';
 
-import React from 'react';
-import { Button } from '@/components/ui';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Button, Modal } from '@/components/ui';
 
-type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'settings' | 'dividend' | 'strategy-lab';
+type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'settings' | 'dividend' | 'strategy-lab' | 'ai-cost';
+
+interface QAIssue {
+  severity: 'CRITICAL' | 'WARNING' | 'INFO';
+  category: string;
+  title: string;
+  detail: string;
+}
+interface QAReport {
+  runAt: string;
+  elapsedSec: number;
+  issues: QAIssue[];
+  critical: number;
+  warning: number;
+  info: number;
+  status: 'pass' | 'warn' | 'fail';
+}
 
 export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, health, dash, viewMode, switchView, killSwitch, toggleKill, lastUpdate, load, featureFlags, isPaper, isUS, theme, loopStatus, newInsightCount }: {
   tab: Tab; setTab: (t: Tab) => void;
@@ -19,6 +35,43 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
 }) {
   const isKillActive = killSwitch?.kr?.active || killSwitch?.overseas?.active;
 
+  // QA Watchdog 상태
+  const [qaReport, setQaReport] = useState<QAReport | null>(null);
+  const [qaReports, setQaReports] = useState<QAReport[]>([]);
+  const [qaModalOpen, setQaModalOpen] = useState(false);
+  const [qaRunning, setQaRunning] = useState(false);
+
+  const fetchQA = useCallback(async () => {
+    try {
+      const key = typeof window !== 'undefined' ? localStorage.getItem('api_key') : null;
+      const headers: Record<string, string> = key ? { 'x-api-key': key } : {};
+      const res = await fetch('/api/qa/latest', { headers });
+      if (res.ok) { const data = await res.json(); if (data) setQaReport(data); }
+    } catch { /* ignore */ }
+  }, []);
+
+  const fetchQAReports = useCallback(async () => {
+    try {
+      const key = typeof window !== 'undefined' ? localStorage.getItem('api_key') : null;
+      const headers: Record<string, string> = key ? { 'x-api-key': key } : {};
+      const res = await fetch('/api/qa/reports', { headers });
+      if (res.ok) setQaReports(await res.json());
+    } catch { /* ignore */ }
+  }, []);
+
+  const runQA = useCallback(async () => {
+    setQaRunning(true);
+    try {
+      const key = typeof window !== 'undefined' ? localStorage.getItem('api_key') : null;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(key ? { 'x-api-key': key } : {}) };
+      await fetch('/api/qa/run', { method: 'POST', headers });
+      // 5초 후 결과 가져오기
+      setTimeout(() => { fetchQA(); fetchQAReports(); setQaRunning(false); }, 8000);
+    } catch { setQaRunning(false); }
+  }, [fetchQA, fetchQAReports]);
+
+  useEffect(() => { fetchQA(); }, [fetchQA]);
+
   const allNavItems: { id: Tab; label: string; icon: string; paperOnly?: boolean }[] = [
     { id: 'home', label: '대시보드', icon: '📊' },
     { id: 'trades', label: '매매내역', icon: '📋' },
@@ -27,6 +80,7 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
     { id: 'news', label: '뉴스', icon: '📰' },
     { id: 'dividend', label: '배당', icon: '💰' },
     { id: 'strategy-lab', label: '전략 Lab', icon: '🧪' },
+    { id: 'ai-cost', label: 'AI 비용', icon: '🤖' },
     { id: 'settings', label: '설정', icon: '⚙️' },
   ];
   const navItems = allNavItems.filter(item => !item.paperOnly || isPaper);
@@ -98,6 +152,31 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
           </div>
         )}
 
+        {/* QA Watchdog 상태 패널 */}
+        <button
+          className="mx-3 mt-2 w-[calc(100%-24px)] text-left rounded-xl border p-3 space-y-1.5 transition-all hover:brightness-110"
+          style={{
+            background: !qaReport ? 'rgba(100,116,139,0.05)' : qaReport.status === 'pass' ? 'rgba(34,197,94,0.06)' : qaReport.status === 'warn' ? 'rgba(245,158,11,0.08)' : 'rgba(239,68,68,0.08)',
+            borderColor: !qaReport ? 'rgba(100,116,139,0.15)' : qaReport.status === 'pass' ? 'rgba(34,197,94,0.2)' : qaReport.status === 'warn' ? 'rgba(245,158,11,0.25)' : 'rgba(239,68,68,0.3)',
+          }}
+          onClick={() => { setQaModalOpen(true); fetchQAReports(); }}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-sm">🔍</span>
+            <span className={`text-[11px] font-bold ${!qaReport ? 'text-slate-500' : qaReport.status === 'pass' ? 'text-emerald-400' : qaReport.status === 'warn' ? 'text-amber-400' : 'text-red-400'}`}>
+              QA Watchdog {!qaReport ? '대기' : qaReport.status === 'pass' ? '통과' : `${qaReport.critical + qaReport.warning}건`}
+            </span>
+          </div>
+          {qaReport && (
+            <div className="flex items-center gap-3 text-[10px] text-slate-500">
+              {qaReport.critical > 0 && <span className="text-red-400">{qaReport.critical} CRITICAL</span>}
+              {qaReport.warning > 0 && <span className="text-amber-400">{qaReport.warning} WARN</span>}
+              {qaReport.status === 'pass' && <span className="text-emerald-400">이상 없음</span>}
+              <span className="ml-auto">{new Date(qaReport.runAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}</span>
+            </div>
+          )}
+        </button>
+
         <nav className="flex-1 p-2.5 space-y-0.5">
           {navItems.map(item => (
             <button key={item.id} onClick={() => { setTab(item.id); setMobileMenu(false); }}
@@ -141,6 +220,70 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
           </Button>
         </div>
       </aside>
+
+      {/* QA Watchdog 상세 모달 */}
+      <Modal open={qaModalOpen} onClose={() => setQaModalOpen(false)} maxWidth="max-w-lg">
+        <div className="p-5 max-h-[80vh] overflow-y-auto">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-bold text-slate-100 flex items-center gap-2">
+              🔍 QA Watchdog 감시 로그
+            </h2>
+            <button
+              className={`text-[10px] px-3 py-1.5 rounded-lg font-bold transition-all ${qaRunning ? 'bg-blue-500/20 text-blue-400' : 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25'}`}
+              disabled={qaRunning}
+              onClick={runQA}
+            >
+              {qaRunning ? '검사 중...' : '수동 실행'}
+            </button>
+          </div>
+
+          {qaReports.length === 0 && (
+            <p className="text-slate-500 text-xs text-center py-8">아직 QA 실행 기록 없음</p>
+          )}
+
+          {qaReports.map((report, idx) => {
+            const statusColor = report.status === 'pass' ? 'emerald' : report.status === 'warn' ? 'amber' : 'red';
+            const statusLabel = report.status === 'pass' ? '통과' : report.status === 'warn' ? '경고' : '실패';
+            const time = new Date(report.runAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+            return (
+              <div key={idx} className="mb-3 rounded-xl border border-white/[0.06] overflow-hidden">
+                {/* 리포트 헤더 */}
+                <div className={`px-4 py-2.5 flex items-center gap-3 bg-${statusColor}-500/5 border-b border-white/[0.04]`}
+                  style={{ background: report.status === 'pass' ? 'rgba(34,197,94,0.05)' : report.status === 'warn' ? 'rgba(245,158,11,0.05)' : 'rgba(239,68,68,0.05)' }}>
+                  <span className={`w-2 h-2 rounded-full`}
+                    style={{ background: report.status === 'pass' ? '#22c55e' : report.status === 'warn' ? '#f59e0b' : '#ef4444' }} />
+                  <span className={`text-[11px] font-bold`}
+                    style={{ color: report.status === 'pass' ? '#22c55e' : report.status === 'warn' ? '#f59e0b' : '#ef4444' }}>
+                    {statusLabel}
+                  </span>
+                  <span className="text-[10px] text-slate-500 ml-auto">{time} · {report.elapsedSec.toFixed(1)}s</span>
+                </div>
+
+                {/* 이슈 목록 */}
+                {report.issues.length === 0 ? (
+                  <div className="px-4 py-3 text-[11px] text-emerald-400/70">전수조사 통과 — 이상 없음</div>
+                ) : (
+                  <div className="px-3 py-2 space-y-1.5">
+                    {report.issues.map((issue, j) => {
+                      const sevColor = issue.severity === 'CRITICAL' ? '#ef4444' : issue.severity === 'WARNING' ? '#f59e0b' : '#3b82f6';
+                      const sevDot = issue.severity === 'CRITICAL' ? '🔴' : issue.severity === 'WARNING' ? '🟡' : '🔵';
+                      return (
+                        <div key={j} className="rounded-lg px-3 py-2" style={{ background: 'rgba(255,255,255,0.02)', borderLeft: `2px solid ${sevColor}` }}>
+                          <div className="text-[11px] font-medium text-slate-200">
+                            {sevDot} <span className="text-slate-500">[{issue.category}]</span> {issue.title}
+                          </div>
+                          <div className="text-[10px] text-slate-500 mt-0.5">{issue.detail}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Modal>
     </>
   );
 }

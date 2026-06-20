@@ -714,6 +714,28 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 📧 17:00 — 종합 이메일 리포트 (평일, 장마감 + 정산 완료 후)
+  cron.schedule(
+    '0 17 * * 1-5',
+    () => {
+      import('../automation/daily-email-report.js')
+        .then((m) => m.sendDailyEmailReport())
+        .catch((e) => logger.error(`이메일 리포트: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🚨 장중 30분마다 — 실전 손실 감지 (09:00~15:30)
+  cron.schedule(
+    '*/30 9-15 * * 1-5',
+    () => {
+      import('../automation/loss-alert.js')
+        .then((m) => m.checkLiveAlerts())
+        .catch((e) => logger.error(`손실 알림: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 🌙 15:42, 15:52 — 장후 시간외 줍줍 (급락 종목 시간외 단일가 매수)
   // runDomesticDual로 감싸서 PAPER_ONLY 모드 존중
   cron.schedule(
@@ -737,6 +759,26 @@ export function startScheduler(): void {
       }
       logger.info('⏰ Track A (장후)', { component: 'SCHEDULER' });
       runTrackAJob().catch((e) => logger.error(`Track A 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🔍 QA Watchdog — 장중 품질 감시 (10:30, 14:00)
+  cron.schedule(
+    '30 10 * * 1-5',
+    () => {
+      import('../automation/qa-watchdog.js')
+        .then((m) => m.runQAWatchdog())
+        .catch((e) => logger.error(`QA Watchdog: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+  cron.schedule(
+    '0 14 * * 1-5',
+    () => {
+      import('../automation/qa-watchdog.js')
+        .then((m) => m.runQAWatchdog())
+        .catch((e) => logger.error(`QA Watchdog: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

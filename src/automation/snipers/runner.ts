@@ -12,7 +12,7 @@ import {
 } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { getCurrentPrice, getDailyChart } from '../../kis/market.js';
-import { isKillSwitchActive } from '../../risk/kill-switch.js';
+import { isKillSwitchActiveForMode } from '../../risk/kill-switch.js';
 import { tradeExecutor } from '../../trading/executor.js';
 import { logger } from '../../utils/logger.js';
 import { getAccountBalance } from '../../kis/account.js';
@@ -33,7 +33,7 @@ import { scanTechnicalPatterns } from './technical-patterns.js';
  * - Sniper: 확정 패턴 감지 → 예산 1.2~1.5배 확대 → 즉시 진입
  */
 export async function runSniperScan(): Promise<void> {
-  if (isKillSwitchActive()) return;
+  if (isKillSwitchActiveForMode('KR', getCtxIsPaper())) return;
 
   try {
     // 모든 스나이퍼 병렬 실행

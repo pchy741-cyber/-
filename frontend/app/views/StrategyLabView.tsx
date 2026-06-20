@@ -3,13 +3,14 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Button } from '@/components/ui';
 import { api, pc, fmtWon, fmtTime, fmtPct } from '../lib/utils';
-import type { StrategyLabOverview, StrategyGraduation, StrategyInsightRow } from '../types';
+import type { StrategyLabOverview, StrategyGraduation, StrategyInsightRow, TuningStatus } from '../types';
 import { STRATEGY_LABELS, SIM_AMOUNTS } from './strategy-lab/constants';
 import { StrategyCard } from './strategy-lab/StrategyCard';
 import { PipelineRow } from './strategy-lab/PipelineRow';
 import { ApprovalCard } from './strategy-lab/ApprovalCard';
 import { InsightChip } from './strategy-lab/InsightChip';
 import { HistoryRow } from './strategy-lab/HistoryRow';
+import { TuningPanel } from './strategy-lab/TuningPanel';
 
 interface Props {
   toast: (msg: string, type?: 'ok' | 'err' | 'info') => void;
@@ -27,20 +28,23 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
   const [refreshing, setRefreshing] = useState(false);
   const [simAmount, setSimAmount] = useState(1000);
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
+  const [tuning, setTuning] = useState<TuningStatus | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [ov, ap, ins] = await Promise.all([
+      const [ov, ap, ins, tun] = await Promise.all([
         api('/strategy-lab/overview'),
         api('/strategy-lab/approvals'),
         api('/strategy-lab/insights'),
+        api('/strategy-lab/tuning-status').catch(() => null),
       ]);
       setStrategies(ov.strategies || []);
       setPending(ap.pending || []);
       setHistory(ap.history || []);
       setInsights(ins.insights || []);
+      if (tun) setTuning(tun);
     } catch (e: any) {
       const msg = e.message || '로딩 실패';
       setError(msg);
@@ -149,40 +153,40 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
         </div>
       )}
       {/* ─── Hero Stats Bar ─── */}
-      <div className="grid grid-cols-3 gap-3">
-        <div className="relative overflow-hidden rounded-2xl border border-white/[0.06] p-4 bg-gradient-to-br from-slate-900/80 to-slate-950/40">
-          <div className="absolute top-0 right-0 w-20 h-20 bg-gradient-to-bl from-cyan-500/[0.07] to-transparent rounded-bl-full" />
-          <div className="text-[10px] text-slate-500 font-medium tracking-wider mb-1">TOTAL P&L</div>
-          <div className={`text-xl font-black tracking-tight ${pc(agg.pnlKrw)}`}>
+      <div className="grid grid-cols-3 gap-2">
+        <div className="relative overflow-hidden rounded-2xl border border-white/[0.06] px-3 py-3 bg-gradient-to-br from-slate-900/80 to-slate-950/40">
+          <div className="text-[9px] text-slate-500 font-medium tracking-wider mb-0.5">P&L</div>
+          <div className={`text-base sm:text-xl font-black tracking-tight truncate ${pc(agg.pnlKrw)}`}>
             {agg.trades > 0 ? fmtWon(agg.pnlKrw) : '-'}
           </div>
-          <div className="text-[10px] text-slate-600 mt-1">{agg.trades}건 거래</div>
+          <div className="text-[9px] text-slate-600 mt-0.5">{agg.trades}건</div>
         </div>
 
-        <div className="relative overflow-hidden rounded-2xl border border-white/[0.06] p-4 bg-gradient-to-br from-slate-900/80 to-slate-950/40">
-          <div className="absolute top-0 right-0 w-20 h-20 bg-gradient-to-bl from-emerald-500/[0.07] to-transparent rounded-bl-full" />
-          <div className="text-[10px] text-slate-500 font-medium tracking-wider mb-1">BEST STRATEGY</div>
+        <div className="relative overflow-hidden rounded-2xl border border-white/[0.06] px-3 py-3 bg-gradient-to-br from-slate-900/80 to-slate-950/40">
+          <div className="text-[9px] text-slate-500 font-medium tracking-wider mb-0.5">BEST</div>
           {bestStrategy ? (
             <>
-              <div className="text-lg font-black text-emerald-400">
+              <div className="text-base sm:text-lg font-black text-emerald-400 truncate">
                 {STRATEGY_LABELS[bestStrategy.mode] || bestStrategy.mode}
               </div>
-              <div className="text-[10px] text-emerald-500/70 mt-1">
-                {fmtPct(bestStrategy.paper!.totalPnlPct)} / {fmtWon(bestStrategy.paper!.totalPnlKrw)}
+              <div className="text-[9px] text-emerald-500/70 mt-0.5 truncate">
+                {fmtPct((bestStrategy[viewMode] ?? bestStrategy.paper)?.totalPnlPct)}
               </div>
             </>
-          ) : <div className="text-lg text-slate-600">-</div>}
+          ) : <div className="text-base text-slate-600">-</div>}
         </div>
 
-        <div className="relative overflow-hidden rounded-2xl border border-white/[0.06] p-4 bg-gradient-to-br from-slate-900/80 to-slate-950/40">
-          <div className="absolute top-0 right-0 w-20 h-20 bg-gradient-to-bl from-blue-500/[0.07] to-transparent rounded-bl-full" />
-          <div className="text-[10px] text-slate-500 font-medium tracking-wider mb-1">WIN RATE</div>
-          <div className={`text-xl font-black ${aggWinRate >= 0.55 ? 'text-emerald-400' : aggWinRate >= 0.45 ? 'text-amber-400' : 'text-rose-400'}`}>
+        <div className="relative overflow-hidden rounded-2xl border border-white/[0.06] px-3 py-3 bg-gradient-to-br from-slate-900/80 to-slate-950/40">
+          <div className="text-[9px] text-slate-500 font-medium tracking-wider mb-0.5">승률</div>
+          <div className={`text-base sm:text-xl font-black ${aggWinRate >= 0.55 ? 'text-emerald-400' : aggWinRate >= 0.45 ? 'text-amber-400' : 'text-rose-400'}`}>
             {agg.trades > 0 ? `${(aggWinRate * 100).toFixed(0)}%` : '-'}
           </div>
-          <div className="text-[10px] text-slate-600 mt-1">{agg.wins}승 / {agg.trades - agg.wins}패</div>
+          <div className="text-[9px] text-slate-600 mt-0.5">{agg.wins}W/{agg.trades - agg.wins}L</div>
         </div>
       </div>
+
+      {/* ─── AI 자동 튜닝 ─── */}
+      {tuning && <TuningPanel tuning={tuning} />}
 
       {/* ─── AI Recommendation Card ─── */}
       {actionableInsights.length > 0 && (

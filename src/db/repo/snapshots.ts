@@ -41,7 +41,7 @@ export async function getTodayStartSnapshot(isPaperOverride?: boolean) {
   const { rows } = await queryWithRetry(
     `SELECT * FROM portfolio_snapshots WHERE snapshot_at >= $1 AND is_paper = $2
      ORDER BY snapshot_at ASC LIMIT 1`,
-    [`${today}T00:00:00`, isPaper],
+    [`${today}T00:00:00+09:00`, isPaper],
   );
   return rows[0] ?? null;
 }

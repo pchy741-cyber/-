@@ -8,7 +8,7 @@ import type { TradeDecision } from '../db/models.js';
 import type { CurrentPrice } from '../kis/market.js';
 import { getBatchInvestorFlow, getBatchPrices, getDailyChart } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
-import { isKillSwitchActive, reportSuccess } from '../risk/kill-switch.js';
+import { isKillSwitchActiveForMode, reportSuccess } from '../risk/kill-switch.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
@@ -266,7 +266,7 @@ export async function runAfterHoursJob(): Promise<void> {
     // ═══════════════════════════════════════════════════════════
     //  STEP 1: 🧠 스마트 장외 매수 (5축 멀티팩터 스코어링)
     // ═══════════════════════════════════════════════════════════
-    if (isKillSwitchActive()) {
+    if (isKillSwitchActiveForMode('KR', getCtxIsPaper())) {
       logger.debug('🛑 Kill Switch 활성 — 시간외 매수 스킵', { component: 'AFTER_HOURS' });
       return;
     }

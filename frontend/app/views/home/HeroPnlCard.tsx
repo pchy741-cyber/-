@@ -109,7 +109,7 @@ export default function HeroPnlCard({
         <div className="bg-white/[0.04] rounded-xl px-2 sm:px-3 py-2">
           <div className="text-[9px] text-slate-500 mb-0.5">
             주문가능
-            {cashSource && !['buyable_api', 'paper_computed', 'ord_psbl_cash'].includes(cashSource) && (
+            {cashSource && !['buyable_api', 'paper_computed', 'paper_domestic', 'ord_psbl_cash'].includes(cashSource) && (
               <span className="ml-1 text-amber-400/90" title={`source: ${cashSource}`}>
                 {cashSource === 'dnca_tot_amt' ? '(예수금)' : cashSource === 'd2_deposit' ? '(D+2)' : cashSource === 'zero' ? '(0)' : cashSource === 'overseas_state' ? '(DB)' : `(${cashSource})`}
               </span>

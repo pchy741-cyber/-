@@ -5,6 +5,7 @@ import { config } from '../../config/index.js';
 import { type TradeDecision, TradeDecisionSchema } from '../../db/models.js';
 import { callClaudeCli, isClaudeCliEnabled } from '../../utils/claude-cli.js';
 import { logger } from '../../utils/logger.js';
+import { logTokenUsage, calcClaudeApiCost, calcClaudeCliCost } from '../../utils/ai-token-logger.js';
 import { buildExecutionPrompt } from '../prompts/track-b-execution.js';
 import { BUY_BLOCKED_CODES } from './trading-rules.js';
 
@@ -57,6 +58,12 @@ export async function runClaudeExecution(params: {
       if (useCli) {
         // Max 구독 CLI 모드
         rawText = await callClaudeCli({ systemPrompt, userPrompt: context });
+        const estimated = Math.ceil(rawText.length / 4);
+        logTokenUsage({
+          provider: 'claude-cli', model: 'sonnet',
+          inputTokens: Math.ceil(context.length / 4), outputTokens: estimated,
+          costUsd: calcClaudeCliCost(), label: 'executor',
+        });
       } else {
         // API 키 모드
         const response = await anthropic!.messages.create({
@@ -72,6 +79,13 @@ export async function runClaudeExecution(params: {
           throw new Error('Claude 응답에 텍스트가 없습니다');
         }
         rawText = textBlock.text;
+        // API 모드: 정확한 usage 기록
+        logTokenUsage({
+          provider: 'claude-api', model: 'claude-haiku-4-5',
+          inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens,
+          costUsd: calcClaudeApiCost(response.usage.input_tokens, response.usage.output_tokens),
+          label: 'executor',
+        });
       }
 
       // JSON 블록 추출 (```json ... ``` 또는 순수 JSON)

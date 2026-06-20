@@ -11,6 +11,7 @@
  */
 
 import { logger } from '../../utils/logger.js';
+import { logTokenUsage, calcGroqCost } from '../../utils/ai-token-logger.js';
 
 export interface GroqNewsSentiment {
   stockCode: string;
@@ -118,6 +119,18 @@ score 기준: 100(극호재), 50(호재), 0(중립), -50(악재), -100(극악재
     temperature: 0.1,
     max_tokens: 1024,
   });
+
+  // 토큰 사용량 기록
+  if (resp.usage) {
+    const inputTok = resp.usage.prompt_tokens ?? 0;
+    const outputTok = resp.usage.completion_tokens ?? 0;
+    logTokenUsage({
+      provider: 'groq', model: 'llama-3.3-70b',
+      inputTokens: inputTok, outputTokens: outputTok,
+      costUsd: calcGroqCost(inputTok, outputTok),
+      label: 'news',
+    });
+  }
 
   const text = resp.choices[0]?.message?.content ?? '{}';
   try {

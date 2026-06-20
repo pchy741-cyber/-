@@ -32,19 +32,19 @@ export async function generateDailyReport(): Promise<void> {
     const [{ rows: todayOrders }, { rows: closedToday }, { rows: weekData }, { rows: monthData }] = await Promise.all([
       getPool().query(
         `SELECT * FROM orders WHERE created_at >= $1 AND status = $2 AND is_paper = $3 AND (trading_mode = $4::text OR ($4::text = 'paper' AND trading_mode = 'p_arch')) ORDER BY created_at ASC`,
-        [`${today}T00:00:00`, 'FILLED', isPaper, isPaper ? 'paper' : 'live'],
+        [`${today}T00:00:00+09:00`, 'FILLED', isPaper, isPaper ? 'paper' : 'live'],
       ),
       getPool().query(
         'SELECT * FROM transaction_chains WHERE status = $1 AND closed_at >= $2 AND is_paper = $3',
-        ['CLOSED', `${today}T00:00:00`, isPaper],
+        ['CLOSED', `${today}T00:00:00+09:00`, isPaper],
       ),
       getPool().query(
         'SELECT realized_pnl FROM transaction_chains WHERE status = $1 AND closed_at >= $2 AND is_paper = $3',
-        ['CLOSED', `${weekStart}T00:00:00`, isPaper],
+        ['CLOSED', `${weekStart}T00:00:00+09:00`, isPaper],
       ),
       getPool().query(
         'SELECT realized_pnl FROM transaction_chains WHERE status = $1 AND closed_at >= $2 AND is_paper = $3',
-        ['CLOSED', `${monthStart}T00:00:00`, isPaper],
+        ['CLOSED', `${monthStart}T00:00:00+09:00`, isPaper],
       ),
     ]);
 
@@ -83,8 +83,10 @@ export async function generateDailyReport(): Promise<void> {
       return `  ${side} ${o.stock_code}: ${reason}`;
     });
 
-    const totalValue = balance.totalDeposit + balance.totalEvalAmount;
-    const dailyEmoji = balance.totalProfitLoss >= 0 ? '📈' : '📉';
+    const totalValue = balance.orderableCash + balance.totalEvalAmount;
+    // Paper 모드: totalProfitLoss는 누적 실현PnL → 미실현은 포지션에서 직접 계산
+    const unrealizedPnl = balance.positions.reduce((sum, p) => sum + p.profitLoss, 0);
+    const dailyEmoji = unrealizedPnl >= 0 ? '📈' : '📉';
 
     const report = [
       `📊 *일일 리포트* [${getCtxIsPaper() ? '연습' : '실전'}]`,
@@ -98,7 +100,7 @@ export async function generateDailyReport(): Promise<void> {
       reserved > 0 ? `  💵 인출 예약금: ${reserved.toLocaleString()}원` : '',
       ``,
       `${dailyEmoji} *오늘 손익*`,
-      `  미실현: ${balance.totalProfitLoss >= 0 ? '+' : ''}${balance.totalProfitLoss.toLocaleString()}원`,
+      `  미실현: ${unrealizedPnl >= 0 ? '+' : ''}${unrealizedPnl.toLocaleString()}원`,
       `  실현: ${realizedPnl >= 0 ? '+' : ''}${realizedPnl.toLocaleString()}원`,
       ``,
       `🤖 *오늘 AI 활동*`,
@@ -125,7 +127,7 @@ export async function generateDailyReport(): Promise<void> {
           totalValue,
           cash: balance.orderableCash,
           realizedPnl,
-          unrealizedPnl: balance.totalProfitLoss,
+          unrealizedPnl,
           buyCount: buyOrders.length,
           sellCount: sellOrders.length,
           closedCount: closedToday.length,

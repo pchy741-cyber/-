@@ -8,6 +8,7 @@ import { callClaudeCli, isClaudeCliEnabled } from '../../utils/claude-cli.js';
 import type { ScoringResult } from '../../db/models.js';
 import type { DailyCandle } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
+import { logTokenUsage, calcClaudeApiCost, calcClaudeCliCost } from '../../utils/ai-token-logger.js';
 
 const COMP = 'TRACK_A_CLAUDE';
 const MODEL_API = 'claude-haiku-4-5-20251001'; // API 키 모드: 비용 최적화
@@ -103,6 +104,13 @@ JSON 배열만 반환 (설명 없이):`;
 
       if (useCli) {
         text = await callClaudeCli({ systemPrompt, userPrompt, model: 'sonnet' });
+        // CLI 모드: 토큰 추정 (응답 길이 / 4)
+        const estimated = Math.ceil(text.length / 4);
+        logTokenUsage({
+          provider: 'claude-cli', model: 'sonnet',
+          inputTokens: Math.ceil(userPrompt.length / 4), outputTokens: estimated,
+          costUsd: calcClaudeCliCost(), label: 'scoring',
+        });
       } else {
         const msg = await client!.messages.create({
           model: MODEL_API,
@@ -111,6 +119,13 @@ JSON 배열만 반환 (설명 없이):`;
           messages: [{ role: 'user', content: userPrompt }],
         });
         text = msg.content[0].type === 'text' ? msg.content[0].text : '';
+        // API 모드: 정확한 usage 기록
+        logTokenUsage({
+          provider: 'claude-api', model: MODEL_API,
+          inputTokens: msg.usage.input_tokens, outputTokens: msg.usage.output_tokens,
+          costUsd: calcClaudeApiCost(msg.usage.input_tokens, msg.usage.output_tokens),
+          label: 'scoring',
+        });
       }
       const jsonMatch = text.match(/\[[\s\S]*\]/);
       if (!jsonMatch) continue;

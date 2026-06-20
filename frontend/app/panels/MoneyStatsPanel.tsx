@@ -22,7 +22,22 @@ export default function MoneyStatsPanel({ market, monthlyGoal, viewMode = 'live'
       .finally(() => setLoading(false));
   }, [market, viewMode]);
 
-  if (loading) return <div className="glass rounded-2xl border border-white/[0.04] px-4 py-4 text-center text-xs text-slate-600 animate-pulse">수익 통계 불러오는 중...</div>;
+  if (loading) return (
+    <div className="glass rounded-2xl border border-white/[0.04] px-4 py-4 space-y-3 animate-pulse">
+      <div className="h-3 w-24 bg-white/[0.06] rounded" />
+      <div className="flex items-center gap-4">
+        <div className="flex-1 space-y-2">
+          <div className="h-2.5 w-32 bg-white/[0.04] rounded" />
+          <div className="h-7 w-40 bg-white/[0.06] rounded" />
+          <div className="h-2.5 w-28 bg-white/[0.04] rounded" />
+        </div>
+        <div className="w-[72px] h-[72px] rounded-full bg-white/[0.04]" />
+      </div>
+      <div className="flex gap-1 h-16">
+        {[1,2,3,4,5,6].map(i => <div key={i} className="flex-1 bg-white/[0.03] rounded-t-sm" style={{ height: `${20 + i * 8}%` }} />)}
+      </div>
+    </div>
+  );
   if (!data) return null;
 
   const isKr = market === 'KR';

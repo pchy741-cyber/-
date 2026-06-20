@@ -47,6 +47,13 @@ const envSchema = z.object({
   // Slack
   SLACK_WEBHOOK_URL: z.string().default(''),
 
+  // Email (SMTP)
+  EMAIL_TO: z.string().default('pch7012@naver.com'),
+  EMAIL_SMTP_HOST: z.string().default(''),
+  EMAIL_SMTP_PORT: z.coerce.number().default(587),
+  EMAIL_SMTP_USER: z.string().default(''),
+  EMAIL_SMTP_PASS: z.string().default(''),
+
   // DART Open API (공시 모니터링, 선택)
   DART_API_KEY: z.string().default(''),
 
@@ -171,6 +178,14 @@ export const config = {
 
   slack: {
     webhookUrl: env.SLACK_WEBHOOK_URL,
+  },
+
+  email: {
+    to: process.env.EMAIL_TO || env.EMAIL_TO,
+    smtpHost: process.env.EMAIL_SMTP_HOST || env.EMAIL_SMTP_HOST,
+    smtpPort: Number(process.env.EMAIL_SMTP_PORT || env.EMAIL_SMTP_PORT),
+    smtpUser: process.env.EMAIL_SMTP_USER || env.EMAIL_SMTP_USER,
+    smtpPass: process.env.EMAIL_SMTP_PASS || env.EMAIL_SMTP_PASS,
   },
 
   risk: {

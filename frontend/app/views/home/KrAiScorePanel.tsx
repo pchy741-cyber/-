@@ -68,25 +68,22 @@ export default function KrAiScorePanel({
               const stockLabel = sc.stock_name && sc.stock_name !== sc.stock_code ? sc.stock_name : getStockName(sc.stock_code);
               return (
                 <div key={sc.stock_code} className="px-2 py-2.5 border-b border-white/[0.03] last:border-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-slate-300 w-20 shrink-0 truncate">{stockLabel}</span>
-                    <div className="flex-1">
+                  {/* 1행: 종목명 + 바 + 점수 + 매수 */}
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-bold text-slate-300 shrink-0 truncate max-w-[72px]">{stockLabel}</span>
+                    <div className="flex-1 min-w-0">
                       <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
-                        <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${Math.max(2, Math.min(100, score))}%` }} />
+                        <div className={`h-full rounded-full ${barColor} transition-all duration-500`} style={{ width: `${Math.max(2, Math.min(100, score))}%` }} />
                       </div>
                     </div>
-                    {/* 점수 추이 미니 그래프 */}
-                    <ScoreSparkline stockCode={sc.stock_code} hours={24} width={60} height={20} />
-                    <span className={`text-sm font-black w-8 text-right ${textColor}`}>{score}</span>
-                    <span className={`text-[10px] font-medium w-14 text-right ${textColor}`}>{signalLabel}</span>
+                    <span className={`text-sm font-black w-7 text-right shrink-0 tabular-nums ${textColor}`}>{score}</span>
+                    <span className={`text-[9px] font-medium shrink-0 ${textColor}`}>{signalLabel}</span>
                     {curP > 0 && (
                       <button
                         disabled={isBuying || !!busyAction}
                         onClick={() =>
                           setModalStock({
-                            code: sc.stock_code,
-                            name: stockLabel,
-                            score,
+                            code: sc.stock_code, name: stockLabel, score,
                             confidence: conf != null ? conf / 100 : undefined,
                             rsi: (sc as any).rsi ?? undefined,
                             volumeRatio: (sc as any).volume_ratio ?? undefined,
@@ -100,19 +97,22 @@ export default function KrAiScorePanel({
                       </button>
                     )}
                   </div>
-                  <div className="flex items-center gap-3 mt-1.5 pl-1 flex-wrap">
-                    {fundScore !== null && <span className="text-[9px] text-slate-500">기본 <b className={fundScore >= 50 ? 'text-emerald-400' : fundScore >= 0 ? 'text-blue-400' : 'text-rose-400'}>{fundScore}</b></span>}
-                    {techScore !== null && <span className="text-[9px] text-slate-500">기술 <b className={techScore >= 50 ? 'text-emerald-400' : techScore >= 0 ? 'text-blue-400' : 'text-rose-400'}>{techScore}</b></span>}
-                    {sentScore !== null && <span className="text-[9px] text-slate-500">심리 <b className={sentScore >= 50 ? 'text-emerald-400' : sentScore >= 0 ? 'text-blue-400' : 'text-rose-400'}>{sentScore}</b></span>}
-                    {conf !== null && <span className="text-[9px] text-blue-400/70">확신 {conf}%</span>}
+                  {/* 2행: 서브스코어 + 스파크라인 */}
+                  <div className="flex items-center gap-2 mt-1 pl-0.5 flex-wrap">
+                    {fundScore !== null && <span className="text-[9px] text-slate-500">기본<b className={`ml-0.5 ${fundScore >= 50 ? 'text-emerald-400' : fundScore >= 0 ? 'text-blue-400' : 'text-rose-400'}`}>{fundScore}</b></span>}
+                    {techScore !== null && <span className="text-[9px] text-slate-500">기술<b className={`ml-0.5 ${techScore >= 50 ? 'text-emerald-400' : techScore >= 0 ? 'text-blue-400' : 'text-rose-400'}`}>{techScore}</b></span>}
+                    {sentScore !== null && <span className="text-[9px] text-slate-500">심리<b className={`ml-0.5 ${sentScore >= 50 ? 'text-emerald-400' : sentScore >= 0 ? 'text-blue-400' : 'text-rose-400'}`}>{sentScore}</b></span>}
+                    {conf !== null && <span className="text-[9px] text-blue-400/70">확신{conf}%</span>}
+                    <div className="ml-auto shrink-0">
+                      <ScoreSparkline stockCode={sc.stock_code} hours={24} width={48} height={16} />
+                    </div>
                   </div>
+                  {/* 3행: 가격 정보 */}
                   {curP > 0 && (
-                    <div className="flex items-center gap-2 mt-1 pl-1 text-[9px] flex-wrap">
-                      <span className="text-slate-500">진입 <b className="text-slate-300">{fmtWon(curP)}</b></span>
-                      <span className="text-slate-600">→</span>
-                      <span className="text-emerald-500">목표 {fmtWon(targetP)}</span>
-                      <span className="text-slate-600">/</span>
-                      <span className="text-rose-500">손절 {fmtWon(stopP)}</span>
+                    <div className="flex items-center gap-1.5 mt-1 pl-0.5 text-[9px] flex-wrap">
+                      <span className="text-slate-500">현재 <b className="text-slate-300">{fmtWon(curP)}</b></span>
+                      <span className="text-emerald-500">TP {fmtWon(targetP)}</span>
+                      <span className="text-rose-500">SL {fmtWon(stopP)}</span>
                     </div>
                   )}
                 </div>

@@ -27,99 +27,101 @@ export function DailySummaryPanel({
         <div className="divide-y divide-slate-800/30">
           {dailySummaries.map(day => {
             const isExp = expandedDate === day.date;
+            const dayPnl = day.realizedPnl + day.realizedPnlUsd;
             return (
               <div key={day.date}>
+                {/* 일자별 요약 행 */}
                 <div
-                  className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-slate-800/20 transition-colors"
+                  className="flex items-center gap-2 px-4 py-3 cursor-pointer hover:bg-slate-800/20 transition-colors"
                   onClick={() => setExpandedDate(isExp ? null : day.date)}
                 >
-                  <div className="font-semibold text-sm w-24 shrink-0">{day.label}</div>
-                  <div className="flex items-center gap-2 text-[12px] text-slate-500 shrink-0">
+                  {/* 날짜 */}
+                  <div className="font-semibold text-sm shrink-0 w-[60px] sm:w-20">{day.label}</div>
+
+                  {/* 건수 */}
+                  <div className="flex items-center gap-1 text-[11px] text-slate-500 shrink-0">
                     <span>{day.trades.length}건</span>
-                    <span className="text-emerald-500/60">{day.buys}매수</span>
-                    <span className="text-rose-500/60">{day.sells}매도</span>
+                    <span className="hidden sm:inline text-emerald-500/60">{day.buys}매수</span>
+                    <span className="hidden sm:inline text-rose-500/60">{day.sells}매도</span>
                   </div>
+
                   <div className="flex-1" />
+
+                  {/* 손익 */}
                   {day.sells > 0 && (
-                    <div className="text-right shrink-0">
+                    <div className="text-right shrink-0 flex flex-col items-end">
                       {day.realizedPnl !== 0 && (
-                        <span className={`text-sm font-bold ${day.realizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        <span className={`text-sm font-bold tabular-nums ${day.realizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                           {day.realizedPnl >= 0 ? '+' : ''}{day.realizedPnl.toLocaleString()}원
                         </span>
                       )}
                       {day.realizedPnlUsd !== 0 && (
-                        <span className={`text-sm font-bold ml-2 ${day.realizedPnlUsd >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        <span className={`text-[11px] font-bold tabular-nums ${day.realizedPnlUsd >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                           {day.realizedPnlUsd >= 0 ? '+' : ''}${Math.abs(day.realizedPnlUsd).toFixed(2)}
                         </span>
                       )}
                     </div>
                   )}
-                  <div className="shrink-0 text-[12px] w-16 text-right">
+
+                  {/* 승률 */}
+                  <div className="shrink-0 text-[11px] w-10 text-right tabular-nums">
                     {day.wins + day.losses > 0 ? (
                       <span className={day.winRate >= 50 ? 'text-emerald-400' : 'text-rose-400'}>
-                        {day.winRate}% <span className="text-slate-600">{day.wins}/{day.wins + day.losses}</span>
+                        {day.winRate}%
                       </span>
                     ) : <span className="text-slate-600">-</span>}
                   </div>
-                  <span className="text-[10px] text-slate-600 shrink-0">{isExp ? '▲' : '▼'}</span>
+
+                  <span className="text-[10px] text-slate-600 shrink-0 ml-0.5">{isExp ? '▲' : '▼'}</span>
                 </div>
 
+                {/* 확장: 매매 카드 리스트 */}
                 {isExp && (
-                  <div className="bg-slate-900/30 px-4 pb-3">
-                    <table className="w-full text-[12px]">
-                      <thead><tr className="text-slate-500 border-b border-slate-700/20">
-                        <th className="px-2 py-2 text-left">시간</th>
-                        <th className="px-2 py-2 text-left">종목</th>
-                        <th className="px-2 py-2 text-center">구분</th>
-                        <th className="px-2 py-2 text-right">수량</th>
-                        <th className="px-2 py-2 text-right">체결가</th>
-                        <th className="px-2 py-2 text-right">손익</th>
-                        <th className="px-2 py-2 text-left">내용</th>
-                      </tr></thead>
-                      <tbody className="divide-y divide-slate-800/15">
-                        {day.trades.map((t: Trade, i: number) => {
-                          const chain = t.transaction_chains;
-                          const os = isOverseas(t);
-                          const isSell = t.side === 'SELL';
-                          const avgBuy = Number(chain?.avg_buy_price) || 0;
-                          const fillPrice = Number(t.filled_price) || 0;
-                          const qty = Number(t.filled_quantity ?? t.quantity) || 0;
-                          const apiPnl = typeof t.realized_pnl === 'number' ? t.realized_pnl : null;
-                          const apiPnlPct = typeof t.realized_pnl_pct === 'number' ? t.realized_pnl_pct : null;
-                          const apiPnlUsd = typeof t.realized_pnl_usd === 'number' ? t.realized_pnl_usd : null;
-                          const calcPnl = avgBuy > 0 && fillPrice > 0 ? (fillPrice - avgBuy) * qty : null;
-                          const calcPct = avgBuy > 0 && fillPrice > 0 ? ((fillPrice - avgBuy) / avgBuy) * 100 : null;
-                          const tradePnl = os ? (apiPnlUsd ?? calcPnl) : (apiPnl ?? calcPnl);
-                          const tradePnlPct = apiPnlPct ?? calcPct;
+                  <div className="bg-slate-900/30 px-3 pb-3 space-y-1.5 animate-in fade-in slide-in-from-top-1 duration-200">
+                    {day.trades.map((t: Trade, i: number) => {
+                      const chain = t.transaction_chains;
+                      const os = isOverseas(t);
+                      const isSell = t.side === 'SELL';
+                      const avgBuy = Number(chain?.avg_buy_price) || 0;
+                      const fillPrice = Number(t.filled_price) || 0;
+                      const qty = Number(t.filled_quantity ?? t.quantity) || 0;
+                      const apiPnl = typeof t.realized_pnl === 'number' ? t.realized_pnl : null;
+                      const apiPnlPct = typeof t.realized_pnl_pct === 'number' ? t.realized_pnl_pct : null;
+                      const apiPnlUsd = typeof t.realized_pnl_usd === 'number' ? t.realized_pnl_usd : null;
+                      const calcPnl = avgBuy > 0 && fillPrice > 0 ? (fillPrice - avgBuy) * qty : null;
+                      const calcPct = avgBuy > 0 && fillPrice > 0 ? ((fillPrice - avgBuy) / avgBuy) * 100 : null;
+                      const tradePnl = os ? (apiPnlUsd ?? calcPnl) : (apiPnl ?? calcPnl);
+                      const tradePnlPct = apiPnlPct ?? calcPct;
 
-                          return (
-                            <tr key={t.id || i} className="hover:bg-slate-800/10">
-                              <td className="px-2 py-2 text-slate-500">{new Date(t.created_at).toLocaleTimeString('ko', { hour: '2-digit', minute: '2-digit' })}</td>
-                              <td className="px-2 py-2 font-medium">
-                                {os && <span className="text-[9px] mr-0.5">🌏</span>}
-                                {getName(t)}
-                              </td>
-                              <td className="px-2 py-2 text-center"><SideBadge side={t.side} isAverageDown={false} /></td>
-                              <td className="px-2 py-2 text-right">{fmt(t.filled_quantity ?? t.quantity)}</td>
-                              <td className="px-2 py-2 text-right">{os ? fmtUsd(fillPrice) : fmtWon(fillPrice)}</td>
-                              <td className="px-2 py-2 text-right">
-                                {isSell && tradePnl !== null && tradePnlPct !== null ? (
-                                  <span className={tradePnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
-                                    {tradePnlPct >= 0 ? '+' : ''}{tradePnlPct.toFixed(1)}%
-                                    <span className="text-[10px] opacity-70 ml-0.5">
-                                      ({os ? `$${Math.abs(tradePnl).toFixed(1)}` : `${Math.round(tradePnl).toLocaleString()}`})
-                                    </span>
-                                  </span>
-                                ) : <span className="text-slate-700">-</span>}
-                              </td>
-                              <td className="px-2 py-2 text-slate-400 truncate max-w-[150px]" title={t.ai_reasoning}>
-                                {simplifyReason(t.ai_reasoning, t.side)}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                      return (
+                        <div key={t.id || i} className="flex items-center gap-2 bg-white/[0.02] hover:bg-white/[0.04] rounded-xl px-3 py-2 transition-colors">
+                          <SideBadge side={t.side} isAverageDown={false} />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              {os && <span className="text-[9px]">🌏</span>}
+                              <span className="text-[12px] font-semibold text-slate-200 truncate">{getName(t)}</span>
+                              <span className="text-[10px] text-slate-600 tabular-nums shrink-0">
+                                {new Date(t.created_at).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 mt-0.5 text-[10px] text-slate-500">
+                              <span className="tabular-nums">{fmt(t.filled_quantity ?? t.quantity)}주 × {os ? fmtUsd(fillPrice) : fmtWon(fillPrice)}</span>
+                              <span className="truncate text-slate-600">{simplifyReason(t.ai_reasoning, t.side)}</span>
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0">
+                            {isSell && tradePnl !== null && tradePnlPct !== null ? (
+                              <div className={tradePnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                                <div className="text-[12px] font-bold tabular-nums">{tradePnlPct >= 0 ? '+' : ''}{tradePnlPct.toFixed(1)}%</div>
+                                <div className="text-[10px] opacity-70 tabular-nums">
+                                  {os ? `$${Math.abs(tradePnl).toFixed(1)}` : `${Math.round(tradePnl).toLocaleString()}`}
+                                </div>
+                              </div>
+                            ) : <span className="text-slate-700 text-[10px]">-</span>}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>

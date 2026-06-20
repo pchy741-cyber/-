@@ -3,7 +3,7 @@ import { getOpenChains } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import { getCurrentPrice } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
-import { isKillSwitchActive } from '../risk/kill-switch.js';
+import { isKillSwitchActiveForMode } from '../risk/kill-switch.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
 import { calcPnlPct } from '../utils/money.js';
@@ -18,7 +18,7 @@ const FORCE_CLOSE_LOSS_THRESHOLD = -2.0; // 이 이상 손실일 때만 강제�
 
 export async function runForceCloseJob(): Promise<void> {
   // 킬스위치 활성이어도 강제청산(매도)은 항상 실행 — 포지션 탈출은 막으면 안 됨
-  if (isKillSwitchActive()) {
+  if (isKillSwitchActiveForMode('KR', getCtxIsPaper())) {
     logger.info('🛑 Kill Switch 활성 중이나 강제청산(매도)은 실행', { component: 'FORCE_CLOSE' });
   }
 
@@ -84,7 +84,7 @@ export async function runForceCloseJob(): Promise<void> {
  * - 수익/손실 무관하게 당일 중 기계적 청산 (오버나잇 절대 금지)
  */
 export async function runOpeningBellForceClose(): Promise<void> {
-  if (isKillSwitchActive()) {
+  if (isKillSwitchActiveForMode('KR', getCtxIsPaper())) {
     logger.info('🛑 Kill Switch 활성 중이나 개장벨 청산은 실행', { component: 'FORCE_CLOSE' });
   }
 

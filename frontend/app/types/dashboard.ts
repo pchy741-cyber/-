@@ -230,3 +230,33 @@ export interface MpData {
   fx?: number;
   [key: string]: unknown;
 }
+
+export interface AiProviderStats {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  calls: number;
+}
+
+export interface AiCostSummary {
+  today: Record<string, AiProviderStats>;
+  todayTotalUsd: number;
+  todayTotalKrw: number;
+  todayTotalCalls: number;
+  todayTotalTokens: number;
+  monthTotalUsd: number;
+  monthTotalKrw: number;
+  exchangeRate: number;
+}
+
+export interface AiCostDailyEntry {
+  day: string;
+  providers: Record<string, AiProviderStats>;
+  totalUsd: number;
+  totalKrw: number;
+}
+
+export interface AiCostHistory {
+  daily: AiCostDailyEntry[];
+  exchangeRate: number;
+}

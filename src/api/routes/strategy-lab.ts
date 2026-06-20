@@ -410,3 +410,64 @@ strategyLabRoutes.post('/strategy-lab/ceo-overrides/:id/remove', async (c) => {
   logger.info(`🔄 CEO 오버라이드 제거: #${id}`, { component: 'STRATEGY_LAB' });
   return c.json({ ok: true });
 });
+
+// ── GET /strategy-lab/tuning-status ───────────────────────────────
+// 전략 옵티마이저 결과 + 인사이트 적용 이력 → 프론트에서 "튜닝 활동" 표시
+strategyLabRoutes.get('/strategy-lab/tuning-status', async (c) => {
+  try {
+    const pool = getPool();
+    const [optimizerRows, configRows, insightStats, appliedInsights] = await Promise.all([
+      // 옵티마이저 결과 (system_state)
+      pool
+        .query(`SELECT key, value, updated_at FROM system_state WHERE key LIKE 'optimizer_%' ORDER BY updated_at DESC`)
+        .catch(() => ({ rows: [] })),
+      // 현재 전략 파라미터
+      pool
+        .query(`SELECT mode, take_profit_pct, stop_loss_pct, buy_threshold, is_active, is_paper, updated_at FROM strategy_config ORDER BY mode`)
+        .catch(() => ({ rows: [] })),
+      // 인사이트 통계
+      pool
+        .query(`SELECT
+          COUNT(*) FILTER (WHERE status = 'APPROVED') AS approved,
+          COUNT(*) FILTER (WHERE status = 'PENDING' AND is_actionable) AS pending_actionable,
+          COUNT(*) FILTER (WHERE is_actionable) AS total_actionable,
+          COUNT(*) AS total
+        FROM strategy_insights`)
+        .catch(() => ({ rows: [{ approved: 0, pending_actionable: 0, total_actionable: 0, total: 0 }] })),
+      // 최근 적용된 인사이트 (튜닝 이력)
+      pool
+        .query(`SELECT id, strategy_mode, condition_label, suggested_action, applied_at
+          FROM strategy_insights
+          WHERE status = 'APPROVED' AND applied_at IS NOT NULL
+          ORDER BY applied_at DESC LIMIT 10`)
+        .catch(() => ({ rows: [] })),
+    ]);
+
+    // 옵티마이저 결과 파싱
+    const optimizers = optimizerRows.rows.map((r: any) => {
+      const mode = r.key.replace('optimizer_', '');
+      const val = typeof r.value === 'string' ? JSON.parse(r.value) : r.value;
+      return { mode, ...val, updatedAt: r.updated_at };
+    });
+
+    // 전략 설정 정리
+    const configs = configRows.rows.map((r: any) => ({
+      mode: r.mode,
+      tp: Number(r.take_profit_pct),
+      sl: Number(r.stop_loss_pct),
+      buyThreshold: Number(r.buy_threshold),
+      isActive: r.is_active,
+      isPaper: r.is_paper,
+      updatedAt: r.updated_at,
+    }));
+
+    return c.json({
+      optimizers,
+      configs,
+      insightStats: insightStats.rows[0] || {},
+      appliedInsights: appliedInsights.rows,
+    });
+  } catch (e: any) {
+    return c.json({ optimizers: [], configs: [], insightStats: {}, appliedInsights: [], error: 'Internal server error' }, 500);
+  }
+});

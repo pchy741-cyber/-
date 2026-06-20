@@ -331,8 +331,8 @@ export class TradeExecutor {
 
     // 리스크 체크 (ETF 파킹/바닥낚시는 Kill Switch만 확인 — 포지션/한도 체크 제외)
     if (skipGates) {
-      const { isKillSwitchActive } = await import('../risk/kill-switch.js');
-      if (isKillSwitchActive()) {
+      const { isKillSwitchActiveForMode } = await import('../risk/kill-switch.js');
+      if (isKillSwitchActiveForMode('KR', isPaperSnapshot)) {
         releaseBuyIntent(stockCode);
         logger.warn(`🛑 Kill Switch 활성 → ETF 파킹 스킵: ${stockCode}`, { component: 'EXECUTOR' });
         return;
@@ -1311,6 +1311,109 @@ export class TradeExecutor {
     ).catch(() => {});
 
     return null; // 체결 실패 시그널
+  }
+
+  /**
+   * ScaleIn 미완료 트랜치 복구 — 프로세스 재시작 시 호출
+   * system_state에서 pending_scalein_* 마커를 읽어 미실행 트랜치 실행
+   */
+  async recoverPendingScaleIns(): Promise<void> {
+    try {
+      const pool = getPool();
+      const { rows } = await pool.query<{ key: string; value: string }>(
+        `SELECT key, value FROM system_state WHERE key LIKE 'pending_scalein_%'`,
+      );
+
+      if (rows.length === 0) return;
+
+      logger.info(`🔄 ScaleIn 미완료 트랜치 ${rows.length}건 복구 시작`, { component: 'EXECUTOR' });
+
+      for (const row of rows) {
+        try {
+          const marker = JSON.parse(row.value) as {
+            stockCode: string;
+            chainId: number;
+            secondTranche: number;
+            thirdTranche: number;
+            scheduledAt: string;
+            reasoning: string;
+            isPaper: boolean;
+          };
+
+          // 스케줄 후 5분 이상 지났으면 복구 대상
+          const scheduledMs = new Date(marker.scheduledAt).getTime();
+          if (Date.now() - scheduledMs < 3 * 60_000) {
+            // 아직 원래 setTimeout이 실행 중일 수 있음 → 스킵
+            continue;
+          }
+
+          // 체인이 아직 열려있는지 확인
+          const { rows: chainRows } = await pool.query(
+            `SELECT status FROM transaction_chains WHERE id = $1`,
+            [marker.chainId],
+          );
+          if (!chainRows[0] || !['OPEN', 'AVERAGING', 'PROFIT_TAKING'].includes(chainRows[0].status)) {
+            // 체인 이미 닫힘 → 마커 삭제
+            await pool.query(`DELETE FROM system_state WHERE key = $1`, [row.key]);
+            continue;
+          }
+
+          // 이미 실행된 트랜치 확인 (체인의 주문 수로 판단)
+          const { rows: orderRows } = await pool.query<{ cnt: string }>(
+            `SELECT COUNT(*) as cnt FROM orders WHERE chain_id = $1 AND side = 'BUY' AND status = 'FILLED'`,
+            [marker.chainId],
+          );
+          const buyCount = Number(orderRows[0]?.cnt ?? 0);
+
+          // 1차만 체결 (1건) → 2차+3차 실행
+          // 2차까지 체결 (2건) → 3차만 실행
+          // 3건 이상 → 이미 완료
+          if (buyCount >= 3 || (buyCount >= 2 && marker.thirdTranche <= 0)) {
+            await pool.query(`DELETE FROM system_state WHERE key = $1`, [row.key]);
+            logger.info(`✅ ScaleIn 이미 완료: ${marker.stockCode} chain=${marker.chainId}`, { component: 'EXECUTOR' });
+            continue;
+          }
+
+          logger.info(
+            `🔄 ScaleIn 복구: ${marker.stockCode} chain=${marker.chainId} (기존 매수 ${buyCount}건, 2차=${marker.secondTranche}주, 3차=${marker.thirdTranche}주)`,
+            { component: 'EXECUTOR' },
+          );
+
+          if (buyCount < 2 && marker.secondTranche > 0) {
+            // 2차 트랜치 즉시 실행
+            try {
+              await runWithMode(marker.isPaper, () =>
+                this.executeAverageDown(marker.stockCode, marker.secondTranche, 'MARKET', undefined, `ScaleIn 2차/3 복구: ${marker.reasoning}`, true),
+              );
+              logger.info(`✅ ScaleIn 2차 복구 완료: ${marker.stockCode} ${marker.secondTranche}주`, { component: 'EXECUTOR' });
+            } catch (e) {
+              logger.warn(`ScaleIn 2차 복구 실패: ${marker.stockCode}: ${(e as Error).message}`, { component: 'EXECUTOR' });
+            }
+          }
+
+          if (marker.thirdTranche > 0 && buyCount < 3) {
+            // 3차 트랜치 30초 후 실행 (2차와 간격)
+            setTimeout(() => {
+              runWithMode(marker.isPaper, () =>
+                this.executeAverageDown(marker.stockCode, marker.thirdTranche, 'MARKET', undefined, `ScaleIn 3차/3 복구: ${marker.reasoning}`, true),
+              ).then(() => {
+                logger.info(`✅ ScaleIn 3차 복구 완료: ${marker.stockCode} ${marker.thirdTranche}주`, { component: 'EXECUTOR' });
+                pool.query(`DELETE FROM system_state WHERE key = $1`, [row.key]).catch(() => {});
+              }).catch((e) => logger.warn(`ScaleIn 3차 복구 실패: ${marker.stockCode}: ${(e as Error).message}`, { component: 'EXECUTOR' }));
+            }, 30_000);
+          } else {
+            // 3차 없으면 바로 마커 삭제
+            await pool.query(`DELETE FROM system_state WHERE key = $1`, [row.key]);
+          }
+        } catch (e) {
+          logger.warn(`ScaleIn 마커 파싱/복구 실패: ${row.key}: ${(e as Error).message}`, { component: 'EXECUTOR' });
+          // 파싱 실패한 마커는 삭제
+          await pool.query(`DELETE FROM system_state WHERE key = $1`, [row.key]).catch(() => {});
+        }
+      }
+    } catch (e) {
+      logger.warn(`ScaleIn 복구 조회 실패: ${(e as Error).message}`, { component: 'EXECUTOR' });
+    }
   }
 }
 

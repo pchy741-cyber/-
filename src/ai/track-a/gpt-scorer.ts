@@ -7,6 +7,7 @@ import OpenAI from 'openai';
 import type { ScoringResult } from '../../db/models.js';
 import type { DailyCandle } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
+import { logTokenUsage, calcGptCost } from '../../utils/ai-token-logger.js';
 import { buildScoringPrompt, type RegimeHint } from '../prompts/track-a-scoring.js';
 
 const COMP = 'TRACK_A_GPT';
@@ -138,6 +139,18 @@ ${chartSummary}${sourcesBlock}
           { role: 'user', content: userMessage },
         ],
       });
+
+      // 토큰 사용량 기록
+      if (res.usage) {
+        const inputTok = res.usage.prompt_tokens ?? 0;
+        const outputTok = res.usage.completion_tokens ?? 0;
+        logTokenUsage({
+          provider: 'gpt', model: MODEL,
+          inputTokens: inputTok, outputTokens: outputTok,
+          costUsd: calcGptCost(inputTok, outputTok),
+          label: 'scoring', isPaper: mode === 'paper',
+        });
+      }
 
       const text = res.choices[0]?.message?.content ?? '';
       if (!text) {

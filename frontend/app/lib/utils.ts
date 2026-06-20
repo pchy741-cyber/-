@@ -62,6 +62,12 @@ export const fmt = (n: number | null | undefined) => n == null || !Number.isFini
 export const fmtPct = (n: number | null | undefined) => n == null || !Number.isFinite(n) ? '-' : (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
 export const fmtWon = (n: number | null | undefined) => n == null || !Number.isFinite(n) ? '-' : Math.round(n).toLocaleString('ko-KR') + '원';
 export const fmtUsd = (n: number | null | undefined) => n == null || !Number.isFinite(n) ? '-' : '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-export const fmtTime = (t: string | null | undefined) => { if (!t) return '-'; const d = new Date(t); return `${(d.getMonth()+1).toString().padStart(2,'0')}/${d.getDate().toString().padStart(2,'0')} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`; };
+/** KST Date 객체 반환 (UTC 기반 getUTC* 메서드로 KST 시각 접근) */
+export function toKST(d: Date): Date { return new Date(d.getTime() + 9 * 3600_000); }
+/** 날짜 문자열 → KST YYYY-MM-DD */
+export function toKSTDateStr(t: string | Date): string { return toKST(new Date(t)).toISOString().slice(0, 10); }
+/** KST 현재 시각의 시/분 (분 단위) */
+export function getKSTMinutes(): number { const k = toKST(new Date()); return k.getUTCHours() * 60 + k.getUTCMinutes(); }
+export const fmtTime = (t: string | null | undefined) => { if (!t) return '-'; const k = toKST(new Date(t)); return `${(k.getUTCMonth()+1).toString().padStart(2,'0')}/${k.getUTCDate().toString().padStart(2,'0')} ${k.getUTCHours().toString().padStart(2,'0')}:${k.getUTCMinutes().toString().padStart(2,'0')}`; };
 export const pc = (n: number | null | undefined) => n == null || n === 0 ? 'text-slate-400' : n > 0 ? 'text-emerald-400' : 'text-rose-400';
 export const pbg = (n: number | null | undefined) => n == null || n === 0 ? '' : n > 0 ? 'bg-emerald-950/30 border-emerald-900/30' : 'bg-rose-950/30 border-rose-900/30';

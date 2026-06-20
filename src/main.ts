@@ -12,6 +12,7 @@ import { dashboardRoutes } from './api/routes/dashboard.js';
 import { dashboardAnalysisRoutes } from './api/routes/dashboard-analysis.js';
 import { dashboardNewsRoutes } from './api/routes/dashboard-news.js';
 import { healthDetailRoutes, healthRoutes } from './api/routes/health.js';
+import { qaRoutes } from './api/routes/qa.js';
 import { journalRoutes } from './api/routes/journal.js';
 import { kakaoAlertRoutes } from './api/routes/kakao-alert.js';
 import { overseasRoutes } from './api/routes/overseas.js';
@@ -36,6 +37,7 @@ import {
   resetPool,
 } from './db/client.js';
 import { getAccessToken } from './kis/auth.js';
+import { initEmail } from './notifications/email.js';
 import { initSlack } from './notifications/slack.js';
 import { initTelegram } from './notifications/telegram.js';
 import { startScheduler } from './scheduler/runner.js';
@@ -148,6 +150,7 @@ app.route('/', webauthnPublicRoutes); // POST /api/auth/webauthn/authenticate/*,
 app.use('*', requireAuth);
 app.route('/', webauthnProtectedRoutes); // POST /api/auth/webauthn/register/*
 app.route('/', healthDetailRoutes); // GET  /api/health/detail (인증 필요)
+app.route('/api', qaRoutes); // GET /api/qa/reports, /api/qa/latest, POST /api/qa/run
 app.route('/', reviewRoutes); // POST /api/review/*, /api/capture/*
 app.route('/', dashboardRoutes); // GET  /api/dashboard, /api/sell/:id, /api/manual-buy ...
 app.route('/', dashboardNewsRoutes); // GET  /api/news/*
@@ -461,6 +464,7 @@ async function bootstrap() {
   }
   const { config: cfg } = await import('./config/index.js');
   if (cfg.slack.webhookUrl) initSlack(cfg.slack.webhookUrl);
+  initEmail(cfg.email);
 
   // 모든 병렬 서비스 완료 대기
   await Promise.allSettled(bootParallel1);
@@ -593,6 +597,14 @@ async function bootstrap() {
       }
     })().catch((e: any) => logger.warn(`Pre-TP peak 복원 실패 (무시): ${e.message}`, { component: 'BOOT' })),
   ]);
+
+  // 6-1.5. ScaleIn 미완료 트랜치 복구 — 프로세스 재시작 시 유실된 2차/3차 분할 매수 실행
+  try {
+    const { tradeExecutor } = await import('./trading/executor.js');
+    await tradeExecutor.recoverPendingScaleIns();
+  } catch (e: any) {
+    logger.warn(`ScaleIn 복구 실패 (무시): ${e.message}`, { component: 'BOOT' });
+  }
 
   // 6-2. 필수 시크릿 검증 — 없으면 킬스위치 자동 활성화 (사고 방지)
   {
