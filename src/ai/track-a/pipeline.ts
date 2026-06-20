@@ -379,10 +379,17 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     }
 
     // 4-k. DART 재무제표 AI 분석 (Vertex Gemini — GCP 크레딧 활용, 24시간 캐시)
+    // 상위 점수 종목 + 보유 종목 모두 분석 → fundamentalScore 매매 점수에 반영
     try {
       const { runDartResearchBatch } = await import('../../automation/dart-research.js');
+      const { getOpenChains } = await import('../../db/client.js');
       const topStockCodes = allStocks.slice(0, 5).map((s) => s.stock_code);
-      const dartResults = await runDartResearchBatch(topStockCodes);
+      // 보유 종목 추가 (최대 10종목 합산, 중복 제거)
+      const openChains = await getOpenChains().catch(() => []);
+      const holdingCodes = [...new Set(openChains.map((c) => c.stock_code))];
+      const dartTargets = [...new Set([...topStockCodes, ...holdingCodes])].slice(0, 15);
+      logger.info(`DART 분석 대상: 상위${topStockCodes.length} + 보유${holdingCodes.length} = ${dartTargets.length}종목`, { component: 'TRACK_A' });
+      const dartResults = await runDartResearchBatch(dartTargets);
       const dartLines = dartResults
         .filter((r) => r.fundamentalScore !== undefined)
         .map((r) => {

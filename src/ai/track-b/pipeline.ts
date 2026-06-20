@@ -939,7 +939,13 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         return true;
       })
       .map((s: any) => {
-        const base = s.composite_score ?? 0;
+        const rawBase = s.composite_score ?? 0;
+        // ── Score Staleness Decay: 시간 경과에 따라 점수를 중립(50)으로 감쇠 ──
+        // Track A 07:30 생성 → 15:30까지 8시간. 오래된 점수의 신뢰도 하락 반영
+        const scoredAt = s.created_at ? new Date(s.created_at).getTime() : 0;
+        const ageHours = scoredAt > 0 ? (Date.now() - scoredAt) / 3_600_000 : 0;
+        const decayWeight = ageHours <= 2 ? 1.0 : ageHours <= 4 ? 0.88 : ageHours <= 6 ? 0.75 : ageHours <= 24 ? 0.60 : 0.45;
+        const base = 50 + (rawBase - 50) * decayWeight; // 중립(50)으로 수렴
         const adj = flowAdjMap.get(s.stock_code) ?? 0;
         const capAdj = marketCapAdjMap.get(s.stock_code) ?? 0;
         // score_date: pg DATE → string (setTypeParser 적용) → "YYYY-MM-DD"
@@ -985,11 +991,23 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           : 0;
         // Community Sentinel: 언급 Z-score + 센티먼트 + FOMO/펌프 감지 (-20 ~ +5)
         const communityAdj = getCommunityScoreAdjustment(s.stock_code);
+        // 상대강도(RS): 종목 5일 수익률 vs KOSPI 5일 수익률 (학술 검증된 모멘텀 팩터)
+        // KOSPI보다 강한 종목 = 시장 주도, 약한 종목 = 구조적 약세
+        const kospi5dRet = kospiRegime.kospi5dReturn ?? 0;
+        const stockCandles = chartData.get(s.stock_code);
+        const stock5dRet = stockCandles && stockCandles.length >= 6 && stockCandles[5].close > 0
+          ? ((stockCandles[0].close - stockCandles[5].close) / stockCandles[5].close) * 100
+          : null;
+        const relStrengthAdj = stock5dRet != null
+          ? (stock5dRet - kospi5dRet) >= 3.0 ? 4     // 시장 대비 3%+ 초과 → 주도주
+            : (stock5dRet - kospi5dRet) <= -3.0 ? -6  // 시장 대비 3%+ 부진 → 약세 종목
+            : 0
+          : 0;
         const totalAdj =
-          adj + capAdj + stale + kospiPenaltyAdj + adamKhooAdj + macroAdj + dartAdj + megaCapAdj + consensusAdj + aiScoreAdj + stockAccAdj + piotroskiAdj + fundScoreAdj + communityAdj;
+          adj + capAdj + stale + kospiPenaltyAdj + adamKhooAdj + macroAdj + dartAdj + megaCapAdj + consensusAdj + aiScoreAdj + stockAccAdj + piotroskiAdj + fundScoreAdj + communityAdj + relStrengthAdj;
         if (!Number.isFinite(totalAdj)) {
           logger.warn(
-            `⚠️ 스코어 보정 NaN 감지: ${s.stock_code} adj=${adj} cap=${capAdj} macro=${macroAdj} dart=${dartAdj} cns=${consensusAdj} ai=${aiScoreAdj} acc=${stockAccAdj} pio=${piotroskiAdj} fund=${fundScoreAdj} cmty=${communityAdj}`,
+            `⚠️ 스코어 보정 NaN 감지: ${s.stock_code} adj=${adj} cap=${capAdj} macro=${macroAdj} dart=${dartAdj} cns=${consensusAdj} ai=${aiScoreAdj} acc=${stockAccAdj} pio=${piotroskiAdj} fund=${fundScoreAdj} cmty=${communityAdj} rs=${relStrengthAdj}`,
             { component: 'TRACK_B' },
           );
           return { stock_code: s.stock_code, score: Math.max(0, Math.round(base)) || 0 };

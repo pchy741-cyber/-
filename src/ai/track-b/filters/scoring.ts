@@ -144,6 +144,15 @@ export function computeScoring(input: ScoringInput): ScoringResult {
     logger.info(`  💥 ${code}: 볼린저 스퀴즈 상방돌파 → +${bbSqueezeBonus}점`, { component: 'TRACK_B' });
   }
 
+  // ── Volume Climax Guard: 거래량 3x+ = 반전 가능성 높음 (학술 검증) ──
+  const volumeClimaxPenalty = adjustedVolRatio >= 4.0 ? -12 : adjustedVolRatio >= 3.0 ? -8 : 0;
+  if (volumeClimaxPenalty < 0) {
+    logger.info(
+      `  ⚡ ${code}: 거래량 폭증 ${adjustedVolRatio.toFixed(1)}x (반전 위험) → ${volumeClimaxPenalty}점`,
+      { component: 'TRACK_B' },
+    );
+  }
+
   // ── 합산 ──
   const effectiveTechScore =
     tech.score +
@@ -155,7 +164,8 @@ export function computeScoring(input: ScoringInput): ScoringResult {
     fibBonus +
     signalBonus +
     rsiDivBonus +
-    bbSqueezeBonus;
+    bbSqueezeBonus +
+    volumeClimaxPenalty;
   const isFibSupport = fibBonus >= 10 && tech.macdCrossover !== 'BEARISH';
 
   // ── 5일 고점/금일 변화율 ──
@@ -177,6 +187,7 @@ export function computeScoring(input: ScoringInput): ScoringResult {
     signalBonus,
     rsiDivBonus,
     bbSqueezeBonus,
+    volumeClimaxPenalty,
     priorityBonus,
     effectiveTechScore,
     isFibSupport,
