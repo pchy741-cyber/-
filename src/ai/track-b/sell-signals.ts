@@ -384,9 +384,11 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       continue;
     }
 
-    // ── 장중 1% 스캘핑 익절 (CEO 지시 2026-06-17: SCALP_TARGET 1% 무한루프) ──
-    // SCALP_TARGET 성격 체인(비추세, SWING/WILLIAMS/BOTTOM_FISHING): 장중(10:30~14:30)에
-    // +1.0% 달성 즉시 청산 → 꺾인포인트 재진입 대기. 트레일링 홀딩 포지션(CHART_DOCTOR/MINERVINI)은 제외.
+    // ── 장중 스캘핑 익절 (v11-fix: 1%→2.5% 상향, SWING 7% TP와 충돌 해소) ──
+    // v11-fix: 기존 1%는 수수료 0.21% 차감 후 순수익 0.79%밖에 안 됨
+    // SWING TP 7%인데 1%에서 전량 청산하면 수익 기회 대부분 상실
+    // 2.5%로 상향: 수수료 후 순수익 ~2.3% 확보 + SWING TP까지 여유
+    // SCALP_TARGET 성격 체인만 적용 (추세 리더 체인은 제외)
     {
       const _isIntradayScalpWindow =
         (_scalpH === 10 && _scalpM >= 30) || (_scalpH >= 11 && _scalpH <= 13) ||
@@ -399,12 +401,12 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         _isIntradayScalpWindow &&
         !_isTrendLeaderChain &&
         chain.strategy_mode !== 'SCALPING' &&
-        pnlPct >= 1.0 &&
+        pnlPct >= 2.5 &&
         chain.total_quantity > 0 &&
         !processedSellChains.has(chain.id)
       ) {
         logger.info(
-          `💰 장중1%스캘핑익절: ${chain.stock_code} +${pnlPct.toFixed(2)}% (10:30~14:30 비추세체인)`,
+          `💰 장중스캘핑익절: ${chain.stock_code} +${pnlPct.toFixed(2)}% (10:30~14:30 비추세체인, 임계 2.5%)`,
           { component: 'TRACK_B' },
         );
         decisions.push({
@@ -412,7 +414,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
           stock_code: chain.stock_code,
           quantity: chain.total_quantity,
           price_type: 'MARKET',
-          reasoning: `장중1%익절(Scalp): +${pnlPct.toFixed(2)}% → 꺾인포인트 재진입 대기`,
+          reasoning: `장중스캘핑익절: +${pnlPct.toFixed(2)}% → 수익확정 (v11: 1%→2.5% 상향)`,
           confidence: 0.90,
         });
         processedSellChains.add(chain.id);

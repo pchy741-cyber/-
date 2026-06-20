@@ -793,6 +793,17 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 🔍 데이터스누핑 감시 — 평일 18:50 (자기학습 18:30 직후, Claude CLI 전수조사)
+  cron.schedule(
+    '50 18 * * 1-5',
+    () => {
+      import('../automation/data-snooping-guard.js')
+        .then((m) => m.runDataSnoopingGuard())
+        .catch((e) => logger.error(`데이터스누핑 감시 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 🔄 Paper 모의자금 리필 체크 — 평일 18:45 (자기학습 직후, 자금 고갈 시 자동 리셋)
   cron.schedule(
     '45 18 * * 1-5',

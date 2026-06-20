@@ -124,9 +124,11 @@ export function tryFinalEntry(input: EntryInput): EntryVerdict {
 
   // techOnlyMode: Gemini OFF 또는 전역 AI 탈락(globalNoAi) → 기술지표만으로 판단
   const techOnlyMode = !hasAI && (!config.geminiEnabled || globalNoAi);
-  // 연습: 기술점수 무제한(1점) — AI점수 vs 수익률 상관관계 데이터 수집 최대화
+  // v11-fix: Paper/Live 괴리 축소 — Paper도 최소 기술점수 적용
+  // 이전: Paper=1(무제한) → Live 대비 성과 부풀림, 프로모션 신뢰도 하락
+  // 변경: Paper=40(최소한의 필터), Live는 기존 유지
   const v4MinTechScore = getCtxIsPaper()
-    ? 1
+    ? Math.max(minTechScore, 40)
     : techOnlyMode
       ? Math.max(minTechScore, 78) // v10: Live AI없이: 78점 이상 (엄격 선별)
       : Math.max(minTechScore, 55); // Live AI 병행: 55점 이상

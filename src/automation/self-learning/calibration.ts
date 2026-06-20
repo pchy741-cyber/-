@@ -259,7 +259,8 @@ export async function calibrateScoreTierParams(): Promise<void> {
 export async function autoTuneEnsembleWeights(): Promise<void> {
   const isPaper = getCtxIsPaper();
   try {
-    // 모델별 참여 거래 성과 분석 (최근 30일)
+    // 모델별 참여 거래 성과 분석 (14~60일 전 — holdout gap 14일 적용)
+    // v11-fix: 데이터 스누핑 방지 — 최근 14일 제외하여 학습/평가 기간 분리
     const { rows: modelStats } = await getPool().query(
       `SELECT
          ai.model,
@@ -270,7 +271,7 @@ export async function autoTuneEnsembleWeights(): Promise<void> {
        JOIN score_accuracy sa ON ai.stock_code = sa.stock_code
          AND sa.recorded_at >= ai.scored_at - INTERVAL '1 day'
          AND sa.recorded_at <= ai.scored_at + INTERVAL '7 days'
-       WHERE ai.scored_at >= NOW() - INTERVAL '30 days'
+       WHERE ai.scored_at BETWEEN NOW() - INTERVAL '60 days' AND NOW() - INTERVAL '14 days'
          AND sa.is_paper = $1
        GROUP BY ai.model
        HAVING COUNT(*) >= 5`,

@@ -728,11 +728,13 @@ export function analyzeHotStocks(enrichedChains: EnrichedChain[]): LearnedInsigh
       const avgPnl = recent3.reduce((s, t) => s + t.pnlPct, 0) / 3;
       const totalWinRate = trades.filter((t) => Number(t.chain.realized_pnl) > 0).length / trades.length;
 
+      // v11-fix: 핫핸드 오류 방지 — 연승은 정보 제공만, 포지션 확대/임계점 완화 제거
+      // 3연승은 통계적으로 50% 승률에서도 12.5% 확률로 발생 → 과도한 가중치 부여 금지
       insights.push({
         category: 'WIN_PATTERN',
-        insight: `🔥 핫 종목 '${code}': 최근 3건 연속 수익 (평균 +${avgPnl.toFixed(1)}%), 전체 승률 ${(totalWinRate * 100).toFixed(0)}%. 매수 신호 시 최우선 진입 + 포지션 확대!`,
-        recommendation: `${code} 매수 임계점 -10점 낮춰서 적극 진입. 포지션 사이즈 1.3배 확대.`,
-        confidence: Math.min(0.9, 0.7 + trades.length * 0.02),
+        insight: `종목 '${code}': 최근 3건 연속 수익 (평균 +${avgPnl.toFixed(1)}%), 전체 승률 ${(totalWinRate * 100).toFixed(0)}%. 전략 적합성 양호 — 기존 기준 유지하며 관찰.`,
+        recommendation: `${code} 기존 매수 기준 유지. 전체 승률 ${(totalWinRate * 100).toFixed(0)}%가 60% 이상이면 꾸준히 신뢰 가능.`,
+        confidence: Math.min(0.75, 0.55 + trades.length * 0.02),
         sampleCount: trades.length,
         lastUpdated: now(),
       });
