@@ -45,6 +45,14 @@ const DART_TARGET_STOCKS = [
   { code: '012450', name: '한화에어로스페이스' },
 ];
 
+const SEC_TARGET_STOCKS = [
+  { ticker: 'NVDA', name: 'NVIDIA' },
+  { ticker: 'AAPL', name: 'Apple' },
+  { ticker: 'MSFT', name: 'Microsoft' },
+  { ticker: 'AVGO', name: 'Broadcom' },
+  { ticker: 'META', name: 'Meta' },
+];
+
 // 숫자 포맷 (억 단위)
 function fmtBillion(v: number): string {
   const eok = v / 100_000_000;
@@ -81,13 +89,19 @@ export function ResearchBotPanel() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [notesLoading, setNotesLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'reports' | 'dart' | 'url'>('dart');
+  const [activeTab, setActiveTab] = useState<'reports' | 'dart' | 'sec' | 'url'>('dart');
 
   // DART 재무분석 상태
   const [dartResults, setDartResults] = useState<DartResult[]>([]);
   const [dartLoading, setDartLoading] = useState(false);
   const [dartError, setDartError] = useState<string | null>(null);
   const [expandedDart, setExpandedDart] = useState<string | null>(null);
+
+  // SEC 재무분석 상태
+  const [secResults, setSecResults] = useState<DartResult[]>([]);
+  const [secLoading, setSecLoading] = useState(false);
+  const [secError, setSecError] = useState<string | null>(null);
+  const [expandedSec, setExpandedSec] = useState<string | null>(null);
 
   const loadNotes = async () => {
     try {
@@ -118,6 +132,50 @@ export function ResearchBotPanel() {
       setDartError(err instanceof Error ? err.message : 'DART 분석 실패');
     } finally {
       setDartLoading(false);
+    }
+  };
+
+  const loadSecReports = async () => {
+    setSecLoading(true);
+    setSecError(null);
+    try {
+      const data = await api('/research/sec/batch', {
+        method: 'POST',
+        body: JSON.stringify({ tickers: SEC_TARGET_STOCKS.map((s) => s.ticker) }),
+        timeout: 90000,
+      });
+      if (data.ok && Array.isArray(data.results)) {
+        // SEC 결과를 DartResult 형식으로 매핑
+        setSecResults(data.results.map((r: any) => ({
+          stockCode: r.ticker,
+          corpName: r.companyName,
+          financial: r.financial ? {
+            revenue: r.financial.revenue,
+            revenueYoy: r.financial.revenueYoy,
+            operatingIncome: r.financial.operatingIncome,
+            operatingIncomeYoy: r.financial.operatingIncomeYoy,
+            operatingMargin: r.financial.operatingMargin,
+            netIncome: r.financial.netIncome,
+            totalAssets: r.financial.totalAssets,
+            totalDebt: r.financial.totalLiabilities ?? 0,
+            debtRatio: r.financial.debtRatio,
+            year: String(r.financial.year),
+            quarter: r.financial.quarter,
+          } : undefined,
+          aiAnalysis: r.aiAnalysis,
+          fundamentalScore: r.fundamentalScore,
+          piotroskiScore: undefined,
+          keyRisks: r.keyRisks ?? [],
+          keyStrengths: r.keyStrengths ?? [],
+          analyzedAt: r.analyzedAt,
+        })));
+      } else {
+        setSecError(data.error ?? 'SEC 분석 실패');
+      }
+    } catch (err: unknown) {
+      setSecError(err instanceof Error ? err.message : 'SEC 분석 실패');
+    } finally {
+      setSecLoading(false);
     }
   };
 
@@ -208,7 +266,7 @@ export function ResearchBotPanel() {
       </div>
 
       <div className="p-4 space-y-3">
-        {/* 3탭 전환 */}
+        {/* 4탭 전환 */}
         <div className="flex gap-1 bg-slate-900/50 rounded-lg p-0.5">
           <button
             onClick={() => setActiveTab('dart')}
@@ -216,7 +274,15 @@ export function ResearchBotPanel() {
               activeTab === 'dart' ? 'bg-cyan-600/30 text-cyan-300' : 'text-slate-500 hover:text-slate-300'
             }`}
           >
-            DART 재무분석
+            KR 재무
+          </button>
+          <button
+            onClick={() => setActiveTab('sec')}
+            className={`flex-1 text-[11px] py-1.5 rounded-md font-medium transition-all ${
+              activeTab === 'sec' ? 'bg-blue-600/30 text-blue-300' : 'text-slate-500 hover:text-slate-300'
+            }`}
+          >
+            US 재무
           </button>
           <button
             onClick={() => setActiveTab('reports')}
@@ -224,7 +290,7 @@ export function ResearchBotPanel() {
               activeTab === 'reports' ? 'bg-violet-600/30 text-violet-300' : 'text-slate-500 hover:text-slate-300'
             }`}
           >
-            리포트 ({notes.length})
+            리포트
           </button>
           <button
             onClick={() => setActiveTab('url')}
@@ -401,6 +467,165 @@ export function ResearchBotPanel() {
                             <div className="text-[9px] text-slate-600 text-right">
                               분석: {fmtTime(r.analyzedAt)}
                             </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ═══ SEC 재무분석 탭 (US) ═══ */}
+        {activeTab === 'sec' && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-slate-500">
+                  대상: {SEC_TARGET_STOCKS.map((s) => s.ticker).join(', ')}
+                </span>
+              </div>
+              <button
+                onClick={loadSecReports}
+                disabled={secLoading}
+                className="px-3 py-1.5 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 disabled:opacity-30 disabled:cursor-not-allowed rounded-lg text-[11px] font-bold transition-all shadow-lg shadow-blue-500/10"
+              >
+                {secLoading ? (
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-3 h-3 border-[1.5px] border-white border-t-transparent rounded-full animate-spin" />
+                    분석 중...
+                  </span>
+                ) : secResults.length > 0 ? '새로고침' : 'SEC 분석 실행'}
+              </button>
+            </div>
+
+            {secError && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs bg-rose-950/40 text-rose-400 border border-rose-800/30">
+                <span>✗</span><span>{secError}</span>
+              </div>
+            )}
+
+            {secLoading && secResults.length === 0 && (
+              <div className="text-center py-8">
+                <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto" />
+                <p className="text-xs text-slate-500 mt-3">SEC EDGAR + Gemini AI 분석 중...</p>
+                <p className="text-[10px] text-slate-600 mt-1">10-K 재무제표 파싱 (24h 캐시)</p>
+              </div>
+            )}
+
+            {!secLoading && secResults.length === 0 && !secError && (
+              <div className="text-center py-6">
+                <span className="text-3xl opacity-30">🇺🇸</span>
+                <p className="text-xs text-slate-500 mt-2">SEC EDGAR 10-K 재무분석</p>
+                <p className="text-[10px] text-slate-600 mt-1">무료 API · Gemini 크레딧 · 실전/연습 공통</p>
+              </div>
+            )}
+
+            {secResults.length > 0 && (
+              <div className="space-y-2">
+                {secResults.map((r) => {
+                  const isExpanded = expandedSec === r.stockCode;
+                  const f = r.financial;
+                  return (
+                    <div key={r.stockCode} className="rounded-xl border border-white/[0.06] bg-white/[0.02] overflow-hidden">
+                      <button
+                        className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/[0.02] transition-colors text-left"
+                        onClick={() => setExpandedSec(isExpanded ? null : r.stockCode)}
+                      >
+                        <div className="flex-1 min-w-0 flex items-center gap-2">
+                          <span className="text-xs font-bold text-slate-100">{r.corpName}</span>
+                          <span className="text-[9px] text-blue-400 bg-blue-900/30 rounded px-1.5 py-0.5">{r.stockCode}</span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {r.fundamentalScore != null && (
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${fundBg(r.fundamentalScore)}`}>
+                              펀더멘털 {r.fundamentalScore}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-slate-600 shrink-0">{isExpanded ? '▲' : '▼'}</span>
+                      </button>
+
+                      {isExpanded && (
+                        <div className="px-3 pb-3 space-y-2.5 border-t border-white/[0.04]">
+                          {f && (
+                            <div className="mt-2">
+                              <div className="text-[9px] text-slate-600 mb-1.5">FY{f.year} {f.quarter === 'annual' ? 'Annual' : f.quarter} (10-K)</div>
+                              <div className="grid grid-cols-3 gap-1.5">
+                                <div className="bg-white/[0.03] rounded-lg px-2 py-1.5 text-center">
+                                  <div className="text-[9px] text-slate-500">Revenue</div>
+                                  <div className="text-[11px] font-bold text-slate-200">{fmtBillion(f.revenue)}</div>
+                                  <div className={`text-[9px] font-bold ${f.revenueYoy >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {f.revenueYoy >= 0 ? '+' : ''}{f.revenueYoy.toFixed(1)}%
+                                  </div>
+                                </div>
+                                <div className="bg-white/[0.03] rounded-lg px-2 py-1.5 text-center">
+                                  <div className="text-[9px] text-slate-500">Op. Income</div>
+                                  <div className="text-[11px] font-bold text-slate-200">{fmtBillion(f.operatingIncome)}</div>
+                                  <div className={`text-[9px] font-bold ${f.operatingIncomeYoy >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {f.operatingIncomeYoy >= 0 ? '+' : ''}{f.operatingIncomeYoy.toFixed(1)}%
+                                  </div>
+                                </div>
+                                <div className="bg-white/[0.03] rounded-lg px-2 py-1.5 text-center">
+                                  <div className="text-[9px] text-slate-500">Op. Margin</div>
+                                  <div className={`text-[11px] font-bold ${f.operatingMargin >= 15 ? 'text-emerald-400' : f.operatingMargin >= 8 ? 'text-amber-400' : 'text-rose-400'}`}>
+                                    {f.operatingMargin.toFixed(1)}%
+                                  </div>
+                                </div>
+                                <div className="bg-white/[0.03] rounded-lg px-2 py-1.5 text-center">
+                                  <div className="text-[9px] text-slate-500">Net Income</div>
+                                  <div className="text-[11px] font-bold text-slate-200">{fmtBillion(f.netIncome)}</div>
+                                </div>
+                                <div className="bg-white/[0.03] rounded-lg px-2 py-1.5 text-center">
+                                  <div className="text-[9px] text-slate-500">Debt Ratio</div>
+                                  <div className={`text-[11px] font-bold ${f.debtRatio <= 50 ? 'text-emerald-400' : f.debtRatio <= 70 ? 'text-amber-400' : 'text-rose-400'}`}>
+                                    {f.debtRatio.toFixed(0)}%
+                                  </div>
+                                </div>
+                                <div className="bg-white/[0.03] rounded-lg px-2 py-1.5 text-center">
+                                  <div className="text-[9px] text-slate-500">Total Assets</div>
+                                  <div className="text-[11px] font-bold text-slate-200">{fmtBillion(f.totalAssets)}</div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          {(r.keyStrengths.length > 0 || r.keyRisks.length > 0) && (
+                            <div className="grid grid-cols-2 gap-2">
+                              {r.keyStrengths.length > 0 && (
+                                <div>
+                                  <div className="text-[9px] text-emerald-500 font-bold mb-1">강점</div>
+                                  {r.keyStrengths.map((s, i) => (
+                                    <div key={i} className="flex items-start gap-1 text-[10px] text-slate-300 leading-relaxed">
+                                      <span className="text-emerald-500 shrink-0 mt-0.5">+</span><span>{s}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              {r.keyRisks.length > 0 && (
+                                <div>
+                                  <div className="text-[9px] text-rose-500 font-bold mb-1">리스크</div>
+                                  {r.keyRisks.map((s, i) => (
+                                    <div key={i} className="flex items-start gap-1 text-[10px] text-slate-300 leading-relaxed">
+                                      <span className="text-rose-500 shrink-0 mt-0.5">-</span><span>{s}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {r.aiAnalysis && (
+                            <div className="bg-blue-950/20 border border-blue-800/15 rounded-lg px-3 py-2">
+                              <div className="text-[9px] text-blue-500 font-bold mb-1">Gemini AI 분석</div>
+                              <p className="text-[10px] text-slate-300 leading-relaxed whitespace-pre-wrap">{r.aiAnalysis}</p>
+                            </div>
+                          )}
+
+                          {r.analyzedAt && (
+                            <div className="text-[9px] text-slate-600 text-right">분석: {fmtTime(r.analyzedAt)}</div>
                           )}
                         </div>
                       )}

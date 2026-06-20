@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { safeQuery as query } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
 import { runDartResearch, runDartResearchBatch } from '../../automation/dart-research.js';
+import { runSecResearch, runSecResearchBatch } from '../../automation/sec-research.js';
 
 export const researchRoutes = new Hono();
 
@@ -170,6 +171,42 @@ researchRoutes.post('/research/dart/batch', async (c) => {
     return c.json({ ok: true, count: results.length, results });
   } catch (err: any) {
     logger.warn(`DART 배치 리서치 실패: ${err.message}`, { component: 'RESEARCH' });
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// GET /api/research/sec/:ticker — SEC EDGAR 재무제표 + Gemini AI 분석 (미국주식)
+researchRoutes.get('/research/sec/:ticker', async (c) => {
+  try {
+    const ticker = c.req.param('ticker').toUpperCase();
+    if (!/^[A-Z]{1,5}$/.test(ticker)) return c.json({ error: '티커 형식 오류 (1~5자 영문)' }, 400);
+
+    logger.info(`SEC 리서치 요청: ${ticker}`, { component: 'RESEARCH' });
+    const result = await runSecResearch(ticker);
+    return c.json({ ok: true, result });
+  } catch (err: any) {
+    logger.warn(`SEC 리서치 실패: ${err.message}`, { component: 'RESEARCH' });
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// POST /api/research/sec/batch — 다수 미국 종목 일괄 SEC 분석
+researchRoutes.post('/research/sec/batch', async (c) => {
+  try {
+    const body = await c.req.json<{ tickers: string[] }>();
+    if (!Array.isArray(body.tickers) || body.tickers.length === 0) {
+      return c.json({ error: 'tickers 배열이 필요합니다' }, 400);
+    }
+    const tickers = body.tickers
+      .map((t) => t.toUpperCase())
+      .filter((t) => /^[A-Z]{1,5}$/.test(t))
+      .slice(0, 10); // 최대 10종목
+
+    logger.info(`SEC 배치 리서치 시작: ${tickers.length}종목`, { component: 'RESEARCH' });
+    const results = await runSecResearchBatch(tickers);
+    return c.json({ ok: true, count: results.length, results });
+  } catch (err: any) {
+    logger.warn(`SEC 배치 리서치 실패: ${err.message}`, { component: 'RESEARCH' });
     return c.json({ error: 'Internal server error' }, 500);
   }
 });
