@@ -57,7 +57,7 @@ export function DailySummaryPanel({
                       )}
                       {day.realizedPnlUsd !== 0 && (
                         <span className={`text-[11px] font-bold tabular-nums ${day.realizedPnlUsd >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          {day.realizedPnlUsd >= 0 ? '+' : ''}${Math.abs(day.realizedPnlUsd).toFixed(2)}
+                          {day.realizedPnlUsd >= 0 ? '+' : '-'}${Math.abs(day.realizedPnlUsd).toFixed(2)}
                         </span>
                       )}
                     </div>

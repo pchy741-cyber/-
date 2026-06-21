@@ -113,7 +113,7 @@ export function TradeListPanel({
                   <div className={`text-right shrink-0 ${tradePnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                     <span className="font-bold tabular-nums">{tradePnlPct >= 0 ? '+' : ''}{tradePnlPct.toFixed(1)}%</span>
                     <span className="text-[10px] opacity-70 ml-1 tabular-nums">
-                      {tradePnl >= 0 ? '+' : ''}{overseas ? `$${Math.abs(tradePnl).toFixed(2)}` : `${Math.round(tradePnl).toLocaleString()}원`}
+                      {tradePnl >= 0 ? '+' : '-'}{overseas ? `$${Math.abs(tradePnl).toFixed(2)}` : `${Math.round(Math.abs(tradePnl)).toLocaleString()}원`}
                     </span>
                   </div>
                 ) : <span className="text-slate-700 text-[10px]">-</span>}

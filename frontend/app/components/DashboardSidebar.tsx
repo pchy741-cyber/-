@@ -91,7 +91,7 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
       <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-[220px] backdrop-blur-xl flex flex-col shrink-0 transform transition-all duration-500 bg-[var(--theme-side-95)] border-r border-[var(--theme-border)] ${mobileMenu ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
         <div className="px-5 py-5 border-b border-white/[0.04]">
           <h1 className="text-lg font-black tracking-tight bg-gradient-to-r from-blue-400 via-cyan-400 to-emerald-400 bg-clip-text text-transparent">AI Bot</h1>
-          <p className="text-[10px] text-slate-600 mt-0.5 font-medium">Auto Bot v0.2</p>
+          <p className="text-[10px] text-slate-600 mt-0.5 font-medium">Auto Bot v10.9</p>
         </div>
 
         <div className="px-4 py-3.5 space-y-2.5 border-b border-white/[0.04]">

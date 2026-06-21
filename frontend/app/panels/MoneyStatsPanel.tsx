@@ -138,7 +138,7 @@ export default function MoneyStatsPanel({ market, monthlyGoal, viewMode = 'live'
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-[10px] text-slate-400">저녁용돈 적립</span>
             <span className="text-[10px] text-slate-500">
-              {data.dinnerMoney.monthlyTotal.toLocaleString('ko-KR')}원 / 30만원
+              {data.dinnerMoney.monthlyTotal.toLocaleString('ko-KR')}원 / {(data.dinnerMoney.monthlyCap / 10000).toFixed(0)}만원
               {data.dinnerMoney.todayReserved && <span className="ml-1 text-emerald-400">오늘 적립됨</span>}
             </span>
           </div>
@@ -153,7 +153,7 @@ export default function MoneyStatsPanel({ market, monthlyGoal, viewMode = 'live'
               }}
             />
           </div>
-          <div className="text-[9px] text-slate-600 mt-1">수익 1만원 이상 되는 날 자동 적립 · 월 30만원 한도</div>
+          <div className="text-[9px] text-slate-600 mt-1">수익 1만원 이상 되는 날 자동 적립 · 월 {(data.dinnerMoney.monthlyCap / 10000).toFixed(0)}만원 한도</div>
         </div>
       )}
     </div>

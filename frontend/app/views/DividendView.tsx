@@ -23,12 +23,12 @@ const DEFAULT_FX = FALLBACK_FX_RATE;
 const TAX_RATE = 0.154;
 
 const DIVIDEND_ETFS = [
-  { code: 'JEPQ', name: '나스닥 커버드콜', yield: 9.5, growth: 8, price: 55, freq: '월', risk: '중', tier: 'core' },
-  { code: 'SPYI', name: 'S&P 콜스프레드', yield: 12.0, growth: 8, price: 30, freq: '월', risk: '중', tier: 'core' },
-  { code: 'SCHD', name: '배당성장 우량주', yield: 3.5, growth: 12, price: 82, freq: '분기', risk: '낮음', tier: 'core' },
-  { code: 'QQQI', name: '나스닥 콜스프레드', yield: 13.4, growth: 6, price: 26, freq: '월', risk: '중', tier: 'satellite' },
-  { code: 'JEPI', name: 'S&P 커버드콜', yield: 7.5, growth: 5, price: 57, freq: '월', risk: '낮음', tier: 'satellite' },
-  { code: 'O', name: '리얼티인컴 리츠', yield: 5.5, growth: 3, price: 58, freq: '월', risk: '낮음', tier: 'anchor' },
+  { code: 'JEPQ', name: '나스닥 커버드콜', yield: 9.5, growth: 8, freq: '월', risk: '중', tier: 'core' },
+  { code: 'SPYI', name: 'S&P 콜스프레드', yield: 12.0, growth: 8, freq: '월', risk: '중', tier: 'core' },
+  { code: 'SCHD', name: '배당성장 우량주', yield: 3.5, growth: 12, freq: '분기', risk: '낮음', tier: 'core' },
+  { code: 'QQQI', name: '나스닥 콜스프레드', yield: 13.4, growth: 6, freq: '월', risk: '중', tier: 'satellite' },
+  { code: 'JEPI', name: 'S&P 커버드콜', yield: 7.5, growth: 5, freq: '월', risk: '낮음', tier: 'satellite' },
+  { code: 'O', name: '리얼티인컴 리츠', yield: 5.5, growth: 3, freq: '월', risk: '낮음', tier: 'anchor' },
 ];
 
 const REGIME_LABEL: Record<string, { text: string; color: string; desc: string }> = {
@@ -125,13 +125,18 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
         </div>
         <div className="px-5 pb-4">
           <div className="flex gap-1.5">
-            {['Core 55%', 'Satellite 35%', 'Anchor 10%'].map((t, i) => (
-              <span key={t} className={`text-[9px] px-2 py-0.5 rounded-full ${
-                i === 0 ? 'bg-blue-500/10 text-blue-400' :
-                i === 1 ? 'bg-violet-500/10 text-violet-400' :
-                'bg-cyan-500/10 text-cyan-400'
-              }`}>{t}</span>
-            ))}
+            {(() => {
+              const w = activeWeights || { JEPQ: 0.25, SPYI: 0.20, SCHD: 0.15, QQQI: 0.15, JEPI: 0.15, O: 0.10 };
+              const tierPcts = { core: 0, satellite: 0, anchor: 0 };
+              DIVIDEND_ETFS.forEach(e => { tierPcts[e.tier as keyof typeof tierPcts] += (w[e.code] ?? 0) * 100; });
+              return [
+                { label: `Core ${Math.round(tierPcts.core)}%`, color: 'bg-blue-500/10 text-blue-400' },
+                { label: `Satellite ${Math.round(tierPcts.satellite)}%`, color: 'bg-violet-500/10 text-violet-400' },
+                { label: `Anchor ${Math.round(tierPcts.anchor)}%`, color: 'bg-cyan-500/10 text-cyan-400' },
+              ].map(t => (
+                <span key={t.label} className={`text-[9px] px-2 py-0.5 rounded-full ${t.color}`}>{t.label}</span>
+              ));
+            })()}
           </div>
           <p className="text-[9px] text-slate-600 mt-2">
             Multi-Tier + VIX 동적 배분 · SPYI/QQQI 차세대 콜스프레드 · Smart DRIP 리밸런싱
@@ -238,14 +243,15 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
       <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden shadow-xl shadow-black/40">
         <div className="px-5 py-3.5 border-b border-white/[0.04]">
           <h2 className="text-sm font-bold text-slate-200">ETF 유니버스</h2>
-          <p className="text-[10px] text-slate-500 mt-0.5">배당 + 시세 + 복리 DRIP · 가중 수익률 ~9.5%</p>
+          <p className="text-[10px] text-slate-500 mt-0.5">배당 + 시세 + 복리 DRIP · 가중 수익률 ~9.0%</p>
         </div>
         <div className="p-5 space-y-3">
           <div className="space-y-1">
             {DIVIDEND_ETFS.map(etf => {
               const totalReturn = etf.yield + etf.growth;
-              const monthlyKrw = 1000000 / FX_RATE * etf.yield / 100 * (1 - TAX_RATE) / 12 * FX_RATE;
+              const monthlyKrw = 1000000 * etf.yield / 100 * (1 - TAX_RATE) / 12;
               const tierInfo = TIER_LABEL[etf.tier] || TIER_LABEL.core;
+              const held = holdings.find((h: any) => h.stock_code === etf.code);
               return (
                 <div key={etf.code} className="flex items-center justify-between py-2 px-2 rounded-lg hover:bg-white/[0.02] transition-colors">
                   <div className="flex-1 min-w-0">
@@ -254,10 +260,11 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
                       <span className="text-xs font-bold text-slate-200">{etf.code}</span>
                       <span className="text-[10px] text-slate-500 truncate">{etf.name}</span>
                       <span className={`text-[9px] px-1 py-0.5 rounded ${etf.risk === '낮음' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>{etf.risk}</span>
+                      {held && <span className="text-[8px] px-1 py-0.5 rounded bg-emerald-500/10 text-emerald-400">{Number(held.quantity)}주</span>}
                     </div>
                     <div className="text-[10px] text-slate-600 ml-7">
                       배당 {etf.yield}% + 시세 {etf.growth}% = <span className="text-slate-400 font-medium">{totalReturn}%</span>
-                      {' · '}{etf.freq} · ${etf.price}
+                      {' · '}{etf.freq}배당
                     </div>
                   </div>
                   <div className="text-right ml-3">
@@ -268,7 +275,7 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
               );
             })}
           </div>
-          <p className="text-[9px] text-slate-600 text-center">* 배당소득세 15.4% 차감 · 과거 실적 기반 추정 · SPYI/QQQI: 2025 최우수 ETF</p>
+          <p className="text-[9px] text-slate-600 text-center">* 배당소득세 15.4% 차감 · 과거 실적 기반 추정 · 참고가 기준</p>
         </div>
       </div>
 
