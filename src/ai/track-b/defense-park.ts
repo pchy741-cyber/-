@@ -239,7 +239,7 @@ export async function isMarketRecovering(
  * 2) CRASH/PANIC → KODEX 인버스 매수 (하락 수익화)
  *    그 외 → SOFR ETF 매수 (안전 파킹)
  */
-async function _buildDefenseParkEntryDecisions(
+export async function buildDefenseParkEntryDecisions(
   openChains: TransactionChain[],
   livePrices: Map<string, CurrentPrice>,
   orderableCash: number,

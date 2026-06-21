@@ -49,7 +49,7 @@ import { logger } from '../../utils/logger.js';
 import { getOverride } from '../ai-overrides.js';
 import { IDLE_PARK_STOCK_CODE } from './cash-manager.js';
 import { applyDecisionFlow } from './decision-flow.js';
-import { buildDefenseParkExitDecisions, getDefenseParkState, PARK_STOCK_CODE, PARK_STOCK_NAME } from './defense-park.js';
+import { buildDefenseParkEntryDecisions, buildDefenseParkExitDecisions, getDefenseParkState, isPortfolioInDowntrend, PARK_STOCK_CODE, PARK_STOCK_NAME } from './defense-park.js';
 import { checkDailyLoss, fetchKospiRegime } from './market-regime.js';
 import { generatePartialTpDecisions } from './sell-signals.js';
 import { technicalFallbackDecisions } from './technical-fallback.js';
@@ -397,6 +397,27 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         `🔻 하락장 신호: ${crashSignal.level} (score=${crashSignal.score}) — ${crashSignal.reasons.join(', ')}`,
         { component: 'CRASH_PROFIT' },
       );
+    }
+
+    // ── 방어 파킹 자동 진입: Live 전용, 하락세 감지 시 ──────────────────
+    // 단, 기관(연금 포함) 순매수 지속 중이면 파킹 보류 (정부 지지선 반영)
+    if (!parkState.isActive && !ctxIsPaper) {
+      const dt = await isPortfolioInDowntrend();
+      if (dt.downtrend) {
+        // KODEX 200(069500)으로 시장 전체 기관 흐름 확인
+        const kospiFlow = await getInvestorFlow('069500', 5).catch(() => null);
+        const instBuying = kospiFlow && kospiFlow.institutionNet > 0 &&
+          (kospiFlow.trend === 'STRONG_BUY' || kospiFlow.trend === 'BUY');
+        if (instBuying) {
+          logger.info(
+            `🛡️ 파킹 진입 보류: 기관 순매수 지속 중 (trend=${kospiFlow!.trend}, 기관순매수=${kospiFlow!.institutionNet.toLocaleString()}주) — 연금 지지선 감지`,
+            { component: 'DEFENSE_PARK' },
+          );
+        } else {
+          logger.warn(`🛡️ 방어 파킹 진입 트리거: ${dt.reason}`, { component: 'DEFENSE_PARK' });
+          return buildDefenseParkEntryDecisions(openChains, livePrices, orderableCash, totalAssets, dt.reason, crashSignal);
+        }
+      }
     }
 
     // 현재 주식 포지션 가치

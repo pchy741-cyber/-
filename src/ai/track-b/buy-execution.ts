@@ -6,6 +6,7 @@ import { getCtxIsPaper } from '../../config/context.js';
 import { getPool } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { getMinuteChart, isMarketOpen } from '../../kis/market.js';
+import { getDynamicPositionSize } from '../../automation/position-sizer.js';
 import { getLossStreakMultiplier } from '../../risk/loss-streak.js';
 import { logger } from '../../utils/logger.js';
 import { generateAveragingDecisions } from './averaging-down.js';
@@ -700,9 +701,22 @@ export async function executeBuyDecisions(
     const positionSize = Math.min(targetKrw, aiMaxPos, remainingCash * 0.95);
     // 소자산 모드: 분산 불가 시에도 비율 계산 반영 (positionSize vs 현금 80% 중 작은 값)
     // Kelly/점수가 축소 시그널 → positionSize가 줄어들면 그대로 존중
-    const effectivePositionSize = !canDiversify3
+    let effectivePositionSize = !canDiversify3
       ? Math.round(Math.min(positionSize, remainingCash * 0.8))
       : positionSize;
+
+    // ── ATR+드로다운+연패 동적 보정 (Live 전용) ──────────────────────────
+    if (!ctxPaper) {
+      const dynSize = await getDynamicPositionSize(cand.stock_code, effectivePositionSize, 'live');
+      if (dynSize.multiplier !== 1.0) {
+        effectivePositionSize = Math.round(dynSize.amount);
+        logger.info(
+          `  📊 ${cand.stock_code}: 동적사이징 x${dynSize.multiplier.toFixed(2)} → ${Math.round(effectivePositionSize / 10000)}만원 (${dynSize.reason})`,
+          { component: 'TRACK_B' },
+        );
+      }
+    }
+
     // 최소 매수금액: 총자산 비례 동적 계산 (절대 최소 1만원)
     // v9-fix: Paper는 학습용 → 최소금액 1% (Live: 2.5~4%) — 소액 포지션도 데이터 수집 허용
     const minPosRate = ctxPaper ? 0.01 : aiApproved ? 0.04 : 0.025;
