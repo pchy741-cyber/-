@@ -763,13 +763,16 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 🔍 QA Watchdog — 08:00 해외장 마감 후, 17:00 국내장 마감 후
+  // 🔍 QA Watchdog + 📊 운영 브리핑 — 08:00 해외장 마감 후, 17:00 국내장 마감 후
   cron.schedule(
     '0 8 * * 1-5',
     () => {
       import('../automation/qa-watchdog.js')
         .then((m) => m.runQAWatchdog())
         .catch((e) => logger.error(`QA Watchdog(해외): ${e}`, { component: 'SCHEDULER' }));
+      import('../automation/daily-briefing.js')
+        .then((m) => m.runDailyBriefing('US'))
+        .catch((e) => logger.error(`해외 브리핑: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -779,6 +782,9 @@ export function startScheduler(): void {
       import('../automation/qa-watchdog.js')
         .then((m) => m.runQAWatchdog())
         .catch((e) => logger.error(`QA Watchdog(국내): ${e}`, { component: 'SCHEDULER' }));
+      import('../automation/daily-briefing.js')
+        .then((m) => m.runDailyBriefing('KR'))
+        .catch((e) => logger.error(`국내 브리핑: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
