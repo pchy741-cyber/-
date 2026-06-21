@@ -242,8 +242,11 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   let totalChainInvested = 0;
   let totalChainPnl = 0;
   const enrichedChains = chains.map((ch: any) => {
-    const currentPrice = priceMap.get(ch.stock_code) ?? 0;
+    // 현재가 0 방지: 장 마감 시 캐시 만료로 PnL이 갑자기 0으로 리셋되는 버그 수정
+    // 폴백 순서: priceMap → avgPrice(PnL=0 유지, 급변 방지)
+    const rawPrice = priceMap.get(ch.stock_code) ?? 0;
     const avgPrice = Number(ch.avg_buy_price) || 0;
+    const currentPrice = rawPrice > 0 ? rawPrice : avgPrice;
     const qty = Number(ch.total_quantity) || 0;
     const invested = avgPrice * qty;
     const unrealizedPnl = currentPrice > 0 ? (currentPrice - avgPrice) * qty : 0;

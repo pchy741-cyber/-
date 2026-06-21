@@ -215,8 +215,10 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
       ? Math.round(((grandTotalValue - prevDay) / prevDay) * 10000) / 100
       : 0;
   }
-  // 마이그레이션(해외자산 신규 편입 등)으로 전일 스냅샷이 현재와 큰 차이를 보이면 0 처리
-  const dailyChangePct = Math.abs(rawDailyChangePct) > 100 ? 0 : rawDailyChangePct;
+  // 해외자산 신규 편입, 입금 등으로 전일 스냅샷과 현재가 큰 차이를 보이면 클리핑
+  // Paper: ±10% 이상은 이상치 (자산 편입/시드 추가 영향), Live: ±100% (기존)
+  const maxDailyPct = i.viewIsPaper ? 10 : 100;
+  const dailyChangePct = Math.abs(rawDailyChangePct) > maxDailyPct ? 0 : rawDailyChangePct;
 
   logger.info(`📊 calcTotalAssets [${i.viewIsPaper ? 'PAPER' : 'LIVE'}] method=${calcMethod} | netAsset=${safe(i.netAsset)} rawCash=${safe(i.rawCash)} kisDomEval=${safe(i.kisDomEval)} kisPurchaseCost=${safe(i.kisPurchaseCost)} | overseasMV_usd=${safe(i.overseasMarketValueUsd)} overseasCash=${rawOverseasCash} | grandTotal=${Math.round(grandTotalValue)} freeCash=${Math.round(freeDomesticCash)} domMV=${Math.round(domesticMarketValue)} overseasMV_krw=${Math.round(overseasMarketValueKrw)}`, { component: 'CALC' });
 

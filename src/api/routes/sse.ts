@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { getLastAutoPilotResult } from '../../ai/auto-pilot.js';
-import { cacheGet, cachePriceMemory, getCachedPriceMemory } from '../../cache/memory.js';
+import { cacheGet, cachePriceMemory, getCachedPriceMemory, getLastKnownPriceMemory } from '../../cache/memory.js';
 import { baseIsPaper } from '../../config/index.js';
 import { getActiveStrategy, getOpenChains, getPool } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
@@ -59,7 +59,7 @@ async function refreshHeldPrices(chains: Array<{ stock_code: string }>): Promise
 // 체인별 가격 빌드 (캐시 기반, DB 호출 없음)
 function buildChainPrices(chains: any[], totalPortfolioValue: number) {
   return chains.reduce((acc: any[], ch: any) => {
-    const cached = getCachedPriceMemory(ch.stock_code);
+    const cached = getCachedPriceMemory(ch.stock_code) ?? getLastKnownPriceMemory(ch.stock_code);
     if (cached == null || cached <= 0) return acc;
     const avgPrice = Number(ch.avg_buy_price ?? 0);
     const qty = Number(ch.total_quantity ?? 0);
@@ -282,8 +282,8 @@ sseRoutes.get('/stream', (c) => {
             const avg = Number(ch.avg_buy_price ?? 0);
             const qty = Number(ch.total_quantity ?? 0);
             totalChainInvested += avg * qty;
-            // PnL은 캐시가격 기반 (실시간)
-            const cached = getCachedPriceMemory(ch.stock_code);
+            // PnL은 캐시가격 기반 (실시간), 장 마감 시 장기캐시 폴백
+            const cached = getCachedPriceMemory(ch.stock_code) ?? getLastKnownPriceMemory(ch.stock_code);
             if (cached && cached > 0 && avg > 0) {
               totalChainPnl += (cached - avg) * qty;
             }
