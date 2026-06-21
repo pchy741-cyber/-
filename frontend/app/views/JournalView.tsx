@@ -39,7 +39,7 @@ function JournalView({ viewMode = 'live' }: { viewMode?: 'live' | 'paper' }) {
   }, [days, viewMode]);
 
   const trades = data?.trades.filter(t => market === 'ALL' || t.market === market) ?? [];
-  const wins = trades.filter(t => t.pnlPct >= 0).length;
+  const wins = trades.filter(t => t.pnlPct > 0).length;
   const losses = trades.length - wins;
   const winRate = trades.length > 0 ? (wins / trades.length) * 100 : 0;
   const avgPnl = trades.length > 0 ? trades.reduce((s, t) => s + t.pnlPct, 0) / trades.length : 0;
@@ -131,7 +131,7 @@ function JournalView({ viewMode = 'live' }: { viewMode?: 'live' | 'paper' }) {
           <div className="divide-y divide-white/[0.03]">
             {trades.map((t, i) => {
               const isExpanded = expandedIdx === i;
-              const isProfit = t.pnlPct >= 0;
+              const isProfit = t.pnlPct > 0;
               return (
                 <div
                   key={`${t.code}-${t.closedAt}-${i}`}

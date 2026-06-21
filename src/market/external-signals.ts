@@ -134,7 +134,7 @@ export async function getUpcomingEarnings(codes: string[]): Promise<EarningsEven
   }
 
   try {
-    const today = new Date();
+    const today = getKSTNow();
     const from = today.toISOString().slice(0, 10);
     const to = new Date(today.getTime() + 30 * 86400000).toISOString().slice(0, 10);
     const res = await fetch(`https://finnhub.io/api/v1/calendar/earnings?from=${from}&to=${to}&token=${key}`, {

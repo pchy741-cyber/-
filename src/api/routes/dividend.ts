@@ -224,9 +224,9 @@ dividendRoutes.post('/dividend/sync-receipts', async (c) => {
     for (const r of receipts) {
       try {
         await getPool().query(
-          `INSERT INTO dividend_history (stock_code, gross_amount_usd, tax_amount_usd, net_amount_usd, pay_date)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT DO NOTHING`,
+          `INSERT INTO dividend_history (stock_code, gross_amount_usd, tax_amount_usd, net_amount_usd, pay_date, is_paper)
+           VALUES ($1, $2, $3, $4, $5, false)
+           ON CONFLICT (stock_code, pay_date, is_paper) WHERE pay_date IS NOT NULL DO NOTHING`,
           [r.stockCode, r.amount, r.tax, r.netAmount, r.date || null],
         );
         synced++;

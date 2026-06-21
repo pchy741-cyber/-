@@ -174,6 +174,7 @@ export interface StockTechnicals {
   macdHistogram?: number;
   macdCrossover?: string;
   bollingerPosition?: number;
+  bollingerPositionPct?: number;
   adx14?: number;
   score?: number;
   sma5?: number;
