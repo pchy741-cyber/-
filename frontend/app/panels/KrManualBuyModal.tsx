@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui';
 import { ScoreSparkline } from '@/components/ScoreSparkline';
 import { api, fmtWon } from '../lib/utils';
+import type { ConfirmFn } from '../types';
 
 /**
  * 🛒 국내 매수 모달 — 갤25 반응형 최적화
@@ -23,6 +24,7 @@ interface Props {
   onClose: () => void;
   onSuccess: () => void;
   toast?: (msg: string, type?: 'ok' | 'err' | 'info') => void;
+  confirm?: ConfirmFn;
 }
 
 interface EstimateResult {
@@ -35,7 +37,7 @@ interface EstimateResult {
 
 export default function KrManualBuyModal({
   open, stockCode, stockName, aiScore, confidence, rsi, volumeRatio, pullbackSignal,
-  currentPrice, viewMode, onClose, onSuccess, toast,
+  currentPrice, viewMode, onClose, onSuccess, toast, confirm,
 }: Props) {
   const [recommended, setRecommended] = useState<EstimateResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -84,6 +86,14 @@ export default function KrManualBuyModal({
   async function executeBuy() {
     if (needsOverride && !ceoOverride) { toast?.('35% 초과 → CEO 토글 필요', 'err'); return; }
     if (needsOverride && ceoOverride && !overrideReason.trim()) { toast?.('CEO override 사유 입력 필요', 'err'); return; }
+    // 🔒 확인 다이얼로그 — 실수 매수 방지
+    const liveTag = viewMode === 'live' ? '[실전] ' : '[연습] ';
+    if (confirm && !await confirm({
+      title: `${liveTag}${stockName} (${stockCode}) ${actualQty}주 매수`,
+      description: `예상 금액: ₩${actualCost.toLocaleString('ko-KR')} · 비중 ${positionPct.toFixed(1)}%`,
+      confirmLabel: '매수',
+      confirmVariant: viewMode === 'live' ? 'danger' : 'primary',
+    })) return;
     setExecuting(true);
     try {
       const body = {

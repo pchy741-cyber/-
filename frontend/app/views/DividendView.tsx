@@ -129,7 +129,7 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
               </span>
             </div>
           ) : (
-            <p className="text-[9px] text-slate-600 text-center">JEPQ 25% · JEPI 25% · SCHD 20% · QYLD 15% · XYLD 10% · O 5%</p>
+            <p className="text-[9px] text-slate-600 text-center">QYLD 30% · JEPQ 25% · XYLD 20% · JEPI 15% · SCHD 5% · O 5%</p>
           )}
         </div>
       </div>

@@ -67,6 +67,17 @@ export default function Dashboard() {
     const active = scope
       ? killSwitch?.[scope.toLowerCase()]?.active
       : isKillActive;
+    // 🔒 확인 다이얼로그 — Kill Switch 실수 방지
+    const action = active ? '재개' : '중단';
+    const scopeLabel = scope === 'KR' ? '국내' : scope === 'OVERSEAS' ? '해외' : '전체';
+    if (!await confirm({
+      title: `자동매매 ${scopeLabel} ${action}`,
+      description: active
+        ? `자동매매를 ${scopeLabel} ${action}합니다. AI가 즉시 매매를 시작합니다.`
+        : `자동매매를 ${scopeLabel} ${action}합니다. 진행 중인 익절/손절이 실행되지 않습니다.`,
+      confirmLabel: action,
+      confirmVariant: active ? 'primary' : 'danger',
+    })) return;
     await api(`/kill-switch/${active ? 'deactivate' : 'activate'}`, {
       method: 'POST',
       body: JSON.stringify({ force: true, ...(scope ? { scope } : {}) }),

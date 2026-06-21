@@ -408,19 +408,34 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
         pool.query(`SELECT COALESCE(value::numeric, 0) AS v FROM overseas_state WHERE key = $1`, [investKey]),
       ]);
 
-    // 배당 현황
+    // 배당 현황 — 실시간 가격으로 현재 가치 계산
     const divInvestedKrw = Number(divInvestedRow[0]?.v ?? 0);
     let divCurrentUsd = 0;
     let divDividendsUsd = 0;
     let divMonthlyUsd = 0;
+
+    // 🔒 실시간 가격 일괄 조회 (시세 실패 시 avg_price 폴백)
+    const priceMap = new Map<string, number>();
+    try {
+      const { getOverseasPrice } = await import('../../kis/overseas.js');
+      const pricePromises = divHoldings.map(async (h: any) => {
+        try {
+          const px = await getOverseasPrice(h.stock_code, 'NASDAQ');
+          if (px?.currentPrice > 0) priceMap.set(h.stock_code, px.currentPrice);
+        } catch { /* 개별 종목 시세 실패 무시 */ }
+      });
+      await Promise.allSettled(pricePromises);
+    } catch { /* 전체 시세 조회 실패 — avg_price 폴백 */ }
+
     const divList = divHoldings.map((h: any) => {
       const qty = Number(h.quantity);
       const avgPx = Number(h.avg_price);
+      const curPx = priceMap.get(h.stock_code) ?? avgPx; // 시세 실패 시 avg_price 폴백
       const divYield = Number(h.dividend_yield ?? 0) / 100;
-      const value = qty * avgPx;
+      const currentValue = qty * curPx;
       const divReceived = Number(h.total_dividends_received ?? 0);
-      const monthlyDiv = (value * divYield * 0.846) / 12;
-      divCurrentUsd += value;
+      const monthlyDiv = (currentValue * divYield * 0.846) / 12;
+      divCurrentUsd += currentValue;
       divDividendsUsd += divReceived;
       divMonthlyUsd += monthlyDiv;
       return {
@@ -428,6 +443,7 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
         name: h.name,
         shares: qty,
         avgPrice: avgPx,
+        currentPrice: curPx,
         dividends: divReceived,
         monthlyDiv: +monthlyDiv.toFixed(2),
       };
@@ -535,7 +551,7 @@ const DEFAULT_YIELDS: Record<string, number> = {
 dividendRoutes.post('/dividend/auto-setup-paper', async (c) => {
   try {
     const body = await c.req.json<{ target_monthly_krw?: number }>();
-    const targetMonthly = body.target_monthly_krw ?? 1_000_000; // 기본: 월100만원
+    const targetMonthly = body.target_monthly_krw ?? 100_000; // 기본: 월10만원 (원금 약 1,500만원)
     if (targetMonthly < 10000) return c.json({ error: '최소 월 1만원 이상' }, 400);
 
     const fx = await fetchExchangeRate().catch(() => FALLBACK_FX_RATE);

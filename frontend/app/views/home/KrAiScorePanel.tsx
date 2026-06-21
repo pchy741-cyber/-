@@ -159,6 +159,7 @@ export default function KrAiScorePanel({
             setModalStock(null);
           }}
           toast={toast}
+          confirm={confirm}
         />
       )}
     </Panel>
