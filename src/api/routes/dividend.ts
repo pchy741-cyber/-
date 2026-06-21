@@ -594,6 +594,24 @@ dividendRoutes.post('/dividend/fix-exchange', async (c) => {
   }
 });
 
+// ── 배당 Paper 리셋 (보유종목 + 투자금 + 히스토리 + 튜닝 초기화) ──
+dividendRoutes.post('/dividend/reset-paper', async (c) => {
+  try {
+    const pool = getPool();
+    const results = await Promise.all([
+      pool.query('DELETE FROM dividend_holdings WHERE is_paper = true'),
+      pool.query('DELETE FROM dividend_history WHERE is_paper = true'),
+      pool.query("DELETE FROM overseas_state WHERE key = 'dividend_invested_krw_paper'"),
+      pool.query("DELETE FROM overseas_state WHERE key = 'dividend_alloc_tuned_paper'"),
+    ]);
+    const deleted = (results[0].rowCount ?? 0) + (results[1].rowCount ?? 0);
+    logger.info(`[MoneyPrinter] Paper 배당 리셋: holdings+history ${deleted}건 삭제`, { component: 'DIVIDEND' });
+    return c.json({ ok: true, deleted });
+  } catch (e: any) {
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
 // ═══════════════════════════════════════════════════════
 // v4: 배당 Paper 자동 셋업 — 월 목표 배당금 기준 최소 자본 계산 + 투자
 // ═══════════════════════════════════════════════════════
