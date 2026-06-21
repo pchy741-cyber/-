@@ -9,7 +9,8 @@ import { getCurrentPrice, isMarketOpen } from '../../kis/market.js';
 import { getPaperBalance } from '../../risk/engine.js';
 import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
 import { getLoopStatus } from '../../scheduler/loop-mode.js';
-import { KR_FEE } from '../../config/constants.js';
+import { getOpenMarketRegions } from '../../scheduler/overseas/session.js';
+import { KR_FEE, FALLBACK_FX_RATE } from '../../config/constants.js';
 import { logger } from '../../utils/logger.js';
 import { PAPER_INITIAL_CAPITAL } from '../../risk/paper-balance.js';
 import { resolveRequestMode } from '../guards/live-pin.js';
@@ -25,22 +26,26 @@ const _metaInFlight = new Map<boolean, Promise<string>>();
 const META_CACHE_TTL = 28_000; // 28s — 30s 메타 인터벌보다 짧게 설정
 
 // ── 보유종목 가격 티커 (10초 간격, 추가 비용 $0) ──
-// 전역 dedup: 여러 SSE 연결이 동시에 있어도 10초에 1회만 호출
-let _lastPriceRefreshAt = 0;
+// paper/live 별 분리 — 모드 간 갱신 누락 방지
+const _lastPriceRefreshAt: Record<string, number> = { paper: 0, live: 0 };
 const PRICE_REFRESH_MS = 10_000;
 
-async function refreshHeldPrices(chains: Array<{ stock_code: string }>): Promise<void> {
+// ── SSE 동시 연결 수 제한 ──
+let _sseConnectionCount = 0;
+const MAX_SSE_CONNECTIONS = 10;
+
+async function refreshHeldPrices(chains: Array<{ stock_code: string }>, isPaper: boolean): Promise<void> {
   if (!isMarketOpen()) return;
   const now = Date.now();
-  if (now - _lastPriceRefreshAt < PRICE_REFRESH_MS) return;
-  _lastPriceRefreshAt = now;
+  const modeKey = isPaper ? 'paper' : 'live';
+  if (now - (_lastPriceRefreshAt[modeKey] ?? 0) < PRICE_REFRESH_MS) return;
+  _lastPriceRefreshAt[modeKey] = now;
 
-  // 국내 보유종목만 (6자리 숫자 코드)
   const krCodes = chains.map((ch) => ch.stock_code).filter((code) => /^\d{6}$/.test(code));
   if (krCodes.length === 0) return;
 
-  // 캐시 stale인 종목만 갱신 (이미 fresh면 skip)
-  const staleCodes = krCodes.filter((code) => getCachedPriceMemory(code) == null);
+  // 15s 캐시 또는 2h 폴백 있으면 skip — KIS API 쿼타 절약
+  const staleCodes = krCodes.filter((code) => getCachedPriceMemory(code) == null && getLastKnownPriceMemory(code) == null);
   if (staleCodes.length === 0) return;
 
   const results = await Promise.allSettled(
@@ -159,276 +164,292 @@ async function getRecentTrades(isPaper?: boolean) {
   }
 }
 
+// ── 메타 페이로드 빌더 (Promise coalescing 대상) ──
+async function buildMetaPayload(viewIsPaper: boolean): Promise<string> {
+  const balanceFn = viewIsPaper ? getPaperBalance : () => getAccountBalance(true);
+  const [balance, chains, recentTrades, strategy, healthLite, todayStats, newInsightRes] = await Promise.all([
+    balanceFn(),
+    getOpenChains(viewIsPaper),
+    getRecentTrades(viewIsPaper),
+    getActiveStrategy().catch(() => null),
+    getCopilotLiteScore(viewIsPaper).catch(() => ({ score: 0, issues: [] })),
+    getTodayTradeStats(viewIsPaper).catch(() => ({
+      totalTrades: 0, krSellCount: 0, krRealizedPnl: 0, usSellCount: 0, usRealizedPnlUsd: 0,
+    })),
+    // newInsightCount를 Promise.all에 포함 (직렬→병렬)
+    getPool().query(
+      `SELECT COUNT(*)::int AS cnt FROM learned_insights
+       WHERE last_updated >= NOW() - INTERVAL '24 hours' AND is_paper = $1`,
+      [viewIsPaper],
+    ).then((r) => Number(r.rows[0]?.cnt ?? 0)).catch(() => 0),
+  ]);
+
+  // 해외 포트폴리오 요약 (DB 기반)
+  const holdingsLiveKey = `overseas:holdings:${viewIsPaper ? 'paper' : 'live'}`;
+  const overseasHoldings = cacheGet<any[]>(holdingsLiveKey);
+  const overseasHoldingCount = overseasHoldings?.length ?? 0;
+  let overseasSummary: {
+    cashUsd: number; cashKrw: number; seedKrw: number; evalUsd: number;
+    investedUsd: number; totalUsd: number;
+    holdings: { code: string; qty: number; pnlPct: number }[];
+    investedKrw: number; evalKrw: number; fxRate: number;
+  } | null = null;
+  try {
+    const p = getPool();
+    const holdRes = await p.query(
+      'SELECT stock_code, quantity, avg_price, last_price FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1',
+      [viewIsPaper],
+    );
+    let cashUsd = 0;
+    let cashKrw = 0;
+    let seedKrw = 0;
+    let osFxRate = 0;
+    if (viewIsPaper) {
+      const { computePaperCash, getPaperSeedKrw } = await import('../../scheduler/overseas/state.js');
+      osFxRate = await getFxRate().catch(() => 0) || FALLBACK_FX_RATE;
+      cashUsd = await computePaperCash(osFxRate);
+      cashKrw = cashUsd * osFxRate;
+      seedKrw = getPaperSeedKrw();
+    } else {
+      const [usdR, krwR] = await Promise.all([
+        p.query("SELECT value FROM overseas_state WHERE key = 'cash_live_usd'"),
+        p.query("SELECT value FROM overseas_state WHERE key = 'cash'"),
+      ]);
+      cashUsd = Number(usdR.rows[0]?.value ?? 0);
+      cashKrw = Number(krwR.rows[0]?.value ?? 0);
+      osFxRate = cashUsd > 0 ? cashKrw / cashUsd : FALLBACK_FX_RATE;
+    }
+    let evalUsd = 0;
+    let investedUsd = 0;
+    const holdings = holdRes.rows.map((h: any) => {
+      const qty = Number(h.quantity);
+      const avg = Number(h.avg_price ?? 0);
+      const last = Number(h.last_price ?? avg);
+      evalUsd += last * qty;
+      investedUsd += avg * qty;
+      return { code: h.stock_code, qty, pnlPct: avg > 0 ? ((last - avg) / avg) * 100 : 0 };
+    });
+    overseasSummary = { cashUsd, cashKrw, seedKrw, evalUsd, investedUsd, totalUsd: cashUsd + evalUsd, holdings, investedKrw: Math.round(investedUsd * osFxRate), evalKrw: Math.round(evalUsd * osFxRate), fxRate: osFxRate };
+  } catch {
+    /* 해외 데이터 조회 실패 시 null 유지 */
+  }
+
+  // 보유종목 가격 갱신
+  await refreshHeldPrices(chains, viewIsPaper).catch(() => {});
+
+  // ── calcTotalAssets — FX는 FALLBACK_FX_RATE 통일 ──
+  const fxRate = await getFxRate().catch(() => 0) || FALLBACK_FX_RATE;
+
+  // 체인 집계: 국내 투자원가 + 미실현PnL
+  let totalChainInvested = 0;
+  let totalChainPnl = 0;
+  for (const ch of chains as any[]) {
+    const avg = Number(ch.avg_buy_price ?? 0);
+    const qty = Number(ch.total_quantity ?? 0);
+    totalChainInvested += avg * qty;
+    const cached = getCachedPriceMemory(ch.stock_code) ?? getLastKnownPriceMemory(ch.stock_code);
+    if (cached && cached > 0 && avg > 0) {
+      totalChainPnl += (cached - avg) * qty;
+    }
+  }
+
+  const assets = calcTotalAssets({
+    viewIsPaper,
+    rawCash: balance.orderableCash ?? 0,
+    netAsset: balance.netAsset ?? 0,
+    kisDomEval: balance.totalEvalAmount ?? 0,
+    kisPurchaseCost: (balance as any).purchaseCost ?? 0,
+    kisTotalProfitLoss: balance.totalProfitLoss ?? 0,
+    kisTotalProfitLossPct: balance.totalProfitLossPct ?? 0,
+    cashSource: (balance as any).cashSource ?? 'unknown',
+    totalChainInvested,
+    totalChainPnl,
+    overseasTotalInvestedUsd: overseasSummary?.investedUsd ?? 0,
+    overseasMarketValueUsd: overseasSummary?.evalUsd ?? 0,
+    overseasCashRaw: viewIsPaper ? (overseasSummary?.cashUsd ?? 0) : (overseasSummary?.cashKrw ?? 0),
+    overseasMaxUsd: 0,
+    fxRate,
+    paperInitialCapital: PAPER_INITIAL_CAPITAL,
+    liveRealizedPnl: 0,
+    prevDayTotalValue: 0,
+    prevDayUnrealizedPnl: 0,
+  });
+
+  const chainPrices = buildChainPrices(chains, assets.grandTotalValue);
+  const sseUnrealizedPnl = Math.round(
+    viewIsPaper ? totalChainPnl : (balance.totalProfitLoss || totalChainPnl),
+  );
+
+  const payload = {
+    timestamp: new Date().toISOString(),
+    portfolio: {
+      totalValue: assets.grandTotalValue,
+      cash: assets.totalCash,
+      invested: assets.totalInvested,
+      domesticInvested: assets.domesticInvested,
+      domesticEval: assets.domesticMarketValue,
+      domesticCash: assets.unifiedCash,
+      unrealizedPnl: sseUnrealizedPnl,
+      pnl: Math.round(assets.totalPnl + assets.overseasUnrealizedPnlKrw),
+      pnlPct: assets.totalPnlPct,
+      positionCount: balance.positions.length,
+    },
+    chainPrices,
+    overseasHoldingCount,
+    overseasSummary,
+    killSwitch: getKillSwitchStatusAll(),
+    activeChains: chains.length,
+    marketOpen: isMarketOpen(),
+    recentTrades,
+    strategy: strategy
+      ? {
+          mode: strategy.mode,
+          buy_threshold: strategy.buy_threshold,
+          take_profit_pct: strategy.take_profit_pct,
+          stop_loss_pct: strategy.stop_loss_pct,
+        }
+      : null,
+    healthScore: healthLite.score,
+    healthIssues: healthLite.issues,
+    loopMode: (() => {
+      try {
+        const ls = getLoopStatus();
+        return {
+          active: ls.active, phase: ls.phase, totalRuns: ls.totalRuns,
+          lastRunAt: ls.lastRunAt, lastRunResult: ls.lastRunResult,
+          startedAt: ls.startedAt, adaptiveIntervalMs: ls.adaptiveIntervalMs,
+          consecutiveErrors: ls.consecutiveErrors, marketPhase: ls.marketPhase,
+          openMarkets: ls.openMarkets, anyMarketOpen: ls.anyMarketOpen,
+          brief: ls.sessionBrief
+            ? { regime: ls.sessionBrief.marketRegime, risk: ls.sessionBrief.riskLevel, narrative: ls.sessionBrief.narrative }
+            : null,
+        };
+      } catch { return null; }
+    })(),
+    autoPilot: (() => {
+      try {
+        const ap = getLastAutoPilotResult();
+        const r = viewIsPaper ? ap.paper : ap.live;
+        return r
+          ? { overridesSet: r.overridesSet, decisions: r.decisions.slice(0, 5), lastRunAt: ap.lastRunAt }
+          : null;
+      } catch { return null; }
+    })(),
+    recentEvents: getRecentEvents(10, viewIsPaper ? 'paper' : 'live'),
+    todayStats,
+    newInsightCount: newInsightRes,
+  };
+
+  return JSON.stringify(payload);
+}
+
 /**
- * SSE (Server-Sent Events) 실시간 대시보드 스트림 v2
+ * SSE (Server-Sent Events) 실시간 대시보드 스트림 v3
  *
  * 2채널 분리:
  * - 'prices' 이벤트: 3초마다, chainPrices만 (~200바이트)
  * - 'meta' 이벤트: 30초마다, 전체 페이로드 (포트폴리오, 거래, 건강 등)
- * - 장외: 120초마다 meta만
+ * - 장외: 120초마다 meta만, 30초마다 keepalive ping
+ *
+ * v3 개선:
+ * - stream.aborted 체크 → 좀비 루프 방지
+ * - Promise coalescing → N연결이어도 DB 1회
+ * - retry 10s → thundering herd 방지
+ * - keepalive ping → 프록시 타임아웃 방지
+ * - 연결 수 제한 (MAX_SSE_CONNECTIONS)
+ * - FX rate 통일 (FALLBACK_FX_RATE)
+ * - paper/live 별 가격 갱신 분리
  */
 sseRoutes.get('/stream', (c) => {
-  // ?viewMode=paper|live — 보기 모드 (서버 거래 모드와 독립)
   const viewIsPaper = resolveRequestMode(c);
 
+  if (_sseConnectionCount >= MAX_SSE_CONNECTIONS) {
+    return c.json({ error: 'SSE 연결 한도 초과' }, 429);
+  }
+
   return streamSSE(c, async (stream) => {
+    _sseConnectionCount++;
     let id = 0;
     let lastMetaAt = 0;
-
-    // 메타 틱 사이 가격 틱에서 재사용할 캐시
+    let lastKeepaliveAt = 0;
     let cachedChains: any[] = [];
     let cachedTotalPortfolio = 0;
 
-    const PRICE_INTERVAL = 3_000; // 장중 가격 틱
-    const META_INTERVAL = 30_000; // 장중 메타 틱
-    const CLOSED_INTERVAL = 120_000; // 장외
+    const PRICE_INTERVAL = 3_000;
+    const META_INTERVAL = 30_000;
+    const CLOSED_INTERVAL = 120_000;
+    const KEEPALIVE_MS = 30_000;
 
-    while (true) {
-      const { getOpenMarketRegions } = await import('../../scheduler/overseas/session.js');
-      const anyMarketOpen = isMarketOpen() || getOpenMarketRegions().size > 0;
-      const now = Date.now();
-      const needMeta = now - lastMetaAt >= (anyMarketOpen ? META_INTERVAL : CLOSED_INTERVAL);
+    // 첫 이벤트: retry 설정 (재접속 간격 10초 — thundering herd 방지)
+    await stream.writeSSE({ data: '', event: 'ping', id: '0', retry: 10000 });
 
-      try {
-        if (needMeta) {
-          // ── 전체 메타 페이로드 빌드 ──
-          lastMetaAt = now;
-          const balanceFn = viewIsPaper ? getPaperBalance : () => getAccountBalance(true);
-          const [balance, chains, recentTrades, strategy, healthLite, todayStats] = await Promise.all([
-            balanceFn(),
-            getOpenChains(viewIsPaper),
-            getRecentTrades(viewIsPaper),
-            getActiveStrategy().catch(() => null),
-            getCopilotLiteScore(viewIsPaper).catch(() => ({ score: 0, issues: [] })),
-            getTodayTradeStats(viewIsPaper).catch(() => ({
-              totalTrades: 0,
-              krSellCount: 0,
-              krRealizedPnl: 0,
-              usSellCount: 0,
-              usRealizedPnlUsd: 0,
-            })),
-          ]);
+    try {
+      while (!stream.aborted) {
+        const anyMarketOpen = isMarketOpen() || getOpenMarketRegions().size > 0;
+        const now = Date.now();
+        const needMeta = now - lastMetaAt >= (anyMarketOpen ? META_INTERVAL : CLOSED_INTERVAL);
 
-          // 캐시 갱신 (가격 틱에서 재사용)
-          cachedChains = chains;
+        try {
+          // keepalive ping (장외 시 30초마다 — 프록시/Cloud Run 타임아웃 방지)
+          if (!anyMarketOpen && now - lastKeepaliveAt >= KEEPALIVE_MS && !needMeta) {
+            lastKeepaliveAt = now;
+            await stream.writeSSE({ data: '', event: 'ping', id: String(++id) });
+          }
 
-          // 해외 포트폴리오 요약 (DB 기반)
-          const holdingsLiveKey = `overseas:holdings:${viewIsPaper ? 'paper' : 'live'}`;
-          const overseasHoldings = cacheGet<any[]>(holdingsLiveKey);
-          const overseasHoldingCount = overseasHoldings?.length ?? 0;
-          let overseasSummary: {
-            cashUsd: number;
-            cashKrw: number;
-            seedKrw: number;
-            evalUsd: number;
-            investedUsd: number;
-            totalUsd: number;
-            holdings: { code: string; qty: number; pnlPct: number }[];
-            investedKrw: number;
-            evalKrw: number;
-            fxRate: number;
-          } | null = null;
-          try {
-            const p = getPool();
-            const holdRes = await p.query(
-              'SELECT stock_code, quantity, avg_price, last_price FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1',
-              [viewIsPaper],
-            );
-            let cashUsd = 0;
-            let cashKrw = 0;
-            let seedKrw = 0;
-            let osFxRate = 0;
-            if (viewIsPaper) {
-              const { computePaperCash, getPaperSeedKrw } = await import('../../scheduler/overseas/state.js');
-              const { fetchExchangeRate } = await import('../../automation/macro-data.js');
-              osFxRate = await fetchExchangeRate();
-              cashUsd = await computePaperCash(osFxRate);
-              cashKrw = cashUsd * osFxRate;
-              seedKrw = getPaperSeedKrw();
+          if (needMeta) {
+            lastMetaAt = now;
+            lastKeepaliveAt = now; // meta도 keepalive 역할
+
+            // Promise coalescing: 캐시 → 인플라이트 → 새 빌드
+            const metaCached = _metaCache.get(viewIsPaper);
+            let metaPayload: string;
+            if (metaCached && now - metaCached.ts < META_CACHE_TTL) {
+              metaPayload = metaCached.payload;
             } else {
-              const [usdR, krwR] = await Promise.all([
-                p.query("SELECT value FROM overseas_state WHERE key = 'cash_live_usd'"),
-                p.query("SELECT value FROM overseas_state WHERE key = 'cash'"),
-              ]);
-              cashUsd = Number(usdR.rows[0]?.value ?? 0);
-              cashKrw = Number(krwR.rows[0]?.value ?? 0);
-              osFxRate = cashUsd > 0 ? cashKrw / cashUsd : 1350;
+              let metaPromise = _metaInFlight.get(viewIsPaper);
+              if (!metaPromise) {
+                metaPromise = buildMetaPayload(viewIsPaper);
+                _metaInFlight.set(viewIsPaper, metaPromise);
+                metaPromise.finally(() => _metaInFlight.delete(viewIsPaper));
+              }
+              metaPayload = await metaPromise;
+              _metaCache.set(viewIsPaper, { payload: metaPayload, ts: Date.now() });
             }
-            let evalUsd = 0;
-            let investedUsd = 0;
-            const holdings = holdRes.rows.map((h: any) => {
-              const qty = Number(h.quantity);
-              const avg = Number(h.avg_price ?? 0);
-              const last = Number(h.last_price ?? avg);
-              evalUsd += last * qty;
-              investedUsd += avg * qty;
-              return { code: h.stock_code, qty, pnlPct: avg > 0 ? ((last - avg) / avg) * 100 : 0 };
-            });
-            overseasSummary = { cashUsd, cashKrw, seedKrw, evalUsd, investedUsd, totalUsd: cashUsd + evalUsd, holdings, investedKrw: Math.round(investedUsd * osFxRate), evalKrw: Math.round(evalUsd * osFxRate), fxRate: osFxRate };
-          } catch {
-            /* 해외 데이터 조회 실패 시 null 유지 */
-          }
 
-          // 보유종목 가격 갱신
-          await refreshHeldPrices(chains).catch(() => {});
+            await stream.writeSSE({ data: metaPayload, event: 'meta', id: String(++id) });
 
-          // ── calcTotalAssets 순수 함수로 위임 (Dashboard API와 100% 동일) ──
-          const fxRate = await getFxRate().catch(() => 0) || 1350;
+            // cachedChains/cachedTotalPortfolio 갱신 (가격 틱에서 재사용)
+            try {
+              const parsed = JSON.parse(metaPayload);
+              cachedTotalPortfolio = parsed.portfolio?.totalValue ?? cachedTotalPortfolio;
+              cachedChains = await getOpenChains(viewIsPaper);
+            } catch {}
+          } else if (anyMarketOpen && cachedChains.length > 0) {
+            // ── 경량 가격 틱 (DB 호출 없음, 캐시 기반) ──
+            await refreshHeldPrices(cachedChains, viewIsPaper).catch(() => {});
+            const chainPrices = buildChainPrices(cachedChains, cachedTotalPortfolio);
 
-          // 체인 집계: 국내 투자원가 + 미실현PnL
-          let totalChainInvested = 0;
-          let totalChainPnl = 0;
-          for (const ch of chains as any[]) {
-            const avg = Number(ch.avg_buy_price ?? 0);
-            const qty = Number(ch.total_quantity ?? 0);
-            totalChainInvested += avg * qty;
-            // PnL은 캐시가격 기반 (실시간), 장 마감 시 장기캐시 폴백
-            const cached = getCachedPriceMemory(ch.stock_code) ?? getLastKnownPriceMemory(ch.stock_code);
-            if (cached && cached > 0 && avg > 0) {
-              totalChainPnl += (cached - avg) * qty;
+            if (chainPrices.length > 0) {
+              await stream.writeSSE({
+                data: JSON.stringify({ timestamp: new Date().toISOString(), chainPrices }),
+                event: 'prices',
+                id: String(++id),
+              });
             }
           }
-
-          const assets = calcTotalAssets({
-            viewIsPaper,
-            rawCash: balance.orderableCash ?? 0,
-            netAsset: balance.netAsset ?? 0,
-            kisDomEval: balance.totalEvalAmount ?? 0,
-            kisPurchaseCost: (balance as any).purchaseCost ?? 0,
-            kisTotalProfitLoss: balance.totalProfitLoss ?? 0,
-            kisTotalProfitLossPct: balance.totalProfitLossPct ?? 0,
-            cashSource: (balance as any).cashSource ?? 'unknown',
-            totalChainInvested,
-            totalChainPnl,
-            overseasTotalInvestedUsd: overseasSummary?.investedUsd ?? 0,
-            overseasMarketValueUsd: overseasSummary?.evalUsd ?? 0,
-            overseasCashRaw: viewIsPaper ? (overseasSummary?.cashUsd ?? 0) : (overseasSummary?.cashKrw ?? 0),
-            overseasMaxUsd: 0, // SSE 경량화: maxUsd 쿼리 생략
-            fxRate,
-            paperInitialCapital: PAPER_INITIAL_CAPITAL,
-            liveRealizedPnl: 0, // SSE 경량화: lifetime realized 쿼리 생략
-            prevDayTotalValue: 0, // SSE 경량화: snapshot 쿼리 생략
-            prevDayUnrealizedPnl: 0, // SSE 경량화: snapshot 쿼리 생략
-          });
-
-          cachedTotalPortfolio = assets.grandTotalValue;
-
-          const chainPrices = buildChainPrices(chains, cachedTotalPortfolio);
-
-          // unrealizedPnl: Dashboard와 동일 (Paper=체인PnL / Live=KIS잔고PnL)
-          const sseUnrealizedPnl = Math.round(
-            viewIsPaper ? totalChainPnl : (balance.totalProfitLoss || totalChainPnl),
-          );
-
-          const payload = {
-            timestamp: new Date().toISOString(),
-            portfolio: {
-              totalValue: assets.grandTotalValue,
-              cash: assets.totalCash,
-              invested: assets.totalInvested,
-              domesticInvested: assets.domesticInvested,
-              domesticEval: assets.domesticMarketValue,
-              domesticCash: assets.unifiedCash,
-              unrealizedPnl: sseUnrealizedPnl,
-              pnl: Math.round(assets.totalPnl + assets.overseasUnrealizedPnlKrw),
-              pnlPct: assets.totalPnlPct,
-              positionCount: balance.positions.length,
-            },
-            chainPrices,
-            overseasHoldingCount,
-            overseasSummary,
-            killSwitch: getKillSwitchStatusAll(),
-            activeChains: chains.length,
-            marketOpen: isMarketOpen(),
-            recentTrades,
-            strategy: strategy
-              ? {
-                  mode: strategy.mode,
-                  buy_threshold: strategy.buy_threshold,
-                  take_profit_pct: strategy.take_profit_pct,
-                  stop_loss_pct: strategy.stop_loss_pct,
-                }
-              : null,
-            healthScore: healthLite.score,
-            healthIssues: healthLite.issues,
-            loopMode: (() => {
-              try {
-                const ls = getLoopStatus();
-                return {
-                  active: ls.active,
-                  phase: ls.phase,
-                  totalRuns: ls.totalRuns,
-                  lastRunAt: ls.lastRunAt,
-                  lastRunResult: ls.lastRunResult,
-                  startedAt: ls.startedAt,
-                  adaptiveIntervalMs: ls.adaptiveIntervalMs,
-                  consecutiveErrors: ls.consecutiveErrors,
-                  marketPhase: ls.marketPhase,
-                  openMarkets: ls.openMarkets,
-                  anyMarketOpen: ls.anyMarketOpen,
-                  brief: ls.sessionBrief
-                    ? {
-                        regime: ls.sessionBrief.marketRegime,
-                        risk: ls.sessionBrief.riskLevel,
-                        narrative: ls.sessionBrief.narrative,
-                      }
-                    : null,
-                };
-              } catch {
-                return null;
-              }
-            })(),
-            autoPilot: (() => {
-              try {
-                const ap = getLastAutoPilotResult();
-                const r = viewIsPaper ? ap.paper : ap.live;
-                return r
-                  ? { overridesSet: r.overridesSet, decisions: r.decisions.slice(0, 5), lastRunAt: ap.lastRunAt }
-                  : null;
-              } catch {
-                return null;
-              }
-            })(),
-            recentEvents: getRecentEvents(10, viewIsPaper ? 'paper' : 'live'),
-            todayStats,
-            newInsightCount: await getPool()
-              .query(
-                `SELECT COUNT(*)::int AS cnt FROM learned_insights
-                 WHERE last_updated >= NOW() - INTERVAL '24 hours' AND is_paper = $1`,
-                [viewIsPaper],
-              )
-              .then((r) => Number(r.rows[0]?.cnt ?? 0))
-              .catch(() => 0),
-          };
-
+        } catch {
           await stream.writeSSE({
-            data: JSON.stringify(payload),
-            event: 'meta',
+            data: JSON.stringify({ error: 'data fetch failed' }),
+            event: 'stream_error',
             id: String(++id),
-          });
-        } else if (anyMarketOpen && cachedChains.length > 0) {
-          // ── 경량 가격 틱 (DB 호출 없음, 캐시 기반) ──
-          await refreshHeldPrices(cachedChains).catch(() => {});
-          const chainPrices = buildChainPrices(cachedChains, cachedTotalPortfolio);
-
-          if (chainPrices.length > 0) {
-            await stream.writeSSE({
-              data: JSON.stringify({ timestamp: new Date().toISOString(), chainPrices }),
-              event: 'prices',
-              id: String(++id),
-            });
-          }
+          }).catch(() => {});
         }
-      } catch {
-        await stream.writeSSE({
-          data: JSON.stringify({ error: 'data fetch failed' }),
-          event: 'error',
-          id: String(++id),
-        });
-      }
 
-      const sleepMs = anyMarketOpen ? PRICE_INTERVAL : CLOSED_INTERVAL;
-      await stream.sleep(sleepMs);
+        const sleepMs = anyMarketOpen ? PRICE_INTERVAL : CLOSED_INTERVAL;
+        await stream.sleep(sleepMs);
+      }
+    } finally {
+      _sseConnectionCount--;
     }
   });
 });
