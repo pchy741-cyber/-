@@ -308,42 +308,39 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
 
   // calcTotalAssets 입력값 준비
   const rawCash = balance.orderableCash ?? PAPER_INITIAL_CAPITAL;
-  let liveRealizedPnl = 0;
-  {
-    const realizedRows = await safeQuery<{ total: string }>(
-      `SELECT COALESCE(SUM(realized_pnl), 0)::text AS total
-       FROM transaction_chains WHERE status='CLOSED' AND is_paper=$1`,
-      [viewIsPaper],
-    );
-    liveRealizedPnl = Number(realizedRows.rows[0]?.total ?? 0);
-  }
 
-  // ── 해외 실현손익 계산 (BUY/SELL 순흐름 + 현재 보유 원가 복원) ──
+  // ── 실현손익 3 쿼리 → Promise.all 병렬화 (네트워크 왕복 70% 단축) ──
+  let liveRealizedPnl = 0;
   let overseasRealizedPnlUsd = 0;
   try {
     const tradingMode = viewIsPaper ? 'paper' : 'live';
-    // 해외 전체 매매 순흐름: SELL 매출 - BUY 비용
-    const { rows: flowRows } = await safeQuery<{ net_flow: string }>(
-      `SELECT COALESCE(SUM(CASE
-         WHEN side = 'SELL' THEN filled_price * filled_quantity
-         WHEN side = 'BUY'  THEN -(filled_price * filled_quantity)
-       END), 0)::text AS net_flow
-       FROM orders
-       WHERE trigger_source = 'OVERSEAS' AND status = 'FILLED' AND (trading_mode = $1::text OR ($1::text = 'paper' AND trading_mode = 'p_arch'))`,
-      [tradingMode],
-    );
-    const netFlowUsd = Number(flowRows[0]?.net_flow ?? 0);
-    // 현재 보유종목 원가 합산 (아직 보유 중인 포지션의 투입금 복원)
-    const { rows: holdCostRows } = await safeQuery<{ invested: string }>(
-      `SELECT COALESCE(SUM(avg_price * quantity), 0)::text AS invested
-       FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1`,
-      [viewIsPaper],
-    );
-    const currentInvestedUsd = Number(holdCostRows[0]?.invested ?? 0);
-    // 실현손익 = 순흐름 + 현재보유원가 (미실현 부분 상쇄)
+    const [realizedRows, flowRows, holdCostRows] = await Promise.all([
+      safeQuery<{ total: string }>(
+        `SELECT COALESCE(SUM(realized_pnl), 0)::text AS total
+         FROM transaction_chains WHERE status='CLOSED' AND is_paper=$1`,
+        [viewIsPaper],
+      ),
+      safeQuery<{ net_flow: string }>(
+        `SELECT COALESCE(SUM(CASE
+           WHEN side = 'SELL' THEN filled_price * filled_quantity
+           WHEN side = 'BUY'  THEN -(filled_price * filled_quantity)
+         END), 0)::text AS net_flow
+         FROM orders
+         WHERE trigger_source = 'OVERSEAS' AND status = 'FILLED' AND (trading_mode = $1::text OR ($1::text = 'paper' AND trading_mode = 'p_arch'))`,
+        [tradingMode],
+      ),
+      safeQuery<{ invested: string }>(
+        `SELECT COALESCE(SUM(avg_price * quantity), 0)::text AS invested
+         FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1`,
+        [viewIsPaper],
+      ),
+    ]);
+    liveRealizedPnl = Number(realizedRows.rows[0]?.total ?? 0);
+    const netFlowUsd = Number(flowRows.rows[0]?.net_flow ?? 0);
+    const currentInvestedUsd = Number(holdCostRows.rows[0]?.invested ?? 0);
     overseasRealizedPnlUsd = Math.round((netFlowUsd + currentInvestedUsd) * 100) / 100;
   } catch {
-    /* overseas realized PnL 계산 실패 시 0 유지 */
+    /* 실현손익 계산 실패 시 0 유지 */
   }
 
   // ── 해외 보유종목 (별도 표시용, 국내 총자산에 합산하지 않음) ──
@@ -381,17 +378,19 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     if (viewIsPaper) {
       overseasCash = await computePaperCash(); // USD (결정론적 — orders 기반)
     } else {
-      const { rows: osCashRows } = await safeQuery(
-        `SELECT value, EXTRACT(EPOCH FROM (NOW() - COALESCE(updated_at, NOW() - INTERVAL '999 hours'))) AS age_sec
-         FROM overseas_state WHERE key = 'cash'`,
+      // cash + cash_max_usd 배치 조회 (2 쿼리 → 1 쿼리)
+      const { rows: cashStateRows } = await safeQuery(
+        `SELECT key, value, EXTRACT(EPOCH FROM (NOW() - COALESCE(updated_at, NOW() - INTERVAL '999 hours'))) AS age_sec
+         FROM overseas_state WHERE key IN ('cash', 'cash_max_usd')`,
       );
-      _osCashAge = osCashRows.length > 0 ? Number(osCashRows[0].age_sec) : Infinity;
-      overseasCash = osCashRows.length > 0 ? Number(osCashRows[0].value) : 0; // KRW
-      // KIS maxUsd(통합증거금 전체 주문가능 USD) — 환율 역변환 오차 방지
-      const { rows: maxUsdRows } = await safeQuery(
-        `SELECT value FROM overseas_state WHERE key = 'cash_max_usd'`,
-      );
-      _overseasMaxUsd = maxUsdRows.length > 0 ? Number(maxUsdRows[0].value) : 0;
+      for (const row of cashStateRows) {
+        if (row.key === 'cash') {
+          _osCashAge = Number(row.age_sec);
+          overseasCash = Number(row.value); // KRW
+        } else if (row.key === 'cash_max_usd') {
+          _overseasMaxUsd = Number(row.value);
+        }
+      }
     }
 
     // 종목별 고점/부분익절단계/동적TP·SL 일괄 조회
@@ -441,6 +440,9 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
         { component: 'DASHBOARD' },
       );
     }
+    // GLOBAL_WATCHLIST → Map 변환 (O(n²) → O(n) 최적화)
+    const watchlistCodeMap = new Map(GLOBAL_WATCHLIST.map(w => [w.code, w]));
+
     for (const r of osRows) {
       const code = String(r.stock_code);
       const qty = Number(r.quantity);
@@ -453,7 +455,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       overseasTotalInvested += avgP * qty;
       overseasMarketValueUsd += curP * qty;
 
-      const wItem = GLOBAL_WATCHLIST.find((w) => w.code === code);
+      const wItem = watchlistCodeMap.get(code);
       const sector = wItem?.sector ?? '';
       const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
       const isMediumBeta = SECTOR_CLASS.MEDIUM_BETA.includes(sector);
