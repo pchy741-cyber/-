@@ -244,21 +244,70 @@ dividendRoutes.post('/dividend/sync-receipts', async (c) => {
 // Money Printer: 배당 자동투자 + 통합 요약
 // ═══════════════════════════════════════════════════════
 
-/** ETF 최적 배분 비중 (고배당 집중 — 가중수익률 9.73%, 세후 8.23%) */
-const ETF_WEIGHTS: Record<string, number> = {
-  QYLD: 0.30,  // 12.0% yield → 3.60%
-  JEPQ: 0.25,  // 10.0% yield → 2.50%
-  XYLD: 0.20,  // 10.0% yield → 2.00%
-  JEPI: 0.15,  //  8.0% yield → 1.20%
-  SCHD: 0.05,  //  3.5% yield → 0.18%
-  O: 0.05,     //  5.0% yield → 0.25%
+/**
+ * 혁신 배당 전략 v2: Multi-Tier + VIX 동적 배분
+ * ─────────────────────────────────────────────
+ * Core (55%):  JEPQ + SPYI + SCHD  — 수익률 + 성장 균형
+ * Satellite (35%): QQQI + JEPI      — 고수익 인컴
+ * Anchor (10%):    O                 — 월배당 리츠 안정성
+ *
+ * 가중 수익률 ~9.5% → 1500만원 기준 월 ~10만원 (세후)
+ * 가중 성장률 ~7.0% → 총수익 ~16.5%
+ */
+const ETF_WEIGHTS_BASE: Record<string, number> = {
+  JEPQ: 0.25,  //  9.5% yield + 8% growth → 최고 밸런스
+  SPYI: 0.20,  // 12.0% yield + 8% growth → 차세대 S&P 커버드콜 (JEPI 상위호환)
+  SCHD: 0.15,  //  3.5% yield + 12% growth → 배당성장 앵커
+  QQQI: 0.15,  // 13.4% yield + 6% growth → 나스닥 콜스프레드 (2025 최우수 ETF)
+  JEPI: 0.15,  //  7.5% yield + 5% growth → 안정적 S&P500 인컴
+  O: 0.10,     //  5.5% yield + 3% growth → 월배당 리츠 (55년 연속 인상)
 };
+
+/**
+ * VIX 레짐별 배분 오버라이드
+ * CALM:   성장 중심 (SCHD↑, JEPQ↑) — 커버드콜 프리미엄 낮을 때 성장 극대화
+ * STRESS: 프리미엄 중심 (SPYI↑, QQQI↑) — 변동성 프리미엄 수확
+ * CRISIS: 방어 중심 (SCHD↑, O↑) — 자본 보존 우선
+ */
+const VIX_REGIME_WEIGHTS: Record<string, Record<string, number>> = {
+  CALM: {
+    JEPQ: 0.28, SPYI: 0.15, SCHD: 0.22, QQQI: 0.12, JEPI: 0.13, O: 0.10,
+  },
+  STRESS: {
+    JEPQ: 0.22, SPYI: 0.25, SCHD: 0.10, QQQI: 0.20, JEPI: 0.13, O: 0.10,
+  },
+  CRISIS: {
+    JEPQ: 0.15, SPYI: 0.15, SCHD: 0.25, QQQI: 0.10, JEPI: 0.15, O: 0.20,
+  },
+};
+
+/** VIX 기반 동적 비중 결정 */
+async function getDynamicWeights(isPaper: boolean): Promise<{ weights: Record<string, number>; regime: string }> {
+  try {
+    const { getFearGreedIndex } = await import('../../market/external-signals.js');
+    const fg = await getFearGreedIndex().catch(() => null);
+    const vix = fg?.vix ?? 0;
+    if (vix <= 0) return { weights: ETF_WEIGHTS_BASE, regime: 'UNKNOWN' };
+
+    const { getVixRegime } = await import('../../scheduler/overseas/vix-regime.js');
+    const { regime } = getVixRegime(vix, isPaper);
+    const regimeWeights = VIX_REGIME_WEIGHTS[regime] ?? ETF_WEIGHTS_BASE;
+    return { weights: regimeWeights, regime };
+  } catch {
+    return { weights: ETF_WEIGHTS_BASE, regime: 'FALLBACK' };
+  }
+}
+
+// 하위 호환: 기존 코드에서 ETF_WEIGHTS 참조 시 기본값 사용
+const ETF_WEIGHTS = ETF_WEIGHTS_BASE;
 
 /** ETF 거래소 매핑 — watchlist JOIN 정합성 보장 */
 const ETF_EXCHANGE: Record<string, string> = {
   JEPQ: 'NASDAQ',
   JEPI: 'NYSE',
   SCHD: 'NYSE',
+  SPYI: 'NYSE',
+  QQQI: 'NASDAQ',
   QYLD: 'NASDAQ',
   XYLD: 'NYSE',
   O: 'NYSE',
@@ -313,9 +362,10 @@ dividendRoutes.post('/dividend/auto-invest', async (c) => {
     const results: Array<{ code: string; shares: number; invested: number; price: number; ordered: boolean }> = [];
     let totalInvested = 0;
 
-    // 튜닝된 배분 비중이 있으면 우선 사용
+    // VIX 동적 비중 → 튜닝된 비중 → 기본값 (우선순위 순)
     const { getOverseasState } = await import('../../scheduler/overseas/utils.js');
-    let weights = ETF_WEIGHTS;
+    const { weights: vixWeights, regime } = await getDynamicWeights(isPaper);
+    let weights = vixWeights;
     try {
       const tunedRaw = await getOverseasState(`dividend_alloc_tuned_${isPaper ? 'paper' : 'live'}`);
       if (tunedRaw) {
@@ -323,8 +373,9 @@ dividendRoutes.post('/dividend/auto-invest', async (c) => {
         if (tuned.weights && Object.keys(tuned.weights).length > 0) weights = tuned.weights;
       }
     } catch {
-      /* use defaults */
+      /* use VIX-based defaults */
     }
+    logger.info(`[MoneyPrinter] VIX 레짐: ${regime} → ETF 배분 적용`, { component: 'DIVIDEND' });
 
     for (const [code, weight] of Object.entries(weights)) {
       const price = prices[code];
@@ -454,6 +505,10 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
     const totalCurrent = divCurrentUsd * fx + divDividendsUsd * fx;
     const totalReturn = divInvestedKrw > 0 ? (totalCurrent / divInvestedKrw - 1) * 100 : 0;
 
+    // VIX 레짐 정보 추가
+    const { regime } = await getDynamicWeights(isPaper);
+    const activeWeights = VIX_REGIME_WEIGHTS[regime] ?? ETF_WEIGHTS_BASE;
+
     return c.json({
       dividend: {
         investedKrw: divInvestedKrw,
@@ -469,6 +524,11 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
         returnPct: +totalReturn.toFixed(1),
       },
       fx,
+      strategy: {
+        regime,
+        activeWeights,
+        tiers: { core: ['JEPQ', 'SPYI', 'SCHD'], satellite: ['QQQI', 'JEPI'], anchor: ['O'] },
+      },
     });
   } catch (e: any) {
     return c.json({ error: 'Internal server error' }, 500);
@@ -540,12 +600,14 @@ dividendRoutes.post('/dividend/fix-exchange', async (c) => {
 
 /** ETF별 예상 배당 수익률 (연간, %) — watchlist에서 업데이트되면 DB값 우선 */
 const DEFAULT_YIELDS: Record<string, number> = {
-  JEPQ: 10.0,
-  JEPI: 8.0,
+  JEPQ: 9.5,
+  SPYI: 12.0,
   SCHD: 3.5,
+  QQQI: 13.4,
+  JEPI: 7.5,
+  O: 5.5,
   QYLD: 12.0,
   XYLD: 10.0,
-  O: 5.0,
 };
 
 dividendRoutes.post('/dividend/auto-setup-paper', async (c) => {
