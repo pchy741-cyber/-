@@ -7,6 +7,12 @@ import { memSetActiveStrategy } from '../../../db/memory-store.js';
 import { logger } from '../../../utils/logger.js';
 import { resolveRequestMode } from '../../guards/live-pin.js';
 
+/** NaN 방지: Number("abc") → NaN 전파 차단 */
+const safeNum = (v: unknown, fallback: number): number => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+
 export const allocationRoutes = new Hono();
 
 // ── 투자비율 설정 (국내/미국 비율 + 섹터 한도) ──
@@ -96,26 +102,26 @@ allocationRoutes.get('/portfolio/allocation/both', async (c) => {
 
 allocationRoutes.put('/portfolio/allocation', async (c) => {
   const body = await c.req.json();
-  const kr = Math.max(0, Math.min(100, Number(body.kr_pct ?? 0)));
-  const us = Math.max(0, Math.min(100, Number(body.us_pct ?? 100)));
+  const kr = Math.max(0, Math.min(100, safeNum(body.kr_pct, 0)));
+  const us = Math.max(0, Math.min(100, safeNum(body.us_pct, 100)));
   if (Math.abs(kr + us - 100) > 1) return c.json({ error: `국내+미국 합계가 100%여야 합니다 (현재 ${kr + us}%)` }, 400);
 
-  const semi = Math.max(0, Math.min(100, Number(body.sector_semiconductor ?? 30)));
-  const bio = Math.max(0, Math.min(100, Number(body.sector_bio ?? 20)));
-  const defense = Math.max(0, Math.min(100, Number(body.sector_defense ?? 25)));
-  const finance = Math.max(0, Math.min(100, Number(body.sector_finance ?? 20)));
-  const etc = Math.max(0, Math.min(100, Number(body.sector_etc ?? 30)));
-  const trailStop = Math.max(1, Math.min(20, Number(body.trailing_stop_pct ?? 5)));
+  const semi = Math.max(0, Math.min(100, safeNum(body.sector_semiconductor, 30)));
+  const bio = Math.max(0, Math.min(100, safeNum(body.sector_bio, 20)));
+  const defense = Math.max(0, Math.min(100, safeNum(body.sector_defense, 25)));
+  const finance = Math.max(0, Math.min(100, safeNum(body.sector_finance, 20)));
+  const etc = Math.max(0, Math.min(100, safeNum(body.sector_etc, 30)));
+  const trailStop = Math.max(1, Math.min(20, safeNum(body.trailing_stop_pct, 5)));
   // 리스크 파라미터 — body에 있으면 사용, 없으면 현재 DB 값 유지
   const posCapPct =
-    body.position_cap_pct !== undefined ? Math.max(5, Math.min(60, Number(body.position_cap_pct))) : null;
+    body.position_cap_pct !== undefined ? Math.max(5, Math.min(60, safeNum(body.position_cap_pct, 25))) : null;
   const maxInvPct =
-    body.max_invested_pct !== undefined ? Math.max(50, Math.min(100, Number(body.max_invested_pct))) : null;
+    body.max_invested_pct !== undefined ? Math.max(50, Math.min(100, safeNum(body.max_invested_pct, 88))) : null;
   const cashResPct =
-    body.cash_reserve_pct !== undefined ? Math.max(0, Math.min(50, Number(body.cash_reserve_pct))) : null;
-  const maxPos = body.max_positions !== undefined ? Math.max(1, Math.min(30, Number(body.max_positions))) : null;
+    body.cash_reserve_pct !== undefined ? Math.max(0, Math.min(50, safeNum(body.cash_reserve_pct, 20))) : null;
+  const maxPos = body.max_positions !== undefined ? Math.max(1, Math.min(30, safeNum(body.max_positions, 8))) : null;
   const maxDailyTr =
-    body.max_daily_trades !== undefined ? Math.max(1, Math.min(50, Number(body.max_daily_trades))) : null;
+    body.max_daily_trades !== undefined ? Math.max(1, Math.min(50, safeNum(body.max_daily_trades, 5))) : null;
 
   try {
     // body.isPaper 명시 우선, 없으면 현재 서버 모드 — 실전/연습 교차 오염 방지

@@ -301,6 +301,8 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
       lastError = err instanceof Error ? err : new Error(String(err));
       // 4xx 에러 (404 데이터 없음 등) → 재시도 무의미, 즉시 종료
       if (lastError.message.includes('데이터 없음')) throw lastError;
+      // POST 요청(주문) 재시도 → 중복 주문 위험: 타임아웃 시 이미 체결되었을 수 있음
+      if (method === 'POST') throw lastError;
       if (attempt < MAX_RETRIES) {
         logger.warn(`KIS 요청 실패, 재시도 ${attempt}/${MAX_RETRIES}: ${lastError.message}`, {
           component: 'KIS',

@@ -84,14 +84,15 @@ export async function getAllocRisk(isPaper: boolean): Promise<AllocRisk> {
     if (!override || Object.keys(override).length === 0) return base;
 
     const adjusted = { ...base, ...override };
-    // DB 설정이 레짐 오버라이드보다 더 공격적이면 DB 값 존중 (사용자 의도 우선)
-    adjusted.maxPositions = Math.max(adjusted.maxPositions, base.maxPositions);
-    adjusted.maxDailyTrades = Math.max(adjusted.maxDailyTrades, base.maxDailyTrades);
-    // 약세장에서는 DB보다 보수적으로 (방어 우선)
     if (regime.penalty >= 1) {
+      // 약세/조정장: 레짐 오버라이드와 DB 중 더 보수적인(작은) 값 (방어 우선)
       adjusted.maxPositions = Math.min(adjusted.maxPositions, base.maxPositions);
       adjusted.maxDailyTrades = Math.min(adjusted.maxDailyTrades, base.maxDailyTrades);
       adjusted.maxInvestedPct = Math.min(adjusted.maxInvestedPct, base.maxInvestedPct);
+    } else {
+      // 강세/중립: DB 설정이 더 공격적이면 DB 값 존중 (사용자 의도 우선)
+      adjusted.maxPositions = Math.max(adjusted.maxPositions, base.maxPositions);
+      adjusted.maxDailyTrades = Math.max(adjusted.maxDailyTrades, base.maxDailyTrades);
     }
     return adjusted;
   } catch {

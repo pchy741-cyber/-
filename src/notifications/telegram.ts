@@ -137,7 +137,12 @@ export async function sendTelegramMessage(message: string): Promise<void> {
   try {
     await bot.telegram.sendMessage(config.telegram.chatId, message, { parse_mode: 'Markdown' });
   } catch (error) {
-    logger.error(`Telegram 전송 실패: ${error}`, { component: 'TELEGRAM' });
+    // Markdown 파싱 실패 (unbalanced *, _, [ 등) → 플레인텍스트 재전송
+    try {
+      await bot.telegram.sendMessage(config.telegram.chatId, message);
+    } catch (retryErr) {
+      logger.error(`Telegram 전송 실패 (재시도 포함): ${retryErr}`, { component: 'TELEGRAM' });
+    }
   }
   // Slack 동시 발송 (webhook 미설정 시 자동 스킵)
   const level = /🚨|⛔|❌|🛑/.test(message) ? 'error' : /⚠️/.test(message) ? 'warn' : 'info';

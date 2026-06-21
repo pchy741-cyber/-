@@ -1,13 +1,20 @@
 import { getCtxIsPaper } from '../../config/context.js';
+import { cacheSet } from '../../cache/memory.js';
 import { isMemoryMode, queryWithRetry } from '../pool.js';
 import { memCreateChain, memGetOpenChains, memUpdateChain } from '../memory-store.js';
 import type { TransactionChain } from '../models.js';
 
+/** 체인 캐시 즉시 무효화 — fire-and-forget import().then() 대신 동기 호출 */
+function invalidateChainCache(): void {
+  cacheSet('db:chains:open:true', null, 0);
+  cacheSet('db:chains:open:false', null, 0);
+}
+
 export async function getOpenChains(isPaperOverride?: boolean): Promise<TransactionChain[]> {
   if (isMemoryMode()) return memGetOpenChains();
   const isPaper = isPaperOverride ?? getCtxIsPaper();
-  // 60초 캐시 — Track B 3분 간격이므로 충분, 매매 발생 시 invalidate됨
-  const { cacheGet, cacheSet } = await import('../../cache/memory.js');
+  // 60초 캐시 — Track B 3분 간격이므로 충분, 매매 발생 시 invalidateChainCache()로 즉시 무효화
+  const { cacheGet } = await import('../../cache/memory.js');
   const cacheKey = `db:chains:open:${isPaper}`;
   const cached = cacheGet<TransactionChain[]>(cacheKey);
   if (cached) return cached;
@@ -49,11 +56,8 @@ export async function createChain(
       chain.is_paper ?? getCtxIsPaper(),
     ],
   );
-  // 체인 캐시 무효화 — 새 포지션 진입 시 즉시 반영
-  import('../../cache/memory.js').then((m) => {
-    m.cacheSet('db:chains:open:true', null, 0);
-    m.cacheSet('db:chains:open:false', null, 0);
-  });
+  // 체인 캐시 즉시 무효화 — TOCTOU 방지 (이전: fire-and-forget import().then()으로 60초 캐시 갱신 지연)
+  invalidateChainCache();
   return rows[0].id;
 }
 
@@ -87,9 +91,6 @@ export async function updateChain(id: string, updates: Partial<TransactionChain>
   const setClauses = keys.map((k, i) => `${k} = $${i + 2}`);
   const values = keys.map((k) => (updates as Record<string, unknown>)[k]);
   await queryWithRetry(`UPDATE transaction_chains SET ${setClauses.join(', ')} WHERE id = $1`, [id, ...values]);
-  // 체인 캐시 무효화 — 상태 변경 즉시 반영
-  import('../../cache/memory.js').then((m) => {
-    m.cacheSet('db:chains:open:true', null, 0);
-    m.cacheSet('db:chains:open:false', null, 0);
-  });
+  // 체인 캐시 즉시 무효화
+  invalidateChainCache();
 }

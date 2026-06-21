@@ -20,6 +20,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: 'AI반도체',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   {
@@ -30,6 +31,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: 'HBM/AI반도체',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   {
@@ -40,6 +42,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: 'AI반도체패키징',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   {
@@ -50,6 +53,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '반도체공정장비',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   // 반도체 소재·원자재
@@ -61,6 +65,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '반도체소재',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   {
@@ -71,6 +76,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '반도체소재',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   // 로봇·자동화
@@ -82,6 +88,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '협동로봇',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   {
@@ -92,6 +99,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '협동로봇',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   // 방산·인프라 (트럼프 테마)
@@ -103,6 +111,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '방산/우주',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   {
@@ -113,6 +122,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '조선/LNG',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   // 바이오·제약
@@ -124,6 +134,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '바이오시밀러',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   {
@@ -134,6 +145,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: 'CMO바이오',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   // 원자재 (알래스카/광물)
@@ -145,6 +157,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '비철금속',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   {
@@ -155,6 +168,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '2차전지소재',
+    currency: 'KRW',
     source: 'MANUAL',
   },
 ];
@@ -180,6 +194,7 @@ const store = {
     id: uuid(),
     mode: 'SWING' as const,
     is_active: true,
+    is_paper: false,
     notebooklm_prompt: '',
     gemini_prompt: '',
     gpt_prompt: '',
@@ -209,6 +224,7 @@ export function memUpsertWatchlistItem(item: Pick<WatchlistItem, 'stock_code' | 
       stock_code: item.stock_code,
       stock_name: item.stock_name,
       market: item.market,
+      currency: item.market === 'NYSE' || item.market === 'NASDAQ' || item.market === 'AMEX' ? 'USD' : 'KRW',
       is_active: true,
       added_at: new Date().toISOString(),
       notes: null,

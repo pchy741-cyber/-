@@ -117,7 +117,7 @@ const ALLOWED_SESSION_COLS = new Set([
   'last_run_result',
   'adaptive_interval_ms',
   'ended_at',
-  'end_reason',
+  'stop_reason',
 ]);
 
 async function dbUpdateSession(id: number | null, updates: Record<string, unknown>): Promise<void> {
@@ -539,7 +539,7 @@ function adaptiveInterval(cachedRegions?: Set<string>, cachedPhase?: USMarketPha
 function isUSDST(d: Date): boolean {
   const year = d.getUTCFullYear();
   const mar1 = new Date(Date.UTC(year, 2, 1));
-  const marSun2 = 14 - (mar1.getUTCDay() || 7);
+  const marSun2 = 8 + (7 - mar1.getUTCDay()) % 7; // 3월 둘째 일요일
   const dstStart = Date.UTC(year, 2, marSun2, 7);
   const nov1 = new Date(Date.UTC(year, 10, 1));
   const novSun1 = nov1.getUTCDay() === 0 ? 1 : 8 - nov1.getUTCDay();
@@ -672,7 +672,12 @@ export async function startLoop(): Promise<{ ok: boolean; error?: string; warnin
   // 6시간 자동 정지 — advisory lock 무한 점유 방지
   _autoStopTimer = setTimeout(() => {
     logger.warn('Loop 6시간 자동 정지 — 최대 세션 시간 초과', { component: 'LOOP' });
-    stopLoop('6시간 자동 정지').catch(() => {});
+    stopLoop('6시간 자동 정지').catch((err) => {
+      // 6시간 안전장치 실패 → 강제 상태 초기화 (무한 루프 방지)
+      logger.error(`⛔ 6시간 자동 정지 실패 → 강제 플래그 해제: ${err}`, { component: 'LOOP' });
+      state.active = false;
+      state.phase = 'STOPPED';
+    });
   }, LOOP_MAX_DURATION_MS);
 
   // ── 1단계: 세션 전략 리뷰 ──
@@ -775,6 +780,13 @@ export async function checkPendingLoop(): Promise<void> {
     const session = rows[0];
     logger.info(`🔄 미종료 루프 세션 발견 (id=${session.id}) — 자동 재개`, { component: 'LOOP' });
 
+    // Advisory lock 획득 — 다른 인스턴스 동시 재개 방지
+    const lockAcquired = await acquireLoopLock();
+    if (!lockAcquired) {
+      logger.info(`🔒 다른 인스턴스에서 루프 실행 중 → 재개 스킵`, { component: 'LOOP' });
+      return;
+    }
+
     state.active = true;
     state.dbSessionId = session.id;
     state.startedAt = session.started_at;
@@ -789,6 +801,16 @@ export async function checkPendingLoop(): Promise<void> {
     state.errorCountTotal = Number(session.error_count ?? 0);
     state.killSwitchPauses = Number(session.kill_switch_pauses ?? 0);
     state.recoveryAttempts = 0; // 재개 시 복구 시도 리셋
+
+    // 6시간 자동 정지 타이머 (startLoop과 동일) — 무한 실행 방지
+    _autoStopTimer = setTimeout(() => {
+      logger.warn('Loop 6시간 자동 정지 — 최대 세션 시간 초과 (재개)', { component: 'LOOP' });
+      stopLoop('6시간 자동 정지 (재개)').catch((err) => {
+        logger.error(`⛔ 6시간 자동 정지 실패: ${err}`, { component: 'LOOP' });
+        state.active = false;
+        state.phase = 'STOPPED';
+      });
+    }, LOOP_MAX_DURATION_MS);
 
     const resumeMarketPhase = getUSMarketPhase();
     const resumeOpenRegions = getOpenMarketRegions();

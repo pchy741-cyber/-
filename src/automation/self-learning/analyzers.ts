@@ -443,14 +443,14 @@ export function analyzeProfitRatio(wins: EnrichedChain[], losses: EnrichedChain[
   const insights: LearnedInsight[] = [];
 
   if (ratio < 1.0) {
-    const suggestedStopLoss = -(Math.abs(avgLossPct) * 0.7).toFixed(1);
+    const suggestedStopLoss = avgLossPct > 0 ? -(Math.round(avgLossPct * 0.7 * 10) / 10) : -3;
     insights.push({
       category: 'LOSS_PATTERN',
       insight: `손익비 ${ratio.toFixed(2)} (평균 수익 +${avgWinPct.toFixed(1)}% vs 평균 손실 -${avgLossPct.toFixed(1)}%). 손절 지연이 손익비를 악화시키고 있음.`,
-      recommendation: `손절 기준을 ${suggestedStopLoss}%로 타이트하게 조정하면 손익비 개선 가능. 현재 평균 손실 -${avgLossPct.toFixed(1)}%의 70% 수준.`,
+      recommendation: `손절 기준을 ${suggestedStopLoss.toFixed(1)}%로 타이트하게 조정하면 손익비 개선 가능. 현재 평균 손실 -${avgLossPct.toFixed(1)}%의 70% 수준.`,
       paramChange: {
         field: 'stop_loss_pct',
-        value: Number(suggestedStopLoss),
+        value: suggestedStopLoss,
         reason: `손익비 ${ratio.toFixed(2)} 개선 필요`,
       },
       confidence: 0.8,

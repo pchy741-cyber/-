@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { KR_FEE } from '../../../config/constants.js';
 import { config } from '../../../config/index.js';
+import { getCtxIsPaper } from '../../../config/context.js';
 import { getOpenChains, getPool } from '../../../db/client.js';
 import { getAccountBalance } from '../../../kis/account.js';
 import { getPaperBalance } from '../../../risk/engine.js';
@@ -91,6 +92,7 @@ portfolioAnalysisRoutes.post('/sync-positions', async (c) => {
           stop_loss_pct: -1.5,
           max_averaging_count: 1,
           current_averaging_count: 0,
+          is_paper: getCtxIsPaper(),
         });
 
         await insertOrder({

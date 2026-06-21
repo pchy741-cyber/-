@@ -100,7 +100,8 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
     const open = new Date(chain.opened_at);
     const close = new Date(chain.closed_at);
     const holdingDays = (close.getTime() - open.getTime()) / (1000 * 60 * 60 * 24);
-    const pnlPct = (Number(chain.realized_pnl) / Number(chain.total_invested)) * 100;
+    const invested = Number(chain.total_invested);
+    const pnlPct = invested > 0 ? (Number(chain.realized_pnl) / invested) * 100 : 0;
 
     const firstOrder = (chain.orders as any[])?.find((o) => o.side === 'BUY');
     let entryType: EnrichedChain['entryType'] = 'UNKNOWN';
@@ -550,12 +551,19 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
       take_profit_pct: { min: 0.5, max: 50 }, // +0.5% ~ +50%
       buy_threshold: { min: 0, max: 100 },
     };
+    // mode 필드 허용 값: LLM이 임의 문자열 주입 방지
+    const VALID_MODES = new Set(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER', 'BOTTOM_FISHING', 'EOD_BETTING', 'BREAKOUT']);
     const applied: string[] = [];
     for (const insight of sorted.slice(0, 5)) {
       const { field, value } = insight.paramChange!;
       const safeCol = SAFE_COL[field];
       if (!safeCol) {
         logger.warn(`🚫 허용되지 않은 필드 업데이트 차단: ${field}`, { component: 'LEARN' });
+        continue;
+      }
+      // mode 값 검증: 허용된 전략 모드만
+      if (field === 'mode' && !VALID_MODES.has(String(value))) {
+        logger.warn(`🚫 허용되지 않은 mode 값 차단: ${value}`, { component: 'LEARN' });
         continue;
       }
       // 값 범위 검증
@@ -633,6 +641,11 @@ export async function applyInsightById(insightId: string): Promise<{ ok: boolean
     const range = PARAM_RANGES[field];
     if (range && typeof value === 'number' && (value < range.min || value > range.max)) {
       return { ok: false, message: `값 범위 초과: ${field}=${value} (허용: ${range.min}~${range.max})` };
+    }
+    // mode 값 검증
+    const VALID_MODES = new Set(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER', 'BOTTOM_FISHING', 'EOD_BETTING', 'BREAKOUT']);
+    if (field === 'mode' && !VALID_MODES.has(String(value))) {
+      return { ok: false, message: `허용되지 않은 mode: ${value}` };
     }
 
     const targetIsPaper = insight.is_paper;

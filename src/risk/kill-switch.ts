@@ -91,9 +91,10 @@ export function getKillSwitchStatusAll() {
  * @param manual true = 대시보드/텔레그램 수동 발동 → 자동 해제 불가
  * @param scope 'KR' | 'OVERSEAS' — 어느 시장의 매매를 차단할지
  */
-export async function activateKillSwitch(reason: string, manual = false, scope: KillSwitchScope = 'KR'): Promise<void> {
-  const key = stateKey(scope);
-  const s = getState(scope);
+export async function activateKillSwitch(reason: string, manual = false, scope: KillSwitchScope = 'KR', isPaperOverride?: boolean): Promise<void> {
+  const isPaper = isPaperOverride !== undefined ? isPaperOverride : getCtxIsPaper();
+  const key = stateKey(scope, isPaper);
+  const s = getState(scope, isPaper);
   if (s.active || updatingKeys.has(key)) return;
 
   // 수동 해제 후 grace period 내 자동 재발동 차단 (MDD re-trigger 방지)
@@ -106,7 +107,6 @@ export async function activateKillSwitch(reason: string, manual = false, scope: 
     }
   }
   // 🔒 active=true를 즉시 설정 — 비동기 작업 전에 isKillSwitchActive()가 true 반환하도록
-  // 이전: updatingKeys.add() 후 async 작업 중 race window 존재
   const now = new Date();
   setState(scope, {
     active: true,
@@ -115,10 +115,9 @@ export async function activateKillSwitch(reason: string, manual = false, scope: 
     consecutiveErrors: s.consecutiveErrors,
     manuallyTriggered: manual,
     forcedDeactivatedAt: null,
-  });
+  }, isPaper);
   updatingKeys.add(key);
 
-  const isPaper = getCtxIsPaper();
   const mode = isPaper ? 'paper' : 'live';
   const scopeLabel = scope === 'OVERSEAS' ? '해외' : '국내';
 

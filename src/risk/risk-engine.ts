@@ -273,6 +273,13 @@ export class RiskEngine {
     const currentBalance = await getBalance(isPaper);
     const startValue = Number(startSnapshot.total_value);
     const currentValue = getDomesticTotalAssets(currentBalance);
+
+    // 장시작 스냅샷 total_value=0 → Drawdown 보호 무력화 방지
+    if (startValue <= 0) {
+      logger.warn(`⚠️ 장시작 스냅샷 total_value=0 → Drawdown 계산 불가, 매매 차단 (다음 사이클 재시도)`, { component: 'RISK' });
+      return { approved: false, reason: '장시작 스냅샷 비정상(0원) — 매매 차단' };
+    }
+
     const dailyLoss = startValue - currentValue;
 
     // ── 외부 매도/입출금 감지 ──────────────────────────────────────────
@@ -305,6 +312,7 @@ export class RiskEngine {
         `일일 손실 한도 초과: ${dailyLoss.toLocaleString()}원(${lossPct}%) > 한도 ${limitAmount.toLocaleString()}원(${pct}%)`,
         false,
         'KR',
+        isPaper,
       );
       return {
         approved: false,
@@ -476,19 +484,20 @@ export class RiskEngine {
   private async checkWeeklyDrawdown(isPaper: boolean): Promise<PreTradeCheckResult> {
     try {
       // 이번 주 월요일 00:00 KST 계산
-      const now = getKSTNow();
+      const now = getKSTNow(); // getUTCX() = KST 값
       const dayOfWeek = now.getUTCDay(); // 0=일, 1=월 ... 6=토
       const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-      const weekStart = new Date(now);
-      weekStart.setUTCDate(now.getUTCDate() - daysFromMonday);
-      weekStart.setUTCHours(0, 0, 0, 0);
+      const mondayKst = new Date(now);
+      mondayKst.setUTCDate(now.getUTCDate() - daysFromMonday);
+      const mondayDateStr = mondayKst.toISOString().split('T')[0]; // KST 기준 월요일 날짜
+      const weekStartIso = `${mondayDateStr}T00:00:00+09:00`; // 월요일 00:00 KST = 일요일 15:00 UTC
 
       const pool = getPool();
       const { rows } = await pool.query<{ total_value: string }>(
         `SELECT total_value FROM portfolio_snapshots
          WHERE snapshot_at >= $1 AND is_paper = $2
          ORDER BY snapshot_at ASC LIMIT 1`,
-        [weekStart.toISOString(), isPaper],
+        [weekStartIso, isPaper],
       );
       if (rows.length === 0) return { approved: true, reason: 'OK' };
 
@@ -536,7 +545,7 @@ export class RiskEngine {
         try {
           await getPool().query(
             `DELETE FROM portfolio_snapshots WHERE snapshot_at >= $1 AND snapshot_at < $2 AND is_paper = $3`,
-            [weekStart.toISOString(), new Date(weekStart.getTime() + 2 * 60 * 60 * 1000).toISOString(), isPaper],
+            [weekStartIso, new Date(new Date(weekStartIso).getTime() + 2 * 60 * 60 * 1000).toISOString(), isPaper],
           );
           await insertSnapshot({
             total_value: currentValue,
@@ -608,6 +617,7 @@ export class RiskEngine {
           `월간 MDD 한도 초과: 고점 대비 -${mddPct.toFixed(1)}% (한도 -${mddLimit}%)`,
           false,
           'KR',
+          isPaper,
         );
         return {
           approved: false,

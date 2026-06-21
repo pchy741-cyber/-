@@ -794,6 +794,11 @@ async function bootstrap() {
         await new Promise((r) => setTimeout(r, 500));
       }
     } catch {}
+    // Auto Pilot 루프 정지 — DB 세션 종료 + advisory lock 해제
+    try {
+      const { stopLoop } = await import('./scheduler/loop-mode.js');
+      await stopLoop('graceful shutdown');
+    } catch {}
     stopIdleWatcher();
     try {
       (await import('./db/client.js')).getPool().end();

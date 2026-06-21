@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { getCtxIsPaper } from '../../../config/context.js';
 import { getOpenChains, getPool } from '../../../db/client.js';
 import { getAccountBalance } from '../../../kis/account.js';
 import { getPaperBalance } from '../../../risk/engine.js';
@@ -108,6 +109,7 @@ manualTriggersRoutes.post('/release-defense-park', async (c) => {
               stop_loss_pct: -1.5,
               max_averaging_count: 1,
               current_averaging_count: 0,
+              is_paper: getCtxIsPaper(),
             });
             await insertOrder({
               chain_id: chainId,

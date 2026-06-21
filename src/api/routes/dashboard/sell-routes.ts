@@ -36,10 +36,11 @@ registerOverseasSellRoutes(sellRoutes);
 // ── 탈출 모드 등록: +0.5% 돌파 순간 자동 전량 매도 ──
 sellRoutes.post('/escape/:chainId', async (c) => {
   const chainId = c.req.param('chainId');
+  const isPaper = resolveRequestMode(c);
   try {
     const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1 AND is_paper = $2', [
       chainId,
-      getCtxIsPaper(),
+      isPaper,
     ]);
     const chain = rows[0];
     if (!chain) return c.json({ error: '체인을 찾을 수 없습니다' }, 404);
@@ -54,7 +55,7 @@ sellRoutes.post('/escape/:chainId', async (c) => {
     await getPool().query('UPDATE transaction_chains SET escape_target_price = $1 WHERE id = $2 AND is_paper = $3', [
       escapeTarget,
       chainId,
-      getCtxIsPaper(),
+      isPaper,
     ]);
 
     logger.info(
@@ -72,10 +73,11 @@ sellRoutes.post('/escape/:chainId', async (c) => {
 // ── 탈출 모드 취소 ──
 sellRoutes.delete('/escape/:chainId', async (c) => {
   const chainId = c.req.param('chainId');
+  const isPaper = resolveRequestMode(c);
   try {
     await getPool().query('UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1 AND is_paper = $2', [
       chainId,
-      getCtxIsPaper(),
+      isPaper,
     ]);
     return c.json({ ok: true });
   } catch (err: any) {
@@ -271,7 +273,11 @@ sellRoutes.post('/sell/:chainId', async (c) => {
 
 // ── 종목코드 전량 매도 (복수 체인 일괄 청산) ──
 sellRoutes.post('/sell-stock/:stockCode', async (c) => {
-  const stockCode = c.req.param('stockCode');
+  const rawCode = c.req.param('stockCode');
+  const stockCode = rawCode.trim().replace(/\D/g, '');
+  if (!stockCode || stockCode.length !== 6) {
+    return c.json({ error: '종목코드는 숫자 6자리여야 합니다' }, 400);
+  }
   try {
     const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
     const triggerSource: string = sanitizeTriggerSource(body.source);

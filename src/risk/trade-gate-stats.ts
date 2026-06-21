@@ -147,7 +147,7 @@ export async function cooldownGate(): Promise<GateResult> {
   if (isPaper) {
     return { passed: true, reason: consecutive > 0 ? `[모의] ${consecutive}연패 (쿨다운 면제)` : '연속손실 없음' };
   }
-  const mult = 1;
+  const mult = config.liveRisk?.cooldownMultiplier ?? 1;
   const cooldownMs =
     consecutive >= 5
       ? Math.round(GATE.CONSECUTIVE_LOSS_HALT_MS * mult)

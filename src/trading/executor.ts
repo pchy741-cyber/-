@@ -429,10 +429,13 @@ export class TradeExecutor {
             component: 'EXECUTOR',
           });
         }
-      } catch {
-        /* 호가 조회 실패 시 시장가 폴백 (fail-open) */
+      } catch (e) {
+        logger.warn(`호가 조회 실패 → 시장가 폴백: ${stockCode} ${(e as Error).message}`, { component: 'EXECUTOR' });
       }
     }
+
+    // smartBuyPrice=0 방어: 시장가 폴백 (penny stock 등 비정상 호가)
+    if (smartBuyPrice !== undefined && smartBuyPrice <= 0) smartBuyPrice = undefined;
 
     // 주문 실행 (지정가 우선 → 호가 없으면 시장가 폴백)
     const result = await this.executeOrder({
@@ -503,8 +506,8 @@ export class TradeExecutor {
             component: 'EXECUTOR',
           });
         }
-      } catch {
-        /* ATR 실패 시 기본값 유지 */
+      } catch (e) {
+        logger.warn(`ATR 계산 실패 → 기본 손절값 유지: ${stockCode} ${(e as Error).message}`, { component: 'EXECUTOR' });
       }
 
       // 1:2 손익비 보장: TP < 2 × |SL| 시 TP 상향 조정
@@ -1133,14 +1136,23 @@ export class TradeExecutor {
     const kH = kstNow.getUTCHours(),
       kM = kstNow.getUTCMinutes();
     const isAfterHours = (kH === 15 && kM >= 40) || (kH === 16 && kM === 0);
-    const orderType = isAfterHours ? OrderType.AFTER_HOURS : params.price ? OrderType.LIMIT : OrderType.MARKET;
+    // 시간외 주문은 반드시 가격 필요 (ORD_DVSN='06'에 price=0 → KIS 거부)
+    let effectivePrice = params.price;
+    if (isAfterHours && !effectivePrice) {
+      effectivePrice = await getCurrentPrice(params.stockCode).then((p) => p.currentPrice).catch(() => 0);
+      if (!effectivePrice) {
+        logger.warn(`⛔ 시간외 주문 가격 조회 실패 → 주문 스킵: ${params.stockCode}`, { component: 'EXECUTOR' });
+        return { success: false, orderNo: '', message: '시간외 주문 가격 없음' };
+      }
+    }
+    const orderType = isAfterHours ? OrderType.AFTER_HOURS : effectivePrice ? OrderType.LIMIT : OrderType.MARKET;
 
     // 실거래 주문
     const result = await placeOrder({
       stockCode: params.stockCode,
       side: params.side,
       quantity: params.quantity,
-      price: params.price,
+      price: effectivePrice,
       orderType,
     });
 
@@ -1151,7 +1163,7 @@ export class TradeExecutor {
       side: params.side,
       order_type: orderType,
       quantity: params.quantity,
-      price: params.price ?? null,
+      price: effectivePrice ?? null,
       kis_order_no: result.orderNo,
       kis_status: result.success ? 'SUBMITTED' : 'FAILED',
       filled_quantity: 0,

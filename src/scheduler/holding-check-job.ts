@@ -295,7 +295,9 @@ async function checkAndUpdateTrailingStop(
           chain.is_paper ?? getCtxIsPaper(),
         ]);
       } catch (err) {
-        logger.error(`조기익절 플래그 저장 실패: ${err}`, { component: 'TRAILING' });
+        // DB 쓰기 실패 시 매도 결정 반환 금지 — 다음 사이클에서 이중 부분매도 방지
+        logger.error(`⛔ 조기익절 플래그 저장 실패 → 매도 차단 (이중 부분매도 방지): ${err}`, { component: 'TRAILING' });
+        return null;
       }
       return {
         action: 'PARTIAL_SELL' as const,
@@ -324,7 +326,9 @@ async function checkAndUpdateTrailingStop(
           chain.is_paper ?? getCtxIsPaper(),
         ]);
       } catch (err) {
-        logger.error(`트레일링 분할매도 플래그 저장 실패: ${err}`, { component: 'TRAILING' });
+        // DB 쓰기 실패 시 매도 결정 반환 금지 — 다음 사이클에서 이중 부분매도 방지
+        logger.error(`⛔ 분할매도 플래그 저장 실패 → 매도 차단 (이중 부분매도 방지): ${err}`, { component: 'TRAILING' });
+        return null;
       }
       return {
         action: isFullSell ? ('FORCE_CLOSE' as const) : ('PARTIAL_SELL' as const),
@@ -434,10 +438,9 @@ function countBusinessDays(start: Date, end: Date): number {
 
   while (currentMs < endMs) {
     currentMs += MS_PER_DAY;
-    const d = new Date(currentMs - KST_OFFSET_MS); // UTC로 변환
-    const day = d.getUTCDay();
-    // KST 날짜 문자열 생성
+    // KST 기준 요일/날짜: currentMs는 이미 KST 시프트된 epoch → getUTCDay()=KST 요일
     const kstDate = new Date(currentMs);
+    const day = kstDate.getUTCDay();
     const ymd = kstDate.toISOString().split('T')[0];
     if (day !== 0 && day !== 6 && !KRX_HOLIDAYS.has(ymd)) count++;
   }

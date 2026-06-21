@@ -33,7 +33,7 @@ strategyRoutes.put('/strategy', async (c) => {
     gpt_prompt: body.gpt_prompt ?? '',
     claude_prompt: body.claude_prompt ?? '',
     // UI 입력값 허용 (최소 50, 최대 99)
-    buy_threshold: body.buy_threshold != null ? Math.max(Math.min(body.buy_threshold, 99), 50) : modeBase.buyThreshold,
+    buy_threshold: body.buy_threshold != null ? Math.max(Math.min(Number(body.buy_threshold), 99), 50) : modeBase.buyThreshold,
     // CEO 직접 설정 허용 — 범위: -10% ~ -0.5%
     stop_loss_pct:
       body.stop_loss_pct != null ? Math.max(Math.min(Number(body.stop_loss_pct), -0.5), -10) : modeBase.stopLossPct,

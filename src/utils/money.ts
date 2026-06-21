@@ -14,9 +14,10 @@ export function roundKrw(value: number): number {
 
 /** 평균 단가 계산 (기존 보유 + 신규 매수) */
 export function calcAvgPrice(existingQty: number, existingAvgPrice: number, newQty: number, newPrice: number): number {
-  if (existingQty + newQty === 0) return 0;
+  const totalQty = existingQty + newQty;
+  if (totalQty <= 0) return 0; // 음수/0 수량 방어 (DB 부정합 시 극단 avgPrice 방지)
   const totalCost = existingQty * existingAvgPrice + newQty * newPrice;
-  return roundKrw(totalCost / (existingQty + newQty));
+  return roundKrw(totalCost / totalQty);
 }
 
 /** 수익률 계산 (%) — 소수 둘째자리 */

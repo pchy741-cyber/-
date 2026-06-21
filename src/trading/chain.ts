@@ -48,7 +48,7 @@ export class ChainManager {
       stop_loss_pct: params.stopLossPct,
       max_averaging_count: params.maxAveragingCount,
       current_averaging_count: 0,
-      is_paper: params.isPaper,
+      is_paper: params.isPaper ?? getCtxIsPaper(),
     });
 
     logger.info(`📦 체인 생성: ${params.stockCode} | ${params.quantity}주 @${params.buyPrice} | 모드: ${params.mode}`, {
@@ -156,7 +156,7 @@ export class ChainManager {
         ...(remainingQty > 0 && { peak_price: sellPrice }),
         ...(remainingQty === 0 && {
           closed_at: new Date().toISOString(),
-          close_reason: `익절: +${((sellPrice / avgBuy - 1) * 100).toFixed(1)}%`,
+          close_reason: avgBuy > 0 ? `익절: +${((sellPrice / avgBuy - 1) * 100).toFixed(1)}%` : '익절',
         }),
       });
     } else {
@@ -188,7 +188,7 @@ export class ChainManager {
             `UPDATE transaction_chains SET status='CLOSED', total_quantity=0, realized_pnl=$1, closed_at=$2, close_reason=$3,
              pnl_pct = CASE WHEN $5 > 0 AND $6 > 0 THEN ROUND(((($5 - $6) / $6) * 100)::numeric, 2) ELSE pnl_pct END
              WHERE id=$4`,
-            [freshPnl + profit, new Date().toISOString(), `익절: +${((sellPrice / freshAvgBuy - 1) * 100).toFixed(1)}%`, chainId, sellPrice, freshAvgBuy],
+            [freshPnl + profit, new Date().toISOString(), freshAvgBuy > 0 ? `익절: +${((sellPrice / freshAvgBuy - 1) * 100).toFixed(1)}%` : '익절', chainId, sellPrice, freshAvgBuy],
           );
         }
       }, 'SERIALIZABLE');

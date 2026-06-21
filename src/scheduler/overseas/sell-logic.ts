@@ -126,6 +126,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     if (!tech) continue;
 
     const curPrice = tech.price.currentPrice;
+    if (holding.avgPrice <= 0 || curPrice <= 0) continue; // 비정상 데이터 방어
     const pnlPct = ((curPrice - holding.avgPrice) / holding.avgPrice) * 100;
     const ai = aiMap.get(code);
 

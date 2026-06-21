@@ -224,15 +224,15 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
   }
 
   // 주문가능원화: TTTC8908R 최우선 → 잔고API → 예수금 폴백
-  // max_buy_amt = 최대매수금액 = KIS 앱 "최대주문가능금액" (대용+재사용 포함)
-  // nrcvb_buy_amt = 미수없는매수금액 (마진 미포함, 대용 포함)
+  // nrcvb_buy_amt = 미수없는매수금액 (마진 미포함) → 자동매매에 안전
+  // max_buy_amt = 최대매수금액 (마진/신용 포함) → 미수 발생 위험, 폴백으로만 사용
   let orderableCash: number;
   let source: AccountBalance['cashSource'];
-  if (maxBuyAmt > 0) {
-    orderableCash = maxBuyAmt;
-    source = 'buyable_api';
-  } else if (nrcvbBuyAmt > 0) {
+  if (nrcvbBuyAmt > 0) {
     orderableCash = nrcvbBuyAmt;
+    source = 'buyable_api';
+  } else if (maxBuyAmt > 0) {
+    orderableCash = maxBuyAmt;
     source = 'buyable_api';
   } else if (ordPsblCash > 0) {
     orderableCash = ordPsblCash;

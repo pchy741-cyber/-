@@ -547,7 +547,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     const snapResult = await safeQuery<{ total_value: string; unrealized_pnl: string }>(
       `SELECT total_value, unrealized_pnl FROM portfolio_snapshots
        WHERE is_paper = $1 AND total_value > 0
-         AND snapshot_at < CURRENT_DATE
+         AND snapshot_at < (NOW() AT TIME ZONE 'Asia/Seoul')::DATE
        ORDER BY snapshot_at DESC LIMIT 1`,
       [viewIsPaper],
     );

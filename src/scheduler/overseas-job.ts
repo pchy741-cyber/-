@@ -131,8 +131,8 @@ import { GLOBAL_WATCHLIST } from './overseas/watchlist.js';
  * AI(Claude) + 기술적 지표 복합 판단
  * 최대 5종목 동시 보유, 종목당 $1,500 / 20% 중 작은 값
  */
-// ⚡ LUNCH 시간 throttle — 12:00~14:00 ET 구간 30분 간격으로 확대
-let _lastLunchRunAt = 0;
+// ⚡ LUNCH 시간 throttle — 12:00~14:00 ET 구간 30분 간격으로 확대 (paper/live 독립)
+const _lastLunchRunAt = new Map<string, number>();
 const LUNCH_THROTTLE_MS = 30 * 60 * 1000; // 30분
 
 export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boolean }): Promise<void> {
@@ -152,11 +152,12 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     const usPhase = getUSMarketPhase();
     if (usPhase === 'LUNCH') {
       const now = Date.now();
-      if (now - _lastLunchRunAt < LUNCH_THROTTLE_MS) {
-        logger.debug('⏭️ 해외 Job 스킵 — US LUNCH 시간 throttle (30분 간격)', { component: 'OVERSEAS' });
+      const lastRun = _lastLunchRunAt.get(modeK) ?? 0;
+      if (now - lastRun < LUNCH_THROTTLE_MS) {
+        logger.debug(`⏭️ 해외 Job 스킵 [${modeK}] — US LUNCH 시간 throttle (30분 간격)`, { component: 'OVERSEAS' });
         return;
       }
-      _lastLunchRunAt = now;
+      _lastLunchRunAt.set(modeK, now);
     }
   }
 

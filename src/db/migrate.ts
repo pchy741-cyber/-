@@ -8,21 +8,22 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.join(__dirname, 'migrations');
 
 // 무시해도 되는 postgres 오류 패턴 (이미 적용된 DDL 재실행)
+// ⚠️ 패턴은 최대한 구체적으로 — 'relation', 'does not exist' 등 광범위 패턴은 실제 오류를 은폐함
 const IGNORABLE = [
   'already exists',
   'duplicate column',
-  'does not exist',
+  'column .* does not exist', // DROP COLUMN 재실행
+  'column .* of relation .* does not exist',
   'cannot alter type',
   'cannot change',
   'multiple primary keys',
   'there is no unique constraint',
   'is not a table',
-  'relation',
 ];
 
 function isIgnorable(msg: string): boolean {
   const m = msg.toLowerCase();
-  return IGNORABLE.some((p) => m.includes(p));
+  return IGNORABLE.some((p) => p.includes('.*') ? new RegExp(p).test(m) : m.includes(p));
 }
 
 /**

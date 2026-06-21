@@ -93,6 +93,18 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
   const strategyParams = resolveStrategyParams(mode, params);
   const aiScoreMap = buildAiScoreMap(params.aiScores);
   const { h: _scalpH, m: _scalpM } = getKstScalpTime();
+
+  // ── 인메모리 맵 클린업 — 닫힌 포지션 잔여 엔트리 + 만료 쿨다운 제거 ──
+  const openCodes = new Set(openChains.map((c) => c.stock_code));
+  const peakMap = _getPeakMap();
+  for (const code of peakMap.keys()) {
+    if (!openCodes.has(code)) peakMap.delete(code);
+  }
+  const ssCooldownMap = _getStrongSellCooldown();
+  const nowMs = Date.now();
+  for (const [code, ts] of ssCooldownMap) {
+    if (nowMs - ts > STRONG_SELL_COOLDOWN_MS * 2) ssCooldownMap.delete(code);
+  }
   const decisions: TradeDecision[] = [];
 
   // 학습된 TrailingStop 배수 로드 (sniperType별 최적 drop 비율)
@@ -343,45 +355,46 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       const ssCooldown = _getStrongSellCooldown();
       const lastFire = ssCooldown.get(chain.stock_code) ?? 0;
       if (Date.now() - lastFire < STRONG_SELL_COOLDOWN_MS) {
-        // 쿨다운 중 — 스킵 (다음 사이클에서 재평가)
-        continue;
-      }
-      ssCooldown.set(chain.stock_code, Date.now());
-      if (isDowntrendMode) {
+        // 쿨다운 중 — STRONG_SELL 부분매도만 스킵, SL/TP 등 나머지 매도 로직은 계속 실행
+        // ⚠️ 이전: continue로 전체 스킵 → 손절/트레일링스탑까지 우회되는 치명적 버그
+      } else {
+        ssCooldown.set(chain.stock_code, Date.now());
+        if (isDowntrendMode) {
+          decisions.push({
+            action: 'SELL',
+            stock_code: chain.stock_code,
+            quantity: chain.total_quantity,
+            price_type: 'MARKET',
+            reasoning: `외국인+기관 동반이탈(하락장): 전량 즉시 청산 → 추가 손실 방지`,
+            confidence: 0.9,
+          });
+          processedSellChains.add(chain.id);
+          continue;
+        }
+        const partialQty = Math.ceil(chain.total_quantity * 0.5);
+        if (partialQty > 0 && partialQty < chain.total_quantity) {
+          decisions.push({
+            action: 'PARTIAL_SELL',
+            stock_code: chain.stock_code,
+            quantity: partialQty,
+            price_type: 'MARKET',
+            reasoning: `외국인+기관 동반이탈(STRONG_SELL): 보유 50% 부분매도 → 수급 리스크 축소`,
+            confidence: 0.85,
+          });
+          processedSellChains.add(chain.id);
+          continue;
+        }
         decisions.push({
           action: 'SELL',
           stock_code: chain.stock_code,
           quantity: chain.total_quantity,
           price_type: 'MARKET',
-          reasoning: `외국인+기관 동반이탈(하락장): 전량 즉시 청산 → 추가 손실 방지`,
-          confidence: 0.9,
-        });
-        processedSellChains.add(chain.id);
-        continue;
-      }
-      const partialQty = Math.ceil(chain.total_quantity * 0.5);
-      if (partialQty > 0 && partialQty < chain.total_quantity) {
-        decisions.push({
-          action: 'PARTIAL_SELL',
-          stock_code: chain.stock_code,
-          quantity: partialQty,
-          price_type: 'MARKET',
-          reasoning: `외국인+기관 동반이탈(STRONG_SELL): 보유 50% 부분매도 → 수급 리스크 축소`,
+          reasoning: `외국인+기관 동반이탈(STRONG_SELL): 분할불가 전량매도 → 수급 리스크 차단`,
           confidence: 0.85,
         });
         processedSellChains.add(chain.id);
         continue;
       }
-      decisions.push({
-        action: 'SELL',
-        stock_code: chain.stock_code,
-        quantity: chain.total_quantity,
-        price_type: 'MARKET',
-        reasoning: `외국인+기관 동반이탈(STRONG_SELL): 분할불가 전량매도 → 수급 리스크 차단`,
-        confidence: 0.85,
-      });
-      processedSellChains.add(chain.id);
-      continue;
     }
 
     // ── 장중 스캘핑 익절 (v11-fix: 1%→2.5% 상향, SWING 7% TP와 충돌 해소) ──

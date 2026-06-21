@@ -7,6 +7,7 @@ import { type EarningsEvent, hasEarningsRisk, type interpretMarketSentiment } fr
 import { logger } from '../../utils/logger.js';
 import type { RegimeAdjustment } from './risk-intelligence.js';
 import { applyUncertaintyPenalty, checkSectorGroupLimit } from './risk-intelligence.js';
+import { isUSDST } from './session.js';
 import { GLOBAL_WATCHLIST } from './watchlist.js';
 import { getCachedSecFundamentalScore } from '../../automation/sec-research.js';
 
@@ -59,22 +60,27 @@ const RSI_OVERSOLD = 38;
 /** Sector concentration weight limit */
 const SECTOR_WEIGHT_LIMIT = 0.3;
 
-// ── 개선#3: 미국 시간대별 진입 가중치 ──
+// ── 개선#3: 미국 시간대별 진입 가중치 (DST 대응) ──
 function getUSTimeBonus(): number {
   const kst = new Date();
   const kstH = kst.getUTCHours() + 9; // UTC → KST
   const kstM = kst.getUTCMinutes();
   const kstTotal = (kstH % 24) * 60 + kstM;
-  // v10.9: 개장 30분 페널티 제거 — 가격 발견 구간에서 모멘텀 포착
-  // 서머타임 기준: 미국 개장 22:30 KST, 마감 05:00 KST
-  // 22:30~23:00 (개장 30분): 모멘텀 포착 구간 → +5점 (기존 -15점에서 전환)
-  if (kstTotal >= 22 * 60 + 30 && kstTotal < 23 * 60) return 5;
-  // 23:00~00:00 (개장 1시간 후): 트렌드 확정 구간 → +10점
-  if (kstTotal >= 23 * 60 && kstTotal < 24 * 60) return 10;
-  // 00:00~01:00 (미국 10~11am): 최적 진입 → +8점
-  if (kstTotal >= 0 && kstTotal < 60) return 8;
-  // 04:00~05:00 (미국 3~4pm 마감 전): 방향 확정 → +5점
-  if (kstTotal >= 4 * 60 && kstTotal < 5 * 60) return 5;
+  // 서머타임: 개장 22:30 KST / 겨울: 개장 23:30 KST
+  const shift = isUSDST() ? 0 : 60; // 겨울 = 1시간 뒤로
+  const open = 22 * 60 + 30 + shift;     // 개장 시각 (분)
+  const open30 = open + 30;               // 개장 +30분
+  const open90 = open + 90;               // 개장 +1.5시간
+  const close60 = (5 * 60 + shift) % (24 * 60) - 60; // 마감 1시간 전
+  const close = (5 * 60 + shift) % (24 * 60);         // 마감
+  // 개장 30분: 모멘텀 포착 구간 → +5점
+  if (kstTotal >= open && kstTotal < open30) return 5;
+  // 개장 30분~1.5시간: 트렌드 확정 구간 → +10점
+  if (kstTotal >= open30 && kstTotal < open90) return 10;
+  // 최적 진입 (개장 1.5~2.5시간 후) → +8점
+  if (kstTotal >= open90 && kstTotal < open90 + 60) return 8;
+  // 마감 1시간 전: 방향 확정 → +5점
+  if (kstTotal >= close60 && kstTotal < close) return 5;
   return 0;
 }
 

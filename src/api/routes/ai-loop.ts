@@ -141,7 +141,7 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
       const { rows: osCashRows } = await getPool()
         .query(`SELECT value FROM overseas_state WHERE key = 'cash'`)
         .catch(() => ({ rows: [] }));
-      overseasCashKrw = osCashRows.length > 0 ? Number(osCashRows[0].value) : 0;
+      overseasCashKrw = osCashRows.length > 0 ? Number(osCashRows[0].value) * FX_RATE : 0;
     }
     const overseasInvestedKrw = overseasInvestedUsd * FX_RATE;
 
@@ -509,8 +509,9 @@ aiLoopRoutes.get('/ai-loop/queue-stats', async (c) => {
              COUNT(*) FILTER (WHERE urgency = 1) AS urgent
       FROM pending_decisions
       WHERE created_at > NOW() - INTERVAL '24 hours'
+        AND is_paper = $1
       GROUP BY status
-    `);
+    `, [getCtxIsPaper()]);
     const stats: Record<string, { count: number; urgent: number }> = {};
     for (const r of rows) {
       stats[r.status as string] = { count: Number(r.cnt), urgent: Number(r.urgent) };

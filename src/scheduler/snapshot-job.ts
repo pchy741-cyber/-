@@ -84,13 +84,15 @@ export async function runSnapshotJob(): Promise<void> {
             `SELECT COALESCE(SUM(realized_pnl), 0)::numeric AS total
              FROM transaction_chains
              WHERE status = 'CLOSED' AND is_paper = $1
-               AND closed_at >= CURRENT_DATE`,
+               AND closed_at >= (NOW() AT TIME ZONE 'Asia/Seoul')::DATE`,
             [isPaper],
           );
           todayRealizedPnl = Number(realizedRows[0]?.total ?? 0);
         } catch { /* realized PnL 조회 실패 시 0 유지 */ }
         dailyPnl = unrealizedChange + todayRealizedPnl;
-        dailyPnlPct = (dailyPnl / Number(todayStart.total_value)) * 100;
+        dailyPnlPct = Number(todayStart.total_value) > 0
+          ? (dailyPnl / Number(todayStart.total_value)) * 100
+          : 0;
       }
     } catch { /* 첫 스냅샷 조회 실패 시 폴백 유지 */ }
 
@@ -134,12 +136,14 @@ export async function runSnapshotJob(): Promise<void> {
               const { rows: realizedRows } = await getPool().query(
                 `SELECT COALESCE(SUM(realized_pnl), 0)::numeric AS total
                  FROM transaction_chains
-                 WHERE status = 'CLOSED' AND is_paper = false AND closed_at >= CURRENT_DATE`,
+                 WHERE status = 'CLOSED' AND is_paper = false AND closed_at >= (NOW() AT TIME ZONE 'Asia/Seoul')::DATE`,
               );
               todayRealizedPnl = Number(realizedRows[0]?.total ?? 0);
             } catch { /* ignore */ }
             liveDailyPnl = unrealizedChange + todayRealizedPnl;
-            liveDailyPnlPct = (liveDailyPnl / Number(liveStart.total_value)) * 100;
+            liveDailyPnlPct = Number(liveStart.total_value) > 0
+              ? (liveDailyPnl / Number(liveStart.total_value)) * 100
+              : 0;
           }
         } catch { /* ignore */ }
         await insertSnapshot({
@@ -175,12 +179,14 @@ export async function runSnapshotJob(): Promise<void> {
             const { rows: realizedRows } = await getPool().query(
               `SELECT COALESCE(SUM(realized_pnl), 0)::numeric AS total
                FROM transaction_chains
-               WHERE status = 'CLOSED' AND is_paper = true AND closed_at >= CURRENT_DATE`,
+               WHERE status = 'CLOSED' AND is_paper = true AND closed_at >= (NOW() AT TIME ZONE 'Asia/Seoul')::DATE`,
             );
             todayRealizedPnl = Number(realizedRows[0]?.total ?? 0);
           } catch { /* ignore */ }
           paperDailyPnl = unrealizedChange + todayRealizedPnl;
-          paperDailyPnlPct = (paperDailyPnl / Number(paperStart.total_value)) * 100;
+          paperDailyPnlPct = Number(paperStart.total_value) > 0
+            ? (paperDailyPnl / Number(paperStart.total_value)) * 100
+            : 0;
         }
       } catch { /* ignore */ }
       await insertSnapshot({

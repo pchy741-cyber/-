@@ -6,6 +6,7 @@ export const WatchlistItemSchema = z.object({
   stock_code: z.string().min(1).max(10),
   stock_name: z.string(),
   market: z.enum(['KOSPI', 'KOSDAQ', 'NYSE', 'NASDAQ', 'AMEX']),
+  currency: z.enum(['KRW', 'USD']).default('KRW'), // DDL 001: VARCHAR(3) NOT NULL DEFAULT 'KRW'
   is_active: z.boolean(),
   added_at: z.string(),
   notes: z.string().nullable(),
@@ -62,7 +63,8 @@ export const TransactionChainSchema = z.object({
   trigger_source: z.string().nullable().optional(),
   // Computed via LEFT JOIN watchlist — SELECT에서만 존재, DDL 컬럼 아님
   stock_name: z.string().nullable().optional(),
-  is_paper: z.boolean().optional(),
+  // DDL 020: NOT NULL DEFAULT true — paper/live 분리 핵심 컬럼
+  is_paper: z.boolean().default(true),
   opened_at: z.string(),
   closed_at: z.string().nullable(),
   close_reason: z.string().nullable(),
@@ -88,11 +90,15 @@ export const OrderSchema = z.object({
   ai_reasoning: z.string().nullable(),
   avg_buy_price: z.number().nullable().optional(),
   // DDL 088: GENERATED ALWAYS AS (trading_mode IN ('paper','p_arch')) STORED
+  // ⚠️ SELECT 전용 — INSERT/UPDATE 시 이 컬럼을 포함하면 PostgreSQL 에러 발생
   is_paper: z.boolean().optional(),
   created_at: z.string(),
   updated_at: z.string(),
 });
 export type Order = z.infer<typeof OrderSchema>;
+
+/** INSERT/UPDATE 시 사용 — GENERATED 컬럼(is_paper) 제외 */
+export const OrderInsertSchema = OrderSchema.omit({ is_paper: true, created_at: true, updated_at: true });
 
 // ── 포트폴리오 스냅샷 ──
 export const PortfolioSnapshotSchema = z.object({
@@ -105,7 +111,8 @@ export const PortfolioSnapshotSchema = z.object({
   daily_pnl: z.number().nullable(),
   daily_pnl_pct: z.number().nullable(),
   positions: z.any().nullable(),
-  is_paper: z.boolean().optional(),
+  // DDL 022: NOT NULL DEFAULT false — paper/live 분리 필수 컬럼
+  is_paper: z.boolean().default(false),
 });
 export type PortfolioSnapshot = z.infer<typeof PortfolioSnapshotSchema>;
 
@@ -158,6 +165,27 @@ export const TradeDecisionSchema = z.object({
   regime_position_scale: z.number().optional(), // 레짐별 포지션 배율 (RANGE_HIGH_VOL=0.5, DIST=0.4, BEAR=0.3, BULL=1.2)
 });
 export type TradeDecision = z.infer<typeof TradeDecisionSchema>;
+
+// ── 해외주식 보유 현황 ──
+// DDL: 011 (생성) + 018 (scalp) + 026/035 (is_paper PK) + 043 (tp/sl) + 050 (bucket)
+// PK: (exchange, stock_code, is_paper)
+export const OverseasHoldingSchema = z.object({
+  stock_code: z.string(),
+  exchange: z.string().default('NASDAQ'),
+  is_paper: z.boolean().default(false),
+  quantity: z.number(),
+  avg_price: z.number(),
+  last_price: z.number().default(0),
+  last_price_at: z.string().nullable().optional(),
+  bought_at: z.string().nullable().optional(),
+  tp_pct: z.number().nullable().optional(),   // 043: 목표 수익률 %
+  sl_pct: z.number().nullable().optional(),   // 043: 손절률 % (음수)
+  scalp_tp: z.number().nullable().optional(), // 018: 스캘핑 TP
+  scalp_sl: z.number().nullable().optional(), // 018: 스캘핑 SL
+  is_scalp: z.boolean().optional(),           // 018: 스캘핑 여부
+  strategy_bucket: z.enum(['SWING', 'CORE', 'TACTICAL']).default('SWING'), // 050
+});
+export type OverseasHolding = z.infer<typeof OverseasHoldingSchema>;
 
 // ── GPT 스코어링 출력 스키마 ──
 export const ScoringResultSchema = z.object({

@@ -13,6 +13,14 @@ const { Pool } = pg;
 // → .toISOString()하면 UTC 변환 시 날짜가 하루 밀리는 버그 발생
 pg.types.setTypeParser(1082, (val: string) => val);
 
+// NUMERIC/DECIMAL(1700) → number 변환
+// pg 드라이버 기본: string 반환 → Zod z.number() 검증 시 실패 방지
+pg.types.setTypeParser(1700, (val: string) => parseFloat(val));
+
+// INT8/BIGINT(20) → number 변환
+// JS Number.MAX_SAFE_INTEGER(2^53) 이하 범위에서 안전 (이 프로젝트의 BIGINT 사용처에 해당)
+pg.types.setTypeParser(20, (val: string) => parseInt(val, 10));
+
 let pool: pg.Pool | null = null;
 let useMemory = false;
 let _poolErrorCount = 0;

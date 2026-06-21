@@ -14,7 +14,7 @@ riskControlsRoutes.put('/seed-capital', async (c) => {
   const body = await c.req.json();
   const market = body.market === 'OVERSEAS' ? 'OVERSEAS' : 'KR';
   const amount = Number(body.amount);
-  if (!amount || amount <= 0) return c.json({ error: '금액은 0보다 커야 합니다' }, 400);
+  if (!Number.isFinite(amount) || amount <= 0) return c.json({ error: '금액은 유한한 양수여야 합니다' }, 400);
 
   await setSeedCapital(market, amount);
   return c.json({ ok: true, status: getSeedCapitalStatus() });

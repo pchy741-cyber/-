@@ -11,6 +11,7 @@ import { getOverseasBalance, getOverseasBuyableAmount, getOverseasPrice } from '
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
 import { cleanupPositionState, getCashKrw, getTimeSinceLastTrade, setCash } from './state.js';
+import { modePrefix } from './utils.js';
 import { GLOBAL_WATCHLIST } from './watchlist.js';
 
 // ── In-memory debounce for manual sell detection (race condition prevention) ──
@@ -99,7 +100,8 @@ export async function syncHoldingsFromKIS(): Promise<void> {
 
         // 디바운스: KIS API 플래핑 방지 — 2회 연속 감지 시에만 SELL 처리
         // In-memory + DB double-check to prevent race condition between concurrent sync cycles
-        const debounceKey = `sync_sell_pending_${code}`;
+        // positionStateKeys() cleanup과 동일한 prefix 사용 (prefix 누락 → 고아키 버그 수정)
+        const debounceKey = `${modePrefix()}sync_sell_pending_${code}`;
         const now = Date.now();
 
         // Clean up stale in-memory debounce entries
@@ -200,7 +202,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
       } else if (Math.abs(kisItem.qty - dbQty) >= 1) {
         // 포지션 확인됨 → 잔여 debounce 상태 제거
         getPool()
-          .query('DELETE FROM overseas_state WHERE key = $1', [`sync_sell_pending_${code}`])
+          .query('DELETE FROM overseas_state WHERE key = $1', [`${modePrefix()}sync_sell_pending_${code}`])
           .catch(() => {});
 
         const soldQty = dbQty - kisItem.qty;
@@ -279,7 +281,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
       } else {
         // 포지션 수량 일치 (안정) → 잔여 debounce 상태 제거
         getPool()
-          .query('DELETE FROM overseas_state WHERE key = $1', [`sync_sell_pending_${code}`])
+          .query('DELETE FROM overseas_state WHERE key = $1', [`${modePrefix()}sync_sell_pending_${code}`])
           .catch(() => {});
       }
       allHoldings.delete(code);

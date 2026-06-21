@@ -9,6 +9,8 @@ import {
 } from '../../automation/crash-profit.js';
 import { getCommunityScoreAdjustment } from '../../automation/community-sentinel.js';
 import { getDisclosureScoreAdjustment, monitorDisclosures } from '../../automation/dart-monitor.js';
+import { refreshInsiderData, getInsiderScoreAdjustment } from '../../automation/dart-insider.js';
+import { refreshNaverTrends, getNaverTrendScoreAdjustment, registerStockNames } from '../../automation/naver-trend.js';
 import { getCachedPiotroskiScore, getCachedFundamentalScore } from '../../automation/dart-research.js';
 import { getInvestorFlow } from '../../automation/investor-flow.js';
 import { getMacroScoreAdjustment, getMacroSnapshot } from '../../automation/macro-data.js';
@@ -373,6 +375,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       _lastDartRefreshAt.set(dartMode, Date.now());
       monitorDisclosures().catch(() => {});
     }
+
+    // ── DART 내부자 매수/매도 + Naver 검색 트렌드 갱신 ──
+    const watchlistCodes = watchlist.map((s) => s.stock_code);
+    registerStockNames(watchlist.map((s) => ({ code: s.stock_code, name: s.stock_name })));
+    await Promise.allSettled([
+      Promise.race([refreshInsiderData(watchlistCodes), new Promise<void>((_, r) => setTimeout(() => r(new Error('timeout')), 3000))]),
+      Promise.race([refreshNaverTrends(watchlistCodes), new Promise<void>((_, r) => setTimeout(() => r(new Error('timeout')), 3000))]),
+    ]);
     const macroRiskOff = !ctxIsPaper && macroSnapshot?.regime === 'RISK_OFF';
     if (macroSnapshot?.regime === 'RISK_OFF') {
       logger.info(
@@ -755,6 +765,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
               stock_code: s.stock_code,
               stock_name: s.stock_name,
               market: 'KOSPI' as const,
+              currency: 'KRW' as const,
               is_active: true,
               added_at: '',
               notes: null,
@@ -1024,11 +1035,13 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
             : (stock5dRet - kospi5dRet) <= -3.0 ? -6  // 시장 대비 3%+ 부진 → 약세 종목
             : 0
           : 0;
+        const insiderAdj = getInsiderScoreAdjustment(s.stock_code);
+        const naverTrendAdj = getNaverTrendScoreAdjustment(s.stock_code);
         const totalAdj =
-          adj + capAdj + stale + kospiPenaltyAdj + adamKhooAdj + macroAdj + dartAdj + megaCapAdj + consensusAdj + aiScoreAdj + stockAccAdj + piotroskiAdj + fundScoreAdj + communityAdj + relStrengthAdj;
+          adj + capAdj + stale + kospiPenaltyAdj + adamKhooAdj + macroAdj + dartAdj + megaCapAdj + consensusAdj + aiScoreAdj + stockAccAdj + piotroskiAdj + fundScoreAdj + communityAdj + relStrengthAdj + insiderAdj + naverTrendAdj;
         if (!Number.isFinite(totalAdj)) {
           logger.warn(
-            `⚠️ 스코어 보정 NaN 감지: ${s.stock_code} adj=${adj} cap=${capAdj} macro=${macroAdj} dart=${dartAdj} cns=${consensusAdj} ai=${aiScoreAdj} acc=${stockAccAdj} pio=${piotroskiAdj} fund=${fundScoreAdj} cmty=${communityAdj} rs=${relStrengthAdj}`,
+            `⚠️ 스코어 보정 NaN 감지: ${s.stock_code} adj=${adj} cap=${capAdj} macro=${macroAdj} dart=${dartAdj} cns=${consensusAdj} ai=${aiScoreAdj} acc=${stockAccAdj} pio=${piotroskiAdj} fund=${fundScoreAdj} cmty=${communityAdj} rs=${relStrengthAdj} ins=${insiderAdj} nvt=${naverTrendAdj}`,
             { component: 'TRACK_B' },
           );
           return { stock_code: s.stock_code, score: Math.max(0, Math.round(base)) || 0 };
