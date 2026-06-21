@@ -14,7 +14,7 @@ import { getKSTNow } from '../utils/time.js';
 import { activateKillSwitch, isKillSwitchActive } from './kill-switch.js';
 import { getMonthlyMddSnapshot } from './mdd-calculator.js';
 import { getPaperBalance } from './paper-balance.js';
-import { MDD_LIMIT } from '../config/constants.js';
+import { MDD_LIMIT, SECTOR_MAP_KR } from '../config/constants.js';
 import { calcDailyLossLimit, WEEKLY_LOSS_PCT_LIVE, WEEKLY_LOSS_PCT_PAPER } from './seed-capital.js';
 
 async function getBalance(isPaper: boolean): Promise<AccountBalance> {
@@ -345,23 +345,12 @@ export class RiskEngine {
     '가전': 'sectorEtc',
   };
 
-  private static readonly SECTOR_MAP: Readonly<Record<string, string>> = {
-    '000660': '반도체', '005930': '반도체', '042700': '반도체',
-    '005290': '반도체', '357780': '반도체', '403870': '반도체',
-    '051910': '배터리', '006400': '배터리', '247540': '배터리',
-    '373220': '배터리', '336260': '배터리', '003670': '배터리',
-    '012450': '방산', '079550': '방산', '034020': '방산',
-    '035420': '인터넷', '035720': '인터넷', '377300': '인터넷',
-    '207940': '바이오', '068270': '바이오', '328130': '바이오',
-    '196170': '바이오', '028300': '바이오',
-    '055550': '금융', '105560': '금융', '316140': '금융',
-    '267260': '전력', '009540': '조선', '066570': '가전',
-  };
+  // SECTOR_MAP: constants.ts SECTOR_MAP_KR SSoT 사용
 
   private async checkSectorExposure(
     stockCode: string, orderValue: number, isPaper: boolean,
   ): Promise<PreTradeCheckResult> {
-    const sector = RiskEngine.SECTOR_MAP[stockCode];
+    const sector = SECTOR_MAP_KR[stockCode];
     if (!sector) return { approved: true, reason: '섹터 미분류 — 체크 면제' };
 
     const dbKey = RiskEngine.SECTOR_TO_DB_KEY[sector];
@@ -376,7 +365,7 @@ export class RiskEngine {
       const sectorGroup = RiskEngine.SECTOR_TO_DB_KEY[sector];
       let sectorInvested = 0;
       for (const pos of balance.positions) {
-        const posSector = RiskEngine.SECTOR_MAP[pos.stockCode];
+        const posSector = SECTOR_MAP_KR[pos.stockCode];
         if (posSector && RiskEngine.SECTOR_TO_DB_KEY[posSector] === sectorGroup) {
           sectorInvested += pos.quantity * pos.avgBuyPrice;
         }
@@ -394,8 +383,8 @@ export class RiskEngine {
       }
       return { approved: true, reason: 'OK' };
     } catch (err) {
-      logger.warn(`⚠️ 섹터 비중 조회 실패 (진행): ${err}`, { component: 'RISK' });
-      return { approved: true, reason: '섹터 비중 조회 실패 — 매수 허용' };
+      logger.warn(`⚠️ 섹터 비중 조회 실패 — fail-closed 차단: ${err}`, { component: 'RISK' });
+      return { approved: false, reason: '섹터 비중 조회 실패 — fail-closed 차단' };
     }
   }
 
@@ -404,21 +393,21 @@ export class RiskEngine {
     let totalPortfolio = getDomesticTotalAssets(balance);
     let currentInvested = balance.totalEvalAmount;
 
-    // Paper 모드: 해외 자산 합산 — KR만 기준 시 투자비중 과다 계산(~100%)으로 매수 차단
-    if (isPaper) {
-      try {
-        const fx = await getFxRate();
-        if (fx > 0) {
-          const [osHoldings, osCashUsd] = await Promise.all([getOverseasHoldings(true), getOverseasCash(true)]);
-          const osInvestedKrw = Math.round(
-            Array.from(osHoldings.values()).reduce((s, h) => s + h.qty * h.avgPrice, 0) * fx,
-          );
-          const osCashKrw = Math.round(osCashUsd * fx);
-          totalPortfolio += osInvestedKrw + osCashKrw;
-          currentInvested += osInvestedKrw;
-        }
-      } catch { /* fallback: KR-only */ }
-    }
+    // 해외 자산 합산 — KR만 기준 시 투자비중 과다 계산(~100%)으로 매수 차단
+    try {
+      const fx = await getFxRate();
+      if (fx > 0) {
+        const [osHoldings, osCashUsd] = await Promise.all([
+          getOverseasHoldings(isPaper), getOverseasCash(isPaper),
+        ]);
+        const osInvestedKrw = Math.round(
+          Array.from(osHoldings.values()).reduce((s, h) => s + h.qty * h.avgPrice, 0) * fx,
+        );
+        const osCashKrw = Math.round(osCashUsd * fx);
+        totalPortfolio += osInvestedKrw + osCashKrw;
+        currentInvested += osInvestedKrw;
+      }
+    } catch { /* fallback: KR-only */ }
 
     // 소자산(100만 미만)은 비율 체크 의미 없음 — cashCheck가 유일한 실질 관문
     if (totalPortfolio === 0 || totalPortfolio < 1_000_000) return { approved: true, reason: 'OK' };

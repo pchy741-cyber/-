@@ -181,7 +181,7 @@ async function checkBalanceIntegrity(issues: QAIssue[]): Promise<void> {
   const today = getKSTNow().toISOString().split('T')[0];
 
   const { rows: snapshots } = await safeQuery<Record<string, unknown>>(
-    `SELECT total_asset, orderable_cash, total_eval_amount, is_paper
+    `SELECT total_value, cash_balance, invested_value, is_paper
      FROM portfolio_snapshots
      WHERE snapshot_at >= $1
      ORDER BY snapshot_at DESC LIMIT 2`,
@@ -204,7 +204,7 @@ async function checkBalanceIntegrity(issues: QAIssue[]): Promise<void> {
           : await getAccountBalance(true);
       });
 
-      const snapTotal = Number(snap.total_asset ?? 0);
+      const snapTotal = Number(snap.total_value ?? 0);
       const liveTotal = balance.orderableCash + balance.totalEvalAmount;
 
       if (snapTotal > 0) {
@@ -380,8 +380,8 @@ async function checkAICostAnomaly(issues: QAIssue[]): Promise<void> {
 async function checkSystemHealth(issues: QAIssue[]): Promise<void> {
   // 최근 1시간 에러 건수
   const { rows: errorRows } = await safeQuery<{ cnt: string }>(
-    `SELECT COUNT(*) as cnt FROM system_events
-     WHERE level = 'error' AND created_at >= NOW() - INTERVAL '1 hour'`,
+    `SELECT COUNT(*) as cnt FROM system_log
+     WHERE level = 'error' AND timestamp >= NOW() - INTERVAL '1 hour'`,
     [],
   );
   const recentErrors = Number(errorRows[0]?.cnt ?? 0);

@@ -857,13 +857,12 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     const sellOrders = sellResult.sellOrders;
     cash = sellResult.cash;
 
-    // v10.8: 매도 후 holdings Map에서 매도 종목 제거 + portfolioValue/holdingEvalUsd 재계산
-    for (const so of sellOrders) {
-      const code = typeof so === 'string' ? so : (so as any).code;
-      if (code && holdings.has(code)) {
-        const h = holdings.get(code)!;
-        if (h.qty <= 0) holdings.delete(code);
-      }
+    // v10.8: 매도 후 holdings Map 동기화 — DB에서 최신 상태 재로딩
+    // 기존 코드: sellOrders(문자열)에서 종목코드 추출 시도 → 항상 실패 (전체 문자열이 code가 됨)
+    if (sellOrders.length > 0) {
+      const freshHoldings = await getHoldings(isPaper());
+      holdings.clear();
+      for (const [k, v] of freshHoldings) holdings.set(k, v);
     }
     let holdingEvalUsdPost = Array.from(holdings.entries()).reduce((sum, [code, h]) => {
       const tech = techResults.find((t) => t.code === code);

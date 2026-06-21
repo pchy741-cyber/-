@@ -38,6 +38,11 @@ export function calcGptCost(inputTokens: number, outputTokens: number): number {
   return (inputTokens / 1_000_000) * 0.15 + (outputTokens / 1_000_000) * 0.60;
 }
 
+/** Groq (llama-3.3-70b): $0.59/1M input + $0.79/1M output */
+export function calcGroqCost(inputTokens: number, outputTokens: number): number {
+  return (inputTokens / 1_000_000) * 0.59 + (outputTokens / 1_000_000) * 0.79;
+}
+
 /** Claude Haiku 4.5 API: $0.80/1M input + $4.00/1M output */
 export function calcClaudeApiCost(inputTokens: number, outputTokens: number): number {
   return (inputTokens / 1_000_000) * 0.80 + (outputTokens / 1_000_000) * 4.00;
@@ -56,11 +61,6 @@ export function calcClaudeCliCost(): number {
   }
   _cliCallsToday++;
   return CLAUDE_CLI_DAILY_COST / _cliCallsToday; // 호출 추가 시 이전 호출 비용도 재분배됨 — 일별 총합은 항상 $3.33
-}
-
-/** Groq (llama-3.3-70b): $0.59/1M input + $0.79/1M output */
-export function calcGroqCost(inputTokens: number, outputTokens: number): number {
-  return (inputTokens / 1_000_000) * 0.59 + (outputTokens / 1_000_000) * 0.79;
 }
 
 // ── 배치 버퍼 ──

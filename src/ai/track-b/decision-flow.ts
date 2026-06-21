@@ -181,7 +181,7 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   });
 
   // ── 3. 섹터 집중 매수 차단 ──────────────────────────────────────────
-  decisions = filterSectorConcentration(decisions, openChains, params.isPaper);
+  decisions = filterSectorConcentration(decisions, openChains, params.isPaper ?? false);
 
   // ── 4. 유휴 현금 파킹 해제 (SELL만 먼저 — BUY는 포지션사이저 이후 step 7.5에서 추가) ──
   // confirmedBuyCount: confidence 0.6+ 인 확정 매수만 카운트 (저품질 매수로 파킹 깨지 않게)

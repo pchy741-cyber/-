@@ -293,8 +293,8 @@ async function runIntegrityCheck(): Promise<IntegrityIssue[]> {
 async function collectSystemEvents(today: string): Promise<{ errors: number; warnings: number }> {
   try {
     const { rows } = await safeQuery<{ level: string; cnt: string }>(
-      `SELECT level, COUNT(*) as cnt FROM system_events
-       WHERE created_at >= $1 AND level IN ('error', 'warn')
+      `SELECT level, COUNT(*) as cnt FROM system_log
+       WHERE timestamp >= $1 AND level IN ('error', 'warn')
        GROUP BY level`,
       [`${today}T00:00:00+09:00`],
     );

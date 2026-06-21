@@ -362,7 +362,7 @@ export async function runDataSnoopingGuard(): Promise<void> {
     // DB 로그
     try {
       await getPool().query(
-        `INSERT INTO system_logs (level, component, message, created_at)
+        `INSERT INTO system_log (level, component, message, timestamp)
          VALUES ($1, $2, $3, NOW())`,
         [
           report.riskLevel === 'LOW' ? 'INFO' : 'WARN',
