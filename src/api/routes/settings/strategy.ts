@@ -34,10 +34,12 @@ strategyRoutes.put('/strategy', async (c) => {
     claude_prompt: body.claude_prompt ?? '',
     // UI 입력값 허용 (최소 50, 최대 99)
     buy_threshold: body.buy_threshold != null ? Math.max(Math.min(body.buy_threshold, 99), 50) : modeBase.buyThreshold,
+    // CEO 직접 설정 허용 — 범위: -10% ~ -0.5%
     stop_loss_pct:
-      body.stop_loss_pct != null ? Math.min(body.stop_loss_pct, modeBase.stopLossPct) : modeBase.stopLossPct,
+      body.stop_loss_pct != null ? Math.max(Math.min(Number(body.stop_loss_pct), -0.5), -10) : modeBase.stopLossPct,
+    // CEO 직접 설정 허용 — 범위: 1% ~ 30%
     take_profit_pct:
-      body.take_profit_pct != null ? Math.max(body.take_profit_pct, modeBase.takeProfitPct) : modeBase.takeProfitPct,
+      body.take_profit_pct != null ? Math.max(Math.min(Number(body.take_profit_pct), 30), 1) : modeBase.takeProfitPct,
     strategy_document: body.strategy_document ?? '',
     risk_prompt: body.risk_prompt ?? '',
     use_dynamic_tpsl: useDynamic,
