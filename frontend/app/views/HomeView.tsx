@@ -104,7 +104,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       if (r?.favorites) setFavorites(new Set(r.favorites));
       if (r?.blacklist) setBlacklist(new Set(r.blacklist));
     }).catch(() => {});
-  }, []);
+  }, [viewMode]);
   const handleToggleFavorite = React.useCallback(async (code: string) => {
     try {
       const r = await api(`/overseas/favorites/toggle?viewMode=${viewMode}`, { method: 'POST', body: JSON.stringify({ code }) });

@@ -10,10 +10,10 @@ featureFlagsRoutes.get('/feature-flags', async (c) => {
     const { rows } = await getPool().query(
       'SELECT key, enabled, config, updated_at FROM feature_flags ORDER BY key',
     );
-    return c.json(rows);
+    return c.json({ flags: rows });
   } catch (e: any) {
     logger.error(`Feature flags 조회 실패: ${e.message}`, { component: 'SETTINGS' });
-    return c.json({ error: 'Internal server error' }, 500);
+    return c.json({ flags: [] }, 500);
   }
 });
 

@@ -218,6 +218,15 @@ export async function placeOverseasOrder(params: {
   price?: number; // 지정가 (없으면 시장가)
 }) {
   const { stockCode, exchange = 'NASDAQ', side, quantity, price } = params;
+
+  // 🔒 입력 검증 — NaN/음수/비정수 수량 방지
+  if (!Number.isFinite(quantity) || quantity <= 0 || Math.floor(quantity) !== quantity) {
+    return { success: false, orderNo: '', message: `유효하지 않은 주문수량: ${quantity}` };
+  }
+  if (price != null && (!Number.isFinite(price) || price < 0)) {
+    return { success: false, orderNo: '', message: `유효하지 않은 가격: ${price}` };
+  }
+
   const excd = ORDER_EXCD_MAP[exchange] ?? EXCHANGE_MAP[exchange] ?? 'NAS';
   const trId = side === 'BUY' ? getOverseasTrId().BUY : getOverseasTrId().SELL;
 

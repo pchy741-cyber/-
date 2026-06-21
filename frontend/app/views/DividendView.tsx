@@ -154,14 +154,14 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
                   ₩{Math.round(currentUsd * FX_RATE).toLocaleString()}
                 </div>
                 <div className={`text-[10px] font-medium ${returnPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                  {returnPct >= 0 ? '+' : ''}{returnPct.toFixed(1)}%
+                  {Number.isFinite(returnPct) ? `${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(1)}%` : '-'}
                 </div>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3 mb-4">
               <div className="bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl p-3.5 text-center">
                 <div className="text-[9px] text-slate-500 mb-0.5">받은 배당</div>
-                <div className="text-sm font-bold text-emerald-400 tabular-nums">${divUsd.toFixed(2)}</div>
+                <div className="text-sm font-bold text-emerald-400 tabular-nums">${Number.isFinite(divUsd) ? divUsd.toFixed(2) : '0.00'}</div>
               </div>
               <div className="bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl p-3.5 text-center">
                 <div className="text-[9px] text-slate-500 mb-0.5">월 예상 배당</div>

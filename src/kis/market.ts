@@ -261,7 +261,7 @@ export function isMarketOpen(): boolean {
   }
 
   // 한국 공휴일 체크
-  if (!isTradingDay(new Date())) return false;
+  if (!isTradingDay(kst)) return false;
 
   const hour = kst.getUTCHours();
   const minute = kst.getUTCMinutes();

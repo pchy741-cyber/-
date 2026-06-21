@@ -150,7 +150,7 @@ app.route('/', webauthnPublicRoutes); // POST /api/auth/webauthn/authenticate/*,
 app.use('*', requireAuth);
 app.route('/', webauthnProtectedRoutes); // POST /api/auth/webauthn/register/*
 app.route('/', healthDetailRoutes); // GET  /api/health/detail (인증 필요)
-app.route('/api', qaRoutes); // GET /api/qa/reports, /api/qa/latest, POST /api/qa/run
+app.route('/', qaRoutes); // GET /api/qa/reports, /api/qa/latest, POST /api/qa/run
 app.route('/', reviewRoutes); // POST /api/review/*, /api/capture/*
 app.route('/', dashboardRoutes); // GET  /api/dashboard, /api/sell/:id, /api/manual-buy ...
 app.route('/', dashboardNewsRoutes); // GET  /api/news/*
@@ -285,12 +285,18 @@ async function bootstrap() {
       );
       const activeMode = (sr[0]?.mode ?? 'SWING') as keyof typeof STRATEGY_PARAMS;
       const sp = STRATEGY_PARAMS[activeMode] ?? STRATEGY_PARAMS.SWING;
+      // 🔒 사용자 커스텀 설정 보호: NULL 값만 채움 (매 부팅마다 덮어쓰기 방지)
       await gp().query(
-        `UPDATE strategy_config SET take_profit_pct=$1, stop_loss_pct=$2, buy_threshold=$3, use_dynamic_tpsl=true WHERE is_active = true AND is_paper = $4`,
+        `UPDATE strategy_config SET
+           take_profit_pct = CASE WHEN take_profit_pct IS NULL THEN $1 ELSE take_profit_pct END,
+           stop_loss_pct = CASE WHEN stop_loss_pct IS NULL THEN $2 ELSE stop_loss_pct END,
+           buy_threshold = CASE WHEN buy_threshold IS NULL THEN $3 ELSE buy_threshold END,
+           use_dynamic_tpsl = COALESCE(use_dynamic_tpsl, true)
+         WHERE is_active = true AND is_paper = $4`,
         [sp.takeProfitPct, sp.stopLossPct, sp.buyThreshold, baseIsPaper],
       );
       logger.info(
-        `✅ 전략 파라미터 동기화 (${baseIsPaper ? 'paper' : 'live'}): buy_threshold=${sp.buyThreshold} take_profit=${sp.takeProfitPct}% stop_loss=${sp.stopLossPct}% dynamic_tpsl=ON`,
+        `✅ 전략 파라미터 NULL값 보충 (${baseIsPaper ? 'paper' : 'live'}): defaults: buy=${sp.buyThreshold} tp=${sp.takeProfitPct}% sl=${sp.stopLossPct}%`,
         { component: 'BOOT' },
       );
       // is_paper 분리: 현재 모드 체인만 null값 보충 — live 체인에 paper SL 덮어쓰기 방지

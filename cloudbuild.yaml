@@ -43,7 +43,7 @@ steps:
       - '--add-cloudsql-instances'
       - 'quantops-trading:asia-northeast3:quantops-db'
       - '--set-env-vars'
-      - 'TZ=UTC,NODE_ENV=production,INSTANCE_UNIX_SOCKET=/cloudsql/quantops-trading:asia-northeast3:quantops-db,DB_DATABASE=quantops,DB_USER=postgres,RISK_MAX_DAILY_DRAWDOWN_KRW=500000,RISK_MAX_POSITION_KRW=3000000,RISK_MAX_TOTAL_INVESTED_PCT=90,TRADING_MODE=live,PAPER_ONLY=false,GEMINI_ENABLED=true,LIVE_ENABLED=true'
+      - 'TZ=UTC,NODE_ENV=production,INSTANCE_UNIX_SOCKET=/cloudsql/quantops-trading:asia-northeast3:quantops-db,DB_NAME=quantops,DB_USER=postgres,RISK_MAX_DAILY_DRAWDOWN_KRW=500000,RISK_MAX_POSITION_KRW=3000000,RISK_MAX_TOTAL_INVESTED_PCT=90,TRADING_MODE=live,PAPER_ONLY=false,GEMINI_ENABLED=true,LIVE_ENABLED=true'
       - '--set-secrets'
       - 'KIS_APP_KEY=kis-app-key:latest,KIS_APP_SECRET=kis-app-secret:latest,KIS_ACCOUNT_NO=kis-account-no:latest,KIS_APP_KEY_LIVE=kis-app-key-live:latest,KIS_APP_SECRET_LIVE=kis-app-secret-live:latest,KIS_ACCOUNT_NO_LIVE=kis-account-no-live:latest,DB_PASSWORD=db-password:latest,DASHBOARD_PASSWORD=dashboard-password:latest,VAPID_PUBLIC_KEY=vapid-public-key:latest,VAPID_PRIVATE_KEY=vapid-private-key:latest,GEMINI_API_KEY=gemini-api-key:latest,ANTHROPIC_API_KEY=anthropic-api-key:latest,OPENAI_API_KEY=openai-api-key:latest,DART_API_KEY=dart-api-key:latest'
 

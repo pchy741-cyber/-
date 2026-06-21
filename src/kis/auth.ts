@@ -287,20 +287,18 @@ function isExpired(token: KISToken): boolean {
   return Date.now() > expiryTime - TOKEN_EXPIRY_BUFFER_MS;
 }
 
-export function clearTokenCache() {
+export async function clearTokenCache(): Promise<void> {
   cachedToken = null;
   modeTokenCache.clear();
   // DB 토큰도 삭제 (KIS 서버에서 무효화된 토큰이 DB 복원되는 것 방지)
   // 현재 모드의 토큰만 삭제 (반대 모드는 유지)
-  (async () => {
-    try {
-      const { getPool, isMemoryMode } = await import('../db/client.js');
-      if (isMemoryMode()) return;
-      const key = getCtxIsPaper() ? 'kis_token_paper' : 'kis_token_live';
-      await getPool().query('DELETE FROM system_state WHERE key = $1', [key]);
-      logger.info(`KIS 토큰 DB 캐시 삭제: ${key}`, { component: 'KIS_AUTH' });
-    } catch (err) {
-      logger.warn(`KIS 토큰 DB 삭제 실패 (무시): ${err}`, { component: 'KIS_AUTH' });
-    }
-  })();
+  try {
+    const { getPool, isMemoryMode } = await import('../db/client.js');
+    if (isMemoryMode()) return;
+    const key = getCtxIsPaper() ? 'kis_token_paper' : 'kis_token_live';
+    await getPool().query('DELETE FROM system_state WHERE key = $1', [key]);
+    logger.info(`KIS 토큰 DB 캐시 삭제: ${key}`, { component: 'KIS_AUTH' });
+  } catch (err) {
+    logger.warn(`KIS 토큰 DB 삭제 실패 (무시): ${err}`, { component: 'KIS_AUTH' });
+  }
 }

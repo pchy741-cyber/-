@@ -132,14 +132,23 @@ export class ChainManager {
    * 부분 익절
    */
   async partialProfit(chainId: string, sellQty: number, sellPrice: number, chain: TransactionChain): Promise<void> {
-    const avgBuy = Number(chain.avg_buy_price);
-    const sellValue = sellPrice * sellQty;
     const SELL_FEE_PCT = KR_FEE.SELL_FEE_PCT;
-    const profit = sellValue - Math.round(sellValue * SELL_FEE_PCT) - avgBuy * sellQty;
+    const sellValue = sellPrice * sellQty;
+
+    // profit 계산 헬퍼 — fresh avg_buy_price 사용
+    const calcProfit = (freshAvgBuy: number) =>
+      sellValue - Math.round(sellValue * SELL_FEE_PCT) - freshAvgBuy * sellQty;
+
+    let logProfit = 0;
+    let logRemainingQty = 0;
 
     // 🔒 트랜잭션 + FOR UPDATE: 동시 매도(대시보드 수동 + AI) 경합 방지
     if (isMemoryMode()) {
+      const avgBuy = Number(chain.avg_buy_price);
+      const profit = calcProfit(avgBuy);
+      logProfit = profit;
       const remainingQty = chain.total_quantity - sellQty;
+      logRemainingQty = remainingQty;
       await updateChain(chainId, {
         status: remainingQty > 0 ? 'PROFIT_TAKING' : 'CLOSED',
         total_quantity: remainingQty,
@@ -153,18 +162,22 @@ export class ChainManager {
     } else {
       await withTransaction(async (client) => {
         const { rows } = await client.query(
-          'SELECT total_quantity, realized_pnl FROM transaction_chains WHERE id = $1 FOR UPDATE',
+          'SELECT total_quantity, realized_pnl, avg_buy_price FROM transaction_chains WHERE id = $1 FOR UPDATE',
           [chainId],
         );
         const freshChain = rows[0];
         if (!freshChain) return;
         const freshQty = Number(freshChain.total_quantity);
+        const freshAvgBuy = Number(freshChain.avg_buy_price);
         if (freshQty <= 0 || freshQty < sellQty) {
           logger.warn(`⚠️ 부분익절 수량 부족: 체인 ${chainId.slice(0, 8)} 보유 ${freshQty}주 < 요청 ${sellQty}주 — 스킵`, { component: 'CHAIN' });
           return;
         }
         const freshPnl = Number(freshChain.realized_pnl);
+        const profit = calcProfit(freshAvgBuy);
+        logProfit = profit;
         const remQty = freshQty - sellQty;
+        logRemainingQty = remQty;
         if (remQty > 0) {
           await client.query(
             `UPDATE transaction_chains SET status='PROFIT_TAKING', total_quantity=$1, realized_pnl=$2, peak_price=$3 WHERE id=$4`,
@@ -175,15 +188,14 @@ export class ChainManager {
             `UPDATE transaction_chains SET status='CLOSED', total_quantity=0, realized_pnl=$1, closed_at=$2, close_reason=$3,
              pnl_pct = CASE WHEN $5 > 0 AND $6 > 0 THEN ROUND(((($5 - $6) / $6) * 100)::numeric, 2) ELSE pnl_pct END
              WHERE id=$4`,
-            [freshPnl + profit, new Date().toISOString(), `익절: +${((sellPrice / avgBuy - 1) * 100).toFixed(1)}%`, chainId, sellPrice, avgBuy],
+            [freshPnl + profit, new Date().toISOString(), `익절: +${((sellPrice / freshAvgBuy - 1) * 100).toFixed(1)}%`, chainId, sellPrice, freshAvgBuy],
           );
         }
       }, 'SERIALIZABLE');
     }
 
-    const remainingQty = chain.total_quantity - sellQty;
     logger.info(
-      `💰 ${remainingQty > 0 ? '부분 익절' : '전량 익절'}: 체인 ${chainId.slice(0, 8)} | ${sellQty}주 @${sellPrice} | 실현수익: ${profit.toLocaleString()}원`,
+      `💰 ${logRemainingQty > 0 ? '부분 익절' : '전량 익절'}: 체인 ${chainId.slice(0, 8)} | ${sellQty}주 @${sellPrice} | 실현수익: ${logProfit.toLocaleString()}원`,
       { component: 'CHAIN' },
     );
   }
@@ -192,15 +204,25 @@ export class ChainManager {
    * 전량 청산 (손절 또는 강제 청산)
    */
   async closeChain(chainId: string, sellPrice: number, chain: TransactionChain, reason: string): Promise<void> {
-    const avgBuy = Number(chain.avg_buy_price);
-    const sellValue = sellPrice * chain.total_quantity;
     const SELL_FEE_PCT = KR_FEE.SELL_FEE_PCT;
-    const profit = sellValue - Math.round(sellValue * SELL_FEE_PCT) - avgBuy * chain.total_quantity;
 
-    const pnlPctNum = avgBuy > 0 ? (sellPrice / avgBuy - 1) * 100 : 0;
+    // profit/pnlPct 계산 헬퍼 — fresh 데이터 사용
+    const calcProfitAndPct = (freshAvgBuy: number, freshQty: number) => {
+      const sellValue = sellPrice * freshQty;
+      const profit = sellValue - Math.round(sellValue * SELL_FEE_PCT) - freshAvgBuy * freshQty;
+      const pnlPctNum = freshAvgBuy > 0 ? (sellPrice / freshAvgBuy - 1) * 100 : 0;
+      return { profit, pnlPctNum };
+    };
+
+    let logProfit = 0;
+    let logPnlPctNum = 0;
 
     // 🔒 트랜잭션 + FOR UPDATE: 동시 청산(대시보드 수동 + AI) 경합 방지
     if (isMemoryMode()) {
+      const avgBuy = Number(chain.avg_buy_price);
+      const { profit, pnlPctNum } = calcProfitAndPct(avgBuy, chain.total_quantity);
+      logProfit = profit;
+      logPnlPctNum = pnlPctNum;
       await updateChain(chainId, {
         status: 'CLOSED',
         total_quantity: 0,
@@ -212,15 +234,20 @@ export class ChainManager {
     } else {
       await withTransaction(async (client) => {
         const { rows } = await client.query(
-          'SELECT realized_pnl, total_quantity FROM transaction_chains WHERE id = $1 FOR UPDATE',
+          'SELECT realized_pnl, total_quantity, avg_buy_price FROM transaction_chains WHERE id = $1 FOR UPDATE',
           [chainId],
         );
         if (!rows[0]) return;
-        if (Number(rows[0].total_quantity) <= 0) {
+        const freshQty = Number(rows[0].total_quantity);
+        if (freshQty <= 0) {
           logger.warn(`⚠️ 체인 이미 청산됨: ${chainId.slice(0, 8)} — 중복 청산 스킵`, { component: 'CHAIN' });
           return;
         }
+        const freshAvgBuy = Number(rows[0].avg_buy_price);
         const freshPnl = Number(rows[0].realized_pnl);
+        const { profit, pnlPctNum } = calcProfitAndPct(freshAvgBuy, freshQty);
+        logProfit = profit;
+        logPnlPctNum = pnlPctNum;
         await client.query(
           `UPDATE transaction_chains SET status='CLOSED', total_quantity=0, realized_pnl=$1, pnl_pct=$2, closed_at=$3, close_reason=$4 WHERE id=$5`,
           [freshPnl + profit, Math.round(pnlPctNum * 100) / 100, new Date().toISOString(), reason, chainId],
@@ -228,11 +255,11 @@ export class ChainManager {
       }, 'SERIALIZABLE');
     }
 
-    const pnlPct = pnlPctNum.toFixed(1);
-    const emoji = profit >= 0 ? '💰' : '💸';
+    const pnlPct = logPnlPctNum.toFixed(1);
+    const emoji = logProfit >= 0 ? '💰' : '💸';
 
     logger.info(
-      `${emoji} 체인 종료: ${chain.stock_code} | ${reason} | 실현손익: ${profit.toLocaleString()}원 (${pnlPct}%)`,
+      `${emoji} 체인 종료: ${chain.stock_code} | ${reason} | 실현손익: ${logProfit.toLocaleString()}원 (${pnlPct}%)`,
       { component: 'CHAIN' },
     );
 

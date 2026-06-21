@@ -228,7 +228,7 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
         throw new Error(`KIS 빈 응답 [${trId}] — 반복 재시도 실패`);
       }
       if (rawText.trim() === 'LOGOUT') {
-        clearTokenCache();
+        await clearTokenCache();
         if (attempt < MAX_RETRIES) {
           logger.warn(`KIS 세션 만료 (LOGOUT), 토큰 갱신 후 재시도 ${attempt}/${MAX_RETRIES}`, { component: 'KIS' });
           continue;
@@ -244,7 +244,7 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
 
         // 토큰 만료 (EGW00123) → 캐시 클리어 후 재시도 (LOGOUT과 동일 처리)
         if (msg.includes('만료된 token') || String(data.msg_cd ?? '') === 'EGW00123') {
-          clearTokenCache();
+          await clearTokenCache();
           if (attempt < MAX_RETRIES) {
             logger.warn(`KIS 토큰 만료 (EGW00123), 캐시 클리어 후 재시도 ${attempt}/${MAX_RETRIES}`, {
               component: 'KIS',

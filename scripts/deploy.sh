@@ -59,7 +59,7 @@ LIVE_INSTANCES="--min-instances=1"
 # staging: min-instances=0 (트래픽 없음 → 서버비 0, 테스트 시에만 warm-up)
 STAGING_INSTANCES="--min-instances=0"
 
-BASE_ENV="NODE_ENV=production,INSTANCE_UNIX_SOCKET=/cloudsql/quantops-trading:asia-northeast3:quantops-db,DB_DATABASE=quantops,DB_USER=postgres,RISK_MAX_DAILY_DRAWDOWN_KRW=500000,RISK_MAX_POSITION_KRW=3000000,RISK_MAX_TOTAL_INVESTED_PCT=90"
+BASE_ENV="NODE_ENV=production,INSTANCE_UNIX_SOCKET=/cloudsql/quantops-trading:asia-northeast3:quantops-db,DB_NAME=quantops,DB_USER=postgres,RISK_MAX_DAILY_DRAWDOWN_KRW=500000,RISK_MAX_POSITION_KRW=3000000,RISK_MAX_TOTAL_INVESTED_PCT=90"
 
 CMD="${1:-staging}"
 

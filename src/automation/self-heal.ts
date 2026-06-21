@@ -28,7 +28,7 @@ export async function runSelfHealing(): Promise<void> {
     logger.debug(`KIS 토큰 확인 실패: ${tokenErr}`, { component: 'HEAL' });
     issues.push('KIS 토큰 만료/에러');
     try {
-      clearTokenCache();
+      await clearTokenCache();
       await getAccessToken();
       fixed.push('KIS 토큰 재발급 성공');
     } catch (retryErr) {

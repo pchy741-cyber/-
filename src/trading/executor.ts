@@ -1297,9 +1297,13 @@ export class TradeExecutor {
     // 미체결 지정가 주문 자동 취소 (이미 체결된 시장가면 취소 실패 → 무시)
     try {
       await cancelOrder({ orderNo, stockCode, quantity: expectedQty });
+      // 🔒 DB 주문 상태도 CANCELLED로 업데이트 — PENDING 잔류 방지 (중복매수 위험 차단)
+      await updateOrderByKisOrderNo(orderNo, { status: 'CANCELLED' });
       logger.warn(`🔄 미체결 주문 취소 완료: ${orderNo}`, { component: 'EXECUTOR' });
       await logSystem('WARN', 'EXECUTOR', `미체결 주문 취소: ${orderNo} (${stockCode})`);
     } catch {
+      // 취소 실패 = 이미 체결된 것일 수 있으므로 UNCONFIRMED 마킹 (reconciler가 나중에 복구)
+      await updateOrderByKisOrderNo(orderNo, { status: 'PENDING', kis_status: 'UNCONFIRMED' }).catch(() => {});
       logger.warn(`⚠️ 주문 취소 실패 (이미 체결?): ${orderNo}`, { component: 'EXECUTOR' });
     }
 
