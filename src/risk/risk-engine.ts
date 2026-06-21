@@ -129,6 +129,10 @@ export class RiskEngine {
       }
     }
 
+    // 5-C. 섹터 비중 한도 체크 (DB 설정 기반)
+    const sectorCheck = await this.checkSectorExposure(stockCode, orderValue, isPaper);
+    if (!sectorCheck.approved) return sectorCheck;
+
     // 6. 총 투자 비율 체크
     const exposureCheck = await this.checkTotalExposure(orderValue, isPaper);
     if (!exposureCheck.approved) return exposureCheck;
@@ -326,6 +330,73 @@ export class RiskEngine {
     }
 
     return { approved: true, reason: 'OK' };
+  }
+
+  // 섹터 → DB 컬럼 브릿지
+  private static readonly SECTOR_TO_DB_KEY: Record<string, keyof import('../db/alloc-risk-cache.js').AllocRisk> = {
+    '반도체': 'sectorSemiconductor',
+    '배터리': 'sectorSemiconductor', // 배터리는 반도체/소재 계열로 합산
+    '바이오': 'sectorBio',
+    '방산': 'sectorDefense',
+    '금융': 'sectorFinance',
+    '인터넷': 'sectorEtc',
+    '전력': 'sectorEtc',
+    '조선': 'sectorEtc',
+    '가전': 'sectorEtc',
+  };
+
+  private static readonly SECTOR_MAP: Readonly<Record<string, string>> = {
+    '000660': '반도체', '005930': '반도체', '042700': '반도체',
+    '005290': '반도체', '357780': '반도체', '403870': '반도체',
+    '051910': '배터리', '006400': '배터리', '247540': '배터리',
+    '373220': '배터리', '336260': '배터리', '003670': '배터리',
+    '012450': '방산', '079550': '방산', '034020': '방산',
+    '035420': '인터넷', '035720': '인터넷', '377300': '인터넷',
+    '207940': '바이오', '068270': '바이오', '328130': '바이오',
+    '196170': '바이오', '028300': '바이오',
+    '055550': '금융', '105560': '금융', '316140': '금융',
+    '267260': '전력', '009540': '조선', '066570': '가전',
+  };
+
+  private async checkSectorExposure(
+    stockCode: string, orderValue: number, isPaper: boolean,
+  ): Promise<PreTradeCheckResult> {
+    const sector = RiskEngine.SECTOR_MAP[stockCode];
+    if (!sector) return { approved: true, reason: '섹터 미분류 — 체크 면제' };
+
+    const dbKey = RiskEngine.SECTOR_TO_DB_KEY[sector];
+    if (!dbKey) return { approved: true, reason: '섹터 매핑 없음 — 체크 면제' };
+
+    try {
+      const balance = await getBalance(isPaper);
+      const totalAssets = getDomesticTotalAssets(balance);
+      if (totalAssets <= 0) return { approved: true, reason: 'OK' };
+
+      // 같은 섹터 그룹에 속하는 종목들의 투자액 합산
+      const sectorGroup = RiskEngine.SECTOR_TO_DB_KEY[sector];
+      let sectorInvested = 0;
+      for (const pos of balance.positions) {
+        const posSector = RiskEngine.SECTOR_MAP[pos.stockCode];
+        if (posSector && RiskEngine.SECTOR_TO_DB_KEY[posSector] === sectorGroup) {
+          sectorInvested += pos.quantity * pos.avgBuyPrice;
+        }
+      }
+
+      const afterInvested = sectorInvested + orderValue;
+      const ar = await getAllocRisk(isPaper);
+      const limitPct = Number(ar[dbKey]) || 30;
+      const afterPct = (afterInvested / totalAssets) * 100;
+
+      if (afterPct > limitPct) {
+        const msg = `섹터 비중 초과: ${sector} ${afterPct.toFixed(0)}% > 한도 ${limitPct}% (현재 ${(sectorInvested / 10000).toFixed(0)}만 + 신규 ${(orderValue / 10000).toFixed(0)}만)`;
+        logger.warn(`🚫 ${msg}`, { component: 'RISK' });
+        return { approved: false, reason: msg };
+      }
+      return { approved: true, reason: 'OK' };
+    } catch (err) {
+      logger.warn(`⚠️ 섹터 비중 조회 실패 (진행): ${err}`, { component: 'RISK' });
+      return { approved: true, reason: '섹터 비중 조회 실패 — 매수 허용' };
+    }
   }
 
   private async checkTotalExposure(orderValue: number, isPaper: boolean): Promise<PreTradeCheckResult> {

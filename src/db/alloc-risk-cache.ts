@@ -7,11 +7,17 @@ export interface AllocRisk {
   cashReservePct: number;
   maxPositions: number;
   maxDailyTrades: number;
+  // 섹터별 최대 비중 (%)
+  sectorSemiconductor: number;
+  sectorBio: number;
+  sectorDefense: number;
+  sectorFinance: number;
+  sectorEtc: number;
 }
 
 const DEFAULTS: Record<'live' | 'paper', AllocRisk> = {
-  live: { positionCapPct: 25, maxInvestedPct: 88, cashReservePct: 20, maxPositions: 8, maxDailyTrades: 5 },
-  paper: { positionCapPct: 40, maxInvestedPct: 97, cashReservePct: 3, maxPositions: 20, maxDailyTrades: 20 },
+  live: { positionCapPct: 25, maxInvestedPct: 88, cashReservePct: 20, maxPositions: 8, maxDailyTrades: 5, sectorSemiconductor: 30, sectorBio: 20, sectorDefense: 25, sectorFinance: 20, sectorEtc: 30 },
+  paper: { positionCapPct: 40, maxInvestedPct: 97, cashReservePct: 3, maxPositions: 20, maxDailyTrades: 20, sectorSemiconductor: 50, sectorBio: 50, sectorDefense: 50, sectorFinance: 50, sectorEtc: 50 },
 };
 
 // ── 레짐 기반 동적 오버라이드 (장 좋으면 적극, 나쁘면 보수) ──
@@ -36,7 +42,8 @@ const TTL_MS = 5 * 60 * 1000;
 async function refresh(): Promise<void> {
   try {
     const { rows } = await getPool().query(
-      `SELECT is_paper, position_cap_pct, max_invested_pct, cash_reserve_pct, max_positions, max_daily_trades
+      `SELECT is_paper, position_cap_pct, max_invested_pct, cash_reserve_pct, max_positions, max_daily_trades,
+              sector_semiconductor, sector_bio, sector_defense, sector_finance, sector_etc
        FROM portfolio_allocation_config ORDER BY id DESC`,
     );
     for (const r of rows) {
@@ -48,6 +55,11 @@ async function refresh(): Promise<void> {
         cashReservePct: r.cash_reserve_pct != null ? Number(r.cash_reserve_pct) : def.cashReservePct,
         maxPositions: r.max_positions != null ? Number(r.max_positions) : def.maxPositions,
         maxDailyTrades: r.max_daily_trades != null ? Number(r.max_daily_trades) : def.maxDailyTrades,
+        sectorSemiconductor: r.sector_semiconductor != null ? Number(r.sector_semiconductor) : def.sectorSemiconductor,
+        sectorBio: r.sector_bio != null ? Number(r.sector_bio) : def.sectorBio,
+        sectorDefense: r.sector_defense != null ? Number(r.sector_defense) : def.sectorDefense,
+        sectorFinance: r.sector_finance != null ? Number(r.sector_finance) : def.sectorFinance,
+        sectorEtc: r.sector_etc != null ? Number(r.sector_etc) : def.sectorEtc,
       };
     }
     lastRefresh = Date.now();

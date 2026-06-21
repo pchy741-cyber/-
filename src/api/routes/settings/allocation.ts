@@ -27,13 +27,13 @@ export const SETTINGS_META = {
   us_pct: { connected: true, desc: '미국 비중 — overseas-job, cross-market-rotation에서 사용' },
   trailing_stop_pct: { connected: true, desc: '트레일링 스탑 — risk-guard에서 사용' },
   sector_semiconductor: {
-    connected: false,
-    desc: '반도체 섹터 한도 — 미연결 (risk-guard는 종목수 기반 하드코딩 사용)',
+    connected: true,
+    desc: '반도체+배터리 섹터 비중 한도(%) — risk-engine checkSectorExposure',
   },
-  sector_bio: { connected: false, desc: '바이오 섹터 한도 — 미연결' },
-  sector_defense: { connected: false, desc: '방산 섹터 한도 — 미연결' },
-  sector_finance: { connected: false, desc: '금융 섹터 한도 — 미연결' },
-  sector_etc: { connected: false, desc: '기타 섹터 한도 — 미연결' },
+  sector_bio: { connected: true, desc: '바이오 섹터 비중 한도(%) — risk-engine' },
+  sector_defense: { connected: true, desc: '방산 섹터 비중 한도(%) — risk-engine' },
+  sector_finance: { connected: true, desc: '금융 섹터 비중 한도(%) — risk-engine' },
+  sector_etc: { connected: true, desc: '기타(인터넷/전력/조선/가전) 비중 한도(%) — risk-engine' },
 };
 
 allocationRoutes.get('/portfolio/allocation', async (c) => {
