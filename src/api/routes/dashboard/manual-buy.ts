@@ -151,21 +151,24 @@ export function registerManualBuyRoutes(app: Hono) {
       stopLossPct = STRATEGY_PARAMS.SWING.stopLossPct;
     }
 
-    // 🎯 진입 타이밍 가드 — 저녁 18-24 KST 하드블락 + 마의시간 + 단기전략 차단 + 기술지표
+    // ===== 수동매수 경고 수집 (CEO 책임 모드 — 경고만 표시, 차단 없음) =====
+    const advisoryWarnings: string[] = [];
+
+    // 🎯 진입 타이밍 가드 — 경고만 (차단 X)
     const { checkEntryTiming } = await import('../../../risk/entry-timing-guard.js');
     const entryCheck = checkEntryTiming({
       tech: { rsi: body.rsi, volumeRatio: body.volume_ratio },
       aiScore,
       marketCode: 'KR',
       isClaudeManual: true,
-      strategyMode: 'SWING', // manual-buy는 기본 SWING (단기 전략 차단)
+      strategyMode: 'SWING',
     });
     if (!entryCheck.allowed) {
-      logger.warn(`🚫 진입타이밍: ${stock_code} — ${entryCheck.reason}`, { component: 'CLAUDE_BUY' });
-      return c.json({ error: `진입타이밍 차단: ${entryCheck.reason}`, details: entryCheck.details }, 422);
+      advisoryWarnings.push(`진입타이밍: ${entryCheck.reason}`);
+      logger.warn(`⚠️ 진입타이밍 경고(진행): ${stock_code} — ${entryCheck.reason}`, { component: 'CLAUDE_BUY' });
     }
 
-    // 🏆 수익 가드 5종 (EV + 종목 승률 + 일일 손실 + 다양화 + 실패 학습)
+    // 🏆 수익 가드 5종 — 경고만 (차단 X)
     const { checkBuyGate } = await import('../../../risk/profit-guards.js');
     const buyGate = await checkBuyGate({
       stockCode: stock_code,
@@ -175,14 +178,8 @@ export function registerManualBuyRoutes(app: Hono) {
       minRr: 1.5,
     });
     if (!buyGate.allowed) {
-      logger.warn(`🚫 수익가드 차단: ${stock_code} — ${buyGate.reason}`, { component: 'CLAUDE_BUY' });
-      return c.json(
-        {
-          error: `수익가드 차단: ${buyGate.reason}`,
-          details: buyGate.details,
-        },
-        422,
-      );
+      advisoryWarnings.push(`수익가드: ${buyGate.reason}`);
+      logger.warn(`⚠️ 수익가드 경고(진행): ${stock_code} — ${buyGate.reason}`, { component: 'CLAUDE_BUY' });
     }
     const sizingMultiplier = buyGate.amountMultiplier;
 
@@ -226,9 +223,8 @@ export function registerManualBuyRoutes(app: Hono) {
       const curPrice = priceData.currentPrice;
       if (!curPrice || curPrice <= 0) return c.json({ error: '현재가 조회 실패' }, 500);
 
-      // 기술지표 안전 게이트 — 실전만 적용 (연습: AI 점수 vs 수익 상관관계 관찰 우선)
+      // 기술지표 — 경고 수집만 (차단 X, CEO 책임 모드)
       if (!isPaper) {
-        const warnings: string[] = [];
         try {
           const { getDailyChart } = await import('../../../kis/market.js');
           const { analyzeTechnicals } = await import('../../../analysis/indicators.js');
@@ -236,54 +232,17 @@ export function registerManualBuyRoutes(app: Hono) {
           if (chart && chart.length >= 20) {
             const tech = analyzeTechnicals(chart);
             if (tech) {
-              const techScore = tech.score;
-              if (techScore < 45) {
-                warnings.push(`기술점수=${techScore} (기준 55 미달 — 매수 부적합)`);
-              } else if (techScore < 55) {
-                warnings.push(`기술점수=${techScore} (양호하나 기준 55 미달)`);
-              }
-              if (tech.macdCrossover === 'BEARISH') {
-                warnings.push(`MACD=BEARISH (하락 모멘텀)`);
-              }
-              if (tech.rsi14 > 70) {
-                warnings.push(`RSI=${tech.rsi14.toFixed(0)} (과매수 위험구간)`);
-              }
-              if (tech.trendStrength === 'STRONG' && tech.sma5 < tech.sma20) {
-                warnings.push(`강한 하락추세 (ADX=${tech.adx14.toFixed(0)}, SMA5<SMA20)`);
-              }
-              if (tech.sma5 < tech.sma20 && tech.sma20 < tech.sma60) {
-                warnings.push(`SMA 역배열 (5<20<60) — 하락 추세`);
-              }
-              if (tech.trendStrength === 'WEAK' && tech.volumeRatio < 0.8) {
-                warnings.push(`약한 추세 + 저유동성 (vol=${tech.volumeRatio.toFixed(1)}x)`);
-              }
-
-              if (warnings.length >= 2) {
-                logger.warn(`🚫 수동매수 기술 차단: ${stock_code} — ${warnings.join(' | ')}`, {
-                  component: 'CLAUDE_BUY',
-                });
-                return c.json(
-                  {
-                    error: `기술지표 안전 차단 (${warnings.length}건 경고)`,
-                    warnings,
-                    techScore,
-                    rsi: tech.rsi14,
-                    macd: tech.macdCrossover,
-                    hint: '기술적 조건 불리 — 진입 재고 필요',
-                  },
-                  422,
-                );
-              }
-
-              if (warnings.length > 0) {
-                logger.warn(`⚠️ 수동매수 경고(진행): ${stock_code} — ${warnings.join(' | ')}`, {
-                  component: 'CLAUDE_BUY',
-                });
-              }
+              if (tech.score < 45) advisoryWarnings.push(`기술점수=${tech.score} (매수 부적합)`);
+              else if (tech.score < 55) advisoryWarnings.push(`기술점수=${tech.score} (기준 55 미달)`);
+              if (tech.macdCrossover === 'BEARISH') advisoryWarnings.push(`MACD=BEARISH (하락 모멘텀)`);
+              if (tech.rsi14 > 70) advisoryWarnings.push(`RSI=${tech.rsi14.toFixed(0)} (과매수)`);
+              if (tech.trendStrength === 'STRONG' && tech.sma5 < tech.sma20) advisoryWarnings.push(`강한 하락추세`);
+              if (tech.sma5 < tech.sma20 && tech.sma20 < tech.sma60) advisoryWarnings.push(`SMA 역배열 (하락추세)`);
+              if (tech.trendStrength === 'WEAK' && tech.volumeRatio < 0.8) advisoryWarnings.push(`약한 추세+저유동성`);
             }
           }
         } catch (e) {
-          logger.warn(`수동매수 기술지표 조회 실패 (진행): ${e}`, { component: 'CLAUDE_BUY' });
+          logger.warn(`기술지표 조회 실패 (진행): ${e}`, { component: 'CLAUDE_BUY' });
         }
       }
 
@@ -327,7 +286,7 @@ export function registerManualBuyRoutes(app: Hono) {
         /* 잔고 조회 실패 시 패스 */
       }
 
-      // 리스크 엔진 검증 (실전만)
+      // 리스크 엔진 검증 (실전만) — MDD -12%와 현금부족만 하드블락, 나머지 경고
       if (!isPaper) {
         try {
           const riskResult = await riskEngine.validateOrder({
@@ -339,25 +298,35 @@ export function registerManualBuyRoutes(app: Hono) {
             ceoManual: true,
           });
           if (!riskResult.approved) {
-            logger.warn(`🚫 수동매수 리스크 거부: ${stock_code} — ${riskResult.reason}`, { component: 'CLAUDE_BUY' });
-            return c.json({ error: `리스크 체크 거부: ${riskResult.reason}` }, 403);
+            const reason = riskResult.reason ?? '';
+            const isMddHardBlock = /mdd|max.*drawdown|최대.*손실/i.test(reason);
+            const isCashBlock = /현금.*부족|잔고.*부족|cash/i.test(reason);
+            if (isMddHardBlock || isCashBlock) {
+              // 하드블락: MDD -12% 또는 현금 부족은 절대 차단
+              logger.warn(`🚫 하드블락: ${stock_code} — ${reason}`, { component: 'CLAUDE_BUY' });
+              return c.json({ error: `하드블락: ${reason}` }, 403);
+            }
+            // 나머지 리스크 → 경고만
+            advisoryWarnings.push(`리스크: ${reason}`);
+            logger.warn(`⚠️ 리스크 경고(진행): ${stock_code} — ${reason}`, { component: 'CLAUDE_BUY' });
           }
         } catch (e) {
-          logger.warn(`리스크 엔진 조회 실패 — 매수 진행 차단: ${e}`, { component: 'CLAUDE_BUY' });
-          return c.json({ error: '리스크 엔진 조회 실패 — 안전을 위해 매수 차단' }, 500);
+          advisoryWarnings.push('리스크 엔진 조회 실패 (진행)');
+          logger.warn(`리스크 엔진 조회 실패 (진행): ${e}`, { component: 'CLAUDE_BUY' });
         }
       }
 
       const totalInvested = quantity * curPrice;
       const rrStr = `TP+${takeProfitPct}%/SL${stopLossPct}%(${(takeProfitPct / Math.abs(stopLossPct)).toFixed(2)}:1)${tpSlLabel ? ` [${tpSlLabel}]` : ''}`;
 
-      // 중복 OPEN 체인 방지
+      // 중복 OPEN 체인 — 경고만 (물타기 허용, CEO 책임)
       const dupCheck = await getPool().query(
         `SELECT id FROM transaction_chains WHERE stock_code = $1 AND is_paper = $2 AND status = 'OPEN' LIMIT 1`,
         [stock_code, isPaper],
       );
       if (dupCheck.rows.length > 0) {
-        return c.json({ error: `이미 OPEN 포지션 있음: ${stock_code} — 중복 매수 불가` }, 409);
+        advisoryWarnings.push(`이미 OPEN 포지션 있음 (물타기 진행)`);
+        logger.warn(`⚠️ 중복 포지션 경고(진행): ${stock_code}`, { component: 'CLAUDE_BUY' });
       }
 
       if (isPaper) {
@@ -504,6 +473,7 @@ export function registerManualBuyRoutes(app: Hono) {
           stopLossPct,
           livePromoted,
           liveAmount,
+          advisoryWarnings: advisoryWarnings.length > 0 ? advisoryWarnings : undefined,
         });
       }
 
@@ -573,6 +543,7 @@ export function registerManualBuyRoutes(app: Hono) {
         totalInvested,
         takeProfitPct,
         stopLossPct,
+        advisoryWarnings: advisoryWarnings.length > 0 ? advisoryWarnings : undefined,
       });
     } catch (err: any) {
       logger.error(`Claude 매수 예외: ${err.message}`, { component: 'CLAUDE_BUY' });
