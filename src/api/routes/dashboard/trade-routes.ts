@@ -282,7 +282,8 @@ tradeRoutes.get('/withdraw/config', async (c) => {
 });
 
 tradeRoutes.put('/withdraw/config', async (_c) => {
-  return _c.json({ ok: true });
+  // TODO: 용돈 이관 설정 저장 미구현 — 현재 하드코딩 (ratio=10%, min=10만)
+  return _c.json({ ok: true, warning: '설정 저장 미구현 — 현재 기본값 사용 중' });
 });
 
 tradeRoutes.get('/withdraw/history', async (c) => {

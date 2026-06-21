@@ -68,7 +68,7 @@ export function deriveActions(
         id: `concentration_reduce`,
         level: it.level as 'warn' | 'danger',
         action: `단일 포지션 쏠림 — 해당 체인 비중 축소 또는 일부 청산 검토`,
-        apiHint: `GET /api/chains?is_paper=${viewIsPaper ? 'true' : 'false'} 로 비중 확인`,
+        apiHint: `GET /api/dashboard 로 비중 확인`,
       });
     }
     if (it.id === 'no_trades') {
@@ -76,7 +76,7 @@ export function deriveActions(
         id: `no_trades_diagnose`,
         level: 'warn',
         action: `7일간 신규 매수 없음 — 자동화 파이프라인 동작 여부 점검`,
-        apiHint: `GET /api/ai-loop/status 로 루프 상태 확인`,
+        apiHint: `GET /api/loop/status 로 루프 상태 확인`,
       });
     }
     if (it.id === 'high_volatility') {

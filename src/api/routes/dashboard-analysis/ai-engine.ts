@@ -65,6 +65,6 @@ aiEngineRoutes.get('/ai/gemini-test', async (c) => {
     }
 
     logger.warn('Gemini 연결 테스트 실패', { error, rawError, component: 'GEMINI_TEST' });
-    return c.json({ ok: false, latencyMs, model: TEST_MODEL, error, errorDetail, rawError });
+    return c.json({ ok: false, latencyMs, model: TEST_MODEL, error, errorDetail });
   }
 });

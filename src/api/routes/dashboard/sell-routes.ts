@@ -64,6 +64,7 @@ sellRoutes.post('/escape/:chainId', async (c) => {
 
     return c.json({ ok: true, escape_target_price: escapeTarget, current_price: curPrice });
   } catch (err: any) {
+    logger.error(`탈출모드 등록 실패: ${err.message}`, { component: 'ESCAPE' });
     return c.json({ error: 'Internal server error' }, 500);
   }
 });
@@ -78,6 +79,7 @@ sellRoutes.delete('/escape/:chainId', async (c) => {
     ]);
     return c.json({ ok: true });
   } catch (err: any) {
+    logger.error(`탈출모드 취소 실패: ${err.message}`, { component: 'ESCAPE' });
     return c.json({ error: 'Internal server error' }, 500);
   }
 });

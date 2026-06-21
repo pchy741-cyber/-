@@ -38,7 +38,11 @@ pushNotificationsRoutes.post('/push/subscribe', async (c) => {
   }
 
   const { saveSubscription } = await import('../../../notifications/web-push.js');
-  await saveSubscription(subscription);
+  try {
+    await saveSubscription(subscription);
+  } catch (e) {
+    return c.json({ ok: false, error: '구독 저장 실패' }, 500);
+  }
   return c.json({ ok: true });
 });
 
