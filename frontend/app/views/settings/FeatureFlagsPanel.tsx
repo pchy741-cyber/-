@@ -28,8 +28,10 @@ export function FeatureFlagsPanel({ toast, confirm, onFlagChange }: { toast: Toa
   };
 
   const flagMeta: Record<string, { icon: string; label: string; desc: string }> = {
-    dividend_investing: { icon: '💰', label: '월배당 투자', desc: '월배당 ETF 자동투자 — QYLD/JEPQ/XYLD 등 고배당 ETF에 분산투자, 매월 배당금 자동 재투자(DRIP)' },
+    dividend_investing: { icon: '💰', label: '월배당 투자', desc: '월배당 ETF 자동투자 — JEPQ/SPYI/SCHD 등 고배당 ETF에 VIX 기반 분산투자, Smart DRIP 자동 재투자' },
   };
+  // 삭제된 기능 플래그는 숨기기
+  const DEPRECATED_FLAGS = new Set(['overseas_futures']);
 
   if (flags.length === 0) return (
     <Panel title="확장 기능">
@@ -40,7 +42,7 @@ export function FeatureFlagsPanel({ toast, confirm, onFlagChange }: { toast: Toa
   return (
     <Panel title="확장 기능">
       <div className="space-y-3">
-        {flags.map(f => {
+        {flags.filter(f => !DEPRECATED_FLAGS.has(f.key)).map(f => {
           const meta = flagMeta[f.key] || { icon: '⚡', label: f.key, desc: '' };
           return (
             <div key={f.key} className="flex items-center justify-between py-2">

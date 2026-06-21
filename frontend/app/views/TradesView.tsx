@@ -113,7 +113,7 @@ function TradesView({ trades, watchlist, viewMode: dashViewMode }: { trades: Tra
             )}
             {totalPnlUsd !== 0 && (
               <div className={`text-sm font-bold tabular-nums ${totalPnlUsd >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {totalPnlUsd >= 0 ? '+' : ''}${Math.abs(totalPnlUsd).toFixed(2)}
+                {totalPnlUsd >= 0 ? '+' : '-'}${Math.abs(totalPnlUsd).toFixed(2)}
               </div>
             )}
             {totalPnlKrw === 0 && totalPnlUsd === 0 && <div className="text-sm text-slate-500 mt-0.5">-</div>}

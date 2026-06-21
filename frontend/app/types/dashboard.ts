@@ -229,6 +229,11 @@ export interface MpDividend {
 export interface MpData {
   dividend?: MpDividend;
   fx?: number;
+  strategy?: {
+    regime?: string;
+    activeWeights?: Record<string, number>;
+    tiers?: Record<string, string[]>;
+  };
   [key: string]: unknown;
 }
 

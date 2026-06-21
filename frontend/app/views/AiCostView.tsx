@@ -269,9 +269,9 @@ export default function AiCostView() {
   const s = summary ?? {
     today: {}, todayTotalUsd: 0, todayTotalKrw: 0,
     todayTotalCalls: 0, todayTotalTokens: 0,
-    monthTotalUsd: 0, monthTotalKrw: 0, exchangeRate: 1380,
+    monthTotalUsd: 0, monthTotalKrw: 0, exchangeRate: 1520,
   };
-  const h = history ?? { daily: [], exchangeRate: 1380 };
+  const h = history ?? { daily: [], exchangeRate: 1520 };
 
   return (
     <div className="space-y-6">
