@@ -653,7 +653,7 @@ export function getOverseasDynamic(portfolioUsd: number, isPaper = false, posCap
     : Math.max(2, Math.min(8, Math.floor(1 / posPct)));
   return {
     maxPositions: maxPos,
-    positionSizeUsd: Math.round(Math.min(p * posCapPct, isPaper ? 8000 : 5000)), // Paper: 상한 완화
+    positionSizeUsd: Math.round(Math.min(p * posCapPct, 5000)), // Paper/Live 동일 상한
     positionPct: posPct,
     parkingCashBuffer: Math.round(p * 0.05), // 포트폴리오 5%
     maxHoldDays: holdDays,

@@ -132,20 +132,21 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
           const trimQty = Math.max(1, Math.floor(trimValue / p.price));
           const trimAmt = trimQty * p.price;
 
+          // 수수료(왕복 ~0.7%) 커버 불가 시 리밸런싱 매도 금지 (Paper/Live 동일 적용)
+          const minPnlPct = OVERSEAS_FEE_PCT * 2 * 100 + 0.5; // ~1.2%
+          if (p.pnl < minPnlPct) {
+            rebalanceAlerts.push(
+              `📊 리밸런싱 스킵 ${p.code}: PnL ${p.pnl.toFixed(1)}% < 최소 ${minPnlPct.toFixed(1)}% (수수료 미달)`,
+            );
+            continue;
+          }
+
           if (!isPaper) {
             rbLines.push(
               `  매도 *${p.code}* ${trimQty}주 @$${p.price.toFixed(2)} → $${trimAmt.toFixed(0)}(₩${((trimAmt * usdKrw) / 10000).toFixed(1)}만)`,
             );
             rbLines.push(`  → 비중 ${p.weight.toFixed(1)}% → ~${(p.weight - adjustPct).toFixed(1)}%`);
           } else {
-            // 수수료(왕복 ~0.7%) 커버 불가 시 리밸런싱 매도 금지
-            const minPnlPct = OVERSEAS_FEE_PCT * 2 * 100 + 0.5; // ~1.2%
-            if (p.pnl < minPnlPct) {
-              rebalanceAlerts.push(
-                `📊 리밸런싱 스킵 ${p.code}: PnL ${p.pnl.toFixed(1)}% < 최소 ${minPnlPct.toFixed(1)}% (수수료 미달)`,
-              );
-              continue;
-            }
             const exec = await executeOverseasOrder(
               p.code,
               'SELL',

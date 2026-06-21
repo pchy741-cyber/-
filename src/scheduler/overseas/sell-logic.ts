@@ -198,7 +198,10 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       tunerOverrides,
       atrPct: atrPctValue,
     });
-    const hardTpPct = dyn.tpPct;
+    // TP: 기존 DB TP가 동적 TP보다 낮으면(보수적) 유지 → 익절 기회 보호
+    const hardTpPct = holding.tpPct != null && holding.tpPct > 0
+      ? Math.min(holding.tpPct, dyn.tpPct)
+      : dyn.tpPct;
     // SL: 매 사이클마다 현재 조건으로 재계산 (tuner 반영, 시장 변화 적응)
     // 단, 기존 DB값이 더 타이트(덜 음수)하면 보수적으로 유지
     const dynamicSl = -dyn.slPct;

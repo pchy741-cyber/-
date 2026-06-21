@@ -31,12 +31,12 @@ export async function enforceConcentrationCap(params: {
     const posValue = capTech.price.currentPrice * capHolding.qty;
     const posWeight = posValue / portfolioValue;
     if (posWeight <= CONC_CAP) continue;
-    // 🛡️ 강화: 손실 중이면 집중도 캡 보류 (손실 확정 방지 — VRT -0.22% 강제매도 사례)
-    //   손실 규모 무관하게 회복 대기 → 수익 구간 진입 후 정상 분산
+    // 🛡️ 손실 중 보류: 비중 25~30%이고 손실 중이면 회복 대기
+    //   비중 30% 이상이면 손실 무관 강제 분산 (추가 손실 방지)
     const pnlPctAtSell = ((capTech.price.currentPrice - capHolding.avgPrice) / capHolding.avgPrice) * 100;
-    if (pnlPctAtSell < 0) {
+    if (pnlPctAtSell < 0 && posWeight < 0.30) {
       logger.info(
-        `⏸️ 집중도 캡 보류: ${capCode} 비중 ${(posWeight * 100).toFixed(0)}% > 25%이나 PnL ${pnlPctAtSell.toFixed(1)}% (손실 중) → 수익 전환 후 재평가`,
+        `⏸️ 집중도 캡 보류: ${capCode} 비중 ${(posWeight * 100).toFixed(0)}% PnL ${pnlPctAtSell.toFixed(1)}% (손실 중, 30% 미만) → 수익 전환 후 재평가`,
         { component: 'OVERSEAS' },
       );
       continue;
