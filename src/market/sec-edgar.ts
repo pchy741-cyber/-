@@ -87,46 +87,69 @@ export async function getInsiderSignal(ticker: string): Promise<InsiderSignal | 
 
     const cutoffMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
     let buys30d = 0;
-    const sells30d = 0;
-    const netBuyValueUsd = 0;
-    const largestBuyUsd = 0;
+    let sells30d = 0;
+    let netBuyValueUsd = 0;
+    let largestBuyUsd = 0;
     const recentBuyers = new Set<string>();
 
-    // Form 4 만 추출 (최대 100개 검사 — 큰 회사도 30일 내에 100개 넘기 어려움)
-    // NOTE: Form 4 includes BOTH buys and sells (+ option exercises, gifts, etc.).
-    // Without parsing the XML content of each filing, we cannot distinguish buy vs sell.
-    // We count all Form 4 filings as "insider activity" (not "buys") and use a conservative
-    // score adjustment. The buys30d field is a misnomer — it tracks total Form 4 filings.
-    // TODO: Parse individual Form 4 XML to extract transactionCode:
-    //   'P' = open-market purchase, 'S' = open-market sale, 'A' = grant/award, etc.
+    // Form 4 filing 수집 (최대 100개 검사, 30일 내)
+    const form4Filings: { accession: string; date: string }[] = [];
     const maxCheck = Math.min(100, recent.form.length);
     for (let i = 0; i < maxCheck; i++) {
       if (recent.form[i] !== '4') continue;
       const fDate = recent.filingDate?.[i];
       if (!fDate) continue;
-      const fMs = new Date(fDate).getTime();
-      if (fMs < cutoffMs) break; // 정렬되어 있어서 break OK
-      // Count as generic insider activity (Form 4 includes both buys AND sells)
-      buys30d++;
+      if (new Date(fDate).getTime() < cutoffMs) break;
+      const acc = recent.accessionNumber?.[i];
+      if (acc) form4Filings.push({ accession: acc, date: fDate });
     }
 
-    // Score adjustment is conservative since we cannot distinguish buys from sells
-    // without parsing filing XML. High activity is still a useful signal (insiders are active).
+    // Form 4 XML 파싱 (최대 10건 — SEC rate limit 보호)
+    const toParse = form4Filings.slice(0, 10);
+    for (const f of toParse) {
+      try {
+        const parsed = await parseForm4Xml(cik, f.accession);
+        if (!parsed) continue;
+        for (const tx of parsed.transactions) {
+          if (tx.code === 'P') {
+            buys30d++;
+            netBuyValueUsd += tx.valueUsd;
+            if (tx.valueUsd > largestBuyUsd) largestBuyUsd = tx.valueUsd;
+          } else if (tx.code === 'S') {
+            sells30d++;
+            netBuyValueUsd -= tx.valueUsd;
+          }
+          // A(grant), M(exercise), G(gift) 등은 무시
+        }
+        if (parsed.officerTitle) recentBuyers.add(parsed.officerTitle);
+      } catch { /* 개별 filing 파싱 실패 → 스킵 */ }
+      await new Promise((r) => setTimeout(r, 120)); // SEC rate limit
+    }
+
+    // 미파싱 filing은 활동 건수만 추가 (보수적)
+    const unparsedCount = form4Filings.length - toParse.length;
+
     let scoreAdjustment = 0;
     let reason = '';
+    const totalActivity = buys30d + sells30d + unparsedCount;
 
-    if (buys30d >= 5) {
-      scoreAdjustment = 10; // Reduced from 15 — may include sells
-      reason = `인사이더 활동 활발 (Form 4 ${buys30d}건/30일, 매수+매도 혼합)`;
+    if (buys30d >= 3 && netBuyValueUsd >= 1_000_000) {
+      scoreAdjustment = 15;
+      reason = `인사이더 대규모 매수 ${buys30d}건 ($${(netBuyValueUsd / 1e6).toFixed(1)}M, ${[...recentBuyers].join('/')})`;
     } else if (buys30d >= 3) {
-      scoreAdjustment = 5; // Reduced from 10 — may include sells
-      reason = `인사이더 매매 ${buys30d}건/30일 (매수+매도 미분류)`;
+      scoreAdjustment = 10;
+      reason = `인사이더 매수 ${buys30d}건 ($${Math.round(netBuyValueUsd / 1000)}K)`;
     } else if (buys30d >= 1) {
-      scoreAdjustment = 3; // Reduced from 5 — may include sells
-      reason = `인사이더 매매 ${buys30d}건/30일 (매수+매도 미분류)`;
+      scoreAdjustment = 5;
+      reason = `인사이더 매수 ${buys30d}건 ($${Math.round(netBuyValueUsd / 1000)}K)`;
+    } else if (sells30d >= 3) {
+      scoreAdjustment = -5;
+      reason = `인사이더 매도 ${sells30d}건 (경고)`;
+    } else if (totalActivity >= 1) {
+      scoreAdjustment = 2;
+      reason = `인사이더 활동 ${totalActivity}건 (매수${buys30d}/매도${sells30d})`;
     } else {
-      scoreAdjustment = 0;
-      reason = `인사이더 매매 없음`;
+      reason = '인사이더 매매 없음';
     }
 
     return {
@@ -144,6 +167,59 @@ export async function getInsiderSignal(ticker: string): Promise<InsiderSignal | 
     logger.debug(`SEC ${ticker} 조회 실패: ${(e as Error).message}`, { component: COMP });
     return null;
   }
+}
+
+// ── Form 4 XML 파서 ──
+
+interface Form4Transaction {
+  code: string; // P=purchase, S=sale, A=award, M=exercise, G=gift
+  shares: number;
+  pricePerShare: number;
+  valueUsd: number;
+}
+
+interface Form4Parsed {
+  officerTitle: string;
+  transactions: Form4Transaction[];
+}
+
+function extractXmlTag(xml: string, tag: string): string {
+  const re = new RegExp(`<${tag}[^>]*>([^<]*)</${tag}>`, 'i');
+  return re.exec(xml)?.[1]?.trim() ?? '';
+}
+
+function extractAllBlocks(xml: string, tag: string): string[] {
+  const re = new RegExp(`<${tag}[^>]*>[\\s\\S]*?</${tag}>`, 'gi');
+  return xml.match(re) ?? [];
+}
+
+async function parseForm4Xml(cik: string, accessionRaw: string): Promise<Form4Parsed | null> {
+  // accession: "0001234567-24-001234" → "000123456724001234"
+  const accNoDash = accessionRaw.replace(/-/g, '');
+  const url = `${SEC_BASE}/Archives/edgar/data/${cik.replace(/^0+/, '')}/${accNoDash}/${accessionRaw}.txt`;
+  const res = await fetch(url, {
+    headers: { 'User-Agent': SEC_UA, Accept: 'text/xml' },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) return null;
+  const xml = await res.text();
+
+  const officerTitle = extractXmlTag(xml, 'officerTitle');
+  const txBlocks = extractAllBlocks(xml, 'nonDerivativeTransaction');
+  const transactions: Form4Transaction[] = [];
+
+  for (const block of txBlocks) {
+    const code = extractXmlTag(block, 'transactionCode');
+    if (!code) continue;
+    const shares = Math.abs(Number(extractXmlTag(block, 'transactionShares') || extractXmlTag(block, 'value')) || 0);
+    const price = Number(extractXmlTag(block, 'transactionPricePerShare') || extractXmlTag(block, 'value')) || 0;
+    const valueUsd = shares * price;
+    if (shares > 0) {
+      transactions.push({ code, shares, pricePerShare: price, valueUsd });
+    }
+  }
+
+  return { officerTitle, transactions };
 }
 
 /** 배치 조회 — 여러 ticker 인사이더 신호 동시 수집 */

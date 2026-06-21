@@ -61,19 +61,29 @@ export async function runBqBacktest(opts: {
           AND is_paper = @isPaper
           AND closed_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL ${daysBack} DAY)
           ${modeFilter}
+      ),
+      cumulative AS (
+        SELECT
+          pnl_pct,
+          closed_at,
+          SUM(pnl_pct) OVER (ORDER BY closed_at) AS cum_pnl,
+          MAX(SUM(pnl_pct) OVER (ORDER BY closed_at))
+            OVER (ORDER BY closed_at ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS peak_pnl
+        FROM closed_chains
       )
       SELECT
         '${opts.strategyMode ?? 'ALL'}' AS strategy_mode,
-        FORMAT_TIMESTAMP('%Y-%m-%d', MIN(closed_at)) AS start_date,
-        FORMAT_TIMESTAMP('%Y-%m-%d', MAX(closed_at)) AS end_date,
+        FORMAT_TIMESTAMP('%Y-%m-%d', MIN(cc.closed_at)) AS start_date,
+        FORMAT_TIMESTAMP('%Y-%m-%d', MAX(cc.closed_at)) AS end_date,
         COUNT(*) AS total_trades,
-        COUNTIF(pnl_pct > 0) / NULLIF(COUNT(*), 0) * 100 AS win_rate,
-        AVG(pnl_pct) AS avg_pnl_pct,
-        SUM(pnl_pct) AS total_pnl_pct,
-        SUM(CASE WHEN pnl_pct > 0 THEN pnl_pct ELSE 0 END) /
-          NULLIF(ABS(SUM(CASE WHEN pnl_pct < 0 THEN pnl_pct ELSE 0 END)), 0) AS profit_factor,
-        STDDEV(pnl_pct) AS std_pnl
-      FROM closed_chains
+        COUNTIF(cc.pnl_pct > 0) / NULLIF(COUNT(*), 0) * 100 AS win_rate,
+        AVG(cc.pnl_pct) AS avg_pnl_pct,
+        SUM(cc.pnl_pct) AS total_pnl_pct,
+        SUM(CASE WHEN cc.pnl_pct > 0 THEN cc.pnl_pct ELSE 0 END) /
+          NULLIF(ABS(SUM(CASE WHEN cc.pnl_pct < 0 THEN cc.pnl_pct ELSE 0 END)), 0) AS profit_factor,
+        STDDEV(cc.pnl_pct) AS std_pnl,
+        (SELECT MAX(c.peak_pnl - c.cum_pnl) FROM cumulative c) AS max_drawdown_pct
+      FROM closed_chains cc
     `;
     const [rows] = await bq.query({
       query,
@@ -94,7 +104,7 @@ export async function runBqBacktest(opts: {
       winRate: Number(r.win_rate ?? 0),
       avgPnlPct: avgPnl,
       totalPnlPct: Number(r.total_pnl_pct ?? 0),
-      maxDrawdownPct: 0, // TODO: window function으로 계산
+      maxDrawdownPct: Number(r.max_drawdown_pct ?? 0),
       profitFactor: Number(r.profit_factor ?? 0),
       sharpeRatio: sharpe,
     };
