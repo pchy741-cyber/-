@@ -34,8 +34,8 @@ const PULLBACK_BONUS = 8;
 const OVEREXTENDED_PENALTY = -5;
 const OVEREXTENDED_BASE_THRESHOLD = 70; // 과매수 감점 기준 점수
 const OVEREXTENDED_VOL_THRESHOLD = 1.3; // 과매수 거래량 비율 기준
-const STRONG_BUY_THRESHOLD = 85;
-const BUY_THRESHOLD = 78;
+const STRONG_BUY_THRESHOLD = 82; // AI 프롬프트 기준 통일 (82+=STRONG_BUY)
+const BUY_THRESHOLD = 68; // 68~81=BUY (프롬프트 기준)
 const STRONG_SELL_THRESHOLD = 25;
 const SELL_THRESHOLD = 35;
 const PULLBACK_VOL_COMBO_THRESHOLD = 1.3; // 눌림목+거래량 콤보 기준

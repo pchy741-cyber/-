@@ -93,17 +93,33 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
       Promise.resolve(getMarketSentiment()),
     ]);
 
-    // AI 점수 로드 (감시목록 종목)
+    // AI 점수 + KOSPI 레짐 + 전체 수익률 병렬 로드
     const codes = watchlist.map((w) => w.stock_code);
-    const scores = codes.length > 0 ? await getLatestScores(codes) : [];
-
-    // KOSPI 레짐 (DB)
-    const regimeResult = await getPool()
-      .query(
-        `SELECT kospi_level, kospi_change_pct, memo FROM system_log
-       WHERE component = 'MARKET_REGIME' ORDER BY created_at DESC LIMIT 1`,
-      )
-      .catch(() => ({ rows: [] }));
+    const [scores, regimeResult, overallStats] = await Promise.all([
+      codes.length > 0 ? getLatestScores(codes) : Promise.resolve([]),
+      getPool()
+        .query(
+          `SELECT kospi_level, kospi_change_pct, memo FROM system_log
+         WHERE component = 'MARKET_REGIME' ORDER BY created_at DESC LIMIT 1`,
+        )
+        .catch(() => ({ rows: [] })),
+      getPool()
+        .query(
+          `
+        SELECT
+          COUNT(*) AS total_trades,
+          COUNT(*) FILTER (WHERE pnl_pct > 0) AS total_wins,
+          ROUND(AVG(pnl_pct)::numeric, 2) AS avg_pnl,
+          ROUND(SUM(CASE WHEN pnl_pct > 0 THEN pnl_pct ELSE 0 END)::numeric, 2) AS total_profit_pct,
+          ROUND(SUM(CASE WHEN pnl_pct < 0 THEN pnl_pct ELSE 0 END)::numeric, 2) AS total_loss_pct
+        FROM transaction_chains
+        WHERE status = 'CLOSED' AND is_paper = $1
+          AND closed_at > NOW() - INTERVAL '30 days'
+      `,
+          [isPaper],
+        )
+        .catch(() => ({ rows: [{}] })),
+    ]);
 
     // 국내 포지션 요약
     const positions = chains.map((ch) => {
@@ -164,24 +180,6 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
       trigger: r.trigger_source,
       closedAt: r.closed_at,
     }));
-
-    // 전체 수익률 요약
-    const overallStats = await getPool()
-      .query(
-        `
-      SELECT
-        COUNT(*) AS total_trades,
-        COUNT(*) FILTER (WHERE pnl_pct > 0) AS total_wins,
-        ROUND(AVG(pnl_pct)::numeric, 2) AS avg_pnl,
-        ROUND(SUM(CASE WHEN pnl_pct > 0 THEN pnl_pct ELSE 0 END)::numeric, 2) AS total_profit_pct,
-        ROUND(SUM(CASE WHEN pnl_pct < 0 THEN pnl_pct ELSE 0 END)::numeric, 2) AS total_loss_pct
-      FROM transaction_chains
-      WHERE status = 'CLOSED' AND is_paper = $1
-        AND closed_at > NOW() - INTERVAL '30 days'
-    `,
-        [isPaper],
-      )
-      .catch(() => ({ rows: [{}] }));
 
     const stats = (overallStats.rows[0] as Record<string, unknown>) ?? {};
 

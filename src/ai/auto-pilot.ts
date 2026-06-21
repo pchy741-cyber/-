@@ -398,7 +398,7 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
 
     // ── 결과 로깅 ──────────────────────────────────────────
     const result: AutoPilotResult = {
-      rulesApplied: 7,
+      rulesApplied: 6,
       overridesSet,
       overridesRemoved,
       decisions,

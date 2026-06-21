@@ -9,6 +9,19 @@ function kstDateStr(d: Date): string {
 }
 
 export async function upsertAIScore(score: Omit<AIScore, 'id' | 'created_at'>) {
+  // 점수 범위 검증: 음수 또는 100 초과 → 클램핑 (AI 모델 오출력 방어)
+  if (score.composite_score != null) {
+    score = { ...score, composite_score: Math.max(0, Math.min(100, score.composite_score)) };
+  }
+  if (score.fundamental_score != null) {
+    score = { ...score, fundamental_score: Math.max(0, Math.min(100, score.fundamental_score)) };
+  }
+  if (score.technical_score != null) {
+    score = { ...score, technical_score: Math.max(0, Math.min(100, score.technical_score)) };
+  }
+  if (score.sentiment_score != null) {
+    score = { ...score, sentiment_score: Math.max(0, Math.min(100, score.sentiment_score)) };
+  }
   if (isMemoryMode()) {
     memUpsertAIScore(score);
     return;
@@ -58,14 +71,14 @@ export async function getLatestScores(stockCodes: string[]): Promise<AIScore[]> 
 
   if (rows.length > 0) return rows;
 
-  // 오늘 없으면 최근 7일 이내 스코어 fallback (주말/공휴일 대비)
-  const sevenDaysAgo = kstDateStr(new Date(getKSTNow().getTime() - 7 * 24 * 60 * 60 * 1000));
+  // 오늘 없으면 최근 3일 이내 스코어 fallback (주말/공휴일 대비, 7일→3일 축소: 오래된 점수 신뢰도 낮음)
+  const threeDaysAgo = kstDateStr(new Date(getKSTNow().getTime() - 3 * 24 * 60 * 60 * 1000));
   const { rows: fallbackRows } = await queryWithRetry(
     `SELECT DISTINCT ON (stock_code) * FROM ai_scores
      WHERE stock_code IN (${placeholders}) AND score_date >= $${validCodes.length + 1}
      AND composite_score > 0
      ORDER BY stock_code, score_date DESC, composite_score DESC`,
-    [...validCodes, sevenDaysAgo],
+    [...validCodes, threeDaysAgo],
   );
 
   return fallbackRows;
