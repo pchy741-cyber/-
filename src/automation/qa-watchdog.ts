@@ -41,18 +41,39 @@ export interface QAReport {
   status: 'pass' | 'warn' | 'fail';
 }
 
-// 최근 QA 리포트 (인메모리, 최대 10개)
-const _reports: QAReport[] = [];
-const MAX_REPORTS = 10;
+// 인메모리 캐시 (DB 조회 부하 절감)
+let _cachedReports: QAReport[] | null = null;
+let _cacheTs = 0;
+const CACHE_TTL_MS = 60_000; // 1분
 
-/** 최근 QA 리포트 반환 */
-export function getQAReports(): QAReport[] {
-  return _reports;
+/** DB에서 최근 QA 리포트 조회 (캐시 포함) */
+export async function getQAReports(): Promise<QAReport[]> {
+  if (_cachedReports && Date.now() - _cacheTs < CACHE_TTL_MS) return _cachedReports;
+  try {
+    const { rows } = await getPool().query(
+      `SELECT run_at, elapsed_sec, issues, critical, warning, info, status
+       FROM qa_reports ORDER BY run_at DESC LIMIT 20`,
+    );
+    _cachedReports = rows.map((r: any) => ({
+      runAt: r.run_at,
+      elapsedSec: Number(r.elapsed_sec),
+      issues: r.issues ?? [],
+      critical: r.critical,
+      warning: r.warning,
+      info: r.info,
+      status: r.status,
+    }));
+    _cacheTs = Date.now();
+    return _cachedReports;
+  } catch {
+    return _cachedReports ?? [];
+  }
 }
 
 /** 최신 QA 리포트 1개 */
-export function getLatestQAReport(): QAReport | null {
-  return _reports[0] ?? null;
+export async function getLatestQAReport(): Promise<QAReport | null> {
+  const reports = await getQAReports();
+  return reports[0] ?? null;
 }
 
 export async function runQAWatchdog(): Promise<void> {
@@ -89,7 +110,7 @@ export async function runQAWatchdog(): Promise<void> {
     const warnings = issues.filter((i) => i.severity === 'WARNING');
     const infos = issues.filter((i) => i.severity === 'INFO');
 
-    // 리포트 저장 (이슈 유무 관계없이)
+    // 리포트 저장 (DB 영구 + 캐시 무효화)
     const report: QAReport = {
       runAt: getKSTNow().toISOString(),
       elapsedSec,
@@ -99,8 +120,19 @@ export async function runQAWatchdog(): Promise<void> {
       info: infos.length,
       status: critical.length > 0 ? 'fail' : warnings.length > 0 ? 'warn' : 'pass',
     };
-    _reports.unshift(report);
-    if (_reports.length > MAX_REPORTS) _reports.pop();
+    try {
+      await getPool().query(
+        `INSERT INTO qa_reports (run_at, elapsed_sec, issues, critical, warning, info, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [report.runAt, report.elapsedSec, JSON.stringify(report.issues),
+         report.critical, report.warning, report.info, report.status],
+      );
+      // 30일 넘은 리포트 정리
+      await getPool().query(`DELETE FROM qa_reports WHERE run_at < NOW() - INTERVAL '30 days'`).catch(() => {});
+    } catch (err) {
+      logger.warn(`QA 리포트 DB 저장 실패: ${err}`, { component: COMPONENT });
+    }
+    _cachedReports = null; // 캐시 무효화
 
     if (issues.length === 0) {
       logger.info(`✅ QA Watchdog 전수조사 통과 (${elapsed}s)`, { component: COMPONENT });
