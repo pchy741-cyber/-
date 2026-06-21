@@ -98,7 +98,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   const [balanceResult, chains, strategy, insightRows, defensePark, _liveBalanceForCap] = await Promise.all([
     balanceFn().catch(() => defaultBalance),
     getOpenChains(viewIsPaper).catch(() => []),
-    getActiveStrategy().catch(() => null),
+    runWithMode(viewIsPaper, () => getActiveStrategy()).catch(() => null),
     safeQuery(
       `SELECT id, category, insight, confidence, sample_count, last_updated, is_manual,
               recommendation, param_change, is_applied, applied_at, is_paper
@@ -675,7 +675,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       currentPrice: priceMap.get(s.stock_code) ?? 0,
     })),
     strategy: strategy ?? { mode: 'SWING' },
-    killSwitch: getKillSwitchStatusAll(),
+    killSwitch: await runWithMode(viewIsPaper, async () => getKillSwitchStatusAll()),
     cooldown: await runWithMode(viewIsPaper, async () => {
       const status = await getCooldownStatus().catch(() => ({
         active: false,

@@ -181,16 +181,22 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
 
   let totalPnl: number;
   if (i.viewIsPaper) {
-    // Paper: 현재 보유 중인 포지션의 미실현 손익만 (누적 실현PnL은 realizedPnl 필드에 별도 표시)
-    totalPnl = i.totalChainPnl;
+    // Paper: 국내 체인 PnL + 해외 미실현 PnL (전체 포트폴리오 반영)
+    totalPnl = i.totalChainPnl + overseasUnrealizedPnlKrw;
   } else {
-    // Live: KIS 미실현 손익 (실현PnL은 realizedPnl 필드에 별도 표시)
-    totalPnl = safe(i.kisTotalProfitLoss);
+    // Live: KIS 미실현 손익 + 해외 미실현 PnL
+    totalPnl = safe(i.kisTotalProfitLoss) + overseasUnrealizedPnlKrw;
   }
 
-  const totalPnlPct = i.viewIsPaper
-    ? i.paperInitialCapital > 0 ? (totalPnl / i.paperInitialCapital) * 100 : 0
-    : safe(i.kisTotalProfitLossPct);
+  let totalPnlPct: number;
+  if (i.viewIsPaper) {
+    totalPnlPct = i.paperInitialCapital > 0 ? (totalPnl / i.paperInitialCapital) * 100 : 0;
+  } else {
+    // KIS API가 0을 반환하면 자체 계산으로 fallback
+    const kisPct = safe(i.kisTotalProfitLossPct);
+    totalPnlPct = kisPct !== 0 ? kisPct
+      : totalInvested > 0 ? (totalPnl / totalInvested) * 100 : 0;
+  }
 
   // ─── 7. 전일 대비 수익률 (입금/출금 영향 제거) ───
   const prevDay = safe(i.prevDayTotalValue);

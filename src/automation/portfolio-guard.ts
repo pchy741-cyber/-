@@ -93,10 +93,16 @@ export async function getPerformanceMultiplier(): Promise<number> {
     } catch (err) {
       logger.debug(`일일 스냅샷 조회 실패 (기본 비율 적용): ${err}`, { component: 'PORTFOLIO_GUARD' });
     }
-    // 포트폴리오 값 폴백 — 상수 기반
+    // 포트폴리오 값 폴백 — 모드별 시드 기반
     if (portfolioValue <= 0) {
-      const { PAPER_INITIAL_CAPITAL: PIC } = await import('../risk/paper-balance.js');
-      portfolioValue = isPaper ? PIC : PIC; // 실전/연습 동일 시드 기반
+      if (isPaper) {
+        const { PAPER_INITIAL_CAPITAL: PIC } = await import('../risk/paper-balance.js');
+        portfolioValue = PIC;
+      } else {
+        const { runWithMode } = await import('../config/context.js');
+        const { getSeedCapitalKr } = await import('../risk/seed-capital.js');
+        portfolioValue = await runWithMode(false, () => getSeedCapitalKr());
+      }
     }
     const profitThreshold = Math.max(portfolioValue * 0.03, 10_000); // 3% 수익이면 공격
     const lossThresholdHard = -Math.max(portfolioValue * 0.05, 10_000); // -5% 심각
@@ -251,7 +257,7 @@ export interface WinRateFeedback {
   summary: string;
 }
 
-let _feedbackCache: { data: WinRateFeedback; ts: number } | null = null;
+const _feedbackCache: Record<string, { data: WinRateFeedback; ts: number }> = {};
 const FEEDBACK_CACHE_MS = 15 * 60 * 1000;
 
 /**
@@ -269,9 +275,10 @@ export async function getWinRateFeedback(isPaper: boolean): Promise<WinRateFeedb
   };
 
   try {
+    const cacheKey = isPaper ? 'paper' : 'live';
     const now = Date.now();
-    if (_feedbackCache && now - _feedbackCache.ts < FEEDBACK_CACHE_MS) {
-      return _feedbackCache.data;
+    if (_feedbackCache[cacheKey] && now - _feedbackCache[cacheKey].ts < FEEDBACK_CACHE_MS) {
+      return _feedbackCache[cacheKey].data;
     }
 
     const cutoff = new Date();
@@ -291,7 +298,7 @@ export async function getWinRateFeedback(isPaper: boolean): Promise<WinRateFeedb
     );
 
     if (rows.length < 5) {
-      _feedbackCache = { data: neutral, ts: now };
+      _feedbackCache[cacheKey] = { data: neutral, ts: now };
       return neutral;
     }
 
@@ -362,7 +369,7 @@ export async function getWinRateFeedback(isPaper: boolean): Promise<WinRateFeedb
       sampleSize: total,
       summary,
     };
-    _feedbackCache = { data: result, ts: now };
+    _feedbackCache[cacheKey] = { data: result, ts: now };
     return result;
   } catch (err) {
     logger.warn(`승률피드백 조회 실패: ${err}`, { component: COMPONENT });
