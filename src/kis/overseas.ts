@@ -259,6 +259,63 @@ export async function placeOverseasOrder(params: {
 }
 
 /**
+ * 해외주식 주간거래 (Blue Ocean ATS) — KST 10:00~18:00
+ * TTTS6036U(매수) / TTTS6037U(매도) — 지정가 ONLY
+ * 미국 정규장 마감 후 낮 시간에 약 1,000개 종목 거래 가능
+ */
+export async function placeOverseasDaytimeOrder(params: {
+  stockCode: string;
+  exchange?: string;
+  side: 'BUY' | 'SELL';
+  quantity: number;
+  price: number; // 지정가 필수 (시장가 미지원)
+}) {
+  const { stockCode, exchange = 'NASDAQ', side, quantity, price } = params;
+
+  if (!Number.isFinite(quantity) || quantity <= 0 || Math.floor(quantity) !== quantity) {
+    return { success: false, orderNo: '', message: `유효하지 않은 주문수량: ${quantity}` };
+  }
+  if (!Number.isFinite(price) || price <= 0) {
+    return { success: false, orderNo: '', message: `주간거래는 지정가 필수 (price=${price})` };
+  }
+
+  const excd = ORDER_EXCD_MAP[exchange] ?? EXCHANGE_MAP[exchange] ?? 'NAS';
+  const p = getCtxIsPaper();
+  // Paper: 주간거래 전용 모의 TR ID는 없음 → 일반 모의 TR ID 사용
+  const trId = p
+    ? (side === 'BUY' ? 'VTTT1002U' : 'VTTT1001U')
+    : (side === 'BUY' ? 'TTTS6036U' : 'TTTS6037U');
+
+  const body: Record<string, string> = {
+    CANO: config.kis.accountNo,
+    ACNT_PRDT_CD: config.kis.accountProductCode,
+    OVRS_EXCG_CD: excd,
+    PDNO: stockCode,
+    ORD_QTY: String(quantity),
+    OVRS_ORD_UNPR: price.toFixed(2),
+    ORD_SVR_DVSN_CD: '0',
+    ORD_DVSN: '00', // 지정가
+    SLL_TYPE: side === 'SELL' ? '00' : '',
+  };
+
+  const res = await overseasKisRequest({
+    path: p
+      ? '/uapi/overseas-stock/v1/trading/order'
+      : '/uapi/overseas-stock/v1/trading/daytime-order',
+    method: 'POST',
+    trId,
+    body,
+  });
+
+  const output = res.output as Record<string, string>;
+  return {
+    success: res.rtCd === '0',
+    orderNo: output?.ODNO ?? '',
+    message: res.msg1,
+  };
+}
+
+/**
  * 해외주식 소수점 매수 (금액 기준 — KIS TTTT3016U)
  * 정수 주문 최소단위보다 작은 금액도 매수 가능
  */

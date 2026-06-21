@@ -8,7 +8,7 @@ import { OVERSEAS, OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getAllocRisk } from '../../db/alloc-risk-cache.js';
 import { getPool, insertOrder, updateOrder } from '../../db/client.js';
-import { placeOverseasOrder } from '../../kis/overseas.js';
+import { placeOverseasDaytimeOrder, placeOverseasOrder } from '../../kis/overseas.js';
 import { logger } from '../../utils/logger.js';
 import { sleep } from '../../utils/sleep.js';
 import type { OverseasExecutionResult } from './analytics.js';
@@ -166,7 +166,15 @@ export async function executeOverseasOrder(
 
     for (let attempt = 0; attempt <= MAX_SELL_RETRIES; attempt++) {
       try {
-        const result = await placeOverseasOrder({ stockCode: code, exchange, side, quantity: qty, price });
+        // 주간거래 시간(KST 10:00~18:00) 감지 → Blue Ocean ATS API 자동 라우팅
+        const isDaytime = (() => {
+          const now = new Date();
+          const kstH = (now.getUTCHours() + 9) % 24;
+          return kstH >= 10 && kstH < 18;
+        })();
+        const result = isDaytime
+          ? await placeOverseasDaytimeOrder({ stockCode: code, exchange, side, quantity: qty, price })
+          : await placeOverseasOrder({ stockCode: code, exchange, side, quantity: qty, price });
         const liveReasoning =
           side === 'SELL' && previousAvgPrice > 0 ? `[avgBuy:${previousAvgPrice.toFixed(4)}] ${reasoning}` : reasoning;
         const orderId = await insertOrder({

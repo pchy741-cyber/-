@@ -4,7 +4,8 @@ import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
 import { getKSTNow } from '../../utils/time.js';
 import { getOverseasWinRates } from './analytics.js';
-import { getCash, getHoldings } from './state.js';
+import { executeOverseasOrder } from './executor.js';
+import { getCash, getHoldings, updateTradeState } from './state.js';
 import { getOverseasState, setOverseasState } from './utils.js';
 import { GLOBAL_WATCHLIST } from './watchlist.js';
 
@@ -244,7 +245,7 @@ export async function checkDipBuyFills(isPaper = true): Promise<string[]> {
     if (orders.length === 0) return fills;
 
     const remaining = [];
-    const { withTransaction } = await import('../../db/client.js');
+    const holdings = await getHoldings(isPaper);
 
     for (const order of orders) {
       try {
@@ -269,55 +270,54 @@ export async function checkDipBuyFills(isPaper = true): Promise<string[]> {
             continue;
           }
 
-          // 체결 처리
-          // scalp TP/SL 절대가격 계산 (vision-scalp에서 모니터링)
-          const scalpTpPrice = +(fillPrice * (1 + TP_PCT / 100)).toFixed(2);
-          const scalpSlPrice = +(fillPrice * (1 - SL_PCT / 100)).toFixed(2);
+          // 기존 보유수량 조회 (executeOverseasOrder에 필요)
+          const existingHolding = holdings.get(order.code);
+          const prevQty = existingHolding?.qty ?? 0;
+          const prevAvgPrice = existingHolding?.avgPrice ?? 0;
 
-          await withTransaction(async (tx) => {
-            await tx.query(
-              `
-              INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, is_paper, tp_pct, sl_pct, is_scalp, scalp_tp, scalp_sl)
-              VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, TRUE, $8, $9)
-              ON CONFLICT (exchange, stock_code, is_paper) DO UPDATE
-                SET quantity = overseas_holdings.quantity + $3,
-                    avg_price = (overseas_holdings.avg_price * overseas_holdings.quantity + $4 * $3) / (overseas_holdings.quantity + $3),
-                    tp_pct = $6, sl_pct = $7, is_scalp = TRUE, scalp_tp = $8, scalp_sl = $9
-            `,
-              [order.code, order.exchange, order.qty, fillPrice, isPaper, TP_PCT, -SL_PCT, scalpTpPrice, scalpSlPrice],
-            );
+          const reasoning = `프리마켓딥바이 -2%진입 @$${fillPrice.toFixed(2)} (목표$${order.targetPrice}) TP+${TP_PCT}%/$${order.tpPrice} SL-${SL_PCT}%/$${order.slPrice}`;
 
-            await tx.query(
-              `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price,
-                kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
-               VALUES ($1, 'BUY', 'LIMIT', $2, $3, $2, $3, $4, 'FILLED', $5, 'OVERSEAS', $6)`,
-              [
-                order.code,
-                order.qty,
-                fillPrice,
-                `DIP${Date.now().toString(36)}`,
-                isPaper ? 'paper' : 'live',
-                `프리마켓딥바이 -2%진입 @$${fillPrice.toFixed(2)} (목표$${order.targetPrice}) TP+${TP_PCT}%:$${order.tpPrice} SL-${SL_PCT}%:$${order.slPrice} [avgBuy:${fillPrice.toFixed(4)}]`,
-              ],
-            );
-
-            // Live 현금: KIS 동기화로 반영 (USD→KRW 단위 오염 방지). Paper는 computed.
-          });
-
-          // Live: KIS 동기화로 현금 갱신
-          if (!isPaper) {
-            const { reconcileCashWithKIS } = await import('./kis-sync.js');
-            const { runWithMode } = await import('../../config/context.js');
-            await runWithMode(false, () => reconcileCashWithKIS()).catch((e: any) =>
-              logger.warn(`딥바이 후 현금 동기화 실패 (무시): ${e.message}`, { component: 'DIP_BUY' }),
-            );
-          }
-
-          fills.push(
-            `🎯 딥바이 체결! ${order.code} x${order.qty} @$${fillPrice.toFixed(2)} (목표$${order.targetPrice})`,
+          // 실제 주문 실행 (paper=시뮬레이션, live=KIS API 호출)
+          const { runWithMode } = await import('../../config/context.js');
+          const exec = await runWithMode(isPaper, () =>
+            executeOverseasOrder(
+              order.code, 'BUY', order.qty, fillPrice,
+              order.exchange, reasoning, prevQty, prevAvgPrice, { isPaper },
+            ),
           );
-          logger.info(fills[fills.length - 1], { component: 'DIP_BUY' });
-          await sendTelegramMessage(fills[fills.length - 1]).catch(() => {});
+
+          if (exec.submitted && exec.filledQty > 0) {
+            // scalp TP/SL 설정 (vision-scalp에서 모니터링)
+            const scalpTpPrice = +(exec.filledPrice * (1 + TP_PCT / 100)).toFixed(2);
+            const scalpSlPrice = +(exec.filledPrice * (1 - SL_PCT / 100)).toFixed(2);
+
+            await updateTradeState({
+              code: order.code, exchange: order.exchange,
+              qty: exec.finalQty, avgPrice: exec.finalAvgPrice,
+              newCash: cash - exec.filledQty * exec.filledPrice * (1 + OVERSEAS_FEE_PCT),
+              isPaper,
+            });
+
+            // scalp 플래그 설정
+            const { withTransaction } = await import('../../db/client.js');
+            await withTransaction(async (tx) => {
+              await tx.query(
+                `UPDATE overseas_holdings SET tp_pct = $1, sl_pct = $2, is_scalp = TRUE, scalp_tp = $3, scalp_sl = $4
+                 WHERE stock_code = $5 AND exchange = $6 AND is_paper = $7`,
+                [TP_PCT, -SL_PCT, scalpTpPrice, scalpSlPrice, order.code, order.exchange, isPaper],
+              );
+            });
+
+            fills.push(
+              `🎯 딥바이 체결! ${order.code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (목표$${order.targetPrice})${isPaper ? '' : ' [LIVE]'}`,
+            );
+            logger.info(fills[fills.length - 1], { component: 'DIP_BUY' });
+            await sendTelegramMessage(fills[fills.length - 1]).catch(() => {});
+          } else {
+            // 주문 실패 → 다음 사이클에 재시도
+            remaining.push(order);
+            logger.warn(`딥바이 주문 실패: ${order.code} — 다음 사이클 재시도`, { component: 'DIP_BUY' });
+          }
         } else {
           remaining.push(order);
         }
