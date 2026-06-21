@@ -763,22 +763,22 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 🔍 QA Watchdog — 장중 품질 감시 (10:30, 14:00)
+  // 🔍 QA Watchdog — 08:00 해외장 마감 후, 17:00 국내장 마감 후
   cron.schedule(
-    '30 10 * * 1-5',
+    '0 8 * * 1-5',
     () => {
       import('../automation/qa-watchdog.js')
         .then((m) => m.runQAWatchdog())
-        .catch((e) => logger.error(`QA Watchdog: ${e}`, { component: 'SCHEDULER' }));
+        .catch((e) => logger.error(`QA Watchdog(해외): ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
-    '0 14 * * 1-5',
+    '0 17 * * 1-5',
     () => {
       import('../automation/qa-watchdog.js')
         .then((m) => m.runQAWatchdog())
-        .catch((e) => logger.error(`QA Watchdog: ${e}`, { component: 'SCHEDULER' }));
+        .catch((e) => logger.error(`QA Watchdog(국내): ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
