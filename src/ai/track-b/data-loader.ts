@@ -13,6 +13,7 @@ import {
   getBigLossBlockedStocks,
   getLossHistory,
   getOpenChains,
+  getPool,
   getRecentLossStocks,
   getRecentlySoldStocks,
   getRecentManuallySoldStocks,
@@ -35,6 +36,8 @@ export interface PipelineData {
   balance: any;
   lossHistory: Awaited<ReturnType<typeof getLossHistory>>;
   ctxIsPaper: boolean;
+  /** 동시호가 PENDING 주문 종목 — Track B 중복매수 방지 */
+  pendingPreMarketCodes: Set<string>;
 }
 
 /**
@@ -85,12 +88,20 @@ export async function loadPipelineData(): Promise<PipelineData> {
   const ctxIsPaper = getCtxIsPaper();
 
   // ── 2차 쿼리 병렬 실행 ──
-  const [todayRepeatStopCodes, bigLossBlocked, recentlySoldCodes, balanceRaw, lossHistory] = await Promise.all([
+  const [todayRepeatStopCodes, bigLossBlocked, recentlySoldCodes, balanceRaw, lossHistory, pendingPreMarketCodes] = await Promise.all([
     getTodayRepeatStopCodes(1),      // 당일 1회 이상 손절 → 당일 재진입 차단
     getBigLossBlockedStocks(),        // -5% 초과 손실 → 30일 절대 차단 (레거시 폴백)
     getRecentlySoldStocks(4),          // v10.3: 최근 4시간 매도 → 재진입 쿨다운 (반복매매=적자 주범)
     ctxIsPaper ? getPaperBalance() : getAccountBalance(true),
     getLossHistory(),                 // 90일 손실 이력 → 스마트 재진입
+    // 동시호가 PENDING 주문 종목 조회 — Track B 중복매수 방지
+    getPool().query(
+      `SELECT DISTINCT stock_code FROM orders
+       WHERE trigger_source = 'PRE_MARKET_ORDER' AND status IN ('PENDING', 'FILLED')
+         AND is_paper = $1 AND created_at >= CURRENT_DATE
+       `,
+      [ctxIsPaper],
+    ).then(({ rows }) => new Set(rows.map((r: any) => r.stock_code as string))).catch(() => new Set<string>()),
   ]);
 
   // v10.4: 인메모리 쿨다운 병합 (DB 반영 전 매도도 차단)
@@ -113,5 +124,6 @@ export async function loadPipelineData(): Promise<PipelineData> {
     balance: balanceRaw as any,
     lossHistory,
     ctxIsPaper,
+    pendingPreMarketCodes,
   };
 }

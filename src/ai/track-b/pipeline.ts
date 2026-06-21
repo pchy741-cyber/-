@@ -105,7 +105,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const {
       watchlist, openChains, strategy, recentLossCodes, manuallySoldCodes,
       todayRepeatStopCodes, bigLossBlocked, recentlySoldCodes, balance,
-      lossHistory, ctxIsPaper,
+      lossHistory, ctxIsPaper, pendingPreMarketCodes,
     } = await loadPipelineData();
 
     if (watchlist.length === 0) {
@@ -694,6 +694,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const junkStockCodes = new Set([...flowAdjMap.entries()].filter(([, adj]) => adj <= -20).map(([code]) => code));
     if (junkStockCodes.size > 0) {
       logger.info(`🗑️ 잡주 필터 대상(STRONG_SELL): ${[...junkStockCodes].join(', ')}`, { component: 'TRACK_B' });
+    }
+    // 동시호가 PENDING/FILLED 종목 → 잡주 필터에 병합 (Track B 중복매수 방지)
+    if (pendingPreMarketCodes.size > 0) {
+      for (const code of pendingPreMarketCodes) junkStockCodes.add(code);
+      logger.info(`📋 동시호가 주문 종목 매수 차단: ${[...pendingPreMarketCodes].join(', ')}`, { component: 'PRE_MARKET_ORDER' });
     }
 
     // ── KIND 공시 악재 즉각 반응 (신규 매수 차단 + 오픈 포지션 텔레그램 경보) ──

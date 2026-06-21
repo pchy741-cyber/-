@@ -31,6 +31,7 @@ import { runHoldingCheckJob } from './holding-check-job.js';
 import { runIntegrityCheck } from './integrity-check-job.js';
 import { resetOpeningBellDaily, runOpeningBellCycle, warmupOpeningBell } from './opening-bell-job.js';
 import { runOverseasDual } from './overseas-job.js';
+import { runPreMarketOrders } from './pre-market-order-job.js';
 import { runSnapshotJob } from './snapshot-job.js';
 import { runTrackAJob } from './track-a-job.js';
 import { runTrackBJob } from './track-b-job.js';
@@ -417,6 +418,17 @@ export function startScheduler(): void {
       resetOpeningBellDaily(); // 전일 캐시 무효화 (일간 차트 데이터 리셋)
       logger.info('🌅 개장 워밍업 시작 (08:55)', { component: 'SCHEDULER' });
       warmupOpeningBell().catch((e) => logger.error(`워밍업 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 📋 08:57 — 동시호가 선제 주문 (AI 85점+ 종목 → 지정가 매수, 09:00 시초가에 체결)
+  cron.schedule(
+    '57 8 * * 1-5',
+    () => {
+      runDomesticDual('동시호가', runPreMarketOrders).catch((e) =>
+        logger.error(`동시호가 주문 실패: ${e}`, { component: 'SCHEDULER' }),
+      );
     },
     { timezone: MARKET.TIMEZONE },
   );
