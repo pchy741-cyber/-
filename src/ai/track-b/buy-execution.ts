@@ -19,6 +19,7 @@ import {
 } from './technical-fallback-types.js';
 import { classifyStock } from './signal-router.js';
 import { PRIORITY_SECTOR_CODES } from './trading-rules.js';
+import { getVisionChartConfirmation } from '../vision/chart-confirmation.js';
 
 // ── 국내 주식 Kelly 사이징 (해외 kelly.ts 패턴 재사용) ──
 interface DomesticKellyResult {
@@ -476,6 +477,43 @@ export async function executeBuyDecisions(
       );
     }
 
+    // ── Vision 차트 확인: 85점+ 고확신 종목 매수 전 캔들차트 시각 검증 (Live 전용) ──
+    let visionSizingMult = 1.0;
+    if (blendedScore >= 85 && !ctxPaper) {
+      try {
+        const visionCandles = chartData.get(cand.stock_code);
+        if (visionCandles && visionCandles.length >= 30) {
+          const visionResult = await getVisionChartConfirmation(
+            cand.stock_code,
+            visionCandles,
+            { rsi14: cand.tech.rsi14, adx14: cand.tech.adx14 },
+          );
+          if (visionResult) {
+            if (visionResult.score < 50) {
+              logger.warn(
+                `  🖼️ ${cand.stock_code}: Vision 차단 (score=${visionResult.score}) — ${visionResult.reasoning} [${visionResult.patterns.join(',')}]${visionResult.cached ? ' (캐시)' : ''}`,
+                { component: 'TRACK_B' },
+              );
+              continue; // 매수 차단
+            } else if (visionResult.score < 70) {
+              visionSizingMult = 0.7;
+              logger.info(
+                `  🖼️ ${cand.stock_code}: Vision 축소 ×0.7 (score=${visionResult.score}) — ${visionResult.reasoning}${visionResult.cached ? ' (캐시)' : ''}`,
+                { component: 'TRACK_B' },
+              );
+            } else {
+              logger.info(
+                `  🖼️ ${cand.stock_code}: Vision 확인 ✓ (score=${visionResult.score}) — ${visionResult.reasoning}${visionResult.cached ? ' (캐시)' : ''}`,
+                { component: 'TRACK_B' },
+              );
+            }
+          }
+        }
+      } catch (err) {
+        logger.warn(`  🖼️ ${cand.stock_code}: Vision 오류 → 허용: ${err}`, { component: 'TRACK_B' });
+      }
+    }
+
     // DB 실거래 역산 비율 사용 (샘플 10건 이상인 티어만), 부족하면 하드코딩 fallback
     const getDbAllocPct = (score: number): number | null => {
       const tier = scoreTierParams.find((t) => score >= t.tier_min && score <= t.tier_max);
@@ -627,7 +665,7 @@ export async function executeBuyDecisions(
     // v9: 곱연산 배수 합산 하한 — 과도한 축소 방지
     // 이전: 0.5×0.6×0.65×0.5 = 0.098 → 25%→2.4% (거의 매수 불가)
     // 수정: 합산 배수 최소 0.25 보장 → 25%→6.25% 이상 유지
-    const rawCompoundMult = modeScale * macroSizingMult * winRateMultiplier * lossStreakMult * evSizingMult;
+    const rawCompoundMult = modeScale * macroSizingMult * winRateMultiplier * lossStreakMult * evSizingMult * visionSizingMult;
     // v9-fix: Paper는 학습용 → 곱연산 하한 0.5 (Live: 0.25) — 데이터 수집 위해 적극적 매수
     // v11: paper도 live와 동일 바닥 (실전 동일 조건 학습)
     const compoundMultFloor = Math.max(0.25, rawCompoundMult);
