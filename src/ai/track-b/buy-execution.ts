@@ -707,13 +707,17 @@ export async function executeBuyDecisions(
 
     // ── ATR+드로다운+연패 동적 보정 (Live 전용) ──────────────────────────
     if (!ctxPaper) {
-      const dynSize = await getDynamicPositionSize(cand.stock_code, effectivePositionSize, 'live');
-      if (dynSize.multiplier !== 1.0) {
-        effectivePositionSize = Math.round(dynSize.amount);
-        logger.info(
-          `  📊 ${cand.stock_code}: 동적사이징 x${dynSize.multiplier.toFixed(2)} → ${Math.round(effectivePositionSize / 10000)}만원 (${dynSize.reason})`,
-          { component: 'TRACK_B' },
-        );
+      try {
+        const dynSize = await getDynamicPositionSize(cand.stock_code, effectivePositionSize, 'live');
+        if (dynSize.multiplier !== 1.0) {
+          effectivePositionSize = Math.round(dynSize.amount);
+          logger.info(
+            `  📊 ${cand.stock_code}: 동적사이징 x${dynSize.multiplier.toFixed(2)} → ${Math.round(effectivePositionSize / 10000)}만원 (${dynSize.reason})`,
+            { component: 'TRACK_B' },
+          );
+        }
+      } catch (err) {
+        logger.warn(`동적사이징 실패 → 기본값 사용: ${cand.stock_code}`, { component: 'TRACK_B', error: err });
       }
     }
 
