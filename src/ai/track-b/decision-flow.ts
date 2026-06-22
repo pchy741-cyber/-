@@ -183,6 +183,66 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   // ── 3. 섹터 집중 매수 차단 ──────────────────────────────────────────
   decisions = filterSectorConcentration(decisions, openChains, params.isPaper ?? false);
 
+  // ── 3.5. 크로스마켓 테크 비중 관리 (KR+US 합산 테크 50% 캡) ──────
+  if (!params.isPaper && (params.overseasValueKrw ?? 0) > 0) {
+    try {
+      const { getPool } = await import('../../db/client.js');
+      const { SECTOR_MAP_KR } = await import('../../config/constants.js');
+      // 해외 테크 섹터 보유금액 조회
+      const { rows: osRows } = await getPool().query(`
+        SELECT stock_code, total_quantity, avg_buy_price
+        FROM transaction_chains
+        WHERE status = 'OPEN' AND trading_mode = 'live'
+          AND stock_code ~ '^[A-Z]'
+      `);
+      const US_TECH_SECTORS = new Set(['AI_SEMI', 'TECH', 'CLOUD', 'GROWTH']);
+      const { GLOBAL_WATCHLIST } = await import('../../scheduler/overseas/watchlist.js');
+      const usSectorMap = new Map(GLOBAL_WATCHLIST.map((w: { code: string; sector: string }) => [w.code, w.sector]));
+      let usTechValueKrw = 0;
+      for (const r of osRows) {
+        const sector = usSectorMap.get(String(r.stock_code));
+        if (sector && US_TECH_SECTORS.has(sector)) {
+          usTechValueKrw += Number(r.total_quantity) * Number(r.avg_buy_price);
+        }
+      }
+      // KR 테크 섹터 보유금액 (반도체 + 인터넷)
+      const KR_TECH_SECTORS = new Set(['반도체', '인터넷']);
+      let krTechValueKrw = 0;
+      for (const c of openChains) {
+        if (Number(c.total_quantity) <= 0) continue;
+        const sector = SECTOR_MAP_KR[c.stock_code];
+        if (sector && KR_TECH_SECTORS.has(sector)) {
+          krTechValueKrw += Number(c.total_quantity) * Number(c.avg_buy_price);
+        }
+      }
+      // 해외 USD → KRW 환산 (overseasValueKrw / 해외총평가 비율 기반)
+      const totalOsValue = osRows.reduce((s: number, r: { total_quantity: number; avg_buy_price: number }) =>
+        s + Number(r.total_quantity) * Number(r.avg_buy_price), 0);
+      const krwRate = totalOsValue > 0 ? (params.overseasValueKrw ?? 0) / totalOsValue : 0;
+      const usTechKrw = usTechValueKrw * krwRate;
+      const combinedTechKrw = krTechValueKrw + usTechKrw;
+      const combinedTechPct = totalAssets > 0 ? (combinedTechKrw / totalAssets) * 100 : 0;
+
+      if (combinedTechPct >= 50) {
+        const blocked: string[] = [];
+        for (const d of decisions) {
+          if (d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN') continue;
+          const sector = SECTOR_MAP_KR[d.stock_code];
+          if (sector && KR_TECH_SECTORS.has(sector)) {
+            blocked.push(d.stock_code);
+            d.action = 'HOLD';
+            d.reasoning = `[크로스마켓 테크 ${combinedTechPct.toFixed(0)}%≥50% 차단] ${d.reasoning}`;
+          }
+        }
+        if (blocked.length > 0) {
+          logger.info(`🌐 크로스마켓 테크 비중 ${combinedTechPct.toFixed(1)}% → KR 테크 매수 ${blocked.length}건 차단: ${blocked.join(',')}`, { component: 'CROSS_SECTOR' });
+        }
+      }
+    } catch (e) {
+      logger.warn(`크로스마켓 섹터 체크 실패: ${e}`, { component: 'CROSS_SECTOR' });
+    }
+  }
+
   // ── 4. 유휴 현금 파킹 해제 (SELL만 먼저 — BUY는 포지션사이저 이후 step 7.5에서 추가) ──
   // confirmedBuyCount: confidence 0.6+ 인 확정 매수만 카운트 (저품질 매수로 파킹 깨지 않게)
   const confirmedBuyCount = decisions.filter(
@@ -230,7 +290,54 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
     livePrices,
     mode,
     stopLossPct: resolvedSl ?? null,
+    chartData, // 동적 ATR 트레일링에 사용
   });
+
+  // ── 5.5. 분할 수익실현 — 수익 종목 단계별 일부 매도 (해외 시스템 포팅) ──
+  {
+    const { evaluateKrPartialTp } = await import('./partial-tp.js');
+    for (const chain of openChains) {
+      const price = livePrices.get(chain.stock_code);
+      if (!price || !chain.avg_buy_price || chain.total_quantity < 2) continue;
+      const avgBuy = Number(chain.avg_buy_price);
+      if (avgBuy <= 0) continue;
+      const pnlPct = ((price.currentPrice - avgBuy) / avgBuy) * 100;
+      if (pnlPct < 1.0) continue; // 최소 +1% 이상만 평가
+
+      // 이미 매도 결정 있으면 스킵
+      const alreadySelling = decisions.some(
+        (d) => d.stock_code === chain.stock_code && ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action),
+      );
+      if (alreadySelling) continue;
+
+      // ADX 조회 (chartData 있으면)
+      let adx: number | undefined;
+      const candles = chartData?.get(chain.stock_code);
+      if (candles && candles.length >= 20) {
+        const { analyzeTechnicals } = await import('../../analysis/indicators.js');
+        const tech = analyzeTechnicals(candles);
+        adx = tech?.adx14;
+      }
+
+      const ptpResults = await evaluateKrPartialTp({
+        chainId: chain.id,
+        stockCode: chain.stock_code,
+        pnlPct,
+        totalQty: chain.total_quantity,
+        adx,
+      });
+      for (const ptp of ptpResults) {
+        decisions.push({
+          action: 'PARTIAL_SELL',
+          stock_code: chain.stock_code,
+          quantity: ptp.quantity,
+          price_type: 'MARKET',
+          reasoning: `분할TP ${ptp.stage}단계: +${pnlPct.toFixed(1)}% (임계 ${ptp.triggerPct}%)`,
+          confidence: 0.95,
+        });
+      }
+    }
+  }
 
   // ── 5b. BUY/AVERAGE_DOWN 현재가 주입 ────────────────────────────────
   for (const d of decisions) {
@@ -309,6 +416,52 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
         } else if (signal?.trend === 'BULLISH' && d.confidence) {
           d.confidence = Math.min(1.0, d.confidence + 0.05);
           d.reasoning = `[컨센서스 상승세↑] ${d.reasoning}`;
+        }
+      }
+    }
+  }
+
+  // ── 9.6. 실적발표 7일 매수 차단 — 어닝스 변동성 회피 ──────────────
+  {
+    const { checkKrEarnings } = await import('../../automation/earnings-sentinel.js');
+    const earningsBlocked: string[] = [];
+    for (const d of decisions) {
+      if (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') {
+        const er = await checkKrEarnings(d.stock_code);
+        if (er.hasUpcomingEarnings) {
+          earningsBlocked.push(`${d.stock_code}(D-${er.daysUntil})`);
+          d.action = 'HOLD';
+          d.reasoning = `[실적발표 D-${er.daysUntil}일 차단] ${d.reasoning}`;
+        }
+      }
+    }
+    if (earningsBlocked.length > 0) {
+      logger.info(`📅 실적발표 매수차단: ${earningsBlocked.join(', ')}`, { component: 'EARNINGS_SENTINEL' });
+    }
+  }
+
+  // ── 9.7. 골든아워 타이밍 보너스 — 최적 진입 시간대 확신도 부스트 ──────
+  {
+    const kstHour = new Date(Date.now() + 9 * 3600_000).getUTCHours();
+    const kstMin = new Date(Date.now() + 9 * 3600_000).getUTCMinutes();
+    const kstTime = kstHour + kstMin / 60;
+    // 09:00-09:30 개장 모멘텀 (가장 강한 방향성)
+    // 13:00-14:00 오후장 추세 확인 (점심 이후 재시작 모멘텀)
+    let timeBonus = 0;
+    let timeLabel = '';
+    if (kstTime >= 9.0 && kstTime < 9.5) {
+      timeBonus = 0.05; timeLabel = '개장모멘텀';
+    } else if (kstTime >= 13.0 && kstTime < 14.0) {
+      timeBonus = 0.03; timeLabel = '오후추세';
+    } else if (kstTime >= 14.5 && kstTime < 15.0) {
+      // 14:30-15:00 마감 전 — 약간의 페널티 (마감 직전 진입 리스크)
+      timeBonus = -0.02; timeLabel = '마감임박';
+    }
+    if (timeBonus !== 0) {
+      for (const d of decisions) {
+        if ((d.action === 'BUY' || d.action === 'AVERAGE_DOWN') && d.confidence) {
+          d.confidence = Math.min(1.0, Math.max(0.1, d.confidence + timeBonus));
+          d.reasoning = `[${timeLabel}${timeBonus > 0 ? '+' : ''}${Math.round(timeBonus * 100)}%] ${d.reasoning}`;
         }
       }
     }

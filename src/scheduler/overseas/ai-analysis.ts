@@ -188,9 +188,82 @@ export async function runAIAnalysis(params: AIAnalysisParams): Promise<AIAnalysi
       if (isPaperMode) s.lastPaperAiCallAt = Date.now();
       else s.lastUSAiCallAt = Date.now();
     }
+
+    // ── Claude 크로스체크: Gemini BUY 고확신 종목 검증 (Live만) ──
+    if (!isPaperMode && aiDecisions.length > 0) {
+      aiDecisions = await crossCheckWithClaude(aiDecisions, aiInputs);
+    }
   } else {
     logger.info('🤖 분석 생략 — 후보 없음 또는 쿨다운 중', { component: 'OVERSEAS' });
   }
 
   return { aiDecisions };
+}
+
+/**
+ * Claude Haiku로 Gemini BUY 결정 크로스체크
+ * 고확신(≥0.70) BUY 최대 5종목을 Claude에게 검증 요청
+ * Claude 반대 시 confidence -0.10 감산 (거부권은 아닌 의견 반영)
+ */
+async function crossCheckWithClaude(
+  decisions: Awaited<ReturnType<typeof analyzeOverseasWithAI>>,
+  inputs: OverseasStockInput[],
+): Promise<Awaited<ReturnType<typeof analyzeOverseasWithAI>>> {
+  try {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return decisions;
+
+    const highConfBuys = decisions.filter((d) => d.action === 'BUY' && d.confidence >= 0.70);
+    if (highConfBuys.length === 0) return decisions;
+
+    const targets = highConfBuys.slice(0, 5);
+    const inputMap = new Map(inputs.map((i) => [i.code, i]));
+
+    const stockLines = targets.map((d) => {
+      const si = inputMap.get(d.code);
+      if (!si) return `${d.code}: conf=${d.confidence} ${d.reasoning}`;
+      return `${d.code}($${si.currentPrice} ${si.changePct >= 0 ? '+' : ''}${si.changePct.toFixed(1)}%): RSI=${si.rsi.toFixed(0)} ADX=${si.adx.toFixed(0)} score=${si.score} signal=${si.signal} trend=${si.trendStrength}${si.isMomentum ? ' 🚀MOM' : ''}${si.isBigMover ? ' 🔥BIG' : ''}${si.isHolding ? ` [보유 PnL=${si.holdingPnlPct?.toFixed(1)}%]` : ''} | Gemini: conf=${(d.confidence * 100).toFixed(0)}% "${d.reasoning}"`;
+    });
+
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    const client = new Anthropic({ apiKey });
+    const { logTokenUsage, calcClaudeApiCost } = await import('../../utils/ai-token-logger.js');
+
+    const resp = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 500,
+      system: `You are a stock trading verification AI. Another AI (Gemini) recommended BUY for these stocks. Your job: independently assess if each BUY is valid based on technical data. Reply JSON array: [{"code":"NVDA","agree":true,"reason":"momentum confirmed"}]. agree=false if you see red flags (overbought RSI>72, weak trend, day-high entry risk). Be concise.`,
+      messages: [{ role: 'user', content: stockLines.join('\n') }],
+    });
+
+    const text = resp.content[0]?.type === 'text' ? resp.content[0].text : '';
+    const inTok = resp.usage?.input_tokens ?? 0;
+    const outTok = resp.usage?.output_tokens ?? 0;
+    const costUsd = calcClaudeApiCost(inTok, outTok);
+    logTokenUsage({ provider: 'claude-api', model: 'claude-haiku-4-5-20251001', inputTokens: inTok, outputTokens: outTok, costUsd, label: '해외-크로스체크' });
+
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) return decisions;
+
+    const checks = JSON.parse(jsonMatch[0]) as { code: string; agree: boolean; reason: string }[];
+    const checkMap = new Map(checks.map((c) => [c.code, c]));
+
+    for (const d of decisions) {
+      const check = checkMap.get(d.code);
+      if (!check) continue;
+      if (!check.agree) {
+        d.confidence = Math.max(0.1, d.confidence - 0.10);
+        d.reasoning = `[Claude반대 -10%: ${check.reason}] ${d.reasoning}`;
+        logger.info(`🔍 Claude 크로스체크 반대: ${d.code} conf ${((d.confidence + 0.10) * 100).toFixed(0)}%→${(d.confidence * 100).toFixed(0)}% (${check.reason})`, { component: 'CROSS_CHECK' });
+      } else {
+        d.reasoning = `[Claude확인✓] ${d.reasoning}`;
+      }
+    }
+
+    logger.info(`🔍 Claude 크로스체크 완료: ${checks.map((c) => `${c.code}=${c.agree ? '✓' : '✗'}`).join(', ')}`, { component: 'CROSS_CHECK' });
+    return decisions;
+  } catch (e) {
+    logger.warn(`Claude 크로스체크 실패 (무시): ${e}`, { component: 'CROSS_CHECK' });
+    return decisions;
+  }
 }

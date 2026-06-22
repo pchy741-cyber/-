@@ -516,6 +516,16 @@ export function getDynamicDomesticTpSl(h: DomesticTpSlHints): {
     parts.push('기관+');
   }
 
+  // ── ATR 바닥 보장 (overseas calcDynamicTpSl 포팅) ──
+  // SL이 1.5×ATR보다 타이트하면 노이즈에 걸림 → ATR×1.5를 최소 SL로 강제
+  if (atrPct > 0) {
+    const atrFloor = -(atrPct * 1.5);
+    if (sl > atrFloor) {
+      sl = Math.max(atrFloor, -8.0); // ATR 바닥 적용 (최대 -8% 유지)
+      parts.push('ATR바닥');
+    }
+  }
+
   // ── 범위 제한 ──
   tp = Math.round(Math.min(Math.max(tp, 3.0), 15.0) * 10) / 10;
   sl = Math.round(Math.max(Math.min(sl, -1.5), -8.0) * 10) / 10;

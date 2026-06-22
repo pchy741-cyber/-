@@ -82,19 +82,20 @@ export async function applyHardRules(params: {
   livePrices: Map<string, CurrentPrice>;
   mode: StrategyMode;
   stopLossPct?: number | null;
+  chartData?: Map<string, import('../../kis/market.js').DailyCandle[]>;
 }): Promise<TradeDecision[]> {
-  const { decisions, openChains, livePrices, mode, stopLossPct } = params;
+  const { decisions, openChains, livePrices, mode, stopLossPct, chartData } = params;
   const result = [...decisions];
   const baseParams = STRATEGY_PARAMS[mode];
 
-  let trailingStopThreshold = -2.5;
+  let trailingStopBase = -2.5;
   try {
     const { getPool } = await import('../../db/client.js');
     const { rows } = await getPool().query(
       'SELECT trailing_stop_pct FROM portfolio_allocation_config WHERE is_paper = $1 LIMIT 1',
       [getCtxIsPaper()],
     );
-    if (rows[0]?.trailing_stop_pct) trailingStopThreshold = -Math.abs(Number(rows[0].trailing_stop_pct));
+    if (rows[0]?.trailing_stop_pct) trailingStopBase = -Math.abs(Number(rows[0].trailing_stop_pct));
   } catch {
     /* 기본값 사용 */
   }
@@ -149,10 +150,44 @@ export async function applyHardRules(params: {
     const peakForTrail = chain.peak_price_since_open ? Number(chain.peak_price_since_open) : 0;
 
     if (peakForTrail > 0 && pnlPct >= 0.5) {
+      // ── 동적 트레일링: ATR/ADX 기반 (해외 시스템 포팅) ──
+      let dynamicTrail = trailingStopBase;
+      const candles = chartData?.get(chain.stock_code);
+      if (candles && candles.length >= 20) {
+        const { analyzeTechnicals } = await import('../../analysis/indicators.js');
+        const tech = analyzeTechnicals(candles);
+        if (tech) {
+        const atrPct = tech.atr14 > 0 && price.currentPrice > 0 ? (tech.atr14 / price.currentPrice) * 100 : 2.0;
+
+        // ATR × 2.0 기반 트레일 (해외와 동일)
+        const atrTrail = -(atrPct * 2.0);
+        // 국내 범위: 대형주 -2%~-5%, 중소형 -3%~-7%
+        dynamicTrail = Math.max(-7.0, Math.min(-2.0, atrTrail));
+
+        // ADX 추세 강도 보정
+        if (tech.adx14 >= 30 && tech.rsi14 >= 50 && tech.rsi14 <= 70) {
+          dynamicTrail *= 1.2; // 강한 추세 → 넓은 트레일 (달리게)
+        } else if (tech.adx14 < 20) {
+          dynamicTrail *= 0.85; // 횡보장 → 타이트 트레일
+        }
+        // 과매수 영역 → 타이트
+        if (tech.rsi14 > 75) dynamicTrail = Math.max(dynamicTrail, -3.5);
+
+        // 수익 크기 비례 타이트닝 (수익 클수록 보호 강화)
+        const maxPnl = peakForTrail > avgBuy ? ((peakForTrail - avgBuy) / avgBuy) * 100 : pnlPct;
+        if (maxPnl >= 15) dynamicTrail = Math.max(dynamicTrail, -3.0);
+        else if (maxPnl >= 10) dynamicTrail = Math.max(dynamicTrail, -4.0);
+        else if (maxPnl >= 6) dynamicTrail = Math.max(dynamicTrail, -5.0);
+
+        // 최종 클램프
+        dynamicTrail = Math.max(-7.0, Math.min(-2.0, dynamicTrail));
+        } // if (tech)
+      }
+
       const trailDropPct = ((price.currentPrice - peakForTrail) / peakForTrail) * 100;
-      if (trailDropPct <= trailingStopThreshold) {
+      if (trailDropPct <= dynamicTrail) {
         logger.info(
-          `🔒 트레일링 스탑: ${chain.stock_code} 고점 ${peakForTrail.toFixed(0)}원 대비 ${trailDropPct.toFixed(1)}% 하락 (수익 ${pnlPct.toFixed(1)}%)`,
+          `🔒 동적 트레일링: ${chain.stock_code} 고점 대비 ${trailDropPct.toFixed(1)}% (한도 ${dynamicTrail.toFixed(1)}%, 수익 +${pnlPct.toFixed(1)}%)`,
           { component: 'RISK_GUARD' },
         );
         result.push({
@@ -160,7 +195,7 @@ export async function applyHardRules(params: {
           stock_code: chain.stock_code,
           quantity: chain.total_quantity,
           price_type: 'MARKET',
-          reasoning: `트레일링 스탑: 고점 ${peakForTrail.toFixed(0)}원 대비 ${trailDropPct.toFixed(1)}% 하락 (수익 +${pnlPct.toFixed(1)}%)`,
+          reasoning: `동적 트레일링: 고점 대비 ${trailDropPct.toFixed(1)}% (ATR한도 ${dynamicTrail.toFixed(1)}%, 수익 +${pnlPct.toFixed(1)}%)`,
           confidence: 1.0,
         });
       }
