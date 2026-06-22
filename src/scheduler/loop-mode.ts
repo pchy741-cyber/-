@@ -4,7 +4,7 @@
  * DB 영속 (loop_sessions/loop_ticks) + 서버 재시작 시 자동 재개
  */
 
-import { getCopilotLiteScore } from '../api/routes/review/copilot-lite.js';
+import type { CaptureTrigger } from '../api/routes/review/capture-trigger.js';
 import { runWithMode } from '../config/context.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { isKillSwitchActive } from '../risk/kill-switch.js';
@@ -152,31 +152,11 @@ async function dbInsertTick(
   }
 }
 
-/** 임계 이벤트 시 Copilot Lite 점검 → DB 저장 + Telegram */
-async function runCopilotCheck(reason: string): Promise<void> {
-  try {
-    const result = await getCopilotLiteScore(false); // live 기준
-    logger.info(`🩺 Auto Copilot [${reason}]: score=${result.score}, issues=${result.issues.length}`, {
-      component: 'LOOP',
-    });
-
-    if (result.issues.length > 0) {
-      const issueText = result.issues.map((i) => `[${i.level}] ${i.label}`).join(', ');
-      sendTelegramMessage(`🩺 Auto Copilot (${reason})\nScore: ${result.score}\n${issueText}`).catch(() => {});
-    }
-
-    // DB 기록
-    if (state.dbSessionId) {
-      const { getPool } = await import('../db/client.js');
-      await getPool().query(
-        `INSERT INTO loop_ticks (session_id, tick_num, result, market_phase)
-         VALUES ($1, $2, $3, $4)`,
-        [state.dbSessionId, state.totalRuns, `copilot:${reason}:${result.score}`, getUSMarketPhase()],
-      );
-    }
-  } catch (e) {
-    logger.warn(`Auto Copilot 실패: ${(e as Error).message}`, { component: 'LOOP' });
-  }
+/** 임계 이벤트 → capture-trigger 위임 (fire-and-forget, 15분 쿨다운 내장) */
+function fireTrigger(trigger: CaptureTrigger, mode: 'paper' | 'live' = 'live'): void {
+  import('../api/routes/review/capture-trigger.js')
+    .then((m) => m.triggerCapture(trigger, mode, state.dbSessionId).catch(() => {}))
+    .catch(() => {});
 }
 
 // ── 세션 메트릭 집계 (강화 #1) ──
@@ -286,14 +266,8 @@ async function tick(): Promise<void> {
       kill_switch_pauses: state.killSwitchPauses,
     }).catch(() => {});
     sendTelegramMessage('🛑 Auto Pilot 자동 PAUSED — KR+OVERSEAS 킬스위치 양쪽 발동').catch(() => {});
-    runCopilotCheck('kill_switch_both').catch(() => {});
-    // 캡쳐 강화 #2: 자동 트리거 (paper + live 둘 다)
-    import('../api/routes/review/capture-trigger.js')
-      .then(async (m) => {
-        await m.triggerCapture('kill_switch', 'live', state.dbSessionId).catch(() => {});
-        await m.triggerCapture('kill_switch', 'paper', state.dbSessionId).catch(() => {});
-      })
-      .catch(() => {});
+    fireTrigger('kill_switch', 'live');
+    fireTrigger('kill_switch', 'paper');
     scheduleNext();
     return;
   }
@@ -316,7 +290,7 @@ async function tick(): Promise<void> {
   if (krKs && !ovKs) logger.info('Auto Pilot: KR Kill Switch 활성 — 국내 매도만', { component: 'LOOP' });
   if (ovKs && !krKs) {
     logger.info('Auto Pilot: OVERSEAS Kill Switch 활성 — 해외 매도만', { component: 'LOOP' });
-    runCopilotCheck('kill_switch').catch(() => {});
+    fireTrigger('kill_switch_overseas');
   }
 
   // ── 1. 전략 유효성 체크 (3틱마다) ──
@@ -337,7 +311,7 @@ async function tick(): Promise<void> {
       sendTelegramMessage(
         `🔄 세션 전략 재수립: ${newBrief.marketRegime}/${newBrief.riskLevel}\n${newBrief.narrative}`,
       ).catch(() => {});
-      runCopilotCheck('strategy_regen').catch(() => {});
+      fireTrigger('strategy_regen');
     }
   }
 
@@ -390,7 +364,7 @@ async function tick(): Promise<void> {
     });
 
     if (state.consecutiveErrors === 2) {
-      runCopilotCheck('consecutive_errors_2').catch(() => {});
+      fireTrigger('consecutive_errors_2');
     }
     if (state.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
       // 자동 복구 (강화 #3): MAX_RECOVERY_ATTEMPTS 까지 쿨다운 후 자동 재시도
@@ -405,10 +379,7 @@ async function tick(): Promise<void> {
         sendTelegramMessage(
           `🔄 Auto Pilot 자동복구 #${state.recoveryAttempts}/${MAX_RECOVERY_ATTEMPTS} — ${cooldown / 60_000}분 후 재시도`,
         ).catch(() => {});
-        // 캡쳐 강화 #2: 에러 폭주 자동 트리거
-        import('../api/routes/review/capture-trigger.js')
-          .then((m) => m.triggerCapture('error_burst', 'live', state.dbSessionId).catch(() => {}))
-          .catch(() => {});
+        fireTrigger('error_burst');
         state.consecutiveErrors = 0; // 재시도 위해 초기화
         state.adaptiveIntervalMs = cooldown;
         dbUpdateSession(state.dbSessionId, {
@@ -419,9 +390,7 @@ async function tick(): Promise<void> {
         return;
       }
       // 복구 소진 → 루프 정지 직전 loop_paused 캡처 (최후 상태 기록)
-      import('../api/routes/review/capture-trigger.js')
-        .then((m) => m.triggerCapture('loop_paused', 'live', state.dbSessionId).catch(() => {}))
-        .catch(() => {});
+      fireTrigger('loop_paused');
       stopLoop(`연속 ${MAX_CONSECUTIVE_ERRORS}회 에러 × ${MAX_RECOVERY_ATTEMPTS}회 복구 시도 모두 실패 — 진짜 정지`);
       return;
     }
@@ -539,7 +508,7 @@ function adaptiveInterval(cachedRegions?: Set<string>, cachedPhase?: USMarketPha
 function isUSDST(d: Date): boolean {
   const year = d.getUTCFullYear();
   const mar1 = new Date(Date.UTC(year, 2, 1));
-  const marSun2 = 8 + (7 - mar1.getUTCDay()) % 7; // 3월 둘째 일요일
+  const marSun2 = 8 + ((7 - mar1.getUTCDay()) % 7); // 3월 둘째 일요일
   const dstStart = Date.UTC(year, 2, marSun2, 7);
   const nov1 = new Date(Date.UTC(year, 10, 1));
   const novSun1 = nov1.getUTCDay() === 0 ? 1 : 8 - nov1.getUTCDay();
@@ -623,7 +592,11 @@ async function acquireLoopLock(): Promise<boolean> {
   } catch (e) {
     // pool.connect() 성공 후 query 실패 시 client 반환
     if (_lockClient) {
-      try { _lockClient.release(); } catch { /* ignore */ }
+      try {
+        _lockClient.release();
+      } catch {
+        /* ignore */
+      }
       _lockClient = null;
     }
     logger.warn(`Loop advisory lock 획득 실패: ${(e as Error).message}`, { component: 'LOOP' });
@@ -734,8 +707,7 @@ export async function stopLoop(reason?: string): Promise<{ ok: boolean }> {
     logger.info(msg, { component: 'LOOP' });
     sendTelegramMessage(msg).catch(() => {});
 
-    // 최종 Copilot 점검
-    runCopilotCheck('session_end').catch(() => {});
+    fireTrigger('session_end');
 
     // DB 세션 종료
     dbUpdateSession(state.dbSessionId, {

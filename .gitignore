@@ -43,3 +43,5 @@ logs/
 .pytest_cache/
 .coverage
 htmlcov/
+*.tsbuildinfo
+tsconfig.tsbuildinfo

@@ -10,14 +10,23 @@
  *  - scheduled: 정기 진단 (시간별)
  */
 
-import { sendTelegramMessage } from '../../../notifications/telegram.js';
 import { sendModeMessage } from '../../../notifications/mode-message.js';
 import { logger } from '../../../utils/logger.js';
 import { type CopilotAction, getCopilotLiteScore } from './copilot-lite.js';
 
 const COMP = 'CAPTURE_TRIG';
 
-export type CaptureTrigger = 'manual' | 'kill_switch' | 'loop_paused' | 'mdd_danger' | 'error_burst' | 'scheduled';
+export type CaptureTrigger =
+  | 'manual'
+  | 'kill_switch'
+  | 'kill_switch_overseas'
+  | 'loop_paused'
+  | 'mdd_danger'
+  | 'error_burst'
+  | 'consecutive_errors_2'
+  | 'strategy_regen'
+  | 'session_end'
+  | 'scheduled';
 
 export interface CaptureSnapshot {
   id: number | null;
@@ -47,9 +56,13 @@ function formatTelegram(snap: CaptureSnapshot): string {
   const triggerLabel: Record<CaptureTrigger, string> = {
     manual: '수동',
     kill_switch: '🛑 킬스위치',
+    kill_switch_overseas: '🛑 해외 킬스위치',
     loop_paused: '⏸️ 루프 PAUSED',
     mdd_danger: '📉 MDD 위험',
     error_burst: '⚠️ 에러 폭주',
+    consecutive_errors_2: '⚠️ 연속 에러',
+    strategy_regen: '🔄 전략 재생성',
+    session_end: '🏁 세션 종료',
     scheduled: '⏰ 정기',
   };
   const modeLabel = snap.mode === 'paper' ? '연습' : '실전';
