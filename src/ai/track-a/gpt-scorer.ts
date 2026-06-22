@@ -128,17 +128,34 @@ ${chartSummary}${sourcesBlock}
 
 위 데이터와 시장 인텔리전스를 종합해 각 종목의 점수를 산출해주세요. 뉴스 감성(Groq), 공시(KRX), 거시경제 방향, 커뮤니티 신호를 sentiment_score에 반영하세요.`;
 
+    // 재시도 로직: Premature close 등 네트워크 에러 대비 (최대 2회 재시도)
+    let res: Awaited<ReturnType<typeof client.chat.completions.create>> | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        res = await client.chat.completions.create({
+          model: MODEL,
+          max_tokens: 4096,
+          temperature: 0.3,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userMessage },
+          ],
+        });
+        break; // 성공
+      } catch (retryErr) {
+        const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        if (attempt < 2 && (msg.includes('Premature close') || msg.includes('ECONNRESET') || msg.includes('socket hang up'))) {
+          logger.warn(`GPT 배치 ${Math.floor(i / BATCH_SIZE) + 1} 재시도 ${attempt + 1}/2: ${msg.slice(0, 100)}`, { component: COMP });
+          await new Promise((r) => setTimeout(r, (attempt + 1) * 3000));
+          continue;
+        }
+        throw retryErr; // 비 네트워크 에러 또는 최종 실패
+      }
+    }
+    if (!res) continue;
+
     try {
-      const res = await client.chat.completions.create({
-        model: MODEL,
-        max_tokens: 4096,
-        temperature: 0.3, // 일관된 스코어링 위해 낮은 temperature
-        response_format: { type: 'json_object' }, // GPT에게 pure JSON 강제 (코드블록/전문 텍스트 방지)
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userMessage },
-        ],
-      });
 
       // 토큰 사용량 기록
       if (res.usage) {

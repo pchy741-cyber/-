@@ -328,11 +328,12 @@ export async function checkAndRefillPaper(): Promise<boolean> {
     );
     const gen = genRows[0]?.next_gen ?? 1;
 
-    // 기존 paper 주문을 아카이브 (학습 데이터 보존: trading_mode → paper_archived_N)
+    // 기존 paper 주문을 아카이브 (학습 데이터 보존: trading_mode → p_arch)
+    // varchar(10) + CHECK 제약 → 'p_arch' 사용 (해외 overseas/state.ts와 동일 패턴)
+    // 세대번호는 overseas_state.paper_kr_gen_N에서 추적
     const { rowCount } = await pool.query(
-      `UPDATE orders SET trading_mode = $1
+      `UPDATE orders SET trading_mode = 'p_arch'
        WHERE trading_mode = 'paper' AND stock_code ~ '^[0-9]{6}$' AND status = 'FILLED'`,
-      [`paper_archived_${gen}`],
     );
 
     // 리셋

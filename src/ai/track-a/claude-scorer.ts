@@ -102,30 +102,42 @@ JSON 배열만 반환 (설명 없이):`;
     try {
       let text: string;
 
-      if (useCli) {
-        text = await callClaudeCli({ systemPrompt, userPrompt, model: 'sonnet' });
-        // CLI 모드: 토큰 추정 (응답 길이 / 4)
-        const estimated = Math.ceil(text.length / 4);
-        logTokenUsage({
-          provider: 'claude-cli', model: 'sonnet',
-          inputTokens: Math.ceil(userPrompt.length / 4), outputTokens: estimated,
-          costUsd: calcClaudeCliCost(), label: 'scoring',
-        });
-      } else {
-        const msg = await client!.messages.create({
-          model: MODEL_API,
-          max_tokens: MAX_TOKENS,
-          system: systemPrompt,
-          messages: [{ role: 'user', content: userPrompt }],
-        });
-        text = msg.content[0].type === 'text' ? msg.content[0].text : '';
-        // API 모드: 정확한 usage 기록
-        logTokenUsage({
-          provider: 'claude-api', model: MODEL_API,
-          inputTokens: msg.usage.input_tokens, outputTokens: msg.usage.output_tokens,
-          costUsd: calcClaudeApiCost(msg.usage.input_tokens, msg.usage.output_tokens),
-          label: 'scoring',
-        });
+      // 재시도 로직: Premature close 등 네트워크 에러 대비 (최대 2회 재시도)
+      for (let attempt = 0; ; attempt++) {
+        try {
+          if (useCli) {
+            text = await callClaudeCli({ systemPrompt, userPrompt, model: 'sonnet' });
+            const estimated = Math.ceil(text.length / 4);
+            logTokenUsage({
+              provider: 'claude-cli', model: 'sonnet',
+              inputTokens: Math.ceil(userPrompt.length / 4), outputTokens: estimated,
+              costUsd: calcClaudeCliCost(), label: 'scoring',
+            });
+          } else {
+            const msg = await client!.messages.create({
+              model: MODEL_API,
+              max_tokens: MAX_TOKENS,
+              system: systemPrompt,
+              messages: [{ role: 'user', content: userPrompt }],
+            });
+            text = msg.content[0].type === 'text' ? msg.content[0].text : '';
+            logTokenUsage({
+              provider: 'claude-api', model: MODEL_API,
+              inputTokens: msg.usage.input_tokens, outputTokens: msg.usage.output_tokens,
+              costUsd: calcClaudeApiCost(msg.usage.input_tokens, msg.usage.output_tokens),
+              label: 'scoring',
+            });
+          }
+          break; // 성공
+        } catch (retryErr) {
+          const errMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          if (attempt < 2 && (errMsg.includes('Premature close') || errMsg.includes('ECONNRESET') || errMsg.includes('socket hang up'))) {
+            logger.warn(`Claude 배치 ${i + 1} 재시도 ${attempt + 1}/2: ${errMsg.slice(0, 100)}`, { component: COMP });
+            await new Promise((r) => setTimeout(r, (attempt + 1) * 3000));
+            continue;
+          }
+          throw retryErr;
+        }
       }
       const jsonMatch = text.match(/\[[\s\S]*\]/);
       if (!jsonMatch) continue;

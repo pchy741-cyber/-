@@ -171,9 +171,12 @@ export const config = {
     databaseUrl: env.DATABASE_URL,
   },
 
-  telegram: {
-    botToken: env.TELEGRAM_BOT_TOKEN,
-    chatId: env.TELEGRAM_CHAT_ID,
+  // Telegram: Secret Manager에서 런타임 로드 → process.env 우선 참조
+  get telegram() {
+    return {
+      botToken: process.env.TELEGRAM_BOT_TOKEN || env.TELEGRAM_BOT_TOKEN,
+      chatId: process.env.TELEGRAM_CHAT_ID || env.TELEGRAM_CHAT_ID,
+    };
   },
 
   slack: {
