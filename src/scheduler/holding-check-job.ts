@@ -167,23 +167,26 @@ export async function runHoldingCheckJob(): Promise<void> {
       // ── 최대 보유일 초과 ──
       if (businessDays < maxDays) continue;
 
-      // 수익이 충분히 나고 있으면 계속 보유 (인버스 ETF는 제외 — 일일 리밸런싱 decay 방지)
-      if (pnlPct > 1.0 && !isInverseEtf) {
-        logger.info(`⏰ ${chain.stock_code}: ${businessDays}일 보유, 수익 ${pnlPct.toFixed(2)}% → 유지`, {
-          component: 'HOLDING_CHECK',
-        });
+      // 수익 중이거나 손익분기(0% 이상)면 시간 청산 제외 — 수수료 손실 방지, 트레일링 스탑이 처리
+      // 인버스 ETF는 일일 리밸런싱 decay 있으므로 제외
+      if (pnlPct >= 0.0 && !isInverseEtf) {
+        logger.info(
+          `⏰ ${chain.stock_code}: ${businessDays}일 보유 초과, 수익 ${pnlPct.toFixed(2)}% → 수익/횡보 중 — 시간 청산 제외 (트레일링 스탑 대기)`,
+          { component: 'HOLDING_CHECK' },
+        );
         continue;
       }
 
-      logger.warn(`${modeTag} ⏰ ${chain.stock_code}: ${businessDays}일 보유, 수익 ${pnlPct.toFixed(2)}% → 시간 손절`, {
-        component: 'HOLDING_CHECK',
-      });
+      logger.warn(
+        `${modeTag} ⏰ ${chain.stock_code}: ${businessDays}일 보유 초과 (한도 ${maxDays}일), 손실 ${pnlPct.toFixed(2)}% → 시간 손절`,
+        { component: 'HOLDING_CHECK' },
+      );
       forceCloseDecisions.push({
         action: 'FORCE_CLOSE',
         stock_code: chain.stock_code,
         quantity: chain.total_quantity,
         price_type: 'MARKET',
-        reasoning: `보유 ${businessDays}영업일 초과 (한도 ${maxDays}일), 수익률 ${pnlPct.toFixed(2)}% → 시간 손절`,
+        reasoning: `보유 ${businessDays}영업일 초과 (한도 ${maxDays}일), 손실 ${pnlPct.toFixed(2)}% → 시간 손절`,
         confidence: 1.0,
       });
     }
