@@ -6,7 +6,8 @@ import { runWithMode } from '../../../config/context.js';
 import { getActiveStrategy, getActiveWatchlist } from '../../../db/client.js';
 import { isMarketOpen } from '../../../kis/market.js';
 import { getKillSwitchStatusAll } from '../../../risk/kill-switch.js';
-import { resolveRequestMode } from '../../guards/live-pin.js';
+import { getOpenMarketRegions } from '../../../scheduler/overseas/session.js';
+import { isLiveEnabled, resolveRequestMode } from '../../guards/live-pin.js';
 
 export const tradingStatusRoutes = new Hono();
 
@@ -69,7 +70,12 @@ tradingStatusRoutes.get('/trading-status', async (c) => {
     const { STRATEGY_PARAMS } = await import('../../../config/constants.js');
     const defaultThreshold = (STRATEGY_PARAMS as any)[mode]?.buyThreshold ?? 62;
     const buyThreshold = strategy?.buy_threshold ?? defaultThreshold;
-    const marketOpen = isMarketOpen();
+    const krMarketOpen = isMarketOpen();
+    const openRegions = getOpenMarketRegions();
+    const usMarketOpen = openRegions.has('US') || openRegions.has('US_EXTENDED');
+    const anyMarketOpen = krMarketOpen || openRegions.size > 0;
+    // 하위호환: marketOpen = 국내 OR 해외 어느 것이든 열려있으면 true
+    const marketOpen = anyMarketOpen;
 
     const blocks: { reason: string; detail: string; severity: 'warn' | 'info' | 'ok' }[] = [];
 
@@ -96,8 +102,12 @@ tradingStatusRoutes.get('/trading-status', async (c) => {
       });
     }
 
-    if (!marketOpen) {
-      blocks.push({ reason: '장 마감', detail: '09:00~15:30 외 시간 — 매수 불가', severity: 'info' });
+    if (!krMarketOpen && !usMarketOpen) {
+      blocks.push({ reason: '전체 장 마감', detail: '국내·해외 모두 마감 시간', severity: 'info' });
+    } else if (!krMarketOpen && usMarketOpen) {
+      blocks.push({ reason: '국내 장 마감', detail: `해외 시장 운영 중 (${[...openRegions].join('/')})`, severity: 'info' });
+    } else if (krMarketOpen && !usMarketOpen) {
+      blocks.push({ reason: '해외 장 마감', detail: '국내 시장 운영 중 (09:00~15:30)', severity: 'info' });
     }
 
     if (mode === 'DEFENSE') {
@@ -215,11 +225,23 @@ tradingStatusRoutes.get('/trading-status', async (c) => {
       });
     }
 
+    // v10.10.4: Live 모드 비활성화 상태 진단
+    if (!viewIsPaper && !isLiveEnabled()) {
+      blocks.push({
+        reason: '실전모드 비활성화',
+        detail: 'LIVE_ENABLED=false — 설정에서 Live를 켜야 실전 매수 가능',
+        severity: 'warn',
+      });
+    }
+
     return c.json({
       overallStatus,
       mode,
       buyThreshold,
       marketOpen,
+      krMarketOpen,
+      usMarketOpen,
+      openMarkets: [...openRegions],
       topScore,
       candidateCount: candidates.length,
       watchlistCount: watchlist.length,

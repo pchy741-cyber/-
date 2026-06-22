@@ -99,12 +99,18 @@ export async function processScaleIns(params: {
   return { cash };
 }
 
-/** Scale-In 결정: 모멘텀/빅무버/강한추세/확인된추세는 100% 즉시매수, 나머지는 60% 진입 */
+/** Scale-In 결정: 대부분 100% 즉시매수, RSI 과매수 구간 접근 시에만 분할진입
+ *  v10.10.4: 기존 과다 분할매수 완화 — 대부분의 매수를 즉시 전량 진입으로 변경
+ *  Scale-In은 RSI가 높아서 조정 가능성 있는 경우에만 사용 (= 신중한 진입)
+ */
 export function shouldUseScaleIn(target: BuyTarget): boolean {
-  const isStrongTrend = target.ai?.action === 'STRONG_BUY' && target.adx >= 35;
-  // ADX>=25 + MA20 위 = 추세 확인됨 → 100% 즉시매수 (Scale-In 불필요)
-  const isConfirmedTrend = target.adx >= 25 && target.aboveMA20;
-  return !target.isMomentum && !target.isBigMover && !isStrongTrend && !isConfirmedTrend;
+  // 모멘텀/빅무버/강한추세/확인된추세 → 무조건 즉시매수
+  if (target.isMomentum || target.isBigMover) return false;
+  if (target.ai?.action === 'STRONG_BUY' && target.adx >= 35) return false;
+  if (target.adx >= 25 && target.aboveMA20) return false;
+  // v10.10.4: ADX 약하고 + RSI 높은 경우에만 분할진입 (과매수 구간 신중 진입)
+  // RSI < 55: 과매수 아님 → 즉시매수, RSI >= 55 + ADX < 20: 추세 약하면서 RSI 높음 → 분할
+  return target.rsi >= 55 && target.adx < 20;
 }
 
 /** Scale-In 예약 데이터 빌드 */

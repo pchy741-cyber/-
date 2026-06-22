@@ -257,6 +257,9 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
 
     // ── 통합증거금: 해외/국내 비중 동적 할당 (시간대별 자동 조절) ──
     const holdingCost = Array.from(holdings.values()).reduce((s, h) => s + h.qty * h.avgPrice, 0);
+    // v10.10.4: 목표 해외 포트폴리오 규모 — 포지션 사이징 레퍼런스용
+    // 해외 현재 자산이 적어도 목표 배분 규모 기준으로 사이징 → 1주씩 소액매수 방지
+    let targetOverseasUsd = 0;
     if (!isPaper() && cycleFxRate > 0) {
       try {
         const { rows: totalRows } = await getPool().query(
@@ -282,6 +285,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
             : 0.60;
 
           const maxOverseasKrw = totalAccountKrw * OVERSEAS_ALLOC_PCT;
+          targetOverseasUsd = maxOverseasKrw / cycleFxRate;
           // 이미 해외에 투자된 금액도 비중에 포함
           const currentOverseasKrw = holdingCost * cycleFxRate;
           const remainingAllocKrw = Math.max(0, maxOverseasKrw - currentOverseasKrw);
@@ -874,6 +878,19 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     }, 0);
     portfolioValue = cash + holdingEvalUsdPost;
 
+    // v10.10.4: 사이징 레퍼런스 — 목표 해외 배분 규모와 현재 해외 규모 중 큰 값
+    // 해외 자산이 목표 대비 적어도 목표 기준으로 사이징 → 점진적으로 목표 비중까지 증가
+    // 리스크 관리(killSwitch, lossPct)는 실제 portfolioValue 기준 유지
+    const sizingPortfolioValue = targetOverseasUsd > 0
+      ? Math.max(portfolioValue, targetOverseasUsd)
+      : portfolioValue;
+    if (sizingPortfolioValue > portfolioValue) {
+      logger.info(
+        `📐 사이징 레퍼런스: $${portfolioValue.toFixed(0)}(현재) → $${sizingPortfolioValue.toFixed(0)}(목표) — 목표배분 기준 포지션 사이징`,
+        { component: 'OVERSEAS' },
+      );
+    }
+
     // ── 4-c. 터틀 전략 비활성화 — sell-logic이 기존 터틀 포지션도 관리 ──
 
     // ── 5. 리스크 관리 ──
@@ -1335,7 +1352,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         const wrData = overseasWinRates.get(target.code);
         const { sizingMult, positionSize } = calcPositionSize({
           target,
-          portfolioValue,
+          portfolioValue: sizingPortfolioValue, // v10.10.4: 목표배분 기준 사이징
           kellyResult,
           vixRegime,
           gradualCooldown,
@@ -1348,8 +1365,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           winRateSamples: wrData?.sampleCount,
           marketBreadth: freshBreadth,
         });
-        // 최소 포지션: 포트폴리오의 10% (MIN_POSITION_PCT) — 고정 $ 폐지
-        const minPositionSize = portfolioValue * 0.1;
+        // 최소 포지션: 사이징 레퍼런스의 10% (MIN_POSITION_PCT)
+        const minPositionSize = sizingPortfolioValue * 0.1;
         if (positionSize < minPositionSize) {
           logger.info(
             `🔧 ${target.code}: positionSize=$${positionSize.toFixed(2)} < $${minPositionSize.toFixed(0)}(10%) → SKIP (sizing=${sizingMult} cash=$${cash.toFixed(0)})`,
@@ -1363,8 +1380,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         const isDefenseEntry = SECTOR_CLASS.DEFENSE.includes(targetWatchItem?.sector ?? '');
         const slDecimal = isHighBetaEntry ? 0.08 : isDefenseEntry ? 0.04 : 0.05;
         // v10.8.2: 마이크로(<$500) 10%, 소액(<$2000) 5%, 일반 Paper 2.5% / Live 2%
-        const riskPct = portfolioValue < 500 ? 0.10 : portfolioValue < 2000 ? 0.05 : isPaper() ? 0.025 : 0.02;
-        const maxRiskUSD = portfolioValue * riskPct;
+        const riskPct = sizingPortfolioValue < 500 ? 0.10 : sizingPortfolioValue < 2000 ? 0.05 : isPaper() ? 0.025 : 0.02;
+        const maxRiskUSD = sizingPortfolioValue * riskPct;
         const qtyBy1PctRule =
           maxRiskUSD > 0 ? Math.floor(maxRiskUSD / (target.price.currentPrice * slDecimal)) : Infinity;
         // 수수료 0.25% 보정: positionSize가 1주 가격과 비슷하면 수수료 무시하고 1주 허용
@@ -1374,20 +1391,20 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           qtyBySizing = 1; // 1주 가격 ±1% 내면 수수료 무시하고 매수
         }
         // v10.8.2: 마이크로 계좌 — 현금으로 1주 살 수 있으면 최소 1주 보장
-        if (qtyBySizing === 0 && portfolioValue < 500 && target.price.currentPrice <= cash * 0.95) {
+        if (qtyBySizing === 0 && sizingPortfolioValue < 500 && target.price.currentPrice <= cash * 0.95) {
           qtyBySizing = 1;
         }
         // 집중캡 사전 체크: concentration-cap.ts의 CONC_CAP(25%)와 정렬
         // $500 미만: cap 무제한 (concentration-cap도 skip), $500+: 25% (cap 발동 기준과 동일)
         const existingHolding = updatedHoldings.get(target.code);
         const existingQty = existingHolding?.qty ?? 0;
-        const CONC_CAP_PCT = portfolioValue < 500 ? 1.0 : 0.25;
+        const CONC_CAP_PCT = sizingPortfolioValue < 500 ? 1.0 : 0.25;
         let maxQtyByConc =
-          portfolioValue > 0
-            ? Math.max(0, Math.floor((portfolioValue * CONC_CAP_PCT) / priceWithFee) - existingQty)
+          sizingPortfolioValue > 0
+            ? Math.max(0, Math.floor((sizingPortfolioValue * CONC_CAP_PCT) / priceWithFee) - existingQty)
             : Infinity;
         // v10.8.2: 마이크로 계좌 — 집중캡 계산상 0이지만 현금으로 1주 가능하면 허용
-        if (maxQtyByConc === 0 && portfolioValue < 500 && existingQty === 0 && target.price.currentPrice <= cash * 0.95) {
+        if (maxQtyByConc === 0 && sizingPortfolioValue < 500 && existingQty === 0 && target.price.currentPrice <= cash * 0.95) {
           maxQtyByConc = 1;
         }
         const fullQty = Math.min(qtyBySizing, qtyBy1PctRule > 0 ? qtyBy1PctRule : qtyBySizing, maxQtyByConc);
@@ -1401,7 +1418,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           continue;
         }
 
-        // Scale-In: 모멘텀/빅무버/강한추세는 100% 즉시매수, 나머지는 60% 진입
+        // Scale-In: RSI과매수+추세약할 때만 분할, 대부분 100% 즉시매수 (v10.10.4)
         const useScaleIn = shouldUseScaleIn(target) && fullQty >= 3;
         const qty = useScaleIn ? Math.max(1, Math.floor(fullQty * 0.6)) : fullQty;
         const scaleInRemainder = useScaleIn ? fullQty - qty : 0;
