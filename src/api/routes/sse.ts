@@ -233,7 +233,9 @@ async function buildMetaPayload(viewIsPaper: boolean): Promise<string> {
     const holdings = holdRes.rows.map((h: any) => {
       const qty = Number(h.quantity);
       const avg = Number(h.avg_price ?? 0);
-      const last = Number(h.last_price ?? avg);
+      // 인메모리 가격 캐시 우선 → DB last_price → avg_price (주가 반영 보장)
+      const cachedEntry = cacheGet<{ price: number }>(`overseas:lastprice:${h.stock_code}`);
+      const last = (cachedEntry?.price ?? 0) > 0 ? cachedEntry!.price : Number(h.last_price || avg);
       evalUsd += last * qty;
       investedUsd += avg * qty;
       return { code: h.stock_code, qty, pnlPct: avg > 0 ? ((last - avg) / avg) * 100 : 0 };
@@ -447,14 +449,19 @@ sseRoutes.get('/stream', (c) => {
             }
           }
         } catch {
-          await stream.writeSSE({
-            data: JSON.stringify({ error: 'data fetch failed' }),
-            event: 'stream_error',
-            id: String(++id),
-          }).catch(() => {});
+          try {
+            await stream.writeSSE({
+              data: JSON.stringify({ error: 'data fetch failed' }),
+              event: 'stream_error',
+              id: String(++id),
+            });
+          } catch {
+            break; // 연결 끊김 — 루프 탈출
+          }
         }
 
-        const sleepMs = anyMarketOpen ? PRICE_INTERVAL : CLOSED_INTERVAL;
+        // 장외 시 KEEPALIVE_MS(30s) 간격으로 루프 — 120s에 1회 meta + 중간에 ping 전송 가능
+        const sleepMs = anyMarketOpen ? PRICE_INTERVAL : KEEPALIVE_MS;
         await stream.sleep(sleepMs);
       }
     } finally {
