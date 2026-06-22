@@ -31,7 +31,7 @@ npm run backtest   # 스코어 vs PnL 백테스트
 ```
 src/
 ├── ai/
-│   ├── track-a/          # 무거운 분석 (Gemini + GPT-4o) — 07:30, 12:30, 18:00
+│   ├── track-a/          # 무거운 분석 (Gemini + GPT-4o) — 07:30, 09:00, 09:30, 10:00, 12:30, 18:00
 │   └── track-b/          # 실시간 실행 (Claude) — 3분 간격
 │       ├── pipeline.ts   # 메인 파이프라인 (지표 수집 → AI 판단 → 주문)
 │       └── technical-fallback.ts  # AI 없을 때 기술적 지표만으로 매매
@@ -56,7 +56,7 @@ src/
 - **Track A**: Gemini + GPT-4o로 일 3회 종목 분석 → `ai_scores` 테이블 저장
 - **Track B**: AI 점수 + 실시간 기술지표로 3분마다 실행 → 실제 주문
 - `technicalFallbackDecisions()` — AI 없을 때 기술지표만으로 매매 판단
-  - `allowScalpingBuys: true` 전달 시에만 SCALPING 신규 매수 허용 (opening-bell-job 전용)
+  - `allowScalpingBuys: true` 전달 시에만 SCALPING 신규 매수 허용 (opening-bell-job 전용) — ⛔ SCALPING 모드 영구 비활성, prop은 잔존
 
 ### Paper/Live 분리 원칙
 - `runWithMode(isPaper, fn)` — AsyncLocalStorage로 컨텍스트 주입 (`src/config/context.ts`)
@@ -90,10 +90,10 @@ cash = rbResult.cash
 ### 전략 모드 (`src/config/constants.ts`)
 | 모드 | TP | SL | 용도 |
 |------|----|----|------|
-| SWING | +5.5% | -3.0% | 기본 |
-| SCALPING | +1.5% | -1.2% | 개장벨 전용 |
+| SWING | +7.0% | -2.5% | 기본 |
+| SCALPING | +2.0% | -1.2% | ⛔ 영구 비활성 (dead code 제거 완료) |
 | DEFENSE | +5.0% | -2.0% | 하락장 |
-| SNIPER | +8.0% | -4.0% | 고확신 집중 |
+| SNIPER | +8.0% | -3.0% | 고확신 집중 |
 | BOTTOM_FISHING | +6.0% | -2.5% | 과매도 반등 |
 
 수치는 `getScoreBasedParams(score)` / `getOverseasDynamic(portfolioUsd)` 로 동적 조정.
@@ -103,7 +103,7 @@ cash = rbResult.cash
 2. `overseas_state` 키 네이밍: paper=`p_`, live=`l_` 접두사 (e.g. `p_maxprice_NVDA`)
 3. 수동매도 쿨다운: `manual_sell_cd_{code}` — 2시간 재매수 금지
 4. 손절 쿨다운: `getLossCooldownStocks()` — 24시간 재매수 금지
-5. 개장벨 SCALPING: `allowScalpingBuys: true` 없으면 Track B가 모든 후보 skip
+5. ~~개장벨 SCALPING~~: ⛔ 영구 비활성 — `allowScalpingBuys` prop 잔존하나 SCALPING 경로 dead code 제거됨
 6. **⛔ GCP 리소스 신규 생성/삭제 금지** — Cloud Run 서비스, Cloud SQL, Artifact Registry, IAM, Secrets 등 모든 인프라 변경은 반드시 사용자 승인 후 실행 (코드 배포는 기존 `ai-auto-bot` 서비스만 사용)
 
 ---
@@ -205,7 +205,7 @@ curl -s -H "x-api-key: <DASHBOARD_PASSWORD>" "https://ai-auto-bot-807105550136.a
 **퀵플립 후 재진입**: 익절 종목이라도 점수 기준 충족하면 즉시 Step 3으로 재매수 가능
 
 그 외 수익/손실 관리는 백엔드에 맡긴다:
-- **Track B** (3분 간격): TP +5.5% / SL -4% 자동 처리
+- **Track B** (3분 간격): TP +7.0% / SL -2.5% 자동 처리 (SWING 기준, 동적 조정)
 - **holding-check** (10분 간격): 트레일링 스탑 + 보유일 초과 손절
 
 매도 실행:
@@ -382,7 +382,7 @@ curl -s -X POST "https://ai-auto-bot-807105550136.asia-northeast3.run.app/api/ov
 ### AI 스코어 현황
 - 현재 스코어: 75점 기술폴백 (Gemini 실패 중)
 - **다음 Track A 실행**: 07:30 KST 평일 — RSS 스코어러 첫 적용 예정
-- Track A 스케줄: 07:30 / 10:00 / 12:30 / 18:00 KST 평일
+- Track A 스케줄: 07:30 / 09:00 / 09:30 / 10:00 / 12:30 / 18:00 KST 평일
 
 ### 포지션 현황
 - 국내: 0개 포지션 / 현금 ~230,000원

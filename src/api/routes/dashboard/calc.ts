@@ -121,9 +121,7 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
 
   const domesticMarketValue = i.kisDomEval > 0
     ? i.kisDomEval
-    : i.viewIsPaper
-      ? safe(i.kisDomEval)
-      : i.totalChainInvested + i.totalChainPnl;
+    : i.totalChainInvested + i.totalChainPnl;
 
   // ─── 3. 총자산 ───
   const rawCashSafe = safe(i.rawCash);
