@@ -123,6 +123,97 @@ export function registerManualBuyRoutes(app: Hono) {
       return c.json({ error: 'stock_code는 숫자 6자리여야 합니다' }, 400);
     }
 
+    // ===== HARD SAFETY GATES (Track B 동일 기준 — 실전 손실 방지) =====
+    // CEO 블랙리스트 — Paper/Live 공통
+    const { BUY_BLOCKED_CODES } = await import('../.././../ai/track-b/trading-rules.js');
+    if (BUY_BLOCKED_CODES.has(stock_code)) {
+      logger.warn(`🚫 HARD BLOCK: ${stock_code} — CEO 블랙리스트`, { component: 'CLAUDE_BUY' });
+      return c.json({ error: '매수 차단: CEO 블랙리스트 종목' }, 403);
+    }
+
+    // 커뮤니티 펌프 감지 — Paper/Live 공통
+    const { isCommunityPumpBlocked } = await import('../../../automation/community-sentinel.js');
+    if (isCommunityPumpBlocked(stock_code)) {
+      logger.warn(`🚫 HARD BLOCK: ${stock_code} — 커뮤니티 펌프 리스크`, { component: 'CLAUDE_BUY' });
+      return c.json({ error: '매수 차단: 커뮤니티 펌프/작전주 리스크 감지' }, 403);
+    }
+
+    // 매도 후 4시간 쿨다운 — Live만 (Paper는 실험 허용)
+    if (!isPaper) {
+      const { getMemoryCooldownCodes } = await import('../../../ai/track-b/sell-cooldown.js');
+      const cooldownCodes = getMemoryCooldownCodes();
+      if (cooldownCodes.has(stock_code)) {
+        logger.warn(`🚫 HARD BLOCK: ${stock_code} — 매도 후 4h 쿨다운`, { component: 'CLAUDE_BUY' });
+        return c.json({ error: '매수 차단: 4시간 이내 매도 종목 (반복매매=적자 주범)' }, 403);
+      }
+    }
+
+    // 저가주 필터 + 상폐리스크 — 현재가 조기 조회 (아래에서 재사용)
+    const priceData = await getCurrentPrice(stock_code);
+    const curPrice = priceData.currentPrice;
+    if (!curPrice || curPrice <= 0) return c.json({ error: '현재가 조회 실패' }, 500);
+
+    const junkPriceThreshold = isPaper ? 1000 : 5000;
+    const ETF_BRANDS = ['KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'KOSEF'];
+    const isETF = ETF_BRANDS.some((b) => (priceData.stockName ?? '').toUpperCase().includes(b));
+    if (curPrice < junkPriceThreshold && !isETF) {
+      logger.warn(
+        `🚫 HARD BLOCK: ${stock_code}(${priceData.stockName}) ${curPrice}원 < ${junkPriceThreshold}원 — 저가주 필터`,
+        { component: 'CLAUDE_BUY' },
+      );
+      return c.json(
+        { error: `매수 차단: 저가주 ${curPrice.toLocaleString()}원 (최소 ${junkPriceThreshold.toLocaleString()}원)` },
+        403,
+      );
+    }
+
+    // 상폐리스크 종목 차단
+    const { isDelistingRisk } = await import('../../../kis/market.js');
+    if (isDelistingRisk(priceData)) {
+      logger.warn(`🚫 HARD BLOCK: ${stock_code} — 상폐리스크/관리종목`, { component: 'CLAUDE_BUY' });
+      return c.json({ error: '매수 차단: 관리종목/거래정지/투자경고' }, 403);
+    }
+
+    // Kelly 음수 → 실전 매수 차단 (수학적으로 "배팅하지 마라")
+    if (!isPaper) {
+      try {
+        const { rows: kellyRows } = await getPool().query(`
+          SELECT realized_pnl, total_invested
+          FROM transaction_chains
+          WHERE status = 'CLOSED' AND closed_at >= NOW() - INTERVAL '30 days'
+            AND total_invested > 0 AND is_paper = false
+        `);
+        if (kellyRows.length >= 10) {
+          let wins = 0, losses = 0, totalWinPct = 0, totalLossPct = 0;
+          for (const r of kellyRows) {
+            const pnlPct = (Number(r.realized_pnl) / Number(r.total_invested)) * 100;
+            if (pnlPct > 0) { wins++; totalWinPct += pnlPct; }
+            else { losses++; totalLossPct += Math.abs(pnlPct); }
+          }
+          const total = wins + losses;
+          if (total >= 10) {
+            const winRate = wins / total;
+            const avgWin = wins > 0 ? totalWinPct / wins : 3.0;
+            const avgLoss = losses > 0 ? totalLossPct / losses : 3.0;
+            const b = avgLoss > 0 ? avgWin / avgLoss : 1.0;
+            const fullKelly = (b * winRate - (1 - winRate)) / b;
+            if (fullKelly <= 0) {
+              logger.warn(
+                `🚫 HARD BLOCK: Kelly 음수 (승률 ${(winRate * 100).toFixed(0)}%, Kelly=${(fullKelly * 100).toFixed(1)}%) — 실전 매수 차단`,
+                { component: 'CLAUDE_BUY' },
+              );
+              return c.json({
+                error: `매수 차단: Kelly 기준 음수 (30일 승률 ${(winRate * 100).toFixed(0)}%, 수학적으로 배팅 부적합)`,
+              }, 403);
+            }
+          }
+        }
+      } catch (e) {
+        logger.warn(`Kelly 계산 실패 (진행): ${e}`, { component: 'CLAUDE_BUY' });
+      }
+    }
+    // ===== END HARD SAFETY GATES =====
+
     // 동적 TP/SL
     const dbStrategy = await getActiveStrategy().catch(() => null);
     const useDynamic = dbStrategy?.use_dynamic_tpsl === true;
@@ -219,9 +310,7 @@ export function registerManualBuyRoutes(app: Hono) {
         }
       }
 
-      const priceData = await getCurrentPrice(stock_code);
-      const curPrice = priceData.currentPrice;
-      if (!curPrice || curPrice <= 0) return c.json({ error: '현재가 조회 실패' }, 500);
+      // curPrice + priceData 는 위 HARD SAFETY GATES에서 이미 조회 완료
 
       // 기술지표 — 경고 수집만 (차단 X, CEO 책임 모드)
       if (!isPaper) {
