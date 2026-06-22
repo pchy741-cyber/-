@@ -1035,15 +1035,23 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         const stock5dRet = stockCandles && stockCandles.length >= 6 && stockCandles[5].close > 0
           ? ((stockCandles[0].close - stockCandles[5].close) / stockCandles[5].close) * 100
           : null;
+        const relStrength = stock5dRet != null ? stock5dRet - kospi5dRet : 0;
         const relStrengthAdj = stock5dRet != null
-          ? (stock5dRet - kospi5dRet) >= 3.0 ? 4     // 시장 대비 3%+ 초과 → 주도주
-            : (stock5dRet - kospi5dRet) <= -3.0 ? -6  // 시장 대비 3%+ 부진 → 약세 종목
+          ? relStrength >= 3.0 ? 4     // 시장 대비 3%+ 초과 → 주도주
+            : relStrength <= -3.0 ? -6  // 시장 대비 3%+ 부진 → 약세 종목
             : 0
           : 0;
+        // 역행주 보호: KOSPI 하락 중 시장 대비 강한 종목은 kospiPenalty 감면
+        // (하락장에서 오히려 오르는 종목 = 시장 주도주 / 섹터 로테이션 수혜)
+        const effectiveKospiPenalty = kospiPenaltyAdj < 0 && stock5dRet != null
+          ? relStrength >= 5.0 ? Math.round(kospiPenaltyAdj * 0.2)   // 80% 감면 (확실한 역행주)
+            : relStrength >= 3.0 ? Math.round(kospiPenaltyAdj * 0.5) // 50% 감면 (강한 역행주)
+            : kospiPenaltyAdj
+          : kospiPenaltyAdj;
         const insiderAdj = getInsiderScoreAdjustment(s.stock_code);
         const naverTrendAdj = getNaverTrendScoreAdjustment(s.stock_code);
         const totalAdj =
-          adj + capAdj + stale + kospiPenaltyAdj + adamKhooAdj + macroAdj + dartAdj + megaCapAdj + consensusAdj + aiScoreAdj + stockAccAdj + piotroskiAdj + fundScoreAdj + communityAdj + relStrengthAdj + insiderAdj + naverTrendAdj;
+          adj + capAdj + stale + effectiveKospiPenalty + adamKhooAdj + macroAdj + dartAdj + megaCapAdj + consensusAdj + aiScoreAdj + stockAccAdj + piotroskiAdj + fundScoreAdj + communityAdj + relStrengthAdj + insiderAdj + naverTrendAdj;
         if (!Number.isFinite(totalAdj)) {
           logger.warn(
             `⚠️ 스코어 보정 NaN 감지: ${s.stock_code} adj=${adj} cap=${capAdj} macro=${macroAdj} dart=${dartAdj} cns=${consensusAdj} ai=${aiScoreAdj} acc=${stockAccAdj} pio=${piotroskiAdj} fund=${fundScoreAdj} cmty=${communityAdj} rs=${relStrengthAdj} ins=${insiderAdj} nvt=${naverTrendAdj}`,

@@ -20,6 +20,7 @@ const SEED_STOCKS: Array<{ code: string; name: string; theme: string }> = [
   { code: '000660', name: 'SK하이닉스', theme: '반도체' },
   { code: '005935', name: '삼성전자(우)', theme: '반도체' },
   { code: '009150', name: '삼성전기', theme: '전자부품' },
+  { code: '066570', name: 'LG전자', theme: '가전' },
   { code: '011760', name: 'LG이노텍', theme: '전자부품' }, // 애플 카메라 모듈
   { code: '066970', name: '엘앤에프', theme: '배터리소재' }, // 066970 = 엘앤에프 (LG이노텍은 011070)
   { code: '000990', name: 'DB하이텍', theme: '반도체' },
