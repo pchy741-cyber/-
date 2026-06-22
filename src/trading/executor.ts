@@ -49,6 +49,13 @@ export class TradeExecutor {
     return getCtxIsPaper() ? 'paper' : 'live';
   }
 
+  /** logSystem fire-and-forget — DB 로그 실패가 매매 실행을 블록하지 않도록 */
+  private _logFire(level: 'ERROR' | 'WARN' | 'INFO' | 'TRADE', component: string, message: string): void {
+    logSystem(level, component, message).catch((e) =>
+      logger.debug(`logSystem DB 기록 실패: ${e}`, { component: 'EXECUTOR' }),
+    );
+  }
+
   private _minuteKey(stockCode: string, action: string): string {
     const now = getKSTNow();
     // 5분마다 오래된 키 정리 (메모리 누수 방지)
@@ -80,7 +87,7 @@ export class TradeExecutor {
         const msg = error instanceof Error ? error.message : String(error);
         logger.error(`주문 실행 실패 [${decision.stock_code}]: ${msg}`, { component: 'EXECUTOR' });
         await reportError('EXECUTOR', msg);
-        await logSystem('ERROR', 'EXECUTOR', `실행 실패: ${decision.stock_code} - ${msg}`);
+        this._logFire('ERROR', 'EXECUTOR', `실행 실패: ${decision.stock_code} - ${msg}`);
       }
     }
 
@@ -98,7 +105,7 @@ export class TradeExecutor {
             const msg = error instanceof Error ? error.message : String(error);
             logger.error(`주문 실행 실패 [${decision.stock_code}]: ${msg}`, { component: 'EXECUTOR' });
             await reportError('EXECUTOR', msg);
-            await logSystem('ERROR', 'EXECUTOR', `실행 실패: ${decision.stock_code} - ${msg}`);
+            this._logFire('ERROR', 'EXECUTOR', `실행 실패: ${decision.stock_code} - ${msg}`);
           }
         }),
       );
@@ -121,7 +128,7 @@ export class TradeExecutor {
     // 수량 0 이하 방어
     if (!quantity || quantity <= 0) {
       logger.warn(`⛔ 수량 0 → 스킵: ${action} ${stock_code}`, { component: 'EXECUTOR' });
-      await logSystem('WARN', 'EXECUTOR', `수량 0 스킵: ${action} ${stock_code}`);
+      this._logFire('WARN', 'EXECUTOR', `수량 0 스킵: ${action} ${stock_code}`);
       return;
     }
 
@@ -232,7 +239,7 @@ export class TradeExecutor {
         `⛔ 동시 포지션 한도 초과 (${effectiveCount}/${config.risk.maxConcurrentPositions}, pending=${this._pendingBuyCount[pk]}) → 신규 매수 차단: ${stockCode}`,
         { component: 'EXECUTOR' },
       );
-      await logSystem(
+      this._logFire(
         'WARN',
         'EXECUTOR',
         `포지션 한도 초과: ${effectiveCount}/${config.risk.maxConcurrentPositions} — ${stockCode} 신규 매수 차단`,
@@ -264,7 +271,7 @@ export class TradeExecutor {
       if (!estimatedPrice || estimatedPrice <= 0) {
         releaseBuyIntent(stockCode);
         logger.warn(`⛔ 현재가+캐시 모두 0 → 매수 스킵: ${stockCode}`, { component: 'EXECUTOR' });
-        await logSystem('WARN', 'EXECUTOR', `매수 스킵: ${stockCode} - 현재가 조회 실패 (0원)`);
+        this._logFire('WARN', 'EXECUTOR', `매수 스킵: ${stockCode} - 현재가 조회 실패 (0원)`);
         return;
       }
 
@@ -317,7 +324,7 @@ export class TradeExecutor {
           if (!gateResult.passed) {
             releaseBuyIntent(stockCode);
             logger.warn(`🚦 게이트 차단 [${stockCode}]: ${gateResult.reason}`, { component: 'EXECUTOR' });
-            await logSystem('WARN', 'TRADE_GATE', `매수 차단: ${stockCode} - ${gateResult.reason}`);
+            this._logFire('WARN', 'TRADE_GATE', `매수 차단: ${stockCode} - ${gateResult.reason}`);
             return;
           }
           gatedQuantity = gateResult.adjustedQuantity ?? firstTranche;
@@ -326,7 +333,7 @@ export class TradeExecutor {
           // fail-closed: 게이트 장애 시 매수 허용하면 리스크 통제 우회 — 차단이 안전
           releaseBuyIntent(stockCode);
           logger.warn(`게이트 에러 (매수 차단): ${errMsg}`, { component: 'EXECUTOR' });
-          await logSystem('WARN', 'EXECUTOR', `게이트 오류 (차단): ${stockCode} - ${errMsg}`);
+          this._logFire('WARN', 'EXECUTOR', `게이트 오류 (차단): ${stockCode} - ${errMsg}`);
           return;
         }
 
@@ -350,7 +357,7 @@ export class TradeExecutor {
         if (!riskCheck.approved) {
           releaseBuyIntent(stockCode);
           logger.warn(`❌ 매수 거부 [${stockCode}]: ${riskCheck.reason}`, { component: 'EXECUTOR' });
-          await logSystem('WARN', 'EXECUTOR', `매수 거부: ${stockCode} - ${riskCheck.reason}`);
+          this._logFire('WARN', 'EXECUTOR', `매수 거부: ${stockCode} - ${riskCheck.reason}`);
           return;
         }
       }
@@ -374,7 +381,7 @@ export class TradeExecutor {
               `🎯 진입타이밍 AI 거부 [${stockCode} ${Math.round(orderAmountKrw / 10000)}만원]: ${entryCheck.reason}`,
               { component: 'EXECUTOR' },
             );
-            await logSystem(
+            this._logFire(
               'WARN',
               'ENTRY_TIMING',
               `대형주문 진입거부: ${stockCode} ${Math.round(orderAmountKrw / 10000)}만원 — ${entryCheck.reason}`,
@@ -388,7 +395,7 @@ export class TradeExecutor {
             `🛑 진입타이밍 AI 장애로 대형주문 차단 [${stockCode} ${Math.round(orderAmountKrw / 10000)}만원]: ${(aiTimingErr as Error).message ?? aiTimingErr}`,
             { component: 'EXECUTOR' },
           );
-          await logSystem(
+          this._logFire(
             'ERROR',
             'ENTRY_TIMING',
             `AI 타이밍 서비스 장애 — 대형주문 차단 (fail-closed): ${stockCode} ${Math.round(orderAmountKrw / 10000)}만원`,
@@ -412,7 +419,7 @@ export class TradeExecutor {
             logger.warn(`⏸️ 호가 진입 보류: ${stockCode} 현재가 ${estimatedPrice} > ask2 ${ask2} — 스킵`, {
               component: 'EXECUTOR',
             });
-            await logSystem('WARN', 'EXECUTOR', `호가 진입 보류: ${stockCode} 현재가=${estimatedPrice} ask2=${ask2}`);
+            this._logFire('WARN', 'EXECUTOR', `호가 진입 보류: ${stockCode} 현재가=${estimatedPrice} ask2=${ask2}`);
             return;
           }
           // v10: 예약매수 — bid1~ask1 중간가로 지정가 주문 (ask1 대비 스프레드 절반 절감)
@@ -643,7 +650,7 @@ export class TradeExecutor {
                 `🚨 체인 생성 최종 실패 (체결 완료됨): ${stockCode} ${filledQty}주 @${fill.filledPrice} err=${chainErr}`,
                 { component: 'EXECUTOR' },
               );
-              await logSystem(
+              this._logFire(
                 'ERROR',
                 'EXECUTOR',
                 `🚨 고아 포지션 발생: ${stockCode} ${filledQty}주 @${fill.filledPrice} — 수동 복구 필요`,
@@ -731,7 +738,7 @@ export class TradeExecutor {
           );
           if (!entryCheck.approved) {
             logger.warn(`🚫 손실 물타기 AI 거부 [${stockCode}]: ${entryCheck.reason}`, { component: 'EXECUTOR' });
-            await logSystem(
+            this._logFire(
               'WARN',
               'EXECUTOR',
               `손실 물타기 거부: ${stockCode} PnL=${pnlPct.toFixed(1)}% — ${entryCheck.reason}`,
@@ -746,7 +753,7 @@ export class TradeExecutor {
           logger.warn(`🚫 손실 물타기 AI 검토 오류 → 차단 (fail-closed): ${stockCode} — ${(e as Error).message}`, {
             component: 'EXECUTOR',
           });
-          await logSystem('WARN', 'EXECUTOR', `손실 물타기 AI 오류 차단: ${stockCode} PnL=${pnlPct.toFixed(1)}%`);
+          this._logFire('WARN', 'EXECUTOR', `손실 물타기 AI 오류 차단: ${stockCode} PnL=${pnlPct.toFixed(1)}%`);
           return;
         }
       }
@@ -766,7 +773,7 @@ export class TradeExecutor {
               `⛔ 하락추세 물타기 차단: ${stockCode} 현재가 ${currentPx.toLocaleString()} < MA5 ${ma5.toFixed(0)} → 스킵`,
               { component: 'EXECUTOR' },
             );
-            await logSystem(
+            this._logFire(
               'WARN',
               'EXECUTOR',
               `하락추세 물타기 차단: ${stockCode} 현재가 ${currentPx} < MA5 ${ma5.toFixed(0)}`,
@@ -943,7 +950,7 @@ export class TradeExecutor {
         this._closeFailCount.delete(failKey);
         invalidateStockCache(stockCode).catch(() => {});
         hardInvalidateDashboardCache();
-        await logSystem(
+        this._logFire(
           'WARN',
           'EXECUTOR',
           `🔄 ${stockCode} 체인 강제 종료: ${failCount}회 연속 실패 (DB ${chain.total_quantity}주)`,
@@ -953,9 +960,9 @@ export class TradeExecutor {
           .then(({ sendTelegramMessage }) =>
             sendTelegramMessage(
               `🚨 체인 강제 종료 (${isPaperSnapshot ? '연습' : '실전'})\n종목: ${stockCode}\n사유: ${failCount}회 연속 청산 실패\n⚠️ KIS 앱에서 실제 잔고 수동 확인 필요`,
-            ).catch(() => {}),
+            ).catch((e) => logger.warn(`강제종료 텔레그램 실패: ${e}`, { component: 'EXECUTOR' })),
           )
-          .catch(() => {});
+          .catch((e) => logger.warn(`텔레그램 모듈 로드 실패: ${e}`, { component: 'EXECUTOR' }));
       } catch (closeErr) {
         logger.error(`체인 강제 종료 실패: ${stockCode} — ${closeErr}`, { component: 'EXECUTOR' });
         this._closeFailCount.set(failKey, failCount + 1);
@@ -1041,7 +1048,7 @@ export class TradeExecutor {
               chain.strategy_mode,
               isPaperSnapshot,
             ).catch((err) => logger.warn(`notifySell() 실패 (DB-KIS 동기화): ${err}`, { component: 'EXECUTOR' }));
-            await logSystem(
+            this._logFire(
               'WARN',
               'EXECUTOR',
               `🔄 DB-KIS 동기화: ${stockCode} 체인 강제 종료 (DB ${chain.total_quantity}주, KIS 0주)`,
@@ -1177,7 +1184,7 @@ export class TradeExecutor {
       );
 
       // 체결 감사 로그: 매도 실체결 내역 (why + 실제 수익)
-      await logSystem(
+      this._logFire(
         'TRADE',
         'EXECUTOR',
         `SELL ${stockCode} x${soldQty} 체결 @${fill.filledPrice.toLocaleString()}원 | 수익 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}% (${pnlKrw >= 0 ? '+' : ''}${pnlKrw.toLocaleString()}원) | ${closeReason}`,
@@ -1220,7 +1227,7 @@ export class TradeExecutor {
       logger.error(`🚫 LIVE 주문 차단: 인메모리 DB 모드 활성 — ${params.stockCode} (DB 복구 후 자동 재개)`, {
         component: 'EXECUTOR',
       });
-      await logSystem(
+      this._logFire(
         'ERROR',
         'EXECUTOR',
         `LIVE 주문 차단 (인메모리 모드): ${params.side} ${params.stockCode} x${params.quantity}`,
@@ -1296,16 +1303,18 @@ export class TradeExecutor {
         `모드: ${isPaper ? 'Paper' : 'LIVE'}\n` +
         `즉시 수동 확인 필요`;
       import('../notifications/telegram.js')
-        .then(({ sendTelegramMessage }) => sendTelegramMessage(orphanMsg).catch(() => {}))
-        .catch(() => {});
-      await logSystem(
+        .then(({ sendTelegramMessage }) =>
+          sendTelegramMessage(orphanMsg).catch((e) => logger.warn(`고아포지션 텔레그램 실패: ${e}`, { component: 'EXECUTOR' })),
+        )
+        .catch((e) => logger.warn(`텔레그램 모듈 로드 실패: ${e}`, { component: 'EXECUTOR' }));
+      this._logFire(
         'ERROR',
         'EXECUTOR',
         `고아포지션: ${params.side} ${params.stockCode} x${params.quantity} orderNo=${result.orderNo} — DB 기록 3회 실패`,
       );
     }
 
-    await logSystem(
+    this._logFire(
       'TRADE',
       'EXECUTOR',
       `${params.side} ${params.stockCode} x${params.quantity} → ${result.success ? '주문 접수' : '실패'}: ${result.message}`,
@@ -1325,7 +1334,7 @@ export class TradeExecutor {
    */
   private confirmedOrders = new Set<string>();
 
-  /** 체결 확인 캐시 + 중복주문 키 정리 — 장 마감 시 호출 */
+  /** 체결 확인 캐시 + 중복주문 키 + 청산실패 카운터 정리 — 장 마감 시 호출 */
   clearConfirmedOrders(): void {
     const size = this.confirmedOrders.size;
     if (size > 0) {
@@ -1340,6 +1349,11 @@ export class TradeExecutor {
     }
     if (before > 0)
       logger.info(`🧹 recentOrderKeys 정리: ${before}→${this._recentOrderKeys.size}건`, { component: 'EXECUTOR' });
+    // 청산실패 카운터 장 마감 정리 (다음 장에 이월 방지)
+    if (this._closeFailCount.size > 0) {
+      logger.info(`🧹 closeFailCount 정리: ${this._closeFailCount.size}건`, { component: 'EXECUTOR' });
+      this._closeFailCount.clear();
+    }
   }
 
   private async confirmFill(
@@ -1418,19 +1432,21 @@ export class TradeExecutor {
       // 🔒 DB 주문 상태도 CANCELLED로 업데이트 — PENDING 잔류 방지 (중복매수 위험 차단)
       await updateOrderByKisOrderNo(orderNo, { status: 'CANCELLED' });
       logger.warn(`🔄 미체결 주문 취소 완료: ${orderNo}`, { component: 'EXECUTOR' });
-      await logSystem('WARN', 'EXECUTOR', `미체결 주문 취소: ${orderNo} (${stockCode})`);
+      this._logFire('WARN', 'EXECUTOR', `미체결 주문 취소: ${orderNo} (${stockCode})`);
     } catch {
       // 취소 실패 = 이미 체결된 것일 수 있으므로 UNCONFIRMED 마킹 (reconciler가 나중에 복구)
-      await updateOrderByKisOrderNo(orderNo, { status: 'PENDING', kis_status: 'UNCONFIRMED' }).catch(() => {});
+      await updateOrderByKisOrderNo(orderNo, { status: 'PENDING', kis_status: 'UNCONFIRMED' }).catch((e) =>
+        logger.warn(`UNCONFIRMED 마킹 실패: ${orderNo} — ${e}`, { component: 'EXECUTOR' }),
+      );
       logger.warn(`⚠️ 주문 취소 실패 (이미 체결?): ${orderNo}`, { component: 'EXECUTOR' });
     }
 
-    await logSystem('ERROR', 'EXECUTOR', `체결 미확인: ${orderNo}. 주문 취소 시도 완료. 수동 확인 필요.`);
+    this._logFire('ERROR', 'EXECUTOR', `체결 미확인: ${orderNo}. 주문 취소 시도 완료. 수동 확인 필요.`);
 
     const { sendTelegramMessage } = await import('../notifications/telegram.js');
     await sendTelegramMessage(
       `🛑 체결 미확인 경고!\n주문번호: ${orderNo}\n종목: ${stockCode}\n주문 취소 시도 완료. 수동 확인 필요`,
-    ).catch(() => {});
+    ).catch((e) => logger.warn(`미체결 경고 텔레그램 실패: ${e}`, { component: 'EXECUTOR' }));
 
     return null; // 체결 실패 시그널
   }

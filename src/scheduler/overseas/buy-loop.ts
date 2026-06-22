@@ -97,6 +97,9 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
   const currentHoldingCount = updatedHoldings.size;
   const osLimit = getOverseasLossTiers(isPaperMode);
   const riskBlocked = lossPctOfPortfolio >= osLimit.blockPct;
+
+  // v10.9.7: techResults 룩업 맵 — O(n) find() 3곳 → O(1) (섹터별 보유가치, 포트폴리오 배분 등)
+  const techByCode = new Map(techResults.map((t) => [t.code, t]));
   const recoveryMode = lossPctOfPortfolio >= osLimit.warnPct && !riskBlocked;
   const dynParams = getOverseasDynamic(portfolioValue, isPaperMode, allocRisk.positionCapPct / 100);
   const MAX_POSITIONS = dynParams.maxPositions;
@@ -141,7 +144,7 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
       const domesticInvestedUsd = cycleFxRate > 0 ? domesticInvestedKrw / cycleFxRate : 0;
       if (domesticInvestedUsd >= 100) {
         const holdingEvalUsdPost = Array.from(updatedHoldings.entries()).reduce((sum, [code, h]) => {
-          const tech = techResults.find((t) => t.code === code);
+          const tech = techByCode.get(code);
           return sum + (tech ? tech.price.currentPrice * h.qty : h.avgPrice * h.qty);
         }, 0);
         const grandInvestedUsd = (holdingEvalUsdPost || 0) + domesticInvestedUsd;
@@ -248,7 +251,7 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
   for (const [code, holding] of updatedHoldings) {
     const watchItem = GLOBAL_WATCHLIST.find((w) => w.code === code);
     if (!watchItem) continue;
-    const tech = techResults.find((t) => t.code === code);
+    const tech = techByCode.get(code);
     const value = (tech?.price.currentPrice ?? holding.avgPrice) * holding.qty;
     sectorValues.set(watchItem.sector, (sectorValues.get(watchItem.sector) ?? 0) + value);
   }
@@ -301,11 +304,16 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
     getUserFavorites(),
     fetchKospiRegime().catch(() => ({ penalty: 0 as const })),
   ]);
+  // v10.9.7: O(n²) → O(n) 단일패스 (기존: 종목마다 전체 반복으로 같은 섹터 찾기)
   const sectorMomentumMap = new Map<string, number>();
+  const _sectorSums = new Map<string, { sum: number; count: number }>();
   for (const t of techResults) {
-    const arr: number[] = [];
-    techResults.forEach((r) => { if (r.sector === t.sector) arr.push(r.price.changePct); });
-    if (arr.length > 0) sectorMomentumMap.set(t.sector, arr.reduce((a, b) => a + b, 0) / arr.length);
+    const prev = _sectorSums.get(t.sector);
+    if (prev) { prev.sum += t.price.changePct; prev.count++; }
+    else _sectorSums.set(t.sector, { sum: t.price.changePct, count: 1 });
+  }
+  for (const [sector, { sum, count }] of _sectorSums) {
+    sectorMomentumMap.set(sector, sum / count);
   }
 
   const buyTargets = filterAndRankBuyTargets({
