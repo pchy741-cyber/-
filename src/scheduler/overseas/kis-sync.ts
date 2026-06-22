@@ -3,6 +3,7 @@
  */
 
 import { fetchExchangeRate } from '../../automation/macro-data.js';
+import { cacheSet } from '../../cache/memory.js';
 import { hardInvalidateDashboardCache } from '../../cache/dashboard-cache.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, insertOrder } from '../../db/client.js';
@@ -340,8 +341,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
     // 매매 변동 감지 시 대시보드 캐시 무효화
     if (syncChanged) hardInvalidateDashboardCache();
 
-    // ── KIS 현재가 → DB last_price 업데이트 (대시보드 정합성) ──
-    // kisPriceMap은 초기 balance API 호출 시 수집한 현재가 (추가 API 호출 없음)
+    // ── KIS 현재가 → DB last_price + 인메모리 캐시 업데이트 ──
     for (const [code, price] of kisPriceMap) {
       if (price > 0) {
         getPool()
@@ -350,10 +350,43 @@ export async function syncHoldingsFromKIS(): Promise<void> {
             [price, code],
           )
           .catch(() => {});
+        // SSE가 즉시 반영할 수 있도록 인메모리 캐시도 갱신
+        cacheSet(`overseas:lastprice:${code}`, { price, changePct: 0, volume: 0 }, 7200);
       }
     }
     if (kisPriceMap.size > 0) {
       logger.info(`📊 KIS동기화: ${kisPriceMap.size}종목 현재가 업데이트 완료`, { component: 'OVERSEAS' });
+    }
+
+    // ── 장외 시간대: balance API에서 현재가 없는 활성 보유종목 직접 조회 ──
+    // getOverseasBalance().now_pric2는 장외 시간대에 0을 반환 → 직전 종가라도 채워야 함
+    if (kisPriceMap.size === 0) {
+      const { rows: staleH } = await getPool()
+        .query(
+          `SELECT stock_code, exchange FROM overseas_holdings
+           WHERE quantity > 0 AND is_paper = false
+             AND (last_price IS NULL OR last_price = 0
+                  OR last_price_at IS NULL OR last_price_at < NOW() - INTERVAL '15 minutes')
+           LIMIT 5`,
+        )
+        .catch(() => ({ rows: [] as { stock_code: string; exchange: string }[] }));
+      for (const h of staleH) {
+        try {
+          const p = await getOverseasPrice(String(h.stock_code), String(h.exchange));
+          if (p?.currentPrice > 0) {
+            getPool()
+              .query(
+                'UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2 AND is_paper = false',
+                [p.currentPrice, h.stock_code],
+              )
+              .catch(() => {});
+            cacheSet(`overseas:lastprice:${h.stock_code}`, { price: p.currentPrice, changePct: 0, volume: 0 }, 7200);
+            logger.info(`📊 장외가격조회: ${h.stock_code}=$${p.currentPrice}`, { component: 'OVERSEAS' });
+          }
+        } catch {
+          /* 무시 — 다음 사이클에 재시도 */
+        }
+      }
     }
   } catch (e) {
     logger.warn(`KIS 잔고 동기화 실패 (무시): ${(e as Error).message}`, { component: 'OVERSEAS' });

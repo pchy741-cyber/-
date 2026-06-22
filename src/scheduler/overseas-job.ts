@@ -208,19 +208,13 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     if (!isPaper()) {
       await syncPendingOverseasOrders();
       await syncHoldingsFromKIS(); // is_paper=NULL 정리 + 수동매매 반영
-      // reconcileCashWithKIS는 아래 시장 시간 확인 후 실행 (한국장 오염 방지)
     }
 
     // ── 시장 시간 필터 ──
     const openRegions = getOpenMarketRegions();
     const isUSExtended = openRegions.has('US_EXTENDED') && !openRegions.has('US');
-    if (openRegions.size === 0) {
-      logger.info('🌏 모든 해외 시장 마감 — 스킵', { component: 'OVERSEAS' });
-      // 🔒 early return — finally 블록이 정리하므로 즉시 return (v10.8: 이중 해제 방지)
-      return;
-    }
 
-    // ── 현금 동기화 (통합증거금) ──
+    // ── 현금 동기화 (시장 마감 무관 항상 실행) ──
     // KIS psamount API는 통합증거금 전체를 반환. 한국장 개장 중에는 국내 매매용 현금까지
     // 해외 가용금액에 포함되어 overseas_state['cash']가 과도하게 설정될 수 있음.
     // 기본: 한국장 마감 시에만 reconcile. 단, overseas cash=0이면 KR장 중에도 1회 복구
@@ -236,6 +230,12 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           await reconcileCashWithKIS();
         }
       }
+    }
+
+    if (openRegions.size === 0) {
+      logger.info('🌏 모든 해외 시장 마감 — 스킵', { component: 'OVERSEAS' });
+      // 🔒 early return — finally 블록이 정리하므로 즉시 return (v10.8: 이중 해제 방지)
+      return;
     }
     // ── 환율 1회 조회 — 사이클 전체에서 동일 환율 사용 (환율 drift 방지) ──
     const cycleFxRate = await fetchExchangeRate();
