@@ -20,6 +20,6 @@ export async function insertRiskEvent(event: {
       event.action_taken,
     ]);
   } catch (err) {
-    logger.error(`리스크 이벤트 기록 실패: ${err}`);
+    logger.error(`리스크 이벤트 기록 실패: ${err}`, { component: 'RISK' });
   }
 }

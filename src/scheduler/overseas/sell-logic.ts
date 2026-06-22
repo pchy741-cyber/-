@@ -21,7 +21,7 @@ import { checkHoldingPriceShock } from './session-strategy.js';
 import { isUSMarketLastNMinutes } from './session.js';
 import { cleanupPositionState, getMaxPrice, setMaxPrice, updateHoldingTpSl, updateTradeState } from './state.js';
 import { getTunerOverrides } from './trade-tuner.js';
-import { GLOBAL_WATCHLIST } from './watchlist.js';
+import { GLOBAL_WATCHLIST, WATCHLIST_BY_CODE } from './watchlist.js';
 
 // ── 타입 ──
 
@@ -178,7 +178,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
 
     let sellReason = '';
 
-    const watchItem = GLOBAL_WATCHLIST.find((w) => w.code === code);
+    const watchItem = WATCHLIST_BY_CODE.get(code);
     const sector = watchItem?.sector ?? '';
     const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
     const isMediumBeta = SECTOR_CLASS.MEDIUM_BETA.includes(sector);

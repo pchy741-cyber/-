@@ -38,7 +38,7 @@ import type { TechResult } from './sell-logic.js';
 import { getActiveSessionBrief } from './session-strategy.js';
 import { modeKey, overseasState } from './session.js';
 import { classifyBucket, getBucketWeight, getHoldings, updateTradeState } from './state.js';
-import { GLOBAL_WATCHLIST } from './watchlist.js';
+import { GLOBAL_WATCHLIST, WATCHLIST_BY_CODE } from './watchlist.js';
 
 type OverseasHolding = Awaited<ReturnType<typeof getHoldings>> extends Map<string, infer V> ? V : never;
 
@@ -249,7 +249,7 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
 
   const sectorValues = new Map<string, number>();
   for (const [code, holding] of updatedHoldings) {
-    const watchItem = GLOBAL_WATCHLIST.find((w) => w.code === code);
+    const watchItem = WATCHLIST_BY_CODE.get(code);
     if (!watchItem) continue;
     const tech = techByCode.get(code);
     const value = (tech?.price.currentPrice ?? holding.avgPrice) * holding.qty;
@@ -516,7 +516,7 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
       continue;
     }
 
-    const targetWatchItem = GLOBAL_WATCHLIST.find((w) => w.code === target.code);
+    const targetWatchItem = WATCHLIST_BY_CODE.get(target.code);
     const isHighBetaEntry = SECTOR_CLASS.HIGH_BETA.includes(targetWatchItem?.sector ?? '');
     const isDefenseEntry = SECTOR_CLASS.DEFENSE.includes(targetWatchItem?.sector ?? '');
     const slDecimal = isHighBetaEntry ? 0.08 : isDefenseEntry ? 0.04 : 0.05;

@@ -8,7 +8,7 @@ import { cancelOverseasOrder, getOverseasBalance } from '../../kis/overseas.js';
 import { logger } from '../../utils/logger.js';
 import { sleep } from '../../utils/sleep.js';
 import type { OverseasExecutionResult } from './analytics.js';
-import { GLOBAL_WATCHLIST } from './watchlist.js';
+import { GLOBAL_WATCHLIST, WATCHLIST_BY_CODE } from './watchlist.js';
 
 /**
  * PENDING 해외주문 재동기화 — 매 사이클 실행
@@ -45,7 +45,7 @@ export async function syncPendingOverseasOrders(): Promise<void> {
 
       if (ageMin >= 15) {
         try {
-          const stock = GLOBAL_WATCHLIST.find((s) => s.code === order.stock_code);
+          const stock = WATCHLIST_BY_CODE.get(order.stock_code);
           const exchange = stock?.exchange ?? 'NASDAQ';
           const balances = await getOverseasBalance(exchange);
           const position = balances.find((b) => b.stockCode === order.stock_code);

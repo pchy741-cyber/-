@@ -125,7 +125,7 @@ import {
 import { getTradeReviewInsights } from './overseas/trade-reviewer.js';
 import { monitorVisionScalp } from './overseas/vision-scalp.js';
 // ── 모듈 import ──
-import { GLOBAL_WATCHLIST } from './overseas/watchlist.js';
+import { GLOBAL_WATCHLIST, WATCHLIST_BY_CODE } from './overseas/watchlist.js';
 
 /**
  * 글로벌 주식 자동매매 Job
@@ -967,25 +967,28 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     const fxNow = cycleFxRate; // 사이클 환율 재사용
     if (!isPaper()) {
       try {
-        // 국내 투자중 금액 확인 (현금 제외 — 통합증거금은 국내/해외 공유)
-        const { rows: domRows } = await getPool().query(
-          `SELECT COALESCE(SUM(invested_amount), 0) AS domestic_invested
-           FROM chains WHERE is_active = true AND is_paper = false`,
-        );
-        const domesticInvestedKrw = Number(domRows[0]?.domestic_invested ?? 0);
-        const domesticInvestedUsd = fxNow > 0 ? domesticInvestedKrw / fxNow : 0;
-        // 국내 투자중 금액이 $100 이상일 때만 비중 체크 (통합증거금 현금만 있으면 스킵)
-        if (domesticInvestedUsd >= 100) {
-          const grandInvestedUsd = (holdingEvalUsdPost || 0) + domesticInvestedUsd;
-          const { rows: allocRows } = await getPool().query(
+        // 3개 독립 쿼리 병렬 실행 (기존 순차 → 병렬, ~300ms 절약)
+        const rotKey = isPaper() ? 'p_rotation_signal' : 'l_rotation_signal';
+        const [domResult, allocResult, rotResult] = await Promise.all([
+          getPool().query(
+            `SELECT COALESCE(SUM(invested_amount), 0) AS domestic_invested
+             FROM chains WHERE is_active = true AND is_paper = false`,
+          ),
+          getPool().query(
             'SELECT us_pct FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1',
             [isPaper()],
-          );
-          let targetUsPct = Number(allocRows[0]?.us_pct ?? 100);
+          ),
+          getPool().query('SELECT value FROM system_state WHERE key = $1', [rotKey]).catch(() => ({ rows: [] })),
+        ]);
+        const domesticInvestedKrw = Number(domResult.rows[0]?.domestic_invested ?? 0);
+        const domesticInvestedUsd = fxNow > 0 ? domesticInvestedKrw / fxNow : 0;
+        // 국내 투자중 금액이 $100 이상일 때만 비중 체크
+        if (domesticInvestedUsd >= 100) {
+          const grandInvestedUsd = (holdingEvalUsdPost || 0) + domesticInvestedUsd;
+          let targetUsPct = Number(allocResult.rows[0]?.us_pct ?? 100);
           // 크로스마켓 로테이션: DB에 저장된 최신 로테이션 신호로 동적 조정
           try {
-            const rotKey = isPaper() ? 'p_rotation_signal' : 'l_rotation_signal';
-            const { rows: rotRows } = await getPool().query('SELECT value FROM system_state WHERE key = $1', [rotKey]);
+            const rotRows = rotResult.rows;
             if (rotRows.length > 0) {
               const rot = JSON.parse(rotRows[0].value);
               const ageMs = Date.now() - new Date(rot.updatedAt).getTime();
@@ -1069,10 +1072,11 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         });
 
       const sectorValues = new Map<string, number>();
+      const techByCodeLocal = new Map(techResults.map((t) => [t.code, t]));
       for (const [code, holding] of updatedHoldings) {
-        const watchItem = GLOBAL_WATCHLIST.find((w) => w.code === code);
+        const watchItem = WATCHLIST_BY_CODE.get(code);
         if (!watchItem) continue;
-        const tech = techResults.find((t) => t.code === code);
+        const tech = techByCodeLocal.get(code);
         const value = (tech?.price.currentPrice ?? holding.avgPrice) * holding.qty;
         sectorValues.set(watchItem.sector, (sectorValues.get(watchItem.sector) ?? 0) + value);
       }
@@ -1128,13 +1132,15 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         getUserFavorites(),
         fetchKospiRegime().catch(() => ({ penalty: 0 as const })),
       ]);
-      // 섹터별 평균 등락률 맵 (buy-filter 섹터 모멘텀 가산용)
-      const sectorMomentumMap = new Map<string, number>();
+      // 섹터별 평균 등락률 맵 — O(n) 단일패스 (기존 O(n²) → O(n))
+      const _sectorAcc = new Map<string, { sum: number; count: number }>();
       for (const t of techResults) {
-        const arr: number[] = [];
-        techResults.forEach((r) => { if (r.sector === t.sector) arr.push(r.price.changePct); });
-        if (arr.length > 0) sectorMomentumMap.set(t.sector, arr.reduce((a, b) => a + b, 0) / arr.length);
+        const prev = _sectorAcc.get(t.sector);
+        if (prev) { prev.sum += t.price.changePct; prev.count++; }
+        else _sectorAcc.set(t.sector, { sum: t.price.changePct, count: 1 });
       }
+      const sectorMomentumMap = new Map<string, number>();
+      for (const [sec, { sum, count }] of _sectorAcc) sectorMomentumMap.set(sec, sum / count);
 
       const buyTargets = filterAndRankBuyTargets({
         techResults,
@@ -1352,7 +1358,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           continue; // v10.8: break→continue (고가 종목 스킵 후 저가 종목 평가 계속)
         }
 
-        const targetWatchItem = GLOBAL_WATCHLIST.find((w) => w.code === target.code);
+        const targetWatchItem = WATCHLIST_BY_CODE.get(target.code);
         const isHighBetaEntry = SECTOR_CLASS.HIGH_BETA.includes(targetWatchItem?.sector ?? '');
         const isDefenseEntry = SECTOR_CLASS.DEFENSE.includes(targetWatchItem?.sector ?? '');
         const slDecimal = isHighBetaEntry ? 0.08 : isDefenseEntry ? 0.04 : 0.05;

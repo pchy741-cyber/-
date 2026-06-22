@@ -829,6 +829,6 @@ process.on('uncaughtException', (err) => {
 });
 
 bootstrap().catch((err) => {
-  logger.error(`치명적 오류: ${err}`);
+  logger.error(`치명적 오류: ${err}`, { component: 'BOOT' });
   process.exit(1);
 });

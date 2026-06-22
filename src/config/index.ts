@@ -76,8 +76,9 @@ const envSchema = z.object({
 const parsed = envSchema.safeParse(process.env);
 
 if (!parsed.success) {
-  console.error('❌ 환경 변수 검증 실패:');
-  console.error(parsed.error.flatten().fieldErrors);
+  // logger는 이 시점에 미초기화 → console 사용 (필드 값 노출 방지)
+  const fields = Object.keys(parsed.error.flatten().fieldErrors).join(', ');
+  console.error(`❌ 환경 변수 검증 실패: ${fields}`);
   process.exit(1);
 }
 

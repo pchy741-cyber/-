@@ -98,7 +98,7 @@ export async function runTradeGates(input: GateInput): Promise<GateResult> {
   // 0. 진입 타이밍
   const timing = entryTimingGate(input);
   if (!timing.passed) {
-    logger.warn(`🚦 [타이밍] ${input.stockCode}: ${timing.reason}`, { component: 'TRADE_GATE' });
+    logger.debug(`🚦 [타이밍] ${input.stockCode}: ${timing.reason}`, { component: 'TRADE_GATE' });
     return timing;
   }
   results.push(timing);
@@ -106,7 +106,7 @@ export async function runTradeGates(input: GateInput): Promise<GateResult> {
   // 1. 연속손실 쿨다운
   const cooldown = await cooldownGate();
   if (!cooldown.passed) {
-    logger.warn(`🚦 [쿨다운] ${input.stockCode}: ${cooldown.reason}`, { component: 'TRADE_GATE' });
+    logger.debug(`🚦 [쿨다운] ${input.stockCode}: ${cooldown.reason}`, { component: 'TRADE_GATE' });
     return cooldown;
   }
   results.push(cooldown);
@@ -114,7 +114,7 @@ export async function runTradeGates(input: GateInput): Promise<GateResult> {
   // 1-b. 뉴스/공시 게이트
   const news = await newsGate(input.stockCode);
   if (!news.passed) {
-    logger.warn(`🚦 [뉴스게이트] ${input.stockCode}: ${news.reason}`, { component: 'TRADE_GATE' });
+    logger.debug(`🚦 [뉴스게이트] ${input.stockCode}: ${news.reason}`, { component: 'TRADE_GATE' });
     return news;
   }
   results.push(news);
@@ -122,7 +122,7 @@ export async function runTradeGates(input: GateInput): Promise<GateResult> {
   // 2. 레짐 필터
   const regime = regimeGate(input);
   if (!regime.passed) {
-    logger.warn(`🚦 [레짐] ${input.stockCode}: ${regime.reason}`, { component: 'TRADE_GATE' });
+    logger.debug(`🚦 [레짐] ${input.stockCode}: ${regime.reason}`, { component: 'TRADE_GATE' });
     return regime;
   }
   if (regime.adjustedQuantity !== undefined) {
@@ -133,7 +133,7 @@ export async function runTradeGates(input: GateInput): Promise<GateResult> {
   // 3. 차트 검수
   const chart = chartVerificationGate(input);
   if (!chart.passed) {
-    logger.warn(`🚦 [차트검수] ${input.stockCode}: ${chart.reason}`, { component: 'TRADE_GATE' });
+    logger.debug(`🚦 [차트검수] ${input.stockCode}: ${chart.reason}`, { component: 'TRADE_GATE' });
     return chart;
   }
   results.push(chart);
@@ -141,7 +141,7 @@ export async function runTradeGates(input: GateInput): Promise<GateResult> {
   // 4. 기대값 필터
   const ev = await expectedValueGate(input);
   if (!ev.passed) {
-    logger.warn(`🚦 [기대값] ${input.stockCode}: ${ev.reason}`, { component: 'TRADE_GATE' });
+    logger.debug(`🚦 [기대값] ${input.stockCode}: ${ev.reason}`, { component: 'TRADE_GATE' });
     return ev;
   }
   results.push(ev);
@@ -149,7 +149,7 @@ export async function runTradeGates(input: GateInput): Promise<GateResult> {
   // 5. 변동성 사이징
   const sizing = volatilitySizing(input);
   if (!sizing.passed) {
-    logger.warn(`🚦 [사이징] ${input.stockCode}: ${sizing.reason}`, { component: 'TRADE_GATE' });
+    logger.debug(`🚦 [사이징] ${input.stockCode}: ${sizing.reason}`, { component: 'TRADE_GATE' });
     return sizing;
   }
 

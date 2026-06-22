@@ -69,6 +69,14 @@ const EXTENDED_WATCHLIST = [
 // 모든 코드에서 GLOBAL_WATCHLIST를 사용 → 기존 호환성 유지
 export const GLOBAL_WATCHLIST = [...CORE_WATCHLIST, ...EXTENDED_WATCHLIST];
 
+// ── O(1) 조회용 Map 인덱스 (GLOBAL_WATCHLIST.find() 대체) ──
+// code → WatchlistItem (동일 code 여러 거래소면 첫 번째 우선)
+export const WATCHLIST_BY_CODE = new Map(GLOBAL_WATCHLIST.map((w) => [w.code, w]));
+// "code:exchange" → WatchlistItem (거래소 특정 조회)
+export const WATCHLIST_BY_CODE_EXCHANGE = new Map(
+  GLOBAL_WATCHLIST.map((w) => [`${w.code}:${w.exchange}`, w]),
+);
+
 // 포지션 한도: getOverseasDynamic(portfolioUsd) 동적 함수 사용 (constants.ts)
 
 /** try-catch 래퍼 — 실패 시 null 반환, 오류 무시 */
@@ -82,8 +90,8 @@ export async function safely<T>(fn: () => Promise<T>): Promise<T | null> {
 
 export function resolveOverseasStockName(code: string, exchange: string): string {
   return (
-    GLOBAL_WATCHLIST.find((s) => s.code === code && s.exchange === exchange)?.name ??
-    GLOBAL_WATCHLIST.find((s) => s.code === code)?.name ??
+    WATCHLIST_BY_CODE_EXCHANGE.get(`${code}:${exchange}`)?.name ??
+    WATCHLIST_BY_CODE.get(code)?.name ??
     code
   );
 }

@@ -4,7 +4,7 @@
  */
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool } from '../../db/client.js';
-import { GLOBAL_WATCHLIST } from './watchlist.js';
+import { WATCHLIST_BY_CODE } from './watchlist.js';
 
 /** 현재 컨텍스트의 trading_mode 문자열 반환 */
 export function ctxMode(isPaper?: boolean): string {
@@ -24,7 +24,7 @@ export function calcPnlPct(currentPrice: number, avgPrice: number): number {
 
 /** 종목 코드로 섹터 조회 */
 export function getSector(code: string): string {
-  return GLOBAL_WATCHLIST.find((w) => w.code === code)?.sector ?? '';
+  return WATCHLIST_BY_CODE.get(code)?.sector ?? '';
 }
 
 /** overseas_state KV 저장 (upsert) */

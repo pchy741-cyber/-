@@ -26,7 +26,7 @@ export async function logSystem(
     const now = Date.now();
     if (now - _lastLogErrorAt > 60_000) {
       _lastLogErrorAt = now;
-      logger.error(`시스템 로그 DB 기록 실패 (60초 스로틀): ${err}`);
+      logger.error(`시스템 로그 DB 기록 실패 (60초 스로틀): ${err}`, { component: 'DB' });
     }
   }
 }

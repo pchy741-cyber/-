@@ -8,7 +8,7 @@ import { logger } from '../../utils/logger.js';
 import type { RegimeAdjustment } from './risk-intelligence.js';
 import { applyUncertaintyPenalty, checkSectorGroupLimit } from './risk-intelligence.js';
 import { isUSDST } from './session.js';
-import { GLOBAL_WATCHLIST } from './watchlist.js';
+import { GLOBAL_WATCHLIST, WATCHLIST_BY_CODE } from './watchlist.js';
 import { getCachedSecFundamentalScore } from '../../automation/sec-research.js';
 import { getPaperValidatedCodes, getPaperSignalScore } from './paper-signal-bridge.js';
 
@@ -319,7 +319,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         }
         // 중베타 RSI 과열 70 (Paper/Live 동일 — paper 75는 과열 진입 유발, BigMover 예외)
         if (!t.isMomentum && !t.isBigMover && !isOversold) {
-          const entryWatchSector = GLOBAL_WATCHLIST.find((w) => w.code === t.code)?.sector ?? '';
+          const entryWatchSector = WATCHLIST_BY_CODE.get(t.code)?.sector ?? '';
           const isMedBetaEntry = SECTOR_CLASS.MEDIUM_BETA.includes(entryWatchSector);
           const rsiOverheatLimit = 70;
           if (isMedBetaEntry && t.rsi > rsiOverheatLimit) {

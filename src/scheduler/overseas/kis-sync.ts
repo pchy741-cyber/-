@@ -13,7 +13,7 @@ import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
 import { cleanupPositionState, getCashKrw, getTimeSinceLastTrade, setCash } from './state.js';
 import { modePrefix } from './utils.js';
-import { GLOBAL_WATCHLIST } from './watchlist.js';
+import { GLOBAL_WATCHLIST, WATCHLIST_BY_CODE } from './watchlist.js';
 
 // ── In-memory debounce for manual sell detection (race condition prevention) ──
 // Tracks first-detection timestamps per stock code to prevent concurrent sync cycles
@@ -58,7 +58,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
             if (item.currentPrice > 0) kisPriceMap.set(item.stockCode, item.currentPrice);
             const existing = allHoldings.get(item.stockCode);
             if (existing) continue;
-            const wlEntry = GLOBAL_WATCHLIST.find((w) => w.code === item.stockCode);
+            const wlEntry = WATCHLIST_BY_CODE.get(item.stockCode);
             const resolvedExchange = wlEntry?.exchange ?? exch;
             allHoldings.set(item.stockCode, {
               qty: item.quantity,
