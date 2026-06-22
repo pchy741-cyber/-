@@ -21,55 +21,37 @@ profitStatsRoutes.get('/profit-stats', async (c) => {
     const tradingMode = isPaper ? 'paper' : 'live';
 
     if (isKr) {
-      // 국내: transaction_chains 기반 (기존)
+      // 국내: transaction_chains 기반 — v10.10.5c: 4 쿼리 병렬화
       const codeFilter = `AND stock_code ~ '^[0-9]{6}$'`;
 
-      const { rows: monthly } = await pool.query(
-        `
-        SELECT
-          to_char(closed_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM') AS month,
-          SUM(realized_pnl) AS pnl,
-          COUNT(*) AS trades
-        FROM transaction_chains
-        WHERE status = 'CLOSED'
-          AND closed_at >= NOW() - INTERVAL '12 months'
-          AND is_paper = $1
-          ${codeFilter}
-        GROUP BY 1
-        ORDER BY 1 ASC
-      `,
-        [isPaper],
-      );
-
-      const { rows: total } = await pool.query(
-        `
-        SELECT COALESCE(SUM(realized_pnl), 0) AS total_pnl
-        FROM transaction_chains
-        WHERE status = 'CLOSED'
-          AND is_paper = $1
-          ${codeFilter}
-      `,
-        [isPaper],
-      );
-
-      const { rows: thisMonth } = await pool.query(
-        `
-        SELECT COALESCE(SUM(realized_pnl), 0) AS pnl
-        FROM transaction_chains
-        WHERE status = 'CLOSED'
-          AND closed_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')
-          AND is_paper = $1
-          ${codeFilter}
-      `,
-        [isPaper],
-      );
-
-      const dinnerMoney = await getDinnerMoneyStats();
-
-      const { rows: firstTrade } = await pool.query(
-        `SELECT MIN(closed_at) AS first_date FROM transaction_chains WHERE status = 'CLOSED' AND is_paper = $1 ${codeFilter}`,
-        [isPaper],
-      );
+      const [{ rows: monthly }, { rows: total }, { rows: thisMonth }, dinnerMoney, { rows: firstTrade }] = await Promise.all([
+        pool.query(
+          `SELECT to_char(closed_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM') AS month,
+                  SUM(realized_pnl) AS pnl, COUNT(*) AS trades
+           FROM transaction_chains
+           WHERE status = 'CLOSED' AND closed_at >= NOW() - INTERVAL '12 months'
+             AND is_paper = $1 ${codeFilter}
+           GROUP BY 1 ORDER BY 1 ASC`,
+          [isPaper],
+        ),
+        pool.query(
+          `SELECT COALESCE(SUM(realized_pnl), 0) AS total_pnl
+           FROM transaction_chains WHERE status = 'CLOSED' AND is_paper = $1 ${codeFilter}`,
+          [isPaper],
+        ),
+        pool.query(
+          `SELECT COALESCE(SUM(realized_pnl), 0) AS pnl
+           FROM transaction_chains
+           WHERE status = 'CLOSED' AND closed_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')
+             AND is_paper = $1 ${codeFilter}`,
+          [isPaper],
+        ),
+        getDinnerMoneyStats(),
+        pool.query(
+          `SELECT MIN(closed_at) AS first_date FROM transaction_chains WHERE status = 'CLOSED' AND is_paper = $1 ${codeFilter}`,
+          [isPaper],
+        ),
+      ]);
       const firstDate = firstTrade[0]?.first_date ? new Date(firstTrade[0].first_date) : new Date();
       const operatingDays = Math.max(1, Math.floor((Date.now() - firstDate.getTime()) / 86400000));
       const totalCumulative = Number(total[0]?.total_pnl ?? 0);
@@ -94,50 +76,32 @@ profitStatsRoutes.get('/profit-stats', async (c) => {
           AND (filled_price / avg_buy_price) <= 2.0
           AND (avg_buy_price / filled_price) <= 2.0`;
 
-      const { rows: monthly } = await pool.query(
-        `
-        SELECT
-          to_char(created_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM') AS month,
-          SUM((filled_price - avg_buy_price) * filled_quantity) AS pnl,
-          COUNT(*) AS trades
-        FROM orders
-        WHERE ${osFilter}
-          AND is_paper = $1
-          AND (trading_mode = $2::text OR ($2::text = 'paper' AND trading_mode = 'p_arch'))
-          AND created_at >= NOW() - INTERVAL '12 months'
-        GROUP BY 1
-        ORDER BY 1 ASC
-      `,
-        [isPaper, tradingMode],
-      );
-
-      const { rows: total } = await pool.query(
-        `
-        SELECT COALESCE(SUM((filled_price - avg_buy_price) * filled_quantity), 0) AS total_pnl
-        FROM orders
-        WHERE ${osFilter}
-          AND is_paper = $1
-          AND (trading_mode = $2::text OR ($2::text = 'paper' AND trading_mode = 'p_arch'))
-      `,
-        [isPaper, tradingMode],
-      );
-
-      const { rows: thisMonth } = await pool.query(
-        `
-        SELECT COALESCE(SUM((filled_price - avg_buy_price) * filled_quantity), 0) AS pnl
-        FROM orders
-        WHERE ${osFilter}
-          AND is_paper = $1
-          AND (trading_mode = $2::text OR ($2::text = 'paper' AND trading_mode = 'p_arch'))
-          AND created_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')
-      `,
-        [isPaper, tradingMode],
-      );
-
-      const { rows: firstTradeUs } = await pool.query(
-        `SELECT MIN(created_at) AS first_date FROM orders WHERE ${osFilter} AND is_paper = $1 AND trading_mode = $2`,
-        [isPaper, tradingMode],
-      );
+      // v10.10.5c: 4 쿼리 병렬화
+      const modeFilter = `AND is_paper = $1 AND (trading_mode = $2::text OR ($2::text = 'paper' AND trading_mode = 'p_arch'))`;
+      const [{ rows: monthly }, { rows: total }, { rows: thisMonth }, { rows: firstTradeUs }] = await Promise.all([
+        pool.query(
+          `SELECT to_char(created_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM') AS month,
+                  SUM((filled_price - avg_buy_price) * filled_quantity) AS pnl, COUNT(*) AS trades
+           FROM orders WHERE ${osFilter} ${modeFilter} AND created_at >= NOW() - INTERVAL '12 months'
+           GROUP BY 1 ORDER BY 1 ASC`,
+          [isPaper, tradingMode],
+        ),
+        pool.query(
+          `SELECT COALESCE(SUM((filled_price - avg_buy_price) * filled_quantity), 0) AS total_pnl
+           FROM orders WHERE ${osFilter} ${modeFilter}`,
+          [isPaper, tradingMode],
+        ),
+        pool.query(
+          `SELECT COALESCE(SUM((filled_price - avg_buy_price) * filled_quantity), 0) AS pnl
+           FROM orders WHERE ${osFilter} ${modeFilter}
+           AND created_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')`,
+          [isPaper, tradingMode],
+        ),
+        pool.query(
+          `SELECT MIN(created_at) AS first_date FROM orders WHERE ${osFilter} AND is_paper = $1 AND trading_mode = $2`,
+          [isPaper, tradingMode],
+        ),
+      ]);
       const firstDateUs = firstTradeUs[0]?.first_date ? new Date(firstTradeUs[0].first_date) : new Date();
       const operatingDaysUs = Math.max(1, Math.floor((Date.now() - firstDateUs.getTime()) / 86400000));
       const totalCumulativeUs = Number(total[0]?.total_pnl ?? 0);

@@ -221,8 +221,10 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     const profitTighten = maxPnlPct >= PROFIT_TIGHTEN_THRESHOLDS.HIGH ? PROFIT_TIGHTEN_VALUES.HIGH
       : maxPnlPct >= PROFIT_TIGHTEN_THRESHOLDS.MEDIUM ? PROFIT_TIGHTEN_VALUES.MEDIUM
       : maxPnlPct >= PROFIT_TIGHTEN_THRESHOLDS.LOW ? PROFIT_TIGHTEN_VALUES.LOW : 0;
-    // v10.8: trailTighten/profitTighten은 양수값 — 음수 trail에서 빼야 더 타이트해짐
-    const effectiveTrailDropPct = dynamicTrailDrop - vixRegime.trailTighten - profitTighten;
+    // v10.10.5c: trailTighten/profitTighten은 양수값 — 음수 trail에 더해야 0에 가까워져 타이트해짐
+    // 예: trail=-4.0 + tighten=2.0 → -2.0 (2%드롭에서 트리거 = 더 빨리 보호)
+    // 기존 버그: 빼면 -6.0 → 6%드롭까지 허용 = VIX 위기 시 오히려 더 느슨해짐
+    const effectiveTrailDropPct = dynamicTrailDrop + vixRegime.trailTighten + profitTighten;
     // v10.9: 트레일 활성화 대폭 하향 (기존 5~10% → 2~4%) — 소액 계좌 수익 보호
     const baseTrailActivate = isHighBeta ? 4.0 : isMediumBeta ? 3.0 : 2.0;
     const trailActivatePct = tunerOverrides.trail_activate_pct ?? baseTrailActivate;
@@ -273,9 +275,9 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       } else if (tws.action === 'BREAK_EVEN' && pnlPct < 0) {
         // 본절 이동 후 손실 진입 → 손절 (본절 = 0%)
         sellReason = `본절 SL (Phase2): PnL ${pnlPct.toFixed(1)}% < 본절 0%`;
-      } else if (tws.action === 'TRAIL_TIGHTEN' && pnlPct < Math.max(0, maxPnlPct - 2.0)) {
-        // 트레일링 SL 발동 — 고점(maxPnlPct) 기준 -2% 슬리피지 (현재가 기준이면 항상 false됨)
-        sellReason = `트레일링 SL (Phase3): PnL ${pnlPct.toFixed(1)}% < 트레일 +${Math.max(0, maxPnlPct - 2.0).toFixed(1)}%`;
+      } else if (tws.action === 'TRAIL_TIGHTEN' && maxPnlPct >= 2.0 && pnlPct < maxPnlPct - 2.0) {
+        // v10.10.5c: 고점 2% 이상일 때만 발동 (기존: maxPnlPct<2 시 Math.max(0,...)=0 → 미세 손실도 매도)
+        sellReason = `트레일링 SL (Phase3): PnL ${pnlPct.toFixed(1)}% < 트레일 +${(maxPnlPct - 2.0).toFixed(1)}%`;
       } else if (tws.action === 'HOLD') {
         // Phase 1 휩소 방어 중 — 구조적 SL만 허용, 일반 손절은 차단
         // v10.8: 단, 하드 TP/ATR 트레일링/수익 확정은 HOLD에서도 허용 (수익 실현 차단 방지)

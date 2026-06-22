@@ -272,7 +272,22 @@ export class RiskEngine {
 
     const currentBalance = await getBalance(isPaper);
     const startValue = Number(startSnapshot.total_value);
-    const currentValue = getDomesticTotalAssets(currentBalance);
+    // v10.10.5c: 스냅샷(total_value)에 해외 포함 → currentValue에도 해외 합산해야 정합
+    // 기존 버그: startValue=국내+해외, currentValue=국내만 → 해외 보유액이 "손실"로 잡힘
+    let currentValue = getDomesticTotalAssets(currentBalance);
+    try {
+      const fx = await getFxRate();
+      if (fx > 0) {
+        const [osHoldings, osCashUsd] = await Promise.all([
+          getOverseasHoldings(isPaper), getOverseasCash(isPaper),
+        ]);
+        const osHoldingsKrw = Math.round(
+          Array.from(osHoldings.values()).reduce((s, h) => s + h.qty * h.avgPrice, 0) * fx,
+        );
+        const osCashKrw = Math.round(osCashUsd * fx);
+        currentValue += osHoldingsKrw + osCashKrw;
+      }
+    } catch { /* 해외 조회 실패 시 국내만으로 폴백 — 보수적(손실 과대평가) */ }
 
     // 장시작 스냅샷 total_value=0 → Drawdown 보호 무력화 방지
     if (startValue <= 0) {

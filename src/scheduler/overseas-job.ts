@@ -261,6 +261,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     // v10.10.5: 목표 해외 포트폴리오 규모 — Paper/Live 모두 적용
     // (v10.10.4에서 Live만 적용 → Paper는 sizingPortfolioValue 누락)
     let targetOverseasUsd = 0;
+    let sizingAllocPct = 0; // v10.10.5c: 손실한도 역산에도 사용 → 스코프 호이스트
     if (cycleFxRate > 0) {
       try {
         // 1) 전체 계좌 가치: Paper는 국내+해외 시드 합산, Live는 KIS 잔고
@@ -303,7 +304,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           // 4) 사이징용 배분비율: 사용자 목표와 시간대별 중 큰 값
           //    → 사용자가 70%로 설정해도 US장(80%) 시간에는 80% 기준 사이징
           //    → KR장(35%)이라도 사용자 70%면 70% 기준 사이징 (소액 매수 방지)
-          const sizingAllocPct = userTargetPct != null
+          sizingAllocPct = userTargetPct != null
             ? Math.max(userTargetPct, timeBasedPct)
             : timeBasedPct;
 
@@ -941,13 +942,15 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       await setSessionStartValue(portfolioValue, isPaper());
     const _sessionStart = s.sessionStartPortfolioValue.get(mk) ?? portfolioValue;
 
-    // v10.10.5: 손실 한도 — 총자산(국내+해외) 기준 (기존: 해외자산만 → 분모가 작아 조기 트리거)
+    // v10.10.5c: 손실 한도 — 총자산(국내+해외) 기준
     const osLimit = getOverseasLossTiers(isPaper());
     const holdingCostUsd = Array.from(holdings.entries()).reduce((sum, [, h]) => sum + h.qty * h.avgPrice, 0);
     const unrealizedLossUsd = holdingCostUsd - holdingEvalUsdPost; // 양수 = 손실
-    // 총자산 기준: targetOverseasUsd > 0이면 전체 계좌 규모 역산, 아니면 해외자산만 (폴백)
+    // 총자산 기준: targetOverseasUsd > 0이면 실제 배분비율로 전체 계좌 역산
+    // 기존 버그: 하드코딩 0.70 → 실제 배분비율(sizingAllocPct)과 불일치
+    const lossAllocPct = sizingAllocPct > 0 ? sizingAllocPct : 0.70; // sizingAllocPct는 상단에서 계산 완료
     const lossBaseTotalUsd = targetOverseasUsd > 0
-      ? targetOverseasUsd / (isPaper() ? 0.70 : 1.0) // 목표배분 역산 → 전체 계좌 (USD)
+      ? targetOverseasUsd / lossAllocPct // 실제 배분비율로 역산 → 전체 계좌 (USD)
       : portfolioValue;
     // 총자산 기준 손실율 (분모: 전체 계좌, 분자: 해외 미실현 손실)
     const lossPctOfTotal = lossBaseTotalUsd > 0 ? (unrealizedLossUsd / lossBaseTotalUsd) * 100 : 0;

@@ -95,7 +95,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     ? () => withTimeout(getPaperBalance(), 10000, defaultBalance as any)
     : () => withTimeout(getAccountBalance(true), 6000, defaultBalance as any);
 
-  const [balanceResult, chains, strategy, insightRows, defensePark, _liveBalanceForCap] = await Promise.all([
+  // v10.10.5c: watchlist를 Promise.all에 포함 (기존: 순차 호출 → 5-15ms 절약)
+  const [balanceResult, chains, strategy, insightRows, defensePark, , watchlist] = await Promise.all([
     balanceFn().catch(() => defaultBalance),
     getOpenChains(viewIsPaper).catch(() => []),
     runWithMode(viewIsPaper, () => getActiveStrategy()).catch(() => null),
@@ -112,13 +113,10 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       entryReason: null,
       enteredAt: null,
     })),
-    // 연습모드 한도: 실전 API 독립 (실전 잔고 오염 제거 — paperCap = 자체 시드)
     Promise.resolve(null),
+    getActiveWatchlist().catch(() => []),
   ]);
   const balance = balanceResult ?? defaultBalance;
-  // 연습모드 한도: 자체 시드 고정 (calcTotalAssets에서 paperInitialCapital로 cap)
-
-  const watchlist = await getActiveWatchlist().catch(() => []);
   const stockCodes = watchlist.map((w) => w.stock_code);
 
   // 감시종목 268+개 전체 스코어 조회는 부하 과중 → 상위 50개만 표시
@@ -418,14 +416,10 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       if (r.last_price_at && new Date(r.last_price_at).getTime() < staleThresh) return true;
       return false;
     }).slice(0, 3);
-    for (const r of needPrice) {
-      // 인메모리 캐시 우선 조회 (Paper/Live 공통)
+    // v10.10.5c: 순차 → 병렬 (최대 3종목 × 3s timeout = 기존 9s → 3s)
+    await Promise.allSettled(needPrice.map(async (r) => {
       const memP = cacheGet<{ price: number }>(`overseas:lastprice:${r.stock_code}`)?.price ?? 0;
-      if (memP > 0) {
-        r.last_price = memP;
-        continue;
-      }
-      // KIS API 폴백 (paper/live 모두 동일 시세 — 조회만 하면 됨)
+      if (memP > 0) { r.last_price = memP; return; }
       try {
         const p = await withTimeout(getOverseasPrice(String(r.stock_code), String(r.exchange)), 3000, null as any);
         if (p?.currentPrice > 0) {
@@ -435,10 +429,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
             [p.currentPrice, r.stock_code, viewIsPaper],
           ).catch(() => {});
         }
-      } catch {
-        /* 시세 조회 실패 시 기존 폴백 사용 */
-      }
-    }
+      } catch { /* 시세 조회 실패 시 기존 폴백 사용 */ }
+    }));
 
     if (viewIsPaper && osRows.length > 0) {
       logger.info(

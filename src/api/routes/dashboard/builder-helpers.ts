@@ -88,10 +88,9 @@ export function buildMonthlyGoal(
   const monthlyTargetPct = 50;
   const seedKr = grandTotalValue > 0 ? grandTotalValue : 0;
   const targetAmount = Math.round((seedKr * monthlyTargetPct) / 100);
-  const overseasUnrealizedForGoal = Number.isNaN(overseasMarketValueKrw - overseasInvestedKrw)
-    ? 0
-    : overseasMarketValueKrw - overseasInvestedKrw;
-  const currentPnl = Math.round(totalPnl + overseasUnrealizedForGoal);
+  // v10.10.5c: totalPnl은 calc.ts에서 이미 overseasUnrealizedPnlKrw 포함
+  // 기존 버그: overseasUnrealizedForGoal을 다시 더하면 해외 미실현PnL 이중 합산
+  const currentPnl = Math.round(totalPnl);
   const progressPct = targetAmount > 0 ? Math.min(200, Math.round((currentPnl / targetAmount) * 100)) : 0;
   return {
     targetPct: monthlyTargetPct,
