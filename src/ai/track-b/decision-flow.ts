@@ -191,6 +191,17 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   const _parkingBuyDecisions: import('../../db/models.js').TradeDecision[] = [];
   {
     const { manageCashParking } = await import('./cash-manager.js');
+    // 해외 목표 비중 조회 — cash-manager가 국내 파킹 예산 제한에 사용
+    let overseasTargetPct = 0;
+    if (!params.isPaper) {
+      try {
+        const { getPool } = await import('../../db/client.js');
+        const { rows } = await getPool().query(
+          'SELECT us_pct FROM portfolio_allocation_config WHERE is_paper = false ORDER BY id DESC LIMIT 1',
+        );
+        overseasTargetPct = Number(rows[0]?.us_pct ?? 0);
+      } catch { /* 기본값 0 유지 */ }
+    }
     const cashDecisions = manageCashParking({
       orderableCash,
       totalAssets,
@@ -203,6 +214,7 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
       blockNewBuys,
       macroRiskOff: params.macroRiskOff,
       isPaper: params.isPaper,
+      overseasTargetPct,
     });
     for (const d of cashDecisions) {
       if (d.action === 'SELL')

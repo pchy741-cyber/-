@@ -10,6 +10,7 @@ import { applyUncertaintyPenalty, checkSectorGroupLimit } from './risk-intellige
 import { isUSDST } from './session.js';
 import { GLOBAL_WATCHLIST } from './watchlist.js';
 import { getCachedSecFundamentalScore } from '../../automation/sec-research.js';
+import { getPaperValidatedCodes, getPaperSignalScore } from './paper-signal-bridge.js';
 
 type MarketSignalResult = ReturnType<typeof interpretMarketSentiment>;
 
@@ -119,6 +120,9 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
 
   // 🔒 isPaper undefined → false 기본값 (undefined가 live로 취급되는 크로스오염 방지)
   const isPaper = _isPaperRaw ?? false;
+
+  // Paper→Live 브릿지: 연습모드 검증 종목 Set (Live 사이클에서만 사용)
+  const paperValidated = !isPaper ? getPaperValidatedCodes() : new Set<string>();
 
   // 세션전략에서 avoidStocks/priorityStocks/confidenceFloor 추출
   const avoidSet = new Set(sessionBrief?.avoidStocks ?? []);
@@ -288,7 +292,9 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const paperSignalPass = isPaper && (t.signal === 'STRONG_BUY' || t.signal === 'BUY');
         // Live: STRONG_BUY + score≥30이면 MA/BB 필터 바이패스 (소액 계좌 매수 기회 확보)
         const liveSignalPass = !isPaper && t.signal === 'STRONG_BUY' && t.score >= 30;
-        const signalPass = paperSignalPass || liveSignalPass;
+        // Paper→Live 브릿지: 연습모드 검증 종목도 MA/BB 필터 완화
+        const paperBridgePass = paperValidated.has(t.code) && t.score >= 20;
+        const signalPass = paperSignalPass || liveSignalPass || paperBridgePass;
         if (!t.isMomentum && !isOversold && t.aboveMA20 === false && !signalPass) {
           logger.info(`  ⛔ MA20 하방 진입 차단: ${t.code}`, { component: 'OVERSEAS' });
           return false;
@@ -457,6 +463,22 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
           )
             return true;
         }
+        // 8b. Paper→Live 브릿지 완화 진입 — 연습모드 검증 종목은 완화 기준 허용
+        if (
+          !isPaper &&
+          paperValidated.has(t.code) &&
+          t.score >= 15 &&
+          t.rsi >= 35 &&
+          t.rsi <= 75 &&
+          t.aboveMA20 &&
+          !effectiveBadWR
+        ) {
+          logger.info(
+            `  ✅ Paper브릿지 진입: ${t.code} score=${t.score} paperScore=${getPaperSignalScore(t.code)} RSI=${t.rsi.toFixed(0)}`,
+            { component: 'OVERSEAS' },
+          );
+          return true;
+        }
         // 9. AI 미사용시 기술적 보통 진입 — NEUTRAL 장에서도 양호한 셋업 진입
         // 조건: AI 결과 없음 + score>0 + MA20↑ + RSI 적정 + ADX 추세 확인 + 과열 아님
         if (
@@ -556,10 +578,13 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const secScoreB = getCachedSecFundamentalScore(b.code);
         const fundAdjA = secScoreA != null ? (secScoreA >= 75 ? 8 : secScoreA >= 60 ? 4 : secScoreA <= 30 ? -10 : 0) : 0;
         const fundAdjB = secScoreB != null ? (secScoreB >= 75 ? 8 : secScoreB >= 60 ? 4 : secScoreB <= 30 ? -10 : 0) : 0;
+        // Paper→Live 브릿지 보너스: 연습모드 검증 종목 우선 매수 (최대 +15점)
+        const paperBridgeA = paperValidated.has(a.code) ? Math.min(15, getPaperSignalScore(a.code) * 0.4) : 0;
+        const paperBridgeB = paperValidated.has(b.code) ? Math.min(15, getPaperSignalScore(b.code) * 0.4) : 0;
         const sa =
-          techA + wrScoreA + losspenA + priorityA + favA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA + sectorMomScoreA + fundAdjA;
+          techA + wrScoreA + losspenA + priorityA + favA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA + sectorMomScoreA + fundAdjA + paperBridgeA;
         const sb =
-          techB + wrScoreB + losspenB + priorityB + favB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB + sectorMomScoreB + fundAdjB;
+          techB + wrScoreB + losspenB + priorityB + favB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB + sectorMomScoreB + fundAdjB + paperBridgeB;
         return sb - sa;
       })
   );

@@ -1166,7 +1166,11 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         sectorMomentumMap,
       });
 
-      // ── 터틀 돌파 전략 비활성화 — buy-filter 12단계로 통합 ──
+      // ── Paper→Live 브릿지: paper 매수 후보를 live에 전달 ──
+      if (isPaper() && buyTargets.length > 0) {
+        const { setPaperBuySignals } = await import('./overseas/paper-signal-bridge.js');
+        setPaperBuySignals(buyTargets);
+      }
 
       if (buyTargets.length === 0) {
         logger.info(

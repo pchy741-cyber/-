@@ -91,6 +91,8 @@ export interface CashManagerParams {
   macroRiskOff?: boolean;
   /** Paper 모드 여부 (쿨다운/파라미터 분리) */
   isPaper?: boolean;
+  /** 해외 목표 비중 (0~100, 예: 70 = 총자산의 70% 해외 예약) — 국내 파킹 예산 제한용 */
+  overseasTargetPct?: number;
 }
 
 // ── 동적 파킹 비율 산출: 현금잔고 + 타이밍 품질 → 총자산 대비 % ──
@@ -321,7 +323,26 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
   const targetBudget = totalAssets * parkPct;
   // 현금 사용 한도: paper=60% (유휴현금 적극 배치), live=40% (나머지 자동매매용)
   const cashCeilRatio = isPaper ? 0.6 : 0.4;
-  const parkBudget = Math.min(targetBudget, orderableCash * cashCeilRatio);
+  let effectiveCash = orderableCash;
+
+  // ── 해외 현금 예약: us_pct만큼 현금을 해외용으로 보존 ──
+  // 국내 파킹은 국내 몫(kr_pct) 내에서만 허용, 해외 예산 침범 방지
+  const osPct = params.overseasTargetPct ?? 0;
+  if (osPct > 0 && !isPaper) {
+    const domesticInvested = openChains.reduce((sum, c) => sum + Number(c.total_invested ?? 0), 0);
+    const domesticBudgetCeil = totalAssets * ((100 - osPct) / 100);
+    const remainingDomesticBudget = Math.max(0, domesticBudgetCeil - domesticInvested);
+    effectiveCash = Math.min(effectiveCash, remainingDomesticBudget);
+    if (effectiveCash < minParkAmount) {
+      logger.info(
+        `💤 파킹 보류 — 국내 예산 소진 (국내투자 ${Math.round(domesticInvested / 10000)}만 / 한도 ${Math.round(domesticBudgetCeil / 10000)}만, 해외예약 ${osPct}%)`,
+        { component: 'CASH_MANAGER' },
+      );
+      return decisions;
+    }
+  }
+
+  const parkBudget = Math.min(targetBudget, effectiveCash * cashCeilRatio);
   if (parkBudget < minParkAmount) return decisions;
 
   const targetPrice = best.price!.currentPrice;

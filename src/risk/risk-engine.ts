@@ -446,31 +446,46 @@ export class RiskEngine {
       };
     }
 
-    // 국내 배분 비중 체크 — kr_pct 목표 준수
-    // 소자산(200만 미만) 또는 연습모드(해외 상태 미분리)는 배분 비중 체크 면제
-    // ⚠️ 통합증거금: 현금(KRW) 단일 풀 → 현금을 특정 시장에 귀속시키지 않음
-    //   배분 비중은 "투자중 금액"(주식 보유액)만 기준으로 계산
-    //   이전 로직은 totalDeposit(전체 현금)을 국내 쪽에 포함 + 해외 현금도 합산 → 현금 이중 계산
-    if (!isPaper && totalPortfolio >= 2000000) {
+    // 국내 배분 비중 체크 — kr_pct 목표 준수 (Live 전용)
+    // ⚠️ 통합증거금: 현금(KRW) 단일 풀 → 배분 비중은 "투자중 금액"(보유액)만 기준
+    // v10.9.8: 소자산 면제 제거 + 해외 0포지션 사각지대 제거
+    //   기존: totalPortfolio<200만 OR osInvested=0 → 체크 스킵 → 국내가 현금 전부 점유
+    //   수정: 해외 보유 없어도 목표비중 기반 현금 예약으로 국내 매수 제한
+    if (!isPaper) {
       try {
-        const [, osHoldings, fx] = await Promise.all([getOverseasCash(), getOverseasHoldings(), getFxRate()]);
-        const osHoldingCostUsd = Array.from(osHoldings.values()).reduce((sum, h) => sum + h.qty * h.avgPrice, 0);
-        const osInvestedKrw = Math.round(osHoldingCostUsd * fx); // 해외 주식 보유액만 (현금 제외)
-        const domesticInvested = balance.totalEvalAmount; // 국내 주식 보유액만 (현금 제외)
-        const totalInvested = domesticInvested + osInvestedKrw;
-        if (totalInvested > 0 && osInvestedKrw > 0) {
-          // 해외 투자 없으면 비율 체크 불필요
-          const { rows: allocRows } = await getPool().query(
-            'SELECT kr_pct FROM portfolio_allocation_config WHERE is_paper = $1 LIMIT 1',
-            [isPaper],
-          );
-          const targetKrPct = Number(allocRows[0]?.kr_pct ?? 0);
-          const currentKrPct = (domesticInvested / totalInvested) * 100;
-          if (currentKrPct > targetKrPct * 1.15) {
-            return {
-              approved: false,
-              reason: `국내 배분 비중 초과: ${currentKrPct.toFixed(0)}% > 목표 ${targetKrPct}% (+15% 여유)`,
-            };
+        const { rows: allocRows } = await getPool().query(
+          'SELECT kr_pct, us_pct FROM portfolio_allocation_config WHERE is_paper = $1 LIMIT 1',
+          [isPaper],
+        );
+        const targetKrPct = Number(allocRows[0]?.kr_pct ?? 30);
+        const targetUsPct = Number(allocRows[0]?.us_pct ?? 70);
+
+        if (targetUsPct > 0) {
+          const [, osHoldings, fx] = await Promise.all([getOverseasCash(), getOverseasHoldings(), getFxRate()]);
+          const osHoldingCostUsd = Array.from(osHoldings.values()).reduce((sum, h) => sum + h.qty * h.avgPrice, 0);
+          const osInvestedKrw = Math.round(osHoldingCostUsd * fx);
+          const domesticInvested = balance.totalEvalAmount;
+          const totalInvested = domesticInvested + osInvestedKrw;
+
+          if (totalInvested > 0) {
+            // 투자 비율 기반 체크 (기존 방식 + 15% 여유)
+            const currentKrPct = (domesticInvested / totalInvested) * 100;
+            if (currentKrPct > targetKrPct * 1.15) {
+              return {
+                approved: false,
+                reason: `국내 배분 비중 초과: ${currentKrPct.toFixed(0)}% > 목표 ${targetKrPct}% (+15% 여유)`,
+              };
+            }
+          } else {
+            // 해외 투자 0일 때: 총자산 대비 국내 투자 한도로 현금 예약
+            // 국내 투자가 kr_pct 몫을 초과하면 매수 차단 (해외용 현금 보존)
+            const domesticBudgetCeil = totalPortfolio * (targetKrPct / 100);
+            if (domesticInvested + orderValue > domesticBudgetCeil * 1.15) {
+              return {
+                approved: false,
+                reason: `국내 예산 한도: 투자 ${Math.round(domesticInvested / 10000)}만 + 주문 ${Math.round(orderValue / 10000)}만 > 한도 ${Math.round(domesticBudgetCeil / 10000)}만 (kr${targetKrPct}%)`,
+              };
+            }
           }
         }
       } catch (err) {
