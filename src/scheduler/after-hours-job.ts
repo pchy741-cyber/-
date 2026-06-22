@@ -7,7 +7,7 @@ import { getActiveStrategy, getActiveWatchlist, getAllRecentScores, getOpenChain
 import type { TradeDecision } from '../db/models.js';
 import type { CurrentPrice } from '../kis/market.js';
 import { getBatchInvestorFlow, getBatchPrices, getDailyChart } from '../kis/market.js';
-import { sendTelegramMessage } from '../notifications/telegram.js';
+import { sendByPaperFlag } from '../notifications/mode-message.js';
 import { isKillSwitchActiveForMode, reportSuccess } from '../risk/kill-switch.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
@@ -258,7 +258,7 @@ export async function runAfterHoursJob(): Promise<void> {
         await tradeExecutor.processDecisions(sellDecisions, mode, 'AFTER_HOURS');
         reportSuccess();
         const sellSummary = sellDecisions.map((d) => `  • ${d.stock_code} x${d.quantity} — ${d.reasoning}`).join('\n');
-        await sendTelegramMessage(`🌙 시간외 수익확정 매도 ${sellDecisions.length}건\n${sellSummary}`).catch(() => {});
+        await sendByPaperFlag(getCtxIsPaper(), `🌙 시간외 수익확정 매도 ${sellDecisions.length}건\n${sellSummary}`);
         await logSystem('INFO', 'AFTER_HOURS', `시간외 수익확정: ${sellDecisions.length}건 매도`);
       }
     }
@@ -411,7 +411,7 @@ export async function runAfterHoursJob(): Promise<void> {
 
     // 1-J. 텔레그램 알림
     const msg = buyDecisions.map((d) => `  • 🧠 ${d.stock_code} x${d.quantity} — ${d.reasoning}`).join('\n');
-    await sendTelegramMessage(`🧠 스마트장외 매수 ${buyDecisions.length}건\n${msg}`).catch(() => {});
+    await sendByPaperFlag(getCtxIsPaper(), `🧠 스마트장외 매수 ${buyDecisions.length}건\n${msg}`);
     await logSystem(
       'INFO',
       'AFTER_HOURS',

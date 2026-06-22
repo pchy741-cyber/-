@@ -622,7 +622,7 @@ export class TradeExecutor {
       // 캐시 무효화
       invalidateStockCache(stockCode).catch(() => {});
       if (chainCreated) {
-        notifyBuy(stockCode, filledQty, fill.filledPrice, reasoning, triggerSource).catch((err) =>
+        notifyBuy(stockCode, filledQty, fill.filledPrice, reasoning, triggerSource, isPaperSnapshot).catch((err) =>
           logger.warn(`알림 발송 오류 (BUY): ${err}`, { component: 'EXECUTOR' }),
         );
       } else {
@@ -864,7 +864,7 @@ export class TradeExecutor {
       invalidateStockCache(stockCode).catch(() => {});
       invalidateBalanceCache();
       hardInvalidateDashboardCache();
-      notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, reasoning, chain.strategy_mode).catch((err) =>
+      notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, reasoning, chain.strategy_mode, isPaperSnapshot).catch((err) =>
         logger.warn(`알림 발송 오류 (SELL): ${err}`, { component: 'EXECUTOR' }),
       );
     }
@@ -983,6 +983,7 @@ export class TradeExecutor {
               pnlPctKisSync,
               `DB-KIS 동기화 강제 청산: 실보유 0주`,
               chain.strategy_mode,
+              isPaperSnapshot,
             ).catch((err) =>
               logger.warn(`notifySell() 실패 (DB-KIS 동기화): ${err}`, { component: 'EXECUTOR' }),
             );
@@ -1074,7 +1075,7 @@ export class TradeExecutor {
       invalidateStockCache(stockCode).catch(() => {});
       invalidateBalanceCache();
       hardInvalidateDashboardCache();
-      notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, closeReason, chain.strategy_mode).catch((err) =>
+      notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, closeReason, chain.strategy_mode, isPaperSnapshot).catch((err) =>
         logger.warn(`알림 발송 오류 (CLOSE): ${err}`, { component: 'EXECUTOR' }),
       );
 

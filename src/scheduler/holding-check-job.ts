@@ -4,7 +4,7 @@ import { getCtxIsPaper } from '../config/context.js';
 import { getActiveStrategy, getOpenChains, getPool } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import { getCurrentPrice } from '../kis/market.js';
-import { sendTelegramMessage } from '../notifications/telegram.js';
+import { sendByPaperFlag } from '../notifications/mode-message.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { reconcileExternalSells } from '../trading/fill-reconciler.js';
 import { logger } from '../utils/logger.js';
@@ -192,7 +192,7 @@ export async function runHoldingCheckJob(): Promise<void> {
       await tradeExecutor.processDecisions(forceCloseDecisions, mode, 'HOLDING_CHECK');
 
       const summary = forceCloseDecisions.map((d) => `${d.stock_code} x${d.quantity} (${d.reasoning})`).join('\n');
-      await sendTelegramMessage(`⏰ 시간 손절 실행:\n${summary}`).catch(() => {});
+      await sendByPaperFlag(getCtxIsPaper(), `⏰ 시간 손절 실행:\n${summary}`);
     }
   } catch (error) {
     logger.error(`보유일 체크 실패: ${error}`, { component: 'HOLDING_CHECK' });
@@ -513,5 +513,5 @@ async function checkEscapeTargets(chains: any[]): Promise<void> {
   }
 
   const summary = decisions.map((d) => `${d.stock_code} x${d.quantity} — ${d.reasoning}`).join('\n');
-  await sendTelegramMessage(`🚪 탈출 매도 실행:\n${summary}`).catch(() => {});
+  await sendByPaperFlag(getCtxIsPaper(), `🚪 탈출 매도 실행:\n${summary}`);
 }

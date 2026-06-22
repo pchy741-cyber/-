@@ -96,11 +96,17 @@ export async function runSnapshotJob(): Promise<void> {
       }
     } catch { /* 첫 스냅샷 조회 실패 시 폴백 유지 */ }
 
+    // Paper: totalProfitLoss는 누적 실현PnL이므로, 실제 미실현PnL로 교체
+    // Live: KIS API totalProfitLoss = 미실현PnL (그대로 사용)
+    const snapshotUnrealizedPnl = isPaper
+      ? balance.totalEvalAmount - balance.purchaseCost
+      : balance.totalProfitLoss;
+
     await insertSnapshot({
       total_value: totalValue,
       cash_balance: balance.orderableCash,
       invested_value: balance.totalEvalAmount,
-      unrealized_pnl: balance.totalProfitLoss,
+      unrealized_pnl: snapshotUnrealizedPnl,
       daily_pnl: dailyPnl,
       daily_pnl_pct: dailyPnlPct,
       positions: balance.positions,

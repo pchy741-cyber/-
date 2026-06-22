@@ -2,7 +2,7 @@ import { getCtxIsPaper } from '../config/context.js';
 import { getOpenChains } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import { getCurrentPrice } from '../kis/market.js';
-import { sendTelegramMessage } from '../notifications/telegram.js';
+import { sendByPaperFlag } from '../notifications/mode-message.js';
 import { isKillSwitchActiveForMode } from '../risk/kill-switch.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
@@ -74,7 +74,7 @@ export async function runForceCloseJob(): Promise<void> {
   ].filter(Boolean);
 
   if (lines.length > 0) {
-    await sendTelegramMessage(`📊 15:20 마감 점검:\n${lines.join('\n')}`).catch(() => {});
+    await sendByPaperFlag(getCtxIsPaper(), `📊 15:20 마감 점검:\n${lines.join('\n')}`);
   }
 }
 
@@ -134,6 +134,6 @@ export async function runOpeningBellForceClose(): Promise<void> {
   if (toClose.length > 0) {
     await tradeExecutor.processDecisions(toClose, 'SCALPING', 'FORCE_CLOSE');
     const codes = toClose.map((d) => d.stock_code).join(', ');
-    await sendTelegramMessage(`🔔 10:00 개장벨 청산 완료 (${toClose.length}건): ${codes}`).catch(() => {});
+    await sendByPaperFlag(getCtxIsPaper(), `🔔 10:00 개장벨 청산 완료 (${toClose.length}건): ${codes}`);
   }
 }

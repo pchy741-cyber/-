@@ -54,7 +54,15 @@ export function hardInvalidateMode(isPaper: boolean): void {
   _dashCacheByMode.delete(isPaper ? 'paper' : 'live');
 }
 
+// SSE 메타 캐시 무효화 콜백 — sse.ts에서 등록 (순환의존 방지)
+let _sseMetaInvalidator: (() => void) | null = null;
+export function registerSseMetaInvalidator(fn: () => void): void {
+  _sseMetaInvalidator = fn;
+}
+
 // Hard invalidate — 캐시 데이터 완전 삭제 (DB 복구 후 stale 데이터 제거)
+// SSE 메타 캐시도 함께 무효화 → 매매 후 왔다갔다 현상 방지
 export function hardInvalidateDashboardCache(): void {
   _dashCacheByMode.clear();
+  _sseMetaInvalidator?.();
 }

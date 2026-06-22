@@ -25,6 +25,11 @@ const _metaCache = new Map<boolean, { payload: string; ts: number }>();
 const _metaInFlight = new Map<boolean, Promise<string>>();
 const META_CACHE_TTL = 28_000; // 28s — 30s 메타 인터벌보다 짧게 설정
 
+/** SSE 메타 캐시 무효화 — 매매 후 대시보드 캐시와 함께 호출 */
+export function invalidateSseMetaCache(): void {
+  _metaCache.clear();
+}
+
 // ── 보유종목 가격 티커 (10초 간격, 추가 비용 $0) ──
 // paper/live 별 분리 — 모드 간 갱신 누락 방지
 const _lastPriceRefreshAt: Record<string, number> = { paper: 0, live: 0 };
@@ -78,6 +83,10 @@ function buildChainPrices(chains: any[], totalPortfolioValue: number) {
 }
 
 export const sseRoutes = new Hono();
+
+// SSE 메타 캐시 무효화 등록 — hardInvalidateDashboardCache() 시 자동 동기 무효화
+import { registerSseMetaInvalidator } from '../../cache/dashboard-cache.js';
+registerSseMetaInvalidator(invalidateSseMetaCache);
 
 // 오늘 매매 통계 (KST 기준 — 클라이언트 TZ 의존 제거)
 export async function getTodayTradeStats(isPaper?: boolean) {
@@ -290,7 +299,7 @@ async function buildMetaPayload(viewIsPaper: boolean): Promise<string> {
       domesticEval: assets.domesticMarketValue,
       domesticCash: assets.unifiedCash,
       unrealizedPnl: sseUnrealizedPnl,
-      pnl: Math.round(assets.totalPnl + assets.overseasUnrealizedPnlKrw),
+      pnl: Math.round(assets.totalPnl), // totalPnl already includes overseasUnrealizedPnlKrw (calc.ts:185)
       pnlPct: assets.totalPnlPct,
       positionCount: balance.positions.length,
     },

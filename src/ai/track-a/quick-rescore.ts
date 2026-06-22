@@ -16,6 +16,7 @@
  * Track B는 ai_scores 최신값 사용하므로 매시간 갱신 → 매 3분 Track B에 반영
  */
 
+import { cacheScores } from '../../cache/redis.js';
 import { getActiveWatchlist, getPool, upsertAIScore } from '../../db/client.js';
 import { getDailyChart } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
@@ -206,6 +207,31 @@ export async function runQuickRescore(): Promise<{ scored: number; errors: numbe
         logger.debug(`${r.stock_code} ai_scores upsert 실패: ${e instanceof Error ? e.message : String(e)}`, { component: COMP });
       }
     }
+
+    // Redis 캐시 갱신 — 대시보드가 Redis 우선 조회하므로 DB만 갱신하면 점수 고정됨
+    const cacheItems = results.map((r) => {
+      const enh = enhanced.get(r.stock_code);
+      const finalScore = enh ? enh.finalScore : r.composite_score;
+      return {
+        stock_code: r.stock_code,
+        score_date: today,
+        composite_score: finalScore,
+        fundamental_score: r.fundamental_score ?? 0,
+        technical_score: r.technical_score ?? 0,
+        sentiment_score: r.sentiment_score ?? 0,
+        confidence: r.confidence ?? 0.5,
+        reasoning: r.reasoning ?? 'Quick Re-Score (RSS)',
+        signal: (r.signal ?? 'HOLD') as string,
+        target_price: r.target_price ?? null,
+        stop_loss_price: r.stop_loss_price ?? null,
+        gemini_summary: null,
+        id: '0',
+        created_at: new Date().toISOString(),
+      };
+    });
+    await cacheScores(cacheItems).catch((e) =>
+      logger.warn(`Quick Re-Score Redis 캐시 갱신 실패: ${e}`, { component: COMP }),
+    );
 
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
     logger.info(`⚡ Quick Re-Score 완료: ${scored}건 갱신, ${errors}건 에러 (${elapsed}초)`, { component: COMP });
