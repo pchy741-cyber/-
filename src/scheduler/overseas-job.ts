@@ -120,6 +120,7 @@ import {
   getCash,
   getCashKrw,
   getHoldings,
+  getPaperSeedKrw,
   updateTradeState,
 } from './overseas/state.js';
 import { getTradeReviewInsights } from './overseas/trade-reviewer.js';
@@ -255,26 +256,41 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     let cash = !isPaper() && rawCash > 0 ? rawCash * (1 - GATE.FX_SAFETY_MARGIN) : rawCash;
     const usCodes = GLOBAL_WATCHLIST.filter((stock) => stock.region === 'US').map((stock) => stock.code);
 
-    // ── 통합증거금: 해외/국내 비중 동적 할당 (시간대별 자동 조절) ──
+    // ── 통합증거금: 해외/국내 비중 동적 할당 ──
     const holdingCost = Array.from(holdings.values()).reduce((s, h) => s + h.qty * h.avgPrice, 0);
-    // v10.10.4: 목표 해외 포트폴리오 규모 — 포지션 사이징 레퍼런스용
-    // 해외 현재 자산이 적어도 목표 배분 규모 기준으로 사이징 → 1주씩 소액매수 방지
+    // v10.10.5: 목표 해외 포트폴리오 규모 — Paper/Live 모두 적용
+    // (v10.10.4에서 Live만 적용 → Paper는 sizingPortfolioValue 누락)
     let targetOverseasUsd = 0;
-    if (!isPaper() && cycleFxRate > 0) {
+    if (cycleFxRate > 0) {
       try {
-        const { rows: totalRows } = await getPool().query(
-          `SELECT value FROM overseas_state WHERE key = 'total_account_krw'`,
-        );
-        const totalAccountKrw = Number(totalRows[0]?.value ?? 0);
+        // 1) 전체 계좌 가치: Paper는 국내+해외 시드 합산, Live는 KIS 잔고
+        let totalAccountKrw = 0;
+        if (isPaper()) {
+          const { PAPER_INITIAL_CAPITAL } = await import('../risk/paper-balance.js');
+          totalAccountKrw = PAPER_INITIAL_CAPITAL + getPaperSeedKrw();
+        } else {
+          const { rows: totalRows } = await getPool().query(
+            `SELECT value FROM overseas_state WHERE key = 'total_account_krw'`,
+          );
+          totalAccountKrw = Number(totalRows[0]?.value ?? 0);
+        }
+
         if (totalAccountKrw > 0) {
-          // 시간대별 해외 비중 동적 조절:
-          //   US장 오픈 → 80% (국내장 닫힘, 해외 최대 활용)
-          //   US 프리/애프터 → 70%
-          //   국내장만 열림 (KR) → 35% (국내 우선)
-          //   아시아 (JP/TW) → 55%
-          //   무장 → 60%
+          // 2) 사용자 설정 해외 목표비중 (portfolio_allocation_config.us_pct) 조회
+          let userTargetPct: number | null = null;
+          try {
+            const { rows: allocRows } = await getPool().query(
+              'SELECT us_pct FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1',
+              [isPaper()],
+            );
+            if (allocRows[0]?.us_pct != null) {
+              userTargetPct = Number(allocRows[0].us_pct) / 100; // DB값 70 → 0.70
+            }
+          } catch { /* DB 미설정 시 시간대별 기본값 사용 */ }
+
+          // 3) 시간대별 기본 비중 (통합증거금 현금 캡용)
           const isKROpen = openRegions.has('KR');
-          const OVERSEAS_ALLOC_PCT = isUSSession
+          const timeBasedPct = isUSSession
             ? 0.80
             : isUSExtended
             ? 0.70
@@ -284,27 +300,51 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
             ? 0.55
             : 0.60;
 
+          // 4) 사이징용 배분비율: 사용자 목표와 시간대별 중 큰 값
+          //    → 사용자가 70%로 설정해도 US장(80%) 시간에는 80% 기준 사이징
+          //    → KR장(35%)이라도 사용자 70%면 70% 기준 사이징 (소액 매수 방지)
+          const sizingAllocPct = userTargetPct != null
+            ? Math.max(userTargetPct, timeBasedPct)
+            : timeBasedPct;
+
+          // 5) 현금캡용 배분비율: Paper는 별도 풀이라 캡 불필요, Live는 시간대별 적용
+          //    → Live에서도 사용자 목표 미만으로 내리지 않음
+          const cashCapAllocPct = isPaper()
+            ? 1.0 // Paper: 해외 시드 전체 사용 가능 (국내/해외 별도 풀)
+            : (userTargetPct != null ? Math.max(userTargetPct, timeBasedPct) : timeBasedPct);
+
+          const OVERSEAS_ALLOC_PCT = cashCapAllocPct;
           const maxOverseasKrw = totalAccountKrw * OVERSEAS_ALLOC_PCT;
-          targetOverseasUsd = maxOverseasKrw / cycleFxRate;
-          // 이미 해외에 투자된 금액도 비중에 포함
-          const currentOverseasKrw = holdingCost * cycleFxRate;
-          const remainingAllocKrw = Math.max(0, maxOverseasKrw - currentOverseasKrw);
-          const remainingAllocUsd = remainingAllocKrw / cycleFxRate;
-          if (cash > remainingAllocUsd) {
-            logger.info(
-              `💱 해외비중 상한: $${cash.toFixed(0)}→$${remainingAllocUsd.toFixed(0)} (총₩${(totalAccountKrw / 10000).toFixed(0)}만×${(OVERSEAS_ALLOC_PCT * 100).toFixed(0)}% - 보유$${holdingCost.toFixed(0)}) [${isUSSession ? 'US장' : isUSExtended ? 'US프리/애프터' : isKROpen ? '국내장' : 'JP/TW/무장'}]`,
-              { component: 'OVERSEAS' },
-            );
-            cash = remainingAllocUsd;
+          targetOverseasUsd = totalAccountKrw * sizingAllocPct / cycleFxRate;
+
+          // 6) 현금 캡: 이미 해외에 투자된 금액도 비중에 포함 (Live만, Paper는 별도 풀)
+          if (!isPaper()) {
+            const currentOverseasKrw = holdingCost * cycleFxRate;
+            const remainingAllocKrw = Math.max(0, maxOverseasKrw - currentOverseasKrw);
+            const remainingAllocUsd = remainingAllocKrw / cycleFxRate;
+            if (cash > remainingAllocUsd) {
+              const label = isUSSession ? 'US장' : isUSExtended ? 'US프리/애프터' : isKROpen ? '국내장' : 'JP/TW/무장';
+              logger.info(
+                `💱 해외비중 상한: $${cash.toFixed(0)}→$${remainingAllocUsd.toFixed(0)} (총₩${(totalAccountKrw / 10000).toFixed(0)}만×${(OVERSEAS_ALLOC_PCT * 100).toFixed(0)}% - 보유$${holdingCost.toFixed(0)}) [${label}]`,
+                { component: 'OVERSEAS' },
+              );
+              cash = remainingAllocUsd;
+            }
           }
+          logger.info(
+            `📊 배분: 총₩${(totalAccountKrw / 10000).toFixed(0)}만 × ${(sizingAllocPct * 100).toFixed(0)}%(${userTargetPct != null ? `DB=${(userTargetPct * 100).toFixed(0)}%` : '기본'}) → 사이징=$${targetOverseasUsd.toFixed(0)} [${isPaper() ? 'PAPER' : 'LIVE'}]`,
+            { component: 'OVERSEAS' },
+          );
         }
       } catch { /* total_account_krw 미존재 시 무시 — 기존 로직 유지 */ }
     }
 
     // ── 루프 헬스 요약 ──
     const earlyEstPortfolio = cash + holdingCost;
+    // v10.10.5: 동적 파라미터(maxPositions 등)도 목표배분 기준 적용
+    const earlyEstSizing = targetOverseasUsd > 0 ? Math.max(earlyEstPortfolio, targetOverseasUsd) : earlyEstPortfolio;
     const allocRisk = await getAllocRisk(isPaper());
-    const earlyMaxPos = getOverseasDynamic(earlyEstPortfolio, isPaper(), allocRisk.positionCapPct / 100).maxPositions;
+    const earlyMaxPos = getOverseasDynamic(earlyEstSizing, isPaper(), allocRisk.positionCapPct / 100).maxPositions;
     logger.info(
       `📊 해외 루프 ${regionFlags} | 현금 $${cash.toFixed(0)} | 보유 ${holdings.size}/${earlyMaxPos} ($${holdingCost.toFixed(0)}) | 종목풀 ${allActiveStocks.length} | ${isPaper() ? 'PAPER' : 'LIVE'}`,
       { component: 'OVERSEAS' },
@@ -815,7 +855,9 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       return sum + (tech ? tech.price.currentPrice * h.qty : h.avgPrice * h.qty);
     }, 0);
     let portfolioValue = cash + holdingEvalUsd;
-    const dynParams = getOverseasDynamic(portfolioValue, isPaper(), allocRisk.positionCapPct / 100);
+    // v10.10.5: maxPositions도 목표배분 기준 (실제 자산이 적어도 적절한 포지션 수 허용)
+    const dynSizingBase = targetOverseasUsd > 0 ? Math.max(portfolioValue, targetOverseasUsd) : portfolioValue;
+    const dynParams = getOverseasDynamic(dynSizingBase, isPaper(), allocRisk.positionCapPct / 100);
     const MAX_POSITIONS = dynParams.maxPositions;
 
     // ── 3-b. 실시간 뉴스 그라운딩 (Google Search) — 매도 판단 전 악재/호재 감지 ──
