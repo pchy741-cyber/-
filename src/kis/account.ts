@@ -5,6 +5,13 @@ import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
 import { kisRequest } from './client.js';
 
+/** NaN 방지: API 응답 필드가 undefined/비정상이면 fallback 반환 */
+const safeNum = (v: string | undefined | null, fallback = 0): number => {
+  if (v === undefined || v === null) return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+
 // ── 보유 종목 ──
 export interface Position {
   stockCode: string;
@@ -171,29 +178,29 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
   // 보유 종목 파싱 (output1)
   const positionItems = (res.output1 ?? []) as Record<string, string>[];
   const positions: Position[] = positionItems
-    .filter((item) => Number(item.hldg_qty) > 0)
+    .filter((item) => safeNum(item.hldg_qty) > 0)
     .map((item) => ({
-      stockCode: item.pdno,
-      stockName: item.prdt_name,
-      quantity: Number(item.hldg_qty),
-      avgBuyPrice: Number(item.pchs_avg_pric),
-      currentPrice: Number(item.prpr),
-      evalAmount: Number(item.evlu_amt),
-      profitLoss: Number(item.evlu_pfls_amt),
-      profitLossPct: Number(item.evlu_pfls_rt),
+      stockCode: item.pdno ?? '',
+      stockName: item.prdt_name ?? '',
+      quantity: safeNum(item.hldg_qty),
+      avgBuyPrice: safeNum(item.pchs_avg_pric),
+      currentPrice: safeNum(item.prpr),
+      evalAmount: safeNum(item.evlu_amt),
+      profitLoss: safeNum(item.evlu_pfls_amt),
+      profitLossPct: safeNum(item.evlu_pfls_rt),
     }));
 
   // 계좌 요약 파싱 (output2)
   const summary = (Array.isArray(res.output2) ? res.output2[0] : res.output2) as Record<string, string>;
 
-  const scts_evlu = Number(summary?.scts_evlu_amt ?? 0);
-  const nass = Number(summary?.nass_amt ?? 0);
-  const pchs = Number(summary?.pchs_amt_smtl_amt ?? 0);
+  const scts_evlu = safeNum(summary?.scts_evlu_amt);
+  const nass = safeNum(summary?.nass_amt);
+  const pchs = safeNum(summary?.pchs_amt_smtl_amt);
 
   // KIS 잔고 필드 파싱
-  const ordPsblCash = Number(summary?.ord_psbl_cash ?? 0); // CMA 주문가능현금
-  const totalDeposit = Number(summary?.dnca_tot_amt ?? 0); // 예수금 총액 (KIS 앱 "예수금"과 일치)
-  const d2Deposit = Number(summary?.prvs_rcdl_excc_amt ?? 0); // D+2 예수금
+  const ordPsblCash = safeNum(summary?.ord_psbl_cash); // CMA 주문가능현금
+  const totalDeposit = safeNum(summary?.dnca_tot_amt); // 예수금 총액 (KIS 앱 "예수금"과 일치)
+  const d2Deposit = safeNum(summary?.prvs_rcdl_excc_amt); // D+2 예수금
   const computedCash = nass > 0 && scts_evlu >= 0 ? Math.max(0, nass - scts_evlu) : 0; // 순자산 - 증권
 
   // 매수가능조회 결과 파싱 (TTTC8908R) — output 또는 output1 (KIS API 불일치 대비)
@@ -205,9 +212,9 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
       { component: 'BALANCE' },
     );
   }
-  const nrcvbBuyAmt = Number(buyableRaw?.nrcvb_buy_amt ?? 0); // 미수없는매수금액 (마진 미사용)
-  const maxBuyAmt = Number(buyableRaw?.max_buy_amt ?? 0); // 최대매수금액 (KIS 앱 "최대주문가능금액")
-  const buyableOrdCash = Number(buyableRaw?.ord_psbl_cash ?? 0); // 매수가능조회의 주문가능현금
+  const nrcvbBuyAmt = safeNum(buyableRaw?.nrcvb_buy_amt); // 미수없는매수금액 (마진 미사용)
+  const maxBuyAmt = safeNum(buyableRaw?.max_buy_amt); // 최대매수금액 (KIS 앱 "최대주문가능금액")
+  const buyableOrdCash = safeNum(buyableRaw?.ord_psbl_cash); // 매수가능조회의 주문가능현금
   if (buyableRaw) {
     logger.info(
       `💰 매수가능조회(8908R): nrcvb=${nrcvbBuyAmt.toLocaleString()} max=${maxBuyAmt.toLocaleString()} ` +
@@ -217,15 +224,15 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
   }
 
   // 주문가능원화: TTTC8908R 최우선 → 잔고API → 예수금 폴백
-  // max_buy_amt = 최대매수금액 = KIS 앱 "최대주문가능금액" (대용+재사용 포함)
-  // nrcvb_buy_amt = 미수없는매수금액 (마진 미포함, 대용 포함)
+  // nrcvb_buy_amt = 미수없는매수금액 (마진 미포함) → 자동매매에 안전
+  // max_buy_amt = 최대매수금액 (마진/신용 포함) → 미수 발생 위험, 폴백으로만 사용
   let orderableCash: number;
   let source: AccountBalance['cashSource'];
-  if (maxBuyAmt > 0) {
-    orderableCash = maxBuyAmt;
-    source = 'buyable_api';
-  } else if (nrcvbBuyAmt > 0) {
+  if (nrcvbBuyAmt > 0) {
     orderableCash = nrcvbBuyAmt;
+    source = 'buyable_api';
+  } else if (maxBuyAmt > 0) {
+    orderableCash = maxBuyAmt;
     source = 'buyable_api';
   } else if (ordPsblCash > 0) {
     orderableCash = ordPsblCash;
@@ -261,8 +268,8 @@ export async function getAccountBalance(forceLive = false): Promise<AccountBalan
     orderableCash: effectiveCash,
     cashSource: isPaper ? 'd2_deposit' : source,
     totalEvalAmount: scts_evlu,
-    totalProfitLoss: Number(summary?.evlu_pfls_smtl_amt ?? 0),
-    totalProfitLossPct: Number(summary?.evlu_pfls_rt ?? 0),
+    totalProfitLoss: safeNum(summary?.evlu_pfls_smtl_amt),
+    totalProfitLossPct: safeNum(summary?.evlu_pfls_rt),
     // 순자산: KIS nass_amt (T+2 미수 차감 완료) — paper는 예수금+증권평가로 계산
     // ※ effectiveCash(=maxBuyAmt)는 대용+CMA 포함 → nass 폴백에 부적합 (d2Deposit/totalDeposit 사용)
     netAsset: isPaper ? effectiveCash + scts_evlu

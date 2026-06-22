@@ -17,7 +17,7 @@ import { logger } from '../utils/logger.js';
 const COMP = 'OPTIMIZER';
 
 // 최적화 대상 전략 (DIVIDEND: 매수 안 함, EOD_BETTING: 별도 체계)
-const TARGET_MODES: StrategyMode[] = ['SWING', 'DEFENSE', 'SCALPING', 'SNIPER', 'BOTTOM_FISHING', 'BREAKOUT'];
+const TARGET_MODES: StrategyMode[] = ['SWING', 'DEFENSE', 'SNIPER', 'BOTTOM_FISHING', 'BREAKOUT'];
 
 // 그리드 서치 범위
 const TP_STEPS = [-1.0, -0.5, 0, 0.5, 1.0]; // 현재값 기준 ±1%
@@ -102,14 +102,15 @@ export async function runStrategyOptimizer(): Promise<OptimizerResult[]> {
               maxPositionPct: 25,
             };
 
-            // TP/SL 오버라이드를 위해 STRATEGY_PARAMS를 임시 변경
-            const origTp = params.takeProfitPct;
-            const origSl = params.stopLossPct;
-            (params as any).takeProfitPct = testTp;
-            (params as any).stopLossPct = testSl;
+            // TP/SL 오버라이드를 위해 복사본 사용 (전역 파라미터 변이 방지)
+            const testConfig: BacktestConfig = {
+              ...config,
+              overrideTp: testTp,
+              overrideSl: testSl,
+            };
 
             try {
-              const result = runBacktest(candles, code, config);
+              const result = runBacktest(candles, code, testConfig);
               if (result.totalTrades >= 3) {
                 totalSharpe += result.sharpeRatio;
                 totalPF += result.profitFactor;
@@ -118,10 +119,6 @@ export async function runStrategyOptimizer(): Promise<OptimizerResult[]> {
               }
             } catch (btErr) {
               logger.warn(`📈 백테스트 실패 ${mode}/${code}: ${btErr}`, { component: COMP });
-            } finally {
-              // 반드시 복원 — 미복원 시 전체 트레이딩 파라미터 오염
-              (params as any).takeProfitPct = origTp;
-              (params as any).stopLossPct = origSl;
             }
           }
 

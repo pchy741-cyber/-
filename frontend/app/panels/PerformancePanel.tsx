@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { api, fmtWon, FALLBACK_FX_RATE } from '../lib/utils';
+import { api, fmtWon, FALLBACK_FX_RATE, toKSTDateStr } from '../lib/utils';
 import { isOverseasTrade as isOvTrade } from '../lib/helpers';
 import type { Trade, Strategy, ToastFn } from '../types';
 
@@ -15,7 +15,7 @@ export default function PerformancePanel({ trades, strategy, setStrategy, toast,
   const sellTrades = trades.filter(t => t.status === 'FILLED' && t.side === 'SELL');
   const dailyMap = new Map<string, number>();
   for (const t of sellTrades) {
-    const date = new Date(t.created_at).toISOString().slice(0, 10);
+    const date = toKSTDateStr(t.created_at);
     if (t.realized_pnl != null) {
       const pnlKrw = isOverseasTrade(t) ? Number(t.realized_pnl) * fxRate : Number(t.realized_pnl);
       dailyMap.set(date, (dailyMap.get(date) ?? 0) + pnlKrw);
@@ -90,7 +90,7 @@ export default function PerformancePanel({ trades, strategy, setStrategy, toast,
       setStrategy(u);
       setQuickPrompt('');
       toast?.('전략 지시 추가됨', 'ok');
-    } finally { setSavingPrompt(false); }
+    } catch (e) { toast?.((e instanceof Error ? e.message : '저장 실패'), 'err'); } finally { setSavingPrompt(false); }
   };
 
   if (dailySeries.length === 0 && !strategy) return null;
@@ -127,15 +127,15 @@ export default function PerformancePanel({ trades, strategy, setStrategy, toast,
             </div>
             <div className="text-[9px] text-slate-600 mt-1">{winPnls.length}승 {lossPnls.length}패 ({tradePnls.length}매매)</div>
           </div>
-          <div className="bg-white/[0.03] rounded-xl p-3">
+          <div className="bg-white/[0.03] rounded-xl p-3 min-w-0">
             <div className="text-[10px] text-slate-500 mb-1">손익비</div>
             <div className={`text-base font-black ${profitFactor >= 1.5 ? 'text-emerald-400' : profitFactor >= 1.0 ? 'text-amber-400' : 'text-rose-400'}`}>
               {profitFactor === 99 ? '∞' : profitFactor.toFixed(2)}
             </div>
-            <div className="text-[9px] mt-1">
+            <div className="text-[9px] mt-1 truncate">
               {streak > 1 && streakDir !== 'none'
                 ? <span className={streakDir === 'win' ? 'text-emerald-500' : 'text-rose-500'}>{streakDir === 'win' ? `${streak}연승` : `${streak}연패`}</span>
-                : <span className="text-slate-600">평균 +{fmtWon(avgWin)} / -{fmtWon(avgLoss)}</span>
+                : <span className="text-slate-600">+{fmtWon(avgWin)} / -{fmtWon(avgLoss)}</span>
               }
             </div>
           </div>

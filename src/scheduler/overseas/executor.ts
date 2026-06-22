@@ -8,13 +8,21 @@ import { OVERSEAS, OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getAllocRisk } from '../../db/alloc-risk-cache.js';
 import { getPool, insertOrder, updateOrder } from '../../db/client.js';
-import { placeOverseasOrder } from '../../kis/overseas.js';
+import { placeOverseasDaytimeOrder, placeOverseasOrder } from '../../kis/overseas.js';
 import { logger } from '../../utils/logger.js';
 import { sleep } from '../../utils/sleep.js';
 import type { OverseasExecutionResult } from './analytics.js';
 import { confirmOverseasFillFromBalance } from './order-sync.js';
 import { updateTradeState } from './state.js';
 import { resolveOverseasStockName } from './watchlist.js';
+
+// ── Named constants (magic number extraction) ──
+/** Paper order slippage simulation (0.1% per side) */
+const PAPER_SLIPPAGE_PCT = 0.001;
+/** Milliseconds per day — used for holding day calculation */
+const MS_PER_DAY = 86_400_000;
+/** PnL threshold for WIN/LOSS/BREAK_EVEN classification */
+const PNL_BREAKEVEN_THRESHOLD = 0.1;
 
 /** 해외 SELL 체결 후 score_accuracy 기록 */
 async function recordOverseasScoreAccuracy(params: {
@@ -29,7 +37,7 @@ async function recordOverseasScoreAccuracy(params: {
     const { stockCode, orderId, avgBuyPrice, fillPrice, isPaper } = params;
     if (avgBuyPrice <= 0 || fillPrice <= 0) return;
     const pnlPct = ((fillPrice - avgBuyPrice) / avgBuyPrice) * 100;
-    const outcome = pnlPct > 0.1 ? 'WIN' : pnlPct < -0.1 ? 'LOSS' : 'BREAK_EVEN';
+    const outcome = pnlPct > PNL_BREAKEVEN_THRESHOLD ? 'WIN' : pnlPct < -PNL_BREAKEVEN_THRESHOLD ? 'LOSS' : 'BREAK_EVEN';
 
     // 보유일수 추정: 가장 최근 BUY 주문 시점 기준
     const pool = getPool();
@@ -41,7 +49,7 @@ async function recordOverseasScoreAccuracy(params: {
       [stockCode, isPaper ? 'paper' : 'live'],
     );
     const holdingDays = buyRows[0]?.created_at
-      ? Math.round((Date.now() - new Date(buyRows[0].created_at).getTime()) / 86400000)
+      ? Math.round((Date.now() - new Date(buyRows[0].created_at).getTime()) / MS_PER_DAY)
       : null;
 
     await pool.query(
@@ -86,7 +94,7 @@ export async function executeOverseasOrder(
   }
 
   if (paperMode) {
-    const slippage = side === 'BUY' ? 0.001 : -0.001;
+    const slippage = side === 'BUY' ? PAPER_SLIPPAGE_PCT : -PAPER_SLIPPAGE_PCT;
     const fillPrice = price * (1 + slippage);
     const fakeOrderNo = `USP${Date.now().toString(36)}`;
 
@@ -158,7 +166,15 @@ export async function executeOverseasOrder(
 
     for (let attempt = 0; attempt <= MAX_SELL_RETRIES; attempt++) {
       try {
-        const result = await placeOverseasOrder({ stockCode: code, exchange, side, quantity: qty, price });
+        // 주간거래 시간(KST 10:00~18:00) 감지 → Blue Ocean ATS API 자동 라우팅
+        const isDaytime = (() => {
+          const now = new Date();
+          const kstH = (now.getUTCHours() + 9) % 24;
+          return kstH >= 10 && kstH < 18;
+        })();
+        const result = isDaytime
+          ? await placeOverseasDaytimeOrder({ stockCode: code, exchange, side, quantity: qty, price })
+          : await placeOverseasOrder({ stockCode: code, exchange, side, quantity: qty, price });
         const liveReasoning =
           side === 'SELL' && previousAvgPrice > 0 ? `[avgBuy:${previousAvgPrice.toFixed(4)}] ${reasoning}` : reasoning;
         const orderId = await insertOrder({
@@ -223,12 +239,13 @@ export async function executeOverseasOrder(
               }).catch(() => {});
             }
           } else {
-            // PENDING 주문 stuck 방지: 체결 미확인 시 UNCONFIRMED로 전환 (fill-reconciler가 추후 처리)
+            // 체결 미확인: PENDING 유지 + UNCONFIRMED 마킹 → syncPendingOverseasOrders가 15분 후 재조회
+            // 기존: FAILED로 전환 → sync가 PENDING만 쿼리하므로 복구 불가 (고아 포지션 발생)
             await updateOrder(orderId, {
-              status: 'FAILED',
+              status: 'PENDING',
               kis_status: 'UNCONFIRMED',
             });
-            logger.warn(`⏳ 체결 미확인 → FAILED(UNCONFIRMED) 전환: ${code} (${result.orderNo})`, { component: 'OVERSEAS' });
+            logger.warn(`⏳ 체결 미확인 → PENDING(UNCONFIRMED) 유지: ${code} (${result.orderNo}) — 15분 후 sync 재조회`, { component: 'OVERSEAS' });
           }
 
           return {

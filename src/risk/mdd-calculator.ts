@@ -16,6 +16,9 @@
 import { getPool } from '../db/client.js';
 import { getKSTNow } from '../utils/time.js';
 
+/** 외부 활동(매도/입출금) 감지 임계값: 고점 대비 이 비율 이하로 급감 시 외부 활동으로 판단 */
+const EXTERNAL_ACTIVITY_THRESHOLD = 0.5; // 50% (설정 가능)
+
 export interface MonthlyMddSnapshot {
   /** 월간 고점 (KRW) */
   peak: number;
@@ -57,14 +60,18 @@ export async function getMonthlyMddSnapshot(isPaper: boolean): Promise<MonthlyMd
     return { peak: 0, latest: 0, mddPct: 0, externalActivity: false, samples: 0 };
   }
 
-  const values = rows.map((r) => Number(r.total_value)).filter((v) => v > 0);
+  const values = rows.map((r) => Number(r.total_value)).filter((v) => Number.isFinite(v) && v > 0);
   if (values.length < 2) {
     return { peak: 0, latest: 0, mddPct: 0, externalActivity: false, samples: values.length };
   }
 
-  const peak = Math.max(...values);
+  // Iterative max to avoid call stack overflow on large arrays (Math.max(...arr) has arg limit)
+  let peak = values[0];
+  for (let i = 1; i < values.length; i++) {
+    if (values[i] > peak) peak = values[i];
+  }
   const latest = values[values.length - 1];
-  const externalActivity = peak > 0 && latest < peak * 0.5;
+  const externalActivity = peak > 0 && latest < peak * EXTERNAL_ACTIVITY_THRESHOLD;
   const mddPct = peak > 0 ? ((peak - latest) / peak) * 100 : 0;
 
   return { peak, latest, mddPct, externalActivity, samples: values.length };

@@ -6,13 +6,34 @@ import { getPool } from '../db/client.js';
 import type { AccountBalance, Position } from '../kis/account.js';
 import { logger } from '../utils/logger.js';
 
-export const PAPER_INITIAL_CAPITAL = Number(process.env.PAPER_INITIAL_CAPITAL_KRW) || 60_000_000;
+const _rawPaperCapital = Number(process.env.PAPER_INITIAL_CAPITAL_KRW);
+export const PAPER_INITIAL_CAPITAL = Number.isFinite(_rawPaperCapital) && _rawPaperCapital > 0
+  ? _rawPaperCapital
+  : 60_000_000;
 const PAPER_BUY_FEE_PCT = KR_FEE.BUY_FEE_PCT;
 const PAPER_SELL_FEE_PCT = KR_FEE.SELL_FEE_PCT;
 let paperCashUsed = 0; // 현재 투자 중인 매수 원가 합
 let paperRealizedPnl = 0; // 확정 수익/손실 누적
 let paperRestored = false; // 서버 시작 후 DB에서 복원했는지
 let paperLedgerCache: { fetchedAt: number; state: PaperLedgerState } | null = null;
+
+// ── 간단한 mutex: 동시 잔액 변경 방지 (race condition 보호) ──
+let _balanceLock: Promise<void> = Promise.resolve();
+
+function withBalanceLock<T>(fn: () => T): Promise<T> {
+  let release: () => void;
+  const next = new Promise<void>((resolve) => { release = resolve; });
+  const prev = _balanceLock;
+  _balanceLock = next;
+  return prev.then(() => {
+    try {
+      const result = fn();
+      return result;
+    } finally {
+      release!();
+    }
+  });
+}
 
 interface PaperHoldingState {
   qty: number;
@@ -45,10 +66,15 @@ function applyPaperOrder(
     return { bought: value, sold: 0, realizedPnl: 0 };
   }
 
-  if (h.qty <= 0) return { bought: 0, sold: value, realizedPnl: 0 };
+  // 매칭 BUY 없는 SELL (아카이브 누락, 외부 편입 등):
+  // costBasis=0 처리 → 매도 대금 전액을 실현손익에 반영 (현금 누락 방지)
+  if (h.qty <= 0) {
+    const sellFee = Math.round(value * PAPER_SELL_FEE_PCT);
+    return { bought: 0, sold: value, realizedPnl: value - sellFee };
+  }
 
   const matchedQty = Math.min(qty, h.qty);
-  const avgCost = h.totalCost / h.qty;
+  const avgCost = h.qty > 0 ? h.totalCost / h.qty : 0;
   const costBasis = avgCost * matchedQty;
   const sellValue = price * matchedQty;
   const sellFee = Math.round(sellValue * PAPER_SELL_FEE_PCT);
@@ -66,7 +92,7 @@ function applyPaperOrder(
 
 async function loadPaperLedger(force = false): Promise<PaperLedgerState> {
   const now = Date.now();
-  if (!force && paperLedgerCache && now - paperLedgerCache.fetchedAt < 30_000) {
+  if (!force && paperLedgerCache && now - paperLedgerCache.fetchedAt < 10_000) {
     return paperLedgerCache.state;
   }
 
@@ -248,9 +274,17 @@ export async function getPaperBalance(): Promise<AccountBalance> {
   const holdingsCost = Number(chainCostRows[0]?.cost ?? 0);
   paperCashUsed = holdingsCost;
 
-  logger.debug(`📊 Paper holdingsCost: chains=${Math.round(holdingsCost).toLocaleString()}원 (FIFO=${Math.round(Object.values(state.holdings).filter(h => h.qty > 0).reduce((s, h) => s + h.totalCost, 0)).toLocaleString()}원)`, { component: 'PAPER' });
+  const holdingsCount = Object.values(state.holdings).filter((h) => h.qty > 0).length;
 
   const cash = Math.max(0, Math.round(PAPER_INITIAL_CAPITAL + paperRealizedPnl - holdingsCost));
+
+  // 진단 로그 (주문가능금액 불일치 추적용)
+  if (holdingsCount === 0 && Math.abs(cash - PAPER_INITIAL_CAPITAL) > 100_000) {
+    logger.info(
+      `📊 [PAPER-DIAG] 보유0건 현금=${cash.toLocaleString()} = 시드${PAPER_INITIAL_CAPITAL.toLocaleString()} + 실현PnL${Math.round(paperRealizedPnl).toLocaleString()} | 총매수${state.totalBought.toLocaleString()} 총매도${state.totalSold.toLocaleString()}`,
+      { component: 'PAPER' },
+    );
+  }
 
   // 시가평가액은 UI 표시 전용 (현금 계산과 분리)
   const positions = await getPaperPositions();
@@ -263,57 +297,85 @@ export async function getPaperBalance(): Promise<AccountBalance> {
     cashSource: 'd2_deposit',
     totalEvalAmount: marketValue,
     totalProfitLoss: paperRealizedPnl,
-    totalProfitLossPct: PAPER_INITIAL_CAPITAL > 0 ? (paperRealizedPnl / PAPER_INITIAL_CAPITAL) * 100 : 0,
+    totalProfitLossPct: (paperRealizedPnl / PAPER_INITIAL_CAPITAL) * 100,
     netAsset: cash + marketValue,
     purchaseCost: Math.round(holdingsCost),
     positions,
   };
 }
 
-// 매수: 매수 원가만큼 차감
+// 매수: 매수 원가만큼 차감 (mutex 보호)
 export function addPaperInvestment(amount: number) {
-  paperCashUsed += amount;
-  paperLedgerCache = null;
+  return withBalanceLock(() => {
+    paperCashUsed += amount;
+    paperLedgerCache = null;
+  });
 }
-// 매도: 매수 원가 복원 + 차액을 실현손익에 반영
+// 매도: 매수 원가 복원 + 차액을 실현손익에 반영 (mutex 보호)
 export function removePaperInvestment(sellAmount: number, buyAmount?: number) {
-  const cost = buyAmount ?? sellAmount;
-  paperRealizedPnl += sellAmount - cost;
-  paperCashUsed = Math.max(0, paperCashUsed - cost);
-  paperLedgerCache = null;
+  return withBalanceLock(() => {
+    const cost = buyAmount ?? sellAmount;
+    paperRealizedPnl += sellAmount - cost;
+    paperCashUsed = Math.max(0, paperCashUsed - cost);
+    paperLedgerCache = null;
+  });
 }
 export function resetPaperBalance() {
-  paperCashUsed = 0;
-  paperRealizedPnl = 0;
-  paperRestored = false;
-  paperLedgerCache = null;
+  return withBalanceLock(() => {
+    paperCashUsed = 0;
+    paperRealizedPnl = 0;
+    paperRestored = false;
+    paperLedgerCache = null;
+  });
 }
 
 // ── Paper 자금 자동 리필 (자율학습 모드) ──────────────────────────────
 // 현금이 최소 주문금액 미만이면 리필 (자유롭게 거래 지속)
 let lastRefillCheck = 0;
+let _cashDepletedSince = 0; // 현금 고갈 시작 시점 (stagnation 감지용)
 
 /**
  * Paper 자금 고갈 시 자동 리필
- * - 남은 현금 < 50,000원 (1종목 매수 불가) + 보유종목 2건 이하 → 리필 트리거
+ * - 남은 현금 < 50,000원 + 보유종목 3건 이하 → 즉시 리필
+ * - 남은 현금 < 50,000원 + 2시간 이상 고갈 지속 → 보유종목 무관 강제 리필 (교착 방지)
+ * - 실현손익 누적 손실로 현금 영구 0 → 감지 후 리필 (gambler's ruin 탈출)
  * - 기존 paper 주문을 archived로 표시 (학습 데이터 보존)
  * - 순수 현금 시드로 리셋
  * @returns true if refill happened
  */
 export async function checkAndRefillPaper(): Promise<boolean> {
   const now = Date.now();
-  // 10분에 1번만 체크 (30분→10분 단축)
-  if (now - lastRefillCheck < 10 * 60 * 1000) return false;
+  // 3분에 1번 체크 (10분→3분 단축 — 현금 고갈 시 빠른 복구)
+  if (now - lastRefillCheck < 3 * 60 * 1000) return false;
   lastRefillCheck = now;
 
   try {
     const balance = await getPaperBalance();
     const hasPositions = balance.positions.length > 0;
-
-    // 리필 조건: 현금 5만원 미만 + 보유종목 3건 이하 (거의 신규매수 불가 상태)
     const isCashDepleted = balance.orderableCash < 50_000;
     const fewPositions = balance.positions.length <= 3;
-    if (!isCashDepleted || (hasPositions && !fewPositions)) return false;
+
+    // 현금 고갈 시작 시점 추적 (stagnation 감지)
+    if (isCashDepleted) {
+      if (_cashDepletedSince === 0) _cashDepletedSince = now;
+    } else {
+      _cashDepletedSince = 0; // 현금 복구 시 리셋
+    }
+
+    // 영구 고갈 감지: 실현손익 누적 손실이 시드를 초과 → 포지션 0이어도 현금 0
+    const isPermanentlyDepleted = !hasPositions && balance.orderableCash === 0
+      && (PAPER_INITIAL_CAPITAL + paperRealizedPnl) <= 0;
+
+    // 교착 감지: 2시간 이상 현금 고갈 지속 (보유종목이 많아 리필 안 되는 케이스)
+    const stagnationMs = 2 * 60 * 60 * 1000; // 2시간
+    const isStagnant = _cashDepletedSince > 0 && (now - _cashDepletedSince) >= stagnationMs;
+
+    // 리필 조건:
+    //   1) 현금 부족 + 보유종목 적음 (기존)
+    //   2) 현금 부족 + 2시간 이상 교착 (신규 — deadlock 방지)
+    //   3) 영구 고갈 (신규 — 누적 손실로 현금 불가능)
+    if (!isCashDepleted && !isPermanentlyDepleted) return false;
+    if (isCashDepleted && hasPositions && !fewPositions && !isStagnant && !isPermanentlyDepleted) return false;
 
     const pool = getPool();
     // 세대 번호 부여 (몇 번째 리필인지 추적)
@@ -323,11 +385,12 @@ export async function checkAndRefillPaper(): Promise<boolean> {
     );
     const gen = genRows[0]?.next_gen ?? 1;
 
-    // 기존 paper 주문을 아카이브 (학습 데이터 보존: trading_mode → paper_archived_N)
+    // 기존 paper 주문을 아카이브 (학습 데이터 보존: trading_mode → p_arch)
+    // varchar(10) + CHECK 제약 → 'p_arch' 사용 (해외 overseas/state.ts와 동일 패턴)
+    // 세대번호는 overseas_state.paper_kr_gen_N에서 추적
     const { rowCount } = await pool.query(
-      `UPDATE orders SET trading_mode = $1
+      `UPDATE orders SET trading_mode = 'p_arch'
        WHERE trading_mode = 'paper' AND stock_code ~ '^[0-9]{6}$' AND status = 'FILLED'`,
-      [`paper_archived_${gen}`],
     );
 
     // transaction_chains도 CLOSED 처리 — 미처리 시 holdingsCost에 유령으로 누적됨
@@ -357,8 +420,10 @@ export async function checkAndRefillPaper(): Promise<boolean> {
       ],
     );
 
+    const refillReason = isPermanentlyDepleted ? '누적손실 영구고갈' : isStagnant ? `${Math.round((now - _cashDepletedSince) / 60_000)}분 교착` : '현금부족';
+    _cashDepletedSince = 0; // 리필 후 stagnation 리셋
     logger.info(
-      `🔄 [PAPER-REFILL] 국내 모의자금 리필 (세대 #${gen}): ${balance.orderableCash.toLocaleString()}원 → ${PAPER_INITIAL_CAPITAL.toLocaleString()}원 (${rowCount}건 아카이브, 누적PnL ${Math.round(balance.totalProfitLoss).toLocaleString()}원)`,
+      `🔄 [PAPER-REFILL] 국내 모의자금 리필 (세대 #${gen}): ${balance.orderableCash.toLocaleString()}원 → ${PAPER_INITIAL_CAPITAL.toLocaleString()}원 (사유: ${refillReason}, ${rowCount}건 아카이브, 누적PnL ${Math.round(balance.totalProfitLoss).toLocaleString()}원)`,
       { component: 'PAPER' },
     );
     return true;

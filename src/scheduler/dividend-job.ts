@@ -11,6 +11,7 @@ import { getCtxIsPaper } from '../config/context.js';
 import { getPool } from '../db/client.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
 import { setOverseasState } from './overseas/utils.js';
 
 const COMP = 'DIVIDEND';
@@ -51,9 +52,9 @@ async function syncDividendReceipts(): Promise<void> {
     let synced = 0;
     for (const r of receipts) {
       const { rowCount } = await getPool().query(
-        `INSERT INTO dividend_history (stock_code, gross_amount_usd, tax_amount_usd, net_amount_usd, currency, pay_date)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT DO NOTHING`,
+        `INSERT INTO dividend_history (stock_code, gross_amount_usd, tax_amount_usd, net_amount_usd, currency, pay_date, is_paper)
+         VALUES ($1, $2, $3, $4, $5, $6, false)
+         ON CONFLICT (stock_code, pay_date, is_paper) WHERE pay_date IS NOT NULL DO NOTHING`,
         [r.stockCode, r.amount, r.tax, r.netAmount, r.currency, r.date || null],
       );
       if ((rowCount ?? 0) > 0) synced++;
@@ -83,7 +84,7 @@ async function monitorExDates(): Promise<void> {
       try {
         const events = await getDividendSchedule({ stockCode: h.stock_code });
         for (const ev of events) {
-          const daysUntilEx = daysBetween(new Date(), parseDate(ev.exDate));
+          const daysUntilEx = daysBetween(getKSTNow(), parseDate(ev.exDate));
           if (daysUntilEx >= 0 && daysUntilEx <= 3) {
             alerts.push(
               `📅 ${h.stock_code}: 배석일 ${ev.exDate} (${daysUntilEx}일 후) — $${ev.dividendPerShare}/주 × ${h.quantity}주`,
@@ -126,10 +127,21 @@ async function updateHoldingDividendTotals(): Promise<void> {
   }
 }
 
-/** 매월 1일: 배당 DRIP — 누적 배당금으로 자동 재매수 (paper/live 모드별 실행) */
+/**
+ * Smart DRIP v2: 크로스에셋 리밸런싱 DRIP
+ * ─────────────────────────────────────────
+ * 기존: 같은 ETF에 배당 재투자 → 비중 불균형 심화
+ * 혁신: 전체 배당금 풀링 → 가장 비중 낮은 ETF에 집중 투자 → 자연 리밸런싱
+ *
+ * 매월 1일 실행:
+ * 1) 각 ETF 월 배당금 계산 → dividend_history 기록
+ * 2) 전체 배당금 합산 (pool)
+ * 3) 현재 비중 vs 목표 비중 비교 → 가장 언더웨이트인 ETF 선정
+ * 4) 풀링된 배당금으로 해당 ETF 집중 매수
+ */
 async function simulateDRIP(): Promise<void> {
-  const today = new Date();
-  if (today.getDate() !== 1) return; // 매월 1일만 실행
+  const today = getKSTNow();
+  if (today.getDate() !== 1) return;
   const isPaper = getCtxIsPaper();
 
   try {
@@ -142,12 +154,14 @@ async function simulateDRIP(): Promise<void> {
     );
     if (holdings.length === 0) return;
 
-    let totalDrip = 0;
+    // 1) 각 ETF 월 배당금 계산 + 기록 + 풀링
+    let totalDivPool = 0;
+    const holdingMap = new Map<string, { exchange: string; price: number; qty: number; value: number }>();
+
     for (const h of holdings) {
       const qty = Number(h.quantity);
       const price = Number(h.avg_price);
       const yieldPct = Number(h.dividend_yield) / 100;
-      // 월 배당 (세후 15.4%)
       const monthlyDiv = (qty * price * yieldPct * 0.846) / 12;
       if (monthlyDiv < 0.01) continue;
 
@@ -156,9 +170,7 @@ async function simulateDRIP(): Promise<void> {
         `INSERT INTO dividend_history (stock_code, exchange, quantity, dividend_per_share, gross_amount_usd, tax_amount_usd, net_amount_usd, pay_date)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
-          h.stock_code,
-          h.exchange,
-          qty,
+          h.stock_code, h.exchange, qty,
           +((yieldPct * price) / 12).toFixed(4),
           +(monthlyDiv / 0.846).toFixed(2),
           +((monthlyDiv / 0.846) * 0.154).toFixed(2),
@@ -167,44 +179,121 @@ async function simulateDRIP(): Promise<void> {
         ],
       );
 
-      // DRIP: 배당금으로 재매수 (live: 실제 KIS 주문)
-      const newShares = Math.floor(monthlyDiv / price);
-      if (newShares > 0) {
-        if (!isPaper) {
-          try {
-            const { placeOverseasOrder } = await import('../kis/overseas.js');
-            await placeOverseasOrder({
-              stockCode: h.stock_code,
-              exchange: h.exchange,
-              side: 'BUY',
-              quantity: newShares,
-            });
-          } catch (e: any) {
-            logger.warn(`[DRIP] ${h.stock_code} 실주문 실패: ${e.message}`, { component: COMP });
-          }
-        }
-        await getPool().query(
-          `UPDATE dividend_holdings SET quantity = quantity + $1, total_dividends_received = total_dividends_received + $2
-           WHERE stock_code = $3 AND exchange = $4 AND is_paper = $5`,
-          [newShares, +monthlyDiv.toFixed(2), h.stock_code, h.exchange, isPaper],
-        );
-        totalDrip += newShares;
-      } else {
-        await getPool().query(
-          `UPDATE dividend_holdings SET total_dividends_received = total_dividends_received + $1
-           WHERE stock_code = $2 AND exchange = $3 AND is_paper = $4`,
-          [+monthlyDiv.toFixed(2), h.stock_code, h.exchange, isPaper],
-        );
+      // 누적 배당 업데이트
+      await getPool().query(
+        `UPDATE dividend_holdings SET total_dividends_received = total_dividends_received + $1
+         WHERE stock_code = $2 AND exchange = $3 AND is_paper = $4`,
+        [+monthlyDiv.toFixed(2), h.stock_code, h.exchange, isPaper],
+      );
+
+      totalDivPool += monthlyDiv;
+      holdingMap.set(h.stock_code, { exchange: h.exchange, price, qty, value: qty * price });
+    }
+
+    if (totalDivPool < 1) return; // $1 미만이면 스킵
+
+    // 2) 목표 비중 로드 (VIX 동적 or 튜닝된 비중)
+    const { getOverseasState } = await import('./overseas/utils.js');
+    let targetWeights: Record<string, number> = {};
+    try {
+      const tunedRaw = await getOverseasState(`dividend_alloc_tuned_${isPaper ? 'paper' : 'live'}`);
+      if (tunedRaw) {
+        const tuned = JSON.parse(tunedRaw);
+        if (tuned.weights) targetWeights = tuned.weights;
+      }
+    } catch { /* ignore */ }
+
+    // 폴백: 기본 비중
+    if (Object.keys(targetWeights).length === 0) {
+      targetWeights = {
+        JEPQ: 0.25, SPYI: 0.20, SCHD: 0.15, QQQI: 0.15, JEPI: 0.15, O: 0.10,
+      };
+    }
+
+    // 3) 현재 비중 vs 목표 → 가장 언더웨이트인 ETF 찾기
+    const totalValue = Array.from(holdingMap.values()).reduce((s, v) => s + v.value, 0);
+    let bestTarget: { code: string; gap: number; exchange: string; price: number } | null = null;
+
+    for (const [code, targetPct] of Object.entries(targetWeights)) {
+      const holding = holdingMap.get(code);
+      const currentPct = holding && totalValue > 0 ? holding.value / totalValue : 0;
+      const gap = targetPct - currentPct; // 양수 = 언더웨이트
+      const exchange = holding?.exchange || getExchangeForDrip(code);
+      const price = holding?.price || 0;
+
+      if (gap > (bestTarget?.gap ?? -Infinity) && price > 0) {
+        bestTarget = { code, gap, exchange, price };
       }
     }
 
-    if (totalDrip > 0) {
-      logger.info(`[DRIP] ${totalDrip}주 자동 재투자 완료`, { component: COMP });
-      await sendTelegramMessage(`💰 [DRIP] 배당금 자동 재투자: ${totalDrip}주 추가 매수`).catch(() => {});
+    // 보유하지 않은 ETF 중 목표 비중이 있는 것도 후보
+    if (!bestTarget || bestTarget.gap <= 0) {
+      for (const [code, targetPct] of Object.entries(targetWeights)) {
+        if (!holdingMap.has(code) && targetPct > 0) {
+          bestTarget = { code, gap: targetPct, exchange: getExchangeForDrip(code), price: 0 };
+          break;
+        }
+      }
     }
+
+    if (!bestTarget || bestTarget.price <= 0) {
+      // 가격 미확인 — 기존 방식 폴백 (가장 큰 포지션에 재투자)
+      const largest = Array.from(holdingMap.entries()).sort((a, b) => b[1].value - a[1].value)[0];
+      if (largest) bestTarget = { code: largest[0], gap: 0, exchange: largest[1].exchange, price: largest[1].price };
+    }
+
+    if (!bestTarget || bestTarget.price <= 0) return;
+
+    // 4) 풀링된 배당금 → 선정 ETF 매수
+    const sharesToBuy = Math.floor(totalDivPool / bestTarget.price);
+    if (sharesToBuy <= 0) {
+      logger.info(`[Smart DRIP] 배당 $${totalDivPool.toFixed(2)} → ${bestTarget.code} 매수 불가 (가격 $${bestTarget.price})`, { component: COMP });
+      return;
+    }
+
+    if (!isPaper) {
+      try {
+        const { placeOverseasOrder } = await import('../kis/overseas.js');
+        await placeOverseasOrder({
+          stockCode: bestTarget.code,
+          exchange: bestTarget.exchange,
+          side: 'BUY',
+          quantity: sharesToBuy,
+        });
+      } catch (e: any) {
+        logger.warn(`[Smart DRIP] ${bestTarget.code} 실주문 실패: ${e.message}`, { component: COMP });
+      }
+    }
+
+    await getPool().query(
+      `INSERT INTO dividend_holdings (stock_code, exchange, quantity, avg_price, total_dividends_received, is_paper)
+       VALUES ($1, $2, $3, $4, 0, $5)
+       ON CONFLICT (stock_code, exchange, is_paper) DO UPDATE SET
+         avg_price = (dividend_holdings.avg_price * dividend_holdings.quantity + $4 * $3) / GREATEST(dividend_holdings.quantity + $3, 1),
+         quantity = dividend_holdings.quantity + $3`,
+      [bestTarget.code, bestTarget.exchange, sharesToBuy, bestTarget.price, isPaper],
+    );
+
+    const gapPct = (bestTarget.gap * 100).toFixed(1);
+    logger.info(
+      `[Smart DRIP] $${totalDivPool.toFixed(2)} → ${bestTarget.code} ${sharesToBuy}주 (언더웨이트 ${gapPct}%p)`,
+      { component: COMP },
+    );
+    await sendTelegramMessage(
+      `💰 [Smart DRIP] 배당 $${totalDivPool.toFixed(2)} → ${bestTarget.code} ${sharesToBuy}주 집중 재투자 (비중 부족 ${gapPct}%p)`,
+    ).catch(() => {});
   } catch (e: any) {
-    logger.warn(`DRIP 시뮬레이션 실패: ${e.message}`, { component: COMP });
+    logger.warn(`Smart DRIP 실패: ${e.message}`, { component: COMP });
   }
+}
+
+/** DRIP용 거래소 매핑 */
+function getExchangeForDrip(code: string): string {
+  const map: Record<string, string> = {
+    JEPQ: 'NASDAQ', JEPI: 'NYSE', SCHD: 'NYSE', SPYI: 'NYSE',
+    QQQI: 'NASDAQ', O: 'NYSE', QYLD: 'NASDAQ', XYLD: 'NYSE',
+  };
+  return map[code] ?? 'NASDAQ';
 }
 
 // ── 유틸 ──
@@ -222,8 +311,11 @@ function parseDate(s: string): Date {
 }
 
 /**
- * 배당 배분 자동 튜닝 — 실제 수익률 기반 ETF 비중 조정
- * 고성과 ETF 비중 UP, 저성과 DOWN (최소 5%, 최대 40%)
+ * 배당 배분 자동 튜닝 v2 — VIX 레짐 + 실적 기반 하이브리드
+ * ──────────────────────────────────────────────────────────
+ * 1단계: VIX 레짐별 기본 비중 로드 (CALM/STRESS/CRISIS)
+ * 2단계: 실적 점수로 미세 조정 (±5%p)
+ * 3단계: 최소 5%, 최대 35% 클램핑 → 정규화
  */
 async function tuneDividendAllocation(): Promise<void> {
   const isPaper = getCtxIsPaper();
@@ -237,30 +329,57 @@ async function tuneDividendAllocation(): Promise<void> {
        WHERE dh.is_paper = $1 AND dh.quantity > 0`,
       [isPaper],
     );
-    if (holdings.length < 2) return; // 2종목 미만 시 튜닝 불필요
+    if (holdings.length < 2) return;
 
-    // 종목별 성과 점수: 배당수익률 + 배당금 누적 기여도
+    // 1단계: VIX 레짐별 기본 비중
+    let regime = 'CALM';
+    const baseWeights: Record<string, number> = {
+      JEPQ: 0.25, SPYI: 0.20, SCHD: 0.15, QQQI: 0.15, JEPI: 0.15, O: 0.10,
+    };
+    try {
+      const { getFearGreedIndex } = await import('../market/external-signals.js');
+      const fg = await getFearGreedIndex().catch(() => null);
+      const vix = fg?.vix ?? 0;
+      if (vix > 0) {
+        const { getVixRegime } = await import('./overseas/vix-regime.js');
+        const vr = getVixRegime(vix, isPaper);
+        regime = vr.regime;
+        // VIX 레짐별 비중 오버라이드
+        const regimeMap: Record<string, Record<string, number>> = {
+          CALM: { JEPQ: 0.28, SPYI: 0.15, SCHD: 0.22, QQQI: 0.12, JEPI: 0.13, O: 0.10 },
+          STRESS: { JEPQ: 0.22, SPYI: 0.25, SCHD: 0.10, QQQI: 0.20, JEPI: 0.13, O: 0.10 },
+          CRISIS: { JEPQ: 0.15, SPYI: 0.15, SCHD: 0.25, QQQI: 0.10, JEPI: 0.15, O: 0.20 },
+        };
+        if (regimeMap[regime]) Object.assign(baseWeights, regimeMap[regime]);
+      }
+    } catch { /* VIX 조회 실패 시 기본값 유지 */ }
+
+    // 2단계: 실적 점수로 ±5%p 미세 조정
     const scores: Record<string, number> = {};
-    let _totalValue = 0;
+    let totalValue = 0;
     for (const h of holdings) {
       const value = Number(h.quantity) * Number(h.avg_price);
       const divYield = Number(h.dividend_yield ?? 0);
       const divReceived = Number(h.total_dividends_received ?? 0);
       const divContribution = value > 0 ? (divReceived / value) * 100 : 0;
-      scores[h.stock_code] = divYield + divContribution; // 배당수익률 + 배당금 기여율
-      _totalValue += value;
+      scores[h.stock_code] = divYield * 2 + divContribution;
+      totalValue += value;
     }
-
-    // 점수 → 비중 (정규화, 최소 5% 최대 40%)
     const totalScore = Object.values(scores).reduce((s, v) => s + v, 0);
-    if (totalScore <= 0) return;
 
-    const weights: Record<string, number> = {};
-    for (const [code, score] of Object.entries(scores)) {
-      const raw = score / totalScore;
-      weights[code] = Math.min(0.4, Math.max(0.05, raw));
+    // 점수 기반 미세 조정 (기본 비중 ±5%p)
+    const weights: Record<string, number> = { ...baseWeights };
+    if (totalScore > 0) {
+      const avgScore = totalScore / Object.keys(scores).length;
+      for (const [code, score] of Object.entries(scores)) {
+        if (weights[code] != null) {
+          const adjustment = ((score - avgScore) / avgScore) * 0.05; // ±5%p
+          weights[code] = Math.min(0.35, Math.max(0.05, weights[code] + adjustment));
+        }
+      }
     }
-    // 재정규화 (합계 = 1)
+
+    // 3단계: 정규화 (합계 = 1)
     const sum = Object.values(weights).reduce((s, v) => s + v, 0);
     for (const code of Object.keys(weights)) {
       weights[code] = +(weights[code] / sum).toFixed(3);
@@ -270,12 +389,13 @@ async function tuneDividendAllocation(): Promise<void> {
       key,
       JSON.stringify({
         weights,
+        regime,
         updatedAt: new Date().toISOString(),
         holdingsCount: holdings.length,
       }),
     );
     logger.info(
-      `[배당 튜닝] 비중 조정: ${Object.entries(weights)
+      `[배당 튜닝] VIX=${regime} 비중: ${Object.entries(weights)
         .map(([k, v]) => `${k}=${(v * 100).toFixed(0)}%`)
         .join(' ')}`,
       { component: COMP },

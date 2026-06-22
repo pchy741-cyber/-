@@ -16,6 +16,7 @@
 
 import { getPool } from '../db/client.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
+import { callClaudeCli, isClaudeCliEnabled } from '../utils/claude-cli.js';
 import { logger } from '../utils/logger.js';
 
 const COMP = 'DAILY_REPORT';
@@ -137,7 +138,8 @@ async function fetchNewlyLearned(): Promise<Array<{ stockCode: string; recommend
       recommendation: String(r.recommendation),
       reason: String(r.reason ?? ''),
     }));
-  } catch {
+  } catch (err) {
+    logger.debug(`자동화 추천 조회 실패: ${err}`, { component: 'LEARNING_REPORT' });
     return [];
   }
 }
@@ -188,11 +190,94 @@ export async function runDailyLearningReport(): Promise<void> {
         logger.debug(`일일 리포트 [${mode}] 스킵: 활동 없음`, { component: COMP });
         continue;
       }
-      const msg = formatReport(mode, stats, auto, learned);
+      let msg = formatReport(mode, stats, auto, learned);
+
+      // Claude 전략 최적화 분석 추가
+      if (isClaudeCliEnabled() && stats.trades >= 1) {
+        try {
+          const strategyAdvice = await generateStrategyOptimization(mode, stats, auto);
+          if (strategyAdvice) msg += `\n\n🧠 *Claude 전략 분석*\n${strategyAdvice}`;
+        } catch (e) {
+          logger.warn(`Claude 전략 분석 실패: ${e}`, { component: COMP });
+        }
+      }
+
       await sendTelegramMessage(msg).catch(() => {});
       logger.info(`📊 일일 리포트 [${mode}] 전송: ${stats.trades}건`, { component: COMP });
     }
   } catch (e) {
     logger.error(`일일 학습 리포트 실패: ${(e as Error).message}`, { component: COMP });
   }
+}
+
+/** Claude CLI 전략 최적화 분석 — 매매 통계 기반 전략 파라미터 개선 제안 */
+async function generateStrategyOptimization(
+  mode: 'paper' | 'live',
+  stats: DailyStats,
+  auto: { mddTriggers: number; autopilotChanges: number; captures: number },
+): Promise<string> {
+  // 현재 전략 파라미터 조회
+  let currentStrategy = '';
+  try {
+    const isPaper = mode === 'paper';
+    const { rows } = await getPool().query(
+      `SELECT mode, buy_threshold, take_profit_pct, stop_loss_pct, use_dynamic_tpsl
+       FROM strategy_config WHERE is_active = true AND is_paper = $1 LIMIT 1`,
+      [isPaper],
+    );
+    if (rows[0]) {
+      const s = rows[0];
+      currentStrategy = `현재 전략: ${s.mode}, 매수기준 ${s.buy_threshold}점, TP ${s.take_profit_pct}%, SL ${s.stop_loss_pct}%, 동적TPSL=${s.use_dynamic_tpsl}`;
+    }
+  } catch { /* ignore */ }
+
+  // 최근 7일 성과 추세
+  let weekTrend = '';
+  try {
+    const isPaper = mode === 'paper';
+    const { rows } = await getPool().query(
+      `SELECT
+         DATE(closed_at AT TIME ZONE 'Asia/Seoul') AS day,
+         COUNT(*) AS trades,
+         SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+         SUM(realized_pnl) AS pnl
+       FROM transaction_chains
+       WHERE status = 'CLOSED' AND is_paper = $1
+         AND closed_at >= NOW() - INTERVAL '7 days'
+       GROUP BY DATE(closed_at AT TIME ZONE 'Asia/Seoul')
+       ORDER BY day DESC`,
+      [isPaper],
+    );
+    if (rows.length > 0) {
+      weekTrend = rows.map((r: any) =>
+        `${r.day}: ${r.trades}건 승률${r.trades > 0 ? ((r.wins / r.trades) * 100).toFixed(0) : 0}% PnL ${Number(r.pnl) >= 0 ? '+' : ''}${Number(r.pnl).toLocaleString()}원`
+      ).join('\n');
+    }
+  } catch { /* ignore */ }
+
+  const systemPrompt = `당신은 알고리즘 트레이딩 전략 최적화 전문가입니다.
+오늘 매매 결과와 최근 추세를 보고, 전략 파라미터 조정이 필요한지 판단하세요.
+- 3~4줄 핵심 분석
+- 구체적 수치 제안 (있으면)
+- 변경 불필요 시 "현재 파라미터 유지 권장"`;
+
+  const userPrompt = `## ${mode === 'paper' ? '연습' : '실전'} 모드 전략 분석
+
+### 오늘 결과
+- ${stats.trades}건 거래, 승률 ${(stats.winRate * 100).toFixed(0)}%
+- PnL: ${stats.totalPnlKrw >= 0 ? '+' : ''}${stats.totalPnlKrw.toLocaleString()}원 (평균 ${stats.avgPnlPct >= 0 ? '+' : ''}${stats.avgPnlPct.toFixed(2)}%)
+${stats.bestStock ? `- 최고: ${stats.bestStock.code} +${stats.bestStock.pnl.toFixed(1)}%` : ''}
+${stats.worstStock ? `- 최악: ${stats.worstStock.code} ${stats.worstStock.pnl.toFixed(1)}%` : ''}
+- MDD 가드: ${auto.mddTriggers}회, AutoPilot: ${auto.autopilotChanges}회
+
+${stats.closeReasons.length > 0 ? `### 매도 사유\n${stats.closeReasons.map((r) => `${r.reason}: ${r.count}회 (평균 ${r.avgPnl >= 0 ? '+' : ''}${r.avgPnl.toFixed(1)}%)`).join('\n')}` : ''}
+
+### ${currentStrategy || '전략 정보 없음'}
+
+${weekTrend ? `### 최근 7일 추세\n${weekTrend}` : ''}
+
+분석 + 파라미터 조정 제안:`;
+
+  const text = await callClaudeCli({ systemPrompt, userPrompt, model: 'haiku', timeoutMs: 30_000 });
+  return text.slice(0, 600);
 }

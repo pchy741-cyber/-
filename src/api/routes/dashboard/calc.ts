@@ -44,6 +44,7 @@ export interface TotalAssetInputs {
 
   // 수익률 계산 (전일 대비)
   prevDayTotalValue: number;        // 전일 총자산 스냅샷 (portfolio_snapshots)
+  prevDayUnrealizedPnl: number;     // 전일 미실현 손익 (입금/출금 영향 제거용)
 }
 
 export interface TotalAssetOutputs {
@@ -180,24 +181,44 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
 
   let totalPnl: number;
   if (i.viewIsPaper) {
-    // Paper: 현재 보유 중인 포지션의 미실현 손익만 (누적 실현PnL은 realizedPnl 필드에 별도 표시)
-    totalPnl = i.totalChainPnl;
+    // Paper: 국내 체인 PnL + 해외 미실현 PnL (전체 포트폴리오 반영)
+    totalPnl = i.totalChainPnl + overseasUnrealizedPnlKrw;
   } else {
-    // Live: KIS 미실현 손익 (실현PnL은 realizedPnl 필드에 별도 표시)
-    totalPnl = safe(i.kisTotalProfitLoss);
+    // Live: KIS 미실현 손익 + 해외 미실현 PnL
+    totalPnl = safe(i.kisTotalProfitLoss) + overseasUnrealizedPnlKrw;
   }
 
-  const totalPnlPct = i.viewIsPaper
-    ? i.paperInitialCapital > 0 ? (totalPnl / i.paperInitialCapital) * 100 : 0
-    : safe(i.kisTotalProfitLossPct);
+  let totalPnlPct: number;
+  if (i.viewIsPaper) {
+    totalPnlPct = i.paperInitialCapital > 0 ? (totalPnl / i.paperInitialCapital) * 100 : 0;
+  } else {
+    // KIS API가 0을 반환하면 자체 계산으로 fallback
+    const kisPct = safe(i.kisTotalProfitLossPct);
+    totalPnlPct = kisPct !== 0 ? kisPct
+      : totalInvested > 0 ? (totalPnl / totalInvested) * 100 : 0;
+  }
 
-  // ─── 7. 전일 대비 수익률 ───
+  // ─── 7. 전일 대비 수익률 (입금/출금 영향 제거) ───
   const prevDay = safe(i.prevDayTotalValue);
-  const rawDailyChangePct = prevDay > 0 && grandTotalValue > 0
-    ? Math.round(((grandTotalValue - prevDay) / prevDay) * 10000) / 100
-    : 0;
-  // 마이그레이션(해외자산 신규 편입 등)으로 전일 스냅샷이 현재와 큰 차이를 보이면 0 처리
-  const dailyChangePct = Math.abs(rawDailyChangePct) > 100 ? 0 : rawDailyChangePct;
+  let rawDailyChangePct: number;
+  if (!i.viewIsPaper && prevDay > 0 && safe(i.prevDayUnrealizedPnl) !== 0) {
+    // Live: P&L 기반 일일 수익률 — 입금/출금이 수익으로 잡히는 버그 방지
+    // dailyPnL = (현재 미실현PnL - 전일 미실현PnL)
+    // 실현PnL은 스냅샷에서 이미 반영되므로 여기선 미실현 변화만 비교
+    const currentPnlKrw = safe(i.kisTotalProfitLoss) + overseasUnrealizedPnlKrw;
+    const prevPnlKrw = safe(i.prevDayUnrealizedPnl);
+    const pnlChange = currentPnlKrw - prevPnlKrw;
+    rawDailyChangePct = Math.round((pnlChange / prevDay) * 10000) / 100;
+  } else {
+    // Paper 또는 첫 스냅샷: 기존 총자산 비교 방식 (입금 없으므로 안전)
+    rawDailyChangePct = prevDay > 0 && grandTotalValue > 0
+      ? Math.round(((grandTotalValue - prevDay) / prevDay) * 10000) / 100
+      : 0;
+  }
+  // 해외자산 신규 편입, 입금 등으로 전일 스냅샷과 현재가 큰 차이를 보이면 클리핑
+  // Paper: ±10% 이상은 이상치 (자산 편입/시드 추가 영향), Live: ±100% (기존)
+  const maxDailyPct = i.viewIsPaper ? 10 : 100;
+  const dailyChangePct = Math.abs(rawDailyChangePct) > maxDailyPct ? 0 : rawDailyChangePct;
 
   logger.info(`📊 calcTotalAssets [${i.viewIsPaper ? 'PAPER' : 'LIVE'}] method=${calcMethod} | netAsset=${safe(i.netAsset)} rawCash=${safe(i.rawCash)} kisDomEval=${safe(i.kisDomEval)} kisPurchaseCost=${safe(i.kisPurchaseCost)} | overseasMV_usd=${safe(i.overseasMarketValueUsd)} overseasCash=${rawOverseasCash} | grandTotal=${Math.round(grandTotalValue)} freeCash=${Math.round(freeDomesticCash)} domMV=${Math.round(domesticMarketValue)} overseasMV_krw=${Math.round(overseasMarketValueKrw)}`, { component: 'CALC' });
 

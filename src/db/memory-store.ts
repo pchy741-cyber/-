@@ -20,6 +20,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: 'AI반도체',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   {
@@ -30,6 +31,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: 'HBM/AI반도체',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   {
@@ -40,6 +42,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: 'AI반도체패키징',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   {
@@ -50,6 +53,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '반도체공정장비',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   // 반도체 소재·원자재
@@ -61,6 +65,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '반도체소재',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   {
@@ -71,6 +76,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '반도체소재',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   // 로봇·자동화
@@ -82,6 +88,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '협동로봇',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   {
@@ -92,6 +99,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '협동로봇',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   // 방산·인프라 (트럼프 테마)
@@ -103,6 +111,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '방산/우주',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   {
@@ -113,6 +122,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '조선/LNG',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   // 바이오·제약
@@ -124,6 +134,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '바이오시밀러',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   {
@@ -134,6 +145,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: 'CMO바이오',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   // 원자재 (알래스카/광물)
@@ -145,6 +157,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '비철금속',
+    currency: 'KRW',
     source: 'MANUAL',
   },
   {
@@ -155,6 +168,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     is_active: true,
     added_at: new Date().toISOString(),
     notes: '2차전지소재',
+    currency: 'KRW',
     source: 'MANUAL',
   },
 ];
@@ -180,6 +194,7 @@ const store = {
     id: uuid(),
     mode: 'SWING' as const,
     is_active: true,
+    is_paper: false,
     notebooklm_prompt: '',
     gemini_prompt: '',
     gpt_prompt: '',
@@ -209,6 +224,7 @@ export function memUpsertWatchlistItem(item: Pick<WatchlistItem, 'stock_code' | 
       stock_code: item.stock_code,
       stock_name: item.stock_name,
       market: item.market,
+      currency: item.market === 'NYSE' || item.market === 'NASDAQ' || item.market === 'AMEX' ? 'USD' : 'KRW',
       is_active: true,
       added_at: new Date().toISOString(),
       notes: null,
@@ -224,6 +240,8 @@ export function memUpsertAIScore(score: Omit<AIScore, 'id' | 'created_at'>) {
     Object.assign(existing, score);
   } else {
     store.aiScores.push({ ...score, id: uuid(), created_at: new Date().toISOString() } as AIScore);
+    // TTL: 48시간(200건) 초과 시 오래된 항목 제거
+    if (store.aiScores.length > 200) store.aiScores.splice(0, store.aiScores.length - 200);
   }
 }
 
@@ -266,6 +284,14 @@ export function memInsertOrder(order: Omit<Order, 'id' | 'created_at' | 'updated
   const id = uuid();
   const now = new Date().toISOString();
   store.orders.push({ ...order, id, created_at: now, updated_at: now } as Order);
+  // 주문 500건 초과 시 CLOSED/CANCELLED 된 오래된 항목 정리
+  if (store.orders.length > 500) {
+    const keepStatuses = new Set(['PENDING', 'PARTIAL']);
+    const active = store.orders.filter((o) => keepStatuses.has(o.status));
+    const inactive = store.orders.filter((o) => !keepStatuses.has(o.status));
+    store.orders.length = 0;
+    store.orders.push(...active, ...inactive.slice(-300));
+  }
   return id;
 }
 
@@ -294,6 +320,8 @@ export function memInsertSnapshot(snapshot: {
   positions: unknown;
 }) {
   store.snapshots.push({ ...snapshot, id: uuid(), snapshot_at: new Date().toISOString() });
+  // 스냅샷 100건 초과 시 오래된 항목 제거 (약 3일분 유지)
+  if (store.snapshots.length > 100) store.snapshots.splice(0, store.snapshots.length - 100);
 }
 
 export function memGetTodayStartSnapshot() {
@@ -314,8 +342,8 @@ export function memSetActiveStrategy(updates: Partial<StrategyConfig>): Strategy
 // ── System Log ──
 export function memLogSystem(level: string, component: string, message: string, details?: unknown) {
   store.systemLogs.push({ level, component, message, details: details ?? null });
-  // 최대 1000개만 보관
-  if (store.systemLogs.length > 1000) store.systemLogs.splice(0, store.systemLogs.length - 500);
+  // 최대 200개만 보관 (메모리 절약)
+  if (store.systemLogs.length > 200) store.systemLogs.splice(0, store.systemLogs.length - 100);
 }
 
 // ── Risk Events ──

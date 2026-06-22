@@ -228,7 +228,7 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
         throw new Error(`KIS 빈 응답 [${trId}] — 반복 재시도 실패`);
       }
       if (rawText.trim() === 'LOGOUT') {
-        clearTokenCache();
+        await clearTokenCache();
         if (attempt < MAX_RETRIES) {
           logger.warn(`KIS 세션 만료 (LOGOUT), 토큰 갱신 후 재시도 ${attempt}/${MAX_RETRIES}`, { component: 'KIS' });
           continue;
@@ -244,7 +244,7 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
 
         // 토큰 만료 (EGW00123) → 캐시 클리어 후 재시도 (LOGOUT과 동일 처리)
         if (msg.includes('만료된 token') || String(data.msg_cd ?? '') === 'EGW00123') {
-          clearTokenCache();
+          await clearTokenCache();
           if (attempt < MAX_RETRIES) {
             logger.warn(`KIS 토큰 만료 (EGW00123), 캐시 클리어 후 재시도 ${attempt}/${MAX_RETRIES}`, {
               component: 'KIS',
@@ -301,6 +301,8 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
       lastError = err instanceof Error ? err : new Error(String(err));
       // 4xx 에러 (404 데이터 없음 등) → 재시도 무의미, 즉시 종료
       if (lastError.message.includes('데이터 없음')) throw lastError;
+      // POST 요청(주문) 재시도 → 중복 주문 위험: 타임아웃 시 이미 체결되었을 수 있음
+      if (method === 'POST') throw lastError;
       if (attempt < MAX_RETRIES) {
         logger.warn(`KIS 요청 실패, 재시도 ${attempt}/${MAX_RETRIES}: ${lastError.message}`, {
           component: 'KIS',

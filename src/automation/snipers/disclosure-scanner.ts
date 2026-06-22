@@ -5,6 +5,15 @@ import { emitSniperSignal, type SniperSignal } from './index.js';
 
 // 프로세스 내 메모리 중복 제거 (Redis 없어도 동작)
 const seenTitleHashes = new Set<string>();
+const SEEN_HASHES_MAX_SIZE = 2000; // 메모리 누수 방지 — 최대 해시 수
+
+// 주기적 정리 (6시간마다 전체 리셋 — 공시는 하루 주기)
+const _seenHashesCleanupTimer = setInterval(() => {
+  if (seenTitleHashes.size > 0) {
+    seenTitleHashes.clear();
+  }
+}, 6 * 60 * 60 * 1000);
+_seenHashesCleanupTimer.unref(); // 프로세스 종료를 차단하지 않음
 
 function titleHash(title: string): string {
   return createHash('md5').update(title).digest('hex').slice(0, 12);
@@ -72,6 +81,10 @@ async function fetchDisclosures(): Promise<DisclosureItem[]> {
       // 중복 기사 스킵
       const hash = titleHash(title);
       if (seenTitleHashes.has(hash)) continue;
+      // 최대 크기 초과 시 전체 리셋 (오래된 해시 제거 — Set은 부분 삭제 비효율)
+      if (seenTitleHashes.size >= SEEN_HASHES_MAX_SIZE) {
+        seenTitleHashes.clear();
+      }
       seenTitleHashes.add(hash);
 
       // 감시 종목과 매칭

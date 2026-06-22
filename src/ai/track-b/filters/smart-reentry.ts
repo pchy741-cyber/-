@@ -35,18 +35,18 @@ function checkConditionA(candles: DailyCandle[]): { pass: boolean; sl?: number }
 
   const closes = candles.map((c) => c.close);
   const volumes = candles.map((c) => c.volume);
-  const currentPrice = closes[closes.length - 1];
-  const currentVolume = volumes[volumes.length - 1];
-  const currentLow = candles[candles.length - 1].low;
+  const currentPrice = closes[0];
+  const currentVolume = volumes[0];
+  const currentLow = candles[0].low;
 
-  // 5일/20일 SMA
+  // 5일/20일 SMA (candles descending: index 0 = newest → sma result[0] = latest)
   const sma5Arr = sma(closes, 5);
   const sma20Arr = sma(closes, 20);
   if (sma5Arr.length === 0 || sma20Arr.length === 0) return { pass: false };
 
-  const sma5Now = sma5Arr[sma5Arr.length - 1];
-  const sma20Now = sma20Arr[sma20Arr.length - 1];
-  const sma20Prev = sma20Arr.length >= 6 ? sma20Arr[sma20Arr.length - 6] : sma20Now;
+  const sma5Now = sma5Arr[0];
+  const sma20Now = sma20Arr[0];
+  const sma20Prev = sma20Arr.length >= 6 ? sma20Arr[5] : sma20Now;
 
   // 20MA 상승추세
   const ma20Rising = sma20Now > sma20Prev;
@@ -60,8 +60,8 @@ function checkConditionA(candles: DailyCandle[]): { pass: boolean; sl?: number }
   const above5MA = currentPrice > sma5Now;
   if (!above5MA) return { pass: false };
 
-  // 거래량 1.5x
-  const recentVol = volumes.slice(-21, -1);
+  // 거래량 1.5x (descending: index 0=today, 1~20=past 20일)
+  const recentVol = volumes.slice(1, 21);
   const avgVol = recentVol.length > 0 ? recentVol.reduce((a, b) => a + b, 0) / recentVol.length : 0;
   const volRatio = avgVol > 0 ? currentVolume / avgVol : 0;
   if (volRatio < 1.5) return { pass: false };
@@ -79,7 +79,7 @@ function checkConditionA(candles: DailyCandle[]): { pass: boolean; sl?: number }
 function checkConditionB(candles: DailyCandle[]): { pass: boolean; sl?: number } {
   if (candles.length < 20) return { pass: false };
 
-  const currentCandle = candles[candles.length - 1];
+  const currentCandle = candles[0];
   const currentPrice = currentCandle.close;
 
   // 양봉 확인
@@ -92,13 +92,13 @@ function checkConditionB(candles: DailyCandle[]): { pass: boolean; sl?: number }
 
   // 38.2% 또는 50% 되돌림 구간 (±2%)
   const inFibZone = fib.levels
-    .filter((l) => l.level === 0.382 || l.level === 0.5)
+    .filter((l) => Math.abs(l.level - 0.382) < 1e-9 || Math.abs(l.level - 0.5) < 1e-9)
     .some((l) => Math.abs(l.pctFromCurrent) <= 2.0);
   if (!inFibZone) return { pass: false };
 
-  // 거래량 1.3x
+  // 거래량 1.3x (descending: index 0=today, 1~20=past 20일)
   const volumes = candles.map((c) => c.volume);
-  const recentVol = volumes.slice(-21, -1);
+  const recentVol = volumes.slice(1, 21);
   const avgVol = recentVol.length > 0 ? recentVol.reduce((a, b) => a + b, 0) / recentVol.length : 0;
   const volRatio = avgVol > 0 ? currentCandle.volume / avgVol : 0;
   if (volRatio < 1.3) return { pass: false };
@@ -118,8 +118,11 @@ function checkConditionB(candles: DailyCandle[]): { pass: boolean; sl?: number }
 function checkConditionD(candles: DailyCandle[]): { pass: boolean; sl?: number } {
   if (candles.length < 25) return { pass: false };
 
+  // candles descending: index 0 = newest
+  // rsi() expects ascending order → reverse closes
   const closes = candles.map((c) => c.close);
-  const rsiArr = rsi(closes, 14);
+  const closesAsc = [...closes].reverse();
+  const rsiArr = rsi(closesAsc, 14);
   if (rsiArr.length < 4) return { pass: false };
 
   // 현재 RSI ≥ 50 (과매도 탈출 + 중립 회복)
@@ -127,22 +130,22 @@ function checkConditionD(candles: DailyCandle[]): { pass: boolean; sl?: number }
   if (rsiNow < 50) return { pass: false };
 
   // 최근 3캔들 내 RSI ≤ 30 이력 (과매도 구간 통과 확인)
-  const recentRsi = rsiArr.slice(-4, -1); // 3캔들 이전
+  const recentRsi = rsiArr.slice(-4, -1); // 3캔들 이전 (ascending output → latest at end)
   const hadOversold = recentRsi.some((r) => r <= 30);
   if (!hadOversold) return { pass: false };
 
-  // 종가 > 5MA (상승 모멘텀 확인)
+  // 종가 > 5MA (상승 모멘텀 확인) — descending: index 0 = latest
   const sma5Arr = sma(closes, 5);
   const sma20Arr = sma(closes, 20);
   if (sma5Arr.length === 0 || sma20Arr.length === 0) return { pass: false };
 
-  const sma5Now = sma5Arr[sma5Arr.length - 1];
-  const currentPrice = closes[closes.length - 1];
+  const sma5Now = sma5Arr[0];
+  const currentPrice = closes[0];
   if (currentPrice <= sma5Now) return { pass: false };
 
   // 최근 5캔들 내 20MA 터치 (저가 ≤ 20MA × 1.03)
-  const sma20Now = sma20Arr[sma20Arr.length - 1];
-  const recent5 = candles.slice(-5);
+  const sma20Now = sma20Arr[0];
+  const recent5 = candles.slice(0, 5);
   const touched20MA = recent5.some((c) => c.low <= sma20Now * 1.03);
   if (!touched20MA) return { pass: false };
 
@@ -160,12 +163,12 @@ function checkConditionC(candles: DailyCandle[], tradingValue: number): boolean 
   // 거래대금 150억 이상
   if (tradingValue >= 15_000_000_000) return true;
 
-  // 60일 신고가 이력 (최근 10일 내)
+  // 60일 신고가 이력 (최근 10일 내) — descending: index 0 = newest
   if (candles.length >= 62) {
     const highs = candles.map((c) => c.high);
-    const lookback60 = highs.slice(-62, -2);
+    const lookback60 = highs.slice(2, 62);
     const high60 = Math.max(...lookback60);
-    const recentHighs = highs.slice(-10);
+    const recentHighs = highs.slice(0, 10);
     if (recentHighs.some((h) => h >= high60 * 0.99)) return true;
   }
 

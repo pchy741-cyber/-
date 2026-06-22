@@ -52,7 +52,9 @@ export async function calcRotationSignal(): Promise<RotationSignal> {
   let krRegime: MarketRegime | null = null;
   try {
     krRegime = await detectMarketRegime();
-  } catch {}
+  } catch (err) {
+    logger.debug(`KR 레짐 감지 실패: ${err}`, { component: COMP });
+  }
 
   let vix = 0;
   let fearGreed = 50;
@@ -62,7 +64,9 @@ export async function calcRotationSignal(): Promise<RotationSignal> {
       fearGreed = fg.fearGreedScore;
       vix = fg.vix;
     }
-  } catch {}
+  } catch (err) {
+    logger.debug(`F&G/VIX 조회 실패: ${err}`, { component: COMP });
+  }
 
   const vixRegime = getVixRegime(vix);
 
@@ -73,7 +77,9 @@ export async function calcRotationSignal(): Promise<RotationSignal> {
     // 1500 기준: 낮으면 원화강세 → 국내 유리
     if (rate < 1450) fxTrend = 1;
     else if (rate > 1550) fxTrend = -1;
-  } catch {}
+  } catch (err) {
+    logger.debug(`환율 조회 실패: ${err}`, { component: COMP });
+  }
 
   // 4. 로테이션 점수 계산
   let rotationScore = 0;
@@ -293,7 +299,7 @@ export async function proposeAllocationRebalance(): Promise<void> {
       [isPaper ? 'paper' : 'live'],
     );
 
-    const parsePerf = (rows: any[], market: 'KR' | 'US'): MarketPerformance => {
+    const parsePerf = (rows: Record<string, unknown>[], market: 'KR' | 'US'): MarketPerformance => {
       const r = rows[0] ?? {};
       const winCount = Number(r.win_count ?? 0);
       const _lossCount = Number(r.loss_count ?? 0);

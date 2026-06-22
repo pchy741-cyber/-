@@ -3,6 +3,8 @@ import { getPool, logSystem } from '../db/client.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
 
+const DINNER_MONEY_MONTHLY_CAP = 300_000;
+
 /**
  * 🍚 용돈 자동 적립
  *
@@ -52,7 +54,32 @@ export async function checkDinnerMoneyWithdraw(): Promise<void> {
       return;
     }
 
-    const amount = Math.floor(todayPnl * RATIO);
+    let amount = Math.floor(todayPnl * RATIO);
+
+    // ── 월간 한도 체크: DINNER_MONEY_MONTHLY_CAP 초과 방지 ──
+    const { rows: monthlyRows } = await pool.query(`
+      SELECT COALESCE(SUM(amount), 0)::numeric AS monthly_total
+      FROM profit_withdrawals
+      WHERE memo LIKE 'dinner_money%'
+        AND created_at AT TIME ZONE 'Asia/Seoul' >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')
+    `);
+    const monthlyTotal = Number(monthlyRows[0]?.monthly_total ?? 0);
+    if (monthlyTotal >= DINNER_MONEY_MONTHLY_CAP) {
+      logger.info(
+        `🍚 용돈: 이번달 누계 ${monthlyTotal.toLocaleString()}원 >= 월간 한도 ${DINNER_MONEY_MONTHLY_CAP.toLocaleString()}원 — 스킵`,
+        { component: 'PROFIT_WITHDRAW' },
+      );
+      return;
+    }
+    // 월간 한도 초과분 절삭
+    const remaining = DINNER_MONEY_MONTHLY_CAP - monthlyTotal;
+    if (amount > remaining) {
+      logger.info(
+        `🍚 용돈: 한도 잔여 ${remaining.toLocaleString()}원 — ${amount.toLocaleString()}원 → ${remaining.toLocaleString()}원 절삭`,
+        { component: 'PROFIT_WITHDRAW' },
+      );
+      amount = remaining;
+    }
 
     await pool.query(
       `INSERT INTO profit_withdrawals (amount, profit_pct_at_trigger, total_value_at_trigger, status, memo)
@@ -86,8 +113,6 @@ export async function checkDinnerMoneyWithdraw(): Promise<void> {
   }
 }
 
-const DINNER_MONEY_MONTHLY_CAP = 300_000;
-
 /** 용돈 적립 현황 조회 (오늘 여부 + 이번달 누계) */
 export async function getDinnerMoneyStats(): Promise<{
   todayReserved: boolean;
@@ -112,7 +137,8 @@ export async function getDinnerMoneyStats(): Promise<{
       monthlyTotal: Number(rows[0]?.monthly_total ?? 0),
       monthlyCap: DINNER_MONEY_MONTHLY_CAP,
     };
-  } catch {
+  } catch (err) {
+    logger.debug(`용돈 현황 조회 실패: ${err}`, { component: 'PROFIT_WITHDRAW' });
     return { todayReserved: false, todayAmount: 0, monthlyTotal: 0, monthlyCap: DINNER_MONEY_MONTHLY_CAP };
   }
 }

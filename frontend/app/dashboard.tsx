@@ -2,7 +2,7 @@
 
 import React, { useState, type CSSProperties } from 'react';
 import { ConfirmModal, Button } from '@/components/ui';
-import { api } from './lib/utils';
+import { api, getKSTMinutes, toKST } from './lib/utils';
 import { useToast, useConfirm } from './lib/hooks';
 import { useMediaQuery, MEDIA } from './lib/useMediaQuery';
 import { useDashboardData } from './hooks/useDashboardData';
@@ -19,10 +19,11 @@ import NewsView from './views/NewsView';
 import SettingsView from './views/SettingsView';
 import DividendView from './views/DividendView';
 import StrategyLabView from './views/StrategyLabView';
+import AiCostView from './views/AiCostView';
 import ScreenshotReview from './components/ScreenshotReview';
 import DbWarmingOverlay from './components/DbWarmingOverlay';
 
-type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'settings' | 'dividend' | 'strategy-lab';
+type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'settings' | 'dividend' | 'strategy-lab' | 'ai-cost';
 
 export default function Dashboard() {
   const { show: toast, ToastContainer } = useToast();
@@ -32,9 +33,9 @@ export default function Dashboard() {
   const [modeToggling, setModeToggling] = useState(false);
   const [liveConfirmOpen, setLiveConfirmOpen] = useState(false);
   const [marketTab, setMarketTab] = useState<'KR'|'US'>(() => {
-    const now = new Date();
-    const h = now.getHours(), m = now.getMinutes(), mins = h * 60 + m;
-    const day = now.getDay();
+    const kst = toKST(new Date());
+    const mins = getKSTMinutes();
+    const day = kst.getUTCDay();
     // 국내장: 평일 09:00~15:30 → KR, 그 외 → US
     return (day >= 1 && day <= 5 && mins >= 540 && mins <= 930) ? 'KR' : 'US';
   });
@@ -66,6 +67,17 @@ export default function Dashboard() {
     const active = scope
       ? killSwitch?.[scope.toLowerCase()]?.active
       : isKillActive;
+    // 🔒 확인 다이얼로그 — Kill Switch 실수 방지
+    const action = active ? '재개' : '중단';
+    const scopeLabel = scope === 'KR' ? '국내' : scope === 'OVERSEAS' ? '해외' : '전체';
+    if (!await confirm({
+      title: `자동매매 ${scopeLabel} ${action}`,
+      description: active
+        ? `자동매매를 ${scopeLabel} ${action}합니다. AI가 즉시 매매를 시작합니다.`
+        : `자동매매를 ${scopeLabel} ${action}합니다. 진행 중인 익절/손절이 실행되지 않습니다.`,
+      confirmLabel: action,
+      confirmVariant: active ? 'primary' : 'danger',
+    })) return;
     await api(`/kill-switch/${active ? 'deactivate' : 'activate'}`, {
       method: 'POST',
       body: JSON.stringify({ force: true, ...(scope ? { scope } : {}) }),
@@ -223,6 +235,9 @@ export default function Dashboard() {
               </ErrorBoundary>
               <ErrorBoundary fallbackTitle="전략 Lab 로딩 오류">
                 {tab === 'strategy-lab' && <StrategyLabView toast={toast} viewMode={viewMode} confirm={confirm} />}
+              </ErrorBoundary>
+              <ErrorBoundary fallbackTitle="AI 비용 로딩 오류">
+                {tab === 'ai-cost' && <AiCostView />}
               </ErrorBoundary>
               <ErrorBoundary fallbackTitle="설정 로딩 오류">
                 {tab === 'settings' && <SettingsView strategy={strategy} setStrategy={setStrategy} secrets={secrets} killSwitch={killSwitch} toggleKill={toggleKill} toast={toast} confirm={confirm} onFeatureFlagChange={(key: string, enabled: boolean) => setFeatureFlags(prev => ({ ...prev, [key]: enabled }))} viewMode={viewMode} />}

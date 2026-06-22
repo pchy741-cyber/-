@@ -14,7 +14,7 @@ import { getKSTNow } from '../utils/time.js';
 import { activateKillSwitch, isKillSwitchActive } from './kill-switch.js';
 import { getMonthlyMddSnapshot } from './mdd-calculator.js';
 import { getPaperBalance } from './paper-balance.js';
-import { MDD_LIMIT } from '../config/constants.js';
+import { MDD_LIMIT, SECTOR_MAP_KR } from '../config/constants.js';
 import { calcDailyLossLimit, WEEKLY_LOSS_PCT_LIVE, WEEKLY_LOSS_PCT_PAPER } from './seed-capital.js';
 
 async function getBalance(isPaper: boolean): Promise<AccountBalance> {
@@ -118,15 +118,20 @@ export class RiskEngine {
       const monthlyMddCheck = await this.checkMonthlyMDD(isPaper);
       if (!monthlyMddCheck.approved) return monthlyMddCheck;
     } else {
-      // 하드캡: ceoManual이라도 월간 MDD -15% 초과 시 절대 차단
+      // 하드캡: ceoManual이라도 MDD 한도의 150% 초과 시 절대 차단
+      const ceoHardCap = MDD_LIMIT.LIVE * 1.5; // e.g. 8% × 1.5 = 12%
       const snap = await getMonthlyMddSnapshot(isPaper);
-      if (snap.samples >= 2 && !snap.externalActivity && snap.mddPct >= 15) {
+      if (snap.samples >= 2 && !snap.externalActivity && snap.mddPct >= ceoHardCap) {
         return {
           approved: false,
-          reason: `🛑 월간 MDD 하드캡 초과: -${snap.mddPct.toFixed(1)}% (한도 -15%) — ceoManual도 차단`,
+          reason: `🛑 월간 MDD 하드캡 초과: -${snap.mddPct.toFixed(1)}% (한도 -${ceoHardCap}%) — ceoManual도 차단`,
         };
       }
     }
+
+    // 5-C. 섹터 비중 한도 체크 (DB 설정 기반)
+    const sectorCheck = await this.checkSectorExposure(stockCode, orderValue, isPaper);
+    if (!sectorCheck.approved) return sectorCheck;
 
     // 6. 총 투자 비율 체크
     const exposureCheck = await this.checkTotalExposure(orderValue, isPaper);
@@ -193,8 +198,8 @@ export class RiskEngine {
 
       return { approved: true, reason: 'OK' };
     } catch (err) {
-      logger.warn(`⚠️ 일일 거래 수 조회 실패 — fail-open 허용 (소프트가드, 킬스위치/MDD가 하드가드): ${err}`, { component: 'RISK' });
-      return { approved: true, reason: '일일 거래 수 조회 실패 — fail-open 허용' };
+      logger.warn(`⚠️ 일일 거래 수 조회 실패 — fail-closed 차단: ${err}`, { component: 'RISK' });
+      return { approved: false, reason: '일일 거래 수 조회 실패 — fail-closed 차단' };
     }
   }
 
@@ -253,7 +258,7 @@ export class RiskEngine {
           total_value: getDomesticTotalAssets(balance),
           cash_balance: balance.orderableCash,
           invested_value: balance.totalEvalAmount,
-          unrealized_pnl: balance.totalProfitLoss,
+          unrealized_pnl: balance.totalEvalAmount - balance.purchaseCost, // 실제 미실현PnL
           daily_pnl: 0,
           daily_pnl_pct: 0,
           positions: balance.positions,
@@ -268,6 +273,13 @@ export class RiskEngine {
     const currentBalance = await getBalance(isPaper);
     const startValue = Number(startSnapshot.total_value);
     const currentValue = getDomesticTotalAssets(currentBalance);
+
+    // 장시작 스냅샷 total_value=0 → Drawdown 보호 무력화 방지
+    if (startValue <= 0) {
+      logger.warn(`⚠️ 장시작 스냅샷 total_value=0 → Drawdown 계산 불가, 매매 차단 (다음 사이클 재시도)`, { component: 'RISK' });
+      return { approved: false, reason: '장시작 스냅샷 비정상(0원) — 매매 차단' };
+    }
+
     const dailyLoss = startValue - currentValue;
 
     // ── 외부 매도/입출금 감지 ──────────────────────────────────────────
@@ -282,25 +294,12 @@ export class RiskEngine {
     }
     if (startValue > 0 && dailyLoss > startValue * 0.2) {
       logger.warn(
-        `⚠️ 외부 매도/입출금 감지: 스냅샷 ${startValue.toLocaleString()}원 → 현재 ${currentValue.toLocaleString()}원 (${((dailyLoss / startValue) * 100).toFixed(0)}% 감소) → Kill Switch 스킵, 스냅샷 재설정`,
+        `⚠️ 외부 매도/입출금 감지: 스냅샷 ${startValue.toLocaleString()}원 → 현재 ${currentValue.toLocaleString()}원 (${((dailyLoss / startValue) * 100).toFixed(0)}% 감소) → Kill Switch 스킵 (스냅샷 유지 — trading P&L만 기준점 변경 가능)`,
         { component: 'RISK' },
       );
-      // 스냅샷을 현재 잔고로 재설정 (외부 매도 후 기준점 리셋)
-      try {
-        await insertSnapshot({
-          total_value: getDomesticTotalAssets(currentBalance),
-          cash_balance: currentBalance.orderableCash,
-          invested_value: currentBalance.totalEvalAmount,
-          unrealized_pnl: currentBalance.totalProfitLoss,
-          daily_pnl: 0,
-          daily_pnl_pct: 0,
-          positions: currentBalance.positions,
-          is_paper: isPaper,
-        });
-      } catch {
-        /* 스냅샷 실패해도 무시 */
-      }
-      return { approved: true, reason: '외부 매도 감지 — 스냅샷 재설정, 매매 허용' };
+      // ⚠️ 스냅샷을 재설정하지 않음 — 외부 입출금/매도로 기준점이 리셋되면
+      // 실제 trading 손실이 은폐될 수 있음. 기준점은 trading P&L에 의해서만 변경되어야 함.
+      return { approved: true, reason: '외부 매도/입출금 감지 — Kill Switch 스킵, 스냅샷 유지' };
     }
 
     // 일일 손실한도: Live 25% / Paper 80% — max(시작, 현재) 기준
@@ -313,6 +312,7 @@ export class RiskEngine {
         `일일 손실 한도 초과: ${dailyLoss.toLocaleString()}원(${lossPct}%) > 한도 ${limitAmount.toLocaleString()}원(${pct}%)`,
         false,
         'KR',
+        isPaper,
       );
       return {
         approved: false,
@@ -330,8 +330,9 @@ export class RiskEngine {
     }
 
     if (dailyLoss > limitAmount * 0.7) {
+      const limitUsedPct = limitAmount > 0 ? ((dailyLoss / limitAmount) * 100).toFixed(0) : '?';
       logger.warn(
-        `⚠️ 일일 손실 경고: ${dailyLoss.toLocaleString()}원(${lossPct}%) — 한도의 ${((dailyLoss / limitAmount) * 100).toFixed(0)}%`,
+        `⚠️ 일일 손실 경고: ${dailyLoss.toLocaleString()}원(${lossPct}%) — 한도의 ${limitUsedPct}%`,
         { component: 'RISK' },
       );
     }
@@ -339,26 +340,82 @@ export class RiskEngine {
     return { approved: true, reason: 'OK' };
   }
 
+  // 섹터 → DB 컬럼 브릿지
+  private static readonly SECTOR_TO_DB_KEY: Record<string, keyof import('../db/alloc-risk-cache.js').AllocRisk> = {
+    '반도체': 'sectorSemiconductor',
+    '배터리': 'sectorSemiconductor', // 배터리는 반도체/소재 계열로 합산
+    '바이오': 'sectorBio',
+    '방산': 'sectorDefense',
+    '금융': 'sectorFinance',
+    '인터넷': 'sectorEtc',
+    '전력': 'sectorEtc',
+    '조선': 'sectorEtc',
+    '가전': 'sectorEtc',
+  };
+
+  // SECTOR_MAP: constants.ts SECTOR_MAP_KR SSoT 사용
+
+  private async checkSectorExposure(
+    stockCode: string, orderValue: number, isPaper: boolean,
+  ): Promise<PreTradeCheckResult> {
+    const sector = SECTOR_MAP_KR[stockCode];
+    if (!sector) return { approved: true, reason: '섹터 미분류 — 체크 면제' };
+
+    const dbKey = RiskEngine.SECTOR_TO_DB_KEY[sector];
+    if (!dbKey) return { approved: true, reason: '섹터 매핑 없음 — 체크 면제' };
+
+    try {
+      const balance = await getBalance(isPaper);
+      const totalAssets = getDomesticTotalAssets(balance);
+      if (totalAssets <= 0) return { approved: true, reason: 'OK' };
+
+      // 같은 섹터 그룹에 속하는 종목들의 투자액 합산
+      const sectorGroup = RiskEngine.SECTOR_TO_DB_KEY[sector];
+      let sectorInvested = 0;
+      for (const pos of balance.positions) {
+        const posSector = SECTOR_MAP_KR[pos.stockCode];
+        if (posSector && RiskEngine.SECTOR_TO_DB_KEY[posSector] === sectorGroup) {
+          sectorInvested += pos.quantity * pos.avgBuyPrice;
+        }
+      }
+
+      const afterInvested = sectorInvested + orderValue;
+      const ar = await getAllocRisk(isPaper);
+      const limitPct = Number(ar[dbKey]) || 30;
+      const afterPct = (afterInvested / totalAssets) * 100;
+
+      if (afterPct > limitPct) {
+        const msg = `섹터 비중 초과: ${sector} ${afterPct.toFixed(0)}% > 한도 ${limitPct}% (현재 ${(sectorInvested / 10000).toFixed(0)}만 + 신규 ${(orderValue / 10000).toFixed(0)}만)`;
+        logger.warn(`🚫 ${msg}`, { component: 'RISK' });
+        return { approved: false, reason: msg };
+      }
+      return { approved: true, reason: 'OK' };
+    } catch (err) {
+      logger.warn(`⚠️ 섹터 비중 조회 실패 — fail-closed 차단: ${err}`, { component: 'RISK' });
+      return { approved: false, reason: '섹터 비중 조회 실패 — fail-closed 차단' };
+    }
+  }
+
   private async checkTotalExposure(orderValue: number, isPaper: boolean): Promise<PreTradeCheckResult> {
     const balance = await getBalance(isPaper);
     let totalPortfolio = getDomesticTotalAssets(balance);
     let currentInvested = balance.totalEvalAmount;
 
-    // Paper 모드: 해외 자산 합산 — KR만 기준 시 투자비중 과다 계산(~100%)으로 매수 차단
-    if (isPaper) {
-      try {
-        const fx = await getFxRate();
-        if (fx > 0) {
-          const [osHoldings, osCashUsd] = await Promise.all([getOverseasHoldings(true), getOverseasCash(true)]);
-          const osInvestedKrw = Math.round(
-            Array.from(osHoldings.values()).reduce((s, h) => s + h.qty * h.avgPrice, 0) * fx,
-          );
-          const osCashKrw = Math.round(osCashUsd * fx);
-          totalPortfolio += osInvestedKrw + osCashKrw;
-          currentInvested += osInvestedKrw;
-        }
-      } catch { /* fallback: KR-only */ }
-    }
+    // 해외 자산 합산 — KR만 기준 시 투자비중 과다 계산(~100%)으로 매수 차단
+    try {
+      const fx = await getFxRate();
+      if (fx > 0) {
+        const [osHoldings, osCashUsd] = await Promise.all([
+          getOverseasHoldings(isPaper), getOverseasCash(isPaper),
+        ]);
+        const osInvestedKrw = Math.round(
+          Array.from(osHoldings.values()).reduce((s, h) => s + h.qty * h.avgPrice, 0) * fx,
+        );
+        const osCashKrw = Math.round(osCashUsd * fx);
+        totalPortfolio += osInvestedKrw + osCashKrw;
+        currentInvested += osInvestedKrw;
+      }
+    } catch { /* fallback: KR-only */ }
 
     // 소자산(100만 미만)은 비율 체크 의미 없음 — cashCheck가 유일한 실질 관문
     if (totalPortfolio === 0 || totalPortfolio < 1_000_000) return { approved: true, reason: 'OK' };
@@ -427,19 +484,20 @@ export class RiskEngine {
   private async checkWeeklyDrawdown(isPaper: boolean): Promise<PreTradeCheckResult> {
     try {
       // 이번 주 월요일 00:00 KST 계산
-      const now = getKSTNow();
+      const now = getKSTNow(); // getUTCX() = KST 값
       const dayOfWeek = now.getUTCDay(); // 0=일, 1=월 ... 6=토
       const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-      const weekStart = new Date(now);
-      weekStart.setUTCDate(now.getUTCDate() - daysFromMonday);
-      weekStart.setUTCHours(0, 0, 0, 0);
+      const mondayKst = new Date(now);
+      mondayKst.setUTCDate(now.getUTCDate() - daysFromMonday);
+      const mondayDateStr = mondayKst.toISOString().split('T')[0]; // KST 기준 월요일 날짜
+      const weekStartIso = `${mondayDateStr}T00:00:00+09:00`; // 월요일 00:00 KST = 일요일 15:00 UTC
 
       const pool = getPool();
       const { rows } = await pool.query<{ total_value: string }>(
         `SELECT total_value FROM portfolio_snapshots
          WHERE snapshot_at >= $1 AND is_paper = $2
          ORDER BY snapshot_at ASC LIMIT 1`,
-        [weekStart.toISOString(), isPaper],
+        [weekStartIso, isPaper],
       );
       if (rows.length === 0) return { approved: true, reason: 'OK' };
 
@@ -459,7 +517,7 @@ export class RiskEngine {
             [isPaper],
           );
           const osMarketUsd = osRows.reduce(
-            (s: number, h: any) => s + Number(h.quantity) * Number(h.last_price || 0),
+            (s: number, h: { quantity: string; last_price: string }) => s + Number(h.quantity) * Number(h.last_price || 0),
             0,
           );
           const paperCashUsd = isPaper ? await computePaperCash(fxRate) : 0;
@@ -487,13 +545,13 @@ export class RiskEngine {
         try {
           await getPool().query(
             `DELETE FROM portfolio_snapshots WHERE snapshot_at >= $1 AND snapshot_at < $2 AND is_paper = $3`,
-            [weekStart.toISOString(), new Date(weekStart.getTime() + 2 * 60 * 60 * 1000).toISOString(), isPaper],
+            [weekStartIso, new Date(new Date(weekStartIso).getTime() + 2 * 60 * 60 * 1000).toISOString(), isPaper],
           );
           await insertSnapshot({
             total_value: currentValue,
             cash_balance: currentBalance.orderableCash,
             invested_value: currentBalance.totalEvalAmount,
-            unrealized_pnl: currentBalance.totalProfitLoss,
+            unrealized_pnl: currentBalance.totalEvalAmount - currentBalance.purchaseCost, // 실제 미실현PnL
             daily_pnl: 0,
             daily_pnl_pct: 0,
             positions: currentBalance.positions,
@@ -559,6 +617,7 @@ export class RiskEngine {
           `월간 MDD 한도 초과: 고점 대비 -${mddPct.toFixed(1)}% (한도 -${mddLimit}%)`,
           false,
           'KR',
+          isPaper,
         );
         return {
           approved: false,
@@ -584,16 +643,9 @@ export class RiskEngine {
     const balance = await getBalance(isPaper);
     let availableCash = balance.orderableCash;
 
-    // Paper 모드: 해외 현금(USD→KRW) 합산 — 통합증거금 방식으로 KR 단독 고갈 시에도 차단 방지
-    if (isPaper) {
-      try {
-        const fx = await getFxRate();
-        if (fx > 0) {
-          const osCashUsd = await getOverseasCash(true);
-          availableCash += Math.round(osCashUsd * fx);
-        }
-      } catch { /* fallback: KR-only */ }
-    }
+    // Paper 모드: 국내 매수는 국내 현금만 사용 (해외 현금 합산 제거)
+    // 기존: 해외 USD를 KRW 환산 후 합산 → 국내 매수 시 해외 현금 미차감 → 무한 매수력 버그
+    // 해외 현금은 해외 매수 전용 (overseas-executor에서 별도 관리)
 
     if (orderValue > availableCash) {
       return {

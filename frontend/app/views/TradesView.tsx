@@ -90,34 +90,38 @@ function TradesView({ trades, watchlist, viewMode: dashViewMode }: { trades: Tra
         />
       </div>
 
-      {/* 종합 통계 */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-        <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+      {/* 종합 통계 — 2x2 + 하단 행 */}
+      <div className="grid grid-cols-2 gap-2.5">
+        <div className="glass rounded-xl p-3 text-center border border-white/[0.04]">
           <div className="text-[10px] text-slate-500">총 체결</div>
-          <div className="text-lg font-black mt-1">{filtered.length}건</div>
+          <div className="text-lg font-black mt-0.5">{filtered.length}<span className="text-xs text-slate-500 ml-0.5">건</span></div>
         </div>
-        <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
-          <div className="text-[10px] text-slate-500">실현 손익(원)</div>
-          <div className={`text-lg font-black mt-1 ${totalPnlKrw >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-            {totalPnlKrw >= 0 ? '+' : ''}{Math.round(totalPnlKrw).toLocaleString()}
-          </div>
-        </div>
-        <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
-          <div className="text-[10px] text-slate-500">실현 손익($)</div>
-          <div className={`text-lg font-black mt-1 ${totalPnlUsd >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-            {totalPnlUsd >= 0 ? '+' : ''}${Math.abs(totalPnlUsd).toFixed(2)}
-          </div>
-        </div>
-        <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+        <div className="glass rounded-xl p-3 text-center border border-white/[0.04]">
           <div className="text-[10px] text-slate-500">승률</div>
-          <div className="text-lg font-black mt-1">
+          <div className="text-lg font-black mt-0.5">
             {(totalWins + totalLosses) > 0 ? Math.round((totalWins / (totalWins + totalLosses)) * 100) : 0}%
-            <span className="text-[11px] text-slate-500 ml-1">{totalWins}W/{totalLosses}L</span>
+          </div>
+          <div className="text-[9px] text-slate-600">{totalWins}W / {totalLosses}L</div>
+        </div>
+        <div className="glass rounded-xl p-3 text-center border border-white/[0.04]">
+          <div className="text-[10px] text-slate-500">실현 손익</div>
+          <div className="mt-0.5 space-y-0.5">
+            {totalPnlKrw !== 0 && (
+              <div className={`text-sm font-bold tabular-nums ${totalPnlKrw >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {totalPnlKrw >= 0 ? '+' : ''}{Math.round(totalPnlKrw).toLocaleString()}원
+              </div>
+            )}
+            {totalPnlUsd !== 0 && (
+              <div className={`text-sm font-bold tabular-nums ${totalPnlUsd >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {totalPnlUsd >= 0 ? '+' : '-'}${Math.abs(totalPnlUsd).toFixed(2)}
+              </div>
+            )}
+            {totalPnlKrw === 0 && totalPnlUsd === 0 && <div className="text-sm text-slate-500 mt-0.5">-</div>}
           </div>
         </div>
-        <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
-          <div className="text-[10px] text-slate-500">수익일/손실일</div>
-          <div className="text-lg font-black mt-1">
+        <div className="glass rounded-xl p-3 text-center border border-white/[0.04]">
+          <div className="text-[10px] text-slate-500">수익일 / 손실일</div>
+          <div className="text-lg font-black mt-0.5">
             <span className="text-emerald-400">{profitDays}</span>
             <span className="text-slate-600 mx-1">/</span>
             <span className="text-rose-400">{lossDays}</span>

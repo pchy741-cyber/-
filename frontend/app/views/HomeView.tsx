@@ -2,7 +2,7 @@
 
 import React from 'react';
 import type { Dashboard, Health, KillSwitch, Trade, UsDashboard, WithdrawConfig, WatchlistItem, Strategy, AllocConfig, ViewMode, ToastFn, ConfirmFn, UsHolding, UsWatchlistItem, Chain, MpData, SystemEvent, TradingStatus, AiStatus, LoopStatus, TodayStats } from '../types';
-import { api, fmtWon, pc, FALLBACK_FX_RATE } from '../lib/utils';
+import { api, fmtWon, pc, FALLBACK_FX_RATE, toKST, getKSTMinutes } from '../lib/utils';
 import { useCountUp } from '../lib/hooks';
 import { toDisplayName } from '../lib/helpers';
 import MoneyStatsPanel from '../panels/MoneyStatsPanel';
@@ -104,7 +104,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       if (r?.favorites) setFavorites(new Set(r.favorites));
       if (r?.blacklist) setBlacklist(new Set(r.blacklist));
     }).catch(() => {});
-  }, []);
+  }, [viewMode]);
   const handleToggleFavorite = React.useCallback(async (code: string) => {
     try {
       const r = await api(`/overseas/favorites/toggle?viewMode=${viewMode}`, { method: 'POST', body: JSON.stringify({ code }) });
@@ -228,18 +228,17 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   const usTabPnlUsd = todayStats ? todayStats.usRealizedPnlUsd : _usTabPnlUsd;
   const usTabPnlKrw = Math.round(usTabPnlUsd * fxRate);
 
-  const now = new Date();
+  const kstNow = toKST(new Date());
   const marketStart = 9 * 60;
   const marketEnd = 15 * 60 + 30;
-  const currentMin = now.getHours() * 60 + now.getMinutes();
+  const currentMin = getKSTMinutes();
   const marketProgress = health?.marketOpen ? Math.min(100, Math.max(0, ((currentMin - marketStart) / (marketEnd - marketStart)) * 100)) : 0;
   const usMarketProgress = (() => {
-    const h = now.getHours(); const m = now.getMinutes();
-    const cur = h * 60 + m;
+    const cur = currentMin;
     const adj = cur < 6 * 60 ? cur + 24 * 60 : cur;
     return Math.min(100, Math.max(0, ((adj - (23 * 60 + 30)) / (6 * 60 + 24 * 60 - (23 * 60 + 30))) * 100));
   })();
-  const currentTimeStr = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+  const currentTimeStr = `${kstNow.getUTCHours().toString().padStart(2,'0')}:${kstNow.getUTCMinutes().toString().padStart(2,'0')}`;
   const defensePark = dash?.defensePark;
 
   const animCombined = useCountUp(combinedPnl);
@@ -261,20 +260,32 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden">
         <div className="flex items-center border-b border-white/[0.04]">
           <button onClick={() => { setHoldingsTab('KR'); setUserPickedTab(true); }}
-            className={`flex-1 py-3 px-4 text-sm font-bold transition-all relative ${holdingsTab === 'KR' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-400'}`}>
+            className={`flex-1 py-2.5 px-2 sm:px-4 text-sm font-bold transition-all relative ${holdingsTab === 'KR' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-400'}`}>
             {holdingsTab === 'KR' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500" />}
-            <span className="flex items-center justify-center gap-1.5 flex-wrap">
-              국내주식 {chains.length > 0 && <span className="text-[10px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded-full">{chains.length}</span>}
-              {krTabHasData && <span className={`text-[10px] font-semibold ${krTabPnl > 0 ? 'text-emerald-400' : krTabPnl < 0 ? 'text-rose-400' : 'text-slate-500'}`}>{krTabPnl > 0 ? '+' : ''}{Math.round(krTabPnl).toLocaleString('ko-KR')}원{krTabPct != null ? ` (${krTabPct > 0 ? '+' : ''}${krTabPct.toFixed(2)}%)` : ''}</span>}
-            </span>
+            <div className="flex flex-col items-center gap-0.5">
+              <span className="flex items-center gap-1">
+                국내주식 {chains.length > 0 && <span className="text-[10px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded-full">{chains.length}</span>}
+              </span>
+              {krTabHasData && (
+                <span className={`text-[10px] font-semibold tabular-nums leading-tight ${krTabPnl > 0 ? 'text-emerald-400' : krTabPnl < 0 ? 'text-rose-400' : 'text-slate-500'}`}>
+                  {krTabPnl > 0 ? '+' : ''}{Math.round(krTabPnl).toLocaleString('ko-KR')}원{krTabPct != null ? ` (${krTabPct > 0 ? '+' : ''}${krTabPct.toFixed(1)}%)` : ''}
+                </span>
+              )}
+            </div>
           </button>
           <button onClick={() => { setHoldingsTab('US'); setUserPickedTab(true); }}
-            className={`flex-1 py-3 px-4 text-sm font-bold transition-all relative ${holdingsTab === 'US' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-400'}`}>
+            className={`flex-1 py-2.5 px-2 sm:px-4 text-sm font-bold transition-all relative ${holdingsTab === 'US' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-400'}`}>
             {holdingsTab === 'US' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500" />}
-            <span className="flex items-center justify-center gap-1.5 flex-wrap">
-              해외주식 {usHoldings.length > 0 && <span className="text-[10px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded-full">{usHoldings.length}</span>}
-              {(todayStats ? todayStats.usSellCount : usTodaySells.length) > 0 && <span className={`text-[10px] font-semibold ${usTabPnlUsd > 0 ? 'text-emerald-400' : usTabPnlUsd < 0 ? 'text-rose-400' : 'text-slate-500'}`}>{usTabPnlUsd > 0 ? '+' : ''}${usTabPnlUsd.toFixed(2)} (₩{usTabPnlKrw > 0 ? '+' : ''}{usTabPnlKrw.toLocaleString('ko-KR')})</span>}
-            </span>
+            <div className="flex flex-col items-center gap-0.5">
+              <span className="flex items-center gap-1">
+                해외주식 {usHoldings.length > 0 && <span className="text-[10px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded-full">{usHoldings.length}</span>}
+              </span>
+              {(todayStats ? todayStats.usSellCount : usTodaySells.length) > 0 && (
+                <span className={`text-[10px] font-semibold tabular-nums leading-tight ${usTabPnlUsd > 0 ? 'text-emerald-400' : usTabPnlUsd < 0 ? 'text-rose-400' : 'text-slate-500'}`}>
+                  {usTabPnlUsd > 0 ? '+' : ''}${usTabPnlUsd.toFixed(2)} (₩{usTabPnlKrw > 0 ? '+' : ''}{usTabPnlKrw.toLocaleString('ko-KR')})
+                </span>
+              )}
+            </div>
           </button>
         </div>
         {holdingsTab === 'KR' && <KrHoldingsTab chains={chains} dash={dash} busyAction={busyAction} guard={guard} getStockName={getStockName} onRefresh={onRefresh} toast={toast} confirm={confirm} viewMode={viewMode} />}
@@ -315,7 +326,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
             {health!.recentEvents!.map((ev: SystemEvent, i: number) => (
               <div key={ev.timestamp + ev.component + i} className="flex items-center gap-2 px-3 py-1.5 text-[11px]">
                 <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${ev.status === 'success' ? 'bg-emerald-400' : ev.status === 'error' ? 'bg-rose-400' : 'bg-blue-400'}`} />
-                <span className="text-slate-500 shrink-0 w-12">{(() => { const d = new Date(ev.timestamp); return `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`; })()}</span>
+                <span className="text-slate-500 shrink-0 w-12">{new Date(ev.timestamp).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hour12: false })}</span>
                 <span className="text-slate-400 font-medium shrink-0">[{ev.component}]</span>
                 <span className="text-slate-300 truncate" title={ev.message}>{ev.message}</span>
               </div>

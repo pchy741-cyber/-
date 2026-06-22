@@ -304,7 +304,6 @@ function repairAndParse<T>(text: string, tag: string): T | null {
  */
 function extractIndividualObjects(raw: string, tag: string): unknown[] {
   const results: unknown[] = [];
-  const _searchFrom = 0;
 
   // First, try to get the text inside a "scores" array or any top-level array
   let searchText = raw;

@@ -2,6 +2,7 @@ import { getCtxIsPaper } from '../config/context.js';
 import { config } from '../config/index.js';
 import { getActiveWatchlist, getPool, upsertWatchlistItem } from '../db/client.js';
 import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
 import { kisRequest } from './client.js';
 import { getCurrentPrice } from './market.js';
 
@@ -13,6 +14,13 @@ import { getCurrentPrice } from './market.js';
  *
  * 그룹 1~10번까지 조회 → DB watchlist에 없는 종목은 자동 추가
  */
+
+/** 관심종목 조회 간 대기 시간 (rate limit 준수) */
+const INTEREST_GROUP_DELAY_MS = 200;
+/** 보유종목 시세 조회 간 대기 시간 */
+const HOLDINGS_SYNC_DELAY_MS = 300;
+/** KRX 전종목 조회 타임아웃 */
+const KRX_REQUEST_TIMEOUT_MS = 10_000;
 
 // KIS 관심종목 TR_ID
 const INTEREST_TR_ID = {
@@ -92,7 +100,7 @@ export async function syncInterestGroups(): Promise<{ added: string[]; total: nu
         component: 'KIS_INTEREST',
       });
     }
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, INTEREST_GROUP_DELAY_MS));
   }
 
   if (allStocks.size === 0) {
@@ -131,7 +139,7 @@ export async function syncInterestGroups(): Promise<{ added: string[]; total: nu
 
     added.push(`${name}(${code})`);
     logger.info(`  ✅ 추가: ${name} (${code}) [${stock.market}]`, { component: 'KIS_INTEREST' });
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, INTEREST_GROUP_DELAY_MS));
   }
 
   const result = { added, total: allStocks.size };
@@ -175,7 +183,7 @@ export async function syncHoldingsToWatchlist(): Promise<{ added: string[] }> {
       } catch {
         /* fallback to KOSPI */
       }
-      await new Promise((r) => setTimeout(r, 300));
+      await new Promise((r) => setTimeout(r, HOLDINGS_SYNC_DELAY_MS));
 
       await upsertWatchlistItem(
         {
@@ -259,7 +267,7 @@ export async function fixWatchlistNames(): Promise<{ fixed: number; total: numbe
     // KRX 전종목 리스트를 한 번만 조회 (rate limit 없음)
     const krxMap = new Map<string, string>();
     try {
-      const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+      const today = getKSTNow().toISOString().split('T')[0].replace(/-/g, '');
       const resp = await fetch('https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd', {
         method: 'POST',
         headers: {
@@ -275,9 +283,9 @@ export async function fixWatchlistNames(): Promise<{ fixed: number; total: numbe
           pageNo: '1',
           rowSize: '5000',
         }).toString(),
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(KRX_REQUEST_TIMEOUT_MS),
       });
-      const data = (await resp.json()) as any;
+      const data = (await resp.json()) as { output?: Array<{ ISU_SRT_CD?: string; ISU_ABBRV?: string }> };
       if (Array.isArray(data.output)) {
         for (const item of data.output) {
           const code = String(item.ISU_SRT_CD ?? '').trim();

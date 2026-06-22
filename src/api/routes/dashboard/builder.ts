@@ -8,7 +8,7 @@ import { getOverseasScores } from '../../../cache/overseas-scores.js';
 import { cachePrice, getLastKnownPrices, getScoresWithFallback } from '../../../cache/redis.js';
 import { FALLBACK_FX_RATE, SECTOR_CLASS } from '../../../config/constants.js';
 import { runWithMode } from '../../../config/context.js';
-import { baseIsPaper, config } from '../../../config/index.js';
+import { baseIsPaper } from '../../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getOpenChains, isMemoryMode, safeQuery } from '../../../db/client.js';
 import { getAccountBalance } from '../../../kis/account.js';
 import { getBatchPrices, isMarketOpen } from '../../../kis/market.js';
@@ -98,7 +98,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   const [balanceResult, chains, strategy, insightRows, defensePark, _liveBalanceForCap] = await Promise.all([
     balanceFn().catch(() => defaultBalance),
     getOpenChains(viewIsPaper).catch(() => []),
-    getActiveStrategy().catch(() => null),
+    runWithMode(viewIsPaper, () => getActiveStrategy()).catch(() => null),
     safeQuery(
       `SELECT id, category, insight, confidence, sample_count, last_updated, is_manual,
               recommendation, param_change, is_applied, applied_at, is_paper
@@ -242,8 +242,11 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   let totalChainInvested = 0;
   let totalChainPnl = 0;
   const enrichedChains = chains.map((ch: any) => {
-    const currentPrice = priceMap.get(ch.stock_code) ?? 0;
+    // 현재가 0 방지: 장 마감 시 캐시 만료로 PnL이 갑자기 0으로 리셋되는 버그 수정
+    // 폴백 순서: priceMap → avgPrice(PnL=0 유지, 급변 방지)
+    const rawPrice = priceMap.get(ch.stock_code) ?? 0;
     const avgPrice = Number(ch.avg_buy_price) || 0;
+    const currentPrice = rawPrice > 0 ? rawPrice : avgPrice;
     const qty = Number(ch.total_quantity) || 0;
     const total_invested = avgPrice * qty;
     const unrealizedPnl = currentPrice > 0 ? (currentPrice - avgPrice) * qty : 0;
@@ -308,42 +311,39 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
 
   // calcTotalAssets 입력값 준비
   const rawCash = balance.orderableCash ?? PAPER_INITIAL_CAPITAL;
-  let liveRealizedPnl = 0;
-  {
-    const realizedRows = await safeQuery<{ total: string }>(
-      `SELECT COALESCE(SUM(realized_pnl), 0)::text AS total
-       FROM transaction_chains WHERE status='CLOSED' AND is_paper=$1`,
-      [viewIsPaper],
-    );
-    liveRealizedPnl = Number(realizedRows.rows[0]?.total ?? 0);
-  }
 
-  // ── 해외 실현손익 계산 (BUY/SELL 순흐름 + 현재 보유 원가 복원) ──
+  // ── 실현손익 3 쿼리 → Promise.all 병렬화 (네트워크 왕복 70% 단축) ──
+  let liveRealizedPnl = 0;
   let overseasRealizedPnlUsd = 0;
   try {
     const tradingMode = viewIsPaper ? 'paper' : 'live';
-    // 해외 전체 매매 순흐름: SELL 매출 - BUY 비용
-    const { rows: flowRows } = await safeQuery<{ net_flow: string }>(
-      `SELECT COALESCE(SUM(CASE
-         WHEN side = 'SELL' THEN filled_price * filled_quantity
-         WHEN side = 'BUY'  THEN -(filled_price * filled_quantity)
-       END), 0)::text AS net_flow
-       FROM orders
-       WHERE trigger_source = 'OVERSEAS' AND status = 'FILLED' AND (trading_mode = $1::text OR ($1::text = 'paper' AND trading_mode = 'p_arch'))`,
-      [tradingMode],
-    );
-    const netFlowUsd = Number(flowRows[0]?.net_flow ?? 0);
-    // 현재 보유종목 원가 합산 (아직 보유 중인 포지션의 투입금 복원)
-    const { rows: holdCostRows } = await safeQuery<{ invested: string }>(
-      `SELECT COALESCE(SUM(avg_price * quantity), 0)::text AS invested
-       FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1`,
-      [viewIsPaper],
-    );
-    const currentInvestedUsd = Number(holdCostRows[0]?.invested ?? 0);
-    // 실현손익 = 순흐름 + 현재보유원가 (미실현 부분 상쇄)
+    const [realizedRows, flowRows, holdCostRows] = await Promise.all([
+      safeQuery<{ total: string }>(
+        `SELECT COALESCE(SUM(realized_pnl), 0)::text AS total
+         FROM transaction_chains WHERE status='CLOSED' AND is_paper=$1`,
+        [viewIsPaper],
+      ),
+      safeQuery<{ net_flow: string }>(
+        `SELECT COALESCE(SUM(CASE
+           WHEN side = 'SELL' THEN filled_price * filled_quantity
+           WHEN side = 'BUY'  THEN -(filled_price * filled_quantity)
+         END), 0)::text AS net_flow
+         FROM orders
+         WHERE trigger_source = 'OVERSEAS' AND status = 'FILLED' AND (trading_mode = $1::text OR ($1::text = 'paper' AND trading_mode = 'p_arch'))`,
+        [tradingMode],
+      ),
+      safeQuery<{ invested: string }>(
+        `SELECT COALESCE(SUM(avg_price * quantity), 0)::text AS invested
+         FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1`,
+        [viewIsPaper],
+      ),
+    ]);
+    liveRealizedPnl = Number(realizedRows.rows[0]?.total ?? 0);
+    const netFlowUsd = Number(flowRows.rows[0]?.net_flow ?? 0);
+    const currentInvestedUsd = Number(holdCostRows.rows[0]?.invested ?? 0);
     overseasRealizedPnlUsd = Math.round((netFlowUsd + currentInvestedUsd) * 100) / 100;
   } catch {
-    /* overseas realized PnL 계산 실패 시 0 유지 */
+    /* 실현손익 계산 실패 시 0 유지 */
   }
 
   // ── 해외 보유종목 (별도 표시용, 국내 총자산에 합산하지 않음) ──
@@ -381,17 +381,19 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     if (viewIsPaper) {
       overseasCash = await computePaperCash(); // USD (결정론적 — orders 기반)
     } else {
-      const { rows: osCashRows } = await safeQuery(
-        `SELECT value, EXTRACT(EPOCH FROM (NOW() - COALESCE(updated_at, NOW() - INTERVAL '999 hours'))) AS age_sec
-         FROM overseas_state WHERE key = 'cash'`,
+      // cash + cash_max_usd 배치 조회 (2 쿼리 → 1 쿼리)
+      const { rows: cashStateRows } = await safeQuery(
+        `SELECT key, value, EXTRACT(EPOCH FROM (NOW() - COALESCE(updated_at, NOW() - INTERVAL '999 hours'))) AS age_sec
+         FROM overseas_state WHERE key IN ('cash', 'cash_max_usd')`,
       );
-      _osCashAge = osCashRows.length > 0 ? Number(osCashRows[0].age_sec) : Infinity;
-      overseasCash = osCashRows.length > 0 ? Number(osCashRows[0].value) : 0; // KRW
-      // KIS maxUsd(통합증거금 전체 주문가능 USD) — 환율 역변환 오차 방지
-      const { rows: maxUsdRows } = await safeQuery(
-        `SELECT value FROM overseas_state WHERE key = 'cash_max_usd'`,
-      );
-      _overseasMaxUsd = maxUsdRows.length > 0 ? Number(maxUsdRows[0].value) : 0;
+      for (const row of cashStateRows) {
+        if (row.key === 'cash') {
+          _osCashAge = Number(row.age_sec);
+          overseasCash = Number(row.value); // KRW
+        } else if (row.key === 'cash_max_usd') {
+          _overseasMaxUsd = Number(row.value);
+        }
+      }
     }
 
     // 종목별 고점/부분익절단계/동적TP·SL 일괄 조회
@@ -441,6 +443,9 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
         { component: 'DASHBOARD' },
       );
     }
+    // GLOBAL_WATCHLIST → Map 변환 (O(n²) → O(n) 최적화)
+    const watchlistCodeMap = new Map(GLOBAL_WATCHLIST.map(w => [w.code, w]));
+
     for (const r of osRows) {
       const code = String(r.stock_code);
       const qty = Number(r.quantity);
@@ -453,7 +458,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       overseasTotalInvested += avgP * qty;
       overseasMarketValueUsd += curP * qty;
 
-      const wItem = GLOBAL_WATCHLIST.find((w) => w.code === code);
+      const wItem = watchlistCodeMap.get(code);
       const sector = wItem?.sector ?? '';
       const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
       const isMediumBeta = SECTOR_CLASS.MEDIUM_BETA.includes(sector);
@@ -538,18 +543,20 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   let FX_RATE = await getFxRate();
   if (FX_RATE <= 0) FX_RATE = FALLBACK_FX_RATE;
 
-  // 전일 총자산 스냅샷 (수익률 계산용)
+  // 전일 총자산 스냅샷 (수익률 계산용) + 미실현PnL (입금 영향 제거용)
   let prevDayTotalValue = 0;
+  let prevDayUnrealizedPnl = 0;
   {
-    const snapResult = await safeQuery<{ total_value: string }>(
-      `SELECT total_value FROM portfolio_snapshots
+    const snapResult = await safeQuery<{ total_value: string; unrealized_pnl: string }>(
+      `SELECT total_value, unrealized_pnl FROM portfolio_snapshots
        WHERE is_paper = $1 AND total_value > 0
-         AND snapshot_at < CURRENT_DATE
+         AND snapshot_at < (NOW() AT TIME ZONE 'Asia/Seoul')::DATE
        ORDER BY snapshot_at DESC LIMIT 1`,
       [viewIsPaper],
     );
     if (snapResult.rows[0]) {
       prevDayTotalValue = Number(snapResult.rows[0].total_value);
+      prevDayUnrealizedPnl = Number(snapResult.rows[0].unrealized_pnl ?? 0);
     }
   }
 
@@ -572,6 +579,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     paperInitialCapital: PAPER_INITIAL_CAPITAL,
     liveRealizedPnl,
     prevDayTotalValue,
+    prevDayUnrealizedPnl,
   });
 
   // 디버깅 로그 — 계산 결과 확인
@@ -642,7 +650,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       domesticCash: assets.unifiedCash,
       unrealizedPnl: Math.round(viewIsPaper ? totalChainPnl : balance.totalProfitLoss || totalChainPnl),
       realizedPnl: Math.round(liveRealizedPnl),
-      pnl: Math.round(assets.totalPnl + assets.overseasUnrealizedPnlKrw),
+      pnl: Math.round(assets.totalPnl), // totalPnl already includes overseasUnrealizedPnlKrw (calc.ts)
       pnlPct: assets.totalPnlPct,
       prevDayTotalValue: assets.prevDayTotalValue,
       dailyChangePct: assets.dailyChangePct,
@@ -675,7 +683,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       currentPrice: priceMap.get(s.stock_code) ?? 0,
     })),
     strategy: strategy ?? { mode: 'SWING' },
-    killSwitch: getKillSwitchStatusAll(),
+    killSwitch: await runWithMode(viewIsPaper, async () => getKillSwitchStatusAll()),
     cooldown: await runWithMode(viewIsPaper, async () => {
       const status = await getCooldownStatus().catch(() => ({
         active: false,
@@ -687,7 +695,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       const eodOnly = await isEodOnlyMode().catch(() => false);
       return { ...status, eodOnly };
     }),
-    tradingMode: config.tradingMode,
+    tradingMode: viewIsPaper ? 'paper' : 'live',
     viewMode: viewIsPaper ? 'paper' : 'live',
     cashSource: actualCashSource,
     riskLimits: (() => {

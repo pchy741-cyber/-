@@ -5,6 +5,7 @@
  * 이 게이트를 통과하지 못하면 이후 분석 일체 생략.
  */
 
+import { isCommunityPumpBlocked } from '../../../automation/community-sentinel.js';
 import { logger } from '../../../utils/logger.js';
 import { getOverride } from '../../ai-overrides.js';
 import { BUY_BLOCKED_CODES } from '../trading-rules.js';
@@ -41,6 +42,12 @@ export function isHardBlocked(input: HardGateInput): boolean {
   // CEO 지시: 바이오/손실 종목 매수 차단 (Paper: CEO 블랙리스트만 유지)
   if (BUY_BLOCKED_CODES.has(code)) {
     logger.info(`  🚫 ${code}(${name}): 매수 차단 목록 — 스킵`, { component: 'TRACK_B' });
+    return true;
+  }
+
+  // Community Sentinel: 펌프/작전주 리스크 감지 → 매수 차단
+  if (isCommunityPumpBlocked(code)) {
+    logger.info(`  🚫 ${code}(${name}): 커뮤니티 펌프 리스크 — 매수 차단`, { component: 'TRACK_B' });
     return true;
   }
 
@@ -106,7 +113,7 @@ export function isHardBlocked(input: HardGateInput): boolean {
 
   // 1) 저가주: Live 5,000원 미만, Paper 1,000원 미만 (ETF 제외)
   // v10.4: Live 2000→5000, Paper 500→1000 (저가 잡주 거래 방지)
-  const ETF_BRANDS = ['KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'KOSEF'];
+  const ETF_BRANDS: readonly string[] = ['KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'KOSEF'];
   const isETF = ETF_BRANDS.some((b) => name.toUpperCase().includes(b));
   const earlyPrice = livePrices.get(code);
   const junkPriceThreshold = isPaper ? 1000 : 5000;

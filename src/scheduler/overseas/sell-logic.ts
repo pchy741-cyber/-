@@ -60,6 +60,21 @@ export interface Holding {
 
 import type { AIDecision } from './types.js';
 
+// ── Sell logic named constants ──
+/** Default ATR% when tech data is missing */
+const DEFAULT_ATR_PCT = 2.0;
+/** Minimum AI confidence for sell signal (high-beta sectors) */
+const MIN_AI_SELL_CONF_HIGH_BETA = 0.82;
+/** Minimum AI confidence for sell signal (other sectors) */
+const MIN_AI_SELL_CONF_DEFAULT = 0.78;
+/** RSI threshold for BigMover overbought exit */
+const RSI_BIGMOVER_OVERBOUGHT = 82;
+/** Profit tightening thresholds (% from peak) */
+const PROFIT_TIGHTEN_THRESHOLDS = { HIGH: 20, MEDIUM: 15, LOW: 10 } as const;
+const PROFIT_TIGHTEN_VALUES = { HIGH: 1.5, MEDIUM: 1.0, LOW: 0.5 } as const;
+/** Milliseconds per day */
+const MS_PER_DAY = 1000 * 60 * 60 * 24;
+
 export interface SellContext {
   holdings: Map<string, Holding>;
   pendingOrderStocks: Set<string>;
@@ -111,6 +126,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     if (!tech) continue;
 
     const curPrice = tech.price.currentPrice;
+    if (holding.avgPrice <= 0 || curPrice <= 0) continue; // 비정상 데이터 방어
     const pnlPct = ((curPrice - holding.avgPrice) / holding.avgPrice) * 100;
     const ai = aiMap.get(code);
 
@@ -169,7 +185,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     const _isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
 
     // ATR 동적 트레일링 스톱 + VIX 레짐 타이트닝
-    const atrPctValue = tech.atrPct ?? 2.0;
+    const atrPctValue = tech.atrPct ?? DEFAULT_ATR_PCT;
     // TP/SL: 매 사이클마다 현재 조건으로 재계산 (DB 저장값은 참고용)
     // 기존 문제: DB에 20~25% TP가 박혀서 사실상 익절 불가 → 항상 현재 조건 반영
     const dyn = calcDynamicTpSl({
@@ -183,7 +199,10 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       tunerOverrides,
       atrPct: atrPctValue,
     });
-    const hardTpPct = dyn.tpPct;
+    // TP: 기존 DB TP가 동적 TP보다 낮으면(보수적) 유지 → 익절 기회 보호
+    const hardTpPct = holding.tpPct != null && holding.tpPct > 0
+      ? Math.min(holding.tpPct, dyn.tpPct)
+      : dyn.tpPct;
     // SL: 매 사이클마다 현재 조건으로 재계산 (tuner 반영, 시장 변화 적응)
     // 단, 기존 DB값이 더 타이트(덜 음수)하면 보수적으로 유지
     const dynamicSl = -dyn.slPct;
@@ -199,14 +218,16 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     });
     // 수익 크기 비례 트레일 타이트닝: 수익 클수록 보호 강화 (2×ATR 연구 — 드로다운 32% 감소 검증)
     // maxPnl 10%+: 추가 0.5% 타이트, 15%+: 1.0% 타이트, 20%+: 1.5% 타이트
-    const profitTighten = maxPnlPct >= 20 ? 1.5 : maxPnlPct >= 15 ? 1.0 : maxPnlPct >= 10 ? 0.5 : 0;
+    const profitTighten = maxPnlPct >= PROFIT_TIGHTEN_THRESHOLDS.HIGH ? PROFIT_TIGHTEN_VALUES.HIGH
+      : maxPnlPct >= PROFIT_TIGHTEN_THRESHOLDS.MEDIUM ? PROFIT_TIGHTEN_VALUES.MEDIUM
+      : maxPnlPct >= PROFIT_TIGHTEN_THRESHOLDS.LOW ? PROFIT_TIGHTEN_VALUES.LOW : 0;
     // v10.8: trailTighten/profitTighten은 양수값 — 음수 trail에서 빼야 더 타이트해짐
     const effectiveTrailDropPct = dynamicTrailDrop - vixRegime.trailTighten - profitTighten;
     // v10.9: 트레일 활성화 대폭 하향 (기존 5~10% → 2~4%) — 소액 계좌 수익 보호
     const baseTrailActivate = isHighBeta ? 4.0 : isMediumBeta ? 3.0 : 2.0;
     const trailActivatePct = tunerOverrides.trail_activate_pct ?? baseTrailActivate;
-    const minAiSellConf = isHighBeta ? 0.82 : 0.78;
-    const holdingDays = (Date.now() - new Date(holding.boughtAt).getTime()) / (1000 * 60 * 60 * 24);
+    const minAiSellConf = isHighBeta ? MIN_AI_SELL_CONF_HIGH_BETA : MIN_AI_SELL_CONF_DEFAULT;
+    const holdingDays = (Date.now() - new Date(holding.boughtAt).getTime()) / MS_PER_DAY;
     // 🔧 강한 매도 신호(score≤-30 + 과매수) → minHold 완화 (HIGH_BETA 3→1일)
     const strongSellSignal = tech.score <= -30 && (tech.signal === 'SELL' || tech.signal === 'STRONG_SELL');
     const minHoldForSell = strongSellSignal ? 1 : isHighBeta ? 3 : 2;
@@ -260,7 +281,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
         // v10.8: 단, 하드 TP/ATR 트레일링/수익 확정은 HOLD에서도 허용 (수익 실현 차단 방지)
         if (pnlPct >= hardTpPct) {
           sellReason = `익절(${hardTpPct}%): +${pnlPct.toFixed(1)}% (HOLD 중 TP 도달)`;
-        } else if (maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {
+        } else if (holdingDays >= 0.5 && maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {
           sellReason = `ATR트레일(HOLD중): 고점 +${maxPnlPct.toFixed(1)}% → 현재 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
         }
       }
@@ -302,7 +323,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     } else if (
       (vixRegime.regime === 'STRESS' || vixRegime.regime === 'CRISIS') &&
       pnlPct >= 1.0 &&
-      holdingDays >= 0.25 &&
+      holdingDays >= 0.5 && // v11.1: 매수 직후 즉시청산 방지 (12h 가드)
       // CRISIS 진입 포지션(과매도반등/BigMover)은 조기 청산하지 않음 — 평균 +5~10% 목표
       !(vixRegime.regime === 'CRISIS' && pnlPct < 3.0 && holdingDays < 2)
     ) {
@@ -311,8 +332,9 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       // ── 1e. 나스닥 급락 선제 청산 ──
       // 전일 나스닥 -2% 이하 + 수익 구간 → 당일 미국장 약세 선반영, 수익 잠금
       // 왕복 수수료 0.7% 커버 + 실질 수익 최소 1.3% 보장 → 2.0% 기준
-    } else if (ctx.nasdaqChange1d != null && ctx.nasdaqChange1d <= -2.0 && pnlPct >= 2.0 && holdingDays >= 0.1) {
-      sellReason = `나스닥급락 선제청산(${ctx.nasdaqChange1d.toFixed(1)}%): +${pnlPct.toFixed(1)}% → 미국장 하락 선반영 수익확정`;
+    } else if (ctx.nasdaqChange1d != null && ctx.nasdaqChange1d <= -2.0 && pnlPct >= 0.5 && holdingDays >= 0.25) {
+      // v11.1: 0.1→0.25일(6h) — 당일 매수 후 2~3h내 즉시청산 방지
+      sellReason = `나스닥급락 선제청산(${ctx.nasdaqChange1d.toFixed(1)}%): +${pnlPct.toFixed(1)}% → 미국장 하락 선반영 즉시 수익확정`;
 
       // ── 2. ATR 트레일링 스톱 ──
     } else if (maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {
@@ -357,7 +379,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       sellReason = `AI 매도(${(ai.confidence * 100).toFixed(0)}%): ${ai.reasoning}`;
     } else if (
       (!ai || (ai.action === 'SELL' && ai.confidence < minAiSellConf)) &&
-      tech.rsi > 82 &&
+      tech.rsi > RSI_BIGMOVER_OVERBOUGHT &&
       pnlPct >= 1.5 &&
       holdingDays >= 0.25
     ) {

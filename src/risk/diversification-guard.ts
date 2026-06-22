@@ -16,6 +16,11 @@ import { logger } from '../utils/logger.js';
 
 const COMP = 'DIV_GUARD';
 
+/** 같은 종목 1시간 내 최대 매수 건수 */
+const MAX_BUY_PER_1H = 1;
+/** 같은 종목 24시간 내 최대 매수 건수 */
+const MAX_BUY_PER_24H = 2;
+
 export interface DiversificationCheck {
   allowed: boolean;
   reason: string;
@@ -44,7 +49,7 @@ export async function checkDiversification(stockCode: string, isPaper = false): 
     const count24h = Number(rows[0]?.c24h ?? 0);
     const count1h = Number(rows[0]?.c1h ?? 0);
 
-    if (count1h >= 1) {
+    if (count1h >= MAX_BUY_PER_1H) {
       return {
         allowed: false,
         reason: `1시간 내 ${count1h}건 매수 — 중복 매수 차단`,
@@ -52,10 +57,10 @@ export async function checkDiversification(stockCode: string, isPaper = false): 
         count1h,
       };
     }
-    if (count24h >= 2) {
+    if (count24h >= MAX_BUY_PER_24H) {
       return {
         allowed: false,
-        reason: `24시간 내 ${count24h}건 매수 — 다양화 (최대 2건)`,
+        reason: `24시간 내 ${count24h}건 매수 — 다양화 (최대 ${MAX_BUY_PER_24H}건)`,
         count24h,
         count1h,
       };

@@ -10,6 +10,7 @@
 
 import { REFRESH } from '../config/constants.js';
 import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
 
 export interface EarningsCheckResult {
   hasUpcomingEarnings: boolean;
@@ -20,6 +21,16 @@ export interface EarningsCheckResult {
 const SAFE: EarningsCheckResult = { hasUpcomingEarnings: false, earningsDate: null, daysUntil: null };
 
 const _cache = new Map<string, { result: EarningsCheckResult; expires: number }>();
+const EARNINGS_CACHE_MAX_SIZE = 300; // 메모리 누수 방지
+
+function evictExpiredCache(): void {
+  if (_cache.size < EARNINGS_CACHE_MAX_SIZE) return;
+  const now = Date.now();
+  for (const [key, entry] of _cache) {
+    if (now >= entry.expires) _cache.delete(key);
+  }
+  if (_cache.size >= EARNINGS_CACHE_MAX_SIZE) _cache.clear();
+}
 
 function toYYYYMMDD(date: Date): string {
   return date.toISOString().slice(0, 10).replace(/-/g, '');
@@ -32,7 +43,7 @@ export async function checkKrEarnings(code: string): Promise<EarningsCheckResult
   if (hit && Date.now() < hit.expires) return hit.result;
 
   try {
-    const today = new Date();
+    const today = getKSTNow();
     const future = new Date(today.getTime() + 30 * 86400000);
     const url = `https://m.stock.naver.com/api/stock/${code}/scheduleList?startDate=${toYYYYMMDD(today)}&endDate=${toYYYYMMDD(future)}`;
 
@@ -42,7 +53,8 @@ export async function checkKrEarnings(code: string): Promise<EarningsCheckResult
     });
 
     if (!res.ok) {
-      _cache.set(cacheKey, { result: SAFE, expires: Date.now() + 60_000 });
+      evictExpiredCache();
+      _cache.set(cacheKey, { result: SAFE, expires: Date.now() + 60_000 /* 1분 재시도 */ });
       return SAFE;
     }
 
@@ -66,6 +78,7 @@ export async function checkKrEarnings(code: string): Promise<EarningsCheckResult
               earningsDate: dateRaw,
               daysUntil,
             };
+            evictExpiredCache();
             _cache.set(cacheKey, { result, expires: Date.now() + REFRESH.EARNINGS_CACHE_TTL_MS });
             logger.info(`📅 KR실적발표 [${code}] D+${daysUntil}일 (${dateRaw}) → 매수 차단`, {
               component: 'EARNINGS_SENTINEL',
@@ -76,11 +89,13 @@ export async function checkKrEarnings(code: string): Promise<EarningsCheckResult
       }
     }
 
+    evictExpiredCache();
     _cache.set(cacheKey, { result: SAFE, expires: Date.now() + REFRESH.EARNINGS_CACHE_TTL_MS });
     return SAFE;
   } catch (err) {
     logger.debug(`KR실적조회실패(${code}): ${err}`, { component: 'EARNINGS_SENTINEL' });
-    _cache.set(cacheKey, { result: SAFE, expires: Date.now() + 60_000 });
+    evictExpiredCache();
+    _cache.set(cacheKey, { result: SAFE, expires: Date.now() + 60_000 /* 1분 재시도 */ });
     return SAFE;
   }
 }
@@ -101,9 +116,9 @@ export async function checkUsEarnings(symbol: string): Promise<EarningsCheckResu
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = (await res.json()) as Record<string, unknown>;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const summary = json as { quoteSummary?: { result?: Array<{ calendarEvents?: { earnings?: { earningsDate?: number[] } } }> } };
     const earningsDates: number[] =
-      (json as any)?.quoteSummary?.result?.[0]?.calendarEvents?.earnings?.earningsDate ?? [];
+      summary?.quoteSummary?.result?.[0]?.calendarEvents?.earnings?.earningsDate ?? [];
 
     const nowSec = Date.now() / 1000;
     for (const ts of earningsDates) {
@@ -115,6 +130,7 @@ export async function checkUsEarnings(symbol: string): Promise<EarningsCheckResu
           earningsDate: dateStr,
           daysUntil: Math.max(0, daysUntil),
         };
+        evictExpiredCache();
         _cache.set(cacheKey, { result, expires: Date.now() + REFRESH.EARNINGS_CACHE_TTL_MS });
         logger.info(`📅 US실적발표 [${symbol}] D+${daysUntil}일 (${dateStr}) → 매수 차단`, {
           component: 'EARNINGS_SENTINEL',
@@ -123,11 +139,13 @@ export async function checkUsEarnings(symbol: string): Promise<EarningsCheckResu
       }
     }
 
+    evictExpiredCache();
     _cache.set(cacheKey, { result: SAFE, expires: Date.now() + REFRESH.EARNINGS_CACHE_TTL_MS });
     return SAFE;
   } catch (err) {
     logger.debug(`US실적조회실패(${symbol}): ${err}`, { component: 'EARNINGS_SENTINEL' });
-    _cache.set(cacheKey, { result: SAFE, expires: Date.now() + 60_000 });
+    evictExpiredCache();
+    _cache.set(cacheKey, { result: SAFE, expires: Date.now() + 60_000 /* 1분 재시도 */ });
     return SAFE;
   }
 }

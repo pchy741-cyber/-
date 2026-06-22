@@ -38,6 +38,7 @@ const envSchema = z.object({
   GEMINI_API_KEY: z.string().default(''),
   OPENAI_API_KEY: z.string().default(''),
   ANTHROPIC_API_KEY: z.string().default(''),
+  USE_CLAUDE_CLI: z.string().default('false'), // true → claude -p CLI 사용 (Max 구독 토큰)
 
   // Telegram
   TELEGRAM_BOT_TOKEN: z.string().default(''),
@@ -45,6 +46,13 @@ const envSchema = z.object({
 
   // Slack
   SLACK_WEBHOOK_URL: z.string().default(''),
+
+  // Email (SMTP)
+  EMAIL_TO: z.string().default('pch7012@naver.com'),
+  EMAIL_SMTP_HOST: z.string().default(''),
+  EMAIL_SMTP_PORT: z.coerce.number().default(587),
+  EMAIL_SMTP_USER: z.string().default(''),
+  EMAIL_SMTP_PASS: z.string().default(''),
 
   // DART Open API (공시 모니터링, 선택)
   DART_API_KEY: z.string().default(''),
@@ -163,13 +171,24 @@ export const config = {
     databaseUrl: env.DATABASE_URL,
   },
 
-  telegram: {
-    botToken: env.TELEGRAM_BOT_TOKEN,
-    chatId: env.TELEGRAM_CHAT_ID,
+  // Telegram: Secret Manager에서 런타임 로드 → process.env 우선 참조
+  get telegram() {
+    return {
+      botToken: process.env.TELEGRAM_BOT_TOKEN || env.TELEGRAM_BOT_TOKEN,
+      chatId: process.env.TELEGRAM_CHAT_ID || env.TELEGRAM_CHAT_ID,
+    };
   },
 
   slack: {
     webhookUrl: env.SLACK_WEBHOOK_URL,
+  },
+
+  email: {
+    to: process.env.EMAIL_TO || env.EMAIL_TO,
+    smtpHost: process.env.EMAIL_SMTP_HOST || env.EMAIL_SMTP_HOST,
+    smtpPort: Number(process.env.EMAIL_SMTP_PORT || env.EMAIL_SMTP_PORT),
+    smtpUser: process.env.EMAIL_SMTP_USER || env.EMAIL_SMTP_USER,
+    smtpPass: process.env.EMAIL_SMTP_PASS || env.EMAIL_SMTP_PASS,
   },
 
   risk: {

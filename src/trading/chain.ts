@@ -32,9 +32,8 @@ export class ChainManager {
     maxAveragingCount: number;
     isPaper?: boolean;
   }): Promise<string> {
-    const COMMISSION_RATE = 0.00015;
     const rawInvested = params.buyPrice * params.quantity;
-    const invested = rawInvested + Math.round(rawInvested * COMMISSION_RATE);
+    const invested = rawInvested + Math.round(rawInvested * KR_FEE.BUY_FEE_PCT);
     const avgBuyPrice = Math.round(invested / params.quantity);
 
     const chainId = await createChain({
@@ -49,7 +48,7 @@ export class ChainManager {
       stop_loss_pct: params.stopLossPct,
       max_averaging_count: params.maxAveragingCount,
       current_averaging_count: 0,
-      is_paper: params.isPaper,
+      is_paper: params.isPaper ?? getCtxIsPaper(),
     });
 
     logger.info(`📦 체인 생성: ${params.stockCode} | ${params.quantity}주 @${params.buyPrice} | 모드: ${params.mode}`, {
@@ -63,7 +62,6 @@ export class ChainManager {
    * 물타기 추가 매수
    */
   async addAveraging(chainId: string, buyPrice: number, quantity: number): Promise<void> {
-    const COMMISSION_RATE = 0.00015;
     let finalAvgPrice = 0;
 
     // 주의: 이 함수 호출 시점에 새 매수 주문은 이미 DB에 INSERT된 상태 (executor.ts → confirmFill 후 호출)
@@ -71,7 +69,7 @@ export class ChainManager {
     const calcFromOrders = (buyOrders: Array<{ filled_price: string | number | null; filled_quantity: number }>) => {
       const totalCost = buyOrders.reduce((sum, o) => {
         const cost = Number(o.filled_price ?? 0) * o.filled_quantity;
-        return sum + cost + Math.round(cost * COMMISSION_RATE);
+        return sum + cost + Math.round(cost * KR_FEE.BUY_FEE_PCT);
       }, 0);
       const totalQty = buyOrders.reduce((sum, o) => sum + o.filled_quantity, 0);
       return {
@@ -95,9 +93,19 @@ export class ChainManager {
         current_averaging_count: averagingCount,
       });
     } else {
-      // SELECT FOR UPDATE — 동시 물타기 방지 (동일 체인 동시 접근 시 후발 요청은 대기)
+      // SELECT FOR UPDATE + SERIALIZABLE — 동시 물타기 방지 (동일 체인 동시 접근 시 후발 요청은 대기)
       await withTransaction(async (client) => {
-        await client.query('SELECT id FROM transaction_chains WHERE id = $1 FOR UPDATE', [chainId]);
+        const { rows: chainRows } = await client.query(
+          'SELECT id, current_averaging_count, max_averaging_count FROM transaction_chains WHERE id = $1 FOR UPDATE',
+          [chainId],
+        );
+        const chainRow = chainRows[0];
+        if (!chainRow) return;
+        // CAS: 물타기 횟수 초과 방지
+        if (chainRow.max_averaging_count != null && Number(chainRow.current_averaging_count) >= Number(chainRow.max_averaging_count)) {
+          logger.warn(`⚠️ 물타기 횟수 초과: 체인 ${chainId.slice(0, 8)} ${chainRow.current_averaging_count}/${chainRow.max_averaging_count} — 스킵`, { component: 'CHAIN' });
+          return;
+        }
         const { rows } = await client.query(
           `SELECT side, status, filled_price, filled_quantity FROM orders WHERE chain_id = $1 ORDER BY created_at ASC`,
           [chainId],
@@ -111,7 +119,7 @@ export class ChainManager {
           `UPDATE transaction_chains SET status='AVERAGING', avg_buy_price=$1, total_quantity=$2, total_invested=$3, current_averaging_count=$4 WHERE id=$5`,
           [newAvgPrice, totalQty, totalCost, averagingCount, chainId],
         );
-      });
+      }, 'SERIALIZABLE');
     }
 
     logger.info(
@@ -124,14 +132,23 @@ export class ChainManager {
    * 부분 익절
    */
   async partialProfit(chainId: string, sellQty: number, sellPrice: number, chain: TransactionChain): Promise<void> {
-    const avgBuy = Number(chain.avg_buy_price);
-    const sellValue = sellPrice * sellQty;
     const SELL_FEE_PCT = KR_FEE.SELL_FEE_PCT;
-    const profit = sellValue - Math.round(sellValue * SELL_FEE_PCT) - avgBuy * sellQty;
+    const sellValue = sellPrice * sellQty;
+
+    // profit 계산 헬퍼 — fresh avg_buy_price 사용
+    const calcProfit = (freshAvgBuy: number) =>
+      sellValue - Math.round(sellValue * SELL_FEE_PCT) - freshAvgBuy * sellQty;
+
+    let logProfit = 0;
+    let logRemainingQty = 0;
 
     // 🔒 트랜잭션 + FOR UPDATE: 동시 매도(대시보드 수동 + AI) 경합 방지
     if (isMemoryMode()) {
+      const avgBuy = Number(chain.avg_buy_price);
+      const profit = calcProfit(avgBuy);
+      logProfit = profit;
       const remainingQty = chain.total_quantity - sellQty;
+      logRemainingQty = remainingQty;
       await updateChain(chainId, {
         status: remainingQty > 0 ? 'PROFIT_TAKING' : 'CLOSED',
         total_quantity: remainingQty,
@@ -139,20 +156,28 @@ export class ChainManager {
         ...(remainingQty > 0 && { peak_price: sellPrice }),
         ...(remainingQty === 0 && {
           closed_at: new Date().toISOString(),
-          close_reason: `익절: +${((sellPrice / avgBuy - 1) * 100).toFixed(1)}%`,
+          close_reason: avgBuy > 0 ? `익절: +${((sellPrice / avgBuy - 1) * 100).toFixed(1)}%` : '익절',
         }),
       });
     } else {
       await withTransaction(async (client) => {
         const { rows } = await client.query(
-          'SELECT total_quantity, realized_pnl FROM transaction_chains WHERE id = $1 FOR UPDATE',
+          'SELECT total_quantity, realized_pnl, avg_buy_price FROM transaction_chains WHERE id = $1 FOR UPDATE',
           [chainId],
         );
         const freshChain = rows[0];
         if (!freshChain) return;
         const freshQty = Number(freshChain.total_quantity);
+        const freshAvgBuy = Number(freshChain.avg_buy_price);
+        if (freshQty <= 0 || freshQty < sellQty) {
+          logger.warn(`⚠️ 부분익절 수량 부족: 체인 ${chainId.slice(0, 8)} 보유 ${freshQty}주 < 요청 ${sellQty}주 — 스킵`, { component: 'CHAIN' });
+          return;
+        }
         const freshPnl = Number(freshChain.realized_pnl);
+        const profit = calcProfit(freshAvgBuy);
+        logProfit = profit;
         const remQty = freshQty - sellQty;
+        logRemainingQty = remQty;
         if (remQty > 0) {
           await client.query(
             `UPDATE transaction_chains SET status='PROFIT_TAKING', total_quantity=$1, realized_pnl=$2, peak_price=$3 WHERE id=$4`,
@@ -163,15 +188,14 @@ export class ChainManager {
             `UPDATE transaction_chains SET status='CLOSED', total_quantity=0, realized_pnl=$1, closed_at=$2, close_reason=$3,
              pnl_pct = CASE WHEN $5 > 0 AND $6 > 0 THEN ROUND(((($5 - $6) / $6) * 100)::numeric, 2) ELSE pnl_pct END
              WHERE id=$4`,
-            [freshPnl + profit, new Date().toISOString(), `익절: +${((sellPrice / avgBuy - 1) * 100).toFixed(1)}%`, chainId, sellPrice, avgBuy],
+            [freshPnl + profit, new Date().toISOString(), freshAvgBuy > 0 ? `익절: +${((sellPrice / freshAvgBuy - 1) * 100).toFixed(1)}%` : '익절', chainId, sellPrice, freshAvgBuy],
           );
         }
-      });
+      }, 'SERIALIZABLE');
     }
 
-    const remainingQty = chain.total_quantity - sellQty;
     logger.info(
-      `💰 ${remainingQty > 0 ? '부분 익절' : '전량 익절'}: 체인 ${chainId.slice(0, 8)} | ${sellQty}주 @${sellPrice} | 실현수익: ${profit.toLocaleString()}원`,
+      `💰 ${logRemainingQty > 0 ? '부분 익절' : '전량 익절'}: 체인 ${chainId.slice(0, 8)} | ${sellQty}주 @${sellPrice} | 실현수익: ${logProfit.toLocaleString()}원`,
       { component: 'CHAIN' },
     );
   }
@@ -180,15 +204,25 @@ export class ChainManager {
    * 전량 청산 (손절 또는 강제 청산)
    */
   async closeChain(chainId: string, sellPrice: number, chain: TransactionChain, reason: string): Promise<void> {
-    const avgBuy = Number(chain.avg_buy_price);
-    const sellValue = sellPrice * chain.total_quantity;
     const SELL_FEE_PCT = KR_FEE.SELL_FEE_PCT;
-    const profit = sellValue - Math.round(sellValue * SELL_FEE_PCT) - avgBuy * chain.total_quantity;
 
-    const pnlPctNum = avgBuy > 0 ? (sellPrice / avgBuy - 1) * 100 : 0;
+    // profit/pnlPct 계산 헬퍼 — fresh 데이터 사용
+    const calcProfitAndPct = (freshAvgBuy: number, freshQty: number) => {
+      const sellValue = sellPrice * freshQty;
+      const profit = sellValue - Math.round(sellValue * SELL_FEE_PCT) - freshAvgBuy * freshQty;
+      const pnlPctNum = freshAvgBuy > 0 ? (sellPrice / freshAvgBuy - 1) * 100 : 0;
+      return { profit, pnlPctNum };
+    };
+
+    let logProfit = 0;
+    let logPnlPctNum = 0;
 
     // 🔒 트랜잭션 + FOR UPDATE: 동시 청산(대시보드 수동 + AI) 경합 방지
     if (isMemoryMode()) {
+      const avgBuy = Number(chain.avg_buy_price);
+      const { profit, pnlPctNum } = calcProfitAndPct(avgBuy, chain.total_quantity);
+      logProfit = profit;
+      logPnlPctNum = pnlPctNum;
       await updateChain(chainId, {
         status: 'CLOSED',
         total_quantity: 0,
@@ -200,23 +234,32 @@ export class ChainManager {
     } else {
       await withTransaction(async (client) => {
         const { rows } = await client.query(
-          'SELECT realized_pnl FROM transaction_chains WHERE id = $1 FOR UPDATE',
+          'SELECT realized_pnl, total_quantity, avg_buy_price FROM transaction_chains WHERE id = $1 FOR UPDATE',
           [chainId],
         );
         if (!rows[0]) return;
+        const freshQty = Number(rows[0].total_quantity);
+        if (freshQty <= 0) {
+          logger.warn(`⚠️ 체인 이미 청산됨: ${chainId.slice(0, 8)} — 중복 청산 스킵`, { component: 'CHAIN' });
+          return;
+        }
+        const freshAvgBuy = Number(rows[0].avg_buy_price);
         const freshPnl = Number(rows[0].realized_pnl);
+        const { profit, pnlPctNum } = calcProfitAndPct(freshAvgBuy, freshQty);
+        logProfit = profit;
+        logPnlPctNum = pnlPctNum;
         await client.query(
           `UPDATE transaction_chains SET status='CLOSED', total_quantity=0, realized_pnl=$1, pnl_pct=$2, closed_at=$3, close_reason=$4 WHERE id=$5`,
           [freshPnl + profit, Math.round(pnlPctNum * 100) / 100, new Date().toISOString(), reason, chainId],
         );
-      });
+      }, 'SERIALIZABLE');
     }
 
-    const pnlPct = pnlPctNum.toFixed(1);
-    const emoji = profit >= 0 ? '💰' : '💸';
+    const pnlPct = logPnlPctNum.toFixed(1);
+    const emoji = logProfit >= 0 ? '💰' : '💸';
 
     logger.info(
-      `${emoji} 체인 종료: ${chain.stock_code} | ${reason} | 실현손익: ${profit.toLocaleString()}원 (${pnlPct}%)`,
+      `${emoji} 체인 종료: ${chain.stock_code} | ${reason} | 실현손익: ${logProfit.toLocaleString()}원 (${pnlPct}%)`,
       { component: 'CHAIN' },
     );
 
@@ -245,11 +288,11 @@ export class ChainManager {
             AND created_at <= COALESCE($2::timestamptz, NOW())
           ORDER BY created_at DESC
           LIMIT 1`,
-        [chain.stock_code, (chain as any).opened_at ?? null],
+        [chain.stock_code, chain.opened_at ?? null],
       );
       const score = scoreRows[0];
-      const holdingDays = (chain as any).opened_at
-        ? Math.round((Date.now() - new Date((chain as any).opened_at).getTime()) / 86400000)
+      const holdingDays = chain.opened_at
+        ? Math.round((Date.now() - new Date(chain.opened_at).getTime()) / 86400000)
         : null;
       const outcome = pnlPct > 0.1 ? 'WIN' : pnlPct < -0.1 ? 'LOSS' : 'BREAK_EVEN';
 
@@ -335,8 +378,8 @@ export class ChainManager {
           outcome,
           holdingDays,
           reason,
-          (chain as any).strategy_mode ?? null,
-          (chain as any).is_paper ?? getCtxIsPaper(),
+          chain.strategy_mode ?? null,
+          chain.is_paper ?? getCtxIsPaper(),
           entryFingerprint,
         ],
       );

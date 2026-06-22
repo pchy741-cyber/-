@@ -12,6 +12,7 @@ import { dashboardRoutes } from './api/routes/dashboard.js';
 import { dashboardAnalysisRoutes } from './api/routes/dashboard-analysis.js';
 import { dashboardNewsRoutes } from './api/routes/dashboard-news.js';
 import { healthDetailRoutes, healthRoutes } from './api/routes/health.js';
+import { qaRoutes } from './api/routes/qa.js';
 import { journalRoutes } from './api/routes/journal.js';
 import { kakaoAlertRoutes } from './api/routes/kakao-alert.js';
 import { overseasRoutes } from './api/routes/overseas.js';
@@ -36,6 +37,7 @@ import {
   resetPool,
 } from './db/client.js';
 import { getAccessToken } from './kis/auth.js';
+import { initEmail } from './notifications/email.js';
 import { initSlack } from './notifications/slack.js';
 import { initTelegram } from './notifications/telegram.js';
 import { startScheduler } from './scheduler/runner.js';
@@ -148,6 +150,7 @@ app.route('/', webauthnPublicRoutes); // POST /api/auth/webauthn/authenticate/*,
 app.use('*', requireAuth);
 app.route('/', webauthnProtectedRoutes); // POST /api/auth/webauthn/register/*
 app.route('/', healthDetailRoutes); // GET  /api/health/detail (인증 필요)
+app.route('/', qaRoutes); // GET /api/qa/reports, /api/qa/latest, POST /api/qa/run
 app.route('/', reviewRoutes); // POST /api/review/*, /api/capture/*
 app.route('/', dashboardRoutes); // GET  /api/dashboard, /api/sell/:id, /api/manual-buy ...
 app.route('/', dashboardNewsRoutes); // GET  /api/news/*
@@ -261,8 +264,7 @@ async function bootstrap() {
     try {
       const { getPool: gp } = await import('./db/client.js');
       const { rows: tmRows } = await gp().query(
-        'SELECT trading_mode_override FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1',
-        [config.isPaper],
+        'SELECT trading_mode_override FROM portfolio_allocation_config WHERE is_paper = false ORDER BY id DESC LIMIT 1',
       );
       const dbMode = tmRows[0]?.trading_mode_override;
       if (dbMode === 'paper' || dbMode === 'live') {
@@ -283,12 +285,18 @@ async function bootstrap() {
       );
       const activeMode = (sr[0]?.mode ?? 'SWING') as keyof typeof STRATEGY_PARAMS;
       const sp = STRATEGY_PARAMS[activeMode] ?? STRATEGY_PARAMS.SWING;
+      // 🔒 사용자 커스텀 설정 보호: NULL 값만 채움 (매 부팅마다 덮어쓰기 방지)
       await gp().query(
-        `UPDATE strategy_config SET take_profit_pct=$1, stop_loss_pct=$2, buy_threshold=$3, use_dynamic_tpsl=true WHERE is_active = true AND is_paper = $4`,
+        `UPDATE strategy_config SET
+           take_profit_pct = CASE WHEN take_profit_pct IS NULL THEN $1 ELSE take_profit_pct END,
+           stop_loss_pct = CASE WHEN stop_loss_pct IS NULL THEN $2 ELSE stop_loss_pct END,
+           buy_threshold = CASE WHEN buy_threshold IS NULL THEN $3 ELSE buy_threshold END,
+           use_dynamic_tpsl = COALESCE(use_dynamic_tpsl, true)
+         WHERE is_active = true AND is_paper = $4`,
         [sp.takeProfitPct, sp.stopLossPct, sp.buyThreshold, baseIsPaper],
       );
       logger.info(
-        `✅ 전략 파라미터 동기화 (${baseIsPaper ? 'paper' : 'live'}): buy_threshold=${sp.buyThreshold} take_profit=${sp.takeProfitPct}% stop_loss=${sp.stopLossPct}% dynamic_tpsl=ON`,
+        `✅ 전략 파라미터 NULL값 보충 (${baseIsPaper ? 'paper' : 'live'}): defaults: buy=${sp.buyThreshold} tp=${sp.takeProfitPct}% sl=${sp.stopLossPct}%`,
         { component: 'BOOT' },
       );
       // is_paper 분리: 현재 모드 체인만 null값 보충 — live 체인에 paper SL 덮어쓰기 방지
@@ -370,8 +378,7 @@ async function bootstrap() {
           try {
             const { getPool: gp } = await import('./db/client.js');
             const { rows: tmRows } = await gp().query(
-              'SELECT trading_mode_override FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1',
-              [config.isPaper],
+              'SELECT trading_mode_override FROM portfolio_allocation_config WHERE is_paper = false ORDER BY id DESC LIMIT 1',
             );
             const dbMode = tmRows[0]?.trading_mode_override;
             if (dbMode === 'paper' || dbMode === 'live') {
@@ -463,6 +470,7 @@ async function bootstrap() {
   }
   const { config: cfg } = await import('./config/index.js');
   if (cfg.slack.webhookUrl) initSlack(cfg.slack.webhookUrl);
+  initEmail(cfg.email);
 
   // 모든 병렬 서비스 완료 대기
   await Promise.allSettled(bootParallel1);
@@ -587,7 +595,7 @@ async function bootstrap() {
         `SELECT stock_code, avg_buy_price, peak_price_since_open FROM transaction_chains
          WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND peak_price_since_open IS NOT NULL
            AND is_paper = $1`,
-        [config.isPaper],
+        [baseIsPaper],
       );
       if (rows.length > 0) {
         const { restorePreTpPeakMap } = await import('./ai/track-b/sell-signals.js');
@@ -595,6 +603,14 @@ async function bootstrap() {
       }
     })().catch((e: any) => logger.warn(`Pre-TP peak 복원 실패 (무시): ${e.message}`, { component: 'BOOT' })),
   ]);
+
+  // 6-1.5. ScaleIn 미완료 트랜치 복구 — 프로세스 재시작 시 유실된 2차/3차 분할 매수 실행
+  try {
+    const { tradeExecutor } = await import('./trading/executor.js');
+    await tradeExecutor.recoverPendingScaleIns();
+  } catch (e: any) {
+    logger.warn(`ScaleIn 복구 실패 (무시): ${e.message}`, { component: 'BOOT' });
+  }
 
   // 6-2. 필수 시크릿 검증 — 없으면 킬스위치 자동 활성화 (사고 방지)
   {
@@ -639,8 +655,7 @@ async function bootstrap() {
     try {
       const { getPool: gp } = await import('./db/client.js');
       const { rows: tmRows } = await gp().query(
-        'SELECT trading_mode_override FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1',
-        [config.isPaper],
+        'SELECT trading_mode_override FROM portfolio_allocation_config WHERE is_paper = false ORDER BY id DESC LIMIT 1',
       );
       const dbMode = tmRows[0]?.trading_mode_override;
       if (dbMode === 'paper' || dbMode === 'live') {
@@ -745,7 +760,7 @@ async function bootstrap() {
             AND stock_code NOT IN (
               SELECT DISTINCT stock_code FROM orders WHERE status = 'FILLED' AND is_paper = $1 AND created_at > NOW() - INTERVAL '14 days'
             )
-        `, [config.isPaper])
+        `, [baseIsPaper])
             .then((r) => {
               if ((r.rowCount ?? 0) > 0)
                 logger.info(`🧹 감시종목 부팅 정리: ${r.rowCount}개 비활성화`, { component: 'BOOT' });
@@ -778,6 +793,11 @@ async function bootstrap() {
       while (Date.now() - start < 8000 && isOverseasJobRunning()) {
         await new Promise((r) => setTimeout(r, 500));
       }
+    } catch {}
+    // Auto Pilot 루프 정지 — DB 세션 종료 + advisory lock 해제
+    try {
+      const { stopLoop } = await import('./scheduler/loop-mode.js');
+      await stopLoop('graceful shutdown');
     } catch {}
     stopIdleWatcher();
     try {

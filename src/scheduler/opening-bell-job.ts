@@ -42,7 +42,7 @@ export function isOpeningBellCompleted(): boolean {
 }
 /** 일간 캐시 리셋 — 스케줄러에서 장 시작 전 호출 (전일 차트 데이터 무효화) */
 export function resetOpeningBellDaily(): void {
-  const today = new Date().toISOString().split('T')[0];
+  const today = getKSTNow().toISOString().split('T')[0];
   if (_warmCacheDate && _warmCacheDate !== today) {
     _warmCache = null;
     _openingBellCompleted = false;
@@ -235,7 +235,7 @@ JSON만 반환 (다른 텍스트 없이):
     }
 
     _warmCache = { chartData, geminiScores, judeojuCodes, warmAt: Date.now() };
-    _warmCacheDate = new Date().toISOString().split('T')[0];
+    _warmCacheDate = getKSTNow().toISOString().split('T')[0];
     _openingBellCompleted = true;
     logger.info(`✅ [OPENING] 워밍업 완료 (${((Date.now() - t0) / 1000).toFixed(1)}초, 차트 ${chartData.size}종목)`, {
       component: 'OPENING_BELL',

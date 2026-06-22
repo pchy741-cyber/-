@@ -40,7 +40,7 @@ export interface DecisionFlowParams {
   manuallySoldCodes: Set<string>;
   scores: Array<{ stock_code: string; composite_score?: number }>;
   totalAssets: number;
-  kospiRegime: { penalty: number; boost: boolean; todayDown: boolean };
+  kospiRegime: { penalty: number; boost: boolean; todayDown: boolean; adamKhooBullish?: boolean };
   resolvedSl: number | undefined | null;
   resolvedTp: number | undefined | null;
   orderableCash: number;
@@ -94,17 +94,6 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
       });
     }
     // 매도/손절은 허용 (기존 보유분 정리)
-    decisions = decisions.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
-  }
-
-  // ── 0. DIVIDEND 모드: 신규 매수 완전 차단 (배당주/ETF 파킹 모드) ────
-  if (mode === 'DIVIDEND') {
-    const buys = decisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
-    if (buys.length > 0) {
-      logger.info(`🏦 DIVIDEND 모드: 신규 매수 ${buys.length}건 차단 (배당 자산 파킹 중)`, {
-        component: 'DECISION_FLOW',
-      });
-    }
     decisions = decisions.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
   }
 
@@ -192,7 +181,7 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   });
 
   // ── 3. 섹터 집중 매수 차단 ──────────────────────────────────────────
-  decisions = filterSectorConcentration(decisions, openChains, params.isPaper);
+  decisions = filterSectorConcentration(decisions, openChains, params.isPaper ?? false);
 
   // ── 4. 유휴 현금 파킹 해제 (SELL만 먼저 — BUY는 포지션사이저 이후 step 7.5에서 추가) ──
   // confirmedBuyCount: confidence 0.6+ 인 확정 매수만 카운트 (저품질 매수로 파킹 깨지 않게)
@@ -253,6 +242,7 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
     adjMaxPositionKrw,
     kospiRegimePenalty: Math.min(2, Math.max(0, Math.round(kospiRegime.penalty))) as 0 | 1 | 2,
     kospiBoost: kospiRegime.boost,
+    adamKhooBullish: kospiRegime.adamKhooBullish,
   });
 
   // ── 7.5. 파킹 매수 추가 (포지션사이저 이후 — 사이저가 파킹 수량 줄이지 않게) ──

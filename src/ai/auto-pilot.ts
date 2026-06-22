@@ -102,7 +102,7 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
   let overridesRemoved = 0;
 
   // Kill switch 활성화 시 스킵
-  if (isKillSwitchActive('KR') && isKillSwitchActive('OVERSEAS')) {
+  if (isKillSwitchActive('KR') || isKillSwitchActive('OVERSEAS')) {
     logger.info(`🤖 AutoPilot [${mode}]: Kill switch 활성 → 스킵`, { component: 'AUTO_PILOT' });
     return { rulesApplied: 0, overridesSet: 0, overridesRemoved: 0, decisions: ['Kill switch active — skipped'] };
   }
@@ -375,15 +375,7 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
       /* 해외 데이터 없으면 무시 */
     }
 
-    // ── Rule 6: ScalpingRadar — 비활성화 (2026-06 성과 검토: SCALPING WR 25.7%, -227K) ───
-    // ScalpRadar 모멘텀 감지가 Track B에서 스캘핑 진입 유발 → 25.7% 승률로 손실 확대
-    // try {
-    //   const { runScalpingRadar } = await import('./scalping-radar.js');
-    //   const radar = await runScalpingRadar(isPaper);
-    //   ...
-    // }
-
-    // ── Rule 7: 레퍼런스 만료 정리 ────────────────────────
+    // ── Rule 6: 레퍼런스 만료 정리 ────────────────────────
     try {
       const { rows: expiredRefs } = await getPool().query(
         `UPDATE trading_references SET is_active = false
@@ -406,7 +398,7 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
 
     // ── 결과 로깅 ──────────────────────────────────────────
     const result: AutoPilotResult = {
-      rulesApplied: 7,
+      rulesApplied: 6,
       overridesSet,
       overridesRemoved,
       decisions,

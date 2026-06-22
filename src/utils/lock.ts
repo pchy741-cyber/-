@@ -9,14 +9,16 @@
 import { getCtxIsPaper } from '../config/context.js';
 import { logger } from './logger.js';
 
-const locks = new Map<string, { lockedAt: Date; owner: string }>();
-const LOCK_TIMEOUT_MS = 45_000; // 45초 초과하면 자동 해제 (체결확인 31초 + 여유 14초)
+const locks = new Map<string, { lockedAt: Date; owner: string; ttlMs: number }>();
+const LOCK_TIMEOUT_MS = 45_000; // 기본 TTL: 45초 (체결확인 31초 + 여유 14초)
 
 /**
  * 종목별 락 획득
+ * @param ttlMs 락 TTL (기본 45초). 용도별 조정: 빠른 매매 30초, 배치 60초
  * @returns unlock 함수. 반드시 finally에서 호출할 것.
  */
-export async function acquireLock(stockCode: string, owner: string): Promise<(() => void) | null> {
+export async function acquireLock(stockCode: string, owner: string, ttlMs?: number): Promise<(() => void) | null> {
+  const lockTtl = ttlMs ?? LOCK_TIMEOUT_MS;
   // paper/live 모드별 독립 락 — paper 005930 매매가 live 005930을 차단하지 않음
   const modePrefix = getCtxIsPaper() ? 'P:' : 'L:';
   const lockKey = `${modePrefix}${stockCode}`;
@@ -26,10 +28,10 @@ export async function acquireLock(stockCode: string, owner: string): Promise<(()
   if (existing) {
     const elapsed = Date.now() - existing.lockedAt.getTime();
 
-    // 타임아웃 초과 → 강제 해제
-    if (elapsed > LOCK_TIMEOUT_MS) {
+    // 개별 락 TTL 초과 → 강제 해제
+    if (elapsed > existing.ttlMs) {
       logger.warn(
-        `🔓 종목 락 타임아웃 강제 해제: ${lockKey} (owner: ${existing.owner}, ${Math.round(elapsed / 1000)}초)`,
+        `🔓 종목 락 타임아웃 강제 해제: ${lockKey} (owner: ${existing.owner}, ${Math.round(elapsed / 1000)}초/${Math.round(existing.ttlMs / 1000)}초)`,
         { component: 'LOCK' },
       );
       locks.delete(lockKey);
@@ -40,7 +42,7 @@ export async function acquireLock(stockCode: string, owner: string): Promise<(()
   }
 
   // 락 획득
-  locks.set(lockKey, { lockedAt: new Date(), owner });
+  locks.set(lockKey, { lockedAt: new Date(), owner, ttlMs: lockTtl });
 
   return () => {
     locks.delete(lockKey);

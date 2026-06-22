@@ -50,7 +50,7 @@ export {
 } from './overseas/session.js';
 
 import { fetchKospiRegime } from '../ai/track-b/market-regime.js';
-import { logSystemEvent } from '../api/routes/health.js';
+import { logSystemEvent } from '../utils/system-events.js';
 import { getOverseasDynamic } from '../config/constants.js';
 import { getAllocRisk } from '../db/alloc-risk-cache.js';
 import { isLoopActive, reportNoBuyCandidates } from './loop-mode.js';
@@ -117,6 +117,7 @@ import {
   ensureOverseasTable,
   getBucketWeight,
   getCash,
+  getCashKrw,
   getHoldings,
   updateTradeState,
 } from './overseas/state.js';
@@ -130,8 +131,8 @@ import { GLOBAL_WATCHLIST } from './overseas/watchlist.js';
  * AI(Claude) + 기술적 지표 복합 판단
  * 최대 5종목 동시 보유, 종목당 $1,500 / 20% 중 작은 값
  */
-// ⚡ LUNCH 시간 throttle — 12:00~14:00 ET 구간 30분 간격으로 확대
-let _lastLunchRunAt = 0;
+// ⚡ LUNCH 시간 throttle — 12:00~14:00 ET 구간 30분 간격으로 확대 (paper/live 독립)
+const _lastLunchRunAt = new Map<string, number>();
 const LUNCH_THROTTLE_MS = 30 * 60 * 1000; // 30분
 
 export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boolean }): Promise<void> {
@@ -151,11 +152,12 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     const usPhase = getUSMarketPhase();
     if (usPhase === 'LUNCH') {
       const now = Date.now();
-      if (now - _lastLunchRunAt < LUNCH_THROTTLE_MS) {
-        logger.debug('⏭️ 해외 Job 스킵 — US LUNCH 시간 throttle (30분 간격)', { component: 'OVERSEAS' });
+      const lastRun = _lastLunchRunAt.get(modeK) ?? 0;
+      if (now - lastRun < LUNCH_THROTTLE_MS) {
+        logger.debug(`⏭️ 해외 Job 스킵 [${modeK}] — US LUNCH 시간 throttle (30분 간격)`, { component: 'OVERSEAS' });
         return;
       }
-      _lastLunchRunAt = now;
+      _lastLunchRunAt.set(modeK, now);
     }
   }
 
@@ -187,10 +189,16 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
   }
 
   s.isRunning.set(modeK, true);
-  const jobTimeout = setTimeout(() => {
+  const jobTimeout = setTimeout(async () => {
     if (s.isRunning.get(modeK)) {
-      logger.error('해외 Job 3분 타임아웃 — isRunning 강제 해제', { component: 'OVERSEAS' });
+      logger.error('해외 Job 3분 타임아웃 — isRunning 강제 해제 + advisory lock 반환', { component: 'OVERSEAS' });
       s.isRunning.set(modeK, false);
+      // advisory lock 해제 — 다음 사이클 deadlock 방지
+      if (lockClient) {
+        try { await lockClient.query('SELECT pg_advisory_unlock($1)', [LOCK_ID]); } catch { /* ignore */ }
+        try { lockClient.release(); } catch { /* ignore */ }
+        lockClient = null;
+      }
     }
   }, 180_000);
 
@@ -212,12 +220,22 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       return;
     }
 
-    // ── 현금 동기화 (해외 시장 열린 시간에만 — 한국장 통합증거금 오염 방지) ──
+    // ── 현금 동기화 (통합증거금) ──
     // KIS psamount API는 통합증거금 전체를 반환. 한국장 개장 중에는 국내 매매용 현금까지
-    // 해외 가용금액에 포함되어 overseas_state['cash']가 과도하게 설정됨.
-    // 한국장 개장(09:00~15:30 KST) 중에는 reconcile 스킵 — 오염 방지
-    if (!isPaper() && !openRegions.has('KR')) {
-      await reconcileCashWithKIS();
+    // 해외 가용금액에 포함되어 overseas_state['cash']가 과도하게 설정될 수 있음.
+    // 기본: 한국장 마감 시에만 reconcile. 단, overseas cash=0이면 KR장 중에도 1회 복구
+    if (!isPaper()) {
+      const isKROpen = openRegions.has('KR');
+      if (!isKROpen) {
+        await reconcileCashWithKIS();
+      } else {
+        // KR장 중이지만 overseas cash가 0이면 1회 복구 (서버 재시작 시 cash=0 교착 방지)
+        const currentOsCashKrw = await getCashKrw();
+        if (currentOsCashKrw <= 0) {
+          logger.info('💱 KR장 중이지만 overseas cash=0 → 1회 복구 reconcile 실행', { component: 'OVERSEAS' });
+          await reconcileCashWithKIS();
+        }
+      }
     }
     // ── 환율 1회 조회 — 사이클 전체에서 동일 환율 사용 (환율 drift 방지) ──
     const cycleFxRate = await fetchExchangeRate();
@@ -750,6 +768,21 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     const aiMap = new Map(aiDecisions.map((d) => [d.code, d]));
     const overseasCodes = techResults.map((t) => t.code);
     const overseasWinRates = await getOverseasWinRates(overseasCodes).catch(() => new Map<string, OverseasWinRate>());
+
+    // SEC EDGAR fundamentalScore 자동 캐시 (보유종목 + 상위 후보, 24시간 캐시)
+    try {
+      const { runSecResearchBatch, getCachedSecFundamentalScore } = await import('../automation/sec-research.js');
+      const holdingTickers = [...holdings.keys()];
+      const uncachedTickers = [...new Set([...holdingTickers, ...overseasCodes.slice(0, 5)])]
+        .filter((t) => getCachedSecFundamentalScore(t) == null)
+        .slice(0, 10);
+      if (uncachedTickers.length > 0) {
+        logger.info(`SEC 리서치 자동 실행: ${uncachedTickers.join(', ')}`, { component: 'OVERSEAS' });
+        await runSecResearchBatch(uncachedTickers).catch((e: any) =>
+          logger.warn(`SEC 리서치 실패 (스킵): ${e.message}`, { component: 'OVERSEAS' }),
+        );
+      }
+    } catch { /* SEC 모듈 로드 실패 무시 */ }
     if (overseasWinRates.size > 0) {
       logger.info(`📈 해외 승률 데이터: ${overseasWinRates.size}종목`, { component: 'OVERSEAS' });
     }
@@ -760,7 +793,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       getMacroSignal().catch(() => null),
     ]);
     const vixValue = earlyVixData?.vix ?? 0;
-    const vixRegime = getVixRegime(vixValue);
+    const vixRegime = getVixRegime(vixValue, isPaper());
     const nasdaqChange1d = macroSigForSell?.nasdaqChange1d ?? null;
     if (vixRegime.regime !== 'CALM') {
       logger.info(
@@ -825,13 +858,12 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     const sellOrders = sellResult.sellOrders;
     cash = sellResult.cash;
 
-    // v10.8: 매도 후 holdings Map에서 매도 종목 제거 + portfolioValue/holdingEvalUsd 재계산
-    for (const so of sellOrders) {
-      const code = typeof so === 'string' ? so : (so as any).code;
-      if (code && holdings.has(code)) {
-        const h = holdings.get(code)!;
-        if (h.qty <= 0) holdings.delete(code);
-      }
+    // v10.8: 매도 후 holdings Map 동기화 — DB에서 최신 상태 재로딩
+    // 기존 코드: sellOrders(문자열)에서 종목코드 추출 시도 → 항상 실패 (전체 문자열이 code가 됨)
+    if (sellOrders.length > 0) {
+      const freshHoldings = await getHoldings(isPaper());
+      holdings.clear();
+      for (const [k, v] of freshHoldings) holdings.set(k, v);
     }
     let holdingEvalUsdPost = Array.from(holdings.entries()).reduce((sum, [code, h]) => {
       const tech = techResults.find((t) => t.code === code);

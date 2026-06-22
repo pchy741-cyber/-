@@ -84,7 +84,15 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
     if (rbTotal < 5000) return { rebalanceAlerts, cash };
     const isSmallPortfolio = rbTotal < 10000;
     const overweightThreshold = isSmallPortfolio ? 20.0 : 5.0;
-    const overweight = positionWeights.filter((p) => p.weight > targetWeightPer + overweightThreshold);
+    // v11.1: 5/25 룰 — 5% 절대 OR 25% 상대 중 먼저 도달한 기준
+    // 단, 상대조건은 최소 3% 절대이탈 요구 (소액 포트/다종목에서 과발동 방지)
+    const overweight = positionWeights.filter(
+      (p) =>
+        p.weight > targetWeightPer + overweightThreshold ||
+        (!isSmallPortfolio &&
+          p.weight > targetWeightPer * 1.25 &&
+          p.weight - targetWeightPer >= 3.0),
+    );
 
     if (overweight.length > 0 || (actualCashPct < 5 && holdingCount >= 3)) {
       const rbLines: string[] = [`📊 *포트폴리오 비중 리밸런싱 추천*`, ''];
@@ -95,12 +103,16 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
       rbLines.push('');
 
       for (const p of positionWeights.sort((a, b) => b.weight - a.weight)) {
-        const tag =
-          p.weight > targetWeightPer + overweightThreshold
-            ? '⚠️과다'
-            : p.weight < targetWeightPer - overweightThreshold
-              ? '⬇️부족'
-              : '✅적정';
+        const isOver =
+          p.weight > targetWeightPer + overweightThreshold ||
+          (!isSmallPortfolio &&
+            p.weight > targetWeightPer * 1.25 &&
+            p.weight - targetWeightPer >= 3.0);
+        const tag = isOver
+          ? '⚠️과다'
+          : p.weight < targetWeightPer - overweightThreshold
+            ? '⬇️부족'
+            : '✅적정';
         rbLines.push(
           `  ${tag} *${p.code}* ${p.weight.toFixed(1)}% ($${p.value.toFixed(0)}) ${p.pnl >= 0 ? '+' : ''}${p.pnl.toFixed(1)}%`,
         );
@@ -120,20 +132,21 @@ export async function rebalancePortfolio(ctx: RebalanceContext): Promise<Rebalan
           const trimQty = Math.max(1, Math.floor(trimValue / p.price));
           const trimAmt = trimQty * p.price;
 
+          // 수수료(왕복 ~0.7%) 커버 불가 시 리밸런싱 매도 금지 (Paper/Live 동일 적용)
+          const minPnlPct = OVERSEAS_FEE_PCT * 2 * 100 + 0.5; // ~1.2%
+          if (p.pnl < minPnlPct) {
+            rebalanceAlerts.push(
+              `📊 리밸런싱 스킵 ${p.code}: PnL ${p.pnl.toFixed(1)}% < 최소 ${minPnlPct.toFixed(1)}% (수수료 미달)`,
+            );
+            continue;
+          }
+
           if (!isPaper) {
             rbLines.push(
               `  매도 *${p.code}* ${trimQty}주 @$${p.price.toFixed(2)} → $${trimAmt.toFixed(0)}(₩${((trimAmt * usdKrw) / 10000).toFixed(1)}만)`,
             );
             rbLines.push(`  → 비중 ${p.weight.toFixed(1)}% → ~${(p.weight - adjustPct).toFixed(1)}%`);
           } else {
-            // 수수료(왕복 ~0.7%) 커버 불가 시 리밸런싱 매도 금지
-            const minPnlPct = OVERSEAS_FEE_PCT * 2 * 100 + 0.5; // ~1.2%
-            if (p.pnl < minPnlPct) {
-              rebalanceAlerts.push(
-                `📊 리밸런싱 스킵 ${p.code}: PnL ${p.pnl.toFixed(1)}% < 최소 ${minPnlPct.toFixed(1)}% (수수료 미달)`,
-              );
-              continue;
-            }
             const exec = await executeOverseasOrder(
               p.code,
               'SELL',

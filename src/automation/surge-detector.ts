@@ -19,6 +19,7 @@ import { getChangeRankingStocks, getCurrentPrice, getVolumeRankingStocks } from 
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
 import { sleep } from '../utils/sleep.js';
+import { getNewsScore } from '../ai/track-a/rss-scorer.js';
 import { getClusterFollowers } from './sector-themes.js';
 
 const COMPONENT = 'SURGE_DETECTOR';
@@ -40,6 +41,12 @@ const CLUSTER_MIN_CHANGE = -2.0; // 하락 중이어도 테마 파급 기대
 const CLUSTER_MAX_CHANGE = 4.5; // 이미 급등한 종목은 제외
 const CLUSTER_MIN_TRADING_VALUE = 10_000_000_000; // 100억 이상 (유동성 보장)
 const MAX_CLUSTER_ADD_PER_SURGE = 3; // 급등 1종목당 클러스터 최대 3개
+
+// 뉴스 추천 편입: 긍정 뉴스 + 양의 등락률 → 낮은 거래대금 기준
+const NEWS_MIN_SENTIMENT = 5;       // 뉴스 감성 +5 이상 (긍정 키워드 ≥2개)
+const NEWS_MIN_CHANGE_PCT = 1.0;    // 최소 +1% 상승
+const NEWS_MIN_TRADING_VALUE = 10_000_000_000; // 거래대금 100억+ (유동성 보장)
+const NEWS_MAX_ADD_PER_RUN = 5;     // 뉴스 기반 1회 최대 5개
 
 // 가격 범위
 const MIN_PRICE = 1_000;
@@ -125,7 +132,7 @@ export async function runSurgeDetector(): Promise<void> {
     // 현재 워치리스트 활성 종목
     const pool = getPool();
     const { rows: wlRows } = await pool.query(`SELECT stock_code FROM watchlist WHERE is_active = true`);
-    const activeSet = new Set(wlRows.map((r: any) => String(r.stock_code)));
+    const activeSet = new Set(wlRows.map((r: Record<string, unknown>) => String(r.stock_code)));
 
     // 이미 활성인 종목 제외
     const newCandidates = candidates.filter((s) => !activeSet.has(s.stock_code));
@@ -176,8 +183,8 @@ export async function runSurgeDetector(): Promise<void> {
               reason,
             });
           }
-        } catch {
-          // 개별 오류 무시
+        } catch (err) {
+          logger.debug(`급등감지 개별 시세 조회 실패: ${err}`, { component: COMPONENT });
         }
       }),
     );
@@ -236,8 +243,95 @@ export async function runSurgeDetector(): Promise<void> {
       ).catch(() => {});
     }
 
+    // ── 뉴스 추천 종목 자동 편입 ──────────────────────────────────────
+    // 급등 기준은 못 넘지만 뉴스 감성이 강한 종목 (LG전자 같은 케이스)
+    // KIS 등락률/거래량 상위에 이미 올라온 종목 중 뉴스 긍정 감성 + 양의 등락률
+    const newsAdded: string[] = [];
+    try {
+      // 급등 목록에 이미 편입된 종목 제외, 이미 워치리스트에 있는 종목도 제외
+      const newsCheckCandidates = newCandidates.filter(
+        (c) => !activeSet.has(c.stock_code) && !surgeList.some((s) => s.stock_code === c.stock_code),
+      );
+
+      if (newsCheckCandidates.length > 0) {
+        // 현재가 + 뉴스 감성 병렬 조회 (최대 20개)
+        type NewsCandidate = {
+          stock_code: string;
+          stock_name: string;
+          changePct: number;
+          tradingValue: number;
+          newsSentiment: number;
+          headline: string;
+        };
+        const newsCandidates: NewsCandidate[] = [];
+
+        await Promise.allSettled(
+          newsCheckCandidates.slice(0, 20).map(async (s) => {
+            try {
+              const [p, news] = await Promise.all([
+                getCurrentPrice(s.stock_code),
+                getNewsScore(s.stock_code, s.stock_name),
+              ]);
+
+              if (p.currentPrice < MIN_PRICE || p.currentPrice > MAX_PRICE) return;
+              if (p.haltYn === 'Y' || p.mrktWarnClsCode >= '02') return;
+
+              const tradingValue = p.currentPrice * p.volume;
+              if (
+                news.score >= NEWS_MIN_SENTIMENT &&
+                p.changePct >= NEWS_MIN_CHANGE_PCT &&
+                tradingValue >= NEWS_MIN_TRADING_VALUE
+              ) {
+                newsCandidates.push({
+                  stock_code: s.stock_code,
+                  stock_name: p.stockName || s.stock_name,
+                  changePct: p.changePct,
+                  tradingValue,
+                  newsSentiment: news.score,
+                  headline: news.headlines[0]?.slice(0, 30) ?? '',
+                });
+              }
+            } catch { /* skip */ }
+          }),
+        );
+
+        // 뉴스 감성 높은 순 정렬
+        newsCandidates.sort((a, b) => b.newsSentiment - a.newsSentiment);
+
+        for (const nc of newsCandidates.slice(0, NEWS_MAX_ADD_PER_RUN)) {
+          if (activeSet.has(nc.stock_code)) continue;
+          try {
+            const { rowCount } = await pool.query(
+              `INSERT INTO watchlist (stock_code, stock_name, market, is_active, source)
+               VALUES ($1, $2, 'KOSPI', true, 'NEWS')
+               ON CONFLICT (stock_code) DO UPDATE
+                 SET is_active = true, stock_name = EXCLUDED.stock_name, source = 'NEWS'
+                 WHERE watchlist.is_active = false`,
+              [nc.stock_code, nc.stock_name],
+            );
+            if (rowCount && rowCount > 0) {
+              activeSet.add(nc.stock_code);
+              const tVal = Math.round(nc.tradingValue / 100_000_000);
+              const label = `${nc.stock_name}(${nc.stock_code}) 뉴스+${nc.newsSentiment} ${nc.changePct.toFixed(1)}% 거래대금${tVal}억 "${nc.headline}"`;
+              newsAdded.push(label);
+              logger.info(`📰 뉴스 추천 편입: ${label}`, { component: COMPONENT });
+            }
+          } catch { /* skip */ }
+        }
+
+        if (newsAdded.length > 0) {
+          await sendTelegramMessage(
+            `📰 뉴스 추천 워치리스트 편입 (${newsAdded.length}개)\n` +
+              newsAdded.map((s) => `• ${s}`).join('\n'),
+          ).catch(() => {});
+        }
+      }
+    } catch (newsErr) {
+      logger.debug(`뉴스 추천 감지 스킵: ${newsErr}`, { component: COMPONENT });
+    }
+
     logger.info(
-      `급등 감지 완료 — 편입 ${added.length}개 / 클러스터 ${clusterAdded.length}개 / 후보 ${surgeList.length}개`,
+      `급등 감지 완료 — 편입 ${added.length}개 / 클러스터 ${clusterAdded.length}개 / 뉴스 ${newsAdded.length}개 / 후보 ${surgeList.length}개`,
       { component: COMPONENT },
     );
   } catch (err) {
@@ -266,11 +360,19 @@ async function expandThemeCluster(
   const followers = getClusterFollowers(surgedCode, activeSet);
   if (followers.length === 0) return;
 
-  let addedCount = 0;
+  // Collect validated candidates first, then process sequentially to avoid race condition
+  // on shared addedCount across Promise.allSettled callbacks
+  type ClusterCandidate = {
+    code: string;
+    name: string;
+    clusterName: string;
+    changePct: number;
+    tradingValue: number;
+  };
+  const validatedCandidates: ClusterCandidate[] = [];
 
   await Promise.allSettled(
     followers.map(async (f) => {
-      if (addedCount >= MAX_CLUSTER_ADD_PER_SURGE) return;
       try {
         const p = await getCurrentPrice(f.code);
 
@@ -282,30 +384,47 @@ async function expandThemeCluster(
 
         if (p.changePct < CLUSTER_MIN_CHANGE || p.changePct >= CLUSTER_MAX_CHANGE) return;
 
-        // 이미 다른 goroutine이 추가했을 수 있음 — activeSet 재확인
         if (activeSet.has(f.code)) return;
-        if (addedCount >= MAX_CLUSTER_ADD_PER_SURGE) return;
 
-        const tVal = Math.round(tradingValue / 100_000_000);
-        const { rowCount } = await pool.query(
-          `INSERT INTO watchlist (stock_code, stock_name, market, is_active, source)
-           VALUES ($1, $2, 'KOSPI', true, 'THEME_CLUSTER')
-           ON CONFLICT (stock_code) DO UPDATE
-             SET is_active = true, stock_name = EXCLUDED.stock_name, source = 'THEME_CLUSTER'
-             WHERE watchlist.is_active = false`,
-          [f.code, p.stockName || f.name],
-        );
-
-        if (rowCount && rowCount > 0) {
-          addedCount++;
-          activeSet.add(f.code);
-          const label = `${p.stockName || f.name}(${f.code}) [${f.clusterName}] ${p.changePct.toFixed(1)}% 거래대금${tVal}억 ← ${surgedName} 파급`;
-          clusterAdded.push(label);
-          logger.info(`🔗 테마클러스터 편입: ${label}`, { component: COMPONENT });
-        }
-      } catch {
-        // 개별 오류 무시
+        validatedCandidates.push({
+          code: f.code,
+          name: p.stockName || f.name,
+          clusterName: f.clusterName,
+          changePct: p.changePct,
+          tradingValue,
+        });
+      } catch (err) {
+        logger.debug(`클러스터 후보 시세 조회 실패: ${err}`, { component: COMPONENT });
       }
     }),
   );
+
+  // Process sequentially — no race condition on addedCount
+  let addedCount = 0;
+  for (const candidate of validatedCandidates) {
+    if (addedCount >= MAX_CLUSTER_ADD_PER_SURGE) break;
+    if (activeSet.has(candidate.code)) continue;
+
+    const tVal = Math.round(candidate.tradingValue / 100_000_000);
+    try {
+      const { rowCount } = await pool.query(
+        `INSERT INTO watchlist (stock_code, stock_name, market, is_active, source)
+         VALUES ($1, $2, 'KOSPI', true, 'THEME_CLUSTER')
+         ON CONFLICT (stock_code) DO UPDATE
+           SET is_active = true, stock_name = EXCLUDED.stock_name, source = 'THEME_CLUSTER'
+           WHERE watchlist.is_active = false`,
+        [candidate.code, candidate.name],
+      );
+
+      if (rowCount && rowCount > 0) {
+        addedCount++;
+        activeSet.add(candidate.code);
+        const label = `${candidate.name}(${candidate.code}) [${candidate.clusterName}] ${candidate.changePct.toFixed(1)}% 거래대금${tVal}억 ← ${surgedName} 파급`;
+        clusterAdded.push(label);
+        logger.info(`🔗 테마클러스터 편입: ${label}`, { component: COMPONENT });
+      }
+    } catch (err) {
+      logger.debug(`클러스터 워치리스트 추가 실패: ${err}`, { component: COMPONENT });
+    }
+  }
 }

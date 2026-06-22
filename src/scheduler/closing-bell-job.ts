@@ -25,7 +25,7 @@ import type { TradeDecision } from '../db/models.js';
 import { getAccountBalance, invalidateBalanceCache } from '../kis/account.js';
 import { getBatchPrices, getDailyChart } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
-import { isKillSwitchActive, reportSuccess } from '../risk/kill-switch.js';
+import { isKillSwitchActiveForMode, reportSuccess } from '../risk/kill-switch.js';
 import { getPaperBalance } from '../risk/paper-balance.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
@@ -57,7 +57,7 @@ export async function runClosingBellJob(): Promise<void> {
   // 15:05~15:20 구간만 실행 (Paper는 항상)
   if (!isPaper && (kstH !== 15 || kstM < 5 || kstM > 20)) return;
 
-  if (isKillSwitchActive()) {
+  if (isKillSwitchActiveForMode('KR', isPaper)) {
     logger.debug('🛑 Kill Switch 활성 — 종가줍줍 스킵', { component: 'CLOSING_BELL' });
     return;
   }

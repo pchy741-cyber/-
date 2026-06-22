@@ -61,7 +61,7 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
 
         /* 파킹 ETF 카드 */
         if (isParking) return (
-          <div key={`c${i}`} className="p-4 bg-sky-950/50 border-l-2 border-sky-500/60">
+          <div key={ch.id ?? `c${i}`} className="p-4 bg-sky-950/50 border-l-2 border-sky-500/60">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 min-w-0">
                 <span className="text-[10px] bg-sky-500/25 text-sky-300 border border-sky-500/40 px-2 py-0.5 rounded-full font-bold shrink-0">💰 파킹중</span>
@@ -104,16 +104,16 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
         const range = targetPct - stopPct;
         const barPos = Math.max(0, Math.min(100, ((pnlPct - stopPct) / range) * 100));
         return (
-          <div key={`c${i}`} className={`p-4 hover:bg-white/[0.01] transition-colors ${isClaudeBought ? 'bg-violet-950/40 border-l-2 border-violet-500/70' : 'bg-[#0f1320]'}`}>
+          <div key={ch.id ?? `c${i}`} className={`p-4 hover:bg-white/[0.01] transition-colors ${isClaudeBought ? 'bg-violet-950/40 border-l-2 border-violet-500/70' : 'bg-[#0f1320]'}`}>
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1 flex-wrap">
                   <span className="text-sm font-bold truncate">{displayName}</span>
-                  {isClaudeBought && <span className="text-[10px] bg-violet-500/20 text-violet-300 border border-violet-500/40 px-1.5 py-0.5 rounded font-bold shrink-0">AI픽</span>}
+                  {isClaudeBought && <span className="text-[8px] bg-violet-500/20 text-violet-300 border border-violet-500/40 px-1 py-px rounded font-bold shrink-0">AI픽</span>}
                   {ch.strategy_mode === 'EOD_BETTING'
-                    ? <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1.5 py-0.5 rounded font-bold shrink-0">🎰 종가베팅</span>
-                    : <span className="text-[10px] bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded font-medium shrink-0">{ch.strategy_mode}</span>}
-                  {ch.status === 'PROFIT_TAKING' && <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.5 rounded font-bold shrink-0">2단계↑</span>}
+                    ? <span className="text-[8px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1 py-px rounded font-bold shrink-0">🎰종가</span>
+                    : <span className="text-[8px] bg-blue-500/10 text-blue-400 px-1 py-px rounded font-medium shrink-0">{ch.strategy_mode}</span>}
+                  {ch.status === 'PROFIT_TAKING' && <span className="text-[8px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-1 py-px rounded font-bold shrink-0">2단계↑</span>}
                 </div>
                 <div className="text-[11px] text-slate-500 mt-0.5">평단 {fmtWon(avgPrice)} · {fmt(qty)}주{weight !== null ? ` · 비중 ${weight}%` : ''}</div>
               </div>
@@ -146,20 +146,20 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
                 </div>
               </div>
             )}
-            <div className="grid grid-cols-3 gap-2 mt-2">
-              <div>
+            <div className="grid grid-cols-3 gap-1.5 mt-2">
+              <div className="min-w-0">
                 <div className="text-[9px] text-slate-500 mb-0.5">투자금</div>
-                <div className="text-[11px] font-bold truncate">{fmtWon(invested)}</div>
+                <div className="text-[10px] font-bold truncate tabular-nums">{fmtWon(invested)}</div>
               </div>
-              <div>
-                <div className="text-[9px] text-slate-500 mb-0.5">진입가 → 현재</div>
-                <div className="text-[10px] font-bold text-slate-300">{fmtWon(avgPrice)}</div>
-                <div className="text-[10px] font-bold">{(ch.currentPrice ?? 0) > 0 ? fmtWon(ch.currentPrice!) : '-'}</div>
+              <div className="min-w-0">
+                <div className="text-[9px] text-slate-500 mb-0.5">평단 → 현재</div>
+                <div className="text-[10px] font-bold text-slate-300 truncate tabular-nums">{fmtWon(avgPrice)}</div>
+                <div className="text-[10px] font-bold truncate tabular-nums">{(ch.currentPrice ?? 0) > 0 ? fmtWon(ch.currentPrice!) : '-'}</div>
               </div>
-              <div>
-                <div className="text-[9px] text-slate-500 mb-0.5">목표가 / 손절가</div>
-                <div className="text-[10px] font-bold text-emerald-400">{avgPrice > 0 ? fmtWon(Math.round(avgPrice * (1 + targetPct / 100))) : '-'} <span className="text-[9px] text-emerald-600">+{targetPct}%</span></div>
-                <div className="text-[10px] font-bold text-rose-400">{avgPrice > 0 ? fmtWon(Math.round(avgPrice * (1 + stopPct / 100))) : '-'} <span className="text-[9px] text-rose-700">{stopPct}%</span></div>
+              <div className="min-w-0">
+                <div className="text-[9px] text-slate-500 mb-0.5">목표 / 손절</div>
+                <div className="text-[10px] font-bold text-emerald-400 truncate tabular-nums">{avgPrice > 0 ? fmtWon(Math.round(avgPrice * (1 + targetPct / 100))) : '-'} <span className="text-[8px] text-emerald-600">+{targetPct}%</span></div>
+                <div className="text-[10px] font-bold text-rose-400 truncate tabular-nums">{avgPrice > 0 ? fmtWon(Math.round(avgPrice * (1 + stopPct / 100))) : '-'} <span className="text-[8px] text-rose-700">{stopPct}%</span></div>
               </div>
             </div>
             <div className="flex items-center gap-1.5 mt-3">

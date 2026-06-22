@@ -140,7 +140,7 @@ webauthnPublicRoutes.post('/auth/webauthn/authenticate/options', async (c) => {
     return c.json(options);
   } catch (err: any) {
     logger.error(`WebAuthn 인증 옵션 생성 실패: ${err.message}`, { component: 'WEBAUTHN' });
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -190,7 +190,7 @@ webauthnPublicRoutes.post('/auth/webauthn/authenticate/verify', async (c) => {
     return c.json({ ok: true, verified: true });
   } catch (err: any) {
     logger.error(`WebAuthn 인증 검증 실패: ${err.message}`, { component: 'WEBAUTHN' });
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -222,7 +222,7 @@ webauthnProtectedRoutes.post('/auth/webauthn/register/options', async (c) => {
     return c.json(options);
   } catch (err: any) {
     logger.error(`WebAuthn 등록 옵션 생성 실패: ${err.message}`, { component: 'WEBAUTHN' });
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -261,7 +261,7 @@ webauthnProtectedRoutes.post('/auth/webauthn/register/verify', async (c) => {
     return c.json({ ok: true, verified: true, deviceName });
   } catch (err: any) {
     logger.error(`WebAuthn 등록 검증 실패: ${err.message}`, { component: 'WEBAUTHN' });
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -273,7 +273,7 @@ webauthnProtectedRoutes.get('/auth/webauthn/credentials', async (c) => {
     );
     return c.json({ credentials: rows });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -285,6 +285,6 @@ webauthnProtectedRoutes.delete('/auth/webauthn/credentials/:id', async (c) => {
     logger.info(`🗑️ WebAuthn 디바이스 삭제: ${credId}`, { component: 'WEBAUTHN' });
     return c.json({ ok: true });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });

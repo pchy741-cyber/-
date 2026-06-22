@@ -47,16 +47,16 @@ const MAX_PARK_RATIO_LIVE = 0.3;
 const MAX_PARK_RATIO_PAPER = 0.4;
 
 /** 최소 보유 시간 (ms) — 1시간 (v1: 30분→v2: 2시간→v3: 1시간, 시장 반전 대응력 개선) */
-const MIN_PARK_HOLD_MS = 1 * 60 * 60_000;
+const MIN_PARK_HOLD_MS = 1 * 60 * 60_000; // 1 hour
 
 /** Paper 모드 최소 보유 — 1시간 (실전과 유사하게 테스트) */
-const MIN_PARK_HOLD_MS_PAPER = 60 * 60_000;
+const MIN_PARK_HOLD_MS_PAPER = 60 * 60_000; // 1 hour
 
 /** 해제 손실 보호: 손실이면 해제 금지 (파킹은 무조건 본전 이상에서만 해제) */
 const UNPARK_MAX_LOSS_PCT = 0;
 
 /** 해제 강제 타임아웃: 6시간 넘으면 손실이어도 해제 (묶이지 않게) */
-const UNPARK_FORCE_TIMEOUT_MS = 6 * 60 * 60_000;
+const UNPARK_FORCE_TIMEOUT_MS = 6 * 60 * 60_000; // 6 hours
 
 /** 수익 자동실현: +5% 이상 수익이면 매수신호 없어도 익절 (v3: 2%→5%, 주도주 상승 더 태우기) */
 const PARK_PROFIT_TAKE_PCT = 5.0;

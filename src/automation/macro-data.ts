@@ -107,8 +107,8 @@ export async function fetchExchangeRate(): Promise<number> {
         return cachedFxRate;
       }
     }
-  } catch {
-    /* fallback to next source */
+  } catch (err) {
+    logger.debug(`환율 1차 소스(er-api) 실패: ${err}`, { component: 'MACRO' });
   }
 
   // 2차: Naver 증권 (기존 — 현재 404일 수 있음)
@@ -127,8 +127,8 @@ export async function fetchExchangeRate(): Promise<number> {
         }
       }
     }
-  } catch {
-    /* fallback */
+  } catch (err) {
+    logger.debug(`환율 2차 소스(Naver) 실패: ${err}`, { component: 'MACRO' });
   }
 
   logger.warn('USD/KRW 모든 소스 실패, 캐시/기본값 사용', { component: 'MACRO' });

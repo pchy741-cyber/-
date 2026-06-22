@@ -17,6 +17,7 @@ import {
   isMarketOpen,
 } from '../../../kis/market.js';
 import { logger } from '../../../utils/logger.js';
+import { getKSTNow } from '../../../utils/time.js';
 import { getKnownStockName, isInvalidStockName } from './helpers.js';
 
 export const watchlistRoutes = new Hono();
@@ -79,7 +80,7 @@ watchlistRoutes.get('/search/stock', async (c) => {
   // 3차: KRX 전체 종목 리스트에서 이름 필터 (NAVER 실패 폴백)
   if (results.length === 0) {
     try {
-      const d = new Date();
+      const d = getKSTNow();
       const day = d.getUTCDay();
       if (day === 0) d.setUTCDate(d.getUTCDate() - 2);
       else if (day === 6) d.setUTCDate(d.getUTCDate() - 1);
@@ -225,7 +226,7 @@ watchlistRoutes.get('/watchlist', async (c) => {
 
     return c.json(base);
   } catch (err: any) {
-    return c.json({ error: err?.message ?? 'watchlist 조회 실패' }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -262,7 +263,7 @@ watchlistRoutes.post('/watchlist', async (c) => {
       [stockCode, stockName, market],
     );
   } catch (err: any) {
-    return c.json({ error: err.message }, 400);
+    return c.json({ error: 'Internal server error' }, 400);
   }
 
   const { onStockAdded } = await import('../../../automation/ceo-workflow.js');
@@ -301,7 +302,7 @@ watchlistRoutes.delete('/watchlist/:stockCode', async (c) => {
   try {
     await getPool().query('UPDATE watchlist SET is_active = false WHERE stock_code = $1', [stockCode]);
   } catch (err: any) {
-    return c.json({ error: err.message }, 400);
+    return c.json({ error: 'Internal server error' }, 400);
   }
 
   const { onStockRemoved } = await import('../../../automation/ceo-workflow.js');
@@ -320,7 +321,7 @@ watchlistRoutes.get('/kis-balance', async (c) => {
     ]);
     return c.json({ domestic, overseas });
   } catch (err: any) {
-    return c.json({ error: err?.message ?? 'KIS 잔고 조회 실패' }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -339,7 +340,7 @@ watchlistRoutes.post('/watchlist/sync', async (c) => {
         allAdded.length > 0 ? `${allAdded.length}종목 동기화 완료` : '이미 최신 상태 (모의투자는 관심종목 API 미지원)',
     });
   } catch (err: any) {
-    return c.json({ error: err?.message ?? 'KIS 동기화 실패' }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -419,7 +420,7 @@ watchlistRoutes.get('/watchlist/sold-tracking', async (c) => {
 
     return c.json(result);
   } catch (err: any) {
-    return c.json({ error: err?.message ?? '매도 추적 조회 실패' }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -469,7 +470,7 @@ watchlistRoutes.post('/watchlist/scan', async (c) => {
       added.length > 0 ? `${added.length}개 신규 종목 발굴 추가 완료` : '신규 발굴 종목 없음 (이미 모두 감시 중)';
     return c.json({ ok: true, added, scanned: candidates.length, message: msg });
   } catch (err: any) {
-    return c.json({ error: err?.message ?? '시장 스캔 실패' }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -508,7 +509,7 @@ watchlistRoutes.post('/watchlist/cleanup', async (c) => {
     });
     return c.json({ ok: true, deactivated: rowCount ?? 0 });
   } catch (err: any) {
-    return c.json({ error: err?.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -519,6 +520,6 @@ watchlistRoutes.post('/watchlist/fix-names', async (c) => {
     const result = await fixWatchlistNames();
     return c.json({ ok: true, ...result });
   } catch (err: any) {
-    return c.json({ error: err?.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });

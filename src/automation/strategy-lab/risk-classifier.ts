@@ -16,7 +16,16 @@ export interface RiskClassification {
   autoApply: boolean;
 }
 
-const HIGH_RISK_STRATEGIES = new Set(['SCALPING', 'EOD_BETTING', 'BREAKOUT']);
+const HIGH_RISK_STRATEGIES = new Set(['BREAKOUT']);
+
+// ── 리스크 분류 기준 상수 ──
+const NARROW_WIN_RATE_MARGIN = 0.03; // 승률 여유 부족 기준 (3%p)
+const NARROW_PF_MARGIN = 0.2; // PF 여유 부족 기준
+const NARROW_MDD_MARGIN = 3; // MDD 여유 부족 기준 (%p)
+const LOW_WIN_RATE_MARGIN = 0.1; // LOW 리스크 승률 기준 (10%p 이상)
+const LOW_PF_MARGIN = 0.5; // LOW 리스크 PF 기준
+const LOW_MDD_MARGIN = 5; // LOW 리스크 MDD 기준 (%p)
+const LOW_TRADE_RATIO = 1.5; // LOW 리스크 거래수 비율
 
 export function classifyGraduationRisk(result: GraduationResult, criteria: GraduationCriteria): RiskClassification {
   if (!result.eligible) {
@@ -34,9 +43,9 @@ export function classifyGraduationRisk(result: GraduationResult, criteria: Gradu
 
   // HIGH: 여유 부족 or 고위험 전략
   const isHighRisk = HIGH_RISK_STRATEGIES.has(result.mode);
-  const narrowWR = wrMargin < 0.03;
-  const narrowPF = pfMargin < 0.2;
-  const narrowMDD = mddMargin < 3;
+  const narrowWR = wrMargin < NARROW_WIN_RATE_MARGIN;
+  const narrowPF = pfMargin < NARROW_PF_MARGIN;
+  const narrowMDD = mddMargin < NARROW_MDD_MARGIN;
 
   if (isHighRisk) reasons.push(`고위험 전략 (${result.mode})`);
   if (narrowWR) reasons.push(`승률 여유 ${(wrMargin * 100).toFixed(1)}%p`);
@@ -48,7 +57,7 @@ export function classifyGraduationRisk(result: GraduationResult, criteria: Gradu
   }
 
   // LOW: 모든 기준 충분한 여유
-  if (wrMargin >= 0.1 && pfMargin >= 0.5 && mddMargin >= 5 && tradeRatio >= 1.5) {
+  if (wrMargin >= LOW_WIN_RATE_MARGIN && pfMargin >= LOW_PF_MARGIN && mddMargin >= LOW_MDD_MARGIN && tradeRatio >= LOW_TRADE_RATIO) {
     reasons.push('모든 기준 충분한 여유');
     return { level: 'LOW', reasons, autoApply: true };
   }

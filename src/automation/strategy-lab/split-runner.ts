@@ -143,9 +143,9 @@ export async function checkAndCompleteSplits(): Promise<void> {
         const wrA = Number(split.win_rate_a ?? 0);
         const wrB = Number(split.win_rate_b ?? 0);
 
-        // PF 기반 winner 결정 (더 높은 승률 * PnL)
-        const scoreA = wrA * Math.abs(pnlA);
-        const scoreB = wrB * Math.abs(pnlB);
+        // Winner 결정: 승률 * PnL (raw, not abs — negative PnL should produce lower score)
+        const scoreA = wrA * pnlA;
+        const scoreB = wrB * pnlB;
         const winner = scoreA >= scoreB ? 'A' : 'B';
 
         await pool.query(

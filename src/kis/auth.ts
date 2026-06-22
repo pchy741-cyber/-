@@ -2,6 +2,11 @@ import { getCtxIsPaper } from '../config/context.js';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 
+/** KIS OAuth2 토큰 만료 여유시간 (만료 30분 전 갱신) */
+const TOKEN_EXPIRY_BUFFER_MS = 30 * 60 * 1000; // 30분
+/** KIS 토큰 발급 API 타임아웃 */
+const TOKEN_REQUEST_TIMEOUT_MS = 15_000; // 15초
+
 interface KISToken {
   accessToken: string;
   tokenType: string;
@@ -113,6 +118,7 @@ export async function getAccessTokenForMode(mode: 'paper' | 'live'): Promise<str
         method: 'POST',
         headers: { 'Content-Type': 'application/json; charset=utf-8' },
         body: JSON.stringify({ grant_type: 'client_credentials', appkey: appKey, appsecret: appSecret }),
+        signal: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
       });
       const rawBody = await res.text();
       if (!res.ok) throw new Error(`KIS 토큰 발급 실패 [${mode}] (${res.status}): ${rawBody}`);
@@ -123,10 +129,15 @@ export async function getAccessTokenForMode(mode: 'paper' | 'live'): Promise<str
       };
       if (!data.access_token) throw new Error(`KIS 토큰 발급 실패 [${mode}]`);
 
+      const expiresAt = new Date(data.access_token_token_expired ?? '');
+      if (isNaN(expiresAt.getTime())) {
+        logger.warn(`KIS 토큰 [${mode}] 만료 시각 파싱 실패: ${data.access_token_token_expired}`, { component: 'KIS_AUTH' });
+      }
+
       const token: KISToken = {
         accessToken: data.access_token,
         tokenType: data.token_type ?? 'Bearer',
-        expiresAt: new Date(data.access_token_token_expired ?? ''),
+        expiresAt,
       };
       modeTokenCache.set(mode, token);
       await saveTokenToDb(token, isPaper);
@@ -193,6 +204,7 @@ export async function getAccessToken(): Promise<string> {
           appkey: appKey,
           appsecret: appSecret,
         }),
+        signal: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
       });
 
       const rawBody = await res.text();
@@ -212,10 +224,15 @@ export async function getAccessToken(): Promise<string> {
         throw new Error(`KIS 토큰 발급 실패: ${data.error_code ?? 'unknown'} - ${data.error_description ?? rawBody}`);
       }
 
+      const mainExpiresAt = new Date(data.access_token_token_expired ?? '');
+      if (isNaN(mainExpiresAt.getTime())) {
+        logger.warn(`KIS 토큰 만료 시각 파싱 실패: ${data.access_token_token_expired}`, { component: 'KIS_AUTH' });
+      }
+
       cachedToken = {
         accessToken: data.access_token,
         tokenType: data.token_type ?? 'Bearer',
-        expiresAt: new Date(data.access_token_token_expired ?? ''),
+        expiresAt: mainExpiresAt,
       };
       cachedTokenIsPaper = isPaper;
       modeTokenCache.set(mode, cachedToken); // 모드별 캐시에도 저장
@@ -264,25 +281,24 @@ export async function getHashkey(body: Record<string, unknown>): Promise<string>
 }
 
 function isExpired(token: KISToken): boolean {
-  // 만료 30분 전에 갱신
-  const buffer = 30 * 60 * 1000;
-  return Date.now() > token.expiresAt.getTime() - buffer;
+  const expiryTime = token.expiresAt.getTime();
+  // 만료 시각이 유효하지 않으면 만료 처리 (재발급 유도)
+  if (!Number.isFinite(expiryTime)) return true;
+  return Date.now() > expiryTime - TOKEN_EXPIRY_BUFFER_MS;
 }
 
-export function clearTokenCache() {
+export async function clearTokenCache(): Promise<void> {
   cachedToken = null;
   modeTokenCache.clear();
   // DB 토큰도 삭제 (KIS 서버에서 무효화된 토큰이 DB 복원되는 것 방지)
   // 현재 모드의 토큰만 삭제 (반대 모드는 유지)
-  (async () => {
-    try {
-      const { getPool, isMemoryMode } = await import('../db/client.js');
-      if (isMemoryMode()) return;
-      const key = getCtxIsPaper() ? 'kis_token_paper' : 'kis_token_live';
-      await getPool().query('DELETE FROM system_state WHERE key = $1', [key]);
-      logger.info(`KIS 토큰 DB 캐시 삭제: ${key}`, { component: 'KIS_AUTH' });
-    } catch (err) {
-      logger.warn(`KIS 토큰 DB 삭제 실패 (무시): ${err}`, { component: 'KIS_AUTH' });
-    }
-  })();
+  try {
+    const { getPool, isMemoryMode } = await import('../db/client.js');
+    if (isMemoryMode()) return;
+    const key = getCtxIsPaper() ? 'kis_token_paper' : 'kis_token_live';
+    await getPool().query('DELETE FROM system_state WHERE key = $1', [key]);
+    logger.info(`KIS 토큰 DB 캐시 삭제: ${key}`, { component: 'KIS_AUTH' });
+  } catch (err) {
+    logger.warn(`KIS 토큰 DB 삭제 실패 (무시): ${err}`, { component: 'KIS_AUTH' });
+  }
 }

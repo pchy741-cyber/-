@@ -27,6 +27,7 @@ function JournalView({ viewMode = 'live' }: { viewMode?: 'live' | 'paper' }) {
   const [data, setData] = useState<{ trades: JournalTrade[]; summary: { totalTrades: number; wins: number; losses: number; winRate: number; avgPnlPct: number } } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -38,12 +39,15 @@ function JournalView({ viewMode = 'live' }: { viewMode?: 'live' | 'paper' }) {
   }, [days, viewMode]);
 
   const trades = data?.trades.filter(t => market === 'ALL' || t.market === market) ?? [];
-  const wins = trades.filter(t => t.pnlPct >= 0).length;
+  const wins = trades.filter(t => t.pnlPct > 0).length;
   const losses = trades.length - wins;
   const winRate = trades.length > 0 ? (wins / trades.length) * 100 : 0;
   const avgPnl = trades.length > 0 ? trades.reduce((s, t) => s + t.pnlPct, 0) / trades.length : 0;
   const totalAmountKr = trades.filter(t => t.market === 'KR').reduce((s, t) => s + t.pnlAmount, 0);
   const totalAmountUs = trades.filter(t => t.market === 'US').reduce((s, t) => s + t.pnlAmount, 0);
+
+  const fmtHold = (d: number) => d < 1 ? `${Math.round(d * 24)}h` : d < 2 ? `${Math.round(d * 24)}h` : `${d.toFixed(0)}일`;
+  const displayName = (t: JournalTrade) => t.name !== t.code ? t.name : (KNOWN_STOCK_NAMES[t.code] ?? t.code);
 
   return (
     <div className="space-y-4">
@@ -53,8 +57,8 @@ function JournalView({ viewMode = 'live' }: { viewMode?: 'live' | 'paper' }) {
           value={market}
           items={[
             { value: 'ALL' as const, label: '전체' },
-            { value: 'KR' as const, label: '🇰🇷 국내' },
-            { value: 'US' as const, label: '🇺🇸 해외' },
+            { value: 'KR' as const, label: '국내' },
+            { value: 'US' as const, label: '해외' },
           ]}
           onChange={setMarket}
         />
@@ -70,28 +74,30 @@ function JournalView({ viewMode = 'live' }: { viewMode?: 'live' | 'paper' }) {
         />
       </div>
 
-      {/* 요약 카드 */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+      {/* 요약 카드 — 2x2 그리드 */}
+      <div className="grid grid-cols-2 gap-2.5">
+        <div className="glass rounded-xl p-3 text-center border border-white/[0.04]">
           <div className="text-[10px] text-slate-500">완결 매매</div>
-          <div className="text-xl font-black mt-1">{trades.length}건</div>
+          <div className="text-lg font-black mt-0.5">{trades.length}<span className="text-xs text-slate-500 ml-0.5">건</span></div>
         </div>
-        <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+        <div className="glass rounded-xl p-3 text-center border border-white/[0.04]">
           <div className="text-[10px] text-slate-500">승률</div>
-          <div className={`text-xl font-black mt-1 ${winRate >= 55 ? 'text-emerald-400' : winRate >= 45 ? 'text-amber-400' : 'text-rose-400'}`}>
+          <div className={`text-lg font-black mt-0.5 ${winRate >= 55 ? 'text-emerald-400' : winRate >= 45 ? 'text-amber-400' : 'text-rose-400'}`}>
             {trades.length > 0 ? winRate.toFixed(0) : '-'}%
           </div>
-          <div className="text-[10px] text-slate-600 mt-0.5">{wins}승 {losses}패</div>
+          <div className="text-[9px] text-slate-600">{wins}승 {losses}패</div>
         </div>
-        <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+        <div className="glass rounded-xl p-3 text-center border border-white/[0.04]">
           <div className="text-[10px] text-slate-500">평균 손익률</div>
-          <div className={`text-xl font-black mt-1 ${pc(avgPnl)}`}>{trades.length > 0 ? fmtPct(avgPnl) : '-'}</div>
+          <div className={`text-lg font-black mt-0.5 ${pc(avgPnl)}`}>{trades.length > 0 ? fmtPct(avgPnl) : '-'}</div>
         </div>
-        <div className="glass rounded-xl p-3.5 text-center border border-white/[0.04]">
+        <div className="glass rounded-xl p-3 text-center border border-white/[0.04]">
           <div className="text-[10px] text-slate-500">실현 손익</div>
-          {totalAmountKr !== 0 && <div className={`text-sm font-bold tabular-nums ${pc(totalAmountKr)}`}>{fmtWon(totalAmountKr)}</div>}
-          {totalAmountUs !== 0 && <div className={`text-sm font-bold tabular-nums ${pc(totalAmountUs)}`}>{fmtUsd(totalAmountUs)}</div>}
-          {totalAmountKr === 0 && totalAmountUs === 0 && <div className="text-sm text-slate-500 mt-1">-</div>}
+          <div className="mt-0.5 space-y-0.5">
+            {totalAmountKr !== 0 && <div className={`text-sm font-bold tabular-nums leading-tight ${pc(totalAmountKr)}`}>{fmtWon(totalAmountKr)}</div>}
+            {totalAmountUs !== 0 && <div className={`text-sm font-bold tabular-nums leading-tight ${pc(totalAmountUs)}`}>{fmtUsd(totalAmountUs)}</div>}
+            {totalAmountKr === 0 && totalAmountUs === 0 && <div className="text-sm text-slate-500">-</div>}
+          </div>
         </div>
       </div>
 
@@ -122,52 +128,73 @@ function JournalView({ viewMode = 'live' }: { viewMode?: 'live' | 'paper' }) {
             <p className="text-[11px] text-slate-600 mt-1">매도 후 손익이 확정된 거래가 여기에 표시됩니다</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-[13px]">
-              <thead><tr className="text-slate-500 border-b border-slate-700/30 text-[11px]">
-                <th className="px-4 py-2.5 text-left font-medium">청산일</th>
-                <th className="px-4 py-2.5 text-left font-medium">종목</th>
-                <th className="px-4 py-2.5 text-center font-medium">시장</th>
-                <th className="px-4 py-2.5 text-right font-medium">진입가</th>
-                <th className="px-4 py-2.5 text-right font-medium">청산가</th>
-                <th className="px-4 py-2.5 text-right font-medium">손익률</th>
-                <th className="px-4 py-2.5 text-right font-medium">손익</th>
-                <th className="px-4 py-2.5 text-right font-medium">보유</th>
-                <th className="px-4 py-2.5 text-left font-medium">사유</th>
-              </tr></thead>
-              <tbody className="divide-y divide-slate-800/20">
-                {trades.map((t, i) => (
-                  <tr key={i} className={`hover:bg-white/[0.02] transition-colors ${t.pnlPct > 0 ? 'bg-emerald-950/10' : t.pnlPct < 0 ? 'bg-rose-950/10' : ''}`}>
-                    <td className="px-4 py-2.5 text-slate-400 whitespace-nowrap">{fmtTime(t.closedAt)}</td>
-                    <td className="px-4 py-2.5">
-                      <div className="font-semibold text-slate-200">{t.name !== t.code ? t.name : (KNOWN_STOCK_NAMES[t.code] ?? t.code)}</div>
-                      <div className="text-[10px] text-slate-600">{t.code}{t.strategyMode ? ` · ${t.strategyMode}` : ''}</div>
-                    </td>
-                    <td className="px-4 py-2.5 text-center">
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/[0.05] text-slate-400">{t.market === 'KR' ? '🇰🇷' : '🇺🇸'}</span>
-                    </td>
-                    <td className="px-4 py-2.5 text-right text-slate-400 tabular-nums">
-                      {t.market === 'KR' ? fmt(t.entryPrice) : `$${t.entryPrice.toFixed(2)}`}
-                    </td>
-                    <td className="px-4 py-2.5 text-right text-slate-300 tabular-nums font-medium">
-                      {t.market === 'KR' ? fmt(t.exitPrice) : `$${t.exitPrice.toFixed(2)}`}
-                    </td>
-                    <td className={`px-4 py-2.5 text-right font-bold tabular-nums ${pc(t.pnlPct)}`}>
-                      {fmtPct(t.pnlPct)}
-                    </td>
-                    <td className={`px-4 py-2.5 text-right tabular-nums text-[12px] ${pc(t.pnlAmount)}`}>
+          <div className="divide-y divide-white/[0.03]">
+            {trades.map((t, i) => {
+              const isExpanded = expandedIdx === i;
+              const isProfit = t.pnlPct > 0;
+              return (
+                <div
+                  key={`${t.code}-${t.closedAt}-${i}`}
+                  onClick={() => setExpandedIdx(isExpanded ? null : i)}
+                  className={`px-4 py-3 cursor-pointer transition-colors hover:bg-white/[0.02] ${isProfit ? 'border-l-2 border-l-emerald-500/40' : 'border-l-2 border-l-rose-500/40'}`}
+                >
+                  {/* 메인 행: 종목명 + 손익률 */}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <span className="text-[10px] shrink-0">{t.market === 'KR' ? '🇰🇷' : '🇺🇸'}</span>
+                      <span className="text-sm font-bold text-slate-200 truncate">{displayName(t)}</span>
+                      {t.strategyMode && (
+                        <span className="text-[9px] bg-white/[0.06] text-slate-400 px-1.5 py-0.5 rounded shrink-0">{t.strategyMode}</span>
+                      )}
+                    </div>
+                    <div className={`text-right shrink-0 ${isProfit ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      <div className="text-base font-black tabular-nums">{fmtPct(t.pnlPct)}</div>
+                    </div>
+                  </div>
+
+                  {/* 서브 행: 가격 + 보유기간 + 손익금액 */}
+                  <div className="flex items-center justify-between mt-1.5 text-[11px]">
+                    <div className="flex items-center gap-2 text-slate-500">
+                      <span className="tabular-nums">
+                        {t.market === 'KR' ? fmt(t.entryPrice) : `$${t.entryPrice.toFixed(2)}`}
+                        <span className="text-slate-600 mx-0.5">→</span>
+                        {t.market === 'KR' ? fmt(t.exitPrice) : `$${t.exitPrice.toFixed(2)}`}
+                      </span>
+                      <span className="text-slate-600">·</span>
+                      <span>{fmtHold(t.holdingDays)}</span>
+                    </div>
+                    <span className={`font-semibold tabular-nums ${pc(t.pnlAmount)}`}>
                       {t.market === 'KR' ? fmtWon(t.pnlAmount) : fmtUsd(t.pnlAmount)}
-                    </td>
-                    <td className="px-4 py-2.5 text-right text-slate-500 tabular-nums text-[12px]">
-                      {t.holdingDays < 1 ? `${Math.round(t.holdingDays * 24)}h` : `${t.holdingDays.toFixed(1)}일`}
-                    </td>
-                    <td className="px-4 py-2.5 text-slate-500 text-[11px] max-w-[200px] truncate" title={t.closeReason}>
-                      {t.closeReason || '-'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                    </span>
+                  </div>
+
+                  {/* 확장: 청산일 + 사유 */}
+                  {isExpanded && (
+                    <div className="mt-3 pt-2.5 border-t border-white/[0.04] space-y-2">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="text-slate-500">청산일</span>
+                        <span className="text-slate-300">{fmtTime(t.closedAt)}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="text-slate-500">진입일</span>
+                        <span className="text-slate-300">{fmtTime(t.openedAt)}</span>
+                      </div>
+                      {t.closeReason && (
+                        <div className="text-[11px]">
+                          <span className="text-slate-500">청산 사유</span>
+                          <p className="text-slate-300 mt-1 leading-relaxed whitespace-pre-wrap break-words">{t.closeReason}</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* 접힌 상태: 청산 사유 한줄 미리보기 */}
+                  {!isExpanded && t.closeReason && (
+                    <p className="text-[10px] text-slate-600 mt-1 truncate">{t.closeReason}</p>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

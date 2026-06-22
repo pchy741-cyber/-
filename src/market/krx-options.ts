@@ -8,6 +8,7 @@
  */
 
 import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
 
 export interface KrxOptionsSignal {
   vkospi: number | null; // 변동성 지수 (VIX 한국판)
@@ -24,7 +25,7 @@ let _cache: { data: KrxOptionsSignal; fetchedAt: number } | null = null;
 // ── VKOSPI 수집 ────────────────────────────────────────────────────
 async function fetchVkospi(): Promise<number | null> {
   // KRX 통계 API (비공식)
-  const today = new Date();
+  const today = getKSTNow();
   const yyyymmdd = today.toISOString().slice(0, 10).replace(/-/g, '');
 
   const url = 'https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd';
@@ -69,7 +70,7 @@ async function fetchVkospi(): Promise<number | null> {
 
 // ── P/C Ratio 수집 ─────────────────────────────────────────────────
 async function fetchPcRatio(): Promise<number | null> {
-  const today = new Date();
+  const today = getKSTNow();
   const yyyymmdd = today.toISOString().slice(0, 10).replace(/-/g, '');
 
   const url = 'https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd';

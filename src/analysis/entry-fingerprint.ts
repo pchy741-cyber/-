@@ -154,7 +154,7 @@ export async function getPatternFeedback(fp: EntryFingerprint): Promise<PatternF
 
     const wins = data.filter((r: any) => r.outcome === 'WIN').length;
     const winRate = wins / data.length;
-    const avgPnlPct = data.reduce((s: number, r: any) => s + Number(r.realized_pnl_pct ?? 0), 0) / data.length;
+    const avgPnlPct = data.reduce((s: number, r: any) => s + (Number(r.realized_pnl_pct) || 0), 0) / data.length;
 
     // 데이터 많을수록 보정 강도 증가
     const dataBias = data.length >= 15 ? 1.3 : data.length >= 8 ? 1.1 : 1.0;

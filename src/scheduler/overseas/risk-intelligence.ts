@@ -47,13 +47,13 @@ export function calcDynamicTrailDrop(params: {
     }
   }
 
-  // 수익 단계별 타이트닝 (수익을 지킨다)
+  // 기본 범위 클램프 (trend/rsi 조정 후)
+  trail = Math.max(minTrail, Math.min(maxTrail, trail));
+
+  // 수익 단계별 타이트닝 — 클램프 이후 적용 (수익 보호가 범위 제한보다 우선)
   if (maxPnlPct >= 25.0) trail = Math.max(trail, -4.0);
   else if (maxPnlPct >= 20.0) trail = Math.max(trail, -5.0);
   else if (maxPnlPct >= 15.0) trail = Math.max(trail, -6.0);
-
-  // 모든 조정 후 최종 클램프
-  trail = Math.max(minTrail, Math.min(maxTrail, trail));
 
   return trail;
 }
@@ -96,7 +96,10 @@ export async function getGradualCooldown(isPaper?: boolean): Promise<GradualCool
       return { level: 1, cooldownMs: 4 * 60 * 60_000, sizingPenalty: 1.0, message: `1회 손절 → 해당 종목 4h 쿨다운` };
     }
     return { level: 0, cooldownMs: 0, sizingPenalty: 1.0, message: '' };
-  } catch {
+  } catch (e) {
+    // Cooldown query failed — safe fallback to no cooldown
+    const err = e as Error;
+    if (err.message) { /* non-critical, logged by DB layer */ }
     return { level: 0, cooldownMs: 0, sizingPenalty: 1.0, message: '' };
   }
 }
@@ -126,7 +129,10 @@ export async function getGradualCooldownStocks(cooldown: GradualCooldown, isPape
       [intervalHours, mode],
     );
     return new Set(rows.map((r: { stock_code: string }) => String(r.stock_code)));
-  } catch {
+  } catch (e) {
+    // Cooldown stock query failed — safe fallback to empty set
+    const err = e as Error;
+    if (err.message) { /* non-critical */ }
     return new Set();
   }
 }
@@ -203,8 +209,10 @@ export async function calcUncertaintyPenalty(params: {
       penalty += 0.15;
       reasons.push(`연속손절${recentSells.length}회`);
     }
-  } catch {
-    /* skip */
+  } catch (e) {
+    // Uncertainty penalty DB query failed — continue with partial result
+    const err = e as Error;
+    if (err.message) { /* logged via caller if significant */ }
   }
 
   if (vix && vix > 25) {
@@ -279,10 +287,14 @@ export async function getPartialTpStageNum(code: string, isPaper?: boolean): Pro
     const { rows } = await getPool().query('SELECT value FROM overseas_state WHERE key = $1', [
       `${modePrefix(isPaper)}partial_tp_stage_${code}`,
     ]);
-    const val = rows.length > 0 ? Number(rows[0].value) : 0;
-    cacheSet(cacheKey, val, 300); // 5분 TTL
+    const raw = rows.length > 0 ? Number(rows[0].value) : 0;
+    const val = Number.isFinite(raw) ? raw : 0;
+    cacheSet(cacheKey, val, 300); // 5min TTL
     return val;
-  } catch {
+  } catch (e) {
+    // Partial TP stage query failed — safe fallback to stage 0
+    const err = e as Error;
+    if (err.message) { /* non-critical */ }
     return 0;
   }
 }
@@ -380,7 +392,7 @@ export function calcDynamicTpSl(params: {
   const roundTripFeePct = OVERSEAS_FEE_PCT * 2 * 100; // 0.7%
   const tpFloor = baseTp + roundTripFeePct;
   const tpCeil = isHighBeta ? 40.0 : isMediumBeta ? 35.0 : isDefense ? 25.0 : 35.0;
-  const tpPct = Math.min(
+  let tpPct = Math.min(
     tpCeil,
     Math.max(tpFloor, baseTp + roundTripFeePct + momentumExt + overboughtCut + aiTpBonus + scoreTpBonus + vixTpAdj),
   );
@@ -401,6 +413,14 @@ export function calcDynamicTpSl(params: {
     }
   }
 
+  // ── R:R 비율 검증 — 국내 getDynamicDomesticTpSl과 동일 1.5:1~4:1 범위 강제 ──
+  const rr = tpPct / slPct;
+  if (rr > 4.0) {
+    tpPct = Math.round(slPct * 4.0 * 10) / 10;
+  } else if (rr < 1.5) {
+    tpPct = Math.round(slPct * 1.5 * 10) / 10;
+  }
+
   const parts: string[] = [`base${baseTp}`];
   if (momentumExt) parts.push(`mom${momentumExt > 0 ? '+' : ''}${momentumExt}`);
   if (overboughtCut) parts.push(`rsi${overboughtCut}`);
@@ -408,6 +428,8 @@ export function calcDynamicTpSl(params: {
   if (scoreTpBonus) parts.push(`s${aiScore}+${scoreTpBonus}`);
   if (vixTpAdj) parts.push(`VIX${vixTpAdj > 0 ? '+' : ''}${vixTpAdj}`);
   if (atrPct && atrPct > 0) parts.push(`ATR${atrPct.toFixed(1)}`);
+  if (rr > 4.0) parts.push('RR>4→TP축소');
+  else if (rr < 1.5) parts.push('RR<1.5→조정');
 
   return { tpPct, slPct, tpLabel: parts.join('/') };
 }

@@ -1,7 +1,7 @@
 import { hardInvalidateDashboardCache } from '../cache/dashboard-cache.js';
 import { invalidateStockCache } from '../cache/redis.js';
 import { OrderType, STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
-import { getCtxIsPaper } from '../config/context.js';
+import { getCtxIsPaper, runWithMode } from '../config/context.js';
 import { config } from '../config/index.js';
 import {
   getActiveStrategy,
@@ -19,7 +19,7 @@ import { getCurrentPrice, getDailyChart } from '../kis/market.js';
 import { cancelOrder, getOrderFills, type OrderResult, placeOrder } from '../kis/order.js';
 import { notifyBuy, notifySell } from '../notifications/web-push.js';
 import { PARK_STOCK_CODE } from '../ai/track-b/defense-park.js';
-import { recordSellForCooldown } from '../ai/track-b/pipeline.js';
+import { recordSellForCooldown } from '../ai/track-b/sell-cooldown.js';
 import { riskEngine } from '../risk/engine.js';
 import { reportError, reportSuccess } from '../risk/kill-switch.js';
 import { paperTradeOrder } from '../risk/paper.js';
@@ -48,13 +48,13 @@ export class TradeExecutor {
   private _getPendingKey(): 'paper' | 'live' { return getCtxIsPaper() ? 'paper' : 'live'; }
 
   private _minuteKey(stockCode: string, action: string): string {
-    const now = new Date();
+    const now = getKSTNow();
     // 5분마다 오래된 키 정리 (메모리 누수 방지)
     if (now.getTime() - this._lastKeyCleanup > 5 * 60_000) {
       this._recentOrderKeys.clear();
       this._lastKeyCleanup = now.getTime();
     }
-    const ymd = now.toISOString().slice(0, 16).replace(/[-:T]/g, ''); // YYYYMMDDHHmm
+    const ymd = now.toISOString().slice(0, 16).replace(/[-:T]/g, ''); // YYYYMMDDHHmm (KST)
     const mode = getCtxIsPaper() ? 'paper' : 'live';
     return `${mode}-${stockCode}-${action}-${ymd}`;
   }
@@ -103,7 +103,7 @@ export class TradeExecutor {
     }
     // 오래된 키 정리 — 현재 분 키만 남기고 이전 분 삭제 (전체 삭제 시 동일 분 중복 허용 버그 방지)
     if (this._recentOrderKeys.size > 200) {
-      const currentMinute = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
+      const currentMinute = getKSTNow().toISOString().slice(0, 16).replace(/[-:T]/g, '');
       for (const key of this._recentOrderKeys) {
         if (!key.endsWith(currentMinute)) this._recentOrderKeys.delete(key);
       }
@@ -331,8 +331,8 @@ export class TradeExecutor {
 
     // 리스크 체크 (ETF 파킹/바닥낚시는 Kill Switch만 확인 — 포지션/한도 체크 제외)
     if (skipGates) {
-      const { isKillSwitchActive } = await import('../risk/kill-switch.js');
-      if (isKillSwitchActive()) {
+      const { isKillSwitchActiveForMode } = await import('../risk/kill-switch.js');
+      if (isKillSwitchActiveForMode('KR', isPaperSnapshot)) {
         releaseBuyIntent(stockCode);
         logger.warn(`🛑 Kill Switch 활성 → ETF 파킹 스킵: ${stockCode}`, { component: 'EXECUTOR' });
         return;
@@ -380,8 +380,19 @@ export class TradeExecutor {
           );
           return;
         }
-      } catch {
-        /* fail-open: AI 오류 시 기존 게이트 결과 존중 */
+      } catch (aiTimingErr) {
+        /* fail-closed: AI 타이밍 서비스 장애 시 대형주문 차단 (안전 우선) */
+        releaseBuyIntent(stockCode);
+        logger.error(
+          `🛑 진입타이밍 AI 장애로 대형주문 차단 [${stockCode} ${Math.round(orderAmountKrw / 10000)}만원]: ${(aiTimingErr as Error).message ?? aiTimingErr}`,
+          { component: 'EXECUTOR' },
+        );
+        await logSystem(
+          'ERROR',
+          'ENTRY_TIMING',
+          `AI 타이밍 서비스 장애 — 대형주문 차단 (fail-closed): ${stockCode} ${Math.round(orderAmountKrw / 10000)}만원`,
+        );
+        return;
       }
     }
 
@@ -418,10 +429,13 @@ export class TradeExecutor {
             component: 'EXECUTOR',
           });
         }
-      } catch {
-        /* 호가 조회 실패 시 시장가 폴백 (fail-open) */
+      } catch (e) {
+        logger.warn(`호가 조회 실패 → 시장가 폴백: ${stockCode} ${(e as Error).message}`, { component: 'EXECUTOR' });
       }
     }
+
+    // smartBuyPrice=0 방어: 시장가 폴백 (penny stock 등 비정상 호가)
+    if (smartBuyPrice !== undefined && smartBuyPrice <= 0) smartBuyPrice = undefined;
 
     // 주문 실행 (지정가 우선 → 호가 없으면 시장가 폴백)
     const result = await this.executeOrder({
@@ -467,8 +481,8 @@ export class TradeExecutor {
       if (mode !== 'SCALPING' && aiScore && aiScore >= 60) {
         const { getDynamicDomesticTpSl } = await import('../config/constants.js');
         // 자기학습 피드백: strategy_config에 학습된 TP/SL → 30% 블렌딩
-        const learnedTp = (dbStrategy as any)?.take_profit_pct as number | undefined;
-        const learnedSl = (dbStrategy as any)?.stop_loss_pct as number | undefined;
+        const learnedTp = dbStrategy?.take_profit_pct;
+        const learnedSl = dbStrategy?.stop_loss_pct;
         const dyn = getDynamicDomesticTpSl({ ...tpSlHints, score: aiScore, learnedTp, learnedSl });
         scoreParams = { takeProfitPct: dyn.takeProfitPct, stopLossPct: dyn.stopLossPct };
         logger.info(
@@ -477,8 +491,8 @@ export class TradeExecutor {
         );
       }
       let targetProfitPct =
-        scoreParams?.takeProfitPct ?? (dbStrategy as any)?.take_profit_pct ?? params.takeProfitPct;
-      let stopLossPct = scoreParams?.stopLossPct ?? (dbStrategy as any)?.stop_loss_pct ?? params.stopLossPct;
+        scoreParams?.takeProfitPct ?? dbStrategy?.take_profit_pct ?? params.takeProfitPct;
+      let stopLossPct = scoreParams?.stopLossPct ?? dbStrategy?.stop_loss_pct ?? params.stopLossPct;
 
       // ATR 기반 동적 손절 — 전략 손절폭보다 넓어지지 않도록 캡 적용
       try {
@@ -492,8 +506,8 @@ export class TradeExecutor {
             component: 'EXECUTOR',
           });
         }
-      } catch {
-        /* ATR 실패 시 기본값 유지 */
+      } catch (e) {
+        logger.warn(`ATR 계산 실패 → 기본 손절값 유지: ${stockCode} ${(e as Error).message}`, { component: 'EXECUTOR' });
       }
 
       // 1:2 손익비 보장: TP < 2 × |SL| 시 TP 상향 조정
@@ -525,19 +539,53 @@ export class TradeExecutor {
           chainCreated = true;
 
           // ScaleIn 3분할: 체인 생성 성공 후 2차(60s)/3차(120s) 분할 진입 스케줄
+          // ⚠️ setTimeout 기반 — 프로세스 재시작 시 2차/3차 트랜치 유실됨
+          // DB에 pending tranche 마커를 기록하여 재시작 후 감지 가능하도록 함
           if (useScaleIn && secondTranche > 0) {
             logger.info(
               `📊 ScaleIn 스케줄: ${stockCode} 1차 ${filledQty}주 완료 → 2차 ${secondTranche}주(60s), 3차 ${thirdTranche}주(120s)`,
               { component: 'EXECUTOR' },
             );
+            // DB 마커 기록 — 프로세스 재시작 시 미실행 트랜치 감지용
+            const trancheMarker = {
+              stockCode,
+              chainId,
+              secondTranche,
+              thirdTranche,
+              scheduledAt: new Date().toISOString(),
+              reasoning,
+              isPaper: isPaperSnapshot,
+            };
+            getPool().query(
+              `INSERT INTO system_state (key, value) VALUES ($1, $2)
+               ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+              [`pending_scalein_${chainId}`, JSON.stringify(trancheMarker)],
+            ).catch((e) => logger.warn(`ScaleIn DB 마커 저장 실패: ${e}`, { component: 'EXECUTOR' }));
+
+            logger.warn(
+              `⚠️ ScaleIn 2차/3차 트랜치가 setTimeout으로 스케줄됨 — 프로세스 재시작 시 유실 위험: ${stockCode} chain=${chainId} 2차=${secondTranche}주(60s) 3차=${thirdTranche}주(120s)`,
+              { component: 'EXECUTOR' },
+            );
             setTimeout(() => {
-              this.executeAverageDown(stockCode, secondTranche, 'MARKET', undefined, `ScaleIn 2차/3: ${reasoning}`, true)
-                .catch((e) => logger.warn(`ScaleIn 2차 실패 ${stockCode}: ${(e as Error).message}`, { component: 'EXECUTOR' }));
+              runWithMode(isPaperSnapshot, () =>
+                this.executeAverageDown(stockCode, secondTranche, 'MARKET', undefined, `ScaleIn 2차/3: ${reasoning}`, true),
+              ).then(() => {
+                logger.info(`✅ ScaleIn 2차 실행 완료: ${stockCode} ${secondTranche}주`, { component: 'EXECUTOR' });
+                // 3차도 완료되었거나 없으면 DB 마커 삭제
+                if (thirdTranche <= 0) {
+                  getPool().query(`DELETE FROM system_state WHERE key = $1`, [`pending_scalein_${chainId}`]).catch(() => {});
+                }
+              }).catch((e) => logger.warn(`ScaleIn 2차 실패 ${stockCode}: ${(e as Error).message}`, { component: 'EXECUTOR' }));
             }, 60_000);
             if (thirdTranche > 0) {
               setTimeout(() => {
-                this.executeAverageDown(stockCode, thirdTranche, 'MARKET', undefined, `ScaleIn 3차/3: ${reasoning}`, true)
-                  .catch((e) => logger.warn(`ScaleIn 3차 실패 ${stockCode}: ${(e as Error).message}`, { component: 'EXECUTOR' }));
+                runWithMode(isPaperSnapshot, () =>
+                  this.executeAverageDown(stockCode, thirdTranche, 'MARKET', undefined, `ScaleIn 3차/3: ${reasoning}`, true),
+                ).then(() => {
+                  logger.info(`✅ ScaleIn 3차 실행 완료: ${stockCode} ${thirdTranche}주`, { component: 'EXECUTOR' });
+                  // 모든 트랜치 완료 → DB 마커 삭제
+                  getPool().query(`DELETE FROM system_state WHERE key = $1`, [`pending_scalein_${chainId}`]).catch(() => {});
+                }).catch((e) => logger.warn(`ScaleIn 3차 실패 ${stockCode}: ${(e as Error).message}`, { component: 'EXECUTOR' }));
               }, 120_000);
             }
           }
@@ -574,7 +622,7 @@ export class TradeExecutor {
       // 캐시 무효화
       invalidateStockCache(stockCode).catch(() => {});
       if (chainCreated) {
-        notifyBuy(stockCode, filledQty, fill.filledPrice, reasoning, triggerSource).catch((err) =>
+        notifyBuy(stockCode, filledQty, fill.filledPrice, reasoning, triggerSource, isPaperSnapshot).catch((err) =>
           logger.warn(`알림 발송 오류 (BUY): ${err}`, { component: 'EXECUTOR' }),
         );
       } else {
@@ -816,7 +864,7 @@ export class TradeExecutor {
       invalidateStockCache(stockCode).catch(() => {});
       invalidateBalanceCache();
       hardInvalidateDashboardCache();
-      notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, reasoning, chain.strategy_mode).catch((err) =>
+      notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, reasoning, chain.strategy_mode, isPaperSnapshot).catch((err) =>
         logger.warn(`알림 발송 오류 (SELL): ${err}`, { component: 'EXECUTOR' }),
       );
     }
@@ -935,6 +983,7 @@ export class TradeExecutor {
               pnlPctKisSync,
               `DB-KIS 동기화 강제 청산: 실보유 0주`,
               chain.strategy_mode,
+              isPaperSnapshot,
             ).catch((err) =>
               logger.warn(`notifySell() 실패 (DB-KIS 동기화): ${err}`, { component: 'EXECUTOR' }),
             );
@@ -1026,7 +1075,7 @@ export class TradeExecutor {
       invalidateStockCache(stockCode).catch(() => {});
       invalidateBalanceCache();
       hardInvalidateDashboardCache();
-      notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, closeReason, chain.strategy_mode).catch((err) =>
+      notifySell(stockCode, soldQty, fill.filledPrice, pnlPct, closeReason, chain.strategy_mode, isPaperSnapshot).catch((err) =>
         logger.warn(`알림 발송 오류 (CLOSE): ${err}`, { component: 'EXECUTOR' }),
       );
 
@@ -1088,14 +1137,23 @@ export class TradeExecutor {
     const kH = kstNow.getUTCHours(),
       kM = kstNow.getUTCMinutes();
     const isAfterHours = (kH === 15 && kM >= 40) || (kH === 16 && kM === 0);
-    const orderType = isAfterHours ? OrderType.AFTER_HOURS : params.price ? OrderType.LIMIT : OrderType.MARKET;
+    // 시간외 주문은 반드시 가격 필요 (ORD_DVSN='06'에 price=0 → KIS 거부)
+    let effectivePrice = params.price;
+    if (isAfterHours && !effectivePrice) {
+      effectivePrice = await getCurrentPrice(params.stockCode).then((p) => p.currentPrice).catch(() => 0);
+      if (!effectivePrice) {
+        logger.warn(`⛔ 시간외 주문 가격 조회 실패 → 주문 스킵: ${params.stockCode}`, { component: 'EXECUTOR' });
+        return { success: false, orderNo: '', message: '시간외 주문 가격 없음' };
+      }
+    }
+    const orderType = isAfterHours ? OrderType.AFTER_HOURS : effectivePrice ? OrderType.LIMIT : OrderType.MARKET;
 
     // 실거래 주문
     const result = await placeOrder({
       stockCode: params.stockCode,
       side: params.side,
       quantity: params.quantity,
-      price: params.price,
+      price: effectivePrice,
       orderType,
     });
 
@@ -1106,7 +1164,7 @@ export class TradeExecutor {
       side: params.side,
       order_type: orderType,
       quantity: params.quantity,
-      price: params.price ?? null,
+      price: effectivePrice ?? null,
       kis_order_no: result.orderNo,
       kis_status: result.success ? 'SUBMITTED' : 'FAILED',
       filled_quantity: 0,
@@ -1173,7 +1231,7 @@ export class TradeExecutor {
       logger.info(`🧹 confirmedOrders 캐시 정리: ${size}건`, { component: 'EXECUTOR' });
     }
     // 전날 분 키 잔재 제거 (오늘 날짜 없는 항목)
-    const todayPrefix = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const todayPrefix = getKSTNow().toISOString().slice(0, 10).replace(/-/g, '');
     const before = this._recentOrderKeys.size;
     for (const key of this._recentOrderKeys) {
       if (!key.includes(todayPrefix)) this._recentOrderKeys.delete(key);
@@ -1252,9 +1310,13 @@ export class TradeExecutor {
     // 미체결 지정가 주문 자동 취소 (이미 체결된 시장가면 취소 실패 → 무시)
     try {
       await cancelOrder({ orderNo, stockCode, quantity: expectedQty });
+      // 🔒 DB 주문 상태도 CANCELLED로 업데이트 — PENDING 잔류 방지 (중복매수 위험 차단)
+      await updateOrderByKisOrderNo(orderNo, { status: 'CANCELLED' });
       logger.warn(`🔄 미체결 주문 취소 완료: ${orderNo}`, { component: 'EXECUTOR' });
       await logSystem('WARN', 'EXECUTOR', `미체결 주문 취소: ${orderNo} (${stockCode})`);
     } catch {
+      // 취소 실패 = 이미 체결된 것일 수 있으므로 UNCONFIRMED 마킹 (reconciler가 나중에 복구)
+      await updateOrderByKisOrderNo(orderNo, { status: 'PENDING', kis_status: 'UNCONFIRMED' }).catch(() => {});
       logger.warn(`⚠️ 주문 취소 실패 (이미 체결?): ${orderNo}`, { component: 'EXECUTOR' });
     }
 
@@ -1266,6 +1328,109 @@ export class TradeExecutor {
     ).catch(() => {});
 
     return null; // 체결 실패 시그널
+  }
+
+  /**
+   * ScaleIn 미완료 트랜치 복구 — 프로세스 재시작 시 호출
+   * system_state에서 pending_scalein_* 마커를 읽어 미실행 트랜치 실행
+   */
+  async recoverPendingScaleIns(): Promise<void> {
+    try {
+      const pool = getPool();
+      const { rows } = await pool.query<{ key: string; value: string }>(
+        `SELECT key, value FROM system_state WHERE key LIKE 'pending_scalein_%'`,
+      );
+
+      if (rows.length === 0) return;
+
+      logger.info(`🔄 ScaleIn 미완료 트랜치 ${rows.length}건 복구 시작`, { component: 'EXECUTOR' });
+
+      for (const row of rows) {
+        try {
+          const marker = JSON.parse(row.value) as {
+            stockCode: string;
+            chainId: number;
+            secondTranche: number;
+            thirdTranche: number;
+            scheduledAt: string;
+            reasoning: string;
+            isPaper: boolean;
+          };
+
+          // 스케줄 후 5분 이상 지났으면 복구 대상
+          const scheduledMs = new Date(marker.scheduledAt).getTime();
+          if (Date.now() - scheduledMs < 3 * 60_000) {
+            // 아직 원래 setTimeout이 실행 중일 수 있음 → 스킵
+            continue;
+          }
+
+          // 체인이 아직 열려있는지 확인
+          const { rows: chainRows } = await pool.query(
+            `SELECT status FROM transaction_chains WHERE id = $1`,
+            [marker.chainId],
+          );
+          if (!chainRows[0] || !['OPEN', 'AVERAGING', 'PROFIT_TAKING'].includes(chainRows[0].status)) {
+            // 체인 이미 닫힘 → 마커 삭제
+            await pool.query(`DELETE FROM system_state WHERE key = $1`, [row.key]);
+            continue;
+          }
+
+          // 이미 실행된 트랜치 확인 (체인의 주문 수로 판단)
+          const { rows: orderRows } = await pool.query<{ cnt: string }>(
+            `SELECT COUNT(*) as cnt FROM orders WHERE chain_id = $1 AND side = 'BUY' AND status = 'FILLED'`,
+            [marker.chainId],
+          );
+          const buyCount = Number(orderRows[0]?.cnt ?? 0);
+
+          // 1차만 체결 (1건) → 2차+3차 실행
+          // 2차까지 체결 (2건) → 3차만 실행
+          // 3건 이상 → 이미 완료
+          if (buyCount >= 3 || (buyCount >= 2 && marker.thirdTranche <= 0)) {
+            await pool.query(`DELETE FROM system_state WHERE key = $1`, [row.key]);
+            logger.info(`✅ ScaleIn 이미 완료: ${marker.stockCode} chain=${marker.chainId}`, { component: 'EXECUTOR' });
+            continue;
+          }
+
+          logger.info(
+            `🔄 ScaleIn 복구: ${marker.stockCode} chain=${marker.chainId} (기존 매수 ${buyCount}건, 2차=${marker.secondTranche}주, 3차=${marker.thirdTranche}주)`,
+            { component: 'EXECUTOR' },
+          );
+
+          if (buyCount < 2 && marker.secondTranche > 0) {
+            // 2차 트랜치 즉시 실행
+            try {
+              await runWithMode(marker.isPaper, () =>
+                this.executeAverageDown(marker.stockCode, marker.secondTranche, 'MARKET', undefined, `ScaleIn 2차/3 복구: ${marker.reasoning}`, true),
+              );
+              logger.info(`✅ ScaleIn 2차 복구 완료: ${marker.stockCode} ${marker.secondTranche}주`, { component: 'EXECUTOR' });
+            } catch (e) {
+              logger.warn(`ScaleIn 2차 복구 실패: ${marker.stockCode}: ${(e as Error).message}`, { component: 'EXECUTOR' });
+            }
+          }
+
+          if (marker.thirdTranche > 0 && buyCount < 3) {
+            // 3차 트랜치 30초 후 실행 (2차와 간격)
+            setTimeout(() => {
+              runWithMode(marker.isPaper, () =>
+                this.executeAverageDown(marker.stockCode, marker.thirdTranche, 'MARKET', undefined, `ScaleIn 3차/3 복구: ${marker.reasoning}`, true),
+              ).then(() => {
+                logger.info(`✅ ScaleIn 3차 복구 완료: ${marker.stockCode} ${marker.thirdTranche}주`, { component: 'EXECUTOR' });
+                pool.query(`DELETE FROM system_state WHERE key = $1`, [row.key]).catch(() => {});
+              }).catch((e) => logger.warn(`ScaleIn 3차 복구 실패: ${marker.stockCode}: ${(e as Error).message}`, { component: 'EXECUTOR' }));
+            }, 30_000);
+          } else {
+            // 3차 없으면 바로 마커 삭제
+            await pool.query(`DELETE FROM system_state WHERE key = $1`, [row.key]);
+          }
+        } catch (e) {
+          logger.warn(`ScaleIn 마커 파싱/복구 실패: ${row.key}: ${(e as Error).message}`, { component: 'EXECUTOR' });
+          // 파싱 실패한 마커는 삭제
+          await pool.query(`DELETE FROM system_state WHERE key = $1`, [row.key]).catch(() => {});
+        }
+      }
+    } catch (e) {
+      logger.warn(`ScaleIn 복구 조회 실패: ${(e as Error).message}`, { component: 'EXECUTOR' });
+    }
   }
 }
 

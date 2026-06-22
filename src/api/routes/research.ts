@@ -3,18 +3,52 @@ import { Hono } from 'hono';
 import { safeQuery as query } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
 import { runDartResearch, runDartResearchBatch } from '../../automation/dart-research.js';
+import { runSecResearch, runSecResearchBatch } from '../../automation/sec-research.js';
 
 export const researchRoutes = new Hono();
 
+// ── SSRF 방어: 허용 도메인 화이트리스트 ──
+const ALLOWED_DOMAINS = [
+  'naver.com', 'finance.naver.com', 'n.news.naver.com', 'm.stock.naver.com',
+  'hankyung.com', 'mk.co.kr', 'sedaily.com', 'edaily.co.kr',
+  'etnews.com', 'zdnet.co.kr', 'bloter.net',
+  'dart.fss.or.kr', 'kind.krx.co.kr',
+  'investing.com', 'seekingalpha.com', 'bloomberg.com', 'reuters.com',
+  'finance.yahoo.com',
+];
+
+function isAllowedDomain(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return ALLOWED_DOMAINS.some((d) => hostname === d || hostname.endsWith('.' + d));
+  } catch {
+    return false;
+  }
+}
+
 // URL에서 텍스트 추출 (메타태그 + 본문 텍스트)
 async function crawlUrl(url: string): Promise<{ title: string; content: string }> {
+  if (!isAllowedDomain(url)) {
+    throw new Error(`허용되지 않은 도메인입니다. 허용 목록: ${ALLOWED_DOMAINS.slice(0, 5).join(', ')} 등`);
+  }
+
   const res = await fetch(url, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36',
       Accept: 'text/html,application/xhtml+xml,*/*',
     },
     signal: AbortSignal.timeout(15000),
+    redirect: 'manual', // 리다이렉트 자동 추적 차단 (SSRF 방지)
   });
+
+  // 리다이렉트 응답: 대상 도메인도 화이트리스트 검증
+  if (res.status >= 300 && res.status < 400) {
+    const location = res.headers.get('location');
+    if (!location || !isAllowedDomain(location)) {
+      throw new Error('리다이렉트 대상이 허용 도메인이 아닙니다');
+    }
+    throw new Error(`리다이렉트 감지 (${res.status}→${location}) — 직접 URL을 입력하세요`);
+  }
 
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
@@ -65,7 +99,7 @@ researchRoutes.post('/research/crawl', async (c) => {
     return c.json({ ok: true, id: result.rows[0].id, title, length: content.length });
   } catch (err: any) {
     logger.warn(`리서치 크롤링 실패: ${err.message}`, { component: 'RESEARCH' });
-    return c.json({ error: err.message ?? '크롤링 실패' }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -92,7 +126,8 @@ researchRoutes.delete('/research/notes/:id', async (c) => {
     await query('DELETE FROM broker_research_notes WHERE id = $1', [id]);
     return c.json({ ok: true });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    logger.warn(`리서치 노트 삭제 실패: ${err.message}`, { component: 'RESEARCH' });
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -115,7 +150,7 @@ researchRoutes.get('/research/dart/:stockCode', async (c) => {
     return c.json({ ok: true, result });
   } catch (err: any) {
     logger.warn(`DART 리서치 실패: ${err.message}`, { component: 'RESEARCH' });
-    return c.json({ error: err.message ?? 'DART 분석 실패' }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -135,6 +170,43 @@ researchRoutes.post('/research/dart/batch', async (c) => {
     const results = await runDartResearchBatch(codes, { year: body.year, quarter });
     return c.json({ ok: true, count: results.length, results });
   } catch (err: any) {
-    return c.json({ error: err.message ?? '배치 분석 실패' }, 500);
+    logger.warn(`DART 배치 리서치 실패: ${err.message}`, { component: 'RESEARCH' });
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// GET /api/research/sec/:ticker — SEC EDGAR 재무제표 + Gemini AI 분석 (미국주식)
+researchRoutes.get('/research/sec/:ticker', async (c) => {
+  try {
+    const ticker = c.req.param('ticker').toUpperCase();
+    if (!/^[A-Z]{1,5}$/.test(ticker)) return c.json({ error: '티커 형식 오류 (1~5자 영문)' }, 400);
+
+    logger.info(`SEC 리서치 요청: ${ticker}`, { component: 'RESEARCH' });
+    const result = await runSecResearch(ticker);
+    return c.json({ ok: true, result });
+  } catch (err: any) {
+    logger.warn(`SEC 리서치 실패: ${err.message}`, { component: 'RESEARCH' });
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// POST /api/research/sec/batch — 다수 미국 종목 일괄 SEC 분석
+researchRoutes.post('/research/sec/batch', async (c) => {
+  try {
+    const body = await c.req.json<{ tickers: string[] }>();
+    if (!Array.isArray(body.tickers) || body.tickers.length === 0) {
+      return c.json({ error: 'tickers 배열이 필요합니다' }, 400);
+    }
+    const tickers = body.tickers
+      .map((t) => t.toUpperCase())
+      .filter((t) => /^[A-Z]{1,5}$/.test(t))
+      .slice(0, 10); // 최대 10종목
+
+    logger.info(`SEC 배치 리서치 시작: ${tickers.length}종목`, { component: 'RESEARCH' });
+    const results = await runSecResearchBatch(tickers);
+    return c.json({ ok: true, count: results.length, results });
+  } catch (err: any) {
+    logger.warn(`SEC 배치 리서치 실패: ${err.message}`, { component: 'RESEARCH' });
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });

@@ -10,6 +10,14 @@ import type { TechResult } from './sell-logic.js';
 import { getHoldings, updateTradeState } from './state.js';
 import { modePrefix } from './utils.js';
 
+// ── Named constants ──
+/** Scale-in trigger: minimum PnL% above entry to execute additional buy */
+const SCALE_IN_TRIGGER_PCT = 1.2;
+/** Maximum days to keep a scale-in reservation before auto-cancel */
+const SCALE_IN_MAX_DAYS = 2;
+/** Milliseconds per day */
+const MS_PER_DAY = 1000 * 60 * 60 * 24;
+
 export async function processScaleIns(params: {
   techResults: TechResult[];
   buyOrders: string[];
@@ -35,8 +43,8 @@ export async function processScaleIns(params: {
       createdAt: string;
       exchange: string;
     };
-    const holdingDays = (Date.now() - new Date(info.createdAt).getTime()) / (1000 * 60 * 60 * 24);
-    if (holdingDays > 2) {
+    const holdingDays = (Date.now() - new Date(info.createdAt).getTime()) / MS_PER_DAY;
+    if (holdingDays > SCALE_IN_MAX_DAYS) {
       await getPool()
         .query(`DELETE FROM overseas_state WHERE key = $1`, [row.key])
         .catch(() => {});
@@ -46,7 +54,7 @@ export async function processScaleIns(params: {
     const tech = techResults.find((t) => t.code === code);
     if (!tech) continue;
     const pnlFromEntry = ((tech.price.currentPrice - info.entryPrice) / info.entryPrice) * 100;
-    if (pnlFromEntry >= 1.2 && cash >= info.remainingQty * tech.price.currentPrice * (1 + OVERSEAS_FEE_PCT)) {
+    if (pnlFromEntry >= SCALE_IN_TRIGGER_PCT && cash >= info.remainingQty * tech.price.currentPrice * (1 + OVERSEAS_FEE_PCT)) {
       // v10.8: 기존 보유 수량/평균단가 조회 — 올바른 finalAvgPrice 계산을 위해
       const currentHoldings = await getHoldings(isPaper);
       const existingHolding = currentHoldings.get(code);

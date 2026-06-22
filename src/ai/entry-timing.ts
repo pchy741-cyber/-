@@ -39,12 +39,13 @@ export async function checkLargeOrderEntryTiming(
   try {
     const tech = candles.length >= 20 ? analyzeTechnicals(candles) : null;
 
-    const last = candles[candles.length - 1];
+    // candles descending: index 0 = newest (today)
+    const last = candles[0];
     const dayHigh = last ? Number(last.high) : currentPrice;
     const dayLow = last ? Number(last.low) : currentPrice;
     const dayRangePct = dayHigh > dayLow ? ((currentPrice - dayLow) / (dayHigh - dayLow)) * 100 : 50;
 
-    const prevClose = candles.length >= 2 ? Number(candles[candles.length - 2].close) : currentPrice;
+    const prevClose = candles.length >= 2 ? Number(candles[1].close) : currentPrice;
     const todayChangePct = prevClose > 0 ? ((currentPrice - prevClose) / prevClose) * 100 : 0;
 
     // 규칙기반 진입 타이밍 검증 (Gemini 대체 — $0)
@@ -53,7 +54,7 @@ export async function checkLargeOrderEntryTiming(
     let reason = '';
 
     // 다일 고점 추격 감지: 5일 최고가 대비 현재가 위치
-    const recentHighs = candles.slice(-6, -1); // 최근 5일 (오늘 제외)
+    const recentHighs = candles.slice(1, 6); // 최근 5일 (오늘 제외, descending)
     const high5d = recentHighs.length > 0 ? Math.max(...recentHighs.map((c) => Number(c.high))) : 0;
     const atMultiDayHigh = high5d > 0 && currentPrice >= high5d * 0.995; // 5일 고점 0.5% 이내
 

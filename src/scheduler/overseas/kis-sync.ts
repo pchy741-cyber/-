@@ -11,7 +11,14 @@ import { getOverseasBalance, getOverseasBuyableAmount, getOverseasPrice } from '
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
 import { cleanupPositionState, getCashKrw, getTimeSinceLastTrade, setCash } from './state.js';
+import { modePrefix } from './utils.js';
 import { GLOBAL_WATCHLIST } from './watchlist.js';
+
+// ── In-memory debounce for manual sell detection (race condition prevention) ──
+// Tracks first-detection timestamps per stock code to prevent concurrent sync cycles
+// from both inserting SELL records for the same stock.
+const _sellDebounceMap = new Map<string, number>();
+const SELL_DEBOUNCE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 /**
  * KIS 실계좌 잔고와 DB 동기화 — 수동매매 간섭 방지 핵심 함수
@@ -92,14 +99,25 @@ export async function syncHoldingsFromKIS(): Promise<void> {
         }
 
         // 디바운스: KIS API 플래핑 방지 — 2회 연속 감지 시에만 SELL 처리
-        const debounceKey = `sync_sell_pending_${code}`;
+        // In-memory + DB double-check to prevent race condition between concurrent sync cycles
+        // positionStateKeys() cleanup과 동일한 prefix 사용 (prefix 누락 → 고아키 버그 수정)
+        const debounceKey = `${modePrefix()}sync_sell_pending_${code}`;
+        const now = Date.now();
+
+        // Clean up stale in-memory debounce entries
+        for (const [k, ts] of _sellDebounceMap) {
+          if (now - ts > SELL_DEBOUNCE_TTL_MS) _sellDebounceMap.delete(k);
+        }
+
+        const inMemoryFirstSeen = _sellDebounceMap.get(code);
         const { rows: debounceRows } = await getPool()
           .query('SELECT value FROM overseas_state WHERE key = $1', [debounceKey])
           .catch(() => ({ rows: [] as Array<{ value: string }> }));
 
-        if (debounceRows.length === 0) {
-          // 첫 감지: debounce 상태 저장 + 즉시 재매수 쿨다운 설정
+        if (debounceRows.length === 0 && !inMemoryFirstSeen) {
+          // 첫 감지: debounce 상태 저장 (in-memory + DB) + 즉시 재매수 쿨다운 설정
           // (2회 확인 전이라도 이번 사이클에서 재매수 금지 — 예약매도 후 재매수 버그 방지)
+          _sellDebounceMap.set(code, now);
           await getPool()
             .query(
               `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
@@ -120,6 +138,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
         }
 
         // 2회 이상 감지: 진짜 수동매도 → 기록 생성 후 debounce 상태 제거
+        _sellDebounceMap.delete(code);
         await getPool()
           .query('DELETE FROM overseas_state WHERE key = $1', [debounceKey])
           .catch(() => {});
@@ -183,7 +202,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
       } else if (Math.abs(kisItem.qty - dbQty) >= 1) {
         // 포지션 확인됨 → 잔여 debounce 상태 제거
         getPool()
-          .query('DELETE FROM overseas_state WHERE key = $1', [`sync_sell_pending_${code}`])
+          .query('DELETE FROM overseas_state WHERE key = $1', [`${modePrefix()}sync_sell_pending_${code}`])
           .catch(() => {});
 
         const soldQty = dbQty - kisItem.qty;
@@ -262,7 +281,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
       } else {
         // 포지션 수량 일치 (안정) → 잔여 debounce 상태 제거
         getPool()
-          .query('DELETE FROM overseas_state WHERE key = $1', [`sync_sell_pending_${code}`])
+          .query('DELETE FROM overseas_state WHERE key = $1', [`${modePrefix()}sync_sell_pending_${code}`])
           .catch(() => {});
       }
       allHoldings.delete(code);
@@ -276,7 +295,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
       // 수동매도 쿨다운 중이면 재삽입 스킵 (T+1 결제: KIS API가 매도 종목을 아직 반환)
       const { rows: cdRows } = await getPool()
         .query('SELECT value FROM overseas_state WHERE key = $1', [`manual_sell_cd_${code}`])
-        .catch(() => ({ rows: [] as any[] }));
+        .catch(() => ({ rows: [] as Array<{ value: string }> }));
       if (cdRows.length > 0) {
         logger.info(`⏭️ KIS동기화: ${code} 수동매도 쿨다운 중 → 재매수 감지 스킵 (T+1 결제 대기)`, {
           component: 'OVERSEAS',
@@ -345,8 +364,10 @@ export async function syncHoldingsFromKIS(): Promise<void> {
 async function estimateSellPrice(code: string, exchange: string): Promise<number> {
   try {
     const price = await getOverseasPrice(code, exchange);
-    return price?.currentPrice ?? 0;
-  } catch {
+    const val = price?.currentPrice ?? 0;
+    return Number.isFinite(val) ? val : 0;
+  } catch (e) {
+    logger.warn(`매도가 추정 실패 (${code}): ${(e as Error).message}`, { component: 'OVERSEAS' });
     return 0;
   }
 }
@@ -398,8 +419,8 @@ export async function reconcileCashWithKIS(): Promise<void> {
             { component: 'OVERSEAS' },
           );
         }
-      } catch {
-        /* 국내 잔고 조회 실패 시 무시 */
+      } catch (e) {
+        logger.warn(`국내 잔고 조회 실패 (폴백 스킵): ${(e as Error).message}`, { component: 'OVERSEAS' });
       }
     }
     if (kisKrw === null) return;
@@ -430,13 +451,15 @@ export async function reconcileCashWithKIS(): Promise<void> {
     }
 
     // 통합증거금 전체 계좌 가치 저장 (해외/국내 비중 동적 할당용)
+    // 3차 폴백에서 이미 getAccountBalance(true) 호출했으면 재사용 (API 중복 방지)
     try {
-      const bal = await getAccountBalance(true);
-      // netAsset = 순자산 (예수금+보유주식-대출 등), totalEvalAmount = 국내 보유주식 평가
-      const nass = bal.netAsset ?? 0;
-      const domEval = bal.totalEvalAmount ?? 0;
-      // 총 계좌 가치 = 주문가능(cash) + 국내 보유주식(이미 netAsset에 포함된 경우도 있으나 보수적 max 사용)
-      const totalAccountKrw = Math.max(nass, (bal.orderableCash ?? 0) + domEval);
+      const bal = kisKrw !== null && (buyable != null)
+        ? await getAccountBalance(true) // 캐시 히트 확률 높음 (30초 이내)
+        : null; // psamount 성공 시 별도 조회 불필요할 수 있으나, total_account_krw는 항상 필요
+      const balForTotal = bal ?? await getAccountBalance(true);
+      const nass = balForTotal.netAsset ?? 0;
+      const domEval = balForTotal.totalEvalAmount ?? 0;
+      const totalAccountKrw = Math.max(nass, (balForTotal.orderableCash ?? 0) + domEval);
       if (totalAccountKrw > 0) {
         await getPool()
           .query(
@@ -446,7 +469,9 @@ export async function reconcileCashWithKIS(): Promise<void> {
           )
           .catch(() => {});
       }
-    } catch { /* 국내 잔고 조회 실패 시 무시 */ }
+    } catch (e) {
+      logger.warn(`통합증거금 폴백: 국내 잔고 조회 실패: ${(e as Error).message}`, { component: 'OVERSEAS' });
+    }
 
     const diff = Math.abs(kisKrw - dbKrw);
     // ₩5,000 이상 또는 1% 이상 차이 시 보정

@@ -51,7 +51,7 @@ export function positionStateKeys(code: string, isPaper?: boolean): string[] {
     `${pfx}dynamic_tpsl_${code}`,
     `${pfx}scale_in_${code}`,
     `${pfx}turtle_trail_${code}`,
-    `sync_sell_pending_${code}`,
+    `${pfx}sync_sell_pending_${code}`,
   ];
 }
 

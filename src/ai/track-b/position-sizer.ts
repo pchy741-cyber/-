@@ -22,13 +22,16 @@ export function adjustPositionSizes(params: {
   kospiRegimePenalty: 0 | 1 | 2;
   /** 강세장 부스터: true이면 convMult 상한 1.8x */
   kospiBoost?: boolean;
+  /** Adam Khoo MA20/MA50/MA200 정배열+우상향 */
+  adamKhooBullish?: boolean;
 }): TradeDecision[] {
-  const { decisions, scores, mode, totalAssets, adjMaxPositionKrw, kospiRegimePenalty, kospiBoost } = params;
+  const { decisions, scores, mode, totalAssets, adjMaxPositionKrw, kospiRegimePenalty, kospiBoost, adamKhooBullish } = params;
   const result = [...decisions];
   const _params = STRATEGY_PARAMS[mode];
 
   // KOSPI 레짐 보정: 조정장이면 기준금액 25% 축소 (기존 40% → 완화)
-  const kospiSizingMult = kospiRegimePenalty >= 1 ? 0.75 : kospiBoost ? 1.2 : 1.0;
+  // ※ adamKhoo 승수는 pipeline.ts에서 adjMaxPositionKrw에 이미 반영 (이중 적용 방지)
+  const kospiSizingMult = kospiRegimePenalty >= 1 ? 0.75 : (kospiBoost ? 1.2 : 1.0);
 
   // pipeline이 계산한 adjMaxPositionKrw를 기준으로 사용 (독자 재계산 안 함)
   const maxPerPosition = Math.round(adjMaxPositionKrw * kospiSizingMult);
@@ -47,18 +50,17 @@ export function adjustPositionSizes(params: {
       const confFactor = Math.min(1, Math.max(0, d.confidence ?? 0.6));
       const scoreFactor = Math.min(1, aiScore / 100);
       const combined = confFactor * 0.55 + scoreFactor * 0.45;
-      // 강세장: 상한 2.6x / 정상: 2.2x
-      const multCeiling = kospiBoost ? 2.0 : 1.6;
-      const convMult = Math.round((0.6 + combined * multCeiling) * 100) / 100;
+      // 강세장: 상한 2.0x / 정상: 1.6x / AK강세: 1.8x
+      const multCeiling = kospiBoost ? 2.0 : adamKhooBullish ? 1.8 : 1.6;
+      const convMult = Math.min(multCeiling, Math.round((0.6 + combined * (multCeiling - 0.6)) * 100) / 100);
       // 예산 = baseBudget × convMult × regimeScale, 절대 상한으로 클램프
       const regimeScale = d.regime_position_scale ?? 1.0;
       const rawBudget = Math.floor(baseBudget * convMult * regimeScale);
-      const rawBudgetCapped = Math.min(rawBudget, absoluteCap);
-      // 1회 손실 ≤ 총자산 1.5% 하드캡 (리스크 절대 한도)
+      // 단일 캡 포인트: 절대상한(25%), 1회손실한도(1.5%÷SL), 원본예산 중 최소값
       const slPct = Math.abs(_params.stopLossPct) / 100;
       const maxBudgetByLoss =
-        totalAssets > 0 && slPct > 0 ? Math.floor((totalAssets * 0.015) / slPct) : rawBudgetCapped;
-      const budget = Math.min(rawBudgetCapped, maxBudgetByLoss);
+        totalAssets > 0 && slPct > 0 ? Math.floor((totalAssets * 0.015) / slPct) : Infinity;
+      const budget = Math.min(rawBudget, absoluteCap, maxBudgetByLoss);
       const targetQty = Math.max(1, Math.floor(budget / price));
       const currentQty = d.quantity ?? 0;
 

@@ -17,7 +17,8 @@ interface BuyIntent {
   registeredAt: number; // Date.now()
 }
 
-const TTL_MS = 5 * 60 * 1000; // v9: 10분→5분 — 파이프라인 3분 간격보다 길되 과도하게 오래 잠기지 않도록
+/** 매수 의도 TTL (5분) — 파이프라인 3분 간격보다 길되 과도하게 오래 잠기지 않도록 */
+const TTL_MS = 5 * 60 * 1000;
 
 // paper/live 모드별 분리 — runDomesticDual() paper→live 순차실행 시 크로스오염 방지
 const _intents = new Map<string, Map<string, BuyIntent>>();

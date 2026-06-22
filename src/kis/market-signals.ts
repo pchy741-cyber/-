@@ -6,6 +6,20 @@ import { KIS_TR_ID } from '../config/constants.js';
 import { logger } from '../utils/logger.js';
 import { kisRequest, marketDataRateLimiter } from './client.js';
 
+/** NaN 방지: API 응답 필드가 undefined/비정상이면 fallback 반환 */
+const safeNum = (v: string | undefined | null, fallback = 0): number => {
+  if (v === undefined || v === null) return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+/** 공매도 조회 시 조회 기간 (영업일 기준) */
+const SHORT_SELLING_LOOKBACK_DAYS = 5;
+/** 대차거래 조회 시 조회 기간 (영업일 기준) */
+const STOCK_LENDING_LOOKBACK_DAYS = 5;
+/** 배치 시그널 수집 시 동시 종목 수 (종목당 6개 API x 3종목 = 18 동시 호출 → rate limit 이내) */
+const SIGNAL_BATCH_CONCURRENCY = 3;
+
 // ── 체결강도 (매수/매도 체결 비율) ──
 export interface TradingIntensity {
   stockCode: string;
@@ -34,9 +48,9 @@ export async function getTradingIntensity(stockCode: string): Promise<TradingInt
     if (!o) return null;
     return {
       stockCode,
-      intensity: Number(o.tday_rltv || 0), // 당일 체결강도
-      prevIntensity: Number(o.d1_rltv || 0), // 전일 체결강도
-      netBuyVolume: Number(o.seln_cnqn_smtn || 0) - Number(o.shnu_cnqn_smtn || 0),
+      intensity: safeNum(o.tday_rltv), // 당일 체결강도
+      prevIntensity: safeNum(o.d1_rltv), // 전일 체결강도
+      netBuyVolume: safeNum(o.shnu_cnqn_smtn) - safeNum(o.seln_cnqn_smtn), // 매수총량 - 매도총량
     };
   } catch {
     return null;
@@ -65,7 +79,7 @@ export async function getShortSelling(stockCode: string): Promise<ShortSellingIn
       params: {
         FID_COND_MRKT_DIV_CODE: 'J',
         FID_INPUT_ISCD: stockCode,
-        FID_INPUT_DATE_1: formatKstDate(-5), // 5영업일 전부터
+        FID_INPUT_DATE_1: formatKstDate(-SHORT_SELLING_LOOKBACK_DAYS),
         FID_INPUT_DATE_2: formatKstDate(0),
       },
     });
@@ -74,9 +88,9 @@ export async function getShortSelling(stockCode: string): Promise<ShortSellingIn
     const latest = items[0]; // 최근 일자
     return {
       stockCode,
-      shortVolume: Number(latest.shrt_trde_vol || latest.total_shrt_vol || 0),
-      shortRatio: Number(latest.shrt_trde_prc_rt || latest.total_shrt_rt || 0),
-      shortBalance: Number(latest.shrt_bal_qty || 0),
+      shortVolume: safeNum(latest.shrt_trde_vol || latest.total_shrt_vol),
+      shortRatio: safeNum(latest.shrt_trde_prc_rt || latest.total_shrt_rt),
+      shortBalance: safeNum(latest.shrt_bal_qty),
     };
   } catch {
     return null;
@@ -109,9 +123,9 @@ export async function getProgramTrading(): Promise<ProgramTrading | null> {
     const o = res.output as Record<string, string>;
     if (!o) return null;
     return {
-      netBuyAmountMil: Math.round(Number(o.tot_ntby_qty || 0) / 1_000_000),
-      arbitrageNetMil: Math.round(Number(o.arbt_ntby_qty || 0) / 1_000_000),
-      nonArbitrageNetMil: Math.round(Number(o.narbt_ntby_qty || 0) / 1_000_000),
+      netBuyAmountMil: Math.round(safeNum(o.tot_ntby_qty) / 1_000_000),
+      arbitrageNetMil: Math.round(safeNum(o.arbt_ntby_qty) / 1_000_000),
+      nonArbitrageNetMil: Math.round(safeNum(o.narbt_ntby_qty) / 1_000_000),
     };
   } catch {
     return null;
@@ -144,8 +158,8 @@ export async function getOrderbookDepth(stockCode: string): Promise<OrderbookDep
     });
     const o = res.output as Record<string, string>;
     if (!o) return null;
-    const totalBid = Number(o.total_bidp_rsqn || 0);
-    const totalAsk = Number(o.total_askp_rsqn || 0);
+    const totalBid = safeNum(o.total_bidp_rsqn);
+    const totalAsk = safeNum(o.total_askp_rsqn);
     return {
       stockCode,
       totalBidVolume: totalBid,
@@ -187,9 +201,9 @@ export async function getSectorIndices(): Promise<SectorIndex[]> {
     return items.slice(0, 20).map((o) => ({
       sectorCode: o.idx_cd || o.bstp_cls_code || '',
       sectorName: o.idx_nm || o.bstp_nmix_prpr || '',
-      currentIndex: Number(o.bstp_nmix_prpr || o.idx_prpr || 0),
-      changePct: Number(o.bstp_nmix_prdy_ctrt || o.idx_prdy_ctrt || 0),
-      volume: Number(o.acml_vol || 0),
+      currentIndex: safeNum(o.bstp_nmix_prpr || o.idx_prpr),
+      changePct: safeNum(o.bstp_nmix_prdy_ctrt || o.idx_prdy_ctrt),
+      volume: safeNum(o.acml_vol),
     }));
   } catch {
     return [];
@@ -223,8 +237,8 @@ export async function getIntradayInvestorEstimate(stockCode: string): Promise<In
     const latest = items[0];
     return {
       stockCode,
-      foreignNetEstMil: Math.round(Number(latest.frgn_ntby_tr_pbmn || 0) / 1_000_000),
-      institutionNetEstMil: Math.round(Number(latest.orgn_ntby_tr_pbmn || 0) / 1_000_000),
+      foreignNetEstMil: Math.round(safeNum(latest.frgn_ntby_tr_pbmn) / 1_000_000),
+      institutionNetEstMil: Math.round(safeNum(latest.orgn_ntby_tr_pbmn) / 1_000_000),
     };
   } catch {
     return null;
@@ -263,10 +277,10 @@ export async function getBrokerInfo(stockCode: string): Promise<BrokerInfo | nul
     let foreignBrokerNetBuy = false;
 
     for (const row of items.slice(0, 5)) {
-      const buyName = row.seln_mbcr_nm || '';
-      const sellName = row.shnu_mbcr_nm || '';
-      const buyVol = Number(row.seln_vol || 0);
-      const sellVol = Number(row.shnu_vol || 0);
+      const buyName = row.shnu_mbcr_nm || '';   // 매수 회원사 (shnu=매수)
+      const sellName = row.seln_mbcr_nm || ''; // 매도 회원사 (seln=매도)
+      const buyVol = safeNum(row.shnu_vol);
+      const sellVol = safeNum(row.seln_vol);
       if (buyName) topBuyers.push({ name: buyName, volume: buyVol });
       if (sellName) topSellers.push({ name: sellName, volume: sellVol });
       // 외국계 증권사 패턴 (모건스탠리, CS, 골드만, UBS, 메릴린치 등)
@@ -318,9 +332,9 @@ export async function getExpectedFillRanking(
     return items.slice(0, limit).map((o) => ({
       stockCode: o.stck_shrn_iscd || '',
       stockName: o.hts_kor_isnm || '',
-      expectedPrice: Number(o.antc_cnpr || 0),
-      expectedChangePct: Number(o.antc_cntg_prdy_ctrt || o.prdy_ctrt || 0),
-      expectedVolume: Number(o.antc_vol || 0),
+      expectedPrice: safeNum(o.antc_cnpr),
+      expectedChangePct: safeNum(o.antc_cntg_prdy_ctrt || o.prdy_ctrt),
+      expectedVolume: safeNum(o.antc_vol),
     }));
   } catch {
     return [];
@@ -363,8 +377,8 @@ export async function getCreditBalanceRanking(limit = 30): Promise<CreditBalance
     return items.slice(0, limit).map((o) => ({
       stockCode: o.stck_shrn_iscd || '',
       stockName: o.hts_kor_isnm || '',
-      creditBalanceRatio: Number(o.crdt_rate || 0),
-      creditBalance: Number(o.crdt_bal || 0),
+      creditBalanceRatio: safeNum(o.crdt_rate),
+      creditBalance: safeNum(o.crdt_bal),
     }));
   } catch {
     return [];
@@ -393,7 +407,7 @@ export async function getStockLending(stockCode: string): Promise<StockLending |
       params: {
         FID_COND_MRKT_DIV_CODE: 'J',
         FID_INPUT_ISCD: stockCode,
-        FID_INPUT_DATE_1: formatKstDate(-5),
+        FID_INPUT_DATE_1: formatKstDate(-STOCK_LENDING_LOOKBACK_DAYS),
         FID_INPUT_DATE_2: formatKstDate(0),
       },
     });
@@ -402,9 +416,9 @@ export async function getStockLending(stockCode: string): Promise<StockLending |
     const latest = items[0];
     return {
       stockCode,
-      lendingBalance: Number(latest.sll_bal_qty || latest.lend_bal || 0),
-      lendingChange: Number(latest.sll_bal_incr || latest.lend_chg || 0),
-      lendingRatio: Number(latest.sll_bal_rt || latest.lend_rt || 0),
+      lendingBalance: safeNum(latest.sll_bal_qty || latest.lend_bal),
+      lendingChange: safeNum(latest.sll_bal_incr || latest.lend_chg),
+      lendingRatio: safeNum(latest.sll_bal_rt || latest.lend_rt),
     };
   } catch {
     return null;
@@ -448,9 +462,9 @@ export async function getNear52WeekHighLow(type: 'high' | 'low' = 'high', limit 
     return items.slice(0, limit).map((o) => ({
       stockCode: o.stck_shrn_iscd || '',
       stockName: o.hts_kor_isnm || '',
-      currentPrice: Number(o.stck_prpr || 0),
-      pctFromHigh: Number(o.d250_hgpr_vrss_prpr_rate || 0),
-      pctFromLow: Number(o.d250_lwpr_vrss_prpr_rate || 0),
+      currentPrice: safeNum(o.stck_prpr),
+      pctFromHigh: safeNum(o.d250_hgpr_vrss_prpr_rate),
+      pctFromLow: safeNum(o.d250_lwpr_vrss_prpr_rate),
     }));
   } catch {
     return [];
@@ -497,7 +511,7 @@ export async function getStockSignals(stockCode: string): Promise<StockSignals> 
  */
 export async function getBatchStockSignals(stockCodes: string[]): Promise<Map<string, StockSignals>> {
   const result = new Map<string, StockSignals>();
-  const BATCH = 3; // 종목당 6개 API × 3종목 = 18 동시 → rate limit 이내
+  const BATCH = SIGNAL_BATCH_CONCURRENCY;
   for (let i = 0; i < stockCodes.length; i += BATCH) {
     const slice = stockCodes.slice(i, i + BATCH);
     const settled = await Promise.allSettled(slice.map((c) => getStockSignals(c)));

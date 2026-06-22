@@ -1,5 +1,5 @@
 import { Telegraf } from 'telegraf';
-import { config } from '../config/index.js';
+import { baseIsPaper, baseTradingMode, config } from '../config/index.js';
 import { getAccountBalance } from '../kis/account.js';
 import { deactivateKillSwitchAll, getKillSwitchStatusAll } from '../risk/kill-switch.js';
 import { logger } from '../utils/logger.js';
@@ -32,8 +32,7 @@ export function initTelegram(): void {
       return; // 무응답 (봇 존재 자체를 숨김)
     }
     try {
-      const isPaperMode = config.tradingMode === 'paper';
-      const balance = isPaperMode
+      const balance = baseIsPaper
         ? await (await import('../risk/paper-balance.js')).getPaperBalance()
         : await getAccountBalance(true);
       const ks = getKillSwitchStatusAll();
@@ -50,7 +49,7 @@ export function initTelegram(): void {
         ks.kr.active ? `  사유: ${ks.kr.reason}` : '',
         `🛡️ Kill Switch [해외]: ${ks.overseas.active ? '🛑 활성' : '✅ 비활성'}`,
         ks.overseas.active ? `  사유: ${ks.overseas.reason}` : '',
-        `📊 모드: ${config.tradingMode}`,
+        `📊 모드: ${baseTradingMode}`,
         `🔧 보유 종목: ${balance.positions.length}개`,
       ]
         .filter(Boolean)
@@ -92,8 +91,7 @@ export function initTelegram(): void {
       return;
     }
     try {
-      const isPaperMode = config.tradingMode === 'paper';
-      const balance = isPaperMode
+      const balance = baseIsPaper
         ? await (await import('../risk/paper-balance.js')).getPaperBalance()
         : await getAccountBalance(true);
       if (balance.positions.length === 0) {
@@ -139,7 +137,12 @@ export async function sendTelegramMessage(message: string): Promise<void> {
   try {
     await bot.telegram.sendMessage(config.telegram.chatId, message, { parse_mode: 'Markdown' });
   } catch (error) {
-    logger.error(`Telegram 전송 실패: ${error}`, { component: 'TELEGRAM' });
+    // Markdown 파싱 실패 (unbalanced *, _, [ 등) → 플레인텍스트 재전송
+    try {
+      await bot.telegram.sendMessage(config.telegram.chatId, message);
+    } catch (retryErr) {
+      logger.error(`Telegram 전송 실패 (재시도 포함): ${retryErr}`, { component: 'TELEGRAM' });
+    }
   }
   // Slack 동시 발송 (webhook 미설정 시 자동 스킵)
   const level = /🚨|⛔|❌|🛑/.test(message) ? 'error' : /⚠️/.test(message) ? 'warn' : 'info';

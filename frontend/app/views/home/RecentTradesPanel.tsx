@@ -34,7 +34,7 @@ export default function RecentTradesPanel({
             const isOverseas = isOvTrade(t);
             const isExpanded = expandedTradeIdx === i;
             return (
-              <div key={i} onClick={() => setExpandedTradeIdx(isExpanded ? null : i)}
+              <div key={t.id ?? i} onClick={() => setExpandedTradeIdx(isExpanded ? null : i)}
                 className="flex items-start gap-3 px-4 py-3 hover:bg-white/[0.02] cursor-pointer">
                 <SideBadge side={t.side} />
                 <div className="flex-1 min-w-0">

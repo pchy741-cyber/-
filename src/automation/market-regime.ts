@@ -29,7 +29,7 @@ export interface MarketRegime {
   fearGreed: number;
   consecutiveDays: number; // 양수=연속 상승일, 음수=연속 하락일
   score: number; // 종합 점수 (양수=강세, 음수=약세)
-  recommendedMode: 'SWING' | 'SCALPING' | 'DEFENSE' | 'DIVIDEND';
+  recommendedMode: 'SWING' | 'SCALPING' | 'DEFENSE';
   reasons: string[];
 }
 
@@ -47,9 +47,10 @@ async function fetchKospiHistory(): Promise<number[]> {
     // 최신순 → 최근 5거래일 종가 반환
     return data
       .slice(0, 5)
-      .map((d: any) => Number(d.closePrice ?? d.endPrice ?? 0))
+      .map((d: Record<string, unknown>) => Number(d.closePrice ?? d.endPrice ?? 0))
       .filter((v) => v > 0);
-  } catch {
+  } catch (err) {
+    logger.debug(`KOSPI 일봉 조회 실패: ${err}`, { component: 'REGIME' });
     return [];
   }
 }
@@ -93,7 +94,8 @@ async function fetchMarketForeignNet(): Promise<number> {
       return sum + Number(item.frgn_ntby_tr_pbmn ?? item.frgn_ntby_qty ?? 0);
     }, 0);
     return total;
-  } catch {
+  } catch (err) {
+    logger.debug(`시장 외국인 수급 조회 실패: ${err}`, { component: 'REGIME' });
     return 0;
   }
 }
@@ -108,7 +110,8 @@ async function fetchKospi200Change(): Promise<number> {
     });
     const o = res.output as Record<string, string>;
     return Number(o?.prdy_ctrt ?? 0);
-  } catch {
+  } catch (err) {
+    logger.debug(`KOSPI200 등락률 조회 실패: ${err}`, { component: 'REGIME' });
     return 0;
   }
 }
@@ -249,8 +252,8 @@ export async function detectMarketRegime(): Promise<MarketRegime> {
     reasons.push(`하락장 스코어 ${score} → DEFENSE 모드`);
   } else {
     regime = 'PANIC';
-    recommendedMode = 'DIVIDEND';
-    reasons.push(`공황 스코어 ${score} → DIVIDEND 파킹`);
+    recommendedMode = 'DEFENSE';
+    reasons.push(`공황 스코어 ${score} → DEFENSE 방어`);
   }
 
   return {
@@ -314,34 +317,6 @@ export async function autoSwitchStrategy(): Promise<void> {
 
     let targetMode = regime.recommendedMode as string;
 
-    // DEFENSE 지속 중 여전히 PANIC → DIVIDEND 에스컬레이션 (24h 지속 + score <= -5 동시 조건)
-    // BEARISH(score -5~-3) 정도로는 에스컬레이션 안 함 (데드락 방지)
-    if (currentMode === 'DEFENSE' && regime.regime === 'PANIC' && regime.score <= -5) {
-      if (hoursSinceSwitch >= 24) {
-        targetMode = 'DIVIDEND';
-        regime.reasons.push(
-          `DEFENSE ${hoursSinceSwitch.toFixed(0)}h 지속 + PANIC(${regime.score}) → DIVIDEND 에스컬레이션`,
-        );
-      } else {
-        targetMode = 'DEFENSE';
-        regime.reasons.push(`DEFENSE 유지 (전환 후 ${hoursSinceSwitch.toFixed(0)}h < 24h)`);
-      }
-    }
-    // DIVIDEND 탈출 — BEARISH(-3~-5)에서도 SWING 복귀 (데드락 방지). 단 점수 -5 미만은 유지
-    else if ((currentMode as string) === 'DIVIDEND') {
-      if (regime.regime === 'NEUTRAL' || regime.regime === 'BULLISH') {
-        targetMode = 'SWING';
-        regime.reasons.push('장세 회복(NEUTRAL+) → DIVIDEND → SWING 복귀');
-      } else if (regime.regime === 'BEARISH' && regime.score >= -4 && hoursSinceSwitch >= 24) {
-        // 약한 BEARISH (-3~-4)이고 24h+ 머물면 SWING으로 회복 시도 (학습 데이터 확보)
-        targetMode = 'SWING';
-        regime.reasons.push(`약 BEARISH(${regime.score}) ${hoursSinceSwitch.toFixed(0)}h+ → DIVIDEND 탈출 SWING 복귀`);
-      } else if (hoursSinceSwitch >= 168) {
-        // 데드락 안전망: DIVIDEND 7일 초과 시 무조건 SWING 복귀 (시장이 영구 패닉인 경우 없음)
-        targetMode = 'SWING';
-        regime.reasons.push(`데드락 안전망: DIVIDEND ${(hoursSinceSwitch / 24).toFixed(0)}일 초과 → 강제 SWING 복귀`);
-      }
-    }
     // v10.2: SCALPING 영구 비활성화 — 혹시 다른 경로에서 SCALPING이 들어와도 SWING으로 강제
     if (targetMode === 'SCALPING') {
       targetMode = 'SWING';

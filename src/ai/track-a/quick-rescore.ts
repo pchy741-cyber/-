@@ -16,12 +16,16 @@
  * Track B는 ai_scores 최신값 사용하므로 매시간 갱신 → 매 3분 Track B에 반영
  */
 
+import { cacheScores } from '../../cache/redis.js';
 import { getActiveWatchlist, getPool, upsertAIScore } from '../../db/client.js';
 import { getDailyChart } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { runRSSScoring } from './rss-scorer.js';
 
 const COMP = 'QUICK_RESCORE';
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000; // KST = UTC+9 in ms
+const CHART_BATCH_SIZE = 10; // KIS 차트 조회 배치 크기
+const CHART_BATCH_DELAY_MS = 1000; // 배치 간 대기 시간 (1초)
 // 황금구간 1분 간격 시: 15종목으로 축소 (KIS rate limit 보호)
 // 비 황금구간: 30종목 (기존)
 const MAX_STOCKS_GOLDEN = 15;
@@ -49,7 +53,7 @@ async function getCurrentRegime(): Promise<string> {
     // mode → regime 매핑
     if (mode === 'SCALPING') return 'BULLISH';
     if (mode === 'DEFENSE') return 'BEARISH';
-    if (mode === 'DIVIDEND') return 'PANIC';
+    if (mode === 'DIVIDEND') return 'BEARISH';
     return 'NEUTRAL';
   } catch {
     return _lastRegime;
@@ -111,9 +115,8 @@ export async function runQuickRescore(): Promise<{ scored: number; errors: numbe
 
     // 일봉 차트 데이터 병렬 수집 (10개씩 배치, 1초 간격 — KIS rate limit)
     const chartData = new Map<string, Awaited<ReturnType<typeof getDailyChart>>>();
-    const BATCH = 10;
-    for (let i = 0; i < codes.length; i += BATCH) {
-      const batch = codes.slice(i, i + BATCH);
+    for (let i = 0; i < codes.length; i += CHART_BATCH_SIZE) {
+      const batch = codes.slice(i, i + CHART_BATCH_SIZE);
       await Promise.allSettled(
         batch.map(async (code) => {
           try {
@@ -124,7 +127,7 @@ export async function runQuickRescore(): Promise<{ scored: number; errors: numbe
           }
         }),
       );
-      if (i + BATCH < codes.length) await new Promise((r) => setTimeout(r, 1000));
+      if (i + CHART_BATCH_SIZE < codes.length) await new Promise((r) => setTimeout(r, CHART_BATCH_DELAY_MS));
     }
     if (chartData.size === 0) {
       logger.warn('Quick Re-Score: 일봉 차트 데이터 0종목 — 종료', { component: COMP });
@@ -156,7 +159,7 @@ export async function runQuickRescore(): Promise<{ scored: number; errors: numbe
     // ai_scores UPSERT + history INSERT (시계열 추적)
     let scored = 0;
     let errors = 0;
-    const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10); // KST
+    const today = new Date(Date.now() + KST_OFFSET_MS).toISOString().slice(0, 10); // KST
     for (const r of results) {
       const enh = enhanced.get(r.stock_code);
       const finalScore = enh ? enh.finalScore : r.composite_score;
@@ -164,7 +167,7 @@ export async function runQuickRescore(): Promise<{ scored: number; errors: numbe
         await upsertAIScore({
           stock_code: r.stock_code,
           score_date: today,
-          gemini_summary: null as any,
+          gemini_summary: null,
           composite_score: finalScore,
           fundamental_score: r.fundamental_score ?? 0,
           technical_score: r.technical_score ?? 0,
@@ -201,9 +204,34 @@ export async function runQuickRescore(): Promise<{ scored: number; errors: numbe
         scored++;
       } catch (e) {
         errors++;
-        logger.debug(`${r.stock_code} ai_scores upsert 실패: ${(e as Error).message}`, { component: COMP });
+        logger.debug(`${r.stock_code} ai_scores upsert 실패: ${e instanceof Error ? e.message : String(e)}`, { component: COMP });
       }
     }
+
+    // Redis 캐시 갱신 — 대시보드가 Redis 우선 조회하므로 DB만 갱신하면 점수 고정됨
+    const cacheItems = results.map((r) => {
+      const enh = enhanced.get(r.stock_code);
+      const finalScore = enh ? enh.finalScore : r.composite_score;
+      return {
+        stock_code: r.stock_code,
+        score_date: today,
+        composite_score: finalScore,
+        fundamental_score: r.fundamental_score ?? 0,
+        technical_score: r.technical_score ?? 0,
+        sentiment_score: r.sentiment_score ?? 0,
+        confidence: r.confidence ?? 0.5,
+        reasoning: r.reasoning ?? 'Quick Re-Score (RSS)',
+        signal: (r.signal ?? 'HOLD') as string,
+        target_price: r.target_price ?? null,
+        stop_loss_price: r.stop_loss_price ?? null,
+        gemini_summary: null,
+        id: '0',
+        created_at: new Date().toISOString(),
+      };
+    });
+    await cacheScores(cacheItems).catch((e) =>
+      logger.warn(`Quick Re-Score Redis 캐시 갱신 실패: ${e}`, { component: COMP }),
+    );
 
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
     logger.info(`⚡ Quick Re-Score 완료: ${scored}건 갱신, ${errors}건 에러 (${elapsed}초)`, { component: COMP });
@@ -221,7 +249,7 @@ export async function runQuickRescore(): Promise<{ scored: number; errors: numbe
     }
     return { scored, errors };
   } catch (e) {
-    logger.error(`Quick Re-Score 실패: ${(e as Error).message}`, { component: COMP });
+    logger.error(`Quick Re-Score 실패: ${e instanceof Error ? e.message : String(e)}`, { component: COMP });
     return { scored: 0, errors: -1 };
   }
 }

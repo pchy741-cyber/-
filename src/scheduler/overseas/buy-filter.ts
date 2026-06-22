@@ -7,7 +7,9 @@ import { type EarningsEvent, hasEarningsRisk, type interpretMarketSentiment } fr
 import { logger } from '../../utils/logger.js';
 import type { RegimeAdjustment } from './risk-intelligence.js';
 import { applyUncertaintyPenalty, checkSectorGroupLimit } from './risk-intelligence.js';
+import { isUSDST } from './session.js';
 import { GLOBAL_WATCHLIST } from './watchlist.js';
+import { getCachedSecFundamentalScore } from '../../automation/sec-research.js';
 
 type MarketSignalResult = ReturnType<typeof interpretMarketSentiment>;
 
@@ -48,22 +50,37 @@ export interface BuyFilterContext {
 
 export type BuyTarget = TechResult & { ai?: AIDecision; _effectiveConf?: number };
 
-// ── 개선#3: 미국 시간대별 진입 가중치 ──
+// ── Named constants ──
+/** Small account threshold (USD) for relaxed filter bypass */
+const SMALL_ACCOUNT_USD = 500;
+/** AI re-entry threshold for recent loss stocks */
+const REENTRY_CONF_THRESHOLD = 0.8;
+/** RSI threshold for oversold bounce detection */
+const RSI_OVERSOLD = 38;
+/** Sector concentration weight limit */
+const SECTOR_WEIGHT_LIMIT = 0.3;
+
+// ── 개선#3: 미국 시간대별 진입 가중치 (DST 대응) ──
 function getUSTimeBonus(): number {
   const kst = new Date();
   const kstH = kst.getUTCHours() + 9; // UTC → KST
   const kstM = kst.getUTCMinutes();
   const kstTotal = (kstH % 24) * 60 + kstM;
-  // v10.9: 개장 30분 페널티 제거 — 가격 발견 구간에서 모멘텀 포착
-  // 서머타임 기준: 미국 개장 22:30 KST, 마감 05:00 KST
-  // 22:30~23:00 (개장 30분): 모멘텀 포착 구간 → +5점 (기존 -15점에서 전환)
-  if (kstTotal >= 22 * 60 + 30 && kstTotal < 23 * 60) return 5;
-  // 23:00~00:00 (개장 1시간 후): 트렌드 확정 구간 → +10점
-  if (kstTotal >= 23 * 60 && kstTotal < 24 * 60) return 10;
-  // 00:00~01:00 (미국 10~11am): 최적 진입 → +8점
-  if (kstTotal >= 0 && kstTotal < 60) return 8;
-  // 04:00~05:00 (미국 3~4pm 마감 전): 방향 확정 → +5점
-  if (kstTotal >= 4 * 60 && kstTotal < 5 * 60) return 5;
+  // 서머타임: 개장 22:30 KST / 겨울: 개장 23:30 KST
+  const shift = isUSDST() ? 0 : 60; // 겨울 = 1시간 뒤로
+  const open = 22 * 60 + 30 + shift;     // 개장 시각 (분)
+  const open30 = open + 30;               // 개장 +30분
+  const open90 = open + 90;               // 개장 +1.5시간
+  const close60 = (5 * 60 + shift) % (24 * 60) - 60; // 마감 1시간 전
+  const close = (5 * 60 + shift) % (24 * 60);         // 마감
+  // 개장 30분: 모멘텀 포착 구간 → +5점
+  if (kstTotal >= open && kstTotal < open30) return 5;
+  // 개장 30분~1.5시간: 트렌드 확정 구간 → +10점
+  if (kstTotal >= open30 && kstTotal < open90) return 10;
+  // 최적 진입 (개장 1.5~2.5시간 후) → +8점
+  if (kstTotal >= open90 && kstTotal < open90 + 60) return 8;
+  // 마감 1시간 전: 방향 확정 → +5점
+  if (kstTotal >= close60 && kstTotal < close) return 5;
   return 0;
 }
 
@@ -144,7 +161,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       .filter((t) => {
         if (!recentLossSet.has(t.code)) return true;
         const ai = aiMap.get(t.code);
-        const reentryThreshold = 0.8;
+        const reentryThreshold = REENTRY_CONF_THRESHOLD;
         if (ai?.action === 'BUY' && ai.confidence >= reentryThreshold) return true;
         logger.info(
           `⚠️ 최근 손실 종목 재진입 차단: ${t.code} AI 확신 부족 (${ai ? `${(ai.confidence * 100).toFixed(0)}%` : 'AI 없음'} < ${(reentryThreshold * 100).toFixed(0)}%)`,
@@ -155,7 +172,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       // 4. Memory Agent 차단 (Live 소액 계좌: STRONG_BUY만 바이패스 — 매수 기회 확보)
       .filter((t) => {
         if (memoryBlockedStocks.has(t.code)) {
-          if (!isPaper && portfolioValue < 500 && t.signal === 'STRONG_BUY' && t.score >= 40) {
+          if (!isPaper && portfolioValue < SMALL_ACCOUNT_USD && t.signal === 'STRONG_BUY' && t.score >= 40) {
             logger.info(`🧠 Memory 경고(소액 바이패스): ${t.code} (60일 승률≤25%, STRONG_BUY score=${t.score})`, {
               component: 'OVERSEAS',
             });
@@ -242,7 +259,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         }
         const sectorValue = sectorValues.get(t.sector) ?? 0;
         const sectorWeight = portfolioValue > 0 ? sectorValue / portfolioValue : 0;
-        if (sectorWeight >= 0.3) {
+        if (sectorWeight >= SECTOR_WEIGHT_LIMIT) {
           logger.info(`📊 섹터 집중도 초과: ${t.code}(${t.sector}) ${(sectorWeight * 100).toFixed(0)}% ≥ 30%`, {
             component: 'OVERSEAS',
           });
@@ -253,7 +270,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       // 9. 기술적 진입 필터 (RSI/ADX/MA/BB/dayRange) + AI 확신도
       .filter((t) => {
         const ai = aiMap.get(t.code);
-        const isOversold = t.rsi <= 38 && t.trendStrength !== 'WEAK';
+        const isOversold = t.rsi <= RSI_OVERSOLD && t.trendStrength !== 'WEAK';
         const isAbove50 = t.rsi >= 50;
         // RSI "developing zone" (38-49): 추세 발전 중, ADX가 확인해주면 진입 허용
         const isDeveloping = t.rsi >= 38 && t.rsi < 50 && t.adx >= 20 && t.aboveMA20;
@@ -386,7 +403,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // 1. BigMover (급등주) — 초급등(+8%)은 RSI 88, 일반급등(+5%)은 RSI 82까지 허용
         // 근거: 10% 급등 종목 RSI는 75~85 범위 → 기존 72 상한으로 핫 종목 전부 차단됨
         // 안전장치: dayRangePct≥40(일중저점 아님) + aboveMA20 + 승률 피드백 유지
-        const bigMoverRsiCap = t.price.changePct >= 8 ? 88 : 82;
+        const bigMoverRsiCap = t.price.changePct >= 8 ? 78 : 75; // RSI 88→78 하향 (과매수 고점 진입 방지)
         if (t.isBigMover && t.score >= 18 && t.rsi >= 35 && t.rsi <= bigMoverRsiCap && t.dayRangePct >= 40 && t.aboveMA20 && !effectiveBadWR)
           return true;
         // 2. Momentum (모멘텀 확인: 볼륨+추세) — RSI 상한 79로 확장
@@ -471,7 +488,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const isBigUp = t.isBigMover;
         if (isBargin || isBigUp) return true;
         // 소액 계좌: 장외에서도 STRONG_BUY 매수 기회 확보
-        if (!isPaper && portfolioValue < 500 && t.signal === 'STRONG_BUY' && t.score >= 40) return true;
+        if (!isPaper && portfolioValue < SMALL_ACCOUNT_USD && t.signal === 'STRONG_BUY' && t.score >= 40) return true;
         return false;
       })
       // 11. AI 정보 + 보정 confidence 병합
@@ -534,10 +551,15 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const sectorMomB = sectorMomentumMap?.get(b.sector ?? '') ?? 0;
         const sectorMomScoreA = sectorMomA >= 2 ? 12 : sectorMomA >= 1 ? 7 : sectorMomA <= -2 ? -10 : sectorMomA <= -1 ? -5 : 0;
         const sectorMomScoreB = sectorMomB >= 2 ? 12 : sectorMomB >= 1 ? 7 : sectorMomB <= -2 ? -10 : sectorMomB <= -1 ? -5 : 0;
+        // SEC fundamentalScore: 재무건전성 우량 → 매수 우선, 취약 → 차감
+        const secScoreA = getCachedSecFundamentalScore(a.code);
+        const secScoreB = getCachedSecFundamentalScore(b.code);
+        const fundAdjA = secScoreA != null ? (secScoreA >= 75 ? 8 : secScoreA >= 60 ? 4 : secScoreA <= 30 ? -10 : 0) : 0;
+        const fundAdjB = secScoreB != null ? (secScoreB >= 75 ? 8 : secScoreB >= 60 ? 4 : secScoreB <= 30 ? -10 : 0) : 0;
         const sa =
-          techA + wrScoreA + losspenA + priorityA + favA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA + sectorMomScoreA;
+          techA + wrScoreA + losspenA + priorityA + favA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA + sectorMomScoreA + fundAdjA;
         const sb =
-          techB + wrScoreB + losspenB + priorityB + favB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB + sectorMomScoreB;
+          techB + wrScoreB + losspenB + priorityB + favB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB + sectorMomScoreB + fundAdjB;
         return sb - sa;
       })
   );

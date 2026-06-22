@@ -3,6 +3,7 @@ import { getCtxIsPaper } from '../config/context.js';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { adjustToTickSize } from '../utils/money.js';
+import { getKSTNow } from '../utils/time.js';
 import { getHashkey } from './auth.js';
 import { kisRequest } from './client.js';
 
@@ -35,6 +36,16 @@ export async function placeOrder(params: {
   orderType?: OrderType;
 }): Promise<OrderResult> {
   const { stockCode, side, quantity, price, orderType = OrderType.MARKET } = params;
+
+  // Input validation: quantity must be positive
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    return { success: false, orderNo: '', message: `주문 수량이 유효하지 않습니다: ${quantity}` };
+  }
+  // For limit orders, price must be positive
+  if (orderType !== OrderType.MARKET && (!Number.isFinite(price) || (price ?? 0) <= 0)) {
+    return { success: false, orderNo: '', message: `지정가 주문 시 가격이 유효하지 않습니다: ${price}` };
+  }
+
   const trIds = getCtxIsPaper() ? KIS_TR_ID.PAPER : KIS_TR_ID.LIVE;
   const trId = side === 'BUY' ? trIds.BUY : trIds.SELL;
 
@@ -78,7 +89,7 @@ export async function placeOrder(params: {
  */
 export async function getOrderFills(orderNo: string): Promise<FillInfo | null> {
   const trIds = getCtxIsPaper() ? KIS_TR_ID.PAPER : KIS_TR_ID.LIVE;
-  const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+  const today = getKSTNow().toISOString().split('T')[0].replace(/-/g, '');
 
   const res = await kisRequest({
     path: '/uapi/domestic-stock/v1/trading/inquire-daily-ccld',
@@ -106,14 +117,18 @@ export async function getOrderFills(orderNo: string): Promise<FillInfo | null> {
 
   if (!matched) return null;
 
+  const orderQty = Number(matched.ord_qty);
+  const filledQty = Number(matched.tot_ccld_qty);
+  const filledPrice = Number(matched.avg_prvs);
+
   return {
-    orderNo: matched.odno,
-    stockCode: matched.pdno,
+    orderNo: matched.odno ?? '',
+    stockCode: matched.pdno ?? '',
     side: matched.sll_buy_dvsn_cd === '01' ? 'SELL' : 'BUY',
-    orderQty: Number(matched.ord_qty),
-    filledQty: Number(matched.tot_ccld_qty),
-    filledPrice: Number(matched.avg_prvs),
-    status: matched.ord_dvsn_cd,
+    orderQty: Number.isFinite(orderQty) ? orderQty : 0,
+    filledQty: Number.isFinite(filledQty) ? filledQty : 0,
+    filledPrice: Number.isFinite(filledPrice) ? filledPrice : 0,
+    status: matched.ord_dvsn_cd ?? '',
   };
 }
 

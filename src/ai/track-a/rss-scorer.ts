@@ -21,6 +21,29 @@ import { logger } from '../../utils/logger.js';
 
 const COMP = 'RSS_SCORER';
 
+// ── 스코어링 상수 ──
+const MIN_CANDLES = 30; // 기술분석 최소 캔들 수
+const TECH_SCORE_WEIGHT = 0.6; // 기술지표 점수 가중치
+const BASE_SCORE = 50;
+const RSS_MAX_SCORE = 82; // RSS 단독 상한
+const NEWS_SCORE_MAX = 15;
+const MARKET_SENTIMENT_CACHE_MS = 30 * 60_000; // 시장 감성 캐시 30분
+const NEWS_BATCH_SIZE = 30; // Google RSS 배치 크기
+const NEWS_BATCH_DELAY_MS = 300; // 배치 간 지연 (ms)
+const PULLBACK_BONUS = 8;
+const OVEREXTENDED_PENALTY = -5;
+const OVEREXTENDED_BASE_THRESHOLD = 70; // 과매수 감점 기준 점수
+const OVEREXTENDED_VOL_THRESHOLD = 1.3; // 과매수 거래량 비율 기준
+const STRONG_BUY_THRESHOLD = 82; // AI 프롬프트 기준 통일 (82+=STRONG_BUY)
+const BUY_THRESHOLD = 68; // 68~81=BUY (프롬프트 기준)
+const STRONG_SELL_THRESHOLD = 25;
+const SELL_THRESHOLD = 30; // ensemble.ts 기준 통일 (30~49=SELL)
+const PULLBACK_VOL_COMBO_THRESHOLD = 1.3; // 눌림목+거래량 콤보 기준
+const PULLBACK_CONFIDENCE_BOOST = 0.08;
+const MAX_CONFIDENCE = 0.9;
+const YT_CACHE_TTL_MS = 30 * 60_000; // 유튜브 감성 캐시 30분
+const YT_LOOKBACK_MS = 48 * 3600_000; // 유튜브 최근 48시간
+
 // ── 한국 긍정/부정 키워드 (감성 분석) ──
 // weight: 3=강한 시그널, 2=중간, 1=약한
 const POSITIVE: [string, number][] = [
@@ -123,8 +146,30 @@ const NEGATIVE: [string, number][] = [
 ];
 
 
+// ── 뉴스 감성 점수 캐시 (Track B 파이프라인 연동용) ──
+// Quick Re-Score(1~60분) / Surge Detector가 getNewsScore() 호출 시 자동 적재
+// Track B pipeline은 getCachedNewsAdj()로 네트워크 호출 없이 참조
+const NEWS_SCORE_CACHE = new Map<string, { score: number; fetchedAt: number }>();
+const NEWS_CACHE_TTL_MS = 90 * 60_000; // 90분 (Quick Re-Score 주기보다 여유)
+
+/** Track B 파이프라인용: 캐시된 뉴스 감성 → 점수 보정값 (-6 ~ +5) */
+export function getCachedNewsAdj(stockCode: string): number {
+  const cached = NEWS_SCORE_CACHE.get(stockCode);
+  if (!cached || Date.now() - cached.fetchedAt > NEWS_CACHE_TTL_MS) return 0;
+  const s = cached.score;
+  // 강한 긍정(8+): +5, 중간(5+): +3, 약한(3+): +1
+  // 강한 부정(-8↓): -6, 중간(-5↓): -3, 약한(-3↓): -1
+  if (s >= 8) return 5;
+  if (s >= 5) return 3;
+  if (s >= 3) return 1;
+  if (s <= -8) return -6;
+  if (s <= -5) return -3;
+  if (s <= -3) return -1;
+  return 0;
+}
+
 /** Google News RSS로 종목 뉴스 감성 점수 계산 (-15 ~ +15) */
-async function getNewsScore(_stockCode: string, stockName: string): Promise<{ score: number; headlines: string[] }> {
+export async function getNewsScore(_stockCode: string, stockName: string): Promise<{ score: number; headlines: string[] }> {
   try {
     const url = `https://news.google.com/rss/search?q=${encodeURIComponent(stockName)}&hl=ko&gl=KR&ceid=KR:ko`;
     const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
@@ -147,7 +192,10 @@ async function getNewsScore(_stockCode: string, stockName: string): Promise<{ sc
       }
     }
 
-    return { score: Math.max(-15, Math.min(15, score)), headlines: titles.slice(0, 3) };
+    const bounded = Math.max(-NEWS_SCORE_MAX, Math.min(NEWS_SCORE_MAX, score));
+    // 캐시 적재 — Track B pipeline이 getCachedNewsAdj()로 참조
+    NEWS_SCORE_CACHE.set(_stockCode, { score: bounded, fetchedAt: Date.now() });
+    return { score: bounded, headlines: titles.slice(0, 3) };
   } catch {
     return { score: 0, headlines: [] };
   }
@@ -156,7 +204,7 @@ async function getNewsScore(_stockCode: string, stockName: string): Promise<{ sc
 /** 시장 전체 뉴스 감성 (-10 ~ +10) — KOSPI/코스닥/경제 전반 */
 let _marketSentimentCache: { score: number; fetchedAt: number } | null = null;
 async function getMarketSentiment(): Promise<number> {
-  if (_marketSentimentCache && Date.now() - _marketSentimentCache.fetchedAt < 30 * 60_000) {
+  if (_marketSentimentCache && Date.now() - _marketSentimentCache.fetchedAt < MARKET_SENTIMENT_CACHE_MS) {
     return _marketSentimentCache.score;
   }
   try {
@@ -255,11 +303,11 @@ let _ytSentimentCache: { score: number; detail: string; fetchedAt: number } | nu
 
 /** 유튜브 인플루언서 시장 감성 (-5 ~ +5) — 최근 48시간 영상 제목 분석 */
 async function getYouTubeSentiment(): Promise<{ score: number; detail: string }> {
-  if (_ytSentimentCache && Date.now() - _ytSentimentCache.fetchedAt < 30 * 60_000) {
+  if (_ytSentimentCache && Date.now() - _ytSentimentCache.fetchedAt < YT_CACHE_TTL_MS) {
     return { score: _ytSentimentCache.score, detail: _ytSentimentCache.detail };
   }
   try {
-    const cutoff = Date.now() - 48 * 3600_000; // 48시간 이내만
+    const cutoff = Date.now() - YT_LOOKBACK_MS; // 48시간 이내만
     let totalScore = 0;
     const matchedTitles: string[] = [];
 
@@ -325,10 +373,12 @@ function getMomentumScore(
   if (topGainerCodes.has(code)) bonus += 6; // 오늘 등락률 상위
   if (topVolumeCodes.has(code)) bonus += 4; // 오늘 거래량 상위
 
-  // 최근 3일 상승 추세
+  // 최근 3일 상승 추세 (descending: index 0 = newest)
   if (candles.length >= 4) {
-    const recent = candles.slice(-4);
-    const rising = recent.slice(1).every((c, i) => c.close >= recent[i].close);
+    const recent = candles.slice(0, 4); // 최신 4일
+    // descending: recent[0]=today, recent[1]=yesterday, ...
+    // rising = today > yesterday > day_before > ...
+    const rising = recent.slice(0, -1).every((c, i) => c.close >= recent[i + 1].close);
     if (rising) bonus += 3;
   }
 
@@ -357,16 +407,15 @@ export async function runRSSScoring(
 
   // 종목별 뉴스 스코어 — 전종목 배치 처리 (Google RSS rate limit 대응: 30개씩, 300ms 간격)
   const newsScores = new Map<string, { score: number; headlines: string[] }>();
-  const NEWS_BATCH = 30;
-  for (let i = 0; i < watchlist.length; i += NEWS_BATCH) {
-    const batch = watchlist.slice(i, i + NEWS_BATCH);
+  for (let i = 0; i < watchlist.length; i += NEWS_BATCH_SIZE) {
+    const batch = watchlist.slice(i, i + NEWS_BATCH_SIZE);
     await Promise.allSettled(
       batch.map(async (w) => {
         const result = await getNewsScore(w.stock_code, w.stock_name);
         if (result.score !== 0) newsScores.set(w.stock_code, result);
       }),
     );
-    if (i + NEWS_BATCH < watchlist.length) await new Promise((r) => setTimeout(r, 300));
+    if (i + NEWS_BATCH_SIZE < watchlist.length) await new Promise((r) => setTimeout(r, NEWS_BATCH_DELAY_MS));
   }
 
   logger.info(
@@ -376,14 +425,14 @@ export async function runRSSScoring(
 
   for (const w of watchlist) {
     const candles = chartData.get(w.stock_code) ?? [];
-    if (candles.length < 30) continue;
+    if (candles.length < MIN_CANDLES) continue;
 
-    const tech = analyzeTechnicals(candles as any);
+    const tech = analyzeTechnicals(candles);
     if (!tech) continue;
 
     // 기술지표 기반 베이스 점수 (75점 캡 제거 — RSS 모드에서는 full range)
-    let baseScore = 50 + Math.round(tech.score * 0.6);
-    baseScore = Math.max(0, Math.min(82, baseScore)); // RSS 단독 상한 82
+    let baseScore = BASE_SCORE + Math.round(tech.score * TECH_SCORE_WEIGHT);
+    baseScore = Math.max(0, Math.min(RSS_MAX_SCORE, baseScore));
 
     const newsResult = newsScores.get(w.stock_code);
     const newsBonus = newsResult?.score ?? 0;
@@ -391,9 +440,9 @@ export async function runRSSScoring(
     const flowBonus = getFlowBonus(flowAdjMap.get(w.stock_code) ?? 0);
 
     // 눌림목 보너스
-    const pullbackBonus = tech.pullbackSignal ? 8 : 0;
+    const pullbackBonus = tech.pullbackSignal ? PULLBACK_BONUS : 0;
     // 과매수 감점
-    const overextendedPenalty = !tech.pullbackSignal && baseScore < 70 && tech.volumeRatio < 1.3 ? -5 : 0;
+    const overextendedPenalty = !tech.pullbackSignal && baseScore < OVEREXTENDED_BASE_THRESHOLD && tech.volumeRatio < OVEREXTENDED_VOL_THRESHOLD ? OVEREXTENDED_PENALTY : 0;
     // 시장 감성 반영 (±10 → ±5점으로 축소 적용, 개별 종목보다 영향 낮게)
     const marketBonus = Math.round(marketSentiment * 0.5);
     // 유튜브 인플루언서 감성 (±5, 시장 레짐 보정)
@@ -409,23 +458,23 @@ export async function runRSSScoring(
     // (구 0.55는 필터 탈락 → adjustedScores=[] → aiScore=0 → 전 종목 매수 차단 버그)
     let signal: ScoringResult['signal'] = 'HOLD';
     let confidence = 0.65;
-    if (composite >= 85) {
+    if (composite >= STRONG_BUY_THRESHOLD) {
       signal = 'STRONG_BUY';
       confidence = 0.82;
-    } else if (composite >= 78) {
+    } else if (composite >= BUY_THRESHOLD) {
       signal = 'BUY';
       confidence = 0.72;
-    } else if (composite <= 25) {
+    } else if (composite <= STRONG_SELL_THRESHOLD) {
       signal = 'STRONG_SELL';
       confidence = 0.8;
-    } else if (composite <= 35) {
+    } else if (composite <= SELL_THRESHOLD) {
       signal = 'SELL';
       confidence = 0.7;
     }
 
     // 눌림목 + 거래량 콤보: confidence 추가 상향 (Track B 진입 문턱 넘기 용이)
-    if (tech.pullbackSignal && composite >= 78 && tech.volumeRatio >= 1.3) {
-      confidence = Math.min(0.9, confidence + 0.08);
+    if (tech.pullbackSignal && composite >= BUY_THRESHOLD && tech.volumeRatio >= PULLBACK_VOL_COMBO_THRESHOLD) {
+      confidence = Math.min(MAX_CONFIDENCE, confidence + PULLBACK_CONFIDENCE_BOOST);
     }
 
     const reasoningParts = [
@@ -448,7 +497,7 @@ export async function runRSSScoring(
       composite_score: composite,
       fundamental_score: baseScore,
       technical_score: baseScore,
-      sentiment_score: newsBonus + 50,
+      sentiment_score: newsBonus + BASE_SCORE,
       signal,
       confidence,
       reasoning: reasoningParts,

@@ -21,6 +21,8 @@ export interface BacktestConfig {
   commissionPct?: number; // 증권사 수수료 (매수+매도 각각, 기본 0.015%)
   taxPct?: number; // 증권거래세 (매도 시에만, 기본 0.18% — 2025~)
   slippagePct?: number; // 슬리피지 (매수 +, 매도 -, 기본 0.1%)
+  overrideTp?: number; // 전역 파라미터 변이 없이 TP 오버라이드 (optimizer용)
+  overrideSl?: number; // 전역 파라미터 변이 없이 SL 오버라이드 (optimizer용)
 }
 
 // ── 거래 비용 계산 ──
@@ -95,7 +97,10 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
   // 슬리피지 적용 헬퍼: 매수는 불리하게(높게), 매도는 불리하게(낮게)
   const buyPrice = (close: number) => Math.round(close * (1 + slippagePct / 100));
   const sellPrice = (close: number) => Math.round(close * (1 - slippagePct / 100));
-  const params = STRATEGY_PARAMS[mode];
+  const baseParams = STRATEGY_PARAMS[mode];
+  const params = backtestConfig.overrideTp != null || backtestConfig.overrideSl != null
+    ? { ...baseParams, takeProfitPct: backtestConfig.overrideTp ?? baseParams.takeProfitPct, stopLossPct: backtestConfig.overrideSl ?? baseParams.stopLossPct }
+    : baseParams;
   let _totalCommissions = 0; // 총 거래비용 추적
   // 백테스트 기술 점수 임계치
   // 실전 minTechScore(SWING=55, DEFENSE=65) 기준이나, 합성 데이터는 지표 분산이 적으므로
@@ -523,4 +528,100 @@ function countDaysBetween(start: string, end: string): number {
   const s = new Date(start);
   const e = new Date(end);
   return Math.floor((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+// ═══════════════════════════════════════════
+//  Walk-Forward 검증 — 데이터스누핑 방지
+// ═══════════════════════════════════════════
+
+export interface WalkForwardResult {
+  folds: Array<{
+    trainPeriod: string;
+    testPeriod: string;
+    trainResult: Pick<BacktestResult, 'winRate' | 'totalReturnPct' | 'profitFactor' | 'totalTrades'>;
+    testResult: Pick<BacktestResult, 'winRate' | 'totalReturnPct' | 'profitFactor' | 'totalTrades'>;
+  }>;
+  /** OOS 수익률 / IS 수익률 — 1.0에 가까울수록 과적합 아님, 낮을수록 과적합 */
+  walkForwardEfficiency: number;
+  avgOosWinRate: number;
+  avgOosReturn: number;
+  isOverfit: boolean;
+}
+
+/**
+ * Walk-Forward 백테스트
+ *
+ * 데이터를 k개 fold로 나눠서 train(60%)/test(40%) 분리 검증.
+ * 각 fold에서 train 성과와 test(OOS) 성과를 비교하여 과적합 여부 판단.
+ *
+ * @param folds 접기 수 (기본 5)
+ */
+export function runWalkForward(
+  candles: OHLCV[],
+  stockCode: string,
+  config: BacktestConfig,
+  folds = 5,
+): WalkForwardResult {
+  const sorted = [...candles].sort((a, b) => a.date.localeCompare(b.date));
+  const totalCandles = sorted.length;
+
+  if (totalCandles < 200) {
+    return {
+      folds: [],
+      walkForwardEfficiency: 0,
+      avgOosWinRate: 0,
+      avgOosReturn: 0,
+      isOverfit: true,
+    };
+  }
+
+  const foldSize = Math.floor(totalCandles / folds);
+  const results: WalkForwardResult['folds'] = [];
+
+  for (let i = 0; i < folds; i++) {
+    const testStart = i * foldSize;
+    const testEnd = i === folds - 1 ? totalCandles : (i + 1) * foldSize;
+
+    // Train: 나머지 데이터
+    const trainCandles = [...sorted.slice(0, testStart), ...sorted.slice(testEnd)];
+    // Test: 현재 fold
+    const testCandles = sorted.slice(testStart, testEnd);
+
+    if (trainCandles.length < 120 || testCandles.length < 40) continue;
+
+    const trainResult = runBacktest(trainCandles, stockCode, config);
+    const testResult = runBacktest(testCandles, stockCode, config);
+
+    const pick = (r: BacktestResult) => ({
+      winRate: r.winRate,
+      totalReturnPct: r.totalReturnPct,
+      profitFactor: r.profitFactor,
+      totalTrades: r.totalTrades,
+    });
+
+    results.push({
+      trainPeriod: `${trainCandles[0]?.date ?? '?'}~${trainCandles[trainCandles.length - 1]?.date ?? '?'}`,
+      testPeriod: `${testCandles[0]?.date ?? '?'}~${testCandles[testCandles.length - 1]?.date ?? '?'}`,
+      trainResult: pick(trainResult),
+      testResult: pick(testResult),
+    });
+  }
+
+  if (results.length === 0) {
+    return { folds: [], walkForwardEfficiency: 0, avgOosWinRate: 0, avgOosReturn: 0, isOverfit: true };
+  }
+
+  const avgIsReturn = results.reduce((s, f) => s + f.trainResult.totalReturnPct, 0) / results.length;
+  const avgOosReturn = results.reduce((s, f) => s + f.testResult.totalReturnPct, 0) / results.length;
+  const avgOosWinRate = results.reduce((s, f) => s + f.testResult.winRate, 0) / results.length;
+  const wfe = avgIsReturn !== 0 ? avgOosReturn / avgIsReturn : 0;
+
+  return {
+    folds: results,
+    walkForwardEfficiency: Math.round(wfe * 100) / 100,
+    avgOosWinRate: Math.round(avgOosWinRate * 10) / 10,
+    avgOosReturn: Math.round(avgOosReturn * 100) / 100,
+    // WFE < 0.5 = OOS 성과가 IS의 절반 미만 → 과적합 의심
+    isOverfit: wfe < 0.5 || avgOosReturn < 0,
+  };
 }

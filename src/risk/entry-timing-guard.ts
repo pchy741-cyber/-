@@ -17,6 +17,27 @@ import { getKrMarketPhase } from '../scheduler/loop-mode.js';
 
 const COMP = 'ENTRY_TIMING';
 
+/** 기본 매수 최소 점수 */
+const BASE_MIN_SCORE = 70;
+/** 마의시간 점수 보너스 요구 */
+const CURSED_SCORE_BONUS = 5;
+/** 장외(CLOSED) 점수 보너스 — Claude 수동매수 시 */
+const CLOSED_MANUAL_SCORE_BONUS = 3;
+/** 장외(CLOSED) 점수 보너스 — 자동매수 시 */
+const CLOSED_AUTO_SCORE_BONUS = 5;
+
+/** RSI 과매수 임계값 */
+const RSI_OVERBOUGHT_THRESHOLD = 70;
+/** RSI 역추세 (모멘텀 없는 과매도) 임계값 */
+const RSI_OVERSOLD_THRESHOLD = 30;
+/** 거래량 비율 최소 요구 */
+const VOLUME_MIN_RATIO = 0.8;
+/** 거래량 비율 강세 기준 */
+const VOLUME_BULL_RATIO = 1.2;
+
+/** 기술지표 다중 위험 차단 기준 (2개 이상 위험 시 차단) */
+const MAX_TECH_FAILURES = 2;
+
 // ── 허용 전략 (CEO 지시 #B) ─
 // SWING = 6~10일 보유, 75% 승률 실증
 // SNIPER = 고확신 집중 매수 (SWING과 비슷)
@@ -121,12 +142,12 @@ export function checkEntryTiming(params: {
     // entry-timing-guard까지 이중 차단하면 10:20~13:00 완전 매수 금지 → 기회 상실
     // 대신 score bonus +5 요구로 완화 (낮은 점수 진입만 차단)
     if (phase === 'CURSED') {
-      scoreBonus = 5;
-      if (params.aiScore < 70 + scoreBonus) {
+      scoreBonus = CURSED_SCORE_BONUS;
+      if (params.aiScore < BASE_MIN_SCORE + scoreBonus) {
         return {
           allowed: false,
           scoreBonus,
-          reason: `⚠️ 마의시간 (10:20~13:00): 점수 ${params.aiScore} < 필요 ${70 + scoreBonus} (저확신 차단)`,
+          reason: `⚠️ 마의시간 (10:20~13:00): 점수 ${params.aiScore} < 필요 ${BASE_MIN_SCORE + scoreBonus} (저확신 차단)`,
           details: {
             phase,
             rsi: tech.rsi ?? null,
@@ -139,13 +160,13 @@ export function checkEntryTiming(params: {
       }
     }
     if (phase === 'CLOSED') {
-      // 저녁이 아닌 장외 (06:30~09:00, 15:30~18:00): 점수 +5 보너스 요구
-      scoreBonus = params.isClaudeManual ? 3 : 5;
-      if (params.aiScore < 70 + scoreBonus) {
+      // 저녁이 아닌 장외 (06:30~09:00, 15:30~18:00): 점수 보너스 요구
+      scoreBonus = params.isClaudeManual ? CLOSED_MANUAL_SCORE_BONUS : CLOSED_AUTO_SCORE_BONUS;
+      if (params.aiScore < BASE_MIN_SCORE + scoreBonus) {
         return {
           allowed: false,
           scoreBonus,
-          reason: `🌙 장외 매수: 점수 ${params.aiScore} < 필요 ${70 + scoreBonus}`,
+          reason: `🌙 장외 매수: 점수 ${params.aiScore} < 필요 ${BASE_MIN_SCORE + scoreBonus}`,
           details: {
             phase,
             rsi: tech.rsi ?? null,
@@ -164,18 +185,18 @@ export function checkEntryTiming(params: {
   const failures: string[] = [];
 
   if (tech.rsi != null) {
-    if (tech.rsi > 70) failures.push(`RSI ${tech.rsi.toFixed(0)} > 70 (과매수)`);
-    else if (tech.rsi < 30 && !tech.isMomentum) failures.push(`RSI ${tech.rsi.toFixed(0)} < 30 + 모멘텀 없음`);
+    if (tech.rsi > RSI_OVERBOUGHT_THRESHOLD) failures.push(`RSI ${tech.rsi.toFixed(0)} > ${RSI_OVERBOUGHT_THRESHOLD} (과매수)`);
+    else if (tech.rsi < RSI_OVERSOLD_THRESHOLD && !tech.isMomentum) failures.push(`RSI ${tech.rsi.toFixed(0)} < ${RSI_OVERSOLD_THRESHOLD} + 모멘텀 없음`);
     else reasons.push(`RSI ${tech.rsi.toFixed(0)} ✓`);
   }
   if (tech.volumeRatio != null) {
-    if (tech.volumeRatio < 0.8) failures.push(`거래량 ${tech.volumeRatio.toFixed(1)}x < 0.8`);
-    else if (tech.volumeRatio >= 1.2) reasons.push(`거래량 ${tech.volumeRatio.toFixed(1)}x ✓`);
+    if (tech.volumeRatio < VOLUME_MIN_RATIO) failures.push(`거래량 ${tech.volumeRatio.toFixed(1)}x < ${VOLUME_MIN_RATIO}`);
+    else if (tech.volumeRatio >= VOLUME_BULL_RATIO) reasons.push(`거래량 ${tech.volumeRatio.toFixed(1)}x ✓`);
   }
   if (tech.aboveMa20 === false) failures.push(`MA20 아래 (하락추세)`);
   else if (tech.aboveMa20 === true) reasons.push(`MA20 위 ✓`);
 
-  if (failures.length >= 2) {
+  if (failures.length >= MAX_TECH_FAILURES) {
     return {
       allowed: false,
       scoreBonus,

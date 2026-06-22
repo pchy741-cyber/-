@@ -46,7 +46,9 @@ async function detectRegime(): Promise<RegimeType> {
       if (parsed.boost) return 'BULLISH';
       return 'NEUTRAL';
     }
-  } catch {}
+  } catch (err) {
+    logger.debug(`체제 감지 실패 (기본 NEUTRAL 사용): ${err}`, { component: 'REGIME_ALLOC' });
+  }
 
   // DB에 없으면 NEUTRAL
   return 'NEUTRAL';
@@ -84,7 +86,7 @@ export async function autoTuneRegimeWeights(): Promise<void> {
          AND is_paper = $1
          AND strategy_mode IS NOT NULL
        GROUP BY strategy_mode
-       HAVING COUNT(*) >= 3`,
+       HAVING COUNT(*) >= 5`,
       [isPaper],
     );
 
@@ -141,7 +143,9 @@ export async function autoTuneRegimeWeights(): Promise<void> {
         [overrideKey],
       );
       if (stateRows[0]?.value) existing = JSON.parse(stateRows[0].value);
-    } catch {}
+    } catch (err) {
+      logger.debug(`가중치 오버라이드 조회 실패: ${err}`, { component: 'REGIME_ALLOC' });
+    }
 
     existing[regime] = adjusted;
     await getPool().query(
@@ -165,7 +169,9 @@ export async function autoTuneRegimeWeights(): Promise<void> {
         await sendTelegramMessage(
           `📈 *황금비율 자동 조정* (${regime})\n${changes.map((c) => `• ${c}`).join('\n')}`,
         ).catch(() => {});
-      } catch {}
+      } catch (tgErr) {
+        logger.debug(`텔레그램 알림 실패: ${tgErr}`, { component: 'REGIME_ALLOC' });
+      }
     }
   } catch (err) {
     logger.warn(`자동 가중치 조정 실패: ${err}`, { component: 'REGIME_ALLOC' });
@@ -192,7 +198,9 @@ export async function getRegimeAllocation(): Promise<Record<string, number>> {
         allocation = { ...allocation, ...overrides[regime] };
       }
     }
-  } catch {}
+  } catch (err) {
+    logger.debug(`가중치 오버라이드 조회 실패: ${err}`, { component: 'REGIME_ALLOC' });
+  }
 
   _cache = { regime, allocation, ts: now };
   logger.info(

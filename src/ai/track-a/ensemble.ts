@@ -15,6 +15,19 @@ import type { GeminiAnalysis } from './gemini.js';
 
 const COMP = 'ENSEMBLE';
 
+/** Signal thresholds */
+const STRONG_BUY_THRESHOLD = 82;
+const BUY_THRESHOLD = 68;
+const HOLD_THRESHOLD = 50;
+const SELL_THRESHOLD = 30;
+/** Confidence calculation constants */
+const BASE_CONFIDENCE = 0.5;
+const MAX_CONFIDENCE = 0.95;
+const AGREEMENT_WEIGHT = 0.4;
+const STD_DEV_NORMALIZER = 20; // stdDev 0 → max bonus, stdDev 20+ → 0 bonus
+const DEFAULT_SCORE = 50;
+const SELL_SCORE_CAP = 49;
+
 export interface EnsembleWeights {
   gemini: number;
   gpt: number;
@@ -107,10 +120,10 @@ async function runModel(model: keyof EnsembleWeights, params: EnsembleParams): P
 
 /** 신호 결정 (기존 룰과 동일) */
 function resolveSignal(score: number): ScoringResult['signal'] {
-  if (score >= 82) return 'STRONG_BUY';
-  if (score >= 68) return 'BUY';
-  if (score >= 50) return 'HOLD';
-  if (score >= 30) return 'SELL';
+  if (score >= STRONG_BUY_THRESHOLD) return 'STRONG_BUY';
+  if (score >= BUY_THRESHOLD) return 'BUY';
+  if (score >= HOLD_THRESHOLD) return 'HOLD';
+  if (score >= SELL_THRESHOLD) return 'SELL';
   return 'STRONG_SELL';
 }
 
@@ -174,13 +187,13 @@ function mergeScores(modelResults: ModelResult[], config: EnsembleConfig): Scori
         else votes.HOLD += 1;
       }
       // 다수결 신호와 가중평균 점수 조합
-      composite = wSum > 0 ? Math.round(weightedSum / wSum) : 50;
+      composite = wSum > 0 ? Math.round(weightedSum / wSum) : DEFAULT_SCORE;
       // 다수결로 BUY인데 점수가 낮으면 점수 보정
-      if (votes.BUY > votes.SELL && votes.BUY > votes.HOLD && composite < 68) {
-        composite = 68; // BUY 문턱
+      if (votes.BUY > votes.SELL && votes.BUY > votes.HOLD && composite < BUY_THRESHOLD) {
+        composite = BUY_THRESHOLD;
       }
-      if (votes.SELL > votes.BUY && composite > 49) {
-        composite = 49; // SELL 문턱
+      if (votes.SELL > votes.BUY && composite > SELL_SCORE_CAP) {
+        composite = SELL_SCORE_CAP;
       }
       fundamentalScore = Math.round(entries.reduce((a, e) => a + e.score.fundamental_score, 0) / entries.length);
       technicalScore = Math.round(entries.reduce((a, e) => a + e.score.technical_score, 0) / entries.length);
@@ -200,10 +213,10 @@ function mergeScores(modelResults: ModelResult[], config: EnsembleConfig): Scori
         sSum += e.score.sentiment_score * w;
         wSum += w;
       }
-      composite = wSum > 0 ? Math.round(weightedSum / wSum) : 50;
-      fundamentalScore = wSum > 0 ? Math.round(fSum / wSum) : 50;
-      technicalScore = wSum > 0 ? Math.round(tSum / wSum) : 50;
-      sentimentScore = wSum > 0 ? Math.round(sSum / wSum) : 50;
+      composite = wSum > 0 ? Math.round(weightedSum / wSum) : DEFAULT_SCORE;
+      fundamentalScore = wSum > 0 ? Math.round(fSum / wSum) : DEFAULT_SCORE;
+      technicalScore = wSum > 0 ? Math.round(tSum / wSum) : DEFAULT_SCORE;
+      sentimentScore = wSum > 0 ? Math.round(sSum / wSum) : DEFAULT_SCORE;
     }
 
     composite = Math.max(0, Math.min(100, composite));
@@ -214,9 +227,8 @@ function mergeScores(modelResults: ModelResult[], config: EnsembleConfig): Scori
     const variance = scores.reduce((a, s) => a + (s - mean) ** 2, 0) / scores.length;
     const stdDev = Math.sqrt(variance);
     // stdDev 0 → confidence 0.9, stdDev 20+ → confidence 0.5
-    const agreementBonus = Math.max(0, 0.4 * (1 - Math.min(1, stdDev / 20)));
-    const baseConfidence = 0.5;
-    const confidence = Math.min(0.95, baseConfidence + agreementBonus);
+    const agreementBonus = Math.max(0, AGREEMENT_WEIGHT * (1 - Math.min(1, stdDev / STD_DEV_NORMALIZER)));
+    const confidence = Math.min(MAX_CONFIDENCE, BASE_CONFIDENCE + agreementBonus);
 
     // reasoning: 각 모델 점수 투명 표시
     const parts = entries.map((e) => {
@@ -312,7 +324,7 @@ export async function runEnsembleScoring(params: EnsembleParams): Promise<Scorin
 
   // 점수 합산
   const merged = mergeScores(modelResults, config);
-  const buyCount = merged.filter((s) => s.composite_score >= 68).length;
+  const buyCount = merged.filter((s) => s.composite_score >= BUY_THRESHOLD).length;
 
   logger.info(`🎼 앙상블 완료: ${modelResults.length}모델 → ${merged.length}개 스코어, 매수후보 ${buyCount}개`, {
     component: COMP,

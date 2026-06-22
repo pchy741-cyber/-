@@ -13,8 +13,8 @@ import { getOpenChains, getPool, logSystem } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import { getAccountBalance, invalidateBalanceCache } from '../kis/account.js';
 import { type CurrentPrice, getBatchPrices, getVolumeRankingStocks } from '../kis/market.js';
-import { sendTelegramMessage } from '../notifications/telegram.js';
-import { isKillSwitchActive, reportSuccess } from '../risk/kill-switch.js';
+import { sendByPaperFlag } from '../notifications/mode-message.js';
+import { isKillSwitchActiveForMode, reportSuccess } from '../risk/kill-switch.js';
 import { getPaperBalance } from '../risk/paper-balance.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
@@ -71,7 +71,7 @@ export async function runEodBettingJob(): Promise<void> {
   }
 
   // Kill Switch 확인
-  if (isKillSwitchActive()) {
+  if (isKillSwitchActiveForMode('KR', getCtxIsPaper())) {
     logger.debug('🛑 Kill Switch 활성 — 종가베팅 스킵', { component: 'EOD_BETTING' });
     return;
   }
@@ -320,7 +320,7 @@ export async function runEodBettingJob(): Promise<void> {
 
     // ── STEP 8: 알림 ──
     const summary = buyDecisions.map((d) => `  • ${d.stock_code} x${d.quantity} — ${d.reasoning}`).join('\n');
-    await sendTelegramMessage(`🎰 종가베팅 매수 ${buyDecisions.length}건\n${summary}`).catch(() => {});
+    await sendByPaperFlag(getCtxIsPaper(), `🎰 종가베팅 매수 ${buyDecisions.length}건\n${summary}`);
     await logSystem('INFO', 'EOD_BETTING', `종가베팅: ${buyDecisions.length}건 매수`);
 
     logger.info(`🎰 종가베팅 완료: ${buyDecisions.length}종목 매수`, { component: 'EOD_BETTING' });
@@ -404,7 +404,7 @@ export async function runEodMorningSell(): Promise<void> {
 
     // 결과 알림
     const msg = sellDecisions.map((d) => `  • ${d.stock_code} x${d.quantity}`).join('\n');
-    await sendTelegramMessage(`🌅 종가베팅 익일매도 ${sellDecisions.length}건\n${msg}`).catch(() => {});
+    await sendByPaperFlag(getCtxIsPaper(), `🌅 종가베팅 익일매도 ${sellDecisions.length}건\n${msg}`);
     await logSystem('INFO', 'EOD_BETTING', `종가베팅 익일매도: ${sellDecisions.length}건`);
 
     logger.info(`🌅 종가베팅 익일매도 완료: ${sellDecisions.length}건`, { component: 'EOD_BETTING' });

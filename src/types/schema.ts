@@ -23,10 +23,12 @@ export {
   AIScoreSchema,
   TransactionChainSchema,
   OrderSchema,
+  OrderInsertSchema,
   PortfolioSnapshotSchema,
   StrategyConfigSchema,
   TradeDecisionSchema,
   ScoringResultSchema,
+  OverseasHoldingSchema,
   // 타입 (TS 추론용)
   type WatchlistItem,
   type AIScore,
@@ -36,6 +38,7 @@ export {
   type StrategyConfig,
   type TradeDecision,
   type ScoringResult,
+  type OverseasHolding,
 } from '../db/models.js';
 
 // MDD 스냅샷 (risk/mdd-calculator.ts에서 정의)

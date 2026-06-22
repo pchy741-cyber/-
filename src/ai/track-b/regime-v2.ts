@@ -6,7 +6,6 @@
  */
 
 import type { TechnicalSummary } from '../../analysis/indicators.js';
-import { atr } from '../../analysis/indicators.js';
 
 // ── 레짐 타입 ──
 export type RegimeV2 =
@@ -58,24 +57,7 @@ export function calcLag1Autocorrelation(closes: number[], period: number = 20): 
 
 // ── 6-상태 레짐 감지 ──
 export function detectRegimeV2(tech: TechnicalSummary, closes: number[]): RegimeV2Result {
-  const closesAsc = [...closes].reverse();
-
-  // ATR 중간값 (20일)
-  const _atrPctArr: number[] = [];
-  if (closesAsc.length >= 30) {
-    const _atrVals = atr(
-      closesAsc.map((c, _i) => ({
-        date: '',
-        open: c,
-        high: c * 1.01,
-        low: c * 0.99,
-        close: c,
-        volume: 0,
-      })),
-      14,
-    );
-    // 실제 atrPct은 tech에서 가져옴
-  }
+  // ATR 중간값: tech.atrPct을 직접 사용
   const currentAtr = tech.atrPct;
 
   // BB 폭 → 스퀴즈 감지 (BB폭 < 70% 평균)

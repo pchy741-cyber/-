@@ -31,6 +31,7 @@ import { runHoldingCheckJob } from './holding-check-job.js';
 import { runIntegrityCheck } from './integrity-check-job.js';
 import { resetOpeningBellDaily, runOpeningBellCycle, warmupOpeningBell } from './opening-bell-job.js';
 import { runOverseasDual } from './overseas-job.js';
+import { runPreMarketOrders } from './pre-market-order-job.js';
 import { runSnapshotJob } from './snapshot-job.js';
 import { runTrackAJob } from './track-a-job.js';
 import { runTrackBJob } from './track-b-job.js';
@@ -113,7 +114,7 @@ function withTimeout<T>(label: string, fn: () => Promise<T>, timeoutMs: number):
  * ├─ 09:30~15:30 ── 보유일 초과 손절 체크 매시
  * ├─ 09:00~15:30 ── 포트폴리오 스냅샷 30분 간격
  * ├─ 15:20 ─── 단타 강제 청산 (오버나잇 방지)
- * ├─ 15:40 ─── 일일 자동 리포트 (Telegram)
+ * ├─ 16:00 ─── 일일 자동 리포트 (Telegram, 시간외종가 정산 후)
  * ├─ 18:00 ─── Track A 장후 분석
  * ├─ 상시 ──── Self-Healing 10분 간격
  * ├─ 18:30 ─── 자기학습 (당일 매매 패턴 분석 → 즉시 반영)
@@ -333,7 +334,7 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 08:50 — 장시작 스냅샷 + Kill Switch 리셋
+  // 08:50 — 장시작 스냅샷 + Kill Switch 리셋 + Auto Pilot 자동 시작
   cron.schedule(
     '50 8 * * 1-5',
     async () => {
@@ -353,6 +354,23 @@ export function startScheduler(): void {
           await deactivateKillSwitchForMode(false, isPaperMode, 'KR');
         }
       }
+
+      // 🤖 Auto Pilot 자동 시작 — 수동 버튼 불필요 (비활성 시에만)
+      try {
+        const { isLoopActive, startLoop } = await import('./loop-mode.js');
+        if (!isLoopActive()) {
+          const result = await startLoop();
+          if (result.ok) {
+            logger.info('🤖 Auto Pilot 자동 시작 (08:50 cron)', { component: 'SCHEDULER' });
+          } else {
+            logger.info(`🤖 Auto Pilot 시작 스킵: ${result.error}`, { component: 'SCHEDULER' });
+          }
+        } else {
+          logger.debug('🤖 Auto Pilot 이미 활성 — 스킵', { component: 'SCHEDULER' });
+        }
+      } catch (e) {
+        logger.warn(`Auto Pilot 자동 시작 실패: ${e}`, { component: 'SCHEDULER' });
+      }
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -364,16 +382,19 @@ export function startScheduler(): void {
   // Track B 중복 실행 방지 mutex (paper → live 순차 실행)
   let _trackBRunning = false;
   let _trackBStartedAt = 0;
-  const TRACK_B_MAX_MS = 960_000; // 16분
+  const TRACK_B_MAX_MS = 720_000; // 12분 (3분 간격 × 4 = 여유 포함)
   const runTrackBSafe = () => {
-    // 안전장치: 이전 실행이 TRACK_B_MAX_MS 초과 시 stuck으로 간주, 강제 리셋
-    if (_trackBRunning && Date.now() - _trackBStartedAt > TRACK_B_MAX_MS + 30_000) {
-      logger.error('🔧 Track B stuck 감지 — 강제 리셋', { component: 'SCHEDULER' });
-      _trackBRunning = false;
-    }
+    // Atomic tryAcquire: check stuck + acquire in single synchronous block
+    // to eliminate race window between checking and acquiring lock
     if (_trackBRunning) {
-      logger.warn('⏭️ Track B 이미 실행 중 — 스킵 (중복 방지)', { component: 'SCHEDULER' });
-      return;
+      // 안전장치: 이전 실행이 TRACK_B_MAX_MS 초과 시 stuck으로 간주, 강제 리셋 후 즉시 acquire
+      if (Date.now() - _trackBStartedAt > TRACK_B_MAX_MS + 30_000) {
+        logger.error('🔧 Track B stuck 감지 — 강제 리셋 후 재실행', { component: 'SCHEDULER' });
+        // Fall through to acquire below
+      } else {
+        logger.warn('⏭️ Track B 이미 실행 중 — 스킵 (중복 방지)', { component: 'SCHEDULER' });
+        return;
+      }
     }
     _trackBRunning = true;
     _trackBStartedAt = Date.now();
@@ -384,6 +405,29 @@ export function startScheduler(): void {
       });
   };
 
+  // 해외 스케줄러 중복 실행 방지 mutex
+  let _overseasRunning = false;
+  let _overseasStartedAt = 0;
+  const OVERSEAS_MAX_MS = 600_000; // 10분
+  const runOverseasSafe = () => {
+    // Atomic tryAcquire: same pattern as Track B
+    if (_overseasRunning) {
+      if (Date.now() - _overseasStartedAt > OVERSEAS_MAX_MS + 30_000) {
+        logger.error('🔧 Overseas stuck 감지 — 강제 리셋 후 재실행', { component: 'SCHEDULER' });
+      } else {
+        logger.warn('⏭️ Overseas 이미 실행 중 — 스킵 (중복 방지)', { component: 'SCHEDULER' });
+        return;
+      }
+    }
+    _overseasRunning = true;
+    _overseasStartedAt = Date.now();
+    withTimeout('Overseas dual', () => runOverseasDual(), OVERSEAS_MAX_MS)
+      .catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }))
+      .finally(() => {
+        _overseasRunning = false;
+      });
+  };
+
   // 🌅 08:55 — 개장 워밍업: 차트+시세 선행 캐시 + Gemini 사전 분석
   cron.schedule(
     '55 8 * * 1-5',
@@ -391,6 +435,17 @@ export function startScheduler(): void {
       resetOpeningBellDaily(); // 전일 캐시 무효화 (일간 차트 데이터 리셋)
       logger.info('🌅 개장 워밍업 시작 (08:55)', { component: 'SCHEDULER' });
       warmupOpeningBell().catch((e) => logger.error(`워밍업 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 📋 08:57 — 동시호가 선제 주문 (AI 85점+ 종목 → 지정가 매수, 09:00 시초가에 체결)
+  cron.schedule(
+    '57 8 * * 1-5',
+    () => {
+      runDomesticDual('동시호가', runPreMarketOrders).catch((e) =>
+        logger.error(`동시호가 주문 실패: ${e}`, { component: 'SCHEDULER' }),
+      );
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -463,7 +518,7 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 수급 분석 — 장 시작 전(08:30) + 장 마감 후(15:40) 2회만 (장중 KIS rate limit 보호)
+  // 수급 분석 — 장 시작 전(08:30) + 장 마감 후(16:00) 2회만 (장중 KIS rate limit 보호)
   cron.schedule(
     '30 8 * * 1-5',
     () => {
@@ -472,7 +527,7 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
-    '40 15 * * 1-5',
+    '0 16 * * 1-5',
     () => {
       withTimeout('수급 분석 (장후)', () => analyzeWatchlistFlows(), 180_000);
     },
@@ -673,9 +728,10 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 15:40 — 일일 자동 리포트 (Telegram) + 체결 캐시 정리 (paper + live 양쪽)
+  // 16:00 — 일일 자동 리포트 (Telegram) + 체결 캐시 정리 (paper + live 양쪽)
+  // 시간외종가(15:40~16:00) + 환전/외화RP 정산 완료 후 세션 마감
   cron.schedule(
-    '40 15 * * 1-5',
+    '0 16 * * 1-5',
     () => {
       runDomesticDual('일일리포트', generateDailyReport).catch((e) =>
         logger.error(`리포트 실패: ${e}`, { component: 'SCHEDULER' }),
@@ -683,6 +739,28 @@ export function startScheduler(): void {
       import('../trading/executor.js')
         .then((m) => m.tradeExecutor.clearConfirmedOrders())
         .catch((e) => logger.warn(`체결캐시 클리어 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 📧 17:00 — 종합 이메일 리포트 (평일, 장마감 + 정산 완료 후)
+  cron.schedule(
+    '0 17 * * 1-5',
+    () => {
+      import('../automation/daily-email-report.js')
+        .then((m) => m.sendDailyEmailReport())
+        .catch((e) => logger.error(`이메일 리포트: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🚨 장중 30분마다 — 실전 손실 감지 (09:00~15:30)
+  cron.schedule(
+    '*/30 9-15 * * 1-5',
+    () => {
+      import('../automation/loss-alert.js')
+        .then((m) => m.checkLiveAlerts())
+        .catch((e) => logger.error(`손실 알림: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -710,6 +788,32 @@ export function startScheduler(): void {
       }
       logger.info('⏰ Track A (장후)', { component: 'SCHEDULER' });
       runTrackAJob().catch((e) => logger.error(`Track A 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🔍 QA Watchdog + 📊 운영 브리핑 — 08:00 해외장 마감 후, 17:00 국내장 마감 후
+  cron.schedule(
+    '0 8 * * 1-5',
+    () => {
+      import('../automation/qa-watchdog.js')
+        .then((m) => m.runQAWatchdog())
+        .catch((e) => logger.error(`QA Watchdog(해외): ${e}`, { component: 'SCHEDULER' }));
+      import('../automation/daily-briefing.js')
+        .then((m) => m.runDailyBriefing('US'))
+        .catch((e) => logger.error(`해외 브리핑: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+  cron.schedule(
+    '0 17 * * 1-5',
+    () => {
+      import('../automation/qa-watchdog.js')
+        .then((m) => m.runQAWatchdog())
+        .catch((e) => logger.error(`QA Watchdog(국내): ${e}`, { component: 'SCHEDULER' }));
+      import('../automation/daily-briefing.js')
+        .then((m) => m.runDailyBriefing('KR'))
+        .catch((e) => logger.error(`국내 브리핑: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -745,9 +849,10 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 💰 배당 자동화 — 평일 16:00 (paper+live 이중 실행: 배당금 동기화 + 배석일 경보 + DRIP)
+  // 💰 배당 자동화 — 평일 15:55 (paper+live 이중 실행: 배당금 동기화 + 배석일 경보 + DRIP)
+  // 16:00 일일리포트 직전에 배당 정보 갱신 완료
   cron.schedule(
-    '0 16 * * 1-5',
+    '55 15 * * 1-5',
     () => {
       import('./dividend-job.js')
         .then((m) => runDomesticDual('배당 자동화', () => m.runDividendJob()))
@@ -761,6 +866,17 @@ export function startScheduler(): void {
     '30 18 * * 1-5',
     () => {
       runDailyLearning().catch((e) => logger.error(`자기학습 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🔍 데이터스누핑 감시 — 평일 18:50 (자기학습 18:30 직후, Claude CLI 전수조사)
+  cron.schedule(
+    '50 18 * * 1-5',
+    () => {
+      import('../automation/data-snooping-guard.js')
+        .then((m) => m.runDataSnoopingGuard())
+        .catch((e) => logger.error(`데이터스누핑 감시 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -879,6 +995,25 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 🗣️ Community Sentinel — 장중 커뮤니티 언급 추적 + FOMO/펌프 감지
+  // 매 시 20/50분 실행 (surge-detector :00/:30, capitalFlow :15/:45와 겹침 방지)
+  cron.schedule(
+    '20,50 9-15 * * 1-5',
+    () => {
+      Promise.all([
+        import('../automation/community-sentinel.js'),
+        import('../db/client.js'),
+      ])
+        .then(async ([sentinel, db]) => {
+          const wl = await db.getActiveWatchlist();
+          const codes = wl.map((s: { stock_code: string }) => s.stock_code).slice(0, 12);
+          return sentinel.runCommunitySentinel(codes);
+        })
+        .catch((e) => logger.error(`커뮤니티 감시 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 📊 일일 시장 발굴 — 14:15 (장 중반 수급 데이터 확정 후)
   // runDailyMarketScan: 거래량/급등 상위 + 기관/외국인 수급 검증 후 워치리스트 편입
   cron.schedule(
@@ -898,7 +1033,7 @@ export function startScheduler(): void {
   // ═══════════════════════════════════════════
 
   // 🇯🇵🇹🇼 아시아 해외주식 cron 제거 — 워치리스트 전부 region:'US' (미국 ADR)
-  // US 장 시간(22:30~06:00 KST)에만 매매. 아시아 시간 실행은 "종목풀 0" 낭비.
+  // US 세션: 21:00 기동 → 프리마켓 감시 → 22:30/23:30 정규장 → 06:00 마감
 
   // 🌏 아시아장 세션 캐시 초기화 — 08:50 (장 시작 전, 당일 스캔 준비)
   cron.schedule(
@@ -913,10 +1048,10 @@ export function startScheduler(): void {
 
   // 🇺🇸 미국 주식 (23:30~06:30 KST)
 
-  // 22:20 — 미국장 전 Kill Switch 리셋 + 세션 캐시 초기화
-  // (서머타임: 22:30 개장 / 표준시: 23:30 개장 — 둘 다 커버하기 위해 22:20으로 앞당김)
+  // 21:00 — 미국장 세션 준비 (Kill Switch 리셋 + 세션 캐시 초기화)
+  // 프리마켓 데이터 수집·뉴스 스캔·포트폴리오 리뷰를 위해 개장 1.5시간 전 기동
   cron.schedule(
-    '20 22 * * 1-5',
+    '0 21 * * 1-5',
     async () => {
       const { isKillSwitchActiveForMode, deactivateKillSwitchForMode, resetDailyErrorCount } = await import(
         '../risk/kill-switch.js'
@@ -931,10 +1066,10 @@ export function startScheduler(): void {
           await deactivateKillSwitchForMode(false, isPaperMode, 'OVERSEAS');
         }
       }
-      // 미국장 세션 캐시 초기화 — 22:30 첫 사이클에서 전 종목 재스캔
+      // 미국장 세션 캐시 초기화 — 21:00 기동, 프리마켓 감시 즉시 시작
       const { resetUSSessionCache } = await import('./overseas-job.js');
       resetUSSessionCache();
-      logger.info('🇺🇸 미국장 세션 캐시 초기화 (22:30 전체 스캔 준비 — 서머타임 대응)', { component: 'SCHEDULER' });
+      logger.info('🇺🇸 미국장 세션 준비 완료 (21:00 기동 — 프리마켓 감시 시작)', { component: 'SCHEDULER' });
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -946,7 +1081,7 @@ export function startScheduler(): void {
       const { isUSDST } = await import('./overseas/session.js');
       if (isUSDST()) {
         logger.info('🇺🇸 서머타임 개장 22:30 즉시 트리거', { component: 'SCHEDULER' });
-        runOverseasDual().catch((e) => logger.error(`개장 트리거 실패: ${e}`, { component: 'SCHEDULER' }));
+        runOverseasSafe();
       }
     },
     { timezone: MARKET.TIMEZONE },
@@ -957,7 +1092,7 @@ export function startScheduler(): void {
       const { isUSDST } = await import('./overseas/session.js');
       if (!isUSDST()) {
         logger.info('🇺🇸 겨울시간 개장 23:30 즉시 트리거', { component: 'SCHEDULER' });
-        runOverseasDual().catch((e) => logger.error(`개장 트리거 실패: ${e}`, { component: 'SCHEDULER' }));
+        runOverseasSafe();
       }
     },
     { timezone: MARKET.TIMEZONE },
@@ -968,28 +1103,28 @@ export function startScheduler(): void {
   cron.schedule(
     '*/10 22 * * 1-5',
     () => {
-      runOverseasDual().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
+      runOverseasSafe();
     },
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
     '*/10 23 * * 1-5',
     () => {
-      runOverseasDual().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
+      runOverseasSafe();
     },
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
     '*/10 0-5 * * 2-6',
     () => {
-      runOverseasDual().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
+      runOverseasSafe();
     },
     { timezone: MARKET.TIMEZONE },
   );
   cron.schedule(
     '*/10 6 * * 2-6',
     () => {
-      runOverseasDual().catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }));
+      runOverseasSafe();
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -1000,7 +1135,7 @@ export function startScheduler(): void {
   cron.schedule(
     '*/15 17-21 * * 1-5',
     () => {
-      runOverseasDual().catch((e) => logger.error(`프리마켓 감시 실패: ${e}`, { component: 'SCHEDULER' }));
+      runOverseasSafe();
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -1008,7 +1143,7 @@ export function startScheduler(): void {
   cron.schedule(
     '*/15 6-9 * * 2-6',
     () => {
-      runOverseasDual().catch((e) => logger.error(`포스트마켓 감시 실패: ${e}`, { component: 'SCHEDULER' }));
+      runOverseasSafe();
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -1121,10 +1256,10 @@ export function startScheduler(): void {
     { component: 'SCHEDULER' },
   );
   logger.info(
-    '  이상감지: 30분 | 장세전환: 08:00/12:00 | 리포트: 15:40 | 🌙시간외: 15:42/52 | 🎰종가베팅: 15:15→09:02',
+    '  이상감지: 30분 | 장세전환: 08:00/12:00 | 리포트: 16:00 | 🌙시간외: 15:42/52 | 🎰종가베팅: 15:15→09:02',
     { component: 'SCHEDULER' },
   );
   logger.info('  🎯 스나이퍼: 15분 (수급/기술/공시 고확률 자동 진입)', { component: 'SCHEDULER' });
   logger.info('  Self-Heal: 10분 | 아카이빙: 일요일 02:00', { component: 'SCHEDULER' });
-  logger.info('  🌏 해외주식: 🇯🇵🇹🇼 09:00~15:00 + 🇺🇸 23:30~06:30 10분 (기술적 지표)', { component: 'SCHEDULER' });
+  logger.info('  🌏 해외주식: 🇺🇸 21:00 기동~06:30 마감 10분 (프리마켓 21:00~)', { component: 'SCHEDULER' });
 }

@@ -42,7 +42,7 @@ dividendRoutes.get('/dividend/watchlist', async (c) => {
     const enabled = await checkDividendEnabled(isPaper);
     return c.json({ enabled, watchlist: rows });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -68,7 +68,7 @@ dividendRoutes.post('/dividend/watchlist', async (c) => {
     );
     return c.json({ ok: true });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -79,7 +79,7 @@ dividendRoutes.delete('/dividend/watchlist/:id', async (c) => {
     await getPool().query('DELETE FROM dividend_watchlist WHERE id = $1', [id]);
     return c.json({ ok: true });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -116,7 +116,7 @@ dividendRoutes.patch('/dividend/watchlist/:id', async (c) => {
     await getPool().query(`UPDATE dividend_watchlist SET ${sets.join(', ')} WHERE id = $${idx}`, vals);
     return c.json({ ok: true });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -134,28 +134,30 @@ dividendRoutes.get('/dividend/holdings', async (c) => {
     );
     return c.json({ holdings: rows });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
 // ── 배당금 수령 내역 조회 ──
 dividendRoutes.get('/dividend/history', async (c) => {
   try {
-    const limit = parseInt(c.req.query('limit') || '50', 10);
+    const rawLimit = parseInt(c.req.query('limit') || '50', 10);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 50;
+    const isPaper = resolveRequestMode(c);
     const pool = getPool();
     const [{ rows }, { rows: stats }] = await Promise.all([
-      pool.query(`SELECT * FROM dividend_history ORDER BY pay_date DESC NULLS LAST, recorded_at DESC LIMIT $1`, [
-        limit,
+      pool.query(`SELECT * FROM dividend_history WHERE is_paper = $2 ORDER BY pay_date DESC NULLS LAST, recorded_at DESC LIMIT $1`, [
+        limit, isPaper,
       ]),
       pool.query(
         `SELECT COUNT(*) AS total_payments, COALESCE(SUM(net_amount_usd), 0) AS total_received_usd,
            COALESCE(SUM(tax_amount_usd), 0) AS total_tax_usd, COALESCE(AVG(net_amount_usd), 0) AS avg_per_payment
-         FROM dividend_history`,
+         FROM dividend_history WHERE is_paper = $1`, [isPaper],
       ),
     ]);
     return c.json({ history: rows, stats: stats[0] });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -197,7 +199,7 @@ dividendRoutes.post('/dividend/history', async (c) => {
       .catch(() => {});
     return c.json({ ok: true });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -209,7 +211,7 @@ dividendRoutes.get('/dividend/schedule', async (c) => {
     const events = await getDividendSchedule({ stockCode: code });
     return c.json({ events });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -222,9 +224,9 @@ dividendRoutes.post('/dividend/sync-receipts', async (c) => {
     for (const r of receipts) {
       try {
         await getPool().query(
-          `INSERT INTO dividend_history (stock_code, gross_amount_usd, tax_amount_usd, net_amount_usd, pay_date)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT DO NOTHING`,
+          `INSERT INTO dividend_history (stock_code, gross_amount_usd, tax_amount_usd, net_amount_usd, pay_date, is_paper)
+           VALUES ($1, $2, $3, $4, $5, false)
+           ON CONFLICT (stock_code, pay_date, is_paper) WHERE pay_date IS NOT NULL DO NOTHING`,
           [r.stockCode, r.amount, r.tax, r.netAmount, r.date || null],
         );
         synced++;
@@ -234,7 +236,7 @@ dividendRoutes.post('/dividend/sync-receipts', async (c) => {
     }
     return c.json({ ok: true, synced, total: receipts.length });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -242,21 +244,70 @@ dividendRoutes.post('/dividend/sync-receipts', async (c) => {
 // Money Printer: 배당 자동투자 + 통합 요약
 // ═══════════════════════════════════════════════════════
 
-/** ETF 최적 배분 비중 */
-const ETF_WEIGHTS: Record<string, number> = {
-  JEPQ: 0.25,
-  JEPI: 0.25,
-  SCHD: 0.2,
-  QYLD: 0.15,
-  XYLD: 0.1,
-  O: 0.05,
+/**
+ * 혁신 배당 전략 v2: Multi-Tier + VIX 동적 배분
+ * ─────────────────────────────────────────────
+ * Core (55%):  JEPQ + SPYI + SCHD  — 수익률 + 성장 균형
+ * Satellite (35%): QQQI + JEPI      — 고수익 인컴
+ * Anchor (10%):    O                 — 월배당 리츠 안정성
+ *
+ * 가중 수익률 ~9.5% → 1500만원 기준 월 ~10만원 (세후)
+ * 가중 성장률 ~7.0% → 총수익 ~16.5%
+ */
+const ETF_WEIGHTS_BASE: Record<string, number> = {
+  JEPQ: 0.25,  //  9.5% yield + 8% growth → 최고 밸런스
+  SPYI: 0.20,  // 12.0% yield + 8% growth → 차세대 S&P 커버드콜 (JEPI 상위호환)
+  SCHD: 0.15,  //  3.5% yield + 12% growth → 배당성장 앵커
+  QQQI: 0.15,  // 13.4% yield + 6% growth → 나스닥 콜스프레드 (2025 최우수 ETF)
+  JEPI: 0.15,  //  7.5% yield + 5% growth → 안정적 S&P500 인컴
+  O: 0.10,     //  5.5% yield + 3% growth → 월배당 리츠 (55년 연속 인상)
 };
+
+/**
+ * VIX 레짐별 배분 오버라이드
+ * CALM:   성장 중심 (SCHD↑, JEPQ↑) — 커버드콜 프리미엄 낮을 때 성장 극대화
+ * STRESS: 프리미엄 중심 (SPYI↑, QQQI↑) — 변동성 프리미엄 수확
+ * CRISIS: 방어 중심 (SCHD↑, O↑) — 자본 보존 우선
+ */
+const VIX_REGIME_WEIGHTS: Record<string, Record<string, number>> = {
+  CALM: {
+    JEPQ: 0.28, SPYI: 0.15, SCHD: 0.22, QQQI: 0.12, JEPI: 0.13, O: 0.10,
+  },
+  STRESS: {
+    JEPQ: 0.22, SPYI: 0.25, SCHD: 0.10, QQQI: 0.20, JEPI: 0.13, O: 0.10,
+  },
+  CRISIS: {
+    JEPQ: 0.15, SPYI: 0.15, SCHD: 0.25, QQQI: 0.10, JEPI: 0.15, O: 0.20,
+  },
+};
+
+/** VIX 기반 동적 비중 결정 */
+async function getDynamicWeights(isPaper: boolean): Promise<{ weights: Record<string, number>; regime: string }> {
+  try {
+    const { getFearGreedIndex } = await import('../../market/external-signals.js');
+    const fg = await getFearGreedIndex().catch(() => null);
+    const vix = fg?.vix ?? 0;
+    if (vix <= 0) return { weights: ETF_WEIGHTS_BASE, regime: 'UNKNOWN' };
+
+    const { getVixRegime } = await import('../../scheduler/overseas/vix-regime.js');
+    const { regime } = getVixRegime(vix, isPaper);
+    const regimeWeights = VIX_REGIME_WEIGHTS[regime] ?? ETF_WEIGHTS_BASE;
+    return { weights: regimeWeights, regime };
+  } catch {
+    return { weights: ETF_WEIGHTS_BASE, regime: 'FALLBACK' };
+  }
+}
+
+// 하위 호환: 기존 코드에서 ETF_WEIGHTS 참조 시 기본값 사용
+const ETF_WEIGHTS = ETF_WEIGHTS_BASE;
 
 /** ETF 거래소 매핑 — watchlist JOIN 정합성 보장 */
 const ETF_EXCHANGE: Record<string, string> = {
   JEPQ: 'NASDAQ',
   JEPI: 'NYSE',
   SCHD: 'NYSE',
+  SPYI: 'NYSE',
+  QQQI: 'NASDAQ',
   QYLD: 'NASDAQ',
   XYLD: 'NYSE',
   O: 'NYSE',
@@ -311,9 +362,10 @@ dividendRoutes.post('/dividend/auto-invest', async (c) => {
     const results: Array<{ code: string; shares: number; invested: number; price: number; ordered: boolean }> = [];
     let totalInvested = 0;
 
-    // 튜닝된 배분 비중이 있으면 우선 사용
+    // VIX 동적 비중 → 튜닝된 비중 → 기본값 (우선순위 순)
     const { getOverseasState } = await import('../../scheduler/overseas/utils.js');
-    let weights = ETF_WEIGHTS;
+    const { weights: vixWeights, regime } = await getDynamicWeights(isPaper);
+    let weights = vixWeights;
     try {
       const tunedRaw = await getOverseasState(`dividend_alloc_tuned_${isPaper ? 'paper' : 'live'}`);
       if (tunedRaw) {
@@ -321,8 +373,9 @@ dividendRoutes.post('/dividend/auto-invest', async (c) => {
         if (tuned.weights && Object.keys(tuned.weights).length > 0) weights = tuned.weights;
       }
     } catch {
-      /* use defaults */
+      /* use VIX-based defaults */
     }
+    logger.info(`[MoneyPrinter] VIX 레짐: ${regime} → ETF 배분 적용`, { component: 'DIVIDEND' });
 
     for (const [code, weight] of Object.entries(weights)) {
       const price = prices[code];
@@ -380,7 +433,7 @@ dividendRoutes.post('/dividend/auto-invest', async (c) => {
       etfs: results,
     });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -406,19 +459,34 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
         pool.query(`SELECT COALESCE(value::numeric, 0) AS v FROM overseas_state WHERE key = $1`, [investKey]),
       ]);
 
-    // 배당 현황
+    // 배당 현황 — 실시간 가격으로 현재 가치 계산
     const divInvestedKrw = Number(divInvestedRow[0]?.v ?? 0);
     let divCurrentUsd = 0;
     let divDividendsUsd = 0;
     let divMonthlyUsd = 0;
+
+    // 🔒 실시간 가격 일괄 조회 (시세 실패 시 avg_price 폴백)
+    const priceMap = new Map<string, number>();
+    try {
+      const { getOverseasPrice } = await import('../../kis/overseas.js');
+      const pricePromises = divHoldings.map(async (h: any) => {
+        try {
+          const px = await getOverseasPrice(h.stock_code, 'NASDAQ');
+          if (px?.currentPrice > 0) priceMap.set(h.stock_code, px.currentPrice);
+        } catch { /* 개별 종목 시세 실패 무시 */ }
+      });
+      await Promise.allSettled(pricePromises);
+    } catch { /* 전체 시세 조회 실패 — avg_price 폴백 */ }
+
     const divList = divHoldings.map((h: any) => {
       const qty = Number(h.quantity);
       const avgPx = Number(h.avg_price);
+      const curPx = priceMap.get(h.stock_code) ?? avgPx; // 시세 실패 시 avg_price 폴백
       const divYield = Number(h.dividend_yield ?? 0) / 100;
-      const value = qty * avgPx;
+      const currentValue = qty * curPx;
       const divReceived = Number(h.total_dividends_received ?? 0);
-      const monthlyDiv = (value * divYield * 0.846) / 12;
-      divCurrentUsd += value;
+      const monthlyDiv = (currentValue * divYield * 0.846) / 12;
+      divCurrentUsd += currentValue;
       divDividendsUsd += divReceived;
       divMonthlyUsd += monthlyDiv;
       return {
@@ -426,6 +494,7 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
         name: h.name,
         shares: qty,
         avgPrice: avgPx,
+        currentPrice: curPx,
         dividends: divReceived,
         monthlyDiv: +monthlyDiv.toFixed(2),
       };
@@ -435,6 +504,10 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
 
     const totalCurrent = divCurrentUsd * fx + divDividendsUsd * fx;
     const totalReturn = divInvestedKrw > 0 ? (totalCurrent / divInvestedKrw - 1) * 100 : 0;
+
+    // VIX 레짐 정보 추가
+    const { regime } = await getDynamicWeights(isPaper);
+    const activeWeights = VIX_REGIME_WEIGHTS[regime] ?? ETF_WEIGHTS_BASE;
 
     return c.json({
       dividend: {
@@ -451,9 +524,14 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
         returnPct: +totalReturn.toFixed(1),
       },
       fx,
+      strategy: {
+        regime,
+        activeWeights,
+        tiers: { core: ['JEPQ', 'SPYI', 'SCHD'], satellite: ['QQQI', 'JEPI'], anchor: ['O'] },
+      },
     });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -469,7 +547,7 @@ dividendRoutes.get('/trade-tuner/result', async (c) => {
     const overrides = byKey.trade_tuner_overrides ? JSON.parse(byKey.trade_tuner_overrides) : {};
     return c.json({ result, overrides });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -480,7 +558,7 @@ dividendRoutes.post('/trade-tuner/run', async (c) => {
     const liveResult = await runTradeTuner(false);
     return c.json({ ok: true, paper: paperResult, live: liveResult });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -494,7 +572,7 @@ dividendRoutes.get('/dividend/allocation-tuned', async (c) => {
     if (rows[0]?.value) return c.json(JSON.parse(rows[0].value));
     return c.json({ weights: null });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -512,7 +590,25 @@ dividendRoutes.post('/dividend/fix-exchange', async (c) => {
     }
     return c.json({ ok: true, fixed });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// ── 배당 Paper 리셋 (보유종목 + 투자금 + 히스토리 + 튜닝 초기화) ──
+dividendRoutes.post('/dividend/reset-paper', async (c) => {
+  try {
+    const pool = getPool();
+    const results = await Promise.all([
+      pool.query('DELETE FROM dividend_holdings WHERE is_paper = true'),
+      pool.query('DELETE FROM dividend_history WHERE is_paper = true'),
+      pool.query("DELETE FROM overseas_state WHERE key = 'dividend_invested_krw_paper'"),
+      pool.query("DELETE FROM overseas_state WHERE key = 'dividend_alloc_tuned_paper'"),
+    ]);
+    const deleted = (results[0].rowCount ?? 0) + (results[1].rowCount ?? 0);
+    logger.info(`[MoneyPrinter] Paper 배당 리셋: holdings+history ${deleted}건 삭제`, { component: 'DIVIDEND' });
+    return c.json({ ok: true, deleted });
+  } catch (e: any) {
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -522,18 +618,20 @@ dividendRoutes.post('/dividend/fix-exchange', async (c) => {
 
 /** ETF별 예상 배당 수익률 (연간, %) — watchlist에서 업데이트되면 DB값 우선 */
 const DEFAULT_YIELDS: Record<string, number> = {
-  JEPQ: 10.0,
-  JEPI: 8.0,
+  JEPQ: 9.5,
+  SPYI: 12.0,
   SCHD: 3.5,
+  QQQI: 13.4,
+  JEPI: 7.5,
+  O: 5.5,
   QYLD: 12.0,
   XYLD: 10.0,
-  O: 5.0,
 };
 
 dividendRoutes.post('/dividend/auto-setup-paper', async (c) => {
   try {
     const body = await c.req.json<{ target_monthly_krw?: number }>();
-    const targetMonthly = body.target_monthly_krw ?? 1_000_000; // 기본: 월100만원
+    const targetMonthly = body.target_monthly_krw ?? 100_000; // 기본: 월10만원 (원금 약 1,500만원)
     if (targetMonthly < 10000) return c.json({ error: '최소 월 1만원 이상' }, 400);
 
     const fx = await fetchExchangeRate().catch(() => FALLBACK_FX_RATE);
@@ -666,6 +764,6 @@ dividendRoutes.post('/dividend/auto-setup-paper', async (c) => {
       etfs: results,
     });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });

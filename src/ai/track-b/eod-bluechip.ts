@@ -56,7 +56,7 @@ export function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: EodCon
     for (const chain of openChains) {
       if (Number(chain.total_quantity) <= 0) continue;
       if (!chain.opened_at) continue;
-      const openedKst = new Date(new Date(chain.opened_at).getTime() + 9 * 3600000);
+      const openedKst = new Date(new Date(chain.opened_at).getTime() + 9 * 3_600_000); // UTC+9 (KST offset)
       const openedStr = openedKst.toISOString().split('T')[0];
       if (openedStr >= todayStr) continue; // 오늘 매수 건은 제외
       const openedH = openedKst.getUTCHours();

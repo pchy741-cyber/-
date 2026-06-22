@@ -126,7 +126,7 @@ export default function UsHoldingsTab({
                       </>
                     ) : <span className="text-xs text-slate-600">시세 없음</span>}
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
+                  <div className="flex items-center gap-0.5 shrink-0 flex-wrap">
                     {h.quantity >= 4 && [25, 50, 75].map(pct => {
                       const sellQty = Math.max(1, Math.round(h.quantity * pct / 100));
                       return (

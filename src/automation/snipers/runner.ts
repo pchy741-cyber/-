@@ -12,9 +12,10 @@ import {
 } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { getCurrentPrice, getDailyChart } from '../../kis/market.js';
-import { isKillSwitchActive } from '../../risk/kill-switch.js';
+import { isKillSwitchActiveForMode } from '../../risk/kill-switch.js';
 import { tradeExecutor } from '../../trading/executor.js';
 import { logger } from '../../utils/logger.js';
+import { getAccountBalance } from '../../kis/account.js';
 import { calcSplitQuantity } from '../../utils/money.js';
 import { calcPositionSize } from '../position-sizer.js';
 import { scanDisclosures } from './disclosure-scanner.js';
@@ -32,7 +33,7 @@ import { scanTechnicalPatterns } from './technical-patterns.js';
  * - Sniper: 확정 패턴 감지 → 예산 1.2~1.5배 확대 → 즉시 진입
  */
 export async function runSniperScan(): Promise<void> {
-  if (isKillSwitchActive()) return;
+  if (isKillSwitchActiveForMode('KR', getCtxIsPaper())) return;
 
   try {
     // 모든 스나이퍼 병렬 실행
@@ -92,6 +93,20 @@ export async function runSniperScan(): Promise<void> {
     const strategy = await getActiveStrategy();
     const mode = (strategy?.mode ?? 'SWING') as StrategyMode;
 
+    // 총자산 기반 동적 포지션 사이징 (paper/live 자동 분리)
+    let sniperMaxPositionKrw = config.risk.maxPositionKrw;
+    try {
+      const balance = await getAccountBalance();
+      const totalAssets = balance.netAsset > 0 ? balance.netAsset : balance.orderableCash + balance.totalEvalAmount;
+      if (totalAssets > 0) {
+        // Track B와 동일 기준: 총자산 20% (paper/live 총자산이 다르므로 자동 분리)
+        sniperMaxPositionKrw = Math.min(Math.round(totalAssets * 0.2), config.risk.maxPositionKrw);
+      }
+    } catch (err) {
+      logger.debug(`스나이퍼 잔고 조회 실패 (기존 한도 사용): ${err}`, { component: 'SNIPER' });
+    }
+    logger.info(`🎯 스나이퍼 포지션 한도: ${sniperMaxPositionKrw.toLocaleString()}원 (${getCtxIsPaper() ? '연습' : '실전'})`, { component: 'SNIPER' });
+
     // 시그널 → 매매 결정 변환
     const decisions: TradeDecision[] = [];
 
@@ -127,7 +142,7 @@ export async function runSniperScan(): Promise<void> {
           const debateFailed = debate.bullArguments[0] === '분析 실패' && debate.bearArguments[0] === '분析 실패';
           if (debateFailed && scores[0]) {
             const score = scores[0].composite_score ?? 0;
-            debateVerdict = score >= 75 ? 'BUY' : score >= 85 ? 'STRONG_BUY' : 'HOLD';
+            debateVerdict = score >= 85 ? 'STRONG_BUY' : score >= 75 ? 'BUY' : 'HOLD';
             debateSource = `TRACK_A_FALLBACK(${score}점)`;
             logger.warn(`🏛️ DEBATE AI 실패 → Track A 폴백: ${stockCode} 스코어 ${score}점 → ${debateVerdict}`, {
               component: 'SNIPER',
@@ -157,11 +172,11 @@ export async function runSniperScan(): Promise<void> {
           continue;
         }
 
-        // 승률 기반 포지션 사이징 × 스나이퍼 배수
-        const sizing = await calcPositionSize(config.risk.maxPositionKrw);
+        // 승률 기반 포지션 사이징 × 스나이퍼 배수 (총자산 비례 — paper/live 자동 분리)
+        const sizing = await calcPositionSize(sniperMaxPositionKrw);
         const sniperBudget = Math.min(
           Math.round(sizing.adjustedBudget * signal.budgetMultiplier),
-          config.risk.maxPositionKrw,
+          sniperMaxPositionKrw,
         );
 
         const quantity = calcSplitQuantity(sniperBudget, price.currentPrice, 3, 0);
@@ -179,8 +194,8 @@ export async function runSniperScan(): Promise<void> {
         logger.info(`🎯 스나이퍼 매수 결정: ${signal.stockName} x${quantity} @${price.currentPrice} (${signal.type})`, {
           component: 'SNIPER',
         });
-      } catch {
-        logger.warn(`스나이퍼 가격 조회 실패: ${stockCode}`, { component: 'SNIPER' });
+      } catch (err) {
+        logger.warn(`스나이퍼 가격 조회 실패 (${stockCode}): ${err}`, { component: 'SNIPER' });
       }
     }
 

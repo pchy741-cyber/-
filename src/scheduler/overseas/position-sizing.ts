@@ -63,7 +63,9 @@ export function calcSizingMultiplier(params: {
   // 배율 스택 캡: evMult × wrMult 합산이 1.5x 초과 방지 (과집중 사고 방지)
   const combinedBoostMult = Math.min(evMult * wrMult, 1.5);
   const rawMult = Math.round((0.6 + combined * 1.4) * combinedBoostMult * vixSizingMult * cooldownPenalty * 100) / 100;
-  return isPaper ? Math.max(rawMult, 0.5) : rawMult;
+  // 상한 캡: 2.0x 초과 방지 (과집중 사고 방지)
+  const cappedMult = Math.min(2.0, rawMult);
+  return isPaper ? Math.max(cappedMult, 0.5) : cappedMult;
 }
 
 export function calcPositionSize(params: SizingParams): SizingResult {
@@ -157,7 +159,8 @@ export function calcPositionSize(params: SizingParams): SizingResult {
   const cashUsageCap = 1.0 - dynamicCashReserve;
 
   // 복합 감소기 바닥: 소액 0.60 / 일반 0.40 (여러 팩터 곱셈 붕괴 방지)
-  const sizingFloor = isSmallAccount ? 0.6 : 0.4;
+  // 단, VIX CRISIS(0.3x) 시에는 바닥 적용 안 함 — 위기 보호 우선
+  const sizingFloor = vixRegime.regime === 'CRISIS' ? 0 : isSmallAccount ? 0.6 : 0.4;
   const flooredSizingMult = Math.max(sizingMult, sizingFloor);
   let positionSize = Math.min(baseSize * flooredSizingMult, cash * cashUsageCap);
 

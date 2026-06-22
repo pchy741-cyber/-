@@ -60,7 +60,7 @@ ${JSON.stringify(stocks, null, 2)}
     } else {
       const stockCode =
         typeof score === 'object' && score !== null && 'stock_code' in score
-          ? String((score as any).stock_code)
+          ? String((score as Record<string, unknown>).stock_code)
           : 'UNKNOWN';
       logger.warn(`Gemini 스코어 검증 실패 (${stockCode}): ${zod.error?.message}`, {
         component: 'TRACK_A',

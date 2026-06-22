@@ -150,7 +150,7 @@ export async function getDynamicPositionSize(
   try {
     const { rows: snapshotRows } = await getPool().query(
       `SELECT total_value FROM portfolio_snapshots
-       WHERE snapshot_at >= CURRENT_DATE AND is_paper = $1
+       WHERE snapshot_at >= (NOW() AT TIME ZONE 'Asia/Seoul')::DATE AND is_paper = $1
        ORDER BY snapshot_at ASC LIMIT 1`,
       [getCtxIsPaper()],
     );

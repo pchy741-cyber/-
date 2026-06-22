@@ -57,14 +57,12 @@ const EXTENDED_WATCHLIST = [
   // 💰 금융 (금리 수혜)
   { code: 'GS', name: 'Goldman Sachs', exchange: 'NYSE', region: 'US', sector: 'FINANCE' },
   { code: 'V', name: 'Visa', exchange: 'NYSE', region: 'US', sector: 'FINANCE' },
-  // 🚀 우주·항공 (2026 최대 IPO)
-  { code: 'SPCX', name: 'SpaceX', exchange: 'NASDAQ', region: 'US', sector: 'DEFENSE' },
   // ⚡ EV/에너지전환
   { code: 'TSLA', name: 'Tesla', exchange: 'NASDAQ', region: 'US', sector: 'EV' },
   // 🎮 엔터테인먼트
   { code: 'NFLX', name: 'Netflix', exchange: 'NASDAQ', region: 'US', sector: 'TECH' },
-  // 💊 헬스케어 추가 (CEO 요청)
-  { code: 'PMI', name: 'Picard Medical', exchange: 'AMEX', region: 'US', sector: 'HEALTH' },
+  // 💊 헬스케어 추가
+  { code: 'ABBV', name: 'AbbVie', exchange: 'NYSE', region: 'US', sector: 'HEALTH' },
 ];
 
 // ── 통합 감시 목록 (Core 23 + Extended 12 = 35종목) ──

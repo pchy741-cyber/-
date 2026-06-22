@@ -73,8 +73,8 @@ async function fetchSpxChangePct(): Promise<number | null> {
     const pct = ((meta.regularMarketPrice - meta.chartPreviousClose) / meta.chartPreviousClose) * 100;
     _spxCache = { value: pct, fetchedAt: Date.now() };
     return pct;
-  } catch {
-    // 타임아웃/네트워크 에러 시 stale 캐시 반환
+  } catch (err) {
+    logger.debug(`S&P500 등락률 조회 실패 (stale 캐시 반환): ${err}`, { component: 'MARKET_ROUTING' });
     return _spxCache?.value ?? null;
   }
 }

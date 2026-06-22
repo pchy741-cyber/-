@@ -99,9 +99,9 @@ export const STRATEGY_PARAMS = {
     earlyTpPct: 0,
     takeProfitPct: 7.0, // v11: 5.0%→7.0% (손익분기 WR 29.1% — 실전WR30% 초과 → 흑자)
     takeProfitRatio: 0.5,
-    stopLossPct: -2.5,
-    maxHoldingDays: 10,
-    maxDailyTrades: 2, // v11: 3→2 (과잉거래 차단)
+    stopLossPct: -2.5, // v10.7: -3.5%→-2.5% (손실 빨리 차단, 소액계좌 드로다운 축소)
+    maxHoldingDays: 15, // v11.0: 10→15 (실증: 21봉 71.79% WR, 2.64× PF — 보수적 15일 채택)
+    maxDailyTrades: 3, // v10.3: 5→3 (과잉거래=구조적 적자의 주범, 수수료 절감)
   },
 
   DEFENSE: {
@@ -162,7 +162,7 @@ export const STRATEGY_PARAMS = {
     takeProfitPct: 8.0, // +8% 익절
     takeProfitRatio: 0.5, // 50% 부분 매도 → 잔여 트레일링
     stopLossPct: -3.0, // v7: -4%→-3% (고확신 종목은 타이트 SL로 손실 제한)
-    maxHoldingDays: 7, // 1주일 내 청산
+    maxHoldingDays: 14, // v11.0: 7→14 (고확신 종목 TP까지 충분한 시간 확보)
   },
 
   BOTTOM_FISHING: {
@@ -171,7 +171,7 @@ export const STRATEGY_PARAMS = {
     // │ R:R = 6:2.5 = 2.4:1 / 손익분기 승률 29.4% (보수적)                   │
     // │ 익일 강제청산 없음 — 최대 5영업일 보유 후 시간손절                    │
     // └────────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 99, // v10.8: 0→99 (WR17%, 에지 없음 → 사실상 비활성화)
+    buyThreshold: 99, // v10.8: 0→99 — 메인 파이프라인 차단 (사이드채널 주입 전용: closing-bell-job, eod-bluechip)
     splitCount: 1, // 분할 없음 — 시간외 단일가 1회
     averageDownPct: 0,
     maxAveragingCount: 0,
@@ -266,19 +266,29 @@ export const KIS_TR_ID = {
   },
 } as const;
 
-// ── 점수 기반 동적 익절/손절 파라미터 (2026-06-12 강화) ──
-// 매수 당시 AI 점수 → 확신 티어별 최적 TP/SL 계산
-// CEO 철학: "점수 낮으면 1%라도 빨리 익절, 점수 높으면 5%까지 기다림"
-//   • 60-69 (마진컬): 1.5% 익절 + 1.0% 손절 → 1.5:1 R:R, 빨리 빠짐
-//   • 70-79 (보통): 3.0% 익절 + 1.5% 손절 → 2.0:1 R:R
-//   • 80-89 (고확신): 5.0% 익절 + 2.0% 손절 → 2.5:1 R:R
-//   • 90+  (엘리트): 8.0% 익절 + 3.0% 손절 → 2.67:1 R:R
-// 핵심: 낮은 점수일수록 TP를 작게 → 5%까지 기다리다 -4%로 손실확정 패턴 차단
+// ── 점수 기반 동적 익절/손절 파라미터 (v13: 5단계 + R:R guard) ──
+// getDynamicDomesticTpSl 5단계 베이스 + R:R 1.5:1~4:1 검증 통합
+//   • <80  (저확신):  5.0% TP / -4.0% SL → R:R 1.25→1.5 조정
+//   • 80-82 (중확신): 6.0% TP / -3.8% SL → R:R 1.58:1
+//   • 83-87 (고확신): 7.0% TP / -3.5% SL → R:R 2.0:1
+//   • 88-92 (초고확신): 8.0% TP / -3.3% SL → R:R 2.42:1
+//   • 93+  (최고확신): 9.0% TP / -3.0% SL → R:R 3.0:1
+// 핵심: 저점수도 SL 넓혀 노이즈 손절 방지 + R:R guard로 비현실적 비율 차단
 export function getScoreBasedParams(score: number): { takeProfitPct: number; stopLossPct: number } {
-  if (score >= 90) return { takeProfitPct: 8.0, stopLossPct: -3.0 }; // 엘리트: 2.67:1
-  if (score >= 80) return { takeProfitPct: 5.0, stopLossPct: -2.0 }; // 고확신: 2.5:1
-  if (score >= 70) return { takeProfitPct: 3.0, stopLossPct: -1.5 }; // 보통: 2.0:1
-  return { takeProfitPct: 1.5, stopLossPct: -1.0 }; // 마진컬(60-69): 1.5:1 빠른 회전
+  let tp: number;
+  let sl: number;
+  if (score >= 93) { tp = 9.0; sl = -3.0; }
+  else if (score >= 88) { tp = 8.0; sl = -3.3; }
+  else if (score >= 83) { tp = 7.0; sl = -3.5; }
+  else if (score >= 80) { tp = 6.0; sl = -3.8; }
+  else { tp = 5.0; sl = -4.0; }
+
+  // R:R guard (1.5:1 ~ 4:1)
+  const rr = tp / Math.abs(sl);
+  if (rr > 4.0) tp = Math.round(Math.abs(sl) * 4.0 * 10) / 10;
+  else if (rr < 1.5) tp = Math.round(Math.abs(sl) * 1.5 * 10) / 10;
+
+  return { takeProfitPct: tp, stopLossPct: sl };
 }
 
 // ── 동적 포지션 사이징 — 황금비율: 장이 나쁘면 매수 없고, 매수하면 그만큼 확실한 것 ──
@@ -511,12 +521,12 @@ export function getDynamicDomesticTpSl(h: DomesticTpSlHints): {
   sl = Math.round(Math.max(Math.min(sl, -1.5), -8.0) * 10) / 10;
 
   // ── R:R 비율 검증 — 확률싸움에서 비현실적 비율 방지 ──
-  // R:R = TP / |SL|, 1.5:1 ~ 4:1 범위 강제 (10:1 같은 비현실적 비율 차단)
+  // R:R = TP / |SL|, 1.5:1 ~ 4:1 범위 강제
   const rr = tp / Math.abs(sl);
   if (rr > 4.0) {
-    // R:R 너무 높음 → SL을 TP/4로 넓힘 (TP 유지, SL 조정)
-    sl = -Math.round((tp / 4.0) * 10) / 10;
-    parts.push('RR>4→조정');
+    // R:R 너무 높음 → TP를 |SL|×4로 줄임 (SL 유지, TP 축소 — 손실 확대 방지)
+    tp = Math.round(Math.abs(sl) * 4.0 * 10) / 10;
+    parts.push('RR>4→TP축소');
   } else if (rr < 1.5) {
     // R:R 너무 낮음 → TP를 |SL|×1.5로 올림
     tp = Math.round(Math.abs(sl) * 1.5 * 10) / 10;
@@ -638,10 +648,12 @@ export function getOverseasDynamic(portfolioUsd: number, isPaper = false, posCap
   const posPct = tier === 'large' ? Math.min(0.18, posCapPct) : posCapPct;
   const holdDays = tier === 'micro' ? 14 : tier === 'small' ? 21 : 30;
 
-  const maxPos = Math.max(2, Math.min(8, Math.floor(1 / posPct)));
+  const maxPos = isPaper
+    ? 15                                                    // Paper: 15종목 고정 (전수조사)
+    : Math.max(2, Math.min(8, Math.floor(1 / posPct)));
   return {
     maxPositions: maxPos,
-    positionSizeUsd: Math.round(Math.min(p * posCapPct, 5000)), // DB position_cap_pct 기반
+    positionSizeUsd: Math.round(Math.min(p * posCapPct, 5000)), // Paper/Live 동일 상한
     positionPct: posPct,
     parkingCashBuffer: Math.round(p * 0.05), // 포트폴리오 5%
     maxHoldDays: holdDays,
@@ -660,6 +672,21 @@ export const Signal = {
   NO_DATA: 'NO_DATA', // 소스 부족 → 분석 불가
 } as const;
 export type Signal = (typeof Signal)[keyof typeof Signal];
+
+// ── 국내주식 섹터 맵 (Single Source of Truth) ──
+// risk-engine, risk-guard, market-data에서 공유 — 추가/변경 시 이 상수만 수정
+export const SECTOR_MAP_KR: Readonly<Record<string, string>> = {
+  '000660': '반도체', '005930': '반도체', '042700': '반도체',
+  '005290': '반도체', '357780': '반도체', '403870': '반도체',
+  '051910': '배터리', '006400': '배터리', '247540': '배터리',
+  '373220': '배터리', '336260': '배터리', '003670': '배터리',
+  '012450': '방산', '079550': '방산', '034020': '방산',
+  '035420': '인터넷', '035720': '인터넷', '377300': '인터넷',
+  '207940': '바이오', '068270': '바이오', '328130': '바이오',
+  '196170': '바이오', '028300': '바이오',
+  '055550': '금융', '105560': '금융', '316140': '금융',
+  '267260': '전력', '009540': '조선', '066570': '가전',
+};
 
 // ── 월간 MDD 한도 (Single Source of Truth) ──
 export const MDD_LIMIT = {

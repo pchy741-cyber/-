@@ -19,6 +19,16 @@ import { hardInvalidateMode } from './helpers.js';
 import { registerManualBuyRoutes } from './manual-buy.js';
 import { registerOverseasSellRoutes } from './overseas-sell.js';
 
+// trigger_source 화이트리스트 — 허용되지 않은 값은 MANUAL로 강제 전환
+const VALID_TRIGGER_SOURCES = new Set([
+  'MANUAL', 'AI', 'FORCE_CLOSE', 'TRAILING_STOP', 'HOLDING_CHECK', 'ESCAPE',
+  'CLAUDE', 'EXTERNAL', 'OVERSEAS', 'SCALPING', 'KILL_SWITCH', 'CEO',
+]);
+function sanitizeTriggerSource(raw: unknown): string {
+  const s = typeof raw === 'string' ? raw.trim().toUpperCase() : '';
+  return VALID_TRIGGER_SOURCES.has(s) ? s : 'MANUAL';
+}
+
 export const sellRoutes = new Hono();
 registerManualBuyRoutes(sellRoutes);
 registerOverseasSellRoutes(sellRoutes);
@@ -26,10 +36,11 @@ registerOverseasSellRoutes(sellRoutes);
 // ── 탈출 모드 등록: +0.5% 돌파 순간 자동 전량 매도 ──
 sellRoutes.post('/escape/:chainId', async (c) => {
   const chainId = c.req.param('chainId');
+  const isPaper = resolveRequestMode(c);
   try {
     const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1 AND is_paper = $2', [
       chainId,
-      getCtxIsPaper(),
+      isPaper,
     ]);
     const chain = rows[0];
     if (!chain) return c.json({ error: '체인을 찾을 수 없습니다' }, 404);
@@ -44,7 +55,7 @@ sellRoutes.post('/escape/:chainId', async (c) => {
     await getPool().query('UPDATE transaction_chains SET escape_target_price = $1 WHERE id = $2 AND is_paper = $3', [
       escapeTarget,
       chainId,
-      getCtxIsPaper(),
+      isPaper,
     ]);
 
     logger.info(
@@ -54,21 +65,24 @@ sellRoutes.post('/escape/:chainId', async (c) => {
 
     return c.json({ ok: true, escape_target_price: escapeTarget, current_price: curPrice });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    logger.error(`탈출모드 등록 실패: ${err.message}`, { component: 'ESCAPE' });
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
 // ── 탈출 모드 취소 ──
 sellRoutes.delete('/escape/:chainId', async (c) => {
   const chainId = c.req.param('chainId');
+  const isPaper = resolveRequestMode(c);
   try {
     await getPool().query('UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1 AND is_paper = $2', [
       chainId,
-      getCtxIsPaper(),
+      isPaper,
     ]);
     return c.json({ ok: true });
   } catch (err: any) {
-    return c.json({ error: err.message }, 500);
+    logger.error(`탈출모드 취소 실패: ${err.message}`, { component: 'ESCAPE' });
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -77,7 +91,7 @@ sellRoutes.post('/sell/:chainId', async (c) => {
   const chainId = c.req.param('chainId');
   try {
     const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
-    const triggerSource: string = (body.source as string) || 'MANUAL';
+    const triggerSource: string = sanitizeTriggerSource(body.source);
     const sellReason: string = (body.reason as string) || 'CEO 수동 매도';
 
     const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1 AND is_paper = $2', [
@@ -253,19 +267,23 @@ sellRoutes.post('/sell/:chainId', async (c) => {
     });
   } catch (err: any) {
     logger.error(`수동 매도 예외: ${err.message}`, { component: 'DASHBOARD' });
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
 // ── 종목코드 전량 매도 (복수 체인 일괄 청산) ──
 sellRoutes.post('/sell-stock/:stockCode', async (c) => {
-  const stockCode = c.req.param('stockCode');
+  const rawCode = c.req.param('stockCode');
+  const stockCode = rawCode.trim().replace(/\D/g, '');
+  if (!stockCode || stockCode.length !== 6) {
+    return c.json({ error: '종목코드는 숫자 6자리여야 합니다' }, 400);
+  }
   try {
     const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
-    const triggerSource: string = (body.source as string) || 'MANUAL';
+    const triggerSource: string = sanitizeTriggerSource(body.source);
     const sellReason: string = (body.reason as string) || 'CEO 수동 매도';
-    // 대시보드 viewMode에서 is_paper를 전달받거나, 없으면 서버 모드로 폴백
-    const isPaper: boolean = typeof body.is_paper === 'boolean' ? body.is_paper : resolveRequestMode(c);
+    // 서버 세션에서 모드 결정 (클라이언트 is_paper는 신뢰하지 않음)
+    const isPaper: boolean = resolveRequestMode(c);
     const stockTradingMode = isPaper ? 'paper' : 'live';
 
     const { rows: openChains } = await getPool().query(
@@ -408,7 +426,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
         const pos2 = bal2.positions?.find((p: any) => p.stockCode === stockCode);
         fillConfirmed = !pos2 || pos2.quantity === 0;
       } catch {
-        fillConfirmed = true;
+        fillConfirmed = false;
       }
     }
 
@@ -470,7 +488,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
     });
   } catch (err: any) {
     logger.error(`전량 매도 예외 (${stockCode}): ${err.message}`, { component: 'DASHBOARD' });
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 

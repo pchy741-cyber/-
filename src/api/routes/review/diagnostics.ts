@@ -3,6 +3,7 @@
  */
 import { Hono } from 'hono';
 import { OVERSEAS_FEE_PCT } from '../../../config/constants.js';
+import { logger } from '../../../utils/logger.js';
 
 const app = new Hono();
 
@@ -94,7 +95,8 @@ app.get('/review/diag', async (c) => {
       overseasPaperStats,
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    logger.error(`진단 조회 실패: ${err}`, { component: 'DIAGNOSTICS' });
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -203,7 +205,8 @@ app.post('/review/paper-reset', async (c) => {
       hint: 'POST with { "execute": true } to reset paper cash to target',
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    logger.error(`Paper 리셋 실패: ${err}`, { component: 'DIAGNOSTICS' });
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 

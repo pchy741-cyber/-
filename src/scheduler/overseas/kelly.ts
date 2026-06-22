@@ -60,6 +60,8 @@ export async function calcRollingKelly(days: number = 30, isPaper?: boolean): Pr
     for (const r of rows) {
       const sellPrice = Number(r.filled_price);
       const buyPrice = Number(r.avg_buy_price);
+      // Guard against NaN/Infinity from DB parsing
+      if (!Number.isFinite(sellPrice) || !Number.isFinite(buyPrice) || buyPrice <= 0) continue;
       // 왕복 수수료 차감 (실질 손익 기준 Kelly 계산)
       const pnlPct = ((sellPrice - buyPrice) / buyPrice) * 100 - OVERSEAS_FEE_PCT * 2 * 100;
 
@@ -110,7 +112,8 @@ export async function calcRollingKelly(days: number = 30, isPaper?: boolean): Pr
       evPerTrade,
       breakevenWinRate,
     };
-  } catch {
+  } catch (e) {
+    logger.warn(`Rolling Kelly 계산 실패 (기본값 사용): ${(e as Error).message}`, { component: 'RISK_INTEL' });
     return defaultResult;
   }
 }
@@ -154,6 +157,8 @@ export async function calcStockEVMultipliers(codes: string[], isPaper?: boolean)
       const wins = Number(r.wins);
       const avgWin = Number(r.avg_win_pct);
       const avgLoss = Number(r.avg_loss_pct);
+      // Guard against NaN from DB parsing
+      if (!Number.isFinite(total) || !Number.isFinite(wins) || !Number.isFinite(avgWin) || !Number.isFinite(avgLoss)) continue;
       const winRate = total > 0 ? wins / total : 0.5;
       // Gross EV에서 미국 왕복 마찰비용(0.70%) 차감 → Net EV 기준으로 사이징
       const evPct = winRate * avgWin - (1 - winRate) * avgLoss - GATE.US_SLIPPAGE_PCT;
@@ -173,8 +178,9 @@ export async function calcStockEVMultipliers(codes: string[], isPaper?: boolean)
 
       result.set(code, { evPct, evMultiplier, winRate, sampleCount: total });
     }
-  } catch {
+  } catch (e) {
     // DB 실패 시 빈 맵 반환 (기본 배율 1.0 사용)
+    logger.warn(`EV Multiplier 계산 실패: ${(e as Error).message}`, { component: 'RISK_INTEL' });
   }
 
   return result;

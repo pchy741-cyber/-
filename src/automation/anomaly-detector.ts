@@ -12,6 +12,12 @@ import { getKSTNow } from '../utils/time.js';
  * Track B 판단에 추가 컨텍스트로 활용 가능
  */
 
+// ── 이상 감지 기준 상수 ──
+const SURGE_THRESHOLD_PCT = 5; // 전일 대비 급등 기준 (%)
+const CRITICAL_SURGE_THRESHOLD_PCT = 10; // CRITICAL 등급 급등 기준 (%)
+const SHORT_TERM_CHANGE_PCT = 2; // 5분 내 급변 기준 (%)
+const VOLUME_SPIKE_MULTIPLIER = 3; // 거래량 급증 배수
+
 // 이전 체크 시점의 가격 캐시 (메모리 릭 방지: 매일 리셋)
 const priceHistory = new Map<string, { price: number; volume: number; checkedAt: Date }>();
 let lastCleanupDate = '';
@@ -48,12 +54,12 @@ export async function detectAnomalies(): Promise<AnomalyAlert[]> {
       const prev = priceHistory.get(stock.stock_code);
 
       // 1. 급등 감지 (전일 대비 +5% 이상)
-      if (price.changePct >= 5) {
+      if (price.changePct >= SURGE_THRESHOLD_PCT) {
         alerts.push({
           stockCode: stock.stock_code,
           stockName: stock.stock_name,
           type: 'PRICE_SURGE',
-          severity: price.changePct >= 10 ? 'CRITICAL' : 'WARNING',
+          severity: price.changePct >= CRITICAL_SURGE_THRESHOLD_PCT ? 'CRITICAL' : 'WARNING',
           message: `${stock.stock_name} +${price.changePct.toFixed(1)}% 급등!`,
           currentPrice: price.currentPrice,
           changePct: price.changePct,
@@ -61,12 +67,12 @@ export async function detectAnomalies(): Promise<AnomalyAlert[]> {
       }
 
       // 2. 급락 감지 (전일 대비 -5% 이상)
-      if (price.changePct <= -5) {
+      if (price.changePct <= -SURGE_THRESHOLD_PCT) {
         alerts.push({
           stockCode: stock.stock_code,
           stockName: stock.stock_name,
           type: 'PRICE_CRASH',
-          severity: price.changePct <= -10 ? 'CRITICAL' : 'WARNING',
+          severity: price.changePct <= -CRITICAL_SURGE_THRESHOLD_PCT ? 'CRITICAL' : 'WARNING',
           message: `${stock.stock_name} ${price.changePct.toFixed(1)}% 급락!`,
           currentPrice: price.currentPrice,
           changePct: price.changePct,
@@ -74,9 +80,9 @@ export async function detectAnomalies(): Promise<AnomalyAlert[]> {
       }
 
       // 3. 5분 내 급변 감지 (이전 체크 대비 ±2%)
-      if (prev) {
+      if (prev && prev.price > 0) {
         const shortTermChange = ((price.currentPrice - prev.price) / prev.price) * 100;
-        if (Math.abs(shortTermChange) >= 2) {
+        if (Number.isFinite(shortTermChange) && Math.abs(shortTermChange) >= SHORT_TERM_CHANGE_PCT) {
           alerts.push({
             stockCode: stock.stock_code,
             stockName: stock.stock_name,
@@ -88,8 +94,8 @@ export async function detectAnomalies(): Promise<AnomalyAlert[]> {
           });
         }
 
-        // 4. 거래량 급증 (이전 체크 대비 3배)
-        if (prev.volume > 0 && price.volume > prev.volume * 3) {
+        // 4. 거래량 급증 (이전 체크 대비 N배)
+        if (prev.volume > 0 && price.volume > prev.volume * VOLUME_SPIKE_MULTIPLIER) {
           alerts.push({
             stockCode: stock.stock_code,
             stockName: stock.stock_name,

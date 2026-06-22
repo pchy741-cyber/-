@@ -7,13 +7,15 @@ import { logger } from '../../utils/logger.js';
 // ── 고상관 종목 그룹 (실제 상관계수 기반) ──
 
 const HIGH_CORR_GROUPS: { group: string; codes: string[]; maxHold: number }[] = [
-  { group: 'AI_SEMI', codes: ['NVDA', 'AMD', 'AVGO', 'MRVL', 'MU'], maxHold: 2 },
+  { group: 'AI_SEMI', codes: ['NVDA', 'AMD', 'AVGO', 'MRVL', 'MU', 'SMCI'], maxHold: 2 },
   { group: 'BIGTECH', codes: ['AAPL', 'MSFT', 'GOOGL', 'META', 'AMZN'], maxHold: 2 },
-  { group: 'DEFENSE', codes: ['LMT', 'RTX', 'NOC', 'GD', 'HII'], maxHold: 2 },
-  { group: 'EV', codes: ['TSLA', 'RIVN', 'LCID', 'NIO'], maxHold: 1 },
-  { group: 'CLOUD', codes: ['CRM', 'NOW', 'SNOW', 'DDOG', 'NET'], maxHold: 2 },
-  { group: 'CYBER', codes: ['CRWD', 'PANW', 'ZS', 'FTNT'], maxHold: 1 },
-  { group: 'JP_SEMI', codes: ['6857', '8035', '6861'], maxHold: 1 },
+  { group: 'DEFENSE', codes: ['LMT', 'RTX', 'GEV', 'PLTR', 'GE'], maxHold: 2 }, // GEV/PLTR/GE 추가
+  { group: 'EV', codes: ['TSLA'], maxHold: 1 },
+  { group: 'CLOUD', codes: ['CRM', 'NOW', 'SNOW', 'ORCL', 'AMZN'], maxHold: 2 },
+  { group: 'INFRA', codes: ['ANET', 'VRT', 'ETN', 'PWR'], maxHold: 2 }, // AI 인프라 그룹 추가
+  { group: 'TW_SEMI', codes: ['TSM', 'UMC'], maxHold: 1 }, // 대만 반도체 ADR
+  { group: 'JP_ADR', codes: ['TM', 'SONY', 'MUFG'], maxHold: 2 }, // 일본 ADR (TSE코드→NYSE ADR)
+  { group: 'HEALTH', codes: ['LLY', 'UNH', 'ABBV'], maxHold: 2 },
 ];
 
 // ── 타입 ──

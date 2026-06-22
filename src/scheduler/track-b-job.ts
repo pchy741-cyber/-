@@ -1,12 +1,12 @@
 import { runTrackBPipeline } from '../ai/track-b/pipeline.js';
-import { logSystemEvent } from '../api/routes/health.js';
+import { logSystemEvent } from '../utils/system-events.js';
 import { INVERSE_ETF_CODES } from '../automation/crash-profit.js';
 import { isRiskOffToday } from '../automation/market-routing.js';
 import type { StrategyMode } from '../config/constants.js';
 import { getCtxIsPaper, runWithMode } from '../config/context.js';
 import { getActiveStrategy, getPool } from '../db/client.js';
 import { isMarketOpen } from '../kis/market.js';
-import { sendTelegramMessage } from '../notifications/telegram.js';
+import { sendByPaperFlag } from '../notifications/mode-message.js';
 import { isKillSwitchActive, reportError, reportSuccess } from '../risk/kill-switch.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
@@ -172,7 +172,7 @@ export async function runTrackBJob(): Promise<void> {
         'success',
         actionable.map((d) => `${d.action} ${d.stock_code} ${d.quantity}주`).join(', '),
       );
-      await sendTelegramMessage(`🤖 Track B[${mt}] 실행:\n${summary}`).catch(() => {});
+      await sendByPaperFlag(getCtxIsPaper(), `🤖 Track B 실행:\n${summary}`);
     }
 
     // 5. 매도 체결 후 60초 뒤 재스캔 — 모드별 타이머 분리 (paper/live 상호 취소 방지)

@@ -174,6 +174,7 @@ export interface StockTechnicals {
   macdHistogram?: number;
   macdCrossover?: string;
   bollingerPosition?: number;
+  bollingerPositionPct?: number;
   adx14?: number;
   score?: number;
   sma5?: number;
@@ -228,5 +229,40 @@ export interface MpDividend {
 export interface MpData {
   dividend?: MpDividend;
   fx?: number;
+  strategy?: {
+    regime?: string;
+    activeWeights?: Record<string, number>;
+    tiers?: Record<string, string[]>;
+  };
   [key: string]: unknown;
+}
+
+export interface AiProviderStats {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  calls: number;
+}
+
+export interface AiCostSummary {
+  today: Record<string, AiProviderStats>;
+  todayTotalUsd: number;
+  todayTotalKrw: number;
+  todayTotalCalls: number;
+  todayTotalTokens: number;
+  monthTotalUsd: number;
+  monthTotalKrw: number;
+  exchangeRate: number;
+}
+
+export interface AiCostDailyEntry {
+  day: string;
+  providers: Record<string, AiProviderStats>;
+  totalUsd: number;
+  totalKrw: number;
+}
+
+export interface AiCostHistory {
+  daily: AiCostDailyEntry[];
+  exchangeRate: number;
 }

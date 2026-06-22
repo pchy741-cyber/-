@@ -17,6 +17,7 @@
 
 import { getCtxIsPaper } from '../config/context.js';
 import { getPool, isMemoryMode } from '../db/client.js';
+import { logger } from '../utils/logger.js';
 import type { TradeDecision, TransactionChain } from '../db/models.js';
 import type { CurrentPrice } from '../kis/market.js';
 
@@ -367,7 +368,8 @@ export async function getInverseHoldingStatus(): Promise<{
       pnlPct: 0,
       crashLevel: 'UNKNOWN',
     };
-  } catch {
+  } catch (err) {
+    logger.debug(`인버스 보유상태 조회 실패: ${err}`, { component: 'CRASH_PROFIT' });
     return null;
   }
 }

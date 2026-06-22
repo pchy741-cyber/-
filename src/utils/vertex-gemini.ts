@@ -13,6 +13,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { VertexAI } from '@google-cloud/vertexai';
 import { logger } from './logger.js';
+import { logTokenUsage, calcGeminiVertexCost, calcGeminiStudioCost } from './ai-token-logger.js';
 
 // ── 모델 설정 ──
 const FREE_MODEL = 'gemini-2.5-flash';
@@ -228,7 +229,7 @@ export async function callVertexGemini(
   if (opts.useVertex && !opts.grounded) {
     try {
       const { text, inputTokens, outputTokens } = await callVertexUngrounded(systemPrompt, userMessage, opts);
-      const costUsd = (inputTokens / 1_000_000) * 0.1 + (outputTokens / 1_000_000) * 0.4;
+      const costUsd = calcGeminiVertexCost(inputTokens, outputTokens, false);
       _dailyTotals.vertexCalls++;
       _dailyTotals.calls++;
       _dailyTotals.inputTokens += inputTokens;
@@ -238,6 +239,7 @@ export async function callVertexGemini(
       const durationMs = Date.now() - startMs;
       _recentCalls.push({ label, inputTokens, outputTokens, at: new Date().toISOString(), durationMs, isGrounded: false, costUsd });
       if (_recentCalls.length > 20) _recentCalls.shift();
+      logTokenUsage({ provider: 'gemini', model: GROUNDED_MODEL, inputTokens, outputTokens, costUsd, label });
       logger.info(`⚡ Vertex Direct [${label}]: ${inputTokens}+${outputTokens}tok $${costUsd.toFixed(5)}`, { component: 'AI_COST' });
       return text;
     } catch (err) {
@@ -253,7 +255,7 @@ export async function callVertexGemini(
       const durationMs = Date.now() - startMs;
 
       // 비용 추정: Gemini 2.0 Flash $0.1/1M input + $0.4/1M output + Search grounding $0.035/query
-      const costUsd = (inputTokens / 1_000_000) * 0.1 + (outputTokens / 1_000_000) * 0.4 + 0.035;
+      const costUsd = calcGeminiVertexCost(inputTokens, outputTokens, true);
 
       _dailyTotals.vertexCalls++;
       _dailyTotals.calls++;
@@ -264,6 +266,7 @@ export async function callVertexGemini(
 
       _recentCalls.push({ label, inputTokens, outputTokens, at: new Date().toISOString(), durationMs, isGrounded: true, costUsd });
       if (_recentCalls.length > 20) _recentCalls.shift();
+      logTokenUsage({ provider: 'gemini', model: GROUNDED_MODEL, inputTokens, outputTokens, costUsd, label });
 
       logger.info(
         `🔍 Vertex Grounded [${label}]: ${inputTokens}+${outputTokens}tok ${durationMs}ms $${costUsd.toFixed(4)} (누적 $${_dailyTotals.vertexCostUsd.toFixed(3)})`,
@@ -290,7 +293,7 @@ export async function callVertexGemini(
     logger.info(`⚡ AI Studio RPD 소진 [${label}] → Vertex AI 폴백 (GCP 크레딧)`, { component: 'AI_COST' });
     try {
       const { text, inputTokens, outputTokens } = await callVertexUngrounded(systemPrompt, userMessage, opts);
-      const costUsd = (inputTokens / 1_000_000) * 0.1 + (outputTokens / 1_000_000) * 0.4;
+      const costUsd = calcGeminiVertexCost(inputTokens, outputTokens, false);
       _dailyTotals.vertexCalls++;
       _dailyTotals.calls++;
       _dailyTotals.inputTokens += inputTokens;
@@ -300,6 +303,7 @@ export async function callVertexGemini(
       const durationMs = Date.now() - startMs;
       _recentCalls.push({ label, inputTokens, outputTokens, at: new Date().toISOString(), durationMs, isGrounded: false, costUsd });
       if (_recentCalls.length > 20) _recentCalls.shift();
+      logTokenUsage({ provider: 'gemini', model: GROUNDED_MODEL, inputTokens, outputTokens, costUsd, label });
       logger.info(`⚡ Vertex Fallback [${label}]: ${inputTokens}+${outputTokens}tok $${costUsd.toFixed(5)}`, { component: 'AI_COST' });
       return text;
     } catch (vErr) {
@@ -343,6 +347,7 @@ export async function callVertexGemini(
     const durationMs = Date.now() - startMs;
     _recentCalls.push({ label, inputTokens: inTok, outputTokens: outTok, at: new Date().toISOString(), durationMs, isGrounded: false, costUsd: 0 });
     if (_recentCalls.length > 20) _recentCalls.shift();
+    logTokenUsage({ provider: 'gemini', model: FREE_MODEL, inputTokens: inTok, outputTokens: outTok, costUsd: calcGeminiStudioCost(), label });
 
     logger.info(
       `🤖 AI Studio [${label}]: ${inTok}+${outTok}tok ${durationMs}ms (${_rate.dailyCalls}/${RATE_LIMIT.RPD} RPD) $0`,
@@ -358,7 +363,7 @@ export async function callVertexGemini(
       logger.warn(`⚠️ AI Studio 429 [${label}] — Vertex AI 폴백 진행`, { component: 'AI_COST' });
       try {
         const { text, inputTokens, outputTokens } = await callVertexUngrounded(systemPrompt, userMessage, opts);
-        const costUsd = (inputTokens / 1_000_000) * 0.1 + (outputTokens / 1_000_000) * 0.4;
+        const costUsd = calcGeminiVertexCost(inputTokens, outputTokens, false);
         _dailyTotals.vertexCalls++;
         _dailyTotals.calls++;
         _dailyTotals.inputTokens += inputTokens;
@@ -368,6 +373,7 @@ export async function callVertexGemini(
         const durationMs = Date.now() - startMs;
         _recentCalls.push({ label, inputTokens, outputTokens, at: new Date().toISOString(), durationMs, isGrounded: false, costUsd });
         if (_recentCalls.length > 20) _recentCalls.shift();
+        logTokenUsage({ provider: 'gemini', model: GROUNDED_MODEL, inputTokens, outputTokens, costUsd, label });
         logger.info(`⚡ Vertex 429-Fallback [${label}]: ${inputTokens}+${outputTokens}tok $${costUsd.toFixed(5)}`, { component: 'AI_COST' });
         return text;
       } catch (vErr) {

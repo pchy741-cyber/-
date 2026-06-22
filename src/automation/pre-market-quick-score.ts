@@ -19,11 +19,13 @@ const MAX_QUICK_STOCKS = 15; // 경량 스코어링 최대 종목 수
 // 장전 스코어 공유 캐시 — opening-bell-job이 재사용해서 Gemini 중복 호출 방지
 let _sharedScores: Map<string, number> | null = null;
 let _sharedScoresAt = 0;
+let _sharedScoresDate = ''; // KST 날짜 — 일자 경계 넘으면 자동 무효화
 
-/** opening-bell-job이 읽는 장전 스코어 (10분 내 유효) */
+/** opening-bell-job이 읽는 장전 스코어 (10분 내 유효 + 당일만) */
 export function getPreMarketSharedScores(): Map<string, number> | null {
   const age = (Date.now() - _sharedScoresAt) / 60000;
-  return age < 10 ? _sharedScores : null;
+  const todayKst = getKSTNow().toISOString().split('T')[0];
+  return age < 10 && _sharedScoresDate === todayKst ? _sharedScores : null;
 }
 
 export async function runPreMarketQuickScore(): Promise<void> {
@@ -173,6 +175,7 @@ ${stockLines}
     // 공유 캐시 갱신 — opening-bell-job이 재사용 (Gemini 중복 호출 방지)
     _sharedScores = new Map(scores.map((s) => [s.stock_code, safeScore(s.composite_score)]));
     _sharedScoresAt = Date.now();
+    _sharedScoresDate = today;
 
     // Redis 캐시 갱신
     const cacheItems = scores.map((s) => ({

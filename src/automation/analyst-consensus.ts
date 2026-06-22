@@ -30,6 +30,7 @@ export interface AnalystConsensus {
 
 const cache = new Map<string, { data: AnalystConsensus; fetchedAt: number }>();
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24시간
+const CACHE_MAX_SIZE = 200; // 메모리 누수 방지
 
 function getCached(stockCode: string): AnalystConsensus | null {
   const entry = cache.get(stockCode);
@@ -42,6 +43,14 @@ function getCached(stockCode: string): AnalystConsensus | null {
 }
 
 function setCache(stockCode: string, data: AnalystConsensus): void {
+  // 캐시 크기 제한 — 만료 엔트리 먼저 정리, 그래도 초과하면 전체 리셋
+  if (cache.size >= CACHE_MAX_SIZE) {
+    const now = Date.now();
+    for (const [key, entry] of cache) {
+      if (now - entry.fetchedAt > CACHE_TTL_MS) cache.delete(key);
+    }
+    if (cache.size >= CACHE_MAX_SIZE) cache.clear();
+  }
   cache.set(stockCode, { data, fetchedAt: Date.now() });
 }
 
@@ -157,7 +166,8 @@ async function tryIntegrationApi(stockCode: string): Promise<AnalystConsensus | 
     };
 
     return consensus;
-  } catch {
+  } catch (err) {
+    logger.debug(`컨센서스 integration API 실패 (${stockCode}): ${err}`, { component: 'CONSENSUS' });
     return null;
   }
 }
@@ -238,7 +248,8 @@ async function tryAnalystApi(stockCode: string): Promise<AnalystConsensus | null
     };
 
     return consensus;
-  } catch {
+  } catch (err) {
+    logger.debug(`컨센서스 analyst API 실패 (${stockCode}): ${err}`, { component: 'CONSENSUS' });
     return null;
   }
 }
@@ -254,7 +265,8 @@ async function fetchCurrentPrice(stockCode: string): Promise<number> {
 
     const json = (await res.json()) as Record<string, unknown>;
     return Number((json as Record<string, unknown>).closePrice ?? (json as Record<string, unknown>).nowVal ?? 0);
-  } catch {
+  } catch (err) {
+    logger.debug(`현재가 조회 실패 (${stockCode}): ${err}`, { component: 'CONSENSUS' });
     return 0;
   }
 }

@@ -3,6 +3,13 @@ import { isTradingDay, setApiHolidayCache } from '../utils/holidays.js';
 import { logger } from '../utils/logger.js';
 import { kisRequest, marketDataRateLimiter } from './client.js';
 
+/** NaN 방지 유틸: Number(undefined) → NaN이 비교 연산에서 예측 불가하므로 fallback으로 대체 */
+const safeNum = (v: string | undefined | null, fallback = 0): number => {
+  if (v === undefined || v === null) return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+
 // ── 현재가 조회 ──
 export interface CurrentPrice {
   stockCode: string;
@@ -38,22 +45,22 @@ export async function getCurrentPrice(stockCode: string): Promise<CurrentPrice> 
     },
   });
 
-  const o = res.output as Record<string, string>;
+  const o = (res.output ?? {}) as Record<string, string>;
 
   return {
     stockCode,
     stockName: o.hts_kor_isnm ?? '',
-    currentPrice: Number(o.stck_prpr),
-    changePrice: Number(o.prdy_vrss),
-    changePct: Number(o.prdy_ctrt),
-    volume: Number(o.acml_vol),
-    highPrice: Number(o.stck_hgpr),
-    lowPrice: Number(o.stck_lwpr),
-    openPrice: Number(o.stck_oprc),
-    prevClosePrice: Number(o.stck_sdpr),
-    dividendYield: Number(o.dvr ?? 0),
-    per: Number(o.per ?? 0),
-    marketCapEok: Number(o.hts_avls ?? 0),
+    currentPrice: safeNum(o.stck_prpr),
+    changePrice: safeNum(o.prdy_vrss),
+    changePct: safeNum(o.prdy_ctrt),
+    volume: safeNum(o.acml_vol),
+    highPrice: safeNum(o.stck_hgpr),
+    lowPrice: safeNum(o.stck_lwpr),
+    openPrice: safeNum(o.stck_oprc),
+    prevClosePrice: safeNum(o.stck_sdpr),
+    dividendYield: safeNum(o.dvr),
+    per: safeNum(o.per),
+    marketCapEok: safeNum(o.hts_avls),
     haltYn: String(o.halt_yn ?? ''),
     mangIssuClsCode: String(o.mang_issu_cls_code ?? '0'),
     mrktWarnClsCode: String(o.mrkt_warn_cls_code ?? '00'),
@@ -66,7 +73,7 @@ export function isDelistingRisk(p: CurrentPrice): boolean {
   if (p.haltYn === 'Y') return true; // 거래정지
   // KIS API: mang_issu_cls_code → 'N'=정상, '0'=정상(구버전), 그 외=관리종목
   if (p.mangIssuClsCode !== '' && p.mangIssuClsCode !== '0' && p.mangIssuClsCode !== 'N') return true;
-  if (p.mrktWarnClsCode >= '02') return true; // 경고 이상 (02: 경고, 03: 위험예고, 04: 위험)
+  if (Number(p.mrktWarnClsCode) >= 2) return true; // 경고 이상 (02: 경고, 03: 위험예고, 04: 위험)
   return false;
 }
 
@@ -82,26 +89,31 @@ export interface DailyCandle {
 
 // ── getDailyChart 인메모리 캐시 (일봉은 장중 변하지 않음) ──
 const _dailyChartCache = new Map<string, { data: DailyCandle[]; expiresAt: number }>();
+/** 캐시 최대 항목 수 (초과 시 전체 클리어) */
 const DAILY_CHART_CACHE_MAX = 300;
+/** 장중(09:00~15:30) 캐시 TTL — 당일 봉 미확정 */
+const DAILY_CHART_TTL_MARKET_HOURS_MS = 5 * 60 * 1000; // 5분
+/** 장후 캐시 TTL — 일봉 확정 */
+const DAILY_CHART_TTL_AFTER_HOURS_MS = 24 * 60 * 60 * 1000; // 24시간
+/** 캐시 정리 주기 */
+const DAILY_CHART_CACHE_CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // 10분
 
-// 만료 엔트리 자동 정리 (10분 주기) — 무제한 성장 방지
+// 만료 엔트리 자동 정리 — 무제한 성장 방지
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of _dailyChartCache) {
     if (now >= entry.expiresAt) _dailyChartCache.delete(key);
   }
   if (_dailyChartCache.size > DAILY_CHART_CACHE_MAX) _dailyChartCache.clear();
-}, 10 * 60 * 1000).unref();
+}, DAILY_CHART_CACHE_CLEANUP_INTERVAL_MS).unref();
 
 function getDailyChartCacheTtlMs(): number {
   const kst = getKSTNow();
   const h = kst.getUTCHours();
   const m = kst.getUTCMinutes();
   const timeNum = h * 100 + m;
-  // 장중(09:00~15:30): 5분 캐시 (당일 봉 미확정)
-  if (timeNum >= 900 && timeNum <= 1530) return 5 * 60 * 1000;
-  // 장후: 24시간 캐시 (일봉 확정)
-  return 24 * 60 * 60 * 1000;
+  if (timeNum >= 900 && timeNum <= 1530) return DAILY_CHART_TTL_MARKET_HOURS_MS;
+  return DAILY_CHART_TTL_AFTER_HOURS_MS;
 }
 
 export async function getDailyChart(stockCode: string, days: number = 60): Promise<DailyCandle[]> {
@@ -112,8 +124,9 @@ export async function getDailyChart(stockCode: string, days: number = 60): Promi
     return cached.data;
   }
 
-  const endDate = new Date().toISOString().split('T')[0].replace(/-/g, '');
-  const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0].replace(/-/g, '');
+  const kstNow = getKSTNow();
+  const endDate = kstNow.toISOString().split('T')[0].replace(/-/g, '');
+  const startDate = new Date(kstNow.getTime() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0].replace(/-/g, '');
 
   await marketDataRateLimiter.acquire();
   const res = await kisRequest({
@@ -138,12 +151,12 @@ export async function getDailyChart(stockCode: string, days: number = 60): Promi
   // DESC 정렬 보장 (최신 [0]) — analyzeTechnicals() 계약: closes[0] = 현재가
   const result = items
     .map((c) => ({
-      date: c.stck_bsop_date,
-      open: Number(c.stck_oprc),
-      high: Number(c.stck_hgpr),
-      low: Number(c.stck_lwpr),
-      close: Number(c.stck_clpr),
-      volume: Number(c.acml_vol),
+      date: c.stck_bsop_date ?? '',
+      open: safeNum(c.stck_oprc),
+      high: safeNum(c.stck_hgpr),
+      low: safeNum(c.stck_lwpr),
+      close: safeNum(c.stck_clpr),
+      volume: safeNum(c.acml_vol),
     }))
     .sort((a, b) => b.date.localeCompare(a.date));
 
@@ -188,15 +201,15 @@ export async function getMinuteChart(stockCode: string): Promise<MinuteCandle[]>
   const items = (res.output2 ?? []) as unknown as Record<string, string>[];
   if (!Array.isArray(items)) return [];
   return items
-    .filter((c) => c.stck_cntg_hour && Number(c.stck_prpr ?? c.stck_clpr ?? 0) > 0)
+    .filter((c) => c.stck_cntg_hour && safeNum(c.stck_prpr ?? c.stck_clpr) > 0)
     .map((c) => ({
       time: c.stck_cntg_hour ?? '',
       date: c.stck_bsop_date ?? '',
-      open: Number(c.stck_oprc ?? 0),
-      high: Number(c.stck_hgpr ?? 0),
-      low: Number(c.stck_lwpr ?? 0),
-      close: Number(c.stck_prpr ?? c.stck_clpr ?? 0),
-      volume: Number(c.cntg_vol ?? 0),
+      open: safeNum(c.stck_oprc),
+      high: safeNum(c.stck_hgpr),
+      low: safeNum(c.stck_lwpr),
+      close: safeNum(c.stck_prpr ?? c.stck_clpr),
+      volume: safeNum(c.cntg_vol),
     }));
 }
 
@@ -218,15 +231,16 @@ export async function getOrderbook(stockCode: string): Promise<OrderbookEntry[]>
     },
   });
 
-  const o = res.output as Record<string, string>;
+  const o = res.output as Record<string, string> | undefined;
+  if (!o) return [];
   const entries: OrderbookEntry[] = [];
 
   for (let i = 1; i <= 10; i++) {
     entries.push({
-      askPrice: Number(o[`askp${i}`] ?? 0),
-      askVolume: Number(o[`askp_rsqn${i}`] ?? 0),
-      bidPrice: Number(o[`bidp${i}`] ?? 0),
-      bidVolume: Number(o[`bidp_rsqn${i}`] ?? 0),
+      askPrice: safeNum(o[`askp${i}`]),
+      askVolume: safeNum(o[`askp_rsqn${i}`]),
+      bidPrice: safeNum(o[`bidp${i}`]),
+      bidVolume: safeNum(o[`bidp_rsqn${i}`]),
     });
   }
 
@@ -250,7 +264,7 @@ export function isMarketOpen(): boolean {
   }
 
   // 한국 공휴일 체크
-  if (!isTradingDay(new Date())) return false;
+  if (!isTradingDay(kst)) return false;
 
   const hour = kst.getUTCHours();
   const minute = kst.getUTCMinutes();
@@ -386,13 +400,14 @@ export async function getInvestorFlow(stockCode: string): Promise<InvestorFlow |
       },
     });
 
-    const o = res.output as Record<string, string>;
+    const o = res.output as Record<string, string> | undefined;
+    if (!o) return null;
     return {
       stockCode,
-      institutionNet: Number(o.orgn_ntby_qty ?? 0),
-      foreignNet: Number(o.frgn_ntby_qty ?? 0),
-      individualNet: Number(o.prsn_ntby_qty ?? 0),
-      foreignHoldingPct: Number(o.frgn_hldn_qty_rt ?? 0),
+      institutionNet: safeNum(o.orgn_ntby_qty),
+      foreignNet: safeNum(o.frgn_ntby_qty),
+      individualNet: safeNum(o.prsn_ntby_qty),
+      foreignHoldingPct: safeNum(o.frgn_hldn_qty_rt),
     };
   } catch {
     return null;
@@ -402,9 +417,12 @@ export async function getInvestorFlow(stockCode: string): Promise<InvestorFlow |
 /**
  * 복수 종목 수급 일괄 조회 (배치 처리, 오류 무시)
  */
+/** 수급 일괄 조회 시 동시 요청 수 (rate limit 준수) */
+const INVESTOR_FLOW_BATCH_SIZE = 5;
+
 export async function getBatchInvestorFlow(stockCodes: string[]): Promise<Map<string, InvestorFlow>> {
   const result = new Map<string, InvestorFlow>();
-  const BATCH = 5;
+  const BATCH = INVESTOR_FLOW_BATCH_SIZE;
   for (let i = 0; i < stockCodes.length; i += BATCH) {
     const slice = stockCodes.slice(i, i + BATCH);
     const flows = await Promise.allSettled(slice.map((c) => getInvestorFlow(c)));
@@ -447,8 +465,8 @@ export async function refreshMarketHolidayCache(): Promise<void> {
           closureDates.add(`${dt.slice(0, 4)}-${dt.slice(4, 6)}-${dt.slice(6, 8)}`);
         }
       }
-    } catch (e: any) {
-      logger.warn(`KIS 휴장일 조회 실패 (${bassDate}): ${e.message}`, { component: 'MARKET' });
+    } catch (e: unknown) {
+      logger.warn(`KIS 휴장일 조회 실패 (${bassDate}): ${e instanceof Error ? e.message : String(e)}`, { component: 'MARKET' });
     }
   }
 

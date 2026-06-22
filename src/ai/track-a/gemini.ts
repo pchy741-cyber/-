@@ -53,7 +53,6 @@ export async function runGeminiAnalysis(params: {
       if (candles.length === 0) return `${stock.stock_name}(${stock.stock_code}): 차트 데이터 없음`;
 
       const latest = candles[0];
-      const _oldest = candles[candles.length - 1];
       const high52w = Math.max(...candles.map((c) => c.high));
       const dropFromHigh = latest ? (((latest.close - high52w) / high52w) * 100).toFixed(1) : 'N/A';
 
@@ -111,9 +110,10 @@ ${additionalSources ?? '추가 소스 없음'}
 
   // Partial recovery: JSON은 파싱됐지만 구조가 불완전한 경우
   if (parsed && typeof parsed === 'object') {
+    const partial = parsed as Partial<GeminiAnalysis>;
     const recovered: GeminiAnalysis = {
-      market_sentiment: (parsed as any).market_sentiment ?? 'neutral',
-      stocks: Array.isArray((parsed as any).stocks) ? (parsed as any).stocks : [],
+      market_sentiment: partial.market_sentiment ?? 'neutral',
+      stocks: Array.isArray(partial.stocks) ? partial.stocks : [],
     };
     if (recovered.stocks.length > 0) {
       logger.warn(

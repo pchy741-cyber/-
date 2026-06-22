@@ -40,7 +40,8 @@ interface ReasonStat {
 journalRoutes.get('/journal', async (c) => {
   // 🛡️ 백테스팅용 데이터 보존: max 90 → 730일 (2년) 확장, default 30 → 180 확장
   // CEO 지시 (2026-06-12): "매매일지 내역 다 보이게"
-  const days = Math.min(730, Math.max(1, Number(c.req.query('days') ?? 180)));
+  const rawDays = Number(c.req.query('days') ?? 180);
+  const days = Math.min(730, Math.max(1, Number.isFinite(rawDays) ? rawDays : 180));
   const viewIsPaper = resolveRequestMode(c);
   const viewTradingMode = viewIsPaper ? 'paper' : 'live';
   const pool = getPool();

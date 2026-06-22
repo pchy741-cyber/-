@@ -4,7 +4,7 @@ import { getCtxIsPaper } from '../config/context.js';
 import { getActiveStrategy, getOpenChains, getPool } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
 import { getCurrentPrice } from '../kis/market.js';
-import { sendTelegramMessage } from '../notifications/telegram.js';
+import { sendByPaperFlag } from '../notifications/mode-message.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { reconcileExternalSells } from '../trading/fill-reconciler.js';
 import { logger } from '../utils/logger.js';
@@ -27,7 +27,9 @@ const TRAILING_ACTIVATE_PCT = 1.5; // 트레일링 스탑 활성화 최소 수�
 
 /** 수익률 구간별 동적 트레일링 드롭 (고점 대비 하락 허용 %) — 수익 클수록 타이트 */
 function getDynamicTrailingDrop(peakPnlPct: number): number {
-  if (peakPnlPct >= 9) return 1.5; // +9% 이상 고점: 1.5% 하락 시 즉시 청산 (v12: 1.2→1.5, 한국 주도주 숨고르기 1.5~1.8% 대응)
+  if (peakPnlPct >= 20) return 1.0; // +20% 이상: 1.0% 하락 시 즉시 청산 (러너 수익 극대화)
+  if (peakPnlPct >= 15) return 1.2; // +15~20%: 1.2% 하락 허용 (고수익 보호)
+  if (peakPnlPct >= 9) return 1.5; // +9~15%: 1.5% 하락 시 즉시 청산 (v12: 1.2→1.5, 한국 주도주 숨고르기 1.5~1.8% 대응)
   if (peakPnlPct >= 6) return 1.8; // +6~9%: 1.8% 하락 허용
   if (peakPnlPct >= 4) return 2.2; // +4~6%: 2.2% 하락 허용
   if (peakPnlPct >= 2) return 2.6; // +2~4%: 2.6% 하락 허용
@@ -190,7 +192,7 @@ export async function runHoldingCheckJob(): Promise<void> {
       await tradeExecutor.processDecisions(forceCloseDecisions, mode, 'HOLDING_CHECK');
 
       const summary = forceCloseDecisions.map((d) => `${d.stock_code} x${d.quantity} (${d.reasoning})`).join('\n');
-      await sendTelegramMessage(`⏰ 시간 손절 실행:\n${summary}`).catch(() => {});
+      await sendByPaperFlag(getCtxIsPaper(), `⏰ 시간 손절 실행:\n${summary}`);
     }
   } catch (error) {
     logger.error(`보유일 체크 실패: ${error}`, { component: 'HOLDING_CHECK' });
@@ -295,7 +297,9 @@ async function checkAndUpdateTrailingStop(
           chain.is_paper ?? getCtxIsPaper(),
         ]);
       } catch (err) {
-        logger.error(`조기익절 플래그 저장 실패: ${err}`, { component: 'TRAILING' });
+        // DB 쓰기 실패 시 매도 결정 반환 금지 — 다음 사이클에서 이중 부분매도 방지
+        logger.error(`⛔ 조기익절 플래그 저장 실패 → 매도 차단 (이중 부분매도 방지): ${err}`, { component: 'TRAILING' });
+        return null;
       }
       return {
         action: 'PARTIAL_SELL' as const,
@@ -324,7 +328,9 @@ async function checkAndUpdateTrailingStop(
           chain.is_paper ?? getCtxIsPaper(),
         ]);
       } catch (err) {
-        logger.error(`트레일링 분할매도 플래그 저장 실패: ${err}`, { component: 'TRAILING' });
+        // DB 쓰기 실패 시 매도 결정 반환 금지 — 다음 사이클에서 이중 부분매도 방지
+        logger.error(`⛔ 분할매도 플래그 저장 실패 → 매도 차단 (이중 부분매도 방지): ${err}`, { component: 'TRAILING' });
+        return null;
       }
       return {
         action: isFullSell ? ('FORCE_CLOSE' as const) : ('PARTIAL_SELL' as const),
@@ -434,10 +440,9 @@ function countBusinessDays(start: Date, end: Date): number {
 
   while (currentMs < endMs) {
     currentMs += MS_PER_DAY;
-    const d = new Date(currentMs - KST_OFFSET_MS); // UTC로 변환
-    const day = d.getUTCDay();
-    // KST 날짜 문자열 생성
+    // KST 기준 요일/날짜: currentMs는 이미 KST 시프트된 epoch → getUTCDay()=KST 요일
     const kstDate = new Date(currentMs);
+    const day = kstDate.getUTCDay();
     const ymd = kstDate.toISOString().split('T')[0];
     if (day !== 0 && day !== 6 && !KRX_HOLIDAYS.has(ymd)) count++;
   }
@@ -508,5 +513,5 @@ async function checkEscapeTargets(chains: any[]): Promise<void> {
   }
 
   const summary = decisions.map((d) => `${d.stock_code} x${d.quantity} — ${d.reasoning}`).join('\n');
-  await sendTelegramMessage(`🚪 탈출 매도 실행:\n${summary}`).catch(() => {});
+  await sendByPaperFlag(getCtxIsPaper(), `🚪 탈출 매도 실행:\n${summary}`);
 }

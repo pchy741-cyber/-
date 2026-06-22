@@ -18,6 +18,10 @@ import { modePrefix } from './utils.js';
 /** 통합증거금: Paper 시드 (KRW) — 환율 환산 후 USD로 거래 */
 const PAPER_OVERSEAS_SEED_KRW = Number(process.env.PAPER_OVERSEAS_SEED_KRW) || 30_000_000;
 
+/** FX rate sanity range — values outside this range indicate API error or parse failure */
+const FX_RATE_MIN = 1000;
+const FX_RATE_MAX = 2500;
+
 /** paper/live 별 현금 키 */
 export function cashKey(isPaper?: boolean): string {
   return (isPaper ?? getCtxIsPaper()) ? 'cash_paper' : 'cash';
@@ -46,7 +50,7 @@ export async function computePaperCash(fxRate?: number): Promise<number> {
   try {
     let rate = fxRate ?? (await fetchExchangeRate());
     // FX rate 범위 체크 — 비정상 값(API 오류/파싱 실패) 방어
-    if (!Number.isFinite(rate) || rate < 1000 || rate > 2500) {
+    if (!Number.isFinite(rate) || rate < FX_RATE_MIN || rate > FX_RATE_MAX) {
       logger.warn(`⚠️ FX rate 이상치 감지: ${rate} → ${FALLBACK_FX_RATE} 폴백`, { component: 'OVERSEAS' });
       rate = FALLBACK_FX_RATE;
     }
@@ -62,14 +66,17 @@ export async function computePaperCash(fxRate?: number): Promise<number> {
       FROM orders
       WHERE trading_mode = 'paper' AND is_paper = true AND status = 'FILLED' AND trigger_source = 'OVERSEAS'
     `);
-    const totalBuy = Number(rows[0]?.total_buy ?? 0);
-    const totalSell = Number(rows[0]?.total_sell ?? 0);
+    const totalBuyRaw = Number(rows[0]?.total_buy ?? 0);
+    const totalSellRaw = Number(rows[0]?.total_sell ?? 0);
+    const totalBuy = Number.isFinite(totalBuyRaw) ? totalBuyRaw : 0;
+    const totalSell = Number.isFinite(totalSellRaw) ? totalSellRaw : 0;
     const computed = Math.max(0, seedUsd - totalBuy + totalSell);
     _lastPaperCash = computed; // 성공 시 캐시
     return computed;
-  } catch {
+  } catch (e) {
     // DB 실패 시: 마지막 정상값 반환 (없으면 시드 폴백)
     // 이전에는 항상 full seed를 반환 → 매수 후 현금 증가 버그 유발
+    logger.warn(`Paper 현금 조회 실패 (폴백 사용): ${(e as Error).message}`, { component: 'OVERSEAS' });
     if (_lastPaperCash !== null) return _lastPaperCash;
     const rate = fxRate ?? FALLBACK_FX_RATE;
     return PAPER_OVERSEAS_SEED_KRW / rate;
@@ -212,7 +219,7 @@ export async function ensureOverseasTable(): Promise<void> {
     const paperKey = cashKey(true);
     let fxRate = await fetchExchangeRate();
     // FX rate 범위 체크 (ensureOverseasTable 내부)
-    if (!Number.isFinite(fxRate) || fxRate < 1000 || fxRate > 2500) {
+    if (!Number.isFinite(fxRate) || fxRate < FX_RATE_MIN || fxRate > FX_RATE_MAX) {
       logger.warn(`⚠️ ensureOverseasTable: FX rate 이상치 ${fxRate} → ${FALLBACK_FX_RATE} 폴백`, { component: 'OVERSEAS' });
       fxRate = FALLBACK_FX_RATE;
     }
@@ -260,13 +267,19 @@ export async function getHoldings(isPaper?: boolean): Promise<
   const paper = isPaper ?? getCtxIsPaper();
   const map = new Map();
   try {
-    const { rows } = await getPool().query('SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1', [
-      paper,
-    ]);
+    const { rows } = await getPool().query(
+      `SELECT stock_code, quantity, avg_price, bought_at, exchange, tp_pct, sl_pct, strategy_bucket
+       FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1`,
+      [paper],
+    );
     for (const r of rows) {
+      const qty = Number(r.quantity);
+      const avgPrice = Number(r.avg_price);
+      // Skip rows with non-finite numeric values (NaN/Infinity from DB parse)
+      if (!Number.isFinite(qty) || !Number.isFinite(avgPrice)) continue;
       map.set(r.stock_code, {
-        qty: Number(r.quantity),
-        avgPrice: Number(r.avg_price),
+        qty,
+        avgPrice,
         boughtAt: r.bought_at,
         exchange: r.exchange,
         tpPct: r.tp_pct != null ? Number(r.tp_pct) : null,
@@ -274,8 +287,8 @@ export async function getHoldings(isPaper?: boolean): Promise<
         bucket: r.strategy_bucket ?? 'SWING',
       });
     }
-  } catch {
-    /* table might not exist yet */
+  } catch (e) {
+    logger.warn(`getHoldings 조회 실패 (테이블 미존재 가능): ${(e as Error).message}`, { component: 'OVERSEAS' });
   }
   return map;
 }
@@ -347,8 +360,11 @@ export async function getCash(isPaper?: boolean, fxRate?: number): Promise<numbe
 export async function getCashKrw(): Promise<number> {
   try {
     const { rows } = await getPool().query('SELECT value FROM overseas_state WHERE key = $1', [cashKey(false)]);
-    return rows.length > 0 ? Number(rows[0].value) : 0;
-  } catch {
+    if (rows.length === 0) return 0;
+    const val = Number(rows[0].value);
+    return Number.isFinite(val) ? val : 0;
+  } catch (e) {
+    logger.warn(`Live 현금(KRW) 조회 실패: ${(e as Error).message}`, { component: 'OVERSEAS' });
     return 0;
   }
 }
@@ -402,8 +418,9 @@ export async function updateTradeState(p: {
     }
     if (!paper) {
       // Live: USD → KRW 변환 후 저장 (통합증거금)
+      // Round to whole KRW to prevent FX round-trip drift (KRW→USD→KRW repeated conversion with rounding)
       const fxRate = p.fxRate ?? (await fetchExchangeRate());
-      const cashKrw = Math.max(0, p.newCash * fxRate);
+      const cashKrw = Math.round(Math.max(0, p.newCash * fxRate));
       const key = cashKey(false);
       await client.query(
         `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
@@ -413,9 +430,10 @@ export async function updateTradeState(p: {
   });
   // 매매 후 대시보드/잔고 캐시 즉시 무효화 (크로스오염 방지)
   const mode = paper ? 'paper' : 'live';
-  cacheSet(`overseas:dashboard:${mode}`, null as any, 0);
-  cacheSet(`overseas:holdings:${mode}`, null as any, 0);
-  cacheSet(`overseas:balance:${mode}`, null as any, 0);
+  // Invalidate dashboard/holdings/balance caches by setting null with 0 TTL
+  cacheSet<null>(`overseas:dashboard:${mode}`, null, 0);
+  cacheSet<null>(`overseas:holdings:${mode}`, null, 0);
+  cacheSet<null>(`overseas:balance:${mode}`, null, 0);
 }
 
 // ── 트레일링 스탑용 최고가 추적 (paper/live 분리, 메모리 캐시 적용) ──
@@ -427,10 +445,12 @@ export async function getMaxPrice(code: string, isPaper?: boolean): Promise<numb
     const { rows } = await getPool().query('SELECT value FROM overseas_state WHERE key = $1', [
       `${modePrefix(isPaper)}maxprice_${code}`,
     ]);
-    const val = rows.length > 0 ? Number(rows[0].value) : 0;
-    if (val > 0) cacheSet(cacheKey, val, 300); // 5분 TTL
+    const raw = rows.length > 0 ? Number(rows[0].value) : 0;
+    const val = Number.isFinite(raw) ? raw : 0;
+    if (val > 0) cacheSet(cacheKey, val, 300); // 5min TTL
     return val;
-  } catch {
+  } catch (e) {
+    logger.warn(`getMaxPrice 조회 실패 (${code}): ${(e as Error).message}`, { component: 'OVERSEAS' });
     return 0;
   }
 }
@@ -465,7 +485,7 @@ let lastOverseasRefillCheck = 0;
  */
 export async function checkAndRefillOverseasPaper(): Promise<boolean> {
   const now = Date.now();
-  if (now - lastOverseasRefillCheck < 30 * 60 * 1000) return false;
+  if (now - lastOverseasRefillCheck < 5 * 60 * 1000) return false; // 30분→5분 (교착 감지 가속)
   lastOverseasRefillCheck = now;
 
   try {
@@ -568,13 +588,17 @@ export async function getDynamicTpSl(
       const code = String(r.key).replace(`${pfx}dynamic_tpsl_`, '');
       try {
         const v = JSON.parse(r.value);
-        map.set(code, { tp: Number(v.tp), sl: Number(v.sl) });
+        const tp = Number(v.tp);
+        const sl = Number(v.sl);
+        if (Number.isFinite(tp) && Number.isFinite(sl)) {
+          map.set(code, { tp, sl });
+        }
       } catch {
-        /* skip invalid */
+        /* skip invalid JSON — non-critical */
       }
     }
-  } catch {
-    /* DB 실패 시 빈 맵 */
+  } catch (e) {
+    logger.warn(`동적 TP/SL 조회 실패: ${(e as Error).message}`, { component: 'OVERSEAS' });
   }
   return map;
 }

@@ -15,7 +15,8 @@ import { logger } from '../utils/logger.js';
 
 export type KillSwitchScope = 'KR' | 'OVERSEAS';
 
-const MDD_GRACE_PERIOD_MS = 10 * 60 * 1000; // 수동 해제 후 10분간 자동 재발동 차단
+/** 수동 해제 후 자동 재발동 차단 기간 (10분) */
+const MDD_GRACE_PERIOD_MS = 10 * 60 * 1000;
 
 interface KillSwitchState {
   active: boolean;
@@ -90,9 +91,10 @@ export function getKillSwitchStatusAll() {
  * @param manual true = 대시보드/텔레그램 수동 발동 → 자동 해제 불가
  * @param scope 'KR' | 'OVERSEAS' — 어느 시장의 매매를 차단할지
  */
-export async function activateKillSwitch(reason: string, manual = false, scope: KillSwitchScope = 'KR'): Promise<void> {
-  const key = stateKey(scope);
-  const s = getState(scope);
+export async function activateKillSwitch(reason: string, manual = false, scope: KillSwitchScope = 'KR', isPaperOverride?: boolean): Promise<void> {
+  const isPaper = isPaperOverride !== undefined ? isPaperOverride : getCtxIsPaper();
+  const key = stateKey(scope, isPaper);
+  const s = getState(scope, isPaper);
   if (s.active || updatingKeys.has(key)) return;
 
   // 수동 해제 후 grace period 내 자동 재발동 차단 (MDD re-trigger 방지)
@@ -105,7 +107,6 @@ export async function activateKillSwitch(reason: string, manual = false, scope: 
     }
   }
   // 🔒 active=true를 즉시 설정 — 비동기 작업 전에 isKillSwitchActive()가 true 반환하도록
-  // 이전: updatingKeys.add() 후 async 작업 중 race window 존재
   const now = new Date();
   setState(scope, {
     active: true,
@@ -114,10 +115,9 @@ export async function activateKillSwitch(reason: string, manual = false, scope: 
     consecutiveErrors: s.consecutiveErrors,
     manuallyTriggered: manual,
     forcedDeactivatedAt: null,
-  });
+  }, isPaper);
   updatingKeys.add(key);
 
-  const isPaper = getCtxIsPaper();
   const mode = isPaper ? 'paper' : 'live';
   const scopeLabel = scope === 'OVERSEAS' ? '해외' : '국내';
 
@@ -163,9 +163,11 @@ export async function activateKillSwitchAll(reason: string, manual = false): Pro
  * Kill Switch 해제
  * @param force true = 수동 발동이어도 강제 해제 (대시보드 명시적 해제)
  * @param scope 'KR' | 'OVERSEAS'
+ * @param isPaperOverride 명시적 paper/live 모드 지정 — ALS 컨텍스트 대신 사용
  */
-export async function deactivateKillSwitch(force = false, scope: KillSwitchScope = 'KR'): Promise<void> {
-  const s = getState(scope);
+export async function deactivateKillSwitch(force = false, scope: KillSwitchScope = 'KR', isPaperOverride?: boolean): Promise<void> {
+  const isPaper = isPaperOverride !== undefined ? isPaperOverride : getCtxIsPaper();
+  const s = getState(scope, isPaper);
   if (!s.active) return;
 
   const scopeLabel = scope === 'OVERSEAS' ? '해외' : '국내';
@@ -178,13 +180,12 @@ export async function deactivateKillSwitch(force = false, scope: KillSwitchScope
     return;
   }
 
-  const isPaper = getCtxIsPaper();
   const mode = isPaper ? 'paper' : 'live';
   const prevReason = s.reason;
 
   const newState = DEFAULT_STATE();
   if (force) newState.forcedDeactivatedAt = new Date();
-  setState(scope, newState);
+  setState(scope, newState, isPaper);
 
   logger.info(`✅ Kill Switch 해제 [${scopeLabel}]${force ? ' [강제]' : ''} [${mode}]`, { component: 'KILL_SWITCH' });
   await logSystem(
@@ -208,8 +209,8 @@ export async function deactivateKillSwitch(force = false, scope: KillSwitchScope
 }
 
 /** KR+OVERSEAS 동시 해제 (대시보드/텔레그램) */
-export async function deactivateKillSwitchAll(force = false): Promise<void> {
-  await Promise.all([deactivateKillSwitch(force, 'KR'), deactivateKillSwitch(force, 'OVERSEAS')]);
+export async function deactivateKillSwitchAll(force = false, isPaperOverride?: boolean): Promise<void> {
+  await Promise.all([deactivateKillSwitch(force, 'KR', isPaperOverride), deactivateKillSwitch(force, 'OVERSEAS', isPaperOverride)]);
 }
 
 /**
@@ -334,10 +335,15 @@ async function loadKillSwitchState(isPaper: boolean, scope: KillSwitchScope): Pr
     const saved = JSON.parse(rows[0].value) as { active?: boolean; reason?: string; manual?: boolean };
     if (!saved.active) return;
 
-    // 연습모드 자동 킬스위치는 재시작 시 자동 해제
+    // 연습모드 자동 킬스위치는 재시작 시 자동 해제 + DB 기록 삭제
     if (isPaper && !saved.manual) {
       const scopeLabel = scope === 'OVERSEAS' ? '해외' : '국내';
       logger.info(`🔓 [모의][${scopeLabel}] 자동 Kill Switch 재시작 해제`, { component: 'KILL_SWITCH' });
+      // DB에서도 삭제하여 다음 재시작 시 불필요한 로드 방지
+      try {
+        const { getPool: getDbPool } = await import('../db/client.js');
+        await getDbPool().query(`DELETE FROM system_state WHERE key = $1`, [key]);
+      } catch { /* 삭제 실패 시 무시 — 인메모리 상태는 이미 리셋됨 */ }
       return;
     }
 

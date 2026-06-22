@@ -43,7 +43,7 @@ export function filterEarlySells(params: {
     // 보유 기간 초과 시 기술적 매도 신호 차단 면제 (장기 물림 방지)
     const maxHoldingDays = baseP.maxHoldingDays ?? 0;
     if (maxHoldingDays > 0 && chain.opened_at) {
-      const holdingDays = (Date.now() - new Date(chain.opened_at).getTime()) / 86400000;
+      const holdingDays = (Date.now() - new Date(chain.opened_at).getTime()) / 86_400_000; // 1 day in ms
       if (holdingDays >= maxHoldingDays) return true;
     }
 
@@ -120,7 +120,7 @@ export async function applyHardRules(params: {
     // v3: earlyBuffer 제거, baseStop 그대로 적용. 빠른 손절이 평균 손실 감소 효과.
     // 10분 미만 보유는 약간의 여유(0.5%)만 제공 — 체결 직후 노이즈 방지
     const holdMs = chain.opened_at ? Date.now() - new Date(chain.opened_at).getTime() : Infinity;
-    const EARLY_HOLD_MS = 10 * 60_000; // 10분 (기존 1시간→10분 축소)
+    const EARLY_HOLD_MS = 10 * 60_000; // 10 minutes
     const EARLY_BUFFER = 0.5; // 0.5% 최소 여유 (기존 1.5%→0.5%)
     const HARD_FLOOR = -6.0; // 절대 손절선: -6% (기존 -8%→-6% 축소)
     const earlyBuffer = holdMs < EARLY_HOLD_MS ? EARLY_BUFFER : 0;
@@ -184,38 +184,8 @@ export async function applyHardRules(params: {
   return result;
 }
 
-// 섹터 집중도 차단에 사용하는 정적 섹터 맵
-const SECTOR_MAP: Record<string, string> = {
-  '000660': '반도체',
-  '005930': '반도체',
-  '042700': '반도체',
-  '005290': '반도체',
-  '357780': '반도체',
-  '403870': '반도체',
-  '051910': '배터리',
-  '006400': '배터리',
-  '247540': '배터리',
-  '373220': '배터리',
-  '336260': '배터리',
-  '003670': '배터리',
-  '012450': '방산',
-  '079550': '방산',
-  '034020': '방산',
-  '035420': '인터넷',
-  '035720': '인터넷',
-  '377300': '인터넷',
-  '207940': '바이오',
-  '068270': '바이오',
-  '328130': '바이오',
-  '196170': '바이오',
-  '028300': '바이오',
-  '055550': '금융',
-  '105560': '금융',
-  '316140': '금융',
-  '267260': '전력',
-  '009540': '조선',
-  '066570': '가전',
-};
+// 섹터 집중도 차단에 사용하는 정적 섹터 맵 (constants.ts SSoT)
+import { SECTOR_MAP_KR as SECTOR_MAP } from '../../config/constants.js';
 
 /**
  * 섹터 집중 매수 차단
@@ -224,7 +194,7 @@ const SECTOR_MAP: Record<string, string> = {
 export function filterSectorConcentration(
   decisions: TradeDecision[],
   openChains: TransactionChain[],
-  isPaper?: boolean,
+  isPaper: boolean,
 ): TradeDecision[] {
   const maxPerSector = isPaper ? config.paperRisk.sectorMaxPerSector : 2;
   const heldSectorCounts: Record<string, number> = {};
@@ -278,7 +248,7 @@ export function filterManualCooldown(decisions: TradeDecision[], manuallySoldCod
  * 우선순위: FORCE_CLOSE > SELL > PARTIAL_SELL
  */
 export function deduplicateSells(decisions: TradeDecision[]): TradeDecision[] {
-  const SELL_PRIORITY: Record<string, number> = { FORCE_CLOSE: 3, SELL: 2, PARTIAL_SELL: 1 };
+  const SELL_PRIORITY: Readonly<Record<string, number>> = { FORCE_CLOSE: 3, SELL: 2, PARTIAL_SELL: 1 };
   const sellMap = new Map<string, TradeDecision>();
   const nonSellDecisions: TradeDecision[] = [];
 

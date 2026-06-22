@@ -93,7 +93,7 @@ export async function monitorVisionScalp(isPaper: boolean): Promise<void> {
               });
               if (result.success) {
                 orderNo = result.orderNo ?? orderNo;
-                kisStatus = 'FILLED';
+                kisStatus = 'PENDING'; // 체결 확인 전까지 PENDING — syncPendingOverseasOrders가 확정
               } else {
                 logger.error(`[VisionScalp] LIVE ${label} 매도 실패: ${code} — ${result.message}`, {
                   component: 'OVERSEAS',
@@ -108,6 +108,7 @@ export async function monitorVisionScalp(isPaper: boolean): Promise<void> {
             }
           }
 
+          const isFilled = isPaper || kisStatus === 'PAPER_FILLED';
           await insertOrder({
             chain_id: null,
             stock_code: code,
@@ -117,9 +118,9 @@ export async function monitorVisionScalp(isPaper: boolean): Promise<void> {
             price: cur,
             kis_order_no: orderNo,
             kis_status: kisStatus,
-            filled_quantity: qty,
-            filled_price: cur,
-            status: 'FILLED',
+            filled_quantity: isFilled ? qty : 0,
+            filled_price: isFilled ? cur : 0,
+            status: isFilled ? 'FILLED' : 'PENDING',
             trading_mode: isPaper ? 'paper' : 'live',
             trigger_source: 'OVERSEAS',
             ai_reasoning: `[avgBuy:${avgBuy.toFixed(4)}] Vision단타 ${label} 청산 ${pnlPct.toFixed(2)}%`,

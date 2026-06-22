@@ -73,6 +73,7 @@ export interface TechScoring {
   signalBonus: number;
   rsiDivBonus: number;
   bbSqueezeBonus: number;
+  volumeClimaxPenalty: number;
   priorityBonus: number;
   effectiveTechScore: number;
   isFibSupport: boolean;

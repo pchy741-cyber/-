@@ -13,6 +13,11 @@ import { sma } from '../../analysis/moving-averages.js';
 import { rsi } from '../../analysis/oscillators.js';
 import type { DailyCandle } from '../../kis/market.js';
 
+// ── 박스권(SCALP_TARGET) 판별 임계값 ──
+const RANGE_RATIO_MAX = 0.14;  // 20일 고-저 범위 / 중심가 (14% 초과 = 방향성 종목)
+const RSI_RANGE_LOW = 25;      // RSI 하한 (이 아래 = 극단 과매도, 박스권 아님)
+const RSI_RANGE_HIGH = 75;     // RSI 상한 (이 위 = 극단 과매수, 박스권 아님)
+
 export type StockClass = 'TREND_LEADER' | 'SCALP_TARGET' | 'STANDARD';
 
 export interface SignalRouterResult {
@@ -81,8 +86,8 @@ function isScalpTarget(candles: DailyCandle[], tradingValue: number): boolean {
   const recent20High = Math.max(...recent20.map((c) => c.high));
   const recent20Low = Math.min(...recent20.map((c) => c.low));
   const midPrice = (recent20High + recent20Low) / 2;
-  const rangeRatio = midPrice > 0 ? (recent20High - recent20Low) / midPrice : 999;
-  if (rangeRatio > 0.14) return false; // 14% 이상 변동 = 방향성 있는 종목
+  const rangeRatio = midPrice > 0 ? (recent20High - recent20Low) / midPrice : 0.2;
+  if (rangeRatio > RANGE_RATIO_MAX) return false; // 범위 초과 = 방향성 있는 종목
 
   // RSI 과매도/과매수 범위 내 순환 중 (30~70 사이에서 반복)
   const closes = candles.map((c) => c.close).reverse();
@@ -90,7 +95,7 @@ function isScalpTarget(candles: DailyCandle[], tradingValue: number): boolean {
   if (rsiArr.length === 0) return false;
   const rsiNow = rsiArr[rsiArr.length - 1];
   // 박스권 종목: RSI가 30~70 내에서 진동하는 게 특징 (극단값 아님)
-  if (rsiNow < 25 || rsiNow > 75) return false; // 이미 극단 = 방향성 발생 중
+  if (rsiNow < RSI_RANGE_LOW || rsiNow > RSI_RANGE_HIGH) return false; // 이미 극단 = 방향성 발생 중
 
   return true;
 }

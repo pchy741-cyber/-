@@ -2,6 +2,7 @@ import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, logSystem } from '../../db/client.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { sendPushNotification } from '../../notifications/web-push.js';
+import { callClaudeCli, isClaudeCliEnabled } from '../../utils/claude-cli.js';
 import { logger } from '../../utils/logger.js';
 
 import {
@@ -23,7 +24,7 @@ import {
   analyzeStrategyStrengths,
   analyzeWinRateTrend,
 } from './analyzers.js';
-import { analyzeBuyThreshold, calibrateScoreTierParams, validatePromotedInsights } from './calibration.js';
+import { analyzeBuyThreshold, autoPromotePaperInsights, autoTuneEnsembleWeights, calibrateScoreTierParams, evaluateAppliedInsights, validatePromotedInsights } from './calibration.js';
 import { analyzeOverseasAll } from './overseas-analyzers.js';
 import {
   analyzeDayOfWeekPerformance,
@@ -68,7 +69,10 @@ export interface LearnedParameters {
 
 // ── Orchestrator ──
 
-const _now = new Date().toISOString();
+/** Fresh timestamp — avoid stale module-level constant */
+function _now(): string {
+  return new Date().toISOString();
+}
 
 export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
   logger.info('🧠 자기학습 분석 시작', { component: 'LEARN' });
@@ -96,7 +100,8 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
     const open = new Date(chain.opened_at);
     const close = new Date(chain.closed_at);
     const holdingDays = (close.getTime() - open.getTime()) / (1000 * 60 * 60 * 24);
-    const pnlPct = (Number(chain.realized_pnl) / Number(chain.total_invested)) * 100;
+    const invested = Number(chain.total_invested);
+    const pnlPct = invested > 0 ? (Number(chain.realized_pnl) / invested) * 100 : 0;
 
     const firstOrder = (chain.orders as any[])?.find((o) => o.side === 'BUY');
     let entryType: EnrichedChain['entryType'] = 'UNKNOWN';
@@ -169,12 +174,130 @@ export async function analyzeTradeHistory(): Promise<LearnedInsight[]> {
     ...(await safeAsync(() => analyzeOverseasAll(getCtxIsPaper()), 'overseasAll')),
   ];
 
+  // ── Claude 심층 메타 분석 (USE_CLAUDE_CLI=true 시) ──
+  if (isClaudeCliEnabled() && insights.length >= 3) {
+    try {
+      const claudeInsights = await analyzeWithClaude(enrichedChains, insights);
+      insights.push(...claudeInsights);
+      logger.info(`🧠 Claude 심층 분석: ${claudeInsights.length}개 메타 인사이트 생성`, { component: 'LEARN' });
+    } catch (e) {
+      logger.warn(`Claude 심층 분석 실패 (통계적 인사이트만 사용): ${e}`, { component: 'LEARN' });
+    }
+  }
+
   if (insights.length > 0) {
     await saveInsights(insights);
     await autoApplyInsights(insights).catch((e) => logger.warn(`자동 적용 실패: ${e}`, { component: 'LEARN' }));
   }
 
   return insights;
+}
+
+/** Claude CLI 심층 메타 분석 — 통계적 인사이트를 종합하여 전략적 제안 생성 */
+async function analyzeWithClaude(
+  chains: EnrichedChain[],
+  existingInsights: LearnedInsight[],
+): Promise<LearnedInsight[]> {
+  const isPaper = getCtxIsPaper();
+  const modeLabel = isPaper ? '연습(Paper)' : '실전(Live)';
+
+  // 매매 통계 요약
+  const totalTrades = chains.length;
+  const wins = chains.filter((c) => c.pnlPct > 0);
+  const losses = chains.filter((c) => c.pnlPct <= 0);
+  const winRate = totalTrades > 0 ? ((wins.length / totalTrades) * 100).toFixed(1) : '0';
+  const avgWinPct = wins.length > 0 ? (wins.reduce((s, c) => s + c.pnlPct, 0) / wins.length).toFixed(2) : '0';
+  const avgLossPct = losses.length > 0 ? (losses.reduce((s, c) => s + c.pnlPct, 0) / losses.length).toFixed(2) : '0';
+  const avgHoldDays = totalTrades > 0 ? (chains.reduce((s, c) => s + c.holdingDays, 0) / totalTrades).toFixed(1) : '0';
+
+  // 전략별 성과
+  const byStrategy = new Map<string, { count: number; winRate: number; avgPnl: number }>();
+  for (const c of chains) {
+    const mode = c.chain.strategy_mode ?? 'UNKNOWN';
+    const entry = byStrategy.get(mode) ?? { count: 0, winRate: 0, avgPnl: 0 };
+    entry.count++;
+    entry.avgPnl = (entry.avgPnl * (entry.count - 1) + c.pnlPct) / entry.count;
+    if (c.pnlPct > 0) entry.winRate = ((entry.winRate * (entry.count - 1) + 100) / entry.count);
+    else entry.winRate = (entry.winRate * (entry.count - 1)) / entry.count;
+    byStrategy.set(mode, entry);
+  }
+  const strategyLines = [...byStrategy.entries()]
+    .map(([mode, s]) => `  ${mode}: ${s.count}건, 승률 ${s.winRate.toFixed(0)}%, 평균 ${s.avgPnl > 0 ? '+' : ''}${s.avgPnl.toFixed(2)}%`)
+    .join('\n');
+
+  // 기존 인사이트 요약
+  const insightSummary = existingInsights
+    .slice(0, 15)
+    .map((i) => `[${i.category}] ${i.insight} (신뢰도 ${(i.confidence * 100).toFixed(0)}%, ${i.sampleCount}건)`)
+    .join('\n');
+
+  const systemPrompt = `당신은 퀀트 트레이딩 전략 분석가입니다. 매매 데이터와 기존 인사이트를 종합 분석하여, 기존 분석에서 놓친 메타 패턴과 전략적 개선안을 JSON으로 제시하세요.
+
+반환 형식 (JSON 배열):
+[
+  {
+    "category": "WIN_PATTERN" | "LOSS_PATTERN" | "TIMING" | "SIZING",
+    "insight": "패턴 설명 (한국어, 1줄)",
+    "confidence": 0.0-1.0,
+    "sampleCount": 숫자,
+    "recommendation": "구체적 행동 지침",
+    "paramChange": { "field": "stop_loss_pct|take_profit_pct|buy_threshold", "value": 숫자, "reason": "근거" } | null
+  }
+]
+
+규칙:
+- 기존 인사이트와 중복되지 않는 새로운 발견만
+- 최대 5개, 각각 구체적이고 실행 가능한 제안
+- paramChange는 확신 있을 때만 (confidence 0.75+)
+- stop_loss_pct 범위: -30 ~ -1, take_profit_pct: 0.5 ~ 50, buy_threshold: 0 ~ 100`;
+
+  const userPrompt = `## ${modeLabel} 매매 분석 (최근 90일)
+
+### 전체 통계
+- 총 ${totalTrades}건: 승률 ${winRate}%
+- 평균 수익: +${avgWinPct}% / 평균 손실: ${avgLossPct}%
+- 평균 보유일: ${avgHoldDays}일
+
+### 전략별 성과
+${strategyLines}
+
+### 기존 인사이트 (통계 기반)
+${insightSummary}
+
+위 데이터를 종합 분석하여, 기존에 빠진 메타 패턴과 전략 개선안을 JSON 배열로 반환하세요.`;
+
+  const text = await callClaudeCli({ systemPrompt, userPrompt, model: 'sonnet', timeoutMs: 90_000 });
+  const jsonMatch = text.match(/\[[\s\S]*\]/);
+  if (!jsonMatch) return [];
+
+  const parsed = JSON.parse(jsonMatch[0]) as Array<{
+    category: string;
+    insight: string;
+    confidence: number;
+    sampleCount: number;
+    recommendation?: string;
+    paramChange?: { field: string; value: number; reason: string } | null;
+  }>;
+
+  const validCategories = ['WIN_PATTERN', 'LOSS_PATTERN', 'TIMING', 'SIZING'];
+  return parsed
+    .filter((item) => validCategories.includes(item.category) && item.insight && item.confidence > 0)
+    .slice(0, 5)
+    .map((item) => ({
+      category: item.category as LearnedInsight['category'],
+      insight: `[Claude 분석] ${item.insight}`,
+      confidence: Math.max(0, Math.min(1, item.confidence)),
+      sampleCount: item.sampleCount ?? totalTrades,
+      lastUpdated: _now(),
+      recommendation: item.recommendation,
+      paramChange: item.paramChange
+        ? {
+            field: item.paramChange.field as InsightParamChange['field'],
+            value: item.paramChange.value,
+            reason: `[Claude] ${item.paramChange.reason}`,
+          }
+        : undefined,
+    }));
 }
 
 // ── DB Functions ──
@@ -191,8 +314,10 @@ async function saveInsights(insights: LearnedInsight[]): Promise<void> {
          WHERE is_dismissed = true AND is_paper = $1`,
         [isPaper],
       );
-      dismissedKeys = new Set(dismissed.map((r: any) => `${r.category}::${r.insight}`));
-    } catch { /* dismissed 컬럼 미존재 시 무시 */ }
+      dismissedKeys = new Set(dismissed.map((r: Record<string, unknown>) => `${r.category}::${r.insight}`));
+    } catch (err) {
+      logger.debug(`dismissed 인사이트 조회 실패 (is_dismissed 컬럼 미존재 가능): ${err}`, { component: 'SELF_LEARN' });
+    }
 
     // v10: dismissed 행 보존 — is_dismissed IS NOT TRUE 조건 추가
     await getPool()
@@ -396,13 +521,16 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
   );
   if (toApply.length === 0) return;
 
+  const client = await getPool().connect();
   try {
-    const { rows } = await getPool().query(
+    await client.query('BEGIN');
+
+    const { rows } = await client.query(
       `SELECT * FROM strategy_config WHERE is_active = true AND is_paper = $1 ORDER BY updated_at DESC LIMIT 1`,
       [isPaper],
     );
     const current = rows[0];
-    if (!current) return;
+    if (!current) { await client.query('ROLLBACK'); return; }
 
     const sorted = toApply.sort((a, b) => {
       if (a.paramChange?.field === 'mode') return -1;
@@ -410,18 +538,32 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
       return b.confidence - a.confidence;
     });
 
-    const ALLOWED_PARAM_FIELDS = ['stop_loss_pct', 'take_profit_pct', 'buy_threshold', 'mode'] as const;
+    // SQL injection 방지: 동적 컬럼명을 화이트리스트 매핑으로 안전하게 치환
+    const SAFE_COL: Record<string, string> = {
+      stop_loss_pct: 'stop_loss_pct',
+      take_profit_pct: 'take_profit_pct',
+      buy_threshold: 'buy_threshold',
+      mode: 'mode',
+    };
     // 안전 범위: 비정상 값 자동적용 방지 (gambler's ruin 방어)
     const PARAM_RANGES: Record<string, { min: number; max: number }> = {
       stop_loss_pct: { min: -30, max: -1 }, // -30% ~ -1%
       take_profit_pct: { min: 0.5, max: 50 }, // +0.5% ~ +50%
       buy_threshold: { min: 0, max: 100 },
     };
+    // mode 필드 허용 값: LLM이 임의 문자열 주입 방지
+    const VALID_MODES = new Set(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER', 'BOTTOM_FISHING', 'EOD_BETTING', 'BREAKOUT']);
     const applied: string[] = [];
     for (const insight of sorted.slice(0, 5)) {
       const { field, value } = insight.paramChange!;
-      if (!(ALLOWED_PARAM_FIELDS as readonly string[]).includes(field)) {
+      const safeCol = SAFE_COL[field];
+      if (!safeCol) {
         logger.warn(`🚫 허용되지 않은 필드 업데이트 차단: ${field}`, { component: 'LEARN' });
+        continue;
+      }
+      // mode 값 검증: 허용된 전략 모드만
+      if (field === 'mode' && !VALID_MODES.has(String(value))) {
+        logger.warn(`🚫 허용되지 않은 mode 값 차단: ${value}`, { component: 'LEARN' });
         continue;
       }
       // 값 범위 검증
@@ -435,18 +577,21 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
       const oldVal = current[field];
       if (oldVal === value) continue;
 
-      await getPool().query(`UPDATE strategy_config SET ${field} = $1 WHERE is_active = true AND is_paper = $2`, [
+      await client.query(`UPDATE strategy_config SET ${safeCol} = $1 WHERE is_active = true AND is_paper = $2`, [
         value,
         isPaper,
       ]);
+      // 이전값 기록: 롤백 시 복원 + 효과 추적용
+      const prevDetails = { previous_value: oldVal, applied_field: field };
       if (insight.id) {
-        await getPool().query(`UPDATE learned_insights SET is_applied = true, applied_at = NOW() WHERE id = $1`, [
-          insight.id,
-        ]);
+        await client.query(
+          `UPDATE learned_insights SET is_applied = true, applied_at = NOW(), details = COALESCE(details, '{}'::jsonb) || $2::jsonb WHERE id = $1`,
+          [insight.id, JSON.stringify(prevDetails)],
+        );
       } else {
-        await getPool().query(
-          `UPDATE learned_insights SET is_applied = true, applied_at = NOW() WHERE category = $1 AND insight = $2`,
-          [insight.category, insight.insight],
+        await client.query(
+          `UPDATE learned_insights SET is_applied = true, applied_at = NOW(), details = COALESCE(details, '{}'::jsonb) || $3::jsonb WHERE category = $1 AND insight = $2`,
+          [insight.category, insight.insight, JSON.stringify(prevDetails)],
         );
       }
       applied.push(`${field}: ${oldVal} → ${value}`);
@@ -455,6 +600,8 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
       });
     }
 
+    await client.query('COMMIT');
+
     if (applied.length > 0) {
       await logSystem('INFO', 'LEARN', `인사이트 자동 전략 적용: ${applied.join(', ')}`).catch(() => {});
       await sendTelegramMessage(`🤖 *자기학습 자동 전략 적용*\n${applied.map((a) => `• ${a}`).join('\n')}`).catch(
@@ -462,7 +609,10 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
       );
     }
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     logger.warn(`인사이트 자동 적용 실패: ${err}`, { component: 'LEARN' });
+  } finally {
+    client.release();
   }
 }
 
@@ -475,8 +625,12 @@ export async function applyInsightById(insightId: string): Promise<{ ok: boolean
     if (insight.is_applied) return { ok: false, message: '이미 적용됨' };
 
     const { field, value } = insight.param_change as InsightParamChange;
-    const ALLOWED_PARAM_FIELDS = ['stop_loss_pct', 'take_profit_pct', 'buy_threshold', 'mode'];
-    if (!ALLOWED_PARAM_FIELDS.includes(field)) return { ok: false, message: `허용되지 않은 필드: ${field}` };
+    const SAFE_COL_MAP: Record<string, string> = {
+      stop_loss_pct: 'stop_loss_pct', take_profit_pct: 'take_profit_pct',
+      buy_threshold: 'buy_threshold', mode: 'mode',
+    };
+    const safeCol = SAFE_COL_MAP[field];
+    if (!safeCol) return { ok: false, message: `허용되지 않은 필드: ${field}` };
 
     // 값 범위 검증
     const PARAM_RANGES: Record<string, { min: number; max: number }> = {
@@ -488,6 +642,11 @@ export async function applyInsightById(insightId: string): Promise<{ ok: boolean
     if (range && typeof value === 'number' && (value < range.min || value > range.max)) {
       return { ok: false, message: `값 범위 초과: ${field}=${value} (허용: ${range.min}~${range.max})` };
     }
+    // mode 값 검증
+    const VALID_MODES = new Set(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER', 'BOTTOM_FISHING', 'EOD_BETTING', 'BREAKOUT']);
+    if (field === 'mode' && !VALID_MODES.has(String(value))) {
+      return { ok: false, message: `허용되지 않은 mode: ${value}` };
+    }
 
     const targetIsPaper = insight.is_paper;
     const { rows: stratRows } = await getPool().query(
@@ -497,7 +656,7 @@ export async function applyInsightById(insightId: string): Promise<{ ok: boolean
     const current = stratRows[0];
     if (!current) return { ok: false, message: '활성 전략 없음' };
 
-    await getPool().query(`UPDATE strategy_config SET ${field} = $1 WHERE is_active = true AND is_paper = $2`, [
+    await getPool().query(`UPDATE strategy_config SET ${safeCol} = $1 WHERE is_active = true AND is_paper = $2`, [
       value,
       targetIsPaper,
     ]);
@@ -515,7 +674,8 @@ export async function applyInsightById(insightId: string): Promise<{ ok: boolean
 
 export async function getInsightsForDashboard(): Promise<LearnedInsight[]> {
   const { rows } = await getPool().query(
-    `SELECT * FROM learned_insights WHERE COALESCE(is_dismissed, false) IS NOT TRUE ORDER BY confidence DESC, sample_count DESC LIMIT 20`,
+    `SELECT * FROM learned_insights WHERE COALESCE(is_dismissed, false) IS NOT TRUE AND is_paper = $1 ORDER BY confidence DESC, sample_count DESC LIMIT 20`,
+    [getCtxIsPaper()],
   );
   return rows.map((r) => ({
     id: r.id,
@@ -592,7 +752,8 @@ export async function getStockAccuracyContext(stockCodes: string[]): Promise<str
     }
     lines.push('> 위 승률이 낮은 종목은 composite_score를 10점 더 엄격하게 적용하세요.');
     return lines.join('\n');
-  } catch {
+  } catch (err) {
+    logger.debug(`종목별 학습 요약 생성 실패: ${err}`, { component: 'SELF_LEARN' });
     return '';
   }
 }
@@ -615,9 +776,8 @@ async function _runLearningForMode(isPaper: boolean): Promise<void> {
       logger.info(`자기학습: 분석 결과 없음 (${modeLabel})`, { component: 'LEARN' });
       return;
     }
-    // analyzeTradeHistory() 내부에서 saveInsights() 이미 호출됨 — 중복 insert 불필요
+    // analyzeTradeHistory() 내부에서 saveInsights() + autoApplyInsights() 이미 호출됨 — 중복 불필요
     logger.info(`🧠 자기학습 인사이트 ${insights.length}건 저장 (${modeLabel})`, { component: 'LEARN' });
-    await autoApplyInsights(insights);
     // 황금비율 자동 조정: 30일 전략별 성과 → 가중치 자동 튜닝
     try {
       const { autoTuneRegimeWeights } = await import('../regime-allocator.js');
@@ -626,7 +786,15 @@ async function _runLearningForMode(isPaper: boolean): Promise<void> {
       logger.warn(`황금비율 자동조정 실패: ${e}`, { component: 'LEARN' });
     }
     await calibrateScoreTierParams().catch((e) => logger.warn(`티어 파라미터 보정 실패: ${e}`, { component: 'LEARN' }));
-    if (!isPaper) {
+    // 앙상블 가중치 자동 튜닝 — 모델별 실거래 성과 기반
+    await autoTuneEnsembleWeights().catch((e) => logger.warn(`앙상블 가중치 튜닝 실패: ${e}`, { component: 'LEARN' }));
+    // 적용된 인사이트 효과 평가 → 악화 시 자동 롤백
+    await evaluateAppliedInsights().catch((e) => logger.warn(`인사이트 효과 평가 실패: ${e}`, { component: 'LEARN' }));
+    if (isPaper) {
+      // Paper 학습 완료 후 → 고신뢰 인사이트를 live로 자동 프로모션
+      await autoPromotePaperInsights().catch((e) => logger.warn(`자동 프로모션 실패: ${e}`, { component: 'LEARN' }));
+    } else {
+      // Live 학습 완료 후 → promote된 인사이트 실전 검증
       await validatePromotedInsights().catch((e) => logger.warn(`프로모션 검증 실패: ${e}`, { component: 'LEARN' }));
     }
 
@@ -657,5 +825,5 @@ export async function runDailyLearning(): Promise<void> {
 }
 
 // Re-export calibration for direct access
-export { validatePromotedInsights } from './calibration.js';
+export { autoPromotePaperInsights, autoTuneEnsembleWeights, validatePromotedInsights } from './calibration.js';
 export { getOverseasInsightsForPrompt } from './overseas-analyzers.js';

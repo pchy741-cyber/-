@@ -52,3 +52,45 @@ export interface StrategyLabOverview {
   live: StrategyPerformance | null;
   graduation: StrategyGraduation | null;
 }
+
+export interface OptimizerResult {
+  mode: string;
+  currentTp: number;
+  currentSl: number;
+  bestTp: number;
+  bestSl: number;
+  currentSharpe: number;
+  bestSharpe: number;
+  bestPF: number;
+  bestWinRate: number;
+  improved: boolean;
+  applied: boolean;
+  paperTrades?: number;
+  runAt: string;
+  updatedAt: string;
+}
+
+export interface OptimizerConfig {
+  mode: string;
+  tp: number;
+  sl: number;
+  buyThreshold: number;
+  isActive: boolean;
+  isPaper: boolean;
+  updatedAt: string;
+}
+
+export interface AppliedInsight {
+  id: number;
+  strategy_mode: string;
+  condition_label: string;
+  suggested_action: string | null;
+  applied_at: string;
+}
+
+export interface TuningStatus {
+  optimizers: OptimizerResult[];
+  configs: OptimizerConfig[];
+  insightStats: { approved?: number; pending_actionable?: number; total_actionable?: number; total?: number };
+  appliedInsights: AppliedInsight[];
+}

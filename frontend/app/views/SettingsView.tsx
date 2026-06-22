@@ -13,7 +13,6 @@ import { StrategyDocPanel } from './settings/StrategyDocPanel';
 import { AiPipelinePanel } from './settings/AiPipelinePanel';
 import { FeatureFlagsPanel } from './settings/FeatureFlagsPanel';
 import { BiometricSection } from './settings/BiometricSection';
-import { RiskParamsPanel } from './settings/RiskParamsPanel';
 import type { Strategy, Secrets, KillSwitch, ToastFn, ConfirmFn } from '../types';
 
 const DEFAULT_STRATEGY_DOC = `# 매매 전략서
@@ -201,10 +200,7 @@ function SettingsView({ strategy, setStrategy, secrets, killSwitch, toggleKill, 
         <PushNotificationPanel toast={toast} confirm={confirm} />
       </div>
 
-      {/* 포트폴리오 리스크 파라미터 — 실전/연습 독립 설정 */}
-      <RiskParamsPanel toast={toast} />
-
-      {/* 전략 설정 */}
+      {/* 전략 설정 (AI 자동 관리) */}
       <StrategySettingsPanel strategy={strategy} setField={setField} viewMode={viewMode} />
 
       {/* 전략서 + 리스크 */}

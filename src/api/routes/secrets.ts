@@ -90,7 +90,7 @@ export async function loadSecretsToEnv(): Promise<void> {
 import { cacheGet, cacheSet } from '../../cache/memory.js';
 
 secretsRoutes.get('/secrets', async (c) => {
-  const cached = cacheGet<any>('secrets:status');
+  const cached = cacheGet<Record<string, { exists: boolean; masked: string }>>('secrets:status');
   if (cached) return c.json(cached);
 
   const result: Record<string, { exists: boolean; masked: string }> = {};

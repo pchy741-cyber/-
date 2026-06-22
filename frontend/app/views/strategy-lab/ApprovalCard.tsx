@@ -15,7 +15,7 @@ export function ApprovalCard({ g, onApprove, onReject }: { g: StrategyGraduation
         </div>
         <span className="text-[9px] text-slate-600">{fmtTime(g.created_at)}</span>
       </div>
-      <div className="grid grid-cols-4 gap-1 text-center text-[10px]">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 text-center text-[10px]">
         <div><div className="text-slate-600">거래</div><div className="font-bold text-slate-200">{g.trades}</div></div>
         <div><div className="text-slate-600">승률</div><div className="font-bold text-slate-200">{(Number(g.win_rate) * 100).toFixed(0)}%</div></div>
         <div><div className="text-slate-600">PF</div><div className="font-bold text-slate-200">{Number(g.profit_factor).toFixed(2)}</div></div>

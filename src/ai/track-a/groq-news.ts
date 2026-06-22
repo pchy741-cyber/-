@@ -11,6 +11,7 @@
  */
 
 import { logger } from '../../utils/logger.js';
+import { logTokenUsage, calcGroqCost } from '../../utils/ai-token-logger.js';
 
 export interface GroqNewsSentiment {
   stockCode: string;
@@ -21,7 +22,8 @@ export interface GroqNewsSentiment {
   newsSource: 'serpapi' | 'rss';
 }
 
-const CACHE_TTL_MS = 60 * 60 * 1000;
+const CACHE_TTL_MS = 60 * 60 * 1000; // 1시간 캐시
+const MAX_BATCH_STOCKS = 10; // 뉴스 배치 최대 종목 수 (rate limit 보호)
 const _cache = new Map<string, { data: GroqNewsSentiment; fetchedAt: number }>();
 
 // ── SerpApi Google News 수집 ──────────────────────────────────────
@@ -118,8 +120,25 @@ score 기준: 100(극호재), 50(호재), 0(중립), -50(악재), -100(극악재
     max_tokens: 1024,
   });
 
+  // 토큰 사용량 기록
+  if (resp.usage) {
+    const inputTok = resp.usage.prompt_tokens ?? 0;
+    const outputTok = resp.usage.completion_tokens ?? 0;
+    logTokenUsage({
+      provider: 'groq', model: 'llama-3.3-70b',
+      inputTokens: inputTok, outputTokens: outputTok,
+      costUsd: calcGroqCost(inputTok, outputTok),
+      label: 'news',
+    });
+  }
+
   const text = resp.choices[0]?.message?.content ?? '{}';
-  return JSON.parse(text);
+  try {
+    return JSON.parse(text) as Record<string, { score: number; summary: string }>;
+  } catch {
+    logger.warn('Groq 감성 응답 JSON 파싱 실패', { component: 'GROQ_NEWS', rawPreview: text.slice(0, 200) });
+    return {};
+  }
 }
 
 /**
@@ -152,7 +171,7 @@ export async function analyzeNewsWithGroq(
     if (stale.length === 0) return cached;
 
     // 최대 10종목 (rate limit 보호)
-    const targets = stale.slice(0, 10);
+    const targets = stale.slice(0, MAX_BATCH_STOCKS);
     const headlineResults = await Promise.allSettled(targets.map((s) => fetchHeadlines(s.companyName)));
 
     const items = targets.map((s, i) => ({

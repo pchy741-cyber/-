@@ -93,17 +93,33 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
       Promise.resolve(getMarketSentiment()),
     ]);
 
-    // AI 점수 로드 (감시목록 종목)
+    // AI 점수 + KOSPI 레짐 + 전체 수익률 병렬 로드
     const codes = watchlist.map((w) => w.stock_code);
-    const scores = codes.length > 0 ? await getLatestScores(codes) : [];
-
-    // KOSPI 레짐 (DB)
-    const regimeResult = await getPool()
-      .query(
-        `SELECT kospi_level, kospi_change_pct, memo FROM system_log
-       WHERE component = 'MARKET_REGIME' ORDER BY created_at DESC LIMIT 1`,
-      )
-      .catch(() => ({ rows: [] }));
+    const [scores, regimeResult, overallStats] = await Promise.all([
+      codes.length > 0 ? getLatestScores(codes) : Promise.resolve([]),
+      getPool()
+        .query(
+          `SELECT kospi_level, kospi_change_pct, memo FROM system_log
+         WHERE component = 'MARKET_REGIME' ORDER BY created_at DESC LIMIT 1`,
+        )
+        .catch(() => ({ rows: [] })),
+      getPool()
+        .query(
+          `
+        SELECT
+          COUNT(*) AS total_trades,
+          COUNT(*) FILTER (WHERE pnl_pct > 0) AS total_wins,
+          ROUND(AVG(pnl_pct)::numeric, 2) AS avg_pnl,
+          ROUND(SUM(CASE WHEN pnl_pct > 0 THEN pnl_pct ELSE 0 END)::numeric, 2) AS total_profit_pct,
+          ROUND(SUM(CASE WHEN pnl_pct < 0 THEN pnl_pct ELSE 0 END)::numeric, 2) AS total_loss_pct
+        FROM transaction_chains
+        WHERE status = 'CLOSED' AND is_paper = $1
+          AND closed_at > NOW() - INTERVAL '30 days'
+      `,
+          [isPaper],
+        )
+        .catch(() => ({ rows: [{}] })),
+    ]);
 
     // 국내 포지션 요약
     const positions = chains.map((ch) => {
@@ -141,7 +157,7 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
       const { rows: osCashRows } = await getPool()
         .query(`SELECT value FROM overseas_state WHERE key = 'cash'`)
         .catch(() => ({ rows: [] }));
-      overseasCashKrw = osCashRows.length > 0 ? Number(osCashRows[0].value) : 0;
+      overseasCashKrw = osCashRows.length > 0 ? Number(osCashRows[0].value) * FX_RATE : 0;
     }
     const overseasInvestedKrw = overseasInvestedUsd * FX_RATE;
 
@@ -164,24 +180,6 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
       trigger: r.trigger_source,
       closedAt: r.closed_at,
     }));
-
-    // 전체 수익률 요약
-    const overallStats = await getPool()
-      .query(
-        `
-      SELECT
-        COUNT(*) AS total_trades,
-        COUNT(*) FILTER (WHERE pnl_pct > 0) AS total_wins,
-        ROUND(AVG(pnl_pct)::numeric, 2) AS avg_pnl,
-        ROUND(SUM(CASE WHEN pnl_pct > 0 THEN pnl_pct ELSE 0 END)::numeric, 2) AS total_profit_pct,
-        ROUND(SUM(CASE WHEN pnl_pct < 0 THEN pnl_pct ELSE 0 END)::numeric, 2) AS total_loss_pct
-      FROM transaction_chains
-      WHERE status = 'CLOSED' AND is_paper = $1
-        AND closed_at > NOW() - INTERVAL '30 days'
-    `,
-        [isPaper],
-      )
-      .catch(() => ({ rows: [{}] }));
 
     const stats = (overallStats.rows[0] as Record<string, unknown>) ?? {};
 
@@ -287,7 +285,7 @@ aiLoopRoutes.get('/ai-loop/snapshot', async (c) => {
     return c.json(snapshot);
   } catch (err) {
     logger.error(`AI Loop snapshot 실패: ${err}`, { component: 'AI_LOOP' });
-    return c.json({ error: 'Snapshot 생성 실패', detail: String(err) }, 500);
+    return c.json({ error: 'Snapshot 생성 실패' }, 500);
   }
 });
 
@@ -375,7 +373,8 @@ aiLoopRoutes.delete('/ai-loop/overrides/:key', async (c) => {
 
 // ── GET /api/ai-loop/history — 명령 이력 ──────────────────────────────
 aiLoopRoutes.get('/ai-loop/history', async (c) => {
-  const limit = Math.min(100, Number(c.req.query('limit')) || 50);
+  const rawLimit = Number(c.req.query('limit'));
+  const limit = Math.min(100, Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 50);
   const history = await getCommandHistory(limit);
   return c.json({ count: history.length, history });
 });
@@ -390,7 +389,7 @@ aiLoopRoutes.post('/ai-loop/clear', async (c) => {
     });
     return c.json({ ok: true, deleted: rowCount });
   } catch (err) {
-    return c.json({ ok: false, error: String(err) }, 500);
+    return c.json({ ok: false, error: 'Internal server error' }, 500);
   }
 });
 
@@ -402,7 +401,7 @@ aiLoopRoutes.post('/ai-loop/autopilot', async (c) => {
     const result = await runAutoPilot(isPaper);
     return c.json(result);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -427,7 +426,7 @@ aiLoopRoutes.get('/ai-loop/pending', async (c) => {
       decisions: rows,
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -508,15 +507,16 @@ aiLoopRoutes.get('/ai-loop/queue-stats', async (c) => {
              COUNT(*) FILTER (WHERE urgency = 1) AS urgent
       FROM pending_decisions
       WHERE created_at > NOW() - INTERVAL '24 hours'
+        AND is_paper = $1
       GROUP BY status
-    `);
+    `, [getCtxIsPaper()]);
     const stats: Record<string, { count: number; urgent: number }> = {};
     for (const r of rows) {
       stats[r.status as string] = { count: Number(r.cnt), urgent: Number(r.urgent) };
     }
     return c.json(stats);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -524,8 +524,10 @@ aiLoopRoutes.get('/ai-loop/queue-stats', async (c) => {
 aiLoopRoutes.get('/ai-loop/scores/history', async (c) => {
   try {
     const code = c.req.query('stock_code') ?? '';
-    const hours = Math.min(168, Math.max(1, Number(c.req.query('hours') ?? 24)));
-    const limit = Math.min(500, Math.max(10, Number(c.req.query('limit') ?? 100)));
+    const rawHours = Number(c.req.query('hours') ?? 24);
+    const hours = Math.min(168, Math.max(1, Number.isFinite(rawHours) ? rawHours : 24));
+    const rawLimitVal = Number(c.req.query('limit') ?? 100);
+    const limit = Math.min(500, Math.max(10, Number.isFinite(rawLimitVal) ? rawLimitVal : 100));
     if (!code) return c.json({ error: 'stock_code required' }, 400);
 
     const { rows } = await getPool().query(
@@ -565,7 +567,7 @@ aiLoopRoutes.get('/ai-loop/scores/history', async (c) => {
       },
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -601,7 +603,7 @@ aiLoopRoutes.get('/ai-loop/scores/refresh-status', async (c) => {
       elapsedSec: lastRun?.elapsedSec ?? null,
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -609,25 +611,27 @@ aiLoopRoutes.get('/ai-loop/scores/refresh-status', async (c) => {
 // 강화 #1: 세션별 매수/매도/PnL/에러/킬스위치 정지 횟수 등 노출
 aiLoopRoutes.get('/loop/sessions', async (c) => {
   try {
-    const limit = Math.min(100, Math.max(1, Number(c.req.query('limit') ?? 20)));
+    const rawSessionLimit = Number(c.req.query('limit') ?? 20);
+    const sessionLimit = Math.min(100, Math.max(1, Number.isFinite(rawSessionLimit) ? rawSessionLimit : 20));
     const { getLoopSessionsHistory, getLoopStatus } = await import('../../scheduler/loop-mode.js');
-    const [history, current] = await Promise.all([getLoopSessionsHistory(limit), Promise.resolve(getLoopStatus())]);
+    const [history, currentStatus] = await Promise.all([getLoopSessionsHistory(sessionLimit), Promise.resolve(getLoopStatus())]);
+    const cur = currentStatus as Record<string, unknown>;
     return c.json({
       current: {
-        active: (current as any).active,
-        phase: (current as any).phase,
-        totalRuns: (current as any).totalRuns,
-        buyCount: (current as any).buyCount,
-        sellCount: (current as any).sellCount,
-        realizedPnlKrw: Math.round((current as any).realizedPnlKrw ?? 0),
-        recoveryAttempts: (current as any).recoveryAttempts,
-        killSwitchPauses: (current as any).killSwitchPauses,
-        pausedReason: (current as any).pausedReason,
-        adaptiveIntervalMs: (current as any).adaptiveIntervalMs,
+        active: cur.active,
+        phase: cur.phase,
+        totalRuns: cur.totalRuns,
+        buyCount: cur.buyCount,
+        sellCount: cur.sellCount,
+        realizedPnlKrw: Math.round(Number(cur.realizedPnlKrw ?? 0)),
+        recoveryAttempts: cur.recoveryAttempts,
+        killSwitchPauses: cur.killSwitchPauses,
+        pausedReason: cur.pausedReason,
+        adaptiveIntervalMs: cur.adaptiveIntervalMs,
       },
       history,
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });

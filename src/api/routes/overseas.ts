@@ -110,6 +110,8 @@ overseasRoutes.get('/overseas/dashboard', async (c) => {
         scalp_sl: r.scalp_sl != null ? Number(r.scalp_sl) : null,
         bought_at: r.bought_at,
         exchange: r.exchange,
+        bucket: r.strategy_bucket ?? null,
+        max_price: r.max_price != null ? Number(r.max_price) : null,
       }));
       // DB 성공 시 holdings 백업 캐시 저장 (5분 TTL — DB 장애 시 폴백용)
       if (holdings.length > 0) cacheSet(holdingsCacheKey, holdings, 300);
@@ -345,7 +347,7 @@ overseasRoutes.get('/overseas/price/:code', async (c) => {
     const price = await getOverseasPrice(code, exchange);
     return c.json(price);
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -356,7 +358,7 @@ overseasRoutes.get('/overseas/insights', async (c) => {
     const text = await getUserInsights();
     return c.json({ insights: text });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -368,7 +370,7 @@ overseasRoutes.put('/overseas/insights', async (c) => {
     await setUserInsights(text);
     return c.json({ ok: true });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -383,7 +385,7 @@ overseasRoutes.post('/overseas/vision-scalp/analyze', async (c) => {
     return c.json(signal);
   } catch (e: any) {
     logger.error(`[VisionScalp] 분석 실패: ${e.message}`, { component: 'OVERSEAS' });
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -500,7 +502,7 @@ overseasRoutes.get('/overseas/buy-recommend/:code', async (c) => {
       stockName: watchItem?.name ?? code,
     });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -652,16 +654,19 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
     const { insertOrder } = await import('../../db/client.js');
     const { getCash: getOsCash } = await import('../../scheduler/overseas/state.js');
 
-    // Paper: computed cash 확인 / Live: overseas_state 확인
-    const currentCash = await getOsCash(isPaper);
-    if (!Number.isFinite(currentCash) || currentCash < totalCost) {
-      return c.json(
-        { error: `해외 현금 부족 (보유: $${currentCash.toFixed(0)}, 필요: $${totalCost.toFixed(0)})` },
-        400,
-      );
-    }
-
+    // 트랜잭션 내에서 현금 확인 + 포지션 기록 (TOCTOU 방지)
     await withTransaction(async (tx) => {
+      // 현금 잠금: overseas_state row lock으로 동시 매수 직렬화
+      const cashKey = isPaper ? 'cash_paper' : 'cash';
+      const { rows: cashRows } = await tx.query(
+        'SELECT value FROM overseas_state WHERE key = $1 FOR UPDATE',
+        [cashKey],
+      );
+      const currentCash = cashRows[0] ? Number(cashRows[0].value) : 0;
+      if (!Number.isFinite(currentCash) || currentCash < totalCost) {
+        throw Object.assign(new Error(`해외 현금 부족 (보유: $${currentCash.toFixed(0)}, 필요: $${totalCost.toFixed(0)})`), { statusCode: 400 });
+      }
+
       await tx.query(
         `
         INSERT INTO overseas_holdings (stock_code, exchange, quantity, avg_price, bought_at, scalp_tp, scalp_sl, is_scalp, is_paper, tp_pct, sl_pct)
@@ -675,7 +680,6 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
         [sanitizedTicker, exchange, qty, filledPrice, tpPrice, slPrice, isPaper, tpPct, -slPct],
       );
 
-      // 매수 주문 기록 (Paper computed cash에 필수 — 이전에 누락됐던 부분)
       await tx.query(
         `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price,
           kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
@@ -689,8 +693,6 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
           `수동매수 $${safeAmount.toFixed(0)} (TP+${tpPct.toFixed(1)}%:$${tpPrice} SL-${slPct.toFixed(1)}%:$${slPrice}) [${tpLabel}]`,
         ],
       );
-
-      // Live 현금: KIS 동기화로 반영 (USD→KRW 단위 오염 방지). Paper는 computed.
     });
 
     // Live: KIS 동기화로 현금 갱신
@@ -730,8 +732,9 @@ overseasRoutes.post('/overseas/vision-scalp/execute', async (c) => {
       mode: isPaper ? 'paper' : 'live',
     });
   } catch (e: any) {
+    if (e.statusCode) return c.json({ error: e.message }, e.statusCode);
     logger.error(`[VisionScalp] 실행 실패: ${e.message}`, { component: 'OVERSEAS' });
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -763,7 +766,7 @@ overseasRoutes.patch('/overseas/holdings/:code/tpsl', async (c) => {
     logger.info(`📝 TP/SL 수동 조절: ${code} TP=${finalTp} SL=${finalSl} [${mode}]`, { component: 'OVERSEAS' });
     return c.json({ ok: true, tp_pct: finalTp, sl_pct: finalSl });
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -780,53 +783,45 @@ overseasRoutes.post('/overseas/sell', async (c) => {
   if (!stock_code) return c.json({ error: 'stock_code 필수' }, 400);
 
   try {
-    const { getPool } = await import('../../db/client.js');
+    const { withTransaction } = await import('../../db/client.js');
     const isPaper = resolveRequestMode(c);
-    const { rows } = await getPool().query(
-      'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0 AND is_paper = $2',
-      [stock_code, isPaper],
-    );
-    const holding = rows[0];
-    if (!holding) return c.json({ error: '보유 종목 없음' }, 404);
 
-    const totalQty = Number(holding.quantity);
-    const qty = quantity && quantity > 0 ? Math.min(quantity, totalQty) : totalQty;
-    const exchange = String(holding.exchange ?? 'NASDAQ');
-    const avgPrice = Number(holding.avg_price ?? 0);
-    const _osCashKey = isPaper ? 'cash_paper' : 'cash';
-
-    let fillPrice = Number(holding.last_price ?? 0);
-    try {
-      const px = await getOverseasPrice(stock_code, exchange);
-      if ((px?.currentPrice ?? 0) > 0) fillPrice = px.currentPrice;
-    } catch {
-      /* 폴백 */
-    }
-    if (fillPrice <= 0) fillPrice = avgPrice;
-
+    // 트랜잭션 내에서 FOR UPDATE로 보유량 잠금 (동시매도 방지)
     if (isPaper) {
+      let fillPrice = 0;
+      let avgPrice = 0;
+      let qty = 0;
       const orderNo = `CLN${Date.now().toString(36)}`;
-      const { withTransaction } = await import('../../db/client.js');
       await withTransaction(async (client) => {
+        const { rows } = await client.query(
+          'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0 AND is_paper = $2 FOR UPDATE',
+          [stock_code, true],
+        );
+        const holding = rows[0];
+        if (!holding) throw Object.assign(new Error('보유 종목 없음'), { statusCode: 404 });
+
+        const totalQty = Number(holding.quantity);
+        qty = quantity && quantity > 0 ? Math.min(quantity, totalQty) : totalQty;
+        const exchange = String(holding.exchange ?? 'NASDAQ');
+        avgPrice = Number(holding.avg_price ?? 0);
+        fillPrice = Number(holding.last_price ?? 0);
+        try {
+          const px = await getOverseasPrice(stock_code, exchange);
+          if ((px?.currentPrice ?? 0) > 0) fillPrice = px.currentPrice;
+        } catch { /* 폴백 */ }
+        if (fillPrice <= 0) fillPrice = avgPrice;
+
         if (qty >= totalQty) {
-          await client.query(
-            'DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = true',
-            [stock_code, exchange],
-          );
+          await client.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = true', [stock_code, exchange]);
           await client.query('DELETE FROM overseas_state WHERE key = ANY($1)', [positionStateKeys(stock_code, true)]);
         } else {
-          await client.query(
-            'UPDATE overseas_holdings SET quantity = quantity - $3 WHERE stock_code = $1 AND exchange = $2 AND is_paper = true',
-            [stock_code, exchange, qty],
-          );
+          await client.query('UPDATE overseas_holdings SET quantity = quantity - $3 WHERE stock_code = $1 AND exchange = $2 AND is_paper = true', [stock_code, exchange, qty]);
         }
-        // Paper: cash는 computed (orders 기반) → overseas_state 업데이트 불필요
         await client.query(
           `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
            VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','paper','OVERSEAS',$5,$6)`,
           [stock_code, qty, fillPrice, orderNo, reason, avgPrice],
         );
-        // 부분매도 후 quantity ≤ 0 된 zombie 행 정리 (paper 전용)
         await client.query('DELETE FROM overseas_holdings WHERE quantity <= 0 AND is_paper = true');
       });
       logger.info(`[OverseasSell] ${stock_code} ${qty}주 @$${fillPrice} (야간감시 모의)`, { component: 'OVERSEAS' });
@@ -837,42 +832,67 @@ overseasRoutes.post('/overseas/sell', async (c) => {
         const stockName = GLOBAL_WATCHLIST.find((s) => s.code === stock_code)?.name ?? stock_code;
         const pnlPct = avgPrice > 0 ? ((fillPrice - avgPrice) / avgPrice) * 100 : 0;
         await notifyOverseasSell(stock_code, stockName, qty, fillPrice, pnlPct, reason);
-      } catch {
-        /* 알림 실패 무시 */
-      }
+      } catch { /* 알림 실패 무시 */ }
       return c.json({ ok: true, orderNo, filledQty: qty, filledPrice: fillPrice });
     }
 
-    const result = await runWithMode(isPaper, () =>
+    // Live: FOR UPDATE로 잠금 후 KIS 주문 → DB 반영
+    let fillPrice = 0;
+    let avgPrice = 0;
+    let qty = 0;
+    let exchange = 'NASDAQ';
+
+    // 1단계: 보유량 확인 (FOR UPDATE)
+    const holdingInfo = await withTransaction(async (client) => {
+      const { rows } = await client.query(
+        'SELECT * FROM overseas_holdings WHERE stock_code = $1 AND quantity > 0 AND is_paper = false FOR UPDATE',
+        [stock_code],
+      );
+      return rows[0] ?? null;
+    });
+    if (!holdingInfo) return c.json({ error: '보유 종목 없음' }, 404);
+
+    const totalQty = Number(holdingInfo.quantity);
+    qty = quantity && quantity > 0 ? Math.min(quantity, totalQty) : totalQty;
+    exchange = String(holdingInfo.exchange ?? 'NASDAQ');
+    avgPrice = Number(holdingInfo.avg_price ?? 0);
+    fillPrice = Number(holdingInfo.last_price ?? 0);
+    try {
+      const px = await getOverseasPrice(stock_code, exchange);
+      if ((px?.currentPrice ?? 0) > 0) fillPrice = px.currentPrice;
+    } catch { /* 폴백 */ }
+    if (fillPrice <= 0) fillPrice = avgPrice;
+
+    // 2단계: KIS 주문
+    const result = await runWithMode(false, () =>
       placeOverseasOrder({ stockCode: stock_code, exchange, side: 'SELL', quantity: qty, price: 0 }),
     );
     if (!result.success) return c.json({ error: `KIS 매도 실패: ${result.message}` }, 502);
-    const _liveProceeds = fillPrice * qty * (1 - OVERSEAS_FEE_PCT); // 수수료 0.25% 차감
-    const { withTransaction } = await import('../../db/client.js');
+
+    // 3단계: DB 반영 (FOR UPDATE로 동시매도 직렬화)
     await withTransaction(async (client) => {
-      if (qty >= totalQty) {
-        await client.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = $3', [
-          stock_code,
-          exchange,
-          isPaper,
-        ]);
-        await client.query('DELETE FROM overseas_state WHERE key = ANY($1)', [positionStateKeys(stock_code, isPaper)]);
+      const { rows } = await client.query(
+        'SELECT quantity FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = false FOR UPDATE',
+        [stock_code, exchange],
+      );
+      const currentQty = rows[0] ? Number(rows[0].quantity) : 0;
+      const sellQty = Math.min(qty, currentQty);
+      if (sellQty <= 0) return; // 이미 다른 매도가 처리함
+
+      if (sellQty >= currentQty) {
+        await client.query('DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = false', [stock_code, exchange]);
+        await client.query('DELETE FROM overseas_state WHERE key = ANY($1)', [positionStateKeys(stock_code, false)]);
       } else {
-        await client.query(
-          'UPDATE overseas_holdings SET quantity = quantity - $3 WHERE stock_code = $1 AND exchange = $2 AND is_paper = $4',
-          [stock_code, exchange, qty, isPaper],
-        );
+        await client.query('UPDATE overseas_holdings SET quantity = quantity - $3 WHERE stock_code = $1 AND exchange = $2 AND is_paper = false', [stock_code, exchange, sellQty]);
       }
-      // Live 현금: KIS 동기화로 반영 (USD→KRW 단위 오염 방지)
       await client.query(
         `INSERT INTO orders (stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning, avg_buy_price)
          VALUES ($1,'SELL','MARKET',$2,$3,$2,$3,$4,'FILLED','live','OVERSEAS',$5,$6)`,
-        [stock_code, qty, fillPrice, result.orderNo ?? '', reason, avgPrice],
+        [stock_code, sellQty, fillPrice, result.orderNo ?? '', reason, avgPrice],
       );
-      // 부분매도 후 quantity ≤ 0 된 zombie 행 정리 (live 전용)
       await client.query('DELETE FROM overseas_holdings WHERE quantity <= 0 AND is_paper = false');
     });
-    // KIS 동기화: 실제 주문가능금액으로 현금 갱신
+    // KIS 동기화
     const { reconcileCashWithKIS } = await import('../../scheduler/overseas/kis-sync.js');
     await runWithMode(false, () => reconcileCashWithKIS()).catch((e: any) =>
       logger.warn(`야간매도 후 현금 동기화 실패 (무시): ${e.message}`, { component: 'OVERSEAS' }),
@@ -886,13 +906,12 @@ overseasRoutes.post('/overseas/sell', async (c) => {
       const stockName = GLOBAL_WATCHLIST.find((s) => s.code === stock_code)?.name ?? stock_code;
       const pnlPct = avgPrice > 0 ? ((fillPrice - avgPrice) / avgPrice) * 100 : 0;
       await notifyOverseasSell(stock_code, stockName, qty, fillPrice, pnlPct, reason);
-    } catch {
-      /* 알림 실패 무시 */
-    }
+    } catch { /* 알림 실패 무시 */ }
     return c.json({ ok: true, orderNo: result.orderNo, filledQty: qty, filledPrice: fillPrice });
   } catch (err: any) {
+    if (err.statusCode) return c.json({ error: err.message }, err.statusCode);
     logger.error(`[OverseasSell] 예외: ${err.message}`, { component: 'OVERSEAS' });
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -904,6 +923,6 @@ overseasRoutes.get('/overseas/chart/:code', async (c) => {
     const chart = await getOverseasDailyChart(code, exchange, 60);
     return c.json(chart);
   } catch (e: any) {
-    return c.json({ error: e.message }, 500);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
