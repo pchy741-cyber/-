@@ -70,7 +70,7 @@ const RECOMMENDED_SITES = [
   { name: 'FnGuide', url: 'https://comp.fnguide.com', icon: '📈', desc: '기관급 분석 — 재무비율/컨센서스/밸류에이션 (증권사 동일DB)' },
   { name: '한경 컨센서스', url: 'https://consensus.hankyung.com', icon: '📰', desc: '증권사 리포트 집계 — 목표가/투자의견/실적추정치 비교' },
   // ── 해외/글로벌 (공신력·이용자 순) ──
-  { name: 'SEC EDGAR', url: 'https://efts.sec.gov/LATEST/search-index?q=', icon: '🇺🇸', desc: '미국 공식 — 10-K/10-Q/Form4/13F (미국주식 1순위)' },
+  { name: 'SEC EDGAR', url: 'https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=&dateb=&owner=include&count=40&search_text=&action=getcompany', icon: '🇺🇸', desc: '미국 공식 — 10-K/10-Q/Form4/13F (미국주식 1순위)' },
   { name: 'Yahoo Finance', url: 'https://finance.yahoo.com', icon: '💰', desc: '세계 최대 금융포털 — 실시간시세/실적/배당/뉴스 (MAU 1억+)' },
   { name: 'TradingView', url: 'https://www.tradingview.com', icon: '📉', desc: '세계 최대 차트 — 기술적분석/글로벌시세/5000만 트레이더' },
   { name: 'Finviz', url: 'https://finviz.com/screener.ashx', icon: '🔍', desc: '미국 스크리너 1위 — 히트맵/펀더멘털/기술적필터/실적캘린더' },

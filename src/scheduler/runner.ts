@@ -304,17 +304,6 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 👽 Reddit/WSB 멘션 spike — 매시간 (시장 시간만)
-  cron.schedule(
-    '30 * * * 1-5',
-    () => {
-      import('../market/reddit-mentions.js')
-        .then((m) => m.getRedditMentions())
-        .catch((e) => logger.error(`Reddit 멘션 실패: ${e}`, { component: 'SCHEDULER' }));
-    },
-    { timezone: MARKET.TIMEZONE },
-  );
-
   // 📋 Google Sheets 매매일지 백업 — 매일 18:30 KST
   cron.schedule(
     '30 18 * * *',
@@ -548,8 +537,9 @@ export function startScheduler(): void {
   // ── 보조 모듈 (모의투자: rate limit 충돌 방지, Track B와 겹치지 않게 오프셋) ──
 
   // 뉴스 RSS — 30분 간격 (Track B +3분 오프셋)
+  // 장중 09~15 + 저녁 18~21 (미국장 프리마켓 커버: 기존 15:33 종료 → 21:33까지 확장)
   cron.schedule(
-    '3,33 9-15 * * 1-5',
+    '3,33 9-15,18-21 * * 1-5',
     () => {
       collectWatchlistNews().catch((e) => logger.error(`뉴스 수집 실패: ${e}`, { component: 'SCHEDULER' }));
     },
@@ -1104,6 +1094,25 @@ export function startScheduler(): void {
       const { resetUSSessionCache } = await import('./overseas-job.js');
       resetUSSessionCache();
       logger.info('🇺🇸 미국장 세션 준비 완료 (21:00 기동 — 프리마켓 감시 시작)', { component: 'SCHEDULER' });
+
+      // 📰 미국장 프리마켓 뉴스 + SEC 리서치 프리로드
+      // 기존: 뉴스 15:33 종료, SEC는 개장 후 첫 사이클에서 온디맨드 → 4.5시간 공백
+      // 개선: 21:00에 미리 돌려서 22:30 개장 시 바로 사용 가능
+      try {
+        collectWatchlistNews().catch((e) => logger.warn(`프리마켓 뉴스 수집 실패: ${e}`, { component: 'SCHEDULER' }));
+        const { GLOBAL_WATCHLIST } = await import('./overseas/watchlist.js');
+        const { runSecResearchBatch, getCachedSecFundamentalScore } = await import('../automation/sec-research.js');
+        const osCodes = GLOBAL_WATCHLIST.map((w: { code: string }) => w.code);
+        const uncached = osCodes.filter((t) => getCachedSecFundamentalScore(t) == null).slice(0, 15);
+        if (uncached.length > 0) {
+          logger.info(`📊 프리마켓 SEC 리서치 프리로드: ${uncached.join(', ')}`, { component: 'SCHEDULER' });
+          runSecResearchBatch(uncached).catch((e) =>
+            logger.warn(`프리마켓 SEC 리서치 실패 (스킵): ${e}`, { component: 'SCHEDULER' }),
+          );
+        }
+      } catch (e) {
+        logger.warn(`프리마켓 리서치 프리로드 실패: ${e}`, { component: 'SCHEDULER' });
+      }
     },
     { timezone: MARKET.TIMEZONE },
   );

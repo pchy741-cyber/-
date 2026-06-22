@@ -24,6 +24,7 @@ import type { StrategyMode } from '../../config/constants.js';
 import { config } from '../../config/index.js';
 import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice, DailyCandle } from '../../kis/market.js';
+import { THEME_CLUSTERS } from '../../automation/sector-themes.js';
 import { logger } from '../../utils/logger.js';
 
 // ── 총자산 대비 최소 현금 보유 비율 (defense-park.ts도 임포트) ──
@@ -64,7 +65,7 @@ const PARK_PROFIT_TAKE_PCT = 5.0;
 /** 최대 파킹 종목 수 — v2는 1종목 집중 (회전 방지) */
 const MAX_PARK_POSITIONS = 1;
 
-// 유저 지정 5종목 — 유휴 현금 파킹 후보 (2026-06-22 확정)
+// 기본 5종목 — 오늘의 테마 후보가 없을 때 폴백
 export const MEGA_CAP_PARK_CANDIDATES: Array<{ code: string; name: string }> = [
   { code: '005930', name: '삼성전자' },
   { code: '005380', name: '현대차' },
@@ -75,6 +76,72 @@ export const MEGA_CAP_PARK_CANDIDATES: Array<{ code: string; name: string }> = [
 
 // 레거시 호환 (pipeline.ts에서 참조)
 export const IDLE_PARK_STOCK_CODE = MEGA_CAP_PARK_CANDIDATES[0].code;
+
+// ── 테마 기반 대형주 후보 — 시가총액 안전 기준 통과하는 종목만 ──
+const THEME_LARGE_CAPS = new Set([
+  '005930', '000660', '005380', '012450', '005935', // 기본 메가캡
+  '373220', '006400', '051910',     // 배터리: LG에너지솔루션, 삼성SDI, LG화학
+  '034020', '298040', '015760',     // 전력/원전: 두산에너빌리티, 효성중공업, 한전
+  '009540', '042660',               // 조선: HD현대중공업, 한화오션
+  '207940', '068270', '128940',     // 바이오: 삼성바이오, 셀트리온, 한미약품
+  '000270', '012330',               // 자동차: 기아, 현대모비스
+  '005490', '004020',               // 철강: POSCO홀딩스, 현대제철
+  '064350', '079550',               // 방산: 현대로템, LIG넥스원
+  '010120', '267260',               // 전력장비: LS일렉트릭, 현대일렉트릭
+  '086520', '247540',               // 에코프로 (대형)
+]);
+
+/**
+ * 오늘의 테마 파킹 후보 — 뉴스/가격 기반 동적 선택
+ * 1. 테마 클러스터별 평균 등락률 산출
+ * 2. 최고 테마(+1.5%↑)에서 대형주 후보 추출
+ * 3. 기본 5종목 + 테마 후보 병합 반환
+ */
+function getThemeParkCandidates(
+  livePrices: Map<string, CurrentPrice>,
+): { candidates: Array<{ code: string; name: string }>; hotTheme: string | null } {
+  let bestTheme: { id: string; name: string; avgChange: number } | null = null;
+
+  for (const cluster of THEME_CLUSTERS) {
+    let total = 0;
+    let count = 0;
+    for (const s of cluster.stocks) {
+      const p = livePrices.get(s.code);
+      if (p) { total += p.changePct; count++; }
+    }
+    if (count < 2) continue;
+    const avg = total / count;
+    if (avg >= 1.5 && (!bestTheme || avg > bestTheme.avgChange)) {
+      bestTheme = { id: cluster.id, name: cluster.name, avgChange: avg };
+    }
+  }
+
+  if (!bestTheme) return { candidates: [...MEGA_CAP_PARK_CANDIDATES], hotTheme: null };
+
+  // 핫 테마에서 대형주만 추출
+  const themeCluster = THEME_CLUSTERS.find((c) => c.id === bestTheme!.id);
+  const themeCandidates: Array<{ code: string; name: string }> = [];
+  const existingCodes = new Set(MEGA_CAP_PARK_CANDIDATES.map((c) => c.code));
+
+  if (themeCluster) {
+    for (const s of themeCluster.stocks) {
+      if (THEME_LARGE_CAPS.has(s.code) && !existingCodes.has(s.code)) {
+        themeCandidates.push(s);
+        existingCodes.add(s.code);
+      }
+    }
+  }
+
+  logger.info(
+    `🎯 오늘의 테마: ${bestTheme.name} (+${bestTheme.avgChange.toFixed(1)}%) → 파킹 후보 ${themeCandidates.length}개 추가`,
+    { component: 'CASH_MANAGER' },
+  );
+
+  return {
+    candidates: [...MEGA_CAP_PARK_CANDIDATES, ...themeCandidates.slice(0, 3)],
+    hotTheme: bestTheme.id,
+  };
+}
 
 export interface CashManagerParams {
   orderableCash: number;
@@ -156,8 +223,8 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
   const decisions: TradeDecision[] = [];
   const minHoldMs = isPaper ? MIN_PARK_HOLD_MS_PAPER : MIN_PARK_HOLD_MS;
 
-  // 현재 파킹 중인 대형주 체인 확인
-  const parkingCodes = new Set(MEGA_CAP_PARK_CANDIDATES.map((c) => c.code));
+  // 현재 파킹 중인 대형주 체인 확인 (기본 메가캡 + 테마 대형주 모두 포함)
+  const parkingCodes = new Set([...MEGA_CAP_PARK_CANDIDATES.map((c) => c.code), ...THEME_LARGE_CAPS]);
   const parkChains = openChains.filter((c) => parkingCodes.has(c.stock_code));
 
   // ── 파킹 해제 로직 v2 ──
@@ -170,7 +237,9 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
       const avgPrice = Number(parkChain.avg_buy_price ?? 0);
       const currentPrice = livePrices.get(parkChain.stock_code)?.currentPrice ?? 0;
       const pnlPct = avgPrice > 0 && currentPrice > 0 ? ((currentPrice - avgPrice) / avgPrice) * 100 : 0;
-      const name = MEGA_CAP_PARK_CANDIDATES.find((c) => c.code === parkChain.stock_code)?.name ?? parkChain.stock_code;
+      const name = MEGA_CAP_PARK_CANDIDATES.find((c) => c.code === parkChain.stock_code)?.name
+        ?? THEME_CLUSTERS.flatMap((cl) => cl.stocks).find((s) => s.code === parkChain.stock_code)?.name
+        ?? parkChain.stock_code;
 
       // ── 수익 자동실현: +2% 이상이면 매수신호 없어도 익절 ──
       if (pnlPct >= PARK_PROFIT_TAKE_PCT && holdMs >= minHoldMs) {
@@ -264,8 +333,10 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
   // 이미 파킹 중인 종목 + 보유 중인 종목 제외
   const alreadyHeld = new Set(openChains.map((c) => c.stock_code));
 
-  // ── 대형주 선택: 기술분석 타이밍 기반 ──
-  const scored = MEGA_CAP_PARK_CANDIDATES.filter((c) => !alreadyHeld.has(c.code))
+  // ── 오늘의 테마 + 대형주 선택: 뉴스/가격 + 기술분석 타이밍 ──
+  const { candidates: parkPool, hotTheme } = getThemeParkCandidates(livePrices);
+
+  const scored = parkPool.filter((c) => !alreadyHeld.has(c.code))
     .map((c) => {
       const price = livePrices.get(c.code);
       const candles = chartData?.get(c.code);
@@ -276,7 +347,7 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
         if (tech.rsi14 < 30) timingScore += 10;
         else if (tech.rsi14 < 50) timingScore += 15;
         else if (tech.rsi14 < 60) timingScore += 5;
-        else if (tech.rsi14 > 70) timingScore -= 5; // v3: -10→-5 (주도주 모멘텀 구간 과도한 페널티 완화)
+        else if (tech.rsi14 > 70) timingScore -= 5;
         // MACD
         if (tech.macdCrossover === 'BULLISH') timingScore += 12;
         else if (tech.macdHistogram > 0) timingScore += 5;
@@ -291,9 +362,12 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
         if (tech.candlePatterns.some((p) => p.bullish && p.strength === 'STRONG')) timingScore += 10;
         else if (tech.candlePatterns.some((p) => p.bullish)) timingScore += 4;
       }
+      // 🎯 테마 보너스: 핫 테마 종목이면 +12점 (테마 모멘텀 활용)
+      const isThemeStock = hotTheme && !MEGA_CAP_PARK_CANDIDATES.some((m) => m.code === c.code);
+      if (isThemeStock) timingScore += 12;
       return { ...c, price, tech, timingScore };
     })
-    // 당일 급락 종목 제외 (칼잡이 방지), 상한 9% (v3: 5%→9%, 주도주 급등일 탈락 방지)
+    // 당일 급락 종목 제외 (칼잡이 방지), 상한 9%
     // paper는 -3% 허용 (대형주 일시 조정도 파킹 학습 기회)
     .filter((c) => c.price && c.price.changePct >= (isPaper ? -3.0 : -2.0) && c.price.changePct <= 9.0);
 
