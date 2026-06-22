@@ -411,8 +411,13 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       for (const sr of stRows) stateMap.set(sr.key, sr.value);
     }
 
-    // last_price=0인 종목: 인메모리 캐시 → KIS API 조회 (최대 3종목)
-    const needPrice = osRows.filter((r: any) => Number(r.last_price ?? 0) <= 0).slice(0, 3);
+    // last_price=0이거나 15분 이상 stale인 종목: 인메모리 캐시 → KIS API 조회 (최대 3종목)
+    const staleThresh = Date.now() - 15 * 60 * 1000;
+    const needPrice = osRows.filter((r: any) => {
+      if (Number(r.last_price ?? 0) <= 0) return true;
+      if (!viewIsPaper && r.last_price_at && new Date(r.last_price_at).getTime() < staleThresh) return true;
+      return false;
+    }).slice(0, 3);
     for (const r of needPrice) {
       // 인메모리 캐시 우선 조회 (Paper/Live 공통)
       const memP = cacheGet<{ price: number }>(`overseas:lastprice:${r.stock_code}`)?.price ?? 0;

@@ -139,15 +139,32 @@ export async function restorePaperState(): Promise<void> {
     const state = await loadPaperLedger(true);
     paperRealizedPnl = state.realizedPnl;
 
-    // paperCashUsed도 transaction_chains OPEN 기반으로 초기화 (FIFO 유령 비용 방지)
+    // paperCashUsed: avg_buy_price * total_quantity 기반 (total_invested는 구 partialProfit 버그로 과대계상 가능)
     const { rows: chainCostRows } = await pool.query(
-      `SELECT COALESCE(SUM(total_invested), 0)::numeric AS cost
+      `SELECT COALESCE(SUM(ROUND(avg_buy_price::numeric * total_quantity::numeric)), 0)::numeric AS cost
        FROM transaction_chains
        WHERE is_paper = true
          AND status IN ('OPEN','AVERAGING','PROFIT_TAKING')
-         AND stock_code ~ '^[0-9]{6}$'`,
+         AND stock_code ~ '^[0-9]{6}$'
+         AND total_quantity > 0`,
     );
     paperCashUsed = Number(chainCostRows[0]?.cost ?? 0);
+
+    // 과대계상 total_invested DB 값 일괄 정정 (partialProfit 구 버그 잔재 치유)
+    const { rowCount: fixedCount } = await pool.query(
+      `UPDATE transaction_chains
+       SET total_invested = ROUND(avg_buy_price::numeric * total_quantity::numeric)
+       WHERE is_paper = true
+         AND status IN ('OPEN','AVERAGING','PROFIT_TAKING')
+         AND total_quantity > 0
+         AND total_invested > ROUND(avg_buy_price::numeric * total_quantity::numeric) * 1.05`,
+    );
+    if ((fixedCount ?? 0) > 0) {
+      logger.info(
+        `🔧 total_invested 과대계상 ${fixedCount}건 정정 완료 (avg_buy_price × total_quantity 기준)`,
+        { component: 'PAPER' },
+      );
+    }
 
     // Ghost chains 자동 정리: holdingsCost > 시드 + 실현손익 → FILLED orders 없는 유령 chain 제거
     if (paperCashUsed > PAPER_INITIAL_CAPITAL + paperRealizedPnl) {
@@ -166,11 +183,12 @@ export async function restorePaperState(): Promise<void> {
       );
       if ((ghostClosed ?? 0) > 0) {
         const { rows: recalc } = await pool.query(
-          `SELECT COALESCE(SUM(total_invested), 0)::numeric AS cost
+          `SELECT COALESCE(SUM(ROUND(avg_buy_price::numeric * total_quantity::numeric)), 0)::numeric AS cost
            FROM transaction_chains
            WHERE is_paper = true
              AND status IN ('OPEN','AVERAGING','PROFIT_TAKING')
-             AND stock_code ~ '^[0-9]{6}$'`,
+             AND stock_code ~ '^[0-9]{6}$'
+             AND total_quantity > 0`,
         );
         paperCashUsed = Number(recalc[0]?.cost ?? 0);
         paperLedgerCache = null;
@@ -236,10 +254,10 @@ async function getPaperPositions(): Promise<Position[]> {
     return (chainRows as any[]).map((row) => {
       const avgPrice = Number(row.avg_price) || 0;
       const qty = Number(row.qty) || 0;
-      const totalInvested = Number(row.total_invested) || avgPrice * qty;
+      const costBasis = Math.round(avgPrice * qty); // total_invested는 partialProfit 버그로 과대계상 가능 → avgPrice 기반 사용
       const livePrice = priceMap.get(row.stock_code) ?? Math.round(avgPrice);
       const evalAmount = livePrice * qty;
-      const profitLoss = evalAmount - Math.round(totalInvested);
+      const profitLoss = evalAmount - costBasis;
       const profitLossPct = avgPrice > 0 ? ((livePrice - avgPrice) / avgPrice) * 100 : 0;
       return {
         stockCode: row.stock_code,
@@ -262,14 +280,14 @@ export async function getPaperBalance(): Promise<AccountBalance> {
   const state = await loadPaperLedger();
   paperRealizedPnl = state.realizedPnl;
 
-  // holdingsCost: FIFO 원장 대신 transaction_chains OPEN 기반 계산
-  // FIFO는 SELL 주문 없이 청산된 포지션(p_arch 아카이브 등)의 BUY 비용이 유령으로 잔류하는 버그가 있음
+  // holdingsCost: avg_buy_price * total_quantity 기반 (total_invested는 partialProfit 구 버그로 과대계상 가능)
   const { rows: chainCostRows } = await pool.query(
-    `SELECT COALESCE(SUM(total_invested), 0)::numeric AS cost
+    `SELECT COALESCE(SUM(ROUND(avg_buy_price::numeric * total_quantity::numeric)), 0)::numeric AS cost
      FROM transaction_chains
      WHERE is_paper = true
        AND status IN ('OPEN','AVERAGING','PROFIT_TAKING')
-       AND stock_code ~ '^[0-9]{6}$'`,
+       AND stock_code ~ '^[0-9]{6}$'
+       AND total_quantity > 0`,
   );
   const holdingsCost = Number(chainCostRows[0]?.cost ?? 0);
   paperCashUsed = holdingsCost;
