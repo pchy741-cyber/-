@@ -222,7 +222,7 @@ export function startDbHealthWatcher(checkDb: () => Promise<boolean>, onReconnec
     } catch {
       /* 다음 주기에 재시도 */
     }
-  }, 2 * 60_000); // 2분마다 체크
+  }, 30_000); // 30초마다 체크 (Cloud SQL 기상 2~3분, 빠른 감지 필요)
 }
 
 // ── Cloud Run 자동 스케일링 — 주말 min=0, 평일 min=1 ──

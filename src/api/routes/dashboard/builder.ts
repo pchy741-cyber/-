@@ -415,7 +415,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     const staleThresh = Date.now() - 15 * 60 * 1000;
     const needPrice = osRows.filter((r: any) => {
       if (Number(r.last_price ?? 0) <= 0) return true;
-      if (!viewIsPaper && r.last_price_at && new Date(r.last_price_at).getTime() < staleThresh) return true;
+      if (r.last_price_at && new Date(r.last_price_at).getTime() < staleThresh) return true;
       return false;
     }).slice(0, 3);
     for (const r of needPrice) {
@@ -425,20 +425,18 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
         r.last_price = memP;
         continue;
       }
-      // Live 모드: KIS API 폴백
-      if (!viewIsPaper) {
-        try {
-          const p = await withTimeout(getOverseasPrice(String(r.stock_code), String(r.exchange)), 3000, null as any);
-          if (p?.currentPrice > 0) {
-            r.last_price = p.currentPrice;
-            safeQuery(
-              'UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2 AND is_paper = false',
-              [p.currentPrice, r.stock_code],
-            ).catch(() => {});
-          }
-        } catch {
-          /* 시세 조회 실패 시 기존 폴백 사용 */
+      // KIS API 폴백 (paper/live 모두 동일 시세 — 조회만 하면 됨)
+      try {
+        const p = await withTimeout(getOverseasPrice(String(r.stock_code), String(r.exchange)), 3000, null as any);
+        if (p?.currentPrice > 0) {
+          r.last_price = p.currentPrice;
+          safeQuery(
+            'UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2 AND is_paper = $3',
+            [p.currentPrice, r.stock_code, viewIsPaper],
+          ).catch(() => {});
         }
+      } catch {
+        /* 시세 조회 실패 시 기존 폴백 사용 */
       }
     }
 

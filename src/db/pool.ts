@@ -35,10 +35,13 @@ const RETRIABLE_CODES = new Set([
   'CONNECTION_LOST',
   'PROTOCOL_CONNECTION_LOST',
   '57P01', // admin_shutdown
+  '57P02', // database_admin_shutdown (Cloud SQL auto-suspend)
   '57P03', // cannot_connect_now (DB restarting)
+  '57P04', // database_shutting_down
   '08003', // connection_does_not_exist
   '08006', // connection_failure
   '08001', // sqlclient_unable_to_establish_sqlconnection
+  '08S01', // protocol_violation / connection reset
 ]);
 
 function isRetriableError(err: unknown): boolean {
@@ -87,11 +90,11 @@ export async function resetPool(): Promise<void> {
 
 function createPool(): pg.Pool {
   const poolDefaults = {
-    max: 8,
-    idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 8_000,
+    max: 20,
+    idleTimeoutMillis: 60_000,
+    connectionTimeoutMillis: 15_000,
     keepAlive: true,
-    keepAliveInitialDelayMillis: 10_000,
+    keepAliveInitialDelayMillis: 5_000,
   };
 
   let newPool: pg.Pool;
