@@ -291,22 +291,29 @@ export async function dailyMarketRouting(): Promise<void> {
 
   if (shouldPark) {
     s.riskOff = true;
-    await parkCashInSofr();
+    // v10.9.5: SOFR 파킹 비활성화 — 수수료 > 수익 구조적 손실 + 해외매매 현금 잠식
+    // 기존: parkCashInSofr() → 예수금 전액 SOFR ETF 매수
+    // 변경: 신규 매수만 차단, 현금은 유지 (해외주식 매수 자금으로 활용)
+    logger.info(`🛡️ [${isPaper ? 'PAPER' : 'LIVE'}] Risk-Off 진입 — 신규 매수 차단 (SOFR 파킹 비활성)`, {
+      component: 'MARKET_ROUTING',
+    });
     if (!isPaper) {
       const reason = immediateMode
-        ? `⚡ 초극단 위기(Score=${score}) — 즉시 파킹`
+        ? `⚡ 초극단 위기(Score=${score}) — 즉시 매수 차단`
         : `📅 ${s.riskOffStreak}영업일 연속 Risk-Off — 불감대 통과`;
       await sendTelegramMessage(
-        `🚨 *시장라우팅: RISK_OFF*\n${infoLine}\n${reason}\n💰 SOFR ETF 파킹 실행 — 신규 스캔 전면 차단`,
+        `🚨 *시장라우팅: RISK_OFF*\n${infoLine}\n${reason}\n🛡️ 신규 매수 차단 (현금 보존, 해외매매 자금 유지)`,
       ).catch(() => {});
     }
   } else if (shouldUnpark) {
     s.riskOff = false;
+    // v10.9.5: 기존 SOFR 잔여분 있으면 정리 (이전 버전에서 매수한 것)
     const unpacked = await unparkSofrEtf();
-    if (unpacked && !isPaper) {
-      await sendTelegramMessage(
-        `✅ *시장라우팅: RISK_ON 회복*\n${infoLine}\n📅 ${s.riskOnStreak}영업일 연속 회복 — SOFR 언파킹 → 8개 전략 재배분`,
-      ).catch(() => {});
+    if (!isPaper) {
+      const msg = unpacked
+        ? `✅ *시장라우팅: RISK_ON 회복*\n${infoLine}\n📅 ${s.riskOnStreak}영업일 연속 회복 — SOFR 잔여분 매도 + 매수 재개`
+        : `✅ *시장라우팅: RISK_ON 회복*\n${infoLine}\n📅 ${s.riskOnStreak}영업일 연속 회복 — 매수 재개`;
+      await sendTelegramMessage(msg).catch(() => {});
     }
   } else if (level === 'RISK_OFF' && !s.riskOff && !isPaper && s.riskOffStreak === 1) {
     // 첫 Risk-Off 감지: 불감대 대기 시작 알림

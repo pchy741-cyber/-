@@ -204,11 +204,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         component: 'TRACK_B',
       });
     }
-    // v10.9.4: 파킹 활성 중에는 SOFR 고아 정리 스킵 (기존: 의도적 파킹을 즉시 청산하는 치명적 버그)
+    // v10.9.5: SOFR ETF 보유 시 무조건 즉시 청산 (SOFR 파킹 완전 폐지)
+    // 기존 v10.9.4: parkState.isActive면 스킵 → 변경: SOFR은 파킹 상태 무관하게 즉시 매도
     const orphanedKodex = openChains.find((c) => c.stock_code === PARK_STOCK_CODE);
-    if (orphanedKodex && !parkState.isActive) {
-      logger.warn(`🧹 잔여 파킹 ETF 즉시 청산 (파킹 비활성 상태)`, { component: 'TRACK_B' });
-      return buildDefenseParkExitDecisions([orphanedKodex], '파킹 ETF 잔여 포지션 청산');
+    if (orphanedKodex) {
+      logger.warn(`🧹 SOFR ETF 잔여분 즉시 청산 (SOFR 파킹 폐지 — 현금 회수)`, { component: 'TRACK_B' });
+      return buildDefenseParkExitDecisions([orphanedKodex], 'SOFR ETF 폐지 — 현금 회수');
     }
     // 인버스 ETF 잔여 — 아래 generateInverseDecisions(NONE 레벨)에서 처리
     const orphanedInverses = openChains.filter((c) => INVERSE_ETF_CODES.has(c.stock_code) && c.total_quantity > 0);

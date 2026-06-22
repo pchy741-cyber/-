@@ -202,9 +202,9 @@ export async function isMarketRecovering(
     }
   }
 
-  // 3. 파킹 48시간 이상 경과 시 해제 (v13: parkChain 없을 때도 탈출 허용)
-  // SOFR ETF(449170)는 일 0.01% 수익으로 0.4% 수수료 왕복 커버 불가 → 장기 파킹은 구조적 손실
-  // v13: parkChain 없거나 PnL ≥ -0.5% (수수료 범위) 이면 48h 후 강제 해제
+  // 3. 파킹 48시간 이상 경과 시 해제
+  // v10.9.5: 인버스 ETF 전용 — 장기 보유 시 시간가치 감소 + 괴리율 확대 리스크
+  // parkChain 없거나 PnL ≥ -1.0% 이면 48h 후 강제 해제
   if (!isMemoryMode()) {
     try {
       const { rows } = await getPool().query(
@@ -227,11 +227,11 @@ export async function isMarketRecovering(
           const avgBuy = Number(parkChain.avg_buy_price ?? 0);
           const currentPx = price?.currentPrice ?? 0;
           const pnlPct = avgBuy > 0 && currentPx > 0 ? ((currentPx - avgBuy) / avgBuy) * 100 : 0;
-          if (pnlPct >= -0.5) {
-            // -0.5% 이상(수수료 범위 이내) 이면 해제 — SOFR ETF는 구조적으로 0.0% 도달 불가
+          if (pnlPct >= -1.0) {
+            // -1.0% 이상이면 해제 — 인버스 ETF는 반등 시 손실 확대 방지
             return {
               recovering: true,
-              reason: `파킹 ${hoursParked.toFixed(0)}시간 경과 — 기간 만료 해제 (SOFR ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)`,
+              reason: `파킹 ${hoursParked.toFixed(0)}시간 경과 — 기간 만료 해제 (인버스 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)`,
             };
           }
         }
@@ -258,9 +258,12 @@ export async function buildDefenseParkEntryDecisions(
   reason: string,
   crashSignal?: CrashSignal,
 ): Promise<TradeDecision[]> {
-  const useInverse = crashSignal && (crashSignal.level === 'CRASH' || crashSignal.level === 'PANIC');
-  const parkCode = useInverse ? INVERSE_ETFS[0].code : PARK_STOCK_CODE;
-  const parkName = useInverse ? INVERSE_ETFS[0].name : PARK_STOCK_NAME;
+  // v10.9.5: SOFR 파킹 완전 폐지 → 항상 인버스 ETF 사용 (하락장 수익화)
+  // 기존: CRASH/PANIC만 인버스, 나머지 SOFR → 수수료 > 수익 구조적 손실
+  // 변경: 모든 방어 파킹 → 인버스 ETF (KODEX 200선물인버스2X)
+  const useInverse = true; // 항상 인버스
+  const parkCode = INVERSE_ETFS[0].code;
+  const parkName = INVERSE_ETFS[0].name;
 
   logger.warn(`🛡️ 방어 파킹 진입: ${reason} → ${parkName}${useInverse ? ` (score=${crashSignal!.score})` : ''}`, {
     component: 'DEFENSE_PARK',
@@ -308,8 +311,9 @@ export async function buildDefenseParkEntryDecisions(
     if (parkPrice && parkPrice.currentPrice > 0) {
       const minCashReserve = Math.floor(totalAssets * getCashReserveRatio(getCtxIsPaper()));
       const parkable = Math.max(0, orderableCash - minCashReserve);
-      // PANIC: 95% 투입, CRASH: 85%, 일반: 95%
-      const investRatio = useInverse && crashSignal!.level === 'PANIC' ? 0.95 : useInverse ? 0.85 : 0.95;
+      // v10.9.5: 인버스 전용 — PANIC: 90%, CRASH: 80%, 기본: 70% (인버스는 양방향 리스크)
+      const crashLevel = crashSignal?.level;
+      const investRatio = crashLevel === 'PANIC' ? 0.90 : crashLevel === 'CRASH' ? 0.80 : 0.70;
       const investAmount = Math.floor(parkable * investRatio);
       const qty = Math.floor(investAmount / parkPrice.currentPrice);
       if (qty > 0) {
@@ -319,10 +323,10 @@ export async function buildDefenseParkEntryDecisions(
           quantity: qty,
           price_type: 'MARKET',
           limit_price: parkPrice.currentPrice,
-          reasoning: `🛡️ 방어 파킹: ${parkName} — ${useInverse ? '하락 수익화' : '하락장 안전자산'} (${reason})`,
+          reasoning: `🛡️ 방어 파킹: ${parkName} — 하락 수익화 (${reason})`,
           confidence: 0.99,
-          strategy_mode: useInverse ? 'DEFENSE' : undefined,
-          trigger_source: useInverse ? `CRASH_PROFIT_PARK_${crashSignal!.level}` : undefined,
+          strategy_mode: 'DEFENSE',
+          trigger_source: crashSignal ? `CRASH_PROFIT_PARK_${crashSignal.level}` : 'DEFENSE_PARK_INVERSE',
         });
       }
     }
