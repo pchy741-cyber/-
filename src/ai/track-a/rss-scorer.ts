@@ -37,7 +37,7 @@ const OVEREXTENDED_VOL_THRESHOLD = 1.3; // 과매수 거래량 비율 기준
 const STRONG_BUY_THRESHOLD = 82; // AI 프롬프트 기준 통일 (82+=STRONG_BUY)
 const BUY_THRESHOLD = 68; // 68~81=BUY (프롬프트 기준)
 const STRONG_SELL_THRESHOLD = 25;
-const SELL_THRESHOLD = 35;
+const SELL_THRESHOLD = 30; // ensemble.ts 기준 통일 (30~49=SELL)
 const PULLBACK_VOL_COMBO_THRESHOLD = 1.3; // 눌림목+거래량 콤보 기준
 const PULLBACK_CONFIDENCE_BOOST = 0.08;
 const MAX_CONFIDENCE = 0.9;

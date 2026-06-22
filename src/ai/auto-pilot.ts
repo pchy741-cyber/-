@@ -102,7 +102,7 @@ export async function runAutoPilot(isPaper: boolean): Promise<AutoPilotResult> {
   let overridesRemoved = 0;
 
   // Kill switch 활성화 시 스킵
-  if (isKillSwitchActive('KR') && isKillSwitchActive('OVERSEAS')) {
+  if (isKillSwitchActive('KR') || isKillSwitchActive('OVERSEAS')) {
     logger.info(`🤖 AutoPilot [${mode}]: Kill switch 활성 → 스킵`, { component: 'AUTO_PILOT' });
     return { rulesApplied: 0, overridesSet: 0, overridesRemoved: 0, decisions: ['Kill switch active — skipped'] };
   }
