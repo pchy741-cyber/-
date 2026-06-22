@@ -27,8 +27,9 @@ function _getPeakMap(): Map<string, number> {
 export function restorePreTpPeakMap(
   chains: Array<{ stock_code: string; avg_buy_price: number | string | null; peak_price_since_open?: number | null }>,
 ): void {
-  // 부팅 시에는 ALS 컨텍스트 없으므로 live 맵에 직접 복원
+  // v10.9.4: paper 맵도 함께 복원 (기존: live만 복원 → paper 피크 유실 → 연습/실전 괴리)
   if (!_preTpPeakMap.has('live')) _preTpPeakMap.set('live', new Map());
+  if (!_preTpPeakMap.has('paper')) _preTpPeakMap.set('paper', new Map());
   const liveMap = _preTpPeakMap.get('live')!;
   for (const c of chains) {
     const avg = Number(c.avg_buy_price ?? 0);
@@ -331,10 +332,12 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // ────────────────────────────────────────────────────────────────────
 
     // AI Loop forceHold: Claude Code가 매도 보류 지시 (실적 발표 대기 등)
+    // v10.9.4: -5% 고정 → 전략 SL 기준 (기존: 설계 SL -2.5%인데 -5%까지 허용 → 2배 손실)
     const aiForceHold = getOverride<boolean>(`${chain.stock_code}_forceHold`);
-    if (aiForceHold && pnlPct > -5) {
-      // 손절 한도(-5%) 이상이면 AI 홀드 존중
-      logger.info(`🤖 AI Loop forceHold: ${chain.stock_code} 매도 보류 (pnl=${pnlPct.toFixed(1)}%)`, {
+    const _chainStrategyParams = STRATEGY_PARAMS[chain.strategy_mode as StrategyMode] ?? strategyParams;
+    const forceHoldLimit = _chainStrategyParams.stopLossPct * 1.2; // 전략 SL의 1.2배까지만 허용 (SWING -2.5%→-3%)
+    if (aiForceHold && pnlPct > forceHoldLimit) {
+      logger.info(`🤖 AI Loop forceHold: ${chain.stock_code} 매도 보류 (pnl=${pnlPct.toFixed(1)}%, limit=${forceHoldLimit.toFixed(1)}%)`, {
         component: 'AI_LOOP',
       });
       processedSellChains.add(chain.id);
@@ -758,7 +761,8 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // 시그널 보정: 체결강도 < 80(매도세 압도) → 손절 타이트닝 (0.85x), 체결강도 > 120(매수세) → 1.1x 완화
     const sigIntensity = marketSignals?.get(chain.stock_code)?.tradingIntensity?.intensity ?? 0;
     const signalStopMult = sigIntensity > 0 ? (sigIntensity < 80 ? 0.85 : sigIntensity >= 120 ? 1.1 : 1.0) : 1.0;
-    const effectiveStop = Math.max(effectiveSl, dynamicStop) * stopWidenMultiplier * signalStopMult;
+    // v10.9.4: 멀티플라이어 적용 후에도 -8% 하한 캡 보장 (기존: 1.2*1.1=-10.56%까지 무제한 확장)
+    const effectiveStop = Math.max(-8.0, Math.max(effectiveSl, dynamicStop) * stopWidenMultiplier * signalStopMult);
     if (pnlPct <= effectiveStop) {
       // v4: 패닉매도 억제 & 대형포지션 부분손절 폐지
       // 이전: RSI<35+거래량급증 시 손절 스킵, 대형포지션 50% 부분손절 → 나머지 50% 추가 하락 → 손실 확대
@@ -808,6 +812,25 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
           });
           processedSellChains.add(chain.id);
         }
+      }
+    }
+
+    // v10.9.4: maxHoldingDays 강제 적용 (PROFIT_TAKING 포함)
+    // 기존: PROFIT_TAKING 상태면 maxHoldingDays 미적용 → 무한 보유 가능
+    if (!processedSellChains.has(chain.id) && chain.opened_at) {
+      const _maxDays = _chainStrategyParams?.maxHoldingDays ?? STRATEGY_PARAMS[chain.strategy_mode as StrategyMode]?.maxHoldingDays ?? 15;
+      const _holdingMs = Date.now() - new Date(chain.opened_at).getTime();
+      const _holdingDays = _holdingMs / 86_400_000;
+      if (_maxDays > 0 && _holdingDays >= _maxDays) {
+        decisions.push({
+          action: 'FORCE_CLOSE',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `최대보유기간 초과: ${_holdingDays.toFixed(1)}일/${_maxDays}일 (pnl=${pnlPct.toFixed(1)}%, ${chain.status})`,
+          confidence: 0.9,
+        });
+        processedSellChains.add(chain.id);
       }
     }
   }

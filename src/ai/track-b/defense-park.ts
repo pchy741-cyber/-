@@ -222,7 +222,8 @@ export async function isMarketRecovering(
               reason: `파킹 ${hoursParked.toFixed(0)}시간 경과 — 포지션 없음, 강제 해제`,
             };
           }
-          const price = livePrices.get(PARK_STOCK_CODE);
+          // v10.9.4: parkChain의 실제 종목코드 사용 (기존: PARK_STOCK_CODE 고정 → 인버스 ETF일 때 SOFR 가격으로 PnL 계산 → 타임아웃 불발)
+          const price = livePrices.get(parkChain.stock_code);
           const avgBuy = Number(parkChain.avg_buy_price ?? 0);
           const currentPx = price?.currentPrice ?? 0;
           const pnlPct = avgBuy > 0 && currentPx > 0 ? ((currentPx - avgBuy) / avgBuy) * 100 : 0;

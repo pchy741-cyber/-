@@ -963,21 +963,25 @@ export class TradeExecutor {
       return;
     }
 
-    // 스마트 매도: SELL/FORCE_CLOSE 모두 bid1 지정가 시도 → 실패 시 시장가 폴백
-    // FORCE_CLOSE도 bid1이면 즉시 체결 가능 (이미 매수자 존재), 시장가 대비 ~0.05% 슬리피지 절감
+    // v10.9.4: FORCE_CLOSE는 시장가 강제 (손절 시 bid1 지정가 미체결 → 손실 확대 방지)
+    // SELL(일반 매도)만 bid1 지정가 시도 → 0.05% 슬리피지 절감
     let smartSellPrice: number | undefined;
-    try {
-      const { getOrderbook } = await import('../kis/market.js');
-      const book = await getOrderbook(stockCode);
-      const bid1 = book[0]?.bidPrice ?? 0;
-      if (bid1 > 0) {
-        smartSellPrice = bid1;
-        logger.info(`💰 스마트 매도: ${stockCode} bid1=${bid1.toLocaleString()} → 지정가 (${action})`, {
-          component: 'EXECUTOR',
-        });
+    if (action !== 'FORCE_CLOSE') {
+      try {
+        const { getOrderbook } = await import('../kis/market.js');
+        const book = await getOrderbook(stockCode);
+        const bid1 = book[0]?.bidPrice ?? 0;
+        if (bid1 > 0) {
+          smartSellPrice = bid1;
+          logger.info(`💰 스마트 매도: ${stockCode} bid1=${bid1.toLocaleString()} → 지정가 (${action})`, {
+            component: 'EXECUTOR',
+          });
+        }
+      } catch {
+        /* 호가 조회 실패 → 시장가 폴백 */
       }
-    } catch {
-      /* 호가 조회 실패 → 시장가 폴백 */
+    } else {
+      logger.info(`🚨 강제청산: ${stockCode} → 시장가 주문 (손절 체결 보장)`, { component: 'EXECUTOR' });
     }
 
     // v9-fix: executeOrder가 throw하면 동기화 로직에 도달 못하는 버그 수정
@@ -1107,7 +1111,9 @@ export class TradeExecutor {
       const fallbackPrice = now?.currentPrice ?? (Number(chain.avg_buy_price) || 0);
       const fill = await this.confirmFill(result.orderNo, stockCode, chain.total_quantity, fallbackPrice);
       if (!fill) {
-        logger.error(`체결 미확인 → 청산 체인 업데이트 보류: ${stockCode}`, { component: 'EXECUTOR' });
+        // v10.9.4: confirmFill 타임아웃도 closeFailCount 증가 (기존: 미증가 → 5회 안전장치 무력화)
+        this._closeFailCount.set(failKey, failCount + 1);
+        logger.error(`체결 미확인 → 청산 체인 업데이트 보류 (failCount=${failCount + 1}): ${stockCode}`, { component: 'EXECUTOR' });
         return;
       }
 
@@ -1118,8 +1124,9 @@ export class TradeExecutor {
         return;
       }
       const soldQty = Math.min(chain.total_quantity, fill.filledQty);
-      if (soldQty < chain.total_quantity) {
-        logger.warn(`⚠️ 전량청산 부분체결 반영: ${stockCode} 요청 ${chain.total_quantity}주 → 체결 ${soldQty}주`, {
+      const remainQty = chain.total_quantity - soldQty;
+      if (remainQty > 0) {
+        logger.warn(`⚠️ 전량청산 부분체결 반영: ${stockCode} 요청 ${chain.total_quantity}주 → 체결 ${soldQty}주, 잔여 ${remainQty}주`, {
           component: 'EXECUTOR',
         });
       }
@@ -1133,6 +1140,34 @@ export class TradeExecutor {
         recordSellForCooldown(stockCode); // v10.4: 인메모리 재진입 쿨다운
       } else {
         await chainManager.partialProfit(chain.id, soldQty, fill.filledPrice, chain);
+        // v10.9.4: FORCE_CLOSE 부분체결 → 잔여 수량 즉시 시장가 재매도 (잔여 포지션 방치 방지)
+        if (action === 'FORCE_CLOSE' && remainQty > 0) {
+          logger.warn(`🔄 FORCE_CLOSE 잔여 ${remainQty}주 즉시 재매도: ${stockCode}`, { component: 'EXECUTOR' });
+          try {
+            const retryResult = await this.executeOrder({
+              stockCode,
+              side: 'SELL',
+              quantity: remainQty,
+              // price 미지정 → 시장가
+              chainId: chain.id,
+              triggerSource: 'TRACK_B',
+              aiReasoning: `부분체결 잔여 ${remainQty}주 재매도`,
+              isPaper: isPaperSnapshot,
+            });
+            if (retryResult.success) {
+              const retryFill = await this.confirmFill(retryResult.orderNo, stockCode, remainQty, fill.filledPrice);
+              if (retryFill && retryFill.filledQty > 0) {
+                const updatedChain = await chainManager.findOpenChain(stockCode);
+                if (updatedChain) {
+                  await chainManager.closeChain(updatedChain.id, retryFill.filledPrice, updatedChain, `${closeReason} (잔여 재매도)`);
+                  recordSellForCooldown(stockCode);
+                }
+              }
+            }
+          } catch (retryErr) {
+            logger.error(`잔여 재매도 실패: ${stockCode} ${remainQty}주 — ${retryErr}`, { component: 'EXECUTOR' });
+          }
+        }
       }
       invalidateStockCache(stockCode).catch(() => {});
       invalidateBalanceCache();

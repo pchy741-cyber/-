@@ -53,32 +53,48 @@ async function persist(isPaper: boolean): Promise<void> {
   }
 }
 
-/** Streak thresholds and corresponding position size multipliers */
+/** Streak thresholds and corresponding position size multipliers
+ * v10.9.4: 5연패 0.25x 추가, 8연패 거래 중단 (기존: 3+연패 0.5x가 최대 → 무한 손실 누적) */
+const STREAK_HALT = 8; // 8+ consecutive losses → 거래 중단
+const STREAK_CRITICAL = 5; // 5+ consecutive losses → 25% position
 const STREAK_SEVERE = 3; // 3+ consecutive losses → 50% position
 const STREAK_MODERATE = 2; // 2 consecutive losses → 70% position
+const MULTIPLIER_HALT = 0; // 거래 중단
+const MULTIPLIER_CRITICAL = 0.25;
 const MULTIPLIER_SEVERE = 0.5;
 const MULTIPLIER_MODERATE = 0.7;
 const MULTIPLIER_NORMAL = 1.0;
 
 function calcMultiplier(streak: number): number {
+  if (streak >= STREAK_HALT) return MULTIPLIER_HALT;
+  if (streak >= STREAK_CRITICAL) return MULTIPLIER_CRITICAL;
   if (streak >= STREAK_SEVERE) return MULTIPLIER_SEVERE;
   if (streak >= STREAK_MODERATE) return MULTIPLIER_MODERATE;
   return MULTIPLIER_NORMAL;
 }
 
-/** 거래 결과 기록 — SELL 체결 후 호출 */
+/** 거래 결과 기록 — SELL 체결 후 호출
+ * v10.9.4: 승리 시 점진적 회복 (기존: 0.1% 수익으로도 즉시 리셋 → 연패 보호 무력화)
+ * 3연패 이상이었으면 1승 = -2, 그 외 = 즉시 리셋 */
 export async function recordTradeOutcome(win: boolean, isPaper: boolean): Promise<void> {
   await load();
   if (win) {
-    if (isPaper) streakPaper = 0;
-    else streakLive = 0;
+    const prev = isPaper ? streakPaper : streakLive;
+    // 3연패 이상 상태에서 1승 → 2단계 낮추기 (점진 회복), 2 이하면 즉시 리셋
+    const next = prev >= STREAK_SEVERE ? Math.max(0, prev - 2) : 0;
+    if (isPaper) streakPaper = next;
+    else streakLive = next;
   } else {
     if (isPaper) streakPaper += 1;
     else streakLive += 1;
   }
   const streak = isPaper ? streakPaper : streakLive;
   const mult = calcMultiplier(streak);
-  logger.info(`📉 연속손실 ${streak}회 → 포지션 배율 ×${mult}${mult < 1 ? ' ⚠️ 축소 중' : ''}`, { component: 'RISK' });
+  if (streak >= STREAK_HALT) {
+    logger.warn(`🛑 연속손실 ${streak}회 → 거래 중단! (자동 재개: 수동 리셋 또는 점진 회복)`, { component: 'RISK' });
+  } else {
+    logger.info(`📉 연속손실 ${streak}회 → 포지션 배율 ×${mult}${mult < 1 ? ' ⚠️ 축소 중' : ''}`, { component: 'RISK' });
+  }
   await persist(isPaper);
 }
 

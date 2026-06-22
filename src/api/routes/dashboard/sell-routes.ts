@@ -103,9 +103,11 @@ sellRoutes.post('/sell/:chainId', async (c) => {
     const triggerSource: string = sanitizeTriggerSource(body.source);
     const sellReason: string = (body.reason as string) || 'CEO 수동 매도';
 
+    // v10.9.4: getCtxIsPaper() → resolveRequestMode(c) (다른 엔드포인트와 일관성 통일)
+    const isPaper = resolveRequestMode(c);
     const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1 AND is_paper = $2', [
       chainId,
-      getCtxIsPaper(),
+      isPaper,
     ]);
     const chain = rows[0];
     if (!chain) return c.json({ error: '체인을 찾을 수 없습니다' }, 404);

@@ -7,6 +7,7 @@ import { analyzeTechnicals, type OHLCV } from '../analysis/indicators.js';
 import { ALLOCATION_GOLDEN, GATE, OVERSEAS, OVERSEAS_FEE_PCT, SECTOR_CLASS } from '../config/constants.js';
 import { runWithMode } from '../config/context.js';
 import { paperOnly } from '../config/index.js';
+import { cacheSet } from '../cache/memory.js';
 import { getPool, logSystem } from '../db/client.js';
 import { getOverseasDailyChart, getOverseasPrice } from '../kis/overseas.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
@@ -533,6 +534,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
             [t.price.currentPrice, code, isPaper()],
           )
           .catch(() => {});
+        // v10.9.4: SSE 인메모리 캐시도 갱신 (기존: DB만 갱신 → SSE에서 stale 가격 표시)
+        cacheSet(`overseas:lastprice:${code}`, { price: t.price.currentPrice, changePct: t.price.changePct, volume: t.price.volume }, 7200);
       }
     }
 
@@ -1672,10 +1675,19 @@ export async function runOverseasDual(): Promise<void> {
 
   logger.info('🇺🇸 runOverseasDual 시작 (paper→live)', { component: 'OVERSEAS' });
 
+  // v10.9.4: paper 실행 전 isRunning 고착 방어 (이전 사이클 에러로 true 잔류 시)
+  const paperModeK = modeKey(true);
+  if (overseasState.isRunning.get(paperModeK)) {
+    logger.warn(`⚠️ paper isRunning=true 고착 감지 → 강제 리셋`, { component: 'OVERSEAS' });
+    overseasState.isRunning.set(paperModeK, false);
+  }
+
   // AsyncLocalStorage로 격리 — 전역 오버라이드 없이 paper/live 독립 실행
   await runWithMode(true, async () => {
     try {
+      logger.info('🇺🇸 [PAPER] overseas job 시작', { component: 'OVERSEAS' });
       await runOverseasJob({ isPaper: true });
+      logger.info('🇺🇸 [PAPER] overseas job 완료', { component: 'OVERSEAS' });
     } catch (e) {
       logger.error(`해외주식 paper 실패: ${e}`, { component: 'OVERSEAS' });
     }

@@ -204,9 +204,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         component: 'TRACK_B',
       });
     }
+    // v10.9.4: 파킹 활성 중에는 SOFR 고아 정리 스킵 (기존: 의도적 파킹을 즉시 청산하는 치명적 버그)
     const orphanedKodex = openChains.find((c) => c.stock_code === PARK_STOCK_CODE);
-    if (orphanedKodex) {
-      logger.warn(`🧹 잔여 파킹 ETF 즉시 청산`, { component: 'TRACK_B' });
+    if (orphanedKodex && !parkState.isActive) {
+      logger.warn(`🧹 잔여 파킹 ETF 즉시 청산 (파킹 비활성 상태)`, { component: 'TRACK_B' });
       return buildDefenseParkExitDecisions([orphanedKodex], '파킹 ETF 잔여 포지션 청산');
     }
     // 인버스 ETF 잔여 — 아래 generateInverseDecisions(NONE 레벨)에서 처리

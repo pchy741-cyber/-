@@ -29,10 +29,10 @@ export function calcDynamicTrailDrop(params: {
   const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
   const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
 
-  // ATR × 2.5 기반 (클램프는 모든 조정 후 마지막에 적용)
-  const atrTrail = -(atrPct * 2.5);
-  const minTrail = isHighBeta ? -12.0 : isDefense ? -6.0 : -8.0;
-  const maxTrail = isHighBeta ? -5.0 : isDefense ? -3.0 : -4.0;
+  // v10.9.4: ATR × 2.0 기반 (기존 2.5 → 2.0) + 트레일 범위 축소 (수익 반납 최소화)
+  const atrTrail = -(atrPct * 2.0);
+  const minTrail = isHighBeta ? -8.0 : isDefense ? -4.0 : -6.0;
+  const maxTrail = isHighBeta ? -4.0 : isDefense ? -2.5 : -3.0;
   let trail = atrTrail;
 
   // 트렌드 강도 기반 동적 조정 (강한 추세 → 넓은 트레일, 약한 추세 → 타이트)
@@ -400,25 +400,35 @@ export function calcDynamicTpSl(params: {
   let slPct = Math.max(isHighBeta ? 3.0 : 2.0, baseSl + aiSlAdj + scoreSlAdj);
 
   // ATR 기반 SL: 항상 적용 — 고변동성은 SL 확대(노이즈 방지), 저변동성은 SL 타이트닝
+  // v10.9.4: ATR SL 상한 축소 (기존 8/12% → 5/8%) — 과도한 SL 확대가 R:R < 1의 근본 원인
   if (atrPct && atrPct > 0) {
     if (atrPct < 1.5) {
       // 저변동성(ATR<1.5%): SL 타이트닝 — 최대 2.5% (불필요한 자본 노출 축소)
       slPct = Math.min(slPct, 2.5);
     } else {
-      // 고변동성: 최소 2×ATR% (일간 변동성의 2배 — 노이즈 손절 방지)
-      const atrFloor = Math.round(atrPct * 2.0 * 10) / 10;
+      // 고변동성: 최소 1.5×ATR% (기존 2x → 1.5x — 노이즈 방어와 손실 제한 균형)
+      const atrFloor = Math.round(atrPct * 1.5 * 10) / 10;
       if (atrFloor > slPct) {
-        slPct = Math.min(atrFloor, isHighBeta ? 12.0 : 8.0); // 안전 상한: HIGH_BETA 12%, 기타 8%
+        slPct = Math.min(atrFloor, isHighBeta ? 8.0 : 5.0); // 안전 상한: HIGH_BETA 8%, 기타 5%
       }
     }
   }
 
-  // ── R:R 비율 검증 — 국내 getDynamicDomesticTpSl과 동일 1.5:1~4:1 범위 강제 ──
+  // ── R:R 비율 검증 — v10.9.4: R:R < 1.5 시 SL 축소 우선 (기존: TP 확대 → 도달 불가능한 TP) ──
   const rr = tpPct / slPct;
   if (rr > 4.0) {
     tpPct = Math.round(slPct * 4.0 * 10) / 10;
   } else if (rr < 1.5) {
-    tpPct = Math.round(slPct * 1.5 * 10) / 10;
+    // TP를 올리는 대신 SL을 줄여서 R:R 보정 (단, SL 하한 유지)
+    const adjustedSl = Math.round((tpPct / 1.5) * 10) / 10;
+    const slFloor = isHighBeta ? 3.0 : 2.0;
+    if (adjustedSl >= slFloor) {
+      slPct = adjustedSl;
+    } else {
+      // SL이 하한에 걸리면 TP 보정 (기존 방식 폴백)
+      slPct = slFloor;
+      tpPct = Math.round(slFloor * 1.5 * 10) / 10;
+    }
   }
 
   const parts: string[] = [`base${baseTp}`];
