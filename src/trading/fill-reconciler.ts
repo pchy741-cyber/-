@@ -94,7 +94,7 @@ export async function reconcilePendingOrders(): Promise<void> {
                    (stock_code, status, strategy_mode, avg_buy_price, total_quantity, total_invested, is_paper, opened_at)
                  VALUES ($1, 'OPEN', 'SWING', $2, $3, $4, $5, NOW())
                  RETURNING id`,
-                [order.stock_code, avgBuyWithFee, fill.filledQty, totalInvested, getCtxIsPaper()],
+                [order.stock_code, avgBuyWithFee, fill.filledQty, totalInvested, order.trading_mode === 'paper'],
               );
               await updateOrderByKisOrderNo(kisOrderNo, { chain_id: newChain.id });
               logger.info(
