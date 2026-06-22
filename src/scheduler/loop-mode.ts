@@ -136,8 +136,14 @@ async function dbUpdateSession(id: number | null, updates: Record<string, unknow
 /** 임계 이벤트 → capture-trigger 위임 (fire-and-forget, 15분 쿨다운 내장) */
 function fireTrigger(trigger: CaptureTrigger, mode: 'paper' | 'live' = 'live'): void {
   import('../api/routes/review/capture-trigger.js')
-    .then((m) => m.triggerCapture(trigger, mode, state.dbSessionId).catch(() => {}))
-    .catch(() => {});
+    .then((m) =>
+      m.triggerCapture(trigger, mode, state.dbSessionId).catch((e) => {
+        logger.debug(`[LOOP] capture trigger 실패 (무시): ${e}`, { component: 'LOOP' });
+      }),
+    )
+    .catch((e) => {
+      logger.debug(`[LOOP] capture-trigger 모듈 로드 실패: ${e}`, { component: 'LOOP' });
+    });
 }
 
 // ── 세션 메트릭 집계 (강화 #1) ──

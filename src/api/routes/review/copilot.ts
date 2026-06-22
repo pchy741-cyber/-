@@ -3,6 +3,7 @@
  * 크로스오염 수정: viewIsPaper에 따라 KIS(live) 또는 DB(paper) 데이터 분리 사용
  */
 import { Hono } from 'hono';
+import { logger } from '../../../utils/logger.js';
 import { getKSTNow } from '../../../utils/time.js';
 
 const app = new Hono();
@@ -45,7 +46,9 @@ app.get('/review/copilot', async (c) => {
         }));
         netAsset = (bal as any).netAsset ?? 0;
         cash = bal.orderableCash ?? 0;
-      } catch {}
+      } catch (e) {
+        logger.debug(`[COPILOT] KIS 잔고 조회 실패 (포지션 빈 상태로 진행): ${e}`, { component: 'COPILOT' });
+      }
     } else {
       // PAPER: DB에서 포지션 구성
       try {
@@ -76,7 +79,9 @@ app.get('/review/copilot', async (c) => {
           const evalTotal = positions.reduce((s, p) => s + p.evalAmount, 0);
           cash = Math.max(0, netAsset - evalTotal);
         }
-      } catch {}
+      } catch (e) {
+        logger.debug(`[COPILOT] paper 포지션 DB 조회 실패: ${e}`, { component: 'COPILOT' });
+      }
     }
 
     // ── 1. 데이터 정합성 검증 ──
@@ -288,7 +293,9 @@ app.get('/review/copilot', async (c) => {
           level: mddPct >= mddLimit ? 'danger' : mddPct >= mddLimit * 0.75 ? 'warn' : 'ok',
         });
       }
-    } catch {}
+    } catch (e) {
+      logger.debug(`[COPILOT] MDD 집계 실패 (무시): ${e}`, { component: 'COPILOT' });
+    }
 
     // 2b. 일일 손실한도 소진율 — Live 2.5% / Paper 30%
     try {
@@ -309,7 +316,9 @@ app.get('/review/copilot', async (c) => {
         level: usedPct >= 80 ? 'danger' : usedPct >= 50 ? 'warn' : 'ok',
         detail: `${Math.round(unrealizedLoss).toLocaleString()}원 / ${Math.round(limit.limitAmount).toLocaleString()}원 (총자산 ${Math.round(totalPortfolioKrw).toLocaleString()}원)`,
       });
-    } catch {}
+    } catch (e) {
+      logger.debug(`[COPILOT] 손실한도 집계 실패 (무시): ${e}`, { component: 'COPILOT' });
+    }
 
     // 2c. 현금 비율
     try {
@@ -324,7 +333,9 @@ app.get('/review/copilot', async (c) => {
         unit: '%',
         level: cashRatio < 10 ? 'danger' : cashRatio < 25 ? 'warn' : 'ok',
       });
-    } catch {}
+    } catch (e) {
+      logger.debug(`[COPILOT] 현금비율 집계 실패 (무시): ${e}`, { component: 'COPILOT' });
+    }
 
     // 2d. 종목 집중도 (HHI)
     try {
@@ -346,7 +357,9 @@ app.get('/review/copilot', async (c) => {
           });
         }
       }
-    } catch {}
+    } catch (e) {
+      logger.debug(`[COPILOT] 집중도(HHI) 집계 실패 (무시): ${e}`, { component: 'COPILOT' });
+    }
 
     // 2e. 승률 (30일)
     try {
@@ -372,7 +385,9 @@ app.get('/review/copilot', async (c) => {
           level: winRate < 30 ? 'danger' : winRate < 45 ? 'warn' : 'ok',
         });
       }
-    } catch {}
+    } catch (e) {
+      logger.debug(`[COPILOT] 승률 집계 실패 (무시): ${e}`, { component: 'COPILOT' });
+    }
 
     // 2f. 연속 손실
     try {
@@ -398,7 +413,9 @@ app.get('/review/copilot', async (c) => {
           level: streak >= 5 ? 'danger' : streak >= 3 ? 'warn' : 'ok',
         });
       }
-    } catch {}
+    } catch (e) {
+      logger.debug(`[COPILOT] 연속손실 집계 실패 (무시): ${e}`, { component: 'COPILOT' });
+    }
 
     // ── 3. 액션 제안 ──
     const actions: {
@@ -466,7 +483,9 @@ app.get('/review/copilot', async (c) => {
           urgency: 'low',
         });
       }
-    } catch {}
+    } catch (e) {
+      logger.debug(`[COPILOT] 해외장기보유 조회 실패 (무시): ${e}`, { component: 'COPILOT' });
+    }
 
     try {
       if (totalEval > 0) {
@@ -480,7 +499,9 @@ app.get('/review/copilot', async (c) => {
           urgency: 'low',
         });
       }
-    } catch {}
+    } catch (e) {
+      logger.debug(`[COPILOT] 스트레스 시나리오 집계 실패 (무시): ${e}`, { component: 'COPILOT' });
+    }
 
     const urgencyOrder = { high: 0, mid: 1, low: 2 };
     actions.sort((a, b) => urgencyOrder[a.urgency] - urgencyOrder[b.urgency]);

@@ -43,9 +43,14 @@ export async function acquireLock(stockCode: string, owner: string, ttlMs?: numb
 
   // 락 획득
   locks.set(lockKey, { lockedAt: new Date(), owner, ttlMs: lockTtl });
+  const myEntry = locks.get(lockKey)!;
 
+  // Only delete if the current entry is still ours — prevents clearing a new owner's lock
+  // when our TTL expired, we were force-released, and another caller re-acquired the same key.
   return () => {
-    locks.delete(lockKey);
+    if (locks.get(lockKey) === myEntry) {
+      locks.delete(lockKey);
+    }
   };
 }
 

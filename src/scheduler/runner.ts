@@ -427,6 +427,7 @@ export function startScheduler(): void {
   // Track B 중복 실행 방지 mutex (paper → live 순차 실행)
   let _trackBRunning = false;
   let _trackBStartedAt = 0;
+  let _trackBGeneration = 0; // guards against stuck-reset: old task's finally must not clear new task's flag
   const TRACK_B_MAX_MS = 720_000; // 12분 (3분 간격 × 4 = 여유 포함)
   const runTrackBSafe = () => {
     // Atomic tryAcquire: check stuck + acquire in single synchronous block
@@ -443,16 +444,18 @@ export function startScheduler(): void {
     }
     _trackBRunning = true;
     _trackBStartedAt = Date.now();
+    const myGen = ++_trackBGeneration;
     withTimeout('Track B dual', () => runDomesticDual('Track B', runTrackBJob), TRACK_B_MAX_MS)
       .catch((e) => logger.error(`Track B 실행 오류: ${e}`, { component: 'SCHEDULER' }))
       .finally(() => {
-        _trackBRunning = false;
+        if (_trackBGeneration === myGen) _trackBRunning = false;
       });
   };
 
   // 해외 스케줄러 중복 실행 방지 mutex
   let _overseasRunning = false;
   let _overseasStartedAt = 0;
+  let _overseasGeneration = 0; // same stuck-reset guard as _trackBGeneration
   const OVERSEAS_MAX_MS = 600_000; // 10분
   const runOverseasSafe = () => {
     // Atomic tryAcquire: same pattern as Track B
@@ -466,10 +469,11 @@ export function startScheduler(): void {
     }
     _overseasRunning = true;
     _overseasStartedAt = Date.now();
+    const myGen = ++_overseasGeneration;
     withTimeout('Overseas dual', () => runOverseasDual(), OVERSEAS_MAX_MS)
       .catch((e) => logger.error(`미국주식 실패: ${e}`, { component: 'SCHEDULER' }))
       .finally(() => {
-        _overseasRunning = false;
+        if (_overseasGeneration === myGen) _overseasRunning = false;
       });
   };
 

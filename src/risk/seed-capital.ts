@@ -43,7 +43,9 @@ export async function getSeedCapitalKr(): Promise<number> {
       cachedKrLiveAt = Date.now();
       return cachedKrLive;
     }
-  } catch {}
+  } catch (e) {
+    logger.debug(`시드자본 DB 조회 실패 (KIS fallback 시도): ${e}`, { component: 'RISK' });
+  }
 
   // 2순위: KIS API에서 실제 순자산 동기화 (임의 상수 사용 안 함)
   try {
@@ -58,10 +60,14 @@ export async function getSeedCapitalKr(): Promise<number> {
       try {
         const { getPool } = await import('../db/client.js');
         await getPool().query('UPDATE portfolio_allocation_config SET seed_capital = $1 WHERE is_paper = false', [netAsset]);
-      } catch {}
+      } catch (e) {
+        logger.debug(`시드자본 DB 캐시 저장 실패 (무시): ${e}`, { component: 'RISK' });
+      }
       return cachedKrLive;
     }
-  } catch {}
+  } catch (e) {
+    logger.debug(`시드자본 KIS API 실패 (fallback 0원): ${e}`, { component: 'RISK' });
+  }
 
   // 3순위: 폴백 (0 = 매수 차단 — 임의 금액 절대 사용 안 함)
   cachedKrLive = FALLBACK_SEED_KR;
@@ -93,7 +99,9 @@ export async function getSeedCapitalOverseas(): Promise<number> {
       cachedOverseasLiveAt = Date.now();
       return cachedOverseasLive;
     }
-  } catch {}
+  } catch (e) {
+    logger.debug(`해외 시드자본 DB 조회 실패 (KIS fallback 시도): ${e}`, { component: 'RISK' });
+  }
 
   // 2순위: KIS 해외 잔고에서 동기화 (cash + holdings value)
   try {
@@ -110,7 +118,9 @@ export async function getSeedCapitalOverseas(): Promise<number> {
       logger.info(`💰 해외 시드자본 동기화: $${totalUsd.toFixed(0)} (DB 미설정 → 실계좌)`, { component: 'RISK' });
       return cachedOverseasLive;
     }
-  } catch {}
+  } catch (e) {
+    logger.debug(`해외 시드자본 KIS API 실패 (fallback $0): ${e}`, { component: 'RISK' });
+  }
 
   cachedOverseasLive = FALLBACK_SEED_OVERSEAS;
   return cachedOverseasLive;

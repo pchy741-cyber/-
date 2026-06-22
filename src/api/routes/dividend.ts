@@ -113,6 +113,8 @@ dividendRoutes.patch('/dividend/watchlist/:id', async (c) => {
     }
     if (sets.length === 0) return c.json({ error: '업데이트 필드 없음' }, 400);
     vals.push(id);
+    // Column names in `sets` come exclusively from ALLOWED_COLS — no user input reaches the SQL string.
+    // Values are fully parameterized ($1..$N), so injection is not possible here.
     await getPool().query(`UPDATE dividend_watchlist SET ${sets.join(', ')} WHERE id = $${idx}`, vals);
     return c.json({ ok: true });
   } catch (e: any) {
