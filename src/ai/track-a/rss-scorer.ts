@@ -151,7 +151,7 @@ interface WatchlistItem {
 }
 
 /** Google News RSS로 종목 뉴스 감성 점수 계산 (-15 ~ +15) */
-async function getNewsScore(_stockCode: string, stockName: string): Promise<{ score: number; headlines: string[] }> {
+export async function getNewsScore(_stockCode: string, stockName: string): Promise<{ score: number; headlines: string[] }> {
   try {
     const url = `https://news.google.com/rss/search?q=${encodeURIComponent(stockName)}&hl=ko&gl=KR&ceid=KR:ko`;
     const res = await fetch(url, { signal: AbortSignal.timeout(4000) });

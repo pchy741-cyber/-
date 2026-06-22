@@ -19,6 +19,7 @@ import { getChangeRankingStocks, getCurrentPrice, getVolumeRankingStocks } from 
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
 import { sleep } from '../utils/sleep.js';
+import { getNewsScore } from '../ai/track-a/rss-scorer.js';
 import { getClusterFollowers } from './sector-themes.js';
 
 const COMPONENT = 'SURGE_DETECTOR';
@@ -40,6 +41,12 @@ const CLUSTER_MIN_CHANGE = -2.0; // 하락 중이어도 테마 파급 기대
 const CLUSTER_MAX_CHANGE = 4.5; // 이미 급등한 종목은 제외
 const CLUSTER_MIN_TRADING_VALUE = 10_000_000_000; // 100억 이상 (유동성 보장)
 const MAX_CLUSTER_ADD_PER_SURGE = 3; // 급등 1종목당 클러스터 최대 3개
+
+// 뉴스 추천 편입: 긍정 뉴스 + 양의 등락률 → 낮은 거래대금 기준
+const NEWS_MIN_SENTIMENT = 5;       // 뉴스 감성 +5 이상 (긍정 키워드 ≥2개)
+const NEWS_MIN_CHANGE_PCT = 1.0;    // 최소 +1% 상승
+const NEWS_MIN_TRADING_VALUE = 10_000_000_000; // 거래대금 100억+ (유동성 보장)
+const NEWS_MAX_ADD_PER_RUN = 5;     // 뉴스 기반 1회 최대 5개
 
 // 가격 범위
 const MIN_PRICE = 1_000;
@@ -236,8 +243,95 @@ export async function runSurgeDetector(): Promise<void> {
       ).catch(() => {});
     }
 
+    // ── 뉴스 추천 종목 자동 편입 ──────────────────────────────────────
+    // 급등 기준은 못 넘지만 뉴스 감성이 강한 종목 (LG전자 같은 케이스)
+    // KIS 등락률/거래량 상위에 이미 올라온 종목 중 뉴스 긍정 감성 + 양의 등락률
+    const newsAdded: string[] = [];
+    try {
+      // 급등 목록에 이미 편입된 종목 제외, 이미 워치리스트에 있는 종목도 제외
+      const newsCheckCandidates = newCandidates.filter(
+        (c) => !activeSet.has(c.stock_code) && !surgeList.some((s) => s.stock_code === c.stock_code),
+      );
+
+      if (newsCheckCandidates.length > 0) {
+        // 현재가 + 뉴스 감성 병렬 조회 (최대 20개)
+        type NewsCandidate = {
+          stock_code: string;
+          stock_name: string;
+          changePct: number;
+          tradingValue: number;
+          newsSentiment: number;
+          headline: string;
+        };
+        const newsCandidates: NewsCandidate[] = [];
+
+        await Promise.allSettled(
+          newsCheckCandidates.slice(0, 20).map(async (s) => {
+            try {
+              const [p, news] = await Promise.all([
+                getCurrentPrice(s.stock_code),
+                getNewsScore(s.stock_code, s.stock_name),
+              ]);
+
+              if (p.currentPrice < MIN_PRICE || p.currentPrice > MAX_PRICE) return;
+              if (p.haltYn === 'Y' || p.mrktWarnClsCode >= '02') return;
+
+              const tradingValue = p.currentPrice * p.volume;
+              if (
+                news.score >= NEWS_MIN_SENTIMENT &&
+                p.changePct >= NEWS_MIN_CHANGE_PCT &&
+                tradingValue >= NEWS_MIN_TRADING_VALUE
+              ) {
+                newsCandidates.push({
+                  stock_code: s.stock_code,
+                  stock_name: p.stockName || s.stock_name,
+                  changePct: p.changePct,
+                  tradingValue,
+                  newsSentiment: news.score,
+                  headline: news.headlines[0]?.slice(0, 30) ?? '',
+                });
+              }
+            } catch { /* skip */ }
+          }),
+        );
+
+        // 뉴스 감성 높은 순 정렬
+        newsCandidates.sort((a, b) => b.newsSentiment - a.newsSentiment);
+
+        for (const nc of newsCandidates.slice(0, NEWS_MAX_ADD_PER_RUN)) {
+          if (activeSet.has(nc.stock_code)) continue;
+          try {
+            const { rowCount } = await pool.query(
+              `INSERT INTO watchlist (stock_code, stock_name, market, is_active, source)
+               VALUES ($1, $2, 'KOSPI', true, 'NEWS')
+               ON CONFLICT (stock_code) DO UPDATE
+                 SET is_active = true, stock_name = EXCLUDED.stock_name, source = 'NEWS'
+                 WHERE watchlist.is_active = false`,
+              [nc.stock_code, nc.stock_name],
+            );
+            if (rowCount && rowCount > 0) {
+              activeSet.add(nc.stock_code);
+              const tVal = Math.round(nc.tradingValue / 100_000_000);
+              const label = `${nc.stock_name}(${nc.stock_code}) 뉴스+${nc.newsSentiment} ${nc.changePct.toFixed(1)}% 거래대금${tVal}억 "${nc.headline}"`;
+              newsAdded.push(label);
+              logger.info(`📰 뉴스 추천 편입: ${label}`, { component: COMPONENT });
+            }
+          } catch { /* skip */ }
+        }
+
+        if (newsAdded.length > 0) {
+          await sendTelegramMessage(
+            `📰 뉴스 추천 워치리스트 편입 (${newsAdded.length}개)\n` +
+              newsAdded.map((s) => `• ${s}`).join('\n'),
+          ).catch(() => {});
+        }
+      }
+    } catch (newsErr) {
+      logger.debug(`뉴스 추천 감지 스킵: ${newsErr}`, { component: COMPONENT });
+    }
+
     logger.info(
-      `급등 감지 완료 — 편입 ${added.length}개 / 클러스터 ${clusterAdded.length}개 / 후보 ${surgeList.length}개`,
+      `급등 감지 완료 — 편입 ${added.length}개 / 클러스터 ${clusterAdded.length}개 / 뉴스 ${newsAdded.length}개 / 후보 ${surgeList.length}개`,
       { component: COMPONENT },
     );
   } catch (err) {

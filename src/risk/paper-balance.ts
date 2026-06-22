@@ -66,7 +66,12 @@ function applyPaperOrder(
     return { bought: value, sold: 0, realizedPnl: 0 };
   }
 
-  if (h.qty <= 0) return { bought: 0, sold: value, realizedPnl: 0 };
+  // 매칭 BUY 없는 SELL (아카이브 누락, 외부 편입 등):
+  // costBasis=0 처리 → 매도 대금 전액을 실현손익에 반영 (현금 누락 방지)
+  if (h.qty <= 0) {
+    const sellFee = Math.round(value * PAPER_SELL_FEE_PCT);
+    return { bought: 0, sold: value, realizedPnl: value - sellFee };
+  }
 
   const matchedQty = Math.min(qty, h.qty);
   const avgCost = h.qty > 0 ? h.totalCost / h.qty : 0;
@@ -87,7 +92,7 @@ function applyPaperOrder(
 
 async function loadPaperLedger(force = false): Promise<PaperLedgerState> {
   const now = Date.now();
-  if (!force && paperLedgerCache && now - paperLedgerCache.fetchedAt < 30_000) {
+  if (!force && paperLedgerCache && now - paperLedgerCache.fetchedAt < 10_000) {
     return paperLedgerCache.state;
   }
 
@@ -213,7 +218,16 @@ export async function getPaperBalance(): Promise<AccountBalance> {
     .reduce((s, h) => s + h.totalCost, 0);
   paperCashUsed = holdingsCost;
 
+  const holdingsCount = Object.values(state.holdings).filter((h) => h.qty > 0).length;
   const cash = Math.max(0, Math.round(PAPER_INITIAL_CAPITAL + paperRealizedPnl - holdingsCost));
+
+  // 진단 로그 (주문가능금액 불일치 추적용)
+  if (holdingsCount === 0 && Math.abs(cash - PAPER_INITIAL_CAPITAL) > 100_000) {
+    logger.info(
+      `📊 [PAPER-DIAG] 보유0건 현금=${cash.toLocaleString()} = 시드${PAPER_INITIAL_CAPITAL.toLocaleString()} + 실현PnL${Math.round(paperRealizedPnl).toLocaleString()} | 총매수${state.totalBought.toLocaleString()} 총매도${state.totalSold.toLocaleString()}`,
+      { component: 'PAPER' },
+    );
+  }
 
   // 시가평가액은 UI 표시 전용 (현금 계산과 분리)
   const positions = await getPaperPositions();
