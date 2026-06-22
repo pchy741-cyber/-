@@ -541,14 +541,12 @@ export class TradeExecutor {
             chainCreated = true;
 
             // ScaleIn 3분할: 체인 생성 성공 후 2차(60s)/3차(120s) 분할 진입 스케줄
-            // ⚠️ setTimeout 기반 — 프로세스 재시작 시 2차/3차 트랜치 유실됨
-            // DB에 pending tranche 마커를 기록하여 재시작 후 감지 가능하도록 함
             if (useScaleIn && secondTranche > 0) {
               logger.info(
                 `📊 ScaleIn 스케줄: ${stockCode} 1차 ${filledQty}주 완료 → 2차 ${secondTranche}주(60s), 3차 ${thirdTranche}주(120s)`,
                 { component: 'EXECUTOR' },
               );
-              // DB 마커 기록 — 프로세스 재시작 시 미실행 트랜치 감지용
+              // DB 마커 기록 — setTimeout 등록 전에 await (재시작 후 recoverPendingScaleIns 복구용)
               const trancheMarker = {
                 stockCode,
                 chainId,
@@ -558,16 +556,27 @@ export class TradeExecutor {
                 reasoning,
                 isPaper: isPaperSnapshot,
               };
-              getPool()
-                .query(
-                  `INSERT INTO system_state (key, value) VALUES ($1, $2)
-               ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-                  [`pending_scalein_${chainId}`, JSON.stringify(trancheMarker)],
-                )
-                .catch((e) => logger.warn(`ScaleIn DB 마커 저장 실패: ${e}`, { component: 'EXECUTOR' }));
-
-              logger.warn(
-                `⚠️ ScaleIn 2차/3차 트랜치가 setTimeout으로 스케줄됨 — 프로세스 재시작 시 유실 위험: ${stockCode} chain=${chainId} 2차=${secondTranche}주(60s) 3차=${thirdTranche}주(120s)`,
+              let markerSaved = false;
+              for (let m = 0; m < 3; m++) {
+                try {
+                  await getPool().query(
+                    `INSERT INTO system_state (key, value) VALUES ($1, $2)
+                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+                    [`pending_scalein_${chainId}`, JSON.stringify(trancheMarker)],
+                  );
+                  markerSaved = true;
+                  break;
+                } catch (e) {
+                  if (m < 2) await new Promise((r) => setTimeout(r, 500));
+                  else
+                    logger.error(
+                      `🚨 ScaleIn DB 마커 저장 최종 실패 — 재시작 시 트랜치 유실 위험: ${stockCode} chain=${chainId}: ${e}`,
+                      { component: 'EXECUTOR' },
+                    );
+                }
+              }
+              logger.info(
+                `📋 ScaleIn 마커 ${markerSaved ? '저장됨' : '저장실패'}: ${stockCode} chain=${chainId} 2차=${secondTranche}주 3차=${thirdTranche}주`,
                 { component: 'EXECUTOR' },
               );
               setTimeout(() => {
@@ -1480,9 +1489,10 @@ export class TradeExecutor {
           }
 
           if (marker.thirdTranche > 0 && buyCount < 3) {
-            // 3차 트랜치 30초 후 실행 (2차와 간격)
-            setTimeout(() => {
-              runWithMode(marker.isPaper, () =>
+            // 3차 트랜치: 2차 직후 30s 대기 후 즉시 실행 (복구 경로에서는 await)
+            await new Promise((r) => setTimeout(r, 30_000));
+            try {
+              await runWithMode(marker.isPaper, () =>
                 this.executeAverageDown(
                   marker.stockCode,
                   marker.thirdTranche,
@@ -1491,19 +1501,16 @@ export class TradeExecutor {
                   `ScaleIn 3차/3 복구: ${marker.reasoning}`,
                   true,
                 ),
-              )
-                .then(() => {
-                  logger.info(`✅ ScaleIn 3차 복구 완료: ${marker.stockCode} ${marker.thirdTranche}주`, {
-                    component: 'EXECUTOR',
-                  });
-                  pool.query(`DELETE FROM system_state WHERE key = $1`, [row.key]).catch(() => {});
-                })
-                .catch((e) =>
-                  logger.warn(`ScaleIn 3차 복구 실패: ${marker.stockCode}: ${(e as Error).message}`, {
-                    component: 'EXECUTOR',
-                  }),
-                );
-            }, 30_000);
+              );
+              logger.info(`✅ ScaleIn 3차 복구 완료: ${marker.stockCode} ${marker.thirdTranche}주`, {
+                component: 'EXECUTOR',
+              });
+              await pool.query(`DELETE FROM system_state WHERE key = $1`, [row.key]).catch(() => {});
+            } catch (e) {
+              logger.warn(`ScaleIn 3차 복구 실패: ${marker.stockCode}: ${(e as Error).message}`, {
+                component: 'EXECUTOR',
+              });
+            }
           } else {
             // 3차 없으면 바로 마커 삭제
             await pool.query(`DELETE FROM system_state WHERE key = $1`, [row.key]);
