@@ -25,7 +25,7 @@ export const FALLBACK_FX_RATE = Number(process.env.FALLBACK_FX_RATE) || 1_520; /
 // ── 스케줄러 ──
 export const SCHEDULE = {
   // Track A: 무거운 분석 (하루 4회 — 파워풀 모드)
-  TRACK_A_CRON: ['30 7 * * 1-5', '0 10 * * 1-5', '30 12 * * 1-5', '0 18 * * 1-5'], // 07:30, 10:00, 12:30, 18:00 KST 평일
+  TRACK_A_CRON: ['30 7 * * 1-5', '0 9 * * 1-5', '30 9 * * 1-5', '0 10 * * 1-5', '30 12 * * 1-5', '0 18 * * 1-5'], // 07:30, 09:00, 09:30, 10:00, 12:30, 18:00 KST 평일
   // Track B: 실시간 감시 (장중 3분 간격 — 트레일링 반응 속도 개선)
   TRACK_B_INTERVAL_MINUTES: 3,
 } as const;

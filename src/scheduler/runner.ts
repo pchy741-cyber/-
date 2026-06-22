@@ -142,8 +142,53 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 장중 Track A 재분석 제거 — 장오픈 직전(07:30 + 08:55 워밍업)에만 AI 분석,
-  // 나머지 장중에는 캐시된 점수로 Track B 루프만 실행 (o3 비용 절감)
+  // 09:00 — Track A 개장 직후 재분석 (시초가 반영, 황금 오전 진입 전)
+  cron.schedule(
+    SCHEDULE.TRACK_A_CRON[1],
+    async () => {
+      const { isTradingDay } = await import('../utils/holidays.js');
+      if (!isTradingDay()) return;
+      logger.info('⏰ Track A (09:00 개장)', { component: 'SCHEDULER' });
+      withTimeout('Track A 09:00', () => runTrackAJob(), 300_000);
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 09:30 — Track A 황금 오전 중간 갱신
+  cron.schedule(
+    SCHEDULE.TRACK_A_CRON[2],
+    async () => {
+      const { isTradingDay } = await import('../utils/holidays.js');
+      if (!isTradingDay()) return;
+      logger.info('⏰ Track A (09:30 황금오전)', { component: 'SCHEDULER' });
+      withTimeout('Track A 09:30', () => runTrackAJob(), 300_000);
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 10:00 — Track A 장중 재분석 (마의구간 진입 직전 점수 갱신)
+  cron.schedule(
+    SCHEDULE.TRACK_A_CRON[3],
+    async () => {
+      const { isTradingDay } = await import('../utils/holidays.js');
+      if (!isTradingDay()) return;
+      logger.info('⏰ Track A (10:00 장중)', { component: 'SCHEDULER' });
+      withTimeout('Track A 10:00', () => runTrackAJob(), 300_000);
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 12:30 — Track A 오후장 재분석 (황금 오후 13:00 진입 전 점수 갱신)
+  cron.schedule(
+    SCHEDULE.TRACK_A_CRON[4],
+    async () => {
+      const { isTradingDay } = await import('../utils/holidays.js');
+      if (!isTradingDay()) return;
+      logger.info('⏰ Track A (12:30 오후)', { component: 'SCHEDULER' });
+      withTimeout('Track A 12:30', () => runTrackAJob(), 300_000);
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
 
   // 📊 크로스마켓 로테이션 — 하루 3회 (08:00 장전, 12:00 장중, 22:00 미국장 전)
   cron.schedule(
@@ -779,7 +824,7 @@ export function startScheduler(): void {
 
   // 18:00 — Track A 장후 분석 (비거래일 스킵 — AI 토큰 절약)
   cron.schedule(
-    SCHEDULE.TRACK_A_CRON[3],
+    SCHEDULE.TRACK_A_CRON[5],
     async () => {
       const { isTradingDay } = await import('../utils/holidays.js');
       if (!isTradingDay()) {
