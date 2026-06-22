@@ -62,26 +62,32 @@ const RSI_OVERSOLD = 38;
 const SECTOR_WEIGHT_LIMIT = 0.3;
 
 // ── 개선#3: 미국 시간대별 진입 가중치 (DST 대응) ──
+// v10.10.5: 자정 랩핑 버그 수정 — 00:00~05:00 KST 구간에서 open(22:30) 대비 비교 실패 → 항상 0점
 function getUSTimeBonus(): number {
   const kst = new Date();
   const kstH = kst.getUTCHours() + 9; // UTC → KST
   const kstM = kst.getUTCMinutes();
   const kstTotal = (kstH % 24) * 60 + kstM;
   // 서머타임: 개장 22:30 KST / 겨울: 개장 23:30 KST
-  const shift = isUSDST() ? 0 : 60; // 겨울 = 1시간 뒤로
-  const open = 22 * 60 + 30 + shift;     // 개장 시각 (분)
-  const open30 = open + 30;               // 개장 +30분
-  const open90 = open + 90;               // 개장 +1.5시간
-  const close60 = (5 * 60 + shift) % (24 * 60) - 60; // 마감 1시간 전
-  const close = (5 * 60 + shift) % (24 * 60);         // 마감
+  const shift = isUSDST() ? 0 : 60;
+  const open = 22 * 60 + 30 + shift;     // 개장 시각 (분, 1350 or 1410)
+  const close = 5 * 60 + shift;           // 마감 시각 (분, 300 or 360)
+  // 자정 교차: 개장 후 경과 시간으로 정규화 (22:30~05:00 → 0~390분)
+  const minsSinceOpen = kstTotal >= open
+    ? kstTotal - open
+    : kstTotal < close
+      ? (kstTotal + 24 * 60) - open  // 자정 이후 (00:00~05:00)
+      : -1; // 장외 시간
+  const sessionLen = (close + 24 * 60) - open; // 390분 (서머) or 390분 (겨울)
+  if (minsSinceOpen < 0 || minsSinceOpen > sessionLen) return 0;
   // 개장 30분: 모멘텀 포착 구간 → +5점
-  if (kstTotal >= open && kstTotal < open30) return 5;
+  if (minsSinceOpen < 30) return 5;
   // 개장 30분~1.5시간: 트렌드 확정 구간 → +10점
-  if (kstTotal >= open30 && kstTotal < open90) return 10;
+  if (minsSinceOpen < 90) return 10;
   // 최적 진입 (개장 1.5~2.5시간 후) → +8점
-  if (kstTotal >= open90 && kstTotal < open90 + 60) return 8;
+  if (minsSinceOpen < 150) return 8;
   // 마감 1시간 전: 방향 확정 → +5점
-  if (kstTotal >= close60 && kstTotal < close) return 5;
+  if (minsSinceOpen >= sessionLen - 60) return 5;
   return 0;
 }
 

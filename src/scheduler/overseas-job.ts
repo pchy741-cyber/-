@@ -941,30 +941,37 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       await setSessionStartValue(portfolioValue, isPaper());
     const _sessionStart = s.sessionStartPortfolioValue.get(mk) ?? portfolioValue;
 
-    // 손실 한도 — 해외 포트폴리오(USD) 기준, Paper/Live 분리
+    // v10.10.5: 손실 한도 — 총자산(국내+해외) 기준 (기존: 해외자산만 → 분모가 작아 조기 트리거)
     const osLimit = getOverseasLossTiers(isPaper());
     const holdingCostUsd = Array.from(holdings.entries()).reduce((sum, [, h]) => sum + h.qty * h.avgPrice, 0);
     const unrealizedLossUsd = holdingCostUsd - holdingEvalUsdPost; // 양수 = 손실
+    // 총자산 기준: targetOverseasUsd > 0이면 전체 계좌 규모 역산, 아니면 해외자산만 (폴백)
+    const lossBaseTotalUsd = targetOverseasUsd > 0
+      ? targetOverseasUsd / (isPaper() ? 0.70 : 1.0) // 목표배분 역산 → 전체 계좌 (USD)
+      : portfolioValue;
+    // 총자산 기준 손실율 (분모: 전체 계좌, 분자: 해외 미실현 손실)
+    const lossPctOfTotal = lossBaseTotalUsd > 0 ? (unrealizedLossUsd / lossBaseTotalUsd) * 100 : 0;
+    // 해외자산 기준 손실율 (로그용)
     const lossPctOfPortfolio = portfolioValue > 0 ? (unrealizedLossUsd / portfolioValue) * 100 : 0;
 
-    if (lossPctOfPortfolio >= osLimit.killPct) {
+    if (lossPctOfTotal >= osLimit.killPct) {
       await activateKillSwitch(
-        `해외 손실 한도 초과: 해외자산 대비 -${lossPctOfPortfolio.toFixed(1)}% (한도 ${osLimit.killPct}%) — $${unrealizedLossUsd.toFixed(0)} 손실 (해외자산 $${portfolioValue.toFixed(0)})`,
+        `해외 손실 한도 초과: 총자산 대비 -${lossPctOfTotal.toFixed(1)}% (한도 ${osLimit.killPct}%) — $${unrealizedLossUsd.toFixed(0)} 손실 (총$${lossBaseTotalUsd.toFixed(0)} 해외$${portfolioValue.toFixed(0)})`,
         false,
         SCOPE,
       );
       sendTelegramMessage(
-        `🛑 OVERSEAS KILL SWITCH: 해외자산 대비 -${lossPctOfPortfolio.toFixed(1)}%\n손실: $${unrealizedLossUsd.toFixed(0)} (해외자산 $${portfolioValue.toFixed(0)})\n해외 전체 매매 중단`,
+        `🛑 OVERSEAS KILL SWITCH: 총자산 대비 -${lossPctOfTotal.toFixed(1)}%\n손실: $${unrealizedLossUsd.toFixed(0)} (총$${lossBaseTotalUsd.toFixed(0)} 해외$${portfolioValue.toFixed(0)})\n해외 전체 매매 중단`,
       ).catch(() => {});
-    } else if (lossPctOfPortfolio >= osLimit.blockPct && !s.dailyLossAlertSent5.get(mk)) {
+    } else if (lossPctOfTotal >= osLimit.blockPct && !s.dailyLossAlertSent5.get(mk)) {
       s.dailyLossAlertSent5.set(mk, true);
       sendTelegramMessage(
-        `🚨 CRITICAL: 해외자산 대비 -${lossPctOfPortfolio.toFixed(1)}% 손실\n손실: $${unrealizedLossUsd.toFixed(0)} (해외자산 $${portfolioValue.toFixed(0)})\n신규 매수 차단됨`,
+        `🚨 CRITICAL: 총자산 대비 -${lossPctOfTotal.toFixed(1)}% 손실\n손실: $${unrealizedLossUsd.toFixed(0)} (총$${lossBaseTotalUsd.toFixed(0)} 해외$${portfolioValue.toFixed(0)})\n신규 매수 차단됨`,
       ).catch(() => {});
-    } else if (lossPctOfPortfolio >= osLimit.warnPct && !s.dailyLossAlertSent3.get(mk)) {
+    } else if (lossPctOfTotal >= osLimit.warnPct && !s.dailyLossAlertSent3.get(mk)) {
       s.dailyLossAlertSent3.set(mk, true);
       sendTelegramMessage(
-        `⚠️ WARNING: 해외자산 대비 -${lossPctOfPortfolio.toFixed(1)}% 손실\n해외자산: $${portfolioValue.toFixed(0)}`,
+        `⚠️ WARNING: 총자산 대비 -${lossPctOfTotal.toFixed(1)}% 손실\n해외자산: $${portfolioValue.toFixed(0)} (총$${lossBaseTotalUsd.toFixed(0)})`,
       ).catch(() => {});
     }
 
@@ -1005,17 +1012,17 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     if (mktSignal) logger.info(`📊 시장 신호: ${mktSignal.reason}`, { component: 'OVERSEAS' });
 
     const quality = mktSignal?.marketQuality ?? 'OK';
-    // 손실한도: OVERSEAS_LOSS_TIERS 통일 (warnPct → 회복모드, blockPct → 매수차단, killPct → 킬스위치)
-    const riskBlocked = lossPctOfPortfolio >= osLimit.blockPct;
-    const recoveryMode = lossPctOfPortfolio >= osLimit.warnPct && !riskBlocked;
+    // v10.10.5: 총자산 기준 손실한도 (lossPctOfTotal)
+    const riskBlocked = lossPctOfTotal >= osLimit.blockPct;
+    const recoveryMode = lossPctOfTotal >= osLimit.warnPct && !riskBlocked;
     if (riskBlocked) {
-      logger.warn(`⛔ 총자산 대비 -${lossPctOfPortfolio.toFixed(1)}% → 신규 매수 차단 (한도 ${osLimit.blockPct}%)`, {
+      logger.warn(`⛔ 총자산 대비 -${lossPctOfTotal.toFixed(1)}% (해외 -${lossPctOfPortfolio.toFixed(1)}%) → 신규 매수 차단 (한도 ${osLimit.blockPct}%)`, {
         component: 'OVERSEAS',
       });
-      await logSystem('WARN', 'OVERSEAS', `총자산 손실 -${lossPctOfPortfolio.toFixed(1)}% → 신규 매수 차단 (blockPct ${osLimit.blockPct}%)`);
+      await logSystem('WARN', 'OVERSEAS', `총자산 손실 -${lossPctOfTotal.toFixed(1)}% → 신규 매수 차단 (blockPct ${osLimit.blockPct}%)`);
     } else if (recoveryMode) {
       logger.warn(
-        `⚠️ 손실 회복 모드(-${lossPctOfPortfolio.toFixed(1)}%): warnPct ${osLimit.warnPct}% 도달 → 고확신 종목만 매수`,
+        `⚠️ 손실 회복 모드(-${lossPctOfTotal.toFixed(1)}%): warnPct ${osLimit.warnPct}% 도달 → 고확신 종목만 매수`,
         { component: 'OVERSEAS' },
       );
     }
