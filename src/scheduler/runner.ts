@@ -334,7 +334,7 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 08:50 — 장시작 스냅샷 + Kill Switch 리셋
+  // 08:50 — 장시작 스냅샷 + Kill Switch 리셋 + Auto Pilot 자동 시작
   cron.schedule(
     '50 8 * * 1-5',
     async () => {
@@ -353,6 +353,23 @@ export function startScheduler(): void {
           });
           await deactivateKillSwitchForMode(false, isPaperMode, 'KR');
         }
+      }
+
+      // 🤖 Auto Pilot 자동 시작 — 수동 버튼 불필요 (비활성 시에만)
+      try {
+        const { isLoopActive, startLoop } = await import('./loop-mode.js');
+        if (!isLoopActive()) {
+          const result = await startLoop();
+          if (result.ok) {
+            logger.info('🤖 Auto Pilot 자동 시작 (08:50 cron)', { component: 'SCHEDULER' });
+          } else {
+            logger.info(`🤖 Auto Pilot 시작 스킵: ${result.error}`, { component: 'SCHEDULER' });
+          }
+        } else {
+          logger.debug('🤖 Auto Pilot 이미 활성 — 스킵', { component: 'SCHEDULER' });
+        }
+      } catch (e) {
+        logger.warn(`Auto Pilot 자동 시작 실패: ${e}`, { component: 'SCHEDULER' });
       }
     },
     { timezone: MARKET.TIMEZONE },

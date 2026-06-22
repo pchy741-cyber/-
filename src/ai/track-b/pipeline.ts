@@ -12,6 +12,7 @@ import { getDisclosureScoreAdjustment, monitorDisclosures } from '../../automati
 import { refreshInsiderData, getInsiderScoreAdjustment } from '../../automation/dart-insider.js';
 import { refreshNaverTrends, getNaverTrendScoreAdjustment, registerStockNames } from '../../automation/naver-trend.js';
 import { getCachedPiotroskiScore, getCachedFundamentalScore } from '../../automation/dart-research.js';
+import { getCachedNewsAdj } from '../track-a/rss-scorer.js';
 import { getInvestorFlow } from '../../automation/investor-flow.js';
 import { getMacroScoreAdjustment, getMacroSnapshot } from '../../automation/macro-data.js';
 import { checkNewsForStock } from '../../automation/news-sentinel.js';
@@ -1050,11 +1051,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           : kospiPenaltyAdj;
         const insiderAdj = getInsiderScoreAdjustment(s.stock_code);
         const naverTrendAdj = getNaverTrendScoreAdjustment(s.stock_code);
+        // RSS 뉴스 감성 보정: Quick Re-Score/Surge Detector가 캐시한 실시간 뉴스 점수 반영
+        // 긍정 뉴스(+1~+5), 부정 뉴스(-1~-6) — 네트워크 호출 없음 (캐시 참조만)
+        const newsAdj = getCachedNewsAdj(s.stock_code);
         const totalAdj =
-          adj + capAdj + stale + effectiveKospiPenalty + adamKhooAdj + macroAdj + dartAdj + megaCapAdj + consensusAdj + aiScoreAdj + stockAccAdj + piotroskiAdj + fundScoreAdj + communityAdj + relStrengthAdj + insiderAdj + naverTrendAdj;
+          adj + capAdj + stale + effectiveKospiPenalty + adamKhooAdj + macroAdj + dartAdj + megaCapAdj + consensusAdj + aiScoreAdj + stockAccAdj + piotroskiAdj + fundScoreAdj + communityAdj + relStrengthAdj + insiderAdj + naverTrendAdj + newsAdj;
         if (!Number.isFinite(totalAdj)) {
           logger.warn(
-            `⚠️ 스코어 보정 NaN 감지: ${s.stock_code} adj=${adj} cap=${capAdj} macro=${macroAdj} dart=${dartAdj} cns=${consensusAdj} ai=${aiScoreAdj} acc=${stockAccAdj} pio=${piotroskiAdj} fund=${fundScoreAdj} cmty=${communityAdj} rs=${relStrengthAdj} ins=${insiderAdj} nvt=${naverTrendAdj}`,
+            `⚠️ 스코어 보정 NaN 감지: ${s.stock_code} adj=${adj} cap=${capAdj} macro=${macroAdj} dart=${dartAdj} cns=${consensusAdj} ai=${aiScoreAdj} acc=${stockAccAdj} pio=${piotroskiAdj} fund=${fundScoreAdj} cmty=${communityAdj} rs=${relStrengthAdj} ins=${insiderAdj} nvt=${naverTrendAdj} news=${newsAdj}`,
             { component: 'TRACK_B' },
           );
           return { stock_code: s.stock_code, score: Math.max(0, Math.round(base)) || 0 };

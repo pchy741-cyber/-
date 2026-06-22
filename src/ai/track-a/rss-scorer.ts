@@ -150,6 +150,28 @@ interface WatchlistItem {
   stock_name: string;
 }
 
+// ── 뉴스 감성 점수 캐시 (Track B 파이프라인 연동용) ──
+// Quick Re-Score(1~60분) / Surge Detector가 getNewsScore() 호출 시 자동 적재
+// Track B pipeline은 getCachedNewsAdj()로 네트워크 호출 없이 참조
+const NEWS_SCORE_CACHE = new Map<string, { score: number; fetchedAt: number }>();
+const NEWS_CACHE_TTL_MS = 90 * 60_000; // 90분 (Quick Re-Score 주기보다 여유)
+
+/** Track B 파이프라인용: 캐시된 뉴스 감성 → 점수 보정값 (-6 ~ +5) */
+export function getCachedNewsAdj(stockCode: string): number {
+  const cached = NEWS_SCORE_CACHE.get(stockCode);
+  if (!cached || Date.now() - cached.fetchedAt > NEWS_CACHE_TTL_MS) return 0;
+  const s = cached.score;
+  // 강한 긍정(8+): +5, 중간(5+): +3, 약한(3+): +1
+  // 강한 부정(-8↓): -6, 중간(-5↓): -3, 약한(-3↓): -1
+  if (s >= 8) return 5;
+  if (s >= 5) return 3;
+  if (s >= 3) return 1;
+  if (s <= -8) return -6;
+  if (s <= -5) return -3;
+  if (s <= -3) return -1;
+  return 0;
+}
+
 /** Google News RSS로 종목 뉴스 감성 점수 계산 (-15 ~ +15) */
 export async function getNewsScore(_stockCode: string, stockName: string): Promise<{ score: number; headlines: string[] }> {
   try {
@@ -174,7 +196,10 @@ export async function getNewsScore(_stockCode: string, stockName: string): Promi
       }
     }
 
-    return { score: Math.max(-NEWS_SCORE_MAX, Math.min(NEWS_SCORE_MAX, score)), headlines: titles.slice(0, 3) };
+    const bounded = Math.max(-NEWS_SCORE_MAX, Math.min(NEWS_SCORE_MAX, score));
+    // 캐시 적재 — Track B pipeline이 getCachedNewsAdj()로 참조
+    NEWS_SCORE_CACHE.set(_stockCode, { score: bounded, fetchedAt: Date.now() });
+    return { score: bounded, headlines: titles.slice(0, 3) };
   } catch {
     return { score: 0, headlines: [] };
   }
