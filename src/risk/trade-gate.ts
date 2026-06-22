@@ -11,14 +11,7 @@
 import { GATE } from '../config/constants.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { logger } from '../utils/logger.js';
-import {
-  chartVerificationGate,
-  entryTimingGate,
-  newsGate,
-  reEntryCooldownGate,
-  regimeGate,
-  volatilitySizing,
-} from './trade-gate-checks.js';
+import { chartVerificationGate, entryTimingGate, newsGate, regimeGate, volatilitySizing } from './trade-gate-checks.js';
 import { cooldownGate, getWinRateStats } from './trade-gate-stats.js';
 
 export type { MarketRegime } from './trade-gate-checks.js';
@@ -118,15 +111,7 @@ export async function runTradeGates(input: GateInput): Promise<GateResult> {
   }
   results.push(cooldown);
 
-  // 1-b. 종목별 재진입 쿨다운
-  const reEntry = await reEntryCooldownGate(input);
-  if (!reEntry.passed) {
-    logger.warn(`🚦 [재진입] ${input.stockCode}: ${reEntry.reason}`, { component: 'TRADE_GATE' });
-    return reEntry;
-  }
-  results.push(reEntry);
-
-  // 1-c. 뉴스/공시 게이트
+  // 1-b. 뉴스/공시 게이트
   const news = await newsGate(input.stockCode);
   if (!news.passed) {
     logger.warn(`🚦 [뉴스게이트] ${input.stockCode}: ${news.reason}`, { component: 'TRADE_GATE' });

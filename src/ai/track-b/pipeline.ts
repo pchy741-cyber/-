@@ -1,5 +1,5 @@
 import { analyzeTechnicals } from '../../analysis/indicators.js';
-import { isKospiOverrideActive } from '../../risk/kospi-override.js';
+import { getCommunityScoreAdjustment } from '../../automation/community-sentinel.js';
 import {
   assessCrashLevel,
   type CrashSignal,
@@ -7,14 +7,12 @@ import {
   generatePanicSellDecisions,
   INVERSE_ETF_CODES,
 } from '../../automation/crash-profit.js';
-import { getCommunityScoreAdjustment } from '../../automation/community-sentinel.js';
+import { getInsiderScoreAdjustment, refreshInsiderData } from '../../automation/dart-insider.js';
 import { getDisclosureScoreAdjustment, monitorDisclosures } from '../../automation/dart-monitor.js';
-import { refreshInsiderData, getInsiderScoreAdjustment } from '../../automation/dart-insider.js';
-import { refreshNaverTrends, getNaverTrendScoreAdjustment, registerStockNames } from '../../automation/naver-trend.js';
-import { getCachedPiotroskiScore, getCachedFundamentalScore } from '../../automation/dart-research.js';
-import { getCachedNewsAdj } from '../track-a/rss-scorer.js';
+import { getCachedFundamentalScore, getCachedPiotroskiScore } from '../../automation/dart-research.js';
 import { getInvestorFlow } from '../../automation/investor-flow.js';
 import { getMacroScoreAdjustment, getMacroSnapshot } from '../../automation/macro-data.js';
+import { getNaverTrendScoreAdjustment, refreshNaverTrends, registerStockNames } from '../../automation/naver-trend.js';
 import { checkNewsForStock } from '../../automation/news-sentinel.js';
 import {
   calcPortfolioStressLevel,
@@ -26,11 +24,7 @@ import { setActiveEngine } from '../../cache/ai-status.js';
 import { REFRESH, STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { config } from '../../config/index.js';
-import {
-  getLatestScores,
-  getPool,
-  logSystem,
-} from '../../db/client.js';
+import { getLatestScores, getPool, logSystem } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { logScanSession } from '../../db/scan-logger.js';
 import {
@@ -47,18 +41,26 @@ import { fetchStockDisclosures } from '../../market/krx-disclosure.js';
 import { getMacroSignal } from '../../market/macro-signal.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { checkEntryTiming } from '../../risk/entry-timing-guard.js';
+import { isKospiOverrideActive } from '../../risk/kospi-override.js';
 import { reconcilePendingOrders } from '../../trading/fill-reconciler.js';
 import { logger } from '../../utils/logger.js';
 import { getOverride } from '../ai-overrides.js';
+import { getCachedNewsAdj } from '../track-a/rss-scorer.js';
 import { IDLE_PARK_STOCK_CODE } from './cash-manager.js';
+import { loadPipelineData } from './data-loader.js';
 import { applyDecisionFlow } from './decision-flow.js';
-import { buildDefenseParkEntryDecisions, buildDefenseParkExitDecisions, getDefenseParkState, isPortfolioInDowntrend, PARK_STOCK_CODE, PARK_STOCK_NAME } from './defense-park.js';
+import {
+  buildDefenseParkEntryDecisions,
+  buildDefenseParkExitDecisions,
+  getDefenseParkState,
+  isPortfolioInDowntrend,
+  PARK_STOCK_CODE,
+  PARK_STOCK_NAME,
+} from './defense-park.js';
 import { checkDailyLoss, fetchKospiRegime } from './market-regime.js';
 import { generatePartialTpDecisions } from './sell-signals.js';
 import { technicalFallbackDecisions } from './technical-fallback.js';
 import { MEGA_CAP_PRIORITY_CODES } from './trading-rules.js';
-
-import { loadPipelineData } from './data-loader.js';
 
 // DART 캐시 갱신 추적 — paper/live 모드별 분리 (크로스오염 방지)
 const _lastDartRefreshAt = new Map<string, number>();
@@ -133,9 +135,18 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // ── 2. 데이터 로드 (병렬) ────────────────────────────────────────
     const {
-      watchlist, openChains, strategy, recentLossCodes, manuallySoldCodes,
-      todayRepeatStopCodes, bigLossBlocked, recentlySoldCodes, balance,
-      lossHistory, ctxIsPaper, pendingPreMarketCodes,
+      watchlist,
+      openChains,
+      strategy,
+      recentLossCodes,
+      manuallySoldCodes,
+      todayRepeatStopCodes,
+      bigLossBlocked,
+      recentlySoldCodes,
+      balance,
+      lossHistory,
+      ctxIsPaper,
+      pendingPreMarketCodes,
     } = await loadPipelineData();
 
     if (watchlist.length === 0) {
@@ -151,19 +162,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       minute: 'numeric',
       hour12: false,
     }).formatToParts(new Date());
-    const kstH = Number(_kstParts.find((p) => p.type === 'hour')!.value);
-    const kstM = Number(_kstParts.find((p) => p.type === 'minute')!.value);
+    const kstH = Number(_kstParts.find((p) => p.type === 'hour')?.value ?? '0');
+    const kstM = Number(_kstParts.find((p) => p.type === 'minute')?.value ?? '0');
     const _isOpeningBell = kstH === 9 && kstM < 15; // 09:00~09:14 (15분 윈도우 — 09:15+ 진입 시 09:30 TP 도달 불가)
     const dbMode = (strategy?.mode ?? 'SWING') as StrategyMode;
     // ── 장초반 09:00-09:30 신규 매수 차단 (매도는 허용) ──
-    // SCALPING 모드 + 연습모드는 예외 (CEO가 명시적으로 스캘핑 지시한 경우)
-    const isOpeningVolatility = kstH === 9 && kstM < 20 && !getCtxIsPaper() && dbMode !== 'SCALPING'; // v10.5: 09:40→09:20 (과도한 차단 → Live 매매 기회 확보)
     // SNIPER/DEFENSE는 개장벨에도 모드 유지 (SNIPER는 CEO가 명시적으로 설정한 집중 전략)
-    // SCALPING 자동 활성화 비활성화 (2026-06 성과 검토: 승률 25.7%, profit factor 0.98 → 실질 손실)
+    const isOpeningVolatility = kstH === 9 && kstM < 20 && !getCtxIsPaper(); // v10.5: 09:40→09:20
     const mode: StrategyMode = dbMode;
-    // SCALPING 10:00 데드라인: 이후 신규 매수는 SWING 기준으로 전환 (기존 체인은 강제청산 유지)
-    const isPastScalpDeadline = dbMode === 'SCALPING' && kstH >= 10;
-    const isScalpingMode = dbMode === 'SCALPING';
 
     // ── 방어 파킹 시스템 ──────────────────────────────────────────────
     // 2026-06 성과 검토: 파킹 즉시 해제 → 하락장 재진입 → 추가 손실 루프
@@ -194,10 +200,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       const PARK_EXCEPT_TOP_N = 3;
       isParkingException = true;
       watchlist.slice(0, PARK_EXCEPT_TOP_N).forEach((w) => parkExceptCodes.add(w.stock_code));
-      logger.info(
-        `🛡️ 파킹 유지 — 감시목록 상위 ${PARK_EXCEPT_TOP_N}개 예외 허용: ${[...parkExceptCodes].join(', ')}`,
-        { component: 'TRACK_B' },
-      );
+      logger.info(`🛡️ 파킹 유지 — 감시목록 상위 ${PARK_EXCEPT_TOP_N}개 예외 허용: ${[...parkExceptCodes].join(', ')}`, {
+        component: 'TRACK_B',
+      });
     }
     const orphanedKodex = openChains.find((c) => c.stock_code === PARK_STOCK_CODE);
     if (orphanedKodex) {
@@ -278,7 +283,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         );
         for (const row of newlyTagged) {
           if (!existingScoreCodes.has(row.stock_code)) {
-            scores.push({ stock_code: row.stock_code, composite_score: 62, confidence: 0, score_date: todayKst } as any);
+            scores.push({
+              stock_code: row.stock_code,
+              composite_score: 62,
+              confidence: 0,
+              score_date: todayKst,
+            } as any);
             logger.info(`🔀 임시점수(62) 주입: ${row.stock_code} — SURGE/KIS 신규편입 (순환참조 우회)`, {
               component: 'TRACK_B',
             });
@@ -418,8 +428,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const watchlistCodes = watchlist.map((s) => s.stock_code);
     registerStockNames(watchlist.map((s) => ({ code: s.stock_code, name: s.stock_name })));
     await Promise.allSettled([
-      Promise.race([refreshInsiderData(watchlistCodes), new Promise<void>((_, r) => setTimeout(() => r(new Error('timeout')), 3000))]),
-      Promise.race([refreshNaverTrends(watchlistCodes), new Promise<void>((_, r) => setTimeout(() => r(new Error('timeout')), 3000))]),
+      Promise.race([
+        refreshInsiderData(watchlistCodes),
+        new Promise<void>((_, r) => setTimeout(() => r(new Error('timeout')), 3000)),
+      ]),
+      Promise.race([
+        refreshNaverTrends(watchlistCodes),
+        new Promise<void>((_, r) => setTimeout(() => r(new Error('timeout')), 3000)),
+      ]),
     ]);
     const macroRiskOff = !ctxIsPaper && macroSnapshot?.regime === 'RISK_OFF';
     if (macroSnapshot?.regime === 'RISK_OFF') {
@@ -455,8 +471,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       if (dt.downtrend) {
         // KODEX 200(069500)으로 시장 전체 기관 흐름 확인
         const kospiFlow = await getInvestorFlow('069500', 5).catch(() => null);
-        const instBuying = kospiFlow && kospiFlow.institutionNet > 0 &&
-          (kospiFlow.trend === 'STRONG_BUY' || kospiFlow.trend === 'BUY');
+        const instBuying =
+          kospiFlow && kospiFlow.institutionNet > 0 && (kospiFlow.trend === 'STRONG_BUY' || kospiFlow.trend === 'BUY');
         if (instBuying) {
           logger.info(
             `🛡️ 파킹 진입 보류: 기관 순매수 지속 중 (trend=${kospiFlow!.trend}, 기관순매수=${kospiFlow!.institutionNet.toLocaleString()}주) — 연금 지지선 감지`,
@@ -464,7 +480,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           );
         } else {
           logger.warn(`🛡️ 방어 파킹 진입 트리거: ${dt.reason}`, { component: 'DEFENSE_PARK' });
-          return buildDefenseParkEntryDecisions(openChains, livePrices, orderableCash, totalAssets, dt.reason, crashSignal);
+          return buildDefenseParkEntryDecisions(
+            openChains,
+            livePrices,
+            orderableCash,
+            totalAssets,
+            dt.reason,
+            crashSignal,
+          );
         }
       }
     }
@@ -492,22 +515,19 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const autoShouldSniper =
       dbMode === 'SWING' && highScoreCount >= 1 && !autoShouldDefense && dailyLoss.dailyPnlPct > -1.0;
     // SNIPER→SWING 자동 복귀: DB=SNIPER이지만 90점+ 종목 소멸 시
-    const autoShouldRevertFromSniper =
-      dbMode === 'SNIPER' && highScoreCount === 0 && !autoShouldDefense;
+    const autoShouldRevertFromSniper = dbMode === 'SNIPER' && highScoreCount === 0 && !autoShouldDefense;
 
-    const effectiveModeRaw: StrategyMode = isPastScalpDeadline
-      ? 'SWING'
-      : autoShouldDefense
-        ? 'DEFENSE'
-        : autoShouldSniper
-          ? 'SNIPER'
-          : autoShouldRevertFromSniper
+    const effectiveModeRaw: StrategyMode = autoShouldDefense
+      ? 'DEFENSE'
+      : autoShouldSniper
+        ? 'SNIPER'
+        : autoShouldRevertFromSniper
+          ? 'SWING'
+          : autoShouldRevertSwing
             ? 'SWING'
-            : autoShouldRevertSwing
+            : scores.length === 0 && mode === 'DEFENSE'
               ? 'SWING'
-              : scores.length === 0 && mode === 'DEFENSE'
-                ? 'SWING'
-                : mode;
+              : mode;
     // Paper는 Live의 DEFENSE 전파 차단 — 연습은 항상 SWING 이상으로 실행
     const effectiveMode: StrategyMode = ctxIsPaper && effectiveModeRaw === 'DEFENSE' ? 'SWING' : effectiveModeRaw;
     // Paper DB행 자가 복구: Paper 행이 DEFENSE로 오염된 경우 자동으로 SWING 복귀 (멱등 조건)
@@ -525,22 +545,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         .catch(() => {});
     }
 
-    if (isPastScalpDeadline) {
-      logger.info('⏰ SCALPING 09:30 이후 → 신규 매수 SWING 기준 전환 (기존 SCALPING 포지션은 강제청산)', {
-        component: 'TRACK_B',
-      });
-      // DB 모드 자동 전환 (SCALPING → SWING) — Live 행만, Paper 행 및 Paper 컨텍스트 모두 차단
-      if (!ctxIsPaper)
-        getPool()
-          .query(
-            `UPDATE strategy_config SET mode='SWING', updated_at=NOW() WHERE is_active=true AND mode='SCALPING' AND is_paper=false`,
-          )
-          .then(({ rowCount }) => {
-            if (rowCount && rowCount > 0)
-              logger.info('✅ DB 모드 자동전환: SCALPING → SWING (09:30 이후)', { component: 'TRACK_B' });
-          })
-          .catch((e: Error) => logger.warn(`모드 자동전환 DB 업데이트 실패: ${e.message}`, { component: 'TRACK_B' }));
-    } else if (autoShouldDefense) {
+    if (autoShouldDefense) {
       const reason = kospiRegime.flashCrash
         ? '급락 서킷브레이커'
         : `하락장(penalty${kospiRegime.penalty})+당일하락+손실${dailyLoss.dailyPnlPct.toFixed(1)}%`;
@@ -687,7 +692,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           { component: 'TRACK_B' },
         );
       }
-    } catch { /* score_accuracy 조회 실패 시 무시 */ }
+    } catch {
+      /* score_accuracy 조회 실패 시 무시 */
+    }
 
     // ── 외국인/기관 수급 → AI 스코어 보정 ────────────────────────────
     // 상위 5종목만 조회 (10→5, timeout 3s→1.5s로 속도 최적화)
@@ -737,7 +744,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 동시호가 PENDING/FILLED 종목 → 잡주 필터에 병합 (Track B 중복매수 방지)
     if (pendingPreMarketCodes.size > 0) {
       for (const code of pendingPreMarketCodes) junkStockCodes.add(code);
-      logger.info(`📋 동시호가 주문 종목 매수 차단: ${[...pendingPreMarketCodes].join(', ')}`, { component: 'PRE_MARKET_ORDER' });
+      logger.info(`📋 동시호가 주문 종목 매수 차단: ${[...pendingPreMarketCodes].join(', ')}`, {
+        component: 'PRE_MARKET_ORDER',
+      });
     }
 
     // ── KIND 공시 악재 즉각 반응 (신규 매수 차단 + 오픈 포지션 텔레그램 경보) ──
@@ -785,7 +794,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 조건: KOSPI >= MA60 (하락장 아님) + 일일손실 미차단
     // kospiBoost(MA20>MA60 강세) 뿐 아니라 중립장(penalty=0)에서도 작동
     const watchlistSet = new Set(watchlist.map((w) => w.stock_code));
-    if ((kospiRegime.penalty === 0 || isScalpingMode) && !dailyLoss.blocked) {
+    if (kospiRegime.penalty === 0 && !dailyLoss.blocked) {
       try {
         const topGainers = await getChangeRankingStocks(10, 'J');
         const newStocks = topGainers.filter((s) => s.stock_code && !watchlistSet.has(s.stock_code));
@@ -860,10 +869,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 13:00~14:50 → 황금 오후 — 전 모드 진입 허용 (v13 복원: 기존 kstH===13 SNIPER전용이 버그였음)
     // 14:50~15:20 → SWING EOD 종가베팅 전용
     // 15:20+      → 전면 차단
-    const isAfterGoldenHour = !isScalpingMode && (kstH > 10 || (kstH === 10 && kstM >= 20)); // 황금오전 끝 10:20부터
+    const isAfterGoldenHour = kstH > 10 || (kstH === 10 && kstM >= 20); // 황금오전 끝 10:20부터
     const isSniperOnlyWindow = (kstH === 10 && kstM >= 20) || (kstH === 11 && kstM < 30); // 10:20~11:30 SNIPER 창구
     const isGoldenAfternoon = kstH === 13 || (kstH === 14 && kstM < 50) || isSwingEodBetting; // 황금오후 + EOD
-    const isLunchBan = isAfterGoldenHour && !isGoldenAfternoon && !(effectiveModeRaw === 'SNIPER' && isSniperOnlyWindow);
+    const isLunchBan =
+      isAfterGoldenHour && !isGoldenAfternoon && !(effectiveModeRaw === 'SNIPER' && isSniperOnlyWindow);
     const portfolioStress = calcPortfolioStressLevel(openChains, livePrices, totalAssets);
     if (portfolioStress >= 1) {
       logger.warn(`⚠️ 포트폴리오 스트레스 레벨 ${portfolioStress} (미실현 손실 누적)`, { component: 'TRACK_B' });
@@ -890,19 +900,27 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 최대 동시 포지션 수 제한 (alloc-risk-cache에서 조회)
     const { getAllocRisk } = await import('../../db/alloc-risk-cache.js');
     const allocRisk = await getAllocRisk(ctxIsPaper);
-    const activePositionCount = openChains.filter((c) => c.total_quantity > 0 && c.stock_code !== PARK_STOCK_CODE).length;
+    const activePositionCount = openChains.filter(
+      (c) => c.total_quantity > 0 && c.stock_code !== PARK_STOCK_CODE,
+    ).length;
     const isMaxPositionsReached = !ctxIsPaper && activePositionCount >= allocRisk.maxPositions;
     if (isMaxPositionsReached) {
-      logger.info(`🚫 최대 포지션 수 도달: ${activePositionCount}/${allocRisk.maxPositions} → 신규 매수 차단`, { component: 'TRACK_B' });
+      logger.info(`🚫 최대 포지션 수 도달: ${activePositionCount}/${allocRisk.maxPositions} → 신규 매수 차단`, {
+        component: 'TRACK_B',
+      });
     }
     // 🚀 랠리일 감지: KOSPI +1.5%+ 갭업 시 보수적 시간 차단 해제 (갭업 랠리 놓치지 않기)
     const isRallyDay = kospiRegime.todayUp;
     // 랠리일: 개장블록만 09:00-09:10으로 단축 — 마의 시간대는 랠리일이어도 유지
     // (이전: isRallyDay ? false : isLunchBan → 오늘 KOSPI+0.1%만 올라도 10:45 진입 → -405K 손실)
-    const isOpeningBlock = isRallyDay ? (kstH === 9 && kstM < 10 && !getCtxIsPaper() && effectiveMode !== 'SCALPING') : isOpeningVolatility;
+    const isOpeningBlock = isRallyDay
+      ? kstH === 9 && kstM < 10 && !getCtxIsPaper() && effectiveMode !== 'SCALPING'
+      : isOpeningVolatility;
     const isLunchBlock = isLunchBan; // 랠리일이어도 마의 시간대 항상 적용 (93+ 극초고확신만 예외)
     if (isRallyDay && (isOpeningVolatility || isSwingEodRestricted)) {
-      logger.info(`🚀 랠리일(KOSPI+1.5%+): 개장블록/종가우선 해제 → 적극 매수 허용 (마의시간대는 유지)`, { component: 'TRACK_B' });
+      logger.info(`🚀 랠리일(KOSPI+1.5%+): 개장블록/종가우선 해제 → 적극 매수 허용 (마의시간대는 유지)`, {
+        component: 'TRACK_B',
+      });
     }
     const blockNewBuys =
       (!ctxIsPaper && isPastClose) || // Paper: 마감시간 면제 (적극적 매매)
@@ -913,10 +931,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       (!ctxIsPaper && dailyLoss.blocked) || // Paper: 일일손실 차단 면제 (데이터 수집 우선)
       (!ctxIsPaper && kospiRegime.flashCrash) || // 급락 서킷브레이커: Live만 차단 (Paper 면제 — 모의자금)
       (!ctxIsPaper && !isKospiOverrideActive() && kospiRegime.todayDown) || // 코스피 당일 -0.3%+ 하락: 신규매수 전면 차단 (고확신 종목은 decision-flow에서 개별 허용)
-      (!ctxIsPaper &&
-        !isKospiOverrideActive() &&
-        kospiRegime.penalty >= 2 &&
-        kospiRegime.todayDown) || // 하락장+당일하락: Live만 차단 (고확신 개별 허용은 downstream)
+      (!ctxIsPaper && !isKospiOverrideActive() && kospiRegime.penalty >= 2 && kospiRegime.todayDown) || // 하락장+당일하락: Live만 차단 (고확신 개별 허용은 downstream)
       (!ctxIsPaper && portfolioStress >= 2) || // Paper: 포트스트레스 면제
       (!ctxIsPaper && crashSignal.level === 'CRASH') || // 크래시 시그널 CRASH: 인버스 외 일반 매수 차단
       (!ctxIsPaper && crashSignal.level === 'PANIC') || // 크래시 시그널 PANIC: 전면 매수 차단
@@ -924,9 +939,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // ── entry-timing-guard 연결: 이브닝 블록 + 전략 필터 + 기술지표 다중 확증 ──
     // 기존 blockNewBuys 조건에 구조적 가드 추가 (Live만 적용)
-    const entryTimingCheck = !ctxIsPaper && !blockNewBuys
-      ? checkEntryTiming({ aiScore: topScore, marketCode: 'KR', strategyMode: effectiveMode })
-      : null;
+    const entryTimingCheck =
+      !ctxIsPaper && !blockNewBuys
+        ? checkEntryTiming({ aiScore: topScore, marketCode: 'KR', strategyMode: effectiveMode })
+        : null;
     if (entryTimingCheck && !entryTimingCheck.allowed) {
       logger.info(`🛡️ 진입타이밍가드 차단: ${entryTimingCheck.reason}`, { component: 'TRACK_B' });
     }
@@ -966,11 +982,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
                   ? `하락장매수차단(penalty${kospiRegime.penalty}+당일하락)`
                   : crashSignal.level === 'CRASH' || crashSignal.level === 'PANIC'
                     ? `🔻 크래시시그널(${crashSignal.level} score=${crashSignal.score})`
-                  : entryTimingCheck && !entryTimingCheck.allowed
-                    ? `진입타이밍가드(${entryTimingCheck.details.phase})`
-                    : eodOnlyActive
-                      ? '🎰 EOD-only모드(연패→종가베팅만허용)'
-                      : `포트폴리오위험(미실현손실-3.5%↑)`;
+                    : entryTimingCheck && !entryTimingCheck.allowed
+                      ? `진입타이밍가드(${entryTimingCheck.details.phase})`
+                      : eodOnlyActive
+                        ? '🎰 EOD-only모드(연패→종가베팅만허용)'
+                        : `포트폴리오위험(미실현손실-3.5%↑)`;
       logger.warn(`🚫 신규매수 차단: ${blockReason}`, { component: 'TRACK_B' });
     }
     if (macroSizingMult < 1.0) {
@@ -1019,7 +1035,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         // Track A 07:30 생성 → 15:30까지 8시간. 오래된 점수의 신뢰도 하락 반영
         const scoredAt = s.created_at ? new Date(s.created_at).getTime() : 0;
         const ageHours = scoredAt > 0 ? (Date.now() - scoredAt) / 3_600_000 : 0;
-        const decayWeight = ageHours <= 2 ? 1.0 : ageHours <= 4 ? 0.88 : ageHours <= 6 ? 0.75 : ageHours <= 24 ? 0.60 : 0.45;
+        const decayWeight =
+          ageHours <= 2 ? 1.0 : ageHours <= 4 ? 0.88 : ageHours <= 6 ? 0.75 : ageHours <= 24 ? 0.6 : 0.45;
         const base = 50 + (rawBase - 50) * decayWeight; // 중립(50)으로 수렴
         const adj = flowAdjMap.get(s.stock_code) ?? 0;
         const capAdj = marketCapAdjMap.get(s.stock_code) ?? 0;
@@ -1056,43 +1073,64 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         const stockAccAdj = stockAccAdjMap.get(s.stock_code) ?? 0;
         // Piotroski F-Score 보정: 8-9 우량 +5, 0-2 취약 -8
         const piotroskiFs = getCachedPiotroskiScore(s.stock_code);
-        const piotroskiAdj = piotroskiFs != null
-          ? piotroskiFs >= 8 ? 5 : piotroskiFs <= 2 ? -8 : 0
-          : 0;
+        const piotroskiAdj = piotroskiFs != null ? (piotroskiFs >= 8 ? 5 : piotroskiFs <= 2 ? -8 : 0) : 0;
         // Gemini fundamentalScore 보정: 75+→+4, 60+→+2, 30-→-5 (DART 리서치 연동)
         const fundScore = getCachedFundamentalScore(s.stock_code);
-        const fundScoreAdj = fundScore != null
-          ? fundScore >= 75 ? 4 : fundScore >= 60 ? 2 : fundScore <= 30 ? -5 : 0
-          : 0;
+        const fundScoreAdj =
+          fundScore != null ? (fundScore >= 75 ? 4 : fundScore >= 60 ? 2 : fundScore <= 30 ? -5 : 0) : 0;
         // Community Sentinel: 언급 Z-score + 센티먼트 + FOMO/펌프 감지 (-20 ~ +5)
         const communityAdj = getCommunityScoreAdjustment(s.stock_code);
         // 상대강도(RS): 종목 5일 수익률 vs KOSPI 5일 수익률 (학술 검증된 모멘텀 팩터)
         // KOSPI보다 강한 종목 = 시장 주도, 약한 종목 = 구조적 약세
         const kospi5dRet = kospiRegime.kospi5dReturn ?? 0;
         const stockCandles = chartData.get(s.stock_code);
-        const stock5dRet = stockCandles && stockCandles.length >= 6 && stockCandles[5].close > 0
-          ? ((stockCandles[0].close - stockCandles[5].close) / stockCandles[5].close) * 100
-          : null;
+        const stock5dRet =
+          stockCandles && stockCandles.length >= 6 && stockCandles[5].close > 0
+            ? ((stockCandles[0].close - stockCandles[5].close) / stockCandles[5].close) * 100
+            : null;
         const relStrength = stock5dRet != null ? stock5dRet - kospi5dRet : 0;
-        const relStrengthAdj = stock5dRet != null
-          ? relStrength >= 3.0 ? 4     // 시장 대비 3%+ 초과 → 주도주
-            : relStrength <= -3.0 ? -6  // 시장 대비 3%+ 부진 → 약세 종목
-            : 0
-          : 0;
+        const relStrengthAdj =
+          stock5dRet != null
+            ? relStrength >= 3.0
+              ? 4 // 시장 대비 3%+ 초과 → 주도주
+              : relStrength <= -3.0
+                ? -6 // 시장 대비 3%+ 부진 → 약세 종목
+                : 0
+            : 0;
         // 역행주 보호: KOSPI 하락 중 시장 대비 강한 종목은 kospiPenalty 감면
         // (하락장에서 오히려 오르는 종목 = 시장 주도주 / 섹터 로테이션 수혜)
-        const effectiveKospiPenalty = kospiPenaltyAdj < 0 && stock5dRet != null
-          ? relStrength >= 5.0 ? Math.round(kospiPenaltyAdj * 0.2)   // 80% 감면 (확실한 역행주)
-            : relStrength >= 3.0 ? Math.round(kospiPenaltyAdj * 0.5) // 50% 감면 (강한 역행주)
-            : kospiPenaltyAdj
-          : kospiPenaltyAdj;
+        const effectiveKospiPenalty =
+          kospiPenaltyAdj < 0 && stock5dRet != null
+            ? relStrength >= 5.0
+              ? Math.round(kospiPenaltyAdj * 0.2) // 80% 감면 (확실한 역행주)
+              : relStrength >= 3.0
+                ? Math.round(kospiPenaltyAdj * 0.5) // 50% 감면 (강한 역행주)
+                : kospiPenaltyAdj
+            : kospiPenaltyAdj;
         const insiderAdj = getInsiderScoreAdjustment(s.stock_code);
         const naverTrendAdj = getNaverTrendScoreAdjustment(s.stock_code);
         // RSS 뉴스 감성 보정: Quick Re-Score/Surge Detector가 캐시한 실시간 뉴스 점수 반영
         // 긍정 뉴스(+1~+5), 부정 뉴스(-1~-6) — 네트워크 호출 없음 (캐시 참조만)
         const newsAdj = getCachedNewsAdj(s.stock_code);
         const totalAdj =
-          adj + capAdj + stale + effectiveKospiPenalty + adamKhooAdj + macroAdj + dartAdj + megaCapAdj + consensusAdj + aiScoreAdj + stockAccAdj + piotroskiAdj + fundScoreAdj + communityAdj + relStrengthAdj + insiderAdj + naverTrendAdj + newsAdj;
+          adj +
+          capAdj +
+          stale +
+          effectiveKospiPenalty +
+          adamKhooAdj +
+          macroAdj +
+          dartAdj +
+          megaCapAdj +
+          consensusAdj +
+          aiScoreAdj +
+          stockAccAdj +
+          piotroskiAdj +
+          fundScoreAdj +
+          communityAdj +
+          relStrengthAdj +
+          insiderAdj +
+          naverTrendAdj +
+          newsAdj;
         if (!Number.isFinite(totalAdj)) {
           logger.warn(
             `⚠️ 스코어 보정 NaN 감지: ${s.stock_code} adj=${adj} cap=${capAdj} macro=${macroAdj} dart=${dartAdj} cns=${consensusAdj} ai=${aiScoreAdj} acc=${stockAccAdj} pio=${piotroskiAdj} fund=${fundScoreAdj} cmty=${communityAdj} rs=${relStrengthAdj} ins=${insiderAdj} nvt=${naverTrendAdj} news=${newsAdj}`,
@@ -1138,7 +1176,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // Live 모드: liveRisk offset(-10) + Paper 실적 기반 크로스 피드백 합산
     const crossBoost = await getCrossModeBoost();
     const liveOffset = !getCtxIsPaper() ? (config.liveRisk?.buyThresholdOffset ?? -10) : 0;
-    const paperOffset = getCtxIsPaper() ? (config.paperRisk.buyThresholdOffset ?? 0) : crossBoost.thresholdAdj + liveOffset;
+    const paperOffset = getCtxIsPaper()
+      ? (config.paperRisk.buyThresholdOffset ?? 0)
+      : crossBoost.thresholdAdj + liveOffset;
     // Paper 모드: 패배 피드백이 임계값 올리는 것 차단 (학습 목적 — 진입 기회 보존)
     const thresholdBonus = ctxIsPaper ? Math.min(0, winFeedback.thresholdBonus) : winFeedback.thresholdBonus;
     // Live v11: 하한선 50→42 (더 많은 고품질 신호 통과)
@@ -1157,8 +1197,13 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           );
         }
       }
-    } catch { /* 인사이트 로드 실패 시 무시 */ }
-    const feedbackThreshold = Math.max(thresholdFloor, resolvedThreshold + thresholdBonus + paperOffset + insightThresholdAdj);
+    } catch {
+      /* 인사이트 로드 실패 시 무시 */
+    }
+    const feedbackThreshold = Math.max(
+      thresholdFloor,
+      resolvedThreshold + thresholdBonus + paperOffset + insightThresholdAdj,
+    );
     if (winFeedback.thresholdBonus > 0 || winFeedback.requirePullback || winFeedback.minVolumeRatio > 1.0) {
       logger.info(`🎯 승률피드백 적용: ${winFeedback.summary}`, { component: 'TRACK_B' });
     }
@@ -1242,13 +1287,17 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // DEFENSE 모드: AI 점수 상위 2개 종목에만 집중 (분산 대신 확신 종목 집중)
     const defenseFocusCodes: Set<string> | null =
       effectiveMode === 'DEFENSE' && finalScores.length > 0
-        ? new Set([...finalScores].sort((a, b) => b.score - a.score).slice(0, 2).map((s) => s.stock_code))
+        ? new Set(
+            [...finalScores]
+              .sort((a, b) => b.score - a.score)
+              .slice(0, 2)
+              .map((s) => s.stock_code),
+          )
         : null;
     if (defenseFocusCodes) {
-      logger.info(
-        `🛡️ DEFENSE 집중: ${[...defenseFocusCodes].join(', ')} 2종목에만 신규 매수 허용`,
-        { component: 'TRACK_B' },
-      );
+      logger.info(`🛡️ DEFENSE 집중: ${[...defenseFocusCodes].join(', ')} 2종목에만 신규 매수 허용`, {
+        component: 'TRACK_B',
+      });
     }
     const activeWatchlist = defenseFocusCodes
       ? filteredWatchlist.filter((w) => defenseFocusCodes!.has(w.stock_code))
@@ -1265,7 +1314,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           .map((s) => s.stock_code);
         if (topCodes.length > 0) {
           marketSignals = await getBatchStockSignals(topCodes);
-          logger.info(`📡 시그널 수집: ${marketSignals.size}/${topCodes.length}개 (상위${signalTopN})`, { component: 'TRACK_B' });
+          logger.info(`📡 시그널 수집: ${marketSignals.size}/${topCodes.length}개 (상위${signalTopN})`, {
+            component: 'TRACK_B',
+          });
         }
       } catch (err) {
         logger.warn(`📡 시그널 수집 실패 (계속): ${err}`, { component: 'TRACK_B' });
@@ -1373,16 +1424,15 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       try {
         const openCodes = new Set(openChains.map((c) => c.stock_code));
         const decidedBuyCodes = new Set(
-          decisions
-            .filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN')
-            .map((d) => d.stock_code),
+          decisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN').map((d) => d.stock_code),
         );
         const topPick = [...finalScores]
           .sort((a, b) => b.score - a.score)
-          .find((s) =>
-            !openCodes.has(s.stock_code) &&
-            !decidedBuyCodes.has(s.stock_code) &&
-            !recentlySoldCodes.has(s.stock_code),
+          .find(
+            (s) =>
+              !openCodes.has(s.stock_code) &&
+              !decidedBuyCodes.has(s.stock_code) &&
+              !recentlySoldCodes.has(s.stock_code),
           );
         if (topPick) {
           const priceInfo = livePrices.get(topPick.stock_code);
@@ -1566,7 +1616,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       manuallySoldCodes,
       scores: scores.map((s: any) => ({ stock_code: s.stock_code, composite_score: s.composite_score ?? undefined })),
       totalAssets,
-      kospiRegime: { penalty: kospiRegime.penalty, boost: kospiRegime.boost, todayDown: kospiRegime.todayDown, adamKhooBullish: kospiRegime.adamKhoo?.bullish },
+      kospiRegime: {
+        penalty: kospiRegime.penalty,
+        boost: kospiRegime.boost,
+        todayDown: kospiRegime.todayDown,
+        adamKhooBullish: kospiRegime.adamKhoo?.bullish,
+      },
       resolvedSl,
       resolvedTp,
       orderableCash,
@@ -1629,7 +1684,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       { component: 'TRACK_B' },
     );
     if (actionable.length === 0 && decisions.length > 0) {
-      logger.info(`⏸️ [${tbModeTag}] Track B: 실행 액션 없음 — 판단 ${decisions.length}건 전부 HOLD/SKIP`, { component: 'TRACK_B' });
+      logger.info(`⏸️ [${tbModeTag}] Track B: 실행 액션 없음 — 판단 ${decisions.length}건 전부 HOLD/SKIP`, {
+        component: 'TRACK_B',
+      });
     }
 
     // 데이터 마스터 로그 (비동기, 파이프라인 블로킹 없음)
@@ -1670,14 +1727,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // ── 매 루프 자기 최적화 (비동기, 파이프라인 블로킹 안 함) ──
     // Paper: 자금 리필 체크 (10분 rate limit 내장)
     if (ctxIsPaper) {
-      import('../../risk/paper-balance.js')
-        .then((m) => m.checkAndRefillPaper())
-        .catch(() => {});
+      import('../../risk/paper-balance.js').then((m) => m.checkAndRefillPaper()).catch(() => {});
     }
     // 황금비율 자동 조정 (1시간 rate limit)
-    import('../../automation/regime-allocator.js')
-      .then((m) => m.autoTuneRegimeWeights())
-      .catch(() => {});
+    import('../../automation/regime-allocator.js').then((m) => m.autoTuneRegimeWeights()).catch(() => {});
 
     // 파킹 예외 모드: 예외 종목 BUY/AVERAGE_DOWN만 허용, 나머지 차단 (SELL/FORCE_CLOSE는 항상 통과)
     if (isParkingException) {
@@ -1686,7 +1739,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       );
       const blocked = actionable.length - parkFiltered.length;
       if (blocked > 0) {
-        logger.info(`🛡️ 파킹 예외 필터: ${blocked}건 BUY 차단 (예외 종목 ${parkExceptCodes.size}개 통과)`, { component: 'TRACK_B' });
+        logger.info(`🛡️ 파킹 예외 필터: ${blocked}건 BUY 차단 (예외 종목 ${parkExceptCodes.size}개 통과)`, {
+          component: 'TRACK_B',
+        });
       }
       return parkFiltered;
     }

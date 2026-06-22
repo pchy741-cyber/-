@@ -91,7 +91,12 @@ export function getKillSwitchStatusAll() {
  * @param manual true = 대시보드/텔레그램 수동 발동 → 자동 해제 불가
  * @param scope 'KR' | 'OVERSEAS' — 어느 시장의 매매를 차단할지
  */
-export async function activateKillSwitch(reason: string, manual = false, scope: KillSwitchScope = 'KR', isPaperOverride?: boolean): Promise<void> {
+export async function activateKillSwitch(
+  reason: string,
+  manual = false,
+  scope: KillSwitchScope = 'KR',
+  isPaperOverride?: boolean,
+): Promise<void> {
   const isPaper = isPaperOverride !== undefined ? isPaperOverride : getCtxIsPaper();
   const key = stateKey(scope, isPaper);
   const s = getState(scope, isPaper);
@@ -102,27 +107,32 @@ export async function activateKillSwitch(reason: string, manual = false, scope: 
     const elapsed = Date.now() - s.forcedDeactivatedAt.getTime();
     if (elapsed < MDD_GRACE_PERIOD_MS) {
       const remainMin = Math.ceil((MDD_GRACE_PERIOD_MS - elapsed) / 60000);
-      logger.info(`⏳ Kill Switch 자동 재발동 차단 [${scope}]: 수동 해제 후 grace period ${remainMin}분 남음`, { component: 'KILL_SWITCH' });
+      logger.info(`⏳ Kill Switch 자동 재발동 차단 [${scope}]: 수동 해제 후 grace period ${remainMin}분 남음`, {
+        component: 'KILL_SWITCH',
+      });
       return;
     }
   }
   // 🔒 active=true를 즉시 설정 — 비동기 작업 전에 isKillSwitchActive()가 true 반환하도록
   const now = new Date();
-  setState(scope, {
-    active: true,
-    reason,
-    activatedAt: now,
-    consecutiveErrors: s.consecutiveErrors,
-    manuallyTriggered: manual,
-    forcedDeactivatedAt: null,
-  }, isPaper);
+  setState(
+    scope,
+    {
+      active: true,
+      reason,
+      activatedAt: now,
+      consecutiveErrors: s.consecutiveErrors,
+      manuallyTriggered: manual,
+      forcedDeactivatedAt: null,
+    },
+    isPaper,
+  );
   updatingKeys.add(key);
 
   const mode = isPaper ? 'paper' : 'live';
   const scopeLabel = scope === 'OVERSEAS' ? '해외' : '국내';
 
   try {
-
     logger.error(`🛑 KILL SWITCH 발동 [${scopeLabel}]${manual ? ' [수동]' : ''} [${mode}]: ${reason}`, {
       component: 'KILL_SWITCH',
     });
@@ -165,7 +175,11 @@ export async function activateKillSwitchAll(reason: string, manual = false): Pro
  * @param scope 'KR' | 'OVERSEAS'
  * @param isPaperOverride 명시적 paper/live 모드 지정 — ALS 컨텍스트 대신 사용
  */
-export async function deactivateKillSwitch(force = false, scope: KillSwitchScope = 'KR', isPaperOverride?: boolean): Promise<void> {
+export async function deactivateKillSwitch(
+  force = false,
+  scope: KillSwitchScope = 'KR',
+  isPaperOverride?: boolean,
+): Promise<void> {
   const isPaper = isPaperOverride !== undefined ? isPaperOverride : getCtxIsPaper();
   const s = getState(scope, isPaper);
   if (!s.active) return;
@@ -210,7 +224,10 @@ export async function deactivateKillSwitch(force = false, scope: KillSwitchScope
 
 /** KR+OVERSEAS 동시 해제 (대시보드/텔레그램) */
 export async function deactivateKillSwitchAll(force = false, isPaperOverride?: boolean): Promise<void> {
-  await Promise.all([deactivateKillSwitch(force, 'KR', isPaperOverride), deactivateKillSwitch(force, 'OVERSEAS', isPaperOverride)]);
+  await Promise.all([
+    deactivateKillSwitch(force, 'KR', isPaperOverride),
+    deactivateKillSwitch(force, 'OVERSEAS', isPaperOverride),
+  ]);
 }
 
 /**
@@ -332,7 +349,13 @@ async function loadKillSwitchState(isPaper: boolean, scope: KillSwitchScope): Pr
 
     if (!rows[0]) return;
 
-    const saved = JSON.parse(rows[0].value) as { active?: boolean; reason?: string; manual?: boolean };
+    let saved: { active?: boolean; reason?: string; manual?: boolean };
+    try {
+      saved = JSON.parse(rows[0].value);
+    } catch {
+      logger.warn(`[KILL_SWITCH] DB 상태값 파싱 실패 — 킬스위치 비활성으로 처리`, { component: 'KILL_SWITCH' });
+      return;
+    }
     if (!saved.active) return;
 
     // 연습모드 자동 킬스위치는 재시작 시 자동 해제 + DB 기록 삭제
@@ -343,7 +366,9 @@ async function loadKillSwitchState(isPaper: boolean, scope: KillSwitchScope): Pr
       try {
         const { getPool: getDbPool } = await import('../db/client.js');
         await getDbPool().query(`DELETE FROM system_state WHERE key = $1`, [key]);
-      } catch { /* 삭제 실패 시 무시 — 인메모리 상태는 이미 리셋됨 */ }
+      } catch {
+        /* 삭제 실패 시 무시 — 인메모리 상태는 이미 리셋됨 */
+      }
       return;
     }
 

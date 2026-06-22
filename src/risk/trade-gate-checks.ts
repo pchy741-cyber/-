@@ -63,10 +63,16 @@ export function chartVerificationGate(input: GateInput): GateResult {
 
   // 거래량 이상치: VOLUME_HARD_BLOCK_RATIO 이상 하드블록, VOLUME_SOFT_WARN_RATIO~이상은 소프트 게이트 (기관매집 신호 가능)
   if (tech.volumeRatio > VOLUME_HARD_BLOCK_RATIO) {
-    return { passed: false, reason: `거래량 이상치: ${tech.volumeRatio.toFixed(1)}배 (${VOLUME_HARD_BLOCK_RATIO}x+ 하드블록)` };
+    return {
+      passed: false,
+      reason: `거래량 이상치: ${tech.volumeRatio.toFixed(1)}배 (${VOLUME_HARD_BLOCK_RATIO}x+ 하드블록)`,
+    };
   }
   if (tech.volumeRatio > VOLUME_SOFT_WARN_RATIO) {
-    logger.info(`🟡 [거래량 소프트] ${input.stockCode}: ${tech.volumeRatio.toFixed(1)}배 — ${VOLUME_SOFT_WARN_RATIO}~${VOLUME_HARD_BLOCK_RATIO}x 경고 (기관매집 가능)`, { component: 'TRADE_GATE' });
+    logger.info(
+      `🟡 [거래량 소프트] ${input.stockCode}: ${tech.volumeRatio.toFixed(1)}배 — ${VOLUME_SOFT_WARN_RATIO}~${VOLUME_HARD_BLOCK_RATIO}x 경고 (기관매집 가능)`,
+      { component: 'TRADE_GATE' },
+    );
   }
   if (tech.volumeRatio < VOLUME_MIN_RATIO) {
     return { passed: false, reason: `거래량 과소: ${tech.volumeRatio.toFixed(1)}배 (유동성 부족)` };
@@ -75,18 +81,16 @@ export function chartVerificationGate(input: GateInput): GateResult {
   // R:R 검증 — R:R 부족 시 차단 대신 로깅 (소프트 게이트화)
   const absStopLoss = Math.abs(stopLossPct);
   const riskRewardRatio = absStopLoss > 0 ? takeProfitPct / absStopLoss : 0; // division-by-zero guard
-  const isScalping = input.strategyMode === 'SCALPING';
-  const minRR = isScalping ? 0.9 : 0.5;
-  if (riskRewardRatio < minRR) {
+  if (riskRewardRatio < 0.5) {
     // 소프트 게이트: R:R 부족 → 로깅만, 차단 안 함 (Phase 4 전환)
     logger.info(
-      `🟡 [R:R 소프트] ${input.stockCode}: R:R=${riskRewardRatio.toFixed(2)} < ${minRR} — 포지션 50% 축소 권장`,
+      `🟡 [R:R 소프트] ${input.stockCode}: R:R=${riskRewardRatio.toFixed(2)} < 0.5 — 포지션 50% 축소 권장`,
       { component: 'TRADE_GATE' },
     );
   }
 
   // ATR 대비 손절폭 검증
-  if (!getCtxIsPaper() && !isScalping) {
+  if (!getCtxIsPaper()) {
     const currentPrice = candles[0]?.close ?? input.estimatedPrice;
     const atrPct = currentPrice > 0 ? (tech.atr14 / currentPrice) * 100 : 0;
     if (atrPct > 0 && absStopLoss < atrPct * ATR_SL_MIN_MULTIPLIER) {
@@ -111,11 +115,16 @@ export function entryTimingGate(input: GateInput): GateResult {
 
   const tech = analyzeTechnicals(candles);
   const rsi = tech?.rsi14 ?? 50;
-  if (rsi >= RSI_OVERBOUGHT) return { passed: false, reason: `🔴 RSI 과매수 차단: ${rsi.toFixed(1)} ≥ ${RSI_OVERBOUGHT}` };
+  if (rsi >= RSI_OVERBOUGHT)
+    return { passed: false, reason: `🔴 RSI 과매수 차단: ${rsi.toFixed(1)} ≥ ${RSI_OVERBOUGHT}` };
 
   const recent3High = Math.max(c1.high, c2.high, c3.high);
   const pctFromHigh = recent3High > 0 ? ((current - recent3High) / recent3High) * 100 : -5;
-  if (!Number.isFinite(pctFromHigh) || pctFromHigh > HIGH_CHASE_PCT) return { passed: false, reason: `🔴 고점 추격 차단: +${Number.isFinite(pctFromHigh) ? pctFromHigh.toFixed(1) : '?'}%` };
+  if (!Number.isFinite(pctFromHigh) || pctFromHigh > HIGH_CHASE_PCT)
+    return {
+      passed: false,
+      reason: `🔴 고점 추격 차단: +${Number.isFinite(pctFromHigh) ? pctFromHigh.toFixed(1) : '?'}%`,
+    };
 
   const body0 = Math.abs(c0.close - c0.open);
   const range0 = c0.high - c0.low;
@@ -250,31 +259,4 @@ export async function newsGate(stockCode: string): Promise<GateResult> {
   } catch {
     return { passed: true, reason: '뉴스조회실패—통과' };
   }
-}
-
-// ── 재진입 쿨다운 (SCALPING 전용) ──
-export async function reEntryCooldownGate(input: GateInput): Promise<GateResult> {
-  if (input.strategyMode !== 'SCALPING') return { passed: true, reason: 'SCALPING 외 — 생략' };
-  const isPaper = getCtxIsPaper();
-  const reEntryCooldownMs = isPaper ? 5 * 60_000 : GATE.REENTRY_COOLDOWN_MS;
-  const reEntryMinutes = isPaper ? 5 : 30;
-  try {
-    const { rows } = await getPool().query(
-      `SELECT created_at FROM orders
-       WHERE stock_code = $1 AND side = 'BUY'
-         AND status IN ('FILLED', 'PENDING', 'PARTIAL')
-         AND created_at >= NOW() - ($3 * INTERVAL '1 minute')
-         AND trading_mode = $2
-       ORDER BY created_at DESC LIMIT 1`,
-      [input.stockCode, isPaper ? 'paper' : 'live', reEntryMinutes],
-    );
-    if (rows.length > 0) {
-      const elapsed = Date.now() - new Date(rows[0].created_at).getTime();
-      const remaining = Math.ceil((reEntryCooldownMs - elapsed) / 60_000);
-      return { passed: false, reason: `재진입 쿨다운: ${remaining}분 남음` };
-    }
-  } catch {
-    /* DB 실패 시 통과 */
-  }
-  return { passed: true, reason: '재진입 쿨다운 없음' };
 }

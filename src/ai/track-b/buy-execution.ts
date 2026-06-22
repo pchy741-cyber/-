@@ -823,22 +823,15 @@ export async function executeBuyDecisions(
     const allocStr = ` [비율${(baseAllocPct * modeScale * firstEntryRatio * 100).toFixed(0)}%→${Math.round(effectivePositionSize / 10000)}만원]`;
     const srTag =
       srClass === 'TREND_LEADER' ? ' [📈TREND_LEADER]' : srClass === 'SCALP_TARGET' ? ' [⚡SCALP_TARGET]' : '';
-    const scalpTag = cand.isScalpOverride ? ' [🎯ScalpRadar]' : '';
-    // SCALP_TARGET: signal-router가 박스권 순환 감지 → SCALPING 모드 강제 (1% TP + 타이트 SL)
     // TREND_LEADER: 트레일링 스탑 홀딩 — 1% 조기청산 금지
-    const srStrategyOverride =
-      !cand.isScalpOverride && srClass === 'SCALP_TARGET'
-        ? { strategy_mode: 'SCALPING' as const, trigger_source: 'SCALP_TARGET' }
-        : srClass === 'TREND_LEADER'
-          ? { trigger_source: 'TREND_LEADER' }
-          : {};
+    const srStrategyOverride = srClass === 'TREND_LEADER' ? { trigger_source: 'TREND_LEADER' } : {};
     decisions.push({
       action: 'BUY',
       stock_code: cand.stock_code,
       quantity,
       price_type: 'MARKET',
       limit_price: cand.price.currentPrice,
-      reasoning: `${cand.isScalpOverride ? '🎯 ScalpRadar 스캘핑' : '기술적'} 매수: score=${cand.tech.score}(blend=${blendedScore.toFixed(0)}) cat=${cand.tech.catTrend}/${cand.tech.catMomentum}/${cand.tech.catVolatility}/${cand.tech.catVolume}(${cand.tech.catPositive}/4)${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''}${idBonus !== 0 ? `${idBonus > 0 ? '+' : ''}${idBonus}분봉` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x SMA=${smaAlign}${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${allocStr}${patternFb.scoreAdj !== 0 ? ` [패턴${patternFb.scoreAdj > 0 ? '+' : ''}${patternFb.scoreAdj}]` : ''}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))} fp=${fpKey}${srTag}${scalpTag}`,
+      reasoning: `기술적 매수: score=${cand.tech.score}(blend=${blendedScore.toFixed(0)}) cat=${cand.tech.catTrend}/${cand.tech.catMomentum}/${cand.tech.catVolatility}/${cand.tech.catVolume}(${cand.tech.catPositive}/4)${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''}${idBonus !== 0 ? `${idBonus > 0 ? '+' : ''}${idBonus}분봉` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x SMA=${smaAlign}${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${allocStr}${patternFb.scoreAdj !== 0 ? ` [패턴${patternFb.scoreAdj > 0 ? '+' : ''}${patternFb.scoreAdj}]` : ''}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))} fp=${fpKey}${srTag}`,
       confidence: Math.min(
         0.95,
         Math.max(
@@ -850,8 +843,7 @@ export async function executeBuyDecisions(
       ),
       ai_score: aiScore > 0 ? aiScore : cand.tech.score,
       regime_position_scale: cand.regimeRoute?.entryConfig?.positionScale,
-      // ScalpRadar 감지 종목: SCALPING 모드로 체인 생성 → TP/SL + forceClose 자동 적용
-      ...(cand.isScalpOverride ? { strategy_mode: 'SCALPING', trigger_source: 'SCALP_RADAR' } : srStrategyOverride),
+      ...srStrategyOverride,
     });
 
     remainingCash -= quantity * cand.price.currentPrice;
@@ -860,7 +852,7 @@ export async function executeBuyDecisions(
   // 2-b. 현금 추가 소진 패스: 매수 후 남은 현금이 총자산 15% 이상 & AI허락 후보 더 있으면 추가 진입
   // (1차 매수에서 firstEntryRatio로 아낀 여지 + 아직 안 산 후보 종목에 배분)
   // SNIPER: 최대 2종목 제한이므로 추가 소진 패스 건너뜀
-  if (totalAssets && remainingCash >= totalAssets * 0.15 && mode !== 'SCALPING' && mode !== 'SNIPER') {
+  if (totalAssets && remainingCash >= totalAssets * 0.15 && mode !== 'SNIPER') {
     const alreadyBuying = new Set(decisions.filter((d) => d.action === 'BUY').map((d) => d.stock_code));
     // 아직 매수 결정 안 된 AI허락 후보만 — 이미 사이클 내 매수한 종목 중복 제외
     const extraCandidates = candidates.filter((c) => {
