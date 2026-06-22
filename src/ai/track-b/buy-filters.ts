@@ -15,13 +15,13 @@
 import { analyzeTechnicals } from '../../analysis/indicators.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { logger } from '../../utils/logger.js';
-import { tryFinalEntry, tryRegimeRouterEntry, tryScalpEntry } from './filters/entry-decision.js';
+import { tryFinalEntry, tryRegimeRouterEntry } from './filters/entry-decision.js';
 // ── 필터 모듈 (각각 독립, 크로스 import 없음) ──
 import { isHardBlocked } from './filters/hard-gates.js';
-import type { HardGateInput } from './filters/types.js';
 import { checkQualityGates } from './filters/quality-gates.js';
 import { checkRiskGates, isBreakoutBlocked } from './filters/risk-gates.js';
 import { computeScoring } from './filters/scoring.js';
+import type { HardGateInput } from './filters/types.js';
 import { routeByRegime } from './strategy-router.js';
 import {
   type BuyCandidate,
@@ -252,30 +252,28 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
 
     const regimeVerdict = tryRegimeRouterEntry(entryInput);
     if (regimeVerdict.action === 'BUY') {
-      candidates.push({ stock_code: stock.stock_code, tech, price, candleBonus: scoring.candleBonus, regimeRoute, smartReentrySl: smartSl });
-      continue;
-    }
-
-    // 5b. 스캘핑/ScalpRadar
-    const scalpVerdict = tryScalpEntry(entryInput);
-    if (scalpVerdict.action === 'BUY') {
       candidates.push({
         stock_code: stock.stock_code,
         tech,
         price,
         candleBonus: scoring.candleBonus,
         regimeRoute,
-        isScalpOverride: scalpVerdict.isScalpOverride,
         smartReentrySl: smartSl,
       });
       continue;
     }
-    if (scalpVerdict.action === 'SKIP') continue;
 
-    // 5c. AI 필수 + 꽁돈 + 기술점수
+    // 5b. AI 필수 + 꽁돈 + 기술점수
     const finalVerdict = tryFinalEntry(entryInput);
     if (finalVerdict.action === 'BUY') {
-      candidates.push({ stock_code: stock.stock_code, tech, price, candleBonus: scoring.candleBonus, regimeRoute, smartReentrySl: smartSl });
+      candidates.push({
+        stock_code: stock.stock_code,
+        tech,
+        price,
+        candleBonus: scoring.candleBonus,
+        regimeRoute,
+        smartReentrySl: smartSl,
+      });
     }
   }
 

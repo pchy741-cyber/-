@@ -8,21 +8,30 @@ import { KR_FEE } from '../../../config/constants.js';
 import { getCtxIsPaper, runWithMode } from '../../../config/context.js';
 import { config } from '../../../config/index.js';
 import { getPool } from '../../../db/client.js';
-import { resolveRequestMode } from '../../guards/live-pin.js';
 import { getAccountBalance, invalidateBalanceCache } from '../../../kis/account.js';
 import { getCurrentPrice } from '../../../kis/market.js';
 import { placeOrder } from '../../../kis/order.js';
 import { notifySell } from '../../../notifications/web-push.js';
 import { logger } from '../../../utils/logger.js';
 import { sleep } from '../../../utils/sleep.js';
+import { resolveRequestMode } from '../../guards/live-pin.js';
 import { hardInvalidateMode } from './helpers.js';
 import { registerManualBuyRoutes } from './manual-buy.js';
 import { registerOverseasSellRoutes } from './overseas-sell.js';
 
 // trigger_source 화이트리스트 — 허용되지 않은 값은 MANUAL로 강제 전환
 const VALID_TRIGGER_SOURCES = new Set([
-  'MANUAL', 'AI', 'FORCE_CLOSE', 'TRAILING_STOP', 'HOLDING_CHECK', 'ESCAPE',
-  'CLAUDE', 'EXTERNAL', 'OVERSEAS', 'SCALPING', 'KILL_SWITCH', 'CEO',
+  'MANUAL',
+  'AI',
+  'FORCE_CLOSE',
+  'TRAILING_STOP',
+  'HOLDING_CHECK',
+  'ESCAPE',
+  'CLAUDE',
+  'EXTERNAL',
+  'OVERSEAS',
+  'KILL_SWITCH',
+  'CEO',
 ]);
 function sanitizeTriggerSource(raw: unknown): string {
   const s = typeof raw === 'string' ? raw.trim().toUpperCase() : '';
@@ -118,7 +127,8 @@ sellRoutes.post('/sell/:chainId', async (c) => {
       const fakeOrderNo = `P${Date.now().toString(36)}`;
       const _qty1 = Number(chain.total_quantity);
       const _avg1 = Number(chain.avg_buy_price ?? 0);
-      const _profit1 = fillPrice > 0 ? Math.round(fillPrice * _qty1 * (1 - KR_FEE.SELL_FEE_PCT)) - Math.round(_avg1 * _qty1) : 0;
+      const _profit1 =
+        fillPrice > 0 ? Math.round(fillPrice * _qty1 * (1 - KR_FEE.SELL_FEE_PCT)) - Math.round(_avg1 * _qty1) : 0;
       const _pnlPct1 = _avg1 > 0 && fillPrice > 0 ? Math.round(((fillPrice - _avg1) / _avg1) * 10000) / 100 : null;
       await getPool().query(
         `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2, total_quantity = 0,
@@ -217,7 +227,8 @@ sellRoutes.post('/sell/:chainId', async (c) => {
     if (fillConfirmed) {
       const _qty2 = Number(chain.total_quantity);
       const _avg2 = Number(chain.avg_buy_price ?? 0);
-      const _profit2 = fillPrice > 0 ? Math.round(fillPrice * _qty2 * (1 - KR_FEE.SELL_FEE_PCT)) - Math.round(_avg2 * _qty2) : 0;
+      const _profit2 =
+        fillPrice > 0 ? Math.round(fillPrice * _qty2 * (1 - KR_FEE.SELL_FEE_PCT)) - Math.round(_avg2 * _qty2) : 0;
       const _pnlPct2 = _avg2 > 0 && fillPrice > 0 ? Math.round(((fillPrice - _avg2) / _avg2) * 10000) / 100 : null;
       await getPool().query(
         `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2, total_quantity = 0,
@@ -252,7 +263,15 @@ sellRoutes.post('/sell/:chainId', async (c) => {
     try {
       const pnlPct =
         chain.avg_buy_price > 0 ? ((fillPrice - Number(chain.avg_buy_price)) / Number(chain.avg_buy_price)) * 100 : 0;
-      await notifySell(chain.stock_code, chain.total_quantity, fillPrice, pnlPct, sellReason, undefined, chain.is_paper);
+      await notifySell(
+        chain.stock_code,
+        chain.total_quantity,
+        fillPrice,
+        pnlPct,
+        sellReason,
+        undefined,
+        chain.is_paper,
+      );
     } catch {
       /* 알림 실패 무시 */
     }
@@ -344,7 +363,8 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
         for (const chain of openChains) {
           const _bqty = Number(chain.total_quantity);
           const _bavg = Number(chain.avg_buy_price ?? 0);
-          const _bprofit = fillPrice > 0 ? Math.round(fillPrice * _bqty * (1 - KR_FEE.SELL_FEE_PCT)) - Math.round(_bavg * _bqty) : 0;
+          const _bprofit =
+            fillPrice > 0 ? Math.round(fillPrice * _bqty * (1 - KR_FEE.SELL_FEE_PCT)) - Math.round(_bavg * _bqty) : 0;
           await tx.query(
             `UPDATE transaction_chains SET status='CLOSED', closed_at=NOW(), close_reason=$2, total_quantity=0,
               realized_pnl = realized_pnl + $3,
@@ -435,7 +455,8 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
         if (fillConfirmed) {
           const _lqty = Number(chain.total_quantity);
           const _lavg = Number(chain.avg_buy_price ?? 0);
-          const _lprofit = fillPrice > 0 ? Math.round(fillPrice * _lqty * (1 - KR_FEE.SELL_FEE_PCT)) - Math.round(_lavg * _lqty) : 0;
+          const _lprofit =
+            fillPrice > 0 ? Math.round(fillPrice * _lqty * (1 - KR_FEE.SELL_FEE_PCT)) - Math.round(_lavg * _lqty) : 0;
           await tx.query(
             `UPDATE transaction_chains SET status='CLOSED', closed_at=NOW(), close_reason=$2, total_quantity=0,
               realized_pnl = realized_pnl + $3,

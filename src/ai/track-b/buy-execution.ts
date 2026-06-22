@@ -1,15 +1,17 @@
 import { computeFingerprint, fingerprintKey, getPatternFeedback } from '../../analysis/entry-fingerprint.js';
 import { analyzeIntraday, analyzeTechnicals } from '../../analysis/indicators.js';
 import { getWinRateConfidenceBoost, winRateSummary } from '../../analysis/win-rate.js';
+import { getDynamicPositionSize } from '../../automation/position-sizer.js';
 import { getDynamicDomesticTpSl } from '../../config/constants.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { getMinuteChart, isMarketOpen } from '../../kis/market.js';
-import { getDynamicPositionSize } from '../../automation/position-sizer.js';
 import { getLossStreakMultiplier } from '../../risk/loss-streak.js';
 import { logger } from '../../utils/logger.js';
+import { getVisionChartConfirmation } from '../vision/chart-confirmation.js';
 import { generateAveragingDecisions } from './averaging-down.js';
+import { classifyStock } from './signal-router.js';
 import {
   type BuyCandidate,
   buildAiScoreMap,
@@ -17,9 +19,7 @@ import {
   resolveStrategyParams,
   type TechnicalFallbackParams,
 } from './technical-fallback-types.js';
-import { classifyStock } from './signal-router.js';
 import { PRIORITY_SECTOR_CODES } from './trading-rules.js';
-import { getVisionChartConfirmation } from '../vision/chart-confirmation.js';
 
 // ── 국내 주식 Kelly 사이징 (해외 kelly.ts 패턴 재사용) ──
 interface DomesticKellyResult {
@@ -32,7 +32,7 @@ interface DomesticKellyResult {
 
 // ── 국내 종목별 EV (해외 calcStockEVMultipliers 패턴) ──
 interface DomesticStockEVResult {
-  evPct: number;        // 기대값 % (winRate×avgWin - lossRate×avgLoss - 수수료)
+  evPct: number; // 기대값 % (winRate×avgWin - lossRate×avgLoss - 수수료)
   evMultiplier: number; // 포지션 사이즈 배율 (0.5~1.5)
   winRate: number;
   sampleCount: number;
@@ -40,10 +40,7 @@ interface DomesticStockEVResult {
 
 const DOMESTIC_FEE_PCT = 0.26; // 국내 왕복 수수료+세금 ~0.26%
 
-async function calcDomesticStockEV(
-  codes: string[],
-  days: number = 90,
-): Promise<Map<string, DomesticStockEVResult>> {
+async function calcDomesticStockEV(codes: string[], days: number = 90): Promise<Map<string, DomesticStockEVResult>> {
   const result = new Map<string, DomesticStockEVResult>();
   if (codes.length === 0) return result;
 
@@ -154,9 +151,12 @@ async function calcDomesticKelly(days: number = 30): Promise<DomesticKellyResult
 
     // 적응형 Kelly: 연속 스케일링 — 샘플 보정 + 승률별 분수 적용
     const confidenceAdj = 1.0 - Math.max(0, (30 - total) / 30) * 0.3; // 샘플 보정 0.7~1.0
-    const kellyFraction = winRate >= 0.70 ? 0.5 * confidenceAdj  // 고승률: Half-Kelly
-                        : winRate >= 0.50 ? 0.4 * confidenceAdj  // 중승률: 40% Kelly
-                        : 0.25;                                   // 저승률: Quarter-Kelly
+    const kellyFraction =
+      winRate >= 0.7
+        ? 0.5 * confidenceAdj // 고승률: Half-Kelly
+        : winRate >= 0.5
+          ? 0.4 * confidenceAdj // 중승률: 40% Kelly
+          : 0.25; // 저승률: Quarter-Kelly
     const quarterKelly = Math.max(0.03, Math.min(0.25, fullKelly * kellyFraction));
 
     logger.info(
@@ -483,11 +483,10 @@ export async function executeBuyDecisions(
       try {
         const visionCandles = chartData.get(cand.stock_code);
         if (visionCandles && visionCandles.length >= 30) {
-          const visionResult = await getVisionChartConfirmation(
-            cand.stock_code,
-            visionCandles,
-            { rsi14: cand.tech.rsi14, adx14: cand.tech.adx14 },
-          );
+          const visionResult = await getVisionChartConfirmation(cand.stock_code, visionCandles, {
+            rsi14: cand.tech.rsi14,
+            adx14: cand.tech.adx14,
+          });
           if (visionResult) {
             if (visionResult.score < 50) {
               logger.warn(
@@ -549,12 +548,12 @@ export async function executeBuyDecisions(
                 ? 0.12
                 : // 75-79: 12%
                   blendedScore >= 70
-                  ? 0.10
+                  ? 0.1
                   : 0.08
       : noAiScores || aiScore === 0
         ? // v11: AI 부재 → 기술지표만으로 판단, 배분 축소 (미검증 과대배분 방지)
           blendedScore >= 85
-          ? 0.10
+          ? 0.1
           : blendedScore >= 75
             ? 0.07
             : 0.04
@@ -567,7 +566,7 @@ export async function executeBuyDecisions(
       ? Math.min(0.25, kellyResult.kellyPct * (blendedScore >= 85 ? 1.5 : blendedScore >= 70 ? 1.2 : 1.0)) // 점수 비례 스케일 (25% hard cap)
       : null;
     const dbAllocPct = getDbAllocPct(blendedScore);
-    let baseAllocPct = kellyAllocPct ?? dbAllocPct ?? (hardcodedAllocPct * kellyNullPenalty);
+    let baseAllocPct = kellyAllocPct ?? dbAllocPct ?? hardcodedAllocPct * kellyNullPenalty;
     // Kelly/DB 데이터 존재 시: 하드코딩의 50%까지 축소 허용 (리스크 관리 우선)
     // 데이터 없으면(폴백): 하드코딩 그대로
     if (kellyAllocPct != null || dbAllocPct != null) {
@@ -667,7 +666,8 @@ export async function executeBuyDecisions(
     // v9: 곱연산 배수 합산 하한 — 과도한 축소 방지
     // 이전: 0.5×0.6×0.65×0.5 = 0.098 → 25%→2.4% (거의 매수 불가)
     // 수정: 합산 배수 최소 0.25 보장 → 25%→6.25% 이상 유지
-    const rawCompoundMult = modeScale * macroSizingMult * winRateMultiplier * lossStreakMult * evSizingMult * visionSizingMult;
+    const rawCompoundMult =
+      modeScale * macroSizingMult * winRateMultiplier * lossStreakMult * evSizingMult * visionSizingMult;
     // v9-fix: Paper는 학습용 → 곱연산 하한 0.5 (Live: 0.25) — 데이터 수집 위해 적극적 매수
     // v11: paper도 live와 동일 바닥 (실전 동일 조건 학습)
     const compoundMultFloor = Math.max(0.25, rawCompoundMult);
@@ -698,9 +698,7 @@ export async function executeBuyDecisions(
     // v9: compoundMultFloor 사용하여 개별 배수 곱연산 대신 합산 배수 적용
     const targetKrwRisk =
       totalAssets && absSl > 0
-        ? Math.round(
-            ((totalAssets * riskPct) / absSl) * compoundMultFloor * signalMultiplier,
-          )
+        ? Math.round(((totalAssets * riskPct) / absSl) * compoundMultFloor * signalMultiplier)
         : 0;
     const targetKrwAlloc = totalAssets
       ? Math.round(
@@ -712,9 +710,7 @@ export async function executeBuyDecisions(
             aiPosMultiplier *
             signalMultiplier,
         )
-      : Math.round(
-          effectiveMaxPos * firstEntryRatio * compoundMultFloor * aiPosMultiplier * signalMultiplier,
-        );
+      : Math.round(effectiveMaxPos * firstEntryRatio * compoundMultFloor * aiPosMultiplier * signalMultiplier);
     // 두 방식 중 큰 값 사용 — 소액일수록 리스크 기반이 더 큰 포지션 산출
     const targetKrw = Math.max(targetKrwAlloc, targetKrwRisk);
     if (targetKrwRisk > targetKrwAlloc && targetKrwRisk > 0) {
@@ -741,9 +737,7 @@ export async function executeBuyDecisions(
     const positionSize = Math.min(targetKrw, aiMaxPos, remainingCash * 0.95);
     // 소자산 모드: 분산 불가 시에도 비율 계산 반영 (positionSize vs 현금 80% 중 작은 값)
     // Kelly/점수가 축소 시그널 → positionSize가 줄어들면 그대로 존중
-    let effectivePositionSize = !canDiversify3
-      ? Math.round(Math.min(positionSize, remainingCash * 0.8))
-      : positionSize;
+    let effectivePositionSize = !canDiversify3 ? Math.round(Math.min(positionSize, remainingCash * 0.8)) : positionSize;
 
     // ── ATR+드로다운+연패 동적 보정 (Live 전용) ──────────────────────────
     if (!ctxPaper) {
@@ -827,7 +821,8 @@ export async function executeBuyDecisions(
     }
 
     const allocStr = ` [비율${(baseAllocPct * modeScale * firstEntryRatio * 100).toFixed(0)}%→${Math.round(effectivePositionSize / 10000)}만원]`;
-    const srTag = srClass === 'TREND_LEADER' ? ' [📈TREND_LEADER]' : srClass === 'SCALP_TARGET' ? ' [⚡SCALP_TARGET]' : '';
+    const srTag =
+      srClass === 'TREND_LEADER' ? ' [📈TREND_LEADER]' : srClass === 'SCALP_TARGET' ? ' [⚡SCALP_TARGET]' : '';
     const scalpTag = cand.isScalpOverride ? ' [🎯ScalpRadar]' : '';
     // SCALP_TARGET: signal-router가 박스권 순환 감지 → SCALPING 모드 강제 (1% TP + 타이트 SL)
     // TREND_LEADER: 트레일링 스탑 홀딩 — 1% 조기청산 금지

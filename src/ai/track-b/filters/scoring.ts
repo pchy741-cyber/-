@@ -9,7 +9,7 @@ import { detectStructuralPatterns, volumeProfile } from '../../../analysis/indic
 import { logger } from '../../../utils/logger.js';
 import { getKSTNow } from '../../../utils/time.js';
 import { PRIORITY_SECTOR_CODES } from '../trading-rules.js';
-import type { ScoringInput, TechScoring, SignalData } from './types.js';
+import type { ScoringInput, SignalData, TechScoring } from './types.js';
 
 /** KIS 시그널에서 필요한 값만 추출 */
 function extractSignals(signals: ScoringInput['signals']): SignalData {
@@ -29,7 +29,8 @@ function extractSignals(signals: ScoringInput['signals']): SignalData {
 function calcSignalBonus(s: SignalData): number {
   // v9-fix: 시그널 데이터 미수신(전부 0) → 페널티 없이 0 반환
   // KIS API 장애/미지원 종목일 때 일괄 -5점 방지
-  const hasAnyData = s.intensity > 0 || s.shortRatio > 0 || s.bidAskRatio !== 1 || s.foreignNetEst !== 0 || s.instNetEst !== 0;
+  const hasAnyData =
+    s.intensity > 0 || s.shortRatio > 0 || s.bidAskRatio !== 1 || s.foreignNetEst !== 0 || s.instNetEst !== 0;
   if (!hasAnyData) return 0;
   return (
     // 체결강도: 매수>매도 비율 (120↑ = 강한 매수세)
@@ -147,10 +148,9 @@ export function computeScoring(input: ScoringInput): TechScoring {
   // ── Volume Climax Guard: 거래량 3x+ = 반전 가능성 높음 (학술 검증) ──
   const volumeClimaxPenalty = adjustedVolRatio >= 4.0 ? -12 : adjustedVolRatio >= 3.0 ? -8 : 0;
   if (volumeClimaxPenalty < 0) {
-    logger.info(
-      `  ⚡ ${code}: 거래량 폭증 ${adjustedVolRatio.toFixed(1)}x (반전 위험) → ${volumeClimaxPenalty}점`,
-      { component: 'TRACK_B' },
-    );
+    logger.info(`  ⚡ ${code}: 거래량 폭증 ${adjustedVolRatio.toFixed(1)}x (반전 위험) → ${volumeClimaxPenalty}점`, {
+      component: 'TRACK_B',
+    });
   }
 
   // ── 합산 ──

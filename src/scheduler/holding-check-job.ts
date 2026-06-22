@@ -72,8 +72,6 @@ export async function runHoldingCheckJob(): Promise<void> {
         chain.strategy_mode && chain.strategy_mode in STRATEGY_PARAMS
           ? (chain.strategy_mode as keyof typeof STRATEGY_PARAMS)
           : mode;
-      // 글로벌 SCALPING이고 체인도 SCALPING이면 별도 강제청산(15:20)이 있으므로 스킵
-      if (chainMode === 'SCALPING') continue;
       const params = STRATEGY_PARAMS[chainMode];
       const isInverseEtf = INVERSE_ETF_CODES.has(chain.stock_code);
       // 인버스 ETF: 일일 리밸런싱 손실 방지 — 전략 설정 무관하게 4영업일 하드 타임아웃
@@ -294,14 +292,15 @@ async function checkAndUpdateTrailingStop(
         { component: 'TRAILING' },
       );
       try {
-        await getPool().query('UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2 AND is_paper = $3', [
-          -currentPrice,
-          chain.id,
-          chain.is_paper ?? getCtxIsPaper(),
-        ]);
+        await getPool().query(
+          'UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2 AND is_paper = $3',
+          [-currentPrice, chain.id, chain.is_paper ?? getCtxIsPaper()],
+        );
       } catch (err) {
         // DB 쓰기 실패 시 매도 결정 반환 금지 — 다음 사이클에서 이중 부분매도 방지
-        logger.error(`⛔ 조기익절 플래그 저장 실패 → 매도 차단 (이중 부분매도 방지): ${err}`, { component: 'TRAILING' });
+        logger.error(`⛔ 조기익절 플래그 저장 실패 → 매도 차단 (이중 부분매도 방지): ${err}`, {
+          component: 'TRAILING',
+        });
         return null;
       }
       return {
@@ -325,14 +324,15 @@ async function checkAndUpdateTrailingStop(
         { component: 'TRAILING' },
       );
       try {
-        await getPool().query('UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2 AND is_paper = $3', [
-          -currentPrice,
-          chain.id,
-          chain.is_paper ?? getCtxIsPaper(),
-        ]);
+        await getPool().query(
+          'UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2 AND is_paper = $3',
+          [-currentPrice, chain.id, chain.is_paper ?? getCtxIsPaper()],
+        );
       } catch (err) {
         // DB 쓰기 실패 시 매도 결정 반환 금지 — 다음 사이클에서 이중 부분매도 방지
-        logger.error(`⛔ 분할매도 플래그 저장 실패 → 매도 차단 (이중 부분매도 방지): ${err}`, { component: 'TRAILING' });
+        logger.error(`⛔ 분할매도 플래그 저장 실패 → 매도 차단 (이중 부분매도 방지): ${err}`, {
+          component: 'TRAILING',
+        });
         return null;
       }
       return {
@@ -354,11 +354,10 @@ async function checkAndUpdateTrailingStop(
   if (newPeak > storedPeak) {
     const saveVal = partialSoldAlready ? -newPeak : newPeak;
     try {
-      await getPool().query('UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2 AND is_paper = $3', [
-        saveVal,
-        chain.id,
-        chain.is_paper ?? getCtxIsPaper(),
-      ]);
+      await getPool().query(
+        'UPDATE transaction_chains SET peak_price_since_open = $1 WHERE id = $2 AND is_paper = $3',
+        [saveVal, chain.id, chain.is_paper ?? getCtxIsPaper()],
+      );
     } catch (err) {
       logger.error(`트레일링 고점 갱신 실패: ${err}`, { component: 'TRAILING' });
     }
@@ -510,7 +509,10 @@ async function checkEscapeTargets(chains: any[]): Promise<void> {
     const d = decisions.find((dd) => dd.stock_code === chain.stock_code);
     if (d) {
       await getPool()
-        .query('UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1 AND is_paper = $2', [chain.id, getCtxIsPaper()])
+        .query('UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1 AND is_paper = $2', [
+          chain.id,
+          getCtxIsPaper(),
+        ])
         .catch(() => {});
     }
   }

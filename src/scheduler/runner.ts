@@ -22,9 +22,9 @@ import { runSniperScan } from '../automation/snipers/runner.js';
 import { MARKET, SCHEDULE } from '../config/constants.js';
 import { runWithMode } from '../config/context.js';
 import { paperOnly } from '../config/index.js';
+import { getPool } from '../db/client.js';
 import { invalidateBalanceCache } from '../kis/account.js';
 import { fixWatchlistNames, syncHoldingsToWatchlist, syncInterestGroups } from '../kis/interest-group.js';
-import { getPool } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 import { runClosingBellJob } from './closing-bell-job.js';
 import { runHoldingCheckJob } from './holding-check-job.js';
@@ -506,17 +506,6 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 🔔 10:00 — 개장벨 스캘핑 전량 청산 (데이트레이드 원칙, 09:00~09:13 진입분)
-  cron.schedule(
-    '0 10 * * 1-5',
-    () => {
-      import('./force-close-job.js')
-        .then((m) => runDomesticDual('개장벨청산', () => m.runOpeningBellForceClose()))
-        .catch((e) => logger.error(`개장벨 청산 실패: ${e}`, { component: 'SCHEDULER' }));
-    },
-    { timezone: MARKET.TIMEZONE },
-  );
-
   // 🔔 09:00 개장 즉시 — 기존 Track B도 병행 (SCALPING 모드 자동 강제)
   cron.schedule(
     '0 9 * * 1-5',
@@ -709,13 +698,10 @@ export function startScheduler(): void {
   //  장 마감 후
   // ═══════════════════════════════════════════
 
-  // 15:20 — 단타 강제 청산 (오버나잇 방지) + Shadow KR EOD 청산
+  // 15:20 — Shadow KR EOD 청산
   cron.schedule(
     `${MARKET.FORCE_SELL_MINUTE} ${MARKET.FORCE_SELL_HOUR} * * 1-5`,
     () => {
-      import('./force-close-job.js')
-        .then((m) => runDomesticDual('단타마감청산', () => m.runForceCloseJob()))
-        .catch((e) => logger.error(`강제 청산 실패: ${e}`, { component: 'SCHEDULER' }));
       import('../shadow/shadow-tracker.js')
         .then(async (st) => {
           await st.closeShadowMarketEnd('KR', new Map());
@@ -1022,7 +1008,9 @@ export function startScheduler(): void {
     cron.schedule(
       `${time} * * 1-5`,
       () => {
-        runHotSectorWatchlist().catch((e) => logger.error(`핫 업종 편입 실패(${time}): ${e}`, { component: 'SCHEDULER' }));
+        runHotSectorWatchlist().catch((e) =>
+          logger.error(`핫 업종 편입 실패(${time}): ${e}`, { component: 'SCHEDULER' }),
+        );
       },
       { timezone: MARKET.TIMEZONE },
     );
@@ -1045,10 +1033,7 @@ export function startScheduler(): void {
   cron.schedule(
     '20,50 9-15 * * 1-5',
     () => {
-      Promise.all([
-        import('../automation/community-sentinel.js'),
-        import('../db/client.js'),
-      ])
+      Promise.all([import('../automation/community-sentinel.js'), import('../db/client.js')])
         .then(async ([sentinel, db]) => {
           const wl = await db.getActiveWatchlist();
           const codes = wl.map((s: { stock_code: string }) => s.stock_code).slice(0, 12);
@@ -1285,7 +1270,9 @@ export function startScheduler(): void {
   cron.schedule(
     '*/15 * * * 1-5',
     () => {
-      getPool().query('SELECT 1').catch(() => {});
+      getPool()
+        .query('SELECT 1')
+        .catch(() => {});
     },
     { timezone: MARKET.TIMEZONE },
   );
