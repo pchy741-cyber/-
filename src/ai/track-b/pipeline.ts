@@ -59,8 +59,6 @@ import { technicalFallbackDecisions } from './technical-fallback.js';
 import { MEGA_CAP_PRIORITY_CODES } from './trading-rules.js';
 
 import { loadPipelineData } from './data-loader.js';
-// 역호환: executor.ts가 pipeline.ts에서 import
-export { recordSellForCooldown } from './sell-cooldown.js';
 
 // DART 캐시 갱신 추적 — paper/live 모드별 분리 (크로스오염 방지)
 const _lastDartRefreshAt = new Map<string, number>();
@@ -451,7 +449,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // ── 방어 파킹 자동 진입: Live 전용, 하락세 감지 시 ──────────────────
     // 단, 기관(연금 포함) 순매수 지속 중이면 파킹 보류 (정부 지지선 반영)
-    if (!parkState.isActive && !ctxIsPaper) {
+    // 14:00 이후 진입 금지 — 장 마감 직전 FORCE_CLOSE → 당일 손실 확정 방지
+    if (!parkState.isActive && !ctxIsPaper && kstH < 14) {
       const dt = await isPortfolioInDowntrend();
       if (dt.downtrend) {
         // KODEX 200(069500)으로 시장 전체 기관 흐름 확인
@@ -853,19 +852,18 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     //   How: paper도 live와 동일한 시간 가드 적용 — 학습 환경에서도 일관된 운영
     // v12: SWING 종가베팅 창구 15:00~15:20 허용 (AI 검증 — 실전 고수 EOD 진입 구간)
     const isSwingEodBetting = effectiveModeRaw === 'SWING' && kstH === 15 && kstM < 20;
-    const isPastClose = kstH >= 14 && !isSwingEodBetting; // v11: 14:50→14:00 / v12: SWING 15:00~15:20 예외
-    // v11 시간대별 매수 필터 (손익 최우선):
-    // 09:00~10:00 → 전략 무제한 (황금 윈도우, 변동성 피크)
-    // 10:00~11:30 → SNIPER 전용 (변동성 축소, 고확신만)
+    const isPastClose = (kstH > 14 || (kstH === 14 && kstM >= 50)) && !isSwingEodBetting; // v13: 14:00→14:50 복원 (황금오후 차단 버그 수정)
+    // v13 시간대별 매수 필터:
+    // 09:00~10:20 → 전략 무제한 (황금 오전 — 변동성 피크)
+    // 10:20~11:30 → SNIPER 전용 마의구간 창구 (고확신만)
     // 11:30~13:00 → 전면 차단 (점심 유동성 소멸)
-    // 13:00~14:00 → SNIPER 전용 (오후 세션 1시간)
-    // 14:00~15:00 → 전면 차단
-    // 15:00~15:20 → SWING 전용 종가베팅 창구 (v12 신규)
-    const isAfterGoldenHour = !isScalpingMode && kstH >= 10;
-    const isSniperWindow =
-      (kstH === 10 || (kstH === 11 && kstM < 30)) || // 10:00~11:30
-      kstH === 13; // 13:00~14:00
-    const isLunchBan = isAfterGoldenHour && !(effectiveModeRaw === 'SNIPER' && isSniperWindow);
+    // 13:00~14:50 → 황금 오후 — 전 모드 진입 허용 (v13 복원: 기존 kstH===13 SNIPER전용이 버그였음)
+    // 14:50~15:20 → SWING EOD 종가베팅 전용
+    // 15:20+      → 전면 차단
+    const isAfterGoldenHour = !isScalpingMode && (kstH > 10 || (kstH === 10 && kstM >= 20)); // 황금오전 끝 10:20부터
+    const isSniperOnlyWindow = (kstH === 10 && kstM >= 20) || (kstH === 11 && kstM < 30); // 10:20~11:30 SNIPER 창구
+    const isGoldenAfternoon = kstH === 13 || (kstH === 14 && kstM < 50) || isSwingEodBetting; // 황금오후 + EOD
+    const isLunchBan = isAfterGoldenHour && !isGoldenAfternoon && !(effectiveModeRaw === 'SNIPER' && isSniperOnlyWindow);
     const portfolioStress = calcPortfolioStressLevel(openChains, livePrices, totalAssets);
     if (portfolioStress >= 1) {
       logger.warn(`⚠️ 포트폴리오 스트레스 레벨 ${portfolioStress} (미실현 손실 누적)`, { component: 'TRACK_B' });

@@ -7,9 +7,10 @@
  * 파킹 자산: KODEX 미국달러SOFR금리액티브 (449170)
  */
 
-import { INVERSE_ETF_CODES, INVERSE_ETFS } from '../../automation/crash-profit.js';
+import { CrashSignal, INVERSE_ETF_CODES, INVERSE_ETFS } from '../../automation/crash-profit.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, isMemoryMode } from '../../db/client.js';
+import { getCashReserveRatio } from './cash-manager.js';
 import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
@@ -20,6 +21,11 @@ export const PARK_STOCK_NAME = 'KODEX 미국달러SOFR금리액티브';
 // 상승세 복귀 기준
 const RECOVERY_PARK_PROFIT_PCT = 1.5; // 파킹 자산 수익률 1.5% 이상 (= 시장 회복 신호)
 const RECOVERY_POSITIVE_DAYS = 2; // 연속 n일 양수 daily_pnl
+
+// 하락장 감지 기준 (isPortfolioInDowntrend 내부 사용)
+const DOWNTREND_MIN_DAYS = 5; // 최소 5일 스냅샷 필요
+const DOWNTREND_DRAWDOWN_PCT = 3.0; // 전고점 대비 3% 이상 낙폭
+const DOWNTREND_CONFIRM_DAYS = 3; // 최근 5일 중 3일 이상 손실 확인
 
 export interface DefenseParkState {
   isActive: boolean;
@@ -192,26 +198,34 @@ export async function isMarketRecovering(
     }
   }
 
-  // 3. 파킹 48시간 이상 경과 + SOFR ETF가 수익일 때만 해제
-  // 2026-06 성과 검토: 24h + PnL≥-1.0% 기준이 하락장 지속 중 조기 해제 → 재진입 손실
-  // v3: 최소 48시간 + 수익 전환(≥0.0%) 조건으로 강화
-  if (!isMemoryMode() && parkChain) {
+  // 3. 파킹 48시간 이상 경과 시 해제 (v13: parkChain 없을 때도 탈출 허용)
+  // SOFR ETF(449170)는 일 0.01% 수익으로 0.4% 수수료 왕복 커버 불가 → 장기 파킹은 구조적 손실
+  // v13: parkChain 없거나 PnL ≥ -0.5% (수수료 범위) 이면 48h 후 강제 해제
+  if (!isMemoryMode()) {
     try {
       const { rows } = await getPool().query(
         `SELECT entered_at FROM defense_park_state WHERE is_active = TRUE ORDER BY entered_at DESC LIMIT 1`,
       );
       if (rows.length > 0) {
         const enteredAt = new Date(rows[0].entered_at);
-        const hoursParked = (Date.now() - enteredAt.getTime()) / 3_600_000; // 1 hour in ms
+        const hoursParked = (Date.now() - enteredAt.getTime()) / 3_600_000;
         if (hoursParked >= 48) {
+          if (!parkChain) {
+            // 파킹 포지션이 이미 없는 상태 → 즉시 해제 (고착 방지)
+            return {
+              recovering: true,
+              reason: `파킹 ${hoursParked.toFixed(0)}시간 경과 — 포지션 없음, 강제 해제`,
+            };
+          }
           const price = livePrices.get(PARK_STOCK_CODE);
           const avgBuy = Number(parkChain.avg_buy_price ?? 0);
           const currentPx = price?.currentPrice ?? 0;
           const pnlPct = avgBuy > 0 && currentPx > 0 ? ((currentPx - avgBuy) / avgBuy) * 100 : 0;
-          if (pnlPct >= 0.0) {
+          if (pnlPct >= -0.5) {
+            // -0.5% 이상(수수료 범위 이내) 이면 해제 — SOFR ETF는 구조적으로 0.0% 도달 불가
             return {
               recovering: true,
-              reason: `파킹 ${hoursParked.toFixed(0)}시간 경과 — 기간 만료 해제 (SOFR +${pnlPct.toFixed(1)}%)`,
+              reason: `파킹 ${hoursParked.toFixed(0)}시간 경과 — 기간 만료 해제 (SOFR ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)`,
             };
           }
         }
@@ -239,8 +253,8 @@ export async function buildDefenseParkEntryDecisions(
   crashSignal?: CrashSignal,
 ): Promise<TradeDecision[]> {
   const useInverse = crashSignal && (crashSignal.level === 'CRASH' || crashSignal.level === 'PANIC');
-  const parkCode = useInverse ? INVERSE_ETF.code : PARK_STOCK_CODE;
-  const parkName = useInverse ? INVERSE_ETF.name : PARK_STOCK_NAME;
+  const parkCode = useInverse ? INVERSE_ETFS[0].code : PARK_STOCK_CODE;
+  const parkName = useInverse ? INVERSE_ETFS[0].name : PARK_STOCK_NAME;
 
   logger.warn(`🛡️ 방어 파킹 진입: ${reason} → ${parkName}${useInverse ? ` (score=${crashSignal!.score})` : ''}`, {
     component: 'DEFENSE_PARK',

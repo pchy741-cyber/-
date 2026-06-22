@@ -96,11 +96,11 @@ export function checkQualityGates(input: QualityGateInput): GateResult {
 
   // ─ qSignalFlow ─ v6: 외국인+기관 동반 매도 시 하드 차단 (AI 90+ 제외)
   // paper: 실시간 KIS 시그널 불필요 → 항상 통과 (연습매매 활성화)
-  // v10: AI 없고 시그널 데이터도 없으면 진입 거부 (순수 랜덤 진입 방지)
+  // v13: 시그널 없음 = 중립 처리 (기술지표 단독 모드에서 4/5 품질게이트로 판단 위임)
   const qSignalFlow = isPaper
     ? true
     : !signalData.raw
-      ? (noAiForStock ? false : true)
+      ? true
       : (() => {
           // 외국인+기관 동시 매도 = 기관 컨센서스 매도 → 개인만 매수 중 → 위험
           if (signalData.foreignNetEst < 0 && signalData.instNetEst < 0 && aiScore < 90) return false;

@@ -149,9 +149,15 @@ export class ChainManager {
       logProfit = profit;
       const remainingQty = chain.total_quantity - sellQty;
       logRemainingQty = remainingQty;
+      // v13: 부분 익절 시 total_invested를 잔여 수량 비율로 감소 (holdingsCost 정합성)
+      const newInvested =
+        remainingQty > 0 && chain.total_quantity > 0
+          ? Math.round((Number(chain.total_invested) * remainingQty) / chain.total_quantity)
+          : 0;
       await updateChain(chainId, {
         status: remainingQty > 0 ? 'PROFIT_TAKING' : 'CLOSED',
         total_quantity: remainingQty,
+        ...(remainingQty > 0 && { total_invested: newInvested }),
         realized_pnl: Number(chain.realized_pnl) + profit,
         ...(remainingQty > 0 && { peak_price: sellPrice }),
         ...(remainingQty === 0 && {
@@ -162,7 +168,7 @@ export class ChainManager {
     } else {
       await withTransaction(async (client) => {
         const { rows } = await client.query(
-          'SELECT total_quantity, realized_pnl, avg_buy_price FROM transaction_chains WHERE id = $1 FOR UPDATE',
+          'SELECT total_quantity, realized_pnl, avg_buy_price, total_invested FROM transaction_chains WHERE id = $1 FOR UPDATE',
           [chainId],
         );
         const freshChain = rows[0];
@@ -179,9 +185,11 @@ export class ChainManager {
         const remQty = freshQty - sellQty;
         logRemainingQty = remQty;
         if (remQty > 0) {
+          // v13: total_invested를 잔여 수량 비율로 감소 (holdingsCost 부풀림 방지)
+          const newInvested = Math.round((Number(freshChain.total_invested) * remQty) / freshQty);
           await client.query(
-            `UPDATE transaction_chains SET status='PROFIT_TAKING', total_quantity=$1, realized_pnl=$2, peak_price=$3 WHERE id=$4`,
-            [remQty, freshPnl + profit, sellPrice, chainId],
+            `UPDATE transaction_chains SET status='PROFIT_TAKING', total_quantity=$1, realized_pnl=$2, peak_price=$3, total_invested=$4 WHERE id=$5`,
+            [remQty, freshPnl + profit, sellPrice, newInvested, chainId],
           );
         } else {
           await client.query(
