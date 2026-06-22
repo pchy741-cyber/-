@@ -149,8 +149,8 @@ export async function restorePaperState(): Promise<void> {
     );
     paperCashUsed = Number(chainCostRows[0]?.cost ?? 0);
 
-    // Ghost chains 자동 정리: holdingsCost > 시드 110% → paper_archived된 orders와 연결된 chains 잔류
-    if (paperCashUsed > PAPER_INITIAL_CAPITAL * 1.1) {
+    // Ghost chains 자동 정리: holdingsCost > 시드 + 실현손익 → FILLED orders 없는 유령 chain 제거
+    if (paperCashUsed > PAPER_INITIAL_CAPITAL + paperRealizedPnl) {
       const { rowCount: ghostClosed } = await pool.query(
         `UPDATE transaction_chains
          SET status = 'CLOSED', close_reason = 'ghost_cleanup', closed_at = NOW()

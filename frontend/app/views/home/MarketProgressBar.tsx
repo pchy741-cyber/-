@@ -46,7 +46,7 @@ export default function MarketProgressBar({
   const isUs = holdingsTab === 'US';
   const loss = isUs ? overseasPnlUsd : unrealizedPnl;
   const limit = isUs ? overseasLimitUsd : dailyLossLimit;
-  const usedPct = loss < 0 && limit > 0 ? Math.min(100, Math.round((Math.abs(loss) / limit) * 100)) : 0;
+  const usedPct = loss < 0 && limit > 0 ? Math.min(100, Math.round((Math.abs(loss) / limit) * 1000) / 10) : 0;
   const lossColor = usedPct >= 60 ? 'text-rose-400' : usedPct > 0 ? 'text-amber-400' : 'text-emerald-400';
   const phase = health?.marketOpen ? getKrMarketPhase(currentTimeStr) : null;
 
@@ -136,14 +136,8 @@ export default function MarketProgressBar({
         <span className="text-[10px] text-slate-500">손실도</span>
         <div className={`text-[11px] font-bold tabular-nums ${lossColor}`}>
           {isUs
-            ? (loss < 0 ? `${usedPct}%` : '0%')
-            : (loss < 0 ? `${usedPct}%` : '0%')}
-        </div>
-        <div className={`text-[10px] tabular-nums ${lossColor} opacity-70 hidden sm:block`}>
-          {isUs
-            ? `($${Math.abs(Math.round(loss)).toLocaleString('en-US')}/$${limit.toLocaleString('en-US')})`
-            : `(${fmtWon(Math.abs(loss < 0 ? loss : 0))}/${fmtWon(limit)})`}
-        </div>
+            ? (loss < 0 ? `${usedPct.toFixed(1)}% ($${Math.abs(Math.round(loss)).toLocaleString('en-US')}/$${limit.toLocaleString('en-US')})` : `0% / $${limit.toLocaleString('en-US')}`)
+            : (loss < 0 ? `${usedPct.toFixed(1)}% (${fmtWon(Math.abs(loss))}/${fmtWon(limit)})` : `0% / ${fmtWon(limit)}`)}
       </div>
     </div>
   );

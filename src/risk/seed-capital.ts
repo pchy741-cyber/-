@@ -157,11 +157,11 @@ export function getSeedCapitalStatus() {
 
 // ── 일일 손실한도 ──
 // Live: 총자산의 25% (CEO 지시 2026-06-12)
-// Paper: 총자산의 80% (킬스위치와 통일 — 사실상 무제한 실험)
+// Paper: 총자산의 50% (CEO 지시 2026-06-19)
 // 순수 함수: DB 쿼리 없음, caller가 투자금을 전달한다.
 
 export const DAILY_LOSS_PCT_LIVE = 25;
-export const DAILY_LOSS_PCT_PAPER = 80;
+export const DAILY_LOSS_PCT_PAPER = 50;
 
 // ── 주간 손실한도 ──
 // Live: 총자산의 50%

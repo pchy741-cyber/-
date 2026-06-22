@@ -24,11 +24,11 @@ import { logger } from '../utils/logger.js';
 // defense-park.ts의 PARK_STOCK_CODE와 동일 — 단일 소스로 통일
 const SOFR_ETF_CODE = PARK_STOCK_CODE;
 
-// 모듈 레벨 상태 — 서버 재시작 시 안전 기본값 (차단 없음)
-let _riskOff = false;
-let _riskOffStreak = 0; // 연속 Risk-Off 감지 일수 (score ≥ 35)
-let _riskOnStreak = 0; // 연속 Risk-On  감지 일수 (score < 20)
-let _lastRoutingDate = ''; // 중복 카운트 방지 (YYYY-MM-DD KST)
+// 모듈 레벨 상태 — Paper/Live 완전 분리 (전역 공유 시 paper 크론이 live 스트릭 오염)
+const _state = {
+  paper: { riskOff: false, riskOffStreak: 0, riskOnStreak: 0, lastDate: '' },
+  live:  { riskOff: false, riskOffStreak: 0, riskOnStreak: 0, lastDate: '' },
+};
 
 // SOFR ETF 배당소득세(15.4%) Whipsaw 마찰 방지 — 불감대(Dead Band) 임계값
 const DEAD_BAND = {
@@ -38,11 +38,11 @@ const DEAD_BAND = {
 } as const;
 
 export function isRiskOffToday(): boolean {
-  return _riskOff;
+  return _state[getCtxIsPaper() ? 'paper' : 'live'].riskOff;
 }
 
 export function getMarketRoutingState(): { riskOff: boolean } {
-  return { riskOff: _riskOff };
+  return { riskOff: _state[getCtxIsPaper() ? 'paper' : 'live'].riskOff };
 }
 
 // ── S&P 500 등락률 조회 (5분 캐시 — 외부 API 타임아웃 시 stale 결과 사용) ──
@@ -226,6 +226,7 @@ async function unparkSofrEtf(): Promise<boolean> {
 
 export async function dailyMarketRouting(): Promise<void> {
   const isPaper = getCtxIsPaper();
+  const s = _state[isPaper ? 'paper' : 'live'];
 
   // 1. 병렬 데이터 수집
   const [spxResult, macroResult, sentResult, snapResult] = await Promise.allSettled([
@@ -264,54 +265,54 @@ export async function dailyMarketRouting(): Promise<void> {
     `→ ${level}`,
   ].join(' ');
 
-  // 3. 불감대(Dead Band) 스트릭 업데이트 — 하루 1회만 카운트 (paper/live 중복 방지)
+  // 3. 불감대(Dead Band) 스트릭 업데이트 — 하루 1회만 카운트 (paper/live 각자 독립 추적)
   const todayKst = new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
-  if (todayKst !== _lastRoutingDate) {
-    _lastRoutingDate = todayKst;
+  if (todayKst !== s.lastDate) {
+    s.lastDate = todayKst;
     if (level === 'RISK_OFF') {
-      _riskOffStreak++;
-      _riskOnStreak = 0;
+      s.riskOffStreak++;
+      s.riskOnStreak = 0;
     } else if (level === 'RISK_ON') {
-      _riskOnStreak++;
-      _riskOffStreak = 0;
+      s.riskOnStreak++;
+      s.riskOffStreak = 0;
     }
     // NEUTRAL: 양쪽 스트릭 모두 유지 (카운트 없음)
   }
 
-  const streakLine = `RiskOff연속=${_riskOffStreak}d RiskOn연속=${_riskOnStreak}d`;
+  const streakLine = `RiskOff연속=${s.riskOffStreak}d RiskOn연속=${s.riskOnStreak}d`;
   logger.info(`📡 시장라우팅 [${isPaper ? 'PAPER' : 'LIVE'}] ${infoLine} | ${streakLine}`, {
     component: 'MARKET_ROUTING',
   });
 
   // 4. 파킹/언파킹 결정 — 불감대 통과 여부 확인
   const immediateMode = score >= DEAD_BAND.IMMEDIATE_SCORE; // 초극단 위기: 즉시 행동
-  const shouldPark = !_riskOff && level === 'RISK_OFF' && (immediateMode || _riskOffStreak >= DEAD_BAND.PARK_DAYS);
-  const shouldUnpark = _riskOff && level === 'RISK_ON' && _riskOnStreak >= DEAD_BAND.UNPARK_DAYS;
+  const shouldPark = !s.riskOff && level === 'RISK_OFF' && (immediateMode || s.riskOffStreak >= DEAD_BAND.PARK_DAYS);
+  const shouldUnpark = s.riskOff && level === 'RISK_ON' && s.riskOnStreak >= DEAD_BAND.UNPARK_DAYS;
 
   if (shouldPark) {
-    _riskOff = true;
+    s.riskOff = true;
     await parkCashInSofr();
     if (!isPaper) {
       const reason = immediateMode
         ? `⚡ 초극단 위기(Score=${score}) — 즉시 파킹`
-        : `📅 ${_riskOffStreak}영업일 연속 Risk-Off — 불감대 통과`;
+        : `📅 ${s.riskOffStreak}영업일 연속 Risk-Off — 불감대 통과`;
       await sendTelegramMessage(
         `🚨 *시장라우팅: RISK_OFF*\n${infoLine}\n${reason}\n💰 SOFR ETF 파킹 실행 — 신규 스캔 전면 차단`,
       ).catch(() => {});
     }
   } else if (shouldUnpark) {
-    _riskOff = false;
+    s.riskOff = false;
     const unpacked = await unparkSofrEtf();
     if (unpacked && !isPaper) {
       await sendTelegramMessage(
-        `✅ *시장라우팅: RISK_ON 회복*\n${infoLine}\n📅 ${_riskOnStreak}영업일 연속 회복 — SOFR 언파킹 → 8개 전략 재배분`,
+        `✅ *시장라우팅: RISK_ON 회복*\n${infoLine}\n📅 ${s.riskOnStreak}영업일 연속 회복 — SOFR 언파킹 → 8개 전략 재배분`,
       ).catch(() => {});
     }
-  } else if (level === 'RISK_OFF' && !_riskOff && !isPaper && _riskOffStreak === 1) {
+  } else if (level === 'RISK_OFF' && !s.riskOff && !isPaper && s.riskOffStreak === 1) {
     // 첫 Risk-Off 감지: 불감대 대기 시작 알림
     await sendTelegramMessage(
-      `⚠️ *시장라우팅: RISK_OFF 감지 (불감대 대기)*\n${infoLine}\n📅 ${_riskOffStreak}/${DEAD_BAND.PARK_DAYS}영업일 — ${DEAD_BAND.PARK_DAYS - _riskOffStreak}일 더 유지 시 파킹`,
+      `⚠️ *시장라우팅: RISK_OFF 감지 (불감대 대기)*\n${infoLine}\n📅 ${s.riskOffStreak}/${DEAD_BAND.PARK_DAYS}영업일 — ${DEAD_BAND.PARK_DAYS - _state.live.riskOffStreak}일 더 유지 시 파킹`,
     ).catch(() => {});
   }
-  // NEUTRAL / 불감대 대기 중: 현재 _riskOff 상태 유지, 행동 없음
+  // NEUTRAL / 불감대 대기 중: 현재 riskOff 상태 유지, 행동 없음
 }

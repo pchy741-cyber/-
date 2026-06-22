@@ -171,6 +171,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 2026-06 성과 검토: 파킹 즉시 해제 → 하락장 재진입 → 추가 손실 루프
     // v3: 파킹 중에는 isMarketRecovering 판정에 맡기고, pipeline에서 강제 해제하지 않음
     // Paper 모드: 방어 파킹 완전 면제 — 연습매매는 하락장에서도 거래 데이터를 수집해야 함
+    let isParkingException = false;
+    const parkExceptCodes = new Set<string>();
     const parkState = ctxIsPaper
       ? {
           isActive: false,
@@ -190,8 +192,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         logger.info(`✅ 방어 파킹 회복 감지 → 해제: ${recovery.reason}`, { component: 'TRACK_B' });
         return buildDefenseParkExitDecisions(openChains, recovery.reason);
       }
-      logger.info(`🛡️ 방어 파킹 유지 중 — 회복 미감지`, { component: 'TRACK_B' });
-      return []; // 파킹 유지, 신규 매수 차단
+      // 파킹 유지 — 감시목록 상위 3개는 BUY 허용 (예외 종목)
+      const PARK_EXCEPT_TOP_N = 3;
+      isParkingException = true;
+      watchlist.slice(0, PARK_EXCEPT_TOP_N).forEach((w) => parkExceptCodes.add(w.stock_code));
+      logger.info(
+        `🛡️ 파킹 유지 — 감시목록 상위 ${PARK_EXCEPT_TOP_N}개 예외 허용: ${[...parkExceptCodes].join(', ')}`,
+        { component: 'TRACK_B' },
+      );
     }
     const orphanedKodex = openChains.find((c) => c.stock_code === PARK_STOCK_CODE);
     if (orphanedKodex) {
@@ -1672,6 +1680,18 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     import('../../automation/regime-allocator.js')
       .then((m) => m.autoTuneRegimeWeights())
       .catch(() => {});
+
+    // 파킹 예외 모드: 예외 종목 BUY/AVERAGE_DOWN만 허용, 나머지 차단 (SELL/FORCE_CLOSE는 항상 통과)
+    if (isParkingException) {
+      const parkFiltered = actionable.filter(
+        (d) => !['BUY', 'AVERAGE_DOWN'].includes(d.action) || parkExceptCodes.has(d.stock_code),
+      );
+      const blocked = actionable.length - parkFiltered.length;
+      if (blocked > 0) {
+        logger.info(`🛡️ 파킹 예외 필터: ${blocked}건 BUY 차단 (예외 종목 ${parkExceptCodes.size}개 통과)`, { component: 'TRACK_B' });
+      }
+      return parkFiltered;
+    }
 
     return actionable;
   } catch (error) {

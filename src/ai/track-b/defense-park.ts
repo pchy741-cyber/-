@@ -1,30 +1,21 @@
 /**
  * 하락장 방어 파킹 시스템
  *
- * 포트폴리오 하락세 감지 → 전종목 청산 → SOFR ETF 파킹
- * 상승세 회복 감지 → SOFR ETF 매도 → 정상 매매 복귀
+ * 파킹 진입: market-routing.ts (VIX/S&P500/Fear&Greed 기반, 08:45 크론)
+ * 파킹 해제: pipeline.ts → isMarketRecovering() 판정
  *
  * 파킹 자산: KODEX 미국달러SOFR금리액티브 (449170)
- *   — 달러 + 단기금리 수익, 주식시장 하락과 무상관
- *   — 기존 KODEX 200 (069500)은 주식시장 연동 → 하락장 파킹에 부적합
- *   — market-routing의 SOFR 로직과 통일 (2중 시스템 제거)
  */
 
-import { type CrashSignal, INVERSE_ETF, INVERSE_ETF_CODES, INVERSE_ETFS } from '../../automation/crash-profit.js';
+import { INVERSE_ETF_CODES, INVERSE_ETFS } from '../../automation/crash-profit.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool, isMemoryMode } from '../../db/client.js';
 import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
-import { getCashReserveRatio } from './cash-manager.js';
 
 export const PARK_STOCK_CODE = '449170'; // KODEX 미국달러SOFR금리액티브
 export const PARK_STOCK_NAME = 'KODEX 미국달러SOFR금리액티브';
-
-// 하락세 진입 기준 (반응속도 개선 — 7%/4일 → 5%/3일)
-const DOWNTREND_DRAWDOWN_PCT = 5; // 7일 최고점 대비 5% 이상 낙폭
-const DOWNTREND_CONFIRM_DAYS = 3; // 최근 5일 중 음수 daily_pnl 일수
-const DOWNTREND_MIN_DAYS = 3; // 판단에 필요한 최소 스냅샷 수
 
 // 상승세 복귀 기준
 const RECOVERY_PARK_PROFIT_PCT = 1.5; // 파킹 자산 수익률 1.5% 이상 (= 시장 회복 신호)
