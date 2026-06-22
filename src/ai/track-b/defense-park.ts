@@ -15,7 +15,8 @@ import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 
-export const PARK_STOCK_CODE = '449170'; // KODEX 미국달러SOFR금리액티브
+/** @deprecated v10.9.5: SOFR 파킹 폐지. 잔여분 감지/매도용으로만 유지 */
+export const PARK_STOCK_CODE = '449170';
 export const PARK_STOCK_NAME = 'KODEX 미국달러SOFR금리액티브';
 
 // 상승세 복귀 기준
@@ -245,10 +246,9 @@ export async function isMarketRecovering(
 }
 
 /**
- * 방어 파킹 진입 결정 생성
- * 1) 보유 전종목 FORCE_CLOSE
- * 2) CRASH/PANIC → KODEX 인버스 매수 (하락 수익화)
- *    그 외 → SOFR ETF 매수 (안전 파킹)
+ * 방어 파킹 진입 결정 생성 (v10.9.5: 인버스 ETF 전용)
+ * 1) 손실 포지션 FORCE_CLOSE (수익 중 +1% 이상은 보존)
+ * 2) KODEX 200선물인버스2X 매수 (하락 수익화)
  */
 export async function buildDefenseParkEntryDecisions(
   openChains: TransactionChain[],
@@ -258,14 +258,11 @@ export async function buildDefenseParkEntryDecisions(
   reason: string,
   crashSignal?: CrashSignal,
 ): Promise<TradeDecision[]> {
-  // v10.9.5: SOFR 파킹 완전 폐지 → 항상 인버스 ETF 사용 (하락장 수익화)
-  // 기존: CRASH/PANIC만 인버스, 나머지 SOFR → 수수료 > 수익 구조적 손실
-  // 변경: 모든 방어 파킹 → 인버스 ETF (KODEX 200선물인버스2X)
-  const useInverse = true; // 항상 인버스
   const parkCode = INVERSE_ETFS[0].code;
   const parkName = INVERSE_ETFS[0].name;
+  const scoreLabel = crashSignal ? ` (score=${crashSignal.score})` : '';
 
-  logger.warn(`🛡️ 방어 파킹 진입: ${reason} → ${parkName}${useInverse ? ` (score=${crashSignal!.score})` : ''}`, {
+  logger.warn(`🛡️ 방어 파킹 진입: ${reason} → ${parkName}${scoreLabel}`, {
     component: 'DEFENSE_PARK',
   });
   await activateDefensePark(reason);
@@ -274,7 +271,7 @@ export async function buildDefenseParkEntryDecisions(
     .then((m) =>
       m.notifyAlert(
         `🛡️ DEFENSE 모드 진입`,
-        `사유: ${reason.slice(0, 80)}\n${parkName}으로 자산 이동${useInverse ? ' (인버스 공격)' : ''}`,
+        `사유: ${reason.slice(0, 80)}\n${parkName}으로 자산 이동 (인버스)`,
       ),
     )
     .catch(() => {});
@@ -287,8 +284,8 @@ export async function buildDefenseParkEntryDecisions(
     const livePrice = livePrices.get(chain.stock_code);
     const avgBuy = Number(chain.avg_buy_price ?? 0);
     const currentPx = livePrice?.currentPrice ?? 0;
-    // PANIC: 전 포지션 청산 (수익 중이어도). CRASH: 수익 중(+1%)은 보존
-    if (!useInverse || crashSignal!.level !== 'PANIC') {
+    // PANIC: 전 포지션 청산 (수익 중이어도). 그 외: 수익 중(+1%)은 보존
+    if (crashSignal?.level !== 'PANIC') {
       if (avgBuy > 0 && currentPx > 0 && ((currentPx - avgBuy) / avgBuy) * 100 >= 1.0) {
         logger.info(`🛡️ 방어 파킹: ${chain.stock_code} 수익 중 — 청산 제외`, { component: 'DEFENSE_PARK' });
         continue;

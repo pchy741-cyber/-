@@ -27,6 +27,7 @@ export const BUY_BLOCKED_CODES = new Set([
   // ── 파킹/채권 ETF (수수료만 발생) ──
   '161510', // ARIRANG 단기채권액티브
   '360750', // KODEX S&P500 — 유휴 파킹 ETF
+  '449170', // KODEX SOFR금리액티브 — 파킹 폐지 (v10.9.5)
   // ── 인버스/곱버스 ETF (역방향 손실 위험) ──
   '114800', // KODEX 인버스
   '252670', // TIGER 200선물인버스2X (곱버스)

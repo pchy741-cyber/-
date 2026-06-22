@@ -15,6 +15,7 @@
  *   ④ EOD 블루칩 줍줍 (갭 수익)
  */
 
+import { PARK_STOCK_CODE } from '../ai/track-b/defense-park.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { getPool, isMemoryMode } from '../db/client.js';
 import { logger } from '../utils/logger.js';
@@ -310,7 +311,7 @@ export function generatePanicSellDecisions(
   for (const chain of openChains) {
     if (chain.total_quantity <= 0) continue;
     if (INVERSE_ETF_CODES.has(chain.stock_code)) continue; // 인버스는 유지
-    if (chain.stock_code === '449170') continue; // SOFR ETF 파킹 유지 (defense-park.ts PARK_STOCK_CODE와 동일, 순환참조 방지)
+    if (chain.stock_code === PARK_STOCK_CODE) continue; // SOFR ETF — 잔여분 보존 (pipeline에서 별도 정리)
 
     const price = livePrices.get(chain.stock_code);
     const avgBuy = Number(chain.avg_buy_price ?? 0);

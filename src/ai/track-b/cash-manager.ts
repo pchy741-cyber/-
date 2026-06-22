@@ -64,13 +64,13 @@ const PARK_PROFIT_TAKE_PCT = 5.0;
 /** 최대 파킹 종목 수 — v2는 1종목 집중 (회전 방지) */
 const MAX_PARK_POSITIONS = 1;
 
-// KOSPI 시가총액 Top 5 — 파킹 후보 (2026년 6월 기준)
+// 유저 지정 5종목 — 유휴 현금 파킹 후보 (2026-06-22 확정)
 export const MEGA_CAP_PARK_CANDIDATES: Array<{ code: string; name: string }> = [
-  { code: '005930', name: '삼성전자' },        // 1위
-  { code: '000660', name: 'SK하이닉스' },      // 2위
-  { code: '012450', name: '한화에어로스페이스' }, // 방산 랠리
-  { code: '005380', name: '현대차' },           // 자동차
-  { code: '005490', name: 'POSCO홀딩스' },      // 철강/소재
+  { code: '005930', name: '삼성전자' },
+  { code: '005380', name: '현대차' },
+  { code: '000660', name: 'SK하이닉스' },
+  { code: '012450', name: '한화에어로스페이스' },
+  { code: '005935', name: '삼성전자우' },
 ];
 
 // 레거시 호환 (pipeline.ts에서 참조)

@@ -3,17 +3,16 @@
  *
  * 08:45 KST 크론에서 runDomesticDual() 로 호출됨 (paper → live 순)
  *
- * Risk-Off: 신규 매수 전면 차단 + 예수금 전액 SOFR ETF 대피
- * Risk-On:  SOFR 언파킹 + 8개 전략 재배분
- * Neutral:  직전 상태 유지 (매수 차단 여부 변경 없음)
+ * v10.9.5: SOFR 파킹 폐지
+ * Risk-Off: 신규 매수 전면 차단 (현금 보존, 해외매매 자금 유지)
+ * Risk-On:  매수 재개 + 잔여 SOFR 정리
+ * Neutral:  직전 상태 유지
  */
 
 import { getMacroSnapshot } from '../automation/macro-data.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { getOpenChains } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
-import { getAccountBalance } from '../kis/account.js';
-import { getCurrentPrice } from '../kis/market.js';
 import { getFearGreedIndex } from '../market/external-signals.js';
 import { getMacroSignal } from '../market/macro-signal.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
@@ -21,7 +20,7 @@ import { PARK_STOCK_CODE } from '../ai/track-b/defense-park.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
 
-// defense-park.ts의 PARK_STOCK_CODE와 동일 — 단일 소스로 통일
+/** @deprecated SOFR 잔여분 매도용 — 신규 매수 없음 */
 const SOFR_ETF_CODE = PARK_STOCK_CODE;
 
 // 모듈 레벨 상태 — Paper/Live 완전 분리 (전역 공유 시 paper 크론이 live 스트릭 오염)
@@ -139,59 +138,7 @@ function scoreToLevel(score: number): RiskLevel {
   return 'RISK_ON';
 }
 
-// ── SOFR ETF 파킹 ────────────────────────────────────────────────────────────
-
-async function parkCashInSofr(): Promise<boolean> {
-  const isPaper = getCtxIsPaper();
-  try {
-    const openChains = await getOpenChains(isPaper);
-    const existing = openChains.find((c) => c.stock_code === SOFR_ETF_CODE && c.total_quantity > 0);
-    if (existing) {
-      logger.info(`💰 [${isPaper ? 'PAPER' : 'LIVE'}] SOFR 이미 ${existing.total_quantity}주 보유 — 추가 매수 스킵`, {
-        component: 'MARKET_ROUTING',
-      });
-      return true;
-    }
-
-    const balance = isPaper
-      ? await (await import('../risk/paper-balance.js')).getPaperBalance()
-      : await getAccountBalance(true);
-    const cash = balance?.orderableCash ?? 0;
-    if (cash < 10_000) {
-      logger.info(`💰 [${isPaper ? 'PAPER' : 'LIVE'}] 예수금 부족 (${cash.toLocaleString()}원) — SOFR 파킹 스킵`, {
-        component: 'MARKET_ROUTING',
-      });
-      return false;
-    }
-
-    const priceData = await getCurrentPrice(SOFR_ETF_CODE);
-    const price = priceData.currentPrice;
-    if (!price || price <= 0) return false;
-
-    const qty = Math.floor(cash / price);
-    if (qty <= 0) return false;
-
-    const decision: TradeDecision = {
-      action: 'BUY',
-      stock_code: SOFR_ETF_CODE,
-      quantity: qty,
-      price_type: 'MARKET',
-      reasoning: `Risk-Off 시장라우팅: 예수금 ${cash.toLocaleString()}원 전액 SOFR 대피`,
-      confidence: 1.0,
-    };
-
-    await tradeExecutor.processDecisions([decision], 'DEFENSE', 'MARKET_ROUTING_PARK');
-    logger.info(`🅿️ [${isPaper ? 'PAPER' : 'LIVE'}] SOFR 파킹 완료: ${qty}주 × ${price.toLocaleString()}원`, {
-      component: 'MARKET_ROUTING',
-    });
-    return true;
-  } catch (e) {
-    logger.error(`SOFR 파킹 실패 [${isPaper ? 'PAPER' : 'LIVE'}]: ${e}`, { component: 'MARKET_ROUTING' });
-    return false;
-  }
-}
-
-// ── SOFR ETF 언파킹 ──────────────────────────────────────────────────────────
+// ── SOFR ETF 잔여분 매도 (레거시 정리용) ─────────────────────────────────────
 
 async function unparkSofrEtf(): Promise<boolean> {
   const isPaper = getCtxIsPaper();

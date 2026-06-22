@@ -1,3 +1,4 @@
+import { IDLE_PARK_STOCK_CODE } from '../../ai/track-b/cash-manager.js';
 import { getPool } from '../../db/client.js';
 import { getDailyChart } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
@@ -242,7 +243,7 @@ export function analyzeDayOfWeekPerformance(
 }
 
 export async function analyzeParkingDecisions(): Promise<LearnedInsight[]> {
-  const IDLE_PARK_CODE = '333940';
+  const IDLE_PARK_CODE = IDLE_PARK_STOCK_CODE; // 현재: 삼성전자(005930)
   try {
     const ninetyDaysAgo = new Date();
     ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
