@@ -258,7 +258,7 @@ export class RiskEngine {
           total_value: getDomesticTotalAssets(balance),
           cash_balance: balance.orderableCash,
           invested_value: balance.totalEvalAmount,
-          unrealized_pnl: balance.totalProfitLoss,
+          unrealized_pnl: balance.totalEvalAmount - balance.purchaseCost, // 실제 미실현PnL
           daily_pnl: 0,
           daily_pnl_pct: 0,
           positions: balance.positions,
@@ -551,7 +551,7 @@ export class RiskEngine {
             total_value: currentValue,
             cash_balance: currentBalance.orderableCash,
             invested_value: currentBalance.totalEvalAmount,
-            unrealized_pnl: currentBalance.totalProfitLoss,
+            unrealized_pnl: currentBalance.totalEvalAmount - currentBalance.purchaseCost, // 실제 미실현PnL
             daily_pnl: 0,
             daily_pnl_pct: 0,
             positions: currentBalance.positions,
@@ -643,16 +643,9 @@ export class RiskEngine {
     const balance = await getBalance(isPaper);
     let availableCash = balance.orderableCash;
 
-    // Paper 모드: 해외 현금(USD→KRW) 합산 — 통합증거금 방식으로 KR 단독 고갈 시에도 차단 방지
-    if (isPaper) {
-      try {
-        const fx = await getFxRate();
-        if (fx > 0) {
-          const osCashUsd = await getOverseasCash(true);
-          availableCash += Math.round(osCashUsd * fx);
-        }
-      } catch { /* fallback: KR-only */ }
-    }
+    // Paper 모드: 국내 매수는 국내 현금만 사용 (해외 현금 합산 제거)
+    // 기존: 해외 USD를 KRW 환산 후 합산 → 국내 매수 시 해외 현금 미차감 → 무한 매수력 버그
+    // 해외 현금은 해외 매수 전용 (overseas-executor에서 별도 관리)
 
     if (orderValue > availableCash) {
       return {

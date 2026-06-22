@@ -647,7 +647,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       domesticCash: assets.unifiedCash,
       unrealizedPnl: Math.round(viewIsPaper ? totalChainPnl : balance.totalProfitLoss || totalChainPnl),
       realizedPnl: Math.round(liveRealizedPnl),
-      pnl: Math.round(assets.totalPnl + assets.overseasUnrealizedPnlKrw),
+      pnl: Math.round(assets.totalPnl), // totalPnl already includes overseasUnrealizedPnlKrw (calc.ts)
       pnlPct: assets.totalPnlPct,
       prevDayTotalValue: assets.prevDayTotalValue,
       dailyChangePct: assets.dailyChangePct,

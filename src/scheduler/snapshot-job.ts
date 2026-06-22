@@ -193,7 +193,7 @@ export async function runSnapshotJob(): Promise<void> {
         total_value: paperTotalValue,
         cash_balance: paperBalance.orderableCash,
         invested_value: paperBalance.totalEvalAmount,
-        unrealized_pnl: paperBalance.totalProfitLoss,
+        unrealized_pnl: paperBalance.totalEvalAmount - paperBalance.purchaseCost, // 실제 미실현PnL (시가-원가)
         daily_pnl: paperDailyPnl,
         daily_pnl_pct: paperDailyPnlPct,
         positions: paperBalance.positions,

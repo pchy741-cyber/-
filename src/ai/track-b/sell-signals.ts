@@ -138,6 +138,29 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // 이미 이 체인에 대해 결정이 내려졌으면 스킵
     if (processedSellChains.has(chain.id)) continue;
 
+    // ── 러너 모멘텀 감지 (모든 매도 트리거보다 선행) ──
+    // 거래량 2x+ / ADX 25+ / RSI 45~75 / 정배열 중 3개 이상 (수익 7%+ 시 2개)
+    const _rTech = (() => {
+      if (chain.strategy_mode === 'SCALPING') return null;
+      const c = chartData.get(chain.stock_code);
+      return c && c.length >= 20 ? analyzeTechnicals(c) : null;
+    })();
+    const isRunner = (() => {
+      if (!_rTech) return false;
+      let s = 0;
+      if (_rTech.volumeRatio >= 2.0) s++;
+      if (_rTech.adx14 >= 25) s++;
+      if (_rTech.rsi14 >= 45 && _rTech.rsi14 <= 75) s++;
+      if (price.currentPrice > _rTech.sma5 && _rTech.sma5 > _rTech.sma20) s++;
+      return s >= (pnlPct >= 7.0 ? 2 : 3);
+    })();
+    if (isRunner && pnlPct >= 2.0) {
+      logger.info(
+        `🚀 러너 감지: ${chain.stock_code} +${pnlPct.toFixed(1)}% vol=${_rTech!.volumeRatio.toFixed(1)}x ADX=${_rTech!.adx14.toFixed(0)} RSI=${_rTech!.rsi14.toFixed(0)} → 익절 지연`,
+        { component: 'TRACK_B' },
+      );
+    }
+
     // ── BreakEvenGuard: +1.5% 도달 시 SL → 본절(0%)로 자동 상향 ────────────
     // pnl +1.5% 도달 순간 기존 SL(예: -3%)을 0%로 이동 → 원금 손실 방지
     // WHERE stop_loss_pct < 0: 낙관적 잠금 — 동시 사이클 중복 업데이트 방지 (이미 0이면 rowCount=0)
@@ -171,7 +194,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // 포트폴리오 전체 수익 +2% 이상 + RISK_OFF/하락장(macroSizingMult<0.8) + 이 종목 수익권
     // → 개별 TP 미도달이라도 즉시 청산 (수익 반납 방지)
     // v10.3: 개별 종목 최소 +2.0% 이상만 선제 청산 (기존 +0.5%는 수수료 차감 후 실질 손실)
-    if (portfolioPnlPct >= 2.0 && (params.macroSizingMult ?? 1.0) < 0.8 && pnlPct >= 2.0 && chain.total_quantity > 0) {
+    if (portfolioPnlPct >= 2.0 && (params.macroSizingMult ?? 1.0) < 0.8 && pnlPct >= 2.0 && chain.total_quantity > 0 && !isRunner) {
       decisions.push({
         action: 'SELL',
         stock_code: chain.stock_code,
@@ -195,6 +218,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     {
       const _isMegaCap = REVERSAL_MEGA_CAPS.has(chain.stock_code);
       const _isReversalEligible = !_isMegaCap
+        && !isRunner // 러너는 일시 조정이 정상 — 반전매도 면제
         && chain.status !== 'PROFIT_TAKING'
         && chain.strategy_mode !== 'SCALPING'
         && ['BREAKOUT','DARVAS','SWING','BOTTOM_FISHING'].includes(chain.strategy_mode ?? '');
@@ -241,29 +265,6 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       }
     }
     // ────────────────────────────────────────────────────────────────────
-
-    // ── 러너 모멘텀 감지: 강한 상승 추세 → 익절 지연으로 수익 극대화 ──
-    // 보해양조 20% 사례: ScaleOut(+3%)+Stage1(+7%)로 수익 50% 조기 확정 → 러너 수익 절반 상실
-    // 러너 조건: 거래량 2x+ / ADX 25+ / RSI 45~75 / 정배열 중 3개 이상 (수익 7%+ 시 2개)
-    const _rTech = (() => {
-      const c = chartData.get(chain.stock_code);
-      return c && c.length >= 20 ? analyzeTechnicals(c) : null;
-    })();
-    const isRunner = (() => {
-      if (!_rTech || chain.strategy_mode === 'SCALPING') return false;
-      let s = 0;
-      if (_rTech.volumeRatio >= 2.0) s++;
-      if (_rTech.adx14 >= 25) s++;
-      if (_rTech.rsi14 >= 45 && _rTech.rsi14 <= 75) s++;
-      if (price.currentPrice > _rTech.sma5 && _rTech.sma5 > _rTech.sma20) s++;
-      return s >= (pnlPct >= 7.0 ? 2 : 3);
-    })();
-    if (isRunner && pnlPct >= 2.0) {
-      logger.info(
-        `🚀 러너 감지: ${chain.stock_code} +${pnlPct.toFixed(1)}% vol=${_rTech!.volumeRatio.toFixed(1)}x ADX=${_rTech!.adx14.toFixed(0)} RSI=${_rTech!.rsi14.toFixed(0)} → 익절 지연`,
-        { component: 'TRACK_B' },
-      );
-    }
 
     // ── TrailingStop: +1.5% 이후 최고점 대비 동적 하락폭 시 전량 매도 ──────
     // BreakEvenGuard(SL=0%)와 연동 2중 수익 보호 체계
@@ -436,6 +437,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       if (
         _isIntradayScalpWindow &&
         !_isTrendLeaderChain &&
+        !isRunner && // 러너: 장중 조기 익절 면제
         chain.strategy_mode !== 'SCALPING' &&
         pnlPct >= 2.5 &&
         chain.total_quantity > 0 &&
@@ -466,7 +468,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       ? (Date.now() - new Date(chain.opened_at).getTime()) / 3_600_000 // 1 hour in ms
       : 999;
     const isNearClose = _scalpH === 15 && _scalpM < 25;
-    if (isNearClose && chain.strategy_mode !== 'SCALPING' && chain.strategy_mode !== 'BREAKOUT' && holdHrsForClose < 6 && chain.total_quantity > 0) {
+    if (isNearClose && chain.strategy_mode !== 'SCALPING' && chain.strategy_mode !== 'BREAKOUT' && !isRunner && holdHrsForClose < 6 && chain.total_quantity > 0) {
       const closeThreshold = 1.0; // v10.3: 모든 시간대 최소 1.0% (수수료 커버 후 순수익 확보)
       const closeLabel = _scalpM >= 20 ? '15:20+' : _scalpM >= 10 ? '15:10+' : '15:00+';
       if (pnlPct >= closeThreshold) {
@@ -526,7 +528,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       effectiveSl = Math.max(Number(chainSl), dyn.stopLossPct); // 더 타이트한 SL (음수이므로 max = 덜 부정적 = 타이트)
 
       // AI 약세 전환 + 수익 구간 → 빠른 수익 확정
-      if (realtimeAiScore > 0 && realtimeAiScore < 55 && pnlPct > 1.0) {
+      if (realtimeAiScore > 0 && realtimeAiScore < 55 && pnlPct > 1.0 && !isRunner) { // 러너: AI 약세에도 기술적 모멘텀 우선
         effectiveTp = Math.min(effectiveTp, Math.max(pnlPct - 0.5, 1.0));
       }
     } else {
