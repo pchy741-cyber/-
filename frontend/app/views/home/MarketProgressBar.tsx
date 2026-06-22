@@ -140,5 +140,6 @@ export default function MarketProgressBar({
             : (loss < 0 ? `${usedPct.toFixed(1)}% (${fmtWon(Math.abs(loss))}/${fmtWon(limit)})` : `0% / ${fmtWon(limit)}`)}
       </div>
     </div>
+  </div>
   );
 }
