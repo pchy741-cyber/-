@@ -6,6 +6,7 @@ import { useSSEStream } from './useSSEStream';
 import type {
   Health, Dashboard, WatchlistItem, Strategy, Trade, KillSwitch,
   Secrets, UsDashboard, WithdrawConfig, AllocConfig, LoopStatus, TodayStats,
+  TradingStatus, AiStatus,
 } from '../types';
 
 // ── Stale-While-Revalidate 캐시 ──
@@ -78,6 +79,8 @@ export function useDashboardData() {
   const [todayStats, setTodayStats] = useState<TodayStats | null>(cached?.todayStats ?? null);
   const [isStale, setIsStale] = useState(!!cached?.dash); // 캐시 데이터면 stale
   const [newInsightCount, setNewInsightCount] = useState(0);
+  const [tradingStatus, setTradingStatus] = useState<TradingStatus | null>(null);
+  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
 
   const [viewMode, setViewMode] = useState<'live'|'paper'>(initVm);
 
@@ -161,6 +164,10 @@ export function useDashboardData() {
         }
       }
 
+      // 자동매매 현황 + AI 상태 (폴링 갱신 — 2~5분마다 자동 리프레시)
+      api(`/trading-status?viewMode=${vm}`).then(ifCurrent((r: TradingStatus) => { if (r) setTradingStatus(r); })).catch(() => {});
+      api('/ai-status').then(ifCurrent((r: AiStatus) => { if (r) setAiStatus(r); })).catch(() => {});
+
       api(`/overseas/dashboard?viewMode=${vm}`).then(ifCurrent((us: UsDashboard) => {
         if (!us) return;
         setUsDash(us);
@@ -236,6 +243,8 @@ export function useDashboardData() {
     setTodayStats(null);
     setKillSwitch(null);
     setNewInsightCount(0);
+    setTradingStatus(null);
+    setAiStatus(null);
     loadingRef.current = false;
     tradesLoadedRef.current = false;
     staticLoadedRef.current = false;
@@ -248,6 +257,6 @@ export function useDashboardData() {
     withdrawConfig, setWithdrawConfig, withdrawHistory, setWithdrawHistory,
     allocConfig, setAllocConfig, loading, lastUpdate, loopStatus, sseHealthScore,
     featureFlags, setFeatureFlags, viewMode, switchView, load, todayStats, isStale,
-    newInsightCount,
+    newInsightCount, tradingStatus, aiStatus,
   };
 }

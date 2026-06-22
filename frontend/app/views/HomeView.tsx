@@ -60,16 +60,21 @@ interface HomeViewProps {
   mpData: MpData | null;
   loopStatus?: LoopStatus | null;
   todayStats?: TodayStats | null;
+  tradingStatus?: TradingStatus | null;
+  aiStatus?: AiStatus | null;
 }
 
-function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, strategy, setStrategy, toast, confirm, onRefresh, allocConfig, setAllocConfig, onGoToSettings, viewMode = 'live', onMarketTabChange, mpData, loopStatus, todayStats }: HomeViewProps) {
+function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, strategy, setStrategy, toast, confirm, onRefresh, allocConfig, setAllocConfig, onGoToSettings, viewMode = 'live', onMarketTabChange, mpData, loopStatus, todayStats, tradingStatus: tradingStatusProp, aiStatus: aiStatusProp }: HomeViewProps) {
   const [holdingsTab, setHoldingsTab] = React.useState<'KR' | 'US'>('KR');
   const [userPickedTab, setUserPickedTab] = React.useState(false);
   const [usInsights, setUsInsights] = React.useState('');
   const [insightsDraft, setInsightsDraft] = React.useState('');
   const [insightsSaving, setInsightsSaving] = React.useState(false);
-  const [tradingStatus, setTradingStatus] = React.useState<TradingStatus | null>(null);
-  const [aiStatus, setAiStatus] = React.useState<AiStatus | null>(null);
+  // tradingStatus/aiStatus: hook(폴링)에서 내려오는 prop 우선, 로컬 초기 fetch는 폴백
+  const [localTradingStatus, setLocalTradingStatus] = React.useState<TradingStatus | null>(null);
+  const [localAiStatus, setLocalAiStatus] = React.useState<AiStatus | null>(null);
+  const tradingStatus = tradingStatusProp ?? localTradingStatus;
+  const aiStatus = aiStatusProp ?? localAiStatus;
   const [privacyMode, setPrivacyMode] = React.useState(false);
   const [showAllKRScores, setShowAllKRScores] = React.useState(false);
   const [expandedTradeIdx, setExpandedTradeIdx] = React.useState<number | null>(null);
@@ -98,8 +103,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
     api('/overseas/insights').then((r: Record<string, unknown>) => {
       if (r?.insights != null) { setUsInsights(r.insights as string); setInsightsDraft(r.insights as string); }
     }).catch(() => {});
-    api(`/trading-status?viewMode=${viewMode}`).then((r: Record<string, unknown>) => setTradingStatus(r)).catch(() => {});
-    api('/ai-status').then((r: Record<string, unknown>) => setAiStatus(r)).catch(() => {});
+    api(`/trading-status?viewMode=${viewMode}`).then((r: Record<string, unknown>) => setLocalTradingStatus(r)).catch(() => {});
+    api('/ai-status').then((r: Record<string, unknown>) => setLocalAiStatus(r)).catch(() => {});
     api('/overseas/favorites').then((r: any) => {
       if (r?.favorites) setFavorites(new Set(r.favorites));
       if (r?.blacklist) setBlacklist(new Set(r.blacklist));

@@ -47,7 +47,7 @@ export default function Dashboard() {
     withdrawConfig, allocConfig, setAllocConfig,
     loading, lastUpdate, loopStatus, sseHealthScore, featureFlags, setFeatureFlags,
     viewMode, switchView, load, todayStats, isStale,
-    newInsightCount,
+    newInsightCount, tradingStatus, aiStatus,
   } = data;
 
   const [mpData, setMpData] = useState<MpData | null>(null);
@@ -216,7 +216,7 @@ export default function Dashboard() {
           ) : (
             <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px] mx-auto">
               <ErrorBoundary fallbackTitle="홈 화면 로딩 오류">
-                {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={data.withdrawConfig} watchlist={watchlist} strategy={strategy} setStrategy={setStrategy} toast={toast} confirm={confirm} onRefresh={load} allocConfig={allocConfig} setAllocConfig={setAllocConfig} onGoToSettings={() => setTab('settings')} viewMode={viewMode} onMarketTabChange={setMarketTab} mpData={mpData} loopStatus={loopStatus} todayStats={todayStats} />}
+                {tab === 'home' && <HomeView dash={dash} health={health} killSwitch={killSwitch} trades={trades} usDash={usDash} withdrawConfig={data.withdrawConfig} watchlist={watchlist} strategy={strategy} setStrategy={setStrategy} toast={toast} confirm={confirm} onRefresh={load} allocConfig={allocConfig} setAllocConfig={setAllocConfig} onGoToSettings={() => setTab('settings')} viewMode={viewMode} onMarketTabChange={setMarketTab} mpData={mpData} loopStatus={loopStatus} todayStats={todayStats} tradingStatus={tradingStatus} aiStatus={aiStatus} />}
               </ErrorBoundary>
               <ErrorBoundary fallbackTitle="매매내역 로딩 오류">
                 {tab === 'trades' && <TradesView trades={trades} watchlist={watchlist} viewMode={viewMode} />}

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { getDefenseParkState } from '../../../ai/track-b/defense-park.js';
 import { getAiStatus } from '../../../cache/ai-status.js';
 import { getScoresWithFallback } from '../../../cache/redis.js';
+import { runWithMode } from '../../../config/context.js';
 import { getActiveStrategy, getActiveWatchlist } from '../../../db/client.js';
 import { isMarketOpen } from '../../../kis/market.js';
 import { getKillSwitchStatusAll } from '../../../risk/kill-switch.js';
@@ -16,6 +17,9 @@ const resolveViewIsPaper = resolveRequestMode;
 tradingStatusRoutes.get('/trading-status', async (c) => {
   try {
     const viewIsPaper = resolveViewIsPaper(c);
+    // runWithMode: getRecentLossStocks/getCooldownStatus/isEodOnlyMode 등이
+    // getCtxIsPaper()로 모드를 읽으므로 올바른 컨텍스트 주입 필수
+    return runWithMode(viewIsPaper, async () => {
     const [
       killSwitch,
       defensePark,
@@ -231,6 +235,7 @@ tradingStatusRoutes.get('/trading-status', async (c) => {
       consecutiveLosses: cooldownStatus?.consecutive ?? 0,
       blocks,
     });
+    }); // runWithMode
   } catch (err) {
     return c.json({ overallStatus: 'UNKNOWN', blocks: [], error: 'Internal server error' });
   }
