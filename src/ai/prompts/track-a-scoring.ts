@@ -92,12 +92,6 @@ Gemini가 시장을 "bearish" 또는 "panic"으로 판정한 경우:
 - 매수 임계치 85점으로 상향 (정말 확실한 것만)
 - reasoning에 "하락장 감점 -30점 적용" 명시`;
 
-export const GPT_SCALPING_ADDON = `
-
-## [초단타 룰]
-- Gemini가 source_confidence="HIGH"로 타겟팅한 종목: 95점 고정
-- 나머지 종목은 스코어링 스킵 (0점 NO_DATA)`;
-
 // ── 레짐별 스코어링 보정 (Phase 5) ──
 export type RegimeHint =
   | 'TREND_BULL'
@@ -138,7 +132,6 @@ export function buildScoringPrompt(mode: string, regimeHint?: RegimeHint): strin
   let prompt = GPT_BASE_PROMPT;
 
   if (mode === 'DEFENSE') prompt += GPT_DEFENSE_ADDON;
-  if (mode === 'SCALPING') prompt += GPT_SCALPING_ADDON;
 
   if (regimeHint && REGIME_SCORING[regimeHint]) {
     prompt += REGIME_SCORING[regimeHint];

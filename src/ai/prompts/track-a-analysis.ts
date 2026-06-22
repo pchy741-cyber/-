@@ -40,12 +40,6 @@ export const GEMINI_DEFENSE_ADDON = `
 - 미국 시장(S&P500, NASDAQ) 동향도 반드시 포함
 - 모든 종목의 negative_factors에 "시장 전체 하락 리스크" 추가`;
 
-export const GEMINI_SCALPING_ADDON = `
-
-## [초단타 모드 추가 지시]
-캡쳐 이미지/텍스트에서 강하게 언급된 '타겟 종목'과 '목표 가격'을 1순위로 추출하세요.
-타겟 종목은 source_confidence를 "HIGH"로 설정하세요.`;
-
 // ── 레짐별 포커싱 질문 (Phase 5: Gemini 프롬프트 레짐 연동) ──
 export type RegimeHint =
   | 'TREND_BULL'
@@ -93,7 +87,6 @@ export function buildGeminiPrompt(mode: string, regimeHint?: RegimeHint): string
   let prompt = GEMINI_BASE_PROMPT;
 
   if (mode === 'DEFENSE') prompt += GEMINI_DEFENSE_ADDON;
-  if (mode === 'SCALPING') prompt += GEMINI_SCALPING_ADDON;
 
   // 레짐 힌트가 있으면 포커싱 질문 추가
   if (regimeHint && REGIME_FOCUS[regimeHint]) {

@@ -47,9 +47,11 @@ export async function getDefenseParkState(): Promise<DefenseParkState> {
     };
   }
   try {
+    const isPaper = getCtxIsPaper();
     const { rows } = await getPool().query(
       `SELECT park_stock_code, park_stock_name, entry_reason, entered_at
-       FROM defense_park_state WHERE is_active = TRUE ORDER BY entered_at DESC LIMIT 1`,
+       FROM defense_park_state WHERE is_active = TRUE AND is_paper = $1 ORDER BY entered_at DESC LIMIT 1`,
+      [isPaper],
     );
     if (rows.length === 0) {
       return {
@@ -81,21 +83,23 @@ export async function getDefenseParkState(): Promise<DefenseParkState> {
 /** 방어 파킹 활성화 기록 */
 async function activateDefensePark(reason: string): Promise<void> {
   if (isMemoryMode()) return;
+  const isPaper = getCtxIsPaper();
   await getPool().query(
-    `INSERT INTO defense_park_state (is_active, park_stock_code, park_stock_name, entry_reason, entered_at)
-     VALUES (TRUE, $1, $2, $3, NOW())
-     ON CONFLICT DO NOTHING`,
-    [PARK_STOCK_CODE, PARK_STOCK_NAME, reason],
+    `INSERT INTO defense_park_state (is_active, is_paper, park_stock_code, park_stock_name, entry_reason, entered_at)
+     VALUES (TRUE, $1, $2, $3, $4, NOW())
+     ON CONFLICT (is_paper) WHERE is_active = TRUE DO NOTHING`,
+    [isPaper, PARK_STOCK_CODE, PARK_STOCK_NAME, reason],
   );
 }
 
 /** 방어 파킹 해제 기록 */
 export async function deactivateDefensePark(reason: string): Promise<void> {
   if (isMemoryMode()) return;
+  const isPaper = getCtxIsPaper();
   await getPool().query(
     `UPDATE defense_park_state SET is_active = FALSE, exit_reason = $1, exited_at = NOW()
-     WHERE is_active = TRUE`,
-    [reason],
+     WHERE is_active = TRUE AND is_paper = $2`,
+    [reason, isPaper],
   );
 }
 
@@ -204,7 +208,8 @@ export async function isMarketRecovering(
   if (!isMemoryMode()) {
     try {
       const { rows } = await getPool().query(
-        `SELECT entered_at FROM defense_park_state WHERE is_active = TRUE ORDER BY entered_at DESC LIMIT 1`,
+        `SELECT entered_at FROM defense_park_state WHERE is_active = TRUE AND is_paper = $1 ORDER BY entered_at DESC LIMIT 1`,
+        [getCtxIsPaper()],
       );
       if (rows.length > 0) {
         const enteredAt = new Date(rows[0].entered_at);

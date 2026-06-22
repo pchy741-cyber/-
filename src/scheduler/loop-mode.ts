@@ -115,7 +115,6 @@ const ALLOWED_SESSION_COLS = new Set([
   'paused_reason',
   'kill_switch_pauses',
   'last_run_result',
-  'adaptive_interval_ms',
   'ended_at',
   'stop_reason',
 ]);
@@ -133,24 +132,6 @@ async function dbUpdateSession(id: number | null, updates: Record<string, unknow
   }
 }
 
-async function dbInsertTick(
-  sessionId: number | null,
-  tickNum: number,
-  result: string,
-  durationMs: number | null,
-  intervalMs: number,
-): Promise<void> {
-  if (!sessionId) return;
-  try {
-    const { getPool } = await import('../db/client.js');
-    await getPool().query(
-      `INSERT INTO loop_ticks (session_id, tick_num, result, duration_ms, interval_ms, market_phase) VALUES ($1, $2, $3, $4, $5, $6)`,
-      [sessionId, tickNum, result, durationMs, intervalMs, getUSMarketPhase()],
-    );
-  } catch (e) {
-    logger.warn(`Loop tick DB 기록 실패: ${e}`, { component: 'LOOP' });
-  }
-}
 
 /** 임계 이벤트 → capture-trigger 위임 (fire-and-forget, 15분 쿨다운 내장) */
 function fireTrigger(trigger: CaptureTrigger, mode: 'paper' | 'live' = 'live'): void {
@@ -402,14 +383,6 @@ async function tick(): Promise<void> {
     state.recoveryAttempts = 0;
   }
 
-  // DB 틱 기록
-  dbInsertTick(
-    state.dbSessionId,
-    state.totalRuns,
-    state.lastRunResult ?? 'error',
-    state.lastRunDurationMs,
-    state.adaptiveIntervalMs,
-  ).catch(() => {});
   // 메트릭 누적 (강화 #1): 직전 틱 이후 발생한 매수/매도/PnL을 orders 테이블에서 집계
   updateSessionMetrics().catch(() => {});
   dbUpdateSession(state.dbSessionId, {

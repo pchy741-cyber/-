@@ -102,7 +102,7 @@ export function getOverride<T = unknown>(key: string, isPaper?: boolean): T | nu
 }
 
 /** 특정 카테고리의 모든 오버라이드 (prefix 매칭) */
-export function getOverridesByPrefix(prefix: string, isPaper?: boolean): Map<string, unknown> {
+function getOverridesByPrefix(prefix: string, isPaper?: boolean): Map<string, unknown> {
   const mode = isPaper ?? getCtxIsPaper();
   const modePrefix = mode ? 'P:' : 'L:';
   const result = new Map<string, unknown>();

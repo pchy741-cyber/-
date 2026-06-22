@@ -348,9 +348,9 @@ export async function executeBuyDecisions(
 
   // 현금 여유 확인하면서 매수 결정
   let remainingCash = orderableCash;
-  // Paper: 15종목 (모의매매 — 데이터 수집 극대화) / SCALPING: 2 / SNIPER: 2 / 일반 SWING: 5
+  // Paper: 15종목 (모의매매 — 데이터 수집 극대화) / SNIPER: 2 / 일반 SWING: 5
   const ctxPaper = getCtxIsPaper();
-  const maxBuys = ctxPaper ? 15 : mode === 'SCALPING' ? 2 : mode === 'SNIPER' ? 2 : 5;
+  const maxBuys = ctxPaper ? 15 : mode === 'SNIPER' ? 2 : 5;
   const splitCount = strategyParams.splitCount || 2;
 
   for (const cand of candidates.slice(0, maxBuys)) {
@@ -582,7 +582,7 @@ export async function executeBuyDecisions(
       // 15% 비중으로 1주(3만원) 못 사면 중소자산 → 20% 최소 배분
       baseAllocPct = Math.max(baseAllocPct, 0.2);
     }
-    const modeScale = mode === 'SCALPING' ? 0.5 : mode === 'DEFENSE' ? 0.6 : 1.0;
+    const modeScale = mode === 'DEFENSE' ? 0.6 : 1.0;
 
     // 승률 기반 보정: 실거래 데이터 기반으로 비율 조정
     const wr = winRates?.get(cand.stock_code);

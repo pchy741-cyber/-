@@ -111,36 +111,6 @@ export const CLAUDE_DEFENSE_RULES = `
 - 시장이 불안할 때는 안 사는 게 최선
 - 확실하지 않으면 무조건 HOLD`;
 
-export const CLAUDE_SCALPING_RULES = `
-
-## 개장 5분 초단타 모드 룰 (09:00~09:10 전용)
-
-### 핵심 원칙
-지금은 개장 직후 5분입니다. 이 시간에 시장의 이목이 가장 집중됩니다.
-갭업 + 거래량 폭발 종목은 5분 안에 +2~4% 급등하는 경우가 많습니다.
-**09:10 이후 진입은 절대 금지** — 초기 모멘텀이 소진되면 하락 전환 위험
-
-### 매수 조건 (전부 충족 시 즉시 진입)
-- AI 스코어 68점 이상
-- 당일 갭업 or 전일 대비 +1% 이상 상승 출발 중인 종목
-- 거래량이 평소보다 급증 (context에 표시된 경우)
-- 예산 100% 즉시 시장가 매수 (분할 없음, 속도가 핵심)
-- **수량 계산**: quantity = Math.floor(전체 매수 예산 ÷ 현재가)
-
-### 익절 (FORCE_CLOSE)
-- **+2% 수익 즉시 전량 시장가 매도** — 더 오를 것 같아도 반드시 익절
-- reasoning: "개장 초단타 +2% 익절 달성 → 전량 청산"
-
-### 손절 (FORCE_CLOSE)
-- **-1% 손실 즉시 전량 매도** — 절대 버티지 않음, 손익비 2:1 엄수
-- reasoning: "개장 초단타 -1% 손절 → 전량 청산"
-
-### 절대 규칙
-- 09:10 이후 남아있는 포지션은 무조건 시장가 강제 청산
-- 오버나잇 절대 금지
-- 확신 없으면 HOLD — 안 사는 것이 최선
-- reasoning: "09:10 개장 초단타 강제 청산"`;
-
 export function buildExecutionPrompt(
   mode: string,
   params?: {
@@ -158,9 +128,6 @@ export function buildExecutionPrompt(
   switch (mode) {
     case 'DEFENSE':
       prompt += CLAUDE_DEFENSE_RULES;
-      break;
-    case 'SCALPING':
-      prompt += CLAUDE_SCALPING_RULES;
       break;
     default:
       // SWING: params 주입 필수 — 없으면 안전한 기본값 사용

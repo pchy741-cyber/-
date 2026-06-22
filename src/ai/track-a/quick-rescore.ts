@@ -51,7 +51,6 @@ async function getCurrentRegime(): Promise<string> {
     );
     const mode = String(rows[0]?.mode ?? 'SWING');
     // mode → regime 매핑
-    if (mode === 'SCALPING') return 'BULLISH';
     if (mode === 'DEFENSE') return 'BEARISH';
     if (mode === 'DIVIDEND') return 'BEARISH';
     return 'NEUTRAL';

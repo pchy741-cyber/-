@@ -45,7 +45,7 @@ export function tryRegimeRouterEntry(input: EntryInput): EntryVerdict {
   const { stockCode, tech, regimeRoute, aiScore, buyThreshold, mode, scoring } = input;
   const { structBonus, candleBonus } = scoring;
 
-  if (!regimeRoute.routed || mode === 'SCALPING') return { action: 'CONTINUE' };
+  if (!regimeRoute.routed) return { action: 'CONTINUE' };
 
   // No-Trade 게이트: 레짐 신뢰도 부족 → 진입 금지
   if (regimeRoute.regimeConfidence < REGIME_CONFIDENCE_THRESHOLD) {
@@ -76,17 +76,6 @@ export function tryRegimeRouterEntry(input: EntryInput): EntryVerdict {
   }
 
   return { action: 'CONTINUE' };
-}
-
-/**
- * 스캘핑/ScalpRadar 판정
- */
-export function tryScalpEntry(input: EntryInput): EntryVerdict {
-  // SCALPING 영구 비활성화 (구조적 판단):
-  // 290건 실전 분석 — 당일 매매 23% 승률, -0.76% 평균
-  // 트랜잭션 비용(0.20% 거래세 + 0.04% 수수료) + 슬리피지가 에지를 잡아먹음
-  // 이는 파라미터 튜닝이 아닌 구조적 진실 → 영구 제거
-  return { action: 'SKIP', reason: 'SCALPING 영구 비활성화 (구조적 비용 > 에지)' };
 }
 
 /**

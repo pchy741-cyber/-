@@ -708,7 +708,7 @@ settingsRoutes.post('/live-toggle', async (c) => {
 
   if (body.enabled) {
     // Live 켜기 → PIN 필수
-    if (body.pin !== '7012') {
+    if (body.pin !== (process.env.LIVE_MODE_PIN ?? '7012')) {
       return c.json({ error: '실전모드 활성화: PIN이 틀렸습니다' }, 403);
     }
     setLiveEnabled(true);
@@ -794,13 +794,13 @@ const SETTINGS_META = {
   us_pct: { connected: true, desc: '미국 비중 — overseas-job, cross-market-rotation에서 사용' },
   trailing_stop_pct: { connected: true, desc: '트레일링 스탑 — risk-guard에서 사용' },
   sector_semiconductor: {
-    connected: false,
-    desc: '반도체 섹터 한도 — 미연결 (risk-guard는 종목수 기반 하드코딩 사용)',
+    connected: true,
+    desc: '반도체 섹터 한도 — risk-engine.checkSectorExposure()에서 사용',
   },
-  sector_bio: { connected: false, desc: '바이오 섹터 한도 — 미연결' },
-  sector_defense: { connected: false, desc: '방산 섹터 한도 — 미연결' },
-  sector_finance: { connected: false, desc: '금융 섹터 한도 — 미연결' },
-  sector_etc: { connected: false, desc: '기타 섹터 한도 — 미연결' },
+  sector_bio: { connected: true, desc: '바이오 섹터 한도 — risk-engine.checkSectorExposure()에서 사용' },
+  sector_defense: { connected: true, desc: '방산 섹터 한도 — risk-engine.checkSectorExposure()에서 사용' },
+  sector_finance: { connected: true, desc: '금융 섹터 한도 — risk-engine.checkSectorExposure()에서 사용' },
+  sector_etc: { connected: true, desc: '기타 섹터 한도 — risk-engine.checkSectorExposure()에서 사용' },
 };
 
 settingsRoutes.get('/portfolio/allocation', async (c) => {

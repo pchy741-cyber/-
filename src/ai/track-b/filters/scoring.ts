@@ -175,7 +175,7 @@ export function computeScoring(input: ScoringInput): TechScoring {
   const todayChangePct = prevClose5 > 0 ? ((curPrice - prevClose5) / prevClose5) * 100 : 0;
 
   // ── minTechScore ──
-  const minTechScore = megaCap ? 45 : mode === 'SCALPING' ? 50 : 55;
+  const minTechScore = megaCap ? 45 : 55;
 
   return {
     candleBonus,

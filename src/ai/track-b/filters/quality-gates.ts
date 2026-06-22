@@ -73,7 +73,6 @@ export function checkQualityGates(input: QualityGateInput): GateResult {
 
   // ─ qConfluence ─
   const qConfluence = (() => {
-    if (mode === 'SCALPING') return true;
     const hasStrongCatalyst =
       tech.bollingerBreakout === 'UP' ||
       tech.ttmSqueeze.fireSignal === 'LONG' ||
