@@ -27,7 +27,9 @@ const TRAILING_ACTIVATE_PCT = 1.5; // 트레일링 스탑 활성화 최소 수�
 
 /** 수익률 구간별 동적 트레일링 드롭 (고점 대비 하락 허용 %) — 수익 클수록 타이트 */
 function getDynamicTrailingDrop(peakPnlPct: number): number {
-  if (peakPnlPct >= 9) return 1.5; // +9% 이상 고점: 1.5% 하락 시 즉시 청산 (v12: 1.2→1.5, 한국 주도주 숨고르기 1.5~1.8% 대응)
+  if (peakPnlPct >= 20) return 1.0; // +20% 이상: 1.0% 하락 시 즉시 청산 (러너 수익 극대화)
+  if (peakPnlPct >= 15) return 1.2; // +15~20%: 1.2% 하락 허용 (고수익 보호)
+  if (peakPnlPct >= 9) return 1.5; // +9~15%: 1.5% 하락 시 즉시 청산 (v12: 1.2→1.5, 한국 주도주 숨고르기 1.5~1.8% 대응)
   if (peakPnlPct >= 6) return 1.8; // +6~9%: 1.8% 하락 허용
   if (peakPnlPct >= 4) return 2.2; // +4~6%: 2.2% 하락 허용
   if (peakPnlPct >= 2) return 2.6; // +2~4%: 2.6% 하락 허용

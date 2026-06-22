@@ -242,6 +242,29 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     }
     // ────────────────────────────────────────────────────────────────────
 
+    // ── 러너 모멘텀 감지: 강한 상승 추세 → 익절 지연으로 수익 극대화 ──
+    // 보해양조 20% 사례: ScaleOut(+3%)+Stage1(+7%)로 수익 50% 조기 확정 → 러너 수익 절반 상실
+    // 러너 조건: 거래량 2x+ / ADX 25+ / RSI 45~75 / 정배열 중 3개 이상 (수익 7%+ 시 2개)
+    const _rTech = (() => {
+      const c = chartData.get(chain.stock_code);
+      return c && c.length >= 20 ? analyzeTechnicals(c) : null;
+    })();
+    const isRunner = (() => {
+      if (!_rTech || chain.strategy_mode === 'SCALPING') return false;
+      let s = 0;
+      if (_rTech.volumeRatio >= 2.0) s++;
+      if (_rTech.adx14 >= 25) s++;
+      if (_rTech.rsi14 >= 45 && _rTech.rsi14 <= 75) s++;
+      if (price.currentPrice > _rTech.sma5 && _rTech.sma5 > _rTech.sma20) s++;
+      return s >= (pnlPct >= 7.0 ? 2 : 3);
+    })();
+    if (isRunner && pnlPct >= 2.0) {
+      logger.info(
+        `🚀 러너 감지: ${chain.stock_code} +${pnlPct.toFixed(1)}% vol=${_rTech!.volumeRatio.toFixed(1)}x ADX=${_rTech!.adx14.toFixed(0)} RSI=${_rTech!.rsi14.toFixed(0)} → 익절 지연`,
+        { component: 'TRACK_B' },
+      );
+    }
+
     // ── TrailingStop: +1.5% 이후 최고점 대비 동적 하락폭 시 전량 매도 ──────
     // BreakEvenGuard(SL=0%)와 연동 2중 수익 보호 체계
     //   · +1.5% 도달 → SL=0%로 상향(BreakEvenGuard) + peak 추적 시작(TrailingStop)
@@ -266,7 +289,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         // 안전 범위: -0.5% ~ -2.5% (너무 타이트하면 잦은 매도, 너무 넓으면 수익 반납)
         const trailingDrop = learnedMult != null
           ? -Math.max(0.5, Math.min(2.5, learnedMult))
-          : -1.0;
+          : isRunner ? -1.8 : -1.0; // 러너: -1.8% (숨고르기 허용), 일반: -1.0%
 
         const dropFromPeak = pnlPct - curPeak;
         if (dropFromPeak <= trailingDrop) {
@@ -512,22 +535,25 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       effectiveSl = STRATEGY_PARAMS.SCALPING.stopLossPct;
     }
 
-    // ── ScaleOut 1차 익절: +3.0% 도달 시 50% 시장가 익절 ────────────────────
+    // ── ScaleOut 1차 익절: 러너=+5.0%/35%, 일반=+3.0%/50% ────────────────────
     // BreakEvenGuard + TrailingStop과 연동 3중 수익 보호:
     //   +1.5%: SL → 본절(BEG) + peak 추적 시작(Trailing)
-    //   +3.0%: 50% 익절(ScaleOut) → 나머지 50%에 BEG+Trailing 계속 적용
+    //   +3~5%: 35~50% 익절(ScaleOut) → 나머지에 BEG+Trailing 계속 적용
+    // 러너: 강한 모멘텀 종목은 ScaleOut 지연 + 비율 축소 → 수익 극대화
+    const _scaleOutPct = isRunner ? 5.0 : 3.0;
+    const _scaleOutRatio = isRunner ? 0.35 : 0.5;
     if (
       !isScalpChain &&
       chain.status !== 'PROFIT_TAKING' &&
       !isDowntrendMode &&
-      pnlPct >= 3.0 &&
+      pnlPct >= _scaleOutPct &&
       chain.total_quantity > 0 &&
       !processedSellChains.has(chain.id)
     ) {
-      const scaleQty = Math.ceil(chain.total_quantity * 0.5);
+      const scaleQty = Math.ceil(chain.total_quantity * _scaleOutRatio);
       if (scaleQty > 0 && scaleQty < chain.total_quantity) {
         logger.info(
-          `💰 ScaleOut 1차(50%): ${chain.stock_code} +${pnlPct.toFixed(1)}% → ${scaleQty}주 익절`,
+          `💰 ScaleOut 1차(${Math.round(_scaleOutRatio * 100)}%${isRunner ? '/러너' : ''}): ${chain.stock_code} +${pnlPct.toFixed(1)}% → ${scaleQty}주 익절`,
           { component: 'TRACK_B' },
         );
         decisions.push({
@@ -535,7 +561,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
           stock_code: chain.stock_code,
           quantity: scaleQty,
           price_type: 'MARKET',
-          reasoning: `ScaleOut 1차(50%): +${pnlPct.toFixed(1)}% 도달 → 나머지 50% BreakEven+Trailing 대기`,
+          reasoning: `ScaleOut 1차(${Math.round(_scaleOutRatio * 100)}%${isRunner ? '/러너' : ''}): +${pnlPct.toFixed(1)}% 도달 → 나머지 ${Math.round((1 - _scaleOutRatio) * 100)}% BreakEven+Trailing 대기`,
           confidence: 0.90,
         });
         processedSellChains.add(chain.id);
@@ -576,14 +602,15 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         _getPeakMap().delete(chain.stock_code);
         continue;
       }
-      const sellQty = Math.ceil(chain.total_quantity * 0.35);
+      const _stage1Ratio = isRunner ? 0.25 : 0.35;
+      const sellQty = Math.ceil(chain.total_quantity * _stage1Ratio);
       if (sellQty > 0 && sellQty < chain.total_quantity) {
         decisions.push({
           action: 'PARTIAL_SELL',
           stock_code: chain.stock_code,
           quantity: sellQty,
           price_type: 'MARKET',
-          reasoning: `1단계 익절(35%): +${pnlPct.toFixed(1)}% 도달 (목표 ${effectiveTp.toFixed(1)}% AI${realtimeAiScore}점) → 나머지 65% 트레일링 대기`,
+          reasoning: `1단계 익절(${Math.round(_stage1Ratio * 100)}%${isRunner ? '/러너' : ''}): +${pnlPct.toFixed(1)}% 도달 (목표 ${effectiveTp.toFixed(1)}% AI${realtimeAiScore}점) → 나머지 ${Math.round((1 - _stage1Ratio) * 100)}% 트레일링 대기`,
           confidence: 0.9,
         });
         processedSellChains.add(chain.id);
@@ -630,7 +657,8 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       // 원래 수량 대비 현재 보유가 60%+ 남아있으면 아직 2단계 미실행
       const origQty = avgBuy > 0 ? Math.round(Number(chain.total_invested) / avgBuy) : chain.total_quantity;
       const remainRatio = origQty > 0 ? chain.total_quantity / origQty : 1;
-      if (remainRatio > 0.6 && pnlPct >= effectiveTp + 3.0) {
+      const _stage2Offset = isRunner ? 6.0 : 3.0; // 러너: TP+6%, 일반: TP+3%
+      if (remainRatio > 0.6 && pnlPct >= effectiveTp + _stage2Offset) {
         const sellQty2 = Math.ceil(chain.total_quantity * 0.47); // 잔여의 ~47% (전체의 ~35%)
         if (sellQty2 > 0 && sellQty2 < chain.total_quantity) {
           decisions.push({
@@ -648,7 +676,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
 
       // 3단계: TP+8% 최종 목표 → 잔여 전량 청산
       // (trailing은 위 TrailingStop 1%가 담당 — 여기서 중복 처리 없음)
-      const stage3Target = effectiveTp + 8.0;
+      const stage3Target = effectiveTp + (isRunner ? 13.0 : 8.0); // 러너: TP+13%, 일반: TP+8%
       const isTargetReached = pnlPct >= stage3Target;
       if (isTargetReached) {
         decisions.push({
