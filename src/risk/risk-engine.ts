@@ -387,7 +387,7 @@ export class RiskEngine {
       // 같은 섹터 그룹에 속하는 종목들의 투자액 합산
       const sectorGroup = RiskEngine.SECTOR_TO_DB_KEY[sector];
       let sectorInvested = 0;
-      for (const pos of balance.positions) {
+      for (const pos of balance.positions ?? []) {
         const posSector = SECTOR_MAP_KR[pos.stockCode];
         if (posSector && RiskEngine.SECTOR_TO_DB_KEY[posSector] === sectorGroup) {
           sectorInvested += pos.quantity * pos.avgBuyPrice;

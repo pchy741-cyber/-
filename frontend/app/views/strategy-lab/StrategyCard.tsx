@@ -5,8 +5,10 @@ import { CRITERIA, STRATEGY_LABELS, STRATEGY_ICONS } from './constants';
 import type { StrategyLabOverview } from '../../types';
 
 export function StrategyCard({ s, expanded, onToggle, viewMode = 'paper' }: { s: StrategyLabOverview; expanded: boolean; onToggle: () => void; viewMode?: 'paper' | 'live' }) {
-  const p = (viewMode === 'live' && s.live && s.live.totalTrades > 0) ? s.live : s.paper!;
-  const ref = s.paper!; // 졸업 기준은 항상 paper
+  // 모드별 데이터 분리 — 실전/연습 혼합 방지
+  const p = viewMode === 'live' ? s.live : s.paper;
+  if (!p || p.totalTrades === 0) return null; // 해당 모드에 데이터 없으면 렌더링 안 함
+  const ref = s.paper ?? p; // 졸업 기준은 paper (없으면 현재 모드)
   const c = CRITERIA[s.mode] ?? CRITERIA.DEFAULT;
   const isProfitable = p.totalPnlKrw >= 0;
   const label = STRATEGY_LABELS[s.mode] || s.mode;
@@ -114,14 +116,15 @@ export function StrategyCard({ s, expanded, onToggle, viewMode = 'paper' }: { s:
               <MetricRow label="PF" value={ref.profitFactor.toFixed(2)} target={`/${c.pf}`} met={ref.profitFactor >= c.pf} />
               <MetricRow label="MDD" value={`${ref.maxDrawdownPct.toFixed(1)}%`} target={`/${c.mdd}%`} met={ref.maxDrawdownPct >= c.mdd} />
             </div>
-            {viewMode === 'live' && s.live && s.live.totalTrades > 0 && (
-              <div className="text-[10px] text-emerald-400/70 pt-1 border-t border-white/[0.04]">
-                실전: {s.live.totalTrades}건 WR {(s.live.winRate * 100).toFixed(0)}% <span className={pc(s.live.totalPnlKrw)}>{fmtWon(s.live.totalPnlKrw)}</span>
+            {/* 반대 모드 참고 데이터 */}
+            {viewMode === 'live' && s.paper && s.paper.totalTrades > 0 && (
+              <div className="text-[10px] text-slate-500 pt-1 border-t border-white/[0.04]">
+                연습: {s.paper.totalTrades}건 WR {(s.paper.winRate * 100).toFixed(0)}% <span className={pc(s.paper.totalPnlKrw)}>{fmtWon(s.paper.totalPnlKrw)}</span>
               </div>
             )}
             {viewMode === 'paper' && s.live && s.live.totalTrades > 0 && (
-              <div className="text-[10px] text-slate-500 pt-1 border-t border-white/[0.04]">
-                연습(참고): {ref.totalTrades}건 / 실전: {s.live.totalTrades}건 WR {(s.live.winRate * 100).toFixed(0)}% <span className={pc(s.live.totalPnlKrw)}>{fmtWon(s.live.totalPnlKrw)}</span>
+              <div className="text-[10px] text-emerald-400/70 pt-1 border-t border-white/[0.04]">
+                실전: {s.live.totalTrades}건 WR {(s.live.winRate * 100).toFixed(0)}% <span className={pc(s.live.totalPnlKrw)}>{fmtWon(s.live.totalPnlKrw)}</span>
               </div>
             )}
           </div>

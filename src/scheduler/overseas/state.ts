@@ -261,6 +261,7 @@ export async function getHoldings(isPaper?: boolean): Promise<
       tpPct: number | null;
       slPct: number | null;
       bucket: string;
+      averagingCount: number;
     }
   >
 > {
@@ -268,7 +269,7 @@ export async function getHoldings(isPaper?: boolean): Promise<
   const map = new Map();
   try {
     const { rows } = await getPool().query(
-      `SELECT stock_code, quantity, avg_price, bought_at, exchange, tp_pct, sl_pct, strategy_bucket
+      `SELECT stock_code, quantity, avg_price, bought_at, exchange, tp_pct, sl_pct, strategy_bucket, averaging_count
        FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1`,
       [paper],
     );
@@ -285,6 +286,7 @@ export async function getHoldings(isPaper?: boolean): Promise<
         tpPct: r.tp_pct != null ? Number(r.tp_pct) : null,
         slPct: r.sl_pct != null ? Number(r.sl_pct) : null,
         bucket: r.strategy_bucket ?? 'SWING',
+        averagingCount: Number(r.averaging_count) || 0,
       });
     }
   } catch (e) {

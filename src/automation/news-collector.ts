@@ -297,11 +297,22 @@ export function getTodayNews(): Map<string, NewsItem[]> {
 // ─── 매크로 뉴스 캐시 ───────────────────────────────────────────────────────
 let macroNewsCache: { headlines: MacroHeadline[]; collectedAt: number } = { headlines: [], collectedAt: 0 };
 
-interface MacroHeadline {
+export interface MacroHeadline {
   title: string;
   link: string;
   source: string;
   publishedAt: string;
+}
+
+/** 매크로 뉴스 헤드라인 원본 배열 반환 (AI 프롬프트 주입용) */
+export async function getMacroHeadlines(): Promise<MacroHeadline[]> {
+  // 캐시 유효하면 즉시 반환
+  if (Date.now() - macroNewsCache.collectedAt < 30 * 60 * 1000 && macroNewsCache.headlines.length > 0) {
+    return macroNewsCache.headlines;
+  }
+  // 캐시 만료 → 수집 트리거 후 반환
+  await collectMacroNews().catch(() => '');
+  return macroNewsCache.headlines;
 }
 
 /**

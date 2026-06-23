@@ -407,6 +407,88 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
   const scaleInResult = await processScaleIns({ techResults, buyOrders, cash, isPaper: isPaperMode });
   cash = scaleInResult.cash;
 
+  // ── 물타기(평균단가 하향) — AI가 AVERAGE_DOWN 판단한 보유 종목 ──
+  const MAX_AVG_DOWN = 2; // 최대 2회
+  const AVG_DOWN_SIZE_RATIO = 0.5; // 기존 포지션의 50% 규모로 추가매수
+  for (const [code, aiDec] of aiMap) {
+    if (aiDec.action !== 'AVERAGE_DOWN') continue;
+    const holding = updatedHoldings.get(code);
+    if (!holding || holding.qty <= 0) continue;
+
+    // DB에서 물타기 횟수 확인
+    let avgCount = 0;
+    try {
+      const { rows } = await getPool().query(
+        'SELECT averaging_count FROM overseas_holdings WHERE stock_code = $1 AND is_paper = $2',
+        [code, isPaperMode],
+      );
+      avgCount = Number(rows[0]?.averaging_count ?? 0);
+    } catch { /* DB 없으면 0 */ }
+
+    if (avgCount >= MAX_AVG_DOWN) {
+      logger.info(`🔻 ${code}: 물타기 한도 도달 (${avgCount}/${MAX_AVG_DOWN}) — SKIP`, { component: 'OVERSEAS' });
+      continue;
+    }
+
+    const tech = techByCode.get(code);
+    if (!tech) continue;
+    const currentPrice = tech.price.currentPrice;
+    const pnlPct = holding.avgPrice > 0 ? ((currentPrice - holding.avgPrice) / holding.avgPrice) * 100 : 0;
+
+    // 안전장치: -3% ~ -8% 구간만 물타기
+    if (pnlPct > -3 || pnlPct < -8) {
+      logger.info(`🔻 ${code}: PnL ${pnlPct.toFixed(1)}% 물타기 범위 밖 (-3~-8%) — SKIP`, { component: 'OVERSEAS' });
+      continue;
+    }
+
+    // 집중도 상한 25% 체크
+    const positionValue = holding.qty * currentPrice;
+    if (portfolioValue > 0 && positionValue / portfolioValue >= 0.25) {
+      logger.info(`🔻 ${code}: 집중도 ${((positionValue / portfolioValue) * 100).toFixed(0)}% ≥ 25% — SKIP`, { component: 'OVERSEAS' });
+      continue;
+    }
+
+    // 물타기 수량 = 기존 포지션의 50% (최소 1주)
+    const avgDownQty = Math.max(1, Math.floor(holding.qty * AVG_DOWN_SIZE_RATIO));
+    const cost = avgDownQty * currentPrice * (1 + OVERSEAS_FEE_PCT);
+    if (cost > cash * 0.5) {
+      logger.info(`🔻 ${code}: 물타기 비용 $${cost.toFixed(0)} > 현금 50% — SKIP`, { component: 'OVERSEAS' });
+      continue;
+    }
+
+    const exec = await executeOverseasOrder(
+      code, 'BUY', avgDownQty, currentPrice, tech.exchange,
+      `물타기${avgCount + 1}회 PnL=${pnlPct.toFixed(1)}% AI=${(aiDec.confidence * 100).toFixed(0)}%`,
+      holding.qty, holding.avgPrice,
+      { isPaper: isPaperMode },
+    );
+
+    if (exec.submitted && exec.filledQty > 0) {
+      cash -= exec.filledQty * exec.filledPrice * (1 + OVERSEAS_FEE_PCT);
+      // DB 물타기 횟수 증가 + initial_avg_price 기록
+      getPool().query(
+        `UPDATE overseas_holdings SET averaging_count = COALESCE(averaging_count, 0) + 1,
+         initial_avg_price = CASE WHEN COALESCE(initial_avg_price, 0) = 0 THEN $2 ELSE initial_avg_price END
+         WHERE stock_code = $1 AND is_paper = $3`,
+        [code, holding.avgPrice, isPaperMode],
+      ).catch(() => {});
+
+      const newAvg = exec.finalAvgPrice;
+      const improvement = holding.avgPrice > 0 ? ((holding.avgPrice - newAvg) / holding.avgPrice * 100).toFixed(1) : '0';
+      buyOrders.push(
+        `🔻 물타기 ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (${avgCount + 1}/${MAX_AVG_DOWN}회)\n` +
+        `  평단가: $${holding.avgPrice.toFixed(2)} → $${newAvg.toFixed(2)} (-${improvement}%) | PnL=${pnlPct.toFixed(1)}%`,
+      );
+      await logSystem('TRADE', 'OVERSEAS',
+        `AVERAGE_DOWN ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} | 평단가 $${holding.avgPrice.toFixed(2)}→$${newAvg.toFixed(2)} (${avgCount + 1}/${MAX_AVG_DOWN}) AI=${(aiDec.confidence * 100).toFixed(0)}%`,
+      );
+      logger.info(
+        `🔻 물타기 성공: ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} → 평단가 $${newAvg.toFixed(2)} (${avgCount + 1}/${MAX_AVG_DOWN})`,
+        { component: 'OVERSEAS' },
+      );
+    }
+  }
+
   // ── 프리마켓 딥바이 체결 감시 ──
   try {
     const { checkDipBuyFills } = await import('./premarket-dip.js');

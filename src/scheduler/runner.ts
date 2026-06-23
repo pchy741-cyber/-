@@ -291,7 +291,7 @@ export function startScheduler(): void {
       const { runEventRescore } = await import('../ai/track-a/event-rescore.js');
       await runEventRescore().catch((e) => logger.error(`이벤트 재스코어 실패: ${e}`, { component: 'SCHEDULER' }));
     });
-  }, 30_000);
+  }, 30_000).unref();
 
   // 🏦 FRED 매크로 워밍업 — 매일 23:00 KST (Fed 데이터 일일 갱신)
   cron.schedule(

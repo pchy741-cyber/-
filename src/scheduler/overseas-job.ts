@@ -631,6 +631,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         trendStrength: t.trendStrength,
         isHolding: !!holding,
         holdingPnlPct: pnlPct,
+        averagingCount: holding?.averagingCount ?? 0,
         dayRangePct: t.dayRangePct,
         isMomentum: t.isMomentum,
         isBigMover: t.isBigMover,
@@ -735,16 +736,36 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         .map((sc) => `${sc.sector}${sc.avg >= 0 ? '+' : ''}${sc.avg.toFixed(1)}%`)
         .join(' ');
 
-      const mktCtx = fgEarly
-        ? {
-            fearGreed: fgEarly.fearGreedScore,
-            fearGreedLabel: fgEarly.fearGreedLabel,
-            vix: fgEarly.vix,
-            earningsRisk: earningsRiskCodes,
-            breadthPct,
-            sectorMomentum: sectorMomentumStr,
-          }
-        : { breadthPct, sectorMomentum: sectorMomentumStr };
+      const mktCtx: Record<string, unknown> = { breadthPct, sectorMomentum: sectorMomentumStr };
+      if (fgEarly) {
+        mktCtx.fearGreed = fgEarly.fearGreedScore;
+        mktCtx.fearGreedLabel = fgEarly.fearGreedLabel;
+        mktCtx.vix = fgEarly.vix;
+        mktCtx.earningsRisk = earningsRiskCodes;
+      }
+
+      // FRED 매크로 데이터 주입 (금리·인플레·수익률곡선)
+      try {
+        const { getFredMacro } = await import('../market/fred-macro.js');
+        const fred = await getFredMacro().catch(() => null);
+        if (fred) {
+          mktCtx.fedFundsRate = fred.fedFundsRate;
+          mktCtx.cpiYoY = fred.cpiYoY;
+          mktCtx.treasuryYield10Y = fred.treasuryYield10Y;
+          mktCtx.yieldCurveSpread = fred.yieldCurveSpread;
+          mktCtx.macroRiskScore = fred.macroRiskScore;
+          mktCtx.macroReasons = fred.reasons;
+        }
+      } catch { /* FRED 실패 시 매크로 없이 진행 */ }
+
+      // 뉴스 헤드라인 주입 (최근 매크로 뉴스 5건)
+      try {
+        const { getMacroHeadlines } = await import('../automation/news-collector.js');
+        const headlines = await getMacroHeadlines().catch(() => []);
+        if (headlines.length > 0) {
+          mktCtx.topHeadlines = headlines.slice(0, 5).map((h: { title: string }) => h.title);
+        }
+      } catch { /* 뉴스 실패 시 헤드라인 없이 진행 */ }
 
       // Gemini 활성 → AI 분석, 비활성 → 규칙기반 ($0)
       const { config: appConfig } = await import('../config/index.js');

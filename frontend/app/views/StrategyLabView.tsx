@@ -82,9 +82,10 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
     setRefreshing(false);
   };
 
+  // 모드별 데이터 분리 — 실전/연습 혼합 방지
   const activeStrategies = useMemo(() =>
     strategies.filter(s => {
-      const perf = (viewMode === 'live' && s.live) ? s.live : s.paper;
+      const perf = viewMode === 'live' ? s.live : s.paper;
       return perf && perf.totalTrades > 0;
     }),
     [strategies, viewMode]
@@ -92,7 +93,7 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
 
   const agg = useMemo(() =>
     activeStrategies.reduce((a, s) => {
-      const p = (viewMode === 'live' && s.live && s.live.totalTrades > 0) ? s.live : s.paper!;
+      const p = (viewMode === 'live' ? s.live : s.paper)!;
       a.trades += p.totalTrades;
       a.wins += p.wins;
       a.pnlKrw += p.totalPnlKrw;
@@ -104,14 +105,15 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
 
   const aggWinRate = agg.trades > 0 ? agg.wins / agg.trades : 0;
   const aggAvgPnlPct = agg.trades > 0 ? agg.pnlPctSum / agg.trades : 0;
-  const monthlyReturnPct = aggAvgPnlPct;
+  // 월 수익률 = 건당 평균 수익% × 월간 거래 건수 (30일 기준)
+  const monthlyReturnPct = aggAvgPnlPct * Math.max(1, agg.trades);
   const capitalKrw = simAmount * 10000;
 
   const bestStrategy = useMemo(() => {
     if (!activeStrategies.length) return null;
     return activeStrategies.reduce((best, s) => {
-      const sPnl = ((viewMode === 'live' && s.live) ? s.live : s.paper)?.totalPnlKrw ?? -Infinity;
-      const bestPnl = ((viewMode === 'live' && best.live) ? best.live : best.paper)?.totalPnlKrw ?? -Infinity;
+      const sPnl = (viewMode === 'live' ? s.live : s.paper)?.totalPnlKrw ?? -Infinity;
+      const bestPnl = (viewMode === 'live' ? best.live : best.paper)?.totalPnlKrw ?? -Infinity;
       return sPnl > bestPnl ? s : best;
     }, activeStrategies[0]);
   }, [activeStrategies, viewMode]);
@@ -155,7 +157,7 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
       {/* ─── Hero Stats Bar ─── */}
       <div className="grid grid-cols-3 gap-2">
         <div className="relative overflow-hidden rounded-2xl border border-white/[0.06] px-3 py-3 bg-gradient-to-br from-slate-900/80 to-slate-950/40">
-          <div className="text-[9px] text-slate-500 font-medium tracking-wider mb-0.5">P&L</div>
+          <div className="text-[9px] text-slate-500 font-medium tracking-wider mb-0.5">P&L <span className={viewMode === 'live' ? 'text-emerald-500' : 'text-amber-500'}>{viewMode === 'live' ? '실전' : '연습'}</span></div>
           <div className={`text-base sm:text-xl font-black tracking-tight truncate ${pc(agg.pnlKrw)}`}>
             {agg.trades > 0 ? fmtWon(agg.pnlKrw) : '-'}
           </div>
@@ -170,7 +172,7 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
                 {STRATEGY_LABELS[bestStrategy.mode] || bestStrategy.mode}
               </div>
               <div className="text-[9px] text-emerald-500/70 mt-0.5 truncate">
-                {fmtPct((bestStrategy[viewMode] ?? bestStrategy.paper)?.totalPnlPct)}
+                {fmtPct((viewMode === 'live' ? bestStrategy.live : bestStrategy.paper)?.totalPnlPct)}
               </div>
             </>
           ) : <div className="text-base text-slate-600">-</div>}
@@ -249,9 +251,13 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
 
         {activeStrategies.length === 0 ? (
           <div className="rounded-2xl border border-white/[0.04] p-10 text-center">
-            <div className="text-2xl mb-3 opacity-30">⏳</div>
-            <div className="text-sm text-slate-500">AI가 자동으로 Paper 매매 중</div>
-            <div className="text-[10px] text-slate-600 mt-1">데이터 수집 완료 시 자동 표시</div>
+            <div className="text-2xl mb-3 opacity-30">{viewMode === 'live' ? '📭' : '⏳'}</div>
+            <div className="text-sm text-slate-500">
+              {viewMode === 'live' ? '실전 매매 완료 기록 없음' : 'AI가 자동으로 Paper 매매 중'}
+            </div>
+            <div className="text-[10px] text-slate-600 mt-1">
+              {viewMode === 'live' ? '매도 완료된 실전 거래가 있으면 자동 표시' : '데이터 수집 완료 시 자동 표시'}
+            </div>
           </div>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -284,7 +290,7 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
       <div className="rounded-2xl border border-white/[0.06] bg-gradient-to-br from-slate-900/60 to-slate-950/30 p-5 space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-bold text-slate-200">수익 시뮬레이터</h3>
-          <div className="text-[9px] text-slate-600 bg-white/[0.03] px-2 py-0.5 rounded-full">Paper 기반</div>
+          <div className={`text-[9px] bg-white/[0.03] px-2 py-0.5 rounded-full ${viewMode === 'live' ? 'text-emerald-500' : 'text-amber-500'}`}>{viewMode === 'live' ? '실전' : '연습'} 기반</div>
         </div>
 
         <div className="flex gap-1.5">
@@ -308,7 +314,7 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
               <ProjCard label="1년" capital={capitalKrw} returnPct={monthlyReturnPct * 12} />
             </div>
             <div className="text-[9px] text-slate-600 text-center pt-1">
-              Paper {agg.trades}건 기준 / 승률 {(aggWinRate * 100).toFixed(0)}% / 월 {monthlyReturnPct >= 0 ? '+' : ''}{monthlyReturnPct.toFixed(1)}% · 과거 실적 기반 추정
+              {viewMode === 'live' ? '실전' : '연습'} {agg.trades}건 기준 / 승률 {(aggWinRate * 100).toFixed(0)}% / 건당 {aggAvgPnlPct >= 0 ? '+' : ''}{aggAvgPnlPct.toFixed(2)}% × {agg.trades}건 · 과거 실적 기반 추정
             </div>
           </>
         ) : (

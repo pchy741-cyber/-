@@ -14,6 +14,7 @@ export interface OverseasStockInput {
   trendStrength: string;
   isHolding: boolean;
   holdingPnlPct?: number;
+  averagingCount?: number; // 물타기 횟수 (0=미실행, 1=1회, 2=최대)
   dayRangePct?: number; // 0=저가, 100=고가 위치 (일중 어디에 있는지)
   isMomentum?: boolean; // 당일 +3% 이상 + 일중 상위 → 강한 상승 모멘텀
   isBigMover?: boolean; // 당일 +5% 이상 → 뉴스/촉매 기반 강한 상승 (우선 진입 대상)
@@ -24,7 +25,7 @@ export interface OverseasStockInput {
 
 export interface OverseasAIDecision {
   code: string;
-  action: 'BUY' | 'SELL' | 'HOLD';
+  action: 'BUY' | 'SELL' | 'HOLD' | 'AVERAGE_DOWN';
   confidence: number; // 0~1
   reasoning: string;
 }
@@ -91,8 +92,17 @@ const SYSTEM_PROMPT = `당신은 글로벌 주식(미국 주력 + 일본·대만
 - 손실 -3% 이상 + signal=SELL 또는 STRONG_SELL + ADX 급등(추세 반전 확인) → 선제 손절 SELL
 - PnL +4~9% 구간에서 단순 RSI 하락만으로는 SELL 금지 — 스윙 추세 내 정상 조정일 수 있음
 
+【물타기(AVERAGE_DOWN) — 보유 손실 종목 추가매수로 평단가 하향】
+- 대상: 보유 종목 중 PnL -3%~-8% 구간 + averagingCount < 2 (최대 2회)
+- 조건: RSI ≤ 40 (과매도 구간) + trendStrength≠WEAK (완전 하락추세 아닐 때)
+  OR dayRangePct < 20 (일중 저점) + score > -10
+- confidence 0.65 이상 필요
+- PnL < -8%: 물타기 금지 (손절 구간 — 시스템이 자동 처리)
+- PnL > -3%: 물타기 불필요 (아직 정상 범위)
+- action="AVERAGE_DOWN"으로 응답 (BUY와 구분)
+
 【절대 금지】
-- 보유 종목에 BUY / 비보유 종목에 SELL
+- 비보유 종목에 SELL / 비보유 종목에 AVERAGE_DOWN
 - VIX > 40: 신규 매수 금지 (패닉 구간)
 - Fear&Greed ≥ 85(극탐욕): 신규 매수 금지
 - RSI < 50 이고 trendStrength=WEAK인 종목 BUY 금지 (하락추세 진입 금지)
@@ -103,8 +113,15 @@ const SYSTEM_PROMPT = `당신은 글로벌 주식(미국 주력 + 일본·대만
 - PnL +4~9% 구간에서 단순 RSI 하락만으로 SELL 금지 — 스윙 추세 내 정상 조정
 - 확신 없으면 HOLD. 조건 미달 종목에 억지로 BUY 하지 말 것
 
+【매크로 환경 반영 — 금리·인플레·뉴스】
+- 수익률곡선 역전(10Y-2Y < 0): 경기침체 신호 → confidence 기준 +0.03 상향 (보수적)
+- Fed 금리 인하: 성장주·기술주 유리 → 해당 섹터 confidence -0.02 (약간 공격적)
+- CPI YoY ≥ 4%: 인플레 부담 → 방어주·배당주 선호, 성장주 주의
+- 매크로리스크 ≤ -5: 극위험 → 신규 BUY 최소화 (현금 보존)
+- 뉴스 헤드라인에 특정 종목 언급 시 재료 반영 (실적·정책·제재 등)
+
 JSON 배열로만 응답 (HOLD는 생략, code 대소문자 정확히):
-[{"code":"NVDA","action":"BUY","confidence":0.78,"reasoning":"모멘텀 브레이크아웃 RSI=55 ADX=32 당일+4.1% 일중고가권"},{"code":"TSM","action":"BUY","confidence":0.71,"reasoning":"NVDA 실적 기대감 RSI=52 ADX=28 눌림목 dayRangePct=22"},{"code":"TSLA","action":"SELL","confidence":0.72,"reasoning":"PnL+6.2% RSI하락 score-18 모멘텀 소진"}]
+[{"code":"NVDA","action":"BUY","confidence":0.78,"reasoning":"모멘텀 브레이크아웃 RSI=55 ADX=32 당일+4.1%"},{"code":"PLTR","action":"AVERAGE_DOWN","confidence":0.68,"reasoning":"PnL-4.2% RSI=32 과매도 반등 기대 물타기1회차"},{"code":"TSLA","action":"SELL","confidence":0.72,"reasoning":"PnL+6.2% RSI하락 score-18 모멘텀 소진"}]
 confidence: 0.0~1.0`;
 
 /**
@@ -123,6 +140,15 @@ export async function analyzeOverseasWithAI(
     earningsRisk?: string[];
     breadthPct?: number;
     sectorMomentum?: string;
+    // 매크로 데이터 (FRED)
+    fedFundsRate?: number;
+    cpiYoY?: number;
+    treasuryYield10Y?: number;
+    yieldCurveSpread?: number;
+    macroRiskScore?: number;
+    macroReasons?: string[];
+    // 뉴스 센티먼트
+    topHeadlines?: string[];
   },
 ): Promise<OverseasAIDecision[]> {
   const context = buildContext(stocks, availableCash, holdingCount, perfSummary, userInsights, marketContext);
@@ -186,7 +212,7 @@ function parseAIResponse(text: string): OverseasAIDecision[] {
     .filter((d): d is Record<string, unknown> => typeof d === 'object' && d !== null)
     .map((d) => ({
       code: String(d.code ?? ''),
-      action: (['BUY', 'SELL', 'HOLD'].includes(String(d.action)) ? String(d.action) : 'HOLD') as 'BUY' | 'SELL' | 'HOLD',
+      action: (['BUY', 'SELL', 'HOLD', 'AVERAGE_DOWN'].includes(String(d.action)) ? String(d.action) : 'HOLD') as 'BUY' | 'SELL' | 'HOLD' | 'AVERAGE_DOWN',
       confidence: Math.min(1, Math.max(0, Number(d.confidence ?? 0.5))),
       reasoning: String(d.reasoning ?? ''),
     }))
@@ -212,6 +238,13 @@ function buildContext(
     earningsRisk?: string[];
     breadthPct?: number;
     sectorMomentum?: string;
+    fedFundsRate?: number;
+    cpiYoY?: number;
+    treasuryYield10Y?: number;
+    yieldCurveSpread?: number;
+    macroRiskScore?: number;
+    macroReasons?: string[];
+    topHeadlines?: string[];
   },
 ): string {
   const now = new Date();
@@ -221,7 +254,8 @@ function buildContext(
   const lines = stocks.map((s) => {
     const pnl = s.isHolding ? s.holdingPnlPct?.toFixed(1) : null;
     const softZone = s.isHolding && (s.holdingPnlPct ?? 0) >= 5 ? ' ⚠️소프트익절구간' : '';
-    const holding = s.isHolding ? ` [보유 PnL=${pnl}%${softZone}]` : '';
+    const avgInfo = s.isHolding && s.averagingCount != null ? ` 물타기${s.averagingCount}/2` : '';
+    const holding = s.isHolding ? ` [보유 PnL=${pnl}%${softZone}${avgInfo}]` : '';
     const bigMover = s.isBigMover ? ' 🔥빅무버' : '';
     const momentum = s.isMomentum && !s.isBigMover ? ' 🚀모멘텀' : '';
     const range = s.dayRangePct != null ? ` 일중${s.dayRangePct.toFixed(0)}%` : '';
@@ -258,6 +292,27 @@ function buildContext(
         : '';
     const sectorStr = marketContext.sectorMomentum ? ` | 섹터모멘텀: ${marketContext.sectorMomentum}` : '';
     parts.push(`🌍 시장 환경: ${fgStr}${vixStr}${erStr}${breadthStr}${sectorStr}`);
+
+    // 매크로 데이터 (FRED)
+    const hasMacro = marketContext.fedFundsRate != null || marketContext.treasuryYield10Y != null;
+    if (hasMacro) {
+      const macroLines: string[] = [];
+      if (marketContext.fedFundsRate != null) macroLines.push(`Fed금리=${marketContext.fedFundsRate.toFixed(2)}%`);
+      if (marketContext.cpiYoY != null) macroLines.push(`CPI=${marketContext.cpiYoY.toFixed(1)}%`);
+      if (marketContext.treasuryYield10Y != null) macroLines.push(`10Y국채=${marketContext.treasuryYield10Y.toFixed(2)}%`);
+      if (marketContext.yieldCurveSpread != null) {
+        const spread = marketContext.yieldCurveSpread;
+        macroLines.push(`수익률곡선=${spread.toFixed(2)}${spread < 0 ? '(역전⚠️)' : ''}`);
+      }
+      if (marketContext.macroRiskScore != null) macroLines.push(`매크로리스크=${marketContext.macroRiskScore >= 0 ? '+' : ''}${marketContext.macroRiskScore}`);
+      if (marketContext.macroReasons?.length) macroLines.push(`사유: ${marketContext.macroReasons.join(', ')}`);
+      parts.push(`🏦 매크로: ${macroLines.join(' | ')}`);
+    }
+
+    // 뉴스 헤드라인
+    if (marketContext.topHeadlines?.length) {
+      parts.push(`📰 주요뉴스: ${marketContext.topHeadlines.slice(0, 5).join(' / ')}`);
+    }
   }
   if (userInsights) parts.push(`\n💡 운영자 인사이트: ${userInsights}`);
   parts.push('', ...lines, '', 'BUY/SELL/HOLD 판단을 JSON 배열로 출력하세요.');

@@ -247,60 +247,98 @@ dividendRoutes.post('/dividend/sync-receipts', async (c) => {
 // ═══════════════════════════════════════════════════════
 
 /**
- * 혁신 배당 전략 v2: Multi-Tier + VIX 동적 배분
- * ─────────────────────────────────────────────
- * Core (55%):  JEPQ + SPYI + SCHD  — 수익률 + 성장 균형
- * Satellite (35%): QQQI + JEPI      — 고수익 인컴
- * Anchor (10%):    O                 — 월배당 리츠 안정성
+ * 배당 상위 5개 자동 선택 시스템
+ * ────────────────────────────────
+ * watchlist에서 순수익률(배당수익률 - 운용보수 - 세금) 기준
+ * 상위 5개를 자동 선택. 주기적으로 더 좋은 상품 발견 시 교체.
  *
- * 가중 수익률 ~9.5% → 1500만원 기준 월 ~10만원 (세후)
- * 가중 성장률 ~7.0% → 총수익 ~16.5%
+ * 순수익률 = (배당수익률 - 운용보수) × (1 - 0.154)  [세후]
+ * 최소 기준: 순수익률 > 해외 매매 수수료(~0.25%) 이상이어야 편입
  */
+
+const DIVIDEND_TAX_RATE = 0.154; // 배당소득세 15.4%
+const MIN_NET_YIELD_PCT = 0.25;  // 해외 ETF 매매 수수료 ~ 0.25%
+const TOP_N = 5;
+
+/** DB watchlist에서 순수익률 기준 상위 N개 ETF 선택 */
+async function getTopDividendETFs(n: number = TOP_N): Promise<Array<{ code: string; exchange: string; netYield: number; grossYield: number; expenseRatio: number }>> {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT stock_code, exchange, COALESCE(dividend_yield, 0) AS yield,
+              COALESCE(expense_ratio, 0) AS expense
+       FROM dividend_watchlist
+       WHERE dividend_yield IS NOT NULL AND dividend_yield > 0
+       ORDER BY (dividend_yield - COALESCE(expense_ratio, 0)) * ${1 - DIVIDEND_TAX_RATE} DESC`,
+    );
+    return rows
+      .map((r: any) => ({
+        code: r.stock_code as string,
+        exchange: (r.exchange || 'NASDAQ') as string,
+        grossYield: Number(r.yield),
+        expenseRatio: Number(r.expense),
+        netYield: (Number(r.yield) - Number(r.expense)) * (1 - DIVIDEND_TAX_RATE),
+      }))
+      .filter((e) => e.netYield > MIN_NET_YIELD_PCT)
+      .slice(0, n);
+  } catch {
+    return [];
+  }
+}
+
+/** 상위 N개 ETF의 순수익률 비례 비중 계산 */
+function calcWeightsFromTop(etfs: Array<{ code: string; netYield: number }>): Record<string, number> {
+  if (etfs.length === 0) return ETF_WEIGHTS_BASE;
+  const totalYield = etfs.reduce((s, e) => s + e.netYield, 0);
+  const weights: Record<string, number> = {};
+  for (const e of etfs) {
+    weights[e.code] = +(e.netYield / totalYield).toFixed(3);
+  }
+  return weights;
+}
+
+// 폴백용 기본 비중 (watchlist 비어있을 때)
 const ETF_WEIGHTS_BASE: Record<string, number> = {
-  JEPQ: 0.25,  //  9.5% yield + 8% growth → 최고 밸런스
-  SPYI: 0.20,  // 12.0% yield + 8% growth → 차세대 S&P 커버드콜 (JEPI 상위호환)
-  SCHD: 0.15,  //  3.5% yield + 12% growth → 배당성장 앵커
-  QQQI: 0.15,  // 13.4% yield + 6% growth → 나스닥 콜스프레드 (2025 최우수 ETF)
-  JEPI: 0.15,  //  7.5% yield + 5% growth → 안정적 S&P500 인컴
-  O: 0.10,     //  5.5% yield + 3% growth → 월배당 리츠 (55년 연속 인상)
+  JEPQ: 0.25, SPYI: 0.20, SCHD: 0.15, QQQI: 0.15, JEPI: 0.15, O: 0.10,
 };
 
-/**
- * VIX 레짐별 배분 오버라이드
- * CALM:   성장 중심 (SCHD↑, JEPQ↑) — 커버드콜 프리미엄 낮을 때 성장 극대화
- * STRESS: 프리미엄 중심 (SPYI↑, QQQI↑) — 변동성 프리미엄 수확
- * CRISIS: 방어 중심 (SCHD↑, O↑) — 자본 보존 우선
- */
-const VIX_REGIME_WEIGHTS: Record<string, Record<string, number>> = {
-  CALM: {
-    JEPQ: 0.28, SPYI: 0.15, SCHD: 0.22, QQQI: 0.12, JEPI: 0.13, O: 0.10,
-  },
-  STRESS: {
-    JEPQ: 0.22, SPYI: 0.25, SCHD: 0.10, QQQI: 0.20, JEPI: 0.13, O: 0.10,
-  },
-  CRISIS: {
-    JEPQ: 0.15, SPYI: 0.15, SCHD: 0.25, QQQI: 0.10, JEPI: 0.15, O: 0.20,
-  },
-};
+/** VIX 기반 동적 비중 결정 — 상위 5개 + VIX 레짐 보정 */
+async function getDynamicWeights(isPaper: boolean): Promise<{ weights: Record<string, number>; regime: string; top5: string[] }> {
+  // 1단계: DB에서 상위 5개 선택
+  const topETFs = await getTopDividendETFs();
+  const baseWeights = topETFs.length >= 3 ? calcWeightsFromTop(topETFs) : ETF_WEIGHTS_BASE;
+  const top5 = topETFs.length >= 3 ? topETFs.map((e) => e.code) : Object.keys(ETF_WEIGHTS_BASE);
 
-/** VIX 기반 동적 비중 결정 */
-async function getDynamicWeights(isPaper: boolean): Promise<{ weights: Record<string, number>; regime: string }> {
+  // 2단계: VIX 레짐으로 미세 조정
   try {
     const { getFearGreedIndex } = await import('../../market/external-signals.js');
     const fg = await getFearGreedIndex().catch(() => null);
     const vix = fg?.vix ?? 0;
-    if (vix <= 0) return { weights: ETF_WEIGHTS_BASE, regime: 'UNKNOWN' };
+    if (vix <= 0) return { weights: baseWeights, regime: 'UNKNOWN', top5 };
 
     const { getVixRegime } = await import('../../scheduler/overseas/vix-regime.js');
     const { regime } = getVixRegime(vix, isPaper);
-    const regimeWeights = VIX_REGIME_WEIGHTS[regime] ?? ETF_WEIGHTS_BASE;
-    return { weights: regimeWeights, regime };
+
+    // VIX 레짐별 방어적 조정: CRISIS 시 고수익 ETF 비중↓, 안정 ETF ↑
+    if (regime === 'CRISIS') {
+      // 상위 1~2개(고수익) 비중 -5%p씩, 하위(안정) +5%p씩
+      const codes = Object.keys(baseWeights);
+      const adjusted = { ...baseWeights };
+      if (codes.length >= 3) {
+        adjusted[codes[0]] = Math.max(0.10, adjusted[codes[0]] - 0.05);
+        adjusted[codes[codes.length - 1]] = adjusted[codes[codes.length - 1]] + 0.05;
+      }
+      const sum = Object.values(adjusted).reduce((s, v) => s + v, 0);
+      for (const k of Object.keys(adjusted)) adjusted[k] = +(adjusted[k] / sum).toFixed(3);
+      return { weights: adjusted, regime, top5 };
+    }
+
+    return { weights: baseWeights, regime, top5 };
   } catch {
-    return { weights: ETF_WEIGHTS_BASE, regime: 'FALLBACK' };
+    return { weights: baseWeights, regime: 'FALLBACK', top5 };
   }
 }
 
-// 하위 호환: 기존 코드에서 ETF_WEIGHTS 참조 시 기본값 사용
+// 하위 호환
 const ETF_WEIGHTS = ETF_WEIGHTS_BASE;
 
 /** ETF 거래소 매핑 — watchlist JOIN 정합성 보장 */
@@ -364,9 +402,9 @@ dividendRoutes.post('/dividend/auto-invest', async (c) => {
     const results: Array<{ code: string; shares: number; invested: number; price: number; ordered: boolean }> = [];
     let totalInvested = 0;
 
-    // VIX 동적 비중 → 튜닝된 비중 → 기본값 (우선순위 순)
+    // 상위 5개 동적 선택 → 튜닝된 비중 → 기본값 (우선순위 순)
     const { getOverseasState } = await import('../../scheduler/overseas/utils.js');
-    const { weights: vixWeights, regime } = await getDynamicWeights(isPaper);
+    const { weights: vixWeights, regime, top5 } = await getDynamicWeights(isPaper);
     let weights = vixWeights;
     try {
       const tunedRaw = await getOverseasState(`dividend_alloc_tuned_${isPaper ? 'paper' : 'live'}`);
@@ -377,7 +415,7 @@ dividendRoutes.post('/dividend/auto-invest', async (c) => {
     } catch {
       /* use VIX-based defaults */
     }
-    logger.info(`[MoneyPrinter] VIX 레짐: ${regime} → ETF 배분 적용`, { component: 'DIVIDEND' });
+    logger.info(`[MoneyPrinter] VIX=${regime} 상위${top5.length}개: ${top5.join(',')} → ETF 배분 적용`, { component: 'DIVIDEND' });
 
     for (const [code, weight] of Object.entries(weights)) {
       const price = prices[code];
@@ -507,9 +545,8 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
     const totalCurrent = divCurrentUsd * fx + divDividendsUsd * fx;
     const totalReturn = divInvestedKrw > 0 ? (totalCurrent / divInvestedKrw - 1) * 100 : 0;
 
-    // VIX 레짐 정보 추가
-    const { regime } = await getDynamicWeights(isPaper);
-    const activeWeights = VIX_REGIME_WEIGHTS[regime] ?? ETF_WEIGHTS_BASE;
+    // 상위 5개 + VIX 레짐 정보
+    const { regime, weights: activeWeights, top5 } = await getDynamicWeights(isPaper);
 
     return c.json({
       dividend: {
@@ -529,8 +566,30 @@ dividendRoutes.get('/money-printer/summary', async (c) => {
       strategy: {
         regime,
         activeWeights,
-        tiers: { core: ['JEPQ', 'SPYI', 'SCHD'], satellite: ['QQQI', 'JEPI'], anchor: ['O'] },
+        top5,
       },
+    });
+  } catch (e: any) {
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// ── 배당 상위 5개 순위 조회 (순수익률 기준) ──
+dividendRoutes.get('/dividend/top5', async (c) => {
+  try {
+    const topETFs = await getTopDividendETFs();
+    const weights = calcWeightsFromTop(topETFs);
+    return c.json({
+      top5: topETFs.map((e) => ({
+        code: e.code,
+        exchange: e.exchange,
+        grossYield: +e.grossYield.toFixed(2),
+        expenseRatio: +e.expenseRatio.toFixed(3),
+        netYield: +e.netYield.toFixed(2),
+        weight: +(weights[e.code] * 100).toFixed(1),
+      })),
+      minNetYieldPct: MIN_NET_YIELD_PCT,
+      taxRate: +(DIVIDEND_TAX_RATE * 100).toFixed(1),
     });
   } catch (e: any) {
     return c.json({ error: 'Internal server error' }, 500);

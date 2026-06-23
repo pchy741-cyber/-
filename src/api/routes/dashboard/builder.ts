@@ -421,7 +421,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       const memP = cacheGet<{ price: number }>(`overseas:lastprice:${r.stock_code}`)?.price ?? 0;
       if (memP > 0) { r.last_price = memP; return; }
       try {
-        const p = await withTimeout(getOverseasPrice(String(r.stock_code), String(r.exchange)), 3000, null as any);
+        const p = await withTimeout(getOverseasPrice(String(r.stock_code), String(r.exchange)), 3000, null!);
+
         if (p?.currentPrice > 0) {
           r.last_price = p.currentPrice;
           safeQuery(

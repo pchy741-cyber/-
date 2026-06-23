@@ -61,12 +61,9 @@ export async function runEodBettingJob(): Promise<void> {
   const isPaper = getCtxIsPaper();
 
   // 시간 윈도우 체크 (Paper: 시간 제한 없이 테스트 가능)
+  // 15:15~15:20 범위만 허용 (같은 시간대이므로 && 조건)
   if (!isPaper) {
-    const inWindow =
-      (kstH === EOD_BUY_START_H && kstM >= EOD_BUY_START_M) || (kstH === EOD_BUY_END_H && kstM <= EOD_BUY_END_M);
-    if (kstH !== EOD_BUY_START_H && kstH !== EOD_BUY_END_H) {
-      return;
-    }
+    const inWindow = kstH === EOD_BUY_START_H && kstM >= EOD_BUY_START_M && kstM <= EOD_BUY_END_M;
     if (!inWindow) return;
   }
 
@@ -89,11 +86,7 @@ export async function runEodBettingJob(): Promise<void> {
 
     // 1) KOSPI 당일 하락률 체크
     if (regime.todayDown) {
-      const { getCurrentPrice } = await import('../kis/market.js');
-      const _kospiLive = await getCurrentPrice('0001').catch(() => null);
-      const _kospiCandles = regime.atrPct; // atrPct는 이미 계산됨
-      // todayDown = KOSPI -0.3% 이상 하락 확인됨
-      // 추가: KOSPI 실시간 가격 기반 정밀 하락률 체크 (getDailyChart 캐시 사용)
+      // KOSPI 실시간 가격 기반 정밀 하락률 체크 (getDailyChart 캐시 사용)
       const { getDailyChart } = await import('../kis/market.js');
       const charts = await getDailyChart('0001', 2).catch(() => []);
       const todayClose = charts[0]?.close ?? 0;

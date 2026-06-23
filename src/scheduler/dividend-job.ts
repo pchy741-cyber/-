@@ -34,6 +34,7 @@ export async function runDividendJob(): Promise<void> {
   await syncDividendReceipts();
   await monitorExDates();
   await updateHoldingDividendTotals();
+  await checkTop5Rotation(); // 상위 5개 교체 감지
   await simulateDRIP();
   await tuneDividendAllocation();
 
@@ -49,19 +50,25 @@ async function syncDividendReceipts(): Promise<void> {
     });
     if (receipts.length === 0) return;
 
-    let synced = 0;
-    for (const r of receipts) {
-      const { rowCount } = await getPool().query(
-        `INSERT INTO dividend_history (stock_code, gross_amount_usd, tax_amount_usd, net_amount_usd, currency, pay_date, is_paper)
-         VALUES ($1, $2, $3, $4, $5, $6, false)
-         ON CONFLICT (stock_code, pay_date, is_paper) WHERE pay_date IS NOT NULL DO NOTHING`,
-        [r.stockCode, r.amount, r.tax, r.netAmount, r.currency, r.date || null],
-      );
-      if ((rowCount ?? 0) > 0) synced++;
+    // 배치 INSERT (N+1 → 1 쿼리)
+    const values: unknown[] = [];
+    const placeholders: string[] = [];
+    for (let i = 0; i < receipts.length; i++) {
+      const r = receipts[i];
+      const offset = i * 6;
+      placeholders.push(`($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, false)`);
+      values.push(r.stockCode, r.amount, r.tax, r.netAmount, r.currency, r.date || null);
     }
+    const { rowCount } = await getPool().query(
+      `INSERT INTO dividend_history (stock_code, gross_amount_usd, tax_amount_usd, net_amount_usd, currency, pay_date, is_paper)
+       VALUES ${placeholders.join(', ')}
+       ON CONFLICT (stock_code, pay_date, is_paper) WHERE pay_date IS NOT NULL DO NOTHING`,
+      values,
+    );
+    const synced = rowCount ?? 0;
     if (synced > 0) {
       logger.info(`배당 동기화: ${synced}건 신규 수령`, { component: COMP });
-      await sendTelegramMessage(`💰 배당금 ${synced}건 자동 동기화 완료`).catch(() => {});
+      await sendTelegramMessage(`💰 배당금 ${synced}건 자동 동기화 완료`).catch((e) => logger.debug(`배당 텔레그램 알림 실패: ${e}`, { component: COMP }));
     }
   } catch (e: any) {
     logger.warn(`배당 동기화 실패: ${e.message}`, { component: COMP });
@@ -124,6 +131,68 @@ async function updateHoldingDividendTotals(): Promise<void> {
     );
   } catch (e: any) {
     logger.warn(`배당 누적 업데이트 실패: ${e.message}`, { component: COMP });
+  }
+}
+
+/**
+ * 상위 5개 교체 감지 — watchlist 순수익률 기준 상위 5개가 바뀌면 알림
+ * 순수익률 = (배당수익률 - 운용보수) × (1 - 15.4%)
+ * 매매 수수료(~0.25%) 이상이어야 편입 자격
+ */
+async function checkTop5Rotation(): Promise<void> {
+  const isPaper = getCtxIsPaper();
+  const TAX_RATE = 0.154;
+  const MIN_NET = 0.25; // %
+
+  try {
+    const pool = getPool();
+
+    // 현재 보유 종목
+    const { rows: holdings } = await pool.query(
+      `SELECT stock_code FROM dividend_holdings WHERE is_paper = $1 AND quantity > 0`,
+      [isPaper],
+    );
+    const currentCodes = new Set(holdings.map((h: any) => h.stock_code));
+    if (currentCodes.size === 0) return;
+
+    // watchlist에서 순수익률 상위 5개
+    const { rows: watchlist } = await pool.query(
+      `SELECT stock_code, exchange, COALESCE(dividend_yield, 0) AS yield,
+              COALESCE(expense_ratio, 0) AS expense
+       FROM dividend_watchlist
+       WHERE dividend_yield IS NOT NULL AND dividend_yield > 0
+       ORDER BY (dividend_yield - COALESCE(expense_ratio, 0)) * ${1 - TAX_RATE} DESC
+       LIMIT 5`,
+    );
+
+    const top5Codes = watchlist
+      .map((w: any) => ({
+        code: w.stock_code as string,
+        netYield: (Number(w.yield) - Number(w.expense)) * (1 - TAX_RATE),
+      }))
+      .filter((e) => e.netYield > MIN_NET);
+
+    // 교체 감지: 상위 5개 중 현재 미보유 종목 = 신규 편입 후보
+    const newEntries = top5Codes.filter((e) => !currentCodes.has(e.code));
+    // 보유 중이지만 상위 5에서 탈락한 종목 = 퇴출 후보
+    const top5Set = new Set(top5Codes.map((e) => e.code));
+    const dropCandidates = [...currentCodes].filter((c) => !top5Set.has(c));
+
+    if (newEntries.length > 0 || dropCandidates.length > 0) {
+      const lines: string[] = ['📊 *배당 상위5 교체 감지*'];
+      if (newEntries.length > 0) {
+        lines.push(`편입 후보: ${newEntries.map((e) => `${e.code}(순${e.netYield.toFixed(1)}%)`).join(', ')}`);
+      }
+      if (dropCandidates.length > 0) {
+        lines.push(`퇴출 후보: ${dropCandidates.join(', ')}`);
+      }
+      lines.push(`현재 상위5: ${top5Codes.map((e) => e.code).join(', ')}`);
+
+      logger.info(lines.join(' | '), { component: COMP });
+      await sendTelegramMessage(lines.join('\n')).catch(() => {});
+    }
+  } catch (e: any) {
+    logger.warn(`상위5 교체 감지 실패: ${e.message}`, { component: COMP });
   }
 }
 
@@ -331,11 +400,26 @@ async function tuneDividendAllocation(): Promise<void> {
     );
     if (holdings.length < 2) return;
 
-    // 1단계: VIX 레짐별 기본 비중
+    // 1단계: watchlist에서 순수익률 기준 상위 5개 동적 비중
     let regime = 'CALM';
-    const baseWeights: Record<string, number> = {
-      JEPQ: 0.25, SPYI: 0.20, SCHD: 0.15, QQQI: 0.15, JEPI: 0.15, O: 0.10,
-    };
+    const baseWeights: Record<string, number> = {};
+    {
+      const { rows: wl } = await getPool().query(
+        `SELECT stock_code, COALESCE(dividend_yield, 0) AS yield, COALESCE(expense_ratio, 0) AS expense
+         FROM dividend_watchlist WHERE dividend_yield > 0
+         ORDER BY (dividend_yield - COALESCE(expense_ratio, 0)) * 0.846 DESC LIMIT 5`,
+      );
+      if (wl.length >= 3) {
+        const totalNet = wl.reduce((s: number, w: any) => s + (Number(w.yield) - Number(w.expense)) * 0.846, 0);
+        for (const w of wl) {
+          const net = (Number(w.yield) - Number(w.expense)) * 0.846;
+          baseWeights[w.stock_code] = totalNet > 0 ? +(net / totalNet).toFixed(3) : 1 / wl.length;
+        }
+      } else {
+        // 폴백: 기본 6개
+        Object.assign(baseWeights, { JEPQ: 0.25, SPYI: 0.20, SCHD: 0.15, QQQI: 0.15, JEPI: 0.15, O: 0.10 });
+      }
+    }
     try {
       const { getFearGreedIndex } = await import('../market/external-signals.js');
       const fg = await getFearGreedIndex().catch(() => null);
